@@ -1,0 +1,1 @@
+ALTER TABLE "skus" ADD COLUMN "name" text DEFAULT '' NOT NULL;

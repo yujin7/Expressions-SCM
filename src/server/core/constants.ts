@@ -1,0 +1,57 @@
+/** 角色（《01》§6）。同角色内 is_approver=true 者为审批人；系统强制 审批人≠制单人 */
+export const ROLES = ["ops", "purchasing", "warehouse", "pmc", "finance", "admin"] as const;
+export type Role = (typeof ROLES)[number];
+
+export const ROLE_LABELS: Record<Role, string> = {
+  ops: "运营",
+  purchasing: "采购",
+  warehouse: "仓管",
+  pmc: "生产计划",
+  finance: "财务",
+  admin: "管理员",
+};
+
+/** 单据类型与编号前缀（R8：取号走 doc_counter，禁止 MAX+1） */
+export const DOC_TYPES = {
+  bh: "BH", // 备货申请单
+  wo: "WO", // 委外工单
+  po: "PO", // 采购订单
+  pc: "PC", // 价格变更申请单
+  jg: "JG", // 委外加工通知单
+  fl: "FL", // 发料单
+  tl: "TL", // 委外退料单
+  sh: "SH", // 收货单
+  ct: "CT", // 采购退货单
+  rk: "RK", // 入库单（stock_doc）
+  ck: "CK", // 出库单（stock_doc）
+  db: "DB", // 调拨单（stock_doc）
+  js: "JS", // 委外结算单
+  pd: "PD", // 盘点单（1.1）
+} as const;
+export type DocType = keyof typeof DOC_TYPES;
+
+/** R9 敏感字段黑名单（dto 唯一收口；运营/仓管不可见，含导出与 RSC 载荷） */
+export const SENSITIVE_FIELDS = [
+  "price", // 采购价/成本价
+  "feeRatePlan", // 加工费计划单价
+  "feeRateCurrent", // 加工费现价
+  "feePayable", // 应付加工费
+  "deductPrice", // 扣款单价
+  "deductAmount", // 扣款额
+  "deductionTotal",
+  "settleAmount", // 结算金额
+  "concessionPrice", // 让步单价
+  "manualAdj",
+  "amount", // offset_pool 金额
+] as const;
+
+/** 可见敏感价格的角色（●）：采购/PMC/财务/管理员 */
+export const PRICE_VISIBLE_ROLES: Role[] = ["purchasing", "pmc", "finance", "admin"];
+
+/** sys_param 键 */
+export const PARAM_KEYS = {
+  priceTolerancePct: "price_tolerance_pct", // 价格异动容差，默认 3
+  overReceiveTolerancePct: "over_receive_tolerance_pct", // 超收容差，默认 0
+  lossRatePct: "loss_rate_pct", // 品类允许损耗率（scope=品类），包材=5
+  concessionPriceRatio: "concession_price_ratio", // 让步默认价率，默认 100（D6 待财务确认）
+} as const;

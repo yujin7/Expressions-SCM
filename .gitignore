@@ -1,0 +1,10 @@
+node_modules/
+.next/
+.env
+uploads/
+*.tsbuildinfo
+.DS_Store
+coverage/
+drizzle/meta/_journal.json.bak
+.data/
+.claude/
