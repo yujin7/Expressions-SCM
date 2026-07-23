@@ -138,3 +138,71 @@ export async function listLedger(
   ]);
   return { rows, total };
 }
+
+/**
+ * D20 全仓视图（2026-07-24 代决落地）：快照仓最新快照，只读参考口径——不入账本。
+ * 每 (仓库,SKU) 取最大 biz_date 行；行带 bizDate 供前端数据龄标注。
+ */
+export async function listSnapshotBalances(
+  opts: { q?: string; warehouseId?: number; page: number; pageSize: number },
+  dbArg?: AnyDb,
+): Promise<{ rows: unknown[]; total: number }> {
+  const db = await resolveDb(dbArg);
+  const { stockSnapshots } = await import("@/db/schema");
+  const latest = db
+    .select({
+      warehouseId: stockSnapshots.warehouseId,
+      skuId: stockSnapshots.skuId,
+      maxDate: sql<string>`max(${stockSnapshots.bizDate})`.as("max_date"),
+    })
+    .from(stockSnapshots)
+    .groupBy(stockSnapshots.warehouseId, stockSnapshots.skuId)
+    .as("latest");
+  const conds = [sql`${stockSnapshots.qty} <> 0`];
+  if (opts.warehouseId) conds.push(eq(stockSnapshots.warehouseId, opts.warehouseId));
+  if (opts.q) conds.push(or(ilike(skus.code, `%${opts.q}%`), ilike(skus.name, `%${opts.q}%`))!);
+  const where = and(...conds);
+  const base = db
+    .select({
+      skuId: stockSnapshots.skuId,
+      skuCode: skus.code,
+      skuName: skus.name,
+      baseUom: skus.baseUom,
+      spuCode: spus.code,
+      spuNameCn: spus.nameCn,
+      warehouseId: stockSnapshots.warehouseId,
+      warehouseName: warehouses.name,
+      warehouseKind: warehouses.kind,
+      qty: stockSnapshots.qty,
+      bizDate: stockSnapshots.bizDate,
+    })
+    .from(stockSnapshots)
+    .innerJoin(
+      latest,
+      and(
+        eq(latest.warehouseId, stockSnapshots.warehouseId),
+        eq(latest.skuId, stockSnapshots.skuId),
+        eq(latest.maxDate, stockSnapshots.bizDate),
+      ),
+    )
+    .innerJoin(skus, eq(stockSnapshots.skuId, skus.id))
+    .innerJoin(spus, eq(skus.spuId, spus.id))
+    .innerJoin(warehouses, eq(stockSnapshots.warehouseId, warehouses.id));
+  const [rows, [{ total }]] = await Promise.all([
+    base.where(where).orderBy(skus.code, warehouses.name).limit(opts.pageSize).offset((opts.page - 1) * opts.pageSize),
+    db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(stockSnapshots)
+      .innerJoin(
+        latest,
+        and(
+          eq(latest.warehouseId, stockSnapshots.warehouseId),
+          eq(latest.skuId, stockSnapshots.skuId),
+          eq(latest.maxDate, stockSnapshots.bizDate),
+        ),
+      )
+      .innerJoin(skus, eq(stockSnapshots.skuId, skus.id))
+      .where(where),
+  ]);
+  return { rows, total };
+}

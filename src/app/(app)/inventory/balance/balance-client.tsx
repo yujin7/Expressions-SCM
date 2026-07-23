@@ -261,6 +261,131 @@ function SpuBalanceTab() {
   );
 }
 
+interface SnapshotRow {
+  skuId: number;
+  skuCode: string;
+  skuName: string;
+  baseUom: string;
+  spuCode: string;
+  spuNameCn: string;
+  warehouseId: number;
+  warehouseName: string;
+  qty: string;
+  bizDate: string;
+}
+
+/** D20 全仓视图：快照仓最新库存（只读参考口径，带数据龄标注，不入账本） */
+function SnapshotTab() {
+  const { message } = App.useApp();
+  const [rows, setRows] = useState<SnapshotRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [q, setQ] = useState("");
+  const [warehouseId, setWarehouseId] = useState<number | undefined>();
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
+      if (warehouseId != null) params.set("warehouseId", String(warehouseId));
+      const res = await fetchJson<{ rows: SnapshotRow[]; total: number }>(
+        `/api/inventory/balance/snapshot?${params.toString()}`,
+      );
+      setRows(res.rows);
+      setTotal(res.total);
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [q, warehouseId, page, pageSize, message]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const ageDays = (bizDate: string) =>
+    Math.max(0, Math.floor((Date.now() - new Date(`${bizDate}T00:00:00+08:00`).getTime()) / 86_400_000));
+
+  const columns: ColumnsType<SnapshotRow> = [
+    { title: "编码", dataIndex: "skuCode", width: 110 },
+    { title: "名称", dataIndex: "skuName", width: 180 },
+    { title: "所属产品", dataIndex: "spuNameCn", render: (_, r) => `${r.spuCode} ${r.spuNameCn}` },
+    { title: "仓库", dataIndex: "warehouseName", width: 160 },
+    { title: "数量", dataIndex: "qty", width: 120, align: "right" },
+    { title: "基础单位", dataIndex: "baseUom", width: 90 },
+    {
+      title: "数据日期",
+      dataIndex: "bizDate",
+      width: 150,
+      render: (v: string) => {
+        const d = ageDays(v);
+        return (
+          <Space size={6}>
+            {v}
+            <Tag color={d <= 1 ? "green" : d <= 3 ? "orange" : "red"}>{d === 0 ? "今日" : `${d} 天前`}</Tag>
+          </Space>
+        );
+      },
+    },
+  ];
+
+  return (
+    <div>
+      <Alert
+        type="warning"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="快照仓（保税/云/平台仓）只读参考口径：数据来自快照导入，不入实时账本；留意「数据日期」标签判断新鲜度（D20）"
+      />
+      <Space style={{ marginBottom: 16 }} wrap>
+        <Input.Search
+          allowClear
+          placeholder="搜索 SKU 编码/名称"
+          style={{ width: 260 }}
+          onSearch={(value) => {
+            setQ(value.trim());
+            setPage(1);
+          }}
+        />
+        <RemoteSelect
+          api="/api/master/warehouse"
+          getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
+          allowClear
+          placeholder="全部快照仓"
+          style={{ width: 220 }}
+          value={warehouseId}
+          onChange={(v) => {
+            setWarehouseId(v as number | undefined);
+            setPage(1);
+          }}
+        />
+      </Space>
+      <Table<SnapshotRow>
+        rowKey={(r) => `${r.skuId}-${r.warehouseId}`}
+        size="middle"
+        columns={columns}
+        dataSource={rows}
+        scroll={{ x: "max-content" }}
+        loading={loading}
+        pagination={{
+          current: page,
+          pageSize,
+          total,
+          showSizeChanger: true,
+          showTotal: (t) => `共 ${t} 条`,
+          onChange: (p, ps) => {
+            setPage(p);
+            setPageSize(ps);
+          },
+        }}
+      />
+    </div>
+  );
+}
+
 export default function BalanceClient() {
   return (
     <div>
@@ -272,6 +397,7 @@ export default function BalanceClient() {
         items={[
           { key: "sku", label: "SKU 明细", children: <SkuBalanceTab /> },
           { key: "spu", label: "SPU 汇总", children: <SpuBalanceTab /> },
+          { key: "snapshot", label: "全仓视图（快照）", children: <SnapshotTab /> },
         ]}
       />
     </div>

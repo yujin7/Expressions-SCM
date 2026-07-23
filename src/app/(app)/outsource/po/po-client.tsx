@@ -304,6 +304,9 @@ export default function PoClient() {
           确认（代录）
         </Button>
       ) : null}
+      {detail.status !== "draft" ? (
+        <Button onClick={() => window.open(`/outsource/po/${detail.id}/print`, "_blank")}>打印采购单</Button>
+      ) : null}
     </Space>
   ) : null;
 

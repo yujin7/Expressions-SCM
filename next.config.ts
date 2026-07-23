@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  output: "standalone", // 生产容器化（ops/Dockerfile）
   // 服务器组件里用到的原生依赖
   serverExternalPackages: ["pg", "pg-boss", "@node-rs/argon2", "exceljs", "@electric-sql/pglite"],
 };

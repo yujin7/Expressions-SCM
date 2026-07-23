@@ -44,3 +44,10 @@ admin / ops01 / purchasing01 / warehouse01 / pmc01(审批人) / pmc02(非审批�
 
 ## 里程碑
 阶段索引与决策登记见 `../spec/CURRENT.md`。当前：**DW1**（W1/W2/DW1-core 已完成，commit 1103347）；上线门待 D15。
+
+## 生产部署（staging 同构）
+```bash
+cp .env.example .env.prod   # 填 POSTGRES_PASSWORD/AUTH_SECRET/AUTH_URL
+ops/deploy.sh               # 构建→迁移门禁→滚动重启→健康检查
+```
+备份：`ops/backup.sh`（crontab 每日 02:00；必须配置 BACKUP_REMOTE 出主机）。恢复演练：`ops/RESTORE-DRILL.md`（每季）。
