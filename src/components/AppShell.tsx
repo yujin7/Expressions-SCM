@@ -74,6 +74,7 @@ const menuItems: MenuProps["items"] = [
     icon: <BarChartOutlined />,
     label: "报表（W5）",
     children: [
+      { key: "/report/dashboard", label: "经营驾驶舱" },
       { key: "/report/wip", label: "委外在制看板" },
       { key: "/report/settlement-summary", label: "结算汇总表" },
     ],
