@@ -29,6 +29,7 @@ export const bhDocs = pgTable("bh_docs", {
   id: serial("id").primaryKey(),
   ...docColumns(),
   purpose: text("purpose"),
+  orderType: text("order_type"), // NPD 钩子（W3 集成补列——此前暂存 purpose）
 });
 export const bhLines = pgTable("bh_lines", {
   id: serial("id").primaryKey(),
@@ -118,7 +119,7 @@ export const jgDocs = pgTable("jg_docs", {
   confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
   confirmedBy: integer("confirmed_by").references(() => users.id),
   confirmNote: text("confirm_note"),
-});
+}, (t) => [unique("uq_jg_wo").on(t.woId)]); // 一 WO 一 JG（W3 集成补约束，替代先查后插的并发窗口）
 
 /** JG 加工费分段（收货时点分段计价的依据；PC 追溯时重算段） */
 export const jgFeeSegments = pgTable("jg_fee_segments", {

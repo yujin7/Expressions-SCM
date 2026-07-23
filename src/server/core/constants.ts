@@ -44,6 +44,9 @@ export const SENSITIVE_FIELDS = [
   "manualAdj",
   "amount", // offset_pool 金额
   "feeRate", // processing_fee_refs 加工费参考价
+  "oldPrice", // PC 基准价
+  "newPrice", // PC 新价
+  "deviationPct", // PC 偏差（可反推价格）
 ] as const;
 
 /** 可见敏感价格的角色（●）：采购/PMC/财务/管理员 */

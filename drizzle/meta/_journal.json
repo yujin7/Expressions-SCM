@@ -43,6 +43,13 @@
       "when": 1784819659691,
       "tag": "0005_sad_vector",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784820834353,
+      "tag": "0006_pretty_iron_fist",
+      "breakpoints": true
     }
   ]
 }

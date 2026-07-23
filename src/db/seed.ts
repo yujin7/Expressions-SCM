@@ -63,7 +63,7 @@ async function main() {
     ["tl", "warehouse"],
     ["sh", "warehouse"],
     ["ct", "warehouse"],
-    ["stock_doc", "warehouse"],
+    ["stock_doc", "warehouse"], ["jg", "pmc"],
     ["opening", "finance"],
     ["count", "finance"],
     ["js", "finance"],
