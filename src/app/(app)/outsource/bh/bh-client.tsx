@@ -4,12 +4,14 @@ import { useCallback, useEffect, useState } from "react";
 import {
   App,
   Button,
+  DatePicker,
   Descriptions,
   Drawer,
   Form,
   Input,
   InputNumber,
   Modal,
+  Popconfirm,
   Select,
   Space,
   Table,
@@ -20,120 +22,178 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
-import dayjs from "dayjs";
+import dayjs, { type Dayjs } from "dayjs";
 import RemoteSelect from "@/components/RemoteSelect";
 import DocStatusTag from "@/components/DocStatusTag";
-import DocActions from "@/components/DocActions";
 import { fetchJson, postJson } from "@/components/fetchJson";
-import { STOCK_SUBTYPE_LABELS, toOptions } from "@/components/labels";
+import { ORDER_TYPE_LABELS, formatOrderType, toOptions } from "@/components/labels";
 
-interface DocRow {
+interface BhRow {
   id: number;
   docNo: string;
-  subtype: string;
   status: string;
-  warehouseName: string;
-  toWarehouseName: string | null;
+  orderType: string | null;
   lineCount: number;
-  createdByName: string;
+  createdByName: string | null;
   createdAt: string;
 }
 
-interface DocLine {
+interface BhLine {
   id: number;
   skuId: number;
   skuCode: string;
   skuName: string;
   baseUom: string;
   qty: string;
-  price: string | null;
+  expectDate: string | null;
 }
 
 interface DocApproval {
-  approverName: string;
+  approverName: string | null;
   action: "approve" | "reject";
   comment: string | null;
   createdAt: string;
 }
 
-interface DocDetail {
+interface BhDetail {
   id: number;
   docNo: string;
-  subtype: string;
   status: string;
-  version: number;
   remark: string | null;
-  warehouseId: number;
-  warehouseName: string;
-  toWarehouseId: number | null;
-  toWarehouseName: string | null;
-  reversalOfId: number | null;
-  lines: DocLine[];
-  approvals: DocApproval[];
-  createdByName: string;
+  orderType: string | null;
+  version: number;
   createdAt: string;
+  createdByName: string | null;
+  lines: BhLine[];
+  approvals: DocApproval[];
 }
 
 interface CreateFormValues {
-  subtype: string;
-  warehouseId: number;
-  toWarehouseId?: number;
+  orderType?: string;
   remark?: string;
-  lines?: { skuId: number; qty: number; price?: number }[];
+  lines?: { skuId: number; qty: number; expectDate?: Dayjs }[];
 }
-
-const SUBTYPE_COLORS: Record<string, string> = {
-  opening: "cyan",
-  issue_out: "orange",
-  sales_out: "blue",
-  transfer: "geekblue",
-  reversal: "red",
-  purchase_in: "green",
-  outsource_in: "purple",
-  outsource_in_spare: "magenta",
-  count_adjust: "gold",
-  loss_writeoff: "volcano",
-  transit_writeoff: "default",
-};
-
-/** 可手工创建的子类型（reversal 只能由红字冲销生成） */
-const MANUAL_SUBTYPE_LABELS: Record<string, string> = {
-  opening: "期初",
-  issue_out: "领料出",
-  sales_out: "销售出",
-  transfer: "调拨",
-};
 
 const STATUS_TABS = [
   { key: "", label: "全部" },
   { key: "draft", label: "草稿" },
   { key: "pending", label: "待审批" },
-  { key: "completed", label: "已完成" },
-  { key: "closed", label: "已关闭" },
+  { key: "approved", label: "已审批" },
 ];
 
-function SubtypeTag({ subtype }: { subtype: string }) {
-  return <Tag color={SUBTYPE_COLORS[subtype] ?? "default"}>{STOCK_SUBTYPE_LABELS[subtype] ?? subtype}</Tag>;
+/** 提交/审批/驳回按钮组（委外链通用请求体：submit {version}，approve {action,comment,version}） */
+function BhActions({
+  doc,
+  onChanged,
+}: {
+  doc: { id: number; status: string; version: number };
+  onChanged: () => void;
+}) {
+  const { message } = App.useApp();
+  const [loading, setLoading] = useState(false);
+  const [rejectOpen, setRejectOpen] = useState(false);
+  const [rejectComment, setRejectComment] = useState("");
+
+  const post = async (path: string, body: unknown, successText: string) => {
+    setLoading(true);
+    try {
+      await postJson(`/api/outsource/bh/${doc.id}/${path}`, body);
+      message.success(successText);
+      onChanged();
+      return true;
+    } catch (e) {
+      message.error((e as Error).message);
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (doc.status === "draft") {
+    return (
+      <Popconfirm
+        title="确认提交审批？"
+        okText="提交"
+        cancelText="取消"
+        onConfirm={() => void post("submit", { version: doc.version }, "已提交审批")}
+      >
+        <Button type="primary" loading={loading}>
+          提交
+        </Button>
+      </Popconfirm>
+    );
+  }
+
+  if (doc.status === "pending") {
+    return (
+      <Space>
+        <Popconfirm
+          title="确认审批通过？"
+          okText="通过"
+          cancelText="取消"
+          onConfirm={() =>
+            void post("approve", { action: "approve", version: doc.version }, "审批已通过")
+          }
+        >
+          <Button type="primary" loading={loading}>
+            审批通过
+          </Button>
+        </Popconfirm>
+        <Button danger loading={loading} onClick={() => setRejectOpen(true)}>
+          驳回
+        </Button>
+        <Modal
+          title="驳回单据"
+          open={rejectOpen}
+          okText="确认驳回"
+          okButtonProps={{ danger: true }}
+          cancelText="取消"
+          confirmLoading={loading}
+          onCancel={() => setRejectOpen(false)}
+          onOk={() =>
+            void post(
+              "approve",
+              { action: "reject", comment: rejectComment.trim() || undefined, version: doc.version },
+              "已驳回",
+            ).then((ok) => {
+              if (ok) {
+                setRejectOpen(false);
+                setRejectComment("");
+              }
+            })
+          }
+        >
+          <Input.TextArea
+            rows={3}
+            maxLength={200}
+            placeholder="驳回意见（可选）"
+            value={rejectComment}
+            onChange={(e) => setRejectComment(e.target.value)}
+          />
+        </Modal>
+      </Space>
+    );
+  }
+
+  return null;
 }
 
-export default function DocsClient() {
+export default function BhClient() {
   const { message } = App.useApp();
   const [form] = Form.useForm<CreateFormValues>();
-  const [rows, setRows] = useState<DocRow[]>([]);
+  const [rows, setRows] = useState<BhRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [status, setStatus] = useState("");
-  const [subtype, setSubtype] = useState<string | undefined>();
   const [q, setQ] = useState("");
 
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const createSubtype = Form.useWatch("subtype", form);
 
   const [detailId, setDetailId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<DocDetail | null>(null);
+  const [detail, setDetail] = useState<BhDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
   const load = useCallback(async () => {
@@ -141,9 +201,8 @@ export default function DocsClient() {
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (status) params.set("status", status);
-      if (subtype) params.set("subtype", subtype);
-      const res = await fetchJson<{ rows: DocRow[]; total: number }>(
-        `/api/inventory/stock-doc?${params.toString()}`,
+      const res = await fetchJson<{ rows: BhRow[]; total: number }>(
+        `/api/outsource/bh?${params.toString()}`,
       );
       setRows(res.rows);
       setTotal(res.total);
@@ -152,7 +211,7 @@ export default function DocsClient() {
     } finally {
       setLoading(false);
     }
-  }, [q, status, subtype, page, pageSize, message]);
+  }, [q, status, page, pageSize, message]);
 
   useEffect(() => {
     void load();
@@ -162,7 +221,7 @@ export default function DocsClient() {
     async (id: number) => {
       setDetailLoading(true);
       try {
-        const res = await fetchJson<DocDetail>(`/api/inventory/stock-doc/${id}`);
+        const res = await fetchJson<BhDetail>(`/api/outsource/bh/${id}`);
         setDetail(res);
       } catch (e) {
         message.error((e as Error).message);
@@ -187,19 +246,16 @@ export default function DocsClient() {
         return;
       }
       setSaving(true);
-      const body = {
-        subtype: values.subtype,
-        warehouseId: values.warehouseId,
-        toWarehouseId: values.subtype === "transfer" ? values.toWarehouseId : undefined,
+      await postJson<{ id: number }>("/api/outsource/bh", {
+        orderType: values.orderType || undefined,
         remark: values.remark?.trim() || undefined,
         lines: lines.map((l) => ({
           skuId: l.skuId,
-          qty: l.qty,
-          price: values.subtype === "opening" ? l.price : undefined,
+          qty: String(l.qty),
+          expectDate: l.expectDate ? l.expectDate.format("YYYY-MM-DD") : undefined,
         })),
-      };
-      await postJson<{ id: number }>("/api/inventory/stock-doc", body);
-      message.success("单据已创建（草稿）");
+      });
+      message.success("备货申请已创建（草稿）");
       setCreateOpen(false);
       form.resetFields();
       void load();
@@ -210,7 +266,7 @@ export default function DocsClient() {
     }
   };
 
-  const columns: ColumnsType<DocRow> = [
+  const columns: ColumnsType<BhRow> = [
     {
       title: "单据号",
       dataIndex: "docNo",
@@ -219,24 +275,21 @@ export default function DocsClient() {
         <Typography.Link onClick={() => setDetailId(r.id)}>{v}</Typography.Link>
       ),
     },
-    { title: "类型", dataIndex: "subtype", width: 120, render: (v: string) => <SubtypeTag subtype={v} /> },
     {
-      title: "仓库",
-      dataIndex: "warehouseName",
-      render: (_, r) =>
-        r.subtype === "transfer" && r.toWarehouseName
-          ? `${r.warehouseName} → ${r.toWarehouseName}`
-          : r.warehouseName,
+      title: "订单类型",
+      dataIndex: "orderType",
+      width: 120,
+      render: (v: string | null) => (v ? <Tag color="blue">{formatOrderType(v)}</Tag> : "—"),
     },
-    { title: "行数", dataIndex: "lineCount", width: 70, align: "right" },
-    { title: "制单人", dataIndex: "createdByName", width: 100 },
+    { title: "行数", dataIndex: "lineCount", width: 80, align: "right" },
+    { title: "状态", dataIndex: "status", width: 100, render: (v: string) => <DocStatusTag status={v} /> },
+    { title: "制单人", dataIndex: "createdByName", width: 100, render: (v: string | null) => v ?? "—" },
     {
       title: "时间",
       dataIndex: "createdAt",
       width: 160,
       render: (v: string) => dayjs(v).format("YYYY-MM-DD HH:mm"),
     },
-    { title: "状态", dataIndex: "status", width: 100, render: (v: string) => <DocStatusTag status={v} /> },
     {
       title: "操作",
       key: "_actions",
@@ -249,24 +302,23 @@ export default function DocsClient() {
     },
   ];
 
-  const lineColumns: ColumnsType<DocLine> = [
-    { title: "SKU 编码", dataIndex: "skuCode", width: 110 },
+  const lineColumns: ColumnsType<BhLine> = [
+    { title: "SKU 编码", dataIndex: "skuCode", width: 120 },
     { title: "名称", dataIndex: "skuName" },
     { title: "数量", dataIndex: "qty", width: 110, align: "right" },
+    { title: "基础单位", dataIndex: "baseUom", width: 90 },
     {
-      title: "单价",
-      dataIndex: "price",
-      width: 100,
-      align: "right",
+      title: "期望到货",
+      dataIndex: "expectDate",
+      width: 110,
       render: (v: string | null) => v ?? "—",
     },
-    { title: "基础单位", dataIndex: "baseUom", width: 90 },
   ];
 
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
-        库存单据
+        备货申请（BH）
       </Typography.Title>
       <Tabs
         activeKey={status}
@@ -277,28 +329,15 @@ export default function DocsClient() {
         }}
       />
       <Space style={{ marginBottom: 16, display: "flex", justifyContent: "space-between" }} wrap>
-        <Space wrap>
-          <Input.Search
-            allowClear
-            placeholder="搜索单据号"
-            style={{ width: 240 }}
-            onSearch={(value) => {
-              setQ(value.trim());
-              setPage(1);
-            }}
-          />
-          <Select
-            allowClear
-            placeholder="全部类型"
-            style={{ width: 160 }}
-            options={toOptions(STOCK_SUBTYPE_LABELS)}
-            value={subtype}
-            onChange={(v) => {
-              setSubtype(v);
-              setPage(1);
-            }}
-          />
-        </Space>
+        <Input.Search
+          allowClear
+          placeholder="搜索单据号"
+          style={{ width: 240 }}
+          onSearch={(value) => {
+            setQ(value.trim());
+            setPage(1);
+          }}
+        />
         <Space>
           <Button icon={<ReloadOutlined />} onClick={() => void load()}>
             刷新
@@ -311,16 +350,15 @@ export default function DocsClient() {
               setCreateOpen(true);
             }}
           >
-            新建单据
+            新建备货申请
           </Button>
         </Space>
       </Space>
-      <Table<DocRow>
+      <Table<BhRow>
         rowKey="id"
         size="middle"
         columns={columns}
         dataSource={rows}
-        scroll={{ x: "max-content" }}
         loading={loading}
         pagination={{
           current: page,
@@ -336,46 +374,23 @@ export default function DocsClient() {
       />
 
       <Modal
-        title="新建库存单据"
+        title="新建备货申请"
         open={createOpen}
         onOk={() => void handleCreate()}
         onCancel={() => setCreateOpen(false)}
         confirmLoading={saving}
-        width="min(720px, 100vw)"
+        width={720}
         forceRender
         maskClosable={false}
         okText="保存草稿"
         cancelText="取消"
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="subtype" label="类型" rules={[{ required: true, message: "必须选择单据类型" }]}>
-            <Select
-              options={toOptions(MANUAL_SUBTYPE_LABELS)}
-              placeholder="期初/领料出/销售出/调拨（红字冲销不可手工创建）"
-            />
+          <Form.Item name="orderType" label="订单类型">
+            <Select allowClear options={toOptions(ORDER_TYPE_LABELS)} placeholder="常规备货/新品首单/紧急需求/月备货" />
           </Form.Item>
-          <Form.Item name="warehouseId" label="仓库" rules={[{ required: true, message: "必须选择仓库" }]}>
-            <RemoteSelect
-              api="/api/master/warehouse"
-              getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
-              placeholder="选择仓库"
-            />
-          </Form.Item>
-          {createSubtype === "transfer" ? (
-            <Form.Item
-              name="toWarehouseId"
-              label="目标仓库"
-              rules={[{ required: true, message: "调拨必须选择目标仓库" }]}
-            >
-              <RemoteSelect
-                api="/api/master/warehouse"
-                getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
-                placeholder="选择目标仓库"
-              />
-            </Form.Item>
-          ) : null}
           <Form.Item name="remark" label="备注">
-            <Input.TextArea rows={2} maxLength={200} />
+            <Input.TextArea rows={2} maxLength={500} />
           </Form.Item>
           <Typography.Text strong>明细行</Typography.Text>
           <Form.List name="lines" initialValue={[{}]}>
@@ -404,11 +419,9 @@ export default function DocsClient() {
                     >
                       <InputNumber min={0.0001} precision={4} placeholder="数量" style={{ width: 130 }} />
                     </Form.Item>
-                    {createSubtype === "opening" ? (
-                      <Form.Item {...restField} name={[name, "price"]} style={{ marginBottom: 8 }}>
-                        <InputNumber min={0} precision={2} placeholder="单价（可选）" style={{ width: 130 }} />
-                      </Form.Item>
-                    ) : null}
+                    <Form.Item {...restField} name={[name, "expectDate"]} style={{ marginBottom: 8 }}>
+                      <DatePicker placeholder="期望到货日" style={{ width: 140 }} />
+                    </Form.Item>
                     <Button
                       type="text"
                       danger
@@ -435,25 +448,17 @@ export default function DocsClient() {
               <DocStatusTag status={detail.status} />
             </Space>
           ) : (
-            "单据详情"
+            "备货申请详情"
           )
         }
         open={detailId != null}
         onClose={() => setDetailId(null)}
-        width="min(720px, 100vw)"
+        width={720}
         loading={detailLoading}
         extra={
           detail ? (
-            <DocActions
-              docType="stock-doc"
-              apiBase="/api/inventory/stock-doc"
-              doc={{
-                id: detail.id,
-                status: detail.status,
-                version: detail.version,
-                subtype: detail.subtype,
-                reversalOfId: detail.reversalOfId,
-              }}
+            <BhActions
+              doc={{ id: detail.id, status: detail.status, version: detail.version }}
               onChanged={() => {
                 void loadDetail(detail.id);
                 void load();
@@ -465,25 +470,15 @@ export default function DocsClient() {
         {detail ? (
           <div>
             <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
-              <Descriptions.Item label="类型">
-                <SubtypeTag subtype={detail.subtype} />
-              </Descriptions.Item>
-              <Descriptions.Item label="仓库">
-                {detail.subtype === "transfer" && detail.toWarehouseName
-                  ? `${detail.warehouseName} → ${detail.toWarehouseName}`
-                  : detail.warehouseName}
-              </Descriptions.Item>
-              <Descriptions.Item label="制单人">{detail.createdByName}</Descriptions.Item>
+              <Descriptions.Item label="订单类型">{formatOrderType(detail.orderType)}</Descriptions.Item>
+              <Descriptions.Item label="制单人">{detail.createdByName ?? "—"}</Descriptions.Item>
               <Descriptions.Item label="制单时间">
                 {dayjs(detail.createdAt).format("YYYY-MM-DD HH:mm")}
               </Descriptions.Item>
               <Descriptions.Item label="备注">{detail.remark ?? "—"}</Descriptions.Item>
-              <Descriptions.Item label="红字引用">
-                {detail.reversalOfId != null ? `#${detail.reversalOfId}` : "—"}
-              </Descriptions.Item>
             </Descriptions>
             <Typography.Title level={5}>明细行</Typography.Title>
-            <Table<DocLine>
+            <Table<BhLine>
               rowKey="id"
               size="small"
               columns={lineColumns}
@@ -495,12 +490,13 @@ export default function DocsClient() {
               <>
                 <Typography.Title level={5}>审批记录</Typography.Title>
                 <Timeline
-                  items={detail.approvals.map((a) => ({
+                  items={detail.approvals.map((a, i) => ({
+                    key: i,
                     color: a.action === "approve" ? "green" : "red",
                     children: (
                       <div>
                         <div>
-                          {a.approverName} {a.action === "approve" ? "审批通过" : "驳回"}
+                          {a.approverName ?? "—"} {a.action === "approve" ? "审批通过" : "驳回"}
                           <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
                             {dayjs(a.createdAt).format("YYYY-MM-DD HH:mm")}
                           </Typography.Text>

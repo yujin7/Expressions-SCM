@@ -143,6 +143,7 @@ function SkuBalanceTab() {
         size="middle"
         columns={columns}
         dataSource={rows}
+        scroll={{ x: "max-content" }}
         loading={loading}
         pagination={{
           current: page,
@@ -219,6 +220,7 @@ function SpuBalanceTab() {
         size="middle"
         columns={columns}
         dataSource={rows}
+        scroll={{ x: "max-content" }}
         loading={loading}
         pagination={{
           current: page,

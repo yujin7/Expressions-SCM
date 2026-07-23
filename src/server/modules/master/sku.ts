@@ -45,6 +45,8 @@ export async function listSkus(q: string, page: number, pageSize: number, typePa
       version: schema.skus.version,
       prodMode: schema.skus.prodMode,
       lossCategory: schema.skus.lossCategory,
+      brandId: schema.skus.brandId,
+      lifecycle: schema.skus.lifecycle,
       active: schema.skus.active,
     })
     .from(schema.skus)
@@ -68,6 +70,9 @@ export async function createSku(input: unknown) {
     .insert(schema.skus)
     .values({
       code: v.code,
+      name: v.name, // 修复：W1 加列后 service 漏写，UI 建的 SKU 名称恒为空串
+      brandId: v.brandId ?? null,
+      lifecycle: v.lifecycle ?? "on_sale",
       spuId: v.spuId,
       skuType: v.skuType,
       baseUom: v.baseUom,
@@ -90,6 +95,9 @@ export async function updateSku(id: number, input: unknown) {
     .update(schema.skus)
     .set({
       code: v.code,
+      name: v.name,
+      brandId: v.brandId ?? null,
+      lifecycle: v.lifecycle ?? "on_sale",
       spuId: v.spuId,
       skuType: v.skuType,
       baseUom: v.baseUom,

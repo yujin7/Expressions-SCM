@@ -379,6 +379,8 @@ export async function listPos(
         woId: poDocs.woId,
         supplierName: suppliers.name,
         lineCount: sql<number>`coalesce(${lineAgg.lineCount}, 0)`,
+        expectedDate: poDocs.expectedDate,
+        confirmedAt: poDocs.confirmedAt,
         createdByName: users.name,
         createdAt: poDocs.createdAt,
       })

@@ -1,4 +1,17 @@
-/** 枚举值 → 中文标签（客户端安全，无服务端依赖） */
+/** 枚举值 → 中文标签（客户端安全；constants.ts 为纯 TS，可直接复用） */
+
+import { ORDER_TYPE_LABELS } from "@/server/core/constants";
+
+export { ORDER_TYPE_LABELS };
+
+/** 订单类型 → 中文（含 "MONTH_STOCK:<n>" 月备货存储形态） */
+export function formatOrderType(v?: string | null): string {
+  if (!v) return "—";
+  if (ORDER_TYPE_LABELS[v]) return ORDER_TYPE_LABELS[v];
+  const m = /^MONTH_STOCK:(\d+)$/.exec(v);
+  if (m) return `${m[1]}月备货`;
+  return v;
+}
 
 export const SKU_TYPE_LABELS: Record<string, string> = {
   finished: "成品",

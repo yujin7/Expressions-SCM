@@ -216,11 +216,11 @@ describe("库存单据 W2：期初/领料出/销售出/调拨 + 红字冲销", (
     const pending = await makePending(openingInput(sku, wh1, "1"));
     await expect(
       approveStockDoc(creator, pending.id, { action: "approve", version: pending.version }, db),
-    ).rejects.toMatchObject({ name: "ApiError", status: 403, message: expect.stringContaining("SELF_APPROVAL") });
+    ).rejects.toMatchObject({ name: "ApiError", status: 403, message: expect.stringContaining("不能审批自己提交的单据") });
 
     await expect(
       approveStockDoc(nonApprover, pending.id, { action: "approve", version: pending.version }, db),
-    ).rejects.toMatchObject({ name: "ApiError", status: 403, message: expect.stringContaining("NOT_APPROVER") });
+    ).rejects.toMatchObject({ name: "ApiError", status: 403, message: expect.stringContaining("审批人") });
 
     // 管理员兜底可审批
     const r = await approveStockDoc(admin, pending.id, { action: "approve", version: pending.version }, db);
@@ -232,7 +232,7 @@ describe("库存单据 W2：期初/领料出/销售出/调拨 + 红字冲销", (
     const pending = await makePending(openingInput(sku, wh1, "1"));
     await expect(
       approveStockDoc(approver, pending.id, { action: "approve", version: pending.version + 99 }, db),
-    ).rejects.toMatchObject({ name: "ApiError", status: 409, message: expect.stringContaining("VERSION_CONFLICT") });
+    ).rejects.toMatchObject({ name: "ApiError", status: 409, message: expect.stringContaining("已被他人更新") });
     // 冲突后单据保持 pending，正确版本可继续审批
     const r = await approveStockDoc(approver, pending.id, { action: "approve", version: pending.version }, db);
     expect(r.status).toBe("completed");

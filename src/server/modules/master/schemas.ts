@@ -34,6 +34,8 @@ export const skuSchema = z.object({
   version: optionalStr,
   prodMode: optionalStr,
   lossCategory: z.preprocess(emptyToUndef, z.enum(["raw", "packaging"]).optional()),
+  brandId: z.number().int().positive().nullable().optional(),
+  lifecycle: z.enum(["on_sale", "trial", "halted", "retired"]).optional(),
   active: z.boolean().optional().default(true),
 });
 export type SkuInput = z.infer<typeof skuSchema>;

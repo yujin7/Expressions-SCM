@@ -253,10 +253,19 @@ const APPROVAL_STATUS: Record<string, number> = {
   VERSION_CONFLICT: 409,
 };
 
+/** UX 走查 Top-3：错误码人话化——普通用户读不懂 SELF_APPROVAL */
+const APPROVAL_HUMAN: Record<string, string> = {
+  NO_CONFIG: "系统缺少该单据的审批配置，请联系管理员",
+  ROLE_FORBIDDEN: "您的角色无权审批该单据",
+  NOT_APPROVER: "您不是审批人（需要审批人权限）",
+  SELF_APPROVAL: "不能审批自己提交的单据（职责分离）",
+  NOT_FOUND: "单据不存在",
+  BAD_STATUS: "当前状态不可审批",
+  VERSION_CONFLICT: "单据已被他人更新，请刷新后重试",
+};
+
 function mapApprovalError(e: ApprovalError): ApiError {
-  // message 始终携带 code，便于前端/测试识别具体审批错误
-  const msg = e.message === e.code ? e.code : `${e.code}：${e.message}`;
-  return new ApiError(APPROVAL_STATUS[e.code] ?? 500, msg);
+  return new ApiError(APPROVAL_STATUS[e.code] ?? 500, APPROVAL_HUMAN[e.code] ?? e.message);
 }
 
 /** 负库存 → 409 "库存不足：<sku>@<仓库>（现有 X，需出 Y）"；事务已整体回滚后用根连接补查明细 */

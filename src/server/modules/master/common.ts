@@ -27,10 +27,10 @@ export function errorResponse(e: unknown): NextResponse {
     return NextResponse.json({ error: `参数校验失败：${msg}` }, { status: 400 });
   }
   if (isUniqueViolation(e)) {
-    return NextResponse.json({ error: "唯一约束冲突：编码或关键字段已存在" }, { status: 409 });
+    return NextResponse.json({ error: "编码或关键字段已存在，请修改后重试" }, { status: 409 });
   }
   console.error("[api/master] 未预期错误:", e);
-  return NextResponse.json({ error: "服务器内部错误" }, { status: 500 });
+  return NextResponse.json({ error: "服务器内部错误——请截图本页面并联系管理员" }, { status: 500 });
 }
 
 export interface ListQuery {

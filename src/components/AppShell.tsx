@@ -32,7 +32,18 @@ const menuItems: MenuProps["items"] = [
       { key: "/master/bom", label: "BOM" },
     ],
   },
-  { key: "outsourcing", icon: <ApartmentOutlined />, label: "委外（W3）", disabled: true },
+  {
+    key: "outsourcing",
+    icon: <ApartmentOutlined />,
+    label: "委外（W3）",
+    children: [
+      { key: "/outsource/bh", label: "备货申请" },
+      { key: "/outsource/wo", label: "委外工单" },
+      { key: "/outsource/po", label: "采购订单" },
+      { key: "/outsource/pc", label: "价格变更" },
+      { key: "/outsource/jg", label: "加工通知单" },
+    ],
+  },
   {
     key: "inventory",
     icon: <InboxOutlined />,
@@ -43,7 +54,15 @@ const menuItems: MenuProps["items"] = [
       { key: "/inventory/docs", label: "库存单据" },
     ],
   },
-  { key: "import", icon: <ImportOutlined />, label: "导入中心（W4）", disabled: true },
+  {
+    key: "import",
+    icon: <ImportOutlined />,
+    label: "导入中心（W4）",
+    children: [
+      { key: "/import/jobs", label: "导入任务" },
+      { key: "/import/exceptions", label: "别名认领" },
+    ],
+  },
   { key: "reports", icon: <BarChartOutlined />, label: "报表（W5）", disabled: true },
   { key: "admin", icon: <SettingOutlined />, label: "系统管理（W5）", disabled: true },
 ];
@@ -59,6 +78,8 @@ export default function AppShell({ children, userName, roleText }: { children: R
   const openKeys = useMemo(() => {
     if (pathname.startsWith("/master/")) return ["master"];
     if (pathname.startsWith("/inventory/")) return ["inventory"];
+    if (pathname.startsWith("/outsource/")) return ["outsourcing"];
+    if (pathname.startsWith("/import/")) return ["import"];
     return [];
   }, [pathname]);
 
@@ -110,7 +131,7 @@ export default function AppShell({ children, userName, roleText }: { children: R
               <Avatar size="small" icon={<UserOutlined />} />
               <Typography.Text>{userName ?? "未登录"}</Typography.Text>
               {roleText ? <Typography.Text type="secondary">（{roleText}）</Typography.Text> : null}
-              <Typography.Link href="/api/auth/signout">退出</Typography.Link>
+              <Typography.Link href="/signout">退出</Typography.Link>
             </Space>
           </Header>
           <Content style={{ margin: 16 }}>

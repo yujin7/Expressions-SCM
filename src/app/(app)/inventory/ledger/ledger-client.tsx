@@ -6,6 +6,7 @@ import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import RemoteSelect from "@/components/RemoteSelect";
 import { fetchJson } from "@/components/fetchJson";
+import { formatQty } from "@/components/format";
 import { LEDGER_SOURCE_LABELS } from "@/components/labels";
 
 interface LedgerRow {
@@ -132,6 +133,7 @@ export default function LedgerClient() {
         size="middle"
         columns={columns}
         dataSource={rows}
+        scroll={{ x: "max-content" }}
         loading={loading}
         pagination={{
           current: page,

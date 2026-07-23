@@ -4,6 +4,7 @@ import { Form, Input, Select, Switch, Tag, Typography } from "antd";
 import CrudTable from "@/components/CrudTable";
 import RemoteSelect from "@/components/RemoteSelect";
 import { LOSS_CATEGORY_LABELS, SKU_TYPE_LABELS, toOptions } from "@/components/labels";
+import { LIFECYCLE_LABELS } from "@/components/format";
 
 interface SkuRow {
   id: number;
@@ -57,6 +58,12 @@ export default function SkuClient() {
             render: (v: string | null) => (v ? LOSS_CATEGORY_LABELS[v] ?? v : "—"),
           },
           {
+            title: "生命周期",
+            dataIndex: "lifecycle",
+            width: 90,
+            render: (v: string | null) => (v ? LIFECYCLE_LABELS[v] ?? v : "在售"),
+          },
+          {
             title: "状态",
             dataIndex: "active",
             width: 80,
@@ -95,6 +102,12 @@ export default function SkuClient() {
             </Form.Item>
             <Form.Item name="lossCategory" label="损耗品类" tooltip="品类允许损耗率参数键（R2），原料/包材需选择">
               <Select allowClear options={toOptions(LOSS_CATEGORY_LABELS)} placeholder="原料/包材" />
+            </Form.Item>
+            <Form.Item name="brandId" label="品牌">
+              <RemoteSelect api="/api/master/brand" getLabel={(r) => `${String(r.code)} ${String(r.nameCn)}`} placeholder="选择品牌" />
+            </Form.Item>
+            <Form.Item name="lifecycle" label="生命周期" initialValue="on_sale" tooltip="在售/试销/停售/淘汰（试销=新品观察期）">
+              <Select options={toOptions(LIFECYCLE_LABELS)} />
             </Form.Item>
             <Form.Item name="active" label="启用" valuePropName="checked" initialValue={true}>
               <Switch checkedChildren="启用" unCheckedChildren="停用" />

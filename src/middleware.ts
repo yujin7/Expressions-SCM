@@ -24,5 +24,5 @@ export default auth((req) => {
 
 export const config = {
   // 除 /login、/api/auth/*、/_next/*、favicon 外全部需要登录
-  matcher: ["/((?!login|api/auth|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!login|api/auth|api/health|_next/static|_next/image|favicon.ico).*)"],
 };
