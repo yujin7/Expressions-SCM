@@ -98,13 +98,13 @@ export async function getBom(id: number) {
   return { ...bom, lines };
 }
 
-export async function createBom(input: unknown) {
+export async function createBom(input: unknown, userId?: number) {
   const v = bomSchema.parse(input);
   const db = await getDbAsync();
   return db.transaction(async (tx) => {
     const [head] = await tx
       .insert(schema.boms)
-      .values({ productSkuId: v.productSkuId, versionNo: v.versionNo, status: "draft" })
+      .values({ productSkuId: v.productSkuId, versionNo: v.versionNo, status: "draft", createdBy: userId ?? null })
       .returning();
     await tx.insert(schema.bomLines).values(
       v.lines.map((l) => ({
@@ -151,12 +151,25 @@ export async function updateBom(id: number, input: unknown) {
  * 再置本版本 active（uq_bom_one_active 部分唯一索引要求——顺序不可颠倒）。
  * TODO(W3): route through approval engine（BOM 生效=审批动作，审批人=PMC is_approver 且非制单人，《01》§6）
  */
-export async function activateBom(id: number) {
+export async function activateBom(
+  id: number,
+  approver: { id: number; roles: string[]; isApprover: boolean },
+) {
   const db = await getDbAsync();
   return db.transaction(async (tx) => {
     const [bom] = await tx.select().from(schema.boms).where(eq(schema.boms.id, id));
     if (!bom) throw new ApiError(404, "BOM 不存在");
     if (bom.status !== "draft") throw new ApiError(409, "仅草稿状态的 BOM 可生效");
+    // 体检 #4 整改：BOM 生效=审批动作（《01》§6 PMC(is_approver, 非本人)；管理员豁免角色不豁免 SoD）
+    const isAdmin = approver.roles.includes("admin");
+    if (!isAdmin && !approver.isApprover) throw new ApiError(403, "仅审批人可生效 BOM");
+    if (bom.createdBy != null && bom.createdBy === approver.id) {
+      throw new ApiError(403, "职责分离：不可生效本人创建的 BOM");
+    }
+    await tx.insert(schema.approvals).values({
+      docType: "bom", docId: id, node: 1, cycle: 0, approverId: approver.id, action: "approve",
+      comment: `生效 ${bom.versionNo}`,
+    }).onConflictDoNothing();
     await tx
       .update(schema.boms)
       .set({ status: "retired", updatedAt: new Date() })

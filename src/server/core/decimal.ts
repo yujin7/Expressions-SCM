@@ -40,13 +40,24 @@ export function dAdd(a: Dec, b: Dec, scale = 4): string {
 export function dSub(a: Dec, b: Dec, scale = 4): string {
   return fromUnits(toUnits(a) - toUnits(b), scale);
 }
+/** 有符号半进位除法：q = n/d 四舍五入（红队 m4：消除截断偏差） */
+function divRoundHalf(n: bigint, d: bigint): bigint {
+  const neg = (n < 0n) !== (d < 0n);
+  const absN = n < 0n ? -n : n;
+  const absD = d < 0n ? -d : d;
+  const q = (absN + absD / 2n) / absD;
+  return neg ? -q : q;
+}
+
 export function dMul(a: Dec, b: Dec, scale = 4): string {
-  return fromUnits((toUnits(a) * toUnits(b)) / POW, scale);
+  // a*b 为 scale-12 值，半进位缩回 scale-6 后再按目标 scale 输出（不再预截断）
+  return fromUnits(divRoundHalf(toUnits(a) * toUnits(b), POW), scale);
 }
 export function dDiv(a: Dec, b: Dec, scale = 4): string {
   const bu = toUnits(b);
   if (bu === 0n) throw new Error("division by zero");
-  return fromUnits((toUnits(a) * POW) / bu, scale);
+  // 半进位（红队 m4：dDiv(2,3,6)=0.666667 而非截断 0.666666）
+  return fromUnits(divRoundHalf(toUnits(a) * POW, bu), scale);
 }
 /** 比较：a<b → -1, a==b → 0, a>b → 1 */
 export function dCmp(a: Dec, b: Dec): -1 | 0 | 1 {
@@ -62,12 +73,15 @@ export function dNeg(a: Dec, scale = 4): string {
 export function dZero(a: Dec): boolean {
   return toUnits(a) === 0n;
 }
-/** 向上取整到 multiple 的整数倍（R11 订货倍数），multiple<=0 时原样返回 */
+/** 向上取整到 multiple 的整数倍（R11 订货倍数），multiple<=0 时原样返回。
+ *  红队 m5 修复：负数按数学 ceiling（朝 +∞），(u+m-1)/m 惯用法仅对非负成立。 */
 export function dCeilToMultiple(a: Dec, multiple: Dec, scale = 4): string {
   const m = toUnits(multiple);
   if (m <= 0n) return fromUnits(toUnits(a), scale);
   const u = toUnits(a);
-  const q = (u + m - 1n) / m;
+  // floorDiv 对负数向 −∞ 取整；ceil(u/m) = −floor(−u/m)
+  const floorDiv = (n: bigint, d: bigint) => (n - (((n % d) + d) % d)) / d;
+  const q = -floorDiv(-u, m);
   return fromUnits(q * m, scale);
 }
 /** 金额口径（scale=2） */

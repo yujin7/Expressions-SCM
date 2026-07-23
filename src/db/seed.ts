@@ -5,6 +5,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { hash } from "@node-rs/argon2";
 import { getDbAsync, schema } from "./index";
+import { seedDimensions } from "./seed-dimensions";
 import type { Role } from "@/server/core/constants";
 
 // tsx 不自动加载 .env
@@ -35,6 +36,7 @@ async function main() {
     { username: "ops01", name: "运营01", roles: ["ops"], isApprover: false },
     { username: "purchasing01", name: "采购01", roles: ["purchasing"], isApprover: true },
     { username: "warehouse01", name: "仓管01", roles: ["warehouse"], isApprover: true },
+    { username: "warehouse02", name: "仓管02", roles: ["warehouse"], isApprover: true },
     { username: "pmc01", name: "生产计划01", roles: ["pmc"], isApprover: true },
     { username: "finance01", name: "财务01", roles: ["finance"], isApprover: true },
     // 制单人（非审批人）：用于演示 审批人≠制单人 的职责分离
@@ -261,6 +263,14 @@ async function main() {
     }
     await db.insert(schema.uomConvs).values({ skuId, purchaseUom: u.purchaseUom, factor: u.factor, moq: u.moq, orderMultiple: u.orderMultiple });
     bump("uom_convs", true);
+  }
+
+  // ---------- DW1 维度（品牌/渠道/别名，幂等模块化——见 seed-dimensions.ts） ----------
+  const dimCounts = await seedDimensions(db);
+  for (const [table, c] of Object.entries(dimCounts)) {
+    counts[table] ??= { inserted: 0, skipped: 0 };
+    counts[table].inserted += c.inserted;
+    counts[table].skipped += c.skipped;
   }
 
   // ---------- 汇总 ----------

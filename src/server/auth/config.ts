@@ -168,7 +168,7 @@ export const authConfig: NextAuthConfig = {
   trustHost: true,
   secret: process.env.AUTH_SECRET,
   // 规格要求 DB 会话（角色变更即时生效）——MVP W1 用 JWT，W2 换 DB 会话/加角色版本戳。deviation logged
-  session: { strategy: "jwt" },
+  session: { strategy: "jwt", maxAge: 8 * 60 * 60, updateAge: 60 * 60 },
   pages: { signIn: "/login" },
   providers: [
     localProvider,

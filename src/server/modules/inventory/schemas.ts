@@ -35,6 +35,9 @@ export const createStockDocSchema = z
     lines: z.array(stockDocLineSchema).min(1, "至少需要一行"),
   })
   .superRefine((v, ctx) => {
+    if (v.subtype !== "opening" && v.lines.some((l) => l.price != null)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["lines"], message: "仅期初单可填单价" });
+    }
     if (v.subtype === "transfer") {
       if (!v.toWarehouseId) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["toWarehouseId"], message: "调拨必须指定转入仓" });

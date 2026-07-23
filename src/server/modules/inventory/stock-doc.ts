@@ -6,6 +6,7 @@ import {
 } from "@/db/schema";
 import { dMoney, dNeg, dQty } from "@/server/core/decimal";
 import { getSessionUser, requireRole, type SessionUser } from "@/server/core/dto";
+import { writeAudit } from "@/server/core/audit";
 import { ApprovalError, approveDoc } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
@@ -28,9 +29,10 @@ const DOC_PREFIX: Record<ManualSubtype, string> = {
 export async function guardWarehouseWrite(): Promise<SessionUser> {
   let user: SessionUser;
   try {
-    user = await getSessionUser();
+    const { getFreshSessionUser } = await import("@/server/core/dto");
+    user = await getFreshSessionUser(); // 写操作回查 DB（体检 #5）
   } catch {
-    throw new ApiError(401, "未登录");
+    throw new ApiError(401, "未登录或账号已停用");
   }
   try {
     requireRole(user, "warehouse");
@@ -106,6 +108,10 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
         price: l.price != null ? dMoney(l.price) : null,
       })),
     );
+    await writeAudit(tx, {
+      userId: user.id, entity: "stock_doc", entityId: doc.id, action: "create",
+      after: { docNo: doc.docNo, subtype: doc.subtype, lineCount: v.lines.length },
+    });
     return doc;
   });
 }
@@ -132,6 +138,7 @@ export async function submitStockDoc(user: SessionUser, id: number, version: num
     .where(and(eq(stockDocs.id, id), eq(stockDocs.version, version)))
     .returning();
   if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
+  await writeAudit(db, { userId: user.id, entity: "stock_doc", entityId: id, action: "submit" });
   return updated[0];
 }
 
@@ -174,8 +181,12 @@ export async function approveStockDoc(
       if (!doc) throw new ApiError(404, "单据不存在");
 
       // 1) 通用审批：权限/职责分离/幂等/状态/乐观锁（pending → approved | draft）
+      //    体检审计 #2 整改：期初/盘点按子类型映射独立审批配置（《01》§6：期初/盘点=财务），
+      //    其余库存单仍走 stock_doc（仓管）。seed 中 opening/count→finance 配置由此启用。
+      const approvalDocType =
+        doc.subtype === "opening" ? "opening" : doc.subtype === "count_adjust" ? "count" : "stock_doc";
       const r = await approveDoc(tx, {
-        docType: "stock_doc",
+        docType: approvalDocType,
         table: stockDocs,
         docId: id,
         approver: { id: user.id, roles: user.roles, isApprover: user.isApprover },
@@ -184,6 +195,10 @@ export async function approveStockDoc(
         expectedVersion: v.version,
       });
       if (r.idempotent) return r; // 重试短路：不再过账（post 本身也幂等，双保险）
+      await writeAudit(tx, {
+        userId: user.id, entity: "stock_doc", entityId: id, action: v.action,
+        after: { comment: v.comment ?? null, approvalDocType },
+      });
       if (v.action === "reject") return r; // 驳回→草稿，无过账
 
       // 2) 过账：红字走 reverse(原单事件取负)，其余按子类型 post
@@ -213,6 +228,10 @@ export async function approveStockDoc(
         .update(stockDocs)
         .set({ status: finalStatus, version: sql`${stockDocs.version} + 1`, updatedAt: new Date() })
         .where(eq(stockDocs.id, id));
+      await writeAudit(tx, {
+        userId: user.id, entity: "stock_doc", entityId: id, action: "post_and_complete",
+        after: { via: "approve", path: "approved→in_progress→completed" },
+      });
       return { status: finalStatus, idempotent: false };
     });
   } catch (e) {
@@ -320,6 +339,10 @@ export async function reverseStockDoc(user: SessionUser, id: number, input: unkn
         price: l.price,
       })),
     );
+    await writeAudit(tx, {
+      userId: user.id, entity: "stock_doc", entityId: doc.id, action: "reverse_create",
+      after: { docNo: doc.docNo, reversalOfId: id, reason: v.reason, lineCount: origLines.length },
+    });
     return doc;
   });
 }
@@ -393,7 +416,7 @@ export async function getStockDoc(id: number, dbArg?: AnyDb) {
     })
     .from(approvals)
     .leftJoin(users, eq(approvals.approverId, users.id))
-    .where(and(eq(approvals.docType, "stock_doc"), eq(approvals.docId, id)))
+    .where(and(inArray(approvals.docType, ["stock_doc", "opening", "count"]), eq(approvals.docId, id)))
     .orderBy(approvals.createdAt, approvals.id);
 
   return {

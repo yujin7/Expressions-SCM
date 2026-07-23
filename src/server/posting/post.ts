@@ -167,10 +167,19 @@ export async function reverse(
   original: PostingEvent,
   reversalDocId: number,
 ): Promise<{ posted: boolean }> {
+  // 红队防御纵深：action 编码被冲原单身份，且先查该原单是否已被任何红字冲销过——
+  // 模块层（reverseStockDoc 409）仍是主防线，这里防"不同红字单二次冲销同一原单"绕过引擎。
+  const reverseAction = `reverse:${original.sourceDocType}#${original.sourceDocId}`;
+  const already = await db
+    .select({ id: stockLedger.id })
+    .from(stockLedger)
+    .where(eq(stockLedger.action, reverseAction))
+    .limit(1);
+  if (already.length > 0) return { posted: false };
   return post(db, {
     sourceDocType: "stock_doc",
     sourceDocId: reversalDocId,
-    action: "reverse",
+    action: reverseAction,
     lines: original.lines.map((l) => ({
       sourceLineId: l.sourceLineId,
       skuId: l.skuId,

@@ -159,7 +159,7 @@ describe("posting engine", () => {
     expect(dCmp(await getBalance(db, skuRaw.id, whRaw.id), "0")).toBe(0);
     const rows = await ledgerRows(db, "stock_doc", 999);
     expect(rows).toHaveLength(1);
-    expect(rows[0].action).toBe("reverse");
+    expect(String(rows[0].action).startsWith("reverse:")).toBe(true);
     expect(dCmp(rows[0].qtyDelta, "-12")).toBe(0);
 
     const r2 = await reverse(db, original, 999);

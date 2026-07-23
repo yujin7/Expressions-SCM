@@ -82,11 +82,33 @@ export async function guardRead(): Promise<SessionUser> {
 }
 
 export async function guardWrite(entity: keyof typeof WRITE_ROLES): Promise<SessionUser> {
-  const user = await guardRead();
+  // 写操作回查 DB 新鲜身份（体检 #5）
+  let user: SessionUser;
+  try {
+    const { getFreshSessionUser } = await import("@/server/core/dto");
+    user = await getFreshSessionUser();
+  } catch {
+    throw new ApiError(401, "未登录或账号已停用");
+  }
   try {
     requireRole(user, ...(WRITE_ROLES[entity] ?? []));
   } catch {
     throw new ApiError(403, "无权限执行此操作");
   }
   return user;
+}
+
+
+/** 路由级审计（体检 #1）：主数据写路径统一落 audit_logs（详情级 before/after 由 service 层按需补充） */
+import { getDbAsync } from "@/db";
+import { writeAudit } from "@/server/core/audit";
+
+export async function auditFromRoute(
+  user: SessionUser,
+  entity: string,
+  entityId: number | null | undefined,
+  action: string,
+  after?: unknown,
+): Promise<void> {
+  await writeAudit(await getDbAsync(), { userId: user.id, entity, entityId: entityId ?? null, action, after });
 }

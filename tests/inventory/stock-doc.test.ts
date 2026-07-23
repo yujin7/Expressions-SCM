@@ -32,7 +32,11 @@ describe("库存单据 W2：期初/领料出/销售出/调拨 + 红字冲销", (
     approver = await mkUser("仓库审批人", ["warehouse"], true);
     admin = await mkUser("管理员", ["admin"], false);
     nonApprover = await mkUser("仓库普通员", ["warehouse"], false);
-    await db.insert(approvalConfigs).values({ docType: "stock_doc", approverRole: "warehouse" });
+    await db.insert(approvalConfigs).values([
+      { docType: "stock_doc", approverRole: "warehouse" },
+      { docType: "opening", approverRole: "warehouse" }, // 机制测试；生产 seed 为 finance（见专项测试）
+      { docType: "count", approverRole: "warehouse" },
+    ]);
 
     const [spu] = await db.insert(spus).values({ code: "P00001", nameCn: "测试产品" }).returning();
     spuId = spu.id;
@@ -194,7 +198,7 @@ describe("库存单据 W2：期初/领料出/销售出/调拨 + 红字冲销", (
       .from(stockLedger)
       .where(and(eq(stockLedger.sourceDocType, "stock_doc"), eq(stockLedger.sourceDocId, rev.id)));
     expect(revLedger).toHaveLength(1);
-    expect(revLedger[0].action).toBe("reverse");
+    expect(String(revLedger[0].action).startsWith("reverse:")).toBe(true);
     expect(dCmp(revLedger[0].qtyDelta, "-8")).toBe(0);
 
     // 二次冲销 → 409

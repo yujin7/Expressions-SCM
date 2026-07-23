@@ -15,6 +15,20 @@
       "when": 1784806495369,
       "tag": "0001_abandoned_hellcat",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784812362160,
+      "tag": "0002_glorious_sprite",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1784814054052,
+      "tag": "0003_simple_sabretooth",
+      "breakpoints": true
     }
   ]
 }

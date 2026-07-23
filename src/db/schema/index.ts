@@ -4,3 +4,4 @@ export * from "./bom";
 export * from "./docs";
 export * from "./inventory";
 export * from "./system";
+export * from "./dimensions";

@@ -67,6 +67,7 @@ export async function approveDoc(
     if (i.approver.id === (doc.createdBy as number)) throw new ApprovalError("SELF_APPROVAL");
 
     // 5) 幂等先于状态/版本校验（R10：重试返回缓存结果，优先于版本冲突）
+    //    幂等键含 cycle=expectedVersion（红队 M1）：同轮次重试幂等；驳回→重提→再驳回=新轮次，允许再次流转
     const [existing] = await tx
       .select({ id: approvals.id })
       .from(approvals)
@@ -76,6 +77,7 @@ export async function approveDoc(
           eq(approvals.docId, i.docId),
           eq(approvals.node, 1),
           eq(approvals.action, i.action),
+          eq(approvals.cycle, i.expectedVersion),
         ),
       );
     if (existing) return { status: String(doc.status), idempotent: true };
@@ -92,12 +94,13 @@ export async function approveDoc(
         docType: i.docType,
         docId: i.docId,
         node: 1,
+        cycle: i.expectedVersion,
         approverId: i.approver.id,
         action: i.action,
         comment: i.comment,
       })
       .onConflictDoNothing({
-        target: [approvals.docType, approvals.docId, approvals.node, approvals.action],
+        target: [approvals.docType, approvals.docId, approvals.node, approvals.action, approvals.cycle],
       })
       .returning({ id: approvals.id });
     if (inserted.length === 0) return { status: String(doc.status), idempotent: true };

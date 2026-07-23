@@ -70,5 +70,8 @@ export const POSTING_REGISTRY: Record<string, { description: string; allowedActi
 /** post() 强制的准入守卫：未注册的 (sourceDocType, action) 组合 → 拒绝过账 */
 export function isRegisteredSource(sourceDocType: string, action: string): boolean {
   const entry = POSTING_REGISTRY[sourceDocType];
-  return !!entry && entry.allowedActions.includes(action);
+  if (!entry) return false;
+  // 红字动作带被冲原单参数（reverse:<type>#<id>，防二次冲销）——按前缀准入
+  if (action.startsWith("reverse:")) return entry.allowedActions.includes("reverse");
+  return entry.allowedActions.includes(action);
 }

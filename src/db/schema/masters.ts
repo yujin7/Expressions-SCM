@@ -49,6 +49,13 @@ export const skus = pgTable("skus", {
   nearExpiryDays: integer("near_expiry_days"), // 临期预警阈值（1.1 启用）
   active: boolean("active").notNull().default(true), // 停用=禁新单引用，在途走完
   attrs: jsonb("attrs"),
+  // ---- DW1 增列（《04》§2.2，均可空、纯增量）----
+  // brandId 为应用层外键（指向 dimensions.brands.id）：dimensions.ts 已 import 本文件，
+  // 此处若 .references(() => brands.id) 需回环 import dimensions → 循环依赖，故不加 DB 级 FK。
+  brandId: integer("brand_id"),
+  barcode: text("barcode"), // EAN13；真实数据存在畸形重复，故不 UNIQUE——规范唯一性由 aliases(sku_barcode) 承载
+  productType: text("product_type"), // 跨境品/一般贸易/国内品牌/TK版/亚马逊版/北美版
+  remark: text("remark"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -70,6 +77,9 @@ export const suppliers = pgTable("suppliers", {
   contact: text("contact"),
   licenseExpiry: date("license_expiry"), // 资质预警数据源
   status: supplierStatusEnum("status").notNull().default("pending"), // 黑名单：禁新PO，存量JG可收尾
+  // ---- DW1 增列（《04》§2.3，均可空、纯增量）----
+  shortName: text("short_name"), // OEM 简码惯用名（ZYT/SF/MLLJ/XZ…，归一走 aliases(supplier_oem)）
+  level: text("level"), // S/A/B/C/D 分级
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

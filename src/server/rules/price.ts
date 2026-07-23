@@ -5,7 +5,18 @@
  * - 偏差 = (新价−基准价)/基准价×100（scale=2）；|偏差| > 容差 → 需走 PC 价格变更
  * 纯函数，无副作用；全部经 decimal.ts 定点运算。
  */
-import { dAdd, dCmp, dDiv, dMoney, dNeg, dDeviationPct } from "@/server/core/decimal";
+import { dAdd, dCmp, dDiv, dMoney, dNeg, dZero, dDeviationPct } from "@/server/core/decimal";
+
+/** 价格规则业务异常（红队 m3：以可识别错误替代裸 division by zero） */
+export class PriceRuleError extends Error {
+  constructor(
+    public readonly code: "UOM_FACTOR_INVALID",
+    message: string,
+  ) {
+    super(message);
+    this.name = "PriceRuleError";
+  }
+}
 
 export interface NormalizeInput {
   /** 报价（可能含税、可能按采购单位） */
@@ -20,6 +31,9 @@ export interface NormalizeInput {
 
 /** 归一化为「基础单位未税价」（金额 scale=2） */
 export function normalizeToBaseNet(i: NormalizeInput): string {
+  if (dZero(i.uomFactor) || dCmp(i.uomFactor, "0") < 0) {
+    throw new PriceRuleError("UOM_FACTOR_INVALID", `单位换算系数非法：${i.uomFactor}（须大于 0）`);
+  }
   // 中间计算 scale=6，最后落金额口径
   let net = i.price;
   if (i.taxIncluded) {
@@ -45,10 +59,14 @@ export interface DeviationResult {
   requiresPc: boolean;
 }
 
-/** 价格偏差检查：首购免检；|偏差| > 容差 → 需 PC */
+/** 价格偏差检查：首购免检；基准价=0 视为数据异常强制 PC（红队 M2：不再抛除零错）；|偏差| > 容差 → 需 PC */
 export function checkPriceDeviation(i: DeviationInput): DeviationResult {
   if (i.baselineBaseNet === null) {
     return { deviationPct: null, requiresPc: false };
+  }
+  if (dZero(i.baselineBaseNet)) {
+    // 基准价为 0 无法计算偏差比：按数据异常处理，强制走价格变更审批复核
+    return { deviationPct: null, requiresPc: true };
   }
   const deviationPct = dDeviationPct(i.baselineBaseNet, i.newBaseNet);
   const absDeviation = dCmp(deviationPct, "0") < 0 ? dNeg(deviationPct, 2) : deviationPct;

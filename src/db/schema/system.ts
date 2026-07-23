@@ -4,17 +4,20 @@ import {
 import { approvalActionEnum, importStatusEnum, reconStatusEnum } from "./enums";
 import { users, skus } from "./masters";
 
-/** 审批记录：UNIQUE(单据,节点,动作) 幂等（R10） */
+/** 审批记录：UNIQUE(单据,节点,动作,轮次) 幂等（R10）
+ *  cycle=审批时的单据版本号——红队 M1 修复：驳回→重提→再驳回属于新轮次（新 key），
+ *  同轮次重试仍幂等。 */
 export const approvals = pgTable("approvals", {
   id: serial("id").primaryKey(),
   docType: text("doc_type").notNull(),
   docId: integer("doc_id").notNull(),
   node: integer("node").notNull().default(1), // MVP 单级=1
+  cycle: integer("cycle").notNull().default(0), // = 审批时点的单据 version
   approverId: integer("approver_id").notNull().references(() => users.id),
   action: approvalActionEnum("action").notNull(),
   comment: text("comment"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [unique("uq_approval_idem").on(t.docType, t.docId, t.node, t.action)]);
+}, (t) => [unique("uq_approval_idem").on(t.docType, t.docId, t.node, t.action, t.cycle)]);
 
 /** 审批配置——单一权威（《01》§6 默认表由 seed 写入）；系统强制审批人≠制单人 */
 export const approvalConfigs = pgTable("approval_configs", {

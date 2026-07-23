@@ -67,3 +67,19 @@ export function requireRole(user: { roles: string[] }, ...roles: string[]): void
   if (roles.some((r) => user.roles.includes(r))) return;
   throw new Error(`无权限：需要角色 ${roles.join("/")}`);
 }
+
+
+/**
+ * 写操作专用（体检 #5）：JWT 会话下角色/停用不即时生效——写路径必须回查 DB 取新鲜身份。
+ * 停用/角色被摘的用户在此被立即拦截；读路径仍信任 token（8h 上限见 auth 配置）。
+ */
+export async function getFreshSessionUser(): Promise<{ id: number; name: string; roles: string[]; isApprover: boolean }> {
+  const tokenUser = await getSessionUser();
+  const { getDbAsync } = await import("@/db");
+  const { users } = await import("@/db/schema");
+  const { eq } = await import("drizzle-orm");
+  const db = await getDbAsync();
+  const [row] = await db.select().from(users).where(eq(users.id, tokenUser.id));
+  if (!row || !row.active) throw new Error("账号已停用或不存在");
+  return { id: row.id, name: row.name, roles: row.roles, isApprover: row.isApprover };
+}
