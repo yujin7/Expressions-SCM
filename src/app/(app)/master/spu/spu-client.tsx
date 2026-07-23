@@ -2,6 +2,7 @@
 
 import { Form, Input, Typography } from "antd";
 import CrudTable from "@/components/CrudTable";
+import { hasAnyRole, useMe } from "@/components/useMe";
 import RemoteSelect from "@/components/RemoteSelect";
 
 interface SpuRow {
@@ -14,12 +15,16 @@ interface SpuRow {
 }
 
 export default function SpuClient() {
+  const me = useMe();
+  const canWrite = hasAnyRole(me, "pmc");
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
         SPU 产品
       </Typography.Title>
       <CrudTable<SpuRow>
+        canCreate={canWrite}
+        canEdit={() => canWrite}
         entityName="SPU"
         apiPath="/api/master/spu"
         searchPlaceholder="搜索编码/中英文名"

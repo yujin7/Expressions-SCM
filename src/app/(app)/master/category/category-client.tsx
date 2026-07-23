@@ -2,6 +2,7 @@
 
 import { Form, Input, Tag, Typography } from "antd";
 import CrudTable from "@/components/CrudTable";
+import { hasAnyRole, useMe } from "@/components/useMe";
 import RemoteSelect from "@/components/RemoteSelect";
 
 interface CategoryRow {
@@ -13,12 +14,16 @@ interface CategoryRow {
 }
 
 export default function CategoryClient() {
+  const me = useMe();
+  const canWrite = hasAnyRole(me, "pmc");
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
         分类
       </Typography.Title>
       <CrudTable<CategoryRow>
+        canCreate={canWrite}
+        canEdit={() => canWrite}
         entityName="分类"
         apiPath="/api/master/category"
         searchPlaceholder="搜索分类名称"

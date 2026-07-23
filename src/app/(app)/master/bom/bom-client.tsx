@@ -3,6 +3,7 @@
 import { App, Button, Form, Input, InputNumber, Popconfirm, Space, Table, Tag, Typography } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
 import CrudTable from "@/components/CrudTable";
+import { hasAnyRole, useMe } from "@/components/useMe";
 import RemoteSelect from "@/components/RemoteSelect";
 import { BOM_STATUS_COLORS, BOM_STATUS_LABELS } from "@/components/labels";
 import { fetchJson } from "@/components/fetchJson";
@@ -60,6 +61,8 @@ function LinesTable({ lines }: { lines: BomLineRow[] }) {
 }
 
 export default function BomClient() {
+  const me = useMe();
+  const canWrite = hasAnyRole(me, "pmc");
   const { message } = App.useApp();
 
   return (
@@ -71,11 +74,12 @@ export default function BomClient() {
         每个成品同一时间仅一个生效版本；生效即冻结行，改动需新建版本。
       </Typography.Paragraph>
       <CrudTable<BomRow>
+        canCreate={canWrite}
         entityName="BOM"
         apiPath="/api/master/bom"
         searchPlaceholder="搜索成品编码/名称/版本"
         modalWidth={860}
-        canEdit={(r) => r.status === "draft"}
+        canEdit={(r) => canWrite && r.status === "draft"}
         tableProps={{
           expandable: {
             expandedRowRender: (record) => <LinesTable lines={record.lines} />,

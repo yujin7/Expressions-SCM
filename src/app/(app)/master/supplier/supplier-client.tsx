@@ -3,6 +3,7 @@
 import { DatePicker, Form, Input, Select, Tag, Typography } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
 import CrudTable from "@/components/CrudTable";
+import { hasAnyRole, useMe } from "@/components/useMe";
 import {
   SUPPLIER_KIND_LABELS,
   SUPPLIER_STATUS_COLORS,
@@ -21,12 +22,16 @@ interface SupplierRow {
 }
 
 export default function SupplierClient() {
+  const me = useMe();
+  const canWrite = hasAnyRole(me, "purchasing");
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
         供应商
       </Typography.Title>
       <CrudTable<SupplierRow>
+        canCreate={canWrite}
+        canEdit={() => canWrite}
         entityName="供应商"
         apiPath="/api/master/supplier"
         searchPlaceholder="搜索编码/名称"

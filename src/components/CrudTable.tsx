@@ -28,6 +28,8 @@ export interface CrudTableProps<T extends { id: number }> {
   modalWidth?: number;
   /** 是否允许编辑该行（默认允许） */
   canEdit?: (record: T) => boolean;
+  /** 角色感知（UX Top-4）：false 时隐藏「新建」按钮（服务端权限仍是唯一权威） */
+  canCreate?: boolean;
   /** 额外行操作（如 BOM 生效） */
   rowActions?: (record: T, reload: () => void) => React.ReactNode;
   /** 透传 Table 属性（如 expandable） */
@@ -45,6 +47,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
     searchPlaceholder,
     modalWidth,
     canEdit,
+    canCreate = true,
     rowActions,
     tableProps,
   } = props;
@@ -156,9 +159,11 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
           <Button icon={<ReloadOutlined />} onClick={() => void load()}>
             刷新
           </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            新建{entityName}
-          </Button>
+          {canCreate && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              新建{entityName}
+            </Button>
+          )}
         </Space>
       </Space>
       <Table<T>

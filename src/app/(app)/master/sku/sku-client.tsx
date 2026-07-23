@@ -2,6 +2,7 @@
 
 import { Form, Input, Select, Switch, Tag, Typography } from "antd";
 import CrudTable from "@/components/CrudTable";
+import { hasAnyRole, useMe } from "@/components/useMe";
 import RemoteSelect from "@/components/RemoteSelect";
 import { LOSS_CATEGORY_LABELS, SKU_TYPE_LABELS, toOptions } from "@/components/labels";
 import { LIFECYCLE_LABELS } from "@/components/format";
@@ -25,12 +26,16 @@ interface SkuRow {
 const SKU_TYPE_COLORS: Record<string, string> = { finished: "blue", raw: "green", packaging: "orange" };
 
 export default function SkuClient() {
+  const me = useMe();
+  const canWrite = hasAnyRole(me, "pmc");
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
         SKU 货品
       </Typography.Title>
       <CrudTable<SkuRow>
+        canCreate={canWrite}
+        canEdit={() => canWrite}
         entityName="SKU"
         apiPath="/api/master/sku"
         searchPlaceholder="搜索编码/产品名/规格"

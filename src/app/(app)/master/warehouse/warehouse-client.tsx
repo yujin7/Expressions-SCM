@@ -2,6 +2,7 @@
 
 import { Form, Input, Select, Switch, Tag, Typography } from "antd";
 import CrudTable from "@/components/CrudTable";
+import { hasAnyRole, useMe } from "@/components/useMe";
 import RemoteSelect from "@/components/RemoteSelect";
 import { WAREHOUSE_KIND_LABELS, toOptions } from "@/components/labels";
 
@@ -26,12 +27,16 @@ const KIND_COLORS: Record<string, string> = {
 };
 
 export default function WarehouseClient() {
+  const me = useMe();
+  const canWrite = hasAnyRole(me);
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
         仓库
       </Typography.Title>
       <CrudTable<WarehouseRow>
+        canCreate={canWrite}
+        canEdit={() => canWrite}
         entityName="仓库"
         apiPath="/api/master/warehouse"
         searchPlaceholder="搜索编码/名称"
