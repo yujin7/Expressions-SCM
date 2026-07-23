@@ -299,5 +299,87 @@
       "error": 0,
       "blockedReasons": []
     }
-  ]
+  ],
+  "fixup": {
+    "materials": {
+      "created": 335,
+      "unclassified": 3,
+      "existing": 8
+    },
+    "skuRerun": {
+      "createdFinished": 0,
+      "createdMaterials": 0,
+      "existing": 1896,
+      "blocked": 10
+    },
+    "bomRerun": {
+      "created": 282,
+      "candidates": 270,
+      "retired": 12,
+      "blocked": 62,
+      "lineSkips": 1082,
+      "releaseRunId": 135
+    },
+    "bomActivation2": {
+      "activated": 270,
+      "sampleSize": 27
+    },
+    "feeRerun": {
+      "created": 0,
+      "existing": 0,
+      "blocked": 56
+    },
+    "shellRebrand": {
+      "rebranded": 276,
+      "packified": 10,
+      "leftUnknown": 0,
+      "brands": [
+        "NING",
+        "DEV",
+        "EXP",
+        "B2F",
+        "LYUV",
+        "DWS",
+        "ABS",
+        "WC"
+      ]
+    },
+    "finalStatus": [
+      {
+        "t": "batch_stock",
+        "staged": 0,
+        "committed": 3131
+      },
+      {
+        "t": "bom_block",
+        "staged": 62,
+        "committed": 817
+      },
+      {
+        "t": "processing_fee_candidate",
+        "staged": 56,
+        "committed": 693
+      },
+      {
+        "t": "sales_monthly",
+        "staged": 0,
+        "committed": 7065
+      },
+      {
+        "t": "sku_leadtime",
+        "staged": 1227,
+        "committed": 0
+      },
+      {
+        "t": "spu_suggestion",
+        "staged": 0,
+        "committed": 336
+      },
+      {
+        "t": "stock_opening_candidate",
+        "staged": 0,
+        "committed": 3473
+      }
+    ]
+  }
 }
