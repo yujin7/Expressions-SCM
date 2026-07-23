@@ -42,6 +42,12 @@ const menuItems: MenuProps["items"] = [
       { key: "/outsource/po", label: "采购订单" },
       { key: "/outsource/pc", label: "价格变更" },
       { key: "/outsource/jg", label: "加工通知单" },
+      { key: "/matflow/fl", label: "发料单" },
+      { key: "/matflow/tl", label: "退料单" },
+      { key: "/matflow/sh", label: "收货检验" },
+      { key: "/matflow/ct", label: "采购退货" },
+      { key: "/settlement/js", label: "结算单" },
+      { key: "/jobs/recon", label: "对账差异" },
     ],
   },
   {
@@ -79,6 +85,9 @@ export default function AppShell({ children, userName, roleText }: { children: R
     if (pathname.startsWith("/master/")) return ["master"];
     if (pathname.startsWith("/inventory/")) return ["inventory"];
     if (pathname.startsWith("/outsource/")) return ["outsourcing"];
+    if (pathname.startsWith("/matflow/")) return ["outsourcing"];
+    if (pathname.startsWith("/settlement/")) return ["outsourcing"];
+    if (pathname.startsWith("/jobs/")) return ["outsourcing"];
     if (pathname.startsWith("/import/")) return ["import"];
     return [];
   }, [pathname]);

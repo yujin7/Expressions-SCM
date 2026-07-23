@@ -156,52 +156,71 @@ export default function BomClient() {
               name="lines"
               rules={[
                 {
-                  validator: async (_, value: unknown[]) => {
+                  validator: async (_, value: { materialSkuId?: number }[]) => {
                     if (!value || value.length === 0) throw new Error("至少需要一行物料");
+                    // UX 走查 #8：重复物料校验
+                    const ids = value.map((l) => l?.materialSkuId).filter(Boolean);
+                    if (new Set(ids).size !== ids.length) throw new Error("存在重复物料，请合并用量");
                   },
                 },
               ]}
             >
-              {(fields, { add, remove }, { errors }) => (
-                <div style={{ marginTop: 8 }}>
-                  {fields.map((field) => (
-                    <Space key={field.key} align="baseline" wrap style={{ display: "flex", marginBottom: 4 }}>
-                      <Form.Item
-                        name={[field.name, "materialSkuId"]}
-                        rules={[{ required: true, message: "选择物料" }]}
-                        style={{ marginBottom: 8 }}
-                      >
-                        <RemoteSelect
-                          api="/api/master/sku?type=raw,packaging"
-                          getLabel={(r) => `${String(r.code)} ${r.name ? String(r.name) : String(r.spuNameCn)}`}
-                          placeholder="物料 SKU（原料/包材）"
-                          style={{ width: 300 }}
-                        />
-                      </Form.Item>
-                      <Form.Item
-                        name={[field.name, "qtyPer"]}
-                        rules={[{ required: true, message: "用量必填" }]}
-                        style={{ marginBottom: 8 }}
-                      >
-                        <InputNumber min={0.0001} step={0.0001} placeholder="单位用量" style={{ width: 120 }} />
-                      </Form.Item>
-                      <Form.Item name={[field.name, "lossRatePct"]} initialValue={0} style={{ marginBottom: 8 }}>
-                        <InputNumber min={0} max={100} step={0.5} placeholder="损耗率%" style={{ width: 110 }} addonAfter="%" />
-                      </Form.Item>
-                      <Form.Item name={[field.name, "leadTimeDays"]} style={{ marginBottom: 8 }}>
-                        <InputNumber min={0} placeholder="提前期(天)" style={{ width: 120 }} />
-                      </Form.Item>
-                      <Button type="link" danger onClick={() => remove(field.name)}>
-                        删除
+              {(fields, { add, remove }, { errors }) => {
+                // UX 走查 #8：表格化编辑器——表头对齐 + 行号 + 滚动区（10+ 行可用）
+                const grid = "40px 300px 130px 120px 110px 60px";
+                const cell: React.CSSProperties = { padding: "2px 4px" };
+                return (
+                  <div style={{ marginTop: 8 }}>
+                    <div
+                      style={{
+                        display: "grid", gridTemplateColumns: grid, fontWeight: 600,
+                        background: "#fafafa", border: "1px solid #f0f0f0", borderBottom: 0, padding: "6px 0",
+                      }}
+                    >
+                      <div style={{ ...cell, textAlign: "center" }}>#</div>
+                      <div style={cell}>物料 SKU（原料/包材）</div>
+                      <div style={cell}>单位用量</div>
+                      <div style={cell}>损耗率%</div>
+                      <div style={cell}>提前期(天)</div>
+                      <div style={cell} />
+                    </div>
+                    <div style={{ maxHeight: 320, overflowY: "auto", border: "1px solid #f0f0f0" }}>
+                      {fields.map((field, idx) => (
+                        <div key={field.key} style={{ display: "grid", gridTemplateColumns: grid, alignItems: "start", borderBottom: "1px solid #f5f5f5" }}>
+                          <div style={{ ...cell, textAlign: "center", paddingTop: 8 }}>{idx + 1}</div>
+                          <Form.Item name={[field.name, "materialSkuId"]} rules={[{ required: true, message: "选择物料" }]} style={{ margin: 4 }}>
+                            <RemoteSelect
+                              api="/api/master/sku?type=raw,packaging"
+                              getLabel={(r) => `${String(r.code)} ${r.name ? String(r.name) : String(r.spuNameCn)}`}
+                              placeholder="物料 SKU"
+                              style={{ width: 290 }}
+                            />
+                          </Form.Item>
+                          <Form.Item name={[field.name, "qtyPer"]} rules={[{ required: true, message: "用量必填" }]} style={{ margin: 4 }}>
+                            <InputNumber min={0.0001} step={0.0001} placeholder="用量" style={{ width: 120 }} />
+                          </Form.Item>
+                          <Form.Item name={[field.name, "lossRatePct"]} initialValue={0} style={{ margin: 4 }}>
+                            <InputNumber min={0} max={100} step={0.5} style={{ width: 110 }} addonAfter="%" />
+                          </Form.Item>
+                          <Form.Item name={[field.name, "leadTimeDays"]} style={{ margin: 4 }}>
+                            <InputNumber min={0} style={{ width: 100 }} />
+                          </Form.Item>
+                          <Button type="link" danger style={{ marginTop: 4 }} onClick={() => remove(field.name)}>
+                            删除
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                    <Space style={{ marginTop: 8 }}>
+                      <Button icon={<PlusOutlined />} onClick={() => add({ lossRatePct: 0 })}>
+                        添加物料行
                       </Button>
+                      <Typography.Text type="secondary">共 {fields.length} 行；Excel 批量导入见导入中心（DW2）</Typography.Text>
                     </Space>
-                  ))}
-                  <Button icon={<PlusOutlined />} onClick={() => add({ lossRatePct: 0 })}>
-                    添加物料行
-                  </Button>
-                  <Form.ErrorList errors={errors} />
-                </div>
-              )}
+                    <Form.ErrorList errors={errors} />
+                  </div>
+                );
+              }}
             </Form.List>
           </>
         )}

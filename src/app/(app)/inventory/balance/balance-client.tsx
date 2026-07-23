@@ -144,6 +144,21 @@ function SkuBalanceTab() {
         columns={columns}
         dataSource={rows}
         scroll={{ x: "max-content" }}
+        summary={(pageData) => {
+          // UX 走查 #6：Excel 肌肉记忆——本页合计行（跨单位直加仅作参考）
+          const sum = pageData.reduce((acc, r) => acc + Number(r.qty || 0), 0);
+          return (
+            <Table.Summary.Row>
+              <Table.Summary.Cell index={0} colSpan={columns.length - 2}>
+                本页合计（{pageData.length} 行，跨单位直加仅参考）
+              </Table.Summary.Cell>
+              <Table.Summary.Cell index={1} align="right">
+                {sum.toLocaleString("zh-CN", { maximumFractionDigits: 4 })}
+              </Table.Summary.Cell>
+              <Table.Summary.Cell index={2} />
+            </Table.Summary.Row>
+          );
+        }}
         loading={loading}
         pagination={{
           current: page,
