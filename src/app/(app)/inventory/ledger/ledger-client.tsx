@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { App, DatePicker, Space, Table, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
+import ExportButton from "@/components/ExportButton";
 import RemoteSelect from "@/components/RemoteSelect";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
@@ -126,6 +127,14 @@ export default function LedgerClient() {
             setTo(values?.[1] ? values[1].format("YYYY-MM-DD") : undefined);
             setPage(1);
           }}
+        />
+        <ExportButton
+          href={`/api/export/ledger?${new URLSearchParams({
+            ...(skuId != null ? { skuId: String(skuId) } : {}),
+            ...(warehouseId != null ? { warehouseId: String(warehouseId) } : {}),
+            ...(from ? { from } : {}),
+            ...(to ? { to } : {}),
+          }).toString()}`}
         />
       </Space>
       <Table<LedgerRow>

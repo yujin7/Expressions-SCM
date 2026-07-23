@@ -21,6 +21,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
+import ExportButton from "@/components/ExportButton";
 import RemoteSelect from "@/components/RemoteSelect";
 import DocStatusTag from "@/components/DocStatusTag";
 import DocActions from "@/components/DocActions";
@@ -300,6 +301,13 @@ export default function DocsClient() {
           />
         </Space>
         <Space>
+          <ExportButton
+            href={`/api/export/stock-docs?${new URLSearchParams({
+              q,
+              ...(status ? { status } : {}),
+              ...(subtype ? { subtype } : {}),
+            }).toString()}`}
+          />
           <Button icon={<ReloadOutlined />} onClick={() => void load()}>
             刷新
           </Button>

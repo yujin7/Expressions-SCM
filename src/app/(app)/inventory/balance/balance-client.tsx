@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Input, Space, Switch, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import ExportButton from "@/components/ExportButton";
 import RemoteSelect from "@/components/RemoteSelect";
 import { fetchJson } from "@/components/fetchJson";
 import { WAREHOUSE_KIND_LABELS } from "@/components/labels";
@@ -137,6 +138,13 @@ function SkuBalanceTab() {
           />
           <Typography.Text>含零库存</Typography.Text>
         </Space>
+        <ExportButton
+          href={`/api/export/balance?${new URLSearchParams({
+            q,
+            nonzero: includeZero ? "0" : "1",
+            ...(warehouseId != null ? { warehouseId: String(warehouseId) } : {}),
+          }).toString()}`}
+        />
       </Space>
       <Table<BalanceRow>
         rowKey={(r) => `${r.skuId}-${r.warehouseId}-${r.batchId ?? "nb"}`}

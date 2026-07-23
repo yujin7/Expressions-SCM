@@ -1,19 +1,24 @@
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { auth, signOut } from "@/server/auth";
+import { auth } from "@/server/auth";
 
-/** 中文退出确认页（UX 走查 Top-9：替换 NextAuth 默认英文页） */
+/** 中文退出确认页（W5 修正：改普通 POST 表单——server-action 版在部分环境不触发） */
 export default async function SignOutPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
+  const jar = await cookies();
+  const raw =
+    jar.get("authjs.csrf-token")?.value ?? jar.get("__Host-authjs.csrf-token")?.value ?? "";
+  const csrfToken = raw.split("|")[0] ?? "";
   return (
     <div style={{ display: "flex", justifyContent: "center", paddingTop: 120 }}>
       <form
-        action={async () => {
-          "use server";
-          await signOut({ redirectTo: "/login" });
-        }}
+        method="post"
+        action="/api/auth/signout"
         style={{ background: "#fff", padding: 32, borderRadius: 8, textAlign: "center", boxShadow: "0 2px 8px rgba(0,0,0,.08)" }}
       >
+        <input type="hidden" name="csrfToken" value={csrfToken} />
+        <input type="hidden" name="callbackUrl" value="/login" />
         <p style={{ fontSize: 16, marginBottom: 24 }}>确定要退出登录吗？</p>
         <button
           type="submit"

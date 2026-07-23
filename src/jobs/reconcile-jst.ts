@@ -99,14 +99,19 @@ export function summarizeDiffs(
 export async function runReconcileJst(db: AnyDb, bizDate: string): Promise<ReconSummary> {
   const { start, end } = shanghaiDayBounds(bizDate);
 
-  // ── sys 侧：自有仓销售出库流水（qty_delta 为负 → 取正出库量） ──
+  // ── sys 侧：自有仓销售出库流水（qty_delta 为负 → 取正出库量）
+  //    W5 修正：红字冲销行（action=reverse:sales_out#<原单id>，qty_delta 为正）纳入净额——
+  //    冲销当日发生即从当日出库净减（此前红字不参与，sys 侧被高估）。 ──
+  const { or, like } = await import("drizzle-orm");
   const ledger: { skuId: number; qtyDelta: string }[] = await db
     .select({ skuId: stockLedger.skuId, qtyDelta: stockLedger.qtyDelta })
     .from(stockLedger)
     .where(
       and(
-        eq(stockLedger.action, "post"),
-        eq(stockLedger.sourceDocType, "sales_out"),
+        or(
+          and(eq(stockLedger.action, "post"), eq(stockLedger.sourceDocType, "sales_out")),
+          like(stockLedger.action, "reverse:sales_out#%"),
+        ),
         gte(stockLedger.occurredAt, start),
         lt(stockLedger.occurredAt, end),
       ),

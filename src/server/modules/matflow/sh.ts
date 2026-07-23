@@ -612,6 +612,7 @@ export async function listShs(
         status: shDocs.status,
         sourceType: shDocs.sourceType,
         sourceId: shDocs.sourceId,
+        sourceDocNo: sql<string | null>`case when ${shDocs.sourceType} = 'po' then ${poDocs.docNo} else ${jgDocs.docNo} end`,
         warehouseName: warehouses.name,
         lineCount: sql<number>`coalesce(${lineAgg.lineCount}, 0)`,
         hasQc: sql<boolean>`${qcAgg.qcId} is not null`,
@@ -620,6 +621,8 @@ export async function listShs(
         createdAt: shDocs.createdAt,
       })
       .from(shDocs)
+      .leftJoin(poDocs, and(eq(shDocs.sourceType, sql`'po'`), eq(shDocs.sourceId, poDocs.id)))
+      .leftJoin(jgDocs, and(eq(shDocs.sourceType, sql`'jg'`), eq(shDocs.sourceId, jgDocs.id)))
       .innerJoin(warehouses, eq(shDocs.warehouseId, warehouses.id))
       .leftJoin(lineAgg, eq(lineAgg.shId, shDocs.id))
       .leftJoin(qcAgg, eq(qcAgg.shId, shDocs.id))

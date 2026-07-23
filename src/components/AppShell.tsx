@@ -69,7 +69,15 @@ const menuItems: MenuProps["items"] = [
       { key: "/import/exceptions", label: "别名认领" },
     ],
   },
-  { key: "reports", icon: <BarChartOutlined />, label: "报表（W5）", disabled: true },
+  {
+    key: "reports",
+    icon: <BarChartOutlined />,
+    label: "报表（W5）",
+    children: [
+      { key: "/report/wip", label: "委外在制看板" },
+      { key: "/report/settlement-summary", label: "结算汇总表" },
+    ],
+  },
   { key: "admin", icon: <SettingOutlined />, label: "系统管理（W5）", disabled: true },
 ];
 
@@ -89,6 +97,7 @@ export default function AppShell({ children, userName, roleText }: { children: R
     if (pathname.startsWith("/settlement/")) return ["outsourcing"];
     if (pathname.startsWith("/jobs/")) return ["outsourcing"];
     if (pathname.startsWith("/import/")) return ["import"];
+    if (pathname.startsWith("/report/")) return ["reports"];
     return [];
   }, [pathname]);
 

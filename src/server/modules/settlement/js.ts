@@ -516,7 +516,7 @@ export async function approveJs(
           const detail = surplus
             .map((l) => `物料${codeById.get(l.materialSkuId) ?? `#${l.materialSkuId}`}结余${dNeg(l.actualLoss)}未退`)
             .join("；");
-          throw new ApiError(409, `${detail}，请先退料(TL)或短溢说明后确认（acknowledgeSurplus）`);
+          { const e = new ApiError(409, `${detail}，请先退料(TL)或短溢说明后确认（acknowledgeSurplus）`); e.code = "SURPLUS_UNACKED"; throw e; }
         }
       }
 

@@ -3,6 +3,8 @@ import { ZodError } from "zod";
 
 /** 业务错误：service 层抛出，route 层统一转 JSON */
 export class ApiError extends Error {
+  /** 可选机器码（如 SURPLUS_UNACKED）——W5：前端不再靠报文文案判别 */
+  public code?: string;
   constructor(
     public status: number,
     message: string,
@@ -20,7 +22,7 @@ function isUniqueViolation(e: unknown): boolean {
 /** 统一错误响应：{error} + 400/404/409/500 */
 export function errorResponse(e: unknown): NextResponse {
   if (e instanceof ApiError) {
-    return NextResponse.json({ error: e.message }, { status: e.status });
+    return NextResponse.json(e.code ? { error: e.message, code: e.code } : { error: e.message }, { status: e.status });
   }
   if (e instanceof ZodError) {
     const msg = e.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("；");

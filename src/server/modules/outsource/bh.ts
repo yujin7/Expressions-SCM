@@ -36,9 +36,8 @@ export async function createBh(user: SessionUser, input: unknown, dbArg?: AnyDb)
       .values({
         docNo,
         remark: v.remark ?? null,
-        // bh_docs 无 order_type 列（schema 本波不可改）——NPD 订单类型暂存 purpose 字段；
         // 集成阶段如需独立列再迁移（诚实标注，勿当正式口径）。
-        purpose: v.orderType ?? null,
+        orderType: v.orderType ?? null,
         createdBy: user.id,
       })
       .returning();
@@ -123,7 +122,7 @@ export async function getBh(id: number, dbArg?: AnyDb) {
       docNo: bhDocs.docNo,
       status: bhDocs.status,
       remark: bhDocs.remark,
-      orderType: bhDocs.purpose, // 见 createBh 注释：orderType 暂存 purpose
+      orderType: sql`coalesce(${bhDocs.orderType}, ${bhDocs.purpose})`, // W5：真列为准，历史 purpose 兼容
       version: bhDocs.version,
       createdBy: bhDocs.createdBy,
       createdAt: bhDocs.createdAt,
@@ -190,7 +189,7 @@ export async function listBhs(
         id: bhDocs.id,
         docNo: bhDocs.docNo,
         status: bhDocs.status,
-        orderType: bhDocs.purpose,
+        orderType: sql`coalesce(${bhDocs.orderType}, ${bhDocs.purpose})`,
         lineCount: sql<number>`coalesce(${lineAgg.lineCount}, 0)`,
         createdByName: users.name,
         createdAt: bhDocs.createdAt,
