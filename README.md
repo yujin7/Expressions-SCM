@@ -43,4 +43,4 @@ admin / ops01 / purchasing01 / warehouse01 / pmc01(审批人) / pmc02(非审批�
 - 脱敏收口：`src/server/core/dto.ts`（运营/仓管不可见成本与加工费，含导出）
 
 ## 里程碑
-W1 主数据+认证 → W2 库存账本 → W3 委外链路前半 → W4 收发退+对账 → W5 结算+报表 → W6 UAT → W7-8 并行运行。当前：**W1**。
+阶段索引与决策登记见 `../spec/CURRENT.md`。当前：**DW1**（W1/W2/DW1-core 已完成，commit 1103347）；上线门待 D15。

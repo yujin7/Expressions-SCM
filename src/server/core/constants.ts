@@ -43,6 +43,7 @@ export const SENSITIVE_FIELDS = [
   "concessionPrice", // 让步单价
   "manualAdj",
   "amount", // offset_pool 金额
+  "feeRate", // processing_fee_refs 加工费参考价
 ] as const;
 
 /** 可见敏感价格的角色（●）：采购/PMC/财务/管理员 */
@@ -55,3 +56,12 @@ export const PARAM_KEYS = {
   lossRatePct: "loss_rate_pct", // 品类允许损耗率（scope=品类），包材=5
   concessionPriceRatio: "concession_price_ratio", // 让步默认价率，默认 100（D6 待财务确认）
 } as const;
+
+/** 订单类型（NPD 钩子，05 §5；来源=在途表 下拉选项 订单类型）。N月备货以 "MONTH_STOCK:<n>" 形式存储 */
+export const ORDER_TYPES = ["regular", "npd_first", "urgent", "month_stock"] as const;
+export const ORDER_TYPE_LABELS: Record<string, string> = {
+  regular: "常规备货",
+  npd_first: "新品首单",
+  urgent: "紧急需求",
+  month_stock: "月备货",
+};

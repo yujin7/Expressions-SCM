@@ -37,15 +37,35 @@ export async function listSpus(q: string, page: number, pageSize: number) {
   return { data: rows, total };
 }
 
-/** 编码留空则自动取号 P+5位流水（主数据流水，非单据号，不走 doc_counter） */
+/** 编码留空则自动取号 P+5位流水。
+ *  《04》§4.1 裁决（连贯性审计 M4 修复）：走 doc_counter 行锁取号（prefix=SPU, bizDate=GLOBAL），
+ *  杜绝 MAX+1 并发竞态——718+ SKU 批量建档时会高频取号。 */
 async function nextSpuCode(): Promise<string> {
   const db = await getDbAsync();
   const [row] = await db
-    .select({ max: sql<string | null>`max(${schema.spus.code})` })
-    .from(schema.spus)
-    .where(sql`${schema.spus.code} ~ '^P[0-9]{5}$'`);
-  const next = row?.max ? parseInt(row.max.slice(1), 10) + 1 : 1;
-  return `P${String(next).padStart(5, "0")}`;
+    .insert(schema.docCounters)
+    .values({ prefix: "SPU", bizDate: "GLOBAL", lastNo: 1 })
+    .onConflictDoUpdate({
+      target: [schema.docCounters.prefix, schema.docCounters.bizDate],
+      set: { lastNo: sql`${schema.docCounters.lastNo} + 1` },
+    })
+    .returning({ lastNo: schema.docCounters.lastNo });
+  let code = `P${String(row.lastNo).padStart(5, "0")}`;
+  // 计数器可能落后于历史手工/种子编码（如 seed 的 P00001）——碰撞则继续取号直至空位
+  for (let guard = 0; guard < 100000; guard++) {
+    const [dup] = await db.select({ id: schema.spus.id }).from(schema.spus).where(eq(schema.spus.code, code));
+    if (!dup) return code;
+    const [again] = await db
+      .insert(schema.docCounters)
+      .values({ prefix: "SPU", bizDate: "GLOBAL", lastNo: 1 })
+      .onConflictDoUpdate({
+        target: [schema.docCounters.prefix, schema.docCounters.bizDate],
+        set: { lastNo: sql`${schema.docCounters.lastNo} + 1` },
+      })
+      .returning({ lastNo: schema.docCounters.lastNo });
+    code = `P${String(again.lastNo).padStart(5, "0")}`;
+  }
+  throw new Error("SPU 取号异常：连续 10 万次碰撞");
 }
 
 export async function createSpu(input: unknown) {

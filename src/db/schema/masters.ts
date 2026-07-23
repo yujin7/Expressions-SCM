@@ -1,7 +1,7 @@
 import {
   pgTable, serial, text, integer, boolean, date, timestamp, numeric, jsonb, unique,
 } from "drizzle-orm/pg-core";
-import { skuTypeEnum, supplierStatusEnum, warehouseKindEnum, accountingModeEnum } from "./enums";
+import { skuTypeEnum, skuLifecycleEnum, supplierStatusEnum, warehouseKindEnum, accountingModeEnum } from "./enums";
 
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
@@ -55,6 +55,7 @@ export const skus = pgTable("skus", {
   brandId: integer("brand_id"),
   barcode: text("barcode"), // EAN13；真实数据存在畸形重复，故不 UNIQUE——规范唯一性由 aliases(sku_barcode) 承载
   productType: text("product_type"), // 跨境品/一般贸易/国内品牌/TK版/亚马逊版/北美版
+  lifecycle: skuLifecycleEnum("lifecycle").notNull().default("on_sale"), // 四态（04 §2.A）；行为门当前仍以 active 为准，DW2 切换
   remark: text("remark"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

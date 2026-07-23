@@ -3,7 +3,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { bomStatusEnum } from "./enums";
-import { skus } from "./masters";
+import { skus, suppliers } from "./masters";
 
 /**
  * BOM：每成品同一时间仅一个生效版本（部分唯一索引）；
@@ -33,4 +33,8 @@ export const bomLines = pgTable("bom_lines", {
   lossRatePct: numeric("loss_rate_pct", { precision: 5, scale: 2 }).notNull().default("0"), // 仅计划/发料预填用，不参与结算（R2）
   leadTimeDays: integer("lead_time_days"),
   substituteSkuId: integer("substitute_sku_id").references(() => skus.id), // P0 预留字段
+  // 《04》§2 增列（BOM 文件每行带供应商——数据审计最大缺口）；双损耗率按第三轮商业审计建议暂缓 1.1
+  preferredSupplierId: integer("preferred_supplier_id").references(() => suppliers.id),
+  uom: text("uom"), // 计数/克/毫升/%（化解「单位用量」混装）
+  remark: text("remark"),
 });

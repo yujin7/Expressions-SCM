@@ -47,6 +47,7 @@ export const woDocs = pgTable("wo_docs", {
   qty: numeric("qty", { precision: 14, scale: 4 }).notNull(),
   supplierId: integer("supplier_id").notNull().references(() => suppliers.id), // 加工厂
   feeRatePlan: numeric("fee_rate_plan", { precision: 14, scale: 2 }).notNull(), // 计划参考价（结算取价=JG现价）
+  orderType: text("order_type"), // NPD 钩子（05 §5）：常规备货/新品首单/紧急需求/N月备货（ORDER_TYPES）
   dueDate: date("due_date"),
   bomId: integer("bom_id").notNull().references(() => boms.id),
 });
@@ -112,6 +113,7 @@ export const jgDocs = pgTable("jg_docs", {
   qty: numeric("qty", { precision: 14, scale: 4 }).notNull(),
   dueDate: date("due_date"),
   feeRateCurrent: numeric("fee_rate_current", { precision: 14, scale: 2 }).notNull(), // 结算取价来源（PC 可改，分段计价）
+  orderType: text("order_type"), // 同 WO（NPD 钩子）
   inProduction: boolean("in_production").notNull().default(false), // 生产中标记
   confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
   confirmedBy: integer("confirmed_by").references(() => users.id),
@@ -219,6 +221,7 @@ export const stockDocs = pgTable("stock_docs", {
   sourceDocType: text("source_doc_type"), // 来源单据（红字=被冲原单）
   sourceDocId: integer("source_doc_id"),
   reversalOfId: integer("reversal_of_id"), // 红字：引用原 stock_doc
+  reason: text("reason"), // R16 借调等业务原因（04 §2；渠道占用由逻辑仓表达，不加渠道字段）
 });
 export const stockDocLines = pgTable("stock_doc_lines", {
   id: serial("id").primaryKey(),

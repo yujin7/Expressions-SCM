@@ -64,3 +64,6 @@ export const tlReasonEnum = pgEnum("tl_reason", ["surplus_return", "defect_excha
 export const importStatusEnum = pgEnum("import_status", ["pending", "validating", "failed", "done"]);
 
 export const reconStatusEnum = pgEnum("recon_status", ["open", "explained", "resolved"]);
+
+/** 货品生命周期（字段枚举权威 4 态；《04》§2.A 行为矩阵）。两段迁移：DW1 建列，行为切换随 DW2 */
+export const skuLifecycleEnum = pgEnum("sku_lifecycle", ["on_sale", "trial", "halted", "retired"]);

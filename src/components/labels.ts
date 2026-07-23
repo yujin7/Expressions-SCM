@@ -85,7 +85,7 @@ export const LEDGER_SOURCE_LABELS: Record<string, string> = {
   sh_outsource_in: "委外收货",
   ct_return: "采购退货",
   js_loss_writeoff: "结算核销",
-  stock_doc: "红字",
+  stock_doc: "红字冲销", // 该来源类型仅由红字 reverse() 产生（连贯性审计 m7 更名）
   sales_out: "销售出",
   spare_in: "备品入库",
 };
