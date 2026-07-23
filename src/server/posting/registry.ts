@@ -32,6 +32,10 @@ export const POSTING_REGISTRY: Record<string, { description: string; allowedActi
     description: "JS 审批→损耗核销：委外仓 − 实际损耗；核销后该 JG 委外仓余额必须=0",
     allowedActions: ["post", "writeoff"],
   },
+  issue_out: {
+    description: "领料出库：自有仓 −（W2 集成新增——原稿遗漏，技术审计 #6 命中）",
+    allowedActions: ["post"],
+  },
   sales_out: {
     description: "销售出库（聚水潭导入/手工）审批：自有仓 −",
     allowedActions: ["post"],

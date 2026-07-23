@@ -50,6 +50,46 @@ export const LOSS_CATEGORY_LABELS: Record<string, string> = {
   packaging: "包材",
 };
 
+/** 库存单据子类型（stock_doc_subtype） */
+export const STOCK_SUBTYPE_LABELS: Record<string, string> = {
+  opening: "期初",
+  issue_out: "领料出",
+  sales_out: "销售出",
+  transfer: "调拨",
+  reversal: "红字冲销",
+  purchase_in: "采购入",
+  outsource_in: "委外入",
+  outsource_in_spare: "委外入-备品",
+  count_adjust: "盘点调整",
+  loss_writeoff: "损耗核销",
+  transit_writeoff: "调拨核销",
+};
+
+/** 统一单据状态机（doc_status） */
+export const DOC_STATUS_LABELS: Record<string, string> = {
+  draft: "草稿",
+  pending: "待审批",
+  approved: "已审批",
+  in_progress: "执行中",
+  completed: "已完成",
+  closed: "已关闭",
+  void: "已作废",
+};
+
+/** 库存流水来源单据类型（sourceDocType） */
+export const LEDGER_SOURCE_LABELS: Record<string, string> = {
+  ...STOCK_SUBTYPE_LABELS,
+  fl_issue: "发料",
+  tl_return: "退料",
+  sh_purchase_in: "采购收货",
+  sh_outsource_in: "委外收货",
+  ct_return: "采购退货",
+  js_loss_writeoff: "结算核销",
+  stock_doc: "红字",
+  sales_out: "销售出",
+  spare_in: "备品入库",
+};
+
 export function toOptions(labels: Record<string, string>): { value: string; label: string }[] {
   return Object.entries(labels).map(([value, label]) => ({ value, label }));
 }

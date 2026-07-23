@@ -33,7 +33,16 @@ const menuItems: MenuProps["items"] = [
     ],
   },
   { key: "outsourcing", icon: <ApartmentOutlined />, label: "委外（W3）", disabled: true },
-  { key: "inventory", icon: <InboxOutlined />, label: "库存（W2）", disabled: true },
+  {
+    key: "inventory",
+    icon: <InboxOutlined />,
+    label: "库存（W2）",
+    children: [
+      { key: "/inventory/balance", label: "库存余额" },
+      { key: "/inventory/ledger", label: "库存流水" },
+      { key: "/inventory/docs", label: "库存单据" },
+    ],
+  },
   { key: "import", icon: <ImportOutlined />, label: "导入中心（W4）", disabled: true },
   { key: "reports", icon: <BarChartOutlined />, label: "报表（W5）", disabled: true },
   { key: "admin", icon: <SettingOutlined />, label: "系统管理（W5）", disabled: true },
@@ -47,7 +56,11 @@ export default function AppShell({ children, userName, roleText }: { children: R
     token: { colorBgContainer },
   } = theme.useToken();
 
-  const openKeys = useMemo(() => (pathname.startsWith("/master/") ? ["master"] : []), [pathname]);
+  const openKeys = useMemo(() => {
+    if (pathname.startsWith("/master/")) return ["master"];
+    if (pathname.startsWith("/inventory/")) return ["inventory"];
+    return [];
+  }, [pathname]);
 
   return (
     <AntApp>
