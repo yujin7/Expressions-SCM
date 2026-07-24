@@ -17,18 +17,22 @@ export const SKU_TYPE_LABELS: Record<string, string> = {
   finished: "成品",
   raw: "原料",
   packaging: "包材",
+  semi: "半成品",
+  service: "服务",
 };
 
 export const SUPPLIER_KIND_LABELS: Record<string, string> = {
   raw: "原料",
   packaging: "包材",
   processor: "加工厂",
+  service: "服务",
 };
 
 export const SUPPLIER_STATUS_LABELS: Record<string, string> = {
   pending: "准入中",
   qualified: "合格",
   blacklisted: "黑名单",
+  paused: "暂停",
 };
 
 export const SUPPLIER_STATUS_COLORS: Record<string, string> = {

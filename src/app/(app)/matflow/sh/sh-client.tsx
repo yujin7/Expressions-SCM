@@ -25,6 +25,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
+import AttachmentPanel from "@/components/AttachmentPanel";
 import DocStatusTag from "@/components/DocStatusTag";
 import RemoteSelect from "@/components/RemoteSelect";
 import { fetchJson, postJson } from "@/components/fetchJson";
@@ -1092,6 +1093,22 @@ export default function ShClient() {
                   ? "待仓管/管理员录入检验。"
                   : "收货单审批通过后方可录入检验。"}
               </Typography.Paragraph>
+            )}
+
+            {/* 检验照片证据链（扣款争议凭据）：已检挂 QC 记录；未检暂挂收货单（sh 兜底） */}
+            {detail.qc ? (
+              <>
+                <AttachmentPanel entity="qc" entityId={detail.qc.id} canWrite={canWrite} title="检验照片" />
+                <AttachmentPanel
+                  entity="sh"
+                  entityId={detail.id}
+                  canWrite={false}
+                  title="检验照片（检验前上传）"
+                  hideWhenEmpty
+                />
+              </>
+            ) : (
+              <AttachmentPanel entity="sh" entityId={detail.id} canWrite={canWrite} title="检验照片" />
             )}
 
             <Typography.Title level={5}>③ 入库区</Typography.Title>

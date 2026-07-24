@@ -11,7 +11,7 @@ export const docStatusEnum = pgEnum("doc_status", [
   "void", // 已作废
 ]);
 
-export const skuTypeEnum = pgEnum("sku_type", ["finished", "raw", "packaging"]); // 成品/原料/包材
+export const skuTypeEnum = pgEnum("sku_type", ["finished", "semi", "raw", "packaging", "service"]); // 成品/半成品/原料/包材/服务（04 §3 裁决 5 值，合规审计补落）
 
 export const warehouseKindEnum = pgEnum("warehouse_kind", [
   "finished", // 成品仓
@@ -24,7 +24,7 @@ export const warehouseKindEnum = pgEnum("warehouse_kind", [
 
 export const accountingModeEnum = pgEnum("accounting_mode", ["realtime", "snapshot"]);
 
-export const supplierStatusEnum = pgEnum("supplier_status", ["pending", "qualified", "blacklisted"]);
+export const supplierStatusEnum = pgEnum("supplier_status", ["pending", "qualified", "paused", "blacklisted"]); // +暂停（04 §3 裁决，合规审计补落）
 
 export const bomStatusEnum = pgEnum("bom_status", ["draft", "active", "retired"]);
 

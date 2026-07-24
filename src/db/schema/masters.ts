@@ -56,6 +56,7 @@ export const skus = pgTable("skus", {
   // 此处若 .references(() => brands.id) 需回环 import dimensions → 循环依赖，故不加 DB 级 FK。
   brandId: integer("brand_id"),
   barcode: text("barcode"), // EAN13；真实数据存在畸形重复，故不 UNIQUE——规范唯一性由 aliases(sku_barcode) 承载
+  barcodeStatus: text("barcode_status"), // 04 §3 裁决：valid/malformed/duplicate/null（backfill 脚本回填）
   productType: text("product_type"), // 跨境品/一般贸易/国内品牌/TK版/亚马逊版/北美版
   lifecycle: skuLifecycleEnum("lifecycle").notNull().default("on_sale"), // 四态（04 §2.A）；行为门当前仍以 active 为准，DW2 切换
   remark: text("remark"),
@@ -85,6 +86,12 @@ export const suppliers = pgTable("suppliers", {
   level: text("level"), // S/A/B/C/D 分级
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  // ── 合规审计补落：D11 承诺字段 + 字典联系明细 ──
+  bankAccount: text("bank_account"), // 银行账户（敏感：入 SENSITIVE_FIELDS）
+  paymentTerm: text("payment_term"), // 结算方式（款到发货/月结30/月结60…）
+  phone: text("phone"),
+  email: text("email"),
+  address: text("address"),
 });
 
 export const customers = pgTable("customers", {
@@ -110,8 +117,9 @@ export const priceLists = pgTable("price_lists", {
   skuId: integer("sku_id").notNull().references(() => skus.id),
   supplierId: integer("supplier_id").notNull().references(() => suppliers.id),
   price: numeric("price", { precision: 14, scale: 2 }).notNull(), // 基础单位未税价
+  channelId: integer("channel_id"), // D11 渠道价字段（空=默认价；应用层 FK→channels，避免循环 import）
   effectiveDate: date("effective_date").notNull(),
-}, (t) => [unique("uq_price_sku_sup_date").on(t.skuId, t.supplierId, t.effectiveDate)]);
+}, (t) => [unique("uq_price_sku_sup_chan_date").on(t.skuId, t.supplierId, t.channelId, t.effectiveDate).nullsNotDistinct()]);
 
 /** 批次主档（1.0 建表关功能，1.1 开启） */
 export const batches = pgTable("batches", {

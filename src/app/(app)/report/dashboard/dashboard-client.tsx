@@ -80,6 +80,10 @@ const STATUS_COLORS: Record<string, string> = {
   reversed: "#722ed1",
 };
 
+/** 试销打标（CURRENT.md 词汇表承诺：试销=新品观察期，报表打标） */
+const LifeTag = ({ v }: { v?: string }) =>
+  v === "trial" ? <Tag color="purple">试销</Tag> : v === "halted" ? <Tag>停售</Tag> : v === "retired" ? <Tag color="default">淘汰</Tag> : null;
+
 const fmt = (v: number | string | undefined | null): string =>
   v == null ? "—" : Number(v).toLocaleString("zh-CN");
 
@@ -119,7 +123,7 @@ export default function DashboardClient() {
   const channelTotal = data.channelMix.reduce((a, c) => a + c.qty, 0);
 
   const riskCols: ColumnsType<DashboardData["expiryRiskTop"][number]> = [
-    { title: "编码", dataIndex: "code", width: 110, render: (v: string) => <a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a> },
+    { title: "编码", dataIndex: "code", width: 130, render: (v: string, r) => <><a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a><LifeTag v={(r as { lifecycle?: string }).lifecycle} /></> },
     { title: "名称", dataIndex: "name", ellipsis: true },
     { title: "仓库", dataIndex: "warehouse", width: 110, ellipsis: true },
     {
@@ -133,7 +137,7 @@ export default function DashboardClient() {
   ];
 
   const slowCols: ColumnsType<DashboardData["slowTop"][number]> = [
-    { title: "编码", dataIndex: "code", width: 110, render: (v: string) => <a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a> },
+    { title: "编码", dataIndex: "code", width: 130, render: (v: string, r) => <><a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a><LifeTag v={(r as { lifecycle?: string }).lifecycle} /></> },
     { title: "名称", dataIndex: "name", ellipsis: true },
     { title: "在库", dataIndex: "onHand", width: 90, align: "right", render: fmt },
     { title: "近3月销", dataIndex: "sales3m", width: 90, align: "right", render: fmt },

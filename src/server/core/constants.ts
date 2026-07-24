@@ -49,6 +49,7 @@ export const SENSITIVE_FIELDS = [
   "deviationPct", // PC 偏差（可反推价格）
   "taxRatePct", // 税率（RT4：与含税价互推，随价格同权限）
   "taxIncluded", // 含/未税标志（同上）
+  "bankAccount", // 供应商银行账户（合规审计补落）
 ] as const;
 
 /** 可见敏感价格的角色（●）：采购/PMC/财务/管理员 */

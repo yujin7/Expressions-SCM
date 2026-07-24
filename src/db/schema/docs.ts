@@ -1,6 +1,5 @@
 import {
-  pgTable, serial, text, integer, numeric, date, timestamp, boolean, unique,
-} from "drizzle-orm/pg-core";
+  pgTable, serial, text, integer, numeric, date, timestamp, boolean, unique, jsonb } from "drizzle-orm/pg-core";
 import {
   docStatusEnum, poLineTypeEnum, shLineTypeEnum, qcHandlingEnum,
   pcTargetEnum, pcScopeEnum, stockDocSubtypeEnum, tlReasonEnum,
@@ -51,6 +50,15 @@ export const woDocs = pgTable("wo_docs", {
   orderType: text("order_type"), // NPD 钩子（05 §5）：常规备货/新品首单/紧急需求/N月备货（ORDER_TYPES）
   dueDate: date("due_date"),
   bomId: integer("bom_id").notNull().references(() => boms.id),
+  // ── 04 §2 W3 增列批（合规审计补落）：包材齐套跟踪 + 计划属性 ──
+  pkgRequiredDate: date("pkg_required_date"), // 包材需求日期
+  pkgSupplierReplyDate: date("pkg_supplier_reply_date"), // 供应商回复日期
+  pkgReadyDate: date("pkg_ready_date"), // 包材齐套日期
+  pkgRefNos: jsonb("pkg_ref_nos"), // 关联包材采购单号数组
+  urgentFlag: boolean("urgent_flag").notNull().default(false), // 紧急标记
+  priority: text("priority"), // 优先级（高/中/低，展示用）
+  isPaused: boolean("is_paused").notNull().default(false), // 暂停执行（挂起）
+  revisedDates: jsonb("revised_dates"), // 交期修改历史 [{date, by, reason}]
 });
 /** WO 审批时按生效 BOM 快照复制（B15：引用≠快照，改版不影响本单）；含 R11 净需求建议 */
 export const woLines = pgTable("wo_lines", {
@@ -119,6 +127,15 @@ export const jgDocs = pgTable("jg_docs", {
   confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
   confirmedBy: integer("confirmed_by").references(() => users.id),
   confirmNote: text("confirm_note"),
+  // ── 04 §2 W3 增列批（合规审计补落）：包材齐套跟踪 + 计划属性 ──
+  pkgRequiredDate: date("pkg_required_date"), // 包材需求日期
+  pkgSupplierReplyDate: date("pkg_supplier_reply_date"), // 供应商回复日期
+  pkgReadyDate: date("pkg_ready_date"), // 包材齐套日期
+  pkgRefNos: jsonb("pkg_ref_nos"), // 关联包材采购单号数组
+  urgentFlag: boolean("urgent_flag").notNull().default(false), // 紧急标记
+  priority: text("priority"), // 优先级（高/中/低，展示用）
+  isPaused: boolean("is_paused").notNull().default(false), // 暂停执行（挂起）
+  revisedDates: jsonb("revised_dates"), // 交期修改历史 [{date, by, reason}]
 }, (t) => [unique("uq_jg_wo").on(t.woId)]); // 一 WO 一 JG（W3 集成补约束，替代先查后插的并发窗口）
 
 /** JG 加工费分段（收货时点分段计价的依据；PC 追溯时重算段） */

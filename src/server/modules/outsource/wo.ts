@@ -192,7 +192,11 @@ async function buildWoLineSnapshot(tx: AnyDb, wo: WoRow, userId: number): Promis
   const { suggestQty } = await import("@/server/rules/netreq");
   await tx.insert(woLines).values(
     bLines.map((l) => {
-      const lossFactor = dAdd("1", dDiv(l.lossRatePct, "100", 6), 6);
+      // 04 §2 双损耗口径：毛=净×(1+来料)×(1+生产)；双列为 0 时回退旧 lossRatePct（存量 BOM 兼容）
+      const dualZero = dCmp(l.incomingLossPct, "0") === 0 && dCmp(l.productionLossPct, "0") === 0;
+      const lossFactor = dualZero
+        ? dAdd("1", dDiv(l.lossRatePct, "100", 6), 6)
+        : dMul(dAdd("1", dDiv(l.incomingLossPct, "100", 6), 6), dAdd("1", dDiv(l.productionLossPct, "100", 6), 6), 6);
       const grossReq = dQty(dMul(dMul(l.qtyPer, lossFactor, 6), wo.qty, 6));
       const onHand = dQty(onHandBySku.get(l.materialSkuId) ?? "0");
       const inTransit = dQty(inTransitBySku.get(l.materialSkuId) ?? "0");

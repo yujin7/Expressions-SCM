@@ -48,12 +48,12 @@ export interface DashboardData {
   trendBrands: string[];
   channelMix: { name: string; qty: number }[];
   brandSales: { name: string; qty: number }[];
-  topSkus: { code: string; name: string; qty: number }[];
+  topSkus: { code: string; name: string; qty: number; lifecycle: string }[];
   warehouseStock: { name: string; qty: number; mode: "realtime" | "snapshot"; bizDate: string | null }[];
   expiryBuckets: { bucket: string; qty: number; batches: number }[];
-  expiryRiskTop: { code: string; name: string; warehouse: string; expiryDate: string; daysLeft: number; qty: number }[];
+  expiryRiskTop: { code: string; name: string; warehouse: string; expiryDate: string; daysLeft: number; qty: number; lifecycle: string }[];
   coverBuckets: { bucket: string; count: number }[];
-  slowTop: { code: string; name: string; onHand: number; sales3m: number; daysCover: number | null }[];
+  slowTop: { code: string; name: string; onHand: number; sales3m: number; daysCover: number | null; lifecycle: string }[];
   outsource: { docType: string; label: string; total: number; byStatus: Record<string, number> }[];
   settlement: { docs: number; amountSum: string } | null; // 仅 admin/finance
   insights: string[];
@@ -168,12 +168,12 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
     .map(([name, qty]) => ({ name, qty: Math.round(qty) }))
     .sort((a, b) => b.qty - a.qty);
 
-  const topSkuRows: { code: string; name: string; qty: string }[] = await db
-    .select({ code: schema.skus.code, name: schema.skus.name, qty: sql<string>`sum(${sm.qty})` })
+  const topSkuRows: { code: string; name: string; qty: string; lifecycle: string }[] = await db
+    .select({ code: schema.skus.code, name: schema.skus.name, lifecycle: schema.skus.lifecycle, qty: sql<string>`sum(${sm.qty})` })
     .from(sm)
     .innerJoin(schema.skus, eq(sm.skuId, schema.skus.id))
     .where(months6.length ? inArray(sm.yearMonth, months6) : sql`false`)
-    .groupBy(schema.skus.code, schema.skus.name)
+    .groupBy(schema.skus.code, schema.skus.name, schema.skus.lifecycle)
     .orderBy(sql`sum(${sm.qty}) desc`)
     .limit(10);
   const topSkus = topSkuRows.map((r) => ({ ...r, qty: Math.round(num(r.qty)) }));
@@ -261,9 +261,9 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
   }));
   const slowMoverCount = slowCandidates.length;
   const slowSorted = slowCandidates.sort((a, b) => b.onHand - a.onHand).slice(0, 10);
-  const slowSkuInfo: { id: number; code: string; name: string }[] = slowSorted.length
+  const slowSkuInfo: { id: number; code: string; name: string; lifecycle: string }[] = slowSorted.length
     ? await db
-        .select({ id: schema.skus.id, code: schema.skus.code, name: schema.skus.name })
+        .select({ id: schema.skus.id, code: schema.skus.code, name: schema.skus.name, lifecycle: schema.skus.lifecycle })
         .from(schema.skus)
         .where(inArray(schema.skus.id, slowSorted.map((s) => s.skuId)))
     : [];
@@ -271,6 +271,7 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
   const slowTop = slowSorted.map((s) => ({
     code: skuInfoMap.get(s.skuId)?.code ?? `#${s.skuId}`,
     name: skuInfoMap.get(s.skuId)?.name ?? "",
+    lifecycle: skuInfoMap.get(s.skuId)?.lifecycle ?? "on_sale",
     onHand: Math.round(s.onHand),
     sales3m: Math.round(s.s3m),
     daysCover: s.daysCover == null ? null : Math.round(s.daysCover),
@@ -319,9 +320,9 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
   // KPI 与图同源（RT4 UX-P1-1）：风险量 = 前三段位（已到期+0-3月+3-6月）之和，只取整一次
   expiryRiskQty = expiryBuckets.slice(0, 3).reduce((a, b) => a + b.qty, 0);
   const riskTop = riskRows.sort((a, b) => a.daysLeft - b.daysLeft || b.qty - a.qty).slice(0, 10);
-  const riskSkuInfo: { id: number; code: string; name: string }[] = riskTop.length
+  const riskSkuInfo: { id: number; code: string; name: string; lifecycle: string }[] = riskTop.length
     ? await db
-        .select({ id: schema.skus.id, code: schema.skus.code, name: schema.skus.name })
+        .select({ id: schema.skus.id, code: schema.skus.code, name: schema.skus.name, lifecycle: schema.skus.lifecycle })
         .from(schema.skus)
         .where(inArray(schema.skus.id, [...new Set(riskTop.map((r) => r.skuId))]))
     : [];
@@ -329,6 +330,7 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
   const expiryRiskTop = riskTop.map((r) => ({
     code: riskSkuMap.get(r.skuId)?.code ?? `#${r.skuId}`,
     name: riskSkuMap.get(r.skuId)?.name ?? "",
+    lifecycle: riskSkuMap.get(r.skuId)?.lifecycle ?? "on_sale",
     warehouse: whName.get(r.warehouseId)?.name ?? `#${r.warehouseId}`,
     expiryDate: r.expiryDate,
     daysLeft: r.daysLeft,

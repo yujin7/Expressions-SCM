@@ -81,6 +81,8 @@ export const bomLineSchema = z.object({
   materialSkuId: z.number().int().positive({ message: "必须选择物料 SKU" }),
   qtyPer: z.coerce.number().positive({ message: "单位用量必须大于 0" }),
   lossRatePct: z.coerce.number().min(0, "损耗率不能为负").max(100, "损耗率不能超过 100").optional().default(0),
+  incomingLossPct: z.coerce.number().min(0, "来料损耗不能为负").max(100).optional().default(0),
+  productionLossPct: z.coerce.number().min(0, "生产损耗不能为负").max(100).optional().default(0),
   leadTimeDays: z.coerce.number().int().min(0).nullable().optional(),
 });
 export const bomSchema = z.object({

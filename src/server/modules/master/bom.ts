@@ -32,6 +32,8 @@ async function fetchLines(bomIds: number[]): Promise<BomLineRow[]> {
       baseUom: schema.skus.baseUom,
       qtyPer: schema.bomLines.qtyPer,
       lossRatePct: schema.bomLines.lossRatePct,
+      incomingLossPct: schema.bomLines.incomingLossPct,
+      productionLossPct: schema.bomLines.productionLossPct,
       leadTimeDays: schema.bomLines.leadTimeDays,
     })
     .from(schema.bomLines)
@@ -118,6 +120,8 @@ export async function createBom(input: unknown, userId?: number) {
         materialSkuId: l.materialSkuId,
         qtyPer: String(l.qtyPer),
         lossRatePct: String(l.lossRatePct),
+        incomingLossPct: String(l.incomingLossPct ?? 0),
+        productionLossPct: String(l.productionLossPct ?? 0),
         leadTimeDays: l.leadTimeDays ?? null,
       })),
     );
@@ -145,6 +149,8 @@ export async function updateBom(id: number, input: unknown) {
         materialSkuId: l.materialSkuId,
         qtyPer: String(l.qtyPer),
         lossRatePct: String(l.lossRatePct),
+        incomingLossPct: String(l.incomingLossPct ?? 0),
+        productionLossPct: String(l.productionLossPct ?? 0),
         leadTimeDays: l.leadTimeDays ?? null,
       })),
     );
@@ -235,7 +241,7 @@ export async function activateBom(
       .where(and(eq(schema.boms.productSkuId, bom.productSkuId), eq(schema.boms.status, "active")));
     const [updated] = await tx
       .update(schema.boms)
-      .set({ status: "active", effectiveDate: todayShanghai(), updatedAt: new Date() })
+      .set({ status: "active", effectiveDate: todayShanghai(), approvedBy: approver.id, updatedAt: new Date() })
       .where(eq(schema.boms.id, id))
       .returning();
     return updated;

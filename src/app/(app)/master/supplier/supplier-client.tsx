@@ -1,7 +1,9 @@
 "use client";
 
-import { DatePicker, Form, Input, Select, Tag, Typography } from "antd";
+import { useState } from "react";
+import { Button, DatePicker, Drawer, Form, Input, Select, Tag, Typography } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
+import AttachmentPanel from "@/components/AttachmentPanel";
 import CrudTable from "@/components/CrudTable";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import {
@@ -24,12 +26,18 @@ interface SupplierRow {
 export default function SupplierClient() {
   const me = useMe();
   const canWrite = hasAnyRole(me, "purchasing");
+  const [attachSupplier, setAttachSupplier] = useState<SupplierRow | null>(null);
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
         供应商
       </Typography.Title>
       <CrudTable<SupplierRow>
+        rowActions={(r) => (
+          <Button type="link" size="small" onClick={() => setAttachSupplier(r)}>
+            资质证照
+          </Button>
+        )}
         canCreate={canWrite}
         canEdit={() => canWrite}
         entityName="供应商"
@@ -89,6 +97,17 @@ export default function SupplierClient() {
           </>
         )}
       />
+      <Drawer
+        title={attachSupplier ? `资质证照 — ${attachSupplier.code} ${attachSupplier.name}` : "资质证照"}
+        width={560}
+        open={attachSupplier != null}
+        onClose={() => setAttachSupplier(null)}
+        destroyOnClose
+      >
+        {attachSupplier ? (
+          <AttachmentPanel entity="supplier" entityId={attachSupplier.id} canWrite={canWrite} title="资质证照" />
+        ) : null}
+      </Drawer>
     </div>
   );
 }

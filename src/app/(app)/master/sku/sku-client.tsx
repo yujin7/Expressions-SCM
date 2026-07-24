@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Button, Form, Input, Select, Switch, Tag, Typography } from "antd";
+import { Button, Drawer, Form, Input, Select, Switch, Tag, Typography } from "antd";
+import AttachmentPanel from "@/components/AttachmentPanel";
 import CrudTable from "@/components/CrudTable";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import RemoteSelect from "@/components/RemoteSelect";
@@ -31,6 +32,7 @@ export default function SkuClient() {
   const me = useMe();
   const canWrite = hasAnyRole(me, "pmc");
   const [panoramaId, setPanoramaId] = useState<number | null>(null);
+  const [attachSku, setAttachSku] = useState<SkuRow | null>(null);
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
@@ -38,9 +40,14 @@ export default function SkuClient() {
       </Typography.Title>
       <CrudTable<SkuRow>
         rowActions={(r) => (
-          <Button type="link" size="small" onClick={() => setPanoramaId(r.id)}>
-            全景
-          </Button>
+          <>
+            <Button type="link" size="small" onClick={() => setPanoramaId(r.id)}>
+              全景
+            </Button>
+            <Button type="link" size="small" onClick={() => setAttachSku(r)}>
+              附件
+            </Button>
+          </>
         )}
         canCreate={canWrite}
         canEdit={() => canWrite}
@@ -129,6 +136,17 @@ export default function SkuClient() {
         )}
       />
       <SkuPanoramaDrawer skuId={panoramaId} onClose={() => setPanoramaId(null)} />
+      <Drawer
+        title={attachSku ? `图片与附件 — ${attachSku.code} ${attachSku.name}` : "图片与附件"}
+        width={560}
+        open={attachSku != null}
+        onClose={() => setAttachSku(null)}
+        destroyOnClose
+      >
+        {attachSku ? (
+          <AttachmentPanel entity="sku" entityId={attachSku.id} canWrite={canWrite} title="图片与附件" />
+        ) : null}
+      </Drawer>
     </div>
   );
 }
