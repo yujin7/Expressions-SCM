@@ -43,7 +43,7 @@ export interface DashboardData {
     slowMoverCount: number;
     pendingApprovals: number;
     reviewBacklog: number; // 开放别名 + 阻塞 staging 行
-    riskActionCount: number; // 风险处置工作台条目数（报废评审+禁售隔离最重两类另见 insights）
+    riskActionCount: number; // 行动类处置条目数（不含滞销关注——#7 防告警疲劳）
   };
   /** 销量口径窗口（动态推导）：trend/结构图=近6月，销速=近3月 */
   salesWindow: { months6: string[]; months3: string[] };
@@ -436,12 +436,13 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
 
   /* ── F 项：风险处置工作台汇总（同库同事务级只读；驾驶舱缓存 60s 吸收成本） ── */
   const risk = await getRiskWorklist({ pageSize: 1 }, dbArg);
-  const riskActionCount = risk.total;
+  const watchCount = risk.byAction["滞销关注"] ?? 0;
+  const riskActionCount = risk.total - watchCount; // #7：行动类（报废/禁售/商务/促销/优先出库），关注类不混入紧迫计数
   const scrapCount = risk.byAction["报废评审"] ?? 0;
   const banCount = risk.byAction["禁售隔离"] ?? 0;
   if (riskActionCount > 0) {
     insights.push(
-      `风险处置：${riskActionCount} 个 SKU 待处置${scrapCount > 0 ? `，其中报废评审 ${scrapCount}` : ""}${banCount > 0 ? `、禁售隔离 ${banCount}` : ""}——见「风险库存处置」工作台`,
+      `风险处置：${riskActionCount} 个 SKU 需行动${scrapCount > 0 ? `（报废评审 ${scrapCount}` : "（"}${banCount > 0 ? `、禁售隔离 ${banCount}` : ""}）另有滞销关注 ${watchCount}——见「风险库存处置」工作台`,
     );
   }
 

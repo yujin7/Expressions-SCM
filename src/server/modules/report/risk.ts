@@ -13,6 +13,9 @@ import { and, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { getNumParam } from "@/server/core/params";
+import { writeAudit } from "@/server/core/audit";
+import type { SessionUser } from "@/server/core/dto";
+import { requireAnyRole } from "@/server/modules/outsource/common";
 import { todayShanghai } from "@/server/modules/master/common";
 import { RISK_ACTION_ORDER, suggestRiskAction, type RiskAction } from "@/server/rules/risk-action";
 
@@ -56,6 +59,8 @@ export interface RiskRow {
   palletRemark: string | null;
   /** 注记所属月份（progress） */
   remarkMonth: string | null;
+  /** 已有未关闭的处置登记（复核清单 risk_disposal） */
+  disposalOpen: boolean;
 }
 
 export interface RiskWorklist {
@@ -147,6 +152,13 @@ export async function getRiskWorklist(
     if (newer) remarkBySku.set(r.skuId, { text: r.exception, month: r.progress, id: r.id });
   }
 
+  /* ── 已登记处置（open）── */
+  const dispRows: { refKey: string | null }[] = await db
+    .select({ refKey: schema.reviewItems.refKey })
+    .from(schema.reviewItems)
+    .where(and(eq(schema.reviewItems.category, "risk_disposal"), eq(schema.reviewItems.status, "open")));
+  const dispSet = new Set(dispRows.map((r) => r.refKey).filter(Boolean) as string[]);
+
   /* ── 逐 SKU 判定 ── */
   const all: RiskRow[] = [];
   for (const sku of skuRows) {
@@ -177,6 +189,7 @@ export async function getRiskWorklist(
       nearQty: r1(exp?.nearQty ?? 0),
       palletRemark: remark?.text ?? null,
       remarkMonth: remark?.month ?? null,
+      disposalOpen: dispSet.has(sku.code),
     });
   }
 
@@ -199,4 +212,39 @@ export async function getRiskWorklist(
     total: filtered.length,
     byAction,
   };
+}
+
+/** #3 修复：处置决定登记 → 复核清单（category=risk_disposal，refKey=SKU 编码；幂等：同 SKU open 项唯一） */
+export async function registerRiskDisposal(
+  user: SessionUser,
+  input: { skuCode: string; action: string; note?: string },
+  dbArg?: AnyDb,
+): Promise<{ ok: true }> {
+  requireAnyRole(user, "pmc", "ops", "warehouse");
+  const code = String(input.skuCode ?? "").trim();
+  const action = String(input.action ?? "").trim();
+  if (!code || !action) throw new Error("skuCode/action 必填");
+  const note = String(input.note ?? "").trim().slice(0, 300);
+  const db: AnyDb = dbArg ?? (await getDbAsync());
+  const open: { id: number }[] = await db
+    .select({ id: schema.reviewItems.id })
+    .from(schema.reviewItems)
+    .where(and(eq(schema.reviewItems.category, "risk_disposal"), eq(schema.reviewItems.refKey, code), eq(schema.reviewItems.status, "open")));
+  if (open.length > 0) return { ok: true }; // 幂等：已有在案登记
+  await db.transaction(async (tx: AnyDb) => {
+    await tx.insert(schema.reviewItems).values({
+      category: "risk_disposal",
+      refType: "sku",
+      refKey: code,
+      title: `处置决定：${action} ${code}`,
+      detail: note || null,
+    });
+    await writeAudit(tx, {
+      userId: user.id,
+      entity: "risk_disposal",
+      action: "register",
+      after: { skuCode: code, action, note: note || null },
+    });
+  });
+  return { ok: true };
 }

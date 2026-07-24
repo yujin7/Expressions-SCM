@@ -168,31 +168,31 @@ export default function DashboardClient() {
 
       {/* KPI 行 */}
       <Row gutter={[12, 12]}>
-        <Col xs={12} md={8} xl={4}>
+        <Col xs={12} md={8} xl={3}>
           <Card size="small">
             <Statistic title="在用 SKU / SPU" value={kpi.skuActive} suffix={`/ ${kpi.spuCount}`} prefix={<DatabaseOutlined />} />
           </Card>
         </Col>
-        <Col xs={12} md={8} xl={4}>
+        <Col xs={12} md={8} xl={3}>
           <Card size="small">
             <Statistic title={`${kpi.lastMonth ?? "—"} 全渠道销量`} value={kpi.salesLastMonth} prefix={<RiseOutlined />} />
           </Card>
         </Col>
-        <Col xs={12} md={8} xl={4}>
+        <Col xs={12} md={8} xl={3}>
           <Card size="small">
             <AntTooltip title="全部实时记账仓合计：自有仓（1仓2仓）+成品/原料/包材仓+委外仓（垫料为负）——与下方「库存分布」逐仓条形图同源">
               <Statistic title="实时账在库（全部记账仓）" value={kpi.ownStockQty} />
             </AntTooltip>
           </Card>
         </Col>
-        <Col xs={12} md={8} xl={4}>
+        <Col xs={12} md={8} xl={3}>
           <Card size="small">
             <AntTooltip title={`快照仓最新快照合计（${kpi.snapDate ?? "—"}）`}>
               <Statistic title="快照仓参考" value={kpi.snapStockQty} />
             </AntTooltip>
           </Card>
         </Col>
-        <Col xs={12} md={8} xl={4}>
+        <Col xs={12} md={8} xl={3}>
           <Card size="small">
             <Statistic
               title="效期风险量（≤6月）"
@@ -202,7 +202,7 @@ export default function DashboardClient() {
             />
           </Card>
         </Col>
-        <Col xs={12} md={8} xl={4}>
+        <Col xs={12} md={8} xl={3}>
           <Card size="small">
             <a href="/report/risk" style={{ color: "inherit" }}>
               <AntTooltip title="风险库存处置工作台条目（效期×货盘注记×销速三源）——点击进入">
@@ -216,7 +216,7 @@ export default function DashboardClient() {
             </a>
           </Card>
         </Col>
-        <Col xs={12} md={8} xl={4}>
+        <Col xs={12} md={8} xl={3}>
           <Card size="small">
             <a href="/workbench" style={{ color: "inherit" }}>
               <AntTooltip title="滞销 SKU 数 / 待办（待审批+数据积压）——点击进工作台处理">

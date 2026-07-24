@@ -1,5 +1,7 @@
 "use client";
 
+import { useSearchParams } from "next/navigation";
+
 /**
  * 月度需求达成参考（demand 域 P1.5 前的登记层）：SKU×渠道 需求/期初/期末/销售达成。
  * 达成率=达成/需求 前端现算（源文件公式未缓存——不落假数）；月度重导整类替换。
@@ -370,13 +372,15 @@ function StockSummaryTab() {
 }
 
 export default function DemandClient() {
+  const searchParams = useSearchParams();
+  const initialTab = ["demand", "pallet", "stock_summary"].includes(searchParams.get("tab") ?? "") ? (searchParams.get("tab") as string) : "demand";
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
         需求达成与货盘参考
       </Typography.Title>
       <Tabs
-        defaultActiveKey="demand"
+        defaultActiveKey={initialTab}
         items={[
           { key: "demand", label: "需求达成", children: <DemandTab /> },
           { key: "pallet", label: "货盘处置", children: <PalletTab /> },

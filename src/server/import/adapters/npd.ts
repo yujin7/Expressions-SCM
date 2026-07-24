@@ -89,7 +89,7 @@ export async function stageNpd(
     const p: TransitPayload = {
       ...emptyP(),
       kind: "npd_node" as TransitPayload["kind"],
-      approvalNo: String(n.节点名称).split(" ")[0] ?? null, // 节点编号（a.1 等）
+      approvalNo: /^[a-z]\d?(?:\.\d+)*\s/i.test(String(n.节点名称)) ? String(n.节点名称).split(" ")[0] : null, // 节点编号（a.1 等；无编号前缀 = null）
       materialName: n.节点名称 as string,
       orderType: (n.节点阶段 as string) ?? null,
       follower: [n.责任部门, n.执行岗位].filter(Boolean).join(" / ") || null,

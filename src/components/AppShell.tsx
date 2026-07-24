@@ -74,6 +74,8 @@ const menuItems: MenuProps["items"] = [
       { key: "/inventory/docs", label: "库存单据" },
       { key: "/inventory/count", label: "盘点任务" },
       { key: "/inventory/expiry", label: "效期批次" },
+      { key: "/report/demand?tab=stock_summary", label: "总库存核对" },
+      { key: "/report/jiediao", label: "借调对账" },
     ],
   },
   {
@@ -93,7 +95,6 @@ const menuItems: MenuProps["items"] = [
       { key: "/settlement/js", label: "结算单" },
       { key: "/report/settlement-summary", label: "结算汇总表" },
       { key: "/jobs/recon", label: "对账差异" },
-      { key: "/report/jiediao", label: "借调对账" },
     ],
   },
   {
@@ -116,10 +117,10 @@ const menuItems: MenuProps["items"] = [
     label: "数据中心",
     children: [
       { key: "/import/upload", label: "文件上传" },
-      { key: "/import/release", label: "放行工作台" },
+      { key: "/import/release", label: "导入放行" },
       { key: "/import/jobs", label: "导入任务" },
-      { key: "/import/exceptions", label: "别名认领" },
-      { key: "/review/checklist", label: "在案复核清单" },
+      { key: "/import/exceptions", label: "编码别名认领" },
+      { key: "/review/checklist", label: "复核清单与提醒" },
       { key: "/report/exports", label: "导出任务" },
     ],
   },

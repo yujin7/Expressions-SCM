@@ -96,6 +96,8 @@ export interface ReplenishRow {
   suppressReason: string | null;
   /** 可销天数已低于常规生产周期（补货窗口迫近） */
   belowLead: boolean;
+  /** 被抑制时的「原始建议量」——人工核实覆盖缺口后可勾选放行（#2 修复） */
+  heldQty: string | null;
 }
 
 export interface ReplenishResult {
@@ -278,20 +280,22 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     });
 
     let suggest: string | null = null;
+    let heldQty: string | null = null;
     let suppressReason: string | null = null;
     if (cover != null && cover < minCoverAlert) {
+      const uom = uomBySku.get(s.id);
+      const suggested = suggestQty({
+        grossReq: dMul(dailyDec, String(coverDaysTarget), 6),
+        onHand,
+        inTransit,
+        moq: uom?.moq ?? null,
+        orderMultiple: uom?.orderMultiple ?? null,
+      });
       if (shouldSuppressSuggest(cover, coverFull, minCoverAlert, refGap)) {
         suppressReason = "全口径参考充足（覆盖缺口 SKU：海外/其他部门仓不在系统快照源）——请先核实全口径库存，防重复下单";
-      } else {
-        const uom = uomBySku.get(s.id);
-        const suggested = suggestQty({
-          grossReq: dMul(dailyDec, String(coverDaysTarget), 6),
-          onHand,
-          inTransit,
-          moq: uom?.moq ?? null,
-          orderMultiple: uom?.orderMultiple ?? null,
-        });
-        if (dCmp(suggested, "0") > 0) suggest = suggested;
+        if (dCmp(suggested, "0") > 0) heldQty = suggested; // 抑制但保留原始量，人工核实后可勾选放行
+      } else if (dCmp(suggested, "0") > 0) {
+        suggest = suggested;
       }
     }
     return {
@@ -313,7 +317,8 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       refGap,
       suppressReason,
       belowLead: belowLeadtime(cover, leadDays),
-      _cover: cover,
+      heldQty,
+      _cover: coverFull ?? cover, // #1 修复：排序用全管道口径——覆盖缺口误报不再霸榜
     };
   });
 
@@ -345,6 +350,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     refGap: r.refGap,
     suppressReason: r.suppressReason,
     belowLead: r.belowLead,
+    heldQty: r.heldQty,
   }));
   return { rows, total: all.length, meta: { coverDaysTarget, minCoverAlert, months3, snapDate, suggestCount, refDate, suppressedCount } };
 }

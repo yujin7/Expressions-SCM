@@ -38,6 +38,7 @@ interface ReplenishRow {
   refGap: boolean;
   suppressReason: string | null;
   belowLead: boolean;
+  heldQty: string | null;
 }
 
 interface ReplenishResult {
@@ -129,7 +130,7 @@ export default function ReplenishClient() {
       rows.flatMap((r) => {
         const cur = byId.get(r.skuId);
         if (!cur) return [r];
-        return cur.suggestQty == null ? [] : [cur];
+        return cur.suggestQty == null && cur.heldQty == null ? [] : [cur];
       }),
     );
   }, [data]);
@@ -140,7 +141,7 @@ export default function ReplenishClient() {
     try {
       const res = await postJson<{ id: number; docNo: string }>("/api/replenish/draft", {
         remark: remark.trim() || undefined,
-        items: selectedRows.map((r) => ({ skuId: r.skuId, qty: r.suggestQty })),
+        items: selectedRows.map((r) => ({ skuId: r.skuId, qty: r.suggestQty ?? r.heldQty })),
       });
       setCreatedDocNo(res.docNo);
       setConfirmOpen(false);
@@ -160,113 +161,60 @@ export default function ReplenishClient() {
       { title: "名称", dataIndex: "name", ellipsis: true },
       { title: "品牌", dataIndex: "brand", width: 100, render: (v: string | null) => v ?? "—" },
       {
-        title: "在库（全网）",
-        dataIndex: "onHand",
-        width: 110,
-        align: "right",
-        render: (v: number) => v.toLocaleString("zh-CN"),
+        title: "系统口径（记账+快照）",
+        children: [
+          { title: "在库", dataIndex: "onHand", width: 95, align: "right" as const, render: (v: number) => v.toLocaleString("zh-CN") },
+          { title: "PO 在途", dataIndex: "inTransit", width: 90, align: "right" as const, render: (v: number) => v.toLocaleString("zh-CN") },
+        ],
       },
       {
-        title: "在途（PO）",
-        dataIndex: "inTransit",
-        width: 100,
-        align: "right",
-        render: (v: number) => v.toLocaleString("zh-CN"),
+        title: "参考口径（文件登记，只提示不入账）",
+        children: [
+          {
+            title: "存量在途", dataIndex: "legacyTransit", width: 90, align: "right" as const,
+            render: (v: number) => (v > 0 ? <Tooltip title="旧流程存量单未入库余量（在途参考·成品跟进表）"><span>{v.toLocaleString("zh-CN")}</span></Tooltip> : "—"),
+          },
+          {
+            title: "全口径在库", dataIndex: "refQty", width: 105, align: "right" as const,
+            render: (v: number | null, r: ReplenishRow) =>
+              v == null ? "—" : (
+                <Space size={4}>
+                  <span>{v.toLocaleString("zh-CN")}</span>
+                  {r.refGap ? <Tooltip title="总库存明细（全公司口径）显著高于系统在库——海外/其他部门仓不在系统快照源"><Tag color="orange" style={{ marginInlineEnd: 0 }}>缺口</Tag></Tooltip> : null}
+                </Space>
+              ),
+          },
+          { title: "在订未出", dataIndex: "onOrder", width: 90, align: "right" as const, render: (v: number | null) => (v == null || v === 0 ? "—" : v.toLocaleString("zh-CN")) },
+        ],
       },
       {
-        title: "存量在途",
-        dataIndex: "legacyTransit",
-        width: 95,
-        align: "right",
-        render: (v: number) =>
-          v > 0 ? (
-            <Tooltip title="旧流程存量单未入库余量（在途参考·成品跟进表，登记口径）">
-              <span>{v.toLocaleString("zh-CN")}</span>
-            </Tooltip>
-          ) : (
-            "—"
-          ),
-      },
-      {
-        title: "全口径参考",
-        dataIndex: "refQty",
-        width: 110,
-        align: "right",
-        render: (v: number | null, r) =>
-          v == null ? (
-            "—"
-          ) : (
-            <Space size={4}>
-              <span>{v.toLocaleString("zh-CN")}</span>
-              {r.refGap ? (
-                <Tooltip title={`总库存明细（全公司口径）显著高于系统在库——海外/其他部门仓不在系统快照源。参考时点见页顶。`}>
-                  <Tag color="orange" style={{ marginInlineEnd: 0 }}>缺口</Tag>
-                </Tooltip>
-              ) : null}
-            </Space>
-          ),
-      },
-      {
-        title: "在订未出",
-        dataIndex: "onOrder",
-        width: 95,
-        align: "right",
-        render: (v: number | null) => (v == null || v === 0 ? "—" : v.toLocaleString("zh-CN")),
-      },
-      { title: "日均销（近3月）", dataIndex: "daily", width: 120, align: "right" },
-      {
-        title: "可销天数",
-        dataIndex: "daysCover",
-        width: 120,
-        align: "right",
-        render: (v: number | null, r) => {
-          const body =
-            v == null ? (
-              <Typography.Text type="secondary">无动销</Typography.Text>
-            ) : v < 15 ? (
-              <Typography.Text type="danger" strong>
-                {v}
-              </Typography.Text>
-            ) : (
-              <span>{v}</span>
-            );
-          return (
-            <Space size={4}>
-              {body}
-              {r.belowLead ? (
-                <Tooltip title={`已低于常规生产周期 ${r.leadDays} 天——即使未到预警阈值，现在下单也可能断货`}>
-                  <Tag color="red" style={{ marginInlineEnd: 0 }}>低于周期</Tag>
-                </Tooltip>
-              ) : null}
-            </Space>
-          );
-        },
-      },
-      {
-        title: "全管道可销",
-        dataIndex: "coverFull",
-        width: 100,
-        align: "right",
-        render: (v: number | null) =>
-          v == null ? (
-            <Typography.Text type="secondary">—</Typography.Text>
-          ) : (
-            <Tooltip title="（max(系统在库, 全口径参考) + PO在途 + 存量在途 + 在订未出）÷ 日均销">
-              <span>{v}</span>
-            </Tooltip>
-          ),
-      },
-      {
-        title: "生产周期",
-        dataIndex: "leadDays",
-        width: 90,
-        align: "right",
-        render: (v: number | null) => (v == null ? "—" : `${v} 天`),
+        title: "销速与判定",
+        children: [
+          { title: "日均销", dataIndex: "daily", width: 80, align: "right" as const },
+          {
+            title: "可销(系统)", dataIndex: "daysCover", width: 105, align: "right" as const,
+            render: (v: number | null, r: ReplenishRow) => {
+              const body = v == null ? <Typography.Text type="secondary">无动销</Typography.Text>
+                : v < 15 ? <Typography.Text type="danger" strong>{v}</Typography.Text> : <span>{v}</span>;
+              return (
+                <Space size={4}>
+                  {body}
+                  {r.belowLead ? <Tooltip title={`已低于常规生产周期 ${r.leadDays} 天`}><Tag color="red" style={{ marginInlineEnd: 0 }}>低于周期</Tag></Tooltip> : null}
+                </Space>
+              );
+            },
+          },
+          {
+            title: "可销(全管道)", dataIndex: "coverFull", width: 100, align: "right" as const,
+            render: (v: number | null) => (v == null ? "—" : <Tooltip title="（max(系统在库, 全口径参考) + PO在途 + 存量在途 + 在订未出）÷ 日均销"><span>{v}</span></Tooltip>),
+          },
+          { title: "生产周期", dataIndex: "leadDays", width: 85, align: "right" as const, render: (v: number | null) => (v == null ? "—" : `${v} 天`) },
+        ],
       },
       {
         title: "建议补货量",
         dataIndex: "suggestQty",
-        width: 130,
+        width: 140,
         align: "right",
         render: (v: string | null, r) =>
           v != null ? (
@@ -277,8 +225,11 @@ export default function ReplenishClient() {
               <Typography.Text type="secondary">{r.baseUom}</Typography.Text>
             </Space>
           ) : r.suppressReason ? (
-            <Tooltip title={r.suppressReason}>
-              <Tag style={{ marginInlineEnd: 0 }}>已抑制</Tag>
+            <Tooltip title={`${r.suppressReason}；原始建议 ${Number(r.heldQty ?? 0).toLocaleString("zh-CN")} ${r.baseUom}——核实后可勾选按此量生成草稿`}>
+              <Space size={4}>
+                <Tag style={{ marginInlineEnd: 0 }}>已抑制</Tag>
+                {r.heldQty ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>({Number(r.heldQty).toLocaleString("zh-CN")})</Typography.Text> : null}
+              </Space>
             </Tooltip>
           ) : (
             "—"
@@ -382,7 +333,7 @@ export default function ReplenishClient() {
           selectedRowKeys: selectedRows.map((r) => r.skuId),
           preserveSelectedRowKeys: true,
           onChange: (_keys, rows) => setSelectedRows(rows.filter((r) => r != null)),
-          getCheckboxProps: (r) => ({ disabled: r.suggestQty == null }),
+          getCheckboxProps: (r) => ({ disabled: r.suggestQty == null && r.heldQty == null }),
         }}
         expandable={{
           rowExpandable: (r) => (r as { skuId?: number }).skuId != null,

@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Input, Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { fetchJson } from "@/components/fetchJson";
+import { fetchJson, postJson } from "@/components/fetchJson";
 
 interface RiskRow {
   skuId: number;
@@ -20,6 +20,7 @@ interface RiskRow {
   nearQty: number;
   palletRemark: string | null;
   remarkMonth: string | null;
+  disposalOpen: boolean;
 }
 
 interface RiskData {
@@ -71,7 +72,15 @@ export default function RiskClient() {
       fixed: "left",
       render: (v: string) => <Tag color={ACTION_COLORS[v]}>{v}</Tag>,
     },
-    { title: "SKU 编码", dataIndex: "code", width: 120, render: (v: string) => <a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a> },
+    {
+      title: "SKU 编码", dataIndex: "code", width: 155,
+      render: (v: string, r) => (
+        <Space size={6}>
+          <a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a>
+          {r.minDaysLeft != null ? <a href={`/inventory/expiry?q=${encodeURIComponent(v)}`} style={{ fontSize: 12 }}>批次</a> : null}
+        </Space>
+      ),
+    },
     { title: "名称", dataIndex: "name", ellipsis: true, width: 220 },
     { title: "品牌", dataIndex: "brand", width: 100, render: (v: string | null) => v ?? "—" },
     { title: "在库", dataIndex: "onHand", width: 95, align: "right", render: (v: number) => v.toLocaleString("zh-CN") },
@@ -98,6 +107,24 @@ export default function RiskClient() {
       width: 95,
       align: "right",
       render: (v: number | null) => (v == null ? <Typography.Text type="secondary">无动销</Typography.Text> : Math.round(v).toLocaleString("zh-CN")),
+    },
+    {
+      title: "处置登记",
+      width: 110,
+      render: (_, r) =>
+        r.disposalOpen ? (
+          <Tag color="green">已登记</Tag>
+        ) : (
+          <a
+            onClick={() => {
+              void postJson("/api/report/risk", { skuCode: r.code, action: r.action, note: r.palletRemark ?? undefined })
+                .then(() => { message.success(`${r.code} 处置决定已登记复核清单`); void load(); })
+                .catch((e) => message.error((e as Error).message));
+            }}
+          >
+            登记处置
+          </a>
+        ),
     },
     {
       title: "货盘注记",

@@ -6,7 +6,7 @@
  * - 任务状态 pending/doing/done/skipped 人工推进；done 记 doneAt（默认当日 Asia/Shanghai）；
  * - 写路径：pmc/ops（admin 兜底），writeAudit 全覆盖；项目完成/取消仅改状态（无删除）。
  */
-import { and, asc, desc, eq } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
@@ -57,6 +57,10 @@ export async function createNpdProject(user: SessionUser, input: unknown, dbArg?
   requireAnyRole(user, "pmc", "ops");
   const v = createNpdProjectSchema.parse(input);
   const db = await resolveDb(dbArg);
+  if (v.skuCode?.trim()) {
+    const [hit] = await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.code, v.skuCode.trim()));
+    if (!hit) throw new Error(`目标 SKU「${v.skuCode.trim()}」未建档——请先建档或留空后补`);
+  }
   const template = await loadNpdTemplate(db);
   if (template.length === 0) throw new Error("NPD 节点模板为空（transit_refs kind=npd_node）——请先导入各节点核心说明");
   const tasks = scheduleNpd(template, v.startDate);
@@ -93,7 +97,9 @@ export async function createNpdProject(user: SessionUser, input: unknown, dbArg?
       action: "create",
       after: { name: v.name, startDate: v.startDate, taskCount: tasks.length },
     });
-    return { id: proj.id, taskCount: tasks.length, planEnd: tasks[tasks.length - 1]?.planEnd ?? v.startDate };
+    // #4：与列表页同口径 = max(planEnd)
+    const planEnd = tasks.reduce((m, t) => (t.planEnd > m ? t.planEnd : m), v.startDate);
+    return { id: proj.id, taskCount: tasks.length, planEnd };
   });
 }
 

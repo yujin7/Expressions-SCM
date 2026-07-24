@@ -2,7 +2,7 @@
 
 /** 效期批次清单（仓库操作层）：逐批次×仓库的实物处置视图；PMC 决策视图见「风险库存处置」 */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Input, Space, Table, Tag, Typography } from "antd";
+import { Alert, App, Input, Select, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
@@ -32,7 +32,6 @@ const BUCKETS: { key: string; label: string; color: string }[] = [
   { key: "expired", label: "已过期", color: "red" },
   { key: "m3", label: "≤3 个月", color: "orange" },
   { key: "m6", label: "3–6 个月", color: "gold" },
-  { key: "rest", label: ">6 个月", color: "green" },
 ];
 
 export default function ExpiryClient() {
@@ -43,19 +42,31 @@ export default function ExpiryClient() {
   const [bucket, setBucket] = useState<string | null>("expired");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
+  const [warehouseId, setWarehouseId] = useState<number | null>(null);
+  const [warehouses, setWarehouses] = useState<{ id: number; name: string }[]>([]);
+  useEffect(() => {
+    fetch("/api/master/warehouse?page=1&pageSize=500")
+      .then((r) => r.json())
+      .then((d) => {
+        const rows = (d.rows ?? d.data ?? []) as { id: number; name: string }[];
+        setWarehouses(rows.filter((w) => w.id && w.name));
+      })
+      .catch(() => setWarehouses([]));
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (bucket) params.set("bucket", bucket);
+      if (warehouseId) params.set("warehouseId", String(warehouseId));
       setData(await fetchJson<Data>(`/api/inventory/expiry?${params.toString()}`));
     } catch (e) {
       message.error((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [q, bucket, page, pageSize, message]);
+  }, [q, bucket, warehouseId, page, pageSize, message]);
   useEffect(() => { void load(); }, [load]);
 
   const columns: ColumnsType<Row> = [
@@ -90,7 +101,7 @@ export default function ExpiryClient() {
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="逐批次×仓库的实物处置视图（batch_stocks 参考层，效期盘点载体）。按 SKU 的处置决策（报废/禁售/促销）见「风险库存处置」。"
+        message="逐批次×仓库的实物处置视图（batch_stocks 参考层，效期盘点载体）。按 SKU 的处置决策（报废/禁售/促销）见「风险库存处置」。>6 个月的健康批次不在风险段位（取消段位筛选可见全量）。"
         description={data ? <Typography.Text type="secondary">口径日 {data.today}；剩余天数升序（最紧急最上）。</Typography.Text> : null}
       />
       <Space style={{ marginBottom: 12 }} wrap>
@@ -104,6 +115,15 @@ export default function ExpiryClient() {
             {b.label}（{data?.bucketCounts[b.key]?.batches ?? 0} 批 / {formatQty(String(data?.bucketCounts[b.key]?.qty ?? 0))}）
           </Tag.CheckableTag>
         ))}
+        <Select
+          allowClear
+          showSearch
+          placeholder="全部仓库"
+          style={{ width: 180 }}
+          optionFilterProp="label"
+          options={warehouses.map((w) => ({ value: w.id, label: w.name }))}
+          onChange={(v) => { setWarehouseId(v ?? null); setPage(1); }}
+        />
         <Input.Search allowClear placeholder="搜索编码/名称/批次" style={{ width: 240 }} onSearch={(v) => { setQ(v.trim()); setPage(1); }} />
       </Space>
       <Table<Row>

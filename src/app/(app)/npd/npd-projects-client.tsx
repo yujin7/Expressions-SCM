@@ -67,6 +67,7 @@ export default function NpdProjectsClient() {
 
   const [detail, setDetail] = useState<{ project: ProjectRow; tasks: TaskRow[] } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [stageFilter, setStageFilter] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -163,7 +164,7 @@ export default function NpdProjectsClient() {
 
   const taskCols: ColumnsType<TaskRow> = [
     { title: "#", dataIndex: "seq", width: 45 },
-    { title: "编号", dataIndex: "nodeNo", width: 65, render: (v: string | null) => v ?? "—" },
+    { title: "编号", dataIndex: "nodeNo", width: 65, render: (v: string | null) => (v && v.length <= 10 ? v : "—") },
     { title: "节点", dataIndex: "name", ellipsis: true, width: 230 },
     { title: "阶段", dataIndex: "stage", width: 95, render: (v: string | null) => (v ? <Tag>{v}</Tag> : "—") },
     { title: "部门/岗位", dataIndex: "dept", width: 150, ellipsis: true, render: (v: string | null) => v ?? "—" },
@@ -252,11 +253,21 @@ export default function NpdProjectsClient() {
           ) : null
         }
       >
+        <Space style={{ marginBottom: 8 }}>
+          <Select
+            allowClear
+            placeholder="全部阶段"
+            style={{ width: 200 }}
+            value={stageFilter}
+            onChange={(v) => setStageFilter(v ?? null)}
+            options={[...new Set((detail?.tasks ?? []).map((t) => t.stage).filter(Boolean))].map((st) => ({ value: st as string, label: st as string }))}
+          />
+        </Space>
         <Table<TaskRow>
           rowKey="id"
           size="small"
           columns={taskCols}
-          dataSource={detail?.tasks ?? []}
+          dataSource={(detail?.tasks ?? []).filter((t) => !stageFilter || t.stage === stageFilter)}
           loading={detailLoading}
           pagination={false}
           scroll={{ x: "max-content" }}

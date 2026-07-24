@@ -143,11 +143,18 @@ async function pmcSection(db: AnyDb): Promise<FocusSection> {
       .from(sm)
       .where(months3.length ? inArray(sm.yearMonth, months3) : sql`false`)
       .groupBy(sm.skuId),
-    countWhere(
-      db,
-      schema.stagingRows,
-      and(inArray(schema.stagingRows.status, ["pending", "validated"]), isNotNull(schema.stagingRows.errorMsg)),
-    ),
+    db
+      .select({ c: sql<number>`count(*)::int` })
+      .from(schema.stagingRows)
+      .innerJoin(schema.importJobs, eq(schema.stagingRows.importJobId, schema.importJobs.id))
+      .where(
+        and(
+          inArray(schema.stagingRows.status, ["pending", "validated"]),
+          isNotNull(schema.stagingRows.errorMsg),
+          gte(schema.importJobs.createdAt, new Date(Date.now() - 7 * 86_400_000)),
+        ),
+      )
+      .then((r: { c: number }[]) => r[0]?.c ?? 0),
     countWhere(db, schema.aliasExceptions, eq(schema.aliasExceptions.status, "open")),
   ]);
 
@@ -165,7 +172,7 @@ async function pmcSection(db: AnyDb): Promise<FocusSection> {
 
   /* 计划视角扩展（Wave T）：风险处置/NPD/数据新鲜度 */
   const [riskActions, npdActive, staleData] = await Promise.all([
-    getRiskWorklist({ pageSize: 1 }, db).then((r) => r.total),
+    getRiskWorklist({ pageSize: 1 }, db).then((r) => r.total - (r.byAction["滞销关注"] ?? 0)),
     countWhere(db, schema.npdProjects, eq(schema.npdProjects.status, "active")),
     countWhere(
       db,
@@ -179,10 +186,10 @@ async function pmcSection(db: AnyDb): Promise<FocusSection> {
     roleLabel: ROLE_LABELS.pmc,
     metrics: [
       { key: "lowCoverSkus", label: "可销天数<30 成品", value: lowCover, href: "/replenish", suffix: "个" },
-      { key: "riskActions", label: "风险处置 SKU", value: riskActions, href: "/report/risk", suffix: "个" },
+      { key: "riskActions", label: "需行动处置 SKU", value: riskActions, href: "/report/risk", suffix: "个" },
       { key: "npdActive", label: "进行中 NPD 项目", value: npdActive, href: "/npd", suffix: "个" },
       { key: "staleData", label: "参考数据过期提醒", value: staleData, href: "/review/checklist", suffix: "项" },
-      { key: "blockedStaging", label: "放行阻塞行", value: blockedStaging, href: "/import/release", suffix: "行" },
+      { key: "blockedStaging", label: "放行阻塞行（近7日新增）", value: blockedStaging, href: "/import/release", suffix: "行" },
       { key: "aliasOpen", label: "别名待认领", value: aliasOpen, href: "/import/exceptions", suffix: "项" },
     ],
   };

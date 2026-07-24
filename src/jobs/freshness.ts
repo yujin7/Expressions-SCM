@@ -72,7 +72,7 @@ export async function runFreshnessCheck(db: AnyDb, opts?: { now?: Date }): Promi
       rule.kind,
       isStale,
       `参考数据过期：${rule.label}`,
-      `kind=${rule.kind} 最近导入 ${latest?.toISOString().slice(0, 10) ?? "无"}，已 ${ageDays ?? "-"} 天（阈值 ${rule.maxAgeDays} 天）——请到导入中心重传对应文件`,
+      `kind=${rule.kind} 最近导入 ${latest?.toISOString().slice(0, 10) ?? "无"}，已 ${ageDays ?? "-"} 天（阈值 ${rule.maxAgeDays} 天）——请到数据中心→文件上传重传对应文件`,
     );
   }
 
