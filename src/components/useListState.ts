@@ -44,6 +44,12 @@ export interface ListStateConfig<F extends Record<string, string | undefined>> {
   paginated?: boolean;
   /** 每页条数默认值（默认 50）；等于该值时不写入 URL */
   defaultPageSize?: number;
+  /**
+   * URL 参数前缀——同一页面存在多个独立列表（每个 Tab 一份）时必填且互不相同，
+   * 例如 prefix "fg" → 参数写作 fg_q / fg_page。不填=无前缀（单列表页，向后兼容）。
+   * 有前缀时，写 URL 只增删本实例自己的参数，不动兄弟实例的（否则 Tab 间互相清空）。
+   */
+  paramPrefix?: string;
 }
 
 export interface ListState<F> {
@@ -73,6 +79,11 @@ export interface ListState<F> {
  * ------------------------------------------------------------------ */
 
 /** localStorage 键名 */
+/** 参数名加前缀（无前缀时原样返回） */
+export function pname(prefix: string | undefined, k: string): string {
+  return prefix ? `${prefix}_${k}` : k;
+}
+
 export function storageKeys(key: string): { last: string; density: string; views: string } {
   return {
     last: `listState:${key}:last`,
@@ -94,25 +105,28 @@ export function buildQueryString<F extends Record<string, string | undefined>>(
   page: number,
   pageSize: number,
   defaults: F,
-  opts?: { paginated?: boolean; defaultPageSize?: number },
+  opts?: { paginated?: boolean; defaultPageSize?: number; paramPrefix?: string; base?: string },
 ): string {
   const paginated = opts?.paginated !== false;
   const defaultPageSize = opts?.defaultPageSize ?? DEFAULT_PAGE_SIZE;
-  const sp = new URLSearchParams();
+  const px = opts?.paramPrefix;
+  // 多列表页：以当前 URL 为底，只增删本实例参数，保留兄弟实例的
+  const sp = new URLSearchParams(px && opts?.base ? (opts.base.startsWith("?") ? opts.base.slice(1) : opts.base) : "");
   for (const k of Object.keys(defaults)) {
+    const name = pname(px, k);
     const v = filters[k];
-    if (isEmpty(v)) continue;
-    if (v === defaults[k]) continue;
-    sp.set(k, String(v));
+    if (isEmpty(v) || v === defaults[k]) { sp.delete(name); continue; }
+    sp.set(name, String(v));
   }
   if (paginated) {
-    if (page > 1) sp.set("page", String(page));
-    if (pageSize !== defaultPageSize) sp.set("pageSize", String(pageSize));
+    if (page > 1) sp.set(pname(px, "page"), String(page)); else sp.delete(pname(px, "page"));
+    if (pageSize !== defaultPageSize) sp.set(pname(px, "pageSize"), String(pageSize)); else sp.delete(pname(px, "pageSize"));
   }
   return sp.toString();
 }
 
 /** 供 fetch 用：筛选项照常省略空值，但 page/pageSize 恒显式带上（后端默认值与前端不一定一致） */
+/** 注意：fetch 查询串**不加前缀**——前缀只是 URL 命名空间，后端参数名不变 */
 export function buildFetchQuery<F extends Record<string, string | undefined>>(
   filters: F,
   page: number,
@@ -143,18 +157,19 @@ export interface ParsedListQuery<F> {
 export function parseQuery<F extends Record<string, string | undefined>>(
   query: string,
   defaults: F,
-  opts?: { paginated?: boolean; defaultPageSize?: number },
+  opts?: { paginated?: boolean; defaultPageSize?: number; paramPrefix?: string },
 ): ParsedListQuery<F> {
   const defaultPageSize = opts?.defaultPageSize ?? DEFAULT_PAGE_SIZE;
+  const px = opts?.paramPrefix;
   const sp = new URLSearchParams(query.startsWith("?") ? query.slice(1) : query);
   const filters = { ...defaults } as Record<string, string | undefined>;
   for (const k of Object.keys(defaults)) {
-    const v = sp.get(k);
+    const v = sp.get(pname(px, k));
     if (v != null) filters[k] = v;
   }
   const paginated = opts?.paginated !== false;
-  const rawPage = Number(sp.get("page"));
-  const rawSize = Number(sp.get("pageSize"));
+  const rawPage = Number(sp.get(pname(px, "page")));
+  const rawSize = Number(sp.get(pname(px, "pageSize")));
   return {
     filters: filters as F,
     page: paginated && Number.isFinite(rawPage) && rawPage >= 1 ? Math.floor(rawPage) : 1,
@@ -223,10 +238,13 @@ export function useListState<F extends Record<string, string | undefined>>(
 
   // defaults 通常是行内字面量，用 ref 固定引用，避免 memo/callback 依赖抖动
   const defaultsRef = useRef<F>(cfg.defaults);
-  const optsRef = useRef({ paginated, defaultPageSize });
-  optsRef.current = { paginated, defaultPageSize };
+  const optsRef = useRef({ paginated, defaultPageSize, paramPrefix: cfg.paramPrefix });
+  optsRef.current = { paginated, defaultPageSize, paramPrefix: cfg.paramPrefix };
+  // 写 URL 时以当前查询串为底（多列表页保留兄弟实例参数）
+  const baseRef = useRef("");
 
   const currentQuery = searchParams.toString();
+  baseRef.current = currentQuery;
   const parsed = useMemo(
     () => parseQuery(currentQuery, defaultsRef.current, optsRef.current),
     [currentQuery],
@@ -252,6 +270,7 @@ export function useListState<F extends Record<string, string | undefined>>(
     bootedRef.current = true;
     if (typeof window === "undefined") return;
     if (currentQuery) return; // URL 有参数时以 URL 为准
+    if (cfg.paramPrefix) return; // 多列表页：整串恢复会抹掉兄弟实例，禁用自动恢复
     const last = window.localStorage.getItem(keys.last);
     if (last) {
       pendingRestoreRef.current = last;
@@ -321,19 +340,19 @@ export function useListState<F extends Record<string, string | undefined>>(
     (patch: Partial<F>) => {
       const cur = parsedRef.current;
       const nextFilters = { ...cur.filters, ...patch } as F;
-      push(buildQueryString(nextFilters, 1, cur.pageSize, defaultsRef.current, optsRef.current));
+      push(buildQueryString(nextFilters, 1, cur.pageSize, defaultsRef.current, { ...optsRef.current, base: baseRef.current }));
     },
     [push],
   );
   const resetFilters = useCallback(() => {
     const cur = parsedRef.current;
-    push(buildQueryString(defaultsRef.current, 1, cur.pageSize, defaultsRef.current, optsRef.current));
+    push(buildQueryString(defaultsRef.current, 1, cur.pageSize, defaultsRef.current, { ...optsRef.current, base: baseRef.current }));
   }, [push]);
   const setPage = useCallback(
     (p: number, ps?: number) => {
       const cur = parsedRef.current;
       push(
-        buildQueryString(cur.filters, p, ps ?? cur.pageSize, defaultsRef.current, optsRef.current),
+        buildQueryString(cur.filters, p, ps ?? cur.pageSize, defaultsRef.current, { ...optsRef.current, base: baseRef.current }),
       );
     },
     [push],

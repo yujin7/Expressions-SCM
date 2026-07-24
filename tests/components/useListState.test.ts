@@ -197,3 +197,48 @@ describe("杂项", () => {
     expect(joinPath("/report/risk", "q=A")).toBe("/report/risk?q=A");
   });
 });
+
+/* ── 多列表页命名空间（paramPrefix）：同页多个独立列表互不干扰 ── */
+describe("paramPrefix 命名空间", () => {
+  const defaults = { q: "", status: "" };
+
+  it("参数名加前缀，fetch 查询串不加前缀（后端参数名不变）", () => {
+    const url = buildQueryString({ q: "abc", status: "open" }, 2, 50, defaults, { paramPrefix: "fg", defaultPageSize: 20 });
+    expect(url).toContain("fg_q=abc");
+    expect(url).toContain("fg_page=2");
+    // 断言无「裸」参数：以 q= 开头或紧跟 & 的才算裸参数（fg_q=abc 含子串 q=abc 属误判）
+    expect(/(^|&)q=/.test(url)).toBe(false);
+    expect(/(^|&)page=/.test(url)).toBe(false);
+    const fetchQ = buildFetchQuery({ q: "abc", status: "open" }, 2, 50, defaults);
+    expect(fetchQ).toContain("q=abc");
+    expect(fetchQ).not.toContain("fg_");
+  });
+
+  it("写入时保留兄弟实例的参数（不再互相清空）", () => {
+    const base = "pkg_q=xyz&pkg_page=3";
+    const url = buildQueryString({ q: "abc", status: "" }, 1, 20, defaults, { paramPrefix: "fg", defaultPageSize: 20, base });
+    expect(url).toContain("pkg_q=xyz"); // 兄弟保留
+    expect(url).toContain("pkg_page=3");
+    expect(url).toContain("fg_q=abc");
+  });
+
+  it("清空本实例筛选只删自己的参数", () => {
+    const base = "fg_q=old&pkg_q=keep";
+    const url = buildQueryString({ q: "", status: "" }, 1, 20, defaults, { paramPrefix: "fg", defaultPageSize: 20, base });
+    expect(url).not.toContain("fg_q");
+    expect(url).toContain("pkg_q=keep");
+  });
+
+  it("parseQuery 按前缀读回，与 buildQueryString 往返一致", () => {
+    const url = buildQueryString({ q: "abc", status: "open" }, 3, 100, defaults, { paramPrefix: "fg", defaultPageSize: 20 });
+    const back = parseQuery(url, defaults, { paramPrefix: "fg", defaultPageSize: 20 });
+    expect(back.filters).toEqual({ q: "abc", status: "open" });
+    expect(back.page).toBe(3);
+    expect(back.pageSize).toBe(100);
+  });
+
+  it("无前缀行为与既有一致（向后兼容）", () => {
+    const url = buildQueryString({ q: "abc", status: "" }, 2, 50, defaults, { defaultPageSize: 20 });
+    expect(url).toBe("q=abc&page=2&pageSize=50");
+  });
+});
