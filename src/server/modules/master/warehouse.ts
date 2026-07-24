@@ -20,6 +20,7 @@ export async function listWarehouses(q: string, page: number, pageSize: number) 
         accountingMode: schema.warehouses.accountingMode,
         supplierId: schema.warehouses.supplierId,
         supplierName: schema.suppliers.name,
+        parentId: schema.warehouses.parentId,
         active: schema.warehouses.active,
       })
       .from(schema.warehouses)
@@ -45,6 +46,7 @@ export async function createWarehouse(input: unknown) {
       // 快照仓账务模式=snapshot，其余实时
       accountingMode: v.kind === "snapshot" ? "snapshot" : "realtime",
       supplierId: v.kind === "outsource" ? (v.supplierId ?? null) : null,
+      parentId: v.parentId ?? null,
       active: v.active,
     })
     .returning();
@@ -64,6 +66,7 @@ export async function updateWarehouse(id: number, input: unknown) {
       kind: v.kind,
       accountingMode: v.kind === "snapshot" ? "snapshot" : "realtime",
       supplierId: v.kind === "outsource" ? (v.supplierId ?? null) : null,
+      parentId: v.parentId === id ? null : (v.parentId ?? null), // 不许自指
       active: v.active,
     })
     .where(eq(schema.warehouses.id, id))

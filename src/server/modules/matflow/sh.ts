@@ -334,7 +334,24 @@ export async function confirmInbound(
         userId: user.id, entity: "sh", entityId: shId, action: "inbound",
         after: { qcId: qc.id, sourceType: sh.sourceType, sourceId: sh.sourceId },
       });
-      return { status: finalStatus };
+      return { status: finalStatus, sourceType: sh.sourceType, sourceId: sh.sourceId };
+    }).then(async (r: { status: string; sourceType?: string; sourceId?: number }) => {
+      // D33 钩子②（事务外、失败不阻断）：材料到仓（po 源入库）→ 齐套自动 JG（开关默认关）
+      if (r?.sourceType === "po" && r.sourceId != null) {
+        try {
+          const [po] = await db.select({ woId: poDocs.woId }).from(poDocs).where(eq(poDocs.id, r.sourceId));
+          const { hookAfterPoReceipt } = await import("@/server/modules/outsource/auto-chain");
+          await hookAfterPoReceipt(user, po?.woId ?? null, dbArg);
+        } catch { /* 钩子失败不阻断入库 */ }
+      }
+      // D33-b（0724：成品入库时核算剩余物料）：jg 源入库 → 结余提示入复核清单
+      if (r?.sourceType === "jg" && r.sourceId != null) {
+        try {
+          const { suggestLeftoverAfterInbound } = await import("@/server/modules/outsource/leftover");
+          await suggestLeftoverAfterInbound(user, r.sourceId, dbArg);
+        } catch { /* 提示失败不阻断入库 */ }
+      }
+      return { status: r.status };
     });
   } catch (e) {
     if (e instanceof PostingError && e.code === "NEGATIVE_STOCK") {

@@ -8,6 +8,7 @@ import { skus, suppliers, warehouses } from "./masters";
  */
 export const processingFeeRefs = pgTable("processing_fee_refs", {
   id: serial("id").primaryKey(),
+  feeType: text("fee_type").notNull().default("OEM填充"), // D34 加工费分类
   skuId: integer("sku_id").notNull().references(() => skus.id),
   supplierId: integer("supplier_id").notNull().references(() => suppliers.id),
   feeRate: numeric("fee_rate", { precision: 14, scale: 2 }), // BOM 文件常缺价——可空，待采购补录

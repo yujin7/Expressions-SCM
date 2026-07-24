@@ -1,6 +1,8 @@
 "use client";
 
-import { DatePicker, Form, Input, InputNumber, Tag, Tooltip, Typography } from "antd";
+const FEE_TYPE_OPTIONS = ["OEM填充", "保税加工", "保税仓操作费", "其他"].map((v) => ({ value: v, label: v }));
+
+import { DatePicker, Form, Input, InputNumber, Tag, Tooltip, Typography, Select } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
 import CrudTable from "@/components/CrudTable";
 import RemoteSelect from "@/components/RemoteSelect";
@@ -113,6 +115,9 @@ export default function FeerefClient() {
             <Form.Item name="feeRate" label="加工费单价（元）" tooltip="可留空待补录；R9 敏感字段，仅采购/生产计划/财务可见">
               <InputNumber min={0} step={0.01} precision={2} style={{ width: 200 }} placeholder="留空=待补录" />
             </Form.Item>
+          <Form.Item name="feeType" label="费用类型" initialValue="OEM填充">
+            <Select options={FEE_TYPE_OPTIONS} />
+          </Form.Item>
             <Form.Item name="effectiveDate" label="生效日期" rules={[{ required: true, message: "生效日期必填" }]}>
               <DatePicker style={{ width: 200 }} />
             </Form.Item>

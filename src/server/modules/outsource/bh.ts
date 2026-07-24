@@ -106,6 +106,13 @@ export async function approveBh(
         after: { comment: v.comment ?? null },
       });
       return r;
+    }).then(async (r: { status: string; idempotent: boolean }) => {
+      // D33 钩子①（事务外、失败不阻断）：BH 审批通过 → 自动 WO 草稿（开关默认关）
+      if (r.status === "approved" && !r.idempotent) {
+        const { hookAfterBhApprove } = await import("./auto-chain");
+        await hookAfterBhApprove(user, id, dbArg);
+      }
+      return r;
     });
   } catch (e) {
     rethrowApproval(e);

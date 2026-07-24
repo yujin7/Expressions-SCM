@@ -54,6 +54,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/settlement/js", label: "结算单" },
       { key: "/jobs/recon", label: "对账差异" },
       { key: "/replenish", label: "补货建议" },
+      { key: "/outsource/auto-chain", label: "自动链预演" },
     ],
   },
   {
@@ -118,6 +119,7 @@ const MENU_ROLES: Record<string, string[]> = {
   "/review/checklist": ["pmc", "purchasing", "warehouse", "finance"],
   "/master/feeref": ["purchasing", "pmc", "finance"],
   "/replenish": ["pmc", "purchasing"],
+  "/outsource/auto-chain": ["pmc"],
   "/admin/users": [],
   "/admin/audit": ["finance"],
   "/admin/params": ["pmc", "purchasing", "finance"],

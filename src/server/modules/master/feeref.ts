@@ -21,16 +21,19 @@ const feeRateVal = z.preprocess(
     .refine((v) => v == null || (/^\d+(\.\d{1,4})?$/.test(String(v)) && Number(String(v)) >= 0), "加工费必须为非负数"),
 );
 
+const FEE_TYPES = ["OEM填充", "保税加工", "保税仓操作费", "其他"] as const; // D34
 const createSchema = z.object({
   skuId: z.number().int().positive({ message: "必须选择 SKU" }),
   supplierId: z.number().int().positive({ message: "必须选择加工厂" }),
   feeRate: feeRateVal.optional(), // BOM 文件常缺价——可空待补录
   effectiveDate: dateStr,
+  feeType: z.enum(FEE_TYPES).optional().default("OEM填充"),
   note: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.string().trim().max(200).optional()),
 });
 
 const updateSchema = z.object({
   feeRate: feeRateVal.optional(),
+  feeType: z.enum(FEE_TYPES).optional(),
   effectiveDate: dateStr.optional(),
   note: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? null : v), z.string().trim().max(200).nullable().optional()),
 });
@@ -66,6 +69,7 @@ export async function listFeeRefs(
         supplierId: schema.processingFeeRefs.supplierId,
         supplierName: schema.suppliers.name,
         feeRate: schema.processingFeeRefs.feeRate,
+      feeType: schema.processingFeeRefs.feeType,
         effectiveDate: schema.processingFeeRefs.effectiveDate,
         source: schema.processingFeeRefs.source,
         note: schema.processingFeeRefs.note,
@@ -100,6 +104,7 @@ export async function createFeeRef(user: { id: number }, input: unknown, dbOverr
   const [created] = await db
     .insert(schema.processingFeeRefs)
     .values({
+      feeType: v.feeType,
       skuId: v.skuId,
       supplierId: v.supplierId,
       feeRate: normFee(v.feeRate ?? null),
@@ -127,6 +132,7 @@ export async function updateFeeRef(user: { id: number }, id: number, input: unkn
   const [after] = await db
     .update(schema.processingFeeRefs)
     .set({
+      ...(v.feeType !== undefined ? { feeType: v.feeType } : {}),
       ...(v.feeRate !== undefined ? { feeRate: normFee(v.feeRate) } : {}),
       ...(v.effectiveDate !== undefined ? { effectiveDate: v.effectiveDate } : {}),
       ...(v.note !== undefined ? { note: v.note } : {}),

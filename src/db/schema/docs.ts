@@ -115,6 +115,7 @@ export const pcDocs = pgTable("pc_docs", {
 /* ── 委外加工通知单 JG ──────────────────────── */
 export const jgDocs = pgTable("jg_docs", {
   batchSeq: integer("batch_seq").notNull().default(1), // 批次序号（D33；既有单据=1）
+  feeType: text("fee_type").notNull().default("OEM填充"), // D34（0724）：OEM填充/保税加工/保税仓操作费/其他
   id: serial("id").primaryKey(),
   ...docColumns(),
   woId: integer("wo_id").notNull().references(() => woDocs.id),

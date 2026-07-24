@@ -73,6 +73,7 @@ export const warehouseSchema = z
     code: z.string().trim().min(1, "编码必填"),
     name: z.string().trim().min(1, "名称必填"),
     kind: z.enum(WAREHOUSE_KINDS),
+    parentId: z.coerce.number().int().positive().nullable().optional(), // D32 树状层级
     supplierId: z.number().int().positive().nullable().optional(),
     active: z.boolean().optional().default(true),
   })

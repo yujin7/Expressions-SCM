@@ -1,0 +1,273 @@
+/**
+ * D33 自动链（spec/11 预演优先）：BH→自动WO草稿；到料齐套→自动JG批次草稿。
+ * 铁律：自动只产【草稿】，审批永远人工；开关默认关（auto_wo_on_bh / auto_jg_on_ready）；
+ * 幂等：WO 按 bhId 查重；JG 批次按 UNIQUE(woId,batchSeq)+建议量水位；
+ * 护栏：批次≤8、成品 attrs.needsReview 非空不自动、钩子失败绝不阻断主流程（审计留痕）。
+ * 供应商解析：OEM 归属参考（transit_refs kind='oem_map'）→ supplier_oem 别名。
+ */
+import { and, eq, inArray, sql } from "drizzle-orm";
+import * as schema from "@/db/schema";
+import { writeAudit } from "@/server/core/audit";
+import { dQty } from "@/server/core/decimal";
+import type { SessionUser } from "@/server/core/dto";
+import { getNumParam } from "@/server/core/params";
+import { batchAllowed, producibleQty, suggestBatchQty, MAX_AUTO_BATCHES } from "@/server/rules/kitting";
+import { nextDocNo } from "@/server/docflow/doc-no";
+import { ApiError } from "@/server/modules/master/common";
+import { type AnyDb, requireAnyRole, resolveDb } from "./common";
+
+/* ── 预演 ── */
+
+export interface BatchSuggestion {
+  woId: number;
+  woDocNo: string;
+  productCode: string;
+  productName: string;
+  woQty: string;
+  receivedBasis: { materialCode: string; received: string; perUnit: string }[];
+  producible: number;
+  alreadyBatched: string;
+  existingBatches: number;
+  suggestQty: number;
+  blockedReason: string | null; // 护栏命中说明；null=可生成
+}
+
+export interface WoSuggestion {
+  bhId: number;
+  bhDocNo: string;
+  skuId: number;
+  skuCode: string;
+  qty: string;
+  supplierId: number | null;
+  supplierName: string | null;
+  feeRatePlan: string | null;
+  blockedReason: string | null;
+}
+
+export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchSuggestion[]; wos: WoSuggestion[] }> {
+  const db = await resolveDb(dbArg);
+
+  /* JG 批次建议：approved/in_progress 且有 PO 的 WO */
+  const woRows: {
+    id: number; docNo: string; qty: string; productSkuId: number; status: string;
+    productCode: string; productName: string; attrs: unknown;
+  }[] = await db
+    .select({
+      id: schema.woDocs.id,
+      docNo: schema.woDocs.docNo,
+      qty: schema.woDocs.qty,
+      productSkuId: schema.woDocs.productSkuId,
+      status: schema.woDocs.status,
+      productCode: schema.skus.code,
+      productName: schema.skus.name,
+      attrs: schema.skus.attrs,
+    })
+    .from(schema.woDocs)
+    .innerJoin(schema.skus, eq(schema.woDocs.productSkuId, schema.skus.id))
+    .where(inArray(schema.woDocs.status, ["approved", "in_progress"]));
+
+  const batches: BatchSuggestion[] = [];
+  for (const wo of woRows) {
+    const lines: { materialSkuId: number; grossReq: string; materialCode: string }[] = await db
+      .select({ materialSkuId: schema.woLines.materialSkuId, grossReq: schema.woLines.grossReq, materialCode: schema.skus.code })
+      .from(schema.woLines)
+      .innerJoin(schema.skus, eq(schema.woLines.materialSkuId, schema.skus.id))
+      .where(eq(schema.woLines.woId, wo.id));
+    if (lines.length === 0) continue;
+    // 到料 = 本 WO 下 PO 行已收量（基础单位）
+    const recv: { skuId: number; received: string }[] = await db
+      .select({ skuId: schema.poLines.skuId, received: sql<string>`coalesce(sum(${schema.poLines.receivedQty}), '0')` })
+      .from(schema.poLines)
+      .innerJoin(schema.poDocs, eq(schema.poLines.poId, schema.poDocs.id))
+      .where(eq(schema.poDocs.woId, wo.id))
+      .groupBy(schema.poLines.skuId);
+    const recvBySku = new Map(recv.map((r) => [r.skuId, r.received]));
+    const kit = lines.map((l) => ({ materialSkuId: l.materialSkuId, grossReq: l.grossReq, netIssued: recvBySku.get(l.materialSkuId) ?? "0" }));
+    const producible = producibleQty(wo.qty, kit);
+    const jgs: { qty: string; status: string }[] = await db
+      .select({ qty: schema.jgDocs.qty, status: schema.jgDocs.status })
+      .from(schema.jgDocs)
+      .where(eq(schema.jgDocs.woId, wo.id));
+    const alreadyBatched = jgs.reduce((a, j) => a + Number(j.qty), 0);
+    const hasDraft = jgs.some((j) => j.status === "draft" || j.status === "pending");
+    // 订货倍数
+    const [conv] = await db
+      .select({ orderMultiple: schema.uomConvs.orderMultiple })
+      .from(schema.uomConvs)
+      .where(eq(schema.uomConvs.skuId, wo.productSkuId))
+      .limit(1);
+    const suggest = suggestBatchQty({
+      producible,
+      alreadyBatched: String(alreadyBatched),
+      woQty: wo.qty,
+      orderMultiple: conv?.orderMultiple ?? null,
+    });
+    const needsReview = Array.isArray((wo.attrs as { needsReview?: unknown[] } | null)?.needsReview)
+      && ((wo.attrs as { needsReview: unknown[] }).needsReview.length > 0);
+    let blockedReason: string | null = null;
+    if (suggest <= 0) blockedReason = producible <= alreadyBatched ? "到料尚不足新批（或已全部下批）" : "不足一个订货倍数";
+    else if (!batchAllowed(jgs.length)) blockedReason = `批次已达上限 ${MAX_AUTO_BATCHES}，转人工`;
+    else if (needsReview) blockedReason = "成品档案待复核（needsReview）——不自动，请人工核对后生成";
+    else if (hasDraft) blockedReason = "已有待审批批次草稿——先处理再生成";
+    if (suggest > 0 || jgs.length > 0) {
+      batches.push({
+        woId: wo.id,
+        woDocNo: wo.docNo,
+        productCode: wo.productCode,
+        productName: wo.productName,
+        woQty: wo.qty,
+        receivedBasis: lines.slice(0, 6).map((l) => ({
+          materialCode: l.materialCode,
+          received: recvBySku.get(l.materialSkuId) ?? "0",
+          perUnit: dQty(l.grossReq),
+        })),
+        producible,
+        alreadyBatched: String(alreadyBatched),
+        existingBatches: jgs.length,
+        suggestQty: suggest,
+        blockedReason,
+      });
+    }
+  }
+
+  /* 自动 WO 建议：approved BH 且尚无 WO */
+  const bhs: { id: number; docNo: string }[] = await db
+    .select({ id: schema.bhDocs.id, docNo: schema.bhDocs.docNo })
+    .from(schema.bhDocs)
+    .where(eq(schema.bhDocs.status, "approved"));
+  const wosOut: WoSuggestion[] = [];
+  for (const bh of bhs) {
+    const [existWo] = await db.select({ id: schema.woDocs.id }).from(schema.woDocs).where(eq(schema.woDocs.bhId, bh.id));
+    if (existWo) continue;
+    const lines: { skuId: number; qty: string; code: string }[] = await db
+      .select({ skuId: schema.bhLines.skuId, qty: schema.bhLines.qty, code: schema.skus.code })
+      .from(schema.bhLines)
+      .innerJoin(schema.skus, eq(schema.bhLines.skuId, schema.skus.id))
+      .where(eq(schema.bhLines.bhId, bh.id));
+    for (const l of lines) {
+      // OEM 归属 → 供应商
+      const [oem] = await db
+        .select({ oemRaw: schema.transitRefs.oemRaw, supplierId: schema.transitRefs.supplierId })
+        .from(schema.transitRefs)
+        .where(and(eq(schema.transitRefs.kind, "oem_map"), eq(schema.transitRefs.skuCode, l.code)));
+      let supplierId = oem?.supplierId ?? null;
+      let supplierName: string | null = null;
+      if (supplierId == null && oem?.oemRaw) {
+        const [al] = await db
+          .select({ targetId: schema.aliases.targetId })
+          .from(schema.aliases)
+          .where(and(eq(schema.aliases.aliasType, "supplier_oem"), eq(schema.aliases.rawValue, oem.oemRaw)));
+        supplierId = al?.targetId ?? null;
+      }
+      if (supplierId != null) {
+        const [sup] = await db.select({ name: schema.suppliers.name, status: schema.suppliers.status }).from(schema.suppliers).where(eq(schema.suppliers.id, supplierId));
+        supplierName = sup?.name ?? null;
+        if (sup?.status === "blacklisted") { supplierId = null; supplierName = `${supplierName}（黑名单）`; }
+      }
+      // 计划加工费：feeref 最新
+      let feeRatePlan: string | null = null;
+      if (supplierId != null) {
+        const [fr] = await db
+          .select({ feeRate: schema.processingFeeRefs.feeRate })
+          .from(schema.processingFeeRefs)
+          .where(and(eq(schema.processingFeeRefs.skuId, l.skuId), eq(schema.processingFeeRefs.supplierId, supplierId)))
+          .orderBy(sql`${schema.processingFeeRefs.effectiveDate} desc`)
+          .limit(1);
+        feeRatePlan = fr?.feeRate ?? null;
+      }
+      const [activeBom] = await db
+        .select({ id: schema.boms.id })
+        .from(schema.boms)
+        .where(and(eq(schema.boms.productSkuId, l.skuId), eq(schema.boms.status, "active")));
+      let blockedReason: string | null = null;
+      if (!activeBom) blockedReason = "无生效 BOM";
+      else if (supplierId == null) blockedReason = "OEM 归属未解析（在途参考·OEM 归属页补认）";
+      else if (feeRatePlan == null || Number(feeRatePlan) <= 0) blockedReason = "无加工费参考价（加工费参考价页补录后自动可用）";
+      wosOut.push({ bhId: bh.id, bhDocNo: bh.docNo, skuId: l.skuId, skuCode: l.code, qty: l.qty, supplierId, supplierName, feeRatePlan, blockedReason });
+    }
+  }
+  return { batches, wos: wosOut };
+}
+
+/* ── 生成（人工点按或钩子调用；一律草稿） ── */
+
+export async function createBatchJg(user: SessionUser, woId: number, dbArg?: AnyDb) {
+  requireAnyRole(user, "pmc");
+  const db = await resolveDb(dbArg);
+  const { batches } = await previewAutoChain(db);
+  const s = batches.find((b) => b.woId === woId);
+  if (!s) throw new ApiError(404, "该工单无批次建议");
+  if (s.blockedReason) throw new ApiError(409, s.blockedReason);
+  const [wo] = await db.select().from(schema.woDocs).where(eq(schema.woDocs.id, woId));
+  return db.transaction(async (tx: AnyDb) => {
+    const docNo = await nextDocNo(tx, "JG");
+    const [jg] = await tx
+      .insert(schema.jgDocs)
+      .values({
+        docNo,
+        woId,
+        batchSeq: s.existingBatches + 1,
+        supplierId: wo.supplierId,
+        productSkuId: wo.productSkuId,
+        qty: dQty(String(s.suggestQty)),
+        dueDate: wo.dueDate,
+        feeRateCurrent: wo.feeRatePlan,
+        orderType: wo.orderType,
+        createdBy: user.id,
+      })
+      .returning();
+    await tx.insert(schema.jgFeeSegments).values({ jgId: jg.id, rate: jg.feeRateCurrent, effectiveFrom: new Date() });
+    await writeAudit(tx, {
+      userId: user.id, entity: "auto_chain", entityId: jg.id, action: "batch_jg",
+      after: { woId, docNo, batchSeq: jg.batchSeq, qty: s.suggestQty, producible: s.producible },
+    });
+    return jg;
+  });
+}
+
+/* ── 钩子（失败绝不阻断主流程） ── */
+
+export async function hookAfterBhApprove(user: SessionUser, bhId: number, dbArg?: AnyDb): Promise<void> {
+  try {
+    const db = await resolveDb(dbArg);
+    if ((await getNumParam("auto_wo_on_bh", 0, db)) !== 1) return;
+    const { wos } = await previewAutoChain(db);
+    const mine = wos.filter((w) => w.bhId === bhId && !w.blockedReason && w.supplierId != null && w.feeRatePlan != null);
+    for (const w of mine) {
+      const { createWo } = await import("./wo");
+      await createWo(user, {
+        productSkuId: w.skuId,
+        supplierId: w.supplierId,
+        qty: Number(w.qty),
+        feeRatePlan: Number(w.feeRatePlan ?? 0),
+        bhId: w.bhId,
+        remark: `自动生成（D33 auto_wo_on_bh；来源 ${w.bhDocNo}）`,
+      }, db);
+    }
+    if (mine.length > 0) {
+      await writeAudit(db, { userId: user.id, entity: "auto_chain", action: "auto_wo", after: { bhId, count: mine.length } });
+    }
+  } catch (e) {
+    try {
+      const db = await resolveDb(dbArg);
+      await writeAudit(db, { userId: user.id, entity: "auto_chain", action: "auto_wo_failed", after: { bhId, error: String(e).slice(0, 300) } });
+    } catch { /* 钩子留痕失败亦不阻断 */ }
+  }
+}
+
+export async function hookAfterPoReceipt(user: SessionUser, woId: number | null, dbArg?: AnyDb): Promise<void> {
+  if (woId == null) return;
+  try {
+    const db = await resolveDb(dbArg);
+    if ((await getNumParam("auto_jg_on_ready", 0, db)) !== 1) return;
+    const { batches } = await previewAutoChain(db);
+    const s = batches.find((b) => b.woId === woId);
+    if (!s || s.blockedReason || s.suggestQty <= 0) return;
+    await createBatchJg(user, woId, db);
+  } catch (e) {
+    try {
+      const db = await resolveDb(dbArg);
+      await writeAudit(db, { userId: user.id, entity: "auto_chain", action: "auto_jg_failed", after: { woId, error: String(e).slice(0, 300) } });
+    } catch { /* 同上 */ }
+  }
+}
