@@ -11,6 +11,8 @@ import { Alert, App, Input, Select, Space, Table, Tabs, Tag, Tooltip, Typography
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 
 interface Row {
   id: number;
@@ -33,9 +35,15 @@ function DemandTab() {
   const [total, setTotal] = useState(0);
   const [importedAt, setImportedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [q, setQ] = useState("");
+  // 本页签独立列表状态：URL 参数命名空间 dm_*（与「货盘处置」「总库存核对」互不干扰）
+  const listState = useListState({
+    key: "demand-demand",
+    paramPrefix: "dm",
+    defaults: { q: "" },
+    defaultPageSize: 20,
+  });
+  const { page, pageSize } = listState;
+  const q = listState.filters.q;
   const [channel, setChannel] = useState<string | undefined>();
 
   const load = useCallback(async () => {
@@ -111,29 +119,33 @@ function DemandTab() {
         showIcon
         message="口径：月度「需求&计划&达成统计表」重导登记（整类替换）；达成率=销售达成÷需求 现算。源文件的总需求/动销率等公式列未缓存值——本页只呈现字面数据，不造数（D30 销售金额域 P1）。"
       />
-      <Space style={{ marginBottom: 12 }} wrap>
-        <Input.Search
-          allowClear
-          placeholder="搜索编码/名称"
-          style={{ width: 260 }}
-          onSearch={(v) => {
-            setQ(v.trim());
-            setPage(1);
-          }}
-        />
-        <Select
-          allowClear
-          placeholder="全部渠道"
-          style={{ width: 160 }}
-          value={channel}
-          onChange={(v) => setChannel(v)}
-          options={["天猫", "拼多多", "唯品会", "京东", "抖音商品卡", "私域", "商务", "品牌中心", "海外运营部"].map((v) => ({ value: v, label: v }))}
-        />
-        {importedAt ? <Tag color="green">导入于 {new Date(importedAt).toLocaleDateString("zh-CN")}</Tag> : <Tag>尚未导入</Tag>}
-      </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            <Input.Search
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索编码/名称"
+              style={{ width: 260 }}
+              onSearch={(v) => listState.setFilter({ q: v.trim() })}
+            />
+            <Select
+              allowClear
+              placeholder="全部渠道"
+              style={{ width: 160 }}
+              value={channel}
+              onChange={(v) => setChannel(v)}
+              options={["天猫", "拼多多", "唯品会", "京东", "抖音商品卡", "私域", "商务", "品牌中心", "海外运营部"].map((v) => ({ value: v, label: v }))}
+            />
+            {importedAt ? <Tag color="green">导入于 {new Date(importedAt).toLocaleDateString("zh-CN")}</Tag> : <Tag>尚未导入</Tag>}
+          </>
+        }
+      />
       <Table<Row>
         rowKey="id"
-        size="small"
+        size={listState.tableSize}
         columns={columns}
         dataSource={rows}
         loading={loading}
@@ -144,10 +156,7 @@ function DemandTab() {
           total,
           showSizeChanger: true,
           showTotal: (n) => `共 ${n} 条（SKU×渠道）`,
-          onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
-          },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
     </div>
@@ -175,9 +184,16 @@ function PalletTab({ initialQ = "" }: { initialQ?: string }) {
   const [total, setTotal] = useState(0);
   const [importedAt, setImportedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [q, setQ] = useState(initialQ);
+  // 本页签独立列表状态：URL 参数命名空间 pl_*；
+  // 深链 /report/demand?tab=pallet&q=CODE 的裸 q 作为本实例的默认值，链接仍能直接过滤
+  const listState = useListState({
+    key: "demand-pallet",
+    paramPrefix: "pl",
+    defaults: { q: initialQ },
+    defaultPageSize: 20,
+  });
+  const { page, pageSize } = listState;
+  const q = listState.filters.q;
   const [onlyRemark, setOnlyRemark] = useState(false);
 
   const load = useCallback(async () => {
@@ -262,24 +278,28 @@ function PalletTab({ initialQ = "" }: { initialQ?: string }) {
         showIcon
         message="口径：PMC 月度货盘登记（整类替换）。处置注记（过期待报废/临期禁售/商务库存…）为业务处置依据；可销天数/滞销为文件当月口径，与系统实时口径（驾驶舱/补货建议）并存对照。成本单价列按 D2 裁决不入库。"
       />
-      <Space style={{ marginBottom: 12 }} wrap>
-        <Input.Search
-          allowClear
-          placeholder="搜索编码/名称"
-          style={{ width: 260 }}
-          onSearch={(v) => {
-            setQ(v.trim());
-            setPage(1);
-          }}
-        />
-        <Tag.CheckableTag checked={onlyRemark} onChange={(c) => setOnlyRemark(c)} style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}>
-          只看有处置注记
-        </Tag.CheckableTag>
-        {importedAt ? <Tag color="green">导入于 {new Date(importedAt).toLocaleDateString("zh-CN")}</Tag> : <Tag>尚未导入</Tag>}
-      </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            <Input.Search
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索编码/名称"
+              style={{ width: 260 }}
+              onSearch={(v) => listState.setFilter({ q: v.trim() })}
+            />
+            <Tag.CheckableTag checked={onlyRemark} onChange={(c) => setOnlyRemark(c)} style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}>
+              只看有处置注记
+            </Tag.CheckableTag>
+            {importedAt ? <Tag color="green">导入于 {new Date(importedAt).toLocaleDateString("zh-CN")}</Tag> : <Tag>尚未导入</Tag>}
+          </>
+        }
+      />
       <Table<PalletRow>
         rowKey="id"
-        size="small"
+        size={listState.tableSize}
         columns={cols}
         dataSource={rows}
         loading={loading}
@@ -290,10 +310,7 @@ function PalletTab({ initialQ = "" }: { initialQ?: string }) {
           total,
           showSizeChanger: true,
           showTotal: (n) => `共 ${n} 条`,
-          onChange: (p2, ps) => {
-            setPage(p2);
-            setPageSize(ps);
-          },
+          onChange: (p2, ps) => listState.setPage(p2, ps),
         }}
       />
     </div>
@@ -321,9 +338,15 @@ function StockSummaryTab() {
   const [rows, setRows] = useState<SummaryRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [q, setQ] = useState("");
+  // 本页签独立列表状态：URL 参数命名空间 ss_*
+  const listState = useListState({
+    key: "demand-stock-summary",
+    paramPrefix: "ss",
+    defaults: { q: "" },
+    defaultPageSize: 20,
+  });
+  const { page, pageSize } = listState;
+  const q = listState.filters.q;
   const [onlyDiff, setOnlyDiff] = useState(false);
 
   const load = useCallback(async () => {
@@ -364,12 +387,17 @@ function StockSummaryTab() {
     <div>
       <Alert style={{ marginBottom: 12 }} type="warning" showIcon
         message="口径：文件「商品数量」=全公司口径（含海外/其他部门仓）；系统数=自有实时账+电商部快照。核对结论（2026-07-21）：775 可比 SKU 中 301 一致、474 差异——差异集中于快照源未覆盖的非电商部仓，属覆盖缺口而非记账错误（全量差异 reports/总库存核对-2026-07-21.json；扩源方案见 CURRENT 已知余量）。" />
-      <Space style={{ marginBottom: 12 }} wrap>
-        <Input.Search allowClear placeholder="搜索编码/名称" style={{ width: 260 }} onSearch={(v) => { setQ(v.trim()); setPage(1); }} />
-        <Tag.CheckableTag checked={onlyDiff} onChange={setOnlyDiff} style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}>只看差异</Tag.CheckableTag>
-      </Space>
-      <Table<SummaryRow> rowKey="id" size="small" columns={cols} dataSource={rows} loading={loading} scroll={{ x: "max-content" }}
-        pagination={{ current: page, pageSize, total, showSizeChanger: true, showTotal: (n) => `共 ${n} 条`, onChange: (p2, ps) => { setPage(p2); setPageSize(ps); } }} />
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            <Input.Search key={q} allowClear defaultValue={q} placeholder="搜索编码/名称" style={{ width: 260 }} onSearch={(v) => listState.setFilter({ q: v.trim() })} />
+            <Tag.CheckableTag checked={onlyDiff} onChange={setOnlyDiff} style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}>只看差异</Tag.CheckableTag>
+          </>
+        }
+      />
+      <Table<SummaryRow> rowKey="id" size={listState.tableSize} columns={cols} dataSource={rows} loading={loading} scroll={{ x: "max-content" }}
+        pagination={{ current: page, pageSize, total, showSizeChanger: true, showTotal: (n) => `共 ${n} 条`, onChange: (p2, ps) => listState.setPage(p2, ps) }} />
     </div>
   );
 }

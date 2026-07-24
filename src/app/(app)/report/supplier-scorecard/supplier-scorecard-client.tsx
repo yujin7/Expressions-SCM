@@ -116,8 +116,9 @@ function ScorecardTab() {
   const [data, setData] = useState<ScoreData | null>(null);
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState<number | null>(null);
-  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "supplier-scorecard", defaults: { q: "", windowDays: "180" }, defaultPageSize: 20 });
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地；
+  // 本页两个页签各是独立列表，用 paramPrefix 分命名空间（sc_* / qc_*）互不清空
+  const listState = useListState({ key: "supplier-scorecard", paramPrefix: "sc", defaults: { q: "", windowDays: "180" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const windowDays = Number(filters.windowDays);
@@ -343,8 +344,15 @@ function QcSummaryTab() {
   const { message } = App.useApp();
   const [data, setData] = useState<QcData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [months, setMonths] = useState(6);
-  const [supplierId, setSupplierId] = useState<number | null>(null);
+  // 本页签独立列表状态：URL 参数命名空间 qc_*（与「记分卡」页签的 sc_* 互不干扰）
+  const listState = useListState({
+    key: "supplier-scorecard-qc",
+    paramPrefix: "qc",
+    defaults: { months: "6", supplierId: "" },
+    defaultPageSize: 20,
+  });
+  const months = Number(listState.filters.months);
+  const supplierId = listState.filters.supplierId ? Number(listState.filters.supplierId) : null;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -425,23 +433,28 @@ function QcSummaryTab() {
         <Col><Card size="small"><Statistic title="报废率" value={t?.scrapRate == null ? 0 : t.scrapRate * 100} precision={1} suffix="%" valueStyle={{ color: "#cf1322" }} /></Card></Col>
       </Row>
 
-      <Space style={{ marginBottom: 12 }} wrap>
-        <Segmented
-          value={months}
-          onChange={(v) => setMonths(Number(v))}
-          options={[{ label: "近 3 月", value: 3 }, { label: "近 6 月", value: 6 }, { label: "近 12 月", value: 12 }]}
-        />
-        <Select
-          allowClear
-          showSearch
-          optionFilterProp="label"
-          placeholder="全部供应商"
-          style={{ width: 260 }}
-          value={supplierId}
-          onChange={(v) => setSupplierId(v ?? null)}
-          options={supplierOptions}
-        />
-      </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            <Segmented
+              value={months}
+              onChange={(v) => listState.setFilter({ months: String(v) })}
+              options={[{ label: "近 3 月", value: 3 }, { label: "近 6 月", value: 6 }, { label: "近 12 月", value: 12 }]}
+            />
+            <Select
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder="全部供应商"
+              style={{ width: 260 }}
+              value={supplierId}
+              onChange={(v) => listState.setFilter({ supplierId: v == null ? "" : String(v) })}
+              options={supplierOptions}
+            />
+          </>
+        }
+      />
 
       <Card size="small" title="月度检验结构（堆叠 = 正常/返工/让步/报废/待判定 数量）" styles={{ body: { height: 320 } }} style={{ marginBottom: 12 }}>
         {!hasData ? (
@@ -464,12 +477,18 @@ function QcSummaryTab() {
 
       <Table<QcRow>
         rowKey={(r) => `${r.month}-${r.supplierId}`}
-        size="small"
+        size={listState.tableSize}
         columns={columns}
         dataSource={rows}
         loading={loading}
         scroll={{ x: "max-content" }}
-        pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (n) => `共 ${n} 条` }}
+        pagination={{
+          current: listState.page,
+          pageSize: listState.pageSize,
+          showSizeChanger: true,
+          showTotal: (n) => `共 ${n} 条`,
+          onChange: (p, ps) => listState.setPage(p, ps),
+        }}
       />
     </div>
   );

@@ -9,6 +9,8 @@ import { Alert, App, Input, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 
 interface Row {
   id: number;
@@ -51,15 +53,24 @@ const PROGRESS_COLORS: Record<string, string> = {
 
 const qn = (v: string | null) => (v == null ? "—" : formatQty(v));
 
-function useTransit(kind: string) {
+/**
+ * 每个 Tab 一份独立列表状态：paramPrefix 给 URL 参数分命名空间（fg_q / pkgo_q …），
+ * 写 URL 时只增删自己的参数，兄弟 Tab 的筛选不会被清空。
+ */
+function useTransit(kind: string, prefix: string) {
   const { message } = App.useApp();
   const [rows, setRows] = useState<Row[]>([]);
   const [total, setTotal] = useState(0);
   const [importedAt, setImportedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [q, setQ] = useState("");
+  const listState = useListState({
+    key: `transit-${kind}`,
+    paramPrefix: prefix,
+    defaults: { q: "" },
+    defaultPageSize: 20,
+  });
+  const { page, pageSize } = listState;
+  const q = listState.filters.q;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -82,50 +93,53 @@ function useTransit(kind: string) {
     void load();
   }, [load]);
 
-  return { rows, total, importedAt, loading, page, pageSize, setPage, setPageSize, setQ };
+  return { rows, total, importedAt, loading, listState };
 }
 
-function KindTable({ kind, columns }: { kind: string; columns: ColumnsType<Row> }) {
-  const t = useTransit(kind);
+function KindTable({ kind, prefix, columns }: { kind: string; prefix: string; columns: ColumnsType<Row> }) {
+  const t = useTransit(kind, prefix);
+  const { listState } = t;
+  const q = listState.filters.q;
   const age =
     t.importedAt != null
       ? Math.max(0, Math.floor((Date.now() - new Date(t.importedAt).getTime()) / 86_400_000))
       : null;
   return (
     <div>
-      <Space style={{ marginBottom: 12 }} wrap>
-        <Input.Search
-          allowClear
-          placeholder="搜索编码/名称/审批号/用友单号"
-          style={{ width: 300 }}
-          onSearch={(v) => {
-            t.setQ(v.trim());
-            t.setPage(1);
-          }}
-        />
-        {age != null ? (
-          <Tag color={age <= 7 ? "green" : age <= 30 ? "orange" : "red"}>数据导入于 {age === 0 ? "今日" : `${age} 天前`}</Tag>
-        ) : (
-          <Tag>尚未导入</Tag>
-        )}
-      </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            <Input.Search
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索编码/名称/审批号/用友单号"
+              style={{ width: 300 }}
+              onSearch={(v) => listState.setFilter({ q: v.trim() })}
+            />
+            {age != null ? (
+              <Tag color={age <= 7 ? "green" : age <= 30 ? "orange" : "red"}>数据导入于 {age === 0 ? "今日" : `${age} 天前`}</Tag>
+            ) : (
+              <Tag>尚未导入</Tag>
+            )}
+          </>
+        }
+      />
       <Table<Row>
         rowKey="id"
-        size="small"
+        size={listState.tableSize}
         columns={columns}
         dataSource={t.rows}
         loading={t.loading}
         scroll={{ x: "max-content" }}
         pagination={{
-          current: t.page,
-          pageSize: t.pageSize,
+          current: listState.page,
+          pageSize: listState.pageSize,
           total: t.total,
           showSizeChanger: true,
           showTotal: (n) => `共 ${n} 条`,
-          onChange: (p, ps) => {
-            t.setPage(p);
-            t.setPageSize(ps);
-          },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
     </div>
@@ -230,10 +244,10 @@ export default function TransitClient() {
       <Tabs
         defaultActiveKey="fg_order"
         items={[
-          { key: "fg_order", label: "成品在途", children: <KindTable kind="fg_order" columns={fgCols} /> },
-          { key: "pkg_order", label: "包材在途", children: <KindTable kind="pkg_order" columns={pkgCols} /> },
-          { key: "pkg_stock", label: "包材备料", children: <KindTable kind="pkg_stock" columns={stockCols} /> },
-          { key: "oem_map", label: "OEM 归属", children: <KindTable kind="oem_map" columns={oemCols} /> },
+          { key: "fg_order", label: "成品在途", children: <KindTable kind="fg_order" prefix="fg" columns={fgCols} /> },
+          { key: "pkg_order", label: "包材在途", children: <KindTable kind="pkg_order" prefix="pkgo" columns={pkgCols} /> },
+          { key: "pkg_stock", label: "包材备料", children: <KindTable kind="pkg_stock" prefix="pkgs" columns={stockCols} /> },
+          { key: "oem_map", label: "OEM 归属", children: <KindTable kind="oem_map" prefix="oem" columns={oemCols} /> },
         ]}
       />
     </div>

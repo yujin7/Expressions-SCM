@@ -4,13 +4,15 @@
  * R16 借调对账：月度部门间借调矩阵 + 明细 + 净借入/借出签字页。
  * 数据源=完成态调拨单（reason='借调'）；替代 借入/借出 手工透视表。
  */
-import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Card, Col, DatePicker, Empty, Input, Row, Skeleton, Space, Table, Tabs, Tag, Typography } from "antd";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Alert, App, Card, Col, DatePicker, Empty, Input, Row, Skeleton, Table, Tabs, Tag, Typography } from "antd";
 import { PrinterOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 import type { JiediaoReport } from "@/server/modules/report/jiediao";
 
 const fmt = (v: number | string): string => Number(v).toLocaleString("zh-CN", { maximumFractionDigits: 4 });
@@ -30,9 +32,15 @@ function BorrowHistoryTab() {
   const [rows, setRows] = useState<BorrowRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [q, setQ] = useState("");
+  // 本页签独立列表状态：URL 参数命名空间 hist_*（与「系统对账」页签互不干扰）
+  const listState = useListState({
+    key: "jiediao-borrow",
+    paramPrefix: "hist",
+    defaults: { q: "" },
+    defaultPageSize: 20,
+  });
+  const { page, pageSize } = listState;
+  const q = listState.filters.q;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -68,16 +76,26 @@ function BorrowHistoryTab() {
         showIcon
         message="系统上线前的借调记录（「需求&计划&达成统计表」借入/借出页导入，只读登记）；上线后的借调走调拨单（原因=借调），见「系统对账」页签。"
       />
-      <Space style={{ marginBottom: 12 }}>
-        <Input.Search allowClear placeholder="搜索编码" style={{ width: 220 }} onSearch={(v) => { setQ(v.trim()); setPage(1); }} />
-      </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <Input.Search
+            key={q}
+            allowClear
+            defaultValue={q}
+            placeholder="搜索编码"
+            style={{ width: 220 }}
+            onSearch={(v) => listState.setFilter({ q: v.trim() })}
+          />
+        }
+      />
       <Table<BorrowRow>
         rowKey="id"
-        size="small"
+        size={listState.tableSize}
         columns={cols}
         dataSource={rows}
         loading={loading}
-        pagination={{ current: page, pageSize, total, showSizeChanger: true, showTotal: (n) => `共 ${n} 条`, onChange: (p2, ps) => { setPage(p2); setPageSize(ps); } }}
+        pagination={{ current: page, pageSize, total, showSizeChanger: true, showTotal: (n) => `共 ${n} 条`, onChange: (p2, ps) => listState.setPage(p2, ps) }}
       />
     </div>
   );
@@ -85,10 +103,21 @@ function BorrowHistoryTab() {
 
 export default function JiediaoClient() {
   const { message } = App.useApp();
-  const [month, setMonth] = useState<Dayjs>(dayjs());
   const [data, setData] = useState<JiediaoReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(false); // 打印时明细全量渲染（RT4 UX-P1-6：签字凭据不能只打当前页）
+  // 本页签独立列表状态：URL 参数命名空间 sys_*（与「历史导入」页签互不干扰）；月份空=当月
+  const listState = useListState({
+    key: "jiediao-sys",
+    paramPrefix: "sys",
+    defaults: { month: "" },
+    defaultPageSize: 20,
+  });
+  const monthParam = listState.filters.month;
+  const month: Dayjs = useMemo(() => {
+    const d = dayjs(monthParam);
+    return monthParam && d.isValid() ? d : dayjs();
+  }, [monthParam]);
 
   const handlePrint = () => {
     setPrinting(true);
@@ -147,18 +176,27 @@ export default function JiediaoClient() {
 
   const systemTab = (
     <div>
-      <Space align="baseline" style={{ justifyContent: "space-between", width: "100%", marginBottom: 8 }}>
-        <span />
-        <Space className="no-print">
-          <DatePicker picker="month" value={month} allowClear={false} onChange={(v) => v && setMonth(v)} />
-          <a onClick={() => void load()}>
-            <ReloadOutlined /> 刷新
-          </a>
-          <a onClick={handlePrint}>
-            <PrinterOutlined /> 打印签字页（含全量明细）
-          </a>
-        </Space>
-      </Space>
+      <div className="no-print">
+        <ListToolbar
+          state={listState}
+          extra={
+            <>
+              <DatePicker
+                picker="month"
+                value={month}
+                allowClear={false}
+                onChange={(v) => v && listState.setFilter({ month: v.format("YYYY-MM") })}
+              />
+              <a onClick={() => void load()}>
+                <ReloadOutlined /> 刷新
+              </a>
+              <a onClick={handlePrint}>
+                <PrinterOutlined /> 打印签字页（含全量明细）
+              </a>
+            </>
+          }
+        />
+      </div>
       <style>{`@media print { .no-print, .ant-layout-sider, .ant-layout-header { display: none !important; } }`}</style>
       <Alert
         style={{ marginBottom: 12 }}
@@ -194,10 +232,20 @@ export default function JiediaoClient() {
           <Card size="small" title={`明细（${data.lines.length} 行）`} style={{ marginTop: 12, marginBottom: 12 }}>
             <Table
               rowKey={(r) => `${r.docNo}-${r.skuCode}-${r.fromWarehouse}`}
-              size="small"
+              size={listState.tableSize}
               columns={lineCols}
               dataSource={data.lines}
-              pagination={printing ? false : { pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
+              pagination={
+                printing
+                  ? false
+                  : {
+                      current: listState.page,
+                      pageSize: listState.pageSize,
+                      showSizeChanger: true,
+                      showTotal: (t) => `共 ${t} 条`,
+                      onChange: (p, ps) => listState.setPage(p, ps),
+                    }
+              }
               scroll={{ x: "max-content" }}
             />
           </Card>
