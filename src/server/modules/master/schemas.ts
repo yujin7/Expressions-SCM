@@ -23,7 +23,7 @@ export const spuSchema = z.object({
 export type SpuInput = z.infer<typeof spuSchema>;
 
 // ---------- SKU ----------
-export const SKU_TYPES = ["finished", "raw", "packaging"] as const;
+export const SKU_TYPES = ["finished", "semi", "raw", "packaging", "service"] as const; // 04 §3 五值
 export const skuSchema = z.object({
   code: z.string().trim().min(1, "编码必填"),
   name: z.string().trim().min(1, "货品名称必填"),
@@ -48,14 +48,21 @@ export const categorySchema = z.object({
 export type CategoryInput = z.infer<typeof categorySchema>;
 
 // ---------- 供应商 ----------
-export const SUPPLIER_KINDS = ["raw", "packaging", "processor"] as const;
+export const SUPPLIER_KINDS = ["raw", "packaging", "processor", "service"] as const; // +服务（04 §3）
+export const SUPPLIER_LEVELS = ["S", "A", "B", "C", "D"] as const;
 export const supplierSchema = z.object({
   code: z.string().trim().min(1, "编码必填"),
   name: z.string().trim().min(1, "名称必填"),
   kinds: z.array(z.enum(SUPPLIER_KINDS)).min(1, "至少选择一种供应商类型"),
   contact: optionalStr,
+  phone: optionalStr,
+  email: z.preprocess(emptyToUndef, z.string().email("邮箱格式不正确").optional()),
+  address: optionalStr,
+  paymentTerm: optionalStr, // 款到发货/月结30/月结60…
+  bankAccount: optionalStr, // 敏感：出口经 maskSensitive
+  level: z.enum(SUPPLIER_LEVELS).nullable().optional(), // S–D 分级（D7 评分 P1 前人工维护）
   licenseExpiry: z.preprocess(emptyToUndef, dateStr.nullable().optional()),
-  status: z.enum(["pending", "qualified", "blacklisted"]).optional().default("pending"),
+  status: z.enum(["pending", "qualified", "paused", "blacklisted"]).optional().default("pending"), // +暂停
 });
 export type SupplierInput = z.infer<typeof supplierSchema>;
 

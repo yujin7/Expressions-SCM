@@ -5,14 +5,19 @@ import {
   App,
   Badge,
   Button,
+  DatePicker,
   Descriptions,
   Drawer,
+  Form,
   Input,
   Modal,
   Popconfirm,
+  Select,
   Space,
+  Switch,
   Table,
   Tabs,
+  Tag,
   Timeline,
   Typography,
 } from "antd";
@@ -20,7 +25,8 @@ import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import DocStatusTag from "@/components/DocStatusTag";
-import { fetchJson, postJson } from "@/components/fetchJson";
+import { fetchJson, patchJson, postJson } from "@/components/fetchJson";
+import { useMe } from "@/components/useMe";
 import { formatOrderType } from "@/components/labels";
 
 interface JgRow {
@@ -73,6 +79,14 @@ interface JgDetail {
   inProduction: boolean;
   confirmedAt: string | null;
   confirmNote: string | null;
+  pkgRequiredDate: string | null;
+  pkgSupplierReplyDate: string | null;
+  pkgReadyDate: string | null;
+  pkgRefNos: string[] | null;
+  urgentFlag: boolean;
+  priority: string | null;
+  isPaused: boolean;
+  revisedDates: { from: string | null; to: string; reason: string; by: string; at: string }[] | null;
   createdAt: string;
   createdByName: string | null;
   feeSegments: FeeSegment[];
@@ -98,6 +112,13 @@ export default function JgClient() {
   const [status, setStatus] = useState("");
   const [q, setQ] = useState("");
 
+  const me = useMe();
+  const canPlan = !!me && (me.roles.includes("pmc") || me.roles.includes("admin"));
+  const canRevise = !!me && ["pmc", "purchasing", "admin"].some((r) => me.roles.includes(r));
+  const [planForm] = Form.useForm();
+  const [planSaving, setPlanSaving] = useState(false);
+  const [reviseOpen, setReviseOpen] = useState(false);
+  const [reviseForm] = Form.useForm();
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detail, setDetail] = useState<JgDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -186,7 +207,18 @@ export default function JgClient() {
     },
     { title: "数量", dataIndex: "qty", width: 100, align: "right" },
     { title: "加工厂", dataIndex: "supplierName", width: 140 },
-    { title: "交期", dataIndex: "dueDate", width: 110, render: (v: string | null) => v ?? "—" },
+    {
+      title: "交期",
+      dataIndex: "dueDate",
+      width: 150,
+      render: (v: string | null, r) => (
+        <Space size={4}>
+          {v ?? "—"}
+          {(r as { urgentFlag?: boolean }).urgentFlag ? <Tag color="red">紧急</Tag> : null}
+          {(r as { isPaused?: boolean }).isPaused ? <Tag color="orange">暂停</Tag> : null}
+        </Space>
+      ),
+    },
     {
       title: "生产中",
       dataIndex: "inProduction",
@@ -363,6 +395,117 @@ export default function JgClient() {
               pagination={false}
               style={{ marginBottom: 24 }}
             />
+            <Typography.Title level={5}>包材齐套与计划属性（04 §2）</Typography.Title>
+            <Form
+              form={planForm}
+              layout="inline"
+              disabled={!canPlan}
+              initialValues={{
+                pkgRequiredDate: detail.pkgRequiredDate ? dayjs(detail.pkgRequiredDate) : undefined,
+                pkgSupplierReplyDate: detail.pkgSupplierReplyDate ? dayjs(detail.pkgSupplierReplyDate) : undefined,
+                pkgReadyDate: detail.pkgReadyDate ? dayjs(detail.pkgReadyDate) : undefined,
+                pkgRefNos: detail.pkgRefNos ?? [],
+                urgentFlag: detail.urgentFlag,
+                priority: detail.priority ?? undefined,
+                isPaused: detail.isPaused,
+              }}
+              style={{ marginBottom: 8, rowGap: 8 }}
+            >
+              <Form.Item name="pkgRequiredDate" label="包材需求日">
+                <DatePicker />
+              </Form.Item>
+              <Form.Item name="pkgSupplierReplyDate" label="供应商回复日">
+                <DatePicker />
+              </Form.Item>
+              <Form.Item name="pkgReadyDate" label="齐套日">
+                <DatePicker />
+              </Form.Item>
+              <Form.Item name="pkgRefNos" label="关联包材单号">
+                <Select mode="tags" style={{ minWidth: 220 }} placeholder="PO-2026…（回车添加）" open={false} />
+              </Form.Item>
+              <Form.Item name="priority" label="优先级">
+                <Select allowClear style={{ width: 90 }} options={["高", "中", "低"].map((v) => ({ value: v, label: v }))} />
+              </Form.Item>
+              <Form.Item name="urgentFlag" label="紧急" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item name="isPaused" label="暂停" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Space>
+                <Button
+                  type="primary"
+                  loading={planSaving}
+                  disabled={!canPlan}
+                  onClick={async () => {
+                    const v = planForm.getFieldsValue();
+                    setPlanSaving(true);
+                    try {
+                      await patchJson(`/api/outsource/jg/${detail.id}/plan`, {
+                        pkgRequiredDate: v.pkgRequiredDate ? v.pkgRequiredDate.format("YYYY-MM-DD") : null,
+                        pkgSupplierReplyDate: v.pkgSupplierReplyDate ? v.pkgSupplierReplyDate.format("YYYY-MM-DD") : null,
+                        pkgReadyDate: v.pkgReadyDate ? v.pkgReadyDate.format("YYYY-MM-DD") : null,
+                        pkgRefNos: v.pkgRefNos ?? [],
+                        priority: v.priority ?? null,
+                        urgentFlag: !!v.urgentFlag,
+                        isPaused: !!v.isPaused,
+                      });
+                      message.success("计划属性已保存");
+                      void loadDetail(detail.id);
+                      void load();
+                    } catch (e) {
+                      message.error((e as Error).message);
+                    } finally {
+                      setPlanSaving(false);
+                    }
+                  }}
+                >
+                  保存计划属性
+                </Button>
+                <Button disabled={!canRevise} onClick={() => setReviseOpen(true)}>
+                  交期修改
+                </Button>
+              </Space>
+            </Form>
+            {(detail.revisedDates?.length ?? 0) > 0 ? (
+              <>
+                <Typography.Text type="secondary">交期修改历史（{detail.revisedDates!.length} 次）</Typography.Text>
+                <Timeline
+                  style={{ marginTop: 8 }}
+                  items={detail.revisedDates!.map((r) => ({
+                    children: `${dayjs(r.at).format("MM-DD HH:mm")} ${r.by}：${r.from ?? "—"} → ${r.to}（${r.reason}）`,
+                  }))}
+                />
+              </>
+            ) : null}
+            <Modal
+              title="交期修改（留痕）"
+              open={reviseOpen}
+              onCancel={() => setReviseOpen(false)}
+              onOk={async () => {
+                const v = await reviseForm.validateFields();
+                await postJson(`/api/outsource/jg/${detail.id}/revise-due`, {
+                  newDate: v.newDate.format("YYYY-MM-DD"),
+                  reason: v.reason,
+                });
+                message.success("交期已修改并留痕");
+                setReviseOpen(false);
+                reviseForm.resetFields();
+                void loadDetail(detail.id);
+                void load();
+              }}
+              okText="确认修改"
+              cancelText="取消"
+            >
+              <Form form={reviseForm} layout="vertical">
+                <Form.Item name="newDate" label="新交期" rules={[{ required: true, message: "必选日期" }]}>
+                  <DatePicker style={{ width: "100%" }} />
+                </Form.Item>
+                <Form.Item name="reason" label="改期原因" rules={[{ required: true, message: "原因必填" }]}>
+                  <Input.TextArea rows={2} maxLength={200} />
+                </Form.Item>
+              </Form>
+            </Modal>
             {detail.approvals.length > 0 ? (
               <>
                 <Typography.Title level={5}>审批记录</Typography.Title>

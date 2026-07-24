@@ -88,10 +88,35 @@ export default function SupplierClient() {
             <Form.Item name="contact" label="联系人">
               <Input maxLength={50} />
             </Form.Item>
+            <Form.Item name="phone" label="电话">
+              <Input maxLength={30} />
+            </Form.Item>
+            <Form.Item name="email" label="邮箱">
+              <Input maxLength={100} type="email" />
+            </Form.Item>
+            <Form.Item name="address" label="地址">
+              <Input maxLength={200} />
+            </Form.Item>
+            <Form.Item name="paymentTerm" label="结算方式">
+              <Select
+                allowClear
+                options={[
+                  { value: "款到发货", label: "款到发货" },
+                  { value: "月结30", label: "月结 30 天" },
+                  { value: "月结60", label: "月结 60 天" },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item name="bankAccount" label="银行账户" tooltip="敏感字段：仅采购/PMC/财务/管理员可见（R9 脱敏）">
+              <Input maxLength={60} placeholder="开户行+账号" />
+            </Form.Item>
+            <Form.Item name="level" label="供应商分级" tooltip="S–D 人工评级；D7 评分体系 P1 参数化联动">
+              <Select allowClear options={["S", "A", "B", "C", "D"].map((v) => ({ value: v, label: v }))} />
+            </Form.Item>
             <Form.Item name="licenseExpiry" label="营业执照到期日" tooltip="资质预警数据源（1.1 启用预警）">
               <DatePicker style={{ width: "100%" }} />
             </Form.Item>
-            <Form.Item name="status" label="状态" initialValue="pending" tooltip="黑名单：禁新 PO，存量 JG 可收尾">
+            <Form.Item name="status" label="状态" initialValue="pending" tooltip="暂停：观察期建议不下新单（软提示）；黑名单：禁新 PO/WO 硬门，存量 JG 可收尾">
               <Select options={toOptions(SUPPLIER_STATUS_LABELS)} />
             </Form.Item>
           </>

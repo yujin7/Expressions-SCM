@@ -20,6 +20,8 @@ interface BomLineRow {
   baseUom: string;
   qtyPer: string;
   lossRatePct: string;
+  incomingLossPct: string;
+  productionLossPct: string;
   leadTimeDays: number | null;
 }
 
@@ -50,7 +52,9 @@ function LinesTable({ lines }: { lines: BomLineRow[] }) {
         },
         { title: "单位用量", dataIndex: "qtyPer", width: 110 },
         { title: "基础单位", dataIndex: "baseUom", width: 90 },
-        { title: "损耗率%", dataIndex: "lossRatePct", width: 100 },
+        { title: "来料损耗%", dataIndex: "incomingLossPct", width: 100 },
+        { title: "生产损耗%", dataIndex: "productionLossPct", width: 100 },
+        { title: "旧损耗%（兼容）", dataIndex: "lossRatePct", width: 120, render: (v: string) => (Number(v) ? v : "—") },
         {
           title: "提前期(天)",
           dataIndex: "leadTimeDays",
@@ -141,7 +145,9 @@ export default function BomClient() {
           lines: r.lines.map((l) => ({
             materialSkuId: l.materialSkuId,
             qtyPer: Number(l.qtyPer),
-            lossRatePct: Number(l.lossRatePct),
+            lossRatePct: Number(l.lossRatePct ?? 0),
+            incomingLossPct: Number(l.incomingLossPct ?? 0),
+            productionLossPct: Number(l.productionLossPct ?? 0),
             leadTimeDays: l.leadTimeDays,
           })),
         })}
@@ -230,8 +236,11 @@ export default function BomClient() {
                           <Form.Item name={[field.name, "qtyPer"]} rules={[{ required: true, message: "用量必填" }]} style={{ margin: 4 }}>
                             <InputNumber min={0.0001} step={0.0001} placeholder="用量" style={{ width: 120 }} />
                           </Form.Item>
-                          <Form.Item name={[field.name, "lossRatePct"]} initialValue={0} style={{ margin: 4 }}>
-                            <InputNumber min={0} max={100} step={0.5} style={{ width: 110 }} addonAfter="%" />
+                          <Form.Item name={[field.name, "incomingLossPct"]} initialValue={0} style={{ margin: 4 }} tooltip="来料损耗">
+                            <InputNumber min={0} max={100} step={0.5} style={{ width: 120 }} addonAfter="%来料" />
+                          </Form.Item>
+                          <Form.Item name={[field.name, "productionLossPct"]} initialValue={0} style={{ margin: 4 }} tooltip="生产损耗">
+                            <InputNumber min={0} max={100} step={0.5} style={{ width: 120 }} addonAfter="%生产" />
                           </Form.Item>
                           <Form.Item name={[field.name, "leadTimeDays"]} style={{ margin: 4 }}>
                             <InputNumber min={0} style={{ width: 100 }} />
@@ -243,7 +252,7 @@ export default function BomClient() {
                       ))}
                     </div>
                     <Space style={{ marginTop: 8 }}>
-                      <Button icon={<PlusOutlined />} onClick={() => add({ lossRatePct: 0 })}>
+                      <Button icon={<PlusOutlined />} onClick={() => add({ incomingLossPct: 0, productionLossPct: 0 })}>
                         添加物料行
                       </Button>
                       <Typography.Text type="secondary">共 {fields.length} 行；Excel 批量导入见导入中心（DW2）</Typography.Text>

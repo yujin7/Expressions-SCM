@@ -39,6 +39,7 @@ export const SUPPLIER_STATUS_COLORS: Record<string, string> = {
   pending: "processing",
   qualified: "success",
   blacklisted: "error",
+  paused: "orange",
 };
 
 export const WAREHOUSE_KIND_LABELS: Record<string, string> = {

@@ -185,6 +185,14 @@ export async function getJg(id: number, dbArg?: AnyDb) {
       inProduction: jgDocs.inProduction,
       confirmedAt: jgDocs.confirmedAt,
       confirmNote: jgDocs.confirmNote,
+      pkgRequiredDate: jgDocs.pkgRequiredDate,
+      pkgSupplierReplyDate: jgDocs.pkgSupplierReplyDate,
+      pkgReadyDate: jgDocs.pkgReadyDate,
+      pkgRefNos: jgDocs.pkgRefNos,
+      urgentFlag: jgDocs.urgentFlag,
+      priority: jgDocs.priority,
+      isPaused: jgDocs.isPaused,
+      revisedDates: jgDocs.revisedDates,
       createdBy: jgDocs.createdBy,
       createdAt: jgDocs.createdAt,
       createdByName: users.name,
@@ -246,6 +254,8 @@ export async function listJgs(
         qty: jgDocs.qty,
         dueDate: jgDocs.dueDate,
         inProduction: jgDocs.inProduction,
+        urgentFlag: jgDocs.urgentFlag,
+        isPaused: jgDocs.isPaused,
         createdByName: users.name,
         createdAt: jgDocs.createdAt,
       })
@@ -260,4 +270,76 @@ export async function listJgs(
     db.select({ total: sql<number>`count(*)::int` }).from(jgDocs).where(where),
   ]);
   return { rows, total };
+}
+
+// ---------- 包材齐套 / 计划属性（04 §2 W3 增列批；合规审计补落的执行面） ----------
+
+import { z } from "zod";
+
+const dateStrOpt = z.preprocess(
+  (v) => (v === "" || v == null ? undefined : v),
+  z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "日期须为 YYYY-MM-DD").nullable().optional(),
+);
+
+export const jgPlanSchema = z.object({
+  pkgRequiredDate: dateStrOpt,
+  pkgSupplierReplyDate: dateStrOpt,
+  pkgReadyDate: dateStrOpt,
+  pkgRefNos: z.array(z.string().trim().min(1)).max(20).optional(),
+  urgentFlag: z.boolean().optional(),
+  priority: z.enum(["高", "中", "低"]).nullable().optional(),
+  isPaused: z.boolean().optional(),
+});
+
+/** 计划属性维护（PMC/admin）：包材齐套三日期、关联单号、紧急/优先级/暂停 */
+export async function updateJgPlan(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<JgRow> {
+  requireAnyRole(user, "pmc");
+  const v = jgPlanSchema.parse(input);
+  const db = await resolveDb(dbArg);
+  const [doc]: JgRow[] = await db.select().from(jgDocs).where(eq(jgDocs.id, id));
+  if (!doc) throw new ApiError(404, "加工通知单不存在");
+  if (["void", "closed"].includes(doc.status)) throw new ApiError(409, "已作废/关闭的单据不可维护计划属性");
+  const patch: Record<string, unknown> = { updatedAt: new Date() };
+  for (const k of ["pkgRequiredDate", "pkgSupplierReplyDate", "pkgReadyDate", "urgentFlag", "priority", "isPaused"] as const) {
+    if (v[k] !== undefined) patch[k] = v[k];
+  }
+  if (v.pkgRefNos !== undefined) patch.pkgRefNos = v.pkgRefNos;
+  const [updated]: JgRow[] = await db.update(jgDocs).set(patch).where(eq(jgDocs.id, id)).returning();
+  await writeAudit(db, {
+    userId: user.id,
+    entity: "jg",
+    entityId: id,
+    action: "plan_update",
+    before: {
+      pkgRequiredDate: doc.pkgRequiredDate, pkgSupplierReplyDate: doc.pkgSupplierReplyDate,
+      pkgReadyDate: doc.pkgReadyDate, urgentFlag: doc.urgentFlag, priority: doc.priority, isPaused: doc.isPaused,
+    },
+    after: v,
+  });
+  return updated;
+}
+
+export const jgReviseDueSchema = z.object({
+  newDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "日期须为 YYYY-MM-DD"),
+  reason: z.string().trim().min(1, "改期原因必填").max(200),
+});
+
+/** 交期修改（留痕入 revisedDates 历史，禁止直接改 dueDate 旁路） */
+export async function reviseJgDueDate(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<JgRow> {
+  requireAnyRole(user, "pmc", "purchasing");
+  const v = jgReviseDueSchema.parse(input);
+  const db = await resolveDb(dbArg);
+  const [doc]: JgRow[] = await db.select().from(jgDocs).where(eq(jgDocs.id, id));
+  if (!doc) throw new ApiError(404, "加工通知单不存在");
+  if (["void", "closed", "completed"].includes(doc.status)) throw new ApiError(409, "终态单据不可改期");
+  const history = Array.isArray(doc.revisedDates) ? (doc.revisedDates as unknown[]) : [];
+  if (history.length >= 20) throw new ApiError(409, "改期次数已达上限（20），请走线下评审");
+  const entry = { from: doc.dueDate, to: v.newDate, reason: v.reason, by: user.name, at: new Date().toISOString() };
+  const [updated]: JgRow[] = await db
+    .update(jgDocs)
+    .set({ dueDate: v.newDate, revisedDates: [...history, entry], updatedAt: new Date() })
+    .where(eq(jgDocs.id, id))
+    .returning();
+  await writeAudit(db, { userId: user.id, entity: "jg", entityId: id, action: "revise_due", before: { dueDate: doc.dueDate }, after: entry });
+  return updated;
 }

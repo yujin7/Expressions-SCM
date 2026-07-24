@@ -26,7 +26,13 @@ interface SkuRow {
   active: boolean;
 }
 
-const SKU_TYPE_COLORS: Record<string, string> = { finished: "blue", raw: "green", packaging: "orange" };
+const SKU_TYPE_COLORS: Record<string, string> = {
+  finished: "blue",
+  semi: "geekblue",
+  raw: "green",
+  packaging: "orange",
+  service: "cyan",
+};
 
 export default function SkuClient() {
   const me = useMe();
@@ -106,7 +112,7 @@ export default function SkuClient() {
               />
             </Form.Item>
             <Form.Item name="skuType" label="类型" rules={[{ required: true, message: "必须选择类型" }]}>
-              <Select options={toOptions(SKU_TYPE_LABELS)} placeholder="成品/原料/包材" />
+              <Select options={toOptions(SKU_TYPE_LABELS)} placeholder="成品/半成品/原料/包材/服务" />
             </Form.Item>
             <Form.Item name="baseUom" label="基础单位" rules={[{ required: true, message: "基础单位必填" }]}>
               <Input maxLength={10} placeholder="如 盒 / kg / 个" />
