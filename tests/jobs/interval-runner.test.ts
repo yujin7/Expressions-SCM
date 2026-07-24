@@ -17,7 +17,7 @@ describe("interval-runner 进程内调度回退", () => {
     expect(g[Symbol.for("supply-chain.interval-runner")]).toBeUndefined();
   });
 
-  it("注册了 8 个任务（+doc-aging/exception-notify/notify-dispatch）", () => {
+  it("注册了 9 个任务（+rollup）", () => {
     expect(INTERVAL_JOBS.map((j) => j.name).sort()).toEqual([
       "data-freshness",
       "doc-aging",
@@ -26,6 +26,7 @@ describe("interval-runner 进程内调度回退", () => {
       "license-alert",
       "notify-dispatch",
       "reconcile-jst",
+      "rollup",
       "snapshot-age",
     ]);
   });

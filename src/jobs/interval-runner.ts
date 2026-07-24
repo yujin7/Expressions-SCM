@@ -19,6 +19,7 @@ import { runSnapshotAgeAlert } from "./snapshot-age";
 import { runHousekeeping } from "./housekeeping";
 import { runFreshnessCheck } from "./freshness";
 import { runDocAging } from "./doc-aging";
+import { runRollup } from "./rollup";
 import { dispatchNotifications, runExceptionNotify } from "./notify";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -42,6 +43,8 @@ export const INTERVAL_JOBS: IntervalJob[] = [
   { name: "reconcile-jst", everyMs: 6 * HOUR_MS, run: (db) => runReconcileJst(db, shanghaiToday(-1)) },
   // 保洁（删除幂等）
   { name: "housekeeping", everyMs: 24 * HOUR_MS, run: (db) => runHousekeeping(db) },
+  // E7-01 预聚合物化（夜间全量重建，幂等 upsert）——BI 秒开 + 交期波动喂给安全库存
+  { name: "rollup", everyMs: 24 * HOUR_MS, run: (db) => runRollup(db) },
   // 参考数据新鲜度看门狗（开/关 review_items 幂等）
   { name: "data-freshness", everyMs: 24 * HOUR_MS, run: (db) => runFreshnessCheck(db) },
   // 单据时效看门狗（等待态停留超阈值 → review_items，离开态自动关闭）

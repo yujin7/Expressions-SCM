@@ -323,6 +323,30 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     arrivalsBySku.set(l.skuId, arr);
   }
 
+  /* ── E2-01+：交期波动（rollup_supplier_lead 物化结果）——此前因热路径开销未接入，
+        E7-01 预聚合落地后改为一次批量读取，安全库存自此计入交期不确定性。
+        同 SKU 多供应商时取样本最多的一条（最有代表性）。 ── */
+  const leadStdevBySku = new Map<number, number>();
+  {
+    const rows: { skuId: number; stdev: string | null; samples: number }[] = await db
+      .select({
+        skuId: schema.rollupSupplierLead.skuId,
+        stdev: schema.rollupSupplierLead.leadStdevDays,
+        samples: schema.rollupSupplierLead.samples,
+      })
+      .from(schema.rollupSupplierLead)
+      .where(inArray(schema.rollupSupplierLead.skuId, skuIds));
+    const bestSamples = new Map<number, number>();
+    for (const r of rows) {
+      if (r.stdev == null) continue;
+      const prev = bestSamples.get(r.skuId) ?? -1;
+      if (r.samples > prev) {
+        bestSamples.set(r.skuId, r.samples);
+        leadStdevBySku.set(r.skuId, num(r.stdev));
+      }
+    }
+  }
+
   /* ── E2-01：安全库存参数（服务水平/兜底天数），分域解析器（sku>brand>segment>global） ── */
   const serviceLevel = await getNumParam("service_level_pct", 95, dbArg);
   const resolveSafetyDays = await makeResolver("safety_days_fallback", 7, dbArg);
@@ -366,6 +390,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       monthly: seriesBySku.get(s.id) ?? [],
       daily: dailyNum,
       leadDays,
+      leadDaysStdev: leadStdevBySku.get(s.id) ?? 0, // 交期波动（无历史样本=0，退化为确定性交期）
       serviceLevel: String(serviceLevel),
       fallbackDays: safetyDays.value,
     });

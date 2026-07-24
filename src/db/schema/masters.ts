@@ -118,6 +118,8 @@ export const priceLists = pgTable("price_lists", {
   skuId: integer("sku_id").notNull().references(() => skus.id),
   supplierId: integer("supplier_id").notNull().references(() => suppliers.id),
   price: numeric("price", { precision: 14, scale: 2 }).notNull(), // 基础单位未税价
+  /** E1-10 币种地基：默认 CNY；海外业务（覆盖缺口已证实存在）落地前的前置字段 */
+  currency: text("currency").notNull().default("CNY"),
   channelId: integer("channel_id"), // D11 渠道价字段（空=默认价；应用层 FK→channels，避免循环 import）
   effectiveDate: date("effective_date").notNull(),
 }, (t) => [unique("uq_price_sku_sup_chan_date").on(t.skuId, t.supplierId, t.channelId, t.effectiveDate).nullsNotDistinct()]);
@@ -151,6 +153,7 @@ export const skuCosts = pgTable("sku_costs", {
   id: serial("id").primaryKey(),
   skuId: integer("sku_id").notNull().references(() => skus.id).unique(),
   unitCost: numeric("unit_cost", { precision: 14, scale: 4 }).notNull(), // 基础单位成本
+  currency: text("currency").notNull().default("CNY"), // E1-10
   note: text("note"),
   updatedBy: integer("updated_by"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

@@ -133,6 +133,9 @@ export const jgDocs = pgTable("jg_docs", {
   feeRateCurrent: numeric("fee_rate_current", { precision: 14, scale: 2 }).notNull(), // 结算取价来源（PC 可改，分段计价）
   orderType: text("order_type"), // 同 WO（NPD 钩子）
   inProduction: boolean("in_production").notNull().default(false), // 生产中标记
+  /** E4-05 工厂扫码回报：JG 打印带码，工厂扫码开公开页报开工/完工（复用供应商门户 token 模式） */
+  reportToken: text("report_token"),
+  reportTokenExpiresAt: timestamp("report_token_expires_at", { withTimezone: true }),
   confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
   confirmedBy: integer("confirmed_by").references(() => users.id),
   confirmNote: text("confirm_note"),
