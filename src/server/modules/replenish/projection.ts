@@ -35,11 +35,19 @@ export interface SkuProjection extends ProjectionResult {
   today: string;
 }
 
+/** #4 沙盘覆盖：假设一批到货 / 覆盖日均，看曲线如何变化（不落库，纯推演） */
+export interface ProjectionScenario {
+  extraInboundQty?: number;
+  extraInboundDate?: string; // YYYY-MM-DD
+  dailyOverride?: number; // 覆盖日均消耗（如大促预估）
+}
+
 export async function getSkuProjection(
   skuCodeOrId: string | number,
   horizonDays = 120,
   dbArg?: AnyDb,
-): Promise<SkuProjection> {
+  scenario?: ProjectionScenario,
+): Promise<SkuProjection & { scenarioApplied: boolean }> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const today = todayShanghai();
 
@@ -111,16 +119,27 @@ export async function getSkuProjection(
   const [sp] = await db.select({ normalLeadDays: schema.skuParams.normalLeadDays }).from(schema.skuParams).where(eq(schema.skuParams.skuId, skuId));
   const leadDays = sp?.normalLeadDays ?? null;
 
-  const proj = projectInventory({ today, startOnHand, daily, arrivals, horizonDays: horizonDays, leadDays });
+  // #4 沙盘覆盖
+  let scenarioApplied = false;
+  const effArrivals = arrivals.slice();
+  if (scenario?.extraInboundQty && scenario.extraInboundQty > 0 && scenario.extraInboundDate) {
+    effArrivals.push({ date: scenario.extraInboundDate, qty: scenario.extraInboundQty });
+    scenarioApplied = true;
+  }
+  const effDaily = scenario?.dailyOverride != null && scenario.dailyOverride >= 0 ? scenario.dailyOverride : daily;
+  if (scenario?.dailyOverride != null && scenario.dailyOverride !== daily) scenarioApplied = true;
+
+  const proj = projectInventory({ today, startOnHand, daily: effDaily, arrivals: effArrivals, horizonDays, leadDays });
   return {
     ...proj,
     skuId,
     code: sku.code,
     name: sku.name,
     startOnHand: Math.round(startOnHand * 100) / 100,
-    daily: Math.round(daily * 100) / 100,
+    daily: Math.round(effDaily * 100) / 100,
     leadDays,
     undatedInbound: Math.round(undated * 100) / 100,
     today,
+    scenarioApplied,
   };
 }

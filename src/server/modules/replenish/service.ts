@@ -20,6 +20,7 @@ import * as schema from "@/db/schema";
 import { dAdd, dCmp, dDiv, dMul, dQty, dSub } from "@/server/core/decimal";
 import { suggestQty } from "@/server/rules/netreq";
 import { belowLeadtime, detectRefGap, fuseCover, shouldSuppressSuggest } from "@/server/rules/fusion";
+import { forecastDaily } from "@/server/rules/forecast";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
 import { createBh } from "@/server/modules/outsource/bh";
@@ -98,6 +99,10 @@ export interface ReplenishRow {
   belowLead: boolean;
   /** 被抑制时的「原始建议量」——人工核实覆盖缺口后可勾选放行（#2 修复） */
   heldQty: string | null;
+  /** #2 预测日均（Holt 近6月，展示口径） */
+  forecastDaily: number;
+  /** 预测趋势 up/down/flat */
+  forecastTrend: "up" | "down" | "flat";
 }
 
 export interface ReplenishResult {
@@ -199,6 +204,25 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     : [];
   const sales3mBySku = new Map<number, string>(salesRows.map((r) => [r.skuId, r.qty ?? "0"]));
 
+  /* ── #2 预测：近6月序列 → Holt 线性预测日均（展示层，供人工判断，不驱动建议量） ── */
+  const months6 = maxYm ? lastMonths(maxYm, 6) : [];
+  const monthIdx = new Map(months6.map((m, i) => [m, i]));
+  const seriesBySku = new Map<number, number[]>();
+  if (months6.length) {
+    const monthlyRows: { skuId: number; ym: string; qty: string | null }[] = await db
+      .select({ skuId: sm.skuId, ym: sm.yearMonth, qty: sql<string | null>`sum(${sm.qty})` })
+      .from(sm)
+      .where(and(inArray(sm.skuId, skuIds), inArray(sm.yearMonth, months6)))
+      .groupBy(sm.skuId, sm.yearMonth);
+    for (const r of monthlyRows) {
+      const i = monthIdx.get(r.ym);
+      if (i == null) continue;
+      let arr = seriesBySku.get(r.skuId);
+      if (!arr) { arr = new Array(months6.length).fill(0); seriesBySku.set(r.skuId, arr); }
+      arr[i] = num(r.qty);
+    }
+  }
+
   /* ── 全口径参考：transit_refs kind=stock_summary（总库存明细，只参考不入账） ── */
   const tr = schema.transitRefs;
   const refRows: { skuId: number | null; qty: string | null; inboundQty: string | null; progress: string | null }[] = await db
@@ -251,6 +275,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     const dailyDec = dCmp(sales3m, "0") > 0 ? dDiv(sales3m, "91", 6) : "0";
     const dailyNum = num(dailyDec);
     const cover = dailyNum > 0 ? (num(onHand) + num(inTransit)) / dailyNum : null;
+    const fc = forecastDaily(seriesBySku.get(s.id) ?? []);
 
     /* 全口径融合（rules/fusion.ts）：参考只调高在库认知，绝不调低 */
     const ref = refBySku.get(s.id);
@@ -305,6 +330,8 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       suppressReason,
       belowLead: belowLeadtime(cover, leadDays),
       heldQty,
+      forecastDaily: fc.forecastDaily,
+      forecastTrend: fc.trend,
       _cover: coverFull ?? cover, // #1 修复：排序用全管道口径——覆盖缺口误报不再霸榜
     };
   });
@@ -338,6 +365,8 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     suppressReason: r.suppressReason,
     belowLead: r.belowLead,
     heldQty: r.heldQty,
+    forecastDaily: r.forecastDaily,
+    forecastTrend: r.forecastTrend,
   }));
   return { rows, total: all.length, meta: { coverDaysTarget, minCoverAlert, months3, snapDate, suggestCount, refDate, suppressedCount } };
 }

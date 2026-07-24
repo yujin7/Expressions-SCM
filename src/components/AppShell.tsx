@@ -40,6 +40,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/report/risk", label: "风险库存处置" },
       { key: "/report/segmentation", label: "库存分层 ABC/XYZ" },
       { key: "/report/closed-loop", label: "建议闭环追踪" },
+      { key: "/report/auto-replenish", label: "自动补货候选" },
       { key: "/outsource/auto-chain", label: "自动链预演" },
     ],
   },

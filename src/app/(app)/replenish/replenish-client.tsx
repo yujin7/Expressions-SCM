@@ -40,6 +40,8 @@ interface ReplenishRow {
   suppressReason: string | null;
   belowLead: boolean;
   heldQty: string | null;
+  forecastDaily: number;
+  forecastTrend: "up" | "down" | "flat";
 }
 
 interface ReplenishResult {
@@ -193,6 +195,18 @@ export default function ReplenishClient() {
         title: "销速与判定",
         children: [
           { title: "日均销", dataIndex: "daily", width: 80, align: "right" as const },
+          {
+            title: "预测日均", dataIndex: "forecastDaily", width: 100, align: "right" as const,
+            render: (v: number, r: ReplenishRow) => {
+              const arrow = r.forecastTrend === "up" ? "↑" : r.forecastTrend === "down" ? "↓" : "→";
+              const color = r.forecastTrend === "up" ? "#cf1322" : r.forecastTrend === "down" ? "#3f8600" : "#888";
+              return (
+                <Tooltip title="Holt 线性预测（近6月，捕捉趋势）——供人工判断，不驱动建议量">
+                  <span style={{ color }}>{v} {arrow}</span>
+                </Tooltip>
+              );
+            },
+          },
           {
             title: "可销(系统)", dataIndex: "daysCover", width: 105, align: "right" as const,
             render: (v: number | null, r: ReplenishRow) => {

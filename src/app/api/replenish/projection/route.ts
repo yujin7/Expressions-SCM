@@ -11,7 +11,12 @@ export async function GET(req: NextRequest) {
     if (!sku) throw new Error("缺少 sku 参数");
     const horizon = Math.min(365, Math.max(14, Number(sp.get("horizon") ?? 120) || 120));
     const idNum = /^\d+$/.test(sku) ? Number(sku) : sku;
-    return NextResponse.json(await getSkuProjection(idNum, horizon));
+    const scenario = {
+      extraInboundQty: sp.get("extraQty") ? Number(sp.get("extraQty")) : undefined,
+      extraInboundDate: sp.get("extraDate") ?? undefined,
+      dailyOverride: sp.get("dailyOverride") ? Number(sp.get("dailyOverride")) : undefined,
+    };
+    return NextResponse.json(await getSkuProjection(idNum, horizon, undefined, scenario));
   } catch (e) {
     return errorResponse(e);
   }

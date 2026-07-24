@@ -1,8 +1,9 @@
 "use client";
 
 /** #1 库存未来曲线抽屉：projected on-hand 逐日曲线 + 断货日/建议下单日标注（对标 Kinaxis projected on-hand）。 */
-import { useEffect, useState } from "react";
-import { Alert, App, Drawer, Empty, Space, Spin, Statistic, Tag, Typography } from "antd";
+import { useCallback, useEffect, useState } from "react";
+import { Alert, App, Button, Card, DatePicker, Drawer, Empty, InputNumber, Space, Spin, Statistic, Tag, Typography } from "antd";
+import type { Dayjs } from "dayjs";
 import {
   Area,
   AreaChart,
@@ -34,18 +35,39 @@ export default function ProjectionDrawer({
   onClose: () => void;
 }) {
   const { message } = App.useApp();
-  const [data, setData] = useState<Projection | null>(null);
+  const [data, setData] = useState<(Projection & { scenarioApplied?: boolean }) | null>(null);
   const [loading, setLoading] = useState(false);
+  // #4 沙盘参数
+  const [extraQty, setExtraQty] = useState<number | null>(null);
+  const [extraDate, setExtraDate] = useState<Dayjs | null>(null);
+  const [dailyOverride, setDailyOverride] = useState<number | null>(null);
+
+  const fetchProj = useCallback(
+    (scenario?: { extraQty?: number | null; extraDate?: Dayjs | null; dailyOverride?: number | null }) => {
+      if (!skuCode) return;
+      setLoading(true);
+      const p = new URLSearchParams({ sku: skuCode, horizon: "120" });
+      if (scenario?.extraQty && scenario.extraDate) {
+        p.set("extraQty", String(scenario.extraQty));
+        p.set("extraDate", scenario.extraDate.format("YYYY-MM-DD"));
+      }
+      if (scenario?.dailyOverride != null) p.set("dailyOverride", String(scenario.dailyOverride));
+      fetchJson<Projection & { scenarioApplied?: boolean }>(`/api/replenish/projection?${p.toString()}`)
+        .then(setData)
+        .catch((e) => message.error((e as Error).message))
+        .finally(() => setLoading(false));
+    },
+    [skuCode, message],
+  );
 
   useEffect(() => {
     if (!open || !skuCode) return;
-    setLoading(true);
     setData(null);
-    fetchJson<Projection>(`/api/replenish/projection?sku=${encodeURIComponent(skuCode)}&horizon=120`)
-      .then(setData)
-      .catch((e) => message.error((e as Error).message))
-      .finally(() => setLoading(false));
-  }, [open, skuCode, message]);
+    setExtraQty(null);
+    setExtraDate(null);
+    setDailyOverride(null);
+    fetchProj();
+  }, [open, skuCode, fetchProj]);
 
   return (
     <Drawer
@@ -114,6 +136,31 @@ export default function ProjectionDrawer({
               </AreaChart>
             </ResponsiveContainer>
           </div>
+          <Card size="small" title="What-if 沙盘（不落库，仅推演）" style={{ background: "#fafafa" }}>
+            <Space wrap align="end">
+              <div>
+                <div style={{ fontSize: 12, color: "#888" }}>假设到货量</div>
+                <InputNumber min={0} value={extraQty} onChange={setExtraQty} style={{ width: 120 }} placeholder="件数" />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: "#888" }}>到货日</div>
+                <DatePicker value={extraDate} onChange={setExtraDate} />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: "#888" }}>覆盖日均（如大促）</div>
+                <InputNumber min={0} value={dailyOverride} onChange={setDailyOverride} style={{ width: 120 }} placeholder={String(data.daily)} />
+              </div>
+              <Button type="primary" onClick={() => fetchProj({ extraQty, extraDate, dailyOverride })}>
+                推演
+              </Button>
+              <Button
+                onClick={() => { setExtraQty(null); setExtraDate(null); setDailyOverride(null); fetchProj(); }}
+              >
+                重置
+              </Button>
+              {data.scenarioApplied ? <Tag color="purple">沙盘结果</Tag> : null}
+            </Space>
+          </Card>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             口径：投影在库 = 当前在库 + 各日到货（有确认到货日的 PO/存量在途）− 日均消耗；曲线可为负（真实缺口，不夹到 0）。基准日 {data.today}。
           </Typography.Text>
