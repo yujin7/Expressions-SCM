@@ -8,11 +8,15 @@
 import { getDbAsync } from "@/db";
 import { runReconcileJst, shanghaiToday } from "./reconcile-jst";
 import { runLicenseAlert } from "./license-alert";
+import { runSnapshotAgeAlert } from "./snapshot-age";
+import { runExportWorkerOnce } from "./export-worker";
 import { stageJstDaily } from "@/server/import/adapters/jst-daily";
 
 const USAGE = `用法:
   npx tsx src/jobs/cli.ts reconcile-jst [YYYY-MM-DD]     缺省=昨日（Asia/Shanghai）
   npx tsx src/jobs/cli.ts license-alert [YYYY-MM-DD]     缺省=今日
+  npx tsx src/jobs/cli.ts snapshot-age [YYYY-MM-DD] [阈值天数=3]
+  npx tsx src/jobs/cli.ts export-worker                  处理一批待办导出任务
   npx tsx src/jobs/cli.ts stage-jst <file.xlsx|csv> <userId>`;
 
 async function main(): Promise<void> {
@@ -26,6 +30,19 @@ async function main(): Promise<void> {
     case "license-alert":
       out = await runLicenseAlert(db, args[0]);
       break;
+    case "snapshot-age":
+      out = await runSnapshotAgeAlert(db, {
+        today: args[0],
+        thresholdDays: args[1] !== undefined ? Number(args[1]) : undefined,
+      });
+      break;
+    case "export-worker": {
+      const results = [];
+      let r;
+      while ((r = await runExportWorkerOnce(db))) results.push(r);
+      out = { processed: results.length, results };
+      break;
+    }
     case "stage-jst": {
       const [file, userId] = args;
       if (!file || !Number.isInteger(Number(userId)) || Number(userId) <= 0) {

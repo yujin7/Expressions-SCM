@@ -77,7 +77,33 @@ async function latestSnapshotRows(db: AnyDb): Promise<{ warehouseId: number; sku
   return rows.map((r) => ({ ...r, qty: num(r.qty) }));
 }
 
+/* ── 模块级 60s 缓存 ──
+ * 键必须含角色（结算金额块按角色裁剪——admin/finance 与其他角色的报文不同形）；
+ * 仅在 dbArg 为空（生产 route 路径）且非测试环境时启用——测试传 db、口径校验须见实时数据。 */
+interface DashboardCacheEntry {
+  value: DashboardData;
+  expiresAt: number;
+}
+const dashboardCache = new Map<string, DashboardCacheEntry>();
+const DASHBOARD_TTL_MS = 60_000;
+
+export function clearDashboardCache(): void {
+  dashboardCache.clear();
+}
+
 export async function getDashboard(roles: string[], dbArg?: AnyDb): Promise<DashboardData> {
+  const bypass = dbArg !== undefined || process.env.NODE_ENV === "test";
+  const key = [...roles].sort().join(",");
+  if (!bypass) {
+    const hit = dashboardCache.get(key);
+    if (hit && hit.expiresAt > Date.now()) return hit.value;
+  }
+  const value = await computeDashboard(roles, dbArg);
+  if (!bypass) dashboardCache.set(key, { value, expiresAt: Date.now() + DASHBOARD_TTL_MS });
+  return value;
+}
+
+async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<DashboardData> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const today = new Date();
 

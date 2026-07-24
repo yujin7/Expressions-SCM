@@ -1,12 +1,14 @@
 "use client";
 
+import { useState } from "react";
 import { App, Button, Form, Input, InputNumber, Popconfirm, Space, Table, Tag, Typography } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
 import CrudTable from "@/components/CrudTable";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import RemoteSelect from "@/components/RemoteSelect";
 import { BOM_STATUS_COLORS, BOM_STATUS_LABELS } from "@/components/labels";
-import { fetchJson } from "@/components/fetchJson";
+import { postJson } from "@/components/fetchJson";
+import BomDiffDrawer from "./bom-diff-drawer";
 
 interface BomLineRow {
   id: number;
@@ -63,7 +65,39 @@ function LinesTable({ lines }: { lines: BomLineRow[] }) {
 export default function BomClient() {
   const me = useMe();
   const canWrite = hasAnyRole(me, "pmc");
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
+  const [diffTarget, setDiffTarget] = useState<BomRow | null>(null);
+
+  /** FEATURE 5：委外仓结存拦截（409）→ 二次确认后 force 重试 */
+  const activate = async (record: BomRow, reload: () => void) => {
+    try {
+      await postJson(`/api/master/bom/${record.id}/activate`, {});
+      message.success("BOM 已生效");
+      reload();
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (msg.includes("在委外仓仍有结存")) {
+        modal.confirm({
+          title: "委外仓仍有被移除物料的结存",
+          content: `${msg}。确认强制生效？（将记录审计）`,
+          okText: "强制生效",
+          okButtonProps: { danger: true },
+          cancelText: "取消",
+          onOk: async () => {
+            try {
+              await postJson(`/api/master/bom/${record.id}/activate`, { force: true });
+              message.success("BOM 已强制生效");
+              reload();
+            } catch (e2) {
+              message.error((e2 as Error).message);
+            }
+          },
+        });
+      } else {
+        message.error(msg);
+      }
+    }
+  };
 
   return (
     <div>
@@ -111,29 +145,26 @@ export default function BomClient() {
             leadTimeDays: l.leadTimeDays,
           })),
         })}
-        rowActions={(record, reload) =>
-          record.status === "draft" ? (
-            <Popconfirm
-              title="确认生效该 BOM？"
-              description="同产品的其他生效版本将自动置为停用"
-              okText="生效"
-              cancelText="取消"
-              onConfirm={async () => {
-                try {
-                  await fetchJson(`/api/master/bom/${record.id}/activate`, { method: "POST" });
-                  message.success("BOM 已生效");
-                  reload();
-                } catch (e) {
-                  message.error((e as Error).message);
-                }
-              }}
-            >
-              <Button type="link" size="small">
-                生效
-              </Button>
-            </Popconfirm>
-          ) : null
-        }
+        rowActions={(record, reload) => (
+          <>
+            {record.status === "draft" && (
+              <Popconfirm
+                title="确认生效该 BOM？"
+                description="同产品的其他生效版本将自动置为停用"
+                okText="生效"
+                cancelText="取消"
+                onConfirm={() => void activate(record, reload)}
+              >
+                <Button type="link" size="small">
+                  生效
+                </Button>
+              </Popconfirm>
+            )}
+            <Button type="link" size="small" onClick={() => setDiffTarget(record)}>
+              版本对比
+            </Button>
+          </>
+        )}
         formItems={() => (
           <>
             <Form.Item
@@ -224,6 +255,12 @@ export default function BomClient() {
             </Form.List>
           </>
         )}
+      />
+      <BomDiffDrawer
+        bomId={diffTarget?.id ?? null}
+        title={diffTarget ? `${diffTarget.productSkuCode} ${diffTarget.productName} ${diffTarget.versionNo}` : ""}
+        open={!!diffTarget}
+        onClose={() => setDiffTarget(null)}
       />
     </div>
   );

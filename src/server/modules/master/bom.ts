@@ -1,5 +1,7 @@
-import { and, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
-import { getDbAsync, schema } from "@/db";
+import { and, asc, desc, eq, ilike, inArray, lt, ne, or, sql } from "drizzle-orm";
+import { getDbAsync, schema, type DB } from "@/db";
+import { writeAudit } from "@/server/core/audit";
+import { dCmp } from "@/server/core/decimal";
 import { ApiError, todayShanghai } from "./common";
 import { bomSchema } from "./schemas";
 
@@ -158,8 +160,9 @@ export async function updateBom(id: number, input: unknown) {
 export async function activateBom(
   id: number,
   approver: { id: number; roles: string[]; isApprover: boolean },
+  opts: { force?: boolean; db?: DB } = {},
 ) {
-  const db = await getDbAsync();
+  const db = opts.db ?? (await getDbAsync());
   return db.transaction(async (tx) => {
     const [bom] = await tx.select().from(schema.boms).where(eq(schema.boms.id, id));
     if (!bom) throw new ApiError(404, "BOM 不存在");
@@ -169,6 +172,58 @@ export async function activateBom(
     if (!isAdmin && !approver.isApprover) throw new ApiError(403, "仅审批人可生效 BOM");
     if (bom.createdBy != null && bom.createdBy === approver.id) {
       throw new ApiError(403, "职责分离：不可生效本人创建的 BOM");
+    }
+    // FEATURE 5 物料流动效检查：新版本移除的物料若在委外仓仍有结存（垫料/在制），
+    // 直接切版会造成发料口径与现场物料脱节——默认拦截，force=true 显式放行并留审计。
+    const [outgoing] = await tx
+      .select({ id: schema.boms.id, versionNo: schema.boms.versionNo })
+      .from(schema.boms)
+      .where(
+        and(
+          eq(schema.boms.productSkuId, bom.productSkuId),
+          eq(schema.boms.status, "active"),
+          ne(schema.boms.id, id),
+        ),
+      );
+    if (outgoing) {
+      const [oldLines, newLines] = await Promise.all([
+        tx.select({ skuId: schema.bomLines.materialSkuId }).from(schema.bomLines).where(eq(schema.bomLines.bomId, outgoing.id)),
+        tx.select({ skuId: schema.bomLines.materialSkuId }).from(schema.bomLines).where(eq(schema.bomLines.bomId, id)),
+      ]);
+      const kept = new Set(newLines.map((l) => l.skuId));
+      const removed = [...new Set(oldLines.map((l) => l.skuId))].filter((s) => !kept.has(s));
+      if (removed.length) {
+        const stuck = await tx
+          .selectDistinct({ code: schema.skus.code })
+          .from(schema.stockBalances)
+          .innerJoin(schema.warehouses, eq(schema.stockBalances.warehouseId, schema.warehouses.id))
+          .innerJoin(schema.skus, eq(schema.stockBalances.skuId, schema.skus.id))
+          .where(
+            and(
+              eq(schema.warehouses.kind, "outsource"),
+              inArray(schema.stockBalances.skuId, removed),
+              sql`${schema.stockBalances.qty} <> 0`,
+            ),
+          )
+          .orderBy(schema.skus.code);
+        if (stuck.length) {
+          const codes = stuck.slice(0, 5).map((s) => s.code).join("、");
+          if (!opts.force) {
+            throw new ApiError(
+              409,
+              `新版本移除的物料 ${codes}${stuck.length > 5 ? ` 等 ${stuck.length} 项` : ""}在委外仓仍有结存（垫料/在制），请先核对物料流再生效；如确认无误可在备注注明后重试`,
+            );
+          }
+          // 显式放行：审计记录被跳过的拦截明细
+          await writeAudit(tx, {
+            userId: approver.id,
+            entity: "bom",
+            entityId: id,
+            action: "activate_forced",
+            after: { outgoingBomId: outgoing.id, outgoingVersion: outgoing.versionNo, stuckCodes: stuck.map((s) => s.code) },
+          });
+        }
+      }
     }
     await tx.insert(schema.approvals).values({
       docType: "bom", docId: id, node: 1, cycle: 0, approverId: approver.id, action: "approve",
@@ -185,4 +240,144 @@ export async function activateBom(
       .returning();
     return updated;
   });
+}
+
+/* ── FEATURE 2：BOM 版本对比 ─────────────────────────────── */
+
+export interface DiffSide {
+  id: number;
+  versionNo: string;
+  status: string;
+  effectiveDate: string | null;
+  lineCount: number;
+}
+
+interface DiffLineSnap {
+  qtyPer: string;
+  uom: string; // bom_lines.uom 缺省回落 SKU 基础单位
+  supplierId: number | null;
+  supplierName: string | null;
+}
+
+export interface BomDiffLine {
+  materialSkuId: number;
+  materialSkuCode: string;
+  materialName: string | null;
+  kind: "added" | "removed" | "changed" | "unchanged";
+  changes: ("qty" | "supplier" | "uom")[];
+  base: DiffLineSnap | null;
+  target: DiffLineSnap | null;
+}
+
+async function fetchDiffLines(db: DB, bomId: number) {
+  return db
+    .select({
+      materialSkuId: schema.bomLines.materialSkuId,
+      materialSkuCode: schema.skus.code,
+      materialName: schema.spus.nameCn,
+      baseUom: schema.skus.baseUom,
+      qtyPer: schema.bomLines.qtyPer,
+      uom: schema.bomLines.uom,
+      supplierId: schema.bomLines.preferredSupplierId,
+      supplierName: schema.suppliers.name,
+    })
+    .from(schema.bomLines)
+    .innerJoin(schema.skus, eq(schema.bomLines.materialSkuId, schema.skus.id))
+    .innerJoin(schema.spus, eq(schema.skus.spuId, schema.spus.id))
+    .leftJoin(schema.suppliers, eq(schema.bomLines.preferredSupplierId, schema.suppliers.id))
+    .where(eq(schema.bomLines.bomId, bomId))
+    .orderBy(schema.skus.code);
+}
+
+type DiffLineRow = Awaited<ReturnType<typeof fetchDiffLines>>[number];
+
+function snap(l: DiffLineRow): DiffLineSnap {
+  return { qtyPer: l.qtyPer, uom: l.uom ?? l.baseUom, supplierId: l.supplierId, supplierName: l.supplierName };
+}
+
+/**
+ * 行级版本对比：againstId 缺省取同产品的上一版本（按创建序）。
+ * 支持 retired vs active 任意同产品版本互比；跨产品拒绝。
+ */
+export async function diffBom(id: number, againstId?: number, dbOverride?: DB) {
+  const db = dbOverride ?? (await getDbAsync());
+  const [target] = await db.select().from(schema.boms).where(eq(schema.boms.id, id));
+  if (!target) throw new ApiError(404, "BOM 不存在");
+
+  // 同产品全部版本（Drawer 内切换对比基准用）
+  const siblings = await db
+    .select({
+      id: schema.boms.id,
+      versionNo: schema.boms.versionNo,
+      status: schema.boms.status,
+      effectiveDate: schema.boms.effectiveDate,
+    })
+    .from(schema.boms)
+    .where(eq(schema.boms.productSkuId, target.productSkuId))
+    .orderBy(asc(schema.boms.id));
+
+  let base: (typeof siblings)[number] | null = null;
+  if (againstId != null) {
+    base = siblings.find((s) => s.id === againstId) ?? null;
+    if (!base) throw new ApiError(400, "对比版本必须是同一成品的 BOM");
+    if (base.id === id) throw new ApiError(400, "不能与自身对比");
+  } else {
+    const prev = await db
+      .select({ id: schema.boms.id })
+      .from(schema.boms)
+      .where(and(eq(schema.boms.productSkuId, target.productSkuId), lt(schema.boms.id, id)))
+      .orderBy(desc(schema.boms.id))
+      .limit(1);
+    base = prev.length ? siblings.find((s) => s.id === prev[0].id) ?? null : null;
+  }
+
+  const [product] = await db
+    .select({ code: schema.skus.code, name: schema.spus.nameCn, spec: schema.skus.spec })
+    .from(schema.skus)
+    .innerJoin(schema.spus, eq(schema.skus.spuId, schema.spus.id))
+    .where(eq(schema.skus.id, target.productSkuId));
+
+  const targetLines = await fetchDiffLines(db, id);
+  const baseLines = base ? await fetchDiffLines(db, base.id) : [];
+  const baseMap = new Map(baseLines.map((l) => [l.materialSkuId, l]));
+  const targetMap = new Map(targetLines.map((l) => [l.materialSkuId, l]));
+
+  const lines: BomDiffLine[] = [];
+  for (const t of targetLines) {
+    const b = baseMap.get(t.materialSkuId);
+    if (!b) {
+      lines.push({
+        materialSkuId: t.materialSkuId, materialSkuCode: t.materialSkuCode, materialName: t.materialName,
+        kind: "added", changes: [], base: null, target: snap(t),
+      });
+      continue;
+    }
+    const changes: BomDiffLine["changes"] = [];
+    if (dCmp(b.qtyPer, t.qtyPer) !== 0) changes.push("qty");
+    if ((b.supplierId ?? null) !== (t.supplierId ?? null)) changes.push("supplier");
+    if ((b.uom ?? b.baseUom) !== (t.uom ?? t.baseUom)) changes.push("uom");
+    lines.push({
+      materialSkuId: t.materialSkuId, materialSkuCode: t.materialSkuCode, materialName: t.materialName,
+      kind: changes.length ? "changed" : "unchanged", changes, base: snap(b), target: snap(t),
+    });
+  }
+  for (const b of baseLines) {
+    if (targetMap.has(b.materialSkuId)) continue;
+    lines.push({
+      materialSkuId: b.materialSkuId, materialSkuCode: b.materialSkuCode, materialName: b.materialName,
+      kind: "removed", changes: [], base: snap(b), target: null,
+    });
+  }
+  lines.sort((a, c) => a.materialSkuCode.localeCompare(c.materialSkuCode));
+
+  const side = (h: { id: number; versionNo: string; status: string; effectiveDate: string | null } | null, count: number): DiffSide | null =>
+    h ? { id: h.id, versionNo: h.versionNo, status: h.status, effectiveDate: h.effectiveDate, lineCount: count } : null;
+
+  return {
+    product: { skuId: target.productSkuId, code: product?.code ?? "", name: product?.name ?? "", spec: product?.spec ?? null },
+    target: side({ id: target.id, versionNo: target.versionNo, status: target.status, effectiveDate: target.effectiveDate }, targetLines.length)!,
+    base: side(base, baseLines.length),
+    siblings,
+    lines,
+  };
 }

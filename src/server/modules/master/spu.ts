@@ -96,3 +96,90 @@ export async function updateSpu(id: number, input: unknown) {
     .returning();
   return updated;
 }
+
+/* ── FEATURE 3：SPU 批量归组 ─────────────────────────────── */
+
+import { inArray } from "drizzle-orm";
+import { z } from "zod";
+import type { DB } from "@/db";
+import { writeAudit } from "@/server/core/audit";
+
+const regroupSchema = z.object({
+  skuIds: z.array(z.number().int().positive()).min(1, "至少选择一个 SKU").max(500, "单次最多 500 个"),
+  mode: z.literal("move-in"),
+});
+
+/** SPU 成员 SKU 列表（含 needsReview 徽标数据） */
+export async function listSpuMembers(spuId: number, dbOverride?: DB) {
+  const db = dbOverride ?? (await getDbAsync());
+  const [spu] = await db.select().from(schema.spus).where(eq(schema.spus.id, spuId));
+  if (!spu) throw new ApiError(404, "SPU 不存在");
+  const rows = await db
+    .select({
+      id: schema.skus.id,
+      code: schema.skus.code,
+      name: schema.skus.name,
+      skuType: schema.skus.skuType,
+      baseUom: schema.skus.baseUom,
+      spec: schema.skus.spec,
+      active: schema.skus.active,
+      attrs: schema.skus.attrs,
+    })
+    .from(schema.skus)
+    .where(eq(schema.skus.spuId, spuId))
+    .orderBy(schema.skus.code);
+  return {
+    data: rows.map((r) => {
+      const attrs = (r.attrs ?? {}) as { needsReview?: unknown };
+      const needsReview = Array.isArray(attrs.needsReview) ? (attrs.needsReview as string[]) : [];
+      return { ...r, attrs: undefined, needsReview };
+    }),
+    total: rows.length,
+  };
+}
+
+/**
+ * 批量归组：把 SKU 移入本 SPU（含从其他 SPU 移出的语义——目标即本 SPU）。
+ * 归组完成即消除该 SKU 的 attrs.needsReview 中的 "spu" 标记（人工已裁决）。
+ */
+export async function regroupSkus(user: { id: number }, spuId: number, input: unknown, dbOverride?: DB) {
+  const v = regroupSchema.parse(input);
+  const db = dbOverride ?? (await getDbAsync());
+  return db.transaction(async (tx) => {
+    const [spu] = await tx.select().from(schema.spus).where(eq(schema.spus.id, spuId));
+    if (!spu) throw new ApiError(404, "SPU 不存在");
+    const skuIds = [...new Set(v.skuIds)];
+    const rows = await tx
+      .select({ id: schema.skus.id, code: schema.skus.code, spuId: schema.skus.spuId, attrs: schema.skus.attrs })
+      .from(schema.skus)
+      .where(inArray(schema.skus.id, skuIds));
+    const found = new Set(rows.map((r) => r.id));
+    const missing = skuIds.filter((i) => !found.has(i));
+    if (missing.length) throw new ApiError(400, `SKU 不存在：${missing.join("、")}`);
+
+    const before: Record<string, number> = {};
+    let moved = 0;
+    for (const r of rows.sort((a, b) => a.id - b.id)) {
+      before[r.code] = r.spuId;
+      const attrs = (r.attrs ?? null) as Record<string, unknown> | null;
+      let nextAttrs = attrs;
+      if (attrs && Array.isArray(attrs.needsReview) && (attrs.needsReview as unknown[]).includes("spu")) {
+        nextAttrs = { ...attrs, needsReview: (attrs.needsReview as string[]).filter((x) => x !== "spu") };
+      }
+      await tx
+        .update(schema.skus)
+        .set({ spuId, ...(nextAttrs !== attrs ? { attrs: nextAttrs } : {}), updatedAt: new Date() })
+        .where(eq(schema.skus.id, r.id));
+      moved += 1;
+    }
+    await writeAudit(tx, {
+      userId: user.id,
+      entity: "spu",
+      entityId: spuId,
+      action: "regroup",
+      before: { memberSpuIds: before },
+      after: { spuId, spuCode: spu.code, skuIds },
+    });
+    return { moved, spuId };
+  });
+}

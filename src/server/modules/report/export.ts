@@ -73,3 +73,197 @@ export function fmtShanghai(v: Date | string | null | undefined): string {
   if (Number.isNaN(d.getTime())) return String(v);
   return SH_TZ_FMT.format(d);
 }
+
+/* ── 导出种类注册表（UAT 缺口 #4：同步路由与异步 worker 共享行生产器） ───────── */
+
+import {
+  DOC_STATUS_LABELS, LEDGER_SOURCE_LABELS, STOCK_SUBTYPE_LABELS, WAREHOUSE_KIND_LABELS,
+} from "@/components/labels";
+import type { SessionUser } from "@/server/core/dto";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyDb = any;
+
+/** 同步导出上限：超过即改走异步导出任务（CLAUDE.md：>5000 行走异步） */
+export const SYNC_EXPORT_MAX = 5000;
+
+export type ExportParams = Record<string, unknown>;
+
+export interface ExportProduceResult {
+  /** 已完成标签映射/时间格式化的行（列剥离由调用方按角色做） */
+  rows: Record<string, unknown>[];
+  columns: CsvColumn[];
+  total: number;
+}
+
+export interface ExportKindDef {
+  /** 文件名/UI 展示用中文名 */
+  nameCn: string;
+  /** 创建异步任务所需角色（undefined=任意登录用户；admin 恒兜底放行） */
+  roles?: readonly string[];
+  /** 同步路由查询串 → 任务 params（JSON 可序列化） */
+  paramsFromSearch: (sp: URLSearchParams) => ExportParams;
+  produce: (user: SessionUser, params: ExportParams, cap: number, db?: AnyDb) => Promise<ExportProduceResult>;
+}
+
+const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+const num = (v: unknown): number | undefined => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+};
+
+export const EXPORT_KINDS: Record<string, ExportKindDef> = {
+  balance: {
+    nameCn: "库存余额",
+    paramsFromSearch: (sp) => ({
+      q: (sp.get("q") ?? "").trim(),
+      warehouseId: Number(sp.get("warehouseId")) || undefined,
+      nonzero: sp.get("nonzero") !== "0",
+    }),
+    async produce(_user, params, cap, db) {
+      const { listBalances } = await import("@/server/modules/inventory/queries");
+      const { rows, total } = await listBalances(
+        { q: str(params.q) ?? "", warehouseId: num(params.warehouseId), nonzero: params.nonzero !== false, page: 1, pageSize: cap },
+        db,
+      );
+      const data = (rows as Record<string, unknown>[]).map((r) => ({
+        ...r,
+        warehouseKind: WAREHOUSE_KIND_LABELS[String(r.warehouseKind)] ?? r.warehouseKind,
+      }));
+      return {
+        rows: data,
+        total,
+        columns: [
+          { key: "skuCode", title: "SKU编码" },
+          { key: "skuName", title: "SKU名称" },
+          { key: "spuCode", title: "产品编码" },
+          { key: "spuNameCn", title: "产品名称" },
+          { key: "warehouseName", title: "仓库" },
+          { key: "warehouseKind", title: "仓库类型" },
+          { key: "batchId", title: "批次" },
+          { key: "qty", title: "数量" },
+          { key: "baseUom", title: "基础单位" },
+        ],
+      };
+    },
+  },
+
+  ledger: {
+    nameCn: "库存流水",
+    paramsFromSearch: (sp) => ({
+      skuId: Number(sp.get("skuId")) || undefined,
+      warehouseId: Number(sp.get("warehouseId")) || undefined,
+      from: sp.get("from") ?? undefined,
+      to: sp.get("to") ?? undefined,
+    }),
+    async produce(_user, params, cap, db) {
+      const { listLedger } = await import("@/server/modules/inventory/queries");
+      const { rows, total } = await listLedger(
+        { skuId: num(params.skuId), warehouseId: num(params.warehouseId), from: str(params.from), to: str(params.to), page: 1, pageSize: cap },
+        db,
+      );
+      const data = (rows as Record<string, unknown>[]).map((r) => ({
+        ...r,
+        occurredAt: fmtShanghai(r.occurredAt as Date),
+        sourceDocType: LEDGER_SOURCE_LABELS[String(r.sourceDocType)] ?? r.sourceDocType,
+      }));
+      return {
+        rows: data,
+        total,
+        columns: [
+          { key: "occurredAt", title: "时间" },
+          { key: "skuCode", title: "SKU编码" },
+          { key: "skuName", title: "SKU名称" },
+          { key: "warehouseName", title: "仓库" },
+          { key: "qtyDelta", title: "数量±" },
+          { key: "sourceDocType", title: "来源类型" },
+          { key: "sourceDocId", title: "来源单ID" },
+          { key: "action", title: "动作" },
+        ],
+      };
+    },
+  },
+
+  "stock-docs": {
+    nameCn: "库存单据",
+    paramsFromSearch: (sp) => ({
+      q: (sp.get("q") ?? "").trim(),
+      status: sp.get("status") ?? undefined,
+      subtype: sp.get("subtype") ?? undefined,
+    }),
+    async produce(_user, params, cap, db) {
+      const { listStockDocs } = await import("@/server/modules/inventory/stock-doc");
+      const { rows, total } = await listStockDocs(
+        str(params.q) ?? "",
+        { status: str(params.status), subtype: str(params.subtype), page: 1, pageSize: cap },
+        db,
+      );
+      const data = (rows as Record<string, unknown>[]).map((r) => ({
+        ...r,
+        subtype: STOCK_SUBTYPE_LABELS[String(r.subtype)] ?? r.subtype,
+        status: DOC_STATUS_LABELS[String(r.status)] ?? r.status,
+        createdAt: fmtShanghai(r.createdAt as Date),
+      }));
+      return {
+        rows: data,
+        total,
+        columns: [
+          { key: "docNo", title: "单据号" },
+          { key: "subtype", title: "类型" },
+          { key: "status", title: "状态" },
+          { key: "warehouseName", title: "仓库" },
+          { key: "toWarehouseName", title: "转入仓" },
+          { key: "lineCount", title: "行数" },
+          { key: "createdByName", title: "制单人" },
+          { key: "createdAt", title: "创建时间" },
+        ],
+      };
+    },
+  },
+
+  "settlement-summary": {
+    nameCn: "结算汇总表",
+    roles: ["purchasing", "pmc", "finance"], // = SETTLEMENT_SUMMARY_ROLES（service 内 requireAnyRole 仍是权威）
+    paramsFromSearch: (sp) => ({
+      from: sp.get("from") ?? undefined,
+      to: sp.get("to") ?? undefined,
+      supplierId: Number(sp.get("supplierId")) || undefined,
+      status: sp.get("status") ?? undefined,
+    }),
+    async produce(user, params, cap, db) {
+      const { getSettlementSummary } = await import("@/server/modules/report/settlement-summary");
+      const { docs } = await getSettlementSummary(
+        user,
+        { from: str(params.from), to: str(params.to), supplierId: num(params.supplierId), status: str(params.status) },
+        db,
+      );
+      const total = docs.length;
+      const data = (total > cap ? docs.slice(0, cap) : docs).map((d) => ({
+        ...d,
+        status: DOC_STATUS_LABELS[d.status] ?? d.status,
+        createdAt: fmtShanghai(d.createdAt),
+      }));
+      return {
+        rows: data,
+        total,
+        columns: [
+          { key: "jsNo", title: "结算单号" },
+          { key: "jgNo", title: "加工通知单号" },
+          { key: "supplierName", title: "加工厂" },
+          { key: "goodQty", title: "合格数" },
+          { key: "concessionQty", title: "让步数" },
+          { key: "spareQty", title: "备品数" },
+          { key: "feePayable", title: "应付加工费" },
+          { key: "deductionTotal", title: "扣款合计" },
+          { key: "settleAmount", title: "结算金额" },
+          { key: "status", title: "状态" },
+          { key: "createdAt", title: "创建时间" },
+        ],
+      };
+    },
+  },
+};
+
+export const EXPORT_KIND_LABELS: Record<string, string> = Object.fromEntries(
+  Object.entries(EXPORT_KINDS).map(([k, def]) => [k, def.nameCn]),
+);

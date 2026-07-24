@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  Alert,
   App,
   Button,
   Descriptions,
@@ -75,6 +76,17 @@ interface DocDetail {
   createdAt: string;
 }
 
+/** R15 临期检查响应行（/api/inventory/expiry-check） */
+interface ExpiryCheckItem {
+  skuId: number;
+  skuCode: string;
+  thresholdDays: number;
+  nearQty: number;
+  nearBatches: number;
+  expiredQty: number;
+  minDaysLeft: number | null;
+}
+
 interface CreateFormValues {
   subtype: string;
   warehouseId: number;
@@ -133,6 +145,37 @@ export default function DocsClient() {
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const createSubtype = Form.useWatch("subtype", form);
+  const createWarehouseId = Form.useWatch("warehouseId", form);
+  const createLines = Form.useWatch("lines", form);
+
+  // R15 临期禁售拦截 v1：sales_out/transfer 明细选定 SKU 后，防抖调用 expiry-check，仅告警不阻断
+  const [expiryAlerts, setExpiryAlerts] = useState<ExpiryCheckItem[]>([]);
+  useEffect(() => {
+    const applicable = createOpen && (createSubtype === "sales_out" || createSubtype === "transfer");
+    const skuIds = applicable
+      ? [
+          ...new Set(
+            ((createLines ?? []) as { skuId?: number }[])
+              .map((l) => l?.skuId)
+              .filter((v): v is number => typeof v === "number" && v > 0),
+          ),
+        ]
+      : [];
+    if (skuIds.length === 0 || !createWarehouseId) {
+      setExpiryAlerts([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      const params = new URLSearchParams({
+        skuIds: skuIds.join(","),
+        warehouseId: String(createWarehouseId),
+      });
+      fetchJson<{ items: ExpiryCheckItem[] }>(`/api/inventory/expiry-check?${params.toString()}`)
+        .then((res) => setExpiryAlerts(res.items.filter((i) => i.nearBatches > 0)))
+        .catch(() => setExpiryAlerts([])); // 提示尽力而为，不阻断建单
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [createOpen, createSubtype, createWarehouseId, createLines]);
 
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detail, setDetail] = useState<DocDetail | null>(null);
@@ -401,6 +444,25 @@ export default function DocsClient() {
           <Form.Item name="remark" label="备注">
             <Input.TextArea rows={2} maxLength={200} />
           </Form.Item>
+          {expiryAlerts.length > 0 ? (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 8 }}
+              message="⚠ 临期/过期批次提示（R15，v1 仅提示不拦截）"
+              description={
+                <ul style={{ margin: 0, paddingLeft: 18 }}>
+                  {expiryAlerts.map((a) => (
+                    <li key={a.skuId}>
+                      编码{a.skuCode} 近效期 {a.nearQty} 件
+                      {a.expiredQty > 0 ? `（含已过期 ${a.expiredQty} 件）` : ""}
+                      （最短剩余 {a.minDaysLeft ?? "—"} 天，阈值 {a.thresholdDays} 天）——请核对批次后再出库
+                    </li>
+                  ))}
+                </ul>
+              }
+            />
+          ) : null}
           <Typography.Text strong>明细行</Typography.Text>
           <Form.List name="lines" initialValue={[{}]}>
             {(fields, { add, remove }) => (

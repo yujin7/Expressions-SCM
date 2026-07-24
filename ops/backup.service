@@ -1,0 +1,14 @@
+# 每日备份 oneshot（由 backup.timer 触发）。
+# 安装：ops/deploy.sh 的 install-backup-schedule 步骤会把 __REPO_DIR__ 替换为
+# 实际部署目录并拷贝到 /etc/systemd/system/scm-backup.service（幂等）。
+[Unit]
+Description=Supply-chain daily backup (pg_dump + uploads volume)
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=__REPO_DIR__
+# 可选环境：BACKUP_DIR / BACKUP_REMOTE（出主机目的地，01 §8 要求）
+EnvironmentFile=-__REPO_DIR__/.env.backup
+ExecStart=__REPO_DIR__/ops/backup.sh

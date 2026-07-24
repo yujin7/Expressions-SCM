@@ -1,11 +1,13 @@
 "use client";
 
-import { Form, Input, Select, Switch, Tag, Typography } from "antd";
+import { useState } from "react";
+import { Button, Form, Input, Select, Switch, Tag, Typography } from "antd";
 import CrudTable from "@/components/CrudTable";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import RemoteSelect from "@/components/RemoteSelect";
 import { LOSS_CATEGORY_LABELS, SKU_TYPE_LABELS, toOptions } from "@/components/labels";
 import { LIFECYCLE_LABELS } from "@/components/format";
+import SkuPanoramaDrawer from "./sku-panorama-drawer";
 
 interface SkuRow {
   id: number;
@@ -28,12 +30,18 @@ const SKU_TYPE_COLORS: Record<string, string> = { finished: "blue", raw: "green"
 export default function SkuClient() {
   const me = useMe();
   const canWrite = hasAnyRole(me, "pmc");
+  const [panoramaId, setPanoramaId] = useState<number | null>(null);
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
         SKU 货品
       </Typography.Title>
       <CrudTable<SkuRow>
+        rowActions={(r) => (
+          <Button type="link" size="small" onClick={() => setPanoramaId(r.id)}>
+            全景
+          </Button>
+        )}
         canCreate={canWrite}
         canEdit={() => canWrite}
         entityName="SKU"
@@ -120,6 +128,7 @@ export default function SkuClient() {
           </>
         )}
       />
+      <SkuPanoramaDrawer skuId={panoramaId} onClose={() => setPanoramaId(null)} />
     </div>
   );
 }

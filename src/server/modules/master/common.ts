@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
+import { log } from "@/server/core/logger";
 
 /** 业务错误：service 层抛出，route 层统一转 JSON */
 export class ApiError extends Error {
@@ -31,8 +32,19 @@ export function errorResponse(e: unknown): NextResponse {
   if (isUniqueViolation(e)) {
     return NextResponse.json({ error: "编码或关键字段已存在，请修改后重试" }, { status: 409 });
   }
-  console.error("[api/master] 未预期错误:", e);
-  return NextResponse.json({ error: "服务器内部错误——请截图本页面并联系管理员" }, { status: 500 });
+  // 未预期 500：生成 errorId 落结构化日志，报文回显错误码供用户转述——业务错误（ApiError）不在此收口，防日志噪音
+  const errorId = globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+  log({
+    level: "error",
+    msg: "api 未预期错误",
+    errorId,
+    error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+    stack: e instanceof Error ? e.stack : undefined,
+  });
+  return NextResponse.json(
+    { error: `系统错误，请联系管理员（错误码 ${errorId}）`, errorId },
+    { status: 500 },
+  );
 }
 
 export interface ListQuery {

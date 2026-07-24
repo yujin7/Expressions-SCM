@@ -247,4 +247,57 @@ describe("releaseBoms / activateReleasedBoms", () => {
     expect(run3.skipped).toBe(1);
     expect(run3.created).toBe(0);
   });
+
+  it("bomIds 收口：引擎外直建的 draft BOM 非放行候选，拒绝批量生效；放行链候选照常", async () => {
+    const { db } = await createTestDb();
+    const { releaser, approver } = await seedUsers(db);
+
+    // 引擎外直建（模拟单据页新建的 draft）——不在任何放行批次候选集合内
+    const [spu] = await db.insert(schema.spus).values({ code: "P90001", nameCn: "外建品" }).returning();
+    const [sku] = await db
+      .insert(schema.skus)
+      .values({ code: "Z9-x", name: "外建品", spuId: spu.id, skuType: "finished", baseUom: "件" })
+      .returning();
+    const [outside] = await db
+      .insert(schema.boms)
+      .values({ productSkuId: sku.id, versionNo: "V1", status: "draft", createdBy: releaser.id })
+      .returning();
+
+    // dry-run 同样收口（守卫先于一切写入判定）
+    await expect(
+      activateReleasedBoms(approver, { bomIds: [outside.id], dryRun: true }, db),
+    ).rejects.toThrow("非放行候选 BOM，请走单据页逐一生效审批");
+
+    // 放行链产出真候选
+    const jobId = await newJob(db);
+    await writeStagingRows(db, jobId, [
+      { rowNo: 1, targetTable: "spu_suggestion", payload: cluster("G01", ["G01-a"]) },
+      {
+        rowNo: 2,
+        targetTable: "bom_block",
+        payload: block({
+          productCode: "G01-a",
+          productName: "G01品",
+          lines: [line({ materialCode: "G01-a-0101", materialName: "料", segment: "raw_bulk" })],
+        }),
+      },
+    ]);
+    await releaseSpus(releaser, { dryRun: false }, db);
+    await releaseSkus(releaser, { dryRun: false }, db);
+    const run = await releaseBoms(releaser, { dryRun: false }, db);
+    const candidateId = run.candidates[0].bomId!;
+
+    // 混入外部 id：整体拒绝，报文列出违规 id
+    await expect(
+      activateReleasedBoms(approver, { bomIds: [candidateId, outside.id], dryRun: false }, db),
+    ).rejects.toThrow(String(outside.id));
+    expect((await db.select().from(schema.boms).where(eq(schema.boms.id, candidateId)))[0].status).toBe("draft");
+
+    // 纯候选 id：照常批审生效
+    const ok = await activateReleasedBoms(approver, { bomIds: [candidateId], dryRun: false }, db);
+    expect(ok.activated).toBe(1);
+    expect((await db.select().from(schema.boms).where(eq(schema.boms.id, candidateId)))[0].status).toBe("active");
+    // 外部 draft 始终未被触碰
+    expect((await db.select().from(schema.boms).where(eq(schema.boms.id, outside.id)))[0].status).toBe("draft");
+  });
 });

@@ -5,7 +5,7 @@
  * - 不可停用自己、不可摘除自己的 admin 角色（防锁死）；
  * - 全部写路径 writeAudit；密码 argon2id（与 seed/登录一致）。
  */
-import { hash } from "@node-rs/argon2";
+import { hash, verify } from "@node-rs/argon2";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDbAsync } from "@/db";
@@ -24,6 +24,7 @@ export interface UserRow {
   roles: string[];
   isApprover: boolean;
   active: boolean;
+  mustChangePassword: boolean;
   lockedUntil: string | null;
   createdAt: string;
 }
@@ -35,6 +36,7 @@ const toRow = (u: typeof schema.users.$inferSelect): UserRow => ({
   roles: u.roles as string[],
   isApprover: u.isApprover,
   active: u.active,
+  mustChangePassword: u.mustChangePassword,
   lockedUntil: u.lockedUntil ? u.lockedUntil.toISOString() : null,
   createdAt: u.createdAt.toISOString(),
 });
@@ -73,7 +75,14 @@ export async function createUser(actor: SessionUser, input: unknown, dbArg?: Any
   const passwordHash = await hash(v.password);
   const [row] = await db
     .insert(schema.users)
-    .values({ username: v.username, name: v.name, passwordHash, roles: v.roles, isApprover: v.isApprover })
+    .values({
+      username: v.username,
+      name: v.name,
+      passwordHash,
+      roles: v.roles,
+      isApprover: v.isApprover,
+      mustChangePassword: true, // 初始密码首登强制修改（UAT 缺口 #1）
+    })
     .returning();
   await writeAudit(db, {
     userId: actor.id,
@@ -113,6 +122,7 @@ export async function updateUser(actor: SessionUser, id: number, input: unknown,
     patch.passwordHash = await hash(v.password);
     patch.failedLogins = 0;
     patch.lockedUntil = null;
+    patch.mustChangePassword = true; // 管理员重置的临时密码：首登强制修改
   }
   const [row] = await db.update(schema.users).set(patch).where(eq(schema.users.id, id)).returning();
   await writeAudit(db, {
@@ -130,4 +140,47 @@ export async function updateUser(actor: SessionUser, id: number, input: unknown,
     },
   });
   return toRow(row);
+}
+
+/* ---------- 自助改密码（UAT 缺口 #1：任何登录用户；含首登强制修改） ---------- */
+
+export const changeOwnPasswordSchema = z.object({
+  oldPassword: z.string().min(1, "请输入原密码"),
+  newPassword: passwordSchema,
+});
+
+/**
+ * 自助改密码：校验原密码（argon2 verify），新密码 ≥8 位且须与原密码不同；
+ * 成功后清除 mustChangePassword / failedLogins / lockedUntil。
+ * 审计仅记事件，绝不落任何密码明文或哈希。
+ */
+export async function changeOwnPassword(userId: number, input: unknown, dbArg?: AnyDb): Promise<void> {
+  const v = changeOwnPasswordSchema.parse(input);
+  const db: AnyDb = dbArg ?? (await getDbAsync());
+  const [u]: (typeof schema.users.$inferSelect)[] = await db
+    .select()
+    .from(schema.users)
+    .where(eq(schema.users.id, userId));
+  if (!u || !u.active) throw new ApiError(401, "账号已停用或不存在");
+  if (!u.passwordHash) throw new ApiError(400, "该账号未设置本地密码（飞书账号请走飞书登录）");
+  const ok = await verify(u.passwordHash, v.oldPassword);
+  if (!ok) throw new ApiError(400, "原密码不正确");
+  if (v.oldPassword === v.newPassword) throw new ApiError(400, "新密码不能与原密码相同");
+  await db
+    .update(schema.users)
+    .set({
+      passwordHash: await hash(v.newPassword),
+      mustChangePassword: false,
+      failedLogins: 0,
+      lockedUntil: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.users.id, userId));
+  await writeAudit(db, {
+    userId,
+    entity: "user",
+    entityId: userId,
+    action: "change_password",
+    after: { selfService: true },
+  });
 }

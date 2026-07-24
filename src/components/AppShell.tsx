@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { App as AntApp, Avatar, Layout, Menu, Space, Typography, theme } from "antd";
+import { App as AntApp, Avatar, Button, Layout, Menu, Modal, Space, Typography, theme } from "antd";
 import type { MenuProps } from "antd";
 import {
   ApartmentOutlined,
@@ -30,6 +30,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/master/supplier", label: "供应商" },
       { key: "/master/warehouse", label: "仓库" },
       { key: "/master/bom", label: "BOM" },
+      { key: "/master/feeref", label: "加工费参考价" },
     ],
   },
   {
@@ -48,6 +49,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/matflow/ct", label: "采购退货" },
       { key: "/settlement/js", label: "结算单" },
       { key: "/jobs/recon", label: "对账差异" },
+      { key: "/replenish", label: "补货建议" },
     ],
   },
   {
@@ -58,6 +60,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/inventory/balance", label: "库存余额" },
       { key: "/inventory/ledger", label: "库存流水" },
       { key: "/inventory/docs", label: "库存单据" },
+      { key: "/inventory/count", label: "盘点任务" },
     ],
   },
   {
@@ -69,6 +72,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/import/release", label: "放行工作台" },
       { key: "/import/jobs", label: "导入任务" },
       { key: "/import/exceptions", label: "别名认领" },
+      { key: "/review/checklist", label: "在案复核清单" },
     ],
   },
   {
@@ -80,39 +84,59 @@ const menuItems: MenuProps["items"] = [
       { key: "/report/wip", label: "委外在制看板" },
       { key: "/report/settlement-summary", label: "结算汇总表" },
       { key: "/report/jiediao", label: "借调对账" },
+      { key: "/report/exports", label: "导出任务" },
     ],
   },
   {
     key: "admin",
     icon: <SettingOutlined />,
     label: "系统管理",
-    children: [{ key: "/admin/users", label: "用户管理" }],
+    children: [
+      { key: "/admin/users", label: "用户管理" },
+      { key: "/admin/audit", label: "审计日志" },
+    ],
   },
 ];
 
-/** RT4 UX-P0：按角色过滤菜单——非本角色的入口一律不渲染（杜绝"点了才 403"） */
+/**
+ * RT4 UX-P0（RT5 扩展为角色映射表）：按角色过滤菜单——非本角色的入口一律不渲染。
+ * 未列出的 key = 全员可见；admin 恒通过。
+ */
+const MENU_ROLES: Record<string, string[]> = {
+  "/import/upload": ["pmc"],
+  "/import/release": ["pmc"],
+  "/import/jobs": ["pmc"],
+  "/import/exceptions": ["pmc", "purchasing", "warehouse"],
+  "/review/checklist": ["pmc", "purchasing", "warehouse", "finance"],
+  "/master/feeref": ["purchasing", "pmc", "finance"],
+  "/replenish": ["pmc", "purchasing"],
+  "/admin/users": [],
+  "/admin/audit": ["finance"],
+};
+
 function filterMenuByRoles(items: MenuProps["items"], roles: string[]): MenuProps["items"] {
   const isAdmin = roles.includes("admin");
-  const isPmc = isAdmin || roles.includes("pmc");
-  const canClaim = isAdmin || ["pmc", "purchasing", "warehouse"].some((r) => roles.includes(r));
+  const visible = (key: string): boolean => {
+    if (isAdmin) return true;
+    const need = MENU_ROLES[key];
+    if (need === undefined) return true;
+    return need.some((r) => roles.includes(r));
+  };
   return (items ?? [])
     .map((item) => {
       if (!item) return item;
-      if (item.key === "admin" && !isAdmin) return null;
-      if (item.key === "import") {
-        if (!isPmc && !canClaim) return null;
-        const children = ((item as { children?: { key: string; label: string }[] }).children ?? []).filter((c) =>
-          c.key === "/import/exceptions" ? canClaim : isPmc,
-        );
+      const it = item as { key?: string; children?: { key: string; label: string }[] };
+      if (it.children) {
+        const children = it.children.filter((c) => visible(c.key));
         if (children.length === 0) return null;
         return { ...item, children };
       }
-      return item;
+      return visible(String(it.key ?? "")) ? item : null;
     })
     .filter(Boolean) as MenuProps["items"];
 }
 
-export default function AppShell({ children, userName, roleText, roles = [] }: { children: React.ReactNode; userName?: string; roleText?: string; roles?: string[] }) {
+export default function AppShell({ children, userName, roleText, roles = [], mustChangePassword = false }: { children: React.ReactNode; userName?: string; roleText?: string; roles?: string[]; mustChangePassword?: boolean }) {
   const pathname = usePathname();
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
@@ -133,8 +157,23 @@ export default function AppShell({ children, userName, roleText, roles = [] }: {
     return [];
   }, [pathname]);
 
+  const onPasswordPage = pathname.startsWith("/account/password");
   return (
     <AntApp>
+      <Modal
+        open={mustChangePassword && !onPasswordPage}
+        closable={false}
+        maskClosable={false}
+        keyboard={false}
+        title="请先修改初始密码"
+        footer={
+          <Button type="primary" onClick={() => router.push("/account/password")}>
+            去修改密码
+          </Button>
+        }
+      >
+        当前账号使用的是管理员设置的初始/临时密码，为保障账号安全，须修改后方可继续使用系统。
+      </Modal>
       <Layout style={{ minHeight: "100vh" }}>
         <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} width={220} theme="dark">
           <div
@@ -181,6 +220,7 @@ export default function AppShell({ children, userName, roleText, roles = [] }: {
               <Avatar size="small" icon={<UserOutlined />} />
               <Typography.Text>{userName ?? "未登录"}</Typography.Text>
               {roleText ? <Typography.Text type="secondary">（{roleText}）</Typography.Text> : null}
+              <Typography.Link href="/account/password">修改密码</Typography.Link>
               <Typography.Link href="/signout">退出</Typography.Link>
             </Space>
           </Header>

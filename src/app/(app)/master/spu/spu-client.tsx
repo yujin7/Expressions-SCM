@@ -1,9 +1,11 @@
 "use client";
 
-import { Form, Input, Typography } from "antd";
+import { useState } from "react";
+import { Button, Form, Input, Typography } from "antd";
 import CrudTable from "@/components/CrudTable";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import RemoteSelect from "@/components/RemoteSelect";
+import SpuRegroupDrawer from "./spu-regroup-drawer";
 
 interface SpuRow {
   id: number;
@@ -17,6 +19,7 @@ interface SpuRow {
 export default function SpuClient() {
   const me = useMe();
   const canWrite = hasAnyRole(me, "pmc");
+  const [regroupSpu, setRegroupSpu] = useState<SpuRow | null>(null);
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
@@ -28,6 +31,11 @@ export default function SpuClient() {
         entityName="SPU"
         apiPath="/api/master/spu"
         searchPlaceholder="搜索编码/中英文名"
+        rowActions={(record) => (
+          <Button type="link" size="small" onClick={() => setRegroupSpu(record)}>
+            归组管理
+          </Button>
+        )}
         columns={[
           { title: "编码", dataIndex: "code", width: 120 },
           { title: "中文名", dataIndex: "nameCn" },
@@ -60,6 +68,12 @@ export default function SpuClient() {
             </Form.Item>
           </>
         )}
+      />
+      <SpuRegroupDrawer
+        spu={regroupSpu}
+        open={!!regroupSpu}
+        onClose={() => setRegroupSpu(null)}
+        canWrite={canWrite}
       />
     </div>
   );
