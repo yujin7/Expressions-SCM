@@ -13,11 +13,10 @@ import { and, desc, eq, isNotNull, or } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { ApiError } from "@/server/modules/master/common";
+import { num } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
 
 /** 统一取 YYYY-MM-DD：date 列已是字符串直接截取；timestamp 列（Date）按上海时区格式化 */
 function ymd(v: unknown): string {

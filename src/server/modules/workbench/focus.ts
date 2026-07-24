@@ -16,6 +16,7 @@ import { ROLE_LABELS, type Role } from "@/server/core/constants";
 import { todayShanghai } from "@/server/modules/master/common";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
 import { getOnHandBySku } from "@/server/core/stock-view";
+import { num } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -54,8 +55,6 @@ export interface WorkbenchFocus {
   /** #6 控制塔：跨域异常，按严重度+影响排序（登录第一屏「今天最需要处理的事」） */
   exceptions: ExceptionItem[];
 }
-
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
 
 async function countWhere(db: AnyDb, table: AnyDb, where: unknown): Promise<number> {
   const [row] = await db.select({ c: sql<number>`count(*)::int` }).from(table).where(where);

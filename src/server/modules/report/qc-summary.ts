@@ -20,6 +20,7 @@ import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";
 import { todayShanghai } from "@/server/modules/master/common";
+import { num } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -31,7 +32,6 @@ const ACTIVE_SH_STATUSES = ["approved", "in_progress", "completed"] as const;
 /** 默认透视月数 */
 export const DEFAULT_MONTHS = 6;
 
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const r2 = (v: number): number => Math.round(v * 100) / 100;
 const r4 = (v: number): number => Math.round(v * 10000) / 10000;
 

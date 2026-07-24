@@ -10,11 +10,10 @@ import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { projectInventory, type DatedArrival, type ProjectionResult } from "@/server/rules/projection";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
 import { getOnHandForSku } from "@/server/core/stock-view";
+import { num } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
-
 
 export interface SkuProjection extends ProjectionResult {
   skuId: number;

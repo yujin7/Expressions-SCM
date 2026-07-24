@@ -18,11 +18,11 @@ import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";
 import { todayShanghai } from "@/server/modules/master/common";
 import { type AnyDb, resolveDb } from "@/server/modules/outsource/common";
+import { num } from "@/server/core/svc";
 
 /** 与 report/wip.ts ACTIVE_SH_STATUSES 一致（就地声明，避免跨模块 const 数组类型摩擦） */
 const ACTIVE_SH_STATUSES = ["approved", "in_progress", "completed"] as const;
 
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const r2 = (v: number): number => Math.round(v * 100) / 100;
 
 export type FunnelStageKey = "demand" | "plan" | "order" | "receipt" | "sales";

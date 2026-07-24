@@ -32,12 +32,10 @@ import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { getNumParam } from "@/server/core/params";
 import { planTransfers } from "@/server/rules/transfer";
+import { num, r1 } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
-const r1 = (v: number): number => Math.round(v * 10) / 10;
 
 /** 排除出建议范围的仓库类型（非自有可调配库位） */
 const EXCLUDED_KINDS = ["outsource", "transit", "snapshot"] as const;

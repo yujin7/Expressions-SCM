@@ -14,10 +14,10 @@ import * as schema from "@/db/schema";
 import { lastMonths, DAYS_PER_MONTH } from "@/server/core/velocity";
 import { forecastDaily } from "@/server/rules/forecast";
 import { backtest, biasLabel, type BacktestResult } from "@/server/rules/backtest";
+import { num } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
 
 export interface ForecastAccuracyRow {
   skuId: number;

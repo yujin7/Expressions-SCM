@@ -19,3 +19,9 @@
   - struct#6 NPD 模板存 transit_refs(kind=npd_node/role)：建项目时快照进 npd_tasks，模板重导不影响在跑项目（已验证）；后续如拆独立表另议
   - struct#11 报表服务目录 report/ 按域归类为目标，但既有文件不批量移动（30+ import 回归风险>收益）；菜单已按域组织
   - struct#12/#13 /report/* 仅新真报表用；risk/auto-replenish 等写页/工具为历史遗留不改路由（菜单键稳定优先）
+- 共享层唯一权威（禁止本地重实现，口径漂移根因）：
+  - 在库/快照 → `core/stock-view.ts`（getOnHandBySku / getLatestSnapshotRows）
+  - 在途/未结供给 → `core/supply.ts`（getOpenSupplyLines）
+  - 销速窗口/日均 → `core/velocity.ts`（lastMonths / dailyFromWindow）
+  - ABC 分层 → `rules/abc.ts`（classifyAbc，标准帕累托；窗口统一近 6 月）
+  - 服务脚手架 → `core/svc.ts`（AnyDb / num / r1 / r2 / resolveDb）

@@ -18,11 +18,10 @@ import { ApiError } from "@/server/modules/master/common";
 import { lastMonths, dailyFromWindow } from "@/server/core/velocity";
 import { getOpenSupplyLines, summarizeSupply } from "@/server/core/supply";
 import { checkRecentOrders } from "@/server/modules/outsource/duplicate-guard";
+import { num, r1 } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
-const r1 = (v: number): number => Math.round(v * 10) / 10;
 
 export interface BriefLine {
   skuId: number;

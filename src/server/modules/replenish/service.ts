@@ -33,17 +33,7 @@ import { safetyStock } from "@/server/rules/safety-stock";
 import { timePhasedNetReq } from "@/server/rules/timephased";
 import { getOpenSupplyLines } from "@/server/core/supply";
 import { makeResolver } from "@/server/core/scoped-params";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyDb = any;
-
-async function resolveDb(db?: AnyDb): Promise<AnyDb> {
-  return db ?? (await getDbAsync());
-}
-
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
-const r1 = (v: number): number => Math.round(v * 10) / 10;
-
+import { type AnyDb, num, r1, resolveDb } from "@/server/core/svc";
 
 export interface ReplenishRow {
   skuId: number;

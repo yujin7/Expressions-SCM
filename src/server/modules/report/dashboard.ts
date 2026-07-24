@@ -16,6 +16,7 @@ import { getRiskWorklist } from "@/server/modules/report/risk";
 import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";
 import { getLatestSnapshotRows } from "@/server/core/stock-view";
+import { num, r1 } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -54,10 +55,6 @@ export interface DashboardData {
   settlement: { docs: number; amountSum: string } | null; // 仅 admin/finance
   insights: string[];
 }
-
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
-const r1 = (v: number): number => Math.round(v * 10) / 10;
-
 
 /* ── 模块级 60s 缓存 ──
  * 键必须含角色（结算金额块按角色裁剪——admin/finance 与其他角色的报文不同形）；

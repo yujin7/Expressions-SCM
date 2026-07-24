@@ -15,11 +15,11 @@ import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";
 import { ApiError } from "@/server/modules/master/common";
 import { buildBridge, type BridgeItem } from "@/server/rules/waterfall";
+import { num } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
 
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const YM_RE = /^\d{4}-(?:0[1-9]|1[0-2])$/;
 /** 无品牌 SKU 归口键（与真实品牌 code 不冲突） */
 const NO_BRAND = "(未分配)";

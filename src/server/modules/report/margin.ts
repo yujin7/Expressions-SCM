@@ -17,13 +17,12 @@ import { writeAudit } from "@/server/core/audit";
 import { ApiError, type SessionUser } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import { lastMonths } from "@/server/core/velocity";
+import { num } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
 
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const r2 = (v: number): number => Math.round(v * 100) / 100;
-
 
 export interface MarginRow {
   skuId: number;

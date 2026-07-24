@@ -13,14 +13,12 @@ import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";
 import { classifyAbc } from "@/server/rules/abc";
+import { num, r1 } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
 
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const r2 = (v: number): number => Math.round(v * 100) / 100;
-const r1 = (v: number): number => Math.round(v * 10) / 10;
-
 
 export const SEG_CELLS = ["AX", "AY", "AZ", "BX", "BY", "BZ", "CX", "CY", "CZ"] as const;
 export type SegCell = (typeof SEG_CELLS)[number];

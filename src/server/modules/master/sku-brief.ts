@@ -16,12 +16,10 @@ import * as schema from "@/db/schema";
 import { ApiError, todayShanghai } from "./common";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
 import { getOpenSupplyLines, summarizeSupply } from "@/server/core/supply";
+import { num, r1 } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
-const r1 = (v: number): number => Math.round(v * 10) / 10;
 
 /** 日界差（Asia/Shanghai 日期字符串直减，与 report/risk.ts、replenish/expiry.ts 同准） */
 function daysBetween(from: string, to: string): number {

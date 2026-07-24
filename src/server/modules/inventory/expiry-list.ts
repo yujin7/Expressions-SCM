@@ -11,11 +11,10 @@ import { and, eq, gt, isNotNull } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
+import { num } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
 
 export type ExpiryBucket = "expired" | "m3" | "m6" | "rest";
 

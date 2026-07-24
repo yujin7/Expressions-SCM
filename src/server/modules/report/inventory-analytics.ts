@@ -27,12 +27,11 @@ import { getNumParam } from "@/server/core/params";
 import { DAILY_WINDOW_DAYS, dailyFromWindow, lastMonths } from "@/server/core/velocity";
 import { getSegmentation } from "@/server/modules/report/segmentation";
 import { AGING_BUCKETS, fifoAging, turnover, type AgingBucket } from "@/server/rules/inventory-metrics";
+import { num, r1 } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
 
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
-const r1 = (v: number): number => Math.round(v * 10) / 10;
 const r2 = (v: number): number => Math.round(v * 100) / 100;
 
 /** 窗口天数上下限（1 天无统计意义，>730 天与"近期周转"语义脱节） */

@@ -18,11 +18,10 @@
  */
 import { getSegmentation } from "@/server/modules/report/segmentation";
 import { getReplenishSuggestions } from "@/server/modules/replenish/service";
+import { num } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
 
 export interface AutoReplenishCandidate {
   skuId: number;

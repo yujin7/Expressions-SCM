@@ -19,9 +19,7 @@ import { dailyFromWindow, lastMonths, monthlyToDaily } from "@/server/core/veloc
 import { getOnHandBySku } from "@/server/core/stock-view";
 import { detectChannelShift, detectSalesStop, detectVelocityChange } from "@/server/rules/detectors";
 import { type AnyDb, resolveDb } from "@/server/modules/outsource/common";
-
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
-const r1 = (v: number): number => Math.round(v * 10) / 10;
+import { num, r1 } from "@/server/core/svc";
 
 export type DetectorKind = "sales_stop" | "channel_shift" | "velocity";
 export type DetectorSeverity = "high" | "medium";

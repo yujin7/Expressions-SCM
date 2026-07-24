@@ -14,11 +14,10 @@
 import { eq } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
+import { num } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
 
 /** 维度中文标签（缺失项文案 & 汇总键；顺序即展示顺序） */
 const DIM_LEAD = "生产周期";

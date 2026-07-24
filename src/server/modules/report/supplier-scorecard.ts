@@ -41,6 +41,7 @@ import { SUPPLIER_LEVELS } from "@/server/modules/master/schemas";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import { leadTimeStats, type LeadTimeSample } from "@/server/rules/leadtime-stats";
 import { scoreSupplier, type ScoreBreakdownItem, type SupplierGrade } from "@/server/rules/scorecard";
+import { num } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -57,7 +58,6 @@ const EFFECTIVE_PC_STATUSES = ["approved", "in_progress", "completed"] as const;
 export const DEFAULT_WINDOW_DAYS = 180;
 export const MIN_SAMPLES = 3;
 
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const r4 = (v: number): number => Math.round(v * 10000) / 10000;
 
 /** 时间戳 → Asia/Shanghai 日期串（与 report/leadtime-learning.ts 同准） */

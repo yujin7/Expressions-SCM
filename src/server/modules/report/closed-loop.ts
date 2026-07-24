@@ -11,12 +11,10 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
+import { num, r1 } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
-const r1 = (v: number): number => Math.round(v * 10) / 10;
 
 /** 单据状态 → 中文标签（兼容 PRD 命名与实际枚举） */
 const STATUS_LABEL: Record<string, string> = {

@@ -13,6 +13,7 @@ import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { ApiError, todayShanghai } from "./common";
 import { lastMonths } from "@/server/core/velocity";
+import { num } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -71,8 +72,6 @@ export interface SkuPanorama {
   activeBom: { id: number; versionNo: string; lineCount: number } | null;
 }
 
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
-
 /** 流水来源类型 → 单据表（docNo 解析用；未列出的子类型默认 stock_doc 载体） */
 const LEDGER_SOURCE_TABLE: Record<string, "sh" | "fl" | "tl" | "ct" | "js"> = {
   sh_purchase_in: "sh",
@@ -83,7 +82,6 @@ const LEDGER_SOURCE_TABLE: Record<string, "sh" | "fl" | "tl" | "ct" | "js"> = {
   ct_return: "ct",
   js_loss_writeoff: "js",
 };
-
 
 export async function getSkuPanorama(id: number, dbArg?: AnyDb): Promise<SkuPanorama> {
   const db: AnyDb = dbArg ?? (await getDbAsync());

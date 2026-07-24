@@ -21,13 +21,10 @@ import { todayShanghai } from "@/server/modules/master/common";
 import { RISK_ACTION_ORDER, suggestRiskAction, type RiskAction } from "@/server/rules/risk-action";
 import { lastMonths } from "@/server/core/velocity";
 import { getOnHandBySku } from "@/server/core/stock-view";
+import { num, r1 } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
-const r1 = (v: number): number => Math.round(v * 10) / 10;
-
 
 /** 日界差（Asia/Shanghai 日期字符串直减，与 expiry.ts 同准） */
 function daysBetween(from: string, to: string): number {
