@@ -9,6 +9,7 @@ import { use, useCallback, useEffect, useState } from "react";
 import { Alert, Button, Space, Spin } from "antd";
 import { PrinterOutlined } from "@ant-design/icons";
 import { fetchJson } from "@/components/fetchJson";
+import { DOC_STATUS_LABELS } from "@/components/labels";
 
 interface PoLine {
   id: number;
@@ -78,15 +79,6 @@ function addDec(a: string, b: string): string {
 }
 
 const LINE_TYPE_LABELS: Record<string, string> = { raw: "原料", packaging: "包材" };
-const STATUS_LABELS: Record<string, string> = {
-  draft: "草稿",
-  pending: "待审批",
-  approved: "已审批",
-  in_progress: "执行中",
-  completed: "已完成",
-  closed: "已关闭",
-  void: "已作废",
-};
 /** 上海时区日期（RT4 UX-P1-4：UTC 切片会与单号日期自相矛盾） */
 const shDate = (v: string | null | undefined): string =>
   v ? new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(v)) : "—";
@@ -178,7 +170,7 @@ export default function PoPrintPage({ params }: { params: Promise<{ id: string }
             <td>制单日期：{shDate(detail.createdAt)}</td>
           </tr>
           <tr>
-            <td>单据状态：{STATUS_LABELS[detail.status] ?? detail.status}</td>
+            <td>单据状态：{DOC_STATUS_LABELS[detail.status] ?? detail.status}</td>
             <td>供应商确认：{detail.confirmedAt ? shDate(detail.confirmedAt) : "待回签"}</td>
           </tr>
         </tbody>

@@ -12,21 +12,15 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { num, r1 } from "@/server/core/svc";
+import { DOC_STATUS_LABELS } from "@/components/labels";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
 
 /** 单据状态 → 中文标签（兼容 PRD 命名与实际枚举） */
 const STATUS_LABEL: Record<string, string> = {
-  draft: "草稿",
-  pending: "待审批",
-  approved: "已审批",
-  in_progress: "执行中",
-  completed: "已完成",
-  done: "已完成",
-  closed: "已关闭",
-  rejected: "已驳回",
-  void: "已作废",
+  ...DOC_STATUS_LABELS, // 唯一源（components/labels，纯 TS 可跨层复用）
+  done: "已完成", rejected: "已驳回", // PRD 命名兼容
 };
 
 /** 采纳类：进入审批通过及以后状态 */

@@ -48,6 +48,7 @@ import {
   YAxis,
 } from "recharts";
 import { fetchJson } from "@/components/fetchJson";
+import { DOC_STATUS_LABELS } from "@/components/labels";
 import type { DashboardData } from "@/server/modules/report/dashboard";
 
 const PALETTE = ["#2f54eb", "#13c2c2", "#fa8c16", "#722ed1", "#52c41a", "#eb2f96", "#a0d911", "#1677ff", "#f5222d", "#faad14"];
@@ -61,14 +62,8 @@ const EXP_COLORS: Record<string, string> = {
   ">24月": "#52c41a",
 };
 const STATUS_LABELS: Record<string, string> = {
-  draft: "草稿",
-  pending: "待审批",
-  approved: "已审批",
-  in_progress: "执行中",
-  completed: "已完成",
-  rejected: "已驳回",
-  cancelled: "已作废",
-  reversed: "已冲销",
+  ...DOC_STATUS_LABELS, // 唯一源（components/labels）
+  rejected: "已驳回", cancelled: "已作废", reversed: "已冲销", // 本页额外历史态
 };
 const STATUS_COLORS: Record<string, string> = {
   draft: "#d9d9d9",

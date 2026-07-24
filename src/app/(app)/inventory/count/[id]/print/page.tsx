@@ -8,6 +8,7 @@ import { use, useCallback, useEffect, useState } from "react";
 import { Alert, Button, Space, Spin } from "antd";
 import { PrinterOutlined } from "@ant-design/icons";
 import { fetchJson } from "@/components/fetchJson";
+import { DOC_STATUS_LABELS } from "@/components/labels";
 
 interface CountLine {
   id: number;
@@ -32,15 +33,6 @@ interface CountDetail {
 }
 
 const MODE_LABELS: Record<string, string> = { full: "定期全盘", partial: "抽盘（循环抽点）" };
-const STATUS_LABELS: Record<string, string> = {
-  draft: "草稿",
-  pending: "待审批",
-  approved: "已审批",
-  in_progress: "执行中",
-  completed: "已完成",
-  closed: "已关闭",
-  void: "已作废",
-};
 
 /** 上海时区日期（与 PO 打印页同口径） */
 const shDate = (v: string | null | undefined): string =>
@@ -100,7 +92,7 @@ export default function CountPrintPage({ params }: { params: Promise<{ id: strin
           <tr>
             <td>仓库：{detail.warehouseName ?? "—"}</td>
             <td>模式：{MODE_LABELS[detail.mode] ?? detail.mode}</td>
-            <td>状态：{STATUS_LABELS[detail.status] ?? detail.status}</td>
+            <td>状态：{DOC_STATUS_LABELS[detail.status] ?? detail.status}</td>
           </tr>
           <tr>
             <td>制单人：{detail.createdByName ?? "—"}</td>

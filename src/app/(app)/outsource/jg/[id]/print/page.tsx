@@ -9,6 +9,7 @@ import { use, useCallback, useEffect, useState } from "react";
 import { Alert, Button, Space, Spin } from "antd";
 import { PrinterOutlined } from "@ant-design/icons";
 import { fetchJson } from "@/components/fetchJson";
+import { DOC_STATUS_LABELS } from "@/components/labels";
 
 interface JgDetail {
   id: number;
@@ -30,10 +31,6 @@ interface JgDetail {
   remark: string | null;
 }
 
-const STATUS_LABELS: Record<string, string> = {
-  draft: "草稿", pending: "待审批", approved: "已审批", in_progress: "执行中",
-  completed: "已完成", closed: "已关闭", void: "已作废",
-};
 const shDate = (v: string | null | undefined): string =>
   v ? new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(v)) : "—";
 
@@ -87,7 +84,7 @@ export default function JgPrintPage({ params }: { params: Promise<{ id: string }
         <tr><td>成品：{detail.productSkuCode} {detail.productSkuName}</td><td>数量：{detail.qty}</td></tr>
         <tr><td>订单类型：{detail.orderType ?? "—"}</td><td>包材齐套日：{detail.pkgReadyDate ?? "—"}</td></tr>
         {detail.feeRateCurrent != null ? <tr><td>加工费单价：{detail.feeRateCurrent}</td><td>优先级：{detail.priority ?? "—"}</td></tr> : null}
-        <tr><td>制单：{detail.createdByName ?? "—"} {shDate(detail.createdAt)}</td><td>状态：{STATUS_LABELS[detail.status] ?? detail.status}</td></tr>
+        <tr><td>制单：{detail.createdByName ?? "—"} {shDate(detail.createdAt)}</td><td>状态：{DOC_STATUS_LABELS[detail.status] ?? detail.status}</td></tr>
       </tbody></table>
       {detail.remark ? <p style={{ fontSize: 13 }}>备注：{detail.remark}</p> : null}
       <h4 style={{ marginTop: 20 }}>合同条款（占位框架）</h4>

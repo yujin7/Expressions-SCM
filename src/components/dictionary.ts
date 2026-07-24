@@ -59,15 +59,9 @@ export const COVER_SCOPE = {
 /* ────────────────────────── 二、状态词表（按域消歧） ────────────────────────── */
 
 /** 单据状态（BH/WO/PO/PC/JG/SH/…）——唯一中文表 */
-export const DOC_STATUS: Record<string, string> = {
-  draft: "草稿",
-  pending: "待审批",
-  approved: "已审批",
-  in_progress: "执行中",
-  completed: "已完成",
-  closed: "已关闭",
-  void: "已作废",
-};
+/** 单据状态中文（唯一数据源 = labels.DOC_STATUS_LABELS；此处仅作术语门面重导出） */
+import { DOC_STATUS_LABELS } from "./labels";
+export const DOC_STATUS = DOC_STATUS_LABELS;
 
 /** 任务/节点状态（NPD 等）——与单据状态区分，避免 pending 歧义 */
 export const TASK_STATUS: Record<string, string> = {
