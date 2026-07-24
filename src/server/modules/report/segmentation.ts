@@ -82,12 +82,13 @@ function cvOf(quantities: number[], mean: number): number {
 }
 
 export async function getSegmentation(
-  query: { q?: string; cell?: string; page?: number; pageSize?: number },
+  query: { q?: string; cell?: string; page?: number; pageSize?: number; allRows?: boolean },
   dbArg?: AnyDb,
 ): Promise<SegmentationResult> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const page = Math.max(1, query.page ?? 1);
-  const pageSize = Math.min(500, Math.max(1, query.pageSize ?? 50));
+  // allRows：内部消费者（自动补货候选等）取全量，防静默截断；HTTP 层永不传 true
+  const pageSize = query.allRows ? Number.MAX_SAFE_INTEGER : Math.min(500, Math.max(1, query.pageSize ?? 50));
   const q = (query.q ?? "").trim().toLowerCase();
   const cellFilter = (query.cell ?? "").trim().toUpperCase();
 

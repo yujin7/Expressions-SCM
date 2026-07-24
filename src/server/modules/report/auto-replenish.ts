@@ -71,8 +71,8 @@ export async function getAutoReplenishCandidates(dbArg?: AnyDb): Promise<AutoRep
   const bypass = dbArg !== undefined || process.env.NODE_ENV === "test";
   if (!bypass && arCache && arCache.expiresAt > Date.now()) return arCache.value;
   /* ── 复用两支既有报表（大页避免分页丢行，传 db 同事务/同连接） ── */
-  const seg = await getSegmentation({ pageSize: 100000 }, dbArg);
-  const rep = await getReplenishSuggestions({ pageSize: 100000 }, dbArg);
+  const seg = await getSegmentation({ allRows: true }, dbArg);
+  const rep = await getReplenishSuggestions({ allRows: true }, dbArg);
 
   const segBySku = new Map<number, { abc: string; xyz: string; cell: string }>();
   for (const s of seg.rows) segBySku.set(s.skuId, { abc: s.abc, xyz: s.xyz, cell: s.cell });

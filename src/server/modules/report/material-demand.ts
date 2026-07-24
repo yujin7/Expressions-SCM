@@ -170,7 +170,7 @@ export async function getMaterialDemand(
   const planByProduct = new Map<number, string>();
   const codeBySku = new Map<number, string>();
   let planSkuCount = 0;
-  const replenish = await getReplenishSuggestions({ pageSize: 100000 }, db);
+  const replenish = await getReplenishSuggestions({ allRows: true }, db);
   for (const r of replenish.rows) {
     if (r.suggestQty == null || dCmp(r.suggestQty, "0") <= 0) continue;
     planSkuCount++;

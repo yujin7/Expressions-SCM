@@ -151,6 +151,8 @@ export interface ReplenishQuery {
   q?: string;
   page?: number;
   pageSize?: number;
+  /** 内部消费者（如 MRP 相关需求展开）取全量，绕过 API 分页夹取——防静默截断。HTTP 层永不传 true。 */
+  allRows?: boolean;
 }
 
 export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: AnyDb): Promise<ReplenishResult> {
@@ -164,7 +166,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
   ]);
   const minCoverAlert = Math.min(365, Math.max(1, Math.floor(query.minCoverAlert ?? (await getNumParam("cover_alert_days", 30, dbArg)))));
   const page = Math.max(1, query.page ?? 1);
-  const pageSize = Math.min(999, Math.max(1, query.pageSize ?? 50));
+  const pageSize = query.allRows ? Number.MAX_SAFE_INTEGER : Math.min(999, Math.max(1, query.pageSize ?? 50));
   const q = (query.q ?? "").trim();
 
   /* ── 成品 SKU（active） ── */
