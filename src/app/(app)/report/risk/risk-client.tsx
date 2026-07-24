@@ -2,7 +2,7 @@
 
 /** F 项：风险库存处置工作台——效期批次 × 货盘处置注记 × 销速 三源融合（只读，spec/13） */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Button, Input, Popconfirm, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Dropdown, Input, Popconfirm, Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { exportCsv } from "@/components/exportCsv";
@@ -44,10 +44,10 @@ const ACTION_COLORS: Record<string, string> = {
 function EXEC_ROUTE(r: RiskRow): { href: string; label: string } {
   const q = encodeURIComponent(r.code);
   switch (r.action) {
-    case "报废评审": return { href: `/inventory/count?q=${q}`, label: "盘点/报废调整（走盘点单）" };
+    case "报废评审": return { href: `/inventory/expiry?q=${q}`, label: "查过期批次→走盘点/报废单" };
     case "禁售隔离": return { href: `/inventory/balance?q=${q}`, label: "库存定位·标记隔离" };
     case "商务处置":
-    case "促销清库": return { href: `/report/demand?tab=pallet`, label: "货盘处置（促销/去化）" };
+    case "促销清库": return { href: `/report/demand?tab=pallet&q=${q}`, label: "货盘处置（促销/去化）" };
     case "优先出库": return { href: `/inventory/balance?q=${q}`, label: "库存定位·先进先出" };
     default: return { href: `/report/sku-360?sku=${q}`, label: "SKU 360 复盘" };
   }
@@ -150,19 +150,28 @@ export default function RiskClient() {
           <Space size={6}>
             <Tag color="green" style={{ marginInlineEnd: 0 }}>已登记</Tag>
             <Tooltip title={`前往执行入口：${EXEC_ROUTE(r).label}`}>
-              <a href={EXEC_ROUTE(r).href}>去执行 →</a>
+              <a href={EXEC_ROUTE(r).href}>去执行</a>
             </Tooltip>
+            <Popconfirm title={`确认 ${r.code} 实物处置已完成、关闭登记？`} onConfirm={() => {
+              void postJson("/api/report/risk", { intent: "close", skuCode: r.code })
+                .then(() => { message.success(`${r.code} 处置登记已关闭`); void load(); })
+                .catch((e) => message.error((e as Error).message));
+            }}><a>完成</a></Popconfirm>
           </Space>
         ) : (
-          <a
-            onClick={() => {
-              void postJson("/api/report/risk", { skuCode: r.code, action: r.action, note: r.palletRemark ?? undefined })
-                .then(() => { message.success(`${r.code} 处置决定已登记复核清单`); void load(); })
-                .catch((e) => message.error((e as Error).message));
+          <Dropdown
+            trigger={["click"]}
+            menu={{
+              items: ACTION_ORDER.map((a) => ({ key: a, label: a === r.action ? `${a}（建议）` : a })),
+              onClick: ({ key }) => {
+                void postJson("/api/report/risk", { skuCode: r.code, action: key, note: r.palletRemark ?? undefined })
+                  .then(() => { message.success(`${r.code} 登记为「${key}」`); void load(); })
+                  .catch((e) => message.error((e as Error).message));
+              },
             }}
           >
-            登记处置
-          </a>
+            <a onClick={(e) => e.preventDefault()}>登记处置 ▾</a>
+          </Dropdown>
         ),
     },
     {

@@ -35,6 +35,7 @@ interface ReplenishRow {
   onOrder: number | null;
   legacyTransit: number;
   wipQty: number;
+  borrowOut: number;
   leadDays: number | null;
   coverFull: number | null;
   refGap: boolean;
@@ -195,6 +196,10 @@ export default function ReplenishClient() {
               ),
           },
           { title: "在订未出", dataIndex: "onOrder", width: 90, align: "right" as const, render: (v: number | null) => (v == null || v === 0 ? "—" : v.toLocaleString("zh-CN")) },
+          {
+            title: "借出未还", dataIndex: "borrowOut", width: 90, align: "right" as const,
+            render: (v: number) => (v > 0 ? <Tooltip title="已借给其他渠道，不再是自己可卖库存——已从全管道口径扣减"><span style={{ color: "#d4380d" }}>-{v.toLocaleString("zh-CN")}</span></Tooltip> : "—"),
+          },
         ],
       },
       {

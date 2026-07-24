@@ -169,7 +169,7 @@ interface PalletRow {
 }
 
 /** 货盘处置参考：PMC 月度货盘 + 处置注记（R14 备注字典源）；文件口径指标并列供与系统口径对照 */
-function PalletTab() {
+function PalletTab({ initialQ = "" }: { initialQ?: string }) {
   const { message } = App.useApp();
   const [rows, setRows] = useState<PalletRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -177,7 +177,7 @@ function PalletTab() {
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(initialQ);
   const [onlyRemark, setOnlyRemark] = useState(false);
 
   const load = useCallback(async () => {
@@ -374,6 +374,7 @@ function StockSummaryTab() {
 export default function DemandClient() {
   const searchParams = useSearchParams();
   const initialTab = ["demand", "pallet", "stock_summary"].includes(searchParams.get("tab") ?? "") ? (searchParams.get("tab") as string) : "demand";
+  const initialQ = searchParams.get("q") ?? "";
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
@@ -383,7 +384,7 @@ export default function DemandClient() {
         defaultActiveKey={initialTab}
         items={[
           { key: "demand", label: "需求达成", children: <DemandTab /> },
-          { key: "pallet", label: "货盘处置", children: <PalletTab /> },
+          { key: "pallet", label: "货盘处置", children: <PalletTab initialQ={initialQ} /> },
           { key: "stock_summary", label: "总库存核对", children: <StockSummaryTab /> },
         ]}
       />

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { errorResponse, guardRead, parseListQuery } from "@/server/modules/master/common";
-import { getRiskWorklist, registerRiskDisposal, registerRiskDisposalBatch } from "@/server/modules/report/risk";
+import { closeRiskDisposal, getRiskWorklist, registerRiskDisposal, registerRiskDisposalBatch } from "@/server/modules/report/risk";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 
 /** F 项：风险库存处置工作台（只读；效期×注记×销速三源融合） */
@@ -20,7 +20,10 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await guardFreshWrite();
-    const body = (await req.json()) as { items?: unknown };
+    const body = (await req.json()) as { items?: unknown; intent?: string };
+    if (body?.intent === "close") {
+      return NextResponse.json(await closeRiskDisposal(user, body as { skuCode: string }), { status: 200 });
+    }
     if (Array.isArray(body?.items)) {
       return NextResponse.json(await registerRiskDisposalBatch(user, body as { items: { skuCode: string; action: string }[] }), { status: 201 });
     }

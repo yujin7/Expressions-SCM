@@ -76,12 +76,13 @@ export async function getRiskWorklist(
   const q = (query.q ?? "").trim().toLowerCase();
 
   /* ── SKU 主档（active 全类型——包材也可能滞销/有注记） ── */
-  const skuRows: { id: number; code: string; name: string; brand: string | null }[] = await db
-    .select({ id: schema.skus.id, code: schema.skus.code, name: schema.skus.name, brand: schema.brands.nameCn })
+  const skuRows: { id: number; code: string; name: string; brand: string | null; nearExpiryDays: number | null }[] = await db
+    .select({ id: schema.skus.id, code: schema.skus.code, name: schema.skus.name, brand: schema.brands.nameCn, nearExpiryDays: schema.skus.nearExpiryDays })
     .from(schema.skus)
     .leftJoin(schema.brands, eq(schema.skus.brandId, schema.brands.id))
     .where(eq(schema.skus.active, true));
   const skuIds = skuRows.map((s) => s.id);
+  const nearThreshBySku = new Map(skuRows.map((s) => [s.id, s.nearExpiryDays ?? 90])); // func#8 逐 SKU 临期阈值
   if (skuIds.length === 0) return { today, slowThreshold, rows: [], total: 0, byAction: {} };
 
   /* ── 在库：实时账 + 快照仓最新快照 ── */
@@ -127,7 +128,7 @@ export async function getRiskWorklist(
     const cur = expiryBySku.get(r.skuId) ?? { minDaysLeft: Number.POSITIVE_INFINITY, expiredQty: 0, nearQty: 0 };
     cur.minDaysLeft = Math.min(cur.minDaysLeft, daysLeft);
     if (daysLeft <= 0) cur.expiredQty += num(r.qty);
-    if (daysLeft <= 90) cur.nearQty += num(r.qty);
+    if (daysLeft <= (nearThreshBySku.get(r.skuId) ?? 90)) cur.nearQty += num(r.qty);
     expiryBySku.set(r.skuId, cur);
   }
 
@@ -240,6 +241,30 @@ export async function registerRiskDisposal(
     });
   });
   return { ok: true };
+}
+
+/** func#6：完成/关闭处置登记（实物处置已走各自单据后，人工在此收口——否则登记台账永不清零） */
+export async function closeRiskDisposal(
+  user: SessionUser,
+  input: { skuCode: string },
+  dbArg?: AnyDb,
+): Promise<{ closed: number }> {
+  requireAnyRole(user, "pmc", "ops", "warehouse");
+  const code = String(input.skuCode ?? "").trim();
+  if (!code) throw new ApiError(400, "skuCode 必填");
+  const db: AnyDb = dbArg ?? (await getDbAsync());
+  const open: { id: number }[] = await db
+    .select({ id: schema.reviewItems.id })
+    .from(schema.reviewItems)
+    .where(and(eq(schema.reviewItems.category, "risk_disposal"), eq(schema.reviewItems.refKey, code), eq(schema.reviewItems.status, "open")));
+  if (open.length === 0) return { closed: 0 };
+  await db.transaction(async (tx: AnyDb) => {
+    for (const o of open) {
+      await tx.update(schema.reviewItems).set({ status: "done", note: "处置已完成（人工收口）", decidedBy: user.id, decidedAt: new Date() }).where(eq(schema.reviewItems.id, o.id));
+    }
+    await writeAudit(tx, { userId: user.id, entity: "risk_disposal", action: "close", after: { skuCode: code } });
+  });
+  return { closed: open.length };
 }
 
 /** #10：批量处置登记（逐项复用单项幂等逻辑；返回新增/已存在计数） */

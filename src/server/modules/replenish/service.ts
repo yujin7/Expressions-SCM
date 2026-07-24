@@ -79,6 +79,8 @@ export interface ReplenishRow {
   legacyTransit: number;
   /** 在制委外产出（WO 计划产出，func#1；in_progress WO 残余部分批已收会高估，列注标明） */
   wipQty: number;
+  /** 借出未还（func#20，从全管道扣减） */
+  borrowOut: number;
   /** 常规生产周期（天，sku_leadtime staging；无 = null） */
   leadDays: number | null;
   /** 全管道可销天数（max(系统,参考)+全部在途 ÷ 日均；1dp） */
@@ -195,6 +197,15 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
   const wipBySku = new Map<number, string>();
   for (const r of woRows) wipBySku.set(r.skuId, dAdd(wipBySku.get(r.skuId) ?? "0", r.qty, 6));
 
+  /* ── func#20 借出未还：transit_refs kind=borrow orderType=借出——已借给其他渠道，从管道扣减 ── */
+  const trB = schema.transitRefs;
+  const borrowRows: { skuId: number | null; qty: string | null }[] = await db
+    .select({ skuId: trB.skuId, qty: trB.qty })
+    .from(trB)
+    .where(and(eq(trB.kind, "borrow"), eq(trB.orderType, "借出"), inArray(trB.skuId, skuIds)));
+  const borrowOutBySku = new Map<number, number>();
+  for (const r of borrowRows) { if (r.skuId != null) borrowOutBySku.set(r.skuId, (borrowOutBySku.get(r.skuId) ?? 0) + num(r.qty)); }
+
   /* ── 销速：近3月（窗口口径见 core/velocity） ── */
   const sm = schema.salesMonthly;
   const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
@@ -286,6 +297,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     const ref = refBySku.get(s.id);
     const legacyTransit = legacyBySku.get(s.id) ?? 0;
     const wipQty = num(wipBySku.get(s.id) ?? "0");
+    const borrowOut = borrowOutBySku.get(s.id) ?? 0;
     const leadDays = leadBySkuId.get(s.id) ?? null; // sku_params 已转正（#18 兜底下线）
     const refGap = detectRefGap(num(onHand), ref?.qty ?? null);
     const coverFull = fuseCover({
@@ -295,6 +307,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       legacyTransit,
       onOrder: ref?.onOrder ?? 0,
       wip: wipQty,
+      borrowOut,
       daily: dailyNum,
     });
 
@@ -332,6 +345,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       onOrder: ref?.onOrder == null ? null : r1(ref.onOrder),
       legacyTransit: r1(legacyTransit),
       wipQty: r1(wipQty),
+      borrowOut: r1(borrowOut),
       leadDays,
       coverFull: coverFull == null ? null : r1(coverFull),
       refGap,
@@ -369,6 +383,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     onOrder: r.onOrder,
     legacyTransit: r.legacyTransit,
     wipQty: r.wipQty,
+    borrowOut: r.borrowOut,
     leadDays: r.leadDays,
     coverFull: r.coverFull,
     refGap: r.refGap,
