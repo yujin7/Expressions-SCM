@@ -25,6 +25,7 @@ import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
 import { createBh } from "@/server/modules/outsource/bh";
 import { requireAnyRole } from "@/server/modules/outsource/common";
+import { lastMonths } from "@/server/core/velocity";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -35,17 +36,6 @@ async function resolveDb(db?: AnyDb): Promise<AnyDb> {
 
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const r1 = (v: number): number => Math.round(v * 10) / 10;
-
-/** 由数据最新月动态回推 N 个月（与驾驶舱同法，本地重实现） */
-function lastMonths(maxYm: string, n: number): string[] {
-  const [y, m] = maxYm.split("-").map(Number);
-  const out: string[] = [];
-  for (let i = 0; i < n; i++) {
-    const d = new Date(Date.UTC(y, m - 1 - i, 1));
-    out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
-  }
-  return out.reverse();
-}
 
 /** 快照仓最新快照（wh,sku）→ qty（D20；与驾驶舱同模式，本地重实现） */
 async function latestSnapshotRows(
@@ -103,6 +93,8 @@ export interface ReplenishRow {
   forecastDaily: number;
   /** 预测趋势 up/down/flat */
   forecastTrend: "up" | "down" | "flat";
+  /** #13：预测与朴素日均显著分歧（>30%）——最值得人工复核的信号 */
+  forecastDivergent: boolean;
 }
 
 export interface ReplenishResult {
@@ -191,7 +183,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     inTransitBySku.set(r.skuId, dAdd(inTransitBySku.get(r.skuId) ?? "0", remain, 6));
   }
 
-  /* ── 销速：近3月（窗口由 max(yearMonth) 动态回推） ── */
+  /* ── 销速：近3月（窗口口径见 core/velocity） ── */
   const sm = schema.salesMonthly;
   const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
   const months3 = maxYm ? lastMonths(maxYm, 3) : [];
@@ -276,6 +268,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     const dailyNum = num(dailyDec);
     const cover = dailyNum > 0 ? (num(onHand) + num(inTransit)) / dailyNum : null;
     const fc = forecastDaily(seriesBySku.get(s.id) ?? []);
+    const forecastDivergent = dailyNum > 0 && fc.forecastDaily > 0 && Math.abs(fc.forecastDaily - dailyNum) / dailyNum > 0.3;
 
     /* 全口径融合（rules/fusion.ts）：参考只调高在库认知，绝不调低 */
     const ref = refBySku.get(s.id);
@@ -332,6 +325,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       heldQty,
       forecastDaily: fc.forecastDaily,
       forecastTrend: fc.trend,
+      forecastDivergent,
       _cover: coverFull ?? cover, // #1 修复：排序用全管道口径——覆盖缺口误报不再霸榜
     };
   });
@@ -367,6 +361,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     heldQty: r.heldQty,
     forecastDaily: r.forecastDaily,
     forecastTrend: r.forecastTrend,
+    forecastDivergent: r.forecastDivergent,
   }));
   return { rows, total: all.length, meta: { coverDaysTarget, minCoverAlert, months3, snapDate, suggestCount, refDate, suppressedCount } };
 }

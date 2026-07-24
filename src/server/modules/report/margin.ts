@@ -16,6 +16,7 @@ import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { ApiError, type SessionUser } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
+import { lastMonths } from "@/server/core/velocity";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -23,15 +24,6 @@ type AnyDb = any;
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const r2 = (v: number): number => Math.round(v * 100) / 100;
 
-function lastMonths(maxYm: string, n: number): string[] {
-  const [y, m] = maxYm.split("-").map(Number);
-  const out: string[] = [];
-  for (let i = 0; i < n; i++) {
-    const d = new Date(Date.UTC(y, m - 1 - i, 1));
-    out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
-  }
-  return out.reverse();
-}
 
 export interface MarginRow {
   skuId: number;

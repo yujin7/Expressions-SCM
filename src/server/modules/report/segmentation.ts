@@ -11,6 +11,7 @@
 import { inArray, eq, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
+import { lastMonths } from "@/server/core/velocity";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -19,15 +20,6 @@ const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const r2 = (v: number): number => Math.round(v * 100) / 100;
 const r1 = (v: number): number => Math.round(v * 10) / 10;
 
-function lastMonths(maxYm: string, n: number): string[] {
-  const [y, m] = maxYm.split("-").map(Number);
-  const out: string[] = [];
-  for (let i = 0; i < n; i++) {
-    const d = new Date(Date.UTC(y, m - 1 - i, 1));
-    out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
-  }
-  return out.reverse();
-}
 
 export const SEG_CELLS = ["AX", "AY", "AZ", "BX", "BY", "BZ", "CX", "CY", "CZ"] as const;
 export type SegCell = (typeof SEG_CELLS)[number];

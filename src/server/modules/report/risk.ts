@@ -19,6 +19,7 @@ import { requireAnyRole } from "@/server/modules/outsource/common";
 import { ApiError } from "@/server/modules/master/common";
 import { todayShanghai } from "@/server/modules/master/common";
 import { RISK_ACTION_ORDER, suggestRiskAction, type RiskAction } from "@/server/rules/risk-action";
+import { lastMonths } from "@/server/core/velocity";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -26,15 +27,6 @@ type AnyDb = any;
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const r1 = (v: number): number => Math.round(v * 10) / 10;
 
-function lastMonths(maxYm: string, n: number): string[] {
-  const [y, m] = maxYm.split("-").map(Number);
-  const out: string[] = [];
-  for (let i = 0; i < n; i++) {
-    const d = new Date(Date.UTC(y, m - 1 - i, 1));
-    out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
-  }
-  return out.reverse();
-}
 
 /** 日界差（Asia/Shanghai 日期字符串直减，与 expiry.ts 同准） */
 function daysBetween(from: string, to: string): number {

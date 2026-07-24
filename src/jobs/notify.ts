@@ -10,13 +10,13 @@
  *
  * 网络失败标记 failed（保留 error），下轮重试。全部 best-effort，绝不反噬业务。
  */
-import { and, eq, isNotNull, lte, sql } from "drizzle-orm";
-import { notifications, reviewItems, batchStocks, skus } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { notifications } from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
+import { computeExceptions } from "@/server/modules/workbench/focus";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
 
 export interface NotifyInput {
   channel: "feishu" | "in_app";
@@ -104,41 +104,17 @@ export async function dispatchNotifications(
   return { sent, skipped, failed };
 }
 
-/** 每日把关键异常入队（按天去重）——飞书未配置时仍会以 in_app 落库供站内提醒 */
-export async function runExceptionNotify(db: AnyDb, opts?: { now?: Date }): Promise<{ enqueued: number }> {
+/** 每日把关键异常入队（按天去重）——复用控制塔唯一异常源（Wave BB struct#9/#10：不再手写第三份、不用缺周期代理） */
+export async function runExceptionNotify(db: AnyDb): Promise<{ enqueued: number }> {
   const today = todayShanghai();
   const channel: NotifyInput["channel"] = process.env.FEISHU_WEBHOOK_URL ? "feishu" : "in_app";
   let enqueued = 0;
-  const push = async (key: string, title: string, body: string, href: string, severity: string) => {
-    if (await enqueueNotification(db, { channel, title, body, href, severity, dedupeKey: `${key}:${today}` })) enqueued++;
-  };
-
-  // 已过期库存
-  const [expired] = await db
-    .select({ skus: sql<number>`count(distinct ${batchStocks.skuId})::int`, qty: sql<string>`coalesce(sum(${batchStocks.qty}),0)` })
-    .from(batchStocks)
-    .where(and(isNotNull(batchStocks.expiryDate), sql`${batchStocks.qty} > 0`, lte(batchStocks.expiryDate, today)));
-  if ((expired?.skus ?? 0) > 0) {
-    await push("expired_stock", "已过期库存待处置", `${expired.skus} 个 SKU · ${num(expired.qty).toLocaleString("zh-CN")} 件`, "/report/risk?action=报废评审", "critical");
+  const exceptions = await computeExceptions(db); // 与工作台控制塔/驾驶舱同源同口径
+  for (const ex of exceptions) {
+    if (await enqueueNotification(db, {
+      channel, title: ex.title, body: ex.impact, href: ex.href, severity: ex.severity,
+      dedupeKey: `${ex.key}:${today}`,
+    })) enqueued++;
   }
-  // 单据超时
-  const [{ c: docAging }] = await db
-    .select({ c: sql<number>`count(*)::int` })
-    .from(reviewItems)
-    .where(and(eq(reviewItems.category, "doc_aging"), eq(reviewItems.status, "open")));
-  if (docAging > 0) await push("doc_aging", "单据超时未流转", `${docAging} 张单据停留超阈值`, "/review/checklist", "high");
-  // 参考数据过期
-  const [{ c: stale }] = await db
-    .select({ c: sql<number>`count(*)::int` })
-    .from(reviewItems)
-    .where(and(eq(reviewItems.category, "data_freshness"), eq(reviewItems.status, "open")));
-  if (stale > 0) await push("stale_data", "关键参考数据过期", `${stale} 类数据待重传`, "/review/checklist", "high");
-  // 断货风险（缺生产周期的成品数作为轻量代理，避免全表推演）
-  const [{ c: missingLead }] = await db
-    .select({ c: sql<number>`count(*)::int` })
-    .from(skus)
-    .where(and(eq(skus.skuType, "finished"), eq(skus.active, true), sql`not exists (select 1 from sku_params sp where sp.sku_id = ${skus.id} and sp.normal_lead_days > 0)`));
-  if (missingLead > 0) await push("missing_lead", "成品缺生产周期", `${missingLead} 个成品无法推算下单日`, "/report/data-health?missing=生产周期", "medium");
-
   return { enqueued };
 }

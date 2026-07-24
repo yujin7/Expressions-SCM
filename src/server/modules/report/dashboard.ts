@@ -14,20 +14,10 @@ import { getDbAsync } from "@/db";
 import { getNumParam } from "@/server/core/params";
 import { getRiskWorklist } from "@/server/modules/report/risk";
 import * as schema from "@/db/schema";
+import { lastMonths } from "@/server/core/velocity";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-
-/** 由数据最新月动态回推 N 个月（RT4 UX-P1-2：新月份导入后口径自动跟进，不再写死） */
-function lastMonths(maxYm: string, n: number): string[] {
-  const [y, m] = maxYm.split("-").map(Number);
-  const out: string[] = [];
-  for (let i = 0; i < n; i++) {
-    const d = new Date(Date.UTC(y, m - 1 - i, 1));
-    out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
-  }
-  return out.reverse();
-}
 
 export interface DashboardData {
   generatedAt: string;

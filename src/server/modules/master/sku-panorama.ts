@@ -12,6 +12,7 @@ import { and, asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { ApiError, todayShanghai } from "./common";
+import { lastMonths } from "@/server/core/velocity";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -83,15 +84,6 @@ const LEDGER_SOURCE_TABLE: Record<string, "sh" | "fl" | "tl" | "ct" | "js"> = {
   js_loss_writeoff: "js",
 };
 
-function lastMonths(maxYm: string, n: number): string[] {
-  const [y, m] = maxYm.split("-").map(Number);
-  const out: string[] = [];
-  for (let i = 0; i < n; i++) {
-    const d = new Date(Date.UTC(y, m - 1 - i, 1));
-    out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
-  }
-  return out.reverse();
-}
 
 export async function getSkuPanorama(id: number, dbArg?: AnyDb): Promise<SkuPanorama> {
   const db: AnyDb = dbArg ?? (await getDbAsync());

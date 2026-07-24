@@ -8,20 +8,12 @@ import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { projectInventory, type DatedArrival, type ProjectionResult } from "@/server/rules/projection";
+import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
 
-function lastMonths(maxYm: string, n: number): string[] {
-  const [y, m] = maxYm.split("-").map(Number);
-  const out: string[] = [];
-  for (let i = 0; i < n; i++) {
-    const d = new Date(Date.UTC(y, m - 1 - i, 1));
-    out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
-  }
-  return out.reverse();
-}
 
 export interface SkuProjection extends ProjectionResult {
   skuId: number;
@@ -113,7 +105,7 @@ export async function getSkuProjection(
   const salesRows: { qty: string | null }[] = months3.length
     ? await db.select({ qty: sql<string | null>`sum(${sm.qty})` }).from(sm).where(and(eq(sm.skuId, skuId), inArray(sm.yearMonth, months3)))
     : [];
-  const daily = num(salesRows[0]?.qty) / 91;
+  const daily = dailyFromWindow(num(salesRows[0]?.qty));
 
   // 生产周期
   const [sp] = await db.select({ normalLeadDays: schema.skuParams.normalLeadDays }).from(schema.skuParams).where(eq(schema.skuParams.skuId, skuId));

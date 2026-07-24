@@ -14,6 +14,7 @@ import * as schema from "@/db/schema";
 import { getRiskWorklist } from "@/server/modules/report/risk";
 import { ROLE_LABELS, type Role } from "@/server/core/constants";
 import { todayShanghai } from "@/server/modules/master/common";
+import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -56,17 +57,6 @@ const num = (v: unknown): number => (v == null ? 0 : Number(v));
 async function countWhere(db: AnyDb, table: AnyDb, where: unknown): Promise<number> {
   const [row] = await db.select({ c: sql<number>`count(*)::int` }).from(table).where(where);
   return row?.c ?? 0;
-}
-
-/** 由数据最新月回推 N 个月（与驾驶舱同规则，独立实现） */
-function lastMonths(maxYm: string, n: number): string[] {
-  const [y, m] = maxYm.split("-").map(Number);
-  const out: string[] = [];
-  for (let i = 0; i < n; i++) {
-    const d = new Date(Date.UTC(y, m - 1 - i, 1));
-    out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
-  }
-  return out.reverse();
 }
 
 function plusDays(ymd: string, days: number): string {
@@ -180,7 +170,7 @@ async function pmcSection(db: AnyDb): Promise<FocusSection> {
     if (qty <= 0) continue;
     const s3 = sales3m.get(skuId) ?? 0;
     if (s3 <= 0) continue; // 无动销不算断货风险（与驾驶舱 <30天 桶同口径）
-    if (qty / (s3 / 91) < 30) lowCover++;
+    if (qty / dailyFromWindow(s3) < 30) lowCover++;
   }
 
   /* 计划视角扩展（Wave T）：风险处置/NPD/数据新鲜度 */
@@ -264,7 +254,7 @@ const SECTION_BUILDERS: [Role, (db: AnyDb) => Promise<FocusSection>][] = [
 const SEVERITY_RANK: Record<ExceptionSeverity, number> = { critical: 0, high: 1, medium: 2 };
 
 /** #6 控制塔：跨域异常聚合（均为廉价聚合查询，登录首屏可承受） */
-async function computeExceptions(db: AnyDb): Promise<ExceptionItem[]> {
+export async function computeExceptions(db: AnyDb): Promise<ExceptionItem[]> {
   const today = todayShanghai();
   const out: ExceptionItem[] = [];
 

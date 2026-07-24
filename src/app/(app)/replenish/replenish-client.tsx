@@ -42,6 +42,7 @@ interface ReplenishRow {
   heldQty: string | null;
   forecastDaily: number;
   forecastTrend: "up" | "down" | "flat";
+  forecastDivergent: boolean;
 }
 
 interface ReplenishResult {
@@ -201,8 +202,8 @@ export default function ReplenishClient() {
               const arrow = r.forecastTrend === "up" ? "↑" : r.forecastTrend === "down" ? "↓" : "→";
               const color = r.forecastTrend === "up" ? "#cf1322" : r.forecastTrend === "down" ? "#3f8600" : "#888";
               return (
-                <Tooltip title="Holt 线性预测（近6月，捕捉趋势）——供人工判断，不驱动建议量">
-                  <span style={{ color }}>{v} {arrow}</span>
+                <Tooltip title={r.forecastDivergent ? "预测与近3月日均分歧>30%——建议人工复核该 SKU 的需求判断" : "Holt 线性预测（近6月，捕捉趋势）——供人工判断，不驱动建议量"}>
+                  <span style={{ color }}>{v} {arrow}{r.forecastDivergent ? " ⚠" : ""}</span>
                 </Tooltip>
               );
             },
