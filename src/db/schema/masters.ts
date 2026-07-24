@@ -107,6 +107,7 @@ export const warehouses = pgTable("warehouses", {
   name: text("name").notNull(),
   kind: warehouseKindEnum("kind").notNull(),
   accountingMode: accountingModeEnum("accounting_mode").notNull().default("realtime"),
+  parentId: integer("parent_id"), // D32 树状层级（0724：保税分中转/发货上下级）；空=顶级
   supplierId: integer("supplier_id").references(() => suppliers.id), // 委外仓专用
   active: boolean("active").notNull().default(true),
 });

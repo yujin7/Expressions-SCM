@@ -1,5 +1,5 @@
 import {
-  pgTable, serial, integer, text, timestamp, jsonb, unique, numeric, date, primaryKey, index,
+  pgTable, serial, integer, text, timestamp, jsonb, unique, numeric, date, primaryKey, index, boolean,
 } from "drizzle-orm/pg-core";
 import { approvalActionEnum, importStatusEnum, reconStatusEnum } from "./enums";
 import { users, skus } from "./masters";
@@ -111,3 +111,25 @@ export const exportJobs = pgTable("export_jobs", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
 }, (t) => [index("ix_export_status").on(t.status, t.createdAt)]);
+
+/** 运行错误留档（errorId 可查——errorResponse 500 时写入） */
+export const errorLogs = pgTable("error_logs", {
+  id: serial("id").primaryKey(),
+  errorId: text("error_id").notNull(),
+  path: text("path"),
+  method: text("method"),
+  userId: integer("user_id"),
+  message: text("message").notNull(),
+  stack: text("stack"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("ix_error_logs_time").on(t.createdAt)]);
+
+/** 任务运行史（进程内调度回退 + 运维面板数据源） */
+export const jobRuns = pgTable("job_runs", {
+  id: serial("id").primaryKey(),
+  job: text("job").notNull(),
+  ok: boolean("ok").notNull(),
+  message: text("message"),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("ix_job_runs").on(t.job, t.finishedAt)]);

@@ -114,6 +114,7 @@ export const pcDocs = pgTable("pc_docs", {
 
 /* ── 委外加工通知单 JG ──────────────────────── */
 export const jgDocs = pgTable("jg_docs", {
+  batchSeq: integer("batch_seq").notNull().default(1), // 批次序号（D33；既有单据=1）
   id: serial("id").primaryKey(),
   ...docColumns(),
   woId: integer("wo_id").notNull().references(() => woDocs.id),
@@ -136,7 +137,10 @@ export const jgDocs = pgTable("jg_docs", {
   priority: text("priority"), // 优先级（高/中/低，展示用）
   isPaused: boolean("is_paused").notNull().default(false), // 暂停执行（挂起）
   revisedDates: jsonb("revised_dates"), // 交期修改历史 [{date, by, reason}]
-}, (t) => [unique("uq_jg_wo").on(t.woId)]); // 一 WO 一 JG（W3 集成补约束，替代先查后插的并发窗口）
+}, (t) => [
+  // D33 schema-first（0724 齐套自动触发链）：一 WO 多批——UNIQUE 升为 (woId, batchSeq)；既有单据 batchSeq=1
+  unique("uq_jg_wo_batch").on(t.woId, t.batchSeq),
+]);
 
 /** JG 加工费分段（收货时点分段计价的依据；PC 追溯时重算段） */
 export const jgFeeSegments = pgTable("jg_fee_segments", {
