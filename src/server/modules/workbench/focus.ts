@@ -11,6 +11,7 @@
 import { and, eq, gte, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
+import { getRiskWorklist } from "@/server/modules/report/risk";
 import { ROLE_LABELS, type Role } from "@/server/core/constants";
 import { todayShanghai } from "@/server/modules/master/common";
 
@@ -162,11 +163,25 @@ async function pmcSection(db: AnyDb): Promise<FocusSection> {
     if (qty / (s3 / 91) < 30) lowCover++;
   }
 
+  /* 计划视角扩展（Wave T）：风险处置/NPD/数据新鲜度 */
+  const [riskActions, npdActive, staleData] = await Promise.all([
+    getRiskWorklist({ pageSize: 1 }, db).then((r) => r.total),
+    countWhere(db, schema.npdProjects, eq(schema.npdProjects.status, "active")),
+    countWhere(
+      db,
+      schema.reviewItems,
+      and(eq(schema.reviewItems.category, "data_freshness"), eq(schema.reviewItems.status, "open")),
+    ),
+  ]);
+
   return {
     role: "pmc",
     roleLabel: ROLE_LABELS.pmc,
     metrics: [
       { key: "lowCoverSkus", label: "可销天数<30 成品", value: lowCover, href: "/replenish", suffix: "个" },
+      { key: "riskActions", label: "风险处置 SKU", value: riskActions, href: "/report/risk", suffix: "个" },
+      { key: "npdActive", label: "进行中 NPD 项目", value: npdActive, href: "/npd", suffix: "个" },
+      { key: "staleData", label: "参考数据过期提醒", value: staleData, href: "/review/checklist", suffix: "项" },
       { key: "blockedStaging", label: "放行阻塞行", value: blockedStaging, href: "/import/release", suffix: "行" },
       { key: "aliasOpen", label: "别名待认领", value: aliasOpen, href: "/import/exceptions", suffix: "项" },
     ],

@@ -5,13 +5,17 @@ import { usePathname, useRouter } from "next/navigation";
 import { App as AntApp, Avatar, Button, Layout, Menu, Modal, Space, Typography, theme } from "antd";
 import type { MenuProps } from "antd";
 import {
+  AccountBookOutlined,
   ApartmentOutlined,
   BarChartOutlined,
   DashboardOutlined,
   DatabaseOutlined,
+  ExperimentOutlined,
+  FundOutlined,
   ImportOutlined,
   InboxOutlined,
   SettingOutlined,
+  SwapOutlined,
   UserOutlined,
 } from "@ant-design/icons";
 
@@ -22,7 +26,76 @@ const { Header, Sider, Content } = Layout;
 
 const menuItems: MenuProps["items"] = [
   { key: "/workbench", icon: <DashboardOutlined />, label: "工作台" },
-  { key: "/inbox", icon: <DashboardOutlined />, label: "我的待办" },
+  { key: "/inbox", icon: <InboxOutlined />, label: "我的待办" },
+  { key: "/report/dashboard", icon: <BarChartOutlined />, label: "经营驾驶舱" },
+  {
+    key: "planning",
+    icon: <FundOutlined />,
+    label: "计划与补货",
+    children: [
+      { key: "/replenish", label: "补货建议" },
+      { key: "/report/demand", label: "需求达成与货盘" },
+      { key: "/report/risk", label: "风险库存处置" },
+      { key: "/outsource/auto-chain", label: "自动链预演" },
+    ],
+  },
+  {
+    key: "outsourcing",
+    icon: <ApartmentOutlined />,
+    label: "委外生产",
+    children: [
+      { key: "/outsource/bh", label: "备货申请" },
+      { key: "/outsource/wo", label: "委外工单" },
+      { key: "/outsource/po", label: "采购订单" },
+      { key: "/outsource/pc", label: "价格变更" },
+      { key: "/outsource/jg", label: "加工通知单" },
+      { key: "/report/wip", label: "委外在制看板" },
+      { key: "/report/transit", label: "在途参考" },
+    ],
+  },
+  {
+    key: "matflow",
+    icon: <SwapOutlined />,
+    label: "物料收发",
+    children: [
+      { key: "/matflow/fl", label: "发料单" },
+      { key: "/matflow/tl", label: "退料单" },
+      { key: "/matflow/sh", label: "收货检验" },
+      { key: "/matflow/ct", label: "采购退货" },
+    ],
+  },
+  {
+    key: "inventory",
+    icon: <InboxOutlined />,
+    label: "库存",
+    children: [
+      { key: "/inventory/balance", label: "库存余额" },
+      { key: "/inventory/ledger", label: "库存流水" },
+      { key: "/inventory/docs", label: "库存单据" },
+      { key: "/inventory/count", label: "盘点任务" },
+      { key: "/inventory/expiry", label: "效期批次" },
+    ],
+  },
+  {
+    key: "npd",
+    icon: <ExperimentOutlined />,
+    label: "新品开发",
+    children: [
+      { key: "/npd", label: "NPD 项目跟踪" },
+      { key: "/report/npd", label: "NPD 节点参考" },
+    ],
+  },
+  {
+    key: "finance",
+    icon: <AccountBookOutlined />,
+    label: "财务结算",
+    children: [
+      { key: "/settlement/js", label: "结算单" },
+      { key: "/report/settlement-summary", label: "结算汇总表" },
+      { key: "/jobs/recon", label: "对账差异" },
+      { key: "/report/jiediao", label: "借调对账" },
+    ],
+  },
   {
     key: "master",
     icon: <DatabaseOutlined />,
@@ -38,62 +111,15 @@ const menuItems: MenuProps["items"] = [
     ],
   },
   {
-    key: "outsourcing",
-    icon: <ApartmentOutlined />,
-    label: "委外生产",
-    children: [
-      { key: "/outsource/bh", label: "备货申请" },
-      { key: "/outsource/wo", label: "委外工单" },
-      { key: "/outsource/po", label: "采购订单" },
-      { key: "/outsource/pc", label: "价格变更" },
-      { key: "/outsource/jg", label: "加工通知单" },
-      { key: "/matflow/fl", label: "发料单" },
-      { key: "/matflow/tl", label: "退料单" },
-      { key: "/matflow/sh", label: "收货检验" },
-      { key: "/matflow/ct", label: "采购退货" },
-      { key: "/settlement/js", label: "结算单" },
-      { key: "/jobs/recon", label: "对账差异" },
-      { key: "/replenish", label: "补货建议" },
-      { key: "/outsource/auto-chain", label: "自动链预演" },
-    ],
-  },
-  {
-    key: "inventory",
-    icon: <InboxOutlined />,
-    label: "库存",
-    children: [
-      { key: "/inventory/balance", label: "库存余额" },
-      { key: "/inventory/ledger", label: "库存流水" },
-      { key: "/inventory/docs", label: "库存单据" },
-      { key: "/inventory/count", label: "盘点任务" },
-    ],
-  },
-  {
     key: "import",
     icon: <ImportOutlined />,
-    label: "导入中心",
+    label: "数据中心",
     children: [
       { key: "/import/upload", label: "文件上传" },
       { key: "/import/release", label: "放行工作台" },
       { key: "/import/jobs", label: "导入任务" },
       { key: "/import/exceptions", label: "别名认领" },
       { key: "/review/checklist", label: "在案复核清单" },
-    ],
-  },
-  {
-    key: "reports",
-    icon: <BarChartOutlined />,
-    label: "报表",
-    children: [
-      { key: "/report/dashboard", label: "经营驾驶舱" },
-      { key: "/report/wip", label: "委外在制看板" },
-      { key: "/report/settlement-summary", label: "结算汇总表" },
-      { key: "/report/jiediao", label: "借调对账" },
-      { key: "/report/transit", label: "在途参考" },
-      { key: "/report/demand", label: "需求达成与货盘" },
-      { key: "/npd", label: "NPD 项目跟踪" },
-      { key: "/report/npd", label: "NPD 节点参考" },
-      { key: "/report/risk", label: "风险库存处置" },
       { key: "/report/exports", label: "导出任务" },
     ],
   },
@@ -126,6 +152,9 @@ const MENU_ROLES: Record<string, string[]> = {
   "/admin/users": [],
   "/admin/audit": ["finance"],
   "/admin/params": ["pmc", "purchasing", "finance"],
+  "/settlement/js": ["finance", "purchasing"],
+  "/report/settlement-summary": ["finance"],
+  "/jobs/recon": ["finance", "pmc"],
 };
 
 function filterMenuByRoles(items: MenuProps["items"], roles: string[]): MenuProps["items"] {
