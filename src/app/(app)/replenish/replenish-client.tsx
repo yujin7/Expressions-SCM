@@ -113,6 +113,19 @@ export default function ReplenishClient() {
 
   const [selectedRows, setSelectedRows] = useState<ReplenishRow[]>([]);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  /* E3-03 重复下单守卫：打开确认框时查近 7 天未结 BH/WO（提示不阻断） */
+  const [dupHits, setDupHits] = useState<Record<number, { docType: string; docNo: string; status: string; qty: number; daysAgo: number }[]>>({});
+  const openConfirm = useCallback(() => {
+    setConfirmOpen(true);
+    setDupHits({});
+    const ids = selectedRows.map((r) => r.skuId);
+    if (ids.length === 0) return;
+    fetchJson<{ hitsBySku: Record<number, { docType: string; docNo: string; status: string; qty: number; daysAgo: number }[]> }>(
+      `/api/outsource/duplicate-check?skuIds=${ids.join(",")}&days=7`,
+    )
+      .then((d) => setDupHits(d.hitsBySku ?? {}))
+      .catch(() => setDupHits({}));
+  }, [selectedRows]);
   const [remark, setRemark] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [createdDocNo, setCreatedDocNo] = useState<string | null>(null);
@@ -432,7 +445,7 @@ export default function ReplenishClient() {
           type="primary"
           icon={<ThunderboltOutlined />}
           disabled={selectedRows.length === 0}
-          onClick={() => setConfirmOpen(true)}
+          onClick={openConfirm}
         >
           生成备货申请草稿（BH）
         </Button>
@@ -454,6 +467,27 @@ export default function ReplenishClient() {
           style={{ marginBottom: 12 }}
           message="将按下表建议量生成一张 BH 草稿（不自动提交），提交与审批在备货申请页完成。"
         />
+        {Object.keys(dupHits).length > 0 ? (
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={`重复下单提醒：${Object.keys(dupHits).length} 个 SKU 近 7 天已有未结单据`}
+            description={
+              <div style={{ maxHeight: 160, overflowY: "auto", fontSize: 12 }}>
+                {selectedRows
+                  .filter((r) => dupHits[r.skuId]?.length)
+                  .map((r) => (
+                    <div key={r.skuId}>
+                      <b>{r.code}</b>：
+                      {dupHits[r.skuId].map((h) => `${h.docType} ${h.docNo}（${h.status}，${h.qty.toLocaleString("zh-CN")}，${h.daysAgo} 天前）`).join("；")}
+                    </div>
+                  ))}
+                <div style={{ marginTop: 4, color: "#8c8c8c" }}>仅提示，不阻断——确属追加/分批下单可继续。</div>
+              </div>
+            }
+          />
+        ) : null}
         {selectedRows.some((r) => r.suggestQty == null && r.heldQty != null) ? (
           <Alert
             type="error"

@@ -14,6 +14,9 @@ interface ClosedLoopRow {
   lineCount: number;
   createdBy: string;
   currentStatus: string;
+  receivedQty: number;
+  plannedQty: number;
+  receiptRate: number | null;
   statusLabel: string;
   downstreamWo: string;
 }
@@ -25,6 +28,8 @@ interface ClosedLoopSummary {
   rejected: number;
   deleted: number;
   adoptRate: number;
+  deliveredRate: number;
+  deliveredCount: number;
 }
 
 interface ClosedLoopData {
@@ -102,7 +107,8 @@ export default function ClosedLoopClient() {
       />
       <Row gutter={12} style={{ marginBottom: 12 }}>
         <Col><Card size="small"><Statistic title="建议草稿总数" value={s?.total ?? 0} /></Card></Col>
-        <Col><Card size="small"><Statistic title="采纳率" value={s?.adoptRate ?? 0} precision={1} suffix="%" valueStyle={{ color: "#52c41a" }} /></Card></Col>
+        <Col><Card size="small"><Statistic title="采纳率（到审批）" value={s?.adoptRate ?? 0} precision={1} suffix="%" valueStyle={{ color: "#52c41a" }} /></Card></Col>
+        <Col><Card size="small"><Statistic title="实际到货率" value={s?.deliveredRate ?? 0} precision={1} suffix="%" valueStyle={{ color: "#3f8600" }} /></Card></Col>
         <Col><Card size="small"><Statistic title="采纳中/已完成" value={s?.adopted ?? 0} valueStyle={{ color: "#52c41a" }} /></Card></Col>
         <Col><Card size="small"><Statistic title="待审批" value={s?.pending ?? 0} valueStyle={{ color: "#1677ff" }} /></Card></Col>
         <Col><Card size="small"><Statistic title="已否决/关闭" value={s?.rejected ?? 0} valueStyle={{ color: "#8c8c8c" }} /></Card></Col>

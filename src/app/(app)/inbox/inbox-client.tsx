@@ -1,11 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { App, Button, Space, Table, Tag, Typography } from "antd";
+import { Alert, App, Button, Modal, Popconfirm, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
-import { fetchJson } from "@/components/fetchJson";
+import { fetchJson, postJson } from "@/components/fetchJson";
 
 interface InboxItem {
   docType: string;
@@ -53,6 +53,12 @@ export default function InboxClient() {
   const [data, setData] = useState<InboxData | null>(null);
   const [loading, setLoading] = useState(false);
 
+  /* E5-03 批量审批：逐单独立、部分成功可见（失败分列+原因，不做全或无） */
+  const [selected, setSelected] = useState<InboxItem[]>([]);
+  const [approving, setApproving] = useState(false);
+  const [batchResult, setBatchResult] = useState<{ approved: number; failed: number; outcomes: { docType: string; id: number; ok: boolean; error?: string }[] } | null>(null);
+  const BATCHABLE = new Set(["bh", "wo", "po", "pc", "jg"]);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -63,6 +69,25 @@ export default function InboxClient() {
       setLoading(false);
     }
   }, [message]);
+
+  const doBatch = async () => {
+    const items = selected.filter((r) => BATCHABLE.has(r.docType)).map((r) => ({ docType: r.docType, id: r.id, version: r.version }));
+    if (items.length === 0) { message.info("所选单据均不支持批量审批"); return; }
+    setApproving(true);
+    try {
+      const res = await postJson<{ approved: number; failed: number; outcomes: { docType: string; id: number; ok: boolean; error?: string }[] }>(
+        "/api/inbox/batch-approve",
+        { items },
+      );
+      setBatchResult(res);
+      setSelected([]);
+      void load();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setApproving(false);
+    }
+  };
 
   useEffect(() => {
     void load();
@@ -123,6 +148,25 @@ export default function InboxClient() {
           <Typography.Title level={5} style={{ marginTop: 8 }}>
             待我审批（{data?.total ?? 0}）
           </Typography.Title>
+          {selected.length > 0 ? (
+            <div style={{ marginBottom: 8, padding: "8px 12px", background: "#e6f4ff", borderRadius: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <Typography.Text>
+                已选 {selected.length} 单
+                {selected.filter((r) => !BATCHABLE.has(r.docType)).length > 0
+                  ? `（其中 ${selected.filter((r) => !BATCHABLE.has(r.docType)).length} 单不支持批量，将跳过）`
+                  : ""}
+              </Typography.Text>
+              <Space>
+                <Button size="small" onClick={() => setSelected([])}>清除</Button>
+                <Popconfirm
+                  title={`将批量通过 ${selected.filter((r) => BATCHABLE.has(r.docType)).length} 单，逐单独立生效（失败不影响其他单）`}
+                  onConfirm={() => void doBatch()}
+                >
+                  <Button size="small" type="primary" loading={approving}>批量通过</Button>
+                </Popconfirm>
+              </Space>
+            </div>
+          ) : null}
           <Table<InboxItem>
             rowKey={(r) => `${r.docType}-${r.id}`}
             size="middle"
@@ -130,6 +174,11 @@ export default function InboxClient() {
             dataSource={data?.pending ?? []}
             loading={loading}
             pagination={false}
+            rowSelection={{
+              selectedRowKeys: selected.map((r) => `${r.docType}-${r.id}`),
+              preserveSelectedRowKeys: true,
+              onChange: (_k, rows) => setSelected(rows.filter((r) => r != null)),
+            }}
             locale={{ emptyText: "没有等待您审批的单据" }}
             style={{ marginBottom: 24 }}
           />
@@ -145,6 +194,37 @@ export default function InboxClient() {
           />
         </>
       )}
+      <Modal
+        open={batchResult != null}
+        title="批量审批结果"
+        onCancel={() => setBatchResult(null)}
+        onOk={() => setBatchResult(null)}
+        footer={null}
+        width="min(640px, 100vw)"
+      >
+        {batchResult ? (
+          <>
+            <Alert
+              type={batchResult.failed === 0 ? "success" : "warning"}
+              showIcon
+              style={{ marginBottom: 12 }}
+              message={`成功 ${batchResult.approved} 单${batchResult.failed > 0 ? `，失败 ${batchResult.failed} 单` : ""}`}
+            />
+            {batchResult.failed > 0 ? (
+              <Table
+                size="small"
+                rowKey={(r: { docType: string; id: number }) => `${r.docType}-${r.id}`}
+                pagination={false}
+                dataSource={batchResult.outcomes.filter((o) => !o.ok)}
+                columns={[
+                  { title: "单据", width: 110, render: (_: unknown, r: { docType: string; id: number }) => `${r.docType.toUpperCase()} #${r.id}` },
+                  { title: "失败原因", dataIndex: "error", render: (v: string) => <Typography.Text type="danger">{v}</Typography.Text> },
+                ]}
+              />
+            ) : null}
+          </>
+        ) : null}
+      </Modal>
     </div>
   );
 }

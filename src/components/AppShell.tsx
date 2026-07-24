@@ -43,6 +43,8 @@ const menuItems: MenuProps["items"] = [
       { key: "/report/closed-loop", label: "建议闭环追踪" },
       { key: "/report/auto-replenish", label: "自动补货候选" },
       { key: "/report/material-demand", label: "物料需求展开 MRP" },
+      { key: "/report/transfer-suggest", label: "调拨建议" },
+      { key: "/report/leadtime-learning", label: "交期学习" },
       { key: "/outsource/auto-chain", label: "自动链预演" },
     ],
   },

@@ -8,7 +8,7 @@
  * 采纳率 = 进入审批通过及以后状态（approved/in_progress/completed）÷ 建议草稿总数。
  * 只读不写库、无金额字段免脱敏。
  */
-import { desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 
@@ -45,6 +45,10 @@ export interface ClosedLoopRow {
   createdBy: string;
   /** BH 当前状态码；单据不存在 = '已删除' */
   currentStatus: string;
+  /** E3-01：下游实际到货量与到货率（WO→JG→SH 正常行实收，与 wip.ts 同口径） */
+  receivedQty: number;
+  plannedQty: number;
+  receiptRate: number | null;
   statusLabel: string;
   downstreamWo: string;
 }
@@ -55,7 +59,10 @@ export interface ClosedLoopSummary {
   pending: number; // 待审批
   rejected: number; // 已否决/关闭
   deleted: number; // 已删除
-  adoptRate: number; // 采纳率（百分比，1 位小数）
+  adoptRate: number; // 采纳率（百分比，1 位小数）——口径=进入审批通过及以后
+  /** E3-01：实际到货口径——建议最终有货落地的占比（比采纳率更硬） */
+  deliveredRate: number;
+  deliveredCount: number;
 }
 
 export interface ClosedLoopResult {
@@ -120,6 +127,53 @@ export async function getClosedLoop(
     }
   }
 
+  /* ── E3-01：闭环延伸到入库——采纳≠到货。经 WO→JG→SH(正常行,已生效) 累计实收 ── */
+  const woIdsByBh = new Map<number, number[]>();
+  const woQtyByBh = new Map<number, number>();
+  if (bhIds.length) {
+    const woFull: { id: number; bhId: number | null; qty: string }[] = await db
+      .select({ id: schema.woDocs.id, bhId: schema.woDocs.bhId, qty: schema.woDocs.qty })
+      .from(schema.woDocs)
+      .where(inArray(schema.woDocs.bhId, bhIds));
+    for (const w of woFull) {
+      if (w.bhId == null) continue;
+      (woIdsByBh.get(w.bhId) ?? woIdsByBh.set(w.bhId, []).get(w.bhId)!).push(w.id);
+      woQtyByBh.set(w.bhId, (woQtyByBh.get(w.bhId) ?? 0) + num(w.qty));
+    }
+  }
+  const allWoIds = [...woIdsByBh.values()].flat();
+  const receivedByWo = new Map<number, number>();
+  if (allWoIds.length) {
+    const jgRows: { id: number; woId: number }[] = await db
+      .select({ id: schema.jgDocs.id, woId: schema.jgDocs.woId })
+      .from(schema.jgDocs)
+      .where(inArray(schema.jgDocs.woId, allWoIds));
+    const woByJg = new Map(jgRows.map((j) => [j.id, j.woId]));
+    const jgIds = jgRows.map((j) => j.id);
+    if (jgIds.length) {
+      const recv: { jgId: number; qty: string | null }[] = await db
+        .select({ jgId: schema.shDocs.sourceId, qty: sql<string | null>`sum(${schema.shLines.actualQty})` })
+        .from(schema.shLines)
+        .innerJoin(schema.shDocs, eq(schema.shLines.shId, schema.shDocs.id))
+        .where(and(
+          eq(schema.shDocs.sourceType, "jg"),
+          inArray(schema.shDocs.sourceId, jgIds),
+          inArray(schema.shDocs.status, ["approved", "in_progress", "completed"]),
+          eq(schema.shLines.lineType, "normal"),
+        ))
+        .groupBy(schema.shDocs.sourceId);
+      for (const r of recv) {
+        const woId = woByJg.get(r.jgId);
+        if (woId == null) continue;
+        receivedByWo.set(woId, (receivedByWo.get(woId) ?? 0) + num(r.qty));
+      }
+    }
+  }
+  const receivedByBh = new Map<number, number>();
+  for (const [bhId, woIds] of woIdsByBh) {
+    receivedByBh.set(bhId, woIds.reduce((a, id) => a + (receivedByWo.get(id) ?? 0), 0));
+  }
+
   const all: ClosedLoopRow[] = logs.map((l) => {
     const after = (l.after ?? {}) as { docNo?: unknown; source?: unknown; lineCount?: unknown };
     const docNo = typeof after.docNo === "string" ? after.docNo : "";
@@ -148,6 +202,11 @@ export async function getClosedLoop(
       currentStatus,
       statusLabel,
       downstreamWo,
+      receivedQty: bhId != null ? r1(receivedByBh.get(bhId) ?? 0) : 0,
+      plannedQty: bhId != null ? r1(woQtyByBh.get(bhId) ?? 0) : 0,
+      receiptRate: bhId != null && (woQtyByBh.get(bhId) ?? 0) > 0
+        ? r1(((receivedByBh.get(bhId) ?? 0) / (woQtyByBh.get(bhId) ?? 1)) * 100)
+        : null,
     };
   });
 
@@ -164,10 +223,13 @@ export async function getClosedLoop(
   }
   const total = all.length;
   const adoptRate = total > 0 ? r1((adopted / total) * 100) : 0;
+  // E3-01：实际到货 = 下游已有正常行实收（>0）
+  const deliveredCount = all.filter((r) => r.receivedQty > 0).length;
+  const deliveredRate = total > 0 ? r1((deliveredCount / total) * 100) : 0;
 
   return {
     rows: all.slice((page - 1) * pageSize, page * pageSize),
     total,
-    summary: { total, adopted, pending, rejected, deleted, adoptRate },
+    summary: { total, adopted, pending, rejected, deleted, adoptRate, deliveredRate, deliveredCount },
   };
 }
