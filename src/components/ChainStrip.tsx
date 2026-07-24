@@ -1,0 +1,113 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { Tag, Typography } from "antd";
+import { RightOutlined } from "@ant-design/icons";
+
+/**
+ * 链路视图条：委外全链 BH→WO→PO→JG→FL/TL→SH→CT→JS 的紧凑横向节点条。
+ * 当前单据高亮；其余节点点击跳转对应列表页（?q=单号 作兜底导航参数）。
+ * 链路接口出错/无链路（≤1 节点）时不渲染任何内容（graceful）。
+ */
+
+interface ChainNode {
+  docType: string;
+  label: string;
+  id: number;
+  docNo: string;
+  status: string;
+  statusLabel: string;
+  current: boolean;
+}
+
+/** 与 DocStatusTag 保持一致的状态配色（该组件未导出色表，此处按同口径本地维护） */
+const STATUS_COLORS: Record<string, string> = {
+  draft: "default",
+  pending: "processing",
+  approved: "blue",
+  in_progress: "geekblue",
+  completed: "success",
+  closed: "warning",
+  void: "default",
+};
+
+const PAGE_HREFS: Record<string, string> = {
+  bh: "/outsource/bh",
+  wo: "/outsource/wo",
+  po: "/outsource/po",
+  jg: "/outsource/jg",
+  fl: "/matflow/fl",
+  tl: "/matflow/tl",
+  sh: "/matflow/sh",
+  ct: "/matflow/ct",
+  js: "/settlement/js",
+};
+
+export default function ChainStrip({ docType, id }: { docType: string; id: number }) {
+  const [nodes, setNodes] = useState<ChainNode[]>([]);
+
+  useEffect(() => {
+    let alive = true;
+    setNodes([]);
+    fetch(`/api/outsource/chain?docType=${encodeURIComponent(docType)}&id=${id}`)
+      .then((res) => (res.ok ? (res.json() as Promise<{ nodes: ChainNode[] }>) : null))
+      .then((data) => {
+        if (alive && data && Array.isArray(data.nodes)) setNodes(data.nodes);
+      })
+      .catch(() => {
+        /* 链路获取失败：静默不渲染 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [docType, id]);
+
+  if (nodes.length <= 1) return null;
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        flexWrap: "wrap",
+        rowGap: 6,
+        marginBottom: 16,
+        padding: "8px 12px",
+        background: "rgba(0,0,0,0.02)",
+        border: "1px solid rgba(5,5,5,0.06)",
+        borderRadius: 6,
+      }}
+    >
+      <Typography.Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>
+        链路
+      </Typography.Text>
+      {nodes.map((n, idx) => {
+        const tag = (
+          <Tag
+            color={STATUS_COLORS[n.status] ?? "default"}
+            title={`${n.label} · ${n.statusLabel}`}
+            style={{
+              marginInlineEnd: 0,
+              fontSize: 12,
+              ...(n.current
+                ? { fontWeight: 600, boxShadow: "0 0 0 1px currentColor inset" }
+                : { cursor: "pointer" }),
+              ...(n.status === "void" ? { textDecoration: "line-through" } : undefined),
+            }}
+          >
+            {n.label} {n.docNo}
+          </Tag>
+        );
+        const href = PAGE_HREFS[n.docType];
+        return (
+          <span key={`${n.docType}-${n.id}`} style={{ display: "inline-flex", alignItems: "center" }}>
+            {idx > 0 ? (
+              <RightOutlined style={{ fontSize: 10, color: "rgba(0,0,0,0.35)", margin: "0 6px" }} />
+            ) : null}
+            {n.current || !href ? tag : <a href={`${href}?q=${encodeURIComponent(n.docNo)}`}>{tag}</a>}
+          </span>
+        );
+      })}
+    </div>
+  );
+}

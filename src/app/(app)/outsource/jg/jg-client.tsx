@@ -24,6 +24,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
+import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
 import { fetchJson, patchJson, postJson } from "@/components/fetchJson";
 import { useMe } from "@/components/useMe";
@@ -364,6 +365,7 @@ export default function JgClient() {
       >
         {detail ? (
           <div>
+            <ChainStrip docType="jg" id={detail.id} />
             <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="关联工单">{detail.woDocNo}</Descriptions.Item>
               <Descriptions.Item label="加工厂">{detail.supplierName}</Descriptions.Item>

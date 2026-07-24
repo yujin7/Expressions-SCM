@@ -37,3 +37,40 @@ export function log(entry: LogEntry): void {
   else if (entry.level === "warn") console.warn(line);
   else console.log(line);
 }
+
+/** error_logs 落库入参（errorResponse 500 路径） */
+export interface ErrorLogEntry {
+  errorId: string;
+  message: string;
+  stack?: string | null;
+  path?: string | null;
+  method?: string | null;
+  userId?: number | null;
+}
+
+/**
+ * 未预期 500 落 error_logs 表（best-effort：任何失败吞掉——留档绝不能反过来
+ * 弄坏响应/边界）。@/db 延迟 import：logger 保持零依赖、edge bundle 不吃 db 权重。
+ * dbArg 仅供测试注入（PGlite）。
+ */
+export async function persistErrorLog(entry: ErrorLogEntry, dbArg?: unknown): Promise<void> {
+  try {
+    // 整体包在 !== 'edge' 静态分支内：logger 被 instrumentation 拉进 edge bundle，
+    // 若 @/db（→ pg → fs）的 import() 不在可折叠死分支里，edge 编译期直接 Module not found。
+    if (process.env.NEXT_RUNTIME !== "edge") {
+      const { errorLogs } = await import("@/db/schema");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const db: any = dbArg ?? (await (await import("@/db")).getDbAsync());
+      await db.insert(errorLogs).values({
+        errorId: entry.errorId,
+        message: entry.message.slice(0, 2000),
+        stack: entry.stack ? entry.stack.slice(0, 8000) : null,
+        path: entry.path ?? null,
+        method: entry.method ?? null,
+        userId: entry.userId ?? null,
+      });
+    }
+  } catch {
+    /* swallow——日志落库失败只能认（JSON 行日志仍在） */
+  }
+}

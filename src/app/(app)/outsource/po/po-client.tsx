@@ -20,6 +20,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
+import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
 import { fetchJson, postJson } from "@/components/fetchJson";
 
@@ -378,6 +379,7 @@ export default function PoClient() {
       >
         {detail ? (
           <div>
+            <ChainStrip docType="po" id={detail.id} />
             {priceAlert ? (
               <Alert
                 type="warning"

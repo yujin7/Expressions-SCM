@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
-import { log } from "@/server/core/logger";
+import { log, persistErrorLog } from "@/server/core/logger";
 
 /** 业务错误：service 层抛出，route 层统一转 JSON */
 export class ApiError extends Error {
@@ -20,8 +20,15 @@ function isUniqueViolation(e: unknown): boolean {
   return err?.code === "23505" || err?.cause?.code === "23505";
 }
 
-/** 统一错误响应：{error} + 400/404/409/500 */
-export function errorResponse(e: unknown): NextResponse {
+/** 500 留档上下文（可选——现有调用方无须改动；path 为 null 亦可接受 v1） */
+export interface ErrorCtx {
+  path?: string;
+  method?: string;
+  userId?: number;
+}
+
+/** 统一错误响应：{error} + 400/404/409/500；未预期 500 额外落 error_logs（best-effort） */
+export function errorResponse(e: unknown, ctx?: ErrorCtx): NextResponse {
   if (e instanceof ApiError) {
     return NextResponse.json(e.code ? { error: e.message, code: e.code } : { error: e.message }, { status: e.status });
   }
@@ -40,6 +47,17 @@ export function errorResponse(e: unknown): NextResponse {
     errorId,
     error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
     stack: e instanceof Error ? e.stack : undefined,
+    path: ctx?.path,
+    method: ctx?.method,
+  });
+  // 落库留档（fire-and-forget：绝不阻塞/破坏响应；失败在 persistErrorLog 内吞掉）
+  void persistErrorLog({
+    errorId,
+    message: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+    stack: e instanceof Error ? (e.stack ?? null) : null,
+    path: ctx?.path ?? null,
+    method: ctx?.method ?? null,
+    userId: ctx?.userId ?? null,
   });
   return NextResponse.json(
     { error: `系统错误，请联系管理员（错误码 ${errorId}）`, errorId },

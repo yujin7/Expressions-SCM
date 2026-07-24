@@ -26,6 +26,7 @@ import type { ColumnsType } from "antd/es/table";
 import { DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import AttachmentPanel from "@/components/AttachmentPanel";
+import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
 import RemoteSelect from "@/components/RemoteSelect";
 import { fetchJson, postJson } from "@/components/fetchJson";
@@ -1003,6 +1004,7 @@ export default function ShClient() {
       >
         {detail ? (
           <div>
+            <ChainStrip docType="sh" id={detail.id} />
             {overCapAlert ? (
               <Alert
                 type="warning"

@@ -21,6 +21,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
+import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
 import RemoteSelect from "@/components/RemoteSelect";
 import { fetchJson, postJson } from "@/components/fetchJson";
@@ -497,6 +498,7 @@ export default function TlClient() {
       >
         {detail ? (
           <div>
+            <ChainStrip docType="tl" id={detail.id} />
             {overReturnAlert ? (
               <Alert
                 type="warning"

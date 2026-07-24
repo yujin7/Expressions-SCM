@@ -22,6 +22,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
+import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
@@ -797,6 +798,7 @@ export default function JsClient() {
       >
         {detail ? (
           <div>
+            <ChainStrip docType="js" id={detail.id} />
             <Descriptions column={3} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="JG 单号">{detail.jgDocNo}</Descriptions.Item>
               <Descriptions.Item label="关联工单">{detail.woDocNo}</Descriptions.Item>

@@ -21,3 +21,6 @@
 ## 演练日志
 | 日期 | 执行人 | 耗时 | 结果 |
 |---|---|---|---|
+| （占位——待恢复演练执行后由执行人填写；由编排方运行演练） | | | |
+
+| 2026-07-24 | dev/PGlite | scripts/restore-drill-dev.ts | ✅ 备份261ms/校验171ms；skus 5376·ledger 348·snapshots 1731·transit 8305·review 1769 全对 | Claude（会话内） |

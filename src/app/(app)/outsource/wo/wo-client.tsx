@@ -33,6 +33,7 @@ import {
 } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import RemoteSelect from "@/components/RemoteSelect";
+import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { ORDER_TYPE_LABELS, formatOrderType, toOptions } from "@/components/labels";
@@ -621,6 +622,7 @@ export default function WoClient() {
       >
         {detail ? (
           <div>
+            <ChainStrip docType="wo" id={detail.id} />
             {detail.status === "approved" && existingJgNo != null ? (
               <Alert
                 type="info"

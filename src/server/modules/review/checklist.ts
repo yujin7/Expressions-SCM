@@ -172,3 +172,28 @@ export async function guardReviewWrite(): Promise<Decider & { isApprover: boolea
   assertDecider(user);
   return user;
 }
+
+/* ── UAT 反馈直录（0724 改进波：页面反馈→复核清单 category=uat_feedback） ── */
+
+const feedbackSchema = z.object({
+  page: z.string().trim().max(200),
+  content: z.string().trim().min(2, "请描述问题或建议").max(1000),
+});
+
+export async function createFeedback(user: Decider, input: unknown, dbOverride?: DB): Promise<{ id: number }> {
+  const v = feedbackSchema.parse(input);
+  const db = dbOverride ?? (await getDbAsync());
+  const [row] = await db
+    .insert(schema.reviewItems)
+    .values({
+      category: "uat_feedback",
+      refType: null,
+      refKey: v.page,
+      title: `【反馈】${v.content.slice(0, 60)}${v.content.length > 60 ? "…" : ""}`,
+      detail: `页面：${v.page}\n提交人：${user.name}\n内容：${v.content}`,
+      status: "open",
+    })
+    .returning({ id: schema.reviewItems.id });
+  await writeAudit(db, { userId: user.id, entity: "review_item", entityId: row.id, action: "feedback", after: { page: v.page } });
+  return { id: row.id };
+}

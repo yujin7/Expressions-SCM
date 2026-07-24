@@ -15,10 +15,14 @@ import {
   UserOutlined,
 } from "@ant-design/icons";
 
+import GlobalSearch from "@/components/GlobalSearch";
+import FeedbackButton from "@/components/FeedbackButton";
+
 const { Header, Sider, Content } = Layout;
 
 const menuItems: MenuProps["items"] = [
   { key: "/workbench", icon: <DashboardOutlined />, label: "工作台" },
+  { key: "/inbox", icon: <DashboardOutlined />, label: "我的待办" },
   {
     key: "master",
     icon: <DatabaseOutlined />,
@@ -97,6 +101,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/admin/users", label: "用户管理" },
       { key: "/admin/audit", label: "审计日志" },
       { key: "/admin/params", label: "运行参数" },
+      { key: "/admin/health", label: "运维面板" },
     ],
   },
 ];
@@ -221,6 +226,8 @@ export default function AppShell({ children, userName, roleText, roles = [], mus
               供应链系统
             </Typography.Title>
             <Space>
+              <GlobalSearch />
+              <FeedbackButton />
               <Avatar size="small" icon={<UserOutlined />} />
               <Typography.Text>{userName ?? "未登录"}</Typography.Text>
               {roleText ? <Typography.Text type="secondary">（{roleText}）</Typography.Text> : null}

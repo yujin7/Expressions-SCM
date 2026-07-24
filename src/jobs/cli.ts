@@ -10,6 +10,7 @@ import { runReconcileJst, shanghaiToday } from "./reconcile-jst";
 import { runLicenseAlert } from "./license-alert";
 import { runSnapshotAgeAlert } from "./snapshot-age";
 import { runExportWorkerOnce } from "./export-worker";
+import { runHousekeeping } from "./housekeeping";
 import { stageJstDaily } from "@/server/import/adapters/jst-daily";
 
 const USAGE = `用法:
@@ -17,6 +18,7 @@ const USAGE = `用法:
   npx tsx src/jobs/cli.ts license-alert [YYYY-MM-DD]     缺省=今日
   npx tsx src/jobs/cli.ts snapshot-age [YYYY-MM-DD] [阈值天数=3]
   npx tsx src/jobs/cli.ts export-worker                  处理一批待办导出任务
+  npx tsx src/jobs/cli.ts housekeeping                   过期数据保洁（staging/导出/错误/任务史）
   npx tsx src/jobs/cli.ts stage-jst <file.xlsx|csv> <userId>`;
 
 async function main(): Promise<void> {
@@ -43,6 +45,9 @@ async function main(): Promise<void> {
       out = { processed: results.length, results };
       break;
     }
+    case "housekeeping":
+      out = await runHousekeeping(db);
+      break;
     case "stage-jst": {
       const [file, userId] = args;
       if (!file || !Number.isInteger(Number(userId)) || Number(userId) <= 0) {
