@@ -84,6 +84,8 @@ export const poDocs = pgTable("po_docs", {
   confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
   confirmedBy: integer("confirmed_by").references(() => users.id),
   confirmNote: text("confirm_note"),
+  // #13 供应商确认门户：不可猜 token（买手生成、外发链接），供应商凭链接确认交期
+  confirmToken: text("confirm_token"),
 });
 export const poLines = pgTable("po_lines", {
   id: serial("id").primaryKey(),

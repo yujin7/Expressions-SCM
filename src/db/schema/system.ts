@@ -133,3 +133,23 @@ export const jobRuns = pgTable("job_runs", {
   startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
   finishedAt: timestamp("finished_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("ix_job_runs").on(t.job, t.finishedAt)]);
+
+/** #8 通知发件箱（outbox 模式）：应用内产生通知 → 排队 → 分发任务按渠道推送。
+ *  渠道 feishu=飞书自定义机器人 webhook（URL 存 env FEISHU_WEBHOOK_URL，无则跳过）；
+ *  in_app=站内。幂等键 dedupeKey 防重复入队。状态 pending/sent/skipped/failed。 */
+export const notifications = pgTable("notifications", {
+  id: serial("id").primaryKey(),
+  channel: text("channel").notNull(), // feishu | in_app
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  href: text("href"),
+  severity: text("severity"), // critical/high/medium/info
+  status: text("status").notNull().default("pending"), // pending/sent/skipped/failed
+  dedupeKey: text("dedupe_key"),
+  error: text("error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+}, (t) => [
+  unique("uq_notify_dedupe").on(t.dedupeKey).nullsNotDistinct(),
+  index("ix_notify_status").on(t.status, t.createdAt),
+]);

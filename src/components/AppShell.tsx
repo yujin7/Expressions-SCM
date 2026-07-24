@@ -28,6 +28,7 @@ const { Header, Sider, Content } = Layout;
 const menuItems: MenuProps["items"] = [
   { key: "/workbench", icon: <DashboardOutlined />, label: "工作台" },
   { key: "/inbox", icon: <InboxOutlined />, label: "我的待办" },
+  { key: "/notifications", icon: <InboxOutlined />, label: "通知中心" },
   { key: "/report/dashboard", icon: <BarChartOutlined />, label: "经营驾驶舱" },
   { key: "/report/digest", icon: <BarChartOutlined />, label: "每日经营摘要" },
   {
@@ -99,6 +100,7 @@ const menuItems: MenuProps["items"] = [
     label: "财务结算",
     children: [
       { key: "/settlement/js", label: "结算单" },
+      { key: "/report/margin", label: "毛利视角" },
       { key: "/report/settlement-summary", label: "结算汇总表" },
       { key: "/jobs/recon", label: "对账差异" },
     ],

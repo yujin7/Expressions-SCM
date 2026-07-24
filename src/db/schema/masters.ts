@@ -144,3 +144,14 @@ export const fileMetas = pgTable("file_metas", {
   uploadedBy: integer("uploaded_by").references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/** #18 SKU 单位成本（人工录入 v1——成本自动口径 D2 未定，本表为手工基准，审计留痕）。
+ *  用于毛利视角：毛利率、按利润贡献排序滞销/补货。空=未录入，毛利视图对该 SKU 留白。 */
+export const skuCosts = pgTable("sku_costs", {
+  id: serial("id").primaryKey(),
+  skuId: integer("sku_id").notNull().references(() => skus.id).unique(),
+  unitCost: numeric("unit_cost", { precision: 14, scale: 4 }).notNull(), // 基础单位成本
+  note: text("note"),
+  updatedBy: integer("updated_by"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

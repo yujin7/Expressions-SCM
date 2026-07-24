@@ -14,19 +14,24 @@ const { auth } = NextAuth({
   pages: { signIn: "/login" },
 });
 
+/** 公开路径前缀（#13 供应商确认门户——token 门控，无需登录） */
+const PUBLIC_PREFIXES = ["/supplier/confirm", "/api/public/"];
+
 export default auth((req) => {
+  const path = req.nextUrl.pathname;
+  if (PUBLIC_PREFIXES.some((p) => path.startsWith(p))) return; // 公开：token 在业务层校验
   if (!req.auth) {
     // API 客户端要机器可读错误，不要 302 HTML（RT4）；页面仍走登录跳转
-    if (req.nextUrl.pathname.startsWith("/api/")) {
+    if (path.startsWith("/api/")) {
       return Response.json({ error: "未登录" }, { status: 401 });
     }
     const loginUrl = new URL("/login", req.nextUrl.origin);
-    loginUrl.searchParams.set("callbackUrl", req.nextUrl.pathname + req.nextUrl.search);
+    loginUrl.searchParams.set("callbackUrl", path + req.nextUrl.search);
     return Response.redirect(loginUrl);
   }
 });
 
 export const config = {
-  // 除 /login、/api/auth/*、/_next/*、favicon 外全部需要登录
-  matcher: ["/((?!login|api/auth|api/health|_next/static|_next/image|favicon.ico).*)"],
+  // 除 /login、/api/auth/*、/_next/*、favicon、公开门户外全部需要登录
+  matcher: ["/((?!login|api/auth|api/health|supplier/confirm|api/public|_next/static|_next/image|favicon.ico).*)"],
 };

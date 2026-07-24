@@ -17,12 +17,14 @@ describe("interval-runner 进程内调度回退", () => {
     expect(g[Symbol.for("supply-chain.interval-runner")]).toBeUndefined();
   });
 
-  it("注册了 6 个任务（+doc-aging）", () => {
+  it("注册了 8 个任务（+doc-aging/exception-notify/notify-dispatch）", () => {
     expect(INTERVAL_JOBS.map((j) => j.name).sort()).toEqual([
       "data-freshness",
       "doc-aging",
+      "exception-notify",
       "housekeeping",
       "license-alert",
+      "notify-dispatch",
       "reconcile-jst",
       "snapshot-age",
     ]);
