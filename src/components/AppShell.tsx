@@ -42,6 +42,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/report/segmentation", label: "库存分层 ABC/XYZ" },
       { key: "/report/closed-loop", label: "建议闭环追踪" },
       { key: "/report/auto-replenish", label: "自动补货候选" },
+      { key: "/report/material-demand", label: "物料需求展开 MRP" },
       { key: "/outsource/auto-chain", label: "自动链预演" },
     ],
   },

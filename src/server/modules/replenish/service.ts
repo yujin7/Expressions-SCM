@@ -25,7 +25,12 @@ import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
 import { createBh } from "@/server/modules/outsource/bh";
 import { requireAnyRole } from "@/server/modules/outsource/common";
+import { todayShanghai } from "@/server/modules/master/common";
 import { lastMonths } from "@/server/core/velocity";
+import { safetyStock } from "@/server/rules/safety-stock";
+import { timePhasedNetReq } from "@/server/rules/timephased";
+import { getOpenSupplyLines } from "@/server/core/supply";
+import { makeResolver } from "@/server/core/scoped-params";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -102,6 +107,21 @@ export interface ReplenishRow {
   forecastTrend: "up" | "down" | "flat";
   /** #13：预测与朴素日均显著分歧（>30%）——最值得人工复核的信号 */
   forecastDivergent: boolean;
+  /* ── E2-01/05 计划引擎 v2 ── */
+  /** 安全库存（件） */
+  safetyQty: number;
+  /** 安全库存口径：statistical=统计法 / fallback=兜底天数 / none */
+  safetyMethod: string;
+  /** 首次跌破安全库存日；无短缺=null */
+  shortageDate: string | null;
+  /** 距短缺天数 */
+  daysToShortage: number | null;
+  /** 最晚下单日（短缺日−生产周期） */
+  orderByDate: string | null;
+  /** 已错过下单窗口 */
+  orderWindowMissed: boolean;
+  /** 建议量的逐步解释（可解释链） */
+  planExplain: string[];
 }
 
 export interface ReplenishResult {
@@ -118,6 +138,10 @@ export interface ReplenishResult {
     refDate: string | null;
     /** 因覆盖缺口+全管道充足而被抑制的建议数 */
     suppressedCount: number;
+    /** E2：建议引擎口径（time_phased=逐日推演触发；legacy=单桶覆盖天数） */
+    engine: string;
+    /** 目标服务水平（%） */
+    serviceLevel: number;
   };
 }
 
@@ -160,7 +184,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     .leftJoin(schema.brands, eq(schema.skus.brandId, schema.brands.id))
     .where(and(...conds));
   if (skuRows.length === 0) {
-    return { rows: [], total: 0, meta: { coverDaysTarget, minCoverAlert, months3: [], snapDate: null, suggestCount: 0, refDate: null, suppressedCount: 0 } };
+    return { rows: [], total: 0, meta: { coverDaysTarget, minCoverAlert, months3: [], snapDate: null, suggestCount: 0, refDate: null, suppressedCount: 0, engine: "time_phased", serviceLevel: 95 } };
   }
   const skuIds = skuRows.map((s) => s.id);
 
@@ -312,6 +336,21 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
   const uomBySku = new Map<number, { moq: string | null; orderMultiple: string | null }>();
   for (const u of uomRows) if (!uomBySku.has(u.skuId)) uomBySku.set(u.skuId, u);
 
+  /* ── E2-05：预取「有确认到货日」的未结供给（core/supply 唯一定义）供逐日推演 ── */
+  const supplyLines = await getOpenSupplyLines(db, skuIds);
+  const arrivalsBySku = new Map<number, { date: string; qty: number }[]>();
+  for (const l of supplyLines) {
+    if (!l.expectDate || l.qty <= 0) continue;
+    const arr = arrivalsBySku.get(l.skuId) ?? [];
+    arr.push({ date: l.expectDate, qty: l.qty });
+    arrivalsBySku.set(l.skuId, arr);
+  }
+
+  /* ── E2-01：安全库存参数（服务水平/兜底天数），分域解析器（sku>brand>segment>global） ── */
+  const serviceLevel = await getNumParam("service_level_pct", 95, dbArg);
+  const resolveSafetyDays = await makeResolver("safety_days_fallback", 7, dbArg);
+  const todayStr = todayShanghai();
+
   /* ── 逐 SKU 计算（decimal 计算、展示层 Number） ── */
   const all: (ReplenishRow & { _cover: number | null })[] = skuRows.map((s) => {
     const onHand = dQty(onHandBySku.get(s.id) ?? "0");
@@ -343,24 +382,55 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
 
     const abcClass = abcBySku.get(s.id) ?? null;
     const effectiveTarget = targetForClass(abcClass ?? undefined);
+
+    /* ── E2-01 安全库存：统计法（需求σ×交期），样本/交期不足降级兜底天数并注明 ── */
+    const safetyDays = resolveSafetyDays({ skuId: s.id, segment: abcClass ?? undefined });
+    const ss = safetyStock({
+      monthly: seriesBySku.get(s.id) ?? [],
+      daily: dailyNum,
+      leadDays,
+      serviceLevel: String(serviceLevel),
+      fallbackDays: safetyDays.value,
+    });
+
+    /* ── E2-05 时间分段净需求：逐日推演到首次跌破安全库存，替代「日均×覆盖天数」单桶乘法。
+          触发＝再订货点逻辑：短缺发生在生产周期内（来不及补）才建议下单。 ── */
+    const actionWindow = leadDays != null && leadDays > 0 ? leadDays : minCoverAlert;
+    const tp = timePhasedNetReq({
+      today: todayStr,
+      onHand: num(onHand),
+      daily: dailyNum,
+      arrivals: arrivalsBySku.get(s.id) ?? [],
+      safetyQty: ss.safetyQty,
+      coverTargetDays: effectiveTarget,
+      leadDays,
+      horizonDays: Math.min(365, actionWindow + effectiveTarget + 30),
+    });
+
     let suggest: string | null = null;
     let heldQty: string | null = null;
     let suppressReason: string | null = null;
-    if (cover != null && cover < minCoverAlert) {
+    const planExplain: string[] = [`安全库存 ${ss.safetyQty}（${ss.reason}）`, ...tp.explain];
+    const triggered = tp.shortageDate != null && tp.daysToShortage != null && tp.daysToShortage <= actionWindow;
+    if (triggered && tp.requiredQty > 0) {
       const uom = uomBySku.get(s.id);
+      // 净需求已由逐日推演得出；此处仅施加 MOQ/订货倍数（onHand/inTransit 已在推演中扣除，故传 0）
       const suggested = suggestQty({
-        grossReq: dMul(dailyDec, String(effectiveTarget), 6),
-        onHand,
-        inTransit,
+        grossReq: String(tp.requiredQty),
+        onHand: "0",
+        inTransit: "0",
         moq: uom?.moq ?? null,
         orderMultiple: uom?.orderMultiple ?? null,
       });
+      planExplain.push(`施加 MOQ/订货倍数后 → ${suggested}`);
       if (shouldSuppressSuggest(cover, coverFull, minCoverAlert, refGap)) {
         suppressReason = "全口径参考充足（覆盖缺口 SKU：海外/其他部门仓不在系统快照源）——请先核实全口径库存，防重复下单";
-        if (dCmp(suggested, "0") > 0) heldQty = suggested; // 抑制但保留原始量，人工核实后可勾选放行
+        if (dCmp(suggested, "0") > 0) heldQty = suggested;
       } else if (dCmp(suggested, "0") > 0) {
         suggest = suggested;
       }
+    } else if (tp.shortageDate != null) {
+      planExplain.push(`短缺在 ${tp.daysToShortage} 天后、超出行动窗口 ${actionWindow} 天（生产周期内可补），暂不建议下单`);
     }
     return {
       skuId: s.id,
@@ -389,6 +459,13 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       forecastDaily: fc.forecastDaily,
       forecastTrend: fc.trend,
       forecastDivergent,
+      safetyQty: ss.safetyQty,
+      safetyMethod: ss.method,
+      shortageDate: tp.shortageDate,
+      daysToShortage: tp.daysToShortage,
+      orderByDate: tp.orderByDate,
+      orderWindowMissed: tp.orderWindowMissed,
+      planExplain,
       _cover: coverFull ?? cover, // #1 修复：排序用全管道口径——覆盖缺口误报不再霸榜
     };
   });
@@ -428,9 +505,16 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     heldQty: r.heldQty,
     forecastDaily: r.forecastDaily,
     forecastTrend: r.forecastTrend,
+    safetyQty: r.safetyQty,
+    safetyMethod: r.safetyMethod,
+    shortageDate: r.shortageDate,
+    daysToShortage: r.daysToShortage,
+    orderByDate: r.orderByDate,
+    orderWindowMissed: r.orderWindowMissed,
+    planExplain: r.planExplain,
     forecastDivergent: r.forecastDivergent,
   }));
-  return { rows, total: all.length, meta: { coverDaysTarget, minCoverAlert, months3, snapDate, suggestCount, refDate, suppressedCount } };
+  return { rows, total: all.length, meta: { coverDaysTarget, minCoverAlert, months3, snapDate, suggestCount, refDate, suppressedCount, engine: "time_phased", serviceLevel } };
 }
 
 /* ────────────────────────── 生成 BH 草稿（R13 人工闸） ────────────────────────── */

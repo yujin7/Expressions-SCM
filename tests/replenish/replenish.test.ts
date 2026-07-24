@@ -110,8 +110,17 @@ describe("R11 补货建议：口径 + 建议量 + BH 草稿", () => {
     expect(r1.inTransit).toBe(15); // 2×10−5；draft 不计；超收行下限 0
     expect(r1.daily).toBe(10); // 910/91
     expect(r1.daysCover).toBe(16.5); // (150+15)/10
-    // 净需求 = 10×45 − 150 − 15 = 285 → MOQ 300 → 倍数 50 → 300
-    expect(r1.suggestQty).toBe("300.0000");
+    /* E2-05 计划引擎 v2（time-phased）：建议量不再是「日均×覆盖天数 − 在库 − 在途」单桶乘法。
+       逐日推演：期初 165（150+15 在途），日耗 10，安全库存 70（无生产周期→7天兜底×10）；
+       第 9 天水位跌破安全线 → 补至目标水位（安全 70 + 目标 45 天×10 = 520）需 455；
+       施加 MOQ 300 / 倍数 50 → 500。
+       与旧口径差异：旧法 285 补后「从今天算」才 45 天，货到时已消耗大半且完全无安全库存。 */
+    expect(r1.suggestQty).toBe("500.0000");
+    expect(r1.safetyQty).toBe(70);
+    expect(r1.safetyMethod).toBe("fallback"); // 夹具无 sku_params 交期 → 诚实降级
+    expect(r1.shortageDate).not.toBeNull();
+    expect(r1.daysToShortage).toBe(8);
+    expect(r1.planExplain.length).toBeGreaterThan(2); // 可解释链
 
     const r2 = res.rows[1];
     expect(r2.onHand).toBe(5000);
@@ -126,12 +135,19 @@ describe("R11 补货建议：口径 + 建议量 + BH 草稿", () => {
 
   it("参数联动：目标覆盖天数放大建议量；阈值收紧后不再触发", async () => {
     const big = await getReplenishSuggestions({ coverDaysTarget: 90, minCoverAlert: 30 }, db);
-    // 净需求 = 10×90 − 165 = 735 → ≥MOQ → 倍数 50 向上取整 = 750
-    expect(big.rows[0].suggestQty).toBe("750.0000");
+    // 目标覆盖 90 天：补至 安全70 + 90×10 = 970，短缺期水位 65 → 需 905 → 倍数 50 → 950
+    expect(big.rows[0].suggestQty).toBe("950.0000");
 
+    /* 触发口径同步升级为「再订货点」：短缺是否落在行动窗口内（有生产周期用生产周期，
+       否则用预警阈值）。夹具无生产周期 → 窗口=minCoverAlert。
+       窗口 10 天 > 短缺 8 天 → 仍触发（此前按 cover 16.5≥10 判不触发——旧法忽略了安全库存）。 */
     const tight = await getReplenishSuggestions({ coverDaysTarget: 45, minCoverAlert: 10 }, db);
-    expect(tight.rows[0].suggestQty).toBeNull(); // 16.5 天 ≥ 阈值 10，不预警
-    expect(tight.meta.suggestCount).toBe(0);
+    expect(tight.rows[0].suggestQty).not.toBeNull();
+
+    // 窗口收到 5 天 < 短缺 8 天 → 生产周期内来得及补，不建议下单
+    const veryTight = await getReplenishSuggestions({ coverDaysTarget: 45, minCoverAlert: 5 }, db);
+    expect(veryTight.rows[0].suggestQty).toBeNull();
+    expect(veryTight.meta.suggestCount).toBe(0);
   });
 
   it("搜索与分页", async () => {

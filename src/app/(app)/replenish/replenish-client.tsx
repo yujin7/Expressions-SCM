@@ -8,6 +8,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Popover,
   Space,
   Table,
   Tag,
@@ -47,6 +48,13 @@ interface ReplenishRow {
   forecastDaily: number;
   forecastTrend: "up" | "down" | "flat";
   forecastDivergent: boolean;
+  safetyQty: number;
+  safetyMethod: string;
+  shortageDate: string | null;
+  daysToShortage: number | null;
+  orderByDate: string | null;
+  orderWindowMissed: boolean;
+  planExplain: string[];
 }
 
 interface ReplenishResult {
@@ -60,6 +68,8 @@ interface ReplenishResult {
     suggestCount: number;
     refDate: string | null;
     suppressedCount: number;
+    engine: string;
+    serviceLevel: number;
   };
 }
 
@@ -258,12 +268,26 @@ export default function ReplenishClient() {
         align: "right",
         render: (v: string | null, r) =>
           v != null ? (
-            <Space size={4}>
-              <Tag color="orange" style={{ marginInlineEnd: 0 }}>
-                {Number(v).toLocaleString("zh-CN")}
-              </Tag>
-              <Typography.Text type="secondary">{r.baseUom}</Typography.Text>
-            </Space>
+            <Popover
+              trigger="click"
+              title="为什么是这个数（计算链）"
+              content={
+                <div style={{ maxWidth: 460 }}>
+                  <ol style={{ paddingLeft: 18, margin: 0 }}>
+                    {(r.planExplain ?? []).map((e, i) => (
+                      <li key={i} style={{ fontSize: 12, marginBottom: 4 }}>{e}</li>
+                    ))}
+                  </ol>
+                </div>
+              }
+            >
+              <Space size={4} style={{ cursor: "pointer" }}>
+                <Tag color="orange" style={{ marginInlineEnd: 0 }}>
+                  {Number(v).toLocaleString("zh-CN")}
+                </Tag>
+                <Typography.Text type="secondary">{r.baseUom}</Typography.Text>
+              </Space>
+            </Popover>
           ) : r.suppressReason ? (
             <Tooltip title={`${r.suppressReason}；原始建议 ${Number(r.heldQty ?? 0).toLocaleString("zh-CN")} ${r.baseUom}——核实后可勾选按此量生成草稿`}>
               <Space size={4}>
@@ -289,7 +313,7 @@ export default function ReplenishClient() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="建议基于全网口径在库（实时账+最新快照）+ PO 在途与近 3 月销速；另融合全口径参考（总库存明细）/存量在途/在订未出与生产周期做风险标注与防重复下单抑制；生成的是草稿，走正常审批（R13 人工闸）。"
+        message="建议引擎 v2（逐日推演）：按安全库存与逐日到货推演首次短缺，落在生产周期内才建议下单；建议量=补至「安全库存+目标覆盖」。仍融合全口径参考/存量在途/在制做标注与防重复下单抑制；另融合全口径参考（总库存明细）/存量在途/在订未出与生产周期做风险标注与防重复下单抑制；生成的是草稿，走正常审批（R13 人工闸）。"
         description={
           data?.meta ? (
             <Typography.Text type="secondary">
