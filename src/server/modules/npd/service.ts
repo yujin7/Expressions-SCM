@@ -13,8 +13,9 @@ import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import type { SessionUser } from "@/server/core/dto";
 import { requireAnyRole } from "@/server/modules/outsource/common";
-import { todayShanghai } from "@/server/modules/master/common";
+import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { scheduleNpd, type NpdTemplateNode } from "@/server/rules/npd-schedule";
+import { createBh } from "@/server/modules/outsource/bh";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -59,10 +60,10 @@ export async function createNpdProject(user: SessionUser, input: unknown, dbArg?
   const db = await resolveDb(dbArg);
   if (v.skuCode?.trim()) {
     const [hit] = await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.code, v.skuCode.trim()));
-    if (!hit) throw new Error(`目标 SKU「${v.skuCode.trim()}」未建档——请先建档或留空后补`);
+    if (!hit) throw new ApiError(400, `目标 SKU「${v.skuCode.trim()}」未建档——请先建档或留空后补`);
   }
   const template = await loadNpdTemplate(db);
-  if (template.length === 0) throw new Error("NPD 节点模板为空（transit_refs kind=npd_node）——请先导入各节点核心说明");
+  if (template.length === 0) throw new ApiError(400, "NPD 节点模板为空（transit_refs kind=npd_node）——请先导入各节点核心说明");
   const tasks = scheduleNpd(template, v.startDate);
 
   return db.transaction(async (tx: AnyDb) => {
@@ -130,7 +131,7 @@ export async function listNpdProjects(dbArg?: AnyDb) {
 export async function getNpdProject(id: number, dbArg?: AnyDb) {
   const db = await resolveDb(dbArg);
   const [project] = await db.select().from(schema.npdProjects).where(eq(schema.npdProjects.id, id));
-  if (!project) throw new Error("项目不存在");
+  if (!project) throw new ApiError(404, "项目不存在");
   const tasks = await db
     .select()
     .from(schema.npdTasks)
@@ -150,7 +151,7 @@ export async function updateNpdTask(user: SessionUser, input: unknown, dbArg?: A
   const v = updateNpdTaskSchema.parse(input);
   const db = await resolveDb(dbArg);
   const [task] = await db.select().from(schema.npdTasks).where(eq(schema.npdTasks.id, v.taskId));
-  if (!task) throw new Error("任务不存在");
+  if (!task) throw new ApiError(404, "任务不存在");
   const doneAt = v.status === "done" ? todayShanghai() : null;
   await db.transaction(async (tx: AnyDb) => {
     await tx
@@ -179,7 +180,7 @@ export async function updateNpdProject(user: SessionUser, input: unknown, dbArg?
   const v = updateNpdProjectSchema.parse(input);
   const db = await resolveDb(dbArg);
   const [proj] = await db.select().from(schema.npdProjects).where(eq(schema.npdProjects.id, v.projectId));
-  if (!proj) throw new Error("项目不存在");
+  if (!proj) throw new ApiError(404, "项目不存在");
   await db.transaction(async (tx: AnyDb) => {
     await tx
       .update(schema.npdProjects)
@@ -195,4 +196,35 @@ export async function updateNpdProject(user: SessionUser, input: unknown, dbArg?
     });
   });
   return { ok: true };
+}
+
+export const npdFirstOrderSchema = z.object({
+  projectId: z.number().int().positive(),
+  qty: z.union([z.string(), z.number()]).transform((v) => String(v).trim()).refine((v) => /^\d+(\.\d+)?$/.test(v) && Number(v) > 0, "数量必须为正数"),
+});
+
+/** #13：NPD 项目 → 新品首单 BH 草稿（目标 SKU 必须已建档；走正常审批，R13 人工闸） */
+export async function createNpdFirstOrder(user: SessionUser, input: unknown, dbArg?: AnyDb) {
+  requireAnyRole(user, "pmc", "ops");
+  const v = npdFirstOrderSchema.parse(input);
+  const db = await resolveDb(dbArg);
+  const [proj] = await db.select().from(schema.npdProjects).where(eq(schema.npdProjects.id, v.projectId));
+  if (!proj) throw new ApiError(404, "项目不存在");
+  if (!proj.skuCode) throw new ApiError(400, "项目未设置目标 SKU——请先在主数据建档并补录到项目");
+  const [sku] = await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.code, proj.skuCode));
+  if (!sku) throw new ApiError(400, `目标 SKU「${proj.skuCode}」未建档`);
+  const delegate: SessionUser = user.roles.includes("ops") ? user : { ...user, roles: [...user.roles, "ops"] };
+  const doc = await createBh(
+    delegate,
+    { remark: `NPD 首单：项目《${proj.name}》#${proj.id}（新品首单，人工确认后提交审批）`, lines: [{ skuId: sku.id, qty: v.qty }] },
+    db,
+  );
+  await writeAudit(db, {
+    userId: user.id,
+    entity: "npd_project",
+    entityId: proj.id,
+    action: "first_order_draft",
+    after: { docNo: doc.docNo, skuCode: proj.skuCode, qty: v.qty },
+  });
+  return { id: doc.id, docNo: doc.docNo };
 }

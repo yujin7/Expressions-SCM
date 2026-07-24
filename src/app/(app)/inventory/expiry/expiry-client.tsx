@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Input, Select, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
+import { exportCsv } from "@/components/exportCsv";
 import { formatQty } from "@/components/format";
 
 interface Row {
@@ -125,6 +126,20 @@ export default function ExpiryClient() {
           onChange={(v) => { setWarehouseId(v ?? null); setPage(1); }}
         />
         <Input.Search allowClear placeholder="搜索编码/名称/批次" style={{ width: 240 }} onSearch={(v) => { setQ(v.trim()); setPage(1); }} />
+        <a onClick={async () => {
+          const all: Row[] = [];
+          for (let p2 = 1; p2 <= 10; p2++) {
+            const params = new URLSearchParams({ q, page: String(p2), pageSize: "500" });
+            if (bucket) params.set("bucket", bucket);
+            if (warehouseId) params.set("warehouseId", String(warehouseId));
+            const d = await fetchJson<Data>(`/api/inventory/expiry?${params.toString()}`);
+            all.push(...d.rows);
+            if (all.length >= d.total) break;
+          }
+          exportCsv(`效期批次-${data?.today ?? ""}`,
+            ["SKU编码","名称","品牌","仓库","批次","生产日期","到期日","剩余天数","数量"],
+            all.map((r) => [r.skuCode, r.skuName, r.brand, r.warehouse, r.batchNo, r.productionDate, r.expiryDate, r.daysLeft, r.qty]));
+        }}>导出 CSV</a>
       </Space>
       <Table<Row>
         rowKey="id"

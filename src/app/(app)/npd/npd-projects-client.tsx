@@ -243,6 +243,19 @@ export default function NpdProjectsClient() {
         extra={
           detail && detail.project.status === "active" ? (
             <Space>
+              {detail.project.skuCode ? (
+                <Button
+                  onClick={() => {
+                    const qty = window.prompt(`新品首单数量（${detail.project.skuCode}，基础单位）：`);
+                    if (!qty || !/^\d+(\.\d+)?$/.test(qty.trim()) || Number(qty) <= 0) { if (qty != null) message.error("数量必须为正数"); return; }
+                    void postJson<{ docNo: string }>("/api/npd/projects", { intent: "first_order", projectId: detail.project.id, qty: qty.trim() })
+                      .then((r) => message.success(`首单备货申请草稿已生成：${r.docNo}（备货申请页提交审批）`))
+                      .catch((e) => message.error((e as Error).message));
+                  }}
+                >
+                  生成首单 BH
+                </Button>
+              ) : null}
               <Popconfirm title="确认整项目完成？" onConfirm={() => void setProject(detail.project.id, "done")}>
                 <Button type="primary">标记完成</Button>
               </Popconfirm>

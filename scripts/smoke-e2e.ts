@@ -117,7 +117,7 @@ async function main(): Promise<void> {
   const admin = jars.get("admin");
   const ops = jars.get("ops01");
   if (!admin) {
-    printSummary();
+  printSummary();
     process.exit(1);
   }
 
@@ -200,6 +200,22 @@ async function main(): Promise<void> {
   } else {
     record("PO 脱敏（ops01 无 price）", "SKIP", "ops01 登录失败");
   }
+
+  /* ── Wave V：新页 API 冒烟（risk/expiry/npd） ── */
+  if (admin) {
+    const risk = await getJson(admin, "/api/report/risk?pageSize=1");
+    const riskTotal = (risk.body as { total?: number } | null)?.total;
+    record("风险处置 API", riskTotal != null ? "PASS" : "FAIL", `total=${riskTotal}`);
+    const exp = await getJson(admin, "/api/inventory/expiry?pageSize=1");
+    const expTotal = (exp.body as { total?: number } | null)?.total;
+    record("效期批次 API", expTotal != null ? "PASS" : "FAIL", `total=${expTotal}`);
+    const npd = await getJson(admin, "/api/npd/projects");
+    const projects = (npd.body as { projects?: unknown[] } | null)?.projects;
+    record("NPD 项目 API", Array.isArray(projects) ? "PASS" : "FAIL", `projects=${projects?.length ?? "?"}`);
+  } else {
+    record("新页 API 冒烟", "SKIP", "admin 登录失败");
+  }
+
 
   printSummary();
   process.exit(results.some((r) => r.status === "FAIL") ? 1 : 0);

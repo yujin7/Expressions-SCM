@@ -1,6 +1,7 @@
 import { ilike, or } from "drizzle-orm";
 import type { AnyPgColumn, AnyPgTable } from "drizzle-orm/pg-core";
 import {
+  npdProjects,
   bhDocs, ctDocs, flDocs, jgDocs, jsDocs, pcDocs, pdDocs, poDocs,
   shDocs, skus, stockDocs, suppliers, tlDocs, woDocs,
 } from "@/db/schema";
@@ -52,7 +53,7 @@ export async function searchAll(qRaw: string, dbArg?: AnyDb): Promise<SearchResu
   const contains = `%${escapeLike(q)}%`;
   const prefix = `${escapeLike(q)}%`;
 
-  const [skuRows, supplierRows, ...docRows] = await Promise.all([
+  const [skuRows, supplierRows, npdRows, ...docRows] = await Promise.all([
     db
       .select({ code: skus.code, name: skus.name })
       .from(skus)
@@ -64,6 +65,12 @@ export async function searchAll(qRaw: string, dbArg?: AnyDb): Promise<SearchResu
       .from(suppliers)
       .where(or(ilike(suppliers.code, contains), ilike(suppliers.name, contains)))
       .orderBy(suppliers.code)
+      .limit(3),
+    db
+      .select({ id: npdProjects.id, name: npdProjects.name })
+      .from(npdProjects)
+      .where(or(ilike(npdProjects.name, contains), ilike(npdProjects.skuCode, contains)))
+      .orderBy(npdProjects.id)
       .limit(3),
     ...DOC_TABLES.map(({ table }) =>
       db
@@ -83,6 +90,13 @@ export async function searchAll(qRaw: string, dbArg?: AnyDb): Promise<SearchResu
     tag: "SKU",
   }));
   if (skuItems.length > 0) groups.push({ title: "商品", items: skuItems });
+
+  const npdItems: SearchItem[] = (npdRows as { id: number; name: string }[]).map((r) => ({
+    label: r.name,
+    href: "/npd",
+    tag: "NPD",
+  }));
+  if (npdItems.length > 0) groups.push({ title: "NPD 项目", items: npdItems });
 
   const docItems: SearchItem[] = DOC_TABLES.flatMap(({ docType }, idx) =>
     (docRows[idx] as { id: number; docNo: string }[]).map((r) => ({

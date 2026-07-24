@@ -2,9 +2,10 @@
  * 运行参数维护（D39 阈值参数化 + 既有 R 规则参数统一入口）。
  * 白名单制：仅暴露登记过的 global 参数；写=admin，读=admin/pmc/purchasing/finance。
  */
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDbAsync } from "@/db";
+import * as schema from "@/db/schema";
 import { sysParams } from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { clearParamCache } from "@/server/core/params";
@@ -35,17 +36,30 @@ export const PARAM_DEFS: ParamDef[] = [
   { key: "auto_jg_on_ready", label: "齐套自动JG草稿", fallback: 0, min: 0, max: 1, unit: "", note: "D33 自动链开关②（0=关；自动仅产草稿，审批留人工闸）" },
 ];
 
-export async function listParams(dbArg?: AnyDb): Promise<(ParamDef & { value: number; isDefault: boolean })[]> {
+export async function listParams(dbArg?: AnyDb): Promise<(ParamDef & { value: number; isDefault: boolean; lastChangedBy: string | null; lastChangedAt: string | null })[]> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const rows: { key: string; value: string }[] = await db
     .select({ key: sysParams.key, value: sysParams.value })
     .from(sysParams)
     .where(eq(sysParams.scope, "global"));
   const byKey = new Map(rows.map((r) => [r.key, Number(r.value)]));
+  /* #17：最近修改人/时间——audit_log entity=sys_param 逐键取最新一条 */
+  const auditRows: { after: unknown; createdAt: Date; name: string | null }[] = await db
+    .select({ after: schema.auditLogs.after, createdAt: schema.auditLogs.createdAt, name: schema.users.name })
+    .from(schema.auditLogs)
+    .leftJoin(schema.users, eq(schema.auditLogs.userId, schema.users.id))
+    .where(eq(schema.auditLogs.entity, "sys_param"))
+    .orderBy(desc(schema.auditLogs.id));
+  const lastByKey = new Map<string, { by: string | null; at: string }>();
+  for (const a of auditRows) {
+    const key = (a.after as { key?: string } | null)?.key;
+    if (key && !lastByKey.has(key)) lastByKey.set(key, { by: a.name, at: a.createdAt.toISOString().slice(0, 16).replace("T", " ") });
+  }
   return PARAM_DEFS.map((d) => {
     const v = byKey.get(d.key);
     const ok = v != null && Number.isFinite(v);
-    return { ...d, value: ok ? (v as number) : d.fallback, isDefault: !ok };
+    const last = lastByKey.get(d.key);
+    return { ...d, value: ok ? (v as number) : d.fallback, isDefault: !ok, lastChangedBy: last?.by ?? null, lastChangedAt: last?.at ?? null };
   });
 }
 

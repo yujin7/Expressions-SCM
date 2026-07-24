@@ -16,6 +16,7 @@ import { getNumParam } from "@/server/core/params";
 import { writeAudit } from "@/server/core/audit";
 import type { SessionUser } from "@/server/core/dto";
 import { requireAnyRole } from "@/server/modules/outsource/common";
+import { ApiError } from "@/server/modules/master/common";
 import { todayShanghai } from "@/server/modules/master/common";
 import { RISK_ACTION_ORDER, suggestRiskAction, type RiskAction } from "@/server/rules/risk-action";
 
@@ -223,7 +224,7 @@ export async function registerRiskDisposal(
   requireAnyRole(user, "pmc", "ops", "warehouse");
   const code = String(input.skuCode ?? "").trim();
   const action = String(input.action ?? "").trim();
-  if (!code || !action) throw new Error("skuCode/action 必填");
+  if (!code || !action) throw new ApiError(400, "skuCode/action 必填");
   const note = String(input.note ?? "").trim().slice(0, 300);
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const open: { id: number }[] = await db

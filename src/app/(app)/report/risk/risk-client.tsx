@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Input, Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
+import { exportCsv } from "@/components/exportCsv";
 
 interface RiskRow {
   skuId: number;
@@ -163,6 +164,19 @@ export default function RiskClient() {
           </Tag.CheckableTag>
         ))}
         <Input.Search allowClear placeholder="搜索编码/名称" style={{ width: 240 }} onSearch={(v) => { setQ(v.trim()); setPage(1); }} />
+        <a onClick={async () => {
+          const all: RiskRow[] = [];
+          for (let p2 = 1; p2 <= 10; p2++) {
+            const params = new URLSearchParams({ q, page: String(p2), pageSize: "500" });
+            if (action) params.set("action", action);
+            const d = await fetchJson<RiskData>(`/api/report/risk?${params.toString()}`);
+            all.push(...d.rows);
+            if (all.length >= d.total) break;
+          }
+          exportCsv(`风险库存处置-${data?.today ?? ""}`,
+            ["建议动作","SKU编码","名称","品牌","在库","最短剩余效期(天)","过期量","90天内到期量","日均销","可销天数","货盘注记","已登记"],
+            all.map((r) => [r.action, r.code, r.name, r.brand, r.onHand, r.minDaysLeft, r.expiredQty, r.nearQty, r.daily, r.cover, r.palletRemark, r.disposalOpen ? "是" : ""]));
+        }}>导出 CSV</a>
       </Space>
       <Table<RiskRow>
         rowKey="skuId"

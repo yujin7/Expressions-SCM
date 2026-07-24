@@ -16,6 +16,8 @@ interface Row {
   unit: string;
   note: string;
   isDefault: boolean;
+  lastChangedBy: string | null;
+  lastChangedAt: string | null;
 }
 
 export default function ParamsClient({ canWrite }: { canWrite: boolean }) {
@@ -59,6 +61,12 @@ export default function ParamsClient({ canWrite }: { canWrite: boolean }) {
 
   const columns: ColumnsType<Row> = [
     { title: "参数", dataIndex: "label", width: 160 },
+    {
+      title: "最近修改",
+      width: 190,
+      render: (_: unknown, r: Row) =>
+        r.lastChangedAt ? `${r.lastChangedBy ?? "?"} · ${r.lastChangedAt}` : "从未修改（默认值）",
+    },
     {
       title: "当前值",
       width: 200,
