@@ -204,6 +204,20 @@ export default function DashboardClient() {
         </Col>
         <Col xs={12} md={8} xl={4}>
           <Card size="small">
+            <a href="/report/risk" style={{ color: "inherit" }}>
+              <AntTooltip title="风险库存处置工作台条目（效期×货盘注记×销速三源）——点击进入">
+                <Statistic
+                  title="风险处置 SKU"
+                  value={kpi.riskActionCount}
+                  valueStyle={{ color: kpi.riskActionCount > 0 ? "#cf1322" : undefined }}
+                  prefix={<ClockCircleOutlined />}
+                />
+              </AntTooltip>
+            </a>
+          </Card>
+        </Col>
+        <Col xs={12} md={8} xl={4}>
+          <Card size="small">
             <a href="/workbench" style={{ color: "inherit" }}>
               <AntTooltip title="滞销 SKU 数 / 待办（待审批+数据积压）——点击进工作台处理">
                 <Statistic

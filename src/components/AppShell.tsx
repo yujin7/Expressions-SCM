@@ -92,6 +92,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/report/transit", label: "在途参考" },
       { key: "/report/demand", label: "需求达成与货盘" },
       { key: "/report/npd", label: "NPD 节点参考" },
+      { key: "/report/risk", label: "风险库存处置" },
       { key: "/report/exports", label: "导出任务" },
     ],
   },

@@ -12,6 +12,7 @@
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { getNumParam } from "@/server/core/params";
+import { getRiskWorklist } from "@/server/modules/report/risk";
 import * as schema from "@/db/schema";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -42,6 +43,7 @@ export interface DashboardData {
     slowMoverCount: number;
     pendingApprovals: number;
     reviewBacklog: number; // 开放别名 + 阻塞 staging 行
+    riskActionCount: number; // 风险处置工作台条目数（报废评审+禁售隔离最重两类另见 insights）
   };
   /** 销量口径窗口（动态推导）：trend/结构图=近6月，销速=近3月 */
   salesWindow: { months6: string[]; months3: string[] };
@@ -432,6 +434,17 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
     if (age > 3) insights.push(`快照仓数据已 ${age} 天未更新（${snapDate}）——全仓视图仅供参考，RPA/快照导入接通后自动刷新`);
   }
 
+  /* ── F 项：风险处置工作台汇总（同库同事务级只读；驾驶舱缓存 60s 吸收成本） ── */
+  const risk = await getRiskWorklist({ pageSize: 1 }, dbArg);
+  const riskActionCount = risk.total;
+  const scrapCount = risk.byAction["报废评审"] ?? 0;
+  const banCount = risk.byAction["禁售隔离"] ?? 0;
+  if (riskActionCount > 0) {
+    insights.push(
+      `风险处置：${riskActionCount} 个 SKU 待处置${scrapCount > 0 ? `，其中报废评审 ${scrapCount}` : ""}${banCount > 0 ? `、禁售隔离 ${banCount}` : ""}——见「风险库存处置」工作台`,
+    );
+  }
+
   return {
     generatedAt: today.toISOString(),
     salesWindow: { months6, months3 },
@@ -447,6 +460,7 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
       slowMoverCount,
       pendingApprovals,
       reviewBacklog,
+      riskActionCount,
     },
     salesTrend,
     trendBrands: [...topBrands, "其他"],
