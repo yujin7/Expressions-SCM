@@ -27,6 +27,7 @@ import { createBh } from "@/server/modules/outsource/bh";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import { todayShanghai } from "@/server/modules/master/common";
 import { lastMonths } from "@/server/core/velocity";
+import { getOnHandBySku } from "@/server/core/stock-view";
 import { safetyStock } from "@/server/rules/safety-stock";
 import { timePhasedNetReq } from "@/server/rules/timephased";
 import { getOpenSupplyLines } from "@/server/core/supply";
@@ -42,23 +43,6 @@ async function resolveDb(db?: AnyDb): Promise<AnyDb> {
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const r1 = (v: number): number => Math.round(v * 10) / 10;
 
-/** 快照仓最新快照（wh,sku）→ qty（D20；与驾驶舱同模式，本地重实现） */
-async function latestSnapshotRows(
-  db: AnyDb,
-  skuIds: number[],
-): Promise<{ warehouseId: number; skuId: number; qty: string; bizDate: string }[]> {
-  const s = schema.stockSnapshots;
-  const latest = db
-    .select({ warehouseId: s.warehouseId, skuId: s.skuId, maxDate: sql<string>`max(${s.bizDate})`.as("max_date") })
-    .from(s)
-    .where(inArray(s.skuId, skuIds))
-    .groupBy(s.warehouseId, s.skuId)
-    .as("latest");
-  return db
-    .select({ warehouseId: s.warehouseId, skuId: s.skuId, qty: s.qty, bizDate: s.bizDate })
-    .from(s)
-    .innerJoin(latest, and(eq(latest.warehouseId, s.warehouseId), eq(latest.skuId, s.skuId), eq(latest.maxDate, s.bizDate)));
-}
 
 export interface ReplenishRow {
   skuId: number;
@@ -190,19 +174,10 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
   }
   const skuIds = skuRows.map((s) => s.id);
 
-  /* ── 在库：实时账 Σbalances + 快照仓最新快照（全网口径 D20） ── */
-  const balRows: { skuId: number; qty: string | null }[] = await db
-    .select({ skuId: schema.stockBalances.skuId, qty: sql<string | null>`sum(${schema.stockBalances.qty})` })
-    .from(schema.stockBalances)
-    .where(inArray(schema.stockBalances.skuId, skuIds))
-    .groupBy(schema.stockBalances.skuId);
-  const onHandBySku = new Map<number, string>(balRows.map((r) => [r.skuId, r.qty ?? "0"]));
-  const snapRows = await latestSnapshotRows(db, skuIds);
-  let snapDate: string | null = null;
-  for (const r of snapRows) {
-    onHandBySku.set(r.skuId, dAdd(onHandBySku.get(r.skuId) ?? "0", r.qty, 6));
-    if (snapDate == null || r.bizDate > snapDate) snapDate = r.bizDate;
-  }
+  /* ── 在库：全网口径（core/stock-view 唯一实现） ── */
+  const onHandView = await getOnHandBySku(db, { skuIds });
+  const onHandBySku = onHandView.bySku;
+  const snapDate: string | null = onHandView.snapDate;
 
   /* ── 在途：已审批/执行中 PO 未收量（基础单位，逐行下限 0；与 wo.ts 快照同口径） ── */
   const transitRows: { skuId: number; qty: string; uomFactor: string; receivedQty: string }[] = await db

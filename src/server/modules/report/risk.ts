@@ -20,6 +20,7 @@ import { ApiError } from "@/server/modules/master/common";
 import { todayShanghai } from "@/server/modules/master/common";
 import { RISK_ACTION_ORDER, suggestRiskAction, type RiskAction } from "@/server/rules/risk-action";
 import { lastMonths } from "@/server/core/velocity";
+import { getOnHandBySku } from "@/server/core/stock-view";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -87,23 +88,10 @@ export async function getRiskWorklist(
   const nearThreshBySku = new Map(skuRows.map((s) => [s.id, s.nearExpiryDays ?? 90])); // func#8 逐 SKU 临期阈值
   if (skuIds.length === 0) return { today, slowThreshold, rows: [], total: 0, byAction: {} };
 
-  /* ── 在库：实时账 + 快照仓最新快照 ── */
-  const balRows: { skuId: number; qty: string | null }[] = await db
-    .select({ skuId: schema.stockBalances.skuId, qty: sql<string | null>`sum(${schema.stockBalances.qty})` })
-    .from(schema.stockBalances)
-    .groupBy(schema.stockBalances.skuId);
-  const onHandBySku = new Map<number, number>(balRows.map((r) => [r.skuId, num(r.qty)]));
-  const s = schema.stockSnapshots;
-  const latest = db
-    .select({ warehouseId: s.warehouseId, skuId: s.skuId, maxDate: sql<string>`max(${s.bizDate})`.as("max_date") })
-    .from(s)
-    .groupBy(s.warehouseId, s.skuId)
-    .as("latest");
-  const snapRows: { skuId: number; qty: string }[] = await db
-    .select({ skuId: s.skuId, qty: s.qty })
-    .from(s)
-    .innerJoin(latest, and(eq(latest.warehouseId, s.warehouseId), eq(latest.skuId, s.skuId), eq(latest.maxDate, s.bizDate)));
-  for (const r of snapRows) onHandBySku.set(r.skuId, (onHandBySku.get(r.skuId) ?? 0) + num(r.qty));
+  /* ── 在库：全网口径（core/stock-view 唯一实现） ── */
+  const onHandView = await getOnHandBySku(db, { skuIds });
+  const onHandBySku = new Map<number, number>();
+  for (const [id, v] of onHandView.bySku) onHandBySku.set(id, num(v));
 
   /* ── 销速：近3月 ── */
   const sm = schema.salesMonthly;

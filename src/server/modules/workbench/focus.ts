@@ -15,6 +15,7 @@ import { getRiskWorklist } from "@/server/modules/report/risk";
 import { ROLE_LABELS, type Role } from "@/server/core/constants";
 import { todayShanghai } from "@/server/modules/master/common";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
+import { getOnHandBySku } from "@/server/core/stock-view";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -109,38 +110,16 @@ async function purchasingSection(db: AnyDb): Promise<FocusSection> {
 async function pmcSection(db: AnyDb): Promise<FocusSection> {
   const s = schema.stockSnapshots;
   const sm = schema.salesMonthly;
-  const latest = db
-    .select({
-      warehouseId: s.warehouseId,
-      skuId: s.skuId,
-      maxDate: sql<string>`max(${s.bizDate})`.as("max_date"),
-    })
-    .from(s)
-    .groupBy(s.warehouseId, s.skuId)
-    .as("latest");
 
   const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
   const months3 = maxYm ? lastMonths(maxYm, 3) : [];
 
-  const [balRows, snapRows, salesRows, blockedStaging, aliasOpen]: [
-    { skuId: number; qty: string }[],
-    { skuId: number; qty: string }[],
+  const onHandView = await getOnHandBySku(db, { finishedOnly: true }); // core/stock-view 唯一在库口径
+  const [salesRows, blockedStaging, aliasOpen]: [
     { skuId: number; qty: string }[],
     number,
     number,
   ] = await Promise.all([
-    db
-      .select({ skuId: schema.stockBalances.skuId, qty: sql<string>`sum(${schema.stockBalances.qty})` })
-      .from(schema.stockBalances)
-      .innerJoin(schema.skus, eq(schema.stockBalances.skuId, schema.skus.id))
-      .where(eq(schema.skus.skuType, "finished"))
-      .groupBy(schema.stockBalances.skuId),
-    db
-      .select({ skuId: s.skuId, qty: s.qty })
-      .from(s)
-      .innerJoin(latest, and(eq(latest.warehouseId, s.warehouseId), eq(latest.skuId, s.skuId), eq(latest.maxDate, s.bizDate)))
-      .innerJoin(schema.skus, eq(s.skuId, schema.skus.id))
-      .where(eq(schema.skus.skuType, "finished")),
     db
       .select({ skuId: sm.skuId, qty: sql<string>`sum(${sm.qty})` })
       .from(sm)
@@ -162,8 +141,7 @@ async function pmcSection(db: AnyDb): Promise<FocusSection> {
   ]);
 
   const onHand = new Map<number, number>();
-  for (const r of balRows) onHand.set(r.skuId, (onHand.get(r.skuId) ?? 0) + num(r.qty));
-  for (const r of snapRows) onHand.set(r.skuId, (onHand.get(r.skuId) ?? 0) + num(r.qty));
+  for (const [id, v] of onHandView.bySku) onHand.set(id, num(v));
   const sales3m = new Map(salesRows.map((r) => [r.skuId, num(r.qty)]));
   let lowCover = 0;
   for (const [skuId, qty] of onHand) {

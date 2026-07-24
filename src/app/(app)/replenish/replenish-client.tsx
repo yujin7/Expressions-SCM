@@ -20,6 +20,7 @@ import { ReloadOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import ProjectionDrawer from "@/components/ProjectionDrawer";
+import { metricTooltip } from "@/components/metrics";
 
 interface ReplenishRow {
   skuId: number;
