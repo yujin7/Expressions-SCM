@@ -19,6 +19,7 @@ import { getNumParam } from "@/server/core/params";
 import * as schema from "@/db/schema";
 import { dAdd, dCmp, dDiv, dMul, dQty, dSub } from "@/server/core/decimal";
 import { suggestQty } from "@/server/rules/netreq";
+import { belowLeadtime, detectRefGap, fuseCover, shouldSuppressSuggest } from "@/server/rules/fusion";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
 import { createBh } from "@/server/modules/outsource/bh";
@@ -79,6 +80,22 @@ export interface ReplenishRow {
   daysCover: number | null;
   /** R11 建议补货量（qty scale=4）；未触发预警为 null */
   suggestQty: string | null;
+  /** 全口径参考在库（总库存明细文件，2026-07-21 时点；无参考 = null） */
+  refQty: number | null;
+  /** 在订未出（总库存明细「已下单未出货」；无参考 = null） */
+  onOrder: number | null;
+  /** 存量单在途（transit_refs fg_order 未入库余量，旧流程收尾口径） */
+  legacyTransit: number;
+  /** 常规生产周期（天，sku_leadtime staging；无 = null） */
+  leadDays: number | null;
+  /** 全管道可销天数（max(系统,参考)+全部在途 ÷ 日均；1dp） */
+  coverFull: number | null;
+  /** 覆盖缺口 SKU（参考显著>系统——海外/其他部门仓不在快照源） */
+  refGap: boolean;
+  /** 建议被抑制的原因（refGap 且全管道充足 → 防重复下单）；无抑制 = null */
+  suppressReason: string | null;
+  /** 可销天数已低于常规生产周期（补货窗口迫近） */
+  belowLead: boolean;
 }
 
 export interface ReplenishResult {
@@ -91,6 +108,10 @@ export interface ReplenishResult {
     snapDate: string | null;
     /** 全部成品中触发建议的 SKU 数（不受分页影响） */
     suggestCount: number;
+    /** 全口径参考时点（总库存明细 progress；无参考数据 = null） */
+    refDate: string | null;
+    /** 因覆盖缺口+全管道充足而被抑制的建议数 */
+    suppressedCount: number;
   };
 }
 
@@ -127,7 +148,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     .leftJoin(schema.brands, eq(schema.skus.brandId, schema.brands.id))
     .where(and(...conds));
   if (skuRows.length === 0) {
-    return { rows: [], total: 0, meta: { coverDaysTarget, minCoverAlert, months3: [], snapDate: null, suggestCount: 0 } };
+    return { rows: [], total: 0, meta: { coverDaysTarget, minCoverAlert, months3: [], snapDate: null, suggestCount: 0, refDate: null, suppressedCount: 0 } };
   }
   const skuIds = skuRows.map((s) => s.id);
 
@@ -176,6 +197,46 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     : [];
   const sales3mBySku = new Map<number, string>(salesRows.map((r) => [r.skuId, r.qty ?? "0"]));
 
+  /* ── 全口径参考：transit_refs kind=stock_summary（总库存明细，只参考不入账） ── */
+  const tr = schema.transitRefs;
+  const refRows: { skuId: number | null; qty: string | null; inboundQty: string | null; progress: string | null }[] = await db
+    .select({ skuId: tr.skuId, qty: tr.qty, inboundQty: tr.inboundQty, progress: tr.progress })
+    .from(tr)
+    .where(and(eq(tr.kind, "stock_summary"), inArray(tr.skuId, skuIds)));
+  const refBySku = new Map<number, { qty: number | null; onOrder: number | null }>();
+  let refDate: string | null = null;
+  for (const r of refRows) {
+    if (r.skuId == null) continue;
+    refBySku.set(r.skuId, { qty: r.qty == null ? null : num(r.qty), onOrder: r.inboundQty == null ? null : num(r.inboundQty) });
+    if (r.progress && (refDate == null || r.progress > refDate)) refDate = r.progress;
+  }
+
+  /* ── 存量单在途：transit_refs kind=fg_order 未入库余量（旧流程收尾，登记口径） ── */
+  const fgRows: { skuId: number | null; qty: string | null; inboundQty: string | null; closedQty: string | null }[] = await db
+    .select({ skuId: tr.skuId, qty: tr.qty, inboundQty: tr.inboundQty, closedQty: tr.closedQty })
+    .from(tr)
+    .where(and(eq(tr.kind, "fg_order"), inArray(tr.skuId, skuIds)));
+  const legacyBySku = new Map<number, number>();
+  for (const r of fgRows) {
+    if (r.skuId == null || r.qty == null) continue;
+    const remain = num(r.qty) - num(r.inboundQty) - num(r.closedQty);
+    if (remain <= 0) continue; // 已入库/已关单的存量单不再计在途
+    legacyBySku.set(r.skuId, (legacyBySku.get(r.skuId) ?? 0) + remain);
+  }
+
+  /* ── 常规生产周期：sku_leadtime staging（与 releaseFinishedMoq 同源，首见为准） ── */
+  const ltRows: { payload: unknown }[] = await db
+    .select({ payload: schema.stagingRows.payload })
+    .from(schema.stagingRows)
+    .where(and(eq(schema.stagingRows.targetTable, "sku_leadtime"), inArray(schema.stagingRows.status, ["pending", "validated"])));
+  const leadByCode = new Map<string, number>();
+  for (const r of ltRows) {
+    const p = r.payload as { skuCode?: string | null; normalLeadDays?: unknown };
+    const code = p.skuCode?.trim();
+    const days = typeof p.normalLeadDays === "number" && Number.isFinite(p.normalLeadDays) ? p.normalLeadDays : null;
+    if (code && days != null && days > 0 && !leadByCode.has(code)) leadByCode.set(code, days);
+  }
+
   /* ── MOQ/订货倍数：uom_convs 首行（按 id）兜底，值按基础单位解释（与 wo.ts PoC 口径一致） ── */
   const uomRows: { skuId: number; moq: string | null; orderMultiple: string | null }[] = await db
     .select({ skuId: schema.uomConvs.skuId, moq: schema.uomConvs.moq, orderMultiple: schema.uomConvs.orderMultiple })
@@ -194,17 +255,36 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     const dailyNum = num(dailyDec);
     const cover = dailyNum > 0 ? (num(onHand) + num(inTransit)) / dailyNum : null;
 
+    /* 全口径融合（rules/fusion.ts）：参考只调高在库认知，绝不调低 */
+    const ref = refBySku.get(s.id);
+    const legacyTransit = legacyBySku.get(s.id) ?? 0;
+    const leadDays = leadByCode.get(s.code) ?? null;
+    const refGap = detectRefGap(num(onHand), ref?.qty ?? null);
+    const coverFull = fuseCover({
+      onHand: num(onHand),
+      refQty: ref?.qty ?? null,
+      inTransit: num(inTransit),
+      legacyTransit,
+      onOrder: ref?.onOrder ?? 0,
+      daily: dailyNum,
+    });
+
     let suggest: string | null = null;
+    let suppressReason: string | null = null;
     if (cover != null && cover < minCoverAlert) {
-      const uom = uomBySku.get(s.id);
-      const suggested = suggestQty({
-        grossReq: dMul(dailyDec, String(coverDaysTarget), 6),
-        onHand,
-        inTransit,
-        moq: uom?.moq ?? null,
-        orderMultiple: uom?.orderMultiple ?? null,
-      });
-      if (dCmp(suggested, "0") > 0) suggest = suggested;
+      if (shouldSuppressSuggest(cover, coverFull, minCoverAlert, refGap)) {
+        suppressReason = "全口径参考充足（覆盖缺口 SKU：海外/其他部门仓不在系统快照源）——请先核实全口径库存，防重复下单";
+      } else {
+        const uom = uomBySku.get(s.id);
+        const suggested = suggestQty({
+          grossReq: dMul(dailyDec, String(coverDaysTarget), 6),
+          onHand,
+          inTransit,
+          moq: uom?.moq ?? null,
+          orderMultiple: uom?.orderMultiple ?? null,
+        });
+        if (dCmp(suggested, "0") > 0) suggest = suggested;
+      }
     }
     return {
       skuId: s.id,
@@ -217,6 +297,14 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       daily: r1(dailyNum),
       daysCover: cover == null ? null : r1(cover),
       suggestQty: suggest,
+      refQty: ref?.qty == null ? null : r1(ref.qty),
+      onOrder: ref?.onOrder == null ? null : r1(ref.onOrder),
+      legacyTransit: r1(legacyTransit),
+      leadDays,
+      coverFull: coverFull == null ? null : r1(coverFull),
+      refGap,
+      suppressReason,
+      belowLead: belowLeadtime(cover, leadDays),
       _cover: cover,
     };
   });
@@ -229,6 +317,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     return a._cover - b._cover || a.code.localeCompare(b.code);
   });
   const suggestCount = all.filter((r) => r.suggestQty != null).length;
+  const suppressedCount = all.filter((r) => r.suppressReason != null).length;
   const rows: ReplenishRow[] = all.slice((page - 1) * pageSize, page * pageSize).map((r) => ({
     skuId: r.skuId,
     code: r.code,
@@ -240,8 +329,16 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     daily: r.daily,
     daysCover: r.daysCover,
     suggestQty: r.suggestQty,
+    refQty: r.refQty,
+    onOrder: r.onOrder,
+    legacyTransit: r.legacyTransit,
+    leadDays: r.leadDays,
+    coverFull: r.coverFull,
+    refGap: r.refGap,
+    suppressReason: r.suppressReason,
+    belowLead: r.belowLead,
   }));
-  return { rows, total: all.length, meta: { coverDaysTarget, minCoverAlert, months3, snapDate, suggestCount } };
+  return { rows, total: all.length, meta: { coverDaysTarget, minCoverAlert, months3, snapDate, suggestCount, refDate, suppressedCount } };
 }
 
 /* ────────────────────────── 生成 BH 草稿（R13 人工闸） ────────────────────────── */

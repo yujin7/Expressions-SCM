@@ -11,6 +11,7 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
@@ -29,6 +30,14 @@ interface ReplenishRow {
   daily: number;
   daysCover: number | null;
   suggestQty: string | null;
+  refQty: number | null;
+  onOrder: number | null;
+  legacyTransit: number;
+  leadDays: number | null;
+  coverFull: number | null;
+  refGap: boolean;
+  suppressReason: string | null;
+  belowLead: boolean;
 }
 
 interface ReplenishResult {
@@ -40,6 +49,8 @@ interface ReplenishResult {
     months3: string[];
     snapDate: string | null;
     suggestCount: number;
+    refDate: string | null;
+    suppressedCount: number;
   };
 }
 
@@ -162,22 +173,95 @@ export default function ReplenishClient() {
         align: "right",
         render: (v: number) => v.toLocaleString("zh-CN"),
       },
+      {
+        title: "存量在途",
+        dataIndex: "legacyTransit",
+        width: 95,
+        align: "right",
+        render: (v: number) =>
+          v > 0 ? (
+            <Tooltip title="旧流程存量单未入库余量（在途参考·成品跟进表，登记口径）">
+              <span>{v.toLocaleString("zh-CN")}</span>
+            </Tooltip>
+          ) : (
+            "—"
+          ),
+      },
+      {
+        title: "全口径参考",
+        dataIndex: "refQty",
+        width: 110,
+        align: "right",
+        render: (v: number | null, r) =>
+          v == null ? (
+            "—"
+          ) : (
+            <Space size={4}>
+              <span>{v.toLocaleString("zh-CN")}</span>
+              {r.refGap ? (
+                <Tooltip title={`总库存明细（全公司口径）显著高于系统在库——海外/其他部门仓不在系统快照源。参考时点见页顶。`}>
+                  <Tag color="orange" style={{ marginInlineEnd: 0 }}>缺口</Tag>
+                </Tooltip>
+              ) : null}
+            </Space>
+          ),
+      },
+      {
+        title: "在订未出",
+        dataIndex: "onOrder",
+        width: 95,
+        align: "right",
+        render: (v: number | null) => (v == null || v === 0 ? "—" : v.toLocaleString("zh-CN")),
+      },
       { title: "日均销（近3月）", dataIndex: "daily", width: 120, align: "right" },
       {
         title: "可销天数",
         dataIndex: "daysCover",
+        width: 120,
+        align: "right",
+        render: (v: number | null, r) => {
+          const body =
+            v == null ? (
+              <Typography.Text type="secondary">无动销</Typography.Text>
+            ) : v < 15 ? (
+              <Typography.Text type="danger" strong>
+                {v}
+              </Typography.Text>
+            ) : (
+              <span>{v}</span>
+            );
+          return (
+            <Space size={4}>
+              {body}
+              {r.belowLead ? (
+                <Tooltip title={`已低于常规生产周期 ${r.leadDays} 天——即使未到预警阈值，现在下单也可能断货`}>
+                  <Tag color="red" style={{ marginInlineEnd: 0 }}>低于周期</Tag>
+                </Tooltip>
+              ) : null}
+            </Space>
+          );
+        },
+      },
+      {
+        title: "全管道可销",
+        dataIndex: "coverFull",
         width: 100,
         align: "right",
         render: (v: number | null) =>
           v == null ? (
-            <Typography.Text type="secondary">无动销</Typography.Text>
-          ) : v < 15 ? (
-            <Typography.Text type="danger" strong>
-              {v}
-            </Typography.Text>
+            <Typography.Text type="secondary">—</Typography.Text>
           ) : (
-            v
+            <Tooltip title="（max(系统在库, 全口径参考) + PO在途 + 存量在途 + 在订未出）÷ 日均销">
+              <span>{v}</span>
+            </Tooltip>
           ),
+      },
+      {
+        title: "生产周期",
+        dataIndex: "leadDays",
+        width: 90,
+        align: "right",
+        render: (v: number | null) => (v == null ? "—" : `${v} 天`),
       },
       {
         title: "建议补货量",
@@ -185,13 +269,19 @@ export default function ReplenishClient() {
         width: 130,
         align: "right",
         render: (v: string | null, r) =>
-          v == null ? "—" : (
+          v != null ? (
             <Space size={4}>
               <Tag color="orange" style={{ marginInlineEnd: 0 }}>
                 {Number(v).toLocaleString("zh-CN")}
               </Tag>
               <Typography.Text type="secondary">{r.baseUom}</Typography.Text>
             </Space>
+          ) : r.suppressReason ? (
+            <Tooltip title={r.suppressReason}>
+              <Tag style={{ marginInlineEnd: 0 }}>已抑制</Tag>
+            </Tooltip>
+          ) : (
+            "—"
           ),
       },
     ],
@@ -208,13 +298,15 @@ export default function ReplenishClient() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="建议基于全网口径在库（实时账+最新快照）+ PO 在途与近 3 月销速；生成的是草稿，走正常审批（R13 人工闸）。"
+        message="建议基于全网口径在库（实时账+最新快照）+ PO 在途与近 3 月销速；另融合全口径参考（总库存明细）/存量在途/在订未出与生产周期做风险标注与防重复下单抑制；生成的是草稿，走正常审批（R13 人工闸）。"
         description={
           data?.meta ? (
             <Typography.Text type="secondary">
               销速窗口：{data.meta.months3.length ? data.meta.months3.join("、") : "无销量数据"}
               {data.meta.snapDate ? `；快照数据日期：${data.meta.snapDate}` : ""}
-              ；在途口径 v1 仅含已审批/执行中 PO 未收量（不含委外工单计划产出）；触发建议 {data.meta.suggestCount} 个 SKU。
+              {data.meta.refDate ? `；全口径参考时点：${data.meta.refDate}（总库存明细，全公司口径——覆盖缺口 SKU 标「缺口」）` : ""}
+              ；触发建议 {data.meta.suggestCount} 个 SKU
+              {data.meta.suppressedCount > 0 ? `，其中 ${data.meta.suppressedCount} 个因全口径参考充足被抑制（防对海外/其他仓已有库存重复下单，逐行有原因）` : ""}。
             </Typography.Text>
           ) : null
         }
