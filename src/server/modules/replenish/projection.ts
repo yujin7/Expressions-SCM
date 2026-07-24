@@ -9,6 +9,7 @@ import * as schema from "@/db/schema";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { projectInventory, type DatedArrival, type ProjectionResult } from "@/server/rules/projection";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
+import { getOnHandForSku } from "@/server/core/stock-view";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -51,24 +52,9 @@ export async function getSkuProjection(
   if (!sku) throw new ApiError(404, "SKU 不存在");
   const skuId = sku.id;
 
-  // 起点在库
-  const [{ bal }] = await db
-    .select({ bal: sql<string | null>`sum(${schema.stockBalances.qty})` })
-    .from(schema.stockBalances)
-    .where(eq(schema.stockBalances.skuId, skuId));
-  const s = schema.stockSnapshots;
-  const latest = db
-    .select({ warehouseId: s.warehouseId, skuId: s.skuId, maxDate: sql<string>`max(${s.bizDate})`.as("max_date") })
-    .from(s)
-    .where(eq(s.skuId, skuId))
-    .groupBy(s.warehouseId, s.skuId)
-    .as("latest");
-  const snapRows: { qty: string }[] = await db
-    .select({ qty: s.qty })
-    .from(s)
-    .innerJoin(latest, and(eq(latest.warehouseId, s.warehouseId), eq(latest.skuId, s.skuId), eq(latest.maxDate, s.bizDate)));
-  let startOnHand = num(bal);
-  for (const r of snapRows) startOnHand += num(r.qty);
+  // 起点在库（core/stock-view 唯一口径）
+  const { onHand: onHandStr } = await getOnHandForSku(db, skuId);
+  const startOnHand = num(onHandStr);
 
   // 到货：PO 未收（有 expectedDate）
   const arrivals: DatedArrival[] = [];

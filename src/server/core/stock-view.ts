@@ -31,6 +31,31 @@ export interface OnHandView {
   snapDate: string | null;
 }
 
+/** 快照仓「每 (仓,SKU) 最新一期」原始行——唯一实现。
+ *  消费方按需自行聚合：按 SKU 汇总（getOnHandBySku）、按仓分布（驾驶舱）、单 SKU 明细（全景）。 */
+export async function getLatestSnapshotRows(
+  db: AnyDb,
+  opts: { skuIds?: number[]; finishedOnly?: boolean } = {},
+): Promise<{ warehouseId: number; skuId: number; qty: string; bizDate: string }[]> {
+  const s = schema.stockSnapshots;
+  let latestQ = db
+    .select({ warehouseId: s.warehouseId, skuId: s.skuId, maxDate: sql<string>`max(${s.bizDate})`.as("max_date") })
+    .from(s);
+  if (opts.skuIds) latestQ = latestQ.where(inArray(s.skuId, opts.skuIds));
+  const latest = latestQ.groupBy(s.warehouseId, s.skuId).as("latest");
+
+  let q = db
+    .select({ warehouseId: s.warehouseId, skuId: s.skuId, qty: s.qty, bizDate: s.bizDate })
+    .from(s)
+    .innerJoin(latest, and(eq(latest.warehouseId, s.warehouseId), eq(latest.skuId, s.skuId), eq(latest.maxDate, s.bizDate)));
+  if (opts.finishedOnly) {
+    q = q
+      .innerJoin(schema.skus, eq(s.skuId, schema.skus.id))
+      .where(and(eq(schema.skus.skuType, "finished"), eq(schema.skus.active, true)));
+  }
+  return q;
+}
+
 /** 全网在库（实时账 + 各快照仓最新快照）——全系统唯一实现 */
 export async function getOnHandBySku(db: AnyDb, opts: OnHandOptions = {}): Promise<OnHandView> {
   const { skuIds, finishedOnly } = opts;
@@ -50,24 +75,8 @@ export async function getOnHandBySku(db: AnyDb, opts: OnHandOptions = {}): Promi
   const bySku = new Map<number, string>();
   for (const r of balRows) bySku.set(r.skuId, r.qty ?? "0");
 
-  /* ── 快照仓最新快照（(wh,sku) 取 max(bizDate)） ── */
-  const s = schema.stockSnapshots;
-  let latestQ = db
-    .select({ warehouseId: s.warehouseId, skuId: s.skuId, maxDate: sql<string>`max(${s.bizDate})`.as("max_date") })
-    .from(s);
-  if (skuIds) latestQ = latestQ.where(inArray(s.skuId, skuIds));
-  const latest = latestQ.groupBy(s.warehouseId, s.skuId).as("latest");
-
-  let snapQ = db
-    .select({ skuId: s.skuId, qty: s.qty, bizDate: s.bizDate })
-    .from(s)
-    .innerJoin(latest, and(eq(latest.warehouseId, s.warehouseId), eq(latest.skuId, s.skuId), eq(latest.maxDate, s.bizDate)));
-  if (finishedOnly) {
-    snapQ = snapQ
-      .innerJoin(schema.skus, eq(s.skuId, schema.skus.id))
-      .where(and(eq(schema.skus.skuType, "finished"), eq(schema.skus.active, true)));
-  }
-  const snapRows: { skuId: number; qty: string; bizDate: string }[] = await snapQ;
+  /* ── 快照仓最新快照（共用原始行实现） ── */
+  const snapRows = await getLatestSnapshotRows(db, { skuIds, finishedOnly });
 
   let snapDate: string | null = null;
   for (const r of snapRows) {

@@ -15,6 +15,7 @@ import { getNumParam } from "@/server/core/params";
 import { getRiskWorklist } from "@/server/modules/report/risk";
 import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";
+import { getLatestSnapshotRows } from "@/server/core/stock-view";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -57,20 +58,6 @@ export interface DashboardData {
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const r1 = (v: number): number => Math.round(v * 10) / 10;
 
-/** 快照仓最新快照（wh,sku）→ qty 行 */
-async function latestSnapshotRows(db: AnyDb): Promise<{ warehouseId: number; skuId: number; qty: number; bizDate: string }[]> {
-  const s = schema.stockSnapshots;
-  const latest = db
-    .select({ warehouseId: s.warehouseId, skuId: s.skuId, maxDate: sql<string>`max(${s.bizDate})`.as("max_date") })
-    .from(s)
-    .groupBy(s.warehouseId, s.skuId)
-    .as("latest");
-  const rows: { warehouseId: number; skuId: number; qty: string; bizDate: string }[] = await db
-    .select({ warehouseId: s.warehouseId, skuId: s.skuId, qty: s.qty, bizDate: s.bizDate })
-    .from(s)
-    .innerJoin(latest, and(eq(latest.warehouseId, s.warehouseId), eq(latest.skuId, s.skuId), eq(latest.maxDate, s.bizDate)));
-  return rows.map((r) => ({ ...r, qty: num(r.qty) }));
-}
 
 /* ── 模块级 60s 缓存 ──
  * 键必须含角色（结算金额块按角色裁剪——admin/finance 与其他角色的报文不同形）；
@@ -178,7 +165,7 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
     .select({ warehouseId: schema.stockBalances.warehouseId, skuId: schema.stockBalances.skuId, qty: sql<string>`sum(${schema.stockBalances.qty})` })
     .from(schema.stockBalances)
     .groupBy(schema.stockBalances.warehouseId, schema.stockBalances.skuId);
-  const snapRows = await latestSnapshotRows(db);
+  const snapRows = (await getLatestSnapshotRows(db)).map((r) => ({ ...r, qty: num(r.qty) }));
   const whRows: { id: number; name: string; accountingMode: string }[] = await db
     .select({ id: schema.warehouses.id, name: schema.warehouses.name, accountingMode: schema.warehouses.accountingMode })
     .from(schema.warehouses);

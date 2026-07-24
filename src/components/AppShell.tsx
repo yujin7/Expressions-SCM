@@ -31,6 +31,8 @@ const menuItems: MenuProps["items"] = [
   { key: "/notifications", icon: <InboxOutlined />, label: "通知中心" },
   { key: "/alerts", icon: <InboxOutlined />, label: "系统告警" },
   { key: "/report/dashboard", icon: <BarChartOutlined />, label: "经营驾驶舱" },
+  { key: "/report/sales-bridge", icon: <BarChartOutlined />, label: "销量变化归因" },
+  { key: "/report/inventory-analytics", icon: <BarChartOutlined />, label: "库存分析" },
   {
     key: "planning",
     icon: <FundOutlined />,
@@ -45,6 +47,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/report/material-demand", label: "物料需求展开 MRP" },
       { key: "/report/transfer-suggest", label: "调拨建议" },
       { key: "/report/leadtime-learning", label: "交期学习" },
+      { key: "/report/forecast-accuracy", label: "预测复盘" },
       { key: "/outsource/auto-chain", label: "自动链预演" },
     ],
   },
