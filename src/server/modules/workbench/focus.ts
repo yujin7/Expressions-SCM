@@ -348,6 +348,14 @@ export async function getWorkbenchFocus(roles: string[], dbArg?: AnyDb): Promise
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const isAdmin = roles.includes("admin");
   const builders = SECTION_BUILDERS.filter(([role]) => isAdmin || roles.includes(role));
+  // #9 角色化落地：用户本角色区块优先（按其 roles 顺序），admin 保持规范序
+  if (!isAdmin) {
+    const priority = (role: Role) => {
+      const i = roles.indexOf(role);
+      return i === -1 ? 99 : i;
+    };
+    builders.sort((a, b) => priority(a[0]) - priority(b[0]));
+  }
   const planningRole = isAdmin || roles.some((r) => ["pmc", "purchasing", "ops", "warehouse"].includes(r));
   const [sections, exceptions] = await Promise.all([
     Promise.all(builders.map(([, build]) => build(db))),

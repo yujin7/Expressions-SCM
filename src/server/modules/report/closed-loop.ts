@@ -1,0 +1,147 @@
+/**
+ * 建议闭环追踪（只读报表层）：补货建议 / NPD 首单 → 生成的 BH 草稿 → 其审批/执行状态。
+ *
+ * 链路来源（既有审计，不新增口径）：
+ * - audit_logs action='draft_bh'（补货建议页 createReplenishDraft，after={docNo,lineCount,source}）；
+ * - audit_logs action='first_order_draft'（NPD 首单 createFirstOrder，after={docNo,skuCode,qty}）。
+ * 以 after.docNo 关联 bh_docs 取当前状态；createBy 经 users 解析姓名。
+ * 采纳率 = 进入审批通过及以后状态（approved/in_progress/completed）÷ 建议草稿总数。
+ * 只读不写库、无金额字段免脱敏。
+ */
+import { desc, eq, inArray } from "drizzle-orm";
+import { getDbAsync } from "@/db";
+import * as schema from "@/db/schema";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyDb = any;
+
+const num = (v: unknown): number => (v == null ? 0 : Number(v));
+const r1 = (v: number): number => Math.round(v * 10) / 10;
+
+/** 单据状态 → 中文标签（兼容 PRD 命名与实际枚举） */
+const STATUS_LABEL: Record<string, string> = {
+  draft: "草稿",
+  pending: "待审批",
+  approved: "已审批",
+  in_progress: "执行中",
+  completed: "已完成",
+  done: "已完成",
+  closed: "已关闭",
+  rejected: "已驳回",
+  void: "已作废",
+};
+
+/** 采纳类：进入审批通过及以后状态 */
+const ADOPTED = new Set(["approved", "in_progress", "completed", "done"]);
+/** 待审批类 */
+const PENDING = new Set(["draft", "pending"]);
+
+export interface ClosedLoopRow {
+  id: number;
+  createdAt: string;
+  docNo: string;
+  source: string;
+  lineCount: number;
+  createdBy: string;
+  /** BH 当前状态码；单据不存在 = '已删除' */
+  currentStatus: string;
+  statusLabel: string;
+}
+
+export interface ClosedLoopSummary {
+  total: number;
+  adopted: number; // 采纳中/已完成
+  pending: number; // 待审批
+  rejected: number; // 已否决/关闭
+  deleted: number; // 已删除
+  adoptRate: number; // 采纳率（百分比，1 位小数）
+}
+
+export interface ClosedLoopResult {
+  rows: ClosedLoopRow[];
+  total: number;
+  summary: ClosedLoopSummary;
+}
+
+export async function getClosedLoop(
+  query: { page?: number; pageSize?: number },
+  dbArg?: AnyDb,
+): Promise<ClosedLoopResult> {
+  const db: AnyDb = dbArg ?? (await getDbAsync());
+  const page = Math.max(1, query.page ?? 1);
+  const pageSize = Math.min(500, Math.max(1, query.pageSize ?? 20));
+
+  const al = schema.auditLogs;
+  const logs: { id: number; userId: number; action: string; after: unknown; createdAt: Date }[] = await db
+    .select({ id: al.id, userId: al.userId, action: al.action, after: al.after, createdAt: al.createdAt })
+    .from(al)
+    .where(inArray(al.action, ["draft_bh", "first_order_draft"]))
+    .orderBy(desc(al.createdAt), desc(al.id));
+
+  // 解析制单人姓名
+  const userIds = [...new Set(logs.map((l) => l.userId).filter((v) => v != null))];
+  const userRows: { id: number; name: string }[] = userIds.length
+    ? await db.select({ id: schema.users.id, name: schema.users.name }).from(schema.users).where(inArray(schema.users.id, userIds))
+    : [];
+  const nameById = new Map<number, string>(userRows.map((u) => [u.id, u.name]));
+
+  // 关联 BH 当前状态
+  const docNos = [
+    ...new Set(
+      logs
+        .map((l) => (l.after as { docNo?: unknown } | null)?.docNo)
+        .filter((v): v is string => typeof v === "string" && v.length > 0),
+    ),
+  ];
+  const bhRows: { docNo: string; status: string }[] = docNos.length
+    ? await db.select({ docNo: schema.bhDocs.docNo, status: schema.bhDocs.status }).from(schema.bhDocs).where(inArray(schema.bhDocs.docNo, docNos))
+    : [];
+  const statusByDocNo = new Map<string, string>(bhRows.map((b) => [b.docNo, b.status]));
+
+  const all: ClosedLoopRow[] = logs.map((l) => {
+    const after = (l.after ?? {}) as { docNo?: unknown; source?: unknown; lineCount?: unknown };
+    const docNo = typeof after.docNo === "string" ? after.docNo : "";
+    const source =
+      typeof after.source === "string" && after.source
+        ? after.source === "replenish_suggestion"
+          ? "补货建议"
+          : after.source
+        : l.action === "first_order_draft"
+          ? "NPD首单"
+          : "补货建议";
+    const lineCount = after.lineCount != null ? num(after.lineCount) : 1;
+    const status = docNo ? statusByDocNo.get(docNo) : undefined;
+    const currentStatus = status ?? "已删除";
+    const statusLabel = status ? STATUS_LABEL[status] ?? status : "已删除";
+    return {
+      id: l.id,
+      createdAt: (l.createdAt instanceof Date ? l.createdAt : new Date(l.createdAt)).toISOString(),
+      docNo,
+      source,
+      lineCount,
+      createdBy: nameById.get(l.userId) ?? `用户#${l.userId}`,
+      currentStatus,
+      statusLabel,
+    };
+  });
+
+  // 汇总
+  let adopted = 0;
+  let pending = 0;
+  let rejected = 0;
+  let deleted = 0;
+  for (const r of all) {
+    if (r.currentStatus === "已删除") deleted++;
+    else if (ADOPTED.has(r.currentStatus)) adopted++;
+    else if (PENDING.has(r.currentStatus)) pending++;
+    else rejected++; // rejected/closed/void
+  }
+  const total = all.length;
+  const adoptRate = total > 0 ? r1((adopted / total) * 100) : 0;
+
+  return {
+    rows: all.slice((page - 1) * pageSize, page * pageSize),
+    total,
+    summary: { total, adopted, pending, rejected, deleted, adoptRate },
+  };
+}

@@ -40,6 +40,19 @@ const ACTION_COLORS: Record<string, string> = {
   优先出库: "gold",
   滞销关注: "blue",
 };
+/** #15 处置决定→执行入口路由（不自动开审批单，仅引导到正确的执行页） */
+function EXEC_ROUTE(r: RiskRow): { href: string; label: string } {
+  const q = encodeURIComponent(r.code);
+  switch (r.action) {
+    case "报废评审": return { href: `/inventory/count?q=${q}`, label: "盘点/报废调整（走盘点单）" };
+    case "禁售隔离": return { href: `/inventory/balance?q=${q}`, label: "库存定位·标记隔离" };
+    case "商务处置":
+    case "促销清库": return { href: `/report/demand?tab=pallet`, label: "货盘处置（促销/去化）" };
+    case "优先出库": return { href: `/inventory/balance?q=${q}`, label: "库存定位·先进先出" };
+    default: return { href: `/report/sku-360?sku=${q}`, label: "SKU 360 复盘" };
+  }
+}
+
 const ACTION_ORDER = ["报废评审", "禁售隔离", "商务处置", "促销清库", "优先出库", "滞销关注"];
 
 export default function RiskClient() {
@@ -131,10 +144,15 @@ export default function RiskClient() {
     },
     {
       title: "处置登记",
-      width: 110,
+      width: 150,
       render: (_, r) =>
         r.disposalOpen ? (
-          <Tag color="green">已登记</Tag>
+          <Space size={6}>
+            <Tag color="green" style={{ marginInlineEnd: 0 }}>已登记</Tag>
+            <Tooltip title={`前往执行入口：${EXEC_ROUTE(r).label}`}>
+              <a href={EXEC_ROUTE(r).href}>去执行 →</a>
+            </Tooltip>
+          </Space>
         ) : (
           <a
             onClick={() => {

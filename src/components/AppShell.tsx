@@ -29,6 +29,7 @@ const menuItems: MenuProps["items"] = [
   { key: "/workbench", icon: <DashboardOutlined />, label: "工作台" },
   { key: "/inbox", icon: <InboxOutlined />, label: "我的待办" },
   { key: "/report/dashboard", icon: <BarChartOutlined />, label: "经营驾驶舱" },
+  { key: "/report/digest", icon: <BarChartOutlined />, label: "每日经营摘要" },
   {
     key: "planning",
     icon: <FundOutlined />,
@@ -38,6 +39,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/report/demand", label: "需求达成与货盘" },
       { key: "/report/risk", label: "风险库存处置" },
       { key: "/report/segmentation", label: "库存分层 ABC/XYZ" },
+      { key: "/report/closed-loop", label: "建议闭环追踪" },
       { key: "/outsource/auto-chain", label: "自动链预演" },
     ],
   },
