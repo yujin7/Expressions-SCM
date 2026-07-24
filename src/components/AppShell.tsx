@@ -20,6 +20,7 @@ import {
 } from "@ant-design/icons";
 
 import GlobalSearch from "@/components/GlobalSearch";
+import CommandPalette from "@/components/CommandPalette";
 import FeedbackButton from "@/components/FeedbackButton";
 
 const { Header, Sider, Content } = Layout;
@@ -36,6 +37,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/replenish", label: "补货建议" },
       { key: "/report/demand", label: "需求达成与货盘" },
       { key: "/report/risk", label: "风险库存处置" },
+      { key: "/report/segmentation", label: "库存分层 ABC/XYZ" },
       { key: "/outsource/auto-chain", label: "自动链预演" },
     ],
   },
@@ -74,6 +76,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/inventory/docs", label: "库存单据" },
       { key: "/inventory/count", label: "盘点任务" },
       { key: "/inventory/expiry", label: "效期批次" },
+      { key: "/report/sku-360", label: "SKU 360 事件轴" },
       { key: "/report/demand?tab=stock_summary", label: "总库存核对" },
       { key: "/report/jiediao", label: "借调对账" },
     ],
@@ -205,6 +208,7 @@ export default function AppShell({ children, userName, roleText, roles = [], mus
   const onPasswordPage = pathname.startsWith("/account/password");
   return (
     <AntApp>
+      <CommandPalette />
       <Modal
         open={mustChangePassword && !onPasswordPage}
         closable={false}

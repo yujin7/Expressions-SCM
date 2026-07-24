@@ -1,10 +1,57 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Card, Col, Row, Statistic, Tooltip, Typography } from "antd";
-import { AuditOutlined, RightOutlined, SendOutlined, WarningOutlined } from "@ant-design/icons";
+import { Alert, App, Card, Col, List, Row, Statistic, Tag, Tooltip, Typography } from "antd";
+import { AuditOutlined, RightOutlined, SendOutlined, ThunderboltOutlined, WarningOutlined } from "@ant-design/icons";
 import Link from "next/link";
 import { fetchJson } from "@/components/fetchJson";
+
+interface ExceptionItem {
+  key: string;
+  severity: "critical" | "high" | "medium";
+  title: string;
+  impact: string;
+  count: number;
+  href: string;
+}
+
+const SEV_META: Record<string, { color: string; label: string }> = {
+  critical: { color: "#cf1322", label: "紧急" },
+  high: { color: "#fa8c16", label: "高" },
+  medium: { color: "#faad14", label: "中" },
+};
+
+/** #6 控制塔：登录第一屏「今天最需要处理的事」，按严重度+影响排序，一键直达 */
+function ControlTower({ items, loading }: { items: ExceptionItem[]; loading: boolean }) {
+  if (loading) return <Card loading style={{ marginBottom: 16 }} />;
+  if (items.length === 0) {
+    return (
+      <Alert type="success" showIcon style={{ marginBottom: 16 }} message="控制塔：当前无跨域异常——各项监控均在阈值内。" />
+    );
+  }
+  return (
+    <Card
+      size="small"
+      style={{ marginBottom: 16, borderColor: "#ffccc7" }}
+      title={<span><ThunderboltOutlined style={{ color: "#cf1322" }} /> 控制塔 · 今天最需要处理的事（{items.length}）</span>}
+    >
+      <List
+        dataSource={items}
+        renderItem={(it) => (
+          <List.Item
+            actions={[<Link key="go" href={it.href}>处理 <RightOutlined /></Link>]}
+          >
+            <List.Item.Meta
+              avatar={<Tag color={SEV_META[it.severity].color}>{SEV_META[it.severity].label}</Tag>}
+              title={<Link href={it.href}>{it.title}</Link>}
+              description={it.impact}
+            />
+          </List.Item>
+        )}
+      />
+    </Card>
+  );
+}
 
 /** 待审批单据来源：库存单据 + 委外四单（BH/WO/PO/JG），各取 status=pending 的 total */
 const PENDING_LIST_APIS = [
@@ -80,14 +127,15 @@ export default function WorkbenchClient() {
   const [openAliasCount, setOpenAliasCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [sections, setSections] = useState<FocusSection[]>([]);
+  const [exceptions, setExceptions] = useState<ExceptionItem[]>([]);
   const [focusLoading, setFocusLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setFocusLoading(true);
-    // 角色聚焦区块（服务端按当前用户角色计算真实计数）
-    fetchJson<{ sections: FocusSection[] }>("/api/workbench")
-      .then((r) => setSections(r.sections))
+    // 角色聚焦区块 + 控制塔异常（服务端按当前用户角色计算真实计数）
+    fetchJson<{ sections: FocusSection[]; exceptions: ExceptionItem[] }>("/api/workbench")
+      .then((r) => { setSections(r.sections); setExceptions(r.exceptions ?? []); })
       .catch((e) => message.error((e as Error).message))
       .finally(() => setFocusLoading(false));
     try {
@@ -117,6 +165,7 @@ export default function WorkbenchClient() {
       <Typography.Title level={4} style={{ marginTop: 0 }}>
         工作台
       </Typography.Title>
+      <ControlTower items={exceptions} loading={focusLoading && exceptions.length === 0} />
       <FocusSections sections={sections} loading={focusLoading} />
       <Alert
         type="info"

@@ -33,9 +33,22 @@ export interface FocusSection {
   metrics: FocusMetric[];
 }
 
+export type ExceptionSeverity = "critical" | "high" | "medium";
+export interface ExceptionItem {
+  key: string;
+  severity: ExceptionSeverity;
+  title: string;
+  /** 量化影响（金额/数量/天数——对标控制塔的 impact 排序） */
+  impact: string;
+  count: number;
+  href: string;
+}
+
 export interface WorkbenchFocus {
   generatedAt: string;
   sections: FocusSection[];
+  /** #6 控制塔：跨域异常，按严重度+影响排序（登录第一屏「今天最需要处理的事」） */
+  exceptions: ExceptionItem[];
 }
 
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
@@ -248,11 +261,97 @@ const SECTION_BUILDERS: [Role, (db: AnyDb) => Promise<FocusSection>][] = [
   ["ops", opsSection],
 ];
 
+const SEVERITY_RANK: Record<ExceptionSeverity, number> = { critical: 0, high: 1, medium: 2 };
+
+/** #6 控制塔：跨域异常聚合（均为廉价聚合查询，登录首屏可承受） */
+async function computeExceptions(db: AnyDb): Promise<ExceptionItem[]> {
+  const today = todayShanghai();
+  const out: ExceptionItem[] = [];
+
+  // 1) 已过期库存待处置（金额未定，用数量+SKU数量化）
+  const [expired] = await db
+    .select({
+      skus: sql<number>`count(distinct ${schema.batchStocks.skuId})::int`,
+      qty: sql<string>`coalesce(sum(${schema.batchStocks.qty}),0)`,
+    })
+    .from(schema.batchStocks)
+    .where(and(isNotNull(schema.batchStocks.expiryDate), sql`${schema.batchStocks.qty} > 0`, lte(schema.batchStocks.expiryDate, today)));
+  if ((expired?.skus ?? 0) > 0) {
+    out.push({
+      key: "expired_stock",
+      severity: "critical",
+      title: "已过期库存待处置",
+      impact: `${expired.skus} 个 SKU · ${num(expired.qty).toLocaleString("zh-CN")} 件`,
+      count: expired.skus,
+      href: "/report/risk?action=报废评审",
+    });
+  }
+
+  // 2) 单据超时（时效看门狗）
+  const docAging = await countWhere(db, schema.reviewItems, and(eq(schema.reviewItems.category, "doc_aging"), eq(schema.reviewItems.status, "open")));
+  if (docAging > 0) {
+    out.push({ key: "doc_aging", severity: "high", title: "单据超时未流转", impact: `${docAging} 张单据停留超阈值`, count: docAging, href: "/review/checklist" });
+  }
+
+  // 3) 参考数据过期（新鲜度看门狗）
+  const staleData = await countWhere(db, schema.reviewItems, and(eq(schema.reviewItems.category, "data_freshness"), eq(schema.reviewItems.status, "open")));
+  if (staleData > 0) {
+    out.push({ key: "stale_data", severity: "high", title: "关键参考数据过期", impact: `${staleData} 类数据待重传（口径将失真）`, count: staleData, href: "/review/checklist" });
+  }
+
+  // 4) 断货且已错过下单窗口（可销 < 生产周期）——取样估算：可销天数<生产周期的成品数
+  const sm = schema.salesMonthly;
+  const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
+  const months3 = maxYm ? lastMonths(maxYm, 3) : [];
+  if (months3.length) {
+    const rows: { skuId: number; sales3m: string; onHand: string; leadDays: number | null }[] = await db
+      .select({
+        skuId: schema.skus.id,
+        sales3m: sql<string>`coalesce((select sum(q) from (select sum(${sm.qty}) q from sales_monthly where sku_id=${schema.skus.id} and year_month in (${sql.join(months3, sql`,`)})) t),0)`,
+        onHand: sql<string>`coalesce((select sum(qty) from stock_balances where sku_id=${schema.skus.id}),0)`,
+        leadDays: schema.skuParams.normalLeadDays,
+      })
+      .from(schema.skus)
+      .leftJoin(schema.skuParams, eq(schema.skuParams.skuId, schema.skus.id))
+      .where(and(eq(schema.skus.skuType, "finished"), eq(schema.skus.active, true)));
+    let belowLead = 0;
+    for (const r of rows) {
+      const daily = num(r.sales3m) / 91;
+      if (daily <= 0 || r.leadDays == null || r.leadDays <= 0) continue;
+      const cover = num(r.onHand) / daily;
+      if (cover < r.leadDays) belowLead++;
+    }
+    if (belowLead > 0) {
+      out.push({ key: "below_lead", severity: "critical", title: "断货风险（可销 < 生产周期）", impact: `${belowLead} 个成品补货窗口迫近/已过`, count: belowLead, href: "/replenish" });
+    }
+  }
+
+  // 5) 成品缺生产周期（阻断投影/补货判定）
+  const missingLead = await countWhere(
+    db,
+    schema.skus,
+    and(
+      eq(schema.skus.skuType, "finished"),
+      eq(schema.skus.active, true),
+      sql`not exists (select 1 from sku_params sp where sp.sku_id = ${schema.skus.id} and sp.normal_lead_days > 0)`,
+    ),
+  );
+  if (missingLead > 0) {
+    out.push({ key: "missing_lead", severity: "medium", title: "成品缺生产周期", impact: `${missingLead} 个成品无法推算下单日`, count: missingLead, href: "/report/data-health?missing=生产周期" });
+  }
+
+  return out.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.count - a.count);
+}
+
 /** 按当前用户角色计算聚焦区块；admin 全量可见；多角色叠加多区块 */
 export async function getWorkbenchFocus(roles: string[], dbArg?: AnyDb): Promise<WorkbenchFocus> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const isAdmin = roles.includes("admin");
   const builders = SECTION_BUILDERS.filter(([role]) => isAdmin || roles.includes(role));
-  const sections = await Promise.all(builders.map(([, build]) => build(db)));
-  return { generatedAt: new Date().toISOString(), sections };
+  const planningRole = isAdmin || roles.some((r) => ["pmc", "purchasing", "ops", "warehouse"].includes(r));
+  const [sections, exceptions] = await Promise.all([
+    Promise.all(builders.map(([, build]) => build(db))),
+    planningRole ? computeExceptions(db) : Promise.resolve<ExceptionItem[]>([]),
+  ]);
+  return { generatedAt: new Date().toISOString(), sections, exceptions };
 }
