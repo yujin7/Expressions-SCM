@@ -28,5 +28,5 @@
 - 列表页状态平台（`components/useListState` + `ListToolbar`）：新列表页一律采用；
   **必须**在该页 `page.tsx` 包 `<Suspense>`（hook 内用 useSearchParams，缺边界会导致
   useId 序列 SSR/CSR 不一致 → 整页水合失败、退化为无交互静态 HTML）。
-  已知缺口：平台按「一页一个列表」设计，多 Tab 各自独立列表的页面（transit/jiediao/demand/
-  supplier-scorecard QC 页签）暂不迁移——多实例会争抢同一组 URL 参数，需先支持按 Tab 命名空间。
+  同页多个独立列表（每 Tab 一份）必须给每个实例不同的 `paramPrefix`（URL 参数变 `fg_q`/`fg_page`，
+  写入只增删自己的参数、保留兄弟）；fetch 查询串不带前缀，后端参数名不变。
