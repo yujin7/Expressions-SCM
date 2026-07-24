@@ -31,12 +31,17 @@ export const createStockDocSchema = z
     }),
     warehouseId: z.number().int().positive({ message: "必须选择仓库" }),
     toWarehouseId: z.number().int().positive().nullable().optional(),
+    /** R16：调拨业务原因（'借调' 触发月末部门间借调对账）；仅调拨填写 */
+    reason: z.string().trim().max(50).optional(),
     remark: z.string().trim().max(500).optional(),
     lines: z.array(stockDocLineSchema).min(1, "至少需要一行"),
   })
   .superRefine((v, ctx) => {
     if (v.subtype !== "opening" && v.lines.some((l) => l.price != null)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["lines"], message: "仅期初单可填单价" });
+    }
+    if (v.reason && v.subtype !== "transfer") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reason"], message: "业务原因仅调拨单填写（R16）" });
     }
     if (v.subtype === "transfer") {
       if (!v.toWarehouseId) {

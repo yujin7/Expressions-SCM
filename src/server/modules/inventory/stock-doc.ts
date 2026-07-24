@@ -93,6 +93,7 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
       .values({
         docNo,
         subtype: v.subtype,
+        reason: v.subtype === "transfer" ? (v.reason ?? null) : null,
         remark: v.remark ?? null,
         createdBy: user.id,
       })

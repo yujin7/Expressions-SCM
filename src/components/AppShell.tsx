@@ -79,9 +79,15 @@ const menuItems: MenuProps["items"] = [
       { key: "/report/dashboard", label: "经营驾驶舱" },
       { key: "/report/wip", label: "委外在制看板" },
       { key: "/report/settlement-summary", label: "结算汇总表" },
+      { key: "/report/jiediao", label: "借调对账（R16）" },
     ],
   },
-  { key: "admin", icon: <SettingOutlined />, label: "系统管理（W5）", disabled: true },
+  {
+    key: "admin",
+    icon: <SettingOutlined />,
+    label: "系统管理",
+    children: [{ key: "/admin/users", label: "用户管理" }],
+  },
 ];
 
 export default function AppShell({ children, userName, roleText }: { children: React.ReactNode; userName?: string; roleText?: string }) {
@@ -101,6 +107,7 @@ export default function AppShell({ children, userName, roleText }: { children: R
     if (pathname.startsWith("/jobs/")) return ["outsourcing"];
     if (pathname.startsWith("/import/")) return ["import"];
     if (pathname.startsWith("/report/")) return ["reports"];
+    if (pathname.startsWith("/admin/")) return ["admin"];
     return [];
   }, [pathname]);
 

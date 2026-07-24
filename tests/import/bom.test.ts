@@ -190,6 +190,7 @@ describe("BOM 块解析：结构规则（合成）", () => {
       mat({ mc: "N920-ZY001", mn: "专用箱", qty: "（箱规/）" }),
       mat({ mc: "N920-X001", mn: "周转箱", qty: "/" }),
       mat({ mc: "ZCYL-067", mn: "自采香精", qty: 0.008, sup: "申丽" }),
+      mat({ mc: "ZCLY-016", mn: "自供原料-VC-IP", qty: 0.01 }), // 真实编码序（补遗轮实证）
       mat({ mn: "收缩膜", qty: 1 }),
       mat({ mc: "76", mn: "神秘部件", qty: 1 }),
       summary(null),
@@ -197,7 +198,7 @@ describe("BOM 块解析：结构规则（合成）", () => {
     const { blocks } = parseBomSheets([sheet("SEG", rows)], "NING");
     expect(blocks[0].lines.map((l) => l.segment)).toEqual([
       "raw_bulk", "primary_pack", "secondary_pack", "secondary_pack", "secondary_pack",
-      "box", "box", "self_supplied", "uncoded", "unknown",
+      "box", "box", "self_supplied", "self_supplied", "uncoded", "unknown",
     ]);
   });
 

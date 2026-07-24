@@ -294,7 +294,8 @@ function classifyProductCode(raw: string): { code: string | null; reject: string
 function segmentOf(code: string | null): BomSegment {
   if (code == null) return "uncoded";
   const c = code.toUpperCase();
-  if (c.startsWith("ZCYL")) return "self_supplied";
+  // 真实编码为 ZCLY（自供原料拼音序），ZCYL 为早期基线笔误——两式并认（2026-07-24 补遗轮实证）
+  if (c.startsWith("ZCLY") || c.startsWith("ZCYL")) return "self_supplied";
   if (c.includes("-0101")) return "raw_bulk";
   if (c.includes("-0201")) return "primary_pack";
   if (c.includes("-0401") || c.includes("-0402") || c.includes("-0801")) return "secondary_pack";

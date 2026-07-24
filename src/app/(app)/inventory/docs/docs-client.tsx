@@ -79,6 +79,7 @@ interface CreateFormValues {
   subtype: string;
   warehouseId: number;
   toWarehouseId?: number;
+  reason?: string; // R16：调拨业务原因
   remark?: string;
   lines?: { skuId: number; qty: number; price?: number }[];
 }
@@ -192,6 +193,7 @@ export default function DocsClient() {
         subtype: values.subtype,
         warehouseId: values.warehouseId,
         toWarehouseId: values.subtype === "transfer" ? values.toWarehouseId : undefined,
+        reason: values.subtype === "transfer" ? values.reason || undefined : undefined,
         remark: values.remark?.trim() || undefined,
         lines: lines.map((l) => ({
           skuId: l.skuId,
@@ -379,6 +381,20 @@ export default function DocsClient() {
                 api="/api/master/warehouse"
                 getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
                 placeholder="选择目标仓库"
+              />
+            </Form.Item>
+          ) : null}
+          {createSubtype === "transfer" ? (
+            <Form.Item name="reason" label="业务原因（R16：借调将进入月末部门间借调对账）">
+              <Select
+                allowClear
+                placeholder="正常调拨可不填"
+                options={[
+                  { value: "借调", label: "借调（部门间借货，月末自动对账）" },
+                  { value: "补货", label: "补货" },
+                  { value: "退仓", label: "退仓" },
+                  { value: "调仓优化", label: "调仓优化" },
+                ]}
               />
             </Form.Item>
           ) : null}

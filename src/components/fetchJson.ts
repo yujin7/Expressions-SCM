@@ -19,6 +19,14 @@ export function postJson<T>(url: string, data: unknown): Promise<T> {
   });
 }
 
+export function patchJson<T>(url: string, data: unknown): Promise<T> {
+  return fetchJson<T>(url, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
 export function putJson<T>(url: string, data: unknown): Promise<T> {
   return fetchJson<T>(url, {
     method: "PUT",

@@ -51,12 +51,13 @@ import type { DashboardData } from "@/server/modules/report/dashboard";
 
 const PALETTE = ["#2f54eb", "#13c2c2", "#fa8c16", "#722ed1", "#52c41a", "#eb2f96", "#a0d911", "#1677ff", "#f5222d", "#faad14"];
 const EXP_COLORS: Record<string, string> = {
-  已过期: "#cf1322",
-  "≤90天": "#fa541c",
-  "91-180天": "#fa8c16",
-  "181-365天": "#fadb14",
-  "1-2年": "#a0d911",
-  ">2年": "#52c41a",
+  已到期: "#cf1322",
+  "0-3月": "#fa541c",
+  "3-6月": "#fa8c16",
+  "6-12月": "#fadb14",
+  "12-18月": "#d3f261",
+  "18-24月": "#a0d911",
+  ">24月": "#52c41a",
 };
 const STATUS_LABELS: Record<string, string> = {
   draft: "草稿",
@@ -126,7 +127,7 @@ export default function DashboardClient() {
       dataIndex: "daysLeft",
       width: 90,
       align: "right",
-      render: (v: number) => <Tag color={v < 0 ? "red" : v <= 90 ? "volcano" : "orange"}>{v < 0 ? `过期${-v}天` : `${v}天`}</Tag>,
+      render: (v: number) => <Tag color={v < 0 ? "red" : v < 92 ? "volcano" : "orange"}>{v < 0 ? `过期${-v}天` : `${v}天`}</Tag>,
     },
     { title: "数量", dataIndex: "qty", width: 90, align: "right", render: fmt },
   ];
@@ -190,7 +191,7 @@ export default function DashboardClient() {
         <Col xs={12} md={8} xl={4}>
           <Card size="small">
             <Statistic
-              title="效期风险量（≤180天）"
+              title="效期风险量（≤6月）"
               value={kpi.expiryRiskQty}
               valueStyle={{ color: kpi.expiryRiskQty > 0 ? "#cf1322" : undefined }}
               prefix={<ClockCircleOutlined />}
@@ -377,7 +378,7 @@ export default function DashboardClient() {
       {/* 效期 */}
       <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
         <Col xs={24} xl={10}>
-          <ChartCard title="效期六段位（批次参考层，3,131 批）">
+          <ChartCard title="效期七段位（R15，批次参考层）">
             <ResponsiveContainer>
               <BarChart data={data.expiryBuckets} margin={{ right: 16 }}>
                 <CartesianGrid strokeDasharray="3 3" />
@@ -399,7 +400,7 @@ export default function DashboardClient() {
             title={
               <Space>
                 <AlertOutlined style={{ color: "#cf1322" }} />
-                近效期风险 TOP 10（≤180 天）
+                近效期风险 TOP 10（≤6 月）
               </Space>
             }
           >

@@ -28,7 +28,7 @@ export interface DashboardData {
     snapDate: string | null;
     salesLastMonth: number;
     lastMonth: string | null;
-    expiryRiskQty: number; // ≤180 天 + 已过期
+    expiryRiskQty: number; // ≤6月 + 已到期（七段位前三段）
     slowMoverCount: number;
     pendingApprovals: number;
     reviewBacklog: number; // 开放别名 + 阻塞 staging 行
@@ -243,13 +243,15 @@ export async function getDashboard(roles: string[], dbArg?: AnyDb): Promise<Dash
     })
     .from(schema.batchStocks)
     .where(isNotNull(schema.batchStocks.expiryDate));
+  // R15 七段位（04 §3 裁决：互斥左闭右开——已到期/(0,3月]/(3,6月]/(6,12月]/(12,18月]/(18,24月]/>24月）
   const EXP_BUCKETS = [
-    { bucket: "已过期", min: -Infinity, max: 0 },
-    { bucket: "≤90天", min: 0, max: 90 },
-    { bucket: "91-180天", min: 90, max: 180 },
-    { bucket: "181-365天", min: 180, max: 365 },
-    { bucket: "1-2年", min: 365, max: 730 },
-    { bucket: ">2年", min: 730, max: Infinity },
+    { bucket: "已到期", min: -Infinity, max: 0 },
+    { bucket: "0-3月", min: 0, max: 92 },
+    { bucket: "3-6月", min: 92, max: 183 },
+    { bucket: "6-12月", min: 183, max: 365 },
+    { bucket: "12-18月", min: 365, max: 548 },
+    { bucket: "18-24月", min: 548, max: 730 },
+    { bucket: ">24月", min: 730, max: Infinity },
   ];
   const expAgg = new Map<string, { qty: number; batches: number }>(EXP_BUCKETS.map((b) => [b.bucket, { qty: 0, batches: 0 }]));
   let expiryRiskQty = 0;
@@ -262,7 +264,7 @@ export async function getDashboard(roles: string[], dbArg?: AnyDb): Promise<Dash
     const e = expAgg.get(b.bucket)!;
     e.qty += q;
     e.batches++;
-    if (daysLeft <= 180) {
+    if (daysLeft < 183) { // ≤6月（与七段位 (3,6月] 右界一致）
       expiryRiskQty += q;
       riskRows.push({ skuId: r.skuId, warehouseId: r.warehouseId, expiryDate: r.expiryDate, daysLeft, qty: q });
     }
@@ -361,10 +363,10 @@ export async function getDashboard(roles: string[], dbArg?: AnyDb): Promise<Dash
     const totalB = brandSales.reduce((a, c) => a + c.qty, 0);
     insights.push(`品牌结构：「${brandSales[0].name}」占 ${r1((brandSales[0].qty / Math.max(totalB, 1)) * 100)}%，前三品牌合计 ${r1((brandSales.slice(0, 3).reduce((a, c) => a + c.qty, 0) / Math.max(totalB, 1)) * 100)}%`);
   }
-  const expired = expiryBuckets.find((b) => b.bucket === "已过期");
-  const within90 = expiryBuckets.find((b) => b.bucket === "≤90天");
-  if ((expired?.qty ?? 0) > 0 || (within90?.qty ?? 0) > 0) {
-    insights.push(`效期风险：已过期 ${expired?.qty.toLocaleString("zh-CN") ?? 0}（${expired?.batches ?? 0} 批）、90 天内到期 ${within90?.qty.toLocaleString("zh-CN") ?? 0}（${within90?.batches ?? 0} 批）——建议优先促销/处置`);
+  const expired = expiryBuckets.find((b) => b.bucket === "已到期");
+  const within3m = expiryBuckets.find((b) => b.bucket === "0-3月");
+  if ((expired?.qty ?? 0) > 0 || (within3m?.qty ?? 0) > 0) {
+    insights.push(`效期风险：已到期 ${expired?.qty.toLocaleString("zh-CN") ?? 0}（${expired?.batches ?? 0} 批）、3 个月内到期 ${within3m?.qty.toLocaleString("zh-CN") ?? 0}（${within3m?.batches ?? 0} 批）——建议优先促销/处置`);
   }
   if (slowMoverCount > 0) {
     const worst = slowTop[0];
