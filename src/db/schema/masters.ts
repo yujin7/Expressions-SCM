@@ -13,6 +13,8 @@ export const users = pgTable("users", {
   isApprover: boolean("is_approver").notNull().default(false),
   active: boolean("active").notNull().default(true),
   failedLogins: integer("failed_logins").notNull().default(0),
+  mustChangePassword: boolean("must_change_password").notNull().default(false), // 初始密码首登强制修改
+
   lockedUntil: timestamp("locked_until", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

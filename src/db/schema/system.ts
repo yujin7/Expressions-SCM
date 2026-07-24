@@ -80,3 +80,34 @@ export const docCounters = pgTable("doc_counters", {
   bizDate: text("biz_date").notNull(), // YYYYMMDD
   lastNo: integer("last_no").notNull().default(0),
 }, (t) => [primaryKey({ columns: [t.prefix, t.bizDate] })]);
+
+/* ── RT5 建设波（top-20 改进）共享基座 ─────────────── */
+
+/** 复核清单（原 reports/复核清单-*.md 落库）：代决事项的在案审阅工作流 */
+export const reviewItems = pgTable("review_items", {
+  id: serial("id").primaryKey(),
+  category: text("category").notNull(), // spu_cluster/bom_version/segment/shell_brand/blocked/...
+  refType: text("ref_type"), // sku/bom/spu/staging_row（可空=纯文字项）
+  refKey: text("ref_key"), // 编码或 id 字符串，用于跳转
+  title: text("title").notNull(),
+  detail: text("detail"),
+  status: text("status").notNull().default("open"), // open/done/overruled
+  note: text("note"), // 复核意见
+  decidedBy: integer("decided_by"),
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("ix_review_status_cat").on(t.status, t.category)]);
+
+/** 异步导出任务（DoD：>5000 行走异步；进程内 worker 轮询，PGlite/PG 通用） */
+export const exportJobs = pgTable("export_jobs", {
+  id: serial("id").primaryKey(),
+  kind: text("kind").notNull(), // balance/ledger/bom/settlement-summary/...
+  params: jsonb("params"),
+  status: text("status").notNull().default("pending"), // pending/running/done/failed
+  filePath: text("file_path"),
+  rowCount: integer("row_count"),
+  error: text("error"),
+  requestedBy: integer("requested_by").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+}, (t) => [index("ix_export_status").on(t.status, t.createdAt)]);
