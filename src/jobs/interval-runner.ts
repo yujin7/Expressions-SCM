@@ -17,6 +17,7 @@ import { runLicenseAlert } from "./license-alert";
 import { runReconcileJst, shanghaiToday } from "./reconcile-jst";
 import { runSnapshotAgeAlert } from "./snapshot-age";
 import { runHousekeeping } from "./housekeeping";
+import { runFreshnessCheck } from "./freshness";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -39,6 +40,8 @@ export const INTERVAL_JOBS: IntervalJob[] = [
   { name: "reconcile-jst", everyMs: 6 * HOUR_MS, run: (db) => runReconcileJst(db, shanghaiToday(-1)) },
   // 保洁（删除幂等）
   { name: "housekeeping", everyMs: 24 * HOUR_MS, run: (db) => runHousekeeping(db) },
+  // 参考数据新鲜度看门狗（开/关 review_items 幂等）
+  { name: "data-freshness", everyMs: 24 * HOUR_MS, run: (db) => runFreshnessCheck(db) },
 ];
 
 /** 跑一次并落 job_runs（job_runs 写失败仅打日志——监控不能反噬任务本身） */

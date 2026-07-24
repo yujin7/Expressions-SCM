@@ -1,0 +1,267 @@
+"use client";
+
+/** NPD 1.x 项目跟踪（D19 激活）：69 节点标准模板实例化 → 计划推算 → 任务推进 */
+import { useCallback, useEffect, useState } from "react";
+import {
+  Alert, App, Button, DatePicker, Drawer, Form, Input, Modal, Popconfirm, Progress, Select, Space, Table, Tag, Typography,
+} from "antd";
+import type { ColumnsType } from "antd/es/table";
+import { PlusOutlined } from "@ant-design/icons";
+import dayjs, { type Dayjs } from "dayjs";
+import { fetchJson, postJson } from "@/components/fetchJson";
+
+interface ProjectRow {
+  id: number;
+  name: string;
+  skuCode: string | null;
+  brand: string | null;
+  startDate: string;
+  status: string;
+  remark: string | null;
+  taskTotal: number;
+  taskDone: number;
+  planEnd: string | null;
+}
+
+interface TaskRow {
+  id: number;
+  seq: number;
+  nodeNo: string | null;
+  name: string;
+  stage: string | null;
+  dept: string | null;
+  days: number;
+  planStart: string | null;
+  planEnd: string | null;
+  status: string;
+  doneAt: string | null;
+  note: string | null;
+}
+
+const STATUS_TAG: Record<string, { color: string; label: string }> = {
+  active: { color: "processing", label: "进行中" },
+  done: { color: "success", label: "已完成" },
+  cancelled: { color: "default", label: "已取消" },
+};
+const TASK_STATUS: Record<string, { color: string; label: string }> = {
+  pending: { color: "default", label: "未开始" },
+  doing: { color: "processing", label: "进行中" },
+  done: { color: "success", label: "完成" },
+  skipped: { color: "warning", label: "跳过" },
+};
+
+async function patchJson<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = (await res.json()) as T & { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `请求失败（${res.status}）`);
+  return data;
+}
+
+export default function NpdProjectsClient() {
+  const { message } = App.useApp();
+  const [rows, setRows] = useState<ProjectRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [form] = Form.useForm<{ name: string; skuCode?: string; brand?: string; startDate: Dayjs; remark?: string }>();
+
+  const [detail, setDetail] = useState<{ project: ProjectRow; tasks: TaskRow[] } | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const d = await fetchJson<{ projects: ProjectRow[] }>("/api/npd/projects");
+      setRows(d.projects);
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [message]);
+  useEffect(() => { void load(); }, [load]);
+
+  const openDetail = async (id: number) => {
+    setDetailLoading(true);
+    try {
+      setDetail(await fetchJson<{ project: ProjectRow; tasks: TaskRow[] }>(`/api/npd/projects?id=${id}`));
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const handleCreate = async () => {
+    const v = await form.validateFields();
+    setCreating(true);
+    try {
+      const res = await postJson<{ id: number; taskCount: number; planEnd: string }>("/api/npd/projects", {
+        name: v.name,
+        skuCode: v.skuCode || undefined,
+        brand: v.brand || undefined,
+        startDate: v.startDate.format("YYYY-MM-DD"),
+        remark: v.remark || undefined,
+      });
+      message.success(`项目已创建：${res.taskCount} 个节点任务，计划完成 ${res.planEnd}`);
+      setCreateOpen(false);
+      form.resetFields();
+      void load();
+      void openDetail(res.id);
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const setTask = async (taskId: number, status: string) => {
+    try {
+      await patchJson("/api/npd/tasks", { taskId, status });
+      if (detail) void openDetail(detail.project.id);
+      void load();
+    } catch (e) {
+      message.error((e as Error).message);
+    }
+  };
+
+  const setProject = async (projectId: number, status: string) => {
+    try {
+      await patchJson("/api/npd/projects", { projectId, status });
+      message.success("项目状态已更新");
+      setDetail(null);
+      void load();
+    } catch (e) {
+      message.error((e as Error).message);
+    }
+  };
+
+  const columns: ColumnsType<ProjectRow> = [
+    { title: "项目", dataIndex: "name", width: 220, render: (v: string, r) => <a onClick={() => void openDetail(r.id)}>{v}</a> },
+    { title: "目标 SKU", dataIndex: "skuCode", width: 130, render: (v: string | null) => v ?? "—" },
+    { title: "品牌", dataIndex: "brand", width: 110, render: (v: string | null) => v ?? "—" },
+    { title: "启动日", dataIndex: "startDate", width: 110 },
+    { title: "计划完成", dataIndex: "planEnd", width: 110, render: (v: string | null) => v ?? "—" },
+    {
+      title: "进度",
+      width: 170,
+      render: (_, r) => (
+        <Progress
+          size="small"
+          percent={r.taskTotal ? Math.round((r.taskDone / r.taskTotal) * 100) : 0}
+          format={() => `${r.taskDone}/${r.taskTotal}`}
+        />
+      ),
+    },
+    {
+      title: "状态",
+      dataIndex: "status",
+      width: 90,
+      render: (v: string) => <Tag color={STATUS_TAG[v]?.color}>{STATUS_TAG[v]?.label ?? v}</Tag>,
+    },
+  ];
+
+  const taskCols: ColumnsType<TaskRow> = [
+    { title: "#", dataIndex: "seq", width: 45 },
+    { title: "编号", dataIndex: "nodeNo", width: 65, render: (v: string | null) => v ?? "—" },
+    { title: "节点", dataIndex: "name", ellipsis: true, width: 230 },
+    { title: "阶段", dataIndex: "stage", width: 95, render: (v: string | null) => (v ? <Tag>{v}</Tag> : "—") },
+    { title: "部门/岗位", dataIndex: "dept", width: 150, ellipsis: true, render: (v: string | null) => v ?? "—" },
+    { title: "天数", dataIndex: "days", width: 55, align: "right" },
+    { title: "计划", width: 180, render: (_, r) => (r.planStart ? `${r.planStart} ~ ${r.planEnd}` : "—") },
+    {
+      title: "状态",
+      dataIndex: "status",
+      width: 210,
+      render: (v: string, r) => (
+        <Space size={4}>
+          <Select
+            size="small"
+            value={v}
+            style={{ width: 92 }}
+            onChange={(nv) => void setTask(r.id, nv)}
+            options={Object.entries(TASK_STATUS).map(([val, m]) => ({ value: val, label: m.label }))}
+          />
+          {r.doneAt ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.doneAt}</Typography.Text> : null}
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <div>
+      <Typography.Title level={4} style={{ marginTop: 0 }}>NPD 项目跟踪</Typography.Title>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="D19 · 1.x：新建项目按「各节点核心说明」69 节点标准实例化，计划沿上一节点链推算（自然日）。节点标准/角色分配见「NPD 节点参考」页。"
+      />
+      <Space style={{ marginBottom: 12 }}>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+          新建 NPD 项目
+        </Button>
+      </Space>
+      <Table<ProjectRow> rowKey="id" size="small" columns={columns} dataSource={rows} loading={loading} pagination={false} scroll={{ x: "max-content" }} />
+
+      <Modal
+        title="新建 NPD 项目（按 69 节点标准实例化）"
+        open={createOpen}
+        onOk={() => void handleCreate()}
+        onCancel={() => setCreateOpen(false)}
+        confirmLoading={creating}
+        okText="创建"
+        cancelText="取消"
+      >
+        <Form form={form} layout="vertical" initialValues={{ startDate: dayjs() }}>
+          <Form.Item name="name" label="项目名称" rules={[{ required: true, min: 2, message: "至少 2 字" }]}>
+            <Input placeholder="如：EXPRESSIONS 秋季新品-胶原蛋白饮" maxLength={120} />
+          </Form.Item>
+          <Space style={{ display: "flex" }} align="start">
+            <Form.Item name="skuCode" label="目标 SKU（可后补）">
+              <Input placeholder="如 E120-000" maxLength={60} />
+            </Form.Item>
+            <Form.Item name="brand" label="品牌">
+              <Input maxLength={60} />
+            </Form.Item>
+            <Form.Item name="startDate" label="启动日期" rules={[{ required: true }]}>
+              <DatePicker />
+            </Form.Item>
+          </Space>
+          <Form.Item name="remark" label="备注">
+            <Input.TextArea rows={2} maxLength={500} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Drawer
+        title={detail ? `${detail.project.name}（${detail.tasks.filter((t) => t.status === "done" || t.status === "skipped").length}/${detail.tasks.length}）` : ""}
+        open={detail != null}
+        onClose={() => setDetail(null)}
+        width="min(1080px, 100vw)"
+        extra={
+          detail && detail.project.status === "active" ? (
+            <Space>
+              <Popconfirm title="确认整项目完成？" onConfirm={() => void setProject(detail.project.id, "done")}>
+                <Button type="primary">标记完成</Button>
+              </Popconfirm>
+              <Popconfirm title="确认取消项目？（任务保留，仅状态标记）" onConfirm={() => void setProject(detail.project.id, "cancelled")}>
+                <Button danger>取消项目</Button>
+              </Popconfirm>
+            </Space>
+          ) : null
+        }
+      >
+        <Table<TaskRow>
+          rowKey="id"
+          size="small"
+          columns={taskCols}
+          dataSource={detail?.tasks ?? []}
+          loading={detailLoading}
+          pagination={false}
+          scroll={{ x: "max-content" }}
+        />
+      </Drawer>
+    </div>
+  );
+}

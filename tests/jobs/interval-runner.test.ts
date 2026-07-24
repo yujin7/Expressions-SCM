@@ -17,8 +17,9 @@ describe("interval-runner 进程内调度回退", () => {
     expect(g[Symbol.for("supply-chain.interval-runner")]).toBeUndefined();
   });
 
-  it("注册了 4 个任务（snapshot-age/license-alert/reconcile-jst/housekeeping）", () => {
+  it("注册了 5 个任务（snapshot-age/license-alert/reconcile-jst/housekeeping/data-freshness）", () => {
     expect(INTERVAL_JOBS.map((j) => j.name).sort()).toEqual([
+      "data-freshness",
       "housekeeping",
       "license-alert",
       "reconcile-jst",

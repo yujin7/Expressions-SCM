@@ -224,17 +224,25 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     legacyBySku.set(r.skuId, (legacyBySku.get(r.skuId) ?? 0) + remain);
   }
 
-  /* ── 常规生产周期：sku_leadtime staging（与 releaseFinishedMoq 同源，首见为准） ── */
-  const ltRows: { payload: unknown }[] = await db
-    .select({ payload: schema.stagingRows.payload })
-    .from(schema.stagingRows)
-    .where(and(eq(schema.stagingRows.targetTable, "sku_leadtime"), inArray(schema.stagingRows.status, ["pending", "validated"])));
+  /* ── 常规生产周期：sku_params 正式表优先（E 项转正），staging 兜底过渡 ── */
+  const leadBySkuId = new Map<number, number>();
+  const spRows: { skuId: number; normalLeadDays: number | null }[] = await db
+    .select({ skuId: schema.skuParams.skuId, normalLeadDays: schema.skuParams.normalLeadDays })
+    .from(schema.skuParams)
+    .where(inArray(schema.skuParams.skuId, skuIds));
+  for (const r of spRows) if (r.normalLeadDays != null && r.normalLeadDays > 0) leadBySkuId.set(r.skuId, r.normalLeadDays);
   const leadByCode = new Map<string, number>();
-  for (const r of ltRows) {
-    const p = r.payload as { skuCode?: string | null; normalLeadDays?: unknown };
-    const code = p.skuCode?.trim();
-    const days = typeof p.normalLeadDays === "number" && Number.isFinite(p.normalLeadDays) ? p.normalLeadDays : null;
-    if (code && days != null && days > 0 && !leadByCode.has(code)) leadByCode.set(code, days);
+  if (leadBySkuId.size === 0) {
+    const ltRows: { payload: unknown }[] = await db
+      .select({ payload: schema.stagingRows.payload })
+      .from(schema.stagingRows)
+      .where(and(eq(schema.stagingRows.targetTable, "sku_leadtime"), inArray(schema.stagingRows.status, ["pending", "validated"])));
+    for (const r of ltRows) {
+      const p = r.payload as { skuCode?: string | null; normalLeadDays?: unknown };
+      const code = p.skuCode?.trim();
+      const days = typeof p.normalLeadDays === "number" && Number.isFinite(p.normalLeadDays) ? p.normalLeadDays : null;
+      if (code && days != null && days > 0 && !leadByCode.has(code)) leadByCode.set(code, days);
+    }
   }
 
   /* ── MOQ/订货倍数：uom_convs 首行（按 id）兜底，值按基础单位解释（与 wo.ts PoC 口径一致） ── */
@@ -258,7 +266,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     /* 全口径融合（rules/fusion.ts）：参考只调高在库认知，绝不调低 */
     const ref = refBySku.get(s.id);
     const legacyTransit = legacyBySku.get(s.id) ?? 0;
-    const leadDays = leadByCode.get(s.code) ?? null;
+    const leadDays = leadBySkuId.get(s.id) ?? leadByCode.get(s.code) ?? null;
     const refGap = detectRefGap(num(onHand), ref?.qty ?? null);
     const coverFull = fuseCover({
       onHand: num(onHand),
