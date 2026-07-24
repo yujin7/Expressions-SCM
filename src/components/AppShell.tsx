@@ -96,6 +96,7 @@ const menuItems: MenuProps["items"] = [
     children: [
       { key: "/admin/users", label: "用户管理" },
       { key: "/admin/audit", label: "审计日志" },
+      { key: "/admin/params", label: "运行参数" },
     ],
   },
 ];
@@ -114,6 +115,7 @@ const MENU_ROLES: Record<string, string[]> = {
   "/replenish": ["pmc", "purchasing"],
   "/admin/users": [],
   "/admin/audit": ["finance"],
+  "/admin/params": ["pmc", "purchasing", "finance"],
 };
 
 function filterMenuByRoles(items: MenuProps["items"], roles: string[]): MenuProps["items"] {

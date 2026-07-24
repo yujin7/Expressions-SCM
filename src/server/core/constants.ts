@@ -61,6 +61,9 @@ export const PARAM_KEYS = {
   overReceiveTolerancePct: "over_receive_tolerance_pct", // 超收容差，默认 0
   lossRatePct: "loss_rate_pct", // 品类允许损耗率（scope=品类），包材=5
   concessionPriceRatio: "concession_price_ratio", // 让步默认价率，默认 100（D6 待财务确认）
+  slowDaysThreshold: "slow_days_threshold", // 滞销警戒阈值（可销天数>N=滞销），默认 180（D39/0724会议）
+  coverAlertDays: "cover_alert_days", // 断货预警阈值（可销天数<N），默认 30
+  coverTargetDays: "cover_target_days", // 补货目标覆盖天数，默认 45
 } as const;
 
 /** 订单类型（NPD 钩子，05 §5；来源=在途表 下拉选项 订单类型）。N月备货以 "MONTH_STOCK:<n>" 形式存储 */

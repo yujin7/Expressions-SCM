@@ -11,6 +11,7 @@
  */
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
+import { getNumParam } from "@/server/core/params";
 import * as schema from "@/db/schema";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -231,6 +232,7 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
     .groupBy(sm.skuId);
   const sales3m = new Map(sales3mRows.map((r) => [r.skuId, num(r.qty)]));
 
+  const slowThreshold = await getNumParam("slow_days_threshold", 180, dbArg);
   const COVER_BUCKETS = [
     { bucket: "<30天", max: 30 },
     { bucket: "30-60天", max: 60 },
@@ -253,7 +255,7 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
     const days = onHand / (s3 / 91);
     const b = COVER_BUCKETS.find((x) => days < x.max)!;
     coverCount.set(b.bucket, coverCount.get(b.bucket)! + 1);
-    if (days > 180) slowCandidates.push({ skuId, onHand, s3m: s3, daysCover: days });
+    if (days > slowThreshold) slowCandidates.push({ skuId, onHand, s3m: s3, daysCover: days });
   }
   const coverBuckets = [...COVER_BUCKETS.map((b) => b.bucket), "无动销"].map((bucket) => ({
     bucket,
@@ -416,7 +418,7 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
   }
   if (slowMoverCount > 0) {
     const worst = slowTop[0];
-    insights.push(`滞销：${slowMoverCount} 个 SKU 可销天数超 180 天或无动销${worst ? `，最大压库「${worst.code}」在库 ${worst.onHand.toLocaleString("zh-CN")}` : ""}`);
+    insights.push(`滞销：${slowMoverCount} 个 SKU 可销天数超 ${slowThreshold} 天或无动销${worst ? `，最大压库「${worst.code}」在库 ${worst.onHand.toLocaleString("zh-CN")}` : ""}`);
   }
   const short = coverBuckets.find((b) => b.bucket === "<30天");
   if ((short?.count ?? 0) > 0) {

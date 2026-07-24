@@ -465,6 +465,7 @@ export default function JgClient() {
                 <Button disabled={!canRevise} onClick={() => setReviseOpen(true)}>
                   交期修改
                 </Button>
+                <Button onClick={() => window.open(`/outsource/jg/${detail.id}/print`, "_blank")}>打印通知单</Button>
               </Space>
             </Form>
             {(detail.revisedDates?.length ?? 0) > 0 ? (

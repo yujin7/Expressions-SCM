@@ -15,6 +15,7 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDbAsync } from "@/db";
+import { getNumParam } from "@/server/core/params";
 import * as schema from "@/db/schema";
 import { dAdd, dCmp, dDiv, dMul, dQty, dSub } from "@/server/core/decimal";
 import { suggestQty } from "@/server/rules/netreq";
@@ -103,8 +104,8 @@ export interface ReplenishQuery {
 
 export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: AnyDb): Promise<ReplenishResult> {
   const db = await resolveDb(dbArg);
-  const coverDaysTarget = Math.min(365, Math.max(1, Math.floor(query.coverDaysTarget ?? 45)));
-  const minCoverAlert = Math.min(365, Math.max(1, Math.floor(query.minCoverAlert ?? 30)));
+  const coverDaysTarget = Math.min(365, Math.max(1, Math.floor(query.coverDaysTarget ?? (await getNumParam("cover_target_days", 45, dbArg)))));
+  const minCoverAlert = Math.min(365, Math.max(1, Math.floor(query.minCoverAlert ?? (await getNumParam("cover_alert_days", 30, dbArg)))));
   const page = Math.max(1, query.page ?? 1);
   const pageSize = Math.min(999, Math.max(1, query.pageSize ?? 50));
   const q = (query.q ?? "").trim();

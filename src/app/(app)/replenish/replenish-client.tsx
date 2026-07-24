@@ -16,6 +16,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { fetchJson, postJson } from "@/components/fetchJson";
+import { formatQty } from "@/components/format";
 
 interface ReplenishRow {
   skuId: number;
@@ -40,6 +41,34 @@ interface ReplenishResult {
     snapDate: string | null;
     suggestCount: number;
   };
+}
+
+
+function SharedPackagingPanel({ skuId }: { skuId: number }) {
+  const [items, setItems] = useState<{ materialCode: string; materialName: string; baseUom: string; onHand: string; sharedCount: number; sharedWith: { code: string }[] }[] | null>(null);
+  useEffect(() => {
+    fetch(`/api/master/sku/${skuId}/shared-packaging`)
+      .then((r) => r.json())
+      .then((d) => setItems(d.items ?? []))
+      .catch(() => setItems([]));
+  }, [skuId]);
+  if (items == null) return <Typography.Text type="secondary">载入包材信息…</Typography.Text>;
+  if (items.length === 0) return <Typography.Text type="secondary">该成品无生效 BOM 包材（或 BOM 未生效）</Typography.Text>;
+  return (
+    <Space direction="vertical" size={4} style={{ padding: "4px 0" }}>
+      <Typography.Text strong style={{ fontSize: 12 }}>包材可用量（D36 共用包材口径，实时账）：</Typography.Text>
+      {items.map((it) => (
+        <Typography.Text key={it.materialCode} style={{ fontSize: 12 }}>
+          {it.materialCode} {it.materialName}：在库 <b>{formatQty(it.onHand)}</b> {it.baseUom}
+          {it.sharedCount > 0 ? (
+            <Typography.Text type="warning" style={{ fontSize: 12 }}>
+              　⚠ 与 {it.sharedCount} 个成品共用（{it.sharedWith.slice(0, 4).map((s) => s.code).join("、")}{it.sharedCount > 4 ? "…" : ""}）
+            </Typography.Text>
+          ) : null}
+        </Typography.Text>
+      ))}
+    </Space>
+  );
 }
 
 export default function ReplenishClient() {
@@ -262,6 +291,10 @@ export default function ReplenishClient() {
           preserveSelectedRowKeys: true,
           onChange: (_keys, rows) => setSelectedRows(rows.filter((r) => r != null)),
           getCheckboxProps: (r) => ({ disabled: r.suggestQty == null }),
+        }}
+        expandable={{
+          rowExpandable: (r) => (r as { skuId?: number }).skuId != null,
+          expandedRowRender: (r) => <SharedPackagingPanel skuId={(r as { skuId: number }).skuId} />,
         }}
         pagination={{
           current: page,
