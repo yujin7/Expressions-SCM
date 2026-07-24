@@ -5,13 +5,16 @@
  * 展开行左右并排展示 before/after JSON。仅追加数据，无任何写操作。
  * 操作人筛选：admin 用 /api/admin/users 下拉；finance 无用户管理权限→填用户 ID。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import {
-  App, Button, Col, DatePicker, Input, InputNumber, Row, Select, Space, Table, Tag, Typography,
+  App, Button, DatePicker, Input, InputNumber, Select, Space, Table, Tag, Typography,
 } from "antd";
 import { ReloadOutlined, SearchOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
+import dayjs from "dayjs";
 import type { Dayjs } from "dayjs";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 import { fetchJson } from "@/components/fetchJson";
 import type { AuditRow } from "@/server/modules/admin/audit";
 
@@ -102,54 +105,78 @@ interface UserOption {
 }
 
 export default function AuditClient({ isAdmin }: { isAdmin: boolean }) {
+  // useSearchParams（列表页状态平台 E6-P1）需要 Suspense 边界
+  return (
+    <Suspense>
+      <AuditInner isAdmin={isAdmin} />
+    </Suspense>
+  );
+}
+
+function AuditInner({ isAdmin }: { isAdmin: boolean }) {
   const { message } = App.useApp();
   const [rows, setRows] = useState<AuditRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
+  const listState = useListState({
+    key: "audit",
+    defaults: { entity: "", entityId: "", userId: "", action: "", from: "", to: "", q: "" },
+    defaultPageSize: 20,
+  });
+  const { filters, page, pageSize } = listState;
 
   const [entities, setEntities] = useState<string[]>([]);
   const [userOptions, setUserOptions] = useState<UserOption[]>([]);
 
-  // 筛选条件
-  const [entity, setEntity] = useState<string | undefined>();
-  const [entityId, setEntityId] = useState<number | null>(null);
-  const [userId, setUserId] = useState<number | null>(null);
-  const [action, setAction] = useState<string | undefined>();
+  // 筛选控件的待提交值（点「查询」才落到 URL——保持原有显式查询交互）
+  const [entity, setEntity] = useState<string | undefined>(filters.entity || undefined);
+  const [entityId, setEntityId] = useState<number | null>(filters.entityId ? Number(filters.entityId) : null);
+  const [userId, setUserId] = useState<number | null>(filters.userId ? Number(filters.userId) : null);
+  const [action, setAction] = useState<string | undefined>(filters.action || undefined);
   const [range, setRange] = useState<[Dayjs | null, Dayjs | null] | null>(null);
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(filters.q);
 
-  const load = useCallback(
-    async (p = page, ps = pageSize) => {
-      setLoading(true);
-      try {
-        const sp = new URLSearchParams();
-        sp.set("page", String(p));
-        sp.set("pageSize", String(ps));
-        if (entity) sp.set("entity", entity);
-        if (entityId) sp.set("entityId", String(entityId));
-        if (userId) sp.set("userId", String(userId));
-        if (action) sp.set("action", action);
-        if (range?.[0]) sp.set("from", range[0].format("YYYY-MM-DD"));
-        if (range?.[1]) sp.set("to", range[1].format("YYYY-MM-DD"));
-        if (q.trim()) sp.set("q", q.trim());
-        const res = await fetchJson<{ rows: AuditRow[]; total: number }>(`/api/admin/audit?${sp}`);
-        setRows(res.rows);
-        setTotal(res.total);
-      } catch (e) {
-        message.error((e as Error).message);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [page, pageSize, entity, entityId, userId, action, range, q, message],
-  );
+  // URL（含本地续航恢复 / 已保存视图 / 重置）变化时回填控件
+  useEffect(() => {
+    setEntity(filters.entity || undefined);
+    setEntityId(filters.entityId ? Number(filters.entityId) : null);
+    setUserId(filters.userId ? Number(filters.userId) : null);
+    setAction(filters.action || undefined);
+    setRange(
+      filters.from || filters.to
+        ? [filters.from ? dayjs(filters.from) : null, filters.to ? dayjs(filters.to) : null]
+        : null,
+    );
+    setQ(filters.q);
+  }, [filters]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const sp = new URLSearchParams();
+      sp.set("page", String(page));
+      sp.set("pageSize", String(pageSize));
+      if (filters.entity) sp.set("entity", filters.entity);
+      if (filters.entityId) sp.set("entityId", filters.entityId);
+      if (filters.userId) sp.set("userId", filters.userId);
+      if (filters.action) sp.set("action", filters.action);
+      if (filters.from) sp.set("from", filters.from);
+      if (filters.to) sp.set("to", filters.to);
+      if (filters.q.trim()) sp.set("q", filters.q.trim());
+      const res = await fetchJson<{ rows: AuditRow[]; total: number }>(`/api/admin/audit?${sp}`);
+      setRows(res.rows);
+      setTotal(res.total);
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [page, pageSize, filters, message]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, pageSize]);
+  }, [load]);
 
   useEffect(() => {
     void fetchJson<{ entities: string[] }>("/api/admin/audit/entities")
@@ -163,8 +190,15 @@ export default function AuditClient({ isAdmin }: { isAdmin: boolean }) {
   }, [isAdmin]);
 
   const search = () => {
-    setPage(1);
-    void load(1, pageSize);
+    listState.setFilter({
+      entity: entity ?? "",
+      entityId: entityId != null ? String(entityId) : "",
+      userId: userId != null ? String(userId) : "",
+      action: action ?? "",
+      from: range?.[0] ? range[0].format("YYYY-MM-DD") : "",
+      to: range?.[1] ? range[1].format("YYYY-MM-DD") : "",
+      q: q.trim(),
+    });
   };
 
   const entityOptions = useMemo(
@@ -226,73 +260,64 @@ export default function AuditClient({ isAdmin }: { isAdmin: boolean }) {
         </Button>
       </Space>
 
-      <Row gutter={[8, 8]} style={{ marginBottom: 12 }}>
-        <Col>
-          <Select
-            allowClear
-            showSearch
-            optionFilterProp="label"
-            placeholder="对象类型"
-            style={{ width: 200 }}
-            options={entityOptions}
-            value={entity}
-            onChange={setEntity}
-          />
-        </Col>
-        <Col>
-          <InputNumber placeholder="对象ID" style={{ width: 110 }} min={1} value={entityId} onChange={setEntityId} />
-        </Col>
-        <Col>
-          {isAdmin ? (
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
             <Select
               allowClear
               showSearch
               optionFilterProp="label"
-              placeholder="操作人"
-              style={{ width: 180 }}
-              options={userOptions.map((u) => ({ value: u.id, label: `${u.name}（${u.username ?? u.id}）` }))}
-              value={userId}
-              onChange={(v) => setUserId(v ?? null)}
+              placeholder="对象类型"
+              style={{ width: 200 }}
+              options={entityOptions}
+              value={entity}
+              onChange={setEntity}
             />
-          ) : (
-            <InputNumber placeholder="操作人用户ID" style={{ width: 140 }} min={1} value={userId} onChange={setUserId} />
-          )}
-        </Col>
-        <Col>
-          <Select
-            allowClear
-            showSearch
-            optionFilterProp="label"
-            placeholder="动作"
-            style={{ width: 180 }}
-            options={actionOptions}
-            value={action}
-            onChange={setAction}
-          />
-        </Col>
-        <Col>
-          <DatePicker.RangePicker value={range} onChange={(v) => setRange(v)} allowEmpty={[true, true]} />
-        </Col>
-        <Col>
-          <Input
-            placeholder="对象/动作关键字"
-            style={{ width: 160 }}
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            onPressEnter={search}
-            allowClear
-          />
-        </Col>
-        <Col>
-          <Button type="primary" icon={<SearchOutlined />} onClick={search}>
-            查询
-          </Button>
-        </Col>
-      </Row>
+            <InputNumber placeholder="对象ID" style={{ width: 110 }} min={1} value={entityId} onChange={setEntityId} />
+            {isAdmin ? (
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                placeholder="操作人"
+                style={{ width: 180 }}
+                options={userOptions.map((u) => ({ value: u.id, label: `${u.name}（${u.username ?? u.id}）` }))}
+                value={userId}
+                onChange={(v) => setUserId(v ?? null)}
+              />
+            ) : (
+              <InputNumber placeholder="操作人用户ID" style={{ width: 140 }} min={1} value={userId} onChange={setUserId} />
+            )}
+            <Select
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder="动作"
+              style={{ width: 180 }}
+              options={actionOptions}
+              value={action}
+              onChange={setAction}
+            />
+            <DatePicker.RangePicker value={range} onChange={(v) => setRange(v)} allowEmpty={[true, true]} />
+            <Input
+              placeholder="对象/动作关键字"
+              style={{ width: 160 }}
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onPressEnter={search}
+              allowClear
+            />
+            <Button type="primary" icon={<SearchOutlined />} onClick={search}>
+              查询
+            </Button>
+          </>
+        }
+      />
 
       <Table<AuditRow>
         rowKey="id"
-        size="middle"
+        size={listState.tableSize}
         columns={columns}
         dataSource={rows}
         loading={loading}
@@ -311,10 +336,7 @@ export default function AuditClient({ isAdmin }: { isAdmin: boolean }) {
           total,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
-          },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
     </div>

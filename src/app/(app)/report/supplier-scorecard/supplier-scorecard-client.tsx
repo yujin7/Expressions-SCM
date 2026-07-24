@@ -16,6 +16,8 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { fetchJson, postJson } from "@/components/fetchJson";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 
 /* ───────────────── 类型（与服务端 DTO 对齐） ───────────────── */
 
@@ -114,10 +116,11 @@ function ScorecardTab() {
   const [data, setData] = useState<ScoreData | null>(null);
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState<number | null>(null);
-  const [q, setQ] = useState("");
-  const [windowDays, setWindowDays] = useState(180);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
+  const listState = useListState({ key: "supplier-scorecard", defaults: { q: "", windowDays: "180" }, defaultPageSize: 20 });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
+  const windowDays = Number(filters.windowDays);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -291,18 +294,30 @@ function ScorecardTab() {
         </Col>
       </Row>
 
-      <Space style={{ marginBottom: 12 }} wrap>
-        <Input.Search allowClear placeholder="搜索供应商编码/名称" style={{ width: 240 }} onSearch={(v) => { setQ(v.trim()); setPage(1); }} />
-        <Segmented
-          value={windowDays}
-          onChange={(v) => { setWindowDays(Number(v)); setPage(1); }}
-          options={[{ label: "近 90 天", value: 90 }, { label: "近 180 天", value: 180 }, { label: "近 365 天", value: 365 }]}
-        />
-      </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            <Input.Search
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索供应商编码/名称"
+              style={{ width: 240 }}
+              onSearch={(v) => listState.setFilter({ q: v.trim() })}
+            />
+            <Segmented
+              value={windowDays}
+              onChange={(v) => listState.setFilter({ windowDays: String(v) })}
+              options={[{ label: "近 90 天", value: 90 }, { label: "近 180 天", value: 180 }, { label: "近 365 天", value: 365 }]}
+            />
+          </>
+        }
+      />
 
       <Table<ScoreRow>
         rowKey="supplierId"
-        size="small"
+        size={listState.tableSize}
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
@@ -315,7 +330,7 @@ function ScorecardTab() {
           total: data?.total ?? 0,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 家`,
-          onChange: (p, ps) => { setPage(p); setPageSize(ps); },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
     </div>

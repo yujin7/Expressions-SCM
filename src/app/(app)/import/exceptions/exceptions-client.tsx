@@ -23,6 +23,8 @@ import dayjs from "dayjs";
 import RemoteSelect from "@/components/RemoteSelect";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { toOptions } from "@/components/labels";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 
 interface ExceptionRow {
   id: number;
@@ -119,10 +121,11 @@ export default function ExceptionsClient() {
   const [rows, setRows] = useState<ExceptionRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [status, setStatus] = useState("open");
-  const [aliasType, setAliasType] = useState<string | undefined>();
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
+  const listState = useListState({ key: "import-exceptions", defaults: { status: "open", aliasType: "" }, defaultPageSize: 20 });
+  const { filters, page, pageSize } = listState;
+  const status = filters.status;
+  const aliasType = filters.aliasType;
 
   const [claiming, setClaiming] = useState<ExceptionRow | null>(null);
   const [saving, setSaving] = useState(false);
@@ -294,30 +297,29 @@ export default function ExceptionsClient() {
       <Tabs
         activeKey={status}
         items={STATUS_TABS}
-        onChange={(key) => {
-          setStatus(key);
-          setPage(1);
-        }}
+        onChange={(key) => listState.setFilter({ status: key })}
       />
-      <Space style={{ marginBottom: 16, display: "flex", justifyContent: "space-between" }} wrap>
-        <Select
-          allowClear
-          placeholder="全部类型"
-          style={{ width: 160 }}
-          options={toOptions(ALIAS_TYPE_LABELS)}
-          value={aliasType}
-          onChange={(v) => {
-            setAliasType(v);
-            setPage(1);
-          }}
-        />
-        <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-          刷新
-        </Button>
-      </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            <Select
+              allowClear
+              placeholder="全部类型"
+              style={{ width: 160 }}
+              options={toOptions(ALIAS_TYPE_LABELS)}
+              value={aliasType || undefined}
+              onChange={(v) => listState.setFilter({ aliasType: v ?? "" })}
+            />
+            <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+              刷新
+            </Button>
+          </>
+        }
+      />
       <Table<ExceptionRow>
         rowKey="id"
-        size="middle"
+        size={listState.tableSize}
         columns={columns}
         dataSource={rows}
         loading={loading}
@@ -327,10 +329,7 @@ export default function ExceptionsClient() {
           total,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
-          },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
 

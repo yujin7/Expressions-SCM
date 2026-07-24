@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import AuditClient from "./audit-client";
 import NoAccess from "@/components/NoAccess";
 import { auth } from "@/server/auth";
@@ -9,6 +10,7 @@ export default async function Page() {
   const session = await auth();
   const roles = ((session?.user as { roles?: string[] } | undefined)?.roles ?? []) as string[];
   const allowed = roles.includes("admin") || roles.includes("finance");
-  if (!allowed) return <NoAccess need="管理员或财务" />;
+  if (!allowed) // useSearchParams（列表页状态平台）需要 Suspense 边界
+  return <Suspense><NoAccess need="管理员或财务" /></Suspense>;
   return <AuditClient isAdmin={roles.includes("admin")} />;
 }

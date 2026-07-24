@@ -8,6 +8,7 @@ import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import { fetchJson, patchJson } from "@/components/fetchJson";
 import { hasAnyRole, useMe } from "@/components/useMe";
+import { useListState } from "@/components/useListState";
 
 /** 类别标签（新文件承载——共享 labels.ts 不动） */
 const CATEGORY_LABELS: Record<string, string> = {
@@ -59,14 +60,14 @@ export default function ChecklistClient() {
   const { message } = App.useApp();
 
   const [counts, setCounts] = useState<CountRow[]>([]);
-  const [category, setCategory] = useState<string>("all");
-  const [status, setStatus] = useState<string>("open");
-  const [q, setQ] = useState("");
+  const listState = useListState({ key: "checklist", defaults: { q: "", category: "all", status: "open" }, defaultPageSize: 20 });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
+  const category = filters.category;
+  const status = filters.status;
   const [rows, setRows] = useState<ReviewItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
   const [selected, setSelected] = useState<number[]>([]);
   const [overruling, setOverruling] = useState<ReviewItem | null>(null);
   const [overruleNote, setOverruleNote] = useState("");
@@ -287,8 +288,7 @@ export default function ChecklistClient() {
         activeKey={category}
         items={tabItems}
         onChange={(k) => {
-          setCategory(k);
-          setPage(1);
+          listState.setFilter({ category: k });
         }}
       />
       <Space style={{ marginBottom: 12 }} wrap>
@@ -297,16 +297,14 @@ export default function ChecklistClient() {
           placeholder="搜索事项/详情/编码"
           style={{ width: 280 }}
           onSearch={(v) => {
-            setQ(v.trim());
-            setPage(1);
+            listState.setFilter({ q: v.trim() });
           }}
         />
         <Select
           value={status}
           style={{ width: 120 }}
           onChange={(v) => {
-            setStatus(v);
-            setPage(1);
+            listState.setFilter({ status: v });
           }}
           options={[
             { value: "all", label: "全部状态" },
@@ -333,7 +331,7 @@ export default function ChecklistClient() {
       </Space>
       <Table<ReviewItem>
         rowKey="id"
-        size="middle"
+        size={listState.tableSize}
         columns={columns}
         dataSource={rows}
         loading={loading}
@@ -358,8 +356,7 @@ export default function ChecklistClient() {
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
           onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
+            listState.setPage(p, ps);
           },
         }}
       />

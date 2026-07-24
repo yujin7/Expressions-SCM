@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import {
   App,
   Badge,
@@ -27,6 +27,8 @@ import dayjs from "dayjs";
 import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
 import { fetchJson, patchJson, postJson } from "@/components/fetchJson";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 import { useMe } from "@/components/useMe";
 import { formatOrderType } from "@/components/labels";
 
@@ -103,15 +105,16 @@ const STATUS_TABS = [
   { key: "completed", label: "已完成" },
 ];
 
-export default function JgClient() {
+function JgInner() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<JgRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [status, setStatus] = useState("");
-  const [q, setQ] = useState("");
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
+  const listState = useListState({ key: "jg", defaults: { q: "", status: "" }, defaultPageSize: 20 });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
+  const status = filters.status;
 
   const me = useMe();
   const canPlan = !!me && (me.roles.includes("pmc") || me.roles.includes("admin"));
@@ -307,28 +310,29 @@ export default function JgClient() {
       <Tabs
         activeKey={status}
         items={STATUS_TABS}
-        onChange={(key) => {
-          setStatus(key);
-          setPage(1);
-        }}
+        onChange={(key) => listState.setFilter({ status: key })}
       />
-      <Space style={{ marginBottom: 16, display: "flex", justifyContent: "space-between" }} wrap>
-        <Input.Search
-          allowClear
-          placeholder="搜索单据号"
-          style={{ width: 240 }}
-          onSearch={(value) => {
-            setQ(value.trim());
-            setPage(1);
-          }}
-        />
+      <Space style={{ marginBottom: 12, display: "flex", justifyContent: "flex-end" }} wrap>
         <Button icon={<ReloadOutlined />} onClick={() => void load()}>
           刷新
         </Button>
       </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <Input.Search
+            key={q}
+            allowClear
+            defaultValue={q}
+            placeholder="搜索单据号"
+            style={{ width: 240 }}
+            onSearch={(value) => listState.setFilter({ q: value.trim() })}
+          />
+        }
+      />
       <Table<JgRow>
         rowKey="id"
-        size="middle"
+        size={listState.tableSize}
         columns={columns}
         dataSource={rows}
         loading={loading}
@@ -338,10 +342,7 @@ export default function JgClient() {
           total,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
-          },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
 
@@ -597,5 +598,14 @@ export default function JgClient() {
         />
       </Modal>
     </div>
+  );
+}
+
+export default function JgClient() {
+  // useListState 读 useSearchParams，需要 Suspense 边界
+  return (
+    <Suspense>
+      <JgInner />
+    </Suspense>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import {
   App,
   Alert,
@@ -23,6 +23,8 @@ import dayjs from "dayjs";
 import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
 import { fetchJson, postJson } from "@/components/fetchJson";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 
 interface PoRow {
   id: number;
@@ -88,15 +90,16 @@ const STATUS_TABS = [
 
 const LINE_TYPE_LABELS: Record<string, string> = { raw: "原料", packaging: "包材" };
 
-export default function PoClient() {
+function PoInner() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<PoRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [status, setStatus] = useState("");
-  const [q, setQ] = useState("");
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
+  const listState = useListState({ key: "po", defaults: { q: "", status: "" }, defaultPageSize: 20 });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
+  const status = filters.status;
 
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detail, setDetail] = useState<PoDetail | null>(null);
@@ -322,28 +325,29 @@ export default function PoClient() {
       <Tabs
         activeKey={status}
         items={STATUS_TABS}
-        onChange={(key) => {
-          setStatus(key);
-          setPage(1);
-        }}
+        onChange={(key) => listState.setFilter({ status: key })}
       />
-      <Space style={{ marginBottom: 16, display: "flex", justifyContent: "space-between" }} wrap>
-        <Input.Search
-          allowClear
-          placeholder="搜索单据号"
-          style={{ width: 240 }}
-          onSearch={(value) => {
-            setQ(value.trim());
-            setPage(1);
-          }}
-        />
+      <Space style={{ marginBottom: 12, display: "flex", justifyContent: "flex-end" }} wrap>
         <Button icon={<ReloadOutlined />} onClick={() => void load()}>
           刷新
         </Button>
       </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <Input.Search
+            key={q}
+            allowClear
+            defaultValue={q}
+            placeholder="搜索单据号"
+            style={{ width: 240 }}
+            onSearch={(value) => listState.setFilter({ q: value.trim() })}
+          />
+        }
+      />
       <Table<PoRow>
         rowKey="id"
-        size="middle"
+        size={listState.tableSize}
         columns={columns}
         dataSource={rows}
         loading={loading}
@@ -353,10 +357,7 @@ export default function PoClient() {
           total,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
-          },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
 
@@ -515,5 +516,14 @@ export default function PoClient() {
         />
       </Modal>
     </div>
+  );
+}
+
+export default function PoClient() {
+  // useListState 读 useSearchParams，需要 Suspense 边界
+  return (
+    <Suspense>
+      <PoInner />
+    </Suspense>
   );
 }

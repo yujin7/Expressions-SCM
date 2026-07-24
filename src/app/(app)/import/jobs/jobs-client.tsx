@@ -1,11 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { App, Button, Space, Table, Tag, Typography } from "antd";
+import { App, Button, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { fetchJson } from "@/components/fetchJson";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 
 const TEMPLATE_LABELS: Record<string, string> = {
   bom: "BOM 表",
@@ -126,8 +128,9 @@ export default function JobsClient() {
   const [rows, setRows] = useState<JobRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  // 列表页状态平台（E6-P1）：分页进 URL，密度与已保存视图存本地
+  const listState = useListState({ key: "import-jobs", defaults: {}, defaultPageSize: 20 });
+  const { page, pageSize } = listState;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -180,14 +183,17 @@ export default function JobsClient() {
       <Typography.Title level={4} style={{ marginTop: 0 }}>
         导入任务
       </Typography.Title>
-      <Space style={{ marginBottom: 16, display: "flex", justifyContent: "flex-end" }}>
-        <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-          刷新
-        </Button>
-      </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+            刷新
+          </Button>
+        }
+      />
       <Table<JobRow>
         rowKey="id"
-        size="middle"
+        size={listState.tableSize}
         columns={columns}
         dataSource={rows}
         loading={loading}
@@ -200,10 +206,7 @@ export default function JobsClient() {
           total,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
-          },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
     </div>

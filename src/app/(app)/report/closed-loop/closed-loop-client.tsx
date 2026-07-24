@@ -5,6 +5,8 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Card, Col, Row, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 
 interface ClosedLoopRow {
   id: number;
@@ -58,8 +60,9 @@ export default function ClosedLoopClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<ClosedLoopData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  // 列表页状态平台（E6-P1）：分页进 URL，密度与已保存视图存本地
+  const listState = useListState({ key: "closed-loop", defaults: {}, defaultPageSize: 20 });
+  const { page, pageSize } = listState;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -114,9 +117,10 @@ export default function ClosedLoopClient() {
         <Col><Card size="small"><Statistic title="已否决/关闭" value={s?.rejected ?? 0} valueStyle={{ color: "#8c8c8c" }} /></Card></Col>
         {s?.deleted ? <Col><Card size="small"><Statistic title="已删除" value={s.deleted} valueStyle={{ color: "#8c8c8c" }} /></Card></Col> : null}
       </Row>
+      <ListToolbar state={listState} />
       <Table<ClosedLoopRow>
         rowKey="id"
-        size="small"
+        size={listState.tableSize}
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
@@ -127,7 +131,7 @@ export default function ClosedLoopClient() {
           total: data?.total ?? 0,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => { setPage(p); setPageSize(ps); },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
     </div>

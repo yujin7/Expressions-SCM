@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import {
   Alert,
   App,
@@ -26,6 +26,8 @@ import ExportButton from "@/components/ExportButton";
 import RemoteSelect from "@/components/RemoteSelect";
 import DocStatusTag from "@/components/DocStatusTag";
 import DocActions from "@/components/DocActions";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { STOCK_SUBTYPE_LABELS, toOptions } from "@/components/labels";
 
@@ -131,16 +133,30 @@ function SubtypeTag({ subtype }: { subtype: string }) {
 }
 
 export default function DocsClient() {
+  // useSearchParams（列表页状态平台 E6-P1）需要 Suspense 边界
+  return (
+    <Suspense>
+      <DocsInner />
+    </Suspense>
+  );
+}
+
+function DocsInner() {
   const { message } = App.useApp();
   const [form] = Form.useForm<CreateFormValues>();
   const [rows, setRows] = useState<DocRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [status, setStatus] = useState("");
-  const [subtype, setSubtype] = useState<string | undefined>();
-  const [q, setQ] = useState("");
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL（?status=pending 工作台直达），密度与已保存视图存本地
+  const listState = useListState({
+    key: "inv-docs",
+    defaults: { q: "", status: "", subtype: "" },
+    defaultPageSize: 20,
+  });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
+  const status = filters.status;
+  const subtype = filters.subtype || undefined;
 
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -317,60 +333,56 @@ export default function DocsClient() {
       <Tabs
         activeKey={status}
         items={STATUS_TABS}
-        onChange={(key) => {
-          setStatus(key);
-          setPage(1);
-        }}
+        onChange={(key) => listState.setFilter({ status: key })}
       />
-      <Space style={{ marginBottom: 16, display: "flex", justifyContent: "space-between" }} wrap>
-        <Space wrap>
-          <Input.Search
-            allowClear
-            placeholder="搜索单据号"
-            style={{ width: 240 }}
-            onSearch={(value) => {
-              setQ(value.trim());
-              setPage(1);
-            }}
-          />
-          <Select
-            allowClear
-            placeholder="全部类型"
-            style={{ width: 160 }}
-            options={toOptions(STOCK_SUBTYPE_LABELS)}
-            value={subtype}
-            onChange={(v) => {
-              setSubtype(v);
-              setPage(1);
-            }}
-          />
-        </Space>
-        <Space>
-          <ExportButton
-            href={`/api/export/stock-docs?${new URLSearchParams({
-              q,
-              ...(status ? { status } : {}),
-              ...(subtype ? { subtype } : {}),
-            }).toString()}`}
-          />
-          <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-            刷新
-          </Button>
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={() => {
-              form.resetFields();
-              setCreateOpen(true);
-            }}
-          >
-            新建单据
-          </Button>
-        </Space>
+      <Space style={{ marginBottom: 12, width: "100%", justifyContent: "flex-end" }} wrap>
+        <ExportButton
+          href={`/api/export/stock-docs?${new URLSearchParams({
+            q,
+            ...(status ? { status } : {}),
+            ...(subtype ? { subtype } : {}),
+          }).toString()}`}
+        />
+        <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+          刷新
+        </Button>
+        <Button
+          type="primary"
+          icon={<PlusOutlined />}
+          onClick={() => {
+            form.resetFields();
+            setCreateOpen(true);
+          }}
+        >
+          新建单据
+        </Button>
       </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            <Input.Search
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索单据号"
+              style={{ width: 240 }}
+              onSearch={(value) => listState.setFilter({ q: value.trim() })}
+            />
+            <Select
+              allowClear
+              placeholder="全部类型"
+              style={{ width: 160 }}
+              options={toOptions(STOCK_SUBTYPE_LABELS)}
+              value={subtype}
+              onChange={(v) => listState.setFilter({ subtype: v ?? "" })}
+            />
+          </>
+        }
+      />
       <Table<DocRow>
         rowKey="id"
-        size="middle"
+        size={listState.tableSize}
         columns={columns}
         dataSource={rows}
         scroll={{ x: "max-content" }}
@@ -381,10 +393,7 @@ export default function DocsClient() {
           total,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
-          },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
 

@@ -9,6 +9,8 @@ import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import SkuHoverCard from "@/components/SkuHoverCard";
 import CaliberNote from "@/components/CaliberNote";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 
 interface MarginRow {
   skuId: number;
@@ -35,10 +37,11 @@ export default function MarginClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<MarginData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [q, setQ] = useState("");
-  const [onlyCosted, setOnlyCosted] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
+  const listState = useListState({ key: "margin", defaults: { q: "", onlyCosted: "" }, defaultPageSize: 50 });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
+  const onlyCosted = filters.onlyCosted === "1";
   const [edits, setEdits] = useState<Record<number, number | null>>({});
   const [saving, setSaving] = useState<number | null>(null);
 
@@ -132,19 +135,31 @@ export default function MarginClient() {
             : <Statistic title="近3月毛利合计" value="售价待接入" valueStyle={{ fontSize: 20, color: "#8c8c8c" }} />}
         </Col>
       </Row>
-      <Space style={{ marginBottom: 12 }} wrap>
-        <Tag.CheckableTag
-          checked={onlyCosted}
-          onChange={(c) => { setOnlyCosted(c); setPage(1); }}
-          style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}
-        >
-          只看已录成本
-        </Tag.CheckableTag>
-        <Input.Search allowClear placeholder="搜索编码/名称" style={{ width: 240 }} onSearch={(v) => { setQ(v.trim()); setPage(1); }} />
-      </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            <Tag.CheckableTag
+              checked={onlyCosted}
+              onChange={(c) => listState.setFilter({ onlyCosted: c ? "1" : "" })}
+              style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}
+            >
+              只看已录成本
+            </Tag.CheckableTag>
+            <Input.Search
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索编码/名称"
+              style={{ width: 240 }}
+              onSearch={(v) => listState.setFilter({ q: v.trim() })}
+            />
+          </>
+        }
+      />
       <Table<MarginRow>
         rowKey="skuId"
-        size="small"
+        size={listState.tableSize}
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
@@ -155,7 +170,7 @@ export default function MarginClient() {
           total: data?.total ?? 0,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => { setPage(p); setPageSize(ps); },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
     </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import {
   App,
   Button,
@@ -24,6 +24,8 @@ import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import DocStatusTag from "@/components/DocStatusTag";
 import { fetchJson, postJson } from "@/components/fetchJson";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 
 interface PcRow {
   id: number;
@@ -77,15 +79,16 @@ function priceChangeText(r: PcRow): string {
   return `${r.oldPrice ?? "—"} → ${r.newPrice ?? "—"}`;
 }
 
-export default function PcClient() {
+function PcInner() {
   const { message } = App.useApp();
   const [form] = Form.useForm<CreateFormValues>();
   const [rows, setRows] = useState<PcRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [status, setStatus] = useState("");
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
+  const listState = useListState({ key: "pc", defaults: { status: "" }, defaultPageSize: 20 });
+  const { page, pageSize } = listState;
+  const status = listState.filters.status;
 
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -238,12 +241,9 @@ export default function PcClient() {
       <Tabs
         activeKey={status}
         items={STATUS_TABS}
-        onChange={(key) => {
-          setStatus(key);
-          setPage(1);
-        }}
+        onChange={(key) => listState.setFilter({ status: key })}
       />
-      <Space style={{ marginBottom: 16, display: "flex", justifyContent: "flex-end" }} wrap>
+      <Space style={{ marginBottom: 12, display: "flex", justifyContent: "flex-end" }} wrap>
         <Button icon={<ReloadOutlined />} onClick={() => void load()}>
           刷新
         </Button>
@@ -258,9 +258,10 @@ export default function PcClient() {
           发起加工费改价
         </Button>
       </Space>
+      <ListToolbar state={listState} />
       <Table<PcRow>
         rowKey="id"
-        size="middle"
+        size={listState.tableSize}
         columns={columns}
         dataSource={rows}
         loading={loading}
@@ -270,10 +271,7 @@ export default function PcClient() {
           total,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
-          },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
 
@@ -391,5 +389,14 @@ export default function PcClient() {
         />
       </Modal>
     </div>
+  );
+}
+
+export default function PcClient() {
+  // useListState 读 useSearchParams，需要 Suspense 边界
+  return (
+    <Suspense>
+      <PcInner />
+    </Suspense>
   );
 }

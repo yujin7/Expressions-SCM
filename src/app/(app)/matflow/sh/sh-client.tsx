@@ -28,9 +28,11 @@ import dayjs from "dayjs";
 import AttachmentPanel from "@/components/AttachmentPanel";
 import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
+import ListToolbar from "@/components/ListToolbar";
 import RemoteSelect from "@/components/RemoteSelect";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
+import { useListState } from "@/components/useListState";
 import { hasAnyRole, useMe } from "@/components/useMe";
 
 // ---------- 客户端十进制工具（仅 UI 过滤/汇总提示用；非负字符串，禁 float） ----------
@@ -223,10 +225,11 @@ export default function ShClient() {
   const [rows, setRows] = useState<ShRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [status, setStatus] = useState("");
-  const [q, setQ] = useState("");
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
+  const listState = useListState({ key: "sh", defaults: { q: "", status: "" }, defaultPageSize: 20 });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
+  const status = filters.status;
 
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detail, setDetail] = useState<ShDetail | null>(null);
@@ -939,35 +942,34 @@ export default function ShClient() {
       <Tabs
         activeKey={status}
         items={STATUS_TABS}
-        onChange={(key) => {
-          setStatus(key);
-          setPage(1);
-        }}
+        onChange={(key) => listState.setFilter({ status: key })}
       />
-      <Space style={{ marginBottom: 16, display: "flex", justifyContent: "space-between" }} wrap>
-        <Input.Search
-          allowClear
-          placeholder="搜索单据号"
-          style={{ width: 240 }}
-          onSearch={(value) => {
-            setQ(value.trim());
-            setPage(1);
-          }}
-        />
-        <Space>
-          {canWrite ? (
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-              新建收货单
-            </Button>
-          ) : null}
-          <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-            刷新
+      <Space style={{ marginBottom: 8, width: "100%", display: "flex", justifyContent: "flex-end" }} wrap>
+        {canWrite ? (
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+            新建收货单
           </Button>
-        </Space>
+        ) : null}
+        <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+          刷新
+        </Button>
       </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <Input.Search
+            key={q}
+            allowClear
+            defaultValue={q}
+            placeholder="搜索单据号"
+            style={{ width: 240 }}
+            onSearch={(value) => listState.setFilter({ q: value.trim() })}
+          />
+        }
+      />
       <Table<ShRow>
         rowKey="id"
-        size="middle"
+        size={listState.tableSize}
         columns={columns}
         dataSource={rows}
         loading={loading}
@@ -977,10 +979,7 @@ export default function ShClient() {
           total,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
-          },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
 

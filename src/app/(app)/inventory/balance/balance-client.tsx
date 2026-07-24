@@ -6,6 +6,8 @@ import { Alert, App, Input, Space, Switch, Table, Tabs, Tag, Tooltip, Typography
 import type { ColumnsType } from "antd/es/table";
 import ExportButton from "@/components/ExportButton";
 import RemoteSelect from "@/components/RemoteSelect";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import { WAREHOUSE_KIND_LABELS } from "@/components/labels";
@@ -43,15 +45,19 @@ const KIND_COLORS: Record<string, string> = {
 
 function SkuBalanceTab() {
   const { message } = App.useApp();
-  const initialQ = useSearchParams().get("q") ?? ""; // 驾驶舱风险表点击直达（RT4 UX-P1-3）
   const [rows, setRows] = useState<BalanceRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [q, setQ] = useState(initialQ);
-  const [warehouseId, setWarehouseId] = useState<number | undefined>();
-  const [includeZero, setIncludeZero] = useState(false);
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL（?q= 驾驶舱风险表点击直达 RT4 UX-P1-3），密度与已保存视图存本地
+  const listState = useListState({
+    key: "balance",
+    defaults: { q: "", warehouseId: "", includeZero: "" },
+    defaultPageSize: 20,
+  });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
+  const warehouseId = filters.warehouseId ? Number(filters.warehouseId) : undefined;
+  const includeZero = filters.includeZero === "1";
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -109,51 +115,48 @@ function SkuBalanceTab() {
 
   return (
     <div>
-      <Space style={{ marginBottom: 16 }} wrap>
-        <Input.Search
-          allowClear
-          defaultValue={initialQ}
-          placeholder="搜索 SKU 编码/名称"
-          style={{ width: 260 }}
-          onSearch={(value) => {
-            setQ(value.trim());
-            setPage(1);
-          }}
-        />
-        <RemoteSelect
-          api="/api/master/warehouse"
-          getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
-          filterRow={(r) => r.accountingMode === "realtime"}
-          allowClear
-          placeholder="全部实时仓（快照仓请切「全仓视图」页签）"
-          style={{ width: 280 }}
-          value={warehouseId}
-          onChange={(v) => {
-            setWarehouseId(v as number | undefined);
-            setPage(1);
-          }}
-        />
-        <Space size={8}>
-          <Switch
-            checked={includeZero}
-            onChange={(v) => {
-              setIncludeZero(v);
-              setPage(1);
-            }}
-          />
-          <Typography.Text>含零库存</Typography.Text>
-        </Space>
-        <ExportButton
-          href={`/api/export/balance?${new URLSearchParams({
-            q,
-            nonzero: includeZero ? "0" : "1",
-            ...(warehouseId != null ? { warehouseId: String(warehouseId) } : {}),
-          }).toString()}`}
-        />
-      </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            <Input.Search
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索 SKU 编码/名称"
+              style={{ width: 260 }}
+              onSearch={(value) => listState.setFilter({ q: value.trim() })}
+            />
+            <RemoteSelect
+              api="/api/master/warehouse"
+              getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
+              filterRow={(r) => r.accountingMode === "realtime"}
+              allowClear
+              placeholder="全部实时仓（快照仓请切「全仓视图」页签）"
+              style={{ width: 280 }}
+              value={warehouseId}
+              onChange={(v) => listState.setFilter({ warehouseId: v == null ? "" : String(v) })}
+            />
+            <Space size={8}>
+              <Switch
+                checked={includeZero}
+                onChange={(v) => listState.setFilter({ includeZero: v ? "1" : "" })}
+              />
+              <Typography.Text>含零库存</Typography.Text>
+            </Space>
+            <ExportButton
+              href={`/api/export/balance?${new URLSearchParams({
+                q,
+                nonzero: includeZero ? "0" : "1",
+                ...(warehouseId != null ? { warehouseId: String(warehouseId) } : {}),
+              }).toString()}`}
+            />
+          </>
+        }
+      />
       <Table<BalanceRow>
         rowKey={(r) => `${r.skuId}-${r.warehouseId}-${r.batchId ?? "nb"}`}
-        size="middle"
+        size={listState.tableSize}
         columns={columns}
         dataSource={rows}
         scroll={{ x: "max-content" }}
@@ -179,10 +182,7 @@ function SkuBalanceTab() {
           total,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
-          },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
     </div>

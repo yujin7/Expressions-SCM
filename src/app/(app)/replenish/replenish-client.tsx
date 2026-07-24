@@ -22,6 +22,7 @@ import { formatQty } from "@/components/format";
 import ProjectionDrawer from "@/components/ProjectionDrawer";
 import CaliberNote from "@/components/CaliberNote";
 import { metricTooltip } from "@/components/metrics";
+import { useListState } from "@/components/useListState";
 
 interface ReplenishRow {
   skuId: number;
@@ -105,11 +106,15 @@ function SharedPackagingPanel({ skuId }: { skuId: number }) {
 
 export default function ReplenishClient() {
   const { message } = App.useApp();
-  const [coverDays, setCoverDays] = useState<number>(45);
-  const [minCover, setMinCover] = useState<number>(30);
-  const [q, setQ] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const listState = useListState({
+    key: "replenish",
+    defaults: { q: "", coverDays: "45", minCover: "30" },
+    defaultPageSize: 50,
+  });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
+  const coverDays = Number(filters.coverDays) || 45;
+  const minCover = Number(filters.minCover) || 30;
   const [data, setData] = useState<ReplenishResult | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -351,10 +356,7 @@ export default function ReplenishClient() {
               max={365}
               precision={0}
               value={coverDays}
-              onChange={(v) => {
-                setCoverDays(v ?? 45);
-                setPage(1);
-              }}
+              onChange={(v) => listState.setFilter({ coverDays: String(v ?? 45) })}
               style={{ width: 90 }}
             />
           </span>
@@ -365,10 +367,7 @@ export default function ReplenishClient() {
               max={365}
               precision={0}
               value={minCover}
-              onChange={(v) => {
-                setMinCover(v ?? 30);
-                setPage(1);
-              }}
+              onChange={(v) => listState.setFilter({ minCover: String(v ?? 30) })}
               style={{ width: 90 }}
             />
           </span>
@@ -376,10 +375,7 @@ export default function ReplenishClient() {
             allowClear
             placeholder="搜索 SKU 编码/名称"
             style={{ width: 220 }}
-            onSearch={(value) => {
-              setQ(value.trim());
-              setPage(1);
-            }}
+            onSearch={(value) => { listState.setFilter({ q: value.trim() }); }}
           />
         </Space>
         <Button icon={<ReloadOutlined />} onClick={() => void load()}>
@@ -403,7 +399,7 @@ export default function ReplenishClient() {
       ) : null}
       <Table<ReplenishRow>
         rowKey="skuId"
-        size="middle"
+        size={listState.tableSize}
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
@@ -424,10 +420,7 @@ export default function ReplenishClient() {
           total: data?.total ?? 0,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
-          },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
       <div
