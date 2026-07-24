@@ -26,6 +26,8 @@ export interface FusionInput {
   legacyTransit: number;
   /** 在订未出（总库存明细「已下单未出货」；无参考 = 0） */
   onOrder: number;
+  /** 在制委外产出（WO 计划产出；func#1——成品主要补给来源） */
+  wip?: number;
   /** 近3月日均销 */
   daily: number;
 }
@@ -41,7 +43,7 @@ export function detectRefGap(onHand: number, refQty: number | null): boolean {
 export function fuseCover(input: FusionInput): number | null {
   if (input.daily <= 0) return null;
   const effectiveOnHand = Math.max(input.onHand, input.refQty ?? input.onHand);
-  const pipeline = effectiveOnHand + input.inTransit + input.legacyTransit + input.onOrder;
+  const pipeline = effectiveOnHand + input.inTransit + input.legacyTransit + input.onOrder + (input.wip ?? 0);
   return pipeline / input.daily;
 }
 

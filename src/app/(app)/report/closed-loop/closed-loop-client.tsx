@@ -15,6 +15,7 @@ interface ClosedLoopRow {
   createdBy: string;
   currentStatus: string;
   statusLabel: string;
+  downstreamWo: string;
 }
 
 interface ClosedLoopSummary {

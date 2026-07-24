@@ -6,7 +6,7 @@
  * - 在库 = 全网口径（D20）：Σ stock_balances（实时账）+ 快照仓最新快照（latest-snapshot 模式与驾驶舱同口径，
  *   本地重实现，不 import report/dashboard.ts）；
  * - 在途 = 已审批/执行中 PO 实物行未收量（基础单位 = qty×uomFactor − receivedQty，逐行下限 0）。
- *   v1 诚实标注：不含 WO/JG 计划产出——成品在途主要来自委外产出，PO 口径偏保守（可能高估需求）；
+ *   func#1：WO 在制产出已纳入全管道口径（wipQty，非建议驱动）；建议驱动仍为 PO 在途（保守）；
  * - 日均销 = 近3月销量 ÷ 91（窗口由 sales_monthly max(yearMonth) 动态回推，与驾驶舱同法，本地重推导）；
  * - 建议量 = R11 纯函数（rules/netreq.ts）：净需求 = 毛需求(日均×目标覆盖天数) − 在库 − 在途，
  *   MOQ/订货倍数取 uom_convs 首行（按 id）兜底——与 wo.ts 快照同一 PoC 口径（值按基础单位解释）；无行则纯净需求向上取整由 dQty 收口。
@@ -77,6 +77,8 @@ export interface ReplenishRow {
   onOrder: number | null;
   /** 存量单在途（transit_refs fg_order 未入库余量，旧流程收尾口径） */
   legacyTransit: number;
+  /** 在制委外产出（WO 计划产出，func#1；in_progress WO 残余部分批已收会高估，列注标明） */
+  wipQty: number;
   /** 常规生产周期（天，sku_leadtime staging；无 = null） */
   leadDays: number | null;
   /** 全管道可销天数（max(系统,参考)+全部在途 ÷ 日均；1dp） */
@@ -183,6 +185,16 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     inTransitBySku.set(r.skuId, dAdd(inTransitBySku.get(r.skuId) ?? "0", remain, 6));
   }
 
+  /* ── func#1 在制委外产出：WO（已审批/执行中、未暂停）计划产出——成品主要补给来源，
+        原补货完全看不见导致重复下单。归入全管道口径（非建议驱动，同参考层纪律）。
+        口径诚实：以 WO qty 计，未净部分批已收（in_progress WO 残余高估），列注标明。 ── */
+  const woRows: { skuId: number; qty: string }[] = await db
+    .select({ skuId: schema.woDocs.productSkuId, qty: schema.woDocs.qty })
+    .from(schema.woDocs)
+    .where(and(inArray(schema.woDocs.productSkuId, skuIds), inArray(schema.woDocs.status, ["approved", "in_progress"]), eq(schema.woDocs.isPaused, false)));
+  const wipBySku = new Map<number, string>();
+  for (const r of woRows) wipBySku.set(r.skuId, dAdd(wipBySku.get(r.skuId) ?? "0", r.qty, 6));
+
   /* ── 销速：近3月（窗口口径见 core/velocity） ── */
   const sm = schema.salesMonthly;
   const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
@@ -273,6 +285,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     /* 全口径融合（rules/fusion.ts）：参考只调高在库认知，绝不调低 */
     const ref = refBySku.get(s.id);
     const legacyTransit = legacyBySku.get(s.id) ?? 0;
+    const wipQty = num(wipBySku.get(s.id) ?? "0");
     const leadDays = leadBySkuId.get(s.id) ?? null; // sku_params 已转正（#18 兜底下线）
     const refGap = detectRefGap(num(onHand), ref?.qty ?? null);
     const coverFull = fuseCover({
@@ -281,6 +294,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       inTransit: num(inTransit),
       legacyTransit,
       onOrder: ref?.onOrder ?? 0,
+      wip: wipQty,
       daily: dailyNum,
     });
 
@@ -317,6 +331,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       refQty: ref?.qty == null ? null : r1(ref.qty),
       onOrder: ref?.onOrder == null ? null : r1(ref.onOrder),
       legacyTransit: r1(legacyTransit),
+      wipQty: r1(wipQty),
       leadDays,
       coverFull: coverFull == null ? null : r1(coverFull),
       refGap,
@@ -353,6 +368,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     refQty: r.refQty,
     onOrder: r.onOrder,
     legacyTransit: r.legacyTransit,
+    wipQty: r.wipQty,
     leadDays: r.leadDays,
     coverFull: r.coverFull,
     refGap: r.refGap,

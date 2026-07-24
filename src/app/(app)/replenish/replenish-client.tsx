@@ -34,6 +34,7 @@ interface ReplenishRow {
   refQty: number | null;
   onOrder: number | null;
   legacyTransit: number;
+  wipQty: number;
   leadDays: number | null;
   coverFull: number | null;
   refGap: boolean;
@@ -146,7 +147,7 @@ export default function ReplenishClient() {
     try {
       const res = await postJson<{ id: number; docNo: string }>("/api/replenish/draft", {
         remark: remark.trim() || undefined,
-        items: selectedRows.map((r) => ({ skuId: r.skuId, qty: r.suggestQty ?? r.heldQty })),
+        items: selectedRows.slice(0, 200).map((r) => ({ skuId: r.skuId, qty: r.suggestQty ?? r.heldQty })),
       });
       setCreatedDocNo(res.docNo);
       setConfirmOpen(false);
@@ -178,6 +179,10 @@ export default function ReplenishClient() {
           {
             title: "存量在途", dataIndex: "legacyTransit", width: 90, align: "right" as const,
             render: (v: number) => (v > 0 ? <Tooltip title="旧流程存量单未入库余量（在途参考·成品跟进表）"><span>{v.toLocaleString("zh-CN")}</span></Tooltip> : "—"),
+          },
+          {
+            title: "在制委外", dataIndex: "wipQty", width: 90, align: "right" as const,
+            render: (v: number) => (v > 0 ? <Tooltip title="WO 计划产出（已审批/执行中、未暂停）——成品主要补给来源；执行中单残余部分批已收会略高估"><span style={{ color: "#722ed1" }}>{v.toLocaleString("zh-CN")}</span></Tooltip> : "—"),
           },
           {
             title: "全口径在库", dataIndex: "refQty", width: 105, align: "right" as const,
@@ -414,6 +419,22 @@ export default function ReplenishClient() {
           style={{ marginBottom: 12 }}
           message="将按下表建议量生成一张 BH 草稿（不自动提交），提交与审批在备货申请页完成。"
         />
+        {selectedRows.some((r) => r.suggestQty == null && r.heldQty != null) ? (
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={`注意：所选含 ${selectedRows.filter((r) => r.suggestQty == null && r.heldQty != null).length} 个「被抑制」项（覆盖缺口 SKU）——这些 SKU 系统外仓可能已有库存。请确认已核实全口径库存后再放行，否则可能重复采购。`}
+          />
+        ) : null}
+        {selectedRows.length > 200 ? (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={`一张 BH 最多 200 项，当前 ${selectedRows.length} 项——将只生成前 200 项，其余请分批。`}
+          />
+        ) : null}
         <Table<ReplenishRow>
           rowKey="skuId"
           size="small"

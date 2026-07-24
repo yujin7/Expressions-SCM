@@ -56,7 +56,7 @@ export default function AutoReplenishClient() {
   useEffect(() => { void load(); }, [load]);
 
   const bulkDraft = async () => {
-    const items = selected.filter((r) => r.suggestQty != null).map((r) => ({ skuId: r.skuId, qty: r.suggestQty as string }));
+    const items = selected.filter((r) => r.suggestQty != null).slice(0, 200).map((r) => ({ skuId: r.skuId, qty: r.suggestQty as string }));
     if (items.length === 0) { message.info("请先勾选候选行"); return; }
     setDrafting(true);
     try {

@@ -46,6 +46,7 @@ export interface ClosedLoopRow {
   /** BH 当前状态码；单据不存在 = '已删除' */
   currentStatus: string;
   statusLabel: string;
+  downstreamWo: string;
 }
 
 export interface ClosedLoopSummary {
@@ -98,6 +99,27 @@ export async function getClosedLoop(
     : [];
   const statusByDocNo = new Map<string, string>(bhRows.map((b) => [b.docNo, b.status]));
 
+  // func#3 下游追溯：BH → 子 WO（woDocs.bhId）最远阶段——采纳不等于到货
+  const bhIdByDocNo = new Map<string, number>();
+  if (docNos.length) {
+    const idRows: { id: number; docNo: string }[] = await db.select({ id: schema.bhDocs.id, docNo: schema.bhDocs.docNo }).from(schema.bhDocs).where(inArray(schema.bhDocs.docNo, docNos));
+    for (const r of idRows) bhIdByDocNo.set(r.docNo, r.id);
+  }
+  const bhIds = [...bhIdByDocNo.values()];
+  const STAGE_RANK: Record<string, number> = { draft: 0, pending: 1, approved: 2, in_progress: 3, completed: 4, closed: 4, void: -1 };
+  const woStageByBhId = new Map<number, string>();
+  if (bhIds.length) {
+    const woRows: { bhId: number | null; status: string }[] = await db
+      .select({ bhId: schema.woDocs.bhId, status: schema.woDocs.status })
+      .from(schema.woDocs)
+      .where(inArray(schema.woDocs.bhId, bhIds));
+    for (const w of woRows) {
+      if (w.bhId == null) continue;
+      const cur = woStageByBhId.get(w.bhId);
+      if (!cur || (STAGE_RANK[w.status] ?? 0) > (STAGE_RANK[cur] ?? 0)) woStageByBhId.set(w.bhId, w.status);
+    }
+  }
+
   const all: ClosedLoopRow[] = logs.map((l) => {
     const after = (l.after ?? {}) as { docNo?: unknown; source?: unknown; lineCount?: unknown };
     const docNo = typeof after.docNo === "string" ? after.docNo : "";
@@ -113,6 +135,9 @@ export async function getClosedLoop(
     const status = docNo ? statusByDocNo.get(docNo) : undefined;
     const currentStatus = status ?? "已删除";
     const statusLabel = status ? STATUS_LABEL[status] ?? status : "已删除";
+    const bhId = docNo ? bhIdByDocNo.get(docNo) : undefined;
+    const woStage = bhId != null ? woStageByBhId.get(bhId) : undefined;
+    const downstreamWo = woStage ? (STATUS_LABEL[woStage] ?? woStage) : (status === "approved" || status === "in_progress" || status === "completed") ? "未开工单" : "—";
     return {
       id: l.id,
       createdAt: (l.createdAt instanceof Date ? l.createdAt : new Date(l.createdAt)).toISOString(),
@@ -122,6 +147,7 @@ export async function getClosedLoop(
       createdBy: nameById.get(l.userId) ?? `用户#${l.userId}`,
       currentStatus,
       statusLabel,
+      downstreamWo,
     };
   });
 

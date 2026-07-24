@@ -97,6 +97,17 @@ export async function getSkuProjection(
     if (r.expectDate) arrivals.push({ date: r.expectDate, qty: remain });
     else undated += remain;
   }
+  // func#2 在制委外产出：WO（已审批/执行中、未暂停）dueDate 作到货日；无日期计入 undated
+  const woRows: { qty: string; dueDate: string | null }[] = await db
+    .select({ qty: schema.woDocs.qty, dueDate: schema.woDocs.dueDate })
+    .from(schema.woDocs)
+    .where(and(eq(schema.woDocs.productSkuId, skuId), inArray(schema.woDocs.status, ["approved", "in_progress"]), eq(schema.woDocs.isPaused, false)));
+  for (const r of woRows) {
+    const q = num(r.qty);
+    if (q <= 0) continue;
+    if (r.dueDate) arrivals.push({ date: r.dueDate, qty: q });
+    else undated += q;
+  }
 
   // 日均
   const sm = schema.salesMonthly;
