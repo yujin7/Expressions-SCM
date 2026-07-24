@@ -8,7 +8,7 @@
  * - 展示层聚合允许 Number()（非记账路径）；
  * - 时区 Asia/Shanghai（今日出入库的日界）。
  */
-import { and, eq, gte, inArray, isNotNull, lte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { getRiskWorklist } from "@/server/modules/report/risk";
@@ -52,6 +52,8 @@ export interface WorkbenchFocus {
   sections: FocusSection[];
   /** 我发起的未完结单据（BH/WO/PO/JG/库存单，draft+pending；未传 userId = null） */
   myOpenDocs: number | null;
+  /** 冗余#7 统一入口：五条待处理队列计数（各自生命周期不同，不合并，只汇总一处呈现） */
+  queues: { key: string; label: string; count: number; href: string }[];
   /** #6 控制塔：跨域异常，按严重度+影响排序（登录第一屏「今天最需要处理的事」） */
   exceptions: ExceptionItem[];
 }
@@ -341,5 +343,23 @@ export async function getWorkbenchFocus(roles: string[], dbArg?: AnyDb, userId?:
     planningRole ? computeExceptions(db) : Promise.resolve<ExceptionItem[]>([]),
   ]);
   const myOpenDocs = userId != null ? await countMyOpenDocs(db, userId) : null;
-  return { generatedAt: new Date().toISOString(), sections, exceptions, myOpenDocs };
+
+  /* 冗余#7：五条队列一次汇总（工作台一处看全，不必逐个页面点） */
+  const [pendingDocs, unreadNotify, openAlerts, openReview] = await Promise.all([
+    Promise.all([schema.bhDocs, schema.woDocs, schema.poDocs, schema.jgDocs, schema.stockDocs].map((t) =>
+      countWhere(db, t, eq(t.status, "pending")))).then((a) => a.reduce((x, y) => x + y, 0)),
+    userId != null
+      ? countWhere(db, schema.notifications, and(isNull(schema.notifications.readAt), inArray(schema.notifications.status, ["pending", "sent", "skipped"])))
+      : Promise.resolve(0),
+    countWhere(db, schema.systemAlerts, eq(schema.systemAlerts.status, "open")),
+    countWhere(db, schema.reviewItems, eq(schema.reviewItems.status, "open")),
+  ]);
+  const queues = [
+    { key: "inbox", label: "待我审批", count: pendingDocs, href: "/inbox" },
+    { key: "notify", label: "未读通知", count: unreadNotify, href: "/notifications" },
+    { key: "alerts", label: "系统告警", count: openAlerts, href: "/alerts" },
+    { key: "review", label: "待复核事项", count: openReview, href: "/review/checklist" },
+    { key: "mine", label: "我发起的未完结", count: myOpenDocs ?? 0, href: "/inbox" },
+  ];
+  return { generatedAt: new Date().toISOString(), sections, exceptions, myOpenDocs, queues };
 }

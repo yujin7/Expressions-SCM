@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Card, Col, List, Row, Statistic, Tag, Tooltip, Typography } from "antd";
-import { AuditOutlined, RightOutlined, SendOutlined, ThunderboltOutlined, WarningOutlined } from "@ant-design/icons";
+import { Alert, App, Card, Col, List, Row, Statistic, Tag, Typography } from "antd";
+import { RightOutlined, ThunderboltOutlined, WarningOutlined } from "@ant-design/icons";
 import Link from "next/link";
 import { fetchJson } from "@/components/fetchJson";
 
@@ -53,15 +53,6 @@ function ControlTower({ items, loading }: { items: ExceptionItem[]; loading: boo
   );
 }
 
-/** 待审批单据来源：库存单据 + 委外四单（BH/WO/PO/JG），各取 status=pending 的 total */
-const PENDING_LIST_APIS = [
-  "/api/inventory/stock-doc",
-  "/api/outsource/bh",
-  "/api/outsource/wo",
-  "/api/outsource/po",
-  "/api/outsource/jg",
-];
-
 interface FocusMetric {
   key: string;
   label: string;
@@ -69,6 +60,9 @@ interface FocusMetric {
   href: string;
   suffix?: string;
 }
+
+interface QueueItem { key: string; label: string; count: number; href: string }
+const PLACEHOLDER_QUEUES: QueueItem[] = [];
 
 interface FocusSection {
   role: string;
@@ -123,32 +117,24 @@ function FocusSections({ sections, loading }: { sections: FocusSection[]; loadin
 
 export default function WorkbenchClient() {
   const { message } = App.useApp();
-  const [pendingCount, setPendingCount] = useState<number | null>(null);
   const [openAliasCount, setOpenAliasCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [sections, setSections] = useState<FocusSection[]>([]);
   const [exceptions, setExceptions] = useState<ExceptionItem[]>([]);
   const [myOpenDocs, setMyOpenDocs] = useState<number | null>(null);
+  const [queues, setQueues] = useState<QueueItem[]>([]);
   const [focusLoading, setFocusLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setFocusLoading(true);
     // 角色聚焦区块 + 控制塔异常（服务端按当前用户角色计算真实计数）
-    fetchJson<{ sections: FocusSection[]; exceptions: ExceptionItem[]; myOpenDocs: number | null }>("/api/workbench")
-      .then((r) => { setSections(r.sections); setExceptions(r.exceptions ?? []); setMyOpenDocs(r.myOpenDocs ?? null); })
+    fetchJson<{ sections: FocusSection[]; exceptions: ExceptionItem[]; myOpenDocs: number | null; queues: QueueItem[] }>("/api/workbench")
+      .then((r) => { setSections(r.sections); setExceptions(r.exceptions ?? []); setMyOpenDocs(r.myOpenDocs ?? null); setQueues(r.queues ?? []); })
       .catch((e) => message.error((e as Error).message))
       .finally(() => setFocusLoading(false));
     try {
-      const [totals, aliasRes] = await Promise.all([
-        Promise.all(
-          PENDING_LIST_APIS.map((api) =>
-            fetchJson<{ total: number }>(`${api}?status=pending&page=1&pageSize=1`),
-          ),
-        ),
-        fetchJson<{ total: number }>("/api/import/exceptions?status=open&page=1&pageSize=1"),
-      ]);
-      setPendingCount(totals.reduce((sum, r) => sum + r.total, 0));
+      const aliasRes = await fetchJson<{ total: number }>("/api/import/exceptions?status=open&page=1&pageSize=1");
       setOpenAliasCount(aliasRes.total);
     } catch (e) {
       message.error((e as Error).message);
@@ -169,39 +155,25 @@ export default function WorkbenchClient() {
       </div>
       <ControlTower items={exceptions} loading={focusLoading && exceptions.length === 0} />
       <FocusSections sections={sections} loading={focusLoading} />
-      <Alert
-        type="info"
-        showIcon
-        message="以下计数均为真实统计，点击卡片直达处理页"
-        style={{ marginBottom: 16 }}
-      />
-      <Row gutter={16}>
-        <Col xs={24} sm={8}>
-          <Card loading={loading && pendingCount == null}>
-            <Statistic
-              title="待审批单据"
-              value={pendingCount ?? 0}
-              prefix={<AuditOutlined />}
-              suffix="单"
-            />
-          </Card>
-        </Col>
-        <Col xs={24} sm={8}>
-          <Card loading={focusLoading && myOpenDocs == null}>
-            <Tooltip title="我发起且仍在 草稿/待审批 状态的单据（BH/WO/PO/JG/库存单）">
-              <Statistic title="我发起的（未完结）" value={myOpenDocs ?? 0} prefix={<SendOutlined />} suffix="单" />
-            </Tooltip>
-          </Card>
-        </Col>
-        <Col xs={24} sm={8}>
+      <Typography.Title level={5} style={{ margin: "4px 0 12px" }}>待处理入口</Typography.Title>
+      <Row gutter={[12, 12]}>
+        {(queues.length ? queues : PLACEHOLDER_QUEUES).map((qq) => (
+          <Col xs={12} sm={8} md={queues.length > 4 ? 4 : 6} key={qq.key}>
+            <Link href={qq.href}>
+              <Card hoverable size="small" loading={focusLoading && queues.length === 0}>
+                <Statistic
+                  title={qq.label}
+                  value={qq.count}
+                  valueStyle={qq.count > 0 ? { fontSize: 22 } : { fontSize: 22, color: "#bbb" }}
+                />
+              </Card>
+            </Link>
+          </Col>
+        ))}
+        <Col xs={12} sm={8} md={queues.length > 4 ? 4 : 6}>
           <Link href="/import/exceptions">
-            <Card hoverable loading={loading && openAliasCount == null}>
-              <Statistic
-                title="待认领别名"
-                value={openAliasCount ?? 0}
-                prefix={<WarningOutlined />}
-                suffix="项"
-              />
+            <Card hoverable size="small" loading={loading && openAliasCount == null}>
+              <Statistic title="待认领别名" value={openAliasCount ?? 0} valueStyle={{ fontSize: 22, color: (openAliasCount ?? 0) > 0 ? undefined : "#bbb" }} />
             </Card>
           </Link>
         </Col>
