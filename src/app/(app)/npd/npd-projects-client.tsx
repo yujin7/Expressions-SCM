@@ -21,6 +21,7 @@ interface ProjectRow {
   taskTotal: number;
   taskDone: number;
   planEnd: string | null;
+  overdueTasks: number;
 }
 
 interface TaskRow {
@@ -36,6 +37,7 @@ interface TaskRow {
   status: string;
   doneAt: string | null;
   note: string | null;
+  overdue: boolean;
 }
 
 const STATUS_TAG: Record<string, { color: string; label: string }> = {
@@ -68,6 +70,9 @@ export default function NpdProjectsClient() {
   const [detail, setDetail] = useState<{ project: ProjectRow; tasks: TaskRow[] } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [stageFilter, setStageFilter] = useState<string | null>(null);
+  const [skuDraft, setSkuDraft] = useState("");
+  const [savingSku, setSavingSku] = useState(false);
+  const [rescheduling, setRescheduling] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -83,6 +88,7 @@ export default function NpdProjectsClient() {
   useEffect(() => { void load(); }, [load]);
 
   const openDetail = async (id: number) => {
+    setSkuDraft("");
     setDetailLoading(true);
     try {
       setDetail(await fetchJson<{ project: ProjectRow; tasks: TaskRow[] }>(`/api/npd/projects?id=${id}`));
@@ -126,6 +132,37 @@ export default function NpdProjectsClient() {
     }
   };
 
+  const saveSku = async (projectId: number) => {
+    const code = skuDraft.trim();
+    if (!code) { message.error("请填写目标 SKU 编码"); return; }
+    setSavingSku(true);
+    try {
+      await patchJson("/api/npd/projects", { intent: "set_sku", projectId, skuCode: code });
+      message.success("目标 SKU 已补录");
+      setSkuDraft("");
+      void openDetail(projectId);
+      void load();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setSavingSku(false);
+    }
+  };
+
+  const reschedule = async (projectId: number) => {
+    setRescheduling(true);
+    try {
+      const r = await patchJson<{ changed: number; planEnd: string }>("/api/npd/projects", { intent: "reschedule", projectId });
+      message.success(`计划已重排：${r.changed} 个任务顺延，计划完成 ${r.planEnd}`);
+      void openDetail(projectId);
+      void load();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setRescheduling(false);
+    }
+  };
+
   const setProject = async (projectId: number, status: string) => {
     try {
       await patchJson("/api/npd/projects", { projectId, status });
@@ -157,8 +194,13 @@ export default function NpdProjectsClient() {
     {
       title: "状态",
       dataIndex: "status",
-      width: 90,
-      render: (v: string) => <Tag color={STATUS_TAG[v]?.color}>{STATUS_TAG[v]?.label ?? v}</Tag>,
+      width: 150,
+      render: (v: string, r) => (
+        <Space size={4}>
+          <Tag color={STATUS_TAG[v]?.color}>{STATUS_TAG[v]?.label ?? v}</Tag>
+          {r.overdueTasks > 0 ? <Tag color="orange">逾期 {r.overdueTasks}</Tag> : null}
+        </Space>
+      ),
     },
   ];
 
@@ -169,7 +211,16 @@ export default function NpdProjectsClient() {
     { title: "阶段", dataIndex: "stage", width: 95, render: (v: string | null) => (v ? <Tag>{v}</Tag> : "—") },
     { title: "部门/岗位", dataIndex: "dept", width: 150, ellipsis: true, render: (v: string | null) => v ?? "—" },
     { title: "天数", dataIndex: "days", width: 55, align: "right" },
-    { title: "计划", width: 180, render: (_, r) => (r.planStart ? `${r.planStart} ~ ${r.planEnd}` : "—") },
+    {
+      title: "计划",
+      width: 210,
+      render: (_, r) => (
+        <Space size={4}>
+          <span>{r.planStart ? `${r.planStart} ~ ${r.planEnd}` : "—"}</span>
+          {r.overdue ? <Tag color="red">逾期</Tag> : null}
+        </Space>
+      ),
+    },
     {
       title: "状态",
       dataIndex: "status",
@@ -243,6 +294,9 @@ export default function NpdProjectsClient() {
         extra={
           detail && detail.project.status === "active" ? (
             <Space>
+              <Button loading={rescheduling} onClick={() => void reschedule(detail.project.id)}>
+                重排计划
+              </Button>
               {detail.project.skuCode ? (
                 <Button
                   onClick={() => {
@@ -266,6 +320,29 @@ export default function NpdProjectsClient() {
           ) : null
         }
       >
+        {detail && detail.project.status === "active" && !detail.project.skuCode ? (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 8 }}
+            message="目标 SKU 尚未设置——补录后方可生成新品首单 BH"
+            description={
+              <Space.Compact style={{ marginTop: 4 }}>
+                <Input
+                  placeholder="目标 SKU 编码或别名，如 N024-000"
+                  value={skuDraft}
+                  maxLength={60}
+                  style={{ width: 260 }}
+                  onChange={(e) => setSkuDraft(e.target.value)}
+                  onPressEnter={() => void saveSku(detail.project.id)}
+                />
+                <Button type="primary" loading={savingSku} onClick={() => void saveSku(detail.project.id)}>
+                  补录目标 SKU
+                </Button>
+              </Space.Compact>
+            }
+          />
+        ) : null}
         <Space style={{ marginBottom: 8 }}>
           <Select
             allowClear
@@ -284,7 +361,9 @@ export default function NpdProjectsClient() {
           loading={detailLoading}
           pagination={false}
           scroll={{ x: "max-content" }}
+          rowClassName={(r) => (r.overdue ? "npd-overdue-row" : "")}
         />
+        <style dangerouslySetInnerHTML={{ __html: ".npd-overdue-row > td { background: #fff1f0; }" }} />
       </Drawer>
     </div>
   );

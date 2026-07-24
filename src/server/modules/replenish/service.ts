@@ -81,6 +81,9 @@ export interface ReplenishRow {
   wipQty: number;
   /** 借出未还（func#20，从全管道扣减） */
   borrowOut: number;
+  /** func#14 ABC 分层与生效目标覆盖天数 */
+  abcClass: "A" | "B" | "C" | null;
+  effectiveTarget: number;
   /** 常规生产周期（天，sku_leadtime staging；无 = null） */
   leadDays: number | null;
   /** 全管道可销天数（max(系统,参考)+全部在途 ÷ 日均；1dp） */
@@ -128,7 +131,13 @@ export interface ReplenishQuery {
 
 export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: AnyDb): Promise<ReplenishResult> {
   const db = await resolveDb(dbArg);
+  const userTarget = query.coverDaysTarget != null;
   const coverDaysTarget = Math.min(365, Math.max(1, Math.floor(query.coverDaysTarget ?? (await getNumParam("cover_target_days", 45, dbArg)))));
+  const [targetA, targetB, targetC] = await Promise.all([
+    getNumParam("cover_target_days_a", 60, dbArg),
+    getNumParam("cover_target_days_b", 45, dbArg),
+    getNumParam("cover_target_days_c", 25, dbArg),
+  ]);
   const minCoverAlert = Math.min(365, Math.max(1, Math.floor(query.minCoverAlert ?? (await getNumParam("cover_alert_days", 30, dbArg)))));
   const page = Math.max(1, query.page ?? 1);
   const pageSize = Math.min(999, Math.max(1, query.pageSize ?? 50));
@@ -218,6 +227,27 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
         .groupBy(sm.skuId)
     : [];
   const sales3mBySku = new Map<number, string>(salesRows.map((r) => [r.skuId, r.qty ?? "0"]));
+
+  /* ── func#14 ABC 分层（全成品口径，与 q 过滤无关）→ 逐 SKU 目标覆盖天数 ── */
+  const abcBySku = new Map<number, "A" | "B" | "C">();
+  if (months3.length) {
+    const popRows: { skuId: number; qty: string | null }[] = await db
+      .select({ skuId: sm.skuId, qty: sql<string | null>`sum(${sm.qty})` })
+      .from(sm)
+      .innerJoin(schema.skus, eq(sm.skuId, schema.skus.id))
+      .where(and(eq(schema.skus.skuType, "finished"), eq(schema.skus.active, true), inArray(sm.yearMonth, months3)))
+      .groupBy(sm.skuId);
+    const ranked = popRows.map((r) => ({ id: r.skuId, q: num(r.qty) })).sort((a, b) => b.q - a.q);
+    const total = ranked.reduce((acc, r) => acc + r.q, 0);
+    let cum = 0;
+    for (const r of ranked) {
+      cum += r.q;
+      const share = total > 0 ? cum / total : 1;
+      abcBySku.set(r.id, r.q <= 0 ? "C" : share <= 0.8 ? "A" : share <= 0.95 ? "B" : "C");
+    }
+  }
+  const targetForClass = (c: "A" | "B" | "C" | undefined): number =>
+    userTarget ? coverDaysTarget : Math.min(365, Math.max(1, Math.floor(c === "A" ? targetA : c === "B" ? targetB : c === "C" ? targetC : coverDaysTarget)));
 
   /* ── #2 预测：近6月序列 → Holt 线性预测日均（展示层，供人工判断，不驱动建议量） ── */
   const months6 = maxYm ? lastMonths(maxYm, 6) : [];
@@ -311,13 +341,15 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       daily: dailyNum,
     });
 
+    const abcClass = abcBySku.get(s.id) ?? null;
+    const effectiveTarget = targetForClass(abcClass ?? undefined);
     let suggest: string | null = null;
     let heldQty: string | null = null;
     let suppressReason: string | null = null;
     if (cover != null && cover < minCoverAlert) {
       const uom = uomBySku.get(s.id);
       const suggested = suggestQty({
-        grossReq: dMul(dailyDec, String(coverDaysTarget), 6),
+        grossReq: dMul(dailyDec, String(effectiveTarget), 6),
         onHand,
         inTransit,
         moq: uom?.moq ?? null,
@@ -346,6 +378,8 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       legacyTransit: r1(legacyTransit),
       wipQty: r1(wipQty),
       borrowOut: r1(borrowOut),
+      abcClass,
+      effectiveTarget,
       leadDays,
       coverFull: coverFull == null ? null : r1(coverFull),
       refGap,
@@ -384,6 +418,8 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     legacyTransit: r.legacyTransit,
     wipQty: r.wipQty,
     borrowOut: r.borrowOut,
+    abcClass: r.abcClass,
+    effectiveTarget: r.effectiveTarget,
     leadDays: r.leadDays,
     coverFull: r.coverFull,
     refGap: r.refGap,

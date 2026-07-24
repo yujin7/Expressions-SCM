@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { errorResponse, guardRead } from "@/server/modules/master/common";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
-import { createNpdFirstOrder, createNpdProject, getNpdProject, listNpdProjects, updateNpdProject } from "@/server/modules/npd/service";
+import { createNpdFirstOrder, createNpdProject, getNpdProject, listNpdProjects, rescheduleNpd, updateNpdProject, updateNpdProjectSkuCode } from "@/server/modules/npd/service";
 
 /** NPD 项目：GET 列表 / ?id= 详情；POST 建项目（模板实例化）；PATCH 项目状态 */
 export async function GET(req: NextRequest) {
@@ -31,7 +31,10 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const user = await guardFreshWrite();
-    return NextResponse.json(await updateNpdProject(user, await req.json()));
+    const body = (await req.json()) as { intent?: string };
+    if (body?.intent === "set_sku") return NextResponse.json(await updateNpdProjectSkuCode(user, body));
+    if (body?.intent === "reschedule") return NextResponse.json(await rescheduleNpd(user, body));
+    return NextResponse.json(await updateNpdProject(user, body));
   } catch (e) {
     return errorResponse(e);
   }

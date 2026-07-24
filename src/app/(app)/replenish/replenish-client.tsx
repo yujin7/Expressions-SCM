@@ -36,6 +36,8 @@ interface ReplenishRow {
   legacyTransit: number;
   wipQty: number;
   borrowOut: number;
+  abcClass: "A" | "B" | "C" | null;
+  effectiveTarget: number;
   leadDays: number | null;
   coverFull: number | null;
   refGap: boolean;
@@ -167,6 +169,10 @@ export default function ReplenishClient() {
       { title: "SKU 编码", dataIndex: "code", width: 110, fixed: "left" },
       { title: "名称", dataIndex: "name", ellipsis: true },
       { title: "品牌", dataIndex: "brand", width: 100, render: (v: string | null) => v ?? "—" },
+      {
+        title: "分层", dataIndex: "abcClass", width: 70, align: "center" as const,
+        render: (v: string | null, r: ReplenishRow) => v ? <Tooltip title={`ABC ${v} 类——目标覆盖 ${r.effectiveTarget} 天（分层策略，可在运行参数调）`}><Tag color={v === "A" ? "red" : v === "B" ? "orange" : "default"}>{v}</Tag></Tooltip> : "—",
+      },
       {
         title: "系统口径（记账+快照）",
         children: [

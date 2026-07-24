@@ -22,6 +22,7 @@ const TEMPLATE_OPTS = [
             { value: "demand", label: "需求&计划&达成统计表（月度需求/借调历史）" },
             { value: "pallet", label: "总货盘情况表-PMC（月度货盘/处置注记）" },
             { value: "stock_summary", label: "总库存明细（全公司口径核对）" },
+            { value: "sku_cost", label: "SKU 成本导入（毛利视角基准）" },
 ];
 
 interface UploadResult {

@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Col, Input, InputNumber, Row, Space, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import Link from "next/link";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 
@@ -126,6 +127,8 @@ export default function MarginClient() {
             未录入成本的 SKU 一律留白（显示「待录入成本」），不臆造数字。
             售价来源：库内暂无销售价口径{priceAvailable ? "" : "——售价/毛利列「待接入」，暂仅呈现成本与近3月销量"}。
             {data?.months?.length ? `销量窗口：${data.months[0]} ~ ${data.months[data.months.length - 1]}。` : null}
+            <br />
+            批量导入成本请到 <Link href="/import/upload">数据中心 → 文件上传</Link>（模板：SKU 成本导入）。
           </Typography.Text>
         }
       />

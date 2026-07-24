@@ -90,6 +90,12 @@ export default function SegmentationClient() {
         message="双维分层（只读建议，不自动开单）：ABC=近6月销售贡献分层（A 前 80% / B 次 15% / C 末 5%）；XYZ=需求波动（变异系数 X≤0.5 稳定 / 0.5<Y≤1.0 中 / Z>1.0 波动）。点击矩阵格可下钻明细。"
         description={data ? <Typography.Text type="secondary">口径窗口：{data.months[0] ?? "—"} ~ {data.months[data.months.length - 1] ?? "—"}（近6月）；成品在架 SKU；单源销量，无金额。</Typography.Text> : null}
       />
+      <Alert
+        type="success"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="func#14：A/B/C 分层已驱动补货目标覆盖天数（默认 A 60 天 / B 45 天 / C 25 天，可在 系统管理→运行参数 调整）。调整 C 类目标即情景推演——一键收紧长尾库存、放宽 A 类缓冲。"
+      />
 
       {matrix && policy ? (
         <table style={{ borderCollapse: "separate", borderSpacing: 6, marginBottom: 16, width: "100%", tableLayout: "fixed" }}>
