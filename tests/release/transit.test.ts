@@ -118,3 +118,42 @@ describe("在途参考层：解析 → 放行（整类替换）+ 起订量 → u
     expect(convs).toHaveLength(1);
   });
 });
+
+describe("需求达成表：解析（demand/borrow）→ 同引擎放行", () => {
+  it("库存明细 SKU×渠道展开 + 借入借出透视展开（零值行不展开）", async () => {
+    const { parseDemandWorkbook } = await import("@/server/import/adapters/demand");
+    const mk = (name: string, rows: (string | number | null)[][]) => ({ name, rows, hidden: false });
+    const { rows, stats } = parseDemandWorkbook(
+      [
+        mk("库存明细", [
+          ["品牌", "产品类型", "产品编码", "产品名称", "期初库存数量", "5月销量", "6月份", null, null, null, null, null, "天猫", null, null, null, null, null, null, null, null, "拼多多", null, null, null, null, null, null, null, null],
+          ["品牌", "产品类型", "产品编码", "产品名称", "期初库存数量", "5月销量", "总需求", "采购量", "总达成", "月销量差异", "达成率", "动销率", "需求", "期初库存", "期末库存", "采购量", "借出", "借入", "销售达成", "达成率", "动销率", "需求", "期初库存", "期末库存", "采购量", "借出", "借入", "销售达成", "达成率", "动销率"],
+          ["合计", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null],
+          ["NING", "正装", "TR001-000", "在途SKU", null, 500, null, null, null, null, null, null, 800, 100, 50, null, null, null, 700, null, null, 0, 0, 0, null, null, null, 0, null, null],
+        ]),
+        mk("借入", [
+          [null, null], [null, null],
+          ["求和项:数量2", "借货部门"],
+          ["商品编码", "天猫", "拼多多", "总计"],
+          ["TR001-000", 30, 0, 30],
+          ["总计", 30, 0, 30],
+        ]),
+        mk("借出", [
+          [null, null], [null, null],
+          ["求和项:数量2", "借货来源"],
+          ["商品编码", "海外", "总计"],
+          ["TR001-000", 12, 12],
+        ]),
+      ],
+      "2026-06",
+    );
+    // 天猫组有值→1 行；拼多多全零→不展开
+    expect(stats.demand).toBe(1);
+    expect(stats.borrow_in).toBe(1); // 拼多多 0 不展开
+    expect(stats.borrow_out).toBe(1);
+    const d = rows.map((r) => r.payload as Record<string, unknown>).find((p) => p.kind === "demand")!;
+    expect(d).toMatchObject({ skuCode: "TR001-000", follower: "天猫", qty: 800, doneQty: 700, usedQty: 100, remainQty: 50, progress: "2026-06" });
+    const bi = rows.map((r) => r.payload as Record<string, unknown>).find((p) => p.kind === "borrow" && p.orderType === "借入")!;
+    expect(bi).toMatchObject({ skuCode: "TR001-000", follower: "天猫", qty: 30 });
+  });
+});

@@ -85,6 +85,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/report/settlement-summary", label: "结算汇总表" },
       { key: "/report/jiediao", label: "借调对账" },
       { key: "/report/transit", label: "在途参考" },
+      { key: "/report/demand", label: "需求达成参考" },
       { key: "/report/exports", label: "导出任务" },
     ],
   },

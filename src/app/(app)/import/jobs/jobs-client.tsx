@@ -14,6 +14,7 @@ const TEMPLATE_LABELS: Record<string, string> = {
   sales: "销量汇总",
   leadtime: "在途/交期",
   transit: "在途进度表",
+  demand: "需求达成表",
 };
 const TABLE_LABELS: Record<string, string> = {
   spu_suggestion: "SPU 归组建议",

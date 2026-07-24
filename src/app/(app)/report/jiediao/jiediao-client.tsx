@@ -5,14 +5,83 @@
  * 数据源=完成态调拨单（reason='借调'）；替代 借入/借出 手工透视表。
  */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Card, Col, DatePicker, Empty, Row, Skeleton, Space, Table, Tag, Typography } from "antd";
+import { Alert, App, Card, Col, DatePicker, Empty, Input, Row, Skeleton, Space, Table, Tabs, Tag, Typography } from "antd";
 import { PrinterOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import { fetchJson } from "@/components/fetchJson";
+import { formatQty } from "@/components/format";
 import type { JiediaoReport } from "@/server/modules/report/jiediao";
 
 const fmt = (v: number | string): string => Number(v).toLocaleString("zh-CN", { maximumFractionDigits: 4 });
+
+interface BorrowRow {
+  id: number;
+  skuCode: string | null;
+  orderType: string | null; // 借入/借出
+  qty: string | null;
+  follower: string | null; // 对方部门
+  progress: string | null; // YYYY-MM
+}
+
+/** 历史借调（R16 上线前，文件导入登记）——衔接系统对账的前史 */
+function BorrowHistoryTab() {
+  const { message } = App.useApp();
+  const [rows, setRows] = useState<BorrowRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [q, setQ] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ kind: "borrow", q, page: String(page), pageSize: String(pageSize) });
+      const res = await fetchJson<{ rows: BorrowRow[]; total: number }>(`/api/report/transit?${params.toString()}`);
+      setRows(res.rows);
+      setTotal(res.total);
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [q, page, pageSize, message]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const cols: ColumnsType<BorrowRow> = [
+    { title: "月份", dataIndex: "progress", width: 90 },
+    { title: "编码", dataIndex: "skuCode", width: 130, render: (v: string | null) => (v ? <a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a> : "—") },
+    { title: "方向", dataIndex: "orderType", width: 80, render: (v: string | null) => <Tag color={v === "借入" ? "orange" : "blue"}>{v}</Tag> },
+    { title: "对方部门", dataIndex: "follower", width: 140 },
+    { title: "数量", dataIndex: "qty", width: 100, align: "right", render: (v: string | null) => (v == null ? "—" : formatQty(v)) },
+  ];
+
+  return (
+    <div>
+      <Alert
+        style={{ marginBottom: 12 }}
+        type="info"
+        showIcon
+        message="系统上线前的借调记录（「需求&计划&达成统计表」借入/借出页导入，只读登记）；上线后的借调走调拨单（原因=借调），见「系统对账」页签。"
+      />
+      <Space style={{ marginBottom: 12 }}>
+        <Input.Search allowClear placeholder="搜索编码" style={{ width: 220 }} onSearch={(v) => { setQ(v.trim()); setPage(1); }} />
+      </Space>
+      <Table<BorrowRow>
+        rowKey="id"
+        size="small"
+        columns={cols}
+        dataSource={rows}
+        loading={loading}
+        pagination={{ current: page, pageSize, total, showSizeChanger: true, showTotal: (n) => `共 ${n} 条`, onChange: (p2, ps) => { setPage(p2); setPageSize(ps); } }}
+      />
+    </div>
+  );
+}
 
 export default function JiediaoClient() {
   const { message } = App.useApp();
@@ -76,12 +145,10 @@ export default function JiediaoClient() {
     { title: "备注", dataIndex: "remark", width: 140, ellipsis: true },
   ];
 
-  return (
+  const systemTab = (
     <div>
       <Space align="baseline" style={{ justifyContent: "space-between", width: "100%", marginBottom: 8 }}>
-        <Typography.Title level={4} style={{ marginTop: 0 }}>
-          借调对账（R16）
-        </Typography.Title>
+        <span />
         <Space className="no-print">
           <DatePicker picker="month" value={month} allowClear={false} onChange={(v) => v && setMonth(v)} />
           <a onClick={() => void load()}>
@@ -136,6 +203,21 @@ export default function JiediaoClient() {
           </Card>
         </>
       )}
+    </div>
+  );
+
+  return (
+    <div>
+      <Typography.Title level={4} style={{ marginTop: 0 }}>
+        借调对账（R16）
+      </Typography.Title>
+      <Tabs
+        defaultActiveKey="sys"
+        items={[
+          { key: "sys", label: "系统对账", children: systemTab },
+          { key: "hist", label: "历史导入", children: <BorrowHistoryTab /> },
+        ]}
+      />
     </div>
   );
 }

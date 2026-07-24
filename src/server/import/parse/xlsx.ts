@@ -21,7 +21,11 @@ export interface WorkbookData {
   channel: "exceljs" | "ooxml";
 }
 
-export async function readWorkbook(filePath: string): Promise<WorkbookData> {
+export async function readWorkbook(filePath: string, opts?: { forceRaw?: boolean }): Promise<WorkbookData> {
+  if (opts?.forceRaw) {
+    // 共享公式重的工作簿：exceljs 会丢部分 sharedFormula 缓存值，原生通道直读 <v>
+    return { sheets: readViaOoxml(filePath), channel: "ooxml" };
+  }
   try {
     return { sheets: await readViaExceljs(filePath), channel: "exceljs" };
   } catch {
@@ -62,6 +66,7 @@ function normalizeExceljsValue(v: unknown): CellValue {
     }
     if ("text" in o && typeof o.text === "string") return o.text || null; // 超链接
     if ("error" in o) return null;
+    return null; // 未知对象形态（如无缓存的 sharedFormula）——宁空勿假
   }
   return String(v);
 }

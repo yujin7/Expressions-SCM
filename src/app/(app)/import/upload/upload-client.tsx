@@ -19,6 +19,7 @@ const TEMPLATE_OPTS = [
   { value: "bom", label: "产品 BOM 工作簿（须选品牌）" },
   { value: "leadtime", label: "在途/交期表（提前期参考，1.1 启用）" },
             { value: "transit", label: "在途进度表（成品/包材/备料/OEM 归属）" },
+            { value: "demand", label: "需求&计划&达成统计表（月度需求/借调历史）" },
 ];
 
 interface UploadResult {
