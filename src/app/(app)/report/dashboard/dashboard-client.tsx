@@ -1,4 +1,5 @@
 "use client";
+import DataSourceBadge from "@/components/DataSourceBadge";
 
 /**
  * 经营驾驶舱：销量 / 库存 / 效期 / 可销天数 / 委外执行 / 数据健康 一屏总览。
@@ -181,14 +182,14 @@ export default function DashboardClient() {
         <Col xs={12} md={8} xl={3}>
           <Card size="small">
             <AntTooltip title="全部实时记账仓合计：自有仓（1仓2仓）+成品/原料/包材仓+委外仓（垫料为负）——与下方「库存分布」逐仓条形图同源">
-              <Statistic title="实时账在库（全部记账仓）" value={kpi.ownStockQty} />
+              <Statistic title={<>实时账在库（全部记账仓）<DataSourceBadge tier="ledger" source="stock_balances 过账台账" /></>} value={kpi.ownStockQty} />
             </AntTooltip>
           </Card>
         </Col>
         <Col xs={12} md={8} xl={3}>
           <Card size="small">
             <AntTooltip title={`快照仓最新快照合计（${kpi.snapDate ?? "—"}）`}>
-              <Statistic title="快照仓参考" value={kpi.snapStockQty} />
+              <Statistic title={<>快照仓参考<DataSourceBadge tier="snapshot" source="电商部库存明细快照" date={kpi.snapDate ?? undefined} /></>} value={kpi.snapStockQty} />
             </AntTooltip>
           </Card>
         </Col>

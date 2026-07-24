@@ -109,6 +109,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/master/warehouse", label: "仓库" },
       { key: "/master/bom", label: "BOM" },
       { key: "/master/feeref", label: "加工费参考价" },
+      { key: "/report/data-health", label: "主数据健康度" },
     ],
   },
   {

@@ -249,3 +249,36 @@ export async function registerRiskDisposal(
   });
   return { ok: true };
 }
+
+/** #10：批量处置登记（逐项复用单项幂等逻辑；返回新增/已存在计数） */
+export async function registerRiskDisposalBatch(
+  user: SessionUser,
+  input: { items: { skuCode: string; action: string; note?: string }[] },
+  dbArg?: AnyDb,
+): Promise<{ registered: number; skipped: number }> {
+  requireAnyRole(user, "pmc", "ops", "warehouse");
+  const items = Array.isArray(input.items) ? input.items.slice(0, 500) : [];
+  if (items.length === 0) throw new ApiError(400, "未选择任何行");
+  const db: AnyDb = dbArg ?? (await getDbAsync());
+  let registered = 0;
+  let skipped = 0;
+  for (const it of items) {
+    const code = String(it.skuCode ?? "").trim();
+    const action = String(it.action ?? "").trim();
+    if (!code || !action) { skipped++; continue; }
+    const open: { id: number }[] = await db
+      .select({ id: schema.reviewItems.id })
+      .from(schema.reviewItems)
+      .where(and(eq(schema.reviewItems.category, "risk_disposal"), eq(schema.reviewItems.refKey, code), eq(schema.reviewItems.status, "open")));
+    if (open.length > 0) { skipped++; continue; }
+    await db.transaction(async (tx: AnyDb) => {
+      await tx.insert(schema.reviewItems).values({
+        category: "risk_disposal", refType: "sku", refKey: code,
+        title: `处置决定：${action} ${code}`, detail: String(it.note ?? "").trim().slice(0, 300) || null,
+      });
+      await writeAudit(tx, { userId: user.id, entity: "risk_disposal", action: "register_batch", after: { skuCode: code, action } });
+    });
+    registered++;
+  }
+  return { registered, skipped };
+}

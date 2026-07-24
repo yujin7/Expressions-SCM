@@ -2,7 +2,7 @@
 
 /** F 项：风险库存处置工作台——效期批次 × 货盘处置注记 × 销速 三源融合（只读，spec/13） */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Input, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Input, Popconfirm, Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { exportCsv } from "@/components/exportCsv";
@@ -50,6 +50,26 @@ export default function RiskClient() {
   const [action, setAction] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
+  const [selected, setSelected] = useState<RiskRow[]>([]);
+  const [registering, setRegistering] = useState(false);
+
+  const bulkRegister = async () => {
+    const targets = selected.filter((r) => !r.disposalOpen);
+    if (targets.length === 0) { message.info("所选行均已登记"); return; }
+    setRegistering(true);
+    try {
+      const res = await postJson<{ registered: number; skipped: number }>("/api/report/risk", {
+        items: targets.map((r) => ({ skuCode: r.code, action: r.action, note: r.palletRemark ?? undefined })),
+      });
+      message.success(`批量登记完成：新增 ${res.registered}，跳过 ${res.skipped}`);
+      setSelected([]);
+      void load();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setRegistering(false);
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -178,6 +198,17 @@ export default function RiskClient() {
             all.map((r) => [r.action, r.code, r.name, r.brand, r.onHand, r.minDaysLeft, r.expiredQty, r.nearQty, r.daily, r.cover, r.palletRemark, r.disposalOpen ? "是" : ""]));
         }}>导出 CSV</a>
       </Space>
+      {selected.length > 0 ? (
+        <div style={{ position: "sticky", top: 0, zIndex: 2, marginBottom: 8, padding: "8px 12px", background: "#e6f4ff", borderRadius: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <Typography.Text>已选 {selected.length} 行（{selected.filter((r) => !r.disposalOpen).length} 项可登记）</Typography.Text>
+          <Space>
+            <Button size="small" onClick={() => setSelected([])}>清除</Button>
+            <Popconfirm title={`将为 ${selected.filter((r) => !r.disposalOpen).length} 个 SKU 按其建议动作批量登记处置决定？`} onConfirm={() => void bulkRegister()}>
+              <Button size="small" type="primary" loading={registering}>批量登记处置</Button>
+            </Popconfirm>
+          </Space>
+        </div>
+      ) : null}
       <Table<RiskRow>
         rowKey="skuId"
         size="small"
@@ -185,6 +216,12 @@ export default function RiskClient() {
         dataSource={data?.rows ?? []}
         loading={loading}
         scroll={{ x: "max-content" }}
+        rowSelection={{
+          selectedRowKeys: selected.map((r) => r.skuId),
+          preserveSelectedRowKeys: true,
+          onChange: (_keys, rows) => setSelected(rows.filter((r) => r != null)),
+          getCheckboxProps: (r) => ({ disabled: r.disposalOpen }),
+        }}
         pagination={{
           current: page,
           pageSize,

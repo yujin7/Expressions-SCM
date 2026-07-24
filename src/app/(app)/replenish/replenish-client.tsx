@@ -18,6 +18,7 @@ import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
+import ProjectionDrawer from "@/components/ProjectionDrawer";
 
 interface ReplenishRow {
   skuId: number;
@@ -98,6 +99,7 @@ export default function ReplenishClient() {
   const [remark, setRemark] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [createdDocNo, setCreatedDocNo] = useState<string | null>(null);
+  const [projSku, setProjSku] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -210,6 +212,13 @@ export default function ReplenishClient() {
           },
           { title: "生产周期", dataIndex: "leadDays", width: 85, align: "right" as const, render: (v: number | null) => (v == null ? "—" : `${v} 天`) },
         ],
+      },
+      {
+        title: "曲线",
+        key: "proj",
+        width: 60,
+        fixed: "right",
+        render: (_: unknown, r: ReplenishRow) => <a onClick={() => setProjSku(r.code)}>查看</a>,
       },
       {
         title: "建议补货量",
@@ -416,6 +425,7 @@ export default function ReplenishClient() {
           onChange={(e) => setRemark(e.target.value)}
         />
       </Modal>
+      <ProjectionDrawer skuCode={projSku} open={projSku != null} onClose={() => setProjSku(null)} />
     </div>
   );
 }
