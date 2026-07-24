@@ -34,6 +34,7 @@ import { timePhasedNetReq } from "@/server/rules/timephased";
 import { getOpenSupplyLines } from "@/server/core/supply";
 import { makeResolver } from "@/server/core/scoped-params";
 import { type AnyDb, num, r1, resolveDb } from "@/server/core/svc";
+import { getSkuSupplyParams } from "@/server/modules/master/sku-supply-params";
 
 export interface ReplenishRow {
   skuId: number;
@@ -281,22 +282,15 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     legacyBySku.set(r.skuId, (legacyBySku.get(r.skuId) ?? 0) + remain);
   }
 
-  /* ── 常规生产周期：sku_params 正式表（E 项已转正，#18 staging 兜底已下线） ── */
+  /* ── 供应参数（生产周期 / MOQ / 订货倍数）：master/sku-supply-params 唯一读 facade，
+        一次读齐，避免各服务分别 join uom_convs 与 sku_params（口径与顺序易漂移）。 ── */
+  const supplyParams = await getSkuSupplyParams(skuIds, db);
   const leadBySkuId = new Map<number, number>();
-  const spRows: { skuId: number; normalLeadDays: number | null }[] = await db
-    .select({ skuId: schema.skuParams.skuId, normalLeadDays: schema.skuParams.normalLeadDays })
-    .from(schema.skuParams)
-    .where(inArray(schema.skuParams.skuId, skuIds));
-  for (const r of spRows) if (r.normalLeadDays != null && r.normalLeadDays > 0) leadBySkuId.set(r.skuId, r.normalLeadDays);
-
-  /* ── MOQ/订货倍数：uom_convs 首行（按 id）兜底，值按基础单位解释（与 wo.ts PoC 口径一致） ── */
-  const uomRows: { skuId: number; moq: string | null; orderMultiple: string | null }[] = await db
-    .select({ skuId: schema.uomConvs.skuId, moq: schema.uomConvs.moq, orderMultiple: schema.uomConvs.orderMultiple })
-    .from(schema.uomConvs)
-    .where(inArray(schema.uomConvs.skuId, skuIds))
-    .orderBy(asc(schema.uomConvs.id));
   const uomBySku = new Map<number, { moq: string | null; orderMultiple: string | null }>();
-  for (const u of uomRows) if (!uomBySku.has(u.skuId)) uomBySku.set(u.skuId, u);
+  for (const [id, p] of supplyParams) {
+    if (p.normalLeadDays != null && p.normalLeadDays > 0) leadBySkuId.set(id, p.normalLeadDays);
+    uomBySku.set(id, { moq: p.moq, orderMultiple: p.orderMultiple });
+  }
 
   /* ── E2-05：预取「有确认到货日」的未结供给（core/supply 唯一定义）供逐日推演 ── */
   const supplyLines = await getOpenSupplyLines(db, skuIds);
