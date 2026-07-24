@@ -1,0 +1,1 @@
+CREATE INDEX "ix_ledger_time_desc" ON "stock_ledger" USING btree ("occurred_at" desc,"id" desc);

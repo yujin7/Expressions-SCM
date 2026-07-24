@@ -1,6 +1,7 @@
 import {
   pgTable, serial, integer, numeric, text, timestamp, date, unique, index,
 } from "drizzle-orm/pg-core";
+import { desc } from "drizzle-orm";
 import { offsetPoolKindEnum } from "./enums";
 import { skus, warehouses } from "./masters";
 
@@ -22,6 +23,9 @@ export const stockLedger = pgTable("stock_ledger", {
 }, (t) => [
   unique("uq_ledger_source").on(t.sourceDocType, t.sourceDocId, t.sourceLineId, t.action, t.warehouseId),
   index("ix_ledger_sku_wh_time").on(t.skuId, t.warehouseId, t.occurredAt),
+  // DoD-5 性能：无筛选流水默认视图 ORDER BY occurredAt DESC, id DESC LIMIT——
+  // 无此降序索引时 1M 行需全表排序（实测 662ms）；有则走索引扫描（perf-smoke 复测）
+  index("ix_ledger_time_desc").on(desc(t.occurredAt), desc(t.id)),
 ]);
 
 /**
