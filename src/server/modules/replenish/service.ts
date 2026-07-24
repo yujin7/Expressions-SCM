@@ -208,37 +208,17 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
   const borrowOutBySku = new Map<number, number>();
   for (const r of borrowRows) { if (r.skuId != null) borrowOutBySku.set(r.skuId, (borrowOutBySku.get(r.skuId) ?? 0) + num(r.qty)); }
 
-  /* ── 销速：近3月（窗口口径见 core/velocity） ── */
+  /* ── 销量矩阵：一次取回近 6 月 SKU×月（冗余#5：原分三次查 sales_monthly——
+        近3月汇总 / ABC 全量 / 预测序列；其中近3月汇总与预测序列同窗同集，合并为一次），
+        近3月汇总由矩阵按月 dAdd 精确累加（保持 decimal 字符串，不经 float）。 ── */
   const sm = schema.salesMonthly;
   const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
-  const months3 = maxYm ? lastMonths(maxYm, 3) : [];
-  const salesRows: { skuId: number; qty: string | null }[] = months3.length
-    ? await db
-        .select({ skuId: sm.skuId, qty: sql<string | null>`sum(${sm.qty})` })
-        .from(sm)
-        .where(and(inArray(sm.skuId, skuIds), inArray(sm.yearMonth, months3)))
-        .groupBy(sm.skuId)
-    : [];
-  const sales3mBySku = new Map<number, string>(salesRows.map((r) => [r.skuId, r.qty ?? "0"]));
-
-  /* ── func#14 ABC 分层（全成品口径，与 q 过滤无关）→ 逐 SKU 目标覆盖天数。
-        窗口与「库存分层」页一致取近 6 月（同一 SKU 两页必须同类——曾因窗口不同产生 41 处分歧）。 ── */
   const months6 = maxYm ? lastMonths(maxYm, 6) : [];
-  const abcBySku = new Map<number, "A" | "B" | "C">();
-  if (months6.length) {
-    const popRows: { skuId: number; qty: string | null }[] = await db
-      .select({ skuId: sm.skuId, qty: sql<string | null>`sum(${sm.qty})` })
-      .from(sm)
-      .innerJoin(schema.skus, eq(sm.skuId, schema.skus.id))
-      .where(and(eq(schema.skus.skuType, "finished"), eq(schema.skus.active, true), inArray(sm.yearMonth, months6)))
-      .groupBy(sm.skuId);
-    for (const [id, cls] of classifyAbc(popRows.map((r) => ({ id: r.skuId, qty: num(r.qty) })))) abcBySku.set(id, cls);
-  }
-  const targetForClass = (c: "A" | "B" | "C" | undefined): number =>
-    userTarget ? coverDaysTarget : Math.min(365, Math.max(1, Math.floor(c === "A" ? targetA : c === "B" ? targetB : c === "C" ? targetC : coverDaysTarget)));
-
-  /* ── #2 预测：近6月序列 → Holt 线性预测日均（展示层，供人工判断，不驱动建议量） ── */
+  const months3 = maxYm ? lastMonths(maxYm, 3) : [];
+  const months3Set = new Set(months3);
   const monthIdx = new Map(months6.map((m, i) => [m, i]));
+
+  const sales3mBySku = new Map<number, string>();
   const seriesBySku = new Map<number, number[]>();
   if (months6.length) {
     const monthlyRows: { skuId: number; ym: string; qty: string | null }[] = await db
@@ -252,8 +232,26 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       let arr = seriesBySku.get(r.skuId);
       if (!arr) { arr = new Array(months6.length).fill(0); seriesBySku.set(r.skuId, arr); }
       arr[i] = num(r.qty);
+      if (months3Set.has(r.ym)) {
+        sales3mBySku.set(r.skuId, dAdd(sales3mBySku.get(r.skuId) ?? "0", r.qty ?? "0", 6));
+      }
     }
   }
+
+  /* ── func#14 ABC 分层（全成品口径，与 q 过滤无关——故需独立一次全量查询）→ 逐 SKU 目标覆盖天数。
+        窗口与「库存分层」页一致取近 6 月（同一 SKU 两页必须同类——曾因窗口不同产生 41 处分歧）。 ── */
+  const abcBySku = new Map<number, "A" | "B" | "C">();
+  if (months6.length) {
+    const popRows: { skuId: number; qty: string | null }[] = await db
+      .select({ skuId: sm.skuId, qty: sql<string | null>`sum(${sm.qty})` })
+      .from(sm)
+      .innerJoin(schema.skus, eq(sm.skuId, schema.skus.id))
+      .where(and(eq(schema.skus.skuType, "finished"), eq(schema.skus.active, true), inArray(sm.yearMonth, months6)))
+      .groupBy(sm.skuId);
+    for (const [id, cls] of classifyAbc(popRows.map((r) => ({ id: r.skuId, qty: num(r.qty) })))) abcBySku.set(id, cls);
+  }
+  const targetForClass = (c: "A" | "B" | "C" | undefined): number =>
+    userTarget ? coverDaysTarget : Math.min(365, Math.max(1, Math.floor(c === "A" ? targetA : c === "B" ? targetB : c === "C" ? targetC : coverDaysTarget)));
 
   /* ── 全口径参考：transit_refs kind=stock_summary（总库存明细，只参考不入账） ── */
   const tr = schema.transitRefs;
