@@ -54,7 +54,7 @@ async function main() {
     .where(and(eq(schema.stagingRows.targetTable, "batch_stock"), eq(schema.stagingRows.status, "committed")));
   // 自然键重复=0（约束在，但显式验证）
   const dupB = await db.execute(sql`select count(*)::int as c from (select sku_id,warehouse_id,stocktake_date,prod_date,expiry_date,batch_no,count(*) from batch_stocks group by 1,2,3,4,5,6 having count(*)>1) t`);
-  console.log(`物理行 ${b.rows}（源行 committed ${bstage.c}——同键合并所致）| 数量合计 ${b.qty} | SKU ${b.skus} | 仓 ${b.whs} | 自然键重复组 ${(dupB as { rows: { c: number }[] }).rows[0].c}`);
+  console.log(`物理行 ${b.rows}（源行 committed ${bstage.c}——同键合并所致）| 数量合计 ${b.qty} | SKU ${b.skus} | 仓 ${b.whs} | 自然键重复组 ${(dupB as unknown as { rows: { c: number }[] }).rows[0].c}`);
 
   // 3) 销量对账
   console.log("\n== 销量（sales_monthly）==");

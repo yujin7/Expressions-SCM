@@ -41,7 +41,7 @@ function headerIndex(sheet: SheetData, mustContain: string[]): { hi: number; col
 }
 
 export interface TransitPayload {
-  kind: "fg_order" | "pkg_order" | "pkg_stock" | "oem_map" | "demand" | "borrow" | "pallet";
+  kind: "fg_order" | "pkg_order" | "pkg_stock" | "oem_map" | "demand" | "borrow" | "pallet" | "npd_node" | "npd_role" | "stock_summary";
   brandRaw: string | null;
   skuCode: string | null;
   materialCode: string | null;

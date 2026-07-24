@@ -298,6 +298,77 @@ function PalletTab() {
   );
 }
 
+interface SummaryRow {
+  id: number;
+  skuCode: string | null;
+  skuId: number | null;
+  materialName: string | null;
+  orderType: string | null;
+  qty: string | null; // 文件商品数量（全公司口径）
+  inboundQty: string | null; // 已下单未出货
+  progress: string | null;
+  extra: { 总日均销量?: number | null; 总计划可销天数?: number | null; 系统数_核对时?: number; 差异_系统减文件?: number } | null;
+}
+
+/** 总库存核对：文件=全公司口径 vs 系统=自有+电商部快照——差异主因=海外/其他部门仓不在快照源（覆盖缺口已量化） */
+function StockSummaryTab() {
+  const { message } = App.useApp();
+  const [rows, setRows] = useState<SummaryRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [q, setQ] = useState("");
+  const [onlyDiff, setOnlyDiff] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ kind: "stock_summary", q, page: String(page), pageSize: String(pageSize) });
+      const res = await fetchJson<{ rows: SummaryRow[]; total: number }>(`/api/report/transit?${params.toString()}`);
+      setRows(onlyDiff ? res.rows.filter((r) => Math.abs(r.extra?.差异_系统减文件 ?? 0) >= 0.5) : res.rows);
+      setTotal(res.total);
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [q, onlyDiff, page, pageSize, message]);
+  useEffect(() => { void load(); }, [load]);
+
+  const cols: ColumnsType<SummaryRow> = [
+    { title: "编码", dataIndex: "skuCode", width: 130, render: (v: string | null, r) => v ? <Space size={4}><a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a>{r.skuId == null ? <Tag>未建档</Tag> : null}</Space> : "—" },
+    { title: "名称", dataIndex: "materialName", ellipsis: true, width: 210 },
+    { title: "类型", dataIndex: "orderType", width: 90, render: (v: string | null) => v ?? "—" },
+    { title: "文件总库存", dataIndex: "qty", width: 110, align: "right", render: (v: string | null) => (v == null ? "—" : formatQty(v)) },
+    { title: "系统数（核对时）", width: 130, align: "right", render: (_, r) => r.extra?.系统数_核对时 != null ? formatQty(String(r.extra.系统数_核对时)) : "—" },
+    {
+      title: "差异（系统−文件）", width: 140, align: "right",
+      render: (_, r) => {
+        const d = r.extra?.差异_系统减文件;
+        if (d == null) return "—";
+        if (Math.abs(d) < 0.5) return <Tag color="green">一致</Tag>;
+        return <Tooltip title="差异主因：海外/其他部门仓不在电商部快照源内（覆盖口径），非记账错误"><Tag color={d < 0 ? "orange" : "blue"}>{d > 0 ? "+" : ""}{formatQty(String(d))}</Tag></Tooltip>;
+      },
+    },
+    { title: "在订未出", dataIndex: "inboundQty", width: 100, align: "right", render: (v: string | null) => (v == null ? "—" : formatQty(v)) },
+    { title: "总日均销（文件）", width: 120, align: "right", render: (_, r) => r.extra?.总日均销量 != null ? String(Math.round((r.extra.总日均销量 as number) * 100) / 100) : "—" },
+  ];
+
+  return (
+    <div>
+      <Alert style={{ marginBottom: 12 }} type="warning" showIcon
+        message="口径：文件「商品数量」=全公司口径（含海外/其他部门仓）；系统数=自有实时账+电商部快照。核对结论（2026-07-21）：775 可比 SKU 中 301 一致、474 差异——差异集中于快照源未覆盖的非电商部仓，属覆盖缺口而非记账错误（全量差异 reports/总库存核对-2026-07-21.json；扩源方案见 CURRENT 已知余量）。" />
+      <Space style={{ marginBottom: 12 }} wrap>
+        <Input.Search allowClear placeholder="搜索编码/名称" style={{ width: 260 }} onSearch={(v) => { setQ(v.trim()); setPage(1); }} />
+        <Tag.CheckableTag checked={onlyDiff} onChange={setOnlyDiff} style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}>只看差异</Tag.CheckableTag>
+      </Space>
+      <Table<SummaryRow> rowKey="id" size="small" columns={cols} dataSource={rows} loading={loading} scroll={{ x: "max-content" }}
+        pagination={{ current: page, pageSize, total, showSizeChanger: true, showTotal: (n) => `共 ${n} 条`, onChange: (p2, ps) => { setPage(p2); setPageSize(ps); } }} />
+    </div>
+  );
+}
+
 export default function DemandClient() {
   return (
     <div>
@@ -309,6 +380,7 @@ export default function DemandClient() {
         items={[
           { key: "demand", label: "需求达成", children: <DemandTab /> },
           { key: "pallet", label: "货盘处置", children: <PalletTab /> },
+          { key: "stock_summary", label: "总库存核对", children: <StockSummaryTab /> },
         ]}
       />
     </div>

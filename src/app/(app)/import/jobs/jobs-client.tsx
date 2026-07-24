@@ -16,6 +16,8 @@ const TEMPLATE_LABELS: Record<string, string> = {
   transit: "在途进度表",
   demand: "需求达成表",
   pallet: "货盘情况表",
+  npd: "NPD节点说明",
+  stock_summary: "总库存明细",
 };
 const TABLE_LABELS: Record<string, string> = {
   spu_suggestion: "SPU 归组建议",

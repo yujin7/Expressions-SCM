@@ -21,6 +21,7 @@ const TEMPLATE_OPTS = [
             { value: "transit", label: "在途进度表（成品/包材/备料/OEM 归属）" },
             { value: "demand", label: "需求&计划&达成统计表（月度需求/借调历史）" },
             { value: "pallet", label: "总货盘情况表-PMC（月度货盘/处置注记）" },
+            { value: "stock_summary", label: "总库存明细（全公司口径核对）" },
 ];
 
 interface UploadResult {

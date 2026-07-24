@@ -91,6 +91,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/report/jiediao", label: "借调对账" },
       { key: "/report/transit", label: "在途参考" },
       { key: "/report/demand", label: "需求达成与货盘" },
+      { key: "/report/npd", label: "NPD 节点参考" },
       { key: "/report/exports", label: "导出任务" },
     ],
   },
