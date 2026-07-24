@@ -309,7 +309,10 @@ interface SummaryRow {
   qty: string | null; // 文件商品数量（全公司口径）
   inboundQty: string | null; // 已下单未出货
   progress: string | null;
-  extra: { 总日均销量?: number | null; 总计划可销天数?: number | null; 系统数_核对时?: number; 差异_系统减文件?: number } | null;
+  extra: { 总日均销量?: number | null; 总计划可销天数?: number | null } | null;
+  /** E1-02：查询时实时计算（不再读烘焙值） */
+  sysQty?: number | null;
+  diffQty?: number | null;
 }
 
 /** 总库存核对：文件=全公司口径 vs 系统=自有+电商部快照——差异主因=海外/其他部门仓不在快照源（覆盖缺口已量化） */
@@ -328,7 +331,7 @@ function StockSummaryTab() {
     try {
       const params = new URLSearchParams({ kind: "stock_summary", q, page: String(page), pageSize: String(pageSize) });
       const res = await fetchJson<{ rows: SummaryRow[]; total: number }>(`/api/report/transit?${params.toString()}`);
-      setRows(onlyDiff ? res.rows.filter((r) => Math.abs(r.extra?.差异_系统减文件 ?? 0) >= 0.5) : res.rows);
+      setRows(onlyDiff ? res.rows.filter((r) => Math.abs(r.diffQty ?? 0) >= 0.5) : res.rows);
       setTotal(res.total);
     } catch (e) {
       message.error((e as Error).message);
@@ -343,11 +346,11 @@ function StockSummaryTab() {
     { title: "名称", dataIndex: "materialName", ellipsis: true, width: 210 },
     { title: "类型", dataIndex: "orderType", width: 90, render: (v: string | null) => v ?? "—" },
     { title: "文件总库存", dataIndex: "qty", width: 110, align: "right", render: (v: string | null) => (v == null ? "—" : formatQty(v)) },
-    { title: "系统数（核对时）", width: 130, align: "right", render: (_, r) => r.extra?.系统数_核对时 != null ? formatQty(String(r.extra.系统数_核对时)) : "—" },
+    { title: "系统数（核对时）", width: 130, align: "right", render: (_, r) => (r.sysQty != null ? formatQty(String(r.sysQty)) : "—") },
     {
       title: "差异（系统−文件）", width: 140, align: "right",
       render: (_, r) => {
-        const d = r.extra?.差异_系统减文件;
+        const d = r.diffQty;
         if (d == null) return "—";
         if (Math.abs(d) < 0.5) return <Tag color="green">一致</Tag>;
         return <Tooltip title="差异主因：海外/其他部门仓不在电商部快照源内（覆盖口径），非记账错误"><Tag color={d < 0 ? "orange" : "blue"}>{d > 0 ? "+" : ""}{formatQty(String(d))}</Tag></Tooltip>;

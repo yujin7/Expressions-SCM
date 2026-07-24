@@ -9,7 +9,7 @@ export async function GET(req: NextRequest) {
     await guardRead();
     const { q, page, pageSize, searchParams } = parseListQuery(req.url);
     const action = searchParams.get("action") ?? undefined;
-    const data = await getRiskWorklist({ q, action, page, pageSize });
+    const data = await getRiskWorklist({ q, action, page, pageSize, precise: searchParams.get("precise") === "1" });
     return NextResponse.json(data);
   } catch (e) {
     return errorResponse(e);

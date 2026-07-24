@@ -65,10 +65,12 @@ export interface RiskWorklist {
 }
 
 export async function getRiskWorklist(
-  query: { q?: string; action?: string; page?: number; pageSize?: number },
+  query: { q?: string; action?: string; page?: number; pageSize?: number; precise?: boolean },
   dbArg?: AnyDb,
 ): Promise<RiskWorklist> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
+  /** E1-06：导出走全精度（precise），屏显仍 1dp——截断值不得流入对账口径 */
+  const rq = (v: number): number => (query.precise ? v : r1(v));
   const today = todayShanghai();
   const slowThreshold = await getNumParam("slow_days_threshold", 180, dbArg);
   const page = Math.max(1, query.page ?? 1);
@@ -175,12 +177,12 @@ export async function getRiskWorklist(
       name: sku.name,
       brand: sku.brand,
       action,
-      onHand: r1(onHand),
-      daily: r1(daily),
-      cover: cover == null ? null : r1(cover),
+      onHand: rq(onHand),
+      daily: rq(daily),
+      cover: cover == null ? null : rq(cover),
       minDaysLeft: exp ? exp.minDaysLeft : null,
-      expiredQty: r1(exp?.expiredQty ?? 0),
-      nearQty: r1(exp?.nearQty ?? 0),
+      expiredQty: rq(exp?.expiredQty ?? 0),
+      nearQty: rq(exp?.nearQty ?? 0),
       palletRemark: remark?.text ?? null,
       remarkMonth: remark?.month ?? null,
       disposalOpen: dispSet.has(sku.code),

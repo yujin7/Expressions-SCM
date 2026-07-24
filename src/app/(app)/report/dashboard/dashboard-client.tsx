@@ -181,7 +181,7 @@ export default function DashboardClient() {
         </Col>
         <Col xs={12} md={8} xl={3}>
           <Card size="small">
-            <AntTooltip title="全部实时记账仓合计：自有仓（1仓2仓）+成品/原料/包材仓+委外仓（垫料为负）——与下方「库存分布」逐仓条形图同源">
+            <AntTooltip title={<span style={{ whiteSpace: "pre-line" }}>{`全部实时记账仓合计（含委外仓垫料为负）。\n⚠ 跨 SKU 直加，量纲混装——按基础单位拆分：\n${(kpi.stockByUom ?? []).map((u) => `· ${u.uom}：${u.qty.toLocaleString("zh-CN")}`).join("\n") || "（无明细）"}`}</span>}>
               <Statistic title={<>实时账在库（全部记账仓）<DataSourceBadge tier="ledger" source="stock_balances 过账台账" /></>} value={kpi.ownStockQty} />
             </AntTooltip>
           </Card>

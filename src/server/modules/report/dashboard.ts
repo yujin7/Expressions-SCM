@@ -26,6 +26,8 @@ export interface DashboardData {
     spuCount: number;
     ownStockQty: number;
     snapStockQty: number;
+    /** E1-09：跨 SKU 直加的量纲明细（按基础单位分组，前 6 组）——裸数字必须可拆 */
+    stockByUom: { uom: string; qty: number }[];
     snapDate: string | null;
     salesLastMonth: number;
     lastMonth: string | null;
@@ -184,11 +186,22 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
 
   const whAgg = new Map<number, { qty: number; mode: "realtime" | "snapshot"; bizDate: string | null }>();
   const onHandBySku = new Map<number, number>();
+  /* E1-09：量纲明细——加载 skuId→baseUom，累计各单位小计 */
+  const uomBySku = new Map<number, string>(
+    (await db.select({ id: schema.skus.id, baseUom: schema.skus.baseUom }).from(schema.skus))
+      .map((r: { id: number; baseUom: string }) => [r.id, r.baseUom ?? "未标"]),
+  );
+  const qtyByUom = new Map<string, number>();
+  const addUom = (skuId: number, q: number) => {
+    const u = uomBySku.get(skuId) ?? "未标";
+    qtyByUom.set(u, (qtyByUom.get(u) ?? 0) + q);
+  };
   let ownStockQty = 0;
   for (const r of balRows) {
     const q = num(r.qty);
     if (q === 0) continue;
     ownStockQty += q;
+    addUom(r.skuId, q);
     onHandBySku.set(r.skuId, (onHandBySku.get(r.skuId) ?? 0) + q);
     const e = whAgg.get(r.warehouseId) ?? { qty: 0, mode: "realtime" as const, bizDate: null };
     e.qty += q;
@@ -198,6 +211,7 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
   let snapDate: string | null = null;
   for (const r of snapRows) {
     snapStockQty += r.qty;
+    addUom(r.skuId, r.qty);
     onHandBySku.set(r.skuId, (onHandBySku.get(r.skuId) ?? 0) + r.qty);
     if (snapDate == null || r.bizDate > snapDate) snapDate = r.bizDate;
     const e = whAgg.get(r.warehouseId) ?? { qty: 0, mode: "snapshot" as const, bizDate: r.bizDate };
@@ -452,6 +466,7 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
       pendingApprovals,
       reviewBacklog,
       riskActionCount,
+      stockByUom: [...qtyByUom.entries()].map(([uom, qty]) => ({ uom, qty: Math.round(qty) })).sort((a, b) => b.qty - a.qty).slice(0, 6),
     },
     salesTrend,
     trendBrands: [...topBrands, "其他"],

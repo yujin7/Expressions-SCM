@@ -6,6 +6,9 @@ import { Alert, App, Button, Popconfirm, Space, Statistic, Table, Tabs, Tag, Typ
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
 
+/** E1-03：与 createReplenishDraftSchema 的 200 项上限对齐（服务端契约） */
+const DRAFT_MAX = 200;
+
 interface Candidate {
   skuId: number;
   code: string;
@@ -56,8 +59,14 @@ export default function AutoReplenishClient() {
   useEffect(() => { void load(); }, [load]);
 
   const bulkDraft = async () => {
-    const items = selected.filter((r) => r.suggestQty != null).slice(0, 200).map((r) => ({ skuId: r.skuId, qty: r.suggestQty as string }));
-    if (items.length === 0) { message.info("请先勾选候选行"); return; }
+    const usable = selected.filter((r) => r.suggestQty != null);
+    if (usable.length === 0) { message.info("请先勾选候选行"); return; }
+    // E1-03：服务端上限 200 项。超限显式告知并要求分批，绝不静默截断。
+    if (usable.length > DRAFT_MAX) {
+      message.warning(`一次最多 ${DRAFT_MAX} 项（当前已选 ${usable.length}）——请分批生成，避免草稿被截断。`);
+      return;
+    }
+    const items = usable.map((r) => ({ skuId: r.skuId, qty: r.suggestQty as string }));
     setDrafting(true);
     try {
       const res = await postJson<{ id: number; docNo: string }>("/api/replenish/draft", {
@@ -98,14 +107,26 @@ export default function AutoReplenishClient() {
     <div>
       {selected.length > 0 ? (
         <div style={{ position: "sticky", top: 0, zIndex: 2, marginBottom: 8, padding: "8px 12px", background: "#e6f4ff", borderRadius: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <Typography.Text>已选 {selected.length} 个候选 SKU</Typography.Text>
+          <Typography.Text>
+            已选 {selected.length} 个候选 SKU
+            {selected.filter((r) => r.suggestQty != null).length > DRAFT_MAX ? (
+              <Typography.Text type="danger">（超过单张上限 {DRAFT_MAX}，请分批）</Typography.Text>
+            ) : null}
+          </Typography.Text>
           <Space>
             <Button size="small" onClick={() => setSelected([])}>清除</Button>
             <Popconfirm
               title={`将为所选 ${selected.length} 个候选 SKU 生成 1 张备货申请草稿（不自动提交，仍走审批）？`}
               onConfirm={() => void bulkDraft()}
             >
-              <Button size="small" type="primary" loading={drafting}>批量生成补货草稿</Button>
+              <Button
+                size="small"
+                type="primary"
+                loading={drafting}
+                disabled={selected.filter((r) => r.suggestQty != null).length > DRAFT_MAX}
+              >
+                批量生成补货草稿
+              </Button>
             </Popconfirm>
           </Space>
         </div>

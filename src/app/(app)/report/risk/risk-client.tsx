@@ -214,7 +214,7 @@ export default function RiskClient() {
         <a onClick={async () => {
           const all: RiskRow[] = [];
           for (let p2 = 1; p2 <= 40; p2++) { // struct#17: 提高上限至 2 万行
-            const params = new URLSearchParams({ q, page: String(p2), pageSize: "500" });
+            const params = new URLSearchParams({ q, page: String(p2), pageSize: "500", precise: "1" });
             if (action) params.set("action", action);
             const d = await fetchJson<RiskData>(`/api/report/risk?${params.toString()}`);
             all.push(...d.rows);

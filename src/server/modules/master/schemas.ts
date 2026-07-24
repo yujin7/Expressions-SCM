@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { checkCode } from "@/server/rules/code-rule";
 
 /** 空字符串 → undefined（配合可选字段） */
 const emptyToUndef = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
@@ -25,7 +26,7 @@ export type SpuInput = z.infer<typeof spuSchema>;
 // ---------- SKU ----------
 export const SKU_TYPES = ["finished", "semi", "raw", "packaging", "service"] as const; // 04 §3 五值
 export const skuSchema = z.object({
-  code: z.string().trim().min(1, "编码必填"),
+  code: z.string().trim().min(1, "编码必填").refine((c) => checkCode(c).ok, (c) => ({ message: checkCode(c).reason ?? "编码不合规" })),
   name: z.string().trim().min(1, "货品名称必填"),
   spuId: z.number().int().positive({ message: "必须选择所属 SPU" }),
   skuType: z.enum(SKU_TYPES),
@@ -51,7 +52,7 @@ export type CategoryInput = z.infer<typeof categorySchema>;
 export const SUPPLIER_KINDS = ["raw", "packaging", "processor", "service"] as const; // +服务（04 §3）
 export const SUPPLIER_LEVELS = ["S", "A", "B", "C", "D"] as const;
 export const supplierSchema = z.object({
-  code: z.string().trim().min(1, "编码必填"),
+  code: z.string().trim().min(1, "编码必填").refine((c) => checkCode(c).ok, (c) => ({ message: checkCode(c).reason ?? "编码不合规" })),
   name: z.string().trim().min(1, "名称必填"),
   kinds: z.array(z.enum(SUPPLIER_KINDS)).min(1, "至少选择一种供应商类型"),
   contact: optionalStr,
@@ -70,7 +71,7 @@ export type SupplierInput = z.infer<typeof supplierSchema>;
 export const WAREHOUSE_KINDS = ["finished", "raw", "packaging", "outsource", "transit", "snapshot"] as const;
 export const warehouseSchema = z
   .object({
-    code: z.string().trim().min(1, "编码必填"),
+    code: z.string().trim().min(1, "编码必填").refine((c) => checkCode(c).ok, (c) => ({ message: checkCode(c).reason ?? "编码不合规" })),
     name: z.string().trim().min(1, "名称必填"),
     kind: z.enum(WAREHOUSE_KINDS),
     parentId: z.coerce.number().int().positive().nullable().optional(), // D32 树状层级
