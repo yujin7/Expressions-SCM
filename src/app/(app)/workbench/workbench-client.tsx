@@ -128,14 +128,15 @@ export default function WorkbenchClient() {
   const [loading, setLoading] = useState(false);
   const [sections, setSections] = useState<FocusSection[]>([]);
   const [exceptions, setExceptions] = useState<ExceptionItem[]>([]);
+  const [myOpenDocs, setMyOpenDocs] = useState<number | null>(null);
   const [focusLoading, setFocusLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setFocusLoading(true);
     // 角色聚焦区块 + 控制塔异常（服务端按当前用户角色计算真实计数）
-    fetchJson<{ sections: FocusSection[]; exceptions: ExceptionItem[] }>("/api/workbench")
-      .then((r) => { setSections(r.sections); setExceptions(r.exceptions ?? []); })
+    fetchJson<{ sections: FocusSection[]; exceptions: ExceptionItem[]; myOpenDocs: number | null }>("/api/workbench")
+      .then((r) => { setSections(r.sections); setExceptions(r.exceptions ?? []); setMyOpenDocs(r.myOpenDocs ?? null); })
       .catch((e) => message.error((e as Error).message))
       .finally(() => setFocusLoading(false));
     try {
@@ -171,7 +172,7 @@ export default function WorkbenchClient() {
       <Alert
         type="info"
         showIcon
-        message="待审批单据与待认领别名已接入真实统计；「我发起的」按人筛选建设中"
+        message="以下计数均为真实统计，点击卡片直达处理页"
         style={{ marginBottom: 16 }}
       />
       <Row gutter={16}>
@@ -186,13 +187,10 @@ export default function WorkbenchClient() {
           </Card>
         </Col>
         <Col xs={24} sm={8}>
-          <Card>
-            <Statistic
-              title={<Tooltip title="按人筛选建设中">我发起的</Tooltip>}
-              value={0}
-              prefix={<SendOutlined />}
-              suffix="单"
-            />
+          <Card loading={focusLoading && myOpenDocs == null}>
+            <Tooltip title="我发起且仍在 草稿/待审批 状态的单据（BH/WO/PO/JG/库存单）">
+              <Statistic title="我发起的（未完结）" value={myOpenDocs ?? 0} prefix={<SendOutlined />} suffix="单" />
+            </Tooltip>
           </Card>
         </Col>
         <Col xs={24} sm={8}>

@@ -20,6 +20,7 @@ import { ReloadOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import ProjectionDrawer from "@/components/ProjectionDrawer";
+import CaliberNote from "@/components/CaliberNote";
 import { metricTooltip } from "@/components/metrics";
 
 interface ReplenishRow {
@@ -191,21 +192,21 @@ export default function ReplenishClient() {
   const columns: ColumnsType<ReplenishRow> = useMemo(
     () => [
       { title: "SKU 编码", dataIndex: "code", width: 110, fixed: "left" },
-      { title: "名称", dataIndex: "name", ellipsis: true },
+      { title: "名称", dataIndex: "name", ellipsis: true, render: (v: string, r: ReplenishRow) => (v === r.code ? <Typography.Text type="secondary">（未命名）</Typography.Text> : v) },
       { title: "品牌", dataIndex: "brand", width: 100, render: (v: string | null) => v ?? "—" },
       {
         title: "分层", dataIndex: "abcClass", width: 70, align: "center" as const,
         render: (v: string | null, r: ReplenishRow) => v ? <Tooltip title={`ABC ${v} 类——目标覆盖 ${r.effectiveTarget} 天（分层策略，可在运行参数调）`}><Tag color={v === "A" ? "red" : v === "B" ? "orange" : "default"}>{v}</Tag></Tooltip> : "—",
       },
       {
-        title: "系统口径（记账+快照）",
+        title: "系统口径",
         children: [
           { title: "在库", dataIndex: "onHand", width: 95, align: "right" as const, render: (v: number) => v.toLocaleString("zh-CN") },
           { title: "PO 在途", dataIndex: "inTransit", width: 90, align: "right" as const, render: (v: number) => v.toLocaleString("zh-CN") },
         ],
       },
       {
-        title: "参考口径（文件登记，只提示不入账）",
+        title: "参考口径（只提示不入账）",
         children: [
           {
             title: "存量在途", dataIndex: "legacyTransit", width: 90, align: "right" as const,
@@ -233,7 +234,7 @@ export default function ReplenishClient() {
         ],
       },
       {
-        title: "销速与判定",
+        title: "判定",
         children: [
           { title: "日均销", dataIndex: "daily", width: 80, align: "right" as const },
           {
@@ -319,25 +320,26 @@ export default function ReplenishClient() {
 
   return (
     <div>
-      <style>{`.replenish-danger-row td { background: #fff1f0 !important; }`}</style>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
         补货建议（R11）
       </Typography.Title>
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 16 }}
-        message="建议引擎 v2（逐日推演）：按安全库存与逐日到货推演首次短缺，落在生产周期内才建议下单；建议量=补至「安全库存+目标覆盖」。仍融合全口径参考/存量在途/在制做标注与防重复下单抑制；另融合全口径参考（总库存明细）/存量在途/在订未出与生产周期做风险标注与防重复下单抑制；生成的是草稿，走正常审批（R13 人工闸）。"
-        description={
-          data?.meta ? (
-            <Typography.Text type="secondary">
-              销速窗口：{data.meta.months3.length ? data.meta.months3.join("、") : "无销量数据"}
-              {data.meta.snapDate ? `；快照数据日期：${data.meta.snapDate}` : ""}
-              {data.meta.refDate ? `；全口径参考时点：${data.meta.refDate}（总库存明细，全公司口径——覆盖缺口 SKU 标「缺口」）` : ""}
-              ；触发建议 {data.meta.suggestCount} 个 SKU
-              {data.meta.suppressedCount > 0 ? `，其中 ${data.meta.suppressedCount} 个因全口径参考充足被抑制（防对海外/其他仓已有库存重复下单，逐行有原因）` : ""}。
-            </Typography.Text>
-          ) : null
+      <CaliberNote
+        summary={
+          <>逐日推演引擎：断货日落在生产周期内才建议下单，建议量补至「安全库存＋目标覆盖」；生成草稿走审批。
+          {data?.meta ? <>　触发 <b>{data.meta.suggestCount}</b> 个建议{data.meta.suppressedCount > 0 ? <>，另 {data.meta.suppressedCount} 个因全口径参考充足被抑制（防重复下单）</> : null}。</> : null}</>
+        }
+        detail={
+          <div>
+            <p>建议引擎 v2：按安全库存与逐日到货推演首次短缺；只有短缺日落在生产周期内才触发建议（更早下单是浪费，更晚来不及）。</p>
+            <p>融合参考层做标注与抑制（只提示不入账）：全口径参考（总库存明细）、存量在途（旧流程成品跟进表）、在制委外（WO 计划产出）、在订未出、借出未还、生产周期。覆盖缺口 SKU（参考显著高于系统）触发的建议会被抑制并逐行给出原因，人工核实后可放行。</p>
+            {data?.meta ? (
+              <p>
+                销速窗口：{data.meta.months3.length ? data.meta.months3.join("、") : "无销量数据"}
+                {data.meta.snapDate ? `；快照数据日期：${data.meta.snapDate}` : ""}
+                {data.meta.refDate ? `；全口径参考时点：${data.meta.refDate}` : ""}。
+              </p>
+            ) : null}
+          </div>
         }
       />
       <Space style={{ marginBottom: 16, display: "flex", justifyContent: "space-between" }} wrap>
@@ -406,7 +408,6 @@ export default function ReplenishClient() {
         dataSource={data?.rows ?? []}
         loading={loading}
         scroll={{ x: "max-content" }}
-        rowClassName={(r) => (r.daysCover != null && r.daysCover < 15 ? "replenish-danger-row" : "")}
         rowSelection={{
           selectedRowKeys: selectedRows.map((r) => r.skuId),
           preserveSelectedRowKeys: true,
@@ -433,8 +434,11 @@ export default function ReplenishClient() {
         style={{
           position: "sticky",
           bottom: 0,
-          padding: "12px 0",
-          background: "var(--ant-color-bg-container, #fff)",
+          padding: "10px 16px",
+          background: "#fff",
+          borderTop: "1px solid #f0f0f0",
+          boxShadow: "0 -2px 8px rgba(0,0,0,0.06)",
+          zIndex: 5,
           display: "flex",
           justifyContent: "flex-end",
           gap: 12,
@@ -512,7 +516,7 @@ export default function ReplenishClient() {
           dataSource={selectedRows}
           columns={[
             { title: "SKU 编码", dataIndex: "code", width: 110 },
-            { title: "名称", dataIndex: "name", ellipsis: true },
+            { title: "名称", dataIndex: "name", ellipsis: true, render: (v: string, r: ReplenishRow) => (v === r.code ? <Typography.Text type="secondary">（未命名）</Typography.Text> : v) },
             {
               title: "建议补货量",
               dataIndex: "suggestQty",

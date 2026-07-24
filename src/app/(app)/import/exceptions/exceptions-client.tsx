@@ -360,7 +360,7 @@ export default function ExceptionsClient() {
                 rules={[{ required: true, message: "必须指定归属目标" }]}
                 help={
                   claiming.aliasType === "brand" || claiming.aliasType === "channel"
-                    ? "品牌/渠道请填目标 ID（管理页建设中）"
+                    ? "品牌/渠道暂需直接填目标 ID（可在 主数据 页查询）"
                     : undefined
                 }
               >

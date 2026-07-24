@@ -7,6 +7,7 @@ import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import { exportCsv } from "@/components/exportCsv";
 import { formatQty } from "@/components/format";
+import CaliberNote from "@/components/CaliberNote";
 
 interface Row {
   id: number;
@@ -98,12 +99,9 @@ export default function ExpiryClient() {
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>效期批次</Typography.Title>
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 12 }}
-        message="逐批次×仓库的实物处置视图（batch_stocks 参考层，效期盘点载体）。按 SKU 的处置决策（报废/禁售/促销）见「风险库存处置」。>6 个月的健康批次不在风险段位（取消段位筛选可见全量）。"
-        description={data ? <Typography.Text type="secondary">口径日 {data.today}；剩余天数升序（最紧急最上）。</Typography.Text> : null}
+      <CaliberNote
+        summary={<>批次 × 仓库的实物处置视图；按 SKU 的决策见「风险库存处置」。{data ? <>　口径日 {data.today}，剩余天数升序。</> : null}</>}
+        detail={<div><p>数据源：batch_stocks 参考层（效期盘点载体，非账本）。段位：已过期 / ≤3 月 / 3–6 月；&gt;6 个月的健康批次不在风险段位（取消段位筛选可见全量）。</p></div>}
       />
       <Space style={{ marginBottom: 12 }} wrap>
         {BUCKETS.map((b) => (

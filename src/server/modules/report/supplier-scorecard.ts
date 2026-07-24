@@ -1,0 +1,423 @@
+/**
+ * E5-06 供应商记分卡（只读报表 + 人工采纳分级）。
+ *
+ * 背景：suppliers.level（S–D）是采购**凭印象手工填**的，而算分所需的原料全在库里躺着——
+ * 交期履约、质检结果、价格异动。本模块把三路数据按供应商聚合，交给 rules/scorecard.ts
+ * 算出可解释的综合分与建议等级；写档案只有一条路 applySupplierLevel（人工点「采纳」才写）。
+ *
+ * ── 取数口径（全部沿用既有模块的口径，不新造）──
+ * 1) 准时率：完全复用 rules/leadtime-stats.ts 的 leadTimeStats，样本取法与
+ *    report/leadtime-learning.ts 一致——
+ *      起算日 = po_docs.created_at（Asia/Shanghai 日界）；
+ *      承诺到货日 = coalesce(po_lines.expected_date, po_docs.expected_date)（两者皆空 → 不进准时率分母）；
+ *      实际收货日 = 该 (PO, SKU) 最早一张生效 SH 的 created_at（生效 = approved/in_progress/completed，
+ *      与 report/wip.ts 的 ACTIVE_SH_STATUSES 同集合）；
+ *      负交期（收货早于制单，多为历史补录）丢弃。
+ *      与 leadtime-learning 的唯一差别：那边按 (供应商 × SKU) 出行，这里把同一供应商的样本**汇总成一条**。
+ *    局限：委外加工（JG）没有「承诺交期 vs 收货」的等价链路（dueDate 在 JG 上、收货走 SH sourceType='jg'），
+ *    1.0 阶段准时率只覆盖采购 PO；纯加工厂该维度无数据 → 权重归一（见 rules/scorecard.ts）。
+ * 2) 质检：qc_lines（一单一检，pass/fail/concession 三桶互斥、合计 ≤ 实收）。
+ *    合格 = passQty；让步 = concessionQty + failHandling='concession' 的 failQty；
+ *    报废 = failHandling='scrap' 的 failQty；返工 = 'rework'；待判定 = 'pending'。
+ *    分母 = 判定总量 = pass + fail + concession（**不是**实收量——未检验的量不该进合格率分母）。
+ *    PO 与 JG 两种收货都算（都是供应商交付质量），供应商分别取自 po_docs / jg_docs。
+ * 3) 价格变更次数：pc_docs 窗口内**生效**（approved/in_progress/completed）单数；
+ *    target='po_line' → po_lines→po_docs.supplier_id；target='jg_fee' → jg_docs.supplier_id。
+ *    草稿/待审/驳回不算——没生效的调价不是调价。
+ * 4) 样本数 sampleN = 窗口内该供应商的**生效收货单张数**（PO+JG 去重），作为置信度依据。
+ *    选「收货单张数」而非「交期样本对数」：后者按 SKU 展开会高估样本量，
+ *    且加工厂没有 PO 交期样本却有真实收货批次，用单张数才不会把它们一律打成低置信。
+ *
+ * 窗口：默认近 180 天（半年）——太短样本不够，太长会把早已改进的历史问题算进当期。
+ * 只列窗口内**有信号**（有收货 / 有质检 / 有调价）的供应商；全无往来的供应商不占版面。
+ */
+import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { z } from "zod";
+import { getDbAsync } from "@/db";
+import * as schema from "@/db/schema";
+import { writeAudit } from "@/server/core/audit";
+import { ApiError, type SessionUser } from "@/server/modules/master/common";
+import { SUPPLIER_LEVELS } from "@/server/modules/master/schemas";
+import { requireAnyRole } from "@/server/modules/outsource/common";
+import { leadTimeStats, type LeadTimeSample } from "@/server/rules/leadtime-stats";
+import { scoreSupplier, type ScoreBreakdownItem, type SupplierGrade } from "@/server/rules/scorecard";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyDb = any;
+/** drizzle 表对象（po_docs / jg_docs 结构不同但都含 id + supplier_id，此处按鸭子类型传参） */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyTable = any;
+
+/** 生效收货状态（照抄 report/wip.ts ACTIVE_SH_STATUSES） */
+const ACTIVE_SH_STATUSES = ["approved", "in_progress", "completed"] as const;
+/** 生效价格变更单状态（草稿/待审/驳回不算「发生过调价」） */
+const EFFECTIVE_PC_STATUSES = ["approved", "in_progress", "completed"] as const;
+
+/** 默认窗口天数 / 最小样本数 */
+export const DEFAULT_WINDOW_DAYS = 180;
+export const MIN_SAMPLES = 3;
+
+const num = (v: unknown): number => (v == null ? 0 : Number(v));
+const r4 = (v: number): number => Math.round(v * 10000) / 10000;
+
+/** 时间戳 → Asia/Shanghai 日期串（与 report/leadtime-learning.ts 同准） */
+function shanghaiDate(d: Date): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(d);
+}
+/** 日界差（日期串直减） */
+function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000);
+}
+
+export interface ScorecardRow {
+  supplierId: number;
+  code: string;
+  name: string;
+  /** 档案现有等级（人工维护值） */
+  currentLevel: string | null;
+  score: number | null;
+  grade: SupplierGrade | null;
+  confidence: "high" | "medium" | "low";
+  onTimeRate: number | null;
+  qcPassRate: number | null;
+  concessionRate: number | null;
+  scrapRate: number | null;
+  priceChangeCount: number;
+  /** 窗口内生效收货单张数 */
+  sampleN: number;
+  breakdown: ScoreBreakdownItem[];
+  /** 建议等级 ≠ 档案等级 且 置信度不低 → 值得人工复核 */
+  suggestLevelChange: boolean;
+  /** 评分理由（可解释） */
+  reason: string;
+}
+
+export interface SupplierScorecard {
+  rows: ScorecardRow[];
+  total: number;
+  minSamples: number;
+  summary: {
+    /** 窗口内有信号的供应商数 */
+    suppliers: number;
+    /** 其中已评级（样本足够）的数量 */
+    rated: number;
+    /** 建议调整等级的数量 */
+    suggestChanges: number;
+    /** 平均准时率 0~1（仅有准时率的供应商参与）；无 → null */
+    avgOnTimeRate: number | null;
+    windowDays: number;
+  };
+}
+
+/** 窗口内 (供应商 → 生效收货单张数)；PO/JG 两种来源各查一次后合并 */
+async function receiptCountsBySupplier(db: AnyDb, cutoff: Date): Promise<Map<number, Set<number>>> {
+  const out = new Map<number, Set<number>>();
+  const fetch = async (sourceType: string, doc: AnyTable): Promise<{ supplierId: number; shId: number }[]> =>
+    db
+      .select({ supplierId: doc.supplierId, shId: schema.shDocs.id })
+      .from(schema.shDocs)
+      .innerJoin(doc, eq(schema.shDocs.sourceId, doc.id))
+      .where(
+        and(
+          eq(schema.shDocs.sourceType, sourceType),
+          inArray(schema.shDocs.status, [...ACTIVE_SH_STATUSES]),
+          gte(schema.shDocs.createdAt, cutoff),
+        ),
+      );
+  for (const r of [...(await fetch("po", schema.poDocs)), ...(await fetch("jg", schema.jgDocs))]) {
+    const set = out.get(r.supplierId) ?? new Set<number>();
+    set.add(r.shId);
+    out.set(r.supplierId, set);
+  }
+  return out;
+}
+
+/** 质检桶（数量） */
+interface QcBuckets {
+  pass: number;
+  rework: number;
+  concession: number;
+  scrap: number;
+  pending: number;
+  /** 判定总量 = pass + fail + concession */
+  graded: number;
+}
+const emptyQc = (): QcBuckets => ({ pass: 0, rework: 0, concession: 0, scrap: 0, pending: 0, graded: 0 });
+
+/** 把一行 qc_lines 的三桶数量按 failHandling 归入五类 */
+export function accumulateQc(
+  b: QcBuckets,
+  line: { pass: number; fail: number; concession: number; handling: string },
+): void {
+  b.pass += line.pass;
+  b.concession += line.concession; // 显式让步接收桶
+  switch (line.handling) {
+    case "rework":
+      b.rework += line.fail;
+      break;
+    case "concession":
+      b.concession += line.fail; // 不合格但走让步放行
+      break;
+    case "scrap":
+      b.scrap += line.fail;
+      break;
+    default:
+      b.pending += line.fail; // pending：尚未判定去向
+  }
+  b.graded += line.pass + line.fail + line.concession;
+}
+
+/** 窗口内 (供应商 → 质检桶)；按 (supplier, failHandling) 分组聚合 */
+async function qcBySupplier(db: AnyDb, cutoff: Date): Promise<Map<number, QcBuckets>> {
+  const out = new Map<number, QcBuckets>();
+  const fetch = async (
+    sourceType: string,
+    doc: AnyTable,
+  ): Promise<{ supplierId: number; handling: string; pass: string | null; fail: string | null; concession: string | null }[]> =>
+    db
+      .select({
+        supplierId: doc.supplierId,
+        handling: schema.qcLines.failHandling,
+        pass: sql<string | null>`sum(${schema.qcLines.passQty})`,
+        fail: sql<string | null>`sum(${schema.qcLines.failQty})`,
+        concession: sql<string | null>`sum(${schema.qcLines.concessionQty})`,
+      })
+      .from(schema.qcLines)
+      .innerJoin(schema.qcRecords, eq(schema.qcLines.qcId, schema.qcRecords.id))
+      .innerJoin(schema.shDocs, eq(schema.qcRecords.shId, schema.shDocs.id))
+      .innerJoin(doc, eq(schema.shDocs.sourceId, doc.id))
+      .where(
+        and(
+          eq(schema.shDocs.sourceType, sourceType),
+          inArray(schema.shDocs.status, [...ACTIVE_SH_STATUSES]),
+          gte(schema.qcRecords.createdAt, cutoff),
+        ),
+      )
+      .groupBy(doc.supplierId, schema.qcLines.failHandling);
+
+  for (const r of [...(await fetch("po", schema.poDocs)), ...(await fetch("jg", schema.jgDocs))]) {
+    const b = out.get(r.supplierId) ?? emptyQc();
+    accumulateQc(b, { pass: num(r.pass), fail: num(r.fail), concession: num(r.concession), handling: r.handling });
+    out.set(r.supplierId, b);
+  }
+  return out;
+}
+
+/** 窗口内 (供应商 → 生效价格变更单数) */
+async function priceChangesBySupplier(db: AnyDb, cutoff: Date): Promise<Map<number, number>> {
+  const out = new Map<number, number>();
+  const add = (rows: { supplierId: number; cnt: number }[]) => {
+    for (const r of rows) out.set(r.supplierId, (out.get(r.supplierId) ?? 0) + Number(r.cnt));
+  };
+
+  // target='po_line'：pc → po_lines → po_docs
+  add(
+    await db
+      .select({ supplierId: schema.poDocs.supplierId, cnt: sql<number>`count(*)::int` })
+      .from(schema.pcDocs)
+      .innerJoin(schema.poLines, eq(schema.pcDocs.poLineId, schema.poLines.id))
+      .innerJoin(schema.poDocs, eq(schema.poLines.poId, schema.poDocs.id))
+      .where(
+        and(
+          eq(schema.pcDocs.target, "po_line"),
+          inArray(schema.pcDocs.status, [...EFFECTIVE_PC_STATUSES]),
+          gte(schema.pcDocs.createdAt, cutoff),
+        ),
+      )
+      .groupBy(schema.poDocs.supplierId),
+  );
+
+  // target='jg_fee'：pc.jg_id → jg_docs（该 FK 由应用层保证，见 schema/docs.ts 注释）
+  add(
+    await db
+      .select({ supplierId: schema.jgDocs.supplierId, cnt: sql<number>`count(*)::int` })
+      .from(schema.pcDocs)
+      .innerJoin(schema.jgDocs, eq(schema.pcDocs.jgId, schema.jgDocs.id))
+      .where(
+        and(
+          eq(schema.pcDocs.target, "jg_fee"),
+          inArray(schema.pcDocs.status, [...EFFECTIVE_PC_STATUSES]),
+          gte(schema.pcDocs.createdAt, cutoff),
+        ),
+      )
+      .groupBy(schema.jgDocs.supplierId),
+  );
+  return out;
+}
+
+/** 窗口内 (供应商 → 交期样本)；口径见文件头注释 1) */
+async function leadSamplesBySupplier(db: AnyDb, cutoff: Date): Promise<Map<number, LeadTimeSample[]>> {
+  const receipts = db
+    .select({
+      poId: schema.shDocs.sourceId,
+      skuId: schema.shLines.skuId,
+      receivedAt: sql<Date>`min(${schema.shDocs.createdAt})`.as("received_at"),
+    })
+    .from(schema.shDocs)
+    .innerJoin(schema.shLines, eq(schema.shLines.shId, schema.shDocs.id))
+    .where(and(eq(schema.shDocs.sourceType, "po"), inArray(schema.shDocs.status, [...ACTIVE_SH_STATUSES])))
+    .groupBy(schema.shDocs.sourceId, schema.shLines.skuId)
+    .as("receipts");
+
+  const rows: { supplierId: number; orderedAt: Date; promisedDate: string | null; receivedAt: Date }[] = await db
+    .select({
+      supplierId: schema.poDocs.supplierId,
+      orderedAt: schema.poDocs.createdAt,
+      promisedDate: sql<string | null>`coalesce(${schema.poLines.expectedDate}, ${schema.poDocs.expectedDate})`,
+      receivedAt: receipts.receivedAt,
+    })
+    .from(schema.poLines)
+    .innerJoin(schema.poDocs, eq(schema.poLines.poId, schema.poDocs.id))
+    .innerJoin(receipts, and(eq(receipts.poId, schema.poLines.poId), eq(receipts.skuId, schema.poLines.skuId)));
+
+  const out = new Map<number, LeadTimeSample[]>();
+  for (const r of rows) {
+    const received = new Date(r.receivedAt);
+    if (received < cutoff) continue; // 窗口外的历史履约不参与本期评分
+    const orderedStr = shanghaiDate(new Date(r.orderedAt));
+    const actualDays = daysBetween(orderedStr, shanghaiDate(received));
+    if (!Number.isFinite(actualDays) || actualDays < 0) continue; // 收货早于制单 = 补录脏数据
+    const promisedDays = r.promisedDate ? daysBetween(orderedStr, r.promisedDate) : null;
+    const list = out.get(r.supplierId) ?? [];
+    list.push({ promisedDays: promisedDays != null && promisedDays >= 0 ? promisedDays : null, actualDays });
+    out.set(r.supplierId, list);
+  }
+  return out;
+}
+
+export async function getSupplierScorecard(
+  query: { q?: string; page?: number; pageSize?: number; windowDays?: number },
+  dbArg?: AnyDb,
+): Promise<SupplierScorecard> {
+  const db: AnyDb = dbArg ?? (await getDbAsync());
+  const page = Math.max(1, query.page ?? 1);
+  const pageSize = Math.min(500, Math.max(1, query.pageSize ?? 20));
+  const windowDays = Math.min(1095, Math.max(30, query.windowDays ?? DEFAULT_WINDOW_DAYS));
+  const q = (query.q ?? "").trim().toLowerCase();
+  const cutoff = new Date(Date.now() - windowDays * 86_400_000);
+
+  const [receipts, qc, priceChanges, leadSamples] = await Promise.all([
+    receiptCountsBySupplier(db, cutoff),
+    qcBySupplier(db, cutoff),
+    priceChangesBySupplier(db, cutoff),
+    leadSamplesBySupplier(db, cutoff),
+  ]);
+
+  /** 窗口内有任一信号的供应商 */
+  const active = new Set<number>([...receipts.keys(), ...qc.keys(), ...priceChanges.keys(), ...leadSamples.keys()]);
+  if (active.size === 0) {
+    return {
+      rows: [],
+      total: 0,
+      minSamples: MIN_SAMPLES,
+      summary: { suppliers: 0, rated: 0, suggestChanges: 0, avgOnTimeRate: null, windowDays },
+    };
+  }
+
+  const supRows: { id: number; code: string; name: string; level: string | null }[] = await db
+    .select({ id: schema.suppliers.id, code: schema.suppliers.code, name: schema.suppliers.name, level: schema.suppliers.level })
+    .from(schema.suppliers)
+    .where(inArray(schema.suppliers.id, [...active]));
+
+  const all: ScorecardRow[] = [];
+  for (const sup of supRows) {
+    const b = qc.get(sup.id);
+    const graded = b?.graded ?? 0;
+    const qcPassRate = graded > 0 ? r4((b as QcBuckets).pass / graded) : null;
+    const concessionRate = graded > 0 ? r4((b as QcBuckets).concession / graded) : null;
+    const scrapRate = graded > 0 ? r4((b as QcBuckets).scrap / graded) : null;
+    const stats = leadTimeStats(leadSamples.get(sup.id) ?? []);
+    const priceChangeCount = priceChanges.get(sup.id) ?? 0;
+    const sampleN = receipts.get(sup.id)?.size ?? 0;
+
+    const res = scoreSupplier(
+      { onTimeRate: stats.onTimeRate, qcPassRate, concessionRate, scrapRate, priceChangeCount, sampleN },
+      MIN_SAMPLES,
+    );
+    all.push({
+      supplierId: sup.id,
+      code: sup.code,
+      name: sup.name,
+      currentLevel: sup.level,
+      score: res.score,
+      grade: res.grade,
+      confidence: res.confidence,
+      onTimeRate: stats.onTimeRate,
+      qcPassRate,
+      concessionRate,
+      scrapRate,
+      priceChangeCount,
+      sampleN,
+      breakdown: res.breakdown,
+      suggestLevelChange: res.grade != null && res.confidence !== "low" && res.grade !== sup.level,
+      reason: res.reason,
+    });
+  }
+
+  /* ── 搜索 / 汇总 / 排序 / 分页 ── */
+  let filtered = all;
+  if (q) filtered = filtered.filter((r) => r.code.toLowerCase().includes(q) || r.name.toLowerCase().includes(q));
+  const withOnTime = filtered.filter((r) => r.onTimeRate != null);
+  const summary = {
+    suppliers: filtered.length,
+    rated: filtered.filter((r) => r.score != null).length,
+    suggestChanges: filtered.filter((r) => r.suggestLevelChange).length,
+    avgOnTimeRate:
+      withOnTime.length > 0
+        ? r4(withOnTime.reduce((a, r) => a + (r.onTimeRate as number), 0) / withOnTime.length)
+        : null,
+    windowDays,
+  };
+  // 差的在前（最值得处理）；未评级的排最后——没数据不等于差，别抢占注意力
+  filtered = [...filtered].sort(
+    (a, b) => (a.score ?? Number.POSITIVE_INFINITY) - (b.score ?? Number.POSITIVE_INFINITY) || a.code.localeCompare(b.code),
+  );
+
+  return {
+    rows: filtered.slice((page - 1) * pageSize, page * pageSize),
+    total: filtered.length,
+    minSamples: MIN_SAMPLES,
+    summary,
+  };
+}
+
+const applySchema = z.object({
+  supplierId: z.number().int().positive(),
+  level: z.enum(SUPPLIER_LEVELS),
+});
+
+/**
+ * 采纳记分卡建议等级 → 写 suppliers.level。
+ * 人工闸：只有点「采纳」才走到这里，系统绝不自动改主数据（评分是建议，不是判决）。
+ */
+export async function applySupplierLevel(
+  user: SessionUser,
+  input: { supplierId: number; level: string },
+  dbArg?: AnyDb,
+): Promise<{ ok: true; supplierId: number; level: string }> {
+  requireAnyRole(user, "purchasing");
+  const v = applySchema.parse(input);
+  const db: AnyDb = dbArg ?? (await getDbAsync());
+
+  const [sup]: { id: number; code: string; level: string | null }[] = await db
+    .select({ id: schema.suppliers.id, code: schema.suppliers.code, level: schema.suppliers.level })
+    .from(schema.suppliers)
+    .where(eq(schema.suppliers.id, v.supplierId));
+  if (!sup) throw new ApiError(404, `供应商不存在: #${v.supplierId}`);
+
+  await db.transaction(async (tx: AnyDb) => {
+    await tx
+      .update(schema.suppliers)
+      .set({ level: v.level, updatedAt: new Date() })
+      .where(eq(schema.suppliers.id, v.supplierId));
+    await writeAudit(tx, {
+      userId: user.id,
+      entity: "supplier",
+      entityId: v.supplierId,
+      action: "apply_scorecard_level",
+      before: { supplierId: v.supplierId, code: sup.code, level: sup.level },
+      after: { supplierId: v.supplierId, code: sup.code, level: v.level, source: "supplier_scorecard" },
+    });
+  });
+  return { ok: true, supplierId: v.supplierId, level: v.level };
+}

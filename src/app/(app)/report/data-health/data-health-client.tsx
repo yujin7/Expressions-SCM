@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Input, Progress, Space, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
+import CaliberNote from "@/components/CaliberNote";
 
 interface DataHealthRow {
   skuId: number;
@@ -103,12 +104,9 @@ export default function DataHealthClient() {
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>主数据健康度</Typography.Title>
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 12 }}
-        message="完整度评分 = 各适用维度完整占比（按货品类型裁剪：成品评 生产周期/起订量/BOM/条码/品牌，其余类型仅评 条码/品牌）。"
-        description="仅列出存在缺失项的 SKU；完全健康的 SKU 不入列表，仅计入下方汇总。只读报表，不修改任何主数据。"
+      <CaliberNote
+        summary={<>完整度＝各适用维度完整占比；只列出有缺失项的 SKU（完全健康的计入统计不进列表）。</>}
+        detail={<div><p>按货品类型裁剪适用维度：成品评 生产周期 / 起订量 / BOM / 条码 / 品牌 五项；原料/包材仅评 条码 / 品牌。条码为 null 或 malformed 记缺失。</p></div>}
       />
       <Space size="large" style={{ marginBottom: 12 }} wrap>
         <Statistic title="总 SKU" value={summary?.totalSkus ?? 0} />

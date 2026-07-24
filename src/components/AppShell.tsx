@@ -28,11 +28,25 @@ const { Header, Sider, Content } = Layout;
 const menuItems: MenuProps["items"] = [
   { key: "/workbench", icon: <DashboardOutlined />, label: "工作台" },
   { key: "/inbox", icon: <InboxOutlined />, label: "我的待办" },
-  { key: "/notifications", icon: <InboxOutlined />, label: "通知中心" },
-  { key: "/alerts", icon: <InboxOutlined />, label: "系统告警" },
-  { key: "/report/dashboard", icon: <BarChartOutlined />, label: "经营驾驶舱" },
-  { key: "/report/sales-bridge", icon: <BarChartOutlined />, label: "销量变化归因" },
-  { key: "/report/inventory-analytics", icon: <BarChartOutlined />, label: "库存分析" },
+  {
+    key: "messages",
+    icon: <InboxOutlined />,
+    label: "消息与告警",
+    children: [
+      { key: "/notifications", label: "通知中心" },
+      { key: "/alerts", label: "系统告警" },
+    ],
+  },
+  {
+    key: "analytics",
+    icon: <BarChartOutlined />,
+    label: "经营分析",
+    children: [
+      { key: "/report/dashboard", label: "经营驾驶舱" },
+      { key: "/report/sales-bridge", label: "销量变化归因" },
+      { key: "/report/inventory-analytics", label: "库存分析" },
+    ],
+  },
   {
     key: "planning",
     icon: <FundOutlined />,
@@ -63,6 +77,8 @@ const menuItems: MenuProps["items"] = [
       { key: "/outsource/jg", label: "加工通知单" },
       { key: "/report/wip", label: "委外在制看板" },
       { key: "/report/transit", label: "在途参考" },
+      { key: "/report/supplier-scorecard", label: "供应商记分卡" },
+      { key: "/report/price-compare", label: "物料比价" },
     ],
   },
   {
@@ -86,6 +102,8 @@ const menuItems: MenuProps["items"] = [
       { key: "/inventory/docs", label: "库存单据" },
       { key: "/inventory/count", label: "盘点任务" },
       { key: "/inventory/expiry", label: "效期批次" },
+      { key: "/inventory/batch-trace", label: "批次追溯" },
+      { key: "/report/inbound-calendar", label: "到货日历" },
       { key: "/report/sku-360", label: "SKU 360 事件轴" },
       { key: "/report/demand?tab=stock_summary", label: "总库存核对" },
       { key: "/report/jiediao", label: "借调对账" },

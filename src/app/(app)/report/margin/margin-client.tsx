@@ -7,6 +7,7 @@ import type { ColumnsType } from "antd/es/table";
 import Link from "next/link";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
+import CaliberNote from "@/components/CaliberNote";
 
 interface MarginRow {
   skuId: number;
@@ -117,20 +118,9 @@ export default function MarginClient() {
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>毛利视角（手工成本 v1）</Typography.Title>
-      <Alert
-        type="warning"
-        showIcon
-        style={{ marginBottom: 12 }}
-        message="诚实口径声明：成本自动核算口径（D2）尚未裁定，本页单位成本为「手工录入基准」，非系统自动核算。"
-        description={
-          <Typography.Text type="secondary">
-            未录入成本的 SKU 一律留白（显示「待录入成本」），不臆造数字。
-            售价来源：库内暂无销售价口径{priceAvailable ? "" : "——售价/毛利列「待接入」，暂仅呈现成本与近3月销量"}。
-            {data?.months?.length ? `销量窗口：${data.months[0]} ~ ${data.months[data.months.length - 1]}。` : null}
-            <br />
-            批量导入成本请到 <Link href="/import/upload">数据中心 → 文件上传</Link>（模板：SKU 成本导入）。
-          </Typography.Text>
-        }
+      <CaliberNote
+        summary={<>手工成本 v1：成本人工录入，未录入不臆造；售价源未接入，毛利列暂缓点亮。批量导入：数据中心 → 文件上传（模板：SKU 成本导入）。</>}
+        detail={<div><p>诚实口径声明：成本自动核算口径（D2）尚未裁定，本页单位成本为「手工录入基准」，非系统自动核算。</p><p>库内唯一价格表为供应商采购基准价（非售价），用它算毛利属臆造——故 priceAvailable=false；接入真实售价源后，单位毛利/毛利率/近3月毛利自动点亮。</p></div>}
       />
       <Row gutter={16} style={{ marginBottom: 12 }}>
         <Col><Statistic title="已录成本 SKU 数" value={data?.summary.costedSkus ?? 0} /></Col>

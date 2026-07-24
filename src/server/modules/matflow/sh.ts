@@ -6,6 +6,7 @@ import {
 import { dAdd, dCmp, dDiv, dMul, dNeg, dQty, dSub, dZero } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
+import { registerBatchesFromReceipt, requireBatchForExpirySkus } from "@/server/modules/inventory/batch-trace";
 import { approveDoc } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, type DocStatus } from "@/server/docflow/state";
@@ -151,6 +152,8 @@ export async function createSh(user: SessionUser, input: unknown, dbArg?: AnyDb)
         createdBy: user.id,
       })
       .returning();
+    // E4-01：管效期 SKU 必须带批次号——否则后续效期与召回能力形同虚设
+    await requireBatchForExpirySkus(tx, lines.map((l) => ({ skuId: l.skuId, batchNo: l.batchNo ?? null })));
     await tx.insert(shLines).values(
       lines.map((l) => ({
         shId: doc.id,
@@ -322,6 +325,15 @@ export async function confirmInbound(
         .where(eq(qcLines.qcId, qc.id));
       const qcByShLine = new Map(qcRows.map((l) => [l.shLineId, l]));
       const lines: ShLineRow[] = await tx.select().from(shLines).where(eq(shLines.shId, shId)).orderBy(shLines.id);
+
+      /* E4-01：批次登记册——把行上采集的批次写进 batches 主档（此前该表定义了却从无写入）。
+         注意：**不**把 batchId 写进过账流水——余额键含 batchId 且实时仓禁负，
+         入库分批而出库不选批次会击穿非负校验。批次贯通出入库须与 FEFO（E2-12）配套。 */
+      await registerBatchesFromReceipt(
+        tx,
+        lines.map((l) => ({ skuId: l.skuId, batchNo: l.batchNo, prodDate: l.prodDate })),
+        { docType: "sh", docId: shId },
+      );
 
       if (sh.sourceType === "jg") {
         await inboundFromJg(tx, user, sh, lines, qcByShLine);

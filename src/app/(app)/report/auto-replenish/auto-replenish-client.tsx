@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Button, Popconfirm, Space, Statistic, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
+import CaliberNote from "@/components/CaliberNote";
 
 /** E1-03：与 createReplenishDraftSchema 的 200 项上限对齐（服务端契约） */
 const DRAFT_MAX = 200;
@@ -163,12 +164,9 @@ export default function AutoReplenishClient() {
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>自动补货候选（守护式）</Typography.Title>
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 12 }}
-        message="守护式：仅对 A/B 类·需求稳定(X/Y)·非覆盖缺口·有生产周期的告急 SKU 列为可自动候选；其余转人工。"
-        description="生成的是草稿，仍走审批（R13 人工闸）——绝不自动提交。"
+      <CaliberNote
+        summary={<>守护式：仅 A/B 类·需求稳定(X/Y)·非覆盖缺口·有生产周期的告急 SKU 列为可自动；其余转人工。生成草稿仍走审批。</>}
+        detail={<div><p>自动候选五门：有真实建议量、ABC ∈ A/B、XYZ ∈ X/Y（波动大不宜自动）、非覆盖缺口（防对海外仓已有库存重复下单）、生产周期在档。</p><p>批准 BH 后如需自动开工单，在 系统管理→运行参数 开启 auto_wo_on_bh（D33 自动链）。</p></div>}
       />
       <Space size={48} style={{ marginBottom: 16 }} wrap>
         <Statistic title="可自动候选数" value={data?.summary.candidateCount ?? 0} />

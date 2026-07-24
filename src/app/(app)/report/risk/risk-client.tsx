@@ -8,6 +8,7 @@ import { fetchJson, postJson } from "@/components/fetchJson";
 import { exportCsv } from "@/components/exportCsv";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
+import CaliberNote from "@/components/CaliberNote";
 
 interface RiskRow {
   skuId: number;
@@ -209,12 +210,9 @@ export default function RiskClient() {
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>风险库存处置</Typography.Title>
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 12 }}
-        message="三源融合（只读建议，不自动开单）：批次效期 × 货盘处置注记（PMC 货盘表备注） × 近3月销速。报废/禁售/盘点等操作走各自单据流程。"
-        description={data ? <Typography.Text type="secondary">口径日 {data.today}；滞销阈值 {data.slowThreshold} 天（运行参数 slow_days_threshold）；注记为对应月份货盘表原文。</Typography.Text> : null}
+      <CaliberNote
+        summary={<>效期 × 货盘注记 × 销速三源融合的处置建议；只读不开单，登记处置后到各单据执行。{data ? <>　口径日 {data.today}，滞销阈值 {data.slowThreshold} 天。</> : null}</>}
+        detail={<div><p>三源：批次效期（batch_stocks）× 货盘处置注记（PMC 货盘表备注原文）× 近 3 月销速。动作优先级：报废评审 → 禁售隔离 → 商务处置 → 促销清库 → 优先出库 → 滞销关注。</p><p>报废/禁售/盘点等实物操作走各自单据流程；「登记处置」仅记录决定（复核清单留痕），完成后点「完成」收口。</p></div>}
       />
       <ListToolbar
         state={listState}

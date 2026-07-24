@@ -49,6 +49,8 @@ export interface ExceptionItem {
 export interface WorkbenchFocus {
   generatedAt: string;
   sections: FocusSection[];
+  /** 我发起的未完结单据（BH/WO/PO/JG/库存单，draft+pending；未传 userId = null） */
+  myOpenDocs: number | null;
   /** #6 控制塔：跨域异常，按严重度+影响排序（登录第一屏「今天最需要处理的事」） */
   exceptions: ExceptionItem[];
 }
@@ -312,7 +314,17 @@ export async function computeExceptions(db: AnyDb): Promise<ExceptionItem[]> {
 }
 
 /** 按当前用户角色计算聚焦区块；admin 全量可见；多角色叠加多区块 */
-export async function getWorkbenchFocus(roles: string[], dbArg?: AnyDb): Promise<WorkbenchFocus> {
+async function countMyOpenDocs(db: AnyDb, userId: number): Promise<number> {
+  const tables = [schema.bhDocs, schema.woDocs, schema.poDocs, schema.jgDocs, schema.stockDocs];
+  const counts = await Promise.all(
+    tables.map((t) =>
+      countWhere(db, t, and(eq(t.createdBy, userId), inArray(t.status, ["draft", "pending"]))),
+    ),
+  );
+  return counts.reduce((a, b) => a + b, 0);
+}
+
+export async function getWorkbenchFocus(roles: string[], dbArg?: AnyDb, userId?: number): Promise<WorkbenchFocus> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const isAdmin = roles.includes("admin");
   const builders = SECTION_BUILDERS.filter(([role]) => isAdmin || roles.includes(role));
@@ -329,5 +341,6 @@ export async function getWorkbenchFocus(roles: string[], dbArg?: AnyDb): Promise
     Promise.all(builders.map(([, build]) => build(db))),
     planningRole ? computeExceptions(db) : Promise.resolve<ExceptionItem[]>([]),
   ]);
-  return { generatedAt: new Date().toISOString(), sections, exceptions };
+  const myOpenDocs = userId != null ? await countMyOpenDocs(db, userId) : null;
+  return { generatedAt: new Date().toISOString(), sections, exceptions, myOpenDocs };
 }

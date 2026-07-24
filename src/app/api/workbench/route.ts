@@ -6,7 +6,7 @@ import { getWorkbenchFocus } from "@/server/modules/workbench/focus";
 export async function GET() {
   try {
     const user = await guardRead();
-    const focus = await getWorkbenchFocus(user.roles);
+    const focus = await getWorkbenchFocus(user.roles, undefined, user.id);
     return NextResponse.json(focus);
   } catch (e) {
     return errorResponse(e);

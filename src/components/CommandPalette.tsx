@@ -122,7 +122,7 @@ export default function CommandPalette({ roles = [] }: { roles?: string[] }) {
       styles={{ body: { padding: 12 } }}
       style={{ top: 100 }}
       width={560}
-      destroyOnClose
+      destroyOnHidden
     >
       <AutoComplete
         autoFocus
