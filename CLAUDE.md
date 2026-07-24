@@ -15,3 +15,7 @@
 - 所有 service 写路径必须 writeAudit（core/audit.ts）；写守卫用 getFreshSessionUser 回查 DB
 - 生成新迁移后必须重启 dev server（PGlite 迁移仅在启动时应用——热更新代码引用新列会全线 500；/api/health 暴露漂移）
 - 路由域约定（Wave U）：新页面路由按业务域取路径（/npd、/inventory/expiry），/report/* 仅限真报表；存量 /report/risk 等为历史遗留不迁移（菜单键稳定优先）
+- 结构约定（Wave GG 体检结论，新代码遵循，存量不迁移以保稳定）：
+  - struct#6 NPD 模板存 transit_refs(kind=npd_node/role)：建项目时快照进 npd_tasks，模板重导不影响在跑项目（已验证）；后续如拆独立表另议
+  - struct#11 报表服务目录 report/ 按域归类为目标，但既有文件不批量移动（30+ import 回归风险>收益）；菜单已按域组织
+  - struct#12/#13 /report/* 仅新真报表用；risk/auto-replenish 等写页/工具为历史遗留不改路由（菜单键稳定优先）

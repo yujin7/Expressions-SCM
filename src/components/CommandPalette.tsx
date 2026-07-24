@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AutoComplete, Modal } from "antd";
 
-interface PageEntry { label: string; href: string; keywords: string }
+interface PageEntry { label: string; href: string; keywords: string; roles?: string[] }
 const PAGES: PageEntry[] = [
   { label: "工作台", href: "/workbench", keywords: "workbench home shouye" },
   { label: "我的待办", href: "/inbox", keywords: "inbox daiban todo" },
@@ -18,7 +18,7 @@ const PAGES: PageEntry[] = [
   { label: "风险库存处置", href: "/report/risk", keywords: "risk fengxian chuzhi" },
   { label: "库存分层 ABC/XYZ", href: "/report/segmentation", keywords: "abc xyz fenceng segmentation" },
   { label: "SKU 360", href: "/report/sku-360", keywords: "sku360 timeline shijianzhou" },
-  { label: "主数据健康度", href: "/report/data-health", keywords: "health jiankang zhiliang quality" },
+  { label: "主数据健康度", href: "/report/data-health", keywords: "health jiankang zhiliang quality" , roles: ["pmc","purchasing"] },
   { label: "自动链预演", href: "/outsource/auto-chain", keywords: "auto chain zidonglian" },
   { label: "备货申请", href: "/outsource/bh", keywords: "bh beihuo" },
   { label: "委外工单", href: "/outsource/wo", keywords: "wo weiwai gongdan" },
@@ -35,16 +35,16 @@ const PAGES: PageEntry[] = [
   { label: "供应商", href: "/master/supplier", keywords: "supplier gongyingshang" },
   { label: "仓库", href: "/master/warehouse", keywords: "warehouse cangku" },
   { label: "BOM", href: "/master/bom", keywords: "bom wuliaoqingdan" },
-  { label: "文件上传", href: "/import/upload", keywords: "upload import shangchuan" },
+  { label: "文件上传", href: "/import/upload", keywords: "upload import shangchuan" , roles: ["pmc"] },
   { label: "复核清单与提醒", href: "/review/checklist", keywords: "review fuhe checklist tixing" },
-  { label: "用户管理", href: "/admin/users", keywords: "users yonghu admin" },
-  { label: "运行参数", href: "/admin/params", keywords: "params canshu" },
-  { label: "运维面板", href: "/admin/health", keywords: "health yunwei ops" },
+  { label: "用户管理", href: "/admin/users", keywords: "users yonghu admin" , roles: [] },
+  { label: "运行参数", href: "/admin/params", keywords: "params canshu" , roles: ["pmc","purchasing","finance"] },
+  { label: "运维面板", href: "/admin/health", keywords: "health yunwei ops" , roles: [] },
 ];
 
 interface Group { title: string; items: { label: string; href: string; tag?: string }[] }
 
-export default function CommandPalette() {
+export default function CommandPalette({ roles = [] }: { roles?: string[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -90,14 +90,16 @@ export default function CommandPalette() {
     }, 300);
   }, [q]);
 
+  const isAdmin = roles.includes("admin");
+  const allowed = useMemo(() => PAGES.filter((p) => isAdmin || p.roles === undefined || p.roles.some((r) => roles.includes(r))), [isAdmin, roles]);
   const pageOpts = useMemo(() => {
     const kw = q.trim().toLowerCase();
     const matched = kw
-      ? PAGES.filter((p) => p.label.toLowerCase().includes(kw) || p.keywords.includes(kw))
-      : PAGES.slice(0, 8);
+      ? allowed.filter((p) => p.label.toLowerCase().includes(kw) || p.keywords.includes(kw))
+      : allowed.slice(0, 8);
     for (const p of matched) hrefByKey.current.set(`p:${p.href}`, p.href);
     return matched.map((p) => ({ value: `p:${p.href}`, label: <span>{p.label}</span> }));
-  }, [q]);
+  }, [q, allowed]);
 
   const options = useMemo(() => {
     const groups: { label: React.ReactNode; options: { value: string; label: React.ReactNode }[] }[] = [];

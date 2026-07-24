@@ -61,7 +61,15 @@ export interface AutoReplenishResult {
   };
 }
 
+/* struct#16：60s 模块缓存——本报表每次全量跑分层+补货两轮全表聚合，登录首屏/频繁打开代价高。
+   仅生产路径（dbArg 为空、非测试）缓存；测试传 db 走实时。 */
+let arCache: { value: AutoReplenishResult; expiresAt: number } | null = null;
+const AR_TTL_MS = 60_000;
+export function clearAutoReplenishCache(): void { arCache = null; }
+
 export async function getAutoReplenishCandidates(dbArg?: AnyDb): Promise<AutoReplenishResult> {
+  const bypass = dbArg !== undefined || process.env.NODE_ENV === "test";
+  if (!bypass && arCache && arCache.expiresAt > Date.now()) return arCache.value;
   /* ── 复用两支既有报表（大页避免分页丢行，传 db 同事务/同连接） ── */
   const seg = await getSegmentation({ pageSize: 100000 }, dbArg);
   const rep = await getReplenishSuggestions({ pageSize: 100000 }, dbArg);

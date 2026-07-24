@@ -31,7 +31,6 @@ const menuItems: MenuProps["items"] = [
   { key: "/notifications", icon: <InboxOutlined />, label: "通知中心" },
   { key: "/alerts", icon: <InboxOutlined />, label: "系统告警" },
   { key: "/report/dashboard", icon: <BarChartOutlined />, label: "经营驾驶舱" },
-  { key: "/report/digest", icon: <BarChartOutlined />, label: "每日经营摘要" },
   {
     key: "planning",
     icon: <FundOutlined />,
@@ -214,7 +213,7 @@ export default function AppShell({ children, userName, roleText, roles = [], mus
   const onPasswordPage = pathname.startsWith("/account/password");
   return (
     <AntApp>
-      <CommandPalette />
+      <CommandPalette roles={roles} />
       <Modal
         open={mustChangePassword && !onPasswordPage}
         closable={false}

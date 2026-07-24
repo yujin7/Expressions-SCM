@@ -128,7 +128,7 @@ export default function ExpiryClient() {
         <Input.Search allowClear placeholder="搜索编码/名称/批次" style={{ width: 240 }} onSearch={(v) => { setQ(v.trim()); setPage(1); }} />
         <a onClick={async () => {
           const all: Row[] = [];
-          for (let p2 = 1; p2 <= 10; p2++) {
+          for (let p2 = 1; p2 <= 40; p2++) { // struct#17: 提高上限至 2 万行
             const params = new URLSearchParams({ q, page: String(p2), pageSize: "500" });
             if (bucket) params.set("bucket", bucket);
             if (warehouseId) params.set("warehouseId", String(warehouseId));

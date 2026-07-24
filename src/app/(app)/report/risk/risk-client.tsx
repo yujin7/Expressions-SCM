@@ -213,7 +213,7 @@ export default function RiskClient() {
         <Input.Search allowClear placeholder="搜索编码/名称" style={{ width: 240 }} onSearch={(v) => { setQ(v.trim()); setPage(1); }} />
         <a onClick={async () => {
           const all: RiskRow[] = [];
-          for (let p2 = 1; p2 <= 10; p2++) {
+          for (let p2 = 1; p2 <= 40; p2++) { // struct#17: 提高上限至 2 万行
             const params = new URLSearchParams({ q, page: String(p2), pageSize: "500" });
             if (action) params.set("action", action);
             const d = await fetchJson<RiskData>(`/api/report/risk?${params.toString()}`);

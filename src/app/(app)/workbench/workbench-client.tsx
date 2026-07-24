@@ -162,9 +162,10 @@ export default function WorkbenchClient() {
 
   return (
     <div>
-      <Typography.Title level={4} style={{ marginTop: 0 }}>
-        工作台
-      </Typography.Title>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <Typography.Title level={4} style={{ marginTop: 0 }}>工作台</Typography.Title>
+        <Link href="/report/digest">每日经营摘要（简报视图）→</Link>
+      </div>
       <ControlTower items={exceptions} loading={focusLoading && exceptions.length === 0} />
       <FocusSections sections={sections} loading={focusLoading} />
       <Alert
