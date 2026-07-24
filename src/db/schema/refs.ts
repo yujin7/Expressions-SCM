@@ -33,7 +33,11 @@ export const batchStocks = pgTable("batch_stocks", {
   stocktakeDate: date("stocktake_date").notNull(), // 盘点所属期间
   source: text("source"), // expiry_import 等
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index("ix_batch_stocks_sku_wh").on(t.skuId, t.warehouseId)]);
+}, (t) => [
+  index("ix_batch_stocks_sku_wh").on(t.skuId, t.warehouseId),
+  // RT4-F7：自然幂等键——staging 行状态之外的第二道防线（重复行整套重插=效期视图翻倍）
+  unique("uq_batch_stock_key").on(t.skuId, t.warehouseId, t.stocktakeDate, t.prodDate, t.expiryDate, t.batchNo).nullsNotDistinct(),
+]);
 
 /**
  * 外部单号对照（《04》§2）：用友 CGDD-* / 钉钉审批号 / 聚水潭单号 ↔ 系统单据。

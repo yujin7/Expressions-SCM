@@ -1,3 +1,4 @@
+import { ROLE_LABELS } from "@/server/core/constants";
 import { getDbAsync } from "@/db";
 import type { AnyDb } from "@/server/docflow/doc-no";
 import { ApprovalError } from "@/server/docflow/approval";
@@ -39,7 +40,8 @@ export async function guardFreshWrite(): Promise<SessionUser> {
 export function requireAnyRole(user: SessionUser, ...roles: string[]): void {
   if (user.roles.includes("admin")) return;
   if (roles.some((r) => user.roles.includes(r))) return;
-  throw new ApiError(403, `无权限执行此操作：需要角色 ${roles.join("/")}`);
+  const labels = roles.map((r) => ROLE_LABELS[r as keyof typeof ROLE_LABELS] ?? r);
+  throw new ApiError(403, `无权限执行此操作：需要${labels.join("/")}角色`);
 }
 
 const APPROVAL_STATUS: Record<string, number> = {

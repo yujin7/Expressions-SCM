@@ -35,7 +35,7 @@ const menuItems: MenuProps["items"] = [
   {
     key: "outsourcing",
     icon: <ApartmentOutlined />,
-    label: "委外（W3）",
+    label: "委外生产",
     children: [
       { key: "/outsource/bh", label: "备货申请" },
       { key: "/outsource/wo", label: "委外工单" },
@@ -53,7 +53,7 @@ const menuItems: MenuProps["items"] = [
   {
     key: "inventory",
     icon: <InboxOutlined />,
-    label: "库存（W2）",
+    label: "库存",
     children: [
       { key: "/inventory/balance", label: "库存余额" },
       { key: "/inventory/ledger", label: "库存流水" },
@@ -63,7 +63,7 @@ const menuItems: MenuProps["items"] = [
   {
     key: "import",
     icon: <ImportOutlined />,
-    label: "导入中心（W4）",
+    label: "导入中心",
     children: [
       { key: "/import/upload", label: "文件上传" },
       { key: "/import/release", label: "放行工作台" },
@@ -74,12 +74,12 @@ const menuItems: MenuProps["items"] = [
   {
     key: "reports",
     icon: <BarChartOutlined />,
-    label: "报表（W5）",
+    label: "报表",
     children: [
       { key: "/report/dashboard", label: "经营驾驶舱" },
       { key: "/report/wip", label: "委外在制看板" },
       { key: "/report/settlement-summary", label: "结算汇总表" },
-      { key: "/report/jiediao", label: "借调对账（R16）" },
+      { key: "/report/jiediao", label: "借调对账" },
     ],
   },
   {
@@ -90,7 +90,29 @@ const menuItems: MenuProps["items"] = [
   },
 ];
 
-export default function AppShell({ children, userName, roleText }: { children: React.ReactNode; userName?: string; roleText?: string }) {
+/** RT4 UX-P0：按角色过滤菜单——非本角色的入口一律不渲染（杜绝"点了才 403"） */
+function filterMenuByRoles(items: MenuProps["items"], roles: string[]): MenuProps["items"] {
+  const isAdmin = roles.includes("admin");
+  const isPmc = isAdmin || roles.includes("pmc");
+  const canClaim = isAdmin || ["pmc", "purchasing", "warehouse"].some((r) => roles.includes(r));
+  return (items ?? [])
+    .map((item) => {
+      if (!item) return item;
+      if (item.key === "admin" && !isAdmin) return null;
+      if (item.key === "import") {
+        if (!isPmc && !canClaim) return null;
+        const children = ((item as { children?: { key: string; label: string }[] }).children ?? []).filter((c) =>
+          c.key === "/import/exceptions" ? canClaim : isPmc,
+        );
+        if (children.length === 0) return null;
+        return { ...item, children };
+      }
+      return item;
+    })
+    .filter(Boolean) as MenuProps["items"];
+}
+
+export default function AppShell({ children, userName, roleText, roles = [] }: { children: React.ReactNode; userName?: string; roleText?: string; roles?: string[] }) {
   const pathname = usePathname();
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
@@ -134,7 +156,7 @@ export default function AppShell({ children, userName, roleText }: { children: R
           <Menu
             theme="dark"
             mode="inline"
-            items={menuItems}
+            items={useMemo(() => filterMenuByRoles(menuItems, roles), [roles])}
             selectedKeys={[pathname]}
             defaultOpenKeys={openKeys}
             onClick={({ key }) => {

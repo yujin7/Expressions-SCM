@@ -1,6 +1,7 @@
 import { and, eq, getTableColumns, sql } from "drizzle-orm";
 import type { AnyPgTable, PgColumn } from "drizzle-orm/pg-core";
 import { approvalConfigs, approvals } from "@/db/schema";
+import { ROLE_LABELS } from "@/server/core/constants";
 import type { AnyDb } from "./doc-no";
 import { nextStatus, type DocStatus } from "./state";
 
@@ -51,7 +52,7 @@ export async function approveDoc(
     if (!cfg) throw new ApprovalError("NO_CONFIG", `缺少审批配置: ${i.docType}`);
     const isAdmin = i.approver.roles.includes("admin");
     if (!isAdmin && !i.approver.roles.includes(cfg.approverRole)) {
-      throw new ApprovalError("ROLE_FORBIDDEN", `需要角色 ${cfg.approverRole}`);
+      throw new ApprovalError("ROLE_FORBIDDEN", `需要${ROLE_LABELS[cfg.approverRole as keyof typeof ROLE_LABELS] ?? cfg.approverRole}审批角色`);
     }
     // 2) 同角色内仅 is_approver=true 者可审批（管理员豁免）
     if (!isAdmin && !i.approver.isApprover) throw new ApprovalError("NOT_APPROVER");

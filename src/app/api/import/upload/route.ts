@@ -62,6 +62,14 @@ export async function POST(req: NextRequest) {
               ? await stageSalesMonthly(db, filePath, user.id)
               : await stageLeadtime(db, filePath, user.id);
 
+    // RT4：上传本身留审计痕（谁在何时上传了什么文件到哪个模板）
+    const { writeAudit } = await import("@/server/core/audit");
+    await writeAudit(db, {
+      userId: user.id,
+      entity: "import_upload",
+      action: "upload",
+      after: { file: safeName, template: v.template, size: file.size },
+    });
     return NextResponse.json({ file: safeName, template: v.template, summary });
   } catch (e) {
     return errorResponse(e);

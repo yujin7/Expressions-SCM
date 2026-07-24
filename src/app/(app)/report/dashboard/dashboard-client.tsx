@@ -119,7 +119,7 @@ export default function DashboardClient() {
   const channelTotal = data.channelMix.reduce((a, c) => a + c.qty, 0);
 
   const riskCols: ColumnsType<DashboardData["expiryRiskTop"][number]> = [
-    { title: "编码", dataIndex: "code", width: 110 },
+    { title: "编码", dataIndex: "code", width: 110, render: (v: string) => <a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a> },
     { title: "名称", dataIndex: "name", ellipsis: true },
     { title: "仓库", dataIndex: "warehouse", width: 110, ellipsis: true },
     {
@@ -127,13 +127,13 @@ export default function DashboardClient() {
       dataIndex: "daysLeft",
       width: 90,
       align: "right",
-      render: (v: number) => <Tag color={v < 0 ? "red" : v < 92 ? "volcano" : "orange"}>{v < 0 ? `过期${-v}天` : `${v}天`}</Tag>,
+      render: (v: number) => <Tag color={v < 0 ? "red" : v < 92 ? "volcano" : "orange"}>{v < 0 ? `逾期${-v}天` : `${v}天`}</Tag>,
     },
     { title: "数量", dataIndex: "qty", width: 90, align: "right", render: fmt },
   ];
 
   const slowCols: ColumnsType<DashboardData["slowTop"][number]> = [
-    { title: "编码", dataIndex: "code", width: 110 },
+    { title: "编码", dataIndex: "code", width: 110, render: (v: string) => <a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a> },
     { title: "名称", dataIndex: "name", ellipsis: true },
     { title: "在库", dataIndex: "onHand", width: 90, align: "right", render: fmt },
     { title: "近3月销", dataIndex: "sales3m", width: 90, align: "right", render: fmt },
@@ -176,8 +176,8 @@ export default function DashboardClient() {
         </Col>
         <Col xs={12} md={8} xl={4}>
           <Card size="small">
-            <AntTooltip title="自有仓实时账（1仓2仓合并口径）">
-              <Statistic title="自有仓在账" value={kpi.ownStockQty} />
+            <AntTooltip title="全部实时记账仓合计：自有仓（1仓2仓）+成品/原料/包材仓+委外仓（垫料为负）——与下方「库存分布」逐仓条形图同源">
+              <Statistic title="实时账在库（全部记账仓）" value={kpi.ownStockQty} />
             </AntTooltip>
           </Card>
         </Col>
@@ -200,13 +200,17 @@ export default function DashboardClient() {
         </Col>
         <Col xs={12} md={8} xl={4}>
           <Card size="small">
-            <Statistic
-              title="滞销 SKU / 待办"
-              value={kpi.slowMoverCount}
-              suffix={`/ ${kpi.pendingApprovals + kpi.reviewBacklog}`}
-              valueStyle={{ color: kpi.slowMoverCount > 0 ? "#fa8c16" : undefined }}
-              prefix={<FallOutlined />}
-            />
+            <a href="/workbench" style={{ color: "inherit" }}>
+              <AntTooltip title="滞销 SKU 数 / 待办（待审批+数据积压）——点击进工作台处理">
+                <Statistic
+                  title="滞销 SKU / 待办"
+                  value={kpi.slowMoverCount}
+                  suffix={`/ ${kpi.pendingApprovals + kpi.reviewBacklog}`}
+                  valueStyle={{ color: kpi.slowMoverCount > 0 ? "#fa8c16" : undefined }}
+                  prefix={<FallOutlined />}
+                />
+              </AntTooltip>
+            </a>
           </Card>
         </Col>
       </Row>
@@ -220,11 +224,19 @@ export default function DashboardClient() {
           icon={<BulbOutlined />}
           message="智能洞察（纯报表口径自动归纳，不代决策）"
           description={
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
-              {data.insights.map((s, i) => (
-                <li key={i}>{s}</li>
-              ))}
-            </ul>
+            <>
+              <ul style={{ margin: 0, paddingLeft: 18 }}>
+                {data.insights.map((s, i) => (
+                  <li key={i}>{s}</li>
+                ))}
+              </ul>
+              <Space size={16} style={{ marginTop: 8 }}>
+                <a href="/workbench">→ 工作台待办</a>
+                <a href="/import/release">→ 放行工作台</a>
+                <a href="/import/exceptions">→ 别名认领</a>
+                <a href="/inventory/balance">→ 库存余额</a>
+              </Space>
+            </>
           }
         />
       )}
@@ -233,7 +245,7 @@ export default function DashboardClient() {
       <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
         <Col xs={24} xl={16}>
           <ChartCard
-            title="销售趋势（2026 上半年，全渠道）"
+            title={`销售趋势（${data.salesWindow.months6[0] ?? ""} ~ ${data.salesWindow.months6.at(-1) ?? ""}，全渠道）`}
             extra={<Segmented size="small" options={["按品牌", "总量"]} value={trendMode} onChange={setTrendMode} />}
           >
             <ResponsiveContainer>
@@ -254,7 +266,7 @@ export default function DashboardClient() {
           </ChartCard>
         </Col>
         <Col xs={24} xl={8}>
-          <ChartCard title="渠道结构（近半年）">
+          <ChartCard title={`渠道结构（近${data.salesWindow.months6.length}个月）`}>
             <ResponsiveContainer>
               <PieChart>
                 <Pie
@@ -283,7 +295,7 @@ export default function DashboardClient() {
       {/* 品牌 + TOP SKU */}
       <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
         <Col xs={24} xl={8}>
-          <ChartCard title="品牌销量结构（近半年）">
+          <ChartCard title={`品牌销量结构（近${data.salesWindow.months6.length}个月）`}>
             <ResponsiveContainer>
               <BarChart data={data.brandSales} layout="vertical" margin={{ left: 24, right: 24 }}>
                 <CartesianGrid strokeDasharray="3 3" />
@@ -300,7 +312,7 @@ export default function DashboardClient() {
           </ChartCard>
         </Col>
         <Col xs={24} xl={16}>
-          <ChartCard title="TOP 10 SKU（近半年销量）">
+          <ChartCard title={`TOP 10 SKU（近${data.salesWindow.months6.length}个月销量）`}>
             <ResponsiveContainer>
               <BarChart data={data.topSkus} layout="vertical" margin={{ left: 24, right: 24 }}>
                 <CartesianGrid strokeDasharray="3 3" />
@@ -378,7 +390,7 @@ export default function DashboardClient() {
       {/* 效期 */}
       <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
         <Col xs={24} xl={10}>
-          <ChartCard title="效期七段位（R15，批次参考层）">
+          <ChartCard title="效期七段位（批次参考层）">
             <ResponsiveContainer>
               <BarChart data={data.expiryBuckets} margin={{ right: 16 }}>
                 <CartesianGrid strokeDasharray="3 3" />

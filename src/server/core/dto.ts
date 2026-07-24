@@ -1,4 +1,4 @@
-import { PRICE_VISIBLE_ROLES, SENSITIVE_FIELDS } from "./constants";
+import { PRICE_VISIBLE_ROLES, ROLE_LABELS, SENSITIVE_FIELDS } from "./constants";
 
 /**
  * R9 脱敏唯一收口：所有实体 dto / 导出 / RSC 载荷必须经过 maskSensitive。
@@ -65,7 +65,8 @@ export async function getSessionUser(): Promise<SessionUser> {
 export function requireRole(user: { roles: string[] }, ...roles: string[]): void {
   if (user.roles.includes("admin")) return;
   if (roles.some((r) => user.roles.includes(r))) return;
-  throw new Error(`无权限：需要角色 ${roles.join("/")}`);
+  const labels = roles.map((r) => ROLE_LABELS[r as keyof typeof ROLE_LABELS] ?? r);
+  throw new Error(`无权限：需要${labels.join("/")}角色`);
 }
 
 

@@ -4,7 +4,7 @@
  */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { importJobs, stagingRows } from "@/db/schema";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -24,18 +24,40 @@ export async function createImportJob(
 ): Promise<{ id: number }> {
   const fileHash = createHash("md5").update(readFileSync(i.filePath)).digest("hex");
   const filename = i.filePath.split("/").pop() ?? i.filePath;
-  const [job] = await db
-    .insert(importJobs)
-    .values({
-      template: i.template,
-      filename,
-      fileHash,
-      status: "validating",
-      createdBy: i.createdBy,
-      idempotencyKey: i.idempotencyKey ?? `${i.template}:${fileHash}`,
-    })
-    .returning({ id: importJobs.id });
-  return job;
+  const idempotencyKey = i.idempotencyKey ?? `${i.template}:${fileHash}`;
+  // 红队第四轮 F1：重导幂等落地——同 idempotencyKey 的旧 job 未放行行一律作废，
+  // 防止 populate/上传重跑把同一文件的行重复排队（期初翻倍事故的根因）。
+  // committed 行不动（已放行历史留痕）；error 行本就不入选。
+  return db.transaction(async (tx: AnyDb) => {
+    const olds: { id: number }[] = await tx
+      .select({ id: importJobs.id })
+      .from(importJobs)
+      .where(eq(importJobs.idempotencyKey, idempotencyKey));
+    const [job] = await tx
+      .insert(importJobs)
+      .values({
+        template: i.template,
+        filename,
+        fileHash,
+        status: "validating",
+        createdBy: i.createdBy,
+        idempotencyKey,
+      })
+      .returning({ id: importJobs.id });
+    for (const old of olds) {
+      await tx
+        .update(stagingRows)
+        .set({ status: "error", errorMsg: `重导作废（superseded by job #${job.id}）` })
+        .where(
+          and(
+            eq(stagingRows.importJobId, old.id),
+            inArray(stagingRows.status, ["pending", "validated"]),
+          ),
+        );
+      await tx.update(importJobs).set({ status: "superseded" }).where(eq(importJobs.id, old.id));
+    }
+    return job;
+  });
 }
 
 export async function writeStagingRows(db: AnyDb, jobId: number, rows: StagingRowInput[]): Promise<void> {

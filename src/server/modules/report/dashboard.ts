@@ -16,7 +16,16 @@ import * as schema from "@/db/schema";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
 
-const SALES_MONTHS_3M = ["2026-04", "2026-05", "2026-06"];
+/** 由数据最新月动态回推 N 个月（RT4 UX-P1-2：新月份导入后口径自动跟进，不再写死） */
+function lastMonths(maxYm: string, n: number): string[] {
+  const [y, m] = maxYm.split("-").map(Number);
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const d = new Date(Date.UTC(y, m - 1 - i, 1));
+    out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
+  }
+  return out.reverse();
+}
 
 export interface DashboardData {
   generatedAt: string;
@@ -33,6 +42,8 @@ export interface DashboardData {
     pendingApprovals: number;
     reviewBacklog: number; // 开放别名 + 阻塞 staging 行
   };
+  /** 销量口径窗口（动态推导）：trend/结构图=近6月，销速=近3月 */
+  salesWindow: { months6: string[]; months3: string[] };
   salesTrend: { month: string; total: number; [brand: string]: number | string }[];
   trendBrands: string[];
   channelMix: { name: string; qty: number }[];
@@ -76,8 +87,11 @@ export async function getDashboard(roles: string[], dbArg?: AnyDb): Promise<Dash
     db.select({ spuCount: sql<number>`count(*)::int` }).from(schema.spus),
   ]);
 
-  /* ── 销量：月×品牌趋势 / 渠道 / 品牌 / TOP SKU ── */
+  /* ── 销量：月×品牌趋势 / 渠道 / 品牌 / TOP SKU（窗口动态推导） ── */
   const sm = schema.salesMonthly;
+  const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
+  const months6 = maxYm ? lastMonths(maxYm, 6) : [];
+  const months3 = maxYm ? lastMonths(maxYm, 3) : [];
   const monthBrand: { month: string; brand: string | null; qty: string }[] = await db
     .select({
       month: sm.yearMonth,
@@ -87,6 +101,7 @@ export async function getDashboard(roles: string[], dbArg?: AnyDb): Promise<Dash
     .from(sm)
     .innerJoin(schema.skus, eq(sm.skuId, schema.skus.id))
     .leftJoin(schema.brands, eq(schema.skus.brandId, schema.brands.id))
+    .where(months6.length ? inArray(sm.yearMonth, months6) : sql`false`)
     .groupBy(sm.yearMonth, schema.brands.nameCn)
     .orderBy(sm.yearMonth);
 
@@ -117,6 +132,7 @@ export async function getDashboard(roles: string[], dbArg?: AnyDb): Promise<Dash
     .select({ name: schema.channels.name, qty: sql<string>`sum(${sm.qty})` })
     .from(sm)
     .innerJoin(schema.channels, eq(sm.channelId, schema.channels.id))
+    .where(months6.length ? inArray(sm.yearMonth, months6) : sql`false`)
     .groupBy(schema.channels.name);
   const channelMix = channelRows
     .map((r) => ({ name: r.name, qty: Math.round(num(r.qty)) }))
@@ -130,6 +146,7 @@ export async function getDashboard(roles: string[], dbArg?: AnyDb): Promise<Dash
     .select({ code: schema.skus.code, name: schema.skus.name, qty: sql<string>`sum(${sm.qty})` })
     .from(sm)
     .innerJoin(schema.skus, eq(sm.skuId, schema.skus.id))
+    .where(months6.length ? inArray(sm.yearMonth, months6) : sql`false`)
     .groupBy(schema.skus.code, schema.skus.name)
     .orderBy(sql`sum(${sm.qty}) desc`)
     .limit(10);
@@ -184,7 +201,7 @@ export async function getDashboard(roles: string[], dbArg?: AnyDb): Promise<Dash
   const sales3mRows: { skuId: number; qty: string }[] = await db
     .select({ skuId: sm.skuId, qty: sql<string>`sum(${sm.qty})` })
     .from(sm)
-    .where(inArray(sm.yearMonth, SALES_MONTHS_3M))
+    .where(months3.length ? inArray(sm.yearMonth, months3) : sql`false`)
     .groupBy(sm.skuId);
   const sales3m = new Map(sales3mRows.map((r) => [r.skuId, num(r.qty)]));
 
@@ -254,7 +271,7 @@ export async function getDashboard(roles: string[], dbArg?: AnyDb): Promise<Dash
     { bucket: ">24月", min: 730, max: Infinity },
   ];
   const expAgg = new Map<string, { qty: number; batches: number }>(EXP_BUCKETS.map((b) => [b.bucket, { qty: 0, batches: 0 }]));
-  let expiryRiskQty = 0;
+  let expiryRiskQty = 0; // 由段位聚合后统一赋值（同源口径）
   const riskRows: { skuId: number; warehouseId: number; expiryDate: string; daysLeft: number; qty: number }[] = [];
   for (const r of batchRows) {
     const q = num(r.qty);
@@ -264,8 +281,7 @@ export async function getDashboard(roles: string[], dbArg?: AnyDb): Promise<Dash
     const e = expAgg.get(b.bucket)!;
     e.qty += q;
     e.batches++;
-    if (daysLeft < 183) { // ≤6月（与七段位 (3,6月] 右界一致）
-      expiryRiskQty += q;
+    if (daysLeft <= 183) { // ≤6月（含 183 边界，与段位 (3,6月] 右闭一致）
       riskRows.push({ skuId: r.skuId, warehouseId: r.warehouseId, expiryDate: r.expiryDate, daysLeft, qty: q });
     }
   }
@@ -274,6 +290,8 @@ export async function getDashboard(roles: string[], dbArg?: AnyDb): Promise<Dash
     qty: Math.round(expAgg.get(b.bucket)!.qty),
     batches: expAgg.get(b.bucket)!.batches,
   }));
+  // KPI 与图同源（RT4 UX-P1-1）：风险量 = 前三段位（已到期+0-3月+3-6月）之和，只取整一次
+  expiryRiskQty = expiryBuckets.slice(0, 3).reduce((a, b) => a + b.qty, 0);
   const riskTop = riskRows.sort((a, b) => a.daysLeft - b.daysLeft || b.qty - a.qty).slice(0, 10);
   const riskSkuInfo: { id: number; code: string; name: string }[] = riskTop.length
     ? await db
@@ -386,6 +404,7 @@ export async function getDashboard(roles: string[], dbArg?: AnyDb): Promise<Dash
 
   return {
     generatedAt: today.toISOString(),
+    salesWindow: { months6, months3 },
     kpi: {
       skuActive,
       spuCount,

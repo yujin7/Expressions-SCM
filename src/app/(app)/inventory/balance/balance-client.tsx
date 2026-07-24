@@ -1,11 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Alert, App, Input, Space, Switch, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import ExportButton from "@/components/ExportButton";
 import RemoteSelect from "@/components/RemoteSelect";
 import { fetchJson } from "@/components/fetchJson";
+import { formatQty } from "@/components/format";
 import { WAREHOUSE_KIND_LABELS } from "@/components/labels";
 
 interface BalanceRow {
@@ -41,12 +43,13 @@ const KIND_COLORS: Record<string, string> = {
 
 function SkuBalanceTab() {
   const { message } = App.useApp();
+  const initialQ = useSearchParams().get("q") ?? ""; // 驾驶舱风险表点击直达（RT4 UX-P1-3）
   const [rows, setRows] = useState<BalanceRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(initialQ);
   const [warehouseId, setWarehouseId] = useState<number | undefined>();
   const [includeZero, setIncludeZero] = useState(false);
 
@@ -95,10 +98,10 @@ function SkuBalanceTab() {
       render: (v: string, r) =>
         r.warehouseKind === "outsource" && Number(v) < 0 ? (
           <Tooltip title="加工厂垫料">
-            <Typography.Text type="danger">{v}</Typography.Text>
+            <Typography.Text type="danger">{formatQty(v)}</Typography.Text>
           </Tooltip>
         ) : (
-          v
+          formatQty(v)
         ),
     },
     { title: "基础单位", dataIndex: "baseUom", width: 90 },
@@ -109,6 +112,7 @@ function SkuBalanceTab() {
       <Space style={{ marginBottom: 16 }} wrap>
         <Input.Search
           allowClear
+          defaultValue={initialQ}
           placeholder="搜索 SKU 编码/名称"
           style={{ width: 260 }}
           onSearch={(value) => {
@@ -119,9 +123,10 @@ function SkuBalanceTab() {
         <RemoteSelect
           api="/api/master/warehouse"
           getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
+          filterRow={(r) => r.accountingMode === "realtime"}
           allowClear
-          placeholder="全部仓库"
-          style={{ width: 220 }}
+          placeholder="全部实时仓（快照仓请切「全仓视图」页签）"
+          style={{ width: 280 }}
           value={warehouseId}
           onChange={(v) => {
             setWarehouseId(v as number | undefined);
@@ -216,7 +221,7 @@ function SpuBalanceTab() {
     { title: "产品编码", dataIndex: "spuCode", width: 140 },
     { title: "产品名", dataIndex: "spuNameCn" },
     { title: "SKU 数", dataIndex: "skuCount", width: 100, align: "right" },
-    { title: "合计数量", dataIndex: "totalQty", width: 140, align: "right" },
+    { title: "合计数量", dataIndex: "totalQty", width: 140, align: "right", render: (v: string) => formatQty(v) },
   ];
 
   return (
@@ -277,12 +282,13 @@ interface SnapshotRow {
 /** D20 全仓视图：快照仓最新库存（只读参考口径，带数据龄标注，不入账本） */
 function SnapshotTab() {
   const { message } = App.useApp();
+  const initialQ = useSearchParams().get("q") ?? "";
   const [rows, setRows] = useState<SnapshotRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(initialQ);
   const [warehouseId, setWarehouseId] = useState<number | undefined>();
 
   const load = useCallback(async () => {
@@ -314,7 +320,7 @@ function SnapshotTab() {
     { title: "名称", dataIndex: "skuName", width: 180 },
     { title: "所属产品", dataIndex: "spuNameCn", render: (_, r) => `${r.spuCode} ${r.spuNameCn}` },
     { title: "仓库", dataIndex: "warehouseName", width: 160 },
-    { title: "数量", dataIndex: "qty", width: 120, align: "right" },
+    { title: "数量", dataIndex: "qty", width: 120, align: "right", render: (v: string) => formatQty(v) },
     { title: "基础单位", dataIndex: "baseUom", width: 90 },
     {
       title: "数据日期",
@@ -343,6 +349,7 @@ function SnapshotTab() {
       <Space style={{ marginBottom: 16 }} wrap>
         <Input.Search
           allowClear
+          defaultValue={initialQ}
           placeholder="搜索 SKU 编码/名称"
           style={{ width: 260 }}
           onSearch={(value) => {
@@ -353,6 +360,7 @@ function SnapshotTab() {
         <RemoteSelect
           api="/api/master/warehouse"
           getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
+          filterRow={(r) => r.accountingMode === "snapshot"}
           allowClear
           placeholder="全部快照仓"
           style={{ width: 220 }}
@@ -387,6 +395,14 @@ function SnapshotTab() {
 }
 
 export default function BalanceClient() {
+  return (
+    <Suspense>
+      <BalanceInner />
+    </Suspense>
+  );
+}
+
+function BalanceInner() {
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>

@@ -16,6 +16,10 @@ const { auth } = NextAuth({
 
 export default auth((req) => {
   if (!req.auth) {
+    // API 客户端要机器可读错误，不要 302 HTML（RT4）；页面仍走登录跳转
+    if (req.nextUrl.pathname.startsWith("/api/")) {
+      return Response.json({ error: "未登录" }, { status: 401 });
+    }
     const loginUrl = new URL("/login", req.nextUrl.origin);
     loginUrl.searchParams.set("callbackUrl", req.nextUrl.pathname + req.nextUrl.search);
     return Response.redirect(loginUrl);

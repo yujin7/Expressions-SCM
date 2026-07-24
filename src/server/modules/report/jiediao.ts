@@ -86,9 +86,10 @@ export async function getJiediaoReport(month: string, dbArg?: AnyDb): Promise<Ji
     )
     .orderBy(schema.stockDocs.docNo, sql`${schema.skus.code}`);
 
+  const shDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" });
   const lines = rows.map((r) => ({
     docNo: r.docNo,
-    postedAt: r.postedAt.toISOString().slice(0, 10),
+    postedAt: shDate.format(r.postedAt), // RT4：上海口径显示（跨月凌晨单不再显示出报表月之外的日期）
     fromWarehouse: r.fromName,
     toWarehouse: r.toName,
     skuCode: r.skuCode,

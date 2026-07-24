@@ -4,6 +4,7 @@
  *  1) 仓库/供应商主档创建 + 确定性别名自动认领（规则见 CURRENT.md 代决记录）
  * 运行（须先停 dev server——PGlite 单进程）：npx tsx scripts/populate-stage.ts
  */
+import { createHash } from "node:crypto";
 import { getDbAsync } from "../src/db";
 import * as schema from "../src/db/schema";
 import { and, eq } from "drizzle-orm";
@@ -33,7 +34,10 @@ function classifyWarehouse(raw: string): { code: string; name: string; kind: "fi
   if (t.includes("1仓2仓") || t === "1仓(广州)" || t === "1仓（广州）") {
     return { code: "WH-OWN", name: "自有仓（1仓2仓合并口径）", kind: "finished", mode: "realtime", merged: true };
   }
-  return { code: "WH-SNAP-" + Buffer.from(t).toString("hex").slice(0, 10).toUpperCase(), name: t, kind: "snapshot", mode: "snapshot" };
+  // RT4-F4：全量 md5 前 10 位——此前取 utf8 hex 前 10 字符（≈1.7 个汉字），
+  // 「天猫保税仓/天猫国际仓」这类同前缀异仓会静默合并且别名固化错绑
+  const digest = createHash("md5").update(t).digest("hex").slice(0, 10).toUpperCase();
+  return { code: "WH-SNAP-" + digest, name: t, kind: "snapshot", mode: "snapshot" };
 }
 
 async function main() {

@@ -61,7 +61,7 @@ export const approvalActionEnum = pgEnum("approval_action", ["approve", "reject"
 
 export const tlReasonEnum = pgEnum("tl_reason", ["surplus_return", "defect_exchange"]); // 剩料退回/不合格料退换
 
-export const importStatusEnum = pgEnum("import_status", ["pending", "validating", "failed", "done"]);
+export const importStatusEnum = pgEnum("import_status", ["pending", "validating", "failed", "done", "superseded"]); // superseded=被同键重导作废（RT4-F1）
 
 export const reconStatusEnum = pgEnum("recon_status", ["open", "explained", "resolved"]);
 

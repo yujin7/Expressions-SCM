@@ -39,9 +39,13 @@ async function fetchLines(bomIds: number[]): Promise<BomLineRow[]> {
     .orderBy(schema.bomLines.id);
 }
 
-export async function listBoms(q: string, page: number, pageSize: number) {
+export async function listBoms(q: string, page: number, pageSize: number, status?: string) {
   const db = await getDbAsync();
   const conds = [];
+  // RT4：status 过滤此前是无操作参数——现真实生效（非法值忽略）
+  if (status && ["draft", "active", "retired"].includes(status)) {
+    conds.push(eq(schema.boms.status, status as "draft" | "active" | "retired"));
+  }
   if (q) {
     conds.push(
       or(

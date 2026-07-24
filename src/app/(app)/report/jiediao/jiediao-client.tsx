@@ -19,6 +19,15 @@ export default function JiediaoClient() {
   const [month, setMonth] = useState<Dayjs>(dayjs());
   const [data, setData] = useState<JiediaoReport | null>(null);
   const [loading, setLoading] = useState(true);
+  const [printing, setPrinting] = useState(false); // 打印时明细全量渲染（RT4 UX-P1-6：签字凭据不能只打当前页）
+
+  const handlePrint = () => {
+    setPrinting(true);
+    setTimeout(() => {
+      window.print();
+      setPrinting(false);
+    }, 60);
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -78,8 +87,8 @@ export default function JiediaoClient() {
           <a onClick={() => void load()}>
             <ReloadOutlined /> 刷新
           </a>
-          <a onClick={() => window.print()}>
-            <PrinterOutlined /> 打印签字页
+          <a onClick={handlePrint}>
+            <PrinterOutlined /> 打印签字页（含全量明细）
           </a>
         </Space>
       </Space>
@@ -121,7 +130,7 @@ export default function JiediaoClient() {
               size="small"
               columns={lineCols}
               dataSource={data.lines}
-              pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
+              pagination={printing ? false : { pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
               scroll={{ x: "max-content" }}
             />
           </Card>

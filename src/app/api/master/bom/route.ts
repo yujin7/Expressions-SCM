@@ -6,8 +6,8 @@ import { createBom, listBoms } from "@/server/modules/master/bom";
 export async function GET(req: NextRequest) {
   try {
     await guardRead();
-    const { q, page, pageSize } = parseListQuery(req.url);
-    return NextResponse.json(await listBoms(q, page, pageSize));
+    const { q, page, pageSize, searchParams } = parseListQuery(req.url);
+    return NextResponse.json(await listBoms(q, page, pageSize, searchParams.get("status") ?? undefined));
   } catch (e) {
     return errorResponse(e);
   }

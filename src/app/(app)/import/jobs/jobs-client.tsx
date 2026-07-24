@@ -7,6 +7,23 @@ import { ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { fetchJson } from "@/components/fetchJson";
 
+const TEMPLATE_LABELS: Record<string, string> = {
+  bom: "BOM 表",
+  inventory: "库存明细",
+  expiry: "效期占比",
+  sales: "销量汇总",
+  leadtime: "在途/交期",
+};
+const TABLE_LABELS: Record<string, string> = {
+  spu_suggestion: "SPU 归组建议",
+  bom_block: "BOM 块",
+  processing_fee_candidate: "加工费候选",
+  batch_stock: "批次效期",
+  sales_monthly: "月销量",
+  stock_opening_candidate: "库存明细（期初/快照）",
+  sku_leadtime: "交期参考（1.1）",
+};
+
 interface JobRow {
   id: number;
   template: string;
@@ -70,10 +87,10 @@ function JobSummary({ jobId }: { jobId: number }) {
 
   const columns: ColumnsType<JobSummaryRow> = [
     {
-      title: "目标表",
+      title: "数据集",
       dataIndex: "targetTable",
       render: (v: string | null) =>
-        v ? <Typography.Text code>{v}</Typography.Text> : <Typography.Text type="secondary">（未放行）</Typography.Text>,
+        v ? TABLE_LABELS[v] ?? <Typography.Text code>{v}</Typography.Text> : <Typography.Text type="secondary">（未放行）</Typography.Text>,
     },
     {
       title: "状态",
@@ -127,7 +144,7 @@ export default function JobsClient() {
 
   const columns: ColumnsType<JobRow> = [
     { title: "ID", dataIndex: "id", width: 70 },
-    { title: "模板", dataIndex: "template", width: 160, render: (v: string) => <Tag>{v}</Tag> },
+    { title: "模板", dataIndex: "template", width: 160, render: (v: string) => <Tag>{TEMPLATE_LABELS[v] ?? v}</Tag> },
     { title: "文件名", dataIndex: "filename", ellipsis: true },
     {
       title: "状态",

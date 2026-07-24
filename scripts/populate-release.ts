@@ -25,6 +25,7 @@ import {
   type BomResolution,
 } from "../src/server/modules/release/engine";
 import { createStockDoc, submitStockDoc, approveStockDoc } from "../src/server/modules/inventory/stock-doc";
+import { dAdd } from "../src/server/core/decimal";
 import { writeAudit } from "../src/server/core/audit";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -270,7 +271,7 @@ async function main() {
   const whAlias = new Map<string, number | null>();
   const skuAlias = new Map<string, number | null>();
 
-  type Bucket = { qty: number; rowIds: number[] };
+  type Bucket = { qty: string; rowIds: number[] }; // RT4-P3：dAdd 字符串求和（禁 float）
   const openingBySku = new Map<number, Bucket>(); // 实时仓（WH-OWN 合并口径）
   const snapByKey = new Map<string, Bucket & { warehouseId: number; skuId: number }>();
   let zeroRows = 0, unresolvedRows = 0;
@@ -308,14 +309,14 @@ async function main() {
     }
     const wh = whById.get(whId)!;
     if (wh.accountingMode === "realtime") {
-      const b = openingBySku.get(skuId) ?? { qty: 0, rowIds: [] };
-      b.qty += p.qty;
+      const b = openingBySku.get(skuId) ?? { qty: "0", rowIds: [] };
+      b.qty = dAdd(b.qty, String(p.qty));
       b.rowIds.push(r.id);
       openingBySku.set(skuId, b);
     } else {
       const key = `${whId}|${skuId}`;
-      const b = snapByKey.get(key) ?? { qty: 0, rowIds: [], warehouseId: whId, skuId };
-      b.qty += p.qty;
+      const b = snapByKey.get(key) ?? { qty: "0", rowIds: [], warehouseId: whId, skuId };
+      b.qty = dAdd(b.qty, String(p.qty));
       b.rowIds.push(r.id);
       snapByKey.set(key, b);
     }
@@ -331,15 +332,18 @@ async function main() {
       subtype: "opening",
       warehouseId: ownWh.id,
       remark: `期初建账（电商部库存明细 ${SNAPSHOT_BIZ_DATE}，1仓2仓合并口径）批次 ${Math.floor(i / OPENING_CHUNK) + 1}`,
-      lines: chunk.map(([skuId, b]) => ({ skuId, qty: String(b.qty) })),
+      lines: chunk.map(([skuId, b]) => ({ skuId, qty: b.qty })),
     });
     const submitted = await submitStockDoc(warehouse01, doc.id, doc.version);
-    await approveStockDoc(finance01, doc.id, { action: "approve", version: submitted.version, comment: "期初批量建账（业主代决授权）" });
+    // RT4-F3：审批过账与 staging 提交同事务——消除"已过账但行仍 pending"的崩溃窗口（重跑翻倍根因之二）
     const rowIds = chunk.flatMap(([, b]) => b.rowIds);
-    await db
-      .update(schema.stagingRows)
-      .set({ status: "committed", targetId: doc.id, errorMsg: null })
-      .where(inArray(schema.stagingRows.id, rowIds));
+    await db.transaction(async (tx: typeof db) => {
+      await approveStockDoc(finance01, doc.id, { action: "approve", version: submitted.version, comment: "期初批量建账（业主代决授权）" }, tx);
+      await tx
+        .update(schema.stagingRows)
+        .set({ status: "committed", targetId: doc.id, errorMsg: null })
+        .where(inArray(schema.stagingRows.id, rowIds));
+    });
     docNos.push(doc.docNo);
   }
   report.opening = { docs: docNos.length, docNos, skuLines: openingEntries.length, zeroRows, unresolvedRows };
@@ -350,10 +354,10 @@ async function main() {
   for (const b of snapByKey.values()) {
     const [row] = await db
       .insert(schema.stockSnapshots)
-      .values({ warehouseId: b.warehouseId, skuId: b.skuId, bizDate: SNAPSHOT_BIZ_DATE, qty: String(b.qty) })
+      .values({ warehouseId: b.warehouseId, skuId: b.skuId, bizDate: SNAPSHOT_BIZ_DATE, qty: b.qty })
       .onConflictDoUpdate({
         target: [schema.stockSnapshots.warehouseId, schema.stockSnapshots.skuId, schema.stockSnapshots.bizDate],
-        set: { qty: String(b.qty) },
+        set: { qty: b.qty },
       })
       .returning({ id: schema.stockSnapshots.id });
     await db

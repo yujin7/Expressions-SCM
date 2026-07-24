@@ -9,7 +9,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const roles = ((session.user as { roles?: string[] }).roles ?? []) as Role[];
   const roleText = roles.map((r) => ROLE_LABELS[r] ?? r).join("/");
   return (
-    <AppShell userName={session.user.name ?? "用户"} roleText={roleText}>
+    <AppShell userName={session.user.name ?? "用户"} roleText={roleText} roles={roles}>
       {children}
     </AppShell>
   );

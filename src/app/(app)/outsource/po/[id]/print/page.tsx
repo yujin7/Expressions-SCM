@@ -78,6 +78,18 @@ function addDec(a: string, b: string): string {
 }
 
 const LINE_TYPE_LABELS: Record<string, string> = { raw: "原料", packaging: "包材" };
+const STATUS_LABELS: Record<string, string> = {
+  draft: "草稿",
+  pending: "待审批",
+  approved: "已审批",
+  in_progress: "执行中",
+  completed: "已完成",
+  closed: "已关闭",
+  void: "已作废",
+};
+/** 上海时区日期（RT4 UX-P1-4：UTC 切片会与单号日期自相矛盾） */
+const shDate = (v: string | null | undefined): string =>
+  v ? new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(v)) : "—";
 
 /** 公司现行采购合同固定条款（D21；文字有变更改此处即可） */
 const CONTRACT_TERMS = [
@@ -113,8 +125,26 @@ export default function PoPrintPage({ params }: { params: Promise<{ id: string }
     ? detail.lines.reduce((acc, l) => (l.price != null ? addDec(acc, mulDec(l.qty, l.price)) : acc), "0.00")
     : null;
 
+  const notEffective = ["draft", "pending", "void"].includes(detail.status);
   return (
-    <div style={{ maxWidth: 900, margin: "0 auto", padding: 24, background: "#fff", color: "#000" }}>
+    <div style={{ maxWidth: 900, margin: "0 auto", padding: 24, background: "#fff", color: "#000", position: "relative" }}>
+      {notEffective && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            pointerEvents: "none",
+            zIndex: 10,
+          }}
+        >
+          <span style={{ fontSize: 96, color: "rgba(207,19,34,0.14)", transform: "rotate(-24deg)", fontWeight: 700, whiteSpace: "nowrap" }}>
+            {detail.status === "void" ? "已作废" : "草稿·未生效"}
+          </span>
+        </div>
+      )}
       <style>{`
         @media print {
           .no-print { display: none !important; }
@@ -131,6 +161,7 @@ export default function PoPrintPage({ params }: { params: Promise<{ id: string }
         </Button>
         <Button onClick={() => window.history.back()}>返回</Button>
         {!hasPrice && <Alert type="info" showIcon message="当前角色无价格权限——打印为不含价单" />}
+        {notEffective && <Alert type="warning" showIcon message="本单尚未审批生效——打印件带水印，不可作为发厂依据（D21）" />}
       </Space>
 
       <h2 style={{ textAlign: "center", marginBottom: 4 }}>采 购 订 单</h2>
@@ -144,11 +175,11 @@ export default function PoPrintPage({ params }: { params: Promise<{ id: string }
           </tr>
           <tr>
             <td>制单人：{detail.createdByName ?? "—"}</td>
-            <td>制单日期：{String(detail.createdAt).slice(0, 10)}</td>
+            <td>制单日期：{shDate(detail.createdAt)}</td>
           </tr>
           <tr>
-            <td>单据状态：{detail.status === "in_progress" ? "执行中" : detail.status}</td>
-            <td>供应商确认：{detail.confirmedAt ? String(detail.confirmedAt).slice(0, 10) : "待回签"}</td>
+            <td>单据状态：{STATUS_LABELS[detail.status] ?? detail.status}</td>
+            <td>供应商确认：{detail.confirmedAt ? shDate(detail.confirmedAt) : "待回签"}</td>
           </tr>
         </tbody>
       </table>
