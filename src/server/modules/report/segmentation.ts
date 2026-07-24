@@ -12,6 +12,7 @@ import { inArray, eq, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";
+import { classifyAbc } from "@/server/rules/abc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -150,14 +151,9 @@ export async function getSegmentation(
 
   /* ── ABC：按 6 月总销量降序累计占比切分（80% / 95%） ── */
   interims.sort((a, b) => b.sales6m - a.sales6m);
-  let cum = 0;
-  for (const it of interims) {
-    const prevPct = totalSales > 0 ? (cum / totalSales) * 100 : 100;
-    cum += it.sales6m;
-    if (it.sales6m <= 0) it.abc = "C";
-    else if (prevPct < 80) it.abc = "A";
-    else if (prevPct < 95) it.abc = "B";
-    else it.abc = "C";
+  const abcByKey = classifyAbc(interims.map((it, i) => ({ id: i, qty: it.sales6m })));
+  for (const [i, it] of interims.entries()) {
+    it.abc = abcByKey.get(i) ?? "C";
     it.cell = `${it.abc}${it.xyz}` as SegCell;
   }
 
