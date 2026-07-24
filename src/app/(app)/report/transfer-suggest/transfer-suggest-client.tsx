@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Input, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
+import SkuHoverCard from "@/components/SkuHoverCard";
 
 interface TransferSuggestRow {
   skuId: number;
@@ -63,7 +64,7 @@ export default function TransferSuggestClient() {
       dataIndex: "code",
       width: 155,
       fixed: "left",
-      render: (v: string) => <a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a>,
+      render: (v: string) => <SkuHoverCard code={v} />,
     },
     { title: "名称", dataIndex: "name", ellipsis: true, width: 220 },
     { title: "调出仓", dataIndex: "fromWarehouse", width: 130 },

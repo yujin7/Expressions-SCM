@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Input, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
+import SkuHoverCard from "@/components/SkuHoverCard";
 
 interface MaterialDemandRow {
   materialSkuId: number;
@@ -70,7 +71,7 @@ export default function MaterialDemandClient() {
       dataIndex: "code",
       width: 160,
       fixed: "left",
-      render: (v: string) => <a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a>,
+      render: (v: string) => <SkuHoverCard code={v} />,
     },
     { title: "名称", dataIndex: "name", ellipsis: true, width: 220 },
     { title: "单位", dataIndex: "baseUom", width: 70 },

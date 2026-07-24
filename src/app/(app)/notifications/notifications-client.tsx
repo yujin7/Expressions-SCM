@@ -5,16 +5,14 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Button, List, Space, Tag, Typography } from "antd";
 import Link from "next/link";
 import { fetchJson, postJson } from "@/components/fetchJson";
+import { SEVERITY, ALERT_STATUS } from "@/components/dictionary";
 
 interface Notice {
   id: number; channel: string; title: string; body: string; href: string | null;
   severity: string | null; status: string; createdAt: string; sentAt: string | null; readAt: string | null;
 }
-const SEV: Record<string, string> = { critical: "red", high: "orange", medium: "gold", info: "blue" };
-const STATUS: Record<string, { color: string; label: string }> = {
-  pending: { color: "default", label: "待发" }, sent: { color: "green", label: "已发" },
-  skipped: { color: "default", label: "站内" }, failed: { color: "red", label: "失败" },
-};
+
+const STATUS_COLOR: Record<string, string> = { pending: "default", sent: "green", skipped: "default", failed: "red" };
 
 export default function NotificationsClient() {
   const { message } = App.useApp();
@@ -57,7 +55,7 @@ export default function NotificationsClient() {
             ]}
           >
             <List.Item.Meta
-              avatar={n.severity ? <Tag color={SEV[n.severity]}>{n.severity}</Tag> : null}
+              avatar={n.severity ? <Tag color={SEVERITY[n.severity]?.color}>{SEVERITY[n.severity]?.label ?? n.severity}</Tag> : null}
               title={<>{!n.readAt ? <Tag color="blue" style={{ marginRight: 6 }}>未读</Tag> : null}{n.title}</>}
               description={<span>{n.body} · {new Date(n.createdAt).toLocaleString("zh-CN")}</span>}
             />

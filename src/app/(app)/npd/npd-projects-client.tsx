@@ -3,12 +3,13 @@
 /** NPD 1.x 项目跟踪（D19 激活）：69 节点标准模板实例化 → 计划推算 → 任务推进 */
 import { useCallback, useEffect, useState } from "react";
 import {
-  Alert, App, Button, DatePicker, Drawer, Form, Input, Modal, Popconfirm, Progress, Select, Space, Table, Tag, Typography,
+  Alert, App, Button, DatePicker, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Table, Tag, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { fetchJson, postJson } from "@/components/fetchJson";
+import { ACTION } from "@/components/dictionary";
 
 interface ProjectRow {
   id: number;
@@ -70,6 +71,32 @@ export default function NpdProjectsClient() {
   const [detail, setDetail] = useState<{ project: ProjectRow; tasks: TaskRow[] } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [stageFilter, setStageFilter] = useState<string | null>(null);
+  /* E6-P4：以正规表单弹窗取代 window.prompt（原生对话框无校验样式/无单位提示/与全站风格断裂） */
+  const [firstOrderOpen, setFirstOrderOpen] = useState(false);
+  const [firstOrderQty, setFirstOrderQty] = useState<number | null>(null);
+  const [firstOrdering, setFirstOrdering] = useState(false);
+
+  const submitFirstOrder = async () => {
+    if (!detail?.project.skuCode || firstOrderQty == null || firstOrderQty <= 0) {
+      message.error("请填写大于 0 的数量");
+      return;
+    }
+    setFirstOrdering(true);
+    try {
+      const r = await postJson<{ docNo: string }>("/api/npd/projects", {
+        intent: "first_order",
+        projectId: detail.project.id,
+        qty: String(firstOrderQty),
+      });
+      message.success(`首单备货草稿已生成：${r.docNo}——请到备货申请页提交审批`);
+      setFirstOrderOpen(false);
+      setFirstOrderQty(null);
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setFirstOrdering(false);
+    }
+  };
   const [skuDraft, setSkuDraft] = useState("");
   const [savingSku, setSavingSku] = useState(false);
   const [rescheduling, setRescheduling] = useState(false);
@@ -298,16 +325,8 @@ export default function NpdProjectsClient() {
                 重排计划
               </Button>
               {detail.project.skuCode ? (
-                <Button
-                  onClick={() => {
-                    const qty = window.prompt(`新品首单数量（${detail.project.skuCode}，基础单位）：`);
-                    if (!qty || !/^\d+(\.\d+)?$/.test(qty.trim()) || Number(qty) <= 0) { if (qty != null) message.error("数量必须为正数"); return; }
-                    void postJson<{ docNo: string }>("/api/npd/projects", { intent: "first_order", projectId: detail.project.id, qty: qty.trim() })
-                      .then((r) => message.success(`首单备货申请草稿已生成：${r.docNo}（备货申请页提交审批）`))
-                      .catch((e) => message.error((e as Error).message));
-                  }}
-                >
-                  生成首单 BH
+                <Button onClick={() => { setFirstOrderQty(null); setFirstOrderOpen(true); }}>
+                  {ACTION.createBhDraft}
                 </Button>
               ) : null}
               <Popconfirm title="确认整项目完成？" onConfirm={() => void setProject(detail.project.id, "done")}>
@@ -365,6 +384,30 @@ export default function NpdProjectsClient() {
         />
         <style dangerouslySetInnerHTML={{ __html: ".npd-overdue-row > td { background: #fff1f0; }" }} />
       </Drawer>
+      <Modal
+        title={`生成首单备货草稿 · ${detail?.project.skuCode ?? ""}`}
+        open={firstOrderOpen}
+        onOk={() => void submitFirstOrder()}
+        onCancel={() => setFirstOrderOpen(false)}
+        confirmLoading={firstOrdering}
+        okText="生成草稿"
+        cancelText="取消"
+        width={460}
+      >
+        <Alert type="info" showIcon style={{ marginBottom: 12 }} message={ACTION.createBhDraftHint} />
+        <Form layout="vertical">
+          <Form.Item label={`首单数量（${detail?.project.skuCode ?? ""}，基础单位）`} required>
+            <InputNumber
+              autoFocus
+              min={1}
+              style={{ width: "100%" }}
+              value={firstOrderQty}
+              onChange={setFirstOrderQty}
+              placeholder="请输入数量"
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }

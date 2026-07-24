@@ -6,6 +6,8 @@ import { Alert, App, Button, Dropdown, Input, Popconfirm, Space, Table, Tag, Too
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { exportCsv } from "@/components/exportCsv";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 
 interface RiskRow {
   skuId: number;
@@ -59,10 +61,11 @@ export default function RiskClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<RiskData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [q, setQ] = useState("");
-  const [action, setAction] = useState<string | null>(null);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
+  const listState = useListState({ key: "risk", defaults: { q: "", action: "" }, defaultPageSize: 50 });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
+  const action = filters.action;
   const [selected, setSelected] = useState<RiskRow[]>([]);
   const [registering, setRegistering] = useState(false);
 
@@ -97,6 +100,20 @@ export default function RiskClient() {
     }
   }, [q, action, page, pageSize, message]);
   useEffect(() => { void load(); }, [load]);
+
+  const doExport = async () => {
+    const all: RiskRow[] = [];
+    for (let p2 = 1; p2 <= 40; p2++) { // struct#17: 提高上限至 2 万行
+      const params = new URLSearchParams({ q, page: String(p2), pageSize: "500", precise: "1" });
+      if (action) params.set("action", action);
+      const d = await fetchJson<RiskData>(`/api/report/risk?${params.toString()}`);
+      all.push(...d.rows);
+      if (all.length >= d.total) break;
+    }
+    exportCsv(`风险库存处置-${data?.today ?? ""}`,
+      ["建议动作","SKU编码","名称","品牌","在库","最短剩余效期(天)","过期量","90天内到期量","日均销","可销天数","货盘注记","已登记"],
+      all.map((r) => [r.action, r.code, r.name, r.brand, r.onHand, r.minDaysLeft, r.expiredQty, r.nearQty, r.daily, r.cover, r.palletRemark, r.disposalOpen ? "是" : ""]));
+  };
 
   const columns: ColumnsType<RiskRow> = [
     {
@@ -199,32 +216,32 @@ export default function RiskClient() {
         message="三源融合（只读建议，不自动开单）：批次效期 × 货盘处置注记（PMC 货盘表备注） × 近3月销速。报废/禁售/盘点等操作走各自单据流程。"
         description={data ? <Typography.Text type="secondary">口径日 {data.today}；滞销阈值 {data.slowThreshold} 天（运行参数 slow_days_threshold）；注记为对应月份货盘表原文。</Typography.Text> : null}
       />
-      <Space style={{ marginBottom: 12 }} wrap>
-        {ACTION_ORDER.map((a) => (
-          <Tag.CheckableTag
-            key={a}
-            checked={action === a}
-            onChange={(c) => { setAction(c ? a : null); setPage(1); }}
-            style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}
-          >
-            {a}（{data?.byAction[a] ?? 0}）
-          </Tag.CheckableTag>
-        ))}
-        <Input.Search allowClear placeholder="搜索编码/名称" style={{ width: 240 }} onSearch={(v) => { setQ(v.trim()); setPage(1); }} />
-        <a onClick={async () => {
-          const all: RiskRow[] = [];
-          for (let p2 = 1; p2 <= 40; p2++) { // struct#17: 提高上限至 2 万行
-            const params = new URLSearchParams({ q, page: String(p2), pageSize: "500", precise: "1" });
-            if (action) params.set("action", action);
-            const d = await fetchJson<RiskData>(`/api/report/risk?${params.toString()}`);
-            all.push(...d.rows);
-            if (all.length >= d.total) break;
-          }
-          exportCsv(`风险库存处置-${data?.today ?? ""}`,
-            ["建议动作","SKU编码","名称","品牌","在库","最短剩余效期(天)","过期量","90天内到期量","日均销","可销天数","货盘注记","已登记"],
-            all.map((r) => [r.action, r.code, r.name, r.brand, r.onHand, r.minDaysLeft, r.expiredQty, r.nearQty, r.daily, r.cover, r.palletRemark, r.disposalOpen ? "是" : ""]));
-        }}>导出 CSV</a>
-      </Space>
+      <ListToolbar
+        state={listState}
+        onExport={() => void doExport()}
+        extra={
+          <>
+            {ACTION_ORDER.map((a) => (
+              <Tag.CheckableTag
+                key={a}
+                checked={action === a}
+                onChange={(c) => listState.setFilter({ action: c ? a : "" })}
+                style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}
+              >
+                {a}（{data?.byAction[a] ?? 0}）
+              </Tag.CheckableTag>
+            ))}
+            <Input.Search
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索编码/名称"
+              style={{ width: 240 }}
+              onSearch={(v) => listState.setFilter({ q: v.trim() })}
+            />
+          </>
+        }
+      />
       {selected.length > 0 ? (
         <div style={{ position: "sticky", top: 0, zIndex: 2, marginBottom: 8, padding: "8px 12px", background: "#e6f4ff", borderRadius: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <Typography.Text>已选 {selected.length} 行（{selected.filter((r) => !r.disposalOpen).length} 项可登记）</Typography.Text>
@@ -238,7 +255,7 @@ export default function RiskClient() {
       ) : null}
       <Table<RiskRow>
         rowKey="skuId"
-        size="small"
+        size={listState.tableSize}
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
@@ -255,7 +272,7 @@ export default function RiskClient() {
           total: data?.total ?? 0,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => { setPage(p); setPageSize(ps); },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
     </div>
