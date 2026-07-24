@@ -5,6 +5,8 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Button, Card, Col, Input, Popconfirm, Row, Space, Statistic, Table, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 
 interface LtRow {
   supplierId: number;
@@ -38,9 +40,10 @@ export default function LeadTimeLearningClient() {
   const [data, setData] = useState<LtData | null>(null);
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState<number | null>(null);
-  const [q, setQ] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
+  const listState = useListState({ key: "leadtime-learning", defaults: { q: "" }, defaultPageSize: 20 });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -153,13 +156,23 @@ export default function LeadTimeLearningClient() {
         </Col>
       </Row>
 
-      <Space style={{ marginBottom: 12 }} wrap>
-        <Input.Search allowClear placeholder="搜索供应商/SKU 编码/名称" style={{ width: 260 }} onSearch={(v) => { setQ(v.trim()); setPage(1); }} />
-      </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <Input.Search
+            key={q}
+            allowClear
+            defaultValue={q}
+            placeholder="搜索供应商/SKU 编码/名称"
+            style={{ width: 260 }}
+            onSearch={(v) => listState.setFilter({ q: v.trim() })}
+          />
+        }
+      />
 
       <Table<LtRow>
         rowKey={(r) => `${r.supplierId}-${r.skuId}`}
-        size="small"
+        size={listState.tableSize}
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
@@ -170,7 +183,7 @@ export default function LeadTimeLearningClient() {
           total: data?.total ?? 0,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => { setPage(p); setPageSize(ps); },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
     </div>

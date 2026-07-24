@@ -6,6 +6,9 @@ import { Alert, App, Card, Col, Input, Row, Space, Statistic, Table, Tag, Toolti
 import type { ColumnsType } from "antd/es/table";
 import { Line, LineChart, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { fetchJson } from "@/components/fetchJson";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
+import SkuHoverCard from "@/components/SkuHoverCard";
 
 interface Point { ym: string; actual: number; forecast: number; error: number; ape: number | null }
 interface Row0 {
@@ -28,10 +31,11 @@ export default function ForecastAccuracyClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(false);
-  const [q, setQ] = useState("");
-  const [onlyReliable, setOnlyReliable] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
+  const listState = useListState({ key: "forecast-accuracy", defaults: { q: "", onlyReliable: "" }, defaultPageSize: 20 });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
+  const onlyReliable = filters.onlyReliable === "1";
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -49,7 +53,14 @@ export default function ForecastAccuracyClient() {
 
   const s = data?.summary;
   const columns: ColumnsType<Row0> = [
-    { title: "SKU 编码", dataIndex: "code", width: 130, render: (v: string) => <a href={`/report/sku-360?sku=${encodeURIComponent(v)}`}>{v}</a> },
+    {
+      title: "SKU 编码", dataIndex: "code", width: 130,
+      render: (v: string) => (
+        <SkuHoverCard code={v}>
+          <a href={`/report/sku-360?sku=${encodeURIComponent(v)}`}>{v}</a>
+        </SkuHoverCard>
+      ),
+    },
     { title: "名称", dataIndex: "name", ellipsis: true, width: 200 },
     { title: "品牌", dataIndex: "brand", width: 95, render: (v: string | null) => v ?? "—" },
     { title: "回测期数", dataIndex: "n", width: 90, align: "right", render: (v: number, r) => (r.reliable ? v : <Tooltip title="样本不足 3 期，结论参考价值有限"><span style={{ color: "#faad14" }}>{v} ⚠</span></Tooltip>) },
@@ -91,15 +102,31 @@ export default function ForecastAccuracyClient() {
         <Col><Card size="small"><Statistic title="系统性高估 SKU" value={s?.overCount ?? 0} valueStyle={{ color: "#fa8c16" }} /></Card></Col>
         <Col><Card size="small"><Statistic title="系统性低估 SKU" value={s?.underCount ?? 0} valueStyle={{ color: "#cf1322" }} /></Card></Col>
       </Row>
-      <Space style={{ marginBottom: 12 }} wrap>
-        <Input.Search allowClear placeholder="搜索编码/名称" style={{ width: 240 }} onSearch={(v) => { setQ(v.trim()); setPage(1); }} />
-        <Tag.CheckableTag checked={onlyReliable} onChange={(c) => { setOnlyReliable(c); setPage(1); }} style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}>
-          只看样本充足（≥3 期）
-        </Tag.CheckableTag>
-      </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            <Input.Search
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索编码/名称"
+              style={{ width: 240 }}
+              onSearch={(v) => listState.setFilter({ q: v.trim() })}
+            />
+            <Tag.CheckableTag
+              checked={onlyReliable}
+              onChange={(c) => listState.setFilter({ onlyReliable: c ? "1" : "" })}
+              style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}
+            >
+              只看样本充足（≥3 期）
+            </Tag.CheckableTag>
+          </>
+        }
+      />
       <Table<Row0>
         rowKey="skuId"
-        size="small"
+        size={listState.tableSize}
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
@@ -122,7 +149,7 @@ export default function ForecastAccuracyClient() {
         pagination={{
           current: page, pageSize, total: data?.total ?? 0,
           showSizeChanger: true, showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => { setPage(p); setPageSize(ps); },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
     </div>

@@ -6,6 +6,9 @@ import { Alert, App, Input, Progress, Space, Statistic, Table, Tag, Typography }
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import CaliberNote from "@/components/CaliberNote";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
+import SkuHoverCard from "@/components/SkuHoverCard";
 
 interface DataHealthRow {
   skuId: number;
@@ -47,10 +50,11 @@ export default function DataHealthClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<DataHealthData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [q, setQ] = useState("");
-  const [missing, setMissing] = useState<string | null>(null);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
+  const listState = useListState({ key: "data-health", defaults: { q: "", missing: "" }, defaultPageSize: 50 });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
+  const missing = filters.missing;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -83,7 +87,7 @@ export default function DataHealthClient() {
       title: "SKU 编码",
       dataIndex: "code",
       width: 150,
-      render: (v: string) => <a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a>,
+      render: (v: string) => <SkuHoverCard code={v} />,
     },
     { title: "名称", dataIndex: "name", ellipsis: true, width: 220 },
     { title: "类型", dataIndex: "skuType", width: 90, render: (v: string) => TYPE_LABELS[v] ?? v },
@@ -113,22 +117,34 @@ export default function DataHealthClient() {
         <Statistic title="完全健康" value={summary?.fullyHealthy ?? 0} suffix={summary ? `/ ${healthRate}%` : undefined} />
         <Statistic title="待修复" value={data?.total ?? 0} valueStyle={{ color: "#cf1322" }} />
       </Space>
-      <Space style={{ marginBottom: 12 }} wrap>
-        {DIMENSIONS.map((d) => (
-          <Tag.CheckableTag
-            key={d}
-            checked={missing === d}
-            onChange={(c) => { setMissing(c ? d : null); setPage(1); }}
-            style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}
-          >
-            {d} 缺失（{summary?.byDimension[d] ?? 0}）
-          </Tag.CheckableTag>
-        ))}
-        <Input.Search allowClear placeholder="搜索编码/名称" style={{ width: 240 }} onSearch={(v) => { setQ(v.trim()); setPage(1); }} />
-      </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            {DIMENSIONS.map((d) => (
+              <Tag.CheckableTag
+                key={d}
+                checked={missing === d}
+                onChange={(c) => listState.setFilter({ missing: c ? d : "" })}
+                style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}
+              >
+                {d} 缺失（{summary?.byDimension[d] ?? 0}）
+              </Tag.CheckableTag>
+            ))}
+            <Input.Search
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索编码/名称"
+              style={{ width: 240 }}
+              onSearch={(v) => listState.setFilter({ q: v.trim() })}
+            />
+          </>
+        }
+      />
       <Table<DataHealthRow>
         rowKey="skuId"
-        size="small"
+        size={listState.tableSize}
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
@@ -139,7 +155,7 @@ export default function DataHealthClient() {
           total: data?.total ?? 0,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条待修复`,
-          onChange: (p, ps) => { setPage(p); setPageSize(ps); },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
     </div>

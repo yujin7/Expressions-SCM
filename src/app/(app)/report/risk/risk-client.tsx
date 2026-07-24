@@ -9,6 +9,7 @@ import { exportCsv } from "@/components/exportCsv";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
 import CaliberNote from "@/components/CaliberNote";
+import SkuHoverCard from "@/components/SkuHoverCard";
 
 interface RiskRow {
   skuId: number;
@@ -128,7 +129,7 @@ export default function RiskClient() {
       title: "SKU 编码", dataIndex: "code", width: 155,
       render: (v: string, r) => (
         <Space size={6}>
-          <a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a>
+          <SkuHoverCard code={v} />
           {r.minDaysLeft != null ? <a href={`/inventory/expiry?q=${encodeURIComponent(v)}`} style={{ fontSize: 12 }}>批次</a> : null}
         </Space>
       ),

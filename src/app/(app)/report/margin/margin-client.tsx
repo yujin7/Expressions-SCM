@@ -7,6 +7,7 @@ import type { ColumnsType } from "antd/es/table";
 import Link from "next/link";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
+import SkuHoverCard from "@/components/SkuHoverCard";
 import CaliberNote from "@/components/CaliberNote";
 
 interface MarginRow {
@@ -76,7 +77,7 @@ export default function MarginClient() {
   const columns: ColumnsType<MarginRow> = [
     {
       title: "SKU 编码", dataIndex: "code", width: 150, fixed: "left",
-      render: (v: string) => <a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a>,
+      render: (v: string) => <SkuHoverCard code={v} />,
     },
     { title: "名称", dataIndex: "name", ellipsis: true, width: 220 },
     { title: "品牌", dataIndex: "brand", width: 100, render: (v: string | null) => v ?? "—" },

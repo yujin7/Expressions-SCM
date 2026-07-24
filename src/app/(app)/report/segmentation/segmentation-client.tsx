@@ -6,6 +6,9 @@ import { Alert, App, Input, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import CaliberNote from "@/components/CaliberNote";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
+import SkuHoverCard from "@/components/SkuHoverCard";
 
 interface SegRow {
   skuId: number;
@@ -44,10 +47,11 @@ export default function SegmentationClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<SegData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [q, setQ] = useState("");
-  const [cell, setCell] = useState<string | null>(null);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
+  const listState = useListState({ key: "segmentation", defaults: { q: "", cell: "" }, defaultPageSize: 50 });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
+  const cell = filters.cell;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -67,7 +71,7 @@ export default function SegmentationClient() {
     { title: "分层", dataIndex: "cell", width: 70, fixed: "left", render: (v: string) => <Tag color={cellColor(v)}>{v}</Tag> },
     {
       title: "SKU 编码", dataIndex: "code", width: 155,
-      render: (v: string) => <a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a>,
+      render: (v: string) => <SkuHoverCard code={v} />,
     },
     { title: "名称", dataIndex: "name", ellipsis: true, width: 240 },
     { title: "品牌", dataIndex: "brand", width: 110, render: (v: string | null) => v ?? "—" },
@@ -112,7 +116,7 @@ export default function SegmentationClient() {
                   return (
                     <td key={key} style={{ verticalAlign: "top" }}>
                       <div
-                        onClick={() => { setCell(selected ? null : key); setPage(1); }}
+                        onClick={() => listState.setFilter({ cell: selected ? "" : key })}
                         style={{
                           cursor: "pointer",
                           borderRadius: 8,
@@ -139,18 +143,30 @@ export default function SegmentationClient() {
         </table>
       ) : null}
 
-      <Space style={{ marginBottom: 12 }} wrap>
-        {cell ? (
-          <Tag color={cellColor(cell)} closable onClose={() => { setCell(null); setPage(1); }}>
-            已筛选：{cell}
-          </Tag>
-        ) : null}
-        <Input.Search allowClear placeholder="搜索编码/名称" style={{ width: 240 }} onSearch={(v) => { setQ(v.trim()); setPage(1); }} />
-      </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            {cell ? (
+              <Tag color={cellColor(cell)} closable onClose={() => listState.setFilter({ cell: "" })}>
+                已筛选：{cell}
+              </Tag>
+            ) : null}
+            <Input.Search
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索编码/名称"
+              style={{ width: 240 }}
+              onSearch={(v) => listState.setFilter({ q: v.trim() })}
+            />
+          </>
+        }
+      />
 
       <Table<SegRow>
         rowKey="skuId"
-        size="small"
+        size={listState.tableSize}
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
@@ -161,7 +177,7 @@ export default function SegmentationClient() {
           total: data?.total ?? 0,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => { setPage(p); setPageSize(ps); },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
     </div>

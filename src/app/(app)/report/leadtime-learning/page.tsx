@@ -1,7 +1,9 @@
+import { Suspense } from "react";
 import LeadTimeLearningClient from "./leadtime-learning-client";
 
 export const metadata = { title: "交期学习" };
 
 export default function Page() {
-  return <LeadTimeLearningClient />;
+  // useSearchParams（列表页状态平台 E6-P1）需要 Suspense 边界
+  return <Suspense><LeadTimeLearningClient /></Suspense>;
 }

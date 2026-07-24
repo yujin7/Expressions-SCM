@@ -25,6 +25,7 @@ import { DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons"
 import dayjs, { type Dayjs } from "dayjs";
 import RemoteSelect from "@/components/RemoteSelect";
 import ChainStrip from "@/components/ChainStrip";
+import ApprovalBrief from "@/components/ApprovalBrief";
 import DocStatusTag from "@/components/DocStatusTag";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { ORDER_TYPE_LABELS, formatOrderType, toOptions } from "@/components/labels";
@@ -471,6 +472,7 @@ export default function BhClient() {
         {detail ? (
           <div>
             <ChainStrip docType="bh" id={detail.id} />
+            {detail.status === "pending" ? <ApprovalBrief docType="bh" docId={detail.id} /> : null}
             <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="订单类型">{formatOrderType(detail.orderType)}</Descriptions.Item>
               <Descriptions.Item label="制单人">{detail.createdByName ?? "—"}</Descriptions.Item>

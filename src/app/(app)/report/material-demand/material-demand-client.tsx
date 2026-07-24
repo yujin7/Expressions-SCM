@@ -6,6 +6,8 @@ import { Alert, App, Input, Space, Statistic, Table, Tag, Tooltip, Typography } 
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import SkuHoverCard from "@/components/SkuHoverCard";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 
 interface MaterialDemandRow {
   materialSkuId: number;
@@ -48,9 +50,10 @@ export default function MaterialDemandClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<MaterialDemandData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [q, setQ] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
+  const listState = useListState({ key: "material-demand", defaults: { q: "" }, defaultPageSize: 50 });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -164,17 +167,22 @@ export default function MaterialDemandClient() {
           valueStyle={{ color: (data?.summary.shortageCount ?? 0) > 0 ? "#cf1322" : undefined }}
         />
       </Space>
-      <Space style={{ marginBottom: 12 }} wrap>
-        <Input.Search
-          allowClear
-          placeholder="搜索物料编码/名称"
-          style={{ width: 260 }}
-          onSearch={(v) => { setQ(v.trim()); setPage(1); }}
-        />
-      </Space>
+      <ListToolbar
+        state={listState}
+        extra={
+          <Input.Search
+            key={q}
+            allowClear
+            defaultValue={q}
+            placeholder="搜索物料编码/名称"
+            style={{ width: 260 }}
+            onSearch={(v) => listState.setFilter({ q: v.trim() })}
+          />
+        }
+      />
       <Table<MaterialDemandRow>
         rowKey="materialSkuId"
-        size="small"
+        size={listState.tableSize}
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
@@ -185,7 +193,7 @@ export default function MaterialDemandClient() {
           total: data?.total ?? 0,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => { setPage(p); setPageSize(ps); },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
     </div>

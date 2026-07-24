@@ -7,6 +7,7 @@ import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import { exportCsv } from "@/components/exportCsv";
 import { formatQty } from "@/components/format";
+import SkuHoverCard from "@/components/SkuHoverCard";
 import CaliberNote from "@/components/CaliberNote";
 
 interface Row {
@@ -72,7 +73,7 @@ export default function ExpiryClient() {
   useEffect(() => { void load(); }, [load]);
 
   const columns: ColumnsType<Row> = [
-    { title: "SKU 编码", dataIndex: "skuCode", width: 125, fixed: "left", render: (v: string) => <a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a> },
+    { title: "SKU 编码", dataIndex: "skuCode", width: 125, fixed: "left", render: (v: string) => <SkuHoverCard code={v} /> },
     { title: "名称", dataIndex: "skuName", ellipsis: true, width: 220 },
     { title: "品牌", dataIndex: "brand", width: 100, render: (v: string | null) => v ?? "—" },
     { title: "仓库", dataIndex: "warehouse", width: 130, ellipsis: true },

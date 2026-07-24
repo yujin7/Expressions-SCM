@@ -5,6 +5,8 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Input, Space, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
+import ListToolbar from "@/components/ListToolbar";
+import { useListState } from "@/components/useListState";
 
 interface PriceQuote {
   supplierId: number;
@@ -41,9 +43,10 @@ export default function PriceCompareClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<PriceCompareData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [q, setQ] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
+  const listState = useListState({ key: "price-compare", defaults: { q: "" }, defaultPageSize: 20 });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -156,31 +159,37 @@ export default function PriceCompareClient() {
         }
       />
 
-      <Space style={{ marginBottom: 16, display: "flex", justifyContent: "space-between" }} wrap>
-        <Input.Search
-          allowClear
-          placeholder="搜索 SKU 编码 / 名称"
-          style={{ width: 280 }}
-          onSearch={(v) => { setQ(v.trim()); setPage(1); }}
-        />
-        {data ? (
-          <Space size="large">
-            <Statistic title="可比物料数" value={data.summary.skuCount} valueStyle={{ fontSize: 20 }} />
-            <Statistic title="平均价差" value={data.summary.avgSpreadPct} suffix="%" precision={1} valueStyle={{ fontSize: 20 }} />
-            <Statistic
-              title="最大价差"
-              value={data.summary.maxSpreadPct}
-              suffix="%"
-              precision={1}
-              valueStyle={{ fontSize: 20, color: data.summary.maxSpreadPct > SPREAD_ALERT_PCT ? "#cf1322" : undefined }}
-            />
-          </Space>
-        ) : null}
-      </Space>
+      {data ? (
+        <Space size="large" style={{ marginBottom: 12 }} wrap>
+          <Statistic title="可比物料数" value={data.summary.skuCount} valueStyle={{ fontSize: 20 }} />
+          <Statistic title="平均价差" value={data.summary.avgSpreadPct} suffix="%" precision={1} valueStyle={{ fontSize: 20 }} />
+          <Statistic
+            title="最大价差"
+            value={data.summary.maxSpreadPct}
+            suffix="%"
+            precision={1}
+            valueStyle={{ fontSize: 20, color: data.summary.maxSpreadPct > SPREAD_ALERT_PCT ? "#cf1322" : undefined }}
+          />
+        </Space>
+      ) : null}
+
+      <ListToolbar
+        state={listState}
+        extra={
+          <Input.Search
+            key={q}
+            allowClear
+            defaultValue={q}
+            placeholder="搜索 SKU 编码 / 名称"
+            style={{ width: 280 }}
+            onSearch={(v) => listState.setFilter({ q: v.trim() })}
+          />
+        }
+      />
 
       <Table<PriceCompareRow>
         rowKey="skuId"
-        size="small"
+        size={listState.tableSize}
         loading={loading}
         columns={columns}
         dataSource={data?.rows ?? []}
@@ -237,7 +246,7 @@ export default function PriceCompareClient() {
         pagination={{
           current: page, pageSize, total: data?.total ?? 0,
           showSizeChanger: true, showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => { setPage(p); setPageSize(ps); },
+          onChange: (p, ps) => listState.setPage(p, ps),
         }}
       />
     </div>

@@ -44,6 +44,7 @@ const menuItems: MenuProps["items"] = [
     children: [
       { key: "/report/dashboard", label: "经营驾驶舱" },
       { key: "/report/sales-bridge", label: "销量变化归因" },
+      { key: "/report/funnel", label: "全链达成漏斗" },
       { key: "/report/inventory-analytics", label: "库存分析" },
     ],
   },
@@ -62,6 +63,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/report/transfer-suggest", label: "调拨建议" },
       { key: "/report/leadtime-learning", label: "交期学习" },
       { key: "/report/forecast-accuracy", label: "预测复盘" },
+      { key: "/report/detectors", label: "异动侦测" },
       { key: "/outsource/auto-chain", label: "自动链预演" },
     ],
   },
