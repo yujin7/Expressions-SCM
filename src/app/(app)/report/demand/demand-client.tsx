@@ -5,7 +5,7 @@
  * 达成率=达成/需求 前端现算（源文件公式未缓存——不落假数）；月度重导整类替换。
  */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Input, Select, Space, Table, Tag, Typography } from "antd";
+import { Alert, App, Input, Select, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
@@ -25,7 +25,7 @@ interface Row {
   progress: string | null; // YYYY-MM
 }
 
-export default function DemandClient() {
+function DemandTab() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<Row[]>([]);
   const [total, setTotal] = useState(0);
@@ -58,7 +58,6 @@ export default function DemandClient() {
     void load();
   }, [load]);
 
-  const month = rows[0]?.progress ?? "—";
   const rate = (r: Row): string | null => {
     const d = Number(r.qty ?? 0);
     const a = Number(r.doneQty ?? 0);
@@ -104,9 +103,6 @@ export default function DemandClient() {
 
   return (
     <div>
-      <Typography.Title level={4} style={{ marginTop: 0 }}>
-        需求达成参考（{month}）
-      </Typography.Title>
       <Alert
         style={{ marginBottom: 12 }}
         type="info"
@@ -151,6 +147,169 @@ export default function DemandClient() {
             setPageSize(ps);
           },
         }}
+      />
+    </div>
+  );
+}
+
+
+interface PalletRow {
+  id: number;
+  brandRaw: string | null;
+  skuCode: string | null;
+  skuId: number | null;
+  materialName: string | null;
+  qty: string | null; // 当前库存（月末）
+  doneQty: string | null; // 月销量
+  exception: string | null; // 处置注记
+  progress: string | null;
+  extra: { 近三月日均销?: number | null; 可销天数_文件口径?: number | null; 是否滞销_文件口径?: string | null } | null;
+}
+
+/** 货盘处置参考：PMC 月度货盘 + 处置注记（R14 备注字典源）；文件口径指标并列供与系统口径对照 */
+function PalletTab() {
+  const { message } = App.useApp();
+  const [rows, setRows] = useState<PalletRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [importedAt, setImportedAt] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [q, setQ] = useState("");
+  const [onlyRemark, setOnlyRemark] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ kind: "pallet", q, page: String(page), pageSize: String(pageSize) });
+      const res = await fetchJson<{ rows: PalletRow[]; total: number; importedAt: string | null }>(
+        `/api/report/transit?${params.toString()}`,
+      );
+      setRows(onlyRemark ? res.rows.filter((r) => r.exception) : res.rows);
+      setTotal(res.total);
+      setImportedAt(res.importedAt);
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [q, onlyRemark, page, pageSize, message]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const remarkColor = (v: string): string =>
+    v.includes("报废") || v.includes("过期") ? "red" : v.includes("临期") ? "volcano" : v.includes("停") ? "orange" : "blue";
+
+  const cols: ColumnsType<PalletRow> = [
+    { title: "品牌", dataIndex: "brandRaw", width: 110 },
+    {
+      title: "编码",
+      dataIndex: "skuCode",
+      width: 130,
+      render: (v: string | null, r) =>
+        v ? (
+          <Space size={4}>
+            <a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a>
+            {r.skuId == null ? <Tag>未建档</Tag> : null}
+          </Space>
+        ) : (
+          "—"
+        ),
+    },
+    { title: "名称", dataIndex: "materialName", ellipsis: true, width: 220 },
+    { title: "月末库存", dataIndex: "qty", width: 100, align: "right", render: (v: string | null) => (v == null ? "—" : formatQty(v)) },
+    { title: "月销量", dataIndex: "doneQty", width: 90, align: "right", render: (v: string | null) => (v == null ? "—" : formatQty(v)) },
+    {
+      title: "可销天数（文件口径）",
+      width: 150,
+      align: "right",
+      render: (_, r) => {
+        const d = r.extra?.可销天数_文件口径;
+        if (d == null) return "—";
+        const n = Math.round(d);
+        return (
+          <Tooltip title="货盘文件当月口径；系统实时口径见驾驶舱/补货建议">
+            <Tag color={n < 30 ? "red" : n > 180 ? "orange" : "green"}>{n.toLocaleString("zh-CN")}天</Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: "滞销（文件）",
+      width: 100,
+      render: (_, r) => {
+        const v = r.extra?.是否滞销_文件口径;
+        return v ? <Tag color={v === "是" ? "orange" : "default"}>{v}</Tag> : "—";
+      },
+    },
+    {
+      title: "处置注记",
+      dataIndex: "exception",
+      width: 220,
+      render: (v: string | null) => (v ? <Tag color={remarkColor(v)}>{v}</Tag> : "—"),
+    },
+  ];
+
+  return (
+    <div>
+      <Alert
+        style={{ marginBottom: 12 }}
+        type="info"
+        showIcon
+        message="口径：PMC 月度货盘登记（整类替换）。处置注记（过期待报废/临期禁售/商务库存…）为业务处置依据；可销天数/滞销为文件当月口径，与系统实时口径（驾驶舱/补货建议）并存对照。成本单价列按 D2 裁决不入库。"
+      />
+      <Space style={{ marginBottom: 12 }} wrap>
+        <Input.Search
+          allowClear
+          placeholder="搜索编码/名称"
+          style={{ width: 260 }}
+          onSearch={(v) => {
+            setQ(v.trim());
+            setPage(1);
+          }}
+        />
+        <Tag.CheckableTag checked={onlyRemark} onChange={(c) => setOnlyRemark(c)} style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}>
+          只看有处置注记
+        </Tag.CheckableTag>
+        {importedAt ? <Tag color="green">导入于 {new Date(importedAt).toLocaleDateString("zh-CN")}</Tag> : <Tag>尚未导入</Tag>}
+      </Space>
+      <Table<PalletRow>
+        rowKey="id"
+        size="small"
+        columns={cols}
+        dataSource={rows}
+        loading={loading}
+        scroll={{ x: "max-content" }}
+        pagination={{
+          current: page,
+          pageSize,
+          total,
+          showSizeChanger: true,
+          showTotal: (n) => `共 ${n} 条`,
+          onChange: (p2, ps) => {
+            setPage(p2);
+            setPageSize(ps);
+          },
+        }}
+      />
+    </div>
+  );
+}
+
+export default function DemandClient() {
+  return (
+    <div>
+      <Typography.Title level={4} style={{ marginTop: 0 }}>
+        需求达成与货盘参考
+      </Typography.Title>
+      <Tabs
+        defaultActiveKey="demand"
+        items={[
+          { key: "demand", label: "需求达成", children: <DemandTab /> },
+          { key: "pallet", label: "货盘处置", children: <PalletTab /> },
+        ]}
       />
     </div>
   );

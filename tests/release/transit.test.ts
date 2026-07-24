@@ -157,3 +157,34 @@ describe("需求达成表：解析（demand/borrow）→ 同引擎放行", () =>
     expect(bi).toMatchObject({ skuCode: "TR001-000", follower: "天猫", qty: 30 });
   });
 });
+
+describe("货盘表：品牌页双行表头解析 → pallet 参考", () => {
+  it("处置注记/文件口径指标入 extra；合计行与空行剔除", async () => {
+    const { parsePalletWorkbook } = await import("@/server/import/adapters/pallet");
+    const mk = (name: string, rows: (string | number | null)[][], hidden = false) => ({ name, rows, hidden });
+    const { rows, stats } = parsePalletWorkbook(
+      [
+        mk("NING", [
+          ["货品编号", "货品名称", "当前库存", "成本单价", "单品总金额", null, null, null],
+          [null, null, null, null, null, null, "5月销量", "天猫", "6月销量合计", "近三月日均销", "可销天数", "是否滞销", "备注"],
+          ["合计：", null, 100, null, null, null, 5, 3, 8, 1.2, 83, null, null],
+          ["N02-001", "美乳霜", 3, 0, null, null, 0, 0, 0, 0, null, "是", "过期，待报废"],
+          ["N02-002", "喷雾", 500, 0, null, null, 10, 5, 15, 0.5, 1000, "是", null],
+          [null, null, null, null, null, null, null, null, null, null, null, null, null],
+        ]),
+        mk("往期数据", [["货品编号", "x"], ["A", 1]]),
+        mk("Sheet1", [["编码", "名称", null, "库存"], ["N1", "x", null, 3]], true),
+      ],
+      "2026-06",
+    );
+    expect(stats.pallet).toBe(2);
+    expect(stats.brands).toBe(1); // 往期数据/隐藏页不计
+    expect(stats.withRemark).toBe(1);
+    const p1 = rows.map((r) => r.payload as Record<string, unknown>).find((p) => p.skuCode === "N02-001")!;
+    expect(p1).toMatchObject({ kind: "pallet", brandRaw: "NING", qty: 3, exception: "过期，待报废" });
+    expect((p1.extra as Record<string, unknown>).是否滞销_文件口径).toBe("是");
+    const p2 = rows.map((r) => r.payload as Record<string, unknown>).find((p) => p.skuCode === "N02-002")!;
+    expect(p2).toMatchObject({ doneQty: 15, exception: null });
+    expect((p2.extra as Record<string, unknown>).可销天数_文件口径).toBe(1000);
+  });
+});

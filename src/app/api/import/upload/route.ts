@@ -17,8 +17,9 @@ import { stageSalesMonthly } from "@/server/import/adapters/sales-monthly";
 import { stageLeadtime } from "@/server/import/adapters/leadtime";
 import { stageTransit } from "@/server/import/adapters/transit";
 import { stageDemand } from "@/server/import/adapters/demand";
+import { stagePallet } from "@/server/import/adapters/pallet";
 
-const TEMPLATES = ["bom", "inventory", "expiry", "sales", "leadtime", "transit", "demand"] as const;
+const TEMPLATES = ["bom", "inventory", "expiry", "sales", "leadtime", "transit", "demand", "pallet"] as const;
 const fields = z.object({
   template: z.enum(TEMPLATES, { errorMap: () => ({ message: "未知模板类型" }) }),
   brand: z.string().trim().max(20).optional(), // bom 必填（品牌编码）
@@ -66,7 +67,9 @@ export async function POST(req: NextRequest) {
                 ? await stageLeadtime(db, filePath, user.id)
                 : v.template === "transit"
                   ? await stageTransit(db, filePath, user.id)
-                  : await stageDemand(db, filePath, user.id);
+                  : v.template === "demand"
+                    ? await stageDemand(db, filePath, user.id)
+                    : await stagePallet(db, filePath, user.id);
 
     // RT4：上传本身留审计痕（谁在何时上传了什么文件到哪个模板）
     const { writeAudit } = await import("@/server/core/audit");
