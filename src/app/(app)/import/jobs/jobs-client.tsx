@@ -13,6 +13,7 @@ const TEMPLATE_LABELS: Record<string, string> = {
   expiry: "效期占比",
   sales: "销量汇总",
   leadtime: "在途/交期",
+  transit: "在途进度表",
 };
 const TABLE_LABELS: Record<string, string> = {
   spu_suggestion: "SPU 归组建议",
@@ -22,6 +23,7 @@ const TABLE_LABELS: Record<string, string> = {
   sales_monthly: "月销量",
   stock_opening_candidate: "库存明细（期初/快照）",
   sku_leadtime: "交期参考（1.1）",
+  transit_ref: "在途参考",
 };
 
 interface JobRow {

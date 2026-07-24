@@ -42,7 +42,8 @@ const TABLE_LABELS: Record<string, string> = {
   batch_stock: "批次效期",
   sales_monthly: "月销量",
   stock_opening_candidate: "库存明细（期初/快照）",
-  sku_leadtime: "交期参考（1.1）",
+  sku_leadtime: "交期参考（起订量已放行；周期 1.1）",
+  transit_ref: "在途参考（成品/包材/备料/OEM）",
 };
 
 async function postJson<T>(url: string, body: unknown): Promise<T> {

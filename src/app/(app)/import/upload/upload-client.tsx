@@ -18,6 +18,7 @@ const TEMPLATE_OPTS = [
   { value: "expiry", label: "效期占比（批次效期参考）" },
   { value: "bom", label: "产品 BOM 工作簿（须选品牌）" },
   { value: "leadtime", label: "在途/交期表（提前期参考，1.1 启用）" },
+            { value: "transit", label: "在途进度表（成品/包材/备料/OEM 归属）" },
 ];
 
 interface UploadResult {

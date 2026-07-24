@@ -1,6 +1,5 @@
 import {
-  pgTable, serial, integer, numeric, text, date, timestamp, unique, index,
-} from "drizzle-orm/pg-core";
+  pgTable, serial, integer, numeric, text, date, timestamp, unique, index, jsonb } from "drizzle-orm/pg-core";
 import { skus, suppliers, warehouses } from "./masters";
 
 /**
@@ -52,3 +51,47 @@ export const externalDocRefs = pgTable("external_doc_refs", {
   note: text("note"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [unique("uq_ext_system_ref").on(t.system, t.refNo)]);
+
+/**
+ * 在途/备料参考层（D16 新旧划断的执行面）：存量单在旧流程收尾，本表只读登记——
+ * 绝不入账本；每次重导整类替换（replace-by-kind，语义同快照）。
+ * kind: fg_order 成品在途 / pkg_order 包材在途 / pkg_stock 包材备料 / oem_map OEM归属
+ */
+export const transitRefs = pgTable("transit_refs", {
+  id: serial("id").primaryKey(),
+  kind: text("kind").notNull(),
+  brandRaw: text("brand_raw"),
+  skuCode: text("sku_code"), // 成品编码（原文保真）
+  skuId: integer("sku_id"), // 解析命中则填（别名优先），未命中留空仍展示
+  materialCode: text("material_code"),
+  materialName: text("material_name"),
+  oemRaw: text("oem_raw"),
+  supplierId: integer("supplier_id"),
+  externalNo: text("external_no"), // 用友订单号
+  approvalNo: text("approval_no"), // 钉钉审批号
+  feishuNo: text("feishu_no"),
+  orderType: text("order_type"),
+  qty: numeric("qty", { precision: 14, scale: 4 }),
+  doneQty: numeric("done_qty", { precision: 14, scale: 4 }),
+  inboundQty: numeric("inbound_qty", { precision: 14, scale: 4 }),
+  closedQty: numeric("closed_qty", { precision: 14, scale: 4 }),
+  usedQty: numeric("used_qty", { precision: 14, scale: 4 }),
+  remainQty: numeric("remain_qty", { precision: 14, scale: 4 }),
+  orderDate: date("order_date"),
+  needDate: date("need_date"),
+  replyDate: date("reply_date"),
+  revisedDate: date("revised_date"),
+  expectDate: date("expect_date"), // 预计入仓/结束时间
+  startDate: date("start_date"), // oem_map 生效起
+  progress: text("progress"), // 订单实时进度（11 态词表）/包材进度
+  urgentDept: text("urgent_dept"),
+  follower: text("follower"), // 跟进人/备货部门
+  exception: text("exception"), // 异常情况/原因
+  extra: jsonb("extra"),
+  sourceJobId: integer("source_job_id").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("ix_transit_kind").on(t.kind),
+  index("ix_transit_sku").on(t.skuCode),
+  index("ix_transit_approval").on(t.approvalNo),
+]);
