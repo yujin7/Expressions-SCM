@@ -27,7 +27,7 @@ describe("在途参考层：解析 → 放行（整类替换）+ 起订量 → u
   });
 
   it("解析器：四类 sheet 归类正确，「成品」表按审批号富化跟进表", () => {
-    const mk = (name: string, rows: (string | number | null)[][]) => ({ name, rows });
+    const mk = (name: string, rows: (string | number | null)[][]) => ({ name, rows, hidden: false });
     const { rows, stats } = parseTransitWorkbook([
       mk("成品", [
         ["序号", "x", "订单类型", "运营下单日期", "钉钉审批号", "品牌", "商品编码", "物料名称", "OEM", "订单数量", "常规", "常规交期", "最初计划交期", "紧急需求部门", "运营需求交期", "回复1", "回复2", "预计入仓时间", "异常情况", "包材进度", "已完工数", "未交数量"],
