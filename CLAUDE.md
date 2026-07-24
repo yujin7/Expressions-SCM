@@ -25,3 +25,8 @@
   - 销速窗口/日均 → `core/velocity.ts`（lastMonths / dailyFromWindow）
   - ABC 分层 → `rules/abc.ts`（classifyAbc，标准帕累托；窗口统一近 6 月）
   - 服务脚手架 → `core/svc.ts`（AnyDb / num / r1 / r2 / resolveDb）
+- 列表页状态平台（`components/useListState` + `ListToolbar`）：新列表页一律采用；
+  **必须**在该页 `page.tsx` 包 `<Suspense>`（hook 内用 useSearchParams，缺边界会导致
+  useId 序列 SSR/CSR 不一致 → 整页水合失败、退化为无交互静态 HTML）。
+  已知缺口：平台按「一页一个列表」设计，多 Tab 各自独立列表的页面（transit/jiediao/demand/
+  supplier-scorecard QC 页签）暂不迁移——多实例会争抢同一组 URL 参数，需先支持按 Tab 命名空间。
