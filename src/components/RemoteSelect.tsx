@@ -10,11 +10,13 @@ export interface RemoteSelectProps extends Omit<SelectProps, "options" | "childr
   /** 列表接口（可带查询串），组件自动附加 page=1&pageSize=999 */
   api: string;
   getLabel: (row: RemoteRow) => string;
+  /** 选项值取数（缺省 row.id）——需要编码等业务键时传入 */
+  getValue?: (row: RemoteRow) => string | number;
   filterRow?: (row: RemoteRow) => boolean;
 }
 
 /** 下拉选项来自主数据列表接口的通用 Select（前端本地搜索） */
-export default function RemoteSelect({ api, getLabel, filterRow, ...rest }: RemoteSelectProps) {
+export default function RemoteSelect({ api, getLabel, getValue, filterRow, ...rest }: RemoteSelectProps) {
   const [rows, setRows] = useState<RemoteRow[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -41,10 +43,10 @@ export default function RemoteSelect({ api, getLabel, filterRow, ...rest }: Remo
     () =>
       (filterRow ? rows.filter(filterRow) : rows).map((row) => ({
         label: getLabel(row),
-        value: row.id,
+        value: getValue ? getValue(row) : row.id,
       })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rows, filterRow],
+    [rows, filterRow, getValue],
   );
 
   return <Select showSearch optionFilterProp="label" loading={loading} options={options} {...rest} />;

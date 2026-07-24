@@ -45,3 +45,11 @@ export type ActivateBomsBody = z.infer<typeof activateBomsBody>;
 
 export const releasePlainBody = z.object({ jobIds, dryRun: z.boolean().default(true) });
 export type ReleasePlainBody = z.infer<typeof releasePlainBody>;
+
+/** 快照刷新（D20 运营环）：bizDate 必填——快照必须有数据日期 */
+export const releaseSnapshotsBody = z.object({
+  jobIds,
+  bizDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "数据日期格式须为 YYYY-MM-DD"),
+  dryRun: z.boolean().default(true),
+});
+export type ReleaseSnapshotsBody = z.infer<typeof releaseSnapshotsBody>;

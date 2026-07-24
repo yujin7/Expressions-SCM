@@ -65,6 +65,8 @@ const menuItems: MenuProps["items"] = [
     icon: <ImportOutlined />,
     label: "导入中心（W4）",
     children: [
+      { key: "/import/upload", label: "文件上传" },
+      { key: "/import/release", label: "放行工作台" },
       { key: "/import/jobs", label: "导入任务" },
       { key: "/import/exceptions", label: "别名认领" },
     ],
