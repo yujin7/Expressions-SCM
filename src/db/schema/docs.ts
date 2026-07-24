@@ -86,6 +86,9 @@ export const poDocs = pgTable("po_docs", {
   confirmNote: text("confirm_note"),
   // #13 供应商确认门户：不可猜 token（买手生成、外发链接），供应商凭链接确认交期
   confirmToken: text("confirm_token"),
+  // struct#3 token 生命周期：过期时间 + 已用时间（确认即失效，防链接外泄后被反复改期）
+  confirmTokenExpiresAt: timestamp("confirm_token_expires_at", { withTimezone: true }),
+  confirmTokenUsedAt: timestamp("confirm_token_used_at", { withTimezone: true }),
 });
 export const poLines = pgTable("po_lines", {
   id: serial("id").primaryKey(),
@@ -99,6 +102,8 @@ export const poLines = pgTable("po_lines", {
   taxIncluded: boolean("tax_included").notNull().default(true),
   taxRatePct: numeric("tax_rate_pct", { precision: 5, scale: 2 }).notNull().default("13"),
   receivedQty: numeric("received_qty", { precision: 14, scale: 4 }).notNull().default("0"), // 基础单位累计已收（CT 回冲）
+  // func#11 供应商按行回交期（同单不同物料交期不同）
+  expectedDate: date("expected_date"),
 });
 
 /* ── 价格变更申请单 PC ──────────────────────── */

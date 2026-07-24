@@ -29,6 +29,7 @@ const menuItems: MenuProps["items"] = [
   { key: "/workbench", icon: <DashboardOutlined />, label: "工作台" },
   { key: "/inbox", icon: <InboxOutlined />, label: "我的待办" },
   { key: "/notifications", icon: <InboxOutlined />, label: "通知中心" },
+  { key: "/alerts", icon: <InboxOutlined />, label: "系统告警" },
   { key: "/report/dashboard", icon: <BarChartOutlined />, label: "经营驾驶舱" },
   { key: "/report/digest", icon: <BarChartOutlined />, label: "每日经营摘要" },
   {

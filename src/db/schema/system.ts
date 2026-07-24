@@ -146,10 +146,31 @@ export const notifications = pgTable("notifications", {
   severity: text("severity"), // critical/high/medium/info
   status: text("status").notNull().default("pending"), // pending/sent/skipped/failed
   dedupeKey: text("dedupe_key"),
+  // func#12 收件人：userId=定向个人（null=广播）；targetRole=定向角色（null=全员）
+  userId: integer("user_id"),
+  targetRole: text("target_role"),
+  // 站内已读（null=未读）
+  readAt: timestamp("read_at", { withTimezone: true }),
   error: text("error"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   sentAt: timestamp("sent_at", { withTimezone: true }),
 }, (t) => [
-  unique("uq_notify_dedupe").on(t.dedupeKey).nullsNotDistinct(),
+  // struct#1 修复：dedupeKey 唯一但 NULL 相异（多条无键通知可共存，不再被静默吞掉）
+  unique("uq_notify_dedupe").on(t.dedupeKey),
   index("ix_notify_status").on(t.status, t.createdAt),
 ]);
+
+/** struct#4/#15：系统告警（看门狗产出，与人工裁决 review_items 分家——生命周期不同）。
+ *  data_freshness/doc_aging 迁入本表；status open/resolved；autoResolved=系统自动关闭。 */
+export const systemAlerts = pgTable("system_alerts", {
+  id: serial("id").primaryKey(),
+  category: text("category").notNull(), // data_freshness | doc_aging
+  refKey: text("ref_key"),
+  title: text("title").notNull(),
+  detail: text("detail"),
+  severity: text("severity"), // high/medium
+  status: text("status").notNull().default("open"), // open | resolved
+  autoResolved: boolean("auto_resolved").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+}, (t) => [index("ix_alert_status_cat").on(t.status, t.category)]);

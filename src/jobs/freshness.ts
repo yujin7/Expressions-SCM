@@ -10,7 +10,7 @@
  * sales_monthly 另查 max(yearMonth)：晚于 45 天视为断更。
  */
 import { eq, sql, and } from "drizzle-orm";
-import { reviewItems, salesMonthly, transitRefs } from "@/db/schema";
+import { systemAlerts, salesMonthly, transitRefs } from "@/db/schema";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -39,22 +39,22 @@ export async function runFreshnessCheck(db: AnyDb, opts?: { now?: Date }): Promi
 
   const check = async (refKey: string, isStale: boolean, title: string, detail: string) => {
     const open: { id: number }[] = await db
-      .select({ id: reviewItems.id })
-      .from(reviewItems)
-      .where(and(eq(reviewItems.category, "data_freshness"), eq(reviewItems.refKey, refKey), eq(reviewItems.status, "open")));
+      .select({ id: systemAlerts.id })
+      .from(systemAlerts)
+      .where(and(eq(systemAlerts.category, "data_freshness"), eq(systemAlerts.refKey, refKey), eq(systemAlerts.status, "open")));
     if (isStale) {
       stale.push(refKey);
       if (open.length === 0) {
-        await db.insert(reviewItems).values({ category: "data_freshness", refType: "import", refKey, title, detail });
+        await db.insert(systemAlerts).values({ category: "data_freshness", refKey, title, detail, severity: "high" });
         opened++;
       }
     } else if (open.length > 0) {
-      // 数据已刷新 → 自动关闭（note 记明非人工裁决）
+      // 数据已刷新 → 自动关闭（系统自动，非人工裁决）
       for (const o of open) {
         await db
-          .update(reviewItems)
-          .set({ status: "done", note: "数据已重传，看门狗自动关闭", decidedAt: now })
-          .where(eq(reviewItems.id, o.id));
+          .update(systemAlerts)
+          .set({ status: "resolved", autoResolved: true, resolvedAt: now })
+          .where(eq(systemAlerts.id, o.id));
         autoClosed++;
       }
     }

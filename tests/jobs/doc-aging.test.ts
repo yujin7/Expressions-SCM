@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { createTestDb, type TestDb } from "../helpers/db";
-import { bhDocs, reviewItems } from "@/db/schema";
+import { bhDocs, systemAlerts } from "@/db/schema";
 import { runDocAging } from "@/jobs/doc-aging";
 
 const DAY = 86_400_000;
@@ -31,8 +31,8 @@ describe("runDocAging", () => {
     expect(s2.opened).toBe(0); // 幂等
     const open = await db
       .select()
-      .from(reviewItems)
-      .where(and(eq(reviewItems.category, "doc_aging"), eq(reviewItems.status, "open")));
+      .from(systemAlerts)
+      .where(and(eq(systemAlerts.category, "doc_aging"), eq(systemAlerts.status, "open")));
     expect(open.length).toBe(1);
     expect(open[0].refKey).toBe("BH:BH-OLD");
   });
@@ -43,8 +43,8 @@ describe("runDocAging", () => {
     expect(s.autoClosed).toBe(1);
     const open = await db
       .select()
-      .from(reviewItems)
-      .where(and(eq(reviewItems.category, "doc_aging"), eq(reviewItems.status, "open")));
+      .from(systemAlerts)
+      .where(and(eq(systemAlerts.category, "doc_aging"), eq(systemAlerts.status, "open")));
     expect(open.length).toBe(0);
   });
 });

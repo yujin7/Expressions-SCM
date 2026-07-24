@@ -11,7 +11,7 @@
  * draft 不计（未提交是正常暂存）；in_progress/done/closed 为终态或执行中不告警。
  */
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
-import { bhDocs, jgDocs, poDocs, reviewItems, woDocs } from "@/db/schema";
+import { bhDocs, jgDocs, poDocs, systemAlerts, woDocs } from "@/db/schema";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -57,16 +57,16 @@ export async function runDocAging(db: AnyDb, opts?: { now?: Date }): Promise<Doc
         const dwell = Math.floor((now.getTime() - new Date(r.updatedAt).getTime()) / DAY_MS);
         aging.push({ docType: src.docType, docNo: r.docNo, status, days: dwell });
         const existing: { id: number }[] = await db
-          .select({ id: reviewItems.id })
-          .from(reviewItems)
-          .where(and(eq(reviewItems.category, "doc_aging"), eq(reviewItems.refKey, refKey), eq(reviewItems.status, "open")));
+          .select({ id: systemAlerts.id })
+          .from(systemAlerts)
+          .where(and(eq(systemAlerts.category, "doc_aging"), eq(systemAlerts.refKey, refKey), eq(systemAlerts.status, "open")));
         if (existing.length === 0) {
-          await db.insert(reviewItems).values({
+          await db.insert(systemAlerts).values({
             category: "doc_aging",
-            refType: "doc",
             refKey,
             title: `${src.label} ${r.docNo} 停留「${status === "pending" ? "待审批" : "待确认/待执行"}」已 ${dwell} 天`,
             detail: `阈值 ${days} 天；请跟进审批或供应商确认`,
+            severity: "high",
           });
           opened++;
         }
@@ -76,15 +76,15 @@ export async function runDocAging(db: AnyDb, opts?: { now?: Date }): Promise<Doc
 
   // 自动关闭：已离开等待态（不在本轮 staleKeys 中）的 open doc_aging 项
   const openItems: { id: number; refKey: string | null }[] = await db
-    .select({ id: reviewItems.id, refKey: reviewItems.refKey })
-    .from(reviewItems)
-    .where(and(eq(reviewItems.category, "doc_aging"), eq(reviewItems.status, "open")));
+    .select({ id: systemAlerts.id, refKey: systemAlerts.refKey })
+    .from(systemAlerts)
+    .where(and(eq(systemAlerts.category, "doc_aging"), eq(systemAlerts.status, "open")));
   for (const it of openItems) {
     if (it.refKey && !staleKeys.has(it.refKey)) {
       await db
-        .update(reviewItems)
-        .set({ status: "done", note: "单据已流转，看门狗自动关闭", decidedAt: now })
-        .where(eq(reviewItems.id, it.id));
+        .update(systemAlerts)
+        .set({ status: "resolved", autoResolved: true, resolvedAt: now })
+        .where(eq(systemAlerts.id, it.id));
       autoClosed++;
     }
   }

@@ -179,8 +179,8 @@ async function pmcSection(db: AnyDb): Promise<FocusSection> {
     countWhere(db, schema.npdProjects, eq(schema.npdProjects.status, "active")),
     countWhere(
       db,
-      schema.reviewItems,
-      and(eq(schema.reviewItems.category, "data_freshness"), eq(schema.reviewItems.status, "open")),
+      schema.systemAlerts,
+      and(eq(schema.systemAlerts.category, "data_freshness"), eq(schema.systemAlerts.status, "open")),
     ),
   ]);
 
@@ -278,15 +278,15 @@ export async function computeExceptions(db: AnyDb): Promise<ExceptionItem[]> {
   }
 
   // 2) 单据超时（时效看门狗）
-  const docAging = await countWhere(db, schema.reviewItems, and(eq(schema.reviewItems.category, "doc_aging"), eq(schema.reviewItems.status, "open")));
+  const docAging = await countWhere(db, schema.systemAlerts, and(eq(schema.systemAlerts.category, "doc_aging"), eq(schema.systemAlerts.status, "open")));
   if (docAging > 0) {
-    out.push({ key: "doc_aging", severity: "high", title: "单据超时未流转", impact: `${docAging} 张单据停留超阈值`, count: docAging, href: "/review/checklist" });
+    out.push({ key: "doc_aging", severity: "high", title: "单据超时未流转", impact: `${docAging} 张单据停留超阈值`, count: docAging, href: "/alerts" });
   }
 
   // 3) 参考数据过期（新鲜度看门狗）
-  const staleData = await countWhere(db, schema.reviewItems, and(eq(schema.reviewItems.category, "data_freshness"), eq(schema.reviewItems.status, "open")));
+  const staleData = await countWhere(db, schema.systemAlerts, and(eq(schema.systemAlerts.category, "data_freshness"), eq(schema.systemAlerts.status, "open")));
   if (staleData > 0) {
-    out.push({ key: "stale_data", severity: "high", title: "关键参考数据过期", impact: `${staleData} 类数据待重传（口径将失真）`, count: staleData, href: "/review/checklist" });
+    out.push({ key: "stale_data", severity: "high", title: "关键参考数据过期", impact: `${staleData} 类数据待重传（口径将失真）`, count: staleData, href: "/alerts" });
   }
 
   // 4) 断货且已错过下单窗口（可销 < 生产周期）——取样估算：可销天数<生产周期的成品数

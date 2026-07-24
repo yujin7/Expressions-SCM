@@ -25,6 +25,8 @@ export interface NotifyInput {
   href?: string | null;
   severity?: string | null;
   dedupeKey?: string | null;
+  userId?: number | null; // func#12 定向个人（null=广播）
+  targetRole?: string | null; // 定向角色（null=全员）
 }
 
 /** 入队（同 dedupeKey 已存在则跳过——幂等） */
@@ -43,6 +45,8 @@ export async function enqueueNotification(db: AnyDb, n: NotifyInput): Promise<bo
     href: n.href ?? null,
     severity: n.severity ?? null,
     dedupeKey: n.dedupeKey ?? null,
+    userId: n.userId ?? null,
+    targetRole: n.targetRole ?? null,
   }).onConflictDoNothing();
   return true;
 }
@@ -113,7 +117,7 @@ export async function runExceptionNotify(db: AnyDb): Promise<{ enqueued: number 
   for (const ex of exceptions) {
     if (await enqueueNotification(db, {
       channel, title: ex.title, body: ex.impact, href: ex.href, severity: ex.severity,
-      dedupeKey: `${ex.key}:${today}`,
+      dedupeKey: `${ex.key}:${today}`, targetRole: "pmc",
     })) enqueued++;
   }
   return { enqueued };

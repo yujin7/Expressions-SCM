@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { createTestDb, type TestDb } from "../helpers/db";
-import { importJobs, reviewItems, transitRefs } from "@/db/schema";
+import { importJobs, systemAlerts, transitRefs } from "@/db/schema";
 import { runFreshnessCheck } from "@/jobs/freshness";
 
 const DAY = 24 * 3600 * 1000;
@@ -36,8 +36,8 @@ describe("runFreshnessCheck", () => {
     expect(s2.opened).toBe(0); // 幂等：已有 open 项不重复
     const open = await db
       .select()
-      .from(reviewItems)
-      .where(and(eq(reviewItems.category, "data_freshness"), eq(reviewItems.status, "open")));
+      .from(systemAlerts)
+      .where(and(eq(systemAlerts.category, "data_freshness"), eq(systemAlerts.status, "open")));
     expect(open.length).toBe(1);
     expect(open[0].refKey).toBe("stock_summary");
   });
@@ -48,8 +48,8 @@ describe("runFreshnessCheck", () => {
     expect(s.autoClosed).toBe(1);
     const open = await db
       .select()
-      .from(reviewItems)
-      .where(and(eq(reviewItems.category, "data_freshness"), eq(reviewItems.status, "open")));
+      .from(systemAlerts)
+      .where(and(eq(systemAlerts.category, "data_freshness"), eq(systemAlerts.status, "open")));
     expect(open.length).toBe(0);
   });
 });

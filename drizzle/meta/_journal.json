@@ -113,6 +113,13 @@
       "when": 1784900967050,
       "tag": "0015_tricky_spyke",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1784903316868,
+      "tag": "0016_chief_captain_stacy",
+      "breakpoints": true
     }
   ]
 }
