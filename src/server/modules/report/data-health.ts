@@ -61,7 +61,7 @@ export interface DataHealthSummary {
 
 /** 结构性告警：不归属单个 SKU 的主数据问题（无命中则数组为空，页面不占位） */
 export interface StructuralWarning {
-  key: "bom_nested" | "near_expiry_below_channel" | "shelf_life_missing";
+  key: "bom_nested" | "near_expiry_below_channel" | "near_expiry_using_default" | "shelf_life_missing";
   severity: "high" | "medium";
   title: string;
   /** 影响说明——写清「会错成什么样」，不写「请检查」 */
@@ -195,24 +195,55 @@ export async function getDataHealth(
       });
     }
 
-    const below = hasShelf
-      .map((s) => ({ s, need: CHANNEL_RULE(s.shelfLifeDays as number), cur: s.nearExpiryDays ?? DEFAULT_NEAR }))
+    /*
+     * 临期阈值 vs 渠道口径。**这里必须区分两件性质完全不同的事**，否则会变成一条
+     * 命中率 100% 的噪音：曾经把「用缺省值」和「设错了」混在一起报，
+     * 结果 391/391 全部命中——而实际上 0 个 SKU 显式设过阈值，
+     * 391 条讲的是同一件事（全局缺省 90 天低于渠道口径），却摆成 391 个待办。
+     *
+     * ① 显式设过、但低于渠道口径 → **真的逐 SKU 配置错误**，值得逐条列出。
+     * ② 从没设过、吃全局缺省      → 这是**一个**设定决策，不是 N 个问题；
+     *    合并成一句话，不给逐 SKU 清单（给了就是假装有 N 件事要做）。
+     */
+    const explicitBelow = hasShelf
+      .filter((s) => s.nearExpiryDays != null)
+      .map((s) => ({ s, need: CHANNEL_RULE(s.shelfLifeDays as number), cur: s.nearExpiryDays as number }))
       .filter((x) => x.cur < x.need);
-    if (below.length > 0) {
-      below.sort((a, b) => b.need - b.cur - (a.need - a.cur));
+    if (explicitBelow.length > 0) {
+      explicitBelow.sort((a, b) => b.need - b.cur - (a.need - a.cur));
       structural.push({
         key: "near_expiry_below_channel",
         severity: "medium",
-        title: `${below.length} / ${hasShelf.length} 个成品的临期阈值低于渠道通行口径 max(保质期×2/10, 100天)`,
+        title: `${explicitBelow.length} 个成品**已设定**的临期阈值低于渠道通行口径 max(保质期×2/10, 100天)`,
         impact:
-          "这些 SKU 会出现「系统判健康、渠道判临期」：货已不能正常上架/不可退，" +
-          "但系统既不预警、也不会在补货建议里为提前处置留出时间。" +
-          "请按各平台实际合同核准阈值后在 SKU 主档逐项设定——系统不代改，因为这是渠道口径不是代码常量。",
-        count: below.length,
-        samples: below.slice(0, 20).map(
-          (x) => `${x.s.code}（保质期 ${x.s.shelfLifeDays} 天，现阈值 ${x.s.nearExpiryDays ?? `缺省 ${DEFAULT_NEAR}`}，渠道口径 ≥${x.need}）`,
+          "这些 SKU 有人显式设过阈值，但设得比渠道口径松：会出现「系统判健康、渠道判临期」——" +
+          "货已不能正常上架/不可退，系统却既不预警、也不在补货建议里为提前处置留时间。请逐项复核。",
+        count: explicitBelow.length,
+        samples: explicitBelow.slice(0, 20).map(
+          (x) => `${x.s.code}（保质期 ${x.s.shelfLifeDays} 天，现阈值 ${x.cur}，渠道口径 ≥${x.need}）`,
         ),
       });
+    }
+
+    const usingDefault = hasShelf.filter((s) => s.nearExpiryDays == null);
+    if (usingDefault.length > 0) {
+      const needs = usingDefault.map((s) => CHANNEL_RULE(s.shelfLifeDays as number));
+      const minNeed = Math.min(...needs);
+      const shortfall = needs.filter((n) => DEFAULT_NEAR < n).length;
+      if (shortfall > 0) {
+        structural.push({
+          key: "near_expiry_using_default",
+          severity: "medium",
+          // 一句话陈述一个全局事实——不摆成 N 条待办
+          title: `临期阈值尚未逐 SKU 设定：${usingDefault.length} 个有保质期的成品在吃全局缺省 ${DEFAULT_NEAR} 天`,
+          impact:
+            `其中 ${shortfall} 个的渠道口径要求 ≥${minNeed} 天，缺省值偏松。` +
+            "这是**一个设定决策、不是 N 个问题**：需要业务按各平台合同确认阈值口径，再逐类落到 SKU 主档。" +
+            "系统不代设——渠道口径属于商务条款，不是代码常量。在设定之前，效期分层与临期预警仍按缺省值工作。",
+          count: usingDefault.length,
+          samples: [], // 刻意不给逐 SKU 清单：列出来会让人以为有 N 件事要办，实际只有一件
+        });
+      }
     }
   }
 
