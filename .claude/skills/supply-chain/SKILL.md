@@ -1,6 +1,6 @@
 ---
 name: supply-chain
-description: Engineering and domain doctrine for this self-built supply-chain system (Next.js + Drizzle + PGlite/Postgres, Chinese UI, 8-brand cosmetics company replacing Excel). Covers the hard invariants that prevent data corruption (decimal-string math, posting registry, append-only ledger, the masking sink), the single-source-of-truth calibers (on-hand, in-transit, velocity, ABC), the R1-R17 business rules and D-decision register, the guarded-automation doctrine, the layered change playbook, and the verification sweeps that have caught real production defects. Use this whenever working anywhere in this repo — adding or changing a feature, fixing a bug, reviewing code, planning work, or answering questions about 委外/结算/补货/效期/批次/口径/审批/过账 — even when the user does not mention supply chain by name. Also use when asked what to improve, what is outstanding, or how this system compares to best-in-class supply chain software. Do not use for generic Next.js or React questions unrelated to this repo.
+description: Answers domain and judgment questions about this self-built supply-chain system (8-brand cosmetics company replacing Excel): what an R1-R17 rule means, which D-decision is current, how a document flows (BH/WO/PO/JG/FL/TL/SH/JS), which role approves what, why a number is computed the way it is, and whether a design choice matches best-in-class supply chain practice. Use when asked about 委外/结算/补货/效期/批次/口径/审批/过账 semantics, when a business rule or threshold needs its authoritative definition, when weighing a design tradeoff (safety stock, forecasting, expiry policy, alert noise, automation limits), and when asked what to improve or how this compares to leading systems. For the procedures themselves use the specialist skills instead: caliber-change to alter a shared calculation, new work verified by release-sweep, redteam-pass before shipping a write path, verify-claim before reporting a gap, data-release for imports, decision-log to record a ruling. Do not use for generic Next.js or React questions.
 ---
 
 # 供应链系统 · 工作教义
@@ -27,17 +27,8 @@ description: Engineering and domain doctrine for this self-built supply-chain sy
    前端隐藏不算数。DTO 里禁用 Map/Set/class 作数据容器——`maskSensitive` 只穿透
    plain object/array，Map 里的敏感字段会**原样漏出**。
 
-**共享层唯一权威，禁止本地重实现**（口径漂移的根因就是「就几行，我自己写一遍」）：
-
-| 口径 | 唯一权威 |
-|---|---|
-| 在库/快照 | `core/stock-view.ts` |
-| 在途/未结供给 | `core/supply.ts` |
-| 销速/日均 | `core/velocity.ts` |
-| ABC 分层 | `rules/abc.ts` |
-| 服务脚手架 | `core/svc.ts` |
-
-同一个计算**出现第 2 次就抽出来**，别等第 3 次。
+**共享层唯一权威表见 `CLAUDE.md`（常驻）**——此处不复制，四份手工同步的副本必然漂移，
+而口径漂移正是本系统最贵的缺陷类。要改共享口径走 skill `caliber-change`。
 
 ---
 
@@ -112,6 +103,17 @@ app/(app)/ 页面："use client"，禁止值导入 @/server/*
 
 判据：**能写成纯函数的一律进 `rules/` 并配单测。`rules/` 里出现 `await db.` 就是分层错了。**
 
+`rules/` 模块头注释必须回答三件事（本仓库硬约定，不是文风）：
+
+```ts
+/**
+ * 问题：系统在用 Holt 驱动展示，却从未回答"它准不准"。        ← 解决什么问题
+ * 口径：MAPE 仅统计实际>0 的期（实际=0 时无定义）。            ← 口径来源（spec 章节或 D 编号）
+ * 诚实降级：样本 <3 期 → method='fallback' 并标原因，
+ *          绝不假装算出了统计结果。                          ← 降级条件
+ */
+```
+
 新增列表页：用 `components/useListState` + `ListToolbar`，且该页 `page.tsx`
 **必须**包 `<Suspense>`（见下方陷阱）。同页多个独立列表各给不同 `paramPrefix`。
 
@@ -133,7 +135,7 @@ curl -s localhost:3000/api/health     # 迁移条数 + drift:false
 ```
 
 **改了页面或路由，还要跑全量扫描**——本项目最贵的两个 bug 都是扫描抓到的，不是读代码读出来的。
-命令见 `reference/verification.md`。
+扫描流程走 skill `release-sweep`（命令、水合指纹判读、登录端点都在那里）。
 
 ---
 
@@ -174,8 +176,11 @@ curl -s localhost:3000/api/health     # 迁移条数 + drift:false
 |---|---|
 | 需要某条 R 规则的准确定义、D 决议、单据流、审批域、摄取纪律 | `reference/domain-rules.md` |
 | 要动过账/审批/脱敏/口径共享层，或想知道某条铁律背后的事故 | `reference/invariants.md` |
-| 要跑验证、排查页面/API 异常、写扫描脚本 | `reference/verification.md` |
 | 做取舍判断：安全库存/预测指标/效期渠道规则/告警降噪/自动化边界/行业基准 | `reference/excellence.md` |
+
+**流程类工作不要在这里找**：改口径→`caliber-change`；发布前扫描→`release-sweep`；
+上报缺陷前证伪→`verify-claim`；写路径对抗测试→`redteam-pass`；
+数据导入放行→`data-release`；业务裁决登记→`decision-log`。
 
 **权威顺序**：用户当面的判断 > `spec/CURRENT.md`（唯一真相索引，改判先改它）>
 `CLAUDE.md`（常驻铁律）> 本 skill > 各 spec 文档 > 代码注释。

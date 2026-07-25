@@ -1,6 +1,6 @@
 ---
 name: decision-log
-description: Records a business ruling into spec/CURRENT.md's D-register before code depends on it, and reads that register when a threshold, caliber, or policy question needs an authoritative answer. Use whenever the user decides a number, threshold, policy, or scope call (price tolerance, loss rate, shelf life, near-expiry days, service level, approval domain, what ships in which phase), whenever about to hardcode a business constant, and whenever unsure which of two conflicting spec documents is current. This register exists because 19 decisions once lived only in chat and the spec set decayed into an unreadable patch chain. Do not use for engineering choices with no business owner.
+description: Records a business ruling into spec/CURRENT.md's D-register before code depends on it, and reads that register when a threshold or policy needs its authoritative answer. **Use whenever about to write a business constant into code that is not read from sys_params — a price tolerance, loss rate, shelf life, near-expiry days, service level, slow-mover threshold, approval domain, or phase-scope call. That constant needs a D number first.** Also use when the user decides any such number in conversation, and when two spec documents disagree about which rule is current (01 and 04 both contain superseded sections). This register exists because 19 decisions once lived only in chat and the spec set decayed into an unreadable patch chain. Do not use for engineering choices with no business owner, such as file layout or library selection.
 ---
 
 # 决议登记
@@ -47,10 +47,10 @@ CURRENT.md 里的「当前答案速查」表每行 = 一个唯一权威。典型
 
 ## 登记格式
 
-追加到 CURRENT.md 的决议登记簿表格：
+追加到 CURRENT.md 的决议登记簿表格（**编号取当前最大值 +1，先 grep 确认，别硬记**）：
 
 ```markdown
-| D41 | 临期阈值口径 | 运营 | **已决 2026-07-25**：按渠道合同逐 SKU 设定，
+| D<下一个未用编号> | 临期阈值口径 | 运营 | **已决 YYYY-MM-DD**：按渠道合同逐 SKU 设定，
 默认沿用 max(保质期×2/10, 100天) | 天猫美妆类目口径；主档 `skus.near_expiry_days` 承载 |
 ```
 
