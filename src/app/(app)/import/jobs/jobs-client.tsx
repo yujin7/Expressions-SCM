@@ -200,14 +200,7 @@ export default function JobsClient() {
         expandable={{
           expandedRowRender: (r) => <JobSummary jobId={r.id} />,
         }}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => listState.setPage(p, ps),
-        }}
+        pagination={listState.paginationProps({ total: total })}
       />
     </div>
   );

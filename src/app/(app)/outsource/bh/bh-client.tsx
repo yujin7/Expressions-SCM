@@ -347,14 +347,7 @@ function BhInner() {
         columns={columns}
         dataSource={rows}
         loading={loading}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => listState.setPage(p, ps),
-        }}
+        pagination={listState.paginationProps({ total: total })}
       />
 
       <Modal

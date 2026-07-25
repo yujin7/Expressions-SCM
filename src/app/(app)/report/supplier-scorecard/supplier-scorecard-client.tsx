@@ -325,14 +325,7 @@ function ScorecardTab() {
         scroll={{ x: "max-content" }}
         expandable={{ expandedRowRender: expanded, rowExpandable: (r) => r.breakdown.length > 0 }}
         rowClassName={(r) => (r.suggestLevelChange ? "ant-table-row-selected" : "")}
-        pagination={{
-          current: page,
-          pageSize,
-          total: data?.total ?? 0,
-          showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 家`,
-          onChange: (p, ps) => listState.setPage(p, ps),
-        }}
+        pagination={listState.paginationProps({ total: data?.total ?? 0, showTotal: (t) => `共 ${t} 家` })}
       />
     </div>
   );

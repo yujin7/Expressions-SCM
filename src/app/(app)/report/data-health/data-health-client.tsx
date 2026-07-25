@@ -187,14 +187,7 @@ function MissingTab() {
         dataSource={data?.rows ?? []}
         loading={loading}
         scroll={{ x: "max-content" }}
-        pagination={{
-          current: page,
-          pageSize,
-          total: data?.total ?? 0,
-          showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 条待修复`,
-          onChange: (p, ps) => listState.setPage(p, ps),
-        }}
+        pagination={listState.paginationProps({ total: data?.total ?? 0, showTotal: (t) => `共 ${t} 条待修复` })}
       />
     </div>
   );
@@ -387,14 +380,7 @@ function DuplicatesTab() {
         dataSource={data?.rows ?? []}
         loading={loading}
         scroll={{ x: "max-content" }}
-        pagination={{
-          current: page,
-          pageSize,
-          total: data?.total ?? 0,
-          showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 组候选`,
-          onChange: (p, ps) => listState.setPage(p, ps),
-        }}
+        pagination={listState.paginationProps({ total: data?.total ?? 0, showTotal: (t) => `共 ${t} 组候选` })}
       />
     </div>
   );

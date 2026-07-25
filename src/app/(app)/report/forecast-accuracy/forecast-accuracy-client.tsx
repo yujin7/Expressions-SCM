@@ -176,11 +176,7 @@ export default function ForecastAccuracyClient() {
             </div>
           ),
         }}
-        pagination={{
-          current: page, pageSize, total: data?.total ?? 0,
-          showSizeChanger: true, showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => listState.setPage(p, ps),
-        }}
+        pagination={listState.paginationProps({ total: data?.total ?? 0 })}
       />
     </div>
   );

@@ -422,14 +422,7 @@ export default function ReplenishClient() {
           rowExpandable: (r) => (r as { skuId?: number }).skuId != null,
           expandedRowRender: (r) => <SharedPackagingPanel skuId={(r as { skuId: number }).skuId} />,
         }}
-        pagination={{
-          current: page,
-          pageSize,
-          total: data?.total ?? 0,
-          showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => listState.setPage(p, ps),
-        }}
+        pagination={listState.paginationProps({ total: data?.total ?? 0 })}
       />
       <div
         style={{

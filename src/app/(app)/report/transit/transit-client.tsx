@@ -133,14 +133,7 @@ function KindTable({ kind, prefix, columns }: { kind: string; prefix: string; co
         dataSource={t.rows}
         loading={t.loading}
         scroll={{ x: "max-content" }}
-        pagination={{
-          current: listState.page,
-          pageSize: listState.pageSize,
-          total: t.total,
-          showSizeChanger: true,
-          showTotal: (n) => `共 ${n} 条`,
-          onChange: (p, ps) => listState.setPage(p, ps),
-        }}
+        pagination={listState.paginationProps({ total: t.total })}
       />
     </div>
   );

@@ -150,14 +150,7 @@ function DemandTab() {
         dataSource={rows}
         loading={loading}
         scroll={{ x: "max-content" }}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          showTotal: (n) => `共 ${n} 条（SKU×渠道）`,
-          onChange: (p, ps) => listState.setPage(p, ps),
-        }}
+        pagination={listState.paginationProps({ total: total, showTotal: (n) => `共 ${n} 条（SKU×渠道）` })}
       />
     </div>
   );
@@ -304,14 +297,7 @@ function PalletTab({ initialQ = "" }: { initialQ?: string }) {
         dataSource={rows}
         loading={loading}
         scroll={{ x: "max-content" }}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          showTotal: (n) => `共 ${n} 条`,
-          onChange: (p2, ps) => listState.setPage(p2, ps),
-        }}
+        pagination={listState.paginationProps({ total: total })}
       />
     </div>
   );
@@ -397,7 +383,7 @@ function StockSummaryTab() {
         }
       />
       <Table<SummaryRow> rowKey="id" size={listState.tableSize} columns={cols} dataSource={rows} loading={loading} scroll={{ x: "max-content" }}
-        pagination={{ current: page, pageSize, total, showSizeChanger: true, showTotal: (n) => `共 ${n} 条`, onChange: (p2, ps) => listState.setPage(p2, ps) }} />
+        pagination={listState.paginationProps({ total: total })} />
     </div>
   );
 }

@@ -247,14 +247,7 @@ export default function DetectorsClient() {
         loading={loading}
         scroll={{ x: "max-content" }}
         locale={{ emptyText: loading ? "加载中…" : "本期无命中——三条规则均未触发（无异常不占位）" }}
-        pagination={{
-          current: page,
-          pageSize,
-          total: data?.total ?? 0,
-          showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => listState.setPage(p, ps),
-        }}
+        pagination={listState.paginationProps({ total: data?.total ?? 0 })}
       />
     </div>
   );

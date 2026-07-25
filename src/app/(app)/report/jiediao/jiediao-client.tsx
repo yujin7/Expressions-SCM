@@ -95,7 +95,7 @@ function BorrowHistoryTab() {
         columns={cols}
         dataSource={rows}
         loading={loading}
-        pagination={{ current: page, pageSize, total, showSizeChanger: true, showTotal: (n) => `共 ${n} 条`, onChange: (p2, ps) => listState.setPage(p2, ps) }}
+        pagination={listState.paginationProps({ total: total })}
       />
     </div>
   );

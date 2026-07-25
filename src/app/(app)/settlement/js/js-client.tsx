@@ -613,14 +613,7 @@ export default function JsClient() {
         dataSource={rows}
         loading={loading}
         scroll={{ x: 1100 }}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => listState.setPage(p, ps),
-        }}
+        pagination={listState.paginationProps({ total: total })}
       />
 
       {/* ---- 发起结算 Modal ---- */}

@@ -59,6 +59,15 @@ export interface ListState<F> {
   page: number;
   pageSize: number;
   setPage: (p: number, ps?: number) => void;
+  /** AntD Table 的 pagination 配置（收口 49 处复制；showTotal 可覆盖单位） */
+  paginationProps: (opts?: { total?: number; showTotal?: (t: number) => string }) => {
+    current: number;
+    pageSize: number;
+    total: number | undefined;
+    showSizeChanger: boolean;
+    showTotal: (t: number) => string;
+    onChange: (p: number, ps: number) => void;
+  };
   density: Density;
   setDensity: (d: Density) => void;
   /** 传给 AntD Table 的 size 值 */
@@ -371,6 +380,29 @@ export function useListState<F extends Record<string, string | undefined>>(
     });
   }, []);
 
+  /**
+   * AntD Table 的 pagination 配置。
+   *
+   * 此前这 6 行在 40 个客户端文件、49 个位置逐字复制。它不只是样板：
+   * pageSizeOptions、是否显示快速跳页、默认每页条数这类决策散在 49 处，
+   * 想统一调整就得改 49 个地方——于是没人调，页面之间的分页体验各不相同。
+   *
+   * `showTotal` 保留覆盖参数：确实有 3 处单位不是「条」
+   * （「共 N 家」供应商、「共 N 组候选」去重、「共 N 条待修复」健康度），
+   * 强行统一成「条」会把话说错。
+   */
+  const paginationProps = useCallback(
+    (opts?: { total?: number; showTotal?: (t: number) => string }) => ({
+      current: parsed.page,
+      pageSize: parsed.pageSize,
+      total: opts?.total,
+      showSizeChanger: true,
+      showTotal: opts?.showTotal ?? ((t: number) => `共 ${t} 条`),
+      onChange: (p: number, ps: number) => setPage(p, ps),
+    }),
+    [parsed.page, parsed.pageSize, setPage],
+  );
+
   return {
     filters: parsed.filters,
     setFilter,
@@ -378,6 +410,7 @@ export function useListState<F extends Record<string, string | undefined>>(
     page: parsed.page,
     pageSize: parsed.pageSize,
     setPage,
+    paginationProps,
     density,
     setDensity,
     tableSize: DENSITY_TO_SIZE[density],
