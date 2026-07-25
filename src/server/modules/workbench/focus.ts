@@ -270,30 +270,43 @@ export async function computeExceptions(db: AnyDb): Promise<ExceptionItem[]> {
     out.push({ key: "stale_data", severity: "high", title: "关键参考数据过期", impact: `${staleData} 类数据待重传（口径将失真）`, count: staleData, href: "/alerts" });
   }
 
-  // 4) 断货且已错过下单窗口（可销 < 生产周期）——取样估算：可销天数<生产周期的成品数
+  // 4) 断货且已错过下单窗口（可销 < 生产周期）
+  //
+  // 在库必须走 core/stock-view 的全网口径（实时账 + 各快照仓最新快照）。
+  // 这里原先内联 `sum(qty) from stock_balances`，只看实时记账仓、看不见保税/E仓/云仓，
+  // 于是把大量有货的成品判成断货：实测 261 报警里只有 111 是真的，150 个是快照仓被漏看
+  // （DEV007-000 本地读到 237 件，全网实际 14,966 件，差 63 倍）。
+  // 日均同理走 core/velocity.dailyFromWindow，不要再手写 /91。
   const sm = schema.salesMonthly;
   const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
   const months3 = maxYm ? lastMonths(maxYm, 3) : [];
   if (months3.length) {
-    const rows: { skuId: number; sales3m: string; onHand: string; leadDays: number | null }[] = await db
+    const rows: { skuId: number; sales3m: string; leadDays: number | null }[] = await db
       .select({
         skuId: schema.skus.id,
         sales3m: sql<string>`coalesce((select sum(q) from (select sum(${sm.qty}) q from sales_monthly where sku_id=${schema.skus.id} and year_month in (${sql.join(months3, sql`,`)})) t),0)`,
-        onHand: sql<string>`coalesce((select sum(qty) from stock_balances where sku_id=${schema.skus.id}),0)`,
         leadDays: schema.skuParams.normalLeadDays,
       })
       .from(schema.skus)
       .leftJoin(schema.skuParams, eq(schema.skuParams.skuId, schema.skus.id))
       .where(and(eq(schema.skus.skuType, "finished"), eq(schema.skus.active, true)));
+    const onHandView = await getOnHandBySku(db, { finishedOnly: true }); // core/stock-view 唯一在库口径
     let belowLead = 0;
     for (const r of rows) {
-      const daily = num(r.sales3m) / 91;
+      const daily = dailyFromWindow(num(r.sales3m));
       if (daily <= 0 || r.leadDays == null || r.leadDays <= 0) continue;
-      const cover = num(r.onHand) / daily;
+      const cover = num(onHandView.bySku.get(r.skuId)) / daily;
       if (cover < r.leadDays) belowLead++;
     }
     if (belowLead > 0) {
-      out.push({ key: "below_lead", severity: "critical", title: "断货风险（可销 < 生产周期）", impact: `${belowLead} 个成品补货窗口迫近/已过`, count: belowLead, href: "/replenish" });
+      out.push({
+        key: "below_lead",
+        severity: "critical",
+        title: "断货风险（可销 < 生产周期）",
+        impact: `${belowLead} 个成品补货窗口迫近/已过（全网口径${onHandView.snapDate ? `，快照 ${onHandView.snapDate}` : ""}）`,
+        count: belowLead,
+        href: "/replenish",
+      });
     }
   }
 
