@@ -62,7 +62,6 @@ interface FocusMetric {
 }
 
 interface QueueItem { key: string; label: string; count: number; href: string }
-const PLACEHOLDER_QUEUES: QueueItem[] = [];
 
 interface FocusSection {
   role: string;
@@ -156,8 +155,17 @@ export default function WorkbenchClient() {
       <ControlTower items={exceptions} loading={focusLoading && exceptions.length === 0} />
       <FocusSections sections={sections} loading={focusLoading} />
       <Typography.Title level={5} style={{ margin: "4px 0 12px" }}>待处理入口</Typography.Title>
+      {/* 队列为空且已加载完毕：明确说明「没有待办」，而不是静默塌缩成只剩别名一张卡 */}
+      {!focusLoading && queues.length === 0 && (
+        <Alert
+          type="success"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="当前没有待你处理的单据——下方仅剩别名认领入口。"
+        />
+      )}
       <Row gutter={[12, 12]}>
-        {(queues.length ? queues : PLACEHOLDER_QUEUES).map((qq) => (
+        {queues.map((qq) => (
           <Col xs={12} sm={8} md={queues.length > 4 ? 4 : 6} key={qq.key}>
             <Link href={qq.href}>
               <Card hoverable size="small" loading={focusLoading && queues.length === 0}>

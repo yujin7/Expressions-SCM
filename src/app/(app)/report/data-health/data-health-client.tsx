@@ -26,10 +26,21 @@ interface DataHealthSummary {
   byDimension: Record<string, number>;
 }
 
+/** 结构性告警：不归属单个 SKU 的主数据问题（服务端无命中时为空数组，页面不占位） */
+interface StructuralWarning {
+  key: string;
+  severity: "high" | "medium";
+  title: string;
+  impact: string;
+  count: number;
+  samples: string[];
+}
+
 interface DataHealthData {
   rows: DataHealthRow[];
   total: number;
   summary: DataHealthSummary;
+  structural?: StructuralWarning[];
 }
 
 const DIMENSIONS = ["生产周期", "起订量", "BOM", "条码", "品牌"];
@@ -112,6 +123,25 @@ export default function DataHealthClient() {
         summary={<>完整度＝各适用维度完整占比；只列出有缺失项的 SKU（完全健康的计入统计不进列表）。</>}
         detail={<div><p>按货品类型裁剪适用维度：成品评 生产周期 / 起订量 / BOM / 条码 / 品牌 五项；原料/包材仅评 条码 / 品牌。条码为 null 或 malformed 记缺失。</p></div>}
       />
+      {/* 结构性告警：命中才渲染——无命中时整块不出现，不留空占位 */}
+      {(data?.structural ?? []).map((w) => (
+        <Alert
+          key={w.key}
+          type={w.severity === "high" ? "error" : "warning"}
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={w.title}
+          description={
+            <>
+              <div style={{ marginBottom: 6 }}>{w.impact}</div>
+              <div style={{ color: "#666", fontSize: 12 }}>
+                涉及：{w.samples.join("、")}
+                {w.count > w.samples.length ? ` 等 ${w.count} 项` : ""}
+              </div>
+            </>
+          }
+        />
+      ))}
       <Space size="large" style={{ marginBottom: 12 }} wrap>
         <Statistic title="总 SKU" value={summary?.totalSkus ?? 0} />
         <Statistic title="完全健康" value={summary?.fullyHealthy ?? 0} suffix={summary ? `/ ${healthRate}%` : undefined} />

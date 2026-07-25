@@ -161,7 +161,9 @@ export async function updateBom(id: number, input: unknown) {
 /**
  * BOM 生效：仅草稿可生效；同事务内先将同产品其他生效版本置为 retired，
  * 再置本版本 active（uq_bom_one_active 部分唯一索引要求——顺序不可颠倒）。
- * TODO(W3): route through approval engine（BOM 生效=审批动作，审批人=PMC is_approver 且非制单人，《01》§6）
+ * 《01》§6 的管控要求**已在本函数内实现**（勿再当作待办）：审批人资格（is_approver，admin 亦不豁免
+ * 职责分离）＋ 不可生效本人创建的 BOM ＋ 委外仓残料拦截（force 显式放行并留审计）。
+ * 尚未做的只是形式：未走通用审批引擎（无审批队列条目/驳回理由/轮次），属架构统一，非管控缺口。
  */
 export async function activateBom(
   id: number,
