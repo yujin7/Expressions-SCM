@@ -17,13 +17,11 @@ import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { scheduleNpd, type NpdTemplateNode } from "@/server/rules/npd-schedule";
 import { createBh } from "@/server/modules/outsource/bh";
 import { resolveAlias } from "@/server/modules/dimension/resolver";
+import { resolveDb } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
 
-async function resolveDb(db?: AnyDb): Promise<AnyDb> {
-  return db ?? (await getDbAsync());
-}
 
 const DAY_MS = 86_400_000;
 /** 自然日推算（与 rules/npd-schedule 同口径，UTC 基准避免时区漂移） */

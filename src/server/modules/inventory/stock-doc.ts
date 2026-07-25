@@ -12,6 +12,7 @@ import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { post, PostingError, reverse, type AnyDb, type PostingEvent, type PostingLine } from "@/server/posting/post";
 import { ApiError } from "@/server/modules/master/common";
+import { resolveDb } from "@/server/core/svc";
 import {
   approveStockDocSchema, createStockDocSchema, type ManualSubtype, reverseStockDocSchema,
 } from "./schemas";
@@ -42,9 +43,6 @@ export async function guardWarehouseWrite(): Promise<SessionUser> {
   return user;
 }
 
-async function resolveDb(db?: AnyDb): Promise<AnyDb> {
-  return db ?? (await getDbAsync());
-}
 
 type StockDocRow = typeof stockDocs.$inferSelect;
 type StockDocLineRow = typeof stockDocLines.$inferSelect;

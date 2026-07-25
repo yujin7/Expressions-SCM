@@ -7,6 +7,7 @@ import { getDbAsync } from "@/db";
 import type { AnyDb } from "@/server/docflow/doc-no";
 import type { SessionUser } from "@/server/core/dto";
 import { STOCK_SUBTYPE_LABELS } from "@/components/labels";
+import { resolveDb } from "@/server/core/svc";
 
 /**
  * 我的待办（inbox）：聚合所有等待「我」审批的单据 + 我提交的待审单据。
@@ -67,9 +68,6 @@ export interface InboxResult {
 /** 内部行：带审批域与制单人（分组后剥离） */
 type RawItem = InboxItem & { domain: string; createdBy: number };
 
-async function resolveDb(db?: AnyDb): Promise<AnyDb> {
-  return db ?? (await getDbAsync());
-}
 
 /** 展示用数量：去掉 numeric(14,4) 的尾零（100.0000→100、2.5000→2.5） */
 function fmtQty(v: string): string {

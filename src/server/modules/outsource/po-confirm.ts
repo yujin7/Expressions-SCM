@@ -18,12 +18,10 @@ import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/st
 import { ApiError } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import type { SessionUser } from "@/server/core/dto";
+import { resolveDb } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-async function resolveDb(db?: AnyDb): Promise<AnyDb> {
-  return db ?? (await getDbAsync());
-}
 
 const CONFIRM_TOKEN_TTL_MS = 30 * 86400 * 1000; // 30 天
 

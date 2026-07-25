@@ -2,10 +2,8 @@ import { and, desc, eq, gte, ilike, lte, or, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { skus, spus, stockBalances, stockLedger, warehouses } from "@/db/schema";
 import type { AnyDb } from "@/server/posting/post";
+import { resolveDb } from "@/server/core/svc";
 
-async function resolveDb(db?: AnyDb): Promise<AnyDb> {
-  return db ?? (await getDbAsync());
-}
 
 /** SKU×仓库×批次 余额（实时仓口径；快照仓 1.1 并入）。nonzero 默认 true=隐藏零余额行 */
 export async function listBalances(

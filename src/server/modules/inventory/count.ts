@@ -13,6 +13,7 @@ import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { post, PostingError, type AnyDb, type PostingLine } from "@/server/posting/post";
 import { ApiError } from "@/server/modules/master/common";
+import { resolveDb } from "@/server/core/svc";
 
 /**
  * 盘点任务（PD）——定期全盘 full / 抽盘 partial（=原 PRD"永续盘点"的落地形式：循环抽点）。
@@ -79,9 +80,6 @@ export const approveCountTaskSchema = z.object({
 
 // ---------- 公共 ----------
 
-async function resolveDb(db?: AnyDb): Promise<AnyDb> {
-  return db ?? (await getDbAsync());
-}
 
 type PdDocRow = typeof pdDocs.$inferSelect;
 type PdLineRow = typeof pdLines.$inferSelect;
