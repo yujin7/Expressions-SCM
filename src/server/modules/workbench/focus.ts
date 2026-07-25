@@ -9,6 +9,9 @@
  * - 时区 Asia/Shanghai（今日出入库的日界）。
  */
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import type { SessionUser } from "@/server/core/dto";
+import { getInbox } from "@/server/modules/inbox/service";
+import { notifyVisibleWhere } from "@/server/core/notify-audience";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { getRiskWorklist } from "@/server/modules/report/risk";
@@ -338,7 +341,17 @@ async function countMyOpenDocs(db: AnyDb, userId: number): Promise<number> {
   return counts.reduce((a, b) => a + b, 0);
 }
 
-export async function getWorkbenchFocus(roles: string[], dbArg?: AnyDb, userId?: number): Promise<WorkbenchFocus> {
+/**
+ * @param user 当前登录人。**必须传全量身份**（id + roles + isApprover）——
+ *   「待我审批」要按 approval_configs 审批域 + SoD 自审排除算，只有 roles/userId 算不出。
+ *   不传（如每日摘要的全局视角）则两个与人相关的队列返回 0。
+ */
+export async function getWorkbenchFocus(
+  roles: string[],
+  dbArg?: AnyDb,
+  user?: SessionUser,
+): Promise<WorkbenchFocus> {
+  const userId = user?.id;
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const isAdmin = roles.includes("admin");
   const builders = SECTION_BUILDERS.filter(([role]) => isAdmin || roles.includes(role));
@@ -358,11 +371,18 @@ export async function getWorkbenchFocus(roles: string[], dbArg?: AnyDb, userId?:
   const myOpenDocs = userId != null ? await countMyOpenDocs(db, userId) : null;
 
   /* 冗余#7：五条队列一次汇总（工作台一处看全，不必逐个页面点） */
+  /* 「待我审批」与「未读通知」两个数都必须与用户点进去看到的页面同源，否则徽标不可行动。
+     此前两处各自手写查询：
+       - 待我审批：只数 bh/wo/po/jg/stock 五表全量 pending，不看 approval_configs 审批域、
+         不做 SoD 自审排除、漏掉 pc/fl/tl/sh/ct/js/pd 七类——是个与登录人无关的常量，
+         七个角色一律显示 2，而 /api/inbox 实际为 admin=4 / ops01=0 / warehouse01=0。
+         仓管点红色「待我审批 2」进去是空列表。
+       - 未读通知：完全不带收件人条件，4 类角色恒显 8（实际可见 4），读完仍卡 4 且无法归零。
+     现改为复用两处唯一权威：getInbox（审批域 + SoD）与 notifyVisibleWhere（收件人）。 */
   const [pendingDocs, unreadNotify, openAlerts, openReview] = await Promise.all([
-    Promise.all([schema.bhDocs, schema.woDocs, schema.poDocs, schema.jgDocs, schema.stockDocs].map((t) =>
-      countWhere(db, t, eq(t.status, "pending")))).then((a) => a.reduce((x, y) => x + y, 0)),
-    userId != null
-      ? countWhere(db, schema.notifications, and(isNull(schema.notifications.readAt), inArray(schema.notifications.status, ["pending", "sent", "skipped"])))
+    user ? getInbox(user, db).then((r) => r.total) : Promise.resolve(0),
+    user
+      ? countWhere(db, schema.notifications, and(isNull(schema.notifications.readAt), notifyVisibleWhere(user)))
       : Promise.resolve(0),
     countWhere(db, schema.systemAlerts, eq(schema.systemAlerts.status, "open")),
     countWhere(db, schema.reviewItems, eq(schema.reviewItems.status, "open")),
