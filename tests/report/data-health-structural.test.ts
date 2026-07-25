@@ -72,7 +72,36 @@ describe("主数据健康度：结构性告警（BOM 嵌套）", () => {
     // 成品 ← 原料：子件自身无 BOM，单层展开即完整
     await mkBom(finished, [raw], 1);
     const r = await getDataHealth({ page: 1, pageSize: 50 }, db);
-    expect(r.structural).toEqual([]);
+    // 只断言「无嵌套告警」——structural 里还会有保质期等其他结构项，不该被这条测试连坐
+    expect(r.structural.find((x) => x.key === "bom_nested")).toBeUndefined();
+  });
+
+  it("成品缺保质期时报「无法评估」，而不是沉默通过（不许把「没法查」当「没问题」）", async () => {
+    // finished 成品建档时未设 shelfLifeDays —— 现实中 1026/1026 都是这个状态
+    const r = await getDataHealth({ page: 1, pageSize: 50 }, db);
+    const w = r.structural.find((x) => x.key === "shelf_life_missing");
+    expect(w, "缺保质期必须显式报出，否则渠道临期口径的缺口会被静默掩盖").toBeTruthy();
+    expect(w!.count).toBeGreaterThan(0);
+    expect(w!.samples.join()).toContain("FG-001");
+    // 必须澄清血缘：现有效期能力不依赖本字段，别把影响说大
+    expect(w!.impact).toContain("batch_stocks.expiryDate");
+    expect(w!.impact).toContain("仍正常工作");
+  });
+
+  it("有保质期但临期阈值低于渠道口径时报出，并给出应达到的天数", async () => {
+    // 保质期 1095 天 → 渠道口径 max(1095*0.2, 100) = 219 天；阈值设 90 应命中
+    await db.update(skus).set({ shelfLifeDays: 1095, nearExpiryDays: 90 }).where(eq(skus.id, finished));
+    const r = await getDataHealth({ page: 1, pageSize: 50 }, db);
+    const w = r.structural.find((x) => x.key === "near_expiry_below_channel");
+    expect(w, "阈值 90 < 渠道口径 219，必须命中").toBeTruthy();
+    expect(w!.samples.join()).toContain("≥219");
+    // 阈值属业务口径，系统只呈现不代改
+    expect(w!.impact).toContain("系统不代改");
+
+    // 阈值调到渠道口径之上 → 不再告警
+    await db.update(skus).set({ nearExpiryDays: 240 }).where(eq(skus.id, finished));
+    const r2 = await getDataHealth({ page: 1, pageSize: 50 }, db);
+    expect(r2.structural.find((x) => x.key === "near_expiry_below_channel")).toBeUndefined();
   });
 
   it("子件自身也有生效 BOM 时必须告警，并指名到具体物料", async () => {

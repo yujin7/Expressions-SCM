@@ -17,6 +17,11 @@
  * 若某个子件自身也有生效 BOM，其下级需求会被静默漏算——不报错、不为零，
  * 只是数字偏小，是最难发现的一类错。当前数据 0 例（725 父件 / 3441 子件互不重叠），
  * 所以本项是「哪天有人建了半成品 BOM 就立刻示警」的哨兵，而不是待办。
+ *
+ * 第二项：**临期阈值低于渠道通行口径**。效期在美妆是渠道准入约束而非仓库报表——
+ * 天猫对部分美妆类目按 max(保质期×2/10, 100天) 判临期。系统阈值若更低，
+ * 就会「系统判健康、渠道判临期」。本项只呈现差距，**不自动改阈值**：
+ * 阈值属业务与渠道合同的口径，不归代码裁决（同 CLAUDE.md「口径归业务」纪律）。
  */
 import { and, eq, inArray } from "drizzle-orm";
 import { getDbAsync } from "@/db";
@@ -56,7 +61,7 @@ export interface DataHealthSummary {
 
 /** 结构性告警：不归属单个 SKU 的主数据问题（无命中则数组为空，页面不占位） */
 export interface StructuralWarning {
-  key: "bom_nested";
+  key: "bom_nested" | "near_expiry_below_channel" | "shelf_life_missing";
   severity: "high" | "medium";
   title: string;
   /** 影响说明——写清「会错成什么样」，不写「请检查」 */
@@ -92,6 +97,8 @@ export async function getDataHealth(
     brandId: number | null;
     barcodeStatus: string | null;
     brand: string | null;
+    shelfLifeDays: number | null;
+    nearExpiryDays: number | null;
   }[] = await db
     .select({
       id: schema.skus.id,
@@ -101,6 +108,8 @@ export async function getDataHealth(
       brandId: schema.skus.brandId,
       barcodeStatus: schema.skus.barcodeStatus,
       brand: schema.brands.nameCn,
+      shelfLifeDays: schema.skus.shelfLifeDays,
+      nearExpiryDays: schema.skus.nearExpiryDays,
     })
     .from(schema.skus)
     .leftJoin(schema.brands, eq(schema.skus.brandId, schema.brands.id))
@@ -150,6 +159,59 @@ export async function getDataHealth(
           "请先按多层结构人工核对这些物料的需求，或联系开发启用多层展开。",
         count: nested.length,
         samples: nested.slice(0, 20).map((id) => nameById.get(id) ?? `SKU#${id}`),
+      });
+    }
+  }
+
+  /* ── 结构性告警：临期阈值低于渠道通行口径 ──
+     效期在美妆是**渠道准入约束**，不是仓库报表：天猫对部分美妆类目定义
+     临期 = max(总保质期 × 2/10, 100 天)，多平台对剩余 90/180 天以下要求临期标注与不可退。
+     若系统阈值低于渠道口径，会出现「系统判健康、渠道判临期」——货发不出去，
+     且补货建议不会为这批货预留提前处置的时间。
+     纪律：本项只**呈现差距**，不自动改阈值——阈值是业务与渠道合同的口径，不归代码裁决。 ── */
+  const CHANNEL_RULE = (shelf: number) => Math.max(Math.round(shelf * 0.2), 100);
+  const DEFAULT_NEAR = 90; // 与 report/risk.ts 的兜底一致
+  {
+    const finished = skuRows.filter((s) => s.skuType === "finished");
+    const hasShelf = finished.filter((s) => s.shelfLifeDays != null && s.shelfLifeDays > 0);
+    const noShelf = finished.filter((s) => s.shelfLifeDays == null || s.shelfLifeDays <= 0);
+
+    /* 先报「算不出来」——缺保质期就无法判临期口径。
+       若沉默跳过，本项会在数据缺失时显示「无异常」，把「没问题」和「没法查」混为一谈，
+       这正是本项目反复出现的静默截断缺陷类。 */
+    if (noShelf.length > 0) {
+      structural.push({
+        key: "shelf_life_missing",
+        severity: "medium",
+        title: `${noShelf.length} / ${finished.length} 个在售成品的主档保质期为空，渠道临期口径无法评估`,
+        impact:
+          "现有效期能力（效期分层 / 临期预警 / FEFO）读的是 batch_stocks.expiryDate，**不受本项影响，仍正常工作**。" +
+          "本项卡住的是另外两件事：① 无法与渠道口径（天猫等按 max(保质期×2/10, 100天) 判临期）比对，" +
+          "也就无法回答「我们的临期阈值够不够渠道用」；② 批次缺效期时无法由生产日期推算。" +
+          "注意根因不在源数据：适配器已从效期文件解析出保质期并落进 staging（含 1095 天计数），" +
+          "但放行引擎未把它写回 skus.shelf_life_days——是**解析了却没落库**，不是没采集。D13 已裁定缺省 1095 天。",
+        count: noShelf.length,
+        samples: noShelf.slice(0, 20).map((s) => `${s.code} ${s.name}`),
+      });
+    }
+
+    const below = hasShelf
+      .map((s) => ({ s, need: CHANNEL_RULE(s.shelfLifeDays as number), cur: s.nearExpiryDays ?? DEFAULT_NEAR }))
+      .filter((x) => x.cur < x.need);
+    if (below.length > 0) {
+      below.sort((a, b) => b.need - b.cur - (a.need - a.cur));
+      structural.push({
+        key: "near_expiry_below_channel",
+        severity: "medium",
+        title: `${below.length} / ${hasShelf.length} 个成品的临期阈值低于渠道通行口径 max(保质期×2/10, 100天)`,
+        impact:
+          "这些 SKU 会出现「系统判健康、渠道判临期」：货已不能正常上架/不可退，" +
+          "但系统既不预警、也不会在补货建议里为提前处置留出时间。" +
+          "请按各平台实际合同核准阈值后在 SKU 主档逐项设定——系统不代改，因为这是渠道口径不是代码常量。",
+        count: below.length,
+        samples: below.slice(0, 20).map(
+          (x) => `${x.s.code}（保质期 ${x.s.shelfLifeDays} 天，现阈值 ${x.s.nearExpiryDays ?? `缺省 ${DEFAULT_NEAR}`}，渠道口径 ≥${x.need}）`,
+        ),
       });
     }
   }
