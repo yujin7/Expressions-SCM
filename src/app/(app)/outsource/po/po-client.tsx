@@ -270,6 +270,35 @@ function PoInner() {
     { title: "已收量", dataIndex: "receivedQty", width: 100, align: "right" },
   ];
 
+  /* 生成/复制供应商确认链接。链接为 UUID token + 30 天有效期 + 单次使用，
+     公开页只读且脱敏（不含内部价），供应商提交后回填逐行交期并推进状态机。
+     外发渠道是人工/IT，所以这里只负责生成并把链接交到买手手上。 */
+  const [tokenLoading, setTokenLoading] = useState(false);
+  const genConfirmLink = useCallback(
+    async (poId: number) => {
+      setTokenLoading(true);
+      try {
+        const r = await fetchJson<{ token: string; path: string }>(`/api/outsource/po/${poId}/confirm-token`, {
+          method: "POST",
+        });
+        const url = `${window.location.origin}${r.path}`;
+        try {
+          await navigator.clipboard.writeText(url);
+          message.success("确认链接已生成并复制到剪贴板（30 天有效，仅可使用一次）");
+        } catch {
+          // 非安全上下文或剪贴板权限被拒时退化为可复制弹窗，绝不静默失败
+          message.info("确认链接已生成（30 天有效，仅可使用一次）");
+          window.prompt("复制以下链接发给供应商：", url);
+        }
+      } catch (e) {
+        message.error((e as Error).message);
+      } finally {
+        setTokenLoading(false);
+      }
+    },
+    [message],
+  );
+
   const actions = detail ? (
     <Space>
       {detail.status === "draft" ? (

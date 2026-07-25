@@ -7,6 +7,7 @@ import {
   resolveNumParam,
   makeResolver,
   setScopedParam,
+  clearScopedParam,
   listScopedOverrides,
   encodeScope,
   describeScope,
@@ -173,5 +174,37 @@ describe("scoped-params 作用域继承", () => {
     expect(encodeScope({ kind: "sku", skuId: 401 })).toBe("sku:401");
     expect(describeScope("segment:AX")).toBe("AX 分层");
     expect(describeScope(FALLBACK_SCOPE)).toBe("系统缺省");
+  });
+});
+
+/**
+ * 覆盖必须可撤销。一个设得上却撤不掉的覆盖是陷阱：
+ * 业务试设一次分层参数后无法回退，只能带着一个自己也解释不清的数字继续跑，
+ * 而它正驱动补货建议量。
+ */
+describe("clearScopedParam：覆盖可撤销并回落上一级", () => {
+  it("删除 brand 覆盖后解析回落到 global", async () => {
+    const { db } = await createTestDb();
+    const admin = { id: 1, name: "管理员", roles: ["admin"], isApprover: true };
+
+    await setScopedParam(admin, { key: "safety_days_fallback", scope: { kind: "global" }, value: 7 }, db);
+    await setScopedParam(admin, { key: "safety_days_fallback", scope: { kind: "brand", brandId: 12 }, value: 21 }, db);
+    expect((await resolveNumParam("safety_days_fallback", 0, { brandId: 12 }, db)).value).toBe(21);
+
+    await clearScopedParam(admin, { key: "safety_days_fallback", scope: { kind: "brand", brandId: 12 } }, db);
+    const back = await resolveNumParam("safety_days_fallback", 0, { brandId: 12 }, db);
+    expect(back.value).toBe(7);
+    expect(back.scope).toBe("global"); // 确实回落到上一级，而不是落到 fallback
+  });
+
+  it("global 层拒绝删除（它是兜底底座）；不存在的覆盖报 404", async () => {
+    const { db } = await createTestDb();
+    const admin = { id: 1, name: "管理员", roles: ["admin"], isApprover: true };
+    await expect(
+      clearScopedParam(admin, { key: "safety_days_fallback", scope: { kind: "global" } }, db),
+    ).rejects.toThrow();
+    await expect(
+      clearScopedParam(admin, { key: "safety_days_fallback", scope: { kind: "sku", skuId: 999 } }, db),
+    ).rejects.toThrow();
   });
 });

@@ -10,7 +10,7 @@
  * （例："该 SKU 用的是 AX 分层值 30 天"）。
  * 校验复用 admin/params.ts 的 PARAM_DEFS 白名单（未登记的 key 一律拒绝）。
  */
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { sysParams } from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
@@ -190,6 +190,44 @@ export async function setScopedParam(
     action: "update",
     before: { key: input.key, scope, value: old?.value ?? null },
     after: { key: input.key, scope, value: input.value },
+  });
+}
+
+/**
+ * 移除某个作用域的覆盖，回落到上一级（sku→brand→segment→global→系统缺省）。
+ *
+ * 必须有这个：一个**设得上却撤不掉**的覆盖是陷阱——业务试设一次分层参数后
+ * 无法回退，只能带着一个自己也解释不清的数字继续跑，而它正驱动补货建议量。
+ * global 层不允许在此删除（它是兜底底座，改值走 admin/params 的 updateParam）。
+ */
+export async function clearScopedParam(
+  user: SessionUser,
+  input: { key: string; scope: ParamScope },
+  dbArg?: AnyDb,
+): Promise<void> {
+  if (!user.roles.includes("admin") && !user.roles.includes("pmc")) {
+    throw new ApiError(403, "仅管理员/计划员可维护分域参数");
+  }
+  requireDef(input.key);
+  if (input.scope.kind === "global") throw new ApiError(400, "全局层不可删除，请直接改值");
+  const scope = encodeScope(input.scope);
+
+  const db: AnyDb = dbArg ?? (await getDbAsync());
+  const [old] = (await db
+    .select({ value: sysParams.value })
+    .from(sysParams)
+    .where(and(eq(sysParams.key, input.key), eq(sysParams.scope, scope)))) as { value: string }[];
+  if (!old) throw new ApiError(404, "该作用域没有覆盖值");
+
+  await db.delete(sysParams).where(and(eq(sysParams.key, input.key), eq(sysParams.scope, scope)));
+  clearScopedParamCache();
+  clearParamCache();
+  await writeAudit(db, {
+    userId: user.id,
+    entity: "sys_param_scoped",
+    action: "delete",
+    before: { key: input.key, scope, value: old.value },
+    after: { key: input.key, scope, value: null },
   });
 }
 
