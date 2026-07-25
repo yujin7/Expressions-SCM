@@ -30,3 +30,8 @@
   useId 序列 SSR/CSR 不一致 → 整页水合失败、退化为无交互静态 HTML）。
   同页多个独立列表（每 Tab 一份）必须给每个实例不同的 `paramPrefix`（URL 参数变 `fg_q`/`fg_page`，
   写入只增删自己的参数、保留兄弟）；fetch 查询串不带前缀，后端参数名不变。
+- 客户端/服务端边界（真实事故护栏）：`"use client"` 文件禁止**值导入** `@/server/*`——
+  一次值导入会把 auth/pg/原生依赖拖进客户端包，webpack 解析失败后污染模块图，
+  导致全应用（含 /api/health）齐刷刷 500 且随编译顺序漂移。需要类型用 `import type`；
+  需要常量则由服务端 API 下发，或放进零依赖纯常量模块。
+  自动化护栏：`tests/architecture/client-server-boundary.test.ts`（含白名单防腐化断言）。
