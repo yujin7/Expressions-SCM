@@ -14,6 +14,7 @@
  * 只输出命中的行——无异常不占位。命中 ≠ 结论：规则化提示，需人工确认。
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { getNumParam } from "@/server/core/params";
 import * as schema from "@/db/schema";
 import { dailyFromWindow, lastMonths, monthlyToDaily } from "@/server/core/velocity";
 import { getOnHandBySku } from "@/server/core/stock-view";
@@ -31,6 +32,13 @@ export const DETECTOR_KIND_LABELS: Record<DetectorKind, string> = {
 };
 
 /** 侦测阈值（与 rules/detectors 默认值一致，集中在此便于日后参数化） */
+/**
+ * 侦测阈值缺省值。**运行时以 sys_params 为准**（admin/params.ts 已收编三项，
+ * key: detector_sales_drop_pct / detector_channel_shift_pct / detector_velocity_dev_pct）。
+ * 此处保留缺省是为纯函数单测与参数缺失时的兜底，不是「唯一权威」。
+ * 收编原因（2026-07-25 审计）：三个数字原本只在代码里，无 D 号、不可配置，
+ * 调阈值必须发版，而没有业务归属谁都不敢动。
+ */
 export const DETECTOR_THRESHOLDS = {
   /** 销量骤停：较前期均值跌幅超过此值即命中（末期为 0 直接命中） */
   salesDrop: 0.7,
@@ -171,9 +179,21 @@ export async function getDetectorAlerts(
 
   /* ── 逐 SKU 判定（一个 SKU 一行，命中原因合并在行内） ── */
   const all: DetectorRow[] = [];
+  /* 实际生效阈值：sys_params 优先，缺失回落到 DETECTOR_THRESHOLDS 缺省 */
+  const th = {
+    salesDrop: (await getNumParam("detector_sales_drop_pct", DETECTOR_THRESHOLDS.salesDrop * 100, db)) / 100,
+    channelShiftPct: await getNumParam("detector_channel_shift_pct", DETECTOR_THRESHOLDS.channelShiftPct, db),
+    velocityDeviation: (await getNumParam("detector_velocity_dev_pct", DETECTOR_THRESHOLDS.velocityDeviation * 100, db)) / 100,
+    minPeriods: DETECTOR_THRESHOLDS.minPeriods,
+  };
+
+  /* scanned 必须只数「真的被判定过」的 SKU。
+     原先用 skuRows.length（1026）作分母，而三条规则对零销量 SKU 全部 continue 不判定，
+     于是 585 个零销量 SKU 留在分母里，把真实命中率 343/441=78% 显示成 33%——
+     目录三分之一都在清单里却看着像可控。 */
   const summary: DetectorSummary = {
     salesStop: 0, channelShift: 0, velocity: 0,
-    scanned: skuRows.length, affectedSkus: 0, multiHitSkus: 0,
+    scanned: 0, affectedSkus: 0, multiHitSkus: 0,
   };
   for (const sku of skuRows) {
     const hits: DetectorHit[] = [];
@@ -182,9 +202,11 @@ export async function getDetectorAlerts(
     const lastQty = series[series.length - 1];
     const onHand = num(onHandView.bySku.get(sku.id));
     const meta = { skuId: sku.id, code: sku.code, name: sku.name, brand: sku.brand, onHand: r1(onHand), lastQty: r1(lastQty) };
+    // 近 6 月全零 = 三条规则都不判定，不计入分母（否则命中率被稀释成假象）
+    if (series.some((v) => v > 0)) summary.scanned++;
 
     // ① 销量骤停（有库存的骤停最危险：货压着而出口没了 → high）
-    const stop = detectSalesStop(series, DETECTOR_THRESHOLDS.salesDrop);
+    const stop = detectSalesStop(series, th.salesDrop);
     if (stop.stopped) {
       summary.salesStop++;
       hits.push({
@@ -198,7 +220,7 @@ export async function getDetectorAlerts(
     // ② 渠道结构迁移（结构位移，与量级无关）
     const ch = chBySku.get(sku.id);
     if (ch) {
-      const shift = detectChannelShift(ch.prev, ch.curr, DETECTOR_THRESHOLDS.channelShiftPct);
+      const shift = detectChannelShift(ch.prev, ch.curr, th.channelShiftPct);
       if (shift.shifted) {
         summary.channelShift++;
         const top3 = shift.movements
@@ -217,7 +239,7 @@ export async function getDetectorAlerts(
     // ③ 速度突变（近 1 月日均 vs 近 3 月基线日均）
     const recentDaily = monthlyToDaily(lastQty);
     const baselineDaily = dailyFromWindow(months3.reduce((a, ym) => a + (byYm.get(ym) ?? 0), 0));
-    const vel = detectVelocityChange(recentDaily, baselineDaily, DETECTOR_THRESHOLDS.velocityDeviation);
+    const vel = detectVelocityChange(recentDaily, baselineDaily, th.velocityDeviation);
     if (vel.changed) {
       summary.velocity++;
       hits.push({
@@ -226,7 +248,7 @@ export async function getDetectorAlerts(
         title: `销速${vel.direction === "up" ? "提速" : "降速"} ${Math.abs(vel.deviationPct ?? 0)}%`,
         detail:
           `近 1 月日均 ${r1(recentDaily)}（月销 ÷ 30.4）vs 近 3 月基线日均 ${r1(baselineDaily)}（${months3[0]}~${months3[2]} 窗口销量 ÷ 91），` +
-          `偏离 ${vel.deviationPct}%（阈值 ±${DETECTOR_THRESHOLDS.velocityDeviation * 100}%）。` +
+          `偏离 ${vel.deviationPct}%（阈值 ±${th.velocityDeviation * 100}%）。` +
           `这是「最近 1 个月」与「近 3 个月均值」之比，季节性与单月大促都会体现为偏离——先看是不是这两类，再判断是否异常`,
       });
     }

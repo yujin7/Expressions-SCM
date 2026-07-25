@@ -38,8 +38,14 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
           })
           .from(schema.stockSnapshots)
           .innerJoin(schema.skus, eq(schema.stockSnapshots.skuId, schema.skus.id))
+          // 口径：逐 (仓, SKU) 取各自最新期，与 core/stock-view 一致。
+          // 原先取「本仓最新期」——某 SKU 在新一期文件里缺行（渠道断货/下架就会发生）
+          // 会整条消失、页面显示 0，而全网在库（驾驶舱/补货/风险）仍按它上一期的数计入：
+          // 同一批货两个页面一个有一个没有，且错的那边正是仓库负责人核对用的页面。
           .where(and(eq(schema.stockSnapshots.warehouseId, id),
-            sql`${schema.stockSnapshots.bizDate} = (select max(s2.biz_date) from stock_snapshots s2 where s2.warehouse_id = ${id})`))
+            sql`(${schema.stockSnapshots.skuId}, ${schema.stockSnapshots.bizDate}) in (
+                  select s2.sku_id, max(s2.biz_date) from stock_snapshots s2
+                  where s2.warehouse_id = ${id} group by s2.sku_id)`))
           .orderBy(desc(schema.stockSnapshots.qty))
           .limit(20);
 
@@ -47,7 +53,11 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
       ? await db.select({ total: sql<string>`coalesce(sum(${schema.stockBalances.qty}),'0')`, skuCount: sql<number>`count(distinct ${schema.stockBalances.skuId})::int` })
           .from(schema.stockBalances).where(and(eq(schema.stockBalances.warehouseId, id), sql`${schema.stockBalances.qty} <> 0`))
       : await db.select({ total: sql<string>`coalesce(sum(q.qty),'0')`, skuCount: sql<number>`count(*)::int` })
-          .from(sql`(select qty from stock_snapshots s where s.warehouse_id = ${id} and s.biz_date = (select max(s2.biz_date) from stock_snapshots s2 where s2.warehouse_id = ${id})) q`);
+          .from(sql`(select s.qty from stock_snapshots s
+                     where s.warehouse_id = ${id}
+                       and (s.sku_id, s.biz_date) in (
+                         select s2.sku_id, max(s2.biz_date) from stock_snapshots s2
+                         where s2.warehouse_id = ${id} group by s2.sku_id)) q`);
 
     const recentLedger = isRealtime
       ? await db
