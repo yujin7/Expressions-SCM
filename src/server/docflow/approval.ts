@@ -1,6 +1,6 @@
-import { and, eq, getTableColumns, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import type { AnyPgTable, PgColumn } from "drizzle-orm/pg-core";
-import { approvalConfigs, approvals } from "@/db/schema";
+import { approvalConfigs, approvals, users } from "@/db/schema";
 import { ROLE_LABELS } from "@/server/core/constants";
 import type { AnyDb } from "./doc-no";
 import { nextStatus, type DocStatus } from "./state";
@@ -122,4 +122,42 @@ export async function approveDoc(
     }
     return { status: newStatus, idempotent: false };
   });
+}
+
+export interface ApprovalHistoryRow {
+  /** 审批人姓名；账号被删/停用后为 null（leftJoin），**渲染必须带兜底** */
+  approverName: string | null;
+  action: string;
+  comment: string | null;
+  createdAt: Date;
+}
+
+/**
+ * 读取单据的审批轨迹（按时间升序）。
+ *
+ * 此前这段 select + leftJoin + orderBy 在 11 个单据模块里逐字复制。
+ * 复制体之间已经开始分叉：6 处用 `eq(docType, "x")`、5 处用 `inArray(docType, [...])`，
+ * 因此本函数签名同时接受两种形态——**stock-doc 确实需要一次查三个域**
+ * （stock_doc / opening / count 共用一条单据线）。
+ *
+ * `approverName` 走 leftJoin，审批人账号被删后为 null；调用方渲染时必须带兜底，
+ * 曾有两个页面漏写导致该行显示空白。
+ */
+export async function loadApprovalHistory(
+  db: AnyDb,
+  docType: string | string[],
+  docId: number,
+): Promise<ApprovalHistoryRow[]> {
+  const types = Array.isArray(docType) ? docType : [docType];
+  return db
+    .select({
+      approverName: users.name,
+      action: approvals.action,
+      comment: approvals.comment,
+      createdAt: approvals.createdAt,
+    })
+    .from(approvals)
+    .leftJoin(users, eq(approvals.approverId, users.id))
+    .where(and(inArray(approvals.docType, types), eq(approvals.docId, docId)))
+    .orderBy(approvals.createdAt, approvals.id);
 }

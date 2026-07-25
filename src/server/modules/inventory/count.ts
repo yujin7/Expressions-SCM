@@ -8,7 +8,7 @@ import { dCmp, dQty, dSub } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { requireRole } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { ApprovalError, approveDoc } from "@/server/docflow/approval";
+import { ApprovalError, approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { post, PostingError, type AnyDb, type PostingLine } from "@/server/posting/post";
@@ -415,17 +415,7 @@ export async function getCountTask(id: number, dbArg?: AnyDb) {
     ? await db.select({ id: stockDocs.id, docNo: stockDocs.docNo }).from(stockDocs).where(inArray(stockDocs.id, adjIds))
     : [];
 
-  const approvalRows: { approverName: string | null; action: string; comment: string | null; createdAt: Date }[] = await db
-    .select({
-      approverName: users.name,
-      action: approvals.action,
-      comment: approvals.comment,
-      createdAt: approvals.createdAt,
-    })
-    .from(approvals)
-    .leftJoin(users, eq(approvals.approverId, users.id))
-    .where(and(eq(approvals.docType, "count"), eq(approvals.docId, id)))
-    .orderBy(approvals.createdAt, approvals.id);
+  const approvalRows = await loadApprovalHistory(db, "count", id);
 
   return {
     id: doc.id,

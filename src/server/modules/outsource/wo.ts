@@ -6,7 +6,7 @@ import {
 import { dAdd, dCmp, dDiv, dMoney, dMul, dQty, dSub } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { approveDoc } from "@/server/docflow/approval";
+import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import type { DocStatus } from "@/server/docflow/state";
 import { ApiError } from "@/server/modules/master/common";
@@ -383,17 +383,7 @@ export async function getWo(id: number, dbArg?: AnyDb) {
     .where(eq(woLines.woId, id))
     .orderBy(woLines.id);
 
-  const approvalRows = await db
-    .select({
-      approverName: users.name,
-      action: approvals.action,
-      comment: approvals.comment,
-      createdAt: approvals.createdAt,
-    })
-    .from(approvals)
-    .leftJoin(users, eq(approvals.approverId, users.id))
-    .where(and(inArray(approvals.docType, ["wo"]), eq(approvals.docId, id)))
-    .orderBy(approvals.createdAt, approvals.id);
+  const approvalRows = await loadApprovalHistory(db, "wo", id);
 
   return { ...doc, lines, approvals: approvalRows };
 }

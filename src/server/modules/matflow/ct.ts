@@ -5,7 +5,7 @@ import {
 import { dAdd, dCmp, dNeg, dQty, dSub } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { approveDoc } from "@/server/docflow/approval";
+import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import type { DocStatus } from "@/server/docflow/state";
 import { post, PostingError } from "@/server/posting";
@@ -232,17 +232,7 @@ export async function getCt(id: number, dbArg?: AnyDb) {
     .where(eq(ctLines.ctId, id))
     .orderBy(ctLines.id);
 
-  const approvalRows = await db
-    .select({
-      approverName: users.name,
-      action: approvals.action,
-      comment: approvals.comment,
-      createdAt: approvals.createdAt,
-    })
-    .from(approvals)
-    .leftJoin(users, eq(approvals.approverId, users.id))
-    .where(and(eq(approvals.docType, "ct"), eq(approvals.docId, id)))
-    .orderBy(approvals.createdAt, approvals.id);
+  const approvalRows = await loadApprovalHistory(db, "ct", id);
 
   return { ...doc, lines, approvals: approvalRows };
 }

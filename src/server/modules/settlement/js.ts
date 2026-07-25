@@ -8,7 +8,7 @@ import { PARAM_KEYS } from "@/server/core/constants";
 import { dAdd, dCmp, dDiv, dMoney, dMul, dNeg, dQty, dZero } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { approveDoc } from "@/server/docflow/approval";
+import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
@@ -648,17 +648,7 @@ export async function getJs(id: number, dbArg?: AnyDb) {
     .where(eq(jsLines.jsId, id))
     .orderBy(asc(jsLines.id));
 
-  const approvalRows = await db
-    .select({
-      approverName: users.name,
-      action: approvals.action,
-      comment: approvals.comment,
-      createdAt: approvals.createdAt,
-    })
-    .from(approvals)
-    .leftJoin(users, eq(approvals.approverId, users.id))
-    .where(and(eq(approvals.docType, "js"), eq(approvals.docId, id)))
-    .orderBy(approvals.createdAt, approvals.id);
+  const approvalRows = await loadApprovalHistory(db, "js", id);
 
   return { ...doc, lines, approvals: approvalRows, deductPriceSource: "price_list_proxy" as const };
 }

@@ -7,7 +7,7 @@ import {
 import { dMoney, dNeg, dQty } from "@/server/core/decimal";
 import { getSessionUser, requireRole, type SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { ApprovalError, approveDoc } from "@/server/docflow/approval";
+import { ApprovalError, approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { post, PostingError, reverse, type AnyDb, type PostingEvent, type PostingLine } from "@/server/posting/post";
@@ -417,17 +417,7 @@ export async function getStockDoc(id: number, dbArg?: AnyDb) {
     : [];
   const whName = (wid: number | null) => whRows.find((w) => w.id === wid)?.name ?? null;
 
-  const approvalRows: { approverName: string | null; action: string; comment: string | null; createdAt: Date }[] = await db
-    .select({
-      approverName: users.name,
-      action: approvals.action,
-      comment: approvals.comment,
-      createdAt: approvals.createdAt,
-    })
-    .from(approvals)
-    .leftJoin(users, eq(approvals.approverId, users.id))
-    .where(and(inArray(approvals.docType, ["stock_doc", "opening", "count"]), eq(approvals.docId, id)))
-    .orderBy(approvals.createdAt, approvals.id);
+  const approvalRows = await loadApprovalHistory(db, ["stock_doc", "opening", "count"], id);
 
   return {
     id: doc.id,

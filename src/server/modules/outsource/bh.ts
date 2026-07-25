@@ -3,7 +3,7 @@ import { approvals, bhDocs, bhLines, skus, users } from "@/db/schema";
 import { dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { approveDoc } from "@/server/docflow/approval";
+import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { ApiError } from "@/server/modules/master/common";
@@ -155,17 +155,7 @@ export async function getBh(id: number, dbArg?: AnyDb) {
     .where(eq(bhLines.bhId, id))
     .orderBy(bhLines.id);
 
-  const approvalRows = await db
-    .select({
-      approverName: users.name,
-      action: approvals.action,
-      comment: approvals.comment,
-      createdAt: approvals.createdAt,
-    })
-    .from(approvals)
-    .leftJoin(users, eq(approvals.approverId, users.id))
-    .where(and(inArray(approvals.docType, ["bh"]), eq(approvals.docId, id)))
-    .orderBy(approvals.createdAt, approvals.id);
+  const approvalRows = await loadApprovalHistory(db, "bh", id);
 
   return { ...doc, lines, approvals: approvalRows };
 }

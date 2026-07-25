@@ -7,7 +7,7 @@ import { dAdd, dCmp, dDiv, dMul, dNeg, dQty, dSub, dZero } from "@/server/core/d
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
 import { registerBatchesFromReceipt, requireBatchForExpirySkus } from "@/server/modules/inventory/batch-trace";
-import { approveDoc } from "@/server/docflow/approval";
+import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, type DocStatus } from "@/server/docflow/state";
 import { post, PostingError, type PostingLine } from "@/server/posting";
@@ -594,17 +594,7 @@ export async function getSh(id: number, dbArg?: AnyDb) {
       }
     : null;
 
-  const approvalRows = await db
-    .select({
-      approverName: users.name,
-      action: approvals.action,
-      comment: approvals.comment,
-      createdAt: approvals.createdAt,
-    })
-    .from(approvals)
-    .leftJoin(users, eq(approvals.approverId, users.id))
-    .where(and(eq(approvals.docType, "sh"), eq(approvals.docId, id)))
-    .orderBy(approvals.createdAt, approvals.id);
+  const approvalRows = await loadApprovalHistory(db, "sh", id);
 
   return { ...doc, sourceDocNo, lines, qc, inbound: doc.status === "completed", approvals: approvalRows };
 }

@@ -6,7 +6,7 @@ import {
 import { dCmp } from "@/server/core/decimal";
 import { canSeePrices, type SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { approveDoc } from "@/server/docflow/approval";
+import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { checkPriceDeviation, normalizeToBaseNet } from "@/server/rules/price";
@@ -337,17 +337,7 @@ export async function getPo(id: number, dbArg?: AnyDb) {
     .where(eq(poLines.poId, id))
     .orderBy(poLines.id);
 
-  const approvalRows = await db
-    .select({
-      approverName: users.name,
-      action: approvals.action,
-      comment: approvals.comment,
-      createdAt: approvals.createdAt,
-    })
-    .from(approvals)
-    .leftJoin(users, eq(approvals.approverId, users.id))
-    .where(and(inArray(approvals.docType, ["po"]), eq(approvals.docId, id)))
-    .orderBy(approvals.createdAt, approvals.id);
+  const approvalRows = await loadApprovalHistory(db, "po", id);
 
   return { ...doc, lines, approvals: approvalRows };
 }
