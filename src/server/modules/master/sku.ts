@@ -80,6 +80,8 @@ export async function createSku(input: unknown) {
       version: v.version ?? null,
       prodMode: v.prodMode ?? null,
       lossCategory: v.lossCategory ?? null,
+      shelfLifeDays: v.shelfLifeDays ?? null,
+      nearExpiryDays: v.nearExpiryDays ?? null,
       active: v.active,
     })
     .returning();
@@ -105,6 +107,8 @@ export async function updateSku(id: number, input: unknown) {
       version: v.version ?? null,
       prodMode: v.prodMode ?? null,
       lossCategory: v.lossCategory ?? null,
+      shelfLifeDays: v.shelfLifeDays ?? null,
+      nearExpiryDays: v.nearExpiryDays ?? null,
       active: v.active,
       updatedAt: new Date(),
     })

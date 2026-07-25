@@ -38,6 +38,15 @@ export const skuSchema = z.object({
   brandId: z.number().int().positive().nullable().optional(),
   lifecycle: z.enum(["on_sale", "trial", "halted", "retired"]).optional(),
   active: z.boolean().optional().default(true),
+  /* 效期两参（2026-07-25 审计补写入口）。
+     此前 skus 表有这两列、且有两处活代码读它，却**全系统没有任何写入路径**
+     （zod 无此键、create/updateSku 白名单不含、放行引擎只写 shelf_life_days、无 UI/API）：
+     - shelfLifeDays 决定渠道临期口径 max(保质期×2/10, 100天) 能否比对；
+     - nearExpiryDays 是 matflow/sh.ts「管效期 SKU 收货必填批次号」硬闸的唯一开关，
+       实测 0/5376 非空 → 该闸结构性不可达，读代码的人会以为效期收货已受控，实则一单也拦不住。
+     留空＝沿用兜底 90 天（与 report/risk 一致），不改变既有行为。 */
+  shelfLifeDays: z.number().int().positive().nullable().optional(),
+  nearExpiryDays: z.number().int().positive().nullable().optional(),
 });
 export type SkuInput = z.infer<typeof skuSchema>;
 
