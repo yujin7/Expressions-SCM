@@ -8,12 +8,15 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
-import { dQty } from "@/server/core/decimal";
+import { dAdd, dMul, dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { getNumParam } from "@/server/core/params";
 import { batchAllowed, producibleQty, suggestBatchQty, MAX_AUTO_BATCHES } from "@/server/rules/kitting";
+import { earliestKitDate, type KitBlocker } from "@/server/rules/kitting-atp";
+import { getOnHandBySku } from "@/server/core/stock-view";
+import { getOpenSupplyLines } from "@/server/core/supply";
 import { nextDocNo } from "@/server/docflow/doc-no";
-import { ApiError } from "@/server/modules/master/common";
+import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb } from "./common";
 
 /* ── 预演 ── */
@@ -26,6 +29,12 @@ export interface BatchSuggestion {
   woQty: string;
   receivedBasis: { materialCode: string; received: string; perUnit: string }[];
   producible: number;
+  /** E2-09 预计齐套日（YYYY-MM-DD）；null = 视野内齐不了 */
+  kitDate: string | null;
+  /** 卡住齐套的物料（最多 3 个，够定位不刷屏） */
+  kitBlockers: KitBlocker[];
+  /** 齐套判定说明（含诚实降级：无物料行 ≠ 已验证齐套） */
+  kitNote: string;
   alreadyBatched: string;
   existingBatches: number;
   suggestQty: number;
@@ -84,6 +93,31 @@ export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchS
     const recvBySku = new Map(recv.map((r) => [r.skuId, r.received]));
     const kit = lines.map((l) => ({ materialSkuId: l.materialSkuId, grossReq: l.grossReq, netIssued: recvBySku.get(l.materialSkuId) ?? "0" }));
     const producible = producibleQty(wo.qty, kit);
+
+    /* E2-09 齐套 ATP：producibleQty 只回答「现在够不够」，回答不了业务真正要问的
+       「几号能齐套」。rules/kitting-atp 早已实现（逐日推演 + 木桶效应取各料 readyDate 最大值）
+       却零生产调用方，交付日期这个问题在系统里一直没人回答。此处接上。
+       物料到货走 core/supply 唯一权威（有确认到货日的才进推演，无日期的不臆造）。 */
+    const materialIds = lines.map((l) => l.materialSkuId);
+    const matOnHand = materialIds.length ? await getOnHandBySku(db, { skuIds: materialIds }) : null;
+    const matSupply = materialIds.length ? await getOpenSupplyLines(db, materialIds) : [];
+    const arrivalsByMat = new Map<number, { date: string; qty: string }[]>();
+    for (const sl of matSupply) {
+      if (!sl.expectDate || sl.qty <= 0) continue;
+      const arr = arrivalsByMat.get(sl.skuId) ?? [];
+      arr.push({ date: sl.expectDate, qty: String(sl.qty) });
+      arrivalsByMat.set(sl.skuId, arr);
+    }
+    const kitAtp = earliestKitDate(
+      lines.map((l) => ({
+        materialSkuId: l.materialSkuId,
+        // 毛需求按整张 WO 计（与 producibleQty 同口径），已收部分从在库侧抵扣
+        required: dMul(dQty(l.grossReq), wo.qty),
+        onHand: dAdd(String(matOnHand?.bySku.get(l.materialSkuId) ?? "0"), recvBySku.get(l.materialSkuId) ?? "0"),
+        arrivals: arrivalsByMat.get(l.materialSkuId) ?? [],
+      })),
+      todayShanghai(),
+    );
     const jgs: { qty: string; status: string }[] = await db
       .select({ qty: schema.jgDocs.qty, status: schema.jgDocs.status })
       .from(schema.jgDocs)
@@ -122,6 +156,10 @@ export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchS
           perUnit: dQty(l.grossReq),
         })),
         producible,
+        /** E2-09：预计齐套日（null=视野内齐不了，blockers 说明卡在哪个料） */
+        kitDate: kitAtp.kitDate,
+        kitBlockers: kitAtp.blockers.slice(0, 3),
+        kitNote: kitAtp.note,
         alreadyBatched: String(alreadyBatched),
         existingBatches: jgs.length,
         suggestQty: suggest,

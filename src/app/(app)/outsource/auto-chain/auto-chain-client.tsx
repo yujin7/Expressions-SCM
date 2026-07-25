@@ -2,7 +2,7 @@
 
 /** D33 自动链预演（spec/11 上线闸）：先看清会生成什么，再逐步放开开关 */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Button, Card, Space, Table, Tag, Typography } from "antd";
+import { Alert, App, Button, Card, Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
@@ -10,6 +10,8 @@ import { formatQty } from "@/components/format";
 interface Batch {
   woId: number; woDocNo: string; productCode: string; productName: string; woQty: string;
   producible: number; alreadyBatched: string; existingBatches: number; suggestQty: number; blockedReason: string | null;
+  kitDate: string | null; kitNote: string;
+  kitBlockers: { materialSkuId: number; shortBy: string; readyDate: string | null }[];
 }
 interface WoSug {
   bhId: number; bhDocNo: string; skuId: number; skuCode: string; qty: string;
@@ -54,6 +56,18 @@ export default function AutoChainClient() {
     { title: "成品", render: (_, r) => `${r.productCode} ${r.productName}`, ellipsis: true },
     { title: "工单量", dataIndex: "woQty", width: 90, align: "right", render: (v: string) => formatQty(v) },
     { title: "到料可产", dataIndex: "producible", width: 90, align: "right" },
+    {
+      // E2-09：「现在够不够」之外，回答业务真正要问的「几号能齐套」。
+      // 视野内齐不了就直说并指出卡在哪个料，不给一个含糊的日期。
+      title: "预计齐套日",
+      dataIndex: "kitDate",
+      width: 120,
+      render: (v: string | null, r: Batch) => (
+        <Tooltip title={r.kitNote + (r.kitBlockers?.length ? `；卡料：${r.kitBlockers.map((b: Batch["kitBlockers"][number]) => `#${b.materialSkuId} 缺 ${b.shortBy}`).join("、")}` : "")}>
+          {v ? <span>{v}</span> : <span style={{ color: "#cf1322" }}>视野内齐不了</span>}
+        </Tooltip>
+      ),
+    },
     { title: "已下批", dataIndex: "alreadyBatched", width: 90, align: "right", render: (v: string) => formatQty(v) },
     { title: "批次数", dataIndex: "existingBatches", width: 70, align: "right" },
     { title: "建议新批", dataIndex: "suggestQty", width: 100, align: "right", render: (v: number) => (v > 0 ? <Tag color="green">{v.toLocaleString("zh-CN")}</Tag> : "—") },
