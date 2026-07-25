@@ -15,8 +15,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { ApiError } from "@/server/modules/master/common";
-import { lastMonths, dailyFromWindow } from "@/server/core/velocity";
-import { getOpenSupplyLines, summarizeSupply } from "@/server/core/supply";
+import { getSkuFacts } from "@/server/core/sku-facts";
 import { checkRecentOrders } from "@/server/modules/outsource/duplicate-guard";
 import { num, r1 } from "@/server/core/svc";
 
@@ -89,40 +88,17 @@ export async function getApprovalBrief(docType: string, docId: number, dbArg?: A
     .where(inArray(schema.skus.id, skuIds));
   const skuById = new Map(skuRows.map((s) => [s.id, s]));
 
-  const balRows: { skuId: number; qty: string | null }[] = await db
-    .select({ skuId: schema.stockBalances.skuId, qty: sql<string | null>`sum(${schema.stockBalances.qty})` })
-    .from(schema.stockBalances)
-    .where(inArray(schema.stockBalances.skuId, skuIds))
-    .groupBy(schema.stockBalances.skuId);
-  const onHandBySku = new Map<number, number>(balRows.map((r) => [r.skuId, num(r.qty)]));
-  const s = schema.stockSnapshots;
-  const latest = db
-    .select({ warehouseId: s.warehouseId, skuId: s.skuId, maxDate: sql<string>`max(${s.bizDate})`.as("max_date") })
-    .from(s)
-    .where(inArray(s.skuId, skuIds))
-    .groupBy(s.warehouseId, s.skuId)
-    .as("latest");
-  const snapRows: { skuId: number; qty: string | null }[] = await db
-    .select({ skuId: s.skuId, qty: sql<string | null>`sum(${s.qty})` })
-    .from(s)
-    .innerJoin(latest, and(eq(latest.warehouseId, s.warehouseId), eq(latest.skuId, s.skuId), eq(latest.maxDate, s.bizDate)))
-    .groupBy(s.skuId);
-  for (const r of snapRows) onHandBySku.set(r.skuId, (onHandBySku.get(r.skuId) ?? 0) + num(r.qty));
+  /*
+   * 在库 / 销速 / 未结供给：core/sku-facts 一次装配。
+   * 此前这里自己写了一遍「Σstock_balances + 各仓最新快照」——与 master/sku-brief.ts
+   * 是同一段复制品。审批简报是**做审批决定当下**看的那张卡，在库算错就是直接
+   * 拿错的数字批单据，所以这里必须走唯一权威而不是第二实现。
+   */
+  const facts = await getSkuFacts(db, { skuIds });
+  const onHandBySku = new Map<number, number>([...facts.bySku].map(([id, f]) => [id, f.onHand]));
+  const dailyBySku = new Map<number, number>([...facts.bySku].map(([id, f]) => [id, f.daily]));
 
-  const sm = schema.salesMonthly;
-  const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
-  const months3 = maxYm ? lastMonths(maxYm, 3) : [];
-  const salesRows: { skuId: number; qty: string | null }[] = months3.length
-    ? await db
-        .select({ skuId: sm.skuId, qty: sql<string | null>`sum(${sm.qty})` })
-        .from(sm)
-        .where(and(inArray(sm.skuId, skuIds), inArray(sm.yearMonth, months3)))
-        .groupBy(sm.skuId)
-    : [];
-  const dailyBySku = new Map<number, number>(salesRows.map((r) => [r.skuId, dailyFromWindow(num(r.qty))]));
-
-  /* 未结供给（唯一定义）+ 重复下单守卫（同一守卫） */
-  const supply = summarizeSupply(await getOpenSupplyLines(db, skuIds));
+  /* 重复下单守卫（同一守卫）；未结供给已随 facts 装配 */
   const dup = await checkRecentOrders(skuIds, 7, db);
 
   const briefLines: BriefLine[] = lines.map((l) => {
@@ -130,7 +106,7 @@ export async function getApprovalBrief(docType: string, docId: number, dbArg?: A
     const onHand = onHandBySku.get(l.skuId) ?? 0;
     const daily = dailyBySku.get(l.skuId) ?? 0;
     const cover = daily > 0 ? onHand / daily : null;
-    const openSupply = supply.get(l.skuId)?.total ?? 0;
+    const openSupply = facts.bySku.get(l.skuId)?.openSupply ?? 0;
     // 排除本单自身（本单尚未成为未结单，但同 SKU 的其他单要提示）
     const recent = (dup.hitsBySku[l.skuId] ?? []).filter((h) => h.docNo !== doc.docNo);
 

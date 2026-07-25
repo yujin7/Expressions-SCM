@@ -19,7 +19,7 @@ import { requireAnyRole } from "@/server/modules/outsource/common";
 import { ApiError } from "@/server/modules/master/common";
 import { todayShanghai } from "@/server/modules/master/common";
 import { RISK_ACTION_ORDER, suggestRiskAction, type RiskAction } from "@/server/rules/risk-action";
-import { lastMonths } from "@/server/core/velocity";
+import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
 import { getOnHandBySku } from "@/server/core/stock-view";
 import { num, r1 } from "@/server/core/svc";
 
@@ -101,7 +101,9 @@ export async function getRiskWorklist(
         .where(inArray(sm.yearMonth, months3))
         .groupBy(sm.skuId)
     : [];
-  const dailyBySku = new Map<number, number>(salesRows.map((r) => [r.skuId, num(r.qty) / 91]));
+  // 日均走 core/velocity 唯一口径——此前这里手写 /91，除数虽然一样，
+  // 但第二实现意味着窗口口径一旦调整这里不会跟着变
+  const dailyBySku = new Map<number, number>(salesRows.map((r) => [r.skuId, dailyFromWindow(num(r.qty))]));
 
   /* ── 效期：batch_stocks 逐 SKU 聚合 ── */
   const bs = schema.batchStocks;
