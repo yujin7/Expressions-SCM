@@ -1,18 +1,12 @@
 /** release 流水线：skus（自 engine.ts 拆出，行为未变） */
-import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
-import { getDbAsync } from "@/db";
+import { eq } from "drizzle-orm";
+
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
-import { dAdd } from "@/server/core/decimal";
-import { resolveAlias, type DimDb } from "@/server/modules/dimension/resolver";
-import { ApiError, todayShanghai } from "@/server/modules/master/common";
+
 import type { BomBlock, BomLine } from "@/server/import/adapters/bom";
 import type { SpuCluster } from "@/server/import/adapters/bom-spu";
-import {
-  type AnyDb, type ReleaseUser, type StagedRow,
-  resolveDb, loadStagedRows, commitRows, markBlocked, aliasCache,
-  nextSpuCodeIn, loadReleasedSpuIndex, loadSkuIdByCode, isBomBlockPayload,
-} from "./common";
+import { type AnyDb, type ReleaseUser, resolveDb, loadStagedRows, markBlocked, aliasCache, loadReleasedSpuIndex, loadSkuIdByCode, isBomBlockPayload } from "./common";
 
 /* ══ 2) releaseSkus（BOM 块 → 成品/物料建档） ═══════════ */
 
@@ -32,7 +26,6 @@ export interface ReleaseSkusResult {
   /** 与 stock_opening_candidate 的名称交叉核对（仅提示，不阻塞） */
   nameCrossCheck: { code: string; bomName: string; openingName: string }[];
 }
-
 
 export async function releaseSkus(
   user: ReleaseUser,

@@ -68,7 +68,7 @@ export async function stageNpd(
       merged.set(k, next);
     }
   };
-  let roles: { 角色名称: string; 分配方式: string | null }[] = [];
+  const roles: { 角色名称: string; 分配方式: string | null }[] = [];
   for (const p of [files.withRoles, files.base, files.sim]) {
     const wb = await readWorkbook(p, { forceRaw: true });
     const data = wb.sheets.find((s) => s.name.includes("数据表"));

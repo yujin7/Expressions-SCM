@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- 红队测试刻意用 as any 探查脱敏后的任意嵌套属性：断言的正是「敏感键有没有被剥掉」，写成精确类型反而会让被测对象重新获得类型保护，测不到真实的漏出面。 */
 /**
  * RED TEAM — dto.maskSensitive 脱敏收口攻击。
  * 约定：断言【正确】行为；用例失败 = 漏洞证实。

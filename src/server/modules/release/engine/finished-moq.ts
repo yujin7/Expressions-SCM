@@ -1,18 +1,12 @@
 /** release 流水线：finished-moq（自 engine.ts 拆出，行为未变） */
-import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
-import { getDbAsync } from "@/db";
+import { and, eq, inArray } from "drizzle-orm";
+
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
-import { dAdd } from "@/server/core/decimal";
-import { resolveAlias, type DimDb } from "@/server/modules/dimension/resolver";
-import { ApiError, todayShanghai } from "@/server/modules/master/common";
+
 import type { BomBlock, BomLine } from "@/server/import/adapters/bom";
 import type { SpuCluster } from "@/server/import/adapters/bom-spu";
-import {
-  type AnyDb, type ReleaseUser, type StagedRow,
-  resolveDb, loadStagedRows, commitRows, markBlocked, aliasCache,
-  nextSpuCodeIn, loadReleasedSpuIndex, loadSkuIdByCode, isBomBlockPayload,
-} from "./common";
+import { type AnyDb, type ReleaseUser, resolveDb, aliasCache, loadSkuIdByCode } from "./common";
 
 export interface ReleaseMoqResult {
   dryRun: boolean;
