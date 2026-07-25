@@ -152,6 +152,25 @@ export async function makeResolver(
 }
 
 /** 写入某作用域的覆盖值（admin/pmc；复用 PARAM_DEFS 的 min/max 校验 + writeAudit） */
+/** scope 形状校验（先于 encodeScope 调用，保证参数错误是 400 而不是 500） */
+function assertScopeShape(scope: ParamScope): void {
+  switch (scope.kind) {
+    case "global":
+      return;
+    case "segment":
+      if (typeof scope.cell !== "string" || !scope.cell.trim()) throw new ApiError(400, "分层格不能为空");
+      return;
+    case "brand":
+      if (!Number.isInteger(scope.brandId) || scope.brandId <= 0) throw new ApiError(400, "brandId 须为正整数");
+      return;
+    case "sku":
+      if (!Number.isInteger(scope.skuId) || scope.skuId <= 0) throw new ApiError(400, "skuId 须为正整数");
+      return;
+    default:
+      throw new ApiError(400, `未知的 scope.kind：${String((scope as { kind?: unknown }).kind)}`);
+  }
+}
+
 export async function setScopedParam(
   user: SessionUser,
   input: { key: string; scope: ParamScope; value: number },
@@ -160,15 +179,24 @@ export async function setScopedParam(
   if (!user.roles.includes("admin") && !user.roles.includes("pmc")) {
     throw new ApiError(403, "仅管理员/计划员可维护分域参数");
   }
+  /* **global 层不走这条路**（2026-07-26 红队实证的提权口子）。
+     global 行与 admin/params.ts 的 updateParam 落在同一个唯一键 (scope,key) 上，
+     而那条路径是 admin-only。本函数放行 pmc，于是 pmc 一个请求就能改写
+     比价硬门 / 超收容差 / 让步价率 / D33 自动链开关这些 admin-only 的全局参数——
+     实测 pmc01 对 /api/admin/params 得 403，对本路径同 key 得 201 并真的改掉了值。
+     分域参数只管 sku/brand/segment 三层；global 一律回 admin 专用路径。 */
+  if (input.scope.kind === "global" && !user.roles.includes("admin")) {
+    throw new ApiError(403, "全局参数仅管理员可改，请走「运行参数」页（/api/admin/params）");
+  }
   const def = requireDef(input.key);
   if (!Number.isFinite(input.value)) throw new ApiError(400, "参数值须为数值");
   if (input.value < def.min || input.value > def.max) {
     throw new ApiError(400, `「${def.label}」取值须在 ${def.min}–${def.max}${def.unit} 之间`);
   }
+  /* 形状校验必须**先于** encodeScope：否则畸形 scope 会在 encodeScope 里抛 TypeError，
+     把「用户参数写错」变成 500 并污染 error_logs（本仓反复出现的缺陷类）。 */
+  assertScopeShape(input.scope);
   const scope = encodeScope(input.scope);
-  if (input.scope.kind === "segment" && !input.scope.cell.trim()) {
-    throw new ApiError(400, "分层格不能为空");
-  }
 
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const before = (await db
@@ -186,7 +214,9 @@ export async function setScopedParam(
   clearParamCache(); // global 层与 core/params 共用同一批行，一并失效
   await writeAudit(db, {
     userId: user.id,
-    entity: "sys_param_scoped",
+    // global 行与 admin/params 写的是同一行，审计 entity 必须一致，
+    // 否则运行参数页（只读 entity="sys_param"）的「最近修改人/时间」会停留在上一次 admin 的记录
+    entity: input.scope.kind === "global" ? "sys_param" : "sys_param_scoped",
     action: "update",
     before: { key: input.key, scope, value: old?.value ?? null },
     after: { key: input.key, scope, value: input.value },
@@ -210,6 +240,7 @@ export async function clearScopedParam(
   }
   requireDef(input.key);
   if (input.scope.kind === "global") throw new ApiError(400, "全局层不可删除，请直接改值");
+  assertScopeShape(input.scope);
   const scope = encodeScope(input.scope);
 
   const db: AnyDb = dbArg ?? (await getDbAsync());

@@ -337,6 +337,14 @@ function PoInner() {
           确认（代录）
         </Button>
       ) : null}
+      {/* 供应商确认链接：token 门户是 po_lines.expected_date 的**唯一**写入路径
+          （内部「确认（代录）」只写表头 note/version，不写行级交期）。
+          首版只加了回调没加这个按钮，回调成了编译进包却不可达的死代码。 */}
+      {["approved", "in_progress"].includes(detail.status) ? (
+        <Button loading={tokenLoading} onClick={() => void genConfirmLink(detail.id)}>
+          生成供应商确认链接
+        </Button>
+      ) : null}
       {detail.status !== "draft" ? (
         <Button onClick={() => window.open(`/outsource/po/${detail.id}/print`, "_blank")}>打印采购单</Button>
       ) : null}

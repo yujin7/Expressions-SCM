@@ -32,7 +32,12 @@ coverage/
 *.log
 
 # ── 测试与文档（不参与运行）──
+# 注意：tests/ 与 scripts/ **必须一起排除**。tsconfig include 是 **/*.ts（覆盖 scripts/），
+# 而 scripts/perf-smoke.ts:6 import 了 ../tests/helpers/db——只排 tests/ 会让
+# Dockerfile 的 `next build` 在类型检查阶段直接失败（ops/deploy.sh 首条命令即中止）。
+# 运行阶段只拷 .next/standalone 等 5 条路径，两者都不需要。
 tests/
+scripts/
 **/*.test.ts
 **/*.test.tsx
 README.md

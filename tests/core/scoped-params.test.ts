@@ -208,3 +208,50 @@ describe("clearScopedParam：覆盖可撤销并回落上一级", () => {
     ).rejects.toThrow();
   });
 });
+
+/**
+ * 红队实证的提权口子（2026-07-26）：/api/admin/params/scoped 曾接受 scope:{kind:"global"}，
+ * 而 global 行与 admin-only 的 admin/params.updateParam 落在**同一个唯一键 (scope,key)** 上。
+ * 实测 pmc01 对 /api/admin/params 得 403、对 scoped 路径同 key 得 201 并真的改掉了
+ * 超收容差/比价硬门/让步价率/D33 自动链开关。
+ */
+describe("setScopedParam：global 层的权限边界", () => {
+  const pmc = { id: 2, name: "计划员", roles: ["pmc"], isApprover: true };
+  const admin = { id: 1, name: "管理员", roles: ["admin"], isApprover: true };
+
+  it("pmc 不能经分域路径改 global（否则绕过 admin-only 闸）", async () => {
+    const { db } = await createTestDb();
+    await expect(
+      setScopedParam(pmc, { key: "over_receive_tolerance_pct", scope: { kind: "global" }, value: 19 }, db),
+    ).rejects.toThrow(/仅管理员/);
+  });
+
+  it("pmc 仍可维护 sku/brand/segment 三层（分域参数本来的职责）", async () => {
+    const { db } = await createTestDb();
+    await setScopedParam(pmc, { key: "safety_days_fallback", scope: { kind: "sku", skuId: 259 }, value: 9 }, db);
+    expect((await resolveNumParam("safety_days_fallback", 0, { skuId: 259 }, db)).value).toBe(9);
+  });
+
+  it("admin 改 global 时审计 entity 必须是 sys_param（否则运行参数页「最近修改人」张冠李戴）", async () => {
+    const { db } = await createTestDb();
+    await setScopedParam(admin, { key: "safety_days_fallback", scope: { kind: "global" }, value: 8 }, db);
+    const rows = await db.select().from(auditLogs);
+    const hit = rows.filter((r: { entity: string }) => r.entity === "sys_param");
+    expect(hit.length, "global 行与 admin/params 写同一行，审计 entity 必须一致").toBeGreaterThan(0);
+  });
+
+  it("畸形 scope 是 400 不是 500（参数错误不该污染 error_logs）", async () => {
+    const { db } = await createTestDb();
+    for (const bad of [
+      { kind: "brand", brandId: "x" },
+      { kind: "sku", skuId: -1 },
+      { kind: "segment", cell: "  " },
+      { kind: "bogus" },
+    ]) {
+      await expect(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        setScopedParam(admin, { key: "safety_days_fallback", scope: bad as any, value: 9 }, db),
+      ).rejects.toMatchObject({ status: 400 });
+    }
+  });
+});

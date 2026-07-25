@@ -153,13 +153,14 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
   if (q) {
     conds.push(sql`(${schema.skus.code} ILIKE ${"%" + q + "%"} OR ${schema.skus.name} ILIKE ${"%" + q + "%"})`);
   }
-  const skuRows: { id: number; code: string; name: string; baseUom: string; brand: string | null }[] = await db
+  const skuRows: { id: number; code: string; name: string; baseUom: string; brand: string | null; brandId: number | null }[] = await db
     .select({
       id: schema.skus.id,
       code: schema.skus.code,
       name: schema.skus.name,
       baseUom: schema.skus.baseUom,
       brand: schema.brands.nameCn,
+      brandId: schema.skus.brandId, // 分域参数 brand 层解析需要（缺它则 brand 覆盖永不命中）
     })
     .from(schema.skus)
     .leftJoin(schema.brands, eq(schema.skus.brandId, schema.brands.id))
@@ -380,7 +381,16 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     const effectiveTarget = targetForClass(abcClass ?? undefined);
 
     /* ── E2-01 安全库存：统计法（需求σ×交期），样本/交期不足降级兜底天数并注明 ── */
-    const safetyDays = resolveSafetyDays({ skuId: s.id, segment: abcClass ?? undefined });
+    /* 解析上下文必须带齐三层，缺一层则那一层的覆盖**永远不命中**：
+       此前只传 {skuId, segment}，于是 /api/admin/params/scoped 写入的 brand 覆盖
+       返 201、GET 列得出、审计也留痕，唯独建议量纹丝不动——写得进、读不到。
+       （segment 传的是 ABC 单字母；九宫格 AX/BY 这类 cell 目前不在本引擎上下文里，
+       要支持需先把 segmentation 的 cell 引进来，属另一件事，不在此处臆造。） */
+    const safetyDays = resolveSafetyDays({
+      skuId: s.id,
+      brandId: s.brandId ?? undefined,
+      segment: abcClass ?? undefined,
+    });
     const ss = safetyStock({
       monthly: seriesBySku.get(s.id) ?? [],
       daily: dailyNum,
