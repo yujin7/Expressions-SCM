@@ -12,6 +12,7 @@ import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
 import { num } from "@/server/core/svc";
+import { EXPIRY_TIER_DAYS, daysLeftOf } from "@/server/core/stock-view";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -41,9 +42,11 @@ export interface ExpiryListResult {
 }
 
 function bucketOf(daysLeft: number): ExpiryBucket {
+  // 边界走 core/stock-view.EXPIRY_TIER_DAYS（spec/07 N3 七段位口径 92/183），
+  // 此前写死 90/180，与驾驶舱差 2-3 天，同一批货在两页会落到不同段位
   if (daysLeft <= 0) return "expired";
-  if (daysLeft <= 90) return "m3";
-  if (daysLeft <= 180) return "m6";
+  if (daysLeft <= EXPIRY_TIER_DAYS.m3) return "m3";
+  if (daysLeft <= EXPIRY_TIER_DAYS.m6) return "m6";
   return "rest";
 }
 
@@ -82,9 +85,8 @@ export async function listExpiryBatches(
     .innerJoin(schema.warehouses, eq(bs.warehouseId, schema.warehouses.id))
     .where(and(...conds));
 
-  const todayMs = Date.parse(`${today}T00:00:00Z`);
   const all: ExpiryBatchRow[] = raw.map((r) => {
-    const daysLeft = Math.round((Date.parse(`${r.expiryDate}T00:00:00Z`) - todayMs) / 86_400_000);
+    const daysLeft = daysLeftOf(today, r.expiryDate);
     return { ...r, qty: num(r.qty), daysLeft, bucket: bucketOf(daysLeft) };
   });
 

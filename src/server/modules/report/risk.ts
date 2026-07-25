@@ -20,17 +20,12 @@ import { ApiError } from "@/server/modules/master/common";
 import { todayShanghai } from "@/server/modules/master/common";
 import { RISK_ACTION_ORDER, suggestRiskAction, type RiskAction } from "@/server/rules/risk-action";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
-import { getOnHandBySku, coverDays } from "@/server/core/stock-view";
+import { coverDays, daysLeftOf, getOnHandBySku } from "@/server/core/stock-view";
 import { num, r1 } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-
-/** 日界差（Asia/Shanghai 日期字符串直减，与 expiry.ts 同准） */
-function daysBetween(from: string, to: string): number {
-  return Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000);
-}
 
 export interface RiskRow {
   skuId: number;
@@ -114,7 +109,7 @@ export async function getRiskWorklist(
     .where(and(isNotNull(bs.expiryDate), gt(bs.qty, "0")));
   const expiryBySku = new Map<number, { minDaysLeft: number; expiredQty: number; nearQty: number }>();
   for (const r of batchRows) {
-    const daysLeft = daysBetween(today, r.expiryDate);
+    const daysLeft = daysLeftOf(today, r.expiryDate);
     const cur = expiryBySku.get(r.skuId) ?? { minDaysLeft: Number.POSITIVE_INFINITY, expiredQty: 0, nearQty: 0 };
     cur.minDaysLeft = Math.min(cur.minDaysLeft, daysLeft);
     if (daysLeft <= 0) cur.expiredQty += num(r.qty);

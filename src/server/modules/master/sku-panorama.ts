@@ -14,6 +14,7 @@ import * as schema from "@/db/schema";
 import { ApiError, todayShanghai } from "./common";
 import { lastMonths } from "@/server/core/velocity";
 import { num } from "@/server/core/svc";
+import { daysLeftOf } from "@/server/core/stock-view";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -329,7 +330,7 @@ export async function getSkuPanorama(id: number, dbArg?: AnyDb): Promise<SkuPano
       batchNo: r.batchNo,
       prodDate: r.prodDate,
       expiryDate: r.expiryDate,
-      daysLeft: Math.floor((new Date(`${r.expiryDate}T00:00:00+08:00`).getTime() - todayMs) / 86_400_000),
+      daysLeft: daysLeftOf(today, r.expiryDate),
       qty: r.qty,
     })),
     sales: { months, byMonth, topChannels },

@@ -15,9 +15,10 @@ import { getNumParam } from "@/server/core/params";
 import { getRiskWorklist } from "@/server/modules/report/risk";
 import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";
-import { getLatestSnapshotRows } from "@/server/core/stock-view";
+import { getLatestSnapshotRows, daysLeftOf, EXPIRY_TIER_DAYS } from "@/server/core/stock-view";
 import { num, r1 } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
+import { todayShanghai } from "@/server/modules/master/common";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -86,6 +87,7 @@ export async function getDashboard(roles: string[], dbArg?: AnyDb): Promise<Dash
 async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<DashboardData> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const today = new Date();
+  const todayStr = todayShanghai(); // 效期天数的午夜锚点（与效期页/风险页同源）
 
   /* ── 基础主档计数 ── */
   const [[{ skuActive }], [{ spuCount }]] = await Promise.all([
@@ -283,12 +285,12 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
   // R15 七段位（04 §3 裁决：互斥左闭右开——已到期/(0,3月]/(3,6月]/(6,12月]/(12,18月]/(18,24月]/>24月）
   const EXP_BUCKETS = [
     { bucket: "已到期", min: -Infinity, max: 0 },
-    { bucket: "0-3月", min: 0, max: 92 },
-    { bucket: "3-6月", min: 92, max: 183 },
-    { bucket: "6-12月", min: 183, max: 365 },
-    { bucket: "12-18月", min: 365, max: 548 },
-    { bucket: "18-24月", min: 548, max: 730 },
-    { bucket: ">24月", min: 730, max: Infinity },
+    { bucket: "0-3月", min: 0, max: EXPIRY_TIER_DAYS.m3 },
+    { bucket: "3-6月", min: EXPIRY_TIER_DAYS.m3, max: EXPIRY_TIER_DAYS.m6 },
+    { bucket: "6-12月", min: EXPIRY_TIER_DAYS.m6, max: EXPIRY_TIER_DAYS.m12 },
+    { bucket: "12-18月", min: EXPIRY_TIER_DAYS.m12, max: EXPIRY_TIER_DAYS.m18 },
+    { bucket: "18-24月", min: EXPIRY_TIER_DAYS.m18, max: EXPIRY_TIER_DAYS.m24 },
+    { bucket: ">24月", min: EXPIRY_TIER_DAYS.m24, max: Infinity },
   ];
   const expAgg = new Map<string, { qty: number; batches: number }>(EXP_BUCKETS.map((b) => [b.bucket, { qty: 0, batches: 0 }]));
   let expiryRiskQty = 0; // 由段位聚合后统一赋值（同源口径）
@@ -296,7 +298,11 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
   for (const r of batchRows) {
     const q = num(r.qty);
     if (q <= 0 || !r.expiryDate) continue;
-    const daysLeft = Math.floor((new Date(`${r.expiryDate}T00:00:00+08:00`).getTime() - today.getTime()) / 86_400_000);
+    /* 效期剩余天数走 core/stock-view.daysLeftOf（午夜锚点），不要拿「此刻」去减。
+       用 today.getTime()（当前时刻）时，明天到期的批次算出 floor(24h−14h)/24h = 0，
+       而效期页/风险页是午夜减午夜得 1——**驾驶舱恒少 1 天**，且首桶判据是
+       daysLeft <= 0，于是明天才到期的货在驾驶舱被计进「已过期」与 expiryRiskQty。 */
+    const daysLeft = daysLeftOf(todayStr, r.expiryDate);
     const b = EXP_BUCKETS.find((x) => daysLeft > x.min && daysLeft <= x.max) ?? EXP_BUCKETS[EXP_BUCKETS.length - 1];
     const e = expAgg.get(b.bucket)!;
     e.qty += q;

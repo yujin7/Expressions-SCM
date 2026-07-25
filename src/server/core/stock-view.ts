@@ -117,3 +117,20 @@ export function coverDays(onHand: number, daily: number): number | null {
 export function daysLeftOf(today: string, expiryDate: string): number {
   return Math.round((Date.parse(`${expiryDate}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000);
 }
+
+/**
+ * 效期段位边界（天）。**唯一权威**——spec/07 N3 规定七段位，
+ * spec 与 R15 裁定的边界是 0 / 92 / 183 / 365 / 548 / 730。
+ *
+ * 为什么必须共享：驾驶舱按 92/183 分桶，效期页却写死 90/180，
+ * 于是同一批「剩余 181 天」的货在驾驶舱是「3-6月」、在效期页是「6月以上」——
+ * 两个页面对同一批货给出不同段位（实测差 4 个批次 / 6 件）。
+ * 边界是业务口径（KPI 风险线 ≤6月=<183d 就建立在它上面），不是各页面的展示细节。
+ */
+export const EXPIRY_TIER_DAYS = {
+  m3: 92,
+  m6: 183,
+  m12: 365,
+  m18: 548,
+  m24: 730,
+} as const;

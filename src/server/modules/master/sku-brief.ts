@@ -17,14 +17,10 @@ import * as schema from "@/db/schema";
 import { ApiError, todayShanghai } from "./common";
 import { getSkuFactsFor } from "@/server/core/sku-facts";
 import { num, r1 } from "@/server/core/svc";
+import { daysLeftOf } from "@/server/core/stock-view";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-
-/** 日界差（Asia/Shanghai 日期字符串直减，与 report/risk.ts、replenish/expiry.ts 同准） */
-function daysBetween(from: string, to: string): number {
-  return Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000);
-}
 
 export interface SkuBrief {
   skuId: number;
@@ -120,7 +116,7 @@ export async function getSkuBrief(skuCodeOrId: string | number, dbArg?: AnyDb): 
     .where(and(eq(bs.skuId, skuId), isNotNull(bs.expiryDate), gt(bs.qty, "0")));
   let minDaysLeft: number | null = null;
   for (const r of batchRows) {
-    const d = daysBetween(today, r.expiryDate);
+    const d = daysLeftOf(today, r.expiryDate);
     if (minDaysLeft == null || d < minDaysLeft) minDaysLeft = d;
   }
 

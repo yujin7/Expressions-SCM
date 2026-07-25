@@ -14,6 +14,7 @@ import { and, eq, gt, inArray, isNotNull } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { batchStocks, skus } from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
+import { daysLeftOf } from "@/server/core/stock-view";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -70,7 +71,7 @@ export async function expiryCheck(
     const sku = skuById.get(r.skuId);
     if (!sku) continue;
     const threshold = sku.nearExpiryDays ?? DEFAULT_NEAR_EXPIRY_DAYS;
-    const daysLeft = Math.floor((new Date(`${r.expiryDate}T00:00:00+08:00`).getTime() - todayMs) / 86_400_000);
+    const daysLeft = daysLeftOf(today, r.expiryDate);
     if (daysLeft > threshold) continue; // 新鲜批次
     const q = Number(r.qty);
     if (!(q > 0)) continue;
