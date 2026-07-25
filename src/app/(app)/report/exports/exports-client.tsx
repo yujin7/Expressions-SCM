@@ -10,9 +10,8 @@ import { DownloadOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import type { ExportJobRow } from "@/jobs/export-worker";
-import { EXPORT_KIND_LABELS } from "@/server/modules/report/export";
 
-type Row = ExportJobRow & { requestedByName: string | null };
+type Row = ExportJobRow & { requestedByName: string | null; kindLabel?: string };
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "排队中",
@@ -87,7 +86,7 @@ export default function ExportsClient() {
       title: "导出内容",
       dataIndex: "kind",
       width: 140,
-      render: (v: string) => EXPORT_KIND_LABELS[v] ?? v,
+      render: (v: string, r: Row) => r.kindLabel ?? v,
     },
     {
       title: "状态",

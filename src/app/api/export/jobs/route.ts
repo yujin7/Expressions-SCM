@@ -3,7 +3,7 @@ import { z } from "zod";
 import { getFreshSessionUser } from "@/server/core/dto";
 import { ApiError, errorResponse, guardRead } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
-import { EXPORT_KINDS } from "@/server/modules/report/export";
+import { EXPORT_KIND_LABELS, EXPORT_KINDS } from "@/server/modules/report/export";
 import { createExportJob, ensureExportWorkerStarted, listExportJobs } from "@/jobs/export-worker";
 
 const createSchema = z.object({
@@ -37,7 +37,9 @@ export async function GET() {
   try {
     const user = await guardRead();
     ensureExportWorkerStarted(); // 开发模式兜底：确保有人在消费队列
-    return NextResponse.json({ rows: await listExportJobs(user) });
+    /* 标签由服务端下发：客户端页面禁止 import 服务端模块（会把 auth/pg/argon2 拖进客户端包） */
+    const rows = (await listExportJobs(user)).map((r) => ({ ...r, kindLabel: EXPORT_KIND_LABELS[r.kind] ?? r.kind }));
+    return NextResponse.json({ rows });
   } catch (e) {
     return errorResponse(e);
   }
