@@ -1,23 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import {
-  App,
-  Alert,
-  Button,
-  Descriptions,
-  Drawer,
-  Input,
-  InputNumber,
-  Modal,
-  Popconfirm,
-  Select,
-  Space,
-  Table,
-  Tabs,
-  Timeline,
-  Typography,
-} from "antd";
+import { App, Alert, Button, Descriptions, Drawer, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tabs, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
@@ -29,6 +13,7 @@ import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import { useListState } from "@/components/useListState";
 import { hasAnyRole, useMe } from "@/components/useMe";
+import ApprovalTimeline from "@/components/ApprovalTimeline";
 
 // ---------- 客户端十进制比较（仅提交前过滤 0 行；非负字符串，禁 float） ----------
 
@@ -534,22 +519,7 @@ export default function TlClient() {
             {detail.approvals.length > 0 ? (
               <>
                 <Typography.Title level={5}>审批记录</Typography.Title>
-                <Timeline
-                  items={detail.approvals.map((a) => ({
-                    color: a.action === "approve" ? "green" : "red",
-                    children: (
-                      <div>
-                        <div>
-                          {a.approverName ?? "—"} {a.action === "approve" ? "审批通过" : "驳回"}
-                          <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-                            {dayjs(a.createdAt).format("YYYY-MM-DD HH:mm")}
-                          </Typography.Text>
-                        </div>
-                        {a.comment ? <Typography.Text type="secondary">{a.comment}</Typography.Text> : null}
-                      </div>
-                    ),
-                  }))}
-                />
+                <ApprovalTimeline items={detail.approvals} />
               </>
             ) : null}
           </div>

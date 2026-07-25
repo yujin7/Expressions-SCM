@@ -1,24 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import {
-  Alert,
-  App,
-  Button,
-  Checkbox,
-  Descriptions,
-  Drawer,
-  Input,
-  Modal,
-  Popconfirm,
-  Space,
-  Spin,
-  Table,
-  Tabs,
-  Timeline,
-  Tooltip,
-  Typography,
-} from "antd";
+import { Alert, App, Button, Checkbox, Descriptions, Drawer, Input, Modal, Popconfirm, Space, Spin, Table, Tabs, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
@@ -29,6 +12,7 @@ import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import { useListState } from "@/components/useListState";
 import { hasAnyRole, useMe } from "@/components/useMe";
+import ApprovalTimeline from "@/components/ApprovalTimeline";
 
 /** 敏感金额（R9）：非可见角色时后端 maskSensitive 已剥离键 → undefined → 显示 "—" */
 const fmtMoney = (v: string | null | undefined): string => (v == null ? "—" : v);
@@ -843,22 +827,7 @@ export default function JsClient() {
                 <Typography.Title level={5} style={{ marginTop: 24 }}>
                   审批记录
                 </Typography.Title>
-                <Timeline
-                  items={detail.approvals.map((a) => ({
-                    color: a.action === "approve" ? "green" : "red",
-                    children: (
-                      <div>
-                        <div>
-                          {a.approverName ?? "—"} {a.action === "approve" ? "审批通过" : "驳回"}
-                          <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-                            {dayjs(a.createdAt).format("YYYY-MM-DD HH:mm")}
-                          </Typography.Text>
-                        </div>
-                        {a.comment ? <Typography.Text type="secondary">{a.comment}</Typography.Text> : null}
-                      </div>
-                    ),
-                  }))}
-                />
+                <ApprovalTimeline items={detail.approvals} />
               </>
             ) : null}
           </div>
