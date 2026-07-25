@@ -105,16 +105,22 @@ export default function RiskClient() {
 
   const doExport = async () => {
     const all: RiskRow[] = [];
+    let serverTotal = 0;
     for (let p2 = 1; p2 <= 40; p2++) { // struct#17: 提高上限至 2 万行
       const params = new URLSearchParams({ q, page: String(p2), pageSize: "500", precise: "1" });
       if (action) params.set("action", action);
       const d = await fetchJson<RiskData>(`/api/report/risk?${params.toString()}`);
+      serverTotal = d.total;
       all.push(...d.rows);
       if (all.length >= d.total) break;
     }
     exportCsv(`风险库存处置-${data?.today ?? ""}`,
       ["建议动作","SKU编码","名称","品牌","在库","最短剩余效期(天)","过期量","90天内到期量","日均销","可销天数","货盘注记","已登记"],
-      all.map((r) => [r.action, r.code, r.name, r.brand, r.onHand, r.minDaysLeft, r.expiredQty, r.nearQty, r.daily, r.cover, r.palletRemark, r.disposalOpen ? "是" : ""]));
+      all.map((r) => [r.action, r.code, r.name, r.brand, r.onHand, r.minDaysLeft, r.expiredQty, r.nearQty, r.daily, r.cover, r.palletRemark, r.disposalOpen ? "是" : ""]),
+      all.length < serverTotal
+        ? `……仅导出前 ${all.length} 行，服务端共 ${serverTotal} 行（浏览器分页取数已达上限）；请缩小筛选范围，或改用「导出任务」`
+        : undefined,
+    );
   };
 
   const columns: ColumnsType<RiskRow> = [

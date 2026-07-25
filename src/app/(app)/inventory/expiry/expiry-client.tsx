@@ -93,17 +93,23 @@ function ExpiryInner() {
 
   const doExport = async () => {
     const all: Row[] = [];
+    let serverTotal = 0;
     for (let p2 = 1; p2 <= 40; p2++) { // struct#17: 提高上限至 2 万行
       const params = new URLSearchParams({ q, page: String(p2), pageSize: "500" });
       if (bucket) params.set("bucket", bucket);
       if (warehouseId) params.set("warehouseId", String(warehouseId));
       const d = await fetchJson<Data>(`/api/inventory/expiry?${params.toString()}`);
+      serverTotal = d.total;
       all.push(...d.rows);
       if (all.length >= d.total) break;
     }
     exportCsv(`效期批次-${data?.today ?? ""}`,
       ["SKU编码","名称","品牌","仓库","批次","生产日期","到期日","剩余天数","数量"],
-      all.map((r) => [r.skuCode, r.skuName, r.brand, r.warehouse, r.batchNo, r.productionDate, r.expiryDate, r.daysLeft, r.qty]));
+      all.map((r) => [r.skuCode, r.skuName, r.brand, r.warehouse, r.batchNo, r.productionDate, r.expiryDate, r.daysLeft, r.qty]),
+      all.length < serverTotal
+        ? `……仅导出前 ${all.length} 行，服务端共 ${serverTotal} 行（浏览器分页取数已达上限）；请缩小筛选范围，或改用「导出任务」`
+        : undefined,
+    );
   };
 
   const columns: ColumnsType<Row> = [

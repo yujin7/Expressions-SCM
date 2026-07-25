@@ -89,10 +89,12 @@ export default function DetectorsClient() {
 
   const doExport = async () => {
     const all: DetectorRow[] = [];
+    let serverTotal = 0;
     for (let p = 1; p <= 40; p++) {
       const params = new URLSearchParams({ q, page: String(p), pageSize: "500" });
       if (kind) params.set("kind", kind);
       const d = await fetchJson<DetectorData>(`/api/report/detectors?${params.toString()}`);
+      serverTotal = d.total;
       all.push(...d.rows);
       if (all.length >= d.total) break;
     }
@@ -103,6 +105,9 @@ export default function DetectorsClient() {
       all.flatMap((r) =>
         r.hits.map((h) => [KIND_LABEL[h.kind], SEVERITY_LABEL[h.severity], r.code, r.name, r.brand, r.onHand, r.lastQty, h.title, h.detail]),
       ),
+      all.length < serverTotal
+        ? `……仅导出前 ${all.length} 行，服务端共 ${serverTotal} 行（浏览器分页取数已达上限）；请缩小筛选范围，或改用「导出任务」`
+        : undefined,
     );
   };
 

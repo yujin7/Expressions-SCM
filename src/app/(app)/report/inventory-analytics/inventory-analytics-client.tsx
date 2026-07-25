@@ -194,9 +194,11 @@ export default function InventoryAnalyticsClient() {
 
   const doExport = async () => {
     const all: Row[] = [];
+    let serverTotal = 0;
     for (let p2 = 1; p2 <= 20; p2++) {
       const params = new URLSearchParams({ q, windowDays, page: String(p2), pageSize: String(CHART_LIMIT) });
       const d = await fetchJson<Data>(`/api/report/inventory-analytics?${params.toString()}`);
+      serverTotal = d.total;
       all.push(...d.rows);
       if (all.length >= d.total) break;
     }
@@ -207,6 +209,9 @@ export default function InventoryAnalyticsClient() {
         r.code, r.name, r.brand, r.abc, r.cell, r.onHand, r.daily, r.daysCover, r.outQty, r.turns, r.dio, r.avgAgeDays,
         ...BUCKETS.map((b) => r.aging[b]), r.unknownOriginQty,
       ]),
+      all.length < serverTotal
+        ? `……仅导出前 ${all.length} 行，服务端共 ${serverTotal} 行（浏览器分页取数已达上限）；请缩小筛选范围，或改用「导出任务」`
+        : undefined,
     );
   };
 
