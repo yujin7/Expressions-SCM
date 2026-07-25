@@ -4,6 +4,7 @@
  * 解析/入库不猜测——未解析别名照常进认领队列，放行仍走放行工作台的人工闸。
  */
 import { mkdir, writeFile } from "node:fs/promises";
+import { storageDir } from "@/server/core/storage";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -50,7 +51,7 @@ export async function POST(req: NextRequest) {
       .toISOString()
       .replace(/[-:T]/g, "")
       .slice(0, 14);
-    const dir = path.join(process.cwd(), "uploads", stamp);
+    const dir = storageDir(stamp); // 落盘根唯一权威（core/storage）——禁止 process.cwd()
     await mkdir(dir, { recursive: true });
     const filePath = path.join(dir, safeName);
     await writeFile(filePath, Buffer.from(await file.arrayBuffer()));

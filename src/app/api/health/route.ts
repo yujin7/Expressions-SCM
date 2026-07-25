@@ -9,6 +9,13 @@ export async function GET() {
   try {
     const files = readdirSync(path.resolve(process.cwd(), "drizzle")).filter((f) => f.endsWith(".sql")).length;
     const db = await getDbAsync();
+
+    /* 先探活，再谈漂移。
+       原实现只查 _migrations，而该查询失败会被内层 catch 统一降级成 applied=-2
+       （「PG 模式正常」的合法取值）——数据库整个连不上时，健康检查照样返回 ok:true/200。
+       探活必须是独立的一步：SELECT 1 失败＝不健康，绝不能与「这个模式没有这张表」混为一谈。 */
+    await db.execute(sql`SELECT 1`);
+
     let applied = -1;
     try {
       const r = await db.execute(sql`SELECT count(*)::int AS c FROM _migrations`);

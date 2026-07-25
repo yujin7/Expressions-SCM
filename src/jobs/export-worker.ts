@@ -4,6 +4,7 @@
  * 行生产器复用 report/export.ts 的 EXPORT_KINDS（与同步导出同一套列/脱敏/截断语义）。
  */
 import { mkdir, writeFile } from "node:fs/promises";
+import { storageDir } from "@/server/core/storage";
 import path from "node:path";
 import { and, asc, desc, eq } from "drizzle-orm";
 import { getDbAsync } from "@/db";
@@ -22,7 +23,7 @@ async function resolveDb(db?: AnyDb): Promise<AnyDb> {
   return db ?? (await getDbAsync());
 }
 
-export const EXPORT_FILE_DIR = path.join(process.cwd(), "uploads", "exports");
+export const EXPORT_FILE_DIR = storageDir("exports");
 
 export type ExportJobRecord = typeof exportJobs.$inferSelect;
 

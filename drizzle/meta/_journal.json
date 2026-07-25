@@ -127,6 +127,13 @@
       "when": 1784915248067,
       "tag": "0017_productive_thanos",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784915248068,
+      "tag": "0018_drop_unread_rollups",
+      "breakpoints": true
     }
   ]
 }

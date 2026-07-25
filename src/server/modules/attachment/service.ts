@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { storageDir } from "@/server/core/storage";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { desc, eq, and } from "drizzle-orm";
@@ -45,9 +46,9 @@ const MAX_PDF_SIZE = 20 * 1024 * 1024; // 20MB
 const IMAGE_EXT_RE = /\.(jpe?g|png|webp)$/i;
 const PDF_EXT_RE = /\.pdf$/i;
 
-/** 附件根目录：测试经 ATTACH_ROOT 指向临时目录，避免写入仓库 uploads/ */
+/** 附件根目录：落盘根走 core/storage（生产=挂载卷）；测试经 ATTACH_ROOT 指向临时目录 */
 export function attachRoot(): string {
-  return process.env.ATTACH_ROOT || path.join(process.cwd(), "uploads", "attachments");
+  return process.env.ATTACH_ROOT || storageDir("attachments");
 }
 
 /** 流式下载的 Content-Type 按扩展名推导（file_metas 无 mime 列） */
