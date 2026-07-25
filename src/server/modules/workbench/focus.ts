@@ -10,6 +10,7 @@
  */
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { getNumParam } from "@/server/core/params";
+import { getReplenishSuggestions } from "@/server/modules/replenish/service";
 import type { SessionUser } from "@/server/core/dto";
 import { getInbox } from "@/server/modules/inbox/service";
 import { notifyVisibleWhere } from "@/server/core/notify-audience";
@@ -278,40 +279,30 @@ export async function computeExceptions(db: AnyDb): Promise<ExceptionItem[]> {
     out.push({ key: "stale_data", severity: "high", title: "关键参考数据过期", impact: `${staleData} 类数据待重传（口径将失真）`, count: staleData, href: "/alerts" });
   }
 
-  // 4) 断货且已错过下单窗口（可销 < 生产周期）
-  //
-  // 在库必须走 core/stock-view 的全网口径（实时账 + 各快照仓最新快照）。
-  // 这里原先内联 `sum(qty) from stock_balances`，只看实时记账仓、看不见保税/E仓/云仓，
-  // 于是把大量有货的成品判成断货：实测 261 报警里只有 111 是真的，150 个是快照仓被漏看
-  // （DEV007-000 本地读到 237 件，全网实际 14,966 件，差 63 倍）。
-  // 日均同理走 core/velocity.dailyFromWindow，不要再手写 /91。
-  const sm = schema.salesMonthly;
-  const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
-  const months3 = maxYm ? lastMonths(maxYm, 3) : [];
-  if (months3.length) {
-    const rows: { skuId: number; sales3m: string; leadDays: number | null }[] = await db
-      .select({
-        skuId: schema.skus.id,
-        sales3m: sql<string>`coalesce((select sum(q) from (select sum(${sm.qty}) q from sales_monthly where sku_id=${schema.skus.id} and year_month in (${sql.join(months3, sql`,`)})) t),0)`,
-        leadDays: schema.skuParams.normalLeadDays,
-      })
-      .from(schema.skus)
-      .leftJoin(schema.skuParams, eq(schema.skuParams.skuId, schema.skus.id))
-      .where(and(eq(schema.skus.skuType, "finished"), eq(schema.skus.active, true)));
-    const onHandView = await getOnHandBySku(db, { finishedOnly: true }); // core/stock-view 唯一在库口径
-    let belowLead = 0;
-    for (const r of rows) {
-      const daily = dailyFromWindow(num(r.sales3m));
-      if (daily <= 0 || r.leadDays == null || r.leadDays <= 0) continue;
-      const cover = num(onHandView.bySku.get(r.skuId)) / daily;
-      if (cover < r.leadDays) belowLead++;
-    }
+  /* 4) 断货且已错过下单窗口（可销 < 生产周期）
+     
+     必须与 /replenish 同源：直接消费 getReplenishSuggestions 的行，而不是在这里
+     重算一遍在库与可销天数。原实现只用系统在库（core/stock-view 全网口径）判 belowLead，
+     而同一个 service 早已算出全管道口径 coverFull 与抑制结论——
+     实测 111 条 critical 里 77 条在 coverFull 下已够生产周期、70 条系统根本给不出建议量
+     （56 条被显式抑制、待人工核实覆盖缺口）。用户点红字进 /replenish 看到的是 80/91，
+     两个数没有一个能解释另一个，最终整条 critical 被忽略。
+     
+     现在只计「系统自己也认为该下单」的 SKU：belowLead 且未被抑制。
+     被抑制的条数照本系统「抑制≠隐藏」的铁律在 impact 里明写，不静默吞掉。 */
+  {
+    const rep = await getReplenishSuggestions({ allRows: true }, db);
+    const belowLead = rep.rows.filter((r) => r.belowLead && r.suppressReason == null).length;
+    const suppressed = rep.rows.filter((r) => r.belowLead && r.suppressReason != null).length;
     if (belowLead > 0) {
       out.push({
         key: "below_lead",
         severity: "critical",
         title: "断货风险（可销 < 生产周期）",
-        impact: `${belowLead} 个成品补货窗口迫近/已过（全网口径${onHandView.snapDate ? `，快照 ${onHandView.snapDate}` : ""}）`,
+        impact:
+          `${belowLead} 个成品补货窗口迫近/已过（全网口径，与补货页同源` +
+          `${rep.meta.snapDate ? `，快照 ${rep.meta.snapDate}` : ""}）` +
+          (suppressed > 0 ? `；另有 ${suppressed} 个虽低于生产周期但全口径参考充足，已抑制待人工核实` : ""),
         count: belowLead,
         href: "/replenish",
       });
