@@ -8,7 +8,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
-import { dAdd, dMul, dQty } from "@/server/core/decimal";
+import { dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { getNumParam } from "@/server/core/params";
 import { batchAllowed, producibleQty, suggestBatchQty, MAX_AUTO_BATCHES } from "@/server/rules/kitting";
@@ -111,9 +111,14 @@ export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchS
     const kitAtp = earliestKitDate(
       lines.map((l) => ({
         materialSkuId: l.materialSkuId,
-        // 毛需求按整张 WO 计（与 producibleQty 同口径），已收部分从在库侧抵扣
-        required: dMul(dQty(l.grossReq), wo.qty),
-        onHand: dAdd(String(matOnHand?.bySku.get(l.materialSkuId) ?? "0"), recvBySku.get(l.materialSkuId) ?? "0"),
+        /* grossReq **本身就是全单毛需求**（rules/kitting.ts:10 定义，且 :3 写明
+           「毛单耗 = grossReq / woQty」——单耗是除出来的）。首版在此又乘了一遍 wo.qty，
+           把需求放大 wo.qty 倍，齐套日必然算不出来；而我把那个「视野内无法齐套」
+           误当成了功能生效的证据。此处直接用 grossReq。 */
+        required: dQty(l.grossReq),
+        /* 在库只取物料在库。首版还把本 WO 下 PO 已收量加了上去——收货已过账进仓，
+           getOnHandBySku 本就包含它，相加即重复计入。 */
+        onHand: String(matOnHand?.bySku.get(l.materialSkuId) ?? "0"),
         arrivals: arrivalsByMat.get(l.materialSkuId) ?? [],
       })),
       todayShanghai(),

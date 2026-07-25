@@ -77,7 +77,36 @@ describe("架构护栏：Suspense 边界", () => {
     for (const page of allPageFiles(APP)) {
       if (!touchesHook(page)) continue;
       need.push(page);
-      if (!/\bSuspense\b/.test(read(page))) offenders.push(path.relative(SRC, page));
+      const src = read(page);
+      const rel = path.relative(SRC, page);
+
+      if (!/\bSuspense\b/.test(src)) {
+        offenders.push(`${rel}（完全没有 Suspense）`);
+        continue;
+      }
+      /* 光有 Suspense **不够**——组件必须真的在边界**内**。
+         红队实证的绕过写法（本护栏首版被它骗过）：
+             <><Suspense fallback={null}><h1>标题</h1></Suspense><XxxClient /></>
+         Suspense 在、正则通过，而客户端组件在边界外，水合照样整页失败。
+         所以这里检查「包含关系」：每个本地 *-client 组件的使用点，
+         必须落在某一对 <Suspense …> … </Suspense> 之间。 */
+      const clientTags = new Set<string>();
+      for (const m of src.matchAll(/import\s+(\w+)\s+from\s+["']\.\/[\w.-]*client["']/g)) clientTags.add(m[1]);
+      if (clientTags.size === 0) continue; // 页面自身就是客户端组件或结构特殊，交给上面的存在性检查
+
+      const spans: [number, number][] = [];
+      const openRe = /<Suspense\b[^>]*>/g;
+      for (let om = openRe.exec(src); om; om = openRe.exec(src)) {
+        const close = src.indexOf("</Suspense>", om.index);
+        if (close > -1) spans.push([om.index, close]);
+      }
+      for (const tag of clientTags) {
+        const useRe = new RegExp(`<${tag}\\b`, "g");
+        for (let um = useRe.exec(src); um; um = useRe.exec(src)) {
+          const inside = spans.some(([a, b]) => um!.index > a && um!.index < b);
+          if (!inside) offenders.push(`${rel}（<${tag}> 在 Suspense 边界之外）`);
+        }
+      }
     }
 
     // 防腐化：若这个数字掉到 0，说明解析逻辑坏了（比如目录改名），
