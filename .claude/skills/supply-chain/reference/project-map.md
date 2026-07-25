@@ -13,7 +13,7 @@
 
 ## 1. Project signature
 
-Treat a directory as this project when it contains:
+Treat a workspace directory as this project when it contains:
 
 - `spec/CURRENT.md`
 - `spec/01-系统完整规格-v2.0.md`
@@ -21,21 +21,26 @@ Treat a directory as this project when it contains:
 - `supply-chain/package.json`
 - `supply-chain/src/server/posting/`
 
-Default known root: `/Users/yj/Downloads/供应链系统 PRD`.
-
-If the project moved, search workspace roots for the signature instead of hard-coding the default path. Never recursively search broad home or filesystem roots without a narrow target.
+When starting inside the `supply-chain` repository, the equivalent signature is `package.json`,
+`src/server/posting/`, `CLAUDE.md`, and `../spec/CURRENT.md`. Resolve the repository with
+`git rev-parse --show-toplevel`; search only provided workspace roots if the project moved. Never
+hard-code a personal path or recursively search a broad home/filesystem root.
 
 ## 2. Authority and reading order
 
-Use this precedence, while checking dates and explicit supersession:
+Match authority to the question instead of applying one universal precedence:
 
-1. `spec/CURRENT.md`: current entrypoint, decisions, ownership, and explicit authority links.
-2. Current specifications named by `CURRENT.md`, especially `01`, `02`, `04`, and `14`, including explicit amendment sections.
-3. `supply-chain/CLAUDE.md`: live engineering conventions.
-4. Implemented schema, migrations, services, rules, routes, jobs, UI, and tests: evidence of actual behavior, not automatic proof of intended behavior.
-5. UAT and compliance mappings (`07`, `08`, newer meeting decisions/designs): acceptance and traceability evidence.
-6. Audit archives (`03`, `05`, `06`): immutable historical findings and rationale.
-7. Original PRD and source business files: stakeholder intent and raw evidence; later valid decisions may supersede them only explicitly.
+1. **Current approved intent:** current user decision, `spec/CURRENT.md`, and the current
+   specifications it names, including explicit amendments.
+2. **Repository operating contract:** `supply-chain/CLAUDE.md` / `AGENTS.md`.
+3. **Implemented behavior:** schema, migrations, services, rules, routes, jobs, UI, configuration,
+   and the exact revision.
+4. **Verified behavior:** reproducible tests, UAT, queries, logs, API/UI observations, and
+   reconciliation artifacts.
+5. **Deployed behavior:** deployed revision, environment configuration, telemetry, operational
+   reconciliation, and sign-off evidence.
+6. **History and rationale:** audit archives (`03`, `05`, `06`), original inputs, meeting notes,
+   and git history.
 
 Resolve conflicts explicitly:
 
@@ -162,4 +167,7 @@ Verify proportionally:
 - UI: happy/empty/loading/error/permission states and affected end-to-end flow;
 - full-risk changes: targeted tests first, then full `npm test`, `npm run typecheck`, and build where relevant.
 
-The local environment may lack `rg`; prefer it when available and fall back to `find` plus `/usr/bin/grep`. Avoid competing processes against the same `.data/dev` PGlite directory; stop the dev server before a script that opens that database, and restart after new migrations.
+The local environment may lack `rg`; prefer it when available and fall back to `find` plus
+`/usr/bin/grep`. Avoid competing writers against the same `.data/dev` PGlite directory. Identify
+ports and PIDs with `lsof`, stop only a process owned by the current session, and restart it after
+new migrations.

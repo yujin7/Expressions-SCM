@@ -1,6 +1,6 @@
 ---
 name: design-supply-chain-flows
-description: Design an end-to-end cosmetics supply-chain business flow and its minimal product and technical contract. Use for new or changed requirements, PRDs, workflows, state machines, domain models, acceptance criteria, and schema/API/UI impact before implementation. Do not use for auditing as-is status or approving a release.
+description: Design an end-to-end cosmetics supply-chain business flow and its minimal product and technical contract. Use when the user asks for a PRD, workflow, state machine, domain model, acceptance criteria, or design artifact, or when a new or changed workflow contract is unresolved. Do not activate solely because a bounded implementation request is new; do not use for as-is audits or release approval.
 ---
 
 # Design Supply Chain Flows
@@ -12,15 +12,17 @@ Turn business intent into an implementable operating contract before designing s
 Answer: **What should this workflow do, who may decide, and which facts change?**
 
 - Use `$reconcile-supply-chain-truth` when the question is what already exists.
-- Use `$protect-supply-chain-ledgers` to prove a transactional mutation preserves invariants.
-- Use `$release-supply-chain-safely` to gate a concrete candidate.
+- Use `$write-path` to implement a transactional mutation through project invariants.
+- Use `$release-sweep` to gate a concrete candidate.
 - Make changes only when the user asks to build or implement; otherwise produce the design.
 
 ## Orient from evidence
 
-1. Identify the workspace and affected capability.
-2. In this project, locate the root containing `spec/CURRENT.md` and `supply-chain/package.json`.
-3. Read `spec/CURRENT.md` completely and then `supply-chain/CLAUDE.md` completely.
+1. Resolve the repository root with `git rev-parse --show-toplevel` and identify the affected capability.
+2. In this repository, read `../spec/CURRENT.md` completely and then `CLAUDE.md` completely.
+   Do not depend on a machine-specific absolute path.
+3. Read the project map in
+   [project-map.md](../supply-chain/reference/project-map.md) when document roles are unclear.
 4. Read the smallest relevant specifications and inspect the actual schema, rules, services, routes, jobs, UI, exports, permissions, and tests.
 5. Preserve user-authored and unrelated work.
 6. Reconcile requested intent with current constraints. Label observed fact, approved decision, assumption, proposal, and open question distinctly.

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Integrate Supply Chain Data"
-  short_description: "Build reliable master-data and system integrations"
-  default_prompt: "Use $integrate-supply-chain-data to design or implement a replayable, reconcilable data flow."

@@ -1,15 +1,37 @@
 ---
 name: write-path
-description: Builds a write path in this supply-chain system through its mandatory entry points — post() for any stock movement, nextDocNo() for any document number, getFreshSessionUser() for identity, writeAudit(tx) inside the service transaction, ApiError for any client-caused failure — and encodes the transaction boundary, multi-leg sourceLineId construction, and decimal precision by semantics. Use when adding or editing a service that inserts, updates or deletes rows, when wiring a new document type or posting event, when adding an API route that writes, when choosing where a transaction begins and ends, and when picking the numeric precision of a new column. The 1.0 baseline (commit 2d77242) shipped 39 tables and four engines with audit_logs created in drizzle/0000 and the spec demanding full audit trail, while src/server/core/audit.ts did not exist and had zero call sites; today's 97 writeAudit call sites across 41 files were retrofitted by a red-team round, and 8 modules files still write rows with no audit at all. Do not use for read-only queries, reports, or pure calculation modules with no database write; use caliber-change to alter a shared formula and redteam-pass to attack a write path that is already built.
+description: Build or modify database write paths through this project's mandatory posting, numbering, fresh-authorization, audit, error, transaction, precision, and idempotency boundaries. Use for services, write APIs, document flows, posting events, or application-owned inserts, updates, and deletes. Do not use for migration-owned schema backfills; use schema-change. Use redteam-pass after implementation.
 ---
 
 # 没有唯一入口的规则，等于没写
+
+> 下文调用点数量、行号与“今天”记录的是 2026-07-23 至 2026-07-25 的事故证据。
+> 唯一写入边界与事务原则是 durable contract；具体调用者、薄弱点和计数必须在当前 revision
+> 用 `rg`、schema 约束和对抗测试重新确认。
 
 MVP 1.0 基线（commit 2d77242，2026-07-23）一次性交付 39 张表、四大引擎、全套主数据模块和种子数据。`audit_logs` 表在 `drizzle/0000_wandering_randall_flagg.sql:607`
 就建好了，规格 §8 白纸黑字写着「审计全留痕」——而 `src/server/core/audit.ts` 当天**根本不存在**，全库调用点为零。是红队第二轮揪出来的（commit 1103347，同日，
 BLOCKER×3 之一），同轮还揪出 `maskSensitive` 定义了但从未被调用。今天代码里 97 处 `writeAudit`、41 个文件——**那是补出来的，不是设计出来的。**
 
 教训不在规则不够多，而在于：**一条只写在规格里、没有唯一入口 + 没有护栏测试的规则，等于没写。**
+
+---
+
+## 零、先写最小事务契约
+
+动代码前先写清：
+
+- 业务触发、授权角色、fresh authorization 与 maker-checker；
+- 源单、版本、允许的前态与目标态；
+- 不可变幂等键和数据库唯一边界；
+- 数量、单位、货权、仓、批次、效期、质量状态、金额、币种、税与业务时间；
+- 同一事务内的单据、流水、余额、审计和 outbox 效果；
+- 超时重放、并发、部分失败、驳回重提与红字/补偿路径；
+- 可复核的守恒式、对账规则和失败信号。
+
+把效果写成 `guard → state transition → movement/audit/outbox → invariant`。两处组件都能写同一
+invariant 时先停下来收口 owner。历史数量、调用点和事故清单只作线索；每次变更前用当前
+revision 重新验证。
 
 ---
 

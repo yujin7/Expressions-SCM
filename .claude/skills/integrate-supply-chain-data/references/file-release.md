@@ -1,9 +1,7 @@
----
-name: data-release
-description: Runs or modifies the file-to-master-data pipeline in this supply-chain system — Excel adapter, staging rows, alias claiming, human review gate, release engine. Use when importing or re-importing a business file, when a release run reports blocked or unresolved rows, when adding or changing an adapter, when master data looks wrong or empty after an import, and when asked why a field parsed from a file never reached the database. Encodes dry-run-first, replay idempotency, alias-before-resolution, and the never-guess rule that keeps a wrong ruling from poisoning settlement bases. Do not use for ordinary document flows such as PO or WO, or for stock postings.
----
-
 # 数据放行
+
+> 本文件是 `$integrate-supply-chain-data` 的项目文件放行模式参考。事故数量、文件行数、
+> 主档填充率和路径均为历史证据；运行前必须在当前 revision 与当前数据上重新核实。
 
 这条管道决定主数据长什么样，而主数据错了，下游每个数字都错。
 **45% 的新品上市延迟源于主数据缺陷**——这里省的每一步，后面都要加倍还。
@@ -64,8 +62,9 @@ description: Runs or modifies the file-to-master-data pipeline in this supply-ch
 ## 运行
 
 ```bash
-# PGlite 单进程：脚本要读 .data/dev 必须先停 dev server
-pkill -f "next dev"; pkill -f next-server; sleep 4
+# .data/dev 只能有一个写者：先确认端口/PID，只停止自己启动的进程
+lsof -nP -iTCP -sTCP:LISTEN | /usr/bin/grep 300
+kill <owned-dev-pid>
 npx tsx scripts/db-peek.ts
 ```
 

@@ -1,11 +1,11 @@
 ---
 name: decision-log
-description: Records a business ruling into spec/CURRENT.md's D-register before code depends on it, and reads that register when a threshold or policy needs its authoritative answer. **Use whenever about to write a business constant into code that is not read from sys_params — a price tolerance, loss rate, shelf life, near-expiry days, service level, slow-mover threshold, approval domain, or phase-scope call. That constant needs a D number first.** Also use when the user decides any such number in conversation, and when two spec documents disagree about which rule is current (01 and 04 both contain superseded sections). This register exists because 19 decisions once lived only in chat and the spec set decayed into an unreadable patch chain. Do not use for engineering choices with no business owner, such as file layout or library selection.
+description: Read or record authoritative business rulings in ../spec/CURRENT.md. Use before hard-coding a business threshold, policy, approval domain, or phase decision; when the user makes or changes such a ruling; or when specifications conflict. Do not use for implementation choices without a business owner.
 ---
 
 # 决议登记
 
-**`spec/CURRENT.md` 是唯一真相索引。** 改判先改它，再改宿主文档。
+**`../spec/CURRENT.md` 是当前意图入口与决策登记簿。** 改判先改它，再改宿主文档。
 它存在的原因很具体：曾有 19 条决议只活在聊天记录里，规格集退化成互相打补丁的链条，
 没人答得上「现在到底按哪条」。
 

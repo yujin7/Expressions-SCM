@@ -1,9 +1,12 @@
 ---
 name: parallel-sessions
-description: Keeps one agent session from corrupting another's work when two sessions edit, build, and commit the same repo and same main branch at once. Use before any git add / commit / stash, before starting or killing a dev server, before a script opens .data/dev directly, before quoting a test count, and whenever git status, typecheck output, or a file changes without this session having touched it. At 17:45 git status reported a clean tree; at 17:54 it listed 13 untracked _tmp-*.ts debug scripts from the other session that git add -A --dry-run confirmed it would stage into this session's commit, all 14 recent commits carry the identical git author so attribution is impossible without a deliberate trailer, and two dev servers holding the same PGlite data directory reproduced a committed row vanishing permanently with no error raised. Do not use for genuinely solo sessions, for read-only questions about the code, or in place of the domain skills that verify a change is correct.
+description: Protect shared Git, dev-server, PGlite, test, and commit state when multiple agent sessions work in this repository. Use before staging, committing, stashing, starting or stopping servers, opening .data/dev, quoting test counts, or whenever files or results change unexpectedly. Do not use for genuinely solo read-only work.
 ---
 
 # 假设另一个会话正在写
+
+> 下文时间、PID、端口、提交、文件数与测试数是 2026-07-25 的事故证据，不是当前状态。
+> Durable rule 是：每次外部状态改变后重新取证、逐路径归属、只控制自己的进程与文件。
 
 17:45，`git status` 说「nothing to commit, working tree clean」。17:54，同一个仓库
 `git status --short -uall` 列出 13 个未跟踪文件——`scripts/_tmp-alert-audit.ts` 到
@@ -16,6 +19,8 @@ description: Keeps one agent session from corrupting another's work when two ses
 ---
 
 ## 提交：逐路径 add，并留下指纹
+
+只有用户明确要求提交时才执行 staging/commit；否则保留 scoped diff 并报告。
 
 ```bash
 git log --oneline -5          # 别人落了什么（已成文：supply-chain/SKILL.md:157）
@@ -53,7 +58,8 @@ git commit -F /tmp/msg.txt    # 中文提交信息含括号会破坏 shell 引�
 （14:25:36）重写，`git diff --stat` = **216 insertions / 69 deletions**，正文写着「算法在 5,376 个真实
 SKU 上被打脸三次，逐条修正」并留下反向约束「**不要改回单连接**」。不读就动手 = 把别人三轮修正推回去。
 `.claude/skills/supply-chain/reference/excellence.md` 在 45 分钟内被 3 个提交各改一次
-（16:59 / 17:06 / 17:27）——共享文件**改完立刻提交**，别攒着。
+（16:59 / 17:06 / 17:27）——若用户已授权提交，共享文件应隔离并尽快提交；未授权时不要
+擅自 commit，只报告 scoped diff，避免与其他工作混装。
 
 ---
 
@@ -61,7 +67,7 @@ SKU 上被打脸三次，逐条修正」并留下反向约束「**不要改回�
 
 ### PGlite 数据目录：不会锁死报错，会静默分叉并丢数据
 
-`data-release/SKILL.md:67` 与 `supply-chain/SKILL.md:148` 都写「PGlite 单进程」，**这个措辞是误导的**。
+历史版本的 file-release 与 supply-chain 指南曾写「PGlite 单进程」，**这个措辞不够准确**。
 现场：PID 30961（127.0.0.1:3001，1:55PM 起）与 PID 42081（127.0.0.1:3000，2:39PM 起）
 各有 46 个 fd 开在同一个 `.data/dev`，分别持有不同 WAL 段（…008C / …008D），
 两边 `/api/health` 都是 200 且完全一致（`migrationFiles:18, applied:18, drift:false`）。**无一方报错。**
@@ -77,8 +83,8 @@ SKU 上被打脸三次，逐条修正」并留下反向约束「**不要改回�
 
 ### 停服务：禁止全机 pkill
 
-`data-release/SKILL.md:67-68` 的 `pkill -f "next dev"; pkill -f next-server` 是**全机范围**的，
-照做会当场杀掉另一个会话的 dev server。改成按端口定位、按 PID 精确停：
+历史 file-release 指南里的全机模式匹配终止命令会杀掉其他会话的 dev server。
+按端口定位、按 PID 精确停：
 
 ```bash
 lsof -nP -iTCP -sTCP:LISTEN | /usr/bin/grep 300   # 有几台、各是谁
@@ -110,7 +116,8 @@ kill <自己那台的 PID>                              # 只杀自己启的
 - 提交之间的中途跑（工作区混着别人未提交的文件）**谁也复现不出来**，别引用这种数。
 - 随机 FAIL 先怀疑并发：`vitest.config.ts:8-11` 已写明单会话内 18 核并行就能饿死
   `createTestDb()`（故 `hookTimeout: 30000`）。另一台 dev server 或另一个 vitest 同时在跑时概率更高——
-  **单跑能过就不是缺陷**。
+  单跑通过只能说明失败尚未稳定复现，既不能证明产品缺陷，也不能排除竞态；记录环境并重复、
+  隔离、缩小边界后再分类。
 
 ---
 
@@ -120,7 +127,10 @@ kill <自己那台的 PID>                              # 只杀自己启的
 - 报测试数带 HEAD（`751 @ 311004f`）。不带 HEAD 的数字对读者无意义。
 - `.claude/launch.json` 与 `.claude/settings.local.json` 仍被 `.gitignore` 挡住（`git check-ignore` 确认）——
   每个会话的本地配置互不可见，别假设对方看得到你的端口或权限设置。
-- 改了 skill 就 `git ls-files .claude` 确认在库（现 10 个文件）。`.gitignore:10-13` 的
+- 改了 skill 就动态核对 canonical 与 discovery 层：
+  `find .claude/skills -mindepth 1 -maxdepth 1 -type d`、
+  `find .agents/skills -mindepth 1 -maxdepth 1 -type l`，并在获授权提交前用
+  `git status --short -uall` 确认这些路径会入库。`.gitignore` 的
   `.claude/*` + `!.claude/skills/` 是事故修复产物：`01bf0a7`(14:34:42) 宣称新增 5 个 skill，
   `git show --stat` 实际只有 `CLAUDE.md`（1 file changed），55 秒后 `c8680fa` 才真正入库。
   **不入库的 skill 等于没有——其他会话只加载仓库里的。**

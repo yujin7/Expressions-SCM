@@ -1,9 +1,13 @@
 ---
 name: alert-budget
-description: Decides whether an alert, exception, badge, or red count in this supply-chain system is allowed to exist at all, and kills the ones that are not — the budget question, not the how-to-add question. Use before adding any alert, detector, threshold, or notification job; when a page shows a count nobody acts on; when tuning a threshold to make an alert quieter; when writing a watchdog or a push job; and when asked why an alert list is so long or whether a workbench number can be trusted. The replenish page once flagged 128 finished SKUs as urgent under-cover when only 20 were real, and 105 of the 108 false ones were data-coverage gaps (one SKU off by 176,216 units), not thresholds set too high — no smarter statistic could have saved a single one. The same repo still ships 554 detector rows over 343 SKUs from three hardcoded thresholds, a structural warning that fires 1026/1026, and a first-screen critical count of 261 that the authoritative on-hand caliber puts at 111. Do not use for changing how a shared number is computed (caliber-change), for proving whether a claimed gap is real (verify-claim), or for styling an alert that has already earned its place.
+description: Decide whether an alert, exception, badge, detector, threshold, or notification in this project deserves to exist. Use before adding or tuning alerts, when counts are noisy or unactionable, or when an alert may reflect coverage or caliber errors. Use caliber-change for shared-number definitions and reconcile-supply-chain-truth for factual claims.
 ---
 
 # 先证明它配存在，再加这条告警
+
+> 下文数字、行号和“今天”均来自一次 2026-07-25 事故审计，用来解释五道门为什么存在，
+> 不是永久基线或当前 backlog。做任何告警决策前，在当前 revision 和当前数据上重跑命中量、
+> 去重后对象数、误报归因、处置率与抑制数。
 
 补货页曾经对 128 个成品同时喊「可销天数不足 30 天，紧急」。真正缺货的只有 20 个。另外 108 个的货就躺在
 海外仓和其他部门仓里——那些仓不在系统快照源里，系统看不见（E054-000 一个 SKU 就差 176,216 件，固化在
@@ -118,7 +122,7 @@ DATABASE_URL=pglite:.data/dev npx tsx /tmp/count-alerts.ts   # 调服务层，�
 /usr/bin/grep -rn "PARAM_DEFS" src/server/modules/admin/params.ts   # 阈值是不是真的可配
 ```
 
-今天的基线（改动后逐个复算，只许变小）：补货 daysCover<30 系统口径 128 / 全管道 20；forecastDivergent 43（无闸 181）；
+历史事故基线（2026-07-25，仅用于复现归因，不能当当前目标）：补货 daysCover<30 系统口径 128 / 全管道 20；forecastDivergent 43（无闸 181）；
 suggest 80 / suppressed 91；detectors 554 行 / 343 SKU；控制塔异常 3 条；待复核 1771。
 
 **报告口径**：给「上线后每天发多少条 / 多少条有人处置 / 抑制了多少条及原因」，不要给「已加告警覆盖 X 场景」。

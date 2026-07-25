@@ -9,13 +9,19 @@ Make every release, hold, and recall decision reconstructable from current evide
 
 ## Start from live evidence
 
-1. Locate the project root. Prefer the workspace containing `spec/CURRENT.md` and `supply-chain/package.json`; otherwise inspect `/Users/yj/Downloads/供应链系统 PRD` when available.
-2. Read `spec/CURRENT.md` fully, then `supply-chain/CLAUDE.md` before proposing or changing code.
+1. Resolve the repository root with `git rev-parse --show-toplevel`; do not depend on a machine-specific absolute path.
+2. Read `../spec/CURRENT.md` fully, then `CLAUDE.md` before proposing or changing code.
 3. Read only the relevant current specification, then inspect the actual schema, services, routes, UI, migrations, and tests before claiming a capability exists.
 4. Check the worktree before editing and preserve unrelated changes.
 5. Treat historical audit documents as evidence, not current requirements.
 
-For every time-sensitive regulatory or standards claim, verify a current primary source. Record its jurisdiction, publisher, publication or effective date, access date, and status as binding law, regulator guidance, recognized standard, recommended practice, draft or pilot, or inference. Cite the exact provision that affects the design. If authoritative currency cannot be verified, say so, abstain from a compliance conclusion, and route the question to qualified regulatory or legal review.
+For every time-sensitive regulatory or standards claim, verify a current primary source. Use
+[authoritative-sources.md](../supply-chain/reference/authoritative-sources.md) only as a dated
+research index, reopen the primary source, and record its jurisdiction, publisher, publication or
+effective date, access date, and status as binding law, regulator guidance, recognized standard,
+recommended practice, draft or pilot, or inference. Cite the exact provision that affects the
+design. If authoritative currency cannot be verified, say so, abstain from a compliance
+conclusion, and route the question to qualified regulatory or legal review.
 
 ## Define the quality decision
 

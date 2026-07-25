@@ -1,4 +1,0 @@
-interface:
-  display_name: "Govern Cosmetics Quality"
-  short_description: "Govern cosmetics quality, traceability, and recall"
-  default_prompt: "Use $govern-cosmetics-quality to design a safe quality, traceability, or recall workflow for this cosmetics product."

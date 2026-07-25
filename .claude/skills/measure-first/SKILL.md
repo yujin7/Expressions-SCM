@@ -1,9 +1,13 @@
 ---
 name: measure-first
-description: Sets the evidence bar for performance and refactor work in this supply-chain system — take a baseline before changing anything, and tell measurement artifacts (cold start, a cache with no write path, display-layer rounding, cold/hot mixed sampling) apart from real defects (silent caliber drift). Use before optimizing a report, query, or hot path, before adding or trusting any cache, before wiring a page to a rollup/materialized table, when a commit message or code comment claims a speedup or calls something a stopgap, when deciding whether slowness justifies a refactor, and when two screens differ by a rounding-sized amount. A commit here claimed "1.48s→0.099s (15x)" from a 60s cache that never had a write path: arCache is read at src/server/modules/report/auto-replenish.ts:71 and assigned nowhere, clearing it vs not clearing it both measure 105ms, and the 15x was merely call#1 (521ms — connect + migration check + JIT) vs call#2 (116ms); half a month later that phantom cache was the written justification for the E7-01 pre-aggregation layer — three tables (2436 / 344 / 0 rows), one migration, one nightly job, zero readers — while the reports it was meant to rescue measure 12–116ms. Do not use for correctness bugs, which need no latency threshold (caliber-change, verify-claim), or for defining what a shared number means.
+description: Measure before performance optimization, caching, rollups, or large refactors in this project. Use to establish reproducible baselines, separate cold-start and rounding artifacts from real defects, and validate claimed speedups. Use caliber-change or reconcile-supply-chain-truth for correctness rather than latency.
 ---
 
 # 没有基线数字的性能改动，改的是幻觉
+
+> 下文数字、缓存状态、表行数、消费者数量和“今天”来自 2026-07-25 的历史审计。保留它们是
+> 为了说明测量陷阱，不是宣称当前仍如此。每次优化必须在当前 revision、代表性数据和目标环境
+> 重新建立冷/热、吞吐、尾延迟、资源与业务 SLO 基线。
 
 提交信息写着：「struct#16 自动补货候选 60s 缓存：实测 1.48s→0.099s（15×）」。
 缓存只有读没有写——`arCache` 在 `src/server/modules/report/auto-replenish.ts:71` 被读，函数 `:128-136` 直接 return 对象字面量，全函数没有一次赋值（`git show 0e7b9a6` 里它也只出现在 :66/:68/:72 三行）。真跑一遍：清缓存 105ms，不清缓存 105ms，一模一样；那个 15× 是同一进程里 call#1（521ms，建连+迁移检查+JIT）和 call#2（116ms）之差。
@@ -35,7 +39,7 @@ DATABASE_URL=pglite:"$SCRATCH/devcopy" npx tsx scripts/_tmp-bench.ts   # 新进�
 /usr/bin/grep -rn "rollupSkuMonth|rollupWarehouseSku" --include="*.ts" src tests scripts
 ```
 
-取中位数，**丢弃 call#1**。
+冷启动与稳定态分开报告；稳定态中位数可排除 call#1，但面向首个请求的场景不能把冷启动丢掉。
 
 ---
 
@@ -49,7 +53,8 @@ DATABASE_URL=pglite:"$SCRATCH/devcopy" npx tsx scripts/_tmp-bench.ts   # 新进�
 | 两页数字对不上，差在 0.1 量级 | 展示层舍入 | `replenish/service.ts:340-342` 用未舍入的 dailyNum 算 daysCover，`:440-441` 才把 daily 与 daysCover 各自 r1；拿 r1 后的 daily 重算 cover，402 个有销量成品里 206 个对不上——这 206 条不是缺陷。比对必须用未舍入值 |
 | 两页数字对不上，差的是分类/等级 | 口径漂移，真缺陷 | 两套帕累托各写一遍（边界约定不同 + 窗口不同），441 个 SKU 里 41 个分层不一致（`invariants.md:70`）；修法是唯一权威 `rules/abc.ts` 的 `classifyAbc`（提交 e5d3fc4）。转 caliber-change |
 
-性能问题有门槛：150ms 以内不值得改。
+性能改动的门槛由用户可见 SLO、调用频率、并发、尾延迟、资源成本和风险共同决定；
+该次历史样本的稳定态 <150ms，不足以证明需要重构。
 正确性问题没有门槛：41/441 必须改，因为它**不报错**。
 
 ---

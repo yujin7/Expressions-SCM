@@ -1,4 +1,0 @@
-interface:
-  display_name: "Plan Beauty Supply"
-  short_description: "Plan beauty demand, supply, and inventory wisely"
-  default_prompt: "Use $plan-beauty-supply to assess planning readiness and produce an explainable demand, supply, or inventory recommendation."

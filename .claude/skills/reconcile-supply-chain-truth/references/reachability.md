@@ -1,9 +1,8 @@
----
-name: dead-plumbing
-description: Hunts and classifies dead plumbing in this supply-chain system — code that writes rows nobody reads, parses fields nobody stores, computes results nobody consumes, and fixes whose entry condition can never be met — and separates those from honestly-labelled reserved fields and from pipes that are correctly wired but starved of upstream data. Use when a table, column, rule module, or API route looks unused, when a nightly job reports success with no visible effect, when a schema comment promises service-layer behaviour ("由服务层匹配", "复用 X 模式"), when a report still recomputes something a rollup already stores, when reviewing a fix that claims to close a gap, before deleting anything that looks dead, and before reporting "not wired up" as a defect. The expiry adapter parses shelfLifeDays into 3131 staging rows (3122 of them 1095 days) while 1026 of 1026 active finished SKUs still have skus.shelf_life_days null (0 non-null across all 5376 rows), and the commit that finally added the backfill (release/engine.ts:1261-1273 plus 5 tests) can never fire because loadStagedRows only scans staging in status pending/validated and all 3131 rows are already committed; meanwhile rollup_sku_month (2436 rows) and rollup_warehouse_sku (344 rows) have been rebuilt nightly for 8 runs with zero readers in src. Do not use for verifying a single second-hand claim before reporting it (verify-claim), for latency or cache work (measure-first), for changing what a shared number means (caliber-change), or for schema/migration mechanics (schema-change).
----
-
 # 先找读的人，再说它做完了
+
+> 本文件保存 `$reconcile-supply-chain-truth` 的 reachability 扫描法与历史事故样本。
+> 下文的行数、路径、调用点、表数据与“已确认清单”只证明当时发生过什么；它们不是当前
+> backlog。每次引用前必须在当前 revision 重新扫描定义、写端、读端、入口条件和真实数据。
 
 效期文件里写着 1095 天。适配器认认真真解析出来，还顺手统计了「有多少条是 1095」
 （`src/server/import/adapters/expiry.ts:89-92`，:105 写进 payload），3131 行 staging 里 3122 行带着这个数字。
@@ -62,7 +61,7 @@ done
 
 ---
 
-## 三、已确认清单（拿它当对照，别重复排查）
+## 三、历史已确认样本（拿它学判型，不要当当前结论）
 
 | 死在哪 | 位置 | 实测 |
 |---|---|---|

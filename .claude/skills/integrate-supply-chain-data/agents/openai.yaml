@@ -1,0 +1,4 @@
+interface:
+  display_name: "Integrate Supply Chain Data"
+  short_description: "Build replayable, reconciled supply-chain data pipelines"
+  default_prompt: "Use $integrate-supply-chain-data to design or audit this data boundary, replay, and reconciliation flow."

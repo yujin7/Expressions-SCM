@@ -1,15 +1,20 @@
 # 供应链系统 — 项目约定
 
-- **本项目共 14 个 skill，全部在 `.claude/skills/`**（唯一位置，已入库）。入口是 `supply-chain`
-  （领域教义 + R1–R17/D 决议/单据流 + 行业判断力 + 全量 skill 索引），其余 13 个各管一段：
-  `caliber-change` 改共享口径 / `write-path` 写落库路径 / `list-page` 建列表页与客户端组件 /
-  `schema-change` 改 schema 与迁移 / `alert-budget` 加告警 / `data-release` 导入放行 /
-  `decision-log` 登记业务裁决 / `verify-claim` 上报缺陷前证伪 / `dead-plumbing` 查死管道 /
-  `measure-first` 优化前先量 / `redteam-pass` 上线前对抗 / `release-sweep` 交付前全量扫描 /
-  `parallel-sessions` 多会话并行。通用（非本仓）领域知识与法规原文出处在
-  `.claude/skills/supply-chain/reference/portable/`——**不自动加载，按需查阅**。
-  本页只留常驻铁律，其余按需加载。
-- 唯一开发依据: `../spec/01-系统完整规格-v2.0.md`（v2.1）；术语用《00》A4 统一命名
+- **本项目共 16 个 active skill，canonical 正文只在 `.claude/skills/`**；`.agents/skills/`
+  是指向同一批目录的 Codex 发现层，不保存第二份正文。Claude/Codex 依据每个 skill 的
+  `description` 在匹配任务中隐式激活；明确写 `$skill-name` 可强制调用。一次只加载最小可用组合，
+  不会也不应每次把 16 个全部加载。
+  - 编排/领域：`supply-chain`（跨 3+ 领域或系统级判断）
+  - 设计/事实：`design-supply-chain-flows` / `reconcile-supply-chain-truth`
+  - 交易/数据：`write-path` / `integrate-supply-chain-data` / `schema-change`
+  - 计划/质量：`plan-beauty-supply` / `govern-cosmetics-quality`
+  - 项目护栏：`caliber-change` / `alert-budget` / `decision-log` / `list-page` /
+    `measure-first` / `redteam-pass` / `release-sweep` / `parallel-sessions`
+  通用领域、架构、交付与一手来源索引统一在
+  `.claude/skills/supply-chain/reference/`，由相关 skill 按需加载。
+- 当前意图入口与决策登记簿是 `../spec/CURRENT.md`；它所指向的现行宿主规格共同定义需求。
+  `../spec/01-系统完整规格-v2.0.md` 是核心宿主规格之一，不单独凌驾于后续显式改判；
+  术语用《00》A4 统一命名。
 - 单据前缀: BH/WO/PO/PC/JG/FL/TL/SH/CT/RK/CK/DB/JS/PD；取号走 doc_counter（`src/server/docflow/doc-no.ts`），禁止 MAX+1
 - 金额 decimal(14,2)，数量 decimal(14,4)；禁 float 运算（用字符串/decimal 工具 `src/server/core/decimal.ts`）；时区 Asia/Shanghai
 - 库存只能经 `src/server/posting/registry.ts` 过账；禁止直接写 stock_balance/stock_ledger

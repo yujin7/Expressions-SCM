@@ -1,6 +1,6 @@
 ---
 name: release-sweep
-description: Runs the whole-app verification sweep for this supply-chain system — every page, every GET route, hydration fingerprints, migration drift, smoke suite. Use before telling the user a batch of work is done, before any commit touching multiple pages or routes, after restarting the dev server, when the user says the system feels rough or broken or half-finished, and whenever unsure whether something unrelated was broken. The two most expensive defects in this project's history — 24 pages with total hydration failure and a client import that made every route including /api/health return 500 — both passed unit tests and returned HTTP 200, and only this sweep exposed them. Do not use for a single isolated pure-function change with no page or route impact.
+description: Gate whether an exact branch, commit, or release candidate can ship by running this project's whole-application verification sweep across typecheck, tests, smoke flows, health, pages, APIs, hydration, permissions, migrations, and rollback evidence. Use before declaring broad work complete, after server restarts, or when the system seems broadly broken. Do not use for an isolated pure-function change.
 ---
 
 # 全量扫描
@@ -13,6 +13,30 @@ description: Runs the whole-app verification sweep for this supply-chain system 
    webpack 解析失败后污染模块图，**全应用含 `/api/health` 齐刷刷 500**，且随编译顺序漂移。
 
 只测你改过的地方，这两类永远抓不到。
+
+---
+
+## 先锚定候选与权限
+
+本 skill 回答：**这个精确候选在指定环境、上线方式和回滚计划下，是否有足够证据交付？**
+它提供发布判断，不自动取得部署、生产迁移、UAT 签字或业务风险接受权限。
+
+开始前记录：
+
+- commit/branch、worktree diff 指纹、包含与排除的文件；
+- 目标环境、配置/迁移版本、业务日期与证据截止时间；
+- 发布方式、feature flag/canary、监控、停止阈值、回滚/恢复负责人；
+- 哪些检查可运行，哪些因环境或权限仍是 unknown。
+
+候选在验证中变化就停止沿用旧结果，重新锚定。多会话下先用 `$parallel-sessions` 确认
+HEAD、未跟踪文件、PID 与端口归属。
+
+按风险追完整链：
+
+`schema/migration → rule/service → API/job/integration → UI/export → permission → audit → test → operation`
+
+至少覆盖适用的业务规则、十进制/单位/过账/并发/幂等、迁移/回填、权限/脱敏、
+集成重放、可观测性、回滚和 UAT。未适用要说明，未运行不得写成通过。
 
 ---
 
@@ -94,3 +118,12 @@ done
 - 有任何一项没跑，**明说没跑**，不要含糊成「已验证」。
 - 这个仓库常有另一个会话同时在写：提交前 `git log --oneline -5` 看有无新提交，
   只 `git add` 自己的文件。中文提交信息含括号会破坏引号，用 `git commit -F`。
+
+最终只给一个 verdict：
+
+- `READY`：关键证据通过，残余风险有具名控制。
+- `READY WITH EXPLICIT ACCEPTANCE`：无 blocker，但具名责任人必须接受有界残余风险。
+- `NOT READY`：存在 blocker/high 风险或关键失败。
+- `UNKNOWN`：候选、环境或关键证据未锚定；运营上等同不发布。
+
+报告同时给 exact candidate、运行过的证据、未运行项、失败分类、回滚证据、责任人与下一门禁。

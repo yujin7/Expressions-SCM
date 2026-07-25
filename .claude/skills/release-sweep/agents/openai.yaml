@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Sweep"
+  short_description: "Gate an exact release candidate with full-story evidence"
+  default_prompt: "Use $release-sweep to verify this exact candidate and return a defensible release verdict."

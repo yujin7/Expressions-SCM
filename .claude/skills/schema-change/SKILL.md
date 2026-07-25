@@ -1,9 +1,13 @@
 ---
 name: schema-change
-description: Changes the database schema of this supply-chain system safely — editing src/db/schema/*.ts, generating and applying drizzle migrations, adding columns, tightening or relaxing UNIQUE keys. Use whenever touching any file under src/db/schema/, right after running drizzle-kit generate, when a route 500s with `Failed query: select "..." from "..."`, when /api/health returns drift:true or migrationFiles != applied, before running any script against .data/dev, and when deciding whether a constraint change needs a backfill. A forgotten dev-server restart does not break only the new column: drizzle's column-less `db.select().from(t)` expands every column declared in schema.ts — 127 such call sites in src/ — so every read of that table 500s, including code that never touches the new field, and the migration loop lives inside createDb() whose promise is pinned on globalThis (src/db/index.ts:49), so HMR never replays it. Do not use for changing how an existing number is computed (caliber-change), for importing rows into an unchanged schema (data-release), or for pure query/UI edits that add no column and no constraint.
+description: Change this project's Drizzle schema and migrations safely. Use for any edit under src/db/schema, generated migration, column or constraint change, drift or health mismatch, schema-related 500, backfill decision, or direct .data/dev script. Use caliber-change for calculation semantics and integrate-supply-chain-data for imports into unchanged schemas.
 ---
 
 # 改完 schema，重启进程
+
+> 下文迁移数、调用点数、表/约束数量、行号和性能数是历史审计样本。迁移流程与失败模式
+> 是 durable contract；当前基线必须从 `drizzle/*.sql`、schema、health、目标数据库和本次
+> candidate 动态取得。
 
 给 `schema.ts` 加一个字段、忘了重启 dev server——挂掉的不是「用到新列的那个页面」，
 是那张表的**每一次读取**。drizzle 的无列名 `db.select().from(t)` 会展开 schema 里声明的
@@ -11,7 +15,7 @@ description: Changes the database schema of this supply-chain system safely — 
 `src/server/modules/settlement/js.ts:123` …）。实测 DB 落后一个迁移时，`select id,name` 照常返回，
 `db.select().from()` 当场 `Failed query: select "id","name","new_col" from "demo"`。
 
-唯一的哨兵是 `/api/health`：正常 `{"migrationFiles":18,"applied":18,"drift":false}`，
+dev/PGlite 的哨兵是 `/api/health`：正常时 `migrationFiles === applied` 且 `drift:false`，
 漂移时 `drift:true` + HTTP 503 + hint「schema 漂移：请重启 dev server」（`src/app/api/health/route.ts:10-23`）。
 
 ---
@@ -22,7 +26,7 @@ description: Changes the database schema of this supply-chain system safely — 
 |---|---|
 | 迁移 SQL | 仓库根 `drizzle/`，`drizzle.config.ts:6 out:"./drizzle"` |
 | schema 入口 | `src/db/schema/index.ts`，按域拆 10 个文件（enums/masters/bom/docs/inventory/system/dimensions/refs/npd/rollup） |
-| 命名 | drizzle-kit 自动生成 `NNNN_随机代号.sql`，现为 0000–0017 |
+| 命名 | drizzle-kit 自动生成 `NNNN_随机代号.sql`；当前范围必须从 `drizzle/*.sql` 动态读取 |
 | 账本（prod） | `drizzle/meta/_journal.json`（version 7） |
 | 账本（dev） | 手写表 `_migrations(name text PRIMARY KEY, applied_at)`，`src/db/index.ts:32` |
 
@@ -33,7 +37,9 @@ description: Changes the database schema of this supply-chain system safely — 
 ```bash
 npx drizzle-kit generate                       # 改完 src/db/schema/<域>.ts 后产出 drizzle/00NN_xxx.sql
 # 读一遍生成的 SQL —— 下面所有事故的共同前提是没读
-pkill -f "next dev"; pkill -f next-server; sleep 4; npm run dev   # 唯一让迁移生效的方法
+lsof -nP -iTCP -sTCP:LISTEN                    # 确认自己启动的 dev PID/端口
+kill <owned-dev-pid>                            # 只停自己拥有的进程，禁止全机 pkill
+npm run dev                                     # 重新启动后才应用新迁移
 curl -s http://127.0.0.1:3000/api/health       # 验收：三个数必须对上
 ```
 
@@ -66,7 +72,7 @@ HMR 只换路由模块，`globalThis` 上的 PGlite 实例和那个 promise 不�
 1. **`ADD COLUMN … NOT NULL` 必须带 `DEFAULT`**。全部 60 处 ADD COLUMN 中 15 处 NOT NULL，
    无一例外都带 DEFAULT（grep「NOT NULL 且不含 DEFAULT」结果为空）。
 2. **收紧 UNIQUE 必须在同一个迁移里先 backfill**。`drizzle/0007_vengeful_sunfire.sql:2-19` 是
-   18 个迁移里唯一有手写 SQL 的一个：加 `uq_batch_stock_key` 之前，先用
+   当时迁移集里少数有手写 SQL 的一个：加 `uq_batch_stock_key` 之前，先用
    `SUM(qty) OVER (PARTITION BY sku_id, warehouse_id, stocktake_date, prod_date, expiry_date, batch_no)`
    把同自然键多行的 qty 合并到最早一行，再 `DELETE … WHERE rn > 1`，最后才 `ADD CONSTRAINT`，
    并用三行中文注释解释为什么合并在口径内安全。少了 backfill，ADD CONSTRAINT 直接失败 → 见上一节。
@@ -75,7 +81,8 @@ HMR 只换路由模块，`globalThis` 上的 PGlite 实例和那个 promise 不�
    `uq_sales_velocity`（`dimensions.ts:105`）、`uq_price_sku_sup_chan_date`（`masters.ts:125`）。
    `batchId` / `channelId` 可空，普通 UNIQUE 在 PG 里放行无限多行 NULL，余额表会长出重复行，
    幂等直接失效。`tests/schema.smoke.test.ts:6-18` 专门断言（同 sku+仓、batchId 皆 null 的第二行必须被拒）。
-4. **不要 DROP**。18 个迁移里 0 处 DROP COLUMN、0 处 DROP TABLE；4 处 DROP CONSTRAINT
+4. **不要无迁移方案地 DROP**。以下数量是历史审计样本，不是当前基线：当时 0 处 DROP COLUMN、
+   0 处 DROP TABLE；4 处 DROP CONSTRAINT
    （0003 / 0009 / 0012 / 0016）每一处都在同一文件内立刻以**更宽的键**加回，例如 0003 给 approvals
    加 `cycle`（DEFAULT 0 NOT NULL）后把 `uq_approval_idem` 从 4 列换成 5 列。
 
@@ -104,13 +111,14 @@ prod 侧迁移是**发布窗口内的独立门禁步骤**（`ops/deploy.sh:2` �
 `INSERT 2` 成功返回 `[1,2]` 并优雅关闭；A 全程只看到 `[1]`，退出落盘后第三个进程重开读到 `[1,99]`——
 **B 写的那行被整个覆盖，双方都没有拿到任何锁错误**。全部 20 个 `scripts/*.ts` 默认
 `process.env.DATABASE_URL ??= "pglite:.data/dev"`（`scripts/db-peek.ts:7`、`scripts/rt4-repair.ts:29`），
-即默认直连同一个目录。所以跑脚本前先 `pkill -f "next dev"; pkill -f next-server; sleep 4`。
+即默认直连同一个目录。所以跑脚本前先用 `lsof` 找到自己启动且占用目标端口的 PID，
+再精确 `kill <owned-dev-pid>`；禁止全机 `pkill`。
 
 ## 每加一个迁移文件，测试就整体变慢一次
 
 `tests/helpers/db.ts:12-25`：每次 `createTestDb()` 起一个内存 PGlite，并把 `drizzle/` 下全部 `.sql`
 依序 exec（没有 `_migrations` 表，无条件全量重放）。112 个测试文件里 69 个用 `createTestDb`，
-机器 18 核 → 69 × 18 个迁移文件同时开工。`vitest.config.ts:8-11` 的 `hookTimeout: 30000`
+历史采样中，机器 18 核时多个测试进程会同时重放全部迁移。`vitest.config.ts:8-11` 的 `hookTimeout: 30000`
 就是为此而设，**不要调小**。参考量级：单跑 `npx vitest run tests/schema.smoke.test.ts` = 513ms。
 
 ## 报告口径

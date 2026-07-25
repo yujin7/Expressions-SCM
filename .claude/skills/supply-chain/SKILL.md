@@ -1,6 +1,6 @@
 ---
 name: supply-chain
-description: Answers domain and judgment questions about this self-built supply-chain system (8-brand cosmetics company replacing Excel): what an R1-R17 rule means, which D-decision is current, how a document flows (BH/WO/PO/JG/FL/TL/SH/JS), which role approves what, why a number is computed the way it is, and whether a design choice matches best-in-class supply chain practice. Use when asked about 委外/结算/补货/效期/批次/口径/审批/过账 semantics, when a business rule or threshold needs its authoritative definition, when weighing a design tradeoff (safety stock, forecasting, expiry policy, alert noise, automation limits), and when asked what to improve or how this compares to leading systems. For the procedures themselves use the specialist skills instead: caliber-change to alter a shared calculation, new work verified by release-sweep, redteam-pass before shipping a write path, verify-claim before reporting a gap, data-release for imports, decision-log to record a ruling. Do not use for generic Next.js or React questions.
+description: Apply this repository's cosmetics supply-chain domain model and judgment for business semantics, authoritative rules, architecture trade-offs, and system-wide initiatives. Use narrower procedural skills for bounded work in one or two domains. Use this skill to orchestrate work spanning three or more of flow design, transactions, integrations, planning, quality, and release, loading specialists only for scoped subwork.
 ---
 
 # 供应链系统 · 工作教义
@@ -10,6 +10,20 @@ description: Answers domain and judgment questions about this self-built supply-
 
 写代码之前先接受一件事：**这个系统里最贵的错误不是崩溃，是「看起来对但是小了」的数字。**
 崩溃会被发现，静默算错不会。
+
+---
+
+## 零、先路由，不把所有知识一次加载
+
+- 窄任务默认只用一个最匹配的 specialist。
+- 真正跨边界时才组合两个：明确一个主责、另一个只提供约束。
+- 涉及三个以上领域、系统级路线图、架构取舍或模糊的端到端问题，才由本 skill 编排。
+- 当前事实有争议先用 `$reconcile-supply-chain-truth`；具体候选能否交付由
+  `$release-sweep` 裁决。
+- 任何自动建议都必须给证据截止时间、覆盖范围、降级/弃权条件和人工执行边界。
+
+跨域工作先写清业务结果、责任人、系统事实、不可逆决定和验收证据，再把工作拆给最小
+skill 组合。不要以 skill 数量代替判断。
 
 ---
 
@@ -57,8 +71,7 @@ description: Answers domain and judgment questions about this self-built supply-
 D33 自动链也一样：自动开草稿 + dry-run 预览 + 防雪崩护栏（每 WO ≤8 批、
 needsReview BOM 排除、全局急停开关）。
 
-行业数据支持这个选择：Gartner 预计到 2027 年底 40%+ 的 agentic AI 项目会被取消。
-生产中有效的模式恰恰是——**受约束、可逆、小的决策自动跑；不可逆的必须人审。**
+本项目采用的模式是：**受约束、可逆、小的决策自动跑；不可逆的必须人审。**
 **不要为了「更智能」去松这个闸。**
 
 ### 4. 绝不猜——歧义变成人工队列，不是默认值
@@ -145,7 +158,8 @@ curl -s localhost:3000/api/health     # 迁移条数 + drift:false
   必要时 `LC_ALL=C`。`--include=*.ts` 在 zsh 下会被当 glob 报错，要加引号。
 - **登录 provider id 是 `local`，不是 `credentials`**。走错端点返回
   `error=Configuration`，看起来像登录坏了——那是测试写错了。
-- **PGlite 单进程**：脚本要读 `.data/dev` 必须先停 dev server（`pkill -f "next dev"`）。
+- **PGlite 数据目录只能有一个写者**：脚本要读 `.data/dev` 前，先用
+  `lsof -nP -iTCP -sTCP:LISTEN` 确认占用者；只精确停止自己启动的 PID，禁止全机 `pkill`。
 - **新增迁移后必须重启 dev server**——PGlite 只在启动时应用迁移，热更新代码引用新列会全线 500。
 - **`page.tsx` 缺 `<Suspense>` 会导致整页水合失败**：`useListState` 用了 `useSearchParams`，
   `useId` 序列 SSR/CSR 错位，页面退化成无交互静态 HTML。**HTTP 仍是 200，单测全绿。**
@@ -177,26 +191,32 @@ curl -s localhost:3000/api/health     # 迁移条数 + drift:false
 | 需要某条 R 规则的准确定义、D 决议、单据流、审批域、摄取纪律 | `reference/domain-rules.md` |
 | 要动过账/审批/脱敏/口径共享层，或想知道某条铁律背后的事故 | `reference/invariants.md` |
 | 做取舍判断：安全库存/预测指标/效期渠道规则/告警降噪/自动化边界/行业基准 | `reference/excellence.md` |
-| **要引法规原文出处**（NMPA / 国务院令 727 / GMP / 注册备案） | `reference/portable/authoritative-sources.md` ← 本 skill 正文与其余 reference **一个 URL 都没有**，只有这里有；且标注了研究日期，引用前必须重新核实 |
-| 开新项目或对外讲方法论，需要不绑定本仓的通用框架 | `reference/portable/README.md`（8 份通用 playbook + 领域/架构/交付三份长文） |
+| 不清楚文档角色、证据层级、项目边界 | `reference/project-map.md` |
+| 需要跨模块美妆供应链能力地图、质量/计划/OEM 约束 | `reference/cosmetics-domain.md` |
+| 需要数据、事务、集成、安全、AI 治理与可观测性框架 | `reference/architecture-and-ai.md` |
+| 需要 PRD、实现、迁移、UAT、审计交付清单 | `reference/delivery-and-audit.md` |
+| **要引法规/标准原文出处** | `reference/authoritative-sources.md`（仅作带研究日期的索引；引用前必须重新打开当前一手来源） |
 
-**流程类工作不要在这里找**——14 个 skill 各管一段：
+**流程类工作用最窄的 owner**——项目共 16 个 active skill（含本编排器）：
 
 | 你要做的事 | 用哪个 skill |
 |---|---|
+| 新需求、PRD、端到端流程、状态机与验收契约 | `design-supply-chain-flows` |
+| 查清「现在到底是什么」、证伪缺陷、追死管道 | `reconcile-supply-chain-truth` |
 | 改共享口径（在库/在途/日均/ABC/安全库存） | `caliber-change` |
 | 写会落库的 service / 路由 / 过账 | `write-path` |
 | 新建列表页、加 Tab、动 `"use client"` 文件 | `list-page` |
 | 改 `src/db/schema/*`、生成迁移 | `schema-change` |
 | 加告警 / 检测器 / 阈值 / 推送 | `alert-budget` |
-| 跑导入放行管道 | `data-release` |
+| 文件/API/ERP/WMS 数据接入、staging、放行与对账 | `integrate-supply-chain-data` |
+| 预测、S&OP、安全库存、补货、分配与库存策略 | `plan-beauty-supply` |
+| 品控、批次/效期、FEFO、市场准入、投诉与召回 | `govern-cosmetics-quality` |
 | 登记业务裁决（写死任何业务常数之前） | `decision-log` |
-| 上报「缺了/坏了/没接」之前 | `verify-claim` |
-| 怀疑某处「写了没人读 / 解析了没落库」 | `dead-plumbing` |
 | 想做性能优化或大重构之前 | `measure-first` |
 | 写完写路径，上线前对抗测试 | `redteam-pass` |
-| 告诉用户「这批做完了」之前 | `release-sweep` |
+| 精确候选的全量回归、发布判断与回滚证据 | `release-sweep` |
 | 发现另一个会话也在改这个仓库 | `parallel-sessions` |
 
-**权威顺序**：用户当面的判断 > `spec/CURRENT.md`（唯一真相索引，改判先改它）>
-`CLAUDE.md`（常驻铁律）> 本 skill > 各 spec 文档 > 代码注释。
+**权威必须按问题匹配**：当前业务意图看用户裁决 + `../spec/CURRENT.md` + 现行宿主规格；
+实现看 schema/migration/code；验证看可复现测试和运行证据；生产状态看部署版本与运营证据。
+冲突时用 `$reconcile-supply-chain-truth`，不要拿一类证据替另一类证据作答。

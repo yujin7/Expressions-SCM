@@ -1,0 +1,4 @@
+interface:
+  display_name: "Decision Log"
+  short_description: "Record consequential business decisions before coding"
+  default_prompt: "Use $decision-log to capture this business decision, its authority, impact, and supersession path."

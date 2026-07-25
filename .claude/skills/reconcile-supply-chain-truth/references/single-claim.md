@@ -1,9 +1,7 @@
----
-name: verify-claim
-description: Proves or kills a claim about this codebase before it is reported, planned around, or fixed. Use whenever about to tell the user something is missing, broken, unimplemented, a gap, a TODO, or "not wired up" — and whenever a comment, TODO, doc, spec, register, or another agent's report asserts that state. Comments in this repo have twice described finished work as pending and produced two false defects; the cost of one grep is far below the cost of a wrong finding. Also use before acting on any second-hand claim about the code. Do not use for claims already verified this session, or for questions about intent and design rather than facts.
----
-
 # 先证伪，再上报
+
+> 本文件是 `$reconcile-supply-chain-truth` 的单项主张模式参考。事故数量、行号、填充率和
+> 调用点均为历史证据；使用前必须在当前 revision 重新测量。
 
 这个仓库里**注释会撒谎**。已经发生两次：`TODO(W3)` 说 BOM 生效没走审批（实际
 SoD 早已实现）、`E2-01+` 注释读着像待办（实际交期波动早已接进安全库存）。
@@ -54,12 +52,12 @@ ls -la src/server/core/dto.ts
 
 ## 三个高频陷阱
 
-- **「计算了」≠「被读了」**：`rollup_sku_month` 每晚构建 2436 行，**零消费者**。
+- **「计算了」≠「被读了」**：历史审计曾发现 `rollup_sku_month` 有写入、无消费者；
+  当前实现必须重新追踪。
   发现「已实现」后再问一句：谁在用？
-- **「接通了」≠「有数据」**：交期波动公式早已接进安全库存，但 `rollup_supplier_lead`
-  是 0 行——因为系统里只有 3 条 PO。**代码就绪、数据未至，不是缺陷。**
-- **「有默认值」≠「没问题」**：`nearExpiryDays ?? 90` 读着正常，但主档 1026/1026 为空，
-  全靠兜底在撑。查字段时连它的**实际填充率**一起查。
+- **「接通了」≠「有数据」**：消费者存在但上游没有满足前提的数据时，结论是数据准备度，
+  不是自动判定为代码缺陷。
+- **「有默认值」≠「没问题」**：查字段时连当前实际填充率、覆盖范围和兜底命中率一起查。
 
 ---
 

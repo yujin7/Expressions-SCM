@@ -1,6 +1,6 @@
 ---
 name: caliber-change
-description: Safely changes how a shared business number is computed in this supply-chain system — on-hand stock, in-transit, daily velocity, days-of-cover, ABC class, safety stock, net requirement, settlement loss. Use whenever adding, editing, or duplicating any such calculation, whenever two pages might show different values for the same SKU, and whenever about to write a formula that already exists somewhere else. Two independent Pareto implementations once classified 41 of 441 SKUs differently, and the same latest-snapshot subquery was copy-pasted nine times across twelve modules. Also use when asked why two screens disagree. Do not use for display formatting, or for numbers used in exactly one place with no shared meaning.
+description: Change shared business calculations in this project without caliber drift, including on-hand, supply, velocity, days of cover, ABC, safety stock, net requirement, and settlement loss. Use when adding, editing, duplicating, or reconciling a calculation shown in multiple places. Do not use for display-only formatting or one-off local numbers.
 ---
 
 # 改口径

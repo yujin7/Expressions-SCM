@@ -1,6 +1,6 @@
 ---
 name: redteam-pass
-description: Attacks a change in this supply-chain system before shipping it — concurrency, replay, idempotency-key collisions, role and masking bypass, reject-resubmit-reject cycles, double reversal, negative stock, cross-material netting. Use after writing any approval, posting, settlement, pricing, import, or export path, and before committing anything that moves stock or money. Five red-team rounds on this codebase found an audit table with zero writes, masking defined but never called, opening approval self-hijack, and a settlement formula falsified by counterexample — every one of them passed the happy path first. Do not use for read-only reports with no write path and no role-sensitive fields.
+description: Attack consequential project changes for concurrency, replay, idempotency, authorization, masking, approval-cycle, reversal, negative-stock, precision, and aggregation failures. Use after implementing approval, posting, settlement, pricing, import, export, or other write paths and before shipping stock- or money-moving changes.
 ---
 
 # 红队一遍

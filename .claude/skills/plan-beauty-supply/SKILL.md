@@ -12,14 +12,14 @@ Produce the simplest explainable planning recommendation that available evidence
 Answer: **Given current evidence and constraints, what future supply or inventory action should a human consider?**
 
 - Recommend; do not approve, order, allocate, post stock, or release quality automatically.
-- Use `$protect-supply-chain-ledgers` for execution of an approved decision.
+- Use `$write-path` for execution of an approved decision.
 - Use `$govern-cosmetics-quality` for lot eligibility and quality release.
 - Use `$integrate-supply-chain-data` when missing readiness is primarily a data-boundary problem.
 
 ## Establish the decision context
 
 1. Define product and hierarchy, market, channel, location, owner, decision horizon, review cadence, service objective, and accountable planner.
-2. In this project, read `spec/CURRENT.md` and `supply-chain/CLAUDE.md`, then inspect the shared stock, supply, velocity, ABC, forecast, and replenishment implementations before proposing a new caliber.
+2. In this repository, read `../spec/CURRENT.md` and `CLAUDE.md`, then inspect the shared stock, supply, velocity, ABC, forecast, and replenishment implementations before proposing a new caliber. Resolve the repository root dynamically; do not depend on a machine-specific path.
 3. State the business date, data as-of time, coverage, latency, and known blind spots.
 4. Separate demand, sales, orders, shipments, returns, cancellations, lost sales, stockouts, substitutions, and promotions.
 5. Identify lifecycle effects: launch, ramp, discontinuation, relaunch, reformulation, pack-size change, channel expansion, influencer spike, and cannibalization.
