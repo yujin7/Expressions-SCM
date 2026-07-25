@@ -14,3 +14,5 @@ drizzle/meta/_journal.json.bak
 !.claude/skills/
 !.claude/settings.json
 !.claude/hooks/
+.writer.lock
+backups/

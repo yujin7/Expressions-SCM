@@ -13,7 +13,9 @@
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:seed": "tsx src/db/seed.ts",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "db:backup": "tsx scripts/backup-dev-db.ts",
+    "db:restore": "tsx scripts/backup-dev-db.ts --restore"
   },
   "dependencies": {
     "@ant-design/icons": "^5.6.0",
