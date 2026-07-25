@@ -245,12 +245,22 @@ export interface DupeResult {
   affectedSkus: number;
   /** 有库存风险的簇数——这些不能只改主档 */
   clustersWithStock: number;
+  /** 归一化后完全同名的簇数（几乎必然是真重复，建议优先处理） */
+  exactCount: number;
   threshold: number;
   note: string;
 }
 
 export async function getDuplicateCandidates(
-  query: { q?: string; crossBrand?: boolean; page?: number; pageSize?: number; threshold?: number },
+  query: {
+    q?: string;
+    crossBrand?: boolean;
+    /** 只看归一化后完全同名的簇——真实数据上这部分只有几十组，可以当天处理完 */
+    exactOnly?: boolean;
+    page?: number;
+    pageSize?: number;
+    threshold?: number;
+  },
   dbArg?: AnyDb,
 ): Promise<DupeResult> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
@@ -280,7 +290,7 @@ export async function getDuplicateCandidates(
 
   const empty: DupeResult = {
     rows: [], total: 0, scanned: skuRows.length, affectedSkus: 0,
-    clustersWithStock: 0, threshold, note: "未发现疑似重复主档",
+    clustersWithStock: 0, exactCount: 0, threshold, note: "未发现疑似重复主档",
   };
   if (skuRows.length === 0) return { ...empty, note: "无 active SKU" };
 
@@ -340,8 +350,11 @@ export async function getDuplicateCandidates(
     };
   });
 
+  const exactCount = all.filter((r) => r.topScore === 1).length;
+
   let filtered = all;
   if (query.crossBrand === false) filtered = filtered.filter((r) => !r.crossBrand);
+  if (query.exactOnly) filtered = filtered.filter((r) => r.topScore === 1);
   if (q) {
     filtered = filtered.filter((r) =>
       r.members.some((m) => m.code.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)),
@@ -362,11 +375,13 @@ export async function getDuplicateCandidates(
     scanned: skuRows.length,
     affectedSkus: filtered.reduce((s, r) => s + r.members.length, 0),
     clustersWithStock,
+    exactCount,
     threshold,
     note:
       `在 ${skuRows.length} 个 active SKU 中发现 ${filtered.length} 组疑似重复` +
+      (exactCount > 0 ? `，其中 ${exactCount} 组归一化后完全同名（几乎必然是真重复，建议先处理这批）` : "") +
       (clustersWithStock > 0
-        ? `，其中 ${clustersWithStock} 组待并项仍有在库——这些必须先处理库存再合并，不能只改主档`
+        ? `；${clustersWithStock} 组待并项仍有在库——这些必须先处理库存再合并，不能只改主档`
         : "") +
       "。以下均为候选，需人工裁决，系统不会自动合并。",
   };

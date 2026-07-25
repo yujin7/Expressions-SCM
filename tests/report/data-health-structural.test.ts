@@ -19,7 +19,12 @@ describe("主数据健康度：结构性告警（BOM 嵌套）", () => {
   let semi = 0; // 半成品：既是成品的子件，自身又有生效 BOM ← 嵌套点
   let raw = 0; // 原料：只作子件，自身无 BOM
 
-  async function mkSku(code: string, name: string, skuType: string): Promise<number> {
+  // skuType 必须收敛到枚举字面量联合——写成 string 会过不了 drizzle 的 insert 重载
+  async function mkSku(
+    code: string,
+    name: string,
+    skuType: "finished" | "semi" | "raw" | "packaging" | "service",
+  ): Promise<number> {
     const [spu] = await db.insert(spus).values({ code: `SPU-${code}`, nameCn: name }).returning();
     const [s] = await db
       .insert(skus)
