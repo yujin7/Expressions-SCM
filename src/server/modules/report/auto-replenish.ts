@@ -60,15 +60,13 @@ export interface AutoReplenishResult {
   };
 }
 
-/* struct#16：60s 模块缓存——本报表每次全量跑分层+补货两轮全表聚合，登录首屏/频繁打开代价高。
-   仅生产路径（dbArg 为空、非测试）缓存；测试传 db 走实时。 */
-let arCache: { value: AutoReplenishResult; expiresAt: number } | null = null;
-const AR_TTL_MS = 60_000;
-export function clearAutoReplenishCache(): void { arCache = null; }
-
+/* 这里曾有一个「60s 模块缓存」（struct#16）。它**从未生效**：变量只有读取与清空，
+   函数结尾直接 return 对象字面量，全程没有一次赋值。当初提交信息里的「1.48s→0.099s（15×）」
+   是同一进程内 call#1（建连+迁移检查+JIT）与 call#2 之差，不是缓存效果——
+   清缓存 105ms、不清缓存 105ms，完全一致。
+   实测本报表 105ms（1026 个在售成品 / 441 个有销量 SKU），不需要缓存，故整块删除。
+   要再加缓存，先按 skill `measure-first` 拿基线数字。 */
 export async function getAutoReplenishCandidates(dbArg?: AnyDb): Promise<AutoReplenishResult> {
-  const bypass = dbArg !== undefined || process.env.NODE_ENV === "test";
-  if (!bypass && arCache && arCache.expiresAt > Date.now()) return arCache.value;
   /* ── 复用两支既有报表（大页避免分页丢行，传 db 同事务/同连接） ── */
   const seg = await getSegmentation({ allRows: true }, dbArg);
   const rep = await getReplenishSuggestions({ allRows: true }, dbArg);

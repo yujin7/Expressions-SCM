@@ -22,8 +22,6 @@ const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const dec = (v: number | null): string | null => (v == null ? null : String(Math.round(v * 100) / 100));
 
 export interface RollupSummary {
-  skuMonthRows: number;
-  warehouseSkuRows: number;
   supplierLeadRows: number;
   builtAt: string;
 }
@@ -37,88 +35,11 @@ export async function runRollup(db: AnyDb, opts?: { months?: number }): Promise<
   const months = Math.max(1, opts?.months ?? 24);
   const now = new Date();
 
-  /* ── ① SKU × 月 ────────────────────────────────────────── */
-  const sm = schema.salesMonthly;
-  const salesAgg: { skuId: number; ym: string; qty: string | null }[] = await db
-    .select({ skuId: sm.skuId, ym: sm.yearMonth, qty: sql<string | null>`sum(${sm.qty})` })
-    .from(sm)
-    .groupBy(sm.skuId, sm.yearMonth);
-
-  // 台账按月聚合出入库（DB 侧分组，避免把全量流水拉进 JS）
-  const sl = schema.stockLedger;
-  const ledgerAgg: { skuId: number; ym: string; inQty: string | null; outQty: string | null }[] = await db
-    .select({
-      skuId: sl.skuId,
-      ym: sql<string>`to_char(${sl.occurredAt} at time zone 'Asia/Shanghai', 'YYYY-MM')`,
-      inQty: sql<string | null>`sum(case when ${sl.qtyDelta} > 0 then ${sl.qtyDelta} else 0 end)`,
-      outQty: sql<string | null>`sum(case when ${sl.qtyDelta} < 0 then -${sl.qtyDelta} else 0 end)`,
-    })
-    .from(sl)
-    .groupBy(sl.skuId, sql`to_char(${sl.occurredAt} at time zone 'Asia/Shanghai', 'YYYY-MM')`);
-
-  const byKey = new Map<string, { skuId: number; ym: string; sales: number; inQty: number; outQty: number }>();
-  const put = (skuId: number, ym: string) => {
-    const k = `${skuId}:${ym}`;
-    let e = byKey.get(k);
-    if (!e) { e = { skuId, ym, sales: 0, inQty: 0, outQty: 0 }; byKey.set(k, e); }
-    return e;
-  };
-  for (const r of salesAgg) put(r.skuId, r.ym).sales += num(r.qty);
-  for (const r of ledgerAgg) {
-    const e = put(r.skuId, r.ym);
-    e.inQty += num(r.inQty);
-    e.outQty += num(r.outQty);
-  }
-
-  let skuMonthRows = 0;
-  for (const e of byKey.values()) {
-    await db
-      .insert(schema.rollupSkuMonth)
-      .values({
-        skuId: e.skuId, yearMonth: e.ym,
-        salesQty: String(e.sales), inboundQty: String(e.inQty), outboundQty: String(e.outQty),
-        builtAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [schema.rollupSkuMonth.skuId, schema.rollupSkuMonth.yearMonth],
-        set: { salesQty: String(e.sales), inboundQty: String(e.inQty), outboundQty: String(e.outQty), builtAt: now },
-      });
-    skuMonthRows++;
-  }
-
-  /* ── ② 仓 × SKU 在库 + 近90天出库 ──────────────────────── */
-  const bal: { warehouseId: number; skuId: number; qty: string | null }[] = await db
-    .select({
-      warehouseId: schema.stockBalances.warehouseId,
-      skuId: schema.stockBalances.skuId,
-      qty: sql<string | null>`sum(${schema.stockBalances.qty})`,
-    })
-    .from(schema.stockBalances)
-    .groupBy(schema.stockBalances.warehouseId, schema.stockBalances.skuId);
-
-  const out90: { warehouseId: number; skuId: number; qty: string | null }[] = await db
-    .select({
-      warehouseId: sl.warehouseId,
-      skuId: sl.skuId,
-      qty: sql<string | null>`sum(-${sl.qtyDelta})`,
-    })
-    .from(sl)
-    .where(and(lt(sl.qtyDelta, "0"), gte(sl.occurredAt, daysAgo(90))))
-    .groupBy(sl.warehouseId, sl.skuId);
-  const outByKey = new Map(out90.map((r) => [`${r.warehouseId}:${r.skuId}`, num(r.qty)]));
-
-  let warehouseSkuRows = 0;
-  for (const r of bal) {
-    const o = outByKey.get(`${r.warehouseId}:${r.skuId}`) ?? 0;
-    await db
-      .insert(schema.rollupWarehouseSku)
-      .values({ warehouseId: r.warehouseId, skuId: r.skuId, onHand: String(num(r.qty)), outbound90d: String(o), builtAt: now })
-      .onConflictDoUpdate({
-        target: [schema.rollupWarehouseSku.warehouseId, schema.rollupWarehouseSku.skuId],
-        set: { onHand: String(num(r.qty)), outbound90d: String(o), builtAt: now },
-      });
-    warehouseSkuRows++;
-  }
+  /* ── ①② 已删除（迁移 0018）──
+     原先还构建 rollup_sku_month（2436 行）与 rollup_warehouse_sku（344 行），
+     连跑 8 轮、**零读取方**：立项理由「BI 靠 60s 缓存硬撑」经核实不成立
+     （那个缓存从未生效），而实测报表 32ms/105ms/23ms 本就不慢。
+     汇总表是派生数据可随时重建，将来真有性能证据再按 skill `measure-first` 加回。 ── */
 
   /* ── ③ 供应商 × SKU 交期分布（安全库存的交期波动来源） ──── */
   // 样本：PO 创建 → 该 (PO,SKU) 最早一张生效 SH 建单（与 leadtime-learning 同口径）
@@ -196,5 +117,5 @@ export async function runRollup(db: AnyDb, opts?: { months?: number }): Promise<
 
   void months;
   void isNotNull;
-  return { skuMonthRows, warehouseSkuRows, supplierLeadRows, builtAt: now.toISOString() };
+  return { supplierLeadRows, builtAt: now.toISOString() };
 }

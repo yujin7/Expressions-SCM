@@ -1,10 +1,15 @@
 /**
  * E7-01 预聚合层（物化汇总）+ R7 迁移批次的若干结构补齐。
  *
- * ── 为什么要预聚合 ──
- * 当前每张 BI 报表都实时扫全表（自动补货页要扫两遍全部 SKU），靠 60 秒进程内缓存硬撑。
- * 夜间物化汇总后，BI 从"能看"变"秒开"，也是把**交期波动接进安全库存**的前提
- * （否则补货热路径上要为每个 SKU 扫一遍收货历史）。
+ * ── 立项理由的订正（2026-07-25）──
+ * 本层最初的理由写的是「BI 报表实时扫全表、靠 60 秒进程内缓存硬撑」。
+ * 事后核实：那个「60s 缓存」（report/auto-replenish.ts）**从未生效**——只有读取没有赋值；
+ * 提交信息里的 15× 提速是同进程 call#1 与 call#2 之差。实测三支被怀疑慢的报表
+ * 分别是 32ms / 105ms / 23ms（1026 在售成品），**根本不存在要解决的性能问题**。
+ * 据此保留的只有 `rollup_supplier_lead`——它有真实读取方（补货安全库存的交期波动项），
+ * 且那个计算确实不宜放进热路径（需逐 SKU 扫收货历史）。
+ * 另两张（sku_month / warehouse_sku）建了 8 轮、零读取方，已随迁移 0018 删除；
+ * 汇总表是派生数据、可随时重建，将来真有性能证据再加回来（先按 skill `measure-first` 拿基线）。
  *
  * ── 纪律 ──
  * - 汇总表是**派生数据**，可随时全量重建；绝不作为业务真相来源（真相仍在台账/单据）。
@@ -15,33 +20,6 @@ import {
   pgTable, serial, integer, text, timestamp, numeric, date, boolean, unique, index,
 } from "drizzle-orm/pg-core";
 import { skus, suppliers, warehouses, users } from "./masters";
-
-/** SKU × 月 销量汇总（BI 趋势/瀑布/分层/预测回测的共同底表） */
-export const rollupSkuMonth = pgTable("rollup_sku_month", {
-  id: serial("id").primaryKey(),
-  skuId: integer("sku_id").notNull().references(() => skus.id),
-  yearMonth: text("year_month").notNull(), // YYYY-MM
-  salesQty: numeric("sales_qty", { precision: 14, scale: 4 }).notNull().default("0"),
-  /** 该月出库合计（台账口径，含调拨/盘亏等非销售出库） */
-  outboundQty: numeric("outbound_qty", { precision: 14, scale: 4 }).notNull().default("0"),
-  /** 该月入库合计 */
-  inboundQty: numeric("inbound_qty", { precision: 14, scale: 4 }).notNull().default("0"),
-  builtAt: timestamp("built_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [
-  unique("uq_rollup_sku_month").on(t.skuId, t.yearMonth),
-  index("ix_rollup_sku_month_ym").on(t.yearMonth),
-]);
-
-/** 仓 × SKU 在库汇总（驾驶舱/调拨建议/库存分析的共同底表） */
-export const rollupWarehouseSku = pgTable("rollup_warehouse_sku", {
-  id: serial("id").primaryKey(),
-  warehouseId: integer("warehouse_id").notNull().references(() => warehouses.id),
-  skuId: integer("sku_id").notNull().references(() => skus.id),
-  onHand: numeric("on_hand", { precision: 14, scale: 4 }).notNull().default("0"),
-  /** 该仓该 SKU 近 90 天出库（调拨建议的需求代理信号） */
-  outbound90d: numeric("outbound_90d", { precision: 14, scale: 4 }).notNull().default("0"),
-  builtAt: timestamp("built_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [unique("uq_rollup_wh_sku").on(t.warehouseId, t.skuId)]);
 
 /**
  * 供应商 × SKU 交期统计（E2-04 交期学习的物化结果）。
