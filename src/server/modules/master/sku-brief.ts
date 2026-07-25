@@ -4,18 +4,18 @@
  * 设计约束：**轻**——全站几十处 SKU 编码链接悬停即调，故只做单 SKU 的小查询集合
  * （主档 1 + 实时账 1 + 快照 1 + 月销 2 + 效期 1 + 参数 1 + core/supply 内部若干），
  * 不分页、不扫全表、不做建议判定。重口径一律复用唯一权威模块，禁止本地重实现：
- * - 「未结供给」= core/supply.ts 的 getOpenSupplyLines + summarizeSupply（唯一定义）；
- * - 「近 N 月 / 日均销」= core/velocity.ts 的 lastMonths + dailyFromWindow（唯一口径，除数 91）；
- * - 「全网在库」= Σstock_balances + 各仓最新快照（照抄 replenish/service.ts 的 latestSnapshotRows 模式）；
- * - 「效期」= batch_stocks 参考层（非账本），取最短剩余天数（可为负 = 已过期）。
+ * - 「在库 / 日均销 / 未结供给 / 生产周期 / 可销天数」= core/sku-facts.ts 的 getSkuFacts 一次装配
+ *   （它内部再委托 stock-view / velocity / supply 三个唯一权威）。
+ *   **此前这里自己写了一遍「Σstock_balances + 各仓最新快照」，注释还标着「照抄 replenish/service.ts」——
+ *   照抄就是第二实现，迟早分叉；已改为调用装配层。**
+ * - 「效期」= batch_stocks 参考层（非账本），取最短剩余天数（可为负 = 已过期）——参考层不进事实服务。
  * 全表无金额字段，免脱敏；只读不写库。
  */
 import { and, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { ApiError, todayShanghai } from "./common";
-import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
-import { getOpenSupplyLines, summarizeSupply } from "@/server/core/supply";
+import { getSkuFactsFor } from "@/server/core/sku-facts";
 import { num, r1 } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -103,51 +103,14 @@ export async function getSkuBrief(skuCodeOrId: string | number, dbArg?: AnyDb): 
   const sku = skuRows[0];
   const skuId = sku.id;
 
-  /* ── 在库：实时账 + 各仓最新快照（旧快照不计——同 replenish/service.ts latestSnapshotRows） ── */
-  const balRows: { qty: string | null }[] = await db
-    .select({ qty: sql<string | null>`sum(${schema.stockBalances.qty})` })
-    .from(schema.stockBalances)
-    .where(eq(schema.stockBalances.skuId, skuId));
-  let onHand = num(balRows[0]?.qty);
-  const s = schema.stockSnapshots;
-  const latest = db
-    .select({ warehouseId: s.warehouseId, skuId: s.skuId, maxDate: sql<string>`max(${s.bizDate})`.as("max_date") })
-    .from(s)
-    .where(eq(s.skuId, skuId))
-    .groupBy(s.warehouseId, s.skuId)
-    .as("latest");
-  const snapRows: { qty: string }[] = await db
-    .select({ qty: s.qty })
-    .from(s)
-    .innerJoin(latest, and(eq(latest.warehouseId, s.warehouseId), eq(latest.skuId, s.skuId), eq(latest.maxDate, s.bizDate)));
-  for (const r of snapRows) onHand += num(r.qty);
-
-  /* ── 销速与迷你曲线：core/velocity 唯一口径（最新月回推；3 月窗口 ÷91） ── */
-  const sm = schema.salesMonthly;
-  const maxRows: { maxYm: string | null }[] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
-  const maxYm = maxRows[0]?.maxYm ?? null;
-  const months6 = maxYm ? lastMonths(maxYm, 6) : [];
-  const months3 = maxYm ? lastMonths(maxYm, 3) : [];
-  const salesRows: { ym: string; qty: string | null }[] = months6.length
-    ? await db
-        .select({ ym: sm.yearMonth, qty: sql<string | null>`sum(${sm.qty})` })
-        .from(sm)
-        .where(and(eq(sm.skuId, skuId), inArray(sm.yearMonth, months6)))
-        .groupBy(sm.yearMonth)
-    : [];
-  const qtyByYm = new Map<string, number>(salesRows.map((r) => [r.ym, num(r.qty)]));
-  const spark = months6.map((ym) => ({ ym, qty: r1(qtyByYm.get(ym) ?? 0) })); // lastMonths 已升序
-  const window3 = months3.reduce((acc, ym) => acc + (qtyByYm.get(ym) ?? 0), 0);
-  const daily = dailyFromWindow(window3);
-  const daysCover = daily > 0 ? onHand / daily : null;
-
-  /* ── 生产周期 ── */
-  const paramRows: { normalLeadDays: number | null }[] = await db
-    .select({ normalLeadDays: schema.skuParams.normalLeadDays })
-    .from(schema.skuParams)
-    .where(eq(schema.skuParams.skuId, skuId))
-    .limit(1);
-  const leadDays = paramRows[0]?.normalLeadDays ?? null;
+  /* ── 在库 / 销速 / 迷你曲线 / 未结供给 / 生产周期：core/sku-facts 一次装配 ── */
+  const facts = await getSkuFactsFor(db, skuId, 6);
+  const onHand = facts?.onHand ?? 0;
+  const daily = facts?.daily ?? 0;
+  const daysCover = facts?.daysCover ?? null;
+  const leadDays = facts?.leadDays ?? null;
+  const openSupply = facts?.openSupply ?? 0;
+  const spark = facts?.series ?? [];
 
   /* ── 效期：batch_stocks 参考层最短剩余天数（qty>0 且有效期） ── */
   const bs = schema.batchStocks;
@@ -160,10 +123,6 @@ export async function getSkuBrief(skuCodeOrId: string | number, dbArg?: AnyDb): 
     const d = daysBetween(today, r.expiryDate);
     if (minDaysLeft == null || d < minDaysLeft) minDaysLeft = d;
   }
-
-  /* ── 未结供给：core/supply 唯一定义（禁止本地重实现四段 join） ── */
-  const supplyLines = await getOpenSupplyLines(db, [skuId]);
-  const openSupply = summarizeSupply(supplyLines).get(skuId)?.total ?? 0;
 
   return {
     skuId,
