@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createTestDb, type TestDb } from "../helpers/db";
-import { errorLogs, exportJobs, importJobs, jobRuns, stagingRows } from "@/db/schema";
+import { errorLogs, exportJobs, importJobs, jobRuns, stagingRows, notifications } from "@/db/schema";
 import { runHousekeeping } from "@/jobs/housekeeping";
 
 const DAY = 24 * 3600 * 1000;
@@ -71,6 +71,7 @@ describe("housekeeping 保洁任务", () => {
       exportFilesUnlinked: 1, // 仅目录内文件；越界路径不删
       errorLogsDeleted: 1,
       jobRunsDeleted: 1,
+      notificationsDeleted: 0, // 本用例未造已读通知；保留期逻辑另见下一用例
     });
 
     // 任务头行保留；fresh superseded / done 任务的 staging 行保留
@@ -99,6 +100,33 @@ describe("housekeeping 保洁任务", () => {
       exportFilesUnlinked: 0,
       errorLogsDeleted: 0,
       jobRunsDeleted: 0,
+      notificationsDeleted: 0,
     });
+  });
+});
+
+/**
+ * 通知保留期（2026-07-25 新增）。此前 notifications 无任何保留期，
+ * 而列表硬截断 100 条且无分页——日推摘要按 3 条/天累积，约 33 天占满唯一视图。
+ * 纪律：已读的按期清理；**未读永不自动删**（不替用户决定什么该被忽略）。
+ */
+describe("housekeeping 通知保留期", () => {
+  it("清理超期已读通知，保留未读与近期已读", async () => {
+    const { db } = await createTestDb();
+    const old = new Date(Date.now() - 60 * 864e5);
+    const recent = new Date(Date.now() - 3 * 864e5);
+
+    await db.insert(notifications).values([
+      { channel: "in_app", title: "老的已读", body: "x", status: "sent", readAt: old },
+      { channel: "in_app", title: "近期已读", body: "x", status: "sent", readAt: recent },
+      { channel: "in_app", title: "老的未读", body: "x", status: "sent", createdAt: old },
+    ]);
+
+    const r = await runHousekeeping(db);
+    expect(r.notificationsDeleted).toBe(1);
+
+    const left = await db.select({ title: notifications.title }).from(notifications);
+    // 中文按 UTF-16 码元排序不稳定，用集合比较语义更准
+    expect(new Set(left.map((x) => x.title))).toEqual(new Set(["近期已读", "老的未读"]));
   });
 });

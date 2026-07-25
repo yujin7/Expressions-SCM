@@ -108,17 +108,55 @@ export async function dispatchNotifications(
   return { sent, skipped, failed };
 }
 
-/** 每日把关键异常入队（按天去重）——复用控制塔唯一异常源（Wave BB struct#9/#10：不再手写第三份、不用缺周期代理） */
+/**
+ * 把关键异常入队——复用控制塔唯一异常源（Wave BB struct#9/#10：不手写第三份）。
+ *
+ * 去重策略（2026-07-25 审计整改）。原实现 dedupeKey=`${key}:${today}`＝**每天必推一条**，
+ * 无 severity 过滤、内容一字不变也照推：像「成品缺生产周期 506 个」这种只会随主数据
+ * 补齐而变化的静态事实，每天生成一条新未读。而通知表无保留期、列表硬截断 100 条且无分页，
+ * 按 3 条/天无衰减累积，约 33 天后日推摘要占满唯一视图，真实事件通知被永久挤出。
+ *
+ * 现在两道闸：
+ *  ① **内容去重**：dedupeKey 含 impact 文案的指纹——数字没变就不再推，
+ *     变了才算“新消息”。静态事实自然只推一次。
+ *  ② **节流窗口**：critical/high 最多每天一条；medium 降为每 ISO 周一条
+ *     （medium 多为待补主数据这类慢变量，天天提醒只会训练用户无视）。
+ */
 export async function runExceptionNotify(db: AnyDb): Promise<{ enqueued: number }> {
   const today = todayShanghai();
   const channel: NotifyInput["channel"] = process.env.FEISHU_WEBHOOK_URL ? "feishu" : "in_app";
   let enqueued = 0;
   const exceptions = await computeExceptions(db); // 与工作台控制塔/驾驶舱同源同口径
   for (const ex of exceptions) {
+    // 内容指纹：同一异常、同一措辞（含计数）→ 同一 key → 不重复入队
+    const fingerprint = fnv1a(`${ex.title}|${ex.impact}`);
+    // 节流窗口：高危按天，medium 按周（周一为界，避免慢变量天天刷屏）
+    const window = ex.severity === "medium" ? isoWeekOf(today) : today;
     if (await enqueueNotification(db, {
       channel, title: ex.title, body: ex.impact, href: ex.href, severity: ex.severity,
-      dedupeKey: `${ex.key}:${today}`, targetRole: "pmc",
+      dedupeKey: `${ex.key}:${window}:${fingerprint}`, targetRole: "pmc",
     })) enqueued++;
   }
   return { enqueued };
+}
+
+/** 32 位 FNV-1a：稳定、无依赖、够用于文案指纹（非安全用途） */
+function fnv1a(str: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36);
+}
+
+/** ISO 周键 YYYY-Www（Asia/Shanghai 日界，输入为 YYYY-MM-DD） */
+function isoWeekOf(day: string): string {
+  const d = new Date(`${day}T00:00:00Z`);
+  const dow = (d.getUTCDay() + 6) % 7; // 周一=0
+  d.setUTCDate(d.getUTCDate() - dow + 3); // 移到本周周四
+  const year = d.getUTCFullYear();
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const week = 1 + Math.round(((d.getTime() - jan4.getTime()) / 86400000 - 3 + ((jan4.getUTCDay() + 6) % 7)) / 7);
+  return `${year}-W${String(week).padStart(2, "0")}`;
 }

@@ -9,8 +9,8 @@
  */
 import { unlink } from "node:fs/promises";
 import path from "node:path";
-import { and, eq, inArray, lt } from "drizzle-orm";
-import { errorLogs, exportJobs, importJobs, jobRuns, stagingRows } from "@/db/schema";
+import { and, eq, inArray, lt, isNotNull } from "drizzle-orm";
+import { errorLogs, exportJobs, importJobs, jobRuns, stagingRows, notifications } from "@/db/schema";
 import { EXPORT_FILE_DIR } from "./export-worker";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -20,6 +20,8 @@ export const STAGING_RETENTION_DAYS = 90;
 export const EXPORT_RETENTION_DAYS = 30;
 export const ERROR_LOG_RETENTION_DAYS = 90;
 export const JOB_RUN_RETENTION_DAYS = 30;
+/** 已读通知保留天数（未读永不自动删——不替用户决定什么该被忽略） */
+const NOTIFY_READ_RETENTION_DAYS = 30;
 
 export interface HousekeepingSummary {
   stagingRowsDeleted: number;
@@ -27,6 +29,8 @@ export interface HousekeepingSummary {
   exportFilesUnlinked: number;
   errorLogsDeleted: number;
   jobRunsDeleted: number;
+  /** 已读且超保留期的通知清理数 */
+  notificationsDeleted: number;
 }
 
 const DAY_MS = 24 * 3600 * 1000;
@@ -82,11 +86,21 @@ export async function runHousekeeping(
     .where(lt(jobRuns.finishedAt, cutoff(JOB_RUN_RETENTION_DAYS)))
     .returning({ id: jobRuns.id });
 
+  /* (e) 通知保留期（2026-07-25 审计新增）。
+     此前 notifications 表**无任何保留期**，只能人工「全部已读」，而列表硬截断 100 条
+     且无分页——日推摘要按 3 条/天无衰减累积，约 33 天后占满唯一视图，
+     真实事件通知被永久挤出。已读的留 30 天（回溯足够），未读不删（不替用户做决定）。 */
+  const delNotify: { id: number }[] = await db
+    .delete(notifications)
+    .where(and(isNotNull(notifications.readAt), lt(notifications.readAt, cutoff(NOTIFY_READ_RETENTION_DAYS))))
+    .returning({ id: notifications.id });
+
   return {
     stagingRowsDeleted: delStaging.length,
     exportJobsDeleted: staleExports.length,
     exportFilesUnlinked: filesUnlinked,
     errorLogsDeleted: delErrors.length,
     jobRunsDeleted: delRuns.length,
+    notificationsDeleted: delNotify.length,
   };
 }
