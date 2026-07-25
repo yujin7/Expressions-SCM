@@ -41,11 +41,22 @@ export function detectRefGap(onHand: number, refQty: number | null): boolean {
   return diff > 10 && diff > refQty * 0.2;
 }
 
-/** 全管道可销天数（日均=0 → null）；有效在库=max(系统, 参考) */
+/**
+ * 全管道可销天数（日均=0 → null）；有效在库=max(系统, 参考)。
+ *
+ * **legacyTransit 与 onOrder 取 max，不相加**（2026-07-25 审计修正）。
+ * `core/supply.ts:22-25` 已写明：on_order（总库存明细「已下单未出货」）是参考层最弱的一档，
+ * 与 po/legacy_fg **口径上可能指向同一批货**，因此在 core/supply 里是 default-off、
+ * 需显式 `includeOnOrder=true` 才返回。而此处原先无条件把两者相加，绕过了那道闸门：
+ * 实测重复计入 1,293,972 件（≈on_order 全量）——152 个有 on_order 的 SKU 里
+ * 151 个同时有 legacy，两者独有信息仅 64 件。
+ * 取 max 既不重复计入，又符合本系统「参考只能调高认知、绝不调低」的铁律。
+ */
 export function fuseCover(input: FusionInput): number | null {
   if (input.daily <= 0) return null;
   const effectiveOnHand = Math.max(input.onHand, input.refQty ?? input.onHand);
-  const pipeline = effectiveOnHand + input.inTransit + input.legacyTransit + input.onOrder + (input.wip ?? 0) - (input.borrowOut ?? 0);
+  const legacyOrOnOrder = Math.max(input.legacyTransit, input.onOrder);
+  const pipeline = effectiveOnHand + input.inTransit + legacyOrOnOrder + (input.wip ?? 0) - (input.borrowOut ?? 0);
   return pipeline / input.daily;
 }
 

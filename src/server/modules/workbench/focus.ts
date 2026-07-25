@@ -9,6 +9,7 @@
  * - 时区 Asia/Shanghai（今日出入库的日界）。
  */
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { getNumParam } from "@/server/core/params";
 import type { SessionUser } from "@/server/core/dto";
 import { getInbox } from "@/server/modules/inbox/service";
 import { notifyVisibleWhere } from "@/server/core/notify-audience";
@@ -149,12 +150,16 @@ async function pmcSection(db: AnyDb): Promise<FocusSection> {
   const onHand = new Map<number, number>();
   for (const [id, v] of onHandView.bySku) onHand.set(id, num(v));
   const sales3m = new Map(salesRows.map((r) => [r.skuId, num(r.qty)]));
+  /* 阈值必须读 sys_params.cover_alert_days（admin/params.ts:33 可调），不能写死 30——
+     写死会导致业务在参数页把阈值改成 45，工作台首屏这张卡纹丝不动，
+     而它下面所有页面（补货/驾驶舱/调拨）都已按 45 走，首屏与全站对不上。 */
+  const alertDays = await getNumParam("cover_alert_days", 30, db);
   let lowCover = 0;
   for (const [skuId, qty] of onHand) {
     if (qty <= 0) continue;
     const s3 = sales3m.get(skuId) ?? 0;
-    if (s3 <= 0) continue; // 无动销不算断货风险（与驾驶舱 <30天 桶同口径）
-    if (qty / dailyFromWindow(s3) < 30) lowCover++;
+    if (s3 <= 0) continue; // 无动销不算断货风险（与驾驶舱同口径）
+    if (qty / dailyFromWindow(s3) < alertDays) lowCover++;
   }
 
   /* 计划视角扩展（Wave T）：风险处置/NPD/数据新鲜度 */
@@ -172,7 +177,7 @@ async function pmcSection(db: AnyDb): Promise<FocusSection> {
     role: "pmc",
     roleLabel: ROLE_LABELS.pmc,
     metrics: [
-      { key: "lowCoverSkus", label: "可销天数<30 成品", value: lowCover, href: "/replenish", suffix: "个" },
+      { key: "lowCoverSkus", label: `可销天数<${alertDays} 成品`, value: lowCover, href: "/replenish", suffix: "个" },
       { key: "riskActions", label: "需行动处置 SKU", value: riskActions, href: "/report/risk", suffix: "个" },
       { key: "npdActive", label: "进行中 NPD 项目", value: npdActive, href: "/npd", suffix: "个" },
       { key: "staleData", label: "参考数据过期提醒", value: staleData, href: "/review/checklist", suffix: "项" },
