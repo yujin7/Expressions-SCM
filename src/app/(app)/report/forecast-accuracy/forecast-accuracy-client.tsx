@@ -15,6 +15,7 @@ interface Row0 {
   skuId: number; code: string; name: string; brand: string | null;
   n: number; mape: number | null; wape: number | null; bias: number | null;
   hitRate: number | null; reliable: boolean; biasText: string; points: Point[];
+  naiveWape: number | null; fva: number | null; fvaText: string;
 }
 interface Data {
   rows: Row0[];
@@ -22,6 +23,8 @@ interface Data {
   summary: {
     evaluated: number; overallWape: number | null; overallBias: number | null;
     overallBiasText: string; overCount: number; underCount: number; months: string[];
+    overallNaiveWape: number | null; overallFva: number | null;
+    overallFvaText: string; worseThanNaiveCount: number;
   };
 }
 
@@ -72,6 +75,20 @@ export default function ForecastAccuracyClient() {
         </Tooltip>
       ),
     },
+    {
+      title: "vs 朴素", dataIndex: "fva", width: 130, align: "right",
+      render: (v: number | null, r) => (
+        <Tooltip title={r.fvaText}>
+          {v == null ? <span style={{ color: "#999" }}>—</span> : v < -0.02 ? (
+            <Tag color="red" style={{ marginInlineEnd: 0 }}>做负功 {pct(Math.abs(v))}</Tag>
+          ) : v > 0.02 ? (
+            <Tag color="green" style={{ marginInlineEnd: 0 }}>优于 {pct(v)}</Tag>
+          ) : (
+            <Tag style={{ marginInlineEnd: 0 }}>持平</Tag>
+          )}
+        </Tooltip>
+      ),
+    },
     { title: "MAPE", dataIndex: "mape", width: 90, align: "right", render: (v: number | null) => pct(v) },
     {
       title: "偏差", dataIndex: "bias", width: 200,
@@ -98,6 +115,19 @@ export default function ForecastAccuracyClient() {
       />
       <Row gutter={12} style={{ marginBottom: 12 }}>
         <Col><Card size="small"><Statistic title="整体 WAPE" value={s?.overallWape != null ? (s.overallWape * 100).toFixed(1) : "—"} suffix="%" /></Card></Col>
+        <Col>
+          <Card size="small">
+            <Tooltip title={s?.overallFvaText ?? ""}>
+              <Statistic
+                title="朴素基准 WAPE"
+                value={s?.overallNaiveWape != null ? (s.overallNaiveWape * 100).toFixed(1) : "—"}
+                suffix="%"
+                valueStyle={{ color: (s?.overallFva ?? 0) < -0.02 ? "#cf1322" : (s?.overallFva ?? 0) > 0.02 ? "#3f8600" : undefined }}
+              />
+            </Tooltip>
+          </Card>
+        </Col>
+        <Col><Card size="small"><Statistic title="预测做负功 SKU" value={s?.worseThanNaiveCount ?? 0} valueStyle={{ color: (s?.worseThanNaiveCount ?? 0) > 0 ? "#cf1322" : "#999" }} /></Card></Col>
         <Col><Card size="small"><Statistic title="整体偏差" value={s?.overallBias != null ? (s.overallBias * 100).toFixed(1) : "—"} suffix="%" valueStyle={{ color: (s?.overallBias ?? 0) > 0.1 ? "#fa8c16" : (s?.overallBias ?? 0) < -0.1 ? "#cf1322" : "#3f8600" }} /></Card></Col>
         <Col><Card size="small"><Statistic title="系统性高估 SKU" value={s?.overCount ?? 0} valueStyle={{ color: "#fa8c16" }} /></Card></Col>
         <Col><Card size="small"><Statistic title="系统性低估 SKU" value={s?.underCount ?? 0} valueStyle={{ color: "#cf1322" }} /></Card></Col>

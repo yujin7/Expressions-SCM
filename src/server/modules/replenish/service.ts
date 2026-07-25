@@ -21,6 +21,7 @@ import { dAdd, dCmp, dDiv, dMul, dQty, dSub } from "@/server/core/decimal";
 import { suggestQty } from "@/server/rules/netreq";
 import { belowLeadtime, detectRefGap, fuseCover, shouldSuppressSuggest } from "@/server/rules/fusion";
 import { forecastDaily } from "@/server/rules/forecast";
+import { backtest } from "@/server/rules/backtest";
 import { classifyAbc } from "@/server/rules/abc";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
@@ -83,6 +84,8 @@ export interface ReplenishRow {
   forecastTrend: "up" | "down" | "flat";
   /** #13：预测与朴素日均显著分歧（>30%）——最值得人工复核的信号 */
   forecastDivergent: boolean;
+  /** 该 SKU 的预测是否经回测证明优于朴素预测（否则预测列仅供参考，不发偏离告警） */
+  forecastTrusted: boolean;
   /* ── E2-01/05 计划引擎 v2 ── */
   /** 安全库存（件） */
   safetyQty: number;
@@ -337,8 +340,23 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     const dailyDec = dCmp(sales3m, "0") > 0 ? dDiv(sales3m, "91", 6) : "0";
     const dailyNum = num(dailyDec);
     const cover = dailyNum > 0 ? (num(onHand) + num(inTransit)) / dailyNum : null;
-    const fc = forecastDaily(seriesBySku.get(s.id) ?? []);
-    const forecastDivergent = dailyNum > 0 && fc.forecastDaily > 0 && Math.abs(fc.forecastDaily - dailyNum) / dailyNum > 0.3;
+    /* ── 预测与「预测偏离」告警 ──
+       告警只在**该 SKU 的预测确有价值时**才发：先做滚动回测，若 Holt 的 WAPE 不优于
+       朴素预测（下月＝上月），说明这条序列上模型本身就是噪声——此时「预测偏离日均」
+       并不指示需求异常，只指示模型不适用（真实数据实测：441 个成品里 243 个如此，
+       多为间歇性需求，Holt 本就不适配）。据此发警报＝制造告警疲劳。
+       回测是纯计算（12 点序列，无 IO），不构成热路径开销。 ── */
+    const series = seriesBySku.get(s.id) ?? [];
+    const fc = forecastDaily(series);
+    const fcBt = backtest(
+      series.map((q, i) => ({ ym: String(i), qty: q })),
+      (h) => { const r = forecastDaily(h); return r.forecastMonthly > 0 ? r.forecastMonthly : r.forecastDaily * 30.4; },
+      3,
+    );
+    const forecastTrusted = fcBt.fva != null && fcBt.fva > 0;
+    const forecastDivergent =
+      forecastTrusted && dailyNum > 0 && fc.forecastDaily > 0 &&
+      Math.abs(fc.forecastDaily - dailyNum) / dailyNum > 0.3;
 
     /* 全口径融合（rules/fusion.ts）：参考只调高在库认知，绝不调低 */
     const ref = refBySku.get(s.id);
@@ -438,6 +456,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       forecastDaily: fc.forecastDaily,
       forecastTrend: fc.trend,
       forecastDivergent,
+      forecastTrusted,
       safetyQty: ss.safetyQty,
       safetyMethod: ss.method,
       shortageDate: tp.shortageDate,
@@ -492,6 +511,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     orderWindowMissed: r.orderWindowMissed,
     planExplain: r.planExplain,
     forecastDivergent: r.forecastDivergent,
+    forecastTrusted: r.forecastTrusted,
   }));
   return { rows, total: all.length, meta: { coverDaysTarget, minCoverAlert, months3, snapDate, suggestCount, refDate, suppressedCount, engine: "time_phased", serviceLevel } };
 }

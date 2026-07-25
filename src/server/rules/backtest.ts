@@ -15,6 +15,15 @@
  * - WAPE  = Σ|实际−预测| / Σ实际（对零值稳健，电商稀疏序列更可信，故同时给出）；
  * - Bias  = Σ(预测−实际) / Σ实际（>0 系统性高估，<0 低估）；
  * - 命中率 = |误差|/实际 ≤ tolerance 的期数占比。
+ *
+ * ── FVA（预测价值增量）──
+ * 上面四个指标只能说明 Holt「误差多大」，回答不了那个真正该问的问题：
+ * **它到底比「下月＝上月」这种零成本的朴素预测强吗？**
+ * 一项 30 万+ 预测的研究里，52% 的预测不如随机游走——即多数预测流程是在做负功。
+ * 所以本模块对每一期同时算朴素预测（naive = 上一期实际值，随机游走），
+ * 用同一批期数、同一个 WAPE 口径对比：
+ *     FVA = naiveWape − wape   （>0 = Holt 确实加了分；≤0 = 不如照抄上月）
+ * FVA ≤ 0 时必须**照实说**，不许粉饰——用不如朴素的模型驱动补货，是在系统性地制造错误决策。
  */
 
 export interface BacktestPoint {
@@ -25,6 +34,8 @@ export interface BacktestPoint {
   error: number;
   /** 绝对百分误差；实际=0 时为 null */
   ape: number | null;
+  /** 朴素预测（随机游走：本期预测＝上期实际）——FVA 的对照基准 */
+  naive: number;
 }
 
 export interface BacktestResult {
@@ -35,6 +46,10 @@ export interface BacktestResult {
   wape: number | null;
   bias: number | null;
   hitRate: number | null;
+  /** 朴素预测（上期实际）在同一批期数上的 WAPE——FVA 基准 */
+  naiveWape: number | null;
+  /** FVA = naiveWape − wape。>0 模型加分；≤0 不如照抄上月 */
+  fva: number | null;
   /** 诚实标注：样本太少时结论不可用 */
   reliable: boolean;
   note: string;
@@ -67,6 +82,8 @@ export function backtest(
       forecast: Math.round(forecast * 100) / 100,
       error: Math.round(error * 100) / 100,
       ape: actual > 0 ? Math.abs(error) / actual : null,
+      // 朴素基准与模型看到的信息集完全相同：history 的最后一期即上期实际
+      naive: history[history.length - 1],
     });
   }
 
@@ -74,6 +91,7 @@ export function backtest(
   if (n === 0) {
     return {
       points, n: 0, mape: null, wape: null, bias: null, hitRate: null,
+      naiveWape: null, fva: null,
       reliable: false,
       note: `历史不足：滚动回测需至少 ${minHistory + 1} 个月数据`,
     };
@@ -85,20 +103,44 @@ export function backtest(
   const sumErr = points.reduce((a, p) => a + p.error, 0);
   const hits = apes.filter((v) => v <= tolerance).length;
 
+  /* FVA：朴素预测在同一批期数、同一 WAPE 口径下的误差 */
+  const sumAbsNaiveErr = points.reduce((a, p) => a + Math.abs(p.naive - p.actual), 0);
+
   const r2 = (v: number) => Math.round(v * 1000) / 1000;
   const reliable = n >= 3;
+  const wape = sumActual > 0 ? r2(sumAbsErr / sumActual) : null;
+  const naiveWape = sumActual > 0 ? r2(sumAbsNaiveErr / sumActual) : null;
   return {
     points,
     n,
     mape: apes.length ? r2(apes.reduce((a, b) => a + b, 0) / apes.length) : null,
-    wape: sumActual > 0 ? r2(sumAbsErr / sumActual) : null,
+    wape,
     bias: sumActual > 0 ? r2(sumErr / sumActual) : null,
     hitRate: apes.length ? r2(hits / apes.length) : null,
+    naiveWape,
+    fva: wape != null && naiveWape != null ? r2(naiveWape - wape) : null,
     reliable,
     note: reliable
       ? `基于 ${n} 期滚动回测（每期仅用其之前的数据预测）`
       : `仅 ${n} 期可回测，结论参考价值有限（建议积累到 3 期以上）`,
   };
+}
+
+/**
+ * FVA 的中文解读——供 UI 直接展示。
+ * 纪律：模型输给朴素预测时必须**明说**并给出行动建议，不许用「基本持平」之类的话糊过去。
+ * 用不如「照抄上月」的模型驱动补货，等于在系统性地制造错误决策。
+ */
+export function fvaLabel(fva: number | null, naiveWape: number | null, wape: number | null): string {
+  if (fva == null || naiveWape == null || wape == null) return "样本不足，无法与朴素预测对比";
+  const pp = (v: number) => `${(v * 100).toFixed(1)}%`;
+  const cmp = `（模型 WAPE ${pp(wape)} vs 朴素 ${pp(naiveWape)}）`;
+  if (fva > 0.02) return `预测有效：比「下月＝上月」减少 ${pp(fva)} 误差${cmp}`;
+  if (fva < -0.02) {
+    return `⚠ 预测在做负功：比「下月＝上月」**多** ${pp(Math.abs(fva))} 误差${cmp}——` +
+      `不宜用该预测驱动决策，建议回到近三月日均口径`;
+  }
+  return `与朴素预测基本持平${cmp}——Holt 未带来可辨识增益，优先怀疑数据质量而非调参`;
 }
 
 /** 偏差方向的中文解读——供 UI 直接展示 */

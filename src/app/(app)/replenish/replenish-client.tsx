@@ -51,6 +51,7 @@ interface ReplenishRow {
   forecastDaily: number;
   forecastTrend: "up" | "down" | "flat";
   forecastDivergent: boolean;
+  forecastTrusted: boolean;
   safetyQty: number;
   safetyMethod: string;
   shortageDate: string | null;
@@ -248,8 +249,16 @@ export default function ReplenishClient() {
               const arrow = r.forecastTrend === "up" ? "↑" : r.forecastTrend === "down" ? "↓" : "→";
               const color = r.forecastTrend === "up" ? "#cf1322" : r.forecastTrend === "down" ? "#3f8600" : "#888";
               return (
-                <Tooltip title={r.forecastDivergent ? "预测与近3月日均分歧>30%——建议人工复核该 SKU 的需求判断" : "Holt 线性预测（近6月，捕捉趋势）——供人工判断，不驱动建议量"}>
-                  <span style={{ color }}>{v} {arrow}{r.forecastDivergent ? " ⚠" : ""}</span>
+                <Tooltip
+                  title={
+                    r.forecastDivergent
+                      ? "预测与近3月日均分歧>30%，且该 SKU 的预测已回测优于朴素基准——建议人工复核需求判断"
+                      : r.forecastTrusted
+                        ? "Holt 线性预测（近6月，捕捉趋势）——供人工判断，不驱动建议量"
+                        : "该 SKU 的 Holt 预测经回测不优于「下月＝上月」（多为间歇性需求），仅列出供参考，不据此发偏离告警"
+                  }
+                >
+                  <span style={{ color: r.forecastTrusted ? color : "#bbb" }}>{v} {arrow}{r.forecastDivergent ? " ⚠" : ""}</span>
                 </Tooltip>
               );
             },

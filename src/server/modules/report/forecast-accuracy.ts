@@ -13,7 +13,7 @@ import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { lastMonths, DAYS_PER_MONTH } from "@/server/core/velocity";
 import { forecastDaily } from "@/server/rules/forecast";
-import { backtest, biasLabel, type BacktestResult } from "@/server/rules/backtest";
+import { backtest, biasLabel, fvaLabel, type BacktestResult } from "@/server/rules/backtest";
 import { num } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -30,8 +30,13 @@ export interface ForecastAccuracyRow {
   wape: number | null;
   bias: number | null;
   hitRate: number | null;
+  /** 朴素预测（下月＝上月）同口径 WAPE */
+  naiveWape: number | null;
+  /** FVA = naiveWape − wape：>0 模型加分，≤0 不如照抄上月 */
+  fva: number | null;
   reliable: boolean;
   biasText: string;
+  fvaText: string;
   /** 近 12 月实际 vs 回测预测（供图表） */
   points: BacktestResult["points"];
 }
@@ -50,6 +55,12 @@ export interface ForecastAccuracyResult {
     /** 系统性高估/低估的 SKU 数（|bias|>10%） */
     overCount: number;
     underCount: number;
+    /** 全局朴素基准 WAPE 与 FVA——回答「这套预测整体上值不值」 */
+    overallNaiveWape: number | null;
+    overallFva: number | null;
+    overallFvaText: string;
+    /** 预测做负功（FVA<−2%）的 SKU 数——应改用朴素口径 */
+    worseThanNaiveCount: number;
     months: string[];
   };
 }
@@ -76,7 +87,7 @@ export async function getForecastAccuracy(
   if (months.length === 0) {
     return {
       rows: [], total: 0,
-      summary: { evaluated: 0, overallWape: null, overallBias: null, overallBiasText: "无销量数据", overCount: 0, underCount: 0, months: [] },
+      summary: { evaluated: 0, overallWape: null, overallBias: null, overallBiasText: "无销量数据", overCount: 0, underCount: 0, overallNaiveWape: null, overallFva: null, overallFvaText: "样本不足，无法与朴素预测对比", worseThanNaiveCount: 0, months: [] },
     };
   }
 
@@ -88,7 +99,7 @@ export async function getForecastAccuracy(
   if (skuRows.length === 0) {
     return {
       rows: [], total: 0,
-      summary: { evaluated: 0, overallWape: null, overallBias: null, overallBiasText: "无成品", overCount: 0, underCount: 0, months },
+      summary: { evaluated: 0, overallWape: null, overallBias: null, overallBiasText: "无成品", overCount: 0, underCount: 0, overallNaiveWape: null, overallFva: null, overallFvaText: "样本不足，无法与朴素预测对比", worseThanNaiveCount: 0, months },
     };
   }
   const skuIds = skuRows.map((s) => s.id);
@@ -108,8 +119,10 @@ export async function getForecastAccuracy(
   let sumAbsErr = 0;
   let sumActual = 0;
   let sumErr = 0;
+  let sumAbsNaiveErr = 0;
   let overCount = 0;
   let underCount = 0;
+  let worseThanNaiveCount = 0;
 
   const all: ForecastAccuracyRow[] = [];
   for (const s of skuRows) {
@@ -123,14 +136,18 @@ export async function getForecastAccuracy(
       sumActual += p.actual;
       sumAbsErr += Math.abs(p.error);
       sumErr += p.error;
+      sumAbsNaiveErr += Math.abs(p.naive - p.actual);
     }
     if (bt.bias != null && bt.bias > 0.1) overCount++;
     if (bt.bias != null && bt.bias < -0.1) underCount++;
+    if (bt.fva != null && bt.fva < -0.02) worseThanNaiveCount++;
 
     all.push({
       skuId: s.id, code: s.code, name: s.name, brand: s.brand,
       n: bt.n, mape: bt.mape, wape: bt.wape, bias: bt.bias, hitRate: bt.hitRate,
-      reliable: bt.reliable, biasText: biasLabel(bt.bias), points: bt.points,
+      naiveWape: bt.naiveWape, fva: bt.fva,
+      reliable: bt.reliable, biasText: biasLabel(bt.bias),
+      fvaText: fvaLabel(bt.fva, bt.naiveWape, bt.wape), points: bt.points,
     });
   }
 
@@ -143,6 +160,9 @@ export async function getForecastAccuracy(
   const r3 = (v: number) => Math.round(v * 1000) / 1000;
   const overallWape = sumActual > 0 ? r3(sumAbsErr / sumActual) : null;
   const overallBias = sumActual > 0 ? r3(sumErr / sumActual) : null;
+  const overallNaiveWape = sumActual > 0 ? r3(sumAbsNaiveErr / sumActual) : null;
+  const overallFva =
+    overallWape != null && overallNaiveWape != null ? r3(overallNaiveWape - overallWape) : null;
 
   return {
     rows: filtered.slice((page - 1) * pageSize, page * pageSize),
@@ -154,6 +174,10 @@ export async function getForecastAccuracy(
       overallBiasText: biasLabel(overallBias),
       overCount,
       underCount,
+      overallNaiveWape,
+      overallFva,
+      overallFvaText: fvaLabel(overallFva, overallNaiveWape, overallWape),
+      worseThanNaiveCount,
       months,
     },
   };
