@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse, guardRead, parseListQuery } from "@/server/modules/master/common";
+import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
 import { bulkDecideReviewItems, guardReviewWrite, listReviewItems } from "@/server/modules/review/checklist";
 
 export async function GET(req: NextRequest) {
@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const user = await guardReviewWrite();
-    return NextResponse.json(await bulkDecideReviewItems(user, await req.json()));
+    return NextResponse.json(await bulkDecideReviewItems(user, await readJson(req)));
   } catch (e) {
     return errorResponse(e);
   }

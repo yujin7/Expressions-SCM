@@ -144,3 +144,21 @@ export async function auditFromRoute(
 ): Promise<void> {
   await writeAudit(await getDbAsync(), { userId: user.id, entity, entityId: entityId ?? null, action, after });
 }
+
+/**
+ * 读取并解析请求体。**所有写路由都必须走这里，禁止裸 `await req.json()`。**
+ *
+ * 裸调的问题：空体或坏 JSON 会让 `req.json()` 抛 `SyntaxError`，而 errorResponse
+ * 只分流 ApiError / ZodError / 23505，SyntaxError 落进兜底分支——于是
+ * **客户端发错请求，系统却回 500、并往 error_logs 插一条带 errorId 的记录**。
+ * 后果有两层：① 用户看到「系统错误，请联系管理员」而不是「请求体不合法」；
+ * ② `/api/public/po-confirm/[token]` 是匿名可达的，坏 body 在 token 校验之前就抛，
+ * 等于**一条无需登录即可持续写 error_logs 的通道**，还会污染 /admin/health 的错误计数。
+ */
+export async function readJson<T = unknown>(req: { json: () => Promise<unknown> }): Promise<T> {
+  try {
+    return (await req.json()) as T;
+  } catch {
+    throw new ApiError(400, "请求体不是合法的 JSON");
+  }
+}

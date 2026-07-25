@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { errorResponse, parseId } from "@/server/modules/master/common";
+import { errorResponse, parseId, readJson } from "@/server/modules/master/common";
 import { guardWarehouseWrite } from "@/server/modules/inventory/stock-doc";
 import { submitCountTask } from "@/server/modules/inventory/count";
 
@@ -10,7 +10,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   try {
     const user = await guardWarehouseWrite();
     const { id } = await ctx.params;
-    const { version } = bodySchema.parse(await req.json());
+    const { version } = bodySchema.parse(await readJson(req));
     return NextResponse.json(await submitCountTask(user, parseId(id), version));
   } catch (e) {
     return errorResponse(e);

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse } from "@/server/modules/master/common";
+import { errorResponse, readJson } from "@/server/modules/master/common";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { updateNpdTask } from "@/server/modules/npd/service";
 
@@ -7,7 +7,7 @@ import { updateNpdTask } from "@/server/modules/npd/service";
 export async function PATCH(req: NextRequest) {
   try {
     const user = await guardFreshWrite();
-    return NextResponse.json(await updateNpdTask(user, await req.json()));
+    return NextResponse.json(await updateNpdTask(user, await readJson(req)));
   } catch (e) {
     return errorResponse(e);
   }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse, guardRead, parseListQuery } from "@/server/modules/master/common";
+import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
 import { applyLeadTimeSuggestion, getLeadTimeLearning } from "@/server/modules/report/leadtime-learning";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 
@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await guardFreshWrite();
-    const body = (await req.json()) as { skuId: number; leadDays: number };
+    const body = (await readJson(req)) as { skuId: number; leadDays: number };
     return NextResponse.json(await applyLeadTimeSuggestion(user, body), { status: 200 });
   } catch (e) {
     return errorResponse(e);

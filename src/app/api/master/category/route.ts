@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse, parseListQuery } from "@/server/modules/master/common";
+import { errorResponse, parseListQuery, readJson } from "@/server/modules/master/common";
 import { auditFromRoute, guardRead, guardWrite } from "@/server/modules/master/common";
 import { createCategory, listCategories } from "@/server/modules/master/category";
 
@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await guardWrite("category");
-    const result = await createCategory(await req.json());
+    const result = await createCategory(await readJson(req));
     await auditFromRoute(user, "category", (result as { id?: number }).id, "create", result);
     return NextResponse.json(result, { status: 201 });
   } catch (e) {

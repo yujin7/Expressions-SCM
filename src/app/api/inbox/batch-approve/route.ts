@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse } from "@/server/modules/master/common";
+import { errorResponse, readJson } from "@/server/modules/master/common";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { batchApprove } from "@/server/modules/inbox/batch-approve";
 
@@ -7,7 +7,7 @@ import { batchApprove } from "@/server/modules/inbox/batch-approve";
 export async function POST(req: NextRequest) {
   try {
     const user = await guardFreshWrite();
-    return NextResponse.json(await batchApprove(user, await req.json()));
+    return NextResponse.json(await batchApprove(user, await readJson(req)));
   } catch (e) {
     return errorResponse(e);
   }

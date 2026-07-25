@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse, guardRead, parseListQuery } from "@/server/modules/master/common";
+import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
 import { closeRiskDisposal, getRiskWorklist, registerRiskDisposal, registerRiskDisposalBatch } from "@/server/modules/report/risk";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 
@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await guardFreshWrite();
-    const body = (await req.json()) as { items?: unknown; intent?: string };
+    const body = (await readJson(req)) as { items?: unknown; intent?: string };
     if (body?.intent === "close") {
       return NextResponse.json(await closeRiskDisposal(user, body as { skuCode: string }), { status: 200 });
     }

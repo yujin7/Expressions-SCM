@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse, guardRead, parseListQuery } from "@/server/modules/master/common";
+import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
 import { applySupplierLevel, getSupplierScorecard } from "@/server/modules/report/supplier-scorecard";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 
@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await guardFreshWrite();
-    const body = (await req.json()) as { supplierId: number; level: string };
+    const body = (await readJson(req)) as { supplierId: number; level: string };
     return NextResponse.json(await applySupplierLevel(user, body), { status: 200 });
   } catch (e) {
     return errorResponse(e);

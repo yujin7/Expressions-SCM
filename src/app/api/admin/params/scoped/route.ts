@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ApiError, errorResponse, guardRead } from "@/server/modules/master/common";
+import { ApiError, errorResponse, guardRead, readJson } from "@/server/modules/master/common";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { clearScopedParam, listScopedOverrides, setScopedParam, type ParamScope } from "@/server/core/scoped-params";
 
@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await guardFreshWrite();
-    const body = (await req.json()) as { key?: string; value?: number; scope?: ParamScope };
+    const body = (await readJson(req)) as { key?: string; value?: number; scope?: ParamScope };
     if (!body?.key) throw new ApiError(400, "缺少 key");
     if (typeof body.value !== "number" || !Number.isFinite(body.value)) throw new ApiError(400, "value 必须是数字");
     if (!body.scope?.kind) throw new ApiError(400, "缺少 scope.kind");
@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   try {
     const user = await guardFreshWrite();
-    const body = (await req.json()) as { key?: string; scope?: ParamScope };
+    const body = (await readJson(req)) as { key?: string; scope?: ParamScope };
     if (!body?.key) throw new ApiError(400, "缺少 key");
     if (!body.scope?.kind) throw new ApiError(400, "缺少 scope.kind");
     await clearScopedParam(user, { key: body.key, scope: body.scope });

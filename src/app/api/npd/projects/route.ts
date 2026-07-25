@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse, guardRead } from "@/server/modules/master/common";
+import { errorResponse, guardRead, readJson } from "@/server/modules/master/common";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { createNpdFirstOrder, createNpdProject, getNpdProject, listNpdProjects, rescheduleNpd, updateNpdProject, updateNpdProjectSkuCode } from "@/server/modules/npd/service";
 
@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await guardFreshWrite();
-    const body = (await req.json()) as { intent?: string };
+    const body = (await readJson(req)) as { intent?: string };
     if (body?.intent === "first_order") {
       return NextResponse.json(await createNpdFirstOrder(user, body), { status: 201 });
     }
@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const user = await guardFreshWrite();
-    const body = (await req.json()) as { intent?: string };
+    const body = (await readJson(req)) as { intent?: string };
     if (body?.intent === "set_sku") return NextResponse.json(await updateNpdProjectSkuCode(user, body));
     if (body?.intent === "reschedule") return NextResponse.json(await rescheduleNpd(user, body));
     return NextResponse.json(await updateNpdProject(user, body));

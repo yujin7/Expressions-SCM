@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getFreshSessionUser } from "@/server/core/dto";
-import { ApiError, errorResponse, guardRead } from "@/server/modules/master/common";
+import { ApiError, errorResponse, guardRead, readJson } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import { EXPORT_KIND_LABELS, EXPORT_KINDS } from "@/server/modules/report/export";
 import { createExportJob, ensureExportWorkerStarted, listExportJobs } from "@/jobs/export-worker";
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
     } catch {
       throw new ApiError(401, "未登录或账号已停用");
     }
-    const v = createSchema.parse(await req.json());
+    const v = createSchema.parse(await readJson(req));
     const def = EXPORT_KINDS[v.kind];
     if (!def) throw new ApiError(400, `未知导出类型：${v.kind}`);
     if (def.roles?.length) requireAnyRole(user, ...def.roles);

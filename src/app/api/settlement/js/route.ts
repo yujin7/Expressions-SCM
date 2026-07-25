@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { maskSensitive } from "@/server/core/dto";
-import { errorResponse, guardRead, parseListQuery } from "@/server/modules/master/common";
+import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { createJs, listJss } from "@/server/modules/settlement/js";
 
@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await guardFreshWrite(); // 制单角色（pmc）由 service 校验
-    const data = await createJs(user, await req.json());
+    const data = await createJs(user, await readJson(req));
     return NextResponse.json(maskSensitive(data, user.roles), { status: 201 });
   } catch (e) {
     return errorResponse(e);

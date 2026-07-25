@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse, guardRead, parseListQuery } from "@/server/modules/master/common";
+import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
 import { maskSensitive } from "@/server/core/dto";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { listPcs } from "@/server/modules/outsource/po";
@@ -30,7 +30,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await guardFreshWrite(); // 角色（purchasing）在 service 内校验
-    return NextResponse.json(await createPcForJgFee(user, await req.json()), { status: 201 });
+    return NextResponse.json(await createPcForJgFee(user, await readJson(req)), { status: 201 });
   } catch (e) {
     return errorResponse(e);
   }

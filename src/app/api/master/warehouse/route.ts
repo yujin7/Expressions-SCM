@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse, parseListQuery } from "@/server/modules/master/common";
+import { errorResponse, parseListQuery, readJson } from "@/server/modules/master/common";
 import { auditFromRoute, guardRead, guardWrite } from "@/server/modules/master/common";
 import { createWarehouse, listWarehouses } from "@/server/modules/master/warehouse";
 
@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await guardWrite("warehouse");
-    const result = await createWarehouse(await req.json());
+    const result = await createWarehouse(await readJson(req));
     await auditFromRoute(user, "warehouse", (result as { id?: number }).id, "create", result);
     return NextResponse.json(result, { status: 201 });
   } catch (e) {

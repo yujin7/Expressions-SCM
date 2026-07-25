@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getFreshSessionUser } from "@/server/core/dto";
-import { ApiError, errorResponse } from "@/server/modules/master/common";
+import { ApiError, errorResponse, readJson } from "@/server/modules/master/common";
 import { changeOwnPassword } from "@/server/modules/admin/users";
 
 /** POST /api/account/password：自助改密码（写路径→新鲜身份；首登强制修改亦走此口） */
@@ -12,7 +12,7 @@ export async function POST(req: NextRequest) {
     } catch {
       throw new ApiError(401, "未登录或账号已停用");
     }
-    await changeOwnPassword(user.id, await req.json());
+    await changeOwnPassword(user.id, await readJson(req));
     return NextResponse.json({ ok: true });
   } catch (e) {
     return errorResponse(e);

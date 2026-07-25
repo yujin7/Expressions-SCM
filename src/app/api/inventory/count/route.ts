@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse, guardRead, parseListQuery } from "@/server/modules/master/common";
+import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
 import { guardWarehouseWrite } from "@/server/modules/inventory/stock-doc";
 import { createCountTask, listCountTasks } from "@/server/modules/inventory/count";
 
@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await guardWarehouseWrite();
-    return NextResponse.json(await createCountTask(user, await req.json()), { status: 201 });
+    return NextResponse.json(await createCountTask(user, await readJson(req)), { status: 201 });
   } catch (e) {
     return errorResponse(e);
   }

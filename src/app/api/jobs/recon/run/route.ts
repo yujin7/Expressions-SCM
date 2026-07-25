@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { ApiError, auditFromRoute, errorResponse } from "@/server/modules/master/common";
+import { ApiError, auditFromRoute, errorResponse, readJson } from "@/server/modules/master/common";
 import { getFreshSessionUser, requireRole } from "@/server/core/dto";
 import { getDbAsync } from "@/db";
 import { runReconcileJst } from "@/jobs/reconcile-jst";
@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     } catch {
       throw new ApiError(403, "无权限触发对账");
     }
-    const { bizDate } = bodySchema.parse(await req.json());
+    const { bizDate } = bodySchema.parse(await readJson(req));
     const summary = await runReconcileJst(await getDbAsync(), bizDate);
     await auditFromRoute(user, "recon_diffs", null, "reconcile-jst:run", summary);
     return NextResponse.json(summary);

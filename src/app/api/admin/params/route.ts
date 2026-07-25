@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getFreshSessionUser } from "@/server/core/dto";
 import { requireRole } from "@/server/core/dto";
-import { errorResponse } from "@/server/modules/master/common";
+import { errorResponse, readJson } from "@/server/modules/master/common";
 import { listParams, updateParam } from "@/server/modules/admin/params";
 
 /** 运行参数：读=业务角色，写=admin（新鲜身份） */
@@ -18,7 +18,7 @@ export async function GET() {
 export async function PUT(req: NextRequest) {
   try {
     const user = await getFreshSessionUser();
-    await updateParam(user, await req.json());
+    await updateParam(user, await readJson(req));
     return NextResponse.json({ ok: true });
   } catch (e) {
     return errorResponse(e);

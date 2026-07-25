@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse } from "@/server/modules/master/common";
+import { errorResponse, readJson } from "@/server/modules/master/common";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { closeJgFromRoute } from "@/server/modules/settlement/js";
 
@@ -7,7 +7,7 @@ import { closeJgFromRoute } from "@/server/modules/settlement/js";
 export async function POST(req: NextRequest) {
   try {
     const user = await guardFreshWrite(); // PMC 角色由 service 校验
-    return NextResponse.json(await closeJgFromRoute(user, await req.json()));
+    return NextResponse.json(await closeJgFromRoute(user, await readJson(req)));
   } catch (e) {
     return errorResponse(e);
   }

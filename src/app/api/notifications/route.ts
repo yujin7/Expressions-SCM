@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { notifications } from "@/db/schema";
-import { errorResponse, guardRead } from "@/server/modules/master/common";
+import { errorResponse, guardRead, readJson } from "@/server/modules/master/common";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { notifyAudienceWhere } from "@/server/core/notify-audience";
 
@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
   try {
     const user = await guardFreshWrite();
     const db = await getDbAsync();
-    const body = (await req.json()) as { id?: number; all?: boolean };
+    const body = (await readJson(req)) as { id?: number; all?: boolean };
     const now = new Date();
     // 收件人判定收口到 core/notify-audience（工作台徽标与本页必须同源）
     const audience = notifyAudienceWhere(user);
