@@ -12,6 +12,7 @@ import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
 import { getOnHandForSku } from "@/server/core/stock-view";
 import { getOpenSupplyLines } from "@/server/core/supply";
 import { num } from "@/server/core/svc";
+import { salesWindow } from "@/server/core/sales-window";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -74,7 +75,7 @@ export async function getSkuProjection(
 
   // 日均
   const sm = schema.salesMonthly;
-  const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
+  const { maxYm } = await salesWindow(db);
   const months3 = maxYm ? lastMonths(maxYm, 3) : [];
   const salesRows: { qty: string | null }[] = months3.length
     ? await db.select({ qty: sql<string | null>`sum(${sm.qty})` }).from(sm).where(and(eq(sm.skuId, skuId), inArray(sm.yearMonth, months3)))

@@ -18,6 +18,7 @@ import { ApiError, type SessionUser } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import { lastMonths } from "@/server/core/velocity";
 import { num } from "@/server/core/svc";
+import { salesWindow } from "@/server/core/sales-window";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -62,7 +63,7 @@ export async function getMarginReport(
 
   /* ── 近 3 月窗口（自 max(yearMonth) 回推） ── */
   const sm = schema.salesMonthly;
-  const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
+  const { maxYm } = await salesWindow(db);
   const months = maxYm ? lastMonths(maxYm, 3) : [];
 
   /* ── 成品主档（finished + active） ── */

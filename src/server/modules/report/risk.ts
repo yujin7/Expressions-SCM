@@ -22,6 +22,7 @@ import { RISK_ACTION_ORDER, suggestRiskAction, type RiskAction } from "@/server/
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
 import { getOnHandBySku, coverDays } from "@/server/core/stock-view";
 import { num, r1 } from "@/server/core/svc";
+import { salesWindow } from "@/server/core/sales-window";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -92,7 +93,7 @@ export async function getRiskWorklist(
 
   /* ── 销速：近3月 ── */
   const sm = schema.salesMonthly;
-  const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
+  const { maxYm } = await salesWindow(db);
   const months3 = maxYm ? lastMonths(maxYm, 3) : [];
   const salesRows: { skuId: number; qty: string | null }[] = months3.length
     ? await db

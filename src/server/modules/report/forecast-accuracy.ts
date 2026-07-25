@@ -15,6 +15,7 @@ import { lastMonths, DAYS_PER_MONTH } from "@/server/core/velocity";
 import { forecastDaily } from "@/server/rules/forecast";
 import { backtest, biasLabel, fvaLabel, type BacktestResult } from "@/server/rules/backtest";
 import { num } from "@/server/core/svc";
+import { salesWindow } from "@/server/core/sales-window";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -82,7 +83,7 @@ export async function getForecastAccuracy(
   const q = (query.q ?? "").trim().toLowerCase();
 
   const sm = schema.salesMonthly;
-  const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
+  const { maxYm } = await salesWindow(db);
   const months = maxYm ? lastMonths(maxYm, 12) : [];
   if (months.length === 0) {
     return {

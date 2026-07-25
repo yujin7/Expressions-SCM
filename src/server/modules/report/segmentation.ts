@@ -14,6 +14,7 @@ import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";
 import { classifyAbc } from "@/server/rules/abc";
 import { num, r1 } from "@/server/core/svc";
+import { salesWindow } from "@/server/core/sales-window";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -96,7 +97,7 @@ export async function getSegmentation(
 
   /* ── 近 6 月窗口（自 max(yearMonth) 回推） ── */
   const sm = schema.salesMonthly;
-  const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
+  const { maxYm } = await salesWindow(db);
   const months = maxYm ? lastMonths(maxYm, 6) : [];
 
   /* ── 成品主档（finished + active） ── */

@@ -19,6 +19,7 @@ import { lastMonths } from "@/server/core/velocity";
 import { todayShanghai } from "@/server/modules/master/common";
 import { type AnyDb, resolveDb } from "@/server/modules/outsource/common";
 import { num } from "@/server/core/svc";
+import { salesWindow } from "@/server/core/sales-window";
 
 /** 与 report/wip.ts ACTIVE_SH_STATUSES 一致（就地声明，避免跨模块 const 数组类型摩擦） */
 const ACTIVE_SH_STATUSES = ["approved", "in_progress", "completed"] as const;
@@ -83,9 +84,7 @@ export async function getFulfillmentFunnel(
 
   /* ── 窗口①⑤：自然月（由销量数据最新月回推，core/velocity 唯一口径） ── */
   const sm = schema.salesMonthly;
-  const [{ maxYm }]: { maxYm: string | null }[] = await db
-    .select({ maxYm: sql<string | null>`max(${sm.yearMonth})` })
-    .from(sm);
+  const { maxYm } = await salesWindow(db);
   const monthList = maxYm ? lastMonths(maxYm, months) : [];
   const monthRange = monthList.length ? `${monthList[0]}~${monthList[monthList.length - 1]}` : "无销量数据";
 

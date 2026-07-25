@@ -17,6 +17,7 @@ import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";
 import { getLatestSnapshotRows } from "@/server/core/stock-view";
 import { num, r1 } from "@/server/core/svc";
+import { salesWindow } from "@/server/core/sales-window";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -94,7 +95,7 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
 
   /* ── 销量：月×品牌趋势 / 渠道 / 品牌 / TOP SKU（窗口动态推导） ── */
   const sm = schema.salesMonthly;
-  const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
+  const { maxYm } = await salesWindow(db);
   const months6 = maxYm ? lastMonths(maxYm, 6) : [];
   const months3 = maxYm ? lastMonths(maxYm, 3) : [];
   const monthBrand: { month: string; brand: string | null; qty: string }[] = await db

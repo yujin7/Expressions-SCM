@@ -21,6 +21,7 @@ import { getOnHandBySku } from "@/server/core/stock-view";
 import { detectChannelShift, detectSalesStop, detectVelocityChange } from "@/server/rules/detectors";
 import { type AnyDb, resolveDb } from "@/server/modules/outsource/common";
 import { num, r1 } from "@/server/core/svc";
+import { salesWindow } from "@/server/core/sales-window";
 
 export type DetectorKind = "sales_stop" | "channel_shift" | "velocity";
 export type DetectorSeverity = "high" | "medium";
@@ -137,7 +138,7 @@ export async function getDetectorAlerts(
 
   /* ── 月窗：由数据最新月回推 6 期（core/velocity 唯一口径） ── */
   const sm = schema.salesMonthly;
-  const [{ maxYm }]: { maxYm: string | null }[] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
+  const { maxYm } = await salesWindow(db);
   const months = maxYm ? lastMonths(maxYm, 6) : [];
   if (months.length === 0) {
     return { ...base, rows: [], total: 0, summary: { ...EMPTY_SUMMARY, scanned: skuRows.length } };

@@ -36,6 +36,7 @@ import { getOpenSupplyLines } from "@/server/core/supply";
 import { makeResolver } from "@/server/core/scoped-params";
 import { type AnyDb, num, r1, resolveDb } from "@/server/core/svc";
 import { getSkuSupplyParams } from "@/server/modules/master/sku-supply-params";
+import { salesWindow } from "@/server/core/sales-window";
 
 export interface ReplenishRow {
   skuId: number;
@@ -216,7 +217,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
         近3月汇总 / ABC 全量 / 预测序列；其中近3月汇总与预测序列同窗同集，合并为一次），
         近3月汇总由矩阵按月 dAdd 精确累加（保持 decimal 字符串，不经 float）。 ── */
   const sm = schema.salesMonthly;
-  const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
+  const { maxYm } = await salesWindow(db);
   const months6 = maxYm ? lastMonths(maxYm, 6) : [];
   const months3 = maxYm ? lastMonths(maxYm, 3) : [];
   const months3Set = new Set(months3);

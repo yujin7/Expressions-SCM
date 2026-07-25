@@ -29,6 +29,7 @@ import { DAILY_WINDOW_DAYS, dailyFromWindow, lastMonths } from "@/server/core/ve
 import { getSegmentation } from "@/server/modules/report/segmentation";
 import { AGING_BUCKETS, fifoAging, turnover, type AgingBucket } from "@/server/rules/inventory-metrics";
 import { num, r1, r1n } from "@/server/core/svc";
+import { salesWindow } from "@/server/core/sales-window";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -153,7 +154,7 @@ export async function getInventoryAnalytics(
 
   /* ── 销速：近3月窗口 ÷ 91（core/velocity 唯一口径） ── */
   const sm = schema.salesMonthly;
-  const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
+  const { maxYm } = await salesWindow(db);
   const months3 = maxYm ? lastMonths(maxYm, 3) : [];
   const salesRows: { skuId: number; qty: string | null }[] = months3.length
     ? await db

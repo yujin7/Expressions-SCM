@@ -25,6 +25,7 @@ import { getOnHandBySku, coverDays } from "@/server/core/stock-view";
 import { getOpenSupplyLines, summarizeSupply } from "@/server/core/supply";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
 import { num, r1, r1n } from "@/server/core/svc";
+import { salesWindow } from "@/server/core/sales-window";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -91,9 +92,7 @@ export async function getSkuFacts(db: AnyDb, opts: SkuFactsOptions = {}): Promis
 
   /* ── 月窗与销量：core/velocity 唯一口径（由数据最新月回推） ── */
   const sm = schema.salesMonthly;
-  const [{ maxYm }]: { maxYm: string | null }[] = await db
-    .select({ maxYm: sql<string | null>`max(${sm.yearMonth})` })
-    .from(sm);
+  const { maxYm } = await salesWindow(db);
   const months = maxYm ? lastMonths(maxYm, monthCount) : [];
   const months3 = maxYm ? lastMonths(maxYm, 3) : [];
 

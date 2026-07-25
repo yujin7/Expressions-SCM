@@ -22,6 +22,7 @@ import { todayShanghai } from "@/server/modules/master/common";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
 import { getOnHandBySku } from "@/server/core/stock-view";
 import { num } from "@/server/core/svc";
+import { salesWindow } from "@/server/core/sales-window";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -119,7 +120,7 @@ async function pmcSection(db: AnyDb): Promise<FocusSection> {
   const s = schema.stockSnapshots;
   const sm = schema.salesMonthly;
 
-  const [{ maxYm }] = await db.select({ maxYm: sql<string | null>`max(${sm.yearMonth})` }).from(sm);
+  const { maxYm } = await salesWindow(db);
   const months3 = maxYm ? lastMonths(maxYm, 3) : [];
 
   const onHandView = await getOnHandBySku(db, { finishedOnly: true }); // core/stock-view 唯一在库口径
