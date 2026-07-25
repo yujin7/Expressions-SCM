@@ -43,7 +43,7 @@ admin / ops01 / purchasing01 / warehouse01 / pmc01(审批人) / pmc02(非审批�
 - 脱敏收口：`src/server/core/dto.ts`（运营/仓管不可见成本与加工费，含导出）
 
 ## 里程碑
-阶段索引与决策登记见 `../spec/CURRENT.md`。当前：**DW1**（W1/W2/DW1-core 已完成，commit 1103347）；上线门待 D15。
+阶段索引与决策登记见 `../spec/CURRENT.md`。当前阶段与决策以 `../spec/CURRENT.md` 为准（本文件不再复制阶段号与 commit 号——曾落后 91 个提交）。
 
 ## 生产部署（staging 同构）
 ```bash
