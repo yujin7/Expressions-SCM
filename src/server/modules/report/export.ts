@@ -5,7 +5,10 @@ import { canSeePrices } from "@/server/core/dto";
  * CSV 导出基础设施（W5）。
  * - UTF-8 带 BOM（Excel 直开不乱码）、CRLF 行结束、RFC4180 引号转义；
  * - decimal 字符串原样输出（禁 float 重格式化——CLAUDE.md）；
- * - 行数上限 EXPORT_ROW_CAP：命中后追加截断提示行（路由另设 X-Truncated 头）；
+ * - 行数上限 EXPORT_ROW_CAP=50000：**仅异步导出任务用**（jobs/export-worker），命中后追加截断提示行；
+ *   同步路由取的是 SYNC_EXPORT_MAX=5000——超过就转异步任务，因此同步路径永远不会截断。
+ *   （2026-07-26 修：同步路由此前先按 50000 取数、再用 5000 判闸，多取的行直接丢弃，
+ *   且随后的 `total > EXPORT_ROW_CAP` 分支恒为 false，是不可达代码。）
  * - 脱敏（R9 含导出）：canSeePrices=false 的用户，金额列**整列剔除**（非置空）。
  */
 

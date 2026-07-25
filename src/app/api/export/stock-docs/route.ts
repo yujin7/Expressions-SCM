@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { errorResponse, guardRead, todayShanghai } from "@/server/modules/master/common";
 import {
-  buildCsv, csvDisposition, EXPORT_KINDS, EXPORT_ROW_CAP, stripMoneyColumns,
+  buildCsv, csvDisposition, EXPORT_KINDS, stripMoneyColumns, SYNC_EXPORT_MAX,
 } from "@/server/modules/report/export";
 import { ensureExportWorkerStarted, syncExportGate } from "@/jobs/export-worker";
 
@@ -14,7 +14,7 @@ export async function GET(req: NextRequest) {
     const user = await guardRead();
     const def = EXPORT_KINDS["stock-docs"];
     const params = def.paramsFromSearch(new URL(req.url).searchParams);
-    const { rows, columns, total } = await def.produce(user, params, EXPORT_ROW_CAP);
+    const { rows, columns, total } = await def.produce(user, params, SYNC_EXPORT_MAX);
     const deferred = await syncExportGate(user, "stock-docs", params, total);
     if (deferred) {
       ensureExportWorkerStarted();
@@ -23,12 +23,10 @@ export async function GET(req: NextRequest) {
         { status: 202 },
       );
     }
-    const truncated = total > EXPORT_ROW_CAP;
-    return new NextResponse(buildCsv(rows, stripMoneyColumns(columns, user.roles), { truncated }), {
+    return new NextResponse(buildCsv(rows, stripMoneyColumns(columns, user.roles)), {
       headers: {
         "Content-Type": "text/csv; charset=utf-8",
         "Content-Disposition": csvDisposition(`库存单据_${todayShanghai()}`),
-        ...(truncated ? { "X-Truncated": "1" } : {}),
       },
     });
   } catch (e) {
