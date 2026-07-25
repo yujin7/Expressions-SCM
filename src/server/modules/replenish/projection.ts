@@ -1,6 +1,6 @@
 /**
  * #1 单 SKU 库存未来曲线服务（报表层，只读）。
- * 起点在库=全网口径（实时账+快照，与 R11 同法）；到货=有日期的 PO 未收量 + 存量单未入库量；
+ * 起点在库=全网口径（实时账+快照，与 R11 同法）；到货走 core/supply 唯一权威（PO/存量单/WO 三源，行级交期优先）；
  * 日均=近3月÷91；生产周期=sku_params。推演走 rules/projection.ts 纯函数。
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -10,6 +10,7 @@ import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { projectInventory, type DatedArrival, type ProjectionResult } from "@/server/rules/projection";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
 import { getOnHandForSku } from "@/server/core/stock-view";
+import { getOpenSupplyLines } from "@/server/core/supply";
 import { num } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -55,43 +56,20 @@ export async function getSkuProjection(
   const { onHand: onHandStr } = await getOnHandForSku(db, skuId);
   const startOnHand = num(onHandStr);
 
-  // 到货：PO 未收（有 expectedDate）
+  /* 到货来源统一走 core/supply.getOpenSupplyLines（PO 在途 / 存量单在途 / WO 在制三源）。
+     此前这里自行重装配了同样三段 SQL，与权威实现有两处实质差异：
+       ① PO 到货日取的是**表头** po_docs.expected_date，而 core/supply 取**行级**
+          po_lines.expected_date（无行级才回落表头）——供应商按行回交期后，
+          同一张 PO 在补货页行内 shortageDate（走 core/supply）与本曲线会落在不同日期，
+          而这两个页面正是用来互相印证的；
+       ② WO 在制此处不判 isPaused 之外的状态细节，口径易与 core/supply 漂移。
+     无确认到货日的量不进曲线，单独在 undatedInbound 提示（诚实降级，既有约定）。 */
   const arrivals: DatedArrival[] = [];
   let undated = 0;
-  const poRows: { qty: string; uomFactor: string; receivedQty: string; expectedDate: string | null }[] = await db
-    .select({ qty: schema.poLines.qty, uomFactor: schema.poLines.uomFactor, receivedQty: schema.poLines.receivedQty, expectedDate: schema.poDocs.expectedDate })
-    .from(schema.poLines)
-    .innerJoin(schema.poDocs, eq(schema.poLines.poId, schema.poDocs.id))
-    .where(and(eq(schema.poLines.skuId, skuId), inArray(schema.poDocs.status, ["approved", "in_progress"])));
-  for (const r of poRows) {
-    const remain = num(r.qty) * num(r.uomFactor) - num(r.receivedQty);
-    if (remain <= 0) continue;
-    if (r.expectedDate) arrivals.push({ date: r.expectedDate, qty: remain });
-    else undated += remain;
-  }
-  // 存量单未入库（transit_refs fg_order，有 expectDate）
-  const tr = schema.transitRefs;
-  const fgRows: { qty: string | null; inboundQty: string | null; closedQty: string | null; expectDate: string | null }[] = await db
-    .select({ qty: tr.qty, inboundQty: tr.inboundQty, closedQty: tr.closedQty, expectDate: tr.expectDate })
-    .from(tr)
-    .where(and(eq(tr.kind, "fg_order"), eq(tr.skuId, skuId)));
-  for (const r of fgRows) {
-    if (r.qty == null) continue;
-    const remain = num(r.qty) - num(r.inboundQty) - num(r.closedQty);
-    if (remain <= 0) continue;
-    if (r.expectDate) arrivals.push({ date: r.expectDate, qty: remain });
-    else undated += remain;
-  }
-  // func#2 在制委外产出：WO（已审批/执行中、未暂停）dueDate 作到货日；无日期计入 undated
-  const woRows: { qty: string; dueDate: string | null }[] = await db
-    .select({ qty: schema.woDocs.qty, dueDate: schema.woDocs.dueDate })
-    .from(schema.woDocs)
-    .where(and(eq(schema.woDocs.productSkuId, skuId), inArray(schema.woDocs.status, ["approved", "in_progress"]), eq(schema.woDocs.isPaused, false)));
-  for (const r of woRows) {
-    const q = num(r.qty);
-    if (q <= 0) continue;
-    if (r.dueDate) arrivals.push({ date: r.dueDate, qty: q });
-    else undated += q;
+  for (const l of await getOpenSupplyLines(db, [skuId])) {
+    if (l.qty <= 0) continue;
+    if (l.expectDate) arrivals.push({ date: l.expectDate, qty: l.qty });
+    else undated += l.qty;
   }
 
   // 日均

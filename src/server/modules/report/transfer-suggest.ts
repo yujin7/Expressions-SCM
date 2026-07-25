@@ -28,6 +28,7 @@
  * 无金额字段，免脱敏。
  */
 import { and, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { coverDays } from "@/server/core/stock-view";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { getNumParam } from "@/server/core/params";
@@ -159,7 +160,7 @@ export async function getTransferSuggestions(
     const surplus: Node[] = [];
     const deficit: Node[] = [];
     for (const n of nodes) {
-      const cover = n.daily > 0 ? n.onHand / n.daily : null;
+      const cover = coverDays(n.onHand, n.daily);
       if (cover == null) {
         if (n.onHand > 0) surplus.push(n); // 无出库但有库存 = 呆滞积压，整仓可让
       } else if (cover > surplusDays) {

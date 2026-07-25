@@ -98,6 +98,21 @@ export function coverDays(onHand: number, daily: number): number | null {
   return onHand / daily;
 }
 
+/**
+ * 全系统「可销天数」实际有**两个**口径，同名不同义，务必按场景选对：
+ *
+ * | 口径 | 分子 | 用在哪 | 语义 |
+ * |---|---|---|---|
+ * | 在库可销 `coverDays(onHand, daily)` | 仅在库 | 风险页 / 库存分析 / 调拨 / 审批简报 / SKU事实 | 「现在手上的货能卖几天」 |
+ * | 到货后可销（补货页 daysCover） | 在库 + PO在途 | replenish/service.ts | 「算上已下单在路上的能卖几天」 |
+ *
+ * 两者相差一个 PO 在途量。**不要把补货页的 daysCover 与其他页面的可销天数直接比大小**——
+ * 今天成品 PO 在途接近 0 所以看不出差异，PO 流程一旦跑起来，补货页会系统性高于其他页。
+ * 控制塔首屏的「可销 < 生产周期」已改为直接消费 replenish 的行（同源），不再自行判定。
+ * 若新增第三种分子（例如含在制/含参考层），**先走 skill `caliber-change`**，
+ * 不要再就地写一个 `x / daily`——本函数存在的意义就是让口径可数、可查、可解释。
+ */
+
 /** 效期剩余天数（Asia/Shanghai 日界，日期串直减；可为负=已过期） */
 export function daysLeftOf(today: string, expiryDate: string): number {
   return Math.round((Date.parse(`${expiryDate}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000);

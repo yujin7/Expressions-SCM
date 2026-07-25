@@ -12,6 +12,7 @@
  * 只读、不写库；失败不得阻断审批（调用方 catch 后照常渲染审批按钮）。
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { coverDays } from "@/server/core/stock-view";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { ApiError } from "@/server/modules/master/common";
@@ -105,7 +106,7 @@ export async function getApprovalBrief(docType: string, docId: number, dbArg?: A
     const sku = skuById.get(l.skuId);
     const onHand = onHandBySku.get(l.skuId) ?? 0;
     const daily = dailyBySku.get(l.skuId) ?? 0;
-    const cover = daily > 0 ? onHand / daily : null;
+    const cover = coverDays(onHand, daily);
     const openSupply = facts.bySku.get(l.skuId)?.openSupply ?? 0;
     // 排除本单自身（本单尚未成为未结单，但同 SKU 的其他单要提示）
     const recent = (dup.hitsBySku[l.skuId] ?? []).filter((h) => h.docNo !== doc.docNo);

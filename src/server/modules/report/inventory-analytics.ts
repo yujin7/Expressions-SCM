@@ -20,6 +20,7 @@
  * 全表无金额字段，免脱敏；只读不写库。
  */
 import { and, eq, gt, gte, inArray, lt, sql } from "drizzle-orm";
+import { coverDays } from "@/server/core/stock-view";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
@@ -27,7 +28,7 @@ import { getNumParam } from "@/server/core/params";
 import { DAILY_WINDOW_DAYS, dailyFromWindow, lastMonths } from "@/server/core/velocity";
 import { getSegmentation } from "@/server/modules/report/segmentation";
 import { AGING_BUCKETS, fifoAging, turnover, type AgingBucket } from "@/server/rules/inventory-metrics";
-import { num, r1 } from "@/server/core/svc";
+import { num, r1, r1n } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -218,7 +219,7 @@ export async function getInventoryAnalytics(
       brand: sku.brand,
       onHand: r2(onHand),
       daily: r2(daily),
-      daysCover: daily > 0 ? r1(onHand / daily) : null,
+      daysCover: r1n(coverDays(onHand, daily)),
       outQty: r2(outQty),
       avgOnHand: r2(avgOnHand),
       turns: t.turns == null ? null : r2(t.turns),

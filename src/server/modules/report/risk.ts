@@ -20,7 +20,7 @@ import { ApiError } from "@/server/modules/master/common";
 import { todayShanghai } from "@/server/modules/master/common";
 import { RISK_ACTION_ORDER, suggestRiskAction, type RiskAction } from "@/server/rules/risk-action";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
-import { getOnHandBySku } from "@/server/core/stock-view";
+import { getOnHandBySku, coverDays } from "@/server/core/stock-view";
 import { num, r1 } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -147,7 +147,7 @@ export async function getRiskWorklist(
   for (const sku of skuRows) {
     const onHand = onHandBySku.get(sku.id) ?? 0;
     const daily = dailyBySku.get(sku.id) ?? 0;
-    const cover = daily > 0 ? onHand / daily : null;
+    const cover = coverDays(onHand, daily);
     const exp = expiryBySku.get(sku.id);
     const remark = remarkBySku.get(sku.id);
     const action = suggestRiskAction({

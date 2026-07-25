@@ -21,10 +21,10 @@
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
-import { getOnHandBySku } from "@/server/core/stock-view";
+import { getOnHandBySku, coverDays } from "@/server/core/stock-view";
 import { getOpenSupplyLines, summarizeSupply } from "@/server/core/supply";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
-import { num, r1 } from "@/server/core/svc";
+import { num, r1, r1n } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -133,7 +133,7 @@ export async function getSkuFacts(db: AnyDb, opts: SkuFactsOptions = {}): Promis
       skuId: id,
       onHand: r1(onHand),
       daily: r1(daily),
-      daysCover: daily > 0 ? r1(onHand / daily) : null,
+      daysCover: r1n(coverDays(onHand, daily)),
       openSupply: r1(supplyTotals.get(id)?.total ?? 0),
       leadDays: leadBySku.get(id) ?? null,
       series,

@@ -18,6 +18,8 @@ export const num = (v: unknown): number => (v == null ? 0 : Number(v));
 
 /** 展示层四舍五入到 1 位小数 */
 export const r1 = (v: number): number => Math.round(v * 10) / 10;
+/** 可空版 r1：null 透传（可销天数等「算不出＝null」的口径专用） */
+export const r1n = (v: number | null): number | null => (v == null ? null : r1(v));
 
 /** 展示层四舍五入到 2 位小数 */
 export const r2 = (v: number): number => Math.round(v * 100) / 100;
