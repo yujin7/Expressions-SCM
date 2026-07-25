@@ -35,8 +35,17 @@ describe("架构护栏：落盘根目录", () => {
       if (ALLOW.some((a) => rel === a)) continue;
       const src = readFileSync(file, "utf8");
       // 命中形如 path.join(process.cwd(), "uploads" | "attachments" | "exports" ...)
-      for (const m of src.matchAll(/process\.cwd\(\)\s*,\s*["'](uploads|attachments|exports|files)["']/g)) {
-        offenders.push(`${rel} → process.cwd(), "${m[1]}"`);
+      /* 三种等价写法都要拦（红队指出首版只匹配第一种）：
+           path.join(process.cwd(), "uploads")     ← 逗号分隔
+           path.join(process.cwd() + "/uploads")   ← 字符串拼接
+           `${process.cwd()}/uploads`              ← 模板串 */
+      const pats: [RegExp, string][] = [
+        [/process\.cwd\(\)\s*,\s*["'](uploads|attachments|exports|files)["']/g, "process.cwd(), \"$1\""],
+        [/process\.cwd\(\)\s*\+\s*["'][\/]?(uploads|attachments|exports|files)/g, "process.cwd() + \"/$1\""],
+        [/\$\{\s*process\.cwd\(\)\s*\}[\/]+(uploads|attachments|exports|files)/g, "`${process.cwd()}/$1`"],
+      ];
+      for (const [re, label] of pats) {
+        for (const m of src.matchAll(re)) offenders.push(`${rel} → ${label.replace("$1", m[1])}`);
       }
     }
     expect(

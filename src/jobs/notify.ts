@@ -130,8 +130,12 @@ export async function runExceptionNotify(db: AnyDb): Promise<{ enqueued: number 
   for (const ex of exceptions) {
     // 内容指纹：同一异常、同一措辞（含计数）→ 同一 key → 不重复入队
     const fingerprint = fnv1a(`${ex.title}|${ex.impact}`);
-    // 节流窗口：高危按天，medium 按周（周一为界，避免慢变量天天刷屏）
-    const window = ex.severity === "medium" ? isoWeekOf(today) : today;
+    /* 节流窗口。**内容指纹只有在窗口不变时才起降噪作用**——
+       首版对 critical/high 仍取 today，于是文案一字不变也照旧每天一条新未读，
+       指纹形同虚设（我在源码注释里写的「静态事实自然只推一次」当时是不实描述）。
+       现在窗口只在**内容变化时**才推进：指纹相同即复用同一个 dedupeKey，
+       跨天不再重复入队；medium 另按 ISO 周降频，慢变量连周内变化也不刷屏。 */
+    const window = ex.severity === "medium" ? isoWeekOf(today) : "by-content";
     if (await enqueueNotification(db, {
       channel, title: ex.title, body: ex.impact, href: ex.href, severity: ex.severity,
       dedupeKey: `${ex.key}:${window}:${fingerprint}`, targetRole: "pmc",

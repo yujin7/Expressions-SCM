@@ -291,9 +291,22 @@ export async function computeExceptions(db: AnyDb): Promise<ExceptionItem[]> {
      现在只计「系统自己也认为该下单」的 SKU：belowLead 且未被抑制。
      被抑制的条数照本系统「抑制≠隐藏」的铁律在 impact 里明写，不静默吞掉。 */
   {
+    /* 代价与取舍（2026-07-26 实测，勿凭感觉重构）：
+       复用 getReplenishSuggestions 使本块从 ~21ms 涨到 ~135ms，
+       /api/workbench 整体热态 ~260ms。这是**用延迟换正确性**：
+       首屏那个标红的数必须与用户点进去看到的页面同源，否则两个数互相解释不了，
+       整条 critical 会被忽略（改之前正是如此）。
+       **不要在这里加缓存**：首屏是可信度的地基，宁可慢 130ms 也不能显示陈旧的告急数；
+       本仓已有前车之鉴——一个从未生效的 60s 缓存曾被当成立项理由，撑起了一整层预聚合表。
+       真要提速，先按 skill `measure-first` 拿基线，再从 service 内部优化，不要在此分叉口径。 */
     const rep = await getReplenishSuggestions({ allRows: true }, db);
-    const belowLead = rep.rows.filter((r) => r.belowLead && r.suppressReason == null).length;
-    const suppressed = rep.rows.filter((r) => r.belowLead && r.suppressReason != null).length;
+    /* 判据用 suggestQty != null，不用 belowLead。
+       service.ts:421-441 里 suggestQty 只在「短缺落在行动窗口内 且 未被抑制 且 量>0」时非空
+       ——这正是「引擎自己认为该下单」。而 belowLead 只说明可销 < 生产周期，
+       红队实证：首版 55 条里有 14 条（25%）引擎判定「短缺在 57 天后、超出行动窗口，暂不建议下单」，
+       与卡片文案「补货窗口迫近/已过」和我自己写的谓词描述都矛盾。 */
+    const belowLead = rep.rows.filter((r) => r.suggestQty != null).length;
+    const suppressed = rep.rows.filter((r) => r.suppressReason != null).length;
     if (belowLead > 0) {
       out.push({
         key: "below_lead",
@@ -302,7 +315,7 @@ export async function computeExceptions(db: AnyDb): Promise<ExceptionItem[]> {
         impact:
           `${belowLead} 个成品补货窗口迫近/已过（全网口径，与补货页同源` +
           `${rep.meta.snapDate ? `，快照 ${rep.meta.snapDate}` : ""}）` +
-          (suppressed > 0 ? `；另有 ${suppressed} 个虽低于生产周期但全口径参考充足，已抑制待人工核实` : ""),
+          (suppressed > 0 ? `；另有 ${suppressed} 个因全口径参考充足被抑制，待人工核实覆盖缺口` : ""),
         count: belowLead,
         href: "/replenish",
       });

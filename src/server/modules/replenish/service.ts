@@ -430,7 +430,15 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
         orderMultiple: uom?.orderMultiple ?? null,
       });
       planExplain.push(`施加 MOQ/订货倍数后 → ${suggested}`);
-      if (shouldSuppressSuggest(cover, coverFull, minCoverAlert, refGap)) {
+      /* 抑制基准必须与**触发**基准同源（2026-07-26 红队实证）。
+         触发用 actionWindow（=生产周期，本仓 40–68 天，见 :405/:421），
+         而抑制此前仍用 minCoverAlert(=cover_alert_days 缺省 30)。
+         二者不一致时，凡系统可销落在 30–生产周期之间的 SKU，
+         shouldSuppressSuggest 的第一个条件 coverSystem < 基准 恒不成立 → **闸门结构性打不开**：
+         实测 37/80 条建议（46%）不可抑制，其中 18 条按同源基准本应抑制、合计 115,391 件，
+         等于对海外/其他部门仓已有的货重复下单。
+         抑制≠拦单：被抑制的量仍以 heldQty 保留、逐行给出原因，人工核实后可手工放行。 */
+      if (shouldSuppressSuggest(cover, coverFull, actionWindow, refGap)) {
         suppressReason = "全口径参考充足（覆盖缺口 SKU：海外/其他部门仓不在系统快照源）——请先核实全口径库存，防重复下单";
         if (dCmp(suggested, "0") > 0) heldQty = suggested;
       } else if (dCmp(suggested, "0") > 0) {

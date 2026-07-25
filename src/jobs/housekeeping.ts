@@ -9,7 +9,7 @@
  */
 import { unlink } from "node:fs/promises";
 import path from "node:path";
-import { and, eq, inArray, lt, isNotNull } from "drizzle-orm";
+import { and, eq, inArray, lt, isNotNull, or, isNull } from "drizzle-orm";
 import { errorLogs, exportJobs, importJobs, jobRuns, stagingRows, notifications } from "@/db/schema";
 import { EXPORT_FILE_DIR } from "./export-worker";
 
@@ -22,6 +22,8 @@ export const ERROR_LOG_RETENTION_DAYS = 90;
 export const JOB_RUN_RETENTION_DAYS = 30;
 /** 已读通知保留天数（未读永不自动删——不替用户决定什么该被忽略） */
 const NOTIFY_READ_RETENTION_DAYS = 30;
+/** 广播/角色定向通知的绝对保留天数（readAt 归属不明，只能按年龄兜底） */
+const NOTIFY_BROADCAST_RETENTION_DAYS = 180;
 
 export interface HousekeepingSummary {
   stagingRowsDeleted: number;
@@ -90,9 +92,28 @@ export async function runHousekeeping(
      此前 notifications 表**无任何保留期**，只能人工「全部已读」，而列表硬截断 100 条
      且无分页——日推摘要按 3 条/天无衰减累积，约 33 天后占满唯一视图，
      真实事件通知被永久挤出。已读的留 30 天（回溯足够），未读不删（不替用户做决定）。 */
+  /* readAt 是**行级**的，而一行可以被多人看见（广播 userId=null，或 targetRole 定向一个角色，
+     且 admin 无 audience 过滤能看到全部）。所以 readAt 的真实语义是「**某个**能看到它的人读过」，
+     不是「收件人读过」。首版按 readAt 一刀切删除，等于：定向 pmc 的通知只要被 admin 打开过，
+     30 天后就会在 pmc01 从未看见的情况下被永久删除——我却在提交信息里写了「未读永不自动删」。
+     那句话只在行级成立，在收件人级不成立。
+
+     在不改 schema（需要 per-recipient 已读表）的前提下，按收件人可辨识性分两档：
+      · userId 非空＝**唯一收件人**，readAt 就是那个人读的 → 按已读 30 天清理，语义准确；
+      · userId 为空（广播/角色定向）＝ readAt 归属不明 → **不按已读删**，
+        只按绝对年龄兜底，避免表无界增长，且窗口给得足够长。 */
   const delNotify: { id: number }[] = await db
     .delete(notifications)
-    .where(and(isNotNull(notifications.readAt), lt(notifications.readAt, cutoff(NOTIFY_READ_RETENTION_DAYS))))
+    .where(
+      or(
+        and(
+          isNotNull(notifications.userId),
+          isNotNull(notifications.readAt),
+          lt(notifications.readAt, cutoff(NOTIFY_READ_RETENTION_DAYS)),
+        ),
+        and(isNull(notifications.userId), lt(notifications.createdAt, cutoff(NOTIFY_BROADCAST_RETENTION_DAYS))),
+      ),
+    )
     .returning({ id: notifications.id });
 
   return {

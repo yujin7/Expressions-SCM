@@ -111,22 +111,26 @@ describe("housekeeping 保洁任务", () => {
  * 纪律：已读的按期清理；**未读永不自动删**（不替用户决定什么该被忽略）。
  */
 describe("housekeeping 通知保留期", () => {
-  it("清理超期已读通知，保留未读与近期已读", async () => {
+  it("只清理「唯一收件人且已读超期」；角色定向的不因他人已读被删", async () => {
     const { db } = await createTestDb();
     const old = new Date(Date.now() - 60 * 864e5);
     const recent = new Date(Date.now() - 3 * 864e5);
 
     await db.insert(notifications).values([
-      { channel: "in_app", title: "老的已读", body: "x", status: "sent", readAt: old },
-      { channel: "in_app", title: "近期已读", body: "x", status: "sent", readAt: recent },
-      { channel: "in_app", title: "老的未读", body: "x", status: "sent", createdAt: old },
+      // 定向个人（userId 非空）＝唯一收件人，readAt 语义准确
+      { channel: "in_app", title: "定向-老的已读", body: "x", status: "sent", userId: 1, readAt: old },
+      { channel: "in_app", title: "定向-近期已读", body: "x", status: "sent", userId: 1, readAt: recent },
+      { channel: "in_app", title: "定向-老的未读", body: "x", status: "sent", userId: 1, createdAt: old },
+      // 角色定向（userId 为空）：readAt 可能是 admin 读的，**不得**据此删除
+      { channel: "in_app", title: "定向pmc-被admin读过", body: "x", status: "sent", targetRole: "pmc", readAt: old, createdAt: old },
     ]);
 
     const r = await runHousekeeping(db);
-    expect(r.notificationsDeleted).toBe(1);
+    expect(r.notificationsDeleted).toBe(1); // 只删定向个人且已读超期的那一条
 
     const left = await db.select({ title: notifications.title }).from(notifications);
-    // 中文按 UTF-16 码元排序不稳定，用集合比较语义更准
-    expect(new Set(left.map((x) => x.title))).toEqual(new Set(["近期已读", "老的未读"]));
+    expect(new Set(left.map((x) => x.title))).toEqual(
+      new Set(["定向-近期已读", "定向-老的未读", "定向pmc-被admin读过"]),
+    );
   });
 });

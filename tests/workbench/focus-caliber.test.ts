@@ -68,12 +68,17 @@ describe("控制塔首屏：断货风险必须用全网在库口径", () => {
     expect(await belowLeadCount()).toBe(1);
   });
 
-  it("实时仓 + 快照仓合并计算（两边都不够、合起来够 → 不报）", async () => {
+  it("实时仓 + 快照仓合并计算（两边单看都不够、合起来够 → 不报）", async () => {
     const skuId = await mkSku("MERGED");
     await mkSales(skuId);
-    await db.insert(stockBalances).values({ skuId, warehouseId: realtimeWh, batchId: null, qty: "300" });
-    await db.insert(stockSnapshots).values({ warehouseId: snapshotWh, skuId, bizDate: "2026-07-21", qty: "300" });
-    // 300 或 300 单看都 <495，合并 600 足够
+    // 判据已于 2026-07-26 改为「引擎给得出建议量」(suggestQty != null)，
+    // 而引擎是按**跌破安全库存**判短缺，不是裸的「可销 < 生产周期」。
+    // 本例安全库存实测 348 件（近6月窗口里前三月无销量，σ 偏大），
+    // 故合并量必须同时盖过 50 天消耗(≈495) **与** 安全库存，才是真的「不缺」。
+    // 各 700 件：单看 700 < 495+348=843（仍不足），合并 1400 才够——
+    // 继续钉住「快照仓必须计入」这条口径。
+    await db.insert(stockBalances).values({ skuId, warehouseId: realtimeWh, batchId: null, qty: "700" });
+    await db.insert(stockSnapshots).values({ warehouseId: snapshotWh, skuId, bizDate: "2026-07-21", qty: "700" });
 
     expect(await belowLeadCount()).toBe(0);
   });
