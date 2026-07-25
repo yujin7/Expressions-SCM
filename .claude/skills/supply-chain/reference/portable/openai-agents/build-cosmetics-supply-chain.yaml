@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cosmetics Supply Chain Engineer"
+  short_description: "Orchestrate cross-domain beauty supply-chain work"
+  default_prompt: "Use $build-cosmetics-supply-chain to coordinate this system-wide cosmetics supply-chain initiative across the required specialist domains."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Protect Supply Chain Ledgers"
+  short_description: "Protect inventory and financial transaction integrity"
+  default_prompt: "Use $protect-supply-chain-ledgers to make this transaction flow correct, idempotent, auditable, and reversible."

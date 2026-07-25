@@ -1,0 +1,4 @@
+interface:
+  display_name: "Reconcile Supply Chain Truth"
+  short_description: "Reconcile specs, code, tests, and delivery truth"
+  default_prompt: "Use $reconcile-supply-chain-truth to determine the project's actual status and next evidence-backed actions."

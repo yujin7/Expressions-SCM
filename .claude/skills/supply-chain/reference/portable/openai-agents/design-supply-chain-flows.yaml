@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design Supply Chain Flows"
+  short_description: "Design complete supply-chain workflows and contracts"
+  default_prompt: "Use $design-supply-chain-flows to turn this business need into an implementable end-to-end workflow."

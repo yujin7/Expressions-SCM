@@ -1,7 +1,14 @@
 # 供应链系统 — 项目约定
 
-- **工作教义见 skill `supply-chain`**（`.claude/skills/supply-chain/`）：设计教义、分层改动流程、
-  验证扫描、业务规则速查（R1–R17/D 决议/单据流）、行业判断力。本页只留常驻铁律，其余按需加载。
+- **本项目共 14 个 skill，全部在 `.claude/skills/`**（唯一位置，已入库）。入口是 `supply-chain`
+  （领域教义 + R1–R17/D 决议/单据流 + 行业判断力 + 全量 skill 索引），其余 13 个各管一段：
+  `caliber-change` 改共享口径 / `write-path` 写落库路径 / `list-page` 建列表页与客户端组件 /
+  `schema-change` 改 schema 与迁移 / `alert-budget` 加告警 / `data-release` 导入放行 /
+  `decision-log` 登记业务裁决 / `verify-claim` 上报缺陷前证伪 / `dead-plumbing` 查死管道 /
+  `measure-first` 优化前先量 / `redteam-pass` 上线前对抗 / `release-sweep` 交付前全量扫描 /
+  `parallel-sessions` 多会话并行。通用（非本仓）领域知识与法规原文出处在
+  `.claude/skills/supply-chain/reference/portable/`——**不自动加载，按需查阅**。
+  本页只留常驻铁律，其余按需加载。
 - 唯一开发依据: `../spec/01-系统完整规格-v2.0.md`（v2.1）；术语用《00》A4 统一命名
 - 单据前缀: BH/WO/PO/PC/JG/FL/TL/SH/CT/RK/CK/DB/JS/PD；取号走 doc_counter（`src/server/docflow/doc-no.ts`），禁止 MAX+1
 - 金额 decimal(14,2)，数量 decimal(14,4)；禁 float 运算（用字符串/decimal 工具 `src/server/core/decimal.ts`）；时区 Asia/Shanghai

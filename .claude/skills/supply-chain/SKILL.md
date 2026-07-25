@@ -177,10 +177,26 @@ curl -s localhost:3000/api/health     # 迁移条数 + drift:false
 | 需要某条 R 规则的准确定义、D 决议、单据流、审批域、摄取纪律 | `reference/domain-rules.md` |
 | 要动过账/审批/脱敏/口径共享层，或想知道某条铁律背后的事故 | `reference/invariants.md` |
 | 做取舍判断：安全库存/预测指标/效期渠道规则/告警降噪/自动化边界/行业基准 | `reference/excellence.md` |
+| **要引法规原文出处**（NMPA / 国务院令 727 / GMP / 注册备案） | `reference/portable/authoritative-sources.md` ← 本 skill 正文与其余 reference **一个 URL 都没有**，只有这里有；且标注了研究日期，引用前必须重新核实 |
+| 开新项目或对外讲方法论，需要不绑定本仓的通用框架 | `reference/portable/README.md`（8 份通用 playbook + 领域/架构/交付三份长文） |
 
-**流程类工作不要在这里找**：改口径→`caliber-change`；发布前扫描→`release-sweep`；
-上报缺陷前证伪→`verify-claim`；写路径对抗测试→`redteam-pass`；
-数据导入放行→`data-release`；业务裁决登记→`decision-log`。
+**流程类工作不要在这里找**——14 个 skill 各管一段：
+
+| 你要做的事 | 用哪个 skill |
+|---|---|
+| 改共享口径（在库/在途/日均/ABC/安全库存） | `caliber-change` |
+| 写会落库的 service / 路由 / 过账 | `write-path` |
+| 新建列表页、加 Tab、动 `"use client"` 文件 | `list-page` |
+| 改 `src/db/schema/*`、生成迁移 | `schema-change` |
+| 加告警 / 检测器 / 阈值 / 推送 | `alert-budget` |
+| 跑导入放行管道 | `data-release` |
+| 登记业务裁决（写死任何业务常数之前） | `decision-log` |
+| 上报「缺了/坏了/没接」之前 | `verify-claim` |
+| 怀疑某处「写了没人读 / 解析了没落库」 | `dead-plumbing` |
+| 想做性能优化或大重构之前 | `measure-first` |
+| 写完写路径，上线前对抗测试 | `redteam-pass` |
+| 告诉用户「这批做完了」之前 | `release-sweep` |
+| 发现另一个会话也在改这个仓库 | `parallel-sessions` |
 
 **权威顺序**：用户当面的判断 > `spec/CURRENT.md`（唯一真相索引，改判先改它）>
 `CLAUDE.md`（常驻铁律）> 本 skill > 各 spec 文档 > 代码注释。

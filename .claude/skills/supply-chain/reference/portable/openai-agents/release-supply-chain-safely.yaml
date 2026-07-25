@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Supply Chain Safely"
+  short_description: "Prove releases safe with risk-led verification"
+  default_prompt: "Use $release-supply-chain-safely to verify this change end to end and produce an evidence-backed release decision."
