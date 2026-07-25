@@ -7,4 +7,7 @@ uploads/
 coverage/
 drizzle/meta/_journal.json.bak
 .data/
-.claude/
+# .claude/ 默认忽略（launch.json 等本地设置因人而异），但项目 skill 必须入库——
+# 它是团队/云端会话共享的工作教义，不入库等于没有。
+.claude/*
+!.claude/skills/
