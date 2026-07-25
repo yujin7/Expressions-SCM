@@ -1,12 +1,14 @@
 # 供应链系统 — 项目约定
 
+- **工作教义见 skill `supply-chain`**（`.claude/skills/supply-chain/`）：设计教义、分层改动流程、
+  验证扫描、业务规则速查（R1–R17/D 决议/单据流）、行业判断力。本页只留常驻铁律，其余按需加载。
 - 唯一开发依据: `../spec/01-系统完整规格-v2.0.md`（v2.1）；术语用《00》A4 统一命名
 - 单据前缀: BH/WO/PO/PC/JG/FL/TL/SH/CT/RK/CK/DB/JS/PD；取号走 doc_counter（`src/server/docflow/doc-no.ts`），禁止 MAX+1
 - 金额 decimal(14,2)，数量 decimal(14,4)；禁 float 运算（用字符串/decimal 工具 `src/server/core/decimal.ts`）；时区 Asia/Shanghai
 - 库存只能经 `src/server/posting/registry.ts` 过账；禁止直接写 stock_balance/stock_ledger
 - stock_ledger 与 audit_log 仅追加；纠错一律红字冲销，无反审批
 - 业务规则在 `src/server/rules/*.ts` 纯函数+单测；R5 逐物料计算，禁止跨物料轧差
-- 脱敏唯一收口 `src/server/modules/*/dto.ts`（含导出/RSC）；前端隐藏不算数
+- 脱敏唯一收口 `src/server/core/dto.ts` 的 `maskSensitive`（含导出/RSC）；前端隐藏不算数
 - 余额更新事务内按 (skuId, warehouseId, batchId) 排序；过账/审批靠 UNIQUE 约束幂等
 - UI: AntD5 + 中文界面；列表可导出（>5000 行走异步任务）
 - 测试: 纯规则用 vitest 直测；涉库测试用 PGlite（`tests/helpers/db.ts`），不依赖 Docker
