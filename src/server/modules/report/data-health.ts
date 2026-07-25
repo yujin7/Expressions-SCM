@@ -217,7 +217,8 @@ export async function getDataHealth(
         title: `${explicitBelow.length} 个成品**已设定**的临期阈值低于渠道通行口径 max(保质期×2/10, 100天)`,
         impact:
           "这些 SKU 有人显式设过阈值，但设得比渠道口径松：会出现「系统判健康、渠道判临期」——" +
-          "货已不能正常上架/不可退，系统却既不预警、也不在补货建议里为提前处置留时间。请逐项复核。",
+          "货已不能正常上架/不可退，系统却既不预警、也不在补货建议里为提前处置留时间。" +
+          "请按各平台实际合同核准后在 SKU 主档逐项修正——系统不代改，因为这是渠道口径不是代码常量。",
         count: explicitBelow.length,
         samples: explicitBelow.slice(0, 20).map(
           (x) => `${x.s.code}（保质期 ${x.s.shelfLifeDays} 天，现阈值 ${x.cur}，渠道口径 ≥${x.need}）`,

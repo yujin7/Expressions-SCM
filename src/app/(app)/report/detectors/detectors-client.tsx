@@ -16,15 +16,22 @@ import CaliberNote from "@/components/CaliberNote";
 
 type DetectorKind = "sales_stop" | "channel_shift" | "velocity";
 
+interface DetectorHit {
+  kind: DetectorKind;
+  severity: "high" | "medium";
+  title: string;
+  detail: string;
+}
+
+/** 一行 = 一个 SKU；同一 SKU 命中的多个侦测器合并在 hits 里，不再各占一行 */
 interface DetectorRow {
   skuId: number;
   code: string;
   name: string;
   brand: string | null;
-  kind: DetectorKind;
+  hits: DetectorHit[];
   severity: "high" | "medium";
-  title: string;
-  detail: string;
+  hitCount: number;
   onHand: number;
   lastQty: number;
 }
@@ -32,7 +39,10 @@ interface DetectorRow {
 interface DetectorData {
   rows: DetectorRow[];
   total: number;
-  summary: { salesStop: number; channelShift: number; velocity: number; scanned: number };
+  summary: {
+    salesStop: number; channelShift: number; velocity: number;
+    scanned: number; affectedSkus: number; multiHitSkus: number;
+  };
   months: string[];
   maxYm: string | null;
   snapDate: string | null;
@@ -89,17 +99,26 @@ export default function DetectorsClient() {
     exportCsv(
       `异动侦测-${data?.maxYm ?? ""}`,
       ["类型", "严重度", "SKU编码", "名称", "品牌", "在库", "最近一期销量", "标题", "说明"],
-      all.map((r) => [KIND_LABEL[r.kind], SEVERITY_LABEL[r.severity], r.code, r.name, r.brand, r.onHand, r.lastQty, r.title, r.detail]),
+      // 导出按「一次命中一行」展开——表格是给人看的（按 SKU 合并），CSV 是拿去透视的
+      all.flatMap((r) =>
+        r.hits.map((h) => [KIND_LABEL[h.kind], SEVERITY_LABEL[h.severity], r.code, r.name, r.brand, r.onHand, r.lastQty, h.title, h.detail]),
+      ),
     );
   };
 
   const columns: ColumnsType<DetectorRow> = [
     {
-      title: "类型",
-      dataIndex: "kind",
-      width: 96,
+      title: "命中",
+      key: "hits",
+      width: 190,
       fixed: "left",
-      render: (v: DetectorKind) => <Tag color={KIND_COLOR[v]}>{KIND_LABEL[v]}</Tag>,
+      render: (_: unknown, r: DetectorRow) => (
+        <Space size={4} wrap>
+          {r.hits.map((h) => (
+            <Tag color={KIND_COLOR[h.kind]} key={h.kind} style={{ marginInlineEnd: 0 }}>{KIND_LABEL[h.kind]}</Tag>
+          ))}
+        </Space>
+      ),
     },
     {
       title: "SKU 编码",
@@ -119,12 +138,16 @@ export default function DetectorsClient() {
     { title: "最近一期销量", dataIndex: "lastQty", width: 110, align: "right", render: (v: number) => formatQty(v) },
     {
       title: "说明",
-      dataIndex: "detail",
-      render: (v: string, r) => (
-        <div>
-          <Typography.Text strong>{r.title}</Typography.Text>
-          <div style={{ fontSize: 12, color: "rgba(0,0,0,0.55)", lineHeight: 1.7 }}>{v}</div>
-        </div>
+      key: "detail",
+      render: (_: unknown, r: DetectorRow) => (
+        <Space direction="vertical" size={6} style={{ width: "100%" }}>
+          {r.hits.map((h) => (
+            <div key={h.kind}>
+              <Typography.Text strong>{h.title}</Typography.Text>
+              <div style={{ fontSize: 12, color: "rgba(0,0,0,0.55)", lineHeight: 1.7 }}>{h.detail}</div>
+            </div>
+          ))}
+        </Space>
       ),
     },
     {
@@ -176,6 +199,16 @@ export default function DetectorsClient() {
         <Card size="small" style={{ minWidth: 150 }}>
           <Statistic title="速度突变" value={s?.velocity ?? 0} valueStyle={{ color: "#1677ff" }} suffix="项" />
         </Card>
+        <Card size="small" style={{ minWidth: 170 }}>
+          {/* 三项之和 > 待看 SKU 数，差额就是同一 SKU 中多条的重叠量——把它摆出来，
+              否则「554」会被读成「554 个东西要处理」，实际只有 343 个对象 */}
+          <Statistic
+            title="待看 SKU"
+            value={s?.affectedSkus ?? 0}
+            suffix={s ? `个（其中 ${s.multiHitSkus} 个中多条）` : "个"}
+            valueStyle={{ color: "#d4380d" }}
+          />
+        </Card>
         <Card size="small" style={{ minWidth: 150 }}>
           <Statistic title="扫描成品 SKU" value={s?.scanned ?? 0} suffix="个" />
         </Card>
@@ -207,7 +240,7 @@ export default function DetectorsClient() {
         }
       />
       <Table<DetectorRow>
-        rowKey={(r) => `${r.kind}:${r.skuId}`}
+        rowKey={(r) => String(r.skuId)}
         size={listState.tableSize}
         columns={columns}
         dataSource={data?.rows ?? []}
