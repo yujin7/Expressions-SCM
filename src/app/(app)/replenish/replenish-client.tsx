@@ -21,7 +21,6 @@ import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import ProjectionDrawer from "@/components/ProjectionDrawer";
 import CaliberNote from "@/components/CaliberNote";
-import { metricTooltip } from "@/components/metrics";
 import { useListState } from "@/components/useListState";
 
 interface ReplenishRow {

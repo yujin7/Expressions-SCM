@@ -51,17 +51,6 @@ export interface SalesBridgeResult {
   attribution: { brand: AttributionSide; channel: AttributionSide };
 }
 
-export interface AttributionResult {
-  metricKey: "sales";
-  fromYm: string;
-  toYm: string;
-  from: number;
-  to: number;
-  total: number;
-  brand: AttributionSide;
-  channel: AttributionSide;
-}
-
 /** 一个维度两期的键→数值 + 标签解析 */
 interface DimMaps {
   prev: Map<string, number>;
@@ -227,30 +216,3 @@ export async function getSalesBridge(
   };
 }
 
-/** KPI 异动自动归因：同一变化同时按 brand/channel 分解，各返回 top3 正/负贡献 */
-export async function getAttribution(
-  metricKey: "sales",
-  fromYm: string,
-  toYm: string,
-  dbArg?: AnyDb,
-): Promise<AttributionResult> {
-  if (metricKey !== "sales") throw new ApiError(400, `暂不支持的指标：${String(metricKey)}`);
-  const db: AnyDb = dbArg ?? (await getDbAsync());
-  const w = await resolveWindow(db, fromYm, toYm);
-  const emptySide = (): AttributionSide => ({ ups: [], downs: [] });
-  if (!w.fromYm || !w.toYm) {
-    return { metricKey, fromYm: w.fromYm, toYm: w.toYm, from: 0, to: 0, total: 0, brand: emptySide(), channel: emptySide() };
-  }
-  const dims = await loadDims(db, w.fromYm, w.toYm);
-  const b = buildBridge(dims.brand.prev, dims.brand.curr, dims.brand.labelOf, Number.MAX_SAFE_INTEGER);
-  return {
-    metricKey,
-    fromYm: w.fromYm,
-    toYm: w.toYm,
-    from: b.from,
-    to: b.to,
-    total: b.total,
-    brand: attributionOf(dims.brand),
-    channel: attributionOf(dims.channel),
-  };
-}

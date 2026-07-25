@@ -3,7 +3,7 @@
  * 可产量 = min_i( floor(净已发料_i ÷ 毛单耗_i) )；毛单耗 = grossReq_i / woQty。
  * 建议批量 = min(可产量 − 已批量, WO 余量) 按订货倍数向下取整；<1 倍数则 0。
  */
-import { dCmp, dDiv, dMul, dSub } from "@/server/core/decimal";
+import { dCmp, dDiv, dSub } from "@/server/core/decimal";
 
 export interface KittingLine {
   materialSkuId: number;
@@ -44,5 +44,3 @@ export function batchAllowed(existingBatches: number): boolean {
   return existingBatches < MAX_AUTO_BATCHES;
 }
 
-// 保留 dMul 引用以防未来单位换算扩展（当前未用）
-void dMul;

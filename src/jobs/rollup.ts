@@ -12,7 +12,7 @@
  * - 交期样本口径**复用 leadtime-learning 的既有判定**（PO 创建 → 最早生效 SH 建单），
  *   不另立一套，否则交期学习页与安全库存会各说各话。
  */
-import { and, eq, gte, inArray, isNotNull, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { leadTimeStats } from "@/server/rules/leadtime-stats";
 
@@ -27,9 +27,6 @@ export interface RollupSummary {
 }
 
 /** 近 N 天的起点（Asia/Shanghai 日界近似用 UTC 偏移，与既有任务同准） */
-function daysAgo(n: number): Date {
-  return new Date(Date.now() - n * 86_400_000);
-}
 
 export async function runRollup(db: AnyDb, opts?: { months?: number }): Promise<RollupSummary> {
   const months = Math.max(1, opts?.months ?? 24);
@@ -114,8 +111,5 @@ export async function runRollup(db: AnyDb, opts?: { months?: number }): Promise<
       });
     supplierLeadRows++;
   }
-
-  void months;
-  void isNotNull;
   return { supplierLeadRows, builtAt: now.toISOString() };
 }

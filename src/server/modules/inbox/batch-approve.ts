@@ -52,10 +52,6 @@ const APPROVERS: Record<string, Approver> = {
   jg: approveJg,
 };
 
-export function supportedBatchDocTypes(): string[] {
-  return Object.keys(APPROVERS);
-}
-
 export async function batchApprove(
   user: SessionUser,
   input: { items: BatchApproveItem[]; comment?: string },
