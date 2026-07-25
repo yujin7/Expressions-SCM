@@ -7,8 +7,8 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
   try {
     const user = await guardWrite("supplier");
     const { id } = await ctx.params;
-    const result = await updateSupplier(parseId(id), await readJson(req));
-    await auditFromRoute(user, "supplier", parseId(id), "update", result);
+    // 审计已随写入落在同一事务内（master/supplier.ts）
+    const result = await updateSupplier(parseId(id), await readJson(req), user);
     return NextResponse.json(result);
   } catch (e) {
     return errorResponse(e);

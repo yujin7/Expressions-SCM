@@ -1,4 +1,8 @@
 import { eq, ilike, or, sql } from "drizzle-orm";
+import { writeAudit } from "@/server/core/audit";
+import type { SessionUser } from "@/server/core/dto";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyTx = any;
 import { getDbAsync, schema } from "@/db";
 import { ApiError } from "./common";
 import { warehouseSchema } from "./schemas";
@@ -34,10 +38,12 @@ export async function listWarehouses(q: string, page: number, pageSize: number) 
   return { data: rows, total };
 }
 
-export async function createWarehouse(input: unknown) {
+/** @param actor 写入者；审计与写入同事务（路由层补记不原子，见 master/sku.ts 注释） */
+export async function createWarehouse(input: unknown, actor?: SessionUser, dbArg?: AnyTx) {
   const v = warehouseSchema.parse(input);
-  const db = await getDbAsync();
-  const [created] = await db
+  const db: AnyTx = dbArg ?? (await getDbAsync());
+  return db.transaction(async (tx: AnyTx) => {
+  const [created] = await tx
     .insert(schema.warehouses)
     .values({
       code: v.code,
@@ -50,15 +56,20 @@ export async function createWarehouse(input: unknown) {
       active: v.active,
     })
     .returning();
+  if (actor) {
+    await writeAudit(tx, { userId: actor.id, entity: "warehouse", entityId: created.id, action: "create", after: created });
+  }
   return created;
+  });
 }
 
-export async function updateWarehouse(id: number, input: unknown) {
+export async function updateWarehouse(id: number, input: unknown, actor?: SessionUser, dbArg?: AnyTx) {
   const v = warehouseSchema.parse(input);
-  const db = await getDbAsync();
-  const [existing] = await db.select().from(schema.warehouses).where(eq(schema.warehouses.id, id));
+  const db: AnyTx = dbArg ?? (await getDbAsync());
+  return db.transaction(async (tx: AnyTx) => {
+  const [existing] = await tx.select().from(schema.warehouses).where(eq(schema.warehouses.id, id));
   if (!existing) throw new ApiError(404, "仓库不存在");
-  const [updated] = await db
+  const [updated] = await tx
     .update(schema.warehouses)
     .set({
       code: v.code,
@@ -71,5 +82,9 @@ export async function updateWarehouse(id: number, input: unknown) {
     })
     .where(eq(schema.warehouses.id, id))
     .returning();
+  if (actor) {
+    await writeAudit(tx, { userId: actor.id, entity: "warehouse", entityId: id, action: "update", before: existing, after: updated });
+  }
   return updated;
+  });
 }

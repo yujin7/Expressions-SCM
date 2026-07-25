@@ -16,8 +16,9 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await guardWrite("sku");
-    const result = await createSku(await readJson(req));
-    await auditFromRoute(user, "sku", (result as { id?: number }).id, "create", result);
+    // 审计已随写入落在同一事务内（master/sku.ts），此处不再补记——
+    // 路由层补记用的是新连接、且在服务提交之后，进程挂在中间就会「有数据无审计」。
+    const result = await createSku(await readJson(req), user);
     return NextResponse.json(result, { status: 201 });
   } catch (e) {
     return errorResponse(e);

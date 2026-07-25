@@ -16,8 +16,8 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await guardWrite("supplier");
-    const result = await createSupplier(await readJson(req));
-    await auditFromRoute(user, "supplier", (result as { id?: number }).id, "create", result);
+    // 审计已随写入落在同一事务内（master/supplier.ts）
+    const result = await createSupplier(await readJson(req), user);
     return NextResponse.json(result, { status: 201 });
   } catch (e) {
     return errorResponse(e);

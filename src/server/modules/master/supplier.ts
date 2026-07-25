@@ -1,4 +1,8 @@
 import { eq, ilike, or, sql } from "drizzle-orm";
+import { writeAudit } from "@/server/core/audit";
+import type { SessionUser } from "@/server/core/dto";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyTx = any;
 import { getDbAsync, schema } from "@/db";
 import { ApiError } from "./common";
 import { supplierSchema } from "./schemas";
@@ -31,10 +35,15 @@ export async function listSuppliers(q: string, page: number, pageSize: number) {
   return { data: rows, total };
 }
 
-export async function createSupplier(input: unknown) {
+/**
+ * @param actor 写入者。审计必须与写入同事务——路由层补记用的是新连接、且在提交之后，
+ *   进程挂在中间就留下「有数据无审计」。供应商含银行账户等敏感字段，留痕尤其不能有洞。
+ */
+export async function createSupplier(input: unknown, actor?: SessionUser, dbArg?: AnyTx) {
   const v = supplierSchema.parse(input);
-  const db = await getDbAsync();
-  const [created] = await db
+  const db: AnyTx = dbArg ?? (await getDbAsync());
+  return db.transaction(async (tx: AnyTx) => {
+  const [created] = await tx
     .insert(schema.suppliers)
     .values({
       code: v.code,
@@ -51,15 +60,20 @@ export async function createSupplier(input: unknown) {
       status: v.status,
     })
     .returning();
+  if (actor) {
+    await writeAudit(tx, { userId: actor.id, entity: "supplier", entityId: created.id, action: "create", after: created });
+  }
   return created;
+  });
 }
 
-export async function updateSupplier(id: number, input: unknown) {
+export async function updateSupplier(id: number, input: unknown, actor?: SessionUser, dbArg?: AnyTx) {
   const v = supplierSchema.parse(input);
-  const db = await getDbAsync();
-  const [existing] = await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, id));
+  const db: AnyTx = dbArg ?? (await getDbAsync());
+  return db.transaction(async (tx: AnyTx) => {
+  const [existing] = await tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, id));
   if (!existing) throw new ApiError(404, "供应商不存在");
-  const [updated] = await db
+  const [updated] = await tx
     .update(schema.suppliers)
     .set({
       code: v.code,
@@ -78,5 +92,9 @@ export async function updateSupplier(id: number, input: unknown) {
     })
     .where(eq(schema.suppliers.id, id))
     .returning();
+  if (actor) {
+    await writeAudit(tx, { userId: actor.id, entity: "supplier", entityId: id, action: "update", before: existing, after: updated });
+  }
   return updated;
+  });
 }

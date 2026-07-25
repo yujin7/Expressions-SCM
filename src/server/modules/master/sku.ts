@@ -1,4 +1,8 @@
 import { and, eq, ilike, inArray, or, sql } from "drizzle-orm";
+import { writeAudit } from "@/server/core/audit";
+import type { SessionUser } from "@/server/core/dto";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyTx = any;
 import { getDbAsync, schema } from "@/db";
 import { ApiError } from "./common";
 import { SKU_TYPES, skuSchema } from "./schemas";
@@ -63,10 +67,17 @@ export async function listSkus(q: string, page: number, pageSize: number, typePa
   return { data: rows, total };
 }
 
-export async function createSku(input: unknown) {
+/**
+ * @param actor 写入者。审计必须与写入落在**同一个事务**里。
+ *   此前审计由路由层的 auditFromRoute 补记，而它用 getDbAsync() 拿的是**新的根连接**、
+ *   且在服务事务提交之后才跑——进程在这中间挂掉就会留下「有数据、无审计」的行。
+ *   CLAUDE.md 的铁律是「所有 service 写路径必须 writeAudit」，原子性是这条规则的实质。
+ */
+export async function createSku(input: unknown, actor?: SessionUser, dbArg?: AnyTx) {
   const v = skuSchema.parse(input);
-  const db = await getDbAsync();
-  const [created] = await db
+  const db: AnyTx = dbArg ?? (await getDbAsync());
+  return db.transaction(async (tx: AnyTx) => {
+  const [created] = await tx
     .insert(schema.skus)
     .values({
       code: v.code,
@@ -85,15 +96,20 @@ export async function createSku(input: unknown) {
       active: v.active,
     })
     .returning();
+  if (actor) {
+    await writeAudit(tx, { userId: actor.id, entity: "sku", entityId: created.id, action: "create", after: created });
+  }
   return created;
+  });
 }
 
-export async function updateSku(id: number, input: unknown) {
+export async function updateSku(id: number, input: unknown, actor?: SessionUser, dbArg?: AnyTx) {
   const v = skuSchema.parse(input);
-  const db = await getDbAsync();
-  const [existing] = await db.select().from(schema.skus).where(eq(schema.skus.id, id));
+  const db: AnyTx = dbArg ?? (await getDbAsync());
+  return db.transaction(async (tx: AnyTx) => {
+  const [existing] = await tx.select().from(schema.skus).where(eq(schema.skus.id, id));
   if (!existing) throw new ApiError(404, "SKU 不存在");
-  const [updated] = await db
+  const [updated] = await tx
     .update(schema.skus)
     .set({
       code: v.code,
@@ -114,5 +130,9 @@ export async function updateSku(id: number, input: unknown) {
     })
     .where(eq(schema.skus.id, id))
     .returning();
+  if (actor) {
+    await writeAudit(tx, { userId: actor.id, entity: "sku", entityId: id, action: "update", before: existing, after: updated });
+  }
   return updated;
+  });
 }

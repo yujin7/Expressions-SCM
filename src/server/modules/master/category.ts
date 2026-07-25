@@ -1,4 +1,8 @@
 import { eq, ilike, sql } from "drizzle-orm";
+import { writeAudit } from "@/server/core/audit";
+import type { SessionUser } from "@/server/core/dto";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyTx = any;
 import { alias } from "drizzle-orm/pg-core";
 import { getDbAsync, schema } from "@/db";
 import { ApiError } from "./common";
@@ -50,25 +54,31 @@ async function resolveLevel(parentId: number | null | undefined, selfId?: number
   return level;
 }
 
-export async function createCategory(input: unknown) {
+/** @param actor 写入者；审计与写入同事务（路由层补记不原子，见 master/sku.ts 注释） */
+export async function createCategory(input: unknown, actor?: SessionUser, dbArg?: AnyTx) {
   const v = categorySchema.parse(input);
   const level = await resolveLevel(v.parentId);
-  const db = await getDbAsync();
-  const [created] = await db
-    .insert(schema.categories)
-    .values({ name: v.name, parentId: v.parentId ?? null, level })
-    .returning();
-  return created;
+  const db: AnyTx = dbArg ?? (await getDbAsync());
+  return db.transaction(async (tx: AnyTx) => {
+    const [created] = await tx
+      .insert(schema.categories)
+      .values({ name: v.name, parentId: v.parentId ?? null, level })
+      .returning();
+    if (actor) {
+      await writeAudit(tx, { userId: actor.id, entity: "category", entityId: created.id, action: "create", after: created });
+    }
+    return created;
+  });
 }
 
-export async function updateCategory(id: number, input: unknown) {
+export async function updateCategory(id: number, input: unknown, actor?: SessionUser, dbArg?: AnyTx) {
   const v = categorySchema.parse(input);
-  const db = await getDbAsync();
+  const db: AnyTx = dbArg ?? (await getDbAsync());
   const [existing] = await db.select().from(schema.categories).where(eq(schema.categories.id, id));
   if (!existing) throw new ApiError(404, "分类不存在");
   const level = await resolveLevel(v.parentId, id);
 
-  return db.transaction(async (tx) => {
+  return db.transaction(async (tx: AnyTx) => {
     const [updated] = await tx
       .update(schema.categories)
       .set({ name: v.name, parentId: v.parentId ?? null, level })
@@ -91,6 +101,9 @@ export async function updateCategory(id: number, input: unknown) {
       for (const gc of grandchildren) {
         await tx.update(schema.categories).set({ level: level + 2 }).where(eq(schema.categories.id, gc.id));
       }
+    }
+    if (actor) {
+      await writeAudit(tx, { userId: actor.id, entity: "category", entityId: id, action: "update", before: existing, after: updated });
     }
     return updated;
   });
