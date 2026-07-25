@@ -54,7 +54,7 @@ interface DocLine {
 }
 
 interface DocApproval {
-  approverName: string;
+  approverName: string | null;
   action: "approve" | "reject";
   comment: string | null;
   createdAt: string;
@@ -595,7 +595,7 @@ function DocsInner() {
                     children: (
                       <div>
                         <div>
-                          {a.approverName} {a.action === "approve" ? "审批通过" : "驳回"}
+                          {a.approverName ?? "—"} {a.action === "approve" ? "审批通过" : "驳回"}
                           <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
                             {dayjs(a.createdAt).format("YYYY-MM-DD HH:mm")}
                           </Typography.Text>
