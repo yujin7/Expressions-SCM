@@ -127,7 +127,7 @@ export default function SupplierClient() {
         width={560}
         open={attachSupplier != null}
         onClose={() => setAttachSupplier(null)}
-        destroyOnClose
+        destroyOnHidden
       >
         {attachSupplier ? (
           <AttachmentPanel entity="supplier" entityId={attachSupplier.id} canWrite={canWrite} title="资质证照" />

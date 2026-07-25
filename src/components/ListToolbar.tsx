@@ -124,7 +124,7 @@ export default function ListToolbar<F extends Record<string, string | undefined>
         onCancel={() => setSaveOpen(false)}
         okText="保存"
         cancelText="取消"
-        destroyOnClose
+        destroyOnHidden
       >
         <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
           视图保存当前的筛选与分页（本机可见，最多 20 条，同名覆盖）。

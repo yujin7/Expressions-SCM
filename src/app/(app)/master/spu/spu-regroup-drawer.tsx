@@ -174,7 +174,7 @@ export default function SpuRegroupDrawer({
       width={760}
       open={open}
       onClose={onClose}
-      destroyOnClose
+      destroyOnHidden
     >
       <Typography.Title level={5} style={{ marginTop: 0 }}>
         当前成员（{members.length}）
@@ -234,7 +234,7 @@ export default function SpuRegroupDrawer({
         okButtonProps={{ disabled: !moveOutTarget }}
         onCancel={() => setMoveOut(null)}
         onOk={() => void doMoveOut()}
-        destroyOnClose
+        destroyOnHidden
       >
         <Typography.Paragraph type="secondary">选择目标 SPU（SKU 将改挂至该 SPU）：</Typography.Paragraph>
         <RemoteSelect

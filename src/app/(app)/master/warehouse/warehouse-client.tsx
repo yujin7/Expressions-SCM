@@ -57,7 +57,7 @@ function WarehousePanoramaDrawer({ id, onClose }: { id: number | null; onClose: 
       width={680}
       open={id != null}
       onClose={onClose}
-      destroyOnClose
+      destroyOnHidden
     >
       {!data ? (
         <Skeleton active />

@@ -147,7 +147,7 @@ export default function SkuClient() {
         width={560}
         open={attachSku != null}
         onClose={() => setAttachSku(null)}
-        destroyOnClose
+        destroyOnHidden
       >
         {attachSku ? (
           <AttachmentPanel entity="sku" entityId={attachSku.id} canWrite={canWrite} title="图片与附件" />

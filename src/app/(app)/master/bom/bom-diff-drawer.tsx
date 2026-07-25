@@ -162,7 +162,7 @@ export default function BomDiffDrawer({
   ];
 
   return (
-    <Drawer title={`版本对比：${title}`} width={880} open={open} onClose={onClose} destroyOnClose>
+    <Drawer title={`版本对比：${title}`} width={880} open={open} onClose={onClose} destroyOnHidden>
       {diff && (
         <>
           <Space style={{ marginBottom: 12 }}>
