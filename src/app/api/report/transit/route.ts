@@ -168,6 +168,31 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    if (includeSummary && (kind === "pkg_order" || kind === "pkg_stock")) {
+      const [coverage] = await db
+        .select({
+          materialRows: sql<number>`count(*) filter (where ${t.materialCode} is not null)::int`,
+          linkedMaterialRows: sql<number>`count(${t.materialSkuId})::int`,
+          distinctLinkedMaterials: sql<number>`count(distinct ${t.materialSkuId})::int`,
+          unresolvedMaterialCodes:
+            sql<number>`count(distinct ${t.materialCode}) filter (where ${t.materialCode} is not null and ${t.materialSkuId} is null)::int`,
+          supplierRows:
+            sql<number>`count(*) filter (where ${t.oemRaw} is not null and ${t.oemRaw} <> '/')::int`,
+          linkedSupplierRows: sql<number>`count(${t.supplierId})::int`,
+        })
+        .from(t)
+        .where(eq(t.kind, kind));
+      summary = {
+        type: "material_coverage",
+        materialRows: coverage?.materialRows ?? 0,
+        linkedMaterialRows: coverage?.linkedMaterialRows ?? 0,
+        distinctLinkedMaterials: coverage?.distinctLinkedMaterials ?? 0,
+        unresolvedMaterialCodes: coverage?.unresolvedMaterialCodes ?? 0,
+        supplierRows: coverage?.supplierRows ?? 0,
+        linkedSupplierRows: coverage?.linkedSupplierRows ?? 0,
+      };
+    }
+
     return NextResponse.json({ rows: enriched, total, importedAt: meta?.importedAt ?? null, summary });
   } catch (e) {
     return errorResponse(e);

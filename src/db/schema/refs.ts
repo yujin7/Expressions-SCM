@@ -65,6 +65,7 @@ export const transitRefs = pgTable("transit_refs", {
   skuCode: text("sku_code"), // 成品编码（原文保真）
   skuId: integer("sku_id"), // 解析命中则填（别名优先），未命中留空仍展示
   materialCode: text("material_code"),
+  materialSkuId: integer("material_sku_id").references(() => skus.id), // 包材/原料主档；与成品 skuId 分离，禁止混用
   materialName: text("material_name"),
   oemRaw: text("oem_raw"),
   supplierId: integer("supplier_id"),
@@ -94,5 +95,6 @@ export const transitRefs = pgTable("transit_refs", {
 }, (t) => [
   index("ix_transit_kind").on(t.kind),
   index("ix_transit_sku").on(t.skuCode),
+  index("ix_transit_material_sku").on(t.materialSkuId),
   index("ix_transit_approval").on(t.approvalNo),
 ]);

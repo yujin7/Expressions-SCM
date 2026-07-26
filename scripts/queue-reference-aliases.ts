@@ -32,6 +32,7 @@ interface RefRow {
   skuCode: string | null;
   skuId: number | null;
   materialCode: string | null;
+  materialSkuId: number | null;
   oemRaw: string | null;
   supplierId: number | null;
   brandRaw: string | null;
@@ -77,6 +78,7 @@ async function main(): Promise<void> {
       skuCode: schema.transitRefs.skuCode,
       skuId: schema.transitRefs.skuId,
       materialCode: schema.transitRefs.materialCode,
+      materialSkuId: schema.transitRefs.materialSkuId,
       oemRaw: schema.transitRefs.oemRaw,
       supplierId: schema.transitRefs.supplierId,
       brandRaw: schema.transitRefs.brandRaw,
@@ -89,9 +91,9 @@ async function main(): Promise<void> {
   const enrichmentEvidence = new Map<string, Evidence>();
   for (const row of refs) {
     if (row.skuCode) add(evidence, row, "sku_code", "sku", row.skuCode);
-    // materialCode/barcode 当前没有正式 materialSkuId / barcode-owner 字段：
-    // 只量化，不塞进日常 alias 工作台，避免 600+ 低上下文项淹没运营必需裁决。
-    if (row.materialCode) add(enrichmentEvidence, row, "sku_code", "materialSku", row.materialCode);
+    if (row.materialCode && row.materialSkuId == null) {
+      add(evidence, row, "sku_code", "materialSku", row.materialCode);
+    }
     if (row.oemRaw) add(evidence, row, "supplier_oem", "supplier", row.oemRaw);
     if (row.brandRaw) add(evidence, row, "brand", "brand", row.brandRaw);
     if (row.kind === "demand" && row.follower) add(evidence, row, "channel", "channel", row.follower);
@@ -187,7 +189,7 @@ async function main(): Promise<void> {
     unresolvedByType: byType,
     enrichmentGapsNotQueued: {
       rationale:
-        "materialCode and source barcode are measured separately until transit_refs has an explicit materialSkuId/barcode ownership workflow",
+        "source barcode is measured separately until a dedicated barcode-ownership workflow is available",
       byType: Object.fromEntries(
         [...new Set(enrichmentUnresolved.map((row) => row.aliasType))].map((type) => [
           type,

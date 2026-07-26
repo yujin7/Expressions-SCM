@@ -13,6 +13,8 @@ export interface ReleaseTransitResult {
   byKind: Record<string, number>;
   skuResolved: number;
   skuUnresolved: number;
+  materialResolved: number;
+  materialUnresolved: number;
   supplierResolved: number;
   replacedOldRows: number;
 }
@@ -33,6 +35,7 @@ export async function releaseTransitRefs(
 
   interface P {
     kind?: string; skuCode?: string | null; materialCode?: string | null; oemRaw?: string | null;
+    _resolved?: Record<string, unknown>;
     [k: string]: unknown;
   }
   const codes: string[] = [];
@@ -44,30 +47,48 @@ export async function releaseTransitRefs(
   const skuByCode = await loadSkuIdByCode(db, codes);
 
   const byKind: Record<string, number> = {};
-  let skuResolved = 0, skuUnresolved = 0, supplierResolved = 0;
+  let skuResolved = 0, skuUnresolved = 0;
+  let materialResolved = 0, materialUnresolved = 0;
+  let supplierResolved = 0;
   const plans: { rowId: number; values: typeof schema.transitRefs.$inferInsert }[] = [];
   const jobIds = new Set<number>();
+  const strOrNull = (v: unknown) => (typeof v === "string" && v.trim() !== "" ? v : null);
 
   for (const r of rows) {
     const p = r.payload as P;
     const kind = typeof p.kind === "string" ? p.kind : null;
     if (!kind || !["fg_order", "pkg_order", "pkg_stock", "oem_map", "demand", "borrow", "pallet", "npd_node", "npd_role", "stock_summary"].includes(kind)) continue;
     jobIds.add(r.importJobId);
+    const stagedResolved = p._resolved ?? {};
+    const stagedId = (key: string): number | null => {
+      const value = stagedResolved[key];
+      return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+    };
     const skuCode = (p.skuCode as string | null) ?? null;
     let skuId: number | null = null;
     if (skuCode) {
-      skuId = (await resolve("sku_code", skuCode)) ?? skuByCode.get(skuCode) ?? null;
+      skuId = (await resolve("sku_code", skuCode)) ?? stagedId("skuId") ?? skuByCode.get(skuCode) ?? null;
       if (skuId != null) skuResolved++;
       else skuUnresolved++;
+    }
+    const materialCode = strOrNull(p.materialCode);
+    let materialSkuId: number | null = null;
+    if (materialCode) {
+      materialSkuId =
+        (await resolve("sku_code", materialCode))
+        ?? stagedId("materialSkuId")
+        ?? skuByCode.get(materialCode)
+        ?? null;
+      if (materialSkuId != null) materialResolved++;
+      else materialUnresolved++;
     }
     let supplierId: number | null = null;
     const oemRaw = (p.oemRaw as string | null) ?? null;
     if (oemRaw && oemRaw !== "/") {
-      supplierId = await resolve("supplier_oem", oemRaw);
+      supplierId = (await resolve("supplier_oem", oemRaw)) ?? stagedId("supplierId");
       if (supplierId != null) supplierResolved++;
     }
     const numOrNull = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? String(v) : null);
-    const strOrNull = (v: unknown) => (typeof v === "string" && v.trim() !== "" ? v : null);
     const ISO = /^\d{4}-\d{2}-\d{2}$/;
     const dateOrNull = (v: unknown) => (typeof v === "string" && ISO.test(v) ? v : null);
     plans.push({
@@ -77,7 +98,8 @@ export async function releaseTransitRefs(
         brandRaw: strOrNull(p.brandRaw),
         skuCode,
         skuId,
-        materialCode: strOrNull(p.materialCode),
+        materialCode,
+        materialSkuId,
         materialName: strOrNull(p.materialName),
         oemRaw,
         supplierId,
@@ -109,7 +131,16 @@ export async function releaseTransitRefs(
   }
 
   if (args.dryRun) {
-    return { dryRun: true, byKind, skuResolved, skuUnresolved, supplierResolved, replacedOldRows: 0 };
+    return {
+      dryRun: true,
+      byKind,
+      skuResolved,
+      skuUnresolved,
+      materialResolved,
+      materialUnresolved,
+      supplierResolved,
+      replacedOldRows: 0,
+    };
   }
 
   let replacedOldRows = 0;
@@ -131,11 +162,28 @@ export async function releaseTransitRefs(
       userId: user.id,
       entity: "release_transit_ref",
       action: "release",
-      after: { jobIds: [...jobIds], byKind, skuResolved, skuUnresolved, supplierResolved, replacedOldRows },
+      after: {
+        jobIds: [...jobIds],
+        byKind,
+        skuResolved,
+        skuUnresolved,
+        materialResolved,
+        materialUnresolved,
+        supplierResolved,
+        replacedOldRows,
+      },
     });
   });
-  return { dryRun: false, byKind, skuResolved, skuUnresolved, supplierResolved, replacedOldRows };
+  return {
+    dryRun: false,
+    byKind,
+    skuResolved,
+    skuUnresolved,
+    materialResolved,
+    materialUnresolved,
+    supplierResolved,
+    replacedOldRows,
+  };
 }
 
 /* ══ 9b) releaseSkuParams（生产周期 → sku_params 正式表，E 项转正） ══════ */
-

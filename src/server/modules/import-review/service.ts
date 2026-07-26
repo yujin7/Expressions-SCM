@@ -4,7 +4,7 @@
  */
 import { desc, eq } from "drizzle-orm";
 import { getDbAsync } from "@/db";
-import { aliasExceptions, importJobs, stagingRows } from "@/db/schema";
+import { aliasExceptions, importJobs, stagingRows, transitRefs } from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { claimAlias } from "@/server/modules/dimension/resolver";
 import { ApiError } from "@/server/modules/master/common";
@@ -51,10 +51,53 @@ export async function claimException(
   const [exc] = await db.select().from(aliasExceptions).where(eq(aliasExceptions.id, id));
   if (!exc) throw new ApiError(404, "异常不存在");
   if (exc.status !== "open") throw new ApiError(409, `该异常已处理: ${exc.status}`);
-  await claimAlias(db, { aliasType: exc.aliasType, rawValue: exc.rawValue, targetId, userId: user.id });
-  await writeAudit(db, {
-    userId: user.id, entity: "alias_exception", entityId: id, action: "claim",
-    after: { aliasType: exc.aliasType, rawValue: exc.rawValue, targetId },
+  await db.transaction(async (tx: AnyDb) => {
+    await claimAlias(tx, {
+      aliasType: exc.aliasType,
+      rawValue: exc.rawValue,
+      targetId,
+      userId: user.id,
+    });
+
+    let propagatedProductRows = 0;
+    let propagatedMaterialRows = 0;
+    let propagatedSupplierRows = 0;
+    if (exc.aliasType === "sku_code") {
+      const productRows = await tx
+        .update(transitRefs)
+        .set({ skuId: targetId })
+        .where(eq(transitRefs.skuCode, exc.rawValue))
+        .returning({ id: transitRefs.id });
+      const materialRows = await tx
+        .update(transitRefs)
+        .set({ materialSkuId: targetId })
+        .where(eq(transitRefs.materialCode, exc.rawValue))
+        .returning({ id: transitRefs.id });
+      propagatedProductRows = productRows.length;
+      propagatedMaterialRows = materialRows.length;
+    } else if (exc.aliasType === "supplier_oem") {
+      const supplierRows = await tx
+        .update(transitRefs)
+        .set({ supplierId: targetId })
+        .where(eq(transitRefs.oemRaw, exc.rawValue))
+        .returning({ id: transitRefs.id });
+      propagatedSupplierRows = supplierRows.length;
+    }
+
+    await writeAudit(tx, {
+      userId: user.id,
+      entity: "alias_exception",
+      entityId: id,
+      action: "claim",
+      after: {
+        aliasType: exc.aliasType,
+        rawValue: exc.rawValue,
+        targetId,
+        propagatedProductRows,
+        propagatedMaterialRows,
+        propagatedSupplierRows,
+      },
+    });
   });
 }
 

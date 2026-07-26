@@ -270,6 +270,7 @@ export async function stageTransit(db: AnyDb, filePath: string, userId: number) 
         return [
           { field: "brand", aliasType: "brand", value: p.brandRaw },
           { field: "sku", aliasType: "sku_code", value: p.skuCode },
+          { field: "materialSku", aliasType: "sku_code", value: p.materialCode },
           { field: "supplier", aliasType: "supplier_oem", value: p.oemRaw },
         ];
       },

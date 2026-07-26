@@ -232,6 +232,8 @@ async function main() {
         select kind,
                count(*)::int as rows,
                count(sku_id)::int as resolved_sku,
+               count(*) filter (where material_code is not null)::int as material_rows,
+               count(material_sku_id)::int as resolved_material,
                count(*) filter (where oem_raw is not null and oem_raw <> '/')::int as needs_supplier,
                count(supplier_id)::int as resolved_supplier,
                count(distinct source_job_id)::int as source_jobs

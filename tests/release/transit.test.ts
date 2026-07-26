@@ -13,6 +13,7 @@ describe("在途参考层：解析 → 放行（整类替换）+ 起订量 → u
   let db: TestDb;
   let user: ReleaseUser;
   let skuId: number;
+  let materialSkuId: number;
 
   beforeAll(async () => {
     ({ db } = await createTestDb());
@@ -24,6 +25,11 @@ describe("在途参考层：解析 → 放行（整类替换）+ 起订量 → u
       .values({ code: "TR001-000", name: "在途SKU", spuId: spu.id, baseUom: "件", skuType: "finished" })
       .returning();
     skuId = s.id;
+    const [material] = await db
+      .insert(schema.skus)
+      .values({ code: "TR001-0201", name: "测试软管", spuId: spu.id, baseUom: "个", skuType: "packaging" })
+      .returning();
+    materialSkuId = material.id;
   });
 
   it("解析器：四类 sheet 归类正确，「成品」表按审批号富化跟进表", () => {
@@ -73,12 +79,35 @@ describe("在途参考层：解析 → 放行（整类替换）+ 起订量 → u
     await writeStagingRows(db, job.id, [
       { rowNo: 1, targetTable: "transit_ref", payload: mkPayload({}) },
       { rowNo: 2, targetTable: "transit_ref", payload: mkPayload({ skuCode: "TRUNK-999", approvalNo: "DD002" }) },
+      {
+        rowNo: 3,
+        targetTable: "transit_ref",
+        payload: mkPayload({
+          kind: "pkg_order",
+          materialCode: "TR001-0201",
+          materialName: "测试软管",
+          approvalNo: "DD003",
+        }),
+      },
+      {
+        rowNo: 4,
+        targetTable: "transit_ref",
+        payload: mkPayload({
+          kind: "pkg_stock",
+          materialCode: "TR001-0201（源表写法）",
+          materialName: "测试软管",
+          approvalNo: "DD004",
+          _resolved: { materialSkuId },
+        }),
+      },
     ]);
 
     const dry = await releaseTransitRefs(user, { dryRun: true }, db);
     expect(dry.byKind.fg_order).toBe(2);
-    expect(dry.skuResolved).toBe(1);
+    expect(dry.skuResolved).toBe(3);
     expect(dry.skuUnresolved).toBe(1);
+    expect(dry.materialResolved).toBe(2);
+    expect(dry.materialUnresolved).toBe(0);
 
     const r1 = await releaseTransitRefs(user, { dryRun: false }, db);
     expect(r1.replacedOldRows).toBe(0);
@@ -86,6 +115,10 @@ describe("在途参考层：解析 → 放行（整类替换）+ 起订量 → u
     expect(rows1).toHaveLength(2);
     expect(rows1.find((r) => r.skuCode === "TR001-000")!.skuId).toBe(skuId);
     expect(rows1.find((r) => r.skuCode === "TRUNK-999")!.skuId).toBeNull(); // 参考层不丢行
+    const [pkg] = await db.select().from(schema.transitRefs).where(eq(schema.transitRefs.kind, "pkg_order"));
+    expect(pkg.materialSkuId).toBe(materialSkuId);
+    const [stock] = await db.select().from(schema.transitRefs).where(eq(schema.transitRefs.kind, "pkg_stock"));
+    expect(stock.materialSkuId).toBe(materialSkuId);
 
     // 重导 = 整类替换（committed 行不复选，需新 job 行）
     const job2 = await createImportJob(db, { template: "transit", filePath: f, createdBy: user.id });

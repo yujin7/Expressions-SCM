@@ -20,6 +20,7 @@ interface Row {
   skuCode: string | null;
   skuId: number | null;
   materialCode: string | null;
+  materialSkuId: number | null;
   materialName: string | null;
   oemRaw: string | null;
   externalNo: string | null;
@@ -43,6 +44,16 @@ interface Row {
   exception: string | null;
 }
 
+interface MaterialCoverage {
+  type: "material_coverage";
+  materialRows: number;
+  linkedMaterialRows: number;
+  distinctLinkedMaterials: number;
+  unresolvedMaterialCodes: number;
+  supplierRows: number;
+  linkedSupplierRows: number;
+}
+
 const PROGRESS_COLORS: Record<string, string> = {
   待采购下单: "default",
   待包材回货: "orange",
@@ -64,6 +75,7 @@ function useTransit(kind: string, prefix: string) {
   const [rows, setRows] = useState<Row[]>([]);
   const [total, setTotal] = useState(0);
   const [importedAt, setImportedAt] = useState<string | null>(null);
+  const [summary, setSummary] = useState<MaterialCoverage | null>(null);
   const [loading, setLoading] = useState(false);
   const listState = useListState({
     key: `transit-${kind}`,
@@ -77,13 +89,25 @@ function useTransit(kind: string, prefix: string) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ kind, q, page: String(page), pageSize: String(pageSize) });
-      const res = await fetchJson<{ rows: Row[]; total: number; importedAt: string | null }>(
+      const params = new URLSearchParams({
+        kind,
+        q,
+        page: String(page),
+        pageSize: String(pageSize),
+        includeSummary: "1",
+      });
+      const res = await fetchJson<{
+        rows: Row[];
+        total: number;
+        importedAt: string | null;
+        summary: MaterialCoverage | null;
+      }>(
         `/api/report/transit?${params.toString()}`,
       );
       setRows(res.rows);
       setTotal(res.total);
       setImportedAt(res.importedAt);
+      setSummary(res.summary?.type === "material_coverage" ? res.summary : null);
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -95,7 +119,7 @@ function useTransit(kind: string, prefix: string) {
     void load();
   }, [load]);
 
-  return { rows, total, importedAt, loading, listState };
+  return { rows, total, importedAt, summary, loading, listState };
 }
 
 function KindTable({ kind, prefix, columns }: { kind: string; prefix: string; columns: ColumnsType<Row> }) {
@@ -108,6 +132,31 @@ function KindTable({ kind, prefix, columns }: { kind: string; prefix: string; co
       : null;
   return (
     <div>
+      {t.summary ? (
+        <Alert
+          style={{ marginBottom: 12 }}
+          type={t.summary.unresolvedMaterialCodes > 0 ? "warning" : "success"}
+          showIcon
+          message={
+            <>
+              物料主档关联 {t.summary.linkedMaterialRows.toLocaleString()} / {t.summary.materialRows.toLocaleString()} 行
+              （{t.summary.materialRows > 0
+                ? Math.round((t.summary.linkedMaterialRows / t.summary.materialRows) * 1000) / 10
+                : 100}%），已识别 {t.summary.distinctLinkedMaterials.toLocaleString()} 个物料主档；
+              {t.summary.unresolvedMaterialCodes > 0 ? (
+                <> {t.summary.unresolvedMaterialCodes.toLocaleString()} 个源编码待<a href="/import/exceptions?aliasType=sku_code&status=open">认领</a></>
+              ) : (
+                " 无待关联编码"
+              )}
+            </>
+          }
+          description={
+            kind === "pkg_order" && t.summary.supplierRows > 0
+              ? `供应商已关联 ${t.summary.linkedSupplierRows.toLocaleString()} / ${t.summary.supplierRows.toLocaleString()} 行；认领后会立即回填现有参考数据，无需重导。`
+              : "认领物料编码后会立即回填现有参考数据，无需重导。"
+          }
+        />
+      ) : null}
       <ListToolbar
         state={listState}
         extra={
@@ -156,6 +205,25 @@ const skuCol: ColumnsType<Row>[number] = {
     ),
 };
 
+const materialCol: ColumnsType<Row>[number] = {
+  title: "物料编码",
+  dataIndex: "materialCode",
+  width: 170,
+  render: (v: string | null, r) =>
+    v ? (
+      <Space size={4}>
+        {r.materialSkuId != null ? (
+          <a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a>
+        ) : (
+          v
+        )}
+        {r.materialSkuId == null ? <Tag color="default">待关联</Tag> : null}
+      </Space>
+    ) : (
+      "—"
+    ),
+};
+
 const fgCols: ColumnsType<Row> = [
   { title: "品牌", dataIndex: "brandRaw", width: 110 },
   skuCol,
@@ -185,7 +253,7 @@ const fgCols: ColumnsType<Row> = [
 const pkgCols: ColumnsType<Row> = [
   { title: "品牌", dataIndex: "brandRaw", width: 110 },
   skuCol,
-  { title: "物料编码", dataIndex: "materialCode", width: 150 },
+  materialCol,
   { title: "物料名称", dataIndex: "materialName", ellipsis: true, width: 200 },
   { title: "首/返单", dataIndex: "orderType", width: 80 },
   { title: "供应商", dataIndex: "oemRaw", width: 90, render: (v: string | null) => v ?? "—" },
@@ -200,7 +268,7 @@ const pkgCols: ColumnsType<Row> = [
 const stockCols: ColumnsType<Row> = [
   { title: "品牌", dataIndex: "brandRaw", width: 110 },
   skuCol,
-  { title: "物料编码", dataIndex: "materialCode", width: 150 },
+  materialCol,
   { title: "物料名称", dataIndex: "materialName", ellipsis: true, width: 200 },
   { title: "审批单号", dataIndex: "approvalNo", width: 140 },
   { title: "备货量", dataIndex: "qty", width: 90, align: "right", render: qn },
