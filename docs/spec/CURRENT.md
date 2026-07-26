@@ -77,7 +77,8 @@
 - **架构护栏现 4 个**（均已验证「重新引入缺陷会变红」）：客户端/服务端边界、Suspense 边界（含包含关系）、
   落盘根目录（三种等价写法）、迁移登记（孤儿 .sql）。
 - **代码与现行规格已在同一私有 GitHub 仓**：`yujin7/Expressions-SCM`；本地 `main`
-  仍须设置 upstream，GitHub Actions/分支保护须在仓库侧确认。
+  已关联 `origin/main`，且两套同树异源历史已用无覆盖 merge 接通。R8 本地交付提交尚待 GitHub
+  重新授权后推送；Actions/分支保护仍须在仓库侧确认。
 - **测试数字**：以最近一次 `.artifacts/verification/` 的 exact-commit release report 为准；
   旧段落中的 794/809 等均为历史快照，不作当前门禁证据。
 - **交接给下一会话的待办**见本文件末尾「下一会话接手清单」。
@@ -205,8 +206,8 @@ PRD+数据字典+功能清单（PDF 3 份）· 会议纪要 PDF · BOM×3 · 字
 1. **轮换 AUTH_SECRET**。.dockerignore 已阻止密钥进入**将来**的镜像，
    但**此前从本树构建过的镜像里，/app/.env 仍含 JWT 签名密钥**。凭据类操作不由 AI 代劳。
 2. **确认抑制闸口径改判**（见上）——它改变建议下单量，需要一个 D 号。
-3. **完成 GitHub 仓治理**：代码已推送私有仓；仍需确认 Actions 全绿、设置 `main` 分支保护
-   （required checks / 禁 force-push / PR 合并），并给本地 `main` 设置 upstream。
+3. **完成 GitHub 仓治理**：本地 upstream 与历史已完成治理；GitHub CLI 重新授权后推送 R8，
+   再确认 Actions 全绿并设置 `main` 分支保护（required checks / 禁 force-push / PR 合并）。
 
 ### 解锁即可用（每项差一个决定或一份数据）
 | 缺什么 | 解锁什么 |
