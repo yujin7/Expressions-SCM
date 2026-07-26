@@ -131,8 +131,8 @@ function MissingTab() {
   return (
     <div>
       <CaliberNote
-        summary={<>完整度＝各适用维度完整占比；只列出有缺失项的 SKU（完全健康的计入统计不进列表）。</>}
-        detail={<div><p>按货品类型裁剪适用维度：成品评 生产周期 / 起订量 / BOM / 条码 / 品牌 五项；原料/包材仅评 条码 / 品牌。条码为 null 或 malformed 记缺失。</p></div>}
+        summary={<>完整度＝在售成品五项关键主数据的完整占比；只列出有缺失项的成品（完全健康的计入统计不进列表）。</>}
+        detail={<div><p>成品评生产周期 / 起订量 / BOM / 条码 / 品牌五项。原料与包材没有零售条码或消费品牌在当前 BOM 模型中属于不适用，不计为缺失；它们仍参与“疑似重复”扫描。</p></div>}
       />
       {/* 结构性告警：命中才渲染——无命中时整块不出现，不留空占位 */}
       {(data?.structural ?? []).map((w) => (
@@ -154,7 +154,7 @@ function MissingTab() {
         />
       ))}
       <Space size="large" style={{ marginBottom: 12 }} wrap>
-        <Statistic title="总 SKU" value={summary?.totalSkus ?? 0} />
+        <Statistic title="在售成品 SKU" value={summary?.totalSkus ?? 0} />
         <Statistic title="完全健康" value={summary?.fullyHealthy ?? 0} suffix={summary ? `/ ${healthRate}%` : undefined} />
         <Statistic title="待修复" value={data?.total ?? 0} valueStyle={{ color: "#cf1322" }} />
       </Space>

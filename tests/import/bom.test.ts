@@ -245,9 +245,9 @@ describe("BOM 块解析：结构规则（合成）", () => {
 /* ── 真实文件基线（事实核查 ±1% 带；文件缺席则跳过） ───── */
 
 const REAL = {
-  NING: "/Users/yj/Downloads/【NING】产品bom表.xlsx",
-  EXP: "/Users/yj/Downloads/【EXPRESSIONS】产品bom表.xlsx",
-  DEV: "/Users/yj/Downloads/【DEVIANCE】产品bom表.xlsx",
+  NING: "/Users/yj/Desktop/SCM/【NING】产品bom表.xlsx",
+  EXP: "/Users/yj/Desktop/SCM/【EXPRESSIONS】产品bom表.xlsx",
+  DEV: "/Users/yj/Desktop/SCM/【DEVIANCE】产品bom表.xlsx",
 };
 
 function within(actual: number, base: number, pct = 0.01): void {

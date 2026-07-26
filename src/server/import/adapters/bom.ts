@@ -530,6 +530,7 @@ export async function parseBomWorkbook(filePath: string, brandCode: string): Pro
 
 import {
   createImportJob,
+  failImportJob,
   finalizeImportJob,
   writeStagingRows,
   type StagingRowInput,
@@ -548,9 +549,11 @@ export async function stageBom(
   userId: number,
 ): Promise<{ jobId: number; result: BomParseResult; stagedRows: number }> {
   const job = await createImportJob(db, { template: "bom", filePath, createdBy: userId });
-  const result = await parseBomWorkbook(filePath, brandCode);
+  try {
+    const result = await parseBomWorkbook(filePath, brandCode);
+    if (result.blocks.length === 0) throw new Error("BOM 文件未解析到任何产品块");
 
-  await resolveOrQueue(db, "brand", brandCode, { source: "bom", filePath });
+    await resolveOrQueue(db, "brand", brandCode, { source: "bom", filePath });
 
   // 供应商 OEM 别名：去重后逐值 resolveOrQueue（异常队列 UNIQUE 幂等）
   const suppliers = new Set<string>();
@@ -573,7 +576,7 @@ export async function stageBom(
   const feeKeys = new Map<string, { productCode: string | null; supplierRaw: string }>();
   for (const b of result.blocks) {
     for (const f of b.feeLines) {
-      const key = `${b.productCode ?? ""} ${f.supplierRaw}`;
+      const key = `${b.productCode ?? ""}\0${f.supplierRaw}`;
       if (!feeKeys.has(key)) feeKeys.set(key, { productCode: b.productCode, supplierRaw: f.supplierRaw });
     }
   }
@@ -595,10 +598,15 @@ export async function stageBom(
     });
   }
 
-  await writeStagingRows(db, job.id, rows);
-  await finalizeImportJob(db, job.id, {
-    okRows: rows.length - result.rejects.length,
-    failRows: result.rejects.length,
-  });
-  return { jobId: job.id, result, stagedRows: rows.length };
+    await writeStagingRows(db, job.id, rows);
+    await finalizeImportJob(db, job.id, {
+      okRows: rows.length - result.rejects.length,
+      failRows: result.rejects.length,
+      controlRows: rows.length,
+    });
+    return { jobId: job.id, result, stagedRows: rows.length };
+  } catch (error) {
+    await failImportJob(db, job.id, "bom_block", error);
+    throw error;
+  }
 }

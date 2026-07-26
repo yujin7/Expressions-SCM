@@ -133,6 +133,11 @@ export async function stageExpiry(db: AnyDb, filePath: string, userId: number): 
     userId,
     adapter: expiryAdapter,
     targetTable: TARGET_TABLE,
+    job: {
+      sourceAsOf: "2026-07-21",
+      schemaVersion: "expiry-batch-v2",
+      scope: { mode: "full", target: "batch_stocks", stocktakePeriod: "2026-07" },
+    },
     aliasRefs: (row) => [
       { field: "warehouse", aliasType: "warehouse", value: row.payload.sheetWarehouse as string | null },
       { field: "sku", aliasType: "sku_code", value: row.payload.skuCode as string | null },

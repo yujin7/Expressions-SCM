@@ -19,7 +19,7 @@ import {
   stageSalesMonthly,
 } from "@/server/import/adapters/sales-monthly";
 
-const FILE = "/Users/yj/Downloads/26年产品销量汇总（6月）.xlsx";
+const FILE = "/Users/yj/Desktop/SCM/26年产品销量汇总（6月）.xlsx";
 
 describe.skipIf(!existsSync(FILE))("适配器③：月销量长表化（真实文件）", () => {
   it("5 个品牌页；非零 SKU×渠道×月 >5,000 行；qty 全为非零有限数值", async () => {

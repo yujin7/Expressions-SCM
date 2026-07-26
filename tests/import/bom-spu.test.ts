@@ -68,8 +68,8 @@ describe("suggestSpus（合成）", () => {
 });
 
 const REAL = {
-  NING: "/Users/yj/Downloads/【NING】产品bom表.xlsx",
-  EXP: "/Users/yj/Downloads/【EXPRESSIONS】产品bom表.xlsx",
+  NING: "/Users/yj/Desktop/SCM/【NING】产品bom表.xlsx",
+  EXP: "/Users/yj/Desktop/SCM/【EXPRESSIONS】产品bom表.xlsx",
 };
 
 describe.runIf(existsSync(REAL.NING) && existsSync(REAL.EXP))("suggestSpus（真实文件）", () => {

@@ -13,8 +13,8 @@ import * as schema from "@/db/schema";
 import { getStagingRows } from "@/server/import/staging";
 import { leadtimeAdapter, stageLeadtime } from "@/server/import/adapters/leadtime";
 
-const FILE_A = "/Users/yj/Downloads/26年产品销量汇总（6月）.xlsx";
-const FILE_B = "/Users/yj/Downloads/2026年成品在途订单实时进度表---新版.xlsx";
+const FILE_A = "/Users/yj/Desktop/SCM/26年产品销量汇总（6月）.xlsx";
+const FILE_B = "/Users/yj/Desktop/SCM/2026年成品在途订单实时进度表---新版.xlsx";
 
 function isNumOrNull(v: unknown): boolean {
   return v === null || (typeof v === "number" && Number.isFinite(v));

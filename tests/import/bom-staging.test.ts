@@ -10,8 +10,8 @@ import { createTestDb } from "../helpers/db";
 import { stageBom } from "@/server/import/adapters/bom";
 import type { DimDb } from "@/server/modules/dimension/resolver";
 
-const DEV = "/Users/yj/Downloads/【DEVIANCE】产品bom表.xlsx";
-const EXP = "/Users/yj/Downloads/【EXPRESSIONS】产品bom表.xlsx";
+const DEV = "/Users/yj/Desktop/SCM/【DEVIANCE】产品bom表.xlsx";
+const EXP = "/Users/yj/Desktop/SCM/【EXPRESSIONS】产品bom表.xlsx";
 
 describe.runIf(existsSync(DEV))("stageBom：DEVIANCE 全量入 staging", () => {
   it("块/加工费候选/SPU 建议入 staging，品牌+供应商 OEM 入异常队列，job 收口", async () => {

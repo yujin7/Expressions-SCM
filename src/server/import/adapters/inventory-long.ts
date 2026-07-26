@@ -99,6 +99,11 @@ export async function stageInventoryLong(
     userId,
     adapter: inventoryLongAdapter,
     targetTable: TARGET_TABLE,
+    job: {
+      sourceAsOf: "2026-07-21",
+      schemaVersion: "inventory-long-v2",
+      scope: { mode: "full", target: "stock_snapshots", sourceSheet: SHEET_NAME },
+    },
     aliasRefs: (row) => [
       { field: "warehouse", aliasType: "warehouse", value: row.payload.warehouseRaw as string | null },
       { field: "sku", aliasType: "sku_code", value: row.payload.skuCode as string | null },

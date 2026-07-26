@@ -8,8 +8,16 @@
  * 文件公式列多未缓存 → forceRaw 通道；月份自文件名推导。
  */
 import { readWorkbook, type CellValue, type SheetData } from "../parse/xlsx";
-import { createImportJob, finalizeImportJob, writeStagingRows, type AnyDb, type StagingRowInput } from "../staging";
-import { monthFromFilename } from "./demand";
+import { resolveReferenceAliases } from "../reference-aliases";
+import {
+  createImportJob,
+  failImportJob,
+  finalizeImportJob,
+  writeStagingRows,
+  type AnyDb,
+  type StagingRowInput,
+} from "../staging";
+import { monthEnd, monthFromFilename } from "./demand";
 import type { TransitPayload } from "./transit";
 
 export const PALLET_TEMPLATE = "pallet";
@@ -121,8 +129,42 @@ export async function stagePallet(db: AnyDb, filePath: string, userId: number) {
   const wb = await readWorkbook(filePath, { forceRaw: true });
   const ym = monthFromFilename(filePath, new Date().getFullYear());
   const { rows, stats } = parsePalletWorkbook(wb.sheets, ym);
-  const job = await createImportJob(db, { template: PALLET_TEMPLATE, filePath, createdBy: userId });
-  await writeStagingRows(db, job.id, rows);
-  await finalizeImportJob(db, job.id, { okRows: rows.length, failRows: 0 });
-  return { jobId: job.id, stats: { ...stats, stagedRows: rows.length, yearMonth: ym } };
+  if (rows.length === 0) throw new Error("货盘文件未解析到任何品牌 SKU 行");
+  const job = await createImportJob(db, {
+    template: PALLET_TEMPLATE,
+    filePath,
+    createdBy: userId,
+    sourceAsOf: monthEnd(ym),
+    scope: { mode: "full", targetKinds: ["pallet"], yearMonth: ym },
+  });
+  try {
+    const aliased = await resolveReferenceAliases(db, {
+      filePath,
+      template: PALLET_TEMPLATE,
+      rows,
+      aliasRefs: (row) => {
+        const p = row.payload as TransitPayload;
+        return [
+          { field: "brand", aliasType: "brand", value: p.brandRaw },
+          { field: "sku", aliasType: "sku_code", value: p.skuCode },
+        ];
+      },
+    });
+    await writeStagingRows(db, job.id, aliased.rows);
+    await finalizeImportJob(db, job.id, { okRows: rows.length, failRows: 0, controlRows: rows.length });
+    return {
+      jobId: job.id,
+      stats: {
+        ...stats,
+        stagedRows: rows.length,
+        yearMonth: ym,
+        aliasValidated: aliased.validated,
+        aliasPending: aliased.pending,
+        unresolved: aliased.unresolved,
+      },
+    };
+  } catch (error) {
+    await failImportJob(db, job.id, TARGET_TABLE, error);
+    throw error;
+  }
 }

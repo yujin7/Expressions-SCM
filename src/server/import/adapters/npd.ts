@@ -4,8 +4,18 @@
  * 三文件合并：基表(说明) ⊕ 时间节点模拟(模拟起止) ⊕ 角色及分配逻辑；节点名称为合并键。
  */
 import { normalizeDateCell, readWorkbook, type CellValue, type SheetData } from "../parse/xlsx";
-import { createImportJob, finalizeImportJob, writeStagingRows, type AnyDb, type StagingRowInput } from "../staging";
+import {
+  createImportJob,
+  failImportJob,
+  finalizeImportJob,
+  writeStagingRows,
+  type AnyDb,
+  type StagingRowInput,
+} from "../staging";
 import type { TransitPayload } from "./transit";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
 export const NPD_TEMPLATE = "npd";
 const TARGET_TABLE = "transit_ref";
@@ -60,19 +70,28 @@ export async function stageNpd(
   userId: number,
 ) {
   const merged = new Map<string, Record<string, unknown>>();
-  const mergeIn = (m: Map<string, Record<string, unknown>>) => {
+  const conflicts: { node: string; field: string; first: unknown; next: unknown; source: string }[] = [];
+  const mergeIn = (m: Map<string, Record<string, unknown>>, source: string) => {
     for (const [k, v] of m) {
       const prev = merged.get(k) ?? {};
       const next: Record<string, unknown> = { ...prev };
-      for (const [f, val] of Object.entries(v)) if (val != null && next[f] == null) next[f] = val;
+      for (const [f, val] of Object.entries(v)) {
+        if (val == null) continue;
+        if (next[f] == null) {
+          next[f] = val;
+        } else if (JSON.stringify(next[f]) !== JSON.stringify(val)) {
+          conflicts.push({ node: k, field: f, first: next[f], next: val, source });
+        }
+      }
       merged.set(k, next);
     }
   };
   const roles: { 角色名称: string; 分配方式: string | null }[] = [];
-  for (const p of [files.withRoles, files.base, files.sim]) {
+  // 基表→模拟→角色文件；重复非空值必须一致，禁止“先读到的静默胜出”。
+  for (const p of [files.base, files.sim, files.withRoles]) {
     const wb = await readWorkbook(p, { forceRaw: true });
     const data = wb.sheets.find((s) => s.name.includes("数据表"));
-    if (data) mergeIn(parseNodes(data));
+    if (data) mergeIn(parseNodes(data), path.basename(p));
     const roleSheet = wb.sheets.find((s) => s.name.includes("角色"));
     if (roleSheet && roles.length === 0) {
       const hi = roleSheet.rows.findIndex((r) => r.some((c) => typeof c === "string" && String(c).includes("角色名称")));
@@ -83,6 +102,15 @@ export async function stageNpd(
       }
     }
   }
+  if (conflicts.length > 0) {
+    const sample = conflicts
+      .slice(0, 5)
+      .map((c) => `${c.node}.${c.field}（${c.source}）`)
+      .join("、");
+    throw new Error(`NPD 三份来源存在 ${conflicts.length} 个字段冲突，禁止静默合并：${sample}`);
+  }
+  if (merged.size === 0) throw new Error("NPD 来源未解析到任何节点");
+  if (roles.length === 0) throw new Error("NPD 来源未解析到任何角色分配");
   const rows: StagingRowInput[] = [];
   let rowNo = 0;
   for (const n of merged.values()) {
@@ -113,8 +141,34 @@ export async function stageNpd(
       payload: { ...emptyP(), kind: "npd_role" as TransitPayload["kind"], materialName: r.角色名称, follower: r.分配方式, extra: null },
     });
   }
-  const job = await createImportJob(db, { template: NPD_TEMPLATE, filePath: files.withRoles, createdBy: userId });
-  await writeStagingRows(db, job.id, rows);
-  await finalizeImportJob(db, job.id, { okRows: rows.length, failRows: 0 });
-  return { jobId: job.id, stats: { nodes: merged.size, roles: roles.length, stagedRows: rows.length } };
+  const sourceFiles = [files.base, files.sim, files.withRoles].map((file) => ({
+    filename: path.basename(file),
+    md5: createHash("md5").update(readFileSync(file)).digest("hex"),
+  }));
+  const job = await createImportJob(db, {
+    template: NPD_TEMPLATE,
+    filePath: files.withRoles,
+    createdBy: userId,
+    schemaVersion: "npd-v2",
+    scope: {
+      mode: "full",
+      targetKinds: ["npd_node", "npd_role"],
+      sources: sourceFiles,
+    },
+  });
+  try {
+    await writeStagingRows(db, job.id, rows);
+    await finalizeImportJob(db, job.id, {
+      okRows: rows.length,
+      failRows: 0,
+      controlRows: rows.length,
+    });
+    return {
+      jobId: job.id,
+      stats: { nodes: merged.size, roles: roles.length, stagedRows: rows.length, sourceFiles: sourceFiles.length },
+    };
+  } catch (error) {
+    await failImportJob(db, job.id, TARGET_TABLE, error);
+    throw error;
+  }
 }

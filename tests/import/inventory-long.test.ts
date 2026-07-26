@@ -15,7 +15,7 @@ import {
   stageInventoryLong,
 } from "@/server/import/adapters/inventory-long";
 
-const FILE = "/Users/yj/Downloads/电商部库存明细26-7-21.xlsx";
+const FILE = "/Users/yj/Desktop/SCM/电商部库存明细26-7-21.xlsx";
 const BASELINE_ROWS = 3473;
 
 describe.skipIf(!existsSync(FILE))("适配器①：库存明细长表（真实文件）", () => {

@@ -4,11 +4,20 @@
  * 独有价值：已下单未出货（在订）、总日均销量、条形码核对。渠道块与快照重叠，不重复登记。
  */
 import { readWorkbook, type CellValue, type SheetData } from "../parse/xlsx";
-import { createImportJob, finalizeImportJob, writeStagingRows, type AnyDb, type StagingRowInput } from "../staging";
+import { resolveReferenceAliases } from "../reference-aliases";
+import {
+  createImportJob,
+  failImportJob,
+  finalizeImportJob,
+  writeStagingRows,
+  type AnyDb,
+  type StagingRowInput,
+} from "../staging";
 import type { TransitPayload } from "./transit";
 
 export const STOCK_SUMMARY_TEMPLATE = "stock_summary";
 const TARGET_TABLE = "transit_ref";
+export const STOCK_SUMMARY_AS_OF = "2026-07-21";
 
 const str = (v: CellValue): string | null => {
   if (v == null) return null;
@@ -19,6 +28,7 @@ const num = (v: CellValue): number | null => (typeof v === "number" && Number.is
 
 export function parseStockSummarySheet(sheet: SheetData): StagingRowInput[] {
   const hi = sheet.rows.findIndex((r) => r.some((c) => typeof c === "string" && String(c).includes("商家编码")));
+  if (hi < 0) throw new Error("总库存文件未找到表头行（商家编码）");
   const col = new Map<string, number>();
   (sheet.rows[hi] ?? []).forEach((c, i) => { if (typeof c === "string") col.set(String(c).replace(/\s/g, ""), i); });
   const c = (k: string) => col.get(k) ?? -1;
@@ -46,7 +56,7 @@ export function parseStockSummarySheet(sheet: SheetData): StagingRowInput[] {
       usedQty: null,
       remainQty: null,
       orderDate: null, needDate: null, replyDate: null, revisedDate: null, expectDate: null, startDate: null,
-      progress: "2026-07-21",
+      progress: STOCK_SUMMARY_AS_OF,
       urgentDept: null,
       follower: null,
       exception: null,
@@ -60,8 +70,39 @@ export function parseStockSummarySheet(sheet: SheetData): StagingRowInput[] {
 export async function stageStockSummary(db: AnyDb, filePath: string, userId: number) {
   const wb = await readWorkbook(filePath, { forceRaw: true });
   const rows = parseStockSummarySheet(wb.sheets[0]);
-  const job = await createImportJob(db, { template: STOCK_SUMMARY_TEMPLATE, filePath, createdBy: userId });
-  await writeStagingRows(db, job.id, rows);
-  await finalizeImportJob(db, job.id, { okRows: rows.length, failRows: 0 });
-  return { jobId: job.id, stats: { stagedRows: rows.length } };
+  if (rows.length === 0) throw new Error("总库存文件未解析到任何 SKU 行");
+  const job = await createImportJob(db, {
+    template: STOCK_SUMMARY_TEMPLATE,
+    filePath,
+    createdBy: userId,
+    sourceAsOf: STOCK_SUMMARY_AS_OF,
+    scope: { mode: "full", targetKinds: ["stock_summary"] },
+  });
+  try {
+    const aliased = await resolveReferenceAliases(db, {
+      filePath,
+      template: STOCK_SUMMARY_TEMPLATE,
+      rows,
+      aliasRefs: (row) => {
+        const p = row.payload as TransitPayload;
+        return [
+          { field: "sku", aliasType: "sku_code", value: p.skuCode },
+        ];
+      },
+    });
+    await writeStagingRows(db, job.id, aliased.rows);
+    await finalizeImportJob(db, job.id, { okRows: rows.length, failRows: 0, controlRows: rows.length });
+    return {
+      jobId: job.id,
+      stats: {
+        stagedRows: rows.length,
+        aliasValidated: aliased.validated,
+        aliasPending: aliased.pending,
+        unresolved: aliased.unresolved,
+      },
+    };
+  } catch (error) {
+    await failImportJob(db, job.id, TARGET_TABLE, error);
+    throw error;
+  }
 }

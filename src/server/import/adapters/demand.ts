@@ -12,7 +12,15 @@
  */
 import path from "node:path";
 import { readWorkbook, type CellValue, type SheetData } from "../parse/xlsx";
-import { createImportJob, finalizeImportJob, writeStagingRows, type AnyDb, type StagingRowInput } from "../staging";
+import { resolveReferenceAliases } from "../reference-aliases";
+import {
+  createImportJob,
+  failImportJob,
+  finalizeImportJob,
+  writeStagingRows,
+  type AnyDb,
+  type StagingRowInput,
+} from "../staging";
 import type { TransitPayload } from "./transit";
 
 export const DEMAND_TEMPLATE = "demand";
@@ -35,9 +43,18 @@ const emptyPayload = (): Omit<TransitPayload, "kind"> => ({
 
 /** 「6月份业务部需求…」→ '2026-06'（年缺省=当前系统年——文件历来只写月份） */
 export function monthFromFilename(filePath: string, nowYear: number): string {
-  const m = path.basename(filePath).match(/(\d{1,2})\s*月/);
+  const filename = path.basename(filePath);
+  const m = filename.match(/(\d{1,2})\s*月/);
   const mm = m ? String(Number(m[1])).padStart(2, "0") : "01";
-  return `${nowYear}-${mm}`;
+  const y4 = filename.match(/(20\d{2})\s*年?/);
+  const y2 = filename.match(/(?:^|\D)(\d{2})\s*年/);
+  const year = y4 ? Number(y4[1]) : y2 ? 2000 + Number(y2[1]) : nowYear;
+  return `${year}-${mm}`;
+}
+
+export function monthEnd(yearMonth: string): string {
+  const [year, month] = yearMonth.split("-").map(Number);
+  return new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
 }
 
 export interface DemandParseResult {
@@ -150,8 +167,47 @@ export async function stageDemand(db: AnyDb, filePath: string, userId: number) {
   const wb = await readWorkbook(filePath, { forceRaw: true });
   const ym = monthFromFilename(filePath, new Date().getFullYear());
   const { rows, stats } = parseDemandWorkbook(wb.sheets, ym);
-  const job = await createImportJob(db, { template: DEMAND_TEMPLATE, filePath, createdBy: userId });
-  await writeStagingRows(db, job.id, rows);
-  await finalizeImportJob(db, job.id, { okRows: rows.length, failRows: 0 });
-  return { jobId: job.id, stats: { ...stats, stagedRows: rows.length, yearMonth: ym } };
+  if (rows.length === 0) throw new Error("需求文件未解析到任何需求或借调业务行");
+  const job = await createImportJob(db, {
+    template: DEMAND_TEMPLATE,
+    filePath,
+    createdBy: userId,
+    sourceAsOf: monthEnd(ym),
+    scope: { mode: "full", targetKinds: ["demand", "borrow"], yearMonth: ym },
+  });
+  try {
+    const aliased = await resolveReferenceAliases(db, {
+      filePath,
+      template: DEMAND_TEMPLATE,
+      rows,
+      aliasRefs: (row) => {
+        const p = row.payload as TransitPayload;
+        return [
+          { field: "brand", aliasType: "brand", value: p.brandRaw },
+          { field: "sku", aliasType: "sku_code", value: p.skuCode },
+          {
+            field: "channel",
+            aliasType: "channel",
+            value: p.kind === "demand" ? p.follower : null,
+          },
+        ];
+      },
+    });
+    await writeStagingRows(db, job.id, aliased.rows);
+    await finalizeImportJob(db, job.id, { okRows: rows.length, failRows: 0, controlRows: rows.length });
+    return {
+      jobId: job.id,
+      stats: {
+        ...stats,
+        stagedRows: rows.length,
+        yearMonth: ym,
+        aliasValidated: aliased.validated,
+        aliasPending: aliased.pending,
+        unresolved: aliased.unresolved,
+      },
+    };
+  } catch (error) {
+    await failImportJob(db, job.id, TARGET_TABLE, error);
+    throw error;
+  }
 }

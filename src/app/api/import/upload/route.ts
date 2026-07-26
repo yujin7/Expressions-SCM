@@ -21,10 +21,14 @@ import { stageDemand } from "@/server/import/adapters/demand";
 import { stagePallet } from "@/server/import/adapters/pallet";
 import { stageStockSummary } from "@/server/import/adapters/stock-summary";
 import { stageSkuCost } from "@/server/import/adapters/sku-cost";
+import { readWorkbook } from "@/server/import/parse/xlsx";
+import {
+  assertWorkbookMatchesTemplate,
+  IMPORT_TEMPLATES,
+} from "@/server/import/template-contract";
 
-const TEMPLATES = ["bom", "inventory", "expiry", "sales", "leadtime", "transit", "demand", "pallet", "stock_summary", "sku_cost"] as const;
 const fields = z.object({
-  template: z.enum(TEMPLATES, { errorMap: () => ({ message: "未知模板类型" }) }),
+  template: z.enum(IMPORT_TEMPLATES, { errorMap: () => ({ message: "未知模板类型" }) }),
   brand: z.string().trim().max(20).optional(), // bom 必填（品牌编码）
 });
 
@@ -55,6 +59,10 @@ export async function POST(req: NextRequest) {
     await mkdir(dir, { recursive: true });
     const filePath = path.join(dir, safeName);
     await writeFile(filePath, Buffer.from(await file.arrayBuffer()));
+
+    // 先验内容指纹：错误模板在创建 import_job / staging 行之前即被拒绝。
+    const workbook = await readWorkbook(filePath);
+    assertWorkbookMatchesTemplate(workbook, v.template);
 
     const db = await getDbAsync();
     const summary =

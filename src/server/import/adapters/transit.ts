@@ -12,7 +12,15 @@
  * 生产周期明细 → 既有 leadtime 适配器（sku_leadtime），另由 releaseFinishedMoq 取起订量。
  */
 import { normalizeDateCell, readWorkbook, type CellValue, type SheetData } from "../parse/xlsx";
-import { createImportJob, finalizeImportJob, writeStagingRows, type AnyDb, type StagingRowInput } from "../staging";
+import { resolveReferenceAliases } from "../reference-aliases";
+import {
+  createImportJob,
+  failImportJob,
+  finalizeImportJob,
+  writeStagingRows,
+  type AnyDb,
+  type StagingRowInput,
+} from "../staging";
 
 export const TRANSIT_TEMPLATE = "transit";
 const TARGET_TABLE = "transit_ref";
@@ -250,8 +258,36 @@ export function parseTransitWorkbook(sheets: SheetData[]): TransitParseResult {
 export async function stageTransit(db: AnyDb, filePath: string, userId: number) {
   const wb = await readWorkbook(filePath);
   const { rows, stats } = parseTransitWorkbook(wb.sheets);
+  if (rows.length === 0) throw new Error("在途文件未解析到任何成品、包材、备货或 OEM 映射行");
   const job = await createImportJob(db, { template: TRANSIT_TEMPLATE, filePath, createdBy: userId });
-  await writeStagingRows(db, job.id, rows);
-  await finalizeImportJob(db, job.id, { okRows: rows.length, failRows: 0 });
-  return { jobId: job.id, stats: { ...stats, stagedRows: rows.length } };
+  try {
+    const aliased = await resolveReferenceAliases(db, {
+      filePath,
+      template: TRANSIT_TEMPLATE,
+      rows,
+      aliasRefs: (row) => {
+        const p = row.payload as TransitPayload;
+        return [
+          { field: "brand", aliasType: "brand", value: p.brandRaw },
+          { field: "sku", aliasType: "sku_code", value: p.skuCode },
+          { field: "supplier", aliasType: "supplier_oem", value: p.oemRaw },
+        ];
+      },
+    });
+    await writeStagingRows(db, job.id, aliased.rows);
+    await finalizeImportJob(db, job.id, { okRows: rows.length, failRows: 0, controlRows: rows.length });
+    return {
+      jobId: job.id,
+      stats: {
+        ...stats,
+        stagedRows: rows.length,
+        aliasValidated: aliased.validated,
+        aliasPending: aliased.pending,
+        unresolved: aliased.unresolved,
+      },
+    };
+  } catch (error) {
+    await failImportJob(db, job.id, TARGET_TABLE, error);
+    throw error;
+  }
 }

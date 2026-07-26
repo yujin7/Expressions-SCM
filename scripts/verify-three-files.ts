@@ -6,16 +6,26 @@ import { getDbAsync } from "../src/db";
 import * as schema from "../src/db/schema";
 
 const FILES = {
-  expiry: "/Users/yj/Desktop/SCM/7月电商组效期占比情况-仅数量.xlsx",
-  sales: "/Users/yj/Desktop/SCM/26年产品销量汇总（6月）.xlsx",
-  transit: "/Users/yj/Desktop/SCM/2026年成品在途订单实时进度表---新版.xlsx",
+  expiry: {
+    path: "/Users/yj/Desktop/SCM/7月电商组效期占比情况-仅数量.xlsx",
+    templates: ["expiry_batch_202607"],
+  },
+  sales: {
+    path: "/Users/yj/Desktop/SCM/26年产品销量汇总（6月）.xlsx",
+    // 同一物理文件有两个合法消费方，不属于重复导入。
+    templates: ["sales_monthly_summary", "sku_leadtime"],
+  },
+  transit: {
+    path: "/Users/yj/Desktop/SCM/2026年成品在途订单实时进度表---新版.xlsx",
+    templates: ["transit", "sku_leadtime"],
+  },
 };
 
 async function main() {
   process.env.DATABASE_URL ??= "pglite:.data/dev";
   const db = await getDbAsync();
   const md5 = (p: string) => createHash("md5").update(readFileSync(p)).digest("hex");
-  const hashes = Object.fromEntries(Object.entries(FILES).map(([k, p]) => [k, md5(p)]));
+  const hashes = Object.fromEntries(Object.entries(FILES).map(([k, v]) => [k, md5(v.path)]));
 
   // 1) 身份：import_jobs 里这些 hash 的记录
   const jobs = await db
@@ -26,14 +36,34 @@ async function main() {
   console.log("== 身份核验 ==");
   for (const [k, h] of Object.entries(hashes)) {
     const hit = jobs.filter((j) => j.fileHash === h);
-    console.log(`${k}: hash=${h.slice(0, 8)}… → 入库记录 ${hit.length} 次`, hit.map((j) => `#${j.id}:${j.template}/${j.status}`).join(" "));
+    const expected = new Set(FILES[k as keyof typeof FILES].templates);
+    const legitimate = hit.filter((j) => expected.has(j.template));
+    const unexpected = hit.filter((j) => !expected.has(j.template));
+    console.log(
+      `${k}: hash=${h.slice(0, 8)}… → 合法模板记录 ${legitimate.length} 次`,
+      legitimate.map((j) => `#${j.id}:${j.template}/${j.status}`).join(" "),
+    );
+    if (unexpected.length > 0) {
+      console.log("  ⚠ 非预期模板:", unexpected.map((j) => `#${j.id}:${j.template}/${j.status}`).join(" "));
+    }
   }
-  // 同 hash 重复入库健康度（superseded 机制）
+  // 重复键必须按 (template, hash) 判断；只按 hash 会把“同文件多用途”误报成重复。
   const byHash = new Map<string, typeof jobs>();
-  for (const j of jobs) { if (!j.fileHash) continue; const a = byHash.get(j.fileHash) ?? []; a.push(j); byHash.set(j.fileHash, a); }
+  for (const j of jobs) {
+    if (!j.fileHash) continue;
+    const key = `${j.template}\0${j.fileHash}`;
+    const a = byHash.get(key) ?? [];
+    a.push(j);
+    byHash.set(key, a);
+  }
   const dupHash = [...byHash.values()].filter((a) => a.length > 1);
-  console.log("重复 hash 组:", dupHash.length, "| 其中非最新记录未 superseded 的:",
-    dupHash.flatMap((a) => a.slice(0, -1)).filter((j) => j.status !== "superseded" && j.status !== "done").length);
+  const duplicateActive = dupHash.filter((group) => group.filter((j) => j.status !== "superseded").length > 1);
+  console.log(
+    "重复 (template,hash) 组:",
+    dupHash.length,
+    "| 多个未 superseded 版本:",
+    duplicateActive.length,
+  );
   // superseded 组内残留 pending 行
   const supersededIds = jobs.filter((j) => j.status === "superseded").map((j) => j.id);
   const [orphan] = supersededIds.length

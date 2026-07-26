@@ -150,12 +150,22 @@ export const leadtimeAdapter: Adapter = async (filePath) => {
 
 /** 全链路：别名解析 sku_code + supplier_oem */
 export async function stageLeadtime(db: AnyDb, filePath: string, userId: number): Promise<StageSummary> {
+  const fromSales = filePath.includes("销量汇总");
   return stagePipeline(db, {
     filePath,
     template: LEADTIME_TEMPLATE,
     userId,
     adapter: leadtimeAdapter,
     targetTable: TARGET_TABLE,
+    job: {
+      sourceAsOf: fromSales ? "2026-06-30" : null,
+      schemaVersion: "sku-leadtime-v2",
+      scope: {
+        mode: "full",
+        targets: ["sku_params", "uom_convs.moq"],
+        sourceSection: fromSales ? "生产周期" : "生产周期明细",
+      },
+    },
     aliasRefs: (row) => [
       { field: "sku", aliasType: "sku_code", value: row.payload.skuCode as string | null },
       { field: "oem", aliasType: "supplier_oem", value: row.payload.oemRaw as string | null },

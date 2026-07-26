@@ -6,7 +6,7 @@
  * 注意：已知变体（调拨在途/在途调拨、唯品/唯品会、多多/拼多多）不在代码里硬编码，
  * 它们以 aliases 数据行的形式由 seed / 人工认领写入。
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, or } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import * as schema from "@/db/schema";
 import type { AliasType } from "@/db/schema";
@@ -111,5 +111,95 @@ export async function resolveOrQueue(
   const targetId = await resolveAlias(db, aliasType, rawValue);
   if (targetId !== null) return targetId;
   await queueException(db, aliasType, rawValue, context);
+  return null;
+}
+
+/**
+ * 参考层导入便捷入口：别名优先；别名未命中时再做主档的**精确**自然键匹配；
+ * 仍未命中或命中不唯一才入异常队列。
+ *
+ * 这不是模糊匹配，也不会自动写 alias：它只避免把已经等于 SKU/仓库/供应商等
+ * 主档编码（或唯一名称）的原值误报为异常。若名称撞到多条主档，仍交人工裁决。
+ */
+export async function resolveKnownReference(
+  db: DimDb,
+  aliasType: AliasType,
+  rawValue: string,
+): Promise<number | null> {
+  const value = normalizeAliasText(rawValue);
+  if (!value) return null;
+
+  const aliasId = await resolveAlias(db, aliasType, value);
+  if (aliasId !== null) return aliasId;
+
+  let rows: { id: number }[] = [];
+  switch (aliasType) {
+    case "sku_code":
+      rows = await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.code, value));
+      break;
+    case "sku_barcode":
+      rows = await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.barcode, value));
+      break;
+    case "supplier_oem":
+      rows = await db
+        .select({ id: schema.suppliers.id })
+        .from(schema.suppliers)
+        .where(or(
+          eq(schema.suppliers.code, value),
+          eq(schema.suppliers.shortName, value),
+          eq(schema.suppliers.name, value),
+        ));
+      break;
+    case "brand":
+      rows = await db
+        .select({ id: schema.brands.id })
+        .from(schema.brands)
+        .where(or(
+          eq(schema.brands.code, value),
+          eq(schema.brands.nameCn, value),
+          eq(schema.brands.nameEn, value),
+        ));
+      break;
+    case "channel":
+      rows = await db
+        .select({ id: schema.channels.id })
+        .from(schema.channels)
+        .where(or(eq(schema.channels.code, value), eq(schema.channels.name, value)));
+      break;
+    case "warehouse":
+      rows = await db
+        .select({ id: schema.warehouses.id })
+        .from(schema.warehouses)
+        .where(or(eq(schema.warehouses.code, value), eq(schema.warehouses.name, value)));
+      break;
+  }
+
+  const ids = [...new Set(rows.map((row) => row.id))];
+  if (ids.length === 1) return ids[0];
+  return null;
+}
+
+export async function resolveKnownOrQueue(
+  db: DimDb,
+  aliasType: AliasType,
+  rawValue: string,
+  context: unknown,
+): Promise<number | null> {
+  const value = normalizeAliasText(rawValue);
+  if (!value) return null;
+  const targetId = await resolveKnownReference(db, aliasType, value);
+  if (targetId !== null) return targetId;
+
+  let exactMatchCount = 0;
+  if (aliasType === "sku_barcode") {
+    exactMatchCount = (
+      await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.barcode, value))
+    ).length;
+  }
+  await queueException(db, aliasType, value, {
+    ...((context && typeof context === "object") ? context : { context }),
+    reason: exactMatchCount > 1 ? "exact_master_match_ambiguous" : "not_found",
+    exactMatchCount,
+  });
   return null;
 }

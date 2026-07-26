@@ -12,7 +12,7 @@ import * as schema from "@/db/schema";
 import { getStagingRows } from "@/server/import/staging";
 import { expiryAdapter, stageExpiry } from "@/server/import/adapters/expiry";
 
-const FILE = "/Users/yj/Downloads/7月电商组效期占比情况-仅数量.xlsx";
+const FILE = "/Users/yj/Desktop/SCM/7月电商组效期占比情况-仅数量.xlsx";
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 describe.skipIf(!existsSync(FILE))("适配器②：效期批次库存（真实文件）", () => {

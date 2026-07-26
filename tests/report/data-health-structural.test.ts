@@ -72,6 +72,7 @@ describe("主数据健康度：结构性告警（BOM 嵌套）", () => {
     // 成品 ← 原料：子件自身无 BOM，单层展开即完整
     await mkBom(finished, [raw], 1);
     const r = await getDataHealth({ page: 1, pageSize: 50 }, db);
+    expect(r.summary.totalSkus).toBe(1); // 原料/半成品的零售条码/品牌不适用，不污染成品健康率
     // 只断言「无嵌套告警」——structural 里还会有保质期等其他结构项，不该被这条测试连坐
     expect(r.structural.find((x) => x.key === "bom_nested")).toBeUndefined();
   });

@@ -2,8 +2,9 @@
  * 主数据健康度仪表（只读报表层）：逐 active SKU 评分主数据完整度并产出缺失清单。
  *
  * 口径（不新增字段，全部既有主档）：
- * - 适用维度按 skuType 裁剪——成品(finished)：生产周期+起订量+BOM+条码+品牌；
- *   其余类型（半成品/原料/包材/服务）仅：条码+品牌（不评 BOM/生产周期/起订量）。
+ * - 完整度评分只评价成品(finished)：生产周期+起订量+BOM+条码+品牌。
+ *   原料/包材没有零售条码与消费品牌在当前 BOM 数据模型中是正常的，不应被伪装成缺陷；
+ *   它们仍参与「疑似重复」扫描，未来有经业务确认的物料专属必填项后再独立评分。
  * - 生产周期缺失 = 无 sku_params.normalLeadDays>0（成品适用）
  * - 起订量缺失   = 无 uom_convs.moq>0（任一采购单位；成品适用）
  * - BOM 缺失     = 无生效版本 boms(status=active)（成品适用）
@@ -250,22 +251,19 @@ export async function getDataHealth(
     }
   }
 
-  /* ── 逐 SKU 判定 ── */
+  /* ── 逐成品 SKU 判定 ──
+     原料/包材若按条码+品牌打分，会把 4,350 条「不适用」误报成缺失，健康率失真。 */
+  const evaluatedSkus = skuRows.filter((sku) => sku.skuType === "finished");
   const byDimension = emptyByDim();
   let fullyHealthy = 0;
   const all: DataHealthRow[] = [];
 
-  for (const sku of skuRows) {
-    const isFinished = sku.skuType === "finished";
+  for (const sku of evaluatedSkus) {
     const missing: string[] = [];
-    let applicable = 2; // 全类型：条码 + 品牌
-
-    if (isFinished) {
-      applicable += 3; // 成品专属：生产周期 + 起订量 + BOM
-      if (!hasLead.has(sku.id)) missing.push(DIM_LEAD);
-      if (!hasMoq.has(sku.id)) missing.push(DIM_MOQ);
-      if (!hasBom.has(sku.id)) missing.push(DIM_BOM);
-    }
+    const applicable = 5;
+    if (!hasLead.has(sku.id)) missing.push(DIM_LEAD);
+    if (!hasMoq.has(sku.id)) missing.push(DIM_MOQ);
+    if (!hasBom.has(sku.id)) missing.push(DIM_BOM);
     if (sku.barcodeStatus == null || sku.barcodeStatus === "malformed") missing.push(DIM_BARCODE);
     if (sku.brandId == null) missing.push(DIM_BRAND);
 
@@ -287,7 +285,7 @@ export async function getDataHealth(
   return {
     rows: filtered.slice((page - 1) * pageSize, page * pageSize),
     total: filtered.length,
-    summary: { totalSkus: skuRows.length, fullyHealthy, byDimension },
+    summary: { totalSkus: evaluatedSkus.length, fullyHealthy, byDimension },
     structural,
   };
 }

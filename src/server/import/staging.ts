@@ -20,7 +20,15 @@ export interface StagingRowInput {
 
 export async function createImportJob(
   db: AnyDb,
-  i: { template: string; filePath: string; createdBy: number; idempotencyKey?: string },
+  i: {
+    template: string;
+    filePath: string;
+    createdBy: number;
+    idempotencyKey?: string;
+    sourceAsOf?: string | null;
+    schemaVersion?: string;
+    scope?: Record<string, unknown> | null;
+  },
 ): Promise<{ id: number }> {
   const fileHash = createHash("md5").update(readFileSync(i.filePath)).digest("hex");
   const filename = i.filePath.split("/").pop() ?? i.filePath;
@@ -39,6 +47,9 @@ export async function createImportJob(
         template: i.template,
         filename,
         fileHash,
+        sourceAsOf: i.sourceAsOf ?? null,
+        schemaVersion: i.schemaVersion ?? `${i.template}-v1`,
+        scope: i.scope ?? null,
         status: "validating",
         createdBy: i.createdBy,
         idempotencyKey,
@@ -79,12 +90,69 @@ export async function writeStagingRows(db: AnyDb, jobId: number, rows: StagingRo
 export async function finalizeImportJob(
   db: AnyDb,
   jobId: number,
-  stats: { okRows: number; failRows: number },
+  stats: {
+    okRows: number;
+    failRows: number;
+    status?: "done" | "failed";
+    controlRows?: number;
+  },
 ): Promise<void> {
   await db
     .update(importJobs)
-    .set({ status: "done", okRows: stats.okRows, failRows: stats.failRows })
+    .set({
+      status: stats.status ?? "done",
+      okRows: stats.okRows,
+      failRows: stats.failRows,
+      controlRows: stats.controlRows ?? stats.okRows + stats.failRows,
+    })
     .where(eq(importJobs.id, jobId));
+}
+
+/** 解析阶段失败也必须留下可解释状态，不能永远卡在 validating。 */
+export async function failImportJob(
+  db: AnyDb,
+  jobId: number,
+  targetTable: string,
+  error: unknown,
+): Promise<void> {
+  const message = (error instanceof Error ? error.message : String(error)).slice(0, 2000);
+  await db.transaction(async (tx: AnyDb) => {
+    const existing: { id: number; status: string }[] = await tx
+      .select({ id: stagingRows.id, status: stagingRows.status })
+      .from(stagingRows)
+      .where(eq(stagingRows.importJobId, jobId));
+    if (existing.length === 0) {
+      await tx.insert(stagingRows).values({
+        importJobId: jobId,
+        rowNo: 0,
+        targetTable,
+        payload: { phase: "parse" },
+        status: "error",
+        errorMsg: message,
+      });
+    } else {
+      // 部分分块已写入后失败时，必须封死这些行；release 查询按 staging status，
+      // 若只把 job 标 failed 而保留 pending/validated，失败批次仍可能被误放行。
+      await tx
+        .update(stagingRows)
+        .set({ status: "error", errorMsg: `导入失败：${message}` })
+        .where(
+          and(
+            eq(stagingRows.importJobId, jobId),
+            inArray(stagingRows.status, ["pending", "validated"]),
+          ),
+        );
+    }
+    await tx
+      .update(importJobs)
+      .set({
+        status: "failed",
+        okRows: 0,
+        failRows: existing.length > 0 ? existing.length : 1,
+        controlRows: existing.length,
+      })
+      .where(eq(importJobs.id, jobId));
+  });
 }
 
 export async function getStagingRows(db: AnyDb, jobId: number, status?: string) {

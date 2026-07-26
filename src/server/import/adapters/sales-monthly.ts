@@ -135,6 +135,11 @@ export async function stageSalesMonthly(db: AnyDb, filePath: string, userId: num
     userId,
     adapter: salesMonthlyAdapter,
     targetTable: TARGET_TABLE,
+    job: {
+      sourceAsOf: "2026-06-30",
+      schemaVersion: "sales-monthly-v2",
+      scope: { mode: "full", target: "sales_monthly", monthFrom: "2026-01", monthTo: "2026-06" },
+    },
     aliasRefs: (row) => [
       { field: "sku", aliasType: "sku_code", value: row.payload.skuCode as string | null },
       { field: "channel", aliasType: "channel", value: row.payload.channelRaw as string | null },
