@@ -1,6 +1,6 @@
 # 先证伪，再上报
 
-> 本文件是 `$reconcile-supply-chain-truth` 的单项主张模式参考。事故数量、行号、填充率和
+> 本文件是 `integrate-supply-chain-data` 的单项主张模式参考。事故数量、行号、填充率和
 > 调用点均为历史证据；使用前必须在当前 revision 重新测量。
 
 这个仓库里**注释会撒谎**。已经发生两次：`TODO(W3)` 说 BOM 生效没走审批（实际

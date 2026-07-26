@@ -25,7 +25,7 @@ import { resolveDb } from "@/server/core/svc";
  * 设计决策（v1）：
  * - countedQty 创建时预填=账面数（bookQty）——schema 冻结、pd_lines 无逐行状态列，
  *   "未盘=未改动"在 v1 可接受；差异=countedQty−bookQty ≠ 0 的行。
- * - 调整单前缀取 'CA'（Count Adjust）：doc_counter 按前缀独立计数，
+ * - 调整单前缀取 'CA'（Count Adjust）：doc_counters 按前缀独立计数，
  *   避免与 pd_docs 的 'PD' 前缀在同日互相占号造成阅读混乱。
  * - 调整单在 PD 审批事务内直接落 completed（审批留痕在 PD/count 审批域，
  *   不再走 stock_doc 二次审批——期初/盘点审批域=财务，见 CLAUDE.md/seed）。

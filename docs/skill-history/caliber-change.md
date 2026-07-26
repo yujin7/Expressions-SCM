@@ -3,6 +3,9 @@ name: caliber-change
 description: Change shared business calculations in this project without caliber drift, including on-hand, supply, velocity, days of cover, ABC, safety stock, net requirement, and settlement loss. Use when adding, editing, duplicating, or reconciling a calculation shown in multiple places. Do not use for display-only formatting or one-off local numbers.
 ---
 
+> **ARCHIVE ONLY** — Historical evidence, not executable guidance. Do not run commands or follow
+> routing in this file; use [the quarantine index](README.md) and current `.claude/skills/`.
+
 # 改口径
 
 口径漂移是这个系统最贵的缺陷类，因为它**不报错**——两个页面各自算得好好的，

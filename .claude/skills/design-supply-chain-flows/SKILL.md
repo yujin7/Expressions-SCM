@@ -7,6 +7,10 @@ description: Design or implement an end-to-end supply-chain workflow, page, plan
 
 Turn business intent into the smallest complete operating loop.
 
+Use this as the only primary skill while the unresolved question is workflow behavior. Hand off
+sequentially to `write-path` once implementation reaches an application-owned mutation, then to
+`release-sweep` only after an exact candidate exists.
+
 ## Contract before screens
 
 1. Identify actor, trigger, decision, source facts, state transition, exception path, owner, SLA, and evidence.
@@ -20,8 +24,7 @@ Turn business intent into the smallest complete operating loop.
 
 - Prefer server-rendered initial facts and small client islands.
 - Use the shared list-state and toolbar components; wrap search-parameter clients in `Suspense`.
-- Keep client modules free of value imports from `@/server/*`.
+- Keep client modules free of value imports from `@/server/*` except an architecture-test allowlist
+  of zero-import pure constants, currently `@/server/core/constants`.
 - Make defaults useful, exceptions visible, empty states explanatory, and destructive actions explicit.
 - Verify the workflow with observable scenarios, not page existence.
-
-Consult `docs/skill-history/` only for a relevant deep playbook such as planning, cosmetics quality, alerts, or list pages.

@@ -7,6 +7,9 @@ description: Protect shared Git, worktree, dev-server, PGlite, test, and commit 
 
 Assume external state can change after every observation.
 
+This is a safety constraint, not a domain primary. Apply it sequentially only around shared Git,
+process, database, or evidence operations, then return to the primary skill.
+
 1. Recheck `git log --oneline -5` and `git status --short -uall`.
 2. Attribute every changed path; preserve unknown and unrelated work.
 3. Prefer a dedicated branch/worktree via `npm run dev:session -- <name>`.

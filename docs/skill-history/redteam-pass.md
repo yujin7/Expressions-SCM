@@ -3,6 +3,9 @@ name: redteam-pass
 description: Attack consequential project changes for concurrency, replay, idempotency, authorization, masking, approval-cycle, reversal, negative-stock, precision, and aggregation failures. Use after implementing approval, posting, settlement, pricing, import, export, or other write paths and before shipping stock- or money-moving changes.
 ---
 
+> **ARCHIVE ONLY** — Historical evidence, not executable guidance. Do not run commands or follow
+> routing in this file; use [the quarantine index](README.md) and current `.claude/skills/`.
+
 # 红队一遍
 
 **五轮红队在这个仓库里找到的东西，全都是正常路径跑通之后才发现的：**

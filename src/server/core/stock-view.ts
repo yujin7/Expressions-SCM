@@ -109,7 +109,8 @@ export function coverDays(onHand: number, daily: number): number | null {
  * 两者相差一个 PO 在途量。**不要把补货页的 daysCover 与其他页面的可销天数直接比大小**——
  * 今天成品 PO 在途接近 0 所以看不出差异，PO 流程一旦跑起来，补货页会系统性高于其他页。
  * 控制塔首屏的「可销 < 生产周期」已改为直接消费 replenish 的行（同源），不再自行判定。
- * 若新增第三种分子（例如含在制/含参考层），**先走 skill `caliber-change`**，
+ * 若新增第三种分子（例如含在制/含参考层），先由 `integrate-supply-chain-data`
+ * 统一口径并验证所有消费者，
  * 不要再就地写一个 `x / daily`——本函数存在的意义就是让口径可数、可查、可解释。
  */
 

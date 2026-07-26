@@ -95,7 +95,7 @@ async function main() {
   const MAT_SHELL = "【物料】未归组（导入壳，待业务归组）";
   let [matShell] = await db.select().from(schema.spus).where(eq(schema.spus.nameCn, MAT_SHELL));
   if (!matShell) {
-    // SPU 取号走 doc_counter（禁 MAX+1）
+    // SPU 取号走 doc_counters（禁 MAX+1）
     const [row] = await db
       .insert(schema.docCounters)
       .values({ prefix: "SPU", bizDate: "GLOBAL", lastNo: 1 })

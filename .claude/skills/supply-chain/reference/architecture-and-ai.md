@@ -1,5 +1,9 @@
 # Architecture and AI playbook
 
+> This is a generic design reference, not live project authority. Use `docs/NOW.md` for current
+> status and `docs/spec/CURRENT.md` for current decisions. Repository-specific rules such as R13
+> override any broader autonomy pattern below.
+
 ## Contents
 
 1. Architecture stance
@@ -161,8 +165,13 @@ Use this autonomy ladder:
 - **L0:** read, retrieve, explain;
 - **L1:** recommend and simulate;
 - **L2:** draft or stage an action;
-- **L3:** execute a reversible, low-impact action under deterministic limits;
+- **L3:** execute reversible, low-impact technical housekeeping under deterministic limits, or a
+  business action explicitly authorized by a current `docs/spec/CURRENT.md` decision;
 - **L4:** execute a consequential action only after authorized human approval and policy/state revalidation.
+
+For this repository, current R13 is stricter: automation may create business drafts, but approval and
+consequential execution remain human-gated. Do not use L3/L4 terminology to widen that boundary; only
+a newly recorded project decision can do so.
 
 Never autonomously change supplier bank data, release major POs, post/write off inventory, release quality holds, change approved formula/regulatory data, pay, bulk-export sensitive data, or initiate/close a recall.
 

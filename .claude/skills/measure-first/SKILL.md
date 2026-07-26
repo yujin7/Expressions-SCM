@@ -7,6 +7,10 @@ description: Measure and validate a performance, build-speed, test-speed, cachin
 
 Optimize a reproducible bottleneck, not an anecdote.
 
+Use this as the primary skill for a performance claim. Keep correctness work with its domain skill;
+add `parallel-sessions` only when the measurement can interfere with shared processes, databases,
+or worktrees.
+
 1. Anchor revision, environment, data scale, cache state, command/request, and sample count.
 2. Measure cold and warm behavior separately; report median, tail, failures, and relevant resources.
 3. Profile the critical path and identify the dominant contributor.

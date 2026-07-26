@@ -3,6 +3,9 @@ name: parallel-sessions
 description: Protect shared Git, dev-server, PGlite, test, and commit state when multiple agent sessions work in this repository. Use before staging, committing, stashing, starting or stopping servers, opening .data/dev, quoting test counts, or whenever files or results change unexpectedly. Do not use for genuinely solo read-only work.
 ---
 
+> **ARCHIVE ONLY** — Historical evidence, not executable guidance. Do not run commands or follow
+> routing in this file; use [the quarantine index](README.md) and current `.claude/skills/`.
+
 # 假设另一个会话正在写
 
 > 下文时间、PID、端口、提交、文件数与测试数是 2026-07-25 的事故证据，不是当前状态。

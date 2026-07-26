@@ -3,6 +3,9 @@ name: schema-change
 description: Change this project's Drizzle schema and migrations safely. Use for any edit under src/db/schema, generated migration, column or constraint change, drift or health mismatch, schema-related 500, backfill decision, or direct .data/dev script. Use caliber-change for calculation semantics and integrate-supply-chain-data for imports into unchanged schemas.
 ---
 
+> **ARCHIVE ONLY** — Historical evidence, not executable guidance. Do not run commands or follow
+> routing in this file; use [the quarantine index](README.md) and current `.claude/skills/`.
+
 # 改完 schema，重启进程
 
 > 下文迁移数、调用点数、表/约束数量、行号和性能数是历史审计样本。迁移流程与失败模式

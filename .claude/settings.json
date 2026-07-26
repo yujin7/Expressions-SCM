@@ -6,7 +6,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh\" git"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh\" git",
+            "timeout": 5,
+            "statusMessage": "Advisory: checking shared Git state"
           }
         ]
       }
@@ -17,7 +19,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh\" schema"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh\" schema",
+            "timeout": 5,
+            "statusMessage": "Advisory: checking schema-change evidence"
           }
         ]
       }

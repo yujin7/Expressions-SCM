@@ -86,7 +86,7 @@ export function aliasCache(db: AnyDb) {
   };
 }
 
-/** SPU 取号：复刻 master/spu.ts 的 doc_counter 行锁模式（该函数私有，不可 import）——碰撞续取 */
+/** SPU 取号：复刻 master/spu.ts 的 doc_counters 原子 upsert 模式（该函数私有，不可 import）——碰撞续取 */
 export async function nextSpuCodeIn(db: AnyDb): Promise<string> {
   for (let guard = 0; guard < 100000; guard++) {
     const [row] = await db

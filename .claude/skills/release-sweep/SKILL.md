@@ -5,7 +5,13 @@ description: Gate an exact branch, commit, or release candidate with full-story 
 
 # Release Sweep
 
-Return a verdict for one anchored candidate and environment: `READY`, `READY WITH EXPLICIT ACCEPTANCE`, or `NOT READY`.
+Return a verdict for one anchored candidate and environment: `READY` only when every required
+check passes; otherwise `NOT READY`. Document authorized risk acceptance separately—it cannot turn
+skipped live or database evidence into readiness.
+
+This is the terminal verification primary, not an implementation companion. Activate it only after
+the implementation skill has produced an exact candidate; add `parallel-sessions` only while
+shared state makes the evidence unstable.
 
 ## Anchor and verify
 

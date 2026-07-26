@@ -1,11 +1,14 @@
 ---
 name: decision-log
-description: Read or record authoritative business rulings in ../spec/CURRENT.md. Use before hard-coding a business threshold, policy, approval domain, or phase decision; when the user makes or changes such a ruling; or when specifications conflict. Do not use for implementation choices without a business owner.
+description: Read or record authoritative business rulings in docs/spec/CURRENT.md. Use before hard-coding a business threshold, policy, approval domain, or phase decision; when the user makes or changes such a ruling; or when specifications conflict. Do not use for implementation choices without a business owner.
 ---
+
+> **ARCHIVE ONLY** — Historical evidence, not executable guidance. Do not run commands or follow
+> routing in this file; use [the quarantine index](README.md) and current `.claude/skills/`.
 
 # 决议登记
 
-**`../spec/CURRENT.md` 是当前意图入口与决策登记簿。** 改判先改它，再改宿主文档。
+**`docs/spec/CURRENT.md` 是当前意图入口与决策登记簿。** 改判先改它，再改宿主文档。
 它存在的原因很具体：曾有 19 条决议只活在聊天记录里，规格集退化成互相打补丁的链条，
 没人答得上「现在到底按哪条」。
 
@@ -17,8 +20,8 @@ description: Read or record authoritative business rulings in ../spec/CURRENT.md
 原文里有大量已过期段落（打了 ⚠ 锚点但容易漏看）。
 
 ```bash
-/usr/bin/grep -n "D[0-9]\+" "../spec/CURRENT.md" | head -40
-/usr/bin/grep -n "关键词" "../spec/CURRENT.md"
+/usr/bin/grep -n "D[0-9]\+" "docs/spec/CURRENT.md" | head -40
+/usr/bin/grep -n "关键词" "docs/spec/CURRENT.md"
 ```
 
 CURRENT.md 里的「当前答案速查」表每行 = 一个唯一权威。典型过期陷阱：

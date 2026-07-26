@@ -3,6 +3,9 @@ name: reconcile-supply-chain-truth
 description: Establish the evidence-backed current state of this supply-chain project. Use when specifications, status notes, code, migrations, tests, runtime behavior, or audit claims disagree; when asked whether a capability exists or is wired end to end; and before reporting a TODO, missing feature, or dead path. Diagnose and report by default. Use release-sweep to gate an exact ship candidate.
 ---
 
+> **ARCHIVE ONLY** — Historical evidence, not executable guidance. Do not run commands or follow
+> routing in this file; use [the quarantine index](README.md) and current `.claude/skills/`.
+
 # Reconcile Supply-Chain Truth
 
 Produce a dated truth packet that separates **intended**, **implemented**, **verified**, and
@@ -23,7 +26,7 @@ scope. If the claim changes materially while investigating, split it into separa
 
 1. Resolve the repository root with `git rev-parse --show-toplevel`; do not depend on a
    machine-specific absolute path.
-2. Read `../spec/CURRENT.md` as the decision register and document router, then read
+2. Read `docs/spec/CURRENT.md` as the decision register and document router, then read
    `CLAUDE.md` as the repository operating contract.
 3. Read only the relevant current specification.
 4. Inspect the actual schema, migrations, rules, services, routes or jobs, UI or exports,
@@ -34,7 +37,7 @@ scope. If the claim changes materially while investigating, split it into separa
    behavior.
 
 For the repository map and evidence roles, read
-[project-map.md](../supply-chain/reference/project-map.md).
+[project-map.md](../../.claude/skills/supply-chain/reference/project-map.md).
 
 ## Choose the smallest evidence mode
 
@@ -42,7 +45,7 @@ For the repository map and evidence roles, read
 
 Name the exact symbol, field, table, route, or behavior. Search definitions and consumers with
 `rg`, then read the implementation rather than trusting comments. Reproduce the narrow behavior
-when feasible. Use [single-claim.md](references/single-claim.md) for the detailed checklist.
+when feasible. Use [single-claim.md](../../.claude/skills/supply-chain/reference/single-claim.md) for the detailed checklist.
 
 ### B. Capability reconciliation
 
@@ -64,7 +67,7 @@ Trace both directions:
 Classify the result as zero consumer, parsed-not-persisted, live-but-starved, duplicate caliber,
 or intentional reservation. Before deleting anything, inspect dynamic dispatch, jobs, exports,
 tests, migrations, and external contracts. Use
-[reachability.md](references/reachability.md) for project-specific scan patterns and dated
+[reachability.md](../../.claude/skills/supply-chain/reference/reachability.md) for project-specific scan patterns and dated
 incident evidence.
 
 ## Match authority to the claim

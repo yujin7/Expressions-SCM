@@ -7,6 +7,10 @@ description: Design, implement, or audit supply-chain ingestion, Excel/API/ERP/W
 
 Move claims into governed facts without losing identity, precision, provenance, or replayability.
 
+Use this as the only primary skill while facts cross a source, staging, schema, or truth boundary.
+Hand off sequentially to `write-path` only when accepted facts enter an application-owned mutation,
+then to `release-sweep` only after an exact candidate exists.
+
 ## Evidence contract
 
 1. Record source and target owners, system of record, grain, natural key, version, units, timezone, correction semantics, cadence, and coverage.
@@ -23,4 +27,6 @@ Move claims into governed facts without losing identity, precision, provenance, 
 - Generate migrations from the project workflow; restart local PGlite after schema changes and verify `/api/health`.
 - Never edit production-like data or run a backfill without an exact target, dry run, control totals, and recovery path.
 
-Use `references/file-release.md` for file ingestion. Deeper historical reconciliation and schema playbooks are in `docs/skill-history/`.
+Use [file-release.md](references/file-release.md) for file ingestion,
+[single-claim.md](../supply-chain/reference/single-claim.md) to test one factual claim, and
+[reachability.md](../supply-chain/reference/reachability.md) to trace a fact from writer to caller.

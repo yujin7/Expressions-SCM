@@ -43,7 +43,7 @@ async function loadUser(db: AnyDb, username: string): Promise<ReleaseUser> {
   return { id: u.id, name: u.name, roles: u.roles as string[], isApprover: u.isApprover };
 }
 
-/** SPU 取号（复刻引擎私有逻辑：doc_counter 行锁，禁止 MAX+1） */
+/** SPU 取号（复刻引擎私有逻辑：doc_counters 原子 upsert，禁止 MAX+1） */
 async function nextSpuCode(db: AnyDb): Promise<string> {
   for (let guard = 0; guard < 100000; guard++) {
     const [row] = await db

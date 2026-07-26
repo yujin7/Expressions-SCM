@@ -3,6 +3,9 @@ name: integrate-supply-chain-data
 description: Design, implement, run, or audit trustworthy supply-chain ingestion and integration pipelines for files, Excel, APIs, ERP, WMS, marketplaces, cross-system data migrations, master data, and exports. Use when data crosses a source, staging, or system boundary; for mappings, aliases, replay, reconciliation, lineage, or parsed-but-not-persisted fields. Do not use for an in-place schema migration backfill; use schema-change.
 ---
 
+> **ARCHIVE ONLY** — Historical evidence, not executable guidance. Do not run commands or follow
+> routing in this file; use [the quarantine index](README.md) and current `.claude/skills/`.
+
 # Integrate Supply-Chain Data
 
 Move external claims into governed system facts without losing identity, provenance, precision, or
@@ -75,7 +78,7 @@ arrived through a trusted connector.
 ## Project file-release mode
 
 For this repository's upload → `staging_rows` → review → release pipeline, follow
-[file-release.md](references/file-release.md). Its examples are historical evidence: rerun counts
+[file-release.md](../../.claude/skills/integrate-supply-chain-data/references/file-release.md). Its examples are historical evidence: rerun counts
 and verify paths before treating them as current. The non-negotiable project behaviors are:
 
 - dry-run produces full counts and **zero writes**;
@@ -85,8 +88,8 @@ and verify paths before treating them as current. The non-negotiable project beh
 - the report names committed, blocked, unresolved, and reconciled counts separately;
 - opening or migrated inventory uses the approved migration posting path, never a balance update.
 
-Use `$reconcile-supply-chain-truth` when a parsed field appears disconnected. Use
-`$write-path` when accepted data becomes a transactional fact. Use `$schema-change` when the
+Use the current integration/truth reference when a parsed field appears disconnected. Use
+`$write-path` when accepted data becomes a transactional fact. Use the current integration skill when the
 target contract itself changes.
 
 ## Verify the full story

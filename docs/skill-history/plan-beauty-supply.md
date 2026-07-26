@@ -3,6 +3,9 @@ name: plan-beauty-supply
 description: Design, evaluate, or implement demand forecasting, S&OP, safety stock, replenishment, allocation, inventory optimization, and planning recommendations for beauty brands. Use when the core decision is future supply or inventory policy under uncertainty, including backtests, baselines, constraints, abstention, and human approval. Do not use for deterministic posting or quality release.
 ---
 
+> **ARCHIVE ONLY** — Historical evidence, not executable guidance. Do not run commands or follow
+> routing in this file; use [the quarantine index](README.md) and current `.claude/skills/`.
+
 # Plan Beauty Supply
 
 Produce the simplest explainable planning recommendation that available evidence can support. Diagnose readiness before reaching for advanced AI.
@@ -13,13 +16,13 @@ Answer: **Given current evidence and constraints, what future supply or inventor
 
 - Recommend; do not approve, order, allocate, post stock, or release quality automatically.
 - Use `$write-path` for execution of an approved decision.
-- Use `$govern-cosmetics-quality` for lot eligibility and quality release.
+- Use the current workflow-design skill for lot eligibility and quality release.
 - Use `$integrate-supply-chain-data` when missing readiness is primarily a data-boundary problem.
 
 ## Establish the decision context
 
 1. Define product and hierarchy, market, channel, location, owner, decision horizon, review cadence, service objective, and accountable planner.
-2. In this repository, read `../spec/CURRENT.md` and `CLAUDE.md`, then inspect the shared stock, supply, velocity, ABC, forecast, and replenishment implementations before proposing a new caliber. Resolve the repository root dynamically; do not depend on a machine-specific path.
+2. In this repository, read `docs/spec/CURRENT.md` and `CLAUDE.md`, then inspect the shared stock, supply, velocity, ABC, forecast, and replenishment implementations before proposing a new caliber. Resolve the repository root dynamically; do not depend on a machine-specific path.
 3. State the business date, data as-of time, coverage, latency, and known blind spots.
 4. Separate demand, sales, orders, shipments, returns, cancellations, lost sales, stockouts, substitutions, and promotions.
 5. Identify lifecycle effects: launch, ramp, discontinuation, relaunch, reformulation, pack-size change, channel expansion, influencer spike, and cannibalization.

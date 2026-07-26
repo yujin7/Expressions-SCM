@@ -7,6 +7,11 @@ description: Build or change a database mutation, service write, approval, posti
 
 No business invariant is real unless it has one enforced entry point and adversarial tests.
 
+Use this as the only primary skill for application-owned mutations after the business and data
+contract is settled. Keep `integrate-supply-chain-data` primary while facts are still crossing
+source, staging, schema, or reconciliation boundaries; hand off to `release-sweep` only for the
+resulting exact candidate.
+
 ## Define the mutation
 
 Before code, state:

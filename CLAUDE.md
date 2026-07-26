@@ -1,8 +1,11 @@
 # 供应链系统 — 项目约定
 
 - **本项目只有 7 个 active skill，canonical 正文只在 `.claude/skills/`**；`.agents/skills/`
-  是同一批目录的发现层。依据 `description` 自动匹配，明确写 `$skill-name` 可强制调用。
-  一次选一个主责、最多一个约束 skill，不并行加载整套：
+  是同一批目录的发现层。只有从仓库根目录启动的会话才把这些仓库 skill 视为可发现；
+  `description` 命中只表示可被隐式激活，不保证一定激活。Codex 显式调用写 `$skill-name`，
+  Claude Code 写 `/skill-name`。
+- 每个任务确定一个主责 skill，再按实施阶段加载完成任务所需的**最少安全门**；数据/迁移、
+  写路径、并行会话与发布检查可以组合，不预加载无关整套：
   - 编排：`supply-chain`
   - 产品/工作流：`design-supply-chain-flows`
   - 数据/迁移/事实核验：`integrate-supply-chain-data`
@@ -12,13 +15,15 @@
   - 并行会话安全：`parallel-sessions`
   详细领域资料在 `.claude/skills/supply-chain/reference/`；旧版 playbook 完整保存在
   `docs/skill-history/`，只在需要具体案例时读取。
-- 当前入口是 `docs/NOW.md`，需求与决议入口是 `docs/spec/CURRENT.md`；它所指向的宿主规格共同定义需求。
-  `docs/spec/01-系统完整规格-v2.0.md` 是核心宿主规格之一，不单独凌驾于后续显式改判；
-  术语用《00》A4 统一命名。
-- 单据前缀: BH/WO/PO/PC/JG/FL/TL/SH/CT/RK/CK/DB/JS/PD；取号走 doc_counter（`src/server/docflow/doc-no.ts`），禁止 MAX+1
-- 金额 decimal(14,2)，数量 decimal(14,4)；禁 float 运算（用字符串/decimal 工具 `src/server/core/decimal.ts`）；时区 Asia/Shanghai
-- 库存只能经 `src/server/posting/registry.ts` 过账；禁止直接写 stock_balance/stock_ledger
-- stock_ledger 与 audit_log 仅追加；纠错一律红字冲销，无反审批
+- 仓库内只有两个 live authority：`docs/NOW.md` 管当前状态与下一优先级，
+  `docs/spec/CURRENT.md` 管当前业务意图、决议与宿主规格导航。其余规格、README、skill reference、
+  历史审计和代码注释都只是支撑材料；冲突不得静默裁决，实施/验证/部署事实仍须在当前 revision 取证。
+- 单据前缀: BH/WO/PO/PC/JG/FL/TL/SH/CT/RK/CK/DB/JS/PD/CA；取号走 doc_counters（`src/server/docflow/doc-no.ts`），禁止 MAX+1
+- 精度按字段契约：单据金额/价格通常 decimal(14,2)，基础单位成本等 schema 明示字段可 decimal(14,4)；
+  业务数量通常 decimal(14,4)，导入控制总量等聚合字段可更宽。不得凭本摘要改 schema；
+  禁 float 运算（用字符串/decimal 工具 `src/server/core/decimal.ts`）；时区 Asia/Shanghai
+- 库存只能经 `src/server/posting/registry.ts` 过账；禁止直接写 stock_balances/stock_ledger
+- stock_ledger 与 audit_logs 由数据库触发器强制仅追加；纠错一律红字冲销，无反审批
 - 业务规则在 `src/server/rules/*.ts` 纯函数+单测；R5 逐物料计算，禁止跨物料轧差
 - 脱敏唯一收口 `src/server/core/dto.ts` 的 `maskSensitive`（含导出/RSC）；前端隐藏不算数
 - 余额更新事务内按 (skuId, warehouseId, batchId) 排序；过账/审批靠 UNIQUE 约束幂等
@@ -29,7 +34,8 @@
   否则又会退回「65 条豁免指向一个没装的 linter」那种状态）。
 - DTO 禁止 Map/Set/class 实例作数据容器（maskSensitive 只穿透 plain object/array——红队第二轮裁决）
 - 审批幂等键含 cycle=单据版本（驳回→重提→再驳回属新轮次）；期初/盘点审批域=opening/count（财务），勿并回 stock_doc
-- 所有 service 写路径必须 writeAudit（core/audit.ts）；写守卫用 getFreshSessionUser 回查 DB
+- 所有业务 service 写路径必须在同一事务边界 writeAudit（core/audit.ts）；低层 helper 可委托调用方，
+  但调用链与测试必须证明审计边界；写守卫用 getFreshSessionUser 回查 DB
 - 生成新迁移后必须重启 dev server（PGlite 迁移仅在启动时应用——热更新代码引用新列会全线 500；/api/health 暴露漂移）
 - 路由域约定（Wave U）：新页面路由按业务域取路径（/npd、/inventory/expiry），/report/* 仅限真报表；存量 /report/risk 等为历史遗留不迁移（菜单键稳定优先）
 - 结构约定（Wave GG 体检结论，新代码遵循，存量不迁移以保稳定）：

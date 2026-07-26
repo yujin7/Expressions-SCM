@@ -5,6 +5,8 @@
 
 > `CLAUDE.md` 常驻上下文，列的是**规则本身**。本页补的是**规则背后的事故**——
 > 知道一条规则为什么存在，你才不会在它碍事的时候绕过它。
+> 下文事故数量、路径和覆盖数是历史样本，不是当前基线；当前状态只看 `docs/NOW.md`，
+> 当前决议只看 `docs/spec/CURRENT.md`，引用样本前须在当前 revision 复核。
 
 ---
 
@@ -13,11 +15,11 @@
 | 铁律 | 唯一入口 | 违反的后果 |
 |---|---|---|
 | 禁止 float 运算 | `src/server/core/decimal.ts`（`dAdd/dSub/dMul/dDiv/dCmp`，十进制字符串，内部 BigInt，scale 6） | 金额/数量出现 0.1+0.2 类误差，结算逐物料轧不平，红队第二轮实测出系统性向下舍入偏差 |
-| 库存只经过账表 | `src/server/posting/registry.ts` 的 `post()` | 直接写 `stock_balance`/`stock_ledger` ＝ 绕过幂等 UNIQUE、绕过审计、台账与余额永久劈叉 |
+| 库存只经过账表 | `src/server/posting/registry.ts` 的 `post()` | 直接写 `stock_balances`/`stock_ledger` ＝ 绕过幂等 UNIQUE、绕过审计、台账与余额永久劈叉 |
 | 台账/审计只追加 | 红字冲销纠错 | 改/删已过账数据 ＝ 失去纠错能力（红队一轮原话：「没有冲销的追加式台账等于没有纠错能力」） |
 | 所有写路径 `writeAudit` | `src/server/core/audit.ts` | 红队二轮实测：审计表**零写入**——规格写了「全留痕」但没人调 |
 | 脱敏唯一收口 | `src/server/core/dto.ts` 的 `maskSensitive` | 红队二轮实测：函数定义了但**从未被调用**。前端隐藏不算数——RSC 载荷/导出/报表都要过 |
-| 取号走 doc_counter | `src/server/docflow/doc-no.ts` | `MAX+1` 并发下必然重号 |
+| 取号走 doc_counters | `src/server/docflow/doc-no.ts` | `MAX+1` 并发下必然重号 |
 | 余额更新排序 | 事务内按 `(skuId, warehouseId, batchId)` | 不排序 → 并发死锁 |
 | 幂等键含 cycle | 审批引擎 | 红队二轮：驳回→重提→再驳回被幂等短路，第二次驳回静默丢失 |
 | DTO 禁 Map/Set/class | 用 plain object/array | `maskSensitive` 只穿透 plain object/array——Map 里的敏感字段会**原样漏出** |

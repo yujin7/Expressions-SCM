@@ -1,6 +1,9 @@
 # Authoritative research sources
 
 Last researched: 2026-07-25. Re-verify current primary sources before making legal, regulatory, security-standard, or version-sensitive claims.
+This is a research index, not live project authority: current status belongs to `docs/NOW.md`, and
+product/market scope or hard-gate decisions belong to `docs/spec/CURRENT.md` with legal/compliance
+owner sign-off where applicable.
 
 ## Cosmetics regulation and quality
 

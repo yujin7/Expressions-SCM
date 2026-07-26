@@ -48,6 +48,38 @@ async function main(): Promise<void> {
       throw new Error("users.session_version migration contract is missing or nullable");
     }
 
+    const immutableTriggers = await client.query<{
+      table_name: string;
+      trigger_name: string;
+    }>(
+      `select c.relname as table_name, t.tgname as trigger_name
+         from pg_trigger t
+         join pg_class c on c.oid = t.tgrelid
+         join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public'
+          and not t.tgisinternal
+          and t.tgname = any($1::text[])`,
+      [[
+        "stock_ledger_append_only",
+        "stock_ledger_append_only_truncate",
+        "audit_logs_append_only",
+        "audit_logs_append_only_truncate",
+      ]],
+    );
+    const triggerPairs = new Set(
+      immutableTriggers.rows.map((row) => `${row.table_name}:${row.trigger_name}`),
+    );
+    const requiredTriggerPairs = [
+      "stock_ledger:stock_ledger_append_only",
+      "stock_ledger:stock_ledger_append_only_truncate",
+      "audit_logs:audit_logs_append_only",
+      "audit_logs:audit_logs_append_only_truncate",
+    ];
+    const missingTriggers = requiredTriggerPairs.filter((pair) => !triggerPairs.has(pair));
+    if (missingTriggers.length) {
+      throw new Error(`Missing append-only database triggers: ${missingTriggers.join(", ")}`);
+    }
+
     const migrationCount = await client.query<{ count: string }>(
       `select count(*)::text as count from drizzle.__drizzle_migrations`,
     );
@@ -60,6 +92,7 @@ async function main(): Promise<void> {
       appliedMigrations: applied,
       requiredTables: [...found].sort(),
       sessionVersion: column,
+      immutableTriggers: [...triggerPairs].sort(),
     }, null, 2));
   } finally {
     await client.end();

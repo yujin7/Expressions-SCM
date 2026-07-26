@@ -13,34 +13,40 @@
 
 ## 1. Project signature
 
-Treat a workspace directory as this project when it contains:
+Treat a repository root as this project when it contains:
 
-- `spec/CURRENT.md`
-- `spec/01-系统完整规格-v2.0.md`
-- `spec/14-系统进化总PRD.md`
-- `supply-chain/package.json`
-- `supply-chain/src/server/posting/`
+- `docs/NOW.md`
+- `docs/spec/CURRENT.md`
+- `package.json`
+- `src/server/posting/`
+- `CLAUDE.md`
 
-When starting inside the `supply-chain` repository, the equivalent signature is `package.json`,
-`src/server/posting/`, `CLAUDE.md`, and `../spec/CURRENT.md`. Resolve the repository with
-`git rev-parse --show-toplevel`; search only provided workspace roots if the project moved. Never
-hard-code a personal path or recursively search a broad home/filesystem root.
+Launch repository skills from that root. Resolve it with `git rev-parse --show-toplevel`; search only
+provided workspace roots if the project moved. Never route live decisions outside the Git root,
+hard-code a personal path, or recursively search a broad home/filesystem root.
 
 ## 2. Authority and reading order
 
-Match authority to the question instead of applying one universal precedence:
+Within the repository, only two documents are live authority:
 
-1. **Current approved intent:** current user decision, `spec/CURRENT.md`, and the current
-   specifications it names, including explicit amendments.
-2. **Repository operating contract:** `supply-chain/CLAUDE.md` / `AGENTS.md`.
-3. **Implemented behavior:** schema, migrations, services, rules, routes, jobs, UI, configuration,
+1. **Current status and next priority:** `docs/NOW.md`.
+2. **Current approved intent and decisions:** `docs/spec/CURRENT.md`, which navigates to supporting
+   host specifications. Those host documents do not independently override a later explicit ruling.
+
+Keep the other layers distinct:
+
+3. **Repository operating contract:** `CLAUDE.md` / `AGENTS.md`.
+4. **Implemented behavior:** schema, migrations, services, rules, routes, jobs, UI, configuration,
    and the exact revision.
-4. **Verified behavior:** reproducible tests, UAT, queries, logs, API/UI observations, and
+5. **Verified behavior:** reproducible tests, UAT, queries, logs, API/UI observations, and
    reconciliation artifacts.
-5. **Deployed behavior:** deployed revision, environment configuration, telemetry, operational
+6. **Deployed behavior:** deployed revision, environment configuration, telemetry, operational
    reconciliation, and sign-off evidence.
-6. **History and rationale:** audit archives (`03`, `05`, `06`), original inputs, meeting notes,
-   and git history.
+7. **History and rationale:** supporting specifications, audit archives, original inputs, meeting
+   notes, skill history, and git history.
+
+A current user ruling can supersede repository intent for the task, but it is not durable project
+authority until recorded in `docs/spec/CURRENT.md`.
 
 Resolve conflicts explicitly:
 
@@ -55,16 +61,16 @@ Do not trust embedded commit IDs, test counts, data volumes, or “complete” l
 
 | Task | Read first | Then inspect |
 |---|---|---|
-| Current status or next priority | `CURRENT.md`, `14` | git status/log, relevant code and tests |
-| MVP scope or acceptance | `CURRENT.md`, `02`, `07` | affected routes/services/tests |
-| Core entities, state machines, permissions | `01`, explicit amendments in `04` | `src/db/schema`, `docflow`, DTOs, APIs |
-| Data import, master data, snapshots, lineage | `04`, `13` | adapters, staging/release engine, refs, migrations, import tests |
-| Product requirements and omitted intent | original PRD, `00`, `08` | current decision register and implementation |
-| Supplier lifecycle | `10`, `09`, `CURRENT.md` | supplier schema/service/UI, scorecard, alerts |
-| Automatic outsourced-production chain | `11`, `14`, `CURRENT.md` | auto-chain, kitting/ATP rules, approval and posting boundaries |
-| SPU/SKU policy | `12`, `04`, `CURRENT.md` | masters schema, aliases, release/regroup logic |
-| Platform evolution/AI/planning | `14`, `13` | rules, projections, reports, jobs, data coverage |
-| Audit history or rationale | `03`, `05`, `06`, `08` | current files to test whether finding remains true |
+| Current status or next priority | `docs/NOW.md` | git status/log, linked evidence, relevant code and tests |
+| Current ruling, scope, or acceptance | `docs/spec/CURRENT.md` | the supporting sections it names, then affected routes/services/tests |
+| Core entities, state machines, permissions | `docs/spec/CURRENT.md` | named host specs, `src/db/schema`, `docflow`, DTOs, APIs |
+| Data import, master data, snapshots, lineage | `docs/spec/CURRENT.md` | named data specs, adapters, staging/release engine, refs, migrations, tests |
+| Product requirements and omitted intent | `docs/spec/CURRENT.md` | named original inputs/audits and current implementation |
+| Supplier lifecycle | `docs/spec/CURRENT.md` | supplier schema/service/UI, scorecard, alerts |
+| Automatic outsourced-production chain | `docs/spec/CURRENT.md` | auto-chain, kitting/ATP rules, approval and posting boundaries |
+| SPU/SKU policy | `docs/spec/CURRENT.md` | masters schema, aliases, release/regroup logic |
+| Platform evolution/AI/planning | `docs/NOW.md`, `docs/spec/CURRENT.md` | rules, projections, reports, jobs, data coverage |
+| Audit history or rationale | `docs/spec/CURRENT.md` | named archives, then current files to test whether a finding remains true |
 
 Read a referenced section in context. A heading hit alone is not sufficient when a later paragraph amends it.
 
@@ -106,13 +112,16 @@ Use the terminology in current specifications if it changes. Do not invent paral
 
 ## 6. Durable implementation invariants
 
-Re-read `supply-chain/CLAUDE.md`; the following is a routing summary, not a substitute:
+Re-read `CLAUDE.md`; the following is a routing summary, not a substitute:
 
-- Allocate numbers through `src/server/docflow/doc-no.ts` and `doc_counter`.
+- Allocate numbers through `src/server/docflow/doc-no.ts` and `doc_counters`.
 - Post inventory only through `src/server/posting/registry.ts` and the posting engine.
-- Keep `stock_ledger` and `audit_log` append-only.
+- Keep `stock_ledger` and `audit_logs` append-only.
 - Use linked reversals; never implement reverse approval.
-- Use decimal strings/utilities for `decimal(14,2)` money and `decimal(14,4)` quantities.
+- Follow each schema field's precision contract: document amounts/prices are usually
+  `decimal(14,2)`, explicitly higher-precision unit costs may be `decimal(14,4)`, business
+  quantities are usually `decimal(14,4)`, and aggregate control totals may be wider. Always use
+  decimal strings/utilities rather than floating-point business arithmetic.
 - Update balance keys in deterministic sorted order inside a transaction.
 - Enforce idempotency through unique database constraints, not pre-checks alone.
 - Keep rules under `src/server/rules` pure and directly tested.
@@ -130,10 +139,12 @@ Re-read `supply-chain/CLAUDE.md`; the following is a routing summary, not a subs
 
 These were observed on 2026-07-25. Re-check rather than preserving them as permanent truth:
 
-- `CURRENT.md` summary rows and its decision-register rows disagree for some decisions such as D10, D17, and D20. Prefer the explicit dated decision row, then test implementation.
+- `docs/spec/CURRENT.md` summary rows and its decision-register rows have disagreed for some
+  decisions. Prefer the latest explicit dated decision row, then test implementation.
 - Embedded test totals and commit IDs disagree across sections. Run the current checks.
-- `supply-chain/README.md` contains an old DW1 milestone and must not be used as status authority.
-- `spec/14` checkboxes sometimes lag existing code, while schema or a route alone may still overstate end-to-end completion.
+- `README.md` is onboarding material, not status or decision authority.
+- Supporting `docs/spec/14-系统进化总PRD.md` checkboxes may lag existing code, while schema or a
+  route alone may still overstate end-to-end completion.
 - The specification describes DB sessions in one place, while the accepted implementation uses an eight-hour JWT plus fresh DB authorization on writes. Preserve the security intent unless redesigning it explicitly.
 - Background-job wiring has changed over time. Verify the real production entrypoint, singleton behavior, and idempotency instead of assuming pg-boss or an interval runner is active.
 - Supplier `retired`, centralized permission policy, and full FEFO/batch execution have appeared as design directions without necessarily being complete.
@@ -151,7 +162,7 @@ Before editing:
 
 When changing a business decision:
 
-1. Update `spec/CURRENT.md` first as the decision register.
+1. Update `docs/spec/CURRENT.md` first as the decision register.
 2. Register new discoveries or evolution work in the current roadmap/decision scheme before silently building it.
 3. Update the current host specification and mark superseded text explicitly.
 4. Preserve audit archives.

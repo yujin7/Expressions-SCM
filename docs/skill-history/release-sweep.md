@@ -3,6 +3,9 @@ name: release-sweep
 description: Gate whether an exact branch, commit, or release candidate can ship by running this project's whole-application verification sweep across typecheck, tests, smoke flows, health, pages, APIs, hydration, permissions, migrations, and rollback evidence. Use before declaring broad work complete, after server restarts, or when the system seems broadly broken. Do not use for an isolated pure-function change.
 ---
 
+> **ARCHIVE ONLY** — Historical evidence, not executable guidance. Do not run commands or follow
+> routing in this file; use [the quarantine index](README.md) and current `.claude/skills/`.
+
 # 全量扫描
 
 **这个项目最贵的两个 bug 都不是读代码找到的，是扫出来的。** 两个都返回 200，两个都单测全绿：
@@ -61,12 +64,13 @@ PGlite 只在启动时应用迁移，热更新的代码引用新列会全线 500
 
 ```bash
 rm -f /tmp/j.jar
+test -n "${SMOKE_PASSWORD:-}" || { echo "SMOKE_PASSWORD is required" >&2; exit 1; }
 CSRF=$(curl -s -c /tmp/j.jar http://localhost:3000/api/auth/csrf \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["csrfToken"])')
 curl -s -b /tmp/j.jar -c /tmp/j.jar -o /dev/null \
   -X POST "http://localhost:3000/api/auth/callback/local" \
   --data-urlencode "csrfToken=$CSRF" \
-  --data-urlencode "username=admin" --data-urlencode "password=admin123"
+  --data-urlencode "username=admin" --data-urlencode "password=$SMOKE_PASSWORD"
 curl -s -b /tmp/j.jar http://localhost:3000/api/auth/session   # 必须返回 user，不能是 null
 ```
 

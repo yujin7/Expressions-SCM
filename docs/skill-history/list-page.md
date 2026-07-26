@@ -3,6 +3,9 @@ name: list-page
 description: Build or modify list pages and client components in this project using required Suspense, useListState, ListToolbar, paramPrefix, client/server import, search, and empty-state conventions. Use for new app pages, tables, filters, tabs, or any use-client file. Use release-sweep for after-the-fact whole-app verification.
 ---
 
+> **ARCHIVE ONLY** — Historical evidence, not executable guidance. Do not run commands or follow
+> routing in this file; use [the quarantine index](README.md) and current `.claude/skills/`.
+
 # 页面返回 200，不等于页面活着
 
 这个项目最贵的两个缺陷，都返回 HTTP 200，都单元测试全绿，都「看起来做完了」。一次是 **24 个页面整页水合失败**——`page.tsx` 少包一层 `<Suspense>`，页面退化成无交互的静态 HTML：Tab 变成纯文本列表、表头重复出现、点什么都不动（commit aaf3d63，24 个 `page.tsx` 一次性补边界）。另一次是一个 `"use client"` 文件为了取一个标签常量**值导入**了 `@/server/*`，把 auth/pg/argon2 拖进客户端包，webpack 解析原生模块失败后污染模块图，**全应用连同 `/api/health` 齐刷刷 500，68 页里 23 页连锁失败**，且随编译顺序漂移。两条都不是读代码读出来的，是扫出来的。这份纪律是让它们不必再被扫一次。
@@ -81,7 +84,7 @@ export default function Page() {
 ## 提交前自检（两条扫描 + 一次测试）
 
 ```bash
-# 1) Suspense 边界 —— 这条纪律至今零自动化护栏，只能手扫。期望：无输出
+# 1) Suspense 边界 —— 架构测试是当前护栏；下列历史扫描仅解释它守的边界
 find "src/app/(app)" -name page.tsx | while read -r p; do
   d=$(dirname "$p")
   hit=$(/usr/bin/grep -rl -e useListState -e useSearchParams "$d" --include='*-client.tsx' 2>/dev/null)
@@ -94,9 +97,12 @@ done
     | /usr/bin/grep -v 'import type' | sed "s|^|$f:|"
 done
 
-npx vitest run tests/architecture tests/components   # 2 files / 33 tests，~220ms
+npx vitest run tests/architecture/suspense-boundary.test.ts \
+  tests/architecture/client-server-boundary.test.ts
 ```
 
-**最高杠杆的一件待办**：给 Suspense 补一个与 `tests/architecture/client-server-boundary.test.ts` 同构的架构测（`page.tsx` 的 import 传递闭包里出现 `useSearchParams` → 必须含 `Suspense`），75 页跑完 <1s。同一批「最贵的两个 bug」里，边界事故拿到了测试，水合事故至今只有 CLAUDE.md 的散文 + release-sweep 的人工扫描（`/usr/bin/grep -rn "Suspense" tests/` = **0 命中**）。
+Suspense 已由 `tests/architecture/suspense-boundary.test.ts` 自动守护；客户端到服务端的
+传递闭包由 `tests/architecture/client-server-boundary.test.ts` 守护。历史手扫只能作为
+诊断补充，不能替代当前测试结果。
 
 **报告口径**：说「页面做完了」之前，贴上面两条扫描的实际输出和 vitest 的实际数字。只说「本地看着正常」等于没验——24 页水合失败那次，浏览器里也「看着正常」，直到你去点它。

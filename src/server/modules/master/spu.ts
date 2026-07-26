@@ -38,7 +38,7 @@ export async function listSpus(q: string, page: number, pageSize: number) {
 }
 
 /** 编码留空则自动取号 P+5位流水。
- *  《04》§4.1 裁决（连贯性审计 M4 修复）：走 doc_counter 行锁取号（prefix=SPU, bizDate=GLOBAL），
+ *  《04》§4.1 裁决（连贯性审计 M4 修复）：走 doc_counters 原子 upsert 取号（prefix=SPU, bizDate=GLOBAL），
  *  杜绝 MAX+1 并发竞态——718+ SKU 批量建档时会高频取号。 */
 async function nextSpuCode(): Promise<string> {
   const db = await getDbAsync();

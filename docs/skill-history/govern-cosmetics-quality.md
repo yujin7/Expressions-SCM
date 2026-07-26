@@ -3,6 +3,9 @@ name: govern-cosmetics-quality
 description: Design, implement, audit, and operate cosmetics quality, batch and lot traceability, expiry and FEFO, market eligibility, complaints, adverse events, and recall controls. Use for formula, ingredient, packaging, supplier or OEM qualification, QC sampling and release, CoA, deviation, concession, rework, quarantine, genealogy, recall scope, regulatory evidence, or the related schemas, workflows, APIs, UI, tests, and incident playbooks.
 ---
 
+> **ARCHIVE ONLY** — Historical evidence, not executable guidance. Do not run commands or follow
+> routing in this file; use [the quarantine index](README.md) and current `.claude/skills/`.
+
 # Govern Cosmetics Quality
 
 Make every release, hold, and recall decision reconstructable from current evidence. Prefer a small, explicit control system over a broad compliance platform.
@@ -10,13 +13,13 @@ Make every release, hold, and recall decision reconstructable from current evide
 ## Start from live evidence
 
 1. Resolve the repository root with `git rev-parse --show-toplevel`; do not depend on a machine-specific absolute path.
-2. Read `../spec/CURRENT.md` fully, then `CLAUDE.md` before proposing or changing code.
+2. Read `docs/spec/CURRENT.md` fully, then `CLAUDE.md` before proposing or changing code.
 3. Read only the relevant current specification, then inspect the actual schema, services, routes, UI, migrations, and tests before claiming a capability exists.
 4. Check the worktree before editing and preserve unrelated changes.
 5. Treat historical audit documents as evidence, not current requirements.
 
 For every time-sensitive regulatory or standards claim, verify a current primary source. Use
-[authoritative-sources.md](../supply-chain/reference/authoritative-sources.md) only as a dated
+[authoritative-sources.md](../../.claude/skills/supply-chain/reference/authoritative-sources.md) only as a dated
 research index, reopen the primary source, and record its jurisdiction, publisher, publication or
 effective date, access date, and status as binding law, regulator guidance, recognized standard,
 recommended practice, draft or pilot, or inference. Cite the exact provision that affects the

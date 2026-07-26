@@ -3,6 +3,9 @@ name: alert-budget
 description: Decide whether an alert, exception, badge, detector, threshold, or notification in this project deserves to exist. Use before adding or tuning alerts, when counts are noisy or unactionable, or when an alert may reflect coverage or caliber errors. Use caliber-change for shared-number definitions and reconcile-supply-chain-truth for factual claims.
 ---
 
+> **ARCHIVE ONLY** — Historical evidence, not executable guidance. Do not run commands or follow
+> routing in this file; use [the quarantine index](README.md) and current `.claude/skills/`.
+
 # 先证明它配存在，再加这条告警
 
 > 下文数字、行号和“今天”均来自一次 2026-07-25 事故审计，用来解释五道门为什么存在，

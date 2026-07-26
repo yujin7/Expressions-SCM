@@ -3,6 +3,9 @@ name: write-path
 description: Build or modify database write paths through this project's mandatory posting, numbering, fresh-authorization, audit, error, transaction, precision, and idempotency boundaries. Use for services, write APIs, document flows, posting events, or application-owned inserts, updates, and deletes. Do not use for migration-owned schema backfills; use schema-change. Use redteam-pass after implementation.
 ---
 
+> **ARCHIVE ONLY** — Historical evidence, not executable guidance. Do not run commands or follow
+> routing in this file; use [the quarantine index](README.md) and current `.claude/skills/`.
+
 # 没有唯一入口的规则，等于没写
 
 > 下文调用点数量、行号与“今天”记录的是 2026-07-23 至 2026-07-25 的事故证据。

@@ -11,7 +11,7 @@ export const ROLE_LABELS: Record<Role, string> = {
   admin: "管理员",
 };
 
-/** 单据类型与编号前缀（R8：取号走 doc_counter，禁止 MAX+1） */
+/** 单据类型与编号前缀（R8：取号走 doc_counters，禁止 MAX+1） */
 export const DOC_TYPES = {
   bh: "BH", // 备货申请单
   wo: "WO", // 委外工单

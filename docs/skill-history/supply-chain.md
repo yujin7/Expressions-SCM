@@ -3,6 +3,9 @@ name: supply-chain
 description: Apply this repository's cosmetics supply-chain domain model and judgment for business semantics, authoritative rules, architecture trade-offs, and system-wide initiatives. Use narrower procedural skills for bounded work in one or two domains. Use this skill to orchestrate work spanning three or more of flow design, transactions, integrations, planning, quality, and release, loading specialists only for scoped subwork.
 ---
 
+> **ARCHIVE ONLY** — Historical evidence, not executable guidance. Do not run commands or follow
+> routing in this file; use [the quarantine index](README.md) and current `.claude/skills/`.
+
 # 供应链系统 · 工作教义
 
 你是这套系统的架构负责人。它替代的是一家 8 品牌美妆公司的 Excel 手工账，
@@ -18,7 +21,7 @@ description: Apply this repository's cosmetics supply-chain domain model and jud
 - 窄任务默认只用一个最匹配的 specialist。
 - 真正跨边界时才组合两个：明确一个主责、另一个只提供约束。
 - 涉及三个以上领域、系统级路线图、架构取舍或模糊的端到端问题，才由本 skill 编排。
-- 当前事实有争议先用 `$reconcile-supply-chain-truth`；具体候选能否交付由
+- 当前事实有争议先用当前集成/事实审计参考；具体候选能否交付由
   `$release-sweep` 裁决。
 - 任何自动建议都必须给证据截止时间、覆盖范围、降级/弃权条件和人工执行边界。
 
@@ -197,26 +200,9 @@ curl -s localhost:3000/api/health     # 迁移条数 + drift:false
 | 需要 PRD、实现、迁移、UAT、审计交付清单 | `reference/delivery-and-audit.md` |
 | **要引法规/标准原文出处** | `reference/authoritative-sources.md`（仅作带研究日期的索引；引用前必须重新打开当前一手来源） |
 
-**流程类工作用最窄的 owner**——项目共 16 个 active skill（含本编排器）：
+这张历史路由表已经退役。当前仅有七个 active skill；旧名到当前 owner 的解释映射见
+[隔离区索引](README.md)，不可从本文件激活任何 workflow。
 
-| 你要做的事 | 用哪个 skill |
-|---|---|
-| 新需求、PRD、端到端流程、状态机与验收契约 | `design-supply-chain-flows` |
-| 查清「现在到底是什么」、证伪缺陷、追死管道 | `reconcile-supply-chain-truth` |
-| 改共享口径（在库/在途/日均/ABC/安全库存） | `caliber-change` |
-| 写会落库的 service / 路由 / 过账 | `write-path` |
-| 新建列表页、加 Tab、动 `"use client"` 文件 | `list-page` |
-| 改 `src/db/schema/*`、生成迁移 | `schema-change` |
-| 加告警 / 检测器 / 阈值 / 推送 | `alert-budget` |
-| 文件/API/ERP/WMS 数据接入、staging、放行与对账 | `integrate-supply-chain-data` |
-| 预测、S&OP、安全库存、补货、分配与库存策略 | `plan-beauty-supply` |
-| 品控、批次/效期、FEFO、市场准入、投诉与召回 | `govern-cosmetics-quality` |
-| 登记业务裁决（写死任何业务常数之前） | `decision-log` |
-| 想做性能优化或大重构之前 | `measure-first` |
-| 写完写路径，上线前对抗测试 | `redteam-pass` |
-| 精确候选的全量回归、发布判断与回滚证据 | `release-sweep` |
-| 发现另一个会话也在改这个仓库 | `parallel-sessions` |
-
-**权威必须按问题匹配**：当前业务意图看用户裁决 + `../spec/CURRENT.md` + 现行宿主规格；
+**权威必须按问题匹配**：当前业务意图看用户裁决 + `docs/spec/CURRENT.md` + 现行宿主规格；
 实现看 schema/migration/code；验证看可复现测试和运行证据；生产状态看部署版本与运营证据。
-冲突时用 `$reconcile-supply-chain-truth`，不要拿一类证据替另一类证据作答。
+冲突时使用当前集成/事实审计参考，不要拿一类证据替另一类证据作答。

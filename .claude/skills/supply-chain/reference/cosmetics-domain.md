@@ -1,5 +1,9 @@
 # Cosmetics supply-chain domain playbook
 
+> This is a generic capability reference, not live project authority. Use `docs/NOW.md` for current
+> status and `docs/spec/CURRENT.md` for approved project decisions. Map concepts below onto current
+> repository enums and workflows; do not invent states or widen R13 automation from this playbook.
+
 ## Contents
 
 1. Capability model
@@ -106,9 +110,13 @@ Do not optimize forecast accuracy in isolation. Backtest the downstream replenis
 
 ## 5. Supplier and outsourced manufacturing
 
-Model supplier lifecycle as controlled transitions:
+Model supplier lifecycle as controlled transitions. The generic stages are:
 
-`candidate → qualification → approved pool → active → conditional/paused → exit/blacklist`
+`candidate → qualification → approved/active → conditional/paused → exit/blacklist`
+
+These are conceptual stages, not repository enum values. The project lifecycle and re-entry rules
+come only from `docs/spec/CURRENT.md`; verify the current schema and migrations before claiming a
+state is implemented.
 
 Include:
 

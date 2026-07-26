@@ -1,8 +1,8 @@
 #!/bin/bash
-# Claude Code 钩子：把「靠记性」的两条纪律变成确定性检查。
+# Claude Code / Codex 共用的 advisory 钩子：在高风险操作旁提供事实提醒。
 #
 # 设计原则：
-#  1. **永远 exit 0**——钩子出错绝不能挡住用户干活。任何异常一律静默放行。
+#  1. **永远 exit 0**——这是提醒层，不是安全边界；钩子出错绝不能挡住用户干活。
 #  2. **给事实，不给唠叨**——直接跑检查并输出真实结果（谁的未跟踪文件、漂移与否），
 #     而不是打印一句「请注意…」。提醒会被忽略，事实不会。
 #  3. **命中才说话**——不相关的调用零输出，否则很快就没人看了。
@@ -28,30 +28,117 @@ except Exception:
 " 2>/dev/null
 }
 
+input_text() {
+  printf '%s' "$payload" | python3 -c '
+import json,sys
+try:
+    tool_input=json.load(sys.stdin).get("tool_input", {})
+    if isinstance(tool_input, str):
+        print(tool_input)
+    elif isinstance(tool_input, dict):
+        print("\n".join(v for k,v in tool_input.items()
+              if k in {"command","cmd","file_path","path","patch","input"} and isinstance(v,str)))
+except Exception:
+    pass
+' 2>/dev/null
+}
+
+git_mutation() {
+  printf '%s' "$1" | python3 -c '
+import os,re,shlex,sys
+ACTIONS={"add","commit","stash"}
+TAKES_VALUE={"-C","-c","--git-dir","--work-tree","--namespace","--super-prefix","--config-env"}
+
+def words(command):
+    lexer=shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+    lexer.whitespace_split=True
+    lexer.commenters=""
+    return list(lexer)
+
+def invocation(tokens):
+    while tokens and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
+        tokens=tokens[1:]
+    if not tokens:
+        return False
+    exe=os.path.basename(tokens[0])
+    if exe in {"command","nohup"}:
+        rest=tokens[1:]
+        while rest and rest[0].startswith("-"):
+            rest=rest[1:]
+        return invocation(rest)
+    if exe == "env":
+        rest=tokens[1:]
+        while rest and (rest[0].startswith("-") or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=",rest[0])):
+            option=rest.pop(0)
+            if option in {"-u","--unset","-C","--chdir"} and rest:
+                rest.pop(0)
+        return invocation(rest)
+    if exe == "sudo":
+        rest=tokens[1:]
+        while rest and rest[0].startswith("-"):
+            option=rest.pop(0)
+            if option in {"-u","-g","-h","-p","-C","-T","-R","-r","-t","--user","--group","--host","--prompt","--chdir"} and rest:
+                rest.pop(0)
+        return invocation(rest)
+    if exe in {"sh","bash","zsh"}:
+        for i,arg in enumerate(tokens[1:],1):
+            if arg.startswith("-") and "c" in arg[1:] and i+1 < len(tokens):
+                return matches(tokens[i+1])
+        return False
+    if exe != "git":
+        return False
+    args=tokens[1:]
+    while args and args[0].startswith("-"):
+        option=args.pop(0)
+        if option in TAKES_VALUE and args:
+            args.pop(0)
+    return bool(args and args[0] in ACTIONS)
+
+def matches(command):
+    segment=[]
+    for token in words(command):
+        if token and all(char in ";&|()" for char in token):
+            if invocation(segment):
+                return True
+            segment=[]
+        else:
+            segment.append(token)
+    return invocation(segment)
+
+sys.exit(0 if matches(sys.stdin.read()) else 1)
+' 2>/dev/null
+}
+
+emit_warning() {
+  python3 -c 'import json,sys; print(json.dumps({"systemMessage": sys.stdin.read().rstrip()}, ensure_ascii=False))'
+}
+
 case "$MODE" in
   git)
     cmd="$(field command)"
-    # 只在真的要提交/暂存时介入
-    printf '%s' "$cmd" | /usr/bin/grep -qE 'git (add|commit|stash)' || exit 0
+    [ -n "$cmd" ] || cmd="$(field cmd)"
+    # 识别绝对路径、git 全局参数、env/command 包装和 shell -c，且绝不 eval 用户命令。
+    git_mutation "$cmd" || exit 0
 
     untracked="$(git status --porcelain -uall 2>/dev/null | /usr/bin/grep '^??' | sed 's/^?? //')"
     [ -z "$untracked" ] && exit 0
 
-    echo "⚠ parallel-sessions：工作区有 $(printf '%s\n' "$untracked" | wc -l | tr -d ' ') 个未跟踪文件。"
-    echo "  另一个会话若正在改这个仓库，git add -A 会把它做到一半的东西一起提交进来（本项目已发生过）。"
-    echo "  逐个确认是不是你写的，不确定就用 git add <具体路径> 而不是 -A："
-    printf '%s\n' "$untracked" | head -15 | sed 's/^/    /'
-    n=$(printf '%s\n' "$untracked" | wc -l | tr -d ' ')
-    [ "$n" -gt 15 ] && echo "    …另有 $((n-15)) 个"
+    {
+      echo "⚠ advisory / parallel-sessions：工作区有 $(printf '%s\n' "$untracked" | wc -l | tr -d ' ') 个未跟踪文件。"
+      echo "  钩子不会阻止命令；逐个确认归属，不确定就用 git add <具体路径> 而不是宽泛暂存："
+      printf '%s\n' "$untracked" | head -15 | sed 's/^/    /'
+      n=$(printf '%s\n' "$untracked" | wc -l | tr -d ' ')
+      [ "$n" -gt 15 ] && echo "    …另有 $((n-15)) 个"
+    } | emit_warning
     ;;
 
   schema)
-    p="$(field file_path)"
-    printf '%s' "$p" | /usr/bin/grep -q 'src/db/schema/' || exit 0
-    echo "⚠ schema-change：刚改了 $(basename "$p")。"
-    echo "  PGlite 只在进程启动时应用迁移，HMR 不会重放（迁移循环在 createDb() 里，promise 钉在 globalThis）。"
-    echo "  漏掉重启，坏的不只是新列——drizzle 的无列名 db.select().from(t) 会展开 schema 里全部列，"
-    echo "  该表的每一次读取都会 500（本仓 127 处这么写）。顺序：drizzle-kit generate → 重启 dev server → 查 /api/health 的 drift。"
+    p="$(input_text | /usr/bin/grep -oE '(^|/|[[:space:]])src/db/schema/[A-Za-z0-9._/-]+' | head -1 | sed -E 's#^[[:space:]/]*##')"
+    [ -n "$p" ] || exit 0
+    {
+      echo "⚠ advisory / schema-change：刚改了 ${p}。"
+      echo "  钩子不会证明迁移完整；仍需 drizzle-kit generate → 重启 dev server → 查 /api/health drift。"
+    } | emit_warning
     ;;
 esac
 

@@ -1,0 +1,20 @@
+# Advisory project hooks. Codex runs these only after the repository and exact
+# hook definitions have been reviewed and trusted; they are not enforcement.
+
+[[hooks.PreToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = 'bash "$(git rev-parse --show-toplevel)/.claude/hooks/guard.sh" git'
+timeout = 5
+statusMessage = "Advisory: checking shared Git state"
+
+[[hooks.PostToolUse]]
+matcher = "^(apply_patch|Edit|Write)$"
+
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = 'bash "$(git rev-parse --show-toplevel)/.claude/hooks/guard.sh" schema'
+timeout = 5
+statusMessage = "Advisory: checking schema-change evidence"

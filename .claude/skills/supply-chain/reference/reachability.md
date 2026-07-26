@@ -1,6 +1,6 @@
 # 先找读的人，再说它做完了
 
-> 本文件保存 `$reconcile-supply-chain-truth` 的 reachability 扫描法与历史事故样本。
+> 本文件是 `integrate-supply-chain-data` 的 reachability 扫描参考。
 > 下文的行数、路径、调用点、表数据与“已确认清单”只证明当时发生过什么；它们不是当前
 > backlog。每次引用前必须在当前 revision 重新扫描定义、写端、读端、入口条件和真实数据。
 
@@ -23,7 +23,7 @@
 | 解析到位、staging/中间表有值，目标主档 0 行有值 | ②**解析了没落库** | 找回填点，**并验证入口条件在存量数据上成立**（见上面那 3131 行） |
 | 消费端在热路径且真被调用，上游表 0 行 | ③**接通了没数据** | **不是缺陷**。报为数据待办，写清缺哪一类单据 |
 | 注释明写「预留」，DB 0 行 | 诚实预留位 | 不动，不报 |
-| 写端读端都在，但读端自己又算了一遍同一个量 | 重复口径 | 报口径风险（caliber-change），不是死管道 |
+| 写端读端都在，但读端自己又算了一遍同一个量 | 重复口径 | 交给 `integrate-supply-chain-data` 统一口径，不是死管道 |
 
 ③ 的样板：`replenish/service.ts:306-326` 批量读 `rollupSupplierLead.leadStdevDays` 喂安全库存，是热路径，代码完全正确；
 表 0 行的原因不是 PO 少，而是 `jobs/rollup.ts:151-160` 要求 PO 与同 (PO,SKU) 最早一张 approved/in_progress/completed 的 SH 配对，
@@ -52,7 +52,7 @@
 # 3) 路由级：拿 route 的 URL 前缀在 src 全域反查（排除 src/app/api 自身）
 for r in $(find src/app/api -name route.ts); do
   u=$(echo "${r#src/app}" | sed 's#/route.ts##')
-  /usr/bin/grep -rq -- "$u" --include="*.ts" --include="*.tsx" src --exclude-dir=api || echo "NO CALLER $u"
+  /usr/bin/grep -rq --include="*.ts" --include="*.tsx" --exclude-dir=api -- "$u" src || echo "NO CALLER $u"
 done
 # 实测 46 个 route → 3 个零引用
 ```

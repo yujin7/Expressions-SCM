@@ -1,6 +1,6 @@
 # 数据放行
 
-> 本文件是 `$integrate-supply-chain-data` 的项目文件放行模式参考。事故数量、文件行数、
+> 本文件是 `integrate-supply-chain-data` 的项目文件放行模式参考。事故数量、文件行数、
 > 主档填充率和路径均为历史证据；运行前必须在当前 revision 与当前数据上重新核实。
 
 这条管道决定主数据长什么样，而主数据错了，下游每个数字都错。
@@ -48,7 +48,7 @@
 ```bash
 # 三处逐一对照：适配器解析了吗？放行接口读了吗？主档写了吗？
 /usr/bin/grep -n "fieldName" src/server/import/adapters/*.ts
-/usr/bin/grep -an "fieldName" src/server/modules/release/engine.ts   # 注意加 -a，该文件被识别为 binary
+/usr/bin/grep -RIn --include="*.ts" -- "fieldName" src/server/modules/release/engine
 /usr/bin/grep -n "fieldName" src/db/schema/*.ts
 ```
 
@@ -62,9 +62,9 @@
 ## 运行
 
 ```bash
-# .data/dev 只能有一个写者：先确认端口/PID，只停止自己启动的进程
-lsof -nP -iTCP -sTCP:LISTEN | /usr/bin/grep 300
-kill <owned-dev-pid>
+# .data/dev 只能有一个写者：先确认精确端口/PID，只停止自己启动且再次核实过的进程
+lsof -nP -iTCP:3000 -sTCP:LISTEN
+# 确认 PID 的命令、工作目录和归属后，才可执行：kill <owned-dev-pid>
 npx tsx scripts/db-peek.ts
 ```
 

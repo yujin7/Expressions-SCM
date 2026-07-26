@@ -3,6 +3,9 @@ name: measure-first
 description: Measure before performance optimization, caching, rollups, or large refactors in this project. Use to establish reproducible baselines, separate cold-start and rounding artifacts from real defects, and validate claimed speedups. Use caliber-change or reconcile-supply-chain-truth for correctness rather than latency.
 ---
 
+> **ARCHIVE ONLY** — Historical evidence, not executable guidance. Do not run commands or follow
+> routing in this file; use [the quarantine index](README.md) and current `.claude/skills/`.
+
 # 没有基线数字的性能改动，改的是幻觉
 
 > 下文数字、缓存状态、表行数、消费者数量和“今天”来自 2026-07-25 的历史审计。保留它们是
@@ -34,8 +37,8 @@ description: Measure before performance optimization, caching, rollups, or large
 复现（不要对着 `.data/dev` 本体跑，另一个 session 可能正开着 dev server）：
 
 ```bash
-cp -R .data/dev "$SCRATCH/devcopy"
-DATABASE_URL=pglite:"$SCRATCH/devcopy" npx tsx scripts/_tmp-bench.ts   # 新进程内连调 5–7 次
+# 当前仓库已有独立 PGlite 性能冒烟；它不会打开 .data/dev
+npx tsx scripts/perf-smoke.ts 100000
 /usr/bin/grep -rn "rollupSkuMonth|rollupWarehouseSku" --include="*.ts" src tests scripts
 ```
 
