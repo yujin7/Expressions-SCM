@@ -311,7 +311,11 @@ export default function NpdProjectsClient() {
         summary={`进行中 ${projectSummary.active.length} 个项目，已完成 ${projectSummary.taskDone}/${projectSummary.taskTotal} 个节点${projectSummary.progress == null ? "" : `，组合进度 ${projectSummary.progress}%`}；逾期节点 ${projectSummary.overdueTasks} 个。`}
         caveat="当前只有项目计划与节点完成事实；缺少上市后销量、毛利、退货和复盘标签，不能据此评价新品商业成功率。"
         state={loading ? "loading" : rows.length === 0 ? "empty" : projectSummary.taskTotal === 0 ? "insufficient" : "ready"}
-        stateDetail={projectSummary.taskTotal === 0 ? "现有进行中项目尚未实例化节点计划，无法形成组合进度。" : undefined}
+        stateDetail={rows.length === 0
+          ? "尚无 NPD 项目；新建项目后将自动实例化节点计划。"
+          : projectSummary.taskTotal === 0
+            ? "现有进行中项目尚未实例化节点计划，无法形成组合进度。"
+            : undefined}
         height={Math.max(220, Math.min(420, projectSummary.active.length * 58 + 30))}
         dataView={
           <Table<ProjectRow>
