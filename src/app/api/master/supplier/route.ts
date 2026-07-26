@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { errorResponse, parseListQuery, readJson } from "@/server/modules/master/common";
-import { auditFromRoute, guardRead, guardWrite } from "@/server/modules/master/common";
+import { guardRead, guardWrite } from "@/server/modules/master/common";
 import { createSupplier, listSuppliers } from "@/server/modules/master/supplier";
 
 export async function GET(req: NextRequest) {

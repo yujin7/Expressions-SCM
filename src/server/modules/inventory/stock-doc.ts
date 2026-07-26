@@ -16,6 +16,7 @@ import { resolveDb } from "@/server/core/svc";
 import {
   approveStockDocSchema, createStockDocSchema, type ManualSubtype, reverseStockDocSchema,
 } from "./schemas";
+import { expandOutboundLinesForBatchPosting } from "./batch-allocation";
 
 /** 单号前缀（CLAUDE.md）：入库 RK / 出库 CK / 调拨 DB；红字沿用原单前缀 */
 const DOC_PREFIX: Record<ManualSubtype, string> = {
@@ -85,6 +86,9 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
   }
 
   return db.transaction(async (tx: AnyDb) => {
+    const lines = v.subtype === "opening"
+      ? v.lines.map((line) => ({ ...line, qty: dQty(line.qty), batchId: line.batchId ?? null }))
+      : await expandOutboundLinesForBatchPosting(tx, v.warehouseId, v.lines);
     const docNo = await nextDocNo(tx, DOC_PREFIX[v.subtype]);
     const [doc]: StockDocRow[] = await tx
       .insert(stockDocs)
@@ -97,7 +101,7 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
       })
       .returning();
     await tx.insert(stockDocLines).values(
-      v.lines.map((l) => ({
+      lines.map((l) => ({
         stockDocId: doc.id,
         skuId: l.skuId,
         warehouseId: v.warehouseId,
@@ -109,7 +113,7 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
     );
     await writeAudit(tx, {
       userId: user.id, entity: "stock_doc", entityId: doc.id, action: "create",
-      after: { docNo: doc.docNo, subtype: doc.subtype, lineCount: v.lines.length },
+      after: { docNo: doc.docNo, subtype: doc.subtype, lineCount: lines.length },
     });
     return doc;
   });

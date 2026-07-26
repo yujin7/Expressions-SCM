@@ -65,6 +65,17 @@ export const importJobs = pgTable("import_jobs", {
   template: text("template").notNull(),
   filename: text("filename").notNull(),
   fileHash: text("file_hash"),
+  /** 外部事实的业务截止日；不同于系统收到文件的 createdAt。 */
+  sourceAsOf: date("source_as_of"),
+  /** 解析契约版本，支持规则升级后的可重放与解释。 */
+  schemaVersion: text("schema_version").notNull().default("staging-v1"),
+  /** 本次放行声明的范围（目标、full/delta、仓库集合等）。 */
+  scope: jsonb("scope"),
+  controlRows: integer("control_rows"),
+  controlQty: numeric("control_qty", { precision: 18, scale: 4 }),
+  /** 目标级放行摘要：输入摘要、规则版本、结果计数与 digest。 */
+  releaseManifest: jsonb("release_manifest"),
+  releasedAt: timestamp("released_at", { withTimezone: true }),
   status: importStatusEnum("status").notNull().default("pending"),
   okRows: integer("ok_rows").notNull().default(0),
   failRows: integer("fail_rows").notNull().default(0),

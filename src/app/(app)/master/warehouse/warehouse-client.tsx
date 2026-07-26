@@ -17,6 +17,7 @@ interface WarehouseRow {
   accountingMode: string;
   supplierId: number | null;
   supplierName: string | null;
+  parentId: number | null;
   active: boolean;
 }
 
@@ -142,6 +143,7 @@ export default function WarehouseClient() {
         仓库
       </Typography.Title>
       <CrudTable<WarehouseRow>
+        loadDetailOnEdit
         canCreate={canWrite}
         canEdit={() => canWrite}
         entityName="仓库"
@@ -170,7 +172,7 @@ export default function WarehouseClient() {
             render: (v: boolean) => (v ? <Tag color="success">启用</Tag> : <Tag>停用</Tag>),
           },
         ]}
-        formItems={() => (
+        formItems={(editing) => (
           <>
             <Form.Item name="code" label="编码" rules={[{ required: true, message: "编码必填" }]}>
               <Input maxLength={30} placeholder="如 WH-CP" />
@@ -199,6 +201,19 @@ export default function WarehouseClient() {
                   </Form.Item>
                 ) : null
               }
+            </Form.Item>
+            <Form.Item
+              name="parentId"
+              label="上级仓库"
+              tooltip="D32 树状层级；不能选择自身或自己的下级"
+            >
+              <RemoteSelect
+                allowClear
+                api="/api/master/warehouse"
+                getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
+                filterRow={(r) => r.id !== editing?.id}
+                placeholder="留空表示顶级仓库"
+              />
             </Form.Item>
             <Form.Item name="active" label="启用" valuePropName="checked" initialValue={true}>
               <Switch checkedChildren="启用" unCheckedChildren="停用" />

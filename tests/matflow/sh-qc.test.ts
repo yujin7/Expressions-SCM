@@ -144,13 +144,13 @@ describe("物料流转 W4：SH 收货（jg 源）+ QC + 入库", () => {
     sh1SpareLineId = detail.lines[1].id;
   });
 
-  it("2) QC：判定合计≤实收；一单一检；行须属于本单", async () => {
+  it("2) QC：判定必须完整覆盖实收和全部收货行；一单一检；行须属于本单", async () => {
     await expect(
       createQc(whApprover, {
         shId: sh1,
         lines: [{ shLineId: sh1NormalLineId, passQty: "350", failQty: "30", concessionQty: "30" }], // 410 > 400
       }, db),
-    ).rejects.toMatchObject({ status: 400, message: expect.stringContaining("检验数量超过实收") });
+    ).rejects.toMatchObject({ status: 400, message: expect.stringContaining("必须完整覆盖实收") });
 
     await expect(
       createQc(whApprover, {
@@ -159,14 +159,24 @@ describe("物料流转 W4：SH 收货（jg 源）+ QC + 入库", () => {
       }, db),
     ).rejects.toMatchObject({ status: 400, message: expect.stringContaining("不属于该收货单") });
 
+    await expect(
+      createQc(whApprover, {
+        shId: sh1,
+        lines: [
+          { shLineId: sh1NormalLineId, passQty: "350", failQty: "30", concessionQty: "20", failHandling: "rework" },
+        ],
+      }, db),
+    ).rejects.toMatchObject({ status: 400, message: expect.stringContaining("覆盖全部收货行") });
+
     const qc = await createQc(whApprover, {
       shId: sh1,
       conclusion: "抽检合格率 87.5%",
       lines: [
         { shLineId: sh1NormalLineId, passQty: "350", failQty: "30", concessionQty: "20", failHandling: "rework" },
+        { shLineId: sh1SpareLineId, passQty: "5", failQty: "0", concessionQty: "0" },
       ],
     }, db);
-    expect(qc.lines).toHaveLength(1);
+    expect(qc.lines).toHaveLength(2);
 
     // 一单一检
     await expect(

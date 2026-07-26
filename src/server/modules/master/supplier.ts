@@ -35,6 +35,14 @@ export async function listSuppliers(q: string, page: number, pageSize: number) {
   return { data: rows, total };
 }
 
+/** 编辑使用完整 DTO；路由层负责按角色剥离 bankAccount。 */
+export async function getSupplier(id: number, dbArg?: AnyTx) {
+  const db: AnyTx = dbArg ?? (await getDbAsync());
+  const [row] = await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, id));
+  if (!row) throw new ApiError(404, "供应商不存在");
+  return row;
+}
+
 /**
  * @param actor 写入者。审计必须与写入同事务——路由层补记用的是新连接、且在提交之后，
  *   进程挂在中间就留下「有数据无审计」。供应商含银行账户等敏感字段，留痕尤其不能有洞。

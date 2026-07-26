@@ -4,9 +4,8 @@
  * ── 现状诊断（实读代码后的结论，非推测）──
  * 1. 收货单行 `sh_lines` **已采集** batchNo / prodDate；
  * 2. 主档 `batches` 表**早已定义但从无任何代码写入**——批次登记册是空的；
- * 3. 过账时 `stock_ledger.batchId` 在收货路径被硬编码为 null（sh.ts 多处），
- *    而发料/库存单路径其实**支持**逐行 batchId。
- * 结论：链条断在"收货未登记批次 + 收货过账不带批次"。
+ * 3. 批次过账现由 `batch_posting_enabled` 迁移闸门控制；打开后，收货、发料、
+ *    退料、采购退货及手工出库/调拨均写入 batchId，未批次化历史余额允许显式回落。
  *
  * ── 本模块的范围与刻意不做的事（重要）──
  * 做：
@@ -14,13 +13,9 @@
  *     （幂等：同 (skuId,batchNo) 复用既有行，补齐缺失的效期/生产日期）；
  *   - `requireBatchForExpirySkus`：对"管效期"的 SKU 强制要求收货填批次（校验，不静默放过）；
  *   - `traceBatch`：按批次追溯**当前可知**的链路（登记信息 + 收货来源单 + 批次库存分布）。
- * 不做（且必须说明原因）：
- *   - **不把 batchId 写进收货过账的 stock_ledger**。原因：余额唯一键是
- *     (skuId, warehouseId, batchId) 且实时仓禁止负库存；若入库按批次分行、而出库仍
- *     不选批次，出库就会去扣 batchId=null 的行并击穿非负校验——正常发货会直接报错。
- *     要让批次贯通出入库，必须先有 **FEFO 批次选择**（PRD E2-12）在出库侧配套落地，
- *     属独立且需谨慎设计的改动。在那之前，出库侧的批次归属仍是空白，
- *     `traceBatch` 会**如实标注**这一点，绝不假装能追到销售终点。
+ * 开闸前提：
+ *   - 先迁移/盘点历史 null 批次余额并完成全出库路径 UAT；
+ *   - 管理员再把 `batch_posting_enabled` 从 0 改为 1。默认关闭，避免半链路上线。
  */
 import { and, desc, eq, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
@@ -188,8 +183,8 @@ export async function traceBatch(skuCode: string, batchNo: string, dbArg?: AnyDb
       outboundTraceable,
       note: outboundTraceable
         ? "该批次已有带批次的出库流水，可追至出库单据。"
-        : "出库侧尚未按批次归属：收货过账当前不写 batchId（需与 FEFO 出库批次选择 E2-12 配套落地）。"
-          + "本页可追溯到「批次登记 + 来源收货单 + 批次库存分布」，但无法回答「卖到了哪个渠道」——该能力待 FEFO 上线后开通。",
+        : "该批次尚无带批次的出库流水。可能是批次/FEFO 迁移闸门仍关闭、尚未发生出库，"
+          + "或历史余额仍在无批次维度；在出现批次出库前，本页只能证明来源与当前库存分布。",
     },
   };
 }

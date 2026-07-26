@@ -42,6 +42,7 @@ export const createTlSchema = z.object({
       z.object({
         skuId: z.number().int().positive({ message: "必须选择物料" }),
         qty: qtyPositive,
+        batchId: z.number().int().positive().nullable().optional(),
         reason: z.enum(["surplus_return", "defect_exchange"], {
           errorMap: () => ({ message: "退料原因必填：剩料退回/不合格料退换" }),
         }),
@@ -104,6 +105,7 @@ export const createCtSchema = z.object({
         poLineId: z.number().int().positive({ message: "必须关联 PO 行" }),
         skuId: z.number().int().positive({ message: "必须选择 SKU" }),
         qty: qtyPositive, // 基础单位
+        batchId: z.number().int().positive().nullable().optional(),
         reason: z.string().trim().max(200).optional(),
       }),
     )

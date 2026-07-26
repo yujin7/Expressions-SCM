@@ -15,11 +15,20 @@ export async function register(): Promise<void> {
     nodeEnv: process.env.NODE_ENV ?? "development",
     nodeVersion: process.version,
   });
-  // 进程内定时任务回退（PGlite 模式 pg_boss 不可用；test 环境函数内自行 no-op）。
+  // 只启动一个调度权威：PostgreSQL=pg-boss；PGlite=进程内 interval 回退。
   // 必须包在 NEXT_RUNTIME==='nodejs' 静态分支里：webpack 常量折叠会把 edge bundle
   // 中的该分支整体消除——否则 @/db → pg → fs 在 edge 编译期就炸（Module not found）。
   if (process.env.NEXT_RUNTIME === "nodejs") {
-    const { ensureIntervalJobsStarted } = await import("@/jobs/interval-runner");
-    ensureIntervalJobsStarted();
+    if ((process.env.DATABASE_URL ?? "").startsWith("postgres")) {
+      const { ensureSchedulerStarted } = await import("@/jobs/scheduler");
+      try {
+        await ensureSchedulerStarted();
+      } catch (error) {
+        log({ level: "error", msg: "pg-boss scheduler start failed", error: String(error) });
+      }
+    } else {
+      const { ensureIntervalJobsStarted } = await import("@/jobs/interval-runner");
+      ensureIntervalJobsStarted();
+    }
   }
 }

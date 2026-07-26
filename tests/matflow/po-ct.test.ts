@@ -1,7 +1,8 @@
 import { eq, inArray } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
-  approvalConfigs, auditLogs, poDocs, poLines, skus, spus, suppliers, users, warehouses,
+  approvalConfigs, auditLogs, batches, poDocs, poLines, skus, spus, suppliers, sysParams,
+  users, warehouses,
 } from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
 import { getBalance } from "@/server/posting";
@@ -27,6 +28,7 @@ describe("物料流转 W4：SH 收货（po 源）+ CT 采购退货", () => {
   let po1 = 0;
   let poLineYl = 0;
   let poLineBc = 0;
+  let supplierId = 0;
 
   beforeAll(async () => {
     ({ db } = await createTestDb());
@@ -56,6 +58,7 @@ describe("物料流转 W4：SH 收货（po 源）+ CT 采购退货", () => {
       .insert(suppliers)
       .values({ code: "SUP001", name: "物料供应商A", kinds: ["raw", "packaging"], status: "qualified" })
       .returning();
+    supplierId = supA.id;
 
     const [wh] = await db
       .insert(warehouses)
@@ -228,5 +231,64 @@ describe("物料流转 W4：SH 收货（po 源）+ CT 采购退货", () => {
     ]) {
       expect(seen, `缺少审计: ${key}`).toContain(key);
     }
+  });
+
+  it("6) 批次闸开启：采购收货写批次余额，CT 自动 FEFO 原批退回", async () => {
+    await db.insert(sysParams).values({
+      scope: "global",
+      key: "batch_posting_enabled",
+      value: "1",
+    });
+    const [po] = await db.insert(poDocs).values({
+      docNo: "PO-T-BATCH",
+      status: "in_progress",
+      supplierId,
+      createdBy: admin.id,
+    }).returning();
+    const [poLine] = await db.insert(poLines).values({
+      poId: po.id,
+      skuId: yl,
+      lineType: "raw",
+      purchaseUom: "kg",
+      uomFactor: "1",
+      qty: "10",
+      price: "20",
+    }).returning();
+
+    const sh = await createSh(whCreator, {
+      sourceType: "po",
+      sourceId: po.id,
+      warehouseId: whId,
+      lines: [{ skuId: yl, actualQty: "10", batchNo: "YL-BATCH-01" }],
+    }, db);
+    const shPending = await submitSh(whCreator, sh.id, 1, db);
+    await approveSh(whApprover, sh.id, { action: "approve", version: shPending.version }, db);
+    const shDetail = await getSh(sh.id, db);
+    await createQc(whApprover, {
+      shId: sh.id,
+      lines: [{
+        shLineId: shDetail.lines[0].id,
+        passQty: "10",
+        failQty: "0",
+        concessionQty: "0",
+      }],
+    }, db);
+    await confirmInbound(whCreator, sh.id, db);
+
+    const [batch] = await db.select().from(batches).where(eq(batches.batchNo, "YL-BATCH-01"));
+    expect(batch).toBeDefined();
+    expect(await getBalance(db, yl, whId, batch.id)).toBe("10.0000");
+
+    const ct = await createCt(whCreator, {
+      poId: po.id,
+      warehouseId: whId,
+      lines: [{ poLineId: poLine.id, skuId: yl, qty: "4", reason: "批次退货" }],
+    }, db);
+    const ctDetail = await getCt(ct.id, db);
+    expect(ctDetail.lines).toHaveLength(1);
+    expect(ctDetail.lines[0].batchId).toBe(batch.id);
+    const ctPending = await submitCt(whCreator, ct.id, 1, db);
+    await approveCt(whApprover, ct.id, { action: "approve", version: ctPending.version }, db);
+    expect(await getBalance(db, yl, whId, batch.id)).toBe("6.0000");
   });
 });

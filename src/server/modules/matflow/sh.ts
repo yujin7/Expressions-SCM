@@ -7,6 +7,10 @@ import { dAdd, dCmp, dDiv, dMul, dNeg, dQty, dSub, dZero } from "@/server/core/d
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
 import { registerBatchesFromReceipt, requireBatchForExpirySkus } from "@/server/modules/inventory/batch-trace";
+import {
+  expandOutboundLinesForBatchPosting,
+  isBatchPostingEnabled,
+} from "@/server/modules/inventory/batch-allocation";
 import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, type DocStatus } from "@/server/docflow/state";
@@ -243,7 +247,7 @@ export async function approveSh(
   }
 }
 
-// ---------- QC 检验（一单一检；pass+fail+concession ≤ 实收） ----------
+// ---------- QC 检验（一单一检；每个收货行必须完整三分且合计=实收） ----------
 
 export async function createQc(
   user: SessionUser,
@@ -266,13 +270,25 @@ export async function createQc(
 
   const lineRows: ShLineRow[] = await db.select().from(shLines).where(eq(shLines.shId, v.shId));
   const lineById = new Map(lineRows.map((l) => [l.id, l]));
+  const submittedIds = new Set<number>();
   for (const l of v.lines) {
     const shLine = lineById.get(l.shLineId);
     if (!shLine) throw new ApiError(400, `检验行不属于该收货单: sh_line#${l.shLineId}`);
-    const graded = dAdd(dAdd(l.passQty, l.failQty), l.concessionQty);
-    if (dCmp(graded, shLine.actualQty) > 0) {
-      throw new ApiError(400, `检验数量超过实收: sh_line#${l.shLineId}（判定合计 ${graded} > 实收 ${shLine.actualQty}）`);
+    if (submittedIds.has(l.shLineId)) {
+      throw new ApiError(400, `同一收货行不可重复检验: sh_line#${l.shLineId}`);
     }
+    submittedIds.add(l.shLineId);
+    const graded = dAdd(dAdd(l.passQty, l.failQty), l.concessionQty);
+    if (dCmp(graded, shLine.actualQty) !== 0) {
+      throw new ApiError(
+        400,
+        `检验数量必须完整覆盖实收: sh_line#${l.shLineId}（判定合计 ${graded} ≠ 实收 ${shLine.actualQty}）`,
+      );
+    }
+  }
+  const missingIds = lineRows.filter((l) => !submittedIds.has(l.id)).map((l) => l.id);
+  if (missingIds.length > 0) {
+    throw new ApiError(400, `检验必须覆盖全部收货行，缺少: ${missingIds.map((id) => `sh_line#${id}`).join("、")}`);
   }
 
   return db.transaction(async (tx: AnyDb) => {
@@ -326,25 +342,36 @@ export async function confirmInbound(
       const qcByShLine = new Map(qcRows.map((l) => [l.shLineId, l]));
       const lines: ShLineRow[] = await tx.select().from(shLines).where(eq(shLines.shId, shId)).orderBy(shLines.id);
 
-      /* E4-01：批次登记册——把行上采集的批次写进 batches 主档（此前该表定义了却从无写入）。
-         注意：**不**把 batchId 写进过账流水——余额键含 batchId 且实时仓禁负，
-         入库分批而出库不选批次会击穿非负校验。批次贯通出入库须与 FEFO（E2-12）配套。 */
-      await registerBatchesFromReceipt(
+      const batchPostingEnabled = await isBatchPostingEnabled(tx);
+      const batchIds = await registerBatchesFromReceipt(
         tx,
         lines.map((l) => ({ skuId: l.skuId, batchNo: l.batchNo, prodDate: l.prodDate })),
         { docType: "sh", docId: shId },
       );
+      const batchByShLine = new Map<number, number | null>(
+        lines.map((line) => [
+          line.id,
+          batchPostingEnabled && line.batchNo
+            ? (batchIds.get(`${line.skuId}:${line.batchNo.trim()}`) ?? null)
+            : null,
+        ]),
+      );
 
       if (sh.sourceType === "jg") {
-        await inboundFromJg(tx, user, sh, lines, qcByShLine);
+        await inboundFromJg(tx, user, sh, lines, qcByShLine, batchByShLine);
       } else {
-        await inboundFromPo(tx, user, sh, lines, qcByShLine);
+        await inboundFromPo(tx, user, sh, lines, qcByShLine, batchByShLine);
       }
 
       const finalStatus = await completeApprovedDoc(tx, shDocs, shId);
       await writeAudit(tx, {
         userId: user.id, entity: "sh", entityId: shId, action: "inbound",
-        after: { qcId: qc.id, sourceType: sh.sourceType, sourceId: sh.sourceId },
+        after: {
+          qcId: qc.id,
+          sourceType: sh.sourceType,
+          sourceId: sh.sourceId,
+          batchPostingEnabled,
+        },
       });
       return { status: finalStatus, sourceType: sh.sourceType, sourceId: sh.sourceId };
     }).then(async (r: { status: string; sourceType?: string; sourceId?: number }) => {
@@ -384,6 +411,7 @@ async function inboundFromJg(
   sh: ShRow,
   lines: ShLineRow[],
   qcByShLine: Map<number, typeof qcLines.$inferSelect>,
+  batchByShLine: Map<number, number | null>,
 ): Promise<void> {
   const [jg]: (typeof jgDocs.$inferSelect)[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, sh.sourceId));
   if (!jg) throw new ApiError(500, `收货单挂空 JG: #${sh.sourceId}`);
@@ -396,17 +424,22 @@ async function inboundFromJg(
 
   const eventLines: PostingLine[] = [];
   let goodTotal = "0"; // 合格+让步（正常+返工行）
-  let spareTotal = "0"; // 备品实收
+  let spareTotal = "0"; // 备品合格+让步
   for (const l of lines) {
+    const qc = qcByShLine.get(l.id);
+    if (!qc) throw new ApiError(500, `检验记录缺少收货行: sh_line#${l.id}`);
+    const good = dAdd(qc.passQty, qc.concessionQty);
     if (l.lineType === "spare") {
-      spareTotal = dAdd(spareTotal, l.actualQty);
+      spareTotal = dAdd(spareTotal, good);
       continue;
     }
-    const qc = qcByShLine.get(l.id);
-    const good = qc ? dAdd(qc.passQty, qc.concessionQty) : "0";
     if (dCmp(good, "0") > 0) {
       eventLines.push({
-        sourceLineId: l.id, skuId: l.skuId, warehouseId: sh.warehouseId, batchId: null, qtyDelta: good,
+        sourceLineId: l.id,
+        skuId: l.skuId,
+        warehouseId: sh.warehouseId,
+        batchId: batchByShLine.get(l.id) ?? null,
+        qtyDelta: good,
       });
       goodTotal = dAdd(goodTotal, good);
     }
@@ -415,11 +448,22 @@ async function inboundFromJg(
   // 委外仓净标准用量扣减：Q = 合格+让步+备品实收（备品占用物料——R5 有效完工数口径）
   const q = dAdd(goodTotal, spareTotal);
   if (dCmp(q, "0") > 0) {
-    for (const wl of woLineRows) {
-      const consume = dMul(wl.qtyPer, q);
-      if (dZero(consume)) continue;
+    const consumption = woLineRows
+      .map((wl) => ({ skuId: wl.materialSkuId, qty: dMul(wl.qtyPer, q), originId: wl.id }))
+      .filter((line) => !dZero(line.qty));
+    const allocated = await expandOutboundLinesForBatchPosting(tx, outWh.id, consumption);
+    const fragmentByOrigin = new Map<number, number>();
+    for (const line of allocated) {
+      const fragment = (fragmentByOrigin.get(line.originId) ?? 0) + 1;
+      fragmentByOrigin.set(line.originId, fragment);
+      // 负号与收货成品正 sourceLineId 分域；每个原 WO 行预留 100000 个批次片段。
+      const sourceLineId = -(line.originId * 100000 + fragment);
       eventLines.push({
-        sourceLineId: -wl.id, skuId: wl.materialSkuId, warehouseId: outWh.id, batchId: null, qtyDelta: dNeg(consume),
+        sourceLineId,
+        skuId: line.skuId,
+        warehouseId: outWh.id,
+        batchId: line.batchId,
+        qtyDelta: dNeg(line.qty),
       });
     }
   }
@@ -432,8 +476,14 @@ async function inboundFromJg(
   if (dCmp(spareTotal, "0") > 0) {
     const spareLines: PostingLine[] = lines
       .filter((l) => l.lineType === "spare")
+      .map((l) => ({ line: l, qc: qcByShLine.get(l.id)! }))
+      .filter(({ qc }) => dCmp(dAdd(qc.passQty, qc.concessionQty), "0") > 0)
       .map((l) => ({
-        sourceLineId: l.id, skuId: l.skuId, warehouseId: sh.warehouseId, batchId: null, qtyDelta: dQty(l.actualQty),
+        sourceLineId: l.line.id,
+        skuId: l.line.skuId,
+        warehouseId: sh.warehouseId,
+        batchId: batchByShLine.get(l.line.id) ?? null,
+        qtyDelta: dQty(dAdd(l.qc.passQty, l.qc.concessionQty)),
       }));
     await post(tx, { sourceDocType: "spare_in", sourceDocId: sh.id, action: "post", lines: spareLines });
     await tx.insert(offsetPools).values({
@@ -462,6 +512,7 @@ async function inboundFromPo(
   sh: ShRow,
   lines: ShLineRow[],
   qcByShLine: Map<number, typeof qcLines.$inferSelect>,
+  batchByShLine: Map<number, number | null>,
 ): Promise<void> {
   const [po]: (typeof poDocs.$inferSelect)[] = await tx.select().from(poDocs).where(eq(poDocs.id, sh.sourceId));
   if (!po) throw new ApiError(500, `收货单挂空 PO: #${sh.sourceId}`);
@@ -478,7 +529,11 @@ async function inboundFromPo(
     const pass = qc ? qc.passQty : "0";
     if (dCmp(pass, "0") <= 0) continue;
     eventLines.push({
-      sourceLineId: l.id, skuId: l.skuId, warehouseId: sh.warehouseId, batchId: null, qtyDelta: dQty(pass),
+      sourceLineId: l.id,
+      skuId: l.skuId,
+      warehouseId: sh.warehouseId,
+      batchId: batchByShLine.get(l.id) ?? null,
+      qtyDelta: dQty(pass),
     });
     passBySku.set(l.skuId, dAdd(passBySku.get(l.skuId) ?? "0", pass));
   }

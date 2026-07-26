@@ -52,15 +52,15 @@ describe("allocateFefo", () => {
     expect(r.allocations.map((a) => a.qty)).toEqual(["0.1000", "0.2000"]);
   });
 
-  it("已过期批次仍参与分配但被标注（引擎不擅自拦截业务）", () => {
+  it("已过期批次被排除，不会作为可发库存自动推荐", () => {
     const lots = [lot(1, "2026-01-01", "50"), lot(2, "2027-01-01", "50")];
     const r = allocateFefo(lots, "30", "2026-07-25");
-    expect(r.allocations[0].batchId).toBe(1); // 过期的最早到期，仍先出
+    expect(r.allocations[0].batchId).toBe(2);
     expect(r.expiredLots).toBe(1);
-    expect(r.note).toContain("已过期");
+    expect(r.note).toContain("已排除");
   });
 
-  it("不传 today 时不做过期标注", () => {
+  it("纯规则不传 today 时不擅自读取系统时间", () => {
     const r = allocateFefo([lot(1, "2020-01-01", "50")], "10");
     expect(r.expiredLots).toBe(0);
     expect(r.note).not.toContain("已过期");

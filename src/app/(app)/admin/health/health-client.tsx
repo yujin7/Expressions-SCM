@@ -123,6 +123,30 @@ export default function HealthClient() {
         v === null || v > SNAPSHOT_RED_DAYS ? <Tag color="red">{v ?? "∞"}</Tag> : <Tag color="green">{v}</Tag>,
     },
   ];
+  const connectorColumns: ColumnsType<OpsHealth["connectors"][number]> = [
+    { title: "系统", dataIndex: "label", width: 180 },
+    {
+      title: "实现",
+      dataIndex: "implementation",
+      width: 110,
+      render: (value: string) => value === "ready"
+        ? <Tag color="green">已接通</Tag>
+        : <Tag color="orange">仅契约</Tag>,
+    },
+    {
+      title: "配置",
+      dataIndex: "configured",
+      width: 100,
+      render: (value: boolean) => value ? <Tag color="blue">凭据已配</Tag> : <Tag>未配置</Tag>,
+    },
+    {
+      title: "可运行",
+      dataIndex: "operational",
+      width: 100,
+      render: (value: boolean) => value ? <Tag color="green">是</Tag> : <Tag color="red">否</Tag>,
+    },
+    { title: "阻塞/说明", dataIndex: "blocker", render: (value: string | null) => value ?? "—" },
+  ];
 
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
@@ -192,6 +216,16 @@ export default function HealthClient() {
           dataSource={data.lastJobRuns}
           pagination={false}
           locale={{ emptyText: "尚无任务运行记录（进程内调度首轮在启动 60 秒后）" }}
+        />
+      </Card>
+
+      <Card size="small" title="外部系统连接器（实现与凭据分开判定）">
+        <Table
+          rowKey="key"
+          size="small"
+          columns={connectorColumns}
+          dataSource={data.connectors}
+          pagination={false}
         />
       </Card>
 

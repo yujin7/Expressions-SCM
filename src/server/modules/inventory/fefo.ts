@@ -4,9 +4,9 @@
  * 判定全部委托 `rules/fefo.ts` 纯函数；本模块只负责取数与口径组合。
  *
  * ── 为什么这一步是安全的 ──
- * 出库侧早就支持逐行 `batchId`（`inventory/stock-doc.ts`、`matflow/fl.ts`），
- * 缺的一直是「谁来填」。本模块就是填这个空：给出建议，由人确认后写进单据行。
- * **不改任何过账逻辑**，开关未开时对现网零影响。
+ * 出库侧支持逐行 `batchId`；本模块提供唯一 FEFO 建议口径。只读 API 可供人预览，
+ * `batch-allocation.ts` 也会在迁移闸门开启时把建议写入**草稿单行**，仍须走原审批。
+ * 过账逻辑保持唯一；开关未开时对现网零影响。
  *
  * ── 迁移期的关键取舍（步骤 5 护栏，别删）──
  * 入库分批开关打开后，库里会**同时存在** batchId=null 的历史余额行与新的分批行。
@@ -22,6 +22,7 @@ import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { dAdd, dCmp, dQty, dSub } from "@/server/core/decimal";
 import { allocateFefo, type BatchLot } from "@/server/rules/fefo";
+import { todayShanghai } from "@/server/modules/master/common";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -33,7 +34,7 @@ export interface FefoSuggestion {
   fallbackQty: string;
   /** 连回落也不够的缺口 */
   shortBy: string;
-  /** 命中的已过期批次数（提示不阻断） */
+  /** 因过期被排除的正库存批次数 */
   expiredLots: number;
   /** 该 (SKU,仓) 是否存在分批维度余额 */
   batchCoverage: boolean;
@@ -94,7 +95,8 @@ export async function suggestFefoAllocation(
     };
   }
 
-  const r = allocateFefo(lots, required, args.today);
+  // 安全默认：调用方不传 today 也必须按上海业务日排除已过期批次，不能绕过。
+  const r = allocateFefo(lots, required, args.today ?? todayShanghai());
 
   /* ── 迁移期回落：分批行不足时看 batchId=null 的历史行 ── */
   let fallbackQty = dQty("0");
@@ -127,7 +129,7 @@ export async function suggestFefoAllocation(
     );
   }
   if (dCmp(shortBy, "0") > 0) parts.push(`仍缺 ${shortBy}，本仓库存不足`);
-  if (r.expiredLots > 0) parts.push(`含 ${r.expiredLots} 个已过期批次——请确认是否可发（引擎不拦截）`);
+  if (r.expiredLots > 0) parts.push(`已排除 ${r.expiredLots} 个过期批次，不计入可发库存`);
 
   return {
     allocations: r.allocations.map((a) => ({

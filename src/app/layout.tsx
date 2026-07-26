@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { AntdRegistry } from "@ant-design/nextjs-registry";
 import { ConfigProvider } from "antd";
 import zhCN from "antd/locale/zh_CN";
+import AntdReact19Compat from "@/components/AntdReact19Compat";
 
 export const metadata: Metadata = {
   title: "供应链系统",
@@ -12,6 +13,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="zh-CN">
       <body style={{ margin: 0 }}>
+        <AntdReact19Compat />
         <AntdRegistry>
           <ConfigProvider locale={zhCN} theme={{ token: { colorPrimary: "#1677ff" } }}>
             {children}

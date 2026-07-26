@@ -3,9 +3,8 @@
  * instrumentation register() 调 ensureIntervalJobsStarted()，globalThis 单例防
  * Next dev 热更新重复启动（与 export-worker ensureExportWorkerStarted 同型）。
  *
- * 与 pg_boss 并存说明：生产 PG 模式下 scheduler.start() 的 cron 与本回退可能双跑——
- * snapshot-age / license-alert 为纯查询告警，reconcile-jst 靠 UNIQUE(biz_date,sku_id)
- * upsert 幂等，housekeeping 删除天然幂等，双跑无害（已验收口径）。
+ * 本回退只允许在非 PostgreSQL（PGlite）模式启动；PostgreSQL 由 pg-boss 作为唯一
+ * 调度权威。调用处和函数内各做一道防线，避免未来接线变化又产生双调度。
  *
  * 每次运行落 job_runs {job, ok, message≤500, startedAt, finishedAt}；首次 tick 延迟
  * 60s（避免拖慢冷启动）；NODE_ENV=test 直接 no-op。
@@ -89,6 +88,7 @@ const RUNNER_KEY = Symbol.for("supply-chain.interval-runner");
 /** 进程内单例启动（hot-reload 安全）；test 环境 no-op */
 export function ensureIntervalJobsStarted(): void {
   if (process.env.NODE_ENV === "test") return;
+  if ((process.env.DATABASE_URL ?? "").startsWith("postgres")) return;
   const g = globalThis as unknown as Record<symbol, { stop: () => void } | undefined>;
   if (g[RUNNER_KEY]) return;
 

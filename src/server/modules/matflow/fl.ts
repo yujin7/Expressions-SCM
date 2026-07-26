@@ -20,6 +20,7 @@ import {
   requireRealtimeWarehouse,
 } from "./common-notes";
 import { createFlSchema } from "./schemas";
+import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
 
 /**
  * 发料单 FL（《01》§3/§4）：自有仓 → 委外仓，按 wo_line 预填；
@@ -53,6 +54,7 @@ export async function createFl(user: SessionUser, input: unknown, dbArg?: AnyDb)
   }
 
   return db.transaction(async (tx: AnyDb) => {
+    const allocatedLines = await expandOutboundLinesForBatchPosting(tx, v.fromWarehouseId, v.lines);
     const docNo = await nextDocNo(tx, "FL");
     const [doc]: FlRow[] = await tx
       .insert(flDocs)
@@ -66,7 +68,7 @@ export async function createFl(user: SessionUser, input: unknown, dbArg?: AnyDb)
       })
       .returning();
     await tx.insert(flLines).values(
-      v.lines.map((l) => ({
+      allocatedLines.map((l) => ({
         flId: doc.id,
         skuId: l.skuId,
         qty: dQty(l.qty),
@@ -75,7 +77,7 @@ export async function createFl(user: SessionUser, input: unknown, dbArg?: AnyDb)
     );
     await writeAudit(tx, {
       userId: user.id, entity: "fl", entityId: doc.id, action: "create",
-      after: { docNo: doc.docNo, jgId: jg.id, toWarehouseId: toWh.id, lineCount: v.lines.length },
+      after: { docNo: doc.docNo, jgId: jg.id, toWarehouseId: toWh.id, lineCount: allocatedLines.length },
     });
     return doc;
   });

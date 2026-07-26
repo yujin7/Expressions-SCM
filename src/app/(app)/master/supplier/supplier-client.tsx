@@ -33,6 +33,7 @@ export default function SupplierClient() {
         供应商
       </Typography.Title>
       <CrudTable<SupplierRow>
+        loadDetailOnEdit
         rowActions={(r) => (
           <Button type="link" size="small" onClick={() => setAttachSupplier(r)}>
             资质证照

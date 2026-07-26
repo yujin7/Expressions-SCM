@@ -22,6 +22,11 @@ export interface CrudTableProps<T extends { id: number }> {
   formItems: (editing: T | null, form: FormInstance) => React.ReactNode;
   /** 编辑时：记录 → 表单值 */
   toFormValues?: (record: T) => Record<string, unknown>;
+  /**
+   * 编辑前从 `${apiPath}/${id}` 读取完整记录。
+   * 列表 DTO 往往刻意省略敏感/低频字段，不能拿列表行覆盖完整主数据。
+   */
+  loadDetailOnEdit?: boolean;
   /** 提交前：表单值 → 请求体 */
   transformSubmit?: (values: Record<string, unknown>, editing: T | null) => Record<string, unknown>;
   searchPlaceholder?: string;
@@ -43,6 +48,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
     columns,
     formItems,
     toFormValues,
+    loadDetailOnEdit = false,
     transformSubmit,
     searchPlaceholder,
     modalWidth,
@@ -62,6 +68,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
   const [q, setQ] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<T | null>(null);
+  const [openingEditId, setOpeningEditId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -90,13 +97,25 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
   };
 
   const openEdit = useCallback(
-    (record: T) => {
-      setEditing(record);
-      form.resetFields();
-      form.setFieldsValue(toFormValues ? toFormValues(record) : (record as Record<string, unknown>));
-      setModalOpen(true);
+    async (record: T) => {
+      setOpeningEditId(record.id);
+      try {
+        const completeRecord = loadDetailOnEdit
+          ? await fetchJson<T>(`${apiPath}/${record.id}`)
+          : record;
+        setEditing(completeRecord);
+        form.resetFields();
+        form.setFieldsValue(
+          toFormValues ? toFormValues(completeRecord) : (completeRecord as Record<string, unknown>),
+        );
+        setModalOpen(true);
+      } catch (e) {
+        message.error((e as Error).message);
+      } finally {
+        setOpeningEditId(null);
+      }
     },
-    [form, toFormValues],
+    [apiPath, form, loadDetailOnEdit, message, toFormValues],
   );
 
   const handleSubmit = async () => {
@@ -131,7 +150,12 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
         render: (_: unknown, record: T) => (
           <Space size={0}>
             {(canEdit ? canEdit(record) : true) && (
-              <Button type="link" size="small" onClick={() => openEdit(record)}>
+              <Button
+                type="link"
+                size="small"
+                loading={openingEditId === record.id}
+                onClick={() => void openEdit(record)}
+              >
                 编辑
               </Button>
             )}
@@ -140,7 +164,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
         ),
       },
     ],
-    [columns, canEdit, rowActions, load, openEdit],
+    [columns, canEdit, rowActions, load, openEdit, openingEditId],
   );
 
   return (

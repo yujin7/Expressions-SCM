@@ -9,8 +9,7 @@
  * 安全边界：token 为 UUID + 30 天有效期 + 单次使用；公开端点只可写确认字段与逐行交期；无 token 即拒；不暴露价格/成本。
  */
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
-import { getDbAsync } from "@/db";
+import { and, eq, gte, isNull, or, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { enqueueNotification } from "@/jobs/notify";
@@ -152,50 +151,71 @@ export async function submitPoConfirm(
   }
 
   const now = new Date();
+  const confirmed = await db.transaction(async (tx: AnyDb) => {
+    const validDates = lineInputs.map((line) => String(line.expectedDate).trim());
+    const headerDate = validDates.length > 0 ? validDates.slice().sort()[0] : headerInput;
 
-  // 逐行回填交期（仅限本 PO 的行）
-  const validDates: string[] = [];
-  if (lineInputs.length > 0) {
-    for (const l of lineInputs) {
-      const d = String(l.expectedDate).trim();
-      await db
-        .update(schema.poLines)
-        .set({ expectedDate: d })
-        .where(and(eq(schema.poLines.id, l.poLineId), eq(schema.poLines.poId, doc.id)));
-      validDates.push(d);
+    // 推进状态机（approved→in_progress），已在执行中则只更新交期。
+    let target: DocStatus | null = null;
+    try {
+      target = nextStatus(doc.status as DocStatus, "confirm");
+    } catch (e) {
+      if (!(e instanceof TransitionError)) throw e;
+      target = null;
     }
-  }
-  // 表头交期：各行最早日期，无逐行则用单一日期
-  const headerDate = validDates.length > 0 ? validDates.slice().sort()[0] : headerInput;
 
-  // 推进状态机（approved→in_progress），无法推进（如已在 in_progress）则仅更新交期不报错
-  let target: DocStatus | null = null;
-  try {
-    target = nextStatus(doc.status as DocStatus, "confirm");
-  } catch (e) {
-    if (!(e instanceof TransitionError)) throw e;
-    target = null;
-  }
+    // 原子消费 token：used_at 仍为空且未过期才更新成功。并发请求只有一个能 returning。
+    const claimed: { id: number }[] = await tx
+      .update(schema.poDocs)
+      .set({
+        ...(target ? { status: target } : {}),
+        expectedDate: headerDate,
+        confirmedAt: now,
+        confirmNote: note || "供应商已确认交期",
+        confirmTokenUsedAt: now,
+        version: sql`${schema.poDocs.version} + 1`,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(schema.poDocs.id, doc.id),
+        eq(schema.poDocs.confirmToken, t),
+        isNull(schema.poDocs.confirmTokenUsedAt),
+        or(
+          isNull(schema.poDocs.confirmTokenExpiresAt),
+          gte(schema.poDocs.confirmTokenExpiresAt, now),
+        ),
+      ))
+      .returning({ id: schema.poDocs.id });
+    if (claimed.length !== 1) {
+      throw new ApiError(409, "该确认链接已被使用或已过期，请联系采购重新生成");
+    }
 
-  await db
-    .update(schema.poDocs)
-    .set({
-      ...(target ? { status: target } : {}),
-      expectedDate: headerDate,
-      confirmedAt: now,
-      confirmNote: note || "供应商已确认交期",
-      confirmTokenUsedAt: now,
-      version: sql`${schema.poDocs.version} + 1`,
-      updatedAt: now,
-    })
-    .where(and(eq(schema.poDocs.id, doc.id), eq(schema.poDocs.confirmToken, t)));
+    // 逐行回填必须命中本 PO；任一行越权/不存在则整笔（含 token 消费）回滚。
+    for (const line of lineInputs) {
+      const updated: { id: number }[] = await tx
+        .update(schema.poLines)
+        .set({ expectedDate: String(line.expectedDate).trim() })
+        .where(and(eq(schema.poLines.id, line.poLineId), eq(schema.poLines.poId, doc.id)))
+        .returning({ id: schema.poLines.id });
+      if (updated.length !== 1) {
+        throw new ApiError(400, `采购单行不存在或不属于该单据: po_line#${line.poLineId}`);
+      }
+    }
 
-  await writeAudit(db, {
-    userId: doc.createdBy,
-    entity: "po",
-    entityId: doc.id,
-    action: "supplier_confirm",
-    after: { source: "supplier_via_token", expectedDate: headerDate, lines: validDates.length, note: note || null, status: target ?? doc.status },
+    await writeAudit(tx, {
+      userId: doc.createdBy,
+      entity: "po",
+      entityId: doc.id,
+      action: "supplier_confirm",
+      after: {
+        source: "supplier_via_token",
+        expectedDate: headerDate,
+        lines: validDates.length,
+        note: note || null,
+        status: target ?? doc.status,
+      },
+    });
+    return { headerDate };
   });
 
   // func#10 通知买手（尽力而为，失败不影响确认结果）
@@ -203,10 +223,10 @@ export async function submitPoConfirm(
     await enqueueNotification(db, {
       channel: "in_app",
       title: "供应商已确认交期",
-      body: `${doc.docNo} 供应商确认交货日 ${headerDate}`,
+      body: `${doc.docNo} 供应商确认交货日 ${confirmed.headerDate}`,
       href: "/outsource/po",
       severity: "info",
-      dedupeKey: `po_confirm:${doc.id}:${headerDate}`,
+      dedupeKey: `po_confirm:${doc.id}:${confirmed.headerDate}`,
       userId: doc.createdBy, // func#12：定向通知买手本人
     });
   } catch {

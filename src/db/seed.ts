@@ -1,6 +1,6 @@
 /**
  * 种子数据（幂等：按唯一键先查后插，可重复执行）
- * 运行：npm run db:seed（需 DATABASE_URL；密码取 SEED_ADMIN_PASSWORD ?? "admin123"）
+ * 运行：npm run db:seed（需 DATABASE_URL 与 SEED_ADMIN_PASSWORD）
  */
 import { and, eq, isNull } from "drizzle-orm";
 import { hash } from "@node-rs/argon2";
@@ -27,7 +27,13 @@ function bump(table: string, inserted: boolean) {
 
 async function main() {
   const db = await getDbAsync();
-  const password = process.env.SEED_ADMIN_PASSWORD ?? "admin123";
+  const password = process.env.SEED_ADMIN_PASSWORD?.trim();
+  if (!password) {
+    throw new Error("缺少 SEED_ADMIN_PASSWORD：拒绝以公开默认口令创建账号");
+  }
+  if (password.length < 12) {
+    throw new Error("SEED_ADMIN_PASSWORD 至少需要 12 个字符");
+  }
   const passwordHash = await hash(password);
 
   // ---------- 用户 ----------
@@ -86,6 +92,7 @@ async function main() {
     ["global", "price_tolerance_pct", "3", "价格异动容差%（R1）"],
     ["global", "over_receive_tolerance_pct", "0", "超收容差%（R4）"],
     ["global", "concession_price_ratio", "100", "让步默认价率%（D6 待财务确认）"],
+    ["global", "batch_posting_enabled", "0", "批次过账与 FEFO 闸门（迁移/UAT 完成前保持关闭）"],
     ["category:packaging", "loss_rate_pct", "5", "包材品类允许损耗率%（R2）"],
     ["category:raw", "loss_rate_pct", "2", "原料品类允许损耗率%（D5 待定）"],
   ];

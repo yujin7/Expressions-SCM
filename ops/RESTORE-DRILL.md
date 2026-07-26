@@ -24,3 +24,13 @@
 | （占位——待恢复演练执行后由执行人填写；由编排方运行演练） | | | |
 
 | 2026-07-24 | dev/PGlite | scripts/restore-drill-dev.ts | ✅ 备份261ms/校验171ms；skus 5376·ledger 348·snapshots 1731·transit 8305·review 1769 全对 | Claude（会话内） |
+
+## dev/PGlite 安全流程
+
+1. 先确认 `.data/dev` 的唯一写者并优雅停止；不要复制正在打开的数据目录。
+2. `npm run db:backup`：同时核对外置 writer lock 与 `lsof`，任一写者存在即拒绝。
+3. `npm run db:restore-drill`：只解开最近的已完成归档到临时目录，不读取 live `.data/dev`。
+4. 指定归档时使用
+   `DEV_BACKUP_FILE=/absolute/path/dev_YYYYMMDDHHMMSS.tgz npm run db:restore-drill`。
+5. 真恢复使用 `npm run db:restore -- /absolute/path/archive.tgz`；原库保留为
+   `.data/dev.pre-restore-<timestamp>`，验证成功前不得删除。

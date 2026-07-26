@@ -1,7 +1,7 @@
 /**
  * releaseSnapshots（D20 运营环）：快照仓最新库存周期刷新。
  * 铁律：只吃快照仓（实时仓阻塞防双套账）；同键 upsert 幂等；dry-run 零写入；
- * 已提交行不再入选；零量行提交但不落快照。
+ * 显式任务、预演摘要绑定、完整性硬闸、零量覆盖与来源追溯。
  */
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
@@ -40,7 +40,7 @@ async function seed(db: TestDb) {
 }
 
 describe("releaseSnapshots", () => {
-  it("快照仓聚合 upsert；实时仓阻塞；零量行提交不落快照；dry-run 零写入；重放幂等", async () => {
+  it("存在实时仓或未知身份时只允许预演，拒绝部分放行", async () => {
     const { db } = await createTestDb();
     const { sku, snapWh } = await seed(db);
     const job = await newJob(db);
@@ -56,49 +56,119 @@ describe("releaseSnapshots", () => {
       { rowNo: 5, targetTable: "stock_opening_candidate", payload: { warehouseRaw: "天猫中心仓", skuCode: "X404", qty: 9 } },
     ]);
 
-    // dry-run：零写入
-    const dry = await releaseSnapshots(pmc, { bizDate: "2026-07-24", dryRun: true }, db);
+    const dry = await releaseSnapshots(pmc, { jobIds: [job], bizDate: "2026-07-24", dryRun: true }, db);
     expect(dry.dryRun).toBe(true);
     expect(dry.upserts).toBe(1);
-    expect(dry.zeroSkipped).toBe(1);
+    expect(dry.zeroRows).toBe(1);
     expect(dry.blocked).toHaveLength(2);
     expect((await db.select().from(schema.stockSnapshots)).length).toBe(0);
 
-    // 执行：42 聚合入快照；零量行 committed；阻塞行留 pending 带原因
-    const run = await releaseSnapshots(pmc, { bizDate: "2026-07-24", dryRun: false }, db);
-    expect(run.upserts).toBe(1);
-    expect(run.rowsCommitted).toBe(3); // 2 聚合行 + 1 零量行
-    const snaps = await db.select().from(schema.stockSnapshots);
-    expect(snaps).toHaveLength(1);
-    expect(snaps[0].warehouseId).toBe(snapWh.id);
-    expect(snaps[0].skuId).toBe(sku.id);
-    expect(snaps[0].qty).toBe("42.0000");
+    await expect(
+      releaseSnapshots(
+        pmc,
+        { jobIds: [job], bizDate: "2026-07-24", expectedDigest: dry.releaseDigest, dryRun: false },
+        db,
+      ),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(await db.select().from(schema.stockSnapshots)).toHaveLength(0);
     const staged = await db.select().from(schema.stagingRows).where(eq(schema.stagingRows.importJobId, job));
-    expect(staged.filter((r) => r.status === "committed")).toHaveLength(3);
-    const blockedRows = staged.filter((r) => r.status === "pending");
-    expect(blockedRows).toHaveLength(2);
-    expect(blockedRows.map((r) => r.errorMsg).join("|")).toMatch(/实时仓不吃快照|别名未认领/);
+    expect(staged.every((r) => r.status !== "committed")).toBe(true);
+  });
 
-    // 重放：已提交行不再入选；同键新一期 bizDate 落新行，旧行保留（时间序列）
+  it("正数后显式零量会清零，不残留旧库存；执行绑定预演摘要与导入任务", async () => {
+    const { db } = await createTestDb();
+    const { sku, snapWh } = await seed(db);
+    const job1 = await newJob(db);
+    await writeStagingRows(db, job1, [
+      { rowNo: 1, targetTable: "stock_opening_candidate", payload: { warehouseRaw: "天猫中心仓", skuCode: "N001-000", qty: 42 } },
+    ]);
+    await db.update(schema.importJobs).set({ okRows: 1 }).where(eq(schema.importJobs.id, job1));
+    const dry1 = await releaseSnapshots(pmc, { jobIds: [job1], bizDate: "2026-07-24", dryRun: true }, db);
+    const run1 = await releaseSnapshots(
+      pmc,
+      { jobIds: [job1], bizDate: "2026-07-24", expectedDigest: dry1.releaseDigest, dryRun: false },
+      db,
+    );
+    expect(run1.rowsCommitted).toBe(1);
+    expect((await db.select().from(schema.stockSnapshots))[0]).toMatchObject({
+      warehouseId: snapWh.id,
+      skuId: sku.id,
+      importJobId: job1,
+      qty: "42.0000",
+    });
+
     const job2 = await newJob(db);
     await writeStagingRows(db, job2, [
-      { rowNo: 1, targetTable: "stock_opening_candidate", payload: { warehouseRaw: "天猫中心仓", skuCode: "N001-000", qty: 50 } },
+      { rowNo: 1, targetTable: "stock_opening_candidate", payload: { warehouseRaw: "天猫中心仓", skuCode: "N001-000", qty: 0 } },
     ]);
-    const run2 = await releaseSnapshots(pmc, { bizDate: "2026-07-25", dryRun: false }, db);
-    expect(run2.upserts).toBe(1);
+    await db.update(schema.importJobs).set({ okRows: 1 }).where(eq(schema.importJobs.id, job2));
+    const dry2 = await releaseSnapshots(pmc, { jobIds: [job2], bizDate: "2026-07-25", dryRun: true }, db);
+    const run2 = await releaseSnapshots(
+      pmc,
+      { jobIds: [job2], bizDate: "2026-07-25", expectedDigest: dry2.releaseDigest, dryRun: false },
+      db,
+    );
+    expect(run2.zeroRows).toBe(1);
     const all = await db.select().from(schema.stockSnapshots);
     expect(all).toHaveLength(2);
     const d25 = all.find((s) => s.bizDate === "2026-07-25");
-    expect(d25?.qty).toBe("50.0000");
+    expect(d25).toMatchObject({ qty: "0.0000", importJobId: job2 });
 
-    // 同期重导（同 bizDate）：upsert 覆盖不重复
     const job3 = await newJob(db);
     await writeStagingRows(db, job3, [
       { rowNo: 1, targetTable: "stock_opening_candidate", payload: { warehouseRaw: "天猫中心仓", skuCode: "N001-000", qty: 55 } },
     ]);
-    await releaseSnapshots(pmc, { bizDate: "2026-07-25", dryRun: false }, db);
-    const after = await db.select().from(schema.stockSnapshots);
-    expect(after).toHaveLength(2);
-    expect(after.find((s) => s.bizDate === "2026-07-25")?.qty).toBe("55.0000");
+    await db.update(schema.importJobs).set({ okRows: 1 }).where(eq(schema.importJobs.id, job3));
+    const stale = await releaseSnapshots(pmc, { jobIds: [job3], bizDate: "2026-07-25", dryRun: true }, db);
+    await writeStagingRows(db, job3, [
+      { rowNo: 2, targetTable: "stock_opening_candidate", payload: { warehouseRaw: "天猫中心仓", skuCode: "N001-000", qty: 1 } },
+    ]);
+    await db.update(schema.importJobs).set({ okRows: 2 }).where(eq(schema.importJobs.id, job3));
+    await expect(
+      releaseSnapshots(
+        pmc,
+        { jobIds: [job3], bizDate: "2026-07-25", expectedDigest: stale.releaseDigest, dryRun: false },
+        db,
+      ),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("同一导入任务只能放行一次，重放不新增审计或改写快照", async () => {
+    const { db } = await createTestDb();
+    await seed(db);
+    const job = await newJob(db);
+    await writeStagingRows(db, job, [
+      { rowNo: 1, targetTable: "stock_opening_candidate", payload: { warehouseRaw: "天猫中心仓", skuCode: "N001-000", qty: 12 } },
+    ]);
+    await db.update(schema.importJobs).set({ okRows: 1 }).where(eq(schema.importJobs.id, job));
+
+    const preview = await releaseSnapshots(pmc, {
+      jobIds: [job],
+      bizDate: "2026-07-21",
+      dryRun: true,
+    }, db);
+    await releaseSnapshots(pmc, {
+      jobIds: [job],
+      bizDate: "2026-07-21",
+      expectedDigest: preview.releaseDigest,
+      dryRun: false,
+    }, db);
+
+    await expect(releaseSnapshots(pmc, {
+      jobIds: [job],
+      bizDate: "2026-07-21",
+      expectedDigest: preview.releaseDigest,
+      dryRun: false,
+    }, db)).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("不可重复执行"),
+    });
+
+    expect(await db.select().from(schema.stockSnapshots)).toHaveLength(1);
+    const audits = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.entity, "release_snapshot"));
+    expect(audits).toHaveLength(1);
   });
 });

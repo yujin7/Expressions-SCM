@@ -10,6 +10,7 @@ import path from "node:path";
 import { desc, eq, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { errorLogs, exportJobs, importJobs, jobRuns, stockSnapshots, warehouses } from "@/db/schema";
+import { getConnectorReadiness, type ConnectorReadiness } from "@/server/integrations/connector";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -55,6 +56,7 @@ export interface OpsHealth {
   snapshotAges: { warehouseId: number; code: string; name: string; latestBizDate: string | null; ageDays: number | null }[];
   /** null=备份目录不存在（开发环境正常） */
   backupFreshness: { dir: string; file: string; mtime: string; ageHours: number } | null;
+  connectors: ConnectorReadiness[];
 }
 
 function todayShanghai(): string {
@@ -214,6 +216,7 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
     exportQueue,
     snapshotAges,
     backupFreshness: readBackupFreshness(),
+    connectors: getConnectorReadiness(),
   };
 }
 

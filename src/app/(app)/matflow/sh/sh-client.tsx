@@ -492,8 +492,8 @@ export default function ShClient() {
         if (!DEC_RE.test(v)) return void message.warning(`${r.label}：${label}数量格式不正确`);
       }
       const graded = decAdd(decAdd(r.passQty, r.failQty), r.concessionQty);
-      if (decCmp(graded, r.actualQty) > 0) {
-        return void message.warning(`${r.label}：判定合计 ${graded} 超过实收 ${formatQty(r.actualQty)}`);
+      if (decCmp(graded, r.actualQty) !== 0) {
+        return void message.warning(`${r.label}：合格、不合格与让步数量必须完整覆盖实收 ${formatQty(r.actualQty)}（当前 ${graded}）`);
       }
     }
     setQcLoading(true);
@@ -530,8 +530,12 @@ export default function ShClient() {
         concession = decAdd(concession, l.concessionQty);
       }
       let spare = "0";
+      const qcByLine = new Map(detail.qc.lines.map((l) => [l.shLineId, l]));
       for (const l of detail.lines) {
-        if (l.lineType === "spare") spare = decAdd(spare, l.actualQty);
+        if (l.lineType === "spare") {
+          const qc = qcByLine.get(l.id);
+          spare = decAdd(spare, qc ? decAdd(qc.passQty, qc.concessionQty) : "0");
+        }
       }
       const parts = [`合格 ${formatQty(pass)}`];
       if (decCmp(concession, "0") > 0) parts.push(`让步 ${formatQty(concession)}`);

@@ -17,6 +17,7 @@ import {
   Collapse,
   DatePicker,
   Popconfirm,
+  Select,
   Space,
   Table,
   Tag,
@@ -33,6 +34,15 @@ interface StatusTable {
   committed: number;
   error: number;
   blockedReasons: { reason: string; count: number }[];
+}
+
+interface ImportJobOption {
+  id: number;
+  template: string;
+  filename: string;
+  status: string;
+  okRows: number;
+  failRows: number;
 }
 
 const TABLE_LABELS: Record<string, string> = {
@@ -58,7 +68,7 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
 }
 
 /** 一个数据集的操作卡：预演 → 结果摘要 → 执行 */
-function useAction() {
+function useAction(jobId?: number | null) {
   const { message } = App.useApp();
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
@@ -66,7 +76,9 @@ function useAction() {
     async (url: string, body: Record<string, unknown>, onDone?: (r: Record<string, unknown>) => void) => {
       setBusy(true);
       try {
-        const r = await postJson<Record<string, unknown>>(url, body);
+        if (jobId === null) throw new Error("请先选择本次放行的导入任务");
+        const scopedBody = jobId === undefined ? body : { ...body, jobIds: [jobId] };
+        const r = await postJson<Record<string, unknown>>(url, scopedBody);
         setResult(r);
         onDone?.(r);
         message.success(body.dryRun ? "预演完成（零写入）" : "已执行");
@@ -76,7 +88,7 @@ function useAction() {
         setBusy(false);
       }
     },
-    [message],
+    [jobId, message],
   );
   return { busy, result, run, setResult };
 }
@@ -102,27 +114,39 @@ function ResultLine({ result, pick }: { result: Record<string, unknown> | null; 
 
 export default function ReleaseClient() {
   const { message } = App.useApp();
+  const [jobs, setJobs] = useState<ImportJobOption[]>([]);
+  const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [status, setStatus] = useState<StatusTable[]>([]);
   const [loading, setLoading] = useState(false);
 
   const loadStatus = useCallback(async () => {
+    if (selectedJobId == null) {
+      setStatus([]);
+      return;
+    }
     setLoading(true);
     try {
-      const r = await fetchJson<{ tables: StatusTable[] }>("/api/release/status");
+      const r = await fetchJson<{ tables: StatusTable[] }>(`/api/release/status?jobId=${selectedJobId}`);
       setStatus(r.tables);
     } catch (e) {
       message.error((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [message]);
+  }, [message, selectedJobId]);
 
   useEffect(() => {
     void loadStatus();
   }, [loadStatus]);
 
+  useEffect(() => {
+    void fetchJson<{ data: ImportJobOption[] }>("/api/import/jobs?page=1&pageSize=100")
+      .then((r) => setJobs(r.data))
+      .catch((e) => message.error((e as Error).message));
+  }, [message]);
+
   /* SPU：预演出 review 簇 → 勾选接受 → 执行 */
-  const spu = useAction();
+  const spu = useAction(selectedJobId);
   const [spuChecked, setSpuChecked] = useState<Set<string>>(new Set());
   const spuReview = useMemo(
     () => (spu.result?.needsReview as { spuKey: string; members: string[]; reason: string }[] | undefined) ?? [],
@@ -130,13 +154,13 @@ export default function ReleaseClient() {
   );
 
   /* SKU / 费用 / 批次 / 月销：直接预演-执行 */
-  const sku = useAction();
-  const fee = useAction();
-  const batch = useAction();
-  const sales = useAction();
+  const sku = useAction(selectedJobId);
+  const fee = useAction(selectedJobId);
+  const batch = useAction(selectedJobId);
+  const sales = useAction(selectedJobId);
 
   /* BOM：预演出歧义块 → 勾选「按推荐裁决」 → 执行 → 生效 */
-  const bom = useAction();
+  const bom = useAction(selectedJobId);
   const bomActivate = useAction();
   const [useRecommended, setUseRecommended] = useState(true);
   const bomAmbiguous = useMemo(() => {
@@ -163,7 +187,7 @@ export default function ReleaseClient() {
   const bomRunId = bom.result?.releaseRunId as number | null | undefined;
 
   /* 快照刷新 */
-  const snap = useAction();
+  const snap = useAction(selectedJobId);
   const [bizDate, setBizDate] = useState<Dayjs>(dayjs());
 
   const statusCols: ColumnsType<StatusTable> = [
@@ -208,6 +232,27 @@ export default function ReleaseClient() {
         style={{ margin: "8px 0 16px" }}
         message="每个数据集先「预演」（零写入，出裁决清单），再「执行」。SPU 歧义簇与 BOM 歧义块必须显式勾选裁决——引擎绝不代劳；执行后主档生效走红字/重导可改判。"
       />
+      <Card size="small" style={{ marginBottom: 16 }}>
+        <Space wrap>
+          <Typography.Text strong>本次放行任务：</Typography.Text>
+          <Select
+            showSearch
+            optionFilterProp="label"
+            style={{ minWidth: 520 }}
+            value={selectedJobId}
+            placeholder="选择一个明确的导入任务；系统不会再放行全库待处理行"
+            onChange={(id) => setSelectedJobId(id)}
+            options={jobs.map((j) => ({
+              value: j.id,
+              label: `#${j.id} ${j.template} · ${j.filename} · ${j.okRows} 行${j.failRows ? ` / 拒收 ${j.failRows}` : ""}`,
+              disabled: j.status !== "done",
+            }))}
+          />
+        </Space>
+      </Card>
+      {selectedJobId == null ? (
+        <Alert type="warning" showIcon message="未选择导入任务：预演和执行均被禁用。" style={{ marginBottom: 16 }} />
+      ) : null}
 
       <Table<StatusTable>
         rowKey="targetTable"
@@ -236,9 +281,20 @@ export default function ReleaseClient() {
                   </Button>
                   <Popconfirm
                     title={`确认按数据日期 ${bizDate.format("YYYY-MM-DD")} 刷新快照？同键覆盖，重导幂等。`}
-                    onConfirm={() => void snap.run("/api/release/snapshots", { bizDate: bizDate.format("YYYY-MM-DD"), dryRun: false }, () => void loadStatus())}
+                    onConfirm={() => void snap.run("/api/release/snapshots", {
+                      bizDate: bizDate.format("YYYY-MM-DD"),
+                      expectedDigest: snap.result?.releaseDigest,
+                      dryRun: false,
+                    }, () => void loadStatus())}
                   >
-                    <Button type="primary" loading={snap.busy}>
+                    <Button
+                      type="primary"
+                      loading={snap.busy}
+                      disabled={
+                        snap.result?.dryRun !== true ||
+                        snap.result?.jobId !== selectedJobId
+                      }
+                    >
                       执行刷新
                     </Button>
                   </Popconfirm>
@@ -246,7 +302,7 @@ export default function ReleaseClient() {
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   只吃快照仓；自有仓行会被阻塞（日常出入必须走单据过账，防双套账）。
                 </Typography.Text>
-                <ResultLine result={snap.result} pick={[["upserts", "快照键"], ["rowsCommitted", "提交行"], ["zeroSkipped", "零量行"], ["blocked", "阻塞"]]} />
+                <ResultLine result={snap.result} pick={[["upserts", "快照键"], ["rowsCommitted", "提交行"], ["zeroRows", "显式零量行"], ["sourceRejectedRows", "源拒收"], ["blocked", "阻塞"]]} />
               </Space>
             ),
           },

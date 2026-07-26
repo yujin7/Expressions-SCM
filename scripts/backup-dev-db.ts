@@ -23,26 +23,77 @@
  * PGlite 打开时会自行做崩溃恢复——演练中成功，但**优雅停止后再备份**更稳。
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+} from "node:fs";
 import path from "node:path";
 
-const DATA_DIR = process.env.DEV_DATA_DIR ?? ".data/dev";
-const DEST_DIR = process.env.DEV_BACKUP_DIR ?? "backups/dev";
+const DATA_DIR = safeDirectory(process.env.DEV_DATA_DIR ?? ".data/dev", "DEV_DATA_DIR");
+const DEST_DIR = safeDirectory(process.env.DEV_BACKUP_DIR ?? "backups/dev", "DEV_BACKUP_DIR");
 const KEEP = Number(process.env.DEV_BACKUP_KEEP ?? 10);
 
-function assertNoWriter(): void {
-  const lock = path.join(DATA_DIR, ".writer.lock");
-  if (!existsSync(lock)) return;
-  const pid = Number((readFileSync(lock, "utf8") || "").trim());
-  if (!Number.isInteger(pid) || pid <= 0) return;
-  try {
-    process.kill(pid, 0);
-  } catch {
-    return; // 陈旧锁，持有者已退出
+function safeDirectory(raw: string, label: string): string {
+  const resolved = path.resolve(raw);
+  if (resolved === path.parse(resolved).root) {
+    throw new Error(`${label} 不得指向文件系统根目录：${resolved}`);
   }
-  throw new Error(
-    `开发库正被 PID ${pid} 占用，备份会拿到不一致的快照。请先停掉它（kill ${pid}）再重试。`,
-  );
+  return resolved;
+}
+
+function assertNoWriter(): void {
+  // 必须与 src/db/index.ts 一致：锁在数据目录外侧，而不是 DATA_DIR/.writer.lock。
+  const lock = path.resolve(`${DATA_DIR.replace(/\/+$/, "")}.writer.lock`);
+  if (existsSync(lock)) {
+    const pid = Number((readFileSync(lock, "utf8") || "").trim());
+    if (Number.isInteger(pid) && pid > 0) {
+      try {
+        process.kill(pid, 0);
+        throw new Error(
+          `开发库正被 PID ${pid} 占用，备份会拿到不一致的快照。请先优雅停止该进程再重试。`,
+        );
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("开发库正被 PID")) throw error;
+        // 陈旧锁：继续做 lsof 二次核验，不能只信锁文件。
+      }
+    }
+  }
+
+  // 兼容在单写者闸上线前启动的旧进程：它们没有外置锁，但仍可能打开数据文件。
+  try {
+    const openFiles = execFileSync("lsof", ["+D", DATA_DIR], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    if (openFiles) {
+      throw new Error(
+        `开发库仍有进程打开文件，拒绝备份/恢复：\n${openFiles.split("\n").slice(0, 5).join("\n")}`,
+      );
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException & { status?: number }).code;
+    const status = (error as { status?: number }).status;
+    const stdout = String((error as { stdout?: string | Buffer }).stdout ?? "").trim();
+    // macOS 的 lsof 在受限环境中可能“有匹配输出但退出 1”；必须先看证据，不能先信退出码。
+    if (stdout) {
+      throw new Error(
+        `开发库仍有进程打开文件，拒绝备份/恢复：\n${stdout.split("\n").slice(0, 5).join("\n")}`,
+      );
+    }
+    if (status === 1) return; // 无输出的 exit 1 才表示没有匹配文件
+    if (error instanceof Error && error.message.includes("开发库仍有进程打开文件")) throw error;
+    if (code === "ENOENT") {
+      throw new Error("缺少 lsof，无法证明 PGlite 数据目录没有写者；为安全起见拒绝操作。");
+    }
+    throw error;
+  }
 }
 
 function backup(): void {
@@ -72,19 +123,34 @@ function backup(): void {
 
 function restore(file: string): void {
   assertNoWriter();
-  if (!existsSync(file)) throw new Error(`备份文件不存在：${file}`);
-  // 解到临时目录再原子替换，避免解一半把现库毁了
-  const tmp = `${DATA_DIR}.restoring`;
-  execFileSync("rm", ["-rf", tmp]);
-  mkdirSync(tmp, { recursive: true });
-  execFileSync("tar", ["xzf", file, "-C", tmp], { stdio: "inherit" });
+  const archive = path.resolve(file);
+  if (!existsSync(archive)) throw new Error(`备份文件不存在：${archive}`);
+
+  const expectedRoot = `${path.basename(DATA_DIR)}/`;
+  const entries = execFileSync("tar", ["tzf", archive], { encoding: "utf8" })
+    .split("\n")
+    .filter(Boolean);
+  if (
+    entries.length === 0 ||
+    entries.some((entry) => entry.startsWith("/") || entry.includes("../") || !entry.startsWith(expectedRoot))
+  ) {
+    throw new Error(`备份包结构异常：所有条目必须位于 ${expectedRoot} 下，且不得路径穿越`);
+  }
+
+  // 在目标同级目录解包，校验完成后 rename；原库保留为带时间戳的可恢复副本。
+  const parent = path.dirname(DATA_DIR);
+  mkdirSync(parent, { recursive: true });
+  const tmp = mkdtempSync(path.join(parent, `.${path.basename(DATA_DIR)}.restore-`));
+  execFileSync("tar", ["xzf", archive, "-C", tmp], { stdio: "inherit" });
   const inner = path.join(tmp, path.basename(DATA_DIR));
   if (!existsSync(inner)) throw new Error("备份包结构异常：找不到数据目录");
-  execFileSync("rm", ["-rf", `${DATA_DIR}.old`]);
-  if (existsSync(DATA_DIR)) execFileSync("mv", [DATA_DIR, `${DATA_DIR}.old`]);
-  execFileSync("mv", [inner, DATA_DIR]);
-  execFileSync("rm", ["-rf", tmp]);
-  console.log(`✓ 已恢复：${file} → ${DATA_DIR}（原库保留在 ${DATA_DIR}.old，确认无误后自行删除）`);
+  const stamp = new Date().toISOString().replace(/[-:T.]/g, "").slice(0, 14);
+  const prior = `${DATA_DIR}.pre-restore-${stamp}`;
+  if (existsSync(DATA_DIR)) renameSync(DATA_DIR, prior);
+  renameSync(inner, DATA_DIR);
+  rmSync(tmp, { recursive: true, force: true });
+  console.log(`✓ 已恢复：${archive} → ${DATA_DIR}`);
+  if (existsSync(prior)) console.log(`  原库保留：${prior}`);
 }
 
 const args = process.argv.slice(2);

@@ -190,6 +190,7 @@ export const tlLines = pgTable("tl_lines", {
   tlId: integer("tl_id").notNull().references(() => tlDocs.id),
   skuId: integer("sku_id").notNull().references(() => skus.id),
   qty: numeric("qty", { precision: 14, scale: 4 }).notNull(),
+  batchId: integer("batch_id"),
   reason: tlReasonEnum("reason").notNull(),
 });
 
@@ -243,6 +244,7 @@ export const ctLines = pgTable("ct_lines", {
   poLineId: integer("po_line_id").notNull().references(() => poLines.id),
   skuId: integer("sku_id").notNull().references(() => skus.id),
   qty: numeric("qty", { precision: 14, scale: 4 }).notNull(), // 基础单位
+  batchId: integer("batch_id"),
   reason: text("reason"),
 });
 

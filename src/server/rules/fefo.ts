@@ -12,8 +12,8 @@
  * - 同到期日按 batchId 升序，保证**结果稳定**（同样输入永远同样输出，便于测试与复现）。
  * - 数量不足时返回 `shortBy > 0` 并给出**已能覆盖的部分分配**，绝不静默截断——
  *   调用方必须显式处理缺口（与全系统"不静默截断"的纪律一致）。
- * - 已过期批次**仍参与分配**但在 note 中标注：引擎不擅自拦截业务（与"提示而非阻断"原则一致），
- *   是否禁发由业务在上层决定。
+ * - 已过期批次**不参与可发分配**：化妆品/食品效期属于安全边界，不能只提示后仍自动推荐。
+ *   被排除批次数量会显式返回，若因此不足则 `shortBy` 保留真实缺口。
  *
  * 数量口径：分配结果会成为出库过账数量，因此**全程走 decimal 字符串**（CLAUDE.md 硬规则），
  * 不用浮点——否则会在台账里留下 0.30000000000000004 这类值。
@@ -43,7 +43,7 @@ export interface FefoResult {
   shortBy: string;
   /** 已分配合计 */
   allocated: string;
-  /** 命中的已过期批次数量（供 UI 提示，不阻断） */
+  /** 因过期被排除的正库存批次数量 */
   expiredLots: number;
   note: string;
 }
@@ -81,14 +81,19 @@ export function allocateFefo(lots: BatchLot[], required: string, today?: string)
     };
   }
 
-  const usable = (lots ?? [])
+  const positive = (lots ?? [])
     .filter((l) => l && isDec(l.qty) && dCmp(l.qty, "0") > 0)
+    .slice();
+  const expiredLots = today
+    ? positive.filter((l) => l.expiryDate != null && l.expiryDate <= today).length
+    : 0;
+  const usable = positive
+    .filter((l) => !today || l.expiryDate == null || l.expiryDate > today)
     .slice()
     .sort(compareLots);
 
   const allocations: Allocation[] = [];
   let remaining = need;
-  let expiredLots = 0;
 
   for (const lot of usable) {
     if (dCmp(remaining, "0") <= 0) break;
@@ -102,7 +107,6 @@ export function allocateFefo(lots: BatchLot[], required: string, today?: string)
       qty: dQty(take),
     });
     remaining = dSub(remaining, take, 6);
-    if (today && lot.expiryDate && lot.expiryDate <= today) expiredLots++;
   }
 
   const allocated = dQty(dSub(need, remaining, 6));
@@ -114,7 +118,7 @@ export function allocateFefo(lots: BatchLot[], required: string, today?: string)
       ? `批次库存不足，尚缺 ${shortBy}（已分配 ${allocated}）`
       : `已按先到期先出分配 ${allocations.length} 个批次`,
   );
-  if (expiredLots > 0) parts.push(`其中 ${expiredLots} 个批次已过期——请确认是否可发（引擎不拦截）`);
+  if (expiredLots > 0) parts.push(`已排除 ${expiredLots} 个过期批次，不计入可发库存`);
   if (usable.some((l) => l.expiryDate == null)) parts.push("存在无效期批次，已排在有效期批次之后");
 
   return { allocations, shortBy, allocated, expiredLots, note: parts.join("；") };

@@ -4,7 +4,8 @@
  */
 import { z } from "zod";
 
-const jobIds = z.array(z.number().int().positive()).optional();
+/** 所有放行动作必须明确绑定输入任务，禁止“把全库待处理行都放掉”。 */
+const jobIds = z.array(z.number().int().positive()).min(1, "至少选择一个导入任务");
 
 /** SPU 放行：review 簇必须显式 override，引擎绝不替人归组（§4.1） */
 export const releaseSpusBody = z.object({
@@ -48,8 +49,9 @@ export type ReleasePlainBody = z.infer<typeof releasePlainBody>;
 
 /** 快照刷新（D20 运营环）：bizDate 必填——快照必须有数据日期 */
 export const releaseSnapshotsBody = z.object({
-  jobIds,
+  jobIds: z.array(z.number().int().positive()).length(1, "快照刷新每次必须且只能选择一个导入任务"),
   bizDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "数据日期格式须为 YYYY-MM-DD"),
+  expectedDigest: z.string().length(64).optional(),
   dryRun: z.boolean().default(true),
 });
 export type ReleaseSnapshotsBody = z.infer<typeof releaseSnapshotsBody>;

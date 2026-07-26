@@ -4,11 +4,11 @@
  *   SMOKE_BASE=https://host npx tsx scripts/smoke-e2e.ts
  * 覆盖：健康检查（迁移无漂移）、全角色登录、关键只读端点形状、越权/匿名负样例、
  * ops 角色 PO 价格脱敏。退出码 0=全过 / 1=有失败；结尾打印汇总表。
- * 口令：SMOKE_PASSWORD ?? "admin123"（与 seed 一致）。
+ * 口令：必须显式提供 SMOKE_PASSWORD；脚本不保留任何公开默认密码。
  */
 
 const BASE = process.env.SMOKE_BASE ?? "http://localhost:3000";
-const PASSWORD = process.env.SMOKE_PASSWORD ?? "admin123";
+const PASSWORD: string = process.env.SMOKE_PASSWORD?.trim() ?? "";
 const ROLE_USERS = ["admin", "ops01", "purchasing01", "warehouse01", "pmc01", "finance01"];
 
 type Status = "PASS" | "FAIL" | "SKIP";
@@ -90,6 +90,9 @@ async function getJson(jar: Jar | null, path: string): Promise<{ status: number;
 }
 
 async function main(): Promise<void> {
+  if (!PASSWORD) {
+    throw new Error("必须显式设置 SMOKE_PASSWORD，拒绝使用公开默认密码");
+  }
   console.log(`冒烟目标: ${BASE}\n`);
 
   // 1) 健康检查：ok 且迁移文件数===已应用数（PGlite 模式）

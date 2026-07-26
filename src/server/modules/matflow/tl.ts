@@ -20,6 +20,7 @@ import {
   requireRealtimeWarehouse,
 } from "./common-notes";
 import { createTlSchema } from "./schemas";
+import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
 
 /**
  * 委外退料单 TL（R5「退回量」唯一数据源）：委外仓 → 自有仓。
@@ -53,6 +54,7 @@ export async function createTl(user: SessionUser, input: unknown, dbArg?: AnyDb)
   }
 
   return db.transaction(async (tx: AnyDb) => {
+    const allocatedLines = await expandOutboundLinesForBatchPosting(tx, fromWh.id, v.lines);
     const docNo = await nextDocNo(tx, "TL");
     const [doc]: TlRow[] = await tx
       .insert(tlDocs)
@@ -66,16 +68,17 @@ export async function createTl(user: SessionUser, input: unknown, dbArg?: AnyDb)
       })
       .returning();
     await tx.insert(tlLines).values(
-      v.lines.map((l) => ({
+      allocatedLines.map((l) => ({
         tlId: doc.id,
         skuId: l.skuId,
         qty: dQty(l.qty),
+        batchId: l.batchId,
         reason: l.reason,
       })),
     );
     await writeAudit(tx, {
       userId: user.id, entity: "tl", entityId: doc.id, action: "create",
-      after: { docNo: doc.docNo, jgId: jg.id, fromWarehouseId: fromWh.id, lineCount: v.lines.length },
+      after: { docNo: doc.docNo, jgId: jg.id, fromWarehouseId: fromWh.id, lineCount: allocatedLines.length },
     });
     return doc;
   });
@@ -151,8 +154,8 @@ export async function approveTl(
         sourceDocId: id,
         action: "post",
         lines: lines.flatMap((l) => [
-          { sourceLineId: l.id, skuId: l.skuId, warehouseId: doc.fromWarehouseId, batchId: null, qtyDelta: dNeg(l.qty) },
-          { sourceLineId: -l.id, skuId: l.skuId, warehouseId: doc.toWarehouseId, batchId: null, qtyDelta: dQty(l.qty) },
+          { sourceLineId: l.id, skuId: l.skuId, warehouseId: doc.fromWarehouseId, batchId: l.batchId, qtyDelta: dNeg(l.qty) },
+          { sourceLineId: -l.id, skuId: l.skuId, warehouseId: doc.toWarehouseId, batchId: l.batchId, qtyDelta: dQty(l.qty) },
         ]),
       });
 
@@ -231,6 +234,7 @@ export async function getTl(id: number, dbArg?: AnyDb) {
       skuName: skus.name,
       baseUom: skus.baseUom,
       qty: tlLines.qty,
+      batchId: tlLines.batchId,
       reason: tlLines.reason,
     })
     .from(tlLines)

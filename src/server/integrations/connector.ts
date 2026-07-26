@@ -31,6 +31,10 @@ export interface Connector {
   /** 连接器标识（jst=聚水潭 / yy=用友 / feishu=飞书） */
   key: string;
   label: string;
+  /** ready=代码已接通；contract_only=只有契约，禁止因凭据存在就宣称可用 */
+  implementation: "ready" | "contract_only";
+  requiredEnv: string[];
+  blocker?: string;
   /** 是否已配置凭据（环境变量齐全）——未配置时对接任务应优雅跳过 */
   isConfigured(): boolean;
   /** 拉取库存快照（未实现则抛 NotImplemented） */
@@ -45,10 +49,79 @@ export class NotImplementedError extends Error {
   }
 }
 
-/** 已注册连接器（IT 对接时在此登记实现实例）。当前为空——文件周更仍为唯一数据源。 */
-export const CONNECTORS: Connector[] = [];
+function hasEnv(keys: string[]): boolean {
+  return keys.every((key) => Boolean(process.env[key]?.trim()));
+}
+
+/**
+ * 集成目录不是“成功清单”：未实现的系统也注册，但明确标为 contract_only。
+ * 这样运维页能看见真实缺口，同时 `configuredConnectors()` 绝不会把脚手架当成可运行连接器。
+ */
+export const CONNECTORS: Connector[] = [
+  {
+    key: "jst",
+    label: "聚水潭（库存/销量）",
+    implementation: "contract_only",
+    requiredEnv: ["JST_APP_KEY", "JST_APP_SECRET"],
+    blocker: "待 IT 提供 API 凭据、租户信息与字段契约；当前继续走受控文件导入",
+    isConfigured() {
+      return hasEnv(this.requiredEnv);
+    },
+    async fetchInventorySnapshot() {
+      throw new NotImplementedError("jst", "fetchInventorySnapshot");
+    },
+    async fetchSalesMonthly() {
+      throw new NotImplementedError("jst", "fetchSalesMonthly");
+    },
+  },
+  {
+    key: "yy",
+    label: "用友（财务/成本）",
+    implementation: "contract_only",
+    requiredEnv: ["YY_CLIENT_ID", "YY_CLIENT_SECRET"],
+    blocker: "待成本口径 D2、API 凭据与接口契约确认",
+    isConfigured() {
+      return hasEnv(this.requiredEnv);
+    },
+  },
+  {
+    key: "feishu",
+    label: "飞书通知",
+    implementation: "ready",
+    requiredEnv: ["FEISHU_WEBHOOK_URL"],
+    blocker: "代码已接通；配置 webhook 后启用",
+    isConfigured() {
+      return hasEnv(this.requiredEnv);
+    },
+  },
+];
 
 /** 供对接任务查询：返回已配置凭据的连接器 */
 export function configuredConnectors(): Connector[] {
-  return CONNECTORS.filter((c) => c.isConfigured());
+  return CONNECTORS.filter((c) => c.implementation === "ready" && c.isConfigured());
+}
+
+export interface ConnectorReadiness {
+  key: string;
+  label: string;
+  implementation: Connector["implementation"];
+  configured: boolean;
+  operational: boolean;
+  requiredEnv: string[];
+  blocker: string | null;
+}
+
+export function getConnectorReadiness(): ConnectorReadiness[] {
+  return CONNECTORS.map((connector) => {
+    const configured = connector.isConfigured();
+    return {
+      key: connector.key,
+      label: connector.label,
+      implementation: connector.implementation,
+      configured,
+      operational: connector.implementation === "ready" && configured,
+      requiredEnv: connector.requiredEnv,
+      blocker: connector.blocker ?? null,
+    };
+  });
 }

@@ -99,14 +99,15 @@ describe("suggestFefoAllocation", () => {
     expect(r.allocations[1].qty).toBe("50.0000");
   });
 
-  it("已过期批次仍参与但被标注（提示不阻断）", async () => {
+  it("已过期批次被排除并形成真实缺口", async () => {
     const expired = await mkBatch("L-EXP", "2026-01-01");
     await bal(whA, expired, "100");
 
     const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "10", today: "2026-07-25" });
-    expect(r.allocations[0].batchNo).toBe("L-EXP");
+    expect(r.allocations).toEqual([]);
+    expect(r.shortBy).toBe("10.0000");
     expect(r.expiredLots).toBe(1);
-    expect(r.note).toContain("已过期");
+    expect(r.note).toContain("已排除");
   });
 
   it("出库量为 0 或负 → 空分配，不查库也不报错", async () => {

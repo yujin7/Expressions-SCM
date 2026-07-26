@@ -15,7 +15,8 @@
     "db:seed": "tsx src/db/seed.ts",
     "lint": "eslint .",
     "db:backup": "tsx scripts/backup-dev-db.ts",
-    "db:restore": "tsx scripts/backup-dev-db.ts --restore"
+    "db:restore": "tsx scripts/backup-dev-db.ts --restore",
+    "db:restore-drill": "tsx scripts/restore-drill-dev.ts"
   },
   "dependencies": {
     "@ant-design/icons": "^5.6.0",

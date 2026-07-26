@@ -4,6 +4,7 @@ import {
 import { desc } from "drizzle-orm";
 import { offsetPoolKindEnum } from "./enums";
 import { skus, warehouses } from "./masters";
+import { importJobs } from "./system";
 
 /**
  * 库存流水——唯一事实源，仅追加（禁止 UPDATE/DELETE）。
@@ -47,9 +48,14 @@ export const stockSnapshots = pgTable("stock_snapshots", {
   id: serial("id").primaryKey(),
   warehouseId: integer("warehouse_id").notNull().references(() => warehouses.id),
   skuId: integer("sku_id").notNull().references(() => skus.id),
+  /** 未来放行必须绑定一个明确导入任务；历史行为空表示 legacy。 */
+  importJobId: integer("import_job_id").references(() => importJobs.id),
   bizDate: date("biz_date").notNull(),
   qty: numeric("qty", { precision: 14, scale: 4 }).notNull(),
-}, (t) => [unique("uq_snapshot_key").on(t.warehouseId, t.skuId, t.bizDate)]);
+}, (t) => [
+  unique("uq_snapshot_key").on(t.warehouseId, t.skuId, t.bizDate),
+  index("ix_snapshot_import_job").on(t.importJobId),
+]);
 
 /** 对冲池台账（R7）：备品/损耗/补送，季度盘点后一张冲销调整单 */
 export const offsetPools = pgTable("offset_pools", {

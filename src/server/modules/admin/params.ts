@@ -46,6 +46,7 @@ export const PARAM_DEFS: ParamDef[] = [
   { key: "detector_velocity_dev_pct", label: "速度突变偏离", fallback: 40, min: 15, max: 100, unit: "%", note: "E5-10：本期日均相对近3月基线偏离超过即命中（月度数据下 40% 属常态波动，建议校准后上调）" },
   { key: "auto_wo_on_bh", label: "BH审批自动建WO", fallback: 0, min: 0, max: 1, unit: "", note: "D33 自动链开关①（0=关；上线前须预演验证——spec/11）" },
   { key: "auto_jg_on_ready", label: "齐套自动JG草稿", fallback: 0, min: 0, max: 1, unit: "", note: "D33 自动链开关②（0=关；自动仅产草稿，审批留人工闸）" },
+  { key: "batch_posting_enabled", label: "批次过账与FEFO", fallback: 0, min: 0, max: 1, unit: "", note: "E2-12 迁移闸门（默认关；历史余额迁移、全出库路径UAT后方可开启）" },
 ];
 
 export async function listParams(dbArg?: AnyDb): Promise<(ParamDef & { value: number; isDefault: boolean; lastChangedBy: string | null; lastChangedAt: string | null })[]> {

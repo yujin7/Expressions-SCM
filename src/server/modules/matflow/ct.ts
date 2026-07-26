@@ -16,6 +16,7 @@ import {
 import { approveDocSchema } from "@/server/modules/outsource/schemas";
 import { completeApprovedDoc, requireRealtimeWarehouse } from "./common-notes";
 import { createCtSchema } from "./schemas";
+import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
 
 /**
  * 采购退货单 CT（B9）：仓库 −，PO 已收数回冲（po_line.receivedQty −=，基础单位）。
@@ -66,6 +67,7 @@ export async function createCt(user: SessionUser, input: unknown, dbArg?: AnyDb)
   assertWithinReceived(ctQtyByPoLine, poLineById);
 
   return db.transaction(async (tx: AnyDb) => {
+    const allocatedLines = await expandOutboundLinesForBatchPosting(tx, v.warehouseId, v.lines);
     const docNo = await nextDocNo(tx, "CT");
     const [doc]: CtRow[] = await tx
       .insert(ctDocs)
@@ -78,17 +80,18 @@ export async function createCt(user: SessionUser, input: unknown, dbArg?: AnyDb)
       })
       .returning();
     await tx.insert(ctLines).values(
-      v.lines.map((l) => ({
+      allocatedLines.map((l) => ({
         ctId: doc.id,
         poLineId: l.poLineId,
         skuId: l.skuId,
         qty: dQty(l.qty),
+        batchId: l.batchId,
         reason: l.reason ?? null,
       })),
     );
     await writeAudit(tx, {
       userId: user.id, entity: "ct", entityId: doc.id, action: "create",
-      after: { docNo: doc.docNo, poId: v.poId, lineCount: v.lines.length },
+      after: { docNo: doc.docNo, poId: v.poId, lineCount: allocatedLines.length },
     });
     return doc;
   });
@@ -162,7 +165,7 @@ export async function approveCt(
         sourceDocId: id,
         action: "post",
         lines: lines.map((l) => ({
-          sourceLineId: l.id, skuId: l.skuId, warehouseId: doc.warehouseId, batchId: null, qtyDelta: dNeg(l.qty),
+          sourceLineId: l.id, skuId: l.skuId, warehouseId: doc.warehouseId, batchId: l.batchId, qtyDelta: dNeg(l.qty),
         })),
       });
 
@@ -225,6 +228,7 @@ export async function getCt(id: number, dbArg?: AnyDb) {
       skuName: skus.name,
       baseUom: skus.baseUom,
       qty: ctLines.qty,
+      batchId: ctLines.batchId,
       reason: ctLines.reason,
     })
     .from(ctLines)

@@ -12,7 +12,7 @@ Next.js 15 · TypeScript · Ant Design 5 · PostgreSQL 16 · Drizzle ORM · Next
 ```bash
 cp .env.example .env   # AUTH_SECRET 用 openssl rand -base64 32 生成；DATABASE_URL 留 pglite:.data/dev
 npm install
-npm run db:seed        # admin/admin123 及演示主数据（密码可用 SEED_ADMIN_PASSWORD 覆盖）
+SEED_ADMIN_PASSWORD='请使用至少12位强口令' npm run db:seed
 npm run dev            # http://localhost:3000
 ```
 
@@ -32,9 +32,13 @@ npm run db:migrate && npm run db:seed && npm run dev
 | `npm run test` | 全部测试（规则/过账/单据流用 PGlite，无需 Docker） |
 | `npm run db:generate` | schema 变更后生成迁移（变更后必须重跑，测试依赖 drizzle/*.sql） |
 | `npm run db:seed` | 幂等种子数据 |
+| `npm run db:backup` | dev/PGlite 停机备份；检测到外置锁或打开文件即拒绝 |
+| `npm run db:restore-drill` | 从最近的停机归档恢复到临时目录并核对核心表 |
+| `npm run db:restore -- /absolute/path/dev_*.tgz` | 停机恢复；原库保留为带时间戳副本 |
 
 ## 演示账号（seed）
-admin / ops01 / purchasing01 / warehouse01 / pmc01(审批人) / pmc02(非审批人) / finance01，默认密码 `admin123`。
+admin / ops01 / purchasing01 / warehouse01 / pmc01(审批人) / pmc02(非审批人) / finance01
+使用执行 `db:seed` 时显式提供的 `SEED_ADMIN_PASSWORD`；系统不再接受公开默认口令。
 
 ## 架构要点（详见 CLAUDE.md 与 spec/01 §4-§6）
 - 库存唯一入口：`src/server/posting/`（过账表 registry；流水仅追加；纠错走红字）
