@@ -18,7 +18,10 @@ export async function register(): Promise<void> {
   // 只启动一个调度权威：PostgreSQL=pg-boss；PGlite=进程内 interval 回退。
   // 必须包在 NEXT_RUNTIME==='nodejs' 静态分支里：webpack 常量折叠会把 edge bundle
   // 中的该分支整体消除——否则 @/db → pg → fs 在 edge 编译期就炸（Module not found）。
-  if (process.env.NEXT_RUNTIME === "nodejs") {
+  const runJobs =
+    process.env.NODE_ENV !== "development" ||
+    process.env.SCM_RUN_JOBS === "1";
+  if (process.env.NEXT_RUNTIME === "nodejs" && runJobs) {
     if ((process.env.DATABASE_URL ?? "").startsWith("postgres")) {
       const { ensureSchedulerStarted } = await import("@/jobs/scheduler");
       try {

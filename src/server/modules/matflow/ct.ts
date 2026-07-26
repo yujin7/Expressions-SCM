@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
-  approvals, ctDocs, ctLines, poDocs, poLines, skus, users, warehouses,
+   ctDocs, ctLines, poDocs, poLines, skus, users, warehouses,
 } from "@/db/schema";
 import { dAdd, dCmp, dNeg, dQty, dSub } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";

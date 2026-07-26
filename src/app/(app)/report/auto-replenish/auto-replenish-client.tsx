@@ -2,7 +2,7 @@
 
 /** 自动补货候选（守护式）——把 A/B×X/Y·非覆盖缺口·有生产周期的告急 SKU 挑出批量生成草稿；其余转人工（只读+人工闸 R13）。 */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Button, Popconfirm, Space, Statistic, Table, Tabs, Tag, Typography } from "antd";
+import {  App, Button, Popconfirm, Space, Statistic, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import CaliberNote from "@/components/CaliberNote";

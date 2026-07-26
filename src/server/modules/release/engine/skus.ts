@@ -4,8 +4,8 @@ import { eq } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 
-import type { BomBlock, BomLine } from "@/server/import/adapters/bom";
-import type { SpuCluster } from "@/server/import/adapters/bom-spu";
+import type {  BomLine } from "@/server/import/adapters/bom";
+
 import { type AnyDb, type ReleaseUser, resolveDb, loadStagedRows, markBlocked, aliasCache, loadReleasedSpuIndex, loadSkuIdByCode, isBomBlockPayload } from "./common";
 
 /* ══ 2) releaseSkus（BOM 块 → 成品/物料建档） ═══════════ */

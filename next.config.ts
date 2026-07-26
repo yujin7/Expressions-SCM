@@ -2,6 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // Development sessions use .next-dev/.next-webpack so a production build
+  // cannot invalidate the active HMR cache. CI and `npm run build` keep .next.
+  distDir: process.env.NEXT_DIST_DIR?.trim() || ".next",
   output: "standalone", // 生产容器化（ops/Dockerfile）
   // 服务器组件里用到的原生依赖
   serverExternalPackages: ["pg", "pg-boss", "@node-rs/argon2", "exceljs", "@electric-sql/pglite"],

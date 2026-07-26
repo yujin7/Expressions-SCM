@@ -1,6 +1,6 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import {
-  approvals, jgDocs, jgFeeSegments, pcDocs, skus, suppliers, users, woDocs,
+   jgDocs, jgFeeSegments, pcDocs, skus, suppliers, users, woDocs,
 } from "@/db/schema";
 import { dDeviationPct, dMoney, dZero } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";

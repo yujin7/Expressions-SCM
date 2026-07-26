@@ -285,7 +285,7 @@ export function useListState<F extends Record<string, string | undefined>>(
       pendingRestoreRef.current = last;
       router.replace(joinPath(pathname, last), { scroll: false });
     }
-  }, [currentQuery, keys.last, pathname, router]);
+  }, [cfg.paramPrefix, currentQuery, keys.last, pathname, router]);
 
   /* --- 每次状态变更把当前 query 写回 localStorage --- */
   useEffect(() => {

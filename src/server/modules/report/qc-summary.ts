@@ -15,7 +15,7 @@
  * · 生效收货状态 = approved/in_progress/completed（照抄 report/wip.ts ACTIVE_SH_STATUSES）；
  * · PO 收货与 JG 委外收货都算，供应商分别取自 po_docs / jg_docs。
  */
-import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, eq, gte, inArray } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";

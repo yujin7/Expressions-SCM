@@ -8,7 +8,7 @@
  */
 import { asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { getDbAsync } from "@/db";
+
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import type { SessionUser } from "@/server/core/dto";

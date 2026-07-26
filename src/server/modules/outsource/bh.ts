@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { approvals, bhDocs, bhLines, skus, users } from "@/db/schema";
+import {  bhDocs, bhLines, skus, users } from "@/db/schema";
 import { dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";

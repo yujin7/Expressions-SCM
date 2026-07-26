@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import {
   App,
   Button,
@@ -260,7 +261,7 @@ export default function ReconClient() {
                 <div>
                   <div>该日期暂无对账结果。</div>
                   <div style={{ marginTop: 4 }}>
-                    先在<a href="/import/jobs">导入中心</a>
+                    先在<Link href="/import/jobs">导入中心</Link>
                     上传聚水潭日汇总（模板见 JST_DAILY_TEMPLATE），再运行对账。
                   </div>
                 </div>

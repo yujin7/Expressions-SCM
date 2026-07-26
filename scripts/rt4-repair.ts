@@ -16,9 +16,6 @@ import { writeAudit } from "../src/server/core/audit";
 import { releaseSalesMonthly, type ReleaseUser } from "../src/server/modules/release/engine";
 import { stageSalesMonthly } from "../src/server/import/adapters/sales-monthly";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyDb = any;
-
 const SALES_FILE = "/Users/yj/Downloads/26年产品销量汇总（6月）.xlsx";
 const SNAPSHOT_BIZ_DATE = "2026-07-21";
 

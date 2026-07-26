@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": ".cache/tsconfig.scripts.tsbuildinfo",
+    "plugins": [],
+    "types": ["node"]
+  },
+  "include": [
+    "src/**/*.ts",
+    "scripts/**/*.ts",
+    "tests/helpers/**/*.ts"
+  ],
+  "exclude": ["node_modules", ".next*", "tests/**/*.test.ts", "drizzle"]
+}

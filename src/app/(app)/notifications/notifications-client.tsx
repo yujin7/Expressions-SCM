@@ -5,14 +5,12 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Button, List, Space, Tag, Typography } from "antd";
 import Link from "next/link";
 import { fetchJson, postJson } from "@/components/fetchJson";
-import { SEVERITY, ALERT_STATUS } from "@/components/dictionary";
+import { SEVERITY } from "@/components/dictionary";
 
 interface Notice {
   id: number; channel: string; title: string; body: string; href: string | null;
   severity: string | null; status: string; createdAt: string; sentAt: string | null; readAt: string | null;
 }
-
-const STATUS_COLOR: Record<string, string> = { pending: "default", sent: "green", skipped: "default", failed: "red" };
 
 export default function NotificationsClient() {
   const { message } = App.useApp();

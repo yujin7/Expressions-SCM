@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
-import { createSh, listShs } from "@/server/modules/matflow/sh";
+import { createSh } from "@/server/modules/matflow/sh";
+import { listShs } from "@/server/modules/matflow/sh-read";
 
 export async function GET(req: NextRequest) {
   try {

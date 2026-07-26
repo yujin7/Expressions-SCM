@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
-  approvals, jgDocs, jgFeeSegments, pcDocs, poDocs, poLines, priceLists,
+   jgDocs, jgFeeSegments, pcDocs, poDocs, poLines, priceLists,
   skus, suppliers, sysParams, users,
 } from "@/db/schema";
 import { dCmp } from "@/server/core/decimal";

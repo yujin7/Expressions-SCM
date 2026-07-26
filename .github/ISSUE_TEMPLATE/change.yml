@@ -1,0 +1,43 @@
+name: Product or engineering change
+description: Define a small, outcome-led increment.
+title: "[Change] "
+labels: []
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Intended outcome
+      description: Describe the user or operational result, not a proposed implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and current pain
+      description: Add examples, metrics, screenshots, or affected workflows.
+    validations:
+      required: true
+  - type: textarea
+    id: slice
+    attributes:
+      label: Smallest useful slice
+      description: What can ship independently in one short cycle?
+    validations:
+      required: true
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk class
+      options:
+        - Low — presentation, docs, isolated read path
+        - Medium — shared behavior or non-financial write path
+        - High — inventory, finance, identity, migration, or destructive operation
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance evidence
+      description: List observable scenarios that prove the outcome.
+    validations:
+      required: true

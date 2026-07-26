@@ -59,7 +59,7 @@ describe("主数据健康度：结构性告警（BOM 嵌套）", () => {
 
   beforeAll(async () => {
     ({ db } = await createTestDb());
-    const [u] = await db
+    await db
       .insert(users)
       .values({ username: "t_struct", name: "测试", passwordHash: "x", active: true })
       .returning();

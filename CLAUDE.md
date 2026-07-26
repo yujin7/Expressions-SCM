@@ -1,19 +1,19 @@
 # 供应链系统 — 项目约定
 
-- **本项目共 16 个 active skill，canonical 正文只在 `.claude/skills/`**；`.agents/skills/`
-  是指向同一批目录的 Codex 发现层，不保存第二份正文。Claude/Codex 依据每个 skill 的
-  `description` 在匹配任务中隐式激活；明确写 `$skill-name` 可强制调用。一次只加载最小可用组合，
-  不会也不应每次把 16 个全部加载。
-  - 编排/领域：`supply-chain`（跨 3+ 领域或系统级判断）
-  - 设计/事实：`design-supply-chain-flows` / `reconcile-supply-chain-truth`
-  - 交易/数据：`write-path` / `integrate-supply-chain-data` / `schema-change`
-  - 计划/质量：`plan-beauty-supply` / `govern-cosmetics-quality`
-  - 项目护栏：`caliber-change` / `alert-budget` / `decision-log` / `list-page` /
-    `measure-first` / `redteam-pass` / `release-sweep` / `parallel-sessions`
-  通用领域、架构、交付与一手来源索引统一在
-  `.claude/skills/supply-chain/reference/`，由相关 skill 按需加载。
-- 当前意图入口与决策登记簿是 `../spec/CURRENT.md`；它所指向的现行宿主规格共同定义需求。
-  `../spec/01-系统完整规格-v2.0.md` 是核心宿主规格之一，不单独凌驾于后续显式改判；
+- **本项目只有 7 个 active skill，canonical 正文只在 `.claude/skills/`**；`.agents/skills/`
+  是同一批目录的发现层。依据 `description` 自动匹配，明确写 `$skill-name` 可强制调用。
+  一次选一个主责、最多一个约束 skill，不并行加载整套：
+  - 编排：`supply-chain`
+  - 产品/工作流：`design-supply-chain-flows`
+  - 数据/迁移/事实核验：`integrate-supply-chain-data`
+  - 交易写路径：`write-path`
+  - 性能：`measure-first`
+  - 发布/红队：`release-sweep`
+  - 并行会话安全：`parallel-sessions`
+  详细领域资料在 `.claude/skills/supply-chain/reference/`；旧版 playbook 完整保存在
+  `docs/skill-history/`，只在需要具体案例时读取。
+- 当前入口是 `docs/NOW.md`，需求与决议入口是 `docs/spec/CURRENT.md`；它所指向的宿主规格共同定义需求。
+  `docs/spec/01-系统完整规格-v2.0.md` 是核心宿主规格之一，不单独凌驾于后续显式改判；
   术语用《00》A4 统一命名。
 - 单据前缀: BH/WO/PO/PC/JG/FL/TL/SH/CT/RK/CK/DB/JS/PD；取号走 doc_counter（`src/server/docflow/doc-no.ts`），禁止 MAX+1
 - 金额 decimal(14,2)，数量 decimal(14,4)；禁 float 运算（用字符串/decimal 工具 `src/server/core/decimal.ts`）；时区 Asia/Shanghai
@@ -24,8 +24,8 @@
 - 余额更新事务内按 (skuId, warehouseId, batchId) 排序；过账/审批靠 UNIQUE 约束幂等
 - UI: AntD5 + 中文界面；列表可导出（>5000 行走异步任务）
 - 测试: 纯规则用 vitest 直测；涉库测试用 PGlite（`tests/helpers/db.ts`），不依赖 Docker
-- Lint: `npm run lint`（eslint@9 flat config，2026-07-26 引入）。**门禁是 0 error**；
-  warning 是清理信号不阻断。写 `eslint-disable` 必须带 `--` 理由（豁免要能被复核，
+- Lint: `npm run lint`（eslint@9 flat config，2026-07-26 引入）。**门禁是 0 error / 0 warning**。
+  写 `eslint-disable` 必须带 `--` 理由（豁免要能被复核，
   否则又会退回「65 条豁免指向一个没装的 linter」那种状态）。
 - DTO 禁止 Map/Set/class 实例作数据容器（maskSensitive 只穿透 plain object/array——红队第二轮裁决）
 - 审批幂等键含 cycle=单据版本（驳回→重提→再驳回属新轮次）；期初/盘点审批域=opening/count（财务），勿并回 stock_doc

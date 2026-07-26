@@ -1,6 +1,9 @@
-node_modules/
-.next/
+node_modules
+.next*/
+.cache/
+.artifacts/
 .env
+.env.local
 uploads/
 *.tsbuildinfo
 .DS_Store

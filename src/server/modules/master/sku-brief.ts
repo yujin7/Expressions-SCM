@@ -11,12 +11,12 @@
  * - 「效期」= batch_stocks 参考层（非账本），取最短剩余天数（可为负 = 已过期）——参考层不进事实服务。
  * 全表无金额字段，免脱敏；只读不写库。
  */
-import { and, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, eq, gt, isNotNull } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { ApiError, todayShanghai } from "./common";
 import { getSkuFactsFor } from "@/server/core/sku-facts";
-import { num, r1 } from "@/server/core/svc";
+import {  r1 } from "@/server/core/svc";
 import { daysLeftOf } from "@/server/core/stock-view";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

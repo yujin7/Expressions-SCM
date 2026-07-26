@@ -42,7 +42,7 @@ async function seed(db: TestDb) {
 describe("releaseSnapshots", () => {
   it("存在实时仓或未知身份时只允许预演，拒绝部分放行", async () => {
     const { db } = await createTestDb();
-    const { sku, snapWh } = await seed(db);
+    await seed(db);
     const job = await newJob(db);
     await writeStagingRows(db, job, [
       // 同仓同码两行 → 聚合为一键

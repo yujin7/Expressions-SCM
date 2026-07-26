@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  dAdd, dCeilToMultiple, dDiv, dMoney, dMul, dNeg, dQty, dSub,
+  dAdd, dCeilToMultiple, dDiv, dMoney, dMul, dNeg, dQty,
 } from "@/server/core/decimal";
 
 describe("redteam/decimal", () => {

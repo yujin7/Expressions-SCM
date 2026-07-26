@@ -21,8 +21,6 @@ describe("R11 补货建议：口径 + 建议量 + BH 草稿", () => {
   let whUser: SessionUser; // 无权限角色（403 用）
   let cp1 = 0; // 成品：触发建议（MOQ/倍数取整）
   let cp2 = 0; // 成品：库存充足，不触发
-  let cp3 = 0; // 成品：无动销
-  let yl = 0; // 原料：不进本报表
 
   beforeAll(async () => {
     ({ db } = await createTestDb());
@@ -40,8 +38,8 @@ describe("R11 补货建议：口径 + 建议量 + BH 草稿", () => {
     };
     cp1 = await mkSku("CP00001", "胶原蛋白肽饮品", "finished");
     cp2 = await mkSku("CP00002", "库存充足成品", "finished");
-    cp3 = await mkSku("CP00003", "无动销成品", "finished");
-    yl = await mkSku("YL00001", "胶原蛋白肽粉", "raw");
+    await mkSku("CP00003", "无动销成品", "finished");
+    await mkSku("YL00001", "胶原蛋白肽粉", "raw");
 
     const [whA] = await db
       .insert(warehouses)

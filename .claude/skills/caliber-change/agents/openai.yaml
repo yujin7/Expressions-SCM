@@ -1,4 +1,0 @@
-interface:
-  display_name: "Caliber Change"
-  short_description: "Change shared supply-chain definitions without drift"
-  default_prompt: "Use $caliber-change to change this shared business definition safely across every consumer."

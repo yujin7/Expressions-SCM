@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import {
-  approvals, flDocs, flLines, jgDocs, jgFeeSegments, jsDocs, jsLines,
+   flDocs, flLines, jgDocs, jgFeeSegments, jsDocs, jsLines,
   priceLists, shDocs, shLines, qcLines, skus, suppliers, sysParams,
   tlDocs, tlLines, users, warehouses, woDocs, woLines,
 } from "@/db/schema";

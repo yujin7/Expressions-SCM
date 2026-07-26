@@ -12,9 +12,9 @@
  *   MOQ/订货倍数取 uom_convs 首行（按 id）兜底——与 wo.ts 快照同一 PoC 口径（值按基础单位解释）；无行则纯净需求向上取整由 dQty 收口。
  * - 全表无金额字段，免脱敏。
  */
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
-import { getDbAsync } from "@/db";
+
 import { getNumParam } from "@/server/core/params";
 import * as schema from "@/db/schema";
 import { dAdd, dCmp, dDiv, dMul, dQty, dSub } from "@/server/core/decimal";
