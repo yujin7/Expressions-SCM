@@ -2,7 +2,14 @@
 import { describe, expect, it } from "vitest";
 import { isSlowMover, suggestRiskAction } from "@/server/rules/risk-action";
 
-const base = { minDaysLeft: null, cover: 30, onHand: 100, slowThreshold: 180, palletRemark: null };
+const base = {
+  minDaysLeft: null,
+  cover: 30,
+  onHand: 100,
+  slowThreshold: 180,
+  nearExpiryDays: 90,
+  palletRemark: null,
+};
 
 describe("suggestRiskAction 优先级", () => {
   it("注记「报废」最高优先（即使效期未到）", () => {
@@ -22,6 +29,10 @@ describe("suggestRiskAction 优先级", () => {
     expect(suggestRiskAction({ ...base, minDaysLeft: 60, cover: 400 })).toBe("促销清库");
     expect(suggestRiskAction({ ...base, minDaysLeft: 60, cover: null })).toBe("促销清库"); // 无动销
     expect(suggestRiskAction({ ...base, minDaysLeft: 60, cover: 45 })).toBe("优先出库");
+  });
+  it("逐 SKU 临期阈值决定动作，不再硬编码 90 天", () => {
+    expect(suggestRiskAction({ ...base, minDaysLeft: 150, nearExpiryDays: 180, cover: 45 })).toBe("优先出库");
+    expect(suggestRiskAction({ ...base, minDaysLeft: 60, nearExpiryDays: 30, cover: 45 })).toBeNull();
   });
   it("无效期风险但滞销 → 滞销关注；无信号 → null", () => {
     expect(suggestRiskAction({ ...base, cover: 400 })).toBe("滞销关注");

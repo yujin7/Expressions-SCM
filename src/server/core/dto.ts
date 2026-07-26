@@ -45,6 +45,8 @@ export interface SessionUser {
   name: string;
   roles: string[];
   isApprover: boolean;
+  /** JWT 身份版本；直接调用 service 的测试/后台任务可省略，HTTP 写路径必须具备 */
+  sessionVersion?: number;
 }
 
 /** 从 NextAuth 会话取当前用户；未登录抛错。（动态 import 保持本模块纯函数可独立单测） */
@@ -58,6 +60,7 @@ export async function getSessionUser(): Promise<SessionUser> {
     name: u.name ?? "",
     roles: u.roles ?? [],
     isApprover: u.isApprover ?? false,
+    sessionVersion: u.sessionVersion,
   };
 }
 
@@ -72,7 +75,7 @@ export function requireRole(user: { roles: string[] }, ...roles: string[]): void
 
 /**
  * 写操作专用（体检 #5）：JWT 会话下角色/停用不即时生效——写路径必须回查 DB 取新鲜身份。
- * 停用/角色被摘的用户在此被立即拦截；读路径仍信任 token（8h 上限见 auth 配置）。
+ * 停用/角色/审批权/密码版本变化的用户在此被立即拦截。
  */
 export async function getFreshSessionUser(): Promise<{ id: number; name: string; roles: string[]; isApprover: boolean }> {
   const tokenUser = await getSessionUser();
@@ -82,5 +85,8 @@ export async function getFreshSessionUser(): Promise<{ id: number; name: string;
   const db = await getDbAsync();
   const [row] = await db.select().from(users).where(eq(users.id, tokenUser.id));
   if (!row || !row.active) throw new Error("账号已停用或不存在");
+  if (tokenUser.sessionVersion == null || tokenUser.sessionVersion !== row.sessionVersion) {
+    throw new Error("会话已失效，请重新登录");
+  }
   return { id: row.id, name: row.name, roles: row.roles, isApprover: row.isApprover };
 }

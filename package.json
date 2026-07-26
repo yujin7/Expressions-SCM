@@ -2,6 +2,9 @@
   "name": "supply-chain",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=24 <25"
+  },
   "scripts": {
     "dev": "NEXT_DIST_DIR=.next-dev next dev --turbopack -H 127.0.0.1",
     "dev:webpack": "NEXT_DIST_DIR=.next-webpack next dev -H 127.0.0.1",
@@ -22,6 +25,7 @@
     "check:fast": "node --import tsx scripts/verify-fast.ts",
     "check:pr": "npm run lint:full && npm run typecheck:all && npm test",
     "check:release": "node --import tsx scripts/verify-release.ts",
+    "check:postgres": "node --import tsx scripts/verify-postgres.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",

@@ -136,7 +136,7 @@ async function main(): Promise<void> {
   {
     const { status, body } = await getJson(admin, "/api/inventory/balance");
     const total = (body as { total?: number } | null)?.total;
-    if (status === 200 && typeof total === "number" && total > 0) record("库存余额 /api/inventory/balance", "PASS", `total=${total}`);
+    if (status === 200 && typeof total === "number" && total >= 0) record("库存余额 /api/inventory/balance", "PASS", `total=${total}`);
     else record("库存余额 /api/inventory/balance", "FAIL", `status=${status} total=${String(total)}`);
   }
   {

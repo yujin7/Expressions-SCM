@@ -14,7 +14,14 @@ describe("getSkuBrief", () => {
     ({ db } = await createTestDb());
     const [spu] = await db.insert(spus).values({ code: "P9", nameCn: "速览测试产品" }).returning();
     const mk = async (code: string, name: string) => {
-      const [s] = await db.insert(skus).values({ code, name, spuId: spu.id, skuType: "finished", baseUom: "件" }).returning();
+      const [s] = await db.insert(skus).values({
+        code,
+        name,
+        spuId: spu.id,
+        skuType: "finished",
+        baseUom: "件",
+        nearExpiryDays: code === "BRIEF-A" ? 180 : null,
+      }).returning();
       return s.id;
     };
     skuA = await mk("BRIEF-A", "速览甲");
@@ -77,6 +84,11 @@ describe("getSkuBrief", () => {
     const b = await getSkuBrief(skuA, db);
     expect(b.minDaysLeft).not.toBeNull();
     expect(b.minDaysLeft!).toBeLessThan(0);
+  });
+
+  it("临期阈值透传逐 SKU 值，未维护时回落 90 天", async () => {
+    expect((await getSkuBrief(skuA, db)).nearExpiryDays).toBe(180);
+    expect((await getSkuBrief(skuB, db)).nearExpiryDays).toBe(90);
   });
 
   it("生产周期取 sku_params；未维护为 null", async () => {

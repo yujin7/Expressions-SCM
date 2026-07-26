@@ -41,6 +41,8 @@ export interface SkuBrief {
   leadDays: number | null;
   /** 最短剩余效期天数（负 = 已过期）；无带效期批次 = null */
   minDaysLeft: number | null;
+  /** 逐 SKU 临期阈值；未维护时 90 天兜底 */
+  nearExpiryDays: number;
   /** 未结供给合计（core/supply 口径：po + wo + legacy_fg，不含在订未出） */
   openSupply: number;
   /** 近 6 月销量迷你序列（升序，缺月补 0） */
@@ -67,6 +69,7 @@ export async function getSkuBrief(skuCodeOrId: string | number, dbArg?: AnyDb): 
     skuType: schema.skus.skuType,
     lifecycle: schema.skus.lifecycle,
     active: schema.skus.active,
+    nearExpiryDays: schema.skus.nearExpiryDays,
   };
   const asId = /^\d+$/.test(raw) ? Number(raw) : null;
   let skuRows: {
@@ -78,6 +81,7 @@ export async function getSkuBrief(skuCodeOrId: string | number, dbArg?: AnyDb): 
     skuType: string;
     lifecycle: string | null;
     active: boolean;
+    nearExpiryDays: number | null;
   }[] = [];
   if (asId != null) {
     skuRows = await db
@@ -134,6 +138,7 @@ export async function getSkuBrief(skuCodeOrId: string | number, dbArg?: AnyDb): 
     daysCover: daysCover == null ? null : r1(daysCover),
     leadDays,
     minDaysLeft,
+    nearExpiryDays: sku.nearExpiryDays ?? 90,
     openSupply: r1(openSupply),
     spark,
   };

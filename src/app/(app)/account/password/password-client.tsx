@@ -2,10 +2,10 @@
 
 /**
  * 自助改密码（UAT 缺口 #1）：原密码 + 新密码 + 确认。
- * 成功后提示并跳转工作台；首登强制修改（mustChangePassword）由布局层重定向到本页。
+ * 成功后注销全部旧会话并要求用新密码重登；首登强制修改由布局层重定向到本页。
  */
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { signOut } from "next-auth/react";
 import { App, Button, Card, Form, Input, Typography } from "antd";
 import { LockOutlined } from "@ant-design/icons";
 import { postJson } from "@/components/fetchJson";
@@ -18,7 +18,6 @@ interface FormValues {
 
 export default function PasswordClient() {
   const { message } = App.useApp();
-  const router = useRouter();
   const [form] = Form.useForm<FormValues>();
   const [saving, setSaving] = useState(false);
 
@@ -29,8 +28,8 @@ export default function PasswordClient() {
         oldPassword: v.oldPassword,
         newPassword: v.newPassword,
       });
-      message.success("密码已修改");
-      router.replace("/workbench");
+      message.success("密码已修改，请使用新密码重新登录");
+      await signOut({ redirectTo: "/login?passwordChanged=1" });
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -45,7 +44,7 @@ export default function PasswordClient() {
         修改密码
       </Typography.Title>
       <Typography.Paragraph type="secondary">
-        新密码至少 8 位，且不能与原密码相同；修改成功后返回工作台。
+        新密码至少 8 位，且不能与原密码相同；修改成功后所有旧会话立即失效，请重新登录。
       </Typography.Paragraph>
       <Form<FormValues> form={form} layout="vertical" onFinish={(v) => void onFinish(v)}>
         <Form.Item name="oldPassword" label="原密码" rules={[{ required: true, message: "请输入原密码" }]}>

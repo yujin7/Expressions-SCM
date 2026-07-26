@@ -9,6 +9,8 @@ const root = process.cwd();
 describe("计划任务只有一个运行权威", () => {
   it("PostgreSQL 与 PGlite 在 instrumentation 中互斥接线", async () => {
     const source = await readFile(path.join(root, "src/instrumentation.ts"), "utf8");
+    expect(source).toContain('process.env.NEXT_RUNTIME === "nodejs"');
+    expect(source).not.toContain('process.env.NEXT_RUNTIME !== "nodejs"');
     expect(source).toContain('startsWith("postgres")');
     expect(source).toContain("ensureSchedulerStarted");
     expect(source).toContain("ensureIntervalJobsStarted");

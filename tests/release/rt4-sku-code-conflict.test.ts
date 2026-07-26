@@ -1,9 +1,7 @@
 /**
- * rt4 审计验证②③：releaseSkus 编码冲突两案。
- * ② 同一编码同时以成品与物料身份出现（半成品场景）：dry-run 报「可创建」，
- *    真放行却在事务内撞 skus.code UNIQUE → 整批 500 崩溃（非按行阻塞）——dry-run 与提交结果背离。
- * ③ sku_code 别名已认领到既有主档 A 时，releaseSkus 按 skus.code 精确匹配（不查别名）
- *    另建新主档 B：同一原始编码在 BOM/费用链路绑 B、在批次/月销/快照链路绑 A——双主档分叉。
+ * RT4-F5/F6 回归保护：
+ * ② 同一编码同时以成品与物料身份出现时按行阻塞，不让 UNIQUE 冲突终止整批放行。
+ * ③ sku_code 别名已认领既有主档时复用裁决结果，不另建重复主档。
  */
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
@@ -46,7 +44,7 @@ const cluster = (key: string, members: string[]) => ({
 });
 
 describe("rt4: releaseSkus 编码冲突", () => {
-  it("② 同码既是成品又是物料：dry-run 报成功，真放行整批崩溃（unique violation，无行级阻塞）", async () => {
+  it("② 同码既是成品又是物料：dry-run 与真放行均按行阻塞，其他编码继续处理", async () => {
     const { db } = await createTestDb();
     const jobId = await newJob(db);
     await writeStagingRows(db, jobId, [
@@ -73,13 +71,11 @@ describe("rt4: releaseSkus 编码冲突", () => {
     ]);
     await releaseSpus(pmc, { dryRun: false }, db);
 
-    // dry-run：同一编码 X01-a 同时进入成品与物料计划，createdCodes 出现两次——无任何冲突提示
     const dry = await releaseSkus(pmc, { dryRun: true }, db);
-    // RT4-F5 修复后：同码成品∩物料转行级阻塞，两侧撤出计划
+    // RT4-F5：同码成品∩物料转行级阻塞，两侧撤出计划。
     expect(dry.createdCodes.filter((c) => c === "X01-a")).toHaveLength(0);
     expect(dry.blocked.some((b) => b.code === "X01-a")).toBe(true);
 
-    // 真放行：事务内撞 skus.code UNIQUE → 整个放行批次异常终止（零行落库）
     const real = await releaseSkus(pmc, { dryRun: false }, db);
     expect(real.blocked.some((b) => b.code === "X01-a")).toBe(true);
     // 冲突码之外的建档正常落库，事务不再整批崩溃
@@ -87,7 +83,7 @@ describe("rt4: releaseSkus 编码冲突", () => {
     expect(skus.every((k: { code: string }) => k.code !== "X01-a")).toBe(true);
   });
 
-  it("③ 别名已认领到主档 A，releaseSkus 仍按码另建主档 B：批次效期绑 A、BOM 链路绑 B（双主档分叉）", async () => {
+  it("③ 别名已认领到主档 A：放行复用 A，批次与 BOM 链路不分叉", async () => {
     const { db } = await createTestDb();
     // 人工已裁决：原始编码 N1-x 是既有主档 A（code=OLD-X）的别名
     const [spuA] = await db.insert(schema.spus).values({ code: "P00001", nameCn: "既有品" }).returning();
@@ -133,7 +129,6 @@ describe("rt4: releaseSkus 编码冲突", () => {
     const batchRes = await releaseBatchStocks(pmc, { dryRun: false }, db);
     expect(batchRes.created).toBe(1);
     const [bs] = await db.select().from(schema.batchStocks);
-    // 分叉证明：批次效期按别名绑到 A，而 BOM/费用链路（loadSkuIdByCode）将绑到 B
-    expect(bs.skuId).toBe(skuA.id); // 批次与 BOM/费用同指裁决主档 A
+    expect(bs.skuId).toBe(skuA.id); // 批次与 BOM/费用同指裁决主档 A。
   });
 });

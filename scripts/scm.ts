@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 
 const [command, subcommand, ...rest] = process.argv.slice(2);
 
@@ -45,6 +46,18 @@ if (command === "doctor") {
     console.log(`\n$ ${binary} ${args.join(" ")}`);
     const result = spawnSync(binary, [...args], { stdio: "inherit" });
     if (result.status !== 0) process.exit(result.status ?? 1);
+  }
+  const cachePath = ".next/cache";
+  if (existsSync(cachePath)) {
+    const size = spawnSync("du", ["-sk", cachePath], { encoding: "utf8" });
+    const kib = Number(size.stdout.trim().split(/\s+/)[0] ?? 0);
+    if (Number.isFinite(kib)) {
+      const gib = kib / 1024 / 1024;
+      console.log(`\nproduction build cache: ${gib.toFixed(2)} GiB`);
+      if (gib >= 1) {
+        console.warn("cache exceeds 1 GiB; reclaim it with: npm run scm -- clean --all");
+      }
+    }
   }
   process.exit(0);
 }

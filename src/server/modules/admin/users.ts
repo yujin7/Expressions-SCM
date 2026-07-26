@@ -6,7 +6,7 @@
  * - 全部写路径 writeAudit；密码 argon2id（与 seed/登录一致）。
  */
 import { hash, verify } from "@node-rs/argon2";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
@@ -70,28 +70,30 @@ export async function createUser(actor: SessionUser, input: unknown, dbArg?: Any
   guardAdmin(actor);
   const v = createUserSchema.parse(input);
   const db: AnyDb = dbArg ?? (await getDbAsync());
-  const [dup] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.username, v.username));
-  if (dup) throw new ApiError(409, `账号已存在：${v.username}`);
   const passwordHash = await hash(v.password);
-  const [row] = await db
-    .insert(schema.users)
-    .values({
-      username: v.username,
-      name: v.name,
-      passwordHash,
-      roles: v.roles,
-      isApprover: v.isApprover,
-      mustChangePassword: true, // 初始密码首登强制修改（UAT 缺口 #1）
-    })
-    .returning();
-  await writeAudit(db, {
-    userId: actor.id,
-    entity: "user",
-    entityId: row.id,
-    action: "create",
-    after: { username: v.username, name: v.name, roles: v.roles, isApprover: v.isApprover },
+  return db.transaction(async (tx: AnyDb) => {
+    const [dup] = await tx.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.username, v.username));
+    if (dup) throw new ApiError(409, `账号已存在：${v.username}`);
+    const [row] = await tx
+      .insert(schema.users)
+      .values({
+        username: v.username,
+        name: v.name,
+        passwordHash,
+        roles: v.roles,
+        isApprover: v.isApprover,
+        mustChangePassword: true, // 初始密码首登强制修改（UAT 缺口 #1）
+      })
+      .returning();
+    await writeAudit(tx, {
+      userId: actor.id,
+      entity: "user",
+      entityId: row.id,
+      action: "create",
+      after: { username: v.username, name: v.name, roles: v.roles, isApprover: v.isApprover },
+    });
+    return toRow(row);
   });
-  return toRow(row);
 }
 
 export const updateUserSchema = z.object({
@@ -107,39 +109,46 @@ export async function updateUser(actor: SessionUser, id: number, input: unknown,
   guardAdmin(actor);
   const v = updateUserSchema.parse(input);
   const db: AnyDb = dbArg ?? (await getDbAsync());
-  const [u]: (typeof schema.users.$inferSelect)[] = await db.select().from(schema.users).where(eq(schema.users.id, id));
-  if (!u) throw new ApiError(404, "用户不存在");
-  if (id === actor.id) {
-    if (v.active === false) throw new ApiError(400, "不可停用自己的账号");
-    if (v.roles && !v.roles.includes("admin")) throw new ApiError(400, "不可摘除自己的管理员角色（防锁死）");
-  }
-  const patch: Record<string, unknown> = { updatedAt: new Date() };
-  if (v.name !== undefined) patch.name = v.name;
-  if (v.roles !== undefined) patch.roles = v.roles;
-  if (v.isApprover !== undefined) patch.isApprover = v.isApprover;
-  if (v.active !== undefined) patch.active = v.active;
-  if (v.password !== undefined) {
-    patch.passwordHash = await hash(v.password);
-    patch.failedLogins = 0;
-    patch.lockedUntil = null;
-    patch.mustChangePassword = true; // 管理员重置的临时密码：首登强制修改
-  }
-  const [row] = await db.update(schema.users).set(patch).where(eq(schema.users.id, id)).returning();
-  await writeAudit(db, {
-    userId: actor.id,
-    entity: "user",
-    entityId: id,
-    action: "update",
-    before: { name: u.name, roles: u.roles, isApprover: u.isApprover, active: u.active },
-    after: {
-      name: row.name,
-      roles: row.roles,
-      isApprover: row.isApprover,
-      active: row.active,
-      passwordReset: v.password !== undefined,
-    },
+  const passwordHash = v.password !== undefined ? await hash(v.password) : undefined;
+  return db.transaction(async (tx: AnyDb) => {
+    const [u]: (typeof schema.users.$inferSelect)[] = await tx.select().from(schema.users).where(eq(schema.users.id, id));
+    if (!u) throw new ApiError(404, "用户不存在");
+    if (id === actor.id) {
+      if (v.active === false) throw new ApiError(400, "不可停用自己的账号");
+      if (v.roles && !v.roles.includes("admin")) throw new ApiError(400, "不可摘除自己的管理员角色（防锁死）");
+    }
+    const patch: Record<string, unknown> = { updatedAt: new Date() };
+    if (v.name !== undefined) patch.name = v.name;
+    if (v.roles !== undefined) patch.roles = v.roles;
+    if (v.isApprover !== undefined) patch.isApprover = v.isApprover;
+    if (v.active !== undefined) patch.active = v.active;
+    if (passwordHash !== undefined) {
+      patch.passwordHash = passwordHash;
+      patch.failedLogins = 0;
+      patch.lockedUntil = null;
+      patch.mustChangePassword = true; // 管理员重置的临时密码：首登强制修改
+    }
+    const identityChanged =
+      v.roles !== undefined || v.isApprover !== undefined || v.active !== undefined || passwordHash !== undefined;
+    if (identityChanged) patch.sessionVersion = sql`${schema.users.sessionVersion} + 1`;
+    const [row] = await tx.update(schema.users).set(patch).where(eq(schema.users.id, id)).returning();
+    await writeAudit(tx, {
+      userId: actor.id,
+      entity: "user",
+      entityId: id,
+      action: "update",
+      before: { name: u.name, roles: u.roles, isApprover: u.isApprover, active: u.active },
+      after: {
+        name: row.name,
+        roles: row.roles,
+        isApprover: row.isApprover,
+        active: row.active,
+        passwordReset: v.password !== undefined,
+        sessionInvalidated: identityChanged,
+      },
+    });
+    return toRow(row);
   });
-  return toRow(row);
 }
 
 /* ---------- 自助改密码（UAT 缺口 #1：任何登录用户；含首登强制修改） ---------- */
@@ -166,21 +175,27 @@ export async function changeOwnPassword(userId: number, input: unknown, dbArg?: 
   const ok = await verify(u.passwordHash, v.oldPassword);
   if (!ok) throw new ApiError(400, "原密码不正确");
   if (v.oldPassword === v.newPassword) throw new ApiError(400, "新密码不能与原密码相同");
-  await db
-    .update(schema.users)
-    .set({
-      passwordHash: await hash(v.newPassword),
-      mustChangePassword: false,
-      failedLogins: 0,
-      lockedUntil: null,
-      updatedAt: new Date(),
-    })
-    .where(eq(schema.users.id, userId));
-  await writeAudit(db, {
-    userId,
-    entity: "user",
-    entityId: userId,
-    action: "change_password",
-    after: { selfService: true },
+  const passwordHash = await hash(v.newPassword);
+  await db.transaction(async (tx: AnyDb) => {
+    const [updated] = await tx
+      .update(schema.users)
+      .set({
+        passwordHash,
+        mustChangePassword: false,
+        failedLogins: 0,
+        lockedUntil: null,
+        sessionVersion: sql`${schema.users.sessionVersion} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(schema.users.id, userId), eq(schema.users.sessionVersion, u.sessionVersion)))
+      .returning({ id: schema.users.id });
+    if (!updated) throw new ApiError(409, "账号已被同时更新，请重新登录后再试");
+    await writeAudit(tx, {
+      userId,
+      entity: "user",
+      entityId: userId,
+      action: "change_password",
+      after: { selfService: true, sessionInvalidated: true },
+    });
   });
 }

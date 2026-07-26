@@ -7,6 +7,7 @@ import { verify } from "@node-rs/argon2";
 import { eq } from "drizzle-orm";
 import { getDbAsync, schema } from "@/db";
 import type { Role } from "@/server/core/constants";
+import { refreshSessionIdentity } from "./session-version";
 
 /* ---------- 类型扩展：session/jwt 携带 userId/roles/isApprover ---------- */
 
@@ -16,11 +17,13 @@ declare module "next-auth" {
       id: string;
       roles: Role[];
       isApprover: boolean;
+      sessionVersion: number;
     } & DefaultSession["user"];
   }
   interface User {
     roles?: Role[];
     isApprover?: boolean;
+    sessionVersion?: number;
   }
 }
 
@@ -29,6 +32,7 @@ declare module "next-auth/jwt" {
     userId?: number;
     roles?: Role[];
     isApprover?: boolean;
+    sessionVersion?: number;
   }
 }
 
@@ -223,6 +227,7 @@ const localProvider = Credentials({
       name: u.name,
       roles: u.roles as Role[],
       isApprover: u.isApprover,
+      sessionVersion: u.sessionVersion,
     };
   },
 });
@@ -272,6 +277,7 @@ export const authConfig: NextAuthConfig = {
           token.name = u.name;
           token.roles = u.roles as Role[];
           token.isApprover = u.isApprover;
+          token.sessionVersion = u.sessionVersion;
         }
       } else if (user) {
         // local credentials：authorize 已返回完整用户
@@ -279,6 +285,9 @@ export const authConfig: NextAuthConfig = {
         token.name = user.name;
         token.roles = user.roles ?? [];
         token.isApprover = user.isApprover ?? false;
+        token.sessionVersion = user.sessionVersion;
+      } else if (token.userId != null) {
+        return refreshSessionIdentity(token);
       }
       return token;
     },
@@ -287,6 +296,7 @@ export const authConfig: NextAuthConfig = {
       session.user.name = token.name ?? null;
       session.user.roles = token.roles ?? [];
       session.user.isApprover = token.isApprover ?? false;
+      session.user.sessionVersion = token.sessionVersion ?? -1;
       return session;
     },
   },

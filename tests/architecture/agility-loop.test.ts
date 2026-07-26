@@ -21,6 +21,29 @@ describe("agile delivery loop", () => {
     expect(pkg.scripts["check:pr"]).toContain("lint:full");
     expect(pkg.scripts["check:release"]).toContain("verify-release.ts");
     expect(read(".github/workflows/ci.yml")).toContain("cancel-in-progress: true");
+    expect(read(".github/workflows/ci.yml")).toContain("PostgreSQL migration contract");
+    expect(read(".github/workflows/ci.yml")).toContain("docker build --tag supply-chain:ci .");
+    expect(pkg.scripts["check:postgres"]).toContain("verify-postgres.ts");
+  });
+
+  it("keeps local diagnostics honest about oversized build caches", () => {
+    const cli = read("scripts/scm.ts");
+    expect(cli).toContain("cache exceeds 1 GiB");
+    expect(cli).toContain("npm run scm -- clean --all");
+  });
+
+  it("does not lint generated output after a normal development session", () => {
+    const eslintConfig = read("eslint.config.mjs");
+    expect(eslintConfig).toContain('".next-dev/**"');
+    expect(eslintConfig).toContain('".next-webpack/**"');
+    expect(eslintConfig).toContain('".artifacts/**"');
+  });
+
+  it("uses one Node major locally, in CI, and in the production image", () => {
+    expect(read(".nvmrc").trim()).toBe("24");
+    expect(read("package.json")).toContain('"node": ">=24 <25"');
+    expect(read(".github/workflows/ci.yml")).not.toContain("node-version: 22");
+    expect(read("Dockerfile")).not.toContain("node:22");
   });
 
   it("exposes exactly seven canonical project skills through seven links", () => {

@@ -37,7 +37,7 @@
 | E1-05 | rules/code-rule.ts 编码规范 + 建档强校验（存量清理待 DB 空闲） | 审3/议9 | ◐ R0 |
 | E1-06 | 导出全精度（precise 模式） | 审3 | ✅ R0 |
 | E1-07 | 借调（借入/借出）纳入在库口径：借出未还不计可卖 | 审2 | ✅ **经核查早已实现**（`modules/replenish/service.ts:205-210` 按 transit_refs kind=borrow/orderType=借出 从全管道扣减，`rules/fusion.ts:31` 记录口径）。此前 register 标 ☐ 属失实 |
-| E1-08 | skus.nearExpiryDays 逐 SKU 阈值接入效期页与风险引擎（替代硬编码 90/180） | 审2/7 | ☐ |
+| E1-08 | skus.nearExpiryDays 逐 SKU 阈值接入效期页与风险引擎（替代动作/展示硬编码 90） | 审2/7 | ✅ R8 |
 | E1-09 | 跨单位 KPI 量纲明细（stockByUom） | 审3 | ✅ R0 |
 | E1-10 | 币种地基（price_lists/sku_costs.currency 默认 CNY） | 审3 | ✅ R7 |
 | E1-11 | 通知定向（userId/targetRole）+ 客户端按角色过滤 | 审2 | ◐ BB 已加 schema 字段 |
@@ -221,6 +221,8 @@
   E1-10 币种、E4-02 库位、E4-05 JG token、E5-01 路由、E5-02 委托 五项 schema 就位。
   - 诚实标注：dev 库 2 张 PO 但 0 张 PO 源收货单 → 交期样本为 0、波动退化为确定性交期，
     随真实收货历史积累自动生效。
+- R8（本轮）：迁移 0021 会话版本立即失效旧 JWT；E1-08 逐 SKU 临期阈值贯通风险动作、
+  SKU 速览、风险页和导出；CI 增真实 PostgreSQL 迁移契约与生产容器构建。
 - 测试基线：418 → 616 通过；冒烟 21/21；迁移 18/18 无漂移。
 - **迁移批次待办（DB 锁释放后一次执行）**：E1-10 币种 / E5-01 审批路由表 / E5-02 委托表 /
   E7-01 预聚合物化表 / E4-02 库位表 / E4-05 JG token / 幽灵编码存量清理。

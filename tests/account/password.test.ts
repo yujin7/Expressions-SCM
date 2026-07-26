@@ -67,6 +67,7 @@ describe("changeOwnPassword", () => {
     expect(after.mustChangePassword).toBe(false);
     expect(after.failedLogins).toBe(0);
     expect(after.lockedUntil).toBeNull();
+    expect(after.sessionVersion).toBe(u.sessionVersion + 1);
     expect(await verify(after.passwordHash!, "newpass456")).toBe(true);
     expect(await verify(after.passwordHash!, "oldpass123")).toBe(false);
 
@@ -107,7 +108,28 @@ describe("mustChangePassword 置位", () => {
     await changeOwnPassword(u.id, { oldPassword: "oldpass123", newPassword: "newpass456" }, db); // → false
     const noPw = await updateUser(ADMIN, u.id, { name: "改名" }, db);
     expect(noPw.mustChangePassword).toBe(false);
+    const [afterRename] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
+    expect(afterRename.sessionVersion).toBe(1);
     const reset = await updateUser(ADMIN, u.id, { password: "resetpass77" }, db);
     expect(reset.mustChangePassword).toBe(true);
+    const [afterReset] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
+    expect(afterReset.sessionVersion).toBe(2);
+  });
+
+  it("角色、审批权和停用变化均使旧会话失效；仅改名不递增", async () => {
+    const { db } = await createTestDb();
+    const u = await seedUser(db, "oldpass123");
+    await updateUser(ADMIN, u.id, { name: "只改名" }, db);
+    let [after] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
+    expect(after.sessionVersion).toBe(0);
+    await updateUser(ADMIN, u.id, { roles: ["finance"] }, db);
+    [after] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
+    expect(after.sessionVersion).toBe(1);
+    await updateUser(ADMIN, u.id, { isApprover: true }, db);
+    [after] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
+    expect(after.sessionVersion).toBe(2);
+    await updateUser(ADMIN, u.id, { active: false }, db);
+    [after] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
+    expect(after.sessionVersion).toBe(3);
   });
 });

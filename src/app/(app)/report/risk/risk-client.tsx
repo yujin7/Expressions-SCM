@@ -22,6 +22,7 @@ interface RiskRow {
   cover: number | null;
   minDaysLeft: number | null;
   expiredQty: number;
+  nearExpiryDays: number;
   nearQty: number;
   palletRemark: string | null;
   remarkMonth: string | null;
@@ -115,8 +116,8 @@ export default function RiskClient() {
       if (all.length >= d.total) break;
     }
     exportCsv(`风险库存处置-${data?.today ?? ""}`,
-      ["建议动作","SKU编码","名称","品牌","在库","最短剩余效期(天)","过期量","90天内到期量","日均销","可销天数","货盘注记","已登记"],
-      all.map((r) => [r.action, r.code, r.name, r.brand, r.onHand, r.minDaysLeft, r.expiredQty, r.nearQty, r.daily, r.cover, r.palletRemark, r.disposalOpen ? "是" : ""]),
+      ["建议动作","SKU编码","名称","品牌","在库","最短剩余效期(天)","临期阈值(天)","过期量","阈值内到期量","日均销","可销天数","货盘注记","已登记"],
+      all.map((r) => [r.action, r.code, r.name, r.brand, r.onHand, r.minDaysLeft, r.nearExpiryDays, r.expiredQty, r.nearQty, r.daily, r.cover, r.palletRemark, r.disposalOpen ? "是" : ""]),
       all.length < serverTotal
         ? `……仅导出前 ${all.length} 行，服务端共 ${serverTotal} 行（浏览器分页取数已达上限）；请缩小筛选范围，或改用「导出任务」`
         : undefined,
@@ -148,17 +149,29 @@ export default function RiskClient() {
       dataIndex: "minDaysLeft",
       width: 115,
       align: "right",
-      render: (v: number | null) =>
+      render: (v: number | null, r) =>
         v == null ? "—" : v <= 0 ? (
           <Typography.Text type="danger" strong>已过期 {-v} 天</Typography.Text>
-        ) : v <= 90 ? (
-          <Typography.Text type="warning">{v} 天</Typography.Text>
+        ) : v <= r.nearExpiryDays ? (
+          <Tooltip title={`该 SKU 临期阈值 ${r.nearExpiryDays} 天`}>
+            <Typography.Text type="warning">{v} 天</Typography.Text>
+          </Tooltip>
         ) : (
           `${v} 天`
         ),
     },
     { title: "过期量", dataIndex: "expiredQty", width: 90, align: "right", render: (v: number) => (v > 0 ? <Typography.Text type="danger">{v.toLocaleString("zh-CN")}</Typography.Text> : "—") },
-    { title: "90天内到期量", dataIndex: "nearQty", width: 110, align: "right", render: (v: number) => (v > 0 ? v.toLocaleString("zh-CN") : "—") },
+    {
+      title: "阈值内到期量",
+      dataIndex: "nearQty",
+      width: 120,
+      align: "right",
+      render: (v: number, r) => (
+        <Tooltip title={`临期阈值 ${r.nearExpiryDays} 天`}>
+          <span>{v > 0 ? v.toLocaleString("zh-CN") : "—"}</span>
+        </Tooltip>
+      ),
+    },
     { title: "日均销", dataIndex: "daily", width: 85, align: "right" },
     {
       title: "可销天数",

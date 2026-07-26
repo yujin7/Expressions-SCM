@@ -7,8 +7,8 @@
  * 1. 报废评审   —— 注记含「报废」，或已有批次过期（daysLeft≤0）
  * 2. 禁售隔离   —— 注记含「禁售」（临期禁售等，业务已明令）
  * 3. 商务处置   —— 注记含「商务」（商务库存走专项去化）
- * 4. 促销清库   —— 90 天内到期 且（滞销或无动销）——正常销速消化不完
- * 5. 优先出库   —— 90 天内到期 但销速尚可——先进先出加急即可
+ * 4. 促销清库   —— SKU 临期阈值内到期 且（滞销或无动销）——正常销速消化不完
+ * 5. 优先出库   —— SKU 临期阈值内到期但销速尚可——先进先出加急即可
  * 6. 滞销关注   —— 无效期风险但滞销（cover>阈值 或 有库存无动销）
  * 7. null（正常）—— 无信号，不进工作台
  *
@@ -26,6 +26,8 @@ export interface RiskSignal {
   onHand: number;
   /** 滞销阈值（天，slow_days_threshold 运行参数） */
   slowThreshold: number;
+  /** 逐 SKU 临期阈值（skus.nearExpiryDays；未维护时由调用方传 90 天兜底） */
+  nearExpiryDays: number;
   /** 货盘处置注记原文（无 = null） */
   palletRemark: string | null;
 }
@@ -44,7 +46,7 @@ export function suggestRiskAction(s: RiskSignal): RiskAction | null {
   if (remark.includes("禁售")) return "禁售隔离";
   if (remark.includes("商务")) return "商务处置";
   const slow = isSlowMover(s);
-  if (s.minDaysLeft != null && s.minDaysLeft <= 90) return slow ? "促销清库" : "优先出库";
+  if (s.minDaysLeft != null && s.minDaysLeft <= s.nearExpiryDays) return slow ? "促销清库" : "优先出库";
   if (slow) return "滞销关注";
   return null;
 }

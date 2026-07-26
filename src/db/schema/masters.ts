@@ -14,6 +14,8 @@ export const users = pgTable("users", {
   active: boolean("active").notNull().default(true),
   failedLogins: integer("failed_logins").notNull().default(0),
   mustChangePassword: boolean("must_change_password").notNull().default(false), // 初始密码首登强制修改
+  /** 身份/权限版本：改密、重置、停用、角色或审批权变化时 +1，使既有 JWT 立即失效 */
+  sessionVersion: integer("session_version").notNull().default(0),
 
   lockedUntil: timestamp("locked_until", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

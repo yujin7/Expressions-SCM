@@ -2,7 +2,7 @@
  * F 项：风险库存处置工作台（只读报表层，spec/13 §三）。
  *
  * 三源融合（全部既有数据，不新增口径）：
- * - 效期：batch_stocks（qty>0 且 expiryDate 非空）→ 逐 SKU minDaysLeft/expiredQty/nearQty(≤90天)；
+ * - 效期：batch_stocks（qty>0 且 expiryDate 非空）→ 逐 SKU minDaysLeft/expiredQty/nearQty(≤逐 SKU 阈值)；
  * - 注记：transit_refs kind=pallet exception 非空 → 逐 SKU 取最新（progress desc, id desc）；
  * - 销速：sales_monthly 近3月 ÷ 91（窗口动态回推，与驾驶舱/R11 同法）；
  * - 在库：Σ stock_balances + 快照仓最新快照（全网口径 D20，与 R11 同法本地重实现）。
@@ -40,7 +40,9 @@ export interface RiskRow {
   minDaysLeft: number | null;
   /** 已过期批次数量小计 */
   expiredQty: number;
-  /** 90 天内到期数量小计（含已过期） */
+  /** 当前 SKU 的临期阈值（未维护时 90 天兜底） */
+  nearExpiryDays: number;
+  /** 临期阈值内到期数量小计（含已过期） */
   nearQty: number;
   /** 货盘处置注记原文（最新一条；无 = null） */
   palletRemark: string | null;
@@ -151,6 +153,7 @@ export async function getRiskWorklist(
       cover,
       onHand,
       slowThreshold,
+      nearExpiryDays: nearThreshBySku.get(sku.id) ?? 90,
       palletRemark: remark?.text ?? null,
     });
     if (!action) continue;
@@ -165,6 +168,7 @@ export async function getRiskWorklist(
       cover: cover == null ? null : rq(cover),
       minDaysLeft: exp ? exp.minDaysLeft : null,
       expiredQty: rq(exp?.expiredQty ?? 0),
+      nearExpiryDays: nearThreshBySku.get(sku.id) ?? 90,
       nearQty: rq(exp?.nearQty ?? 0),
       palletRemark: remark?.text ?? null,
       remarkMonth: remark?.month ?? null,

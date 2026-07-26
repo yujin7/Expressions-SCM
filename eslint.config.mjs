@@ -16,8 +16,9 @@ const compat = new FlatCompat({ baseDirectory: import.meta.dirname });
 const config = [
   {
     ignores: [
-      ".next/**", "node_modules/**", "drizzle/**", ".data/**",
-      "uploads/**", "reports/**", "next-env.d.ts",
+      ".next/**", ".next-dev/**", ".next-webpack/**", ".cache/**",
+      "node_modules/**", "drizzle/**", ".data/**", ".artifacts/**",
+      "coverage/**", "uploads/**", "reports/**", "next-env.d.ts",
     ],
   },
   ...compat.extends("next/core-web-vitals", "next/typescript"),

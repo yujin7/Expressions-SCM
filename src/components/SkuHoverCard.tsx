@@ -26,6 +26,7 @@ export interface SkuBriefDto {
   daysCover: number | null;
   leadDays: number | null;
   minDaysLeft: number | null;
+  nearExpiryDays: number;
   openSupply: number;
   spark: { ym: string; qty: number }[];
 }
@@ -70,7 +71,7 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
 
 function BriefBody({ data }: { data: SkuBriefDto }) {
   const expired = data.minDaysLeft != null && data.minDaysLeft <= 0;
-  const near = data.minDaysLeft != null && data.minDaysLeft > 0 && data.minDaysLeft <= 90;
+  const near = data.minDaysLeft != null && data.minDaysLeft > 0 && data.minDaysLeft <= data.nearExpiryDays;
   const hasSales = data.spark.some((p) => p.qty > 0);
   const cq = encodeURIComponent(data.code);
   return (
@@ -107,7 +108,9 @@ function BriefBody({ data }: { data: SkuBriefDto }) {
       {expired ? (
         <div style={{ color: "#cf1322", marginBottom: 6 }}>已过期 {Math.abs(data.minDaysLeft as number)} 天（最早批次）</div>
       ) : near ? (
-        <div style={{ color: "#fa8c16", marginBottom: 6 }}>最短剩余效期 {data.minDaysLeft} 天</div>
+        <div style={{ color: "#fa8c16", marginBottom: 6 }}>
+          最短剩余效期 {data.minDaysLeft} 天（阈值 {data.nearExpiryDays} 天）
+        </div>
       ) : null}
       <div style={{ height: 48, marginBottom: 6 }}>
         {hasSales ? (
