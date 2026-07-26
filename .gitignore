@@ -4,6 +4,8 @@ node_modules
 .artifacts/
 .env
 .env.local
+.env.prod
+.env.backup
 uploads/
 *.tsbuildinfo
 .DS_Store

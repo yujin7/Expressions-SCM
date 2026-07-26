@@ -40,6 +40,7 @@ const candidate = {
 
 const checks: Result[] = [];
 const planned: Array<[string, string, string[]]> = [
+  ["operations contracts", "npm", ["run", "check:ops"]],
   ["full lint", "npm", ["run", "lint:full"]],
   ["all TypeScript scopes", "npm", ["run", "typecheck:all"]],
   ["full Vitest suite", "npm", ["test"]],

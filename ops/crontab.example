@@ -3,8 +3,8 @@
 # CRON_TZ 需 cronie/vixie-cron 支持；不支持时确认主机时区为 Asia/Shanghai。
 CRON_TZ=Asia/Shanghai
 
-# 每日 02:30 备份（DB + 附件卷，出主机见 BACKUP_REMOTE）
-30 2 * * * /opt/supply-chain/ops/backup.sh >> /var/log/scm-backup.log 2>&1
+# 每日 02:30 备份（加载 .env.backup；DB + 附件卷 + SHA-256 + 出主机）
+30 2 * * * cd /opt/supply-chain && set -a && . ./.env.backup && set +a && ./ops/backup.sh >> /var/log/scm-backup.log 2>&1
 
-# 每小时备份新鲜度检查：最新备份 >25h 视为断档，非零退出接告警通道
-0 * * * * /opt/supply-chain/ops/check-backup.sh >> /var/log/scm-backup-check.log 2>&1
+# 每小时完整性/新鲜度检查：DB+附件不成对、校验失败或 >25h 均告警
+0 * * * * cd /opt/supply-chain && set -a && . ./.env.backup && set +a && ./ops/check-backup.sh >> /var/log/scm-backup-check.log 2>&1

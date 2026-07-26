@@ -31,9 +31,14 @@
   新增真实 PostgreSQL 16 的迁移契约任务；`scm doctor` 对超过 1 GiB 的构建缓存显式报警。
 - **跨平台发布契约实证（07-26）**：首轮 GitHub Actions 准确抓出 macOS lockfile 缺 Linux/WASM
   嵌套 optional 包；现改用 Linux 生成的 canonical lock，并以架构测试防回归。真实 Linux 完整门禁为
-  132 文件通过/5 文件跳过、848 例通过/21 例跳过，生产构建通过；Vitest 并发收口为 4，
+  133 文件通过/5 文件跳过、852 例通过/21 例跳过，生产构建通过；Vitest 并发收口为 4，
   消除 PGlite 多实例内存争抢与 `ERR_IPC_CHANNEL_CLOSED`。PostgreSQL 16 已实跑 22 个迁移，
   最终生产镜像已连该库启动并通过 `/api/health`。
+- **恢复与监控闭环（07-26）**：生产备份从两个松散压缩包升级为 DB+附件原子备份集，
+  以双文件 SHA-256 manifest 作为唯一完成标志；附件经 compose 只读工具服务导出，不再猜实际卷名，
+  也不依赖 app 镜像可启动。迁移前强制异地备份；每日调度 + 每小时配对/校验和/压缩结构/新鲜度监控。
+  `db:restore-drill:prod` 已在隔离 PostgreSQL 16 实跑通过：22 迁移、5 关键表、1 用户、1 附件，2 秒完成，
+  一次性容器/卷已精确清理。部署/备份现显式读取 `.env.prod`，修复原文档写该文件但 Compose 未加载的问题。
 - **依赖安全收口（07-26）**：Drizzle ORM 升至 0.45.2，Next.js/ESLint config 升至 15.5.22，
   并固定已修复的 PostCSS、Sharp、UUID 与 Drizzle 工具链 esbuild。唯一保留的审计项来自
   ExcelJS→archiver 的 glob 工具链；应用无 glob 输入/API，自动强修会降级 ExcelJS，
@@ -89,7 +94,7 @@
   已关联 `origin/main`，且两套同树异源历史已用无覆盖 merge 接通。R8 已推送；首轮 Actions
   暴露的跨平台 lockfile 问题已在本轮修复，远端四项门禁全绿。Actions 官方组件已升级到
   Node 24 运行时的 `checkout@v7` / `setup-node@v7`；私有仓分支保护受当前 GitHub 套餐限制。
-- **测试数字**：当前 Linux 发布证据为 **848 通过 / 21 有意跳过**，lint、三套 typecheck、
+- **测试数字**：当前 Linux 发布证据为 **852 通过 / 21 有意跳过**，lint、三套 typecheck、
   Next 生产构建、PostgreSQL 16 迁移契约与最终容器健康检查均通过。
 - **交接给下一会话的待办**见本文件末尾「下一会话接手清单」。
 

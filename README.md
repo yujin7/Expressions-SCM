@@ -60,8 +60,11 @@ admin / ops01 / purchasing01 / warehouse01 / pmc01(审批人) / pmc02(非审批�
 ## 生产部署（staging 同构）
 ```bash
 cp .env.example .env.prod   # 填 POSTGRES_PASSWORD/AUTH_SECRET/AUTH_URL
-ops/deploy.sh               # 构建→迁移门禁→滚动重启→健康检查
+cp .env.backup.example .env.backup  # 填异地 BACKUP_REMOTE
+ops/deploy.sh               # 自动加载两份环境文件；备份→迁移门禁→滚动重启→健康检查
 ```
-备份：`ops/backup.sh`（crontab 每日 02:00；必须配置 BACKUP_REMOTE 出主机）。恢复演练：`ops/RESTORE-DRILL.md`（每季）。
+部署默认显式读取 `.env.prod` 和 `.env.backup`；迁移前会生成 DB+附件的完整异地备份集。每日 02:30 自动备份，
+每小时验证配对清单、SHA-256、压缩结构与新鲜度。每季运行
+`npm run db:restore-drill:prod`，详见 `ops/RESTORE-DRILL.md`。
 独立审计整改的迁移、账号、批次 UAT、HTTP 扫描、停止阈值与签字门禁见
 `ops/SCM-AUDIT-RELEASE-CHECKLIST.md`。

@@ -9,6 +9,6 @@ After=docker.service
 [Service]
 Type=oneshot
 WorkingDirectory=__REPO_DIR__
-# 可选环境：BACKUP_DIR / BACKUP_REMOTE（出主机目的地，01 §8 要求）
+# 从 .env.backup.example 复制；BACKUP_REMOTE 与 SCM_ENV_FILE 均为生产必需。
 EnvironmentFile=-__REPO_DIR__/.env.backup
 ExecStart=__REPO_DIR__/ops/backup.sh

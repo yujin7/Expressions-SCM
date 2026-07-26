@@ -25,6 +25,7 @@
     "check:fast": "node --import tsx scripts/verify-fast.ts",
     "check:pr": "npm run lint:full && npm run typecheck:all && npm test",
     "check:release": "node --import tsx scripts/verify-release.ts",
+    "check:ops": "bash -n ops/backup.sh ops/check-backup.sh ops/restore-drill.sh ops/deploy.sh && node --import tsx scripts/verify-ops.ts",
     "check:postgres": "node --import tsx scripts/verify-postgres.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
@@ -34,7 +35,8 @@
     "lint:full": "eslint . --no-cache --max-warnings=0",
     "db:backup": "tsx scripts/backup-dev-db.ts",
     "db:restore": "tsx scripts/backup-dev-db.ts --restore",
-    "db:restore-drill": "tsx scripts/restore-drill-dev.ts"
+    "db:restore-drill": "tsx scripts/restore-drill-dev.ts",
+    "db:restore-drill:prod": "ops/restore-drill.sh"
   },
   "dependencies": {
     "@ant-design/icons": "^5.6.0",

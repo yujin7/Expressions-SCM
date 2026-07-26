@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly supply-chain backup integrity and freshness check
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

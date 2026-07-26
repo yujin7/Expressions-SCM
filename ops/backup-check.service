@@ -1,0 +1,9 @@
+# 每小时备份完整性/新鲜度检查（由 backup-check.timer 触发）。
+[Unit]
+Description=Supply-chain backup integrity and freshness check
+
+[Service]
+Type=oneshot
+WorkingDirectory=__REPO_DIR__
+EnvironmentFile=-__REPO_DIR__/.env.backup
+ExecStart=__REPO_DIR__/ops/check-backup.sh

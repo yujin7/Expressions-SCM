@@ -21,9 +21,11 @@ describe("agile delivery loop", () => {
     expect(pkg.scripts["check:fast"]).toContain("verify-fast.ts");
     expect(pkg.scripts["check:pr"]).toContain("lint:full");
     expect(pkg.scripts["check:release"]).toContain("verify-release.ts");
+    expect(pkg.scripts["check:ops"]).toContain("verify-ops.ts");
     expect(workflow).toContain("cancel-in-progress: true");
     expect(workflow).toContain("PostgreSQL migration contract");
     expect(workflow).toContain("docker build --tag supply-chain:ci .");
+    expect(workflow).toContain("npm run check:ops");
     expect(workflow).toContain("actions/checkout@v7");
     expect(workflow).toContain("actions/setup-node@v7");
     expect(workflow).not.toContain("actions/checkout@v4");

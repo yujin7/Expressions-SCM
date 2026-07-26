@@ -1,29 +1,40 @@
 # 恢复演练（每季一次，RTO≤4h——01 §8）
-1. 新机器: 安装 docker; git clone; 复制 .env.prod。
-2. `docker compose -f docker-compose.prod.yml up -d db` 等健康。
-3. `gunzip -c db_<最近>.sql.gz | docker compose -f docker-compose.prod.yml exec -T db psql -U scm scm`
-4. 附件: `docker run --rm -v supply-chain_uploads:/data -v $PWD:/backup alpine tar xzf /backup/uploads_<最近>.tar.gz -C /data`
-5. `ops/deploy.sh`（跳过迁移亦可——备份已含 schema）。
-6. 验收: /api/health ok:true; 登录; 抽查 3 张单据与流水一致; 记录耗时于本文件底部演练日志。
+
+生产备份以 `backup_<时间>.sha256` 为完成标志；清单必须同时登记同时间戳的 DB 与附件归档。
+日常演练不接触在线库：
+
+```bash
+set -a; . ./.env.backup; set +a
+npm run db:restore-drill:prod
+```
+
+脚本会校验配对、SHA-256 与压缩结构，把 DB 恢复进一次性 PostgreSQL 16 容器，核对当前迁移数、
+关键表和用户，再解开附件到临时目录；退出时精确删除一次性容器/目录，并把 JSON 证据写入
+`.artifacts/restore-drill/`。指定备份集时设置
+`BACKUP_MANIFEST=/absolute/path/backup_YYYYMMDD_HHMMSS.sha256`。
+
+真实灾难恢复仍须在新机器上完成：安装 Docker → clone 同一 release commit → 复制
+`.env.prod` / `.env.backup` → 从异地目录取回同一 manifest 的三件套 → 运行上述演练 →
+恢复正式卷 → `ops/deploy.sh` → 验证 health、登录、三张单据与流水。每一步记录耗时，RTO 必须 ≤4h。
 
 ## 备份调度与新鲜度监控
 - 调度: `ops/deploy.sh` 的 install-backup-schedule 步骤自动安装 systemd 单元
   `scm-backup.timer` + `scm-backup.service`（每日 02:30 Asia/Shanghai，`Persistent=true`
   停机补跑；源文件 `ops/backup.timer` / `ops/backup.service`，`__REPO_DIR__` 安装时替换）。
   无 systemd 的主机按 `ops/crontab.example` 装 cron（二选一，勿双装）。
-- 环境: 备份目的地经 `.env.backup`（`BACKUP_DIR` / `BACKUP_REMOTE`）注入 service；
+- 环境: 从 `.env.backup.example` 复制 `.env.backup`，配置 `BACKUP_DIR` / `BACKUP_REMOTE`
+  以及实际 `.env.prod` 路径；
   `BACKUP_REMOTE` 必须配置出主机目的地（01 §8）。
-- 新鲜度: `ops/check-backup.sh` —— 最新 `db_*.sql.gz` 超 25h（给 02:30 调度留 1h 余量）
-  即非零退出（1=过期，2=无备份），接 cron 邮件或外部监控探针，每小时跑一次。
-- 手动验证: `systemctl list-timers scm-backup.timer` 看下次触发；
+- 完整性/新鲜度: `scm-backup-check.timer` 每小时运行 `ops/check-backup.sh`；DB/附件不成对、
+  SHA-256 或压缩结构失败、最新完整集超 25h 均非零退出。
+- 手动验证: `systemctl list-timers scm-backup.timer scm-backup-check.timer` 看下次触发；
   `systemctl start scm-backup.service` 即时试跑一轮备份。
 
 ## 演练日志
 | 日期 | 执行人 | 耗时 | 结果 |
 |---|---|---|---|
-| （占位——待恢复演练执行后由执行人填写；由编排方运行演练） | | | |
-
-| 2026-07-24 | dev/PGlite | scripts/restore-drill-dev.ts | ✅ 备份261ms/校验171ms；skus 5376·ledger 348·snapshots 1731·transit 8305·review 1769 全对 | Claude（会话内） |
+| 2026-07-26 | Codex / PostgreSQL 16 隔离容器 | 2s | ✅ 22 migrations · 5 required tables · 1 user · 1 attachment；一次性资源已清理 |
+| 2026-07-24 | Claude / dev PGlite | 432ms | ✅ `scripts/restore-drill-dev.ts`；skus 5376 · ledger 348 · snapshots 1731 · transit 8305 · review 1769 全对 |
 
 ## dev/PGlite 安全流程
 

@@ -14,6 +14,11 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
   app:
     build: .
     restart: unless-stopped
@@ -31,6 +36,31 @@ services:
       - uploads:/data/uploads
     ports:
       - "127.0.0.1:3000:3000" # 前置 nginx/caddy 终止 HTTPS
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/health').then(async r=>{const b=await r.json();if(!r.ok||b.ok!==true)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    init: true
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+  # 备份附件不依赖 app 镜像可构建/可启动；只读挂载 compose 逻辑卷，profile=ops 时按需运行。
+  backup-files:
+    # 与生产构建基镜像一致；部署完成后必已在本机，备份脚本以 --pull never 禁止运行时依赖 registry。
+    image: node:24-alpine
+    profiles: ["ops"]
+    entrypoint: ["sh"]
+    volumes:
+      - uploads:/data/uploads:ro
 volumes:
   pgdata:
   uploads:
