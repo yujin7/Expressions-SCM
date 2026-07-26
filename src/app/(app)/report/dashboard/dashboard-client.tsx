@@ -153,6 +153,10 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
     asOf: kpi.snapDate,
     note: "实时账与快照分层展示，不混作同一时点事实",
   };
+  const stockByUomDetail =
+    (kpi.stockByUom ?? [])
+      .map((row) => `${row.uom}：${row.qty.toLocaleString("zh-CN")}`)
+      .join("；") || "暂无单位明细";
 
   const riskCols: ColumnsType<DashboardData["expiryRiskTop"][number]> = [
     { title: "编码", dataIndex: "code", width: 130, render: (v: string, r) => <><Link href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</Link><LifeTag v={(r as { lifecycle?: string }).lifecycle} /></> },
@@ -183,41 +187,43 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
   ];
 
   return (
-    <div>
-      <Space align="baseline" style={{ justifyContent: "space-between", width: "100%", marginBottom: 8 }}>
-        <Typography.Title level={4} style={{ marginTop: 0 }}>
-          经营驾驶舱
-        </Typography.Title>
-        <Space>
+    <div className="dashboard-page">
+      <header className="dashboard-header">
+        <div className="dashboard-header__copy">
+          <Typography.Title level={4} className="dashboard-header__title">
+            经营驾驶舱
+          </Typography.Title>
+          <CaliberNote
+            summary={`最后生成 ${generatedDate}。先看异常与覆盖，再下钻到责任工作台；数量跨 SKU 汇总只反映规模。`}
+            detail={
+              <>
+                销售事实当前只有月粒度数量；库存由实时记账仓和最新快照仓组成，两者时点不同。
+                所有推导指标均保留来源、截至时点、覆盖与限制，缺数据时不以 0 代替。
+              </>
+            }
+          />
+        </div>
+        <div className="dashboard-header__meta">
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             数量为跨 SKU 直加参考口径；快照仓数据日期 {kpi.snapDate ?? "—"}
           </Typography.Text>
           <Button type="link" size="small" onClick={() => router.refresh()}>
             <ReloadOutlined /> 刷新
           </Button>
-        </Space>
-      </Space>
-      <CaliberNote
-        summary={`最后生成 ${generatedDate}。先看异常与覆盖，再下钻到责任工作台；数量跨 SKU 汇总只反映规模。`}
-        detail={
-          <>
-            销售事实当前只有月粒度数量；库存由实时记账仓和最新快照仓组成，两者时点不同。
-            所有推导指标均保留来源、截至时点、覆盖与限制，缺数据时不以 0 代替。
-          </>
-        }
-      />
+        </div>
+      </header>
 
       {/* KPI 行 */}
-      <Row gutter={[12, 12]}>
-        <Col xs={12} md={8} xl={3}>
+      <section className="dashboard-kpi-grid" aria-label="经营关键指标">
+        <div className="dashboard-kpi-grid__item">
           <DecisionMetric
             metricId="activeSkuSpu"
             value={kpi.skuActive}
             suffix={`/ ${kpi.spuCount}`}
             source={{ tier: "ledger", name: "SKU/SPU 主数据" }}
           />
-        </Col>
-        <Col xs={12} md={8} xl={3}>
+        </div>
+        <div className="dashboard-kpi-grid__item">
           <DecisionMetric
             metricId="salesQty"
             value={kpi.salesLastMonth}
@@ -225,21 +231,18 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
             source={{ tier: "snapshot", name: "sales_monthly 销售月事实" }}
             asOf={kpi.lastMonth}
           />
-        </Col>
-        <Col xs={12} md={8} xl={3}>
-          <AntTooltip title={<span style={{ whiteSpace: "pre-line" }}>{`按基础单位拆分：\n${(kpi.stockByUom ?? []).map((u) => `· ${u.uom}：${u.qty.toLocaleString("zh-CN")}`).join("\n") || "（无明细）"}`}</span>}>
-            <div>
-              <DecisionMetric
-                metricId="onHandSystem"
-                value={kpi.ownStockQty}
-                source={{ tier: "ledger", name: "stock_balances 过账台账" }}
-                actionHref="/inventory/balance"
-                actionLabel="核对库存"
-              />
-            </div>
-          </AntTooltip>
-        </Col>
-        <Col xs={12} md={8} xl={3}>
+        </div>
+        <div className="dashboard-kpi-grid__item">
+          <DecisionMetric
+            metricId="onHandSystem"
+            value={kpi.ownStockQty}
+            source={{ tier: "ledger", name: "stock_balances 过账台账" }}
+            actionHref="/inventory/balance"
+            actionLabel="核对库存"
+            detail={<>按基础单位拆分：{stockByUomDetail}</>}
+          />
+        </div>
+        <div className="dashboard-kpi-grid__item">
           <DecisionMetric
             metricId="onHandExternal"
             value={kpi.snapStockQty}
@@ -248,8 +251,8 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
             actionHref="/report/demand?tab=stock_summary"
             actionLabel="核对外部登记"
           />
-        </Col>
-        <Col xs={12} md={8} xl={3}>
+        </div>
+        <div className="dashboard-kpi-grid__item">
           <DecisionMetric
             metricId="expiryRiskQty"
             value={kpi.expiryRiskQty}
@@ -260,8 +263,8 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
             actionHref="/inventory/expiry"
             actionLabel="查看风险批次"
           />
-        </Col>
-        <Col xs={12} md={8} xl={3}>
+        </div>
+        <div className="dashboard-kpi-grid__item">
           <DecisionMetric
             metricId="riskActionCount"
             value={kpi.riskActionCount}
@@ -271,8 +274,8 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
             actionHref="/report/risk"
             actionLabel="进入处置工作台"
           />
-        </Col>
-        <Col xs={12} md={8} xl={3}>
+        </div>
+        <div className="dashboard-kpi-grid__item">
           <DecisionMetric
             metricId="slowMoverCount"
             value={kpi.slowMoverCount}
@@ -283,25 +286,26 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
             actionHref="/workbench"
             actionLabel="分派与处理"
           />
-        </Col>
-      </Row>
+        </div>
+      </section>
 
       {/* 智能洞察 */}
       {data.insights.length > 0 && (
         <Alert
-          style={{ marginTop: 12 }}
+          className="dashboard-insights"
+          style={{ marginTop: 16 }}
           type="info"
           showIcon
           icon={<BulbOutlined />}
           message="智能洞察（纯报表口径自动归纳，不代决策）"
           description={
             <>
-              <ul style={{ margin: 0, paddingLeft: 18 }}>
+              <ul className="dashboard-insights__list">
                 {data.insights.map((s, i) => (
                   <li key={i}>{s}</li>
                 ))}
               </ul>
-              <Space size={16} style={{ marginTop: 8 }}>
+              <Space wrap size={[16, 6]} className="dashboard-insights__actions">
                 <Link href="/workbench">→ 工作台待办</Link>
                 <Link href="/import/release">→ 放行工作台</Link>
                 <Link href="/import/exceptions">→ 别名认领</Link>

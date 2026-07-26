@@ -10,7 +10,7 @@ import type { ReactNode } from "react";
 
 export default function CaliberNote({ summary, detail }: { summary: ReactNode; detail?: ReactNode }) {
   return (
-    <div style={{ display: "flex", alignItems: "baseline", gap: 10, margin: "2px 0 16px", color: "rgba(0,0,0,0.55)", fontSize: 13, lineHeight: 1.6 }}>
+    <div className="caliber-note" style={{ display: "flex", alignItems: "baseline", gap: 10, margin: "2px 0 16px", color: "rgba(0,0,0,0.55)", fontSize: 13, lineHeight: 1.6 }}>
       <span>{summary}</span>
       {detail ? (
         <Popover

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { ArrowRightOutlined, InfoCircleOutlined } from "@ant-design/icons";
-import { Card, Statistic, Tag, Tooltip, Typography } from "antd";
+import { Card, Statistic, Tooltip, Typography } from "antd";
 
 import DataSourceBadge, { type LineageTier } from "@/components/DataSourceBadge";
 import { metric, metricTooltip } from "@/components/metrics";
@@ -17,6 +17,7 @@ export default function DecisionMetric({
   status = "neutral",
   actionHref,
   actionLabel,
+  detail,
 }: {
   metricId: string;
   value: number | string;
@@ -27,6 +28,7 @@ export default function DecisionMetric({
   status?: "neutral" | "positive" | "warning" | "critical";
   actionHref?: string;
   actionLabel?: string;
+  detail?: React.ReactNode;
 }) {
   const definition = metric(metricId);
   if (!definition) return null;
@@ -36,39 +38,48 @@ export default function DecisionMetric({
     warning: "#b45309",
     critical: "#c2413b",
   }[status];
-  const body = (
-    <Card size="small" className="decision-metric" styles={{ body: { height: "100%" } }}>
+  return (
+    <Card size="small" className={`decision-metric decision-metric--${status}`}>
+      <div className="decision-metric__header">
+        <Typography.Text className="decision-metric__title">{definition.label}</Typography.Text>
+        <span className="decision-metric__meta">
+          <Tooltip
+            placement="bottom"
+            title={
+              <div className="decision-metric__tooltip">
+                <div style={{ whiteSpace: "pre-line" }}>{metricTooltip(metricId)}</div>
+                {detail ? <div className="decision-metric__tooltip-detail">{detail}</div> : null}
+              </div>
+            }
+          >
+            <button
+              type="button"
+              className="decision-metric__info"
+              aria-label={`${definition.label}口径说明`}
+            >
+              <InfoCircleOutlined />
+            </button>
+          </Tooltip>
+          <DataSourceBadge tier={source.tier} source={source.name} date={asOf} />
+        </span>
+      </div>
       <Statistic
-        title={
-          <>
-            {definition.label}
-            <Tooltip title={<span style={{ whiteSpace: "pre-line" }}>{metricTooltip(metricId)}</span>}>
-              <InfoCircleOutlined
-                aria-label={`${definition.label}口径说明`}
-                style={{ marginLeft: 5, color: "#64748b" }}
-              />
-            </Tooltip>
-            <DataSourceBadge tier={source.tier} source={source.name} date={asOf} />
-          </>
-        }
+        className="decision-metric__statistic"
         value={value}
         suffix={suffix}
         prefix={prefix}
         valueStyle={{ color }}
       />
+      <Typography.Paragraph className="decision-metric__description">
+        {definition.short}
+      </Typography.Paragraph>
       {actionHref && actionLabel ? (
-        <Typography.Text style={{ display: "block", marginTop: 8, fontSize: 12 }}>
+        <div className="decision-metric__action">
           <Link href={actionHref}>
             {actionLabel} <ArrowRightOutlined />
           </Link>
-        </Typography.Text>
-      ) : (
-        <Tag bordered={false} style={{ marginTop: 8 }}>
-          {definition.short}
-        </Tag>
-      )}
+        </div>
+      ) : null}
     </Card>
   );
-  return body;
 }
-

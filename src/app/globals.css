@@ -134,6 +134,204 @@ body {
   border-radius: 10px;
 }
 
+.dashboard-page {
+  --dashboard-gap: 14px;
+}
+
+.dashboard-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 16px;
+}
+
+.dashboard-header__copy {
+  min-width: 0;
+}
+
+.dashboard-header__title.ant-typography {
+  margin: 0;
+}
+
+.dashboard-header .caliber-note {
+  max-width: 860px;
+  margin: 6px 0 0 !important;
+}
+
+.dashboard-header__meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 1 520px;
+  gap: 8px;
+  text-align: right;
+}
+
+.dashboard-header__meta .ant-btn {
+  flex: 0 0 auto;
+}
+
+.dashboard-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: var(--dashboard-gap);
+}
+
+.dashboard-kpi-grid__item {
+  min-width: 0;
+}
+
+.dashboard-insights .ant-alert-content {
+  min-width: 0;
+  width: 100%;
+}
+
+.dashboard-insights__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr));
+  gap: 4px 28px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.dashboard-insights__actions {
+  margin-top: 10px;
+}
+
+.decision-metric {
+  height: 100%;
+  overflow: hidden;
+  border-color: #e4e9f1;
+  box-shadow: 0 2px 10px rgba(16, 24, 40, 0.035);
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.decision-metric:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 8px 22px rgba(16, 24, 40, 0.07);
+  transform: translateY(-1px);
+}
+
+.decision-metric--critical {
+  border-top: 3px solid #d84a43;
+}
+
+.decision-metric--warning {
+  border-top: 3px solid #d97706;
+}
+
+.decision-metric--positive {
+  border-top: 3px solid #22a06b;
+}
+
+.decision-metric .ant-card-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 184px;
+  height: 100%;
+  padding: 16px;
+}
+
+.decision-metric__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  min-height: 38px;
+  gap: 8px;
+}
+
+.decision-metric__title {
+  color: #475467;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.decision-metric__meta {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 3px;
+}
+
+.decision-metric__info {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: #64748b;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: help;
+}
+
+.decision-metric__info:hover,
+.decision-metric__info:focus-visible {
+  color: #3157d5;
+  background: #eef2ff;
+  outline: none;
+}
+
+.decision-metric__statistic {
+  margin-top: 8px;
+}
+
+.decision-metric__statistic .ant-statistic-content {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  color: #172033;
+  font-size: clamp(26px, 2vw, 34px);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.12;
+  white-space: nowrap;
+}
+
+.decision-metric__statistic .ant-statistic-content-prefix {
+  margin-inline-end: 8px;
+  font-size: 0.78em;
+}
+
+.decision-metric__statistic .ant-statistic-content-suffix {
+  margin-inline-start: 7px;
+  font-size: 0.5em;
+  font-weight: 500;
+}
+
+.decision-metric__description.ant-typography {
+  display: -webkit-box;
+  min-height: 38px;
+  margin: 10px 0 0;
+  overflow: hidden;
+  color: #7a8699;
+  font-size: 12px;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.decision-metric__action {
+  margin-top: auto;
+  padding-top: 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.decision-metric__tooltip {
+  max-width: 360px;
+  line-height: 1.65;
+}
+
+.decision-metric__tooltip-detail {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.24);
+}
+
 .app-boot {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
@@ -289,6 +487,17 @@ body {
 
   .login-shell {
     padding: 20px;
+  }
+
+  .dashboard-header {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .dashboard-header__meta {
+    justify-content: space-between;
+    width: 100%;
+    text-align: left;
   }
 }
 
