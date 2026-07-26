@@ -81,7 +81,7 @@ body {
   min-width: 0;
 }
 
-.app-header {
+.app-header.ant-layout-header {
   position: sticky;
   top: 0;
   z-index: 30;
@@ -120,6 +120,12 @@ body {
   border-radius: 10px;
 }
 
+/* AntD offsets nested expanded tables into their parent padding. Keep that
+   intentional 16px offset visible instead of clipping the detail header. */
+.app-surface .ant-table-expanded-row .ant-table-wrapper {
+  overflow: visible;
+}
+
 .app-surface .ant-table-thead > tr > th {
   font-size: 12px;
   font-weight: 650;
@@ -140,6 +146,10 @@ body {
 
 .app-surface .ant-alert {
   border-radius: 10px;
+}
+
+.decision-visual + .list-toolbar {
+  margin-top: 12px;
 }
 
 .dashboard-page {

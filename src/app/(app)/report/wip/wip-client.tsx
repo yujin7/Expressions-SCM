@@ -185,6 +185,7 @@ export default function WipClient() {
         caveat="数量可能混合不同 SKU 的基础单位，只能用于识别集中度与催交优先级；跨品类总量不代表可替代产能。"
         state={loading ? "loading" : rows.length === 0 ? "empty" : "ready"}
         height={Math.max(220, Math.min(420, supplierSummary.ranked.length * 52 + 36))}
+        fitContent
         dataView={
           <>
             <style>{`.wip-row-overdue > td { background: #fff1f0 !important; }`}</style>

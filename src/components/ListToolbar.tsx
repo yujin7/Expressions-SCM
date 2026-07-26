@@ -100,7 +100,12 @@ export default function ListToolbar<F extends Record<string, string | undefined>
 
   return (
     <>
-      <Space style={{ marginBottom: 12, width: "100%", justifyContent: "space-between" }} wrap align="center">
+      <Space
+        className="list-toolbar"
+        style={{ marginBottom: 12, width: "100%", justifyContent: "space-between" }}
+        wrap
+        align="center"
+      >
         <Space wrap align="center">{extra}</Space>
         <Space wrap>
           <Dropdown

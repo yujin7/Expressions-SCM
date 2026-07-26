@@ -172,6 +172,7 @@ function DemandTab() {
         state={loading && !summary ? "loading" : !summary || summary.rowCount === 0 ? "empty" : summary.achievementRate == null ? "insufficient" : "ready"}
         stateDetail="请先导入月度需求与达成文件，或调整当前筛选。"
         height={Math.max(220, (summary?.byChannel.length ?? 0) * 42 + 72)}
+        fitContent
         dataView={
           <Table
             rowKey="name"
@@ -501,79 +502,80 @@ function StockSummaryTab() {
         detail="文件「商品数量」含海外与其他部门仓；系统数为自有实时账加电商部最新快照。全量核对按 SKU 编码映射，未映射行与可比行分开呈现。"
       />
       <DecisionVisual
-        title="库存事实覆盖与一致性"
-        question="有多少 SKU 真正可比，可比部分有多少一致，差异是否可能来自仓库覆盖？"
-        metricId="coverageSku"
-        grain="SKU"
-        unit="SKU 数 / 覆盖率"
-        source={{
-          tier: "reference",
-          source: "总库存明细 × 当前库存过账台账 × 最新仓库快照",
-          asOf: importedAt ? new Date(importedAt).toLocaleDateString("zh-CN") : null,
-        }}
-        coverage={coverage ? {
-          covered: coverage.comparableRows,
-          total: coverage.rowCount,
-          label: "编码可比",
-        } : undefined}
-        activeFilters={[q ? `搜索：${q}` : "全部 SKU"]}
-        summary={
-          coverage
-            ? `共 ${coverage.rowCount} 行，${coverage.comparableRows} 行可比；其中 ${coverage.agreeRows} 行一致，${coverage.diffRows} 行有差异，${coverage.unmappedRows} 行未映射。`
-            : "库存覆盖数据尚未加载。"
-        }
-        caveat="一致阈值为绝对差异小于 0.5；差异可能来自海外/其他部门仓未接入，不能直接推断为账本错误。"
-        state={loading && !coverage ? "loading" : !coverage || coverage.rowCount === 0 ? "empty" : "ready"}
-        stateDetail="请先导入总库存明细，或调整当前筛选。"
-        height={220}
-        dataView={
-          <Table<{ key: string; label: string; count: number; denominator: number }>
-            rowKey="key"
-            size="small"
-            pagination={false}
-            dataSource={coverage ? [
-              { key: "comparable", label: "编码可比", count: coverage.comparableRows, denominator: coverage.rowCount },
-              { key: "agreement", label: "可比且一致", count: coverage.agreeRows, denominator: coverage.comparableRows },
-              { key: "difference", label: "可比但有差异", count: coverage.diffRows, denominator: coverage.comparableRows },
-              { key: "unmapped", label: "编码未映射", count: coverage.unmappedRows, denominator: coverage.rowCount },
-            ] : []}
-            columns={[
-              { title: "检查项", dataIndex: "label" },
-              { title: "SKU 数", dataIndex: "count", align: "right" },
-              {
-                title: "比例",
-                align: "right",
-                render: (_value, row: { count: number; denominator: number }) =>
-                  row.denominator > 0 ? `${Math.round((row.count / row.denominator) * 100)}%` : "—",
-              },
-            ]}
+          title="库存事实覆盖与一致性"
+          question="有多少 SKU 真正可比，可比部分有多少一致，差异是否可能来自仓库覆盖？"
+          metricId="coverageSku"
+          grain="SKU"
+          unit="SKU 数 / 覆盖率"
+          source={{
+            tier: "reference",
+            source: "总库存明细 × 当前库存过账台账 × 最新仓库快照",
+            asOf: importedAt ? new Date(importedAt).toLocaleDateString("zh-CN") : null,
+          }}
+          coverage={coverage ? {
+            covered: coverage.comparableRows,
+            total: coverage.rowCount,
+            label: "编码可比",
+          } : undefined}
+          activeFilters={[q ? `搜索：${q}` : "全部 SKU"]}
+          summary={
+            coverage
+              ? `共 ${coverage.rowCount} 行，${coverage.comparableRows} 行可比；其中 ${coverage.agreeRows} 行一致，${coverage.diffRows} 行有差异，${coverage.unmappedRows} 行未映射。`
+              : "库存覆盖数据尚未加载。"
+          }
+          caveat="一致阈值为绝对差异小于 0.5；差异可能来自海外/其他部门仓未接入，不能直接推断为账本错误。"
+          state={loading && !coverage ? "loading" : !coverage || coverage.rowCount === 0 ? "empty" : "ready"}
+          stateDetail="请先导入总库存明细，或调整当前筛选。"
+          height={220}
+          fitContent
+          dataView={
+            <Table<{ key: string; label: string; count: number; denominator: number }>
+              rowKey="key"
+              size="small"
+              pagination={false}
+              dataSource={coverage ? [
+                { key: "comparable", label: "编码可比", count: coverage.comparableRows, denominator: coverage.rowCount },
+                { key: "agreement", label: "可比且一致", count: coverage.agreeRows, denominator: coverage.comparableRows },
+                { key: "difference", label: "可比但有差异", count: coverage.diffRows, denominator: coverage.comparableRows },
+                { key: "unmapped", label: "编码未映射", count: coverage.unmappedRows, denominator: coverage.rowCount },
+              ] : []}
+              columns={[
+                { title: "检查项", dataIndex: "label" },
+                { title: "SKU 数", dataIndex: "count", align: "right" },
+                {
+                  title: "比例",
+                  align: "right",
+                  render: (_value, row: { count: number; denominator: number }) =>
+                    row.denominator > 0 ? `${Math.round((row.count / row.denominator) * 100)}%` : "—",
+                },
+              ]}
+            />
+          }
+        >
+          <Row gutter={[16, 16]}>
+            <Col xs={24} md={12}>
+              <Typography.Text>编码覆盖</Typography.Text>
+              <Progress
+                percent={coverage && coverage.rowCount > 0 ? Math.round((coverage.comparableRows / coverage.rowCount) * 100) : 0}
+                format={() => coverage ? `${coverage.comparableRows}/${coverage.rowCount}` : "—"}
+                status={coverage && coverage.unmappedRows > 0 ? "exception" : "success"}
+              />
+            </Col>
+            <Col xs={24} md={12}>
+              <Typography.Text>可比行一致率</Typography.Text>
+              <Progress
+                percent={coverage && coverage.comparableRows > 0 ? Math.round((coverage.agreeRows / coverage.comparableRows) * 100) : 0}
+                format={() => coverage ? `${coverage.agreeRows}/${coverage.comparableRows}` : "—"}
+                status={coverage && coverage.diffRows > 0 ? "exception" : "success"}
+              />
+            </Col>
+          </Row>
+          <Alert
+            style={{ marginTop: 12 }}
+            type={coverage && coverage.diffRows > 0 ? "warning" : "success"}
+            showIcon
+            message={coverage ? `${coverage.diffRows} 个可比 SKU 需要按仓库覆盖继续核对` : "等待核对结果"}
           />
-        }
-      >
-        <Row gutter={[16, 16]}>
-          <Col xs={24} md={12}>
-            <Typography.Text>编码覆盖</Typography.Text>
-            <Progress
-              percent={coverage && coverage.rowCount > 0 ? Math.round((coverage.comparableRows / coverage.rowCount) * 100) : 0}
-              format={() => coverage ? `${coverage.comparableRows}/${coverage.rowCount}` : "—"}
-              status={coverage && coverage.unmappedRows > 0 ? "exception" : "success"}
-            />
-          </Col>
-          <Col xs={24} md={12}>
-            <Typography.Text>可比行一致率</Typography.Text>
-            <Progress
-              percent={coverage && coverage.comparableRows > 0 ? Math.round((coverage.agreeRows / coverage.comparableRows) * 100) : 0}
-              format={() => coverage ? `${coverage.agreeRows}/${coverage.comparableRows}` : "—"}
-              status={coverage && coverage.diffRows > 0 ? "exception" : "success"}
-            />
-          </Col>
-        </Row>
-        <Alert
-          style={{ marginTop: 12 }}
-          type={coverage && coverage.diffRows > 0 ? "warning" : "success"}
-          showIcon
-          message={coverage ? `${coverage.diffRows} 个可比 SKU 需要按仓库覆盖继续核对` : "等待核对结果"}
-        />
       </DecisionVisual>
       <ListToolbar
         state={listState}

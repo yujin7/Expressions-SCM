@@ -44,6 +44,8 @@ export interface DecisionVisualProps {
   state?: VisualState;
   stateDetail?: React.ReactNode;
   height?: number;
+  /** KPI/summary content can use its natural height; charts keep a fixed canvas by default. */
+  fitContent?: boolean;
   children: React.ReactNode;
   dataView?: React.ReactNode;
   extra?: React.ReactNode;
@@ -107,6 +109,7 @@ export default function DecisionVisual({
   state = "ready",
   stateDetail,
   height = 300,
+  fitContent = false,
   children,
   dataView,
   extra,
@@ -125,6 +128,7 @@ export default function DecisionVisual({
   const isReady = state === "ready";
   const isShowingData = Boolean(showTable && dataView);
   const contentHeight: number | string = fullscreen ? "calc(100vh - 230px)" : height;
+  const useNaturalHeight = fitContent && !fullscreen;
 
   const share = async () => {
     try {
@@ -277,8 +281,8 @@ export default function DecisionVisual({
         aria-describedby={summaryId}
         aria-label={isShowingData || contentIsTable ? undefined : `${typeof title === "string" ? title : "决策图表"}。${summary}`}
         style={{
-          minHeight: contentHeight,
-          height: isReady && !isShowingData ? contentHeight : undefined,
+          minHeight: useNaturalHeight ? undefined : contentHeight,
+          height: useNaturalHeight || !isReady || isShowingData ? undefined : contentHeight,
         }}
       >
         {isShowingData ? dataView : isReady ? children : (

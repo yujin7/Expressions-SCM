@@ -317,6 +317,7 @@ export default function NpdProjectsClient() {
             ? "现有进行中项目尚未实例化节点计划，无法形成组合进度。"
             : undefined}
         height={Math.max(220, Math.min(420, projectSummary.active.length * 58 + 30))}
+        fitContent
         dataView={
           <Table<ProjectRow>
             rowKey="id"
