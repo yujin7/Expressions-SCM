@@ -10,7 +10,7 @@
  * 口径局限（平均在库用当前在库近似）在页面顶部与周转页签内均常驻提示，不做美化。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, App, Card, Col, Empty, Input, Row, Segmented, Space, Statistic, Table, Tabs, Tag, Tooltip as AntTooltip, Typography } from "antd";
+import { Alert, App, Col, Input, Row, Segmented, Space, Table, Tabs, Tag, Tooltip as AntTooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
   Bar,
@@ -28,6 +28,10 @@ import {
   ZAxis,
 } from "recharts";
 import { fetchJson } from "@/components/fetchJson";
+import CaliberNote from "@/components/CaliberNote";
+import DecisionMetric from "@/components/DecisionMetric";
+import DecisionVisual from "@/components/DecisionVisual";
+import { VISUAL_COLOR } from "@/components/decision-visuals";
 import { exportCsv } from "@/components/exportCsv";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
@@ -114,11 +118,11 @@ export default function InventoryAnalyticsClient() {
   const [data, setData] = useState<Data | null>(null);
   const [chart, setChart] = useState<Data | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState("scatter");
-  const listState = useListState({ key: "inventory-analytics", defaults: { q: "", windowDays: "90" }, defaultPageSize: 50 });
+  const listState = useListState({ key: "inventory-analytics", defaults: { q: "", windowDays: "90", view: "scatter" }, defaultPageSize: 50 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const windowDays = filters.windowDays || "90";
+  const tab = filters.view || "scatter";
 
   /* 表格数据：随分页变化 */
   const load = useCallback(async () => {
@@ -306,37 +310,52 @@ export default function InventoryAnalyticsClient() {
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>库存分析</Typography.Title>
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 12 }}
-        message="三视图口径：在库 = 实时账 + 快照仓最新快照；日均销 = 近3月销量 ÷ 91；出库/入库均取自库存流水 stock_ledger 的带符号 qtyDelta（正=入库、负=出库）。仅成品（finished + 在用）。"
-        description={
-          data ? (
-            <Typography.Text type="secondary">
-              口径日 {data.today}；周转窗口 {data.summary.windowDays} 天；可销告警线 {data.coverAlertDays} 天、滞销线 {data.slowDaysThreshold} 天（运行参数）。
-              {truncated ? `图表仅绘制在库量 TOP ${CHART_LIMIT}（共 ${chart?.total ?? 0} 个 SKU），明细表分页完整。` : ""}
-            </Typography.Text>
-          ) : null
+      <CaliberNote
+        summary={`口径日 ${data?.today ?? "—"}；先用健康矩阵找异常，再用账龄和周转验证原因。`}
+        detail={
+          <>
+            在库 = 实时账 + 快照仓最新快照；日均销 = 近 3 月销量 ÷ 91；
+            出入库取自 stock_ledger 带符号流水。仅统计在用成品。
+            {truncated ? ` 图表仅绘制在库量 TOP ${CHART_LIMIT}（共 ${chart?.total ?? 0} 个 SKU），明细表分页完整。` : ""}
+          </>
         }
       />
 
       <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
-        <Col xs={12} md={6}><Card size="small"><Statistic title="成品 SKU 数" value={summary?.skuCount ?? 0} /></Card></Col>
         <Col xs={12} md={6}>
-          <Card size="small">
-            <Statistic title={`平均周转次数（年化，窗口 ${windowDays} 天）`} value={summary?.avgTurns ?? "—"} precision={summary?.avgTurns != null ? 2 : undefined} />
-          </Card>
+          <DecisionMetric
+            metricId="finishedSkuCount"
+            value={summary?.skuCount ?? 0}
+            source={{ tier: "ledger", name: "SKU 主数据" }}
+            asOf={data?.today}
+          />
         </Col>
-        <Col xs={12} md={6}><Card size="small"><Statistic title="平均 DIO（天）" value={summary?.avgDio ?? "—"} /></Card></Col>
         <Col xs={12} md={6}>
-          <Card size="small">
-            <Statistic
-              title="来源不明库存"
-              value={summary?.unknownOriginQty ?? 0}
-              valueStyle={{ color: (summary?.unknownOriginQty ?? 0) > 0 ? "#d46b08" : undefined }}
-            />
-          </Card>
+          <DecisionMetric
+            metricId="turns"
+            value={summary?.avgTurns ?? "—"}
+            source={{ tier: "derived", name: `库存流水与当前在库（${windowDays} 天窗口）` }}
+            asOf={data?.today}
+          />
+        </Col>
+        <Col xs={12} md={6}>
+          <DecisionMetric
+            metricId="dio"
+            value={summary?.avgDio ?? "—"}
+            source={{ tier: "derived", name: `库存流水与当前在库（${windowDays} 天窗口）` }}
+            asOf={data?.today}
+          />
+        </Col>
+        <Col xs={12} md={6}>
+          <DecisionMetric
+            metricId="unknownOriginQty"
+            value={summary?.unknownOriginQty ?? 0}
+            status={(summary?.unknownOriginQty ?? 0) > 0 ? "warning" : "positive"}
+            source={{ tier: "derived", name: "当前在库 − 可追溯历史入库" }}
+            asOf={data?.today}
+            actionHref="/inventory/ledger"
+            actionLabel="核对库存流水"
+          />
         </Col>
       </Row>
 
@@ -374,22 +393,59 @@ export default function InventoryAnalyticsClient() {
 
       <Tabs
         activeKey={tab}
-        onChange={setTab}
+        onChange={(view) => listState.setFilter({ view })}
         items={[
           {
             key: "scatter",
             label: "健康散点",
             children: (
-              <Card
-                size="small"
+              <DecisionVisual
                 title="库存健康矩阵（横轴=日均销·对数，纵轴=可销天数，气泡=在库量，颜色=ABC）"
+                question="哪些 SKU 同时处于低销速、高库存或短覆盖的异常象限？"
+                metricId="daysCover"
+                grain="SKU"
+                unit="日均销 × 可销天数 × 在库量"
+                source={{
+                  tier: "derived",
+                  source: "库存过账台账 + 最新快照 + 近 3 月销售",
+                  asOf: data?.today,
+                }}
+                coverage={{
+                  covered: points.length,
+                  total: chart?.total,
+                  label: truncated ? `图形 TOP ${CHART_LIMIT}` : "有在库成品",
+                }}
+                activeFilters={[`周转窗口 ${windowDays} 天`, q ? `搜索：${q}` : "全部 SKU"]}
+                caveat={`对数轴无法显示 0，无动销 SKU 放在最左占位并降低透明度；可销天数超过 ${COVER_CAP} 天封顶绘制。`}
+                summary={`图中 ${points.length} 个 SKU；橙色虚线为 ${data?.coverAlertDays ?? 30} 天缺货告警线，黄色虚线为 ${data?.slowDaysThreshold ?? 180} 天滞销线。气泡越大表示在库越多。`}
+                state={chart == null ? "loading" : points.length === 0 ? "empty" : "ready"}
+                stateDetail="当前筛选范围内没有在库成品。"
                 extra={<Space size={4}>{(["A", "B", "C"] as const).map((a) => <Tag key={a} color={a === "A" ? "red" : a === "B" ? "orange" : "default"}>{a} 类</Tag>)}</Space>}
-                styles={{ body: { height: 460 } }}
+                height={460}
+                dataView={
+                  <Table<Point>
+                    rowKey="code"
+                    size="small"
+                    columns={[
+                      { title: "SKU", dataIndex: "code" },
+                      { title: "名称", dataIndex: "name", ellipsis: true },
+                      { title: "ABC", dataIndex: "abc" },
+                      { title: "日均销", dataIndex: "daily", align: "right" },
+                      {
+                        title: "可销天数",
+                        dataIndex: "daysCover",
+                        align: "right",
+                        render: (value: number | null) => value == null ? "无动销" : fmt(Math.round(value)),
+                      },
+                      { title: "在库", dataIndex: "z", align: "right", render: fmt },
+                    ]}
+                    dataSource={points}
+                    pagination={{ pageSize: 20, showSizeChanger: false }}
+                    scroll={{ x: "max-content", y: 330 }}
+                  />
+                }
               >
-                {points.length === 0 ? (
-                  <Empty description="无在库成品" />
-                ) : (
-                  <ResponsiveContainer>
+                <ResponsiveContainer>
                     <ScatterChart margin={{ top: 16, right: 24, bottom: 28, left: 8 }}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis
@@ -429,15 +485,15 @@ export default function InventoryAnalyticsClient() {
                       />
                       <ReferenceLine
                         y={data?.coverAlertDays ?? 30}
-                        stroke="#fa541c"
+                        stroke={VISUAL_COLOR.critical}
                         strokeDasharray="4 4"
-                        label={{ value: `缺货告警线 ${data?.coverAlertDays ?? 30} 天`, position: "insideTopRight", fontSize: 11, fill: "#fa541c" }}
+                        label={{ value: `缺货告警线 ${data?.coverAlertDays ?? 30} 天`, position: "insideTopRight", fontSize: 11, fill: VISUAL_COLOR.critical }}
                       />
                       <ReferenceLine
                         y={data?.slowDaysThreshold ?? 180}
-                        stroke="#faad14"
+                        stroke={VISUAL_COLOR.warning}
                         strokeDasharray="4 4"
-                        label={{ value: `滞销线 ${data?.slowDaysThreshold ?? 180} 天`, position: "insideTopRight", fontSize: 11, fill: "#d48806" }}
+                        label={{ value: `滞销线 ${data?.slowDaysThreshold ?? 180} 天`, position: "insideTopRight", fontSize: 11, fill: VISUAL_COLOR.warning }}
                       />
                       <Legend verticalAlign="top" height={24} />
                       <Scatter name="成品 SKU（点击进 SKU 360）" data={points} onClick={onPointClick} cursor="pointer">
@@ -447,8 +503,7 @@ export default function InventoryAnalyticsClient() {
                       </Scatter>
                     </ScatterChart>
                   </ResponsiveContainer>
-                )}
-              </Card>
+              </DecisionVisual>
             ),
           },
           {
@@ -475,10 +530,47 @@ export default function InventoryAnalyticsClient() {
                     <Tag key={b} color={BUCKET_COLORS[b]}>{BUCKET_LABELS[b]}：{fmt(summary?.agingTotals[b] ?? 0)}</Tag>
                   ))}
                 </Space>
-                <Card size="small" title={`账龄结构（在库量 TOP ${agingBarData.length} SKU，堆叠=各账龄桶数量）`} styles={{ body: { height: 340 } }} style={{ marginBottom: 12 }}>
-                  {agingBarData.length === 0 ? (
-                    <Empty description="无在库成品" />
-                  ) : (
+                <div style={{ marginBottom: 12 }}>
+                  <DecisionVisual
+                    title={`账龄结构（在库量 TOP ${agingBarData.length} SKU）`}
+                    question="哪些高库存 SKU 的货已经压得最久？"
+                    metricId="unknownOriginQty"
+                    grain="SKU × 账龄桶"
+                    unit="基础单位数量"
+                    source={{
+                      tier: "derived",
+                      source: "库存台账按 FIFO 假设回溯",
+                      asOf: data?.today,
+                    }}
+                    coverage={{
+                      covered: agingBarData.length,
+                      total: chartRows.filter((row) => row.onHand > 0).length,
+                      label: "图形 TOP SKU",
+                    }}
+                    caveat="来源不明库存按最坏假设计入 >180 天桶，但不参与加权库龄；图形是聚焦视图，分页明细完整。"
+                    summary={`展示在库量最高的 ${agingBarData.length} 个 SKU；颜色从绿到红依次表示由新到老的五个账龄区间。`}
+                    state={chart == null ? "loading" : agingBarData.length === 0 ? "empty" : "ready"}
+                    stateDetail="当前筛选范围内没有在库成品。"
+                    height={340}
+                    dataView={
+                      <Table
+                        rowKey="code"
+                        size="small"
+                        dataSource={agingBarData}
+                        columns={[
+                          { title: "SKU", dataIndex: "code" },
+                          ...BUCKETS.map((bucket) => ({
+                            title: BUCKET_LABELS[bucket],
+                            dataIndex: bucket,
+                            align: "right" as const,
+                            render: fmt,
+                          })),
+                        ]}
+                        pagination={false}
+                        scroll={{ x: "max-content", y: 250 }}
+                      />
+                    }
+                  >
                     <ResponsiveContainer>
                       <BarChart data={agingBarData} margin={{ top: 8, right: 16, bottom: 48, left: 8 }}>
                         <CartesianGrid strokeDasharray="3 3" />
@@ -491,8 +583,8 @@ export default function InventoryAnalyticsClient() {
                         ))}
                       </BarChart>
                     </ResponsiveContainer>
-                  )}
-                </Card>
+                  </DecisionVisual>
+                </div>
                 <Table<Row>
                   rowKey="skuId"
                   size={listState.tableSize}

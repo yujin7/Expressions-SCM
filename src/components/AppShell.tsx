@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import { usePathname, useRouter } from "next/navigation";
-import { App as AntApp, Avatar, Button, Layout, Menu, Modal, Space, Typography, theme } from "antd";
+import { App as AntApp, Avatar, Button, Drawer, Grid, Layout, Menu, Modal, Space, Typography, theme } from "antd";
 import type { MenuProps } from "antd";
 import {
   AccountBookOutlined,
@@ -15,6 +15,7 @@ import {
   FundOutlined,
   ImportOutlined,
   InboxOutlined,
+  MenuOutlined,
   SettingOutlined,
   SwapOutlined,
   UserOutlined,
@@ -26,6 +27,53 @@ import { MeProvider, type Me } from "@/components/useMe";
 const { Header, Sider, Content } = Layout;
 const CommandPalette = dynamic(() => import("@/components/CommandPalette"), { ssr: false });
 const FeedbackButton = dynamic(() => import("@/components/FeedbackButton"), { ssr: false });
+
+const REPORT_GROUPS: Record<string, string> = {
+  "/report/dashboard": "analytics",
+  "/report/sales-bridge": "analytics",
+  "/report/funnel": "analytics",
+  "/report/inventory-analytics": "analytics",
+  "/report/demand": "planning",
+  "/report/risk": "planning",
+  "/report/segmentation": "planning",
+  "/report/closed-loop": "planning",
+  "/report/auto-replenish": "planning",
+  "/report/material-demand": "planning",
+  "/report/transfer-suggest": "planning",
+  "/report/leadtime-learning": "planning",
+  "/report/forecast-accuracy": "planning",
+  "/report/detectors": "planning",
+  "/report/wip": "outsourcing",
+  "/report/transit": "outsourcing",
+  "/report/supplier-scorecard": "outsourcing",
+  "/report/price-compare": "outsourcing",
+  "/report/inbound-calendar": "inventory",
+  "/report/sku-360": "inventory",
+  "/report/jiediao": "inventory",
+  "/report/npd": "npd",
+  "/report/margin": "finance",
+  "/report/settlement-summary": "finance",
+  "/report/data-health": "master",
+  "/report/exports": "import",
+};
+
+export function navigationGroupForPath(pathname: string): string | null {
+  if (REPORT_GROUPS[pathname]) return REPORT_GROUPS[pathname];
+  if (pathname.startsWith("/master/")) return "master";
+  if (pathname.startsWith("/inventory/")) return "inventory";
+  if (pathname.startsWith("/outsource/")) return "outsourcing";
+  if (pathname.startsWith("/matflow/")) return "matflow";
+  if (pathname.startsWith("/settlement/") || pathname.startsWith("/jobs/")) return "finance";
+  if (pathname.startsWith("/import/") || pathname.startsWith("/review/")) return "import";
+  if (pathname.startsWith("/npd")) return "npd";
+  if (pathname.startsWith("/admin/")) return "admin";
+  if (pathname.startsWith("/report/")) return "analytics";
+  return null;
+}
+
+export function selectedMenuKeyForPath(pathname: string): string {
+  return pathname;
+}
 
 const menuItems: MenuProps["items"] = [
   { key: "/workbench", icon: <DashboardOutlined />, label: "工作台" },
@@ -232,22 +280,37 @@ export default function AppShell({
   const router = useRouter();
   const { name: userName, roles } = currentUser;
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const screens = Grid.useBreakpoint();
+  const isMobile = screens.lg === false;
   const {
     token: { colorBgContainer },
   } = theme.useToken();
 
-  const openKeys = useMemo(() => {
-    if (pathname.startsWith("/master/")) return ["master"];
-    if (pathname.startsWith("/inventory/")) return ["inventory"];
-    if (pathname.startsWith("/outsource/")) return ["outsourcing"];
-    if (pathname.startsWith("/matflow/")) return ["outsourcing"];
-    if (pathname.startsWith("/settlement/")) return ["outsourcing"];
-    if (pathname.startsWith("/jobs/")) return ["outsourcing"];
-    if (pathname.startsWith("/import/")) return ["import"];
-    if (pathname.startsWith("/report/")) return ["reports"];
-    if (pathname.startsWith("/admin/")) return ["admin"];
-    return [];
-  }, [pathname]);
+  const activeGroup = useMemo(() => navigationGroupForPath(pathname), [pathname]);
+  const [openKeys, setOpenKeys] = useState<string[]>(() => (activeGroup ? [activeGroup] : []));
+  const visibleMenuItems = useMemo(() => filterMenuByRoles(menuItems, roles), [roles]);
+  useEffect(() => {
+    if (!activeGroup) return;
+    setOpenKeys((current) => (current.includes(activeGroup) ? current : [...current, activeGroup]));
+  }, [activeGroup]);
+
+  const navigationMenu = (
+    <Menu
+      theme="dark"
+      mode="inline"
+      items={visibleMenuItems}
+      selectedKeys={[selectedMenuKeyForPath(pathname)]}
+      openKeys={openKeys}
+      onOpenChange={(keys) => setOpenKeys(keys)}
+      onClick={({ key }) => {
+        if (key.startsWith("/")) {
+          router.push(key);
+          setMobileMenuOpen(false);
+        }
+      }}
+    />
+  );
 
   const onPasswordPage = pathname.startsWith("/account/password");
   return (
@@ -269,7 +332,7 @@ export default function AppShell({
         当前账号使用的是管理员设置的初始/临时密码，为保障账号安全，须修改后方可继续使用系统。
       </Modal>
       <Layout style={{ minHeight: "100vh" }}>
-        <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} width={220} theme="dark">
+        {!isMobile ? <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} width={220} theme="dark">
           <div
             style={{
               height: 48,
@@ -286,42 +349,67 @@ export default function AppShell({
           >
             {collapsed ? "供应链" : "供应链系统"}
           </div>
-          <Menu
-            theme="dark"
-            mode="inline"
-            items={useMemo(() => filterMenuByRoles(menuItems, roles), [roles])}
-            selectedKeys={[pathname]}
-            defaultOpenKeys={openKeys}
-            onClick={({ key }) => {
-              if (key.startsWith("/")) router.push(key);
+          {navigationMenu}
+        </Sider> : null}
+        <Drawer
+          placement="left"
+          width={280}
+          open={isMobile && mobileMenuOpen}
+          onClose={() => setMobileMenuOpen(false)}
+          styles={{ body: { padding: 0, background: "#001529" }, header: { display: "none" } }}
+          destroyOnHidden
+        >
+          <div
+            style={{
+              height: 60,
+              display: "flex",
+              alignItems: "center",
+              padding: "0 24px",
+              color: "#fff",
+              fontWeight: 650,
+              fontSize: 16,
+              background: "#001529",
             }}
-          />
-        </Sider>
+          >
+            供应链系统
+          </div>
+          {navigationMenu}
+        </Drawer>
         <Layout>
           <Header
             style={{
               background: colorBgContainer,
-              padding: "0 24px",
+              padding: isMobile ? "0 12px" : "0 24px",
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
             }}
           >
-            <Typography.Title level={4} style={{ margin: 0 }}>
-              供应链系统
-            </Typography.Title>
-            <Space>
-              <GlobalSearch />
-              <FeedbackButton />
+            <Space size={8}>
+              {isMobile ? (
+                <Button
+                  type="text"
+                  icon={<MenuOutlined />}
+                  aria-label="打开主导航"
+                  onClick={() => setMobileMenuOpen(true)}
+                />
+              ) : null}
+              <Typography.Title level={4} style={{ margin: 0 }}>
+                {isMobile ? "供应链" : "供应链系统"}
+              </Typography.Title>
+            </Space>
+            <Space size={isMobile ? 6 : 8}>
+              {!isMobile ? <GlobalSearch /> : null}
+              {!isMobile ? <FeedbackButton /> : null}
               <Avatar size="small" icon={<UserOutlined />} />
-              <Typography.Text>{userName ?? "未登录"}</Typography.Text>
-              {roleText ? <Typography.Text type="secondary">（{roleText}）</Typography.Text> : null}
-              <Typography.Link href="/account/password">修改密码</Typography.Link>
+              {!isMobile ? <Typography.Text>{userName ?? "未登录"}</Typography.Text> : null}
+              {!isMobile && roleText ? <Typography.Text type="secondary">（{roleText}）</Typography.Text> : null}
+              {!isMobile ? <Typography.Link href="/account/password">修改密码</Typography.Link> : null}
               <Typography.Link href="/signout">退出</Typography.Link>
             </Space>
           </Header>
-          <Content style={{ margin: 16 }}>
-            <div style={{ background: colorBgContainer, borderRadius: 8, padding: 24, minHeight: "100%" }}>
+          <Content style={{ margin: isMobile ? 8 : 16 }}>
+            <div style={{ background: colorBgContainer, borderRadius: 10, padding: isMobile ? 12 : 24, minHeight: "100%" }}>
               {children}
             </div>
           </Content>

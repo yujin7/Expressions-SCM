@@ -129,7 +129,7 @@ function BriefBody({ data }: { data: SkuBriefDto }) {
         )}
       </div>
       <div style={{ display: "flex", gap: 10, borderTop: "1px solid #f0f0f0", paddingTop: 6 }}>
-        <a href={`/master/sku?q=${cq}`}>SKU 360</a>
+        <a href={`/report/sku-360?q=${cq}`}>SKU 360</a>
         <a href={`/replenish?q=${cq}`}>未来曲线</a>
         <a href={`/inventory/expiry?q=${cq}`}>效期批次</a>
       </div>
