@@ -62,11 +62,17 @@ exit 0
   );
   chmodSync(fakeNode, 0o755);
 
+  const inheritedEnv = { ...process.env };
+  delete inheritedEnv.SCM_VERIFY_LIVE;
+  delete inheritedEnv.SCM_TEST_LIVE_SKIP;
+  delete inheritedEnv.SCM_TEST_MUTATE_WORKTREE;
+  delete inheritedEnv.SCM_TEST_MUTATE_HEAD;
+
   const result = spawnSync(process.execPath, ["--import", tsxImport, script], {
     cwd: repo,
     encoding: "utf8",
     env: {
-      ...process.env,
+      ...inheritedEnv,
       PATH: `${bin}:${process.env.PATH ?? ""}`,
       SCM_TEST_LOG: logPath,
       ...(options.live ? { SCM_VERIFY_LIVE: "1" } : {}),
