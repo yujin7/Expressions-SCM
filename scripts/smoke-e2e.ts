@@ -186,22 +186,42 @@ async function main(): Promise<void> {
     record("匿名 → /api/report/dashboard 应 401", status === 401 ? "PASS" : "FAIL", `status=${status}`);
   }
 
-  // 5) PO 价格脱敏（ops 不可见 price；admin 侧对照）
+  // 5) PO 详情价格脱敏（ops 不可见 price；admin 对同一 PO 必须可见 price）
   if (ops) {
-    const opsPo = await getJson(ops, "/api/outsource/po");
-    const adminPo = await getJson(admin, "/api/outsource/po");
-    const opsRows = (opsPo.body as { rows?: unknown[] } | null)?.rows ?? [];
-    const adminRows = (adminPo.body as { rows?: unknown[] } | null)?.rows ?? [];
-    if (opsPo.status !== 200) record("PO 脱敏（ops01 无 price）", "FAIL", `status=${opsPo.status}`);
-    else if (adminRows.length === 0) record("PO 脱敏（ops01 无 price）", "SKIP", "无 PO 数据，无法验证");
-    else {
-      const opsHasPrice = hasDeepKey(opsRows, "price");
-      const adminHasPrice = hasDeepKey(adminRows, "price");
-      if (!opsHasPrice) record("PO 脱敏（ops01 无 price）", "PASS", `admin侧price=${adminHasPrice ? "可见" : "列表层无price字段"}`);
-      else record("PO 脱敏（ops01 无 price）", "FAIL", "ops01 报文中发现 price 键");
+    const adminPoList = await getJson(admin, "/api/outsource/po");
+    const adminRows = (adminPoList.body as { rows?: Array<{ id?: number }> } | null)?.rows ?? [];
+    if (adminPoList.status !== 200) {
+      record("PO 详情脱敏（admin 有 price / ops01 无 price）", "FAIL", `列表 status=${adminPoList.status}`);
+    } else if (adminRows.length === 0) {
+      record("PO 详情脱敏（admin 有 price / ops01 无 price）", "SKIP", "无 PO 数据，无法验证");
+    } else {
+      const poId = Number(adminRows[0]?.id);
+      if (!Number.isInteger(poId) || poId <= 0) {
+        record("PO 详情脱敏（admin 有 price / ops01 无 price）", "FAIL", "列表首行缺少有效 PO id");
+      } else {
+        const [adminDetail, opsDetail] = await Promise.all([
+          getJson(admin, `/api/outsource/po/${poId}`),
+          getJson(ops, `/api/outsource/po/${poId}`),
+        ]);
+        const adminHasPrice = hasDeepKey(adminDetail.body, "price");
+        const opsHasPrice = hasDeepKey(opsDetail.body, "price");
+        if (adminDetail.status !== 200 || opsDetail.status !== 200) {
+          record(
+            "PO 详情脱敏（admin 有 price / ops01 无 price）",
+            "FAIL",
+            `admin=${adminDetail.status} ops=${opsDetail.status}`,
+          );
+        } else if (!adminHasPrice) {
+          record("PO 详情脱敏（admin 有 price / ops01 无 price）", "FAIL", "admin 详情缺少价格对照字段");
+        } else if (opsHasPrice) {
+          record("PO 详情脱敏（admin 有 price / ops01 无 price）", "FAIL", "ops01 详情报文发现 price 键");
+        } else {
+          record("PO 详情脱敏（admin 有 price / ops01 无 price）", "PASS", `poId=${poId}`);
+        }
+      }
     }
   } else {
-    record("PO 脱敏（ops01 无 price）", "SKIP", "ops01 登录失败");
+    record("PO 详情脱敏（admin 有 price / ops01 无 price）", "SKIP", "ops01 登录失败");
   }
 
   /* ── Wave V：新页 API 冒烟（risk/expiry/npd） ── */

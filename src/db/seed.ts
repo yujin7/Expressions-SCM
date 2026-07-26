@@ -272,6 +272,56 @@ async function main() {
     bump("uom_convs", true);
   }
 
+  // ---------- 发布冒烟 PO（R9：详情价格按角色脱敏；草稿不计入在途/审批） ----------
+  // 固定自然键让重复 seed 幂等；单据与行分别补齐，亦可修复上次中断留下的半成品。
+  const smokePoDocNo = "PO-SEED-0001";
+  const [adminUser] = await db
+    .select({ id: schema.users.id })
+    .from(schema.users)
+    .where(eq(schema.users.username, "admin"));
+  if (!adminUser) throw new Error("种子管理员不存在，无法创建发布冒烟 PO");
+
+  let [smokePo] = await db
+    .select({ id: schema.poDocs.id })
+    .from(schema.poDocs)
+    .where(eq(schema.poDocs.docNo, smokePoDocNo));
+  if (smokePo) {
+    bump("po_docs", false);
+  } else {
+    [smokePo] = await db
+      .insert(schema.poDocs)
+      .values({
+        docNo: smokePoDocNo,
+        status: "draft",
+        supplierId: supplierIds["SUP001"],
+        createdBy: adminUser.id,
+        remark: "发布冒烟：验证 PO 详情价格按角色脱敏",
+      })
+      .returning({ id: schema.poDocs.id });
+    bump("po_docs", true);
+  }
+
+  const [smokePoLine] = await db
+    .select({ id: schema.poLines.id })
+    .from(schema.poLines)
+    .where(and(eq(schema.poLines.poId, smokePo.id), eq(schema.poLines.skuId, skuIds["YL00001"])));
+  if (smokePoLine) {
+    bump("po_lines", false);
+  } else {
+    await db.insert(schema.poLines).values({
+      poId: smokePo.id,
+      skuId: skuIds["YL00001"],
+      lineType: "raw",
+      purchaseUom: "袋",
+      uomFactor: "25",
+      qty: "2",
+      price: "3000.00",
+      taxIncluded: false,
+      taxRatePct: "13",
+    });
+    bump("po_lines", true);
+  }
+
   // ---------- DW1 维度（品牌/渠道/别名，幂等模块化——见 seed-dimensions.ts） ----------
   const dimCounts = await seedDimensions(db);
   for (const [table, c] of Object.entries(dimCounts)) {
