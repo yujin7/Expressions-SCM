@@ -55,3 +55,5 @@ cp .env.example .env.prod   # 填 POSTGRES_PASSWORD/AUTH_SECRET/AUTH_URL
 ops/deploy.sh               # 构建→迁移门禁→滚动重启→健康检查
 ```
 备份：`ops/backup.sh`（crontab 每日 02:00；必须配置 BACKUP_REMOTE 出主机）。恢复演练：`ops/RESTORE-DRILL.md`（每季）。
+独立审计整改的迁移、账号、批次 UAT、HTTP 扫描、停止阈值与签字门禁见
+`ops/SCM-AUDIT-RELEASE-CHECKLIST.md`。
