@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import dynamic from "next/dynamic";
 import { usePathname, useRouter } from "next/navigation";
 import { App as AntApp, Avatar, Button, Drawer, Grid, Layout, Menu, Modal, Space, Typography, theme } from "antd";
 import type { MenuProps } from "antd";
@@ -22,11 +21,11 @@ import {
 } from "@ant-design/icons";
 
 import GlobalSearch from "@/components/GlobalSearch";
+import CommandPalette from "@/components/CommandPalette";
+import FeedbackButton from "@/components/FeedbackButton";
 import { MeProvider, type Me } from "@/components/useMe";
 
 const { Header, Sider, Content } = Layout;
-const CommandPalette = dynamic(() => import("@/components/CommandPalette"), { ssr: false });
-const FeedbackButton = dynamic(() => import("@/components/FeedbackButton"), { ssr: false });
 
 const REPORT_GROUPS: Record<string, string> = {
   "/report/dashboard": "analytics",
@@ -283,6 +282,7 @@ export default function AppShell({
   const { name: userName, roles } = currentUser;
   const [collapsed, setCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const screens = Grid.useBreakpoint();
   const isMobile = screens.lg === false;
   const {
@@ -292,6 +292,9 @@ export default function AppShell({
   const activeGroup = useMemo(() => navigationGroupForPath(pathname), [pathname]);
   const [openKeys, setOpenKeys] = useState<string[]>(() => (activeGroup ? [activeGroup] : []));
   const visibleMenuItems = useMemo(() => filterMenuByRoles(menuItems, roles), [roles]);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
   useEffect(() => {
     if (!activeGroup) return;
     setOpenKeys((current) => (current.includes(activeGroup) ? current : [...current, activeGroup]));
@@ -315,6 +318,26 @@ export default function AppShell({
   );
 
   const onPasswordPage = pathname.startsWith("/account/password");
+  if (!mounted) {
+    return (
+      <div className="app-boot" role="status" aria-label="正在加载供应链系统">
+        <div className="app-boot__sidebar">
+          <div className="app-boot__brand" />
+          {Array.from({ length: 9 }, (_, index) => (
+            <div className="app-boot__nav" key={index} />
+          ))}
+        </div>
+        <div className="app-boot__workspace">
+          <div className="app-boot__header" />
+          <div className="app-boot__surface">
+            <div className="app-boot__title" />
+            <div className="app-boot__line" />
+            <div className="app-boot__line app-boot__line--short" />
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <MeProvider initialMe={currentUser}>
       <AntApp>
@@ -333,9 +356,10 @@ export default function AppShell({
       >
         当前账号使用的是管理员设置的初始/临时密码，为保障账号安全，须修改后方可继续使用系统。
       </Modal>
-      <Layout style={{ minHeight: "100vh" }}>
-        {!isMobile ? <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} width={220} theme="dark">
+      <Layout className="app-layout">
+        {!isMobile ? <Sider className="app-sider" collapsible collapsed={collapsed} onCollapse={setCollapsed} width={220} theme="dark">
           <div
+            className="app-brand"
             style={{
               height: 48,
               margin: 12,
@@ -349,7 +373,8 @@ export default function AppShell({
               overflow: "hidden",
             }}
           >
-            {collapsed ? "供应链" : "供应链系统"}
+            <span className="app-brand__mark">链</span>
+            <span className="app-brand__name">{collapsed ? "" : "供应链系统"}</span>
           </div>
           {navigationMenu}
         </Sider> : null}
@@ -377,8 +402,9 @@ export default function AppShell({
           </div>
           {navigationMenu}
         </Drawer>
-        <Layout>
+        <Layout className="app-workspace">
           <Header
+            className="app-header"
             style={{
               background: colorBgContainer,
               padding: isMobile ? "0 12px" : "0 24px",
@@ -387,7 +413,7 @@ export default function AppShell({
               justifyContent: "space-between",
             }}
           >
-            <Space size={8}>
+            <Space size={8} className="app-header__identity">
               {isMobile ? (
                 <Button
                   type="text"
@@ -400,7 +426,7 @@ export default function AppShell({
                 {isMobile ? "供应链" : "供应链系统"}
               </Typography.Title>
             </Space>
-            <Space size={isMobile ? 6 : 8}>
+            <Space size={isMobile ? 6 : 8} className="app-header__actions">
               {!isMobile ? <GlobalSearch /> : null}
               {!isMobile ? <FeedbackButton /> : null}
               <Avatar size="small" icon={<UserOutlined />} />
@@ -410,10 +436,10 @@ export default function AppShell({
               <Typography.Link href="/signout">退出</Typography.Link>
             </Space>
           </Header>
-          <Content style={{ margin: isMobile ? 8 : 16 }}>
-            <div style={{ background: colorBgContainer, borderRadius: 10, padding: isMobile ? 12 : 24, minHeight: "100%" }}>
+          <Content className="app-content" style={{ margin: isMobile ? 8 : 16 }}>
+            <main className="app-surface" style={{ background: colorBgContainer, padding: isMobile ? 12 : 24 }}>
               {children}
-            </div>
+            </main>
           </Content>
         </Layout>
       </Layout>

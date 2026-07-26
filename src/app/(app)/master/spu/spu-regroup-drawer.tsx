@@ -1,7 +1,9 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 import { useCallback, useEffect, useState } from "react";
-import { App, Button, Drawer, Input, Modal, Space, Table, Tag, Typography } from "antd";
+import { App, Button, Drawer, Modal, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import RemoteSelect from "@/components/RemoteSelect";
 import { fetchJson, postJson } from "@/components/fetchJson";
@@ -193,7 +195,7 @@ export default function SpuRegroupDrawer({
             移入 SKU
           </Typography.Title>
           <Space style={{ marginBottom: 8 }}>
-            <Input.Search
+            <SearchInput
               allowClear
               placeholder="按编码/名称搜索其他 SPU 下的 SKU"
               style={{ width: 320 }}

@@ -1,0 +1,313 @@
+:root {
+  color-scheme: light;
+  background: #f3f6fb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: #f3f6fb;
+}
+
+body {
+  color: #172033;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  color: #fff;
+  background: #3157d5;
+}
+
+.app-layout {
+  min-height: 100vh;
+  background: #f3f6fb;
+}
+
+.app-sider {
+  position: sticky !important;
+  top: 0;
+  height: 100vh;
+  overflow: auto;
+  box-shadow: 8px 0 28px rgba(11, 27, 54, 0.08);
+}
+
+.app-sider::-webkit-scrollbar {
+  width: 0;
+}
+
+.app-brand {
+  gap: 10px;
+  letter-spacing: 0.02em;
+}
+
+.app-brand__mark,
+.login-card__mark,
+.login-brand-panel__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  color: #fff;
+  font-weight: 750;
+  border-radius: 10px;
+  background: linear-gradient(145deg, #6f8cff, #3157d5 58%, #1e3ca7);
+  box-shadow: 0 8px 18px rgba(49, 87, 213, 0.3);
+}
+
+.app-brand__name {
+  overflow: hidden;
+  font-size: 15px;
+}
+
+.app-sider .ant-menu {
+  padding: 4px 8px 12px;
+}
+
+.app-sider .ant-menu-item,
+.app-sider .ant-menu-submenu-title {
+  margin-block: 3px;
+}
+
+.app-workspace {
+  min-width: 0;
+}
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  height: 64px;
+  line-height: normal;
+  border-bottom: 1px solid rgba(223, 229, 238, 0.9);
+  box-shadow: 0 2px 14px rgba(16, 24, 40, 0.04);
+}
+
+.app-header__actions {
+  min-width: 0;
+}
+
+.app-content {
+  min-width: 0;
+}
+
+.app-surface {
+  min-height: calc(100vh - 96px);
+  overflow: hidden;
+  border: 1px solid rgba(223, 229, 238, 0.85);
+  border-radius: 14px;
+  box-shadow: 0 8px 28px rgba(16, 24, 40, 0.045);
+}
+
+.app-surface > h1:first-child,
+.app-surface > h2:first-child,
+.app-surface > h3:first-child,
+.app-surface > h4:first-child {
+  letter-spacing: -0.015em;
+}
+
+.app-surface .ant-table-wrapper {
+  overflow: hidden;
+  border: 1px solid #edf0f5;
+  border-radius: 10px;
+}
+
+.app-surface .ant-table-thead > tr > th {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.app-surface .ant-empty {
+  margin-block: 52px;
+}
+
+.app-surface .ant-alert {
+  border-radius: 10px;
+}
+
+.app-boot {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: 100vh;
+  background: #f3f6fb;
+}
+
+.app-boot__sidebar {
+  padding: 24px 18px;
+  background: #0b1b36;
+}
+
+.app-boot__brand,
+.app-boot__nav,
+.app-boot__header,
+.app-boot__title,
+.app-boot__line {
+  overflow: hidden;
+  border-radius: 8px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.07));
+  background-size: 220% 100%;
+  animation: app-shimmer 1.4s ease-in-out infinite;
+}
+
+.app-boot__brand {
+  width: 130px;
+  height: 32px;
+  margin: 0 auto 28px;
+}
+
+.app-boot__nav {
+  height: 38px;
+  margin-bottom: 9px;
+}
+
+.app-boot__workspace {
+  min-width: 0;
+}
+
+.app-boot__header {
+  height: 64px;
+  border-radius: 0;
+  background-color: #fff;
+}
+
+.app-boot__surface {
+  min-height: calc(100vh - 96px);
+  margin: 16px;
+  padding: 28px;
+  border: 1px solid #e6eaf1;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.app-boot__title {
+  width: 180px;
+  height: 28px;
+  margin-bottom: 28px;
+  background-color: #edf1f7;
+}
+
+.app-boot__line {
+  height: 120px;
+  margin-bottom: 16px;
+  background-color: #edf1f7;
+}
+
+.app-boot__line--short {
+  width: 68%;
+}
+
+.login-shell {
+  gap: clamp(36px, 7vw, 96px);
+  padding: 32px;
+  background:
+    radial-gradient(circle at 14% 18%, rgba(85, 119, 255, 0.17), transparent 28%),
+    radial-gradient(circle at 82% 88%, rgba(58, 191, 165, 0.12), transparent 30%),
+    linear-gradient(135deg, #f7f9fd 0%, #eef3fb 100%);
+}
+
+.login-brand-panel {
+  width: min(44vw, 520px);
+  padding: 40px;
+}
+
+.login-brand-panel__mark {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 28px;
+  font-size: 20px;
+  border-radius: 15px;
+}
+
+.login-brand-panel__eyebrow {
+  margin-bottom: 16px;
+  color: #3157d5;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.16em;
+}
+
+.login-brand-panel__title {
+  color: #14213b;
+  font-size: clamp(32px, 3.4vw, 48px);
+  font-weight: 720;
+  line-height: 1.24;
+  letter-spacing: -0.035em;
+}
+
+.login-brand-panel__caption {
+  margin-top: 22px;
+  color: #667085;
+  font-size: 15px;
+}
+
+.login-card {
+  width: min(100%, 410px);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 18px !important;
+  box-shadow: 0 24px 60px rgba(22, 39, 78, 0.12);
+}
+
+.login-card .ant-card-body {
+  padding: 36px;
+}
+
+.login-card__mark {
+  margin: 0 auto;
+}
+
+@keyframes app-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+@media (max-width: 991px) {
+  .app-boot {
+    grid-template-columns: 1fr;
+  }
+
+  .app-boot__sidebar {
+    display: none;
+  }
+
+  .app-surface {
+    min-height: calc(100vh - 80px);
+    border-radius: 10px;
+  }
+
+  .login-brand-panel {
+    display: none;
+  }
+
+  .login-shell {
+    padding: 20px;
+  }
+}
+
+@media (max-width: 575px) {
+  .app-header__identity h4 {
+    font-size: 16px !important;
+  }
+
+  .login-card .ant-card-body {
+    padding: 28px 22px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-boot__brand,
+  .app-boot__nav,
+  .app-boot__header,
+  .app-boot__title,
+  .app-boot__line {
+    animation: none;
+  }
+}

@@ -1,7 +1,9 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { App, Button, Form, Input, Modal, Space, Table } from "antd";
+import { App, Button, Form, Modal, Space, Table } from "antd";
 import type { FormInstance, TableProps } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
@@ -170,7 +172,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
   return (
     <div>
       <Space style={{ marginBottom: 16, display: "flex", justifyContent: "space-between" }} wrap>
-        <Input.Search
+        <SearchInput
           allowClear
           placeholder={searchPlaceholder ?? "搜索编码/名称"}
           style={{ width: 280 }}

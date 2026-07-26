@@ -1,9 +1,11 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /** SKU 360 · 事件时间轴——单 SKU 全生命周期事件融合（只读）。
  *  四源：库存流水 × 在途存量单 × 效期批次 × 处置决定。 */
-import { useCallback, useState } from "react";
-import { App, Empty, Input, Space, Spin, Tag, Timeline, Typography } from "antd";
+import { useCallback, useEffect, useState } from "react";
+import { App, Empty, Space, Spin, Tag, Timeline, Typography } from "antd";
 import { fetchJson } from "@/components/fetchJson";
 
 type TimelineCategory = "stock" | "order" | "expiry" | "disposal" | "other";
@@ -30,7 +32,7 @@ const CATEGORY_COLORS: Record<TimelineCategory, string> = {
   other: "gray",
 };
 
-export default function Sku360Client() {
+export default function Sku360Client({ initialSku = "" }: { initialSku?: string }) {
   const { message } = App.useApp();
   const [data, setData] = useState<SkuTimeline | null>(null);
   const [loading, setLoading] = useState(false);
@@ -53,15 +55,19 @@ export default function Sku360Client() {
     },
     [message],
   );
+  useEffect(() => {
+    if (initialSku) void load(initialSku);
+  }, [initialSku, load]);
 
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
         SKU 360 · 事件时间轴
       </Typography.Title>
-      <Input.Search
+      <SearchInput
         allowClear
         enterButton
+        defaultValue={initialSku}
         placeholder="输入 SKU 编码查看全生命周期事件"
         style={{ maxWidth: 420, marginBottom: 16 }}
         onSearch={(v) => void load(v)}

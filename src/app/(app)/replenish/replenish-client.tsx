@@ -1,5 +1,7 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
@@ -380,7 +382,7 @@ export default function ReplenishClient() {
               style={{ width: 90 }}
             />
           </span>
-          <Input.Search
+          <SearchInput
             allowClear
             placeholder="搜索 SKU 编码/名称"
             style={{ width: 220 }}

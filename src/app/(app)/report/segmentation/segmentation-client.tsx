@@ -1,8 +1,10 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /** ABC/XYZ 库存分层——近6月销售贡献（ABC）×需求波动（XYZ）3×3 矩阵（只读） */
 import { useCallback, useEffect, useState } from "react";
-import {  App, Input, Table, Tag, Typography } from "antd";
+import {  App, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import CaliberNote from "@/components/CaliberNote";
@@ -152,7 +154,7 @@ export default function SegmentationClient() {
                 已筛选：{cell}
               </Tag>
             ) : null}
-            <Input.Search
+            <SearchInput
               key={q}
               allowClear
               defaultValue={q}

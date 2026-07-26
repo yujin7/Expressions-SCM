@@ -1,5 +1,7 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 import { useRouter, useSearchParams } from "next/navigation";
 
 /**
@@ -7,7 +9,7 @@ import { useRouter, useSearchParams } from "next/navigation";
  * 达成率=达成/需求 前端现算（源文件公式未缓存——不落假数）；月度重导整类替换。
  */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Col, Input, Progress, Row, Select, Space, Statistic, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Col, Progress, Row, Select, Space, Statistic, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import CaliberNote from "@/components/CaliberNote";
@@ -216,7 +218,7 @@ function DemandTab() {
         state={listState}
         extra={
           <>
-            <Input.Search
+            <SearchInput
               key={q}
               allowClear
               defaultValue={q}
@@ -374,7 +376,7 @@ function PalletTab({ initialQ = "" }: { initialQ?: string }) {
         state={listState}
         extra={
           <>
-            <Input.Search
+            <SearchInput
               key={q}
               allowClear
               defaultValue={q}
@@ -577,7 +579,7 @@ function StockSummaryTab() {
         state={listState}
         extra={
           <>
-            <Input.Search key={q} allowClear defaultValue={q} placeholder="搜索编码/名称" style={{ width: 260 }} onSearch={(v) => listState.setFilter({ q: v.trim() })} />
+            <SearchInput key={q} allowClear defaultValue={q} placeholder="搜索编码/名称" style={{ width: 260 }} onSearch={(v) => listState.setFilter({ q: v.trim() })} />
             <Tag.CheckableTag checked={onlyDiff} onChange={setOnlyDiff} style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}>本页只看差异</Tag.CheckableTag>
           </>
         }

@@ -1,11 +1,13 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /**
  * R16 借调对账：月度部门间借调矩阵 + 明细 + 净借入/借出签字页。
  * 数据源=完成态调拨单（reason='借调'）；替代 借入/借出 手工透视表。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, App, Card, Col, DatePicker, Empty, Input, Row, Skeleton, Table, Tabs, Tag, Typography } from "antd";
+import { Alert, App, Card, Col, DatePicker, Empty, Row, Skeleton, Table, Tabs, Tag, Typography } from "antd";
 import { PrinterOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
@@ -79,7 +81,7 @@ function BorrowHistoryTab() {
       <ListToolbar
         state={listState}
         extra={
-          <Input.Search
+          <SearchInput
             key={q}
             allowClear
             defaultValue={q}

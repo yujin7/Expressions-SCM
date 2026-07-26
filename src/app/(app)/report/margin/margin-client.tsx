@@ -1,8 +1,10 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /** 毛利视角 v1——手工成本基准 × 近3月销量（成本录入=finance/admin；售价源未接入时留白，绝不臆造） */
 import { useCallback, useEffect, useState } from "react";
-import {  App, Col, Input, InputNumber, Row, Space, Statistic, Table, Tag, Typography } from "antd";
+import {  App, Col, InputNumber, Row, Space, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 
 import { fetchJson, postJson } from "@/components/fetchJson";
@@ -146,7 +148,7 @@ export default function MarginClient() {
             >
               只看已录成本
             </Tag.CheckableTag>
-            <Input.Search
+            <SearchInput
               key={q}
               allowClear
               defaultValue={q}

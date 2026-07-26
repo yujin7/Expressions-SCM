@@ -1,5 +1,7 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { App, Alert, Button, Descriptions, Drawer, Input, Modal, Popconfirm, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
@@ -358,7 +360,7 @@ function PoInner() {
       <ListToolbar
         state={listState}
         extra={
-          <Input.Search
+          <SearchInput
             key={q}
             allowClear
             defaultValue={q}

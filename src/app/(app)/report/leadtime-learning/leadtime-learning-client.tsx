@@ -1,8 +1,10 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /** E2-04 交期学习与供应商准时率——历史 PO 承诺交期 vs 实际收货，算分布并提议档案交期（人工采纳） */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Button, Card, Col, Input, Popconfirm, Row, Space, Statistic, Table, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Card, Col, Popconfirm, Row, Space, Statistic, Table, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import ListToolbar from "@/components/ListToolbar";
@@ -157,7 +159,7 @@ export default function LeadTimeLearningClient() {
       <ListToolbar
         state={listState}
         extra={
-          <Input.Search
+          <SearchInput
             key={q}
             allowClear
             defaultValue={q}

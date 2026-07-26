@@ -1,5 +1,7 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Button, Checkbox, Descriptions, Drawer, Input, Modal, Popconfirm, Space, Spin, Table, Tabs, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
@@ -596,7 +598,7 @@ export default function JsClient() {
       <ListToolbar
         state={listState}
         extra={
-          <Input.Search
+          <SearchInput
             key={q}
             allowClear
             defaultValue={q}

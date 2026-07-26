@@ -1,8 +1,10 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /** E7-05 预测复盘：滚动回测线上 Holt 算法——不存历史预测也能回答「准不准」 */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Card, Col, Input, Row, Statistic, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Card, Col, Row, Statistic, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { Line, LineChart, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { fetchJson } from "@/components/fetchJson";
@@ -138,7 +140,7 @@ export default function ForecastAccuracyClient() {
         state={listState}
         extra={
           <>
-            <Input.Search
+            <SearchInput
               key={q}
               allowClear
               defaultValue={q}

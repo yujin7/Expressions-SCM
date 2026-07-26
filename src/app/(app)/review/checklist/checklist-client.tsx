@@ -1,5 +1,7 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   App, Badge, Button, Empty, Input, Modal, Popconfirm, Progress, Select, Space, Table, Tabs, Tag, Tooltip, Typography,
@@ -292,7 +294,7 @@ export default function ChecklistClient() {
         }}
       />
       <Space style={{ marginBottom: 12 }} wrap>
-        <Input.Search
+        <SearchInput
           allowClear
           placeholder="搜索事项/详情/编码"
           style={{ width: 280 }}

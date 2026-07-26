@@ -1,8 +1,10 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /** 效期批次清单（仓库操作层）：逐批次×仓库的实物处置视图；PMC 决策视图见「风险库存处置」 */
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { App, Input, Select, Table, Tag, Typography } from "antd";
+import { App, Select, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import { exportCsv } from "@/components/exportCsv";
@@ -169,7 +171,7 @@ function ExpiryInner() {
               value={warehouseId ?? undefined}
               onChange={(v) => listState.setFilter({ warehouseId: v == null ? "" : String(v) })}
             />
-            <Input.Search
+            <SearchInput
               key={q}
               allowClear
               defaultValue={q}

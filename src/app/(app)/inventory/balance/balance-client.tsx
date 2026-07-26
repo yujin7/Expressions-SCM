@@ -1,8 +1,10 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Alert, App, Input, Space, Switch, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Space, Switch, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import ExportButton from "@/components/ExportButton";
 import RemoteSelect from "@/components/RemoteSelect";
@@ -119,7 +121,7 @@ function SkuBalanceTab() {
         state={listState}
         extra={
           <>
-            <Input.Search
+            <SearchInput
               key={q}
               allowClear
               defaultValue={q}
@@ -226,7 +228,7 @@ function SpuBalanceTab() {
         message="SPU 汇总按数量直加，仅同基础单位产品有参考意义（R3）"
       />
       <Space style={{ marginBottom: 16 }} wrap>
-        <Input.Search
+        <SearchInput
           allowClear
           placeholder="搜索产品编码/名称"
           style={{ width: 260 }}
@@ -340,7 +342,7 @@ function SnapshotTab() {
         message="快照仓（保税/云/平台仓）只读参考口径：数据来自快照导入，不入实时账本；留意「数据日期」标签判断新鲜度（D20）"
       />
       <Space style={{ marginBottom: 16 }} wrap>
-        <Input.Search
+        <SearchInput
           allowClear
           defaultValue={initialQ}
           placeholder="搜索 SKU 编码/名称"

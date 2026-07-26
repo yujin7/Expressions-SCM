@@ -1,5 +1,7 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /** E4-01 批次追溯：召回场景的"这批货从哪来、现在在哪"。出库侧覆盖情况如实标注。 */
 import { useCallback, useState } from "react";
 import { Alert, App, Card, Descriptions, Empty, Input, Space, Table, Tag, Typography } from "antd";
@@ -49,7 +51,7 @@ export default function BatchTraceClient() {
       <Space style={{ marginBottom: 16 }} wrap>
         <Input placeholder="SKU 编码" value={sku} onChange={(e) => setSku(e.target.value)} style={{ width: 200 }} onPressEnter={() => void run()} />
         <Input placeholder="批次号" value={batch} onChange={(e) => setBatch(e.target.value)} style={{ width: 200 }} onPressEnter={() => void run()} />
-        <Input.Search enterButton="追溯" loading={loading} onSearch={() => void run()} style={{ width: 120 }} />
+        <SearchInput enterButton="追溯" loading={loading} onSearch={() => void run()} style={{ width: 120 }} />
       </Space>
 
       {!data ? (

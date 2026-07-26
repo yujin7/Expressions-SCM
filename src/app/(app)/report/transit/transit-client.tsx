@@ -1,11 +1,13 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /**
  * 在途参考（D16 新旧划断执行面）：存量在途订单/包材/备料/OEM 归属只读登记。
  * 数据来自「在途进度表」月度重导（整类替换），带数据龄标注；绝不入账本。
  */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Input, Space, Table, Tabs, Tag, Typography } from "antd";
+import { Alert, App, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
@@ -110,7 +112,7 @@ function KindTable({ kind, prefix, columns }: { kind: string; prefix: string; co
         state={listState}
         extra={
           <>
-            <Input.Search
+            <SearchInput
               key={q}
               allowClear
               defaultValue={q}

@@ -1,8 +1,10 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /** E5-08 物料比价：同一物料多供应商基准价并排，价差最大者优先（只读；R1 防买贵，本页防买错家） */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Input, Space, Statistic, Table, Tag, Typography } from "antd";
+import { Alert, App, Space, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import ListToolbar from "@/components/ListToolbar";
@@ -176,7 +178,7 @@ export default function PriceCompareClient() {
       <ListToolbar
         state={listState}
         extra={
-          <Input.Search
+          <SearchInput
             key={q}
             allowClear
             defaultValue={q}

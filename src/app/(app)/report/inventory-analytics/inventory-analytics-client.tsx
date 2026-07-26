@@ -1,5 +1,7 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /**
  * E7-04 库存分析三视图：健康散点 × 库存账龄 × 周转指标（只读）。
  *
@@ -10,7 +12,7 @@
  * 口径局限（平均在库用当前在库近似）在页面顶部与周转页签内均常驻提示，不做美化。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, App, Col, Input, Row, Segmented, Space, Table, Tabs, Tag, Tooltip as AntTooltip, Typography } from "antd";
+import { Alert, App, Col, Row, Segmented, Space, Table, Tabs, Tag, Tooltip as AntTooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
   Bar,
@@ -379,7 +381,7 @@ export default function InventoryAnalyticsClient() {
                 onChange={(v) => listState.setFilter({ windowDays: String(v) })}
               />
             </Space>
-            <Input.Search
+            <SearchInput
               key={q}
               allowClear
               defaultValue={q}

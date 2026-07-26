@@ -1,8 +1,10 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /** F 项：风险库存处置工作台——效期批次 × 货盘处置注记 × 销速 三源融合（只读，spec/13） */
 import { useCallback, useEffect, useState } from "react";
-import {  App, Button, Dropdown, Input, Popconfirm, Space, Table, Tag, Tooltip, Typography } from "antd";
+import {  App, Button, Dropdown, Popconfirm, Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { exportCsv } from "@/components/exportCsv";
@@ -249,7 +251,7 @@ export default function RiskClient() {
                 {a}（{data?.byAction[a] ?? 0}）
               </Tag.CheckableTag>
             ))}
-            <Input.Search
+            <SearchInput
               key={q}
               allowClear
               defaultValue={q}

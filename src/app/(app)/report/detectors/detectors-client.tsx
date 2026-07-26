@@ -1,11 +1,13 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /**
  * E5-10 异动侦测：三条规则（销量骤停 / 渠道结构迁移 / 速度突变）的命中清单（只读）。
  * 命中即提示，不代表结论——页面顶部明确要求人工确认。
  */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Card, Input, Space, Statistic, Table, Tag, Typography } from "antd";
+import { Alert, App, Card, Space, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import { exportCsv } from "@/components/exportCsv";
@@ -233,7 +235,7 @@ export default function DetectorsClient() {
                 {KIND_LABEL[k]}（{k === "sales_stop" ? s?.salesStop ?? 0 : k === "channel_shift" ? s?.channelShift ?? 0 : s?.velocity ?? 0}）
               </Tag.CheckableTag>
             ))}
-            <Input.Search
+            <SearchInput
               key={q}
               allowClear
               defaultValue={q}

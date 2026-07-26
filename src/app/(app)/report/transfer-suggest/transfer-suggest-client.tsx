@@ -1,8 +1,10 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /** E3-04 仓间调拨建议：逐仓出库流水代理逐仓需求，盈余仓 → 缺口仓贪心分配（只读，不自动开单） */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Input, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import SkuHoverCard from "@/components/SkuHoverCard";
@@ -150,7 +152,7 @@ export default function TransferSuggestClient() {
       <ListToolbar
         state={listState}
         extra={
-          <Input.Search
+          <SearchInput
             key={q}
             allowClear
             defaultValue={q}

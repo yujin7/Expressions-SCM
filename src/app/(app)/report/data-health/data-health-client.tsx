@@ -1,5 +1,7 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /**
  * 主数据健康度（只读，不写库）。
  * 两个页签回答一体两面的问题：
@@ -8,7 +10,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Alert, App, Input, Progress, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Progress, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import { Tabs } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
@@ -170,7 +172,7 @@ function MissingTab() {
                 {d} 缺失（{summary?.byDimension[d] ?? 0}）
               </Tag.CheckableTag>
             ))}
-            <Input.Search
+            <SearchInput
               key={q}
               allowClear
               defaultValue={q}
@@ -363,7 +365,7 @@ function DuplicatesTab() {
               />
               <span>只看同品牌</span>
             </Space>
-            <Input.Search
+            <SearchInput
               key={q}
               allowClear
               defaultValue={q}

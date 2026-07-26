@@ -1,5 +1,7 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 import { Suspense, useCallback, useEffect, useState } from "react";
 import {
   App,
@@ -321,7 +323,7 @@ function JgInner() {
       <ListToolbar
         state={listState}
         extra={
-          <Input.Search
+          <SearchInput
             key={q}
             allowClear
             defaultValue={q}

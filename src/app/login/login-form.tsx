@@ -63,18 +63,28 @@ function LoginFormInner({ feishuEnabled }: { feishuEnabled: boolean }) {
 
   return (
     <div
+      className="login-shell"
       style={{
         minHeight: "100vh",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        background: "#f0f2f5",
       }}
     >
-      <Card style={{ width: 380 }}>
-        <Typography.Title level={4} style={{ textAlign: "center", marginBottom: 24 }}>
-          供应链系统登录
+      <div className="login-brand-panel" aria-hidden="true">
+        <div className="login-brand-panel__mark">链</div>
+        <div className="login-brand-panel__eyebrow">EXPRESSIONS · SCM</div>
+        <div className="login-brand-panel__title">让供应、库存与决策<br />保持在同一条链上</div>
+        <div className="login-brand-panel__caption">一个事实口径 · 一个行动入口 · 全程可追溯</div>
+      </div>
+      <Card className="login-card">
+        <div className="login-card__mark">链</div>
+        <Typography.Title level={3} style={{ textAlign: "center", margin: "10px 0 6px" }}>
+          欢迎回来
         </Typography.Title>
+        <Typography.Paragraph type="secondary" style={{ textAlign: "center", marginBottom: 24 }}>
+          登录供应链控制塔
+        </Typography.Paragraph>
         <Form<{ username: string; password: string }> onFinish={onFinish} size="large">
           <Form.Item name="username" rules={[{ required: true, message: "请输入用户名" }]}>
             <Input prefix={<UserOutlined />} placeholder="用户名" autoComplete="username" />

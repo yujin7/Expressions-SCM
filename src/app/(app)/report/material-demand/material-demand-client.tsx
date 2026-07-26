@@ -1,8 +1,10 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /** E2-07 物料需求展开（MRP）：成品需求（在制 WO 剩余产出 + 成品补货建议）经生效 BOM 展开为物料相关需求（只读） */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Input, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import SkuHoverCard from "@/components/SkuHoverCard";
@@ -170,7 +172,7 @@ export default function MaterialDemandClient() {
       <ListToolbar
         state={listState}
         extra={
-          <Input.Search
+          <SearchInput
             key={q}
             allowClear
             defaultValue={q}

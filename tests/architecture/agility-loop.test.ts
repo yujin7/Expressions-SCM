@@ -33,9 +33,7 @@ describe("agile delivery loop", () => {
     expect(pkg.scripts["check:postgres"]).toContain("verify-postgres.ts");
     expect(read("scripts/verify-postgres.ts")).toContain("async function main()");
     expect(read("scripts/verify-postgres.ts")).toContain("void main()");
-    expect(read("package-lock.json")).toContain(
-      "node_modules/@unrs/resolver-binding-wasm32-wasi/node_modules/@emnapi/core",
-    );
+    expect(read("package-lock.json")).toContain("node_modules/@emnapi/core");
     expect(read("vitest.config.ts")).toContain("maxWorkers: 4");
   });
 

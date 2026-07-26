@@ -1,5 +1,7 @@
 "use client";
 
+import SearchInput from "@/components/SearchInput";
+
 /**
  * E5-06 + E5-07 供应商记分卡 / 质检透视（只读报表 + 人工采纳分级）。
  *
@@ -11,7 +13,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  Alert, App, Button, Card, Col, Input, Popconfirm, Progress, Row, Segmented, Select,
+  Alert, App, Button, Card, Col, Popconfirm, Progress, Row, Segmented, Select,
   Space, Statistic, Table, Tabs, Tag, Tooltip, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
@@ -301,7 +303,7 @@ function ScorecardTab() {
         state={listState}
         extra={
           <>
-            <Input.Search
+            <SearchInput
               key={q}
               allowClear
               defaultValue={q}
