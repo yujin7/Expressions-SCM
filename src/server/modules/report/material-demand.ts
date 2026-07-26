@@ -17,9 +17,12 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
-import { dAdd, dCmp, dMax, dMul, dQty, dSub } from "@/server/core/decimal";
+import { dAdd, dCmp, dMax, dQty, dSub } from "@/server/core/decimal";
+import { getMaterialReferenceLines } from "@/server/core/material-reference";
+import { getOpenSupplyLines } from "@/server/core/supply";
 import { suggestQty } from "@/server/rules/netreq";
 import { grossFromBom, type BomLineLike } from "@/server/rules/bom-explode";
+import { earliestKitDate } from "@/server/rules/kitting-atp";
 import { getReplenishSuggestions } from "@/server/modules/replenish/service";
 import { todayShanghai } from "@/server/modules/master/common";
 
@@ -44,6 +47,19 @@ export interface MaterialDemandRow {
   onHand: string;
   /** PO 在途（已审批/执行中未收量） */
   inTransit: string;
+  /** 旧流程包材在途，仅参考；只计与本次需求成品匹配的行 */
+  referenceInTransit: string;
+  /** 旧流程包材备料剩余，仅参考；只计与本次需求成品匹配的行 */
+  referenceReserved: string;
+  /** 有物料关联但无法匹配到本次需求成品的参考量，不参与参考缺口 */
+  referenceUnallocated: string;
+  /** 仅供人工判断：系统净需求再扣匹配的旧台账在途/备料；不驱动建议采购量 */
+  referenceAwareGap: string;
+  /** 仅按实时账+有日期系统 PO 推演；无日期供给不臆造 */
+  systemEta: string | null;
+  /** 在系统 ETA 上叠加匹配的旧台账旁证；绝不驱动自动链 */
+  referenceEta: string | null;
+  referenceEvidenceCount: number;
   /** 净需求 = max(0, 毛需求 − 在库 − 在途)，未过 MOQ/倍数 */
   netReq: string;
   /** 建议采购量 = R11（MOQ 托底 + 订货倍数向上取整） */
@@ -72,6 +88,12 @@ export interface MaterialDemandResult {
     horizonDays: number;
     /** 口径日（Asia/Shanghai） */
     today: string;
+    /** 已匹配到当前需求成品的旧包材参考行数 */
+    referenceMatchedLines: number;
+    /** 有旧包材参考旁证的物料数 */
+    referenceMaterialCount: number;
+    /** 旧包材参考数据最近导入时点 */
+    referenceAsOf: string | null;
   };
 }
 
@@ -105,7 +127,9 @@ export async function getMaterialDemand(
     total: 0,
     summary: {
       materialCount: 0, shortageCount: 0, wipWoCount: 0, planSkuCount: 0,
-      missingBomProducts: [], horizonDays, today, ...s,
+      missingBomProducts: [], horizonDays, today,
+      referenceMatchedLines: 0, referenceMaterialCount: 0, referenceAsOf: null,
+      ...s,
     },
   });
 
@@ -225,6 +249,8 @@ export async function getMaterialDemand(
   const grossPlan = new Map<number, string>();
   /** 物料 → (成品编码 → 贡献毛需求)，用于 topProducts */
   const contribByMaterial = new Map<number, Map<string, string>>();
+  /** 物料 → 本次确有需求的成品；旧台账必须命中该集合才可进入参考缺口。 */
+  const contributingProductsByMaterial = new Map<number, Set<number>>();
   for (const pid of productIds) {
     const lines = bomByProduct.get(pid);
     if (!lines || lines.length === 0) continue;
@@ -242,6 +268,9 @@ export async function getMaterialDemand(
       const m = contribByMaterial.get(l.materialSkuId) ?? new Map<string, string>();
       m.set(pCode, dAdd(m.get(pCode) ?? "0", total, 6));
       contribByMaterial.set(l.materialSkuId, m);
+      const productSet = contributingProductsByMaterial.get(l.materialSkuId) ?? new Set<number>();
+      productSet.add(pid);
+      contributingProductsByMaterial.set(l.materialSkuId, productSet);
     }
   }
   const materialIds = [...new Set([...grossWip.keys(), ...grossPlan.keys()])];
@@ -262,22 +291,25 @@ export async function getMaterialDemand(
     .groupBy(schema.stockBalances.skuId);
   const onHandBySku = new Map<number, string>(balRows.map((r) => [r.skuId, r.qty ?? "0"]));
 
-  /* ── 在途：已审批/执行中 PO 实物行未收量（逐行下限 0，与 wo.ts/R11 同口径） ── */
-  const transitRows: { skuId: number; qty: string; uomFactor: string; receivedQty: string }[] = await db
-    .select({
-      skuId: schema.poLines.skuId,
-      qty: schema.poLines.qty,
-      uomFactor: schema.poLines.uomFactor,
-      receivedQty: schema.poLines.receivedQty,
-    })
-    .from(schema.poLines)
-    .innerJoin(schema.poDocs, eq(schema.poLines.poId, schema.poDocs.id))
-    .where(and(inArray(schema.poLines.skuId, materialIds), inArray(schema.poDocs.status, ["approved", "in_progress"])));
+  /* ── 供给：系统 PO 走 core/supply 唯一权威；旧包材台账走只读参考装配 ── */
+  const [systemSupply, materialReferences] = await Promise.all([
+    getOpenSupplyLines(db, materialIds),
+    getMaterialReferenceLines(db, materialIds),
+  ]);
+  const poBySku = new Map<number, typeof systemSupply>();
   const inTransitBySku = new Map<number, string>();
-  for (const r of transitRows) {
-    const remain = dSub(dMul(r.qty, r.uomFactor, 6), r.receivedQty, 6);
-    if (dCmp(remain, "0") <= 0) continue; // 超收行不抵扣其他行
-    inTransitBySku.set(r.skuId, dAdd(inTransitBySku.get(r.skuId) ?? "0", remain, 6));
+  for (const line of systemSupply) {
+    if (line.source !== "po") continue;
+    const arr = poBySku.get(line.skuId) ?? [];
+    arr.push(line);
+    poBySku.set(line.skuId, arr);
+    inTransitBySku.set(line.skuId, dAdd(inTransitBySku.get(line.skuId) ?? "0", String(line.qty), 6));
+  }
+  const refsBySku = new Map<number, typeof materialReferences>();
+  for (const line of materialReferences) {
+    const arr = refsBySku.get(line.materialSkuId) ?? [];
+    arr.push(line);
+    refsBySku.set(line.materialSkuId, arr);
   }
 
   /* ── MOQ/订货倍数：uom_convs 首行（按 id）兜底，值按基础单位解释（与 wo.ts/R11 同 PoC 口径） ── */
@@ -303,6 +335,8 @@ export async function getMaterialDemand(
 
   /* ── 逐物料净额化 ── */
   const all: MaterialDemandRow[] = [];
+  let referenceMatchedLines = 0;
+  let referenceAsOf: string | null = null;
   for (const mid of materialIds) {
     const m = matById.get(mid);
     if (!m) continue; // 主档缺失（理论上不可能，FK 保证）——跳过而非崩
@@ -314,6 +348,65 @@ export async function getMaterialDemand(
     const netReq = dQty(dMax(dSub(dSub(grossReq, onHand, 6), inTransit, 6), "0", 6));
     const uom = uomBySku.get(mid);
     const contrib = contribByMaterial.get(mid) ?? new Map<string, string>();
+    const contributingProducts = contributingProductsByMaterial.get(mid) ?? new Set<number>();
+    const references = refsBySku.get(mid) ?? [];
+    const matchedReferences = references.filter(
+      (line) => line.productSkuId != null && contributingProducts.has(line.productSkuId),
+    );
+    referenceMatchedLines += matchedReferences.length;
+    for (const line of references) {
+      if (referenceAsOf == null || line.asOf > referenceAsOf) referenceAsOf = line.asOf;
+    }
+    const referenceInTransit = dQty(
+      matchedReferences
+        .filter((line) => line.source === "legacy_pkg_order")
+        .reduce((sum, line) => dAdd(sum, line.qty, 6), "0"),
+    );
+    const referenceReserved = dQty(
+      matchedReferences
+        .filter((line) => line.source === "legacy_pkg_stock")
+        .reduce((sum, line) => dAdd(sum, line.qty, 6), "0"),
+    );
+    const referenceUnallocated = dQty(
+      references
+        .filter((line) => !matchedReferences.includes(line))
+        .reduce((sum, line) => dAdd(sum, line.qty, 6), "0"),
+    );
+    const referenceAwareGap = dQty(
+      dMax(dSub(dSub(netReq, referenceInTransit, 6), referenceReserved, 6), "0", 6),
+    );
+    const poLines = poBySku.get(mid) ?? [];
+    const systemEta = earliestKitDate(
+      [{
+        materialSkuId: mid,
+        required: grossReq,
+        onHand,
+        arrivals: poLines
+          .filter((line) => line.expectDate != null)
+          .map((line) => ({ date: line.expectDate!, qty: String(line.qty) })),
+      }],
+      today,
+      horizonDays,
+    ).kitDate;
+    const referenceEta = matchedReferences.length > 0
+      ? earliestKitDate(
+        [{
+          materialSkuId: mid,
+          required: grossReq,
+          onHand: dAdd(onHand, referenceReserved, 6),
+          arrivals: [
+            ...poLines
+              .filter((line) => line.expectDate != null)
+              .map((line) => ({ date: line.expectDate!, qty: String(line.qty) })),
+            ...matchedReferences
+              .filter((line) => line.source === "legacy_pkg_order" && line.expectDate != null)
+              .map((line) => ({ date: line.expectDate!, qty: line.qty })),
+          ],
+        }],
+        today,
+        horizonDays,
+      ).kitDate
+      : null;
     all.push({
       materialSkuId: mid,
       code: m.code,
@@ -324,6 +417,13 @@ export async function getMaterialDemand(
       fromPlan,
       onHand,
       inTransit,
+      referenceInTransit,
+      referenceReserved,
+      referenceUnallocated,
+      referenceAwareGap,
+      systemEta,
+      referenceEta,
+      referenceEvidenceCount: matchedReferences.length,
       netReq,
       suggestQty: suggestQty({ grossReq, onHand, inTransit, moq: uom?.moq ?? null, orderMultiple: uom?.orderMultiple ?? null }),
       sharedCount: sharedBySku.get(mid) ?? 0,
@@ -351,6 +451,9 @@ export async function getMaterialDemand(
       missingBomProducts: missingBomProducts.slice(0, 20),
       horizonDays,
       today,
+      referenceMatchedLines,
+      referenceMaterialCount: all.filter((row) => row.referenceEvidenceCount > 0).length,
+      referenceAsOf,
     },
   };
 }

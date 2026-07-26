@@ -120,10 +120,20 @@ body {
   border-radius: 10px;
 }
 
-/* AntD offsets nested expanded tables into their parent padding. Keep that
-   intentional 16px offset visible instead of clipping the detail header. */
+/* AntD gives a table nested in an expanded row negative block margins. The
+   expanded-row viewport is intentionally overflow:hidden, so that default
+   pulls the nested header 16px above its visible area and clips the labels.
+   Keep the detail table inside the row padding; horizontal overflow remains
+   owned by the surrounding table viewport. */
 .app-surface .ant-table-expanded-row .ant-table-wrapper {
   overflow: visible;
+}
+
+.app-surface .ant-table-wrapper .ant-table-expanded-row .ant-table-wrapper .ant-table {
+  /* AntD's generated selector includes table-cell and :only-child clauses;
+     important is intentionally scoped here so the local regression guard wins
+     without changing ordinary table spacing. */
+  margin: 0 !important;
 }
 
 .app-surface .ant-table-thead > tr > th {
@@ -150,6 +160,11 @@ body {
 
 .decision-visual + .list-toolbar {
   margin-top: 12px;
+}
+
+.decision-visual,
+.decision-visual .ant-card-body {
+  min-width: 0;
 }
 
 .dashboard-page {

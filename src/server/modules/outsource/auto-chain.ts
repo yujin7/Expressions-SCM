@@ -8,8 +8,9 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
-import { dQty } from "@/server/core/decimal";
+import { dAdd, dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
+import { getMaterialReferenceLines } from "@/server/core/material-reference";
 import { getNumParam } from "@/server/core/params";
 import { batchAllowed, producibleQty, suggestBatchQty, MAX_AUTO_BATCHES } from "@/server/rules/kitting";
 import { earliestKitDate, type KitBlocker } from "@/server/rules/kitting-atp";
@@ -35,6 +36,11 @@ export interface BatchSuggestion {
   kitBlockers: KitBlocker[];
   /** 齐套判定说明（含诚实降级：无物料行 ≠ 已验证齐套） */
   kitNote: string;
+  /** 旧台账旁证推演；只展示，绝不改变 producible/suggestQty/blockedReason。 */
+  referenceKitDate: string | null;
+  referenceKitNote: string;
+  referenceEvidenceCount: number;
+  referenceReservedQty: string;
   alreadyBatched: string;
   existingBatches: number;
   suggestQty: number;
@@ -123,6 +129,44 @@ export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchS
       })),
       todayShanghai(),
     );
+    /* 已关联旧包材台账只作第二条证据线：必须同时命中物料与本 WO 成品，未分配行不套用。
+       pkg_stock 可能已被实时账覆盖，pkg_order 也可能与系统 PO 重叠，因此这条参考推演
+       绝不能改变自动批次的可产量、建议量或阻断结果。 */
+    const matchedReference = (await getMaterialReferenceLines(db, materialIds))
+      .filter((line) => line.productSkuId === wo.productSkuId);
+    const referenceByMaterial = new Map<number, typeof matchedReference>();
+    for (const line of matchedReference) {
+      const arr = referenceByMaterial.get(line.materialSkuId) ?? [];
+      arr.push(line);
+      referenceByMaterial.set(line.materialSkuId, arr);
+    }
+    const referenceReservedQty = dQty(
+      matchedReference
+        .filter((line) => line.source === "legacy_pkg_stock")
+        .reduce((sum, line) => dAdd(sum, line.qty, 6), "0"),
+    );
+    const referenceAtp = matchedReference.length > 0
+      ? earliestKitDate(
+        lines.map((line) => {
+          const refs = referenceByMaterial.get(line.materialSkuId) ?? [];
+          const reserved = refs
+            .filter((ref) => ref.source === "legacy_pkg_stock")
+            .reduce((sum, ref) => dAdd(sum, ref.qty, 6), "0");
+          return {
+            materialSkuId: line.materialSkuId,
+            required: dQty(line.grossReq),
+            onHand: dAdd(String(matOnHand?.bySku.get(line.materialSkuId) ?? "0"), reserved, 6),
+            arrivals: [
+              ...(arrivalsByMat.get(line.materialSkuId) ?? []),
+              ...refs
+                .filter((ref) => ref.source === "legacy_pkg_order" && ref.expectDate != null)
+                .map((ref) => ({ date: ref.expectDate!, qty: ref.qty })),
+            ],
+          };
+        }),
+        todayShanghai(),
+      )
+      : null;
     const jgs: { qty: string; status: string }[] = await db
       .select({ qty: schema.jgDocs.qty, status: schema.jgDocs.status })
       .from(schema.jgDocs)
@@ -165,6 +209,12 @@ export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchS
         kitDate: kitAtp.kitDate,
         kitBlockers: kitAtp.blockers.slice(0, 3),
         kitNote: kitAtp.note,
+        referenceKitDate: referenceAtp?.kitDate ?? null,
+        referenceKitNote: referenceAtp
+          ? `${referenceAtp.note}；仅叠加 ${matchedReference.length} 条旧流程包材旁证，可能与实时账/系统 PO 重叠，不驱动自动批次`
+          : "无同时命中本工单成品与物料的旧流程包材旁证",
+        referenceEvidenceCount: matchedReference.length,
+        referenceReservedQty,
         alreadyBatched: String(alreadyBatched),
         existingBatches: jgs.length,
         suggestQty: suggest,

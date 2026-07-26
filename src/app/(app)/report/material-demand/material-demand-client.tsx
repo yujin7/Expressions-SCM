@@ -21,6 +21,13 @@ interface MaterialDemandRow {
   fromPlan: string;
   onHand: string;
   inTransit: string;
+  referenceInTransit: string;
+  referenceReserved: string;
+  referenceUnallocated: string;
+  referenceAwareGap: string;
+  systemEta: string | null;
+  referenceEta: string | null;
+  referenceEvidenceCount: number;
   netReq: string;
   suggestQty: string;
   sharedCount: number;
@@ -38,6 +45,9 @@ interface MaterialDemandData {
     missingBomProducts: string[];
     horizonDays: number;
     today: string;
+    referenceMatchedLines: number;
+    referenceMaterialCount: number;
+    referenceAsOf: string | null;
   };
 }
 
@@ -102,7 +112,66 @@ export default function MaterialDemandClient() {
       render: (v: string) => (Number(v) > 0 ? qty(v) : <Typography.Text type="secondary">—</Typography.Text>),
     },
     { title: "在库", dataIndex: "onHand", width: 105, align: "right", render: (v: string) => qty(v) },
-    { title: "在途", dataIndex: "inTransit", width: 105, align: "right", render: (v: string) => qty(v) },
+    { title: "系统 PO 在途", dataIndex: "inTransit", width: 120, align: "right", render: (v: string) => qty(v) },
+    {
+      title: "旧台账旁证（不驱动下单）",
+      children: [
+        {
+          title: "包材在途",
+          dataIndex: "referenceInTransit",
+          width: 110,
+          align: "right",
+          render: (v: string, r) =>
+            Number(v) > 0 ? (
+              <Tooltip title={`只计与当前需求成品匹配的旧流程包材在途，共 ${r.referenceEvidenceCount} 条旁证；不进入系统建议采购量`}>
+                <Tag color="blue" style={{ marginInlineEnd: 0 }}>{qty(v)}</Tag>
+              </Tooltip>
+            ) : "—",
+        },
+        {
+          title: "备料剩余",
+          dataIndex: "referenceReserved",
+          width: 110,
+          align: "right",
+          render: (v: string) =>
+            Number(v) > 0 ? (
+              <Tooltip title="旧流程包材备料池剩余量，可能与实时账重叠，仅作人工核对">
+                <Tag color="cyan" style={{ marginInlineEnd: 0 }}>{qty(v)}</Tag>
+              </Tooltip>
+            ) : "—",
+        },
+        {
+          title: "参考后缺口",
+          dataIndex: "referenceAwareGap",
+          width: 115,
+          align: "right",
+          render: (v: string, r) =>
+            r.referenceEvidenceCount > 0 ? (
+              <Tooltip title={`仅供人工判断；系统建议采购量仍按净需求 ${qty(r.netReq)} 计算。未分配/未匹配参考量 ${qty(r.referenceUnallocated)} 不参与扣减。`}>
+                <span>{qty(v)}</span>
+              </Tooltip>
+            ) : "—",
+        },
+      ],
+    },
+    {
+      title: "系统 ETA",
+      dataIndex: "systemEta",
+      width: 110,
+      render: (v: string | null) =>
+        v ? <Tooltip title="实时账在库 + 有确认到货日的系统 PO 推演"><span>{v}</span></Tooltip> : <Typography.Text type="secondary">未可得</Typography.Text>,
+    },
+    {
+      title: "参考 ETA",
+      dataIndex: "referenceEta",
+      width: 110,
+      render: (v: string | null, r) =>
+        r.referenceEvidenceCount === 0 ? "—" : v ? (
+          <Tooltip title="叠加匹配的旧流程包材在途/备料旁证；不会进入自动齐套或自动开单">
+            <Tag color="geekblue" style={{ marginInlineEnd: 0 }}>{v}</Tag>
+          </Tooltip>
+        ) : <Typography.Text type="warning">视野内未可得</Typography.Text>,
+    },
     {
       title: "净需求",
       dataIndex: "netReq",
@@ -154,6 +223,8 @@ export default function MaterialDemandClient() {
               在制 = 委外工单（已审批/执行中、未暂停）剩余产出，共 {data.summary.wipWoCount} 单，交期窗口 {data.summary.horizonDays} 天（口径日 {data.summary.today}）；
               计划 = 成品补货建议量，共 {data.summary.planSkuCount} 个成品。
               <b>计划路属建议层——成品建议未必被采纳，故本页为采购前瞻而非承诺</b>：只读不开单，下单仍走 PO 正常审批。
+              旧流程包材在途/备料只在物料与成品均已关联且命中本次需求时显示为旁证；
+              <b>它不改变系统净需求、建议采购量或自动链</b>，避免参考台账与实时账重叠造成少买。
               {data.summary.missingBomProducts.length > 0
                 ? `　有需求但无生效 BOM（展开断链，请补 BOM）：${data.summary.missingBomProducts.join("、")}`
                 : ""}
@@ -167,6 +238,11 @@ export default function MaterialDemandClient() {
           title="缺口物料数（净需求 > 0）"
           value={data?.summary.shortageCount ?? 0}
           valueStyle={{ color: (data?.summary.shortageCount ?? 0) > 0 ? "#cf1322" : undefined }}
+        />
+        <Statistic
+          title="有旧台账旁证的物料"
+          value={data?.summary.referenceMaterialCount ?? 0}
+          suffix={data?.summary.referenceMatchedLines ? ` / ${data.summary.referenceMatchedLines} 行` : undefined}
         />
       </Space>
       <ListToolbar

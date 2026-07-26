@@ -12,6 +12,10 @@ interface Batch {
   producible: number; alreadyBatched: string; existingBatches: number; suggestQty: number; blockedReason: string | null;
   kitDate: string | null; kitNote: string;
   kitBlockers: { materialSkuId: number; shortBy: string; readyDate: string | null }[];
+  referenceKitDate: string | null;
+  referenceKitNote: string;
+  referenceEvidenceCount: number;
+  referenceReservedQty: string;
 }
 interface WoSug {
   bhId: number; bhDocNo: string; skuId: number; skuCode: string; qty: string;
@@ -68,6 +72,19 @@ export default function AutoChainClient() {
         </Tooltip>
       ),
     },
+    {
+      title: "旧台账参考",
+      dataIndex: "referenceKitDate",
+      width: 125,
+      render: (v: string | null, r: Batch) =>
+        r.referenceEvidenceCount > 0 ? (
+          <Tooltip title={`${r.referenceKitNote}；其中备料池剩余 ${formatQty(r.referenceReservedQty)}`}>
+            <Tag color={v ? "geekblue" : "orange"} style={{ marginInlineEnd: 0 }}>
+              {v ?? "视野内未可得"}
+            </Tag>
+          </Tooltip>
+        ) : <Typography.Text type="secondary">无匹配旁证</Typography.Text>,
+    },
     { title: "已下批", dataIndex: "alreadyBatched", width: 90, align: "right", render: (v: string) => formatQty(v) },
     { title: "批次数", dataIndex: "existingBatches", width: 70, align: "right" },
     { title: "建议新批", dataIndex: "suggestQty", width: 100, align: "right", render: (v: number) => (v > 0 ? <Tag color="green">{v.toLocaleString("zh-CN")}</Tag> : "—") },
@@ -99,7 +116,7 @@ export default function AutoChainClient() {
         style={{ marginBottom: 12 }}
         type={data?.flags.autoJgOnReady || data?.flags.autoWoOnBh ? "warning" : "info"}
         showIcon
-        message={`口径：自动只产草稿，审批永远人工。开关状态：BH自动建WO=${data?.flags.autoWoOnBh ? "开" : "关"} · 齐套自动JG=${data?.flags.autoJgOnReady ? "开" : "关"}（运行参数页调整）。到料口径=本工单 PO 已收量；护栏：批次≤8、待复核成品不自动、有待批草稿先处理。`}
+        message={`口径：自动只产草稿，审批永远人工。开关状态：BH自动建WO=${data?.flags.autoWoOnBh ? "开" : "关"} · 齐套自动JG=${data?.flags.autoJgOnReady ? "开" : "关"}（运行参数页调整）。自动判断只使用实时账与系统 PO；旧流程包材在途/备料仅作第二条旁证，不改变可产量、建议量或阻断结果。护栏：批次≤8、待复核成品不自动、有待批草稿先处理。`}
       />
       <Space direction="vertical" size={16} style={{ width: "100%" }}>
         <Card size="small" title={`齐套批次建议（${data?.batches.length ?? 0}）`}>
