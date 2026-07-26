@@ -1,4 +1,0 @@
-interface:
-  display_name: "List Page"
-  short_description: "Build safe project list pages and client boundaries"
-  default_prompt: "Use $list-page to build or change this list page with the project state and hydration contracts."

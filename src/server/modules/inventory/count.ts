@@ -1,8 +1,8 @@
 import { and, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
-import { getDbAsync } from "@/db";
+
 import {
-  approvals, pdDocs, pdLines, skus, spus, stockBalances, stockDocLines, stockDocs, users, warehouses,
+   pdDocs, pdLines, skus, spus, stockBalances, stockDocLines, stockDocs, users, warehouses,
 } from "@/db/schema";
 import { dCmp, dQty, dSub } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";

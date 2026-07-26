@@ -18,7 +18,6 @@ import { leadTimeStats } from "@/server/rules/leadtime-stats";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
-const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const dec = (v: number | null): string | null => (v == null ? null : String(Math.round(v * 100) / 100));
 
 export interface RollupSummary {
@@ -28,8 +27,7 @@ export interface RollupSummary {
 
 /** 近 N 天的起点（Asia/Shanghai 日界近似用 UTC 偏移，与既有任务同准） */
 
-export async function runRollup(db: AnyDb, opts?: { months?: number }): Promise<RollupSummary> {
-  const months = Math.max(1, opts?.months ?? 24);
+export async function runRollup(db: AnyDb, _opts?: { months?: number }): Promise<RollupSummary> {
   const now = new Date();
 
   /* ── ①② 已删除（迁移 0018）──

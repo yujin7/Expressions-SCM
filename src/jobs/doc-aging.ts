@@ -10,7 +10,7 @@
  * - approved（PO/JG 待供应商确认 / 待执行）：5 天——供应商确认窗口。
  * draft 不计（未提交是正常暂存）；in_progress/done/closed 为终态或执行中不告警。
  */
-import { and, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import { bhDocs, jgDocs, poDocs, systemAlerts, woDocs } from "@/db/schema";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

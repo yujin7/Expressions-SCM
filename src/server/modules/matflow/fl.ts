@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
-  approvals, flDocs, flLines, jgDocs, skus, users, warehouses, woLines,
+   flDocs, flLines, jgDocs, skus, users, warehouses, woLines,
 } from "@/db/schema";
 import { dAdd, dCmp, dNeg, dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";

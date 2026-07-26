@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { and, desc, eq } from "drizzle-orm";
+import {  desc, eq } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { systemAlerts } from "@/db/schema";
 import { errorResponse, guardRead } from "@/server/modules/master/common";

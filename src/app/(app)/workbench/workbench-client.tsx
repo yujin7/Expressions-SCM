@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Card, Col, List, Row, Statistic, Tag, Typography } from "antd";
-import { RightOutlined, ThunderboltOutlined, WarningOutlined } from "@ant-design/icons";
+import { RightOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import Link from "next/link";
 import { fetchJson } from "@/components/fetchJson";
 
@@ -120,7 +120,6 @@ export default function WorkbenchClient() {
   const [loading, setLoading] = useState(false);
   const [sections, setSections] = useState<FocusSection[]>([]);
   const [exceptions, setExceptions] = useState<ExceptionItem[]>([]);
-  const [myOpenDocs, setMyOpenDocs] = useState<number | null>(null);
   const [queues, setQueues] = useState<QueueItem[]>([]);
   const [focusLoading, setFocusLoading] = useState(false);
 
@@ -129,7 +128,7 @@ export default function WorkbenchClient() {
     setFocusLoading(true);
     // 角色聚焦区块 + 控制塔异常（服务端按当前用户角色计算真实计数）
     fetchJson<{ sections: FocusSection[]; exceptions: ExceptionItem[]; myOpenDocs: number | null; queues: QueueItem[] }>("/api/workbench")
-      .then((r) => { setSections(r.sections); setExceptions(r.exceptions ?? []); setMyOpenDocs(r.myOpenDocs ?? null); setQueues(r.queues ?? []); })
+      .then((r) => { setSections(r.sections); setExceptions(r.exceptions ?? []); setQueues(r.queues ?? []); })
       .catch((e) => message.error((e as Error).message))
       .finally(() => setFocusLoading(false));
     try {

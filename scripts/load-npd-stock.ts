@@ -1,7 +1,7 @@
 /** NPD 三件套 + 总库存汇总 入库与核对（须停 dev server） */
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
-import { and, eq, sql } from "drizzle-orm";
+import {  eq, sql } from "drizzle-orm";
 import { getDbAsync } from "../src/db";
 import * as schema from "../src/db/schema";
 import { stageNpd } from "../src/server/import/adapters/npd";

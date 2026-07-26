@@ -64,7 +64,6 @@ export async function expiryCheck(
     .from(batchStocks)
     .where(and(...conds));
 
-  const todayMs = new Date(`${today}T00:00:00+08:00`).getTime();
   const agg = new Map<number, { nearQty: number; nearBatches: number; expiredQty: number; minDaysLeft: number | null }>();
   for (const r of rows) {
     if (!r.expiryDate) continue;

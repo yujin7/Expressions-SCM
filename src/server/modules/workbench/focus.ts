@@ -117,7 +117,6 @@ async function purchasingSection(db: AnyDb): Promise<FocusSection> {
 
 /* ── PMC：可销天数<30 成品数 / 放行阻塞行 / 别名待认领 ── */
 async function pmcSection(db: AnyDb): Promise<FocusSection> {
-  const s = schema.stockSnapshots;
   const sm = schema.salesMonthly;
 
   const { maxYm } = await salesWindow(db);

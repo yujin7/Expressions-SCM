@@ -1,5 +1,5 @@
 import { and, desc, eq, gte, ilike, lte, or, sql } from "drizzle-orm";
-import { getDbAsync } from "@/db";
+
 import { skus, spus, stockBalances, stockLedger, warehouses } from "@/db/schema";
 import type { AnyDb } from "@/server/posting/post";
 import { resolveDb } from "@/server/core/svc";

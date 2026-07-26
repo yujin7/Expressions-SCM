@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import { usePathname, useRouter } from "next/navigation";
 import { App as AntApp, Avatar, Button, Layout, Menu, Modal, Space, Typography, theme } from "antd";
 import type { MenuProps } from "antd";
@@ -20,10 +21,11 @@ import {
 } from "@ant-design/icons";
 
 import GlobalSearch from "@/components/GlobalSearch";
-import CommandPalette from "@/components/CommandPalette";
-import FeedbackButton from "@/components/FeedbackButton";
+import { MeProvider, type Me } from "@/components/useMe";
 
 const { Header, Sider, Content } = Layout;
+const CommandPalette = dynamic(() => import("@/components/CommandPalette"), { ssr: false });
+const FeedbackButton = dynamic(() => import("@/components/FeedbackButton"), { ssr: false });
 
 const menuItems: MenuProps["items"] = [
   { key: "/workbench", icon: <DashboardOutlined />, label: "工作台" },
@@ -215,9 +217,20 @@ function filterMenuByRoles(items: MenuProps["items"], roles: string[]): MenuProp
     .filter(Boolean) as MenuProps["items"];
 }
 
-export default function AppShell({ children, userName, roleText, roles = [], mustChangePassword = false }: { children: React.ReactNode; userName?: string; roleText?: string; roles?: string[]; mustChangePassword?: boolean }) {
+export default function AppShell({
+  children,
+  currentUser,
+  roleText,
+  mustChangePassword = false,
+}: {
+  children: React.ReactNode;
+  currentUser: Me;
+  roleText?: string;
+  mustChangePassword?: boolean;
+}) {
   const pathname = usePathname();
   const router = useRouter();
+  const { name: userName, roles } = currentUser;
   const [collapsed, setCollapsed] = useState(false);
   const {
     token: { colorBgContainer },
@@ -238,7 +251,8 @@ export default function AppShell({ children, userName, roleText, roles = [], mus
 
   const onPasswordPage = pathname.startsWith("/account/password");
   return (
-    <AntApp>
+    <MeProvider initialMe={currentUser}>
+      <AntApp>
       <CommandPalette roles={roles} />
       <Modal
         open={mustChangePassword && !onPasswordPage}
@@ -313,6 +327,7 @@ export default function AppShell({ children, userName, roleText, roles = [], mus
           </Content>
         </Layout>
       </Layout>
-    </AntApp>
+      </AntApp>
+    </MeProvider>
   );
 }

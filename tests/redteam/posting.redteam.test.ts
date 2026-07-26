@@ -4,7 +4,7 @@
  */
 import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
-import { skus, spus, stockBalances, stockLedger, warehouses } from "@/db/schema";
+import { skus, spus, stockLedger, warehouses } from "@/db/schema";
 import { dCmp } from "@/server/core/decimal";
 import { getBalance, post, reverse, type PostingEvent } from "@/server/posting/post";
 import { createTestDb, type TestDb } from "../helpers/db";

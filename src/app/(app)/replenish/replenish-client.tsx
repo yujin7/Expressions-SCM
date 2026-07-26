@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import {
   Alert,
   App,
@@ -400,7 +401,7 @@ export default function ReplenishClient() {
           message={
             <span>
               备货申请草稿 {createdDocNo} 已生成，
-              <a href="/outsource/bh">前往备货申请列表提交审批 →</a>
+              <Link href="/outsource/bh">前往备货申请列表提交审批 →</Link>
             </span>
           }
         />

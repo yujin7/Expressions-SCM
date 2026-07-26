@@ -33,8 +33,6 @@ interface LtData {
   summary: { pairCount: number; withSuggestion: number; avgOnTimeRate: number | null };
 }
 
-const dash = (v: number | null): string => (v == null ? "—" : String(v));
-
 export default function LeadTimeLearningClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<LtData | null>(null);

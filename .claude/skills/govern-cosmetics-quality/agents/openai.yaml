@@ -1,4 +1,0 @@
-interface:
-  display_name: "Govern Cosmetics Quality"
-  short_description: "Govern quality, traceability, expiry, and recall decisions"
-  default_prompt: "Use $govern-cosmetics-quality to design or audit this quality and traceability decision."

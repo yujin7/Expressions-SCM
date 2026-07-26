@@ -1,7 +1,7 @@
 "use client";
 
 /** NPD 节点参考（D19：核心 1.x——本页为节点标准/角色分配的只读底稿） */
-import { useCallback, useEffect, useState } from "react";
+import {  useEffect, useState } from "react";
 import { Alert, App, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";

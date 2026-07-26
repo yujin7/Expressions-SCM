@@ -11,7 +11,7 @@
  * - 重复下单 → outsource/duplicate-guard（同一守卫，不另写一套判定）
  * 只读、不写库；失败不得阻断审批（调用方 catch 后照常渲染审批按钮）。
  */
-import { and, eq, inArray, sql } from "drizzle-orm";
+import {  eq, inArray } from "drizzle-orm";
 import { coverDays } from "@/server/core/stock-view";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";

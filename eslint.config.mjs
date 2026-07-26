@@ -13,7 +13,7 @@ const compat = new FlatCompat({ baseDirectory: import.meta.dirname });
  * （24 页水合失败、客户端值导入服务端、落盘根目录、裸 req.json）。
  * tests/architecture/* 已经是自建的静态护栏，eslint 是同一策略的通用化。
  */
-export default [
+const config = [
   {
     ignores: [
       ".next/**", "node_modules/**", "drizzle/**", ".data/**",
@@ -21,4 +21,19 @@ export default [
     ],
   },
   ...compat.extends("next/core-web-vitals", "next/typescript"),
+  {
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        {
+          argsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+          destructuredArrayIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+        },
+      ],
+    },
+  },
 ];
+
+export default config;

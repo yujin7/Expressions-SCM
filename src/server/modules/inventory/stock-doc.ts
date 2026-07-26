@@ -1,11 +1,11 @@
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { getDbAsync } from "@/db";
+
 import {
-  approvals, skus, stockBalances, stockDocLines, stockDocs, users, warehouses,
+   skus, stockBalances, stockDocLines, stockDocs, users, warehouses,
 } from "@/db/schema";
 import { dMoney, dNeg, dQty } from "@/server/core/decimal";
-import { getSessionUser, requireRole, type SessionUser } from "@/server/core/dto";
+import {  requireRole, type SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
 import { ApprovalError, approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";

@@ -15,18 +15,56 @@ export interface RemoteSelectProps extends Omit<SelectProps, "options" | "childr
   filterRow?: (row: RemoteRow) => boolean;
 }
 
+const CACHE_TTL_MS = 30_000;
+const rowCache = new Map<string, { rows: RemoteRow[]; expiresAt: number }>();
+const inflight = new Map<string, Promise<RemoteRow[]>>();
+
+function cachedRows(api: string): RemoteRow[] | undefined {
+  const entry = rowCache.get(api);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= Date.now()) {
+    rowCache.delete(api);
+    return undefined;
+  }
+  return entry.rows;
+}
+
+async function loadRows(api: string): Promise<RemoteRow[]> {
+  const cached = cachedRows(api);
+  if (cached) return cached;
+  const pending = inflight.get(api);
+  if (pending) return pending;
+  const request = fetch(`${api}${api.includes("?") ? "&" : "?"}page=1&pageSize=999`)
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`RemoteSelect ${response.status}`);
+      const body = (await response.json()) as { data?: RemoteRow[] };
+      const rows = body.data ?? [];
+      rowCache.set(api, { rows, expiresAt: Date.now() + CACHE_TTL_MS });
+      return rows;
+    })
+    .finally(() => inflight.delete(api));
+  inflight.set(api, request);
+  return request;
+}
+
 /** 下拉选项来自主数据列表接口的通用 Select（前端本地搜索） */
 export default function RemoteSelect({ api, getLabel, getValue, filterRow, ...rest }: RemoteSelectProps) {
-  const [rows, setRows] = useState<RemoteRow[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [rows, setRows] = useState<RemoteRow[]>(() => cachedRows(api) ?? []);
+  const [loading, setLoading] = useState(() => cachedRows(api) === undefined);
 
   useEffect(() => {
     let cancelled = false;
+    const cached = cachedRows(api);
+    if (cached) {
+      setRows(cached);
+      setLoading(false);
+      return;
+    }
+    setRows([]);
     setLoading(true);
-    fetch(`${api}${api.includes("?") ? "&" : "?"}page=1&pageSize=999`)
-      .then((r) => r.json())
-      .then((body: { data?: RemoteRow[] }) => {
-        if (!cancelled) setRows(body.data ?? []);
+    void loadRows(api)
+      .then((loaded) => {
+        if (!cancelled) setRows(loaded);
       })
       .catch(() => {
         /* 下拉加载失败时保持空选项 */

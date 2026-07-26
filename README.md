@@ -1,6 +1,7 @@
 # 供应链系统（委外闭环 MVP 1.0）
 
-内部供应链管理系统。规格见 `../spec/`（01=完整规格 v2.1，02=MVP 构建规格）。
+内部供应链管理系统。当前入口见 [`docs/NOW.md`](docs/NOW.md)，规格与决议见
+[`docs/spec/CURRENT.md`](docs/spec/CURRENT.md)。
 
 ## 技术栈
 Next.js 15 · TypeScript · Ant Design 5 · PostgreSQL 16 · Drizzle ORM · NextAuth v5 · pg-boss · vitest(+PGlite)
@@ -13,8 +14,12 @@ Next.js 15 · TypeScript · Ant Design 5 · PostgreSQL 16 · Drizzle ORM · Next
 cp .env.example .env   # AUTH_SECRET 用 openssl rand -base64 32 生成；DATABASE_URL 留 pglite:.data/dev
 npm install
 SEED_ADMIN_PASSWORD='请使用至少12位强口令' npm run db:seed
-npm run dev            # http://localhost:3000
+npm run dev            # Turbopack；普通开发不启动后台任务
 ```
+
+并行开发使用 `npm run dev:session -- <name>`，自动隔离 worktree、分支、缓存、端口和 PGlite。
+需要验证后台任务时使用 `npm run dev:jobs`；遇到 Turbopack 兼容问题可临时用
+`npm run dev:webpack`。
 
 ## 联调/部署模式（PostgreSQL）
 
@@ -28,7 +33,10 @@ npm run db:migrate && npm run db:seed && npm run dev
 ## 常用命令
 | 命令 | 说明 |
 |---|---|
-| `npm run typecheck` | TS 严格检查 |
+| `npm run check:fast` | 日常内循环：应用类型、改动 lint、架构/规则与关联测试 |
+| `npm run check:pr` | 合并门：全量 lint、三作用域类型检查、全部测试 |
+| `npm run check:release` | 发布门：PR 门 + 生产构建 + 可选 live smoke |
+| `npm run scm -- doctor` | 环境和共享工作树快速诊断 |
 | `npm run test` | 全部测试（规则/过账/单据流用 PGlite，无需 Docker） |
 | `npm run db:generate` | schema 变更后生成迁移（变更后必须重跑，测试依赖 drizzle/*.sql） |
 | `npm run db:seed` | 幂等种子数据 |
@@ -40,14 +48,14 @@ npm run db:migrate && npm run db:seed && npm run dev
 admin / ops01 / purchasing01 / warehouse01 / pmc01(审批人) / pmc02(非审批人) / finance01
 使用执行 `db:seed` 时显式提供的 `SEED_ADMIN_PASSWORD`；系统不再接受公开默认口令。
 
-## 架构要点（详见 CLAUDE.md 与 spec/01 §4-§6）
+## 架构要点（详见 CLAUDE.md 与 docs/spec/01 §4-§6）
 - 库存唯一入口：`src/server/posting/`（过账表 registry；流水仅追加；纠错走红字）
 - 单据流：`src/server/docflow/`（doc_counter 取号 / 统一状态机 / 审批人≠制单人）
 - 业务规则：`src/server/rules/`（R1 价格异动 / R5 逐物料结算 / R11 净需求，纯函数+单测）
 - 脱敏收口：`src/server/core/dto.ts`（运营/仓管不可见成本与加工费，含导出）
 
 ## 里程碑
-阶段索引与决策登记见 `../spec/CURRENT.md`。当前阶段与决策以 `../spec/CURRENT.md` 为准（本文件不再复制阶段号与 commit 号——曾落后 91 个提交）。
+阶段索引与决策登记见 `docs/spec/CURRENT.md`。当前阶段与决策以该文件为准（本文件不再复制阶段号与 commit 号）。
 
 ## 生产部署（staging 同构）
 ```bash

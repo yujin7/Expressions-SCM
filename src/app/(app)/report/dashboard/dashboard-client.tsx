@@ -5,7 +5,8 @@ import DataSourceBadge from "@/components/DataSourceBadge";
  * 经营驾驶舱：销量 / 库存 / 效期 / 可销天数 / 委外执行 / 数据健康 一屏总览。
  * 口径提示常驻：数量跨 SKU 直加仅参考；快照仓带数据日期；金额仅限授权角色。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import Link from "next/link";
 import {
   Alert,
   App,
@@ -91,10 +92,10 @@ function ChartCard({ title, extra, height = 300, children }: { title: React.Reac
   );
 }
 
-export default function DashboardClient() {
+export default function DashboardClient({ initialData }: { initialData: DashboardData }) {
   const { message } = App.useApp();
-  const [data, setData] = useState<DashboardData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<DashboardData | null>(initialData);
+  const [loading, setLoading] = useState(false);
   const [trendMode, setTrendMode] = useState<string | number>("按品牌");
 
   const load = useCallback(async () => {
@@ -108,10 +109,6 @@ export default function DashboardClient() {
     }
   }, [message]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
-
   if (loading && !data) return <Skeleton active paragraph={{ rows: 12 }} />;
   if (!data) return <Empty description="驾驶舱数据加载失败" />;
 
@@ -119,7 +116,7 @@ export default function DashboardClient() {
   const channelTotal = data.channelMix.reduce((a, c) => a + c.qty, 0);
 
   const riskCols: ColumnsType<DashboardData["expiryRiskTop"][number]> = [
-    { title: "编码", dataIndex: "code", width: 130, render: (v: string, r) => <><a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a><LifeTag v={(r as { lifecycle?: string }).lifecycle} /></> },
+    { title: "编码", dataIndex: "code", width: 130, render: (v: string, r) => <><Link href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</Link><LifeTag v={(r as { lifecycle?: string }).lifecycle} /></> },
     { title: "名称", dataIndex: "name", ellipsis: true },
     { title: "仓库", dataIndex: "warehouse", width: 110, ellipsis: true },
     {
@@ -133,7 +130,7 @@ export default function DashboardClient() {
   ];
 
   const slowCols: ColumnsType<DashboardData["slowTop"][number]> = [
-    { title: "编码", dataIndex: "code", width: 130, render: (v: string, r) => <><a href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</a><LifeTag v={(r as { lifecycle?: string }).lifecycle} /></> },
+    { title: "编码", dataIndex: "code", width: 130, render: (v: string, r) => <><Link href={`/inventory/balance?q=${encodeURIComponent(v)}`}>{v}</Link><LifeTag v={(r as { lifecycle?: string }).lifecycle} /></> },
     { title: "名称", dataIndex: "name", ellipsis: true },
     { title: "在库", dataIndex: "onHand", width: 90, align: "right", render: fmt },
     { title: "近3月销", dataIndex: "sales3m", width: 90, align: "right", render: fmt },
@@ -200,7 +197,7 @@ export default function DashboardClient() {
         </Col>
         <Col xs={12} md={8} xl={3}>
           <Card size="small">
-            <a href="/report/risk" style={{ color: "inherit" }}>
+            <Link href="/report/risk" style={{ color: "inherit" }}>
               <AntTooltip title="风险库存处置工作台条目（效期×货盘注记×销速三源）——点击进入">
                 <Statistic
                   title="风险处置 SKU"
@@ -209,12 +206,12 @@ export default function DashboardClient() {
                   prefix={<ClockCircleOutlined />}
                 />
               </AntTooltip>
-            </a>
+            </Link>
           </Card>
         </Col>
         <Col xs={12} md={8} xl={3}>
           <Card size="small">
-            <a href="/workbench" style={{ color: "inherit" }}>
+            <Link href="/workbench" style={{ color: "inherit" }}>
               <AntTooltip title="滞销 SKU 数 / 待办（待审批+数据积压）——点击进工作台处理">
                 <Statistic
                   title="滞销 SKU / 待办"
@@ -224,7 +221,7 @@ export default function DashboardClient() {
                   prefix={<FallOutlined />}
                 />
               </AntTooltip>
-            </a>
+            </Link>
           </Card>
         </Col>
       </Row>
@@ -245,10 +242,10 @@ export default function DashboardClient() {
                 ))}
               </ul>
               <Space size={16} style={{ marginTop: 8 }}>
-                <a href="/workbench">→ 工作台待办</a>
-                <a href="/import/release">→ 放行工作台</a>
-                <a href="/import/exceptions">→ 别名认领</a>
-                <a href="/inventory/balance">→ 库存余额</a>
+                <Link href="/workbench">→ 工作台待办</Link>
+                <Link href="/import/release">→ 放行工作台</Link>
+                <Link href="/import/exceptions">→ 别名认领</Link>
+                <Link href="/inventory/balance">→ 库存余额</Link>
               </Space>
             </>
           }

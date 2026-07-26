@@ -299,7 +299,7 @@ function DuplicatesTab() {
       title: "合并影响",
       dataIndex: "stockAtRisk",
       width: 190,
-      render: (v: number, r) =>
+      render: (v: number) =>
         v > 0 ? (
           <Tooltip title="待并项身上还压着库存。合并不是改主档的文书工作——必须先把货调走或清零，否则库存会连同错误主档一起消失。">
             <Tag color="volcano">待并项有库存 {v}</Tag>
