@@ -87,7 +87,8 @@
   落盘根目录（三种等价写法）、迁移登记（孤儿 .sql）。
 - **代码与现行规格已在同一私有 GitHub 仓**：`yujin7/Expressions-SCM`；本地 `main`
   已关联 `origin/main`，且两套同树异源历史已用无覆盖 merge 接通。R8 已推送；首轮 Actions
-  暴露的跨平台 lockfile 问题已在本轮修复，最新远端门禁与分支保护仍以 GitHub 实况为准。
+  暴露的跨平台 lockfile 问题已在本轮修复，远端四项门禁全绿。Actions 官方组件已升级到
+  Node 24 运行时的 `checkout@v7` / `setup-node@v7`；私有仓分支保护受当前 GitHub 套餐限制。
 - **测试数字**：当前 Linux 发布证据为 **844 通过 / 21 有意跳过**，lint、三套 typecheck、
   Next 生产构建、PostgreSQL 16 迁移契约与最终容器健康检查均通过。
 - **交接给下一会话的待办**见本文件末尾「下一会话接手清单」。
@@ -215,8 +216,10 @@ PRD+数据字典+功能清单（PDF 3 份）· 会议纪要 PDF · BOM×3 · 字
 1. **轮换 AUTH_SECRET**。.dockerignore 已阻止密钥进入**将来**的镜像，
    但**此前从本树构建过的镜像里，/app/.env 仍含 JWT 签名密钥**。凭据类操作不由 AI 代劳。
 2. **确认抑制闸口径改判**（见上）——它改变建议下单量，需要一个 D 号。
-3. **完成 GitHub 仓治理**：本地 upstream 与历史已完成治理；GitHub CLI 重新授权后推送 R8，
-   再确认 Actions 全绿并设置 `main` 分支保护（required checks / 禁 force-push / PR 合并）。
+3. **决定是否升级 GitHub 套餐**：代码、历史、upstream、R8 推送及四项 Actions 门禁均已完成。
+   GitHub API 对私有仓分支保护 / rulesets 返回 403，明确要求升级 GitHub Pro 或公开仓库。
+   本项目含业务资料，应保持私有；只有你决定升级套餐后，才能设置 required checks、禁 force-push
+   与 PR 合并保护。
 
 ### 解锁即可用（每项差一个决定或一份数据）
 | 缺什么 | 解锁什么 |

@@ -17,12 +17,17 @@ describe("agile delivery loop", () => {
 
   it("provides distinct fast, PR, and release evidence gates", () => {
     const pkg = JSON.parse(read("package.json")) as { scripts: Record<string, string> };
+    const workflow = read(".github/workflows/ci.yml");
     expect(pkg.scripts["check:fast"]).toContain("verify-fast.ts");
     expect(pkg.scripts["check:pr"]).toContain("lint:full");
     expect(pkg.scripts["check:release"]).toContain("verify-release.ts");
-    expect(read(".github/workflows/ci.yml")).toContain("cancel-in-progress: true");
-    expect(read(".github/workflows/ci.yml")).toContain("PostgreSQL migration contract");
-    expect(read(".github/workflows/ci.yml")).toContain("docker build --tag supply-chain:ci .");
+    expect(workflow).toContain("cancel-in-progress: true");
+    expect(workflow).toContain("PostgreSQL migration contract");
+    expect(workflow).toContain("docker build --tag supply-chain:ci .");
+    expect(workflow).toContain("actions/checkout@v7");
+    expect(workflow).toContain("actions/setup-node@v7");
+    expect(workflow).not.toContain("actions/checkout@v4");
+    expect(workflow).not.toContain("actions/setup-node@v4");
     expect(pkg.scripts["check:postgres"]).toContain("verify-postgres.ts");
     expect(read("scripts/verify-postgres.ts")).toContain("async function main()");
     expect(read("scripts/verify-postgres.ts")).toContain("void main()");
