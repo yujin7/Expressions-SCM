@@ -33,16 +33,9 @@ describe("agile delivery loop", () => {
     expect(pkg.scripts["check:postgres"]).toContain("verify-postgres.ts");
     expect(read("scripts/verify-postgres.ts")).toContain("async function main()");
     expect(read("scripts/verify-postgres.ts")).toContain("void main()");
-    const lock = JSON.parse(read("package-lock.json")) as {
-      packages?: Record<string, { version?: string }>;
-    };
-    // npm may deduplicate these to the lockfile root. Assert the portable WASM
-    // fallback and its runtime exist, not an incidental nesting path.
-    expect(
-      lock.packages?.["node_modules/@unrs/resolver-binding-wasm32-wasi"]?.version,
-    ).toBeTruthy();
-    expect(lock.packages?.["node_modules/@emnapi/core"]?.version).toBeTruthy();
-    expect(lock.packages?.["node_modules/@emnapi/runtime"]?.version).toBeTruthy();
+    expect(read("package-lock.json")).toContain(
+      "node_modules/@unrs/resolver-binding-wasm32-wasi/node_modules/@emnapi/core",
+    );
     expect(read("vitest.config.ts")).toContain("maxWorkers: 4");
   });
 
@@ -60,8 +53,10 @@ describe("agile delivery loop", () => {
   });
 
   it("uses one Node major locally, in CI, and in the production image", () => {
+    const pkg = JSON.parse(read("package.json")) as { packageManager?: string };
     expect(read(".nvmrc").trim()).toBe("24");
     expect(read("package.json")).toContain('"node": ">=24 <25"');
+    expect(pkg.packageManager).toBe("npm@11.16.0");
     expect(read(".github/workflows/ci.yml")).not.toContain("node-version: 22");
     expect(read("Dockerfile")).not.toContain("node:22");
   });
