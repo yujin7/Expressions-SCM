@@ -125,14 +125,95 @@ export interface ReplenishResult {
   };
 }
 
+export const REPLENISH_SORT_FIELDS = [
+  "code",
+  "name",
+  "brand",
+  "abcClass",
+  "onHand",
+  "inTransit",
+  "legacyTransit",
+  "wipQty",
+  "refQty",
+  "onOrder",
+  "borrowOut",
+  "daily",
+  "forecastDaily",
+  "daysCover",
+  "coverFull",
+  "leadDays",
+  "suggestQty",
+] as const;
+
+export type ReplenishSortBy = (typeof REPLENISH_SORT_FIELDS)[number];
+export type ReplenishSortOrder = "ascend" | "descend";
+
+export function normalizeReplenishSort(
+  sortBy: string | null | undefined,
+  sortOrder: string | null | undefined,
+): { sortBy: ReplenishSortBy; sortOrder: ReplenishSortOrder } {
+  return {
+    sortBy: REPLENISH_SORT_FIELDS.includes(sortBy as ReplenishSortBy)
+      ? (sortBy as ReplenishSortBy)
+      : "coverFull",
+    sortOrder: sortOrder === "descend" ? "descend" : "ascend",
+  };
+}
+
 export interface ReplenishQuery {
   coverDaysTarget?: number;
   minCoverAlert?: number;
   q?: string;
   page?: number;
   pageSize?: number;
+  sortBy?: ReplenishSortBy;
+  sortOrder?: ReplenishSortOrder;
   /** 内部消费者（如 MRP 相关需求展开）取全量，绕过 API 分页夹取——防静默截断。HTTP 层永不传 true。 */
   allRows?: boolean;
+}
+
+const replenishCollator = new Intl.Collator("zh-CN", {
+  numeric: true,
+  sensitivity: "base",
+});
+
+function replenishSortValue(
+  row: ReplenishRow,
+  sortBy: ReplenishSortBy,
+): string | number | null {
+  switch (sortBy) {
+    case "code":
+    case "name":
+      return row[sortBy];
+    case "brand":
+    case "abcClass":
+      return row[sortBy];
+    case "suggestQty":
+      return row.suggestQty ?? row.heldQty;
+    default:
+      return row[sortBy];
+  }
+}
+
+/** 全量结果先排序、后分页；空值无论升降序都置底，避免“无数据”霸占决策视野。 */
+export function compareReplenishRows(
+  a: ReplenishRow,
+  b: ReplenishRow,
+  sortBy: ReplenishSortBy,
+  sortOrder: ReplenishSortOrder,
+): number {
+  const av = replenishSortValue(a, sortBy);
+  const bv = replenishSortValue(b, sortBy);
+  if (av == null && bv == null) return replenishCollator.compare(a.code, b.code);
+  if (av == null) return 1;
+  if (bv == null) return -1;
+  const primary = sortBy === "suggestQty"
+    ? dCmp(String(av), String(bv))
+    : typeof av === "number" && typeof bv === "number"
+      ? av - bv
+      : replenishCollator.compare(String(av), String(bv));
+  if (primary !== 0) return sortOrder === "descend" ? -primary : primary;
+  return replenishCollator.compare(a.code, b.code);
 }
 
 export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: AnyDb): Promise<ReplenishResult> {
@@ -148,6 +229,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
   const page = Math.max(1, query.page ?? 1);
   const pageSize = query.allRows ? Number.MAX_SAFE_INTEGER : Math.min(999, Math.max(1, query.pageSize ?? 50));
   const q = (query.q ?? "").trim();
+  const { sortBy, sortOrder } = normalizeReplenishSort(query.sortBy, query.sortOrder);
 
   /* ── 成品 SKU（active） ── */
   const conds = [eq(schema.skus.skuType, "finished" as const), eq(schema.skus.active, true)];
@@ -335,7 +417,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
   const todayStr = todayShanghai();
 
   /* ── 逐 SKU 计算（decimal 计算、展示层 Number） ── */
-  const all: (ReplenishRow & { _cover: number | null })[] = skuRows.map((s) => {
+  const all: ReplenishRow[] = skuRows.map((s) => {
     const onHand = dQty(onHandBySku.get(s.id) ?? "0");
     const inTransit = dQty(inTransitBySku.get(s.id) ?? "0");
     const sales3m = sales3mBySku.get(s.id) ?? "0";
@@ -483,17 +565,11 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       orderByDate: tp.orderByDate,
       orderWindowMissed: tp.orderWindowMissed,
       planExplain,
-      _cover: coverFull ?? cover, // #1 修复：排序用全管道口径——覆盖缺口误报不再霸榜
     };
   });
 
-  // 可销天数升序（越紧急越靠前）；无动销（daily=0）排最后，再按编码稳定排序
-  all.sort((a, b) => {
-    if (a._cover == null && b._cover == null) return a.code.localeCompare(b.code);
-    if (a._cover == null) return 1;
-    if (b._cover == null) return -1;
-    return a._cover - b._cover || a.code.localeCompare(b.code);
-  });
+  // 决策列按用户选择全量排序后再分页；默认全管道可销天数升序（越紧急越靠前）。
+  all.sort((a, b) => compareReplenishRows(a, b, sortBy, sortOrder));
   const suggestCount = all.filter((r) => r.suggestQty != null).length;
   const suppressedCount = all.filter((r) => r.suppressReason != null).length;
   const rows: ReplenishRow[] = all.slice((page - 1) * pageSize, page * pageSize).map((r) => ({

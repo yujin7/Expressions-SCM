@@ -5,7 +5,11 @@ import {
   stockBalances, stockSnapshots, suppliers, uomConvs, users, warehouses,
 } from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
-import { createReplenishDraft, getReplenishSuggestions } from "@/server/modules/replenish/service";
+import {
+  createReplenishDraft,
+  getReplenishSuggestions,
+  normalizeReplenishSort,
+} from "@/server/modules/replenish/service";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 /**
@@ -156,6 +160,25 @@ describe("R11 补货建议：口径 + 建议量 + BH 草稿", () => {
     const p = await getReplenishSuggestions({ page: 2, pageSize: 2 }, db);
     expect(p.total).toBe(3);
     expect(p.rows.map((r) => r.code)).toEqual(["CP00003"]);
+  });
+
+  it("排序：全量排序后分页，数值升降序正确且空值始终置底", async () => {
+    const highestStock = await getReplenishSuggestions(
+      { sortBy: "onHand", sortOrder: "descend", page: 1, pageSize: 1 },
+      db,
+    );
+    expect(highestStock.rows.map((r) => r.code)).toEqual(["CP00002"]);
+
+    const coverDesc = await getReplenishSuggestions(
+      { sortBy: "daysCover", sortOrder: "descend" },
+      db,
+    );
+    expect(coverDesc.rows.map((r) => r.code)).toEqual(["CP00002", "CP00001", "CP00003"]);
+
+    expect(normalizeReplenishSort("not-a-column", "sideways")).toEqual({
+      sortBy: "coverFull",
+      sortOrder: "ascend",
+    });
   });
 
   it("生成 BH 草稿：复用 createBh，一张草稿多行，双审计留痕", async () => {

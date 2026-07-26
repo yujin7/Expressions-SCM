@@ -126,6 +126,14 @@ body {
   letter-spacing: 0.02em;
 }
 
+.replenish-table .ant-table-thead > tr > th {
+  white-space: nowrap;
+}
+
+.replenish-table .ant-table-column-title {
+  min-width: 0;
+}
+
 .app-surface .ant-empty {
   margin-block: 52px;
 }

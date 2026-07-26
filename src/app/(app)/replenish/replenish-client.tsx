@@ -18,7 +18,7 @@ import {
   Tooltip,
   Typography,
 } from "antd";
-import type { ColumnsType } from "antd/es/table";
+import type { ColumnsType, TableProps } from "antd/es/table";
 import { ReloadOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
@@ -79,6 +79,27 @@ interface ReplenishResult {
   };
 }
 
+type ReplenishSortBy =
+  | "code"
+  | "name"
+  | "brand"
+  | "abcClass"
+  | "onHand"
+  | "inTransit"
+  | "legacyTransit"
+  | "wipQty"
+  | "refQty"
+  | "onOrder"
+  | "borrowOut"
+  | "daily"
+  | "forecastDaily"
+  | "daysCover"
+  | "coverFull"
+  | "leadDays"
+  | "suggestQty";
+
+type ReplenishSortOrder = "ascend" | "descend";
+
 
 function SharedPackagingPanel({ skuId }: { skuId: number }) {
   const [items, setItems] = useState<{ materialCode: string; materialName: string; baseUom: string; onHand: string; sharedCount: number; sharedWith: { code: string }[] }[] | null>(null);
@@ -111,13 +132,21 @@ export default function ReplenishClient() {
   const { message } = App.useApp();
   const listState = useListState({
     key: "replenish",
-    defaults: { q: "", coverDays: "45", minCover: "30" },
+    defaults: {
+      q: "",
+      coverDays: "45",
+      minCover: "30",
+      sortBy: "coverFull",
+      sortOrder: "ascend",
+    },
     defaultPageSize: 50,
   });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const coverDays = Number(filters.coverDays) || 45;
   const minCover = Number(filters.minCover) || 30;
+  const sortBy = filters.sortBy as ReplenishSortBy;
+  const sortOrder = filters.sortOrder as ReplenishSortOrder;
   const [data, setData] = useState<ReplenishResult | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -150,6 +179,8 @@ export default function ReplenishClient() {
         q,
         page: String(page),
         pageSize: String(pageSize),
+        sortBy,
+        sortOrder,
       });
       const res = await fetchJson<ReplenishResult>(`/api/replenish/suggestions?${params.toString()}`);
       setData(res);
@@ -158,7 +189,7 @@ export default function ReplenishClient() {
     } finally {
       setLoading(false);
     }
-  }, [coverDays, minCover, q, page, pageSize, message]);
+  }, [coverDays, minCover, q, page, pageSize, sortBy, sortOrder, message]);
 
   useEffect(() => {
     void load();
@@ -198,34 +229,41 @@ export default function ReplenishClient() {
   };
 
   const columns: ColumnsType<ReplenishRow> = useMemo(
-    () => [
-      { title: "SKU 编码", dataIndex: "code", width: 110, fixed: "left" },
-      { title: "名称", dataIndex: "name", ellipsis: true, render: (v: string, r: ReplenishRow) => (v === r.code ? <Typography.Text type="secondary">（未命名）</Typography.Text> : v) },
-      { title: "品牌", dataIndex: "brand", width: 100, render: (v: string | null) => v ?? "—" },
+    () => {
+      const sortable = (key: ReplenishSortBy) => ({
+        key,
+        sorter: true,
+        sortDirections: ["ascend", "descend"] as ReplenishSortOrder[],
+        sortOrder: sortBy === key ? sortOrder : null,
+      });
+      return [
+      { title: "SKU 编码", dataIndex: "code", width: 120, fixed: "left", ...sortable("code") },
+      { title: "名称", dataIndex: "name", width: 280, ellipsis: true, ...sortable("name"), render: (v: string, r: ReplenishRow) => (v === r.code ? <Typography.Text type="secondary">（未命名）</Typography.Text> : v) },
+      { title: "品牌", dataIndex: "brand", width: 120, ...sortable("brand"), render: (v: string | null) => v ?? "—" },
       {
-        title: "分层", dataIndex: "abcClass", width: 70, align: "center" as const,
+        title: "分层", dataIndex: "abcClass", width: 82, align: "center" as const, ...sortable("abcClass"),
         render: (v: string | null, r: ReplenishRow) => v ? <Tooltip title={`ABC ${v} 类——目标覆盖 ${r.effectiveTarget} 天（分层策略，可在运行参数调）`}><Tag color={v === "A" ? "red" : v === "B" ? "orange" : "default"}>{v}</Tag></Tooltip> : "—",
       },
       {
         title: "系统口径",
         children: [
-          { title: "在库", dataIndex: "onHand", width: 95, align: "right" as const, render: (v: number) => v.toLocaleString("zh-CN") },
-          { title: "PO 在途", dataIndex: "inTransit", width: 90, align: "right" as const, render: (v: number) => v.toLocaleString("zh-CN") },
+          { title: "在库", dataIndex: "onHand", width: 105, align: "right" as const, ...sortable("onHand"), render: (v: number) => v.toLocaleString("zh-CN") },
+          { title: "PO 在途", dataIndex: "inTransit", width: 105, align: "right" as const, ...sortable("inTransit"), render: (v: number) => v.toLocaleString("zh-CN") },
         ],
       },
       {
         title: "参考口径（只提示不入账）",
         children: [
           {
-            title: "存量在途", dataIndex: "legacyTransit", width: 90, align: "right" as const,
+            title: "存量在途", dataIndex: "legacyTransit", width: 105, align: "right" as const, ...sortable("legacyTransit"),
             render: (v: number) => (v > 0 ? <Tooltip title="旧流程存量单未入库余量（在途参考·成品跟进表）"><span>{v.toLocaleString("zh-CN")}</span></Tooltip> : "—"),
           },
           {
-            title: "在制委外", dataIndex: "wipQty", width: 90, align: "right" as const,
+            title: "在制委外", dataIndex: "wipQty", width: 105, align: "right" as const, ...sortable("wipQty"),
             render: (v: number) => (v > 0 ? <Tooltip title="WO 计划产出（已审批/执行中、未暂停）——成品主要补给来源；执行中单残余部分批已收会略高估"><span style={{ color: "#722ed1" }}>{v.toLocaleString("zh-CN")}</span></Tooltip> : "—"),
           },
           {
-            title: "全口径在库", dataIndex: "refQty", width: 105, align: "right" as const,
+            title: "全口径在库", dataIndex: "refQty", width: 125, align: "right" as const, ...sortable("refQty"),
             render: (v: number | null, r: ReplenishRow) =>
               v == null ? "—" : (
                 <Space size={4}>
@@ -234,9 +272,9 @@ export default function ReplenishClient() {
                 </Space>
               ),
           },
-          { title: "在订未出", dataIndex: "onOrder", width: 90, align: "right" as const, render: (v: number | null) => (v == null || v === 0 ? "—" : v.toLocaleString("zh-CN")) },
+          { title: "在订未出", dataIndex: "onOrder", width: 105, align: "right" as const, ...sortable("onOrder"), render: (v: number | null) => (v == null || v === 0 ? "—" : v.toLocaleString("zh-CN")) },
           {
-            title: "借出未还", dataIndex: "borrowOut", width: 90, align: "right" as const,
+            title: "借出未还", dataIndex: "borrowOut", width: 105, align: "right" as const, ...sortable("borrowOut"),
             render: (v: number) => (v > 0 ? <Tooltip title="已借给其他渠道，不再是自己可卖库存——已从全管道口径扣减"><span style={{ color: "#d4380d" }}>-{v.toLocaleString("zh-CN")}</span></Tooltip> : "—"),
           },
         ],
@@ -244,9 +282,9 @@ export default function ReplenishClient() {
       {
         title: "判定",
         children: [
-          { title: "日均销", dataIndex: "daily", width: 80, align: "right" as const },
+          { title: "日均销", dataIndex: "daily", width: 95, align: "right" as const, ...sortable("daily") },
           {
-            title: "预测日均", dataIndex: "forecastDaily", width: 100, align: "right" as const,
+            title: "预测日均", dataIndex: "forecastDaily", width: 115, align: "right" as const, ...sortable("forecastDaily"),
             render: (v: number, r: ReplenishRow) => {
               const arrow = r.forecastTrend === "up" ? "↑" : r.forecastTrend === "down" ? "↓" : "→";
               const color = r.forecastTrend === "up" ? "#cf1322" : r.forecastTrend === "down" ? "#3f8600" : "#888";
@@ -266,7 +304,7 @@ export default function ReplenishClient() {
             },
           },
           {
-            title: "可销(系统)", dataIndex: "daysCover", width: 105, align: "right" as const,
+            title: "可销（系统）", dataIndex: "daysCover", width: 135, align: "right" as const, ...sortable("daysCover"),
             render: (v: number | null, r: ReplenishRow) => {
               const body = v == null ? <Typography.Text type="secondary">无动销</Typography.Text>
                 : v < 15 ? <Typography.Text type="danger" strong>{v}</Typography.Text> : <span>{v}</span>;
@@ -279,24 +317,18 @@ export default function ReplenishClient() {
             },
           },
           {
-            title: "可销(全管道)", dataIndex: "coverFull", width: 100, align: "right" as const,
+            title: "可销（全管道）", dataIndex: "coverFull", width: 145, align: "right" as const, ...sortable("coverFull"),
             render: (v: number | null) => (v == null ? "—" : <Tooltip title="（max(系统在库, 全口径参考) + PO在途 + 存量在途 + 在订未出）÷ 日均销"><span>{v}</span></Tooltip>),
           },
-          { title: "生产周期", dataIndex: "leadDays", width: 85, align: "right" as const, render: (v: number | null) => (v == null ? "—" : `${v} 天`) },
+          { title: "生产周期", dataIndex: "leadDays", width: 105, align: "right" as const, ...sortable("leadDays"), render: (v: number | null) => (v == null ? "—" : `${v} 天`) },
         ],
-      },
-      {
-        title: "曲线",
-        key: "proj",
-        width: 60,
-        fixed: "right",
-        render: (_: unknown, r: ReplenishRow) => <a onClick={() => setProjSku(r.code)}>查看</a>,
       },
       {
         title: "建议补货量",
         dataIndex: "suggestQty",
-        width: 140,
+        width: 155,
         align: "right",
+        ...sortable("suggestQty"),
         render: (v: string | null, r) =>
           v != null ? (
             <Popover
@@ -330,9 +362,33 @@ export default function ReplenishClient() {
             "—"
           ),
       },
-    ],
-    [],
+      {
+        title: "库存曲线",
+        key: "proj",
+        width: 90,
+        align: "center",
+        render: (_: unknown, r: ReplenishRow) => <a onClick={() => setProjSku(r.code)}>查看</a>,
+      },
+    ];
+    },
+    [sortBy, sortOrder],
   );
+
+  const handleTableChange: TableProps<ReplenishRow>["onChange"] = (
+    _pagination,
+    _tableFilters,
+    sorter,
+    extra,
+  ) => {
+    if (extra.action !== "sort" || Array.isArray(sorter)) return;
+    const nextSortBy = typeof sorter.columnKey === "string"
+      ? sorter.columnKey as ReplenishSortBy
+      : "coverFull";
+    listState.setFilter({
+      sortBy: nextSortBy,
+      sortOrder: sorter.order === "descend" ? "descend" : "ascend",
+    });
+  };
 
   return (
     <div>
@@ -409,12 +465,14 @@ export default function ReplenishClient() {
         />
       ) : null}
       <Table<ReplenishRow>
+        className="replenish-table"
         rowKey="skuId"
         size={listState.tableSize}
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
         scroll={{ x: "max-content" }}
+        onChange={handleTableChange}
         rowSelection={{
           selectedRowKeys: selectedRows.map((r) => r.skuId),
           preserveSelectedRowKeys: true,
