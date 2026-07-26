@@ -17,9 +17,10 @@ describe("interval-runner 进程内调度回退", () => {
     expect(g[Symbol.for("supply-chain.interval-runner")]).toBeUndefined();
   });
 
-  it("注册了 9 个任务（+rollup）", () => {
+  it("注册了 10 个任务（含 rollup 与决策摘要）", () => {
     expect(INTERVAL_JOBS.map((j) => j.name).sort()).toEqual([
       "data-freshness",
+      "decision-digest",
       "doc-aging",
       "exception-notify",
       "housekeeping",

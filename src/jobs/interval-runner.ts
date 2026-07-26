@@ -19,7 +19,7 @@ import { runHousekeeping } from "./housekeeping";
 import { runFreshnessCheck } from "./freshness";
 import { runDocAging } from "./doc-aging";
 import { runRollup } from "./rollup";
-import { dispatchNotifications, runExceptionNotify } from "./notify";
+import { dispatchNotifications, runDecisionDigestNotify, runExceptionNotify } from "./notify";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -50,6 +50,7 @@ export const INTERVAL_JOBS: IntervalJob[] = [
   { name: "doc-aging", everyMs: 6 * HOUR_MS, run: (db) => runDocAging(db) },
   // 异常入队（每日去重）+ 通知分发（飞书/站内）
   { name: "exception-notify", everyMs: 24 * HOUR_MS, run: (db) => runExceptionNotify(db) },
+  { name: "decision-digest", everyMs: 7 * 24 * HOUR_MS, run: (db) => runDecisionDigestNotify(db) },
   { name: "notify-dispatch", everyMs: 6 * HOUR_MS, run: (db) => dispatchNotifications(db) },
 ];
 

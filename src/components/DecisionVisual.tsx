@@ -50,6 +50,8 @@ export interface DecisionVisualProps {
   onExport?: () => void;
   exportLabel?: string;
   size?: CardProps["size"];
+  /** 主内容本身是语义表格时，不把容器声明为图片。 */
+  contentIsTable?: boolean;
 }
 
 function StateBody({
@@ -111,6 +113,7 @@ export default function DecisionVisual({
   onExport,
   exportLabel = "导出当前视图",
   size = "small",
+  contentIsTable = false,
 }: DecisionVisualProps) {
   const [showTable, setShowTable] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
@@ -270,9 +273,9 @@ export default function DecisionVisual({
       </Typography.Paragraph>
 
       <div
-        role={isShowingData ? undefined : "img"}
+        role={isShowingData || contentIsTable ? undefined : "img"}
         aria-describedby={summaryId}
-        aria-label={isShowingData ? undefined : `${typeof title === "string" ? title : "决策图表"}。${summary}`}
+        aria-label={isShowingData || contentIsTable ? undefined : `${typeof title === "string" ? title : "决策图表"}。${summary}`}
         style={{
           minHeight: contentHeight,
           height: isReady && !isShowingData ? contentHeight : undefined,

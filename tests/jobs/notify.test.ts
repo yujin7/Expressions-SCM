@@ -2,8 +2,13 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { eq } from "drizzle-orm";
 import { createTestDb, type TestDb } from "../helpers/db";
+import * as schema from "@/db/schema";
 import { notifications } from "@/db/schema";
-import { dispatchNotifications, enqueueNotification } from "@/jobs/notify";
+import {
+  dispatchNotifications,
+  enqueueNotification,
+  runDecisionDigestNotify,
+} from "@/jobs/notify";
 
 describe("通知发件箱", () => {
   let db: TestDb;
@@ -37,5 +42,43 @@ describe("通知发件箱", () => {
   it("dispatch：无 pending 时返回全 0", async () => {
     const s = await dispatchNotifications(db, { webhookUrl: null });
     expect(s).toEqual({ sent: 0, skipped: 0, failed: 0 });
+  });
+
+  it("周度决策摘要：同一数据月只入队一次", async () => {
+    const [brand] = await db.insert(schema.brands).values({
+      code: "EXP",
+      nameCn: "Expressions",
+    }).returning();
+    const [channel] = await db.insert(schema.channels).values({
+      code: "tmall",
+      name: "天猫",
+      kind: "platform",
+    }).returning();
+    const [spu] = await db.insert(schema.spus).values({
+      code: "P99100",
+      nameCn: "摘要测试",
+    }).returning();
+    const [sku] = await db.insert(schema.skus).values({
+      code: "CS99100",
+      name: "摘要货品",
+      spuId: spu.id,
+      baseUom: "支",
+      skuType: "finished",
+      brandId: brand.id,
+    }).returning();
+    await db.insert(schema.salesMonthly).values([
+      { skuId: sku.id, channelId: channel.id, yearMonth: "2026-06", qty: "100" },
+      { skuId: sku.id, channelId: channel.id, yearMonth: "2026-07", qty: "120" },
+    ]);
+
+    const first = await runDecisionDigestNotify(db);
+    const replay = await runDecisionDigestNotify(db);
+
+    expect(first).toEqual({ enqueued: 1, month: "2026-07" });
+    expect(replay).toEqual({ enqueued: 0, month: "2026-07" });
+    const [row] = await db.select().from(notifications)
+      .where(eq(notifications.dedupeKey, "decision-digest:2026-07"));
+    expect(row.href).toBe("/report/decision-studio?tab=review");
+    expect(row.targetRole).toBe("pmc");
   });
 });

@@ -45,6 +45,15 @@ export const METRICS: Record<string, MetricDef> = {
     tier: "snapshot",
     caveat: "当前只有月粒度数量；没有日销、收入、客户、区域和促销维度",
   },
+  salesConcentration: {
+    id: "salesConcentration",
+    label: "销量集中度",
+    short: "最新月累计贡献达到 80% 所需的品牌、渠道或 SKU 数",
+    formula: "按销量降序累计，取累计占比首次达到 80% 的成员数",
+    unit: "count",
+    tier: "derived",
+    caveat: "集中度只描述结构，不直接代表风险；还需结合替代性、渠道战略和利润判断",
+  },
   onHandSystem: {
     id: "onHandSystem",
     label: "系统库存",

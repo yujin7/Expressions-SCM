@@ -30,6 +30,7 @@ const FeedbackButton = dynamic(() => import("@/components/FeedbackButton"), { ss
 
 const REPORT_GROUPS: Record<string, string> = {
   "/report/dashboard": "analytics",
+  "/report/decision-studio": "analytics",
   "/report/sales-bridge": "analytics",
   "/report/funnel": "analytics",
   "/report/inventory-analytics": "analytics",
@@ -93,6 +94,7 @@ const menuItems: MenuProps["items"] = [
     label: "经营分析",
     children: [
       { key: "/report/dashboard", label: "经营驾驶舱" },
+      { key: "/report/decision-studio", label: "决策工作室" },
       { key: "/report/sales-bridge", label: "销量变化归因" },
       { key: "/report/funnel", label: "全链达成漏斗" },
       { key: "/report/inventory-analytics", label: "库存分析" },

@@ -15,6 +15,7 @@ describe("governed decision visual contract", () => {
     expect(visual).toContain("数据不足，暂不下结论");
     expect(visual).toContain("aria-describedby");
     expect(visual).toContain("显示数据表");
+    expect(visual).toContain("contentIsTable");
   });
 
   it("migrates the executive and inventory decision charts onto the shared contract", () => {
@@ -37,6 +38,7 @@ describe("governed decision visual contract", () => {
       "src/app/(app)/report/inventory-analytics/inventory-analytics-client.tsx",
       "src/app/(app)/report/sales-bridge/sales-bridge-client.tsx",
       "src/app/(app)/report/supplier-scorecard/supplier-scorecard-client.tsx",
+      "src/app/(app)/report/decision-studio/decision-studio-client.tsx",
       "src/components/ProjectionDrawer.tsx",
     ];
     for (const surface of surfaces) {

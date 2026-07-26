@@ -14,6 +14,7 @@ import { eq } from "drizzle-orm";
 import { notifications } from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
 import { computeExceptions } from "@/server/modules/workbench/focus";
+import { getDecisionStudio } from "@/server/modules/report/decision-studio";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -142,6 +143,29 @@ export async function runExceptionNotify(db: AnyDb): Promise<{ enqueued: number 
     })) enqueued++;
   }
   return { enqueued };
+}
+
+/**
+ * E7-15：周度决策摘要订阅。
+ *
+ * 没有 webhook 时仍投递站内通知；配置 FEISHU_WEBHOOK_URL 后沿用同一 outbox 自动出圈。
+ * 每个数据最新月只入队一次，避免调度器每周重复推送完全相同的月事实。
+ */
+export async function runDecisionDigestNotify(db: AnyDb): Promise<{ enqueued: number; month: string | null }> {
+  const studio = await getDecisionStudio({ dimension: "brand" }, db);
+  if (!studio.latestMonth) return { enqueued: 0, month: null };
+  const channel: NotifyInput["channel"] = process.env.FEISHU_WEBHOOK_URL ? "feishu" : "in_app";
+  const body = studio.review.bullets.join("\n");
+  const created = await enqueueNotification(db, {
+    channel,
+    title: `${studio.latestMonth} 经营决策摘要`,
+    body,
+    href: "/report/decision-studio?tab=review",
+    severity: "info",
+    dedupeKey: `decision-digest:${studio.latestMonth}`,
+    targetRole: "pmc",
+  });
+  return { enqueued: created ? 1 : 0, month: studio.latestMonth };
 }
 
 /** 32 位 FNV-1a：稳定、无依赖、够用于文案指纹（非安全用途） */

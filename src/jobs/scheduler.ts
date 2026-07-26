@@ -20,6 +20,7 @@ export const SCHEDULES: Record<string, string> = {
   housekeeping: "30 1 * * *",
   rollup: "0 2 * * *",
   "exception-notify": "30 8 * * *",
+  "decision-digest": "45 8 * * 1",
 };
 
 export async function start(): Promise<{ stop: () => Promise<void> } | null> {
