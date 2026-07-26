@@ -1,0 +1,29 @@
+import { NextRequest, NextResponse } from "next/server";
+import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
+import { createStockDoc, guardWarehouseWrite, listStockDocs } from "@/server/modules/inventory/stock-doc";
+
+export async function GET(req: NextRequest) {
+  try {
+    await guardRead();
+    const { q, page, pageSize, searchParams } = parseListQuery(req.url);
+    return NextResponse.json(
+      await listStockDocs(q, {
+        status: searchParams.get("status") ?? undefined,
+        subtype: searchParams.get("subtype") ?? undefined,
+        page,
+        pageSize,
+      }),
+    );
+  } catch (e) {
+    return errorResponse(e);
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const user = await guardWarehouseWrite();
+    return NextResponse.json(await createStockDoc(user, await readJson(req)), { status: 201 });
+  } catch (e) {
+    return errorResponse(e);
+  }
+}

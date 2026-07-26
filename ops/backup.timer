@@ -1,0 +1,12 @@
+# 每日 02:30（Asia/Shanghai）触发 scm-backup.service。
+# Persistent=true：停机错过窗口则开机补跑一次。
+[Unit]
+Description=Daily 02:30 Asia/Shanghai supply-chain backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,52 @@
+{
+  "name": "supply-chain",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -H 127.0.0.1",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:seed": "tsx src/db/seed.ts",
+    "lint": "eslint .",
+    "db:backup": "tsx scripts/backup-dev-db.ts",
+    "db:restore": "tsx scripts/backup-dev-db.ts --restore",
+    "db:restore-drill": "tsx scripts/restore-drill-dev.ts"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^5.6.0",
+    "@ant-design/nextjs-registry": "^1.0.2",
+    "@node-rs/argon2": "^2.0.2",
+    "antd": "^5.24.0",
+    "dayjs": "^1.11.13",
+    "drizzle-orm": "^0.44.2",
+    "exceljs": "^4.4.0",
+    "fflate": "^0.8.3",
+    "next": "^15.3.0",
+    "next-auth": "^5.0.0-beta.29",
+    "pg": "^8.16.0",
+    "pg-boss": "^10.3.2",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "recharts": "^3.10.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.3.4",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "drizzle-kit": "^0.31.1",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^15.5.21",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}

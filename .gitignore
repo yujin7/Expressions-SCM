@@ -1,0 +1,18 @@
+node_modules/
+.next/
+.env
+uploads/
+*.tsbuildinfo
+.DS_Store
+coverage/
+drizzle/meta/_journal.json.bak
+.data/
+# .claude/ 默认忽略（launch.json 等本地设置因人而异），但下面三样必须入库：
+# skills/ 是团队/云端会话共享的工作教义；settings.json + hooks/ 是确定性护栏
+# （靠模型记性的纪律迟早会漏，钩子不会）。不入库等于没有。
+.claude/*
+!.claude/skills/
+!.claude/settings.json
+!.claude/hooks/
+.writer.lock
+backups/

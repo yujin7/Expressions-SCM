@@ -1,0 +1,4 @@
+interface:
+  display_name: "Measure First"
+  short_description: "Measure real bottlenecks before optimizing or refactoring"
+  default_prompt: "Use $measure-first to establish a reproducible baseline before changing performance architecture."

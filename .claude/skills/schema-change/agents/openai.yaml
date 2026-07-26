@@ -1,0 +1,4 @@
+interface:
+  display_name: "Schema Change"
+  short_description: "Change Drizzle schemas and migrations without drift"
+  default_prompt: "Use $schema-change to implement and verify this schema or migration change safely."

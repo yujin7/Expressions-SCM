@@ -1,0 +1,4 @@
+interface:
+  display_name: "Write Path"
+  short_description: "Protect transactional writes, posting, and audit invariants"
+  default_prompt: "Use $write-path to implement this database mutation through the project transaction boundaries."

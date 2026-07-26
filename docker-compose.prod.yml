@@ -1,0 +1,36 @@
+# 生产编排（staging 同构，仅 env 不同）。部署走 ops/deploy.sh（含迁移门禁），勿直接 up。
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: scm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?生产必须显式设置}
+      POSTGRES_DB: scm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scm"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://scm:${POSTGRES_PASSWORD}@db:5432/scm
+      AUTH_SECRET: ${AUTH_SECRET:?}
+      AUTH_URL: ${AUTH_URL:?}
+      FEISHU_APP_ID: ${FEISHU_APP_ID:-}
+      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
+      FILE_STORAGE_DIR: /data/uploads
+    volumes:
+      - uploads:/data/uploads
+    ports:
+      - "127.0.0.1:3000:3000" # 前置 nginx/caddy 终止 HTTPS
+volumes:
+  pgdata:
+  uploads:

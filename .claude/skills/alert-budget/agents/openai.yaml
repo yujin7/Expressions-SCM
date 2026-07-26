@@ -1,0 +1,4 @@
+interface:
+  display_name: "Alert Budget"
+  short_description: "Design actionable alerts within an attention budget"
+  default_prompt: "Use $alert-budget to decide whether this signal deserves an alert and how it should behave."

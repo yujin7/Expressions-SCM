@@ -1,0 +1,4 @@
+interface:
+  display_name: "Parallel Sessions"
+  short_description: "Protect shared repository and runtime state across sessions"
+  default_prompt: "Use $parallel-sessions to work safely with concurrent agents in this shared repository."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Red Team Pass"
+  short_description: "Attack write paths with high-value counterexamples"
+  default_prompt: "Use $redteam-pass to test this write path against replay, concurrency, authorization, and reversal failures."

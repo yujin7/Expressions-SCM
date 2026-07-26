@@ -1,0 +1,4 @@
+interface:
+  display_name: "Supply Chain Architect"
+  short_description: "Orchestrate this cosmetics supply-chain project wisely"
+  default_prompt: "Use $supply-chain to frame and orchestrate this cross-domain supply-chain initiative."
