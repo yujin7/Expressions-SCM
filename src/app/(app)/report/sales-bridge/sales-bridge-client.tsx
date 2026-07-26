@@ -7,17 +7,20 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Alert, App, Card, Empty, Radio, Select, Skeleton, Space, Table, Tag, Typography } from "antd";
+import { Alert, App, Card, Radio, Select, Skeleton, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { Bar, BarChart, CartesianGrid, Cell, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { fetchJson } from "@/components/fetchJson";
+import DecisionVisual from "@/components/DecisionVisual";
+import { VISUAL_COLOR } from "@/components/decision-visuals";
 import { formatQty } from "@/components/format";
+import { useListState } from "@/components/useListState";
 import type { BridgeDim, SalesBridgeResult } from "@/server/modules/report/sales-bridge";
 
-const COLOR_TOTAL = "#2f54eb";
-const COLOR_UP = "#52c41a";
-const COLOR_DOWN = "#f5222d";
-const COLOR_OTHER = "#8c8c8c";
+const COLOR_TOTAL = VISUAL_COLOR.primary;
+const COLOR_UP = VISUAL_COLOR.positive;
+const COLOR_DOWN = VISUAL_COLOR.critical;
+const COLOR_OTHER = VISUAL_COLOR.neutral;
 
 const DIM_OPTIONS: { label: string; value: BridgeDim }[] = [
   { label: "品牌", value: "brand" },
@@ -53,10 +56,16 @@ export default function SalesBridgeClient() {
   const router = useRouter();
   const [data, setData] = useState<SalesBridgeResult | null>(null);
   const [loading, setLoading] = useState(true);
-  const [dim, setDim] = useState<BridgeDim>("brand");
-  // 空字符串 = 跟随接口默认（最新月与其上一月），用户选择后才显式传参
-  const [fromYm, setFromYm] = useState("");
-  const [toYm, setToYm] = useState("");
+  const viewState = useListState({
+    key: "sales-bridge",
+    defaults: { dim: "brand", fromYm: "", toYm: "" },
+    paginated: false,
+  });
+  const dim = (["brand", "channel", "sku"].includes(viewState.filters.dim)
+    ? viewState.filters.dim
+    : "brand") as BridgeDim;
+  const fromYm = viewState.filters.fromYm;
+  const toYm = viewState.filters.toYm;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -189,16 +198,16 @@ export default function SalesBridgeClient() {
               size="small"
               value={dim}
               options={DIM_OPTIONS}
-              onChange={(e) => setDim(e.target.value as BridgeDim)}
+              onChange={(event) => viewState.setFilter({ dim: event.target.value as BridgeDim })}
             />
           </Space>
           <Space size={8}>
             <Typography.Text type="secondary">对比区间</Typography.Text>
             {monthOpts.length > 0 ? (
               <>
-                <Select size="small" style={{ width: 120 }} value={curFrom || undefined} options={monthOpts} onChange={(v) => setFromYm(v)} placeholder="起始月" />
+                <Select size="small" style={{ width: 120 }} value={curFrom || undefined} options={monthOpts} onChange={(value) => viewState.setFilter({ fromYm: value })} placeholder="起始月" />
                 <span>→</span>
-                <Select size="small" style={{ width: 120 }} value={curTo || undefined} options={monthOpts} onChange={(v) => setToYm(v)} placeholder="结束月" />
+                <Select size="small" style={{ width: 120 }} value={curTo || undefined} options={monthOpts} onChange={(value) => viewState.setFilter({ toYm: value })} placeholder="结束月" />
               </>
             ) : (
               <Typography.Text>{curFrom || "—"} → {curTo || "—"}</Typography.Text>
@@ -223,10 +232,42 @@ export default function SalesBridgeClient() {
         description={<Typography.Text>{narrative}</Typography.Text>}
       />
 
-      <Card size="small" title={`销量变化瀑布（按${data ? DIM_CN[data.dim] : ""}拆分）`} styles={{ body: { height: 380 } }} loading={loading}>
-        {wf.length === 0 ? (
-          <Empty description="无销量数据" />
-        ) : (
+      <DecisionVisual
+        title={`销量变化瀑布（按${data ? DIM_CN[data.dim] : ""}拆分）`}
+        question="两个月销量为何变化，哪些项目贡献增长或造成下滑？"
+        metricId="salesQty"
+        grain={`月 × ${DIM_CN[dim]}`}
+        unit="基础单位数量"
+        source={{
+          tier: "snapshot",
+          source: "sales_monthly 销售月事实",
+          asOf: data?.toYm,
+        }}
+        coverage={{ covered: data?.months.length ?? 0, total: 6, label: "可选月份" }}
+        activeFilters={[`${curFrom || "—"} → ${curTo || "—"}`, `按${DIM_CN[dim]}`]}
+        summary={narrative}
+        caveat="当前只有月粒度数量；跨 SKU 汇总用于解释趋势，不代表收入或毛利变化。TOP 8 之外合并为“其他”。"
+        state={loading && !data ? "loading" : wf.length === 0 ? "empty" : "ready"}
+        stateDetail="当前月份或拆分维度没有销量事实。"
+        height={380}
+        dataView={
+          <Table<DetailRow>
+            rowKey="key"
+            size="small"
+            columns={columns}
+            dataSource={detail}
+            pagination={false}
+            scroll={{ y: 280 }}
+            onRow={(row) => {
+              const href = hrefOf(row);
+              return {
+                onClick: () => { if (href) router.push(href); },
+                style: href ? { cursor: "pointer" } : undefined,
+              };
+            }}
+          />
+        }
+      >
           <ResponsiveContainer>
             <BarChart data={wf} margin={{ top: 8, right: 16, left: 8, bottom: 72 }}>
               <CartesianGrid strokeDasharray="3 3" />
@@ -250,8 +291,7 @@ export default function SalesBridgeClient() {
               </Bar>
             </BarChart>
           </ResponsiveContainer>
-        )}
-      </Card>
+      </DecisionVisual>
 
       <Space size={12} style={{ margin: "8px 0 12px" }}>
         <Tag color={COLOR_TOTAL}>期间总量</Tag>
@@ -260,35 +300,6 @@ export default function SalesBridgeClient() {
         <Tag color={COLOR_OTHER}>其他（合并）</Tag>
       </Space>
 
-      <Table<DetailRow>
-        rowKey="key"
-        size="small"
-        columns={columns}
-        dataSource={detail}
-        pagination={false}
-        onRow={(r) => {
-          const href = hrefOf(r);
-          return {
-            onClick: () => { if (href) router.push(href); },
-            style: href ? { cursor: "pointer" } : undefined,
-          };
-        }}
-        summary={() =>
-          data ? (
-            <Table.Summary.Row>
-              <Table.Summary.Cell index={0}>
-                <Typography.Text strong>合计（{data.fromYm} {qty(data.from)} → {data.toYm} {qty(data.to)}）</Typography.Text>
-              </Table.Summary.Cell>
-              <Table.Summary.Cell index={1} align="right">
-                <Typography.Text strong type={data.total >= 0 ? "success" : "danger"}>{sq(data.total)}</Typography.Text>
-              </Table.Summary.Cell>
-              <Table.Summary.Cell index={2} align="right">
-                <Typography.Text strong>{data.total === 0 ? "—" : "100.0%"}</Typography.Text>
-              </Table.Summary.Cell>
-            </Table.Summary.Row>
-          ) : null
-        }
-      />
     </div>
   );
 }

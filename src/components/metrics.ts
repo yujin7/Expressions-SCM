@@ -221,6 +221,41 @@ export const METRICS: Record<string, MetricDef> = {
     tier: "derived",
     caveat: "当前来自月度登记文件，不是订单承诺或实时 sell-through；需求为 0 时显示数据不足",
   },
+  qcPassRate: {
+    id: "qcPassRate",
+    label: "检验合格率",
+    short: "已判定检验数量中正常合格的比例",
+    formula: "正常合格数量 ÷（合格 + 返工 + 让步 + 报废）",
+    unit: "pct",
+    tier: "derived",
+    caveat: "未检验与待判定数量不进入分母；必须同时查看待判定积压，避免幸存者偏差",
+  },
+  flowStageQty: {
+    id: "flowStageQty",
+    label: "全链阶段量级",
+    short: "需求、计划、下单、到货与动销各阶段在当前窗口内的数量规模",
+    unit: "qty",
+    tier: "derived",
+    caveat: "各阶段事实粒度和时间窗不同，只用于定位落差，不是严格转化或损耗率",
+  },
+  npdProgress: {
+    id: "npdProgress",
+    label: "新品组合进度",
+    short: "进行中新品项目已完成的标准节点任务比例",
+    formula: "Σ已完成节点 ÷ Σ已实例化节点",
+    unit: "pct",
+    tier: "ledger",
+    caveat: "计划进度不等于商业成功；上市后销量、毛利、退货与复盘结论需单独接入",
+  },
+  wipPendingQty: {
+    id: "wipPendingQty",
+    label: "委外待收数量",
+    short: "委外订单尚未通过正常收货行入库的剩余数量",
+    formula: "Σ max(JG订单数量−正常行累计实收, 0)",
+    unit: "qty",
+    tier: "ledger",
+    caveat: "跨 SKU 合计可能混合件、箱、kg 等基础单位，仅用于催交排序，不可视为统一产能",
+  },
 };
 
 /** 取指标定义；未登记返回 undefined（调用方应回退到原文案） */

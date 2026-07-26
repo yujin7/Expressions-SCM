@@ -112,7 +112,11 @@ function BriefBody({ data }: { data: SkuBriefDto }) {
           最短剩余效期 {data.minDaysLeft} 天（阈值 {data.nearExpiryDays} 天）
         </div>
       ) : null}
-      <div style={{ height: 48, marginBottom: 6 }}>
+      <div
+        style={{ height: 48, marginBottom: 6 }}
+        role={hasSales ? "img" : undefined}
+        aria-label={hasSales ? `${data.code} 近 ${data.spark.length} 个月销量趋势：${data.spark.map((point) => `${point.ym} ${nf(point.qty)}`).join("，")}` : undefined}
+      >
         {hasSales ? (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={data.spark} margin={{ top: 4, right: 2, left: 2, bottom: 0 }}>

@@ -2,7 +2,7 @@
 
 /** #1 库存未来曲线抽屉：projected on-hand 逐日曲线 + 断货日/建议下单日标注（对标 Kinaxis projected on-hand）。 */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Button, Card, DatePicker, Drawer, Empty, InputNumber, Space, Spin, Statistic, Tag, Typography } from "antd";
+import { Alert, App, Button, Card, DatePicker, Drawer, Empty, InputNumber, Space, Spin, Statistic, Table, Tag, Typography } from "antd";
 import type { Dayjs } from "dayjs";
 import {
   Area,
@@ -15,6 +15,8 @@ import {
   YAxis,
 } from "recharts";
 import { fetchJson } from "@/components/fetchJson";
+import DecisionVisual from "@/components/DecisionVisual";
+import { VISUAL_COLOR } from "@/components/decision-visuals";
 
 interface Point { date: string; onHand: number; arrival: number }
 interface Projection {
@@ -113,13 +115,43 @@ export default function ProjectionDrawer({
               message={`另有 ${data.undatedInbound.toLocaleString("zh-CN")} 在途量无确认到货日，未计入曲线（补录 PO 预计到货日后可纳入推演）。`}
             />
           ) : null}
-          <div style={{ width: "100%", height: 320 }}>
+          <DecisionVisual
+            title="120 天投影在库"
+            question="按当前销速与已确认供给，何时会断货，最晚何时必须下单？"
+            metricId="coverFull"
+            grain="SKU × 日"
+            unit="基础单位数量"
+            source={{
+              tier: "derived",
+              source: "当前库存 + 有日期未结供给 − 日均消耗",
+              asOf: data.today,
+            }}
+            coverage={{ covered: data.points.length, total: 120, label: "投影视野天数" }}
+            activeFilters={[data.scenarioApplied ? "What-if 沙盘" : "基准情景"]}
+            summary={`${data.code} 当前在库 ${data.startOnHand.toLocaleString("zh-CN")}，日均消耗 ${data.daily.toLocaleString("zh-CN")}；${data.stockoutDate ? `预计 ${data.stockoutDate} 断货` : "120 天内不断货"}；${data.orderByDate ? `最晚下单日 ${data.orderByDate}` : "暂无可计算下单日"}。`}
+            caveat={`无日期在途 ${data.undatedInbound.toLocaleString("zh-CN")} 未计入；沙盘只推演、不落库、不自动下单。`}
+            height={320}
+            dataView={
+              <Table<Point>
+                rowKey="date"
+                size="small"
+                pagination={{ pageSize: 20, showSizeChanger: false }}
+                dataSource={data.points}
+                columns={[
+                  { title: "日期", dataIndex: "date" },
+                  { title: "投影在库", dataIndex: "onHand", align: "right" },
+                  { title: "当日到货", dataIndex: "arrival", align: "right" },
+                ]}
+                scroll={{ y: 230 }}
+              />
+            }
+          >
             <ResponsiveContainer>
               <AreaChart data={data.points} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id="ohFill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#1677ff" stopOpacity={0.35} />
-                    <stop offset="100%" stopColor="#1677ff" stopOpacity={0.02} />
+                    <stop offset="0%" stopColor={VISUAL_COLOR.primary} stopOpacity={0.35} />
+                    <stop offset="100%" stopColor={VISUAL_COLOR.primary} stopOpacity={0.02} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
@@ -129,13 +161,13 @@ export default function ProjectionDrawer({
                   formatter={(v) => [Number(v).toLocaleString("zh-CN"), "投影在库"]}
                   labelFormatter={(l) => `日期 ${l}`}
                 />
-                <ReferenceLine y={0} stroke="#cf1322" strokeDasharray="4 2" />
-                {data.stockoutDate ? <ReferenceLine x={data.stockoutDate} stroke="#cf1322" label={{ value: "断货", fontSize: 11, fill: "#cf1322" }} /> : null}
-                {data.orderByDate && !data.orderWindowMissed ? <ReferenceLine x={data.orderByDate} stroke="#fa8c16" label={{ value: "下单", fontSize: 11, fill: "#fa8c16" }} /> : null}
-                <Area type="monotone" dataKey="onHand" stroke="#1677ff" fill="url(#ohFill)" strokeWidth={2} />
+                <ReferenceLine y={0} stroke={VISUAL_COLOR.critical} strokeDasharray="4 2" />
+                {data.stockoutDate ? <ReferenceLine x={data.stockoutDate} stroke={VISUAL_COLOR.critical} label={{ value: "断货", fontSize: 11, fill: VISUAL_COLOR.critical }} /> : null}
+                {data.orderByDate && !data.orderWindowMissed ? <ReferenceLine x={data.orderByDate} stroke={VISUAL_COLOR.warning} label={{ value: "下单", fontSize: 11, fill: VISUAL_COLOR.warning }} /> : null}
+                <Area type="monotone" dataKey="onHand" stroke={VISUAL_COLOR.primary} fill="url(#ohFill)" strokeWidth={2} />
               </AreaChart>
             </ResponsiveContainer>
-          </div>
+          </DecisionVisual>
           <Card size="small" title="What-if 沙盘（不落库，仅推演）" style={{ background: "#fafafa" }}>
             <Space wrap align="end">
               <div>

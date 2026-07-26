@@ -7,12 +7,13 @@
  *  - 疑似重复：主数据**多了什么**（同一实物被建了多条主档）
  */
 import { useCallback, useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Alert, App, Input, Progress, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import { Tabs } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import CaliberNote from "@/components/CaliberNote";
+import DecisionReadinessPanel from "@/components/DecisionReadinessPanel";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
 import SkuHoverCard from "@/components/SkuHoverCard";
@@ -387,17 +388,31 @@ function DuplicatesTab() {
 }
 
 export default function DataHealthClient() {
-  // ?tab=duplicates 深链（与 /report/demand?tab= 同约定）：告警与复核项可直接指到「疑似重复」
+  // ?tab=* 深链：告警、复核项与能力门禁可直接分享。
+  const pathname = usePathname();
+  const router = useRouter();
   const searchParams = useSearchParams();
-  const initialTab = searchParams.get("tab") === "duplicates" ? "duplicates" : "missing";
+  const requestedTab = searchParams.get("tab");
+  const activeTab = requestedTab === "duplicates" || requestedTab === "readiness"
+    ? requestedTab
+    : "missing";
+  const setTab = (tab: string) => {
+    const next = new URLSearchParams(searchParams.toString());
+    if (tab === "missing") next.delete("tab");
+    else next.set("tab", tab);
+    const query = next.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  };
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>主数据健康度</Typography.Title>
       <Tabs
-        defaultActiveKey={initialTab}
+        activeKey={activeTab}
+        onChange={setTab}
         items={[
           { key: "missing", label: "缺失清单", children: <MissingTab /> },
           { key: "duplicates", label: "疑似重复", children: <DuplicatesTab /> },
+          { key: "readiness", label: "决策能力解锁", children: <DecisionReadinessPanel /> },
         ]}
       />
     </div>

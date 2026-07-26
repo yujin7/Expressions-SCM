@@ -1,13 +1,14 @@
 "use client";
 
 /** NPD 1.x 项目跟踪（D19 激活）：69 节点标准模板实例化 → 计划推算 → 任务推进 */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert, App, Button, DatePicker, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Table, Tag, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
+import DecisionVisual from "@/components/DecisionVisual";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { ACTION } from "@/components/dictionary";
 
@@ -267,6 +268,20 @@ export default function NpdProjectsClient() {
     },
   ];
 
+  const projectSummary = useMemo(() => {
+    const active = rows.filter((row) => row.status === "active");
+    const taskTotal = active.reduce((sum, row) => sum + row.taskTotal, 0);
+    const taskDone = active.reduce((sum, row) => sum + row.taskDone, 0);
+    const overdueTasks = active.reduce((sum, row) => sum + row.overdueTasks, 0);
+    return {
+      active,
+      taskTotal,
+      taskDone,
+      overdueTasks,
+      progress: taskTotal > 0 ? Math.round((taskDone / taskTotal) * 100) : null,
+    };
+  }, [rows]);
+
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>NPD 项目跟踪</Typography.Title>
@@ -281,7 +296,67 @@ export default function NpdProjectsClient() {
           新建 NPD 项目
         </Button>
       </Space>
-      <Table<ProjectRow> rowKey="id" size="small" columns={columns} dataSource={rows} loading={loading} pagination={false} scroll={{ x: "max-content" }} />
+      <DecisionVisual
+        title="新品项目组合进度"
+        question="哪些在研项目已落后计划，哪些节点需要本周优先解除阻塞？"
+        metricId="npdProgress"
+        grain="项目 / 节点任务"
+        unit="项目、任务、%"
+        source={{ tier: "ledger", source: "NPD 项目与实例化节点任务" }}
+        coverage={{
+          covered: projectSummary.active.filter((row) => row.taskTotal > 0).length,
+          total: projectSummary.active.length,
+          label: "进行中项目含节点计划",
+        }}
+        summary={`进行中 ${projectSummary.active.length} 个项目，已完成 ${projectSummary.taskDone}/${projectSummary.taskTotal} 个节点${projectSummary.progress == null ? "" : `，组合进度 ${projectSummary.progress}%`}；逾期节点 ${projectSummary.overdueTasks} 个。`}
+        caveat="当前只有项目计划与节点完成事实；缺少上市后销量、毛利、退货和复盘标签，不能据此评价新品商业成功率。"
+        state={loading ? "loading" : rows.length === 0 ? "empty" : projectSummary.taskTotal === 0 ? "insufficient" : "ready"}
+        stateDetail={projectSummary.taskTotal === 0 ? "现有进行中项目尚未实例化节点计划，无法形成组合进度。" : undefined}
+        height={Math.max(220, Math.min(420, projectSummary.active.length * 58 + 30))}
+        dataView={
+          <Table<ProjectRow>
+            rowKey="id"
+            size="small"
+            columns={columns}
+            dataSource={rows}
+            loading={loading}
+            pagination={false}
+            scroll={{ x: "max-content" }}
+          />
+        }
+      >
+        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          {projectSummary.active.map((project) => {
+            const percent = project.taskTotal > 0
+              ? Math.round((project.taskDone / project.taskTotal) * 100)
+              : 0;
+            return (
+              <div key={project.id}>
+                <Space style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }} wrap>
+                  <Button
+                    type="link"
+                    size="small"
+                    style={{ padding: 0, height: "auto", fontWeight: 600 }}
+                    onClick={() => void openDetail(project.id)}
+                  >
+                    {project.name}
+                  </Button>
+                  <Space size={4}>
+                    {project.planEnd ? <Tag bordered={false}>计划 {project.planEnd}</Tag> : null}
+                    {project.overdueTasks > 0 ? <Tag color="error">逾期 {project.overdueTasks}</Tag> : null}
+                  </Space>
+                </Space>
+                <Progress
+                  percent={percent}
+                  status={project.overdueTasks > 0 ? "exception" : "active"}
+                  format={() => `${project.taskDone}/${project.taskTotal}`}
+                  aria-label={`${project.name}进度 ${percent}%，逾期节点 ${project.overdueTasks} 个`}
+                />
+              </div>
+            );
+          })}
+        </Space>
+      </DecisionVisual>
 
       <Modal
         title="新建 NPD 项目（按 69 节点标准实例化）"

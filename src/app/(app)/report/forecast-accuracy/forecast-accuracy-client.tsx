@@ -6,6 +6,8 @@ import { Alert, App, Card, Col, Input, Row, Statistic, Table, Tag, Tooltip, Typo
 import type { ColumnsType } from "antd/es/table";
 import { Line, LineChart, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { fetchJson } from "@/components/fetchJson";
+import DecisionVisual from "@/components/DecisionVisual";
+import { VISUAL_COLOR } from "@/components/decision-visuals";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
 import SkuHoverCard from "@/components/SkuHoverCard";
@@ -163,17 +165,48 @@ export default function ForecastAccuracyClient() {
         scroll={{ x: "max-content" }}
         expandable={{
           expandedRowRender: (r) => (
-            <div style={{ height: 180, padding: "8px 0" }}>
+            <DecisionVisual
+              title={`${r.code} 实际 vs 回测预测`}
+              question="该 SKU 的预测在哪些月份偏离实际，偏差方向是否持续？"
+              metricId="wape"
+              grain="SKU × 月"
+              unit="基础单位数量"
+              source={{
+                tier: "derived",
+                source: "销售月事实滚动回测 Holt 预测",
+                asOf: r.points.at(-1)?.ym,
+              }}
+              coverage={{ covered: r.n, total: Math.max(r.n, 3), label: "回测月份" }}
+              summary={`${r.code} 回测 ${r.n} 期，WAPE ${pct(r.wape)}，偏差 ${pct(r.bias)}，${r.fvaText}。`}
+              caveat="每月只使用此前月份训练；少于 3 个回测期时样本不足，不应据此切换算法。"
+              state={r.points.length === 0 ? "empty" : r.reliable ? "ready" : "insufficient"}
+              stateDetail={r.points.length === 0 ? "没有可回测月份。" : "回测期少于 3，暂不下可靠结论。"}
+              height={210}
+              dataView={
+                <Table<Point>
+                  rowKey="ym"
+                  size="small"
+                  pagination={false}
+                  dataSource={r.points}
+                  columns={[
+                    { title: "月份", dataIndex: "ym" },
+                    { title: "实际", dataIndex: "actual", align: "right" },
+                    { title: "回测预测", dataIndex: "forecast", align: "right" },
+                    { title: "误差", dataIndex: "error", align: "right" },
+                  ]}
+                />
+              }
+            >
               <ResponsiveContainer>
                 <LineChart data={r.points} margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
                   <XAxis dataKey="ym" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} width={56} />
                   <RTooltip formatter={(v, n) => [Number(v).toLocaleString("zh-CN"), n === "actual" ? "实际" : "回测预测"]} />
-                  <Line type="monotone" dataKey="actual" stroke="#1677ff" strokeWidth={2} dot={false} name="actual" />
-                  <Line type="monotone" dataKey="forecast" stroke="#fa8c16" strokeDasharray="4 2" strokeWidth={2} dot={false} name="forecast" />
+                  <Line type="monotone" dataKey="actual" stroke={VISUAL_COLOR.primary} strokeWidth={2} dot={false} name="actual" />
+                  <Line type="monotone" dataKey="forecast" stroke={VISUAL_COLOR.warning} strokeDasharray="4 2" strokeWidth={2} dot={false} name="forecast" />
                 </LineChart>
               </ResponsiveContainer>
-            </div>
+            </DecisionVisual>
           ),
         }}
         pagination={listState.paginationProps({ total: data?.total ?? 0 })}

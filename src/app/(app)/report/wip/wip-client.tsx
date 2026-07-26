@@ -1,13 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { App, Button, Card, Col, Row, Space, Statistic, Switch, Table, Typography } from "antd";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { App, Button, Card, Col, Progress, Row, Space, Statistic, Switch, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
+import DecisionVisual from "@/components/DecisionVisual";
 import DocStatusTag from "@/components/DocStatusTag";
 import RemoteSelect from "@/components/RemoteSelect";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
+import { useListState } from "@/components/useListState";
 
 interface WipRow {
   jgId: number;
@@ -38,8 +40,15 @@ export default function WipClient() {
   const [rows, setRows] = useState<WipRow[]>([]);
   const [summary, setSummary] = useState<WipSummary | null>(null);
   const [loading, setLoading] = useState(false);
-  const [supplierId, setSupplierId] = useState<number | undefined>();
-  const [overdueOnly, setOverdueOnly] = useState(false);
+  const viewState = useListState({
+    key: "wip-report",
+    defaults: { supplierId: "", overdueOnly: "" },
+    paginated: false,
+  });
+  const supplierId = viewState.filters.supplierId
+    ? Number(viewState.filters.supplierId)
+    : undefined;
+  const overdueOnly = viewState.filters.overdueOnly === "1";
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -62,6 +71,26 @@ export default function WipClient() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const supplierSummary = useMemo(() => {
+    const bySupplier = new Map<string, { name: string; pending: number; jobs: number; overdue: number }>();
+    for (const row of rows) {
+      const current = bySupplier.get(row.supplierName) ?? {
+        name: row.supplierName,
+        pending: 0,
+        jobs: 0,
+        overdue: 0,
+      };
+      current.pending += Number(row.pendingQty) || 0;
+      current.jobs += 1;
+      current.overdue += row.overdue ? 1 : 0;
+      bySupplier.set(row.supplierName, current);
+    }
+    const ranked = [...bySupplier.values()].sort((a, b) => b.pending - a.pending);
+    const maxPending = Math.max(...ranked.map((item) => item.pending), 0);
+    const pendingTotal = ranked.reduce((sum, item) => sum + item.pending, 0);
+    return { ranked, maxPending, pendingTotal };
+  }, [rows]);
 
   const columns: ColumnsType<WipRow> = [
     { title: "JG 单号", dataIndex: "jgNo", width: 150 },
@@ -127,27 +156,80 @@ export default function WipClient() {
           placeholder="全部加工厂"
           style={{ width: 240 }}
           value={supplierId}
-          onChange={(v) => setSupplierId(v as number | undefined)}
+          onChange={(v) => viewState.setFilter({ supplierId: v == null ? "" : String(v) })}
         />
         <Space size={8}>
-          <Switch checked={overdueOnly} onChange={setOverdueOnly} />
+          <Switch
+            checked={overdueOnly}
+            onChange={(checked) => viewState.setFilter({ overdueOnly: checked ? "1" : "" })}
+          />
           <Typography.Text>仅逾期</Typography.Text>
         </Space>
         <Button icon={<ReloadOutlined />} onClick={() => void load()}>
           刷新
         </Button>
       </Space>
-      <style>{`.wip-row-overdue > td { background: #fff1f0 !important; }`}</style>
-      <Table<WipRow>
-        rowKey="jgId"
-        size="middle"
-        columns={columns}
-        dataSource={rows}
-        loading={loading}
-        scroll={{ x: 1250 }}
-        rowClassName={(r) => (r.overdue ? "wip-row-overdue" : "")}
-        pagination={{ pageSize: 50, showTotal: (t) => `共 ${t} 条` }}
-      />
+      <DecisionVisual
+        title="委外待收集中度"
+        question="待收数量集中在哪些加工厂，逾期订单是否需要立即催交或调整产能？"
+        metricId="wipPendingQty"
+        grain="加工厂 / JG"
+        unit="基础数量"
+        source={{ tier: "ledger", source: "JG 委外订单与收货正常行" }}
+        coverage={{ covered: rows.length, total: summary?.wipCount ?? rows.length, label: "当前筛选在制 JG" }}
+        activeFilters={[
+          supplierId != null ? `加工厂 ID ${supplierId}` : "全部加工厂",
+          overdueOnly ? "仅逾期" : "全部在制",
+        ]}
+        summary={`当前 ${rows.length} 个在制 JG，待收 ${formatQty(String(supplierSummary.pendingTotal))}；其中逾期 ${summary?.overdueCount ?? 0} 个，分布在 ${supplierSummary.ranked.length} 家加工厂。`}
+        caveat="数量可能混合不同 SKU 的基础单位，只能用于识别集中度与催交优先级；跨品类总量不代表可替代产能。"
+        state={loading ? "loading" : rows.length === 0 ? "empty" : "ready"}
+        height={Math.max(220, Math.min(420, supplierSummary.ranked.length * 52 + 36))}
+        dataView={
+          <>
+            <style>{`.wip-row-overdue > td { background: #fff1f0 !important; }`}</style>
+            <Table<WipRow>
+              rowKey="jgId"
+              size="middle"
+              columns={columns}
+              dataSource={rows}
+              loading={loading}
+              scroll={{ x: 1250 }}
+              rowClassName={(r) => (r.overdue ? "wip-row-overdue" : "")}
+              pagination={{ pageSize: 50, showTotal: (t) => `共 ${t} 条` }}
+            />
+          </>
+        }
+      >
+        <Space direction="vertical" size={10} style={{ width: "100%" }}>
+          {supplierSummary.ranked.map((supplier) => {
+            const share = supplierSummary.pendingTotal > 0
+              ? Math.round((supplier.pending / supplierSummary.pendingTotal) * 100)
+              : 0;
+            const relative = supplierSummary.maxPending > 0
+              ? Math.round((supplier.pending / supplierSummary.maxPending) * 100)
+              : 0;
+            return (
+              <div key={supplier.name}>
+                <Space style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }} wrap>
+                  <Typography.Text strong>{supplier.name}</Typography.Text>
+                  <Space size={4}>
+                    <Tag bordered={false}>{supplier.jobs} 个 JG</Tag>
+                    {supplier.overdue > 0 ? <Tag color="error">逾期 {supplier.overdue}</Tag> : null}
+                    <Typography.Text>{formatQty(String(supplier.pending))} · {share}%</Typography.Text>
+                  </Space>
+                </Space>
+                <Progress
+                  percent={relative}
+                  showInfo={false}
+                  strokeColor={supplier.overdue > 0 ? "#dc2626" : "#2563eb"}
+                  aria-label={`${supplier.name}待收 ${formatQty(String(supplier.pending))}，占当前待收 ${share}%，逾期 ${supplier.overdue} 个`}
+                />
+              </div>
+            );
+          })}
+        </Space>
+      </DecisionVisual>
     </div>
   );
 }

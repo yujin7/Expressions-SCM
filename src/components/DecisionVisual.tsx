@@ -120,6 +120,7 @@ export default function DecisionVisual({
   const coverageLabel = coverageText(coverage);
   const coverageValue = coveragePercent(coverage);
   const isReady = state === "ready";
+  const isShowingData = Boolean(showTable && dataView);
   const contentHeight: number | string = fullscreen ? "calc(100vh - 230px)" : height;
 
   const share = async () => {
@@ -269,15 +270,15 @@ export default function DecisionVisual({
       </Typography.Paragraph>
 
       <div
-        role={showTable ? undefined : "img"}
+        role={isShowingData ? undefined : "img"}
         aria-describedby={summaryId}
-        aria-label={showTable ? undefined : `${typeof title === "string" ? title : "决策图表"}。${summary}`}
+        aria-label={isShowingData ? undefined : `${typeof title === "string" ? title : "决策图表"}。${summary}`}
         style={{
           minHeight: contentHeight,
-          height: isReady && !(showTable && dataView) ? contentHeight : undefined,
+          height: isReady && !isShowingData ? contentHeight : undefined,
         }}
       >
-        {isReady ? (showTable && dataView ? dataView : children) : (
+        {isShowingData ? dataView : isReady ? children : (
           <StateBody state={state} detail={stateDetail} height={height} />
         )}
       </div>

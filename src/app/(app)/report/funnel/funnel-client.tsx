@@ -6,11 +6,13 @@
  * 下方表格逐级列出量 / 单据数 / 取数口径——口径与时间窗不对齐的诚实标注在顶部 Alert。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, App, Card, Radio, Skeleton, Space, Statistic, Table, Tag, Typography } from "antd";
+import { Alert, App, Card, Radio, Space, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { Bar, BarChart, Cell, LabelList, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { fetchJson } from "@/components/fetchJson";
+import DecisionVisual from "@/components/DecisionVisual";
 import { formatQty } from "@/components/format";
+import { useListState } from "@/components/useListState";
 
 type StageKey = "demand" | "plan" | "order" | "receipt" | "sales";
 
@@ -53,7 +55,12 @@ export default function FunnelClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<FunnelData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [months, setMonths] = useState(3);
+  const viewState = useListState({
+    key: "funnel",
+    defaults: { months: "3" },
+    paginated: false,
+  });
+  const months = Number(viewState.filters.months) || 3;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -129,17 +136,6 @@ export default function FunnelClient() {
         description={data?.caveat ?? "各级口径与时间窗不完全对齐，五级并非严格一一对应。"}
       />
       <Space size={12} wrap style={{ marginBottom: 12 }}>
-        <Radio.Group
-          value={months}
-          onChange={(e) => setMonths(Number(e.target.value))}
-          optionType="button"
-          buttonStyle="solid"
-          options={[
-            { label: "近 3 月", value: 3 },
-            { label: "近 6 月", value: 6 },
-            { label: "近 12 月", value: 12 },
-          ]}
-        />
         {data ? (
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>
             自然月窗（需求/动销）：{data.monthList.length ? `${data.monthList[0]} ~ ${data.monthList[data.monthList.length - 1]}` : "无销量数据"}
@@ -148,11 +144,50 @@ export default function FunnelClient() {
         ) : null}
       </Space>
 
-      <Card size="small" style={{ marginBottom: 12 }}>
-        {loading && !data ? (
-          <Skeleton active paragraph={{ rows: 6 }} />
-        ) : (
-          <>
+      <div style={{ marginBottom: 12 }}>
+        <DecisionVisual
+          title="需求到动销的全链量级"
+          question="从需求到最终动销，量级在哪一级出现最大落差？"
+          metricId="flowStageQty"
+          grain="流程阶段"
+          unit="基础单位数量"
+          source={{
+            tier: "derived",
+            source: "需求登记、BH/WO/PO、收货台账与销售月事实",
+            asOf: data?.docWindow.to,
+          }}
+          coverage={{ covered: data?.stages.length ?? 0, total: 5, label: "流程阶段" }}
+          activeFilters={[`近 ${months} 月`]}
+          summary={data ? `${data.stages.map((stage) => `${stage.label} ${qty(stage.qty)}`).join("；")}。` : "全链数据尚未加载。"}
+          caveat={data?.caveat ?? "各阶段时间窗与事实粒度不同，不是严格的一一转化或损耗率。"}
+          state={loading && !data ? "loading" : chartRows.length === 0 ? "empty" : "ready"}
+          stateDetail="当前窗口内没有可形成全链量级的数据。"
+          height={360}
+          extra={
+            <Radio.Group
+              value={String(months)}
+              onChange={(event) => viewState.setFilter({ months: String(event.target.value) })}
+              optionType="button"
+              buttonStyle="solid"
+              size="small"
+              options={[
+                { label: "3 月", value: "3" },
+                { label: "6 月", value: "6" },
+                { label: "12 月", value: "12" },
+              ]}
+            />
+          }
+          dataView={
+            <Table<FunnelStage>
+              rowKey="key"
+              size="small"
+              columns={columns}
+              dataSource={data?.stages ?? []}
+              pagination={false}
+              scroll={{ x: "max-content", y: 250 }}
+            />
+          }
+        >
             <div style={{ width: "100%", height: 300 }}>
               <ResponsiveContainer>
                 <BarChart data={chartRows} layout="vertical" margin={{ top: 8, right: 96, left: 8, bottom: 8 }}>
@@ -192,9 +227,8 @@ export default function FunnelClient() {
                 );
               })}
             </Space>
-          </>
-        )}
-      </Card>
+        </DecisionVisual>
+      </div>
 
       <Space size={12} wrap style={{ marginBottom: 12 }}>
         {(data?.stages ?? []).map((s) => (
@@ -205,15 +239,6 @@ export default function FunnelClient() {
         ))}
       </Space>
 
-      <Table<FunnelStage>
-        rowKey="key"
-        size="middle"
-        columns={columns}
-        dataSource={data?.stages ?? []}
-        loading={loading}
-        pagination={false}
-        scroll={{ x: "max-content" }}
-      />
     </div>
   );
 }

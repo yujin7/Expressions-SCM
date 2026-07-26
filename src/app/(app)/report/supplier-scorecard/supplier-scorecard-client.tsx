@@ -9,13 +9,15 @@
  * 评分只是**数据建议**：采纳与否由采购判断，点「采纳」才写档案等级；样本不足者不评级而非给低分。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
-  Alert, App, Button, Card, Col, Empty, Input, Popconfirm, Progress, Row, Segmented, Select,
+  Alert, App, Button, Card, Col, Input, Popconfirm, Progress, Row, Segmented, Select,
   Space, Statistic, Table, Tabs, Tag, Tooltip, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { fetchJson, postJson } from "@/components/fetchJson";
+import DecisionVisual from "@/components/DecisionVisual";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
 
@@ -449,10 +451,46 @@ function QcSummaryTab() {
         }
       />
 
-      <Card size="small" title="月度检验结构（堆叠 = 正常/返工/让步/报废/待判定 数量）" styles={{ body: { height: 320 } }} style={{ marginBottom: 12 }}>
-        {!hasData ? (
-          <Empty description="窗口内无检验记录" />
-        ) : (
+      <div style={{ marginBottom: 12 }}>
+        <DecisionVisual
+          title="月度检验结构"
+          question="合格、返工、让步和报废的结构是否在恶化，集中在哪些月份？"
+          metricId="qcPassRate"
+          grain="月 × 检验判定"
+          unit="检验数量"
+          source={{
+            tier: "derived",
+            source: "收货检验台账按月聚合",
+            asOf: data?.months.at(-1),
+          }}
+          coverage={{ covered: data?.months.length ?? 0, total: months, label: "目标窗口月份" }}
+          activeFilters={[
+            `近 ${months} 月`,
+            supplierId == null ? "全部供应商" : supplierOptions.find((option) => option.value === supplierId)?.label ?? "指定供应商",
+          ]}
+          summary={`收货批次 ${t?.batches ?? 0}，合格率 ${pct(t?.passRate ?? null)}，让步率 ${pct(t?.concessionRate ?? null)}，报废率 ${pct(t?.scrapRate ?? null)}。`}
+          caveat="月份取检验录入月；占比分母只含已判定数量，未检验数量不进入分母。"
+          state={loading && !data ? "loading" : !hasData ? "empty" : "ready"}
+          stateDetail="当前窗口与供应商筛选下没有检验记录。"
+          height={320}
+          dataView={
+            <Table
+              rowKey="month"
+              size="small"
+              pagination={false}
+              dataSource={chartData}
+              columns={[
+                { title: "月份", dataIndex: "month" },
+                ...QC_SERIES.map((series) => ({
+                  title: series.label,
+                  dataIndex: series.key,
+                  align: "right" as const,
+                  render: (value: number) => fmt(value),
+                })),
+              ]}
+            />
+          }
+        >
           <ResponsiveContainer>
             <BarChart data={chartData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
               <CartesianGrid strokeDasharray="3 3" />
@@ -465,8 +503,8 @@ function QcSummaryTab() {
               ))}
             </BarChart>
           </ResponsiveContainer>
-        )}
-      </Card>
+        </DecisionVisual>
+      </div>
 
       <Table<QcRow>
         rowKey={(r) => `${r.month}-${r.supplierId}`}
@@ -490,11 +528,20 @@ function QcSummaryTab() {
 /* ───────────────── 页面外壳 ───────────────── */
 
 export default function SupplierScorecardClient() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const activeTab = searchParams.get("tab") === "qc" ? "qc" : "scorecard";
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>供应商记分卡</Typography.Title>
       <Tabs
-        defaultActiveKey="scorecard"
+        activeKey={activeTab}
+        onChange={(tab) => {
+          const next = new URLSearchParams(searchParams.toString());
+          if (tab === "scorecard") next.delete("tab");
+          else next.set("tab", tab);
+          router.replace(`/report/supplier-scorecard${next.size > 0 ? `?${next.toString()}` : ""}`, { scroll: false });
+        }}
         items={[
           { key: "scorecard", label: "记分卡", children: <ScorecardTab /> },
           { key: "qc", label: "质检透视", children: <QcSummaryTab /> },
