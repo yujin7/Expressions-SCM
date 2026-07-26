@@ -24,6 +24,12 @@ describe("agile delivery loop", () => {
     expect(read(".github/workflows/ci.yml")).toContain("PostgreSQL migration contract");
     expect(read(".github/workflows/ci.yml")).toContain("docker build --tag supply-chain:ci .");
     expect(pkg.scripts["check:postgres"]).toContain("verify-postgres.ts");
+    expect(read("scripts/verify-postgres.ts")).toContain("async function main()");
+    expect(read("scripts/verify-postgres.ts")).toContain("void main()");
+    expect(read("package-lock.json")).toContain(
+      "node_modules/@unrs/resolver-binding-wasm32-wasi/node_modules/@emnapi/core",
+    );
+    expect(read("vitest.config.ts")).toContain("maxWorkers: 4");
   });
 
   it("keeps local diagnostics honest about oversized build caches", () => {

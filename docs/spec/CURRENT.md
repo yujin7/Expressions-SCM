@@ -1,7 +1,7 @@
 # CURRENT · 项目现状唯一索引
 
 > **看这一页就知道现在的真相。** 更新纪律：任何改判/决议先改本页，再改宿主文档。
-> 最后更新：2026-07-24（W5 完成——建设侧收官至 UAT 前）
+> 最后更新：2026-07-26（R8 发布、Linux/PG/容器发布契约收口）
 
 ## 一句话故事（五句版）
 
@@ -29,6 +29,15 @@
   低于/高于 90 天的阈值均有回归测试。
 - **发布证据增强（07-26）**：CI/本地/生产容器统一 Node 24；CI 生产构建改验完整 Docker 镜像，
   新增真实 PostgreSQL 16 的迁移契约任务；`scm doctor` 对超过 1 GiB 的构建缓存显式报警。
+- **跨平台发布契约实证（07-26）**：首轮 GitHub Actions 准确抓出 macOS lockfile 缺 Linux/WASM
+  嵌套 optional 包；现改用 Linux 生成的 canonical lock，并以架构测试防回归。真实 Linux 完整门禁为
+  131 文件通过/5 文件跳过、844 例通过/21 例跳过，生产构建通过；Vitest 并发收口为 4，
+  消除 PGlite 多实例内存争抢与 `ERR_IPC_CHANNEL_CLOSED`。PostgreSQL 16 已实跑 22 个迁移，
+  最终生产镜像已连该库启动并通过 `/api/health`。
+- **依赖安全收口（07-26）**：Drizzle ORM 升至 0.45.2，Next.js/ESLint config 升至 15.5.22，
+  并固定已修复的 PostCSS、Sharp、UUID 与 Drizzle 工具链 esbuild。唯一保留的审计项来自
+  ExcelJS→archiver 的 glob 工具链；应用无 glob 输入/API，自动强修会降级 ExcelJS，
+  故按不可达风险临时接受并登记在 `ops/SECURITY-NOTES.md`，不以不兼容 override 伪造“0 漏洞”。
 - **上线阻断项 4 条已清零（07-26）**：
   ① 三处落盘硬编码 `process.cwd()/uploads`，而 compose 设的是 `FILE_STORAGE_DIR=/data/uploads`
   且该变量零读取方——容器写可写层，**每次 deploy 抹掉全部附件与导入原件，备份备的是空卷**。
@@ -77,10 +86,10 @@
 - **架构护栏现 4 个**（均已验证「重新引入缺陷会变红」）：客户端/服务端边界、Suspense 边界（含包含关系）、
   落盘根目录（三种等价写法）、迁移登记（孤儿 .sql）。
 - **代码与现行规格已在同一私有 GitHub 仓**：`yujin7/Expressions-SCM`；本地 `main`
-  已关联 `origin/main`，且两套同树异源历史已用无覆盖 merge 接通。R8 本地交付提交尚待 GitHub
-  重新授权后推送；Actions/分支保护仍须在仓库侧确认。
-- **测试数字**：以最近一次 `.artifacts/verification/` 的 exact-commit release report 为准；
-  旧段落中的 794/809 等均为历史快照，不作当前门禁证据。
+  已关联 `origin/main`，且两套同树异源历史已用无覆盖 merge 接通。R8 已推送；首轮 Actions
+  暴露的跨平台 lockfile 问题已在本轮修复，最新远端门禁与分支保护仍以 GitHub 实况为准。
+- **测试数字**：当前 Linux 发布证据为 **844 通过 / 21 有意跳过**，lint、三套 typecheck、
+  Next 生产构建、PostgreSQL 16 迁移契约与最终容器健康检查均通过。
 - **交接给下一会话的待办**见本文件末尾「下一会话接手清单」。
 
 ## 当前状态（2026-07-24 · RT5 完成 + 需求合规审计闭环，UAT-ready）
