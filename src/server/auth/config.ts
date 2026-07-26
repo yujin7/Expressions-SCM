@@ -116,10 +116,35 @@ function clientIpOf(request: Request | undefined): string | null {
 
 /* ---------- 飞书 OAuth（仅当 FEISHU_APP_ID/SECRET 配置时启用） ---------- */
 
-// TODO(P1): exact Feishu token/userinfo field mapping must be verified against current Feishu docs
-// 当前按 v2 oauth/token（顶层 access_token）+ v1 user_info（{ code, msg, data: { union_id, name, avatar_url } }）
-// 的常见返回形状做防御性映射；profile 回调兼容 data 嵌套与顶层两种形状。
+// 2026-07-26 已按现行飞书 OAuth 契约复核：
+// - accounts.feishu.cn/authen/v1/authorize（标准 client_id，由 Auth.js 注入）
+// - open.feishu.cn/authen/v2/oauth/token（顶层 access_token）
+// - open.feishu.cn/authen/v1/user_info（{ code, msg, data: { union_id, name, avatar_url } }）
+// profile 仍兼容 data 嵌套与顶层两种形状，避免 SDK 包装差异破坏登录。
 type FeishuProfile = Record<string, unknown> & { data?: Record<string, unknown> };
+
+export const FEISHU_OAUTH_ENDPOINTS = {
+  authorization: "https://accounts.feishu.cn/open-apis/authen/v1/authorize",
+  token: "https://open.feishu.cn/open-apis/authen/v2/oauth/token",
+  userinfo: "https://open.feishu.cn/open-apis/authen/v1/user_info",
+} as const;
+
+/** 导出仅为契约测试；生产路径由 Auth.js provider.profile 调用。 */
+export function mapFeishuProfile(raw: FeishuProfile): {
+  id: string;
+  name: string;
+  image: string | null;
+} {
+  const d = (raw && typeof raw === "object" && raw.data && typeof raw.data === "object"
+    ? raw.data
+    : raw) as Record<string, unknown>;
+  return {
+    // id = feishu union_id：signIn/jwt 回调据此查 users.feishuUnionId
+    id: typeof d.union_id === "string" ? d.union_id : "",
+    name: typeof d.name === "string" ? d.name : "飞书用户",
+    image: typeof d.avatar_url === "string" ? d.avatar_url : null,
+  };
+}
 
 function feishuProvider(appId: string, appSecret: string): OAuth2Config<FeishuProfile> {
   return {
@@ -129,25 +154,13 @@ function feishuProvider(appId: string, appSecret: string): OAuth2Config<FeishuPr
     clientId: appId,
     clientSecret: appSecret,
     authorization: {
-      url: "https://open.feishu.cn/open-apis/authen/v1/authorize",
-      params: { app_id: appId },
+      url: FEISHU_OAUTH_ENDPOINTS.authorization,
     },
-    token: "https://open.feishu.cn/open-apis/authen/v2/oauth/token",
-    userinfo: "https://open.feishu.cn/open-apis/authen/v1/user_info",
+    token: FEISHU_OAUTH_ENDPOINTS.token,
+    userinfo: FEISHU_OAUTH_ENDPOINTS.userinfo,
     checks: ["state"],
     client: { token_endpoint_auth_method: "client_secret_post" },
-    profile(raw) {
-      const d = (raw && typeof raw === "object" && raw.data && typeof raw.data === "object"
-        ? raw.data
-        : raw) as Record<string, unknown>;
-      const unionId = typeof d.union_id === "string" ? d.union_id : "";
-      return {
-        // id = feishu union_id：signIn/jwt 回调据此查 users.feishuUnionId
-        id: unionId,
-        name: typeof d.name === "string" ? d.name : "飞书用户",
-        image: typeof d.avatar_url === "string" ? d.avatar_url : null,
-      };
-    },
+    profile: mapFeishuProfile,
   };
 }
 

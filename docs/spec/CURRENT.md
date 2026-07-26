@@ -31,7 +31,7 @@
   新增真实 PostgreSQL 16 的迁移契约任务；`scm doctor` 对超过 1 GiB 的构建缓存显式报警。
 - **跨平台发布契约实证（07-26）**：首轮 GitHub Actions 准确抓出 macOS lockfile 缺 Linux/WASM
   嵌套 optional 包；现改用 Linux 生成的 canonical lock，并以架构测试防回归。真实 Linux 完整门禁为
-  131 文件通过/5 文件跳过、844 例通过/21 例跳过，生产构建通过；Vitest 并发收口为 4，
+  132 文件通过/5 文件跳过、848 例通过/21 例跳过，生产构建通过；Vitest 并发收口为 4，
   消除 PGlite 多实例内存争抢与 `ERR_IPC_CHANNEL_CLOSED`。PostgreSQL 16 已实跑 22 个迁移，
   最终生产镜像已连该库启动并通过 `/api/health`。
 - **依赖安全收口（07-26）**：Drizzle ORM 升至 0.45.2，Next.js/ESLint config 升至 15.5.22，
@@ -89,7 +89,7 @@
   已关联 `origin/main`，且两套同树异源历史已用无覆盖 merge 接通。R8 已推送；首轮 Actions
   暴露的跨平台 lockfile 问题已在本轮修复，远端四项门禁全绿。Actions 官方组件已升级到
   Node 24 运行时的 `checkout@v7` / `setup-node@v7`；私有仓分支保护受当前 GitHub 套餐限制。
-- **测试数字**：当前 Linux 发布证据为 **844 通过 / 21 有意跳过**，lint、三套 typecheck、
+- **测试数字**：当前 Linux 发布证据为 **848 通过 / 21 有意跳过**，lint、三套 typecheck、
   Next 生产构建、PostgreSQL 16 迁移契约与最终容器健康检查均通过。
 - **交接给下一会话的待办**见本文件末尾「下一会话接手清单」。
 
@@ -225,7 +225,7 @@ PRD+数据字典+功能清单（PDF 3 份）· 会议纪要 PDF · BOM×3 · 字
 | 缺什么 | 解锁什么 |
 |---|---|
 | 售价数据源 | 毛利报表全列点亮（现留白，绝不臆造） |
-| 飞书 app 凭据 | 通知/摘要出圈；OAuth 字段映射至今未验证 |
+| 飞书 app 凭据 | 通知/摘要出圈；OAuth 端点与字段契约已静态复核并测试，凭据到位后做真实回调握手 |
 | 各平台临期合同条款 | 逐 SKU 临期阈值（写入路径已通，值需业务核准） |
 | 哪些品牌/分层该用不同安全库存 | 分域参数（API 已通，含 DELETE 撤销） |
 | 有人真的把供应商确认链接发出去 | po_lines.expected_date 才会有数据，行级交期相关能力才有输入 |
