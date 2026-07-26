@@ -31,6 +31,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:seed": "tsx src/db/seed.ts",
+    "admin:reset-local": "node --import tsx scripts/reset-local-admin.ts",
     "lint": "eslint . --cache --cache-strategy content --cache-location .cache/eslint --concurrency auto --max-warnings=0",
     "lint:full": "eslint . --no-cache --max-warnings=0",
     "db:backup": "tsx scripts/backup-dev-db.ts",
@@ -39,6 +40,7 @@
     "db:restore-drill:prod": "ops/restore-drill.sh"
   },
   "dependencies": {
+    "@ant-design/cssinjs": "1.24.0",
     "@ant-design/icons": "^5.6.0",
     "@ant-design/nextjs-registry": "^1.0.2",
     "@node-rs/argon2": "^2.0.2",

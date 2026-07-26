@@ -40,6 +40,7 @@ npm run db:migrate && npm run db:seed && npm run dev
 | `npm run test` | 全部测试（规则/过账/单据流用 PGlite，无需 Docker） |
 | `npm run db:generate` | schema 变更后生成迁移（变更后必须重跑，测试依赖 drizzle/*.sql） |
 | `npm run db:seed` | 幂等种子数据 |
+| `SCM_ADMIN_RESET_PASSWORD='至少12位临时强口令' npm run admin:reset-local` | 仅限停机后的本机 PGlite：重置 admin、解除锁定并强制首登改密 |
 | `npm run db:backup` | dev/PGlite 停机备份；检测到外置锁或打开文件即拒绝 |
 | `npm run db:restore-drill` | 从最近的停机归档恢复到临时目录并核对核心表 |
 | `npm run db:restore -- /absolute/path/dev_*.tgz` | 停机恢复；原库保留为带时间戳副本 |

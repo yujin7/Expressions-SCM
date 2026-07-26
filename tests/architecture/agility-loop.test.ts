@@ -33,9 +33,16 @@ describe("agile delivery loop", () => {
     expect(pkg.scripts["check:postgres"]).toContain("verify-postgres.ts");
     expect(read("scripts/verify-postgres.ts")).toContain("async function main()");
     expect(read("scripts/verify-postgres.ts")).toContain("void main()");
-    expect(read("package-lock.json")).toContain(
-      "node_modules/@unrs/resolver-binding-wasm32-wasi/node_modules/@emnapi/core",
-    );
+    const lock = JSON.parse(read("package-lock.json")) as {
+      packages?: Record<string, { version?: string }>;
+    };
+    // npm may deduplicate these to the lockfile root. Assert the portable WASM
+    // fallback and its runtime exist, not an incidental nesting path.
+    expect(
+      lock.packages?.["node_modules/@unrs/resolver-binding-wasm32-wasi"]?.version,
+    ).toBeTruthy();
+    expect(lock.packages?.["node_modules/@emnapi/core"]?.version).toBeTruthy();
+    expect(lock.packages?.["node_modules/@emnapi/runtime"]?.version).toBeTruthy();
     expect(read("vitest.config.ts")).toContain("maxWorkers: 4");
   });
 
