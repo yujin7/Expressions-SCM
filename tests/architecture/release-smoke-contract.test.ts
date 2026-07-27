@@ -24,4 +24,13 @@ describe("release smoke data contract", () => {
     expect(smoke).toContain('else if (opsHasPrice)');
     expect(smoke).not.toContain("列表层无price字段");
   });
+
+  it("proves import-job metadata is not exposed through direct API calls", () => {
+    const smoke = read("scripts/smoke-e2e.ts");
+    expect(smoke).toContain('getJson(null, "/api/import/jobs?pageSize=1")');
+    expect(smoke).toContain('getJson(ops, "/api/import/jobs?pageSize=1")');
+    expect(smoke).toContain('getJson(admin, "/api/import/jobs?pageSize=1")');
+    expect(smoke).toContain("匿名 → /api/import/jobs 应 401");
+    expect(smoke).toContain("越权 ops01 → /api/import/jobs 应 403");
+  });
 });

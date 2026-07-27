@@ -185,6 +185,25 @@ async function main(): Promise<void> {
     const { status } = await getJson(null, "/api/report/dashboard");
     record("匿名 → /api/report/dashboard 应 401", status === 401 ? "PASS" : "FAIL", `status=${status}`);
   }
+  {
+    const { status } = await getJson(null, "/api/import/jobs?pageSize=1");
+    record("匿名 → /api/import/jobs 应 401", status === 401 ? "PASS" : "FAIL", `status=${status}`);
+  }
+  if (ops) {
+    const { status } = await getJson(ops, "/api/import/jobs?pageSize=1");
+    record("越权 ops01 → /api/import/jobs 应 403", status === 403 ? "PASS" : "FAIL", `status=${status}`);
+  } else {
+    record("越权 ops01 → /api/import/jobs 应 403", "SKIP", "ops01 登录失败");
+  }
+  {
+    const { status, body } = await getJson(admin, "/api/import/jobs?pageSize=1");
+    const data = (body as { data?: unknown[] } | null)?.data;
+    record(
+      "管理员 → /api/import/jobs 可读",
+      status === 200 && Array.isArray(data) ? "PASS" : "FAIL",
+      `status=${status}`,
+    );
+  }
 
   // 5) PO 详情价格脱敏（ops 不可见 price；admin 对同一 PO 必须可见 price）
   if (ops) {
