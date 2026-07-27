@@ -235,28 +235,31 @@ function ScorecardTab() {
 
   /** 展开行：逐维度拆分——评分可解释性的关键 */
   const expanded = (r: ScoreRow) => (
-    <Table<BreakdownItem>
-      rowKey="key"
-      size="small"
-      pagination={false}
-      dataSource={r.breakdown}
-      columns={[
-        { title: "维度", dataIndex: "label", width: 110 },
-        { title: "权重", dataIndex: "weight", width: 70, align: "right", render: (v: number) => `${v} 分` },
-        {
-          title: "指标", dataIndex: "value", width: 100, align: "right",
-          render: (v: number | null, d) =>
-            v == null ? <Typography.Text type="secondary">无数据</Typography.Text> : d.key === "price" ? `${v} 次` : pct(v),
-        },
-        {
-          title: "得分", dataIndex: "points", width: 90, align: "right",
-          render: (v: number | null, d) =>
-            v == null ? <Typography.Text type="secondary">不计分</Typography.Text> : <Typography.Text strong>{v} / {d.weight}</Typography.Text>,
-        },
-        { title: "说明", dataIndex: "note" },
-      ]}
-      footer={() => <Typography.Text type="secondary">{r.reason}</Typography.Text>}
-    />
+    <div className="supplier-scorecard-breakdown">
+      <Table<BreakdownItem>
+        rowKey="key"
+        size="small"
+        pagination={false}
+        tableLayout="fixed"
+        dataSource={r.breakdown}
+        columns={[
+          { title: "维度", dataIndex: "label", width: 110 },
+          { title: "权重", dataIndex: "weight", width: 70, align: "right", render: (v: number) => `${v} 分` },
+          {
+            title: "指标", dataIndex: "value", width: 100, align: "right",
+            render: (v: number | null, d) =>
+              v == null ? <Typography.Text type="secondary">无数据</Typography.Text> : d.key === "price" ? `${v} 次` : pct(v),
+          },
+          {
+            title: "得分", dataIndex: "points", width: 90, align: "right",
+            render: (v: number | null, d) =>
+              v == null ? <Typography.Text type="secondary">不计分</Typography.Text> : <Typography.Text strong>{v} / {d.weight}</Typography.Text>,
+          },
+          { title: "说明", dataIndex: "note" },
+        ]}
+        footer={() => <Typography.Text type="secondary">{r.reason}</Typography.Text>}
+      />
+    </div>
   );
 
   const s = data?.summary;
@@ -264,40 +267,45 @@ function ScorecardTab() {
   return (
     <div>
       <Alert
+        className="supplier-scorecard-methodology"
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
         message="评分是数据建议，不是判决——采纳与否由采购判断，点「采纳」才会写入供应商档案等级，系统不会自动改主数据。"
         description={
-          <Typography.Text type="secondary">
-            综合分 = 准时交付 40 分（复用交期学习的准时率：实际收货 ≤ 承诺到货）+ 质量 40 分（合格率 − 让步率×0.5 − 报废率×1.0）+ 价格稳定 20 分（窗口内生效调价次数，满 5 次归零）。
-            某维度无数据时该维度不计分、按剩余权重归一（展开行有逐维度说明）；
-            窗口内收货不足 {data?.minSamples ?? 3} 单的供应商<strong>不予评级</strong>，而不是给一个低分——单笔波动不足以定性。
-            准时率目前只覆盖采购 PO（委外 JG 无「承诺 vs 收货」等价链路），纯加工厂该维度按归一处理。
-          </Typography.Text>
+          <div>
+            <Typography.Text type="secondary">
+              样本不足 {data?.minSamples ?? 3} 单时不评级；缺失维度不计分，按剩余权重归一。
+            </Typography.Text>
+            <details className="supplier-scorecard-methodology__details">
+              <summary>查看完整评分口径与数据限制</summary>
+              <Typography.Paragraph type="secondary">
+                综合分 = 准时交付 40 分（复用交期学习的准时率：实际收货 ≤ 承诺到货）+ 质量 40 分（合格率 − 让步率×0.5 − 报废率×1.0）+ 价格稳定 20 分（窗口内生效调价次数，满 5 次归零）。
+                某维度无数据时该维度不计分、按剩余权重归一（展开行有逐维度说明）；
+                窗口内收货不足 {data?.minSamples ?? 3} 单的供应商<strong>不予评级</strong>，而不是给一个低分——单笔波动不足以定性。
+                准时率目前只覆盖采购 PO（委外 JG 无「承诺 vs 收货」等价链路），纯加工厂该维度按归一处理。
+              </Typography.Paragraph>
+            </details>
+          </div>
         }
       />
 
-      <Row gutter={12} style={{ marginBottom: 12 }}>
-        <Col><Card size="small"><Statistic title={`窗口内有往来的供应商（近 ${s?.windowDays ?? 180} 天）`} value={s?.suppliers ?? 0} /></Card></Col>
-        <Col><Card size="small"><Statistic title="已评级" value={s?.rated ?? 0} suffix={`/ ${s?.suppliers ?? 0}`} /></Card></Col>
-        <Col>
-          <Card size="small">
-            <Statistic title="建议调整等级" value={s?.suggestChanges ?? 0} valueStyle={{ color: (s?.suggestChanges ?? 0) > 0 ? "#fa8c16" : undefined }} />
-          </Card>
-        </Col>
-        <Col>
-          <Card size="small">
-            <Statistic
-              title="平均准时率"
-              value={s?.avgOnTimeRate == null ? 0 : s.avgOnTimeRate * 100}
-              precision={1}
-              suffix="%"
-              valueStyle={{ color: s?.avgOnTimeRate != null && s.avgOnTimeRate < 0.8 ? "#cf1322" : "#52c41a" }}
-            />
-          </Card>
-        </Col>
-      </Row>
+      <div className="supplier-scorecard-kpis">
+        <Card size="small"><Statistic title={`窗口内有往来的供应商（近 ${s?.windowDays ?? 180} 天）`} value={s?.suppliers ?? 0} /></Card>
+        <Card size="small"><Statistic title="已评级" value={s?.rated ?? 0} suffix={`/ ${s?.suppliers ?? 0}`} /></Card>
+        <Card size="small">
+          <Statistic title="建议调整等级" value={s?.suggestChanges ?? 0} valueStyle={{ color: (s?.suggestChanges ?? 0) > 0 ? "#fa8c16" : undefined }} />
+        </Card>
+        <Card size="small">
+          <Statistic
+            title="平均准时率"
+            value={s?.avgOnTimeRate == null ? 0 : s.avgOnTimeRate * 100}
+            precision={1}
+            suffix="%"
+            valueStyle={{ color: s?.avgOnTimeRate != null && s.avgOnTimeRate < 0.8 ? "#cf1322" : "#52c41a" }}
+          />
+        </Card>
+      </div>
 
       <ListToolbar
         state={listState}
@@ -321,6 +329,7 @@ function ScorecardTab() {
       />
 
       <Table<ScoreRow>
+        className="supplier-scorecard-table"
         rowKey="supplierId"
         size={listState.tableSize}
         columns={columns}

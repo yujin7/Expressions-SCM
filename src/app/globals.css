@@ -136,6 +136,38 @@ body {
   margin: 0 !important;
 }
 
+.supplier-scorecard-table {
+  container-type: inline-size;
+}
+
+/* An expanded cell spans the full scrollable width of its parent table.
+   Keep the score explanation pinned to the visible table viewport instead of
+   letting it drift off-canvas with the parent's horizontal scroll position. */
+.supplier-scorecard-breakdown {
+  position: sticky;
+  left: 16px;
+  width: calc(100cqw - 34px);
+  max-width: calc(100cqw - 34px);
+  min-width: 0;
+}
+
+.supplier-scorecard-breakdown .ant-table-wrapper {
+  overflow: hidden !important;
+}
+
+.supplier-scorecard-breakdown .ant-table-cell {
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+
+.supplier-scorecard-breakdown .ant-table-thead > tr > th {
+  white-space: nowrap;
+}
+
+.supplier-scorecard-breakdown .ant-table-footer {
+  overflow-wrap: anywhere;
+}
+
 .app-surface .ant-table-thead > tr > th {
   font-size: 12px;
   font-weight: 650;
@@ -162,9 +194,59 @@ body {
   margin-top: 12px;
 }
 
+.list-toolbar {
+  display: flex !important;
+  width: 100%;
+  margin-bottom: 12px;
+  justify-content: space-between;
+}
+
+.list-toolbar__filters,
+.list-toolbar__actions {
+  min-width: 0;
+}
+
+.list-toolbar__actions {
+  justify-content: flex-end;
+}
+
 .decision-visual,
 .decision-visual .ant-card-body {
   min-width: 0;
+}
+
+.supplier-scorecard-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.supplier-scorecard-kpis .ant-card,
+.supplier-scorecard-kpis .ant-statistic {
+  min-width: 0;
+  height: 100%;
+}
+
+.supplier-scorecard-kpis .ant-statistic-title {
+  min-height: 44px;
+  line-height: 1.45;
+}
+
+.supplier-scorecard-methodology__details {
+  margin-top: 5px;
+}
+
+.supplier-scorecard-methodology__details summary {
+  width: fit-content;
+  color: #3157d5;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.supplier-scorecard-methodology__details .ant-typography {
+  margin: 8px 0 0;
+  line-height: 1.7;
 }
 
 .dashboard-page {
@@ -532,6 +614,10 @@ body {
     width: 100%;
     text-align: left;
   }
+
+  .supplier-scorecard-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 575px) {
@@ -541,6 +627,30 @@ body {
 
   .login-card .ant-card-body {
     padding: 28px 22px;
+  }
+
+  .list-toolbar {
+    align-items: stretch !important;
+  }
+
+  .list-toolbar__filters,
+  .list-toolbar__actions {
+    width: 100%;
+  }
+
+  .list-toolbar__actions {
+    justify-content: flex-start;
+  }
+
+  .list-toolbar__filters > .ant-space-item:has(.ant-input-search),
+  .list-toolbar__filters > .ant-space-item:has(.ant-select) {
+    flex: 1 1 180px;
+    min-width: 0;
+  }
+
+  .list-toolbar__filters .ant-input-search,
+  .list-toolbar__filters .ant-select {
+    width: 100% !important;
   }
 }
 

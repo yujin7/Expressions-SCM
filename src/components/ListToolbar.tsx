@@ -102,12 +102,11 @@ export default function ListToolbar<F extends Record<string, string | undefined>
     <>
       <Space
         className="list-toolbar"
-        style={{ marginBottom: 12, width: "100%", justifyContent: "space-between" }}
         wrap
         align="center"
       >
-        <Space wrap align="center">{extra}</Space>
-        <Space wrap>
+        <Space className="list-toolbar__filters" wrap align="center">{extra}</Space>
+        <Space className="list-toolbar__actions" wrap>
           <Dropdown
             trigger={["click"]}
             menu={{ items: densityItems, onClick: ({ key }) => state.setDensity(key as Density) }}
