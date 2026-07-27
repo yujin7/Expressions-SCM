@@ -35,9 +35,14 @@ export default function SupplierClient() {
       <CrudTable<SupplierRow>
         loadDetailOnEdit
         rowActions={(r) => (
-          <Button type="link" size="small" onClick={() => setAttachSupplier(r)}>
-            资质证照
-          </Button>
+          <>
+            <Button type="link" size="small" href={`/master/supplier/lifecycle?supplierId=${r.id}`}>
+              生命周期
+            </Button>
+            <Button type="link" size="small" onClick={() => setAttachSupplier(r)}>
+              资质证照
+            </Button>
+          </>
         )}
         canCreate={canWrite}
         canEdit={() => canWrite}
@@ -45,8 +50,8 @@ export default function SupplierClient() {
         apiPath="/api/master/supplier"
         searchPlaceholder="搜索编码/名称"
         columns={[
-          { title: "编码", dataIndex: "code", width: 110 },
-          { title: "名称", dataIndex: "name" },
+          { title: "编码", dataIndex: "code", width: 110, sorter: (a, b) => a.code.localeCompare(b.code) },
+          { title: "名称", dataIndex: "name", sorter: (a, b) => a.name.localeCompare(b.name) },
           {
             title: "类型",
             dataIndex: "kinds",
@@ -58,12 +63,15 @@ export default function SupplierClient() {
             title: "营业执照到期日",
             dataIndex: "licenseExpiry",
             width: 140,
+            sorter: (a, b) => (a.licenseExpiry ?? "").localeCompare(b.licenseExpiry ?? ""),
             render: (v: string | null) => v ?? "—",
           },
           {
             title: "状态",
             dataIndex: "status",
             width: 100,
+            filters: Object.entries(SUPPLIER_STATUS_LABELS).map(([value, text]) => ({ value, text })),
+            onFilter: (value, row) => row.status === value,
             render: (v: string) => <Tag color={SUPPLIER_STATUS_COLORS[v]}>{SUPPLIER_STATUS_LABELS[v] ?? v}</Tag>,
           },
         ]}
@@ -116,9 +124,6 @@ export default function SupplierClient() {
             </Form.Item>
             <Form.Item name="licenseExpiry" label="营业执照到期日" tooltip="资质预警数据源（1.1 启用预警）">
               <DatePicker style={{ width: "100%" }} />
-            </Form.Item>
-            <Form.Item name="status" label="状态" initialValue="pending" tooltip="暂停：观察期建议不下新单（软提示）；黑名单：禁新 PO/WO 硬门，存量 JG 可收尾">
-              <Select options={toOptions(SUPPLIER_STATUS_LABELS)} />
             </Form.Item>
           </>
         )}

@@ -65,7 +65,7 @@ export async function createSupplier(input: unknown, actor?: SessionUser, dbArg?
       bankAccount: v.bankAccount ?? null,
       level: v.level ?? null,
       licenseExpiry: v.licenseExpiry ?? null,
-      status: v.status,
+      status: v.status ?? "pending",
     })
     .returning();
   if (actor) {
@@ -95,7 +95,8 @@ export async function updateSupplier(id: number, input: unknown, actor?: Session
       bankAccount: v.bankAccount ?? null,
       level: v.level ?? null,
       licenseExpiry: v.licenseExpiry ?? null,
-      status: v.status,
+      // 常规档案编辑不能绕过准入/整改闭环改状态。
+      status: existing.status,
       updatedAt: new Date(),
     })
     .where(eq(schema.suppliers.id, id))

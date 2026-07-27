@@ -239,6 +239,67 @@ body {
   width: 100%;
 }
 
+.crud-table__toolbar {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  border: 1px solid #edf0f5;
+  border-radius: 10px;
+  background: #fafbfe;
+}
+
+.crud-table__toolbar > .ant-space-item:first-child {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.crud-table__toolbar .ant-input-search {
+  width: min(100%, 360px) !important;
+}
+
+.crud-table__toolbar-actions {
+  justify-content: flex-end;
+}
+
+.supplier-lifecycle-kpis {
+  margin-bottom: 12px;
+}
+
+.supplier-lifecycle-kpis .ant-card,
+.supplier-lifecycle-kpis .ant-statistic {
+  height: 100%;
+  min-width: 0;
+}
+
+.supplier-lifecycle-kpis .ant-card-body {
+  padding: 12px 14px;
+}
+
+.supplier-lifecycle-kpis .ant-statistic-title {
+  margin-bottom: 2px;
+  font-size: 13px;
+}
+
+.supplier-lifecycle-kpis .ant-statistic-content {
+  font-size: 24px;
+}
+
+.supplier-lifecycle-evidence {
+  position: sticky;
+  left: 16px;
+  width: min(760px, calc(100cqw - 40px));
+  max-width: calc(100cqw - 40px);
+  padding: 4px 0;
+  overflow-wrap: anywhere;
+}
+
+.supplier-lifecycle-evidence .ant-typography {
+  margin: 4px 0 12px;
+}
+
 .decision-visual,
 .decision-visual .ant-card-body {
   min-width: 0;
@@ -714,6 +775,20 @@ body {
 
   .list-toolbar {
     align-items: stretch !important;
+  }
+
+  .crud-table__toolbar {
+    align-items: stretch;
+  }
+
+  .crud-table__toolbar > .ant-space-item,
+  .crud-table__toolbar .ant-input-search,
+  .crud-table__toolbar-actions {
+    width: 100% !important;
+  }
+
+  .crud-table__toolbar-actions {
+    justify-content: flex-start;
   }
 
   .list-toolbar__filters,

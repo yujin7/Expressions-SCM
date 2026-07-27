@@ -58,7 +58,7 @@ describe("委外链 W3：BH→WO→PO+JG（R1 价格异动 / R11 建议量 / 审
     await db.insert(approvalConfigs).values([
       { docType: "bh", approverRole: "pmc" },
       { docType: "wo", approverRole: "pmc" },
-      { docType: "jg", approverRole: "pmc" }, // 生产 seed 缺此行——REQUIRED_APPROVAL_CONFIGS 已标注
+      { docType: "jg", approverRole: "pmc" },
       { docType: "po", approverRole: "purchasing" },
       { docType: "pc", approverRole: "purchasing" },
     ]);

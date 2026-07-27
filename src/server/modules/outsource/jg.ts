@@ -15,8 +15,7 @@ import { getSupplierCapacitySignal } from "@/server/modules/report/supplier-capa
 
 /**
  * 委外加工通知单 JG。审批走 docType "jg"（JG 与 WO 同域=PMC 审批）；
- * ⚠ 生产 seed 目前缺 {jg→pmc} 审批配置（见 common.ts REQUIRED_APPROVAL_CONFIGS），
- * 集成阶段须补，否则 approveJg 报 NO_CONFIG（测试自行种配置不受影响）。
+ * 生产 seed 已包含 {jg→pmc}；REQUIRED_APPROVAL_CONFIGS 与架构测试共同防漂移。
  * 加工费改价唯一通道 = PC(target=jg_fee)：createPcForJgFee → approvePc（po.ts）同事务
  * 更新 feeRateCurrent + 插入新分段。
  */

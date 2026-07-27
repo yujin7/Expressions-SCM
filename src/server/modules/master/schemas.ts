@@ -72,7 +72,8 @@ export const supplierSchema = z.object({
   bankAccount: optionalStr, // 敏感：出口经 maskSensitive
   level: z.enum(SUPPLIER_LEVELS).nullable().optional(), // S–D 分级（D7 评分 P1 前人工维护）
   licenseExpiry: z.preprocess(emptyToUndef, dateStr.nullable().optional()),
-  status: z.enum(["pending", "qualified", "paused", "blacklisted"]).optional().default("pending"), // +暂停
+  // 状态变化走 supplier-lifecycle；保留可选入参仅供 seed/迁移显式建档。
+  status: z.enum(["pending", "qualified", "paused", "blacklisted"]).optional(),
 });
 export type SupplierInput = z.infer<typeof supplierSchema>;
 

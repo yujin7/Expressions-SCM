@@ -40,6 +40,7 @@ async function main(): Promise<void> {
         "month_close_checks",
         "sop_cycles",
         "sop_decisions",
+        "supplier_lifecycle_cases",
       ]],
     );
     const found = new Set(tables.rows.map((row) => row.table_name));
@@ -59,6 +60,7 @@ async function main(): Promise<void> {
       "month_close_checks",
       "sop_cycles",
       "sop_decisions",
+      "supplier_lifecycle_cases",
     ].filter((name) => !found.has(name));
     if (missing.length) throw new Error(`Missing migrated tables: ${missing.join(", ")}`);
 
@@ -167,6 +169,12 @@ async function main(): Promise<void> {
       "ck_sop_decision_role",
       "ck_sop_decision_value",
       "ck_sop_reject_note",
+      "ck_supplier_lifecycle_kind",
+      "ck_supplier_lifecycle_status",
+      "ck_supplier_lifecycle_priority",
+      "ck_supplier_lifecycle_close",
+      "ck_supplier_lifecycle_outcome",
+      "uq_supplier_lifecycle_idempotency",
     ];
     const locationConstraints = await client.query<{ conname: string }>(
       `select conname
@@ -178,6 +186,28 @@ async function main(): Promise<void> {
     const missingConstraints = requiredLocationConstraints.filter((name) => !foundConstraints.has(name));
     if (missingConstraints.length) {
       throw new Error(`Missing release-critical database constraints: ${missingConstraints.join(", ")}`);
+    }
+
+    const lifecycleIndexes = await client.query<{ indexname: string }>(
+      `select indexname
+         from pg_indexes
+        where schemaname = 'public'
+          and tablename = 'supplier_lifecycle_cases'
+          and indexname = any($1::text[])`,
+      [[
+        "uq_supplier_lifecycle_open_kind",
+        "ix_supplier_lifecycle_status_due",
+        "ix_supplier_lifecycle_supplier_created",
+      ]],
+    );
+    const foundLifecycleIndexes = new Set(lifecycleIndexes.rows.map((row) => row.indexname));
+    const missingLifecycleIndexes = [
+      "uq_supplier_lifecycle_open_kind",
+      "ix_supplier_lifecycle_status_due",
+      "ix_supplier_lifecycle_supplier_created",
+    ].filter((name) => !foundLifecycleIndexes.has(name));
+    if (missingLifecycleIndexes.length) {
+      throw new Error(`Missing supplier lifecycle indexes: ${missingLifecycleIndexes.join(", ")}`);
     }
 
     const migrationCount = await client.query<{ count: string }>(
@@ -194,6 +224,7 @@ async function main(): Promise<void> {
       sessionVersion: column,
       immutableTriggers: [...triggerPairs].sort(),
       locationConstraints: [...foundConstraints].sort(),
+      supplierLifecycleIndexes: [...foundLifecycleIndexes].sort(),
     }, null, 2));
   } finally {
     await client.end();

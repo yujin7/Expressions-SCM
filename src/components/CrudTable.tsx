@@ -148,7 +148,8 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
       {
         title: "操作",
         key: "_actions",
-        width: 160,
+        width: rowActions ? 220 : 100,
+        fixed: "right",
         render: (_: unknown, record: T) => (
           <Space size={0}>
             {(canEdit ? canEdit(record) : true) && (
@@ -171,7 +172,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
 
   return (
     <div>
-      <Space style={{ marginBottom: 16, display: "flex", justifyContent: "space-between" }} wrap>
+      <Space className="crud-table__toolbar" wrap>
         <SearchInput
           allowClear
           placeholder={searchPlaceholder ?? "搜索编码/名称"}
@@ -181,7 +182,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
             setPage(1);
           }}
         />
-        <Space>
+        <Space className="crud-table__toolbar-actions" wrap>
           <Button icon={<ReloadOutlined />} onClick={() => void load()}>
             刷新
           </Button>
@@ -193,6 +194,8 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
         </Space>
       </Space>
       <Table<T>
+        {...tableProps}
+        className={`crud-table${tableProps?.className ? ` ${tableProps.className}` : ""}`}
         rowKey="id"
         size="middle"
         columns={mergedColumns}
@@ -209,7 +212,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
             setPageSize(ps);
           },
         }}
-        {...tableProps}
+        scroll={tableProps?.scroll ?? { x: "max-content" }}
       />
       <Modal
         title={editing ? `编辑${entityName}` : `新建${entityName}`}

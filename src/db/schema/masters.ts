@@ -1,5 +1,5 @@
 import {
-  pgTable, serial, text, integer, boolean, date, timestamp, numeric, jsonb, unique, check,
+  pgTable, serial, text, integer, boolean, date, timestamp, numeric, jsonb, unique, check, index, uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { skuTypeEnum, skuLifecycleEnum, supplierStatusEnum, warehouseKindEnum, accountingModeEnum } from "./enums";
@@ -96,6 +96,53 @@ export const suppliers = pgTable("suppliers", {
   email: text("email"),
   address: text("address"),
 });
+
+/**
+ * C184：供应商准入与整改闭环。
+ *
+ * 记分卡只提供建议，不能自动改变供应商状态。采购发起一条有责任人、截止日和原因的工作项，
+ * 完成时再由采购明确选择结果；工作项、供应商状态和审计必须在同一事务中变更。
+ */
+export const supplierLifecycleCases = pgTable("supplier_lifecycle_cases", {
+  id: serial("id").primaryKey(),
+  supplierId: integer("supplier_id").notNull().references(() => suppliers.id),
+  kind: text("kind").notNull(),
+  status: text("status").notNull().default("open"),
+  priority: text("priority").notNull().default("normal"),
+  reason: text("reason").notNull(),
+  dueDate: date("due_date").notNull(),
+  ownerId: integer("owner_id").notNull().references(() => users.id),
+  pauseNewOrders: boolean("pause_new_orders").notNull().default(false),
+  supplierStatusBefore: text("supplier_status_before").notNull(),
+  supplierStatusAfter: text("supplier_status_after").notNull(),
+  outcome: text("outcome"),
+  closureNote: text("closure_note"),
+  idempotencyKey: text("idempotency_key").notNull(),
+  createdBy: integer("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  closedBy: integer("closed_by").references(() => users.id),
+  closedAt: timestamp("closed_at", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique("uq_supplier_lifecycle_idempotency").on(t.idempotencyKey),
+  uniqueIndex("uq_supplier_lifecycle_open_kind")
+    .on(t.supplierId, t.kind)
+    .where(sql`${t.status} = 'open'`),
+  index("ix_supplier_lifecycle_status_due").on(t.status, t.dueDate),
+  index("ix_supplier_lifecycle_supplier_created").on(t.supplierId, t.createdAt),
+  check("ck_supplier_lifecycle_kind", sql`${t.kind} IN ('admission', 'corrective')`),
+  check("ck_supplier_lifecycle_status", sql`${t.status} IN ('open', 'closed')`),
+  check("ck_supplier_lifecycle_priority", sql`${t.priority} IN ('normal', 'high', 'critical')`),
+  check(
+    "ck_supplier_lifecycle_close",
+    sql`(${t.status} = 'open' AND ${t.outcome} IS NULL AND ${t.closureNote} IS NULL AND ${t.closedBy} IS NULL AND ${t.closedAt} IS NULL)
+      OR (${t.status} = 'closed' AND ${t.outcome} IS NOT NULL AND length(trim(${t.closureNote})) >= 5 AND ${t.closedBy} IS NOT NULL AND ${t.closedAt} IS NOT NULL)`,
+  ),
+  check(
+    "ck_supplier_lifecycle_outcome",
+    sql`${t.outcome} IS NULL OR ${t.outcome} IN ('approved', 'rejected', 'resolved', 'failed')`,
+  ),
+]);
 
 export const customers = pgTable("customers", {
   id: serial("id").primaryKey(),

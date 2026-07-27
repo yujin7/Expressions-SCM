@@ -232,6 +232,13 @@
       "when": 1785154073140,
       "tag": "0032_confused_senator_kelly",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1785184468451,
+      "tag": "0033_slimy_rumiko_fujikawa",
+      "breakpoints": true
     }
   ]
 }

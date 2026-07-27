@@ -8,14 +8,12 @@ import type { SessionUser } from "@/server/core/dto";
 /**
  * W3 委外链公共工具（模块私有）。
  * 审批配置依赖（单一权威=approval_configs，seed 为准）：
- *   bh→pmc / wo→pmc / po→purchasing / pc→purchasing 已在 src/db/seed.ts；
- *   ⚠ jg→pmc 目前 seed 缺失（本模块 approveJg 走 docType "jg"）——集成阶段须补 seed，
- *   否则生产环境审批 JG 报 NO_CONFIG。测试自行种入配置不受影响。
+ *   seed 与本注册表必须同步；架构测试会验证必需单据配置完整。
  */
 export const REQUIRED_APPROVAL_CONFIGS: Record<string, string> = {
   bh: "pmc",
   wo: "pmc",
-  jg: "pmc", // ← seed 待补（见上）
+  jg: "pmc",
   po: "purchasing",
   pc: "purchasing",
 };

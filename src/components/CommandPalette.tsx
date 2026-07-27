@@ -35,6 +35,7 @@ const PAGES: PageEntry[] = [
   { label: "SPU 产品", href: "/master/spu", keywords: "spu chanpin" },
   { label: "SKU 货品", href: "/master/sku", keywords: "sku huopin" },
   { label: "供应商", href: "/master/supplier", keywords: "supplier gongyingshang" },
+  { label: "供应商准入与整改", href: "/master/supplier/lifecycle", keywords: "supplier onboarding corrective gongyingshang zhunru zhenggai" },
   { label: "仓库", href: "/master/warehouse", keywords: "warehouse cangku" },
   { label: "库位", href: "/master/bin", keywords: "bin location kuwei", roles: ["warehouse"] },
   { label: "BOM", href: "/master/bom", keywords: "bom wuliaoqingdan" },
