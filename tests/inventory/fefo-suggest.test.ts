@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { batches, skus, spus, stockBalances, warehouses } from "@/db/schema";
+import { batches, binBalances, bins, skus, spus, stockBalances, warehouses } from "@/db/schema";
 import { suggestFefoAllocation } from "@/server/modules/inventory/fefo";
 import { createTestDb, type TestDb } from "../helpers/db";
 
@@ -108,6 +108,28 @@ describe("suggestFefoAllocation", () => {
     expect(r.shortBy).toBe("10.0000");
     expect(r.expiredLots).toBe(1);
     expect(r.note).toContain("已排除");
+  });
+
+  it("FEFO 只建议未定位可发量，已定位/隔离量不能被建议旁路", async () => {
+    const batch = await mkBatch("L-PROTECTED", "2027-01-01");
+    await bal(whA, batch, "100");
+    const [quarantine] = await db.insert(bins).values({
+      warehouseId: whA,
+      code: "Q-01",
+      kind: "quarantine",
+    }).returning();
+    await db.insert(binBalances).values({
+      binId: quarantine.id,
+      skuId,
+      batchId: batch,
+      qty: "70",
+    });
+
+    const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "50" });
+    expect(r.allocations).toEqual([
+      expect.objectContaining({ batchId: batch, qty: "30.0000" }),
+    ]);
+    expect(r.shortBy).toBe("20.0000");
   });
 
   it("出库量为 0 或负 → 空分配，不查库也不报错", async () => {

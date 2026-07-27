@@ -23,6 +23,7 @@ import * as schema from "@/db/schema";
 import { dAdd, dCmp, dQty, dSub } from "@/server/core/decimal";
 import { allocateFefo, type BatchLot } from "@/server/rules/fefo";
 import { todayShanghai } from "@/server/modules/master/common";
+import { listLocatedQtyByBatch, locationBatchKey } from "./location-balance";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -76,6 +77,10 @@ export async function suggestFefoAllocation(
           isNotNull(schema.stockBalances.batchId),
         ),
       );
+  const locatedByBatch = await listLocatedQtyByBatch(db, {
+    skuId: args.skuId,
+    warehouseId: args.warehouseId,
+  });
 
   const lots: BatchLot[] = batchRows
     .filter((r) => r.batchId != null)
@@ -83,7 +88,12 @@ export async function suggestFefoAllocation(
       batchId: r.batchId as number,
       batchNo: r.batchNo ?? `#${r.batchId}`,
       expiryDate: r.expiryDate ?? null,
-      qty: r.qty ?? "0",
+      qty: dCmp(
+        dSub(r.qty ?? "0", locatedByBatch.get(locationBatchKey(r.batchId)) ?? "0"),
+        "0",
+      ) > 0
+        ? dQty(dSub(r.qty ?? "0", locatedByBatch.get(locationBatchKey(r.batchId)) ?? "0"))
+        : "0.0000",
     }));
 
   /* ── 无批次维度余额：诚实降级，不报错 ── */
@@ -112,7 +122,9 @@ export async function suggestFefoAllocation(
           isNull(schema.stockBalances.batchId),
         ),
       );
-    const nullQty = nullRows.reduce((s, x) => dAdd(s, x.qty ?? "0", 6), "0");
+    const nullGross = nullRows.reduce((s, x) => dAdd(s, x.qty ?? "0", 6), "0");
+    const nullRemainder = dSub(nullGross, locatedByBatch.get(locationBatchKey(null)) ?? "0");
+    const nullQty = dCmp(nullRemainder, "0") > 0 ? nullRemainder : "0";
     if (dCmp(nullQty, "0") > 0) {
       // 回落量 = min(缺口, 无批次余量)
       fallbackQty = dQty(dCmp(nullQty, r.shortBy) >= 0 ? r.shortBy : nullQty);

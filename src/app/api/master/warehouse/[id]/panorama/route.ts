@@ -93,7 +93,14 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
           .limit(6);
 
     return NextResponse.json({
-      warehouse: { id: wh.id, code: wh.code, name: wh.name, kind: wh.kind, accountingMode: wh.accountingMode },
+      warehouse: {
+        id: wh.id,
+        code: wh.code,
+        name: wh.name,
+        kind: wh.kind,
+        accountingMode: wh.accountingMode,
+        regionCode: wh.regionCode,
+      },
       totals, topStock, recentLedger, batches, snapDates,
     });
   } catch (e) {

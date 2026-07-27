@@ -13,6 +13,7 @@ import { dAdd, dCmp, dQty, dSub } from "@/server/core/decimal";
 import { getNumParam } from "@/server/core/params";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { suggestFefoAllocation } from "./fefo";
+import { getLocatedQty } from "./location-balance";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -79,10 +80,13 @@ export async function expandOutboundLinesForBatchPosting<T extends BatchAllocata
             eq(stockBalances.warehouseId, warehouseId),
             eq(stockBalances.batchId, batchId),
           ));
-        if (!balance || dCmp(balance.qty, required) < 0) {
+        const locatedQty = await getLocatedQty(db, { skuId, warehouseId, batchId });
+        const available = dSub(balance?.qty ?? "0", locatedQty);
+        if (!balance || dCmp(available, required) < 0) {
           throw new ApiError(
             409,
-            `批次库存不足: sku#${skuId} batch#${batchId}（可用 ${balance?.qty ?? "0"}，需 ${required}）`,
+            `批次库存不足（未定位可发口径）: sku#${skuId} batch#${batchId}（总账 ${balance?.qty ?? "0"}，` +
+              `已定位 ${locatedQty}，可用 ${dCmp(available, "0") > 0 ? dQty(available) : "0.0000"}，需 ${required}）`,
           );
         }
       }

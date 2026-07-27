@@ -15,6 +15,7 @@ interface WarehouseRow {
   name: string;
   kind: string;
   accountingMode: string;
+  regionCode: string;
   supplierId: number | null;
   supplierName: string | null;
   parentId: number | null;
@@ -32,7 +33,7 @@ const KIND_COLORS: Record<string, string> = {
 
 
 interface WhPanorama {
-  warehouse: { id: number; code: string; name: string; kind: string; accountingMode: string };
+  warehouse: { id: number; code: string; name: string; kind: string; accountingMode: string; regionCode: string };
   totals: { total: string; skuCount: number };
   topStock: { skuCode: string; skuName: string; baseUom: string; qty: string; bizDate?: string }[];
   recentLedger: { occurredAt: string; skuCode: string; qtyDelta: string; sourceDocType: string }[];
@@ -64,9 +65,10 @@ function WarehousePanoramaDrawer({ id, onClose }: { id: number | null; onClose: 
         <Skeleton active />
       ) : (
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
-          <Descriptions size="small" column={3} bordered>
+          <Descriptions size="small" column={4} bordered>
             <Descriptions.Item label="类型">{WAREHOUSE_KIND_LABELS[data.warehouse.kind] ?? data.warehouse.kind}</Descriptions.Item>
             <Descriptions.Item label="记账">{rt ? "实时账" : "快照参考"}</Descriptions.Item>
+            <Descriptions.Item label="区域">{data.warehouse.regionCode}</Descriptions.Item>
             <Descriptions.Item label="SKU 数 / 合计">{data.totals.skuCount} / {formatQty(data.totals.total)}</Descriptions.Item>
           </Descriptions>
           <div>
@@ -147,7 +149,14 @@ export default function WarehouseClient() {
         canCreate={canWrite}
         canEdit={() => canWrite}
         entityName="仓库"
-        rowActions={(r) => <Button type="link" size="small" onClick={() => setPanoId(r.id)}>360</Button>}
+        rowActions={(r) => (
+          <Space size={0}>
+            <Button type="link" size="small" onClick={() => setPanoId(r.id)}>360</Button>
+            {r.accountingMode === "realtime" ? (
+              <Button type="link" size="small" href={`/inventory/locations?warehouseId=${r.id}`}>库位</Button>
+            ) : null}
+          </Space>
+        )}
         apiPath="/api/master/warehouse"
         searchPlaceholder="搜索编码/名称"
         columns={[
@@ -158,6 +167,18 @@ export default function WarehouseClient() {
             dataIndex: "kind",
             width: 110,
             render: (v: string) => <Tag color={KIND_COLORS[v]}>{WAREHOUSE_KIND_LABELS[v] ?? v}</Tag>,
+          },
+          {
+            title: "记账",
+            dataIndex: "accountingMode",
+            width: 100,
+            render: (v: string) => v === "realtime" ? <Tag color="processing">实时账</Tag> : <Tag>快照参考</Tag>,
+          },
+          {
+            title: "区域",
+            dataIndex: "regionCode",
+            width: 80,
+            sorter: (a, b) => a.regionCode.localeCompare(b.regionCode),
           },
           {
             title: "关联供应商",
@@ -182,6 +203,19 @@ export default function WarehouseClient() {
             </Form.Item>
             <Form.Item name="kind" label="类型" rules={[{ required: true, message: "必须选择仓库类型" }]}>
               <Select options={toOptions(WAREHOUSE_KIND_LABELS)} placeholder="选择仓库类型" />
+            </Form.Item>
+            <Form.Item
+              name="regionCode"
+              label="运营区域"
+              initialValue="CN"
+              tooltip="ISO 两位区域代码；不依据仓名猜测海外归属"
+              rules={[
+                { required: true, message: "运营区域必填" },
+                { pattern: /^[A-Za-z]{2}$/, message: "请输入两位字母，如 CN、HK、US" },
+              ]}
+              normalize={(value: string) => value?.trim().toUpperCase()}
+            >
+              <Input maxLength={2} placeholder="CN" style={{ textTransform: "uppercase" }} />
             </Form.Item>
             <Form.Item noStyle shouldUpdate={(prev, cur) => prev.kind !== cur.kind}>
               {({ getFieldValue }) =>

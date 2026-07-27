@@ -78,11 +78,13 @@ export type SupplierInput = z.infer<typeof supplierSchema>;
 
 // ---------- 仓库 ----------
 export const WAREHOUSE_KINDS = ["finished", "raw", "packaging", "outsource", "transit", "snapshot"] as const;
+export const BIN_KINDS = ["normal", "quarantine", "staging"] as const;
 export const warehouseSchema = z
   .object({
     code: z.string().trim().min(1, "编码必填").refine((c) => checkCode(c).ok, (c) => ({ message: checkCode(c).reason ?? "编码不合规" })),
     name: z.string().trim().min(1, "名称必填"),
     kind: z.enum(WAREHOUSE_KINDS),
+    regionCode: z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/, "区域代码须为两位大写字母").optional(),
     parentId: z.coerce.number().int().positive().nullable().optional(), // D32 树状层级
     supplierId: z.number().int().positive().nullable().optional(),
     active: z.boolean().optional().default(true),
@@ -93,6 +95,16 @@ export const warehouseSchema = z
     }
   });
 export type WarehouseInput = z.infer<typeof warehouseSchema>;
+
+export const binSchema = z.object({
+  warehouseId: z.number().int().positive({ message: "必须选择所属仓库" }),
+  code: z.string().trim().min(1, "库位编码必填").max(40),
+  name: z.preprocess(emptyToUndef, z.string().trim().max(80).nullable().optional()),
+  kind: z.enum(BIN_KINDS).optional().default("normal"),
+  active: z.boolean().optional().default(true),
+  remark: z.preprocess(emptyToUndef, z.string().trim().max(300).nullable().optional()),
+});
+export type BinInput = z.infer<typeof binSchema>;
 
 // ---------- BOM ----------
 export const bomLineSchema = z.object({

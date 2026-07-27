@@ -33,7 +33,7 @@ describe("getSkuBrief", () => {
       .returning();
     const [whSnap] = await db
       .insert(warehouses)
-      .values({ code: "BW-S", name: "快照仓", kind: "finished", accountingMode: "snapshot" })
+      .values({ code: "BW-S", name: "快照仓", kind: "snapshot", accountingMode: "snapshot" })
       .returning();
 
     // 实时账 100

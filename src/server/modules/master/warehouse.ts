@@ -22,6 +22,7 @@ export async function listWarehouses(q: string, page: number, pageSize: number) 
         name: schema.warehouses.name,
         kind: schema.warehouses.kind,
         accountingMode: schema.warehouses.accountingMode,
+        regionCode: schema.warehouses.regionCode,
         supplierId: schema.warehouses.supplierId,
         supplierName: schema.suppliers.name,
         parentId: schema.warehouses.parentId,
@@ -80,6 +81,7 @@ export async function createWarehouse(input: unknown, actor?: SessionUser, dbArg
       kind: v.kind,
       // 快照仓账务模式=snapshot，其余实时
       accountingMode: v.kind === "snapshot" ? "snapshot" : "realtime",
+      regionCode: v.regionCode ?? "CN",
       supplierId: v.kind === "outsource" ? (v.supplierId ?? null) : null,
       parentId: v.parentId ?? null,
       active: v.active,
@@ -99,13 +101,42 @@ export async function updateWarehouse(id: number, input: unknown, actor?: Sessio
   const [existing] = await tx.select().from(schema.warehouses).where(eq(schema.warehouses.id, id));
   if (!existing) throw new ApiError(404, "仓库不存在");
   await assertValidParent(tx, id, v.parentId ?? null);
+  const nextAccountingMode = v.kind === "snapshot" ? "snapshot" : "realtime";
+  if (nextAccountingMode !== existing.accountingMode) {
+    const [balanceUsage]: { total: number }[] = await tx
+      .select({ total: sql<number>`count(*)::int` })
+      .from(schema.stockBalances)
+      .where(eq(schema.stockBalances.warehouseId, id));
+    const [snapshotUsage]: { total: number }[] = await tx
+      .select({ total: sql<number>`count(*)::int` })
+      .from(schema.stockSnapshots)
+      .where(eq(schema.stockSnapshots.warehouseId, id));
+    const [ledgerUsage]: { total: number }[] = await tx
+      .select({ total: sql<number>`count(*)::int` })
+      .from(schema.stockLedger)
+      .where(eq(schema.stockLedger.warehouseId, id));
+    const [binUsage]: { total: number }[] = await tx
+      .select({ total: sql<number>`count(*)::int` })
+      .from(schema.bins)
+      .where(eq(schema.bins.warehouseId, id));
+    const evidenceCount =
+      Number(balanceUsage?.total ?? 0)
+      + Number(snapshotUsage?.total ?? 0)
+      + Number(ledgerUsage?.total ?? 0)
+      + Number(binUsage?.total ?? 0);
+    if (evidenceCount > 0) {
+      throw new ApiError(409, "已有库存、快照、流水或库位的仓库不能切换记账模式；请新建正确类型的仓库");
+    }
+  }
   const [updated] = await tx
     .update(schema.warehouses)
     .set({
       code: v.code,
       name: v.name,
       kind: v.kind,
-      accountingMode: v.kind === "snapshot" ? "snapshot" : "realtime",
+      accountingMode: nextAccountingMode,
+      // 兼容迁移前客户端：更新未携带新字段时保留原区域，绝不静默重置为 CN。
+      regionCode: v.regionCode ?? existing.regionCode,
       supplierId: v.kind === "outsource" ? (v.supplierId ?? null) : null,
       parentId: v.parentId ?? null,
       active: v.active,

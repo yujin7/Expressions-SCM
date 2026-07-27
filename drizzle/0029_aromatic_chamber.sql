@@ -1,0 +1,1 @@
+ALTER TABLE "bins" ADD CONSTRAINT "ck_bin_kind" CHECK ("bins"."kind" IN ('normal', 'quarantine', 'staging'));

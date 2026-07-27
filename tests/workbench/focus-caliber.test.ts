@@ -41,7 +41,12 @@ describe("控制塔首屏：断货风险必须用全网在库口径", () => {
   beforeEach(async () => {
     ({ db } = await createTestDb());
     const [rt] = await db.insert(warehouses).values({ code: "RT", name: "实时仓", kind: "finished" }).returning();
-    const [sn] = await db.insert(warehouses).values({ code: "SN", name: "保税仓", kind: "snapshot" }).returning();
+    const [sn] = await db.insert(warehouses).values({
+      code: "SN",
+      name: "保税仓",
+      kind: "snapshot",
+      accountingMode: "snapshot",
+    }).returning();
     realtimeWh = rt.id;
     snapshotWh = sn.id;
     const [ch] = await db.insert(channels).values({ code: "tmall", name: "天猫", kind: "platform" }).returning();

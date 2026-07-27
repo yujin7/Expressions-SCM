@@ -1,6 +1,7 @@
 import {
-  pgTable, serial, text, integer, boolean, date, timestamp, numeric, jsonb, unique,
+  pgTable, serial, text, integer, boolean, date, timestamp, numeric, jsonb, unique, check,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { skuTypeEnum, skuLifecycleEnum, supplierStatusEnum, warehouseKindEnum, accountingModeEnum } from "./enums";
 
 export const users = pgTable("users", {
@@ -109,10 +110,18 @@ export const warehouses = pgTable("warehouses", {
   name: text("name").notNull(),
   kind: warehouseKindEnum("kind").notNull(),
   accountingMode: accountingModeEnum("accounting_mode").notNull().default("realtime"),
+  /** ISO 3166-1 alpha-2 运营区域；历史仓迁移默认 CN，不从仓名猜测海外归属。 */
+  regionCode: text("region_code").notNull().default("CN"),
   parentId: integer("parent_id"), // D32 树状层级（0724：保税分中转/发货上下级）；空=顶级
   supplierId: integer("supplier_id").references(() => suppliers.id), // 委外仓专用
   active: boolean("active").notNull().default(true),
-});
+}, (t) => [
+  check("ck_warehouse_region_code", sql`${t.regionCode} ~ '^[A-Z]{2}$'`),
+  check(
+    "ck_warehouse_accounting_taxonomy",
+    sql`(${t.kind} = 'snapshot' AND ${t.accountingMode} = 'snapshot') OR (${t.kind} <> 'snapshot' AND ${t.accountingMode} = 'realtime')`,
+  ),
+]);
 
 /** 供应商价格表（R1 基准兜底）：取生效日≤今日的最新行 */
 export const priceLists = pgTable("price_lists", {

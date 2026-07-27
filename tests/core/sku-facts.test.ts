@@ -32,7 +32,12 @@ describe("getSkuFacts 事实装配", () => {
   beforeEach(async () => {
     ({ db } = await createTestDb());
     const [rt] = await db.insert(warehouses).values({ code: "RT", name: "实时仓", kind: "finished" }).returning();
-    const [sn] = await db.insert(warehouses).values({ code: "SN", name: "保税仓", kind: "snapshot" }).returning();
+    const [sn] = await db.insert(warehouses).values({
+      code: "SN",
+      name: "保税仓",
+      kind: "snapshot",
+      accountingMode: "snapshot",
+    }).returning();
     const [ch] = await db.insert(channels).values({ code: "tmall", name: "天猫", kind: "platform" }).returning();
     rtWh = rt.id; snapWh = sn.id; channelId = ch.id;
   });

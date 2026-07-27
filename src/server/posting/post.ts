@@ -11,6 +11,7 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { stockBalances, stockLedger, warehouses } from "@/db/schema";
 import { dCmp, dNeg, dQty } from "@/server/core/decimal";
+import { getLocatedQty } from "@/server/modules/inventory/location-balance";
 import { isRegisteredSource } from "./registry";
 
 /**
@@ -41,7 +42,8 @@ export type PostingErrorCode =
   | "NEGATIVE_STOCK"
   | "EMPTY_EVENT"
   | "UNREGISTERED_SOURCE"
-  | "SNAPSHOT_WAREHOUSE";
+  | "SNAPSHOT_WAREHOUSE"
+  | "LOCATED_STOCK";
 
 export class PostingError extends Error {
   readonly code: PostingErrorCode;
@@ -111,6 +113,12 @@ export async function post(db: AnyDb, event: PostingEvent): Promise<{ posted: bo
       }
     }
 
+    // 库位作业与库存过账共用仓库主档行锁。否则“定位未定位量”和“出库扣总账”
+    // 可在两个事务中同时通过检查，提交后制造 Σ库位 > 仓库余额。
+    for (const warehouseId of [...whIds].sort((a, b) => a - b)) {
+      await tx.execute(sql`select id from warehouses where id = ${warehouseId} for update`);
+    }
+
     // 4) 插入流水（按排序后顺序，一行一条；dQty 兼做十进制校验与规格化）
     await tx.insert(stockLedger).values(
       lines.map((l) => ({
@@ -150,6 +158,20 @@ export async function post(db: AnyDb, event: PostingEvent): Promise<{ posted: bo
           "NEGATIVE_STOCK",
           `负库存被拒（R4）: sku#${l.skuId} warehouse#${l.warehouseId}(${kind ?? "unknown"}) 过账后余额 ${row.qty} < 0`,
         );
+      }
+      if (dCmp(delta, "0") < 0) {
+        const locatedQty = await getLocatedQty(tx, {
+          skuId: l.skuId,
+          warehouseId: l.warehouseId,
+          batchId: l.batchId ?? null,
+        });
+        if (dCmp(row.qty, locatedQty) < 0) {
+          throw new PostingError(
+            "LOCATED_STOCK",
+            `可出库的未定位库存不足: sku#${l.skuId} warehouse#${l.warehouseId} ` +
+              `过账后总账 ${row.qty}，已有库位定位 ${locatedQty}；请先在库位作业中取消定位或放行后再出库`,
+          );
+        }
       }
     }
 

@@ -17,8 +17,9 @@
  * - 重建幂等：按自然键 upsert，重跑不产生重复行。
  */
 import {
-  pgTable, serial, integer, text, timestamp, numeric, date, boolean, unique, index,
+  pgTable, serial, integer, text, timestamp, numeric, date, boolean, unique, index, check,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { skus, suppliers, warehouses, users } from "./masters";
 
 /**
@@ -46,8 +47,7 @@ export const rollupSupplierLead = pgTable("rollup_supplier_lead", {
 
 /**
  * 库位主数据。仓库粒度到 warehouse 为止时，盘点/找货/临期隔离全靠仓管脑内地图。
- * v1 只做**登记与归属**（库位清单、类型、状态），不改过账口径——
- * 库位级余额需与 FEFO/批次一并设计，属独立改动。
+ * 仓库台账仍是唯一财务真相；`bin_balances/bin_movements` 是受总账余额约束的定位子账。
  */
 export const bins = pgTable("bins", {
   id: serial("id").primaryKey(),
@@ -59,7 +59,10 @@ export const bins = pgTable("bins", {
   active: boolean("active").notNull().default(true),
   remark: text("remark"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [unique("uq_bin_wh_code").on(t.warehouseId, t.code)]);
+}, (t) => [
+  unique("uq_bin_wh_code").on(t.warehouseId, t.code),
+  check("ck_bin_kind", sql`${t.kind} IN ('normal', 'quarantine', 'staging')`),
+]);
 
 /* ────────────────────────── E5-01/E5-02 审批路由与委托 ────────────────────────── */
 

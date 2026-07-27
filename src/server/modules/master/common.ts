@@ -36,6 +36,15 @@ export function errorResponse(e: unknown, ctx?: ErrorCtx): NextResponse {
     const msg = e.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("；");
     return NextResponse.json({ error: `参数校验失败：${msg}` }, { status: 400 });
   }
+  if (
+    e instanceof Error
+    && e.name === "PostingError"
+    && ["NEGATIVE_STOCK", "SNAPSHOT_WAREHOUSE", "LOCATED_STOCK"].includes(
+      String((e as Error & { code?: string }).code ?? ""),
+    )
+  ) {
+    return NextResponse.json({ error: e.message }, { status: 409 });
+  }
   if (isUniqueViolation(e)) {
     return NextResponse.json({ error: "编码或关键字段已存在，请修改后重试" }, { status: 409 });
   }

@@ -1,10 +1,11 @@
 import {
-  pgTable, serial, integer, numeric, text, timestamp, date, unique, index,
+  pgTable, serial, integer, numeric, text, timestamp, date, unique, index, check,
 } from "drizzle-orm/pg-core";
-import { desc } from "drizzle-orm";
+import { desc, sql } from "drizzle-orm";
 import { offsetPoolKindEnum } from "./enums";
-import { skus, warehouses } from "./masters";
+import { batches, skus, users, warehouses } from "./masters";
 import { importJobs } from "./system";
+import { bins } from "./rollup";
 
 /**
  * 库存流水——唯一事实源，仅追加（禁止 UPDATE/DELETE）。
@@ -41,6 +42,45 @@ export const stockBalances = pgTable("stock_balances", {
   qty: numeric("qty", { precision: 14, scale: 4 }).notNull().default("0"),
 }, (t) => [
   unique("uq_balance_key").on(t.skuId, t.warehouseId, t.batchId).nullsNotDistinct(),
+]);
+
+/**
+ * 库位作业子账：仓库台账仍是财务/数量唯一真相，库位余额只回答“货在哪里”。
+ * 所有库位作业都必须满足 Σ库位余额 ≤ 对应仓库账余额；未定位差额视为 unlocated。
+ */
+export const binBalances = pgTable("bin_balances", {
+  id: serial("id").primaryKey(),
+  binId: integer("bin_id").notNull().references(() => bins.id),
+  skuId: integer("sku_id").notNull().references(() => skus.id),
+  batchId: integer("batch_id").references(() => batches.id),
+  qty: numeric("qty", { precision: 14, scale: 4 }).notNull().default("0"),
+}, (t) => [
+  unique("uq_bin_balance_key").on(t.binId, t.skuId, t.batchId).nullsNotDistinct(),
+  index("ix_bin_balance_sku_batch").on(t.skuId, t.batchId),
+  check("ck_bin_balance_nonnegative", sql`${t.qty} >= 0`),
+]);
+
+/** 库位移动流水：仅追加；同一 idempotencyKey 只能执行一次。 */
+export const binMovements = pgTable("bin_movements", {
+  id: serial("id").primaryKey(),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+  warehouseId: integer("warehouse_id").notNull().references(() => warehouses.id),
+  skuId: integer("sku_id").notNull().references(() => skus.id),
+  batchId: integer("batch_id").references(() => batches.id),
+  fromBinId: integer("from_bin_id").references(() => bins.id),
+  toBinId: integer("to_bin_id").references(() => bins.id),
+  qty: numeric("qty", { precision: 14, scale: 4 }).notNull(),
+  operation: text("operation").notNull(), // locate/move/unlocate/quarantine/release
+  reason: text("reason"),
+  createdBy: integer("created_by").notNull().references(() => users.id),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("ix_bin_movement_wh_time").on(t.warehouseId, desc(t.occurredAt)),
+  index("ix_bin_movement_sku_batch").on(t.skuId, t.batchId),
+  check("ck_bin_movement_positive_qty", sql`${t.qty} > 0`),
+  check("ck_bin_movement_has_endpoint", sql`${t.fromBinId} IS NOT NULL OR ${t.toBinId} IS NOT NULL`),
+  check("ck_bin_movement_distinct_endpoints", sql`${t.fromBinId} IS NULL OR ${t.toBinId} IS NULL OR ${t.fromBinId} <> ${t.toBinId}`),
+  check("ck_bin_movement_operation", sql`${t.operation} IN ('locate', 'move', 'unlocate', 'quarantine', 'release')`),
 ]);
 
 /** 快照仓（保税/E/云）唯一数据源；1.1 启用；余额查询=实时仓 balance ∪ 快照仓最新 snapshot */

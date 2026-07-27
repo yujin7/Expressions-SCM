@@ -28,6 +28,9 @@ async function main(): Promise<void> {
         "users",
         "stock_ledger",
         "stock_balances",
+        "bins",
+        "bin_balances",
+        "bin_movements",
         "audit_logs",
         "batches",
         "planning_versions",
@@ -40,6 +43,9 @@ async function main(): Promise<void> {
       "users",
       "stock_ledger",
       "stock_balances",
+      "bins",
+      "bin_balances",
+      "bin_movements",
       "audit_logs",
       "batches",
       "planning_versions",
@@ -86,6 +92,8 @@ async function main(): Promise<void> {
         "planning_version_lines_append_only_truncate",
         "projection_scenarios_append_only",
         "projection_scenarios_append_only_truncate",
+        "bin_movements_append_only",
+        "bin_movements_append_only_truncate",
       ]],
     );
     const triggerPairs = new Set(
@@ -102,10 +110,37 @@ async function main(): Promise<void> {
       "planning_version_lines:planning_version_lines_append_only_truncate",
       "projection_scenarios:projection_scenarios_append_only",
       "projection_scenarios:projection_scenarios_append_only_truncate",
+      "bin_movements:bin_movements_append_only",
+      "bin_movements:bin_movements_append_only_truncate",
     ];
     const missingTriggers = requiredTriggerPairs.filter((pair) => !triggerPairs.has(pair));
     if (missingTriggers.length) {
       throw new Error(`Missing append-only database triggers: ${missingTriggers.join(", ")}`);
+    }
+
+    const requiredLocationConstraints = [
+      "ck_warehouse_region_code",
+      "ck_warehouse_accounting_taxonomy",
+      "ck_bin_kind",
+      "uq_bin_wh_code",
+      "uq_bin_balance_key",
+      "ck_bin_balance_nonnegative",
+      "bin_movements_idempotency_key_unique",
+      "ck_bin_movement_positive_qty",
+      "ck_bin_movement_has_endpoint",
+      "ck_bin_movement_distinct_endpoints",
+      "ck_bin_movement_operation",
+    ];
+    const locationConstraints = await client.query<{ conname: string }>(
+      `select conname
+         from pg_constraint
+        where conname = any($1::text[])`,
+      [requiredLocationConstraints],
+    );
+    const foundConstraints = new Set(locationConstraints.rows.map((row) => row.conname));
+    const missingConstraints = requiredLocationConstraints.filter((name) => !foundConstraints.has(name));
+    if (missingConstraints.length) {
+      throw new Error(`Missing warehouse/bin database constraints: ${missingConstraints.join(", ")}`);
     }
 
     const migrationCount = await client.query<{ count: string }>(
@@ -121,6 +156,7 @@ async function main(): Promise<void> {
       requiredTables: [...found].sort(),
       sessionVersion: column,
       immutableTriggers: [...triggerPairs].sort(),
+      locationConstraints: [...foundConstraints].sort(),
     }, null, 2));
   } finally {
     await client.end();
