@@ -6,6 +6,7 @@ import * as schema from "@/db/schema";
 import type {  BomLine } from "@/server/import/adapters/bom";
 
 import { type AnyDb, type ReleaseUser, resolveDb, loadStagedRows, commitRows, markBlocked, aliasCache, loadSkuIdByCode, isBomBlockPayload } from "./common";
+import { assertImportPreflight, type PreflightOverrides } from "./preflight";
 
 export type BomResolution = { decision: "active" | "retired" | "skip" };
 
@@ -33,10 +34,16 @@ const UOM_LABEL: Record<BomLine["uomGuess"], string | null> = {
 
 export async function releaseBoms(
   user: ReleaseUser,
-  args: { jobIds?: number[]; resolutions?: Record<string, BomResolution>; dryRun: boolean },
+  args: {
+    jobIds?: number[];
+    resolutions?: Record<string, BomResolution>;
+    preflightOverrides?: PreflightOverrides;
+    dryRun: boolean;
+  },
   dbArg?: AnyDb,
 ): Promise<ReleaseBomsResult> {
   const db = await resolveDb(dbArg);
+  await assertImportPreflight(db, user, args);
   const rows = await loadStagedRows(db, "bom_block", args.jobIds);
   const resolve = aliasCache(db);
   const resolutions = args.resolutions ?? {};
@@ -295,4 +302,3 @@ export async function releaseBoms(
     releaseRunId,
   };
 }
-

@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getDbAsync } from "@/db";
 import { ApiError, errorResponse } from "@/server/modules/master/common";
-import { guardRelease } from "@/server/modules/release/engine";
+import { guardFreshWrite, requireAnyRole } from "@/server/modules/outsource/common";
 import { stageBom } from "@/server/import/adapters/bom";
 import { stageInventoryLong } from "@/server/import/adapters/inventory-long";
 import { stageExpiry } from "@/server/import/adapters/expiry";
@@ -36,7 +36,7 @@ const MAX_SIZE = 30 * 1024 * 1024; // 30MB——真实 BOM 工作簿 ~5MB，留�
 
 export async function POST(req: NextRequest) {
   try {
-    const user = await guardRelease();
+    const user = await guardFreshWrite();
     const form = await req.formData();
     const file = form.get("file");
     if (!(file instanceof File)) throw new ApiError(400, "缺少文件");
@@ -47,6 +47,8 @@ export async function POST(req: NextRequest) {
       brand: form.get("brand") || undefined,
     });
     if (v.template === "bom" && !v.brand) throw new ApiError(400, "BOM 导入必须选择品牌");
+    if (v.template === "sku_cost") requireAnyRole(user, "finance");
+    else requireAnyRole(user, "pmc");
 
     // 落盘：uploads/<时间戳>/<原名>——保留原始文件名（部分适配器按文件名推导语义，
     // 如销量表回退「NN年」取年份），时间戳做目录防覆盖；原名清洗防路径穿越

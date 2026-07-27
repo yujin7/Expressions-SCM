@@ -7,6 +7,7 @@ import { ApiError } from "@/server/modules/master/common";
 
 
 import { type AnyDb, type ReleaseUser, resolveDb } from "./common";
+import { getImportPreflight, type ImportPreflightResult } from "./preflight";
 
 export interface ReleaseStatusTable {
   targetTable: string;
@@ -16,7 +17,10 @@ export interface ReleaseStatusTable {
   blockedReasons: { reason: string; count: number }[];
 }
 
-export async function releaseStatus(jobId?: number, dbArg?: AnyDb): Promise<{ tables: ReleaseStatusTable[] }> {
+export async function releaseStatus(
+  jobId?: number,
+  dbArg?: AnyDb,
+): Promise<{ tables: ReleaseStatusTable[]; preflight: ImportPreflightResult | null }> {
   const db = await resolveDb(dbArg);
   const where = jobId != null ? eq(schema.stagingRows.importJobId, jobId) : undefined;
   const rows: { targetTable: string | null; status: string; errorMsg: string | null }[] = await db
@@ -55,7 +59,20 @@ export async function releaseStatus(jobId?: number, dbArg?: AnyDb): Promise<{ ta
         .slice(0, 20)
         .map(([reason, count]) => ({ reason, count })),
     }));
-  return { tables };
+  let preflight: ImportPreflightResult | null = null;
+  if (jobId != null) {
+    try {
+      preflight = await getImportPreflight(db, jobId);
+    } catch (error) {
+      // 历史/损坏数据可能留下无 import_job 的 staging 行；状态页仍须把这些孤儿行展示出来。
+      // HTTP 路由会先校验真实任务，正常用户流程不会吞掉 404。
+      if (!(error instanceof ApiError) || error.status !== 404) throw error;
+    }
+  }
+  return {
+    tables,
+    preflight,
+  };
 }
 
 /* ══ 路由守卫（release 模块自持，不借用他模块私有件） ═════ */
@@ -86,4 +103,3 @@ export async function guardReleaseApprover(): Promise<ReleaseUser> {
 }
 
 /* ══ 8) releaseTransitRefs（在途参考层，D16 执行面） ═══════ */
-

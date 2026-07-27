@@ -7,6 +7,7 @@ import { writeAudit } from "@/server/core/audit";
 import type {  BomLine } from "@/server/import/adapters/bom";
 
 import { type AnyDb, type ReleaseUser, resolveDb, loadStagedRows, markBlocked, aliasCache, loadReleasedSpuIndex, loadSkuIdByCode, isBomBlockPayload } from "./common";
+import { assertImportPreflight, type PreflightOverrides } from "./preflight";
 
 /* ══ 2) releaseSkus（BOM 块 → 成品/物料建档） ═══════════ */
 
@@ -29,10 +30,11 @@ export interface ReleaseSkusResult {
 
 export async function releaseSkus(
   user: ReleaseUser,
-  args: { jobIds?: number[]; dryRun: boolean },
+  args: { jobIds?: number[]; preflightOverrides?: PreflightOverrides; dryRun: boolean },
   dbArg?: AnyDb,
 ): Promise<ReleaseSkusResult> {
   const db = await resolveDb(dbArg);
+  await assertImportPreflight(db, user, args);
   const rows = await loadStagedRows(db, "bom_block", args.jobIds);
   const spuOfCode = await loadReleasedSpuIndex(db);
   const resolve = aliasCache(db);
@@ -272,4 +274,3 @@ export async function releaseSkus(
 }
 
 /* ══ 3) releaseBoms（§4.3 块人工闸）+ 批量生效审批 ═══════ */
-

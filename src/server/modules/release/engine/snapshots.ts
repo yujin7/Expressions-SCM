@@ -10,6 +10,7 @@ import { ApiError } from "@/server/modules/master/common";
 import {
   type AnyDb, type ReleaseUser, resolveDb, loadStagedRows, commitRows, aliasCache, loadSkuIdByCode,
 } from "./common";
+import { assertImportPreflight, type PreflightOverrides } from "./preflight";
 
 export interface ReleaseSnapshotsResult {
   dryRun: boolean;
@@ -34,10 +35,17 @@ const SNAPSHOT_RULES_VERSION = "snapshot-release-v2";
  */
 export async function releaseSnapshots(
   user: ReleaseUser,
-  args: { jobIds: number[]; bizDate: string; expectedDigest?: string; dryRun: boolean },
+  args: {
+    jobIds: number[];
+    bizDate: string;
+    expectedDigest?: string;
+    preflightOverrides?: PreflightOverrides;
+    dryRun: boolean;
+  },
   dbArg?: AnyDb,
 ): Promise<ReleaseSnapshotsResult> {
   const db = await resolveDb(dbArg);
+  await assertImportPreflight(db, user, args);
   if (args.jobIds.length !== 1) {
     throw new ApiError(400, "快照刷新每次必须且只能选择一个导入任务");
   }

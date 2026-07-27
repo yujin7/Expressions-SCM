@@ -1,21 +1,13 @@
 /**
- * 适配器⑮：SKU 单位成本批量导入（毛利视角基准）→ 直接 upsert sku_costs。
+ * 适配器⑮：SKU 单位成本批量导入（毛利视角基准）→ staging。
  *
- * 口径：sku_costs 为「手工录入基准」（成本自动口径 D2 未定），本适配器为毛利视角 func#15
- * 提供批量入口——单表逐行录入对 1000+ SKU 不可用。
- * 语义与既有单条 upsertSkuCost（report/margin.ts）一致：skuCode→skuId（先精确 skus.code，
- * 再走 sku_code 别名），onConflict 覆盖 unitCost，updatedBy=导入人。
- *
- * 放行语义：成本是简单主数据 upsert，无复杂放行分支——故在 stage 阶段内联直写
- * （不入 staging 待放行），全程包在 createImportJob/finalizeImportJob 内留审计痕。
- * 未解析编码=计数上报，不致命（非精确/无别名的行不写，仅 unresolved++）。
+ * 成本属于财务主数据：上传只解析和暂存，绝不在适配器里改 sku_costs。
+ * 正式写入统一走 releaseSkuCosts（finance/admin 新鲜权限、dry-run、预检、事务审计）。
  */
-import { eq } from "drizzle-orm";
 import { readWorkbook, type CellValue, type SheetData } from "../parse/xlsx";
-import { createImportJob, finalizeImportJob, type AnyDb } from "../staging";
-import * as schema from "@/db/schema";
-import { writeAudit } from "@/server/core/audit";
-import { resolveAlias, type DimDb } from "@/server/modules/dimension/resolver";
+import { stagePipeline, type AdapterResult } from "./types";
+import type { AnyDb } from "../staging";
+import { dCmp, dQty } from "@/server/core/decimal";
 
 export const SKU_COST_TEMPLATE = "sku_cost";
 
@@ -29,15 +21,20 @@ const str = (v: CellValue): string | null => {
 };
 
 /**
- * 解析单位成本：数字或字符串（去千分位）→ 正数，至多 4 位小数（numeric(14,4)）。
- * 非正/非法/空 → null（调用方计入 badValue）。四舍五入去浮点噪声后剥离尾零。
+ * 解析单位成本：数字或字符串（去千分位）→ 正数，按 numeric(14,4) 半进位。
+ * 统一走 decimal 工具，禁止用 Math/Number 做金额舍入。
  */
 export function parseCost(v: CellValue): string | null {
   if (v == null) return null;
-  const raw = typeof v === "number" ? v : Number(String(v).trim().replace(/,/g, ""));
-  if (!Number.isFinite(raw) || raw <= 0) return null;
-  const s = (Math.round(raw * 10000) / 10000).toFixed(4).replace(/\.?0+$/, "");
-  return s === "" || s === "0" ? null : s;
+  const raw = typeof v === "number" ? String(v) : String(v).trim().replace(/,/g, "");
+  if (!/^\d+(\.\d+)?$/.test(raw)) return null;
+  try {
+    const fixed = dQty(raw);
+    if (dCmp(fixed, "0") <= 0) return null;
+    return fixed.replace(/\.?0+$/, "");
+  } catch {
+    return null;
+  }
 }
 
 /** 定位表头：某行同时含（编码列之一）与（含「成本」的列）——返回行号与两列下标 */
@@ -61,7 +58,8 @@ function findHeader(sheet: SheetData): { hi: number; codeCol: number; costCol: n
 }
 
 export interface SkuCostParse {
-  rows: { code: string; unitCost: string }[];
+  rows: { rowNo: number; code: string; unitCost: string }[];
+  rejects: { rowNo: number; reason: string; raw: unknown }[];
   /** 扫描的数据行数（有内容） */
   scanned: number;
   /** 无编码 或 成本非正/非法 */
@@ -72,7 +70,8 @@ export interface SkuCostParse {
 export function parseSkuCostSheet(sheet: SheetData): SkuCostParse {
   const h = findHeader(sheet);
   if (!h) throw new Error("表头未找到（需含 商家编码/SKU编码/编码 之一 且 含「成本」的列）");
-  const out: { code: string; unitCost: string }[] = [];
+  const out: { rowNo: number; code: string; unitCost: string }[] = [];
+  const rejects: { rowNo: number; reason: string; raw: unknown }[] = [];
   let scanned = 0;
   let badValue = 0;
   for (let i = h.hi + 1; i < sheet.rows.length; i++) {
@@ -83,58 +82,60 @@ export function parseSkuCostSheet(sheet: SheetData): SkuCostParse {
     const unitCost = parseCost(r[h.costCol]);
     if (!code || !unitCost) {
       badValue++;
+      rejects.push({
+        rowNo: i + 1,
+        reason: !code ? "SKU 编码为空" : "单位成本须为正数且可按 4 位小数表示",
+        raw: { code: r[h.codeCol] ?? null, unitCost: r[h.costCol] ?? null },
+      });
       continue;
     }
-    out.push({ code, unitCost });
+    out.push({ rowNo: i + 1, code, unitCost });
   }
-  return { rows: out, scanned, badValue };
+  return { rows: out, rejects, scanned, badValue };
 }
 
 /**
- * 全链路：createImportJob（幂等 supersede）→ 解析 → 逐行 skuId 解析 + upsert sku_costs
- * → finalizeImportJob → writeAudit（entity=sku_cost_import，任务级 1 行）。
+ * 全链路：createImportJob → 解析 → SKU 别名解析/排队 → staging → finalize。
+ * 正式成本表保持零写入，直到财务在放行工作台预演并执行。
  */
 export async function stageSkuCost(db: AnyDb, filePath: string, userId: number) {
-  const wb = await readWorkbook(filePath, { forceRaw: true });
-  const parsed = parseSkuCostSheet(wb.sheets[0]);
-  const job = await createImportJob(db, { template: SKU_COST_TEMPLATE, filePath, createdBy: userId });
-
-  let upserted = 0;
-  let unresolved = 0;
-  const skuIdCache = new Map<string, number | null>();
-
-  await db.transaction(async (tx: AnyDb) => {
-    for (const { code, unitCost } of parsed.rows) {
-      let skuId = skuIdCache.get(code);
-      if (skuId === undefined) {
-        const [sku]: { id: number }[] = await tx
-          .select({ id: schema.skus.id })
-          .from(schema.skus)
-          .where(eq(schema.skus.code, code));
-        skuId = sku ? sku.id : await resolveAlias(tx as DimDb, "sku_code", code);
-        skuIdCache.set(code, skuId);
-      }
-      if (skuId == null) {
-        unresolved++;
-        continue;
-      }
-      await tx
-        .insert(schema.skuCosts)
-        .values({ skuId, unitCost, updatedBy: userId, updatedAt: new Date() })
-        .onConflictDoUpdate({
-          target: schema.skuCosts.skuId,
-          set: { unitCost, updatedBy: userId, updatedAt: new Date() },
-        });
-      upserted++;
-    }
-    await writeAudit(tx, {
-      userId,
-      entity: "sku_cost_import",
-      action: "import",
-      after: { jobId: job.id, rows: parsed.scanned, upserted, unresolved, badValue: parsed.badValue },
-    });
+  return stagePipeline(db, {
+    filePath,
+    template: SKU_COST_TEMPLATE,
+    userId,
+    targetTable: "sku_cost",
+    adapter: async (path): Promise<AdapterResult> => {
+      const wb = await readWorkbook(path, { forceRaw: true });
+      const parsed = parseSkuCostSheet(wb.sheets[0]);
+      return {
+        rows: parsed.rows.map((row) => ({
+          rowNo: row.rowNo,
+          targetTable: "sku_cost",
+          payload: { skuCode: row.code, unitCost: row.unitCost },
+        })),
+        rejects: parsed.rejects.map((reject) => ({
+          rowNo: reject.rowNo,
+          sheet: wb.sheets[0]?.name ?? "(unknown)",
+          reason: reject.reason,
+          raw: reject.raw,
+        })),
+        stats: {
+          scanned: parsed.scanned,
+          valid: parsed.rows.length,
+          rejected: parsed.badValue,
+        },
+      };
+    },
+    aliasRefs: (row) => [
+      {
+        field: "sku",
+        aliasType: "sku_code",
+        value: typeof row.payload.skuCode === "string" ? row.payload.skuCode : null,
+      },
+    ],
+    job: {
+      schemaVersion: "sku-cost-v2",
+      scope: { mode: "full", targetKinds: ["sku_cost"] },
+    },
   });
-
-  await finalizeImportJob(db, job.id, { okRows: upserted, failRows: unresolved + parsed.badValue });
-  return { jobId: job.id, stats: { rows: parsed.scanned, upserted, unresolved, badValue: parsed.badValue } };
 }

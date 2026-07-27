@@ -8,6 +8,7 @@ import { dAdd } from "@/server/core/decimal";
 
 
 import { type AnyDb, type ReleaseUser, resolveDb, loadStagedRows, commitRows, markBlocked, aliasCache, loadSkuIdByCode } from "./common";
+import { assertImportPreflight, type PreflightOverrides } from "./preflight";
 
 export interface ReleaseSalesMonthlyResult {
   dryRun: boolean;
@@ -19,10 +20,11 @@ export interface ReleaseSalesMonthlyResult {
 
 export async function releaseSalesMonthly(
   user: ReleaseUser,
-  args: { jobIds?: number[]; dryRun: boolean },
+  args: { jobIds?: number[]; preflightOverrides?: PreflightOverrides; dryRun: boolean },
   dbArg?: AnyDb,
 ): Promise<ReleaseSalesMonthlyResult> {
   const db = await resolveDb(dbArg);
+  await assertImportPreflight(db, user, args);
   const rows = await loadStagedRows(db, "sales_monthly", args.jobIds);
   const resolve = aliasCache(db);
 
@@ -130,4 +132,3 @@ export async function releaseSalesMonthly(
 }
 
 /* ══ 6.5) releaseSnapshots（快照仓周期刷新，D20 运营环） ══ */
-

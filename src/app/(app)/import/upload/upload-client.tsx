@@ -18,11 +18,11 @@ const TEMPLATE_OPTS = [
   { value: "expiry", label: "效期占比（批次效期参考）" },
   { value: "bom", label: "产品 BOM 工作簿（须选品牌）" },
   { value: "leadtime", label: "在途/交期表（提前期参考，1.1 启用）" },
-            { value: "transit", label: "在途进度表（成品/包材/备料/OEM 归属）" },
-            { value: "demand", label: "需求&计划&达成统计表（月度需求/借调历史）" },
-            { value: "pallet", label: "总货盘情况表-PMC（月度货盘/处置注记）" },
-            { value: "stock_summary", label: "总库存明细（全公司口径核对）" },
-            { value: "sku_cost", label: "SKU 成本导入（毛利视角基准）" },
+  { value: "transit", label: "在途进度表（成品/包材/备料/OEM 归属）" },
+  { value: "demand", label: "需求&计划&达成统计表（月度需求/借调历史）" },
+  { value: "pallet", label: "总货盘情况表-PMC（月度货盘/处置注记）" },
+  { value: "stock_summary", label: "总库存明细（全公司口径核对）" },
+  { value: "sku_cost", label: "SKU 成本导入（暂存后由财务放行）" },
 ];
 
 interface UploadResult {
@@ -31,9 +31,18 @@ interface UploadResult {
   summary: Record<string, unknown>;
 }
 
-export default function UploadClient() {
+export default function UploadClient({
+  canPlan,
+  canFinance,
+}: {
+  canPlan: boolean;
+  canFinance: boolean;
+}) {
   const { message } = App.useApp();
-  const [template, setTemplate] = useState("inventory");
+  const allowedTemplates = TEMPLATE_OPTS.filter((option) =>
+    option.value === "sku_cost" ? canFinance : canPlan,
+  );
+  const [template, setTemplate] = useState(canPlan ? "inventory" : "sku_cost");
   const [brand, setBrand] = useState<string | undefined>();
   const [file, setFile] = useState<RcFile | null>(null);
   const [busy, setBusy] = useState(false);
@@ -53,7 +62,11 @@ export default function UploadClient() {
       const body = (await res.json()) as UploadResult & { error?: string };
       if (!res.ok) throw new Error(body.error ?? `上传失败（${res.status}）`);
       setResult(body);
-      message.success("已入 staging——请到放行工作台执行放行");
+      message.success(
+        template === "sku_cost"
+          ? "成本文件已入 staging——须由财务在放行工作台预演并执行"
+          : "已入 staging——请到放行工作台执行放行",
+      );
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -78,7 +91,12 @@ export default function UploadClient() {
       <Card size="small">
         <Space direction="vertical" style={{ width: "100%" }} size={12}>
           <Space wrap>
-            <Select style={{ width: 360 }} options={TEMPLATE_OPTS} value={template} onChange={(v) => setTemplate(v)} />
+            <Select
+              style={{ width: 360 }}
+              options={allowedTemplates}
+              value={template}
+              onChange={(v) => setTemplate(v)}
+            />
             {template === "bom" && (
               <RemoteSelect
                 api="/api/master/brand"

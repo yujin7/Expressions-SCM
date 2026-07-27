@@ -7,6 +7,7 @@ import { writeAudit } from "@/server/core/audit";
 
 import type { SpuCluster } from "@/server/import/adapters/bom-spu";
 import { type AnyDb, type ReleaseUser, resolveDb, loadStagedRows, commitRows, nextSpuCodeIn } from "./common";
+import { assertImportPreflight, type PreflightOverrides } from "./preflight";
 
 export interface SpuOverride {
   action: "accept" | "mergeInto";
@@ -24,10 +25,16 @@ export interface ReleaseSpusResult {
 
 export async function releaseSpus(
   user: ReleaseUser,
-  args: { jobIds?: number[]; overrides?: Record<string, SpuOverride>; dryRun: boolean },
+  args: {
+    jobIds?: number[];
+    overrides?: Record<string, SpuOverride>;
+    preflightOverrides?: PreflightOverrides;
+    dryRun: boolean;
+  },
   dbArg?: AnyDb,
 ): Promise<ReleaseSpusResult> {
   const db = await resolveDb(dbArg);
+  await assertImportPreflight(db, user, args);
   const rows = await loadStagedRows(db, "spu_suggestion", args.jobIds);
 
   // 同 spuKey 跨 job 去重（payload 首见为准，行集合并）

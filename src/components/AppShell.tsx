@@ -228,9 +228,9 @@ const menuItems: MenuProps["items"] = [
  * 未列出的 key = 全员可见；admin 恒通过。
  */
 const MENU_ROLES: Record<string, string[]> = {
-  "/import/upload": ["pmc"],
-  "/import/release": ["pmc"],
-  "/import/jobs": ["pmc"],
+  "/import/upload": ["pmc", "finance"],
+  "/import/release": ["pmc", "finance"],
+  "/import/jobs": ["pmc", "finance"],
   "/import/exceptions": ["pmc", "purchasing", "warehouse"],
   "/review/checklist": ["pmc", "purchasing", "warehouse", "finance"],
   "/master/feeref": ["purchasing", "pmc", "finance"],

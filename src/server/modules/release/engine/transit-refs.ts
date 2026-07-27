@@ -7,6 +7,7 @@ import { writeAudit } from "@/server/core/audit";
 
 
 import { type AnyDb, type ReleaseUser, resolveDb, loadStagedRows, commitRows, aliasCache, loadSkuIdByCode } from "./common";
+import { assertImportPreflight, type PreflightOverrides } from "./preflight";
 
 export interface ReleaseTransitResult {
   dryRun: boolean;
@@ -26,10 +27,11 @@ export interface ReleaseTransitResult {
  */
 export async function releaseTransitRefs(
   user: ReleaseUser,
-  args: { jobIds?: number[]; dryRun: boolean },
+  args: { jobIds?: number[]; preflightOverrides?: PreflightOverrides; dryRun: boolean },
   dbArg?: AnyDb,
 ): Promise<ReleaseTransitResult> {
   const db = await resolveDb(dbArg);
+  await assertImportPreflight(db, user, args);
   const rows = await loadStagedRows(db, "transit_ref", args.jobIds);
   const resolve = aliasCache(db);
 

@@ -548,7 +548,12 @@ export async function stageBom(
   brandCode: string,
   userId: number,
 ): Promise<{ jobId: number; result: BomParseResult; stagedRows: number }> {
-  const job = await createImportJob(db, { template: "bom", filePath, createdBy: userId });
+  const job = await createImportJob(db, {
+    template: "bom",
+    filePath,
+    createdBy: userId,
+    scope: { mode: "full", brandCode },
+  });
   try {
     const result = await parseBomWorkbook(filePath, brandCode);
     if (result.blocks.length === 0) throw new Error("BOM 文件未解析到任何产品块");

@@ -20,6 +20,7 @@ const TEMPLATE_LABELS: Record<string, string> = {
   pallet: "货盘情况表",
   npd: "NPD节点说明",
   stock_summary: "总库存明细",
+  sku_cost: "SKU 单位成本",
 };
 const TABLE_LABELS: Record<string, string> = {
   spu_suggestion: "SPU 归组建议",
@@ -30,13 +31,14 @@ const TABLE_LABELS: Record<string, string> = {
   stock_opening_candidate: "库存明细（期初/快照）",
   sku_leadtime: "交期参考（1.1）",
   transit_ref: "在途参考",
+  sku_cost: "SKU 单位成本",
 };
 
 interface JobRow {
   id: number;
   template: string;
   filename: string;
-  status: "pending" | "validating" | "failed" | "done";
+  status: "pending" | "validating" | "failed" | "done" | "superseded";
   okRows: number;
   failRows: number;
   createdAt: string;
@@ -53,6 +55,7 @@ const JOB_STATUS_LABELS: Record<string, string> = {
   validating: "校验中",
   failed: "失败",
   done: "完成",
+  superseded: "已被重导替代",
 };
 
 const JOB_STATUS_COLORS: Record<string, string> = {
@@ -60,6 +63,7 @@ const JOB_STATUS_COLORS: Record<string, string> = {
   validating: "warning",
   failed: "error",
   done: "success",
+  superseded: "default",
 };
 
 const STAGING_STATUS_LABELS: Record<string, string> = {

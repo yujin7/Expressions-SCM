@@ -8,6 +8,7 @@ import { todayShanghai } from "@/server/modules/master/common";
 
 
 import { type AnyDb, type ReleaseUser, resolveDb, loadStagedRows, commitRows, markBlocked, aliasCache, loadSkuIdByCode } from "./common";
+import { assertImportPreflight, type PreflightOverrides } from "./preflight";
 
 export interface ReleaseFeeRefsResult {
   dryRun: boolean;
@@ -18,10 +19,11 @@ export interface ReleaseFeeRefsResult {
 
 export async function releaseFeeRefs(
   user: ReleaseUser,
-  args: { jobIds?: number[]; dryRun: boolean },
+  args: { jobIds?: number[]; preflightOverrides?: PreflightOverrides; dryRun: boolean },
   dbArg?: AnyDb,
 ): Promise<ReleaseFeeRefsResult> {
   const db = await resolveDb(dbArg);
+  await assertImportPreflight(db, user, args);
   const rows = await loadStagedRows(db, "processing_fee_candidate", args.jobIds);
   const resolve = aliasCache(db);
   const today = todayShanghai();
@@ -126,4 +128,3 @@ export async function releaseFeeRefs(
 }
 
 /* ══ 5) releaseBatchStocks（效期盘点 → batch_stocks 参考层） ═ */
-

@@ -8,6 +8,7 @@ import { dAdd } from "@/server/core/decimal";
 
 
 import { type AnyDb, type ReleaseUser, resolveDb, loadStagedRows, commitRows, markBlocked, aliasCache, loadSkuIdByCode } from "./common";
+import { assertImportPreflight, type PreflightOverrides } from "./preflight";
 
 export interface ReleaseBatchStocksResult {
   dryRun: boolean;
@@ -25,10 +26,11 @@ export interface ReleaseBatchStocksResult {
 
 export async function releaseBatchStocks(
   user: ReleaseUser,
-  args: { jobIds?: number[]; dryRun: boolean },
+  args: { jobIds?: number[]; preflightOverrides?: PreflightOverrides; dryRun: boolean },
   dbArg?: AnyDb,
 ): Promise<ReleaseBatchStocksResult> {
   const db = await resolveDb(dbArg);
+  await assertImportPreflight(db, user, args);
   const rows = await loadStagedRows(db, "batch_stock", args.jobIds);
   const resolve = aliasCache(db);
 
@@ -196,4 +198,3 @@ export async function releaseBatchStocks(
 }
 
 /* ══ 6) releaseSalesMonthly（月销量 upsert） ══════════════ */
-

@@ -16,6 +16,7 @@ import {
   Checkbox,
   Collapse,
   DatePicker,
+  Input,
   Popconfirm,
   Select,
   Space,
@@ -45,6 +46,33 @@ interface ImportJobOption {
   failRows: number;
 }
 
+interface ImportPreflight {
+  jobId: number;
+  baselineJobId: number | null;
+  baselineFilename: string | null;
+  status: "pass" | "blocked" | "baseline_missing" | "not_applicable";
+  thresholdPct: string;
+  currentRows: number;
+  baselineRows: number | null;
+  addedRows: number | null;
+  removedRows: number | null;
+  unchangedRows: number | null;
+  reasons: {
+    bucket: string;
+    metric: string;
+    baseline: string;
+    current: string;
+    deviationPct: string;
+  }[];
+  token: string;
+  note: string;
+}
+
+interface PreflightGate {
+  required: boolean;
+  override?: { token: string; reason: string };
+}
+
 const TABLE_LABELS: Record<string, string> = {
   spu_suggestion: "SPU 归组建议",
   bom_block: "BOM 块",
@@ -54,6 +82,7 @@ const TABLE_LABELS: Record<string, string> = {
   stock_opening_candidate: "库存明细（期初/快照）",
   sku_leadtime: "交期参考（起订量已放行；周期 1.1）",
   transit_ref: "在途参考（成品/包材/备料/OEM）",
+  sku_cost: "SKU 单位成本",
 };
 
 async function postJson<T>(url: string, body: unknown): Promise<T> {
@@ -68,7 +97,7 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
 }
 
 /** 一个数据集的操作卡：预演 → 结果摘要 → 执行 */
-function useAction(jobId?: number | null) {
+function useAction(jobId?: number | null, preflight?: PreflightGate) {
   const { message } = App.useApp();
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
@@ -77,7 +106,18 @@ function useAction(jobId?: number | null) {
       setBusy(true);
       try {
         if (jobId === null) throw new Error("请先选择本次放行的导入任务");
-        const scopedBody = jobId === undefined ? body : { ...body, jobIds: [jobId] };
+        if (!body.dryRun && preflight?.required && !preflight.override) {
+          throw new Error("控制量偏差超过 30%；请先填写至少 5 个字的核对说明");
+        }
+        const scopedBody = jobId === undefined
+          ? body
+          : {
+              ...body,
+              jobIds: [jobId],
+              ...(preflight?.override
+                ? { preflightOverrides: { [String(jobId)]: preflight.override } }
+                : {}),
+            };
         const r = await postJson<Record<string, unknown>>(url, scopedBody);
         setResult(r);
         onDone?.(r);
@@ -88,7 +128,7 @@ function useAction(jobId?: number | null) {
         setBusy(false);
       }
     },
-    [jobId, message],
+    [jobId, message, preflight],
   );
   return { busy, result, run, setResult };
 }
@@ -112,22 +152,47 @@ function ResultLine({ result, pick }: { result: Record<string, unknown> | null; 
   );
 }
 
-export default function ReleaseClient() {
+export default function ReleaseClient({
+  canPlan,
+  canFinance,
+}: {
+  canPlan: boolean;
+  canFinance: boolean;
+}) {
   const { message } = App.useApp();
   const [jobs, setJobs] = useState<ImportJobOption[]>([]);
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [status, setStatus] = useState<StatusTable[]>([]);
+  const [preflight, setPreflight] = useState<ImportPreflight | null>(null);
+  const [preflightReason, setPreflightReason] = useState("");
   const [loading, setLoading] = useState(false);
+  const selectedJob = jobs.find((job) => job.id === selectedJobId) ?? null;
+  const selectedTemplate = selectedJob?.template ?? null;
+  const preflightGate = useMemo<PreflightGate>(() => {
+    const required = preflight?.status === "blocked";
+    const reason = preflightReason.trim();
+    return {
+      required,
+      override: required && reason.length >= 5 && preflight
+        ? { token: preflight.token, reason }
+        : undefined,
+    };
+  }, [preflight, preflightReason]);
 
   const loadStatus = useCallback(async () => {
     if (selectedJobId == null) {
       setStatus([]);
+      setPreflight(null);
       return;
     }
     setLoading(true);
     try {
-      const r = await fetchJson<{ tables: StatusTable[] }>(`/api/release/status?jobId=${selectedJobId}`);
+      const r = await fetchJson<{ tables: StatusTable[]; preflight: ImportPreflight }>(
+        `/api/release/status?jobId=${selectedJobId}`,
+      );
       setStatus(r.tables);
+      setPreflight(r.preflight);
+      setPreflightReason("");
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -141,12 +206,18 @@ export default function ReleaseClient() {
 
   useEffect(() => {
     void fetchJson<{ data: ImportJobOption[] }>("/api/import/jobs?page=1&pageSize=100")
-      .then((r) => setJobs(r.data))
+      .then((r) =>
+        setJobs(
+          r.data.filter((job) =>
+            job.template === "sku_cost" ? canFinance : canPlan,
+          ),
+        ),
+      )
       .catch((e) => message.error((e as Error).message));
-  }, [message]);
+  }, [canFinance, canPlan, message]);
 
   /* SPU：预演出 review 簇 → 勾选接受 → 执行 */
-  const spu = useAction(selectedJobId);
+  const spu = useAction(selectedJobId, preflightGate);
   const [spuChecked, setSpuChecked] = useState<Set<string>>(new Set());
   const spuReview = useMemo(
     () => (spu.result?.needsReview as { spuKey: string; members: string[]; reason: string }[] | undefined) ?? [],
@@ -154,13 +225,14 @@ export default function ReleaseClient() {
   );
 
   /* SKU / 费用 / 批次 / 月销：直接预演-执行 */
-  const sku = useAction(selectedJobId);
-  const fee = useAction(selectedJobId);
-  const batch = useAction(selectedJobId);
-  const sales = useAction(selectedJobId);
+  const sku = useAction(selectedJobId, preflightGate);
+  const fee = useAction(selectedJobId, preflightGate);
+  const batch = useAction(selectedJobId, preflightGate);
+  const sales = useAction(selectedJobId, preflightGate);
+  const cost = useAction(selectedJobId, preflightGate);
 
   /* BOM：预演出歧义块 → 勾选「按推荐裁决」 → 执行 → 生效 */
-  const bom = useAction(selectedJobId);
+  const bom = useAction(selectedJobId, preflightGate);
   const bomActivate = useAction();
   const [useRecommended, setUseRecommended] = useState(true);
   const bomAmbiguous = useMemo(() => {
@@ -187,7 +259,7 @@ export default function ReleaseClient() {
   const bomRunId = bom.result?.releaseRunId as number | null | undefined;
 
   /* 快照刷新 */
-  const snap = useAction(selectedJobId);
+  const snap = useAction(selectedJobId, preflightGate);
   const [bizDate, setBizDate] = useState<Dayjs>(dayjs());
 
   const statusCols: ColumnsType<StatusTable> = [
@@ -253,6 +325,57 @@ export default function ReleaseClient() {
       {selectedJobId == null ? (
         <Alert type="warning" showIcon message="未选择导入任务：预演和执行均被禁用。" style={{ marginBottom: 16 }} />
       ) : null}
+      {preflight ? (
+        <Card size="small" style={{ marginBottom: 16 }} title="同模板版本预检">
+          <Alert
+            showIcon
+            type={
+              preflight.status === "blocked"
+                ? "error"
+                : preflight.status === "pass"
+                  ? "success"
+                  : "warning"
+            }
+            message={
+              preflight.status === "blocked"
+                ? `控制量异常：${preflight.reasons.length} 项偏差超过 ${preflight.thresholdPct}%`
+                : preflight.status === "pass"
+                  ? "版本规模校验通过"
+                  : preflight.status === "baseline_missing"
+                    ? "首次放行：尚无同范围历史基线"
+                    : "该任务不适用版本对比"
+            }
+            description={
+              <Space direction="vertical" size={4}>
+                <Typography.Text>{preflight.note}</Typography.Text>
+                <Typography.Text type="secondary">
+                  当前 {preflight.currentRows} 行
+                  {preflight.baselineRows != null
+                    ? `；基线 #${preflight.baselineJobId} ${preflight.baselineFilename ?? ""} · ${preflight.baselineRows} 行；新增 ${preflight.addedRows} / 删除 ${preflight.removedRows} / 未变 ${preflight.unchangedRows}`
+                    : ""}
+                </Typography.Text>
+                {preflight.reasons.slice(0, 5).map((reason) => (
+                  <Typography.Text key={`${reason.bucket}:${reason.metric}`} type="danger">
+                    {reason.bucket} · {reason.metric}：{reason.baseline} → {reason.current}
+                    （偏差 {reason.deviationPct}%）
+                  </Typography.Text>
+                ))}
+              </Space>
+            }
+          />
+          {preflight.status === "blocked" ? (
+            <Input.TextArea
+              value={preflightReason}
+              onChange={(event) => setPreflightReason(event.target.value)}
+              rows={2}
+              maxLength={500}
+              showCount
+              style={{ marginTop: 12 }}
+              placeholder="填写核对说明（至少 5 个字），例如：已确认本月文件只含国内仓，范围缩小属预期"
+            />
+          ) : null}
+        </Card>
+      ) : null}
 
       <Table<StatusTable>
         rowKey="targetTable"
@@ -265,9 +388,54 @@ export default function ReleaseClient() {
       />
 
       <Collapse
-        defaultActiveKey={["snapshot"]}
+        key={selectedTemplate ?? "no-selection"}
+        defaultActiveKey={[selectedTemplate === "sku_cost" ? "sku_cost" : "snapshot"]}
         expandIcon={({ isActive }) => <CaretRightOutlined rotate={isActive ? 90 : 0} />}
         items={[
+          {
+            key: "sku_cost",
+            label: "SKU 单位成本（财务主数据：预演 → 财务放行）",
+            children: (
+              <Space direction="vertical">
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="成本上传只进入 staging；只有财务/管理员可执行正式覆盖，文件内同 SKU 多个不同成本会整项阻塞。"
+                />
+                <Space>
+                  <Button
+                    loading={cost.busy}
+                    onClick={() => void cost.run("/api/release/sku-costs", { dryRun: true })}
+                  >
+                    预演
+                  </Button>
+                  <Popconfirm
+                    title="确认把本批单位成本写入财务主数据？该操作会逐 SKU 覆盖现有手工基准并完整留痕。"
+                    onConfirm={() =>
+                      void cost.run(
+                        "/api/release/sku-costs",
+                        { dryRun: false },
+                        () => void loadStatus(),
+                      )
+                    }
+                  >
+                    <Button type="primary" loading={cost.busy}>
+                      财务执行放行
+                    </Button>
+                  </Popconfirm>
+                </Space>
+                <ResultLine
+                  result={cost.result}
+                  pick={[
+                    ["upserted", "更新 SKU"],
+                    ["blocked", "阻塞"],
+                    ["unresolvedSku", "未解析 SKU"],
+                    ["conflictingSku", "文件内冲突"],
+                  ]}
+                />
+              </Space>
+            ),
+          },
           {
             key: "snapshot",
             label: "快照仓刷新（日常运营环：新一期库存明细 → 全仓视图）",
@@ -470,7 +638,11 @@ export default function ReleaseClient() {
               </Space>
             ),
           },
-        ]}
+        ].filter((item) => {
+          if (selectedTemplate === "sku_cost") return item.key === "sku_cost";
+          if (selectedTemplate != null) return item.key !== "sku_cost";
+          return canPlan && item.key !== "sku_cost";
+        })}
       />
     </div>
   );
