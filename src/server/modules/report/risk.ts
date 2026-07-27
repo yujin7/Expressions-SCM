@@ -50,6 +50,8 @@ export interface RiskRow {
   remarkMonth: string | null;
   /** 已有未关闭的处置登记（复核清单 risk_disposal） */
   disposalOpen: boolean;
+  /** 未关闭处置登记 ID；用于把报废出库单精确绑定到本登记。 */
+  disposalId: number | null;
 }
 
 export interface RiskWorklist {
@@ -134,11 +136,15 @@ export async function getRiskWorklist(
   }
 
   /* ── 已登记处置（open）── */
-  const dispRows: { refKey: string | null }[] = await db
-    .select({ refKey: schema.reviewItems.refKey })
+  const dispRows: { id: number; refKey: string | null }[] = await db
+    .select({ id: schema.reviewItems.id, refKey: schema.reviewItems.refKey })
     .from(schema.reviewItems)
     .where(and(eq(schema.reviewItems.category, "risk_disposal"), eq(schema.reviewItems.status, "open")));
-  const dispSet = new Set(dispRows.map((r) => r.refKey).filter(Boolean) as string[]);
+  const dispBySku = new Map(
+    dispRows
+      .filter((row): row is { id: number; refKey: string } => Boolean(row.refKey))
+      .map((row) => [row.refKey, row.id]),
+  );
 
   /* ── 逐 SKU 判定 ── */
   const all: RiskRow[] = [];
@@ -172,7 +178,8 @@ export async function getRiskWorklist(
       nearQty: rq(exp?.nearQty ?? 0),
       palletRemark: remark?.text ?? null,
       remarkMonth: remark?.month ?? null,
-      disposalOpen: dispSet.has(sku.code),
+      disposalOpen: dispBySku.has(sku.code),
+      disposalId: dispBySku.get(sku.code) ?? null,
     });
   }
 

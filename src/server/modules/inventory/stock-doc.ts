@@ -2,7 +2,7 @@ import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import {
-   skus, stockBalances, stockDocLines, stockDocs, users, warehouses,
+   reviewItems, skus, stockBalances, stockDocLines, stockDocs, users, warehouses,
 } from "@/db/schema";
 import { dMoney, dNeg, dQty } from "@/server/core/decimal";
 import {  requireRole, type SessionUser } from "@/server/core/dto";
@@ -76,8 +76,8 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
 
   // SKU 校验：存在且启用（停用=禁新单引用）
   const skuIds = [...new Set(v.lines.map((l) => l.skuId))];
-  const skuRows: { id: number; active: boolean }[] = await db
-    .select({ id: skus.id, active: skus.active })
+  const skuRows: { id: number; code: string; active: boolean }[] = await db
+    .select({ id: skus.id, code: skus.code, active: skus.active })
     .from(skus)
     .where(inArray(skus.id, skuIds));
   const activeSku = new Set(skuRows.filter((s) => s.active).map((s) => s.id));
@@ -86,6 +86,28 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
   }
 
   return db.transaction(async (tx: AnyDb) => {
+    if (v.riskDisposalId) {
+      const [disposal]: { refKey: string | null; title: string }[] = await tx
+        .select({ refKey: reviewItems.refKey, title: reviewItems.title })
+        .from(reviewItems)
+        .where(and(
+          eq(reviewItems.id, v.riskDisposalId),
+          eq(reviewItems.category, "risk_disposal"),
+          eq(reviewItems.status, "open"),
+        ));
+      if (!disposal) throw new ApiError(409, "风险处置登记不存在、已关闭或已被改判");
+      if (!disposal.title.startsWith("处置决定：报废评审 ")) {
+        throw new ApiError(409, "只有「报废评审」登记可生成报废出库单");
+      }
+      const linkedSkuCodes = new Set(
+        v.lines
+          .map((line) => skuRows.find((sku) => sku.id === line.skuId)?.code)
+          .filter((code): code is string => Boolean(code)),
+      );
+      if (linkedSkuCodes.size !== 1 || !disposal.refKey || !linkedSkuCodes.has(disposal.refKey)) {
+        throw new ApiError(409, "报废出库明细必须且只能包含该处置登记对应的 SKU");
+      }
+    }
     const lines = v.subtype === "opening"
       ? v.lines.map((line) => ({ ...line, qty: dQty(line.qty), batchId: line.batchId ?? null }))
       : await expandOutboundLinesForBatchPosting(tx, v.warehouseId, v.lines);
@@ -97,6 +119,8 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
         subtype: v.subtype,
         reason: v.subtype === "transfer" ? (v.reason ?? null) : null,
         remark: v.remark ?? null,
+        sourceDocType: v.riskDisposalId ? "risk_disposal" : null,
+        sourceDocId: v.riskDisposalId ?? null,
         createdBy: user.id,
       })
       .returning();
@@ -235,6 +259,69 @@ export async function approveStockDoc(
         userId: user.id, entity: "stock_doc", entityId: id, action: "post_and_complete",
         after: { via: "approve", path: "approved→in_progress→completed" },
       });
+      if (doc.subtype === "issue_out" && doc.sourceDocType === "risk_disposal" && doc.sourceDocId) {
+        const closed: { id: number }[] = await tx
+          .update(reviewItems)
+          .set({
+            status: "done",
+            note: `报废出库 ${doc.docNo} 已审批过账，处置自动完成`,
+            decidedBy: user.id,
+            decidedAt: new Date(),
+          })
+          .where(and(
+            eq(reviewItems.id, doc.sourceDocId),
+            eq(reviewItems.category, "risk_disposal"),
+            eq(reviewItems.status, "open"),
+          ))
+          .returning({ id: reviewItems.id });
+        if (closed.length === 1) {
+          await writeAudit(tx, {
+            userId: user.id,
+            entity: "risk_disposal",
+            entityId: doc.sourceDocId,
+            action: "auto_close_after_scrap",
+            after: { stockDocId: doc.id, docNo: doc.docNo },
+          });
+        }
+      }
+      if (doc.subtype === "reversal" && doc.reversalOfId) {
+        const [original]: StockDocRow[] = await tx
+          .select()
+          .from(stockDocs)
+          .where(eq(stockDocs.id, doc.reversalOfId));
+        if (
+          original?.subtype === "issue_out"
+          && original.sourceDocType === "risk_disposal"
+          && original.sourceDocId
+        ) {
+          const reopened: { id: number }[] = await tx
+            .update(reviewItems)
+            .set({
+              status: "open",
+              note: `报废出库 ${original.docNo} 已由红字 ${doc.docNo} 冲销，处置重新打开`,
+              decidedBy: null,
+              decidedAt: null,
+            })
+            .where(and(
+              eq(reviewItems.id, original.sourceDocId),
+              eq(reviewItems.category, "risk_disposal"),
+              eq(reviewItems.status, "done"),
+            ))
+            .returning({ id: reviewItems.id });
+          if (reopened.length === 1) {
+            await writeAudit(tx, {
+              userId: user.id,
+              entity: "risk_disposal",
+              entityId: original.sourceDocId,
+              action: "reopen_after_scrap_reversal",
+              after: {
+                originalStockDocId: original.id,
+                reversalStockDocId: doc.id,
+              },
+            });
+          }
+        }
+      }
       return { status: finalStatus, idempotent: false };
     });
   } catch (e) {

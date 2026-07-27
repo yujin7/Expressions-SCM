@@ -2,7 +2,7 @@
 
 import SearchInput from "@/components/SearchInput";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Alert, App, Button, Descriptions, Drawer, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
@@ -16,6 +16,7 @@ import { useListState } from "@/components/useListState";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { STOCK_SUBTYPE_LABELS, toOptions } from "@/components/labels";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
+import { useSearchParams } from "next/navigation";
 
 interface DocRow {
   id: number;
@@ -81,6 +82,7 @@ interface CreateFormValues {
   toWarehouseId?: number;
   reason?: string; // R16：调拨业务原因
   remark?: string;
+  riskDisposalId?: number;
   lines?: { skuId: number; qty: number; price?: number }[];
 }
 
@@ -129,6 +131,7 @@ export default function DocsClient() {
 
 function DocsInner() {
   const { message } = App.useApp();
+  const searchParams = useSearchParams();
   const [form] = Form.useForm<CreateFormValues>();
   const [rows, setRows] = useState<DocRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -149,6 +152,30 @@ function DocsInner() {
   const createSubtype = Form.useWatch("subtype", form);
   const createWarehouseId = Form.useWatch("warehouseId", form);
   const createLines = Form.useWatch("lines", form);
+  const createRiskDisposalId = Form.useWatch("riskDisposalId", form);
+  const handledScrapLink = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (searchParams.get("create") !== "scrap") return;
+    const skuId = Number(searchParams.get("skuId"));
+    const riskDisposalId = Number(searchParams.get("disposalId"));
+    const linkKey = `${skuId}:${riskDisposalId}`;
+    if (
+      handledScrapLink.current === linkKey
+      || !Number.isInteger(skuId)
+      || skuId <= 0
+      || !Number.isInteger(riskDisposalId)
+      || riskDisposalId <= 0
+    ) return;
+    handledScrapLink.current = linkKey;
+    form.setFieldsValue({
+      subtype: "issue_out",
+      riskDisposalId,
+      remark: "风险库存报废处置",
+      lines: [{ skuId, qty: 1 }],
+    });
+    setCreateOpen(true);
+  }, [form, searchParams]);
 
   // R15 临期禁售拦截 v1：sales_out/transfer 明细选定 SKU 后，防抖调用 expiry-check，仅告警不阻断
   const [expiryAlerts, setExpiryAlerts] = useState<ExpiryCheckItem[]>([]);
@@ -240,6 +267,7 @@ function DocsInner() {
         toWarehouseId: values.subtype === "transfer" ? values.toWarehouseId : undefined,
         reason: values.subtype === "transfer" ? values.reason || undefined : undefined,
         remark: values.remark?.trim() || undefined,
+        riskDisposalId: values.riskDisposalId,
         lines: lines.map((l) => ({
           skuId: l.skuId,
           qty: l.qty,
@@ -389,6 +417,9 @@ function DocsInner() {
         cancelText="取消"
       >
         <Form form={form} layout="vertical">
+          <Form.Item name="riskDisposalId" hidden>
+            <Input />
+          </Form.Item>
           <Form.Item name="subtype" label="类型" rules={[{ required: true, message: "必须选择单据类型" }]}>
             <Select
               options={toOptions(MANUAL_SUBTYPE_LABELS)}
@@ -414,6 +445,15 @@ function DocsInner() {
                 placeholder="选择目标仓库"
               />
             </Form.Item>
+          ) : null}
+          {createRiskDisposalId ? (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message="已绑定风险库存报废登记"
+              description="请核对仓库、批次与实际报废数量。审批过账后处置登记会自动完成；若后续红字冲销，登记会自动重开。"
+            />
           ) : null}
           {createSubtype === "transfer" ? (
             <Form.Item name="reason" label="业务原因（R16：借调将进入月末部门间借调对账）">

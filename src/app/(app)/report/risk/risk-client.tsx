@@ -29,6 +29,7 @@ interface RiskRow {
   palletRemark: string | null;
   remarkMonth: string | null;
   disposalOpen: boolean;
+  disposalId: number | null;
 }
 
 interface RiskData {
@@ -51,7 +52,13 @@ const ACTION_COLORS: Record<string, string> = {
 function EXEC_ROUTE(r: RiskRow): { href: string; label: string } {
   const q = encodeURIComponent(r.code);
   switch (r.action) {
-    case "报废评审": return { href: `/inventory/expiry?q=${q}`, label: "查过期批次→走盘点/报废单" };
+    case "报废评审":
+      return r.disposalId
+        ? {
+            href: `/inventory/docs?create=scrap&skuId=${r.skuId}&disposalId=${r.disposalId}`,
+            label: "创建已绑定的报废出库单；审批过账后自动完成处置",
+          }
+        : { href: `/inventory/expiry?q=${q}`, label: "先登记处置，再创建报废出库单" };
     case "禁售隔离": return { href: `/inventory/balance?q=${q}`, label: "库存定位·标记隔离" };
     case "商务处置":
     case "促销清库": return { href: `/report/demand?tab=pallet&q=${q}`, label: "货盘处置（促销/去化）" };
@@ -234,7 +241,7 @@ export default function RiskClient() {
       <Typography.Title level={4} style={{ marginTop: 0 }}>风险库存处置</Typography.Title>
       <CaliberNote
         summary={<>效期 × 货盘注记 × 销速三源融合的处置建议；只读不开单，登记处置后到各单据执行。{data ? <>　口径日 {data.today}，滞销阈值 {data.slowThreshold} 天。</> : null}</>}
-        detail={<div><p>三源：批次效期（batch_stocks）× 货盘处置注记（PMC 货盘表备注原文）× 近 3 月销速。动作优先级：报废评审 → 禁售隔离 → 商务处置 → 促销清库 → 优先出库 → 滞销关注。</p><p>报废/禁售/盘点等实物操作走各自单据流程；「登记处置」仅记录决定（复核清单留痕），完成后点「完成」收口。</p></div>}
+        detail={<div><p>三源：批次效期（batch_stocks）× 货盘处置注记（PMC 货盘表备注原文）× 近 3 月销速。动作优先级：报废评审 → 禁售隔离 → 商务处置 → 促销清库 → 优先出库 → 滞销关注。</p><p>报废登记可直接创建绑定的报废出库单；审批过账后登记自动完成，红字冲销后自动重开。其他处置仍走对应业务页并人工收口。</p></div>}
       />
       <ListToolbar
         state={listState}

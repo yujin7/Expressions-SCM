@@ -34,6 +34,8 @@ export const createStockDocSchema = z
     /** R16：调拨业务原因（'借调' 触发月末部门间借调对账）；仅调拨填写 */
     reason: z.string().trim().max(50).optional(),
     remark: z.string().trim().max(500).optional(),
+    /** 风险处置登记来源；仅报废出库（issue_out）可绑定。 */
+    riskDisposalId: z.number().int().positive().optional(),
     lines: z.array(stockDocLineSchema).min(1, "至少需要一行"),
   })
   .superRefine((v, ctx) => {
@@ -42,6 +44,13 @@ export const createStockDocSchema = z
     }
     if (v.reason && v.subtype !== "transfer") {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reason"], message: "业务原因仅调拨单填写（R16）" });
+    }
+    if (v.riskDisposalId && v.subtype !== "issue_out") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["riskDisposalId"],
+        message: "风险处置登记只能绑定领料出（报废出库）",
+      });
     }
     if (v.subtype === "transfer") {
       if (!v.toWarehouseId) {
