@@ -1,4 +1,7 @@
 import { auditLogs } from "@/db/schema";
+import { classifyEvent } from "@/server/core/event-taxonomy";
+
+export const AUDIT_EVENT_VERSION = "event-v1";
 
 /**
  * 审计写入器（体检审计 #1 整改）：规格 §8「审计全留痕」的唯一落点。
@@ -20,11 +23,16 @@ export async function writeAudit(
     ip?: string | null;
   },
 ): Promise<void> {
+  const event = classifyEvent(i.entity, i.action);
   await db.insert(auditLogs).values({
     userId: i.userId,
     entity: i.entity,
     entityId: i.entityId ?? null,
     action: i.action,
+    canonicalEvent: event.canonical,
+    eventDomain: event.domain,
+    eventVersion: AUDIT_EVENT_VERSION,
+    isStateChange: event.isStateChange,
     before: i.before ?? null,
     after: i.after ?? null,
     ip: i.ip ?? null,

@@ -169,6 +169,13 @@
       "when": 1785097745505,
       "tag": "0023_immutable_ledgers",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1785115540644,
+      "tag": "0024_secret_talon",
+      "breakpoints": true
     }
   ]
 }

@@ -33,6 +33,7 @@ const REPORT_GROUPS: Record<string, string> = {
   "/report/sales-bridge": "analytics",
   "/report/funnel": "analytics",
   "/report/inventory-analytics": "analytics",
+  "/report/process-mining": "analytics",
   "/report/demand": "planning",
   "/report/risk": "planning",
   "/report/segmentation": "planning",
@@ -97,6 +98,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/report/sales-bridge", label: "销量变化归因" },
       { key: "/report/funnel", label: "全链达成漏斗" },
       { key: "/report/inventory-analytics", label: "库存分析" },
+      { key: "/report/process-mining", label: "流程效率与瓶颈" },
     ],
   },
   {
@@ -241,6 +243,7 @@ const MENU_ROLES: Record<string, string[]> = {
   "/admin/params": ["pmc", "purchasing", "finance"],
   "/settlement/js": ["finance", "purchasing"],
   "/report/settlement-summary": ["finance"],
+  "/report/process-mining": ["pmc", "finance"],
   "/jobs/recon": ["finance", "pmc"],
 };
 

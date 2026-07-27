@@ -54,11 +54,20 @@ export const auditLogs = pgTable("audit_logs", {
   entity: text("entity").notNull(),
   entityId: integer("entity_id"),
   action: text("action").notNull(),
+  /** E8-05：写入时固化的规范事件身份；历史行为空，读模型按原 action 兼容分类。 */
+  canonicalEvent: text("canonical_event"),
+  eventDomain: text("event_domain"),
+  eventVersion: text("event_version"),
+  isStateChange: boolean("is_state_change"),
   before: jsonb("before"),
   after: jsonb("after"),
   ip: text("ip"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index("ix_audit_entity").on(t.entity, t.entityId), index("ix_audit_time").on(t.createdAt)]);
+}, (t) => [
+  index("ix_audit_entity").on(t.entity, t.entityId),
+  index("ix_audit_time").on(t.createdAt),
+  index("ix_audit_canonical_time").on(t.canonicalEvent, t.createdAt),
+]);
 
 export const importJobs = pgTable("import_jobs", {
   id: serial("id").primaryKey(),

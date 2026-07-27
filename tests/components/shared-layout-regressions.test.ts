@@ -55,4 +55,11 @@ describe("shared layout regressions", () => {
       /@media \(max-width:\s*575px\)[\s\S]*\.list-toolbar__filters,[\s\S]*\.list-toolbar__actions\s*\{[^}]*width:\s*100%;/s,
     );
   });
+
+  it("clears the desktop metadata flex basis after dashboard headers stack", () => {
+    const styles = read("src/app/globals.css");
+    expect(styles).toMatch(
+      /@media \(max-width:\s*991px\)[\s\S]*\.dashboard-header__meta\s*\{[^}]*flex:\s*0 0 auto;[^}]*width:\s*100%;/s,
+    );
+  });
 });

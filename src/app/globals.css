@@ -249,6 +249,27 @@ body {
   line-height: 1.7;
 }
 
+.process-mining-kpis {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.process-mining-kpis .ant-card,
+.process-mining-kpis .ant-statistic {
+  min-width: 0;
+  height: 100%;
+}
+
+.process-mining-kpis .ant-statistic-title {
+  min-height: 22px;
+}
+
+.process-mining-page .decision-visual {
+  margin-bottom: 20px;
+}
+
 .dashboard-page {
   --dashboard-gap: 14px;
 }
@@ -610,12 +631,17 @@ body {
   }
 
   .dashboard-header__meta {
+    flex: 0 0 auto;
     justify-content: space-between;
     width: 100%;
     text-align: left;
   }
 
   .supplier-scorecard-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .process-mining-kpis {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
