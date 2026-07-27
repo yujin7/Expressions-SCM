@@ -70,6 +70,65 @@ export const planningVersionLines = pgTable("planning_version_lines", {
 ]);
 
 /**
+ * E2-16 / C125：精益 S&OP 数量计划周期。
+ *
+ * 周期只引用不可变 planningVersions；当前版本号同时是共识轮次。更换源计划会开启新一轮，
+ * 旧签认保留为历史但不再满足冻结条件。
+ */
+export const sopCycles = pgTable("sop_cycles", {
+  id: serial("id").primaryKey(),
+  month: text("month").notNull(),
+  name: text("name").notNull(),
+  status: text("status").notNull().default("consensus"),
+  planningVersionId: integer("planning_version_id").notNull().references(() => planningVersions.id),
+  planDigest: text("plan_digest").notNull(),
+  version: integer("version").notNull().default(1),
+  idempotencyKey: text("idempotency_key").notNull(),
+  createdBy: integer("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  frozenBy: integer("frozen_by").references(() => users.id),
+  frozenAt: timestamp("frozen_at", { withTimezone: true }),
+  executingBy: integer("executing_by").references(() => users.id),
+  executingAt: timestamp("executing_at", { withTimezone: true }),
+  closedBy: integer("closed_by").references(() => users.id),
+  closedAt: timestamp("closed_at", { withTimezone: true }),
+}, (t) => [
+  unique("uq_sop_cycle_month").on(t.month),
+  unique("uq_sop_cycle_idempotency").on(t.idempotencyKey),
+  index("ix_sop_cycle_status_month").on(t.status, t.month),
+  check("ck_sop_cycle_month", sql`${t.month} ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`),
+  check("ck_sop_cycle_status", sql`${t.status} IN ('consensus', 'frozen', 'executing', 'closed')`),
+  check("ck_sop_cycle_version", sql`${t.version} > 0`),
+  check(
+    "ck_sop_cycle_lifecycle",
+    sql`(${t.status} = 'consensus' AND ${t.frozenBy} IS NULL AND ${t.frozenAt} IS NULL AND ${t.executingBy} IS NULL AND ${t.executingAt} IS NULL AND ${t.closedBy} IS NULL AND ${t.closedAt} IS NULL)
+      OR (${t.status} = 'frozen' AND ${t.frozenBy} IS NOT NULL AND ${t.frozenAt} IS NOT NULL AND ${t.executingBy} IS NULL AND ${t.executingAt} IS NULL AND ${t.closedBy} IS NULL AND ${t.closedAt} IS NULL)
+      OR (${t.status} = 'executing' AND ${t.frozenBy} IS NOT NULL AND ${t.frozenAt} IS NOT NULL AND ${t.executingBy} IS NOT NULL AND ${t.executingAt} IS NOT NULL AND ${t.closedBy} IS NULL AND ${t.closedAt} IS NULL)
+      OR (${t.status} = 'closed' AND ${t.frozenBy} IS NOT NULL AND ${t.frozenAt} IS NOT NULL AND ${t.executingBy} IS NOT NULL AND ${t.executingAt} IS NOT NULL AND ${t.closedBy} IS NOT NULL AND ${t.closedAt} IS NOT NULL)`,
+  ),
+]);
+
+/** 共识签认是只增事件，不更新、不删除；同一角色可用后一条决定纠正前一条。 */
+export const sopDecisions = pgTable("sop_decisions", {
+  id: serial("id").primaryKey(),
+  cycleId: integer("cycle_id").notNull().references(() => sopCycles.id),
+  cycleVersion: integer("cycle_version").notNull(),
+  role: text("role").notNull(),
+  decision: text("decision").notNull(),
+  note: text("note"),
+  planDigest: text("plan_digest").notNull(),
+  decidedBy: integer("decided_by").notNull().references(() => users.id),
+  decidedAt: timestamp("decided_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("ix_sop_decision_cycle_round").on(t.cycleId, t.cycleVersion, t.role, t.id),
+  check("ck_sop_decision_round", sql`${t.cycleVersion} > 0`),
+  check("ck_sop_decision_role", sql`${t.role} IN ('ops', 'pmc', 'finance')`),
+  check("ck_sop_decision_value", sql`${t.decision} IN ('agree', 'reject')`),
+  check("ck_sop_reject_note", sql`${t.decision} <> 'reject' OR length(trim(coalesce(${t.note}, ''))) >= 5`),
+]);
+
+/**
  * E2-20 / C129: immutable supply-demand allocation evidence.
  *
  * A row connects one frozen planning demand bucket to one supply fact or

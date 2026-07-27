@@ -38,6 +38,8 @@ async function main(): Promise<void> {
         "supply_demand_links",
         "projection_scenarios",
         "month_close_checks",
+        "sop_cycles",
+        "sop_decisions",
       ]],
     );
     const found = new Set(tables.rows.map((row) => row.table_name));
@@ -55,6 +57,8 @@ async function main(): Promise<void> {
       "supply_demand_links",
       "projection_scenarios",
       "month_close_checks",
+      "sop_cycles",
+      "sop_decisions",
     ].filter((name) => !found.has(name));
     if (missing.length) throw new Error(`Missing migrated tables: ${missing.join(", ")}`);
 
@@ -101,6 +105,8 @@ async function main(): Promise<void> {
         "projection_scenarios_append_only_truncate",
         "bin_movements_append_only",
         "bin_movements_append_only_truncate",
+        "sop_decisions_append_only",
+        "sop_decisions_append_only_truncate",
       ]],
     );
     const triggerPairs = new Set(
@@ -122,6 +128,8 @@ async function main(): Promise<void> {
       "projection_scenarios:projection_scenarios_append_only_truncate",
       "bin_movements:bin_movements_append_only",
       "bin_movements:bin_movements_append_only_truncate",
+      "sop_decisions:sop_decisions_append_only",
+      "sop_decisions:sop_decisions_append_only_truncate",
     ];
     const missingTriggers = requiredTriggerPairs.filter((pair) => !triggerPairs.has(pair));
     if (missingTriggers.length) {
@@ -151,6 +159,14 @@ async function main(): Promise<void> {
       "ck_month_close_status",
       "ck_month_close_completion",
       "ck_month_close_waiver_note",
+      "ck_sop_cycle_month",
+      "ck_sop_cycle_status",
+      "ck_sop_cycle_version",
+      "ck_sop_cycle_lifecycle",
+      "ck_sop_decision_round",
+      "ck_sop_decision_role",
+      "ck_sop_decision_value",
+      "ck_sop_reject_note",
     ];
     const locationConstraints = await client.query<{ conname: string }>(
       `select conname

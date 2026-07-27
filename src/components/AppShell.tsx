@@ -30,6 +30,7 @@ const { Header, Sider, Content } = Layout;
 const REPORT_GROUPS: Record<string, string> = {
   "/replenish": "planning",
   "/replenish/versions": "planning",
+  "/replenish/sop": "planning",
   "/report/dashboard": "analytics",
   "/report/decision-studio": "analytics",
   "/report/sales-bridge": "analytics",
@@ -110,6 +111,7 @@ const menuItems: MenuProps["items"] = [
     children: [
       { key: "/replenish", label: "补货建议" },
       { key: "/replenish/versions", label: "计划版本与周差异" },
+      { key: "/replenish/sop", label: "S&OP 计划周期" },
       { key: "/report/demand", label: "需求达成与货盘" },
       { key: "/report/risk", label: "风险库存处置" },
       { key: "/report/segmentation", label: "库存分层 ABC/XYZ" },
@@ -246,6 +248,7 @@ const MENU_ROLES: Record<string, string[]> = {
   "/inventory/locations": ["warehouse"],
   "/replenish": ["pmc", "purchasing"],
   "/replenish/versions": ["pmc", "purchasing"],
+  "/replenish/sop": ["pmc", "purchasing", "ops", "finance"],
   "/outsource/auto-chain": ["pmc"],
   "/admin/users": [],
   "/admin/audit": ["finance"],

@@ -14,6 +14,7 @@ const PAGES: PageEntry[] = [
   { label: "我的待办", href: "/inbox", keywords: "inbox daiban todo" },
   { label: "经营驾驶舱", href: "/report/dashboard", keywords: "dashboard jiashicang bi" },
   { label: "补货建议", href: "/replenish", keywords: "replenish buhuo" },
+  { label: "S&OP 计划周期", href: "/replenish/sop", keywords: "sop consensus freeze execute 共识 冻结 执行" },
   { label: "需求达成与货盘", href: "/report/demand", keywords: "demand xuqiu huopan" },
   { label: "风险库存处置", href: "/report/risk", keywords: "risk fengxian chuzhi" },
   { label: "库存分层 ABC/XYZ", href: "/report/segmentation", keywords: "abc xyz fenceng segmentation" },

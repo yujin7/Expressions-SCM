@@ -152,10 +152,10 @@ describe("immutable fact tables", () => {
     await expectAppendOnlyRejection(
       db.delete(planningVersionLines).where(eq(planningVersionLines.id, line.id)),
     );
-    // Include the dependent pegging evidence table so PostgreSQL reaches the
+    // Include the dependent pegging and S&OP evidence tables so PostgreSQL reaches the
     // append-only trigger instead of rejecting the FK truncate shape first.
     await expectAppendOnlyRejection(
-      client.exec("TRUNCATE TABLE supply_demand_links, planning_version_lines, planning_versions"),
+      client.exec("TRUNCATE TABLE sop_decisions, sop_cycles, supply_demand_links, planning_version_lines, planning_versions"),
     );
 
     const [persistedVersion] = await db.select().from(planningVersions).where(eq(planningVersions.id, version.id));

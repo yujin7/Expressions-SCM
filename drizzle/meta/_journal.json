@@ -225,6 +225,13 @@
       "when": 1785152673467,
       "tag": "0031_daffy_sway",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1785154073140,
+      "tag": "0032_confused_senator_kelly",
+      "breakpoints": true
     }
   ]
 }

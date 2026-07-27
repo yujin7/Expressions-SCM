@@ -702,6 +702,8 @@ export async function createReplenishDraft(
   requireAnyRole(user, "pmc");
   const v = createReplenishDraftSchema.parse(input);
   const db = await resolveDb(dbArg);
+  const { assertLiveSuggestionsWritable } = await import("./sop-cycle");
+  await assertLiveSuggestionsWritable(db);
 
   const delegate: SessionUser = user.roles.includes("ops")
     ? user
