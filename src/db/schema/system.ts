@@ -1,6 +1,7 @@
 import {
-  pgTable, serial, integer, text, timestamp, jsonb, unique, numeric, date, primaryKey, index, boolean,
+  pgTable, serial, integer, text, timestamp, jsonb, unique, numeric, date, primaryKey, index, boolean, check,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { approvalActionEnum, importStatusEnum, reconStatusEnum } from "./enums";
 import { users, skus } from "./masters";
 
@@ -93,6 +94,35 @@ export const importJobs = pgTable("import_jobs", {
   createdBy: integer("created_by").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * 月结六项检查单的人工作业状态。系统证据每次读取实时重算；完成/例外关闭时把当时证据
+ * 固化进 evidence，避免后来事实变化后无法解释当时为何关账。
+ */
+export const monthCloseChecks = pgTable("month_close_checks", {
+  id: serial("id").primaryKey(),
+  month: text("month").notNull(), // YYYY-MM，Asia/Shanghai
+  checkKey: text("check_key").notNull(),
+  status: text("status").notNull().default("pending"), // pending/completed/waived
+  note: text("note"),
+  evidence: jsonb("evidence"),
+  completedBy: integer("completed_by").references(() => users.id),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  version: integer("version").notNull().default(1),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique("uq_month_close_month_key").on(t.month, t.checkKey),
+  index("ix_month_close_month").on(t.month),
+  check("ck_month_close_month", sql`${t.month} ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`),
+  check("ck_month_close_key", sql`${t.checkKey} IN ('data_release', 'operational_docs', 'inventory_count', 'jst_reconciliation', 'borrow_reconciliation', 'settlement_close')`),
+  check("ck_month_close_status", sql`${t.status} IN ('pending', 'completed', 'waived')`),
+  check(
+    "ck_month_close_completion",
+    sql`(${t.status} = 'pending' AND ${t.completedBy} IS NULL AND ${t.completedAt} IS NULL) OR (${t.status} IN ('completed', 'waived') AND ${t.completedBy} IS NOT NULL AND ${t.completedAt} IS NOT NULL)`,
+  ),
+  check("ck_month_close_waiver_note", sql`${t.status} <> 'waived' OR length(trim(coalesce(${t.note}, ''))) > 0`),
+]);
 
 /** 取号器（R8/B5）：行锁 UPDATE…RETURNING；doc_no UNIQUE 兜底 */
 export const docCounters = pgTable("doc_counters", {

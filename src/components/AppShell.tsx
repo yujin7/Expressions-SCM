@@ -186,6 +186,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/report/margin", label: "毛利视角" },
       { key: "/report/settlement-summary", label: "结算汇总表" },
       { key: "/jobs/recon", label: "对账差异" },
+      { key: "/settlement/month-close", label: "月结控制台" },
     ],
   },
   {
@@ -253,6 +254,7 @@ const MENU_ROLES: Record<string, string[]> = {
   "/report/settlement-summary": ["finance"],
   "/report/process-mining": ["pmc", "finance"],
   "/jobs/recon": ["finance", "pmc"],
+  "/settlement/month-close": ["finance", "pmc"],
 };
 
 function filterMenuByRoles(items: MenuProps["items"], roles: string[]): MenuProps["items"] {

@@ -37,6 +37,7 @@ async function main(): Promise<void> {
         "planning_version_lines",
         "supply_demand_links",
         "projection_scenarios",
+        "month_close_checks",
       ]],
     );
     const found = new Set(tables.rows.map((row) => row.table_name));
@@ -53,6 +54,7 @@ async function main(): Promise<void> {
       "planning_version_lines",
       "supply_demand_links",
       "projection_scenarios",
+      "month_close_checks",
     ].filter((name) => !found.has(name));
     if (missing.length) throw new Error(`Missing migrated tables: ${missing.join(", ")}`);
 
@@ -144,6 +146,11 @@ async function main(): Promise<void> {
       "ck_supply_demand_sequence",
       "ck_supply_demand_confidence",
       "ck_supply_demand_status",
+      "ck_month_close_month",
+      "ck_month_close_key",
+      "ck_month_close_status",
+      "ck_month_close_completion",
+      "ck_month_close_waiver_note",
     ];
     const locationConstraints = await client.query<{ conname: string }>(
       `select conname

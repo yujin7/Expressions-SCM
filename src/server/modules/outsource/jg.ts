@@ -11,6 +11,7 @@ import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/st
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb, rethrowApproval } from "./common";
 import { approveDocSchema, confirmDocSchema, createPcForJgFeeSchema } from "./schemas";
+import { getSupplierCapacitySignal } from "@/server/modules/report/supplier-capacity";
 
 /**
  * 委外加工通知单 JG。审批走 docType "jg"（JG 与 WO 同域=PMC 审批）；
@@ -217,7 +218,15 @@ export async function getJg(id: number, dbArg?: AnyDb) {
 
   const approvalRows = await loadApprovalHistory(db, "jg", id);
 
-  return { ...doc, feeSegments: segments, approvals: approvalRows };
+  const capacity = await getSupplierCapacitySignal({
+    supplierId: doc.supplierId,
+    baseUom: (
+      await db.select({ baseUom: skus.baseUom }).from(skus).where(eq(skus.id, doc.productSkuId))
+    )[0]?.baseUom ?? "未标",
+    dueDate: doc.dueDate,
+  }, db);
+
+  return { ...doc, feeSegments: segments, approvals: approvalRows, capacity };
 }
 
 export async function listJgs(

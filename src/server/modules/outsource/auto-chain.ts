@@ -19,6 +19,10 @@ import { getOpenSupplyLines } from "@/server/core/supply";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb } from "./common";
+import {
+  capacityAuditSnapshot,
+  getSupplierCapacitySignal,
+} from "@/server/modules/report/supplier-capacity";
 
 /* ── 预演 ── */
 
@@ -292,6 +296,19 @@ export async function createBatchJg(user: SessionUser, woId: number, dbArg?: Any
   if (!s) throw new ApiError(404, "该工单无批次建议");
   if (s.blockedReason) throw new ApiError(409, s.blockedReason);
   const [wo] = await db.select().from(schema.woDocs).where(eq(schema.woDocs.id, woId));
+  if (!wo) throw new ApiError(404, "工单不存在");
+  const [product] = await db
+    .select({ baseUom: schema.skus.baseUom })
+    .from(schema.skus)
+    .where(eq(schema.skus.id, wo.productSkuId));
+  if (!product) throw new ApiError(400, `成品 SKU 不存在: #${wo.productSkuId}`);
+  const candidateQty = dQty(String(s.suggestQty));
+  const capacity = await getSupplierCapacitySignal({
+    supplierId: wo.supplierId,
+    baseUom: product.baseUom,
+    dueDate: wo.dueDate,
+    candidateQty,
+  }, db);
   return db.transaction(async (tx: AnyDb) => {
     const docNo = await nextDocNo(tx, "JG");
     const [jg] = await tx
@@ -302,7 +319,7 @@ export async function createBatchJg(user: SessionUser, woId: number, dbArg?: Any
         batchSeq: s.existingBatches + 1,
         supplierId: wo.supplierId,
         productSkuId: wo.productSkuId,
-        qty: dQty(String(s.suggestQty)),
+        qty: candidateQty,
         dueDate: wo.dueDate,
         feeRateCurrent: wo.feeRatePlan,
         orderType: wo.orderType,
@@ -312,7 +329,14 @@ export async function createBatchJg(user: SessionUser, woId: number, dbArg?: Any
     await tx.insert(schema.jgFeeSegments).values({ jgId: jg.id, rate: jg.feeRateCurrent, effectiveFrom: new Date() });
     await writeAudit(tx, {
       userId: user.id, entity: "auto_chain", entityId: jg.id, action: "batch_jg",
-      after: { woId, docNo, batchSeq: jg.batchSeq, qty: s.suggestQty, producible: s.producible },
+      after: {
+        woId,
+        docNo,
+        batchSeq: jg.batchSeq,
+        qty: s.suggestQty,
+        producible: s.producible,
+        capacity: capacityAuditSnapshot(capacity),
+      },
     });
     return jg;
   });

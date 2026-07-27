@@ -12,6 +12,10 @@ import type { DocStatus } from "@/server/docflow/state";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb, rethrowApproval } from "./common";
 import { approveDocSchema, createWoSchema, generateDocsSchema } from "./schemas";
+import {
+  capacityAuditSnapshot,
+  getSupplierCapacitySignal,
+} from "@/server/modules/report/supplier-capacity";
 
 /** 委外工单 WO（《02》§3）：选生效 BOM → 审批时 wo_line 快照（毛需求/可用/在途/建议量 R11） */
 
@@ -278,6 +282,20 @@ export async function generateDocs(
     }
   }
 
+  const [product] = await db
+    .select({ baseUom: skus.baseUom })
+    .from(skus)
+    .where(eq(skus.id, wo.productSkuId));
+  if (!product) throw new ApiError(400, `成品 SKU 不存在: #${wo.productSkuId}`);
+  const jgQty = dQty(v.jg?.qty ?? wo.qty);
+  const jgDueDate = v.jg?.dueDate ?? wo.dueDate;
+  const capacity = await getSupplierCapacitySignal({
+    supplierId: wo.supplierId,
+    baseUom: product.baseUom,
+    dueDate: jgDueDate,
+    candidateQty: jgQty,
+  }, db);
+
   return db.transaction(async (tx: AnyDb) => {
     const pos: PoRow[] = [];
     for (const g of v.poGroups) {
@@ -315,8 +333,8 @@ export async function generateDocs(
         woId,
         supplierId: wo.supplierId,
         productSkuId: wo.productSkuId,
-        qty: dQty(v.jg?.qty ?? wo.qty),
-        dueDate: v.jg?.dueDate ?? wo.dueDate,
+        qty: jgQty,
+        dueDate: jgDueDate,
         feeRateCurrent: wo.feeRatePlan,
         orderType: wo.orderType,
         createdBy: user.id,
@@ -325,7 +343,12 @@ export async function generateDocs(
     await tx.insert(jgFeeSegments).values({ jgId: jg.id, rate: jg.feeRateCurrent, effectiveFrom: new Date() });
     await writeAudit(tx, {
       userId: user.id, entity: "jg", entityId: jg.id, action: "create",
-      after: { docNo: jg.docNo, woId, feeRateCurrent: jg.feeRateCurrent },
+      after: {
+        docNo: jg.docNo,
+        woId,
+        feeRateCurrent: jg.feeRateCurrent,
+        capacity: capacityAuditSnapshot(capacity),
+      },
     });
     return { pos, jg };
   });

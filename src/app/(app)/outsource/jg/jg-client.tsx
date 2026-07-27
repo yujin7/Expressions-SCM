@@ -5,6 +5,7 @@ import SearchInput from "@/components/SearchInput";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import {
   App,
+  Alert,
   Badge,
   Button,
   DatePicker,
@@ -14,6 +15,7 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Progress,
   Select,
   Space,
   Switch,
@@ -97,6 +99,26 @@ interface JgDetail {
   createdByName: string | null;
   feeSegments: FeeSegment[];
   approvals: DocApproval[];
+  capacity: {
+    advisoryOnly: true;
+    baseUom: string;
+    dueMonth: string;
+    stats: {
+      sampleMonths: number;
+      minMonths: number;
+      reliable: boolean;
+      p50: string | null;
+      p90: string | null;
+      months: { month: string; actualQty: string }[];
+    };
+    scheduledQty: string;
+    projectedQty: string;
+    utilizationPct: string | null;
+    overP90: boolean;
+    excessQty: string;
+    explanation: string;
+    limitations: string[];
+  };
 }
 
 const STATUS_TABS = [
@@ -385,6 +407,44 @@ function JgInner() {
               </Descriptions.Item>
               <Descriptions.Item label="备注">{detail.remark ?? "—"}</Descriptions.Item>
             </Descriptions>
+            <Typography.Title level={5}>供应商产能信号（历史学习·软约束）</Typography.Title>
+            <Alert
+              type={
+                !detail.capacity.stats.reliable
+                  ? "info"
+                  : detail.capacity.overP90
+                    ? "warning"
+                    : "success"
+              }
+              showIcon
+              message={
+                !detail.capacity.stats.reliable
+                  ? `样本不足（${detail.capacity.stats.sampleMonths}/${detail.capacity.stats.minMonths} 个活跃月）`
+                  : detail.capacity.overP90
+                    ? `${detail.capacity.dueMonth} 计划负荷超过历史活跃月 P90`
+                    : `${detail.capacity.dueMonth} 计划负荷在历史活跃月 P90 内`
+              }
+              description={
+                <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                  <Typography.Text>{detail.capacity.explanation}</Typography.Text>
+                  {detail.capacity.stats.reliable && detail.capacity.utilizationPct != null ? (
+                    <Progress
+                      percent={Math.min(100, Number(detail.capacity.utilizationPct))}
+                      status={detail.capacity.overP90 ? "exception" : "normal"}
+                      format={() => `${detail.capacity.utilizationPct}%`}
+                    />
+                  ) : null}
+                  <Typography.Text type="secondary">
+                    {detail.capacity.dueMonth} 计划 {detail.capacity.projectedQty} {detail.capacity.baseUom}
+                    {detail.capacity.stats.p90 != null
+                      ? ` · P90 ${detail.capacity.stats.p90} ${detail.capacity.baseUom}`
+                      : ""}
+                    {" · "}仅提示，不阻断建单或审批
+                  </Typography.Text>
+                </Space>
+              }
+              style={{ marginBottom: 20 }}
+            />
             <Typography.Title level={5}>加工费分段（结算按收货时点取价）</Typography.Title>
             <Table<FeeSegment>
               rowKey="id"
@@ -396,6 +456,7 @@ function JgInner() {
             />
             <Typography.Title level={5}>包材齐套与计划属性（04 §2）</Typography.Title>
             <Form
+              key={detail.id}
               form={planForm}
               layout="inline"
               disabled={!canPlan}
