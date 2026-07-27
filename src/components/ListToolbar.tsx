@@ -2,7 +2,7 @@
 
 /** 列表页统一工具条（E6-P1）：自定义筛选插槽 + 密度 / 视图 / 复制链接 / 重置 / 导出 */
 import { useState } from "react";
-import { App, Button, Dropdown, Input, Modal, Space, Typography } from "antd";
+import { App, Button, ConfigProvider, Dropdown, Input, Modal, Space, Typography } from "antd";
 import type { MenuProps } from "antd";
 import type { Density, ListState } from "@/components/useListState";
 
@@ -103,38 +103,40 @@ export default function ListToolbar<F extends Record<string, string | undefined>
 
   return (
     <>
-      <div
-        className={`list-toolbar${extra ? "" : " list-toolbar--actions-only"}`}
-        role="toolbar"
-        aria-label="列表工具"
-      >
-        {extra ? (
-          <Space className="list-toolbar__filters" wrap align="center">
-            {extra}
-          </Space>
-        ) : null}
-        <div className="list-toolbar__right">
-          <Space className="list-toolbar__actions" wrap>
-            <Dropdown
-              trigger={["click"]}
-              menu={{ items: densityItems, onClick: ({ key }) => state.setDensity(key as Density) }}
-            >
-              <Button size="small">密度：{DENSITY_LABEL[state.density]} ▾</Button>
-            </Dropdown>
-            <Dropdown trigger={["click"]} menu={{ items: viewItems, onClick: onViewClick }}>
-              <Button size="small">视图（{state.savedViews.length}）▾</Button>
-            </Dropdown>
-            <Button size="small" onClick={() => void copyLink()}>复制链接</Button>
-            <Button size="small" onClick={() => state.resetFilters()}>重置</Button>
-            {onExport ? <Button size="small" onClick={onExport}>{exportText}</Button> : null}
-          </Space>
-          {primaryActions ? (
-            <Space className="list-toolbar__primary-actions" wrap>
-              {primaryActions}
+      <ConfigProvider componentSize="small">
+        <div
+          className={`list-toolbar${extra ? "" : " list-toolbar--actions-only"}`}
+          role="toolbar"
+          aria-label="列表工具"
+        >
+          {extra ? (
+            <Space className="list-toolbar__filters" wrap align="center">
+              {extra}
             </Space>
           ) : null}
+          <div className="list-toolbar__right">
+            <Space className="list-toolbar__actions" wrap>
+              <Dropdown
+                trigger={["click"]}
+                menu={{ items: densityItems, onClick: ({ key }) => state.setDensity(key as Density) }}
+              >
+                <Button>密度：{DENSITY_LABEL[state.density]} ▾</Button>
+              </Dropdown>
+              <Dropdown trigger={["click"]} menu={{ items: viewItems, onClick: onViewClick }}>
+                <Button>视图（{state.savedViews.length}）▾</Button>
+              </Dropdown>
+              <Button onClick={() => void copyLink()}>复制链接</Button>
+              <Button onClick={() => state.resetFilters()}>重置</Button>
+              {onExport ? <Button onClick={onExport}>{exportText}</Button> : null}
+            </Space>
+            {primaryActions ? (
+              <Space className="list-toolbar__primary-actions" wrap>
+                {primaryActions}
+              </Space>
+            ) : null}
+          </div>
         </div>
-      </div>
+      </ConfigProvider>
       <Modal
         title="保存当前视图"
         open={saveOpen}

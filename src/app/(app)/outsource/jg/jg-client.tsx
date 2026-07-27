@@ -337,13 +337,13 @@ function JgInner() {
         items={STATUS_TABS}
         onChange={(key) => listState.setFilter({ status: key })}
       />
-      <Space style={{ marginBottom: 12, display: "flex", justifyContent: "flex-end" }} wrap>
-        <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-          刷新
-        </Button>
-      </Space>
       <ListToolbar
         state={listState}
+        primaryActions={
+          <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+            刷新
+          </Button>
+        }
         extra={
           <SearchInput
             key={q}
@@ -361,6 +361,7 @@ function JgInner() {
         columns={columns}
         dataSource={rows}
         loading={loading}
+        scroll={{ x: "max-content" }}
         pagination={listState.paginationProps({ total: total })}
       />
 

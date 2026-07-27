@@ -981,18 +981,20 @@ export default function ShClient() {
         items={STATUS_TABS}
         onChange={(key) => listState.setFilter({ status: key })}
       />
-      <Space style={{ marginBottom: 8, width: "100%", display: "flex", justifyContent: "flex-end" }} wrap>
-        {canWrite ? (
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            新建收货单
-          </Button>
-        ) : null}
-        <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-          刷新
-        </Button>
-      </Space>
       <ListToolbar
         state={listState}
+        primaryActions={
+          <>
+            <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+              刷新
+            </Button>
+            {canWrite ? (
+              <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+                新建收货单
+              </Button>
+            ) : null}
+          </>
+        }
         extra={
           <SearchInput
             key={q}
@@ -1010,6 +1012,7 @@ export default function ShClient() {
         columns={columns}
         dataSource={rows}
         loading={loading}
+        scroll={{ x: "max-content" }}
         pagination={listState.paginationProps({ total: total })}
       />
 

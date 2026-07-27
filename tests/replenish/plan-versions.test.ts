@@ -79,7 +79,9 @@ describe("C122 planning version write/read loop", () => {
       docNo: "PO-PLAN-1",
       status: "approved",
       supplierId: supplier.id,
-      expectedDate: "2026-07-28",
+      // Deliberately beyond any active planning horizon. A calendar-date fixture
+      // previously became eligible on 2026-07-28 and made this test date-dependent.
+      expectedDate: "2099-12-31",
       createdBy: pmc.id,
     }).returning();
     await db.insert(poLines).values({

@@ -599,18 +599,20 @@ export default function JsClient() {
         items={STATUS_TABS}
         onChange={(key) => listState.setFilter({ status: key })}
       />
-      <Space style={{ marginBottom: 8, width: "100%", display: "flex", justifyContent: "flex-end" }} wrap>
-        {canCreate ? (
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            发起结算
-          </Button>
-        ) : null}
-        <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-          刷新
-        </Button>
-      </Space>
       <ListToolbar
         state={listState}
+        primaryActions={
+          <>
+            <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+              刷新
+            </Button>
+            {canCreate ? (
+              <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+                发起结算
+              </Button>
+            ) : null}
+          </>
+        }
         extra={
           <SearchInput
             key={q}

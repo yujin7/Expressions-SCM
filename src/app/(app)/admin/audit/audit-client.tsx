@@ -7,7 +7,7 @@
  */
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import {
-  App, Button, DatePicker, Input, InputNumber, Select, Space, Table, Tag, Typography,
+  App, Button, DatePicker, Input, InputNumber, Select, Table, Tag, Typography,
 } from "antd";
 import { ReloadOutlined, SearchOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
@@ -251,17 +251,22 @@ function AuditInner({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <div>
-      <Space style={{ justifyContent: "space-between", width: "100%", marginBottom: 12 }}>
-        <Typography.Title level={4} style={{ marginTop: 0 }}>
-          审计日志
-        </Typography.Title>
-        <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-          刷新
-        </Button>
-      </Space>
+      <Typography.Title level={4} style={{ marginTop: 0 }}>
+        审计日志
+      </Typography.Title>
 
       <ListToolbar
         state={listState}
+        primaryActions={
+          <>
+            <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+              刷新
+            </Button>
+            <Button type="primary" icon={<SearchOutlined />} onClick={search}>
+              查询
+            </Button>
+          </>
+        }
         extra={
           <>
             <Select
@@ -308,9 +313,6 @@ function AuditInner({ isAdmin }: { isAdmin: boolean }) {
               onPressEnter={search}
               allowClear
             />
-            <Button type="primary" icon={<SearchOutlined />} onClick={search}>
-              查询
-            </Button>
           </>
         }
       />
@@ -321,6 +323,7 @@ function AuditInner({ isAdmin }: { isAdmin: boolean }) {
         columns={columns}
         dataSource={rows}
         loading={loading}
+        scroll={{ x: "max-content" }}
         expandable={{
           rowExpandable: (r) => r.before != null || r.after != null,
           expandedRowRender: (r) => (

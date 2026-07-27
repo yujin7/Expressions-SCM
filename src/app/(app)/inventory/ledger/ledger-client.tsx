@@ -113,6 +113,16 @@ function LedgerInner() {
       </Typography.Title>
       <ListToolbar
         state={listState}
+        primaryActions={
+          <ExportButton
+            href={`/api/export/ledger?${new URLSearchParams({
+              ...(skuId != null ? { skuId: String(skuId) } : {}),
+              ...(warehouseId != null ? { warehouseId: String(warehouseId) } : {}),
+              ...(from ? { from } : {}),
+              ...(to ? { to } : {}),
+            }).toString()}`}
+          />
+        }
         extra={
           <>
             <RemoteSelect
@@ -142,14 +152,6 @@ function LedgerInner() {
                   to: values?.[1] ? values[1].format("YYYY-MM-DD") : "",
                 })
               }
-            />
-            <ExportButton
-              href={`/api/export/ledger?${new URLSearchParams({
-                ...(skuId != null ? { skuId: String(skuId) } : {}),
-                ...(warehouseId != null ? { warehouseId: String(warehouseId) } : {}),
-                ...(from ? { from } : {}),
-                ...(to ? { to } : {}),
-              }).toString()}`}
             />
           </>
         }

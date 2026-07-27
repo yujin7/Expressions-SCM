@@ -51,11 +51,18 @@ describe("shared layout regressions", () => {
     expect(toolbar).toContain('className="list-toolbar__right"');
     expect(toolbar).toContain('className="list-toolbar__primary-actions"');
     expect(toolbar).toContain('role="toolbar"');
+    expect(toolbar).toContain('<ConfigProvider componentSize="small">');
     expect(styles).toMatch(
       /\.supplier-scorecard-kpis\s*\{[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\);/s,
     );
     expect(styles).toMatch(
       /@container app-surface \(max-width:\s*760px\)[\s\S]*\.supplier-scorecard-kpis\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/s,
+    );
+    expect(styles).toMatch(
+      /@container app-surface \(max-width:\s*760px\)[\s\S]*\.process-mining-kpis,[\s\S]*\.plan-version-kpis\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\);/s,
+    );
+    expect(styles).toMatch(
+      /@container app-surface \(max-width:\s*520px\)[\s\S]*\.process-mining-kpis,[\s\S]*\.plan-version-kpis\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/s,
     );
     expect(styles).toMatch(
       /\.list-toolbar--actions-only \.list-toolbar__right\s*\{[^}]*width:\s*100%;/s,
@@ -70,6 +77,46 @@ describe("shared layout regressions", () => {
     expect(pc).toContain("primaryActions={");
     expect(pc).toContain('scroll={{ x: "max-content" }}');
     expect(pc).not.toContain('style={{ marginBottom: 12, display: "flex", justifyContent: "flex-end" }}');
+  });
+
+  it("uses the shared action band and safe horizontal viewport across transaction lists", () => {
+    const transactionPages = [
+      "src/app/(app)/outsource/bh/bh-client.tsx",
+      "src/app/(app)/outsource/wo/wo-client.tsx",
+      "src/app/(app)/outsource/po/po-client.tsx",
+      "src/app/(app)/outsource/pc/pc-client.tsx",
+      "src/app/(app)/outsource/jg/jg-client.tsx",
+      "src/app/(app)/matflow/fl/fl-client.tsx",
+      "src/app/(app)/matflow/sh/sh-client.tsx",
+      "src/app/(app)/matflow/tl/tl-client.tsx",
+      "src/app/(app)/matflow/ct/ct-client.tsx",
+      "src/app/(app)/inventory/count/count-client.tsx",
+      "src/app/(app)/inventory/docs/docs-client.tsx",
+      "src/app/(app)/settlement/js/js-client.tsx",
+    ];
+
+    for (const file of transactionPages) {
+      const source = read(file);
+      expect(source, file).toContain("primaryActions={");
+      expect(source, file).toContain("scroll={{ x:");
+      expect(source, file).not.toMatch(
+        /<Space style=\{\{[^}]*marginBottom:[^}]*justifyContent:\s*"flex-end"/,
+      );
+    }
+  });
+
+  it("keeps operational controls out of the toolbar filter region", () => {
+    const actionPages = [
+      "src/app/(app)/admin/audit/audit-client.tsx",
+      "src/app/(app)/import/exceptions/exceptions-client.tsx",
+      "src/app/(app)/import/jobs/jobs-client.tsx",
+      "src/app/(app)/inventory/balance/balance-client.tsx",
+      "src/app/(app)/inventory/ledger/ledger-client.tsx",
+    ];
+
+    for (const file of actionPages) {
+      expect(read(file), file).toContain("primaryActions={");
+    }
   });
 
   it("clears the desktop metadata flex basis after dashboard headers stack", () => {

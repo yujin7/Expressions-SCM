@@ -119,6 +119,15 @@ function SkuBalanceTab() {
     <div>
       <ListToolbar
         state={listState}
+        primaryActions={
+          <ExportButton
+            href={`/api/export/balance?${new URLSearchParams({
+              q,
+              nonzero: includeZero ? "0" : "1",
+              ...(warehouseId != null ? { warehouseId: String(warehouseId) } : {}),
+            }).toString()}`}
+          />
+        }
         extra={
           <>
             <SearchInput
@@ -146,13 +155,6 @@ function SkuBalanceTab() {
               />
               <Typography.Text>含零库存</Typography.Text>
             </Space>
-            <ExportButton
-              href={`/api/export/balance?${new URLSearchParams({
-                q,
-                nonzero: includeZero ? "0" : "1",
-                ...(warehouseId != null ? { warehouseId: String(warehouseId) } : {}),
-              }).toString()}`}
-            />
           </>
         }
       />

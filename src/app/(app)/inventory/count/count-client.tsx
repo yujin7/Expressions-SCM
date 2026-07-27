@@ -370,24 +370,26 @@ function CountInner() {
         items={STATUS_TABS}
         onChange={(key) => listState.setFilter({ status: key })}
       />
-      <Space style={{ marginBottom: 12, width: "100%", justifyContent: "flex-end" }} wrap>
-        <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-          刷新
-        </Button>
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          onClick={() => {
-            form.resetFields();
-            form.setFieldsValue({ mode: "partial" });
-            setCreateOpen(true);
-          }}
-        >
-          新建盘点任务
-        </Button>
-      </Space>
       <ListToolbar
         state={listState}
+        primaryActions={
+          <>
+            <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+              刷新
+            </Button>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => {
+                form.resetFields();
+                form.setFieldsValue({ mode: "partial" });
+                setCreateOpen(true);
+              }}
+            >
+              新建盘点任务
+            </Button>
+          </>
+        }
         extra={
           <>
             <SearchInput

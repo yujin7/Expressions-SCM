@@ -438,30 +438,32 @@ function DocsInner() {
         items={STATUS_TABS}
         onChange={(key) => listState.setFilter({ status: key })}
       />
-      <Space style={{ marginBottom: 12, width: "100%", justifyContent: "flex-end" }} wrap>
-        <ExportButton
-          href={`/api/export/stock-docs?${new URLSearchParams({
-            q,
-            ...(status ? { status } : {}),
-            ...(subtype ? { subtype } : {}),
-          }).toString()}`}
-        />
-        <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-          刷新
-        </Button>
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          onClick={() => {
-            form.resetFields();
-            setCreateOpen(true);
-          }}
-        >
-          新建单据
-        </Button>
-      </Space>
       <ListToolbar
         state={listState}
+        primaryActions={
+          <>
+            <ExportButton
+              href={`/api/export/stock-docs?${new URLSearchParams({
+                q,
+                ...(status ? { status } : {}),
+                ...(subtype ? { subtype } : {}),
+              }).toString()}`}
+            />
+            <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+              刷新
+            </Button>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => {
+                form.resetFields();
+                setCreateOpen(true);
+              }}
+            >
+              新建单据
+            </Button>
+          </>
+        }
         extra={
           <>
             <SearchInput

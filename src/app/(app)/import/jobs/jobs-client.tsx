@@ -240,7 +240,7 @@ export default function JobsClient() {
       </Typography.Title>
       <ListToolbar
         state={listState}
-        extra={
+        primaryActions={
           <Button icon={<ReloadOutlined />} onClick={() => void load()}>
             刷新
           </Button>

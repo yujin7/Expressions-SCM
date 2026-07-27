@@ -301,20 +301,20 @@ export default function ExceptionsClient() {
       />
       <ListToolbar
         state={listState}
+        primaryActions={
+          <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+            刷新
+          </Button>
+        }
         extra={
-          <>
-            <Select
-              allowClear
-              placeholder="全部类型"
-              style={{ width: 160 }}
-              options={toOptions(ALIAS_TYPE_LABELS)}
-              value={aliasType || undefined}
-              onChange={(v) => listState.setFilter({ aliasType: v ?? "" })}
-            />
-            <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-              刷新
-            </Button>
-          </>
+          <Select
+            allowClear
+            placeholder="全部类型"
+            style={{ width: 160 }}
+            options={toOptions(ALIAS_TYPE_LABELS)}
+            value={aliasType || undefined}
+            onChange={(v) => listState.setFilter({ aliasType: v ?? "" })}
+          />
         }
       />
       <Table<ExceptionRow>
@@ -323,6 +323,7 @@ export default function ExceptionsClient() {
         columns={columns}
         dataSource={rows}
         loading={loading}
+        scroll={{ x: "max-content" }}
         pagination={listState.paginationProps({ total: total })}
       />
 

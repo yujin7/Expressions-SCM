@@ -757,6 +757,11 @@ body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .process-mining-kpis,
+  .plan-version-kpis {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .list-toolbar__filters {
     flex-basis: 100%;
   }
@@ -764,6 +769,13 @@ body {
   .list-toolbar__right {
     width: 100%;
     justify-content: flex-end;
+  }
+}
+
+@container app-surface (max-width: 520px) {
+  .process-mining-kpis,
+  .plan-version-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
