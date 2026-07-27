@@ -322,6 +322,7 @@ export async function getPo(id: number, dbArg?: AnyDb) {
       skuId: poLines.skuId,
       skuCode: skus.code,
       skuName: skus.name,
+      barcode: skus.barcode,
       baseUom: skus.baseUom,
       lineType: poLines.lineType,
       purchaseUom: poLines.purchaseUom,

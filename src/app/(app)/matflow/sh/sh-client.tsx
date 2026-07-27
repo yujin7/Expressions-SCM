@@ -17,6 +17,8 @@ import { formatQty } from "@/components/format";
 import { useListState } from "@/components/useListState";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
+import ScannerEntry from "@/components/ScannerEntry";
+import { addScanQty, findUniqueScanMatch } from "@/components/scanner";
 
 // ---------- 客户端十进制工具（仅 UI 过滤/汇总提示用；非负字符串，禁 float） ----------
 
@@ -147,6 +149,7 @@ interface PoDetailLine {
   skuId: number;
   skuCode: string;
   skuName: string;
+  barcode: string | null;
   baseUom: string;
   purchaseUom: string;
   uomFactor: string;
@@ -169,6 +172,7 @@ interface PoCreateLine {
   skuId: number;
   skuCode: string;
   skuName: string;
+  barcode: string | null;
   baseUom: string;
   orderedQty: string;
   purchaseUom: string;
@@ -242,6 +246,7 @@ export default function ShClient() {
     skuId: number;
     skuCode: string;
     skuName: string;
+    barcode: string | null;
     qty: string;
   } | null>(null);
   const [jgLines, setJgLines] = useState<JgCreateLine[]>([]);
@@ -351,12 +356,14 @@ export default function ShClient() {
           productSkuId: number;
           productSkuCode: string;
           productSkuName: string;
+          productSkuBarcode: string | null;
           qty: string;
         }>(`/api/outsource/jg/${id}`);
         setJgProduct({
           skuId: jg.productSkuId,
           skuCode: jg.productSkuCode,
           skuName: jg.productSkuName,
+          barcode: jg.productSkuBarcode,
           qty: jg.qty,
         });
         setJgLines([
@@ -370,6 +377,7 @@ export default function ShClient() {
             skuId: l.skuId,
             skuCode: l.skuCode,
             skuName: l.skuName,
+            barcode: l.barcode,
             baseUom: l.baseUom,
             orderedQty: l.qty,
             purchaseUom: l.purchaseUom,
@@ -385,6 +393,48 @@ export default function ShClient() {
     } finally {
       setLinesLoading(false);
     }
+  };
+
+  const handleReceiveScan = (code: string, qty: string): boolean => {
+    if (sourceType === "jg") {
+      if (!jgProduct) return false;
+      const result = findUniqueScanMatch([jgProduct], code, (item) => [item.barcode, item.skuCode]);
+      if (result.kind === "missing") {
+        message.error(`扫描品不属于当前加工通知单：${code}`);
+        return false;
+      }
+      const normalIndex = jgLines.findIndex((line) => line.lineType === "normal");
+      if (normalIndex < 0) {
+        message.error("当前没有正常收货行；请先添加正常行再扫码");
+        return false;
+      }
+      setJgLines((prev) =>
+        prev.map((line, index) =>
+          index === normalIndex ? { ...line, actualQty: addScanQty(line.actualQty, qty) } : line,
+        ),
+      );
+      message.success(`已计入 ${jgProduct.skuCode}：+${qty}`, 0.8);
+      return true;
+    }
+
+    const result = findUniqueScanMatch(poLines, code, (line) => [line.barcode, line.skuCode]);
+    if (result.kind === "missing") {
+      message.error(`扫描品不属于当前采购订单：${code}`);
+      return false;
+    }
+    if (result.kind === "ambiguous") {
+      message.error(`条码/SKU 命中当前订单 ${result.count} 行，请手工选择行录入`);
+      return false;
+    }
+    setPoLines((prev) =>
+      prev.map((line) =>
+        line.skuId === result.item.skuId
+          ? { ...line, actualQty: addScanQty(line.actualQty, qty) }
+          : line,
+      ),
+    );
+    message.success(`已计入 ${result.item.skuCode}：+${qty}`, 0.8);
+    return true;
   };
 
   const handleCreate = async () => {
@@ -1198,6 +1248,12 @@ export default function ShClient() {
               onChange={(v: number) => setWarehouseId(v)}
             />
           </div>
+          {(sourceType === "jg" ? jgProduct != null : poLines.length > 0) ? (
+            <ScannerEntry
+              help="扫码枪请保持光标在输入框；设备回车后系统按条码或 SKU 编码匹配当前来源单，并把数量累加到本次实收。委外扫码默认计入正常收货行。"
+              onScan={handleReceiveScan}
+            />
+          ) : null}
           {sourceType === "jg" && jgProduct ? (
             <div>
               <div style={{ marginBottom: 4 }}>

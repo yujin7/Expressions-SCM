@@ -13,6 +13,8 @@ import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
+import ScannerEntry from "@/components/ScannerEntry";
+import { addScanQty, findUniqueScanMatch } from "@/components/scanner";
 
 /** 抽盘=循环抽点（原 PRD"永续盘点"）；full=定期全盘 */
 const MODE_LABELS: Record<string, string> = { full: "定期全盘", partial: "抽盘" };
@@ -36,6 +38,7 @@ interface TaskLine {
   skuId: number;
   skuCode: string;
   skuName: string;
+  barcode: string | null;
   baseUom: string;
   batchId: number | null;
   bookQty: string;
@@ -241,6 +244,27 @@ function CountInner() {
   };
 
   const dirtyCount = useMemo(() => Object.keys(edited).length, [edited]);
+  const editable = detail?.status === "draft";
+
+  const handleScan = (code: string, qty: string): boolean => {
+    if (!detail || !editable) return false;
+    const result = findUniqueScanMatch(detail.lines, code, (line) => [line.barcode, line.skuCode]);
+    if (result.kind === "missing") {
+      message.error(`未在本盘点任务中找到条码/SKU：${code}`);
+      return false;
+    }
+    if (result.kind === "ambiguous") {
+      message.error(`条码/SKU 命中 ${result.count} 个批次行，请在表格中按批次手工录入`);
+      return false;
+    }
+    const line = result.item;
+    setEdited((prev) => ({
+      ...prev,
+      [line.id]: prev[line.id] == null ? qty : addScanQty(prev[line.id], qty),
+    }));
+    message.success(`已计入 ${line.skuCode}：+${qty}`, 0.8);
+    return true;
+  };
 
   const saveCounts = async () => {
     if (!detail || dirtyCount === 0) return;
@@ -292,8 +316,6 @@ function CountInner() {
     },
     { title: "状态", dataIndex: "status", width: 100, render: (v: string) => <DocStatusTag status={v} /> },
   ];
-
-  const editable = detail?.status === "draft";
 
   const lineColumns: ColumnsType<TaskLine> = [
     { title: "SKU 编码", dataIndex: "skuCode", width: 110 },
@@ -539,9 +561,15 @@ function CountInner() {
               </Descriptions.Item>
             </Descriptions>
             {editable ? (
-              <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-                实盘数已预填账面数——只需修改有差异的行；未改动的行视为账实相符。
-              </Typography.Paragraph>
+              <>
+                <ScannerEntry
+                  help="扫码枪请保持光标在输入框；首次扫描该 SKU 从扫码数量开始计数，后续扫描累加。若同一 SKU 有多个批次行，系统会阻止歧义写入。"
+                  onScan={handleScan}
+                />
+                <Typography.Paragraph type="secondary" style={{ margin: "8px 0" }}>
+                  实盘数已预填账面数；手工修改按表格值保存，首次扫码则从扫码数量开始累计。
+                </Typography.Paragraph>
+              </>
             ) : null}
             <Table<TaskLine>
               rowKey="id"

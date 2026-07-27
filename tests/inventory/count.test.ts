@@ -53,9 +53,17 @@ describe("盘点任务 PD：抽盘（循环抽点）/全盘 → 财务审批 →
   let skuSeq = 0;
   async function makeSku(): Promise<number> {
     skuSeq += 1;
+    const seq = String(skuSeq).padStart(6, "0");
     const [s] = await db
       .insert(skus)
-      .values({ code: `PD${String(skuSeq).padStart(5, "0")}`, name: `盘点物料${skuSeq}`, spuId, baseUom: "个", skuType: "raw" })
+      .values({
+        code: `PD${String(skuSeq).padStart(5, "0")}`,
+        name: `盘点物料${skuSeq}`,
+        barcode: `6900000${seq}`,
+        spuId,
+        baseUom: "个",
+        skuType: "raw",
+      })
       .returning();
     return s.id;
   }
@@ -94,6 +102,7 @@ describe("盘点任务 PD：抽盘（循环抽点）/全盘 → 财务审批 →
     }
     const lineOf = (skuId: number) => detail.lines.find((l) => l.skuId === skuId)!;
     expect(dCmp(lineOf(skuA).bookQty, "10")).toBe(0);
+    expect(lineOf(skuA).barcode).toMatch(/^6900000\d{6}$/);
 
     // 录实盘：A 12（盈+2）、B 3.5（亏−1.5）、C 不动
     const upd = await updateCounts(

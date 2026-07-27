@@ -388,7 +388,7 @@ export async function getCountTask(id: number, dbArg?: AnyDb) {
   if (!doc) throw new ApiError(404, "盘点单不存在");
 
   const lineRows: {
-    id: number; skuId: number; skuCode: string; skuName: string; baseUom: string;
+    id: number; skuId: number; skuCode: string; skuName: string; barcode: string | null; baseUom: string;
     batchId: number | null; bookQty: string; countedQty: string; adjustDocId: number | null;
   }[] = await db
     .select({
@@ -396,6 +396,7 @@ export async function getCountTask(id: number, dbArg?: AnyDb) {
       skuId: pdLines.skuId,
       skuCode: skus.code,
       skuName: skus.name,
+      barcode: skus.barcode,
       baseUom: skus.baseUom,
       batchId: pdLines.batchId,
       bookQty: pdLines.bookQty,

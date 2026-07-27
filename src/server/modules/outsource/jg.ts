@@ -178,6 +178,7 @@ export async function getJg(id: number, dbArg?: AnyDb) {
       productSkuId: jgDocs.productSkuId,
       productSkuCode: skus.code,
       productSkuName: skus.name,
+      productSkuBarcode: skus.barcode,
       qty: jgDocs.qty,
       dueDate: jgDocs.dueDate,
       feeRateCurrent: jgDocs.feeRateCurrent, // 敏感——路由边界 maskSensitive 剥离
