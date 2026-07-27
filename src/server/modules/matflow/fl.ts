@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
-   flDocs, flLines, jgDocs, skus, users, warehouses, woLines,
+   batches, flDocs, flLines, jgDocs, skus, users, warehouses, woLines,
 } from "@/db/schema";
 import { dAdd, dCmp, dNeg, dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
@@ -246,9 +246,12 @@ export async function getFl(id: number, dbArg?: AnyDb) {
       baseUom: skus.baseUom,
       qty: flLines.qty,
       batchId: flLines.batchId,
+      batchNo: batches.batchNo,
+      expiryDate: batches.expiryDate,
     })
     .from(flLines)
     .innerJoin(skus, eq(flLines.skuId, skus.id))
+    .leftJoin(batches, eq(flLines.batchId, batches.id))
     .where(eq(flLines.flId, id))
     .orderBy(flLines.id);
 

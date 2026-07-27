@@ -53,6 +53,9 @@ interface CtLine {
   baseUom: string;
   qty: string;
   reason: string | null;
+  batchId: number | null;
+  batchNo: string | null;
+  expiryDate: string | null;
 }
 
 interface DocApproval {
@@ -344,6 +347,12 @@ export default function CtClient() {
     { title: "物料", key: "material", render: (_, r) => `${r.skuCode} ${r.skuName}` },
     { title: "单位", dataIndex: "baseUom", width: 70 },
     { title: "PO 行", dataIndex: "poLineId", width: 80, render: (v: number) => `#${v}` },
+    {
+      title: "批次",
+      dataIndex: "batchNo",
+      width: 140,
+      render: (v: string | null, r) => v ? `${v}${r.expiryDate ? ` · ${r.expiryDate}` : ""}` : "无批次",
+    },
     { title: "退货数量", dataIndex: "qty", width: 110, align: "right", render: (v: string) => formatQty(v) },
     { title: "退货原因", dataIndex: "reason", render: (v: string | null) => v ?? "—" },
   ];

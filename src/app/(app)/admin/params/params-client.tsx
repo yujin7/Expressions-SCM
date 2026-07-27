@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Button, InputNumber, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
+import { BatchPostingRolloutCard } from "./BatchPostingRolloutCard";
 
 interface Row {
   key: string;
@@ -76,11 +77,12 @@ export default function ParamsClient({ canWrite }: { canWrite: boolean }) {
             min={r.min}
             max={r.max}
             value={edits[r.key] ?? r.value}
-            disabled={!canWrite}
+            disabled={!canWrite || r.key === "batch_posting_enabled"}
             onChange={(v) => setEdits((e) => ({ ...e, [r.key]: Number(v) }))}
-            addonAfter={r.unit}
-            style={{ width: 140 }}
+            style={{ width: 110 }}
           />
+          {r.unit ? <Typography.Text type="secondary">{r.unit}</Typography.Text> : null}
+          {r.key === "batch_posting_enabled" ? <Tag color="gold">专项闸门</Tag> : null}
           {r.isDefault ? <Tag>缺省</Tag> : null}
         </Space>
       ),
@@ -89,7 +91,7 @@ export default function ParamsClient({ canWrite }: { canWrite: boolean }) {
       title: "",
       width: 90,
       render: (_, r) =>
-        canWrite ? (
+        canWrite && r.key !== "batch_posting_enabled" ? (
           <Button size="small" type="primary" disabled={edits[r.key] == null || edits[r.key] === r.value} onClick={() => void save(r)}>
             保存
           </Button>
@@ -110,6 +112,7 @@ export default function ParamsClient({ canWrite }: { canWrite: boolean }) {
         showIcon
         message="阈值改动影响驾驶舱滞销判定、补货建议与断货预警（0724 会议 D39：滞销警戒阈值可配置）；R1/让步等规则容差同页维护。修改留审计。"
       />
+      <BatchPostingRolloutCard canWrite={canWrite} onActivated={() => void load()} />
       <Table<Row> rowKey="key" size="middle" columns={columns} dataSource={rows} loading={loading} pagination={false} />
     </div>
   );

@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
-   ctDocs, ctLines, poDocs, poLines, skus, users, warehouses,
+   batches, ctDocs, ctLines, poDocs, poLines, skus, users, warehouses,
 } from "@/db/schema";
 import { dAdd, dCmp, dNeg, dQty, dSub } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
@@ -229,10 +229,13 @@ export async function getCt(id: number, dbArg?: AnyDb) {
       baseUom: skus.baseUom,
       qty: ctLines.qty,
       batchId: ctLines.batchId,
+      batchNo: batches.batchNo,
+      expiryDate: batches.expiryDate,
       reason: ctLines.reason,
     })
     .from(ctLines)
     .innerJoin(skus, eq(ctLines.skuId, skus.id))
+    .leftJoin(batches, eq(ctLines.batchId, batches.id))
     .where(eq(ctLines.ctId, id))
     .orderBy(ctLines.id);
 

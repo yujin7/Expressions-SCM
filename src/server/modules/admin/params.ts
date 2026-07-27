@@ -91,6 +91,12 @@ export async function updateParam(user: SessionUser, input: unknown, dbArg?: Any
     .select({ value: sysParams.value })
     .from(sysParams)
     .where(and(eq(sysParams.scope, "global"), eq(sysParams.key, v.key)));
+  if (v.key === "batch_posting_enabled" && String(v.value) !== (old?.value ?? String(def.fallback))) {
+    if (v.value === 1) {
+      throw new ApiError(409, "批次过账必须通过同页「上线体检」确认后启用，不能作为普通参数直接修改");
+    }
+    throw new ApiError(409, "批次过账启用后不可直接关闭；回退必须走库存迁移与专项变更流程");
+  }
   await db
     .insert(sysParams)
     .values({ scope: "global", key: v.key, value: String(v.value), note: def.label })

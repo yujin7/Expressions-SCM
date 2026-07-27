@@ -68,6 +68,8 @@ interface FlLine {
   baseUom: string;
   qty: string;
   batchId: number | null;
+  batchNo: string | null;
+  expiryDate: string | null;
 }
 
 interface FlRequirement {
@@ -356,7 +358,12 @@ export default function FlClient() {
   const lineColumns: ColumnsType<FlLine> = [
     { title: "物料", key: "material", render: (_, r) => `${r.skuCode} ${r.skuName}` },
     { title: "单位", dataIndex: "baseUom", width: 70 },
-    { title: "批次", dataIndex: "batchId", width: 80, render: (v: number | null) => (v != null ? `#${v}` : "—") },
+    {
+      title: "批次",
+      dataIndex: "batchNo",
+      width: 150,
+      render: (v: string | null, r) => v ? `${v}${r.expiryDate ? ` · ${r.expiryDate}` : ""}` : "无批次",
+    },
     {
       title: "毛需求",
       key: "grossReq",

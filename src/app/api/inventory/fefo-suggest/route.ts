@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDbAsync } from "@/db";
+import { eq } from "drizzle-orm";
+import { skus } from "@/db/schema";
 import { errorResponse, guardRead } from "@/server/modules/master/common";
 import { suggestFefoAllocation } from "@/server/modules/inventory/fefo";
 
@@ -25,7 +27,20 @@ export async function GET(req: NextRequest) {
     }
     const today = sp.get("today")?.trim() || undefined;
     const db = await getDbAsync();
-    return NextResponse.json(await suggestFefoAllocation(db, { skuId, warehouseId, qty, today }));
+    const [sku] = await db
+      .select({ code: skus.code, name: skus.name })
+      .from(skus)
+      .where(eq(skus.id, skuId));
+    if (!sku) {
+      return NextResponse.json({ error: "SKU 不存在" }, { status: 404 });
+    }
+    return NextResponse.json({
+      skuId,
+      skuCode: sku.code,
+      skuName: sku.name,
+      requestedQty: qty,
+      ...(await suggestFefoAllocation(db, { skuId, warehouseId, qty, today })),
+    });
   } catch (e) {
     return errorResponse(e, { path: "/api/inventory/fefo-suggest", method: "GET" });
   }

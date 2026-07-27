@@ -2,7 +2,7 @@ import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import {
-   reviewItems, skus, stockBalances, stockDocLines, stockDocs, users, warehouses,
+   batches, reviewItems, skus, stockBalances, stockDocLines, stockDocs, users, warehouses,
 } from "@/db/schema";
 import { dMoney, dNeg, dQty } from "@/server/core/decimal";
 import {  requireRole, type SessionUser } from "@/server/core/dto";
@@ -478,6 +478,7 @@ export async function getStockDoc(id: number, dbArg?: AnyDb) {
   const lines: {
     id: number; skuId: number; skuCode: string; skuName: string; baseUom: string;
     warehouseId: number; toWarehouseId: number | null; batchId: number | null;
+    batchNo: string | null; expiryDate: string | null;
     qty: string; price: string | null;
   }[] = await db
     .select({
@@ -489,11 +490,14 @@ export async function getStockDoc(id: number, dbArg?: AnyDb) {
       warehouseId: stockDocLines.warehouseId,
       toWarehouseId: stockDocLines.toWarehouseId,
       batchId: stockDocLines.batchId,
+      batchNo: batches.batchNo,
+      expiryDate: batches.expiryDate,
       qty: stockDocLines.qty,
       price: stockDocLines.price,
     })
     .from(stockDocLines)
     .innerJoin(skus, eq(stockDocLines.skuId, skus.id))
+    .leftJoin(batches, eq(stockDocLines.batchId, batches.id))
     .where(eq(stockDocLines.stockDocId, id))
     .orderBy(stockDocLines.id);
 
@@ -523,6 +527,7 @@ export async function getStockDoc(id: number, dbArg?: AnyDb) {
     lines: lines.map((l) => ({
       id: l.id, skuId: l.skuId, skuCode: l.skuCode, skuName: l.skuName,
       baseUom: l.baseUom, qty: l.qty, price: l.price,
+      batchId: l.batchId, batchNo: l.batchNo, expiryDate: l.expiryDate,
     })),
     approvals: approvalRows,
     createdByName: doc.createdByName,

@@ -5,7 +5,7 @@ import SearchInput from "@/components/SearchInput";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Alert, App, Button, Descriptions, Drawer, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
+import { DeleteOutlined, ExperimentOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import ExportButton from "@/components/ExportButton";
 import RemoteSelect from "@/components/RemoteSelect";
@@ -17,6 +17,7 @@ import { fetchJson, postJson } from "@/components/fetchJson";
 import { STOCK_SUBTYPE_LABELS, toOptions } from "@/components/labels";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
 import { useSearchParams } from "next/navigation";
+import { FefoPreviewModal, type FefoPreviewGroup } from "./FefoPreviewModal";
 
 interface DocRow {
   id: number;
@@ -38,6 +39,9 @@ interface DocLine {
   baseUom: string;
   qty: string;
   price: string | null;
+  batchId: number | null;
+  batchNo: string | null;
+  expiryDate: string | null;
 }
 
 interface DocApproval {
@@ -84,6 +88,18 @@ interface CreateFormValues {
   remark?: string;
   riskDisposalId?: number;
   lines?: { skuId: number; qty: number; price?: number }[];
+}
+
+const BATCH_OUTBOUND_SUBTYPES = new Set(["issue_out", "sales_out", "transfer"]);
+
+function fefoFingerprint(values: Pick<CreateFormValues, "subtype" | "warehouseId" | "lines">): string {
+  return JSON.stringify({
+    subtype: values.subtype,
+    warehouseId: values.warehouseId,
+    lines: (values.lines ?? [])
+      .filter((line) => line?.skuId && Number(line.qty) > 0)
+      .map((line) => ({ skuId: line.skuId, qty: Number(line.qty) })),
+  });
 }
 
 const SUBTYPE_COLORS: Record<string, string> = {
@@ -154,6 +170,11 @@ function DocsInner() {
   const createLines = Form.useWatch("lines", form);
   const createRiskDisposalId = Form.useWatch("riskDisposalId", form);
   const handledScrapLink = useRef<string | null>(null);
+  const [batchPostingEnabled, setBatchPostingEnabled] = useState(false);
+  const [fefoPreviewOpen, setFefoPreviewOpen] = useState(false);
+  const [fefoPreviewLoading, setFefoPreviewLoading] = useState(false);
+  const [fefoPreviewGroups, setFefoPreviewGroups] = useState<FefoPreviewGroup[]>([]);
+  const [confirmedFefoFingerprint, setConfirmedFefoFingerprint] = useState<string | null>(null);
 
   useEffect(() => {
     if (searchParams.get("create") !== "scrap") return;
@@ -176,6 +197,17 @@ function DocsInner() {
     });
     setCreateOpen(true);
   }, [form, searchParams]);
+
+  useEffect(() => {
+    if (!createOpen) return;
+    fetchJson<{ enabled: boolean }>("/api/inventory/batch-posting/status")
+      .then((result) => setBatchPostingEnabled(result.enabled))
+      .catch(() => setBatchPostingEnabled(false));
+  }, [createOpen]);
+
+  useEffect(() => {
+    setConfirmedFefoFingerprint(null);
+  }, [createSubtype, createWarehouseId, createLines]);
 
   // R15 临期禁售拦截 v1：sales_out/transfer 明细选定 SKU 后，防抖调用 expiry-check，仅告警不阻断
   const [expiryAlerts, setExpiryAlerts] = useState<ExpiryCheckItem[]>([]);
@@ -209,6 +241,41 @@ function DocsInner() {
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detail, setDetail] = useState<DocDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  const loadFefoPreview = async (): Promise<boolean> => {
+    try {
+      const values = await form.validateFields(["subtype", "warehouseId", "lines"]);
+      if (!BATCH_OUTBOUND_SUBTYPES.has(values.subtype)) return true;
+      const lines = (values.lines ?? []).filter((line) => line?.skuId && Number(line.qty) > 0);
+      const qtyBySku = new Map<number, number>();
+      for (const line of lines) {
+        qtyBySku.set(line.skuId, (qtyBySku.get(line.skuId) ?? 0) + Number(line.qty));
+      }
+      if (qtyBySku.size === 0) {
+        message.warning("请先填写至少一条有效明细");
+        return false;
+      }
+      setFefoPreviewOpen(true);
+      setFefoPreviewLoading(true);
+      const groups = await Promise.all(
+        [...qtyBySku.entries()].map(async ([skuId, qty]) => {
+          const params = new URLSearchParams({
+            skuId: String(skuId),
+            warehouseId: String(values.warehouseId),
+            qty: String(qty),
+          });
+          return fetchJson<FefoPreviewGroup>(`/api/inventory/fefo-suggest?${params.toString()}`);
+        }),
+      );
+      setFefoPreviewGroups(groups);
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.message) message.error(error.message);
+      return false;
+    } finally {
+      setFefoPreviewLoading(false);
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -259,6 +326,14 @@ function DocsInner() {
       if (lines.length === 0) {
         message.warning("至少添加一行明细");
         return;
+      }
+      if (batchPostingEnabled && BATCH_OUTBOUND_SUBTYPES.has(values.subtype)) {
+        const fingerprint = fefoFingerprint(values);
+        if (confirmedFefoFingerprint !== fingerprint) {
+          const opened = await loadFefoPreview();
+          if (opened) message.info("请核对并确认 FEFO 批次预分配后再保存");
+          return;
+        }
       }
       setSaving(true);
       const body = {
@@ -329,6 +404,20 @@ function DocsInner() {
     { title: "SKU 编码", dataIndex: "skuCode", width: 110 },
     { title: "名称", dataIndex: "skuName" },
     { title: "数量", dataIndex: "qty", width: 110, align: "right" },
+    {
+      title: "批次",
+      dataIndex: "batchNo",
+      width: 150,
+      render: (value: string | null, row) =>
+        value ? (
+          <Space size={4}>
+            <Tag color="blue">{value}</Tag>
+            {row.expiryDate ? <Typography.Text type="secondary">{row.expiryDate}</Typography.Text> : null}
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">无批次</Typography.Text>
+        ),
+    },
     {
       title: "单价",
       dataIndex: "price",
@@ -491,7 +580,27 @@ function DocsInner() {
               }
             />
           ) : null}
-          <Typography.Text strong>明细行</Typography.Text>
+          <Space style={{ width: "100%", justifyContent: "space-between", marginBottom: 8 }} wrap>
+            <Typography.Text strong>明细行</Typography.Text>
+            {batchPostingEnabled && BATCH_OUTBOUND_SUBTYPES.has(createSubtype) ? (
+              <Button
+                icon={<ExperimentOutlined />}
+                onClick={() => void loadFefoPreview()}
+                loading={fefoPreviewLoading}
+              >
+                预览 FEFO 批次
+              </Button>
+            ) : null}
+          </Space>
+          {batchPostingEnabled && BATCH_OUTBOUND_SUBTYPES.has(createSubtype) ? (
+            <Alert
+              type={confirmedFefoFingerprint ? "success" : "info"}
+              showIcon
+              style={{ marginBottom: 12 }}
+              message={confirmedFefoFingerprint ? "已确认当前 FEFO 预分配" : "保存前需核对 FEFO 批次"}
+              description="修改仓库、SKU 或数量后需要重新确认；系统保存时会再次校验，以防并发出库造成批次余额变化。"
+            />
+          ) : null}
           <Form.List name="lines" initialValue={[{}]}>
             {(fields, { add, remove }) => (
               <div style={{ marginTop: 8 }}>
@@ -540,6 +649,19 @@ function DocsInner() {
           </Form.List>
         </Form>
       </Modal>
+
+      <FefoPreviewModal
+        open={fefoPreviewOpen}
+        loading={fefoPreviewLoading}
+        groups={fefoPreviewGroups}
+        onCancel={() => setFefoPreviewOpen(false)}
+        onConfirm={() => {
+          const values = form.getFieldsValue(["subtype", "warehouseId", "lines"]);
+          setConfirmedFefoFingerprint(fefoFingerprint(values as CreateFormValues));
+          setFefoPreviewOpen(false);
+          message.success("已确认 FEFO 批次规则；保存时将重新校验并写入草稿行");
+        }}
+      />
 
       <Drawer
         title={

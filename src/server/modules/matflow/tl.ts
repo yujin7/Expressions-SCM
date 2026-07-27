@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
-   flDocs, flLines, jgDocs, skus, tlDocs, tlLines, users, warehouses,
+   batches, flDocs, flLines, jgDocs, skus, tlDocs, tlLines, users, warehouses,
 } from "@/db/schema";
 import { dAdd, dCmp, dNeg, dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
@@ -235,10 +235,13 @@ export async function getTl(id: number, dbArg?: AnyDb) {
       baseUom: skus.baseUom,
       qty: tlLines.qty,
       batchId: tlLines.batchId,
+      batchNo: batches.batchNo,
+      expiryDate: batches.expiryDate,
       reason: tlLines.reason,
     })
     .from(tlLines)
     .innerJoin(skus, eq(tlLines.skuId, skus.id))
+    .leftJoin(batches, eq(tlLines.batchId, batches.id))
     .where(eq(tlLines.tlId, id))
     .orderBy(tlLines.id);
 
