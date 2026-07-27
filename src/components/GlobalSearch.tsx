@@ -1,7 +1,7 @@
 "use client";
 
-/** 全局搜索（编码/单号/供应商直达）——数据源 /api/search */
-import { useRef, useState } from "react";
+/** 全局搜索（编码/中文/拼音/首字母/单号直达）——数据源 /api/search */
+import { useEffect, useRef, useState } from "react";
 import { AutoComplete, Input, Tag } from "antd";
 import { SearchOutlined } from "@ant-design/icons";
 import { useRouter } from "next/navigation";
@@ -14,18 +14,31 @@ export default function GlobalSearch() {
   const [options, setOptions] = useState<{ label: React.ReactNode; options: { value: string; label: React.ReactNode }[] }[]>([]);
   const hrefByKey = useRef(new Map<string, string>());
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const controller = useRef<AbortController | null>(null);
+
+  useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current);
+    controller.current?.abort();
+  }, []);
 
   const search = (q: string) => {
     if (timer.current) clearTimeout(timer.current);
+    controller.current?.abort();
     if (q.trim().length < 2) {
+      hrefByKey.current.clear();
       setOptions([]);
       return;
     }
     timer.current = setTimeout(async () => {
+      const request = new AbortController();
+      controller.current = request;
       try {
-        const res = await fetch(`/api/search?q=${encodeURIComponent(q.trim())}`);
+        const res = await fetch(`/api/search?q=${encodeURIComponent(q.trim())}`, {
+          signal: request.signal,
+        });
         if (!res.ok) return;
         const d = (await res.json()) as { groups: Group[] };
+        if (request.signal.aborted) return;
         hrefByKey.current.clear();
         setOptions(
           (d.groups ?? [])
@@ -47,6 +60,7 @@ export default function GlobalSearch() {
             })),
         );
       } catch {
+        if (request.signal.aborted) return;
         /* 忽略搜索失败 */
       }
     }, 300);
@@ -62,7 +76,12 @@ export default function GlobalSearch() {
         if (href) router.push(href);
       }}
     >
-      <Input size="small" prefix={<SearchOutlined />} placeholder="搜编码 / 单号 / 供应商" allowClear />
+      <Input
+        size="small"
+        prefix={<SearchOutlined />}
+        placeholder="搜编码 / 中文 / 拼音 / 首字母 / 单号"
+        allowClear
+      />
     </AutoComplete>
   );
 }

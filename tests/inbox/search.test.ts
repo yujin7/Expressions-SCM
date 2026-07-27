@@ -1,11 +1,11 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { bhDocs, skus, spus, suppliers, users } from "@/db/schema";
-import { searchAll } from "@/server/modules/inbox/search";
+import { matchesRomanizedName, searchAll } from "@/server/modules/inbox/search";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 /**
  * 全局搜索 API 形状：{groups:[{title, items:[{label, href, tag}]}]}
- * - SKU 编码/名称模糊；单据号前缀；供应商编码/名称
+ * - SKU 编码/名称/拼音/首字母模糊；单据号前缀；供应商编码/名称/拼音
  * - q<2 字符 → 空组
  */
 describe("search：全局搜索（SKU/单据/供应商）", () => {
@@ -45,6 +45,23 @@ describe("search：全局搜索（SKU/单据/供应商）", () => {
     expect(g!.items).toHaveLength(2);
   });
 
+  it("SKU 中文名支持连续全拼与首字母，且不把非连续乱序当命中", async () => {
+    const full = await searchAll("jiaoyuandanbaitaiyinpin", db);
+    expect(full.groups.find((x) => x.title === "商品")?.items[0]?.label).toBe(
+      "CP00001 胶原蛋白肽饮品",
+    );
+
+    const initials = await searchAll("jydbtyp", db);
+    expect(initials.groups.find((x) => x.title === "商品")?.items[0]?.label).toBe(
+      "CP00001 胶原蛋白肽饮品",
+    );
+    expect((await searchAll("jydbt", db)).groups.find((x) => x.title === "商品")?.items).toHaveLength(2);
+    expect(matchesRomanizedName("胶原蛋白肽饮品", "jiao-yuan dan-bai-tai-yin-pin")).toBe(true);
+    expect(matchesRomanizedName("（微初）水杨酸植萃焕肤面膜(25ml×15片)", "wcsy")).toBe(true);
+    expect(matchesRomanizedName("重庆美妆供应链", "cq")).toBe(true);
+    expect(matchesRomanizedName("胶原蛋白肽饮品", "jypd")).toBe(false);
+  });
+
   it("单据号前缀命中：单据组带类型 tag 与列表页 href", async () => {
     const r = await searchAll("BH2026", db);
     const g = r.groups.find((x) => x.title === "单据");
@@ -56,6 +73,16 @@ describe("search：全局搜索（SKU/单据/供应商）", () => {
     const r = await searchAll("原料供应", db);
     const g = r.groups.find((x) => x.title === "供应商");
     expect(g!.items).toEqual([{ label: "SUP001 原料供应商A", href: "/master/supplier?q=SUP001", tag: "供应商" }]);
+  });
+
+  it("供应商中文名支持拼音首字母", async () => {
+    const r = await searchAll("ylgys", db);
+    const g = r.groups.find((x) => x.title === "供应商");
+    expect(g?.items[0]).toEqual({
+      label: "SUP001 原料供应商A",
+      href: "/master/supplier?q=SUP001",
+      tag: "供应商",
+    });
   });
 
   it("无命中：不产出空组", async () => {
