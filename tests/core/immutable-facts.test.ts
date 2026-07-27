@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { auditLogs, skus, spus, stockLedger, warehouses } from "@/db/schema";
+import {
+  auditLogs,
+  planningVersionLines,
+  planningVersions,
+  skus,
+  spus,
+  stockLedger,
+  users,
+  warehouses,
+} from "@/db/schema";
 import { createTestDb } from "../helpers/db";
 
 const appendOnlyError = /append-only/i;
@@ -89,5 +98,65 @@ describe("immutable fact tables", () => {
 
     const [persisted] = await db.select().from(auditLogs).where(eq(auditLogs.id, audit.id));
     expect(persisted.action).toBe("create");
+  });
+
+  it("rejects rewriting or deleting immutable planning versions and their evidence lines", async () => {
+    const { db, client } = await createTestDb();
+    const [user] = await db.insert(users).values({ name: "计划证据员", roles: ["pmc"] }).returning();
+    const [spu] = await db.insert(spus).values({ code: "P-PLAN-IMM", nameCn: "计划不可变测试" }).returning();
+    const [sku] = await db.insert(skus).values({
+      code: "SKU-PLAN-IMM",
+      name: "计划不可变成品",
+      spuId: spu.id,
+      baseUom: "件",
+      skuType: "finished",
+    }).returning();
+    const [version] = await db.insert(planningVersions).values({
+      name: "不可变版本",
+      weekStart: "2026-07-27",
+      engineVersion: "test-v1",
+      parameters: {},
+      sourceMeta: {},
+      lineCount: 1,
+      suggestedCount: 1,
+      suppressedCount: 0,
+      digest: "digest",
+      idempotencyKey: "immutable-plan-version",
+      createdBy: user.id,
+    }).returning();
+    const [line] = await db.insert(planningVersionLines).values({
+      versionId: version.id,
+      skuId: sku.id,
+      skuCode: sku.code,
+      skuName: sku.name,
+      baseUom: sku.baseUom,
+      suggestedQty: "10",
+      suppressed: false,
+      orderWindowMissed: false,
+      onHand: "0",
+      inTransit: "0",
+      daily: "1",
+      safetyQty: "7",
+      explanation: [],
+    }).returning();
+
+    await expectAppendOnlyRejection(
+      db.update(planningVersions).set({ name: "被篡改" }).where(eq(planningVersions.id, version.id)),
+    );
+    await expectAppendOnlyRejection(
+      db.delete(planningVersions).where(eq(planningVersions.id, version.id)),
+    );
+    await expectAppendOnlyRejection(
+      db.update(planningVersionLines).set({ suggestedQty: "999" }).where(eq(planningVersionLines.id, line.id)),
+    );
+    await expectAppendOnlyRejection(
+      db.delete(planningVersionLines).where(eq(planningVersionLines.id, line.id)),
+    );
+    await expectAppendOnlyRejection(client.exec("TRUNCATE TABLE planning_version_lines"));
+
+    const [persistedVersion] = await db.select().from(planningVersions).where(eq(planningVersions.id, version.id));
+    const [persistedLine] = await db.select().from(planningVersionLines).where(eq(planningVersionLines.id, line.id));
+    expect(persistedVersion.name).toBe("不可变版本");
+    expect(persistedLine.suggestedQty).toBe("10.0000");
   });
 });

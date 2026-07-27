@@ -270,6 +270,19 @@ body {
   margin-bottom: 20px;
 }
 
+.plan-version-kpis {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.plan-version-kpis .ant-card,
+.plan-version-kpis .ant-statistic {
+  min-width: 0;
+  height: 100%;
+}
+
 .dashboard-page {
   --dashboard-gap: 14px;
 }
@@ -644,6 +657,10 @@ body {
   .process-mining-kpis {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .plan-version-kpis {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 575px) {
@@ -677,6 +694,10 @@ body {
   .list-toolbar__filters .ant-input-search,
   .list-toolbar__filters .ant-select {
     width: 100% !important;
+  }
+
+  .plan-version-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

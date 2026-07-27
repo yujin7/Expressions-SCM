@@ -176,6 +176,20 @@
       "when": 1785115540644,
       "tag": "0024_secret_talon",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1785117155094,
+      "tag": "0025_talented_daimon_hellstrom",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1785117727942,
+      "tag": "0026_immutable_planning_versions",
+      "breakpoints": true
     }
   ]
 }

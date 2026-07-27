@@ -62,4 +62,10 @@ describe("shared layout regressions", () => {
       /@media \(max-width:\s*991px\)[\s\S]*\.dashboard-header__meta\s*\{[^}]*flex:\s*0 0 auto;[^}]*width:\s*100%;/s,
     );
   });
+
+  it("submits the live input value when Enter follows typing before React state commits", () => {
+    const source = read("src/components/SearchInput.tsx");
+    expect(source).toContain("onSearch?.(event.currentTarget.value, event)");
+    expect(source).not.toContain("if (!event.defaultPrevented) submit(event)");
+  });
 });

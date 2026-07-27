@@ -24,12 +24,26 @@ async function main(): Promise<void> {
          from information_schema.tables
         where table_schema = 'public'
           and table_name = any($1::text[])`,
-      [["users", "stock_ledger", "stock_balances", "audit_logs", "batches"]],
+      [[
+        "users",
+        "stock_ledger",
+        "stock_balances",
+        "audit_logs",
+        "batches",
+        "planning_versions",
+        "planning_version_lines",
+      ]],
     );
     const found = new Set(tables.rows.map((row) => row.table_name));
-    const missing = ["users", "stock_ledger", "stock_balances", "audit_logs", "batches"].filter(
-      (name) => !found.has(name),
-    );
+    const missing = [
+      "users",
+      "stock_ledger",
+      "stock_balances",
+      "audit_logs",
+      "batches",
+      "planning_versions",
+      "planning_version_lines",
+    ].filter((name) => !found.has(name));
     if (missing.length) throw new Error(`Missing migrated tables: ${missing.join(", ")}`);
 
     const sessionColumn = await client.query<{
@@ -64,6 +78,10 @@ async function main(): Promise<void> {
         "stock_ledger_append_only_truncate",
         "audit_logs_append_only",
         "audit_logs_append_only_truncate",
+        "planning_versions_append_only",
+        "planning_versions_append_only_truncate",
+        "planning_version_lines_append_only",
+        "planning_version_lines_append_only_truncate",
       ]],
     );
     const triggerPairs = new Set(
@@ -74,6 +92,10 @@ async function main(): Promise<void> {
       "stock_ledger:stock_ledger_append_only_truncate",
       "audit_logs:audit_logs_append_only",
       "audit_logs:audit_logs_append_only_truncate",
+      "planning_versions:planning_versions_append_only",
+      "planning_versions:planning_versions_append_only_truncate",
+      "planning_version_lines:planning_version_lines_append_only",
+      "planning_version_lines:planning_version_lines_append_only_truncate",
     ];
     const missingTriggers = requiredTriggerPairs.filter((pair) => !triggerPairs.has(pair));
     if (missingTriggers.length) {

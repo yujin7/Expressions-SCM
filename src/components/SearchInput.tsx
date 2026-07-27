@@ -58,7 +58,9 @@ const SearchInput = forwardRef<InputRef, SearchProps>(function SearchInput(
         }}
         onPressEnter={(event) => {
           onPressEnter?.(event);
-          if (!event.defaultPrevented) submit(event);
+          // Read from the input event itself: React state may not have committed
+          // yet when a user types and immediately presses Enter.
+          if (!event.defaultPrevented) onSearch?.(event.currentTarget.value, event);
         }}
         style={{
           minWidth: 0,
