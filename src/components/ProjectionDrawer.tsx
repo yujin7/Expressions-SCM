@@ -1,8 +1,8 @@
 "use client";
 
 /** #1 库存未来曲线抽屉：projected on-hand 逐日曲线 + 断货日/建议下单日标注（对标 Kinaxis projected on-hand）。 */
-import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Button, Card, DatePicker, Drawer, Empty, InputNumber, Space, Spin, Statistic, Table, Tag, Typography } from "antd";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Alert, App, Button, Card, DatePicker, Drawer, Empty, Input, InputNumber, Select, Space, Spin, Statistic, Table, Tag, Typography } from "antd";
 import type { Dayjs } from "dayjs";
 import {
   Area,
@@ -14,7 +14,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { fetchJson } from "@/components/fetchJson";
+import { fetchJson, postJson } from "@/components/fetchJson";
 import DecisionVisual from "@/components/DecisionVisual";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
 
@@ -25,6 +25,32 @@ interface Projection {
   points: Point[];
   stockoutDate: string | null; daysToStockout: number | null;
   orderByDate: string | null; orderWindowMissed: boolean;
+}
+
+interface ScenarioInputs {
+  extraInboundQty?: number;
+  extraInboundDate?: string;
+  dailyOverride?: number;
+}
+
+interface SavedScenario {
+  id: number;
+  name: string;
+  inputs: ScenarioInputs;
+  baseline: Projection;
+  scenario: Projection;
+  sourceDate: string;
+  createdByName: string | null;
+  createdAt: string;
+}
+
+function describeInputs(inputs: ScenarioInputs): string {
+  const parts: string[] = [];
+  if (inputs.extraInboundQty != null && inputs.extraInboundDate) {
+    parts.push(`${inputs.extraInboundDate} 到货 ${inputs.extraInboundQty.toLocaleString("zh-CN")}`);
+  }
+  if (inputs.dailyOverride != null) parts.push(`日均 ${inputs.dailyOverride.toLocaleString("zh-CN")}`);
+  return parts.join("；") || "无有效变量";
 }
 
 export default function ProjectionDrawer({
@@ -43,10 +69,44 @@ export default function ProjectionDrawer({
   const [extraQty, setExtraQty] = useState<number | null>(null);
   const [extraDate, setExtraDate] = useState<Dayjs | null>(null);
   const [dailyOverride, setDailyOverride] = useState<number | null>(null);
+  const [appliedInputs, setAppliedInputs] = useState<ScenarioInputs | null>(null);
+  const [scenarioName, setScenarioName] = useState("");
+  const [saved, setSaved] = useState<SavedScenario[]>([]);
+  const [compareIds, setCompareIds] = useState<number[]>([]);
+  const [savedLoading, setSavedLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const projectionRequest = useRef<AbortController | null>(null);
+  const savedRequest = useRef<AbortController | null>(null);
+
+  const loadSaved = useCallback(async (): Promise<SavedScenario[]> => {
+    if (!skuCode) return [];
+    savedRequest.current?.abort();
+    const request = new AbortController();
+    savedRequest.current = request;
+    setSavedLoading(true);
+    try {
+      const rows = await fetchJson<SavedScenario[]>(
+        `/api/replenish/scenarios?sku=${encodeURIComponent(skuCode)}`,
+        { signal: request.signal },
+      );
+      if (request.signal.aborted) return [];
+      setSaved(rows);
+      setCompareIds((current) => current.filter((id) => rows.some((row) => row.id === id)));
+      return rows;
+    } catch (error) {
+      if (!request.signal.aborted) message.error((error as Error).message);
+      return [];
+    } finally {
+      if (savedRequest.current === request) setSavedLoading(false);
+    }
+  }, [skuCode, message]);
 
   const fetchProj = useCallback(
-    (scenario?: { extraQty?: number | null; extraDate?: Dayjs | null; dailyOverride?: number | null }) => {
+    async (scenario?: { extraQty?: number | null; extraDate?: Dayjs | null; dailyOverride?: number | null }) => {
       if (!skuCode) return;
+      projectionRequest.current?.abort();
+      const request = new AbortController();
+      projectionRequest.current = request;
       setLoading(true);
       const p = new URLSearchParams({ sku: skuCode, horizon: "120" });
       if (scenario?.extraQty && scenario.extraDate) {
@@ -54,10 +114,26 @@ export default function ProjectionDrawer({
         p.set("extraDate", scenario.extraDate.format("YYYY-MM-DD"));
       }
       if (scenario?.dailyOverride != null) p.set("dailyOverride", String(scenario.dailyOverride));
-      fetchJson<Projection & { scenarioApplied?: boolean }>(`/api/replenish/projection?${p.toString()}`)
-        .then(setData)
-        .catch((e) => message.error((e as Error).message))
-        .finally(() => setLoading(false));
+      const inputs: ScenarioInputs | null = scenario
+        ? {
+            extraInboundQty: scenario.extraQty ?? undefined,
+            extraInboundDate: scenario.extraDate?.format("YYYY-MM-DD"),
+            dailyOverride: scenario.dailyOverride ?? undefined,
+          }
+        : null;
+      try {
+        const result = await fetchJson<Projection & { scenarioApplied?: boolean }>(
+          `/api/replenish/projection?${p.toString()}`,
+          { signal: request.signal },
+        );
+        if (request.signal.aborted) return;
+        setData(result);
+        setAppliedInputs(result.scenarioApplied ? inputs : null);
+      } catch (error) {
+        if (!request.signal.aborted) message.error((error as Error).message);
+      } finally {
+        if (projectionRequest.current === request) setLoading(false);
+      }
     },
     [skuCode, message],
   );
@@ -68,8 +144,43 @@ export default function ProjectionDrawer({
     setExtraQty(null);
     setExtraDate(null);
     setDailyOverride(null);
-    fetchProj();
-  }, [open, skuCode, fetchProj]);
+    setAppliedInputs(null);
+    setScenarioName("");
+    setCompareIds([]);
+    void fetchProj();
+    void loadSaved();
+  }, [open, skuCode, fetchProj, loadSaved]);
+
+  useEffect(() => () => {
+    projectionRequest.current?.abort();
+    savedRequest.current?.abort();
+  }, []);
+
+  const saveCurrent = async () => {
+    if (!skuCode || !appliedInputs || !scenarioName.trim()) return;
+    setSaving(true);
+    try {
+      const created = await postJson<SavedScenario>("/api/replenish/scenarios", {
+        sku: skuCode,
+        name: scenarioName.trim(),
+        horizonDays: 120,
+        ...appliedInputs,
+        idempotencyKey: globalThis.crypto.randomUUID(),
+      });
+      message.success("情景已保存，可与历史方案并排比较");
+      setScenarioName("");
+      await loadSaved();
+      setCompareIds((current) => [created.id, ...current.filter((id) => id !== created.id)].slice(0, 2));
+    } catch (error) {
+      message.error((error as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const compared = compareIds
+    .map((id) => saved.find((row) => row.id === id))
+    .filter((row): row is SavedScenario => row != null);
 
   return (
     <Drawer
@@ -168,7 +279,7 @@ export default function ProjectionDrawer({
               </AreaChart>
             </ResponsiveContainer>
           </DecisionVisual>
-          <Card size="small" title="What-if 沙盘（不落库，仅推演）" style={{ background: "#fafafa" }}>
+          <Card size="small" title="What-if 沙盘（先推演，再保存证据）" style={{ background: "#fafafa" }}>
             <Space wrap align="end">
               <div>
                 <div style={{ fontSize: 12, color: "#888" }}>假设到货量</div>
@@ -182,16 +293,97 @@ export default function ProjectionDrawer({
                 <div style={{ fontSize: 12, color: "#888" }}>覆盖日均（如大促）</div>
                 <InputNumber min={0} value={dailyOverride} onChange={setDailyOverride} style={{ width: 120 }} placeholder={String(data.daily)} />
               </div>
-              <Button type="primary" onClick={() => fetchProj({ extraQty, extraDate, dailyOverride })}>
+              <Button type="primary" onClick={() => void fetchProj({ extraQty, extraDate, dailyOverride })}>
                 推演
               </Button>
               <Button
-                onClick={() => { setExtraQty(null); setExtraDate(null); setDailyOverride(null); fetchProj(); }}
+                onClick={() => { setExtraQty(null); setExtraDate(null); setDailyOverride(null); void fetchProj(); }}
               >
                 重置
               </Button>
               {data.scenarioApplied ? <Tag color="purple">沙盘结果</Tag> : null}
             </Space>
+            {data.scenarioApplied && appliedInputs ? (
+              <Space wrap style={{ marginTop: 14 }}>
+                <Input
+                  value={scenarioName}
+                  onChange={(event) => setScenarioName(event.target.value)}
+                  maxLength={80}
+                  placeholder="为当前结果命名，如：大促高销速 + 加急到货"
+                  style={{ width: "min(360px, 100%)" }}
+                  onPressEnter={() => void saveCurrent()}
+                />
+                <Button
+                  onClick={() => void saveCurrent()}
+                  loading={saving}
+                  disabled={!scenarioName.trim()}
+                >
+                  保存当前情景
+                </Button>
+                <Typography.Text type="secondary">
+                  保存的是当前已显示结果：{describeInputs(appliedInputs)}
+                </Typography.Text>
+              </Space>
+            ) : null}
+          </Card>
+          <Card
+            size="small"
+            title={`已保存情景（${saved.length}）`}
+            extra={<Button size="small" onClick={() => void loadSaved()} loading={savedLoading}>刷新</Button>}
+          >
+            {saved.length === 0 ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="运行并命名一个沙盘后，可在这里并排比较" />
+            ) : (
+              <Space direction="vertical" style={{ width: "100%" }} size="middle">
+                <Select
+                  mode="multiple"
+                  value={compareIds}
+                  onChange={(ids) => setCompareIds(ids.slice(-2))}
+                  options={saved.map((row) => ({
+                    value: row.id,
+                    label: `${row.name} · ${row.sourceDate}`,
+                  }))}
+                  placeholder="选择最多两个情景并排比较"
+                  maxTagCount={2}
+                  style={{ width: "min(620px, 100%)" }}
+                />
+                {compared.length === 0 ? (
+                  <Typography.Text type="secondary">请选择一至两个已保存情景。</Typography.Text>
+                ) : (
+                  <div style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(min(300px, 100%), 1fr))",
+                    gap: 12,
+                  }}>
+                    {compared.map((row) => (
+                      <Card key={row.id} size="small" title={row.name}>
+                        <Space direction="vertical" style={{ width: "100%" }}>
+                          <Typography.Text>{describeInputs(row.inputs)}</Typography.Text>
+                          <Space size="large" wrap>
+                            <Statistic
+                              title="基准断货日"
+                              value={row.baseline.stockoutDate ?? "视野内不断货"}
+                              valueStyle={{ fontSize: 16 }}
+                            />
+                            <Statistic
+                              title="情景断货日"
+                              value={row.scenario.stockoutDate ?? "视野内不断货"}
+                              valueStyle={{
+                                fontSize: 16,
+                                color: row.scenario.stockoutDate ? "#cf1322" : "#3f8600",
+                              }}
+                            />
+                          </Space>
+                          <Typography.Text type="secondary">
+                            证据日 {row.sourceDate} · {row.createdByName ?? "未知用户"} · {new Date(row.createdAt).toLocaleString("zh-CN")}
+                          </Typography.Text>
+                        </Space>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+              </Space>
+            )}
           </Card>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             口径：投影在库 = 当前在库 + 各日到货（有确认到货日的 PO/存量在途）− 日均消耗；曲线可为负（真实缺口，不夹到 0）。基准日 {data.today}。

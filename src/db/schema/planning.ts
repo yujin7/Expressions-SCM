@@ -63,3 +63,26 @@ export const planningVersionLines = pgTable("planning_version_lines", {
   unique("uq_planning_version_sku").on(t.versionId, t.skuId),
   index("ix_planning_line_sku_version").on(t.skuId, t.versionId),
 ]);
+
+/**
+ * E2-14 / C123：单 SKU what-if 情景快照。
+ *
+ * 输入和输出同时保存，确保以后并排比较的是当时看到的决策证据，而不是用今天的库存悄悄回算。
+ */
+export const projectionScenarios = pgTable("projection_scenarios", {
+  id: serial("id").primaryKey(),
+  skuId: integer("sku_id").notNull().references(() => skus.id),
+  name: text("name").notNull(),
+  horizonDays: integer("horizon_days").notNull(),
+  inputs: jsonb("inputs").notNull(),
+  baselineResult: jsonb("baseline_result").notNull(),
+  scenarioResult: jsonb("scenario_result").notNull(),
+  sourceDate: date("source_date").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  createdBy: integer("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique("uq_projection_scenario_idempotency").on(t.idempotencyKey),
+  index("ix_projection_scenario_sku_created").on(t.skuId, t.createdAt),
+  index("ix_projection_scenario_creator_created").on(t.createdBy, t.createdAt),
+]);

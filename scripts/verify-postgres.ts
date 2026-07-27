@@ -32,6 +32,7 @@ async function main(): Promise<void> {
         "batches",
         "planning_versions",
         "planning_version_lines",
+        "projection_scenarios",
       ]],
     );
     const found = new Set(tables.rows.map((row) => row.table_name));
@@ -43,6 +44,7 @@ async function main(): Promise<void> {
       "batches",
       "planning_versions",
       "planning_version_lines",
+      "projection_scenarios",
     ].filter((name) => !found.has(name));
     if (missing.length) throw new Error(`Missing migrated tables: ${missing.join(", ")}`);
 
@@ -82,6 +84,8 @@ async function main(): Promise<void> {
         "planning_versions_append_only_truncate",
         "planning_version_lines_append_only",
         "planning_version_lines_append_only_truncate",
+        "projection_scenarios_append_only",
+        "projection_scenarios_append_only_truncate",
       ]],
     );
     const triggerPairs = new Set(
@@ -96,6 +100,8 @@ async function main(): Promise<void> {
       "planning_versions:planning_versions_append_only_truncate",
       "planning_version_lines:planning_version_lines_append_only",
       "planning_version_lines:planning_version_lines_append_only_truncate",
+      "projection_scenarios:projection_scenarios_append_only",
+      "projection_scenarios:projection_scenarios_append_only_truncate",
     ];
     const missingTriggers = requiredTriggerPairs.filter((pair) => !triggerPairs.has(pair));
     if (missingTriggers.length) {
