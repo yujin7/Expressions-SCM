@@ -314,12 +314,14 @@ function ScorecardTab() {
             <SearchInput
               key={q}
               allowClear
+              size="small"
               defaultValue={q}
               placeholder="搜索供应商编码/名称"
               style={{ width: 240 }}
               onSearch={(v) => listState.setFilter({ q: v.trim() })}
             />
             <Segmented
+              size="small"
               value={windowDays}
               onChange={(v) => listState.setFilter({ windowDays: String(v) })}
               options={[{ label: "近 90 天", value: 90 }, { label: "近 180 天", value: 180 }, { label: "近 365 天", value: 365 }]}

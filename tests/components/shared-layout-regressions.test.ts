@@ -48,12 +48,28 @@ describe("shared layout regressions", () => {
     expect(scorecard).toContain("查看完整评分口径与数据限制");
     expect(toolbar).toContain('className="list-toolbar__filters"');
     expect(toolbar).toContain('className="list-toolbar__actions"');
+    expect(toolbar).toContain('className="list-toolbar__right"');
+    expect(toolbar).toContain('className="list-toolbar__primary-actions"');
+    expect(toolbar).toContain('role="toolbar"');
     expect(styles).toMatch(
       /\.supplier-scorecard-kpis\s*\{[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\);/s,
     );
     expect(styles).toMatch(
-      /@media \(max-width:\s*575px\)[\s\S]*\.list-toolbar__filters,[\s\S]*\.list-toolbar__actions\s*\{[^}]*width:\s*100%;/s,
+      /@container app-surface \(max-width:\s*760px\)[\s\S]*\.supplier-scorecard-kpis\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/s,
     );
+    expect(styles).toMatch(
+      /\.list-toolbar--actions-only \.list-toolbar__right\s*\{[^}]*width:\s*100%;/s,
+    );
+  });
+
+  it("merges page-level primary actions into the shared list toolbar", () => {
+    const pc = read("src/app/(app)/outsource/pc/pc-client.tsx");
+    const toolbar = read("src/components/ListToolbar.tsx");
+
+    expect(toolbar).toContain("primaryActions?: React.ReactNode");
+    expect(pc).toContain("primaryActions={");
+    expect(pc).toContain('scroll={{ x: "max-content" }}');
+    expect(pc).not.toContain('style={{ marginBottom: 12, display: "flex", justifyContent: "flex-end" }}');
   });
 
   it("clears the desktop metadata flex basis after dashboard headers stack", () => {

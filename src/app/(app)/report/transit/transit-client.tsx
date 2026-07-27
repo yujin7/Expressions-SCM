@@ -164,6 +164,7 @@ function KindTable({ kind, prefix, columns }: { kind: string; prefix: string; co
             <SearchInput
               key={q}
               allowClear
+              size="small"
               defaultValue={q}
               placeholder="搜索编码/名称/审批号/用友单号"
               style={{ width: 300 }}

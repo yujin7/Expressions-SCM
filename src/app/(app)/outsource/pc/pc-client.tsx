@@ -243,28 +243,34 @@ function PcInner() {
         items={STATUS_TABS}
         onChange={(key) => listState.setFilter({ status: key })}
       />
-      <Space style={{ marginBottom: 12, display: "flex", justifyContent: "flex-end" }} wrap>
-        <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-          刷新
-        </Button>
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          onClick={() => {
-            form.resetFields();
-            setCreateOpen(true);
-          }}
-        >
-          发起加工费改价
-        </Button>
-      </Space>
-      <ListToolbar state={listState} />
+      <ListToolbar
+        state={listState}
+        primaryActions={
+          <>
+            <Button size="small" icon={<ReloadOutlined />} onClick={() => void load()}>
+              刷新
+            </Button>
+            <Button
+              size="small"
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => {
+                form.resetFields();
+                setCreateOpen(true);
+              }}
+            >
+              发起加工费改价
+            </Button>
+          </>
+        }
+      />
       <Table<PcRow>
         rowKey="id"
         size={listState.tableSize}
         columns={columns}
         dataSource={rows}
         loading={loading}
+        scroll={{ x: "max-content" }}
         pagination={listState.paginationProps({ total: total })}
       />
 

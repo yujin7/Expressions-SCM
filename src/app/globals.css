@@ -100,6 +100,8 @@ body {
 }
 
 .app-surface {
+  container-name: app-surface;
+  container-type: inline-size;
   min-height: calc(100vh - 96px);
   overflow: hidden;
   border: 1px solid rgba(223, 229, 238, 0.85);
@@ -195,19 +197,46 @@ body {
 }
 
 .list-toolbar {
-  display: flex !important;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
   width: 100%;
+  padding: 8px 10px;
   margin-bottom: 12px;
-  justify-content: space-between;
+  border: 1px solid #edf0f5;
+  border-radius: 10px;
+  background: #fafbfe;
 }
 
-.list-toolbar__filters,
-.list-toolbar__actions {
+.list-toolbar__filters {
+  flex: 1 1 360px;
   min-width: 0;
 }
 
-.list-toolbar__actions {
+.list-toolbar__right {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  margin-left: auto;
   justify-content: flex-end;
+}
+
+.list-toolbar__actions,
+.list-toolbar__primary-actions {
+  justify-content: flex-end;
+}
+
+.list-toolbar__primary-actions {
+  padding-left: 8px;
+  border-left: 1px solid #e5e9f0;
+}
+
+.list-toolbar--actions-only .list-toolbar__right {
+  width: 100%;
 }
 
 .decision-visual,
@@ -228,9 +257,20 @@ body {
   height: 100%;
 }
 
+.supplier-scorecard-kpis .ant-card-body {
+  padding: 12px 14px;
+}
+
 .supplier-scorecard-kpis .ant-statistic-title {
-  min-height: 44px;
-  line-height: 1.45;
+  min-height: 38px;
+  margin-bottom: 4px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.supplier-scorecard-kpis .ant-statistic-content {
+  font-size: 24px;
+  line-height: 1.2;
 }
 
 .supplier-scorecard-methodology__details {
@@ -677,12 +717,21 @@ body {
   }
 
   .list-toolbar__filters,
-  .list-toolbar__actions {
+  .list-toolbar__right {
     width: 100%;
   }
 
-  .list-toolbar__actions {
+  .list-toolbar__right,
+  .list-toolbar__actions,
+  .list-toolbar__primary-actions {
     justify-content: flex-start;
+  }
+
+  .list-toolbar__primary-actions {
+    padding-top: 8px;
+    padding-left: 0;
+    border-top: 1px solid #e5e9f0;
+    border-left: 0;
   }
 
   .list-toolbar__filters > .ant-space-item:has(.ant-input-search),
@@ -698,6 +747,23 @@ body {
 
   .plan-version-kpis {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* The navigation rail can leave a tablet-sized workspace inside a desktop
+   viewport. Respond to the actual page surface, not only window breakpoints. */
+@container app-surface (max-width: 760px) {
+  .supplier-scorecard-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .list-toolbar__filters {
+    flex-basis: 100%;
+  }
+
+  .list-toolbar__right {
+    width: 100%;
+    justify-content: flex-end;
   }
 }
 
