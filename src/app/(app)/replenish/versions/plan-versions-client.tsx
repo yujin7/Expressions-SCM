@@ -6,6 +6,8 @@ import {
   App,
   Button,
   Card,
+  Descriptions,
+  Drawer,
   Input,
   Modal,
   Select,
@@ -76,6 +78,44 @@ interface DiffData {
   summary: Record<DiffCategory, number> & { total: number };
 }
 
+interface PeggingRow {
+  id: number;
+  planningLineId: number;
+  skuId: number;
+  skuCode: string;
+  skuName: string;
+  baseUom: string;
+  evidenceDigest: string;
+  demandDate: string;
+  demandQty: string;
+  sourceType: string;
+  sourceRef: string | null;
+  supplyDate: string | null;
+  availableQty: string;
+  peggedQty: string;
+  confidence: string;
+  status: string;
+  explanation: string;
+}
+
+interface PeggingData {
+  version: PlanningVersion;
+  mode: "demand_to_supply" | "supply_to_demand";
+  query: { skuId: number | null; sourceType: string | null; sourceRef: string | null };
+  summary: {
+    demandQty: string;
+    peggedQty: string;
+    bookedQty: string;
+    referenceQty: string;
+    proposedQty: string;
+    uncoveredQty: string;
+    coveragePct: number;
+    demandCount: number;
+    linkCount: number;
+  };
+  rows: PeggingRow[];
+}
+
 const CATEGORY_META: Record<DiffCategory, { label: string; color: string }> = {
   new_alert: { label: "新增告急", color: "red" },
   resolved: { label: "已解除", color: "green" },
@@ -83,6 +123,22 @@ const CATEGORY_META: Record<DiffCategory, { label: string; color: string }> = {
   improved: { label: "改善", color: "cyan" },
   mixed: { label: "混合变化", color: "gold" },
   stable: { label: "稳定", color: "default" },
+};
+
+const SOURCE_LABEL: Record<string, string> = {
+  on_hand: "记账在库",
+  po: "采购在途",
+  wo: "委外在制",
+  legacy_fg: "存量登记",
+  recommended_replenishment: "拟补货",
+  held_recommendation: "被抑制建议",
+};
+
+const CONFIDENCE_META: Record<string, { label: string; color: string }> = {
+  booked: { label: "记账/确认", color: "blue" },
+  reference: { label: "参考", color: "gold" },
+  proposed: { label: "拟议", color: "purple" },
+  suppressed: { label: "抑制", color: "default" },
 };
 
 const DATE_TIME = new Intl.DateTimeFormat("zh-CN", {
@@ -132,6 +188,9 @@ export default function PlanVersionsClient({ canCapture }: { canCapture: boolean
   const [captureName, setCaptureName] = useState("");
   const [captureKey, setCaptureKey] = useState("");
   const [capturing, setCapturing] = useState(false);
+  const [peggingOpen, setPeggingOpen] = useState(false);
+  const [peggingLoading, setPeggingLoading] = useState(false);
+  const [pegging, setPegging] = useState<PeggingData | null>(null);
 
   const refreshVersions = useCallback(async (signal?: AbortSignal): Promise<PlanningVersion[]> => {
     const result = await fetchJson<{ versions: PlanningVersion[] }>("/api/replenish/versions", { signal });
@@ -196,6 +255,29 @@ export default function PlanVersionsClient({ canCapture }: { canCapture: boolean
     });
   }, [data, filters.category, filters.q]);
 
+  const loadPegging = useCallback(async (query: {
+    versionId: number;
+    skuId?: number;
+    sourceType?: string;
+    sourceRef?: string;
+  }) => {
+    setPeggingOpen(true);
+    setPeggingLoading(true);
+    try {
+      const params = new URLSearchParams({ versionId: String(query.versionId) });
+      if (query.skuId != null) params.set("skuId", String(query.skuId));
+      if (query.sourceType && query.sourceRef) {
+        params.set("sourceType", query.sourceType);
+        params.set("sourceRef", query.sourceRef);
+      }
+      setPegging(await fetchJson<PeggingData>(`/api/replenish/versions/pegging?${params}`));
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "供需追溯加载失败");
+    } finally {
+      setPeggingLoading(false);
+    }
+  }, [message]);
+
   const columns: ColumnsType<DiffRow> = useMemo(() => [
     {
       title: "变化",
@@ -234,7 +316,21 @@ export default function PlanVersionsClient({ canCapture }: { canCapture: boolean
         </Space>
       ),
     },
-  ], []);
+    {
+      title: "供需",
+      key: "pegging",
+      width: 104,
+      fixed: "right",
+      render: (_, row) => {
+        const versionId = row.current ? data?.current.id : data?.base?.id;
+        return versionId ? (
+          <Button type="link" size="small" onClick={() => void loadPegging({ versionId, skuId: row.skuId })}>
+            双向追溯
+          </Button>
+        ) : "—";
+      },
+    },
+  ], [data, loadPegging]);
 
   const openCapture = () => {
     setCaptureName("");
@@ -429,6 +525,128 @@ export default function PlanVersionsClient({ canCapture }: { canCapture: boolean
           style={{ marginTop: 6 }}
         />
       </Modal>
+
+      <Drawer
+        title={pegging?.mode === "supply_to_demand" ? "供给反查需求" : "需求追溯供给"}
+        width="min(1120px, 100vw)"
+        open={peggingOpen}
+        loading={peggingLoading}
+        onClose={() => setPeggingOpen(false)}
+        destroyOnHidden
+      >
+        {pegging ? (
+          <>
+            <Alert
+              type="info"
+              showIcon
+              message={`不可变快照：${pegging.version.name}`}
+              description="分配只使用保存版本当时的输入。无日期、晚到与被抑制供给显式保留但不计覆盖；拟补货仍须人工生成 BH 并审批。"
+              style={{ marginBottom: 16 }}
+            />
+            <Descriptions
+              size="small"
+              bordered
+              column={{ xs: 1, sm: 2, lg: 3 }}
+              style={{ marginBottom: 16 }}
+              items={[
+                { key: "demand", label: "需求桶", children: Number(pegging.summary.demandQty).toLocaleString("zh-CN") },
+                { key: "coverage", label: "总覆盖", children: `${Number(pegging.summary.peggedQty).toLocaleString("zh-CN")}（${pegging.summary.coveragePct}%）` },
+                { key: "uncovered", label: "未覆盖", children: Number(pegging.summary.uncoveredQty).toLocaleString("zh-CN") },
+                { key: "booked", label: "记账/确认覆盖", children: Number(pegging.summary.bookedQty).toLocaleString("zh-CN") },
+                { key: "reference", label: "参考覆盖", children: Number(pegging.summary.referenceQty).toLocaleString("zh-CN") },
+                { key: "proposed", label: "拟议覆盖", children: Number(pegging.summary.proposedQty).toLocaleString("zh-CN") },
+              ]}
+            />
+            {pegging.mode === "supply_to_demand" ? (
+              <Button
+                size="small"
+                style={{ marginBottom: 12 }}
+                onClick={() => {
+                  const skuId = pegging.rows[0]?.skuId;
+                  if (skuId != null) void loadPegging({ versionId: pegging.version.id, skuId });
+                }}
+              >
+                返回需求 → 供给
+              </Button>
+            ) : null}
+            <Table<PeggingRow>
+              rowKey="id"
+              size="small"
+              pagination={false}
+              dataSource={pegging.rows}
+              scroll={{ x: 1155 }}
+              locale={{ emptyText: "该历史版本没有 pegging 证据；请保存一个新版本。" }}
+              columns={[
+                { title: "需求 SKU", dataIndex: "skuCode", width: 105, fixed: "left" },
+                { title: "需求日", dataIndex: "demandDate", width: 105 },
+                {
+                  title: "来源",
+                  dataIndex: "sourceType",
+                  width: 100,
+                  render: (value: string) => SOURCE_LABEL[value] ?? value,
+                },
+                {
+                  title: "供给编号",
+                  dataIndex: "sourceRef",
+                  width: 120,
+                  render: (value: string | null, row) => value ? (
+                    <Button
+                      type="link"
+                      size="small"
+                      style={{ paddingInline: 0 }}
+                      onClick={() => void loadPegging({
+                        versionId: pegging.version.id,
+                        sourceType: row.sourceType,
+                        sourceRef: value,
+                      })}
+                    >
+                      {value}
+                    </Button>
+                  ) : "—",
+                },
+                { title: "到货日", dataIndex: "supplyDate", width: 105, render: (value: string | null) => value ?? "—" },
+                {
+                  title: "可用量",
+                  dataIndex: "availableQty",
+                  width: 90,
+                  align: "right",
+                  render: (value: string) => Number(value).toLocaleString("zh-CN"),
+                },
+                {
+                  title: "分配量",
+                  dataIndex: "peggedQty",
+                  width: 90,
+                  align: "right",
+                  render: (value: string) => Number(value).toLocaleString("zh-CN"),
+                },
+                {
+                  title: "证据级别",
+                  dataIndex: "confidence",
+                  width: 100,
+                  render: (value: string) => {
+                    const meta = CONFIDENCE_META[value] ?? { label: value, color: "default" };
+                    return <Tag color={meta.color}>{meta.label}</Tag>;
+                  },
+                },
+                {
+                  title: "状态",
+                  dataIndex: "status",
+                  width: 100,
+                  render: (value: string) => ({
+                    pegged: "已分配",
+                    partial: "部分分配",
+                    excess: "超出需求",
+                    excluded_undated: "缺到货日",
+                    excluded_late: "晚于需求",
+                    suppressed: "已抑制",
+                  })[value] ?? value,
+                },
+                { title: "解释", dataIndex: "explanation", width: 240 },
+              ]}
+            />
+          </>
+        ) : null}
+      </Drawer>
     </div>
   );
 }

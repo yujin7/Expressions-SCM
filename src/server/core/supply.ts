@@ -43,6 +43,10 @@ export interface OpenSupplyLine {
   source: SupplySource;
   /** 单号/审批号，便于追溯；参考层可能缺号 = null */
   ref: string | null;
+  /** 原始单据/登记主键；供不可变决策证据反查，不替代 ref 的人类可读单号 */
+  sourceDocId: number;
+  /** 有行级事实时保留行主键（PO）；头级供给（WO/登记）为 null */
+  sourceLineId: number | null;
 }
 
 export interface SupplyOptions {
@@ -80,6 +84,8 @@ export async function getOpenSupplyLines(
 
   /* ① po 采购在途：已审批/执行中 PO 行未收量（基础单位 = qty×uomFactor − receivedQty，逐行下限 0） */
   const poRows: {
+    docId: number;
+    lineId: number;
     skuId: number;
     qty: string;
     uomFactor: string;
@@ -89,6 +95,8 @@ export async function getOpenSupplyLines(
     docNo: string;
   }[] = await db
     .select({
+      docId: schema.poDocs.id,
+      lineId: schema.poLines.id,
       skuId: schema.poLines.skuId,
       qty: schema.poLines.qty,
       uomFactor: schema.poLines.uomFactor,
@@ -109,12 +117,15 @@ export async function getOpenSupplyLines(
       expectDate: r.lineDate ?? r.docDate ?? null, // 行级交期优先于头交期（func#11）
       source: "po",
       ref: r.docNo,
+      sourceDocId: r.docId,
+      sourceLineId: r.lineId,
     });
   }
 
   /* ② wo 在制委外产出：已审批/执行中且未暂停的 WO 计划产出，due_date 作到货日 */
-  const woRows: { skuId: number; qty: string; dueDate: string | null; docNo: string }[] = await db
+  const woRows: { docId: number; skuId: number; qty: string; dueDate: string | null; docNo: string }[] = await db
     .select({
+      docId: schema.woDocs.id,
       skuId: schema.woDocs.productSkuId,
       qty: schema.woDocs.qty,
       dueDate: schema.woDocs.dueDate,
@@ -131,13 +142,22 @@ export async function getOpenSupplyLines(
   for (const r of woRows) {
     const remain = dQty(decOf(r.qty));
     if (dCmp(remain, "0") <= 0) continue;
-    lines.push({ skuId: r.skuId, qty: q4(remain), expectDate: r.dueDate ?? null, source: "wo", ref: r.docNo });
+    lines.push({
+      skuId: r.skuId,
+      qty: q4(remain),
+      expectDate: r.dueDate ?? null,
+      source: "wo",
+      ref: r.docNo,
+      sourceDocId: r.docId,
+      sourceLineId: null,
+    });
   }
 
   /* ③④ 参考层 transit_refs：fg_order 存量单在途（恒取），stock_summary 在订未出（默认关闭） */
   const tr = schema.transitRefs;
   const kinds = opts?.includeOnOrder ? ["fg_order", "stock_summary"] : ["fg_order"];
   const refRows: {
+    id: number;
     kind: string;
     skuId: number | null;
     qty: string | null;
@@ -148,6 +168,7 @@ export async function getOpenSupplyLines(
     approvalNo: string | null;
   }[] = await db
     .select({
+      id: tr.id,
       kind: tr.kind,
       skuId: tr.skuId,
       qty: tr.qty,
@@ -166,13 +187,29 @@ export async function getOpenSupplyLines(
       if (r.qty == null) continue;
       const remain = dSub(dSub(decOf(r.qty), decOf(r.inboundQty), 6), decOf(r.closedQty), 6);
       if (dCmp(remain, "0") <= 0) continue; // 已入库/已关单的存量单不再算在途
-      lines.push({ skuId: r.skuId, qty: q4(remain), expectDate: r.expectDate ?? null, source: "legacy_fg", ref });
+      lines.push({
+        skuId: r.skuId,
+        qty: q4(remain),
+        expectDate: r.expectDate ?? null,
+        source: "legacy_fg",
+        ref,
+        sourceDocId: r.id,
+        sourceLineId: null,
+      });
     } else {
       // stock_summary：inbound_qty = 已下单未出货；时点快照，无到货日
       if (r.inboundQty == null) continue;
       const remain = dQty(decOf(r.inboundQty));
       if (dCmp(remain, "0") <= 0) continue;
-      lines.push({ skuId: r.skuId, qty: q4(remain), expectDate: null, source: "on_order", ref });
+      lines.push({
+        skuId: r.skuId,
+        qty: q4(remain),
+        expectDate: null,
+        source: "on_order",
+        ref,
+        sourceDocId: r.id,
+        sourceLineId: null,
+      });
     }
   }
 

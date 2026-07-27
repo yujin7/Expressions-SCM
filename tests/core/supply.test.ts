@@ -110,7 +110,9 @@ describe("未结供给行视图 getOpenSupplyLines", () => {
 
   it("legacy_fg：扣减 inbound+closed，抵完/未解析 SKU 的行不出现", async () => {
     const lines = (await getOpenSupplyLines(db, [skuA])).filter((l) => l.source === "legacy_fg");
-    expect(lines).toEqual([{ skuId: skuA, qty: 50, expectDate: "2026-08-20", source: "legacy_fg", ref: "FG-1" }]);
+    expect(lines.map(({ skuId, qty, expectDate, source, ref }) => ({ skuId, qty, expectDate, source, ref })))
+      .toEqual([{ skuId: skuA, qty: 50, expectDate: "2026-08-20", source: "legacy_fg", ref: "FG-1" }]);
+    expect(lines[0]).toMatchObject({ sourceDocId: expect.any(Number), sourceLineId: null });
   });
 
   it("on_order：默认不返回；includeOnOrder=true 时返回且无到货日", async () => {
@@ -119,7 +121,8 @@ describe("未结供给行视图 getOpenSupplyLines", () => {
 
     const on = await getOpenSupplyLines(db, [skuA, skuB], { includeOnOrder: true });
     const onOrder = on.filter((l) => l.source === "on_order");
-    expect(onOrder).toEqual([{ skuId: skuA, qty: 77, expectDate: null, source: "on_order", ref: null }]); // B 的 0 量不出现
+    expect(onOrder.map(({ skuId, qty, expectDate, source, ref }) => ({ skuId, qty, expectDate, source, ref })))
+      .toEqual([{ skuId: skuA, qty: 77, expectDate: null, source: "on_order", ref: null }]); // B 的 0 量不出现
   });
 
   it("summarizeSupply：逐 SKU 分组，dated/undated 与 bySource 正确", async () => {

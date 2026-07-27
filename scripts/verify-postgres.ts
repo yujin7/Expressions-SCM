@@ -35,6 +35,7 @@ async function main(): Promise<void> {
         "batches",
         "planning_versions",
         "planning_version_lines",
+        "supply_demand_links",
         "projection_scenarios",
       ]],
     );
@@ -50,6 +51,7 @@ async function main(): Promise<void> {
       "batches",
       "planning_versions",
       "planning_version_lines",
+      "supply_demand_links",
       "projection_scenarios",
     ].filter((name) => !found.has(name));
     if (missing.length) throw new Error(`Missing migrated tables: ${missing.join(", ")}`);
@@ -90,6 +92,9 @@ async function main(): Promise<void> {
         "planning_versions_append_only_truncate",
         "planning_version_lines_append_only",
         "planning_version_lines_append_only_truncate",
+        "supply_demand_links_append_only",
+        "supply_demand_links_append_only_truncate",
+        "supply_demand_link_identity",
         "projection_scenarios_append_only",
         "projection_scenarios_append_only_truncate",
         "bin_movements_append_only",
@@ -108,6 +113,9 @@ async function main(): Promise<void> {
       "planning_versions:planning_versions_append_only_truncate",
       "planning_version_lines:planning_version_lines_append_only",
       "planning_version_lines:planning_version_lines_append_only_truncate",
+      "supply_demand_links:supply_demand_links_append_only",
+      "supply_demand_links:supply_demand_links_append_only_truncate",
+      "supply_demand_links:supply_demand_link_identity",
       "projection_scenarios:projection_scenarios_append_only",
       "projection_scenarios:projection_scenarios_append_only_truncate",
       "bin_movements:bin_movements_append_only",
@@ -130,6 +138,12 @@ async function main(): Promise<void> {
       "ck_bin_movement_has_endpoint",
       "ck_bin_movement_distinct_endpoints",
       "ck_bin_movement_operation",
+      "ck_supply_demand_positive_demand",
+      "ck_supply_demand_positive_available",
+      "ck_supply_demand_pegged_range",
+      "ck_supply_demand_sequence",
+      "ck_supply_demand_confidence",
+      "ck_supply_demand_status",
     ];
     const locationConstraints = await client.query<{ conname: string }>(
       `select conname
@@ -140,7 +154,7 @@ async function main(): Promise<void> {
     const foundConstraints = new Set(locationConstraints.rows.map((row) => row.conname));
     const missingConstraints = requiredLocationConstraints.filter((name) => !foundConstraints.has(name));
     if (missingConstraints.length) {
-      throw new Error(`Missing warehouse/bin database constraints: ${missingConstraints.join(", ")}`);
+      throw new Error(`Missing release-critical database constraints: ${missingConstraints.join(", ")}`);
     }
 
     const migrationCount = await client.query<{ count: string }>(

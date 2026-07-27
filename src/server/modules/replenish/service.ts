@@ -32,7 +32,7 @@ import { lastMonths } from "@/server/core/velocity";
 import { getOnHandBySku } from "@/server/core/stock-view";
 import { safetyStock } from "@/server/rules/safety-stock";
 import { timePhasedNetReq } from "@/server/rules/timephased";
-import { getOpenSupplyLines } from "@/server/core/supply";
+import { getOpenSupplyLines, type OpenSupplyLine } from "@/server/core/supply";
 import { makeResolver } from "@/server/core/scoped-params";
 import { type AnyDb, num, r1, resolveDb } from "@/server/core/svc";
 import { getSkuSupplyParams } from "@/server/modules/master/sku-supply-params";
@@ -102,6 +102,29 @@ export interface ReplenishRow {
   orderWindowMissed: boolean;
   /** 建议量的逐步解释（可解释链） */
   planExplain: string[];
+  /** E8-10：版本捕获专用的精确输入/输出；页面可忽略，保存时不得从展示舍入值反推。 */
+  decisionEvidence: ReplenishDecisionEvidence;
+}
+
+export interface ReplenishDecisionEvidence {
+  businessDate: string;
+  onHand: string;
+  poInTransit: string;
+  daily: string;
+  safetyQty: string;
+  targetLevel: string;
+  demandQty: string;
+  netRequiredQty: string;
+  actionWindowDays: number;
+  horizonDays: number;
+  supplyLines: Array<{
+    source: OpenSupplyLine["source"];
+    ref: string | null;
+    sourceDocId: number;
+    sourceLineId: number | null;
+    expectDate: string | null;
+    qty: string;
+  }>;
 }
 
 export interface ReplenishResult {
@@ -380,7 +403,11 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
   /* ── E2-05：预取「有确认到货日」的未结供给（core/supply 唯一定义）供逐日推演 ── */
   const supplyLines = await getOpenSupplyLines(db, skuIds);
   const arrivalsBySku = new Map<number, { date: string; qty: number }[]>();
+  const supplyLinesBySku = new Map<number, OpenSupplyLine[]>();
   for (const l of supplyLines) {
+    const evidence = supplyLinesBySku.get(l.skuId) ?? [];
+    evidence.push(l);
+    supplyLinesBySku.set(l.skuId, evidence);
     if (!l.expectDate || l.qty <= 0) continue;
     const arr = arrivalsBySku.get(l.skuId) ?? [];
     arr.push({ date: l.expectDate, qty: l.qty });
@@ -486,6 +513,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     /* ── E2-05 时间分段净需求：逐日推演到首次跌破安全库存，替代「日均×覆盖天数」单桶乘法。
           触发＝再订货点逻辑：短缺发生在生产周期内（来不及补）才建议下单。 ── */
     const actionWindow = leadDays != null && leadDays > 0 ? leadDays : minCoverAlert;
+    const horizonDays = Math.min(365, actionWindow + effectiveTarget + 30);
     const tp = timePhasedNetReq({
       today: todayStr,
       onHand: num(onHand),
@@ -494,7 +522,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       safetyQty: ss.safetyQty,
       coverTargetDays: effectiveTarget,
       leadDays,
-      horizonDays: Math.min(365, actionWindow + effectiveTarget + 30),
+      horizonDays,
     });
 
     let suggest: string | null = null;
@@ -530,6 +558,18 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     } else if (tp.shortageDate != null) {
       planExplain.push(`短缺在 ${tp.daysToShortage} 天后、超出行动窗口 ${actionWindow} 天（生产周期内可补），暂不建议下单`);
     }
+    const targetLevel = dAdd(
+      String(ss.safetyQty),
+      dMul(dailyDec, String(effectiveTarget), 6),
+      6,
+    );
+    const demandQty = tp.daysToShortage == null
+      ? "0"
+      : dAdd(
+          dMul(dailyDec, String(tp.daysToShortage + 1), 6),
+          targetLevel,
+          6,
+        );
     return {
       skuId: s.id,
       code: s.code,
@@ -565,6 +605,26 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       orderByDate: tp.orderByDate,
       orderWindowMissed: tp.orderWindowMissed,
       planExplain,
+      decisionEvidence: {
+        businessDate: todayStr,
+        onHand,
+        poInTransit: inTransit,
+        daily: dailyDec,
+        safetyQty: String(ss.safetyQty),
+        targetLevel,
+        demandQty,
+        netRequiredQty: String(tp.requiredQty),
+        actionWindowDays: actionWindow,
+        horizonDays,
+        supplyLines: (supplyLinesBySku.get(s.id) ?? []).map((line) => ({
+          source: line.source,
+          ref: line.ref,
+          sourceDocId: line.sourceDocId,
+          sourceLineId: line.sourceLineId,
+          expectDate: line.expectDate,
+          qty: dQty(String(line.qty)),
+        })),
+      },
     };
   });
 
@@ -607,6 +667,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     planExplain: r.planExplain,
     forecastDivergent: r.forecastDivergent,
     forecastTrusted: r.forecastTrusted,
+    decisionEvidence: r.decisionEvidence,
   }));
   return { rows, total: all.length, meta: { coverDaysTarget, minCoverAlert, months3, snapDate, suggestCount, refDate, suppressedCount, engine: "time_phased", serviceLevel } };
 }

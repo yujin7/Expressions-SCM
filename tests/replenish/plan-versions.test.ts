@@ -6,10 +6,14 @@ import {
   channels,
   planningVersionLines,
   planningVersions,
+  poDocs,
+  poLines,
   salesMonthly,
   skus,
   spus,
   stockBalances,
+  suppliers,
+  supplyDemandLinks,
   users,
   warehouses,
 } from "@/db/schema";
@@ -17,6 +21,7 @@ import type { SessionUser } from "@/server/core/dto";
 import {
   capturePlanningVersion,
   comparePlanningVersions,
+  getPlanningPegging,
   listPlanningVersions,
 } from "@/server/modules/replenish/plan-versions";
 import { createTestDb, type TestDb } from "../helpers/db";
@@ -66,6 +71,26 @@ describe("C122 planning version write/read loop", () => {
       accountingMode: "realtime",
     }).returning();
     warehouseId = warehouseRow.id;
+    const [supplier] = await db.insert(suppliers).values({
+      code: "PLAN-SUP",
+      name: "计划测试供应商",
+    }).returning();
+    const [po] = await db.insert(poDocs).values({
+      docNo: "PO-PLAN-1",
+      status: "approved",
+      supplierId: supplier.id,
+      expectedDate: "2026-07-28",
+      createdBy: pmc.id,
+    }).returning();
+    await db.insert(poLines).values({
+      poId: po.id,
+      skuId,
+      lineType: "raw",
+      purchaseUom: "件",
+      uomFactor: "1",
+      qty: "1",
+      price: "1",
+    });
   });
 
   it("captures an immutable all-SKU version atomically and replays idempotently", async () => {
@@ -88,6 +113,32 @@ describe("C122 planning version write/read loop", () => {
       skuCode: "PLAN-001",
       suggestedQty: expect.any(String),
       suppressed: false,
+      envelopeVersion: "decision-envelope/v1",
+      evidenceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(lines[0].decisionEnvelope).toMatchObject({
+      schemaVersion: "decision-envelope/v1",
+      decisionKind: "replenishment_recommendation",
+      engine: { key: "time_phased_replenishment", version: "time-phased-v2" },
+      inputs: { sku: { id: skuId, code: "PLAN-001" } },
+      outputs: { suggestedQty: expect.any(String), suppressed: false },
+    });
+    const links = await db
+      .select()
+      .from(supplyDemandLinks)
+      .where(eq(supplyDemandLinks.versionId, first.id));
+    expect(links).toHaveLength(2);
+    expect(links.find((link) => link.sourceType === "recommended_replenishment")).toMatchObject({
+      skuId,
+      sourceType: "recommended_replenishment",
+      confidence: "proposed",
+      status: expect.stringMatching(/^(pegged|partial)$/),
+    });
+    expect(links.find((link) => link.sourceType === "po")).toMatchObject({
+      sourceRef: "PO-PLAN-1",
+      confidence: "booked",
+      peggedQty: "0.0000",
+      status: "excluded_late",
     });
     expect(audits).toHaveLength(1);
     expect(audits[0]).toMatchObject({ entityId: first.id, action: "capture", userId: pmc.id });
@@ -123,5 +174,36 @@ describe("C122 planning version write/read loop", () => {
     await expect(comparePlanningVersions(pmc, 0, undefined, db)).rejects.toMatchObject({ status: 400 });
     const listed = await listPlanningVersions(purchasing, db);
     expect(listed.versions).toHaveLength(2);
+  });
+
+  it("traces frozen demand to supply and the exact supply back to demand", async () => {
+    const [version] = await db.select().from(planningVersions).orderBy(planningVersions.id).limit(1);
+    const forward = await getPlanningPegging(pmc, { versionId: version.id, skuId }, db);
+    expect(forward.mode).toBe("demand_to_supply");
+    expect(forward.summary).toMatchObject({
+      demandCount: 1,
+      linkCount: 2,
+      proposedQty: expect.any(String),
+    });
+    expect(forward.rows.find((row: { sourceType: string }) => row.sourceType === "recommended_replenishment")).toMatchObject({
+      skuCode: "PLAN-001",
+      sourceType: "recommended_replenishment",
+      evidenceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    const reverse = await getPlanningPegging(purchasing, {
+      versionId: version.id,
+      sourceType: "po",
+      sourceRef: "PO-PLAN-1",
+    }, db);
+    expect(reverse.mode).toBe("supply_to_demand");
+    expect(reverse.rows).toHaveLength(1);
+    expect(reverse.rows[0]).toMatchObject({ skuId, sourceType: "po", sourceRef: "PO-PLAN-1" });
+
+    await expect(getPlanningPegging(warehouse, { versionId: version.id, skuId }, db))
+      .rejects.toMatchObject({ status: 403 });
+    await expect(getPlanningPegging(pmc, {
+      versionId: version.id,
+      sourceType: "po",
+    }, db)).rejects.toMatchObject({ status: 400 });
   });
 });

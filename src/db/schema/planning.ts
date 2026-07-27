@@ -1,5 +1,6 @@
 import {
   boolean,
+  check,
   date,
   index,
   integer,
@@ -11,6 +12,7 @@ import {
   timestamp,
   unique,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 import { skus, users } from "./masters";
 
@@ -59,9 +61,56 @@ export const planningVersionLines = pgTable("planning_version_lines", {
   safetyQty: numeric("safety_qty", { precision: 14, scale: 4 }).notNull(),
   leadDays: integer("lead_days"),
   explanation: jsonb("explanation").notNull(),
+  envelopeVersion: text("envelope_version").notNull().default("decision-envelope/v1"),
+  decisionEnvelope: jsonb("decision_envelope").notNull().default({}),
+  evidenceDigest: text("evidence_digest").notNull().default("legacy"),
 }, (t) => [
   unique("uq_planning_version_sku").on(t.versionId, t.skuId),
   index("ix_planning_line_sku_version").on(t.skuId, t.versionId),
+]);
+
+/**
+ * E2-20 / C129: immutable supply-demand allocation evidence.
+ *
+ * A row connects one frozen planning demand bucket to one supply fact or
+ * proposed recommendation. `availableQty` records what the source offered at
+ * capture time; `peggedQty` records the deterministic allocation. Excluded or
+ * excess supply therefore stays visible without being misrepresented as
+ * coverage.
+ */
+export const supplyDemandLinks = pgTable("supply_demand_links", {
+  id: serial("id").primaryKey(),
+  versionId: integer("version_id").notNull().references(() => planningVersions.id),
+  planningLineId: integer("planning_line_id").notNull().references(() => planningVersionLines.id),
+  skuId: integer("sku_id").notNull().references(() => skus.id),
+  demandType: text("demand_type").notNull(),
+  demandDate: date("demand_date").notNull(),
+  demandQty: numeric("demand_qty", { precision: 14, scale: 4 }).notNull(),
+  sourceType: text("source_type").notNull(),
+  sourceRef: text("source_ref"),
+  sourceDocId: integer("source_doc_id"),
+  sourceLineId: integer("source_line_id"),
+  supplyDate: date("supply_date"),
+  availableQty: numeric("available_qty", { precision: 14, scale: 4 }).notNull(),
+  peggedQty: numeric("pegged_qty", { precision: 14, scale: 4 }).notNull(),
+  confidence: text("confidence").notNull(),
+  status: text("status").notNull(),
+  sequence: integer("sequence").notNull(),
+  explanation: text("explanation").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique("uq_supply_demand_link_sequence").on(t.planningLineId, t.sequence),
+  index("ix_supply_demand_version_sku").on(t.versionId, t.skuId),
+  index("ix_supply_demand_source").on(t.sourceType, t.sourceRef),
+  check("ck_supply_demand_positive_demand", sql`${t.demandQty} > 0`),
+  check("ck_supply_demand_positive_available", sql`${t.availableQty} > 0`),
+  check("ck_supply_demand_pegged_range", sql`${t.peggedQty} >= 0 AND ${t.peggedQty} <= ${t.availableQty}`),
+  check("ck_supply_demand_sequence", sql`${t.sequence} >= 0`),
+  check("ck_supply_demand_confidence", sql`${t.confidence} IN ('booked', 'reference', 'proposed', 'suppressed')`),
+  check(
+    "ck_supply_demand_status",
+    sql`${t.status} IN ('pegged', 'partial', 'excess', 'excluded_undated', 'excluded_late', 'suppressed')`,
+  ),
 ]);
 
 /**
