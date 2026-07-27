@@ -2,7 +2,8 @@
 
 import SearchInput from "@/components/SearchInput";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Alert, App, Button, Checkbox, Descriptions, Drawer, Input, Modal, Popconfirm, Space, Spin, Table, Tabs, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
@@ -243,6 +244,7 @@ function JsLinesTable({ lines, showPreviewCols }: { lines: JsLine[]; showPreview
 
 export default function JsClient() {
   const { message } = App.useApp();
+  const searchParams = useSearchParams();
   const me = useMe();
   const canCreate = hasAnyRole(me, "pmc");
   const canApprove = me != null && (me.roles.includes("admin") || (me.isApprover && me.roles.includes("finance")));
@@ -281,6 +283,7 @@ export default function JsClient() {
   const [manualAdjNote, setManualAdjNote] = useState("");
   const [createRemark, setCreateRemark] = useState("");
   const [creating, setCreating] = useState(false);
+  const contextualOpenHandled = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -367,7 +370,7 @@ export default function JsClient() {
     }
   };
 
-  const pickJg = async (jgId: number) => {
+  const pickJg = useCallback(async (jgId: number) => {
     setCreateStep(2);
     setPreviewLoading(true);
     setPreview(null);
@@ -379,7 +382,18 @@ export default function JsClient() {
     } finally {
       setPreviewLoading(false);
     }
-  };
+  }, [message]);
+
+  useEffect(() => {
+    const jgId = Number(searchParams.get("jgId"));
+    if (!canCreate || contextualOpenHandled.current || !Number.isInteger(jgId) || jgId <= 0) return;
+    contextualOpenHandled.current = true;
+    setCreateOpen(true);
+    setManualAdj("0");
+    setManualAdjNote("");
+    setCreateRemark("");
+    void pickJg(jgId);
+  }, [canCreate, pickJg, searchParams]);
 
   const submitCreate = async () => {
     if (!preview) return;

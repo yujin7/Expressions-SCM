@@ -23,6 +23,7 @@ import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
 import { getOnHandBySku } from "@/server/core/stock-view";
 import { num } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
+import { getNextActions, type NextActionItem } from "@/server/modules/workbench/next-actions";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = any;
@@ -62,6 +63,8 @@ export interface WorkbenchFocus {
   queues: { key: string; label: string; count: number; href: string }[];
   /** #6 控制塔：跨域异常，按严重度+影响排序（登录第一屏「今天最需要处理的事」） */
   exceptions: ExceptionItem[];
+  /** C153：审计事件触发、当前状态复核后的有限下一步建议；只建议，不自动写单。 */
+  nextActions: NextActionItem[];
 }
 
 async function countWhere(db: AnyDb, table: AnyDb, where: unknown): Promise<number> {
@@ -373,9 +376,10 @@ export async function getWorkbenchFocus(
     builders.sort((a, b) => priority(a[0]) - priority(b[0]));
   }
   const planningRole = isAdmin || roles.some((r) => ["pmc", "purchasing", "ops", "warehouse"].includes(r));
-  const [sections, exceptions] = await Promise.all([
+  const [sections, exceptions, nextActions] = await Promise.all([
     Promise.all(builders.map(([, build]) => build(db))),
     planningRole ? computeExceptions(db) : Promise.resolve<ExceptionItem[]>([]),
+    getNextActions(roles, db),
   ]);
   const myOpenDocs = userId != null ? await countMyOpenDocs(db, userId) : null;
 
@@ -403,5 +407,5 @@ export async function getWorkbenchFocus(
     { key: "review", label: "待复核事项", count: openReview, href: "/review/checklist" },
     { key: "mine", label: "我发起的未完结", count: myOpenDocs ?? 0, href: "/inbox" },
   ];
-  return { generatedAt: new Date().toISOString(), sections, exceptions, myOpenDocs, queues };
+  return { generatedAt: new Date().toISOString(), sections, exceptions, nextActions, myOpenDocs, queues };
 }

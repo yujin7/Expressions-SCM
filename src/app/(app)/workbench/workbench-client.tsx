@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Card, Col, List, Row, Statistic, Tag, Typography } from "antd";
-import { RightOutlined, ThunderboltOutlined } from "@ant-design/icons";
+import { Alert, App, Button, Card, Col, List, Row, Space, Statistic, Tag, Typography } from "antd";
+import { BulbOutlined, ReloadOutlined, RightOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import Link from "next/link";
 import { fetchJson } from "@/components/fetchJson";
 
@@ -69,6 +69,73 @@ interface FocusSection {
   metrics: FocusMetric[];
 }
 
+interface NextActionItem {
+  key: string;
+  priority: "high" | "medium";
+  docTypeLabel: string;
+  docNo: string;
+  triggerLabel: string;
+  triggerAt: string;
+  actionLabel: string;
+  reason: string;
+  ownerLabel: string;
+  href: string;
+  evidence: string;
+}
+
+function NextActions({ items, loading }: { items: NextActionItem[]; loading: boolean }) {
+  if (loading) return <Card loading style={{ marginBottom: 16 }} />;
+  if (items.length === 0) {
+    return (
+      <Alert
+        type="success"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="下一步建议：当前没有已触发且仍待执行的单据动作。"
+      />
+    );
+  }
+  return (
+    <Card
+      size="small"
+      style={{ marginBottom: 16 }}
+      title={
+        <span>
+          <BulbOutlined style={{ color: "#1677ff" }} /> 下一步建议（{items.length}）
+        </span>
+      }
+      extra={<Typography.Text type="secondary">审计事件触发 · 当前状态复核 · 不自动执行</Typography.Text>}
+    >
+      <List
+        dataSource={items}
+        renderItem={(item) => (
+          <List.Item actions={[<Link key="go" href={item.href}>{item.actionLabel} <RightOutlined /></Link>]}>
+            <List.Item.Meta
+              title={
+                <Space wrap size={6}>
+                  <Tag color={item.priority === "high" ? "red" : "gold"}>
+                    {item.priority === "high" ? "优先" : "关注"}
+                  </Tag>
+                  <Tag>{item.docTypeLabel}</Tag>
+                  <Typography.Text code>{item.docNo}</Typography.Text>
+                  <Typography.Text>{item.reason}</Typography.Text>
+                </Space>
+              }
+              description={
+                <Space wrap split={<span>·</span>}>
+                  <span>触发：{item.triggerLabel}（{new Date(item.triggerAt).toLocaleString("zh-CN", { hour12: false })}）</span>
+                  <span>责任：{item.ownerLabel}</span>
+                  <span>证据：{item.evidence}</span>
+                </Space>
+              }
+            />
+          </List.Item>
+        )}
+      />
+    </Card>
+  );
+}
+
 /** 角色聚焦区块：每个数字都是真实查询，点击直达可操作页面 */
 function FocusSections({ sections, loading }: { sections: FocusSection[]; loading: boolean }) {
   if (!loading && sections.length === 0) return null;
@@ -120,16 +187,38 @@ export default function WorkbenchClient() {
   const [loading, setLoading] = useState(false);
   const [sections, setSections] = useState<FocusSection[]>([]);
   const [exceptions, setExceptions] = useState<ExceptionItem[]>([]);
+  const [nextActions, setNextActions] = useState<NextActionItem[]>([]);
   const [queues, setQueues] = useState<QueueItem[]>([]);
   const [focusLoading, setFocusLoading] = useState(false);
+  const [focusError, setFocusError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setFocusLoading(true);
+    setFocusError(null);
     // 角色聚焦区块 + 控制塔异常（服务端按当前用户角色计算真实计数）
-    fetchJson<{ sections: FocusSection[]; exceptions: ExceptionItem[]; myOpenDocs: number | null; queues: QueueItem[] }>("/api/workbench")
-      .then((r) => { setSections(r.sections); setExceptions(r.exceptions ?? []); setQueues(r.queues ?? []); })
-      .catch((e) => message.error((e as Error).message))
+    fetchJson<{
+      sections: FocusSection[];
+      exceptions: ExceptionItem[];
+      nextActions: NextActionItem[];
+      myOpenDocs: number | null;
+      queues: QueueItem[];
+    }>("/api/workbench")
+      .then((r) => {
+        setSections(r.sections);
+        setExceptions(r.exceptions ?? []);
+        setNextActions(r.nextActions ?? []);
+        setQueues(r.queues ?? []);
+      })
+      .catch((e) => {
+        const error = (e as Error).message;
+        setFocusError(error);
+        setSections([]);
+        setExceptions([]);
+        setNextActions([]);
+        setQueues([]);
+        message.error(error);
+      })
       .finally(() => setFocusLoading(false));
     try {
       const aliasRes = await fetchJson<{ total: number }>("/api/import/exceptions?status=open&page=1&pageSize=1");
@@ -151,11 +240,25 @@ export default function WorkbenchClient() {
         <Typography.Title level={4} style={{ marginTop: 0 }}>工作台</Typography.Title>
         <Link href="/report/digest">每日经营摘要（简报视图）→</Link>
       </div>
-      <ControlTower items={exceptions} loading={focusLoading && exceptions.length === 0} />
-      <FocusSections sections={sections} loading={focusLoading} />
+      {focusError ? (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="工作台数据加载失败，未用空数据伪装成“无异常”。"
+          description={focusError}
+          action={<Button size="small" icon={<ReloadOutlined />} onClick={() => void load()}>重试</Button>}
+        />
+      ) : (
+        <>
+          <ControlTower items={exceptions} loading={focusLoading && exceptions.length === 0} />
+          <NextActions items={nextActions} loading={focusLoading && nextActions.length === 0} />
+          <FocusSections sections={sections} loading={focusLoading} />
+        </>
+      )}
       <Typography.Title level={5} style={{ margin: "4px 0 12px" }}>待处理入口</Typography.Title>
       {/* 队列为空且已加载完毕：明确说明「没有待办」，而不是静默塌缩成只剩别名一张卡 */}
-      {!focusLoading && queues.length === 0 && (
+      {!focusLoading && !focusError && queues.length === 0 && (
         <Alert
           type="success"
           showIcon
