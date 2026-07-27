@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -16,6 +16,8 @@ describe("导入失败收口", () => {
     const { db } = await createTestDb();
     const [user] = await db.insert(schema.users).values({ name: "导入员" }).returning();
     const dir = mkdtempSync(path.join(tmpdir(), "staging-failure-"));
+    const previousStorage = process.env.FILE_STORAGE_DIR;
+    process.env.FILE_STORAGE_DIR = dir;
     const file = path.join(dir, "partial.xlsx");
     writeFileSync(file, "fixture");
     const job = await createImportJob(db, { template: "inventory", filePath: file, createdBy: user.id });
@@ -46,5 +48,9 @@ describe("导入失败收口", () => {
       failRows: 3,
       controlRows: 3,
     });
+    expect(savedJob.errorFile).toMatch(/^import-errors\//);
+    if (previousStorage === undefined) delete process.env.FILE_STORAGE_DIR;
+    else process.env.FILE_STORAGE_DIR = previousStorage;
+    rmSync(dir, { recursive: true, force: true });
   });
 });

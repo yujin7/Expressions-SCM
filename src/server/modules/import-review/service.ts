@@ -2,12 +2,14 @@
  * 复核工作台后端（《04》§4 ③）：别名异常认领 + 导入任务总览。
  * 认领一次，永久生效（写 aliases + 关闭异常）；忽略=显式拒绝解析（歧义码等）。
  */
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, ne } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { aliasExceptions, importJobs, stagingRows, transitRefs } from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
+import { createImportRejectionArtifact } from "@/server/import/rejection-artifact";
 import { claimAlias } from "@/server/modules/dimension/resolver";
 import { ApiError } from "@/server/modules/master/common";
+import { requireAnyRole } from "@/server/modules/outsource/common";
 import type { SessionUser } from "@/server/core/dto";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -117,21 +119,63 @@ export async function ignoreException(user: SessionUser, id: number, note?: stri
   });
 }
 
-export async function listImportJobs(page: number, pageSize: number, dbArg?: AnyDb) {
+function jobVisibility(user: SessionUser) {
+  if (user.roles.includes("admin")) return undefined;
+  const canFinance = user.roles.includes("finance");
+  const canPmc = user.roles.includes("pmc");
+  if (canFinance && canPmc) return undefined;
+  if (canFinance) return eq(importJobs.template, "sku_cost");
+  if (canPmc) return ne(importJobs.template, "sku_cost");
+  requireAnyRole(user, "finance", "pmc");
+  return undefined;
+}
+
+function assertJobRole(user: SessionUser, template: string): void {
+  requireAnyRole(user, template === "sku_cost" ? "finance" : "pmc");
+}
+
+export async function getAuthorizedImportJob(
+  user: SessionUser,
+  jobId: number,
+  dbArg?: AnyDb,
+) {
   const db = await resolveDb(dbArg);
+  const [job] = await db.select().from(importJobs).where(eq(importJobs.id, jobId));
+  if (!job) throw new ApiError(404, "导入任务不存在");
+  assertJobRole(user, job.template);
+  return job;
+}
+
+export async function listImportJobs(
+  user: SessionUser,
+  page: number,
+  pageSize: number,
+  dbArg?: AnyDb,
+) {
+  const db = await resolveDb(dbArg);
+  const where = jobVisibility(user);
   const rows = await db
     .select()
     .from(importJobs)
+    .where(where)
     .orderBy(desc(importJobs.id))
     .limit(pageSize)
     .offset((page - 1) * pageSize);
   const { sql } = await import("drizzle-orm");
-  const [cnt] = await db.select({ total: sql<number>`count(*)::int` }).from(importJobs);
+  const [cnt] = await db
+    .select({ total: sql<number>`count(*)::int` })
+    .from(importJobs)
+    .where(where);
   return { data: rows, total: cnt?.total ?? 0 };
 }
 
-export async function getJobStagingSummary(jobId: number, dbArg?: AnyDb) {
+export async function getJobStagingSummary(
+  user: SessionUser,
+  jobId: number,
+  dbArg?: AnyDb,
+) {
   const db = await resolveDb(dbArg);
+  await getAuthorizedImportJob(user, jobId, db);
   const { sql } = await import("drizzle-orm");
   return db
     .select({
@@ -142,4 +186,28 @@ export async function getJobStagingSummary(jobId: number, dbArg?: AnyDb) {
     .from(stagingRows)
     .where(eq(stagingRows.importJobId, jobId))
     .groupBy(stagingRows.targetTable, stagingRows.status);
+}
+
+/** 为历史任务显式补生成拒收明细；新任务由 staging finalize 自动生成。 */
+export async function generateJobErrorFile(
+  user: SessionUser,
+  jobId: number,
+  dbArg?: AnyDb,
+): Promise<string> {
+  const db = await resolveDb(dbArg);
+  const job = await getAuthorizedImportJob(user, jobId, db);
+  const errorFile = await createImportRejectionArtifact(db, jobId);
+  if (!errorFile) throw new ApiError(409, "该任务没有可导出的拒收行");
+  await db.transaction(async (tx: AnyDb) => {
+    await tx.update(importJobs).set({ errorFile }).where(eq(importJobs.id, jobId));
+    await writeAudit(tx, {
+      userId: user.id,
+      entity: "import_job",
+      entityId: jobId,
+      action: "generate_rejection_artifact",
+      before: { errorFile: job.errorFile },
+      after: { errorFile, failRows: job.failRows },
+    });
+  });
+  return errorFile;
 }

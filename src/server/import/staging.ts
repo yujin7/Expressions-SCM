@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { and, eq, inArray } from "drizzle-orm";
 import { importJobs, stagingRows } from "@/db/schema";
+import { createImportRejectionArtifact } from "@/server/import/rejection-artifact";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyDb = any;
@@ -97,6 +98,9 @@ export async function finalizeImportJob(
     controlRows?: number;
   },
 ): Promise<void> {
+  const errorFile = stats.failRows > 0
+    ? await createImportRejectionArtifact(db, jobId)
+    : null;
   await db
     .update(importJobs)
     .set({
@@ -104,6 +108,7 @@ export async function finalizeImportJob(
       okRows: stats.okRows,
       failRows: stats.failRows,
       controlRows: stats.controlRows ?? stats.okRows + stats.failRows,
+      errorFile,
     })
     .where(eq(importJobs.id, jobId));
 }
@@ -153,6 +158,8 @@ export async function failImportJob(
       })
       .where(eq(importJobs.id, jobId));
   });
+  const errorFile = await createImportRejectionArtifact(db, jobId);
+  await db.update(importJobs).set({ errorFile }).where(eq(importJobs.id, jobId));
 }
 
 export async function getStagingRows(db: AnyDb, jobId: number, status?: string) {

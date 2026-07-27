@@ -1,17 +1,19 @@
-import { FlatCompat } from "@eslint/eslintrc";
-
-const compat = new FlatCompat({ baseDirectory: import.meta.dirname });
+import nextPlugin from "@next/eslint-plugin-next";
+import tsPlugin from "@typescript-eslint/eslint-plugin";
+import tsParser from "@typescript-eslint/parser";
+import importPlugin from "eslint-plugin-import";
+import jsxA11y from "eslint-plugin-jsx-a11y";
+import react from "eslint-plugin-react";
+import reactHooks from "eslint-plugin-react-hooks";
 
 /**
- * ESLint 配置（2026-07-26 引入）。
+ * Native ESLint 9 flat configuration.
  *
- * 为什么现在才装：仓里长期有 65 条 `eslint-disable` 注释，而 eslint 从未安装、
- * 无配置、无脚本、无 CI——那 65 条豁免指向一个不存在的检查器，等于 65 句假话。
- * 装上之后它们才重新变成真实信息（「这个 any 是刻意的」）。
- *
- * 为什么值得装：本项目最贵的几个缺陷都不是单测抓到的，是**静态扫描**抓到的
- * （24 页水合失败、客户端值导入服务端、落盘根目录、裸 req.json）。
- * tests/architecture/* 已经是自建的静态护栏，eslint 是同一策略的通用化。
+ * Do not route Next 15's legacy eslintrc through FlatCompat here. Its
+ * @rushstack module-resolution patch cannot identify ESLint's caller on Node
+ * 24, so the lint gate crashes before reading a source file. Loading the same
+ * plugin rule sets directly keeps the gate deterministic on the project's
+ * declared Node 24 runtime.
  */
 const config = [
   {
@@ -21,9 +23,52 @@ const config = [
       "coverage/**", "uploads/**", "reports/**", "next-env.d.ts",
     ],
   },
-  ...compat.extends("next/core-web-vitals", "next/typescript"),
   {
+    files: ["**/*.{js,mjs,cjs,jsx,ts,mts,cts,tsx}"],
+    languageOptions: {
+      parser: tsParser,
+      ecmaVersion: "latest",
+      sourceType: "module",
+      parserOptions: {
+        ecmaFeatures: { jsx: true },
+      },
+    },
+    plugins: {
+      "@next/next": nextPlugin,
+      "@typescript-eslint": tsPlugin,
+      import: importPlugin,
+      "jsx-a11y": jsxA11y,
+      react,
+      "react-hooks": reactHooks,
+    },
+    settings: {
+      react: { version: "detect" },
+      "import/parsers": {
+        "@typescript-eslint/parser": [".js", ".jsx", ".ts", ".tsx", ".d.ts"],
+      },
+      "import/resolver": {
+        node: { extensions: [".js", ".jsx", ".ts", ".tsx"] },
+        typescript: { alwaysTryTypes: true },
+      },
+    },
     rules: {
+      ...react.configs.recommended.rules,
+      ...reactHooks.configs.recommended.rules,
+      ...nextPlugin.configs.recommended.rules,
+      ...nextPlugin.configs["core-web-vitals"].rules,
+      ...tsPlugin.configs.recommended.rules,
+      "import/no-anonymous-default-export": "warn",
+      "react/no-unknown-property": "off",
+      "react/react-in-jsx-scope": "off",
+      "react/prop-types": "off",
+      "react/jsx-no-target-blank": "off",
+      "jsx-a11y/alt-text": ["warn", { elements: ["img"], img: ["Image"] }],
+      "jsx-a11y/aria-props": "warn",
+      "jsx-a11y/aria-proptypes": "warn",
+      "jsx-a11y/aria-unsupported-elements": "warn",
+      "jsx-a11y/role-has-required-aria-props": "warn",
+      "jsx-a11y/role-supports-aria-props": "warn",
+      "@typescript-eslint/no-unused-expressions": "warn",
       "@typescript-eslint/no-unused-vars": [
         "warn",
         {

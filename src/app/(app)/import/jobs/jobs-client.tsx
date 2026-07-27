@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { App, Button, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { ReloadOutlined } from "@ant-design/icons";
+import { DownloadOutlined, FileAddOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { fetchJson } from "@/components/fetchJson";
 import ListToolbar from "@/components/ListToolbar";
@@ -21,6 +21,10 @@ const TEMPLATE_LABELS: Record<string, string> = {
   npd: "NPD节点说明",
   stock_summary: "总库存明细",
   sku_cost: "SKU 单位成本",
+  sku_leadtime: "生产周期 / MOQ",
+  inventory_long_721: "仓库库存长表",
+  expiry_batch_202607: "批次效期明细",
+  sales_monthly_summary: "月度销量汇总",
 };
 const TABLE_LABELS: Record<string, string> = {
   spu_suggestion: "SPU 归组建议",
@@ -41,6 +45,7 @@ interface JobRow {
   status: "pending" | "validating" | "failed" | "done" | "superseded";
   okRows: number;
   failRows: number;
+  errorFile: string | null;
   createdAt: string;
 }
 
@@ -132,6 +137,7 @@ export default function JobsClient() {
   const [rows, setRows] = useState<JobRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [generatingId, setGeneratingId] = useState<number | null>(null);
   // 列表页状态平台（E6-P1）：分页进 URL，密度与已保存视图存本地
   const listState = useListState({ key: "import-jobs", defaults: {}, defaultPageSize: 20 });
   const { page, pageSize } = listState;
@@ -154,6 +160,19 @@ export default function JobsClient() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const generateErrorFile = useCallback(async (jobId: number) => {
+    setGeneratingId(jobId);
+    try {
+      await fetchJson<{ ok: true }>(`/api/import/jobs/${jobId}/errors`, { method: "POST" });
+      message.success("拒收明细已生成");
+      await load();
+    } catch (error) {
+      message.error((error as Error).message);
+    } finally {
+      setGeneratingId(null);
+    }
+  }, [load, message]);
 
   const columns: ColumnsType<JobRow> = [
     { title: "ID", dataIndex: "id", width: 70 },
@@ -180,6 +199,38 @@ export default function JobsClient() {
       width: 160,
       render: (v: string) => dayjs(v).format("YYYY-MM-DD HH:mm"),
     },
+    {
+      title: "拒收明细",
+      key: "errorFile",
+      width: 130,
+      fixed: "right",
+      render: (_value, row) => {
+        if (row.failRows <= 0) return <Typography.Text type="secondary">—</Typography.Text>;
+        if (row.errorFile) {
+          return (
+            <Button
+              type="link"
+              size="small"
+              icon={<DownloadOutlined />}
+              href={`/api/import/jobs/${row.id}/errors`}
+            >
+              下载
+            </Button>
+          );
+        }
+        return (
+          <Button
+            type="link"
+            size="small"
+            icon={<FileAddOutlined />}
+            loading={generatingId === row.id}
+            onClick={() => void generateErrorFile(row.id)}
+          >
+            生成
+          </Button>
+        );
+      },
+    },
   ];
 
   return (
@@ -201,6 +252,7 @@ export default function JobsClient() {
         columns={columns}
         dataSource={rows}
         loading={loading}
+        scroll={{ x: 980 }}
         expandable={{
           expandedRowRender: (r) => <JobSummary jobId={r.id} />,
         }}
