@@ -20,7 +20,7 @@ import { getSkuFacts } from "@/server/core/sku-facts";
 import { checkRecentOrders } from "@/server/modules/outsource/duplicate-guard";
 import { num, r1 } from "@/server/core/svc";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 export interface BriefLine {

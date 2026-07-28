@@ -25,7 +25,7 @@ import { num } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
 import { getNextActions, type NextActionItem } from "@/server/modules/workbench/next-actions";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 export interface FocusMetric {

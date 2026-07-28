@@ -11,7 +11,7 @@ import { writeAudit } from "@/server/core/audit";
 import { clearParamCache } from "@/server/core/params";
 import { ApiError, type SessionUser } from "@/server/modules/master/common";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 export interface ParamDef {

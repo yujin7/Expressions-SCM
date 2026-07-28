@@ -15,7 +15,7 @@ import {
 import type { Role } from "@/server/core/constants";
 import { todayShanghai } from "@/server/modules/master/common";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 export interface DigestHighlight {

@@ -59,7 +59,7 @@ export async function persistErrorLog(entry: ErrorLogEntry, dbArg?: unknown): Pr
     // 若 @/db（→ pg → fs）的 import() 不在可折叠死分支里，edge 编译期直接 Module not found。
     if (process.env.NEXT_RUNTIME !== "edge") {
       const { errorLogs } = await import("@/db/schema");
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
       const db: any = dbArg ?? (await (await import("@/db")).getDbAsync());
       await db.insert(errorLogs).values({
         errorId: entry.errorId,

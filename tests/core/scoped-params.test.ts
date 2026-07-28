@@ -249,7 +249,7 @@ describe("setScopedParam：global 层的权限边界", () => {
       { kind: "bogus" },
     ]) {
       await expect(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Red-team input bypasses the scope union to verify runtime rejection
         setScopedParam(admin, { key: "safety_days_fallback", scope: bad as any, value: 9 }, db),
       ).rejects.toMatchObject({ status: 400 });
     }

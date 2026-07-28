@@ -14,7 +14,7 @@ import * as schema from "@/db/schema";
 import { num } from "@/server/core/svc";
 import { detectSignals, type SpcResult } from "@/server/rules/spc";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 export type StudioDimension = "brand" | "channel" | "sku";

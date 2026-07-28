@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { ApiError, auditFromRoute, errorResponse, readJson } from "@/server/modules/master/common";
+import { ApiError, errorResponse, readJson } from "@/server/modules/master/common";
 import { getFreshSessionUser, requireRole } from "@/server/core/dto";
 import { getDbAsync } from "@/db";
 import { runReconcileJst } from "@/jobs/reconcile-jst";
+import { writeAudit } from "@/server/core/audit";
 
 const bodySchema = z.object({ bizDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "须为 YYYY-MM-DD") });
 
@@ -22,8 +23,18 @@ export async function POST(req: NextRequest) {
       throw new ApiError(403, "无权限触发对账");
     }
     const { bizDate } = bodySchema.parse(await readJson(req));
-    const summary = await runReconcileJst(await getDbAsync(), bizDate);
-    await auditFromRoute(user, "recon_diffs", null, "reconcile-jst:run", summary);
+    const db = await getDbAsync();
+    const summary = await db.transaction(async (tx) => {
+      const result = await runReconcileJst(tx, bizDate);
+      await writeAudit(tx, {
+        userId: user.id,
+        entity: "recon_diffs",
+        entityId: null,
+        action: "reconcile-jst:run",
+        after: result,
+      });
+      return result;
+    });
     return NextResponse.json(summary);
   } catch (e) {
     return errorResponse(e);

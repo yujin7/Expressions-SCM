@@ -25,7 +25,7 @@ import { dAdd, dQty } from "@/server/core/decimal";
 import { getOpenSupplyLines, type SupplySource } from "@/server/core/supply";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 /** 区间上限：日历是「看得完」的计划视图，过长区间既无阅读价值又白算（超出报 400，不静默截断） */

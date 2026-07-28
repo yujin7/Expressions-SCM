@@ -1,7 +1,7 @@
 import { eq, ilike, sql } from "drizzle-orm";
 import { writeAudit } from "@/server/core/audit";
 import type { SessionUser } from "@/server/core/dto";
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyTx = any;
 import { alias } from "drizzle-orm/pg-core";
 import { getDbAsync, schema } from "@/db";

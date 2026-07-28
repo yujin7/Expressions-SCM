@@ -6,7 +6,7 @@ import type { SessionUser } from "@/server/core/dto";
 import { ApiError } from "./common";
 import { binSchema } from "./schemas";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 function whereFor(args: { q: string; warehouseId?: number; kind?: string; active?: boolean }) {

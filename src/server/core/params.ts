@@ -6,7 +6,7 @@ import { and, eq } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { sysParams } from "@/db/schema";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 const cache = new Map<string, { v: number; exp: number }>();

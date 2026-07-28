@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { ApiError, errorResponse, parseId } from "@/server/modules/master/common";
+import { ApiError, errorResponse, parseId, readOptionalJson } from "@/server/modules/master/common";
 import { getFreshSessionUser, requireRole } from "@/server/core/dto";
 import { ignoreException } from "@/server/modules/import-review/service";
 
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       throw new ApiError(403, "无权限处理别名异常");
     }
     const { id } = await ctx.params;
-    const { note } = bodySchema.parse(await req.json().catch(() => ({})));
+    const { note } = bodySchema.parse(await readOptionalJson(req));
     await ignoreException(user, parseId(id), note);
     return NextResponse.json({ ok: true });
   } catch (e) {

@@ -16,7 +16,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { leadTimeStats } from "@/server/rules/leadtime-stats";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 const dec = (v: number | null): string | null => (v == null ? null : String(Math.round(v * 100) / 100));
 

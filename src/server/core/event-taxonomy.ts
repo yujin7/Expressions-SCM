@@ -13,7 +13,7 @@
  *  1. 单据审批路径把 `v.action` 直接透传 writeAudit（bh/wo/jg/po/pc/sh/fl/tl/ct/pd/stock-doc/js 共 12 处），
  *     `docflow/approval.ts` 将其类型化为 "approve" | "reject" —— **reject 不在任何字面量里**；
  *  2. `review/checklist.ts` 计算出 review_done / review_overrule / review_reopen；
- *  3. `master/common.ts` 的 `auditFromRoute(...)` 接受路由传来的自由字符串。
+ *  3. 导入、任务、集成等扩展模块会按连接器/动作生成新的 action 字符串。
  * 因此 `classifyEvent` **绝不抛错**：未登记一律降级为 system 域 + 原文标签。
  * 分类法若成为新的故障源，就会让审计写入本身失败——那是比分类不全严重得多的问题。
  */

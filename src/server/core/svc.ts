@@ -10,7 +10,7 @@
 import { getDbAsync } from "@/db";
 
 /** drizzle 查询构建器在本项目按 any 传递（各 service 历史约定，集中于此一处声明） */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 export type AnyDb = any;
 
 /** decimal 字符串/null → number（null/空 = 0）。仅展示与报表聚合用。 */

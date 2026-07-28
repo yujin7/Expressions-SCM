@@ -22,7 +22,7 @@ import { ApiError } from "@/server/modules/master/common";
 import type { BomBlock } from "@/server/import/adapters/bom";
 import type { SpuCluster } from "@/server/import/adapters/bom-spu";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 export type AnyDb = any;
 
 export interface ReleaseUser {

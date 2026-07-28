@@ -24,7 +24,7 @@ import { getDbAsync } from "../src/db";
 import * as schema from "../src/db/schema";
 import { writeAudit } from "../src/server/core/audit";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 interface Payload {

@@ -19,7 +19,7 @@ import { requireAnyRole } from "@/server/modules/outsource/common";
 import type { SessionUser } from "@/server/core/dto";
 import { resolveDb } from "@/server/core/svc";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 const CONFIRM_TOKEN_TTL_MS = 30 * 86400 * 1000; // 30 天

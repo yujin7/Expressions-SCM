@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { errorResponse, parseListQuery, readJson } from "@/server/modules/master/common";
-import { auditFromRoute, guardRead, guardWrite } from "@/server/modules/master/common";
+import { guardRead, guardWrite } from "@/server/modules/master/common";
 import { createBom, listBoms } from "@/server/modules/master/bom";
 
 export async function GET(req: NextRequest) {
@@ -16,8 +16,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await guardWrite("bom");
-    const result = await createBom(await readJson(req), user.id);
-    await auditFromRoute(user, "bom", (result as { id?: number }).id, "create", result);
+    const result = await createBom(await readJson(req), user);
     return NextResponse.json(result, { status: 201 });
   } catch (e) {
     return errorResponse(e);

@@ -16,7 +16,7 @@ import { batchStocks, skus } from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
 import { daysLeftOf } from "@/server/core/stock-view";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 const DEFAULT_NEAR_EXPIRY_DAYS = 90;

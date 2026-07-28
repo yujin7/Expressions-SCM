@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { errorResponse, parseId, readJson } from "@/server/modules/master/common";
-import { auditFromRoute, guardRead, guardWrite } from "@/server/modules/master/common";
+import { guardRead, guardWrite } from "@/server/modules/master/common";
 import { getBom, updateBom } from "@/server/modules/master/bom";
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -17,8 +17,8 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
   try {
     const user = await guardWrite("bom");
     const { id } = await ctx.params;
-    const result = await updateBom(parseId(id), await readJson(req));
-    await auditFromRoute(user, "bom", parseId(id), "update", result);
+    const parsedId = parseId(id);
+    const result = await updateBom(parsedId, await readJson(req), user);
     return NextResponse.json(result);
   } catch (e) {
     return errorResponse(e);

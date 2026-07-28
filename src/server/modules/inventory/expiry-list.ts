@@ -14,7 +14,7 @@ import { todayShanghai } from "@/server/modules/master/common";
 import { num } from "@/server/core/svc";
 import { EXPIRY_TIER_DAYS, daysLeftOf } from "@/server/core/stock-view";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 export type ExpiryBucket = "expired" | "m3" | "m6" | "rest";

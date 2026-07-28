@@ -8,7 +8,7 @@ export const AUDIT_EVENT_VERSION = "event-v1";
  * 约定：所有 service 写路径在同一事务内调用；批量导入按任务记 1 行（文件hash+行数），
  * 不逐行存 before/after（《01》§3 audit_log 约定）。
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 export async function writeAudit(

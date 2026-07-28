@@ -20,7 +20,7 @@ import { lastMonths } from "@/server/core/velocity";
 import { num } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 const r2 = (v: number): number => Math.round(v * 100) / 100;

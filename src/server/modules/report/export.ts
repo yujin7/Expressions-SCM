@@ -84,7 +84,7 @@ import {
 } from "@/components/labels";
 import type { SessionUser } from "@/server/core/dto";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 /** 同步导出上限：超过即改走异步导出任务（CLAUDE.md：>5000 行走异步） */

@@ -15,7 +15,7 @@ import * as schema from "@/db/schema";
 import { ApiError } from "@/server/modules/master/common";
 import { num } from "@/server/core/svc";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 /** 统一取 YYYY-MM-DD：date 列已是字符串直接截取；timestamp 列（Date）按上海时区格式化 */

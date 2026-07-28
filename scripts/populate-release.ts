@@ -28,7 +28,7 @@ import { createStockDoc, submitStockDoc, approveStockDoc } from "../src/server/m
 import { dAdd } from "../src/server/core/decimal";
 import { writeAudit } from "../src/server/core/audit";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 const SNAPSHOT_BIZ_DATE = "2026-07-21"; // 电商部库存明细 7-21 数据源

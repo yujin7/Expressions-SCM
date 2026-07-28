@@ -13,7 +13,7 @@ import { and, eq, inArray, lt, isNotNull, or, isNull } from "drizzle-orm";
 import { errorLogs, exportJobs, importJobs, jobRuns, stagingRows, notifications } from "@/db/schema";
 import { EXPORT_FILE_DIR } from "./export-worker";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 export const STAGING_RETENTION_DAYS = 90;

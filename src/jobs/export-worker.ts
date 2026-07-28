@@ -16,7 +16,7 @@ import {
   buildCsv, EXPORT_KINDS, EXPORT_ROW_CAP, type ExportParams, stripMoneyColumns, SYNC_EXPORT_MAX,
 } from "@/server/modules/report/export";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 async function resolveDb(db?: AnyDb): Promise<AnyDb> {

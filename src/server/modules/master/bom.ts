@@ -106,13 +106,17 @@ export async function getBom(id: number) {
   return { ...bom, lines };
 }
 
-export async function createBom(input: unknown, userId?: number) {
+export async function createBom(
+  input: unknown,
+  actor?: { id: number },
+  dbOverride?: DB,
+) {
   const v = bomSchema.parse(input);
-  const db = await getDbAsync();
+  const db = dbOverride ?? (await getDbAsync());
   return db.transaction(async (tx) => {
     const [head] = await tx
       .insert(schema.boms)
-      .values({ productSkuId: v.productSkuId, versionNo: v.versionNo, status: "draft", createdBy: userId ?? null })
+      .values({ productSkuId: v.productSkuId, versionNo: v.versionNo, status: "draft", createdBy: actor?.id ?? null })
       .returning();
     await tx.insert(schema.bomLines).values(
       v.lines.map((l) => ({
@@ -125,18 +129,33 @@ export async function createBom(input: unknown, userId?: number) {
         leadTimeDays: l.leadTimeDays ?? null,
       })),
     );
+    if (actor) {
+      await writeAudit(tx, {
+        userId: actor.id,
+        entity: "bom",
+        entityId: head.id,
+        action: "create",
+        after: { ...head, lines: v.lines },
+      });
+    }
     return head;
   });
 }
 
 /** 生效即冻结行——仅草稿可编辑；改动=新版本（《01》§3） */
-export async function updateBom(id: number, input: unknown) {
+export async function updateBom(
+  id: number,
+  input: unknown,
+  actor?: { id: number },
+  dbOverride?: DB,
+) {
   const v = bomSchema.parse(input);
-  const db = await getDbAsync();
+  const db = dbOverride ?? (await getDbAsync());
   return db.transaction(async (tx) => {
     const [bom] = await tx.select().from(schema.boms).where(eq(schema.boms.id, id));
     if (!bom) throw new ApiError(404, "BOM 不存在");
     if (bom.status !== "draft") throw new ApiError(409, "仅草稿状态的 BOM 可编辑，生效版本请新建版本");
+    const existingLines = await tx.select().from(schema.bomLines).where(eq(schema.bomLines.bomId, id));
     const [updated] = await tx
       .update(schema.boms)
       .set({ productSkuId: v.productSkuId, versionNo: v.versionNo, updatedAt: new Date() })
@@ -154,6 +173,16 @@ export async function updateBom(id: number, input: unknown) {
         leadTimeDays: l.leadTimeDays ?? null,
       })),
     );
+    if (actor) {
+      await writeAudit(tx, {
+        userId: actor.id,
+        entity: "bom",
+        entityId: id,
+        action: "update",
+        before: { ...bom, lines: existingLines },
+        after: { ...updated, lines: v.lines },
+      });
+    }
     return updated;
   });
 }
@@ -246,6 +275,14 @@ export async function activateBom(
       .set({ status: "active", effectiveDate: todayShanghai(), approvedBy: approver.id, updatedAt: new Date() })
       .where(eq(schema.boms.id, id))
       .returning();
+    await writeAudit(tx, {
+      userId: approver.id,
+      entity: "bom",
+      entityId: id,
+      action: "activate",
+      before: bom,
+      after: updated,
+    });
     return updated;
   });
 }

@@ -14,7 +14,7 @@ import { and, desc, gte, inArray, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { bhDocs, bhLines, woDocs } from "@/db/schema";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 /** 未结（活跃）状态——与单据状态机一致 */

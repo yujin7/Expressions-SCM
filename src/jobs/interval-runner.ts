@@ -21,7 +21,7 @@ import { runDocAging } from "./doc-aging";
 import { runRollup } from "./rollup";
 import { dispatchNotifications, runDecisionDigestNotify, runExceptionNotify } from "./notify";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 const HOUR_MS = 3600 * 1000;

@@ -99,7 +99,7 @@ export default function SkuClient() {
         formItems={() => (
           <>
             <Form.Item name="code" label="编码" rules={[{ required: true, message: "编码必填" }]}>
-              <Input maxLength={30} placeholder="如 CP00001（品类2位+5位流水）" />
+              <Input maxLength={30} placeholder="请输入现行商家编码，如 E02-088" />
             </Form.Item>
             <Form.Item name="name" label="货品名称" rules={[{ required: true, message: "货品名称必填" }]}>
               <Input maxLength={100} placeholder="如 胶原蛋白肽饮品 50ml×10" />

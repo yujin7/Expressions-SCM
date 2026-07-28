@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { auditLogs, skus, spus, users } from "@/db/schema";
+import { auditLogs, bomLines, boms, skus, spus, users } from "@/db/schema";
 import { createTestDb } from "../helpers/db";
 
 /**
@@ -69,5 +69,71 @@ describe("supplier / warehouse / category 审计原子性", () => {
       expect(byEntity.has(e), `${e} 写入后必须有审计行`).toBe(true);
       expect(byEntity.get(e)).toBe(u.id);
     }
+  });
+});
+
+describe("SPU / BOM 审计原子性", () => {
+  it("SPU 创建与修改均在 service 事务内记录 before/after", async () => {
+    const { db } = await createTestDb();
+    const [u] = await db.insert(users).values({ username: "t_spu_audit", name: "SPU审计", passwordHash: "x" }).returning();
+    const { createSpu, updateSpu } = await import("@/server/modules/master/spu");
+
+    const created = await createSpu({ code: "P90101", nameCn: "原名称" }, { id: u.id }, db as never);
+    const updated = await updateSpu(created.id, { code: "P90101", nameCn: "新名称" }, { id: u.id }, db as never);
+
+    const rows = await db.select().from(auditLogs).where(eq(auditLogs.entity, "spu")).orderBy(auditLogs.id);
+    expect(rows.map((r) => r.action)).toEqual(["create", "update"]);
+    expect(rows.every((r) => r.userId === u.id && r.entityId === created.id)).toBe(true);
+    expect((rows[1].before as { nameCn: string }).nameCn).toBe("原名称");
+    expect((rows[1].after as { nameCn: string }).nameCn).toBe("新名称");
+    expect(updated.nameCn).toBe("新名称");
+  });
+
+  it("BOM 创建、修改、生效均同事务留痕，修改保留行级快照", async () => {
+    const { db } = await createTestDb();
+    const [maker] = await db.insert(users).values({ username: "t_bom_maker", name: "制单", passwordHash: "x" }).returning();
+    const [approver] = await db
+      .insert(users)
+      .values({ username: "t_bom_approver", name: "审批", passwordHash: "x", roles: ["pmc"], isApprover: true })
+      .returning();
+    const [spu] = await db.insert(spus).values({ code: "P90102", nameCn: "BOM审计品" }).returning();
+    const [product] = await db
+      .insert(skus)
+      .values({ code: "BOM-AUD-P", name: "成品", spuId: spu.id, skuType: "finished", baseUom: "个" })
+      .returning();
+    const [material] = await db
+      .insert(skus)
+      .values({ code: "BOM-AUD-M", name: "物料", spuId: spu.id, skuType: "raw", baseUom: "克" })
+      .returning();
+    const { activateBom, createBom, updateBom } = await import("@/server/modules/master/bom");
+
+    const created = await createBom(
+      { productSkuId: product.id, versionNo: "V1", lines: [{ materialSkuId: material.id, qtyPer: 1 }] },
+      { id: maker.id },
+      db as never,
+    );
+    await updateBom(
+      created.id,
+      { productSkuId: product.id, versionNo: "V1.1", lines: [{ materialSkuId: material.id, qtyPer: 2 }] },
+      { id: maker.id },
+      db as never,
+    );
+    await activateBom(
+      created.id,
+      { id: approver.id, roles: ["pmc"], isApprover: true },
+      { db: db as never },
+    );
+
+    const rows = await db.select().from(auditLogs).where(eq(auditLogs.entity, "bom")).orderBy(auditLogs.id);
+    expect(rows.map((r) => r.action)).toEqual(["create", "update", "activate"]);
+    expect((rows[0].after as { lines: unknown[] }).lines).toHaveLength(1);
+    expect((rows[1].before as { lines: unknown[] }).lines).toHaveLength(1);
+    expect((rows[1].after as { lines: { qtyPer: number }[] }).lines[0].qtyPer).toBe(2);
+    expect(rows[2].userId).toBe(approver.id);
+
+    const [head] = await db.select().from(boms).where(eq(boms.id, created.id));
+    const lines = await db.select().from(bomLines).where(eq(bomLines.bomId, created.id));
+    expect(head.status).toBe("active");
+    expect(lines[0].qtyPer).toBe("2.0000");
   });
 });

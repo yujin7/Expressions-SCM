@@ -17,7 +17,7 @@ import { approveWo } from "@/server/modules/outsource/wo";
 import { approvePo, approvePc } from "@/server/modules/outsource/po";
 import { approveJg } from "@/server/modules/outsource/jg";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 export const BATCH_APPROVE_MAX = 100;

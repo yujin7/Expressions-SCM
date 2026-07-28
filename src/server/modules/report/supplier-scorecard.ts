@@ -43,10 +43,10 @@ import { leadTimeStats, type LeadTimeSample } from "@/server/rules/leadtime-stat
 import { scoreSupplier, type ScoreBreakdownItem, type SupplierGrade } from "@/server/rules/scorecard";
 import { num } from "@/server/core/svc";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 /** drizzle 表对象（po_docs / jg_docs 结构不同但都含 id + supplier_id，此处按鸭子类型传参） */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyTable = any;
 
 /** 生效收货状态（照抄 report/wip.ts ACTIVE_SH_STATUSES） */

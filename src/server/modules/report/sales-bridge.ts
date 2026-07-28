@@ -17,7 +17,7 @@ import { ApiError } from "@/server/modules/master/common";
 import { buildBridge, type BridgeItem } from "@/server/rules/waterfall";
 import { num } from "@/server/core/svc";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 const YM_RE = /^\d{4}-(?:0[1-9]|1[0-2])$/;

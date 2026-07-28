@@ -13,7 +13,7 @@ import { clearParamCache } from "@/server/core/params";
 import { ApiError, type SessionUser, todayShanghai } from "@/server/modules/master/common";
 import { isBatchPostingEnabled } from "./batch-allocation";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 export const BATCH_ROLLOUT_CONFIRMATION = "ENABLE_FEFO_WITH_LEGACY_FALLBACK";

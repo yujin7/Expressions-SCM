@@ -26,7 +26,7 @@ import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { dCmp, dMul, dQty } from "@/server/core/decimal";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 export interface SkuSupplyParams {

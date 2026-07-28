@@ -18,7 +18,7 @@ describe("classifyEvent", () => {
   });
 
   it("**未登记的 action 走 fallback 且绝不抛错**——分类法不得成为新故障源", () => {
-    // action 有动态来源（审批透传/复核计算/auditFromRoute 自由字符串），静态清单必然不全
+    // action 有动态来源（审批透传、复核计算、连接器/任务扩展），静态清单必然不全
     expect(() => classifyEvent("weird_entity", "some_brand_new_action")).not.toThrow();
     const e = classifyEvent("weird_entity", "some_brand_new_action");
     expect(e.domain).toBe("system");

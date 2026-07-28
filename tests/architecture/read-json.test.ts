@@ -17,10 +17,7 @@ import path from "node:path";
 
 const API = path.resolve(__dirname, "../../src/app/api");
 
-/**
- * 白名单：**语义确实不同**的「可选 body」路由——`.catch(() => ({}))` 表示
- * 空 body 是合法输入（走默认值），不是错误。它们不该被强制 400。
- */
+/** 语义确实允许空 body 的路由；必须走 readOptionalJson，坏 JSON 仍然 400。 */
 const ALLOW_OPTIONAL_BODY = [
   path.join("master", "bom", "[id]", "activate", "route.ts"),
   path.join("import", "exceptions", "[id]", "ignore", "route.ts"),
@@ -41,11 +38,7 @@ describe("架构护栏：请求体解析统一走 readJson", () => {
     for (const file of walk(API)) {
       const rel = path.relative(API, file);
       const src = readFileSync(file, "utf8");
-      // 允许 `req.json().catch(...)`（可选 body），只抓没有兜底的裸调
-      const bare = /await\s+req\.json\(\)\s*(?!\.catch)/.test(src);
-      if (!bare) continue;
-      if (ALLOW_OPTIONAL_BODY.some((a) => rel === a)) continue;
-      offenders.push(rel);
+      if (/await\s+req\.json\(\)/.test(src)) offenders.push(rel);
     }
     expect(
       offenders,
@@ -54,10 +47,11 @@ describe("架构护栏：请求体解析统一走 readJson", () => {
     ).toEqual([]);
   });
 
-  it("白名单只保留真正「空 body 合法」的路由，且必须真的带 .catch 兜底", () => {
+  it("可选 body 路由使用 readOptionalJson，不能用 catch 抹掉坏 JSON", () => {
     for (const rel of ALLOW_OPTIONAL_BODY) {
       const src = readFileSync(path.join(API, rel), "utf8");
-      expect(src, `${rel} 在白名单里，就必须有 .catch 兜底`).toMatch(/req\.json\(\)\.catch/);
+      expect(src, `${rel} 在白名单里，就必须使用 readOptionalJson`).toContain("readOptionalJson");
+      expect(src).not.toMatch(/req\.json\(\)\.catch/);
     }
     // 防腐化：白名单不许无声增长
     expect(ALLOW_OPTIONAL_BODY).toHaveLength(2);

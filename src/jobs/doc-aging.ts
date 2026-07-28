@@ -13,14 +13,14 @@
 import { and, eq, lt } from "drizzle-orm";
 import { bhDocs, jgDocs, poDocs, systemAlerts, woDocs } from "@/db/schema";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 const DAY_MS = 86_400_000;
 
 interface DocSource {
   docType: string;
   label: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
   table: any;
 }
 const SOURCES: DocSource[] = [

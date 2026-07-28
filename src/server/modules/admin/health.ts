@@ -12,7 +12,7 @@ import { getDbAsync } from "@/db";
 import { errorLogs, exportJobs, importJobs, jobRuns, stockSnapshots, warehouses } from "@/db/schema";
 import { getConnectorReadiness, type ConnectorReadiness } from "@/server/integrations/connector";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 export const SNAPSHOT_AGE_RED_DAYS = 3;

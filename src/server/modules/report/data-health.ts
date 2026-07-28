@@ -31,7 +31,7 @@ import { num } from "@/server/core/svc";
 import { detectDuplicates, type SkuLike } from "@/server/core/dedupe";
 import { getOnHandBySku } from "@/server/core/stock-view";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 /** 维度中文标签（缺失项文案 & 汇总键；顺序即展示顺序） */

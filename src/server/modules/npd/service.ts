@@ -19,7 +19,7 @@ import { createBh } from "@/server/modules/outsource/bh";
 import { resolveAlias } from "@/server/modules/dimension/resolver";
 import { resolveDb } from "@/server/core/svc";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 

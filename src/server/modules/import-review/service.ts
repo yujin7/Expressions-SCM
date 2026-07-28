@@ -12,7 +12,7 @@ import { ApiError } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import type { SessionUser } from "@/server/core/dto";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 const resolveDb = async (db?: AnyDb): Promise<AnyDb> => db ?? (await getDbAsync());

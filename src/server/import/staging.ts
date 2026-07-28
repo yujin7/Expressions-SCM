@@ -8,7 +8,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { importJobs, stagingRows } from "@/db/schema";
 import { createImportRejectionArtifact } from "@/server/import/rejection-artifact";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 export type AnyDb = any;
 
 export interface StagingRowInput {

@@ -28,7 +28,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { dSub, dMul, dCmp, dQty } from "@/server/core/decimal";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 /** 供给来源：po/wo=记账层单据；legacy_fg/on_order=参考层登记 */

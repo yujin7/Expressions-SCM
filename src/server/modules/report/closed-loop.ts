@@ -14,7 +14,7 @@ import * as schema from "@/db/schema";
 import { num, r1 } from "@/server/core/svc";
 import { DOC_STATUS_LABELS } from "@/components/labels";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 /** 单据状态 → 中文标签（兼容 PRD 命名与实际枚举） */

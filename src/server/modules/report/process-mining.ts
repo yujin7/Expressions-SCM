@@ -11,7 +11,7 @@ import {
   type ProcessMiningResult,
 } from "@/server/rules/process-mining";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 export const PROCESS_ENTITY_DEFS = [

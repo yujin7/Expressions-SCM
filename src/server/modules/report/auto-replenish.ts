@@ -20,7 +20,7 @@ import { getSegmentation } from "@/server/modules/report/segmentation";
 import { getReplenishSuggestions } from "@/server/modules/replenish/service";
 import { num } from "@/server/core/svc";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 export interface AutoReplenishCandidate {

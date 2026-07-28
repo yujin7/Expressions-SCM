@@ -41,7 +41,7 @@ export const spus = pgTable("spus", {
 
 export const skus = pgTable("skus", {
   id: serial("id").primaryKey(),
-  code: text("code").notNull().unique(), // 品类2位+5位流水
+  code: text("code").notNull().unique(), // D10：沿用现行商家编码作为主码
   name: text("name").notNull().default(""), // 货品名称（红队集成修正：原 schema 遗漏）
   spuId: integer("spu_id").notNull().references(() => spus.id),
   spec: text("spec"), // 规格

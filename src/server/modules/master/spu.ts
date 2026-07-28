@@ -40,8 +40,7 @@ export async function listSpus(q: string, page: number, pageSize: number) {
 /** 编码留空则自动取号 P+5位流水。
  *  《04》§4.1 裁决（连贯性审计 M4 修复）：走 doc_counters 原子 upsert 取号（prefix=SPU, bizDate=GLOBAL），
  *  杜绝 MAX+1 并发竞态——718+ SKU 批量建档时会高频取号。 */
-async function nextSpuCode(): Promise<string> {
-  const db = await getDbAsync();
+async function nextSpuCode(db: DB): Promise<string> {
   const [row] = await db
     .insert(schema.docCounters)
     .values({ prefix: "SPU", bizDate: "GLOBAL", lastNo: 1 })
@@ -68,33 +67,65 @@ async function nextSpuCode(): Promise<string> {
   throw new Error("SPU 取号异常：连续 10 万次碰撞");
 }
 
-export async function createSpu(input: unknown) {
+export async function createSpu(
+  input: unknown,
+  actor?: { id: number },
+  dbOverride?: DB,
+) {
   const v = spuSchema.parse(input);
-  const db = await getDbAsync();
-  const code = v.code ?? (await nextSpuCode());
-  const [created] = await db
-    .insert(schema.spus)
-    .values({ code, nameCn: v.nameCn, nameEn: v.nameEn ?? null, categoryId: v.categoryId ?? null })
-    .returning();
-  return created;
+  const db = dbOverride ?? (await getDbAsync());
+  return db.transaction(async (tx) => {
+    const code = v.code ?? (await nextSpuCode(tx as unknown as DB));
+    const [created] = await tx
+      .insert(schema.spus)
+      .values({ code, nameCn: v.nameCn, nameEn: v.nameEn ?? null, categoryId: v.categoryId ?? null })
+      .returning();
+    if (actor) {
+      await writeAudit(tx, {
+        userId: actor.id,
+        entity: "spu",
+        entityId: created.id,
+        action: "create",
+        after: created,
+      });
+    }
+    return created;
+  });
 }
 
-export async function updateSpu(id: number, input: unknown) {
+export async function updateSpu(
+  id: number,
+  input: unknown,
+  actor?: { id: number },
+  dbOverride?: DB,
+) {
   const v = spuSchema.parse(input);
-  const db = await getDbAsync();
-  const [existing] = await db.select().from(schema.spus).where(eq(schema.spus.id, id));
-  if (!existing) throw new ApiError(404, "SPU 不存在");
-  const [updated] = await db
-    .update(schema.spus)
-    .set({
-      code: v.code ?? existing.code,
-      nameCn: v.nameCn,
-      nameEn: v.nameEn ?? null,
-      categoryId: v.categoryId ?? null,
-    })
-    .where(eq(schema.spus.id, id))
-    .returning();
-  return updated;
+  const db = dbOverride ?? (await getDbAsync());
+  return db.transaction(async (tx) => {
+    const [existing] = await tx.select().from(schema.spus).where(eq(schema.spus.id, id));
+    if (!existing) throw new ApiError(404, "SPU 不存在");
+    const [updated] = await tx
+      .update(schema.spus)
+      .set({
+        code: v.code ?? existing.code,
+        nameCn: v.nameCn,
+        nameEn: v.nameEn ?? null,
+        categoryId: v.categoryId ?? null,
+      })
+      .where(eq(schema.spus.id, id))
+      .returning();
+    if (actor) {
+      await writeAudit(tx, {
+        userId: actor.id,
+        entity: "spu",
+        entityId: id,
+        action: "update",
+        before: existing,
+        after: updated,
+      });
+    }
+    return updated;
+  });
 }
 
 /* ── FEATURE 3：SPU 批量归组 ─────────────────────────────── */

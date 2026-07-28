@@ -26,7 +26,7 @@ import { earliestKitDate } from "@/server/rules/kitting-atp";
 import { getReplenishSuggestions } from "@/server/modules/replenish/service";
 import { todayShanghai } from "@/server/modules/master/common";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 /** 与 report/wip.ts 一致：已生效 SH（正常行实收占用 JG 累计） */

@@ -5,7 +5,7 @@ import { auditLogs, users } from "@/db/schema";
 import { maskSensitive } from "@/server/core/dto";
 import { ApiError, type SessionUser } from "@/server/modules/master/common";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 /**

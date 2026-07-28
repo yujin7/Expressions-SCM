@@ -140,20 +140,6 @@ export async function guardWrite(entity: keyof typeof WRITE_ROLES): Promise<Sess
 }
 
 
-/** 路由级审计（体检 #1）：主数据写路径统一落 audit_logs（详情级 before/after 由 service 层按需补充） */
-import { getDbAsync } from "@/db";
-import { writeAudit } from "@/server/core/audit";
-
-export async function auditFromRoute(
-  user: SessionUser,
-  entity: string,
-  entityId: number | null | undefined,
-  action: string,
-  after?: unknown,
-): Promise<void> {
-  await writeAudit(await getDbAsync(), { userId: user.id, entity, entityId: entityId ?? null, action, after });
-}
-
 /**
  * 读取并解析请求体。**所有写路由都必须走这里，禁止裸 `await req.json()`。**
  *
@@ -167,6 +153,28 @@ export async function auditFromRoute(
 export async function readJson<T = unknown>(req: { json: () => Promise<unknown> }): Promise<T> {
   try {
     return (await req.json()) as T;
+  } catch {
+    throw new ApiError(400, "请求体不是合法的 JSON");
+  }
+}
+
+/**
+ * 允许空请求体的写端点专用：空体归一为 `{}`，非空坏 JSON 仍返回 400。
+ * 目前仅用于“BOM 生效”这类 body 完全可选的命令，避免用 `.catch(() => ({}))`
+ * 把“格式损坏”和“确实为空”混为一谈。
+ */
+export async function readOptionalJson<T = Record<string, never>>(
+  req: { text: () => Promise<string> },
+): Promise<T> {
+  let raw: string;
+  try {
+    raw = await req.text();
+  } catch {
+    throw new ApiError(400, "无法读取请求体");
+  }
+  if (!raw.trim()) return {} as T;
+  try {
+    return JSON.parse(raw) as T;
   } catch {
     throw new ApiError(400, "请求体不是合法的 JSON");
   }

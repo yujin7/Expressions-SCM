@@ -83,7 +83,7 @@ export default function RemoteSelect({ api, getLabel, getValue, filterRow, ...re
         label: getLabel(row),
         value: getValue ? getValue(row) : row.id,
       })),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 标签函数仅影响显示，调用方应提供稳定引用以避免重建全部选项
     [rows, filterRow, getValue],
   );
 

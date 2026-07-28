@@ -3,7 +3,7 @@ import type { PgDatabase } from "drizzle-orm/pg-core";
 import { docCounters } from "@/db/schema";
 
 /** 任意 drizzle PG 连接（node-postgres / PGlite / 事务均兼容） */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 export type AnyDb = PgDatabase<any, any, any>;
 
 const SHANGHAI_FMT = new Intl.DateTimeFormat("en-CA", {

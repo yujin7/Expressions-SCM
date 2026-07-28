@@ -15,7 +15,7 @@ import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { suggestFefoAllocation } from "./fefo";
 import { getLocatedQty } from "./location-balance";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 export interface BatchAllocatableLine {

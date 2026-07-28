@@ -19,7 +19,7 @@ import { isRegisteredSource } from "./registry";
  * （tests/helpers/db.ts）泛型签名不兼容，无公共命名超类，故此处用 any 收口；
  * 运行时只依赖 drizzle 通用查询构建器 + .transaction()。
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 export type AnyDb = any;
 
 export type PostingLine = {

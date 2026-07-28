@@ -34,7 +34,7 @@ import { ApiError, type SessionUser } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import { leadTimeStats, suggestLeadDays, type LeadTimeSample } from "@/server/rules/leadtime-stats";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 /** 生效单据状态（与 matflow 收货口径一致：草稿/待审/驳回不算数） */

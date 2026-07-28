@@ -29,7 +29,7 @@ import * as schema from "@/db/schema";
 import { dDiv, dMoney, dMul, dSub } from "@/server/core/decimal";
 import { todayShanghai } from "@/server/modules/master/common";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 /** PO 现供应商推断时排除的状态（草稿/作废不代表真在跟这家买） */
