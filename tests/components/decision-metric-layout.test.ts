@@ -16,8 +16,15 @@ describe("decision metric layout", () => {
     expect(styles).toContain("repeat(auto-fit, minmax(min(100%, 220px), 1fr))");
     expect(styles).toContain("repeat(auto-fit, minmax(min(100%, 520px), 1fr))");
     expect(styles).toMatch(
-      /@container app-surface \(min-width:\s*640px\) and \(max-width:\s*760px\)[\s\S]*\.dashboard-kpi-grid\s*\{[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\);/s,
+      /\.decision-metric\s*\{[^}]*container-type:\s*inline-size;/s,
     );
+    expect(styles).toMatch(
+      /\.decision-metric__statistic \.ant-statistic-content\s*\{[^}]*font-size:\s*clamp\(20px,\s*11cqi,\s*34px\);/s,
+    );
+    expect(styles).toMatch(
+      /@container app-surface \(max-width:\s*760px\)[\s\S]*\.dashboard-kpi-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\);/s,
+    );
+    expect(styles).not.toContain("@container app-surface (min-width: 640px) and (max-width: 760px)");
     expect(styles).toMatch(
       /@container app-surface \(max-width:\s*520px\)[\s\S]*\.dashboard-kpi-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/s,
     );

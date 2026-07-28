@@ -230,9 +230,9 @@ export default function FunnelClient() {
         </DecisionVisual>
       </div>
 
-      <Space size={12} wrap style={{ marginBottom: 12 }}>
+      <Space className="compact-stat-strip" wrap>
         {(data?.stages ?? []).map((s) => (
-          <Card key={s.key} size="small" style={{ minWidth: 150 }}>
+          <Card key={s.key} size="small">
             <Statistic title={s.label} value={s.qty} formatter={() => qty(s.qty)} valueStyle={{ color: STAGE_COLOR[s.key] }} />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>{s.docCount.toLocaleString("zh-CN")} 单/条</Typography.Text>
           </Card>

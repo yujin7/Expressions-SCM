@@ -12,7 +12,7 @@ import SearchInput from "@/components/SearchInput";
  * 口径局限（平均在库用当前在库近似）在页面顶部与周转页签内均常驻提示，不做美化。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, App, Col, Row, Segmented, Space, Table, Tabs, Tag, Tooltip as AntTooltip, Typography } from "antd";
+import { Alert, App, Segmented, Space, Table, Tabs, Tag, Tooltip as AntTooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
   Bar,
@@ -323,32 +323,32 @@ export default function InventoryAnalyticsClient() {
         }
       />
 
-      <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
-        <Col xs={12} md={6}>
+      <section className="dashboard-kpi-grid" aria-label="库存分析关键指标" style={{ marginBottom: 12 }}>
+        <div className="dashboard-kpi-grid__item">
           <DecisionMetric
             metricId="finishedSkuCount"
             value={summary?.skuCount ?? 0}
             source={{ tier: "ledger", name: "SKU 主数据" }}
             asOf={data?.today}
           />
-        </Col>
-        <Col xs={12} md={6}>
+        </div>
+        <div className="dashboard-kpi-grid__item">
           <DecisionMetric
             metricId="turns"
             value={summary?.avgTurns ?? "—"}
             source={{ tier: "derived", name: `库存流水与当前在库（${windowDays} 天窗口）` }}
             asOf={data?.today}
           />
-        </Col>
-        <Col xs={12} md={6}>
+        </div>
+        <div className="dashboard-kpi-grid__item">
           <DecisionMetric
             metricId="dio"
             value={summary?.avgDio ?? "—"}
             source={{ tier: "derived", name: `库存流水与当前在库（${windowDays} 天窗口）` }}
             asOf={data?.today}
           />
-        </Col>
-        <Col xs={12} md={6}>
+        </div>
+        <div className="dashboard-kpi-grid__item">
           <DecisionMetric
             metricId="unknownOriginQty"
             value={summary?.unknownOriginQty ?? 0}
@@ -358,8 +358,8 @@ export default function InventoryAnalyticsClient() {
             actionHref="/inventory/ledger"
             actionLabel="核对库存流水"
           />
-        </Col>
-      </Row>
+        </div>
+      </section>
 
       <ListToolbar
         state={listState}

@@ -71,7 +71,10 @@ describe("shared layout regressions", () => {
       /\.list-toolbar--actions-only \.list-toolbar__right\s*\{[^}]*width:\s*auto;/s,
     );
     expect(styles).toMatch(
-      /@container app-surface \(max-width:\s*760px\)[\s\S]*\.list-toolbar__right\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto;[^}]*margin-left:\s*0;[^}]*justify-content:\s*stretch;/s,
+      /@container app-surface \(max-width:\s*760px\)[\s\S]*\.list-toolbar\s*\{[^}]*width:\s*fit-content;[^}]*max-width:\s*100%;/s,
+    );
+    expect(styles).toMatch(
+      /@container app-surface \(max-width:\s*760px\)[\s\S]*\.list-toolbar__right\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;[^}]*width:\s*fit-content;[^}]*max-width:\s*100%;[^}]*justify-content:\s*flex-start;/s,
     );
     expect(styles).toMatch(
       /@container app-surface \(max-width:\s*760px\)[\s\S]*\.list-toolbar__actions\s*\{[^}]*justify-content:\s*flex-start;/s,
@@ -84,10 +87,10 @@ describe("shared layout regressions", () => {
     expect(toolbar).toContain('key: "__density"');
     expect(toolbar).not.toContain('aria-label="复制当前视图链接"');
     expect(styles).toMatch(
-      /@container app-surface \(max-width:\s*520px\)[\s\S]*\.list-toolbar__right\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto;/s,
+      /@container app-surface \(max-width:\s*520px\)[\s\S]*\.list-toolbar__right\s*\{[^}]*display:\s*flex;[^}]*width:\s*fit-content;[^}]*max-width:\s*100%;/s,
     );
     expect(styles).toMatch(
-      /@container app-surface \(max-width:\s*320px\)[\s\S]*\.list-toolbar__right\s*\{[^}]*grid-template-columns:\s*1fr;/s,
+      /@container app-surface \(max-width:\s*320px\)[\s\S]*\.list-toolbar__primary-actions\s*\{[^}]*flex-basis:\s*100%;/s,
     );
   });
 
@@ -236,6 +239,9 @@ describe("shared layout regressions", () => {
 
     expect(errorBoundary).toContain('className="app-error-boundary"');
     expect(errorBoundary).toContain("error.digest");
+    expect(errorBoundary).toContain('console.error("[app-error-boundary]"');
+    expect(errorBoundary).toContain("pathname,");
+    expect(errorBoundary).toContain("digest,");
     expect(errorBoundary).toContain("重试本页");
     expect(errorBoundary).toContain('href="/workbench"');
     expect(styles).toMatch(

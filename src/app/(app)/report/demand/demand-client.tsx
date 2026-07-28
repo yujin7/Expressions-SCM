@@ -188,7 +188,7 @@ function DemandTab() {
           />
         }
       >
-        <Row gutter={[12, 12]}>
+        <Row gutter={[12, 12]} className="compact-kpi-row">
           <Col xs={12} md={8}>
             <Statistic title="登记需求" value={summary?.demandQty ?? 0} />
           </Col>

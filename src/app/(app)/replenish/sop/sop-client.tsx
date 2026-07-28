@@ -15,6 +15,7 @@ import {
   Row,
   Select,
   Space,
+  Statistic,
   Steps,
   Table,
   Tag,
@@ -341,10 +342,10 @@ export default function SopClient() {
               <Card title="冻结计划证据" style={{ height: "100%" }}>
                 <Typography.Title level={4} style={{ marginTop: 0 }}>{cycle.plan.name}</Typography.Title>
                 <Typography.Text type="secondary">计划周起点 {cycle.plan.weekStart}</Typography.Text>
-                <Row gutter={12} style={{ marginTop: 20 }}>
-                  <Col span={8}><Typography.Text type="secondary">全量行</Typography.Text><Typography.Title level={4}>{cycle.plan.lineCount}</Typography.Title></Col>
-                  <Col span={8}><Typography.Text type="secondary">建议</Typography.Text><Typography.Title level={4}>{cycle.plan.suggestedCount}</Typography.Title></Col>
-                  <Col span={8}><Typography.Text type="secondary">抑制</Typography.Text><Typography.Title level={4}>{cycle.plan.suppressedCount}</Typography.Title></Col>
+                <Row gutter={[10, 10]} className="compact-kpi-row" style={{ marginTop: 16 }}>
+                  <Col span={8}><Statistic title="全量行" value={cycle.plan.lineCount} /></Col>
+                  <Col span={8}><Statistic title="建议" value={cycle.plan.suggestedCount} /></Col>
+                  <Col span={8}><Statistic title="抑制" value={cycle.plan.suppressedCount} /></Col>
                 </Row>
                 <Typography.Text code ellipsis style={{ display: "block" }}>摘要 {cycle.planDigest}</Typography.Text>
                 <Button href={`/replenish/versions?current=${cycle.planningVersionId}`} style={{ marginTop: 16 }}>查看不可变计划</Button>

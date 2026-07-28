@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { Button, Result, Space, Typography } from "antd";
 import { HomeOutlined, ReloadOutlined } from "@ant-design/icons";
 import { usePathname } from "next/navigation";
@@ -13,6 +14,18 @@ export default function ErrorBoundary({
 }) {
   const pathname = usePathname();
   const reference = error.digest ? `错误编号 ${error.digest}` : "客户端页面异常";
+  const message = error.message;
+  const digest = error.digest;
+  const stack = error.stack;
+
+  useEffect(() => {
+    console.error("[app-error-boundary]", {
+      pathname,
+      message,
+      digest,
+      stack,
+    });
+  }, [digest, message, pathname, stack]);
 
   return (
     <div className="app-error-boundary" role="alert">

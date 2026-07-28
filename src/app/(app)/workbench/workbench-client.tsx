@@ -142,7 +142,7 @@ function FocusSections({ sections, loading }: { sections: FocusSection[]; loadin
   return (
     <div style={{ marginBottom: 8 }}>
       {loading && sections.length === 0 && (
-        <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Row gutter={[10, 10]} className="compact-kpi-row">
           {[0, 1, 2].map((i) => (
             <Col xs={24} sm={8} key={i}>
               <Card loading />
@@ -155,7 +155,7 @@ function FocusSections({ sections, loading }: { sections: FocusSection[]; loadin
           <Typography.Title level={5} style={{ marginBottom: 12 }}>
             {s.roleLabel}关注
           </Typography.Title>
-          <Row gutter={[16, 16]}>
+          <Row gutter={[10, 10]} className="compact-kpi-row">
             {s.metrics.map((m) => (
               <Col xs={12} sm={8} md={6} key={m.key}>
                 <Link href={m.href}>
@@ -266,7 +266,7 @@ export default function WorkbenchClient() {
           message="当前没有待你处理的单据——下方仅剩别名认领入口。"
         />
       )}
-      <Row gutter={[12, 12]}>
+      <Row gutter={[10, 10]} className="compact-kpi-row">
         {queues.map((qq) => (
           <Col xs={12} sm={8} md={queues.length > 4 ? 4 : 6} key={qq.key}>
             <Link href={qq.href}>

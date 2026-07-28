@@ -169,7 +169,7 @@ export function BatchPostingRolloutCard({
             }
             description="切换后草稿单仍需正常提交与审批；FEFO 只负责建议和分配，不绕过审批、非负库存或过期批次拦截。"
           />
-          <Row gutter={[16, 16]}>
+          <Row gutter={[10, 10]} className="compact-kpi-row">
             <Col xs={24} sm={12} lg={6}>
               <Statistic title="批次可追溯覆盖" value={report.coveragePct} suffix="%" />
               <Progress percent={report.coveragePct} showInfo={false} status={report.coveragePct < 80 ? "exception" : "normal"} />
