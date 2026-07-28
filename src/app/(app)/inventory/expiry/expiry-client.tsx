@@ -4,7 +4,7 @@ import SearchInput from "@/components/SearchInput";
 
 /** 效期批次清单（仓库操作层）：逐批次×仓库的实物处置视图；PMC 决策视图见「风险库存处置」 */
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { App, Select, Table, Tag, Typography } from "antd";
+import { App, Select, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import { exportCsv } from "@/components/exportCsv";
@@ -152,14 +152,22 @@ function ExpiryInner() {
         extra={
           <>
             {BUCKETS.map((b) => (
-              <Tag.CheckableTag
+              <Tooltip
                 key={b.key}
-                checked={bucket === b.key}
-                onChange={(c) => listState.setFilter({ bucket: c ? b.key : BUCKET_ALL })}
-                style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}
+                title={`${b.label}：${data?.bucketCounts[b.key]?.batches ?? 0} 批 / ${formatQty(String(data?.bucketCounts[b.key]?.qty ?? 0))}`}
               >
-                {b.label}（{data?.bucketCounts[b.key]?.batches ?? 0} 批 / {formatQty(String(data?.bucketCounts[b.key]?.qty ?? 0))}）
-              </Tag.CheckableTag>
+                <Tag.CheckableTag
+                  className="expiry-bucket-filter"
+                  checked={bucket === b.key}
+                  onChange={(c) => listState.setFilter({ bucket: c ? b.key : BUCKET_ALL })}
+                  style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}
+                >
+                  {b.label}
+                  <span className="expiry-bucket-filter__count">
+                    （{data?.bucketCounts[b.key]?.batches ?? 0} 批 / {formatQty(String(data?.bucketCounts[b.key]?.qty ?? 0))}）
+                  </span>
+                </Tag.CheckableTag>
+              </Tooltip>
             ))}
             <Select
               allowClear

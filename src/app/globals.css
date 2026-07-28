@@ -200,18 +200,35 @@ body {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px 16px;
-  width: 100%;
-  padding: 8px 10px;
-  margin-bottom: 12px;
+  gap: 6px 8px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 6px;
+  margin-bottom: 10px;
   border: 1px solid #edf0f5;
   border-radius: 10px;
   background: #fafbfe;
 }
 
 .list-toolbar__filters {
-  flex: 1 1 360px;
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
+}
+
+.list-toolbar__filters.ant-space {
+  gap: 6px !important;
+}
+
+.list-toolbar__filters > .ant-space-item {
+  min-width: 0;
+}
+
+.list-toolbar__filters .ant-input-search,
+.list-toolbar__filters .ant-select,
+.list-toolbar__filters .ant-picker,
+.list-toolbar__filters .ant-input-number {
+  max-width: 100%;
 }
 
 .list-toolbar__right {
@@ -219,34 +236,40 @@ body {
   align-items: center;
   flex: 0 1 auto;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
-  margin-left: auto;
-  justify-content: flex-end;
+  margin-left: 0;
+  justify-content: flex-start;
 }
 
 .list-toolbar__actions,
 .list-toolbar__primary-actions {
-  justify-content: flex-end;
+  gap: 6px !important;
+  justify-content: flex-start;
 }
 
 .list-toolbar__primary-actions {
-  padding-left: 8px;
+  padding-left: 6px;
   border-left: 1px solid #e5e9f0;
 }
 
 .list-toolbar--actions-only .list-toolbar__right {
-  width: 100%;
+  width: auto;
 }
 
 .compact-kpi-row {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
+  gap: 10px;
+  margin-inline: 0 !important;
   margin-bottom: 12px !important;
 }
 
 .compact-kpi-row > .ant-col {
-  flex: 1 1 170px;
+  flex: none;
   min-width: 0;
-  max-width: 240px;
+  max-width: none;
+  padding-inline: 0 !important;
 }
 
 .app-surface .ant-card:has(> .ant-card-body > .ant-statistic) > .ant-card-body {
@@ -333,6 +356,10 @@ body {
   overflow: auto;
   color: #667085;
   overflow-wrap: anywhere;
+}
+
+.expiry-bucket-filter {
+  white-space: nowrap;
 }
 
 .audit-filter-grid {
@@ -480,7 +507,7 @@ body {
 
 .process-mining-kpis {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 148px), 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -515,6 +542,36 @@ body {
 
 .process-mining-page .decision-visual {
   margin-bottom: 12px;
+}
+
+.app-error-boundary {
+  display: grid;
+  place-items: center;
+  min-height: min(460px, calc(100vh - 150px));
+}
+
+.app-error-boundary .ant-result {
+  width: min(100%, 560px);
+  padding: 28px 24px;
+  border: 1px solid #f1d5d5;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fff 0%, #fffafa 100%);
+}
+
+.app-error-boundary .ant-result-icon {
+  margin-bottom: 14px;
+}
+
+.app-error-boundary .ant-result-icon .anticon {
+  font-size: 52px;
+}
+
+.app-error-boundary .ant-result-title {
+  font-size: 24px;
+}
+
+.app-error-boundary .ant-result-subtitle {
+  line-height: 1.65;
 }
 
 .plan-version-kpis {
@@ -988,8 +1045,16 @@ body {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .compact-kpi-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .list-toolbar__filters {
     flex-basis: 100%;
+  }
+
+  .list-toolbar {
+    width: 100%;
   }
 
   .list-toolbar__right {
@@ -1019,7 +1084,13 @@ body {
   }
 
   .list-toolbar--actions-only .list-toolbar__right {
+    display: flex;
+    width: auto;
     grid-template-columns: 1fr;
+  }
+
+  .list-toolbar.list-toolbar--actions-only {
+    width: fit-content;
   }
 }
 
@@ -1062,22 +1133,13 @@ body {
     display: none;
   }
 
-  .list-toolbar__right:has(.list-toolbar__primary-actions > .ant-space-item:nth-child(2)) {
-    grid-template-columns: 1fr;
-  }
-
-  .list-toolbar__right:has(.list-toolbar__primary-actions > .ant-space-item:nth-child(2))
-    .list-toolbar__primary-actions {
-    justify-content: flex-start;
-    padding-top: 8px;
-    padding-left: 0;
-    border-top: 1px solid #e5e9f0;
-    border-left: 0;
-  }
-
   .compact-kpi-row > .ant-col {
-    flex: 0 0 50%;
-    max-width: 50%;
+    flex: none;
+    max-width: none;
+  }
+
+  .compact-kpi-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .compact-stat-strip.ant-space {
@@ -1094,6 +1156,10 @@ body {
 
   .audit-filter-grid .ant-picker {
     grid-column: auto;
+  }
+
+  .expiry-bucket-filter__count {
+    display: none;
   }
 }
 

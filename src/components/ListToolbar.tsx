@@ -43,39 +43,64 @@ export default function ListToolbar<F extends Record<string, string | undefined>
   const [viewName, setViewName] = useState("");
 
   const densityItems: MenuProps["items"] = (["default", "middle", "small"] as Density[]).map((d) => ({
-    key: d,
+    key: `density:${d}`,
     label: d === state.density ? `${DENSITY_LABEL[d]} ✓` : DENSITY_LABEL[d],
   }));
 
-  const viewItems: MenuProps["items"] = [
-    ...(state.savedViews.length === 0
-      ? [{ key: "__empty", disabled: true, label: <Typography.Text type="secondary">暂无已保存视图</Typography.Text> }]
-      : state.savedViews.map((v) => ({
-          key: `view:${v.name}`,
-          label: (
-            <Space size={8} style={{ display: "flex", justifyContent: "space-between", minWidth: 160 }}>
-              <span>{v.name}</span>
-              <a
-                style={{ fontSize: 12 }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  state.deleteView(v.name);
-                  message.success(`已删除视图「${v.name}」`);
-                }}
-              >
-                删除
-              </a>
-            </Space>
-          ),
-        }))),
+  const utilityItems: MenuProps["items"] = [
+    {
+      key: "__density",
+      icon: <ColumnHeightOutlined />,
+      label: `表格密度 · ${DENSITY_LABEL[state.density]}`,
+      children: densityItems,
+    },
+    {
+      key: "__views",
+      icon: <AppstoreOutlined />,
+      label: `已保存视图 · ${state.savedViews.length}`,
+      children: state.savedViews.length === 0
+        ? [{ key: "__empty", disabled: true, label: <Typography.Text type="secondary">暂无已保存视图</Typography.Text> }]
+        : state.savedViews.map((v) => ({
+            key: `view:${v.name}`,
+            label: (
+              <Space size={8} style={{ display: "flex", justifyContent: "space-between", minWidth: 160 }}>
+                <span>{v.name}</span>
+                <a
+                  style={{ fontSize: 12 }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    state.deleteView(v.name);
+                    message.success(`已删除视图「${v.name}」`);
+                  }}
+                >
+                  删除
+                </a>
+              </Space>
+            ),
+          })),
+    },
     { type: "divider" as const },
-    { key: "__save", label: "保存当前视图…" },
+    { key: "__save", icon: <AppstoreOutlined />, label: "保存当前视图…" },
+    { key: "__copy", icon: <CopyOutlined />, label: "复制当前视图链接" },
+    { key: "__reset", icon: <UndoOutlined />, label: "重置筛选与分页" },
   ];
 
-  const onViewClick: MenuProps["onClick"] = ({ key }) => {
+  const onUtilityClick: MenuProps["onClick"] = ({ key }) => {
+    if (key.startsWith("density:")) {
+      state.setDensity(key.slice("density:".length) as Density);
+      return;
+    }
     if (key === "__save") {
       setViewName("");
       setSaveOpen(true);
+      return;
+    }
+    if (key === "__copy") {
+      void copyLink();
+      return;
+    }
+    if (key === "__reset") {
+      state.resetFilters();
       return;
     }
     if (key.startsWith("view:")) {
@@ -125,47 +150,17 @@ export default function ListToolbar<F extends Record<string, string | undefined>
             <Space className="list-toolbar__actions" wrap>
               <Dropdown
                 trigger={["click"]}
-                menu={{ items: densityItems, onClick: ({ key }) => state.setDensity(key as Density) }}
+                menu={{ items: utilityItems, onClick: onUtilityClick }}
               >
-                <Button
-                  icon={<ColumnHeightOutlined />}
-                  aria-label={`表格密度：${DENSITY_LABEL[state.density]}`}
-                  title={`表格密度：${DENSITY_LABEL[state.density]}`}
-                >
-                  <span className="list-toolbar__utility-label">密度：</span>
-                  <span className="list-toolbar__utility-value">
-                    {DENSITY_LABEL[state.density]} ▾
-                  </span>
-                </Button>
-              </Dropdown>
-              <Dropdown trigger={["click"]} menu={{ items: viewItems, onClick: onViewClick }}>
                 <Button
                   icon={<AppstoreOutlined />}
-                  aria-label={`保存的视图：${state.savedViews.length} 个`}
-                  title={`保存的视图：${state.savedViews.length} 个`}
+                  aria-label={`列表视图与显示；当前密度 ${DENSITY_LABEL[state.density]}；已保存 ${state.savedViews.length} 个视图`}
+                  title="列表视图与显示"
                 >
                   <span className="list-toolbar__utility-label">视图</span>
-                  <span className="list-toolbar__utility-value">
-                    （{state.savedViews.length}）▾
-                  </span>
+                  <span className="list-toolbar__utility-value">· {state.savedViews.length} ▾</span>
                 </Button>
               </Dropdown>
-              <Button
-                icon={<CopyOutlined />}
-                aria-label="复制当前视图链接"
-                title="复制当前视图链接"
-                onClick={() => void copyLink()}
-              >
-                <span className="list-toolbar__utility-label">复制链接</span>
-              </Button>
-              <Button
-                icon={<UndoOutlined />}
-                aria-label="重置列表筛选"
-                title="重置列表筛选"
-                onClick={() => state.resetFilters()}
-              >
-                <span className="list-toolbar__utility-label">重置</span>
-              </Button>
               {onExport ? (
                 <Button
                   icon={<DownloadOutlined />}

@@ -65,7 +65,10 @@ describe("shared layout regressions", () => {
       /@container app-surface \(max-width:\s*520px\)[\s\S]*\.process-mining-kpis,[\s\S]*\.plan-version-kpis\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/s,
     );
     expect(styles).toMatch(
-      /\.list-toolbar--actions-only \.list-toolbar__right\s*\{[^}]*width:\s*100%;/s,
+      /\.list-toolbar\s*\{[^}]*width:\s*fit-content;[^}]*max-width:\s*100%;[^}]*padding:\s*6px;/s,
+    );
+    expect(styles).toMatch(
+      /\.list-toolbar--actions-only \.list-toolbar__right\s*\{[^}]*width:\s*auto;/s,
     );
     expect(styles).toMatch(
       /@container app-surface \(max-width:\s*760px\)[\s\S]*\.list-toolbar__right\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto;[^}]*margin-left:\s*0;[^}]*justify-content:\s*stretch;/s,
@@ -75,7 +78,11 @@ describe("shared layout regressions", () => {
     );
     expect(toolbar).toContain('className="list-toolbar__utility-label"');
     expect(toolbar).toContain('className="list-toolbar__utility-value"');
-    expect(toolbar).toContain('aria-label="复制当前视图链接"');
+    expect(toolbar).toContain("列表视图与显示");
+    expect(toolbar).toContain('key: "__copy"');
+    expect(toolbar).toContain('key: "__reset"');
+    expect(toolbar).toContain('key: "__density"');
+    expect(toolbar).not.toContain('aria-label="复制当前视图链接"');
     expect(styles).toMatch(
       /@container app-surface \(max-width:\s*520px\)[\s\S]*\.list-toolbar__right\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto;/s,
     );
@@ -111,7 +118,10 @@ describe("shared layout regressions", () => {
       expect(read(file), file).toContain("compact-stat-strip");
     }
     expect(styles).toMatch(
-      /\.compact-kpi-row > \.ant-col\s*\{[^}]*flex:\s*1 1 170px;[^}]*max-width:\s*240px;/s,
+      /\.compact-kpi-row\s*\{[^}]*display:\s*grid\s*!important;[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(100%,\s*140px\),\s*1fr\)\);/s,
+    );
+    expect(styles).toMatch(
+      /\.compact-kpi-row > \.ant-col\s*\{[^}]*flex:\s*none;[^}]*max-width:\s*none;[^}]*padding-inline:\s*0\s*!important;/s,
     );
     expect(styles).toMatch(
       /\.compact-stat-strip\.ant-space\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(150px,\s*220px\)\);/s,
@@ -140,17 +150,23 @@ describe("shared layout regressions", () => {
     const release = read("src/app/(app)/import/release/release-client.tsx");
     const upload = read("src/app/(app)/import/upload/upload-client.tsx");
     const audit = read("src/app/(app)/admin/audit/audit-client.tsx");
+    const expiry = read("src/app/(app)/inventory/expiry/expiry-client.tsx");
     const styles = read("src/app/globals.css");
 
     expect(release).toContain('className="release-job-picker"');
     expect(release).not.toContain("minWidth: 520");
     expect(upload).toContain('width: "min(100%, 360px)"');
     expect(audit).toContain('className="audit-filter-grid"');
+    expect(expiry).toContain('className="expiry-bucket-filter"');
+    expect(expiry).toContain('className="expiry-bucket-filter__count"');
     expect(styles).toMatch(
       /\.audit-filter-grid\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(130px,\s*1fr\)\);/s,
     );
     expect(styles).toMatch(
       /@container app-surface \(max-width:\s*520px\)[\s\S]*\.audit-filter-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1\.5fr\) minmax\(0,\s*1fr\);/s,
+    );
+    expect(styles).toMatch(
+      /@container app-surface \(max-width:\s*520px\)[\s\S]*\.expiry-bucket-filter__count\s*\{[^}]*display:\s*none;/s,
     );
     expect(styles).toMatch(
       /\.release-job-picker > \.ant-space-item:has\(\.ant-select\)\s*\{[^}]*flex:\s*1 1 260px;[^}]*min-width:\s*0;[^}]*max-width:\s*520px;/s,
@@ -211,6 +227,22 @@ describe("shared layout regressions", () => {
     const styles = read("src/app/globals.css");
     expect(styles).toMatch(
       /@media \(max-width:\s*991px\)[\s\S]*\.dashboard-header__meta\s*\{[^}]*flex:\s*0 0 auto;[^}]*width:\s*100%;/s,
+    );
+  });
+
+  it("keeps route failures compact, recoverable, and identifiable", () => {
+    const errorBoundary = read("src/app/(app)/error.tsx");
+    const styles = read("src/app/globals.css");
+
+    expect(errorBoundary).toContain('className="app-error-boundary"');
+    expect(errorBoundary).toContain("error.digest");
+    expect(errorBoundary).toContain("重试本页");
+    expect(errorBoundary).toContain('href="/workbench"');
+    expect(styles).toMatch(
+      /\.app-error-boundary\s*\{[^}]*place-items:\s*center;[^}]*min-height:\s*min\(460px,\s*calc\(100vh - 150px\)\);/s,
+    );
+    expect(styles).toMatch(
+      /\.app-error-boundary \.ant-result\s*\{[^}]*width:\s*min\(100%,\s*560px\);[^}]*padding:\s*28px 24px;/s,
     );
   });
 
