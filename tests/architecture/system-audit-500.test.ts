@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 
 const root = process.cwd();
@@ -37,17 +37,30 @@ const controls: Control[] = [
 }));
 
 const expectedCounts: Record<Category, number> = {
-  API_ROUTE: 193,
-  AUTH_PAGE: 79,
-  MIGRATION: 34,
-  ARCH_GATE: 34,
+  API_ROUTE: 200,
+  AUTH_PAGE: 80,
+  MIGRATION: 35,
+  ARCH_GATE: 40,
   REDTEAM_GATE: 8,
   RELEASE_GATE: 11,
   PROJECT_SKILL: 7,
   LINT_EXCEPTION: 86,
   DATA_SOURCE: 20,
-  CRITICAL_INVARIANT: 28,
+  CRITICAL_INVARIANT: 31,
 };
+
+function walkFiles(relative: string, basename: string): string[] {
+  const absolute = path.join(root, relative);
+  return readdirSync(absolute)
+    .flatMap((entry) => {
+      const childRelative = path.posix.join(relative, entry);
+      const childAbsolute = path.join(root, childRelative);
+      return statSync(childAbsolute).isDirectory()
+        ? walkFiles(childRelative, basename)
+        : entry.endsWith(basename) ? [childRelative] : [];
+    })
+    .sort();
+}
 
 function source(relative: string): string {
   return readFileSync(path.join(root, relative), "utf8");
@@ -145,19 +158,35 @@ function verify(control: Control): void {
   assertTestModule(testPath);
 }
 
-describe("500 项系统执行审计台账", () => {
-  it("ID 恰好 A001–A500、对象唯一、分类数量固定", () => {
-    expect(controls).toHaveLength(500);
+describe("518 项系统执行审计台账", () => {
+  it("ID 恰好 A001–A518、对象唯一、分类数量固定", () => {
+    expect(controls).toHaveLength(518);
     expect(controls.map((control) => control.id)).toEqual(
-      Array.from({ length: 500 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
+      Array.from({ length: 518 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
     );
-    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(500);
+    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(518);
     for (const [category, count] of Object.entries(expectedCounts)) {
       expect(
         controls.filter((control) => control.category === category).length,
         `${category} 数量漂移`,
       ).toBe(count);
     }
+  });
+
+  it("路由、认证页面、迁移与架构门与当前目录完全一致，不遗漏新增面", () => {
+    const subjects = (category: Category) => controls
+      .filter((control) => control.category === category)
+      .map((control) => control.subject)
+      .sort();
+    expect(subjects("API_ROUTE")).toEqual(walkFiles("src/app/api", "route.ts"));
+    expect(subjects("AUTH_PAGE")).toEqual(walkFiles("src/app/(app)", "page.tsx"));
+    expect(subjects("MIGRATION")).toEqual(
+      readdirSync(path.join(root, "drizzle"))
+        .filter((entry) => /^\d{4}_.+\.sql$/.test(entry))
+        .map((entry) => `drizzle/${entry}`)
+        .sort(),
+    );
+    expect(subjects("ARCH_GATE")).toEqual(walkFiles("tests/architecture", ".test.ts"));
   });
 
   it.each(controls)("$id $category $subject", (control) => {

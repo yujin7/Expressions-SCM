@@ -43,6 +43,7 @@ async function main() {
     { username: "purchasing01", name: "采购01", roles: ["purchasing"], isApprover: true },
     { username: "warehouse01", name: "仓管01", roles: ["warehouse"], isApprover: true },
     { username: "warehouse02", name: "仓管02", roles: ["warehouse"], isApprover: true },
+    { username: "quality01", name: "质量合规01", roles: ["quality"], isApprover: true },
     { username: "pmc01", name: "生产计划01", roles: ["pmc"], isApprover: true },
     { username: "finance01", name: "财务01", roles: ["finance"], isApprover: true },
     // 制单人（非审批人）：用于演示 审批人≠制单人 的职责分离

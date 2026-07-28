@@ -13,6 +13,9 @@ describe("种子账号密码策略", () => {
   it("HTTP smoke 也必须显式传入口令，不允许继续沿用旧 seed 默认值", async () => {
     const source = await readFile(path.join(process.cwd(), "scripts/smoke-e2e.ts"), "utf8");
     expect(source).toContain("必须显式设置 SMOKE_PASSWORD");
+    expect(source).toContain("SMOKE_ADMIN_PASSWORD");
+    expect(source).toContain("SMOKE_ROLE_PASSWORD");
+    expect(source).toContain("SMOKE_QUALITY_PASSWORD");
     expect(source).not.toContain('?? "admin123"');
   });
 });

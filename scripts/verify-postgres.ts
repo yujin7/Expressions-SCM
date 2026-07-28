@@ -41,6 +41,10 @@ async function main(): Promise<void> {
         "sop_cycles",
         "sop_decisions",
         "supplier_lifecycle_cases",
+        "quality_cases",
+        "quality_actions",
+        "regulatory_records",
+        "electronic_label_versions",
       ]],
     );
     const found = new Set(tables.rows.map((row) => row.table_name));
@@ -61,6 +65,10 @@ async function main(): Promise<void> {
       "sop_cycles",
       "sop_decisions",
       "supplier_lifecycle_cases",
+      "quality_cases",
+      "quality_actions",
+      "regulatory_records",
+      "electronic_label_versions",
     ].filter((name) => !found.has(name));
     if (missing.length) throw new Error(`Missing migrated tables: ${missing.join(", ")}`);
 
@@ -78,6 +86,23 @@ async function main(): Promise<void> {
     const column = sessionColumn.rows[0];
     if (!column || column.data_type !== "integer" || column.is_nullable !== "NO") {
       throw new Error("users.session_version migration contract is missing or nullable");
+    }
+
+    const inspectionSiteKeyColumn = await client.query<{
+      data_type: string;
+      is_nullable: string;
+    }>(
+      `select data_type, is_nullable
+         from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'quality_cases'
+          and column_name = 'inspection_site_key'`,
+    );
+    if (
+      inspectionSiteKeyColumn.rows[0]?.data_type !== "text"
+      || inspectionSiteKeyColumn.rows[0]?.is_nullable !== "YES"
+    ) {
+      throw new Error("quality_cases.inspection_site_key migration contract is missing");
     }
 
     const immutableTriggers = await client.query<{
@@ -109,6 +134,17 @@ async function main(): Promise<void> {
         "bin_movements_append_only_truncate",
         "sop_decisions_append_only",
         "sop_decisions_append_only_truncate",
+        "regulatory_records_append_only",
+        "regulatory_records_append_only_truncate",
+        "electronic_label_versions_append_only",
+        "electronic_label_versions_append_only_truncate",
+        "quality_cases_no_delete",
+        "quality_actions_no_delete",
+        "quality_cases_frozen_scope",
+        "quality_cases_evidence_immutability",
+        "quality_actions_evidence_immutability",
+        "regulatory_records_version_chain",
+        "electronic_label_versions_version_chain",
       ]],
     );
     const triggerPairs = new Set(
@@ -132,6 +168,17 @@ async function main(): Promise<void> {
       "bin_movements:bin_movements_append_only_truncate",
       "sop_decisions:sop_decisions_append_only",
       "sop_decisions:sop_decisions_append_only_truncate",
+      "regulatory_records:regulatory_records_append_only",
+      "regulatory_records:regulatory_records_append_only_truncate",
+      "electronic_label_versions:electronic_label_versions_append_only",
+      "electronic_label_versions:electronic_label_versions_append_only_truncate",
+      "quality_cases:quality_cases_no_delete",
+      "quality_actions:quality_actions_no_delete",
+      "quality_cases:quality_cases_frozen_scope",
+      "quality_cases:quality_cases_evidence_immutability",
+      "quality_actions:quality_actions_evidence_immutability",
+      "regulatory_records:regulatory_records_version_chain",
+      "electronic_label_versions:electronic_label_versions_version_chain",
     ];
     const missingTriggers = requiredTriggerPairs.filter((pair) => !triggerPairs.has(pair));
     if (missingTriggers.length) {
@@ -175,6 +222,45 @@ async function main(): Promise<void> {
       "ck_supplier_lifecycle_close",
       "ck_supplier_lifecycle_outcome",
       "uq_supplier_lifecycle_idempotency",
+      "quality_cases_case_no_unique",
+      "quality_cases_idempotency_key_unique",
+      "ck_quality_case_kind",
+      "ck_quality_case_status",
+      "ck_quality_case_severity",
+      "ck_quality_case_market",
+      "ck_quality_case_source",
+      "ck_quality_case_assessment",
+      "ck_quality_case_reportable_fields",
+      "ck_quality_case_reported",
+      "ck_quality_case_recall_anchor",
+      "ck_quality_case_recall_scope",
+      "ck_quality_case_self_inspection",
+      "ck_quality_case_non_inspection_fields",
+      "ck_quality_case_self_inspection_report",
+      "ck_quality_case_close",
+      "ck_quality_case_version",
+      "quality_actions_idempotency_key_unique",
+      "ck_quality_action_kind",
+      "ck_quality_action_status",
+      "ck_quality_action_completion",
+      "ck_quality_action_verification",
+      "ck_quality_action_sod",
+      "ck_quality_action_waiver",
+      "ck_quality_action_qty",
+      "regulatory_records_idempotency_key_unique",
+      "uq_regulatory_record_version",
+      "ck_regulatory_type",
+      "ck_regulatory_status",
+      "ck_regulatory_market",
+      "ck_regulatory_version",
+      "ck_regulatory_previous",
+      "electronic_label_versions_public_token_unique",
+      "electronic_label_versions_idempotency_key_unique",
+      "uq_electronic_label_version",
+      "ck_electronic_label_market",
+      "ck_electronic_label_locale",
+      "ck_electronic_label_version",
+      "ck_electronic_label_previous",
     ];
     const locationConstraints = await client.query<{ conname: string }>(
       `select conname
@@ -186,6 +272,33 @@ async function main(): Promise<void> {
     const missingConstraints = requiredLocationConstraints.filter((name) => !foundConstraints.has(name));
     if (missingConstraints.length) {
       throw new Error(`Missing release-critical database constraints: ${missingConstraints.join(", ")}`);
+    }
+
+    // PostgreSQL truncates identifiers above 63 bytes, so generated FK names are
+    // not a stable contract. Verify the version-chain self references by meaning.
+    const versionChainFks = await client.query<{
+      table_name: string;
+      definition: string;
+    }>(
+      `select conrelid::regclass::text as table_name,
+              pg_get_constraintdef(oid) as definition
+         from pg_constraint
+        where contype = 'f'
+          and conrelid = confrelid
+          and conrelid = any($1::regclass[])`,
+      [["regulatory_records", "electronic_label_versions"]],
+    );
+    const versionChainSelfReferences = new Set(
+      versionChainFks.rows
+        .filter((row) => row.definition.startsWith("FOREIGN KEY (previous_id) REFERENCES "))
+        .map((row) => row.table_name),
+    );
+    const missingVersionChainFks = ["regulatory_records", "electronic_label_versions"]
+      .filter((tableName) => !versionChainSelfReferences.has(tableName));
+    if (missingVersionChainFks.length) {
+      throw new Error(
+        `Missing previous_id self-reference constraints: ${missingVersionChainFks.join(", ")}`,
+      );
     }
 
     const lifecycleIndexes = await client.query<{ indexname: string }>(
@@ -210,6 +323,30 @@ async function main(): Promise<void> {
       throw new Error(`Missing supplier lifecycle indexes: ${missingLifecycleIndexes.join(", ")}`);
     }
 
+    const requiredQualityIndexes = [
+      "uq_quality_self_inspection_site_year",
+      "ix_quality_case_kind_status",
+      "ix_quality_case_owner_due",
+      "ix_quality_case_sku_batch",
+      "ix_quality_action_case_status",
+      "ix_quality_action_owner_due",
+      "ix_regulatory_market_type",
+      "ix_regulatory_expiry",
+      "ix_electronic_label_sku_market",
+    ];
+    const qualityIndexes = await client.query<{ indexname: string }>(
+      `select indexname
+         from pg_indexes
+        where schemaname = 'public'
+          and indexname = any($1::text[])`,
+      [requiredQualityIndexes],
+    );
+    const foundQualityIndexes = new Set(qualityIndexes.rows.map((row) => row.indexname));
+    const missingQualityIndexes = requiredQualityIndexes.filter((name) => !foundQualityIndexes.has(name));
+    if (missingQualityIndexes.length) {
+      throw new Error(`Missing quality/compliance indexes: ${missingQualityIndexes.join(", ")}`);
+    }
+
     const migrationCount = await client.query<{ count: string }>(
       `select count(*)::text as count from drizzle.__drizzle_migrations`,
     );
@@ -222,9 +359,12 @@ async function main(): Promise<void> {
       appliedMigrations: applied,
       requiredTables: [...found].sort(),
       sessionVersion: column,
+      inspectionSiteKey: inspectionSiteKeyColumn.rows[0],
       immutableTriggers: [...triggerPairs].sort(),
       locationConstraints: [...foundConstraints].sort(),
+      versionChainSelfReferences: [...versionChainSelfReferences].sort(),
       supplierLifecycleIndexes: [...foundLifecycleIndexes].sort(),
+      qualityComplianceIndexes: [...foundQualityIndexes].sort(),
     }, null, 2));
   } finally {
     await client.end();

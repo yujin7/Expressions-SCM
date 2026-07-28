@@ -18,7 +18,7 @@
 - 仓库内只有两个 live authority：`docs/NOW.md` 管当前状态与下一优先级，
   `docs/spec/CURRENT.md` 管当前业务意图、决议与宿主规格导航。其余规格、README、skill reference、
   历史审计和代码注释都只是支撑材料；冲突不得静默裁决，实施/验证/部署事实仍须在当前 revision 取证。
-- 单据前缀: BH/WO/PO/PC/JG/FL/TL/SH/CT/RK/CK/DB/JS/PD/CA；取号走 doc_counters（`src/server/docflow/doc-no.ts`），禁止 MAX+1
+- 单据前缀: BH/WO/PO/PC/JG/FL/TL/SH/CT/RK/CK/DB/JS/PD/CA/QI/RC/GA；取号走 doc_counters（`src/server/docflow/doc-no.ts`），禁止 MAX+1
 - 精度按字段契约：单据金额/价格通常 decimal(14,2)，基础单位成本等 schema 明示字段可 decimal(14,4)；
   业务数量通常 decimal(14,4)，导入控制总量等聚合字段可更宽。不得凭本摘要改 schema；
   禁 float 运算（用字符串/decimal 工具 `src/server/core/decimal.ts`）；时区 Asia/Shanghai

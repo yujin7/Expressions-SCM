@@ -239,6 +239,13 @@
       "when": 1785184468451,
       "tag": "0033_slimy_rumiko_fujikawa",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1785274358906,
+      "tag": "0034_silent_gwen_stacy",
+      "breakpoints": true
     }
   ]
 }

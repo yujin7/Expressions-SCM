@@ -48,10 +48,13 @@ npm run db:migrate && npm run db:seed && npm run dev
 | `npm run db:restore -- /absolute/path/dev_*.tgz` | 停机恢复；原库保留为带时间戳副本 |
 
 发布门的 `READY` 还要求 `DATABASE_URL` 指向已迁移的 PostgreSQL，并显式提供可访问的
-`SMOKE_BASE` 与 `SMOKE_PASSWORD`；缺少 live 条件会如实产出 `NOT READY`，不会代替业务方接受风险。
+`SMOKE_BASE` 与统一的 `SMOKE_PASSWORD`；若管理员与角色账号口令不同，则改为同时提供
+`SMOKE_ADMIN_PASSWORD`、`SMOKE_ROLE_PASSWORD`；质量账号另设口令时再提供
+`SMOKE_QUALITY_PASSWORD`。缺少 live 条件会如实产出 `NOT READY`，不会代替业务方接受风险。
 
 ## 演示账号（seed）
-admin / ops01 / purchasing01 / warehouse01 / pmc01(审批人) / pmc02(非审批人) / finance01
+admin / ops01 / purchasing01 / warehouse01 / warehouse02 / quality01 /
+pmc01(审批人) / pmc02(非审批人) / finance01
 使用执行 `db:seed` 时显式提供的 `SEED_ADMIN_PASSWORD`；系统不再接受公开默认口令。
 
 ## 架构要点（详见 CLAUDE.md 与 docs/spec/01 §4-§6）

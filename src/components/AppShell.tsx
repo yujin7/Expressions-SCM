@@ -16,6 +16,7 @@ import {
   ImportOutlined,
   InboxOutlined,
   MenuOutlined,
+  SafetyCertificateOutlined,
   SettingOutlined,
   SwapOutlined,
   UserOutlined,
@@ -66,6 +67,7 @@ export function navigationGroupForPath(pathname: string): string | null {
   if (REPORT_GROUPS[pathname]) return REPORT_GROUPS[pathname];
   if (pathname.startsWith("/master/")) return "master";
   if (pathname.startsWith("/inventory/")) return "inventory";
+  if (pathname.startsWith("/quality")) return "quality";
   if (pathname.startsWith("/outsource/")) return "outsourcing";
   if (pathname.startsWith("/matflow/")) return "matflow";
   if (pathname.startsWith("/settlement/") || pathname.startsWith("/jobs/")) return "finance";
@@ -172,6 +174,14 @@ const menuItems: MenuProps["items"] = [
     ],
   },
   {
+    key: "quality",
+    icon: <SafetyCertificateOutlined />,
+    label: "质量与合规",
+    children: [
+      { key: "/quality", label: "质量与合规" },
+    ],
+  },
+  {
     key: "npd",
     icon: <ExperimentOutlined />,
     label: "新品开发",
@@ -249,6 +259,7 @@ const MENU_ROLES: Record<string, string[]> = {
   "/master/supplier/lifecycle": ["purchasing", "pmc", "finance"],
   "/master/bin": ["warehouse"],
   "/inventory/locations": ["warehouse"],
+  "/quality": ["quality", "purchasing", "warehouse", "pmc", "ops"],
   "/replenish": ["pmc", "purchasing"],
   "/replenish/versions": ["pmc", "purchasing"],
   "/replenish/sop": ["pmc", "purchasing", "ops", "finance"],

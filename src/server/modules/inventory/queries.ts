@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, ilike, lte, or, sql } from "drizzle-orm";
 
-import { skus, spus, stockBalances, stockLedger, warehouses } from "@/db/schema";
+import { batches, skus, spus, stockBalances, stockLedger, warehouses } from "@/db/schema";
 import type { AnyDb } from "@/server/posting/post";
 import { resolveDb } from "@/server/core/svc";
 
@@ -20,6 +20,7 @@ export async function listBalances(
         ilike(skus.code, `%${opts.q}%`),
         ilike(skus.name, `%${opts.q}%`),
         ilike(spus.nameCn, `%${opts.q}%`),
+        ilike(batches.batchNo, `%${opts.q}%`),
       ),
     );
   }
@@ -38,12 +39,15 @@ export async function listBalances(
         warehouseName: warehouses.name,
         warehouseKind: warehouses.kind,
         batchId: stockBalances.batchId,
+        batchNo: batches.batchNo,
+        batchExpiryDate: batches.expiryDate,
         qty: stockBalances.qty,
       })
       .from(stockBalances)
       .innerJoin(skus, eq(stockBalances.skuId, skus.id))
       .innerJoin(spus, eq(skus.spuId, spus.id))
       .innerJoin(warehouses, eq(stockBalances.warehouseId, warehouses.id))
+      .leftJoin(batches, eq(stockBalances.batchId, batches.id))
       .where(where)
       .orderBy(skus.code, warehouses.code, stockBalances.batchId)
       .limit(opts.pageSize)
@@ -54,6 +58,7 @@ export async function listBalances(
       .innerJoin(skus, eq(stockBalances.skuId, skus.id))
       .innerJoin(spus, eq(skus.spuId, spus.id))
       .innerJoin(warehouses, eq(stockBalances.warehouseId, warehouses.id))
+      .leftJoin(batches, eq(stockBalances.batchId, batches.id))
       .where(where),
   ]);
   return { rows, total };

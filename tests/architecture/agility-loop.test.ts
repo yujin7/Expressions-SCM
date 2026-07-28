@@ -51,8 +51,7 @@ describe("agile delivery loop", () => {
   it("does not lint generated output after a normal development session", () => {
     const eslintConfig = read("eslint.config.mjs");
     const pkg = JSON.parse(read("package.json")) as { scripts: Record<string, string>; overrides: Record<string, string> };
-    expect(eslintConfig).toContain('".next-dev/**"');
-    expect(eslintConfig).toContain('".next-webpack/**"');
+    expect(eslintConfig).toContain('".next-*/**"');
     expect(eslintConfig).toContain('".artifacts/**"');
     expect(eslintConfig).not.toContain('from "@eslint/eslintrc"');
     expect(pkg.scripts.postinstall).toContain("patch-minimatch-brace-api.mjs");

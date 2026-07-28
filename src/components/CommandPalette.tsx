@@ -30,6 +30,7 @@ const PAGES: PageEntry[] = [
   { label: "库位作业", href: "/inventory/locations", keywords: "bin location kuwei zuoye", roles: ["warehouse"] },
   { label: "效期批次", href: "/inventory/expiry", keywords: "expiry xiaoqi pici" },
   { label: "盘点任务", href: "/inventory/count", keywords: "count pandian" },
+  { label: "质量与合规", href: "/quality", keywords: "quality compliance zhiliang hegui", roles: ["quality", "purchasing", "warehouse", "pmc", "ops"] },
   { label: "NPD 项目跟踪", href: "/npd", keywords: "npd xinpin project" },
   { label: "NPD 节点参考", href: "/report/npd", keywords: "npd jiedian node" },
   { label: "SPU 产品", href: "/master/spu", keywords: "spu chanpin" },

@@ -4,12 +4,25 @@
  *   SMOKE_BASE=https://host npx tsx scripts/smoke-e2e.ts
  * 覆盖：健康检查（迁移无漂移）、全角色登录、关键只读端点形状、越权/匿名负样例、
  * ops 角色 PO 价格脱敏。退出码 0=全过 / 1=有失败；结尾打印汇总表。
- * 口令：必须显式提供 SMOKE_PASSWORD；脚本不保留任何公开默认密码。
+ * 口令：可提供统一的 SMOKE_PASSWORD；若管理员与角色账号不同，则同时提供
+ * SMOKE_ADMIN_PASSWORD 与 SMOKE_ROLE_PASSWORD；质量账号若另设口令，可再提供
+ * SMOKE_QUALITY_PASSWORD。脚本不保留任何公开默认密码。
  */
 
 const BASE = process.env.SMOKE_BASE ?? "http://localhost:3000";
-const PASSWORD: string = process.env.SMOKE_PASSWORD?.trim() ?? "";
-const ROLE_USERS = ["admin", "ops01", "purchasing01", "warehouse01", "pmc01", "finance01"];
+const SHARED_PASSWORD = process.env.SMOKE_PASSWORD?.trim() ?? "";
+const ADMIN_PASSWORD = process.env.SMOKE_ADMIN_PASSWORD?.trim() || SHARED_PASSWORD;
+const ROLE_PASSWORD = process.env.SMOKE_ROLE_PASSWORD?.trim() || SHARED_PASSWORD;
+const QUALITY_PASSWORD = process.env.SMOKE_QUALITY_PASSWORD?.trim() || ROLE_PASSWORD;
+const ROLE_USERS = [
+  "admin",
+  "ops01",
+  "purchasing01",
+  "warehouse01",
+  "quality01",
+  "pmc01",
+  "finance01",
+];
 
 type Status = "PASS" | "FAIL" | "SKIP";
 const results: { name: string; status: Status; detail: string }[] = [];
@@ -50,7 +63,7 @@ async function jarFetch(jar: Jar, path: string, init?: RequestInit): Promise<Res
 }
 
 /** next-auth credentials 登录（provider id="local"）：GET csrf → POST callback/local；失败返回 null */
-async function login(username: string): Promise<Jar | null> {
+async function login(username: string, password: string): Promise<Jar | null> {
   try {
     const jar = new Jar();
     const csrfRes = await jarFetch(jar, "/api/auth/csrf");
@@ -59,7 +72,7 @@ async function login(username: string): Promise<Jar | null> {
     const res = await jarFetch(jar, "/api/auth/callback/local", {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrfToken, username, password: PASSWORD }).toString(),
+      body: new URLSearchParams({ csrfToken, username, password }).toString(),
     });
     const loc = res.headers.get("location") ?? "";
     if (res.status !== 302 || /error=/i.test(loc)) return null;
@@ -90,8 +103,10 @@ async function getJson(jar: Jar | null, path: string): Promise<{ status: number;
 }
 
 async function main(): Promise<void> {
-  if (!PASSWORD) {
-    throw new Error("必须显式设置 SMOKE_PASSWORD，拒绝使用公开默认密码");
+  if (!ADMIN_PASSWORD || !ROLE_PASSWORD) {
+    throw new Error(
+      "必须显式设置 SMOKE_PASSWORD，或同时设置 SMOKE_ADMIN_PASSWORD 与 SMOKE_ROLE_PASSWORD；拒绝使用公开默认密码",
+    );
   }
   console.log(`冒烟目标: ${BASE}\n`);
 
@@ -109,7 +124,12 @@ async function main(): Promise<void> {
   // 2) 各角色登录
   const jars = new Map<string, Jar>();
   for (const u of ROLE_USERS) {
-    const jar = await login(u);
+    const password = u === "admin"
+      ? ADMIN_PASSWORD
+      : u === "quality01"
+        ? QUALITY_PASSWORD
+        : ROLE_PASSWORD;
+    const jar = await login(u, password);
     if (jar) {
       jars.set(u, jar);
       record(`登录 ${u}`, "PASS");
@@ -119,6 +139,7 @@ async function main(): Promise<void> {
   }
   const admin = jars.get("admin");
   const ops = jars.get("ops01");
+  const quality = jars.get("quality01");
   if (!admin) {
   printSummary();
     process.exit(1);
@@ -168,6 +189,47 @@ async function main(): Promise<void> {
     record("工作台 /api/workbench", ok ? "PASS" : "FAIL", `status=${status}`);
   }
   {
+    const { status, body } = await getJson(admin, "/api/quality/cases?page=1&pageSize=1");
+    const payload = body as {
+      rows?: unknown[];
+      total?: number;
+      summary?: Record<string, unknown>;
+    } | null;
+    const ok = status === 200
+      && Array.isArray(payload?.rows)
+      && typeof payload?.total === "number"
+      && payload?.summary !== null
+      && typeof payload?.summary === "object";
+    record("质量案件 /api/quality/cases", ok ? "PASS" : "FAIL", `status=${status} total=${String(payload?.total)}`);
+  }
+  {
+    const { status, body } = await getJson(admin, "/api/quality/regulatory");
+    record(
+      "监管证据 /api/quality/regulatory",
+      status === 200 && Array.isArray(body) ? "PASS" : "FAIL",
+      `status=${status}`,
+    );
+  }
+  {
+    const { status, body } = await getJson(admin, "/api/quality/labels");
+    record(
+      "电子标签 /api/quality/labels",
+      status === 200 && Array.isArray(body) ? "PASS" : "FAIL",
+      `status=${status}`,
+    );
+  }
+  if (quality) {
+    const { status, body } = await getJson(quality, "/api/quality/cases?page=1&pageSize=1");
+    const rows = (body as { rows?: unknown[] } | null)?.rows;
+    record(
+      "质量角色 → /api/quality/cases 可读",
+      status === 200 && Array.isArray(rows) ? "PASS" : "FAIL",
+      `status=${status}`,
+    );
+  } else {
+    record("质量角色 → /api/quality/cases 可读", "SKIP", "quality01 登录失败");
+  }
+  {
     const { status, body } = await getJson(admin, "/api/admin/params");
     const rows = (body as { rows?: unknown[] } | null)?.rows;
     if (status === 200 && Array.isArray(rows)) record("运行参数 /api/admin/params", "PASS", `rows=${rows.length}`);
@@ -181,9 +243,23 @@ async function main(): Promise<void> {
   } else {
     record("越权 ops01 → /api/admin/users 应 403", "SKIP", "ops01 登录失败");
   }
+  if (quality) {
+    const { status } = await getJson(quality, "/api/admin/users");
+    record("越权 quality01 → /api/admin/users 应 403", status === 403 ? "PASS" : "FAIL", `status=${status}`);
+  } else {
+    record("越权 quality01 → /api/admin/users 应 403", "SKIP", "quality01 登录失败");
+  }
   {
     const { status } = await getJson(null, "/api/report/dashboard");
     record("匿名 → /api/report/dashboard 应 401", status === 401 ? "PASS" : "FAIL", `status=${status}`);
+  }
+  {
+    const { status } = await getJson(null, "/api/quality/cases?pageSize=1");
+    record("匿名 → /api/quality/cases 应 401", status === 401 ? "PASS" : "FAIL", `status=${status}`);
+  }
+  {
+    const { status } = await getJson(null, "/api/public/e-label/not-a-real-token");
+    record("无效公开电子标签应 404", status === 404 ? "PASS" : "FAIL", `status=${status}`);
   }
   {
     const { status } = await getJson(null, "/api/import/jobs?pageSize=1");

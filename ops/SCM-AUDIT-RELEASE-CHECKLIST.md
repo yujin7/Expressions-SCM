@@ -62,8 +62,10 @@
 
 - 轮换所有既有 seed 账号口令；
 - 环境中显式设置不少于 12 位的 `SEED_ADMIN_PASSWORD`；
-- smoke 必须显式设置 `SMOKE_PASSWORD`，不得使用公开默认口令；
-- 验证 admin、ops、purchasing、warehouse、pmc、finance 六类账号；
+- smoke 必须显式设置统一的 `SMOKE_PASSWORD`，或同时设置
+  `SMOKE_ADMIN_PASSWORD` 与 `SMOKE_ROLE_PASSWORD`；质量账号使用独立口令时再设置
+  `SMOKE_QUALITY_PASSWORD`，不得使用公开默认口令；
+- 验证 admin、ops、purchasing、warehouse、quality、pmc、finance 七类账号；
 - 用 ops/warehouse 核对采购价、成本、银行账户、税率和结算金额脱敏。
 
 ## 5. 批次数据迁移与 UAT
@@ -101,7 +103,9 @@
 
 ```bash
 SMOKE_BASE=https://staging.example \
-SMOKE_PASSWORD='<staging-password>' \
+SMOKE_ADMIN_PASSWORD='<admin-staging-password>' \
+SMOKE_ROLE_PASSWORD='<role-staging-password>' \
+SMOKE_QUALITY_PASSWORD='<quality-staging-password>' \
 node --import tsx scripts/smoke-e2e.ts
 ```
 

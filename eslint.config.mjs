@@ -18,7 +18,7 @@ import reactHooks from "eslint-plugin-react-hooks";
 const config = [
   {
     ignores: [
-      ".next/**", ".next-dev/**", ".next-webpack/**", ".cache/**",
+      ".next/**", ".next-*/**", ".cache/**",
       "node_modules/**", "drizzle/**", ".data/**", ".artifacts/**",
       "coverage/**", "uploads/**", "reports/**", "next-env.d.ts",
     ],

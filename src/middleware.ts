@@ -14,12 +14,16 @@ const { auth } = NextAuth({
   pages: { signIn: "/login" },
 });
 
-/** 公开路径前缀（#13 供应商确认门户——token 门控，无需登录） */
-const PUBLIC_PREFIXES = ["/supplier/confirm", "/api/public/"];
+/** 公开路径根：仅根本身或其子路径公开，名称相近的兄弟路径仍须认证。 */
+const PUBLIC_PATHS = ["/supplier/confirm", "/e-label", "/api/public"];
+
+function isPublicPath(path: string): boolean {
+  return PUBLIC_PATHS.some((root) => path === root || path.startsWith(`${root}/`));
+}
 
 export default auth((req) => {
   const path = req.nextUrl.pathname;
-  if (PUBLIC_PREFIXES.some((p) => path.startsWith(p))) return; // 公开：token 在业务层校验
+  if (isPublicPath(path)) return; // 公开：token 在业务层校验
   if (!req.auth) {
     // API 客户端要机器可读错误，不要 302 HTML（RT4）；页面仍走登录跳转
     if (path.startsWith("/api/")) {
@@ -32,6 +36,8 @@ export default auth((req) => {
 });
 
 export const config = {
-  // 除 /login、/api/auth/*、/_next/*、favicon、公开门户外全部需要登录
-  matcher: ["/((?!login|api/auth|api/health|supplier/confirm|api/public|_next/static|_next/image|favicon.ico).*)"],
+  // 除 /login、/api/auth/*、/_next/*、favicon、公开 token 门户外全部需要登录
+  matcher: [
+    "/((?!login(?:/|$)|api/auth(?:/|$)|api/health(?:/|$)|supplier/confirm(?:/|$)|e-label(?:/|$)|api/public(?:/|$)|_next/static(?:/|$)|_next/image(?:/|$)|favicon\\.ico$).*)",
+  ],
 };

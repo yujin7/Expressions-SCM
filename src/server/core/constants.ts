@@ -1,11 +1,12 @@
 /** 角色（《01》§6）。同角色内 is_approver=true 者为审批人；系统强制 审批人≠制单人 */
-export const ROLES = ["ops", "purchasing", "warehouse", "pmc", "finance", "admin"] as const;
+export const ROLES = ["ops", "purchasing", "warehouse", "quality", "pmc", "finance", "admin"] as const;
 export type Role = (typeof ROLES)[number];
 
 export const ROLE_LABELS: Record<Role, string> = {
   ops: "运营",
   purchasing: "采购",
   warehouse: "仓管",
+  quality: "质量合规",
   pmc: "生产计划",
   finance: "财务",
   admin: "管理员",
@@ -27,6 +28,10 @@ export const DOC_TYPES = {
   db: "DB", // 调拨单（stock_doc）
   js: "JS", // 委外结算单
   pd: "PD", // 盘点单（1.1）
+  ca: "CA", // 盘点差异调整单
+  qi: "QI", // 质量事件/投诉/不良事件
+  rc: "RC", // 召回案件
+  ga: "GA", // 年度 GMP 自查
 } as const;
 export type DocType = keyof typeof DOC_TYPES;
 

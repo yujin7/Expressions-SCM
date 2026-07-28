@@ -1,6 +1,17 @@
 import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
-import { approvalConfigs, approvals, skus, spus, stockDocs, stockLedger, users, warehouses } from "@/db/schema";
+import {
+  approvalConfigs,
+  approvals,
+  batches,
+  skus,
+  spus,
+  stockBalances,
+  stockDocs,
+  stockLedger,
+  users,
+  warehouses,
+} from "@/db/schema";
 import { dCmp } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { getBalance } from "@/server/posting/post";
@@ -108,12 +119,37 @@ describe("库存单据 W2：期初/领料出/销售出/调拨 + 红字冲销", (
     const row = (bal.rows as Record<string, unknown>[]).find((r) => r.skuId === sku);
     expect(row).toMatchObject({
       warehouseId: wh1, warehouseName: "原料一仓", warehouseKind: "raw",
-      spuCode: "P00001", spuNameCn: "测试产品", baseUom: "个", batchId: null,
+      spuCode: "P00001", spuNameCn: "测试产品", baseUom: "个",
+      batchId: null, batchNo: null, batchExpiryDate: null,
     });
 
     const spuAgg = await listBalancesBySpu({ q: "P00001", page: 1, pageSize: 10 }, db);
     expect(spuAgg.total).toBe(1);
     expect((spuAgg.rows[0] as Record<string, unknown>).skuCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it("余额查询返回并可搜索真实批号，避免业务选择器暴露内部 batchId", async () => {
+    const sku = await makeSku();
+    const [batch] = await db
+      .insert(batches)
+      .values({ batchNo: "LOT-QUALITY-001", skuId: sku, expiryDate: "2027-12-31" })
+      .returning();
+    await db.insert(stockBalances).values({
+      skuId: sku,
+      warehouseId: wh1,
+      batchId: batch.id,
+      qty: "7.0000",
+    });
+
+    const result = await listBalances({ q: "LOT-QUALITY", page: 1, pageSize: 20 }, db);
+    expect(result.total).toBe(1);
+    expect(result.rows[0]).toMatchObject({
+      skuId: sku,
+      batchId: batch.id,
+      batchNo: "LOT-QUALITY-001",
+      batchExpiryDate: "2027-12-31",
+      qty: "7.0000",
+    });
   });
 
   it("2) 领料出超库存：审批 409，单据仍 pending，无审批记录，余额不变（原子回滚）", async () => {
