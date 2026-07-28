@@ -215,6 +215,7 @@ export default function HealthClient() {
           columns={jobColumns}
           dataSource={data.lastJobRuns}
           pagination={false}
+          scroll={{ x: "max-content" }}
           locale={{ emptyText: "尚无任务运行记录（进程内调度首轮在启动 60 秒后）" }}
         />
       </Card>
@@ -226,6 +227,7 @@ export default function HealthClient() {
           columns={connectorColumns}
           dataSource={data.connectors}
           pagination={false}
+          scroll={{ x: "max-content" }}
         />
       </Card>
 
@@ -236,6 +238,7 @@ export default function HealthClient() {
           columns={errColumns}
           dataSource={data.recentErrors}
           pagination={false}
+          scroll={{ x: "max-content" }}
           locale={{ emptyText: "无运行错误" }}
         />
       </Card>
@@ -249,6 +252,7 @@ export default function HealthClient() {
               columns={importColumns}
               dataSource={data.recentImports}
               pagination={false}
+              scroll={{ x: "max-content" }}
               locale={{ emptyText: "无导入记录" }}
             />
           </Card>
@@ -261,6 +265,7 @@ export default function HealthClient() {
               columns={snapColumns}
               dataSource={data.snapshotAges}
               pagination={false}
+              scroll={{ x: "max-content" }}
               locale={{ emptyText: "无快照仓" }}
             />
           </Card>

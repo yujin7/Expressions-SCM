@@ -144,8 +144,21 @@ describe("shared layout consumer contract", () => {
     const toolbar = declarationsFor(styles, ".list-toolbar");
     expect(toolbar).toMatch(/flex-wrap:\s*wrap\s*;/);
     expect(toolbar).toMatch(/max-width:\s*100%\s*;/);
-    expect(declarationsFor(styles, ".list-toolbar__filters")).toMatch(/min-width:\s*0\s*;/);
+    const filters = declarationsFor(styles, ".list-toolbar__filters");
+    expect(filters).toMatch(/display:\s*flex\s*;/);
+    expect(filters).toMatch(/flex-wrap:\s*wrap\s*;/);
+    expect(filters).toMatch(/min-width:\s*0\s*;/);
     expect(declarationsFor(styles, ".list-toolbar__right")).toMatch(/min-width:\s*0\s*;/);
+    expect(declarationsFor(styles, ".list-toolbar__actions")).toMatch(/flex-wrap:\s*wrap\s*;/);
+    expect(declarationsFor(styles, ".list-toolbar__primary-actions")).toMatch(
+      /max-width:\s*100%\s*;/,
+    );
+    expect(declarationsFor(styles, ".list-toolbar__filters > .ant-space")).toMatch(
+      /flex-wrap:\s*wrap\s*;/,
+    );
+    expect(declarationsFor(styles, ".list-toolbar__filters > .ant-space")).toMatch(
+      /max-width:\s*100%\s*;/,
+    );
   });
 
   it.each(layoutInventory)(

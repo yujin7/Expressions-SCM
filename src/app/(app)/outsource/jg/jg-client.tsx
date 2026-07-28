@@ -134,7 +134,8 @@ function JgInner() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<JgRow[]>([]);
   const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   const listState = useListState({ key: "jg", defaults: { q: "", status: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
@@ -151,6 +152,7 @@ function JgInner() {
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detail, setDetail] = useState<JgDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailLoadError, setDetailLoadError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
 
   const [rejectOpen, setRejectOpen] = useState(false);
@@ -160,6 +162,7 @@ function JgInner() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (status) params.set("status", status);
@@ -169,7 +172,11 @@ function JgInner() {
       setRows(res.rows);
       setTotal(res.total);
     } catch (e) {
-      message.error((e as Error).message);
+      const text = e instanceof Error ? e.message : "加工通知单加载失败";
+      setRows([]);
+      setTotal(0);
+      setLoadError(text);
+      message.error(text);
     } finally {
       setLoading(false);
     }
@@ -182,11 +189,15 @@ function JgInner() {
   const loadDetail = useCallback(
     async (id: number) => {
       setDetailLoading(true);
+      setDetailLoadError(null);
       try {
         const res = await fetchJson<JgDetail>(`/api/outsource/jg/${id}`);
         setDetail(res);
       } catch (e) {
-        message.error((e as Error).message);
+        const text = e instanceof Error ? e.message : "加工通知单详情加载失败";
+        setDetail(null);
+        setDetailLoadError(text);
+        message.error(text);
       } finally {
         setDetailLoading(false);
       }
@@ -196,7 +207,10 @@ function JgInner() {
 
   useEffect(() => {
     if (detailId != null) void loadDetail(detailId);
-    else setDetail(null);
+    else {
+      setDetail(null);
+      setDetailLoadError(null);
+    }
   }, [detailId, loadDetail]);
 
   const refresh = () => {
@@ -355,6 +369,16 @@ function JgInner() {
           />
         }
       />
+      {loadError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="加工通知单加载失败"
+          description={loadError}
+          action={<Button size="small" icon={<ReloadOutlined />} onClick={() => void load()}>重试</Button>}
+          style={{ marginBottom: 12 }}
+        />
+      ) : null}
       <Table<JgRow>
         rowKey="id"
         size={listState.tableSize}
@@ -363,6 +387,7 @@ function JgInner() {
         loading={loading}
         scroll={{ x: "max-content" }}
         pagination={listState.paginationProps({ total: total })}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前筛选下没有加工通知单" }}
       />
 
       <Drawer
@@ -383,7 +408,15 @@ function JgInner() {
         loading={detailLoading}
         extra={actions}
       >
-        {detail ? (
+        {detailLoadError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="加工通知单详情加载失败"
+            description={detailLoadError}
+            action={detailId != null ? <Button size="small" onClick={() => void loadDetail(detailId)}>重试</Button> : undefined}
+          />
+        ) : detail ? (
           <div>
             <ChainStrip docType="jg" id={detail.id} />
             <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>

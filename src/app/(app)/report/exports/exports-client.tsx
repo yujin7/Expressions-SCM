@@ -142,7 +142,15 @@ export default function ExportsClient() {
         各报表/列表导出超过 5000 行时会自动转为异步任务并在此列出；任务完成后点击「下载」获取 CSV。
         {hasActive ? "（有任务进行中，每 5 秒自动刷新）" : ""}
       </Typography.Paragraph>
-      <Table<Row> rowKey="id" size="middle" columns={columns} dataSource={rows} loading={loading} pagination={false} />
+      <Table<Row>
+        rowKey="id"
+        size="middle"
+        columns={columns}
+        dataSource={rows}
+        loading={loading}
+        pagination={false}
+        scroll={{ x: "max-content" }}
+      />
     </div>
   );
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import ListToolbar from "@/components/ListToolbar";
 import SearchInput from "@/components/SearchInput";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -293,50 +294,60 @@ export default function ChecklistClient() {
           listState.setFilter({ category: k });
         }}
       />
-      <Space style={{ marginBottom: 12 }} wrap>
-        <SearchInput
-          allowClear
-          placeholder="搜索事项/详情/编码"
-          style={{ width: 280 }}
-          onSearch={(v) => {
-            listState.setFilter({ q: v.trim() });
-          }}
-        />
-        <Select
-          value={status}
-          style={{ width: 120 }}
-          onChange={(v) => {
-            listState.setFilter({ status: v });
-          }}
-          options={[
-            { value: "all", label: "全部状态" },
-            { value: "open", label: "待复核" },
-            { value: "done", label: "已通过" },
-            { value: "overruled", label: "已改判" },
-          ]}
-        />
-        <Button icon={<ReloadOutlined />} onClick={reload}>
-          刷新
-        </Button>
-        {canDecide && (
-          <Popconfirm
-            title={`批量通过选中的 ${selected.length} 条？`}
-            okText="通过"
-            cancelText="取消"
-            onConfirm={() => void bulkPass()}
-          >
-            <Button type="primary" disabled={!selected.length} loading={saving}>
-              批量通过（{selected.length}）
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            <SearchInput
+              allowClear
+              placeholder="搜索事项/详情/编码"
+              style={{ width: 280 }}
+              onSearch={(v) => {
+                listState.setFilter({ q: v.trim() });
+              }}
+            />
+            <Select
+              value={status}
+              style={{ width: 120 }}
+              onChange={(v) => {
+                listState.setFilter({ status: v });
+              }}
+              options={[
+                { value: "all", label: "全部状态" },
+                { value: "open", label: "待复核" },
+                { value: "done", label: "已通过" },
+                { value: "overruled", label: "已改判" },
+              ]}
+            />
+          </>
+        }
+        primaryActions={
+          <>
+            <Button icon={<ReloadOutlined />} onClick={reload}>
+              刷新
             </Button>
-          </Popconfirm>
-        )}
-      </Space>
+            {canDecide ? (
+              <Popconfirm
+                title={`批量通过选中的 ${selected.length} 条？`}
+                okText="通过"
+                cancelText="取消"
+                onConfirm={() => void bulkPass()}
+              >
+                <Button type="primary" disabled={!selected.length} loading={saving}>
+                  批量通过（{selected.length}）
+                </Button>
+              </Popconfirm>
+            ) : null}
+          </>
+        }
+      />
       <Table<ReviewItem>
         rowKey="id"
         size={listState.tableSize}
         columns={columns}
         dataSource={rows}
         loading={loading}
+        scroll={{ x: "max-content" }}
         locale={{
           emptyText: (
             <Empty description="暂无复核项——如需导入代决清单，请管理员运行 seed-review-items 脚本" />

@@ -10,6 +10,9 @@ describe("governed decision visual contract", () => {
     const visual = read("src/components/DecisionVisual.tsx");
     expect(visual).toContain("question: string");
     expect(visual).toContain("source: DecisionVisualSource");
+    expect(visual).toContain("const preserveCanvasHeight = isReady || state === \"loading\"");
+    expect(visual).toContain("Math.min(height, 140)");
+    expect(visual).toContain("minHeight: useNaturalHeight ? undefined : minimumContentHeight");
     expect(visual).toContain("summary: string");
     expect(visual).toContain('state === "insufficient"');
     expect(visual).toContain("数据不足，暂不下结论");

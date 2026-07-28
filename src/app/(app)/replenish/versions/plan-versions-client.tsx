@@ -18,7 +18,7 @@ import {
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { CameraOutlined } from "@ant-design/icons";
+import { CameraOutlined, ReloadOutlined } from "@ant-design/icons";
 
 import CaliberNote from "@/components/CaliberNote";
 import { fetchJson, postJson } from "@/components/fetchJson";
@@ -184,6 +184,7 @@ export default function PlanVersionsClient({ canCapture }: { canCapture: boolean
   const [loadingVersions, setLoadingVersions] = useState(true);
   const [loadingDiff, setLoadingDiff] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [captureOpen, setCaptureOpen] = useState(false);
   const [captureName, setCaptureName] = useState("");
   const [captureKey, setCaptureKey] = useState("");
@@ -212,13 +213,17 @@ export default function PlanVersionsClient({ canCapture }: { canCapture: boolean
         }
       })
       .catch((error: unknown) => {
-        if (!controller.signal.aborted) setLoadError(error instanceof Error ? error.message : "计划版本加载失败");
+        if (!controller.signal.aborted) {
+          setVersions([]);
+          setData(null);
+          setLoadError(error instanceof Error ? error.message : "计划版本加载失败");
+        }
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoadingVersions(false);
       });
     return () => controller.abort();
-  }, [refreshVersions, setFilter]);
+  }, [refreshVersions, reloadKey, setFilter]);
 
   useEffect(() => {
     const currentId = Number(filters.currentId);
@@ -243,7 +248,7 @@ export default function PlanVersionsClient({ canCapture }: { canCapture: boolean
         if (!controller.signal.aborted) setLoadingDiff(false);
       });
     return () => controller.abort();
-  }, [filters.baseId, filters.currentId]);
+  }, [filters.baseId, filters.currentId, reloadKey]);
 
   const visibleRows = useMemo(() => {
     const needle = filters.q.trim().toLocaleLowerCase("zh-CN");
@@ -407,8 +412,17 @@ export default function PlanVersionsClient({ canCapture }: { canCapture: boolean
         ) : null}
       </div>
 
-      {loadError ? <Alert type="error" showIcon message="计划版本加载失败" description={loadError} style={{ marginBottom: 12 }} /> : null}
-      {!loadingVersions && versions.length === 0 ? (
+      {loadError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="计划版本加载失败"
+          description={loadError}
+          action={<Button size="small" icon={<ReloadOutlined />} onClick={() => setReloadKey((value) => value + 1)}>重试</Button>}
+          style={{ marginBottom: 12 }}
+        />
+      ) : null}
+      {!loadError && !loadingVersions && versions.length === 0 ? (
         <Alert
           type="info"
           showIcon
@@ -427,12 +441,12 @@ export default function PlanVersionsClient({ canCapture }: { canCapture: boolean
       ) : null}
 
       <div className="plan-version-kpis">
-        <Card size="small"><Statistic title="本版建议集" value={data?.current.lineCount ?? 0} /></Card>
-        <Card size="small"><Statistic title="新增告急" value={data?.summary.new_alert ?? 0} valueStyle={{ color: "#cf1322" }} /></Card>
-        <Card size="small"><Statistic title="恶化" value={data?.summary.worsened ?? 0} valueStyle={{ color: "#d4380d" }} /></Card>
-        <Card size="small"><Statistic title="已解除" value={data?.summary.resolved ?? 0} valueStyle={{ color: "#389e0d" }} /></Card>
-        <Card size="small"><Statistic title="改善" value={data?.summary.improved ?? 0} valueStyle={{ color: "#08979c" }} /></Card>
-        <Card size="small"><Statistic title="混合变化" value={data?.summary.mixed ?? 0} valueStyle={{ color: "#d48806" }} /></Card>
+        <Card size="small"><Statistic title="本版建议集" value={data ? data.current.lineCount : "—"} /></Card>
+        <Card size="small"><Statistic title="新增告急" value={data ? data.summary.new_alert : "—"} valueStyle={{ color: data ? "#cf1322" : undefined }} /></Card>
+        <Card size="small"><Statistic title="恶化" value={data ? data.summary.worsened : "—"} valueStyle={{ color: data ? "#d4380d" : undefined }} /></Card>
+        <Card size="small"><Statistic title="已解除" value={data ? data.summary.resolved : "—"} valueStyle={{ color: data ? "#389e0d" : undefined }} /></Card>
+        <Card size="small"><Statistic title="改善" value={data ? data.summary.improved : "—"} valueStyle={{ color: data ? "#08979c" : undefined }} /></Card>
+        <Card size="small"><Statistic title="混合变化" value={data ? data.summary.mixed : "—"} valueStyle={{ color: data ? "#d48806" : undefined }} /></Card>
       </div>
 
       <ListToolbar
@@ -445,7 +459,7 @@ export default function PlanVersionsClient({ canCapture }: { canCapture: boolean
               loading={loadingVersions}
               value={filters.currentId || undefined}
               placeholder="选择当前版本"
-              style={{ width: 300 }}
+              style={{ width: "min(100%, 300px)", minWidth: 0, flex: "1 1 220px" }}
               options={versions.map((version) => ({ value: String(version.id), label: versionLabel(version) }))}
               onChange={(value) => {
                 const currentIndex = versions.findIndex((version) => String(version.id) === value);
@@ -460,13 +474,13 @@ export default function PlanVersionsClient({ canCapture }: { canCapture: boolean
               allowClear
               value={filters.baseId || undefined}
               placeholder="自动选择上一版本"
-              style={{ width: 300 }}
+              style={{ width: "min(100%, 300px)", minWidth: 0, flex: "1 1 220px" }}
               options={baseOptions}
               onChange={(value) => listState.setFilter({ baseId: value ?? "" })}
             />
             <Select
               value={filters.category}
-              style={{ width: 130 }}
+              style={{ width: "min(100%, 150px)", minWidth: 0, flex: "0 1 130px" }}
               options={[
                 { value: "all", label: "全部变化" },
                 ...Object.entries(CATEGORY_META).map(([value, meta]) => ({ value, label: meta.label })),
@@ -478,7 +492,7 @@ export default function PlanVersionsClient({ canCapture }: { canCapture: boolean
               allowClear
               defaultValue={filters.q}
               placeholder="搜索 SKU / 品牌 / 变化"
-              style={{ width: 220 }}
+              style={{ width: "min(100%, 240px)", minWidth: 0, flex: "1 1 180px" }}
               onSearch={(value) => listState.setFilter({ q: value.trim() })}
             />
           </>
@@ -496,7 +510,7 @@ export default function PlanVersionsClient({ canCapture }: { canCapture: boolean
           total: visibleRows.length,
           showTotal: (total) => `共 ${total} 个 SKU 变化`,
         })}
-        locale={{ emptyText: versions.length === 0 ? "尚无版本" : "当前筛选下没有差异" }}
+        locale={{ emptyText: loadError ? "数据未加载" : versions.length === 0 ? "尚无版本" : "当前筛选下没有差异" }}
       />
 
       <Modal

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { App as AntApp, Avatar, Button, Drawer, Grid, Layout, Menu, Modal, Space, Typography, theme } from "antd";
+import { App as AntApp, Avatar, Button, Drawer, Dropdown, Grid, Layout, Menu, Modal, Space, Typography, theme } from "antd";
 import type { MenuProps } from "antd";
 import {
   AccountBookOutlined,
@@ -10,6 +10,7 @@ import {
   BarChartOutlined,
   DashboardOutlined,
   DatabaseOutlined,
+  DownOutlined,
   ExperimentOutlined,
   FundOutlined,
   ImportOutlined,
@@ -303,6 +304,7 @@ export default function AppShell({
   const [mounted, setMounted] = useState(false);
   const screens = Grid.useBreakpoint();
   const isMobile = screens.lg === false;
+  const isCompactHeader = screens.lg === true && screens.xl === false;
   const {
     token: { colorBgContainer },
   } = theme.useToken();
@@ -310,6 +312,19 @@ export default function AppShell({
   const activeGroup = useMemo(() => navigationGroupForPath(pathname), [pathname]);
   const [openKeys, setOpenKeys] = useState<string[]>(() => (activeGroup ? [activeGroup] : []));
   const visibleMenuItems = useMemo(() => filterMenuByRoles(menuItems, roles), [roles]);
+  const compactAccountItems = useMemo<MenuProps["items"]>(
+    () => [
+      {
+        key: "identity",
+        label: `${userName ?? "未登录"}${roleText ? `（${roleText}）` : ""}`,
+        disabled: true,
+      },
+      { type: "divider" },
+      { key: "password", label: "修改密码" },
+      { key: "signout", label: "退出登录", danger: true },
+    ],
+    [roleText, userName],
+  );
   useEffect(() => {
     setMounted(true);
   }, []);
@@ -425,7 +440,7 @@ export default function AppShell({
             className="app-header"
             style={{
               background: colorBgContainer,
-              padding: isMobile ? "0 12px" : "0 24px",
+              padding: isMobile ? "0 12px" : isCompactHeader ? "0 16px" : "0 24px",
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
@@ -444,15 +459,52 @@ export default function AppShell({
                 {isMobile ? "供应链" : "供应链系统"}
               </Typography.Title>
             </Space>
-            <Space size={isMobile ? 6 : 8} className="app-header__actions">
-              {!isMobile ? <GlobalSearch /> : null}
+            <div className="app-header__actions">
+              {!isMobile ? (
+                <div className="app-header__search">
+                  <GlobalSearch />
+                </div>
+              ) : null}
               {!isMobile ? <FeedbackButton /> : null}
-              <Avatar size="small" icon={<UserOutlined />} />
-              {!isMobile ? <Typography.Text>{userName ?? "未登录"}</Typography.Text> : null}
-              {!isMobile && roleText ? <Typography.Text type="secondary">（{roleText}）</Typography.Text> : null}
-              {!isMobile ? <Typography.Link href="/account/password">修改密码</Typography.Link> : null}
-              <Typography.Link href="/signout">退出</Typography.Link>
-            </Space>
+              {isCompactHeader ? (
+                <Dropdown
+                  trigger={["click"]}
+                  menu={{
+                    items: compactAccountItems,
+                    onClick: ({ key }) => {
+                      if (key === "password") router.push("/account/password");
+                      if (key === "signout") router.push("/signout");
+                    },
+                  }}
+                >
+                  <Button
+                    type="text"
+                    className="app-header__account-menu"
+                    aria-label={`打开账户菜单：${userName ?? "未登录"}`}
+                    aria-haspopup="menu"
+                  >
+                    <Avatar size="small" icon={<UserOutlined />} />
+                    <DownOutlined aria-hidden />
+                  </Button>
+                </Dropdown>
+              ) : (
+                <>
+                  <Avatar size="small" icon={<UserOutlined />} />
+                  {!isMobile ? (
+                    <Typography.Text className="app-header__user" title={userName ?? "未登录"}>
+                      {userName ?? "未登录"}
+                    </Typography.Text>
+                  ) : null}
+                  {!isMobile && roleText ? (
+                    <Typography.Text className="app-header__role" type="secondary" title={roleText}>
+                      （{roleText}）
+                    </Typography.Text>
+                  ) : null}
+                  {!isMobile ? <Typography.Link href="/account/password">修改密码</Typography.Link> : null}
+                  <Typography.Link href="/signout">退出</Typography.Link>
+                </>
+              )}
+            </div>
           </Header>
           <Content className="app-content" style={{ margin: isMobile ? 8 : 16 }}>
             <main className="app-surface" style={{ background: colorBgContainer, padding: isMobile ? 12 : 24 }}>

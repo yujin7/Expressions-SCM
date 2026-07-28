@@ -113,7 +113,15 @@ export default function ParamsClient({ canWrite }: { canWrite: boolean }) {
         message="阈值改动影响驾驶舱滞销判定、补货建议与断货预警（0724 会议 D39：滞销警戒阈值可配置）；R1/让步等规则容差同页维护。修改留审计。"
       />
       <BatchPostingRolloutCard canWrite={canWrite} onActivated={() => void load()} />
-      <Table<Row> rowKey="key" size="middle" columns={columns} dataSource={rows} loading={loading} pagination={false} />
+      <Table<Row>
+        rowKey="key"
+        size="middle"
+        columns={columns}
+        dataSource={rows}
+        loading={loading}
+        pagination={false}
+        scroll={{ x: "max-content" }}
+      />
     </div>
   );
 }

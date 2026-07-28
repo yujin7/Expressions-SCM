@@ -141,13 +141,9 @@ export default function ListToolbar<F extends Record<string, string | undefined>
           role="toolbar"
           aria-label="列表工具"
         >
-          {extra ? (
-            <Space className="list-toolbar__filters" wrap align="center">
-              {extra}
-            </Space>
-          ) : null}
+          {extra ? <div className="list-toolbar__filters">{extra}</div> : null}
           <div className="list-toolbar__right">
-            <Space className="list-toolbar__actions" wrap>
+            <div className="list-toolbar__actions">
               <Dropdown
                 trigger={["click"]}
                 menu={{ items: utilityItems, onClick: onUtilityClick }}
@@ -171,11 +167,9 @@ export default function ListToolbar<F extends Record<string, string | undefined>
                   <span className="list-toolbar__utility-label">{exportText}</span>
                 </Button>
               ) : null}
-            </Space>
+            </div>
             {primaryActions ? (
-              <Space className="list-toolbar__primary-actions" wrap>
-                {primaryActions}
-              </Space>
+              <div className="list-toolbar__primary-actions">{primaryActions}</div>
             ) : null}
           </div>
         </div>

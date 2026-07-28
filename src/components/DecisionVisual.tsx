@@ -129,6 +129,10 @@ export default function DecisionVisual({
   const isShowingData = Boolean(showTable && dataView);
   const contentHeight: number | string = fullscreen ? "calc(100vh - 230px)" : height;
   const useNaturalHeight = fitContent && !fullscreen;
+  const preserveCanvasHeight = isReady || state === "loading";
+  const minimumContentHeight = preserveCanvasHeight
+    ? contentHeight
+    : Math.min(height, 140);
 
   const share = async () => {
     try {
@@ -281,7 +285,7 @@ export default function DecisionVisual({
         aria-describedby={summaryId}
         aria-label={isShowingData || contentIsTable ? undefined : `${typeof title === "string" ? title : "决策图表"}。${summary}`}
         style={{
-          minHeight: useNaturalHeight ? undefined : contentHeight,
+          minHeight: useNaturalHeight ? undefined : minimumContentHeight,
           height: useNaturalHeight || !isReady || isShowingData ? undefined : contentHeight,
         }}
       >

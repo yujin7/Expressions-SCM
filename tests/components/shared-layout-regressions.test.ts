@@ -52,6 +52,9 @@ describe("shared layout regressions", () => {
     expect(toolbar).toContain('className="list-toolbar__primary-actions"');
     expect(toolbar).toContain('role="toolbar"');
     expect(toolbar).toContain('<ConfigProvider componentSize="small">');
+    expect(toolbar).not.toContain('<Space className="list-toolbar__filters"');
+    expect(toolbar).not.toContain('<Space className="list-toolbar__actions"');
+    expect(toolbar).not.toContain('<Space className="list-toolbar__primary-actions"');
     expect(styles).toMatch(
       /\.supplier-scorecard-kpis\s*\{[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\);/s,
     );
@@ -65,16 +68,16 @@ describe("shared layout regressions", () => {
       /@container app-surface \(max-width:\s*520px\)[\s\S]*\.process-mining-kpis,[\s\S]*\.plan-version-kpis\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/s,
     );
     expect(styles).toMatch(
-      /\.list-toolbar\s*\{[^}]*width:\s*fit-content;[^}]*max-width:\s*100%;[^}]*padding:\s*6px;/s,
+      /\.list-toolbar\s*\{[^}]*display:\s*inline-flex;[^}]*width:\s*auto;[^}]*max-width:\s*100%;[^}]*padding:\s*5px;/s,
     );
     expect(styles).toMatch(
       /\.list-toolbar--actions-only \.list-toolbar__right\s*\{[^}]*width:\s*auto;/s,
     );
     expect(styles).toMatch(
-      /@container app-surface \(max-width:\s*760px\)[\s\S]*\.list-toolbar\s*\{[^}]*width:\s*fit-content;[^}]*max-width:\s*100%;/s,
+      /@container app-surface \(max-width:\s*760px\)[\s\S]*\.list-toolbar\s*\{[^}]*width:\s*auto;[^}]*max-width:\s*100%;/s,
     );
     expect(styles).toMatch(
-      /@container app-surface \(max-width:\s*760px\)[\s\S]*\.list-toolbar__right\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;[^}]*width:\s*fit-content;[^}]*max-width:\s*100%;[^}]*justify-content:\s*flex-start;/s,
+      /@container app-surface \(max-width:\s*760px\)[\s\S]*\.list-toolbar__right\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;[^}]*width:\s*auto;[^}]*max-width:\s*100%;[^}]*justify-content:\s*flex-start;/s,
     );
     expect(styles).toMatch(
       /@container app-surface \(max-width:\s*760px\)[\s\S]*\.list-toolbar__actions\s*\{[^}]*justify-content:\s*flex-start;/s,
@@ -87,7 +90,10 @@ describe("shared layout regressions", () => {
     expect(toolbar).toContain('key: "__density"');
     expect(toolbar).not.toContain('aria-label="复制当前视图链接"');
     expect(styles).toMatch(
-      /@container app-surface \(max-width:\s*520px\)[\s\S]*\.list-toolbar__right\s*\{[^}]*display:\s*flex;[^}]*width:\s*fit-content;[^}]*max-width:\s*100%;/s,
+      /@container app-surface \(max-width:\s*520px\)[\s\S]*\.list-toolbar__right\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1 1 100%;[^}]*width:\s*100%;[^}]*max-width:\s*100%;/s,
+    );
+    expect(styles).toMatch(
+      /@container app-surface \(max-width:\s*520px\)[\s\S]*\.list-toolbar__primary-actions\s*\{[^}]*flex:\s*0 1 auto;[^}]*padding-left:\s*6px;[^}]*border-left:\s*1px solid #e5e9f0;/s,
     );
     expect(styles).toMatch(
       /@container app-surface \(max-width:\s*320px\)[\s\S]*\.list-toolbar__primary-actions\s*\{[^}]*flex-basis:\s*100%;/s,
@@ -121,13 +127,19 @@ describe("shared layout regressions", () => {
       expect(read(file), file).toContain("compact-stat-strip");
     }
     expect(styles).toMatch(
-      /\.compact-kpi-row\s*\{[^}]*display:\s*grid\s*!important;[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(100%,\s*140px\),\s*1fr\)\);/s,
+      /\.compact-kpi-row\s*\{[^}]*display:\s*grid\s*!important;[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(140px,\s*220px\)\);[^}]*justify-content:\s*start;/s,
     );
     expect(styles).toMatch(
       /\.compact-kpi-row > \.ant-col\s*\{[^}]*flex:\s*none;[^}]*max-width:\s*none;[^}]*padding-inline:\s*0\s*!important;/s,
     );
     expect(styles).toMatch(
       /\.compact-stat-strip\.ant-space\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(150px,\s*220px\)\);/s,
+    );
+    expect(styles).toMatch(
+      /\.process-mining-kpis\s*\{[^}]*grid-template-columns:\s*repeat\(5,\s*minmax\(0,\s*1fr\)\);/s,
+    );
+    expect(styles).toMatch(
+      /@media \(max-width:\s*991px\)[\s\S]*\.process-mining-kpis\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\);/s,
     );
     expect(styles).toMatch(
       /\.decision-metric \.ant-card-body\s*\{[^}]*min-height:\s*166px;[^}]*padding:\s*14px;/s,

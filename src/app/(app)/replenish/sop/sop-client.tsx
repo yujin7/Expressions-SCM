@@ -22,6 +22,7 @@ import {
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import { ReloadOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -103,7 +104,8 @@ export default function SopClient() {
   const signRoles = (["ops", "pmc", "finance"] as SopRole[]).filter((role) => me?.roles.includes(role));
   const [data, setData] = useState<Workspace | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [month, setMonth] = useState<Dayjs>(dayjs());
@@ -112,6 +114,7 @@ export default function SopClient() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const next = await fetchJson<Workspace>("/api/replenish/sop");
       setData(next);
@@ -121,7 +124,11 @@ export default function SopClient() {
           : next.cycles[0]?.id ?? null);
       setPlanId((current) => current ?? next.versions[0]?.id ?? null);
     } catch (error) {
-      message.error((error as Error).message);
+      const text = error instanceof Error ? error.message : "S&OP 工作区加载失败";
+      setData(null);
+      setSelectedId(null);
+      setLoadError(text);
+      message.error(text);
     } finally {
       setLoading(false);
     }
@@ -268,14 +275,14 @@ export default function SopClient() {
     <div style={{ maxWidth: 1500, margin: "0 auto" }}>
       <Flex justify="space-between" align="flex-start" gap={16} wrap="wrap" style={{ marginBottom: 18 }}>
         <div>
-          <Typography.Title level={3} style={{ margin: 0 }}>S&OP 数量计划周期</Typography.Title>
+          <Typography.Title level={4} style={{ margin: 0 }}>S&OP 数量计划周期</Typography.Title>
           <Typography.Paragraph type="secondary" style={{ margin: "8px 0 0", maxWidth: 820 }}>
             以不可变计划版本组织运营、PMC、财务三方共识，再冻结为单一数量执行基线。任何自动化都不替人批准或下单。
           </Typography.Paragraph>
         </div>
         <Space wrap>
           <Select
-            style={{ minWidth: 230 }}
+            style={{ width: "min(100%, 320px)", minWidth: 0, flex: "1 1 230px" }}
             value={selectedId}
             placeholder="选择周期"
             options={data?.cycles.map((item) => ({
@@ -297,10 +304,25 @@ export default function SopClient() {
         description="成本、资金占用和销售订单事实尚未完成裁决，因此本页不展示虚假的金额共识或 ATP。"
       />
 
-      {!cycle ? (
-        <Card loading={loading}><Empty description={data?.versions.length ? "尚无 S&OP 周期，请由 PMC 建立首个月度周期" : "请先在「计划版本与周差异」保存一个不可变计划版本"} /></Card>
+      {loadError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="S&OP 工作区加载失败"
+          description={loadError}
+          action={<Button size="small" icon={<ReloadOutlined />} onClick={() => void load()}>重试</Button>}
+          style={{ marginBottom: 16 }}
+        />
+      ) : null}
+
+      {!cycle && !loadError ? (
+        <Card loading={loading}>
+          {!loading && data ? (
+            <Empty description={data.versions.length ? "尚无 S&OP 周期，请由 PMC 建立首个月度周期" : "请先在「计划版本与周差异」保存一个不可变计划版本"} />
+          ) : null}
+        </Card>
       ) : (
-        <>
+        cycle ? <>
           <Card style={{ marginBottom: 16 }}>
             <Flex justify="space-between" align="flex-start" gap={16} wrap="wrap">
               <div>
@@ -315,7 +337,7 @@ export default function SopClient() {
               </div>
               {cycle.status === "consensus" && canManage ? (
                 <Select
-                  style={{ minWidth: 300 }}
+                  style={{ width: "min(100%, 420px)", minWidth: 0, flex: "1 1 260px" }}
                   value={cycle.planningVersionId}
                   options={data?.versions.map((version) => ({
                     value: version.id,
@@ -407,7 +429,7 @@ export default function SopClient() {
               locale={{ emptyText: "本周期尚无签认" }}
             />
           </Card>
-        </>
+        </> : null
       )}
 
       {data?.limitations.length ? (

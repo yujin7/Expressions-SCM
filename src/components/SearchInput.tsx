@@ -23,6 +23,7 @@ const SearchInput = forwardRef<InputRef, SearchProps>(function SearchInput(
     onPressEnter,
     value,
     defaultValue,
+    className,
     style,
     disabled,
     size,
@@ -45,7 +46,10 @@ const SearchInput = forwardRef<InputRef, SearchProps>(function SearchInput(
     enterButton && enterButton !== true ? enterButton : <SearchOutlined />;
 
   return (
-    <span style={{ display: "inline-flex", verticalAlign: "middle", ...style }}>
+    <span
+      className={["app-search-input", className].filter(Boolean).join(" ")}
+      style={{ display: "inline-flex", verticalAlign: "middle", ...style }}
+    >
       <Input
         {...inputProps}
         ref={ref}

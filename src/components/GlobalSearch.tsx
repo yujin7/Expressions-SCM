@@ -68,7 +68,8 @@ export default function GlobalSearch() {
 
   return (
     <AutoComplete
-      style={{ width: 260 }}
+      className="global-search"
+      style={{ width: "100%" }}
       options={options}
       onSearch={search}
       onSelect={(key: string) => {
@@ -80,6 +81,7 @@ export default function GlobalSearch() {
         size="small"
         prefix={<SearchOutlined />}
         placeholder="搜编码 / 中文 / 拼音 / 首字母 / 单号"
+        aria-label="全局搜索：编码、中文、拼音、首字母或单号"
         allowClear
       />
     </AutoComplete>

@@ -17,6 +17,7 @@ import {
   Space, Statistic, Table, Tabs, Tag, Tooltip, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import { ReloadOutlined } from "@ant-design/icons";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import DecisionVisual from "@/components/DecisionVisual";
@@ -118,7 +119,8 @@ function RateCell({ v, warnAbove, warnBelow }: { v: number | null; warnAbove?: n
 function ScorecardTab() {
   const { message } = App.useApp();
   const [data, setData] = useState<ScoreData | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [applying, setApplying] = useState<number | null>(null);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地；
   // 本页两个页签各是独立列表，用 paramPrefix 分命名空间（sc_* / qc_*）互不清空
@@ -129,11 +131,15 @@ function ScorecardTab() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize), windowDays: String(windowDays) });
       setData(await fetchJson<ScoreData>(`/api/report/supplier-scorecard?${params.toString()}`));
     } catch (e) {
-      message.error((e as Error).message);
+      const text = e instanceof Error ? e.message : "供应商记分卡加载失败";
+      setData(null);
+      setLoadError(text);
+      message.error(text);
     } finally {
       setLoading(false);
     }
@@ -290,19 +296,30 @@ function ScorecardTab() {
         }
       />
 
+      {loadError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="供应商记分卡加载失败"
+          description={loadError}
+          action={<Button size="small" icon={<ReloadOutlined />} onClick={() => void load()}>重试</Button>}
+          style={{ marginBottom: 12 }}
+        />
+      ) : null}
+
       <div className="supplier-scorecard-kpis">
-        <Card size="small"><Statistic title={`窗口内有往来的供应商（近 ${s?.windowDays ?? 180} 天）`} value={s?.suppliers ?? 0} /></Card>
-        <Card size="small"><Statistic title="已评级" value={s?.rated ?? 0} suffix={`/ ${s?.suppliers ?? 0}`} /></Card>
+        <Card size="small"><Statistic title={`窗口内有往来的供应商（近 ${s?.windowDays ?? windowDays} 天）`} value={s ? s.suppliers : "—"} /></Card>
+        <Card size="small"><Statistic title="已评级" value={s ? s.rated : "—"} suffix={s ? `/ ${s.suppliers}` : undefined} /></Card>
         <Card size="small">
-          <Statistic title="建议调整等级" value={s?.suggestChanges ?? 0} valueStyle={{ color: (s?.suggestChanges ?? 0) > 0 ? "#fa8c16" : undefined }} />
+          <Statistic title="建议调整等级" value={s ? s.suggestChanges : "—"} valueStyle={{ color: s && s.suggestChanges > 0 ? "#fa8c16" : undefined }} />
         </Card>
         <Card size="small">
           <Statistic
             title="平均准时率"
-            value={s?.avgOnTimeRate == null ? 0 : s.avgOnTimeRate * 100}
-            precision={1}
-            suffix="%"
-            valueStyle={{ color: s?.avgOnTimeRate != null && s.avgOnTimeRate < 0.8 ? "#cf1322" : "#52c41a" }}
+            value={s?.avgOnTimeRate == null ? "—" : s.avgOnTimeRate * 100}
+            precision={s?.avgOnTimeRate == null ? undefined : 1}
+            suffix={s?.avgOnTimeRate == null ? undefined : "%"}
+            valueStyle={{ color: s?.avgOnTimeRate == null ? undefined : s.avgOnTimeRate < 0.8 ? "#cf1322" : "#52c41a" }}
           />
         </Card>
       </div>
@@ -341,6 +358,7 @@ function ScorecardTab() {
         expandable={{ expandedRowRender: expanded, rowExpandable: (r) => r.breakdown.length > 0 }}
         rowClassName={(r) => (r.suggestLevelChange ? "ant-table-row-selected" : "")}
         pagination={listState.paginationProps({ total: data?.total ?? 0, showTotal: (t) => `共 ${t} 家` })}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前筛选下没有供应商记录" }}
       />
     </div>
   );
@@ -351,7 +369,8 @@ function ScorecardTab() {
 function QcSummaryTab() {
   const { message } = App.useApp();
   const [data, setData] = useState<QcData | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   // 本页签独立列表状态：URL 参数命名空间 qc_*（与「记分卡」页签的 sc_* 互不干扰）
   const listState = useListState({
     key: "supplier-scorecard-qc",
@@ -364,11 +383,15 @@ function QcSummaryTab() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       // 供应商筛选在前端做：一次取全量才能填出下拉选项（月份数有限、行量可控）
       setData(await fetchJson<QcData>(`/api/report/qc-summary?months=${months}`));
     } catch (e) {
-      message.error((e as Error).message);
+      const text = e instanceof Error ? e.message : "质检透视加载失败";
+      setData(null);
+      setLoadError(text);
+      message.error(text);
     } finally {
       setLoading(false);
     }
@@ -434,11 +457,22 @@ function QcSummaryTab() {
         }
       />
 
+      {loadError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="质检透视加载失败"
+          description={loadError}
+          action={<Button size="small" icon={<ReloadOutlined />} onClick={() => void load()}>重试</Button>}
+          style={{ marginBottom: 12 }}
+        />
+      ) : null}
+
       <Row gutter={[10, 10]} className="compact-kpi-row">
-        <Col><Card size="small"><Statistic title="收货批次" value={t?.batches ?? 0} /></Card></Col>
-        <Col><Card size="small"><Statistic title="合格率" value={t?.passRate == null ? 0 : t.passRate * 100} precision={1} suffix="%" valueStyle={{ color: "#52c41a" }} /></Card></Col>
-        <Col><Card size="small"><Statistic title="让步接收率" value={t?.concessionRate == null ? 0 : t.concessionRate * 100} precision={1} suffix="%" valueStyle={{ color: "#1677ff" }} /></Card></Col>
-        <Col><Card size="small"><Statistic title="报废率" value={t?.scrapRate == null ? 0 : t.scrapRate * 100} precision={1} suffix="%" valueStyle={{ color: "#cf1322" }} /></Card></Col>
+        <Col><Card size="small"><Statistic title="收货批次" value={t ? t.batches : "—"} /></Card></Col>
+        <Col><Card size="small"><Statistic title="合格率" value={t?.passRate == null ? "—" : t.passRate * 100} precision={t?.passRate == null ? undefined : 1} suffix={t?.passRate == null ? undefined : "%"} valueStyle={{ color: t?.passRate == null ? undefined : "#52c41a" }} /></Card></Col>
+        <Col><Card size="small"><Statistic title="让步接收率" value={t?.concessionRate == null ? "—" : t.concessionRate * 100} precision={t?.concessionRate == null ? undefined : 1} suffix={t?.concessionRate == null ? undefined : "%"} valueStyle={{ color: t?.concessionRate == null ? undefined : "#1677ff" }} /></Card></Col>
+        <Col><Card size="small"><Statistic title="报废率" value={t?.scrapRate == null ? "—" : t.scrapRate * 100} precision={t?.scrapRate == null ? undefined : 1} suffix={t?.scrapRate == null ? undefined : "%"} valueStyle={{ color: t?.scrapRate == null ? undefined : "#cf1322" }} /></Card></Col>
       </Row>
 
       <ListToolbar
@@ -481,10 +515,10 @@ function QcSummaryTab() {
             `近 ${months} 月`,
             supplierId == null ? "全部供应商" : supplierOptions.find((option) => option.value === supplierId)?.label ?? "指定供应商",
           ]}
-          summary={`收货批次 ${t?.batches ?? 0}，合格率 ${pct(t?.passRate ?? null)}，让步率 ${pct(t?.concessionRate ?? null)}，报废率 ${pct(t?.scrapRate ?? null)}。`}
+          summary={t ? `收货批次 ${t.batches}，合格率 ${pct(t.passRate)}，让步率 ${pct(t.concessionRate)}，报废率 ${pct(t.scrapRate)}。` : "数据尚未成功加载。"}
           caveat="月份取检验录入月；占比分母只含已判定数量，未检验数量不进入分母。"
-          state={loading && !data ? "loading" : !hasData ? "empty" : "ready"}
-          stateDetail="当前窗口与供应商筛选下没有检验记录。"
+          state={loading && !data ? "loading" : loadError ? "error" : !hasData ? "empty" : "ready"}
+          stateDetail={loadError ?? "当前窗口与供应商筛选下没有检验记录。"}
           height={320}
           dataView={
             <Table
@@ -533,6 +567,7 @@ function QcSummaryTab() {
           showTotal: (n) => `共 ${n} 条`,
           onChange: (p, ps) => listState.setPage(p, ps),
         }}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前窗口与供应商筛选下没有检验记录" }}
       />
     </div>
   );

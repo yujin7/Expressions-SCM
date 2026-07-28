@@ -127,7 +127,15 @@ export default function UsersClient() {
           </Button>
         </Space>
       </Space>
-      <Table<UserRow> rowKey="id" size="middle" columns={columns} dataSource={rows} loading={loading} pagination={false} />
+      <Table<UserRow>
+        rowKey="id"
+        size="middle"
+        columns={columns}
+        dataSource={rows}
+        loading={loading}
+        pagination={false}
+        scroll={{ x: "max-content" }}
+      />
 
       <Modal title="新建账号" open={createOpen} onOk={() => void handleCreate()} confirmLoading={saving} onCancel={() => setCreateOpen(false)} okText="创建" cancelText="取消">
         <Form form={createForm} layout="vertical" initialValues={{ roles: [], isApprover: false }}>

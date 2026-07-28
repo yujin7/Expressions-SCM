@@ -220,6 +220,7 @@ export default function InboundCalendarClient() {
                     columns={columns}
                     dataSource={d.lines}
                     pagination={false}
+                    scroll={{ x: "max-content" }}
                   />
                 ) : (
                   <Typography.Text type="secondary">当日无预计到货</Typography.Text>

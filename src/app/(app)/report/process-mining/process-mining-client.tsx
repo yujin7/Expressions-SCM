@@ -4,8 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   App,
+  Button,
   Card,
   Empty,
+  Grid,
   Segmented,
   Select,
   Space,
@@ -16,6 +18,7 @@ import {
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import { ReloadOutlined } from "@ant-design/icons";
 import {
   Bar,
   BarChart,
@@ -142,8 +145,10 @@ function duration(value: number | null): string {
 export default function ProcessMiningClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<ProcessMiningData | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const screens = Grid.useBreakpoint();
   const listState = useListState({
     key: "process-mining",
     defaults: { windowDays: "90", entity: "all" },
@@ -169,7 +174,7 @@ export default function ProcessMiningClient() {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [entity, message, windowDays]);
+  }, [entity, message, reloadKey, windowDays]);
 
   const chartRows = useMemo(
     () => (data?.stages ?? []).filter((stage) => stage.reliable).slice(0, 10).map((stage) => ({
@@ -305,7 +310,16 @@ export default function ProcessMiningClient() {
         </Space>
       </div>
 
-      {loadError ? <Alert type="error" showIcon message="流程数据加载失败" description={loadError} style={{ marginBottom: 12 }} /> : null}
+      {loadError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="流程数据加载失败"
+          description={loadError}
+          action={<Button size="small" icon={<ReloadOutlined />} onClick={() => setReloadKey((value) => value + 1)}>重试</Button>}
+          style={{ marginBottom: 12 }}
+        />
+      ) : null}
       {data?.truncated ? (
         <Alert
           type="warning"
@@ -325,11 +339,11 @@ export default function ProcessMiningClient() {
       ) : null}
 
       <div className="process-mining-kpis">
-        <Card size="small"><Statistic title="审计事件" value={summary?.totalEvents ?? 0} /></Card>
-        <Card size="small"><Statistic title="状态事件" value={summary?.stateEvents ?? 0} /></Card>
-        <Card size="small"><Statistic title="可计算周期案例" value={summary?.analyzableCases ?? 0} suffix={`/ ${summary?.cases ?? 0}`} /></Card>
-        <Card size="small"><Statistic title="事件映射率" value={summary?.eventMappingRate ?? 0} precision={1} suffix="%" /></Card>
-        <Card size="small"><Statistic title="event-v1 覆盖" value={summary?.versionedRate ?? 0} precision={1} suffix="%" /></Card>
+        <Card size="small"><Statistic title="审计事件" value={summary ? summary.totalEvents : "—"} /></Card>
+        <Card size="small"><Statistic title="状态事件" value={summary ? summary.stateEvents : "—"} /></Card>
+        <Card size="small"><Statistic title="可计算周期案例" value={summary ? summary.analyzableCases : "—"} suffix={summary ? `/ ${summary.cases}` : undefined} /></Card>
+        <Card size="small"><Statistic title="事件映射率" value={summary ? summary.eventMappingRate : "—"} precision={summary ? 1 : undefined} suffix={summary ? "%" : undefined} /></Card>
+        <Card size="small"><Statistic title="event-v1 覆盖" value={summary ? summary.versionedRate : "—"} precision={summary ? 1 : undefined} suffix={summary ? "%" : undefined} /></Card>
       </div>
 
       <DecisionVisual
@@ -362,7 +376,13 @@ export default function ProcessMiningClient() {
           <BarChart data={chartRows} layout="vertical" margin={{ top: 8, right: 30, left: 12, bottom: 8 }}>
             <CartesianGrid strokeDasharray="3 3" horizontal={false} />
             <XAxis type="number" unit="h" />
-            <YAxis type="category" dataKey="name" width={190} tick={{ fontSize: 11 }} />
+            <YAxis
+              type="category"
+              dataKey="name"
+              width={screens.lg ? 190 : screens.sm ? 132 : 96}
+              tick={{ fontSize: screens.sm ? 11 : 10 }}
+              tickFormatter={(value: string) => value.length > (screens.sm ? 20 : 12) ? `${value.slice(0, screens.sm ? 19 : 11)}…` : value}
+            />
             <ChartTooltip formatter={(value) => duration(Number(value))} />
             <Legend />
             <Bar dataKey="median" name="中位数" fill="#6f8cff" radius={[0, 4, 4, 0]} />
@@ -380,6 +400,7 @@ export default function ProcessMiningClient() {
         loading={loading}
         pagination={{ pageSize: 10, showSizeChanger: false }}
         scroll={{ x: "max-content" }}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前窗口没有可比较的环节" }}
       />
 
       <Typography.Title level={5} style={{ marginTop: 20 }}>路径变体</Typography.Title>
@@ -390,7 +411,7 @@ export default function ProcessMiningClient() {
         dataSource={data?.variants ?? []}
         loading={loading}
         pagination={false}
-        locale={{ emptyText: <Empty description="当前窗口没有可识别的流程路径" /> }}
+        locale={{ emptyText: <Empty description={loadError ? "数据未加载" : "当前窗口没有可识别的流程路径"} /> }}
         scroll={{ x: "max-content" }}
       />
 
@@ -403,6 +424,7 @@ export default function ProcessMiningClient() {
         loading={loading}
         pagination={{ pageSize: 10, showSizeChanger: false }}
         scroll={{ x: "max-content" }}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前窗口没有可分析的案例" }}
         expandable={{
           rowExpandable: (row) => row.events.length > 0,
           expandedRowRender: (row) => (

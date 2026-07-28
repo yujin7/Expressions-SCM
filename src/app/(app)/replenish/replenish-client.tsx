@@ -1,6 +1,7 @@
 "use client";
 
 import SearchInput from "@/components/SearchInput";
+import ListToolbar from "@/components/ListToolbar";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -103,12 +104,33 @@ type ReplenishSortOrder = "ascend" | "descend";
 
 function SharedPackagingPanel({ skuId }: { skuId: number }) {
   const [items, setItems] = useState<{ materialCode: string; materialName: string; baseUom: string; onHand: string; sharedCount: number; sharedWith: { code: string }[] }[] | null>(null);
-  useEffect(() => {
-    fetch(`/api/master/sku/${skuId}/shared-packaging`)
-      .then((r) => r.json())
-      .then((d) => setItems(d.items ?? []))
-      .catch(() => setItems([]));
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    setItems(null);
+    setLoadError(null);
+    try {
+      const data = await fetchJson<{ items?: { materialCode: string; materialName: string; baseUom: string; onHand: string; sharedCount: number; sharedWith: { code: string }[] }[] }>(
+        `/api/master/sku/${skuId}/shared-packaging`,
+      );
+      setItems(data.items ?? []);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "包材信息加载失败");
+    }
   }, [skuId]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  if (loadError) {
+    return (
+      <Alert
+        type="error"
+        showIcon
+        message="包材信息加载失败"
+        description={loadError}
+        action={<Button size="small" onClick={() => void load()}>重试</Button>}
+      />
+    );
+  }
   if (items == null) return <Typography.Text type="secondary">载入包材信息…</Typography.Text>;
   if (items.length === 0) return <Typography.Text type="secondary">该成品无生效 BOM 包材（或 BOM 未生效）</Typography.Text>;
   return (
@@ -148,7 +170,8 @@ export default function ReplenishClient() {
   const sortBy = filters.sortBy as ReplenishSortBy;
   const sortOrder = filters.sortOrder as ReplenishSortOrder;
   const [data, setData] = useState<ReplenishResult | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const [selectedRows, setSelectedRows] = useState<ReplenishRow[]>([]);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -172,6 +195,7 @@ export default function ReplenishClient() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const params = new URLSearchParams({
         coverDaysTarget: String(coverDays || 45),
@@ -185,7 +209,11 @@ export default function ReplenishClient() {
       const res = await fetchJson<ReplenishResult>(`/api/replenish/suggestions?${params.toString()}`);
       setData(res);
     } catch (e) {
-      message.error((e as Error).message);
+      const text = e instanceof Error ? e.message : "补货建议加载失败";
+      setData(null);
+      setSelectedRows([]);
+      setLoadError(text);
+      message.error(text);
     } finally {
       setLoading(false);
     }
@@ -414,41 +442,46 @@ export default function ReplenishClient() {
           </div>
         }
       />
-      <Space style={{ marginBottom: 16, display: "flex", justifyContent: "space-between" }} wrap>
-        <Space wrap>
-          <span>
-            目标覆盖天数{" "}
-            <InputNumber
-              min={1}
-              max={365}
-              precision={0}
-              value={coverDays}
-              onChange={(v) => listState.setFilter({ coverDays: String(v ?? 45) })}
-              style={{ width: 90 }}
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            <span>
+              目标覆盖天数{" "}
+              <InputNumber
+                min={1}
+                max={365}
+                precision={0}
+                value={coverDays}
+                onChange={(v) => listState.setFilter({ coverDays: String(v ?? 45) })}
+                style={{ width: 90 }}
+              />
+            </span>
+            <span>
+              预警阈值（天）{" "}
+              <InputNumber
+                min={1}
+                max={365}
+                precision={0}
+                value={minCover}
+                onChange={(v) => listState.setFilter({ minCover: String(v ?? 30) })}
+                style={{ width: 90 }}
+              />
+            </span>
+            <SearchInput
+              allowClear
+              placeholder="搜索 SKU 编码/名称"
+              style={{ width: 220 }}
+              onSearch={(value) => { listState.setFilter({ q: value.trim() }); }}
             />
-          </span>
-          <span>
-            预警阈值（天）{" "}
-            <InputNumber
-              min={1}
-              max={365}
-              precision={0}
-              value={minCover}
-              onChange={(v) => listState.setFilter({ minCover: String(v ?? 30) })}
-              style={{ width: 90 }}
-            />
-          </span>
-          <SearchInput
-            allowClear
-            placeholder="搜索 SKU 编码/名称"
-            style={{ width: 220 }}
-            onSearch={(value) => { listState.setFilter({ q: value.trim() }); }}
-          />
-        </Space>
-        <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-          刷新
-        </Button>
-      </Space>
+          </>
+        }
+        primaryActions={
+          <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+            刷新
+          </Button>
+        }
+      />
       {createdDocNo ? (
         <Alert
           type="success"
@@ -462,6 +495,16 @@ export default function ReplenishClient() {
               <Link href="/outsource/bh">前往备货申请列表提交审批 →</Link>
             </span>
           }
+        />
+      ) : null}
+      {loadError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="补货建议加载失败"
+          description={loadError}
+          action={<Button size="small" icon={<ReloadOutlined />} onClick={() => void load()}>重试</Button>}
+          style={{ marginBottom: 16 }}
         />
       ) : null}
       <Table<ReplenishRow>
@@ -484,6 +527,7 @@ export default function ReplenishClient() {
           expandedRowRender: (r) => <SharedPackagingPanel skuId={(r as { skuId: number }).skuId} />,
         }}
         pagination={listState.paginationProps({ total: data?.total ?? 0 })}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前条件下没有补货建议" }}
       />
       <div
         style={{

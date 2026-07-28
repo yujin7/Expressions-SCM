@@ -92,7 +92,43 @@ body {
 }
 
 .app-header__actions {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
   min-width: 0;
+  margin-left: 24px;
+}
+
+.app-header__search {
+  flex: 0 1 320px;
+  min-width: 180px;
+  max-width: 320px;
+}
+
+.global-search {
+  width: 100%;
+}
+
+.app-header__user,
+.app-header__role {
+  overflow: hidden;
+  max-width: 120px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.app-header__role {
+  max-width: 96px;
+}
+
+.app-header__account-menu.ant-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 44px;
+  padding-inline: 6px;
 }
 
 .app-content {
@@ -197,34 +233,52 @@ body {
 }
 
 .list-toolbar {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px 8px;
-  width: fit-content;
+  width: auto;
   max-width: 100%;
-  padding: 6px;
+  padding: 5px;
   margin-bottom: 10px;
+  vertical-align: top;
   border: 1px solid #edf0f5;
   border-radius: 10px;
   background: #fafbfe;
 }
 
 .list-toolbar__filters {
-  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 6px;
   min-width: 0;
   max-width: 100%;
 }
 
-.list-toolbar__filters.ant-space {
-  gap: 6px !important;
+.list-toolbar__filters > *,
+.list-toolbar__actions > *,
+.list-toolbar__primary-actions > * {
+  min-width: 0;
 }
 
-.list-toolbar__filters > .ant-space-item {
+.list-toolbar__filters > .ant-space,
+.list-toolbar__actions > .ant-space,
+.list-toolbar__primary-actions > .ant-space {
+  flex-wrap: wrap;
+  gap: 6px !important;
+  max-width: 100%;
+}
+
+.list-toolbar__filters > .ant-space > .ant-space-item,
+.list-toolbar__actions > .ant-space > .ant-space-item,
+.list-toolbar__primary-actions > .ant-space > .ant-space-item {
   min-width: 0;
 }
 
 .list-toolbar__filters .ant-input-search,
+.list-toolbar__filters .app-search-input,
 .list-toolbar__filters .ant-select,
 .list-toolbar__filters .ant-picker,
 .list-toolbar__filters .ant-input-number {
@@ -244,8 +298,19 @@ body {
 
 .list-toolbar__actions,
 .list-toolbar__primary-actions {
-  gap: 6px !important;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
   justify-content: flex-start;
+}
+
+.list-toolbar__actions .ant-btn,
+.list-toolbar__primary-actions .ant-btn {
+  max-width: 100%;
+  white-space: nowrap;
 }
 
 .list-toolbar__primary-actions {
@@ -259,8 +324,9 @@ body {
 
 .compact-kpi-row {
   display: grid !important;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 220px));
   gap: 10px;
+  justify-content: start;
   margin-inline: 0 !important;
   margin-bottom: 12px !important;
 }
@@ -507,7 +573,7 @@ body {
 
 .process-mining-kpis {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 148px), 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -923,6 +989,12 @@ body {
 }
 
 @media (max-width: 991px) {
+  .app-header__actions {
+    flex: 0 0 auto;
+    gap: 6px;
+    margin-left: 12px;
+  }
+
   .app-boot {
     grid-template-columns: 1fr;
   }
@@ -961,11 +1033,24 @@ body {
   }
 
   .process-mining-kpis {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .plan-version-kpis {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 992px) and (max-width: 1199px) {
+  .app-header__actions {
+    gap: 6px;
+    margin-left: 16px;
+  }
+
+  .app-header__search {
+    flex-basis: 280px;
+    min-width: 150px;
+    max-width: 280px;
   }
 }
 
@@ -979,7 +1064,9 @@ body {
   }
 
   .list-toolbar {
+    display: flex;
     align-items: stretch !important;
+    width: 100%;
   }
 
   .crud-table__toolbar {
@@ -1008,19 +1095,22 @@ body {
   }
 
   .list-toolbar__primary-actions {
-    padding-top: 8px;
-    padding-left: 0;
-    border-top: 1px solid #e5e9f0;
-    border-left: 0;
+    flex: 0 1 auto;
+    padding-top: 0;
+    padding-left: 6px;
+    border-top: 0;
+    border-left: 1px solid #e5e9f0;
   }
 
-  .list-toolbar__filters > .ant-space-item:has(.ant-input-search),
-  .list-toolbar__filters > .ant-space-item:has(.ant-select) {
+  .list-toolbar__filters > .ant-input-search,
+  .list-toolbar__filters > .app-search-input,
+  .list-toolbar__filters > .ant-select {
     flex: 1 1 145px;
     min-width: 0;
   }
 
   .list-toolbar__filters .ant-input-search,
+  .list-toolbar__filters .app-search-input,
   .list-toolbar__filters .ant-select {
     width: 100% !important;
   }
@@ -1051,12 +1141,8 @@ body {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .list-toolbar__filters {
-    flex-basis: 100%;
-  }
-
   .list-toolbar {
-    width: fit-content;
+    width: auto;
     max-width: 100%;
   }
 
@@ -1065,7 +1151,7 @@ body {
     align-items: center;
     flex-wrap: wrap;
     gap: 8px;
-    width: fit-content;
+    width: auto;
     max-width: 100%;
     margin-left: 0;
     justify-content: flex-start;
@@ -1091,11 +1177,10 @@ body {
   .list-toolbar--actions-only .list-toolbar__right {
     display: flex;
     width: auto;
-    grid-template-columns: 1fr;
   }
 
   .list-toolbar.list-toolbar--actions-only {
-    width: fit-content;
+    width: auto;
   }
 }
 
@@ -1109,9 +1194,20 @@ body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .list-toolbar {
+    display: flex;
+    width: 100%;
+  }
+
+  .list-toolbar__filters {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+
   .list-toolbar__right {
     display: flex;
-    width: fit-content;
+    flex: 1 1 100%;
+    width: 100%;
     max-width: 100%;
   }
 
@@ -1120,13 +1216,11 @@ body {
   }
 
   .list-toolbar__primary-actions {
+    flex: 0 1 auto;
     max-width: 100%;
     justify-content: flex-start;
-  }
-
-  .list-toolbar__primary-actions {
     padding-top: 0;
-    padding-left: 8px;
+    padding-left: 6px;
     border-top: 0;
     border-left: 1px solid #e5e9f0;
   }
@@ -1166,8 +1260,9 @@ body {
 }
 
 @container app-surface (max-width: 320px) {
-  .list-toolbar__filters > .ant-space-item:has(.ant-input-search),
-  .list-toolbar__filters > .ant-space-item:has(.ant-select) {
+  .list-toolbar__filters > .ant-input-search,
+  .list-toolbar__filters > .app-search-input,
+  .list-toolbar__filters > .ant-select {
     flex-basis: 100%;
   }
 
