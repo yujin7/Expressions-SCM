@@ -190,7 +190,7 @@ export default function ReconClient() {
       </Space>
 
       {summary ? (
-        <Row gutter={12} style={{ marginBottom: 16 }}>
+        <Row gutter={[10, 10]} className="compact-kpi-row">
           <Col span={4}>
             <Card size="small">
               <Statistic title="SKU 数" value={summary.skuCount} />

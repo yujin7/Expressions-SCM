@@ -140,7 +140,7 @@ export default function LeadTimeLearningClient() {
         }
       />
 
-      <Row gutter={12} style={{ marginBottom: 12 }}>
+      <Row gutter={[10, 10]} className="compact-kpi-row">
         <Col><Card size="small"><Statistic title="有样本的供应商-SKU 对" value={s?.pairCount ?? 0} /></Card></Col>
         <Col><Card size="small"><Statistic title="有建议数" value={s?.withSuggestion ?? 0} valueStyle={{ color: (s?.withSuggestion ?? 0) > 0 ? "#fa8c16" : undefined }} /></Card></Col>
         <Col>

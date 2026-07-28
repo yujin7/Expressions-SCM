@@ -108,7 +108,7 @@ export default function ClosedLoopClient() {
         message="追踪补货建议 / NPD 首单生成的 BH 草稿，直至审批执行的全过程，据此看清建议是否被采纳。"
         description="采纳率 = 进入审批通过及以后状态（已审批/执行中/已完成）的草稿占比。单号对应 BH 单据不存在时记为「已删除」。只读，不产生任何写入。"
       />
-      <Row gutter={12} style={{ marginBottom: 12 }}>
+      <Row gutter={[10, 10]} className="compact-kpi-row">
         <Col><Card size="small"><Statistic title="建议草稿总数" value={s?.total ?? 0} /></Card></Col>
         <Col><Card size="small"><Statistic title="采纳率（到审批）" value={s?.adoptRate ?? 0} precision={1} suffix="%" valueStyle={{ color: "#52c41a" }} /></Card></Col>
         <Col><Card size="small"><Statistic title="实际到货率" value={s?.deliveredRate ?? 0} precision={1} suffix="%" valueStyle={{ color: "#3f8600" }} /></Card></Col>

@@ -301,7 +301,7 @@ export default function LocationsClient() {
                 description="已停止隐藏负的“未定位”差额。请先核对并纠正数据，再继续定位该 SKU。"
               />
             ) : null}
-            <Row gutter={[12, 12]} style={{ marginBottom: 20 }}>
+            <Row gutter={[10, 10]} className="compact-kpi-row">
               {[
                 ["已定位", totals?.located ?? "0"],
                 ["未定位", totals?.unlocated ?? "0"],

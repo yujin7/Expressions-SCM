@@ -144,7 +144,7 @@ export default function TransferSuggestClient() {
           ) : null
         }
       />
-      <Space size={40} style={{ marginBottom: 12 }} wrap>
+      <Space className="compact-stat-strip" wrap>
         <Statistic title="涉及 SKU 数" value={data?.summary.skuCount ?? 0} />
         <Statistic title="建议条数" value={data?.summary.lineCount ?? 0} />
         <Statistic title="建议总量（基础单位）" value={data?.summary.totalQty ?? 0} />

@@ -232,7 +232,7 @@ export default function MaterialDemandClient() {
           ) : null
         }
       />
-      <Space size={40} style={{ marginBottom: 12 }} wrap>
+      <Space className="compact-stat-strip" wrap>
         <Statistic title="涉及物料数" value={data?.summary.materialCount ?? 0} />
         <Statistic
           title="缺口物料数（净需求 > 0）"

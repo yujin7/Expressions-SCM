@@ -67,6 +67,94 @@ describe("shared layout regressions", () => {
     expect(styles).toMatch(
       /\.list-toolbar--actions-only \.list-toolbar__right\s*\{[^}]*width:\s*100%;/s,
     );
+    expect(styles).toMatch(
+      /@container app-surface \(max-width:\s*760px\)[\s\S]*\.list-toolbar__right\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto;[^}]*margin-left:\s*0;[^}]*justify-content:\s*stretch;/s,
+    );
+    expect(styles).toMatch(
+      /@container app-surface \(max-width:\s*760px\)[\s\S]*\.list-toolbar__actions\s*\{[^}]*justify-content:\s*flex-start;/s,
+    );
+    expect(toolbar).toContain('className="list-toolbar__utility-label"');
+    expect(toolbar).toContain('className="list-toolbar__utility-value"');
+    expect(toolbar).toContain('aria-label="复制当前视图链接"');
+    expect(styles).toMatch(
+      /@container app-surface \(max-width:\s*520px\)[\s\S]*\.list-toolbar__right\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto;/s,
+    );
+    expect(styles).toMatch(
+      /@container app-surface \(max-width:\s*320px\)[\s\S]*\.list-toolbar__right\s*\{[^}]*grid-template-columns:\s*1fr;/s,
+    );
+  });
+
+  it("keeps KPI summaries compact across legacy report layouts", () => {
+    const styles = read("src/app/globals.css");
+    const kpiRows = [
+      "src/app/(app)/jobs/recon/recon-client.tsx",
+      "src/app/(app)/inventory/locations/locations-client.tsx",
+      "src/app/(app)/report/closed-loop/closed-loop-client.tsx",
+      "src/app/(app)/report/forecast-accuracy/forecast-accuracy-client.tsx",
+      "src/app/(app)/report/leadtime-learning/leadtime-learning-client.tsx",
+      "src/app/(app)/report/margin/margin-client.tsx",
+      "src/app/(app)/report/wip/wip-client.tsx",
+    ];
+    const statStrips = [
+      "src/app/(app)/report/auto-replenish/auto-replenish-client.tsx",
+      "src/app/(app)/report/data-health/data-health-client.tsx",
+      "src/app/(app)/report/detectors/detectors-client.tsx",
+      "src/app/(app)/report/material-demand/material-demand-client.tsx",
+      "src/app/(app)/report/price-compare/price-compare-client.tsx",
+      "src/app/(app)/report/transfer-suggest/transfer-suggest-client.tsx",
+    ];
+
+    for (const file of kpiRows) {
+      expect(read(file), file).toContain('className="compact-kpi-row"');
+    }
+    for (const file of statStrips) {
+      expect(read(file), file).toContain("compact-stat-strip");
+    }
+    expect(styles).toMatch(
+      /\.compact-kpi-row > \.ant-col\s*\{[^}]*flex:\s*1 1 170px;[^}]*max-width:\s*240px;/s,
+    );
+    expect(styles).toMatch(
+      /\.compact-stat-strip\.ant-space\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(150px,\s*220px\)\);/s,
+    );
+    expect(styles).toMatch(
+      /\.decision-metric \.ant-card-body\s*\{[^}]*min-height:\s*166px;[^}]*padding:\s*14px;/s,
+    );
+  });
+
+  it("summarizes structural data warnings without dumping the full evidence list", () => {
+    const health = read("src/app/(app)/report/data-health/data-health-client.tsx");
+    const styles = read("src/app/globals.css");
+
+    expect(health).toContain('className="data-health-warning__details"');
+    expect(health).toContain("查看完整影响与范围");
+    expect(health).toContain("plainWarningText");
+    expect(health).toContain('placeholder="全部缺失维度"');
+    expect(health).toContain('aria-label="按缺失维度筛选"');
+    expect(health).not.toContain("DIMENSIONS.map((d) => (");
+    expect(styles).toMatch(
+      /\.data-health-warning__samples\s*\{[^}]*max-height:\s*96px;[^}]*overflow:\s*auto;/s,
+    );
+  });
+
+  it("keeps import and audit controls inside narrow app surfaces", () => {
+    const release = read("src/app/(app)/import/release/release-client.tsx");
+    const upload = read("src/app/(app)/import/upload/upload-client.tsx");
+    const audit = read("src/app/(app)/admin/audit/audit-client.tsx");
+    const styles = read("src/app/globals.css");
+
+    expect(release).toContain('className="release-job-picker"');
+    expect(release).not.toContain("minWidth: 520");
+    expect(upload).toContain('width: "min(100%, 360px)"');
+    expect(audit).toContain('className="audit-filter-grid"');
+    expect(styles).toMatch(
+      /\.audit-filter-grid\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(130px,\s*1fr\)\);/s,
+    );
+    expect(styles).toMatch(
+      /@container app-surface \(max-width:\s*520px\)[\s\S]*\.audit-filter-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1\.5fr\) minmax\(0,\s*1fr\);/s,
+    );
+    expect(styles).toMatch(
+      /\.release-job-picker > \.ant-space-item:has\(\.ant-select\)\s*\{[^}]*flex:\s*1 1 260px;[^}]*min-width:\s*0;[^}]*max-width:\s*520px;/s,
+    );
   });
 
   it("merges page-level primary actions into the shared list toolbar", () => {

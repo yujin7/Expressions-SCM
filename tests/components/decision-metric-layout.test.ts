@@ -15,6 +15,12 @@ describe("decision metric layout", () => {
     expect(dashboard).not.toContain("<Col xs={12} md={8} xl={3}>");
     expect(styles).toContain("repeat(auto-fit, minmax(min(100%, 220px), 1fr))");
     expect(styles).toContain("repeat(auto-fit, minmax(min(100%, 520px), 1fr))");
+    expect(styles).toMatch(
+      /@container app-surface \(min-width:\s*640px\) and \(max-width:\s*760px\)[\s\S]*\.dashboard-kpi-grid\s*\{[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\);/s,
+    );
+    expect(styles).toMatch(
+      /@container app-surface \(max-width:\s*520px\)[\s\S]*\.dashboard-kpi-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/s,
+    );
   });
 
   it("renders metric explanations as bounded copy rather than tags", () => {

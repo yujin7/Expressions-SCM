@@ -215,7 +215,7 @@ export default function DecisionStudioClient() {
         description={data?.limitations[0]}
       />
 
-      <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
+      <Row gutter={[10, 10]} className="compact-kpi-row">
         <Col xs={12} md={6}>
           <Card size="small">
             <Statistic

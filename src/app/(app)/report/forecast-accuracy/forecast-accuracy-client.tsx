@@ -117,7 +117,7 @@ export default function ForecastAccuracyClient() {
         message="滚动回测：对每个月只用「该月之前」的数据跑一次线上 Holt 预测，再与实际比较——复现了当时的信息集，比事后看更严格。"
         description={s ? <Typography.Text type="secondary">窗口 {s.months[0]} ~ {s.months[s.months.length - 1]}；可回测 {s.evaluated} 个成品；整体判定：{s.overallBiasText}</Typography.Text> : null}
       />
-      <Row gutter={12} style={{ marginBottom: 12 }}>
+      <Row gutter={[10, 10]} className="compact-kpi-row">
         <Col><Card size="small"><Statistic title="整体 WAPE" value={s?.overallWape != null ? (s.overallWape * 100).toFixed(1) : "—"} suffix="%" /></Card></Col>
         <Col>
           <Card size="small">

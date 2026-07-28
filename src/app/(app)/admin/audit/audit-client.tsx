@@ -268,7 +268,7 @@ function AuditInner({ isAdmin }: { isAdmin: boolean }) {
           </>
         }
         extra={
-          <>
+          <div className="audit-filter-grid">
             <Select
               allowClear
               showSearch
@@ -313,7 +313,7 @@ function AuditInner({ isAdmin }: { isAdmin: boolean }) {
               onPressEnter={search}
               allowClear
             />
-          </>
+          </div>
         }
       />
 

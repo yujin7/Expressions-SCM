@@ -92,7 +92,7 @@ export default function UploadClient({
         <Space direction="vertical" style={{ width: "100%" }} size={12}>
           <Space wrap>
             <Select
-              style={{ width: 360 }}
+              style={{ width: "min(100%, 360px)" }}
               options={allowedTemplates}
               value={template}
               onChange={(v) => setTemplate(v)}

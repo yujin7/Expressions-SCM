@@ -10,7 +10,7 @@ import SearchInput from "@/components/SearchInput";
  */
 import { useCallback, useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Alert, App, Progress, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Progress, Select, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import { Tabs } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
@@ -65,6 +65,16 @@ const TYPE_LABELS: Record<string, string> = {
 
 function scoreColor(v: number): string {
   return v < 50 ? "#cf1322" : v < 80 ? "#d46b08" : "#389e0d";
+}
+
+function plainWarningText(value: string): string {
+  return value.replaceAll("**", "");
+}
+
+function warningLead(value: string): string {
+  const plain = plainWarningText(value);
+  const boundary = plain.search(/[。；]/);
+  return boundary >= 0 ? plain.slice(0, boundary + 1) : plain;
 }
 
 /* ─────────────────────────── 页签一：缺失清单 ─────────────────────────── */
@@ -143,17 +153,26 @@ function MissingTab() {
           style={{ marginBottom: 12 }}
           message={w.title}
           description={
-            <>
-              <div style={{ marginBottom: 6 }}>{w.impact}</div>
-              <div style={{ color: "#666", fontSize: 12 }}>
-                涉及：{w.samples.join("、")}
-                {w.count > w.samples.length ? ` 等 ${w.count} 项` : ""}
-              </div>
-            </>
+            <div className="data-health-warning">
+              <div>{warningLead(w.impact)}</div>
+              <details className="data-health-warning__details">
+                <summary>查看完整影响与范围（{w.count} 项）</summary>
+                <Typography.Paragraph type="secondary">
+                  {plainWarningText(w.impact)}
+                </Typography.Paragraph>
+                {w.samples.length > 0 ? (
+                  <div className="data-health-warning__samples">
+                    <strong>示例：</strong>
+                    {w.samples.join("、")}
+                    {w.count > w.samples.length ? ` 等 ${w.count} 项` : ""}
+                  </div>
+                ) : null}
+              </details>
+            </div>
           }
         />
       ))}
-      <Space size="large" style={{ marginBottom: 12 }} wrap>
+      <Space className="compact-stat-strip" wrap>
         <Statistic title="在售成品 SKU" value={summary?.totalSkus ?? 0} />
         <Statistic title="完全健康" value={summary?.fullyHealthy ?? 0} suffix={summary ? `/ ${healthRate}%` : undefined} />
         <Statistic title="待修复" value={data?.total ?? 0} valueStyle={{ color: "#cf1322" }} />
@@ -162,16 +181,18 @@ function MissingTab() {
         state={listState}
         extra={
           <>
-            {DIMENSIONS.map((d) => (
-              <Tag.CheckableTag
-                key={d}
-                checked={missing === d}
-                onChange={(c) => listState.setFilter({ missing: c ? d : "" })}
-                style={{ border: "1px solid #d9d9d9", padding: "2px 10px" }}
-              >
-                {d} 缺失（{summary?.byDimension[d] ?? 0}）
-              </Tag.CheckableTag>
-            ))}
+            <Select
+              allowClear
+              value={missing || undefined}
+              placeholder="全部缺失维度"
+              aria-label="按缺失维度筛选"
+              style={{ width: 230 }}
+              options={DIMENSIONS.map((dimension) => ({
+                value: dimension,
+                label: `${dimension} 缺失（${summary?.byDimension[dimension] ?? 0}）`,
+              }))}
+              onChange={(value) => listState.setFilter({ missing: value ?? "" })}
+            />
             <SearchInput
               key={q}
               allowClear
@@ -339,7 +360,7 @@ function DuplicatesTab() {
           message={data.note}
         />
       ) : null}
-      <Space size="large" style={{ marginBottom: 12 }} wrap>
+      <Space className="compact-stat-strip" wrap>
         <Statistic title="疑似重复组" value={data?.total ?? 0} valueStyle={{ color: "#d46b08" }} />
         <Statistic title="完全同名（建议先处理）" value={data?.exactCount ?? 0} valueStyle={{ color: "#cf1322" }} />
         <Statistic title="涉及 SKU" value={data?.affectedSkus ?? 0} suffix={data ? `/ ${data.scanned}` : undefined} />

@@ -162,7 +162,7 @@ export default function PriceCompareClient() {
       />
 
       {data ? (
-        <Space size="large" style={{ marginBottom: 12 }} wrap>
+        <Space className="compact-stat-strip" wrap>
           <Statistic title="可比物料数" value={data.summary.skuCount} valueStyle={{ fontSize: 20 }} />
           <Statistic title="平均价差" value={data.summary.avgSpreadPct} suffix="%" precision={1} valueStyle={{ fontSize: 20 }} />
           <Statistic

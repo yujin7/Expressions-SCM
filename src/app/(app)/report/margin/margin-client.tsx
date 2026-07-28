@@ -128,7 +128,7 @@ export default function MarginClient() {
         summary={<>手工成本 v1：成本人工录入，未录入不臆造；售价源未接入，毛利列暂缓点亮。批量导入：数据中心 → 文件上传（模板：SKU 成本导入）。</>}
         detail={<div><p>诚实口径声明：成本自动核算口径（D2）尚未裁定，本页单位成本为「手工录入基准」，非系统自动核算。</p><p>库内唯一价格表为供应商采购基准价（非售价），用它算毛利属臆造——故 priceAvailable=false；接入真实售价源后，单位毛利/毛利率/近3月毛利自动点亮。</p></div>}
       />
-      <Row gutter={16} style={{ marginBottom: 12 }}>
+      <Row gutter={[10, 10]} className="compact-kpi-row">
         <Col><Statistic title="已录成本 SKU 数" value={data?.summary.costedSkus ?? 0} /></Col>
         <Col><Statistic title="待录入成本" value={data?.summary.uncostedSkus ?? 0} /></Col>
         <Col>

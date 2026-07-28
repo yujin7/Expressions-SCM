@@ -196,7 +196,7 @@ export default function DetectorsClient() {
         message="规则化侦测，命中即提示，需人工确认"
         description="本页不是结论：销量归零可能是链接下架/失效，也可能是季节性、断货或换新链接；渠道位移可能是活动节奏。请结合链接状态、活动排期与实际库存核实后再决策。"
       />
-      <Space size={12} wrap style={{ marginBottom: 12 }}>
+      <Space className="compact-stat-strip" wrap>
         <Card size="small" style={{ minWidth: 150 }}>
           <Statistic title="销量骤停" value={s?.salesStop ?? 0} valueStyle={{ color: "#cf1322" }} suffix="项" />
         </Card>

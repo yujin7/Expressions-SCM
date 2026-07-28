@@ -3,6 +3,13 @@
 /** 列表页统一工具条（E6-P1）：自定义筛选插槽 + 密度 / 视图 / 复制链接 / 重置 / 导出 */
 import { useState } from "react";
 import { App, Button, ConfigProvider, Dropdown, Input, Modal, Space, Typography } from "antd";
+import {
+  AppstoreOutlined,
+  ColumnHeightOutlined,
+  CopyOutlined,
+  DownloadOutlined,
+  UndoOutlined,
+} from "@ant-design/icons";
 import type { MenuProps } from "antd";
 import type { Density, ListState } from "@/components/useListState";
 
@@ -120,14 +127,55 @@ export default function ListToolbar<F extends Record<string, string | undefined>
                 trigger={["click"]}
                 menu={{ items: densityItems, onClick: ({ key }) => state.setDensity(key as Density) }}
               >
-                <Button>密度：{DENSITY_LABEL[state.density]} ▾</Button>
+                <Button
+                  icon={<ColumnHeightOutlined />}
+                  aria-label={`表格密度：${DENSITY_LABEL[state.density]}`}
+                  title={`表格密度：${DENSITY_LABEL[state.density]}`}
+                >
+                  <span className="list-toolbar__utility-label">密度：</span>
+                  <span className="list-toolbar__utility-value">
+                    {DENSITY_LABEL[state.density]} ▾
+                  </span>
+                </Button>
               </Dropdown>
               <Dropdown trigger={["click"]} menu={{ items: viewItems, onClick: onViewClick }}>
-                <Button>视图（{state.savedViews.length}）▾</Button>
+                <Button
+                  icon={<AppstoreOutlined />}
+                  aria-label={`保存的视图：${state.savedViews.length} 个`}
+                  title={`保存的视图：${state.savedViews.length} 个`}
+                >
+                  <span className="list-toolbar__utility-label">视图</span>
+                  <span className="list-toolbar__utility-value">
+                    （{state.savedViews.length}）▾
+                  </span>
+                </Button>
               </Dropdown>
-              <Button onClick={() => void copyLink()}>复制链接</Button>
-              <Button onClick={() => state.resetFilters()}>重置</Button>
-              {onExport ? <Button onClick={onExport}>{exportText}</Button> : null}
+              <Button
+                icon={<CopyOutlined />}
+                aria-label="复制当前视图链接"
+                title="复制当前视图链接"
+                onClick={() => void copyLink()}
+              >
+                <span className="list-toolbar__utility-label">复制链接</span>
+              </Button>
+              <Button
+                icon={<UndoOutlined />}
+                aria-label="重置列表筛选"
+                title="重置列表筛选"
+                onClick={() => state.resetFilters()}
+              >
+                <span className="list-toolbar__utility-label">重置</span>
+              </Button>
+              {onExport ? (
+                <Button
+                  icon={<DownloadOutlined />}
+                  aria-label={exportText}
+                  title={exportText}
+                  onClick={onExport}
+                >
+                  <span className="list-toolbar__utility-label">{exportText}</span>
+                </Button>
+              ) : null}
             </Space>
             {primaryActions ? (
               <Space className="list-toolbar__primary-actions" wrap>

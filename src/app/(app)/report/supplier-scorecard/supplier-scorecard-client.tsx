@@ -434,7 +434,7 @@ function QcSummaryTab() {
         }
       />
 
-      <Row gutter={12} style={{ marginBottom: 12 }}>
+      <Row gutter={[10, 10]} className="compact-kpi-row">
         <Col><Card size="small"><Statistic title="收货批次" value={t?.batches ?? 0} /></Card></Col>
         <Col><Card size="small"><Statistic title="合格率" value={t?.passRate == null ? 0 : t.passRate * 100} precision={1} suffix="%" valueStyle={{ color: "#52c41a" }} /></Card></Col>
         <Col><Card size="small"><Statistic title="让步接收率" value={t?.concessionRate == null ? 0 : t.concessionRate * 100} precision={1} suffix="%" valueStyle={{ color: "#1677ff" }} /></Card></Col>

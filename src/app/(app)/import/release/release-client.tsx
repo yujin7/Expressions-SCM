@@ -305,12 +305,11 @@ export default function ReleaseClient({
         message="每个数据集先「预演」（零写入，出裁决清单），再「执行」。SPU 歧义簇与 BOM 歧义块必须显式勾选裁决——引擎绝不代劳；执行后主档生效走红字/重导可改判。"
       />
       <Card size="small" style={{ marginBottom: 16 }}>
-        <Space wrap>
+        <Space className="release-job-picker" wrap>
           <Typography.Text strong>本次放行任务：</Typography.Text>
           <Select
             showSearch
             optionFilterProp="label"
-            style={{ minWidth: 520 }}
             value={selectedJobId}
             placeholder="选择一个明确的导入任务；系统不会再放行全库待处理行"
             onChange={(id) => setSelectedJobId(id)}

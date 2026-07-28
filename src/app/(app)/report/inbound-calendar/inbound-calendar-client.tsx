@@ -166,7 +166,7 @@ export default function InboundCalendarClient() {
         />
         <a onClick={() => { void load(); }}><ReloadOutlined /> 刷新</a>
         {data ? (
-          <Space size="large" style={{ marginInlineStart: 16 }}>
+          <Space className="compact-stat-strip compact-stat-strip--inline" wrap>
             <Statistic title="预计到货条数" value={data.summary.totalLines} valueStyle={{ fontSize: 20 }} />
             <Statistic title="预计到货总量" value={nz(data.summary.totalQty)} valueStyle={{ fontSize: 20 }} />
             <Statistic

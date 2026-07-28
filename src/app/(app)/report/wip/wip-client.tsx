@@ -127,7 +127,7 @@ export default function WipClient() {
       <Typography.Paragraph type="secondary">
         全部未作废 JG 的收货进度（已收合格/让步=已入库检验口径；待收=订单数量−正常行累计实收）。
       </Typography.Paragraph>
-      <Row gutter={16} style={{ marginBottom: 16 }}>
+      <Row gutter={[10, 10]} className="compact-kpi-row">
         <Col span={8}>
           <Card size="small">
             <Statistic title="在制 JG 数" value={summary?.wipCount ?? "—"} />
