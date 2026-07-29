@@ -285,6 +285,7 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
             source={{ tier: "derived", name: "库存与近 3 月销速" }}
             actionHref="/workbench"
             actionLabel="分派与处理"
+            detail={<>正常销售口径已分开样品；有库存样品 {kpi.sampleStockSkuCount} 个，未分类 {kpi.unclassifiedStockSkuCount} 个（未分类暂保留在滞销统计，待业务确认）。</>}
           />
         </div>
       </section>

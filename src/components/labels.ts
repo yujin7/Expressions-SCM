@@ -21,6 +21,15 @@ export const SKU_TYPE_LABELS: Record<string, string> = {
   service: "服务",
 };
 
+export const COMMERCIAL_ROLE_LABELS: Record<string, string> = {
+  unclassified: "未分类",
+  retail: "正常销售",
+  sample: "样品",
+  gift: "赠品",
+  tester: "试用/测试装",
+  internal: "内部使用",
+};
+
 export const SUPPLIER_KIND_LABELS: Record<string, string> = {
   raw: "原料",
   packaging: "包材",

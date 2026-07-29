@@ -260,6 +260,13 @@
       "when": 1785342128643,
       "tag": "0036_lazy_vector",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1785350448139,
+      "tag": "0037_tough_lockjaw",
+      "breakpoints": true
     }
   ]
 }

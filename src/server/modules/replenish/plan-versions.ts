@@ -131,6 +131,8 @@ function snapshotLine(
         safetyQty: row.decisionEvidence.safetyQty,
         safetyMethod: row.safetyMethod,
         leadDays: row.leadDays,
+        productionLeadDays: row.productionLeadDays,
+        logisticsLeadDays: row.logisticsLeadDays,
         actionWindowDays: row.decisionEvidence.actionWindowDays,
         horizonDays: row.decisionEvidence.horizonDays,
       },

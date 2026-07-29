@@ -39,6 +39,10 @@ const BUCKETS: { key: string; label: string; color: string }[] = [
   { key: "expired", label: "已过期", color: "red" },
   { key: "m3", label: "≤3 个月", color: "orange" },
   { key: "m6", label: "3–6 个月", color: "gold" },
+  { key: "m12", label: "6–12 个月", color: "lime" },
+  { key: "m18", label: "12–18 个月", color: "green" },
+  { key: "m24", label: "18–24 个月", color: "cyan" },
+  { key: "rest", label: ">24 个月", color: "blue" },
 ];
 
 /** 段位「全部」（取消段位筛选）的哨兵值：仅存在于 URL，不下发给接口 */
@@ -144,7 +148,7 @@ function ExpiryInner() {
       <Typography.Title level={4} style={{ marginTop: 0 }}>效期批次</Typography.Title>
       <CaliberNote
         summary={<>批次 × 仓库的实物处置视图；按 SKU 的决策见「风险库存处置」。{data ? <>　口径日 {data.today}，剩余天数升序。</> : null}</>}
-        detail={<div><p>数据源：batch_stocks 参考层（效期盘点载体，非账本）。段位：已过期 / ≤3 月 / 3–6 月；&gt;6 个月的健康批次不在风险段位（取消段位筛选可见全量）。</p></div>}
+        detail={<div><p>数据源：batch_stocks 参考层（效期盘点载体，非账本）。七段位与经营驾驶舱同源：已过期 / ≤3 月 / 3–6 月 / 6–12 月 / 12–18 月 / 18–24 月 / &gt;24 月。</p></div>}
       />
       <ListToolbar
         state={listState}

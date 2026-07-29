@@ -9,8 +9,9 @@
  * 为权威（releaseFinishedMoq 既有路径），此表不重复存 MOQ——单一权威原则。
  */
 import {
-  pgTable, serial, integer, text, timestamp, date, unique, index,
+  pgTable, serial, integer, text, timestamp, date, unique, index, check,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { skus, users } from "./masters";
 
 export const npdProjects = pgTable("npd_projects", {
@@ -48,6 +49,13 @@ export const skuParams = pgTable("sku_params", {
   skuId: integer("sku_id").notNull().references(() => skus.id).unique(),
   normalLeadDays: integer("normal_lead_days"),
   urgentLeadDays: integer("urgent_lead_days"),
+  /** 生产完成后至可售仓的物流/调拨周期；与生产周期分开维护。 */
+  logisticsLeadDays: integer("logistics_lead_days"),
   updatedBy: integer("updated_by"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  check(
+    "ck_sku_params_logistics_lead_days",
+    sql`${t.logisticsLeadDays} IS NULL OR (${t.logisticsLeadDays} >= 0 AND ${t.logisticsLeadDays} <= 365)`,
+  ),
+]);

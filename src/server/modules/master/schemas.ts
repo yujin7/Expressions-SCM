@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { checkCode } from "@/server/rules/code-rule";
+import { COMMERCIAL_ROLES, unicodeLength } from "@/server/rules/sku-standardization";
 
 /** 空字符串 → undefined（配合可选字段） */
 const emptyToUndef = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
@@ -34,6 +35,14 @@ export const skuSchema = z.object({
   spec: optionalStr,
   version: optionalStr,
   prodMode: optionalStr,
+  shortName: z.preprocess(
+    emptyToUndef,
+    z.string().trim().refine((value) => unicodeLength(value) <= 10, "产品简称最多 10 个字符").optional(),
+  ),
+  channelId: z.number().int().positive().nullable().optional(),
+  commercialRole: z.enum(COMMERCIAL_ROLES).optional(),
+  /** 生产周期之外的运输/调拨周期；空=尚未维护，补货暂按 0 天兼容旧口径。 */
+  logisticsLeadDays: z.number().int().min(0).max(365).nullable().optional(),
   lossCategory: z.preprocess(emptyToUndef, z.enum(["raw", "packaging"]).optional()),
   brandId: z.number().int().positive().nullable().optional(),
   lifecycle: z.enum(["on_sale", "trial", "halted", "retired"]).optional(),

@@ -19,6 +19,7 @@ import { getLatestSnapshotRows, daysLeftOf, EXPIRY_TIER_DAYS } from "@/server/co
 import { num, r1 } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
 import { todayShanghai } from "@/server/modules/master/common";
+import { participatesInNormalSalesMovement } from "@/server/rules/sku-standardization";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -37,6 +38,10 @@ export interface DashboardData {
     lastMonth: string | null;
     expiryRiskQty: number; // ≤6月 + 已到期（七段位前三段）
     slowMoverCount: number;
+    /** 有库存的样品 SKU 数（库存仍计入总量，仅从正常销售动销统计分开） */
+    sampleStockSkuCount: number;
+    /** 有库存但尚未完成人工用途分类的 SKU 数 */
+    unclassifiedStockSkuCount: number;
     pendingApprovals: number;
     reviewBacklog: number; // 开放别名 + 阻塞 staging 行
     riskActionCount: number; // 行动类处置条目数（不含滞销关注——#7 防告警疲劳）
@@ -174,9 +179,17 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
   const whAgg = new Map<number, { qty: number; mode: "realtime" | "snapshot"; bizDate: string | null }>();
   const onHandBySku = new Map<number, number>();
   /* E1-09：量纲明细——加载 skuId→baseUom，累计各单位小计 */
+  const skuCaliberRows: { id: number; baseUom: string; commercialRole: string }[] =
+    await db.select({
+      id: schema.skus.id,
+      baseUom: schema.skus.baseUom,
+      commercialRole: schema.skus.commercialRole,
+    }).from(schema.skus);
   const uomBySku = new Map<number, string>(
-    (await db.select({ id: schema.skus.id, baseUom: schema.skus.baseUom }).from(schema.skus))
-      .map((r: { id: number; baseUom: string }) => [r.id, r.baseUom ?? "未标"]),
+    skuCaliberRows.map((r) => [r.id, r.baseUom ?? "未标"]),
+  );
+  const commercialRoleBySku = new Map<number, string>(
+    skuCaliberRows.map((r) => [r.id, r.commercialRole]),
   );
   const qtyByUom = new Map<string, number>();
   const addUom = (skuId: number, q: number) => {
@@ -237,8 +250,15 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
   coverCount.set("无动销", 0);
   interface SlowRow { skuId: number; onHand: number; s3m: number; daysCover: number | null }
   const slowCandidates: SlowRow[] = [];
+  let sampleStockSkuCount = 0;
+  let unclassifiedStockSkuCount = 0;
   for (const [skuId, onHand] of onHandBySku) {
     if (onHand <= 0) continue;
+    const commercialRole = commercialRoleBySku.get(skuId) ?? "unclassified";
+    if (commercialRole === "sample") sampleStockSkuCount++;
+    if (commercialRole === "unclassified") unclassifiedStockSkuCount++;
+    // 非销售用途仍在库存总量，但不制造正常销售“无动销/滞销”噪音。
+    if (!participatesInNormalSalesMovement(commercialRole)) continue;
     const s3 = sales3m.get(skuId) ?? 0;
     if (s3 <= 0) {
       coverCount.set("无动销", coverCount.get("无动销")! + 1);
@@ -417,6 +437,11 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
     const worst = slowTop[0];
     insights.push(`滞销：${slowMoverCount} 个 SKU 可销天数超 ${slowThreshold} 天或无动销${worst ? `，最大压库「${worst.code}」在库 ${worst.onHand.toLocaleString("zh-CN")}` : ""}`);
   }
+  if (sampleStockSkuCount > 0 || unclassifiedStockSkuCount > 0) {
+    insights.push(
+      `SKU 用途：有库存样品 ${sampleStockSkuCount} 个，另有 ${unclassifiedStockSkuCount} 个尚未分类；样品已从正常销售滞销统计分开，未分类仍保留在统计中等待业务确认`,
+    );
+  }
   const short = coverBuckets.find((b) => b.bucket === "<30天");
   if ((short?.count ?? 0) > 0) {
     insights.push(`断货风险：${short!.count} 个 SKU 可销天数不足 30 天，建议核对在途后评估补货（R11 净需求）`);
@@ -454,6 +479,8 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
       lastMonth,
       expiryRiskQty: Math.round(expiryRiskQty),
       slowMoverCount,
+      sampleStockSkuCount,
+      unclassifiedStockSkuCount,
       pendingApprovals,
       reviewBacklog,
       riskActionCount,

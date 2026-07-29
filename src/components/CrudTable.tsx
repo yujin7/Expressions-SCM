@@ -32,6 +32,10 @@ export interface CrudTableProps<T extends { id: number }> {
   /** 提交前：表单值 → 请求体 */
   transformSubmit?: (values: Record<string, unknown>, editing: T | null) => Record<string, unknown>;
   searchPlaceholder?: string;
+  /** 业务筛选器，展示在搜索框后、操作按钮前。 */
+  toolbarFilters?: React.ReactNode;
+  /** 除 q/page/pageSize 外传给列表 API 的筛选参数。 */
+  queryParams?: Record<string, string | undefined>;
   modalWidth?: number;
   /** 是否允许编辑该行（默认允许） */
   canEdit?: (record: T) => boolean;
@@ -53,6 +57,8 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
     loadDetailOnEdit = false,
     transformSubmit,
     searchPlaceholder,
+    toolbarFilters,
+    queryParams,
     modalWidth,
     canEdit,
     canCreate = true,
@@ -72,12 +78,21 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
   const [editing, setEditing] = useState<T | null>(null);
   const [openingEditId, setOpeningEditId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  const queryParamsKey = JSON.stringify(queryParams ?? {});
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      const params = new URLSearchParams({
+        q,
+        page: String(page),
+        pageSize: String(pageSize),
+      });
+      for (const [key, value] of Object.entries(JSON.parse(queryParamsKey) as Record<string, string>)) {
+        if (value) params.set(key, value);
+      }
       const res = await fetchJson<ListResponse<T>>(
-        `${apiPath}?q=${encodeURIComponent(q)}&page=${page}&pageSize=${pageSize}`,
+        `${apiPath}?${params.toString()}`,
       );
       setData(res.data);
       setTotal(res.total);
@@ -86,7 +101,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
     } finally {
       setLoading(false);
     }
-  }, [apiPath, q, page, pageSize, message]);
+  }, [apiPath, q, page, pageSize, message, queryParamsKey]);
 
   useEffect(() => {
     void load();
@@ -182,6 +197,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
             setPage(1);
           }}
         />
+        {toolbarFilters}
         <Space className="crud-table__toolbar-actions" wrap>
           <Button icon={<ReloadOutlined />} onClick={() => void load()}>
             刷新
