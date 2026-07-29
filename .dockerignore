@@ -20,6 +20,8 @@ backups/
 # ── 依赖与构建产物（镜像内重新安装/构建）──
 node_modules/
 .next/
+.next-*/
+.artifacts/
 out/
 dist/
 coverage/
@@ -35,9 +37,10 @@ coverage/
 # 注意：tests/ 与 scripts/ **必须一起排除**。tsconfig include 是 **/*.ts（覆盖 scripts/），
 # 而 scripts/perf-smoke.ts:6 import 了 ../tests/helpers/db——只排 tests/ 会让
 # Dockerfile 的 `next build` 在类型检查阶段直接失败（ops/deploy.sh 首条命令即中止）。
-# 运行阶段只拷 .next/standalone 等 5 条路径，两者都不需要。
+# postinstall 补丁是依赖安装阶段唯一例外；运行阶段仍只拷 standalone 等固定路径。
 tests/
-scripts/
+scripts/*
+!scripts/patch-minimatch-brace-api.mjs
 **/*.test.ts
 **/*.test.tsx
 README.md

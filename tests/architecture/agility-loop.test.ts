@@ -51,12 +51,20 @@ describe("agile delivery loop", () => {
   it("does not lint generated output after a normal development session", () => {
     const eslintConfig = read("eslint.config.mjs");
     const pkg = JSON.parse(read("package.json")) as { scripts: Record<string, string>; overrides: Record<string, string> };
+    const dockerfile = read("Dockerfile");
+    const dockerignore = read(".dockerignore");
     expect(eslintConfig).toContain('".next-*/**"');
     expect(eslintConfig).toContain('".artifacts/**"');
     expect(eslintConfig).not.toContain('from "@eslint/eslintrc"');
     expect(pkg.scripts.postinstall).toContain("patch-minimatch-brace-api.mjs");
     expect(pkg.overrides["brace-expansion"]).toBe("5.0.8");
     expect(read("scripts/patch-minimatch-brace-api.mjs")).toContain("braceExpansion.expand");
+    expect(dockerignore).toContain("!scripts/patch-minimatch-brace-api.mjs");
+    expect(dockerfile).toContain(
+      "COPY scripts/patch-minimatch-brace-api.mjs ./scripts/patch-minimatch-brace-api.mjs",
+    );
+    expect(dockerfile.indexOf("COPY scripts/patch-minimatch-brace-api.mjs"))
+      .toBeLessThan(dockerfile.indexOf("RUN npm ci"));
   });
 
   it("uses one Node major locally, in CI, and in the production image", () => {
