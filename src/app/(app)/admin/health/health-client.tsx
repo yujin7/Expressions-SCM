@@ -130,7 +130,7 @@ export default function HealthClient() {
       dataIndex: "implementation",
       width: 110,
       render: (value: string) => value === "ready"
-        ? <Tag color="green">已接通</Tag>
+        ? <Tag color="green">代码就绪</Tag>
         : <Tag color="orange">仅契约</Tag>,
     },
     {
@@ -140,10 +140,18 @@ export default function HealthClient() {
       render: (value: boolean) => value ? <Tag color="blue">凭据已配</Tag> : <Tag>未配置</Tag>,
     },
     {
-      title: "可运行",
+      title: "Live UAT",
       dataIndex: "operational",
-      width: 100,
-      render: (value: boolean) => value ? <Tag color="green">是</Tag> : <Tag color="red">否</Tag>,
+      width: 110,
+      render: (value: boolean) => value
+        ? <Tag color="green">已验证</Tag>
+        : <Tag color="default">未验证</Tag>,
+    },
+    {
+      title: "验证时间",
+      dataIndex: "liveVerifiedAt",
+      width: 170,
+      render: (value: string | null) => value ? fmtTime(value) : "—",
     },
     {
       title: "能力",
@@ -236,7 +244,7 @@ export default function HealthClient() {
         />
       </Card>
 
-      <Card size="small" title="外部系统连接器（实现与凭据分开判定）">
+      <Card size="small" title="外部系统连接器（代码、凭据与真实 UAT 分开判定）">
         <Table
           rowKey="key"
           size="small"

@@ -29,14 +29,17 @@
   当前代码、测试、运行证据或明确出口，避免把 schema、占位 UI 或重复表述误算成实现。
 - **外部系统连接层（07-29）**：聚水潭已按官方签名、表单 POST、最大 `ts` 游标和日完整
   `io_date` 范围实现；游标模式持续到空页而非误信 `has_next`，同单扫描内变化保留最大 `ts`
-  版本，生产批次分配随源证据留存。库存客户端强制 `ts` / 七日修改窗口互斥。源信封最小化
+  版本，生产批次分配随源证据留存。库存客户端强制 `ts` / 七日修改窗口互斥；跨仓库存总量
+  增量另以显式 opt-in 进入观察 staging，缺失不补零且不写库存快照/台账，仓库目录客户端
+  仅用于后续覆盖核验。源信封最小化
   去 PII、内容寻址留证，继而进入 import/staging/alias，不直写库存或正式销量。运行史、
   checkpoint、超时/退避、重放和缺源停止已有测试；07:30 拉取、08:00 对账。飞书应用机器人
   可缓存 tenant token、以 outbox ID 作 UUID 去重并在失败时回退 webhook；webhook HTTP 200
   仍须业务码为 0 才标 sent，多实例先以可恢复数据库租约原子认领 outbox。用友仍仅为企业
   OpenAPI 契约：只读实证开放平台账号当前进入
   `#/unregister`，提供的 C4 人工登录未写入仓库，也不作为机器凭据；未擅自注册外部开发者主体。
-  真实 operational 状态必须等 app/token、租户/组织、IP/权限与 UAT，详见
+  运维面板把代码、凭据和 dated Live UAT 分开判定；真实 operational 状态必须等
+  app/token、租户/组织、IP/权限与 UAT，详见
   [`../integrations/EXTERNAL-SYSTEMS.md`](../integrations/EXTERNAL-SYSTEMS.md)。
 - **520 项系统执行审计（07-29）**：把全仓 200 个 API、80 个认证页面、37 个迁移、
   40 个架构门、8 个红队门、11 个放行门、7 个项目技能、86 个 lint 例外、20 个真实源文件
