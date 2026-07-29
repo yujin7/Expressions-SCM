@@ -78,6 +78,7 @@ describe("agile delivery loop", () => {
     }
     expect(pkg.scripts.build).toContain("scripts/sanitize-standalone.ts");
     expect(dockerfile).toContain("RUN npm run build");
+    expect(read(".dockerignore")).toContain("!scripts/sanitize-standalone.ts");
     expect(sanitizer).toContain('name !== ".env"');
     expect(sanitizer).toContain("Sensitive/local directory leaked into standalone");
   });
