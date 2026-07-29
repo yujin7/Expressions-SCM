@@ -1,0 +1,137 @@
+# 外部系统集成契约：聚水潭、用友、飞书
+
+更新日期：2026-07-29
+当前实现锚点：`main` 上的连接器代码、`docs/NOW.md` 与 `docs/spec/CURRENT.md`
+
+## 1. 系统边界与唯一权威
+
+| 事实域 | 权威系统 | SCM 的角色 | 当前接入状态 |
+|---|---|---|---|
+| 电商订单、实际出库销量、平台/WMS 库存观察 | 聚水潭 | 拉取、留证、映射、staging、与 SCM 自有仓出库对账 | 出库日事实代码就绪；待真实 app/token/IP/权限 |
+| SCM 委外单据、实时仓库存账、批次、质量、计划与审批 | 本 SCM | 业务与库存账权威 | 已运行；外部系统不得直接覆写 |
+| 财务凭证、成本、结算与组织核算口径 | 用友 | 读取财务权威、提交获批业务结果、双向对账 | 仅契约；待企业 OpenAPI 应用与接口清单 |
+| 协同触达 | 飞书 | 接收 SCM outbox 消息；不成为业务状态权威 | webhook 与应用机器人代码就绪；待任选一路配置 |
+
+任何外部事实都走：
+
+`received → parsed → validated → staged → reconciled → released / rejected`
+
+连接器永不直接写 `stock_balances`、`stock_ledger`、成本、结算或正式销量表。库存仍只能
+由 posting registry 过账；快照/销量仍沿用现有放行与人工裁决。
+
+## 2. 聚水潭
+
+### 官方契约
+
+- [接入准备](https://openweb.jushuitan.com/doc?docId=20)：应用需 `app_key`、
+  `app_secret`、`access_token`，并完成 IP 白名单和 API 权限；token 有有效期。
+- [调用规范](https://openweb.jushuitan.com/doc?docId=30)：POST、
+  `application/x-www-form-urlencoded;charset=UTF-8`，系统参数与 `biz` 都在 body；
+  时间戳为秒且容许窗口有限；每商家受并发与分钟限流。
+- [签名规则](https://openweb.jushuitan.com/doc?docId=70)：去掉 `sign`/空值，
+  key 升序，拼接 `key+value`，前缀 `app_secret`，UTF-8 MD5 小写。
+- 日出库使用 `/open/orders/out/simple/query`；`start_ts` 最大游标推进，页面固定不超过
+  50。库存观察使用 `/open/inventory/query`，页面不超过 100。
+
+### 已实现
+
+- `JstClient`：表单 POST、签名、15 秒超时、HTTP 退避、业务错误、结构校验。
+- 日出库按 `io_date` 拉完整自然日；使用最大 `ts` 前进且拒绝不前进游标，避免死循环。
+- 只把 `Confirmed` / `Archive` 计入实际出库；取消、删除、待确认仍保留在源信封，
+  不伪造成销量。
+- 订单证据只保留 SCM 需要的单号、状态、时间、仓库、SKU、数量和批次字段，不落消费者 PII。
+- 证据文件存于 `FILE_STORAGE_DIR/integration-evidence/jst/...`，内容寻址、SHA-256、
+  0600 权限，并由 `integration_runs` 关联。
+- SKU/仓库走通用 alias；未知值进入人工认领，绝不猜。
+- 相同源信封重放返回原结果；失败不推进 `integration_checkpoints`。
+- 每日 07:30 拉 T-1，08:00 再对账。缺配置记录 `skipped`；缺源覆盖时对账停止，
+  不把未知当成 0。
+
+### 运行配置
+
+```text
+JST_APP_KEY
+JST_APP_SECRET
+JST_ACCESS_TOKEN
+JST_SYNC_ACTOR_ID
+JST_BASE_URL（可选）
+```
+
+`JST_SYNC_ACTOR_ID` 必须指向 SCM 内启用的责任人/服务账号。生产启用前还要完成：
+
+1. 在聚水潭开放平台确认应用类型、商家授权、出库/库存接口权限和生产 IP 白名单。
+2. 建立 access/refresh token 轮换责任人；当前代码不会用过期 token 猜测刷新流程。
+3. 用一日真实导出与 API 结果逐 SKU 对照：订单数、明细数、数量、取消/归档、仓库覆盖、
+   未解析别名和最大游标。
+4. 连续运行至少 7 天，验证迟到修改、重复调度、限流、网络失败和恢复重放。
+
+手工触发：
+
+```bash
+npx tsx src/jobs/cli.ts sync-jst 2026-07-28
+npx tsx src/jobs/cli.ts reconcile-jst 2026-07-28
+```
+
+## 3. 飞书
+
+### 两条可运行路径
+
+1. 应用机器人（推荐）：`FEISHU_APP_ID` + `FEISHU_APP_SECRET` + `FEISHU_CHAT_ID`
+2. 自定义机器人回退：`FEISHU_WEBHOOK_URL`
+
+应用模式按飞书官方
+[tenant_access_token](https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal)
+和[发送消息](https://open.feishu.cn/document/server-docs/im-v1/message/create)实现：
+
+- token 按过期时间缓存并提前 60 秒刷新；
+- `receive_id_type=chat_id`，每条 outbox 使用稳定 UUID 去重；
+- 应用发送失败且 webhook 已配置时自动回退；
+- SCM `notifications` 仍是 pending/sent/failed 的权威，飞书不改变审批或单据状态。
+
+启用前需在开放平台开启机器人能力、授予发消息权限、发布应用，并把机器人加入目标群。
+
+## 4. 用友
+
+[用友开放平台](https://developer.yonyou.com/openAPI)的官方流程是注册、创建应用、申请服务、
+企业授权后调用；并支持 IP 白名单、分层限流和熔断。
+
+提供的 C4 人工登录账号只能供人在管理界面操作，**不能**作为服务器 API 凭据，也未写入代码、
+环境模板、日志或 Git。当前保持 `contract_only`，避免在未知产品版本/租户/组织/接口下伪接通。
+
+所需机器配置：
+
+```text
+YY_CLIENT_ID
+YY_CLIENT_SECRET
+YY_TENANT_ID
+YY_ORG_ID
+YY_BASE_URL
+YY_TOKEN_URL
+```
+
+在实现业务读写前，企业管理员/用友实施方还必须确认并授权：
+
+1. 实际产品与版本（YonBIP / YonSuite / C4 对应租户）；
+2. 成本、凭证、采购/委外结算的具体 API 名称、版本、路径和字段精度；
+3. 组织、账簿、币种、税、会计期间与供应商/SKU 映射；
+4. 查询增量键、冲销/红字、更正、关账后调整和幂等外部单号；
+5. 沙箱与生产 base/token URL、IP 白名单、限流、回调验签和错误码；
+6. 先只读对账，再启用提交；所有提交必须 maker-checker、同事务 outbox 和可逆补偿。
+
+## 5. 观测、告警与验收
+
+运维面板显示每个连接器的实现状态、认证方式、能力、缺失环境变量和阻塞说明。
+运行与证据由以下事实证明：
+
+- `integration_runs`：请求范围、源/落 staging/拒收行数、证据 hash/path、状态、错误；
+- `integration_checkpoints`：最后成功游标、版本、时间和运行；
+- `import_jobs` / `staging_rows`：来源日期、schema 版本、full/delta 范围、别名与拒收；
+- `job_runs`：调度是否真正执行；
+- `notifications`：飞书或站内投递状态。
+
+上线门：
+
+- 聚水潭真实握手、控制总量和 7 天恢复演练通过；
+- 飞书测试群收到去重消息，应用失败时 webhook 回退被验证；
+- 用友只读沙箱完成前不得标记 operational，更不得写财务事实；
+- 密钥只存在部署密钥库/环境变量，轮换后旧值失效，日志与导出无 secret。

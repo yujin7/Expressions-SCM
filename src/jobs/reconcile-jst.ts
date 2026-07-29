@@ -13,8 +13,8 @@
  * - DoD-2 百分比分母 = jst：|sys−jst|/jst；jst=0 且 sys>0 无法取百分比（分母 0），
  *   单独计入 sysOnly，不参与 maxAbsDiffPct。
  */
-import { and, eq, gte, inArray, lt, sql } from "drizzle-orm";
-import { reconDiffs, stagingRows, stockLedger } from "@/db/schema";
+import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { importJobs, reconDiffs, stagingRows, stockLedger } from "@/db/schema";
 import { resolveAlias, type DimDb } from "@/server/modules/dimension/resolver";
 import type { AnyDb } from "@/server/import/staging";
 
@@ -29,6 +29,9 @@ export interface ReconRow {
 
 export interface ReconSummary {
   bizDate: string;
+  /** 该日是否有一批完成的 JST 源覆盖；false 绝不能解释成 JST=0。 */
+  sourceAvailable: boolean;
+  sourceJobId: number | null;
   /** 参与对账的 SKU 数（sys ∪ jst） */
   skuCount: number;
   /** diff=0 的 SKU 数 */
@@ -65,6 +68,8 @@ export function summarizeDiffs(
   bizDate: string,
   rows: { sysQty: number; jstQty: number; diffQty: number }[],
   unresolvedRows: number,
+  sourceAvailable = true,
+  sourceJobId: number | null = null,
 ): ReconSummary {
   let matched = 0;
   let diff = 0;
@@ -87,6 +92,8 @@ export function summarizeDiffs(
   }
   return {
     bizDate,
+    sourceAvailable,
+    sourceJobId,
     skuCount: rows.length,
     matchedCount: matched,
     diffCount: diff,
@@ -94,6 +101,35 @@ export function summarizeDiffs(
     unresolvedRows,
     maxAbsDiffPct: maxPct,
   };
+}
+
+export async function getJstSourceCoverage(
+  db: AnyDb,
+  bizDate: string,
+): Promise<{ sourceAvailable: boolean; sourceJobId: number | null }> {
+  const staged: { importJobId: number }[] = await db
+    .select({ importJobId: stagingRows.importJobId })
+    .from(stagingRows)
+    .where(
+      and(
+        eq(stagingRows.targetTable, JST_TARGET_TABLE),
+        inArray(stagingRows.status, ["validated", "pending"]),
+        sql`${stagingRows.payload}->>'bizDate' = ${bizDate}`,
+      ),
+    );
+  const stagedJobId = staged.reduce((max, row) => Math.max(max, row.importJobId), 0);
+  const [zeroCapableJob]: { id: number }[] = await db
+    .select({ id: importJobs.id })
+    .from(importJobs)
+    .where(and(
+      eq(importJobs.template, JST_TARGET_TABLE),
+      eq(importJobs.sourceAsOf, bizDate),
+      eq(importJobs.status, "done"),
+    ))
+    .orderBy(desc(importJobs.id))
+    .limit(1);
+  const sourceJobId = Math.max(stagedJobId, zeroCapableJob?.id ?? 0) || null;
+  return { sourceAvailable: sourceJobId !== null, sourceJobId };
 }
 
 export async function runReconcileJst(db: AnyDb, bizDate: string): Promise<ReconSummary> {
@@ -132,7 +168,11 @@ export async function runReconcileJst(db: AnyDb, bizDate: string): Promise<Recon
         sql`${stagingRows.payload}->>'bizDate' = ${bizDate}`,
       ),
     );
-  const latestJob = staged.reduce((m, r) => Math.max(m, r.importJobId), 0);
+  const coverage = await getJstSourceCoverage(db, bizDate);
+  if (!coverage.sourceAvailable) {
+    return summarizeDiffs(bizDate, [], 0, false, null);
+  }
+  const latestJob = coverage.sourceJobId!;
   const jst = new Map<number, number>();
   let unresolvedRows = 0;
   const aliasCache = new Map<string, number | null>();
@@ -186,5 +226,5 @@ export async function runReconcileJst(db: AnyDb, bizDate: string): Promise<Recon
       });
   }
 
-  return summarizeDiffs(bizDate, rows, unresolvedRows);
+  return summarizeDiffs(bizDate, rows, unresolvedRows, true, latestJob);
 }

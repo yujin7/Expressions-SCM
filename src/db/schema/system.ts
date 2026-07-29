@@ -184,6 +184,58 @@ export const jobRuns = pgTable("job_runs", {
   finishedAt: timestamp("finished_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("ix_job_runs").on(t.job, t.finishedAt)]);
 
+/**
+ * 外部系统同步运行史。每次 API 拉取先建 running 行，成功/失败后仅补齐结果字段；
+ * 供应链事实仍必须进入 import_jobs/staging_rows，不能由连接器直接写正式表。
+ *
+ * evidencePath 指向 FILE_STORAGE_DIR 下的最小化源信封（去除非业务 PII），evidenceHash
+ * 用于校验恢复/重放证据未被改写。idempotencyKey 防止调度重试制造重复批次。
+ */
+export const integrationRuns = pgTable("integration_runs", {
+  id: serial("id").primaryKey(),
+  connector: text("connector").notNull(),
+  stream: text("stream").notNull(),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+  status: text("status").notNull().default("running"), // running | succeeded | failed
+  cursorStart: text("cursor_start"),
+  cursorEnd: text("cursor_end"),
+  requestScope: jsonb("request_scope"),
+  evidencePath: text("evidence_path"),
+  evidenceHash: text("evidence_hash"),
+  sourceRows: integer("source_rows").notNull().default(0),
+  stagedRows: integer("staged_rows").notNull().default(0),
+  rejectedRows: integer("rejected_rows").notNull().default(0),
+  importJobId: integer("import_job_id").references(() => importJobs.id),
+  error: text("error"),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+}, (t) => [
+  index("ix_integration_runs_stream_time").on(t.connector, t.stream, t.startedAt),
+  check("ck_integration_run_status", sql`${t.status} IN ('running', 'succeeded', 'failed')`),
+  check(
+    "ck_integration_run_terminal",
+    sql`(${t.status} = 'running' AND ${t.finishedAt} IS NULL)
+      OR (${t.status} IN ('succeeded', 'failed') AND ${t.finishedAt} IS NOT NULL)`,
+  ),
+]);
+
+/**
+ * 每个连接器数据流的单一游标。更新只在 staging 与运行史成功落库的同一事务末尾发生；
+ * 失败保留旧游标，因此重试从最后一个已证明成功的位置继续。
+ */
+export const integrationCheckpoints = pgTable("integration_checkpoints", {
+  connector: text("connector").notNull(),
+  stream: text("stream").notNull(),
+  cursor: text("cursor").notNull(),
+  version: integer("version").notNull().default(1),
+  lastRunId: integer("last_run_id").notNull().references(() => integrationRuns.id),
+  lastSuccessAt: timestamp("last_success_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  primaryKey({ columns: [t.connector, t.stream] }),
+  check("ck_integration_checkpoint_version", sql`${t.version} > 0`),
+]);
+
 /** #8 通知发件箱（outbox 模式）：应用内产生通知 → 排队 → 分发任务按渠道推送。
  *  渠道 feishu=飞书自定义机器人 webhook（URL 存 env FEISHU_WEBHOOK_URL，无则跳过）；
  *  in_app=站内。幂等键 dedupeKey 防重复入队。状态 pending/sent/skipped/failed。 */

@@ -145,6 +145,22 @@ export default function HealthClient() {
       width: 100,
       render: (value: boolean) => value ? <Tag color="green">是</Tag> : <Tag color="red">否</Tag>,
     },
+    {
+      title: "能力",
+      dataIndex: "capabilities",
+      width: 230,
+      render: (values: string[]) => values.map((value) => (
+        <Tag key={value} style={{ marginBottom: 4 }}>{value}</Tag>
+      )),
+    },
+    {
+      title: "缺失配置",
+      dataIndex: "missingEnv",
+      width: 230,
+      render: (values: string[]) => values.length === 0
+        ? <Typography.Text type="success">无</Typography.Text>
+        : <Typography.Text code>{values.join(", ")}</Typography.Text>,
+    },
     { title: "阻塞/说明", dataIndex: "blocker", render: (value: string | null) => value ?? "—" },
   ];
 

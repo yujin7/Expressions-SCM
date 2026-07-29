@@ -1,6 +1,6 @@
 "use client";
 
-/** #8 通知中心（站内）：展示异常/事件通知；飞书渠道另经 webhook 推送（FEISHU_WEBHOOK_URL 配置后生效）。 */
+/** #8 通知中心（站内）：展示异常/事件通知；飞书渠道经应用机器人或 webhook 推送。 */
 import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Button, List, Space, Tag, Typography } from "antd";
 import Link from "next/link";
@@ -37,7 +37,7 @@ export default function NotificationsClient() {
       <Typography.Title level={4} style={{ marginTop: 0 }}>通知中心</Typography.Title>
       <Space style={{ marginBottom: 12, display: "flex", justifyContent: "space-between", width: "100%" }}>
         <Alert type="info" showIcon style={{ flex: 1 }}
-          message={`站内通知（未读 ${unread}）；配置 FEISHU_WEBHOOK_URL 后同批通知自动推送到飞书群。`} />
+          message={`站内通知（未读 ${unread}）；配置飞书应用机器人或 webhook 后，同批通知自动推送到飞书群。`} />
         <Button onClick={() => void markRead()} disabled={unread === 0}>全部已读</Button>
       </Space>
       <List

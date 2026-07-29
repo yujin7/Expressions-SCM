@@ -40,6 +40,8 @@ interface ReconDiffRow {
 
 interface ReconSummary {
   bizDate: string;
+  sourceAvailable: boolean;
+  sourceJobId: number | null;
   skuCount: number;
   matchedCount: number;
   diffCount: number;
@@ -97,9 +99,13 @@ export default function ReconClient() {
     try {
       const s = await postJson<ReconSummary>("/api/jobs/recon/run", { bizDate });
       setSummary(s); // run 返回含实时 unresolvedRows 的 summary（GET 重算口径无此值）
-      message.success(
-        `对账完成：${s.skuCount} 个 SKU，差异 ${s.diffCount}，未解析 ${s.unresolvedRows} 行`,
-      );
+      if (s.sourceAvailable) {
+        message.success(
+          `对账完成：${s.skuCount} 个 SKU，差异 ${s.diffCount}，未解析 ${s.unresolvedRows} 行`,
+        );
+      } else {
+        message.warning("该日没有已完成的聚水潭源覆盖；系统已停止，未把缺失数据当作 0");
+      }
       // 只刷新差异行，保留 run 返回的 summary（含 unresolvedRows 实时值）
       const res = await fetchJson<{ rows: ReconDiffRow[]; summary: ReconSummary }>(
         `/api/jobs/recon?bizDate=${bizDate}`,
@@ -190,7 +196,16 @@ export default function ReconClient() {
       </Space>
 
       {summary ? (
-        <Row gutter={[10, 10]} className="compact-kpi-row">
+        <>
+          {!summary.sourceAvailable ? (
+            <Card size="small" style={{ marginBottom: 12, borderColor: "#faad14" }}>
+              <Typography.Text type="warning">
+                该日期没有已完成的聚水潭源覆盖。以下空值表示“未知”，不是销量为 0；
+                请先运行 API 同步或导入完整日汇总。
+              </Typography.Text>
+            </Card>
+          ) : null}
+          <Row gutter={[10, 10]} className="compact-kpi-row">
           <Col span={4}>
             <Card size="small">
               <Statistic title="SKU 数" value={summary.skuCount} />
@@ -244,7 +259,8 @@ export default function ReconClient() {
               />
             </Card>
           </Col>
-        </Row>
+          </Row>
+        </>
       ) : null}
 
       <Table<ReconDiffRow>

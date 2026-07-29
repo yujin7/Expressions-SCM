@@ -13,6 +13,7 @@ const TZ = "Asia/Shanghai";
 export const SCHEDULES: Record<string, string> = {
   "license-alert": "0 7 * * *",
   "snapshot-age": "30 7 * * *",
+  "sync-jst-sales": "30 7 * * *",
   "reconcile-jst": "0 8 * * *",
   "doc-aging": "15 */6 * * *",
   "notify-dispatch": "30 */6 * * *",

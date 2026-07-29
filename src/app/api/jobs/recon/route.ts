@@ -3,7 +3,7 @@ import { asc, eq } from "drizzle-orm";
 import { ApiError, errorResponse, guardRead } from "@/server/modules/master/common";
 import { getDbAsync } from "@/db";
 import { reconDiffs, skus } from "@/db/schema";
-import { summarizeDiffs } from "@/jobs/reconcile-jst";
+import { getJstSourceCoverage, summarizeDiffs } from "@/jobs/reconcile-jst";
 
 /** GET /api/jobs/recon?bizDate=YYYY-MM-DD → 差异行（含 SKU 编码/名称）+ summary（重算，不触发重跑） */
 export async function GET(req: NextRequest) {
@@ -29,10 +29,13 @@ export async function GET(req: NextRequest) {
       .innerJoin(skus, eq(reconDiffs.skuId, skus.id))
       .where(eq(reconDiffs.bizDate, bizDate))
       .orderBy(asc(skus.code));
+    const coverage = await getJstSourceCoverage(db, bizDate);
     const summary = summarizeDiffs(
       bizDate,
       rows.map((r) => ({ sysQty: Number(r.sysQty), jstQty: Number(r.jstQty), diffQty: Number(r.diffQty) })),
       0, // 落库行无 unresolved 概念；实时值见 POST /run 返回
+      coverage.sourceAvailable,
+      coverage.sourceJobId,
     );
     return NextResponse.json({ rows, summary });
   } catch (e) {

@@ -3,18 +3,22 @@
  *
  * enqueueNotification：应用内产生通知 → 入队（dedupeKey 幂等，防同事件重复推）。
  * dispatchNotifications：分发任务读取 pending 逐条推送：
- *  - channel=feishu：POST 到 env FEISHU_WEBHOOK_URL（飞书自定义机器人 webhook——只需一个 URL，
- *    无需应用密钥；未配置则标记 skipped，不报错）；
+ *  - channel=feishu：优先用飞书应用机器人（tenant token + chat_id + UUID 去重），
+ *    失败时可回退自定义机器人 webhook；两者均未配置则标记 skipped；
  *  - channel=in_app：站内通知，直接标记 sent（前端从 notifications 表读）。
  * runExceptionNotify：把控制塔 critical/high 异常按天去重入队（每日一次推送到飞书/站内）。
  *
  * 网络失败标记 failed（保留 error），下轮重试。全部 best-effort，绝不反噬业务。
  */
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { notifications } from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
 import { computeExceptions } from "@/server/modules/workbench/focus";
 import { getDecisionStudio } from "@/server/modules/report/decision-studio";
+import {
+  FeishuAppClient,
+  feishuAppConfigFromEnv,
+} from "@/server/integrations/feishu";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -68,16 +72,50 @@ export interface DispatchSummary {
   failed: number;
 }
 
-/** 分发 pending 通知；opts.webhookUrl / opts.fetchImpl 供测试注入 */
+interface FeishuSender {
+  sendText(input: {
+    title: string;
+    body: string;
+    href?: string | null;
+    uuid: string;
+  }): Promise<unknown>;
+}
+
+export function isFeishuDeliveryConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env.FEISHU_WEBHOOK_URL?.trim()) || feishuAppConfigFromEnv(env) !== null;
+}
+
+/** 分发 pending 通知；应用机器人优先，失败时若有 webhook 则回退。 */
 export async function dispatchNotifications(
   db: AnyDb,
-  opts?: { webhookUrl?: string | null },
+  opts?: {
+    webhookUrl?: string | null;
+    appClient?: FeishuSender | null;
+  },
 ): Promise<DispatchSummary> {
-  const webhookUrl = opts?.webhookUrl ?? process.env.FEISHU_WEBHOOK_URL ?? null;
-  const pending: { id: number; channel: string; title: string; body: string; href: string | null }[] = await db
-    .select({ id: notifications.id, channel: notifications.channel, title: notifications.title, body: notifications.body, href: notifications.href })
+  const webhookUrl = opts && Object.hasOwn(opts, "webhookUrl")
+    ? opts.webhookUrl ?? null
+    : process.env.FEISHU_WEBHOOK_URL?.trim() || null;
+  const envAppConfig = feishuAppConfigFromEnv();
+  const appClient: FeishuSender | null = opts && Object.hasOwn(opts, "appClient")
+    ? opts.appClient ?? null
+    : envAppConfig ? new FeishuAppClient(envAppConfig) : null;
+  const pending: {
+    id: number;
+    channel: string;
+    title: string;
+    body: string;
+    href: string | null;
+  }[] = await db
+    .select({
+      id: notifications.id,
+      channel: notifications.channel,
+      title: notifications.title,
+      body: notifications.body,
+      href: notifications.href,
+    })
     .from(notifications)
-    .where(eq(notifications.status, "pending"))
+    .where(inArray(notifications.status, ["pending", "failed"]))
     .limit(200);
   let sent = 0, skipped = 0, failed = 0;
   const now = new Date();
@@ -88,13 +126,30 @@ export async function dispatchNotifications(
       continue;
     }
     if (p.channel === "feishu") {
-      if (!webhookUrl) {
-        await db.update(notifications).set({ status: "skipped", error: "未配置 FEISHU_WEBHOOK_URL" }).where(eq(notifications.id, p.id));
+      if (!appClient && !webhookUrl) {
+        await db.update(notifications).set({
+          status: "skipped",
+          error: "未配置飞书应用（FEISHU_APP_ID/SECRET/CHAT_ID）或 FEISHU_WEBHOOK_URL",
+        }).where(eq(notifications.id, p.id));
         skipped++;
         continue;
       }
       try {
-        await pushFeishu(webhookUrl, p.title, p.body, p.href);
+        if (appClient) {
+          try {
+            await appClient.sendText({
+              title: p.title,
+              body: p.body,
+              href: p.href,
+              uuid: `scm-notification-${p.id}`,
+            });
+          } catch (appError) {
+            if (!webhookUrl) throw appError;
+            await pushFeishu(webhookUrl, p.title, p.body, p.href);
+          }
+        } else if (webhookUrl) {
+          await pushFeishu(webhookUrl, p.title, p.body, p.href);
+        }
         await db.update(notifications).set({ status: "sent", sentAt: now, error: null }).where(eq(notifications.id, p.id));
         sent++;
       } catch (e) {
@@ -125,7 +180,7 @@ export async function dispatchNotifications(
  */
 export async function runExceptionNotify(db: AnyDb): Promise<{ enqueued: number }> {
   const today = todayShanghai();
-  const channel: NotifyInput["channel"] = process.env.FEISHU_WEBHOOK_URL ? "feishu" : "in_app";
+  const channel: NotifyInput["channel"] = isFeishuDeliveryConfigured() ? "feishu" : "in_app";
   let enqueued = 0;
   const exceptions = await computeExceptions(db); // 与工作台控制塔/驾驶舱同源同口径
   for (const ex of exceptions) {
@@ -148,13 +203,13 @@ export async function runExceptionNotify(db: AnyDb): Promise<{ enqueued: number 
 /**
  * E7-15：周度决策摘要订阅。
  *
- * 没有 webhook 时仍投递站内通知；配置 FEISHU_WEBHOOK_URL 后沿用同一 outbox 自动出圈。
+ * 没有飞书应用/webhook 时仍投递站内通知；任选一路配置后沿用同一 outbox 自动出圈。
  * 每个数据最新月只入队一次，避免调度器每周重复推送完全相同的月事实。
  */
 export async function runDecisionDigestNotify(db: AnyDb): Promise<{ enqueued: number; month: string | null }> {
   const studio = await getDecisionStudio({ dimension: "brand" }, db);
   if (!studio.latestMonth) return { enqueued: 0, month: null };
-  const channel: NotifyInput["channel"] = process.env.FEISHU_WEBHOOK_URL ? "feishu" : "in_app";
+  const channel: NotifyInput["channel"] = isFeishuDeliveryConfigured() ? "feishu" : "in_app";
   const body = studio.review.bullets.join("\n");
   const created = await enqueueNotification(db, {
     channel,

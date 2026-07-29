@@ -45,6 +45,8 @@ async function main(): Promise<void> {
         "quality_actions",
         "regulatory_records",
         "electronic_label_versions",
+        "integration_runs",
+        "integration_checkpoints",
       ]],
     );
     const found = new Set(tables.rows.map((row) => row.table_name));
@@ -69,6 +71,8 @@ async function main(): Promise<void> {
       "quality_actions",
       "regulatory_records",
       "electronic_label_versions",
+      "integration_runs",
+      "integration_checkpoints",
     ].filter((name) => !found.has(name));
     if (missing.length) throw new Error(`Missing migrated tables: ${missing.join(", ")}`);
 

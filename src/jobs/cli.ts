@@ -1,6 +1,7 @@
 /**
  * 后台任务 CLI（PGlite 开发模式下 pg_boss 不可用——任务须可独立手跑）：
  *   npx tsx src/jobs/cli.ts reconcile-jst [YYYY-MM-DD]   # 缺省=昨日（Asia/Shanghai）
+ *   npx tsx src/jobs/cli.ts sync-jst [YYYY-MM-DD]        # API 拉取到受控 staging
  *   npx tsx src/jobs/cli.ts license-alert [YYYY-MM-DD]   # 缺省=今日
  *   npx tsx src/jobs/cli.ts stage-jst <file.xlsx|csv> <userId>
  * 输出 JSON summary；失败退出码非 0。
@@ -12,9 +13,11 @@ import { runSnapshotAgeAlert } from "./snapshot-age";
 import { runExportWorkerOnce } from "./export-worker";
 import { runHousekeeping } from "./housekeeping";
 import { stageJstDaily } from "@/server/import/adapters/jst-daily";
+import { runJstSalesSync } from "./sync-jst";
 
 const USAGE = `用法:
   npx tsx src/jobs/cli.ts reconcile-jst [YYYY-MM-DD]     缺省=昨日（Asia/Shanghai）
+  npx tsx src/jobs/cli.ts sync-jst [YYYY-MM-DD]          API 拉取 T-1/指定日到受控 staging
   npx tsx src/jobs/cli.ts license-alert [YYYY-MM-DD]     缺省=今日
   npx tsx src/jobs/cli.ts snapshot-age [YYYY-MM-DD] [阈值天数=3]
   npx tsx src/jobs/cli.ts export-worker                  处理一批待办导出任务
@@ -26,6 +29,9 @@ async function main(): Promise<void> {
   const db = await getDbAsync();
   let out: unknown;
   switch (cmd) {
+    case "sync-jst":
+      out = await runJstSalesSync(db, args[0] ?? shanghaiToday(-1));
+      break;
     case "reconcile-jst":
       out = await runReconcileJst(db, args[0] ?? shanghaiToday(-1));
       break;

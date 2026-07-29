@@ -19,21 +19,21 @@ export interface StagingRowInput {
   errorMsg?: string | null;
 }
 
-export async function createImportJob(
+interface ImportJobIdentity {
+  template: string;
+  filename: string;
+  fileHash: string;
+  createdBy: number;
+  idempotencyKey: string;
+  sourceAsOf?: string | null;
+  schemaVersion?: string;
+  scope?: Record<string, unknown> | null;
+}
+
+async function insertImportJob(
   db: AnyDb,
-  i: {
-    template: string;
-    filePath: string;
-    createdBy: number;
-    idempotencyKey?: string;
-    sourceAsOf?: string | null;
-    schemaVersion?: string;
-    scope?: Record<string, unknown> | null;
-  },
+  i: ImportJobIdentity,
 ): Promise<{ id: number }> {
-  const fileHash = createHash("md5").update(readFileSync(i.filePath)).digest("hex");
-  const filename = i.filePath.split("/").pop() ?? i.filePath;
-  const idempotencyKey = i.idempotencyKey ?? `${i.template}:${fileHash}`;
   // 红队第四轮 F1：重导幂等落地——同 idempotencyKey 的旧 job 未放行行一律作废，
   // 防止 populate/上传重跑把同一文件的行重复排队（期初翻倍事故的根因）。
   // committed 行不动（已放行历史留痕）；error 行本就不入选。
@@ -41,19 +41,19 @@ export async function createImportJob(
     const olds: { id: number }[] = await tx
       .select({ id: importJobs.id })
       .from(importJobs)
-      .where(eq(importJobs.idempotencyKey, idempotencyKey));
+      .where(eq(importJobs.idempotencyKey, i.idempotencyKey));
     const [job] = await tx
       .insert(importJobs)
       .values({
         template: i.template,
-        filename,
-        fileHash,
+        filename: i.filename,
+        fileHash: i.fileHash,
         sourceAsOf: i.sourceAsOf ?? null,
         schemaVersion: i.schemaVersion ?? `${i.template}-v1`,
         scope: i.scope ?? null,
         status: "validating",
         createdBy: i.createdBy,
-        idempotencyKey,
+        idempotencyKey: i.idempotencyKey,
       })
       .returning({ id: importJobs.id });
     for (const old of olds) {
@@ -70,6 +70,59 @@ export async function createImportJob(
     }
     return job;
   });
+}
+
+export async function createImportJob(
+  db: AnyDb,
+  i: {
+    template: string;
+    filePath: string;
+    createdBy: number;
+    idempotencyKey?: string;
+    sourceAsOf?: string | null;
+    schemaVersion?: string;
+    scope?: Record<string, unknown> | null;
+  },
+): Promise<{ id: number }> {
+  const fileHash = createHash("md5").update(readFileSync(i.filePath)).digest("hex");
+  const filename = i.filePath.split("/").pop() ?? i.filePath;
+  return insertImportJob(db, {
+    ...i,
+    filename,
+    fileHash,
+    idempotencyKey: i.idempotencyKey ?? `${i.template}:${fileHash}`,
+  });
+}
+
+/**
+ * API/queue source equivalent of createImportJob. Callers provide the canonical, PII-minimized
+ * source envelope bytes; their SHA-256 and protected evidence path are carried into import lineage.
+ */
+export async function createSourceImportJob(
+  db: AnyDb,
+  i: {
+    template: string;
+    sourceName: string;
+    sourceBytes: string | Uint8Array;
+    createdBy: number;
+    idempotencyKey: string;
+    sourceAsOf?: string | null;
+    schemaVersion?: string;
+    scope?: Record<string, unknown> | null;
+  },
+): Promise<{ id: number; sourceHash: string }> {
+  const sourceHash = createHash("sha256").update(i.sourceBytes).digest("hex");
+  const job = await insertImportJob(db, {
+    template: i.template,
+    filename: i.sourceName,
+    fileHash: `sha256:${sourceHash}`,
+    createdBy: i.createdBy,
+    idempotencyKey: i.idempotencyKey,
+    sourceAsOf: i.sourceAsOf,
+    schemaVersion: i.schemaVersion,
+    scope: i.scope,
+  });
+  return { ...job, sourceHash };
 }
 
 export async function writeStagingRows(db: AnyDb, jobId: number, rows: StagingRowInput[]): Promise<void> {

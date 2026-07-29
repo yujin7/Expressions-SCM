@@ -10,7 +10,11 @@ import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { createTestDb, type TestDb } from "../helpers/db";
 import * as schema from "@/db/schema";
-import { getStagingRows } from "@/server/import/staging";
+import {
+  createSourceImportJob,
+  finalizeImportJob,
+  getStagingRows,
+} from "@/server/import/staging";
 import { claimAlias } from "@/server/modules/dimension/resolver";
 import { jstDailyAdapter, stageJstDaily, parseCsv, JST_DAILY_TEMPLATE } from "@/server/import/adapters/jst-daily";
 import { runReconcileJst, shanghaiDayBounds } from "@/jobs/reconcile-jst";
@@ -54,6 +58,19 @@ async function seedBase(db: TestDb) {
     { aliasType: "warehouse" as const, rawValue: "自有仓", targetId: wh.id },
   ]);
   return { user, skuA, skuB, skuC, wh };
+}
+
+async function markZeroJstCoverage(db: TestDb, bizDate: string, userId: number): Promise<void> {
+  const job = await createSourceImportJob(db, {
+    template: "jst_daily_sales",
+    sourceName: `jst-zero-${bizDate}.json`,
+    sourceBytes: JSON.stringify({ bizDate, rows: [] }),
+    createdBy: userId,
+    idempotencyKey: `jst_daily_sales:${bizDate}`,
+    sourceAsOf: bizDate,
+    scope: { connector: "jst", mode: "full", bizDate },
+  });
+  await finalizeImportJob(db, job.id, { okRows: 0, failRows: 0, controlRows: 0 });
 }
 
 let docSeq = 1;
@@ -153,6 +170,8 @@ describe("runReconcileJst", () => {
     const sum = await runReconcileJst(db, BIZ_DATE);
     expect(sum).toEqual({
       bizDate: BIZ_DATE,
+      sourceAvailable: true,
+      sourceJobId: expect.any(Number),
       skuCount: 3,
       matchedCount: 1,
       diffCount: 2,
@@ -178,7 +197,7 @@ describe("runReconcileJst", () => {
   it("W5 修正：当日红字冲销（reverse:sales_out#N）净减 sys 出库", async () => {
     const { db } = await createTestDb();
     const { user, skuA, wh } = await seedBase(db);
-    void user;
+    await markZeroJstCoverage(db, "2026-07-24", user.id);
     // 当日销售出 10，随后红字冲销 4（红字行 qtyDelta 为正、action 带原单参数）
     await db.insert(schema.stockLedger).values([
       ledgerRow(skuA.id, wh.id, -10, sh("2026-07-24T10:00:00")),
@@ -193,6 +212,24 @@ describe("runReconcileJst", () => {
     // jst 侧无数据 → sysOnly；关键断言：sys 净额 = 10 − 4 = 6
     expect(row?.sysQty).toBe("6.0000");
     expect(row?.jstQty).toBe("0.0000");
+  });
+
+  it("没有完成的 JST 源覆盖时停止，不把缺失数据解释成 0", async () => {
+    const { db } = await createTestDb();
+    const { skuA, wh } = await seedBase(db);
+    await db.insert(schema.stockLedger).values([
+      ledgerRow(skuA.id, wh.id, -10, sh("2026-07-24T10:00:00")),
+    ]);
+
+    const summary = await runReconcileJst(db, "2026-07-24");
+
+    expect(summary).toMatchObject({
+      sourceAvailable: false,
+      sourceJobId: null,
+      skuCount: 0,
+      sysOnly: 0,
+    });
+    expect(await db.select().from(schema.reconDiffs)).toHaveLength(0);
   });
 
   it("未认领 SKU 计入 unresolvedRows；jst 单边差异分母=jst", async () => {

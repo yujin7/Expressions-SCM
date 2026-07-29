@@ -130,7 +130,7 @@ export const qualityCases = pgTable("quality_cases", {
     sql`${t.kind} <> 'self_inspection'
       OR (${t.inspectionYear} IS NOT NULL AND ${t.inspectionYear} >= 2020
         AND length(trim(coalesce(${t.inspectionSite}, ''))) >= 2
-        AND ${t.inspectionSiteKey} = upper(regexp_replace(trim(${t.inspectionSite}), '\s+', ' ', 'g')))`,
+        AND ${t.inspectionSiteKey} = upper(regexp_replace(trim(${t.inspectionSite}), '\\s+', ' ', 'g')))`,
   ),
   check(
     "ck_quality_case_non_inspection_fields",

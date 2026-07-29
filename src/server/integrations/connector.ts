@@ -1,126 +1,145 @@
-/**
- * #20 外部系统连接器脚手架（聚水潭/用友/飞书 实时对接的插入点）。
- *
- * 现状（诚实标注）：本系统的数据循环靠文件周更 + 新鲜度看门狗（jobs/freshness.ts）。
- * 实时对接需要各系统的 API 凭据与接口契约（属用户划出的「IT part」），不在本次可交付范围。
- * 本文件定义统一连接器契约，IT 对接时按此实现 fetchInventorySnapshot / fetchSalesMonthly，
- * 复用既有导入放行管线（transit_refs / stock_snapshots / sales_monthly）落库——
- * 一旦接通，覆盖缺口(#A)、数据过期(#B)、口径漂移三类问题同时消除。
- *
- * 落地路径（IT 实施）：
- * 1. 实现一个 Connector（如 JstConnector），凭据从环境变量读取（JST_APP_KEY 等）；
- * 2. 注册到 CONNECTORS；
- * 3. 新增 interval-runner 任务：每日拉取 → 走 createImportJob/release 管线（与文件导入同口径同幂等）；
- * 4. 拉取成功即刷新 transit_refs.createdAt，看门狗自动关闭对应过期提醒。
- */
+import { feishuAppConfigFromEnv } from "./feishu";
+import { jstConfigFromEnv } from "./jst";
+import { YONYOU_REQUIRED_ENV, yonyouConfigFromEnv } from "./yonyou";
 
-export interface InventorySnapshotRow {
-  skuCode: string;
-  warehouseCode: string;
-  qty: string; // decimal 字符串
-  bizDate: string; // YYYY-MM-DD
-}
-export interface SalesMonthlyRow {
-  skuCode: string;
-  yearMonth: string; // YYYY-MM
-  qty: string;
-  channel?: string;
-}
+export type ConnectorImplementation = "ready" | "contract_only";
+export type ConnectorAuth = "signed_token" | "oauth_app" | "webhook_or_app";
 
 export interface Connector {
-  /** 连接器标识（jst=聚水潭 / yy=用友 / feishu=飞书） */
-  key: string;
+  key: "jst" | "yy" | "feishu";
   label: string;
-  /** ready=代码已接通；contract_only=只有契约，禁止因凭据存在就宣称可用 */
-  implementation: "ready" | "contract_only";
+  implementation: ConnectorImplementation;
+  auth: ConnectorAuth;
+  systemOfRecord: string;
+  capabilities: string[];
   requiredEnv: string[];
+  optionalEnv: string[];
+  sourceDocs: string[];
   blocker?: string;
-  /** 是否已配置凭据（环境变量齐全）——未配置时对接任务应优雅跳过 */
-  isConfigured(): boolean;
-  /** 拉取库存快照（未实现则抛 NotImplemented） */
-  fetchInventorySnapshot?(sinceDate: string): Promise<InventorySnapshotRow[]>;
-  /** 拉取月度销量 */
-  fetchSalesMonthly?(yearMonth: string): Promise<SalesMonthlyRow[]>;
+  isConfigured(env?: NodeJS.ProcessEnv): boolean;
+  missingEnv(env?: NodeJS.ProcessEnv): string[];
 }
 
-export class NotImplementedError extends Error {
-  constructor(key: string, method: string) {
-    super(`连接器 ${key} 未实现 ${method}（IT 对接待接入——见 src/server/integrations/connector.ts）`);
-  }
+function missing(keys: readonly string[], env: NodeJS.ProcessEnv = process.env): string[] {
+  return keys.filter((key) => !env[key]?.trim());
 }
 
-function hasEnv(keys: string[]): boolean {
-  return keys.every((key) => Boolean(process.env[key]?.trim()));
+function feishuMissing(env: NodeJS.ProcessEnv = process.env): string[] {
+  if (env.FEISHU_WEBHOOK_URL?.trim()) return [];
+  const appPath = missing(["FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID"], env);
+  return appPath.length === 0 ? [] : appPath;
 }
 
 /**
- * 集成目录不是“成功清单”：未实现的系统也注册，但明确标为 contract_only。
- * 这样运维页能看见真实缺口，同时 `configuredConnectors()` 绝不会把脚手架当成可运行连接器。
+ * Operational registry, not a success checklist:
+ * - ready means transport/validation code exists;
+ * - configured means one complete machine-auth path is present;
+ * - operational requires both and never treats a human UI login as an API credential.
  */
 export const CONNECTORS: Connector[] = [
   {
     key: "jst",
-    label: "聚水潭（库存/销量）",
-    implementation: "contract_only",
-    requiredEnv: ["JST_APP_KEY", "JST_APP_SECRET"],
-    blocker: "待 IT 提供 API 凭据、租户信息与字段契约；当前继续走受控文件导入",
-    isConfigured() {
-      return hasEnv(this.requiredEnv);
+    label: "聚水潭（出库销量/库存）",
+    implementation: "ready",
+    auth: "signed_token",
+    systemOfRecord: "电商订单、实际出库销量、平台/WMS 库存观察",
+    capabilities: ["outbound-sales-daily", "inventory-observation"],
+    requiredEnv: ["JST_APP_KEY", "JST_APP_SECRET", "JST_ACCESS_TOKEN", "JST_SYNC_ACTOR_ID"],
+    optionalEnv: ["JST_BASE_URL"],
+    sourceDocs: [
+      "https://openweb.jushuitan.com/doc?docId=20",
+      "https://openweb.jushuitan.com/doc?docId=30",
+      "https://openweb.jushuitan.com/doc?docId=70",
+    ],
+    blocker: "代码与受控 staging 已就绪；需开放平台 app/token、IP 白名单、接口权限及系统同步责任人 ID",
+    isConfigured(env = process.env) {
+      const actor = Number(env.JST_SYNC_ACTOR_ID);
+      return jstConfigFromEnv(env) !== null && Number.isInteger(actor) && actor > 0;
     },
-    async fetchInventorySnapshot() {
-      throw new NotImplementedError("jst", "fetchInventorySnapshot");
-    },
-    async fetchSalesMonthly() {
-      throw new NotImplementedError("jst", "fetchSalesMonthly");
+    missingEnv(env = process.env) {
+      const result = missing(["JST_APP_KEY", "JST_APP_SECRET", "JST_ACCESS_TOKEN"], env);
+      const actor = Number(env.JST_SYNC_ACTOR_ID);
+      if (!Number.isInteger(actor) || actor <= 0) result.push("JST_SYNC_ACTOR_ID");
+      return result;
     },
   },
   {
     key: "yy",
     label: "用友（财务/成本）",
     implementation: "contract_only",
-    requiredEnv: ["YY_CLIENT_ID", "YY_CLIENT_SECRET"],
-    blocker: "待成本口径 D2、API 凭据与接口契约确认",
-    isConfigured() {
-      return hasEnv(this.requiredEnv);
+    auth: "oauth_app",
+    systemOfRecord: "财务凭证、成本、结算与组织核算口径",
+    capabilities: ["cost-authority", "settlement-posting", "financial-reconciliation"],
+    requiredEnv: [...YONYOU_REQUIRED_ENV],
+    optionalEnv: [],
+    sourceDocs: ["https://developer.yonyou.com/openAPI"],
+    blocker: "C4 人工账号不能替代 OpenAPI 应用；待创建并授权企业应用、确认租户/组织、token URL 与获批业务接口",
+    isConfigured(env = process.env) {
+      return yonyouConfigFromEnv(env) !== null;
+    },
+    missingEnv(env = process.env) {
+      return missing(YONYOU_REQUIRED_ENV, env);
     },
   },
   {
     key: "feishu",
-    label: "飞书通知",
+    label: "飞书（协同通知）",
     implementation: "ready",
+    auth: "webhook_or_app",
+    systemOfRecord: "协同触达（SCM 通知发件箱仍是发送状态权威）",
+    capabilities: ["group-webhook", "app-bot-message", "deduplicated-delivery"],
     requiredEnv: ["FEISHU_WEBHOOK_URL"],
-    blocker: "代码已接通；配置 webhook 后启用",
-    isConfigured() {
-      return hasEnv(this.requiredEnv);
+    optionalEnv: ["FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID"],
+    sourceDocs: [
+      "https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal",
+      "https://open.feishu.cn/document/server-docs/im-v1/message/create",
+    ],
+    blocker: "配置自定义 webhook，或配置应用 app_id/app_secret/chat_id；应用模式支持目标群与 UUID 去重",
+    isConfigured(env = process.env) {
+      return Boolean(env.FEISHU_WEBHOOK_URL?.trim()) || feishuAppConfigFromEnv(env) !== null;
+    },
+    missingEnv(env = process.env) {
+      return feishuMissing(env);
     },
   },
 ];
 
-/** 供对接任务查询：返回已配置凭据的连接器 */
-export function configuredConnectors(): Connector[] {
-  return CONNECTORS.filter((c) => c.implementation === "ready" && c.isConfigured());
+export function configuredConnectors(env: NodeJS.ProcessEnv = process.env): Connector[] {
+  return CONNECTORS.filter(
+    (connector) => connector.implementation === "ready" && connector.isConfigured(env),
+  );
 }
 
 export interface ConnectorReadiness {
   key: string;
   label: string;
-  implementation: Connector["implementation"];
+  implementation: ConnectorImplementation;
   configured: boolean;
   operational: boolean;
+  auth: ConnectorAuth;
+  systemOfRecord: string;
+  capabilities: string[];
   requiredEnv: string[];
+  optionalEnv: string[];
+  missingEnv: string[];
   blocker: string | null;
 }
 
-export function getConnectorReadiness(): ConnectorReadiness[] {
+export function getConnectorReadiness(env: NodeJS.ProcessEnv = process.env): ConnectorReadiness[] {
   return CONNECTORS.map((connector) => {
-    const configured = connector.isConfigured();
+    const configured = connector.isConfigured(env);
     return {
       key: connector.key,
       label: connector.label,
       implementation: connector.implementation,
       configured,
       operational: connector.implementation === "ready" && configured,
-      requiredEnv: connector.requiredEnv,
+      auth: connector.auth,
+      systemOfRecord: connector.systemOfRecord,
+      capabilities: [...connector.capabilities],
+      requiredEnv: [...connector.requiredEnv],
+      optionalEnv: [...connector.optionalEnv],
+      missingEnv: connector.missingEnv(env),
       blocker: connector.blocker ?? null,
     };
   });
