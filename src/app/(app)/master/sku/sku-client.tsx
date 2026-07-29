@@ -325,7 +325,7 @@ export default function SkuClient() {
             ]}
           />
           <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            手工输入以 S1- 开头的编码时，系统会校验格式、校验码、品牌来源和货品类型。
+            S1 命名空间只允许系统原子取号，不能手工输入或占号；新建时请将编码留空。
             历史商家编码及外部系统编码继续通过稳定主码和别名解析，不会被自动改写。
           </Typography.Paragraph>
         </Space>

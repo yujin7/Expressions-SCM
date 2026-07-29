@@ -84,12 +84,14 @@ export function parseGovernedSkuCode(raw: string): GovernedSkuParts | null {
   const [, origin, typeCodeRaw, sequenceRaw, checksum] = match;
   const payload = `${GOVERNED_SKU_SCHEME}-${origin}-${typeCodeRaw}-${sequenceRaw}`;
   if (skuCodeChecksum(payload) !== checksum) return null;
+  const sequence = Number(sequenceRaw);
+  if (!Number.isSafeInteger(sequence) || sequence < 1 || sequence > MAX_SEQUENCE) return null;
   const typeCode = typeCodeRaw as GovernedSkuTypeCode;
   return {
     scheme: GOVERNED_SKU_SCHEME,
     origin,
     skuType: CODE_TO_SKU_TYPE[typeCode],
-    sequence: Number(sequenceRaw),
+    sequence,
     checksum,
   };
 }

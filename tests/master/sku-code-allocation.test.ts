@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { brands, docCounters, skus, spus } from "@/db/schema";
 import { createTestDb } from "../helpers/db";
-import { createSku } from "@/server/modules/master/sku";
+import { createSku, updateSku } from "@/server/modules/master/sku";
 import { generateGovernedSkuCode, parseGovernedSkuCode } from "@/server/rules/sku-code";
 
 describe("SKU S1 事务取号", () => {
@@ -63,28 +63,35 @@ describe("SKU S1 事务取号", () => {
     expect(parseGovernedSkuCode(created.code)).toMatchObject({ sequence: 2 });
   });
 
-  it("手工 S1 必须通过校验码并与品牌、类型一致", async () => {
+  it("S1 只允许系统取号，且已生成码的稳定来源与类型不可变", async () => {
     const { db } = await createTestDb();
     const [spu] = await db.insert(spus).values({ code: "P99103", nameCn: "校验测试" }).returning();
     const [brand] = await db.insert(brands).values({ code: "NING", nameCn: "NING" }).returning();
     const valid = generateGovernedSkuCode({ origin: "NING", skuType: "finished", sequence: 77 });
 
     await expect(createSku({
-      code: `${valid.slice(0, -1)}X`,
-      name: "错误校验码",
+      code: valid,
+      name: "手工 S1",
       spuId: spu.id,
       skuType: "finished",
       baseUom: "盒",
       brandId: brand.id,
-    }, undefined, db)).rejects.toThrow("格式或校验码错误");
+    }, undefined, db)).rejects.toThrow("请将编码留空");
 
-    await expect(createSku({
-      code: valid,
-      name: "错误类型",
+    const created = await createSku({
+      name: "系统 S1",
+      spuId: spu.id,
+      skuType: "finished",
+      baseUom: "盒",
+      brandId: brand.id,
+    }, undefined, db);
+    await expect(updateSku(created.id, {
+      code: created.code,
+      name: created.name,
       spuId: spu.id,
       skuType: "packaging",
       baseUom: "个",
       brandId: brand.id,
-    }, undefined, db)).rejects.toThrow("SKU 类型不一致");
+    }, undefined, db)).rejects.toThrow("S1 稳定身份不可变");
   });
 });

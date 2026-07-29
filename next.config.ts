@@ -9,12 +9,12 @@ const nextConfig: NextConfig = {
   // 本地恢复证据和用户文件由运行时卷/目录提供，绝不能被文件追踪复制进 standalone。
   // Docker 构建另有 .dockerignore 双重防线；这里同时保护本地 release build。
   outputFileTracingExcludes: {
-    "/*": [
+    "/**": [
       "./.data/**/*",
       "./backups/**/*",
       "./uploads/**/*",
       "./.artifacts/**/*",
-      "./.next-*/*",
+      "./.next-*/**/*",
       "./tmp/**/*",
     ],
   },

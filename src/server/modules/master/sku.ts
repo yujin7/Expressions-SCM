@@ -168,12 +168,7 @@ export async function createSku(input: unknown, actor?: SessionUser, dbArg?: Any
     if (!code) {
       code = await nextGovernedSkuCode(tx, brandCode, v.skuType);
     } else if (isGovernedSkuCode(code)) {
-      code = code.toUpperCase();
-      try {
-        assertGovernedSkuCode(code, { origin: brandCode, skuType: v.skuType });
-      } catch (error) {
-        throw new ApiError(400, (error as Error).message);
-      }
+      throw new ApiError(400, "S1 编码由系统全局原子取号；请将编码留空。历史/外部编码不得占用 S1 命名空间");
     }
     const [created] = await tx
       .insert(schema.skus)
@@ -230,7 +225,14 @@ export async function updateSku(id: number, input: unknown, actor?: SessionUser,
     if (v.code !== undefined && v.code !== existing.code) {
       throw new ApiError(409, "SKU 主码已用于历史关联，不可直接改码；请新建替代 SKU，并把旧码登记为别名");
     }
-    await assertDimensionIds(tx, v.brandId, v.channelId);
+    const { brandCode } = await assertDimensionIds(tx, v.brandId, v.channelId);
+    if (isGovernedSkuCode(existing.code)) {
+      try {
+        assertGovernedSkuCode(existing.code, { origin: brandCode, skuType: v.skuType });
+      } catch (error) {
+        throw new ApiError(409, `S1 稳定身份不可变：${(error as Error).message}`);
+      }
+    }
     const [updated] = await tx
       .update(schema.skus)
       .set({

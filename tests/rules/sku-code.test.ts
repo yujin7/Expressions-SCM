@@ -4,6 +4,7 @@ import {
   generateGovernedSkuCode,
   normalizeSkuOrigin,
   parseGovernedSkuCode,
+  skuCodeChecksum,
 } from "@/server/rules/sku-code";
 
 describe("SKU S1 编码规则", () => {
@@ -24,6 +25,13 @@ describe("SKU S1 编码规则", () => {
     const wrong = `${code.slice(0, -1)}${code.endsWith("0") ? "1" : "0"}`;
     expect(parseGovernedSkuCode(wrong)).toBeNull();
     expect(() => assertGovernedSkuCode(wrong)).toThrow("格式或校验码错误");
+  });
+
+  it("拒绝保留的零流水，即使校验码正确", () => {
+    const payload = "S1-GEN-R-000000";
+    const code = `${payload}-${skuCodeChecksum(payload)}`;
+    expect(parseGovernedSkuCode(code)).toBeNull();
+    expect(() => assertGovernedSkuCode(code)).toThrow("格式或校验码错误");
   });
 
   it("校验预期来源与 SKU 类型，不把可变业务字段编码", () => {
