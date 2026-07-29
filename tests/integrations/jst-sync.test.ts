@@ -37,11 +37,13 @@ describe("聚水潭日出库受控同步", () => {
       { aliasType: "warehouse", rawValue: "10", targetId: warehouse.id, createdBy: actor.id },
     ]);
 
-    const fetchImpl = vi.fn(async () => response({
-      code: 0,
-      data: {
-        has_next: false,
-        datas: [
+    let fetchCount = 0;
+    const fetchImpl = vi.fn(async () => {
+      const payload = fetchCount++ % 2 === 0 ? {
+        code: 0,
+        data: {
+          has_next: false,
+          datas: [
           {
             io_id: "IO-1",
             status: "Confirmed",
@@ -49,6 +51,14 @@ describe("聚水潭日出库受控同步", () => {
             wms_co_id: "10",
             ts: 101,
             items: [{ sku_id: "JST-SKU-A", qty: "2.1250", ioi_id: "L1" }],
+            batchs: [{
+              batch_no: "LOT-A",
+              ioi_id: "L1",
+              sku_id: "JST-SKU-A",
+              qty: "2.1250",
+              product_date: "2026-06-01",
+              expiration_date: "2028-06-01",
+            }],
           },
           {
             io_id: "IO-2",
@@ -58,9 +68,11 @@ describe("聚水潭日出库受控同步", () => {
             ts: 102,
             items: [{ sku_id: "JST-SKU-A", qty: "3.3750", ioi_id: "L2" }],
           },
-        ],
-      },
-    })) as unknown as typeof fetch;
+          ],
+        },
+      } : { code: 0, data: { has_next: false, datas: [] } };
+      return response(payload);
+    }) as unknown as typeof fetch;
     const client = new JstClient({
       appKey: "app",
       appSecret: "secret",
@@ -99,6 +111,7 @@ describe("聚水潭日出库受控同步", () => {
     expect(first).toMatchObject({
       sourceOrders: 2,
       sourceItems: 2,
+      sourceBatchAllocations: 1,
       stagedRows: 1,
       rejectedRows: 0,
       unresolvedAliases: 0,
@@ -120,6 +133,13 @@ describe("聚水潭日出库受控同步", () => {
       warehouseRaw: "10",
       qty: "5.5000",
       sourceOrderCount: 2,
+    });
+    expect(writeEvidence).toHaveBeenCalled();
+    const envelope = writeEvidence.mock.calls[0]?.[2] as {
+      orders: Array<{ ioId: string; batches: unknown[] }>;
+    };
+    expect(envelope.orders.find((order) => order.ioId === "IO-1")).toMatchObject({
+      batches: [{ batchNo: "LOT-A", lineId: "L1", skuCode: "JST-SKU-A" }],
     });
     const runs = await db.select().from(schema.integrationRuns);
     const checkpoints = await db.select().from(schema.integrationCheckpoints);

@@ -10,7 +10,7 @@
  *
  * 网络失败标记 failed（保留 error），下轮重试。全部 best-effort，绝不反噬业务。
  */
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, lt, or, sql } from "drizzle-orm";
 import { notifications } from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
 import { computeExceptions } from "@/server/modules/workbench/focus";
@@ -19,6 +19,7 @@ import {
   FeishuAppClient,
   feishuAppConfigFromEnv,
 } from "@/server/integrations/feishu";
+import { fetchJson } from "@/server/integrations/http";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -58,12 +59,20 @@ export async function enqueueNotification(db: AnyDb, n: NotifyInput): Promise<bo
 
 async function pushFeishu(url: string, title: string, body: string, href?: string | null): Promise<void> {
   const text = `【供应链】${title}\n${body}${href ? `\n${href}` : ""}`;
-  const res = await fetch(url, {
+  const payload = await fetchJson("飞书 webhook", url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ msg_type: "text", content: { text } }),
-  });
-  if (!res.ok) throw new Error(`feishu webhook ${res.status}`);
+  }, { retries: 0 });
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    throw new Error("飞书 webhook 响应结构非法");
+  }
+  const envelope = payload as Record<string, unknown>;
+  const rawCode = envelope.code ?? envelope.StatusCode;
+  const code = Number(rawCode);
+  if (!Number.isFinite(code) || code !== 0) {
+    throw new Error(`飞书 webhook 业务失败 (${Number.isFinite(code) ? code : "unknown"})`);
+  }
 }
 
 export interface DispatchSummary {
@@ -93,6 +102,8 @@ export async function dispatchNotifications(
     appClient?: FeishuSender | null;
   },
 ): Promise<DispatchSummary> {
+  const selectionStartedAt = new Date();
+  const staleLeaseBefore = new Date(selectionStartedAt.getTime() - 10 * 60 * 1000);
   const webhookUrl = opts && Object.hasOwn(opts, "webhookUrl")
     ? opts.webhookUrl ?? null
     : process.env.FEISHU_WEBHOOK_URL?.trim() || null;
@@ -115,13 +126,41 @@ export async function dispatchNotifications(
       href: notifications.href,
     })
     .from(notifications)
-    .where(inArray(notifications.status, ["pending", "failed"]))
+    .where(or(
+      inArray(notifications.status, ["pending", "failed"]),
+      and(
+        eq(notifications.status, "sending"),
+        lt(notifications.dispatchStartedAt, staleLeaseBefore),
+      ),
+    ))
     .limit(200);
   let sent = 0, skipped = 0, failed = 0;
-  const now = new Date();
   for (const p of pending) {
+    const claimStartedAt = new Date();
+    const claimStaleBefore = new Date(claimStartedAt.getTime() - 10 * 60 * 1000);
+    const [claimed]: { id: number }[] = await db.update(notifications).set({
+      status: "sending",
+      dispatchStartedAt: claimStartedAt,
+      attemptCount: sql`${notifications.attemptCount} + 1`,
+      error: null,
+    }).where(and(
+      eq(notifications.id, p.id),
+      or(
+        inArray(notifications.status, ["pending", "failed"]),
+        and(
+          eq(notifications.status, "sending"),
+          lt(notifications.dispatchStartedAt, claimStaleBefore),
+        ),
+      ),
+    )).returning({ id: notifications.id });
+    if (!claimed) continue;
+
     if (p.channel === "in_app") {
-      await db.update(notifications).set({ status: "sent", sentAt: now }).where(eq(notifications.id, p.id));
+      await db.update(notifications).set({
+        status: "sent",
+        sentAt: new Date(),
+        dispatchStartedAt: null,
+      }).where(eq(notifications.id, p.id));
       sent++;
       continue;
     }
@@ -130,6 +169,7 @@ export async function dispatchNotifications(
         await db.update(notifications).set({
           status: "skipped",
           error: "未配置飞书应用（FEISHU_APP_ID/SECRET/CHAT_ID）或 FEISHU_WEBHOOK_URL",
+          dispatchStartedAt: null,
         }).where(eq(notifications.id, p.id));
         skipped++;
         continue;
@@ -150,15 +190,28 @@ export async function dispatchNotifications(
         } else if (webhookUrl) {
           await pushFeishu(webhookUrl, p.title, p.body, p.href);
         }
-        await db.update(notifications).set({ status: "sent", sentAt: now, error: null }).where(eq(notifications.id, p.id));
+        await db.update(notifications).set({
+          status: "sent",
+          sentAt: new Date(),
+          error: null,
+          dispatchStartedAt: null,
+        }).where(eq(notifications.id, p.id));
         sent++;
       } catch (e) {
-        await db.update(notifications).set({ status: "failed", error: (e as Error).message.slice(0, 300) }).where(eq(notifications.id, p.id));
+        await db.update(notifications).set({
+          status: "failed",
+          error: (e as Error).message.slice(0, 300),
+          dispatchStartedAt: null,
+        }).where(eq(notifications.id, p.id));
         failed++;
       }
       continue;
     }
-    await db.update(notifications).set({ status: "skipped", error: `未知渠道 ${p.channel}` }).where(eq(notifications.id, p.id));
+    await db.update(notifications).set({
+      status: "skipped",
+      error: `未知渠道 ${p.channel}`,
+      dispatchStartedAt: null,
+    }).where(eq(notifications.id, p.id));
     skipped++;
   }
   return { sent, skipped, failed };

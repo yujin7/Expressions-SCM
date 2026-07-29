@@ -30,6 +30,7 @@ export interface JstDailySyncSummary {
   bizDate: string;
   sourceOrders: number;
   sourceItems: number;
+  sourceBatchAllocations: number;
   stagedRows: number;
   rejectedRows: number;
   unresolvedAliases: number;
@@ -65,6 +66,11 @@ function sourceEnvelope(bizDate: string, orders: JstOutboundOrder[]): unknown {
         items: [...order.items].sort((left, right) =>
           `${left.lineId ?? ""}\0${left.skuCode}`.localeCompare(
             `${right.lineId ?? ""}\0${right.skuCode}`,
+            "en",
+          )),
+        batches: [...order.batches].sort((left, right) =>
+          `${left.lineId ?? ""}\0${left.skuCode}\0${left.batchNo ?? ""}`.localeCompare(
+            `${right.lineId ?? ""}\0${right.skuCode}\0${right.batchNo ?? ""}`,
             "en",
           )),
       })),
@@ -156,13 +162,19 @@ interface PriorRun {
 
 function summaryFromRun(run: PriorRun): JstDailySyncSummary | null {
   if (run.status !== "succeeded" || !run.importJobId || !run.cursorEnd) return null;
-  const scope = run.requestScope as { bizDate?: unknown; sourceOrders?: unknown; unresolvedAliases?: unknown } | null;
+  const scope = run.requestScope as {
+    bizDate?: unknown;
+    sourceOrders?: unknown;
+    sourceBatchAllocations?: unknown;
+    unresolvedAliases?: unknown;
+  } | null;
   return {
     runId: run.id,
     importJobId: run.importJobId,
     bizDate: typeof scope?.bizDate === "string" ? scope.bizDate : "",
     sourceOrders: Number(scope?.sourceOrders ?? 0),
     sourceItems: run.sourceRows,
+    sourceBatchAllocations: Number(scope?.sourceBatchAllocations ?? 0),
     stagedRows: run.stagedRows,
     rejectedRows: run.rejectedRows,
     unresolvedAliases: Number(scope?.unresolvedAliases ?? 0),
@@ -223,6 +235,7 @@ export async function syncJstDailySales(
     : `${baseIdempotencyKey}:retry:${priorRuns.length}`;
 
   const cursorEnd = cursorMax(orders);
+  const sourceBatchAllocations = orders.reduce((sum, order) => sum + order.batches.length, 0);
   const { rows, rejects, sourceItems } = aggregateDaily(input.bizDate, orders);
   const [run]: { id: number }[] = await db.insert(integrationRuns).values({
     connector: CONNECTOR,
@@ -233,6 +246,7 @@ export async function syncJstDailySales(
     requestScope: {
       bizDate: input.bizDate,
       sourceOrders: orders.length,
+      sourceBatchAllocations,
       mode: "full-day-snapshot",
     },
     evidencePath: evidence.relativePath,
@@ -329,6 +343,7 @@ export async function syncJstDailySales(
         requestScope: {
           bizDate: input.bizDate,
           sourceOrders: orders.length,
+          sourceBatchAllocations,
           unresolvedAliases,
           mode: "full-day-snapshot",
         },
@@ -358,6 +373,7 @@ export async function syncJstDailySales(
       bizDate: input.bizDate,
       sourceOrders: orders.length,
       sourceItems,
+      sourceBatchAllocations,
       stagedRows: rows.length,
       rejectedRows: rejects.length,
       unresolvedAliases,

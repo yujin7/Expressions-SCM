@@ -3,6 +3,7 @@ import { fetchJson, type FetchJsonOptions } from "./http";
 
 const DEFAULT_BASE_URL = "https://openapi.jushuitan.com";
 const RATE_LIMIT_CODES = new Set([199, 200]);
+const MAX_CURSOR_PAGES = 10_000;
 
 export interface JstConfig {
   appKey: string;
@@ -21,6 +22,15 @@ export interface JstOutboundItem {
   expirationDate: string | null;
 }
 
+export interface JstOutboundBatch {
+  batchNo: string | null;
+  lineId: string | null;
+  skuCode: string;
+  qty: string;
+  productionDate: string | null;
+  expirationDate: string | null;
+}
+
 export interface JstOutboundOrder {
   ioId: string;
   orderId: string | null;
@@ -32,6 +42,7 @@ export interface JstOutboundOrder {
   modifiedAt: string | null;
   cursor: string;
   items: JstOutboundItem[];
+  batches: JstOutboundBatch[];
 }
 
 export interface JstInventoryRow {
@@ -81,6 +92,27 @@ function decimalString(value: unknown, field: string): string {
   const result = required(value, field);
   if (!/^-?\d+(?:\.\d+)?$/.test(result)) throw new Error(`聚水潭响应 ${field} 不是十进制数`);
   return result;
+}
+
+function cursorString(value: unknown, field: string): string {
+  const result = required(value, field);
+  if (!/^\d+$/.test(result)) throw new Error(`聚水潭响应 ${field} 不是有效 ts 游标`);
+  return result;
+}
+
+function assertInventoryWindow(begin: string, end: string): void {
+  const format = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+  if (!format.test(begin) || !format.test(end)) {
+    throw new Error("聚水潭库存修改时间须为 YYYY-MM-DD HH:mm:ss");
+  }
+  const beginMs = Date.parse(`${begin.replace(" ", "T")}Z`);
+  const endMs = Date.parse(`${end.replace(" ", "T")}Z`);
+  if (!Number.isFinite(beginMs) || !Number.isFinite(endMs) || endMs < beginMs) {
+    throw new Error("聚水潭库存修改时间范围非法");
+  }
+  if (endMs - beginMs > 7 * 24 * 60 * 60 * 1000) {
+    throw new Error("聚水潭库存修改时间范围不能超过七天");
+  }
 }
 
 function asObject(value: unknown, label: string): Record<string, unknown> {
@@ -194,6 +226,7 @@ export class JstClient {
     const rows = extractRows(data).map((raw, orderIndex) => {
       const order = asObject(raw, `orders[${orderIndex}]`);
       const rawItems = asArray(order.items ?? order.item_list ?? order.order_items ?? [], `orders[${orderIndex}].items`);
+      const rawBatches = asArray(order.batchs ?? [], `orders[${orderIndex}].batchs`);
       return {
         ioId: required(order.io_id, "io_id"),
         orderId: nonEmpty(order.o_id),
@@ -203,7 +236,7 @@ export class JstClient {
         status: required(order.status, "status"),
         ioDate: required(order.io_date, "io_date"),
         modifiedAt: nonEmpty(order.modified),
-        cursor: required(order.ts, "ts"),
+        cursor: cursorString(order.ts, "ts"),
         items: rawItems.map((rawItem, itemIndex) => {
           const item = asObject(rawItem, `orders[${orderIndex}].items[${itemIndex}]`);
           return {
@@ -216,6 +249,17 @@ export class JstClient {
             expirationDate: nonEmpty(item.expiration_date),
           };
         }),
+        batches: rawBatches.map((rawBatch, batchIndex) => {
+          const batch = asObject(rawBatch, `orders[${orderIndex}].batchs[${batchIndex}]`);
+          return {
+            batchNo: nonEmpty(batch.batch_no),
+            lineId: nonEmpty(batch.ioi_id),
+            skuCode: required(batch.sku_id, "batchs.sku_id"),
+            qty: decimalString(batch.qty, "batchs.qty"),
+            productionDate: nonEmpty(batch.product_date),
+            expirationDate: nonEmpty(batch.expiration_date),
+          };
+        }),
       };
     });
     return { rows, hasNext: parseHasNext(data) };
@@ -224,9 +268,9 @@ export class JstClient {
   async fetchOutboundOrdersForDay(bizDate: string): Promise<JstOutboundOrder[]> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(bizDate)) throw new Error("bizDate 须为 YYYY-MM-DD");
     let cursor = "1";
-    const all: JstOutboundOrder[] = [];
-    const seen = new Set<string>();
-    for (let page = 0; page < 10_000; page++) {
+    const latestByOrder = new Map<string, JstOutboundOrder>();
+    let complete = false;
+    for (let page = 0; page < MAX_CURSOR_PAGES; page++) {
       const result = await this.queryOutboundOrdersPage({
         modified_begin: `${bizDate} 00:00:00`,
         modified_end: `${bizDate} 23:59:59`,
@@ -236,12 +280,15 @@ export class JstClient {
         page_size: 50,
         is_get_total: false,
       });
-      if (result.rows.length === 0) break;
+      if (result.rows.length === 0) {
+        complete = true;
+        break;
+      }
       let maxCursor = cursor;
       for (const row of result.rows) {
-        if (!seen.has(row.ioId)) {
-          seen.add(row.ioId);
-          all.push(row);
+        const previous = latestByOrder.get(row.ioId);
+        if (!previous || BigInt(row.cursor) > BigInt(previous.cursor)) {
+          latestByOrder.set(row.ioId, row);
         }
         if (BigInt(row.cursor) > BigInt(maxCursor)) maxCursor = row.cursor;
       }
@@ -249,9 +296,9 @@ export class JstClient {
         throw new Error("聚水潭出库游标未前进，已中止以避免无限重放");
       }
       cursor = maxCursor;
-      if (result.hasNext === false) break;
     }
-    return all;
+    if (!complete) throw new Error("聚水潭出库游标分页超过安全上限，拒绝返回不完整结果");
+    return [...latestByOrder.values()];
   }
 
   async queryInventoryPage(biz: Record<string, unknown>): Promise<JstPage<JstInventoryRow>> {
@@ -269,46 +316,72 @@ export class JstClient {
         purchaseQty: nonEmpty(row.purchase_qty),
         defectiveQty: nonEmpty(row.defective_qty),
         modifiedAt: nonEmpty(row.modified),
-        cursor: required(row.ts, "ts"),
+        cursor: cursorString(row.ts, "ts"),
       };
     });
     return { rows, hasNext: parseHasNext(data) };
   }
 
   async fetchInventoryChanged(input: {
-    modifiedBegin: string;
-    modifiedEnd: string;
     warehouseCode?: string;
     startCursor?: string;
+    modifiedBegin?: string;
+    modifiedEnd?: string;
   }): Promise<JstInventoryRow[]> {
-    let cursor = input.startCursor ?? "1";
-    const all: JstInventoryRow[] = [];
-    const seen = new Set<string>();
-    for (let page = 0; page < 10_000; page++) {
-      const result = await this.queryInventoryPage({
-        modified_begin: input.modifiedBegin,
-        modified_end: input.modifiedEnd,
+    const cursorMode = input.startCursor !== undefined;
+    const timeMode = input.modifiedBegin !== undefined || input.modifiedEnd !== undefined;
+    if (cursorMode === timeMode) {
+      throw new Error("聚水潭库存查询须且只能选择 ts 游标或修改时间范围");
+    }
+    if (timeMode) {
+      if (!input.modifiedBegin || !input.modifiedEnd) {
+        throw new Error("聚水潭库存修改起止时间必须同时提供");
+      }
+      assertInventoryWindow(input.modifiedBegin, input.modifiedEnd);
+    }
+
+    let cursor = cursorMode ? cursorString(input.startCursor, "startCursor") : null;
+    const latestBySkuWarehouse = new Map<string, JstInventoryRow>();
+    let complete = false;
+    for (let page = 0; page < MAX_CURSOR_PAGES; page++) {
+      const result = await this.queryInventoryPage(cursorMode ? {
         ts: cursor,
         page_index: 1,
         page_size: 100,
         ...(input.warehouseCode ? { wms_co_id: input.warehouseCode } : {}),
+      } : {
+        modified_begin: input.modifiedBegin,
+        modified_end: input.modifiedEnd,
+        page_index: page + 1,
+        page_size: 100,
+        ...(input.warehouseCode ? { wms_co_id: input.warehouseCode } : {}),
       });
-      if (result.rows.length === 0) break;
+      if (result.rows.length === 0) {
+        complete = true;
+        break;
+      }
       let maxCursor = cursor;
       for (const row of result.rows) {
-        const identity = `${row.skuCode}\0${row.warehouseCode ?? ""}\0${row.cursor}`;
-        if (!seen.has(identity)) {
-          seen.add(identity);
-          all.push(row);
+        const identity = `${row.skuCode}\0${row.warehouseCode ?? ""}`;
+        const previous = latestBySkuWarehouse.get(identity);
+        if (!previous || BigInt(row.cursor) > BigInt(previous.cursor)) {
+          latestBySkuWarehouse.set(identity, row);
         }
-        if (BigInt(row.cursor) > BigInt(maxCursor)) maxCursor = row.cursor;
+        if (cursorMode && maxCursor !== null && BigInt(row.cursor) > BigInt(maxCursor)) {
+          maxCursor = row.cursor;
+        }
       }
-      if (BigInt(maxCursor) <= BigInt(cursor)) {
-        throw new Error("聚水潭库存游标未前进，已中止以避免无限重放");
+      if (cursorMode) {
+        if (maxCursor === null || cursor === null || BigInt(maxCursor) <= BigInt(cursor)) {
+          throw new Error("聚水潭库存游标未前进，已中止以避免无限重放");
+        }
+        cursor = maxCursor;
+      } else if (result.hasNext === false || result.rows.length < 100) {
+        complete = true;
+        break;
       }
-      cursor = maxCursor;
-      if (result.hasNext === false) break;
     }
-    return all;
+    if (!complete) throw new Error("聚水潭库存分页超过安全上限，拒绝返回不完整结果");
+    return [...latestBySkuWarehouse.values()];
   }
 }
