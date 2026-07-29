@@ -67,8 +67,12 @@ export interface ReplenishRow {
   /** func#14 ABC 分层与生效目标覆盖天数 */
   abcClass: "A" | "B" | "C" | null;
   effectiveTarget: number;
-  /** 常规生产周期（天，sku_leadtime staging；无 = null） */
+  /** 总供应周期（生产 + 物流/调拨；生产周期缺失时 = null） */
   leadDays: number | null;
+  /** 常规生产周期（天） */
+  productionLeadDays: number | null;
+  /** 物流/调拨周期（天；null=尚未维护，本轮按 0 兼容） */
+  logisticsLeadDays: number | null;
   /** 全管道可销天数（max(系统,参考)+全部在途 ÷ 日均；1dp） */
   coverFull: number | null;
   /** 覆盖缺口 SKU（参考显著>系统——海外/其他部门仓不在快照源） */
@@ -394,9 +398,15 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
         一次读齐，避免各服务分别 join uom_convs 与 sku_params（口径与顺序易漂移）。 ── */
   const supplyParams = await getSkuSupplyParams(skuIds, db);
   const leadBySkuId = new Map<number, number>();
+  const productionLeadBySkuId = new Map<number, number>();
+  const logisticsLeadBySkuId = new Map<number, number | null>();
   const uomBySku = new Map<number, { moq: string | null; orderMultiple: string | null }>();
   for (const [id, p] of supplyParams) {
-    if (p.normalLeadDays != null && p.normalLeadDays > 0) leadBySkuId.set(id, p.normalLeadDays);
+    if (p.normalLeadDays != null && p.normalLeadDays > 0) {
+      productionLeadBySkuId.set(id, p.normalLeadDays);
+      leadBySkuId.set(id, p.normalLeadDays + Math.max(0, p.logisticsLeadDays ?? 0));
+    }
+    logisticsLeadBySkuId.set(id, p.logisticsLeadDays);
     uomBySku.set(id, { moq: p.moq, orderMultiple: p.orderMultiple });
   }
 
@@ -474,7 +484,9 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     const legacyTransit = legacyBySku.get(s.id) ?? 0;
     const wipQty = num(wipBySku.get(s.id) ?? "0");
     const borrowOut = borrowOutBySku.get(s.id) ?? 0;
-    const leadDays = leadBySkuId.get(s.id) ?? null; // sku_params 已转正（#18 兜底下线）
+    const productionLeadDays = productionLeadBySkuId.get(s.id) ?? null;
+    const logisticsLeadDays = logisticsLeadBySkuId.get(s.id) ?? null;
+    const leadDays = leadBySkuId.get(s.id) ?? null;
     const refGap = detectRefGap(num(onHand), ref?.qty ?? null);
     const coverFull = fuseCover({
       onHand: num(onHand),
@@ -589,6 +601,8 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       abcClass,
       effectiveTarget,
       leadDays,
+      productionLeadDays,
+      logisticsLeadDays,
       coverFull: coverFull == null ? null : r1(coverFull),
       refGap,
       suppressReason,
@@ -651,6 +665,8 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     abcClass: r.abcClass,
     effectiveTarget: r.effectiveTarget,
     leadDays: r.leadDays,
+    productionLeadDays: r.productionLeadDays,
+    logisticsLeadDays: r.logisticsLeadDays,
     coverFull: r.coverFull,
     refGap: r.refGap,
     suppressReason: r.suppressReason,

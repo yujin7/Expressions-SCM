@@ -61,11 +61,25 @@ export const skus = pgTable("skus", {
   barcode: text("barcode"), // EAN13；真实数据存在畸形重复，故不 UNIQUE——规范唯一性由 aliases(sku_barcode) 承载
   barcodeStatus: text("barcode_status"), // 04 §3 裁决：valid/malformed/duplicate/null（backfill 脚本回填）
   productType: text("product_type"), // 跨境品/一般贸易/国内品牌/TK版/亚马逊版/北美版
+  /** 0727 SKU 治理：历史数据先保持未分类，禁止按名称猜样品。 */
+  commercialRole: text("commercial_role").notNull().default("unclassified"),
+  /** 业务可识别简称；标准名称按 品牌+渠道+简称+版本+规格 生成。 */
+  shortName: text("short_name"),
+  /** SKU 专属销售渠道；空=通用。应用层 FK→channels，避免 dimensions 循环依赖。 */
+  channelId: integer("channel_id"),
   lifecycle: skuLifecycleEnum("lifecycle").notNull().default("on_sale"), // 四态（04 §2.A）；行为门当前仍以 active 为准，DW2 切换
   remark: text("remark"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  index("ix_skus_commercial_role").on(t.commercialRole),
+  index("ix_skus_channel").on(t.channelId),
+  check(
+    "ck_skus_commercial_role",
+    sql`${t.commercialRole} IN ('unclassified', 'retail', 'sample', 'gift', 'tester', 'internal')`,
+  ),
+  check("ck_skus_short_name_length", sql`${t.shortName} IS NULL OR char_length(${t.shortName}) <= 10`),
+]);
 
 export const uomConvs = pgTable("uom_convs", {
   id: serial("id").primaryKey(),

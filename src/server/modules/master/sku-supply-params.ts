@@ -40,6 +40,8 @@ export interface SkuSupplyParams {
   moqAmbiguous: boolean;
   normalLeadDays: number | null;
   urgentLeadDays: number | null;
+  /** 生产完成到可售仓的运输/调拨周期；null=尚未维护。 */
+  logisticsLeadDays: number | null;
   unitCost: string | null;
   nearExpiryDays: number | null;
 }
@@ -50,13 +52,18 @@ export async function getSkuSupplyParams(skuIds: number[], dbArg?: AnyDb): Promi
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const ensure = (id: number): SkuSupplyParams => {
     let v = out.get(id);
-    if (!v) { v = { moq: null, orderMultiple: null, moqSourceUom: null, moqAmbiguous: false, normalLeadDays: null, urgentLeadDays: null, unitCost: null, nearExpiryDays: null }; out.set(id, v); }
+    if (!v) { v = { moq: null, orderMultiple: null, moqSourceUom: null, moqAmbiguous: false, normalLeadDays: null, urgentLeadDays: null, logisticsLeadDays: null, unitCost: null, nearExpiryDays: null }; out.set(id, v); }
     return v;
   };
 
   const [uomRows, spRows, costRows, skuRows] = await Promise.all([
     db.select({ skuId: schema.uomConvs.skuId, purchaseUom: schema.uomConvs.purchaseUom, factor: schema.uomConvs.factor, moq: schema.uomConvs.moq, orderMultiple: schema.uomConvs.orderMultiple }).from(schema.uomConvs).where(inArray(schema.uomConvs.skuId, skuIds)).orderBy(asc(schema.uomConvs.id)),
-    db.select({ skuId: schema.skuParams.skuId, normalLeadDays: schema.skuParams.normalLeadDays, urgentLeadDays: schema.skuParams.urgentLeadDays }).from(schema.skuParams).where(inArray(schema.skuParams.skuId, skuIds)),
+    db.select({
+      skuId: schema.skuParams.skuId,
+      normalLeadDays: schema.skuParams.normalLeadDays,
+      urgentLeadDays: schema.skuParams.urgentLeadDays,
+      logisticsLeadDays: schema.skuParams.logisticsLeadDays,
+    }).from(schema.skuParams).where(inArray(schema.skuParams.skuId, skuIds)),
     db.select({ skuId: schema.skuCosts.skuId, unitCost: schema.skuCosts.unitCost }).from(schema.skuCosts).where(inArray(schema.skuCosts.skuId, skuIds)),
     db.select({ id: schema.skus.id, nearExpiryDays: schema.skus.nearExpiryDays }).from(schema.skus).where(inArray(schema.skus.id, skuIds)),
   ]);
@@ -78,8 +85,11 @@ export async function getSkuSupplyParams(skuIds: number[], dbArg?: AnyDb): Promi
     v.moqSourceUom = pick.purchaseUom;
     v.moqAmbiguous = rows.length > 1;
   }
-  for (const r of spRows as { skuId: number; normalLeadDays: number | null; urgentLeadDays: number | null }[]) {
-    const v = ensure(r.skuId); v.normalLeadDays = r.normalLeadDays; v.urgentLeadDays = r.urgentLeadDays;
+  for (const r of spRows as { skuId: number; normalLeadDays: number | null; urgentLeadDays: number | null; logisticsLeadDays: number | null }[]) {
+    const v = ensure(r.skuId);
+    v.normalLeadDays = r.normalLeadDays;
+    v.urgentLeadDays = r.urgentLeadDays;
+    v.logisticsLeadDays = r.logisticsLeadDays;
   }
   for (const r of costRows as { skuId: number; unitCost: string | null }[]) { ensure(r.skuId).unitCost = r.unitCost; }
   for (const r of skuRows as { id: number; nearExpiryDays: number | null }[]) { ensure(r.id).nearExpiryDays = r.nearExpiryDays; }

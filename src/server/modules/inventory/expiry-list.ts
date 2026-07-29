@@ -3,8 +3,7 @@
  * 本页给仓管逐「批次×仓库」的实物处置视图，风险处置页给 PMC 逐 SKU 的决策视图）。
  *
  * 口径：batch_stocks 参考层（非账本），qty>0 且 expiryDate 非空；
- * daysLeft = expiryDate − 今日（Asia/Shanghai，可为负）；段位与驾驶舱七段前四段对齐：
- * expired(≤0) / m3(≤90) / m6(≤180) / rest(>180)。默认排序 daysLeft 升序（最紧急最上）。
+ * daysLeft = expiryDate − 今日（Asia/Shanghai，可为负）；段位与驾驶舱七段完全对齐。
  * 无金额字段，免脱敏；只读。
  */
 import { and, eq, gt, isNotNull } from "drizzle-orm";
@@ -17,7 +16,7 @@ import { EXPIRY_TIER_DAYS, daysLeftOf } from "@/server/core/stock-view";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
-export type ExpiryBucket = "expired" | "m3" | "m6" | "rest";
+export type ExpiryBucket = "expired" | "m3" | "m6" | "m12" | "m18" | "m24" | "rest";
 
 export interface ExpiryBatchRow {
   id: number;
@@ -41,12 +40,15 @@ export interface ExpiryListResult {
   bucketCounts: Record<ExpiryBucket, { batches: number; qty: number }>;
 }
 
-function bucketOf(daysLeft: number): ExpiryBucket {
+export function expiryBucketOf(daysLeft: number): ExpiryBucket {
   // 边界走 core/stock-view.EXPIRY_TIER_DAYS（spec/07 N3 七段位口径 92/183），
   // 此前写死 90/180，与驾驶舱差 2-3 天，同一批货在两页会落到不同段位
   if (daysLeft <= 0) return "expired";
   if (daysLeft <= EXPIRY_TIER_DAYS.m3) return "m3";
   if (daysLeft <= EXPIRY_TIER_DAYS.m6) return "m6";
+  if (daysLeft <= EXPIRY_TIER_DAYS.m12) return "m12";
+  if (daysLeft <= EXPIRY_TIER_DAYS.m18) return "m18";
+  if (daysLeft <= EXPIRY_TIER_DAYS.m24) return "m24";
   return "rest";
 }
 
@@ -87,13 +89,16 @@ export async function listExpiryBatches(
 
   const all: ExpiryBatchRow[] = raw.map((r) => {
     const daysLeft = daysLeftOf(today, r.expiryDate);
-    return { ...r, qty: num(r.qty), daysLeft, bucket: bucketOf(daysLeft) };
+    return { ...r, qty: num(r.qty), daysLeft, bucket: expiryBucketOf(daysLeft) };
   });
 
   const bucketCounts: Record<ExpiryBucket, { batches: number; qty: number }> = {
     expired: { batches: 0, qty: 0 },
     m3: { batches: 0, qty: 0 },
     m6: { batches: 0, qty: 0 },
+    m12: { batches: 0, qty: 0 },
+    m18: { batches: 0, qty: 0 },
+    m24: { batches: 0, qty: 0 },
     rest: { batches: 0, qty: 0 },
   };
   for (const r of all) {

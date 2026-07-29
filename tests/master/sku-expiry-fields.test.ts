@@ -42,6 +42,19 @@ describe("SKU 效期两参的写入路径", () => {
     expect(() => skuSchema.parse({ ...base, shelfLifeDays: -1 })).toThrow();
   });
 
+  it("接受 SKU 用途、简称、渠道与物流周期，拒绝超长简称", () => {
+    const v = skuSchema.parse({
+      ...base,
+      shortName: "胶原蛋白肽饮",
+      channelId: 3,
+      commercialRole: "sample",
+      logisticsLeadDays: 7,
+    });
+    expect(v.commercialRole).toBe("sample");
+    expect(v.logisticsLeadDays).toBe(7);
+    expect(() => skuSchema.parse({ ...base, shortName: "一二三四五六七八九十一" })).toThrow();
+  });
+
   it("createSku / updateSku 的白名单确实写这两列（字段进了 schema 却没进 values 等于白搭）", () => {
     const src = readFileSync(
       path.resolve(__dirname, "../../src/server/modules/master/sku.ts"),

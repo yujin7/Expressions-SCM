@@ -139,6 +139,43 @@ async function main(): Promise<void> {
       throw new Error("notifications dispatch lease migration contract is missing");
     }
 
+    const skuGovernanceColumns = await client.query<{
+      table_name: string;
+      column_name: string;
+      data_type: string;
+      is_nullable: string;
+      column_default: string | null;
+    }>(
+      `select table_name, column_name, data_type, is_nullable, column_default
+         from information_schema.columns
+        where table_schema = 'public'
+          and (
+            (table_name = 'skus' and column_name = any($1::text[]))
+            or (table_name = 'sku_params' and column_name = 'logistics_lead_days')
+          )`,
+      [["commercial_role", "short_name", "channel_id"]],
+    );
+    const skuGovernanceColumnMap = new Map(
+      skuGovernanceColumns.rows.map((row) => [`${row.table_name}.${row.column_name}`, row]),
+    );
+    const commercialRole = skuGovernanceColumnMap.get("skus.commercial_role");
+    const shortName = skuGovernanceColumnMap.get("skus.short_name");
+    const channelId = skuGovernanceColumnMap.get("skus.channel_id");
+    const logisticsLeadDays = skuGovernanceColumnMap.get("sku_params.logistics_lead_days");
+    if (
+      commercialRole?.data_type !== "text"
+      || commercialRole.is_nullable !== "NO"
+      || !commercialRole.column_default?.includes("unclassified")
+      || shortName?.data_type !== "text"
+      || shortName.is_nullable !== "YES"
+      || channelId?.data_type !== "integer"
+      || channelId.is_nullable !== "YES"
+      || logisticsLeadDays?.data_type !== "integer"
+      || logisticsLeadDays.is_nullable !== "YES"
+    ) {
+      throw new Error("SKU governance/logistics lead-time migration contract is missing");
+    }
+
     const immutableTriggers = await client.query<{
       table_name: string;
       trigger_name: string;
@@ -296,6 +333,9 @@ async function main(): Promise<void> {
       "ck_electronic_label_version",
       "ck_electronic_label_previous",
       "ck_notify_attempt_count",
+      "ck_skus_commercial_role",
+      "ck_skus_short_name_length",
+      "ck_sku_params_logistics_lead_days",
     ];
     const locationConstraints = await client.query<{ conname: string }>(
       `select conname
@@ -396,6 +436,7 @@ async function main(): Promise<void> {
       sessionVersion: column,
       inspectionSiteKey: inspectionSiteKeyColumn.rows[0],
       notificationLeaseColumns: [...notificationColumns.values()],
+      skuGovernanceColumns: [...skuGovernanceColumnMap.values()],
       immutableTriggers: [...triggerPairs].sort(),
       locationConstraints: [...foundConstraints].sort(),
       versionChainSelfReferences: [...versionChainSelfReferences].sort(),

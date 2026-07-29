@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { skus, spus, uomConvs } from "@/db/schema";
+import { skuParams, skus, spus, uomConvs } from "@/db/schema";
 import { getSkuSupplyParams } from "@/server/modules/master/sku-supply-params";
 import { createTestDb, type TestDb } from "../helpers/db";
 
@@ -87,5 +87,19 @@ describe("SKU 供应参数：MOQ 必须换算到基础单位", () => {
     const p = (await getSkuSupplyParams([id], db)).get(id)!;
     expect(p.moq).toBeNull();
     expect(p.moqSourceUom).toBe("支");
+  });
+
+  it("生产周期与物流/调拨周期分开读取，不互相覆盖", async () => {
+    const id = await mkSku("LEGS");
+    await db.insert(skuParams).values({
+      skuId: id,
+      normalLeadDays: 40,
+      urgentLeadDays: 25,
+      logisticsLeadDays: 7,
+    });
+    const p = (await getSkuSupplyParams([id], db)).get(id)!;
+    expect(p.normalLeadDays).toBe(40);
+    expect(p.urgentLeadDays).toBe(25);
+    expect(p.logisticsLeadDays).toBe(7);
   });
 });

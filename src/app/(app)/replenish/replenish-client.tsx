@@ -46,6 +46,8 @@ interface ReplenishRow {
   abcClass: "A" | "B" | "C" | null;
   effectiveTarget: number;
   leadDays: number | null;
+  productionLeadDays: number | null;
+  logisticsLeadDays: number | null;
   coverFull: number | null;
   refGap: boolean;
   suppressReason: string | null;
@@ -339,7 +341,7 @@ export default function ReplenishClient() {
               return (
                 <Space size={4}>
                   {body}
-                  {r.belowLead ? <Tooltip title={`已低于常规生产周期 ${r.leadDays} 天`}><Tag color="red" style={{ marginInlineEnd: 0 }}>低于周期</Tag></Tooltip> : null}
+                  {r.belowLead ? <Tooltip title={`已低于总供应周期 ${r.leadDays} 天`}><Tag color="red" style={{ marginInlineEnd: 0 }}>低于周期</Tag></Tooltip> : null}
                 </Space>
               );
             },
@@ -348,7 +350,18 @@ export default function ReplenishClient() {
             title: "可销（全管道）", dataIndex: "coverFull", width: 145, align: "right" as const, ...sortable("coverFull"),
             render: (v: number | null) => (v == null ? "—" : <Tooltip title="（max(系统在库, 全口径参考) + PO在途 + 存量在途 + 在订未出）÷ 日均销"><span>{v}</span></Tooltip>),
           },
-          { title: "生产周期", dataIndex: "leadDays", width: 105, align: "right" as const, ...sortable("leadDays"), render: (v: number | null) => (v == null ? "—" : `${v} 天`) },
+          {
+            title: "总供应周期",
+            dataIndex: "leadDays",
+            width: 125,
+            align: "right" as const,
+            ...sortable("leadDays"),
+            render: (v: number | null, r: ReplenishRow) => (
+              v == null
+                ? "—"
+                : <Tooltip title={`生产 ${r.productionLeadDays ?? "—"} 天 + 物流/调拨 ${r.logisticsLeadDays ?? "未维护（暂按 0）"} 天`}>{v} 天</Tooltip>
+            ),
+          },
         ],
       },
       {

@@ -7,7 +7,7 @@
  *
  * 本模块输出：
  * - 首次短缺期（shortageDate）与短缺量；
- * - 建议下单日 = 短缺日 − 生产周期（早于今天则标记已错过窗口）；
+ * - 建议下单日 = 短缺日 − 总供应周期（生产 + 物流/调拨；早于今天则标记已错过窗口）；
  * - 建议量 = 把短缺期的水位补到「安全库存 + 目标覆盖天数需求」所需的量。
  *
  * 与 rules/projection.ts 的关系：projection 画曲线（可视化），本模块做净需求判定（决策）。
@@ -26,7 +26,7 @@ export interface TimePhasedInput {
   safetyQty: number;
   /** 目标覆盖天数（补到该水位） */
   coverTargetDays: number;
-  /** 常规生产周期（天）；null=无法倒推下单日 */
+  /** 总供应周期（生产 + 物流/调拨，天）；null=无法倒推下单日 */
   leadDays: number | null;
   /** 推演天数 */
   horizonDays: number;
@@ -41,7 +41,7 @@ export interface TimePhasedResult {
   shortageQty: number;
   /** 建议补货量（补到 安全库存 + 目标覆盖需求）；无需补货 = 0 */
   requiredQty: number;
-  /** 最晚下单日 = 短缺日 − 生产周期 */
+  /** 最晚下单日 = 短缺日 − 总供应周期 */
   orderByDate: string | null;
   /** 已错过下单窗口 */
   orderWindowMissed: boolean;
@@ -115,11 +115,11 @@ export function timePhasedNetReq(input: TimePhasedInput): TimePhasedResult {
     orderWindowMissed = diffDays(input.today, orderByDate) < 0;
     explain.push(
       orderWindowMissed
-        ? `最晚下单日 ${orderByDate} 已过（生产周期 ${input.leadDays} 天）——现在下单也赶不上，需紧急处置`
-        : `最晚下单日 ${orderByDate}（短缺日倒推生产周期 ${input.leadDays} 天）`,
+        ? `最晚下单日 ${orderByDate} 已过（总供应周期 ${input.leadDays} 天）——现在下单也赶不上，需紧急处置`
+        : `最晚下单日 ${orderByDate}（短缺日倒推总供应周期 ${input.leadDays} 天）`,
     );
   } else {
-    explain.push("无生产周期记录，无法倒推最晚下单日");
+    explain.push("无生产周期记录，无法形成总供应周期并倒推最晚下单日");
   }
 
   return { shortageDate, daysToShortage, shortageQty, requiredQty, orderByDate, orderWindowMissed, explain };
