@@ -43,15 +43,21 @@ export const CONNECTORS: Connector[] = [
     implementation: "ready",
     auth: "signed_token",
     systemOfRecord: "电商订单、实际出库销量、平台/WMS 库存观察",
-    capabilities: ["outbound-sales-daily", "inventory-observation"],
+    capabilities: [
+      "outbound-sales-daily",
+      "inventory-query-client",
+      "batch-allocation-evidence",
+    ],
     requiredEnv: ["JST_APP_KEY", "JST_APP_SECRET", "JST_ACCESS_TOKEN", "JST_SYNC_ACTOR_ID"],
     optionalEnv: ["JST_BASE_URL"],
     sourceDocs: [
       "https://openweb.jushuitan.com/doc?docId=20",
       "https://openweb.jushuitan.com/doc?docId=30",
       "https://openweb.jushuitan.com/doc?docId=70",
+      "https://openweb.jushuitan.com/dev-doc?docType=8&docId=34",
+      "https://openweb.jushuitan.com/dev-doc?docType=3&docId=15",
     ],
-    blocker: "代码与受控 staging 已就绪；需开放平台 app/token、IP 白名单、接口权限及系统同步责任人 ID",
+    blocker: "日出库受控 staging 已就绪，库存为查询客户端；需开放平台 app/token、IP 白名单、接口权限及系统同步责任人 ID",
     isConfigured(env = process.env) {
       const actor = Number(env.JST_SYNC_ACTOR_ID);
       return jstConfigFromEnv(env) !== null && Number.isInteger(actor) && actor > 0;
@@ -73,7 +79,7 @@ export const CONNECTORS: Connector[] = [
     requiredEnv: [...YONYOU_REQUIRED_ENV],
     optionalEnv: [],
     sourceDocs: ["https://developer.yonyou.com/openAPI"],
-    blocker: "C4 人工账号不能替代 OpenAPI 应用；待创建并授权企业应用、确认租户/组织、token URL 与获批业务接口",
+    blocker: "C4 人工账号不能替代 OpenAPI 应用；当前开放平台开发者身份尚未注册，待注册、创建并授权企业应用、确认租户/组织、token URL 与获批接口",
     isConfigured(env = process.env) {
       return yonyouConfigFromEnv(env) !== null;
     },
@@ -88,8 +94,13 @@ export const CONNECTORS: Connector[] = [
     auth: "webhook_or_app",
     systemOfRecord: "协同触达（SCM 通知发件箱仍是发送状态权威）",
     capabilities: ["group-webhook", "app-bot-message", "deduplicated-delivery"],
-    requiredEnv: ["FEISHU_WEBHOOK_URL"],
-    optionalEnv: ["FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID"],
+    requiredEnv: [],
+    optionalEnv: [
+      "FEISHU_WEBHOOK_URL",
+      "FEISHU_APP_ID",
+      "FEISHU_APP_SECRET",
+      "FEISHU_CHAT_ID",
+    ],
     sourceDocs: [
       "https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal",
       "https://open.feishu.cn/document/server-docs/im-v1/message/create",

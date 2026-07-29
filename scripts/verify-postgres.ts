@@ -47,6 +47,7 @@ async function main(): Promise<void> {
         "electronic_label_versions",
         "integration_runs",
         "integration_checkpoints",
+        "notifications",
       ]],
     );
     const found = new Set(tables.rows.map((row) => row.table_name));
@@ -73,6 +74,7 @@ async function main(): Promise<void> {
       "electronic_label_versions",
       "integration_runs",
       "integration_checkpoints",
+      "notifications",
     ].filter((name) => !found.has(name));
     if (missing.length) throw new Error(`Missing migrated tables: ${missing.join(", ")}`);
 
@@ -107,6 +109,34 @@ async function main(): Promise<void> {
       || inspectionSiteKeyColumn.rows[0]?.is_nullable !== "YES"
     ) {
       throw new Error("quality_cases.inspection_site_key migration contract is missing");
+    }
+
+    const notificationLeaseColumns = await client.query<{
+      column_name: string;
+      data_type: string;
+      is_nullable: string;
+      column_default: string | null;
+    }>(
+      `select column_name, data_type, is_nullable, column_default
+         from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'notifications'
+          and column_name = any($1::text[])`,
+      [["dispatch_started_at", "attempt_count"]],
+    );
+    const notificationColumns = new Map(
+      notificationLeaseColumns.rows.map((row) => [row.column_name, row]),
+    );
+    const dispatchStartedAt = notificationColumns.get("dispatch_started_at");
+    const attemptCount = notificationColumns.get("attempt_count");
+    if (
+      dispatchStartedAt?.data_type !== "timestamp with time zone"
+      || dispatchStartedAt.is_nullable !== "YES"
+      || attemptCount?.data_type !== "integer"
+      || attemptCount.is_nullable !== "NO"
+      || !attemptCount.column_default?.includes("0")
+    ) {
+      throw new Error("notifications dispatch lease migration contract is missing");
     }
 
     const immutableTriggers = await client.query<{
@@ -265,6 +295,7 @@ async function main(): Promise<void> {
       "ck_electronic_label_locale",
       "ck_electronic_label_version",
       "ck_electronic_label_previous",
+      "ck_notify_attempt_count",
     ];
     const locationConstraints = await client.query<{ conname: string }>(
       `select conname
@@ -364,6 +395,7 @@ async function main(): Promise<void> {
       requiredTables: [...found].sort(),
       sessionVersion: column,
       inspectionSiteKey: inspectionSiteKeyColumn.rows[0],
+      notificationLeaseColumns: [...notificationColumns.values()],
       immutableTriggers: [...triggerPairs].sort(),
       locationConstraints: [...foundConstraints].sort(),
       versionChainSelfReferences: [...versionChainSelfReferences].sort(),

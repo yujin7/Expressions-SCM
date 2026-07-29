@@ -80,6 +80,7 @@ describe("聚水潭 v2 client", () => {
           }],
         },
       },
+      { code: 0, data: { has_next: false, datas: [] } },
     ];
     const fetchMock = vi.fn(async () => response(pages.shift()));
     const fetchImpl = fetchMock as unknown as typeof fetch;
@@ -97,6 +98,69 @@ describe("聚水潭 v2 client", () => {
     const second = new URLSearchParams(String((fetchMock.mock.calls[1] as unknown as [unknown, RequestInit])[1].body));
     expect(JSON.parse(first.get("biz")!)).toMatchObject({ start_ts: "1", page_size: 50, date_type: 2 });
     expect(JSON.parse(second.get("biz")!)).toMatchObject({ start_ts: "101", page_size: 50, date_type: 2 });
+  });
+
+  it("同一出库单扫描中再次变更时保留最大 ts 的最新版本", async () => {
+    const pages = [
+      {
+        code: 0,
+        data: {
+          datas: [{
+            io_id: "IO-1",
+            status: "WaitConfirm",
+            io_date: "2026-07-28 10:00:00",
+            ts: 101,
+            items: [{ sku_id: "SKU-A", qty: "1", ioi_id: "L1" }],
+          }],
+        },
+      },
+      {
+        code: 0,
+        data: {
+          datas: [{
+            io_id: "IO-1",
+            status: "Confirmed",
+            io_date: "2026-07-28 10:00:00",
+            ts: 102,
+            items: [{ sku_id: "SKU-A", qty: "2", ioi_id: "L1" }],
+            batchs: [{
+              batch_no: "LOT-1",
+              ioi_id: "L1",
+              sku_id: "SKU-A",
+              qty: "2",
+              product_date: "2026-06-01",
+              expiration_date: "2028-06-01",
+            }],
+          }],
+        },
+      },
+      { code: 0, data: { datas: [] } },
+    ];
+    const fetchImpl = vi.fn(async () => response(pages.shift())) as unknown as typeof fetch;
+    const client = new JstClient({
+      appKey: "app",
+      appSecret: "secret",
+      accessToken: "token",
+      baseUrl: "https://example.invalid",
+    }, { fetchImpl, retries: 0 });
+
+    const orders = await client.fetchOutboundOrdersForDay("2026-07-28");
+
+    expect(orders).toHaveLength(1);
+    expect(orders[0]).toMatchObject({
+      ioId: "IO-1",
+      status: "Confirmed",
+      cursor: "102",
+      items: [{ skuCode: "SKU-A", qty: "2" }],
+      batches: [{
+        batchNo: "LOT-1",
+        lineId: "L1",
+        skuCode: "SKU-A",
+        qty: "2",
+        productionDate: "2026-06-01",
+        expirationDate: "2028-06-01",
+      }],
+    });
   });
 
   it("游标不前进时拒绝无限重放", async () => {
@@ -145,18 +209,22 @@ describe("聚水潭 v2 client", () => {
   });
 
   it("库存查询使用 100 行页上限与 ts 游标", async () => {
-    const fetchMock = vi.fn(async () => response({
-      code: 0,
-      data: {
-        has_next: false,
-        inventorys: [{
-          sku_id: "SKU-A",
-          wms_co_id: "10",
-          qty: "12.5000",
-          ts: 500,
-        }],
+    const pages = [
+      {
+        code: 0,
+        data: {
+          has_next: false,
+          inventorys: [{
+            sku_id: "SKU-A",
+            wms_co_id: "10",
+            qty: "12.5000",
+            ts: 500,
+          }],
+        },
       },
-    }));
+      { code: 0, data: { has_next: false, inventorys: [] } },
+    ];
+    const fetchMock = vi.fn(async () => response(pages.shift()));
     const client = new JstClient({
       appKey: "app",
       appSecret: "secret",
@@ -165,8 +233,7 @@ describe("聚水潭 v2 client", () => {
     }, { fetchImpl: fetchMock as unknown as typeof fetch, retries: 0 });
 
     const rows = await client.fetchInventoryChanged({
-      modifiedBegin: "2026-07-28 00:00:00",
-      modifiedEnd: "2026-07-28 23:59:59",
+      startCursor: "1",
       warehouseCode: "10",
     });
 
@@ -180,5 +247,61 @@ describe("聚水潭 v2 client", () => {
       page_size: 100,
       wms_co_id: "10",
     });
+    expect(JSON.parse(form.get("biz")!)).not.toHaveProperty("modified_begin");
+    expect(JSON.parse(form.get("biz")!)).not.toHaveProperty("modified_end");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("库存时间窗口查询不混入 ts，并按 page_index 翻页", async () => {
+    const fetchMock = vi.fn(async () => response({
+      code: 0,
+      data: {
+        has_next: false,
+        inventorys: [{
+          sku_id: "SKU-A",
+          wms_co_id: "10",
+          qty: "5",
+          ts: 501,
+        }],
+      },
+    }));
+    const client = new JstClient({
+      appKey: "app",
+      appSecret: "secret",
+      accessToken: "token",
+      baseUrl: "https://example.invalid",
+    }, { fetchImpl: fetchMock as unknown as typeof fetch, retries: 0 });
+
+    await client.fetchInventoryChanged({
+      modifiedBegin: "2026-07-28 00:00:00",
+      modifiedEnd: "2026-07-28 23:59:59",
+    });
+
+    const form = new URLSearchParams(
+      String((fetchMock.mock.calls[0] as unknown as [unknown, RequestInit])[1].body),
+    );
+    const biz = JSON.parse(form.get("biz")!);
+    expect(biz).toMatchObject({
+      modified_begin: "2026-07-28 00:00:00",
+      modified_end: "2026-07-28 23:59:59",
+      page_index: 1,
+      page_size: 100,
+    });
+    expect(biz).not.toHaveProperty("ts");
+  });
+
+  it("库存查询拒绝同时提供 ts 与时间窗口，避免违反官方互斥契约", async () => {
+    const client = new JstClient({
+      appKey: "app",
+      appSecret: "secret",
+      accessToken: "token",
+      baseUrl: "https://example.invalid",
+    }, { fetchImpl: vi.fn() as unknown as typeof fetch, retries: 0 });
+
+    await expect(client.fetchInventoryChanged({
+      startCursor: "1",
+      modifiedBegin: "2026-07-28 00:00:00",
+      modifiedEnd: "2026-07-28 23:59:59",
+    })).rejects.toThrow("只能选择");
   });
 });

@@ -238,7 +238,7 @@ export const integrationCheckpoints = pgTable("integration_checkpoints", {
 
 /** #8 通知发件箱（outbox 模式）：应用内产生通知 → 排队 → 分发任务按渠道推送。
  *  渠道 feishu=飞书自定义机器人 webhook（URL 存 env FEISHU_WEBHOOK_URL，无则跳过）；
- *  in_app=站内。幂等键 dedupeKey 防重复入队。状态 pending/sent/skipped/failed。 */
+ *  in_app=站内。幂等键 dedupeKey 防重复入队。sending 是带租约的原子认领态，避免多实例重复发送。 */
 export const notifications = pgTable("notifications", {
   id: serial("id").primaryKey(),
   channel: text("channel").notNull(), // feishu | in_app
@@ -246,7 +246,7 @@ export const notifications = pgTable("notifications", {
   body: text("body").notNull(),
   href: text("href"),
   severity: text("severity"), // critical/high/medium/info
-  status: text("status").notNull().default("pending"), // pending/sent/skipped/failed
+  status: text("status").notNull().default("pending"), // pending/sending/sent/skipped/failed
   dedupeKey: text("dedupe_key"),
   // func#12 收件人：userId=定向个人（null=广播）；targetRole=定向角色（null=全员）
   userId: integer("user_id"),
@@ -254,12 +254,15 @@ export const notifications = pgTable("notifications", {
   // 站内已读（null=未读）
   readAt: timestamp("read_at", { withTimezone: true }),
   error: text("error"),
+  dispatchStartedAt: timestamp("dispatch_started_at", { withTimezone: true }),
+  attemptCount: integer("attempt_count").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   sentAt: timestamp("sent_at", { withTimezone: true }),
 }, (t) => [
   // struct#1 修复：dedupeKey 唯一但 NULL 相异（多条无键通知可共存，不再被静默吞掉）
   unique("uq_notify_dedupe").on(t.dedupeKey),
   index("ix_notify_status").on(t.status, t.createdAt),
+  check("ck_notify_attempt_count", sql`${t.attemptCount} >= 0`),
 ]);
 
 /** struct#4/#15：系统告警（看门狗产出，与人工裁决 review_items 分家——生命周期不同）。

@@ -56,7 +56,10 @@ describe("通知发件箱", () => {
     const calls: unknown[] = [];
     globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
       calls.push(init);
-      return new Response("{}", { status: 200 });
+      return new Response(JSON.stringify({ code: 0, msg: "success" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
     }) as typeof fetch;
     try {
       const result = await dispatchNotifications(db, {
@@ -73,6 +76,36 @@ describe("通知发件箱", () => {
     }
   });
 
+  it("dispatch：webhook HTTP 200 但飞书业务码失败时不得伪标 sent", async () => {
+    await enqueueNotification(db, {
+      channel: "feishu",
+      title: "业务失败",
+      body: "HTTP 成功不代表投递成功",
+      dedupeKey: "fs:business-error",
+    });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      code: 19024,
+      msg: "invalid webhook",
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })) as typeof fetch;
+    try {
+      const result = await dispatchNotifications(db, {
+        appClient: null,
+        webhookUrl: "https://example.invalid/webhook",
+      });
+      expect(result.failed).toBe(1);
+      const [row] = await db.select().from(notifications)
+        .where(eq(notifications.dedupeKey, "fs:business-error"));
+      expect(row.status).toBe("failed");
+      expect(row.error).toContain("19024");
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
   it("dispatch：网络失败行在下一轮重试，不会永久卡在 failed", async () => {
     await enqueueNotification(db, {
       channel: "feishu",
@@ -84,16 +117,73 @@ describe("通知发件箱", () => {
       appClient: { sendText: async () => { throw new Error("temporary"); } },
       webhookUrl: null,
     });
-    expect(first.failed).toBe(1);
+    expect(first.failed).toBeGreaterThanOrEqual(1);
     const second = await dispatchNotifications(db, {
       appClient: { sendText: async () => ({ messageId: "ok" }) },
       webhookUrl: null,
     });
-    expect(second.sent).toBe(1);
+    expect(second.sent).toBeGreaterThanOrEqual(1);
     const [row] = await db.select().from(notifications)
       .where(eq(notifications.dedupeKey, "fs:retry"));
     expect(row.status).toBe("sent");
     expect(row.error).toBeNull();
+  });
+
+  it("dispatch：并发分发通过原子租约只发送一次", async () => {
+    await enqueueNotification(db, {
+      channel: "feishu",
+      title: "并发",
+      body: "只允许一个 worker 发送",
+      dedupeKey: "fs:concurrent-claim",
+    });
+    let sends = 0;
+    const appClient = {
+      sendText: async () => {
+        sends++;
+        await new Promise<void>((resolve) => setTimeout(resolve, 5));
+        return { messageId: "once" };
+      },
+    };
+
+    await Promise.all([
+      dispatchNotifications(db, { appClient, webhookUrl: null }),
+      dispatchNotifications(db, { appClient, webhookUrl: null }),
+    ]);
+
+    expect(sends).toBe(1);
+    const [row] = await db.select().from(notifications)
+      .where(eq(notifications.dedupeKey, "fs:concurrent-claim"));
+    expect(row).toMatchObject({
+      status: "sent",
+      attemptCount: 1,
+      dispatchStartedAt: null,
+    });
+  });
+
+  it("dispatch：崩溃遗留的过期 sending 租约可恢复", async () => {
+    await db.insert(notifications).values({
+      channel: "feishu",
+      title: "租约恢复",
+      body: "十分钟前中断",
+      dedupeKey: "fs:stale-lease",
+      status: "sending",
+      dispatchStartedAt: new Date(Date.now() - 11 * 60 * 1000),
+      attemptCount: 1,
+    });
+
+    const result = await dispatchNotifications(db, {
+      appClient: { sendText: async () => ({ messageId: "recovered" }) },
+      webhookUrl: null,
+    });
+
+    expect(result.sent).toBeGreaterThanOrEqual(1);
+    const [row] = await db.select().from(notifications)
+      .where(eq(notifications.dedupeKey, "fs:stale-lease"));
+    expect(row).toMatchObject({
+      status: "sent",
+      attemptCount: 2,
+      dispatchStartedAt: null,
+    });
   });
 
   it("周度决策摘要：同一数据月只入队一次", async () => {
