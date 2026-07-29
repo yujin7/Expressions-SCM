@@ -20,7 +20,7 @@ import { runFreshnessCheck } from "./freshness";
 import { runDocAging } from "./doc-aging";
 import { runRollup } from "./rollup";
 import { dispatchNotifications, runDecisionDigestNotify, runExceptionNotify } from "./notify";
-import { runJstSalesSync } from "./sync-jst";
+import { runJstInventorySync, runJstSalesSync } from "./sync-jst";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -41,6 +41,8 @@ export const INTERVAL_JOBS: IntervalJob[] = [
   { name: "license-alert", everyMs: 6 * HOUR_MS, run: (db) => runLicenseAlert(db) },
   // 聚水潭 T-1 出库全量快照先进入受控 staging；缺配置时显式 skipped
   { name: "sync-jst-sales", everyMs: 6 * HOUR_MS, run: (db) => runJstSalesSync(db) },
+  // 聚水潭全仓合计库存增量只作外部观察；显式开关启用，绝不直写库存真账/快照
+  { name: "sync-jst-inventory", everyMs: 6 * HOUR_MS, run: (db) => runJstInventorySync(db) },
   // 对 T-1 对账；无流水/无 staging 数据时返回空 summary（skuCount=0），自然优雅跳过
   { name: "reconcile-jst", everyMs: 6 * HOUR_MS, run: (db) => runReconcileJst(db, shanghaiToday(-1)) },
   // 保洁（删除幂等）

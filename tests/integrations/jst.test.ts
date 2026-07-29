@@ -252,6 +252,77 @@ describe("聚水潭 v2 client", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("库存响应缺仓库字段时保留请求仓粒度，并校验扩展库存数量", async () => {
+    const pages = [
+      {
+        code: 0,
+        data: {
+          has_next: false,
+          inventorys: [{
+            sku_id: "SKU-A",
+            i_id: "ITEM-A",
+            name: "测试商品",
+            qty: "12.5000",
+            order_lock: "2",
+            pick_lock: "1",
+            lock_qty: "3",
+            virtual_qty: "-1",
+            purchase_qty: "5",
+            return_qty: "0",
+            in_qty: "4",
+            allocate_qty: "2",
+            sale_refund_qty: "1",
+            defective_qty: "0.5",
+            min_qty: "6",
+            max_qty: "20",
+            ts: 500,
+          }],
+        },
+      },
+      { code: 0, data: { has_next: false, inventorys: [] } },
+    ];
+    const fetchMock = vi.fn(async () => response(pages.shift()));
+    const client = new JstClient({
+      appKey: "app",
+      appSecret: "secret",
+      accessToken: "token",
+      baseUrl: "https://example.invalid",
+    }, { fetchImpl: fetchMock as unknown as typeof fetch, retries: 0 });
+
+    const rows = await client.fetchInventoryChanged({
+      startCursor: "1",
+      warehouseCode: "10",
+      includeLockQty: true,
+    });
+
+    expect(rows[0]).toMatchObject({
+      skuCode: "SKU-A",
+      itemId: "ITEM-A",
+      name: "测试商品",
+      warehouseCode: "10",
+      qty: "12.5000",
+      orderLockQty: "2",
+      pickLockQty: "1",
+      inventoryLockQty: "3",
+      virtualQty: "-1",
+      purchaseQty: "5",
+      returnQty: "0",
+      inboundQty: "4",
+      transferInboundQty: "2",
+      saleRefundInboundQty: "1",
+      defectiveQty: "0.5",
+      minQty: "6",
+      maxQty: "20",
+    });
+    const form = new URLSearchParams(
+      String((fetchMock.mock.calls[0] as unknown as [unknown, RequestInit])[1].body),
+    );
+    expect(JSON.parse(form.get("biz")!)).toMatchObject({
+      wms_co_id: "10",
+      has_lock_qty: true,
+    });
+  });
+
   it("库存时间窗口查询不混入 ts，并按 page_index 翻页", async () => {
     const fetchMock = vi.fn(async () => response({
       code: 0,
@@ -303,5 +374,67 @@ describe("聚水潭 v2 client", () => {
       modifiedBegin: "2026-07-28 00:00:00",
       modifiedEnd: "2026-07-28 23:59:59",
     })).rejects.toThrow("只能选择");
+  });
+
+  it("仓库目录按官方 has_next 分页并只保留生效返回项", async () => {
+    const pages = [
+      {
+        code: 0,
+        data: {
+          has_next: true,
+          datas: [{
+            wms_co_id: 20,
+            co_id: 100,
+            name: "二号仓",
+            is_main: false,
+            status: "active",
+          }],
+        },
+      },
+      {
+        code: 0,
+        data: {
+          has_next: false,
+          datas: [{
+            wms_co_id: 10,
+            co_id: 100,
+            name: "主仓",
+            is_main: true,
+            remark1: "三方",
+          }],
+        },
+      },
+    ];
+    const fetchMock = vi.fn(async () => response(pages.shift()));
+    const client = new JstClient({
+      appKey: "app",
+      appSecret: "secret",
+      accessToken: "token",
+      baseUrl: "https://example.invalid",
+    }, { fetchImpl: fetchMock as unknown as typeof fetch, retries: 0 });
+
+    const rows = await client.fetchWarehouses();
+
+    expect(rows).toEqual([
+      {
+        warehouseCode: "10",
+        companyCode: "100",
+        name: "主仓",
+        isMain: true,
+        status: null,
+        partnerRemark: "三方",
+        merchantRemark: null,
+      },
+      {
+        warehouseCode: "20",
+        companyCode: "100",
+        name: "二号仓",
+        isMain: false,
+        status: "active",
+        partnerRemark: null,
+        merchantRemark: null,
+      },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

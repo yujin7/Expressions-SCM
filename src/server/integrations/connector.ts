@@ -14,6 +14,7 @@ export interface Connector {
   capabilities: string[];
   requiredEnv: string[];
   optionalEnv: string[];
+  liveVerificationEnv?: string;
   sourceDocs: string[];
   blocker?: string;
   isConfigured(env?: NodeJS.ProcessEnv): boolean;
@@ -30,11 +31,24 @@ function feishuMissing(env: NodeJS.ProcessEnv = process.env): string[] {
   return appPath.length === 0 ? [] : appPath;
 }
 
+function liveVerifiedAt(
+  key: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (!key) return null;
+  const value = env[key]?.trim();
+  if (!value) return null;
+  const instant = Date.parse(value);
+  if (!Number.isFinite(instant) || instant > Date.now()) return null;
+  return new Date(instant).toISOString();
+}
+
 /**
  * Operational registry, not a success checklist:
  * - ready means transport/validation code exists;
  * - configured means one complete machine-auth path is present;
- * - operational requires both and never treats a human UI login as an API credential.
+ * - operational additionally requires a dated live-UAT marker and never treats credentials or a
+ *   human UI login as proof that the business flow works.
  */
 export const CONNECTORS: Connector[] = [
   {
@@ -45,19 +59,22 @@ export const CONNECTORS: Connector[] = [
     systemOfRecord: "电商订单、实际出库销量、平台/WMS 库存观察",
     capabilities: [
       "outbound-sales-daily",
-      "inventory-query-client",
+      "inventory-total-delta-staging",
+      "warehouse-discovery-client",
       "batch-allocation-evidence",
     ],
     requiredEnv: ["JST_APP_KEY", "JST_APP_SECRET", "JST_ACCESS_TOKEN", "JST_SYNC_ACTOR_ID"],
-    optionalEnv: ["JST_BASE_URL"],
+    optionalEnv: ["JST_BASE_URL", "JST_INVENTORY_SYNC_ENABLED", "JST_LIVE_VERIFIED_AT"],
+    liveVerificationEnv: "JST_LIVE_VERIFIED_AT",
     sourceDocs: [
       "https://openweb.jushuitan.com/doc?docId=20",
       "https://openweb.jushuitan.com/doc?docId=30",
       "https://openweb.jushuitan.com/doc?docId=70",
       "https://openweb.jushuitan.com/dev-doc?docType=8&docId=34",
       "https://openweb.jushuitan.com/dev-doc?docType=3&docId=15",
+      "https://openweb.jushuitan.com/dev-doc?docType=1&docId=3",
     ],
-    blocker: "日出库受控 staging 已就绪，库存为查询客户端；需开放平台 app/token、IP 白名单、接口权限及系统同步责任人 ID",
+    blocker: "日出库与库存总量增量均进入受控 staging；需开放平台 app/token、IP 白名单、接口权限、责任人 ID，并在真实对账/UAT 后设置 JST_LIVE_VERIFIED_AT",
     isConfigured(env = process.env) {
       const actor = Number(env.JST_SYNC_ACTOR_ID);
       return jstConfigFromEnv(env) !== null && Number.isInteger(actor) && actor > 0;
@@ -100,12 +117,14 @@ export const CONNECTORS: Connector[] = [
       "FEISHU_APP_ID",
       "FEISHU_APP_SECRET",
       "FEISHU_CHAT_ID",
+      "FEISHU_LIVE_VERIFIED_AT",
     ],
+    liveVerificationEnv: "FEISHU_LIVE_VERIFIED_AT",
     sourceDocs: [
       "https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal",
       "https://open.feishu.cn/document/server-docs/im-v1/message/create",
     ],
-    blocker: "配置自定义 webhook，或配置应用 app_id/app_secret/chat_id；应用模式支持目标群与 UUID 去重",
+    blocker: "配置自定义 webhook，或配置应用 app_id/app_secret/chat_id；完成真实群投递/UAT 后设置 FEISHU_LIVE_VERIFIED_AT",
     isConfigured(env = process.env) {
       return Boolean(env.FEISHU_WEBHOOK_URL?.trim()) || feishuAppConfigFromEnv(env) !== null;
     },
@@ -133,24 +152,27 @@ export interface ConnectorReadiness {
   requiredEnv: string[];
   optionalEnv: string[];
   missingEnv: string[];
+  liveVerifiedAt: string | null;
   blocker: string | null;
 }
 
 export function getConnectorReadiness(env: NodeJS.ProcessEnv = process.env): ConnectorReadiness[] {
   return CONNECTORS.map((connector) => {
     const configured = connector.isConfigured(env);
+    const verifiedAt = liveVerifiedAt(connector.liveVerificationEnv, env);
     return {
       key: connector.key,
       label: connector.label,
       implementation: connector.implementation,
       configured,
-      operational: connector.implementation === "ready" && configured,
+      operational: connector.implementation === "ready" && configured && verifiedAt !== null,
       auth: connector.auth,
       systemOfRecord: connector.systemOfRecord,
       capabilities: [...connector.capabilities],
       requiredEnv: [...connector.requiredEnv],
       optionalEnv: [...connector.optionalEnv],
       missingEnv: connector.missingEnv(env),
+      liveVerifiedAt: verifiedAt,
       blocker: connector.blocker ?? null,
     };
   });

@@ -48,15 +48,33 @@ export interface JstOutboundOrder {
 export interface JstInventoryRow {
   skuCode: string;
   itemId: string | null;
+  name: string | null;
   warehouseCode: string | null;
   qty: string;
   orderLockQty: string | null;
   pickLockQty: string | null;
+  inventoryLockQty: string | null;
   virtualQty: string | null;
   purchaseQty: string | null;
+  returnQty: string | null;
+  inboundQty: string | null;
+  transferInboundQty: string | null;
+  saleRefundInboundQty: string | null;
   defectiveQty: string | null;
+  minQty: string | null;
+  maxQty: string | null;
   modifiedAt: string | null;
   cursor: string;
+}
+
+export interface JstWarehouse {
+  warehouseCode: string;
+  companyCode: string;
+  name: string;
+  isMain: boolean;
+  status: string | null;
+  partnerRemark: string | null;
+  merchantRemark: string | null;
 }
 
 export interface JstPage<T> {
@@ -90,6 +108,13 @@ function required(value: unknown, field: string): string {
 
 function decimalString(value: unknown, field: string): string {
   const result = required(value, field);
+  if (!/^-?\d+(?:\.\d+)?$/.test(result)) throw new Error(`聚水潭响应 ${field} 不是十进制数`);
+  return result;
+}
+
+function optionalDecimalString(value: unknown, field: string): string | null {
+  const result = nonEmpty(value);
+  if (result === null) return null;
   if (!/^-?\d+(?:\.\d+)?$/.test(result)) throw new Error(`聚水潭响应 ${field} 不是十进制数`);
   return result;
 }
@@ -308,13 +333,21 @@ export class JstClient {
       return {
         skuCode: required(row.sku_id, "sku_id"),
         itemId: nonEmpty(row.i_id),
+        name: nonEmpty(row.name),
         warehouseCode: nonEmpty(row.wms_co_id),
         qty: decimalString(row.qty, "qty"),
-        orderLockQty: nonEmpty(row.order_lock),
-        pickLockQty: nonEmpty(row.pick_lock),
-        virtualQty: nonEmpty(row.virtual_qty),
-        purchaseQty: nonEmpty(row.purchase_qty),
-        defectiveQty: nonEmpty(row.defective_qty),
+        orderLockQty: optionalDecimalString(row.order_lock, "order_lock"),
+        pickLockQty: optionalDecimalString(row.pick_lock, "pick_lock"),
+        inventoryLockQty: optionalDecimalString(row.lock_qty, "lock_qty"),
+        virtualQty: optionalDecimalString(row.virtual_qty, "virtual_qty"),
+        purchaseQty: optionalDecimalString(row.purchase_qty, "purchase_qty"),
+        returnQty: optionalDecimalString(row.return_qty, "return_qty"),
+        inboundQty: optionalDecimalString(row.in_qty, "in_qty"),
+        transferInboundQty: optionalDecimalString(row.allocate_qty, "allocate_qty"),
+        saleRefundInboundQty: optionalDecimalString(row.sale_refund_qty, "sale_refund_qty"),
+        defectiveQty: optionalDecimalString(row.defective_qty, "defective_qty"),
+        minQty: optionalDecimalString(row.min_qty, "min_qty"),
+        maxQty: optionalDecimalString(row.max_qty, "max_qty"),
         modifiedAt: nonEmpty(row.modified),
         cursor: cursorString(row.ts, "ts"),
       };
@@ -327,6 +360,7 @@ export class JstClient {
     startCursor?: string;
     modifiedBegin?: string;
     modifiedEnd?: string;
+    includeLockQty?: boolean;
   }): Promise<JstInventoryRow[]> {
     const cursorMode = input.startCursor !== undefined;
     const timeMode = input.modifiedBegin !== undefined || input.modifiedEnd !== undefined;
@@ -348,12 +382,14 @@ export class JstClient {
         ts: cursor,
         page_index: 1,
         page_size: 100,
+        ...(input.includeLockQty ? { has_lock_qty: true } : {}),
         ...(input.warehouseCode ? { wms_co_id: input.warehouseCode } : {}),
       } : {
         modified_begin: input.modifiedBegin,
         modified_end: input.modifiedEnd,
         page_index: page + 1,
         page_size: 100,
+        ...(input.includeLockQty ? { has_lock_qty: true } : {}),
         ...(input.warehouseCode ? { wms_co_id: input.warehouseCode } : {}),
       });
       if (result.rows.length === 0) {
@@ -361,7 +397,12 @@ export class JstClient {
         break;
       }
       let maxCursor = cursor;
-      for (const row of result.rows) {
+      for (const sourceRow of result.rows) {
+        // The inventory response contract does not guarantee wms_co_id in each row. When the
+        // request is scoped to one warehouse, preserve that request grain explicitly.
+        const row = sourceRow.warehouseCode === null && input.warehouseCode
+          ? { ...sourceRow, warehouseCode: input.warehouseCode }
+          : sourceRow;
         const identity = `${row.skuCode}\0${row.warehouseCode ?? ""}`;
         const previous = latestBySkuWarehouse.get(identity);
         if (!previous || BigInt(row.cursor) > BigInt(previous.cursor)) {
@@ -376,12 +417,56 @@ export class JstClient {
           throw new Error("聚水潭库存游标未前进，已中止以避免无限重放");
         }
         cursor = maxCursor;
-      } else if (result.hasNext === false || result.rows.length < 100) {
+      } else if (result.hasNext === false || (result.hasNext === null && result.rows.length < 100)) {
         complete = true;
         break;
       }
     }
     if (!complete) throw new Error("聚水潭库存分页超过安全上限，拒绝返回不完整结果");
     return [...latestBySkuWarehouse.values()];
+  }
+
+  async queryWarehousesPage(
+    pageIndex: number,
+    pageSize = 30,
+  ): Promise<JstPage<JstWarehouse>> {
+    if (!Number.isInteger(pageIndex) || pageIndex < 1) throw new Error("聚水潭仓库页码必须从 1 开始");
+    if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+      throw new Error("聚水潭仓库每页数量必须为 1–100");
+    }
+    const data = await this.call("/open/wms/partner/query", {
+      page_index: pageIndex,
+      page_size: pageSize,
+    });
+    const rows = extractRows(data).map((raw, index) => {
+      const row = asObject(raw, `warehouses[${index}]`);
+      return {
+        warehouseCode: required(row.wms_co_id, "wms_co_id"),
+        companyCode: required(row.co_id, "co_id"),
+        name: required(row.name, "name"),
+        isMain: row.is_main === true || row.is_main === 1 || row.is_main === "1",
+        status: nonEmpty(row.status),
+        partnerRemark: nonEmpty(row.remark1),
+        merchantRemark: nonEmpty(row.remark2),
+      };
+    });
+    return { rows, hasNext: parseHasNext(data) };
+  }
+
+  async fetchWarehouses(): Promise<JstWarehouse[]> {
+    const pageSize = 30;
+    const byCode = new Map<string, JstWarehouse>();
+    let complete = false;
+    for (let pageIndex = 1; pageIndex <= MAX_CURSOR_PAGES; pageIndex++) {
+      const page = await this.queryWarehousesPage(pageIndex, pageSize);
+      for (const row of page.rows) byCode.set(row.warehouseCode, row);
+      if (page.hasNext === false || (page.hasNext === null && page.rows.length < pageSize)) {
+        complete = true;
+        break;
+      }
+    }
+    if (!complete) throw new Error("聚水潭仓库分页超过安全上限，拒绝返回不完整结果");
+    return [...byCode.values()].sort((left, right) =>
+      left.warehouseCode.localeCompare(right.warehouseCode, "en"));
   }
 }
