@@ -2,7 +2,7 @@
 
 import SearchInput from "@/components/SearchInput";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, Form, Modal, Space, Table } from "antd";
 import type { FormInstance, TableProps } from "antd";
 import type { ColumnsType } from "antd/es/table";
@@ -79,6 +79,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
   const [openingEditId, setOpeningEditId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const queryParamsKey = JSON.stringify(queryParams ?? {});
+  const previousQueryParamsKey = useRef(queryParamsKey);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -104,8 +105,15 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
   }, [apiPath, q, page, pageSize, message, queryParamsKey]);
 
   useEffect(() => {
+    if (previousQueryParamsKey.current !== queryParamsKey) {
+      previousQueryParamsKey.current = queryParamsKey;
+      if (page !== 1) {
+        setPage(1);
+        return;
+      }
+    }
     void load();
-  }, [load]);
+  }, [load, page, queryParamsKey]);
 
   const openCreate = () => {
     setEditing(null);

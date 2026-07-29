@@ -38,6 +38,21 @@ describe("suggestRiskAction 优先级", () => {
     expect(suggestRiskAction({ ...base, cover: 400 })).toBe("滞销关注");
     expect(suggestRiskAction({ ...base, cover: 45 })).toBeNull();
   });
+  it("非销售用途不制造滞销动作，但保留效期与注记动作", () => {
+    expect(suggestRiskAction({ ...base, cover: null, includeSlowMover: false })).toBeNull();
+    expect(suggestRiskAction({
+      ...base,
+      cover: null,
+      minDaysLeft: 60,
+      includeSlowMover: false,
+    })).toBe("优先出库");
+    expect(suggestRiskAction({
+      ...base,
+      cover: null,
+      palletRemark: "临期禁售",
+      includeSlowMover: false,
+    })).toBe("禁售隔离");
+  });
   it("零库存且无注记 → null（不进工作台）", () => {
     expect(suggestRiskAction({ ...base, onHand: 0, minDaysLeft: -3 })).toBeNull();
   });

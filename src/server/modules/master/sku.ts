@@ -171,6 +171,10 @@ export async function updateSku(id: number, input: unknown, actor?: SessionUser,
   return db.transaction(async (tx: AnyTx) => {
   const [existing] = await tx.select().from(schema.skus).where(eq(schema.skus.id, id));
   if (!existing) throw new ApiError(404, "SKU 不存在");
+  const [existingParams] = await tx
+    .select({ logisticsLeadDays: schema.skuParams.logisticsLeadDays })
+    .from(schema.skuParams)
+    .where(eq(schema.skuParams.skuId, id));
   if (v.code !== existing.code) {
     throw new ApiError(409, "SKU 主码已用于历史关联，不可直接改码；请新建替代 SKU，并把旧码登记为别名");
   }
@@ -219,7 +223,7 @@ export async function updateSku(id: number, input: unknown, actor?: SessionUser,
       entity: "sku",
       entityId: id,
       action: "update",
-      before: existing,
+      before: { ...existing, logisticsLeadDays: existingParams?.logisticsLeadDays ?? null },
       after: { ...updated, ...(v.logisticsLeadDays !== undefined ? { logisticsLeadDays: v.logisticsLeadDays ?? null } : {}) },
     });
   }

@@ -30,6 +30,8 @@ export interface RiskSignal {
   nearExpiryDays: number;
   /** 货盘处置注记原文（无 = null） */
   palletRemark: string | null;
+  /** false 时保留效期/注记动作，但不因无动销或高覆盖制造销售型动作。 */
+  includeSlowMover?: boolean;
 }
 
 /** 滞销判定：有库存但无动销，或可销天数超过阈值 */
@@ -45,7 +47,7 @@ export function suggestRiskAction(s: RiskSignal): RiskAction | null {
   if (remark.includes("报废") || (s.minDaysLeft != null && s.minDaysLeft <= 0)) return "报废评审";
   if (remark.includes("禁售")) return "禁售隔离";
   if (remark.includes("商务")) return "商务处置";
-  const slow = isSlowMover(s);
+  const slow = s.includeSlowMover !== false && isSlowMover(s);
   if (s.minDaysLeft != null && s.minDaysLeft <= s.nearExpiryDays) return slow ? "促销清库" : "优先出库";
   if (slow) return "滞销关注";
   return null;

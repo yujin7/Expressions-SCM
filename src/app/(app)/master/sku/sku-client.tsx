@@ -60,7 +60,7 @@ export default function SkuClient() {
       <CrudTable<SkuRow>
         rowActions={(r, reload) => (
           <>
-            {r.namingStatus === "ready" && r.standardName ? (
+            {canWrite && r.namingStatus === "ready" && r.standardName ? (
               <Tooltip title={`建议：${r.standardName}`}>
                 <Button
                   type="link"

@@ -23,6 +23,7 @@ import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
 import { coverDays, daysLeftOf, getOnHandBySku } from "@/server/core/stock-view";
 import { num, r1 } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
+import { participatesInNormalSalesMovement } from "@/server/rules/sku-standardization";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -76,8 +77,22 @@ export async function getRiskWorklist(
   const q = (query.q ?? "").trim().toLowerCase();
 
   /* ── SKU 主档（active 全类型——包材也可能滞销/有注记） ── */
-  const skuRows: { id: number; code: string; name: string; brand: string | null; nearExpiryDays: number | null }[] = await db
-    .select({ id: schema.skus.id, code: schema.skus.code, name: schema.skus.name, brand: schema.brands.nameCn, nearExpiryDays: schema.skus.nearExpiryDays })
+  const skuRows: {
+    id: number;
+    code: string;
+    name: string;
+    brand: string | null;
+    nearExpiryDays: number | null;
+    commercialRole: string;
+  }[] = await db
+    .select({
+      id: schema.skus.id,
+      code: schema.skus.code,
+      name: schema.skus.name,
+      brand: schema.brands.nameCn,
+      nearExpiryDays: schema.skus.nearExpiryDays,
+      commercialRole: schema.skus.commercialRole,
+    })
     .from(schema.skus)
     .leftJoin(schema.brands, eq(schema.skus.brandId, schema.brands.id))
     .where(eq(schema.skus.active, true));
@@ -161,6 +176,7 @@ export async function getRiskWorklist(
       slowThreshold,
       nearExpiryDays: nearThreshBySku.get(sku.id) ?? 90,
       palletRemark: remark?.text ?? null,
+      includeSlowMover: participatesInNormalSalesMovement(sku.commercialRole),
     });
     if (!action) continue;
     all.push({

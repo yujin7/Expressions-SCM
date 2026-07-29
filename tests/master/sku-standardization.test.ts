@@ -45,6 +45,27 @@ describe("SKU 标准化写路径", () => {
     expect(params.logisticsLeadDays).toBe(4);
     const audits = await db.select().from(auditLogs).where(eq(auditLogs.entityId, created.id));
     expect(audits.map((audit) => audit.action)).toContain("standardize_name");
+
+    await updateSku(created.id, {
+      code: created.code,
+      name: applied.name,
+      spuId: spu.id,
+      skuType: "finished",
+      baseUom: "盒",
+      brandId: brand.id,
+      channelId: channel.id,
+      shortName: "胶原蛋白肽饮",
+      version: "升级版",
+      spec: "50ml×10",
+      commercialRole: "retail",
+      logisticsLeadDays: 7,
+    }, actor, db);
+    const [updateAudit] = await db
+      .select()
+      .from(auditLogs)
+      .where(eq(auditLogs.action, "update"));
+    expect(updateAudit.before).toMatchObject({ logisticsLeadDays: 4 });
+    expect(updateAudit.after).toMatchObject({ logisticsLeadDays: 7 });
   });
 
   it("禁止直接改动已使用的 SKU 主码", async () => {
