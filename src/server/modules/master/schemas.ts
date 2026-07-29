@@ -27,7 +27,11 @@ export type SpuInput = z.infer<typeof spuSchema>;
 // ---------- SKU ----------
 export const SKU_TYPES = ["finished", "semi", "raw", "packaging", "service"] as const; // 04 §3 五值
 export const skuSchema = z.object({
-  code: z.string().trim().min(1, "编码必填").refine((c) => checkCode(c).ok, (c) => ({ message: checkCode(c).reason ?? "编码不合规" })),
+  /** 新建时留空由服务端按 S1 原子取号；历史/外部真实编码仍可显式录入。 */
+  code: z.preprocess(
+    emptyToUndef,
+    z.string().trim().refine((c) => checkCode(c).ok, (c) => ({ message: checkCode(c).reason ?? "编码不合规" })).optional(),
+  ),
   name: z.string().trim().min(1, "货品名称必填"),
   spuId: z.number().int().positive({ message: "必须选择所属 SPU" }),
   skuType: z.enum(SKU_TYPES),

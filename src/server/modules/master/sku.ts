@@ -11,6 +11,12 @@ import {
   COMMERCIAL_ROLES,
   type CommercialRole,
 } from "@/server/rules/sku-standardization";
+import {
+  assertGovernedSkuCode,
+  generateGovernedSkuCode,
+  isGovernedSkuCode,
+  normalizeSkuOrigin,
+} from "@/server/rules/sku-code";
 
 type SkuType = (typeof SKU_TYPES)[number];
 
@@ -101,15 +107,50 @@ export async function listSkus(
   return { data: rows, total };
 }
 
-async function assertDimensionIds(tx: AnyTx, brandId?: number | null, channelId?: number | null): Promise<void> {
+async function assertDimensionIds(
+  tx: AnyTx,
+  brandId?: number | null,
+  channelId?: number | null,
+): Promise<{ brandCode: string | null }> {
+  let brandCode: string | null = null;
   if (brandId != null) {
-    const [brand] = await tx.select({ id: schema.brands.id }).from(schema.brands).where(eq(schema.brands.id, brandId));
+    const [brand] = await tx
+      .select({ id: schema.brands.id, code: schema.brands.code })
+      .from(schema.brands)
+      .where(eq(schema.brands.id, brandId));
     if (!brand) throw new ApiError(400, "品牌不存在");
+    brandCode = brand.code;
   }
   if (channelId != null) {
     const [channel] = await tx.select({ id: schema.channels.id }).from(schema.channels).where(eq(schema.channels.id, channelId));
     if (!channel) throw new ApiError(400, "渠道不存在");
   }
+  return { brandCode };
+}
+
+async function nextGovernedSkuCode(
+  tx: AnyTx,
+  brandCode: string | null,
+  skuType: SkuType,
+): Promise<string> {
+  const origin = normalizeSkuOrigin(brandCode);
+  for (let guard = 0; guard < 100_000; guard++) {
+    const [counter] = await tx
+      .insert(schema.docCounters)
+      .values({ prefix: "SKU-S1", bizDate: "GLOBAL", lastNo: 1 })
+      .onConflictDoUpdate({
+        target: [schema.docCounters.prefix, schema.docCounters.bizDate],
+        set: { lastNo: sql`${schema.docCounters.lastNo} + 1` },
+      })
+      .returning({ lastNo: schema.docCounters.lastNo });
+    const code = generateGovernedSkuCode({ origin, skuType, sequence: counter.lastNo });
+    const [duplicate] = await tx
+      .select({ id: schema.skus.id })
+      .from(schema.skus)
+      .where(eq(schema.skus.code, code));
+    if (!duplicate) return code;
+  }
+  throw new ApiError(500, "SKU 取号异常：连续碰撞超过安全上限");
 }
 
 /**
@@ -122,46 +163,57 @@ export async function createSku(input: unknown, actor?: SessionUser, dbArg?: Any
   const v = skuSchema.parse(input);
   const db: AnyTx = dbArg ?? (await getDbAsync());
   return db.transaction(async (tx: AnyTx) => {
-  await assertDimensionIds(tx, v.brandId, v.channelId);
-  const [created] = await tx
-    .insert(schema.skus)
-    .values({
-      code: v.code,
-      name: v.name, // 修复：W1 加列后 service 漏写，UI 建的 SKU 名称恒为空串
-      brandId: v.brandId ?? null,
-      channelId: v.channelId ?? null,
-      shortName: v.shortName ?? null,
-      commercialRole: v.commercialRole ?? "retail",
-      lifecycle: v.lifecycle ?? "on_sale",
-      spuId: v.spuId,
-      skuType: v.skuType,
-      baseUom: v.baseUom,
-      spec: v.spec ?? null,
-      version: v.version ?? null,
-      prodMode: v.prodMode ?? null,
-      lossCategory: v.lossCategory ?? null,
-      shelfLifeDays: v.shelfLifeDays ?? null,
-      nearExpiryDays: v.nearExpiryDays ?? null,
-      active: v.active,
-    })
-    .returning();
-  if (v.logisticsLeadDays !== undefined) {
-    await tx.insert(schema.skuParams).values({
-      skuId: created.id,
-      logisticsLeadDays: v.logisticsLeadDays ?? null,
-      updatedBy: actor?.id ?? null,
-    });
-  }
-  if (actor) {
-    await writeAudit(tx, {
-      userId: actor.id,
-      entity: "sku",
-      entityId: created.id,
-      action: "create",
-      after: { ...created, logisticsLeadDays: v.logisticsLeadDays ?? null },
-    });
-  }
-  return created;
+    const { brandCode } = await assertDimensionIds(tx, v.brandId, v.channelId);
+    let code = v.code;
+    if (!code) {
+      code = await nextGovernedSkuCode(tx, brandCode, v.skuType);
+    } else if (isGovernedSkuCode(code)) {
+      code = code.toUpperCase();
+      try {
+        assertGovernedSkuCode(code, { origin: brandCode, skuType: v.skuType });
+      } catch (error) {
+        throw new ApiError(400, (error as Error).message);
+      }
+    }
+    const [created] = await tx
+      .insert(schema.skus)
+      .values({
+        code,
+        name: v.name,
+        brandId: v.brandId ?? null,
+        channelId: v.channelId ?? null,
+        shortName: v.shortName ?? null,
+        commercialRole: v.commercialRole ?? "retail",
+        lifecycle: v.lifecycle ?? "on_sale",
+        spuId: v.spuId,
+        skuType: v.skuType,
+        baseUom: v.baseUom,
+        spec: v.spec ?? null,
+        version: v.version ?? null,
+        prodMode: v.prodMode ?? null,
+        lossCategory: v.lossCategory ?? null,
+        shelfLifeDays: v.shelfLifeDays ?? null,
+        nearExpiryDays: v.nearExpiryDays ?? null,
+        active: v.active,
+      })
+      .returning();
+    if (v.logisticsLeadDays !== undefined) {
+      await tx.insert(schema.skuParams).values({
+        skuId: created.id,
+        logisticsLeadDays: v.logisticsLeadDays ?? null,
+        updatedBy: actor?.id ?? null,
+      });
+    }
+    if (actor) {
+      await writeAudit(tx, {
+        userId: actor.id,
+        entity: "sku",
+        entityId: created.id,
+        action: "create",
+        after: { ...created, logisticsLeadDays: v.logisticsLeadDays ?? null },
+      });
+    }
+    return created;
   });
 }
 
@@ -169,65 +221,65 @@ export async function updateSku(id: number, input: unknown, actor?: SessionUser,
   const v = skuSchema.parse(input);
   const db: AnyTx = dbArg ?? (await getDbAsync());
   return db.transaction(async (tx: AnyTx) => {
-  const [existing] = await tx.select().from(schema.skus).where(eq(schema.skus.id, id));
-  if (!existing) throw new ApiError(404, "SKU 不存在");
-  const [existingParams] = await tx
-    .select({ logisticsLeadDays: schema.skuParams.logisticsLeadDays })
-    .from(schema.skuParams)
-    .where(eq(schema.skuParams.skuId, id));
-  if (v.code !== existing.code) {
-    throw new ApiError(409, "SKU 主码已用于历史关联，不可直接改码；请新建替代 SKU，并把旧码登记为别名");
-  }
-  await assertDimensionIds(tx, v.brandId, v.channelId);
-  const [updated] = await tx
-    .update(schema.skus)
-    .set({
-      code: v.code,
-      name: v.name,
-      brandId: v.brandId ?? null,
-      channelId: v.channelId ?? null,
-      shortName: v.shortName ?? null,
-      commercialRole: v.commercialRole ?? existing.commercialRole,
-      lifecycle: v.lifecycle ?? "on_sale",
-      spuId: v.spuId,
-      skuType: v.skuType,
-      baseUom: v.baseUom,
-      spec: v.spec ?? null,
-      version: v.version ?? null,
-      prodMode: v.prodMode ?? null,
-      lossCategory: v.lossCategory ?? null,
-      shelfLifeDays: v.shelfLifeDays ?? null,
-      nearExpiryDays: v.nearExpiryDays ?? null,
-      active: v.active,
-      updatedAt: new Date(),
-    })
-    .where(eq(schema.skus.id, id))
-    .returning();
-  if (v.logisticsLeadDays !== undefined) {
-    await tx.insert(schema.skuParams).values({
-      skuId: id,
-      logisticsLeadDays: v.logisticsLeadDays ?? null,
-      updatedBy: actor?.id ?? null,
-    }).onConflictDoUpdate({
-      target: schema.skuParams.skuId,
-      set: {
+    const [existing] = await tx.select().from(schema.skus).where(eq(schema.skus.id, id));
+    if (!existing) throw new ApiError(404, "SKU 不存在");
+    const [existingParams] = await tx
+      .select({ logisticsLeadDays: schema.skuParams.logisticsLeadDays })
+      .from(schema.skuParams)
+      .where(eq(schema.skuParams.skuId, id));
+    if (v.code !== undefined && v.code !== existing.code) {
+      throw new ApiError(409, "SKU 主码已用于历史关联，不可直接改码；请新建替代 SKU，并把旧码登记为别名");
+    }
+    await assertDimensionIds(tx, v.brandId, v.channelId);
+    const [updated] = await tx
+      .update(schema.skus)
+      .set({
+        code: existing.code,
+        name: v.name,
+        brandId: v.brandId ?? null,
+        channelId: v.channelId ?? null,
+        shortName: v.shortName ?? null,
+        commercialRole: v.commercialRole ?? existing.commercialRole,
+        lifecycle: v.lifecycle ?? "on_sale",
+        spuId: v.spuId,
+        skuType: v.skuType,
+        baseUom: v.baseUom,
+        spec: v.spec ?? null,
+        version: v.version ?? null,
+        prodMode: v.prodMode ?? null,
+        lossCategory: v.lossCategory ?? null,
+        shelfLifeDays: v.shelfLifeDays ?? null,
+        nearExpiryDays: v.nearExpiryDays ?? null,
+        active: v.active,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.skus.id, id))
+      .returning();
+    if (v.logisticsLeadDays !== undefined) {
+      await tx.insert(schema.skuParams).values({
+        skuId: id,
         logisticsLeadDays: v.logisticsLeadDays ?? null,
         updatedBy: actor?.id ?? null,
-        updatedAt: new Date(),
-      },
-    });
-  }
-  if (actor) {
-    await writeAudit(tx, {
-      userId: actor.id,
-      entity: "sku",
-      entityId: id,
-      action: "update",
-      before: { ...existing, logisticsLeadDays: existingParams?.logisticsLeadDays ?? null },
-      after: { ...updated, ...(v.logisticsLeadDays !== undefined ? { logisticsLeadDays: v.logisticsLeadDays ?? null } : {}) },
-    });
-  }
-  return updated;
+      }).onConflictDoUpdate({
+        target: schema.skuParams.skuId,
+        set: {
+          logisticsLeadDays: v.logisticsLeadDays ?? null,
+          updatedBy: actor?.id ?? null,
+          updatedAt: new Date(),
+        },
+      });
+    }
+    if (actor) {
+      await writeAudit(tx, {
+        userId: actor.id,
+        entity: "sku",
+        entityId: id,
+        action: "update",
+        before: { ...existing, logisticsLeadDays: existingParams?.logisticsLeadDays ?? null },
+        after: { ...updated, ...(v.logisticsLeadDays !== undefined ? { logisticsLeadDays: v.logisticsLeadDays ?? null } : {}) },
+      });
+    }
+    return updated;
   });
 }
 

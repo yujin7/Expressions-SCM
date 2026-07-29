@@ -6,6 +6,18 @@ const nextConfig: NextConfig = {
   // cannot invalidate the active HMR cache. CI and `npm run build` keep .next.
   distDir: process.env.NEXT_DIST_DIR?.trim() || ".next",
   output: "standalone", // 生产容器化（ops/Dockerfile）
+  // 本地恢复证据和用户文件由运行时卷/目录提供，绝不能被文件追踪复制进 standalone。
+  // Docker 构建另有 .dockerignore 双重防线；这里同时保护本地 release build。
+  outputFileTracingExcludes: {
+    "/*": [
+      "./.data/**/*",
+      "./backups/**/*",
+      "./uploads/**/*",
+      "./.artifacts/**/*",
+      "./.next-*/*",
+      "./tmp/**/*",
+    ],
+  },
   // 服务器组件里用到的原生依赖
   serverExternalPackages: ["pg", "pg-boss", "@node-rs/argon2", "exceljs", "@electric-sql/pglite"],
 

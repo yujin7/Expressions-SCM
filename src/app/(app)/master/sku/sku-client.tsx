@@ -1,7 +1,24 @@
 "use client";
 
 import { useState } from "react";
-import { App, Button, Drawer, Form, Input, InputNumber, Select, Switch, Tag, Tooltip, Typography } from "antd";
+import {
+  Alert,
+  App,
+  Button,
+  Descriptions,
+  Drawer,
+  Form,
+  Input,
+  InputNumber,
+  Select,
+  Space,
+  Switch,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+} from "antd";
+import { InfoCircleOutlined } from "@ant-design/icons";
 import AttachmentPanel from "@/components/AttachmentPanel";
 import CrudTable from "@/components/CrudTable";
 import { hasAnyRole, useMe } from "@/components/useMe";
@@ -52,11 +69,22 @@ export default function SkuClient() {
   const [panoramaId, setPanoramaId] = useState<number | null>(null);
   const [attachSku, setAttachSku] = useState<SkuRow | null>(null);
   const [commercialRole, setCommercialRole] = useState<string>();
+  const [codeGuideOpen, setCodeGuideOpen] = useState(false);
   return (
     <div>
-      <Typography.Title level={4} style={{ marginTop: 0 }}>
-        SKU 货品
-      </Typography.Title>
+      <Space align="center" style={{ marginBottom: 16 }}>
+        <Typography.Title level={4} style={{ margin: 0 }}>
+          SKU 货品
+        </Typography.Title>
+        <Button
+          type="text"
+          size="small"
+          icon={<InfoCircleOutlined />}
+          onClick={() => setCodeGuideOpen(true)}
+        >
+          编码标准
+        </Button>
+      </Space>
       <CrudTable<SkuRow>
         rowActions={(r, reload) => (
           <>
@@ -165,11 +193,16 @@ export default function SkuClient() {
         ]}
         formItems={(editing) => (
           <>
-            <Form.Item name="code" label="编码" rules={[{ required: true, message: "编码必填" }]}>
+            <Form.Item
+              name="code"
+              label="编码"
+              tooltip={editing == null ? "留空时，保存会按 S1 标准在服务端原子取号" : "稳定主码已用于历史关联，不可修改"}
+              extra={editing == null ? "推荐留空自动生成；只有已存在的外部/历史商家编码才手工填写。" : undefined}
+            >
               <Input
                 disabled={editing != null}
                 maxLength={30}
-                placeholder="请输入现行商家编码，如 E02-088"
+                placeholder="留空自动生成；或输入真实历史/外部码"
               />
             </Form.Item>
             <Form.Item name="name" label="货品名称" rules={[{ required: true, message: "货品名称必填" }]}>
@@ -245,6 +278,58 @@ export default function SkuClient() {
         )}
       />
       <SkuPanoramaDrawer skuId={panoramaId} onClose={() => setPanoramaId(null)} />
+      <Drawer
+        title="SKU 编码标准 S1"
+        width={620}
+        open={codeGuideOpen}
+        onClose={() => setCodeGuideOpen(false)}
+      >
+        <Space direction="vertical" size={16} style={{ width: "100%" }}>
+          <Alert
+            type="info"
+            showIcon
+            message="新建时留空即可自动生成；所有历史编码保持原样"
+            description="S1 只表达稳定身份。渠道、规格、供应商、生命周期和 BOM 关系会变化，必须保存在结构化字段中，不写进永久编码。"
+          />
+          <Descriptions bordered size="small" column={1}>
+            <Descriptions.Item label="格式">
+              <Typography.Text code>S1-来源-类型-六位流水-两位校验码</Typography.Text>
+            </Descriptions.Item>
+            <Descriptions.Item label="示例">
+              <Typography.Text code>S1-EXP-F-000123-K7</Typography.Text>
+            </Descriptions.Item>
+            <Descriptions.Item label="来源">
+              品牌主档短码；共享或中性物料使用 <Typography.Text code>GEN</Typography.Text>
+            </Descriptions.Item>
+            <Descriptions.Item label="流水">
+              企业全局原子取号，允许跳号，不按品牌重复计数
+            </Descriptions.Item>
+            <Descriptions.Item label="校验码">
+              发现常见误录；不是权限或安全签名
+            </Descriptions.Item>
+          </Descriptions>
+          <Table
+            size="small"
+            pagination={false}
+            rowKey="code"
+            columns={[
+              { title: "类型码", dataIndex: "code", width: 90 },
+              { title: "SKU 类型", dataIndex: "label" },
+            ]}
+            dataSource={[
+              { code: "F", label: "成品 finished" },
+              { code: "H", label: "半成品 semi" },
+              { code: "R", label: "原料 raw" },
+              { code: "P", label: "包材 packaging" },
+              { code: "V", label: "服务 service" },
+            ]}
+          />
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            手工输入以 S1- 开头的编码时，系统会校验格式、校验码、品牌来源和货品类型。
+            历史商家编码及外部系统编码继续通过稳定主码和别名解析，不会被自动改写。
+          </Typography.Paragraph>
+        </Space>
+      </Drawer>
       <Drawer
         title={attachSku ? `图片与附件 — ${attachSku.code} ${attachSku.name}` : "图片与附件"}
         width={560}

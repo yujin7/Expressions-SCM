@@ -7,12 +7,12 @@ const relativeTargets = [
   ".next-dev",
   ".next-webpack",
   ".cache",
-  ...(includeBuild ? [".next"] : []),
+  ...(includeBuild ? [".next", ".next-live", ".artifacts", "tmp", "tsconfig.tsbuildinfo"] : []),
 ];
 
 for (const relative of relativeTargets) {
   const target = path.resolve(root, relative);
-  if (path.dirname(target) !== root) {
+  if (path.dirname(target) !== root || !relativeTargets.includes(relative)) {
     throw new Error(`Refusing broad cache deletion: ${target}`);
   }
   rmSync(target, { recursive: true, force: true });

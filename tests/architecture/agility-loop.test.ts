@@ -67,6 +67,21 @@ describe("agile delivery loop", () => {
       .toBeLessThan(dockerfile.indexOf("RUN npm ci"));
   });
 
+  it("keeps local data, recovery evidence, uploads, and environment files out of standalone", () => {
+    const config = read("next.config.ts");
+    const pkg = JSON.parse(read("package.json")) as { scripts: Record<string, string> };
+    const dockerfile = read("Dockerfile");
+    const sanitizer = read("scripts/sanitize-standalone.ts");
+
+    for (const excluded of [".data/**/*", "backups/**/*", "uploads/**/*", ".artifacts/**/*", "tmp/**/*"]) {
+      expect(config).toContain(excluded);
+    }
+    expect(pkg.scripts.build).toContain("scripts/sanitize-standalone.ts");
+    expect(dockerfile).toContain("RUN npm run build");
+    expect(sanitizer).toContain('name !== ".env"');
+    expect(sanitizer).toContain("Sensitive/local directory leaked into standalone");
+  });
+
   it("uses one Node major locally, in CI, and in the production image", () => {
     const pkg = JSON.parse(read("package.json")) as { packageManager?: string };
     expect(read(".nvmrc").trim()).toBe("24");
