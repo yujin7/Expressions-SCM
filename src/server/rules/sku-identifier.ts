@@ -6,6 +6,33 @@ export const SKU_PACKAGING_LEVELS = ["each", "inner", "case", "pallet", "other"]
 export type SkuIdentifierKind = (typeof SKU_IDENTIFIER_KINDS)[number];
 export type SkuPackagingLevel = (typeof SKU_PACKAGING_LEVELS)[number];
 
+export const SKU_EXTERNAL_SCOPES = ["JST", "JIANDAOYUN", "YONYOU"] as const;
+
+const EXTERNAL_SCOPE_ALIASES: Record<string, (typeof SKU_EXTERNAL_SCOPES)[number]> = {
+  JST: "JST",
+  JUSHUITAN: "JST",
+  "聚水潭": "JST",
+  JDY: "JIANDAOYUN",
+  JIANDAOYUN: "JIANDAOYUN",
+  "简道云": "JIANDAOYUN",
+  YY: "YONYOU",
+  YONYOU: "YONYOU",
+  YONSUITE: "YONYOU",
+  YONBIP: "YONYOU",
+  "用友": "YONYOU",
+};
+
+/** Canonicalize known system aliases while preserving explicit scopes for future systems. */
+export function normalizeSkuIdentifierScope(
+  kind: SkuIdentifierKind,
+  raw: string | null | undefined,
+): string {
+  if (kind === "gtin") return "GS1";
+  const normalized = (raw ?? "INTERNAL").normalize("NFKC").trim().toUpperCase();
+  if (kind === "external") return EXTERNAL_SCOPE_ALIASES[normalized] ?? normalized;
+  return normalized;
+}
+
 /** GS1 Mod-10；支持 GTIN-8/12/13/14。 */
 export function isValidGtin(raw: string): boolean {
   const value = raw.trim();
@@ -68,7 +95,7 @@ export function normalizeSkuIdentifier(input: SkuIdentifierInput) {
   return {
     ...input,
     value: input.value.trim(),
-    scope: input.kind === "gtin" ? "GS1" : (input.scope?.trim().toUpperCase() || "INTERNAL"),
+    scope: normalizeSkuIdentifierScope(input.kind, input.scope),
     uom: input.uom?.trim() || null,
     packagingLevel: input.packagingLevel ?? null,
     note: input.note?.trim() || null,

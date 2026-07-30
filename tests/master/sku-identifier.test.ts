@@ -147,4 +147,32 @@ describe("SKU 多标识治理", () => {
       setSkuIdentifierActive(second.id, conflictingInactive.id, true, actor, db),
     ).rejects.toThrow(`SKU ${first.code}`);
   });
+
+  it("历史外部 scope 别名与新规范 scope 等价，不能跨 SKU 重复认领", async () => {
+    const { db } = await createTestDb();
+    const [user] = await db.insert(users).values({ username: "scope-guard", name: "Scope 防重" }).returning();
+    const [spu] = await db.insert(spus).values({ code: "P99803", nameCn: "Scope 防重" }).returning();
+    const [first, second] = await db.insert(skus).values([
+      { code: "SCOPE-A", name: "A", spuId: spu.id, skuType: "finished", baseUom: "盒" },
+      { code: "SCOPE-B", name: "B", spuId: spu.id, skuType: "finished", baseUom: "盒" },
+    ]).returning();
+    const actor = { id: user.id, name: user.name, roles: ["admin"], isApprover: true };
+
+    await db.insert(skuIdentifiers).values({
+      skuId: first.id,
+      kind: "external",
+      value: "EXT-001",
+      scope: "JUSHUITAN",
+    });
+    await expect(createSkuIdentifier(first.id, {
+      kind: "external",
+      value: "EXT-001",
+      scope: "JST",
+    }, actor, db)).rejects.toThrow("该标识已登记");
+    await expect(createSkuIdentifier(second.id, {
+      kind: "external",
+      value: "EXT-001",
+      scope: "聚水潭",
+    }, actor, db)).rejects.toThrow(`SKU ${first.code}`);
+  });
 });

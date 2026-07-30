@@ -147,7 +147,7 @@ export const CONNECTORS: Connector[] = [
     requiredEnv: [...YONYOU_REQUIRED_ENV],
     optionalEnv: ["YY_CLIENT_ID", "YY_CLIENT_SECRET"],
     sourceDocs: ["https://developer.yonyou.com/openAPI"],
-    blocker: "C4 人工账号不能替代 OpenAPI 应用；当前开放平台开发者身份尚未注册，待注册、创建并授权企业应用、确认租户/组织、token URL 与获批接口",
+    blocker: "C4 人工账号和 AppKey/AppSecret 对都不能单独证明可调用；待注册并授权企业应用、确认产品、租户/组织、公开 HTTPS 端点与获批接口，先完成沙箱只读对账",
     isConfigured(env = process.env) {
       return yonyouConfigFromEnv(env) !== null;
     },

@@ -22,6 +22,7 @@ import {
 } from "./sync-jiandaoyun";
 import { probeFeishuChats } from "./probe-feishu";
 import { runJiandaoyunContractAudit } from "./audit-jiandaoyun";
+import { auditYonyouReadiness } from "./audit-yonyou";
 
 const USAGE = `用法:
   npx tsx src/jobs/cli.ts reconcile-jst [YYYY-MM-DD]     缺省=昨日（Asia/Shanghai）
@@ -32,6 +33,7 @@ const USAGE = `用法:
   npx tsx src/jobs/cli.ts sync-jiandaoyun-form <key>     同步一条命名观察契约
   npx tsx src/jobs/cli.ts audit-jiandaoyun-contracts     只读输出九条契约的聚合控制总量
   npx tsx src/jobs/cli.ts probe-feishu-chats              只读列出应用机器人可见群/chat_id
+  npx tsx src/jobs/cli.ts audit-yonyou-readiness          只读检查用友配置/授权前置，不请求 token
   npx tsx src/jobs/cli.ts license-alert [YYYY-MM-DD]     缺省=今日
   npx tsx src/jobs/cli.ts snapshot-age [YYYY-MM-DD] [阈值天数=3]
   npx tsx src/jobs/cli.ts export-worker                  处理一批待办导出任务
@@ -46,6 +48,10 @@ async function main(): Promise<void> {
   }
   if (cmd === "audit-jiandaoyun-contracts") {
     console.log(JSON.stringify(await runJiandaoyunContractAudit(), null, 2));
+    return;
+  }
+  if (cmd === "audit-yonyou-readiness") {
+    console.log(JSON.stringify(auditYonyouReadiness(), null, 2));
     return;
   }
   const db = await getDbAsync();

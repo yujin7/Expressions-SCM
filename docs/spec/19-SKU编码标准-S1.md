@@ -84,6 +84,10 @@
 - 新 SKU：编码留空，由系统生成 S1；
 - 在该 SKU 的“标识”抽屉登记 `external`，作用域填写来源系统（如 `JST`、`JIANDAOYUN`
   或 `YONYOU`）；同一外部值必须绑定明确 scope，不能跨系统猜测等价；
+- 常见输入别名会标准化：`聚水潭/JUSHUITAN → JST`、`简道云/JDY → JIANDAOYUN`、
+  `用友/YonSuite/YonBIP → YONYOU`；未知系统仍保留人工填写的独立大写 scope；
+- 0039 迁移为无归属冲突的历史同义 scope 建立 canonical survivor；若同一外部码已指向
+  多个 SKU，只进入 `alias_exceptions` 人工裁决，迁移和新建服务都不会静默抢占；
 - 既有历史 SKU 主码仍原样保留，不强制转换。
 
 ### 同一 SKU 有单品码和箱码
