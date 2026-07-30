@@ -10,6 +10,7 @@ export async function GET(req: NextRequest) {
       await listExceptions({
         status: searchParams.get("status") ?? "open",
         aliasType: searchParams.get("aliasType") ?? undefined,
+        scope: searchParams.get("scope") ?? undefined,
         page,
         pageSize,
       }),

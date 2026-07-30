@@ -231,8 +231,8 @@ describe("简道云受控同步", () => {
     expect(jobs.map((job) => job.status)).toEqual(["done", "done"]);
     expect(staged[0].status).toBe("pending");
     expect(checkpoints.map((row) => row.stream).sort()).toEqual(["catalog", "test-observation"]);
-    expect(aliasQueue.map((row) => [row.aliasType, row.rawValue])).toEqual([
-      ["sku_code", "SKU-001"],
+    expect(aliasQueue.map((row) => [row.aliasType, row.scope, row.rawValue])).toEqual([
+      ["sku_code", "JIANDAOYUN", "SKU-001"],
     ]);
     expect(JSON.stringify(aliasQueue)).not.toContain("sensitive-phone");
   });

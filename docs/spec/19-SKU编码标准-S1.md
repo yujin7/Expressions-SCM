@@ -84,6 +84,9 @@
 - 新 SKU：编码留空，由系统生成 S1；
 - 在该 SKU 的“标识”抽屉登记 `external`，作用域填写来源系统（如 `JST`、`JIANDAOYUN`
   或 `YONYOU`）；同一外部值必须绑定明确 scope，不能跨系统猜测等价；
+- 导入异常与运行别名使用同一个来源 scope；因此简道云和用友即使都存在 `A001`，也可由人
+  分别认领到不同 SKU。认领外部 SKU 码时，别名、`sku_identifiers`、异常关闭与审计同事务
+  提交；已被同一系统另一 SKU 占用时整笔拒绝；
 - 常见输入别名会标准化：`聚水潭/JUSHUITAN → JST`、`简道云/JDY → JIANDAOYUN`、
   `用友/YonSuite/YonBIP → YONYOU`；未知系统仍保留人工填写的独立大写 scope；
 - 0039 迁移为无归属冲突的历史同义 scope 建立 canonical survivor；若同一外部码已指向

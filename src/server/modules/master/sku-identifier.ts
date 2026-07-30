@@ -227,6 +227,107 @@ export async function createSkuIdentifier(
   });
 }
 
+/**
+ * 外部连接器异常经人工认领后，在同一事务内登记为受治理的系统标识。
+ *
+ * 这是 ensure 而不是盲目 insert：重复点击或历史同义 scope 不会制造重复行；
+ * 若同一系统码已属于另一 SKU，则保持人工冲突而不是静默抢占。
+ */
+export async function ensureExternalSkuIdentifierInTransaction(
+  tx: AnyDb,
+  input: {
+    skuId: number;
+    value: string;
+    scope: string;
+    note?: string;
+  },
+  actor: SessionUser,
+): Promise<{ identifier: IdentifierRow; created: boolean; reactivated: boolean }> {
+  const parsed = normalizeSkuIdentifier(skuIdentifierSchema.parse({
+    kind: "external",
+    value: input.value,
+    scope: input.scope,
+    note: input.note,
+  }));
+  const sku = await requireSku(tx, input.skuId);
+  const candidates: IdentifierRow[] = await tx
+    .select()
+    .from(schema.skuIdentifiers)
+    .where(and(
+      eq(schema.skuIdentifiers.kind, "external"),
+      eq(schema.skuIdentifiers.value, parsed.value),
+    ));
+  const equivalent = candidates
+    .filter((row) => normalizeSkuIdentifierScope("external", row.scope) === parsed.scope)
+    .sort((left, right) => {
+      if (left.active !== right.active) return left.active ? -1 : 1;
+      if ((left.scope === parsed.scope) !== (right.scope === parsed.scope)) {
+        return left.scope === parsed.scope ? -1 : 1;
+      }
+      return left.id - right.id;
+    })[0];
+
+  if (equivalent) {
+    if (equivalent.skuId !== input.skuId) {
+      const [owner] = await tx
+        .select({ code: schema.skus.code })
+        .from(schema.skus)
+        .where(eq(schema.skus.id, equivalent.skuId));
+      throw new ApiError(
+        409,
+        `该标识已关联 SKU ${owner?.code ?? equivalent.skuId}；请先完成人工归属裁决`,
+      );
+    }
+    if (equivalent.active) {
+      return { identifier: equivalent, created: false, reactivated: false };
+    }
+    const [reactivated] = await tx
+      .update(schema.skuIdentifiers)
+      .set({ active: true, updatedAt: new Date() })
+      .where(eq(schema.skuIdentifiers.id, equivalent.id))
+      .returning();
+    await writeAudit(tx, {
+      userId: actor.id,
+      entity: "sku_identifier",
+      entityId: equivalent.id,
+      action: "reactivate_from_alias_claim",
+      before: equivalent,
+      after: { ...reactivated, skuCode: sku.code },
+    });
+    return { identifier: reactivated, created: false, reactivated: true };
+  }
+
+  await assertIdentifierOwnership(tx, {
+    skuId: input.skuId,
+    kind: "external",
+    value: parsed.value,
+    scope: parsed.scope,
+  });
+  const [created] = await tx
+    .insert(schema.skuIdentifiers)
+    .values({
+      skuId: input.skuId,
+      kind: "external",
+      value: parsed.value,
+      scope: parsed.scope,
+      uom: null,
+      packagingLevel: null,
+      isPrimary: false,
+      active: true,
+      note: parsed.note,
+      createdBy: actor.id,
+    })
+    .returning();
+  await writeAudit(tx, {
+    userId: actor.id,
+    entity: "sku_identifier",
+    entityId: created.id,
+    action: "create_from_alias_claim",
+    after: { ...created, skuCode: sku.code },
+  });
+  return { identifier: created, created: true, reactivated: false };
+}
+
 export async function setSkuIdentifierActive(
   skuId: number,
   identifierId: number,

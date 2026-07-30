@@ -142,6 +142,9 @@ npx tsx src/jobs/cli.ts reconcile-jst 2026-07-28
   `import_jobs/staging_rows`；相同信封重放不重复，失败不推进 checkpoint。
 - 所有行固定 `observation-only + releaseBlocked`，不会直接更新 SKU、供应商、仓库、价格、
   BOM、单据、库存余额或台账；空结果也只是“本授权视图为空”，不是业务事实为零。
+- 连接器来源别名按 `JIANDAOYUN` scope 与企业通用/聚水潭/用友隔离；同一短码可在不同系统
+  归属不同主档。人工认领 SKU 时会同事务写 scoped `sku_identifiers` 和审计；既有归属冲突
+  会回滚，不会用全局别名静默抢占。
 - MCP 仅保留为个人 AI 助手的人工查询渠道，不进入后台同步或生产写路径。
 
 配置：
@@ -176,6 +179,8 @@ npx tsx src/jobs/cli.ts sync-jiandaoyun-form sample-management-observation
 
 - API key 仍可读取 9 个应用、297 个表单；
 - 九条契约共 128 条主表记录、131 条子表记录；
+- 128 条主表记录已逐条进入 128 条 `releaseBlocked` staging；九条契约精确重放全部复用原
+  run/import job，未制造重复行；
 - 最新一条源更新时间为 2024-12-11，距本次核验 595 天；其余契约更旧；
 - 因此当前授权视图只能作为历史迁移/交叉核对源，不能被标记为 2026 年实时低代码 ERP 权威。
 

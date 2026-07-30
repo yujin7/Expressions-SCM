@@ -29,6 +29,7 @@ import { useListState } from "@/components/useListState";
 interface ExceptionRow {
   id: number;
   aliasType: string;
+  scope: string;
   rawValue: string;
   context: unknown;
   status: "open" | "resolved" | "ignored";
@@ -72,6 +73,13 @@ const STATUS_TABS = [
   { key: "resolved", label: "已认领" },
   { key: "ignored", label: "已忽略" },
 ];
+
+const SCOPE_LABELS: Record<string, string> = {
+  GLOBAL: "企业通用",
+  JST: "聚水潭",
+  JIANDAOYUN: "简道云",
+  YONYOU: "用友",
+};
 
 /** 目标主档选择器：按别名类型切换（品牌/渠道暂无管理页，填 ID） */
 function TargetPicker({ aliasType }: { aliasType: string }) {
@@ -212,6 +220,16 @@ export default function ExceptionsClient() {
       render: (v: string) => <Typography.Text code>{v}</Typography.Text>,
     },
     {
+      title: "来源作用域",
+      dataIndex: "scope",
+      width: 120,
+      render: (v: string) => (
+        <Tag color={v === "GLOBAL" ? "default" : "processing"}>
+          {SCOPE_LABELS[v] ?? v}
+        </Tag>
+      ),
+    },
+    {
       title: "来源上下文",
       dataIndex: "context",
       render: (v: unknown) => {
@@ -292,7 +310,8 @@ export default function ExceptionsClient() {
         别名认领
       </Typography.Title>
       <Typography.Paragraph type="secondary">
-        导入时无法解析的仓库/渠道/编码等原始值在此排队，认领一次永久生效。
+        导入时无法解析的仓库/渠道/编码等原始值在此排队；认领按来源系统隔离，
+        避免简道云、聚水潭或用友的同名短码互相串用。
       </Typography.Paragraph>
       <Tabs
         activeKey={status}
@@ -343,6 +362,9 @@ export default function ExceptionsClient() {
             <Typography.Paragraph>
               <Tag color={ALIAS_TYPE_COLORS[claiming.aliasType] ?? "default"}>
                 {ALIAS_TYPE_LABELS[claiming.aliasType] ?? claiming.aliasType}
+              </Tag>
+              <Tag color={claiming.scope === "GLOBAL" ? "default" : "processing"}>
+                {SCOPE_LABELS[claiming.scope] ?? claiming.scope}
               </Tag>
               <Typography.Text code>{claiming.rawValue}</Typography.Text>
             </Typography.Paragraph>

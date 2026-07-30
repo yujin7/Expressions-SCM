@@ -14,7 +14,7 @@ import {
   type AnyDb,
   type StagingRowInput,
 } from "@/server/import/staging";
-import { resolveOrQueue, type DimDb } from "@/server/modules/dimension/resolver";
+import { resolveKnownOrQueue, type DimDb } from "@/server/modules/dimension/resolver";
 import { writeIntegrationEvidence, type IntegrationEvidence } from "./evidence";
 import { JstClient, type JstOutboundOrder } from "./jst";
 
@@ -287,19 +287,19 @@ export async function syncJstDailySales(
     let rowNo = 0;
     for (const row of rows) {
       rowNo++;
-      const skuId = await resolveOrQueue(db as DimDb, "sku_code", row.skuCode, {
+      const skuId = await resolveKnownOrQueue(db as DimDb, "sku_code", row.skuCode, {
         connector: CONNECTOR,
         stream: STREAM,
         bizDate: input.bizDate,
         field: "sku",
-      });
+      }, { scope: "JST" });
       const warehouseId = row.warehouseRaw
-        ? await resolveOrQueue(db as DimDb, "warehouse", row.warehouseRaw, {
+        ? await resolveKnownOrQueue(db as DimDb, "warehouse", row.warehouseRaw, {
             connector: CONNECTOR,
             stream: STREAM,
             bizDate: input.bizDate,
             field: "warehouse",
-          })
+          }, { scope: "JST" })
         : null;
       const misses = [
         skuId === null ? `sku=${row.skuCode}` : null,

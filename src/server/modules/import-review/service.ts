@@ -4,11 +4,18 @@
  */
 import { desc, eq, ne } from "drizzle-orm";
 import { getDbAsync } from "@/db";
-import { aliasExceptions, importJobs, stagingRows, transitRefs } from "@/db/schema";
+import {
+  aliasExceptions,
+  GLOBAL_ALIAS_SCOPE,
+  importJobs,
+  stagingRows,
+  transitRefs,
+} from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { createImportRejectionArtifact } from "@/server/import/rejection-artifact";
 import { claimAlias } from "@/server/modules/dimension/resolver";
 import { ApiError } from "@/server/modules/master/common";
+import { ensureExternalSkuIdentifierInTransaction } from "@/server/modules/master/sku-identifier";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import type { SessionUser } from "@/server/core/dto";
 
@@ -18,13 +25,14 @@ type AnyDb = any;
 const resolveDb = async (db?: AnyDb): Promise<AnyDb> => db ?? (await getDbAsync());
 
 export async function listExceptions(
-  opts: { status?: string; aliasType?: string; page: number; pageSize: number },
+  opts: { status?: string; aliasType?: string; scope?: string; page: number; pageSize: number },
   dbArg?: AnyDb,
 ) {
   const db = await resolveDb(dbArg);
   const conds = [];
   if (opts.status) conds.push(eq(aliasExceptions.status, opts.status as never));
   if (opts.aliasType) conds.push(eq(aliasExceptions.aliasType, opts.aliasType as never));
+  if (opts.scope) conds.push(eq(aliasExceptions.scope, opts.scope));
   const { and } = await import("drizzle-orm");
   const where = conds.length ? and(...conds) : undefined;
   const rows = await db
@@ -54,17 +62,28 @@ export async function claimException(
   if (!exc) throw new ApiError(404, "异常不存在");
   if (exc.status !== "open") throw new ApiError(409, `该异常已处理: ${exc.status}`);
   await db.transaction(async (tx: AnyDb) => {
+    const externalSkuIdentity = exc.aliasType === "sku_code" && exc.scope !== GLOBAL_ALIAS_SCOPE
+      ? await ensureExternalSkuIdentifierInTransaction(tx, {
+          skuId: targetId,
+          value: exc.rawValue,
+          scope: exc.scope,
+          note: `由 ${exc.scope} 导入异常 #${exc.id} 人工认领`,
+        }, user)
+      : null;
     await claimAlias(tx, {
       aliasType: exc.aliasType,
       rawValue: exc.rawValue,
       targetId,
       userId: user.id,
+      scope: exc.scope,
     });
 
     let propagatedProductRows = 0;
     let propagatedMaterialRows = 0;
     let propagatedSupplierRows = 0;
-    if (exc.aliasType === "sku_code") {
+    // transit_refs 来自企业内部文件导入，没有外部系统 scope；仅 GLOBAL 裁决可传播，
+    // 防止 Jiandaoyun/Yonyou 恰好同码时污染既有参考层。
+    if (exc.aliasType === "sku_code" && exc.scope === GLOBAL_ALIAS_SCOPE) {
       const productRows = await tx
         .update(transitRefs)
         .set({ skuId: targetId })
@@ -77,7 +96,7 @@ export async function claimException(
         .returning({ id: transitRefs.id });
       propagatedProductRows = productRows.length;
       propagatedMaterialRows = materialRows.length;
-    } else if (exc.aliasType === "supplier_oem") {
+    } else if (exc.aliasType === "supplier_oem" && exc.scope === GLOBAL_ALIAS_SCOPE) {
       const supplierRows = await tx
         .update(transitRefs)
         .set({ supplierId: targetId })
@@ -93,8 +112,12 @@ export async function claimException(
       action: "claim",
       after: {
         aliasType: exc.aliasType,
+        scope: exc.scope,
         rawValue: exc.rawValue,
         targetId,
+        externalSkuIdentifierId: externalSkuIdentity?.identifier.id ?? null,
+        externalSkuIdentifierCreated: externalSkuIdentity?.created ?? false,
+        externalSkuIdentifierReactivated: externalSkuIdentity?.reactivated ?? false,
         propagatedProductRows,
         propagatedMaterialRows,
         propagatedSupplierRows,
@@ -115,7 +138,12 @@ export async function ignoreException(user: SessionUser, id: number, note?: stri
     .where(eq(aliasExceptions.id, id));
   await writeAudit(db, {
     userId: user.id, entity: "alias_exception", entityId: id, action: "ignore",
-    after: { aliasType: exc.aliasType, rawValue: exc.rawValue, note: note ?? null },
+    after: {
+      aliasType: exc.aliasType,
+      scope: exc.scope,
+      rawValue: exc.rawValue,
+      note: note ?? null,
+    },
   });
 }
 

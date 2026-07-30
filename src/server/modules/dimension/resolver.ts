@@ -10,9 +10,18 @@ import { and, eq, inArray, or } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import * as schema from "@/db/schema";
 import type { AliasType } from "@/db/schema";
+import { ApiError } from "@/server/modules/master/common";
+import { normalizeSkuIdentifierScope } from "@/server/rules/sku-identifier";
 
 /** 兼容 node-postgres / PGlite / 事务句柄的最小 db 类型 */
 export type DimDb = PgDatabase<PgQueryResultHKT, typeof schema>;
+
+export interface AliasResolutionOptions {
+  /** GLOBAL=企业通用；外部连接器必须传其规范系统 scope。 */
+  scope?: string;
+  /** 外部系统专属别名未命中时，是否允许回退企业通用别名。默认 true。 */
+  allowGlobalFallback?: boolean;
+}
 
 /**
  * 别名文本归一（纯函数）：trim → 全角→半角（含全角空格 U+3000）→ 内部空白折叠为单个半角空格。
@@ -33,35 +42,68 @@ export function normalizeAliasText(raw: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
+export function normalizeAliasScope(raw?: string): string {
+  return normalizeSkuIdentifierScope("external", raw ?? schema.GLOBAL_ALIAS_SCOPE);
+}
+
+async function resolveAliasInScope(
+  db: DimDb,
+  aliasType: AliasType,
+  value: string,
+  scope: string,
+): Promise<number | null> {
+  const [row] = await db
+    .select({ targetId: schema.aliases.targetId })
+    .from(schema.aliases)
+    .where(and(
+      eq(schema.aliases.aliasType, aliasType),
+      eq(schema.aliases.scope, scope),
+      eq(schema.aliases.rawValue, value),
+    ));
+  return row ? row.targetId : null;
+}
+
 /** 归一后精确查 aliases；未命中返回 null（不猜测、不模糊匹配——歧义交人裁决） */
 export async function resolveAlias(
   db: DimDb,
   aliasType: AliasType,
   rawValue: string,
+  options: AliasResolutionOptions = {},
 ): Promise<number | null> {
   const value = normalizeAliasText(rawValue);
   if (!value) return null;
-  const [row] = await db
-    .select({ targetId: schema.aliases.targetId })
-    .from(schema.aliases)
-    .where(and(eq(schema.aliases.aliasType, aliasType), eq(schema.aliases.rawValue, value)));
-  return row ? row.targetId : null;
+  const scope = normalizeAliasScope(options.scope);
+  const scoped = await resolveAliasInScope(db, aliasType, value, scope);
+  if (scoped !== null) return scoped;
+  if (
+    scope !== schema.GLOBAL_ALIAS_SCOPE
+    && options.allowGlobalFallback !== false
+  ) {
+    return resolveAliasInScope(db, aliasType, value, schema.GLOBAL_ALIAS_SCOPE);
+  }
+  return null;
 }
 
-/** 入异常队列（幂等：UNIQUE(aliasType, rawValue) 冲突即跳过，同值只排队一次） */
+/** 入异常队列（幂等：同一类型、scope、值只排队一次；不同系统同码互不串扰） */
 export async function queueException(
   db: DimDb,
   aliasType: AliasType,
   rawValue: string,
   context: unknown,
+  options: AliasResolutionOptions = {},
 ): Promise<void> {
   const value = normalizeAliasText(rawValue);
   if (!value) return;
+  const scope = normalizeAliasScope(options.scope);
   await db
     .insert(schema.aliasExceptions)
-    .values({ aliasType, rawValue: value, context, status: "open" })
+    .values({ aliasType, scope, rawValue: value, context, status: "open" })
     .onConflictDoNothing({
-      target: [schema.aliasExceptions.aliasType, schema.aliasExceptions.rawValue],
+      target: [
+        schema.aliasExceptions.aliasType,
+        schema.aliasExceptions.scope,
+        schema.aliasExceptions.rawValue,
+      ],
     });
 }
 
@@ -71,19 +113,36 @@ export async function queueException(
  */
 export async function claimAlias(
   db: DimDb,
-  args: { aliasType: AliasType; rawValue: string; targetId: number; userId?: number },
+  args: {
+    aliasType: AliasType;
+    rawValue: string;
+    targetId: number;
+    userId?: number;
+    scope?: string;
+  },
 ): Promise<void> {
   const value = normalizeAliasText(args.rawValue);
   if (!value) return;
+  const scope = normalizeAliasScope(args.scope);
   await db
     .insert(schema.aliases)
     .values({
       aliasType: args.aliasType,
+      scope,
       rawValue: value,
       targetId: args.targetId,
       createdBy: args.userId ?? null,
     })
-    .onConflictDoNothing({ target: [schema.aliases.aliasType, schema.aliases.rawValue] });
+    .onConflictDoNothing({
+      target: [schema.aliases.aliasType, schema.aliases.scope, schema.aliases.rawValue],
+    });
+  const actualTarget = await resolveAliasInScope(db, args.aliasType, value, scope);
+  if (actualTarget !== args.targetId) {
+    throw new ApiError(
+      409,
+      `该别名在 ${scope} 作用域已认领到 ID ${actualTarget}；不能静默改绑`,
+    );
+  }
   await db
     .update(schema.aliasExceptions)
     .set({
@@ -95,6 +154,7 @@ export async function claimAlias(
     .where(
       and(
         eq(schema.aliasExceptions.aliasType, args.aliasType),
+        eq(schema.aliasExceptions.scope, scope),
         eq(schema.aliasExceptions.rawValue, value),
         eq(schema.aliasExceptions.status, "open"),
       ),
@@ -107,10 +167,11 @@ export async function resolveOrQueue(
   aliasType: AliasType,
   rawValue: string,
   context: unknown,
+  options: AliasResolutionOptions = {},
 ): Promise<number | null> {
-  const targetId = await resolveAlias(db, aliasType, rawValue);
+  const targetId = await resolveAlias(db, aliasType, rawValue, options);
   if (targetId !== null) return targetId;
-  await queueException(db, aliasType, rawValue, context);
+  await queueException(db, aliasType, rawValue, context, options);
   return null;
 }
 
@@ -125,14 +186,15 @@ export async function resolveKnownReference(
   db: DimDb,
   aliasType: AliasType,
   rawValue: string,
+  options: AliasResolutionOptions = {},
 ): Promise<number | null> {
   const value = normalizeAliasText(rawValue);
   if (!value) return null;
 
-  const aliasId = await resolveAlias(db, aliasType, value);
+  const aliasId = await resolveAlias(db, aliasType, value, options);
   if (aliasId !== null) return aliasId;
 
-  const ids = await loadExactReferenceIds(db, aliasType, value);
+  const ids = await loadExactReferenceIds(db, aliasType, value, options);
   return ids.length === 1 ? ids[0] : null;
 }
 
@@ -140,22 +202,35 @@ async function loadExactReferenceIds(
   db: DimDb,
   aliasType: AliasType,
   value: string,
+  options: AliasResolutionOptions = {},
 ): Promise<number[]> {
   let rows: { id: number }[] = [];
   switch (aliasType) {
-    case "sku_code":
+    case "sku_code": {
+      const scope = normalizeAliasScope(options.scope);
+      const identifierConditions = [
+        eq(schema.skuIdentifiers.value, value),
+        eq(schema.skuIdentifiers.active, true),
+      ];
+      if (scope === schema.GLOBAL_ALIAS_SCOPE) {
+        identifierConditions.push(
+          inArray(schema.skuIdentifiers.kind, ["external", "vendor", "customer", "legacy"]),
+        );
+      } else {
+        identifierConditions.push(
+          eq(schema.skuIdentifiers.kind, "external"),
+          eq(schema.skuIdentifiers.scope, scope),
+        );
+      }
       rows = [
         ...await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.code, value)),
         ...await db
           .select({ id: schema.skuIdentifiers.skuId })
           .from(schema.skuIdentifiers)
-          .where(and(
-            eq(schema.skuIdentifiers.value, value),
-            eq(schema.skuIdentifiers.active, true),
-            inArray(schema.skuIdentifiers.kind, ["external", "vendor", "customer", "legacy"]),
-          )),
+          .where(and(...identifierConditions)),
       ];
       break;
+    }
     case "sku_barcode":
       rows = [
         ...await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.barcode, value)),
@@ -211,18 +286,19 @@ export async function resolveKnownOrQueue(
   aliasType: AliasType,
   rawValue: string,
   context: unknown,
+  options: AliasResolutionOptions = {},
 ): Promise<number | null> {
   const value = normalizeAliasText(rawValue);
   if (!value) return null;
-  const aliasId = await resolveAlias(db, aliasType, value);
+  const aliasId = await resolveAlias(db, aliasType, value, options);
   if (aliasId !== null) return aliasId;
-  const ids = await loadExactReferenceIds(db, aliasType, value);
+  const ids = await loadExactReferenceIds(db, aliasType, value, options);
   if (ids.length === 1) return ids[0];
   const exactMatchCount = ids.length;
   await queueException(db, aliasType, value, {
     ...((context && typeof context === "object") ? context : { context }),
     reason: exactMatchCount > 1 ? "exact_master_match_ambiguous" : "not_found",
     exactMatchCount,
-  });
+  }, options);
   return null;
 }

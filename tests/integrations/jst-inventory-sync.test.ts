@@ -127,7 +127,11 @@ describe("聚水潭库存增量观察受控同步", () => {
     });
     const [unknownAlias] = await db.select().from(schema.aliasExceptions)
       .where(eq(schema.aliasExceptions.rawValue, "JST-SKU-UNKNOWN"));
-    expect(unknownAlias).toMatchObject({ aliasType: "sku_code", status: "open" });
+    expect(unknownAlias).toMatchObject({
+      aliasType: "sku_code",
+      scope: "JST",
+      status: "open",
+    });
 
     const runs = await db.select().from(schema.integrationRuns);
     const checkpoints = await db.select().from(schema.integrationCheckpoints);
