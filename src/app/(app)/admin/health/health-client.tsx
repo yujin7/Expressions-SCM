@@ -17,6 +17,22 @@ const BACKUP_RED_HOURS = 25;
 
 const fmtTime = (iso: string): string => new Date(iso).toLocaleString("zh-CN", { hour12: false });
 
+function liveVerificationTag(connector: OpsHealth["connectors"][number]) {
+  switch (connector.liveVerificationState) {
+    case "valid":
+      return <Tag color="green">Live UAT 有效</Tag>;
+    case "stale":
+      return <Tag color="orange">Live UAT 已过期</Tag>;
+    case "missing_evidence":
+      return <Tag color="orange">UAT 证据缺失</Tag>;
+    case "future":
+    case "invalid":
+      return <Tag color="red">UAT 标记无效</Tag>;
+    default:
+      return <Tag>Live UAT 未验证</Tag>;
+  }
+}
+
 export default function HealthClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<OpsHealth | null>(null);
@@ -209,9 +225,7 @@ export default function HealthClient() {
                     {connector.configured
                       ? <Tag color="blue">凭据已配</Tag>
                       : <Tag>未配置</Tag>}
-                    {connector.operational
-                      ? <Tag color="green">Live UAT 已验证</Tag>
-                      : <Tag>Live UAT 未验证</Tag>}
+                    {liveVerificationTag(connector)}
                   </Space>
 
                   <div>
@@ -244,6 +258,10 @@ export default function HealthClient() {
                   {connector.liveVerifiedAt ? (
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                       验证时间：{fmtTime(connector.liveVerifiedAt)}
+                      {connector.liveVerificationRef
+                        ? ` · 证据：${connector.liveVerificationRef}`
+                        : " · 缺少非秘密证据编号"}
+                      {` · ${connector.liveVerificationMaxAgeDays} 天内有效`}
                     </Typography.Text>
                   ) : null}
                 </Space>

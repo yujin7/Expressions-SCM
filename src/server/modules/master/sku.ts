@@ -232,10 +232,12 @@ export async function updateSku(id: number, input: unknown, actor?: SessionUser,
     if (v.code !== undefined && v.code !== existing.code) {
       throw new ApiError(409, "SKU 主码已用于历史关联，不可直接改码；请新建替代 SKU，并把旧码登记为别名");
     }
-    const { brandCode } = await assertDimensionIds(tx, v.brandId, v.channelId);
+    await assertDimensionIds(tx, v.brandId, v.channelId);
     if (isGovernedSkuCode(existing.code)) {
       try {
-        assertGovernedSkuCode(existing.code, { origin: brandCode, skuType: v.skuType });
+        // S1 的来源段是创建时的稳定起源快照，不是当前品牌关系的替代品。
+        // 品牌归属可以经治理调整，但不能因此改写主码；货品类型仍属于稳定身份。
+        assertGovernedSkuCode(existing.code, { skuType: v.skuType });
       } catch (error) {
         throw new ApiError(409, `S1 稳定身份不可变：${(error as Error).message}`);
       }

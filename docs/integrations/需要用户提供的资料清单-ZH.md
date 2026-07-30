@@ -29,7 +29,8 @@
 替代路径：提供目标群自定义机器人 `FEISHU_WEBHOOK_URL`，并确认允许一条 UAT 消息。
 
 > 应用鉴权已经成功，但只读群目录返回 0；这说明缺的是机器人实际可见群，不是再写一套发送代码。
-> 不要把凭据粘贴到聊天。`FEISHU_LIVE_VERIFIED_AT` 只能在真实投递与失败恢复验收后填写。
+> 不要把凭据粘贴到聊天。`FEISHU_LIVE_VERIFIED_AT` 与 `FEISHU_LIVE_VERIFIED_REF`
+> 只能在真实投递与失败恢复验收后同时填写；REF 只放非秘密工单/验收编号。
 
 ### B. 简道云
 

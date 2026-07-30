@@ -83,6 +83,7 @@ JST_SYNC_ACTOR_ID
 JST_BASE_URL（可选）
 JST_INVENTORY_SYNC_ENABLED（可选，默认 false）
 JST_LIVE_VERIFIED_AT（真实 UAT 通过后的 ISO-8601 时间）
+JST_LIVE_VERIFIED_REF（非秘密 UAT 证据编号，例如 UAT-20260730-JST-001）
 ```
 
 `JST_BASE_URL` 只接受官方 `https://openapi.jushuitan.com`（可省略或带末尾 `/`）。
@@ -102,10 +103,14 @@ JST_LIVE_VERIFIED_AT（真实 UAT 通过后的 ISO-8601 时间）
 手工触发：
 
 ```bash
+npx tsx src/jobs/cli.ts audit-connectors
 npx tsx src/jobs/cli.ts sync-jst 2026-07-28
 npx tsx src/jobs/cli.ts sync-jst-inventory
 npx tsx src/jobs/cli.ts reconcile-jst 2026-07-28
 ```
+
+`audit-connectors` 不打开数据库或调用外部 API，只输出代码状态、缺失环境变量名、UAT
+状态和非秘密证据编号；不会输出凭据、租户/组织值、端点或获批接口清单，可附在内部发布单。
 
 ## 3. 简道云
 
@@ -148,6 +153,7 @@ JIANDAOYUN_SYNC_ENABLED（默认 false）
 JIANDAOYUN_SYNC_CONTRACTS（逗号分隔的显式契约 key）
 JIANDAOYUN_BASE_URL（可选）
 JIANDAOYUN_LIVE_VERIFIED_AT（真实 UAT 后）
+JIANDAOYUN_LIVE_VERIFIED_REF（非秘密 UAT 证据编号）
 ```
 
 `JIANDAOYUN_BASE_URL` 只接受官方
@@ -210,9 +216,13 @@ npx tsx src/jobs/cli.ts sync-jiandaoyun-form sample-management-observation
 消息权限）、发布应用，并把机器人加入目标群且允许发言。飞书对同一群的机器人共享限频为
 5 QPS；SCM outbox 保持串行投递，不以并发冲击群限流。
 
-真实测试群完成投递、去重与失败恢复 UAT 后，才设置 `FEISHU_LIVE_VERIFIED_AT`。运维面板
-只有在完整机器配置和该有效时间同时存在时才显示 Live UAT「已验证」；未来时间或非法时间
-不会被接受。
+真实测试群完成投递、去重与失败恢复 UAT 后，才同时设置 `FEISHU_LIVE_VERIFIED_AT` 与
+`FEISHU_LIVE_VERIFIED_REF`。时间必须是带 `Z` 或明确时区偏移的 ISO/RFC3339 时间；
+证据编号必须以字母或数字开头，整体只接受 3–80 位字母、数字、点、下划线或连字符；不写
+URL、查询串、token 或密钥。
+聚水潭与简道云使用同样的双字段契约。运维面板只有在完整机器配置、合法证据编号和 90 天内
+的有效时间同时存在时才显示 Live UAT「有效」；未来、非法、过期或缺证据的标记都不算
+operational。凭据、接口范围或权威视图发生实质变化时，必须重新验收并更新两项标记。
 
 只读发现命令：
 
