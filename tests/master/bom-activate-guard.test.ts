@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { auditLogs, bomLines, boms, skus, spus, stockBalances, suppliers, users, warehouses } from "@/db/schema";
 import type { DB } from "@/db";
 import { activateBom } from "@/server/modules/master/bom";
+import { MAX_BOM_DEPTH } from "@/server/rules/bom-explode";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 describe("FEATURE 5 BOM 生效动效检查：被移除物料在委外仓有结存 → 409 / force 放行", () => {
@@ -167,5 +168,54 @@ describe("BOM 生效图校验：允许合法多层，阻断自引用与跨 BOM �
     const candidate = await draft(c, raw, "V1");
     const activated = await activateBom(candidate, approver, { db: dbx });
     expect(activated.status).toBe("active");
+  });
+
+  it("候选子树自身未超深、但与既有父链合并后超深时仍阻断，并显示 SKU 编码路径", async () => {
+    const [spu] = await db.insert(spus).values({
+      code: "BOM-DEEP-SPU",
+      nameCn: "BOM深度校验",
+    }).returning();
+    const chain = await db.insert(skus).values(
+      Array.from({ length: MAX_BOM_DEPTH + 9 }, (_, index) => ({
+        code: `DEEP-${String(index).padStart(2, "0")}`,
+        name: `深度节点${index}`,
+        spuId: spu.id,
+        baseUom: "个",
+        skuType: index === 0 ? "finished" as const : index === MAX_BOM_DEPTH + 8 ? "raw" as const : "semi" as const,
+      })),
+    ).returning();
+    const candidateIndex = 20;
+    // 候选上游 20 层已生效。
+    for (let index = 0; index < candidateIndex; index++) {
+      const [head] = await db.insert(boms).values({
+        productSkuId: chain[index].id,
+        versionNo: "V1",
+        status: "active",
+      }).returning();
+      await db.insert(bomLines).values({
+        bomId: head.id,
+        materialSkuId: chain[index + 1].id,
+        qtyPer: "1",
+      });
+    }
+    // 候选下游自身只有 20 层，小于上限；合并父链后总深度超过 32。
+    for (let index = candidateIndex + 1; index < chain.length - 1; index++) {
+      const [head] = await db.insert(boms).values({
+        productSkuId: chain[index].id,
+        versionNo: "V1",
+        status: "active",
+      }).returning();
+      await db.insert(bomLines).values({
+        bomId: head.id,
+        materialSkuId: chain[index + 1].id,
+        qtyPer: "1",
+      });
+    }
+    const candidate = await draft(chain[candidateIndex].id, chain[candidateIndex + 1].id, "V1");
+    await expect(activateBom(candidate, approver, { db: dbx })).rejects.toThrow(
+      /层级超过 32 层安全上限 DEEP-00 → DEEP-01.*DEEP-33/,
+    );
+    const [still] = await db.select().from(boms).where(eq(boms.id, candidate));
+    expect(still.status).toBe("draft");
   });
 });

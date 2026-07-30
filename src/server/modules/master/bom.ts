@@ -248,25 +248,64 @@ async function lockAndValidateBomGraph(tx: DB, candidateBomId: number, productSk
   }
   graph.set(productSkuId, candidateLines);
 
-  let cycle: number[] | null;
-  try {
-    cycle = findBomCycleFrom(productSkuId, graph);
-  } catch (error) {
-    if (error instanceof BomDepthError) {
-      throw new ApiError(409, `BOM 层级超过安全上限，请拆分或核对层级：${error.path.join(" → ")}`);
+  // 候选自身可能不深，但已有父链 + 候选子树合并后会让上游成品超过上限。
+  // 沿反向边找出所有受影响祖先，并从每个祖先重验完整可达图。
+  const parentsByChild = new Map<number, Set<number>>();
+  for (const [parent, lines] of graph) {
+    for (const line of lines) {
+      const parents = parentsByChild.get(line.materialSkuId) ?? new Set<number>();
+      parents.add(parent);
+      parentsByChild.set(line.materialSkuId, parents);
     }
-    throw error;
   }
-  if (!cycle) return;
+  const affectedRoots = new Set<number>([productSkuId]);
+  const queue = [productSkuId];
+  while (queue.length > 0) {
+    const child = queue.shift()!;
+    for (const parent of parentsByChild.get(child) ?? []) {
+      if (affectedRoots.has(parent)) continue;
+      affectedRoots.add(parent);
+      queue.push(parent);
+    }
+  }
+
+  const topRoots = [...affectedRoots].filter(
+    (node) => ![...(parentsByChild.get(node) ?? [])].some((parent) => affectedRoots.has(parent)),
+  );
+  const validationOrder = [
+    ...topRoots,
+    ...[...affectedRoots].filter((node) => !topRoots.includes(node)),
+  ];
+  let violation: { kind: "cycle" | "depth"; path: number[] } | null = null;
+  for (const root of validationOrder) {
+    try {
+      const cycle = findBomCycleFrom(root, graph);
+      if (cycle) {
+        violation = { kind: "cycle", path: cycle };
+        break;
+      }
+    } catch (error) {
+      if (error instanceof BomDepthError) {
+        violation = { kind: "depth", path: error.path };
+        break;
+      }
+      throw error;
+    }
+  }
+  if (!violation) return;
 
   const codeRows = await tx
     .select({ id: schema.skus.id, code: schema.skus.code })
     .from(schema.skus)
-    .where(inArray(schema.skus.id, [...new Set(cycle)]));
+    .where(inArray(schema.skus.id, [...new Set(violation.path)]));
   const codeById = new Map(codeRows.map((row) => [row.id, row.code]));
+  const readablePath = violation.path.map((id) => codeById.get(id) ?? `SKU#${id}`).join(" → ");
+  if (violation.kind === "depth") {
+    throw new ApiError(409, `BOM 不能生效：层级超过 32 层安全上限 ${readablePath}`);
+  }
   throw new ApiError(
     409,
-    `BOM 不能生效：检测到循环 ${cycle.map((id) => codeById.get(id) ?? `SKU#${id}`).join(" → ")}`,
+    `BOM 不能生效：检测到循环 ${readablePath}`,
   );
 }
 

@@ -113,4 +113,92 @@ describe("物料需求：多层 BOM 展开", () => {
     expect(result.summary.bomIssues).toHaveLength(1);
     expect(result.summary.bomIssues[0]).toMatch(/FG-CYCLE.*循环.*FG-CYCLE → SF-CYCLE → FG-CYCLE/);
   });
+
+  it("间接共用半成品的末级原料按成品根计数，不按直接父 BOM 少算", async () => {
+    const [spu] = await db.insert(spus).values({ code: "P-SHARED", nameCn: "间接共用" }).returning();
+    const [finishedA, finishedB, semi, raw] = await db.insert(skus).values([
+      { code: "FG-SHARED-A", name: "成品A", spuId: spu.id, skuType: "finished", baseUom: "盒" },
+      { code: "FG-SHARED-B", name: "成品B", spuId: spu.id, skuType: "finished", baseUom: "盒" },
+      { code: "SF-SHARED", name: "共用半成品", spuId: spu.id, skuType: "semi", baseUom: "个" },
+      { code: "RM-SHARED", name: "共用原料", spuId: spu.id, skuType: "raw", baseUom: "克" },
+    ]).returning();
+    const heads = await db.insert(boms).values([
+      { productSkuId: finishedA.id, versionNo: "V1", status: "active" },
+      { productSkuId: finishedB.id, versionNo: "V1", status: "active" },
+      { productSkuId: semi.id, versionNo: "V1", status: "active" },
+    ]).returning();
+    await db.insert(bomLines).values([
+      { bomId: heads[0].id, materialSkuId: semi.id, qtyPer: "1" },
+      { bomId: heads[1].id, materialSkuId: semi.id, qtyPer: "1" },
+      { bomId: heads[2].id, materialSkuId: raw.id, qtyPer: "1" },
+    ]);
+    const [supplier] = await db.insert(suppliers).values({
+      code: "SUP-SHARED",
+      name: "间接共用工厂",
+    }).returning();
+    // 只有 A 有当前需求，sharedCount 仍应反映全量 active where-used 的 A+B。
+    await db.insert(woDocs).values({
+      docNo: "WO-SHARED",
+      status: "approved",
+      productSkuId: finishedA.id,
+      qty: "10",
+      supplierId: supplier.id,
+      feeRatePlan: "1",
+      bomId: heads[0].id,
+      dueDate: addDays(todayShanghai(), 10),
+      createdBy: 1,
+    });
+    const result = await getMaterialDemand({ pageSize: 50, horizonDays: 90 }, db);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({ code: "RM-SHARED", sharedCount: 2 });
+  });
+
+  it("异常深度整根阻断时摘要包含可操作的 SKU 编码路径", async () => {
+    const [spu] = await db.insert(spus).values({ code: "P-RDEP", nameCn: "报表深度" }).returning();
+    const chain = await db.insert(skus).values(
+      Array.from({ length: 35 }, (_, index) => ({
+        code: `RDEP-${String(index).padStart(2, "0")}`,
+        name: `报表深度节点${index}`,
+        spuId: spu.id,
+        skuType: index === 0 ? "finished" as const : index === 34 ? "raw" as const : "semi" as const,
+        baseUom: "个",
+      })),
+    ).returning();
+    const heads = await db.insert(boms).values(
+      chain.slice(0, -1).map((product) => ({
+        productSkuId: product.id,
+        versionNo: "V1",
+        status: "active" as const,
+      })),
+    ).returning();
+    await db.insert(bomLines).values(
+      heads.map((head, index) => ({
+        bomId: head.id,
+        materialSkuId: chain[index + 1].id,
+        qtyPer: "1",
+      })),
+    );
+    const [supplier] = await db.insert(suppliers).values({
+      code: "SUP-RDEP",
+      name: "深度测试工厂",
+    }).returning();
+    await db.insert(woDocs).values({
+      docNo: "WO-RDEP",
+      status: "approved",
+      productSkuId: chain[0].id,
+      qty: "1",
+      supplierId: supplier.id,
+      feeRatePlan: "1",
+      bomId: heads[0].id,
+      dueDate: addDays(todayShanghai(), 10),
+      createdBy: 1,
+    });
+
+    const result = await getMaterialDemand({ pageSize: 50, horizonDays: 90 }, db);
+    expect(result.rows).toEqual([]);
+    expect(result.summary.bomIssues).toHaveLength(1);
+    expect(result.summary.bomIssues[0]).toMatch(
+      /RDEP-00：层级超过安全上限 RDEP-00 → RDEP-01.*RDEP-33/,
+    );
+  });
 });

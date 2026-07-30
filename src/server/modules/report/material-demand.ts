@@ -248,6 +248,13 @@ export async function getMaterialDemand(
     arr.push(l);
     bomByProduct.set(l.productSkuId, arr);
   }
+  const materialCodeRows = bomRows.length > 0
+    ? await db
+      .select({ id: schema.skus.id, code: schema.skus.code })
+      .from(schema.skus)
+      .where(inArray(schema.skus.id, [...new Set(bomRows.map((row) => row.materialSkuId))]))
+    : [];
+  for (const row of materialCodeRows) codeBySku.set(row.id, row.code);
   const missingBomProducts = productIds
     .filter((id) => !bomByProduct.has(id))
     .map((id) => codeBySku.get(id) ?? `#${id}`)
@@ -278,7 +285,8 @@ export async function getMaterialDemand(
         continue;
       }
       if (error instanceof BomDepthError) {
-        bomIssues.push(`${pCode}：层级超过安全上限`);
+        const path = error.path.map((id) => codeBySku.get(id) ?? `#${id}`).join(" → ");
+        bomIssues.push(`${pCode}：层级超过安全上限 ${path}`);
         continue;
       }
       throw error;
@@ -349,17 +357,29 @@ export async function getMaterialDemand(
   const uomBySku = new Map<number, { moq: string | null; orderMultiple: string | null }>();
   for (const u of uomRows) if (!uomBySku.has(u.skuId)) uomBySku.set(u.skuId, u);
 
-  /* ── 共用度：引用该物料的生效 BOM 成品数（全量，不限于本次有需求的成品；与 shared-packaging 同事实源） ── */
-  const shareRows: { materialSkuId: number; cnt: number }[] = await db
-    .select({
-      materialSkuId: schema.bomLines.materialSkuId,
-      cnt: sql<number>`count(distinct ${schema.boms.productSkuId})::int`,
-    })
-    .from(schema.bomLines)
-    .innerJoin(schema.boms, and(eq(schema.bomLines.bomId, schema.boms.id), eq(schema.boms.status, "active")))
-    .where(inArray(schema.bomLines.materialSkuId, materialIds))
-    .groupBy(schema.bomLines.materialSkuId);
-  const sharedBySku = new Map(shareRows.map((r) => [r.materialSkuId, r.cnt]));
+  /* ── 共用度：全量生效 BOM 图中，能传递到该末级物料的成品根数 ──
+     不能只 count 直接 bom_lines：两个成品共用同一半成品时，末级原料也被两个成品共用。 */
+  const graphProductRows = await db
+    .select({ id: schema.skus.id, skuType: schema.skus.skuType })
+    .from(schema.skus)
+    .where(inArray(schema.skus.id, [...bomByProduct.keys()]));
+  const rootsByLeaf = new Map<number, Set<number>>();
+  const currentMaterialIds = new Set(materialIds);
+  for (const product of graphProductRows) {
+    if (product.skuType !== "finished") continue;
+    try {
+      const leaves = explode([{ skuId: product.id, qty: "1" }], bomByProduct);
+      for (const leafId of leaves.keys()) {
+        if (!currentMaterialIds.has(leafId)) continue;
+        const roots = rootsByLeaf.get(leafId) ?? new Set<number>();
+        roots.add(product.id);
+        rootsByLeaf.set(leafId, roots);
+      }
+    } catch (error) {
+      if (error instanceof BomCycleError || error instanceof BomDepthError) continue;
+      throw error;
+    }
+  }
 
   /* ── 逐物料净额化 ── */
   const all: MaterialDemandRow[] = [];
@@ -454,7 +474,7 @@ export async function getMaterialDemand(
       referenceEvidenceCount: matchedReferences.length,
       netReq,
       suggestQty: suggestQty({ grossReq, onHand, inTransit, moq: uom?.moq ?? null, orderMultiple: uom?.orderMultiple ?? null }),
-      sharedCount: sharedBySku.get(mid) ?? 0,
+      sharedCount: rootsByLeaf.get(mid)?.size ?? 0,
       topProducts: [...contrib.entries()]
         .sort((a, b) => dCmp(b[1], a[1]) || a[0].localeCompare(b[0]))
         .slice(0, 3)
