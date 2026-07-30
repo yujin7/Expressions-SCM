@@ -123,55 +123,6 @@ export default function HealthClient() {
         v === null || v > SNAPSHOT_RED_DAYS ? <Tag color="red">{v ?? "∞"}</Tag> : <Tag color="green">{v}</Tag>,
     },
   ];
-  const connectorColumns: ColumnsType<OpsHealth["connectors"][number]> = [
-    { title: "系统", dataIndex: "label", width: 180 },
-    {
-      title: "实现",
-      dataIndex: "implementation",
-      width: 110,
-      render: (value: string) => value === "ready"
-        ? <Tag color="green">代码就绪</Tag>
-        : <Tag color="orange">仅契约</Tag>,
-    },
-    {
-      title: "配置",
-      dataIndex: "configured",
-      width: 100,
-      render: (value: boolean) => value ? <Tag color="blue">凭据已配</Tag> : <Tag>未配置</Tag>,
-    },
-    {
-      title: "Live UAT",
-      dataIndex: "operational",
-      width: 110,
-      render: (value: boolean) => value
-        ? <Tag color="green">已验证</Tag>
-        : <Tag color="default">未验证</Tag>,
-    },
-    {
-      title: "验证时间",
-      dataIndex: "liveVerifiedAt",
-      width: 170,
-      render: (value: string | null) => value ? fmtTime(value) : "—",
-    },
-    {
-      title: "能力",
-      dataIndex: "capabilities",
-      width: 230,
-      render: (values: string[]) => values.map((value) => (
-        <Tag key={value} style={{ marginBottom: 4 }}>{value}</Tag>
-      )),
-    },
-    {
-      title: "缺失配置",
-      dataIndex: "missingEnv",
-      width: 230,
-      render: (values: string[]) => values.length === 0
-        ? <Typography.Text type="success">无</Typography.Text>
-        : <Typography.Text code>{values.join(", ")}</Typography.Text>,
-    },
-    { title: "阻塞/说明", dataIndex: "blocker", render: (value: string | null) => value ?? "—" },
-  ];
-
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Space style={{ justifyContent: "space-between", width: "100%" }}>
@@ -245,14 +196,61 @@ export default function HealthClient() {
       </Card>
 
       <Card size="small" title="外部系统连接器（代码、凭据与真实 UAT 分开判定）">
-        <Table
-          rowKey="key"
-          size="small"
-          columns={connectorColumns}
-          dataSource={data.connectors}
-          pagination={false}
-          scroll={{ x: "max-content" }}
-        />
+        <Row gutter={[12, 12]}>
+          {data.connectors.map((connector) => (
+            <Col key={connector.key} xs={24} xl={12}>
+              <Card size="small" style={{ height: "100%" }}>
+                <Space direction="vertical" size={10} style={{ width: "100%" }}>
+                  <Space wrap size={[4, 4]}>
+                    <Typography.Text strong>{connector.label}</Typography.Text>
+                    {connector.implementation === "ready"
+                      ? <Tag color="green">代码就绪</Tag>
+                      : <Tag color="orange">仅契约</Tag>}
+                    {connector.configured
+                      ? <Tag color="blue">凭据已配</Tag>
+                      : <Tag>未配置</Tag>}
+                    {connector.operational
+                      ? <Tag color="green">Live UAT 已验证</Tag>
+                      : <Tag>Live UAT 未验证</Tag>}
+                  </Space>
+
+                  <div>
+                    <Typography.Text type="secondary">能力</Typography.Text>
+                    <div style={{ marginTop: 4 }}>
+                      {connector.capabilities.map((value) => (
+                        <Tag key={value} style={{ marginBottom: 4 }}>{value}</Tag>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <Typography.Text type="secondary">缺失配置</Typography.Text>
+                    <div style={{ marginTop: 4 }}>
+                      {connector.missingEnv.length === 0 ? (
+                        <Typography.Text type="success">无</Typography.Text>
+                      ) : (
+                        <Space wrap size={[4, 4]}>
+                          {connector.missingEnv.map((value) => (
+                            <Typography.Text key={value} code>{value}</Typography.Text>
+                          ))}
+                        </Space>
+                      )}
+                    </div>
+                  </div>
+
+                  <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
+                    {connector.blocker ?? "—"}
+                  </Typography.Paragraph>
+                  {connector.liveVerifiedAt ? (
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      验证时间：{fmtTime(connector.liveVerifiedAt)}
+                    </Typography.Text>
+                  ) : null}
+                </Space>
+              </Card>
+            </Col>
+          ))}
+        </Row>
       </Card>
 
       <Card size="small" title={`最近错误（${data.recentErrors.length} 条 / 24h 共 ${data.errorCount24h} 条）`}>
