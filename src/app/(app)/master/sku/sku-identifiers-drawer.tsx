@@ -294,7 +294,7 @@ export default function SkuIdentifiersDrawer({
             <Input
               maxLength={40}
               disabled={kind === "gtin"}
-              placeholder={kind === "external" ? "如 JST / YONYOU" : "如供应商或客户短码"}
+              placeholder={kind === "external" ? "如 JST / JIANDAOYUN / YONYOU" : "如供应商或客户短码"}
             />
           </Form.Item>
           {kind === "gtin" ? (

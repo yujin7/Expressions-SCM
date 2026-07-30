@@ -113,12 +113,18 @@
   显式 opt-in 进入独立观察 staging，缺失不补零且不写库存快照/台账，仓库目录客户端用于
   后续覆盖核验。证据写入受保护存储后
   进入既有 staging/别名/对账管道；相同信封重放不重复，失败不推进 checkpoint，缺源覆盖时
-  不再把未知当 0。飞书支持应用机器人 token 缓存、UUID 去重与 webhook 回退，且 HTTP 200
+  不再把未知当 0。简道云已按官方 v5 OpenAPI 增加全应用/表单目录与九条显式观察契约：
+  产品、采购需求/订单/入库、供应商、仓库、调拨、盘点和样品只保留供应链字段，排除联系人、
+  手机、地址、银行、税号、附件、图片与用户对象；字段改动先触发 schema-drift 拒绝，业务行
+  只进入内容寻址 evidence 和 `releaseBlocked` staging。真实只读 UAT 可见 9 个应用、297 个
+  表单，九条契约共 128 行；其 `sourceAsOf` 主要停在 2023–2024，故只能作历史观察，不能冒充
+  当前主档、库存或订单。飞书支持应用机器人 token 缓存、UUID 去重与 webhook 回退，且 HTTP 200
   仍校验飞书业务码；多实例通过可恢复数据库租约原子认领 outbox，避免并发重复投递。
   运维面板现把代码就绪、机器凭据和 dated Live UAT 分开判定，凭据存在不再伪报 operational。
-  用友明确保持企业 OpenAPI 契约态；实证开放平台账号仍处于
-  `unregister`，C4 人工登录不冒充机器凭据，也未自动接受外部开发者条款。
-  真实握手仍待外部 app/token/IP/权限，详见
+  飞书凭据可取 tenant token，但应用 API 当前返回 0 个可见群，不能设置 UAT 标志。用友收到的
+  AppKey/AppSecret 仍缺租户、组织、token/base URL、服务申请与企业授权，继续保持
+  `contract_only`；C4 人工登录不冒充机器凭据。真实上线仍待密钥轮换、控制总量、群 chat_id
+  与企业授权，详见
   [`integrations/EXTERNAL-SYSTEMS.md`](integrations/EXTERNAL-SYSTEMS.md)。
 - 供应商准入/整改已形成受控生命周期：采购或管理员发起并关闭工作项，状态变更、责任人、
   截止日、关闭证据、审计与幂等在同一事务内完成；普通主数据编辑不能绕过流程改状态。
@@ -134,7 +140,9 @@
 ## 当前优先级
 
 1. 在 staging 完成真实 PostgreSQL 迁移、HTTP/浏览器冒烟、权限脱敏和 41 场景 UAT。
-2. 轮换密钥并完成出主机备份/恢复演练、监控告警、发布与回滚签字。
+2. 轮换所有经聊天传递的飞书/简道云/用友密钥；裁决简道云重复应用视图并完成九条观察契约
+   控制总量；把飞书机器人真正加入 API 可见测试群；补用友租户/组织/端点/服务授权。
+   同时完成出主机备份/恢复演练、监控告警、发布与回滚签字。
 3. 先裁决 376 个 operational 别名并补条码所有权；已关联包材的短缺/ETA/齐套旁证已接通。
    随后补齐海外仓/其他部门库存覆盖，并迁移真实批号、UAT FEFO 全出入库链。
 4. 按 [`engineering/DECISION-VISUAL-PLATFORM.md`](engineering/DECISION-VISUAL-PLATFORM.md)

@@ -1,12 +1,20 @@
 import { feishuAppConfigFromEnv } from "./feishu";
+import {
+  jiandaoyunConfigFromEnv,
+  jiandaoyunSyncActorId,
+} from "./jiandaoyun";
 import { jstConfigFromEnv } from "./jst";
-import { YONYOU_REQUIRED_ENV, yonyouConfigFromEnv } from "./yonyou";
+import {
+  YONYOU_REQUIRED_ENV,
+  yonyouConfigFromEnv,
+  yonyouMissingEnv,
+} from "./yonyou";
 
 export type ConnectorImplementation = "ready" | "contract_only";
-export type ConnectorAuth = "signed_token" | "oauth_app" | "webhook_or_app";
+export type ConnectorAuth = "signed_token" | "api_key" | "oauth_app" | "webhook_or_app";
 
 export interface Connector {
-  key: "jst" | "yy" | "feishu";
+  key: "jst" | "jdy" | "yy" | "feishu";
   label: string;
   implementation: ConnectorImplementation;
   auth: ConnectorAuth;
@@ -87,6 +95,49 @@ export const CONNECTORS: Connector[] = [
     },
   },
   {
+    key: "jdy",
+    label: "简道云（现行低代码 ERP 观察层）",
+    implementation: "ready",
+    auth: "api_key",
+    systemOfRecord: "现行简道云应用、表单与受控业务观察；SCM 主档/单据/库存账仍须人工放行",
+    capabilities: [
+      "application-form-catalog",
+      "field-minimized-form-observations",
+      "schema-drift-guard",
+      "immutable-evidence-and-staging",
+    ],
+    requiredEnv: ["JIANDAOYUN_API_KEY", "JIANDAOYUN_SYNC_ACTOR_ID"],
+    optionalEnv: [
+      "JIANDAOYUN_BASE_URL",
+      "JIANDAOYUN_SYNC_ENABLED",
+      "JIANDAOYUN_SYNC_CONTRACTS",
+      "JIANDAOYUN_LIVE_VERIFIED_AT",
+    ],
+    liveVerificationEnv: "JIANDAOYUN_LIVE_VERIFIED_AT",
+    sourceDocs: [
+      "https://hc.jiandaoyun.com/open/10992",
+      "https://hc.jiandaoyun.com/open/18538",
+      "https://hc.jiandaoyun.com/open/18539",
+      "https://hc.jiandaoyun.com/open/14216",
+      "https://hc.jiandaoyun.com/open/14220",
+    ],
+    blocker: "目录与九条最小化观察契约已就绪；数据只进入 evidence/staging。需轮换已在聊天暴露的密钥、配置责任人和显式表单契约，并完成控制总量/重复视图/UAT 后再设置 JIANDAOYUN_LIVE_VERIFIED_AT",
+    isConfigured(env = process.env) {
+      try {
+        return jiandaoyunConfigFromEnv(env) !== null && jiandaoyunSyncActorId(env) !== null;
+      } catch {
+        return false;
+      }
+    },
+    missingEnv(env = process.env) {
+      const result = missing(["JIANDAOYUN_API_KEY"], env);
+      const baseUrl = env.JIANDAOYUN_BASE_URL?.trim();
+      if (baseUrl && !/^https:\/\//i.test(baseUrl)) result.push("JIANDAOYUN_BASE_URL");
+      if (jiandaoyunSyncActorId(env) === null) result.push("JIANDAOYUN_SYNC_ACTOR_ID");
+      return result;
+    },
+  },
+  {
     key: "yy",
     label: "用友（财务/成本）",
     implementation: "contract_only",
@@ -94,14 +145,14 @@ export const CONNECTORS: Connector[] = [
     systemOfRecord: "财务凭证、成本、结算与组织核算口径",
     capabilities: ["cost-authority", "settlement-posting", "financial-reconciliation"],
     requiredEnv: [...YONYOU_REQUIRED_ENV],
-    optionalEnv: [],
+    optionalEnv: ["YY_CLIENT_ID", "YY_CLIENT_SECRET"],
     sourceDocs: ["https://developer.yonyou.com/openAPI"],
     blocker: "C4 人工账号不能替代 OpenAPI 应用；当前开放平台开发者身份尚未注册，待注册、创建并授权企业应用、确认租户/组织、token URL 与获批接口",
     isConfigured(env = process.env) {
       return yonyouConfigFromEnv(env) !== null;
     },
     missingEnv(env = process.env) {
-      return missing(YONYOU_REQUIRED_ENV, env);
+      return yonyouMissingEnv(env);
     },
   },
   {

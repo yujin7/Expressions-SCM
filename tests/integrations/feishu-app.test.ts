@@ -42,4 +42,59 @@ describe("飞书应用机器人", () => {
     });
     expect(String(init.body)).not.toContain("secret");
   });
+
+  it("只读分页发现应用可见群，并去重排序", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes("tenant_access_token")) {
+        return response({ code: 0, tenant_access_token: "tenant-token", expire: 7200 });
+      }
+      if (value.includes("page_token=next")) {
+        return response({
+          code: 0,
+          data: {
+            has_more: false,
+            items: [
+              { chat_id: "oc_a", name: "采购协同" },
+              { chat_id: "oc_b", name: "供应链异常" },
+            ],
+          },
+        });
+      }
+      return response({
+        code: 0,
+        data: {
+          has_more: true,
+          page_token: "next",
+          items: [{ chat_id: "oc_b", name: "供应链异常" }],
+        },
+      });
+    });
+    const client = new FeishuAppClient(
+      { appId: "cli_a", appSecret: "secret" },
+      { fetchImpl: fetchMock as unknown as typeof fetch, retries: 0 },
+    );
+
+    await expect(client.listAccessibleChats()).resolves.toEqual([
+      { chatId: "oc_a", name: "采购协同" },
+      { chatId: "oc_b", name: "供应链异常" },
+    ]);
+    expect(fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("tenant_access_token"))).toHaveLength(1);
+  });
+
+  it("未配置 chat_id 时拒绝发送，不会调用网络", async () => {
+    const fetchMock = vi.fn();
+    const client = new FeishuAppClient(
+      { appId: "cli_a", appSecret: "secret" },
+      { fetchImpl: fetchMock as unknown as typeof fetch, retries: 0 },
+    );
+
+    await expect(client.sendText({
+      title: "异常",
+      body: "数量变化",
+      uuid: "notice-1",
+    })).rejects.toThrow("未配置目标 chat_id");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

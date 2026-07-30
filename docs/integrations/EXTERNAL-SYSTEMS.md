@@ -1,4 +1,4 @@
-# 外部系统集成契约：聚水潭、用友、飞书
+# 外部系统集成契约：聚水潭、简道云、用友、飞书
 
 更新日期：2026-07-30
 当前实现锚点：`main` 上的连接器代码、`docs/NOW.md` 与 `docs/spec/CURRENT.md`
@@ -8,12 +8,15 @@
 | 事实域 | 权威系统 | SCM 的角色 | 当前接入状态 |
 |---|---|---|---|
 | 电商订单、实际出库销量、平台/WMS 库存观察 | 聚水潭 | 拉取、留证、映射、staging、与 SCM 自有仓出库对账 | 出库日事实与跨仓库存增量观察代码就绪；待真实 app/token/IP/权限 |
+| 现行低代码 ERP 表单与历史流程 | 简道云 | 全量目录、显式表单观察、字段最小化、留证与 staging；不直接成为 SCM 正式事实 | OpenAPI 已完成只读握手；目录与九条观察契约代码就绪，待密钥轮换、控制总量与 UAT |
 | SCM 委外单据、实时仓库存账、批次、质量、计划与审批 | 本 SCM | 业务与库存账权威 | 已运行；外部系统不得直接覆写 |
 | 财务凭证、成本、结算与组织核算口径 | 用友 | 读取财务权威、提交获批业务结果、双向对账 | 仅契约；待企业 OpenAPI 应用与接口清单 |
 | 协同触达 | 飞书 | 接收 SCM outbox 消息；不成为业务状态权威 | webhook 与应用机器人代码就绪；待任选一路配置 |
 
-截至 2026-07-30 的实证结论：代码、契约与治理边界已就绪，但三方均未完成生产机器凭据握手，
-因此任何面板都不得把「代码存在」或「人能登录」显示成 live/operational。
+截至 2026-07-30 的实证结论：简道云 OpenAPI 密钥已完成只读握手，飞书应用凭据可换取
+tenant token；但简道云尚未完成控制总量/UAT，飞书应用看不到任何测试群，用友也缺少完整
+企业授权上下文。因此任何面板都不得把「代码存在」「凭据可鉴权」或「人能登录」显示成
+live/operational。
 
 任何外部事实都走：
 
@@ -101,7 +104,63 @@ npx tsx src/jobs/cli.ts sync-jst-inventory
 npx tsx src/jobs/cli.ts reconcile-jst 2026-07-28
 ```
 
-## 3. 飞书
+## 3. 简道云
+
+### 已验证的源事实
+
+- OpenAPI 使用 HTTPS POST JSON，`Authorization: Bearer <API_KEY>`；应用、表单、字段与数据
+  分页均以官方 v5 接口读取。
+- 当前 API key 可见 9 个应用、297 个表单视图。相同 `entry_id` 会在多个应用中出现，
+  且字段可见性与返回行数并不相同；因此表单名称和裸 `entry_id` 都不是全局唯一同步键。
+- 新「供应中心」23 个表单中，20 个仍无可用字段/业务数据；真实在用记录主要位于
+  「进销存管理」「仓库管理」「采购供应链」。系统不会因为目标应用看起来结构更现代就把
+  空表误认作权威，也不会把重复应用视图相加。
+
+### 已实现
+
+- `JiandaoyunClient`：应用/表单/字段/数据分页、24 位对象 ID 校验、HTTPS 基址、15 秒超时、
+  限次重试、游标不前进和 1,000 页安全上限。
+- `catalog` 流只留存所有可见应用/表单的元数据，不读取业务行。
+- 九条显式观察契约覆盖产品、采购需求、采购订单、采购入库、供应商、仓库、调拨、盘点和
+  样品；只保留供应链决策所需字段，排除联系人、手机、地址、银行账号、税号、附件、图片及
+  用户/部门对象。
+- 每次表单同步先校验字段契约并计算 schema hash；字段缺失即停止，额外字段默认忽略，
+  防止简道云改表后静默错列。
+- 业务行按 `app_id + entry_id + data_id` 身份进入内容寻址 evidence 和现有
+  `import_jobs/staging_rows`；相同信封重放不重复，失败不推进 checkpoint。
+- 所有行固定 `observation-only + releaseBlocked`，不会直接更新 SKU、供应商、仓库、价格、
+  BOM、单据、库存余额或台账；空结果也只是“本授权视图为空”，不是业务事实为零。
+- MCP 仅保留为个人 AI 助手的人工查询渠道，不进入后台同步或生产写路径。
+
+配置：
+
+```text
+JIANDAOYUN_API_KEY
+JIANDAOYUN_SYNC_ACTOR_ID
+JIANDAOYUN_SYNC_ENABLED（默认 false）
+JIANDAOYUN_SYNC_CONTRACTS（逗号分隔的显式契约 key）
+JIANDAOYUN_BASE_URL（可选）
+JIANDAOYUN_LIVE_VERIFIED_AT（真实 UAT 后）
+```
+
+手工触发：
+
+```bash
+npx tsx src/jobs/cli.ts sync-jiandaoyun-catalog
+npx tsx src/jobs/cli.ts sync-jiandaoyun-forms
+npx tsx src/jobs/cli.ts sync-jiandaoyun-form sample-management-observation
+```
+
+上线前必须：
+
+1. 轮换曾通过聊天传递的 API key 与 MCP URL token；生产只用最小权限 OpenAPI key，并配置
+   IP 白名单。MCP token 不用于服务器。
+2. 业务负责人确认每个重复表单视图的唯一读取权威；同一 `entry_id` 不得跨应用累加。
+3. 逐契约核对表单行数、子表行数、数量/金额、删除记录、更新时间与空值。
+4. SKU、仓库、供应商和单号完成 crosswalk；歧义进入人工裁决，不按名称相似度自动合并。
+5. 连续运行并验证限流、改表、删除、空表、重复调度、失败恢复与 evidence 重放。
+
+## 4. 飞书
 
 ### 两条可运行路径
 
@@ -129,7 +188,17 @@ npx tsx src/jobs/cli.ts reconcile-jst 2026-07-28
 只有在完整机器配置和该有效时间同时存在时才显示 Live UAT「已验证」；未来时间或非法时间
 不会被接受。
 
-## 4. 用友
+只读发现命令：
+
+```bash
+npx tsx src/jobs/cli.ts probe-feishu-chats
+```
+
+该命令只使用应用凭据列出机器人当前可见群，不打开业务数据库、不发送消息、不改变群成员。
+2026-07-30 实测鉴权成功但返回 0 个群，因此必须先把机器人加入测试群；不能以有效 token
+替代 `chat_id` 与真实投递验收。
+
+## 5. 用友
 
 [用友开放平台](https://developer.yonyou.com/openAPI)的官方流程是注册、创建应用、申请服务、
 企业授权后调用；并支持 IP 白名单、分层限流和熔断。
@@ -141,14 +210,15 @@ npx tsx src/jobs/cli.ts reconcile-jst 2026-07-28
 - 开放平台控制台实际进入 `#/unregister`，说明当前账号尚未注册开发者/ISV 身份；
 - 因此目前不存在可供 SCM 使用的企业应用 client ID/secret、已申请服务或企业应用授权。
 
-当前保持 `contract_only`，避免在未知产品版本/租户/组织/接口下伪接通。未自动注册开发者身份，
+当前收到的 AppKey/AppSecret 只满足凭据对中的一部分，仍缺租户、组织、token URL、base URL、
+已申请服务及企业授权证据。当前保持 `contract_only`，避免在未知产品版本/租户/组织/接口下伪接通。未自动注册开发者身份，
 因为注册会接受平台条款、创建外部主体并可能要求企业/伙伴资料，属于必须由企业明确批准的外部变更。
 
 所需机器配置：
 
 ```text
-YY_CLIENT_ID
-YY_CLIENT_SECRET
+YY_APP_KEY
+YY_APP_SECRET
 YY_TENANT_ID
 YY_ORG_ID
 YY_BASE_URL
@@ -167,7 +237,7 @@ YY_TOKEN_URL
 8. 把机器凭据放入部署密钥库，而不是聊天、文档或仓库；
 9. 先只读对账，再启用提交；所有提交必须 maker-checker、同事务 outbox 和可逆补偿。
 
-## 5. 观测、告警与验收
+## 6. 观测、告警与验收
 
 运维面板把「代码就绪」「机器凭据已配」「真实 Live UAT 已验证」分开显示；凭据存在不再
 自动等于 operational。面板还显示能力、缺失环境变量、验证时间和阻塞说明。
@@ -183,5 +253,6 @@ YY_TOKEN_URL
 
 - 聚水潭真实握手、控制总量和 7 天恢复演练通过；
 - 飞书测试群收到去重消息，应用失败时 webhook 回退被验证；
+- 简道云完成密钥轮换、重复视图裁决、九条契约控制总量和失败恢复；
 - 用友只读沙箱完成前不得标记 operational，更不得写财务事实；
 - 密钥只存在部署密钥库/环境变量，轮换后旧值失效，日志与导出无 secret。

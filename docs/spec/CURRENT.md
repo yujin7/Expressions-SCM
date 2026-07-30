@@ -45,11 +45,16 @@
   增量另以显式 opt-in 进入观察 staging，缺失不补零且不写库存快照/台账，仓库目录客户端
   仅用于后续覆盖核验。源信封最小化
   去 PII、内容寻址留证，继而进入 import/staging/alias，不直写库存或正式销量。运行史、
-  checkpoint、超时/退避、重放和缺源停止已有测试；07:30 拉取、08:00 对账。飞书应用机器人
+  checkpoint、超时/退避、重放和缺源停止已有测试；07:30 拉取、08:00 对账。简道云现已
+  形成目录 + 显式观察契约：live 只读发现 9 个应用、297 个表单，九条最小化契约覆盖产品、
+  采购、供应商、仓库、盘点、调拨和样品；128 条 UAT 行全部停在 pending staging，schema
+  漂移、重复视图与 PII 有硬闸。源更新时间主要在 2023–2024，当前不得用作实时权威。
+  飞书应用机器人
   可缓存 tenant token、以 outbox ID 作 UUID 去重并在失败时回退 webhook；webhook HTTP 200
-  仍须业务码为 0 才标 sent，多实例先以可恢复数据库租约原子认领 outbox。用友仍仅为企业
-  OpenAPI 契约：只读实证开放平台账号当前进入
-  `#/unregister`，提供的 C4 人工登录未写入仓库，也不作为机器凭据；未擅自注册外部开发者主体。
+  仍须业务码为 0 才标 sent，多实例先以可恢复数据库租约原子认领 outbox；当前应用鉴权成功但
+  `/im/v1/chats` 返回 0 群，尚无可投递 chat_id。用友仍仅为企业 OpenAPI 契约：收到的
+  AppKey/AppSecret 仍不足以确认租户、组织、端点、获批服务和企业授权；提供的 C4 人工登录
+  未写入仓库，也不作为机器凭据；未擅自注册外部开发者主体。
   运维面板把代码、凭据和 dated Live UAT 分开判定；真实 operational 状态必须等
   app/token、租户/组织、IP/权限与 UAT，详见
   [`../integrations/EXTERNAL-SYSTEMS.md`](../integrations/EXTERNAL-SYSTEMS.md)。
