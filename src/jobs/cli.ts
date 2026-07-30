@@ -21,6 +21,7 @@ import {
   runJiandaoyunContractSync,
 } from "./sync-jiandaoyun";
 import { probeFeishuChats } from "./probe-feishu";
+import { runJiandaoyunContractAudit } from "./audit-jiandaoyun";
 
 const USAGE = `用法:
   npx tsx src/jobs/cli.ts reconcile-jst [YYYY-MM-DD]     缺省=昨日（Asia/Shanghai）
@@ -29,6 +30,7 @@ const USAGE = `用法:
   npx tsx src/jobs/cli.ts sync-jiandaoyun-catalog        同步可见应用/表单目录（不读取业务行）
   npx tsx src/jobs/cli.ts sync-jiandaoyun-forms          同步显式配置的最小化观察契约
   npx tsx src/jobs/cli.ts sync-jiandaoyun-form <key>     同步一条命名观察契约
+  npx tsx src/jobs/cli.ts audit-jiandaoyun-contracts     只读输出九条契约的聚合控制总量
   npx tsx src/jobs/cli.ts probe-feishu-chats              只读列出应用机器人可见群/chat_id
   npx tsx src/jobs/cli.ts license-alert [YYYY-MM-DD]     缺省=今日
   npx tsx src/jobs/cli.ts snapshot-age [YYYY-MM-DD] [阈值天数=3]
@@ -40,6 +42,10 @@ async function main(): Promise<void> {
   const [cmd, ...args] = process.argv.slice(2);
   if (cmd === "probe-feishu-chats") {
     console.log(JSON.stringify(await probeFeishuChats(), null, 2));
+    return;
+  }
+  if (cmd === "audit-jiandaoyun-contracts") {
+    console.log(JSON.stringify(await runJiandaoyunContractAudit(), null, 2));
     return;
   }
   const db = await getDbAsync();

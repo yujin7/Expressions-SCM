@@ -120,6 +120,10 @@ npx tsx src/jobs/cli.ts reconcile-jst 2026-07-28
 
 - `JiandaoyunClient`：应用/表单/字段/数据分页、24 位对象 ID 校验、HTTPS 基址、15 秒超时、
   限次重试、游标不前进和 1,000 页安全上限。
+- 数据查询使用 OpenAPI `fields` 只请求契约需要的顶层字段与
+  `createTime/updateTime/deleteTime`；每行返回的 `appId/entryId` 必须与请求完全一致，
+  防止授权视图或响应串表。简道云对子表投影仍会返回整个子表，因此未入契约的子字段只在
+  进程内短暂存在，写 evidence/staging 前继续强制剔除。
 - `catalog` 流只留存所有可见应用/表单的元数据，不读取业务行。
 - 九条显式观察契约覆盖产品、采购需求、采购订单、采购入库、供应商、仓库、调拨、盘点和
   样品；只保留供应链决策所需字段，排除联系人、手机、地址、银行账号、税号、附件、图片及
@@ -146,10 +150,21 @@ JIANDAOYUN_LIVE_VERIFIED_AT（真实 UAT 后）
 手工触发：
 
 ```bash
+npx tsx src/jobs/cli.ts audit-jiandaoyun-contracts
 npx tsx src/jobs/cli.ts sync-jiandaoyun-catalog
 npx tsx src/jobs/cli.ts sync-jiandaoyun-forms
 npx tsx src/jobs/cli.ts sync-jiandaoyun-form sample-management-observation
 ```
+
+`audit-jiandaoyun-contracts` 不打开 SCM 数据库、不落源业务值，只输出九条契约的聚合控制量：
+目录应用/表单数、主表行数、子表行数、字段非空覆盖、契约 schema hash 与源数据时间范围。
+
+2026-07-30 重新实测：
+
+- API key 仍可读取 9 个应用、297 个表单；
+- 九条契约共 128 条主表记录、131 条子表记录；
+- 最新一条源更新时间为 2024-12-11，距本次核验 595 天；其余契约更旧；
+- 因此当前授权视图只能作为历史迁移/交叉核对源，不能被标记为 2026 年实时低代码 ERP 权威。
 
 上线前必须：
 
@@ -195,8 +210,10 @@ npx tsx src/jobs/cli.ts probe-feishu-chats
 ```
 
 该命令只使用应用凭据列出机器人当前可见群，不打开业务数据库、不发送消息、不改变群成员。
-2026-07-30 实测鉴权成功但返回 0 个群，因此必须先把机器人加入测试群；不能以有效 token
-替代 `chat_id` 与真实投递验收。
+2026-07-30 再次实测鉴权成功但仍返回 0 个群。把某人设为应用管理员不等于把机器人加入群；
+“机器人已发布/已允许发消息”的人工确认也不能替代 API 证据。必须在目标群的机器人管理中
+确认加入的是该应用当前已发布版本，然后重新运行发现命令；只有返回目标 `chat_id` 后才可
+执行真实投递、去重与失败恢复验收。
 
 ## 5. 用友
 

@@ -44,7 +44,7 @@ describe("简道云受控同步", () => {
   it("目录只留元数据；业务行字段最小化后停在 staging，重放不重复", async () => {
     const { db } = await createTestDb();
     const [actor] = await db.insert(schema.users).values({ name: "简道云同步责任人" }).returning();
-    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const path = new URL(String(url)).pathname;
       if (path.endsWith("/app/list")) {
         return response({ apps: [{ app_id: appId, name: "供应中心" }] });
@@ -72,9 +72,22 @@ describe("简道云受控同步", () => {
         });
       }
       if (path.endsWith("/app/entry/data/list")) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        expect(body.fields).toEqual([
+          "createTime",
+          "updateTime",
+          "deleteTime",
+          "_widget_code",
+          "_widget_qty",
+          "_widget_lines",
+        ]);
+        expect(JSON.stringify(body.fields)).not.toContain("_widget_phone");
+        expect(JSON.stringify(body.fields)).not.toContain("_widget_line_image");
         return response({
           data: [{
             _id: recordId,
+            appId,
+            entryId,
             createTime: "2026-07-29T01:00:00.000Z",
             updateTime: "2026-07-30T02:00:00.000Z",
             _widget_code: { value: "SKU-001" },
