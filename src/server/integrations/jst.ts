@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { fetchJson, type FetchJsonOptions } from "./http";
 
 const DEFAULT_BASE_URL = "https://openapi.jushuitan.com";
+const OFFICIAL_API_HOST = "openapi.jushuitan.com";
 const RATE_LIMIT_CODES = new Set([199, 200]);
 const MAX_CURSOR_PAGES = 10_000;
 
@@ -80,6 +81,28 @@ export interface JstWarehouse {
 export interface JstPage<T> {
   rows: T[];
   hasNext: boolean | null;
+}
+
+export function normalizeJstBaseUrl(
+  raw: string | null | undefined,
+): string | null {
+  const value = raw?.trim() || DEFAULT_BASE_URL;
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== "https:"
+      || url.hostname.toLowerCase() !== OFFICIAL_API_HOST
+      || (url.port !== "" && url.port !== "443")
+      || url.username
+      || url.password
+      || url.search
+      || url.hash
+      || !["", "/"].includes(url.pathname)
+    ) return null;
+    return DEFAULT_BASE_URL;
+  } catch {
+    return null;
+  }
 }
 
 export class JstApiError extends Error {
@@ -185,11 +208,13 @@ export function jstConfigFromEnv(env: NodeJS.ProcessEnv = process.env): JstConfi
   const appSecret = env.JST_APP_SECRET?.trim();
   const accessToken = env.JST_ACCESS_TOKEN?.trim();
   if (!appKey || !appSecret || !accessToken) return null;
+  const baseUrl = normalizeJstBaseUrl(env.JST_BASE_URL);
+  if (!baseUrl) throw new Error("JST_BASE_URL 必须是聚水潭官方 HTTPS API 基址");
   return {
     appKey,
     appSecret,
     accessToken,
-    baseUrl: env.JST_BASE_URL?.trim() || DEFAULT_BASE_URL,
+    baseUrl,
   };
 }
 

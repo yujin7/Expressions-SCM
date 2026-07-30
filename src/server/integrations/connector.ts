@@ -1,9 +1,10 @@
-import { feishuAppConfigFromEnv } from "./feishu";
+import { feishuAppConfigFromEnv, feishuWebhookUrlFromEnv } from "./feishu";
 import {
   jiandaoyunConfigFromEnv,
   jiandaoyunSyncActorId,
+  normalizeJiandaoyunBaseUrl,
 } from "./jiandaoyun";
-import { jstConfigFromEnv } from "./jst";
+import { jstConfigFromEnv, normalizeJstBaseUrl } from "./jst";
 import {
   YONYOU_REQUIRED_ENV,
   yonyouConfigFromEnv,
@@ -34,9 +35,13 @@ function missing(keys: readonly string[], env: NodeJS.ProcessEnv = process.env):
 }
 
 function feishuMissing(env: NodeJS.ProcessEnv = process.env): string[] {
-  if (env.FEISHU_WEBHOOK_URL?.trim()) return [];
+  if (feishuWebhookUrlFromEnv(env)) return [];
   const appPath = missing(["FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID"], env);
-  return appPath.length === 0 ? [] : appPath;
+  if (appPath.length === 0) return [];
+  return [
+    ...(env.FEISHU_WEBHOOK_URL?.trim() ? ["FEISHU_WEBHOOK_URL"] : []),
+    ...appPath,
+  ];
 }
 
 function liveVerifiedAt(
@@ -85,10 +90,17 @@ export const CONNECTORS: Connector[] = [
     blocker: "日出库与库存总量增量均进入受控 staging；需开放平台 app/token、IP 白名单、接口权限、责任人 ID，并在真实对账/UAT 后设置 JST_LIVE_VERIFIED_AT",
     isConfigured(env = process.env) {
       const actor = Number(env.JST_SYNC_ACTOR_ID);
-      return jstConfigFromEnv(env) !== null && Number.isInteger(actor) && actor > 0;
+      try {
+        return jstConfigFromEnv(env) !== null && Number.isInteger(actor) && actor > 0;
+      } catch {
+        return false;
+      }
     },
     missingEnv(env = process.env) {
       const result = missing(["JST_APP_KEY", "JST_APP_SECRET", "JST_ACCESS_TOKEN"], env);
+      if (env.JST_BASE_URL?.trim() && !normalizeJstBaseUrl(env.JST_BASE_URL)) {
+        result.push("JST_BASE_URL");
+      }
       const actor = Number(env.JST_SYNC_ACTOR_ID);
       if (!Number.isInteger(actor) || actor <= 0) result.push("JST_SYNC_ACTOR_ID");
       return result;
@@ -131,8 +143,10 @@ export const CONNECTORS: Connector[] = [
     },
     missingEnv(env = process.env) {
       const result = missing(["JIANDAOYUN_API_KEY"], env);
-      const baseUrl = env.JIANDAOYUN_BASE_URL?.trim();
-      if (baseUrl && !/^https:\/\//i.test(baseUrl)) result.push("JIANDAOYUN_BASE_URL");
+      if (
+        env.JIANDAOYUN_BASE_URL?.trim()
+        && !normalizeJiandaoyunBaseUrl(env.JIANDAOYUN_BASE_URL)
+      ) result.push("JIANDAOYUN_BASE_URL");
       if (jiandaoyunSyncActorId(env) === null) result.push("JIANDAOYUN_SYNC_ACTOR_ID");
       return result;
     },
@@ -177,7 +191,7 @@ export const CONNECTORS: Connector[] = [
     ],
     blocker: "配置自定义 webhook，或配置应用 app_id/app_secret/chat_id；完成真实群投递/UAT 后设置 FEISHU_LIVE_VERIFIED_AT",
     isConfigured(env = process.env) {
-      return Boolean(env.FEISHU_WEBHOOK_URL?.trim()) || feishuAppConfigFromEnv(env) !== null;
+      return feishuWebhookUrlFromEnv(env) !== null || feishuAppConfigFromEnv(env) !== null;
     },
     missingEnv(env = process.env) {
       return feishuMissing(env);

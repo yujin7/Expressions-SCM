@@ -3,6 +3,8 @@ import { fetchJson, type FetchJsonOptions } from "./http";
 const TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal/";
 const MESSAGE_URL = "https://open.feishu.cn/open-apis/im/v1/messages";
 const CHATS_URL = "https://open.feishu.cn/open-apis/im/v1/chats";
+const WEBHOOK_HOST = "open.feishu.cn";
+const WEBHOOK_PATH = /^\/open-apis\/bot\/v2\/hook\/[A-Za-z0-9_-]+$/;
 const TOKEN_SKEW_MS = 60_000;
 const MAX_CHAT_PAGES = 100;
 
@@ -13,6 +15,29 @@ export interface FeishuAppCredentials {
 
 export interface FeishuAppConfig extends FeishuAppCredentials {
   chatId: string;
+}
+
+export function feishuWebhookUrlFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const raw = env.FEISHU_WEBHOOK_URL?.trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (
+      url.protocol !== "https:"
+      || url.hostname.toLowerCase() !== WEBHOOK_HOST
+      || (url.port !== "" && url.port !== "443")
+      || url.username
+      || url.password
+      || url.search
+      || url.hash
+      || !WEBHOOK_PATH.test(url.pathname)
+    ) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 interface CachedToken {
