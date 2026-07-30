@@ -240,14 +240,17 @@ YY_TENANT_ID
 YY_ORG_ID
 YY_PRODUCT_PROFILE
 YY_APPROVED_API_CONTRACTS
+YY_ALLOWED_HOSTS
 YY_BASE_URL
 YY_TOKEN_URL
 ```
 
 `YY_PRODUCT_PROFILE` 只接受 `c4`、`yonsuite`、`yonbip`，必须由企业管理员/实施方确认；
 不能从网页登录域名猜测。`YY_APPROVED_API_CONTRACTS` 是企业实际授权的精确 API 名称与版本，
-逗号分隔，不能只写“采购”“财务”等泛称。主/别名凭据冲突、HTTP、带用户名密码、loopback、
-私网或本地域名 endpoint 会被拒绝，避免未来 token 客户端把 AppSecret 发往错误目标。
+逗号分隔，不能只写“采购”“财务”等泛称。`YY_ALLOWED_HOSTS` 只列企业/实施方确认的 base/token
+精确主机名，不接受通配符、IP 或任意公网域名。主/别名凭据冲突、HTTP、带用户名密码、
+IPv6 zone、loopback、私网或本地域名 endpoint 会被拒绝；未来 token 客户端还必须在连接前
+重新解析 DNS、拒绝非公网地址并把已验证 IP 固定到同一次请求，避免 DNS rebinding。
 
 在不请求 token、不调用业务 API 的情况下可先运行：
 

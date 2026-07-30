@@ -4,6 +4,7 @@ import { writeAudit } from "@/server/core/audit";
 import type { SessionUser } from "@/server/core/dto";
 import {
   normalizeSkuIdentifier,
+  normalizeSkuIdentifierScope,
   skuIdentifierSchema,
 } from "@/server/rules/sku-identifier";
 import { ApiError } from "./common";
@@ -140,21 +141,33 @@ export async function createSkuIdentifier(
   return db.transaction(async (tx: AnyDb) => {
     const sku = await requireSku(tx, skuId);
 
-    const [exactIdentifier] = await tx
-      .select({ skuId: schema.skuIdentifiers.skuId, skuCode: schema.skus.code })
+    const possibleIdentifiers: {
+      skuId: number;
+      skuCode: string;
+      scope: string;
+    }[] = await tx
+      .select({
+        skuId: schema.skuIdentifiers.skuId,
+        skuCode: schema.skus.code,
+        scope: schema.skuIdentifiers.scope,
+      })
       .from(schema.skuIdentifiers)
       .innerJoin(schema.skus, eq(schema.skus.id, schema.skuIdentifiers.skuId))
       .where(and(
         eq(schema.skuIdentifiers.kind, parsed.kind),
-        eq(schema.skuIdentifiers.scope, parsed.scope),
         eq(schema.skuIdentifiers.value, parsed.value),
       ));
-    if (exactIdentifier) {
+    const equivalentIdentifier = possibleIdentifiers.find((identifier) => (
+      parsed.kind === "external"
+        ? normalizeSkuIdentifierScope("external", identifier.scope) === parsed.scope
+        : identifier.scope === parsed.scope
+    ));
+    if (equivalentIdentifier) {
       throw new ApiError(
         409,
-        exactIdentifier.skuId === skuId
+        equivalentIdentifier.skuId === skuId
           ? "该标识已登记；如已停用，请在历史记录中重新启用"
-          : `该标识已关联 SKU ${exactIdentifier.skuCode}；请先完成人工归属裁决`,
+          : `该标识已关联 SKU ${equivalentIdentifier.skuCode}；请先完成人工归属裁决`,
       );
     }
 

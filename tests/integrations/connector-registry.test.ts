@@ -11,6 +11,7 @@ const envKeys = [
   "YY_APP_KEY", "YY_APP_SECRET",
   "YY_CLIENT_ID", "YY_CLIENT_SECRET", "YY_TENANT_ID", "YY_ORG_ID", "YY_BASE_URL", "YY_TOKEN_URL",
   "YY_PRODUCT_PROFILE", "YY_APPROVED_API_CONTRACTS",
+  "YY_ALLOWED_HOSTS",
   "FEISHU_WEBHOOK_URL", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID",
   "FEISHU_LIVE_VERIFIED_AT",
 ] as const;
@@ -103,6 +104,7 @@ describe("外部连接器目录", () => {
     ] as const) process.env[key] = "present";
     process.env.YY_PRODUCT_PROFILE = "yonsuite";
     process.env.YY_APPROVED_API_CONTRACTS = "supplier.read@v1,cost.read@v1";
+    process.env.YY_ALLOWED_HOSTS = "api.yonyoucloud.com,auth.yonyoucloud.com";
     process.env.YY_BASE_URL = "https://api.yonyoucloud.com";
     process.env.YY_TOKEN_URL = "https://auth.yonyoucloud.com/token";
     expect(getConnectorReadiness().find((row) => row.key === "yy")).toMatchObject({

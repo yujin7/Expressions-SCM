@@ -23,7 +23,7 @@ export function auditYonyouReadiness(env: NodeJS.ProcessEnv = process.env) {
     },
     productProfile: parseYonyouProductProfile(env.YY_PRODUCT_PROFILE),
     approvedApiContractCount: contracts?.length ?? 0,
-    endpointPolicy: "HTTPS_PUBLIC_NO_EMBEDDED_CREDENTIALS",
+    endpointPolicy: "HTTPS_APPROVED_HOST_DNS_PIN_REQUIRED",
     missingEnv,
     remainingControls: [
       "企业应用与目标企业授权证据",

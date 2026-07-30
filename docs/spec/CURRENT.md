@@ -53,14 +53,14 @@
   可缓存 tenant token、以 outbox ID 作 UUID 去重并在失败时回退 webhook；webhook HTTP 200
   仍须业务码为 0 才标 sent，多实例先以可恢复数据库租约原子认领 outbox；当前应用鉴权成功但
   `/im/v1/chats` 返回 0 群，尚无可投递 chat_id。用友仍仅为企业 OpenAPI 契约：收到的
-  AppKey/AppSecret 仅证明一对候选凭据；产品 profile、企业获批 API、租户/组织、公开 HTTPS
-  endpoint 和沙箱只读对账缺一不可。配置审计不会请求 token 或输出敏感值。SKU 外部标识的
+  AppKey/AppSecret 仅证明一对候选凭据；产品 profile、企业获批 API、租户/组织、获批 host、
+  公开 HTTPS endpoint 和沙箱只读对账缺一不可。配置审计不会请求 token 或输出敏感值。SKU 外部标识的
   聚水潭/简道云/用友常见 scope 别名已统一到 `JST/JIANDAOYUN/YONYOU`。
   提供的 C4 人工登录未写入仓库，也不作为机器凭据；未擅自注册外部开发者主体。
   运维面板把代码、凭据和 dated Live UAT 分开判定；真实 operational 状态必须等
   app/token、租户/组织、IP/权限与 UAT，详见
   [`../integrations/EXTERNAL-SYSTEMS.md`](../integrations/EXTERNAL-SYSTEMS.md)。
-- **522 项系统执行审计（07-30）**：把全仓 201 个 API、80 个认证页面、38 个迁移、
+- **526 项系统执行审计（07-30）**：把全仓 202 个 API、80 个认证页面、40 个迁移、
   40 个架构门、8 个红队门、11 个放行门、7 个项目技能、86 个 lint 例外、20 个真实源文件
   和 31 个关键业务不变量固化为 A001–A522。目录与台账现在互相校验，新增路由、页面、迁移或
   架构门不能漏审。逐项测试全绿才算执行；能力层的外部阻塞仍留在 202 项台账，不以“文件存在”
