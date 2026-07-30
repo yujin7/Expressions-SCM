@@ -57,6 +57,50 @@ async function assertBarcodeOwnership(
   }
 }
 
+async function assertIdentifierOwnership(
+  db: AnyDb,
+  input: {
+    skuId: number;
+    kind: IdentifierRow["kind"];
+    value: string;
+    scope: string;
+    exceptId?: number;
+  },
+) {
+  const conditions = [
+    eq(schema.skuIdentifiers.kind, input.kind),
+    eq(schema.skuIdentifiers.value, input.value),
+  ];
+  if (input.exceptId != null) conditions.push(ne(schema.skuIdentifiers.id, input.exceptId));
+  const possibleIdentifiers: {
+    skuId: number;
+    skuCode: string;
+    scope: string;
+  }[] = await db
+    .select({
+      skuId: schema.skuIdentifiers.skuId,
+      skuCode: schema.skus.code,
+      scope: schema.skuIdentifiers.scope,
+    })
+    .from(schema.skuIdentifiers)
+    .innerJoin(schema.skus, eq(schema.skus.id, schema.skuIdentifiers.skuId))
+    .where(and(...conditions));
+  const equivalentIdentifier = possibleIdentifiers.find((identifier) => (
+    input.kind === "external"
+      ? normalizeSkuIdentifierScope("external", identifier.scope) === input.scope
+      : identifier.scope === input.scope
+  ));
+  if (equivalentIdentifier) {
+    throw new ApiError(
+      409,
+      equivalentIdentifier.skuId === input.skuId
+        ? "该标识已登记；如已停用，请在历史记录中重新启用"
+        : `该标识已关联 SKU ${equivalentIdentifier.skuCode}；请先完成人工归属裁决`,
+    );
+  }
+  await assertBarcodeOwnership(db, input.skuId, input.kind, input.value);
+}
+
 async function demotePrimarySlot(
   tx: AnyDb,
   identifier: Pick<IdentifierRow, "skuId" | "kind" | "scope" | "packagingLevel">,
@@ -141,37 +185,12 @@ export async function createSkuIdentifier(
   return db.transaction(async (tx: AnyDb) => {
     const sku = await requireSku(tx, skuId);
 
-    const possibleIdentifiers: {
-      skuId: number;
-      skuCode: string;
-      scope: string;
-    }[] = await tx
-      .select({
-        skuId: schema.skuIdentifiers.skuId,
-        skuCode: schema.skus.code,
-        scope: schema.skuIdentifiers.scope,
-      })
-      .from(schema.skuIdentifiers)
-      .innerJoin(schema.skus, eq(schema.skus.id, schema.skuIdentifiers.skuId))
-      .where(and(
-        eq(schema.skuIdentifiers.kind, parsed.kind),
-        eq(schema.skuIdentifiers.value, parsed.value),
-      ));
-    const equivalentIdentifier = possibleIdentifiers.find((identifier) => (
-      parsed.kind === "external"
-        ? normalizeSkuIdentifierScope("external", identifier.scope) === parsed.scope
-        : identifier.scope === parsed.scope
-    ));
-    if (equivalentIdentifier) {
-      throw new ApiError(
-        409,
-        equivalentIdentifier.skuId === skuId
-          ? "该标识已登记；如已停用，请在历史记录中重新启用"
-          : `该标识已关联 SKU ${equivalentIdentifier.skuCode}；请先完成人工归属裁决`,
-      );
-    }
-
-    await assertBarcodeOwnership(tx, skuId, parsed.kind, parsed.value);
+    await assertIdentifierOwnership(tx, {
+      skuId,
+      kind: parsed.kind,
+      value: parsed.value,
+      scope: parsed.scope,
+    });
 
     if (parsed.isPrimary) {
       await demotePrimarySlot(tx, { skuId, ...parsed }, actor);
@@ -228,7 +247,13 @@ export async function setSkuIdentifierActive(
     if (!existing) throw new ApiError(404, "SKU 标识不存在");
     if (existing.active === active) return existing;
     if (active) {
-      await assertBarcodeOwnership(tx, skuId, existing.kind, existing.value);
+      await assertIdentifierOwnership(tx, {
+        skuId,
+        kind: existing.kind,
+        value: existing.value,
+        scope: normalizeSkuIdentifierScope(existing.kind, existing.scope),
+        exceptId: existing.id,
+      });
     }
 
     const [updated] = await tx

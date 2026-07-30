@@ -174,5 +174,16 @@ describe("SKU 多标识治理", () => {
       value: "EXT-001",
       scope: "聚水潭",
     }, actor, db)).rejects.toThrow(`SKU ${first.code}`);
+
+    const [inactiveCollision] = await db.insert(skuIdentifiers).values({
+      skuId: second.id,
+      kind: "external",
+      value: "EXT-001",
+      scope: "聚水潭",
+      active: false,
+    }).returning();
+    await expect(
+      setSkuIdentifierActive(second.id, inactiveCollision.id, true, actor, db),
+    ).rejects.toThrow(`SKU ${first.code}`);
   });
 });

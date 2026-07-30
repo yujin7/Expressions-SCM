@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { FeishuAppClient } from "@/server/integrations/feishu";
+import {
+  FeishuAppClient,
+  feishuWebhookUrlFromEnv,
+} from "@/server/integrations/feishu";
 
 function response(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -9,6 +12,24 @@ function response(body: unknown): Response {
 }
 
 describe("飞书应用机器人", () => {
+  it("自定义机器人 webhook 只接受飞书官方精确主机和路径", () => {
+    expect(feishuWebhookUrlFromEnv({
+      FEISHU_WEBHOOK_URL: "https://open.feishu.cn/open-apis/bot/v2/hook/test-token",
+    } as unknown as NodeJS.ProcessEnv)).toBe(
+      "https://open.feishu.cn/open-apis/bot/v2/hook/test-token",
+    );
+    for (const value of [
+      "http://open.feishu.cn/open-apis/bot/v2/hook/test-token",
+      "https://open.feishu.cn.evil.example/open-apis/bot/v2/hook/test-token",
+      "https://open.feishu.cn/open-apis/bot/v2/hook/test-token?next=evil",
+      "https://open.feishu.cn/open-apis/im/v1/messages",
+    ]) {
+      expect(feishuWebhookUrlFromEnv({
+        FEISHU_WEBHOOK_URL: value,
+      } as unknown as NodeJS.ProcessEnv)).toBeNull();
+    }
+  });
+
   it("缓存 tenant token，并用 chat_id + UUID 发送可去重文本", async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       if (String(url).includes("tenant_access_token")) {

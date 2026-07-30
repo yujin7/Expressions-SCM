@@ -64,7 +64,7 @@ describe("通知发件箱", () => {
     try {
       const result = await dispatchNotifications(db, {
         appClient,
-        webhookUrl: "https://example.invalid/webhook",
+        webhookUrl: "https://open.feishu.cn/open-apis/bot/v2/hook/test-fallback",
       });
       expect(result.sent).toBe(1);
       expect(calls).toHaveLength(1);
@@ -94,7 +94,7 @@ describe("通知发件箱", () => {
     try {
       const result = await dispatchNotifications(db, {
         appClient: null,
-        webhookUrl: "https://example.invalid/webhook",
+        webhookUrl: "https://open.feishu.cn/open-apis/bot/v2/hook/test-business-error",
       });
       expect(result.failed).toBe(1);
       const [row] = await db.select().from(notifications)

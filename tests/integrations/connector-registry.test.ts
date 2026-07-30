@@ -4,7 +4,7 @@ import {
 } from "@/server/integrations/connector";
 
 const envKeys = [
-  "JST_APP_KEY", "JST_APP_SECRET", "JST_ACCESS_TOKEN", "JST_SYNC_ACTOR_ID",
+  "JST_APP_KEY", "JST_APP_SECRET", "JST_ACCESS_TOKEN", "JST_SYNC_ACTOR_ID", "JST_BASE_URL",
   "JST_INVENTORY_SYNC_ENABLED", "JST_LIVE_VERIFIED_AT",
   "JIANDAOYUN_API_KEY", "JIANDAOYUN_SYNC_ACTOR_ID", "JIANDAOYUN_SYNC_ENABLED",
   "JIANDAOYUN_SYNC_CONTRACTS", "JIANDAOYUN_BASE_URL", "JIANDAOYUN_LIVE_VERIFIED_AT",
@@ -41,6 +41,13 @@ describe("外部连接器目录", () => {
       liveVerifiedAt: null,
     });
     expect(configuredConnectors().some((connector) => connector.key === "jst")).toBe(true);
+    process.env.JST_BASE_URL = "https://openapi.jushuitan.com.evil.example";
+    expect(getConnectorReadiness().find((row) => row.key === "jst")).toMatchObject({
+      configured: false,
+      operational: false,
+      missingEnv: ["JST_BASE_URL"],
+    });
+    delete process.env.JST_BASE_URL;
     process.env.JST_LIVE_VERIFIED_AT = "2026-07-29T00:00:00Z";
     expect(getConnectorReadiness().find((row) => row.key === "jst")).toMatchObject({
       operational: true,
@@ -74,7 +81,8 @@ describe("外部连接器目录", () => {
   });
 
   it("飞书 webhook 或应用机器人任一路径完整即可运行，但不伪装成已完成 live UAT", () => {
-    process.env.FEISHU_WEBHOOK_URL = "https://example.invalid/webhook";
+    process.env.FEISHU_WEBHOOK_URL =
+      "https://open.feishu.cn/open-apis/bot/v2/hook/test-connector";
     expect(configuredConnectors().map((connector) => connector.key)).toContain("feishu");
     expect(getConnectorReadiness().find((row) => row.key === "feishu")).toMatchObject({
       configured: true,
@@ -85,6 +93,17 @@ describe("外部连接器目录", () => {
     expect(getConnectorReadiness().find((row) => row.key === "feishu")).toMatchObject({
       operational: true,
       liveVerifiedAt: "2026-07-29T01:00:00.000Z",
+    });
+    process.env.FEISHU_WEBHOOK_URL = "https://attacker.example/webhook";
+    expect(getConnectorReadiness().find((row) => row.key === "feishu")).toMatchObject({
+      configured: false,
+      operational: false,
+      missingEnv: [
+        "FEISHU_WEBHOOK_URL",
+        "FEISHU_APP_ID",
+        "FEISHU_APP_SECRET",
+        "FEISHU_CHAT_ID",
+      ],
     });
     delete process.env.FEISHU_WEBHOOK_URL;
     delete process.env.FEISHU_LIVE_VERIFIED_AT;

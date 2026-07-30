@@ -18,6 +18,7 @@ import { getDecisionStudio } from "@/server/modules/report/decision-studio";
 import {
   FeishuAppClient,
   feishuAppConfigFromEnv,
+  feishuWebhookUrlFromEnv,
 } from "@/server/integrations/feishu";
 import { fetchJson } from "@/server/integrations/http";
 
@@ -58,8 +59,14 @@ export async function enqueueNotification(db: AnyDb, n: NotifyInput): Promise<bo
 }
 
 async function pushFeishu(url: string, title: string, body: string, href?: string | null): Promise<void> {
+  const safeUrl = feishuWebhookUrlFromEnv({
+    FEISHU_WEBHOOK_URL: url,
+  } as unknown as NodeJS.ProcessEnv);
+  if (!safeUrl) {
+    throw new Error("FEISHU_WEBHOOK_URL 必须是飞书官方群机器人 HTTPS 地址");
+  }
   const text = `【供应链】${title}\n${body}${href ? `\n${href}` : ""}`;
-  const payload = await fetchJson("飞书 webhook", url, {
+  const payload = await fetchJson("飞书 webhook", safeUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ msg_type: "text", content: { text } }),
@@ -91,7 +98,7 @@ interface FeishuSender {
 }
 
 export function isFeishuDeliveryConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
-  return Boolean(env.FEISHU_WEBHOOK_URL?.trim()) || feishuAppConfigFromEnv(env) !== null;
+  return feishuWebhookUrlFromEnv(env) !== null || feishuAppConfigFromEnv(env) !== null;
 }
 
 /** 分发 pending 通知；应用机器人优先，失败时若有 webhook 则回退。 */
@@ -106,7 +113,7 @@ export async function dispatchNotifications(
   const staleLeaseBefore = new Date(selectionStartedAt.getTime() - 10 * 60 * 1000);
   const webhookUrl = opts && Object.hasOwn(opts, "webhookUrl")
     ? opts.webhookUrl ?? null
-    : process.env.FEISHU_WEBHOOK_URL?.trim() || null;
+    : feishuWebhookUrlFromEnv(process.env);
   const envAppConfig = feishuAppConfigFromEnv();
   const appClient: FeishuSender | null = opts && Object.hasOwn(opts, "appClient")
     ? opts.appClient ?? null

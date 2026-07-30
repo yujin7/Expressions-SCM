@@ -85,6 +85,9 @@ JST_INVENTORY_SYNC_ENABLED（可选，默认 false）
 JST_LIVE_VERIFIED_AT（真实 UAT 通过后的 ISO-8601 时间）
 ```
 
+`JST_BASE_URL` 只接受官方 `https://openapi.jushuitan.com`（可省略或带末尾 `/`）。
+相似域名、HTTP、嵌入用户信息、查询串或其他路径会在签名和 access token 发送前被拒绝。
+
 `JST_SYNC_ACTOR_ID` 必须指向 SCM 内启用的责任人/服务账号。生产启用前还要完成：
 
 1. 在聚水潭开放平台确认应用类型、商家授权、出库/库存接口权限和生产 IP 白名单。
@@ -147,6 +150,10 @@ JIANDAOYUN_BASE_URL（可选）
 JIANDAOYUN_LIVE_VERIFIED_AT（真实 UAT 后）
 ```
 
+`JIANDAOYUN_BASE_URL` 只接受官方
+`https://api.jiandaoyun.com/api/v5`（可省略或带末尾 `/`）。即使误配为另一个 HTTPS
+域名，系统也会在发送 API key 前拒绝，避免机器凭据外泄。
+
 手工触发：
 
 ```bash
@@ -181,6 +188,10 @@ npx tsx src/jobs/cli.ts sync-jiandaoyun-form sample-management-observation
 
 1. 应用机器人（推荐）：`FEISHU_APP_ID` + `FEISHU_APP_SECRET` + `FEISHU_CHAT_ID`
 2. 自定义机器人回退：`FEISHU_WEBHOOK_URL`
+
+自定义 webhook 必须是精确的
+`https://open.feishu.cn/open-apis/bot/v2/hook/{token}`；非 HTTPS、相似域名、用户信息、
+查询串或其他飞书 API 路径都会在发送业务摘要前被拒绝。
 
 应用模式按飞书官方
 [tenant_access_token](https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal)

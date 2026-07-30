@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { JstClient, signJstParams } from "@/server/integrations/jst";
+import {
+  JstClient,
+  jstConfigFromEnv,
+  normalizeJstBaseUrl,
+  signJstParams,
+} from "@/server/integrations/jst";
 
 function response(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -9,6 +14,22 @@ function response(body: unknown): Response {
 }
 
 describe("聚水潭 v2 client", () => {
+  it("机器凭据只允许发送到聚水潭官方 HTTPS API 主机", () => {
+    const env = {
+      JST_APP_KEY: "app",
+      JST_APP_SECRET: "secret",
+      JST_ACCESS_TOKEN: "token",
+      JST_BASE_URL: "https://openapi.jushuitan.com/",
+    } as unknown as NodeJS.ProcessEnv;
+    expect(jstConfigFromEnv(env)?.baseUrl).toBe("https://openapi.jushuitan.com");
+    expect(normalizeJstBaseUrl("https://attacker.example")).toBeNull();
+    expect(normalizeJstBaseUrl("https://openapi.jushuitan.com.evil.example")).toBeNull();
+    expect(() => jstConfigFromEnv({
+      ...env,
+      JST_BASE_URL: "https://attacker.example",
+    })).toThrow("官方 HTTPS API 基址");
+  });
+
   it("按官方 key 排序/secret 前缀/MD5 小写规则签名，且忽略空值与 sign", () => {
     expect(signJstParams("secret", {
       access_token: "token",

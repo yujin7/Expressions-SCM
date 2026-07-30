@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { fetchJson, type FetchJsonOptions } from "./http";
 
 const DEFAULT_BASE_URL = "https://api.jiandaoyun.com/api/v5";
+const OFFICIAL_API_HOST = "api.jiandaoyun.com";
+const OFFICIAL_API_PATH = "/api/v5";
 const PAGE_SIZE = 100;
 const MAX_CATALOG_PAGES = 1_000;
 const MAX_DATA_PAGES = 1_000;
@@ -33,6 +35,29 @@ export interface JiandaoyunWidget {
 export interface JiandaoyunRecord {
   _id: string;
   [key: string]: unknown;
+}
+
+export function normalizeJiandaoyunBaseUrl(
+  raw: string | null | undefined,
+): string | null {
+  const value = raw?.trim() || DEFAULT_BASE_URL;
+  try {
+    const url = new URL(value);
+    const path = url.pathname.replace(/\/+$/, "") || "/";
+    if (
+      url.protocol !== "https:"
+      || url.hostname.toLowerCase() !== OFFICIAL_API_HOST
+      || (url.port !== "" && url.port !== "443")
+      || url.username
+      || url.password
+      || url.search
+      || url.hash
+      || path !== OFFICIAL_API_PATH
+    ) return null;
+    return DEFAULT_BASE_URL;
+  } catch {
+    return null;
+  }
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -131,8 +156,10 @@ export function jiandaoyunConfigFromEnv(
 ): JiandaoyunConfig | null {
   const apiKey = env.JIANDAOYUN_API_KEY?.trim();
   if (!apiKey) return null;
-  const baseUrl = (env.JIANDAOYUN_BASE_URL?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, "");
-  if (!/^https:\/\//i.test(baseUrl)) throw new Error("JIANDAOYUN_BASE_URL 必须使用 HTTPS");
+  const baseUrl = normalizeJiandaoyunBaseUrl(env.JIANDAOYUN_BASE_URL);
+  if (!baseUrl) {
+    throw new Error("JIANDAOYUN_BASE_URL 必须是官方 HTTPS API 基址");
+  }
   return { apiKey, baseUrl };
 }
 

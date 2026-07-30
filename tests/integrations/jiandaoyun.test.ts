@@ -3,6 +3,7 @@ import {
   JiandaoyunClient,
   jiandaoyunConfigFromEnv,
   jiandaoyunSchemaHash,
+  normalizeJiandaoyunBaseUrl,
 } from "@/server/integrations/jiandaoyun";
 
 function response(body: unknown, status = 200): Response {
@@ -77,7 +78,7 @@ describe("简道云 OpenAPI 客户端", () => {
     expect(fetchImpl).toHaveBeenCalled();
   });
 
-  it("只接受 HTTPS 基址并允许 API key 独立于 MCP token", () => {
+  it("只接受简道云官方 HTTPS 基址并允许 API key 独立于 MCP token", () => {
     expect(jiandaoyunConfigFromEnv({
       JIANDAOYUN_API_KEY: " api-key ",
     } as unknown as NodeJS.ProcessEnv)).toEqual({
@@ -87,7 +88,17 @@ describe("简道云 OpenAPI 客户端", () => {
     expect(() => jiandaoyunConfigFromEnv({
       JIANDAOYUN_API_KEY: "api-key",
       JIANDAOYUN_BASE_URL: "http://example.invalid",
-    } as unknown as NodeJS.ProcessEnv)).toThrow("必须使用 HTTPS");
+    } as unknown as NodeJS.ProcessEnv)).toThrow("官方 HTTPS API 基址");
+    expect(() => jiandaoyunConfigFromEnv({
+      JIANDAOYUN_API_KEY: "api-key",
+      JIANDAOYUN_BASE_URL: "https://attacker.example/api/v5",
+    } as unknown as NodeJS.ProcessEnv)).toThrow("官方 HTTPS API 基址");
+    expect(normalizeJiandaoyunBaseUrl(
+      "https://api.jiandaoyun.com/api/v5/",
+    )).toBe("https://api.jiandaoyun.com/api/v5");
+    expect(normalizeJiandaoyunBaseUrl(
+      "https://api.jiandaoyun.com/api/v5?redirect=1",
+    )).toBeNull();
   });
 
   it("显式 fields 为空时拒绝退化为全字段下载", async () => {
