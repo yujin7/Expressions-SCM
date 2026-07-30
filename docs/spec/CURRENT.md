@@ -60,7 +60,7 @@
   公开 HTTPS endpoint 和沙箱只读对账缺一不可。配置审计不会请求 token 或输出敏感值。SKU 外部标识的
   聚水潭/简道云/用友常见 scope 别名已统一到 `JST/JIANDAOYUN/YONYOU`。
   提供的 C4 人工登录未写入仓库，也不作为机器凭据；未擅自注册外部开发者主体。
-  运维面板把代码、凭据和 dated Live UAT 分开判定；真实 operational 状态必须等
+  运维面板把代码、凭据和带非秘密证据编号、90 天有效期的 Live UAT 分开判定；真实 operational 状态必须等
   app/token、租户/组织、IP/权限与 UAT，详见
   [`../integrations/EXTERNAL-SYSTEMS.md`](../integrations/EXTERNAL-SYSTEMS.md)。
 - **526 项系统执行审计（07-30）**：把全仓 202 个 API、80 个认证页面、40 个迁移、

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { brands, docCounters, skus, spus } from "@/db/schema";
+import { auditLogs, brands, docCounters, skus, spus, users } from "@/db/schema";
 import { createTestDb } from "../helpers/db";
 import { createSku, updateSku } from "@/server/modules/master/sku";
 import { generateGovernedSkuCode, parseGovernedSkuCode } from "@/server/rules/sku-code";
@@ -63,10 +63,18 @@ describe("SKU S1 事务取号", () => {
     expect(parseGovernedSkuCode(created.code)).toMatchObject({ sequence: 2 });
   });
 
-  it("S1 只允许系统取号，且已生成码的稳定来源与类型不可变", async () => {
+  it("S1 只允许系统取号；来源快照不随当前品牌改写，类型仍不可变", async () => {
     const { db } = await createTestDb();
     const [spu] = await db.insert(spus).values({ code: "P99103", nameCn: "校验测试" }).returning();
     const [brand] = await db.insert(brands).values({ code: "NING", nameCn: "NING" }).returning();
+    const [newBrand] = await db.insert(brands).values({ code: "EXP", nameCn: "EXPRESSIONS" }).returning();
+    const [user] = await db.insert(users).values({
+      username: "sku-origin-governor",
+      name: "SKU 治理员",
+      passwordHash: "x",
+      roles: ["admin"],
+    }).returning();
+    const actor = { id: user.id, name: user.name, roles: ["admin"], isApprover: true };
     const valid = generateGovernedSkuCode({ origin: "NING", skuType: "finished", sequence: 77 });
 
     await expect(createSku({
@@ -85,6 +93,32 @@ describe("SKU S1 事务取号", () => {
       baseUom: "盒",
       brandId: brand.id,
     }, undefined, db);
+
+    const reassigned = await updateSku(created.id, {
+      code: created.code,
+      name: created.name,
+      spuId: spu.id,
+      skuType: "finished",
+      baseUom: "盒",
+      brandId: newBrand.id,
+    }, actor, db);
+    expect(reassigned.brandId).toBe(newBrand.id);
+    expect(parseGovernedSkuCode(reassigned.code)).toMatchObject({
+      origin: "NING",
+      skuType: "finished",
+    });
+    const [audit] = await db
+      .select()
+      .from(auditLogs)
+      .where(eq(auditLogs.entity, "sku"));
+    expect(audit).toMatchObject({
+      entityId: created.id,
+      userId: user.id,
+      action: "update",
+    });
+    expect((audit.before as { brandId: number }).brandId).toBe(brand.id);
+    expect((audit.after as { brandId: number }).brandId).toBe(newBrand.id);
+
     await expect(updateSku(created.id, {
       code: created.code,
       name: created.name,

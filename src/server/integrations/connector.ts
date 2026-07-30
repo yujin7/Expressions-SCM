@@ -13,6 +13,18 @@ import {
 
 export type ConnectorImplementation = "ready" | "contract_only";
 export type ConnectorAuth = "signed_token" | "api_key" | "oauth_app" | "webhook_or_app";
+export type LiveVerificationState =
+  | "missing"
+  | "missing_evidence"
+  | "invalid"
+  | "future"
+  | "stale"
+  | "valid";
+
+export const LIVE_VERIFICATION_MAX_AGE_DAYS = 90;
+const LIVE_VERIFICATION_MAX_AGE_MS = LIVE_VERIFICATION_MAX_AGE_DAYS * 24 * 60 * 60 * 1_000;
+const ISO_INSTANT_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|([+-])(\d{2}):(\d{2}))$/;
 
 export interface Connector {
   key: "jst" | "jdy" | "yy" | "feishu";
@@ -24,6 +36,7 @@ export interface Connector {
   requiredEnv: string[];
   optionalEnv: string[];
   liveVerificationEnv?: string;
+  liveVerificationRefEnv?: string;
   sourceDocs: string[];
   blocker?: string;
   isConfigured(env?: NodeJS.ProcessEnv): boolean;
@@ -44,16 +57,100 @@ function feishuMissing(env: NodeJS.ProcessEnv = process.env): string[] {
   ];
 }
 
-function liveVerifiedAt(
-  key: string | undefined,
+/** Strict RFC3339-style instant parser; rejects Date.parse normalization and impossible dates. */
+function parseIsoInstant(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const match = ISO_INSTANT_PATTERN.exec(raw);
+  if (!match) return null;
+  const [
+    ,
+    yearRaw,
+    monthRaw,
+    dayRaw,
+    hourRaw,
+    minuteRaw,
+    secondRaw,
+    fractionRaw,
+    zoneRaw,
+    ,
+    offsetHourRaw,
+    offsetMinuteRaw,
+  ] = match;
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  const hour = Number(hourRaw);
+  const minute = Number(minuteRaw);
+  const second = Number(secondRaw);
+  const millisecond = Number((fractionRaw ?? "").padEnd(3, "0"));
+  const offsetHour = Number(offsetHourRaw ?? "0");
+  const offsetMinute = Number(offsetMinuteRaw ?? "0");
+  if (
+    month < 1
+    || month > 12
+    || day < 1
+    || hour > 23
+    || minute > 59
+    || second > 59
+    || offsetHour > 14
+    || offsetMinute > 59
+    || (offsetHour === 14 && offsetMinute !== 0)
+  ) return null;
+
+  const wallClock = new Date(0);
+  wallClock.setUTCFullYear(year, month - 1, day);
+  wallClock.setUTCHours(hour, minute, second, millisecond);
+  if (
+    wallClock.getUTCFullYear() !== year
+    || wallClock.getUTCMonth() !== month - 1
+    || wallClock.getUTCDate() !== day
+    || wallClock.getUTCHours() !== hour
+    || wallClock.getUTCMinutes() !== minute
+    || wallClock.getUTCSeconds() !== second
+    || wallClock.getUTCMilliseconds() !== millisecond
+  ) return null;
+
+  const instant = Date.parse(raw);
+  return Number.isFinite(instant) && zoneRaw ? instant : null;
+}
+
+function liveVerification(
+  timestampKey: string | undefined,
+  evidenceRefKey: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
-): string | null {
-  if (!key) return null;
-  const value = env[key]?.trim();
-  if (!value) return null;
-  const instant = Date.parse(value);
-  if (!Number.isFinite(instant) || instant > Date.now()) return null;
-  return new Date(instant).toISOString();
+  now: Date = new Date(),
+): {
+  state: LiveVerificationState;
+  verifiedAt: string | null;
+  evidenceRef: string | null;
+} {
+  if (!timestampKey || !evidenceRefKey) {
+    return { state: "missing", verifiedAt: null, evidenceRef: null };
+  }
+  const timestamp = env[timestampKey]?.trim();
+  const rawEvidenceRef = env[evidenceRefKey]?.trim();
+  if (!timestamp && !rawEvidenceRef) {
+    return { state: "missing", verifiedAt: null, evidenceRef: null };
+  }
+  const evidenceRef = rawEvidenceRef
+    && /^[A-Za-z0-9][A-Za-z0-9._-]{2,79}$/.test(rawEvidenceRef)
+    ? rawEvidenceRef
+    : null;
+  const instant = parseIsoInstant(timestamp);
+  if (instant === null || (!evidenceRef && rawEvidenceRef)) {
+    return { state: "invalid", verifiedAt: null, evidenceRef };
+  }
+  const verifiedAt = new Date(instant).toISOString();
+  if (instant > now.getTime()) {
+    return { state: "future", verifiedAt, evidenceRef };
+  }
+  if (now.getTime() - instant > LIVE_VERIFICATION_MAX_AGE_MS) {
+    return { state: "stale", verifiedAt, evidenceRef };
+  }
+  if (!evidenceRef) {
+    return { state: "missing_evidence", verifiedAt, evidenceRef: null };
+  }
+  return { state: "valid", verifiedAt, evidenceRef };
 }
 
 /**
@@ -77,8 +174,14 @@ export const CONNECTORS: Connector[] = [
       "batch-allocation-evidence",
     ],
     requiredEnv: ["JST_APP_KEY", "JST_APP_SECRET", "JST_ACCESS_TOKEN", "JST_SYNC_ACTOR_ID"],
-    optionalEnv: ["JST_BASE_URL", "JST_INVENTORY_SYNC_ENABLED", "JST_LIVE_VERIFIED_AT"],
+    optionalEnv: [
+      "JST_BASE_URL",
+      "JST_INVENTORY_SYNC_ENABLED",
+      "JST_LIVE_VERIFIED_AT",
+      "JST_LIVE_VERIFIED_REF",
+    ],
     liveVerificationEnv: "JST_LIVE_VERIFIED_AT",
+    liveVerificationRefEnv: "JST_LIVE_VERIFIED_REF",
     sourceDocs: [
       "https://openweb.jushuitan.com/doc?docId=20",
       "https://openweb.jushuitan.com/doc?docId=30",
@@ -87,7 +190,7 @@ export const CONNECTORS: Connector[] = [
       "https://openweb.jushuitan.com/dev-doc?docType=3&docId=15",
       "https://openweb.jushuitan.com/dev-doc?docType=1&docId=3",
     ],
-    blocker: "日出库与库存总量增量均进入受控 staging；需开放平台 app/token、IP 白名单、接口权限、责任人 ID，并在真实对账/UAT 后设置 JST_LIVE_VERIFIED_AT",
+    blocker: "日出库与库存总量增量均进入受控 staging；需开放平台 app/token、IP 白名单、接口权限、责任人 ID，并在真实对账/UAT 后设置时间与非秘密证据编号",
     isConfigured(env = process.env) {
       const actor = Number(env.JST_SYNC_ACTOR_ID);
       try {
@@ -124,8 +227,10 @@ export const CONNECTORS: Connector[] = [
       "JIANDAOYUN_SYNC_ENABLED",
       "JIANDAOYUN_SYNC_CONTRACTS",
       "JIANDAOYUN_LIVE_VERIFIED_AT",
+      "JIANDAOYUN_LIVE_VERIFIED_REF",
     ],
     liveVerificationEnv: "JIANDAOYUN_LIVE_VERIFIED_AT",
+    liveVerificationRefEnv: "JIANDAOYUN_LIVE_VERIFIED_REF",
     sourceDocs: [
       "https://hc.jiandaoyun.com/open/10992",
       "https://hc.jiandaoyun.com/open/18538",
@@ -133,7 +238,7 @@ export const CONNECTORS: Connector[] = [
       "https://hc.jiandaoyun.com/open/14216",
       "https://hc.jiandaoyun.com/open/14220",
     ],
-    blocker: "目录与九条最小化观察契约已就绪；数据只进入 evidence/staging。需轮换已在聊天暴露的密钥、配置责任人和显式表单契约，并完成控制总量/重复视图/UAT 后再设置 JIANDAOYUN_LIVE_VERIFIED_AT",
+    blocker: "目录与九条最小化观察契约已就绪；数据只进入 evidence/staging。需轮换已在聊天暴露的密钥、配置责任人和显式表单契约，并完成控制总量/重复视图/UAT 后记录时间与非秘密证据编号",
     isConfigured(env = process.env) {
       try {
         return jiandaoyunConfigFromEnv(env) !== null && jiandaoyunSyncActorId(env) !== null;
@@ -183,13 +288,15 @@ export const CONNECTORS: Connector[] = [
       "FEISHU_APP_SECRET",
       "FEISHU_CHAT_ID",
       "FEISHU_LIVE_VERIFIED_AT",
+      "FEISHU_LIVE_VERIFIED_REF",
     ],
     liveVerificationEnv: "FEISHU_LIVE_VERIFIED_AT",
+    liveVerificationRefEnv: "FEISHU_LIVE_VERIFIED_REF",
     sourceDocs: [
       "https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal",
       "https://open.feishu.cn/document/server-docs/im-v1/message/create",
     ],
-    blocker: "配置自定义 webhook，或配置应用 app_id/app_secret/chat_id；完成真实群投递/UAT 后设置 FEISHU_LIVE_VERIFIED_AT",
+    blocker: "配置自定义 webhook，或配置应用 app_id/app_secret/chat_id；完成真实群投递/UAT 后记录时间与非秘密证据编号",
     isConfigured(env = process.env) {
       return feishuWebhookUrlFromEnv(env) !== null || feishuAppConfigFromEnv(env) !== null;
     },
@@ -218,26 +325,43 @@ export interface ConnectorReadiness {
   optionalEnv: string[];
   missingEnv: string[];
   liveVerifiedAt: string | null;
+  liveVerificationRef: string | null;
+  liveVerificationState: LiveVerificationState;
+  liveVerificationMaxAgeDays: number;
   blocker: string | null;
 }
 
-export function getConnectorReadiness(env: NodeJS.ProcessEnv = process.env): ConnectorReadiness[] {
+export function getConnectorReadiness(
+  env: NodeJS.ProcessEnv = process.env,
+  now: Date = new Date(),
+): ConnectorReadiness[] {
   return CONNECTORS.map((connector) => {
     const configured = connector.isConfigured(env);
-    const verifiedAt = liveVerifiedAt(connector.liveVerificationEnv, env);
+    const verification = liveVerification(
+      connector.liveVerificationEnv,
+      connector.liveVerificationRefEnv,
+      env,
+      now,
+    );
     return {
       key: connector.key,
       label: connector.label,
       implementation: connector.implementation,
       configured,
-      operational: connector.implementation === "ready" && configured && verifiedAt !== null,
+      operational:
+        connector.implementation === "ready"
+        && configured
+        && verification.state === "valid",
       auth: connector.auth,
       systemOfRecord: connector.systemOfRecord,
       capabilities: [...connector.capabilities],
       requiredEnv: [...connector.requiredEnv],
       optionalEnv: [...connector.optionalEnv],
       missingEnv: connector.missingEnv(env),
-      liveVerifiedAt: verifiedAt,
+      liveVerifiedAt: verification.verifiedAt,
+      liveVerificationRef: verification.evidenceRef,
+      liveVerificationState: verification.state,
+      liveVerificationMaxAgeDays: LIVE_VERIFICATION_MAX_AGE_DAYS,
       blocker: connector.blocker ?? null,
     };
   });
