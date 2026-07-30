@@ -49,6 +49,8 @@ async function main(): Promise<void> {
         "integration_runs",
         "integration_checkpoints",
         "notifications",
+        "aliases",
+        "alias_exceptions",
       ]],
     );
     const found = new Set(tables.rows.map((row) => row.table_name));
@@ -77,6 +79,8 @@ async function main(): Promise<void> {
       "integration_runs",
       "integration_checkpoints",
       "notifications",
+      "aliases",
+      "alias_exceptions",
     ].filter((name) => !found.has(name));
     if (missing.length) throw new Error(`Missing migrated tables: ${missing.join(", ")}`);
 
@@ -176,6 +180,33 @@ async function main(): Promise<void> {
       || logisticsLeadDays.is_nullable !== "YES"
     ) {
       throw new Error("SKU governance/logistics lead-time migration contract is missing");
+    }
+
+    const aliasScopeColumns = await client.query<{
+      table_name: string;
+      data_type: string;
+      is_nullable: string;
+      column_default: string | null;
+    }>(
+      `select table_name, data_type, is_nullable, column_default
+         from information_schema.columns
+        where table_schema = 'public'
+          and table_name = any($1::text[])
+          and column_name = 'scope'`,
+      [["aliases", "alias_exceptions"]],
+    );
+    const aliasScopeColumnMap = new Map(
+      aliasScopeColumns.rows.map((row) => [row.table_name, row]),
+    );
+    for (const table of ["aliases", "alias_exceptions"]) {
+      const scope = aliasScopeColumnMap.get(table);
+      if (
+        scope?.data_type !== "text"
+        || scope.is_nullable !== "NO"
+        || !scope.column_default?.includes("GLOBAL")
+      ) {
+        throw new Error(`${table}.scope migration contract is missing`);
+      }
     }
 
     const immutableTriggers = await client.query<{
@@ -343,6 +374,8 @@ async function main(): Promise<void> {
       "ck_sku_identifier_packaging_level",
       "ck_sku_identifier_scope",
       "ck_sku_identifier_gtin_level",
+      "uq_alias_type_scope_value",
+      "uq_alias_exc_type_scope_value",
     ];
     const locationConstraints = await client.query<{ conname: string }>(
       `select conname
@@ -467,6 +500,7 @@ async function main(): Promise<void> {
       inspectionSiteKey: inspectionSiteKeyColumn.rows[0],
       notificationLeaseColumns: [...notificationColumns.values()],
       skuGovernanceColumns: [...skuGovernanceColumnMap.values()],
+      aliasScopeColumns: [...aliasScopeColumnMap.values()],
       immutableTriggers: [...triggerPairs].sort(),
       locationConstraints: [...foundConstraints].sort(),
       versionChainSelfReferences: [...versionChainSelfReferences].sort(),

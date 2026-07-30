@@ -5,6 +5,7 @@ import * as schema from "@/db/schema";
 import {
   normalizeAliasText,
   resolveAlias,
+  resolveKnownReference,
   resolveKnownOrQueue,
   resolveOrQueue,
   queueException,
@@ -122,8 +123,11 @@ describe("别名解析器（PGlite）", () => {
     expect(exc.resolvedBy).toBe(u.id);
     expect(exc.resolvedAt).not.toBeNull();
 
-    // 再次认领不报错、不覆盖（onConflictDoNothing）
-    await claimAlias(db, { aliasType: "channel", rawValue: "商务达播", targetId: 999999 });
+    // 幂等重复认领可通过；不同目标不能被静默吞掉
+    await claimAlias(db, { aliasType: "channel", rawValue: "商务达播", targetId: vipId });
+    await expect(
+      claimAlias(db, { aliasType: "channel", rawValue: "商务达播", targetId: 999999 }),
+    ).rejects.toThrow("不能静默改绑");
     expect(await resolveAlias(db, "channel", "商务达播")).toBe(vipId);
   });
 
@@ -133,10 +137,62 @@ describe("别名解析器（PGlite）", () => {
     expect(await resolveAlias(db, "warehouse", "唯品")).toBe(77);
   });
 
-  it("UNIQUE(aliasType, rawValue) 直插重复报错", async () => {
+  it("UNIQUE(aliasType, scope, rawValue) 阻止同作用域重复，但允许外部系统同码", async () => {
     await expectUniqueViolation(
       db.insert(schema.aliases).values({ aliasType: "channel", rawValue: "唯品", targetId: 123 }),
     );
+    await db.insert(schema.aliases).values([
+      { aliasType: "channel", scope: "JIANDAOYUN", rawValue: "唯品", targetId: 123 },
+      { aliasType: "channel", scope: "YONYOU", rawValue: "唯品", targetId: 456 },
+    ]);
+    expect(await resolveAlias(db, "channel", "唯品", { scope: "JIANDAOYUN" })).toBe(123);
+    expect(await resolveAlias(db, "channel", "唯品", { scope: "YONYOU" })).toBe(456);
+  });
+
+  it("外部 SKU 标识按系统 scope 解析；同值可安全归属不同 SKU", async () => {
+    const [spu] = await db
+      .insert(schema.spus)
+      .values({ code: "P-SCOPE", nameCn: "系统作用域" })
+      .returning();
+    const [jdySku, yonyouSku] = await db
+      .insert(schema.skus)
+      .values([
+        { code: "SCOPE-JDY", name: "简道云货品", spuId: spu.id, baseUom: "件", skuType: "finished" },
+        { code: "SCOPE-YY", name: "用友货品", spuId: spu.id, baseUom: "件", skuType: "finished" },
+      ])
+      .returning();
+    await db.insert(schema.skuIdentifiers).values([
+      { skuId: jdySku.id, kind: "external", value: "EXT-001", scope: "JIANDAOYUN" },
+      { skuId: yonyouSku.id, kind: "external", value: "EXT-001", scope: "YONYOU" },
+    ]);
+
+    expect(
+      await resolveKnownReference(db, "sku_code", "EXT-001", { scope: "JIANDAOYUN" }),
+    ).toBe(jdySku.id);
+    expect(
+      await resolveKnownReference(db, "sku_code", "EXT-001", { scope: "YONYOU" }),
+    ).toBe(yonyouSku.id);
+    expect(await resolveKnownReference(db, "sku_code", "EXT-001")).toBeNull();
+
+    await resolveKnownOrQueue(
+      db,
+      "sku_code",
+      "MISSING-001",
+      { connector: "jdy" },
+      { scope: "JIANDAOYUN" },
+    );
+    await resolveKnownOrQueue(
+      db,
+      "sku_code",
+      "MISSING-001",
+      { connector: "yonyou" },
+      { scope: "YONYOU" },
+    );
+    const queued = await db
+      .select()
+      .from(schema.aliasExceptions)
+      .where(eq(schema.aliasExceptions.rawValue, "MISSING-001"));
+    expect(queued.map((row) => row.scope).sort()).toEqual(["JIANDAOYUN", "YONYOU"]);
   });
 
   it("sku_code 精确命中多主档时按歧义入队，不误报未找到", async () => {

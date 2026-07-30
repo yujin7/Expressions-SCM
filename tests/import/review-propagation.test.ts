@@ -90,4 +90,87 @@ describe("别名认领：立即传播到参考层关系", () => {
       ]),
     );
   });
+
+  it("外部系统 SKU 认领同时登记 scoped identifier，且不污染 GLOBAL 参考层", async () => {
+    await db.insert(schema.transitRefs).values({
+      kind: "fg_order",
+      skuCode: "SHARED-001",
+      sourceJobId: 1,
+    });
+    const [exception] = await db
+      .insert(schema.aliasExceptions)
+      .values({
+        aliasType: "sku_code",
+        scope: "JIANDAOYUN",
+        rawValue: "SHARED-001",
+        status: "open",
+        context: { connector: "jdy", field: "productCode" },
+      })
+      .returning();
+
+    await claimException(user, exception.id, productSkuId, db);
+
+    const [identifier] = await db
+      .select()
+      .from(schema.skuIdentifiers)
+      .where(eq(schema.skuIdentifiers.value, "SHARED-001"));
+    expect(identifier).toMatchObject({
+      skuId: productSkuId,
+      kind: "external",
+      scope: "JIANDAOYUN",
+      active: true,
+    });
+    const [alias] = await db
+      .select()
+      .from(schema.aliases)
+      .where(eq(schema.aliases.rawValue, "SHARED-001"));
+    expect(alias).toMatchObject({
+      targetId: productSkuId,
+      scope: "JIANDAOYUN",
+    });
+    const [transit] = await db.select().from(schema.transitRefs);
+    expect(transit.skuId).toBeNull();
+    const [audit] = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.entity, "alias_exception"));
+    expect(audit.after).toMatchObject({
+      scope: "JIANDAOYUN",
+      externalSkuIdentifierId: identifier.id,
+      externalSkuIdentifierCreated: true,
+      propagatedProductRows: 0,
+    });
+  });
+
+  it("外部系统码已属于另一 SKU 时整笔认领回滚", async () => {
+    await db.insert(schema.skuIdentifiers).values({
+      skuId: materialSkuId,
+      kind: "external",
+      value: "CONFLICT-001",
+      scope: "JIANDAOYUN",
+    });
+    const [exception] = await db
+      .insert(schema.aliasExceptions)
+      .values({
+        aliasType: "sku_code",
+        scope: "JIANDAOYUN",
+        rawValue: "CONFLICT-001",
+        status: "open",
+        context: { connector: "jdy" },
+      })
+      .returning();
+
+    await expect(
+      claimException(user, exception.id, productSkuId, db),
+    ).rejects.toThrow("请先完成人工归属裁决");
+
+    const [stillOpen] = await db
+      .select()
+      .from(schema.aliasExceptions)
+      .where(eq(schema.aliasExceptions.id, exception.id));
+    expect(stillOpen.status).toBe("open");
+    expect(
+      await db.select().from(schema.aliases).where(eq(schema.aliases.rawValue, "CONFLICT-001")),
+    ).toHaveLength(0);
+  });
 });

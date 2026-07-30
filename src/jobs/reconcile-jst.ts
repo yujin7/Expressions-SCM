@@ -15,7 +15,7 @@
  */
 import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { importJobs, reconDiffs, stagingRows, stockLedger } from "@/db/schema";
-import { resolveAlias, type DimDb } from "@/server/modules/dimension/resolver";
+import { resolveKnownReference, type DimDb } from "@/server/modules/dimension/resolver";
 import type { AnyDb } from "@/server/import/staging";
 
 const JST_TARGET_TABLE = "jst_daily_sales";
@@ -187,7 +187,12 @@ export async function runReconcileJst(db: AnyDb, bizDate: string): Promise<Recon
     }
     let skuId = aliasCache.get(skuCode);
     if (skuId === undefined) {
-      skuId = await resolveAlias(db as DimDb, "sku_code", skuCode);
+      skuId = await resolveKnownReference(
+        db as DimDb,
+        "sku_code",
+        skuCode,
+        { scope: "JST" },
+      );
       aliasCache.set(skuCode, skuId);
     }
     if (skuId === null) {

@@ -13,7 +13,7 @@ import {
   type AnyDb,
   type StagingRowInput,
 } from "@/server/import/staging";
-import { resolveOrQueue, type DimDb } from "@/server/modules/dimension/resolver";
+import { resolveKnownOrQueue, type DimDb } from "@/server/modules/dimension/resolver";
 import { writeIntegrationEvidence, type IntegrationEvidence } from "./evidence";
 import { JstClient, type JstInventoryRow } from "./jst";
 
@@ -246,12 +246,12 @@ export async function syncJstInventoryObservations(
     const staged: StagingRowInput[] = [];
     let unresolvedAliases = 0;
     for (const [index, row] of rows.entries()) {
-      const skuId = await resolveOrQueue(db as DimDb, "sku_code", row.skuCode, {
+      const skuId = await resolveKnownOrQueue(db as DimDb, "sku_code", row.skuCode, {
         connector: CONNECTOR,
         stream: STREAM,
         observedAt,
         field: "sku",
-      });
+      }, { scope: "JST" });
       if (skuId === null) unresolvedAliases++;
       staged.push({
         rowNo: index + 1,

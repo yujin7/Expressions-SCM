@@ -419,7 +419,7 @@ async function resolveObservationIdentities(
       entryId: contract.entryId,
       sourceRecordId,
       field: path,
-    });
+    }, { scope: "JIANDAOYUN" });
     if (targetId === null) unresolved.push(`${path}=${value}`);
     return targetId;
   };

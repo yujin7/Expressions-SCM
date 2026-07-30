@@ -42,6 +42,14 @@ export type AliasType =
   | "brand";
 
 /**
+ * 别名作用域。
+ *
+ * GLOBAL 只用于企业内通用别名；外部系统导入必须使用明确的系统作用域
+ * （如 JST/JIANDAOYUN/YONYOU），避免不同系统恰好使用同一短码时串货。
+ */
+export const GLOBAL_ALIAS_SCOPE = "GLOBAL";
+
+/**
  * 通用别名注册表（替代 warehouse_aliases/sku_aliases/supplier_aliases 分表方案）：
  * 一次认领，永久生效。rawValue 存 normalizeAliasText() 归一后的文本；
  * targetId 指向 aliasType 对应主档的 id（多态目标，应用层保证一致性）。
@@ -49,12 +57,13 @@ export type AliasType =
 export const aliases = pgTable("aliases", {
   id: serial("id").primaryKey(),
   aliasType: text("alias_type").$type<AliasType>().notNull(),
+  scope: text("scope").notNull().default(GLOBAL_ALIAS_SCOPE),
   rawValue: text("raw_value").notNull(),
   targetId: integer("target_id").notNull(),
   note: text("note"),
   createdBy: integer("created_by").references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [unique("uq_alias_type_value").on(t.aliasType, t.rawValue)]);
+}, (t) => [unique("uq_alias_type_scope_value").on(t.aliasType, t.scope, t.rawValue)]);
 
 export type AliasExceptionStatus = "open" | "resolved" | "ignored";
 
@@ -62,6 +71,7 @@ export type AliasExceptionStatus = "open" | "resolved" | "ignored";
 export const aliasExceptions = pgTable("alias_exceptions", {
   id: serial("id").primaryKey(),
   aliasType: text("alias_type").$type<AliasType>().notNull(),
+  scope: text("scope").notNull().default(GLOBAL_ALIAS_SCOPE),
   rawValue: text("raw_value").notNull(),
   context: jsonb("context"), // 来源文件/行 payload，便于人工裁决
   status: text("status").$type<AliasExceptionStatus>().notNull().default("open"),
@@ -69,7 +79,7 @@ export const aliasExceptions = pgTable("alias_exceptions", {
   resolvedBy: integer("resolved_by").references(() => users.id),
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [unique("uq_alias_exc_type_value").on(t.aliasType, t.rawValue)]);
+}, (t) => [unique("uq_alias_exc_type_scope_value").on(t.aliasType, t.scope, t.rawValue)]);
 
 export type StagingRowStatus = "pending" | "validated" | "error" | "committed";
 

@@ -24,6 +24,9 @@ import { probeFeishuChats } from "./probe-feishu";
 import { runJiandaoyunContractAudit } from "./audit-jiandaoyun";
 import { auditYonyouReadiness } from "./audit-yonyou";
 import { auditConnectorReadiness } from "./audit-connectors";
+import { loadJobEnvironment } from "./load-env";
+
+loadJobEnvironment();
 
 const USAGE = `用法:
   npx tsx src/jobs/cli.ts reconcile-jst [YYYY-MM-DD]     缺省=昨日（Asia/Shanghai）
