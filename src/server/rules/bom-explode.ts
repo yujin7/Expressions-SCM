@@ -57,34 +57,117 @@ export function grossFromBom(input: GrossFromBomInput): string {
   return dQty(dMul(dMul(input.qtyPer, lossFactor, 6), input.planQty, 6));
 }
 
+export const MAX_BOM_DEPTH = 32;
+
+export class BomCycleError extends Error {
+  constructor(public readonly cycle: number[]) {
+    super(`BOM 存在循环：${cycle.join(" → ")}`);
+    this.name = "BomCycleError";
+  }
+}
+
+export class BomDepthError extends Error {
+  constructor(public readonly path: number[]) {
+    super(`BOM 层级超过安全上限 ${MAX_BOM_DEPTH}：${path.join(" → ")}`);
+    this.name = "BomDepthError";
+  }
+}
+
+function addDemand(out: Map<number, string>, skuId: number, qty: Dec): void {
+  out.set(skuId, dQty(dAdd(out.get(skuId) ?? "0", qty, 6)));
+}
+
 /**
- * 多成品需求 → 物料毛需求合计（单层展开）。
+ * 从一个根 SKU 检查循环与异常深度。返回首个循环路径；无循环返回 null。
+ * 路径首尾相同，例如 A → B → C → A，便于服务层直接映射成人类可读编码。
+ */
+export function findBomCycleFrom(
+  rootSkuId: number,
+  bom: Map<number, BomLineLike[]>,
+): number[] | null {
+  const path: number[] = [];
+  const active = new Map<number, number>();
+
+  const visit = (skuId: number, depth: number): number[] | null => {
+    const prior = active.get(skuId);
+    if (prior != null) return [...path.slice(prior), skuId];
+    if (depth > MAX_BOM_DEPTH) throw new BomDepthError([...path, skuId]);
+    const lines = bom.get(skuId);
+    if (!lines || lines.length === 0) return null;
+
+    active.set(skuId, path.length);
+    path.push(skuId);
+    for (const line of lines) {
+      const cycle = visit(line.materialSkuId, depth + 1);
+      if (cycle) return cycle;
+    }
+    path.pop();
+    active.delete(skuId);
+    return null;
+  };
+
+  return visit(rootSkuId, 0);
+}
+
+/** 全图循环去重；同一循环从不同入口命中时只返回一次。 */
+export function findBomCycles(bom: Map<number, BomLineLike[]>): number[][] {
+  const unique = new Map<string, number[]>();
+  for (const root of bom.keys()) {
+    const cycle = findBomCycleFrom(root, bom);
+    if (!cycle) continue;
+    const nodes = [...new Set(cycle.slice(0, -1))].sort((a, b) => a - b);
+    const key = nodes.join(",");
+    if (!unique.has(key)) unique.set(key, cycle);
+  }
+  return [...unique.values()];
+}
+
+/**
+ * 多成品需求 → **末级物料**毛需求合计（多层展开）。
  *
- * bom: 成品 skuId → 其生效 BOM 的行集合（调用方负责只传「生效」BOM，判定见 wo.ts：status='active'）。
- * 返回：物料 skuId → 毛需求合计（qty scale=4 字符串）。无 BOM 的成品被静默跳过（前端另行提示）。
- *
- * TODO（多层 BOM）：当前仅做**单层**展开——半成品物料若自身也有生效 BOM，其下级需求不再继续下钻。
- * 现网 BOM 均为「成品→原料/包材」单层，故不影响；将来出现半成品层级时需在此加拓扑排序 + 循环检测。
+ * bom: SKU → 其生效 BOM 行（调用方负责只传 status='active'）。
+ * - 子件有生效 BOM：继续向下展开，不把中间半成品重复计作采购末级物料；
+ * - 子件无生效 BOM：作为末级物料汇总；
+ * - 每一层都按自身 BOM 行应用双损耗/legacy 回退，保持 WO 快照同口径；
+ * - 根 SKU 无 BOM：保持旧契约，返回空（由前端列为断链）；
+ * - 任一根需求出现循环或超过 32 层：整次计算失败，绝不返回部分低估结果。
  */
 export function explode(
   demands: { skuId: number; qty: Dec }[],
   bom: Map<number, BomLineLike[]>,
 ): Map<number, string> {
   const out = new Map<number, string>();
-  for (const d of demands) {
-    if (dCmp(d.qty, "0") <= 0) continue; // 零/负需求不产生物料需求
-    const lines = bom.get(d.skuId);
-    if (!lines || lines.length === 0) continue;
-    for (const l of lines) {
-      const gross = grossFromBom({
-        planQty: d.qty,
-        qtyPer: l.qtyPer,
-        incomingLossPct: l.incomingLossPct,
-        productionLossPct: l.productionLossPct,
-        lossRatePct: l.lossRatePct,
-      });
-      out.set(l.materialSkuId, dQty(dAdd(out.get(l.materialSkuId) ?? "0", gross, 6)));
+  const path: number[] = [];
+  const active = new Map<number, number>();
+
+  const walk = (skuId: number, qty: Dec, depth: number): void => {
+    const prior = active.get(skuId);
+    if (prior != null) throw new BomCycleError([...path.slice(prior), skuId]);
+    if (depth > MAX_BOM_DEPTH) throw new BomDepthError([...path, skuId]);
+    const lines = bom.get(skuId);
+    if (!lines || lines.length === 0) {
+      if (depth > 0) addDemand(out, skuId, qty);
+      return;
     }
+
+    active.set(skuId, path.length);
+    path.push(skuId);
+    for (const line of lines) {
+      const gross = grossFromBom({
+        planQty: qty,
+        qtyPer: line.qtyPer,
+        incomingLossPct: line.incomingLossPct,
+        productionLossPct: line.productionLossPct,
+        lossRatePct: line.lossRatePct,
+      });
+      if (dCmp(gross, "0") > 0) walk(line.materialSkuId, gross, depth + 1);
+    }
+    path.pop();
+    active.delete(skuId);
+  };
+
+  for (const demand of demands) {
+    if (dCmp(demand.qty, "0") > 0) walk(demand.skuId, demand.qty, 0);
   }
   return out;
 }

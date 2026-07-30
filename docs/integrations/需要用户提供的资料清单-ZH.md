@@ -7,7 +7,7 @@
 
 | 系统 | 已有 | 仍缺 | 结论 |
 |---|---|---|---|
-| 飞书 | 本机已有 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` | `FEISHU_CHAT_ID`（或 webhook 二选一）、机器人入群/权限、真实测试 | 部分配置，尚不能投递 |
+| 飞书 | 本机 `.env` 已预留变量名，但值为空 | 应用机器人三项（`FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_CHAT_ID`）或 webhook、机器人入群/权限、真实测试 | 没有可用机器凭据，尚不能投递 |
 | 聚水潭 | 官方文档链接 | `app_key`、`app_secret`、`access_token`、IP/接口授权、责任人 | 没有机器凭据 |
 | 用友 | C4 人工登录入口/账号 | 企业 OpenAPI 应用、client 凭据、租户/组织、接口与沙箱 | 人工登录不等于 API 凭据 |
 
@@ -17,15 +17,18 @@
 
 推荐应用机器人路径：
 
-1. 目标测试群的 `FEISHU_CHAT_ID`；
-2. 确认机器人已加入该群并允许发言；
-3. 确认应用已发布，拥有 `im:message:send_as_bot` 或等价发送权限；
-4. 告诉我允许发送一条标题带“SCM UAT”的测试消息；
-5. 指定该群的业务责任人姓名。
+1. `FEISHU_APP_ID`；
+2. `FEISHU_APP_SECRET`；
+3. 目标测试群的 `FEISHU_CHAT_ID`；
+4. 确认机器人已加入该群并允许发言；
+5. 确认应用已发布，拥有 `im:message:send_as_bot` 或等价发送权限；
+6. 告诉我允许发送一条标题带“SCM UAT”的测试消息；
+7. 指定该群的业务责任人姓名。
 
 替代路径：提供目标群自定义机器人 `FEISHU_WEBHOOK_URL`，并确认允许一条 UAT 消息。
 
-> 已有 app ID/secret 不需要再次发送；只需在安全配置中保留。
+> 当前只存在空变量名，不存在可用值。请把机器凭据写入部署密钥库或本机未跟踪 `.env`，
+> 不要粘贴到聊天。`FEISHU_LIVE_VERIFIED_AT` 只能在真实投递与失败恢复验收后填写。
 
 ### B. 聚水潭
 

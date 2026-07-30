@@ -6,6 +6,12 @@ import {
 import { dAdd, dCmp, dDiv, dMoney, dMul, dQty, dSub } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
+import {
+  BomCycleError,
+  BomDepthError,
+  explode,
+  type BomLineLike,
+} from "@/server/rules/bom-explode";
 import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import type { DocStatus } from "@/server/docflow/state";
@@ -17,7 +23,7 @@ import {
   getSupplierCapacitySignal,
 } from "@/server/modules/report/supplier-capacity";
 
-/** 委外工单 WO（《02》§3）：选生效 BOM → 审批时 wo_line 快照（毛需求/可用/在途/建议量 R11） */
+/** 委外工单 WO（《02》§3）：选生效 BOM → 审批时递归到末级物料并冻结 wo_line（毛需求/可用/在途/建议量 R11） */
 
 type WoRow = typeof woDocs.$inferSelect;
 type PoRow = typeof poDocs.$inferSelect;
@@ -139,7 +145,8 @@ export async function approveWo(
 
 /**
  * wo_line 快照（审批时点冻结；此后 BOM 改版不影响本单）：
- *   毛需求 = 净单位用量 × (1+计划损耗率%) × WO数量
+ *   多层 BOM 递归到末级原料/包材；每层损耗均计入毛需求，中间半成品不进入采购快照。
+ *   qtyPer = 各路径无损耗净单位用量合计；planLossRatePct = 多层综合有效损耗率。
  *   可用   = Σ stock_balances（仅实时记账仓）
  *   在途   = Σ PO 实物行未收量（已审批/执行中 PO；基础单位=qty×uomFactor−receivedQty，行内下限 0）
  *   建议量 = R11（MOQ/订货倍数取整，rules/netreq 纯函数）
@@ -151,7 +158,84 @@ async function buildWoLineSnapshot(tx: AnyDb, wo: WoRow, userId: number): Promis
     .where(eq(bomLines.bomId, wo.bomId))
     .orderBy(asc(bomLines.id));
   if (bLines.length === 0) throw new ApiError(500, `BOM 无行: #${wo.bomId}`);
-  const materialIds = [...new Set(bLines.map((l) => l.materialSkuId))];
+
+  // 根 BOM 必须冻结为 WO 创建时引用的版本；下级半成品使用审批时点的生效版本，
+  // 最终 leaf 快照一经写入 wo_lines，后续任何 BOM 改版都不再影响本单。
+  const activeRows: Array<BomLineLike & { productSkuId: number }> = await tx
+    .select({
+      productSkuId: boms.productSkuId,
+      materialSkuId: bomLines.materialSkuId,
+      qtyPer: bomLines.qtyPer,
+      incomingLossPct: bomLines.incomingLossPct,
+      productionLossPct: bomLines.productionLossPct,
+      lossRatePct: bomLines.lossRatePct,
+    })
+    .from(boms)
+    .innerJoin(bomLines, eq(boms.id, bomLines.bomId))
+    .where(eq(boms.status, "active"))
+    .orderBy(asc(bomLines.id));
+  const graph = new Map<number, BomLineLike[]>();
+  for (const line of activeRows) {
+    const lines = graph.get(line.productSkuId) ?? [];
+    lines.push(line);
+    graph.set(line.productSkuId, lines);
+  }
+  graph.set(wo.productSkuId, bLines);
+
+  let grossLeaves: Map<number, string>;
+  let netLeaves: Map<number, string>;
+  try {
+    grossLeaves = explode([{ skuId: wo.productSkuId, qty: wo.qty }], graph);
+    const noLossGraph = new Map<number, BomLineLike[]>(
+      [...graph].map(([skuId, lines]) => [
+        skuId,
+        lines.map((line) => ({
+          ...line,
+          incomingLossPct: "0",
+          productionLossPct: "0",
+          lossRatePct: "0",
+        })),
+      ]),
+    );
+    netLeaves = explode([{ skuId: wo.productSkuId, qty: wo.qty }], noLossGraph);
+  } catch (error) {
+    if (error instanceof BomCycleError || error instanceof BomDepthError) {
+      const pathIds = error instanceof BomCycleError ? error.cycle : error.path;
+      const codeRows = await tx
+        .select({ id: skus.id, code: skus.code })
+        .from(skus)
+        .where(inArray(skus.id, [...new Set(pathIds)]));
+      const codeById = new Map(codeRows.map((row) => [row.id, row.code]));
+      const path = pathIds.map((id) => codeById.get(id) ?? `SKU#${id}`).join(" → ");
+      throw new ApiError(
+        409,
+        error instanceof BomCycleError
+          ? `工单不能审批：BOM 存在循环 ${path}`
+          : `工单不能审批：BOM 层级超过 32 层安全上限 ${path}`,
+      );
+    }
+    throw error;
+  }
+  const materialIds = [...grossLeaves.keys()];
+  if (materialIds.length === 0) throw new ApiError(409, "工单不能审批：BOM 未展开出末级物料");
+
+  const materialRows = await tx
+    .select({ id: skus.id, code: skus.code, skuType: skus.skuType })
+    .from(skus)
+    .where(inArray(skus.id, materialIds));
+  const materialById = new Map(materialRows.map((row) => [row.id, row]));
+  const unsupportedLeaves = materialIds
+    .map((id) => materialById.get(id))
+    .filter((row) => !row || (row.skuType !== "raw" && row.skuType !== "packaging"));
+  if (unsupportedLeaves.length > 0) {
+    const labels = unsupportedLeaves.map(
+      (row) => row ? `${row.code}（${row.skuType}）` : "未知物料",
+    );
+    throw new ApiError(
+      409,
+      `工单不能审批：末级物料必须是原料或包材；${labels.join("、")} 无生效下级 BOM，请补齐 BOM 或修正物料类型`,
+    );
+  }
 
   // 可用库存：仅实时记账仓（own-warehouse 口径）。诚实标注：快照仓（保税/E/云）按《00》A6
   // 不计入实时可用——因此 R11 建议量偏保守（可能高估需求），见 D20；1.1 快照仓接入后再合并口径。
@@ -195,16 +279,22 @@ async function buildWoLineSnapshot(tx: AnyDb, wo: WoRow, userId: number): Promis
 
   const { suggestQty } = await import("@/server/rules/netreq");
   await tx.insert(woLines).values(
-    bLines.map((l) => {
-      // 04 §2 双损耗口径：毛=净×(1+来料)×(1+生产)；双列为 0 时回退旧 lossRatePct（存量 BOM 兼容）
-      const dualZero = dCmp(l.incomingLossPct, "0") === 0 && dCmp(l.productionLossPct, "0") === 0;
-      const lossFactor = dualZero
-        ? dAdd("1", dDiv(l.lossRatePct, "100", 6), 6)
-        : dMul(dAdd("1", dDiv(l.incomingLossPct, "100", 6), 6), dAdd("1", dDiv(l.productionLossPct, "100", 6), 6), 6);
-      const grossReq = dQty(dMul(dMul(l.qtyPer, lossFactor, 6), wo.qty, 6));
-      const onHand = dQty(onHandBySku.get(l.materialSkuId) ?? "0");
-      const inTransit = dQty(inTransitBySku.get(l.materialSkuId) ?? "0");
-      const uom = uomBySku.get(l.materialSkuId);
+    materialIds.map((materialSkuId) => {
+      const grossReq = dQty(grossLeaves.get(materialSkuId) ?? "0");
+      const netReq = dQty(netLeaves.get(materialSkuId) ?? "0");
+      const qtyPer = dQty(dDiv(netReq, wo.qty, 6));
+      const effectiveLossPct = dMoney(
+        dMul(dSub(dDiv(grossReq, netReq, 6), "1", 6), "100", 6),
+      );
+      if (dCmp(effectiveLossPct, "999.99") > 0) {
+        throw new ApiError(
+          409,
+          `工单不能审批：物料 ${materialById.get(materialSkuId)?.code ?? `#${materialSkuId}`} 的多层综合损耗率超过 999.99%`,
+        );
+      }
+      const onHand = dQty(onHandBySku.get(materialSkuId) ?? "0");
+      const inTransit = dQty(inTransitBySku.get(materialSkuId) ?? "0");
+      const uom = uomBySku.get(materialSkuId);
       const suggested = suggestQty({
         grossReq,
         onHand,
@@ -214,9 +304,9 @@ async function buildWoLineSnapshot(tx: AnyDb, wo: WoRow, userId: number): Promis
       });
       return {
         woId: wo.id,
-        materialSkuId: l.materialSkuId,
-        qtyPer: dQty(l.qtyPer),
-        planLossRatePct: l.lossRatePct,
+        materialSkuId,
+        qtyPer,
+        planLossRatePct: effectiveLossPct,
         grossReq,
         onHandAt: onHand,
         inTransitAt: inTransit,
@@ -226,7 +316,7 @@ async function buildWoLineSnapshot(tx: AnyDb, wo: WoRow, userId: number): Promis
   );
   await writeAudit(tx, {
     userId, entity: "wo", entityId: wo.id, action: "snapshot",
-    after: { bomId: wo.bomId, lineCount: bLines.length },
+    after: { bomId: wo.bomId, lineCount: materialIds.length, multilevel: true },
   });
 }
 

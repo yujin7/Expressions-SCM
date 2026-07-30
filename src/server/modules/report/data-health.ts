@@ -14,10 +14,8 @@
  *
  * ── 结构性告警（structural）──
  * 逐 SKU 评分之外，另有「不属于某一个 SKU、而属于整份主数据」的结构问题。
- * 目前一项：**BOM 嵌套**。rules/bom-explode 只做**单层**展开（见该文件 TODO），
- * 若某个子件自身也有生效 BOM，其下级需求会被静默漏算——不报错、不为零，
- * 只是数字偏小，是最难发现的一类错。当前数据 0 例（725 父件 / 3441 子件互不重叠），
- * 所以本项是「哪天有人建了半成品 BOM 就立刻示警」的哨兵，而不是待办。
+ * 多层 BOM 已由 rules/bom-explode 递归展开；真正不可计算的是**循环**或异常深度。
+ * 新 BOM 在生效事务内被阻断，健康度仍扫描存量/迁移数据，避免历史污染静默低估需求。
  *
  * 第二项：**临期阈值低于渠道通行口径**。效期在美妆是渠道准入约束而非仓库报表——
  * 天猫对部分美妆类目按 max(保质期×2/10, 100天) 判临期。系统阈值若更低，
@@ -30,6 +28,11 @@ import * as schema from "@/db/schema";
 import { num } from "@/server/core/svc";
 import { detectDuplicates, type SkuLike } from "@/server/core/dedupe";
 import { getOnHandBySku } from "@/server/core/stock-view";
+import {
+  BomDepthError,
+  findBomCycleFrom,
+  type BomLineLike,
+} from "@/server/rules/bom-explode";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -62,7 +65,7 @@ export interface DataHealthSummary {
 
 /** 结构性告警：不归属单个 SKU 的主数据问题（无命中则数组为空，页面不占位） */
 export interface StructuralWarning {
-  key: "bom_nested" | "near_expiry_below_channel" | "near_expiry_using_default" | "shelf_life_missing";
+  key: "bom_cycle" | "bom_depth" | "near_expiry_below_channel" | "near_expiry_using_default" | "shelf_life_missing";
   severity: "high" | "medium";
   title: string;
   /** 影响说明——写清「会错成什么样」，不写「请检查」 */
@@ -140,26 +143,68 @@ export async function getDataHealth(
     .where(eq(schema.boms.status, "active"));
   const hasBom = new Set<number>(bomRows.map((r) => r.skuId));
 
-  /* ── 结构性告警：BOM 嵌套（子件自身也有生效 BOM → 单层展开会漏算其下级需求） ── */
+  /* ── 结构性告警：循环/异常深度（合法多层 BOM 不再误报） ── */
   const structural: StructuralWarning[] = [];
   if (bomRows.length > 0) {
-    const lineRows: { materialSkuId: number }[] = await db
-      .select({ materialSkuId: schema.bomLines.materialSkuId })
-      .from(schema.bomLines)
-      .where(inArray(schema.bomLines.bomId, bomRows.map((b) => b.id)));
-    const nested = [...new Set(lineRows.map((l) => l.materialSkuId))].filter((id) => hasBom.has(id));
-    if (nested.length > 0) {
-      const nameById = new Map(skuRows.map((s) => [s.id, `${s.code} ${s.name}`]));
+    const lineRows: Array<BomLineLike & { productSkuId: number }> = await db
+      .select({
+        productSkuId: schema.boms.productSkuId,
+        materialSkuId: schema.bomLines.materialSkuId,
+        qtyPer: schema.bomLines.qtyPer,
+        incomingLossPct: schema.bomLines.incomingLossPct,
+        productionLossPct: schema.bomLines.productionLossPct,
+        lossRatePct: schema.bomLines.lossRatePct,
+      })
+      .from(schema.boms)
+      .innerJoin(schema.bomLines, eq(schema.bomLines.bomId, schema.boms.id))
+      .where(inArray(schema.boms.id, bomRows.map((b) => b.id)));
+    const graph = new Map<number, BomLineLike[]>();
+    for (const line of lineRows) {
+      const rows = graph.get(line.productSkuId) ?? [];
+      rows.push(line);
+      graph.set(line.productSkuId, rows);
+    }
+    const cycles = new Map<string, number[]>();
+    const tooDeep = new Set<number>();
+    for (const root of graph.keys()) {
+      try {
+        const cycle = findBomCycleFrom(root, graph);
+        if (!cycle) continue;
+        const key = [...new Set(cycle.slice(0, -1))].sort((a, b) => a - b).join(",");
+        if (!cycles.has(key)) cycles.set(key, cycle);
+      } catch (error) {
+        if (error instanceof BomDepthError) {
+          tooDeep.add(root);
+          continue;
+        }
+        throw error;
+      }
+    }
+    const nameById = new Map(skuRows.map((s) => [s.id, `${s.code} ${s.name}`]));
+    if (cycles.size > 0) {
       structural.push({
-        key: "bom_nested",
+        key: "bom_cycle",
         severity: "high",
-        title: `检测到 ${nested.length} 个物料既是子件、自身又有生效 BOM（多层 BOM）`,
+        title: `检测到 ${cycles.size} 条存量 BOM 循环`,
         impact:
-          "BOM 展开目前只做单层：这些物料的下级用量不会计入物料需求，" +
-          "结果是需求量被静默算小（不报错、不为零），据此下单会缺料。" +
-          "请先按多层结构人工核对这些物料的需求，或联系开发启用多层展开。",
-        count: nested.length,
-        samples: nested.slice(0, 20).map((id) => nameById.get(id) ?? `SKU#${id}`),
+          "循环 BOM 没有有限的末级物料需求，系统会整根阻断而不返回部分数字。" +
+          "新版本生效已在事务内拦截；此处命中表示存量或迁移数据需先修复。",
+        count: cycles.size,
+        samples: [...cycles.values()].slice(0, 20).map(
+          (cycle) => cycle.map((id) => nameById.get(id) ?? `SKU#${id}`).join(" → "),
+        ),
+      });
+    }
+    if (tooDeep.size > 0) {
+      structural.push({
+        key: "bom_depth",
+        severity: "high",
+        title: `${tooDeep.size} 个 BOM 根节点超过 32 层安全上限`,
+        impact:
+          "异常深度通常意味着错误引用或失控的半成品链。系统会阻断这些根节点的需求计算，" +
+          "避免递归耗尽或把截断结果冒充完整需求。",
+        count: tooDeep.size,
+        samples: [...tooDeep].slice(0, 20).map((id) => nameById.get(id) ?? `SKU#${id}`),
       });
     }
   }

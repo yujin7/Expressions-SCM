@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { auditLogs, bomLines, boms, skus, spus, stockBalances, suppliers, users, warehouses } from "@/db/schema";
 import type { DB } from "@/db";
 import { activateBom } from "@/server/modules/master/bom";
+import { MAX_BOM_DEPTH } from "@/server/rules/bom-explode";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 describe("FEATURE 5 BOM 生效动效检查：被移除物料在委外仓有结存 → 409 / force 放行", () => {
@@ -77,5 +78,144 @@ describe("FEATURE 5 BOM 生效动效检查：被移除物料在委外仓有结�
     await db.insert(bomLines).values([{ bomId: b3.id, materialSkuId: mB, qtyPer: "1.0000", lossRatePct: "0" }]);
     const updated = await activateBom(b3.id, approver, { db: dbx });
     expect(updated.status).toBe("active");
+  });
+});
+
+describe("BOM 生效图校验：允许合法多层，阻断自引用与跨 BOM 循环", () => {
+  let db: TestDb;
+  let dbx: DB;
+  let approver: { id: number; roles: string[]; isApprover: boolean };
+  let a = 0;
+  let b = 0;
+  let c = 0;
+  let d = 0;
+  let raw = 0;
+
+  beforeAll(async () => {
+    ({ db } = await createTestDb());
+    dbx = db as unknown as DB;
+    const [u] = await db.insert(users).values({ name: "BOM图审批", roles: ["pmc"], isApprover: true }).returning();
+    approver = { id: u.id, roles: ["pmc"], isApprover: true };
+    const [spu] = await db.insert(spus).values({ code: "BOM-GRAPH-SPU", nameCn: "BOM图校验" }).returning();
+    const mk = async (code: string, type: "finished" | "semi" | "raw") => {
+      const [sku] = await db.insert(skus).values({
+        code,
+        name: code,
+        spuId: spu.id,
+        baseUom: "个",
+        skuType: type,
+      }).returning();
+      return sku.id;
+    };
+    a = await mk("GRAPH-A", "finished");
+    b = await mk("GRAPH-B", "semi");
+    c = await mk("GRAPH-C", "finished");
+    d = await mk("GRAPH-D", "semi");
+    raw = await mk("GRAPH-RAW", "raw");
+
+    const [activeA] = await db.insert(boms).values({
+      productSkuId: a,
+      versionNo: "V1",
+      status: "active",
+    }).returning();
+    await db.insert(bomLines).values({
+      bomId: activeA.id,
+      materialSkuId: b,
+      qtyPer: "1",
+      lossRatePct: "0",
+    });
+  });
+
+  const draft = async (productSkuId: number, materialSkuId: number, versionNo: string) => {
+    const [head] = await db.insert(boms).values({
+      productSkuId,
+      versionNo,
+      status: "draft",
+    }).returning();
+    await db.insert(bomLines).values({
+      bomId: head.id,
+      materialSkuId,
+      qtyPer: "1",
+      lossRatePct: "0",
+    });
+    return head.id;
+  };
+
+  it("A→B 已生效时，B→A 草稿不能生效且事务不写审计", async () => {
+    const candidate = await draft(b, a, "V1");
+    await expect(activateBom(candidate, approver, { db: dbx })).rejects.toThrow(
+      /BOM 不能生效.*GRAPH-B → GRAPH-A → GRAPH-B/,
+    );
+    const [still] = await db.select().from(boms).where(eq(boms.id, candidate));
+    expect(still.status).toBe("draft");
+    const audits = await db.select().from(auditLogs).where(and(
+      eq(auditLogs.entity, "bom"),
+      eq(auditLogs.entityId, candidate),
+    ));
+    expect(audits).toHaveLength(0);
+  });
+
+  it("自引用草稿不能生效", async () => {
+    const candidate = await draft(d, d, "V1");
+    await expect(activateBom(candidate, approver, { db: dbx })).rejects.toThrow(
+      /BOM 不能生效.*GRAPH-D → GRAPH-D/,
+    );
+    const [still] = await db.select().from(boms).where(eq(boms.id, candidate));
+    expect(still.status).toBe("draft");
+  });
+
+  it("合法 C→原料可以生效", async () => {
+    const candidate = await draft(c, raw, "V1");
+    const activated = await activateBom(candidate, approver, { db: dbx });
+    expect(activated.status).toBe("active");
+  });
+
+  it("候选子树自身未超深、但与既有父链合并后超深时仍阻断，并显示 SKU 编码路径", async () => {
+    const [spu] = await db.insert(spus).values({
+      code: "BOM-DEEP-SPU",
+      nameCn: "BOM深度校验",
+    }).returning();
+    const chain = await db.insert(skus).values(
+      Array.from({ length: MAX_BOM_DEPTH + 9 }, (_, index) => ({
+        code: `DEEP-${String(index).padStart(2, "0")}`,
+        name: `深度节点${index}`,
+        spuId: spu.id,
+        baseUom: "个",
+        skuType: index === 0 ? "finished" as const : index === MAX_BOM_DEPTH + 8 ? "raw" as const : "semi" as const,
+      })),
+    ).returning();
+    const candidateIndex = 20;
+    // 候选上游 20 层已生效。
+    for (let index = 0; index < candidateIndex; index++) {
+      const [head] = await db.insert(boms).values({
+        productSkuId: chain[index].id,
+        versionNo: "V1",
+        status: "active",
+      }).returning();
+      await db.insert(bomLines).values({
+        bomId: head.id,
+        materialSkuId: chain[index + 1].id,
+        qtyPer: "1",
+      });
+    }
+    // 候选下游自身只有 20 层，小于上限；合并父链后总深度超过 32。
+    for (let index = candidateIndex + 1; index < chain.length - 1; index++) {
+      const [head] = await db.insert(boms).values({
+        productSkuId: chain[index].id,
+        versionNo: "V1",
+        status: "active",
+      }).returning();
+      await db.insert(bomLines).values({
+        bomId: head.id,
+        materialSkuId: chain[index + 1].id,
+        qtyPer: "1",
+      });
+    }
+    const candidate = await draft(chain[candidateIndex].id, chain[candidateIndex + 1].id, "V1");
+    await expect(activateBom(candidate, approver, { db: dbx })).rejects.toThrow(
+      /层级超过 32 层安全上限 DEEP-00 → DEEP-01.*DEEP-33/,
+    );
+    const [still] = await db.select().from(boms).where(eq(boms.id, candidate));
+    expect(still.status).toBe("draft");
   });
 });
