@@ -6,7 +6,7 @@
  * 注意：已知变体（调拨在途/在途调拨、唯品/唯品会、多多/拼多多）不在代码里硬编码，
  * 它们以 aliases 数据行的形式由 seed / 人工认领写入。
  */
-import { and, eq, or } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import * as schema from "@/db/schema";
 import type { AliasType } from "@/db/schema";
@@ -135,10 +135,30 @@ export async function resolveKnownReference(
   let rows: { id: number }[] = [];
   switch (aliasType) {
     case "sku_code":
-      rows = await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.code, value));
+      rows = [
+        ...await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.code, value)),
+        ...await db
+          .select({ id: schema.skuIdentifiers.skuId })
+          .from(schema.skuIdentifiers)
+          .where(and(
+            eq(schema.skuIdentifiers.value, value),
+            eq(schema.skuIdentifiers.active, true),
+            inArray(schema.skuIdentifiers.kind, ["external", "vendor", "customer", "legacy"]),
+          )),
+      ];
       break;
     case "sku_barcode":
-      rows = await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.barcode, value));
+      rows = [
+        ...await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.barcode, value)),
+        ...await db
+          .select({ id: schema.skuIdentifiers.skuId })
+          .from(schema.skuIdentifiers)
+          .where(and(
+            eq(schema.skuIdentifiers.kind, "gtin"),
+            eq(schema.skuIdentifiers.value, value),
+            eq(schema.skuIdentifiers.active, true),
+          )),
+      ];
       break;
     case "supplier_oem":
       rows = await db
@@ -192,9 +212,17 @@ export async function resolveKnownOrQueue(
 
   let exactMatchCount = 0;
   if (aliasType === "sku_barcode") {
-    exactMatchCount = (
-      await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.barcode, value))
-    ).length;
+    exactMatchCount = new Set([
+      ...await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.barcode, value)),
+      ...await db
+        .select({ id: schema.skuIdentifiers.skuId })
+        .from(schema.skuIdentifiers)
+        .where(and(
+          eq(schema.skuIdentifiers.kind, "gtin"),
+          eq(schema.skuIdentifiers.value, value),
+          eq(schema.skuIdentifiers.active, true),
+        )),
+    ].map((row) => row.id)).size;
   }
   await queueException(db, aliasType, value, {
     ...((context && typeof context === "object") ? context : { context }),

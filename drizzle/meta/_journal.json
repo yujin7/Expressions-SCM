@@ -267,6 +267,13 @@
       "when": 1785350448139,
       "tag": "0037_tough_lockjaw",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1785377347528,
+      "tag": "0038_clean_microchip",
+      "breakpoints": true
     }
   ]
 }

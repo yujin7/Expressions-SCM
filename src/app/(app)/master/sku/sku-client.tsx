@@ -26,6 +26,7 @@ import RemoteSelect from "@/components/RemoteSelect";
 import { COMMERCIAL_ROLE_LABELS, LOSS_CATEGORY_LABELS, SKU_TYPE_LABELS, toOptions } from "@/components/labels";
 import { LIFECYCLE_LABELS } from "@/components/format";
 import SkuPanoramaDrawer from "./sku-panorama-drawer";
+import SkuIdentifiersDrawer from "./sku-identifiers-drawer";
 import { postJson } from "@/components/fetchJson";
 
 interface SkuRow {
@@ -42,6 +43,7 @@ interface SkuRow {
   prodMode: string | null;
   lossCategory: string | null;
   brandId: number | null;
+  brand: string | null;
   channelId: number | null;
   shortName: string | null;
   commercialRole: string;
@@ -68,6 +70,7 @@ export default function SkuClient() {
   const canWrite = hasAnyRole(me, "pmc");
   const [panoramaId, setPanoramaId] = useState<number | null>(null);
   const [attachSku, setAttachSku] = useState<SkuRow | null>(null);
+  const [identifierSku, setIdentifierSku] = useState<SkuRow | null>(null);
   const [commercialRole, setCommercialRole] = useState<string>();
   const [codeGuideOpen, setCodeGuideOpen] = useState(false);
   return (
@@ -112,6 +115,9 @@ export default function SkuClient() {
             <Button type="link" size="small" onClick={() => setPanoramaId(r.id)}>
               全景
             </Button>
+            <Button type="link" size="small" onClick={() => setIdentifierSku(r)}>
+              标识
+            </Button>
             <Button type="link" size="small" onClick={() => setAttachSku(r)}>
               附件
             </Button>
@@ -121,7 +127,7 @@ export default function SkuClient() {
         canEdit={() => canWrite}
         entityName="SKU"
         apiPath="/api/master/sku"
-        searchPlaceholder="搜索编码/产品名/规格"
+        searchPlaceholder="搜索主码/GTIN/外部码/产品名/规格"
         queryParams={{ commercialRole }}
         toolbarFilters={(
           <Select
@@ -137,6 +143,12 @@ export default function SkuClient() {
         columns={[
           { title: "编码", dataIndex: "code", width: 110 },
           { title: "货品名称", dataIndex: "name", width: 160 },
+          {
+            title: "品牌",
+            dataIndex: "brand",
+            width: 110,
+            render: (v: string | null) => v ?? "共享/中性",
+          },
           {
             title: "所属产品",
             dataIndex: "spuNameCn",
@@ -299,13 +311,17 @@ export default function SkuClient() {
               <Typography.Text code>S1-EXP-F-000123-K7</Typography.Text>
             </Descriptions.Item>
             <Descriptions.Item label="来源">
-              品牌主档短码；共享或中性物料使用 <Typography.Text code>GEN</Typography.Text>
+              品牌主档短码（例如 EXP / NING / DEV），因此主码可直接区分品牌；
+              共享或中性物料使用 <Typography.Text code>GEN</Typography.Text>
             </Descriptions.Item>
             <Descriptions.Item label="流水">
               企业全局原子取号，允许跳号，不按品牌重复计数
             </Descriptions.Item>
             <Descriptions.Item label="校验码">
               发现常见误录；不是权限或安全签名
+            </Descriptions.Item>
+            <Descriptions.Item label="外部标识">
+              GTIN、包装层级条码、聚水潭/用友编码、供应商及客户料号独立登记，不写进 S1
             </Descriptions.Item>
           </Descriptions>
           <Table
@@ -330,6 +346,11 @@ export default function SkuClient() {
           </Typography.Paragraph>
         </Space>
       </Drawer>
+      <SkuIdentifiersDrawer
+        sku={identifierSku}
+        canWrite={canWrite}
+        onClose={() => setIdentifierSku(null)}
+      />
       <Drawer
         title={attachSku ? `图片与附件 — ${attachSku.code} ${attachSku.name}` : "图片与附件"}
         width={560}

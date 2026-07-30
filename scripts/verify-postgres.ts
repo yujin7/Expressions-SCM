@@ -41,6 +41,7 @@ async function main(): Promise<void> {
         "sop_cycles",
         "sop_decisions",
         "supplier_lifecycle_cases",
+        "sku_identifiers",
         "quality_cases",
         "quality_actions",
         "regulatory_records",
@@ -68,6 +69,7 @@ async function main(): Promise<void> {
       "sop_cycles",
       "sop_decisions",
       "supplier_lifecycle_cases",
+      "sku_identifiers",
       "quality_cases",
       "quality_actions",
       "regulatory_records",
@@ -336,6 +338,11 @@ async function main(): Promise<void> {
       "ck_skus_commercial_role",
       "ck_skus_short_name_length",
       "ck_sku_params_logistics_lead_days",
+      "uq_sku_identifier_scope_value",
+      "ck_sku_identifier_kind",
+      "ck_sku_identifier_packaging_level",
+      "ck_sku_identifier_scope",
+      "ck_sku_identifier_gtin_level",
     ];
     const locationConstraints = await client.query<{ conname: string }>(
       `select conname
@@ -422,6 +429,29 @@ async function main(): Promise<void> {
       throw new Error(`Missing quality/compliance indexes: ${missingQualityIndexes.join(", ")}`);
     }
 
+    const requiredSkuIdentifierIndexes = [
+      "uq_sku_identifier_primary_slot",
+      "ix_sku_identifier_sku_active",
+    ];
+    const skuIdentifierIndexes = await client.query<{ indexname: string }>(
+      `select indexname
+         from pg_indexes
+        where schemaname = 'public'
+          and tablename = 'sku_identifiers'
+          and indexname = any($1::text[])`,
+      [requiredSkuIdentifierIndexes],
+    );
+    const foundSkuIdentifierIndexes = new Set(
+      skuIdentifierIndexes.rows.map((row) => row.indexname),
+    );
+    const missingSkuIdentifierIndexes = requiredSkuIdentifierIndexes
+      .filter((name) => !foundSkuIdentifierIndexes.has(name));
+    if (missingSkuIdentifierIndexes.length) {
+      throw new Error(
+        `Missing SKU identifier indexes: ${missingSkuIdentifierIndexes.join(", ")}`,
+      );
+    }
+
     const migrationCount = await client.query<{ count: string }>(
       `select count(*)::text as count from drizzle.__drizzle_migrations`,
     );
@@ -442,6 +472,7 @@ async function main(): Promise<void> {
       versionChainSelfReferences: [...versionChainSelfReferences].sort(),
       supplierLifecycleIndexes: [...foundLifecycleIndexes].sort(),
       qualityComplianceIndexes: [...foundQualityIndexes].sort(),
+      skuIdentifierIndexes: [...foundSkuIdentifierIndexes].sort(),
     }, null, 2));
   } finally {
     await client.end();
