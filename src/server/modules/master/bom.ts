@@ -2,6 +2,11 @@ import { and, asc, desc, eq, ilike, inArray, lt, ne, or, sql } from "drizzle-orm
 import { getDbAsync, schema, type DB } from "@/db";
 import { writeAudit } from "@/server/core/audit";
 import { dCmp } from "@/server/core/decimal";
+import {
+  BomDepthError,
+  findBomCycleFrom,
+  type BomLineLike,
+} from "@/server/rules/bom-explode";
 import { ApiError, todayShanghai } from "./common";
 import { bomSchema } from "./schemas";
 
@@ -188,6 +193,84 @@ export async function updateBom(
 }
 
 /**
+ * BOM 图是一个跨主档聚合不变量。用同一 doc_counters 哨兵行串行化生效事务，
+ * 避免 A→B 与 B→A 两张草稿并发审批时都在对方提交前通过检查。
+ */
+async function lockAndValidateBomGraph(tx: DB, candidateBomId: number, productSkuId: number) {
+  await tx
+    .insert(schema.docCounters)
+    .values({ prefix: "BOM-GRAPH", bizDate: "GLOBAL", lastNo: 0 })
+    .onConflictDoNothing();
+  await tx.execute(sql`
+    SELECT prefix
+    FROM doc_counters
+    WHERE prefix = 'BOM-GRAPH' AND biz_date = 'GLOBAL'
+    FOR UPDATE
+  `);
+
+  const activeHeaders = await tx
+    .select({ id: schema.boms.id, productSkuId: schema.boms.productSkuId })
+    .from(schema.boms)
+    .where(and(
+      eq(schema.boms.status, "active"),
+      ne(schema.boms.productSkuId, productSkuId),
+    ));
+  const candidateLines = await tx
+    .select({
+      materialSkuId: schema.bomLines.materialSkuId,
+      qtyPer: schema.bomLines.qtyPer,
+      incomingLossPct: schema.bomLines.incomingLossPct,
+      productionLossPct: schema.bomLines.productionLossPct,
+      lossRatePct: schema.bomLines.lossRatePct,
+    })
+    .from(schema.bomLines)
+    .where(eq(schema.bomLines.bomId, candidateBomId));
+
+  const graph = new Map<number, BomLineLike[]>();
+  if (activeHeaders.length > 0) {
+    const activeLines = await tx
+      .select({
+        productSkuId: schema.boms.productSkuId,
+        materialSkuId: schema.bomLines.materialSkuId,
+        qtyPer: schema.bomLines.qtyPer,
+        incomingLossPct: schema.bomLines.incomingLossPct,
+        productionLossPct: schema.bomLines.productionLossPct,
+        lossRatePct: schema.bomLines.lossRatePct,
+      })
+      .from(schema.boms)
+      .innerJoin(schema.bomLines, eq(schema.bomLines.bomId, schema.boms.id))
+      .where(inArray(schema.boms.id, activeHeaders.map((row) => row.id)));
+    for (const line of activeLines) {
+      const rows = graph.get(line.productSkuId) ?? [];
+      rows.push(line);
+      graph.set(line.productSkuId, rows);
+    }
+  }
+  graph.set(productSkuId, candidateLines);
+
+  let cycle: number[] | null;
+  try {
+    cycle = findBomCycleFrom(productSkuId, graph);
+  } catch (error) {
+    if (error instanceof BomDepthError) {
+      throw new ApiError(409, `BOM 层级超过安全上限，请拆分或核对层级：${error.path.join(" → ")}`);
+    }
+    throw error;
+  }
+  if (!cycle) return;
+
+  const codeRows = await tx
+    .select({ id: schema.skus.id, code: schema.skus.code })
+    .from(schema.skus)
+    .where(inArray(schema.skus.id, [...new Set(cycle)]));
+  const codeById = new Map(codeRows.map((row) => [row.id, row.code]));
+  throw new ApiError(
+    409,
+    `BOM 不能生效：检测到循环 ${cycle.map((id) => codeById.get(id) ?? `SKU#${id}`).join(" → ")}`,
+  );
+}
+
+/**
  * BOM 生效：仅草稿可生效；同事务内先将同产品其他生效版本置为 retired，
  * 再置本版本 active（uq_bom_one_active 部分唯一索引要求——顺序不可颠倒）。
  * 《01》§6 的管控要求**已在本函数内实现**（勿再当作待办）：审批人资格（is_approver，admin 亦不豁免
@@ -210,6 +293,7 @@ export async function activateBom(
     if (bom.createdBy != null && bom.createdBy === approver.id) {
       throw new ApiError(403, "职责分离：不可生效本人创建的 BOM");
     }
+    await lockAndValidateBomGraph(tx, id, bom.productSkuId);
     // FEATURE 5 物料流动效检查：新版本移除的物料若在委外仓仍有结存（垫料/在制），
     // 直接切版会造成发料口径与现场物料脱节——默认拦截，force=true 显式放行并留审计。
     const [outgoing] = await tx

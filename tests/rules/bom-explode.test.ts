@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { explode, grossFromBom, type BomLineLike } from "@/server/rules/bom-explode";
+import {
+  BomCycleError,
+  BomDepthError,
+  MAX_BOM_DEPTH,
+  explode,
+  grossFromBom,
+  type BomLineLike,
+} from "@/server/rules/bom-explode";
 
 describe("E2-07 BOM 展开 grossFromBom()（双损耗，口径同 wo.ts 快照）", () => {
   it("无损耗：毛需求 = 计划产量 × 净单位用量", () => {
@@ -42,7 +49,7 @@ describe("E2-07 BOM 展开 grossFromBom()（双损耗，口径同 wo.ts 快照�
   });
 });
 
-describe("E2-07 explode()：多成品需求 → 物料毛需求合计（单层）", () => {
+describe("E2-07 explode()：多成品需求 → 末级物料毛需求合计（多层）", () => {
   const bom = new Map<number, BomLineLike[]>([
     // 成品 1：料 100（单耗 2，双损耗 5%/5%）、料 200（单耗 1，无损耗）
     [1, [
@@ -74,5 +81,55 @@ describe("E2-07 explode()：多成品需求 → 物料毛需求合计（单层�
 
   it("数字入参与字符串入参等价（禁 float：内部全程 decimal）", () => {
     expect(explode([{ skuId: 1, qty: 100 }], bom).get(100)).toBe("220.5000");
+  });
+
+  it("逐层展开半成品并逐层应用损耗，中间半成品不重复计作末级物料", () => {
+    const nested = new Map<number, BomLineLike[]>([
+      [1, [{ materialSkuId: 10, qtyPer: "2", incomingLossPct: "10", productionLossPct: "0" }]],
+      [10, [{ materialSkuId: 100, qtyPer: "3", incomingLossPct: "5", productionLossPct: "0" }]],
+    ]);
+    const out = explode([{ skuId: 1, qty: "100" }], nested);
+    // 第 1 层：100 × 2 × 1.10 = 220；第 2 层：220 × 3 × 1.05 = 693
+    expect(out.get(100)).toBe("693.0000");
+    expect(out.has(10)).toBe(false);
+    expect(out.size).toBe(1);
+  });
+
+  it("同一末级物料经多条多层路径汇入时精确合计", () => {
+    const diamond = new Map<number, BomLineLike[]>([
+      [1, [
+        { materialSkuId: 10, qtyPer: "2" },
+        { materialSkuId: 20, qtyPer: "4" },
+      ]],
+      [10, [{ materialSkuId: 100, qtyPer: "3" }]],
+      [20, [{ materialSkuId: 100, qtyPer: "5" }]],
+    ]);
+    // 10 × 2 × 3 + 10 × 4 × 5 = 260
+    expect(explode([{ skuId: 1, qty: "10" }], diamond).get(100)).toBe("260.0000");
+  });
+
+  it("循环时抛出明确路径且不返回任何部分结果", () => {
+    const cyclic = new Map<number, BomLineLike[]>([
+      [1, [
+        { materialSkuId: 100, qtyPer: "1" },
+        { materialSkuId: 2, qtyPer: "1" },
+      ]],
+      [2, [{ materialSkuId: 1, qtyPer: "1" }]],
+    ]);
+    expect(() => explode([{ skuId: 1, qty: "10" }], cyclic)).toThrow(BomCycleError);
+    try {
+      explode([{ skuId: 1, qty: "10" }], cyclic);
+    } catch (error) {
+      expect(error).toBeInstanceOf(BomCycleError);
+      expect((error as BomCycleError).cycle).toEqual([1, 2, 1]);
+    }
+  });
+
+  it(`超过 ${MAX_BOM_DEPTH} 层时阻断，避免递归耗尽或静默截断`, () => {
+    const deep = new Map<number, BomLineLike[]>();
+    for (let id = 1; id <= MAX_BOM_DEPTH + 1; id++) {
+      deep.set(id, [{ materialSkuId: id + 1, qtyPer: "1" }]);
+    }
+    expect(() => explode([{ skuId: 1, qty: "1" }], deep)).toThrow(BomDepthError);
   });
 });

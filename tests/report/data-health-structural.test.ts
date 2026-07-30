@@ -5,15 +5,10 @@ import { getDataHealth } from "@/server/modules/report/data-health";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 /**
- * 结构性告警「BOM 嵌套」哨兵。
- *
- * 为什么值得一测：rules/bom-explode 只做**单层**展开。若某子件自身也有生效 BOM，
- * 其下级用量会被静默漏算——不抛错、不为零，只是需求量偏小，是最难被发现的一类错。
- * 生产数据目前 0 例（父件与子件集合不相交），因此这条告警平时不出现；
- * 本测试的作用就是保证「哪天真出现了嵌套，它一定会响」——否则这个哨兵会
- * 无声腐化成永远为空的死代码，而没有任何人察觉。
+ * 多层 BOM 本身是合法结构，不应再被误报。真正危险的是循环或异常深度：
+ * 它们没有有限的末级需求，必须显式告警并由需求展开整根阻断。
  */
-describe("主数据健康度：结构性告警（BOM 嵌套）", () => {
+describe("主数据健康度：多层 BOM 结构性告警", () => {
   let db: TestDb;
   let finished = 0; // 成品：有生效 BOM
   let semi = 0; // 半成品：既是成品的子件，自身又有生效 BOM ← 嵌套点
@@ -68,13 +63,12 @@ describe("主数据健康度：结构性告警（BOM 嵌套）", () => {
     raw = await mkSku("RM-001", "原料丙", "raw");
   });
 
-  it("无嵌套时不产生告警（避免哨兵误报，平时页面保持干净）", async () => {
-    // 成品 ← 原料：子件自身无 BOM，单层展开即完整
+  it("普通单层 BOM 不产生循环或深度告警", async () => {
     await mkBom(finished, [raw], 1);
     const r = await getDataHealth({ page: 1, pageSize: 50 }, db);
     expect(r.summary.totalSkus).toBe(1); // 原料/半成品的零售条码/品牌不适用，不污染成品健康率
-    // 只断言「无嵌套告警」——structural 里还会有保质期等其他结构项，不该被这条测试连坐
-    expect(r.structural.find((x) => x.key === "bom_nested")).toBeUndefined();
+    expect(r.structural.find((x) => x.key === "bom_cycle")).toBeUndefined();
+    expect(r.structural.find((x) => x.key === "bom_depth")).toBeUndefined();
   });
 
   it("成品缺保质期时报「无法评估」，而不是沉默通过（不许把「没法查」当「没问题」）", async () => {
@@ -105,8 +99,7 @@ describe("主数据健康度：结构性告警（BOM 嵌套）", () => {
     expect(r2.structural.find((x) => x.key === "near_expiry_below_channel")).toBeUndefined();
   });
 
-  it("子件自身也有生效 BOM 时必须告警，并指名到具体物料", async () => {
-    // 追加：成品 ← 半成品，且半成品 ← 原料 ⇒ 半成品成为嵌套点
+  it("合法的成品 → 半成品 → 原料不告警", async () => {
     await mkBom(semi, [raw], 1);
     await db.insert(bomLines).values({
       bomId: (await db.select().from(boms).where(eq(boms.productSkuId, finished)))[0].id,
@@ -118,12 +111,28 @@ describe("主数据健康度：结构性告警（BOM 嵌套）", () => {
     });
 
     const r = await getDataHealth({ page: 1, pageSize: 50 }, db);
-    const w = r.structural.find((x) => x.key === "bom_nested");
-    expect(w, "半成品既是子件、自身又有生效 BOM，必须命中嵌套告警").toBeTruthy();
+    expect(r.structural.find((x) => x.key === "bom_cycle")).toBeUndefined();
+    expect(r.structural.find((x) => x.key === "bom_depth")).toBeUndefined();
+  });
+
+  it("存量 BOM 循环必须告警、指名完整路径并说明整根阻断", async () => {
+    const [semiBom] = await db.select().from(boms).where(eq(boms.productSkuId, semi));
+    await db.insert(bomLines).values({
+      bomId: semiBom.id,
+      materialSkuId: finished,
+      qtyPer: "1",
+      lossRatePct: "0",
+      incomingLossPct: "0",
+      productionLossPct: "0",
+    });
+
+    const r = await getDataHealth({ page: 1, pageSize: 50 }, db);
+    const w = r.structural.find((x) => x.key === "bom_cycle");
+    expect(w, "成品与半成品互相引用时必须命中循环告警").toBeTruthy();
     expect(w!.count).toBe(1);
+    expect(w!.samples.join()).toContain("FG-001");
     expect(w!.samples.join()).toContain("SF-001");
     expect(w!.severity).toBe("high");
-    // 告警文案必须说清「会错成什么样」，否则用户无从判断严重性
-    expect(w!.impact).toContain("单层");
+    expect(w!.impact).toContain("整根阻断");
   });
 });

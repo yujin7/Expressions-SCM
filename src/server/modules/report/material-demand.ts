@@ -7,7 +7,8 @@
  *       = WO 数量 − Σ 其 JG 已生效 SH 正常行实收（与 report/wip.ts pendingQty 同口径），逐单下限 0；
  *   (b) 计划：成品补货建议量（report 层 R11 建议，getReplenishSuggestions）——「若采纳则需要的物料」。
  *       建议层≠承诺：成品建议未必被采纳，故本页数值是前瞻，不得直接当作已定采购量下单。
- * - 展开公式：rules/bom-explode.ts（与 outsource/wo.ts 快照**同一双损耗公式**，含 legacy 回退）；仅单层展开。
+ * - 展开公式：rules/bom-explode.ts（与 outsource/wo.ts 快照**同一双损耗公式**，含 legacy 回退）；
+ *   支持多层 BOM，逐层应用损耗并只汇总末级物料；循环/异常深度整根阻断，不返回部分低估结果。
  * - 生效 BOM 判定：boms.status='active'（与 wo.ts createWo 完全一致，一成品至多一条，部分唯一索引保证）。
  * - 物料侧净额化：在库 = Σ stock_balances（物料不走成品快照仓口径）；
  *   在途 = 已审批/执行中 PO 实物行未收量（基础单位 = qty×uomFactor − receivedQty，逐行下限 0，与 wo.ts/R11 同口径）；
@@ -21,7 +22,12 @@ import { dAdd, dCmp, dMax, dQty, dSub } from "@/server/core/decimal";
 import { getMaterialReferenceLines } from "@/server/core/material-reference";
 import { getOpenSupplyLines } from "@/server/core/supply";
 import { suggestQty } from "@/server/rules/netreq";
-import { grossFromBom, type BomLineLike } from "@/server/rules/bom-explode";
+import {
+  BomCycleError,
+  BomDepthError,
+  explode,
+  type BomLineLike,
+} from "@/server/rules/bom-explode";
 import { earliestKitDate } from "@/server/rules/kitting-atp";
 import { getReplenishSuggestions } from "@/server/modules/replenish/service";
 import { todayShanghai } from "@/server/modules/master/common";
@@ -84,6 +90,8 @@ export interface MaterialDemandResult {
     planSkuCount: number;
     /** 有需求但无生效 BOM 的成品编码（展开断链，最值得人工补 BOM） */
     missingBomProducts: string[];
+    /** BOM 循环或异常深度导致整根未参与计算；不得把部分结果冒充完整需求 */
+    bomIssues: string[];
     /** 在制路交期窗口（天） */
     horizonDays: number;
     /** 口径日（Asia/Shanghai） */
@@ -127,7 +135,7 @@ export async function getMaterialDemand(
     total: 0,
     summary: {
       materialCount: 0, shortageCount: 0, wipWoCount: 0, planSkuCount: 0,
-      missingBomProducts: [], horizonDays, today,
+      missingBomProducts: [], bomIssues: [], horizonDays, today,
       referenceMatchedLines: 0, referenceMaterialCount: 0, referenceAsOf: null,
       ...s,
     },
@@ -212,7 +220,8 @@ export async function getMaterialDemand(
     .where(inArray(schema.skus.id, productIds));
   for (const p of prodRows) codeBySku.set(p.id, p.code);
 
-  /* ── 生效 BOM（status='active'，与 wo.ts 判定一致）+ 成品编码 ── */
+  /* ── 全量生效 BOM 图（status='active'，与 wo.ts 判定一致） ──
+     多层展开必须加载可达半成品的下级 BOM；只查根成品会把半成品误当采购末级。 */
   const bomRows: {
     productSkuId: number; productCode: string; materialSkuId: number;
     qtyPer: string; incomingLossPct: string; productionLossPct: string; lossRatePct: string;
@@ -229,7 +238,7 @@ export async function getMaterialDemand(
     .from(schema.boms)
     .innerJoin(schema.bomLines, eq(schema.bomLines.bomId, schema.boms.id))
     .innerJoin(schema.skus, eq(schema.boms.productSkuId, schema.skus.id))
-    .where(and(eq(schema.boms.status, "active"), inArray(schema.boms.productSkuId, productIds)))
+    .where(eq(schema.boms.status, "active"))
     .orderBy(asc(schema.bomLines.id));
 
   const bomByProduct = new Map<number, BomLineLike[]>();
@@ -244,37 +253,56 @@ export async function getMaterialDemand(
     .map((id) => codeBySku.get(id) ?? `#${id}`)
     .sort();
 
-  /* ── 展开：逐成品逐 BOM 行，两路分别累加（同一双损耗公式，来源 wo.ts） ── */
+  /* ── 多层展开：逐根成品计算末级物料，两路分别累加 ── */
   const grossWip = new Map<number, string>();
   const grossPlan = new Map<number, string>();
   /** 物料 → (成品编码 → 贡献毛需求)，用于 topProducts */
   const contribByMaterial = new Map<number, Map<string, string>>();
   /** 物料 → 本次确有需求的成品；旧台账必须命中该集合才可进入参考缺口。 */
   const contributingProductsByMaterial = new Map<number, Set<number>>();
+  const bomIssues: string[] = [];
   for (const pid of productIds) {
-    const lines = bomByProduct.get(pid);
-    if (!lines || lines.length === 0) continue;
+    if (!bomByProduct.has(pid)) continue;
     const pCode = codeBySku.get(pid) ?? `#${pid}`;
     const wipQty = wipByProduct.get(pid) ?? "0";
     const planQty = planByProduct.get(pid) ?? "0";
-    for (const l of lines) {
-      const base = { qtyPer: l.qtyPer, incomingLossPct: l.incomingLossPct, productionLossPct: l.productionLossPct, lossRatePct: l.lossRatePct };
-      const gw = dCmp(wipQty, "0") > 0 ? grossFromBom({ ...base, planQty: wipQty }) : "0";
-      const gp = dCmp(planQty, "0") > 0 ? grossFromBom({ ...base, planQty }) : "0";
+    let wipLeaves: Map<number, string>;
+    let planLeaves: Map<number, string>;
+    try {
+      wipLeaves = dCmp(wipQty, "0") > 0 ? explode([{ skuId: pid, qty: wipQty }], bomByProduct) : new Map();
+      planLeaves = dCmp(planQty, "0") > 0 ? explode([{ skuId: pid, qty: planQty }], bomByProduct) : new Map();
+    } catch (error) {
+      if (error instanceof BomCycleError) {
+        const path = error.cycle.map((id) => codeBySku.get(id) ?? `#${id}`).join(" → ");
+        bomIssues.push(`${pCode}：循环 ${path}`);
+        continue;
+      }
+      if (error instanceof BomDepthError) {
+        bomIssues.push(`${pCode}：层级超过安全上限`);
+        continue;
+      }
+      throw error;
+    }
+    const leafIds = new Set([...wipLeaves.keys(), ...planLeaves.keys()]);
+    for (const materialSkuId of leafIds) {
+      const gw = wipLeaves.get(materialSkuId) ?? "0";
+      const gp = planLeaves.get(materialSkuId) ?? "0";
       const total = dAdd(gw, gp, 6);
       if (dCmp(total, "0") <= 0) continue;
-      grossWip.set(l.materialSkuId, dAdd(grossWip.get(l.materialSkuId) ?? "0", gw, 6));
-      grossPlan.set(l.materialSkuId, dAdd(grossPlan.get(l.materialSkuId) ?? "0", gp, 6));
-      const m = contribByMaterial.get(l.materialSkuId) ?? new Map<string, string>();
+      grossWip.set(materialSkuId, dAdd(grossWip.get(materialSkuId) ?? "0", gw, 6));
+      grossPlan.set(materialSkuId, dAdd(grossPlan.get(materialSkuId) ?? "0", gp, 6));
+      const m = contribByMaterial.get(materialSkuId) ?? new Map<string, string>();
       m.set(pCode, dAdd(m.get(pCode) ?? "0", total, 6));
-      contribByMaterial.set(l.materialSkuId, m);
-      const productSet = contributingProductsByMaterial.get(l.materialSkuId) ?? new Set<number>();
+      contribByMaterial.set(materialSkuId, m);
+      const productSet = contributingProductsByMaterial.get(materialSkuId) ?? new Set<number>();
       productSet.add(pid);
-      contributingProductsByMaterial.set(l.materialSkuId, productSet);
+      contributingProductsByMaterial.set(materialSkuId, productSet);
     }
   }
   const materialIds = [...new Set([...grossWip.keys(), ...grossPlan.keys()])];
-  if (materialIds.length === 0) return empty({ wipWoCount, planSkuCount, missingBomProducts });
+  if (materialIds.length === 0) {
+    return empty({ wipWoCount, planSkuCount, missingBomProducts, bomIssues });
+  }
 
   /* ── 物料主档 ── */
   const matRows: { id: number; code: string; name: string; baseUom: string }[] = await db
@@ -449,6 +477,7 @@ export async function getMaterialDemand(
       wipWoCount,
       planSkuCount,
       missingBomProducts: missingBomProducts.slice(0, 20),
+      bomIssues: bomIssues.slice(0, 20),
       horizonDays,
       today,
       referenceMatchedLines,

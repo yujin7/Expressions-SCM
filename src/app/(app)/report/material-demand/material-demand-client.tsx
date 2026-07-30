@@ -43,6 +43,7 @@ interface MaterialDemandData {
     wipWoCount: number;
     planSkuCount: number;
     missingBomProducts: string[];
+    bomIssues: string[];
     horizonDays: number;
     today: string;
     referenceMatchedLines: number;
@@ -216,7 +217,7 @@ export default function MaterialDemandClient() {
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="相关需求 = 在制 + 计划 两路，经成品生效 BOM 单层展开（双损耗已计：毛 = 净单位用量 ×(1+来料损耗)×(1+生产损耗)× 计划产出，与委外工单快照同一公式）。"
+        message="相关需求 = 在制 + 计划 两路，经生效 BOM 多层展开到末级物料（每层双损耗均计入，与委外工单快照同一公式）。"
         description={
           data ? (
             <Typography.Text type="secondary">
@@ -232,6 +233,15 @@ export default function MaterialDemandClient() {
           ) : null
         }
       />
+      {data?.summary.bomIssues.length ? (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="以下 BOM 根节点因循环或异常深度未纳入计算"
+          description={`${data.summary.bomIssues.join("；")}。系统未返回部分需求，请先修复 BOM 后再决策。`}
+        />
+      ) : null}
       <Space className="compact-stat-strip" wrap>
         <Statistic title="涉及物料数" value={data?.summary.materialCount ?? 0} />
         <Statistic

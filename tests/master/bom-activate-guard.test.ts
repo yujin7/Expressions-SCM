@@ -79,3 +79,93 @@ describe("FEATURE 5 BOM 生效动效检查：被移除物料在委外仓有结�
     expect(updated.status).toBe("active");
   });
 });
+
+describe("BOM 生效图校验：允许合法多层，阻断自引用与跨 BOM 循环", () => {
+  let db: TestDb;
+  let dbx: DB;
+  let approver: { id: number; roles: string[]; isApprover: boolean };
+  let a = 0;
+  let b = 0;
+  let c = 0;
+  let d = 0;
+  let raw = 0;
+
+  beforeAll(async () => {
+    ({ db } = await createTestDb());
+    dbx = db as unknown as DB;
+    const [u] = await db.insert(users).values({ name: "BOM图审批", roles: ["pmc"], isApprover: true }).returning();
+    approver = { id: u.id, roles: ["pmc"], isApprover: true };
+    const [spu] = await db.insert(spus).values({ code: "BOM-GRAPH-SPU", nameCn: "BOM图校验" }).returning();
+    const mk = async (code: string, type: "finished" | "semi" | "raw") => {
+      const [sku] = await db.insert(skus).values({
+        code,
+        name: code,
+        spuId: spu.id,
+        baseUom: "个",
+        skuType: type,
+      }).returning();
+      return sku.id;
+    };
+    a = await mk("GRAPH-A", "finished");
+    b = await mk("GRAPH-B", "semi");
+    c = await mk("GRAPH-C", "finished");
+    d = await mk("GRAPH-D", "semi");
+    raw = await mk("GRAPH-RAW", "raw");
+
+    const [activeA] = await db.insert(boms).values({
+      productSkuId: a,
+      versionNo: "V1",
+      status: "active",
+    }).returning();
+    await db.insert(bomLines).values({
+      bomId: activeA.id,
+      materialSkuId: b,
+      qtyPer: "1",
+      lossRatePct: "0",
+    });
+  });
+
+  const draft = async (productSkuId: number, materialSkuId: number, versionNo: string) => {
+    const [head] = await db.insert(boms).values({
+      productSkuId,
+      versionNo,
+      status: "draft",
+    }).returning();
+    await db.insert(bomLines).values({
+      bomId: head.id,
+      materialSkuId,
+      qtyPer: "1",
+      lossRatePct: "0",
+    });
+    return head.id;
+  };
+
+  it("A→B 已生效时，B→A 草稿不能生效且事务不写审计", async () => {
+    const candidate = await draft(b, a, "V1");
+    await expect(activateBom(candidate, approver, { db: dbx })).rejects.toThrow(
+      /BOM 不能生效.*GRAPH-B → GRAPH-A → GRAPH-B/,
+    );
+    const [still] = await db.select().from(boms).where(eq(boms.id, candidate));
+    expect(still.status).toBe("draft");
+    const audits = await db.select().from(auditLogs).where(and(
+      eq(auditLogs.entity, "bom"),
+      eq(auditLogs.entityId, candidate),
+    ));
+    expect(audits).toHaveLength(0);
+  });
+
+  it("自引用草稿不能生效", async () => {
+    const candidate = await draft(d, d, "V1");
+    await expect(activateBom(candidate, approver, { db: dbx })).rejects.toThrow(
+      /BOM 不能生效.*GRAPH-D → GRAPH-D/,
+    );
+    const [still] = await db.select().from(boms).where(eq(boms.id, candidate));
+    expect(still.status).toBe("draft");
+  });
+
+  it("合法 C→原料可以生效", async () => {
+    const candidate = await draft(c, raw, "V1");
+    const activated = await activateBom(candidate, approver, { db: dbx });
+    expect(activated.status).toBe("active");
+  });
+});
