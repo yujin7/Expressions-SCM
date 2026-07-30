@@ -3,6 +3,7 @@ import {
   createSkuIdentifier,
   listSkuIdentifiers,
   setSkuIdentifierActive,
+  setSkuIdentifierPrimary,
 } from "@/server/modules/master/sku-identifier";
 import {
   ApiError,
@@ -41,14 +42,25 @@ export async function PATCH(req: NextRequest, ctx: Context) {
   try {
     const user = await guardWrite("sku");
     const skuId = parseId((await ctx.params).id);
-    const body = await readJson<{ identifierId?: unknown; active?: unknown }>(req);
+    const body = await readJson<{
+      identifierId?: unknown;
+      active?: unknown;
+      isPrimary?: unknown;
+    }>(req);
     if (!Number.isInteger(body.identifierId) || Number(body.identifierId) <= 0) {
       throw new ApiError(400, "identifierId 必须是正整数");
     }
-    if (typeof body.active !== "boolean") throw new ApiError(400, "active 必须是布尔值");
-    return NextResponse.json(
-      await setSkuIdentifierActive(skuId, Number(body.identifierId), body.active, user),
-    );
+    if (typeof body.active === "boolean" && body.isPrimary === undefined) {
+      return NextResponse.json(
+        await setSkuIdentifierActive(skuId, Number(body.identifierId), body.active, user),
+      );
+    }
+    if (body.isPrimary === true && body.active === undefined) {
+      return NextResponse.json(
+        await setSkuIdentifierPrimary(skuId, Number(body.identifierId), user),
+      );
+    }
+    throw new ApiError(400, "请只提交 active 布尔值，或 isPrimary=true");
   } catch (error) {
     return errorResponse(error, { path: "/api/master/sku/[id]/identifiers", method: "PATCH" });
   }

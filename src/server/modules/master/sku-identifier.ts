@@ -20,6 +20,101 @@ async function requireSku(db: AnyDb, skuId: number) {
   return sku;
 }
 
+type IdentifierRow = typeof schema.skuIdentifiers.$inferSelect;
+
+async function assertBarcodeOwnership(
+  db: AnyDb,
+  skuId: number,
+  kind: IdentifierRow["kind"],
+  value: string,
+) {
+  if (kind !== "gtin" && kind !== "legacy") return;
+  const [identifierCollision] = await db
+    .select({ code: schema.skus.code })
+    .from(schema.skuIdentifiers)
+    .innerJoin(schema.skus, eq(schema.skus.id, schema.skuIdentifiers.skuId))
+    .where(and(
+      eq(schema.skuIdentifiers.value, value),
+      inArray(schema.skuIdentifiers.kind, ["gtin", "legacy"]),
+      ne(schema.skuIdentifiers.skuId, skuId),
+    ));
+  if (identifierCollision) {
+    throw new ApiError(
+      409,
+      `该条码已关联 SKU ${identifierCollision.code}；请先完成人工归属裁决`,
+    );
+  }
+  const [legacyCollision] = await db
+    .select({ code: schema.skus.code })
+    .from(schema.skus)
+    .where(and(eq(schema.skus.barcode, value), ne(schema.skus.id, skuId)));
+  if (legacyCollision) {
+    throw new ApiError(
+      409,
+      `该条码已在旧条码字段关联 SKU ${legacyCollision.code}；请先完成人工归属裁决`,
+    );
+  }
+}
+
+async function demotePrimarySlot(
+  tx: AnyDb,
+  identifier: Pick<IdentifierRow, "skuId" | "kind" | "scope" | "packagingLevel">,
+  actor: SessionUser,
+  exceptId?: number,
+) {
+  const conditions = [
+    eq(schema.skuIdentifiers.skuId, identifier.skuId),
+    eq(schema.skuIdentifiers.kind, identifier.kind),
+    eq(schema.skuIdentifiers.scope, identifier.scope),
+    identifier.packagingLevel == null
+      ? isNull(schema.skuIdentifiers.packagingLevel)
+      : eq(schema.skuIdentifiers.packagingLevel, identifier.packagingLevel),
+    eq(schema.skuIdentifiers.active, true),
+    eq(schema.skuIdentifiers.isPrimary, true),
+  ];
+  if (exceptId != null) conditions.push(ne(schema.skuIdentifiers.id, exceptId));
+  const demoted: IdentifierRow[] = await tx
+    .select()
+    .from(schema.skuIdentifiers)
+    .where(and(...conditions));
+  for (const before of demoted) {
+    const [after] = await tx
+      .update(schema.skuIdentifiers)
+      .set({ isPrimary: false, updatedAt: new Date() })
+      .where(eq(schema.skuIdentifiers.id, before.id))
+      .returning();
+    await writeAudit(tx, {
+      userId: actor.id,
+      entity: "sku_identifier",
+      entityId: before.id,
+      action: "demote_primary",
+      before,
+      after,
+    });
+  }
+}
+
+async function syncPrimaryEachGtin(tx: AnyDb, skuId: number) {
+  const [primary] = await tx
+    .select({ value: schema.skuIdentifiers.value })
+    .from(schema.skuIdentifiers)
+    .where(and(
+      eq(schema.skuIdentifiers.skuId, skuId),
+      eq(schema.skuIdentifiers.kind, "gtin"),
+      eq(schema.skuIdentifiers.packagingLevel, "each"),
+      eq(schema.skuIdentifiers.active, true),
+      eq(schema.skuIdentifiers.isPrimary, true),
+    ));
+  await tx
+    .update(schema.skus)
+    .set({
+      barcode: primary?.value ?? null,
+      barcodeStatus: primary ? "valid" : null,
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.skus.id, skuId));
+}
+
 export async function listSkuIdentifiers(skuId: number, dbArg?: AnyDb) {
   const db = dbArg ?? (await getDbAsync());
   await requireSku(db, skuId);
@@ -63,48 +158,10 @@ export async function createSkuIdentifier(
       );
     }
 
-    if (parsed.kind === "gtin") {
-      const [legacyIdentifierCollision] = await tx
-        .select({ code: schema.skus.code })
-        .from(schema.skuIdentifiers)
-        .innerJoin(schema.skus, eq(schema.skus.id, schema.skuIdentifiers.skuId))
-        .where(and(
-          eq(schema.skuIdentifiers.value, parsed.value),
-          inArray(schema.skuIdentifiers.kind, ["gtin", "legacy"]),
-          ne(schema.skuIdentifiers.skuId, skuId),
-        ));
-      if (legacyIdentifierCollision) {
-        throw new ApiError(
-          409,
-          `该 GTIN 已作为历史条码关联 SKU ${legacyIdentifierCollision.code}；请先完成人工归属裁决`,
-        );
-      }
-      const [legacyCollision] = await tx
-        .select({ id: schema.skus.id, code: schema.skus.code })
-        .from(schema.skus)
-        .where(and(eq(schema.skus.barcode, parsed.value), ne(schema.skus.id, skuId)));
-      if (legacyCollision) {
-        throw new ApiError(
-          409,
-          `该 GTIN 已在旧条码字段关联 SKU ${legacyCollision.code}；请先完成人工归属裁决`,
-        );
-      }
-    }
+    await assertBarcodeOwnership(tx, skuId, parsed.kind, parsed.value);
 
     if (parsed.isPrimary) {
-      await tx
-        .update(schema.skuIdentifiers)
-        .set({ isPrimary: false, updatedAt: new Date() })
-        .where(and(
-          eq(schema.skuIdentifiers.skuId, skuId),
-          eq(schema.skuIdentifiers.kind, parsed.kind),
-          eq(schema.skuIdentifiers.scope, parsed.scope),
-          parsed.packagingLevel == null
-            ? isNull(schema.skuIdentifiers.packagingLevel)
-            : eq(schema.skuIdentifiers.packagingLevel, parsed.packagingLevel),
-          eq(schema.skuIdentifiers.active, true),
-          eq(schema.skuIdentifiers.isPrimary, true),
-        ));
+      await demotePrimarySlot(tx, { skuId, ...parsed }, actor);
     }
 
     const [created] = await tx
@@ -124,10 +181,7 @@ export async function createSkuIdentifier(
       .returning();
 
     if (parsed.kind === "gtin" && parsed.packagingLevel === "each" && parsed.isPrimary) {
-      await tx
-        .update(schema.skus)
-        .set({ barcode: parsed.value, barcodeStatus: "valid", updatedAt: new Date() })
-        .where(eq(schema.skus.id, skuId));
+      await syncPrimaryEachGtin(tx, skuId);
     }
 
     await writeAudit(tx, {
@@ -160,10 +214,13 @@ export async function setSkuIdentifierActive(
       ));
     if (!existing) throw new ApiError(404, "SKU 标识不存在");
     if (existing.active === active) return existing;
+    if (active) {
+      await assertBarcodeOwnership(tx, skuId, existing.kind, existing.value);
+    }
 
     const [updated] = await tx
       .update(schema.skuIdentifiers)
-      .set({ active, isPrimary: active ? existing.isPrimary : false, updatedAt: new Date() })
+      .set({ active, isPrimary: false, updatedAt: new Date() })
       .where(eq(schema.skuIdentifiers.id, identifierId))
       .returning();
 
@@ -173,24 +230,7 @@ export async function setSkuIdentifierActive(
       && existing.packagingLevel === "each"
       && existing.isPrimary
     ) {
-      const [replacement] = await tx
-        .select({ value: schema.skuIdentifiers.value })
-        .from(schema.skuIdentifiers)
-        .where(and(
-          eq(schema.skuIdentifiers.skuId, skuId),
-          eq(schema.skuIdentifiers.kind, "gtin"),
-          eq(schema.skuIdentifiers.packagingLevel, "each"),
-          eq(schema.skuIdentifiers.active, true),
-          eq(schema.skuIdentifiers.isPrimary, true),
-        ));
-      await tx
-        .update(schema.skus)
-        .set({
-          barcode: replacement?.value ?? null,
-          barcodeStatus: replacement ? "valid" : null,
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.skus.id, skuId));
+      await syncPrimaryEachGtin(tx, skuId);
     }
 
     await writeAudit(tx, {
@@ -198,6 +238,47 @@ export async function setSkuIdentifierActive(
       entity: "sku_identifier",
       entityId: identifierId,
       action: active ? "reactivate" : "deactivate",
+      before: existing,
+      after: updated,
+    });
+    return updated;
+  });
+}
+
+export async function setSkuIdentifierPrimary(
+  skuId: number,
+  identifierId: number,
+  actor: SessionUser,
+  dbArg?: AnyDb,
+) {
+  const db = dbArg ?? (await getDbAsync());
+  return db.transaction(async (tx: AnyDb) => {
+    await requireSku(tx, skuId);
+    const [existing] = await tx
+      .select()
+      .from(schema.skuIdentifiers)
+      .where(and(
+        eq(schema.skuIdentifiers.id, identifierId),
+        eq(schema.skuIdentifiers.skuId, skuId),
+      ));
+    if (!existing) throw new ApiError(404, "SKU 标识不存在");
+    if (!existing.active) throw new ApiError(409, "请先启用该标识，再设为主标识");
+    if (existing.isPrimary) return existing;
+    await assertBarcodeOwnership(tx, skuId, existing.kind, existing.value);
+    await demotePrimarySlot(tx, existing, actor, identifierId);
+    const [updated] = await tx
+      .update(schema.skuIdentifiers)
+      .set({ isPrimary: true, updatedAt: new Date() })
+      .where(eq(schema.skuIdentifiers.id, identifierId))
+      .returning();
+    if (existing.kind === "gtin" && existing.packagingLevel === "each") {
+      await syncPrimaryEachGtin(tx, skuId);
+    }
+    await writeAudit(tx, {
+      userId: actor.id,
+      entity: "sku_identifier",
+      entityId: identifierId,
+      action: "promote_primary",
       before: existing,
       after: updated,
     });

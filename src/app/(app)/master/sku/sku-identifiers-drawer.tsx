@@ -133,14 +133,33 @@ export default function SkuIdentifiersDrawer({
       okButtonProps: row.active ? { danger: true } : undefined,
       cancelText: "取消",
       onOk: async () => {
-        await patchJson(`/api/master/sku/${skuId}/identifiers`, {
-          identifierId: row.id,
-          active: !row.active,
-        });
-        message.success(row.active ? "标识已停用" : "标识已启用");
-        await load();
+        try {
+          await patchJson(`/api/master/sku/${skuId}/identifiers`, {
+            identifierId: row.id,
+            active: !row.active,
+          });
+          message.success(row.active ? "标识已停用" : "标识已启用");
+          await load();
+        } catch (error) {
+          message.error((error as Error).message);
+          throw error;
+        }
       },
     });
+  };
+
+  const promotePrimary = async (row: IdentifierRow) => {
+    if (skuId == null) return;
+    try {
+      await patchJson(`/api/master/sku/${skuId}/identifiers`, {
+        identifierId: row.id,
+        isPrimary: true,
+      });
+      message.success("主标识已更新");
+      await load();
+    } catch (error) {
+      message.error((error as Error).message);
+    }
   };
 
   return (
@@ -211,12 +230,19 @@ export default function SkuIdentifiersDrawer({
               },
               {
                 title: "操作",
-                width: 80,
+                width: 150,
                 fixed: "right",
                 render: (_value: unknown, row) => canWrite ? (
-                  <Button type="link" size="small" danger={row.active} onClick={() => toggleActive(row)}>
-                    {row.active ? "停用" : "启用"}
-                  </Button>
+                  <Space size={0}>
+                    {row.active && !row.isPrimary ? (
+                      <Button type="link" size="small" onClick={() => void promotePrimary(row)}>
+                        设为主标识
+                      </Button>
+                    ) : null}
+                    <Button type="link" size="small" danger={row.active} onClick={() => toggleActive(row)}>
+                      {row.active ? "停用" : "启用"}
+                    </Button>
+                  </Space>
                 ) : null,
               },
             ]}

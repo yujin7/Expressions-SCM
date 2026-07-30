@@ -6,6 +6,7 @@ import {
   createSkuIdentifier,
   listSkuIdentifiers,
   setSkuIdentifierActive,
+  setSkuIdentifierPrimary,
 } from "@/server/modules/master/sku-identifier";
 import { resolveKnownReference } from "@/server/modules/dimension/resolver";
 
@@ -43,11 +44,44 @@ describe("SKU 多标识治理", () => {
     expect(await listSkuIdentifiers(sku.id, db)).toHaveLength(2);
     expect(await db.select().from(auditLogs).where(eq(auditLogs.entity, "sku_identifier"))).toHaveLength(2);
 
-    await setSkuIdentifierActive(sku.id, gtin.id, false, actor, db);
+    const replacement = await createSkuIdentifier(sku.id, {
+      kind: "gtin",
+      value: "96385074",
+      packagingLevel: "each",
+      uom: "盒",
+      isPrimary: true,
+    }, actor, db);
+    const [demoted] = await db
+      .select()
+      .from(skuIdentifiers)
+      .where(eq(skuIdentifiers.id, gtin.id));
+    expect(demoted.isPrimary).toBe(false);
+    expect(
+      await db.select().from(auditLogs).where(eq(auditLogs.action, "demote_primary")),
+    ).toHaveLength(1);
+
+    await setSkuIdentifierActive(sku.id, replacement.id, false, actor, db);
     const [deactivatedSku] = await db.select().from(skus).where(eq(skus.id, sku.id));
     expect(deactivatedSku).toMatchObject({ barcode: null, barcodeStatus: null });
-    const [deactivated] = await db.select().from(skuIdentifiers).where(eq(skuIdentifiers.id, gtin.id));
+    const [deactivated] = await db
+      .select()
+      .from(skuIdentifiers)
+      .where(eq(skuIdentifiers.id, replacement.id));
     expect(deactivated).toMatchObject({ active: false, isPrimary: false });
+
+    await setSkuIdentifierActive(sku.id, replacement.id, true, actor, db);
+    const reactivated = await setSkuIdentifierPrimary(
+      sku.id,
+      replacement.id,
+      actor,
+      db,
+    );
+    expect(reactivated).toMatchObject({ active: true, isPrimary: true });
+    const [restoredSku] = await db.select().from(skus).where(eq(skus.id, sku.id));
+    expect(restoredSku).toMatchObject({ barcode: "96385074", barcodeStatus: "valid" });
+    expect(
+      await db.select().from(auditLogs).where(eq(auditLogs.action, "promote_primary")),
+    ).toHaveLength(1);
   });
 
   it("GTIN 不能跨 SKU 重复，旧条码冲突也不会被静默抢占", async () => {
@@ -95,5 +129,22 @@ describe("SKU 多标识治理", () => {
       value: "96385074",
       packagingLevel: "each",
     }, actor, db)).rejects.toThrow(`SKU ${second.code}`);
+
+    await expect(createSkuIdentifier(second.id, {
+      kind: "legacy",
+      value: "6901234567892",
+      scope: "LEGACY_BARCODE",
+    }, actor, db)).rejects.toThrow(`SKU ${first.code}`);
+
+    const [conflictingInactive] = await db.insert(skuIdentifiers).values({
+      skuId: second.id,
+      kind: "legacy",
+      value: "6901234567892",
+      scope: "PREEXISTING_DIRTY_DATA",
+      active: false,
+    }).returning();
+    await expect(
+      setSkuIdentifierActive(second.id, conflictingInactive.id, true, actor, db),
+    ).rejects.toThrow(`SKU ${first.code}`);
   });
 });

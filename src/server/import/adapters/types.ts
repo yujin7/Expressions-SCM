@@ -3,7 +3,8 @@
  *
  * 分层：
  * - Adapter = 纯解析+归一（读文件→AdapterResult），不触库、不打印（噪音走 stats/rejects）；
- * - stagePipeline = 组合器：createImportJob → adapter → resolveOrQueue 别名解析
+ * - stagePipeline = 组合器：createImportJob → adapter → resolveKnownOrQueue
+ *   （别名优先，再匹配主档自然键与受治理外部标识）
  *   （全部命中→validated；任一未命中→pending，errorMsg 记录未解析字段）→
  *   writeStagingRows（拒收行以 status=error 入 staging 留痕）→ finalizeImportJob。
  */
@@ -15,7 +16,7 @@ import {
   type AnyDb,
   type StagingRowInput,
 } from "../staging";
-import { resolveOrQueue, type DimDb } from "@/server/modules/dimension/resolver";
+import { resolveKnownOrQueue, type DimDb } from "@/server/modules/dimension/resolver";
 import type { AliasType } from "@/db/schema";
 import type { CellValue } from "../parse/xlsx";
 
@@ -154,7 +155,7 @@ export async function stagePipeline(
         if (cache.has(key)) {
           id = cache.get(key)!;
         } else {
-          id = await resolveOrQueue(db as DimDb, ref.aliasType, raw, {
+          id = await resolveKnownOrQueue(db as DimDb, ref.aliasType, raw, {
             file,
             template: args.template,
             rowNo: row.rowNo,

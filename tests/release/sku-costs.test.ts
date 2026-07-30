@@ -36,7 +36,11 @@ async function writeCostWorkbook(rows: (string | number)[][]): Promise<string> {
   return file;
 }
 
-async function seedSku(db: Awaited<ReturnType<typeof createTestDb>>["db"], code: string) {
+async function seedSku(
+  db: Awaited<ReturnType<typeof createTestDb>>["db"],
+  code: string,
+  registerAlias = true,
+) {
   const [spu] = await db
     .insert(schema.spus)
     .values({ code: `P-${code}`, nameCn: `${code} 产品` })
@@ -51,11 +55,13 @@ async function seedSku(db: Awaited<ReturnType<typeof createTestDb>>["db"], code:
       baseUom: "件",
     })
     .returning();
-  await db.insert(schema.aliases).values({
-    aliasType: "sku_code",
-    rawValue: code,
-    targetId: sku.id,
-  });
+  if (registerAlias) {
+    await db.insert(schema.aliases).values({
+      aliasType: "sku_code",
+      rawValue: code,
+      targetId: sku.id,
+    });
+  }
   return sku;
 }
 
@@ -66,12 +72,19 @@ describe("SKU 成本 staging 与财务放行", () => {
       { id: finance.id, name: finance.name },
       { id: pmc.id, name: pmc.name },
     ]);
-    const sku = await seedSku(db, "EXP-001");
+    const sku = await seedSku(db, "EXP-001", false);
+    await db.insert(schema.skuIdentifiers).values({
+      skuId: sku.id,
+      kind: "external",
+      value: "JST-EXP-001",
+      scope: "JST",
+      active: true,
+    });
     const file = await writeCostWorkbook([
       ["商家编码", "单位成本"],
-      ["EXP-001", 12.34567],
+      ["JST-EXP-001", 12.34567],
       ["UNKNOWN-001", 9.5],
-      ["EXP-001", -1],
+      ["JST-EXP-001", -1],
     ]);
 
     const staged = await stageSkuCost(db, file, finance.id);
