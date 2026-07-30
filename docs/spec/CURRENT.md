@@ -53,8 +53,10 @@
   可缓存 tenant token、以 outbox ID 作 UUID 去重并在失败时回退 webhook；webhook HTTP 200
   仍须业务码为 0 才标 sent，多实例先以可恢复数据库租约原子认领 outbox；当前应用鉴权成功但
   `/im/v1/chats` 返回 0 群，尚无可投递 chat_id。用友仍仅为企业 OpenAPI 契约：收到的
-  AppKey/AppSecret 仍不足以确认租户、组织、端点、获批服务和企业授权；提供的 C4 人工登录
-  未写入仓库，也不作为机器凭据；未擅自注册外部开发者主体。
+  AppKey/AppSecret 仅证明一对候选凭据；产品 profile、企业获批 API、租户/组织、公开 HTTPS
+  endpoint 和沙箱只读对账缺一不可。配置审计不会请求 token 或输出敏感值。SKU 外部标识的
+  聚水潭/简道云/用友常见 scope 别名已统一到 `JST/JIANDAOYUN/YONYOU`。
+  提供的 C4 人工登录未写入仓库，也不作为机器凭据；未擅自注册外部开发者主体。
   运维面板把代码、凭据和 dated Live UAT 分开判定；真实 operational 状态必须等
   app/token、租户/组织、IP/权限与 UAT，详见
   [`../integrations/EXTERNAL-SYSTEMS.md`](../integrations/EXTERNAL-SYSTEMS.md)。

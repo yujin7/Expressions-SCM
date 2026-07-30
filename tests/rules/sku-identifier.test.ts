@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isValidGtin,
   normalizeSkuIdentifier,
+  normalizeSkuIdentifierScope,
   skuIdentifierSchema,
 } from "@/server/rules/sku-identifier";
 
@@ -47,5 +48,14 @@ describe("SKU 交换标识规则", () => {
       value: "  jst-001  ",
       scope: " jst ",
     }))).toMatchObject({ value: "jst-001", scope: "JST" });
+  });
+
+  it("把已知外部系统别名归一为稳定 scope，未知系统仍保留显式值", () => {
+    expect(normalizeSkuIdentifierScope("external", "聚水潭")).toBe("JST");
+    expect(normalizeSkuIdentifierScope("external", " jushuitan ")).toBe("JST");
+    expect(normalizeSkuIdentifierScope("external", "简道云")).toBe("JIANDAOYUN");
+    expect(normalizeSkuIdentifierScope("external", "YonSuite")).toBe("YONYOU");
+    expect(normalizeSkuIdentifierScope("external", "future-erp")).toBe("FUTURE-ERP");
+    expect(normalizeSkuIdentifierScope("vendor", "供应商-a")).toBe("供应商-A");
   });
 });

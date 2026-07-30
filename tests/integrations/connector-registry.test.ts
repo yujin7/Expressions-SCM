@@ -10,6 +10,7 @@ const envKeys = [
   "JIANDAOYUN_SYNC_CONTRACTS", "JIANDAOYUN_BASE_URL", "JIANDAOYUN_LIVE_VERIFIED_AT",
   "YY_APP_KEY", "YY_APP_SECRET",
   "YY_CLIENT_ID", "YY_CLIENT_SECRET", "YY_TENANT_ID", "YY_ORG_ID", "YY_BASE_URL", "YY_TOKEN_URL",
+  "YY_PRODUCT_PROFILE", "YY_APPROVED_API_CONTRACTS",
   "FEISHU_WEBHOOK_URL", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID",
   "FEISHU_LIVE_VERIFIED_AT",
 ] as const;
@@ -96,12 +97,14 @@ describe("外部连接器目录", () => {
     });
   });
 
-  it("用友人工账号不构成机器配置；OpenAPI 六项齐全仍保持 contract_only", () => {
+  it("用友人工账号不构成机器配置；完整 OpenAPI 契约仍保持 contract_only", () => {
     for (const key of [
       "YY_APP_KEY", "YY_APP_SECRET", "YY_TENANT_ID", "YY_ORG_ID",
     ] as const) process.env[key] = "present";
-    process.env.YY_BASE_URL = "https://api.example.invalid";
-    process.env.YY_TOKEN_URL = "https://auth.example.invalid/token";
+    process.env.YY_PRODUCT_PROFILE = "yonsuite";
+    process.env.YY_APPROVED_API_CONTRACTS = "supplier.read@v1,cost.read@v1";
+    process.env.YY_BASE_URL = "https://api.yonyoucloud.com";
+    process.env.YY_TOKEN_URL = "https://auth.yonyoucloud.com/token";
     expect(getConnectorReadiness().find((row) => row.key === "yy")).toMatchObject({
       implementation: "contract_only",
       configured: true,
@@ -109,7 +112,7 @@ describe("外部连接器目录", () => {
       missingEnv: [],
     });
     expect(configuredConnectors().some((connector) => connector.key === "yy")).toBe(false);
-    process.env.YY_TOKEN_URL = "http://auth.example.invalid/token";
+    process.env.YY_TOKEN_URL = "http://auth.yonyoucloud.com/token";
     expect(getConnectorReadiness().find((row) => row.key === "yy")).toMatchObject({
       configured: false,
       missingEnv: ["YY_TOKEN_URL"],
