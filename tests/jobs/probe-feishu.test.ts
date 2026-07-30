@@ -2,13 +2,14 @@ import { describe, expect, it } from "vitest";
 import { probeFeishuChats } from "@/jobs/probe-feishu";
 
 const credentials = {
+  NODE_ENV: "test",
   FEISHU_APP_ID: "cli_test",
   FEISHU_APP_SECRET: "secret_test",
-} as NodeJS.ProcessEnv;
+} satisfies NodeJS.ProcessEnv;
 
 describe("Feishu chat discovery probe", () => {
   it("reports missing credentials without calling the API", async () => {
-    const result = await probeFeishuChats({ env: {} });
+    const result = await probeFeishuChats({ env: { NODE_ENV: "test" } });
 
     expect(result).toEqual({
       status: "skipped",
