@@ -1,3 +1,5 @@
+import type { JiandaoyunWidget } from "./jiandaoyun";
+
 export interface JiandaoyunFieldRule {
   source: string;
   target: string;
@@ -18,6 +20,7 @@ export interface JiandaoyunFormContract {
 }
 
 const field = (target: string, source: string): JiandaoyunFieldRule => ({ target, source });
+const JIANDAOYUN_SYSTEM_FIELDS = ["createTime", "updateTime", "deleteTime"] as const;
 
 /**
  * Explicit, field-minimized contracts for the currently populated operational views.
@@ -310,6 +313,59 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
 
 export function jiandaoyunContract(key: string): JiandaoyunFormContract | null {
   return JIANDAOYUN_FORM_CONTRACTS.find((contract) => contract.key === key) ?? null;
+}
+
+/**
+ * Jiandaoyun can project top-level fields, but requesting a subform returns every child field.
+ * Keep the server request as narrow as the API permits; child-field minimization still happens
+ * before immutable evidence and staging are written.
+ */
+export function jiandaoyunContractProjection(
+  contract: JiandaoyunFormContract,
+): string[] {
+  return [...new Set([
+    ...JIANDAOYUN_SYSTEM_FIELDS,
+    ...contract.fields.map((rule) => rule.source),
+    ...(contract.subforms ?? []).map((rule) => rule.source),
+  ])];
+}
+
+function widgetMap(widgets: JiandaoyunWidget[]): Map<string, JiandaoyunWidget> {
+  return new Map(widgets.map((widget) => [widget.name, widget]));
+}
+
+export function jiandaoyunContractWidgets(
+  contract: JiandaoyunFormContract,
+  widgets: JiandaoyunWidget[],
+): JiandaoyunWidget[] {
+  const top = widgetMap(widgets);
+  const missing = contract.fields
+    .filter((rule) => !top.has(rule.source))
+    .map((rule) => rule.source);
+  for (const subform of contract.subforms ?? []) {
+    const widget = top.get(subform.source);
+    if (!widget || widget.type !== "subform") {
+      missing.push(subform.source);
+      continue;
+    }
+    const children = widgetMap(widget.items);
+    missing.push(...subform.items.filter((rule) => !children.has(rule.source)).map((rule) =>
+      `${subform.source}.${rule.source}`));
+  }
+  if (missing.length > 0) {
+    throw new Error(`简道云字段契约漂移，缺少 ${missing.join(", ")}`);
+  }
+  return [
+    ...contract.fields.map((rule) => top.get(rule.source)!),
+    ...(contract.subforms ?? []).map((rule) => {
+      const widget = top.get(rule.source)!;
+      const children = widgetMap(widget.items);
+      return {
+        ...widget,
+        items: rule.items.map((item) => children.get(item.source)!),
+      };
+    }),
+  ];
 }
 
 export function configuredJiandaoyunContracts(

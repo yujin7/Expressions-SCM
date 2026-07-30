@@ -42,16 +42,18 @@ describe("简道云 OpenAPI 客户端", () => {
         return response({
           data: Array.from({ length: 100 }, (_, index) => ({
             _id: index.toString(16).padStart(24, "0"),
+            appId,
+            entryId,
             _widget_code: `SKU-${index}`,
           })),
         });
       }
       return response({}, 404);
-    }) as unknown as typeof fetch;
+    });
     const client = new JiandaoyunClient({
       apiKey: "secret-key",
       baseUrl: "https://example.invalid/api/v5",
-    }, { fetchImpl, retries: 0 });
+    }, { fetchImpl: fetchImpl as unknown as typeof fetch, retries: 0 });
 
     await expect(client.listApps()).resolves.toEqual([{ appId, name: "供应中心" }]);
     await expect(client.listForms(appId)).resolves.toEqual([
@@ -59,7 +61,19 @@ describe("简道云 OpenAPI 客户端", () => {
     ]);
     const widgets = await client.listWidgets(appId, entryId);
     expect(jiandaoyunSchemaHash(widgets)).toMatch(/^[0-9a-f]{64}$/);
-    await expect(client.listRecords(appId, entryId)).resolves.toHaveLength(100);
+    await expect(client.listRecords(
+      appId,
+      entryId,
+      [" updateTime ", "_widget_code", "_widget_code"],
+    )).resolves.toHaveLength(100);
+    const dataRequests = fetchImpl.mock.calls.filter(([url]) =>
+      new URL(String(url)).pathname.endsWith("/app/entry/data/list"));
+    expect(dataRequests).toHaveLength(2);
+    for (const [, init] of dataRequests) {
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        fields: ["updateTime", "_widget_code"],
+      });
+    }
     expect(fetchImpl).toHaveBeenCalled();
   });
 
@@ -74,5 +88,41 @@ describe("简道云 OpenAPI 客户端", () => {
       JIANDAOYUN_API_KEY: "api-key",
       JIANDAOYUN_BASE_URL: "http://example.invalid",
     } as unknown as NodeJS.ProcessEnv)).toThrow("必须使用 HTTPS");
+  });
+
+  it("显式 fields 为空时拒绝退化为全字段下载", async () => {
+    const client = new JiandaoyunClient({
+      apiKey: "secret-key",
+      baseUrl: "https://example.invalid/api/v5",
+    }, {
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      retries: 0,
+    });
+    await expect(client.listRecords(
+      "a".repeat(24),
+      "b".repeat(24),
+      [" ", ""],
+    )).rejects.toThrow("fields 不得为空");
+  });
+
+  it("数据行的 appId/entryId 与请求不一致时拒绝跨表污染", async () => {
+    const client = new JiandaoyunClient({
+      apiKey: "secret-key",
+      baseUrl: "https://example.invalid/api/v5",
+    }, {
+      retries: 0,
+      fetchImpl: vi.fn(async () => response({
+        data: [{
+          _id: "c".repeat(24),
+          appId: "d".repeat(24),
+          entryId: "b".repeat(24),
+        }],
+      })) as unknown as typeof fetch,
+    });
+    await expect(client.listRecords(
+      "a".repeat(24),
+      "b".repeat(24),
+      ["updateTime"],
+    )).rejects.toThrow("表单身份与请求不一致");
   });
 });

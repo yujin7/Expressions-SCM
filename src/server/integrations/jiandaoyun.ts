@@ -103,11 +103,25 @@ function parseWidgets(payload: unknown): JiandaoyunWidget[] {
     .map((raw, index) => parseWidget(raw, `widget.list.widgets[${index}]`));
 }
 
-function parseRecords(payload: unknown): JiandaoyunRecord[] {
+function parseRecords(
+  payload: unknown,
+  expectedAppId: string,
+  expectedEntryId: string,
+): JiandaoyunRecord[] {
   return array(object(payload, "data.list").data, "data.list.data").map((raw, index) => {
     const row = object(raw, `data.list.data[${index}]`);
     const id = text(row._id);
-    if (!id) throw new Error(`简道云响应 data.list.data[${index}] 缺少 _id`);
+    const appId = text(row.appId);
+    const entryId = text(row.entryId);
+    if (!id || !appId || !entryId) {
+      throw new Error(`简道云响应 data.list.data[${index}] 缺少 _id/appId/entryId`);
+    }
+    if (
+      objectId(appId, "简道云 app_id") !== expectedAppId
+      || objectId(entryId, "简道云 entry_id") !== expectedEntryId
+    ) {
+      throw new Error(`简道云响应 data.list.data[${index}] 表单身份与请求不一致`);
+    }
     return { ...row, _id: objectId(id, "简道云 data_id") };
   });
 }
@@ -203,9 +217,19 @@ export class JiandaoyunClient {
     }));
   }
 
-  async listRecords(appIdInput: string, entryIdInput: string): Promise<JiandaoyunRecord[]> {
+  async listRecords(
+    appIdInput: string,
+    entryIdInput: string,
+    fieldsInput?: readonly string[],
+  ): Promise<JiandaoyunRecord[]> {
     const appId = objectId(appIdInput, "简道云 app_id");
     const entryId = objectId(entryIdInput, "简道云 entry_id");
+    const fields = fieldsInput == null
+      ? null
+      : [...new Set(fieldsInput.map((field) => field.trim()).filter(Boolean))];
+    if (fields !== null && fields.length === 0) {
+      throw new Error("简道云 fields 不得为空");
+    }
     const result = new Map<string, JiandaoyunRecord>();
     let cursor: string | null = null;
     for (let pageNo = 1; pageNo <= MAX_DATA_PAGES; pageNo++) {
@@ -214,8 +238,13 @@ export class JiandaoyunClient {
         entry_id: entryId,
         limit: PAGE_SIZE,
       };
+      if (fields) body.fields = fields;
       if (cursor) body.data_id = cursor;
-      const page = parseRecords(await this.post("/app/entry/data/list", body));
+      const page = parseRecords(
+        await this.post("/app/entry/data/list", body),
+        appId,
+        entryId,
+      );
       for (const record of page) result.set(record._id, record);
       if (page.length < PAGE_SIZE) return [...result.values()];
       const next = page.at(-1)?._id ?? null;

@@ -15,6 +15,8 @@ import {
 } from "@/server/import/staging";
 import { resolveKnownOrQueue, type DimDb } from "@/server/modules/dimension/resolver";
 import {
+  jiandaoyunContractProjection,
+  jiandaoyunContractWidgets,
   type JiandaoyunFieldRule,
   type JiandaoyunFormContract,
   type JiandaoyunSubformRule,
@@ -23,7 +25,6 @@ import {
   JiandaoyunClient,
   jiandaoyunSchemaHash,
   type JiandaoyunRecord,
-  type JiandaoyunWidget,
 } from "./jiandaoyun";
 import { writeIntegrationEvidence, type IntegrationEvidence } from "./evidence";
 
@@ -337,44 +338,6 @@ function minimizeRecord(
   };
 }
 
-function widgetMap(widgets: JiandaoyunWidget[]): Map<string, JiandaoyunWidget> {
-  return new Map(widgets.map((widget) => [widget.name, widget]));
-}
-
-function contractWidgets(
-  contract: JiandaoyunFormContract,
-  widgets: JiandaoyunWidget[],
-): JiandaoyunWidget[] {
-  const top = widgetMap(widgets);
-  const missing = contract.fields
-    .filter((rule) => !top.has(rule.source))
-    .map((rule) => rule.source);
-  for (const subform of contract.subforms ?? []) {
-    const widget = top.get(subform.source);
-    if (!widget || widget.type !== "subform") {
-      missing.push(subform.source);
-      continue;
-    }
-    const children = widgetMap(widget.items);
-    missing.push(...subform.items.filter((rule) => !children.has(rule.source)).map((rule) =>
-      `${subform.source}.${rule.source}`));
-  }
-  if (missing.length > 0) {
-    throw new Error(`简道云字段契约漂移，缺少 ${missing.join(", ")}`);
-  }
-  return [
-    ...contract.fields.map((rule) => top.get(rule.source)!),
-    ...(contract.subforms ?? []).map((rule) => {
-      const widget = top.get(rule.source)!;
-      const children = widgetMap(widget.items);
-      return {
-        ...widget,
-        items: rule.items.map((item) => children.get(item.source)!),
-      };
-    }),
-  ];
-}
-
 async function assertStableContractSchema(
   db: AnyDb,
   stream: string,
@@ -517,9 +480,16 @@ export async function syncJiandaoyunForm(
 ): Promise<JiandaoyunFormSummary> {
   await assertActor(db, input.actorId);
   const widgets = await input.client.listWidgets(input.contract.appId, input.contract.entryId);
-  const schemaHash = jiandaoyunSchemaHash(contractWidgets(input.contract, widgets));
+  const schemaHash = jiandaoyunSchemaHash(
+    jiandaoyunContractWidgets(input.contract, widgets),
+  );
   await assertStableContractSchema(db, input.contract.key, schemaHash);
-  const records = await input.client.listRecords(input.contract.appId, input.contract.entryId);
+  const projection = jiandaoyunContractProjection(input.contract);
+  const records = await input.client.listRecords(
+    input.contract.appId,
+    input.contract.entryId,
+    projection,
+  );
   const minimized = records
     .map((record) => minimizeRecord(record, input.contract))
     .sort((left, right) =>
@@ -537,6 +507,7 @@ export async function syncJiandaoyunForm(
       completeness: "full-authorized-form-view",
       authority: "observation-only",
       fieldMinimized: true,
+      sourceProjection: projection,
     },
     records: minimized,
   };
