@@ -15,11 +15,21 @@ import { runExportWorkerOnce } from "./export-worker";
 import { runHousekeeping } from "./housekeeping";
 import { stageJstDaily } from "@/server/import/adapters/jst-daily";
 import { runJstInventorySync, runJstSalesSync } from "./sync-jst";
+import {
+  runJiandaoyunCatalogSync,
+  runJiandaoyunConfiguredFormSyncs,
+  runJiandaoyunContractSync,
+} from "./sync-jiandaoyun";
+import { probeFeishuChats } from "./probe-feishu";
 
 const USAGE = `用法:
   npx tsx src/jobs/cli.ts reconcile-jst [YYYY-MM-DD]     缺省=昨日（Asia/Shanghai）
   npx tsx src/jobs/cli.ts sync-jst [YYYY-MM-DD]          API 拉取 T-1/指定日到受控 staging
   npx tsx src/jobs/cli.ts sync-jst-inventory             增量库存总量观察到受控 staging（需显式启用）
+  npx tsx src/jobs/cli.ts sync-jiandaoyun-catalog        同步可见应用/表单目录（不读取业务行）
+  npx tsx src/jobs/cli.ts sync-jiandaoyun-forms          同步显式配置的最小化观察契约
+  npx tsx src/jobs/cli.ts sync-jiandaoyun-form <key>     同步一条命名观察契约
+  npx tsx src/jobs/cli.ts probe-feishu-chats              只读列出应用机器人可见群/chat_id
   npx tsx src/jobs/cli.ts license-alert [YYYY-MM-DD]     缺省=今日
   npx tsx src/jobs/cli.ts snapshot-age [YYYY-MM-DD] [阈值天数=3]
   npx tsx src/jobs/cli.ts export-worker                  处理一批待办导出任务
@@ -28,6 +38,10 @@ const USAGE = `用法:
 
 async function main(): Promise<void> {
   const [cmd, ...args] = process.argv.slice(2);
+  if (cmd === "probe-feishu-chats") {
+    console.log(JSON.stringify(await probeFeishuChats(), null, 2));
+    return;
+  }
   const db = await getDbAsync();
   let out: unknown;
   switch (cmd) {
@@ -36,6 +50,16 @@ async function main(): Promise<void> {
       break;
     case "sync-jst-inventory":
       out = await runJstInventorySync(db);
+      break;
+    case "sync-jiandaoyun-catalog":
+      out = await runJiandaoyunCatalogSync(db);
+      break;
+    case "sync-jiandaoyun-forms":
+      out = await runJiandaoyunConfiguredFormSyncs(db);
+      break;
+    case "sync-jiandaoyun-form":
+      if (!args[0]) throw new Error(`sync-jiandaoyun-form 需要 <key>\n${USAGE}`);
+      out = await runJiandaoyunContractSync(db, args[0]);
       break;
     case "reconcile-jst":
       out = await runReconcileJst(db, args[0] ?? shanghaiToday(-1));

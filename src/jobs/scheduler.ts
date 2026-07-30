@@ -15,6 +15,8 @@ export const SCHEDULES: Record<string, string> = {
   "snapshot-age": "30 7 * * *",
   "sync-jst-sales": "30 7 * * *",
   "sync-jst-inventory": "40 7 * * *",
+  "sync-jiandaoyun-catalog": "15 6 * * *",
+  "sync-jiandaoyun-forms": "30 */6 * * *",
   "reconcile-jst": "0 8 * * *",
   "doc-aging": "15 */6 * * *",
   "notify-dispatch": "30 */6 * * *",
