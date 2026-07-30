@@ -5,6 +5,7 @@ import * as schema from "@/db/schema";
 import {
   normalizeAliasText,
   resolveAlias,
+  resolveKnownOrQueue,
   resolveOrQueue,
   queueException,
   claimAlias,
@@ -136,6 +137,38 @@ describe("别名解析器（PGlite）", () => {
     await expectUniqueViolation(
       db.insert(schema.aliases).values({ aliasType: "channel", rawValue: "唯品", targetId: 123 }),
     );
+  });
+
+  it("sku_code 精确命中多主档时按歧义入队，不误报未找到", async () => {
+    const [spu] = await db
+      .insert(schema.spus)
+      .values({ code: "P-AMB", nameCn: "歧义测试" })
+      .returning();
+    const [first, second] = await db
+      .insert(schema.skus)
+      .values([
+        { code: "AMB-001", name: "A", spuId: spu.id, baseUom: "件", skuType: "finished" },
+        { code: "OTHER-001", name: "B", spuId: spu.id, baseUom: "件", skuType: "finished" },
+      ])
+      .returning();
+    await db.insert(schema.skuIdentifiers).values({
+      skuId: second.id,
+      kind: "external",
+      value: first.code,
+      scope: "JST",
+    });
+
+    expect(
+      await resolveKnownOrQueue(db, "sku_code", first.code, { source: "test" }),
+    ).toBeNull();
+    const [exception] = await db
+      .select()
+      .from(schema.aliasExceptions)
+      .where(eq(schema.aliasExceptions.rawValue, first.code));
+    expect(exception.context).toMatchObject({
+      reason: "exact_master_match_ambiguous",
+      exactMatchCount: 2,
+    });
   });
 });
 

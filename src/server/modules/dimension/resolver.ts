@@ -6,7 +6,7 @@
  * 注意：已知变体（调拨在途/在途调拨、唯品/唯品会、多多/拼多多）不在代码里硬编码，
  * 它们以 aliases 数据行的形式由 seed / 人工认领写入。
  */
-import { and, eq, or } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import * as schema from "@/db/schema";
 import type { AliasType } from "@/db/schema";
@@ -132,13 +132,42 @@ export async function resolveKnownReference(
   const aliasId = await resolveAlias(db, aliasType, value);
   if (aliasId !== null) return aliasId;
 
+  const ids = await loadExactReferenceIds(db, aliasType, value);
+  return ids.length === 1 ? ids[0] : null;
+}
+
+async function loadExactReferenceIds(
+  db: DimDb,
+  aliasType: AliasType,
+  value: string,
+): Promise<number[]> {
   let rows: { id: number }[] = [];
   switch (aliasType) {
     case "sku_code":
-      rows = await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.code, value));
+      rows = [
+        ...await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.code, value)),
+        ...await db
+          .select({ id: schema.skuIdentifiers.skuId })
+          .from(schema.skuIdentifiers)
+          .where(and(
+            eq(schema.skuIdentifiers.value, value),
+            eq(schema.skuIdentifiers.active, true),
+            inArray(schema.skuIdentifiers.kind, ["external", "vendor", "customer", "legacy"]),
+          )),
+      ];
       break;
     case "sku_barcode":
-      rows = await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.barcode, value));
+      rows = [
+        ...await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.barcode, value)),
+        ...await db
+          .select({ id: schema.skuIdentifiers.skuId })
+          .from(schema.skuIdentifiers)
+          .where(and(
+            eq(schema.skuIdentifiers.kind, "gtin"),
+            eq(schema.skuIdentifiers.value, value),
+            eq(schema.skuIdentifiers.active, true),
+          )),
+      ];
       break;
     case "supplier_oem":
       rows = await db
@@ -174,9 +203,7 @@ export async function resolveKnownReference(
       break;
   }
 
-  const ids = [...new Set(rows.map((row) => row.id))];
-  if (ids.length === 1) return ids[0];
-  return null;
+  return [...new Set(rows.map((row) => row.id))];
 }
 
 export async function resolveKnownOrQueue(
@@ -187,15 +214,11 @@ export async function resolveKnownOrQueue(
 ): Promise<number | null> {
   const value = normalizeAliasText(rawValue);
   if (!value) return null;
-  const targetId = await resolveKnownReference(db, aliasType, value);
-  if (targetId !== null) return targetId;
-
-  let exactMatchCount = 0;
-  if (aliasType === "sku_barcode") {
-    exactMatchCount = (
-      await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.barcode, value))
-    ).length;
-  }
+  const aliasId = await resolveAlias(db, aliasType, value);
+  if (aliasId !== null) return aliasId;
+  const ids = await loadExactReferenceIds(db, aliasType, value);
+  if (ids.length === 1) return ids[0];
+  const exactMatchCount = ids.length;
   await queueException(db, aliasType, value, {
     ...((context && typeof context === "object") ? context : { context }),
     reason: exactMatchCount > 1 ? "exact_master_match_ambiguous" : "not_found",

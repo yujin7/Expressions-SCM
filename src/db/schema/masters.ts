@@ -81,6 +81,51 @@ export const skus = pgTable("skus", {
   check("ck_skus_short_name_length", sql`${t.shortName} IS NULL OR char_length(${t.shortName}) <= 10`),
 ]);
 
+export type SkuIdentifierKind = "gtin" | "external" | "vendor" | "customer" | "legacy";
+export type SkuPackagingLevel = "each" | "inner" | "case" | "pallet" | "other";
+
+/**
+ * SKU 的可交换标识。
+ *
+ * S1 是系统内部稳定主码；GTIN、聚水潭/用友编码、供应商/客户料号和历史码是
+ * 独立、可多值的标识，不能继续塞进一个 barcode 字段或永久主码中。
+ * scope 区分外部系统/交易伙伴；GTIN 本身全球唯一，因此固定使用 GS1 scope。
+ */
+export const skuIdentifiers = pgTable("sku_identifiers", {
+  id: serial("id").primaryKey(),
+  skuId: integer("sku_id").notNull().references(() => skus.id, { onDelete: "cascade" }),
+  kind: text("kind").$type<SkuIdentifierKind>().notNull(),
+  value: text("value").notNull(),
+  scope: text("scope").notNull().default("INTERNAL"),
+  uom: text("uom"),
+  packagingLevel: text("packaging_level").$type<SkuPackagingLevel>(),
+  isPrimary: boolean("is_primary").notNull().default(false),
+  active: boolean("active").notNull().default(true),
+  note: text("note"),
+  createdBy: integer("created_by").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique("uq_sku_identifier_scope_value").on(t.kind, t.scope, t.value),
+  uniqueIndex("uq_sku_identifier_primary_slot")
+    .on(t.skuId, t.kind, t.scope, sql`coalesce(${t.packagingLevel}, '')`)
+    .where(sql`${t.active} = true AND ${t.isPrimary} = true`),
+  index("ix_sku_identifier_sku_active").on(t.skuId, t.active),
+  check("ck_sku_identifier_kind", sql`${t.kind} IN ('gtin', 'external', 'vendor', 'customer', 'legacy')`),
+  check(
+    "ck_sku_identifier_packaging_level",
+    sql`${t.packagingLevel} IS NULL OR ${t.packagingLevel} IN ('each', 'inner', 'case', 'pallet', 'other')`,
+  ),
+  check(
+    "ck_sku_identifier_scope",
+    sql`length(trim(${t.scope})) > 0 AND (${t.kind} <> 'gtin' OR ${t.scope} = 'GS1')`,
+  ),
+  check(
+    "ck_sku_identifier_gtin_level",
+    sql`${t.kind} <> 'gtin' OR ${t.packagingLevel} IS NOT NULL`,
+  ),
+]);
+
 export const uomConvs = pgTable("uom_convs", {
   id: serial("id").primaryKey(),
   skuId: integer("sku_id").notNull().references(() => skus.id),

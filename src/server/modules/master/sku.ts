@@ -49,6 +49,13 @@ export async function listSkus(
         ilike(schema.skus.name, `%${q}%`),
         ilike(schema.spus.nameCn, `%${q}%`),
         ilike(schema.skus.spec, `%${q}%`),
+        sql`exists (
+          select 1
+          from sku_identifiers si
+          where si.sku_id = ${schema.skus.id}
+            and si.active = true
+            and si.value ilike ${`%${q}%`}
+        )`,
       ),
     );
   }

@@ -126,7 +126,7 @@ export async function loadReleasedSpuIndex(db: AnyDb): Promise<Map<string, numbe
 }
 
 /**
- * 编码 → skuId 索引（RT4-F6 修订：别名认领优先，码面精确匹配兜底）。
+ * 编码 → skuId 索引（RT4-F6 修订：别名认领优先，稳定主码与受治理外部标识精确匹配兜底）。
  * 人工把某原始编码认领到了异码主档时，以裁决为准——否则 BOM/费用会另建
  * 分叉主档，与批次/月销（本就别名优先）指向不同 SKU。
  */
@@ -135,11 +135,33 @@ export async function loadSkuIdByCode(db: AnyDb, codes: string[]): Promise<Map<s
   const uniq = [...new Set(codes)].filter((c) => c);
   const CHUNK = 500;
   for (let i = 0; i < uniq.length; i += CHUNK) {
+    const chunk = uniq.slice(i, i + CHUNK);
+    const candidates = new Map<string, Set<number>>();
     const rows: { id: number; code: string }[] = await db
       .select({ id: schema.skus.id, code: schema.skus.code })
       .from(schema.skus)
-      .where(inArray(schema.skus.code, uniq.slice(i, i + CHUNK)));
-    for (const r of rows) map.set(r.code, r.id);
+      .where(inArray(schema.skus.code, chunk));
+    for (const row of rows) {
+      const ids = candidates.get(row.code) ?? new Set<number>();
+      ids.add(row.id);
+      candidates.set(row.code, ids);
+    }
+    const identifiers: { value: string; skuId: number }[] = await db
+      .select({ value: schema.skuIdentifiers.value, skuId: schema.skuIdentifiers.skuId })
+      .from(schema.skuIdentifiers)
+      .where(and(
+        inArray(schema.skuIdentifiers.value, chunk),
+        eq(schema.skuIdentifiers.active, true),
+        inArray(schema.skuIdentifiers.kind, ["external", "vendor", "customer", "legacy"]),
+      ));
+    for (const row of identifiers) {
+      const ids = candidates.get(row.value) ?? new Set<number>();
+      ids.add(row.skuId);
+      candidates.set(row.value, ids);
+    }
+    for (const [code, ids] of candidates) {
+      if (ids.size === 1) map.set(code, [...ids][0]);
+    }
   }
   // 别名覆盖（后写胜出）：sku_code 裁决 > 码面巧合
   for (let i = 0; i < uniq.length; i += CHUNK) {

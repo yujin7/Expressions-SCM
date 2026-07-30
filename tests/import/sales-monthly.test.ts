@@ -52,7 +52,7 @@ describe.skipIf(!existsSync(FILE))("适配器③：月销量长表化（真实�
     expect(hits[0].payload.brandSheet).toBe("EXP销量");
   });
 
-  it("stage 全链路：渠道解析或排队不崩溃；渠道异常含标准渠道名与月度变体", async () => {
+  it("stage 全链路：标准渠道名直解；未知月度变体进入异常队列", async () => {
     const { db } = await createTestDb();
     await seedDimensions(db);
     const [u] = await db.insert(schema.users).values({ name: "导入员" }).returning();
@@ -64,14 +64,17 @@ describe.skipIf(!existsSync(FILE))("适配器③：月销量长表化（真实�
     const staged = await getStagingRows(db, sum.jobId);
     expect(staged.length).toBe(sum.staged);
 
-    // 渠道别名未种标准名（种子只有变体行）→ 全部排队；含 天猫 与 抖音运营部/北美TK 变体
+    // 标准渠道名（如「天猫」）直接按主档自然键解析，不制造异常噪音；
+    // 未治理的月度变体仍进入异常队列，等待一次性认领。
     const chExc = await db
       .select()
       .from(schema.aliasExceptions)
       .where(eq(schema.aliasExceptions.aliasType, "channel"));
     const values = new Set(chExc.map((e: { rawValue: string }) => e.rawValue));
-    expect(values.has("天猫")).toBe(true);
-    expect(values.size).toBeGreaterThanOrEqual(10);
+    expect(values.has("天猫")).toBe(false);
+    expect(values.has("抖音运营部")).toBe(true);
+    expect(values.has("北美TK")).toBe(true);
+    expect(values.size).toBeGreaterThanOrEqual(2);
     expect(sum.unresolved.channel).toBe(values.size);
   });
 });
