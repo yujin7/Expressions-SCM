@@ -36,7 +36,7 @@ const USAGE = `用法:
   npx tsx src/jobs/cli.ts sync-jiandaoyun-forms          同步显式配置的最小化观察契约
   npx tsx src/jobs/cli.ts sync-jiandaoyun-form <key>     同步一条命名观察契约
   npx tsx src/jobs/cli.ts audit-jiandaoyun-contracts     只读输出九条契约的聚合控制总量
-  npx tsx src/jobs/cli.ts probe-feishu-chats              只读列出应用机器人可见群/chat_id
+  npx tsx src/jobs/cli.ts probe-feishu-chats              只读检查应用/权限聚合并列出可见群/chat_id
   npx tsx src/jobs/cli.ts audit-yonyou-readiness          只读检查用友配置/授权前置，不请求 token
   npx tsx src/jobs/cli.ts audit-connectors                 只读汇总全部连接器/UAT 证据，不输出秘密
   npx tsx src/jobs/cli.ts license-alert [YYYY-MM-DD]     缺省=今日

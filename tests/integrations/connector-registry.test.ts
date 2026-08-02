@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   configuredConnectors, CONNECTORS, getConnectorReadiness,
 } from "@/server/integrations/connector";
+import { feishuTargetEvidenceBinding } from "@/server/integrations/feishu";
 
 const envKeys = [
   "JST_APP_KEY", "JST_APP_SECRET", "JST_ACCESS_TOKEN", "JST_SYNC_ACTOR_ID", "JST_BASE_URL",
@@ -233,8 +234,25 @@ describe("外部连接器目录", () => {
     process.env.FEISHU_APP_LIVE_VERIFIED_AT = "2026-07-29T02:00:00Z";
     process.env.FEISHU_APP_LIVE_VERIFIED_REF = "UAT-20260729-FEISHU-APP";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu")).toMatchObject({
+      configurationReady: false,
+      operational: false,
+      liveVerificationState: "unbound",
+    });
+    process.env.FEISHU_APP_LIVE_VERIFIED_REF =
+      `UAT-20260729-${feishuTargetEvidenceBinding("app", "different-chat")}`;
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu"))
+      .toMatchObject({
+        configurationReady: false,
+        operational: false,
+        liveVerificationState: "unbound",
+      });
+    const boundRef = `UAT-20260729-${feishuTargetEvidenceBinding("app", "chat")}`;
+    process.env.FEISHU_APP_LIVE_VERIFIED_REF = boundRef;
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu")).toMatchObject({
+      configurationReady: true,
       operational: true,
-      liveVerificationRef: "UAT-20260729-FEISHU-APP",
+      liveVerificationState: "valid",
+      liveVerificationRef: boundRef,
     });
   });
 
@@ -257,16 +275,17 @@ describe("外部连接器目录", () => {
         operational: false,
         liveVerificationState: "missing",
         effectiveCapabilities: ["app-bot-message", "deduplicated-delivery"],
-      });
+    });
 
     process.env.FEISHU_APP_LIVE_VERIFIED_AT = "2026-07-29T03:00:00Z";
-    process.env.FEISHU_APP_LIVE_VERIFIED_REF = "UAT-20260729-FEISHU-APP";
+    const boundRef = `UAT-20260729-${feishuTargetEvidenceBinding("app", "chat")}`;
+    process.env.FEISHU_APP_LIVE_VERIFIED_REF = boundRef;
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu"))
       .toMatchObject({
         configurationReady: true,
         operational: true,
         liveVerificationState: "valid",
-        liveVerificationRef: "UAT-20260729-FEISHU-APP",
+        liveVerificationRef: boundRef,
       });
   });
 

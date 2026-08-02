@@ -42,28 +42,47 @@ const expectedCounts: Record<Category, number> = {
   MIGRATION: 41,
   ARCH_GATE: 41,
   REDTEAM_GATE: 8,
-  RELEASE_GATE: 11,
+  RELEASE_GATE: 13,
   PROJECT_SKILL: 7,
-  LINT_EXCEPTION: 86,
+  LINT_EXCEPTION: 89,
   DATA_SOURCE: 20,
   CRITICAL_INVARIANT: 32,
 };
 
-function walkFiles(relative: string, basename: string): string[] {
+function walkFiles(relative: string, matcher: string | RegExp): string[] {
   const absolute = path.join(root, relative);
   return readdirSync(absolute)
     .flatMap((entry) => {
       const childRelative = path.posix.join(relative, entry);
       const childAbsolute = path.join(root, childRelative);
       return statSync(childAbsolute).isDirectory()
-        ? walkFiles(childRelative, basename)
-        : entry.endsWith(basename) ? [childRelative] : [];
+        ? walkFiles(childRelative, matcher)
+        : (typeof matcher === "string" ? entry.endsWith(matcher) : matcher.test(entry))
+          ? [childRelative]
+          : [];
     })
     .sort();
 }
 
 function source(relative: string): string {
   return readFileSync(path.join(root, relative), "utf8");
+}
+
+function discoverLintExceptions(): string[] {
+  return ["scripts", "src", "tests"]
+    .flatMap((relative) => walkFiles(relative, /\.(?:[cm]?[jt]sx?)$/))
+    .sort()
+    .flatMap((relative) => {
+      let ordinal = 0;
+      return source(relative)
+        .split("\n")
+        .flatMap((line) => {
+          if (!/^(?:\s*\/\/|\s*\/\*)\s*eslint-disable/.test(line)) return [];
+          ordinal += 1;
+          return [`${relative}#eslint-${ordinal}`];
+        });
+    })
+    .sort();
 }
 
 function assertTestModule(relative: string): void {
@@ -158,13 +177,13 @@ function verify(control: Control): void {
   assertTestModule(testPath);
 }
 
-describe("530 项系统执行审计台账", () => {
-  it("ID 恰好 A001–A530、对象唯一、分类数量固定", () => {
-    expect(controls).toHaveLength(530);
+describe("535 项系统执行审计台账", () => {
+  it("ID 恰好 A001–A535、对象唯一、分类数量固定", () => {
+    expect(controls).toHaveLength(535);
     expect(controls.map((control) => control.id)).toEqual(
-      Array.from({ length: 530 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
+      Array.from({ length: 535 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
     );
-    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(530);
+    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(535);
     for (const [category, count] of Object.entries(expectedCounts)) {
       expect(
         controls.filter((control) => control.category === category).length,
@@ -173,7 +192,7 @@ describe("530 项系统执行审计台账", () => {
     }
   });
 
-  it("路由、认证页面、迁移与架构门与当前目录完全一致，不遗漏新增面", () => {
+  it("路由、页面、迁移、测试门与项目技能与当前目录完全一致", () => {
     const subjects = (category: Category) => controls
       .filter((control) => control.category === category)
       .map((control) => control.subject)
@@ -187,6 +206,17 @@ describe("530 项系统执行审计台账", () => {
         .sort(),
     );
     expect(subjects("ARCH_GATE")).toEqual(walkFiles("tests/architecture", ".test.ts"));
+    expect(subjects("REDTEAM_GATE")).toEqual(walkFiles("tests/redteam", ".test.ts"));
+    expect(subjects("RELEASE_GATE")).toEqual(walkFiles("tests/release", ".test.ts"));
+    expect(subjects("PROJECT_SKILL")).toEqual(walkFiles(".claude/skills", "SKILL.md"));
+  });
+
+  it("规则抑制与当前代码逐项一致，新增或删除都不得漏审", () => {
+    const subjects = controls
+      .filter((control) => control.category === "LINT_EXCEPTION")
+      .map((control) => control.subject)
+      .sort();
+    expect(subjects).toEqual(discoverLintExceptions());
   });
 
   it.each(controls)("$id $category $subject", (control) => {

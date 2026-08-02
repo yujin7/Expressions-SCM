@@ -33,6 +33,8 @@ function liveVerificationTag(connector: OpsHealth["connectors"][number]) {
       return <Tag color="orange">Live UAT 已过期</Tag>;
     case "missing_evidence":
       return <Tag color="orange">UAT 证据缺失</Tag>;
+    case "unbound":
+      return <Tag color="red">UAT 未绑定当前目标</Tag>;
     case "future":
     case "invalid":
       return <Tag color="red">UAT 标记无效</Tag>;

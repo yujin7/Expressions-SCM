@@ -1,6 +1,6 @@
 # 外部系统集成契约：聚水潭、简道云、用友、飞书
 
-更新日期：2026-07-30
+更新日期：2026-08-03
 当前实现锚点：`main` 上的连接器代码、`docs/NOW.md` 与 `docs/spec/CURRENT.md`
 
 ## 1. 系统边界与唯一权威
@@ -8,13 +8,15 @@
 | 事实域 | 权威系统 | SCM 的角色 | 当前接入状态 |
 |---|---|---|---|
 | 电商订单、实际出库销量、平台/WMS 库存观察 | 聚水潭 | 拉取、留证、映射、staging、与 SCM 自有仓出库对账 | 出库日事实与跨仓库存增量观察代码就绪；待真实 app/token/IP/权限 |
-| 现行低代码 ERP 表单与历史流程 | 简道云 | 全量目录、显式表单观察、字段最小化、留证与 staging；不直接成为 SCM 正式事实 | OpenAPI 已完成只读握手；目录与九条观察契约代码就绪，待密钥轮换、控制总量与 UAT |
+| 现行低代码 ERP 表单与历史流程 | 简道云 | 全量目录、显式表单观察、字段最小化、留证与 staging；不直接成为 SCM 正式事实 | OpenAPI 已完成只读握手；目录与九条观察契约代码就绪，待密钥轮换、业务对账控制总量与 UAT |
 | SCM 委外单据、实时仓库存账、批次、质量、计划与审批 | 本 SCM | 业务与库存账权威 | 已运行；外部系统不得直接覆写 |
 | 财务凭证、成本、结算与组织核算口径 | 用友 | 读取财务权威、提交获批业务结果、双向对账 | 仅契约；待企业 OpenAPI 应用与接口清单 |
-| 协同触达 | 飞书 | 接收 SCM outbox 消息；不成为业务状态权威 | webhook 与应用机器人代码就绪；待任选一路配置 |
+| 协同触达 | 飞书 | 接收 SCM outbox 消息；不成为业务状态权威 | 代码就绪；现有共享应用已上线但严重过度授权且看不到群，待最小权限隔离、目标群与 UAT |
 
-截至 2026-07-30 的实证结论：简道云 OpenAPI 密钥已完成只读握手，飞书应用凭据可换取
-tenant token；但简道云尚未完成控制总量/UAT，飞书应用看不到任何测试群，用友也缺少完整
+截至 2026-08-03 的实证结论：简道云 OpenAPI 密钥已完成只读握手，九条契约的 API 技术
+行/子表计数与 schema hash 再次稳定；飞书应用凭据可换取 tenant token，应用已启用并存在
+在线机器人版本。但简道云尚未完成权威视图裁决、业务对账控制总量/业务方 UAT；飞书共享
+应用拥有 1,107 项权限（其中 1,007 项为高级/超敏感）且仍看不到任何测试群；用友也缺少完整
 企业授权上下文。因此任何面板都不得把「代码存在」「凭据可鉴权」或「人能登录」显示成
 live/operational。
 
@@ -225,6 +227,7 @@ npx tsx src/jobs/cli.ts sync-jiandaoyun-form sample-management-observation
 
 应用模式按飞书官方
 [tenant_access_token](https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal)
+、[获取应用信息](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/application-v6/application/get)
 和[发送消息](https://open.feishu.cn/document/server-docs/im-v1/message/create)实现：
 
 - token 按过期时间缓存并提前 60 秒刷新；
@@ -242,11 +245,23 @@ npx tsx src/jobs/cli.ts sync-jiandaoyun-form sample-management-observation
 版本后，把机器人加入同租户目标群并允许发言。飞书对同一群的机器人共享限频为 5 QPS；
 SCM outbox 保持串行投递，不以并发冲击群限流。
 
+2026-08-03 通过官方 `GET /open-apis/application/v6/applications/me` 进行只读复核：现有自建
+应用处于启用状态、存在在线版本，桌面与移动默认能力均为机器人，且权限清单中
+包含 `im:chat:readonly` 与 `im:message:send_as_bot`。功能投递仍阻塞在群可见性和真实投递，
+但同时发现该共享应用拥有 1,107 项权限，其中 1,007 项为高级/超敏感权限。SCM 通知不应继承
+如此宽的攻击面：优先创建专用 SCM 通知应用，只保留群发现、应用发消息和只读自检所需的
+三项最小权限；若必须
+复用共享应用，需由安全/应用责任人完成逐项权限裁决并留下非秘密证据。未裁决前不得标为
+production-safe，也不得自动删权，以免破坏该共享应用的其他业务。
+
 应用机器人和 webhook 必须分别完成真实测试群 UAT：应用路径写
 `FEISHU_APP_LIVE_VERIFIED_AT/REF`，webhook 路径写
 `FEISHU_WEBHOOK_LIVE_VERIFIED_AT/REF`。运行时只采用当前实际发送路径的证据；两条路径同时
 配置时应用机器人优先，webhook 的 UAT 不能替代应用路径验收。旧的未绑定路径
 `FEISHU_LIVE_VERIFIED_AT/REF` 不再接受，避免切换鉴权路径后沿用错误的验收证据。
+应用路径还要求 `FEISHU_CHAT_ID` 与当前可见群精确匹配，且 REF 等于或以
+`probe-feishu-chats` 输出的 `send.expectedEvidenceBinding` 结尾；该非秘密单向摘要把验收记录
+绑定到当前应用和目标群，换应用、换群或沿用旧证据都会保持阻塞。
 时间必须是带 `Z` 或明确时区偏移的 ISO/RFC3339 时间；
 证据编号必须以字母或数字开头，整体只接受 3–80 位字母、数字、点、下划线或连字符；不写
 URL、查询串、token 或密钥。
@@ -260,9 +275,11 @@ operational。凭据、接口范围或权威视图发生实质变化时，必须
 npx tsx src/jobs/cli.ts probe-feishu-chats
 ```
 
-该命令只使用应用凭据列出机器人当前可见群，不打开业务数据库、不发送消息、不改变群成员；
-输出会把“凭据鉴权成功但零可见群”标为 `blocked_no_visible_chat`，并列出发布版本、群信息
-权限、机器人群成员、租户和发言权限检查项。2026-07-30 15:47 UTC 再次实测鉴权成功且群目录
+该命令只使用应用凭据读取本应用启用/在线版本/机器人默认能力和权限聚合，再列出机器人当前
+可见群；不打开业务数据库、不返回应用身份或权限明细、不发送消息、不改变群成员。输出把
+权限声明、群目录实际调用、可见群、路径绑定 UAT 和运行健康分开；权限未知或膨胀时宁可阻塞。
+2026-08-03（上海时间；2026-08-02 17:03 UTC）再次实测鉴权成功，应用启用并有在线机器人版本，
+但 `scopeInventory` 为 1,107/1,007（总权限/高级或超敏感权限），群目录
 业务码为 0，但仍返回 0 个群。把某人设为应用管理员不等于把机器人加入群；“机器人已发布/
 已允许发消息”的人工确认也不能替代 API 证据。必须在目标群的机器人管理中确认加入的是该
 应用当前已发布版本，然后重新运行发现命令；只有返回目标 `chat_id` 后才可执行真实投递、
@@ -283,6 +300,9 @@ npx tsx src/jobs/cli.ts probe-feishu-chats
 当前收到的 AppKey/AppSecret 只满足凭据对中的一部分，仍缺租户、组织、token URL、base URL、
 已申请服务及企业授权证据。当前保持 `contract_only`，避免在未知产品版本/租户/组织/接口下伪接通。未自动注册开发者身份，
 因为注册会接受平台条款、创建外部主体并可能要求企业/伙伴资料，属于必须由企业明确批准的外部变更。
+
+2026-08-03 再次执行无网络 readiness 审计：AppKey/AppSecret 均存在，但产品 profile、租户、
+组织、获批 API 契约、允许主机、base URL 与 token URL 仍全部缺失，故 `safeToCall=false`。
 
 所需机器配置：
 
