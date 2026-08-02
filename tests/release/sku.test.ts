@@ -6,7 +6,11 @@ import { describe, expect, it } from "vitest";
 import * as schema from "@/db/schema";
 import { createTestDb, type TestDb } from "../helpers/db";
 import { writeStagingRows } from "@/server/import/staging";
-import { releaseSkus, releaseSpus, type ReleaseUser } from "@/server/modules/release/engine";
+import {
+  releaseSkusForLegacyLocalMigration as releaseSkusLegacy,
+  releaseSpus,
+  type ReleaseUser,
+} from "@/server/modules/release/engine";
 
 const pmc: ReleaseUser = { id: 1, name: "放行员", roles: ["pmc"], isApprover: false };
 
@@ -95,14 +99,14 @@ describe("releaseSkus", () => {
     await releaseSpus(pmc, { dryRun: false }, db);
 
     // dry-run：完整计数，零写入
-    const dry = await releaseSkus(pmc, { dryRun: true }, db);
+    const dry = await releaseSkusLegacy(pmc, { dryRun: true }, db);
     expect(dry.dryRun).toBe(true);
     expect(dry.createdFinished).toBe(1);
     expect(dry.createdMaterials).toBe(2);
     expect(await db.select().from(schema.skus)).toHaveLength(0);
 
     // 真放行
-    const run = await releaseSkus(pmc, { dryRun: false }, db);
+    const run = await releaseSkusLegacy(pmc, { dryRun: false }, db);
     expect(run.createdFinished).toBe(1);
     expect(run.createdMaterials).toBe(2);
     expect(run.blocked).toContainEqual({ code: "E01-b", kind: "finished", reason: "SPU 未放行" });
@@ -141,7 +145,7 @@ describe("releaseSkus", () => {
     expect((pack.attrs as { needsReview: string[] }).needsReview).toHaveLength(0); // 全 count 不打标
 
     // 幂等重放：全部 existing，不重建
-    const rerun = await releaseSkus(pmc, { dryRun: false }, db);
+    const rerun = await releaseSkusLegacy(pmc, { dryRun: false }, db);
     expect(rerun.createdFinished).toBe(0);
     expect(rerun.createdMaterials).toBe(0);
     expect(rerun.existing).toBe(3);

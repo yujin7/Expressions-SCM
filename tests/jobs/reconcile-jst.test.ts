@@ -54,8 +54,8 @@ async function seedBase(db: TestDb) {
     .values({ code: "W1", name: "自有成品仓", kind: "finished" as const })
     .returning();
   await db.insert(schema.aliases).values([
-    { aliasType: "sku_code" as const, rawValue: "JSTA", targetId: skuA.id },
-    { aliasType: "warehouse" as const, rawValue: "自有仓", targetId: wh.id },
+    { aliasType: "sku_code" as const, scope: "JST", rawValue: "JSTA", targetId: skuA.id },
+    { aliasType: "warehouse" as const, scope: "JST", rawValue: "自有仓", targetId: wh.id },
   ]);
   return { user, skuA, skuB, skuC, wh };
 }
@@ -151,7 +151,13 @@ describe("runReconcileJst", () => {
     const { user, skuA, skuB, skuC, wh } = await seedBase(db);
     await stageJstDaily(db, writeFixture(), user.id);
     // staging 后认领 JSTB——运行时解析应即时生效，无须重导
-    await claimAlias(db, { aliasType: "sku_code", rawValue: "JSTB", targetId: skuB.id, userId: user.id });
+    await claimAlias(db, {
+      aliasType: "sku_code",
+      scope: "JST",
+      rawValue: "JSTB",
+      targetId: skuB.id,
+      userId: user.id,
+    });
 
     await db.insert(schema.stockLedger).values([
       // A：sys 5+3=8 = jst 8 → 匹配（含 00:00 边界行）

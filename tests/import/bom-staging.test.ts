@@ -23,6 +23,7 @@ describe.runIf(existsSync(DEV))("stageBom：DEVIANCE 全量入 staging", () => {
     expect(job.template).toBe("bom");
     expect(job.status).toBe("done");
     expect(job.fileHash).toBeTruthy();
+    expect(job.scope).toMatchObject({ identityMode: "historical_preserve" });
     expect(job.failRows).toBe(result.rejects.length);
     expect(job.okRows + job.failRows).toBe(stagedRows);
 
@@ -57,7 +58,7 @@ describe.runIf(existsSync(EXP))("stageBom：EXPRESSIONS 拒收车道", () => {
   it("拒收行以 status=error 入 staging，errorMsg=分类原因", async () => {
     const { db } = await createTestDb();
     const dimDb = db as unknown as DimDb;
-    const { jobId, result } = await stageBom(dimDb, EXP, "EXP", 1);
+    const { jobId, result } = await stageBom(dimDb, EXP, "EXP", 1, "new_master");
     expect(result.rejects.length).toBeGreaterThan(0);
 
     const rows = await db.select().from(schema.stagingRows).where(eq(schema.stagingRows.importJobId, jobId));
@@ -68,5 +69,6 @@ describe.runIf(existsSync(EXP))("stageBom：EXPRESSIONS 拒收车道", () => {
 
     const [job] = await db.select().from(schema.importJobs).where(eq(schema.importJobs.id, jobId));
     expect(job.failRows).toBe(result.rejects.length);
+    expect(job.scope).toMatchObject({ identityMode: "new_master" });
   }, 60000);
 });

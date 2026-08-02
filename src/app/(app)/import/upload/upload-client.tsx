@@ -25,9 +25,23 @@ const TEMPLATE_OPTS = [
   { value: "sku_cost", label: "SKU 成本导入（暂存后由财务放行）" },
 ];
 
+type SkuIdentityMode = "historical_preserve" | "new_master";
+
+const SKU_IDENTITY_MODE_OPTS = [
+  {
+    value: "historical_preserve",
+    label: "历史编码保留（已有在用主档）",
+  },
+  {
+    value: "new_master",
+    label: "新主档取号（系统生成 S1）",
+  },
+] satisfies { value: SkuIdentityMode; label: string }[];
+
 interface UploadResult {
   file: string;
   template: string;
+  identityMode?: SkuIdentityMode | null;
   summary: Record<string, unknown>;
 }
 
@@ -44,6 +58,7 @@ export default function UploadClient({
   );
   const [template, setTemplate] = useState(canPlan ? "inventory" : "sku_cost");
   const [brand, setBrand] = useState<string | undefined>();
+  const [identityMode, setIdentityMode] = useState<SkuIdentityMode | undefined>();
   const [file, setFile] = useState<RcFile | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<UploadResult | null>(null);
@@ -51,6 +66,9 @@ export default function UploadClient({
   const submit = async () => {
     if (!file) return void message.warning("请先选择 .xlsx 文件");
     if (template === "bom" && !brand) return void message.warning("BOM 导入必须选择品牌");
+    if (template === "bom" && !identityMode) {
+      return void message.warning("BOM 导入必须明确选择 SKU 身份模式");
+    }
     setBusy(true);
     setResult(null);
     try {
@@ -58,6 +76,7 @@ export default function UploadClient({
       fd.append("file", file);
       fd.append("template", template);
       if (brand) fd.append("brand", brand);
+      if (template === "bom" && identityMode) fd.append("identityMode", identityMode);
       const res = await fetch("/api/import/upload", { method: "POST", body: fd });
       const body = (await res.json()) as UploadResult & { error?: string };
       if (!res.ok) throw new Error(body.error ?? `上传失败（${res.status}）`);
@@ -95,28 +114,65 @@ export default function UploadClient({
               style={{ width: "min(100%, 360px)" }}
               options={allowedTemplates}
               value={template}
-              onChange={(v) => setTemplate(v)}
+              onChange={(v) => {
+                setTemplate(v);
+                setBrand(undefined);
+                setIdentityMode(undefined);
+                setFile(null);
+                setResult(null);
+              }}
             />
             {template === "bom" && (
-              <RemoteSelect
-                api="/api/master/brand"
-                getLabel={(r) => `${String(r.code)} ${String(r.nameCn ?? "")}`}
-                getValue={(r) => String(r.code)}
-                placeholder="选择品牌"
-                style={{ width: 220 }}
-                value={brand}
-                onChange={(v) => setBrand(v as string | undefined)}
-              />
+              <>
+                <RemoteSelect
+                  api="/api/master/brand"
+                  getLabel={(r) => `${String(r.code)} ${String(r.nameCn ?? "")}`}
+                  getValue={(r) => String(r.code)}
+                  placeholder="选择品牌"
+                  style={{ width: 220 }}
+                  value={brand}
+                  onChange={(v) => {
+                    setBrand(v as string | undefined);
+                    setResult(null);
+                  }}
+                />
+                <Select<SkuIdentityMode>
+                  style={{ width: 300 }}
+                  options={SKU_IDENTITY_MODE_OPTS}
+                  placeholder="选择 SKU 身份模式（必选）"
+                  value={identityMode}
+                  onChange={(value) => {
+                    setIdentityMode(value);
+                    setResult(null);
+                  }}
+                />
+              </>
             )}
           </Space>
+          {template === "bom" && (
+            <Alert
+              type={identityMode === "new_master" ? "warning" : "info"}
+              showIcon
+              message={identityMode === "new_master"
+                ? "新主档模式：文件编码只作为来源标识；执行 SKU 放行后由系统生成 S1 主码，再允许 BOM 放行。"
+                : identityMode === "historical_preserve"
+                  ? "历史保留模式：仅用于已经在业务中使用的主档编码；不会批量改成 S1。"
+                  : "请根据这批数据的真实业务含义选择身份模式，系统不会从文件名或品牌猜测。"}
+            />
+          )}
           <Upload.Dragger
             accept=".xlsx"
             maxCount={1}
+            fileList={file ? [{ uid: file.uid, name: file.name, originFileObj: file }] : []}
             beforeUpload={(f) => {
               setFile(f);
+              setResult(null);
               return false; // 不自动上传——统一走提交按钮
             }}
-            onRemove={() => setFile(null)}
+            onRemove={() => {
+              setFile(null);
+              setResult(null);
+            }}
           >
             <p className="ant-upload-drag-icon">
               <InboxOutlined />
@@ -124,7 +180,12 @@ export default function UploadClient({
             <p className="ant-upload-text">点击或拖拽 .xlsx 到此处</p>
             <p className="ant-upload-hint">单文件 ≤30MB；损坏的工作簿会自动走 OOXML 兜底通道解析</p>
           </Upload.Dragger>
-          <Button type="primary" loading={busy} onClick={() => void submit()} disabled={!file}>
+          <Button
+            type="primary"
+            loading={busy}
+            onClick={() => void submit()}
+            disabled={!file || (template === "bom" && (!brand || !identityMode))}
+          >
             上传并解析入 staging
           </Button>
         </Space>

@@ -16,7 +16,11 @@ import {
   type AnyDb,
   type StagingRowInput,
 } from "../staging";
-import { resolveKnownOrQueue, type DimDb } from "@/server/modules/dimension/resolver";
+import {
+  resolveKnownOrQueue,
+  type AliasResolutionOptions,
+  type DimDb,
+} from "@/server/modules/dimension/resolver";
 import type { AliasType } from "@/db/schema";
 import type { CellValue } from "../parse/xlsx";
 
@@ -104,6 +108,8 @@ export async function stagePipeline(
     /** 拒收行落 staging 时使用的 targetTable */
     targetTable: string;
     aliasRefs: (row: AdapterRow) => AliasRef[];
+    /** External-system imports must select their identity scope explicitly. */
+    aliasResolution?: AliasResolutionOptions;
     /** 文件级血缘（业务截止日/解析契约/全量或增量范围） */
     job?: {
       sourceAsOf?: string | null;
@@ -160,7 +166,7 @@ export async function stagePipeline(
             template: args.template,
             rowNo: row.rowNo,
             field: ref.field,
-          });
+          }, args.aliasResolution);
           cache.set(key, id);
         }
         if (id === null) {

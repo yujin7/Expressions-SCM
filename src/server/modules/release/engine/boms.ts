@@ -2,6 +2,14 @@
 import { inArray } from "drizzle-orm";
 
 import * as schema from "@/db/schema";
+import {
+  assertLegacyLocalIdentityMigrationAllowed,
+  bomJobIdentityKey,
+  loadBomJobIdentityMappings,
+  requireSkuImportIdentityMode,
+  type BomJobIdentityRef,
+} from "@/server/import/sku-identity-mode";
+import { ApiError } from "@/server/modules/master/common";
 
 import type {  BomLine } from "@/server/import/adapters/bom";
 
@@ -32,17 +40,21 @@ const UOM_LABEL: Record<BomLine["uomGuess"], string | null> = {
   unknown: null,
 };
 
-export async function releaseBoms(
+interface ReleaseBomsArgs {
+  jobIds?: number[];
+  resolutions?: Record<string, BomResolution>;
+  preflightOverrides?: PreflightOverrides;
+  dryRun: boolean;
+}
+
+async function releaseBomsInternal(
   user: ReleaseUser,
-  args: {
-    jobIds?: number[];
-    resolutions?: Record<string, BomResolution>;
-    preflightOverrides?: PreflightOverrides;
-    dryRun: boolean;
-  },
+  args: ReleaseBomsArgs,
   dbArg?: AnyDb,
 ): Promise<ReleaseBomsResult> {
   const db = await resolveDb(dbArg);
+  const strictSelectedJobs = args.jobIds !== undefined;
+  if (strictSelectedJobs) await requireSkuImportIdentityMode(db, args.jobIds!);
   await assertImportPreflight(db, user, args);
   const rows = await loadStagedRows(db, "bom_block", args.jobIds);
   const resolve = aliasCache(db);
@@ -50,13 +62,27 @@ export async function releaseBoms(
 
   // 预载所有编码 → skuId
   const codes: string[] = [];
+  const identityRefs: BomJobIdentityRef[] = [];
   for (const r of rows) {
     const b = r.payload;
     if (!isBomBlockPayload(b)) continue;
-    if (b.productCode) codes.push(b.productCode);
-    for (const l of b.lines) if (l.materialCode) codes.push(l.materialCode);
+    if (b.productCode) {
+      codes.push(b.productCode);
+      identityRefs.push({ jobId: r.importJobId, sourceCode: b.productCode });
+    }
+    for (const l of b.lines) {
+      if (!l.materialCode) continue;
+      codes.push(l.materialCode);
+      identityRefs.push({ jobId: r.importJobId, sourceCode: l.materialCode });
+    }
   }
-  const skuByCode = await loadSkuIdByCode(db, codes);
+  const skuByCode = strictSelectedJobs ? new Map<string, number>() : await loadSkuIdByCode(db, codes);
+  const jobSkuMappings = strictSelectedJobs
+    ? await loadBomJobIdentityMappings(db, identityRefs)
+    : new Map<string, number>();
+  const resolveSku = (jobId: number, sourceCode: string): number | null => strictSelectedJobs
+    ? jobSkuMappings.get(bomJobIdentityKey(jobId, sourceCode)) ?? null
+    : skuByCode.get(sourceCode) ?? null;
 
   interface PlannedLine {
     materialSkuId: number;
@@ -99,9 +125,13 @@ export async function releaseBoms(
       skipped++;
       continue;
     }
-    const productSkuId = skuByCode.get(b.productCode);
+    const productSkuId = resolveSku(r.importJobId, b.productCode);
     if (productSkuId == null) {
-      blocked.push({ stagingRowId: r.id, productCode: b.productCode, reason: "SKU 未放行" });
+      blocked.push({
+        stagingRowId: r.id,
+        productCode: b.productCode,
+        reason: strictSelectedJobs ? "请先完成 SKU 身份放行" : "SKU 未放行",
+      });
       continue;
     }
 
@@ -121,7 +151,7 @@ export async function releaseBoms(
         });
         continue;
       }
-      const matId = skuByCode.get(l.materialCode);
+      const matId = resolveSku(r.importJobId, l.materialCode);
       if (matId == null) {
         missing.push(l.materialCode);
         continue;
@@ -146,7 +176,13 @@ export async function releaseBoms(
       });
     }
     if (missing.length > 0) {
-      blocked.push({ stagingRowId: r.id, productCode: b.productCode, reason: `SKU 未放行：${missing.join("/")}` });
+      blocked.push({
+        stagingRowId: r.id,
+        productCode: b.productCode,
+        reason: strictSelectedJobs
+          ? `请先完成 SKU 身份放行：${missing.join("/")}`
+          : `SKU 未放行：${missing.join("/")}`,
+      });
       continue;
     }
     if (planned.length === 0) {
@@ -301,4 +337,35 @@ export async function releaseBoms(
     demotedActive,
     releaseRunId,
   };
+}
+
+/** Production release contract: every call is explicitly scoped to completed BOM jobs. */
+export async function releaseBoms(
+  user: ReleaseUser,
+  args: {
+    jobIds: number[];
+    resolutions?: Record<string, BomResolution>;
+    preflightOverrides?: PreflightOverrides;
+    dryRun: boolean;
+  },
+  dbArg?: AnyDb,
+): Promise<ReleaseBomsResult> {
+  if (!Array.isArray(args.jobIds)) {
+    throw new ApiError(400, "BOM 放行必须显式绑定导入任务");
+  }
+  return releaseBomsInternal(user, args, dbArg);
+}
+
+/** Explicit, guarded compatibility path for one-shot local PGlite migrations only. */
+export async function releaseBomsForLegacyLocalMigration(
+  user: ReleaseUser,
+  args: {
+    resolutions?: Record<string, BomResolution>;
+    preflightOverrides?: PreflightOverrides;
+    dryRun: boolean;
+  },
+  dbArg?: AnyDb,
+): Promise<ReleaseBomsResult> {
+  assertLegacyLocalIdentityMigrationAllowed();
+  return releaseBomsInternal(user, args, dbArg);
 }

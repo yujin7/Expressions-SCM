@@ -207,6 +207,54 @@ describe("导入拒收明细：生成、隔离与下载路径", () => {
     }
   });
 
+  it("任务列表只返回最小 DTO，不泄露证据路径、hash 或原始 scope", async () => {
+    const { db } = await createTestDb();
+    const [user] = await db.insert(schema.users).values({ name: "管理员" }).returning();
+    const file = path.join(storage, "bom-minimal-dto.csv");
+    writeFileSync(file, "fixture");
+    const job = await createImportJob(db, {
+      template: "bom",
+      filePath: file,
+      createdBy: user.id,
+      scope: {
+        identityMode: "new_master",
+        evidencePath: "/protected/never-return.json",
+        secretMarker: "NEVER_RETURN_SCOPE_VALUE",
+      },
+    });
+    await db.update(schema.importJobs).set({
+      status: "done",
+      failRows: 1,
+      errorFile: "import-errors/protected-path.csv",
+      releaseManifest: { secretMarker: "NEVER_RETURN_MANIFEST_VALUE" },
+    }).where(eq(schema.importJobs.id, job.id));
+
+    const result = await listImportJobs(admin(user.id), 1, 20, db);
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0]).toMatchObject({
+      id: job.id,
+      template: "bom",
+      identityMode: "new_master",
+      hasErrorFile: true,
+    });
+    expect(Object.keys(result.data[0]).sort()).toEqual([
+      "createdAt",
+      "failRows",
+      "filename",
+      "hasErrorFile",
+      "id",
+      "identityMode",
+      "okRows",
+      "status",
+      "template",
+    ]);
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("protected-path");
+    expect(serialized).not.toContain("NEVER_RETURN");
+    expect(serialized).not.toContain("fileHash");
+    expect(serialized).not.toContain("releaseManifest");
+  });
+
   it("固定 import-errors 目录本身也不能是指向存储根外的符号链接", async () => {
     const outsideDir = mkdtempSync(path.join(tmpdir(), "import-errors-outside-"));
     const outsideFile = path.join(outsideDir, "secret.csv");

@@ -21,6 +21,7 @@ import { stageDemand } from "@/server/import/adapters/demand";
 import { stagePallet } from "@/server/import/adapters/pallet";
 import { stageStockSummary } from "@/server/import/adapters/stock-summary";
 import { stageSkuCost } from "@/server/import/adapters/sku-cost";
+import { SKU_IMPORT_IDENTITY_MODES } from "@/server/import/sku-identity-mode";
 import { readWorkbook } from "@/server/import/parse/xlsx";
 import {
   assertWorkbookMatchesTemplate,
@@ -30,6 +31,7 @@ import {
 const fields = z.object({
   template: z.enum(IMPORT_TEMPLATES, { errorMap: () => ({ message: "未知模板类型" }) }),
   brand: z.string().trim().max(20).optional(), // bom 必填（品牌编码）
+  identityMode: z.enum(SKU_IMPORT_IDENTITY_MODES).optional(), // bom 必填（身份契约）
 });
 
 const MAX_SIZE = 30 * 1024 * 1024; // 30MB——真实 BOM 工作簿 ~5MB，留余量
@@ -45,8 +47,12 @@ export async function POST(req: NextRequest) {
     const v = fields.parse({
       template: form.get("template"),
       brand: form.get("brand") || undefined,
+      identityMode: form.get("identityMode") || undefined,
     });
     if (v.template === "bom" && !v.brand) throw new ApiError(400, "BOM 导入必须选择品牌");
+    if (v.template === "bom" && !v.identityMode) {
+      throw new ApiError(400, "BOM 导入必须明确选择历史编码保留或新主档取号模式");
+    }
     if (v.template === "sku_cost") requireAnyRole(user, "finance");
     else requireAnyRole(user, "pmc");
 
@@ -69,7 +75,7 @@ export async function POST(req: NextRequest) {
     const db = await getDbAsync();
     const summary =
       v.template === "bom"
-        ? await stageBom(db, filePath, v.brand!, user.id)
+        ? await stageBom(db, filePath, v.brand!, user.id, v.identityMode!)
         : v.template === "inventory"
           ? await stageInventoryLong(db, filePath, user.id)
           : v.template === "expiry"
@@ -94,9 +100,19 @@ export async function POST(req: NextRequest) {
       userId: user.id,
       entity: "import_upload",
       action: "upload",
-      after: { file: safeName, template: v.template, size: file.size },
+      after: {
+        file: safeName,
+        template: v.template,
+        size: file.size,
+        identityMode: v.template === "bom" ? v.identityMode : null,
+      },
     });
-    return NextResponse.json({ file: safeName, template: v.template, summary });
+    return NextResponse.json({
+      file: safeName,
+      template: v.template,
+      identityMode: v.template === "bom" ? v.identityMode : null,
+      summary,
+    });
   } catch (e) {
     return errorResponse(e);
   }

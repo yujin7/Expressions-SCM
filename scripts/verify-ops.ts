@@ -39,6 +39,52 @@ requireText("docker-compose.prod.yml", "healthcheck:");
 requireText("docker-compose.prod.yml", "max-size: \"10m\"");
 requireText("docker-compose.prod.yml", "uploads:/data/uploads:ro");
 
+for (const key of [
+  "FEISHU_APP_ID",
+  "FEISHU_APP_SECRET",
+  "FEISHU_CHAT_ID",
+  "FEISHU_WEBHOOK_URL",
+  "FEISHU_APP_LIVE_VERIFIED_AT",
+  "FEISHU_APP_LIVE_VERIFIED_REF",
+  "FEISHU_WEBHOOK_LIVE_VERIFIED_AT",
+  "FEISHU_WEBHOOK_LIVE_VERIFIED_REF",
+  "JST_APP_KEY",
+  "JST_APP_SECRET",
+  "JST_ACCESS_TOKEN",
+  "JST_SYNC_ACTOR_ID",
+  "JST_BASE_URL",
+  "JST_INVENTORY_SYNC_ENABLED",
+  "JST_LIVE_VERIFIED_AT",
+  "JST_LIVE_VERIFIED_REF",
+  "JIANDAOYUN_API_KEY",
+  "JIANDAOYUN_SYNC_ACTOR_ID",
+  "JIANDAOYUN_SYNC_ENABLED",
+  "JIANDAOYUN_SYNC_CONTRACTS",
+  "JIANDAOYUN_BASE_URL",
+  "JIANDAOYUN_LIVE_VERIFIED_AT",
+  "JIANDAOYUN_LIVE_VERIFIED_REF",
+  "YY_APP_KEY",
+  "YY_APP_SECRET",
+  "YY_CLIENT_ID",
+  "YY_CLIENT_SECRET",
+  "YY_TENANT_ID",
+  "YY_ORG_ID",
+  "YY_PRODUCT_PROFILE",
+  "YY_APPROVED_API_CONTRACTS",
+  "YY_ALLOWED_HOSTS",
+  "YY_BASE_URL",
+  "YY_TOKEN_URL",
+]) {
+  requireText("docker-compose.prod.yml", `${key}: \${${key}-}`);
+}
+
+requireText(
+  ".github/workflows/ci.yml",
+  "gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7",
+);
+requireText(".github/workflows/ci.yml", "fetch-depth: 0");
+requireText(".gitleaksignore", "tests/replenish/sop-cycle.test.ts:generic-api-key");
+
 if (read("ops/backup.sh").includes("supply-chain_uploads")) {
   failures.push("ops/backup.sh: hard-coded Docker volume name is forbidden");
 }
@@ -54,4 +100,6 @@ if (failures.length) {
   console.error(failures.join("\n"));
   process.exit(1);
 }
-console.log("operations contracts: OK (atomic backup set, restore drill, monitoring, 41-scenario UAT)");
+console.log(
+  "operations contracts: OK (atomic backup set, connector env pass-through, secret scan, monitoring, 41-scenario UAT)",
+);

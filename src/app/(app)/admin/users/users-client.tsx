@@ -8,22 +8,24 @@ import { useCallback, useEffect, useState } from "react";
 import { App, Button, Form, Input, Modal, Select, Space, Switch, Table, Tag, Typography } from "antd";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
-import { fetchJson, patchJson, postJson } from "@/components/fetchJson";
+import { fetchJson, patchJson, postJson, putJson } from "@/components/fetchJson";
 import { ROLE_LABELS } from "@/server/core/constants";
 import type { UserRow } from "@/server/modules/admin/users";
 
 const ROLE_OPTIONS = Object.entries(ROLE_LABELS).map(([value, label]) => ({ value, label }));
 
 export default function UsersClient() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [rows, setRows] = useState<UserRow[]>([]);
   const [me, setMe] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [editRow, setEditRow] = useState<UserRow | null>(null);
+  const [bindRow, setBindRow] = useState<UserRow | null>(null);
   const [saving, setSaving] = useState(false);
   const [createForm] = Form.useForm();
   const [editForm] = Form.useForm();
+  const [bindForm] = Form.useForm();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -77,6 +79,51 @@ export default function UsersClient() {
     }
   };
 
+  const handleBindFeishu = async () => {
+    if (!bindRow) return;
+    const v = await bindForm.validateFields();
+    setSaving(true);
+    try {
+      await putJson(`/api/admin/users/${bindRow.id}/feishu-binding`, { unionId: v.unionId });
+      message.success("已绑定飞书登录");
+      setBindRow(null);
+      bindForm.resetFields();
+      if (bindRow.id === me) {
+        window.location.assign("/signout");
+        return;
+      }
+      void load();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const confirmUnbindFeishu = (row: UserRow) => {
+    modal.confirm({
+      title: `解绑 ${row.name} 的飞书登录？`,
+      content: "解绑后已登录会话将失效；本页不会显示或回传 union ID。",
+      okText: "确认解绑",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      async onOk() {
+        try {
+          await fetchJson(`/api/admin/users/${row.id}/feishu-binding`, { method: "DELETE" });
+          message.success("已解绑飞书登录");
+          if (row.id === me) {
+            window.location.assign("/signout");
+            return;
+          }
+          await load();
+        } catch (error) {
+          message.error((error as Error).message);
+          throw error;
+        }
+      },
+    });
+  };
+
   const columns: ColumnsType<UserRow> = [
     { title: "ID", dataIndex: "id", width: 60 },
     { title: "账号", dataIndex: "username", width: 130, render: (v, r) => <>{v ?? "—"}{r.id === me ? <Tag style={{ marginLeft: 6 }}>本人</Tag> : null}</> },
@@ -95,19 +142,44 @@ export default function UsersClient() {
         !v ? <Tag color="default">已停用</Tag> : r.lockedUntil && new Date(r.lockedUntil) > new Date() ? <Tag color="red">已锁定</Tag> : <Tag color="green">正常</Tag>,
     },
     {
+      title: "飞书登录",
+      dataIndex: "feishuBound",
+      width: 105,
+      render: (v: boolean) => (v ? <Tag color="blue">已绑定</Tag> : <Tag>未绑定</Tag>),
+    },
+    {
       title: "操作",
-      width: 90,
+      width: 180,
       render: (_, r) => (
-        <Button
-          type="link"
-          size="small"
-          onClick={() => {
-            setEditRow(r);
-            editForm.setFieldsValue({ name: r.name, roles: r.roles, isApprover: r.isApprover, active: r.active, password: "" });
-          }}
-        >
-          编辑
-        </Button>
+        <Space size={0}>
+          <Button
+            type="link"
+            size="small"
+            onClick={() => {
+              setEditRow(r);
+              editForm.setFieldsValue({ name: r.name, roles: r.roles, isApprover: r.isApprover, active: r.active, password: "" });
+            }}
+          >
+            编辑
+          </Button>
+          {r.feishuBound ? (
+            <Button type="link" danger size="small" disabled={!r.active} onClick={() => confirmUnbindFeishu(r)}>
+              解绑飞书
+            </Button>
+          ) : (
+            <Button
+              type="link"
+              size="small"
+              disabled={!r.active}
+              onClick={() => {
+                setBindRow(r);
+                bindForm.resetFields();
+              }}
+            >
+              绑定飞书
+            </Button>
+          )}
+        </Space>
       ),
     },
   ];
@@ -173,6 +245,35 @@ export default function UsersClient() {
           </Form.Item>
           <Form.Item name="password" label="重置密码（留空=不改；重置同时解除锁定）">
             <Input.Password placeholder="至少 8 位" autoComplete="new-password" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={`绑定飞书登录：${bindRow?.name ?? ""}`}
+        open={bindRow != null}
+        onOk={() => void handleBindFeishu()}
+        confirmLoading={saving}
+        onCancel={() => {
+          setBindRow(null);
+          bindForm.resetFields();
+        }}
+        okText="确认绑定"
+        cancelText="取消"
+      >
+        <Typography.Paragraph type="secondary">
+          请从受信任的飞书管理员或身份查询流程复制 union ID。绑定后系统只显示“已绑定”，不再回显原值。
+        </Typography.Paragraph>
+        <Form form={bindForm} layout="vertical">
+          <Form.Item
+            name="unionId"
+            label="Feishu union ID"
+            rules={[
+              { required: true, whitespace: true, message: "请输入飞书 union ID" },
+              { max: 128, message: "最多 128 个字符" },
+            ]}
+          >
+            <Input.Password placeholder="粘贴 union ID" autoComplete="off" visibilityToggle={false} />
           </Form.Item>
         </Form>
       </Modal>

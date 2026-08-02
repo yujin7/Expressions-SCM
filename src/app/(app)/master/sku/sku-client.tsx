@@ -68,6 +68,7 @@ export default function SkuClient() {
   const { message, modal } = App.useApp();
   const me = useMe();
   const canWrite = hasAnyRole(me, "pmc");
+  const canHistoricalMigration = me?.roles.includes("admin") ?? false;
   const [panoramaId, setPanoramaId] = useState<number | null>(null);
   const [attachSku, setAttachSku] = useState<SkuRow | null>(null);
   const [identifierSku, setIdentifierSku] = useState<SkuRow | null>(null);
@@ -203,20 +204,76 @@ export default function SkuClient() {
             render: (v: boolean) => (v ? <Tag color="success">启用</Tag> : <Tag>停用</Tag>),
           },
         ]}
-        formItems={(editing) => (
+        formItems={(editing, form) => (
           <>
-            <Form.Item
-              name="code"
-              label="编码"
-              tooltip={editing == null ? "留空时，保存会按 S1 标准在服务端原子取号" : "稳定主码已用于历史关联，不可修改"}
-              extra={editing == null ? "推荐留空自动生成；只有已存在的外部/历史商家编码才手工填写。" : undefined}
-            >
-              <Input
-                disabled={editing != null}
-                maxLength={30}
-                placeholder="留空自动生成；或输入真实历史/外部码"
-              />
-            </Form.Item>
+            {editing == null ? (
+              <>
+                {canHistoricalMigration ? (
+                  <Form.Item
+                    name="creationMode"
+                    label="建档模式"
+                    initialValue="governed_s1"
+                    tooltip="日常新建必须使用 S1；历史迁移只供管理员处理已经存在的真实旧码"
+                  >
+                    <Select
+                      options={[
+                        { value: "governed_s1", label: "新主档（系统自动生成 S1）" },
+                        { value: "historical_migration", label: "历史迁移（管理员例外）" },
+                      ]}
+                    />
+                  </Form.Item>
+                ) : (
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    message="新主档由系统自动生成 S1 编码"
+                    description="保存后才原子取号，不需要也不能手工占号。"
+                  />
+                )}
+                <Form.Item noStyle shouldUpdate={(previous, current) => previous.creationMode !== current.creationMode}>
+                  {() => form.getFieldValue("creationMode") === "historical_migration" ? (
+                    <>
+                      <Alert
+                        type="warning"
+                        showIcon
+                        style={{ marginBottom: 16 }}
+                        message="仅用于真实历史主档迁移"
+                        description="不会生成 S1；编码和迁移原因会随建档事件一起进入审计。"
+                      />
+                      <Form.Item
+                        name="code"
+                        label="历史编码"
+                        preserve={false}
+                        rules={[{ required: true, message: "请填写真实历史编码" }]}
+                      >
+                        <Input maxLength={30} placeholder="输入已存在且需保留的历史主码" />
+                      </Form.Item>
+                      <Form.Item
+                        name="historicalMigrationReason"
+                        label="迁移原因"
+                        preserve={false}
+                        rules={[
+                          { required: true, message: "请填写迁移原因" },
+                          { min: 10, message: "迁移原因至少 10 个字" },
+                          { max: 500, message: "迁移原因最多 500 个字" },
+                        ]}
+                      >
+                        <Input.TextArea rows={3} showCount maxLength={500} placeholder="说明历史来源、保留旧码的必要性和可核对依据" />
+                      </Form.Item>
+                    </>
+                  ) : (
+                    <Form.Item label="编码" extra="保存后由服务端在同一事务中原子取号。">
+                      <Input disabled value="系统将自动生成 S1 编码" />
+                    </Form.Item>
+                  )}
+                </Form.Item>
+              </>
+            ) : (
+              <Form.Item name="code" label="编码" tooltip="稳定主码已用于历史关联，不可修改">
+                <Input disabled maxLength={30} />
+              </Form.Item>
+            )}
             <Form.Item name="name" label="货品名称" rules={[{ required: true, message: "货品名称必填" }]}>
               <Input maxLength={100} placeholder="如 胶原蛋白肽饮品 50ml×10" />
             </Form.Item>
@@ -300,7 +357,7 @@ export default function SkuClient() {
           <Alert
             type="info"
             showIcon
-            message="新建时留空即可自动生成；所有历史编码保持原样"
+            message="日常新建由系统自动生成；真实历史迁移由管理员走审计例外"
             description="S1 只表达稳定身份。渠道、规格、供应商、生命周期和 BOM 关系会变化，必须保存在结构化字段中，不写进永久编码。"
           />
           <Descriptions bordered size="small" column={1}>
@@ -341,8 +398,9 @@ export default function SkuClient() {
             ]}
           />
           <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            S1 命名空间只允许系统原子取号，不能手工输入或占号；新建时请将编码留空。
-            历史商家编码及外部系统编码继续通过稳定主码和别名解析，不会被自动改写。
+            S1 命名空间只允许系统原子取号，不能手工输入或占号；日常新建无需填写编码。
+            只有管理员处理已存在的真实旧主码时，才可选择“历史迁移”并填写可核对原因；
+            外部系统编码优先通过独立标识与别名登记，不会被自动改写。
           </Typography.Paragraph>
         </Space>
       </Drawer>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   App,
   Button,
@@ -123,23 +123,38 @@ function contextText(context: unknown): string {
   }
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 export default function ExceptionsClient() {
   const { message } = App.useApp();
   const [form] = Form.useForm<{ targetId: number }>();
   const [rows, setRows] = useState<ExceptionRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const requestRef = useRef<AbortController | null>(null);
+  const requestSeq = useRef(0);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "import-exceptions", defaults: { status: "open", aliasType: "" }, defaultPageSize: 20 });
+  const listState = useListState({
+    key: "import-exceptions",
+    defaults: { status: "open", aliasType: "", scope: "" },
+    defaultPageSize: 20,
+  });
   const { filters, page, pageSize } = listState;
   const status = filters.status;
   const aliasType = filters.aliasType;
+  const scope = filters.scope;
 
   const [claiming, setClaiming] = useState<ExceptionRow | null>(null);
   const [saving, setSaving] = useState(false);
   const [ignoreNote, setIgnoreNote] = useState("");
 
   const load = useCallback(async () => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
+    const seq = ++requestSeq.current;
     setLoading(true);
     try {
       const params = new URLSearchParams({
@@ -148,20 +163,33 @@ export default function ExceptionsClient() {
         pageSize: String(pageSize),
       });
       if (aliasType) params.set("aliasType", aliasType);
+      if (scope) params.set("scope", scope);
       const res = await fetchJson<{ data: ExceptionRow[]; total: number }>(
         `/api/import/exceptions?${params.toString()}`,
+        { signal: controller.signal },
       );
+      if (requestSeq.current !== seq || controller.signal.aborted) return;
       setRows(res.data);
       setTotal(res.total);
     } catch (e) {
-      message.error((e as Error).message);
+      if (!isAbortError(e) && requestSeq.current === seq) {
+        message.error((e as Error).message);
+      }
     } finally {
-      setLoading(false);
+      if (requestSeq.current === seq) {
+        setLoading(false);
+        if (requestRef.current === controller) requestRef.current = null;
+      }
     }
-  }, [status, aliasType, page, pageSize, message]);
+  }, [status, aliasType, scope, page, pageSize, message]);
 
   useEffect(() => {
     void load();
+    return () => {
+      requestSeq.current += 1;
+      requestRef.current?.abort();
+      requestRef.current = null;
+    };
   }, [load]);
 
   /** 操作成功后：刷新列表 + 报告剩余待认领数量 */
@@ -311,7 +339,8 @@ export default function ExceptionsClient() {
       </Typography.Title>
       <Typography.Paragraph type="secondary">
         导入时无法解析的仓库/渠道/编码等原始值在此排队；认领按来源系统隔离，
-        避免简道云、聚水潭或用友的同名短码互相串用。
+        避免简道云、聚水潭或用友的同名短码互相串用。外部系统作用域的待认领项必须清零，
+        连接器才会被运维面板判定为身份就绪。
       </Typography.Paragraph>
       <Tabs
         activeKey={status}
@@ -325,16 +354,26 @@ export default function ExceptionsClient() {
             刷新
           </Button>
         }
-        extra={
-          <Select
-            allowClear
-            placeholder="全部类型"
-            style={{ width: 160 }}
-            options={toOptions(ALIAS_TYPE_LABELS)}
-            value={aliasType || undefined}
-            onChange={(v) => listState.setFilter({ aliasType: v ?? "" })}
-          />
-        }
+        extra={(
+          <Space wrap size={[8, 8]}>
+            <Select
+              allowClear
+              placeholder="全部来源"
+              style={{ width: 150 }}
+              options={toOptions(SCOPE_LABELS)}
+              value={scope || undefined}
+              onChange={(v) => listState.setFilter({ scope: v ?? "" })}
+            />
+            <Select
+              allowClear
+              placeholder="全部类型"
+              style={{ width: 160 }}
+              options={toOptions(ALIAS_TYPE_LABELS)}
+              value={aliasType || undefined}
+              onChange={(v) => listState.setFilter({ aliasType: v ?? "" })}
+            />
+          </Space>
+        )}
       />
       <Table<ExceptionRow>
         rowKey="id"

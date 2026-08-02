@@ -19,6 +19,14 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -70,6 +78,7 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgres://scm:scm_ci_password@127.0.0.1:5432/scm
+      SCM_ALLOW_MUTATING_PG_CONTRACT: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -79,3 +88,4 @@ jobs:
       - run: npm ci
       - run: npm run db:migrate
       - run: npm run check:postgres
+      - run: npm run check:postgres:jdy-concurrency

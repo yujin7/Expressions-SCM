@@ -180,5 +180,6 @@ export async function stageJstDaily(db: AnyDb, filePath: string, userId: number)
       { field: "sku", aliasType: "sku_code", value: row.payload.skuCode as string | null },
       { field: "warehouse", aliasType: "warehouse", value: row.payload.warehouseRaw as string | null },
     ],
+    aliasResolution: { scope: "JST" },
   });
 }

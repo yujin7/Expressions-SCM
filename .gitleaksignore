@@ -1,0 +1,12 @@
+# Verified non-secret historical fixtures: immutable record keys and request idempotency UUIDs.
+7c564198e5673f9d73b270e985f4532eeea58103:tests/quality/service.test.ts:generic-api-key:768
+7c564198e5673f9d73b270e985f4532eeea58103:tests/quality/service.test.ts:generic-api-key:1011
+d88de7d2ff47d891e367f2556316a26c2d52f34c:tests/replenish/sop-cycle.test.ts:generic-api-key:81
+d88de7d2ff47d891e367f2556316a26c2d52f34c:tests/replenish/sop-cycle.test.ts:generic-api-key:95
+d88de7d2ff47d891e367f2556316a26c2d52f34c:tests/replenish/sop-cycle.test.ts:generic-api-key:222
+8d6b19d30c41d59d19e5037a43079a67fc169bad:tests/replenish/scenarios.test.ts:generic-api-key:73
+8d6b19d30c41d59d19e5037a43079a67fc169bad:tests/replenish/scenarios.test.ts:generic-api-key:106
+8d6b19d30c41d59d19e5037a43079a67fc169bad:tests/replenish/scenarios.test.ts:generic-api-key:112
+b00ee29be10a70648f3f89a02b0f2404455a1da0:tests/replenish/plan-versions.test.ts:generic-api-key:72
+b00ee29be10a70648f3f89a02b0f2404455a1da0:tests/replenish/plan-versions.test.ts:generic-api-key:101
+b00ee29be10a70648f3f89a02b0f2404455a1da0:tests/replenish/plan-versions.test.ts:generic-api-key:119

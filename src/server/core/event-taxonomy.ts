@@ -93,6 +93,8 @@ const CATALOG: Record<string, CatalogEntry> = {
   register: { domain: "master", label: "登记", verb: "register", isStateChange: false },
   register_batch: { domain: "master", label: "批量登记", verb: "registerBatch", isStateChange: false },
   change_password: { domain: "master", label: "修改密码", verb: "changePassword", isStateChange: false },
+  bind_feishu_identity: { domain: "master", label: "绑定飞书身份", verb: "bindFeishuIdentity", isStateChange: false },
+  unbind_feishu_identity: { domain: "master", label: "解绑飞书身份", verb: "unbindFeishuIdentity", isStateChange: false },
 
   /* ── 数据域（导入/放行/复核） ── */
   import: { domain: "data", label: "导入", verb: "import", isStateChange: false },

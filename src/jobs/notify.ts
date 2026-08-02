@@ -3,8 +3,9 @@
  *
  * enqueueNotification：应用内产生通知 → 入队（dedupeKey 幂等，防同事件重复推）。
  * dispatchNotifications：分发任务读取 pending 逐条推送：
- *  - channel=feishu：优先用飞书应用机器人（tenant token + chat_id + UUID 去重），
- *    失败时可回退自定义机器人 webhook；两者均未配置则标记 skipped；
+ *  - channel=feishu：优先用飞书应用机器人（tenant token + chat_id + UUID 去重）；
+ *    应用发送一旦发起就不跨渠道自动回退，避免超时已送达后 webhook 再发一遍；
+ *    仅应用未配置时使用 webhook，两者均未配置则标记 skipped；
  *  - channel=in_app：站内通知，直接标记 sent（前端从 notifications 表读）。
  * runExceptionNotify：把控制塔 critical/high 异常按天去重入队（每日一次推送到飞书/站内）。
  *
@@ -101,7 +102,7 @@ export function isFeishuDeliveryConfigured(env: NodeJS.ProcessEnv = process.env)
   return feishuWebhookUrlFromEnv(env) !== null || feishuAppConfigFromEnv(env) !== null;
 }
 
-/** 分发 pending 通知；应用机器人优先，失败时若有 webhook 则回退。 */
+/** 分发 pending 通知；应用机器人优先，但发送尝试后不做无法幂等的跨渠道回退。 */
 export async function dispatchNotifications(
   db: AnyDb,
   opts?: {
@@ -183,17 +184,12 @@ export async function dispatchNotifications(
       }
       try {
         if (appClient) {
-          try {
-            await appClient.sendText({
-              title: p.title,
-              body: p.body,
-              href: p.href,
-              uuid: `scm-notification-${p.id}`,
-            });
-          } catch (appError) {
-            if (!webhookUrl) throw appError;
-            await pushFeishu(webhookUrl, p.title, p.body, p.href);
-          }
+          await appClient.sendText({
+            title: p.title,
+            body: p.body,
+            href: p.href,
+            uuid: `scm-notification-${p.id}`,
+          });
         } else if (webhookUrl) {
           await pushFeishu(webhookUrl, p.title, p.body, p.href);
         }

@@ -1,12 +1,20 @@
 /** release 流水线：finished-moq（自 engine.ts 拆出，行为未变） */
-import { and, eq, inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 
 
 
-import { type AnyDb, type ReleaseUser, resolveDb, aliasCache, loadSkuIdByCode } from "./common";
+import {
+  aliasCache,
+  assertRowsReleaseable,
+  loadSkuIdByCode,
+  loadStagedRows,
+  resolveDb,
+  type AnyDb,
+  type ReleaseUser,
+} from "./common";
 
 export interface ReleaseMoqResult {
   dryRun: boolean;
@@ -26,10 +34,7 @@ export async function releaseFinishedMoq(
   dbArg?: AnyDb,
 ): Promise<ReleaseMoqResult> {
   const db = await resolveDb(dbArg);
-  const rows: { payload: unknown }[] = await db
-    .select({ payload: schema.stagingRows.payload })
-    .from(schema.stagingRows)
-    .where(and(eq(schema.stagingRows.targetTable, "sku_leadtime"), inArray(schema.stagingRows.status, ["pending", "validated"])));
+  const rows = await loadStagedRows(db, "sku_leadtime");
   const resolve = aliasCache(db);
 
   const moqByCode = new Map<string, number>();
@@ -66,6 +71,7 @@ export async function releaseFinishedMoq(
   if (args.dryRun) return { dryRun: true, updated, created, unresolvedSku };
 
   await db.transaction(async (tx: AnyDb) => {
+    await assertRowsReleaseable(tx, rows.map((row) => row.id));
     for (const p of plans) {
       const convId = firstConvBySku.get(p.skuId);
       if (convId != null) {
@@ -88,4 +94,3 @@ export async function releaseFinishedMoq(
   });
   return { dryRun: false, updated, created, unresolvedSku };
 }
-

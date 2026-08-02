@@ -15,6 +15,8 @@ const envKeys = [
   "YY_ALLOWED_HOSTS",
   "FEISHU_WEBHOOK_URL", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID",
   "FEISHU_LIVE_VERIFIED_AT", "FEISHU_LIVE_VERIFIED_REF",
+  "FEISHU_APP_LIVE_VERIFIED_AT", "FEISHU_APP_LIVE_VERIFIED_REF",
+  "FEISHU_WEBHOOK_LIVE_VERIFIED_AT", "FEISHU_WEBHOOK_LIVE_VERIFIED_REF",
 ] as const;
 const original = new Map(envKeys.map((key) => [key, process.env[key]]));
 const NOW = new Date("2026-07-30T12:00:00Z");
@@ -42,6 +44,11 @@ describe("外部连接器目录", () => {
       missingEnv: [],
       liveVerifiedAt: null,
       liveVerificationState: "missing",
+      effectiveCapabilities: [
+        "outbound-sales-daily",
+        "warehouse-discovery-client",
+        "batch-allocation-evidence",
+      ],
     });
     expect(configuredConnectors().some((connector) => connector.key === "jst")).toBe(true);
     process.env.JST_BASE_URL = "https://openapi.jushuitan.com.evil.example";
@@ -59,19 +66,54 @@ describe("外部连接器目录", () => {
     });
     process.env.JST_LIVE_VERIFIED_REF = "UAT-20260729-JST-001";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst")).toMatchObject({
-      operational: true,
+      configurationReady: true,
+      operational: false,
+      identityClearanceState: "unknown",
       liveVerifiedAt: "2026-07-29T00:00:00.000Z",
       liveVerificationRef: "UAT-20260729-JST-001",
       liveVerificationState: "valid",
     });
+    expect(getConnectorReadiness(process.env, NOW, {
+      JST: { openExceptions: 0, observedIdentities: 1 },
+    }).find((row) => row.key === "jst"))
+      .toMatchObject({
+        configurationReady: true,
+        operational: true,
+        identityScope: "JST",
+        identityClearanceState: "clear",
+        openScopedAliasExceptions: 0,
+        observedScopedIdentities: 1,
+      });
+    expect(getConnectorReadiness(process.env, NOW, {
+      JST: { openExceptions: 2, observedIdentities: 2 },
+    }).find((row) => row.key === "jst"))
+      .toMatchObject({
+        configurationReady: true,
+        operational: false,
+        identityClearanceState: "blocked",
+        openScopedAliasExceptions: 2,
+      });
+    expect(getConnectorReadiness(process.env, NOW, {}).find((row) => row.key === "jst"))
+      .toMatchObject({
+        operational: false,
+        identityClearanceState: "unknown",
+        openScopedAliasExceptions: null,
+        observedScopedIdentities: null,
+      });
+    process.env.JST_INVENTORY_SYNC_ENABLED = "true";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst")
+      ?.effectiveCapabilities).toContain("inventory-total-delta-staging");
   });
 
-  it("简道云凭据和责任人只代表 configured，未做控制总量 UAT 不标 operational", () => {
+  it("简道云把凭据、启用开关、契约选择和 UAT 分别判定", () => {
     process.env.JIANDAOYUN_API_KEY = "present";
     process.env.JIANDAOYUN_SYNC_ACTOR_ID = "3";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jdy")).toMatchObject({
       implementation: "ready",
       configured: true,
+      enablementState: "disabled",
+      contractSelectionState: "missing",
+      selectedContractCount: 0,
       operational: false,
       auth: "api_key",
       missingEnv: [],
@@ -81,10 +123,54 @@ describe("外部连接器目录", () => {
     process.env.JIANDAOYUN_LIVE_VERIFIED_AT = "2026-07-30T01:00:00Z";
     process.env.JIANDAOYUN_LIVE_VERIFIED_REF = "UAT-20260730-JDY-001";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jdy")).toMatchObject({
-      operational: true,
+      operational: false,
       liveVerifiedAt: "2026-07-30T01:00:00.000Z",
       liveVerificationState: "valid",
     });
+
+    process.env.JIANDAOYUN_SYNC_ENABLED = "true";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jdy")).toMatchObject({
+      configured: true,
+      enablementState: "enabled",
+      contractSelectionState: "missing",
+      operational: false,
+    });
+
+    process.env.JIANDAOYUN_SYNC_CONTRACTS = "unknown-contract";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jdy")).toMatchObject({
+      configured: true,
+      enablementState: "enabled",
+      contractSelectionState: "invalid",
+      selectedContractCount: 0,
+      operational: false,
+    });
+
+    process.env.JIANDAOYUN_SYNC_CONTRACTS =
+      "product-master-observation,product-master-observation";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jdy")).toMatchObject({
+      configured: true,
+      enablementState: "enabled",
+      contractSelectionState: "selected",
+      selectedContractCount: 1,
+      configurationReady: true,
+      operational: false,
+      identityClearanceState: "unknown",
+    });
+    expect(getConnectorReadiness(process.env, NOW, {
+      JIANDAOYUN: { openExceptions: 0, observedIdentities: 1 },
+    }).find((row) => row.key === "jdy"))
+      .toMatchObject({
+        configurationReady: true,
+        operational: true,
+        identityClearanceState: "clear",
+      });
+
+    process.env.JIANDAOYUN_SYNC_ENABLED = "sometimes";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jdy")).toMatchObject({
+      enablementState: "invalid",
+      operational: false,
+    });
+    process.env.JIANDAOYUN_SYNC_ENABLED = "true";
     process.env.JIANDAOYUN_BASE_URL = "http://api.example.invalid";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jdy")).toMatchObject({
       configured: false,
@@ -101,9 +187,19 @@ describe("外部连接器目录", () => {
       configured: true,
       operational: false,
       liveVerifiedAt: null,
+      configuredAuthPaths: ["webhook"],
+      activeAuthPath: "webhook",
+      effectiveCapabilities: ["group-webhook"],
     });
     process.env.FEISHU_LIVE_VERIFIED_AT = "2026-07-29T01:00:00Z";
-    process.env.FEISHU_LIVE_VERIFIED_REF = "UAT-20260729-FEISHU-001";
+    process.env.FEISHU_LIVE_VERIFIED_REF = "UAT-LEGACY-MUST-NOT-BIND";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu")).toMatchObject({
+      operational: false,
+      liveVerifiedAt: null,
+      liveVerificationState: "missing",
+    });
+    process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_AT = "2026-07-29T01:00:00Z";
+    process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_REF = "UAT-20260729-FEISHU-WEBHOOK";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu")).toMatchObject({
       operational: true,
       liveVerifiedAt: "2026-07-29T01:00:00.000Z",
@@ -121,7 +217,8 @@ describe("外部连接器目录", () => {
       ],
     });
     delete process.env.FEISHU_WEBHOOK_URL;
-    delete process.env.FEISHU_LIVE_VERIFIED_AT;
+    delete process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_AT;
+    delete process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_REF;
     process.env.FEISHU_APP_ID = "app";
     process.env.FEISHU_APP_SECRET = "secret";
     process.env.FEISHU_CHAT_ID = "chat";
@@ -129,7 +226,48 @@ describe("外部连接器目录", () => {
       configured: true,
       operational: false,
       missingEnv: [],
+      configuredAuthPaths: ["app_bot"],
+      activeAuthPath: "app_bot",
+      effectiveCapabilities: ["app-bot-message", "deduplicated-delivery"],
     });
+    process.env.FEISHU_APP_LIVE_VERIFIED_AT = "2026-07-29T02:00:00Z";
+    process.env.FEISHU_APP_LIVE_VERIFIED_REF = "UAT-20260729-FEISHU-APP";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu")).toMatchObject({
+      operational: true,
+      liveVerificationRef: "UAT-20260729-FEISHU-APP",
+    });
+  });
+
+  it("飞书双路径按实际优先路径绑定 UAT，webhook 证据不能替代应用机器人验收", () => {
+    process.env.FEISHU_WEBHOOK_URL =
+      "https://open.feishu.cn/open-apis/bot/v2/hook/test-connector";
+    process.env.FEISHU_APP_ID = "app";
+    process.env.FEISHU_APP_SECRET = "secret";
+    process.env.FEISHU_CHAT_ID = "chat";
+    process.env.FEISHU_LIVE_VERIFIED_AT = "2026-07-29T01:00:00Z";
+    process.env.FEISHU_LIVE_VERIFIED_REF = "UAT-20260729-FEISHU-GENERIC";
+    process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_AT = "2026-07-29T02:00:00Z";
+    process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_REF = "UAT-20260729-FEISHU-WEBHOOK";
+
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu"))
+      .toMatchObject({
+        configuredAuthPaths: ["webhook", "app_bot"],
+        activeAuthPath: "app_bot",
+        configurationReady: false,
+        operational: false,
+        liveVerificationState: "missing",
+        effectiveCapabilities: ["app-bot-message", "deduplicated-delivery"],
+      });
+
+    process.env.FEISHU_APP_LIVE_VERIFIED_AT = "2026-07-29T03:00:00Z";
+    process.env.FEISHU_APP_LIVE_VERIFIED_REF = "UAT-20260729-FEISHU-APP";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu"))
+      .toMatchObject({
+        configurationReady: true,
+        operational: true,
+        liveVerificationState: "valid",
+        liveVerificationRef: "UAT-20260729-FEISHU-APP",
+      });
   });
 
   it("用友人工账号不构成机器配置；完整 OpenAPI 契约仍保持 contract_only", () => {
@@ -158,29 +296,29 @@ describe("外部连接器目录", () => {
   it("live UAT 标记须有非秘密证据引用，且未来、非法或超过 90 天都不算 operational", () => {
     process.env.FEISHU_WEBHOOK_URL =
       "https://open.feishu.cn/open-apis/bot/v2/hook/test-connector";
-    process.env.FEISHU_LIVE_VERIFIED_REF = "UAT-20260730-FEISHU-001";
+    process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_REF = "UAT-20260730-FEISHU-001";
 
-    process.env.FEISHU_LIVE_VERIFIED_AT = "2026-08-01T00:00:00Z";
+    process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_AT = "2026-08-01T00:00:00Z";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu"))
       .toMatchObject({ operational: false, liveVerificationState: "future" });
 
-    process.env.FEISHU_LIVE_VERIFIED_AT = "2026-04-01T00:00:00Z";
+    process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_AT = "2026-04-01T00:00:00Z";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu"))
       .toMatchObject({ operational: false, liveVerificationState: "stale" });
 
-    process.env.FEISHU_LIVE_VERIFIED_AT = "not-a-date";
+    process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_AT = "not-a-date";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu"))
       .toMatchObject({ operational: false, liveVerificationState: "invalid" });
 
-    process.env.FEISHU_LIVE_VERIFIED_AT = "2026-07-30junk";
+    process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_AT = "2026-07-30junk";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu"))
       .toMatchObject({ operational: false, liveVerificationState: "invalid" });
 
-    process.env.FEISHU_LIVE_VERIFIED_AT = "2026-02-30T01:00:00Z";
+    process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_AT = "2026-02-30T01:00:00Z";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu"))
       .toMatchObject({ operational: false, liveVerificationState: "invalid" });
 
-    process.env.FEISHU_LIVE_VERIFIED_AT = "2026-07-30T09:00:00+08:00";
+    process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_AT = "2026-07-30T09:00:00+08:00";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu"))
       .toMatchObject({
         operational: true,
@@ -188,8 +326,8 @@ describe("外部连接器目录", () => {
         liveVerifiedAt: "2026-07-30T01:00:00.000Z",
       });
 
-    process.env.FEISHU_LIVE_VERIFIED_AT = "2026-07-30T01:00:00Z";
-    process.env.FEISHU_LIVE_VERIFIED_REF = "https://tracker.example/UAT?id=secret";
+    process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_AT = "2026-07-30T01:00:00Z";
+    process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_REF = "https://tracker.example/UAT?id=secret";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu"))
       .toMatchObject({
         operational: false,

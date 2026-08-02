@@ -7,7 +7,7 @@
  * - SPU review 簇、BOM 歧义块必须显式勾选裁决——工作台把裁决做成可见选择，不是自动跳过；
  * - BOM 生效是审批动作（PMC 审批人，SoD：不能生效本人放行的批次）。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   App,
@@ -28,6 +28,15 @@ import { CaretRightOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import { fetchJson } from "@/components/fetchJson";
+import {
+  currentReleaseActionResult,
+  isCurrentReleasePreview,
+  releaseActionScope,
+  sameReleaseActionScope,
+  type BoundReleaseActionResult,
+  type ReleaseActionKey,
+  type ReleaseActionScope,
+} from "./release-action-state";
 
 interface StatusTable {
   targetTable: string;
@@ -44,6 +53,7 @@ interface ImportJobOption {
   status: string;
   okRows: number;
   failRows: number;
+  identityMode: "historical_preserve" | "new_master" | null;
 }
 
 interface ImportPreflight {
@@ -70,7 +80,12 @@ interface ImportPreflight {
 
 interface PreflightGate {
   required: boolean;
+  token: string | null;
   override?: { token: string; reason: string };
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
 const TABLE_LABELS: Record<string, string> = {
@@ -96,41 +111,88 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
   return data;
 }
 
-/** 一个数据集的操作卡：预演 → 结果摘要 → 执行 */
-function useAction(jobId?: number | null, preflight?: PreflightGate) {
+/** 一个数据集的操作卡：当前任务预演 → 同任务执行。 */
+function useAction(
+  action: ReleaseActionKey,
+  jobId: number | null,
+  preflight?: PreflightGate,
+  options: { includeJobIds?: boolean; requirePreview?: boolean } = {},
+) {
   const { message } = App.useApp();
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  const [preview, setPreview] = useState<BoundReleaseActionResult | null>(null);
+  const [boundResult, setBoundResult] = useState<BoundReleaseActionResult | null>(null);
+  const scope = releaseActionScope(action, jobId, preflight?.token ?? null);
+  const scopeRef = useRef<ReleaseActionScope | null>(scope);
+  const requestSeq = useRef(0);
+  scopeRef.current = scope;
+  const includeJobIds = options.includeJobIds ?? true;
+  const requirePreview = options.requirePreview ?? true;
+
+  useEffect(() => {
+    requestSeq.current += 1;
+    setBusy(false);
+    setPreview(null);
+    setBoundResult(null);
+  }, [action, jobId, preflight?.token]);
+
   const run = useCallback(
     async (url: string, body: Record<string, unknown>, onDone?: (r: Record<string, unknown>) => void) => {
+      const requestScope = releaseActionScope(action, jobId, preflight?.token ?? null);
+      const dryRun = body.dryRun === true;
+      const seq = ++requestSeq.current;
       setBusy(true);
       try {
-        if (jobId === null) throw new Error("请先选择本次放行的导入任务");
-        if (!body.dryRun && preflight?.required && !preflight.override) {
+        if (requestScope === null) throw new Error("请先选择本次放行的导入任务");
+        if (!dryRun && requirePreview && !isCurrentReleasePreview(preview, requestScope)) {
+          throw new Error("请先完成当前任务的预演，再执行放行");
+        }
+        if (!dryRun && preflight?.required && !preflight.override) {
           throw new Error("控制量偏差超过 30%；请先填写至少 5 个字的核对说明");
         }
-        const scopedBody = jobId === undefined
-          ? body
-          : {
+        if (dryRun) {
+          // A failed re-preview must not leave the prior preview executable.
+          setPreview(null);
+          setBoundResult(null);
+        }
+        const scopedBody = includeJobIds
+          ? {
               ...body,
-              jobIds: [jobId],
+              jobIds: [requestScope.jobId],
               ...(preflight?.override
-                ? { preflightOverrides: { [String(jobId)]: preflight.override } }
+                ? { preflightOverrides: { [String(requestScope.jobId)]: preflight.override } }
                 : {}),
-            };
+            }
+          : body;
         const r = await postJson<Record<string, unknown>>(url, scopedBody);
-        setResult(r);
-        onDone?.(r);
-        message.success(body.dryRun ? "预演完成（零写入）" : "已执行");
+        const stillCurrent = sameReleaseActionScope(scopeRef.current, requestScope);
+        if (stillCurrent && requestSeq.current === seq) {
+          const next = { scope: requestScope, data: r };
+          if (dryRun) setPreview(next);
+          setBoundResult(next);
+          onDone?.(r);
+          message.success(dryRun ? "预演完成（零写入）" : "已执行");
+        } else if (!dryRun) {
+          message.success(`任务 #${requestScope.jobId} 已执行；当前页面已切换到其他任务`);
+        }
       } catch (e) {
-        message.error((e as Error).message);
+        if (requestSeq.current === seq && sameReleaseActionScope(scopeRef.current, requestScope)) {
+          message.error((e as Error).message);
+        }
       } finally {
-        setBusy(false);
+        if (requestSeq.current === seq && sameReleaseActionScope(scopeRef.current, requestScope)) {
+          setBusy(false);
+        }
       }
     },
-    [jobId, message, preflight],
+    [action, includeJobIds, jobId, message, preflight, preview, requirePreview],
   );
-  return { busy, result, run, setResult };
+  return {
+    busy,
+    canExecute: isCurrentReleasePreview(preview, scope),
+    result: currentReleaseActionResult(boundResult, scope),
+    run,
+  };
 }
 
 function ResultLine({ result, pick }: { result: Record<string, unknown> | null; pick: [string, string][] }) {
@@ -166,13 +228,17 @@ export default function ReleaseClient({
   const [preflight, setPreflight] = useState<ImportPreflight | null>(null);
   const [preflightReason, setPreflightReason] = useState("");
   const [loading, setLoading] = useState(false);
+  const statusRequest = useRef<AbortController | null>(null);
+  const statusRequestSeq = useRef(0);
   const selectedJob = jobs.find((job) => job.id === selectedJobId) ?? null;
   const selectedTemplate = selectedJob?.template ?? null;
+  const selectedIdentityMode = selectedJob?.identityMode ?? null;
   const preflightGate = useMemo<PreflightGate>(() => {
     const required = preflight?.status === "blocked";
     const reason = preflightReason.trim();
     return {
       required,
+      token: preflight?.token ?? null,
       override: required && reason.length >= 5 && preflight
         ? { token: preflight.token, reason }
         : undefined,
@@ -180,32 +246,57 @@ export default function ReleaseClient({
   }, [preflight, preflightReason]);
 
   const loadStatus = useCallback(async () => {
+    statusRequest.current?.abort();
     if (selectedJobId == null) {
+      statusRequestSeq.current += 1;
+      statusRequest.current = null;
       setStatus([]);
       setPreflight(null);
+      setPreflightReason("");
+      setLoading(false);
       return;
     }
+    const controller = new AbortController();
+    statusRequest.current = controller;
+    const seq = ++statusRequestSeq.current;
     setLoading(true);
     try {
       const r = await fetchJson<{ tables: StatusTable[]; preflight: ImportPreflight }>(
         `/api/release/status?jobId=${selectedJobId}`,
+        { signal: controller.signal },
       );
+      if (statusRequestSeq.current !== seq || controller.signal.aborted) return;
+      if (r.preflight.jobId !== selectedJobId) {
+        throw new Error(`放行状态任务不匹配（期望 #${selectedJobId}，实际 #${r.preflight.jobId}）`);
+      }
       setStatus(r.tables);
       setPreflight(r.preflight);
       setPreflightReason("");
     } catch (e) {
-      message.error((e as Error).message);
+      if (!isAbortError(e)) message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (statusRequestSeq.current === seq) {
+        setLoading(false);
+        if (statusRequest.current === controller) statusRequest.current = null;
+      }
     }
   }, [message, selectedJobId]);
 
   useEffect(() => {
     void loadStatus();
+    return () => {
+      statusRequestSeq.current += 1;
+      statusRequest.current?.abort();
+      statusRequest.current = null;
+    };
   }, [loadStatus]);
 
   useEffect(() => {
-    void fetchJson<{ data: ImportJobOption[] }>("/api/import/jobs?page=1&pageSize=100")
+    const controller = new AbortController();
+    void fetchJson<{ data: ImportJobOption[] }>(
+      "/api/import/jobs?page=1&pageSize=100",
+      { signal: controller.signal },
+    )
       .then((r) =>
         setJobs(
           r.data.filter((job) =>
@@ -213,11 +304,14 @@ export default function ReleaseClient({
           ),
         ),
       )
-      .catch((e) => message.error((e as Error).message));
+      .catch((e) => {
+        if (!isAbortError(e)) message.error((e as Error).message);
+      });
+    return () => controller.abort();
   }, [canFinance, canPlan, message]);
 
   /* SPU：预演出 review 簇 → 勾选接受 → 执行 */
-  const spu = useAction(selectedJobId, preflightGate);
+  const spu = useAction("spu", selectedJobId, preflightGate);
   const [spuChecked, setSpuChecked] = useState<Set<string>>(new Set());
   const spuReview = useMemo(
     () => (spu.result?.needsReview as { spuKey: string; members: string[]; reason: string }[] | undefined) ?? [],
@@ -225,16 +319,20 @@ export default function ReleaseClient({
   );
 
   /* SKU / 费用 / 批次 / 月销：直接预演-执行 */
-  const sku = useAction(selectedJobId, preflightGate);
-  const fee = useAction(selectedJobId, preflightGate);
-  const batch = useAction(selectedJobId, preflightGate);
-  const sales = useAction(selectedJobId, preflightGate);
-  const cost = useAction(selectedJobId, preflightGate);
+  const sku = useAction("sku", selectedJobId, preflightGate);
+  const fee = useAction("fee", selectedJobId, preflightGate);
+  const batch = useAction("batch", selectedJobId, preflightGate);
+  const sales = useAction("sales", selectedJobId, preflightGate);
+  const cost = useAction("sku_cost", selectedJobId, preflightGate);
 
   /* BOM：预演出歧义块 → 勾选「按推荐裁决」 → 执行 → 生效 */
-  const bom = useAction(selectedJobId, preflightGate);
-  const bomActivate = useAction();
+  const bom = useAction("bom", selectedJobId, preflightGate);
+  const bomActivate = useAction("bom_activate", selectedJobId, undefined, { includeJobIds: false });
   const [useRecommended, setUseRecommended] = useState(true);
+  useEffect(() => {
+    setSpuChecked(new Set());
+    setUseRecommended(true);
+  }, [selectedJobId]);
   const bomAmbiguous = useMemo(() => {
     const blocked = (bom.result?.blocked as { stagingRowId: number; productCode: string | null; reason: string }[] | undefined) ?? [];
     return blocked.filter((b) => b.reason.includes("歧义"));
@@ -259,7 +357,7 @@ export default function ReleaseClient({
   const bomRunId = bom.result?.releaseRunId as number | null | undefined;
 
   /* 快照刷新 */
-  const snap = useAction(selectedJobId, preflightGate);
+  const snap = useAction("snapshot", selectedJobId, preflightGate);
   const [bizDate, setBizDate] = useState<Dayjs>(dayjs());
 
   const statusCols: ColumnsType<StatusTable> = [
@@ -302,7 +400,7 @@ export default function ReleaseClient({
         type="info"
         showIcon
         style={{ margin: "8px 0 16px" }}
-        message="每个数据集先「预演」（零写入，出裁决清单），再「执行」。SPU 歧义簇与 BOM 歧义块必须显式勾选裁决——引擎绝不代劳；执行后主档生效走红字/重导可改判。"
+        message="每个数据集先「预演」（零写入，出裁决清单），再「执行」。预演供审核但不锁定数据；执行会按当前任务重新计算并在写入事务中复核状态。SPU 歧义簇与 BOM 歧义块必须显式勾选裁决——引擎绝不代劳。"
       />
       <Card size="small" style={{ marginBottom: 16 }}>
         <Space className="release-job-picker" wrap>
@@ -312,15 +410,42 @@ export default function ReleaseClient({
             optionFilterProp="label"
             value={selectedJobId}
             placeholder="选择一个明确的导入任务；系统不会再放行全库待处理行"
-            onChange={(id) => setSelectedJobId(id)}
+            onChange={(id) => {
+              statusRequestSeq.current += 1;
+              statusRequest.current?.abort();
+              statusRequest.current = null;
+              setStatus([]);
+              setPreflight(null);
+              setPreflightReason("");
+              setLoading(true);
+              setSelectedJobId(id);
+            }}
             options={jobs.map((j) => ({
               value: j.id,
-              label: `#${j.id} ${j.template} · ${j.filename} · ${j.okRows} 行${j.failRows ? ` / 拒收 ${j.failRows}` : ""}`,
+              label: `#${j.id} ${j.template}${j.template === "bom"
+                ? j.identityMode === "new_master"
+                  ? " [新主档 S1]"
+                  : j.identityMode === "historical_preserve"
+                    ? " [历史保留]"
+                    : " [身份模式缺失]"
+                : ""} · ${j.filename} · ${j.okRows} 行${j.failRows ? ` / 拒收 ${j.failRows}` : ""}`,
               disabled: j.status !== "done",
             }))}
           />
         </Space>
       </Card>
+      {selectedTemplate === "bom" ? (
+        <Alert
+          type={selectedIdentityMode ? "info" : "error"}
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={selectedIdentityMode === "new_master"
+            ? "本任务为新主档模式：先执行 SKU 建档生成 S1 身份，再执行 BOM 放行。"
+            : selectedIdentityMode === "historical_preserve"
+              ? "本任务为历史编码保留模式：先执行 SKU 身份放行确认归属，再执行 BOM 放行。"
+              : "该旧任务未声明 SKU 身份模式，SKU/BOM 放行会拒绝；请重新上传并明确选择。"}
+        />
+      ) : null}
       {selectedJobId == null ? (
         <Alert type="warning" showIcon message="未选择导入任务：预演和执行均被禁用。" style={{ marginBottom: 16 }} />
       ) : null}
@@ -387,7 +512,7 @@ export default function ReleaseClient({
       />
 
       <Collapse
-        key={selectedTemplate ?? "no-selection"}
+        key={selectedJobId ?? "no-selection"}
         defaultActiveKey={[selectedTemplate === "sku_cost" ? "sku_cost" : "snapshot"]}
         expandIcon={({ isActive }) => <CaretRightOutlined rotate={isActive ? 90 : 0} />}
         items={[
@@ -404,6 +529,7 @@ export default function ReleaseClient({
                 <Space>
                   <Button
                     loading={cost.busy}
+                    disabled={loading}
                     onClick={() => void cost.run("/api/release/sku-costs", { dryRun: true })}
                   >
                     预演
@@ -418,7 +544,7 @@ export default function ReleaseClient({
                       )
                     }
                   >
-                    <Button type="primary" loading={cost.busy}>
+                    <Button type="primary" loading={cost.busy} disabled={!cost.canExecute || loading}>
                       财务执行放行
                     </Button>
                   </Popconfirm>
@@ -443,7 +569,7 @@ export default function ReleaseClient({
                 <Space wrap>
                   <Typography.Text>数据日期（盘点/导出日）：</Typography.Text>
                   <DatePicker value={bizDate} onChange={(d) => d && setBizDate(d)} allowClear={false} />
-                  <Button loading={snap.busy} onClick={() => void snap.run("/api/release/snapshots", { bizDate: bizDate.format("YYYY-MM-DD"), dryRun: true })}>
+                  <Button loading={snap.busy} disabled={loading} onClick={() => void snap.run("/api/release/snapshots", { bizDate: bizDate.format("YYYY-MM-DD"), dryRun: true })}>
                     预演
                   </Button>
                   <Popconfirm
@@ -457,10 +583,7 @@ export default function ReleaseClient({
                     <Button
                       type="primary"
                       loading={snap.busy}
-                      disabled={
-                        snap.result?.dryRun !== true ||
-                        snap.result?.jobId !== selectedJobId
-                      }
+                      disabled={!snap.canExecute || loading}
                     >
                       执行刷新
                     </Button>
@@ -479,10 +602,10 @@ export default function ReleaseClient({
             children: (
               <Space direction="vertical">
                 <Space>
-                  <Button loading={sales.busy} onClick={() => void sales.run("/api/release/sales-monthly", { dryRun: true })}>
+                  <Button loading={sales.busy} disabled={loading} onClick={() => void sales.run("/api/release/sales-monthly", { dryRun: true })}>
                     预演
                   </Button>
-                  <Button type="primary" loading={sales.busy} onClick={() => void sales.run("/api/release/sales-monthly", { dryRun: false }, () => void loadStatus())}>
+                  <Button type="primary" loading={sales.busy} disabled={!sales.canExecute || loading} onClick={() => void sales.run("/api/release/sales-monthly", { dryRun: false }, () => void loadStatus())}>
                     执行
                   </Button>
                 </Space>
@@ -496,10 +619,10 @@ export default function ReleaseClient({
             children: (
               <Space direction="vertical">
                 <Space>
-                  <Button loading={batch.busy} onClick={() => void batch.run("/api/release/batch-stocks", { dryRun: true })}>
+                  <Button loading={batch.busy} disabled={loading} onClick={() => void batch.run("/api/release/batch-stocks", { dryRun: true })}>
                     预演
                   </Button>
-                  <Button type="primary" loading={batch.busy} onClick={() => void batch.run("/api/release/batch-stocks", { dryRun: false }, () => void loadStatus())}>
+                  <Button type="primary" loading={batch.busy} disabled={!batch.canExecute || loading} onClick={() => void batch.run("/api/release/batch-stocks", { dryRun: false }, () => void loadStatus())}>
                     执行
                   </Button>
                 </Space>
@@ -513,12 +636,13 @@ export default function ReleaseClient({
             children: (
               <Space direction="vertical" style={{ width: "100%" }}>
                 <Space>
-                  <Button loading={spu.busy} onClick={() => { setSpuChecked(new Set()); void spu.run("/api/release/spus", { dryRun: true }); }}>
+                  <Button loading={spu.busy} disabled={loading} onClick={() => { setSpuChecked(new Set()); void spu.run("/api/release/spus", { dryRun: true }); }}>
                     预演（出待裁决簇）
                   </Button>
                   <Button
                     type="primary"
                     loading={spu.busy}
+                    disabled={!spu.canExecute || loading}
                     onClick={() => {
                       const overrides: Record<string, { action: "accept" }> = {};
                       for (const k of spuChecked) overrides[k] = { action: "accept" };
@@ -555,10 +679,10 @@ export default function ReleaseClient({
             children: (
               <Space direction="vertical">
                 <Space>
-                  <Button loading={sku.busy} onClick={() => void sku.run("/api/release/skus", { dryRun: true })}>
+                  <Button loading={sku.busy} disabled={loading} onClick={() => void sku.run("/api/release/skus", { dryRun: true })}>
                     预演
                   </Button>
-                  <Button type="primary" loading={sku.busy} onClick={() => void sku.run("/api/release/skus", { dryRun: false }, () => void loadStatus())}>
+                  <Button type="primary" loading={sku.busy} disabled={!sku.canExecute || loading} onClick={() => void sku.run("/api/release/skus", { dryRun: false }, () => void loadStatus())}>
                     执行
                   </Button>
                 </Space>
@@ -572,7 +696,7 @@ export default function ReleaseClient({
             children: (
               <Space direction="vertical" style={{ width: "100%" }}>
                 <Space wrap>
-                  <Button loading={bom.busy} onClick={() => void bom.run("/api/release/boms", { dryRun: true })}>
+                  <Button loading={bom.busy} disabled={loading} onClick={() => void bom.run("/api/release/boms", { dryRun: true })}>
                     预演（出歧义清单）
                   </Button>
                   <Checkbox checked={useRecommended} onChange={(e) => setUseRecommended(e.target.checked)}>
@@ -588,7 +712,7 @@ export default function ReleaseClient({
                       )
                     }
                   >
-                    <Button type="primary" loading={bom.busy}>
+                    <Button type="primary" loading={bom.busy} disabled={!bom.canExecute || loading}>
                       执行放行（出候选 draft）
                     </Button>
                   </Popconfirm>
@@ -603,14 +727,14 @@ export default function ReleaseClient({
                 <ResultLine result={bom.result} pick={[["created", "落库"], ["candidates", "候选"], ["retired", "退役"], ["blocked", "阻塞"], ["lineSkips", "行跳过"], ["releaseRunId", "批次号"]]} />
                 {bomRunId != null && (
                   <Space>
-                    <Button loading={bomActivate.busy} onClick={() => void bomActivate.run("/api/release/boms/activate", { releaseRunId: bomRunId, dryRun: true })}>
+                    <Button loading={bomActivate.busy} disabled={loading} onClick={() => void bomActivate.run("/api/release/boms/activate", { releaseRunId: bomRunId, dryRun: true })}>
                       生效预演（出 10% 抽检样本）
                     </Button>
                     <Popconfirm
                       title="批量生效本批候选 BOM？需 PMC 审批人身份；不能生效本人放行的批次（SoD）。"
                       onConfirm={() => void bomActivate.run("/api/release/boms/activate", { releaseRunId: bomRunId, dryRun: false })}
                     >
-                      <Button danger loading={bomActivate.busy}>
+                      <Button danger loading={bomActivate.busy} disabled={!bomActivate.canExecute || loading}>
                         批量生效（审批动作）
                       </Button>
                     </Popconfirm>
@@ -626,10 +750,10 @@ export default function ReleaseClient({
             children: (
               <Space direction="vertical">
                 <Space>
-                  <Button loading={fee.busy} onClick={() => void fee.run("/api/release/fee-refs", { dryRun: true })}>
+                  <Button loading={fee.busy} disabled={loading} onClick={() => void fee.run("/api/release/fee-refs", { dryRun: true })}>
                     预演
                   </Button>
-                  <Button type="primary" loading={fee.busy} onClick={() => void fee.run("/api/release/fee-refs", { dryRun: false }, () => void loadStatus())}>
+                  <Button type="primary" loading={fee.busy} disabled={!fee.canExecute || loading} onClick={() => void fee.run("/api/release/fee-refs", { dryRun: false }, () => void loadStatus())}>
                     执行
                   </Button>
                 </Space>

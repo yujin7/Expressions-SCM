@@ -20,7 +20,7 @@ describe("master/sku 审计原子性", () => {
 
     const { createSku } = await import("@/server/modules/master/sku");
     const created = await createSku(
-      { code: "AUD-001", name: "审计品", spuId: spu.id, skuType: "finished", baseUom: "个" },
+      { name: "审计品", spuId: spu.id, skuType: "finished", baseUom: "个" },
       { id: u.id, name: u.name, roles: ["admin"], isApprover: true },
       db,
     );
@@ -30,7 +30,7 @@ describe("master/sku 审计原子性", () => {
     expect(rows[0].action).toBe("create");
     expect(rows[0].userId).toBe(u.id);
 
-    const [sku] = await db.select().from(skus).where(eq(skus.code, "AUD-001"));
+    const [sku] = await db.select().from(skus).where(eq(skus.id, created.id));
     expect(sku.id).toBe(created.id);
     expect(rows[0].entityId).toBe(created.id);
   });

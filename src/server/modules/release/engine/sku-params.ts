@@ -1,12 +1,18 @@
 /** release 流水线：sku-params（自 engine.ts 拆出，行为未变） */
-import { and, eq, inArray } from "drizzle-orm";
-
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 
 
 
-import { type AnyDb, type ReleaseUser, resolveDb, aliasCache, loadSkuIdByCode } from "./common";
+import {
+  aliasCache,
+  assertRowsReleaseable,
+  loadSkuIdByCode,
+  loadStagedRows,
+  resolveDb,
+  type AnyDb,
+  type ReleaseUser,
+} from "./common";
 
 export interface ReleaseSkuParamsResult {
   dryRun: boolean;
@@ -25,10 +31,7 @@ export async function releaseSkuParams(
   dbArg?: AnyDb,
 ): Promise<ReleaseSkuParamsResult> {
   const db = await resolveDb(dbArg);
-  const rows: { payload: unknown }[] = await db
-    .select({ payload: schema.stagingRows.payload })
-    .from(schema.stagingRows)
-    .where(and(eq(schema.stagingRows.targetTable, "sku_leadtime"), inArray(schema.stagingRows.status, ["pending", "validated"])));
+  const rows = await loadStagedRows(db, "sku_leadtime");
   const resolve = aliasCache(db);
 
   const byCode = new Map<string, { normal: number | null; urgent: number | null }>();
@@ -53,6 +56,7 @@ export async function releaseSkuParams(
   if (args.dryRun) return { dryRun: true, upserted: plans.length, unresolvedSku };
 
   await db.transaction(async (tx: AnyDb) => {
+    await assertRowsReleaseable(tx, rows.map((row) => row.id));
     for (const p of plans) {
       await tx
         .insert(schema.skuParams)
@@ -73,4 +77,3 @@ export async function releaseSkuParams(
 }
 
 /* ══ 9) releaseFinishedMoq（起订量 → uom_convs.moq） ══════ */
-

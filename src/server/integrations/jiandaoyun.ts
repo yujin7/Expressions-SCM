@@ -272,7 +272,12 @@ export class JiandaoyunClient {
         appId,
         entryId,
       );
-      for (const record of page) result.set(record._id, record);
+      for (const record of page) {
+        if (result.has(record._id)) {
+          throw new Error(`简道云分页返回重复记录 ${record._id}，源视图可能在读取中变化`);
+        }
+        result.set(record._id, record);
+      }
       if (page.length < PAGE_SIZE) return [...result.values()];
       const next = page.at(-1)?._id ?? null;
       if (!next || next === cursor) throw new Error("简道云 data_id 游标未前进");

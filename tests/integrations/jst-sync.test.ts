@@ -33,8 +33,8 @@ describe("聚水潭日出库受控同步", () => {
       kind: "finished",
     }).returning();
     await db.insert(schema.aliases).values([
-      { aliasType: "sku_code", rawValue: "JST-SKU-A", targetId: sku.id, createdBy: actor.id },
-      { aliasType: "warehouse", rawValue: "10", targetId: warehouse.id, createdBy: actor.id },
+      { aliasType: "sku_code", scope: "JST", rawValue: "JST-SKU-A", targetId: sku.id, createdBy: actor.id },
+      { aliasType: "warehouse", scope: "JST", rawValue: "10", targetId: warehouse.id, createdBy: actor.id },
     ]);
 
     let fetchCount = 0;

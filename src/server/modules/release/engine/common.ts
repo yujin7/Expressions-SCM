@@ -17,7 +17,11 @@ import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 
-import { resolveAlias, type DimDb } from "@/server/modules/dimension/resolver";
+import {
+  normalizeAliasText,
+  resolveAlias,
+  type DimDb,
+} from "@/server/modules/dimension/resolver";
 import { ApiError } from "@/server/modules/master/common";
 import type { BomBlock } from "@/server/import/adapters/bom";
 import type { SpuCluster } from "@/server/import/adapters/bom-spu";
@@ -54,19 +58,106 @@ export async function loadStagedRows(db: AnyDb, targetTable: string, jobIds?: nu
     inArray(schema.stagingRows.status, ["pending", "validated"]),
   ];
   if (jobIds && jobIds.length > 0) conds.push(inArray(schema.stagingRows.importJobId, jobIds));
-  return db
-    .select()
+  const candidates: Array<StagedRow & { importScope: unknown }> = await db
+    .select({
+      id: schema.stagingRows.id,
+      importJobId: schema.stagingRows.importJobId,
+      rowNo: schema.stagingRows.rowNo,
+      payload: schema.stagingRows.payload,
+      status: schema.stagingRows.status,
+      errorMsg: schema.stagingRows.errorMsg,
+      targetTable: schema.stagingRows.targetTable,
+      targetId: schema.stagingRows.targetId,
+      importScope: schema.importJobs.scope,
+    })
     .from(schema.stagingRows)
+    .innerJoin(schema.importJobs, eq(schema.importJobs.id, schema.stagingRows.importJobId))
     .where(and(...conds))
     .orderBy(asc(schema.stagingRows.importJobId), asc(schema.stagingRows.rowNo));
+  const blockedJobIds = [...new Set(candidates
+    .filter((row) => {
+      const scope = row.importScope;
+      return !!scope && typeof scope === "object"
+        && !Array.isArray(scope)
+        && (scope as Record<string, unknown>).releaseBlocked === true;
+    })
+    .map((row) => row.importJobId))];
+  if (blockedJobIds.length > 0) {
+    throw new ApiError(
+      409,
+      `导入任务 ${blockedJobIds.join(", ")} 标记为 releaseBlocked，禁止进入正式放行引擎`,
+    );
+  }
+  return candidates.map(({ importScope: _importScope, ...row }) => row);
+}
+
+function isReleaseBlockedScope(scope: unknown): boolean {
+  return !!scope
+    && typeof scope === "object"
+    && !Array.isArray(scope)
+    && (scope as Record<string, unknown>).releaseBlocked === true;
+}
+
+/**
+ * Mutation-time guard shared by every release writer.
+ *
+ * Call this inside the writer transaction. `FOR UPDATE` locks both the staging and owning import
+ * job rows, so a connector cannot toggle releaseBlocked or replace the candidate status between
+ * the decision read and the destination write.
+ */
+export async function assertRowsReleaseable(db: AnyDb, rowIds: number[]): Promise<void> {
+  const selectedIds = [...new Set(rowIds)];
+  if (selectedIds.length === 0) return;
+  const rows: { id: number; importJobId: number; status: string; scope: unknown }[] = [];
+  for (let index = 0; index < selectedIds.length; index += 500) {
+    const chunk = selectedIds.slice(index, index + 500);
+    const locked = await db
+      .select({
+        id: schema.stagingRows.id,
+        importJobId: schema.stagingRows.importJobId,
+        status: schema.stagingRows.status,
+        scope: schema.importJobs.scope,
+      })
+      .from(schema.stagingRows)
+      .innerJoin(schema.importJobs, eq(schema.importJobs.id, schema.stagingRows.importJobId))
+      .where(inArray(schema.stagingRows.id, chunk))
+      .for("update");
+    rows.push(...locked);
+  }
+  const found = new Set(rows.map((row) => row.id));
+  const missing = selectedIds.filter((id) => !found.has(id));
+  if (missing.length > 0) {
+    throw new ApiError(409, `放行候选已变化或不存在：staging ${missing.join(", ")}`);
+  }
+  const blockedJobIds = [...new Set(rows
+    .filter((row) => isReleaseBlockedScope(row.scope))
+    .map((row) => row.importJobId))];
+  if (blockedJobIds.length > 0) {
+    throw new ApiError(
+      409,
+      `导入任务 ${blockedJobIds.join(", ")} 标记为 releaseBlocked，禁止进入正式放行引擎`,
+    );
+  }
+  const changed = rows.filter((row) => !["pending", "validated"].includes(row.status)).map((row) => row.id);
+  if (changed.length > 0) {
+    throw new ApiError(409, `放行候选状态已变化：staging ${changed.join(", ")}`);
+  }
 }
 
 export async function commitRows(db: AnyDb, rowIds: number[], targetId: number | null): Promise<void> {
   if (rowIds.length === 0) return;
-  await db
+  await assertRowsReleaseable(db, rowIds);
+  const committed: { id: number }[] = await db
     .update(schema.stagingRows)
     .set({ status: "committed", targetId, errorMsg: null })
-    .where(inArray(schema.stagingRows.id, rowIds));
+    .where(and(
+      inArray(schema.stagingRows.id, rowIds),
+      inArray(schema.stagingRows.status, ["pending", "validated"]),
+    ))
+    .returning({ id: schema.stagingRows.id });
+  if (committed.length !== new Set(rowIds).size) {
+    throw new ApiError(409, "放行候选在提交时发生变化，请重新预演");
+  }
 }
 
 /** 未提交行记阻塞原因（状态保持 pending——原因可见、行仍待处置） */
@@ -168,10 +259,106 @@ export async function loadSkuIdByCode(db: AnyDb, codes: string[]): Promise<Map<s
     const rows: { rawValue: string; targetId: number | null }[] = await db
       .select({ rawValue: schema.aliases.rawValue, targetId: schema.aliases.targetId })
       .from(schema.aliases)
-      .where(and(eq(schema.aliases.aliasType, "sku_code"), inArray(schema.aliases.rawValue, uniq.slice(i, i + CHUNK))));
+      .where(and(
+        eq(schema.aliases.aliasType, "sku_code"),
+        eq(schema.aliases.scope, schema.GLOBAL_ALIAS_SCOPE),
+        inArray(schema.aliases.rawValue, uniq.slice(i, i + CHUNK)),
+      ));
     for (const r of rows) if (r.targetId != null) map.set(r.rawValue, r.targetId);
   }
   return map;
+}
+
+export interface InternalSkuIdentityResolution {
+  resolved: Map<string, number>;
+  ambiguous: Map<string, number[]>;
+  /** Inactive INTERNAL legacy values remain reserved until an explicit human adjudication. */
+  reserved: Map<string, number[]>;
+}
+
+/**
+ * Production BOM identity resolver.
+ *
+ * Only an explicit GLOBAL sku_code adjudication, an exact canonical code, or an active
+ * INTERNAL legacy identifier may resolve a source code. Vendor/customer/external scopes are
+ * intentionally excluded: their identical short codes are not enterprise master identity.
+ */
+export async function loadInternalSkuIdentityResolution(
+  db: AnyDb,
+  codes: string[],
+): Promise<InternalSkuIdentityResolution> {
+  const originals = [...new Set(codes)].filter(Boolean);
+  const normalizedByOriginal = new Map(originals.map((code) => [code, normalizeAliasText(code)]));
+  const normalizedCodes = [...new Set(normalizedByOriginal.values())].filter(Boolean);
+  const candidates = new Map<string, Set<number>>();
+  const inactiveLegacy = new Map<string, Set<number>>();
+  const adjudicated = new Map<string, number>();
+  const CHUNK = 500;
+
+  for (let index = 0; index < normalizedCodes.length; index += CHUNK) {
+    const chunk = normalizedCodes.slice(index, index + CHUNK);
+    const canonical: { id: number; code: string }[] = await db
+      .select({ id: schema.skus.id, code: schema.skus.code })
+      .from(schema.skus)
+      .where(inArray(schema.skus.code, chunk));
+    for (const row of canonical) {
+      const key = normalizeAliasText(row.code);
+      const ids = candidates.get(key) ?? new Set<number>();
+      ids.add(row.id);
+      candidates.set(key, ids);
+    }
+
+    const legacy: { value: string; skuId: number; active: boolean }[] = await db
+      .select({
+        value: schema.skuIdentifiers.value,
+        skuId: schema.skuIdentifiers.skuId,
+        active: schema.skuIdentifiers.active,
+      })
+      .from(schema.skuIdentifiers)
+      .where(and(
+        inArray(schema.skuIdentifiers.value, chunk),
+        eq(schema.skuIdentifiers.kind, "legacy"),
+        eq(schema.skuIdentifiers.scope, "INTERNAL"),
+      ));
+    for (const row of legacy) {
+      const key = normalizeAliasText(row.value);
+      const target = row.active ? candidates : inactiveLegacy;
+      const ids = target.get(key) ?? new Set<number>();
+      ids.add(row.skuId);
+      target.set(key, ids);
+    }
+
+    const aliases: { rawValue: string; targetId: number }[] = await db
+      .select({ rawValue: schema.aliases.rawValue, targetId: schema.aliases.targetId })
+      .from(schema.aliases)
+      .where(and(
+        eq(schema.aliases.aliasType, "sku_code"),
+        eq(schema.aliases.scope, schema.GLOBAL_ALIAS_SCOPE),
+        inArray(schema.aliases.rawValue, chunk),
+      ));
+    for (const row of aliases) adjudicated.set(normalizeAliasText(row.rawValue), row.targetId);
+  }
+
+  const resolved = new Map<string, number>();
+  const ambiguous = new Map<string, number[]>();
+  const reserved = new Map<string, number[]>();
+  for (const original of originals) {
+    const key = normalizedByOriginal.get(original)!;
+    const chosen = adjudicated.get(key);
+    if (chosen != null) {
+      resolved.set(original, chosen);
+      continue;
+    }
+    const inactiveIds = [...(inactiveLegacy.get(key) ?? new Set<number>())].sort((a, b) => a - b);
+    if (inactiveIds.length > 0) {
+      reserved.set(original, inactiveIds);
+      continue;
+    }
+    const ids = [...(candidates.get(key) ?? new Set<number>())].sort((a, b) => a - b);
+    if (ids.length === 1) resolved.set(original, ids[0]);
+    else if (ids.length > 1) ambiguous.set(original, ids);
+  }
+  return { resolved, ambiguous, reserved };
 }
 
 /* ══ 1) releaseSpus（§4.1 派生 + 人工闸） ═══════════════ */

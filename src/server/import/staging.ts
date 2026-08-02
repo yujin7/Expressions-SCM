@@ -30,46 +30,51 @@ interface ImportJobIdentity {
   scope?: Record<string, unknown> | null;
 }
 
-async function insertImportJob(
-  db: AnyDb,
+async function insertImportJobInTransaction(
+  tx: AnyDb,
   i: ImportJobIdentity,
 ): Promise<{ id: number }> {
   // 红队第四轮 F1：重导幂等落地——同 idempotencyKey 的旧 job 未放行行一律作废，
   // 防止 populate/上传重跑把同一文件的行重复排队（期初翻倍事故的根因）。
   // committed 行不动（已放行历史留痕）；error 行本就不入选。
-  return db.transaction(async (tx: AnyDb) => {
-    const olds: { id: number }[] = await tx
-      .select({ id: importJobs.id })
-      .from(importJobs)
-      .where(eq(importJobs.idempotencyKey, i.idempotencyKey));
-    const [job] = await tx
-      .insert(importJobs)
-      .values({
-        template: i.template,
-        filename: i.filename,
-        fileHash: i.fileHash,
-        sourceAsOf: i.sourceAsOf ?? null,
-        schemaVersion: i.schemaVersion ?? `${i.template}-v1`,
-        scope: i.scope ?? null,
-        status: "validating",
-        createdBy: i.createdBy,
-        idempotencyKey: i.idempotencyKey,
-      })
-      .returning({ id: importJobs.id });
-    for (const old of olds) {
-      await tx
-        .update(stagingRows)
-        .set({ status: "error", errorMsg: `重导作废（superseded by job #${job.id}）` })
-        .where(
-          and(
-            eq(stagingRows.importJobId, old.id),
-            inArray(stagingRows.status, ["pending", "validated"]),
-          ),
-        );
-      await tx.update(importJobs).set({ status: "superseded" }).where(eq(importJobs.id, old.id));
-    }
-    return job;
-  });
+  const olds: { id: number }[] = await tx
+    .select({ id: importJobs.id })
+    .from(importJobs)
+    .where(eq(importJobs.idempotencyKey, i.idempotencyKey));
+  const [job] = await tx
+    .insert(importJobs)
+    .values({
+      template: i.template,
+      filename: i.filename,
+      fileHash: i.fileHash,
+      sourceAsOf: i.sourceAsOf ?? null,
+      schemaVersion: i.schemaVersion ?? `${i.template}-v1`,
+      scope: i.scope ?? null,
+      status: "validating",
+      createdBy: i.createdBy,
+      idempotencyKey: i.idempotencyKey,
+    })
+    .returning({ id: importJobs.id });
+  for (const old of olds) {
+    await tx
+      .update(stagingRows)
+      .set({ status: "error", errorMsg: `重导作废（superseded by job #${job.id}）` })
+      .where(
+        and(
+          eq(stagingRows.importJobId, old.id),
+          inArray(stagingRows.status, ["pending", "validated"]),
+        ),
+      );
+    await tx.update(importJobs).set({ status: "superseded" }).where(eq(importJobs.id, old.id));
+  }
+  return job;
+}
+
+async function insertImportJob(
+  db: AnyDb,
+  i: ImportJobIdentity,
+): Promise<{ id: number }> {
+  return db.transaction((tx: AnyDb) => insertImportJobInTransaction(tx, i));
 }
 
 export async function createImportJob(
@@ -123,6 +128,104 @@ export async function createSourceImportJob(
     scope: i.scope,
   });
   return { ...job, sourceHash };
+}
+
+/**
+ * Transaction-owned variant for connector sagas. The caller must already hold the transaction
+ * that also commits staging rows, its integration run, and the checkpoint. Keeping this separate
+ * avoids a nested transaction/savepoint being mistaken for end-to-end atomicity.
+ */
+export async function createSourceImportJobInTransaction(
+  tx: AnyDb,
+  i: {
+    template: string;
+    sourceName: string;
+    sourceBytes: string | Uint8Array;
+    createdBy: number;
+    idempotencyKey: string;
+    sourceAsOf?: string | null;
+    schemaVersion?: string;
+    scope?: Record<string, unknown> | null;
+  },
+): Promise<{ id: number; sourceHash: string }> {
+  const sourceHash = createHash("sha256").update(i.sourceBytes).digest("hex");
+  const job = await insertImportJobInTransaction(tx, {
+    template: i.template,
+    filename: i.sourceName,
+    fileHash: `sha256:${sourceHash}`,
+    createdBy: i.createdBy,
+    idempotencyKey: i.idempotencyKey,
+    sourceAsOf: i.sourceAsOf,
+    schemaVersion: i.schemaVersion,
+    scope: i.scope,
+  });
+  return { ...job, sourceHash };
+}
+
+/**
+ * A non-empty full observation replaces older, still-reviewable observations for the same
+ * connector stream. This is deliberately separate from `idempotencyKey`: evidence hashes make
+ * exact replays immutable, while this logical stream key prevents multiple full snapshots from
+ * remaining actionable at once. Empty observations must not call this helper because an upstream
+ * permission/outage response must never erase the last reviewable business facts.
+ *
+ * Committed rows are never changed. Superseded jobs and rows remain as append-only lineage.
+ */
+export async function supersedeSourceObservationJobsInTransaction(
+  tx: AnyDb,
+  input: {
+    keepJobId: number;
+    template: string;
+    connector: string;
+    stream: string;
+  },
+): Promise<number> {
+  const candidates: Array<{
+    id: number;
+    status: string;
+    scope: unknown;
+  }> = await tx
+    .select({
+      id: importJobs.id,
+      status: importJobs.status,
+      scope: importJobs.scope,
+    })
+    .from(importJobs)
+    .where(eq(importJobs.template, input.template));
+
+  const supersededIds = candidates
+    .filter((candidate) => {
+      if (candidate.id === input.keepJobId || candidate.status === "superseded") return false;
+      const scope = typeof candidate.scope === "object"
+        && candidate.scope !== null
+        && !Array.isArray(candidate.scope)
+        ? candidate.scope as Record<string, unknown>
+        : {};
+      return scope.connector === input.connector
+        && scope.stream === input.stream
+        && scope.mode === "full"
+        && scope.authority === "observation-only"
+        && scope.releaseBlocked === true;
+    })
+    .map((candidate) => candidate.id);
+
+  for (const oldId of supersededIds) {
+    await tx
+      .update(stagingRows)
+      .set({
+        status: "error",
+        errorMsg: `新全量观察批次 #${input.keepJobId} 替代旧批次 #${oldId}`,
+      })
+      .where(and(
+        eq(stagingRows.importJobId, oldId),
+        inArray(stagingRows.status, ["pending", "validated"]),
+      ));
+    await tx
+      .update(importJobs)
+      .set({ status: "superseded" })
+      .where(eq(importJobs.id, oldId));
+  }
+  return supersededIds.length;
 }
 
 export async function writeStagingRows(db: AnyDb, jobId: number, rows: StagingRowInput[]): Promise<void> {

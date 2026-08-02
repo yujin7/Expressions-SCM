@@ -10,7 +10,7 @@ import { createTestDb, type TestDb } from "../helpers/db";
 import { writeStagingRows } from "@/server/import/staging";
 import {
   releaseBatchStocks,
-  releaseSkus,
+  releaseSkusForLegacyLocalMigration as releaseSkusLegacy,
   releaseSpus,
   type ReleaseUser,
 } from "@/server/modules/release/engine";
@@ -71,12 +71,12 @@ describe("rt4: releaseSkus 编码冲突", () => {
     ]);
     await releaseSpus(pmc, { dryRun: false }, db);
 
-    const dry = await releaseSkus(pmc, { dryRun: true }, db);
+    const dry = await releaseSkusLegacy(pmc, { dryRun: true }, db);
     // RT4-F5：同码成品∩物料转行级阻塞，两侧撤出计划。
     expect(dry.createdCodes.filter((c) => c === "X01-a")).toHaveLength(0);
     expect(dry.blocked.some((b) => b.code === "X01-a")).toBe(true);
 
-    const real = await releaseSkus(pmc, { dryRun: false }, db);
+    const real = await releaseSkusLegacy(pmc, { dryRun: false }, db);
     expect(real.blocked.some((b) => b.code === "X01-a")).toBe(true);
     // 冲突码之外的建档正常落库，事务不再整批崩溃
     const skus = await db.select().from(schema.skus);
@@ -119,7 +119,7 @@ describe("rt4: releaseSkus 编码冲突", () => {
       },
     ]);
     await releaseSpus(pmc, { dryRun: false }, db);
-    const skuRes = await releaseSkus(pmc, { dryRun: false }, db);
+    const skuRes = await releaseSkusLegacy(pmc, { dryRun: false }, db);
     expect(skuRes.createdFinished).toBe(0); // RT4-F6 修复后：别名裁决优先，不再分叉建档
     expect(skuRes.existing).toBeGreaterThanOrEqual(1);
 

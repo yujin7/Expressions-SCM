@@ -19,7 +19,7 @@ describe("wide table overflow contract", () => {
     const source = read(file);
     const tableCount = (source.match(/<Table(?:<[^>]+>)?(?:\s|\/|>)/g) ?? []).length;
     const horizontalViewportCount = (
-      source.match(/\bscroll\s*=\s*\{\{\s*x\s*:\s*["'][^"']+["']\s*\}\}/g) ?? []
+      source.match(/\bscroll\s*=\s*\{\{\s*x\s*:\s*(?:["'][^"']+["']|[\d_]+)\s*\}\}/g) ?? []
     ).length;
 
     expect(tableCount, `${file} must contain an audited table`).toBeGreaterThan(0);

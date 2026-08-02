@@ -11,7 +11,8 @@ import { writeStagingRows } from "@/server/import/staging";
 import {
   activateReleasedBoms,
   releaseBoms,
-  releaseSkus,
+  releaseBomsForLegacyLocalMigration as releaseBomsLegacy,
+  releaseSkusForLegacyLocalMigration as releaseSkusLegacy,
   releaseSpus,
   type ReleaseUser,
 } from "@/server/modules/release/engine";
@@ -19,7 +20,13 @@ import {
 async function newJob(db: TestDb): Promise<number> {
   const [j] = await db
     .insert(schema.importJobs)
-    .values({ template: "bom", filename: "t.xlsx", status: "done", createdBy: 1 })
+    .values({
+      template: "bom",
+      filename: "t.xlsx",
+      status: "done",
+      scope: { mode: "full", identityMode: "historical_preserve" },
+      createdBy: 1,
+    })
     .returning({ id: schema.importJobs.id });
   return j.id;
 }
@@ -85,7 +92,7 @@ describe("releaseBoms / activateReleasedBoms", () => {
       },
     ]);
     await releaseSpus(releaser, { dryRun: false }, db);
-    await releaseSkus(releaser, { dryRun: false }, db);
+    await releaseSkusLegacy(releaser, { dryRun: false }, db);
 
     const productSku = (await db.select().from(schema.skus).where(eq(schema.skus.code, "N006-a")))[0];
     // 既有生效版本（后续批审应将其退役）
@@ -94,7 +101,7 @@ describe("releaseBoms / activateReleasedBoms", () => {
     });
 
     // dry-run：版本接续 V2，零写入
-    const dry = await releaseBoms(releaser, { dryRun: true }, db);
+    const dry = await releaseBomsLegacy(releaser, { dryRun: true }, db);
     expect(dry.dryRun).toBe(true);
     expect(dry.created).toBe(1);
     expect(dry.candidates[0].versionNo).toBe("V2");
@@ -102,7 +109,7 @@ describe("releaseBoms / activateReleasedBoms", () => {
     expect(await db.select().from(schema.boms)).toHaveLength(1);
 
     // 真放行：draft 候选 + 行级跳过留痕
-    const run = await releaseBoms(releaser, { dryRun: false }, db);
+    const run = await releaseBomsLegacy(releaser, { dryRun: false }, db);
     expect(run.created).toBe(1);
     expect(run.releaseRunId).not.toBeNull();
     expect(run.lineSkips).toHaveLength(2);
@@ -184,10 +191,10 @@ describe("releaseBoms / activateReleasedBoms", () => {
       { rowNo: 6, targetTable: "bom_block", payload: mk("E03-y", "preferred", false) },
     ]);
     await releaseSpus(releaser, { dryRun: false }, db);
-    await releaseSkus(releaser, { dryRun: false }, db);
+    await releaseSkusLegacy(releaser, { dryRun: false }, db);
 
     // 无 resolutions：歧义块 100% 阻塞（禁止启发式定 active）；E03 双候选照常放行
-    const run1 = await releaseBoms(releaser, { dryRun: false }, db);
+    const run1 = await releaseBomsLegacy(releaser, { dryRun: false }, db);
     expect(run1.blocked.filter((b) => b.reason.includes("歧义块"))).toHaveLength(2);
     expect(run1.created).toBe(2); // E03-y 两块
     expect(run1.candidates).toHaveLength(1); // 仅最后一块为候选
@@ -209,7 +216,7 @@ describe("releaseBoms / activateReleasedBoms", () => {
 
     // 携带人工裁决重放：旧版 retired / 新版候选
     const [rowA, rowB] = amb.sort((a, b) => a.rowNo - b.rowNo);
-    const run2 = await releaseBoms(
+    const run2 = await releaseBomsLegacy(
       releaser,
       {
         resolutions: {
@@ -283,8 +290,8 @@ describe("releaseBoms / activateReleasedBoms", () => {
       },
     ]);
     await releaseSpus(releaser, { dryRun: false }, db);
-    await releaseSkus(releaser, { dryRun: false }, db);
-    const run = await releaseBoms(releaser, { dryRun: false }, db);
+    await releaseSkusLegacy(releaser, { dryRun: false }, db);
+    const run = await releaseBomsLegacy(releaser, { dryRun: false }, db);
     const candidateId = run.candidates[0].bomId!;
 
     // 混入外部 id：整体拒绝，报文列出违规 id

@@ -9,7 +9,11 @@ import { and, eq } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { createTestDb, type TestDb } from "../helpers/db";
 import { writeStagingRows } from "@/server/import/staging";
-import { releaseSkus, releaseSpus, type ReleaseUser } from "@/server/modules/release/engine";
+import {
+  releaseSkusForLegacyLocalMigration as releaseSkusLegacy,
+  releaseSpus,
+  type ReleaseUser,
+} from "@/server/modules/release/engine";
 
 const pmc: ReleaseUser = { id: 1, name: "放行员", roles: ["pmc"], isApprover: false };
 
@@ -73,7 +77,7 @@ describe("releaseSkus 阻塞原因写回 staging 行", () => {
     await releaseSpus(pmc, { dryRun: false }, db);
 
     // dry-run：blocked 报告但零写入
-    const dry = await releaseSkus(pmc, { dryRun: true }, db);
+    const dry = await releaseSkusLegacy(pmc, { dryRun: true }, db);
     expect(dry.blocked.some((b) => b.code === "XYZ-1")).toBe(true);
     const rowsAfterDry = await db
       .select()
@@ -82,7 +86,7 @@ describe("releaseSkus 阻塞原因写回 staging 行", () => {
     expect(rowsAfterDry.every((r) => r.errorMsg == null)).toBe(true);
 
     // 真放行：受阻码的贡献行 errorMsg 落地
-    const run = await releaseSkus(pmc, { dryRun: false }, db);
+    const run = await releaseSkusLegacy(pmc, { dryRun: false }, db);
     expect(run.blocked).toContainEqual({
       code: "XYZ-1",
       kind: "material",
@@ -132,7 +136,7 @@ describe("releaseSkus 阻塞原因写回 staging 行", () => {
       },
     ]);
     await releaseSpus(pmc, { dryRun: false }, db);
-    const run = await releaseSkus(pmc, { dryRun: false }, db);
+    const run = await releaseSkusLegacy(pmc, { dryRun: false }, db);
     expect(run.blocked).toHaveLength(4);
 
     const [row] = await db

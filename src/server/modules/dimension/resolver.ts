@@ -19,8 +19,16 @@ export type DimDb = PgDatabase<PgQueryResultHKT, typeof schema>;
 export interface AliasResolutionOptions {
   /** GLOBAL=企业通用；外部连接器必须传其规范系统 scope。 */
   scope?: string;
-  /** 外部系统专属别名未命中时，是否允许回退企业通用别名。默认 true。 */
+  /**
+   * 外部系统专属别名未命中时，是否显式允许回退企业通用别名。
+   * 默认 false：外部身份必须由该系统 scope 内的别名或标识裁决，不能因码面巧合串到 GLOBAL。
+   */
   allowGlobalFallback?: boolean;
+  /**
+   * 是否显式允许用未分 scope 的内部主档自然键兜底。
+   * GLOBAL 默认允许；外部 scope 默认禁止，需人工建立 scoped alias / identifier。
+   */
+  allowUnscopedMasterMatch?: boolean;
 }
 
 /**
@@ -77,7 +85,7 @@ export async function resolveAlias(
   if (scoped !== null) return scoped;
   if (
     scope !== schema.GLOBAL_ALIAS_SCOPE
-    && options.allowGlobalFallback !== false
+    && options.allowGlobalFallback === true
   ) {
     return resolveAliasInScope(db, aliasType, value, schema.GLOBAL_ALIAS_SCOPE);
   }
@@ -204,10 +212,12 @@ async function loadExactReferenceIds(
   value: string,
   options: AliasResolutionOptions = {},
 ): Promise<number[]> {
+  const scope = normalizeAliasScope(options.scope);
+  const allowUnscopedMasterMatch = scope === schema.GLOBAL_ALIAS_SCOPE
+    || options.allowUnscopedMasterMatch === true;
   let rows: { id: number }[] = [];
   switch (aliasType) {
     case "sku_code": {
-      const scope = normalizeAliasScope(options.scope);
       const identifierConditions = [
         eq(schema.skuIdentifiers.value, value),
         eq(schema.skuIdentifiers.active, true),
@@ -223,7 +233,9 @@ async function loadExactReferenceIds(
         );
       }
       rows = [
-        ...await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.code, value)),
+        ...(allowUnscopedMasterMatch
+          ? await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.code, value))
+          : []),
         ...await db
           .select({ id: schema.skuIdentifiers.skuId })
           .from(schema.skuIdentifiers)
@@ -232,6 +244,7 @@ async function loadExactReferenceIds(
       break;
     }
     case "sku_barcode":
+      if (!allowUnscopedMasterMatch) break;
       rows = [
         ...await db.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.barcode, value)),
         ...await db
@@ -245,6 +258,7 @@ async function loadExactReferenceIds(
       ];
       break;
     case "supplier_oem":
+      if (!allowUnscopedMasterMatch) break;
       rows = await db
         .select({ id: schema.suppliers.id })
         .from(schema.suppliers)
@@ -255,6 +269,7 @@ async function loadExactReferenceIds(
         ));
       break;
     case "brand":
+      if (!allowUnscopedMasterMatch) break;
       rows = await db
         .select({ id: schema.brands.id })
         .from(schema.brands)
@@ -265,12 +280,14 @@ async function loadExactReferenceIds(
         ));
       break;
     case "channel":
+      if (!allowUnscopedMasterMatch) break;
       rows = await db
         .select({ id: schema.channels.id })
         .from(schema.channels)
         .where(or(eq(schema.channels.code, value), eq(schema.channels.name, value)));
       break;
     case "warehouse":
+      if (!allowUnscopedMasterMatch) break;
       rows = await db
         .select({ id: schema.warehouses.id })
         .from(schema.warehouses)

@@ -27,7 +27,7 @@ export type SpuInput = z.infer<typeof spuSchema>;
 // ---------- SKU ----------
 export const SKU_TYPES = ["finished", "semi", "raw", "packaging", "service"] as const; // 04 §3 五值
 export const skuSchema = z.object({
-  /** 新建时留空由服务端按 S1 原子取号；历史/外部真实编码仍可显式录入。 */
+  /** 新建时留空由服务端按 S1 原子取号；历史码只可经受控迁移入口录入。 */
   code: z.preprocess(
     emptyToUndef,
     z.string().trim().refine((c) => checkCode(c).ok, (c) => ({ message: checkCode(c).reason ?? "编码不合规" })).optional(),
@@ -62,6 +62,20 @@ export const skuSchema = z.object({
   nearExpiryDays: z.number().int().positive().nullable().optional(),
 });
 export type SkuInput = z.infer<typeof skuSchema>;
+
+export const SKU_CREATE_MODES = ["governed_s1", "historical_migration"] as const;
+/**
+ * 主数据交互式新建契约。默认只能由系统生成 S1；历史码例外还须在 service 内
+ * 重新校验管理员身份和原因。skuSchema 仍是更新/内部回填的基础字段契约。
+ */
+export const skuCreateSchema = skuSchema.extend({
+  creationMode: z.enum(SKU_CREATE_MODES).optional().default("governed_s1"),
+  historicalMigrationReason: z.preprocess(
+    emptyToUndef,
+    z.string().trim().min(10, "历史迁移原因至少 10 个字").max(500, "历史迁移原因最多 500 个字").optional(),
+  ),
+});
+export type SkuCreateInput = z.infer<typeof skuCreateSchema>;
 
 // ---------- 分类 ----------
 export const categorySchema = z.object({

@@ -195,6 +195,75 @@ describe("别名解析器（PGlite）", () => {
     expect(queued.map((row) => row.scope).sort()).toEqual(["JIANDAOYUN", "YONYOU"]);
   });
 
+  it("外部 scope 默认严格隔离：不回退 GLOBAL，不用未分 scope 的主档码/名兜底", async () => {
+    const [spu] = await db
+      .insert(schema.spus)
+      .values({ code: "P-JDY-BOUNDARY", nameCn: "简道云身份边界" })
+      .returning();
+    const [internalSku, otherSystemSku] = await db
+      .insert(schema.skus)
+      .values([
+        { code: "COLLIDE-001", name: "内部同码", spuId: spu.id, baseUom: "件", skuType: "finished" },
+        { code: "OTHER-001", name: "其他系统同码", spuId: spu.id, baseUom: "件", skuType: "finished" },
+      ])
+      .returning();
+    const [supplier] = await db
+      .insert(schema.suppliers)
+      .values({ code: "SUP-COLLIDE", name: "同名供应商" })
+      .returning();
+    const [warehouse] = await db
+      .insert(schema.warehouses)
+      .values({ code: "WH-COLLIDE", name: "同名仓", kind: "finished" })
+      .returning();
+    await db.insert(schema.aliases).values([
+      { aliasType: "sku_code", scope: "GLOBAL", rawValue: "COLLIDE-001", targetId: internalSku.id },
+      { aliasType: "supplier_oem", scope: "GLOBAL", rawValue: "同名供应商", targetId: supplier.id },
+      { aliasType: "warehouse", scope: "GLOBAL", rawValue: "同名仓", targetId: warehouse.id },
+    ]);
+    await db.insert(schema.skuIdentifiers).values({
+      skuId: otherSystemSku.id,
+      kind: "external",
+      value: "COLLIDE-001",
+      scope: "YONYOU",
+    });
+
+    const strict = { scope: "JIANDAOYUN" } as const;
+    expect(await resolveAlias(db, "sku_code", "COLLIDE-001", strict)).toBeNull();
+    expect(await resolveKnownReference(db, "sku_code", "COLLIDE-001", strict)).toBeNull();
+    expect(await resolveKnownReference(db, "supplier_oem", "同名供应商", strict)).toBeNull();
+    expect(await resolveKnownReference(db, "warehouse", "同名仓", strict)).toBeNull();
+
+    // 历史兼容只能由调用方显式开启，不能成为外部 scope 的默认行为。
+    expect(await resolveAlias(db, "sku_code", "COLLIDE-001", {
+      ...strict,
+      allowGlobalFallback: true,
+    })).toBe(internalSku.id);
+    expect(await resolveKnownReference(db, "supplier_oem", "同名供应商", {
+      ...strict,
+      allowUnscopedMasterMatch: true,
+    })).toBe(supplier.id);
+
+    expect(await resolveKnownOrQueue(
+      db,
+      "warehouse",
+      "同名仓",
+      { connector: "jdy", field: "warehouseName" },
+      strict,
+    )).toBeNull();
+    const [queued] = await db
+      .select()
+      .from(schema.aliasExceptions)
+      .where(and(
+        eq(schema.aliasExceptions.aliasType, "warehouse"),
+        eq(schema.aliasExceptions.scope, "JIANDAOYUN"),
+        eq(schema.aliasExceptions.rawValue, "同名仓"),
+      ));
+    expect(queued).toMatchObject({
+      status: "open",
+      context: { connector: "jdy", field: "warehouseName", reason: "not_found", exactMatchCount: 0 },
+    });
+  });
+
   it("sku_code 精确命中多主档时按歧义入队，不误报未找到", async () => {
     const [spu] = await db
       .insert(schema.spus)
