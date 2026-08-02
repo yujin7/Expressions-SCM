@@ -6,6 +6,7 @@ import {
   feishuPermissionReviewEvidenceBinding,
   feishuTargetEvidenceBinding,
   feishuWebhookUrlFromEnv,
+  type FeishuLeastPrivilegeState,
 } from "./feishu";
 import {
   jiandaoyunConfigFromEnv,
@@ -50,6 +51,21 @@ export interface ConnectorIdentityEvidence {
   openExceptions: number;
   /** Resolved/ignored exceptions, scoped aliases or scoped identifiers proving this scope was seen. */
   observedIdentities: number;
+}
+
+/**
+ * Current read-only evidence from Feishu's self-application endpoint. Callers must pass the
+ * observation produced in the same readiness operation; persisted configuration is not accepted
+ * as proof of the provider's current permission set.
+ */
+export interface ConnectorFeishuPermissionEvidence {
+  appId: string;
+  fingerprint: string | null;
+  leastPrivilege: FeishuLeastPrivilegeState;
+}
+
+export interface ConnectorRuntimeEvidence {
+  feishuPermission?: ConnectorFeishuPermissionEvidence;
 }
 
 export const LIVE_VERIFICATION_MAX_AGE_DAYS = 90;
@@ -525,6 +541,7 @@ export function getConnectorReadiness(
   env: NodeJS.ProcessEnv = process.env,
   now: Date = new Date(),
   identityEvidence?: Readonly<Partial<Record<ConnectorIdentityScope, ConnectorIdentityEvidence>>>,
+  runtimeEvidence?: Readonly<ConnectorRuntimeEvidence>,
 ): ConnectorReadiness[] {
   return CONNECTORS.map((connector) => {
     const configured = connector.isConfigured(env);
@@ -548,18 +565,34 @@ export function getConnectorReadiness(
     const partialFeishuApp = connector.key === "feishu"
       ? feishuAppCredentialsFromEnv(env)
       : null;
+    const suppliedFeishuPermission = runtimeEvidence?.feishuPermission ?? null;
+    const currentFeishuPermission = connector.key === "feishu"
+      && partialFeishuApp
+      && suppliedFeishuPermission?.appId === partialFeishuApp.appId
+      ? suppliedFeishuPermission
+      : null;
     if (
       connector.key === "feishu"
       && (selectedAuthPath === "app_bot" || (selectedAuthPath === null && partialFeishuApp))
       && partialFeishuApp
     ) {
-      expectedSecurityReviewBinding = feishuPermissionReviewEvidenceBinding(partialFeishuApp.appId);
       securityReview = feishuAppPermissionReviewVerification(env, now);
+      if (currentFeishuPermission?.fingerprint) {
+        expectedSecurityReviewBinding = feishuPermissionReviewEvidenceBinding(
+          partialFeishuApp.appId,
+          currentFeishuPermission.fingerprint,
+        );
+      }
       if (
         securityReview.state === "valid"
-        && !feishuEvidenceRefHasPermissionReviewBinding(
-          securityReview.evidenceRef,
-          partialFeishuApp.appId,
+        && (
+          currentFeishuPermission?.leastPrivilege !== "no_excess_detected"
+          || !currentFeishuPermission.fingerprint
+          || !feishuEvidenceRefHasPermissionReviewBinding(
+            securityReview.evidenceRef,
+            partialFeishuApp.appId,
+            currentFeishuPermission.fingerprint,
+          )
         )
       ) securityReview = { ...securityReview, state: "unbound" };
     }
@@ -629,12 +662,26 @@ export function getConnectorReadiness(
         : connector.key === "feishu"
           ? "Live UAT 证据未绑定当前飞书应用和目标群；换应用或换群后必须重新验收"
           : null;
+    const feishuPermissionBlocker = !partialFeishuApp
+      || (selectedAuthPath !== "app_bot" && selectedAuthPath !== null)
+      ? null
+      : !currentFeishuPermission
+        ? "缺少同次只读探针的当前飞书权限清单；静态配置不得标记生产就绪"
+        : !currentFeishuPermission.fingerprint
+          ? "当前飞书权限清单无法规范化并生成指纹；不得沿用旧复核证据"
+          : currentFeishuPermission.leastPrivilege === "extreme_over_privilege"
+            ? "当前飞书权限远超 SCM 通知最小集合；停止生产接入并重新授权复核"
+            : currentFeishuPermission.leastPrivilege === "review_required"
+              ? "当前飞书权限含通知白名单外项目；逐项复核前不得标记生产就绪"
+              : currentFeishuPermission.leastPrivilege === "unknown"
+                ? "当前飞书最小权限状态未知；不得标记生产就绪"
+                : null;
     const securityReviewBlocker = securityReview.state === "not_required"
       ? null
       : securityReview.state === "valid"
         ? null
         : securityReview.state === "unbound"
-          ? "飞书最小权限复核证据未绑定当前应用；换应用后必须重新复核"
+          ? "飞书最小权限复核证据未绑定当前应用及当前权限清单；权限变化后必须重新复核"
           : "飞书应用缺少当前且有效的最小权限复核证据；未复核前不得标记生产就绪";
     return {
       key: connector.key,
@@ -674,6 +721,7 @@ export function getConnectorReadiness(
       blocker: [
         connector.blocker,
         verificationBindingBlocker,
+        feishuPermissionBlocker,
         securityReviewBlocker,
         identityBlocker,
       ].filter(Boolean).join("；") || null,

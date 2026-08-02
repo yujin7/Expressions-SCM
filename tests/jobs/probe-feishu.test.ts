@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { probeFeishuChats } from "@/jobs/probe-feishu";
 import {
   feishuPermissionReviewEvidenceBinding,
+  feishuPermissionSetFingerprint,
   feishuTargetEvidenceBinding,
 } from "@/server/integrations/feishu";
 
@@ -12,7 +13,15 @@ const credentials = {
 } satisfies NodeJS.ProcessEnv;
 const TARGET_CHAT_ID = "oc_test";
 const TARGET_BINDING = feishuTargetEvidenceBinding(credentials.FEISHU_APP_ID, TARGET_CHAT_ID);
-const PERMISSION_BINDING = feishuPermissionReviewEvidenceBinding(credentials.FEISHU_APP_ID);
+const PERMISSION_FINGERPRINT = feishuPermissionSetFingerprint([
+  { scope: "application:application:self_manage", level: 1 },
+  { scope: "im:chat:readonly", level: 1 },
+  { scope: "im:message:send_as_bot", level: 1 },
+]);
+const PERMISSION_BINDING = feishuPermissionReviewEvidenceBinding(
+  credentials.FEISHU_APP_ID,
+  PERMISSION_FINGERPRINT,
+);
 
 const minimalApplication = {
   enabled: "enabled" as const,
@@ -20,6 +29,7 @@ const minimalApplication = {
   botDefault: "bot_default_both" as const,
   scopes: {
     inventory: "parsed" as const,
+    fingerprint: PERMISSION_FINGERPRINT,
     total: 3,
     elevated: 0,
     chatList: "declared" as const,
@@ -60,6 +70,7 @@ describe("Feishu chat discovery probe", () => {
       },
       scopeInventory: {
         state: "parsed",
+        fingerprint: PERMISSION_FINGERPRINT,
         totalDeclared: 3,
         elevatedDeclared: 0,
         outsideNotificationAllowlist: 0,
@@ -158,8 +169,50 @@ describe("Feishu chat discovery probe", () => {
       evidenceReadiness: "blocked_permission_review",
     });
     expect(result.requiredChecks).toContain(
-      "当前应用完成最小权限复核后，登记有效时间和绑定该应用的非秘密复核编号",
+      "当前应用完成最小权限复核后，登记有效时间和绑定该应用及当前权限清单的非秘密复核编号",
     );
+  });
+
+  it("invalidates a still-fresh review when the same app permission set changes", async () => {
+    const changedFingerprint = feishuPermissionSetFingerprint([
+      { scope: "application:application:self_manage", level: 2 },
+      { scope: "im:chat:readonly", level: 1 },
+      { scope: "im:message:send_as_bot", level: 1 },
+    ]);
+    const result = await probeFeishuChats({
+      env: {
+        ...credentials,
+        FEISHU_CHAT_ID: TARGET_CHAT_ID,
+        FEISHU_APP_LIVE_VERIFIED_AT: "2026-08-02T00:00:00Z",
+        FEISHU_APP_LIVE_VERIFIED_REF: `UAT-20260802-${TARGET_BINDING}`,
+        FEISHU_APP_PERMISSION_REVIEWED_AT: "2026-08-02T01:00:00Z",
+        FEISHU_APP_PERMISSION_REVIEWED_REF: `SEC-20260802-${PERMISSION_BINDING}`,
+      },
+      client: {
+        inspectSelfApplication: async () => ({
+          ...minimalApplication,
+          scopes: {
+            ...minimalApplication.scopes,
+            fingerprint: changedFingerprint,
+            elevated: 1,
+          },
+        }),
+        listAccessibleChats: async () => [{ chatId: TARGET_CHAT_ID, name: "SCM UAT" }],
+      },
+      now: new Date("2026-08-03T00:00:00Z"),
+    });
+
+    expect(result).toMatchObject({
+      permissionReview: {
+        evidenceState: "valid",
+        evidenceBinding: "unbound",
+        expectedEvidenceBinding: feishuPermissionReviewEvidenceBinding(
+          credentials.FEISHU_APP_ID,
+          changedFingerprint,
+        ),
+      },
+      evidenceReadiness: "blocked_permission_review",
+    });
   });
 
   it("never becomes ready when a visible group exists but FEISHU_CHAT_ID is missing", async () => {
@@ -252,6 +305,7 @@ describe("Feishu chat discovery probe", () => {
           botDefault: "bot_default_both",
           scopes: {
             inventory: "parsed",
+            fingerprint: feishuPermissionSetFingerprint([{ scope: "many", level: 2 }]),
             total: 1_107,
             elevated: 1_007,
             chatList: "declared",
@@ -290,6 +344,7 @@ describe("Feishu chat discovery probe", () => {
           botDefault: "unknown",
           scopes: {
             inventory: "ambiguous",
+            fingerprint: null,
             total: 2,
             elevated: null,
             chatList: "unknown",

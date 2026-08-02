@@ -24,6 +24,7 @@ const UNKNOWN_APPLICATION: FeishuSelfApplicationInspection = {
   botDefault: "unknown",
   scopes: {
     inventory: "unavailable",
+    fingerprint: null,
     total: null,
     elevated: null,
     chatList: "unknown",
@@ -65,12 +66,18 @@ export async function probeFeishuChats(
   const chats = await client.listAccessibleChats();
   const liveUat = feishuAppLiveVerification(env, options.now);
   const permissionReview = feishuAppPermissionReviewVerification(env, options.now);
-  const expectedPermissionReviewBinding = feishuPermissionReviewEvidenceBinding(credentials.appId);
+  const permissionSetFingerprint = application.scopes.fingerprint;
+  const expectedPermissionReviewBinding = permissionSetFingerprint
+    ? feishuPermissionReviewEvidenceBinding(credentials.appId, permissionSetFingerprint)
+    : null;
   const permissionReviewBinding = permissionReview.state !== "valid"
     ? "evidence_not_valid" as const
+    : !permissionSetFingerprint
+      ? "scope_inventory_unavailable" as const
     : feishuEvidenceRefHasPermissionReviewBinding(
         permissionReview.evidenceRef,
         credentials.appId,
+        permissionSetFingerprint,
       )
       ? "matched" as const
       : "unbound" as const;
@@ -150,9 +157,9 @@ export async function probeFeishuChats(
     requiredChecks.push("无法可靠解析权限清单；最小权限状态未知，须人工复核");
   }
   if (permissionReview.state !== "valid") {
-    requiredChecks.push("当前应用完成最小权限复核后，登记有效时间和绑定该应用的非秘密复核编号");
+    requiredChecks.push("当前应用完成最小权限复核后，登记有效时间和绑定该应用及当前权限清单的非秘密复核编号");
   } else if (!boundPermissionReview) {
-    requiredChecks.push("现有最小权限复核证据未绑定当前应用；将探针给出的复核绑定标记写入非秘密证据编号后重验");
+    requiredChecks.push("现有最小权限复核证据未绑定当前应用及当前权限清单；将探针给出的复核绑定标记写入非秘密证据编号后重验");
   }
   const transportEvidenceReady = application.enabled === "enabled"
     && application.onlineVersion === "present"
@@ -184,6 +191,7 @@ export async function probeFeishuChats(
     },
     scopeInventory: {
       state: application.scopes.inventory,
+      fingerprint: permissionSetFingerprint,
       totalDeclared: application.scopes.total,
       elevatedDeclared: application.scopes.elevated,
       outsideNotificationAllowlist: application.scopes.outsideNotificationAllowlist,

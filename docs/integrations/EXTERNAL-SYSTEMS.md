@@ -286,9 +286,10 @@ production-safe，也不得自动删权，以免破坏该共享应用的其他�
 URL、查询串、token 或密钥。
 应用机器人还必须填写 `FEISHU_APP_PERMISSION_REVIEWED_AT` 与
 `FEISHU_APP_PERMISSION_REVIEWED_REF`。后者等于或以 `probe-feishu-chats` 输出的
-`permissionReview.expectedEvidenceBinding`（`FSP1_...`）结尾，把最小权限复核绑定到当前应用；
-换应用或超过 90 天会自动失效。只有当前权限清单已收敛到可接受范围后才能登记该证据；标记
-本身不能覆盖探针发现的 `extreme_over_privilege`、`review_required` 或 `unknown` 状态。
+`permissionReview.expectedEvidenceBinding`（`FSP2_...`）结尾，把最小权限复核同时绑定到当前应用
+和规范化后的权限名称+等级指纹；同一应用增删权限、变更权限等级、换应用或超过 90 天都会使旧证据
+失效。只有当前权限清单已收敛到可接受范围后才能登记该证据；静态配置审计没有同次只读权限观察时
+保持阻塞，标记本身也不能覆盖探针发现的 `extreme_over_privilege`、`review_required` 或 `unknown` 状态。
 聚水潭与简道云使用同样的双字段契约。运维面板只有在完整机器配置、合法证据编号和 90 天内
 的有效时间同时存在时才显示 Live UAT「有效」；未来、非法、过期或缺证据的标记都不算
 operational。凭据、接口范围或权威视图发生实质变化时，必须重新验收并更新两项标记。

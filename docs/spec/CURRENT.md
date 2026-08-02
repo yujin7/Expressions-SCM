@@ -73,8 +73,9 @@
   与 Next.js 一致的项目 `.env*`，但不会覆盖部署进程显式注入的变量。
   提供的 C4 人工登录未写入仓库，也不作为机器凭据；未擅自注册外部开发者主体。
   运维面板把代码、凭据、带非秘密证据编号且 90 天有效的 Live UAT、飞书最小权限复核分开
-  判定；简道云 UAT 绑定当前完整契约定义，飞书 UAT 绑定 app+chat，权限复核绑定 app，任何范围、
-  字段映射或身份变化都会自动把旧证据标为 `unbound`。真实 operational 状态必须等 app/token、租户/
+  判定；简道云 UAT 绑定当前完整契约定义，飞书 UAT 绑定 app+chat，权限复核绑定 app+规范化权限
+  名称/等级指纹；静态配置没有同次只读权限观察时保持阻塞，任何权限、范围、字段映射或身份变化都会
+  自动把旧证据标为 `unbound`。真实 operational 状态必须等 app/token、租户/
   组织、IP/权限与 UAT，详见
   [`../integrations/EXTERNAL-SYSTEMS.md`](../integrations/EXTERNAL-SYSTEMS.md)。
 - **535 项系统执行审计（08-03）**：把全仓 204 个 API、80 个认证页面、41 个迁移、

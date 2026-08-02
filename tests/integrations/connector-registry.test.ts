@@ -4,6 +4,7 @@ import {
 } from "@/server/integrations/connector";
 import {
   feishuPermissionReviewEvidenceBinding,
+  feishuPermissionSetFingerprint,
   feishuTargetEvidenceBinding,
 } from "@/server/integrations/feishu";
 import {
@@ -29,6 +30,18 @@ const envKeys = [
 ] as const;
 const original = new Map(envKeys.map((key) => [key, process.env[key]]));
 const NOW = new Date("2026-07-30T12:00:00Z");
+const FEISHU_PERMISSION_FINGERPRINT = feishuPermissionSetFingerprint([
+  { scope: "application:application:self_manage", level: 1 },
+  { scope: "im:chat:readonly", level: 1 },
+  { scope: "im:message:send_as_bot", level: 1 },
+]);
+const FEISHU_RUNTIME_EVIDENCE = {
+  feishuPermission: {
+    appId: "app",
+    fingerprint: FEISHU_PERMISSION_FINGERPRINT,
+    leastPrivilege: "no_excess_detected" as const,
+  },
+};
 
 afterEach(() => {
   for (const key of envKeys) {
@@ -262,7 +275,7 @@ describe("外部连接器目录", () => {
       configured: false,
       activeAuthPath: null,
       securityReviewState: "missing",
-      expectedSecurityReviewBinding: feishuPermissionReviewEvidenceBinding("app"),
+      expectedSecurityReviewBinding: null,
     });
     process.env.FEISHU_CHAT_ID = "chat";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu")).toMatchObject({
@@ -290,22 +303,58 @@ describe("外部连接器目录", () => {
       });
     const boundRef = `UAT-20260729-${feishuTargetEvidenceBinding("app", "chat")}`;
     process.env.FEISHU_APP_LIVE_VERIFIED_REF = boundRef;
-    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu")).toMatchObject({
+    expect(getConnectorReadiness(
+      process.env,
+      NOW,
+      undefined,
+      FEISHU_RUNTIME_EVIDENCE,
+    ).find((row) => row.key === "feishu")).toMatchObject({
       configurationReady: false,
       operational: false,
       liveVerificationState: "valid",
       securityReviewState: "missing",
-      expectedSecurityReviewBinding: feishuPermissionReviewEvidenceBinding("app"),
+      expectedSecurityReviewBinding: feishuPermissionReviewEvidenceBinding(
+        "app",
+        FEISHU_PERMISSION_FINGERPRINT,
+      ),
     });
     process.env.FEISHU_APP_PERMISSION_REVIEWED_AT = "2026-07-29T02:30:00Z";
     process.env.FEISHU_APP_PERMISSION_REVIEWED_REF =
-      `SEC-20260729-${feishuPermissionReviewEvidenceBinding("app")}`;
-    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu")).toMatchObject({
+      `SEC-20260729-${feishuPermissionReviewEvidenceBinding(
+        "app",
+        FEISHU_PERMISSION_FINGERPRINT,
+      )}`;
+    expect(getConnectorReadiness(
+      process.env,
+      NOW,
+      undefined,
+      FEISHU_RUNTIME_EVIDENCE,
+    ).find((row) => row.key === "feishu")).toMatchObject({
       configurationReady: true,
       operational: true,
       liveVerificationState: "valid",
       liveVerificationRef: boundRef,
       securityReviewState: "valid",
+    });
+    const changedFingerprint = feishuPermissionSetFingerprint([
+      { scope: "application:application:self_manage", level: 2 },
+      { scope: "im:chat:readonly", level: 1 },
+      { scope: "im:message:send_as_bot", level: 1 },
+    ]);
+    expect(getConnectorReadiness(process.env, NOW, undefined, {
+      feishuPermission: {
+        appId: "app",
+        fingerprint: changedFingerprint,
+        leastPrivilege: "no_excess_detected",
+      },
+    }).find((row) => row.key === "feishu")).toMatchObject({
+      configurationReady: false,
+      operational: false,
+      securityReviewState: "unbound",
+      expectedSecurityReviewBinding: feishuPermissionReviewEvidenceBinding(
+        "app",
+        changedFingerprint,
+      ),
     });
     process.env.FEISHU_APP_ID = "replacement-app";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu")).toMatchObject({
@@ -342,8 +391,16 @@ describe("外部连接器目录", () => {
     process.env.FEISHU_APP_LIVE_VERIFIED_REF = boundRef;
     process.env.FEISHU_APP_PERMISSION_REVIEWED_AT = "2026-07-29T03:00:00Z";
     process.env.FEISHU_APP_PERMISSION_REVIEWED_REF =
-      `SEC-20260729-${feishuPermissionReviewEvidenceBinding("app")}`;
-    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu"))
+      `SEC-20260729-${feishuPermissionReviewEvidenceBinding(
+        "app",
+        FEISHU_PERMISSION_FINGERPRINT,
+      )}`;
+    expect(getConnectorReadiness(
+      process.env,
+      NOW,
+      undefined,
+      FEISHU_RUNTIME_EVIDENCE,
+    ).find((row) => row.key === "feishu"))
       .toMatchObject({
         configurationReady: true,
         operational: true,

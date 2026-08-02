@@ -43,7 +43,8 @@
 > `send.expectedEvidenceBinding` 原样放在 REF 末尾（例如 `UAT-工单号-FST1_...`），使证据绑定
 > 当前应用与目标群；缺少、错群或旧绑定均不会通过。应用机器人还要在权限确实收敛后填写
 > `FEISHU_APP_PERMISSION_REVIEWED_AT` 与 `FEISHU_APP_PERMISSION_REVIEWED_REF`，并把探针输出的
-> `permissionReview.expectedEvidenceBinding`（`FSP1_...`）放在 REF 末尾；换应用或过期会自动阻塞。
+> `permissionReview.expectedEvidenceBinding`（`FSP2_...`）放在 REF 末尾；它绑定应用及规范化权限
+> 名称+等级指纹，同一应用权限变化、换应用或过期都会自动阻塞，须以同次只读探针重新复核。
 
 ### B. 简道云
 
