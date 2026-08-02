@@ -80,7 +80,7 @@ for (const key of [
 
 requireText(
   ".github/workflows/ci.yml",
-  "gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7",
+  "gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e",
 );
 requireText(".github/workflows/ci.yml", "fetch-depth: 0");
 requireText(".gitleaksignore", "tests/replenish/sop-cycle.test.ts:generic-api-key");
