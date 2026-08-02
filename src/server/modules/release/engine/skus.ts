@@ -790,6 +790,25 @@ async function releaseSkusInternal(
         scope: "GS1",
         packagingLevel: "each",
       });
+      // Preflight is intentionally advisory. Another transaction may have filled this primary
+      // slot while the release waited for its lock, so re-read the governed state before write.
+      const [lockedPrimary]: Array<{ value: string }> = await tx
+        .select({ value: schema.skuIdentifiers.value })
+        .from(schema.skuIdentifiers)
+        .where(and(
+          eq(schema.skuIdentifiers.skuId, skuId),
+          eq(schema.skuIdentifiers.kind, "gtin"),
+          eq(schema.skuIdentifiers.scope, "GS1"),
+          eq(schema.skuIdentifiers.packagingLevel, "each"),
+          eq(schema.skuIdentifiers.active, true),
+          eq(schema.skuIdentifiers.isPrimary, true),
+        ));
+      if (lockedPrimary && lockedPrimary.value !== gtin) {
+        throw new ApiError(
+          409,
+          `SKU #${skuId} 已有主单品 GTIN ${lockedPrimary.value}，不能静默改为 ${gtin}`,
+        );
+      }
       await assertSkuBarcodeOwnershipInTransaction(tx, skuId, "gtin", gtin);
       const existingClaims: Array<typeof schema.skuIdentifiers.$inferSelect> = await tx
         .select()
