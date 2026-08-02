@@ -104,6 +104,161 @@ describe("飞书应用机器人", () => {
       String(url).includes("tenant_access_token"))).toHaveLength(1);
   });
 
+  it("只读检查本应用线上版本与最小权限，只返回聚合证据", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("tenant_access_token")) {
+        return response({ code: 0, tenant_access_token: "tenant-token", expire: 7200 });
+      }
+      return response({
+        code: 0,
+        data: {
+          app: {
+            app_id: "cli_must_not_escape",
+            app_name: "私密应用名",
+            status: 1,
+            online_version_id: "oav_online",
+            mobile_default_ability: "bot",
+            pc_default_ability: "bot",
+            scopes: [
+              { scope: "application:application:self_manage", level: 1, description: "管理应用" },
+              { scope: "im:chat:readonly", level: 1, description: "读取群" },
+              { scope: "im:message:send_as_bot", level: 1, description: "发消息" },
+            ],
+          },
+        },
+      });
+    });
+    const client = new FeishuAppClient(
+      { appId: "cli_a", appSecret: "secret" },
+      { fetchImpl: fetchMock as unknown as typeof fetch, retries: 0 },
+    );
+
+    const result = await client.inspectSelfApplication();
+
+    expect(result).toEqual({
+      enabled: "enabled",
+      onlineVersion: "present",
+      botDefault: "bot_default_both",
+      scopes: {
+        inventory: "parsed",
+        total: 3,
+        elevated: 0,
+        chatList: "declared",
+        sendAsBot: "declared",
+        outsideNotificationAllowlist: 0,
+        leastPrivilege: "no_excess_detected",
+      },
+    });
+    const [url, init] = fetchMock.mock.calls.find(([requestUrl]) =>
+      String(requestUrl).includes("/application/v6/applications/me")) as unknown as [
+        string,
+        RequestInit,
+      ];
+    expect(url).toBe(
+      "https://open.feishu.cn/open-apis/application/v6/applications/me?lang=zh_cn",
+    );
+    expect(init).toMatchObject({
+      method: "GET",
+      headers: { Authorization: "Bearer tenant-token" },
+    });
+    expect(JSON.stringify(result)).not.toMatch(/cli_must_not_escape|私密应用名|tenant-token|secret/);
+  });
+
+  it("权限结构含不认识的项目时保留 unknown，不把缺失误报成未声明", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("tenant_access_token")) {
+        return response({ code: 0, tenant_access_token: "tenant-token", expire: 7200 });
+      }
+      return response({
+        code: 0,
+        data: {
+          app: {
+            online_version_id: "",
+            scopes: [
+              { scope: "im:message:send_as_bot", level: 1 },
+              { description: "结构未知", level: 2 },
+            ],
+          },
+        },
+      });
+    });
+    const client = new FeishuAppClient(
+      { appId: "cli_a", appSecret: "secret" },
+      { fetchImpl: fetchMock as unknown as typeof fetch, retries: 0 },
+    );
+
+    await expect(client.inspectSelfApplication()).resolves.toEqual({
+      enabled: "unknown",
+      onlineVersion: "absent",
+      botDefault: "unknown",
+      scopes: {
+        inventory: "ambiguous",
+        total: 2,
+        elevated: 1,
+        chatList: "unknown",
+        sendAsBot: "declared",
+        outsideNotificationAllowlist: null,
+        leastPrivilege: "unknown",
+      },
+    });
+  });
+
+  it("极端权限膨胀只报告总量和等级总量，不回显权限明细", async () => {
+    const scopes = Array.from({ length: 1_107 }, (_, index) => ({
+      description: `sensitive-description-${index}`,
+      level: index < 1_007 ? 2 : 1,
+      scope: index === 0
+        ? "im:chat:readonly"
+        : index === 1
+          ? "im:message:send_as_bot"
+          : index === 2
+            ? "application:application:self_manage"
+            : `unrelated:scope:${index}`,
+      token_types: ["tenant"],
+    }));
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("tenant_access_token")) {
+        return response({ code: 0, tenant_access_token: "tenant-token", expire: 7200 });
+      }
+      return response({
+        code: 0,
+        data: { app: { online_version_id: "oav_online", scopes } },
+      });
+    });
+    const client = new FeishuAppClient(
+      { appId: "cli_a", appSecret: "secret" },
+      { fetchImpl: fetchMock as unknown as typeof fetch, retries: 0 },
+    );
+
+    const result = await client.inspectSelfApplication();
+
+    expect(result.scopes).toEqual({
+      inventory: "parsed",
+      total: 1_107,
+      elevated: 1_007,
+      chatList: "declared",
+      sendAsBot: "declared",
+      outsideNotificationAllowlist: 1_104,
+      leastPrivilege: "extreme_over_privilege",
+    });
+    expect(JSON.stringify(result)).not.toContain("unrelated:scope");
+    expect(JSON.stringify(result)).not.toContain("sensitive-description");
+  });
+
+  it("业务错误不回显供应商消息中的凭据或 token", async () => {
+    const fetchMock = vi.fn(async () => response({
+      code: 999,
+      msg: "secret and tenant-token must never escape",
+    }));
+    const client = new FeishuAppClient(
+      { appId: "cli_a", appSecret: "secret" },
+      { fetchImpl: fetchMock as unknown as typeof fetch, retries: 0 },
+    );
+
+    await expect(client.inspectSelfApplication()).rejects.toThrow("飞书鉴权 999: 调用失败");
+    await expect(client.inspectSelfApplication()).rejects.not.toThrow(/secret|tenant-token/);
+  });
+
   it("未配置 chat_id 时拒绝发送，不会调用网络", async () => {
     const fetchMock = vi.fn();
     const client = new FeishuAppClient(

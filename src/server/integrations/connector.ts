@@ -1,4 +1,8 @@
-import { feishuAppConfigFromEnv, feishuWebhookUrlFromEnv } from "./feishu";
+import {
+  feishuAppConfigFromEnv,
+  feishuEvidenceRefHasTargetBinding,
+  feishuWebhookUrlFromEnv,
+} from "./feishu";
 import {
   jiandaoyunConfigFromEnv,
   jiandaoyunEnabled,
@@ -20,6 +24,7 @@ export type LiveVerificationState =
   | "missing"
   | "missing_evidence"
   | "invalid"
+  | "unbound"
   | "future"
   | "stale"
   | "valid";
@@ -209,6 +214,19 @@ function liveVerification(
   return { state: "valid", verifiedAt, evidenceRef };
 }
 
+/** Reuses the connector's strict timestamp/evidence policy without requiring a target chat ID. */
+export function feishuAppLiveVerification(
+  env: NodeJS.ProcessEnv = process.env,
+  now: Date = new Date(),
+) {
+  return liveVerification(
+    "FEISHU_APP_LIVE_VERIFIED_AT",
+    "FEISHU_APP_LIVE_VERIFIED_REF",
+    env,
+    now,
+  );
+}
+
 /**
  * Operational registry, not a success checklist:
  * - ready means transport/validation code exists;
@@ -351,6 +369,7 @@ export const CONNECTORS: Connector[] = [
     ],
     sourceDocs: [
       "https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal",
+      "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/application-v6/application/get",
       "https://open.feishu.cn/document/server-docs/im-v1/message/create",
     ],
     blocker: "配置自定义 webhook，或配置应用 app_id/app_secret/chat_id；完成真实群投递/UAT 后记录时间与非秘密证据编号",
@@ -483,12 +502,27 @@ export function getConnectorReadiness(
     const authPaths = configuredAuthPaths(connector, env);
     const selectedAuthPath = activeAuthPath(connector, authPaths);
     const verificationKeys = liveVerificationKeys(connector, selectedAuthPath);
-    const verification = liveVerification(
+    let verification = liveVerification(
       verificationKeys.timestampKey,
       verificationKeys.evidenceRefKey,
       env,
       now,
     );
+    if (
+      connector.key === "feishu"
+      && selectedAuthPath === "app_bot"
+      && verification.state === "valid"
+    ) {
+      const appConfig = feishuAppConfigFromEnv(env);
+      if (
+        !appConfig
+        || !feishuEvidenceRefHasTargetBinding(
+          verification.evidenceRef,
+          appConfig.appId,
+          appConfig.chatId,
+        )
+      ) verification = { ...verification, state: "unbound" };
+    }
     const identityScope = IDENTITY_SCOPE_BY_CONNECTOR[connector.key] ?? null;
     const scopeEvidence = identityScope ? identityEvidence?.[identityScope] : undefined;
     const openScopedAliasExceptions = scopeEvidence
