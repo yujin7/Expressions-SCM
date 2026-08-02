@@ -90,3 +90,4 @@ jobs:
       - run: npm run db:migrate
       - run: npm run check:postgres
       - run: npm run check:postgres:jdy-concurrency
+      - run: npm run check:postgres:sku-identity-concurrency

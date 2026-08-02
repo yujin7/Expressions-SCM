@@ -30,6 +30,7 @@
     "check:ops": "bash -n ops/backup.sh ops/check-backup.sh ops/restore-drill.sh ops/deploy.sh && node --import tsx scripts/verify-ops.ts",
     "check:postgres": "node --import tsx scripts/verify-postgres.ts",
     "check:postgres:jdy-concurrency": "node --import tsx scripts/verify-postgres-jdy-concurrency.ts",
+    "check:postgres:sku-identity-concurrency": "node --import tsx scripts/verify-postgres-sku-identity-concurrency.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",

@@ -13,6 +13,11 @@ import { sql } from "drizzle-orm";
 import { getDbAsync } from "../src/db";
 import * as schema from "../src/db/schema";
 import { getDataHealth, getDuplicateCandidates } from "../src/server/modules/report/data-health";
+import { isGovernedSkuCode, parseGovernedSkuCode } from "../src/server/rules/sku-code";
+import {
+  isValidGtin,
+  normalizeSkuIdentifierScope,
+} from "../src/server/rules/sku-identifier";
 
 type SourceRole = "fact" | "configuration" | "requirements";
 
@@ -72,6 +77,132 @@ async function rawRows(query: string): Promise<Record<string, unknown>[]> {
   const db = await getDbAsync();
   const result = await db.execute(sql.raw(query));
   return (result as unknown as { rows: Record<string, unknown>[] }).rows;
+}
+
+/** Aggregate identity controls only. Raw SKU codes and identifier values never enter the report. */
+async function auditSkuIdentity(): Promise<Record<string, unknown>> {
+  const skuRows = await rawRows(`
+    select id, code, sku_type, barcode, barcode_status
+      from skus
+     order by id
+  `);
+  const identifierRows = await rawRows(`
+    select id, sku_id, kind, value, scope, packaging_level, is_primary, active
+      from sku_identifiers
+     order by id
+  `);
+
+  let governed = 0;
+  let invalidGoverned = 0;
+  let governedTypeMismatch = 0;
+  const governedSequences = new Map<number, number>();
+  for (const row of skuRows) {
+    const code = String(row.code ?? "");
+    if (!isGovernedSkuCode(code)) continue;
+    governed++;
+    const parsed = parseGovernedSkuCode(code);
+    if (!parsed) {
+      invalidGoverned++;
+      continue;
+    }
+    if (parsed.skuType !== row.sku_type) governedTypeMismatch++;
+    governedSequences.set(parsed.sequence, (governedSequences.get(parsed.sequence) ?? 0) + 1);
+  }
+
+  const byKindAndState = new Map<string, number>();
+  const exactKeys = new Map<string, number>();
+  const canonicalExternalOwners = new Map<string, Set<number>>();
+  const barcodeOwners = new Map<string, Set<number>>();
+  const primaryEachGtinBySku = new Map<number, string>();
+  let invalidGtins = 0;
+  let badGtinScope = 0;
+  let gtinMissingPackagingLevel = 0;
+  for (const row of identifierRows) {
+    const kind = String(row.kind ?? "");
+    const value = String(row.value ?? "");
+    const scope = String(row.scope ?? "");
+    const skuId = Number(row.sku_id);
+    const stateKey = `${kind}:${row.active === true ? "active" : "inactive"}`;
+    byKindAndState.set(stateKey, (byKindAndState.get(stateKey) ?? 0) + 1);
+    const exactKey = `${kind}\0${scope}\0${value}`;
+    exactKeys.set(exactKey, (exactKeys.get(exactKey) ?? 0) + 1);
+    if (kind === "external") {
+      const canonicalKey = `${normalizeSkuIdentifierScope("external", scope)}\0${value}`;
+      const owners = canonicalExternalOwners.get(canonicalKey) ?? new Set<number>();
+      owners.add(skuId);
+      canonicalExternalOwners.set(canonicalKey, owners);
+    }
+    if (kind === "gtin") {
+      if (!isValidGtin(value)) invalidGtins++;
+      if (scope !== "GS1") badGtinScope++;
+      if (!row.packaging_level) gtinMissingPackagingLevel++;
+      if (
+        row.active === true
+        && row.is_primary === true
+        && row.packaging_level === "each"
+      ) {
+        primaryEachGtinBySku.set(skuId, value);
+      }
+    }
+    if (kind === "gtin" || kind === "legacy") {
+      const owners = barcodeOwners.get(value) ?? new Set<number>();
+      owners.add(skuId);
+      barcodeOwners.set(value, owners);
+    }
+  }
+
+  let nonEmptyLegacyBarcodes = 0;
+  let validLegacyGtinCandidates = 0;
+  let primaryEachGtinMismatch = 0;
+  let barcodeWithoutPrimaryEachGtin = 0;
+  const barcodeStatus = new Map<string, number>();
+  for (const row of skuRows) {
+    const skuId = Number(row.id);
+    const barcode = row.barcode == null ? null : String(row.barcode).trim();
+    const primaryEach = primaryEachGtinBySku.get(skuId) ?? null;
+    if (primaryEach != null && primaryEach !== barcode) primaryEachGtinMismatch++;
+    if (!barcode) continue;
+    nonEmptyLegacyBarcodes++;
+    if (primaryEach == null) barcodeWithoutPrimaryEachGtin++;
+    if (isValidGtin(barcode)) validLegacyGtinCandidates++;
+    const status = String(row.barcode_status ?? "null");
+    barcodeStatus.set(status, (barcodeStatus.get(status) ?? 0) + 1);
+    const owners = barcodeOwners.get(barcode) ?? new Set<number>();
+    owners.add(skuId);
+    barcodeOwners.set(barcode, owners);
+  }
+
+  return {
+    privacy: "aggregate-controls-no-raw-identifiers",
+    skus: skuRows.length,
+    governedS1: {
+      rows: governed,
+      invalidFormatOrChecksum: invalidGoverned,
+      typeMismatch: governedTypeMismatch,
+      duplicateGlobalSequences: [...governedSequences.values()].filter((count) => count > 1).length,
+    },
+    identifiers: {
+      rows: identifierRows.length,
+      byKindAndState: Object.fromEntries([...byKindAndState].sort()),
+      exactDuplicateKeys: [...exactKeys.values()].filter((count) => count > 1).length,
+      canonicalExternalCrossSkuConflicts: [...canonicalExternalOwners.values()]
+        .filter((owners) => owners.size > 1).length,
+      crossGtinLegacyOrBarcodeOwnershipConflicts: [...barcodeOwners.values()]
+        .filter((owners) => owners.size > 1).length,
+      invalidGtins,
+      badGtinScope,
+      gtinMissingPackagingLevel,
+      primaryEachGtins: primaryEachGtinBySku.size,
+      primaryEachGtinMismatch,
+    },
+    legacyBarcodeReview: {
+      nonEmpty: nonEmptyLegacyBarcodes,
+      validGtinCandidates: validLegacyGtinCandidates,
+      malformedOrNonGtin: nonEmptyLegacyBarcodes - validLegacyGtinCandidates,
+      withoutPrimaryEachGtin: barcodeWithoutPrimaryEachGtin,
+      status: Object.fromEntries([...barcodeStatus].sort()),
+    },
+  };
 }
 
 async function main() {
@@ -218,6 +349,7 @@ async function main() {
       ),
     },
     canonical: {
+      skuIdentity: await auditSkuIdentity(),
       skuCompleteness: await rawRows(`
         select sku_type,
                count(*)::int as rows,
