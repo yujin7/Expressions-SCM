@@ -43,6 +43,26 @@ function liveVerificationTag(connector: OpsHealth["connectors"][number]) {
   }
 }
 
+function securityReviewTag(connector: OpsHealth["connectors"][number]) {
+  switch (connector.securityReviewState) {
+    case "not_required":
+      return null;
+    case "valid":
+      return <Tag color="green">最小权限复核有效</Tag>;
+    case "stale":
+      return <Tag color="orange">权限复核已过期</Tag>;
+    case "missing_evidence":
+      return <Tag color="orange">权限复核证据缺失</Tag>;
+    case "unbound":
+      return <Tag color="red">权限复核未绑定当前应用</Tag>;
+    case "future":
+    case "invalid":
+      return <Tag color="red">权限复核标记无效</Tag>;
+    default:
+      return <Tag>最小权限未复核</Tag>;
+  }
+}
+
 function enablementTag(connector: OpsHealth["connectors"][number]) {
   switch (connector.enablementState) {
     case "enabled":
@@ -421,6 +441,7 @@ export default function HealthClient() {
                     {enablementTag(connector)}
                     {contractSelectionTag(connector)}
                     {liveVerificationTag(connector)}
+                    {securityReviewTag(connector)}
                     {connector.configurationReady
                       ? <Tag color="green">配置 / UAT 就绪</Tag>
                       : <Tag>配置 / UAT 未就绪</Tag>}
@@ -477,6 +498,28 @@ export default function HealthClient() {
                       {` · ${connector.liveVerificationMaxAgeDays} 天内有效`}
                     </Typography.Text>
                   ) : null}
+                  {connector.securityReviewedAt ? (
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      权限复核：{fmtTime(connector.securityReviewedAt)}
+                      {connector.securityReviewRef
+                        ? ` · 证据：${connector.securityReviewRef}`
+                        : " · 缺少非秘密证据编号"}
+                      {` · ${connector.securityReviewMaxAgeDays} 天内有效`}
+                    </Typography.Text>
+                  ) : null}
+                  {connector.expectedLiveVerificationBinding
+                    || connector.expectedSecurityReviewBinding ? (
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        {connector.expectedLiveVerificationBinding
+                          ? `UAT 绑定：${connector.expectedLiveVerificationBinding}`
+                          : ""}
+                        {connector.expectedLiveVerificationBinding
+                          && connector.expectedSecurityReviewBinding ? " · " : ""}
+                        {connector.expectedSecurityReviewBinding
+                          ? `权限复核绑定：${connector.expectedSecurityReviewBinding}`
+                          : ""}
+                      </Typography.Text>
+                    ) : null}
                   </Space>
                 </Card>
               </Col>

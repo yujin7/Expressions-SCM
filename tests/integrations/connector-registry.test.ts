@@ -2,7 +2,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   configuredConnectors, CONNECTORS, getConnectorReadiness,
 } from "@/server/integrations/connector";
-import { feishuTargetEvidenceBinding } from "@/server/integrations/feishu";
+import {
+  feishuPermissionReviewEvidenceBinding,
+  feishuPermissionSetFingerprint,
+  feishuTargetEvidenceBinding,
+} from "@/server/integrations/feishu";
+import {
+  jiandaoyunContract,
+  jiandaoyunContractSetEvidenceBinding,
+} from "@/server/integrations/jiandaoyun-contracts";
 
 const envKeys = [
   "JST_APP_KEY", "JST_APP_SECRET", "JST_ACCESS_TOKEN", "JST_SYNC_ACTOR_ID", "JST_BASE_URL",
@@ -17,10 +25,23 @@ const envKeys = [
   "FEISHU_WEBHOOK_URL", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID",
   "FEISHU_LIVE_VERIFIED_AT", "FEISHU_LIVE_VERIFIED_REF",
   "FEISHU_APP_LIVE_VERIFIED_AT", "FEISHU_APP_LIVE_VERIFIED_REF",
+  "FEISHU_APP_PERMISSION_REVIEWED_AT", "FEISHU_APP_PERMISSION_REVIEWED_REF",
   "FEISHU_WEBHOOK_LIVE_VERIFIED_AT", "FEISHU_WEBHOOK_LIVE_VERIFIED_REF",
 ] as const;
 const original = new Map(envKeys.map((key) => [key, process.env[key]]));
 const NOW = new Date("2026-07-30T12:00:00Z");
+const FEISHU_PERMISSION_FINGERPRINT = feishuPermissionSetFingerprint([
+  { scope: "application:application:self_manage", level: 1 },
+  { scope: "im:chat:readonly", level: 1 },
+  { scope: "im:message:send_as_bot", level: 1 },
+]);
+const FEISHU_RUNTIME_EVIDENCE = {
+  feishuPermission: {
+    appId: "app",
+    fingerprint: FEISHU_PERMISSION_FINGERPRINT,
+    leastPrivilege: "no_excess_detected" as const,
+  },
+};
 
 afterEach(() => {
   for (const key of envKeys) {
@@ -153,9 +174,24 @@ describe("外部连接器目录", () => {
       enablementState: "enabled",
       contractSelectionState: "selected",
       selectedContractCount: 1,
+      configurationReady: false,
+      operational: false,
+      liveVerificationState: "unbound",
+    });
+    const productContract = jiandaoyunContract("product-master-observation");
+    expect(productContract).not.toBeNull();
+    const jdyBinding = jiandaoyunContractSetEvidenceBinding([productContract!]);
+    expect(jiandaoyunContractSetEvidenceBinding([{
+      ...productContract!,
+      entryId: "changed-entry",
+    }])).not.toBe(jdyBinding);
+    process.env.JIANDAOYUN_LIVE_VERIFIED_REF = `UAT-20260730-JDY-${jdyBinding}`;
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jdy")).toMatchObject({
       configurationReady: true,
       operational: false,
       identityClearanceState: "unknown",
+      liveVerificationState: "valid",
+      expectedLiveVerificationBinding: jdyBinding,
     });
     expect(getConnectorReadiness(process.env, NOW, {
       JIANDAOYUN: { openExceptions: 0, observedIdentities: 1 },
@@ -165,6 +201,19 @@ describe("外部连接器目录", () => {
         operational: true,
         identityClearanceState: "clear",
       });
+
+    process.env.JIANDAOYUN_SYNC_CONTRACTS =
+      "product-master-observation,supplier-observation";
+    expect(getConnectorReadiness(process.env, NOW, {
+      JIANDAOYUN: { openExceptions: 0, observedIdentities: 1 },
+    }).find((row) => row.key === "jdy"))
+      .toMatchObject({
+        selectedContractCount: 2,
+        configurationReady: false,
+        operational: false,
+        liveVerificationState: "unbound",
+      });
+    process.env.JIANDAOYUN_SYNC_CONTRACTS = "product-master-observation";
 
     process.env.JIANDAOYUN_SYNC_ENABLED = "sometimes";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jdy")).toMatchObject({
@@ -222,6 +271,12 @@ describe("外部连接器目录", () => {
     delete process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_REF;
     process.env.FEISHU_APP_ID = "app";
     process.env.FEISHU_APP_SECRET = "secret";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu")).toMatchObject({
+      configured: false,
+      activeAuthPath: null,
+      securityReviewState: "missing",
+      expectedSecurityReviewBinding: null,
+    });
     process.env.FEISHU_CHAT_ID = "chat";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu")).toMatchObject({
       configured: true,
@@ -248,11 +303,65 @@ describe("外部连接器目录", () => {
       });
     const boundRef = `UAT-20260729-${feishuTargetEvidenceBinding("app", "chat")}`;
     process.env.FEISHU_APP_LIVE_VERIFIED_REF = boundRef;
-    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu")).toMatchObject({
+    expect(getConnectorReadiness(
+      process.env,
+      NOW,
+      undefined,
+      FEISHU_RUNTIME_EVIDENCE,
+    ).find((row) => row.key === "feishu")).toMatchObject({
+      configurationReady: false,
+      operational: false,
+      liveVerificationState: "valid",
+      securityReviewState: "missing",
+      expectedSecurityReviewBinding: feishuPermissionReviewEvidenceBinding(
+        "app",
+        FEISHU_PERMISSION_FINGERPRINT,
+      ),
+    });
+    process.env.FEISHU_APP_PERMISSION_REVIEWED_AT = "2026-07-29T02:30:00Z";
+    process.env.FEISHU_APP_PERMISSION_REVIEWED_REF =
+      `SEC-20260729-${feishuPermissionReviewEvidenceBinding(
+        "app",
+        FEISHU_PERMISSION_FINGERPRINT,
+      )}`;
+    expect(getConnectorReadiness(
+      process.env,
+      NOW,
+      undefined,
+      FEISHU_RUNTIME_EVIDENCE,
+    ).find((row) => row.key === "feishu")).toMatchObject({
       configurationReady: true,
       operational: true,
       liveVerificationState: "valid",
       liveVerificationRef: boundRef,
+      securityReviewState: "valid",
+    });
+    const changedFingerprint = feishuPermissionSetFingerprint([
+      { scope: "application:application:self_manage", level: 2 },
+      { scope: "im:chat:readonly", level: 1 },
+      { scope: "im:message:send_as_bot", level: 1 },
+    ]);
+    expect(getConnectorReadiness(process.env, NOW, undefined, {
+      feishuPermission: {
+        appId: "app",
+        fingerprint: changedFingerprint,
+        leastPrivilege: "no_excess_detected",
+      },
+    }).find((row) => row.key === "feishu")).toMatchObject({
+      configurationReady: false,
+      operational: false,
+      securityReviewState: "unbound",
+      expectedSecurityReviewBinding: feishuPermissionReviewEvidenceBinding(
+        "app",
+        changedFingerprint,
+      ),
+    });
+    process.env.FEISHU_APP_ID = "replacement-app";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu")).toMatchObject({
+      configurationReady: false,
+      operational: false,
+      liveVerificationState: "unbound",
+      securityReviewState: "unbound",
     });
   });
 
@@ -280,12 +389,24 @@ describe("外部连接器目录", () => {
     process.env.FEISHU_APP_LIVE_VERIFIED_AT = "2026-07-29T03:00:00Z";
     const boundRef = `UAT-20260729-${feishuTargetEvidenceBinding("app", "chat")}`;
     process.env.FEISHU_APP_LIVE_VERIFIED_REF = boundRef;
-    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu"))
+    process.env.FEISHU_APP_PERMISSION_REVIEWED_AT = "2026-07-29T03:00:00Z";
+    process.env.FEISHU_APP_PERMISSION_REVIEWED_REF =
+      `SEC-20260729-${feishuPermissionReviewEvidenceBinding(
+        "app",
+        FEISHU_PERMISSION_FINGERPRINT,
+      )}`;
+    expect(getConnectorReadiness(
+      process.env,
+      NOW,
+      undefined,
+      FEISHU_RUNTIME_EVIDENCE,
+    ).find((row) => row.key === "feishu"))
       .toMatchObject({
         configurationReady: true,
         operational: true,
         liveVerificationState: "valid",
         liveVerificationRef: boundRef,
+        securityReviewState: "valid",
       });
   });
 

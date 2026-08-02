@@ -1,11 +1,16 @@
 import {
   FeishuAppClient,
   feishuAppCredentialsFromEnv,
+  feishuEvidenceRefHasPermissionReviewBinding,
   feishuEvidenceRefHasTargetBinding,
+  feishuPermissionReviewEvidenceBinding,
   feishuTargetEvidenceBinding,
   type FeishuSelfApplicationInspection,
 } from "@/server/integrations/feishu";
-import { feishuAppLiveVerification } from "@/server/integrations/connector";
+import {
+  feishuAppLiveVerification,
+  feishuAppPermissionReviewVerification,
+} from "@/server/integrations/connector";
 
 const NO_VISIBLE_CHAT_CHECKS = [
   "在目标群的机器人管理中确认加入的是本应用机器人，而不是只授予人员应用管理员权限",
@@ -19,6 +24,7 @@ const UNKNOWN_APPLICATION: FeishuSelfApplicationInspection = {
   botDefault: "unknown",
   scopes: {
     inventory: "unavailable",
+    fingerprint: null,
     total: null,
     elevated: null,
     chatList: "unknown",
@@ -59,6 +65,24 @@ export async function probeFeishuChats(
   }
   const chats = await client.listAccessibleChats();
   const liveUat = feishuAppLiveVerification(env, options.now);
+  const permissionReview = feishuAppPermissionReviewVerification(env, options.now);
+  const permissionSetFingerprint = application.scopes.fingerprint;
+  const expectedPermissionReviewBinding = permissionSetFingerprint
+    ? feishuPermissionReviewEvidenceBinding(credentials.appId, permissionSetFingerprint)
+    : null;
+  const permissionReviewBinding = permissionReview.state !== "valid"
+    ? "evidence_not_valid" as const
+    : !permissionSetFingerprint
+      ? "scope_inventory_unavailable" as const
+    : feishuEvidenceRefHasPermissionReviewBinding(
+        permissionReview.evidenceRef,
+        credentials.appId,
+        permissionSetFingerprint,
+      )
+      ? "matched" as const
+      : "unbound" as const;
+  const boundPermissionReview = permissionReview.state === "valid"
+    && permissionReviewBinding === "matched";
   const targetChatId = env.FEISHU_CHAT_ID?.trim() || null;
   const targetMatch = targetChatId === null
     ? "not_configured" as const
@@ -132,22 +156,30 @@ export async function probeFeishuChats(
   } else if (application.scopes.leastPrivilege === "unknown") {
     requiredChecks.push("无法可靠解析权限清单；最小权限状态未知，须人工复核");
   }
-  const evidenceReady = application.enabled === "enabled"
+  if (permissionReview.state !== "valid") {
+    requiredChecks.push("当前应用完成最小权限复核后，登记有效时间和绑定该应用及当前权限清单的非秘密复核编号");
+  } else if (!boundPermissionReview) {
+    requiredChecks.push("现有最小权限复核证据未绑定当前应用及当前权限清单；将探针给出的复核绑定标记写入非秘密证据编号后重验");
+  }
+  const transportEvidenceReady = application.enabled === "enabled"
     && application.onlineVersion === "present"
     && application.botDefault === "bot_default_both"
     && application.scopes.chatList === "declared"
     && application.scopes.sendAsBot === "declared"
     && targetMatch === "matched"
     && boundLiveUat;
+  const evidenceReady = transportEvidenceReady && boundPermissionReview;
   const evidenceReadiness = application.scopes.leastPrivilege === "extreme_over_privilege"
     ? "blocked_extreme_over_privilege" as const
     : application.scopes.leastPrivilege === "review_required"
       ? "blocked_scope_review" as const
       : application.scopes.leastPrivilege === "unknown"
         ? "blocked_unknown_permissions" as const
-        : evidenceReady
-          ? "ready_by_evidence" as const
-          : "pending_chat_or_uat" as const;
+        : transportEvidenceReady && !boundPermissionReview
+          ? "blocked_permission_review" as const
+          : evidenceReady
+            ? "ready_by_evidence" as const
+            : "pending_chat_or_uat" as const;
   return {
     status: "succeeded" as const,
     authentication: "validated" as const,
@@ -159,10 +191,18 @@ export async function probeFeishuChats(
     },
     scopeInventory: {
       state: application.scopes.inventory,
+      fingerprint: permissionSetFingerprint,
       totalDeclared: application.scopes.total,
       elevatedDeclared: application.scopes.elevated,
       outsideNotificationAllowlist: application.scopes.outsideNotificationAllowlist,
       leastPrivilege: application.scopes.leastPrivilege,
+    },
+    permissionReview: {
+      evidenceState: permissionReview.state,
+      evidenceBinding: permissionReviewBinding,
+      expectedEvidenceBinding: expectedPermissionReviewBinding,
+      reviewedAt: permissionReview.verifiedAt,
+      evidenceRef: permissionReview.evidenceRef,
     },
     chatList: {
       declared: application.scopes.chatList,

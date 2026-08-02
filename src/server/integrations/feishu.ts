@@ -23,6 +23,8 @@ const NOTIFICATION_SCOPE_ALLOWLIST = new Set([
 const EXTREME_SCOPE_TOTAL = 25;
 const EXTREME_OUTSIDE_ALLOWLIST = 10;
 const TARGET_BINDING_PREFIX = "FST1_";
+const PERMISSION_SET_FINGERPRINT_PREFIX = "FSS1_";
+const PERMISSION_REVIEW_BINDING_PREFIX = "FSP2_";
 
 export interface FeishuAppCredentials {
   appId: string;
@@ -53,6 +55,8 @@ export interface FeishuSelfApplicationInspection {
   botDefault: FeishuBotDefaultState;
   scopes: {
     inventory: "parsed" | "ambiguous" | "unavailable";
+    /** One-way digest of the normalized scope names and levels; raw permission names never escape. */
+    fingerprint: string | null;
     total: number | null;
     elevated: number | null;
     chatList: FeishuScopeDeclaration;
@@ -79,6 +83,54 @@ export function feishuEvidenceRefHasTargetBinding(
 ): boolean {
   if (!reference) return false;
   const binding = feishuTargetEvidenceBinding(appId, chatId);
+  return reference === binding || reference.endsWith(`-${binding}`);
+}
+
+export interface FeishuPermissionDescriptor {
+  scope: string;
+  level: number;
+}
+
+/** Stable, non-secret digest of a permission set; ordering and duplicate rows do not affect it. */
+export function feishuPermissionSetFingerprint(
+  permissions: readonly FeishuPermissionDescriptor[],
+): string {
+  const normalized = [...new Map(permissions.map((permission) => {
+    const scope = permission.scope.trim();
+    const level = Number(permission.level);
+    return [`${scope}\0${level}`, { scope, level }] as const;
+  })).values()].sort((left, right) =>
+    left.scope === right.scope
+      ? left.level - right.level
+      : left.scope < right.scope ? -1 : 1);
+  const digest = createHash("sha256")
+    .update(`feishu-permission-set-v1\0${JSON.stringify(normalized)}`)
+    .digest("hex")
+    .slice(0, 24)
+    .toUpperCase();
+  return `${PERMISSION_SET_FINGERPRINT_PREFIX}${digest}`;
+}
+
+/** Non-secret marker binding a review to one app and the exact normalized permission set. */
+export function feishuPermissionReviewEvidenceBinding(
+  appId: string,
+  permissionSetFingerprint: string,
+): string {
+  const digest = createHash("sha256")
+    .update(`feishu-app-permission-review-v2\0${appId}\0${permissionSetFingerprint}`)
+    .digest("hex")
+    .slice(0, 24)
+    .toUpperCase();
+  return `${PERMISSION_REVIEW_BINDING_PREFIX}${digest}`;
+}
+
+export function feishuEvidenceRefHasPermissionReviewBinding(
+  reference: string | null,
+  appId: string,
+  permissionSetFingerprint: string,
+): boolean {
+  if (!reference) return false;
+  const binding = feishuPermissionReviewEvidenceBinding(appId, permissionSetFingerprint);
   return reference === binding || reference.endsWith(`-${binding}`);
 }
 
@@ -157,6 +209,7 @@ function inspectScopes(value: unknown): FeishuSelfApplicationInspection["scopes"
   if (!Array.isArray(value)) {
     return {
       inventory: "unavailable",
+      fingerprint: null,
       total: null,
       elevated: null,
       chatList: "unknown",
@@ -178,6 +231,12 @@ function inspectScopes(value: unknown): FeishuSelfApplicationInspection["scopes"
   const outsideNotificationAllowlist = inventory === "parsed"
     ? names.filter((name) => !NOTIFICATION_SCOPE_ALLOWLIST.has(name as string)).length
     : null;
+  const fingerprint = inventory === "parsed" && levels.every((level) => level !== null)
+    ? feishuPermissionSetFingerprint(items.map((item, index) => ({
+        scope: names[index] as string,
+        level: levels[index] as number,
+      })))
+    : null;
   const leastPrivilege: FeishuLeastPrivilegeState = outsideNotificationAllowlist === null
     ? "unknown"
     : value.length >= EXTREME_SCOPE_TOTAL
@@ -189,6 +248,7 @@ function inspectScopes(value: unknown): FeishuSelfApplicationInspection["scopes"
 
   return {
     inventory,
+    fingerprint,
     total: value.length,
     elevated,
     chatList: declaredScope(names, CHAT_LIST_SCOPE),

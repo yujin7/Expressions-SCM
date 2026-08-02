@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   FeishuAppClient,
+  feishuPermissionSetFingerprint,
   feishuWebhookUrlFromEnv,
 } from "@/server/integrations/feishu";
 
@@ -12,6 +13,22 @@ function response(body: unknown): Response {
 }
 
 describe("飞书应用机器人", () => {
+  it("权限指纹忽略顺序和重复项，但等级变化会失效", () => {
+    const baseline = feishuPermissionSetFingerprint([
+      { scope: "im:chat:readonly", level: 1 },
+      { scope: "im:message:send_as_bot", level: 1 },
+    ]);
+    expect(feishuPermissionSetFingerprint([
+      { scope: "im:message:send_as_bot", level: 1 },
+      { scope: "im:chat:readonly", level: 1 },
+      { scope: "im:chat:readonly", level: 1 },
+    ])).toBe(baseline);
+    expect(feishuPermissionSetFingerprint([
+      { scope: "im:chat:readonly", level: 2 },
+      { scope: "im:message:send_as_bot", level: 1 },
+    ])).not.toBe(baseline);
+  });
+
   it("自定义机器人 webhook 只接受飞书官方精确主机和路径", () => {
     expect(feishuWebhookUrlFromEnv({
       FEISHU_WEBHOOK_URL: "https://open.feishu.cn/open-apis/bot/v2/hook/test-token",
@@ -141,6 +158,11 @@ describe("飞书应用机器人", () => {
       botDefault: "bot_default_both",
       scopes: {
         inventory: "parsed",
+        fingerprint: feishuPermissionSetFingerprint([
+          { scope: "application:application:self_manage", level: 1 },
+          { scope: "im:chat:readonly", level: 1 },
+          { scope: "im:message:send_as_bot", level: 1 },
+        ]),
         total: 3,
         elevated: 0,
         chatList: "declared",
@@ -193,6 +215,7 @@ describe("飞书应用机器人", () => {
       botDefault: "unknown",
       scopes: {
         inventory: "ambiguous",
+        fingerprint: null,
         total: 2,
         elevated: 1,
         chatList: "unknown",
@@ -234,6 +257,7 @@ describe("飞书应用机器人", () => {
 
     expect(result.scopes).toEqual({
       inventory: "parsed",
+      fingerprint: feishuPermissionSetFingerprint(scopes),
       total: 1_107,
       elevated: 1_007,
       chatList: "declared",
