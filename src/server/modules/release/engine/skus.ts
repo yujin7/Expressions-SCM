@@ -11,6 +11,11 @@ import {
 } from "@/server/import/sku-identity-mode";
 import { resolveKnownReference } from "@/server/modules/dimension/resolver";
 import { ApiError } from "@/server/modules/master/common";
+import {
+  assertSkuBarcodeOwnershipInTransaction,
+  lockSkuIdentifierClaim,
+  lockSkuIdentifierPrimarySlot,
+} from "@/server/modules/master/sku-identifier";
 import { allocateGovernedSkuCode } from "@/server/modules/master/sku-code-allocation";
 import { checkCode } from "@/server/rules/code-rule";
 import { isGovernedSkuCode, normalizeSkuOrigin } from "@/server/rules/sku-code";
@@ -283,7 +288,7 @@ async function releaseSkusInternal(
     return canonical;
   };
 
-  type GtinDecision = { value: string; action: "register" | "noop" };
+  type GtinDecision = { value: string };
   const gtinDecisionBySourceCode = new Map<string, GtinDecision>();
   const gtinBlockReasonByCode = new Map<string, string>();
   if (strictSelectedJobs) {
@@ -429,10 +434,10 @@ async function releaseSkusInternal(
             );
             continue;
           }
-          gtinDecisionBySourceCode.set(source, { value: gtin, action: "noop" });
+          gtinDecisionBySourceCode.set(source, { value: gtin });
           continue;
         }
-        gtinDecisionBySourceCode.set(source, { value: gtin, action: "register" });
+        gtinDecisionBySourceCode.set(source, { value: gtin });
       }
     }
   }
@@ -774,22 +779,73 @@ async function releaseSkusInternal(
     const registeredGtins = new Set<string>();
     const registerGtin = async (sourceCode: string, skuId: number): Promise<void> => {
       const decision = gtinDecisionBySourceCode.get(sourceCode);
-      if (!decision || decision.action === "noop") return;
+      if (!decision) return;
       const gtin = decision.value;
       const registrationKey = `${skuId}\0${gtin}`;
       if (registeredGtins.has(registrationKey)) return;
-      await tx.insert(schema.skuIdentifiers).values({
+      await lockSkuIdentifierClaim(tx, "gtin", gtin, "GS1");
+      await lockSkuIdentifierPrimarySlot(tx, {
         skuId,
         kind: "gtin",
-        value: gtin,
         scope: "GS1",
-        uom: null,
         packagingLevel: "each",
-        isPrimary: true,
-        active: true,
-        note: `BOM 成品单品 GTIN${args.jobIds ? `; jobs ${args.jobIds.join(",")}` : ""}`,
-        createdBy: user.id,
       });
+      await assertSkuBarcodeOwnershipInTransaction(tx, skuId, "gtin", gtin);
+      const existingClaims: Array<typeof schema.skuIdentifiers.$inferSelect> = await tx
+        .select()
+        .from(schema.skuIdentifiers)
+        .where(and(
+          eq(schema.skuIdentifiers.skuId, skuId),
+          eq(schema.skuIdentifiers.kind, "gtin"),
+          eq(schema.skuIdentifiers.value, gtin),
+        ));
+      const existingClaim = existingClaims[0];
+      if (existingClaim) {
+        if (!existingClaim.active) {
+          throw new ApiError(409, `GTIN ${gtin} 已停用；须先人工裁决，禁止放行时静默重新启用`);
+        }
+        if (existingClaim.scope !== "GS1" || existingClaim.packagingLevel !== "each") {
+          throw new ApiError(409, `GTIN ${gtin} 已登记为非单品包装层级；须先人工裁决`);
+        }
+        if (!existingClaim.isPrimary) {
+          const [promoted] = await tx
+            .update(schema.skuIdentifiers)
+            .set({ isPrimary: true, updatedAt: new Date() })
+            .where(eq(schema.skuIdentifiers.id, existingClaim.id))
+            .returning();
+          await writeAudit(tx, {
+            userId: user.id,
+            entity: "sku_identifier",
+            entityId: existingClaim.id,
+            action: "promote_primary_from_bom_release",
+            before: existingClaim,
+            after: { ...promoted, sourceCode },
+          });
+        }
+      } else {
+        const [created] = await tx
+          .insert(schema.skuIdentifiers)
+          .values({
+            skuId,
+            kind: "gtin",
+            value: gtin,
+            scope: "GS1",
+            uom: null,
+            packagingLevel: "each",
+            isPrimary: true,
+            active: true,
+            note: `BOM 成品单品 GTIN${args.jobIds ? `; jobs ${args.jobIds.join(",")}` : ""}`,
+            createdBy: user.id,
+          })
+          .returning();
+        await writeAudit(tx, {
+          userId: user.id,
+          entity: "sku_identifier",
+          entityId: created.id,
+          action: "create_from_bom_release",
+          after: { ...created, sourceCode },
+        });
+      }
       await tx
         .update(schema.skus)
         .set({ barcode: gtin, barcodeStatus: "valid", updatedAt: new Date() })

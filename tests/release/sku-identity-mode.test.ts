@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import * as schema from "@/db/schema";
@@ -517,22 +517,25 @@ describe("BOM SKU 身份模式", () => {
     });
     const jobId = await seedJob(db, "new_master");
     const [spu] = await db.insert(schema.spus).values({ code: "P99102", nameCn: "已有 GTIN" }).returning();
-    const [invalid, register, noop, otherOwner, collide] = await db.insert(schema.skus).values([
+    const [invalid, register, noop, repairPrimary, otherOwner, collide] = await db.insert(schema.skus).values([
       { code: "EXIST-INVALID", name: "坏码", spuId: spu.id, skuType: "finished", baseUom: "件" },
       { code: "EXIST-REGISTER", name: "待登记", spuId: spu.id, skuType: "finished", baseUom: "件" },
       { code: "EXIST-NOOP", name: "已登记", spuId: spu.id, skuType: "finished", baseUom: "件", barcode: "4006381333931", barcodeStatus: "valid" },
+      { code: "EXIST-REPAIR", name: "待补主条码", spuId: spu.id, skuType: "finished", baseUom: "件" },
       { code: "OTHER-OWNER", name: "他主", spuId: spu.id, skuType: "finished", baseUom: "件", barcode: "5901234123457", barcodeStatus: "valid" },
       { code: "EXIST-COLLIDE", name: "冲突码", spuId: spu.id, skuType: "finished", baseUom: "件" },
     ]).returning();
     await db.insert(schema.skuIdentifiers).values([
       { skuId: noop.id, kind: "gtin", value: "4006381333931", scope: "GS1", packagingLevel: "each", isPrimary: true, active: true },
+      { skuId: repairPrimary.id, kind: "gtin", value: "96385074", scope: "GS1", packagingLevel: "each", isPrimary: false, active: true },
       { skuId: otherOwner.id, kind: "gtin", value: "5901234123457", scope: "GS1", packagingLevel: "each", isPrimary: true, active: true },
     ]);
     await writeStagingRows(db, jobId, [
       { rowNo: 1, targetTable: "bom_block", payload: block({ productCode: invalid.code, productName: invalid.name, barcode: "4006381333932" }) },
       { rowNo: 2, targetTable: "bom_block", payload: block({ productCode: register.code, productName: register.name, barcode: "5012345678900" }) },
       { rowNo: 3, targetTable: "bom_block", payload: block({ productCode: noop.code, productName: noop.name, barcode: "4006381333931" }) },
-      { rowNo: 4, targetTable: "bom_block", payload: block({ productCode: collide.code, productName: collide.name, barcode: "5901234123457" }) },
+      { rowNo: 4, targetTable: "bom_block", payload: block({ productCode: repairPrimary.code, productName: repairPrimary.name, barcode: "96385074" }) },
+      { rowNo: 5, targetTable: "bom_block", payload: block({ productCode: collide.code, productName: collide.name, barcode: "5901234123457" }) },
     ]);
 
     const preview = await releaseSkus(operator, { jobIds: [jobId], dryRun: true }, db);
@@ -550,6 +553,22 @@ describe("BOM SKU 身份模式", () => {
     });
     const [synced] = await db.select().from(schema.skus).where(eq(schema.skus.id, register.id));
     expect(synced).toMatchObject({ barcode: "5012345678900", barcodeStatus: "valid" });
+    const [repairedSku] = await db.select().from(schema.skus).where(eq(schema.skus.id, repairPrimary.id));
+    const [repairedIdentifier] = await db
+      .select()
+      .from(schema.skuIdentifiers)
+      .where(and(
+        eq(schema.skuIdentifiers.skuId, repairPrimary.id),
+        eq(schema.skuIdentifiers.value, "96385074"),
+      ));
+    expect(repairedSku).toMatchObject({ barcode: "96385074", barcodeStatus: "valid" });
+    expect(repairedIdentifier).toMatchObject({ isPrimary: true, active: true });
+    expect(
+      await db
+        .select()
+        .from(schema.auditLogs)
+        .where(eq(schema.auditLogs.action, "promote_primary_from_bom_release")),
+    ).toHaveLength(1);
   });
 
   it("new_master 只用解析后品牌主档编码取号；未解析品牌阻断", async () => {

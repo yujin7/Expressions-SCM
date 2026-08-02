@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { getDbAsync, schema } from "@/db";
 import { writeAudit } from "@/server/core/audit";
 import type { SessionUser } from "@/server/core/dto";
@@ -23,7 +23,42 @@ async function requireSku(db: AnyDb, skuId: number) {
 
 type IdentifierRow = typeof schema.skuIdentifiers.$inferSelect;
 
-async function assertBarcodeOwnership(
+/**
+ * Serialize claims for one logical identifier before running check-then-write ownership guards.
+ *
+ * GTIN and legacy barcode claims deliberately share one lock namespace: they are different
+ * evidence kinds, but the same physical code must never race into two SKU owners. Known external
+ * scope aliases are normalized before the key is built, so JST/JUSHUITAN/聚水潭 also serialize.
+ */
+export async function lockSkuIdentifierClaim(
+  tx: AnyDb,
+  kind: IdentifierRow["kind"],
+  value: string,
+  scope?: string | null,
+) {
+  const normalizedValue = value.trim();
+  const lockKey = kind === "gtin" || kind === "legacy"
+    ? `sku-barcode:${normalizedValue}`
+    : `sku-identifier:${kind}:${normalizeSkuIdentifierScope(kind, scope)}:${normalizedValue}`;
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${lockKey}))`);
+}
+
+/** Serialize replacement/deactivation within one SKU identifier primary slot. */
+export async function lockSkuIdentifierPrimarySlot(
+  tx: AnyDb,
+  input: Pick<IdentifierRow, "skuId" | "kind" | "scope" | "packagingLevel">,
+) {
+  const lockKey = [
+    "sku-identifier-primary",
+    input.skuId,
+    input.kind,
+    normalizeSkuIdentifierScope(input.kind, input.scope),
+    input.packagingLevel ?? "",
+  ].join(":");
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${lockKey}))`);
+}
+
+export async function assertSkuBarcodeOwnershipInTransaction(
   db: AnyDb,
   skuId: number,
   kind: IdentifierRow["kind"],
@@ -98,7 +133,7 @@ async function assertIdentifierOwnership(
         : `该标识已关联 SKU ${equivalentIdentifier.skuCode}；请先完成人工归属裁决`,
     );
   }
-  await assertBarcodeOwnership(db, input.skuId, input.kind, input.value);
+  await assertSkuBarcodeOwnershipInTransaction(db, input.skuId, input.kind, input.value);
 }
 
 async function demotePrimarySlot(
@@ -185,6 +220,7 @@ export async function createSkuIdentifier(
   return db.transaction(async (tx: AnyDb) => {
     const sku = await requireSku(tx, skuId);
 
+    await lockSkuIdentifierClaim(tx, parsed.kind, parsed.value, parsed.scope);
     await assertIdentifierOwnership(tx, {
       skuId,
       kind: parsed.kind,
@@ -193,6 +229,7 @@ export async function createSkuIdentifier(
     });
 
     if (parsed.isPrimary) {
+      await lockSkuIdentifierPrimarySlot(tx, { skuId, ...parsed });
       await demotePrimarySlot(tx, { skuId, ...parsed }, actor);
     }
 
@@ -250,6 +287,7 @@ export async function ensureExternalSkuIdentifierInTransaction(
     note: input.note,
   }));
   const sku = await requireSku(tx, input.skuId);
+  await lockSkuIdentifierClaim(tx, parsed.kind, parsed.value, parsed.scope);
   const candidates: IdentifierRow[] = await tx
     .select()
     .from(schema.skuIdentifiers)
@@ -347,7 +385,11 @@ export async function setSkuIdentifierActive(
       ));
     if (!existing) throw new ApiError(404, "SKU 标识不存在");
     if (existing.active === active) return existing;
+    if (!active && existing.isPrimary) {
+      await lockSkuIdentifierPrimarySlot(tx, existing);
+    }
     if (active) {
+      await lockSkuIdentifierClaim(tx, existing.kind, existing.value, existing.scope);
       await assertIdentifierOwnership(tx, {
         skuId,
         kind: existing.kind,
@@ -403,7 +445,8 @@ export async function setSkuIdentifierPrimary(
     if (!existing) throw new ApiError(404, "SKU 标识不存在");
     if (!existing.active) throw new ApiError(409, "请先启用该标识，再设为主标识");
     if (existing.isPrimary) return existing;
-    await assertBarcodeOwnership(tx, skuId, existing.kind, existing.value);
+    await lockSkuIdentifierPrimarySlot(tx, existing);
+    await assertSkuBarcodeOwnershipInTransaction(tx, skuId, existing.kind, existing.value);
     await demotePrimarySlot(tx, existing, actor, identifierId);
     const [updated] = await tx
       .update(schema.skuIdentifiers)
