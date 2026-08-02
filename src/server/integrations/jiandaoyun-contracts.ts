@@ -5,8 +5,22 @@ export interface JiandaoyunFieldRule {
   target: string;
 }
 
+export interface JiandaoyunNumericControlRule {
+  target: string;
+  scale: 2 | 4;
+}
+
+export interface JiandaoyunReconciliationRule {
+  key: string;
+  headerTarget: string;
+  lineTargets: Array<{ subformTarget: string; fieldTarget: string }>;
+  scale: 2 | 4;
+  tolerance: string;
+}
+
 export interface JiandaoyunSubformRule extends JiandaoyunFieldRule {
   items: JiandaoyunFieldRule[];
+  numericControls?: JiandaoyunNumericControlRule[];
 }
 
 export interface JiandaoyunFormContract {
@@ -17,6 +31,10 @@ export interface JiandaoyunFormContract {
   targetTable: string;
   fields: JiandaoyunFieldRule[];
   subforms?: JiandaoyunSubformRule[];
+  businessKey?: string[];
+  numericControls?: JiandaoyunNumericControlRule[];
+  freshnessMaxAgeDays?: number;
+  reconciliations?: JiandaoyunReconciliationRule[];
 }
 
 const field = (target: string, source: string): JiandaoyunFieldRule => ({ target, source });
@@ -36,6 +54,8 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     appId: "6a1fbeeac2ea65ea6099f422",
     entryId: "5c6a555e2ce076490e9e0595",
     targetTable: "jdy_product_observation",
+    businessKey: ["productCode"],
+    freshnessMaxAgeDays: 90,
     fields: [
       field("productCode", "_widget_1679316712691"),
       field("productAttribute", "_widget_1679316712692"),
@@ -52,6 +72,12 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     appId: "6a342085a29b2e80efcf176f",
     entryId: "65de8e6c4c47385168ce372e",
     targetTable: "jdy_purchase_demand_observation",
+    businessKey: ["requestNo", "productCode"],
+    freshnessMaxAgeDays: 90,
+    numericControls: [
+      { target: "requestedQty", scale: 4 },
+      { target: "purchasedQty", scale: 4 },
+    ],
     fields: [
       field("requestNo", "_widget_1699602665231"),
       field("requestedAt", "_widget_1550480795548"),
@@ -78,6 +104,34 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     appId: "6a342085a29b2e80efcf176f",
     entryId: "5c6a74eccd36f97062560699",
     targetTable: "jdy_purchase_order_observation",
+    businessKey: ["orderNo"],
+    freshnessMaxAgeDays: 90,
+    numericControls: [
+      { target: "totalQty", scale: 4 },
+      { target: "grossAmount", scale: 2 },
+      { target: "discountAmount", scale: 2 },
+      { target: "orderAmount", scale: 2 },
+      { target: "receivedQty", scale: 4 },
+      { target: "receivedAmount", scale: 2 },
+      { target: "invoicedAmount", scale: 2 },
+      { target: "paidAmount", scale: 2 },
+    ],
+    reconciliations: [
+      {
+        key: "purchase-order-quantity",
+        headerTarget: "totalQty",
+        lineTargets: [{ subformTarget: "lines", fieldTarget: "purchaseQty" }],
+        scale: 4,
+        tolerance: "0.0000",
+      },
+      {
+        key: "purchase-order-amount",
+        headerTarget: "orderAmount",
+        lineTargets: [{ subformTarget: "lines", fieldTarget: "lineAmountTaxed" }],
+        scale: 2,
+        tolerance: "0.01",
+      },
+    ],
     fields: [
       field("supplierName", "_widget_1550480795762"),
       field("supplierCode", "_widget_1679388823284"),
@@ -104,6 +158,12 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     subforms: [{
       source: "_widget_1550480795863",
       target: "lines",
+      numericControls: [
+        { target: "requestedQty", scale: 4 },
+        { target: "alreadyPurchasedQty", scale: 4 },
+        { target: "purchaseQty", scale: 4 },
+        { target: "lineAmountTaxed", scale: 2 },
+      ],
       items: [
         field("requestNo", "_widget_1709124659703"),
         field("productName", "_widget_1679390839302"),
@@ -127,6 +187,36 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     appId: "6a342085a29b2e80efcf176f",
     entryId: "5c6b97a6fcc7fc6f03143d42",
     targetTable: "jdy_purchase_receipt_observation",
+    businessKey: ["receiptNo"],
+    freshnessMaxAgeDays: 90,
+    numericControls: [
+      { target: "totalOrderedQty", scale: 4 },
+      { target: "totalReceivedQty", scale: 4 },
+      { target: "receiptAmount", scale: 2 },
+    ],
+    reconciliations: [
+      {
+        key: "purchase-receipt-ordered-quantity",
+        headerTarget: "totalOrderedQty",
+        lineTargets: [{ subformTarget: "lines", fieldTarget: "orderedQty" }],
+        scale: 4,
+        tolerance: "0.0000",
+      },
+      {
+        key: "purchase-receipt-received-quantity",
+        headerTarget: "totalReceivedQty",
+        lineTargets: [{ subformTarget: "lines", fieldTarget: "receivedQty" }],
+        scale: 4,
+        tolerance: "0.0000",
+      },
+      {
+        key: "purchase-receipt-amount",
+        headerTarget: "receiptAmount",
+        lineTargets: [{ subformTarget: "lines", fieldTarget: "lineAmountTaxed" }],
+        scale: 2,
+        tolerance: "0.01",
+      },
+    ],
     fields: [
       field("purchaseOrderName", "_widget_1679406754663"),
       field("purchaseOrderNo", "_widget_1679406754664"),
@@ -145,6 +235,14 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     subforms: [{
       source: "_widget_1550559559766",
       target: "lines",
+      numericControls: [
+        { target: "orderedQty", scale: 4 },
+        { target: "openQty", scale: 4 },
+        { target: "arrivedQty", scale: 4 },
+        { target: "nonconformingQty", scale: 4 },
+        { target: "receivedQty", scale: 4 },
+        { target: "lineAmountTaxed", scale: 2 },
+      ],
       items: [
         field("requestNo", "_widget_1715923996969"),
         field("productName", "_widget_1550559559778"),
@@ -168,6 +266,9 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     appId: "6a342085a29b2e80efcf176f",
     entryId: "64190a45d97a4200089c3048",
     targetTable: "jdy_supplier_observation",
+    businessKey: ["supplierCode"],
+    freshnessMaxAgeDays: 90,
+    numericControls: [{ target: "creditLimit", scale: 2 }],
     fields: [
       field("supplierCode", "_widget_1716278712458"),
       field("supplierName", "_widget_1550470841596"),
@@ -187,6 +288,9 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     appId: "6a341f76a29b2e80efce4700",
     entryId: "5c6ba8b32c9c1b24e1faffce",
     targetTable: "jdy_warehouse_observation",
+    businessKey: ["warehouseCode"],
+    freshnessMaxAgeDays: 90,
+    numericControls: [{ target: "capacityM3", scale: 4 }],
     fields: [
       field("warehouseName", "_widget_1550559411499"),
       field("warehouseCode", "_widget_1679321080626"),
@@ -200,6 +304,16 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     appId: "6a341f76a29b2e80efce4700",
     entryId: "641bbf6425f917000739f52a",
     targetTable: "jdy_warehouse_transfer_observation",
+    businessKey: ["transferNo"],
+    freshnessMaxAgeDays: 90,
+    numericControls: [{ target: "totalQty", scale: 4 }],
+    reconciliations: [{
+      key: "warehouse-transfer-quantity",
+      headerTarget: "totalQty",
+      lineTargets: [{ subformTarget: "lines", fieldTarget: "transferQty" }],
+      scale: 4,
+      tolerance: "0.0000",
+    }],
     fields: [
       field("transferType", "_widget_1679536925339"),
       field("requestedAt", "_widget_1550559292052"),
@@ -216,6 +330,11 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     subforms: [{
       source: "_widget_1550559559766",
       target: "lines",
+      numericControls: [
+        { target: "fromOnHandQty", scale: 4 },
+        { target: "toOnHandQty", scale: 4 },
+        { target: "transferQty", scale: 4 },
+      ],
       items: [
         field("productName", "_widget_1550559559778"),
         field("productCode", "_widget_1550559559880"),
@@ -234,6 +353,28 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     appId: "6a341f76a29b2e80efce4700",
     entryId: "641bc6be42813d00071d5c79",
     targetTable: "jdy_inventory_count_observation",
+    businessKey: ["countNo"],
+    freshnessMaxAgeDays: 90,
+    numericControls: [
+      { target: "lossQty", scale: 4 },
+      { target: "gainQty", scale: 4 },
+    ],
+    reconciliations: [
+      {
+        key: "inventory-count-loss-quantity",
+        headerTarget: "lossQty",
+        lineTargets: [{ subformTarget: "lines", fieldTarget: "lossQty" }],
+        scale: 4,
+        tolerance: "0.0000",
+      },
+      {
+        key: "inventory-count-gain-quantity",
+        headerTarget: "gainQty",
+        lineTargets: [{ subformTarget: "lines", fieldTarget: "gainQty" }],
+        scale: 4,
+        tolerance: "0.0000",
+      },
+    ],
     fields: [
       field("countType", "_widget_1679536925339"),
       field("countNo", "_widget_1679541900774"),
@@ -246,6 +387,12 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     subforms: [{
       source: "_widget_1550559559766",
       target: "lines",
+      numericControls: [
+        { target: "bookQty", scale: 4 },
+        { target: "countedQty", scale: 4 },
+        { target: "lossQty", scale: 4 },
+        { target: "gainQty", scale: 4 },
+      ],
       items: [
         field("productName", "_widget_1550559559778"),
         field("productCode", "_widget_1550559559880"),
@@ -265,6 +412,21 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     appId: "6a342085a29b2e80efcf176f",
     entryId: "664c58588d045de5949710ec",
     targetTable: "jdy_sample_observation",
+    freshnessMaxAgeDays: 90,
+    numericControls: [
+      { target: "totalQty", scale: 4 },
+      { target: "totalValue", scale: 2 },
+    ],
+    reconciliations: [{
+      key: "sample-quantity",
+      headerTarget: "totalQty",
+      lineTargets: [
+        { subformTarget: "existingProductLines", fieldTarget: "sampleQty" },
+        { subformTarget: "newProductLines", fieldTarget: "sampleQty" },
+      ],
+      scale: 4,
+      tolerance: "0.0000",
+    }],
     fields: [
       field("supplierCode", "_widget_1703818211448"),
       field("supplierName", "_widget_1703818211449"),
@@ -282,6 +444,7 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
       {
         source: "_widget_1703818211453",
         target: "existingProductLines",
+        numericControls: [{ target: "sampleQty", scale: 4 }],
         items: [
           field("productName", "_widget_1703818211462"),
           field("productCode", "_widget_1703822182120"),
@@ -296,6 +459,7 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
       {
         source: "_widget_1709118014316",
         target: "newProductLines",
+        numericControls: [{ target: "sampleQty", scale: 4 }],
         items: [
           field("productName", "_widget_1709118014318"),
           field("productCode", "_widget_1709118014319"),

@@ -1,8 +1,12 @@
 import {
   JiandaoyunClient,
   jiandaoyunConfigFromEnv,
+  type JiandaoyunForm,
 } from "@/server/integrations/jiandaoyun";
-import { auditJiandaoyunContracts } from "@/server/integrations/jiandaoyun-audit";
+import {
+  auditJiandaoyunCatalog,
+  auditJiandaoyunContracts,
+} from "@/server/integrations/jiandaoyun-audit";
 
 export async function runJiandaoyunContractAudit() {
   const config = jiandaoyunConfigFromEnv();
@@ -14,14 +18,14 @@ export async function runJiandaoyunContractAudit() {
   }
   const client = new JiandaoyunClient(config);
   const apps = await client.listApps();
-  let forms = 0;
-  for (const app of apps) forms += (await client.listForms(app.appId)).length;
+  const forms: JiandaoyunForm[] = [];
+  for (const app of apps) forms.push(...await client.listForms(app.appId));
   const contracts = await auditJiandaoyunContracts(client);
   return {
     status: "succeeded" as const,
     generatedAt: new Date().toISOString(),
-    privacy: "aggregate-controls-only",
-    catalog: { apps: apps.length, forms },
+    privacy: "internal-aggregate-business-controls-no-raw-rows",
+    catalog: auditJiandaoyunCatalog(apps, forms),
     contracts,
   };
 }
