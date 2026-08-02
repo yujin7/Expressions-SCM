@@ -7,16 +7,20 @@
  *  B) 重放 SKU/BOM/费用放行（歧义块沿用「表内最后一块=active」代决），新候选由 pmc01 批审（SoD）
  *  C) 壳 SKU 品牌归位：编码前缀→品牌（E/N/B/DEV/L/A/D 名称实证；V→微初 消去法存疑标记）；
  *     F/P 前缀（泵头/礼盒/小卡）实为包材→改 skuType=packaging 并打标
- * 运行（须先停 dev server）：npx tsx scripts/populate-fixup.ts
+ * 仅限本地一次性迁移（须先停 dev server——PGlite 单进程）：
+ *   SCM_ALLOW_LEGACY_LOCAL_MIGRATION=I_UNDERSTAND_THIS_REWRITES_LOCAL_IDENTITY \
+ *   DATABASE_URL=pglite:.data/dev npx tsx scripts/populate-fixup.ts
+ * 未给出上述确认值或 DATABASE_URL 不是 pglite: 时，脚本会在任何业务写入前拒绝执行。
  */
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { getDbAsync } from "../src/db";
 import * as schema from "../src/db/schema";
 import { writeAudit } from "../src/server/core/audit";
+import { assertLegacyLocalIdentityMigrationAllowed } from "../src/server/import/sku-identity-mode";
 import {
-  releaseSkus,
-  releaseBoms,
+  releaseSkusForLegacyLocalMigration,
+  releaseBomsForLegacyLocalMigration,
   activateReleasedBoms,
   releaseFeeRefs,
   releaseStatus,
@@ -49,6 +53,7 @@ function classify(code: string, name: string): "raw" | "packaging" | null {
 
 async function main() {
   process.env.DATABASE_URL ??= "pglite:.data/dev";
+  assertLegacyLocalIdentityMigrationAllowed();
   const db = await getDbAsync();
   const admin = await loadUser(db, "admin");
   const pmc01 = await loadUser(db, "pmc01");
@@ -148,7 +153,7 @@ async function main() {
   console.log("物料补建:", JSON.stringify(report.materials));
 
   /* ── B) 重放 SKU/BOM/费用放行 ── */
-  const skuRes = await releaseSkus(admin, { dryRun: false });
+  const skuRes = await releaseSkusForLegacyLocalMigration(admin, { dryRun: false });
   report.skuRerun = { createdFinished: skuRes.createdFinished, createdMaterials: skuRes.createdMaterials, existing: skuRes.existing, blocked: skuRes.blocked.length };
   console.log("SKU重放:", JSON.stringify(report.skuRerun));
 
@@ -177,7 +182,7 @@ async function main() {
       resolutions[String(id)] = { decision: i === list.length - 1 ? "active" : "retired" };
     });
   }
-  const bomRes = await releaseBoms(admin, { resolutions, dryRun: false });
+  const bomRes = await releaseBomsForLegacyLocalMigration(admin, { resolutions, dryRun: false });
   report.bomRerun = {
     created: bomRes.created,
     candidates: bomRes.candidates.length,

@@ -4,7 +4,10 @@
  *  3) 非 BOM 品牌壳 SKU 建档 + sku_code 别名按码精确认领
  *  4) 加工费参考价 / 批次效期 / 月销量放行
  *  5) 自有仓期初单（warehouse01 制单 → finance01 审批）+ 快照仓 stock_snapshots 载入（D20）
- * 运行（须先停 dev server——PGlite 单进程）：npx tsx scripts/populate-release.ts
+ * 仅限本地一次性迁移（须先停 dev server——PGlite 单进程）：
+ *   SCM_ALLOW_LEGACY_LOCAL_MIGRATION=I_UNDERSTAND_THIS_REWRITES_LOCAL_IDENTITY \
+ *   DATABASE_URL=pglite:.data/dev npx tsx scripts/populate-release.ts
+ * 未给出上述确认值或 DATABASE_URL 不是 pglite: 时，脚本会在任何业务写入前拒绝执行。
  * 幂等：committed 行不再入选；壳 SKU 按码跳过；快照 upsert；期初只吃 pending 行。
  */
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -14,8 +17,8 @@ import * as schema from "../src/db/schema";
 import { claimAlias, resolveAlias } from "../src/server/modules/dimension/resolver";
 import {
   releaseSpus,
-  releaseSkus,
-  releaseBoms,
+  releaseSkusForLegacyLocalMigration,
+  releaseBomsForLegacyLocalMigration,
   activateReleasedBoms,
   releaseFeeRefs,
   releaseBatchStocks,
@@ -27,6 +30,7 @@ import {
 import { createStockDoc, submitStockDoc, approveStockDoc } from "../src/server/modules/inventory/stock-doc";
 import { dAdd } from "../src/server/core/decimal";
 import { writeAudit } from "../src/server/core/audit";
+import { assertLegacyLocalIdentityMigrationAllowed } from "../src/server/import/sku-identity-mode";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -63,6 +67,7 @@ async function nextSpuCode(db: AnyDb): Promise<string> {
 
 async function main() {
   process.env.DATABASE_URL ??= "pglite:.data/dev";
+  assertLegacyLocalIdentityMigrationAllowed();
   const db = await getDbAsync();
   const admin = await loadUser(db, "admin");
   const pmc01 = await loadUser(db, "pmc01");
@@ -87,7 +92,7 @@ async function main() {
   console.log("SPU:", JSON.stringify(report.spus));
 
   /* ── 阶段2b：SKU 放行（BOM 三品牌成品+物料） ── */
-  const skuRes = await releaseSkus(admin, { dryRun: false });
+  const skuRes = await releaseSkusForLegacyLocalMigration(admin, { dryRun: false });
   report.skus = {
     createdFinished: skuRes.createdFinished,
     createdMaterials: skuRes.createdMaterials,
@@ -209,7 +214,7 @@ async function main() {
     }
     reviewList.push(`BOM 歧义代决：${code}（${list.length} 块，取表内最后一块为现行版）——自动裁决待复核`);
   }
-  const bomRes = await releaseBoms(admin, { resolutions, dryRun: false });
+  const bomRes = await releaseBomsForLegacyLocalMigration(admin, { resolutions, dryRun: false });
   report.boms = {
     created: bomRes.created,
     candidates: bomRes.candidates.length,

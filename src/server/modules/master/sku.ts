@@ -5,7 +5,7 @@ import type { SessionUser } from "@/server/core/dto";
 type AnyTx = any;
 import { getDbAsync, schema } from "@/db";
 import { ApiError } from "./common";
-import { SKU_TYPES, skuSchema } from "./schemas";
+import { SKU_TYPES, skuCreateSchema, skuSchema } from "./schemas";
 import {
   assessSkuStandardName,
   COMMERCIAL_ROLES,
@@ -13,10 +13,9 @@ import {
 } from "@/server/rules/sku-standardization";
 import {
   assertGovernedSkuCode,
-  generateGovernedSkuCode,
   isGovernedSkuCode,
-  normalizeSkuOrigin,
 } from "@/server/rules/sku-code";
+import { allocateGovernedSkuCode } from "./sku-code-allocation";
 
 type SkuType = (typeof SKU_TYPES)[number];
 
@@ -135,31 +134,6 @@ async function assertDimensionIds(
   return { brandCode };
 }
 
-async function nextGovernedSkuCode(
-  tx: AnyTx,
-  brandCode: string | null,
-  skuType: SkuType,
-): Promise<string> {
-  const origin = normalizeSkuOrigin(brandCode);
-  for (let guard = 0; guard < 100_000; guard++) {
-    const [counter] = await tx
-      .insert(schema.docCounters)
-      .values({ prefix: "SKU-S1", bizDate: "GLOBAL", lastNo: 1 })
-      .onConflictDoUpdate({
-        target: [schema.docCounters.prefix, schema.docCounters.bizDate],
-        set: { lastNo: sql`${schema.docCounters.lastNo} + 1` },
-      })
-      .returning({ lastNo: schema.docCounters.lastNo });
-    const code = generateGovernedSkuCode({ origin, skuType, sequence: counter.lastNo });
-    const [duplicate] = await tx
-      .select({ id: schema.skus.id })
-      .from(schema.skus)
-      .where(eq(schema.skus.code, code));
-    if (!duplicate) return code;
-  }
-  throw new ApiError(500, "SKU 取号异常：连续碰撞超过安全上限");
-}
-
 /**
  * @param actor 写入者。审计必须与写入落在**同一个事务**里。
  *   此前审计由路由层的 auditFromRoute 补记，而它用 getDbAsync() 拿的是**新的根连接**、
@@ -167,13 +141,35 @@ async function nextGovernedSkuCode(
  *   CLAUDE.md 的铁律是「所有 service 写路径必须 writeAudit」，原子性是这条规则的实质。
  */
 export async function createSku(input: unknown, actor?: SessionUser, dbArg?: AnyTx) {
-  const v = skuSchema.parse(input);
+  const v = skuCreateSchema.parse(input);
   const db: AnyTx = dbArg ?? (await getDbAsync());
   return db.transaction(async (tx: AnyTx) => {
     const { brandCode } = await assertDimensionIds(tx, v.brandId, v.channelId);
+    const isInteractive = actor != null;
+    const isHistoricalMigration = v.creationMode === "historical_migration";
+    if (!isInteractive && (isHistoricalMigration || v.historicalMigrationReason)) {
+      throw new ApiError(403, "历史迁移模式必须由已登录管理员执行并写入审计");
+    } else if (isInteractive && isHistoricalMigration) {
+      if (!actor.roles.includes("admin")) {
+        throw new ApiError(403, "只有管理员可以执行历史 SKU 迁移建档");
+      }
+      if (!v.code) {
+        throw new ApiError(400, "历史迁移模式必须填写真实历史编码");
+      }
+      if (!v.historicalMigrationReason) {
+        throw new ApiError(400, "历史迁移模式必须填写迁移原因");
+      }
+    } else if (isInteractive) {
+      if (v.code) {
+        throw new ApiError(400, "主数据新建默认使用系统 S1 编码；请留空由系统取号");
+      }
+      if (v.historicalMigrationReason) {
+        throw new ApiError(400, "迁移原因只能用于历史迁移模式");
+      }
+    }
     let code = v.code;
     if (!code) {
-      code = await nextGovernedSkuCode(tx, brandCode, v.skuType);
+      code = await allocateGovernedSkuCode(tx, brandCode, v.skuType);
     } else if (isGovernedSkuCode(code)) {
       throw new ApiError(400, "S1 编码由系统全局原子取号；请将编码留空。历史/外部编码不得占用 S1 命名空间");
     }
@@ -212,7 +208,14 @@ export async function createSku(input: unknown, actor?: SessionUser, dbArg?: Any
         entity: "sku",
         entityId: created.id,
         action: "create",
-        after: { ...created, logisticsLeadDays: v.logisticsLeadDays ?? null },
+        after: {
+          ...created,
+          logisticsLeadDays: v.logisticsLeadDays ?? null,
+          creationMode: v.creationMode,
+          ...(isHistoricalMigration
+            ? { historicalMigrationReason: v.historicalMigrationReason }
+            : {}),
+        },
       });
     }
     return created;

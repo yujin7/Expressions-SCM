@@ -12,6 +12,11 @@ Before a pull request is ready:
 npm run check:pr
 ```
 
+The required CI static check also scans the complete Git history with Gitleaks. Never commit a
+real credential, webhook token, MCP URL, or populated environment file. A detector exception must
+identify one reviewed non-secret finding by its exact commit/file/rule/line fingerprint; broad
+path or rule exclusions are not accepted.
+
 For a production candidate:
 
 ```bash

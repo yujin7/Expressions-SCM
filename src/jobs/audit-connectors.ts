@@ -9,6 +9,9 @@ export interface ConnectorReadinessAudit {
     total: number;
     codeReady: number;
     configured: number;
+    explicitlyEnabled: number;
+    contractSetsSelected: number;
+    configurationReady: number;
     operational: number;
   };
   connectors: ConnectorReadiness[];
@@ -30,6 +33,10 @@ export function auditConnectorReadiness(
       total: connectors.length,
       codeReady: connectors.filter((row) => row.implementation === "ready").length,
       configured: connectors.filter((row) => row.configured).length,
+      explicitlyEnabled: connectors.filter((row) => row.enablementState === "enabled").length,
+      contractSetsSelected: connectors.filter((row) =>
+        row.contractSelectionState === "selected").length,
+      configurationReady: connectors.filter((row) => row.configurationReady).length,
       operational: connectors.filter((row) => row.operational).length,
     },
     connectors,

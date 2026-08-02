@@ -30,8 +30,11 @@
 
 > 应用鉴权已经成功且群目录 API 业务码为 0，但只读群目录返回 0；这说明缺的是机器人实际
 > 可见群，不是再写一套发送代码。若刚修改权限/发布版本/加入群，等待生效后重跑发现命令。
-> 不要把凭据粘贴到聊天。`FEISHU_LIVE_VERIFIED_AT` 与 `FEISHU_LIVE_VERIFIED_REF`
-> 只能在真实投递与失败恢复验收后同时填写；REF 只放非秘密工单/验收编号。
+> 不要把凭据粘贴到聊天。验收证据必须绑定实际发送路径：应用机器人填写
+> `FEISHU_APP_LIVE_VERIFIED_AT` 与 `FEISHU_APP_LIVE_VERIFIED_REF`；群自定义机器人填写
+> `FEISHU_WEBHOOK_LIVE_VERIFIED_AT` 与 `FEISHU_WEBHOOK_LIVE_VERIFIED_REF`。旧的未绑定路径
+> `FEISHU_LIVE_VERIFIED_AT` / `FEISHU_LIVE_VERIFIED_REF` 不再接受。这些字段只能在真实投递与
+> 失败恢复验收后成对填写；REF 只放非秘密工单/验收编号。
 
 ### B. 简道云
 

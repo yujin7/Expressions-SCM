@@ -45,7 +45,7 @@ interface JobRow {
   status: "pending" | "validating" | "failed" | "done" | "superseded";
   okRows: number;
   failRows: number;
-  errorFile: string | null;
+  hasErrorFile: boolean;
   createdAt: string;
 }
 
@@ -206,7 +206,7 @@ export default function JobsClient() {
       fixed: "right",
       render: (_value, row) => {
         if (row.failRows <= 0) return <Typography.Text type="secondary">—</Typography.Text>;
-        if (row.errorFile) {
+        if (row.hasErrorFile) {
           return (
             <Button
               type="link"

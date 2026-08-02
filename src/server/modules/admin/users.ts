@@ -6,7 +6,8 @@
  * - 全部写路径 writeAudit；密码 argon2id（与 seed/登录一致）。
  */
 import { hash, verify } from "@node-rs/argon2";
-import { and, eq, sql } from "drizzle-orm";
+import { createHmac } from "node:crypto";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
@@ -26,6 +27,8 @@ export interface UserRow {
   active: boolean;
   mustChangePassword: boolean;
   lockedUntil: string | null;
+  /** 列表只暴露是否绑定，不暴露可用于登录的 Feishu union_id。 */
+  feishuBound: boolean;
   createdAt: string;
 }
 
@@ -38,6 +41,7 @@ const toRow = (u: typeof schema.users.$inferSelect): UserRow => ({
   active: u.active,
   mustChangePassword: u.mustChangePassword,
   lockedUntil: u.lockedUntil ? u.lockedUntil.toISOString() : null,
+  feishuBound: u.feishuUnionId != null,
   createdAt: u.createdAt.toISOString(),
 });
 
@@ -149,6 +153,164 @@ export async function updateUser(actor: SessionUser, id: number, input: unknown,
     });
     return toRow(row);
   });
+}
+
+/* ---------- 飞书 SSO 身份绑定（仅 admin） ---------- */
+
+/**
+ * union_id 是登录身份标识，不是用户展示字段。只接受有界、去除首尾空白的值，
+ * 不把其回传到列表 DTO 或审计 before/after。
+ */
+export const bindFeishuIdentitySchema = z.object({
+  unionId: z.string().trim().min(1, "请输入飞书 union ID").max(128, "飞书 union ID 过长"),
+});
+
+function isUniqueViolation(e: unknown): boolean {
+  const err = e as { code?: string; cause?: { code?: string } } | null;
+  return err?.code === "23505" || err?.cause?.code === "23505";
+}
+
+function feishuIdentityFingerprint(unionId: string): string {
+  // AUTH_SECRET is mandatory in production. The local fallback is namespaced and only preserves
+  // test/dev correlation; neither branch stores or exposes the raw login identifier.
+  const key = process.env.AUTH_SECRET ?? "scm-local-feishu-audit-v1";
+  return createHmac("sha256", key).update(unionId).digest("hex").slice(0, 20);
+}
+
+function safeFeishuDatabaseError(operation: "bind" | "unbind", userId: number): Error {
+  const error = new Error(`飞书身份${operation === "bind" ? "绑定" : "解绑"}数据库操作失败（user#${userId}）`);
+  error.name = "FeishuIdentityDatabaseError";
+  return error;
+}
+
+async function requireActiveTarget(tx: AnyDb, id: number): Promise<typeof schema.users.$inferSelect> {
+  const [target]: (typeof schema.users.$inferSelect)[] = await tx
+    .select()
+    .from(schema.users)
+    .where(eq(schema.users.id, id));
+  if (!target) throw new ApiError(404, "用户不存在");
+  if (!target.active) throw new ApiError(409, "停用用户不可变更飞书登录绑定");
+  return target;
+}
+
+/**
+ * 绑定飞书身份。同一用户+同一 union_id 重放为无操作；已绑定其他身份时必须先显式解绑。
+ * 数据库 UNIQUE 是并发下的最终全局唯一性边界。
+ */
+export async function bindFeishuIdentity(
+  actor: SessionUser,
+  id: number,
+  input: unknown,
+  dbArg?: AnyDb,
+): Promise<UserRow> {
+  guardAdmin(actor);
+  const { unionId } = bindFeishuIdentitySchema.parse(input);
+  const db: AnyDb = dbArg ?? (await getDbAsync());
+  try {
+    return await db.transaction(async (tx: AnyDb) => {
+      const target = await requireActiveTarget(tx, id);
+      if (target.feishuUnionId === unionId) return toRow(target);
+      if (target.feishuUnionId !== null) {
+        throw new ApiError(409, "该用户已绑定飞书身份，请先解绑后再重新绑定");
+      }
+
+      const [owner] = await tx
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(eq(schema.users.feishuUnionId, unionId));
+      if (owner && owner.id !== id) throw new ApiError(409, "该飞书身份已绑定其他用户");
+
+      const [row] = await tx
+        .update(schema.users)
+        .set({
+          feishuUnionId: unionId,
+          sessionVersion: sql`${schema.users.sessionVersion} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(schema.users.id, id), eq(schema.users.active, true), isNull(schema.users.feishuUnionId)))
+        .returning();
+      if (!row) {
+        const current = await requireActiveTarget(tx, id);
+        if (current.feishuUnionId === unionId) return toRow(current);
+        throw new ApiError(409, "用户绑定已被同时修改，请刷新后重试");
+      }
+      await writeAudit(tx, {
+        userId: actor.id,
+        entity: "user",
+        entityId: id,
+        action: "bind_feishu_identity",
+        before: { feishuBound: false },
+        after: {
+          feishuBound: true,
+          bindingFingerprint: feishuIdentityFingerprint(unionId),
+          bindingVersion: 1,
+          bindingSource: "admin_manual",
+          sessionInvalidated: true,
+        },
+      });
+      return toRow(row);
+    });
+  } catch (e) {
+    if (isUniqueViolation(e)) throw new ApiError(409, "该飞书身份已绑定其他用户");
+    if (e instanceof ApiError) throw e;
+    // Drizzle database errors include bound parameters in message/stack. Never let the raw
+    // union_id cross into the generic 500 logger or error_logs persistence path.
+    throw safeFeishuDatabaseError("bind", id);
+  }
+}
+
+/**
+ * 解绑飞书身份。已解绑的重放为无操作；解绑自己前必须保留本地密码，防止锁死唯一管理员会话。
+ */
+export async function unbindFeishuIdentity(actor: SessionUser, id: number, dbArg?: AnyDb): Promise<UserRow> {
+  guardAdmin(actor);
+  const db: AnyDb = dbArg ?? (await getDbAsync());
+  try {
+    return await db.transaction(async (tx: AnyDb) => {
+      const target = await requireActiveTarget(tx, id);
+      if (target.feishuUnionId === null) return toRow(target);
+      if (
+        id === actor.id
+        && (target.passwordHash === null || target.username === null || target.username.trim() === "")
+      ) {
+        throw new ApiError(400, "该账号未设置可用的本地账号与密码，不可解绑自己的唯一登录方式");
+      }
+      const bindingFingerprint = feishuIdentityFingerprint(target.feishuUnionId);
+
+      const [row] = await tx
+        .update(schema.users)
+        .set({
+          feishuUnionId: null,
+          sessionVersion: sql`${schema.users.sessionVersion} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(schema.users.id, id),
+            eq(schema.users.active, true),
+            eq(schema.users.feishuUnionId, target.feishuUnionId),
+          ),
+        )
+        .returning();
+      if (!row) {
+        const current = await requireActiveTarget(tx, id);
+        if (current.feishuUnionId === null) return toRow(current);
+        throw new ApiError(409, "用户绑定已被同时修改，请刷新后重试");
+      }
+      await writeAudit(tx, {
+        userId: actor.id,
+        entity: "user",
+        entityId: id,
+        action: "unbind_feishu_identity",
+        before: { feishuBound: true, bindingFingerprint, bindingVersion: 1 },
+        after: { feishuBound: false, sessionInvalidated: true },
+      });
+      return toRow(row);
+    });
+  } catch (e) {
+    if (e instanceof ApiError) throw e;
+    throw safeFeishuDatabaseError("unbind", id);
+  }
 }
 
 /* ---------- 自助改密码（UAT 缺口 #1：任何登录用户；含首登强制修改） ---------- */

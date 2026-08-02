@@ -1,10 +1,11 @@
 "use client";
 
 /**
- * 运维面板（仅 admin）：db/迁移、任务运行史、错误留档、导入/导出、快照数据龄、备份新鲜度。
+ * 运维面板（仅 admin）：db/迁移、任务运行史、连接器运行/检查点、错误留档、导入/导出、
+ * 快照数据龄和备份新鲜度。
  * 30s 自动刷新；红色高亮：任务失败 / 24h 错误>0 / 快照龄>3天 / 备份>25h 或缺失说明。
  */
-import { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { App, Card, Col, Row, Space, Spin, Table, Tag, Typography } from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
@@ -16,6 +17,13 @@ const SNAPSHOT_RED_DAYS = 3;
 const BACKUP_RED_HOURS = 25;
 
 const fmtTime = (iso: string): string => new Date(iso).toLocaleString("zh-CN", { hour12: false });
+
+function fmtAgeHours(hours: number): string {
+  if (hours < 0) return "时间异常";
+  if (hours < 1) return "1 小时内";
+  if (hours < 24) return `${hours.toFixed(1)} 小时前`;
+  return `${(hours / 24).toFixed(1)} 天前`;
+}
 
 function liveVerificationTag(connector: OpsHealth["connectors"][number]) {
   switch (connector.liveVerificationState) {
@@ -33,29 +41,130 @@ function liveVerificationTag(connector: OpsHealth["connectors"][number]) {
   }
 }
 
+function enablementTag(connector: OpsHealth["connectors"][number]) {
+  switch (connector.enablementState) {
+    case "enabled":
+      return <Tag color="green">同步已启用</Tag>;
+    case "disabled":
+      return <Tag color="orange">同步未启用</Tag>;
+    case "invalid":
+      return <Tag color="red">启用标记无效</Tag>;
+    default:
+      return null;
+  }
+}
+
+function contractSelectionTag(connector: OpsHealth["connectors"][number]) {
+  switch (connector.contractSelectionState) {
+    case "selected":
+      return <Tag color="green">已选 {connector.selectedContractCount} 条契约</Tag>;
+    case "missing":
+      return <Tag color="orange">未选同步契约</Tag>;
+    case "invalid":
+      return <Tag color="red">契约选择无效</Tag>;
+    default:
+      return null;
+  }
+}
+
+function identityClearanceTag(connector: OpsHealth["connectors"][number]) {
+  switch (connector.identityClearanceState) {
+    case "clear":
+      return <Tag color="green">身份裁决已清零</Tag>;
+    case "blocked":
+      return <Tag color="red">身份待裁决 {connector.openScopedAliasExceptions ?? 0}</Tag>;
+    case "unknown":
+      return <Tag color="orange">尚无身份观察证据</Tag>;
+    default:
+      return null;
+  }
+}
+
+export function ConnectorRunState({ row }: { row: OpsHealth["connectorRuns"][number] }) {
+  const status = row.status === "failed"
+    ? <Tag color="red">失败</Tag>
+    : row.status === "running"
+      ? <Tag color="processing">运行中</Tag>
+      : <Tag color="green">成功</Tag>;
+  return (
+    <Space wrap size={[4, 4]}>
+      {status}
+      {row.emptySource ? <Tag color="orange">空观察，旧批次保留</Tag> : null}
+      {row.releaseBlocked ? <Tag color="orange">仅观察，不可放行</Tag> : null}
+    </Space>
+  );
+}
+
+function connectorRuntimeState(rows: OpsHealth["connectorRuns"]) {
+  if (rows.length === 0) return <Tag>尚无运行</Tag>;
+  const failed = rows.filter((row) => row.status === "failed").length;
+  const running = rows.filter((row) => row.status === "running").length;
+  const empty = rows.filter((row) => row.emptySource).length;
+  const releaseBlocked = rows.filter((row) => row.releaseBlocked).length;
+  return (
+    <Space wrap size={[4, 4]}>
+      {failed > 0
+        ? <Tag color="red">{failed} 条数据流最近失败</Tag>
+        : running > 0
+          ? <Tag color="processing">{running} 条数据流运行中</Tag>
+          : <Tag color="green">{rows.length} 条数据流最近成功</Tag>}
+      {empty > 0 ? <Tag color="orange">{empty} 条空观察，旧批次保留</Tag> : null}
+      {releaseBlocked > 0 ? <Tag color="orange">{releaseBlocked} 条仅观察，不可放行</Tag> : null}
+    </Space>
+  );
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function authPathLabel(path: string): string {
+  if (path === "webhook") return "Webhook";
+  if (path === "app_bot") return "应用机器人";
+  return path;
+}
+
 export default function HealthClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<OpsHealth | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
+  const requestSeq = useRef(0);
 
   const load = useCallback(async () => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
+    const seq = ++requestSeq.current;
     setLoading(true);
     try {
-      setData(await fetchJson<OpsHealth>("/api/admin/health"));
+      const next = await fetchJson<OpsHealth>("/api/admin/health", { signal: controller.signal });
+      if (requestSeq.current !== seq || controller.signal.aborted) return;
+      setData(next);
       setLoadError(null);
     } catch (e) {
-      setLoadError((e as Error).message);
-      message.error((e as Error).message);
+      if (!isAbortError(e) && requestSeq.current === seq) {
+        setLoadError((e as Error).message);
+        message.error((e as Error).message);
+      }
     } finally {
-      setLoading(false);
+      if (requestSeq.current === seq) {
+        setLoading(false);
+        if (requestRef.current === controller) requestRef.current = null;
+      }
     }
   }, [message]);
 
   useEffect(() => {
     void load();
     const t = setInterval(() => void load(), 30_000); // 30s 自动刷新
-    return () => clearInterval(t);
+    return () => {
+      clearInterval(t);
+      requestSeq.current += 1;
+      requestRef.current?.abort();
+      requestRef.current = null;
+    };
   }, [load]);
 
   if (!data) {
@@ -139,6 +248,86 @@ export default function HealthClient() {
         v === null || v > SNAPSHOT_RED_DAYS ? <Tag color="red">{v ?? "∞"}</Tag> : <Tag color="green">{v}</Tag>,
     },
   ];
+
+  const connectorRunColumns: ColumnsType<OpsHealth["connectorRuns"][number]> = [
+    {
+      title: "连接器 / 数据流",
+      width: 220,
+      render: (_, row) => {
+        const label = data.connectors.find((connector) => connector.key === row.connector)?.label;
+        return (
+          <Space direction="vertical" size={0}>
+            <Typography.Text strong>{label ?? row.connector.toUpperCase()}</Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>{row.stream}</Typography.Text>
+          </Space>
+        );
+      },
+    },
+    {
+      title: "最近运行",
+      width: 170,
+      render: (_, row) => (
+        <Space direction="vertical" size={0}>
+          <ConnectorRunState row={row} />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {fmtTime(row.finishedAt ?? row.startedAt)}
+          </Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: "行数（源 / 暂存 / 拒绝）",
+      width: 180,
+      render: (_, row) => `${row.sourceRows} / ${row.stagedRows} / ${row.rejectedRows}`,
+    },
+    {
+      title: "源时点 / 契约",
+      width: 175,
+      render: (_, row) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{row.sourceAsOf ?? "未报告源时点"}</Typography.Text>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {row.schemaHashPrefix ? `schema ${row.schemaHashPrefix}` : "无 schema hash"}
+          </Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: "别名异常",
+      width: 145,
+      render: (_, row) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>本次 {row.unresolvedAliases ?? "未报告"}</Typography.Text>
+          <Typography.Text type={row.openScopedAliasExceptions > 0 ? "warning" : "secondary"} style={{ fontSize: 12 }}>
+            作用域待裁决 {row.openScopedAliasExceptions}
+          </Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: "检查点",
+      width: 170,
+      render: (_, row) => row.checkpointVersion === null || row.checkpointAgeHours === null ? (
+        <Tag>未建立</Tag>
+      ) : (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>v{row.checkpointVersion} · {fmtAgeHours(row.checkpointAgeHours)}</Typography.Text>
+          <Typography.Text type={row.checkpointOnLatestRun ? "success" : "secondary"} style={{ fontSize: 12 }}>
+            {row.checkpointOnLatestRun ? "已对齐本次成功运行" : "保留上次成功位点"}
+          </Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: "安全摘要",
+      dataIndex: "errorSummary",
+      width: 210,
+      ellipsis: true,
+      render: (value: string | null) => value
+        ? <Typography.Text type="danger">{value}</Typography.Text>
+        : <Typography.Text type="secondary">—</Typography.Text>,
+    },
+  ];
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Space style={{ justifyContent: "space-between", width: "100%" }}>
@@ -206,17 +395,19 @@ export default function HealthClient() {
           columns={jobColumns}
           dataSource={data.lastJobRuns}
           pagination={false}
-          scroll={{ x: "max-content" }}
+          scroll={{ x: 1_270 }}
           locale={{ emptyText: "尚无任务运行记录（进程内调度首轮在启动 60 秒后）" }}
         />
       </Card>
 
-      <Card size="small" title="外部系统连接器（代码、凭据与真实 UAT 分开判定）">
+      <Card size="small" title="外部系统连接器（代码、凭据、启用、契约与真实 UAT 分开判定）">
         <Row gutter={[12, 12]}>
-          {data.connectors.map((connector) => (
-            <Col key={connector.key} xs={24} xl={12}>
-              <Card size="small" style={{ height: "100%" }}>
-                <Space direction="vertical" size={10} style={{ width: "100%" }}>
+          {data.connectors.map((connector) => {
+            const connectorRuns = data.connectorRuns.filter((row) => row.connector === connector.key);
+            return (
+              <Col key={connector.key} xs={24} xl={12}>
+                <Card size="small" style={{ height: "100%" }}>
+                  <Space direction="vertical" size={10} style={{ width: "100%" }}>
                   <Space wrap size={[4, 4]}>
                     <Typography.Text strong>{connector.label}</Typography.Text>
                     {connector.implementation === "ready"
@@ -225,17 +416,37 @@ export default function HealthClient() {
                     {connector.configured
                       ? <Tag color="blue">凭据已配</Tag>
                       : <Tag>未配置</Tag>}
+                    {enablementTag(connector)}
+                    {contractSelectionTag(connector)}
                     {liveVerificationTag(connector)}
+                    {connector.configurationReady
+                      ? <Tag color="green">配置 / UAT 就绪</Tag>
+                      : <Tag>配置 / UAT 未就绪</Tag>}
+                    {identityClearanceTag(connector)}
+                    {connectorRuntimeState(connectorRuns)}
                   </Space>
 
                   <div>
-                    <Typography.Text type="secondary">能力</Typography.Text>
+                    <Typography.Text type="secondary">当前有效能力</Typography.Text>
                     <div style={{ marginTop: 4 }}>
-                      {connector.capabilities.map((value) => (
-                        <Tag key={value} style={{ marginBottom: 4 }}>{value}</Tag>
-                      ))}
+                      {connector.effectiveCapabilities.length > 0
+                        ? connector.effectiveCapabilities.map((value) => (
+                            <Tag key={value} style={{ marginBottom: 4 }}>{value}</Tag>
+                          ))
+                        : <Typography.Text type="secondary">尚无可用鉴权路径</Typography.Text>}
                     </div>
                   </div>
+
+                  {connector.configuredAuthPaths.length > 0 ? (
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      当前发送路径：{connector.activeAuthPath
+                        ? authPathLabel(connector.activeAuthPath)
+                        : "无"}
+                      {connector.configuredAuthPaths.length > 1
+                        ? ` · 已配置：${connector.configuredAuthPaths.map(authPathLabel).join(" + ")}`
+                        : ""}
+                    </Typography.Text>
+                  ) : null}
 
                   <div>
                     <Typography.Text type="secondary">缺失配置</Typography.Text>
@@ -264,11 +475,25 @@ export default function HealthClient() {
                       {` · ${connector.liveVerificationMaxAgeDays} 天内有效`}
                     </Typography.Text>
                   ) : null}
-                </Space>
-              </Card>
-            </Col>
-          ))}
+                  </Space>
+                </Card>
+              </Col>
+            );
+          })}
         </Row>
+      </Card>
+
+      <Card size="small" title="连接器最近运行与检查点">
+        <Table
+          rowKey={(row) => `${row.connector}:${row.stream}`}
+          size="small"
+          tableLayout="fixed"
+          columns={connectorRunColumns}
+          dataSource={data.connectorRuns}
+          pagination={false}
+          scroll={{ x: 1_270 }}
+          locale={{ emptyText: "尚无连接器运行记录" }}
+        />
       </Card>
 
       <Card size="small" title={`最近错误（${data.recentErrors.length} 条 / 24h 共 ${data.errorCount24h} 条）`}>

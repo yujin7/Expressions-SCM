@@ -1,14 +1,15 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
 import {
   importJobs,
   integrationCheckpoints,
   integrationRuns,
+  stagingRows,
   users,
 } from "@/db/schema";
 import {
-  createSourceImportJob,
-  failImportJob,
+  createSourceImportJobInTransaction,
   finalizeImportJob,
+  supersedeSourceObservationJobsInTransaction,
   writeStagingRows,
   type AnyDb,
   type StagingRowInput,
@@ -31,7 +32,9 @@ import { writeIntegrationEvidence, type IntegrationEvidence } from "./evidence";
 const CONNECTOR = "jdy";
 const CATALOG_STREAM = "catalog";
 const CATALOG_SCHEMA_VERSION = "jiandaoyun-catalog-v1";
-const RECORD_SCHEMA_VERSION = "jiandaoyun-observation-v1";
+const RECORD_SCHEMA_VERSION = "jiandaoyun-observation-v3";
+/** Running claims older than this can be fenced off and recovered by a retry. */
+const RUN_STALE_AFTER_MS = 2 * 60 * 60 * 1_000;
 
 export interface JiandaoyunCatalogSummary {
   runId: number;
@@ -56,6 +59,7 @@ export interface JiandaoyunFormSummary {
 interface PriorRun {
   id: number;
   status: string;
+  startedAt: Date;
   importJobId: number | null;
   sourceRows: number;
   stagedRows: number;
@@ -77,6 +81,7 @@ async function priorRun(db: AnyDb, idempotencyKey: string): Promise<PriorRun | n
     .select({
       id: integrationRuns.id,
       status: integrationRuns.status,
+      startedAt: integrationRuns.startedAt,
       importJobId: integrationRuns.importJobId,
       sourceRows: integrationRuns.sourceRows,
       stagedRows: integrationRuns.stagedRows,
@@ -92,81 +97,175 @@ async function priorRun(db: AnyDb, idempotencyKey: string): Promise<PriorRun | n
 async function insertRun(
   db: AnyDb,
   values: typeof integrationRuns.$inferInsert,
-): Promise<{ id: number } | null> {
-  const [run]: { id: number }[] = await db
+): Promise<{ id: number; startedAt: Date } | null> {
+  const [run]: { id: number; startedAt: Date }[] = await db
     .insert(integrationRuns)
     .values(values)
     .onConflictDoNothing()
-    .returning({ id: integrationRuns.id });
+    .returning({ id: integrationRuns.id, startedAt: integrationRuns.startedAt });
   return run ?? null;
 }
 
-async function finishRun(
+interface RunAttempt {
+  id: number;
+  startedAt: Date;
+  recovered: boolean;
+}
+
+/**
+ * Claim an immutable source envelope. Failed claims retry immediately; abandoned running claims
+ * retry after the lease window. `startedAt` is the fencing token that prevents the old worker from
+ * committing after a recovery has begun.
+ */
+async function claimRun(
   db: AnyDb,
-  input: {
-    runId: number;
-    stream: string;
-    cursor: string;
-    importJobId?: number | null;
-    sourceRows: number;
-    stagedRows: number;
-    requestScope: Record<string, unknown>;
-  },
+  values: typeof integrationRuns.$inferInsert,
+  observed: PriorRun | null,
+): Promise<RunAttempt | null> {
+  const startedAt = new Date();
+  if (!observed) {
+    const inserted = await insertRun(db, { ...values, startedAt });
+    if (inserted) return { ...inserted, recovered: false };
+  }
+
+  const existing = observed ?? await priorRun(db, String(values.idempotencyKey));
+  if (!existing || existing.status === "succeeded") return null;
+  const stale = existing.status === "running"
+    && startedAt.getTime() - existing.startedAt.getTime() >= RUN_STALE_AFTER_MS;
+  if (existing.status !== "failed" && !stale) return null;
+
+  const [reclaimed]: { id: number; startedAt: Date }[] = await db
+    .update(integrationRuns)
+    .set({
+      ...values,
+      status: "running",
+      sourceRows: values.sourceRows ?? 0,
+      stagedRows: 0,
+      rejectedRows: 0,
+      importJobId: null,
+      error: null,
+      startedAt,
+      finishedAt: null,
+    })
+    .where(and(
+      eq(integrationRuns.id, existing.id),
+      eq(integrationRuns.status, existing.status),
+      eq(integrationRuns.startedAt, existing.startedAt),
+    ))
+    .returning({ id: integrationRuns.id, startedAt: integrationRuns.startedAt });
+  return reclaimed ? { ...reclaimed, recovered: true } : null;
+}
+
+interface FinishRunInput {
+  runId: number;
+  attemptStartedAt: Date;
+  stream: string;
+  cursor: string;
+  importJobId?: number | null;
+  sourceRows: number;
+  stagedRows: number;
+  requestScope: Record<string, unknown>;
+  /** Empty/non-authoritative observations are evidence, not a new accepted source position. */
+  advanceCheckpoint?: boolean;
+}
+
+async function finishRunInTransaction(
+  tx: AnyDb,
+  input: FinishRunInput,
 ): Promise<void> {
   const finishedAt = new Date();
-  await db.transaction(async (tx: AnyDb) => {
-    await tx
-      .update(integrationRuns)
-      .set({
-        status: "succeeded",
-        importJobId: input.importJobId ?? null,
-        sourceRows: input.sourceRows,
-        stagedRows: input.stagedRows,
-        rejectedRows: 0,
-        requestScope: input.requestScope,
-        cursorEnd: input.cursor,
-        finishedAt,
-      })
-      .where(eq(integrationRuns.id, input.runId));
-    await tx
-      .insert(integrationCheckpoints)
-      .values({
-        connector: CONNECTOR,
-        stream: input.stream,
+  const [claimed]: { id: number }[] = await tx
+    .update(integrationRuns)
+    .set({
+      status: "succeeded",
+      importJobId: input.importJobId ?? null,
+      sourceRows: input.sourceRows,
+      stagedRows: input.stagedRows,
+      rejectedRows: 0,
+      requestScope: input.requestScope,
+      cursorEnd: input.cursor,
+      error: null,
+      finishedAt,
+    })
+    .where(and(
+      eq(integrationRuns.id, input.runId),
+      eq(integrationRuns.status, "running"),
+      eq(integrationRuns.startedAt, input.attemptStartedAt),
+    ))
+    .returning({ id: integrationRuns.id });
+  if (!claimed) throw new Error("简道云同步运行租约已被其他重试接管");
+
+  if (input.advanceCheckpoint === false) return;
+
+  await tx
+    .insert(integrationCheckpoints)
+    .values({
+      connector: CONNECTOR,
+      stream: input.stream,
+      cursor: input.cursor,
+      lastRunId: input.runId,
+      lastSuccessAt: finishedAt,
+      updatedAt: finishedAt,
+    })
+    .onConflictDoUpdate({
+      target: [integrationCheckpoints.connector, integrationCheckpoints.stream],
+      set: {
         cursor: input.cursor,
+        version: sql`${integrationCheckpoints.version} + 1`,
         lastRunId: input.runId,
         lastSuccessAt: finishedAt,
         updatedAt: finishedAt,
-      })
-      .onConflictDoUpdate({
-        target: [integrationCheckpoints.connector, integrationCheckpoints.stream],
-        set: {
-          cursor: input.cursor,
-          version: sql`${integrationCheckpoints.version} + 1`,
-          lastRunId: input.runId,
-          lastSuccessAt: finishedAt,
-          updatedAt: finishedAt,
-        },
-      });
-  });
+      },
+    });
+}
+
+async function lockStreamCommit(tx: AnyDb, stream: string): Promise<void> {
+  // All accepted envelopes for a logical stream share this transaction-scoped lock. `hashtext`
+  // collisions can only serialize unrelated streams; they cannot let two same-stream commits race.
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`${CONNECTOR}:${stream}`}))`);
+}
+
+async function assertNoNewerSucceededRun(
+  tx: AnyDb,
+  stream: string,
+  runId: number,
+): Promise<void> {
+  const [newerCommitted]: { id: number }[] = await tx
+    .select({ id: integrationRuns.id })
+    .from(integrationRuns)
+    .where(and(
+      eq(integrationRuns.connector, CONNECTOR),
+      eq(integrationRuns.stream, stream),
+      eq(integrationRuns.status, "succeeded"),
+      gt(integrationRuns.id, runId),
+    ))
+    .orderBy(desc(integrationRuns.id))
+    .limit(1);
+  if (newerCommitted) {
+    throw new Error(`简道云 ${stream} 已有更新成功运行 #${newerCommitted.id}，拒绝较旧运行覆盖`);
+  }
 }
 
 async function failRun(
   db: AnyDb,
   runId: number,
+  attemptStartedAt: Date,
   error: unknown,
-  importJobId: number | null = null,
 ): Promise<void> {
   const message = (error instanceof Error ? error.message : String(error)).slice(0, 500);
   await db
     .update(integrationRuns)
     .set({
       status: "failed",
-      importJobId,
+      importJobId: null,
       error: message,
       finishedAt: new Date(),
     })
-    .where(eq(integrationRuns.id, runId));
+    .where(and(
+      eq(integrationRuns.id, runId),
+      eq(integrationRuns.status, "running"),
+      eq(integrationRuns.startedAt, attemptStartedAt),
+    ));
 }
 
 function scopeObject(value: unknown): Record<string, unknown> {
@@ -225,8 +324,7 @@ export async function syncJiandaoyunCatalog(
   const existing = await priorRun(db, idempotencyKey);
   const replay = existing ? catalogReplay(existing) : null;
   if (replay) return replay;
-  if (existing) throw new Error("相同简道云目录信封正在处理或先前失败，请检查运行史");
-  const run = await insertRun(db, {
+  const runValues = {
     connector: CONNECTOR,
     stream: CATALOG_STREAM,
     idempotencyKey,
@@ -236,21 +334,27 @@ export async function syncJiandaoyunCatalog(
     evidencePath: evidence.relativePath,
     evidenceHash: evidence.hash,
     sourceRows: forms,
-  });
+  } satisfies typeof integrationRuns.$inferInsert;
+  const run = await claimRun(db, runValues, existing);
   if (!run) {
     const concurrent = await priorRun(db, idempotencyKey);
     const concurrentReplay = concurrent ? catalogReplay(concurrent) : null;
     if (concurrentReplay) return concurrentReplay;
-    throw new Error("相同简道云目录信封正在并发处理");
+    throw new Error("相同简道云目录信封正在处理；超出租约后会自动恢复");
   }
   try {
-    await finishRun(db, {
-      runId: run.id,
-      stream: CATALOG_STREAM,
-      cursor: evidence.hash,
-      sourceRows: forms,
-      stagedRows: 0,
-      requestScope: { apps: apps.length, forms, authority: "metadata-only" },
+    await db.transaction(async (tx: AnyDb) => {
+      await lockStreamCommit(tx, CATALOG_STREAM);
+      await assertNoNewerSucceededRun(tx, CATALOG_STREAM, run.id);
+      await finishRunInTransaction(tx, {
+        runId: run.id,
+        attemptStartedAt: run.startedAt,
+        stream: CATALOG_STREAM,
+        cursor: evidence.hash,
+        sourceRows: forms,
+        stagedRows: 0,
+        requestScope: { apps: apps.length, forms, authority: "metadata-only" },
+      });
     });
     return {
       runId: run.id,
@@ -260,7 +364,7 @@ export async function syncJiandaoyunCatalog(
       replayed: false,
     };
   } catch (error) {
-    await failRun(db, run.id, error);
+    await failRun(db, run.id, run.startedAt, error);
     throw error;
   }
 }
@@ -362,13 +466,59 @@ async function assertStableContractSchema(
   }
 }
 
-function sourceAsOf(records: JiandaoyunRecord[]): string | null {
+function sourceUpdatedThrough(records: JiandaoyunRecord[]): string | null {
   const latest = records.reduce<number | null>((maximum, record) => {
     const instant = Date.parse(String(record.updateTime ?? record.update_time ?? "").trim());
     if (!Number.isFinite(instant)) return maximum;
     return maximum === null ? instant : Math.max(maximum, instant);
   }, null);
-  return latest === null ? null : new Date(latest).toISOString().slice(0, 10);
+  return latest === null ? null : new Date(latest).toISOString();
+}
+
+async function assertPriorSourceRecordContinuity(
+  tx: AnyDb,
+  input: {
+    stream: string;
+    priorJobId: number;
+    expectedRows: number;
+    currentSourceRecordIds: ReadonlySet<string>;
+  },
+): Promise<number> {
+  const priorRows: { sourceRecordId: string | null }[] = await tx
+    .select({
+      sourceRecordId: sql<string | null>`${stagingRows.payload} ->> 'sourceRecordId'`,
+    })
+    .from(stagingRows)
+    .where(eq(stagingRows.importJobId, input.priorJobId));
+  const priorSourceRecordIds = new Set<string>();
+  let rowsWithoutIdentity = 0;
+  for (const row of priorRows) {
+    const sourceRecordId = row.sourceRecordId?.trim() ?? "";
+    if (!sourceRecordId) {
+      rowsWithoutIdentity++;
+      continue;
+    }
+    priorSourceRecordIds.add(sourceRecordId);
+  }
+  if (
+    priorRows.length !== input.expectedRows
+    || priorSourceRecordIds.size !== input.expectedRows
+    || rowsWithoutIdentity > 0
+  ) {
+    throw new Error(
+      `简道云 ${input.stream} 旧观察批次 #${input.priorJobId} 的 sourceRecordId 清单不完整，需人工复核后再替代`,
+    );
+  }
+  let missingPriorRecords = 0;
+  for (const sourceRecordId of priorSourceRecordIds) {
+    if (!input.currentSourceRecordIds.has(sourceRecordId)) missingPriorRecords++;
+  }
+  if (missingPriorRecords > 0) {
+    throw new Error(
+      `简道云 ${input.stream} 新观察缺少旧记录 ${missingPriorRecords} 条；当前没有受支持的删除墓碑，拒绝替代批次 #${input.priorJobId}`,
+    );
+  }
+  return priorSourceRecordIds.size;
 }
 
 function formReplay(
@@ -494,7 +644,17 @@ export async function syncJiandaoyunForm(
     .map((record) => minimizeRecord(record, input.contract))
     .sort((left, right) =>
       String(left.sourceRecordId).localeCompare(String(right.sourceRecordId), "en"));
-  const asOf = sourceAsOf(records);
+  const sourceRecordIds = new Set<string>();
+  for (const record of minimized) {
+    const sourceRecordId = String(record.sourceRecordId ?? "");
+    if (!sourceRecordId) throw new Error("简道云返回了缺少 _id 的记录，拒绝形成观察批次");
+    if (sourceRecordIds.has(sourceRecordId)) {
+      throw new Error(`简道云分页返回重复记录 ${sourceRecordId}，源视图可能在读取中变化`);
+    }
+    sourceRecordIds.add(sourceRecordId);
+  }
+  const updatedThrough = sourceUpdatedThrough(records);
+  const asOf = updatedThrough?.slice(0, 10) ?? null;
   const stream = input.contract.key;
   const envelope = {
     contract: RECORD_SCHEMA_VERSION,
@@ -504,7 +664,11 @@ export async function syncJiandaoyunForm(
       appId: input.contract.appId,
       entryId: input.contract.entryId,
       schemaHash,
-      completeness: "full-authorized-form-view",
+      sourceUpdatedThrough: updatedThrough,
+      completeness: "paginated-authorized-observation",
+      consistency: "source-has-no-snapshot-token",
+      controlRows: minimized.length,
+      uniqueSourceRecordIds: sourceRecordIds.size,
       authority: "observation-only",
       fieldMinimized: true,
       sourceProjection: projection,
@@ -520,8 +684,7 @@ export async function syncJiandaoyunForm(
   const existing = await priorRun(db, idempotencyKey);
   const replay = existing ? formReplay(existing, input.contract) : null;
   if (replay) return replay;
-  if (existing) throw new Error("相同简道云表单信封正在处理或先前失败，请检查运行史");
-  const run = await insertRun(db, {
+  const runValues = {
     connector: CONNECTOR,
     stream,
     idempotencyKey,
@@ -533,122 +696,201 @@ export async function syncJiandaoyunForm(
       entryId: input.contract.entryId,
       schemaHash,
       sourceAsOf: asOf,
+      sourceUpdatedThrough: updatedThrough,
       authority: "observation-only",
     },
     evidencePath: evidence.relativePath,
     evidenceHash: evidence.hash,
     sourceRows: minimized.length,
-  });
+  } satisfies typeof integrationRuns.$inferInsert;
+  const run = await claimRun(db, runValues, existing);
   if (!run) {
     const concurrent = await priorRun(db, idempotencyKey);
     const concurrentReplay = concurrent ? formReplay(concurrent, input.contract) : null;
     if (concurrentReplay) return concurrentReplay;
-    throw new Error("相同简道云表单信封正在并发处理");
+    throw new Error("相同简道云表单信封正在处理；超出租约后会自动恢复");
   }
 
-  let importJobId: number | null = null;
   try {
-    const job = await createSourceImportJob(db, {
-      template: input.contract.targetTable,
-      sourceName: `${CONNECTOR}-${stream}-${evidence.hash.slice(0, 12)}.json`,
-      sourceBytes: evidence.bytes,
-      createdBy: input.actorId,
-      // Each source envelope is immutable. In particular, an empty/failed read must never
-      // supersede the last review batch or imply that previously observed business facts are zero.
-      idempotencyKey: `${input.contract.targetTable}:${evidence.hash}`,
-      sourceAsOf: asOf,
-      schemaVersion: RECORD_SCHEMA_VERSION,
-      scope: {
-        connector: CONNECTOR,
-        stream,
+    const committed = await db.transaction(async (tx: AnyDb) => {
+      await lockStreamCommit(tx, stream);
+      await assertNoNewerSucceededRun(tx, stream, run.id);
+      // A concurrent first run may have established the schema after the pre-fetch check.
+      await assertStableContractSchema(tx, stream, schemaHash);
+
+      const priorCandidates: Array<{
+        id: number;
+        controlRows: number | null;
+        sourceAsOf: string | null;
+        scope: unknown;
+      }> = await tx
+        .select({
+          id: importJobs.id,
+          controlRows: importJobs.controlRows,
+          sourceAsOf: importJobs.sourceAsOf,
+          scope: importJobs.scope,
+        })
+        .from(importJobs)
+        .where(and(
+          eq(importJobs.template, input.contract.targetTable),
+          eq(importJobs.status, "done"),
+        ))
+        .orderBy(desc(importJobs.id));
+      const priorFull = priorCandidates.find((candidate) => {
+        const scope = scopeObject(candidate.scope);
+        return candidate.controlRows !== null
+          && candidate.controlRows > 0
+          && scope.connector === CONNECTOR
+          && scope.stream === stream
+          && scope.mode === "full"
+          && scope.authority === "observation-only"
+          && scope.releaseBlocked === true;
+      });
+      let priorSourceRecordIdsVerified = 0;
+      if (minimized.length > 0 && priorFull) {
+        const priorScope = scopeObject(priorFull.scope);
+        const priorUpdatedThrough = typeof priorScope.sourceUpdatedThrough === "string"
+          ? priorScope.sourceUpdatedThrough
+          : priorFull.sourceAsOf === null ? null : `${priorFull.sourceAsOf}T00:00:00.000Z`;
+        if (priorUpdatedThrough !== null && updatedThrough === null) {
+          throw new Error(
+            `简道云 ${stream} 新观察缺少源时点，不能替代批次 #${priorFull.id}`,
+          );
+        }
+        if (
+          priorUpdatedThrough !== null
+          && updatedThrough !== null
+          && updatedThrough < priorUpdatedThrough
+        ) {
+          throw new Error(
+            `简道云 ${stream} 源时点回退（${updatedThrough} < ${priorUpdatedThrough}），拒绝覆盖`,
+          );
+        }
+        if (minimized.length < priorFull.controlRows!) {
+          throw new Error(
+            `简道云 ${stream} 全量行数下降（${minimized.length} < ${priorFull.controlRows}），可能是权限或分页缩减；需人工复核`,
+          );
+        }
+        priorSourceRecordIdsVerified = await assertPriorSourceRecordContinuity(tx, {
+          stream,
+          priorJobId: priorFull.id,
+          expectedRows: priorFull.controlRows!,
+          currentSourceRecordIds: sourceRecordIds,
+        });
+      }
+
+      const job = await createSourceImportJobInTransaction(tx, {
+        template: input.contract.targetTable,
+        sourceName: `${CONNECTOR}-${stream}-${evidence.hash.slice(0, 12)}.json`,
+        sourceBytes: evidence.bytes,
+        createdBy: input.actorId,
+        // Each source envelope is immutable. In particular, an empty/failed read must never
+        // supersede the last review batch or imply that previously observed business facts are zero.
+        idempotencyKey: `${input.contract.targetTable}:${evidence.hash}`,
+        sourceAsOf: asOf,
+        schemaVersion: RECORD_SCHEMA_VERSION,
+        scope: {
+          connector: CONNECTOR,
+          stream,
+          appId: input.contract.appId,
+          entryId: input.contract.entryId,
+          schemaHash,
+          sourceUpdatedThrough: updatedThrough,
+          priorSourceRecordIdsVerified,
+          deletionPolicy: "no-tombstone-fail-closed",
+          mode: "full",
+          authority: "observation-only",
+          releaseBlocked: true,
+          evidencePath: evidence.relativePath,
+          evidenceHash: evidence.hash,
+        },
+      });
+      // Only a successful, non-empty full observation may retire prior review batches. An empty
+      // response is retained as evidence but cannot imply that previously observed facts vanished.
+      const supersededImportJobs = minimized.length > 0
+        ? await supersedeSourceObservationJobsInTransaction(tx, {
+          keepJobId: job.id,
+          template: input.contract.targetTable,
+          connector: CONNECTOR,
+          stream,
+        })
+        : 0;
+      const staged: StagingRowInput[] = [];
+      let unresolvedAliases = 0;
+      for (let index = 0; index < minimized.length; index++) {
+        const record = minimized[index];
+        const identity = await resolveObservationIdentities(tx, input.contract, record);
+        unresolvedAliases += identity.unresolved.length;
+        staged.push({
+          rowNo: index + 1,
+          targetTable: input.contract.targetTable,
+          payload: {
+            ...record,
+            _source: {
+              connector: CONNECTOR,
+              contractKey: input.contract.key,
+              appId: input.contract.appId,
+              entryId: input.contract.entryId,
+              schemaHash,
+            },
+            _identity: identity.resolved,
+          },
+          status: "pending",
+          errorMsg: [
+            "简道云只读观察：完成身份映射、控制总量与业务复核前禁止放行",
+            identity.unresolved.length > 0
+              ? `未解析别名: ${identity.unresolved.slice(0, 5).join("; ")}${identity.unresolved.length > 5 ? "…" : ""}`
+              : null,
+          ].filter(Boolean).join("；"),
+        });
+      }
+      if (staged.length > 0) await writeStagingRows(tx, job.id, staged);
+      await finalizeImportJob(tx, job.id, {
+        okRows: staged.length,
+        failRows: 0,
+        controlRows: staged.length,
+      });
+      const requestScope = {
+        contractKey: input.contract.key,
         appId: input.contract.appId,
         entryId: input.contract.entryId,
         schemaHash,
-        mode: "full",
+        sourceAsOf: asOf,
+        sourceUpdatedThrough: updatedThrough,
         authority: "observation-only",
         releaseBlocked: true,
-        evidencePath: evidence.relativePath,
-        evidenceHash: evidence.hash,
-      },
-    });
-    importJobId = job.id;
-    const staged: StagingRowInput[] = [];
-    let unresolvedAliases = 0;
-    for (let index = 0; index < minimized.length; index++) {
-      const record = minimized[index];
-      const identity = await resolveObservationIdentities(db, input.contract, record);
-      unresolvedAliases += identity.unresolved.length;
-      staged.push({
-        rowNo: index + 1,
-        targetTable: input.contract.targetTable,
-        payload: {
-          ...record,
-          _source: {
-            connector: CONNECTOR,
-            contractKey: input.contract.key,
-            appId: input.contract.appId,
-            entryId: input.contract.entryId,
-            schemaHash,
-          },
-          _identity: identity.resolved,
-        },
-        status: "pending",
-        errorMsg: [
-          "简道云只读观察：完成身份映射、控制总量与业务复核前禁止放行",
-          identity.unresolved.length > 0
-            ? `未解析别名: ${identity.unresolved.slice(0, 5).join("; ")}${identity.unresolved.length > 5 ? "…" : ""}`
-            : null,
-        ].filter(Boolean).join("；"),
+        emptySource: minimized.length === 0,
+        priorSourceRecordIdsVerified,
+        deletionPolicy: "no-tombstone-fail-closed",
+        supersededImportJobs,
+        unresolvedAliases,
+      };
+      await finishRunInTransaction(tx, {
+        runId: run.id,
+        attemptStartedAt: run.startedAt,
+        stream,
+        cursor: evidence.hash,
+        importJobId: job.id,
+        sourceRows: minimized.length,
+        stagedRows: staged.length,
+        requestScope,
+        advanceCheckpoint: minimized.length > 0,
       });
-    }
-    if (staged.length > 0) await writeStagingRows(db, job.id, staged);
-    await finalizeImportJob(db, job.id, {
-      okRows: staged.length,
-      failRows: 0,
-      controlRows: staged.length,
-    });
-    const requestScope = {
-      contractKey: input.contract.key,
-      appId: input.contract.appId,
-      entryId: input.contract.entryId,
-      schemaHash,
-      sourceAsOf: asOf,
-      authority: "observation-only",
-      releaseBlocked: true,
-      emptySource: minimized.length === 0,
-      unresolvedAliases,
-    };
-    await finishRun(db, {
-      runId: run.id,
-      stream,
-      cursor: evidence.hash,
-      importJobId: job.id,
-      sourceRows: minimized.length,
-      stagedRows: staged.length,
-      requestScope,
+      return { importJobId: job.id, stagedRows: staged.length, unresolvedAliases };
     });
     return {
       runId: run.id,
-      importJobId: job.id,
+      importJobId: committed.importJobId,
       contractKey: input.contract.key,
       sourceRows: minimized.length,
-      stagedRows: staged.length,
+      stagedRows: committed.stagedRows,
       schemaHash,
       sourceAsOf: asOf,
-      unresolvedAliases,
+      unresolvedAliases: committed.unresolvedAliases,
       replayed: false,
     };
   } catch (error) {
-    if (importJobId !== null) {
-      const [job]: { status: string }[] = await db
-        .select({ status: importJobs.status })
-        .from(importJobs)
-        .where(eq(importJobs.id, importJobId));
-      if (job?.status === "validating") {
-        await failImportJob(db, importJobId, input.contract.targetTable, error).catch(() => undefined);
-      }
-    }
-    await failRun(db, run.id, error, importJobId);
+    await failRun(db, run.id, run.startedAt, error);
     throw error;
   }
 }

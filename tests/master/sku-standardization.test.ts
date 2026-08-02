@@ -15,10 +15,9 @@ describe("SKU 标准化写路径", () => {
     }).returning();
     const actor = { id: user.id, name: user.name, roles: ["pmc"], isApprover: true };
     const [spu] = await db.insert(spus).values({ code: "P99001", nameCn: "胶原蛋白肽饮" }).returning();
-    const [brand] = await db.insert(brands).values({ code: "EXP-T", nameCn: "EXPRESSIONS" }).returning();
+    const [brand] = await db.insert(brands).values({ code: "EXPT", nameCn: "EXPRESSIONS" }).returning();
     const [channel] = await db.insert(channels).values({ code: "tmall-t", name: "天猫", kind: "platform" }).returning();
     const created = await createSku({
-      code: "STD-001",
       name: "旧名称",
       spuId: spu.id,
       skuType: "finished",
@@ -34,12 +33,12 @@ describe("SKU 标准化写路径", () => {
 
     const applied = await applySkuStandardName(created.id, actor, db);
     expect(applied).toMatchObject({
-      code: "STD-001",
+      code: created.code,
       name: "EXPRESSIONS 天猫 胶原蛋白肽饮 升级版 50ml×10",
       unchanged: false,
     });
     const [row] = await db.select().from(skus).where(eq(skus.id, created.id));
-    expect(row.code).toBe("STD-001");
+    expect(row.code).toBe(created.code);
     expect(row.name).toBe(applied.name);
     const [params] = await db.select().from(skuParams).where(eq(skuParams.skuId, created.id));
     expect(params.logisticsLeadDays).toBe(4);

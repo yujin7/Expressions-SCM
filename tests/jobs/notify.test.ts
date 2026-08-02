@@ -1,5 +1,5 @@
 /** #8 通知发件箱测试（jobs/notify.ts） */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { createTestDb, type TestDb } from "../helpers/db";
 import * as schema from "@/db/schema";
@@ -12,7 +12,7 @@ import {
 
 describe("通知发件箱", () => {
   let db: TestDb;
-  beforeAll(async () => {
+  beforeEach(async () => {
     ({ db } = await createTestDb());
   });
 
@@ -44,7 +44,7 @@ describe("通知发件箱", () => {
     expect(s).toEqual({ sent: 0, skipped: 0, failed: 0 });
   });
 
-  it("dispatch：应用机器人失败时回退 webhook，仍只把 outbox 标记一次 sent", async () => {
+  it("dispatch：应用发送失败不得自动跨渠道回退，避免超时已送达后 webhook 重复发送", async () => {
     await enqueueNotification(db, {
       channel: "feishu",
       title: "回退",
@@ -66,11 +66,12 @@ describe("通知发件箱", () => {
         appClient,
         webhookUrl: "https://open.feishu.cn/open-apis/bot/v2/hook/test-fallback",
       });
-      expect(result.sent).toBe(1);
-      expect(calls).toHaveLength(1);
+      expect(result.failed).toBe(1);
+      expect(calls).toHaveLength(0);
       const [row] = await db.select().from(notifications)
         .where(eq(notifications.dedupeKey, "fs:fallback"));
-      expect(row.status).toBe("sent");
+      expect(row.status).toBe("failed");
+      expect(row.error).toContain("app unavailable");
     } finally {
       globalThis.fetch = previousFetch;
     }

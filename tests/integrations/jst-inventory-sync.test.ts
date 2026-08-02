@@ -29,6 +29,7 @@ describe("聚水潭库存增量观察受控同步", () => {
     }).returning();
     await db.insert(schema.aliases).values({
       aliasType: "sku_code",
+      scope: "JST",
       rawValue: "JST-SKU-A",
       targetId: sku.id,
       createdBy: actor.id,

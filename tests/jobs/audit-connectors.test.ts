@@ -26,11 +26,16 @@ describe("连接器安全就绪审计", () => {
       total: 4,
       codeReady: 3,
       configured: 2,
-      operational: 1,
+      explicitlyEnabled: 0,
+      contractSetsSelected: 0,
+      configurationReady: 1,
+      operational: 0,
     });
     expect(audit.connectors.find((row) => row.key === "jst")).toMatchObject({
       configured: true,
-      operational: true,
+      configurationReady: true,
+      operational: false,
+      identityClearanceState: "unknown",
       liveVerificationRef: "UAT-20260729-JST-001",
     });
     expect(audit.connectors.find((row) => row.key === "yy")).toMatchObject({

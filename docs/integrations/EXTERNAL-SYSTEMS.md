@@ -110,7 +110,8 @@ npx tsx src/jobs/cli.ts reconcile-jst 2026-07-28
 ```
 
 `audit-connectors` 不打开数据库或调用外部 API，只输出代码状态、缺失环境变量名、UAT
-状态和非秘密证据编号；不会输出凭据、租户/组织值、端点或获批接口清单，可附在内部发布单。
+状态和非秘密证据编号；对有显式开关/契约的连接器还分别输出启用状态、契约选择状态与数量。
+它不会输出凭据、租户/组织值、端点或获批接口清单，可附在内部发布单。
 
 ## 3. 简道云
 
@@ -139,7 +140,18 @@ npx tsx src/jobs/cli.ts reconcile-jst 2026-07-28
 - 每次表单同步先校验字段契约并计算 schema hash；字段缺失即停止，额外字段默认忽略，
   防止简道云改表后静默错列。
 - 业务行按 `app_id + entry_id + data_id` 身份进入内容寻址 evidence 和现有
-  `import_jobs/staging_rows`；相同信封重放不重复，失败不推进 checkpoint。
+  `import_jobs/staging_rows`；相同信封重放不重复。导入任务、身份异常、staging、运行成功与
+  checkpoint 在同一事务提交；失败整批回滚并保留可重试运行史，崩溃遗留的 running 租约
+  超时后由新 attempt 接管，旧 attempt 受时间令牌隔离，不能迟到覆盖。
+- OpenAPI 没有提供本项目可用的源快照 token，因此分页读取只声明
+  `paginated-authorized-observation`，不冒充同一时点全量快照；重复 `data_id`、游标不前进或
+  控制行数异常均停机。每条表单流的验收提交按数据库事务锁串行化；新观察不仅不得回退源时点
+  或减少总行数，还必须包含上一有效批次的全部 `sourceRecordId`。当前没有可信删除墓碑，因此
+  同数量换 ID、用新增行掩盖旧记录缺失或旧批次身份清单不完整都会失败，旧待复核批次与
+  checkpoint 保持不变。目录 checkpoint 也采用相同的流锁与较新运行隔离。业务控制总量与
+  第二次稳定读取仍是 UAT 必检项。CI 另在一次性 PostgreSQL 16 数据库里用两个独立连接证明
+  advisory lock 会真实阻塞并串行提交，且最终 checkpoint、有效 import job 和 staging payload
+  全部指向较新的源信封；测试数据随后删除，不接触开发/生产库。
 - 所有行固定 `observation-only + releaseBlocked`，不会直接更新 SKU、供应商、仓库、价格、
   BOM、单据、库存余额或台账；空结果也只是“本授权视图为空”，不是业务事实为零。
 - 连接器来源别名按 `JIANDAOYUN` scope 与企业通用/聚水潭/用友隔离；同一短码可在不同系统
@@ -162,6 +174,11 @@ JIANDAOYUN_LIVE_VERIFIED_REF（非秘密 UAT 证据编号）
 `JIANDAOYUN_BASE_URL` 只接受官方
 `https://api.jiandaoyun.com/api/v5`（可省略或带末尾 `/`）。即使误配为另一个 HTTPS
 域名，系统也会在发送 API key 前拒绝，避免机器凭据外泄。
+凭据与责任人齐全只表示 `configured`；简道云只有在
+`JIANDAOYUN_SYNC_ENABLED=true`、`JIANDAOYUN_SYNC_CONTRACTS` 至少选中一条已知契约，
+带日期和非秘密证据编号的 Live UAT 仍有效，且 `JIANDAOYUN` 作用域待裁决身份异常为 0 时，
+才能标记为 `operational`。
+空契约、未知契约或无效开关值均显式拦截，不会因凭据存在而自动启用。
 
 手工触发：
 
@@ -175,13 +192,15 @@ npx tsx src/jobs/cli.ts sync-jiandaoyun-form sample-management-observation
 `audit-jiandaoyun-contracts` 不打开 SCM 数据库、不落源业务值，只输出九条契约的聚合控制量：
 目录应用/表单数、主表行数、子表行数、字段非空覆盖、契约 schema hash 与源数据时间范围。
 
-2026-07-30 重新实测：
+2026-08-02 以 schema envelope v3 重新实测：
 
 - API key 仍可读取 9 个应用、297 个表单；
 - 九条契约共 128 条主表记录、131 条子表记录；
 - 128 条主表记录已逐条进入 128 条 `releaseBlocked` staging；九条契约精确重放全部复用原
   run/import job，未制造重复行；
-- 最新一条源更新时间为 2024-12-11，距本次核验 595 天；其余契约更旧；
+- SKU 5,376、SPU 348、供应商 156、仓库 25、库存余额 344、库存流水 348、PO 3、WO 1，
+  同步前后正式表计数不变；
+- 最新一条源更新时间为 2024-12-11，距本次核验 599 天；其余契约更旧；
 - 因此当前授权视图只能作为历史迁移/交叉核对源，不能被标记为 2026 年实时低代码 ERP 权威。
 
 上线前必须：
@@ -198,7 +217,7 @@ npx tsx src/jobs/cli.ts sync-jiandaoyun-form sample-management-observation
 ### 两条可运行路径
 
 1. 应用机器人（推荐）：`FEISHU_APP_ID` + `FEISHU_APP_SECRET` + `FEISHU_CHAT_ID`
-2. 自定义机器人回退：`FEISHU_WEBHOOK_URL`
+2. 自定义机器人独立路径：`FEISHU_WEBHOOK_URL`
 
 自定义 webhook 必须是精确的
 `https://open.feishu.cn/open-apis/bot/v2/hook/{token}`；非 HTTPS、相似域名、用户信息、
@@ -211,7 +230,8 @@ npx tsx src/jobs/cli.ts sync-jiandaoyun-form sample-management-observation
 - token 按过期时间缓存并提前 60 秒刷新；
 - `receive_id_type=chat_id`，每条 outbox 使用稳定 UUID 去重；
 - UUID 最长 50 字符，飞书在 1 小时内对相同 UUID 至多成功发送一次；
-- 应用发送失败且 webhook 已配置时自动回退；
+- 应用发送一旦发起便不自动跨渠道回退；网络超时可能已经送达，而 webhook 没有同一 UUID
+  去重能力，自动回退会制造双发。应用未配置时才使用 webhook 路径；
 - webhook 同时校验 HTTP 与飞书业务码；HTTP 200 但业务码非 0 仍保留为 failed 并重试；
 - 多实例分发先以数据库条件更新原子认领 `sending` 租约；同一 outbox 行只有一个 worker
   能发送，进程中断遗留的租约 10 分钟后可恢复；
@@ -222,8 +242,12 @@ npx tsx src/jobs/cli.ts sync-jiandaoyun-form sample-management-observation
 版本后，把机器人加入同租户目标群并允许发言。飞书对同一群的机器人共享限频为 5 QPS；
 SCM outbox 保持串行投递，不以并发冲击群限流。
 
-真实测试群完成投递、去重与失败恢复 UAT 后，才同时设置 `FEISHU_LIVE_VERIFIED_AT` 与
-`FEISHU_LIVE_VERIFIED_REF`。时间必须是带 `Z` 或明确时区偏移的 ISO/RFC3339 时间；
+应用机器人和 webhook 必须分别完成真实测试群 UAT：应用路径写
+`FEISHU_APP_LIVE_VERIFIED_AT/REF`，webhook 路径写
+`FEISHU_WEBHOOK_LIVE_VERIFIED_AT/REF`。运行时只采用当前实际发送路径的证据；两条路径同时
+配置时应用机器人优先，webhook 的 UAT 不能替代应用路径验收。旧的未绑定路径
+`FEISHU_LIVE_VERIFIED_AT/REF` 不再接受，避免切换鉴权路径后沿用错误的验收证据。
+时间必须是带 `Z` 或明确时区偏移的 ISO/RFC3339 时间；
 证据编号必须以字母或数字开头，整体只接受 3–80 位字母、数字、点、下划线或连字符；不写
 URL、查询串、token 或密钥。
 聚水潭与简道云使用同样的双字段契约。运维面板只有在完整机器配置、合法证据编号和 90 天内
@@ -305,8 +329,14 @@ endpoint 或接口名。即使结果为 `contract_ready`，实现仍为 `contrac
 
 ## 6. 观测、告警与验收
 
-运维面板把「代码就绪」「机器凭据已配」「真实 Live UAT 已验证」分开显示；凭据存在不再
-自动等于 operational。面板还显示能力、缺失环境变量、验证时间和阻塞说明。
+运维面板把「代码就绪」「机器凭据已配」「业务流已启用」「契约已选择」「真实 Live UAT 已验证」
+和「来源作用域身份异常已清零」分开显示；凭据存在不再自动等于 operational。配置/UAT 就绪与
+最近运行健康也分开：空观察显示“空观察，旧批次保留”，只读 staging 显示“仅观察，不可放行”，
+失败不会被绿色状态掩盖。飞书只展示当前实际配置路径可用的 webhook 或应用机器人能力。
+面板还显示缺失环境变量、验证时间和阻塞说明。
+生产 Compose 只把 `.env.prod` 中的连接器值原样传入容器；未设置值保持为空，
+不在编排文件里内置凭据、开启同步或选中契约。CI 的 Static checks 使用固定版本的
+Gitleaks 扫描完整 Git 历史；只有经人工核实的非秘密测试不变键和幂等 UUID 可用精确指纹排除。
 运行与证据由以下事实证明：
 
 - `integration_runs`：请求范围、源/落 staging/拒收行数、证据 hash/path、状态、错误；
@@ -318,7 +348,7 @@ endpoint 或接口名。即使结果为 `contract_ready`，实现仍为 `contrac
 上线门：
 
 - 聚水潭真实握手、控制总量和 7 天恢复演练通过；
-- 飞书测试群收到去重消息，应用失败时 webhook 回退被验证；
+- 飞书测试群分别完成应用 UUID 去重与 webhook 业务码验证；应用超时不得触发跨渠道双发；
 - 简道云完成密钥轮换、重复视图裁决、九条契约控制总量和失败恢复；
 - 用友只读沙箱完成前不得标记 operational，更不得写财务事实；
 - 密钥只存在部署密钥库/环境变量，轮换后旧值失效，日志与导出无 secret。

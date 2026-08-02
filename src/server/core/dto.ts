@@ -49,12 +49,20 @@ export interface SessionUser {
   sessionVersion?: number;
 }
 
+/** Authentication/session freshness failure that routes must return as 401, never as a logged 500. */
+export class SessionAuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionAuthError";
+  }
+}
+
 /** 从 NextAuth 会话取当前用户；未登录抛错。（动态 import 保持本模块纯函数可独立单测） */
 export async function getSessionUser(): Promise<SessionUser> {
   const { auth } = await import("@/server/auth");
   const session = await auth();
   const u = session?.user;
-  if (!u || !u.id) throw new Error("未登录");
+  if (!u || !u.id) throw new SessionAuthError("未登录");
   return {
     id: Number(u.id),
     name: u.name ?? "",
@@ -84,9 +92,9 @@ export async function getFreshSessionUser(): Promise<{ id: number; name: string;
   const { eq } = await import("drizzle-orm");
   const db = await getDbAsync();
   const [row] = await db.select().from(users).where(eq(users.id, tokenUser.id));
-  if (!row || !row.active) throw new Error("账号已停用或不存在");
+  if (!row || !row.active) throw new SessionAuthError("账号已停用或不存在");
   if (tokenUser.sessionVersion == null || tokenUser.sessionVersion !== row.sessionVersion) {
-    throw new Error("会话已失效，请重新登录");
+    throw new SessionAuthError("会话已失效，请重新登录");
   }
   return { id: row.id, name: row.name, roles: row.roles, isApprover: row.isApprover };
 }

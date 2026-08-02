@@ -6,7 +6,7 @@ import { createSku, updateSku } from "@/server/modules/master/sku";
 import { generateGovernedSkuCode, parseGovernedSkuCode } from "@/server/rules/sku-code";
 
 describe("SKU S1 事务取号", () => {
-  it("编码留空时在创建事务内按全局流水生成，历史手工码仍兼容", async () => {
+  it("编码留空时在创建事务内按全局流水生成，actorless 内部回填仍兼容", async () => {
     const { db } = await createTestDb();
     const [spu] = await db.insert(spus).values({ code: "P99101", nameCn: "编码测试" }).returning();
     const [brand] = await db.insert(brands).values({ code: "EXP", nameCn: "EXPRESSIONS" }).returning();
@@ -40,6 +40,57 @@ describe("SKU S1 事务取号", () => {
       .from(docCounters)
       .where(eq(docCounters.prefix, "SKU-S1"));
     expect(counter).toMatchObject({ bizDate: "GLOBAL", lastNo: 2 });
+  });
+
+  it("交互式新建不得手工编主码；历史例外必须管理员、显式模式和审计原因", async () => {
+    const { db } = await createTestDb();
+    const [spu] = await db.insert(spus).values({ code: "P99104", nameCn: "交互式建档测试" }).returning();
+    const [admin, pmc] = await db.insert(users).values([
+      { username: "sku-migration-admin", name: "SKU 迁移管理员", passwordHash: "x", roles: ["admin"] },
+      { username: "sku-create-pmc", name: "SKU 建档 PMC", passwordHash: "x", roles: ["pmc"] },
+    ]).returning();
+    const adminActor = { id: admin.id, name: admin.name, roles: ["admin"], isApprover: true };
+    const pmcActor = { id: pmc.id, name: pmc.name, roles: ["pmc"], isApprover: false };
+    const base = { name: "待建档成品", spuId: spu.id, skuType: "finished" as const, baseUom: "盒" };
+
+    await expect(createSku({ ...base, code: "MANUAL-001" }, adminActor, db))
+      .rejects.toThrow("默认使用系统 S1 编码");
+    await expect(createSku({
+      ...base,
+      code: "OLD-001",
+      creationMode: "historical_migration",
+      historicalMigrationReason: "源系统历史主码需要保留并已完成核对",
+    }, pmcActor, db)).rejects.toThrow("只有管理员");
+    await expect(createSku({
+      ...base,
+      code: "OLD-002",
+      creationMode: "historical_migration",
+    }, adminActor, db)).rejects.toThrow("必须填写迁移原因");
+    await expect(createSku({
+      ...base,
+      code: "OLD-UNAUDITED",
+      creationMode: "historical_migration",
+      historicalMigrationReason: "内部任务不得冒充管理员交互式历史迁移",
+    }, undefined, db)).rejects.toThrow("必须由已登录管理员执行");
+
+    const migrated = await createSku({
+      ...base,
+      code: "OLD-003",
+      creationMode: "historical_migration",
+      historicalMigrationReason: "原 ERP 历史主码需保留，已按原始导出文件核对",
+    }, adminActor, db);
+    expect(migrated.code).toBe("OLD-003");
+    const [audit] = await db
+      .select()
+      .from(auditLogs)
+      .where(eq(auditLogs.entityId, migrated.id));
+    expect(audit.after).toMatchObject({
+      creationMode: "historical_migration",
+      historicalMigrationReason: "原 ERP 历史主码需保留，已按原始导出文件核对",
+    });
+
+    const governed = await createSku(base, pmcActor, db);
+    expect(parseGovernedSkuCode(governed.code)).toMatchObject({ skuType: "finished" });
   });
 
   it("计数器落后且生成码已存在时继续取号，不用 MAX+1", async () => {

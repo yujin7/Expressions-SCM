@@ -16,6 +16,7 @@
  * 两种通道下均正确。
  */
 import { readWorkbook, type CellValue, type SheetData } from "@/server/import/parse/xlsx";
+import type { SkuImportIdentityMode } from "@/server/import/sku-identity-mode";
 
 /* ── 类型（本波次 bom 局部定义，允许与其他适配器重复） ───────────── */
 
@@ -547,12 +548,14 @@ export async function stageBom(
   filePath: string,
   brandCode: string,
   userId: number,
+  identityMode: SkuImportIdentityMode = "historical_preserve",
 ): Promise<{ jobId: number; result: BomParseResult; stagedRows: number }> {
   const job = await createImportJob(db, {
     template: "bom",
     filePath,
     createdBy: userId,
-    scope: { mode: "full", brandCode },
+    // 身份模式由上传人显式声明；默认仅为脚本/历史调用兼容，生产上传 API 不允许省略。
+    scope: { mode: "full", brandCode, identityMode },
   });
   try {
     const result = await parseBomWorkbook(filePath, brandCode);

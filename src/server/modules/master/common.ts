@@ -29,6 +29,9 @@ export interface ErrorCtx {
 
 /** 统一错误响应：{error} + 400/404/409/500；未预期 500 额外落 error_logs（best-effort） */
 export function errorResponse(e: unknown, ctx?: ErrorCtx): NextResponse {
+  if (e instanceof SessionAuthError) {
+    return NextResponse.json({ error: e.message }, { status: 401 });
+  }
   if (e instanceof ApiError) {
     return NextResponse.json(e.code ? { error: e.message, code: e.code } : { error: e.message }, { status: e.status });
   }
@@ -100,7 +103,7 @@ export function todayShanghai(): string {
 }
 
 // ---------- 权限守卫（集成层：《01》§6 功能矩阵） ----------
-import { getSessionUser, requireRole } from "@/server/core/dto";
+import { getSessionUser, requireRole, SessionAuthError } from "@/server/core/dto";
 
 /** 写权限映射（admin 始终放行——requireRole 内置 admin 兜底；空数组=仅 admin） */
 const WRITE_ROLES: Record<string, string[]> = {

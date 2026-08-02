@@ -2,15 +2,33 @@
  * 运维面板数据装配（仅 admin；/api/admin/health）：
  * db/迁移状态（与 /api/health 同口径）、任务运行史（job_runs 每任务最新一条）、
  * 最近错误（error_logs 10 条）、最近导入（import_jobs 5 条）、导出队列积压、
- * 快照仓数据龄、备份新鲜度（BACKUP_DIR 或 ops 默认 ./backups；目录缺失=null，开发环境正常）。
+ * 快照仓数据龄、连接器最近运行/检查点、备份新鲜度（BACKUP_DIR 或 ops 默认
+ * ./backups；目录缺失=null，开发环境正常）。
  * 只读装配，不写库、不写审计。
  */
 import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { desc, eq, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
-import { errorLogs, exportJobs, importJobs, jobRuns, stockSnapshots, warehouses } from "@/db/schema";
-import { getConnectorReadiness, type ConnectorReadiness } from "@/server/integrations/connector";
+import {
+  aliasExceptions,
+  aliases,
+  errorLogs,
+  exportJobs,
+  importJobs,
+  integrationCheckpoints,
+  integrationRuns,
+  jobRuns,
+  skuIdentifiers,
+  stockSnapshots,
+  warehouses,
+} from "@/db/schema";
+import {
+  getConnectorReadiness,
+  type ConnectorIdentityEvidence,
+  type ConnectorIdentityScope,
+  type ConnectorReadiness,
+} from "@/server/integrations/connector";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -36,6 +54,29 @@ export interface ErrorLogRow {
   createdAt: string;
 }
 
+export interface ConnectorRunHealthRow {
+  connector: string;
+  stream: string;
+  status: "running" | "succeeded" | "failed";
+  sourceRows: number;
+  stagedRows: number;
+  rejectedRows: number;
+  startedAt: string;
+  finishedAt: string | null;
+  sourceAsOf: string | null;
+  schemaHashPrefix: string | null;
+  unresolvedAliases: number | null;
+  openScopedAliasExceptions: number;
+  checkpointVersion: number | null;
+  checkpointLastSuccessAt: string | null;
+  checkpointAgeHours: number | null;
+  checkpointOnLatestRun: boolean;
+  /** Safe operational flags copied from the run envelope; no source payload is exposed. */
+  emptySource: boolean;
+  releaseBlocked: boolean;
+  errorSummary: string | null;
+}
+
 export interface OpsHealth {
   generatedAt: string;
   dbOk: boolean;
@@ -57,6 +98,240 @@ export interface OpsHealth {
   /** null=备份目录不存在（开发环境正常） */
   backupFreshness: { dir: string; file: string; mtime: string; ageHours: number } | null;
   connectors: ConnectorReadiness[];
+  connectorRuns: ConnectorRunHealthRow[];
+}
+
+const ALIAS_SCOPE_BY_CONNECTOR: Readonly<Record<string, string>> = {
+  jst: "JST",
+  jdy: "JIANDAOYUN",
+  yy: "YONYOU",
+};
+
+function scopeObject(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function nonNegativeInteger(value: unknown): number | null {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  return null;
+}
+
+function sourceDate(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : null;
+}
+
+function schemaHashPrefix(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return /^[0-9a-f]{12,128}$/i.test(normalized) ? normalized.slice(0, 12).toLowerCase() : null;
+}
+
+/**
+ * Do not return stored connector errors to the browser. They can contain source identifiers,
+ * upstream URLs or credentials. The admin panel only needs a bounded remediation category;
+ * exact diagnostics stay in the protected server log/evidence workflow.
+ */
+export function connectorErrorSummary(value: string | null): string | null {
+  if (!value?.trim()) return null;
+  const normalized = value.toLowerCase();
+  let summary = "连接器运行失败（详情仅限受控日志）";
+  if (/schema|contract|字段|契约|漂移/.test(normalized)) {
+    summary = "字段契约或 schema 校验失败";
+  } else if (/unauthori[sz]ed|forbidden|credential|token|auth|401|403|认证|授权|密钥/.test(normalized)) {
+    summary = "外部系统认证或授权失败";
+  } else if (/timeout|timed out|network|fetch|socket|econn|dns|超时|网络|连接/.test(normalized)) {
+    summary = "外部服务连接或超时";
+  } else if (/alias|别名|标识|解析/.test(normalized)) {
+    summary = "外部标识或别名解析失败";
+  } else if (/checkpoint|cursor|游标|检查点/.test(normalized)) {
+    summary = "同步游标或检查点失败";
+  } else if (/transaction|constraint|database|postgres|pglite|事务|约束|数据库/.test(normalized)) {
+    summary = "受控落库事务失败";
+  }
+  return summary.slice(0, 80);
+}
+
+/**
+ * error_logs and job_runs intentionally keep the original diagnostic text for protected
+ * server-side investigation. The browser receives only a bounded category: upstream SDKs and
+ * database drivers can embed tokens, URLs, source identifiers or SQL values in Error.message.
+ */
+export function operationalErrorSummary(value: string | null): string {
+  const normalized = value?.toLowerCase() ?? "";
+  if (/unauthori[sz]ed|forbidden|credential|token|auth|401|403|认证|授权|密钥/.test(normalized)) {
+    return "认证或授权异常（详情仅限受控日志）";
+  }
+  if (/timeout|timed out|network|fetch|socket|econn|dns|超时|网络|连接/.test(normalized)) {
+    return "外部服务连接或超时（详情仅限受控日志）";
+  }
+  if (/schema|contract|字段|契约|校验|validation/.test(normalized)) {
+    return "数据契约或校验异常（详情仅限受控日志）";
+  }
+  if (/transaction|constraint|database|postgres|pglite|sql|事务|约束|数据库/.test(normalized)) {
+    return "数据库或事务异常（详情仅限受控日志）";
+  }
+  return "未预期系统异常（详情仅限受控日志）";
+}
+
+function safeErrorLogRow(row: typeof errorLogs.$inferSelect): ErrorLogRow {
+  return {
+    id: row.id,
+    errorId: row.errorId,
+    path: row.path,
+    method: row.method,
+    userId: row.userId,
+    message: operationalErrorSummary(row.message),
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+function streamKey(connector: string, stream: string): string {
+  return `${connector}\u0000${stream}`;
+}
+
+interface ConnectorHealthContext {
+  rows: ConnectorRunHealthRow[];
+  identityEvidenceByScope: Map<string, ConnectorIdentityEvidence>;
+}
+
+async function getConnectorRunHealth(db: AnyDb, now: Date): Promise<ConnectorHealthContext> {
+  const [latestRuns, checkpoints, exceptionCounts, aliasCounts, identifierCounts] = await Promise.all([
+    db
+      .selectDistinctOn([integrationRuns.connector, integrationRuns.stream], {
+        id: integrationRuns.id,
+        connector: integrationRuns.connector,
+        stream: integrationRuns.stream,
+        status: integrationRuns.status,
+        requestScope: integrationRuns.requestScope,
+        sourceRows: integrationRuns.sourceRows,
+        stagedRows: integrationRuns.stagedRows,
+        rejectedRows: integrationRuns.rejectedRows,
+        error: integrationRuns.error,
+        startedAt: integrationRuns.startedAt,
+        finishedAt: integrationRuns.finishedAt,
+      })
+      .from(integrationRuns)
+      .orderBy(
+        integrationRuns.connector,
+        integrationRuns.stream,
+        desc(integrationRuns.startedAt),
+        desc(integrationRuns.id),
+      ),
+    db
+      .select({
+        connector: integrationCheckpoints.connector,
+        stream: integrationCheckpoints.stream,
+        version: integrationCheckpoints.version,
+        lastRunId: integrationCheckpoints.lastRunId,
+        lastSuccessAt: integrationCheckpoints.lastSuccessAt,
+      })
+      .from(integrationCheckpoints),
+    db
+      .select({
+        scope: aliasExceptions.scope,
+        status: aliasExceptions.status,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(aliasExceptions)
+      .groupBy(aliasExceptions.scope, aliasExceptions.status),
+    db
+      .select({ scope: aliases.scope, count: sql<number>`count(*)::int` })
+      .from(aliases)
+      .groupBy(aliases.scope),
+    db
+      .select({ scope: skuIdentifiers.scope, count: sql<number>`count(*)::int` })
+      .from(skuIdentifiers)
+      .where(eq(skuIdentifiers.active, true))
+      .groupBy(skuIdentifiers.scope),
+  ]) as [
+    {
+      id: number;
+      connector: string;
+      stream: string;
+      status: string;
+      requestScope: unknown;
+      sourceRows: number;
+      stagedRows: number;
+      rejectedRows: number;
+      error: string | null;
+      startedAt: Date;
+      finishedAt: Date | null;
+    }[],
+    {
+      connector: string;
+      stream: string;
+      version: number;
+      lastRunId: number;
+      lastSuccessAt: Date;
+    }[],
+    { scope: string; status: string; count: number }[],
+    { scope: string; count: number }[],
+    { scope: string; count: number }[],
+  ];
+
+  const checkpointsByStream = new Map(
+    checkpoints.map((row) => [streamKey(row.connector, row.stream), row]),
+  );
+  const identityEvidenceByScope = new Map<string, ConnectorIdentityEvidence>();
+  const evidenceFor = (scope: string): ConnectorIdentityEvidence => {
+    const current = identityEvidenceByScope.get(scope);
+    if (current) return current;
+    const created = { openExceptions: 0, observedIdentities: 0 };
+    identityEvidenceByScope.set(scope, created);
+    return created;
+  };
+  for (const row of exceptionCounts) {
+    const evidence = evidenceFor(row.scope);
+    const count = Number(row.count);
+    if (row.status === "open") evidence.openExceptions += count;
+    // Open values prove the scope has been observed; ignored values are explicit reviewed outcomes.
+    // Resolved rows count through the active alias/identifier they created, not historical status alone.
+    if (row.status === "open" || row.status === "ignored") evidence.observedIdentities += count;
+  }
+  for (const row of [...aliasCounts, ...identifierCounts]) {
+    evidenceFor(row.scope).observedIdentities += Number(row.count);
+  }
+
+  const rows = latestRuns.map((run) => {
+    const scope = scopeObject(run.requestScope);
+    const checkpoint = checkpointsByStream.get(streamKey(run.connector, run.stream));
+    const aliasScope = ALIAS_SCOPE_BY_CONNECTOR[run.connector];
+    const checkpointAgeHours = checkpoint
+      ? Math.round(((now.getTime() - checkpoint.lastSuccessAt.getTime()) / 3_600_000) * 10) / 10
+      : null;
+    return {
+      connector: run.connector,
+      stream: run.stream,
+      status: run.status as ConnectorRunHealthRow["status"],
+      sourceRows: run.sourceRows,
+      stagedRows: run.stagedRows,
+      rejectedRows: run.rejectedRows,
+      startedAt: run.startedAt.toISOString(),
+      finishedAt: run.finishedAt?.toISOString() ?? null,
+      sourceAsOf: sourceDate(scope.sourceAsOf),
+      schemaHashPrefix: schemaHashPrefix(scope.schemaHash),
+      unresolvedAliases: nonNegativeInteger(scope.unresolvedAliases),
+      openScopedAliasExceptions: aliasScope
+        ? (identityEvidenceByScope.get(aliasScope)?.openExceptions ?? 0)
+        : 0,
+      checkpointVersion: checkpoint?.version ?? null,
+      checkpointLastSuccessAt: checkpoint?.lastSuccessAt.toISOString() ?? null,
+      checkpointAgeHours,
+      checkpointOnLatestRun: checkpoint?.lastRunId === run.id,
+      emptySource: scope.emptySource === true,
+      releaseBlocked: scope.releaseBlocked === true,
+      errorSummary: run.status === "failed" ? connectorErrorSummary(run.error) : null,
+    };
+  });
+  return { rows, identityEvidenceByScope };
 }
 
 function todayShanghai(): string {
@@ -95,6 +370,7 @@ export function readBackupFreshness(dirOverride?: string): OpsHealth["backupFres
 
 export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
+  const generatedAt = new Date();
 
   // db + 迁移（与 /api/health 同口径：文件数 vs _migrations 已应用数；PG 模式 applied=-2）
   let dbOk = true;
@@ -132,7 +408,11 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
     lastJobRuns.push({
       job: r.job,
       ok: r.ok,
-      message: r.message,
+      message: r.message === null
+        ? null
+        : r.ok
+          ? "任务成功（详情仅限受控日志）"
+          : operationalErrorSummary(r.message),
       startedAt: r.startedAt.toISOString(),
       finishedAt: r.finishedAt.toISOString(),
     });
@@ -188,21 +468,18 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
     latestBizDate: r.latest,
     ageDays: r.latest ? diffDays(r.latest, today) : null,
   }));
+  const connectorHealth = await getConnectorRunHealth(db, generatedAt);
+  const identityEvidence = Object.fromEntries(
+    [...connectorHealth.identityEvidenceByScope.entries()]
+      .filter(([scope]) => ["JST", "JIANDAOYUN", "YONYOU"].includes(scope)),
+  ) as Partial<Record<ConnectorIdentityScope, ConnectorIdentityEvidence>>;
 
   return {
-    generatedAt: new Date().toISOString(),
+    generatedAt: generatedAt.toISOString(),
     dbOk,
     migrations: { files, applied, drift },
     lastJobRuns,
-    recentErrors: errRows.map((r) => ({
-      id: r.id,
-      errorId: r.errorId,
-      path: r.path,
-      method: r.method,
-      userId: r.userId,
-      message: r.message,
-      createdAt: r.createdAt.toISOString(),
-    })),
+    recentErrors: errRows.map(safeErrorLogRow),
     errorCount24h,
     recentImports: importRows.map((r) => ({
       id: r.id,
@@ -216,7 +493,8 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
     exportQueue,
     snapshotAges,
     backupFreshness: readBackupFreshness(),
-    connectors: getConnectorReadiness(),
+    connectors: getConnectorReadiness(process.env, generatedAt, identityEvidence),
+    connectorRuns: connectorHealth.rows,
   };
 }
 
@@ -229,13 +507,5 @@ export async function listErrorLogs(limit = 50, dbArg?: AnyDb): Promise<ErrorLog
     .from(errorLogs)
     .orderBy(desc(errorLogs.id))
     .limit(n);
-  return rows.map((r) => ({
-    id: r.id,
-    errorId: r.errorId,
-    path: r.path,
-    method: r.method,
-    userId: r.userId,
-    message: r.message,
-    createdAt: r.createdAt.toISOString(),
-  }));
+  return rows.map(safeErrorLogRow);
 }

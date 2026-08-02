@@ -2,7 +2,7 @@
  * 复核工作台后端（《04》§4 ③）：别名异常认领 + 导入任务总览。
  * 认领一次，永久生效（写 aliases + 关闭异常）；忽略=显式拒绝解析（歧义码等）。
  */
-import { desc, eq, ne } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import {
   aliasExceptions,
@@ -13,6 +13,10 @@ import {
 } from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { createImportRejectionArtifact } from "@/server/import/rejection-artifact";
+import {
+  skuImportIdentityModeOf,
+  type SkuImportIdentityMode,
+} from "@/server/import/sku-identity-mode";
 import { claimAlias } from "@/server/modules/dimension/resolver";
 import { ApiError } from "@/server/modules/master/common";
 import { ensureExternalSkuIdentifierInTransaction } from "@/server/modules/master/sku-identifier";
@@ -129,21 +133,35 @@ export async function claimException(
 /** 忽略：显式标记不解析（歧义码/垃圾值）；staging 中引用该值的行保持 pending 由导入方处置 */
 export async function ignoreException(user: SessionUser, id: number, note?: string, dbArg?: AnyDb): Promise<void> {
   const db = await resolveDb(dbArg);
-  const [exc] = await db.select().from(aliasExceptions).where(eq(aliasExceptions.id, id));
-  if (!exc) throw new ApiError(404, "异常不存在");
-  if (exc.status !== "open") throw new ApiError(409, `该异常已处理: ${exc.status}`);
-  await db
-    .update(aliasExceptions)
-    .set({ status: "ignored", resolvedBy: user.id, resolvedAt: new Date() })
-    .where(eq(aliasExceptions.id, id));
-  await writeAudit(db, {
-    userId: user.id, entity: "alias_exception", entityId: id, action: "ignore",
-    after: {
-      aliasType: exc.aliasType,
-      scope: exc.scope,
-      rawValue: exc.rawValue,
-      note: note ?? null,
-    },
+  await db.transaction(async (tx: AnyDb) => {
+    // 条件 UPDATE 是状态转移的唯一竞争点：并发忽略只有一个请求能从 open 迁移。
+    // 返回的旧身份字段与审计同处一个事务，任一失败都不留半步状态。
+    const [exc] = await tx
+      .update(aliasExceptions)
+      .set({ status: "ignored", resolvedBy: user.id, resolvedAt: new Date() })
+      .where(and(eq(aliasExceptions.id, id), eq(aliasExceptions.status, "open")))
+      .returning({
+        aliasType: aliasExceptions.aliasType,
+        scope: aliasExceptions.scope,
+        rawValue: aliasExceptions.rawValue,
+      });
+    if (!exc) {
+      const [current] = await tx
+        .select({ status: aliasExceptions.status })
+        .from(aliasExceptions)
+        .where(eq(aliasExceptions.id, id));
+      if (!current) throw new ApiError(404, "异常不存在");
+      throw new ApiError(409, `该异常已处理: ${current.status}`);
+    }
+    await writeAudit(tx, {
+      userId: user.id, entity: "alias_exception", entityId: id, action: "ignore",
+      after: {
+        aliasType: exc.aliasType,
+        scope: exc.scope,
+        rawValue: exc.rawValue,
+        note: note ?? null,
+      },
+    });
   });
 }
 
@@ -182,8 +200,28 @@ export async function listImportJobs(
 ) {
   const db = await resolveDb(dbArg);
   const where = jobVisibility(user);
-  const rows = await db
-    .select()
+  const rows: Array<{
+    id: number;
+    template: string;
+    filename: string;
+    status: "pending" | "validating" | "failed" | "done" | "superseded";
+    okRows: number;
+    failRows: number;
+    errorFile: string | null;
+    createdAt: Date;
+    scope: unknown;
+  }> = await db
+    .select({
+      id: importJobs.id,
+      template: importJobs.template,
+      filename: importJobs.filename,
+      status: importJobs.status,
+      okRows: importJobs.okRows,
+      failRows: importJobs.failRows,
+      errorFile: importJobs.errorFile,
+      createdAt: importJobs.createdAt,
+      scope: importJobs.scope,
+    })
     .from(importJobs)
     .where(where)
     .orderBy(desc(importJobs.id))
@@ -194,7 +232,30 @@ export async function listImportJobs(
     .select({ total: sql<number>`count(*)::int` })
     .from(importJobs)
     .where(where);
-  return { data: rows, total: cnt?.total ?? 0 };
+  return {
+    data: rows.map((row): {
+      id: number;
+      template: string;
+      filename: string;
+      status: typeof row.status;
+      okRows: number;
+      failRows: number;
+      hasErrorFile: boolean;
+      createdAt: Date;
+      identityMode: SkuImportIdentityMode | null;
+    } => ({
+      id: row.id,
+      template: row.template,
+      filename: row.filename,
+      status: row.status,
+      okRows: row.okRows,
+      failRows: row.failRows,
+      hasErrorFile: row.errorFile !== null,
+      createdAt: row.createdAt,
+      identityMode: skuImportIdentityModeOf(row.scope),
+    })),
+    total: cnt?.total ?? 0,
+  };
 }
 
 export async function getJobStagingSummary(
