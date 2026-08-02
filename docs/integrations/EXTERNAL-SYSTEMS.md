@@ -170,7 +170,7 @@ JIANDAOYUN_SYNC_ENABLED（默认 false）
 JIANDAOYUN_SYNC_CONTRACTS（逗号分隔的显式契约 key）
 JIANDAOYUN_BASE_URL（可选）
 JIANDAOYUN_LIVE_VERIFIED_AT（真实 UAT 后）
-JIANDAOYUN_LIVE_VERIFIED_REF（非秘密 UAT 证据编号）
+JIANDAOYUN_LIVE_VERIFIED_REF（非秘密 UAT 证据编号，末尾绑定当前契约集）
 ```
 
 `JIANDAOYUN_BASE_URL` 只接受官方
@@ -178,9 +178,13 @@ JIANDAOYUN_LIVE_VERIFIED_REF（非秘密 UAT 证据编号）
 域名，系统也会在发送 API key 前拒绝，避免机器凭据外泄。
 凭据与责任人齐全只表示 `configured`；简道云只有在
 `JIANDAOYUN_SYNC_ENABLED=true`、`JIANDAOYUN_SYNC_CONTRACTS` 至少选中一条已知契约，
-带日期和非秘密证据编号的 Live UAT 仍有效，且 `JIANDAOYUN` 作用域待裁决身份异常为 0 时，
+带日期和非秘密证据编号的 Live UAT 仍有效，REF 等于或以 `audit-connectors` 输出的
+`expectedLiveVerificationBinding`（`JDY1_...`）结尾，且 `JIANDAOYUN` 作用域待裁决身份异常为 0 时，
 才能标记为 `operational`。
 空契约、未知契约或无效开关值均显式拦截，不会因凭据存在而自动启用。
+契约会按 key 去重、排序，并把 app/form、目标表、字段/子表映射、业务键、数值与对账规则一并
+生成单向绑定；新增、移除或修改任一契约都会使旧 UAT 证据变为 `unbound`，必须按新范围重验，
+避免扩大同步范围或改字段后沿用旧验收结论。
 
 手工触发：
 
@@ -280,6 +284,11 @@ production-safe，也不得自动删权，以免破坏该共享应用的其他�
 时间必须是带 `Z` 或明确时区偏移的 ISO/RFC3339 时间；
 证据编号必须以字母或数字开头，整体只接受 3–80 位字母、数字、点、下划线或连字符；不写
 URL、查询串、token 或密钥。
+应用机器人还必须填写 `FEISHU_APP_PERMISSION_REVIEWED_AT` 与
+`FEISHU_APP_PERMISSION_REVIEWED_REF`。后者等于或以 `probe-feishu-chats` 输出的
+`permissionReview.expectedEvidenceBinding`（`FSP1_...`）结尾，把最小权限复核绑定到当前应用；
+换应用或超过 90 天会自动失效。只有当前权限清单已收敛到可接受范围后才能登记该证据；标记
+本身不能覆盖探针发现的 `extreme_over_privilege`、`review_required` 或 `unknown` 状态。
 聚水潭与简道云使用同样的双字段契约。运维面板只有在完整机器配置、合法证据编号和 90 天内
 的有效时间同时存在时才显示 Live UAT「有效」；未来、非法、过期或缺证据的标记都不算
 operational。凭据、接口范围或权威视图发生实质变化时，必须重新验收并更新两项标记。

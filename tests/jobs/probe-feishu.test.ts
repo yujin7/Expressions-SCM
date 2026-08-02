@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { probeFeishuChats } from "@/jobs/probe-feishu";
-import { feishuTargetEvidenceBinding } from "@/server/integrations/feishu";
+import {
+  feishuPermissionReviewEvidenceBinding,
+  feishuTargetEvidenceBinding,
+} from "@/server/integrations/feishu";
 
 const credentials = {
   NODE_ENV: "test",
@@ -9,6 +12,7 @@ const credentials = {
 } satisfies NodeJS.ProcessEnv;
 const TARGET_CHAT_ID = "oc_test";
 const TARGET_BINDING = feishuTargetEvidenceBinding(credentials.FEISHU_APP_ID, TARGET_CHAT_ID);
+const PERMISSION_BINDING = feishuPermissionReviewEvidenceBinding(credentials.FEISHU_APP_ID);
 
 const minimalApplication = {
   enabled: "enabled" as const,
@@ -91,6 +95,8 @@ describe("Feishu chat discovery probe", () => {
         FEISHU_CHAT_ID: TARGET_CHAT_ID,
         FEISHU_APP_LIVE_VERIFIED_AT: "2026-08-02T00:00:00Z",
         FEISHU_APP_LIVE_VERIFIED_REF: `UAT-20260802-${TARGET_BINDING}`,
+        FEISHU_APP_PERMISSION_REVIEWED_AT: "2026-08-02T01:00:00Z",
+        FEISHU_APP_PERMISSION_REVIEWED_REF: `SEC-20260802-${PERMISSION_BINDING}`,
       },
       client: {
         inspectSelfApplication: async () => minimalApplication,
@@ -105,6 +111,12 @@ describe("Feishu chat discovery probe", () => {
     expect(result).toMatchObject({
       status: "succeeded",
       target: { configured: true, match: "matched" },
+      permissionReview: {
+        evidenceState: "valid",
+        evidenceBinding: "matched",
+        expectedEvidenceBinding: PERMISSION_BINDING,
+        reviewedAt: "2026-08-02T01:00:00.000Z",
+      },
       send: {
         declared: "declared",
         liveUat: "validated_by_bound_evidence",
@@ -119,6 +131,35 @@ describe("Feishu chat discovery probe", () => {
       items: [{ chatId: TARGET_CHAT_ID, name: "SCM UAT" }],
       requiredChecks: [],
     });
+  });
+
+  it("blocks otherwise-ready app evidence until least-privilege review is app-bound", async () => {
+    const result = await probeFeishuChats({
+      env: {
+        ...credentials,
+        FEISHU_CHAT_ID: TARGET_CHAT_ID,
+        FEISHU_APP_LIVE_VERIFIED_AT: "2026-08-02T00:00:00Z",
+        FEISHU_APP_LIVE_VERIFIED_REF: `UAT-20260802-${TARGET_BINDING}`,
+      },
+      client: {
+        inspectSelfApplication: async () => minimalApplication,
+        listAccessibleChats: async () => [{ chatId: TARGET_CHAT_ID, name: "SCM UAT" }],
+      },
+      now: new Date("2026-08-03T00:00:00Z"),
+    });
+
+    expect(result).toMatchObject({
+      send: { liveUat: "validated_by_bound_evidence" },
+      permissionReview: {
+        evidenceState: "missing",
+        evidenceBinding: "evidence_not_valid",
+        expectedEvidenceBinding: PERMISSION_BINDING,
+      },
+      evidenceReadiness: "blocked_permission_review",
+    });
+    expect(result.requiredChecks).toContain(
+      "当前应用完成最小权限复核后，登记有效时间和绑定该应用的非秘密复核编号",
+    );
   });
 
   it("never becomes ready when a visible group exists but FEISHU_CHAT_ID is missing", async () => {

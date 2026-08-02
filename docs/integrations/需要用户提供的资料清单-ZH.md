@@ -41,7 +41,9 @@
 > `FEISHU_LIVE_VERIFIED_AT` / `FEISHU_LIVE_VERIFIED_REF` 不再接受。这些字段只能在真实投递与
 > 失败恢复验收后成对填写；REF 只放非秘密工单/验收编号。应用机器人路径还必须把探针输出的
 > `send.expectedEvidenceBinding` 原样放在 REF 末尾（例如 `UAT-工单号-FST1_...`），使证据绑定
-> 当前应用与目标群；缺少、错群或旧绑定均不会通过。
+> 当前应用与目标群；缺少、错群或旧绑定均不会通过。应用机器人还要在权限确实收敛后填写
+> `FEISHU_APP_PERMISSION_REVIEWED_AT` 与 `FEISHU_APP_PERMISSION_REVIEWED_REF`，并把探针输出的
+> `permissionReview.expectedEvidenceBinding`（`FSP1_...`）放在 REF 末尾；换应用或过期会自动阻塞。
 
 ### B. 简道云
 
@@ -54,6 +56,9 @@
 5. 提供简道云 SKU、供应商、仓库编码与 SCM 主档的 crosswalk；
 6. 确认 2023–2024 历史行仅供迁移/观察，不能冒充 2026 当前库存或订单；
 7. 指定同步责任人用户 ID，并完成改表、空表、限流、重放、失败恢复 UAT。
+
+> UAT 通过后，`JIANDAOYUN_LIVE_VERIFIED_REF` 必须以 `audit-connectors` 输出的当前
+> `expectedLiveVerificationBinding`（`JDY1_...`）结尾。任何契约增删都会使旧证据失效并要求重验。
 
 当前只读控制审计已可重复执行：
 

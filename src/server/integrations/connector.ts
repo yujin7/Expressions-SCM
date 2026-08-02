@@ -1,6 +1,10 @@
 import {
   feishuAppConfigFromEnv,
+  feishuAppCredentialsFromEnv,
+  feishuEvidenceRefHasPermissionReviewBinding,
   feishuEvidenceRefHasTargetBinding,
+  feishuPermissionReviewEvidenceBinding,
+  feishuTargetEvidenceBinding,
   feishuWebhookUrlFromEnv,
 } from "./feishu";
 import {
@@ -9,7 +13,11 @@ import {
   jiandaoyunSyncActorId,
   normalizeJiandaoyunBaseUrl,
 } from "./jiandaoyun";
-import { configuredJiandaoyunContracts } from "./jiandaoyun-contracts";
+import {
+  configuredJiandaoyunContracts,
+  jiandaoyunContractSetEvidenceBinding,
+  jiandaoyunEvidenceRefHasContractSetBinding,
+} from "./jiandaoyun-contracts";
 import { jstConfigFromEnv, normalizeJstBaseUrl } from "./jst";
 import { jstInventorySyncEnabled } from "./jst-inventory-sync";
 import {
@@ -36,6 +44,7 @@ export type ConnectorContractSelectionState =
   | "selected";
 export type ConnectorIdentityScope = "JST" | "JIANDAOYUN" | "YONYOU";
 export type IdentityClearanceState = "not_required" | "unknown" | "blocked" | "clear";
+export type ConnectorSecurityReviewState = "not_required" | LiveVerificationState;
 
 export interface ConnectorIdentityEvidence {
   openExceptions: number;
@@ -227,6 +236,19 @@ export function feishuAppLiveVerification(
   );
 }
 
+/** Strict, dated evidence that the current Feishu app passed least-privilege review. */
+export function feishuAppPermissionReviewVerification(
+  env: NodeJS.ProcessEnv = process.env,
+  now: Date = new Date(),
+) {
+  return liveVerification(
+    "FEISHU_APP_PERMISSION_REVIEWED_AT",
+    "FEISHU_APP_PERMISSION_REVIEWED_REF",
+    env,
+    now,
+  );
+}
+
 /**
  * Operational registry, not a success checklist:
  * - ready means transport/validation code exists;
@@ -364,6 +386,8 @@ export const CONNECTORS: Connector[] = [
       "FEISHU_CHAT_ID",
       "FEISHU_APP_LIVE_VERIFIED_AT",
       "FEISHU_APP_LIVE_VERIFIED_REF",
+      "FEISHU_APP_PERMISSION_REVIEWED_AT",
+      "FEISHU_APP_PERMISSION_REVIEWED_REF",
       "FEISHU_WEBHOOK_LIVE_VERIFIED_AT",
       "FEISHU_WEBHOOK_LIVE_VERIFIED_REF",
     ],
@@ -417,6 +441,12 @@ export interface ConnectorReadiness {
   liveVerificationRef: string | null;
   liveVerificationState: LiveVerificationState;
   liveVerificationMaxAgeDays: number;
+  expectedLiveVerificationBinding: string | null;
+  securityReviewState: ConnectorSecurityReviewState;
+  securityReviewedAt: string | null;
+  securityReviewRef: string | null;
+  expectedSecurityReviewBinding: string | null;
+  securityReviewMaxAgeDays: number;
   blocker: string | null;
 }
 
@@ -508,19 +538,59 @@ export function getConnectorReadiness(
       env,
       now,
     );
+    let expectedLiveVerificationBinding: string | null = null;
+    let securityReview: {
+      state: ConnectorSecurityReviewState;
+      verifiedAt: string | null;
+      evidenceRef: string | null;
+    } = { state: "not_required", verifiedAt: null, evidenceRef: null };
+    let expectedSecurityReviewBinding: string | null = null;
+    const partialFeishuApp = connector.key === "feishu"
+      ? feishuAppCredentialsFromEnv(env)
+      : null;
+    if (
+      connector.key === "feishu"
+      && (selectedAuthPath === "app_bot" || (selectedAuthPath === null && partialFeishuApp))
+      && partialFeishuApp
+    ) {
+      expectedSecurityReviewBinding = feishuPermissionReviewEvidenceBinding(partialFeishuApp.appId);
+      securityReview = feishuAppPermissionReviewVerification(env, now);
+      if (
+        securityReview.state === "valid"
+        && !feishuEvidenceRefHasPermissionReviewBinding(
+          securityReview.evidenceRef,
+          partialFeishuApp.appId,
+        )
+      ) securityReview = { ...securityReview, state: "unbound" };
+    }
     if (
       connector.key === "feishu"
       && selectedAuthPath === "app_bot"
-      && verification.state === "valid"
     ) {
       const appConfig = feishuAppConfigFromEnv(env);
+      if (appConfig) {
+        expectedLiveVerificationBinding = feishuTargetEvidenceBinding(
+          appConfig.appId,
+          appConfig.chatId,
+        );
+      }
       if (
-        !appConfig
-        || !feishuEvidenceRefHasTargetBinding(
+        verification.state === "valid"
+        && (!appConfig || !feishuEvidenceRefHasTargetBinding(
           verification.evidenceRef,
           appConfig.appId,
           appConfig.chatId,
-        )
+        ))
+      ) verification = { ...verification, state: "unbound" };
+    } else if (
+      connector.key === "jdy"
+      && activation.contractSelectionState === "selected"
+    ) {
+      const contracts = configuredJiandaoyunContracts(env);
+      expectedLiveVerificationBinding = jiandaoyunContractSetEvidenceBinding(contracts);
+      if (
+        verification.state === "valid"
+        && !jiandaoyunEvidenceRefHasContractSetBinding(verification.evidenceRef, contracts)
       ) verification = { ...verification, state: "unbound" };
     }
     const identityScope = IDENTITY_SCOPE_BY_CONNECTOR[connector.key] ?? null;
@@ -545,12 +615,27 @@ export function getConnectorReadiness(
       && configured
       && ["not_required", "enabled"].includes(activation.enablementState)
       && ["not_required", "selected"].includes(activation.contractSelectionState)
-      && verification.state === "valid";
+      && verification.state === "valid"
+      && ["not_required", "valid"].includes(securityReview.state);
     const identityBlocker = identityClearanceState === "blocked"
       ? `身份映射待裁决 ${openScopedAliasExceptions} 项；清零前不得标记 operational`
       : identityClearanceState === "unknown"
         ? "尚无作用域身份观察证据；不得标记 operational"
         : null;
+    const verificationBindingBlocker = verification.state !== "unbound"
+      ? null
+      : connector.key === "jdy"
+        ? "Live UAT 证据未绑定当前简道云契约集；契约新增或移除后必须重新验收"
+        : connector.key === "feishu"
+          ? "Live UAT 证据未绑定当前飞书应用和目标群；换应用或换群后必须重新验收"
+          : null;
+    const securityReviewBlocker = securityReview.state === "not_required"
+      ? null
+      : securityReview.state === "valid"
+        ? null
+        : securityReview.state === "unbound"
+          ? "飞书最小权限复核证据未绑定当前应用；换应用后必须重新复核"
+          : "飞书应用缺少当前且有效的最小权限复核证据；未复核前不得标记生产就绪";
     return {
       key: connector.key,
       label: connector.label,
@@ -580,7 +665,18 @@ export function getConnectorReadiness(
       liveVerificationRef: verification.evidenceRef,
       liveVerificationState: verification.state,
       liveVerificationMaxAgeDays: LIVE_VERIFICATION_MAX_AGE_DAYS,
-      blocker: [connector.blocker, identityBlocker].filter(Boolean).join("；") || null,
+      expectedLiveVerificationBinding,
+      securityReviewState: securityReview.state,
+      securityReviewedAt: securityReview.verifiedAt,
+      securityReviewRef: securityReview.evidenceRef,
+      expectedSecurityReviewBinding,
+      securityReviewMaxAgeDays: LIVE_VERIFICATION_MAX_AGE_DAYS,
+      blocker: [
+        connector.blocker,
+        verificationBindingBlocker,
+        securityReviewBlocker,
+        identityBlocker,
+      ].filter(Boolean).join("；") || null,
     };
   });
 }

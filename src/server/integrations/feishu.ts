@@ -23,6 +23,7 @@ const NOTIFICATION_SCOPE_ALLOWLIST = new Set([
 const EXTREME_SCOPE_TOTAL = 25;
 const EXTREME_OUTSIDE_ALLOWLIST = 10;
 const TARGET_BINDING_PREFIX = "FST1_";
+const PERMISSION_REVIEW_BINDING_PREFIX = "FSP1_";
 
 export interface FeishuAppCredentials {
   appId: string;
@@ -79,6 +80,25 @@ export function feishuEvidenceRefHasTargetBinding(
 ): boolean {
   if (!reference) return false;
   const binding = feishuTargetEvidenceBinding(appId, chatId);
+  return reference === binding || reference.endsWith(`-${binding}`);
+}
+
+/** Non-secret marker binding a permission-review record to one exact Feishu application. */
+export function feishuPermissionReviewEvidenceBinding(appId: string): string {
+  const digest = createHash("sha256")
+    .update(`feishu-app-permission-review-v1\0${appId}`)
+    .digest("hex")
+    .slice(0, 24)
+    .toUpperCase();
+  return `${PERMISSION_REVIEW_BINDING_PREFIX}${digest}`;
+}
+
+export function feishuEvidenceRefHasPermissionReviewBinding(
+  reference: string | null,
+  appId: string,
+): boolean {
+  if (!reference) return false;
+  const binding = feishuPermissionReviewEvidenceBinding(appId);
   return reference === binding || reference.endsWith(`-${binding}`);
 }
 

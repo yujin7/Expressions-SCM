@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
 import type { JiandaoyunWidget } from "./jiandaoyun";
+
+const CONTRACT_SET_BINDING_PREFIX = "JDY1_";
 
 export interface JiandaoyunFieldRule {
   source: string;
@@ -543,4 +546,43 @@ export function configuredJiandaoyunContracts(
     if (!contract) throw new Error(`未知 JIANDAOYUN_SYNC_CONTRACTS: ${key}`);
     return contract;
   });
+}
+
+/**
+ * Non-secret marker binding UAT evidence to the exact selected contract set.
+ * Sorting makes the marker independent of environment-variable ordering while any add/remove
+ * invalidates prior evidence.
+ */
+export function jiandaoyunContractSetEvidenceBinding(
+  contracts: readonly JiandaoyunFormContract[],
+): string {
+  const selected = [...new Map(contracts.map((contract) => [contract.key, contract])).values()]
+    .sort((left, right) => left.key.localeCompare(right.key));
+  const contractMaterial = selected.map((contract) => ({
+    key: contract.key,
+    appId: contract.appId,
+    entryId: contract.entryId,
+    targetTable: contract.targetTable,
+    fields: contract.fields,
+    subforms: contract.subforms ?? [],
+    businessKey: contract.businessKey ?? [],
+    numericControls: contract.numericControls ?? [],
+    freshnessMaxAgeDays: contract.freshnessMaxAgeDays ?? null,
+    reconciliations: contract.reconciliations ?? [],
+  }));
+  const digest = createHash("sha256")
+    .update(`jiandaoyun-contract-set-v1\0${JSON.stringify(contractMaterial)}`)
+    .digest("hex")
+    .slice(0, 24)
+    .toUpperCase();
+  return `${CONTRACT_SET_BINDING_PREFIX}${digest}`;
+}
+
+export function jiandaoyunEvidenceRefHasContractSetBinding(
+  reference: string | null,
+  contracts: readonly JiandaoyunFormContract[],
+): boolean {
+  if (!reference || contracts.length === 0) return false;
+  const binding = jiandaoyunContractSetEvidenceBinding(contracts);
+  return reference === binding || reference.endsWith(`-${binding}`);
 }
