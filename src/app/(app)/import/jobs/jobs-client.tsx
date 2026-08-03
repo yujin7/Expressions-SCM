@@ -41,6 +41,7 @@ const TEMPLATE_LABELS: Record<string, string> = {
   jdy_sample_observation: "简道云样品·观测",
   jdy_tmall_sku_sales_observation: "简道云天猫SKU日销量·观测",
   jdy_tmall_sku_refund_observation: "简道云天猫SKU退款·观测",
+  jdy_pdd_sku_crosswalk_observation: "简道云拼多多SKU对照·观测",
 };
 const TABLE_LABELS: Record<string, string> = {
   spu_suggestion: "SPU 归组建议",

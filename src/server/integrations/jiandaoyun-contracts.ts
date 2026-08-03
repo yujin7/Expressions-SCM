@@ -67,6 +67,41 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
    * 是否用它喂销速、以及净销量口径（支付件数 减 退款子订单数）属业务裁决；
    * 契约进注册表不等于启用，仍需在 `JIANDAOYUN_SYNC_CONTRACTS` 里显式选中。
    */
+  /*
+   * 拼多多 SKU 主数据观察（2026-08-04 加入）——**平台 SKU ↔ 系统 SKU 的对照来源**。
+   *
+   * 为什么需要它：销量表里的 `sku_id` 是平台 SKU（如 `1567203177846`），不是系统编码；
+   * 不做对照，销量行落不到主档，就只是一堆躺在 staging 的数字。
+   *
+   * 这里把 `SKU外部编码`（平台上"商家自己的 SKU 编码"，实测填充率 95%）映射到
+   * `productCode`，从而走既有的 `resolveKnownOrQueue`：能对上的直接解析，
+   * 对不上的进人工认领队列（scope=JIANDAOYUN），**不猜、不自动改主档**。
+   *
+   * 另两个平台的对照现状（各取 3000 行实测）：
+   *   唯品会 Vip_X.01：条码/货号/供应商编码/V_SKU 均 100% —— 可用，但"哪个字段是权威
+   *     系统编码"需业务确认，故暂不映射 productCode，避免造出错误的认领候选；
+   *   天猫 Tmall_X.02：商家编码仅 48%、条形码 45% —— 约一半对不上，需业务补编码。
+   */
+  {
+    key: "pdd-sku-crosswalk-observation",
+    label: "数据中台/拼多多 SKU 对照",
+    appId: "699ebeac318154b4f6d3dda6",
+    entryId: "69b8cc2549504b2026c15fa2",
+    targetTable: "jdy_pdd_sku_crosswalk_observation",
+    businessKey: ["shopName", "platformSkuId"],
+    freshnessMaxAgeDays: 45,
+    fields: [
+      field("shopName", "shop_name"),
+      field("platformProductId", "product_id"),
+      field("productName", "product_name"),
+      field("productSpecification", "product_specification"),
+      // 平台侧「商家自己的 SKU 编码」——即系统 SKU 码，交给既有别名解析
+      field("productCode", "sku_external_code"),
+      field("platformSkuId", "sku_id"),
+      field("productStatus", "product_status"),
+      field("inventory", "inventory"),
+    ],
+  },
   {
     key: "tmall-sku-sales-observation",
     label: "数据中台/天猫 SKU 日销量",
