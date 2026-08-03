@@ -51,6 +51,64 @@ const JIANDAOYUN_SYSTEM_FIELDS = ["createTime", "updateTime", "deleteTime"] as c
  * grants authority to update SCM masters, prices, stock or documents.
  */
 export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
+  /*
+   * 数据中台的平台销量观察（2026-08-04 加入）。
+   *
+   * 背景：原有 9 条契约全部指向「采购供应链」，那批表全量拉数后 sourceAsOf 停在
+   * 2024-12-11。而用服务端 filter 按 statistical_date 逐月探针查实，
+   * 数据中台的这两张表 **2026 年 5~8 月每月都有数据，包括当月**——
+   * 是一条活的、日级、SKU 级的销量事实来源，且当前 API key 本来就读得到。
+   *
+   * 字段最小化：只取统计日期/店铺/商品与 SKU 标识/件数与金额。
+   * 这两张表本身不含 PII（对比 `Pdd_C.01_订单查询列表` 有消费者资料与买家留言，
+   * 故**刻意不纳入**）。
+   *
+   * 与其余契约同样只进 staging、releaseBlocked——**不授予任何更新主档/销量正式表的权限**。
+   * 是否用它喂销速、以及净销量口径（支付件数 减 退款子订单数）属业务裁决；
+   * 契约进注册表不等于启用，仍需在 `JIANDAOYUN_SYNC_CONTRACTS` 里显式选中。
+   */
+  {
+    key: "tmall-sku-sales-observation",
+    label: "数据中台/天猫 SKU 日销量",
+    appId: "699ebeac318154b4f6d3dda6",
+    entryId: "69a79b2c29154c9870ddaf00",
+    targetTable: "jdy_tmall_sku_sales_observation",
+    businessKey: ["statisticalDate", "shopName", "skuId"],
+    freshnessMaxAgeDays: 45,
+    fields: [
+      field("statisticalDate", "statistical_date"),
+      field("shopName", "shop_name"),
+      field("productId", "product_id"),
+      field("productName", "product_name"),
+      field("skuId", "sku_id"),
+      field("skuName", "sku_name"),
+      field("placedOrdersNumber", "placed_orders_number"),
+      field("placedOrdersAmount", "placed_orders_amount"),
+      field("paidNumber", "paid_number"),
+      field("paidAmount", "paid_amount"),
+    ],
+  },
+  {
+    key: "tmall-sku-refund-observation",
+    label: "数据中台/天猫 SKU 退款分布",
+    appId: "699ebeac318154b4f6d3dda6",
+    entryId: "69a79cf5180dcc9f36294d4a",
+    targetTable: "jdy_tmall_sku_refund_observation",
+    businessKey: ["statisticalDate", "shopName", "skuId"],
+    freshnessMaxAgeDays: 45,
+    fields: [
+      field("statisticalDate", "statistical_date"),
+      field("shopName", "shop_name"),
+      field("productId", "product_id"),
+      field("skuId", "sku_id"),
+      field("skuName", "sku_name"),
+      field("timeType", "time_type"),
+      field("paidAmount", "paid_amount"),
+      field("paidSuborderNumber", "paid_suborder_number"),
+      field("successRefundSuborderNumber", "success_refund_suborders_number"),
+      field("successRefundAmount", "success_refund_amount"),
+    ],
+  },
   {
     key: "product-master-observation",
     label: "进销存/产品信息",

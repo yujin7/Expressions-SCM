@@ -39,6 +39,8 @@ const TEMPLATE_LABELS: Record<string, string> = {
   jdy_inventory_count_observation: "简道云盘点·观测",
   jdy_warehouse_transfer_observation: "简道云调拨·观测",
   jdy_sample_observation: "简道云样品·观测",
+  jdy_tmall_sku_sales_observation: "简道云天猫SKU日销量·观测",
+  jdy_tmall_sku_refund_observation: "简道云天猫SKU退款·观测",
 };
 const TABLE_LABELS: Record<string, string> = {
   spu_suggestion: "SPU 归组建议",

@@ -7,6 +7,12 @@
  * 而且业务同事分不清哪些是人工上传、哪些是连接器观测。
  *
  * 新增连接器/数据流时若忘了配标签，本护栏会红。
+ *
+ * ⚠ 第一版正则只匹配 `TARGET_TABLE` 与 `template`，**漏掉了 `targetTable:`**——
+ * 而简道云那批模板正是在 jiandaoyun-contracts.ts 里用 `targetTable:` 声明的。
+ * 于是护栏一直是绿的，却从未真正保护过那 9 个模板（当时的标签是我手工用更宽的
+ * grep 收集后补上的，属侥幸）。2026-08-04 新增两条天猫销量契约时才暴露：
+ * 模板没标签、护栏照样绿。已补上 `targetTable`。
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
@@ -22,7 +28,7 @@ function integrationTemplates(): string[] {
   for (const entry of readdirSync(INTEGRATIONS)) {
     if (!entry.endsWith(".ts")) continue;
     const src = readFileSync(path.join(INTEGRATIONS, entry), "utf8");
-    for (const m of src.matchAll(/(?:TARGET_TABLE|template)\s*[:=]\s*"([a-z0-9_]+)"/g)) {
+    for (const m of src.matchAll(/(?:TARGET_TABLE|targetTable|template)\s*[:=]\s*"([a-z0-9_]+)"/g)) {
       found.add(m[1]);
     }
   }
