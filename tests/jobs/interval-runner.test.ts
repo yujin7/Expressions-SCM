@@ -17,7 +17,7 @@ describe("interval-runner 进程内调度回退", () => {
     expect(g[Symbol.for("supply-chain.interval-runner")]).toBeUndefined();
   });
 
-  it("注册了 14 个任务（含 JST/简道云观察、rollup 与决策摘要）", () => {
+  it("注册了 15 个任务（含 JST/简道云观察、rollup 与决策摘要）", () => {
     expect(INTERVAL_JOBS.map((j) => j.name).sort()).toEqual([
       "data-freshness",
       "decision-digest",
@@ -33,6 +33,7 @@ describe("interval-runner 进程内调度回退", () => {
       "sync-jiandaoyun-forms",
       "sync-jst-inventory",
       "sync-jst-sales",
+      "sync-yonyou",
     ]);
   });
 
