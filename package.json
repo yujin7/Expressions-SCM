@@ -47,7 +47,9 @@
     "data:repair-import-statuses": "node --import tsx scripts/repair-import-job-statuses.ts",
     "data:backfill-snapshot-lineage": "node --import tsx scripts/backfill-snapshot-lineage.ts",
     "data:backfill-npd-lineage": "node --import tsx scripts/backfill-npd-lineage.ts",
-    "readiness": "tsx scripts/connector-readiness.ts"
+    "readiness": "tsx scripts/connector-readiness.ts",
+    "yy:probe": "tsx scripts/yonyou-probe.ts",
+    "jst:auth-url": "tsx scripts/jst-auth-url.ts"
   },
   "dependencies": {
     "@ant-design/cssinjs": "1.24.0",
