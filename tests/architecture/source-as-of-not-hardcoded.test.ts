@@ -11,6 +11,10 @@
  *
  * 现在改为参数：一次性回填脚本显式传历史日期；上传路径留 null，
  * 由 month-close 按既有约定回落 createdAt——宁可"没有声明源时点"，也不要"声明一个错的"。
+ *
+ * ⚠ 本护栏第一版只匹配 `sourceAsOf: "YYYY-MM-DD"` 字面量，**漏掉了常量引用**——
+ * stock-summary.ts 写的是 `sourceAsOf: STOCK_SUMMARY_AS_OF`（常量值同样是写死的日期），
+ * 护栏却是绿的，给了假的安心。现在同时检查：字面量、以及"指向日期常量的引用"。
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
@@ -19,13 +23,26 @@ import path from "node:path";
 const ADAPTERS = path.resolve(__dirname, "../../src/server/import/adapters");
 
 describe("架构护栏：sourceAsOf 不得写死", () => {
-  it("适配器里没有 `sourceAsOf: \"YYYY-MM-DD\"` 这类硬编码时点", () => {
+  it("适配器里 sourceAsOf 既不写字面量日期，也不指向写死日期的常量", () => {
     const offenders: string[] = [];
     for (const entry of readdirSync(ADAPTERS)) {
       if (!entry.endsWith(".ts")) continue;
       const src = readFileSync(path.join(ADAPTERS, entry), "utf8");
+
+      // ① 字面量：sourceAsOf: "2026-07-21"（含三元表达式里的）
       for (const match of src.matchAll(/sourceAsOf:\s*(?:[^,\n]*\?\s*)?"(\d{4}-\d{2}-\d{2})"/g)) {
         offenders.push(`${entry} → sourceAsOf 写死为 ${match[1]}`);
+      }
+
+      // ② 常量引用：先收集本文件里"值是日期字面量"的常量名，再看 sourceAsOf 是否引用它们
+      const dateConstants = new Set<string>();
+      for (const match of src.matchAll(/const\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=]+)?=\s*"(\d{4}-\d{2}-\d{2})"/g)) {
+        dateConstants.add(match[1]);
+      }
+      for (const match of src.matchAll(/sourceAsOf:\s*([A-Za-z_][A-Za-z0-9_]*)/g)) {
+        if (dateConstants.has(match[1])) {
+          offenders.push(`${entry} → sourceAsOf 指向写死日期的常量 ${match[1]}`);
+        }
       }
     }
     expect(

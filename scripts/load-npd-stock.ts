@@ -5,7 +5,7 @@ import {  eq, sql } from "drizzle-orm";
 import { getDbAsync } from "../src/db";
 import * as schema from "../src/db/schema";
 import { stageNpd } from "../src/server/import/adapters/npd";
-import { stageStockSummary } from "../src/server/import/adapters/stock-summary";
+import { STOCK_SUMMARY_AS_OF, stageStockSummary } from "../src/server/import/adapters/stock-summary";
 import { releaseTransitRefs, type ReleaseUser } from "../src/server/modules/release/engine";
 
 const D = "/Users/yj/Desktop/SCM";
@@ -31,7 +31,7 @@ async function main() {
   console.log("NPD staging:", JSON.stringify(npd.stats));
 
   // 2) 总库存汇总
-  const ss = await stageStockSummary(db, `${D}/总库存明细2026-7-21.xlsx`, admin.id);
+  const ss = await stageStockSummary(db, `${D}/总库存明细2026-7-21.xlsx`, admin.id, STOCK_SUMMARY_AS_OF);
   console.log("总库存 staging:", JSON.stringify(ss.stats));
 
   // 3) 放行（整类替换）
