@@ -24,6 +24,7 @@ import { runJstInventorySync, runJstSalesSync } from "./sync-jst";
 import { runYonyouSync } from "./sync-yonyou";
 import { runJstTokenWatchdog } from "./jst-token-watchdog";
 import { runJobFailureWatchdog } from "./job-failure-watchdog";
+import { runSystemAlertNotify } from "./system-alert-notify";
 import {
   runJiandaoyunCatalogSync,
   runJiandaoyunConfiguredFormSyncs,
@@ -50,6 +51,9 @@ export const INTERVAL_JOBS: IntervalJob[] = [
   { name: "sync-jst-sales", everyMs: 6 * HOUR_MS, run: (db) => runJstSalesSync(db) },
   // 聚水潭全仓合计库存增量只作外部观察；显式开关启用，绝不直写库存真账/快照
   { name: "sync-jst-inventory", everyMs: 6 * HOUR_MS, run: (db) => runJstInventorySync(db) },
+  // 把 system_alerts 推进发件箱→飞书/站内。此前这些告警只躺在 /alerts 页面上，
+  // 三方同步挂了、凭据快过期了都不会通知任何人——监控链路断在最后一米
+  { name: "system-alert-notify", everyMs: 6 * HOUR_MS, run: (db) => runSystemAlertNotify(db) },
   // 定时任务连续失败告警：job_runs 一直记着成败但没人被通知，
   // 对 6h 一跑的同步就是"三周前挂了没人知道"。连续 3 次才开单，避免抖动变噪音
   { name: "job-failure-watchdog", everyMs: 6 * HOUR_MS, run: (db) => runJobFailureWatchdog(db) },

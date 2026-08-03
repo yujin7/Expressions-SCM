@@ -18,6 +18,7 @@ import { runJstInventorySync, runJstSalesSync } from "./sync-jst";
 import { runYonyouSync } from "./sync-yonyou";
 import { runJstTokenWatchdog } from "./jst-token-watchdog";
 import { runJobFailureWatchdog } from "./job-failure-watchdog";
+import { runSystemAlertNotify } from "./system-alert-notify";
 import {
   runJiandaoyunCatalogSync,
   runJiandaoyunConfiguredFormSyncs,
@@ -39,6 +40,7 @@ const USAGE = `用法:
   npx tsx src/jobs/cli.ts sync-yonyou [YYYY-MM-DD]       按已批准契约拉取用友只读观测到受控 staging
   npx tsx src/jobs/cli.ts jst-token-watchdog             检查聚水潭 token 有效期，临期开告警
   npx tsx src/jobs/cli.ts job-failure-watchdog           定时任务连续失败开告警，恢复后自动关闭
+  npx tsx src/jobs/cli.ts system-alert-notify            把未处理系统告警推进发件箱（飞书/站内）
   npx tsx src/jobs/cli.ts sync-jiandaoyun-catalog        同步可见应用/表单目录（不读取业务行）
   npx tsx src/jobs/cli.ts sync-jiandaoyun-forms          同步显式配置的最小化观察契约
   npx tsx src/jobs/cli.ts sync-jiandaoyun-form <key>     同步一条命名观察契约
@@ -83,6 +85,9 @@ async function main(): Promise<void> {
       break;
     case "sync-jst-inventory":
       out = await runJstInventorySync(db);
+      break;
+    case "system-alert-notify":
+      out = await runSystemAlertNotify(db);
       break;
     case "job-failure-watchdog":
       out = await runJobFailureWatchdog(db);
