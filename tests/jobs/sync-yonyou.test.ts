@@ -58,10 +58,10 @@ describe("用友同步调度入口", () => {
   });
 
   it("执行人 ID 必须是正整数，非法值不被采纳", () => {
-    expect(yonyouSyncActorId({ YY_SYNC_ACTOR_ID: "3" } as NodeJS.ProcessEnv)).toBe(3);
-    expect(yonyouSyncActorId({ YY_SYNC_ACTOR_ID: "0" } as NodeJS.ProcessEnv)).toBeNull();
-    expect(yonyouSyncActorId({ YY_SYNC_ACTOR_ID: "-1" } as NodeJS.ProcessEnv)).toBeNull();
-    expect(yonyouSyncActorId({ YY_SYNC_ACTOR_ID: "abc" } as NodeJS.ProcessEnv)).toBeNull();
-    expect(yonyouSyncActorId({} as NodeJS.ProcessEnv)).toBeNull();
+    expect(yonyouSyncActorId({ YY_SYNC_ACTOR_ID: "3" } as unknown as NodeJS.ProcessEnv)).toBe(3);
+    expect(yonyouSyncActorId({ YY_SYNC_ACTOR_ID: "0" } as unknown as NodeJS.ProcessEnv)).toBeNull();
+    expect(yonyouSyncActorId({ YY_SYNC_ACTOR_ID: "-1" } as unknown as NodeJS.ProcessEnv)).toBeNull();
+    expect(yonyouSyncActorId({ YY_SYNC_ACTOR_ID: "abc" } as unknown as NodeJS.ProcessEnv)).toBeNull();
+    expect(yonyouSyncActorId({} as unknown as NodeJS.ProcessEnv)).toBeNull();
   });
 });
