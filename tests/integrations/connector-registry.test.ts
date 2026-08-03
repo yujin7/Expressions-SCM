@@ -11,6 +11,7 @@ import {
   jiandaoyunContract,
   jiandaoyunContractSetEvidenceBinding,
 } from "@/server/integrations/jiandaoyun-contracts";
+import { jstLiveEvidenceBinding } from "@/server/integrations/jst";
 
 const envKeys = [
   "JST_APP_KEY", "JST_APP_SECRET", "JST_ACCESS_TOKEN", "JST_SYNC_ACTOR_ID", "JST_BASE_URL",
@@ -68,6 +69,7 @@ describe("外部连接器目录", () => {
       liveVerificationState: "missing",
       effectiveCapabilities: [
         "outbound-sales-daily",
+        "shop-discovery-client",
         "warehouse-discovery-client",
         "batch-allocation-evidence",
       ],
@@ -88,12 +90,20 @@ describe("外部连接器目录", () => {
     });
     process.env.JST_LIVE_VERIFIED_REF = "UAT-20260729-JST-001";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst")).toMatchObject({
-      configurationReady: true,
+      configurationReady: false,
       operational: false,
       identityClearanceState: "unknown",
       liveVerifiedAt: "2026-07-29T00:00:00.000Z",
       liveVerificationRef: "UAT-20260729-JST-001",
+      liveVerificationState: "unbound",
+    });
+    const jstBinding = jstLiveEvidenceBinding(process.env);
+    expect(jstBinding).toMatch(/^JST1_[A-F0-9]{24}$/);
+    process.env.JST_LIVE_VERIFIED_REF = `UAT-20260729-JST-${jstBinding}`;
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst")).toMatchObject({
+      configurationReady: true,
       liveVerificationState: "valid",
+      expectedLiveVerificationBinding: jstBinding,
     });
     expect(getConnectorReadiness(process.env, NOW, {
       JST: { openExceptions: 0, observedIdentities: 1 },
@@ -123,8 +133,12 @@ describe("外部连接器目录", () => {
         observedScopedIdentities: null,
       });
     process.env.JST_INVENTORY_SYNC_ENABLED = "true";
-    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst")
-      ?.effectiveCapabilities).toContain("inventory-total-delta-staging");
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst"))
+      .toMatchObject({
+        configurationReady: false,
+        liveVerificationState: "unbound",
+        effectiveCapabilities: expect.arrayContaining(["inventory-total-delta-staging"]),
+      });
   });
 
   it("简道云把凭据、启用开关、契约选择和 UAT 分别判定", () => {

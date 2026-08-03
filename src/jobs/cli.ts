@@ -24,6 +24,7 @@ import { probeFeishuChats } from "./probe-feishu";
 import { runJiandaoyunContractAudit } from "./audit-jiandaoyun";
 import { auditYonyouReadiness } from "./audit-yonyou";
 import { auditConnectorReadiness } from "./audit-connectors";
+import { probeJstReadiness } from "./probe-jst";
 import { loadJobEnvironment } from "./load-env";
 
 loadJobEnvironment();
@@ -39,6 +40,7 @@ const USAGE = `用法:
   npx tsx src/jobs/cli.ts probe-feishu-chats              只读检查应用/权限聚合并列出可见群/chat_id
   npx tsx src/jobs/cli.ts audit-yonyou-readiness          只读检查用友配置/授权前置，不请求 token
   npx tsx src/jobs/cli.ts audit-connectors                 只读汇总全部连接器/UAT 证据，不输出秘密
+  npx tsx src/jobs/cli.ts probe-jst [YYYY-MM-DD]            只读验证聚水潭签名、店铺/仓库/出库/库存权限
   npx tsx src/jobs/cli.ts license-alert [YYYY-MM-DD]     缺省=今日
   npx tsx src/jobs/cli.ts snapshot-age [YYYY-MM-DD] [阈值天数=3]
   npx tsx src/jobs/cli.ts export-worker                  处理一批待办导出任务
@@ -61,6 +63,10 @@ async function main(): Promise<void> {
   }
   if (cmd === "audit-connectors") {
     console.log(JSON.stringify(auditConnectorReadiness(), null, 2));
+    return;
+  }
+  if (cmd === "probe-jst") {
+    console.log(JSON.stringify(await probeJstReadiness({ bizDate: args[0] }), null, 2));
     return;
   }
   const db = await getDbAsync();

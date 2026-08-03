@@ -33,6 +33,8 @@ live/operational。
 
 - [接入准备](https://openweb.jushuitan.com/doc?docId=20)：应用需 `app_key`、
   `app_secret`、`access_token`，并完成 IP 白名单和 API 权限；token 有有效期。
+- [商家自研系统授权](https://openweb.jushuitan.com/doc?docId=23)：应用审核通过后在应用详情
+  「我的授权」取得初始 `access_token`；只有 AppKey/AppSecret 不能替代商家授权。
 - [调用规范](https://openweb.jushuitan.com/doc?docId=30)：POST、
   `application/x-www-form-urlencoded;charset=UTF-8`，系统参数与 `biz` 都在 body；
   时间戳为秒且容许窗口有限；每商家受并发与分钟限流。
@@ -50,6 +52,8 @@ live/operational。
 - [仓库查询](https://openweb.jushuitan.com/dev-doc?docType=1&docId=3)使用
   `/open/wms/partner/query`，仅返回启用仓库；客户端按 `has_next` 翻页、去重并排序，
   供后续仓库别名覆盖核验使用。
+- [店铺查询](https://openweb.jushuitan.com/dev-doc)使用 `/open/shops/query`；目录只保留店铺 ID、
+  展示名、公司、平台和授权状态，不落消费者、收件地址或订单联系人数据。
 
 ### 已实现
 
@@ -68,6 +72,8 @@ live/operational。
   `jst_inventory_observation` staging → SKU alias/未知值认领。它只表示
   `changed-since-cursor`，缺失行保持未知，绝不写 `stock_snapshots`、库存台账或把缺失补 0。
 - 仓库目录客户端已实现，但在真实权限、仓库覆盖和仓别名验收前不自动改变 SCM 仓库主数据。
+- 店铺目录客户端与 `probe-jst` 只读探针已实现；探针各取最小页验证店铺、仓库、销售出库和
+  库存四个权限面，只输出聚合计数/安全错误分类，不保存源标识、不推进游标、不写 staging。
 - 证据文件存于 `FILE_STORAGE_DIR/integration-evidence/jst/...`，内容寻址、SHA-256、
   0600 权限，并由 `integration_runs` 关联。
 - SKU/仓库走通用 alias；未知值进入人工认领，绝不猜。
@@ -101,11 +107,14 @@ JST_LIVE_VERIFIED_REF（非秘密 UAT 证据编号，例如 UAT-20260730-JST-001
    未解析别名和最大游标。
 5. 库存先以只读观察流接 staging/snapshot；在完整性、仓映射和控制总量验收前不得写实时账。
 6. 连续运行至少 7 天，验证迟到修改、重复调度、限流、网络失败和恢复重放。
+7. UAT 证据编号必须带运维面板输出的 `JST1_...` 绑定；换 AppKey 或从销量-only 开启库存流会
+   自动使旧证据失效，禁止沿用旧日期冒充新权限已验收。
 
 手工触发：
 
 ```bash
 npx tsx src/jobs/cli.ts audit-connectors
+npx tsx src/jobs/cli.ts probe-jst 2026-07-28
 npx tsx src/jobs/cli.ts sync-jst 2026-07-28
 npx tsx src/jobs/cli.ts sync-jst-inventory
 npx tsx src/jobs/cli.ts reconcile-jst 2026-07-28

@@ -78,6 +78,14 @@ export interface JstWarehouse {
   merchantRemark: string | null;
 }
 
+export interface JstShop {
+  shopId: string;
+  name: string | null;
+  companyCode: string | null;
+  platform: string | null;
+  authorizationStatus: string | null;
+}
+
 export interface JstPage<T> {
   rows: T[];
   hasNext: boolean | null;
@@ -176,7 +184,7 @@ function asArray(value: unknown, label: string): unknown[] {
 }
 
 function extractRows(data: Record<string, unknown>): unknown[] {
-  for (const key of ["datas", "items", "inventorys", "orders"]) {
+  for (const key of ["datas", "items", "inventorys", "orders", "shops"]) {
     if (Array.isArray(data[key])) return data[key] as unknown[];
   }
   throw new Error("聚水潭响应未包含已知数据数组");
@@ -216,6 +224,43 @@ export function jstConfigFromEnv(env: NodeJS.ProcessEnv = process.env): JstConfi
     accessToken,
     baseUrl,
   };
+}
+
+const JST_UAT_CONTRACT_VERSION = "jst-uat-v1";
+
+/**
+ * Binds a dated UAT reference to the exact application and exercised capability set without
+ * exposing the app key. Enabling the opt-in inventory stream therefore invalidates sales-only
+ * evidence and forces a new read-only acceptance run.
+ */
+export function jstLiveEvidenceBinding(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const appKey = env.JST_APP_KEY?.trim();
+  if (!appKey) return null;
+  const inventoryEnabled = ["1", "true", "yes"].includes(
+    env.JST_INVENTORY_SYNC_ENABLED?.trim().toLowerCase() ?? "",
+  );
+  const digest = createHash("sha256").update(JSON.stringify({
+    contract: JST_UAT_CONTRACT_VERSION,
+    appKey,
+    capabilities: [
+      "outbound-sales-daily",
+      "shop-discovery-client",
+      "warehouse-discovery-client",
+      "batch-allocation-evidence",
+      ...(inventoryEnabled ? ["inventory-total-delta-staging"] : []),
+    ],
+  }), "utf8").digest("hex").slice(0, 24).toUpperCase();
+  return `JST1_${digest}`;
+}
+
+export function jstEvidenceRefHasLiveBinding(
+  evidenceRef: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const binding = jstLiveEvidenceBinding(env);
+  return binding !== null && evidenceRef?.includes(binding) === true;
 }
 
 export class JstClient {
@@ -493,5 +538,47 @@ export class JstClient {
     if (!complete) throw new Error("聚水潭仓库分页超过安全上限，拒绝返回不完整结果");
     return [...byCode.values()].sort((left, right) =>
       left.warehouseCode.localeCompare(right.warehouseCode, "en"));
+  }
+
+  async queryShopsPage(
+    pageIndex: number,
+    pageSize = 30,
+  ): Promise<JstPage<JstShop>> {
+    if (!Number.isInteger(pageIndex) || pageIndex < 1) throw new Error("聚水潭店铺页码必须从 1 开始");
+    if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50) {
+      throw new Error("聚水潭店铺每页数量必须为 1–50");
+    }
+    const data = await this.call("/open/shops/query", {
+      page_index: pageIndex,
+      page_size: pageSize,
+    });
+    const rows = extractRows(data).map((raw, index) => {
+      const row = asObject(raw, `shops[${index}]`);
+      return {
+        shopId: required(row.shop_id, "shop_id"),
+        name: nonEmpty(row.shop_name ?? row.platform_shop_name ?? row.nick),
+        companyCode: nonEmpty(row.co_id),
+        platform: nonEmpty(row.shop_site ?? row.platform ?? row.shop_type),
+        authorizationStatus: nonEmpty(row.auth_status ?? row.authorization_status ?? row.status),
+      };
+    });
+    return { rows, hasNext: parseHasNext(data) };
+  }
+
+  async fetchShops(): Promise<JstShop[]> {
+    const pageSize = 30;
+    const byId = new Map<string, JstShop>();
+    let complete = false;
+    for (let pageIndex = 1; pageIndex <= MAX_CURSOR_PAGES; pageIndex++) {
+      const page = await this.queryShopsPage(pageIndex, pageSize);
+      for (const row of page.rows) byId.set(row.shopId, row);
+      if (page.hasNext === false || (page.hasNext === null && page.rows.length < pageSize)) {
+        complete = true;
+        break;
+      }
+    }
+    if (!complete) throw new Error("聚水潭店铺分页超过安全上限，拒绝返回不完整结果");
+    return [...byId.values()].sort((left, right) =>
+      left.shopId.localeCompare(right.shopId, "en"));
   }
 }

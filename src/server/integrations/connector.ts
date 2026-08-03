@@ -19,7 +19,12 @@ import {
   jiandaoyunContractSetEvidenceBinding,
   jiandaoyunEvidenceRefHasContractSetBinding,
 } from "./jiandaoyun-contracts";
-import { jstConfigFromEnv, normalizeJstBaseUrl } from "./jst";
+import {
+  jstConfigFromEnv,
+  jstEvidenceRefHasLiveBinding,
+  jstLiveEvidenceBinding,
+  normalizeJstBaseUrl,
+} from "./jst";
 import { jstInventorySyncEnabled } from "./jst-inventory-sync";
 import {
   YONYOU_REQUIRED_ENV,
@@ -283,6 +288,7 @@ export const CONNECTORS: Connector[] = [
     capabilities: [
       "outbound-sales-daily",
       "inventory-total-delta-staging",
+      "shop-discovery-client",
       "warehouse-discovery-client",
       "batch-allocation-evidence",
     ],
@@ -297,8 +303,10 @@ export const CONNECTORS: Connector[] = [
     liveVerificationRefEnv: "JST_LIVE_VERIFIED_REF",
     sourceDocs: [
       "https://openweb.jushuitan.com/doc?docId=20",
+      "https://openweb.jushuitan.com/doc?docId=23",
       "https://openweb.jushuitan.com/doc?docId=30",
       "https://openweb.jushuitan.com/doc?docId=70",
+      "https://openweb.jushuitan.com/dev-doc",
       "https://openweb.jushuitan.com/dev-doc?docType=8&docId=34",
       "https://openweb.jushuitan.com/dev-doc?docType=3&docId=15",
       "https://openweb.jushuitan.com/dev-doc?docType=1&docId=3",
@@ -616,6 +624,14 @@ export function getConnectorReadiness(
         ))
       ) verification = { ...verification, state: "unbound" };
     } else if (
+      connector.key === "jst"
+    ) {
+      expectedLiveVerificationBinding = jstLiveEvidenceBinding(env);
+      if (
+        verification.state === "valid"
+        && !jstEvidenceRefHasLiveBinding(verification.evidenceRef, env)
+      ) verification = { ...verification, state: "unbound" };
+    } else if (
       connector.key === "jdy"
       && activation.contractSelectionState === "selected"
     ) {
@@ -657,7 +673,9 @@ export function getConnectorReadiness(
         : null;
     const verificationBindingBlocker = verification.state !== "unbound"
       ? null
-      : connector.key === "jdy"
+      : connector.key === "jst"
+        ? "Live UAT 证据未绑定当前聚水潭应用和启用能力；换应用或启用库存流后必须重新验收"
+        : connector.key === "jdy"
         ? "Live UAT 证据未绑定当前简道云契约集；契约新增或移除后必须重新验收"
         : connector.key === "feishu"
           ? "Live UAT 证据未绑定当前飞书应用和目标群；换应用或换群后必须重新验收"
