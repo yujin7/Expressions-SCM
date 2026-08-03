@@ -68,6 +68,40 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
    * 契约进注册表不等于启用，仍需在 `JIANDAOYUN_SYNC_CONTRACTS` 里显式选中。
    */
   /*
+   * 天猫 SKU 详情观察（2026-08-04 加入）——条码桥的第二个来源。
+   *
+   * 实测填充率：条形码 45%、商家编码 48%、关联货品 100%、skuId 100%。
+   * **只用条形码解析**：商家编码与系统 SKU 编码是两套命名空间（已在拼多多侧证实），
+   * 拿它喂 sku_code 只会造出解析不到的认领项。
+   * `关联货品` 虽 100% 填充，但那是天猫店内的商品别名（形如 `maonangyfangtuo`），
+   * 与主档的对应关系未经业务确认，故只作观察字段。
+   *
+   * 天猫条形码只填了 45%，意味着约一半天猫 SKU 落不到主档——
+   * 这部分要靠业务在平台侧补条码，代码这边无法弥补。
+   */
+  {
+    key: "tmall-sku-crosswalk-observation",
+    label: "数据中台/天猫 SKU 对照",
+    appId: "699ebeac318154b4f6d3dda6",
+    entryId: "69a7aca01406712eef7abdba",
+    targetTable: "jdy_tmall_sku_crosswalk_observation",
+    businessKey: ["shopName", "platformSkuId"],
+    freshnessMaxAgeDays: 45,
+    fields: [
+      field("shopName", "shop_name"),
+      field("platformProductId", "product_id"),
+      field("specification", "net_content"),
+      field("price", "price"),
+      // 条码：落到系统 SKU 的桥（填充率 45%）
+      field("barcode", "bar_code"),
+      // 商家编码与关联货品只作观察，不参与解析
+      field("merchantSkuCode", "merchant_id"),
+      field("relatedGoods", "related_goods"),
+      field("skuClassification", "sku_classification"),
+      field("platformSkuId", "sku_id"),
+    ],
+  },
+  /*
    * 唯品会商品列表观察（2026-08-04 加入）——**条码桥的主力来源**。
    *
    * 实测：405 个唯一条码里 169 个命中 `skus.barcode`、163 个命中 `sku_identifiers`
