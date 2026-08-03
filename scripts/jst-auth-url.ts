@@ -5,17 +5,22 @@
  * 授权这个应用，换出 access_token。本脚本只做签名和拼串，不发任何请求、不碰账号口令。
  *
  * 用法：
- *   npx tsx scripts/jst-auth-url.ts
+ *   npm run jst:auth-url
  * 然后用你们的聚水潭账号打开输出的链接 → 同意授权 → 回调地址上会带 code 参数
- * （code 仅 15 分钟有效），把 code 交给 `npx tsx scripts/jst-exchange-code.ts <code>` 换 token。
+ * （code 仅 15 分钟有效），再用 `npx tsx scripts/jst-exchange-code.ts <code>` 换 token。
+ *
+ * 签名一律复用 `src/server/integrations/jst.ts` 的 signJstParams——不要在这里另写一份。
+ * 该实现已被服务端证明正确：用它调业务接口返回的是 `130 入参缺少access_token`
+ * 而不是 `120 验证失败!无效签名`，说明签名这一关是过的。
  */
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 for (const line of readFileSync(".env", "utf8").split(/\r?\n/)) {
   const m = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim());
-  if (m) process.env[m[1]] ??= m[2];
+  if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2];
 }
+
+import { signJstParams } from "../src/server/integrations/jst";
 
 const APP_KEY = process.env.JST_APP_KEY;
 const APP_SECRET = process.env.JST_APP_SECRET;
@@ -24,20 +29,15 @@ if (!APP_KEY || !APP_SECRET) {
   process.exit(1);
 }
 
-/** 聚水潭签名：MD5(secret + 按 key 升序拼接的 key+value + secret)，与 integrations/jushuitan.ts 同一口径 */
-export function jstSign(params: Record<string, string>, secret: string): string {
-  const body = Object.keys(params).sort().map((k) => `${k}${params[k]}`).join("");
-  return createHash("md5").update(`${secret}${body}${secret}`, "utf8").digest("hex");
-}
-
 const params: Record<string, string> = {
   app_key: APP_KEY,
   charset: "utf-8",
+  version: "2",
   timestamp: String(Math.floor(Date.now() / 1000)),
   // state 原样回传，用于校验回调确实来自本次请求
   state: "scm-auth",
 };
-params.sign = jstSign(params, APP_SECRET);
+params.sign = signJstParams(APP_SECRET, params);
 
 const url = `https://openweb.jushuitan.com/auth?${new URLSearchParams(params).toString()}`;
 

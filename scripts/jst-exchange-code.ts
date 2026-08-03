@@ -6,7 +6,7 @@
  * 只写 .env（已确认 gitignore、不入库）。token 不打印全文，只打印长度与到期信息。
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { jstSign } from "./jst-auth-url";
+import { signJstParams } from "../src/server/integrations/jst";
 
 for (const line of readFileSync(".env", "utf8").split(/\r?\n/)) {
   const m = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim());
@@ -38,10 +38,11 @@ async function main(): Promise<void> {
     app_key: APP_KEY!,
     charset: "utf-8",
     timestamp: String(Math.floor(Date.now() / 1000)),
+    version: "2",
     code,
     grant_type: "authorization_code",
   };
-  params.sign = jstSign(params, APP_SECRET!);
+  params.sign = signJstParams(APP_SECRET!, params);
 
   const res = await fetch("https://openapi.jushuitan.com/openWeb/auth/accessToken", {
     method: "POST",
