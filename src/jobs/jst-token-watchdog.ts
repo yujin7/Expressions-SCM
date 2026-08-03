@@ -1,26 +1,39 @@
 /**
  * 聚水潭 access_token 到期看门狗。
  *
- * 事故预防（2026-08-04 查官方文档确认）：聚水潭 token **默认 30 天过期**，
- * 且——这是最要命的一条——**一旦过期就不能再用刷新接口，必须让商家重走一遍授权**。
- * 也就是说：授权当天一切正常，一个月后静默失效，然后要再去后台点一次 OAuth。
+ * 官方文档（open.jushuitan.com/document/2135.html，2026-08-04 查）：
+ *  - 新商家 token 有效期 **一年**；
+ *  - **到期前一周内可刷新**，刷新后 token 值不变、只延长有效期；
+ *  - 刷新后接口有缓存，需稍等再调业务接口；
+ *  - 过期后无法再刷新，只能让商家重走授权。
  *
- * 本仓的密钥姿态是「只存 env、不入库」，所以这里**不把 token 写进数据库**。
- * 看门狗只做一件事：在还来得及刷新的时候把事情喊出来（system_alerts + 通知），
- * 让 token 永远不会走到"过期了只能重新授权"那一步。
+ * 有效期按租户/接入方式可能不同，故 TTL 走环境变量 `JST_TOKEN_TTL_DAYS` 配置，
+ * 默认取官方对新商家的一年——**不把猜测写死在代码里**。
  *
- * 刷新动作本身由 `npx tsx src/jobs/cli.ts refresh-jst-token` 执行并写回 .env
- * （与 scripts/jst-exchange-code.ts 同一套路径），保持密钥只在 env 一处。
+ * 刷新接口的确切入参未在可访问的公开文档页给出，因此本模块**不实现刷新调用**
+ * （凭想象拼参数＝把猜测伪装成实现）。看门狗只做一件确定的事：
+ * 在仍处于可刷新窗口时把事情喊出来，让 token 不会走到"过期了只能重新授权"那一步。
+ *
+ * 密钥姿态不变：token **不入库**，只读 env。
  */
 import { and, eq } from "drizzle-orm";
 import { systemAlerts } from "@/db/schema";
 import type { AnyDb } from "@/server/import/staging";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
-/** 官方默认 30 天 */
-export const JST_TOKEN_TTL_DAYS = 30;
-/** 剩余不足这个天数就开告警——留足人工处理窗口，别卡在最后一天 */
+/** 官方对新商家为一年；不同租户可能不同，故可用 JST_TOKEN_TTL_DAYS 覆盖 */
+export const JST_TOKEN_TTL_DAYS_DEFAULT = 365;
+/** 与官方"到期前一周内可刷新"的窗口对齐 */
 export const JST_TOKEN_WARN_DAYS = 7;
+
+export function jstTokenTtlDays(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.JST_TOKEN_TTL_DAYS?.trim();
+  if (raw && /^\d+$/.test(raw)) {
+    const value = Number(raw);
+    if (value > 0 && value <= 3650) return value;
+  }
+  return JST_TOKEN_TTL_DAYS_DEFAULT;
+}
 const ALERT_CATEGORY = "integration_token";
 const ALERT_REF = "jst_access_token";
 
@@ -50,7 +63,7 @@ export function jstTokenDaysRemaining(
   const obtainedAt = jstTokenObtainedAt(env);
   if (!obtainedAt) return null;
   const elapsedDays = (now.getTime() - obtainedAt.getTime()) / DAY_MS;
-  return Math.floor(JST_TOKEN_TTL_DAYS - elapsedDays);
+  return Math.floor(jstTokenTtlDays(env) - elapsedDays);
 }
 
 export async function runJstTokenWatchdog(
@@ -83,7 +96,7 @@ export async function runJstTokenWatchdog(
         category: ALERT_CATEGORY,
         refKey: ALERT_REF,
         title: "聚水潭 token 到期时间未知",
-        detail: "缺少 JST_TOKEN_OBTAINED_AT，无法评估 30 天有效期。"
+        detail: "缺少 JST_TOKEN_OBTAINED_AT，无法评估有效期。"
           + "请在刷新或重新授权后记录取得时刻，否则 token 会在无人察觉时失效，"
           + "届时无法用刷新接口，必须让商家重走一遍授权。",
         severity: "high",
@@ -102,10 +115,12 @@ export async function runJstTokenWatchdog(
         refKey: ALERT_REF,
         title: expired ? "聚水潭 token 已过期" : `聚水潭 token 还有 ${daysRemaining} 天过期`,
         detail: expired
-          ? "已超过 30 天有效期。刷新接口对已过期 token 无效，需让商家重新授权："
+          ? "已超过有效期。刷新接口对已过期 token 无效，只能让商家重新授权："
             + "`npm run jst:auth-url` 生成链接 → 商家同意 → `npx tsx scripts/jst-exchange-code.ts <code>`。"
-          : "请在过期前刷新：`npx tsx src/jobs/cli.ts refresh-jst-token`。"
-            + "一旦过期就不能再刷新，只能让商家重走授权流程。",
+          : "处于官方「到期前一周可刷新」窗口内：请在聚水潭开放平台完成 token 刷新"
+            + "（刷新后 token 值不变、仅延长有效期），随后更新 JST_TOKEN_OBTAINED_AT。"
+            + "务必在窗口内处理——一旦过期就**不能再刷新**，只能让商家重走授权："
+            + "`npm run jst:auth-url`。",
         severity: "high",
       });
       return { status: "checked", daysRemaining, opened: 1, autoClosed: 0 };

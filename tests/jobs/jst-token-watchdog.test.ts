@@ -1,22 +1,29 @@
 /**
  * 聚水潭 token 到期看门狗测试。
  *
- * 为什么值得一道看门狗：官方 token 默认 30 天过期，且**过期后刷新接口失效**，
- * 只能让商家重走授权。没有告警的话就是"授权当天好用、一个月后静默失效"。
+ * 为什么值得一道看门狗：官方 token 有有效期（新商家一年），**到期前一周内才可刷新**，
+ * 且**过期后刷新接口失效**、只能让商家重走授权。没有告警就是"授权当天好用、某天静默失效"。
+ * 有效期按租户可能不同，故 TTL 可配；测试用显式 TTL 让日期算术一目了然。
  */
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { systemAlerts } from "@/db/schema";
 import {
   jstTokenDaysRemaining,
+  jstTokenTtlDays,
   runJstTokenWatchdog,
 } from "@/jobs/jst-token-watchdog";
 import { createTestDb } from "../helpers/db";
 
 const NOW = new Date("2026-09-01T00:00:00Z");
 
+/** 显式给 30 天 TTL，便于用短日期跨度覆盖各分支；默认值另有专测。 */
 function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
-  return { JST_ACCESS_TOKEN: "tok", ...overrides } as unknown as NodeJS.ProcessEnv;
+  return {
+    JST_ACCESS_TOKEN: "tok",
+    JST_TOKEN_TTL_DAYS: "30",
+    ...overrides,
+  } as unknown as NodeJS.ProcessEnv;
 }
 
 describe("聚水潭 token 到期看门狗", () => {
@@ -41,7 +48,7 @@ describe("聚水潭 token 到期看门狗", () => {
     expect(await db.select().from(systemAlerts)).toHaveLength(0);
   });
 
-  it("剩余不足 7 天开高优告警，并给出刷新命令", async () => {
+  it("剩余不足 7 天开高优告警，并给出刷新指引与过期后果", async () => {
     const { db } = await createTestDb();
     // 25 天前取得 → 还剩 5 天
     const result = await runJstTokenWatchdog(db, {
@@ -54,7 +61,7 @@ describe("聚水潭 token 到期看门狗", () => {
     const [alert] = await db.select().from(systemAlerts);
     expect(alert.severity).toBe("high");
     expect(alert.title).toContain("5 天");
-    expect(alert.detail).toContain("refresh-jst-token");
+    expect(alert.detail).toContain("到期前一周可刷新");
     expect(alert.detail, "必须说明过期后就只能重新授权").toContain("不能再刷新");
   });
 
@@ -110,5 +117,20 @@ describe("聚水潭 token 到期看门狗", () => {
       env({ JST_TOKEN_OBTAINED_AT: "不是时间" }),
       NOW,
     )).toBeNull();
+  });
+
+  it("TTL 缺省取官方对新商家的一年，而不是把猜测写死", () => {
+    expect(jstTokenTtlDays({} as unknown as NodeJS.ProcessEnv)).toBe(365);
+    // 2 天前取得 + 一年有效期 → 还剩 363 天
+    expect(jstTokenDaysRemaining({
+      JST_ACCESS_TOKEN: "tok",
+      JST_TOKEN_OBTAINED_AT: "2026-08-30T00:00:00Z",
+    } as unknown as NodeJS.ProcessEnv, NOW)).toBe(363);
+  });
+
+  it("TTL 可按租户覆盖，非法值回落到缺省", () => {
+    expect(jstTokenTtlDays({ JST_TOKEN_TTL_DAYS: "90" } as unknown as NodeJS.ProcessEnv)).toBe(90);
+    expect(jstTokenTtlDays({ JST_TOKEN_TTL_DAYS: "0" } as unknown as NodeJS.ProcessEnv)).toBe(365);
+    expect(jstTokenTtlDays({ JST_TOKEN_TTL_DAYS: "abc" } as unknown as NodeJS.ProcessEnv)).toBe(365);
   });
 });
