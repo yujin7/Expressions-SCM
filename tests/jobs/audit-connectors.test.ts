@@ -29,7 +29,7 @@ describe("连接器安全就绪审计", () => {
       codeReady: 3,
       configured: 2,
       explicitlyEnabled: 0,
-      contractSetsSelected: 0,
+      contractSetsSelected: 1,
       configurationReady: 1,
       operational: 0,
     });

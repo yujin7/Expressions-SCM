@@ -7,7 +7,10 @@ import {
   parseYonyouApprovedApiContracts,
   parseYonyouProductProfile,
   yonyouConfigFromEnv,
+  yonyouEvidenceRefHasLiveBinding,
+  yonyouLiveEvidenceBinding,
   yonyouMissingEnv,
+  yonyouSyncEnabled,
 } from "@/server/integrations/yonyou";
 import { auditYonyouReadiness } from "@/jobs/audit-yonyou";
 
@@ -83,6 +86,24 @@ describe("用友 OpenAPI 前置契约", () => {
     ]);
     expect(parseYonyouAllowedHosts("*.yonyoucloud.com")).toBeNull();
     expect(parseYonyouAllowedHosts("127.0.0.1")).toBeNull();
+    expect(yonyouSyncEnabled({ NODE_ENV: "test", YY_SYNC_ENABLED: " YES " })).toBe(true);
+    expect(yonyouSyncEnabled({ NODE_ENV: "test", YY_SYNC_ENABLED: "false" })).toBe(false);
+  });
+
+  it("UAT 绑定覆盖应用、租户/组织、产品、契约和端点且不暴露原值", () => {
+    const env = completeEnv();
+    const binding = yonyouLiveEvidenceBinding(env);
+    expect(binding).toMatch(/^YY1_[A-F0-9]{24}$/);
+    expect(yonyouEvidenceRefHasLiveBinding(`UAT-20260803-${binding}`, env)).toBe(true);
+    expect(yonyouEvidenceRefHasLiveBinding(`UAT-${binding}-EXTRA`, env)).toBe(false);
+    expect(binding).not.toContain(env.YY_APP_KEY!);
+    expect(binding).not.toContain(env.YY_TENANT_ID!);
+    expect(yonyouLiveEvidenceBinding({ ...env, YY_ORG_ID: "other-org" })).not.toBe(binding);
+    expect(yonyouLiveEvidenceBinding({
+      ...env,
+      YY_APPROVED_API_CONTRACTS: "supplier.read@v1,cost.read@v2",
+    })).not.toBe(binding);
+    expect(yonyouLiveEvidenceBinding({ ...env, YY_APP_SECRET: "rotated" })).toBe(binding);
   });
 
   it("连接前 DNS 检查拒绝私网、回环、保留和 IPv4-mapped IPv6", async () => {
@@ -130,6 +151,8 @@ describe("用友 OpenAPI 前置契约", () => {
       credentialsPresent: { appKey: true, appSecret: true },
       productProfile: "yonsuite",
       approvedApiContractCount: 2,
+      syncEnabled: false,
+      expectedLiveVerificationBinding: expect.stringMatching(/^YY1_/),
       missingEnv: [],
     });
     const serialized = JSON.stringify(report);

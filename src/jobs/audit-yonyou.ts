@@ -2,7 +2,9 @@ import {
   parseYonyouApprovedApiContracts,
   parseYonyouProductProfile,
   yonyouConfigFromEnv,
+  yonyouLiveEvidenceBinding,
   yonyouMissingEnv,
+  yonyouSyncEnabled,
 } from "@/server/integrations/yonyou";
 
 /**
@@ -23,6 +25,8 @@ export function auditYonyouReadiness(env: NodeJS.ProcessEnv = process.env) {
     },
     productProfile: parseYonyouProductProfile(env.YY_PRODUCT_PROFILE),
     approvedApiContractCount: contracts?.length ?? 0,
+    syncEnabled: yonyouSyncEnabled(env),
+    expectedLiveVerificationBinding: yonyouLiveEvidenceBinding(env),
     endpointPolicy: "HTTPS_APPROVED_HOST_DNS_PIN_REQUIRED",
     missingEnv,
     remainingControls: [

@@ -3,6 +3,7 @@
  * enterprise-authorized OpenAPI application with its own client credentials, tenant/org identity,
  * approved services, and exact endpoint contracts.
  */
+import { createHash } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 
@@ -20,6 +21,9 @@ export interface YonyouOpenApiConfig {
 
 export const YONYOU_PRODUCT_PROFILES = ["c4", "yonsuite", "yonbip"] as const;
 export type YonyouProductProfile = (typeof YONYOU_PRODUCT_PROFILES)[number];
+
+const YONYOU_UAT_CONTRACT_VERSION = "yonyou-uat-v1";
+const YONYOU_LIVE_BINDING_PREFIX = "YY1_";
 
 export const YONYOU_REQUIRED_ENV = [
   "YY_APP_KEY",
@@ -163,6 +167,12 @@ export function parseYonyouApprovedApiContracts(
   return values;
 }
 
+export function yonyouSyncEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return ["1", "true", "yes"].includes(
+    env.YY_SYNC_ENABLED?.trim().toLowerCase() ?? "",
+  );
+}
+
 function conflictingAliases(
   primary: string | undefined,
   alias: string | undefined,
@@ -211,4 +221,38 @@ export function yonyouConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Yonyo
     baseUrl: env.YY_BASE_URL!.trim(),
     tokenUrl: env.YY_TOKEN_URL!.trim(),
   };
+}
+
+/**
+ * Binds a dated UAT reference to the exact non-secret integration scope. The digest includes the
+ * application identity, tenant/organization, product, approved contracts and reviewed endpoints,
+ * so changing any of those facts invalidates old evidence without exposing them in readiness JSON.
+ * AppSecret rotation intentionally does not invalidate evidence for the same application scope.
+ */
+export function yonyouLiveEvidenceBinding(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const config = yonyouConfigFromEnv(env);
+  if (!config) return null;
+  const digest = createHash("sha256").update(JSON.stringify({
+    contract: YONYOU_UAT_CONTRACT_VERSION,
+    appKey: config.appKey,
+    tenantId: config.tenantId,
+    orgId: config.orgId,
+    productProfile: config.productProfile,
+    approvedApiContracts: [...config.approvedApiContracts].sort(),
+    allowedHosts: [...config.allowedHosts].sort(),
+    baseUrl: config.baseUrl,
+    tokenUrl: config.tokenUrl,
+  }), "utf8").digest("hex").slice(0, 24).toUpperCase();
+  return `${YONYOU_LIVE_BINDING_PREFIX}${digest}`;
+}
+
+export function yonyouEvidenceRefHasLiveBinding(
+  evidenceRef: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const binding = yonyouLiveEvidenceBinding(env);
+  if (!binding || !evidenceRef) return false;
+  return evidenceRef === binding || evidenceRef.endsWith(`-${binding}`);
 }

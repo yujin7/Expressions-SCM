@@ -28,8 +28,12 @@ import {
 import { jstInventorySyncEnabled } from "./jst-inventory-sync";
 import {
   YONYOU_REQUIRED_ENV,
+  parseYonyouApprovedApiContracts,
   yonyouConfigFromEnv,
+  yonyouEvidenceRefHasLiveBinding,
+  yonyouLiveEvidenceBinding,
   yonyouMissingEnv,
+  yonyouSyncEnabled,
 } from "./yonyou";
 
 export type ConnectorImplementation = "ready" | "contract_only";
@@ -139,8 +143,29 @@ function jiandaoyunActivation(env: NodeJS.ProcessEnv): ConnectorActivation {
   }
 }
 
+function yonyouActivation(env: NodeJS.ProcessEnv): ConnectorActivation {
+  const rawEnablement = env.YY_SYNC_ENABLED?.trim().toLowerCase() ?? "";
+  const enablementState: ConnectorEnablementState = yonyouSyncEnabled(env)
+    ? "enabled"
+    : rawEnablement === "" || ["0", "false", "no"].includes(rawEnablement)
+      ? "disabled"
+      : "invalid";
+  const rawContracts = env.YY_APPROVED_API_CONTRACTS?.trim() ?? "";
+  const contracts = parseYonyouApprovedApiContracts(rawContracts);
+  return {
+    enablementState,
+    contractSelectionState: contracts
+      ? "selected"
+      : rawContracts
+        ? "invalid"
+        : "missing",
+    selectedContractCount: contracts?.length ?? 0,
+  };
+}
+
 function connectorActivation(connector: Connector, env: NodeJS.ProcessEnv): ConnectorActivation {
   if (connector.key === "jdy") return jiandaoyunActivation(env);
+  if (connector.key === "yy") return yonyouActivation(env);
   return {
     enablementState: "not_required",
     contractSelectionState: "not_required",
@@ -385,7 +410,15 @@ export const CONNECTORS: Connector[] = [
     systemOfRecord: "财务凭证、成本、结算与组织核算口径",
     capabilities: ["cost-authority", "settlement-posting", "financial-reconciliation"],
     requiredEnv: [...YONYOU_REQUIRED_ENV],
-    optionalEnv: ["YY_CLIENT_ID", "YY_CLIENT_SECRET"],
+    optionalEnv: [
+      "YY_CLIENT_ID",
+      "YY_CLIENT_SECRET",
+      "YY_SYNC_ENABLED",
+      "YY_LIVE_VERIFIED_AT",
+      "YY_LIVE_VERIFIED_REF",
+    ],
+    liveVerificationEnv: "YY_LIVE_VERIFIED_AT",
+    liveVerificationRefEnv: "YY_LIVE_VERIFIED_REF",
     sourceDocs: ["https://developer.yonyou.com/openAPI"],
     blocker: "C4 人工账号和 AppKey/AppSecret 对都不能单独证明可调用；待注册并授权企业应用、确认产品、租户/组织、公开 HTTPS 端点与获批接口，先完成沙箱只读对账",
     isConfigured(env = process.env) {
@@ -641,6 +674,15 @@ export function getConnectorReadiness(
         verification.state === "valid"
         && !jiandaoyunEvidenceRefHasContractSetBinding(verification.evidenceRef, contracts)
       ) verification = { ...verification, state: "unbound" };
+    } else if (
+      connector.key === "yy"
+      && activation.contractSelectionState === "selected"
+    ) {
+      expectedLiveVerificationBinding = yonyouLiveEvidenceBinding(env);
+      if (
+        verification.state === "valid"
+        && !yonyouEvidenceRefHasLiveBinding(verification.evidenceRef, env)
+      ) verification = { ...verification, state: "unbound" };
     }
     const identityScope = IDENTITY_SCOPE_BY_CONNECTOR[connector.key] ?? null;
     const scopeEvidence = identityScope ? identityEvidence?.[identityScope] : undefined;
@@ -677,6 +719,8 @@ export function getConnectorReadiness(
         ? "Live UAT 证据未绑定当前聚水潭应用和启用能力；换应用或启用库存流后必须重新验收"
         : connector.key === "jdy"
         ? "Live UAT 证据未绑定当前简道云契约集；契约新增或移除后必须重新验收"
+        : connector.key === "yy"
+          ? "Live UAT 证据未绑定当前用友应用、租户/组织、产品、契约与端点；范围变更后必须重新验收"
         : connector.key === "feishu"
           ? "Live UAT 证据未绑定当前飞书应用和目标群；换应用或换群后必须重新验收"
           : null;

@@ -350,6 +350,9 @@ YY_APPROVED_API_CONTRACTS
 YY_ALLOWED_HOSTS
 YY_BASE_URL
 YY_TOKEN_URL
+YY_SYNC_ENABLED
+YY_LIVE_VERIFIED_AT
+YY_LIVE_VERIFIED_REF
 ```
 
 `YY_PRODUCT_PROFILE` 只接受 `c4`、`yonsuite`、`yonbip`，必须由企业管理员/实施方确认；
@@ -358,6 +361,11 @@ YY_TOKEN_URL
 精确主机名，不接受通配符、IP 或任意公网域名。主/别名凭据冲突、HTTP、带用户名密码、
 IPv6 zone、loopback、私网或本地域名 endpoint 会被拒绝；未来 token 客户端还必须在连接前
 重新解析 DNS、拒绝非公网地址并把已验证 IP 固定到同一次请求，避免 DNS rebinding。
+
+`YY_SYNC_ENABLED` 默认关闭；企业应用授权、只读沙箱对账、错误码/限流和失败恢复没有验收前
+不得开启。`YY_LIVE_VERIFIED_REF` 必须以当前应用、租户/组织、产品 profile、精确契约集和端点生成的
+`YY1_...` 非秘密指纹绑定；任一范围变更都会使旧 UAT 证据失效。轮换同一应用的 AppSecret 不改变业务
+范围，但仍须单独证明新凭据握手成功。人工 C4 密码始终不进入服务器环境变量。
 
 在不请求 token、不调用业务 API 的情况下可先运行：
 

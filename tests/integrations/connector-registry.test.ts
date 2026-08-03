@@ -22,7 +22,7 @@ const envKeys = [
   "YY_APP_KEY", "YY_APP_SECRET",
   "YY_CLIENT_ID", "YY_CLIENT_SECRET", "YY_TENANT_ID", "YY_ORG_ID", "YY_BASE_URL", "YY_TOKEN_URL",
   "YY_PRODUCT_PROFILE", "YY_APPROVED_API_CONTRACTS",
-  "YY_ALLOWED_HOSTS",
+  "YY_ALLOWED_HOSTS", "YY_SYNC_ENABLED", "YY_LIVE_VERIFIED_AT", "YY_LIVE_VERIFIED_REF",
   "FEISHU_WEBHOOK_URL", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID",
   "FEISHU_LIVE_VERIFIED_AT", "FEISHU_LIVE_VERIFIED_REF",
   "FEISHU_APP_LIVE_VERIFIED_AT", "FEISHU_APP_LIVE_VERIFIED_REF",
@@ -433,17 +433,47 @@ describe("外部连接器目录", () => {
     process.env.YY_ALLOWED_HOSTS = "api.yonyoucloud.com,auth.yonyoucloud.com";
     process.env.YY_BASE_URL = "https://api.yonyoucloud.com";
     process.env.YY_TOKEN_URL = "https://auth.yonyoucloud.com/token";
+    process.env.YY_SYNC_ENABLED = "true";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "yy")).toMatchObject({
       implementation: "contract_only",
       configured: true,
+      enablementState: "enabled",
+      contractSelectionState: "selected",
+      selectedContractCount: 2,
       operational: false,
       missingEnv: [],
+      expectedLiveVerificationBinding: expect.stringMatching(/^YY1_/),
     });
     expect(configuredConnectors().some((connector) => connector.key === "yy")).toBe(false);
     process.env.YY_TOKEN_URL = "http://auth.yonyoucloud.com/token";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "yy")).toMatchObject({
       configured: false,
       missingEnv: ["YY_TOKEN_URL"],
+    });
+  });
+
+  it("用友无契约、非法开关和未绑定 UAT 证据分开报告", () => {
+    for (const key of [
+      "YY_APP_KEY", "YY_APP_SECRET", "YY_TENANT_ID", "YY_ORG_ID",
+    ] as const) process.env[key] = "present";
+    process.env.YY_PRODUCT_PROFILE = "yonsuite";
+    process.env.YY_ALLOWED_HOSTS = "api.yonyoucloud.com,auth.yonyoucloud.com";
+    process.env.YY_BASE_URL = "https://api.yonyoucloud.com";
+    process.env.YY_TOKEN_URL = "https://auth.yonyoucloud.com/token";
+    process.env.YY_SYNC_ENABLED = "sometimes";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "yy")).toMatchObject({
+      enablementState: "invalid",
+      contractSelectionState: "missing",
+      selectedContractCount: 0,
+    });
+
+    process.env.YY_SYNC_ENABLED = "true";
+    process.env.YY_APPROVED_API_CONTRACTS = "supplier.read@v1,cost.read@v1";
+    process.env.YY_LIVE_VERIFIED_AT = "2026-07-29T03:00:00Z";
+    process.env.YY_LIVE_VERIFIED_REF = "UAT-20260729-GENERIC";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "yy")).toMatchObject({
+      liveVerificationState: "unbound",
+      operational: false,
     });
   });
 

@@ -78,6 +78,9 @@
   自动把旧证据标为 `unbound`。真实 operational 状态必须等 app/token、租户/
   组织、IP/权限与 UAT，详见
   [`../integrations/EXTERNAL-SYSTEMS.md`](../integrations/EXTERNAL-SYSTEMS.md)。
+  用友 readiness 现亦把显式启用、已选精确 API 契约数与凭据完整性分开报告；未来 Live UAT
+  证据绑定当前应用、租户/组织、产品、契约和端点，范围变更不能沿用旧绿灯。但在取得企业授权和
+  只读沙箱实证前，实现状态仍为 `contract_only`。
 - **535 项系统执行审计（08-03）**：把全仓 204 个 API、80 个认证页面、41 个迁移、
   41 个架构门、8 个红队门、13 个放行门、7 个项目技能、89 个 lint 例外、20 个真实源文件
   和 32 个关键业务不变量固化为 A001–A535。目录与台账现在互相校验，新增路由、页面、迁移、
