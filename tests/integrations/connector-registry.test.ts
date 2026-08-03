@@ -428,8 +428,8 @@ describe("外部连接器目录", () => {
     for (const key of [
       "YY_APP_KEY", "YY_APP_SECRET", "YY_TENANT_ID", "YY_ORG_ID",
     ] as const) process.env[key] = "present";
-    process.env.YY_PRODUCT_PROFILE = "yonsuite";
-    process.env.YY_APPROVED_API_CONTRACTS = "supplier.read@v1,cost.read@v1";
+    process.env.YY_PRODUCT_PROFILE = "yonbip";
+    process.env.YY_APPROVED_API_CONTRACTS = "供应商档案列表查询,存货成本查询";
     process.env.YY_ALLOWED_HOSTS = "api.yonyoucloud.com,auth.yonyoucloud.com";
     process.env.YY_BASE_URL = "https://api.yonyoucloud.com";
     process.env.YY_TOKEN_URL = "https://auth.yonyoucloud.com/token";
@@ -456,7 +456,7 @@ describe("外部连接器目录", () => {
     for (const key of [
       "YY_APP_KEY", "YY_APP_SECRET", "YY_TENANT_ID", "YY_ORG_ID",
     ] as const) process.env[key] = "present";
-    process.env.YY_PRODUCT_PROFILE = "yonsuite";
+    process.env.YY_PRODUCT_PROFILE = "yonbip";
     process.env.YY_ALLOWED_HOSTS = "api.yonyoucloud.com,auth.yonyoucloud.com";
     process.env.YY_BASE_URL = "https://api.yonyoucloud.com";
     process.env.YY_TOKEN_URL = "https://auth.yonyoucloud.com/token";
@@ -468,7 +468,7 @@ describe("外部连接器目录", () => {
     });
 
     process.env.YY_SYNC_ENABLED = "true";
-    process.env.YY_APPROVED_API_CONTRACTS = "supplier.read@v1,cost.read@v1";
+    process.env.YY_APPROVED_API_CONTRACTS = "供应商档案列表查询,存货成本查询";
     process.env.YY_LIVE_VERIFIED_AT = "2026-07-29T03:00:00Z";
     process.env.YY_LIVE_VERIFIED_REF = "UAT-20260729-GENERIC";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "yy")).toMatchObject({

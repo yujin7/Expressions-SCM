@@ -61,7 +61,7 @@
 | 聚水潭 | 签名、游标、退避、批次证据、库存增量观察、staging、checkpoint、对账与调度 | 企业 app/token、IP 白名单、接口权限、责任人、真实控制总量与 7 天恢复 UAT |
 | 简道云 | 9 应用/297 表单目录；九条字段最小化契约；schema 漂移、PII、重复视图、重放、checkpoint 与 releaseBlocked staging 闸 | 轮换已暴露 API/MCP token；裁决重复视图；逐契约控制总量、crosswalk 与 UAT；现有源数据主要停在 2023–2024 |
 | 飞书 | 应用机器人、token 缓存、UUID 去重、webhook 回退、数据库发送租约 | app/chat 或 webhook 机器配置、目标测试群、权限与投递/失败恢复 UAT |
-| 用友 | 接受 AppKey/AppSecret 术语及旧环境别名；系统边界、机器配置契约和 readiness 状态 | 租户/组织、base/token URL、获批接口、企业授权、沙箱与 UAT；AppKey/AppSecret 两项不能单独构成 live |
+| 用友 | 目标企业 YonBIP、专用已启用 AK/SK、八条只读优先契约、C4 allowlist/base URL、系统边界与 readiness 状态 | 租户/目标组织 ID、token URL、企业授权范围、只读沙箱对账与 UAT；门户/AK/SK 不能单独构成 live |
 
 人工网页登录口令不是服务器 API 凭据，不写入仓库、文档、日志或部署配置。
 

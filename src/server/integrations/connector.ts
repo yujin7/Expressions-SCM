@@ -420,7 +420,7 @@ export const CONNECTORS: Connector[] = [
     liveVerificationEnv: "YY_LIVE_VERIFIED_AT",
     liveVerificationRefEnv: "YY_LIVE_VERIFIED_REF",
     sourceDocs: ["https://developer.yonyou.com/openAPI"],
-    blocker: "C4 人工账号和 AppKey/AppSecret 对都不能单独证明可调用；待注册并授权企业应用、确认产品、租户/组织、公开 HTTPS 端点与获批接口，先完成沙箱只读对账",
+    blocker: "已核实目标企业 YonBIP、专用 AK/SK、八条只读契约与 C4 网关；仍缺租户/目标组织、token URL、企业授权范围和沙箱只读对账",
     isConfigured(env = process.env) {
       return yonyouConfigFromEnv(env) !== null;
     },

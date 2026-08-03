@@ -325,18 +325,20 @@ npx tsx src/jobs/cli.ts probe-feishu-chats
 企业授权后调用；并支持 IP 白名单、分层限流和熔断。
 
 提供的 C4 人工登录账号只能供人在管理界面操作，**不能**作为服务器 API 凭据，也未写入代码、
-环境模板、日志或 Git。2026-07-29 已用该账号只读验证：
+环境模板、日志或 Git。2026-08-03 已用该账号只读复核目标租户：
 
-- 可以通过 SSO 进入 YonSuite/C4 业务租户与用友开放平台；
-- 开放平台控制台实际进入 `#/unregister`，说明当前账号尚未注册开发者/ISV 身份；
-- 因此目前不存在可供 SCM 使用的企业应用 client ID/secret、已申请服务或企业应用授权。
+- 成功进入企业“广东爱碧生生物科技有限公司”，产品页面明确标识为 YonBIP；
+- 「API调用」存在一条 2026-07-30 创建且已启用的“供应链系统调用1”AK/SK，项目本地 AppKey
+  与该记录一致，AppSecret 仍只保存在忽略的本地密钥文件；
+- 官方 API 文档确认当前数据中心网关为 `https://c4.yonyoucloud.com/iuap-api-gateway`；
+- 已核对八条只读优先契约：`分页查询当前租户组织架构`、`供应商档案列表查询`、
+  `物料档案分页查询 V2`、`采购订单列表查询`、`采购入库列表查询`、`现存量查询 V2`、
+  `存货成本查询`、`凭证列表查询`。
 
-当前收到的 AppKey/AppSecret 只满足凭据对中的一部分，仍缺租户、组织、token URL、base URL、
-已申请服务及企业授权证据。当前保持 `contract_only`，避免在未知产品版本/租户/组织/接口下伪接通。未自动注册开发者身份，
-因为注册会接受平台条款、创建外部主体并可能要求企业/伙伴资料，属于必须由企业明确批准的外部变更。
-
-2026-08-03 再次执行无网络 readiness 审计：AppKey/AppSecret 均存在，但产品 profile、租户、
-组织、获批 API 契约、允许主机、base URL 与 token URL 仍全部缺失，故 `safeToCall=false`。
+本地已据此锁定 `yonbip`、八条精确契约、`c4.yonyoucloud.com` allowlist 和网关 base URL；
+readiness 现在只缺租户 ID、目标组织 ID 与企业自建 token URL。OpenAPI Explorer 的真实 token
+握手与组织查询仍未执行，企业授权范围、账簿/币种/税/会计期间和业务控制总量也未验收，故继续
+保持 `contract_only`、`safeToCall=false`，不会因门户可登录或 AK/SK 存在而伪报 live。
 
 所需机器配置：
 

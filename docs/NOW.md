@@ -155,9 +155,10 @@
   同一应用权限变化、换应用或超过 90 天都会自动失效。
   飞书凭据可取 tenant token，应用已启用、存在在线版本且默认能力为机器人；但当前共享应用
   暴露 1,107 项权限（其中 1,007 项为高级/超敏感），同时群目录仍返回 0 个可见群，故不能
-  作为最小权限生产凭据或设置 UAT 标志。用友收到的
-  AppKey/AppSecret 仍缺租户、组织、token/base URL、服务申请与企业授权，继续保持
-  `contract_only`；C4 人工登录不冒充机器凭据。真实上线仍待密钥轮换、控制总量、群 chat_id
+  作为最小权限生产凭据或设置 UAT 标志。用友已在目标企业门户核实 YonBIP、已启用的专用 AK/SK、
+  八条只读优先 API 契约、C4 allowlist 与网关 base URL；仍缺租户 ID、目标组织 ID、token URL、
+  企业授权范围和真实只读握手/对账，故继续保持 `contract_only`。C4 人工登录不冒充机器凭据。
+  真实上线仍待密钥轮换、控制总量、群 chat_id
   与企业授权，详见
   [`integrations/EXTERNAL-SYSTEMS.md`](integrations/EXTERNAL-SYSTEMS.md)。
   用友就绪审计现独立显示同步开关、已选契约数和配置缺口；Live UAT 证据绑定应用、租户/组织、

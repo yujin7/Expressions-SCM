@@ -90,30 +90,23 @@ npx tsx src/jobs/cli.ts audit-jiandaoyun-contracts
 
 ### D. 用友
 
-你已提供人工登录资料和一对 AppKey/AppSecret；前者只能用于人在 C4/YonSuite 页面操作，
-后者仍缺企业授权上下文。API 接入还需要：
+你已提供人工登录资料；项目也已有与目标租户“供应链系统调用1”一致且启用的 AK/SK。
+2026-08-03 已从目标企业官方页面核实 YonBIP、八条只读优先 API 契约、C4 allowlist 与网关
+base URL。API 接入现在只需补齐/验收：
 
-1. 企业书面/明确批准开放平台开发者或企业应用注册；
-2. 实际产品与版本：C4 / YonSuite / YonBIP；
-3. `YY_APP_KEY`
-4. `YY_APP_SECRET`
-5. `YY_TENANT_ID`
-6. `YY_ORG_ID`
-7. `YY_PRODUCT_PROFILE`：由实施方确认 `c4` / `yonsuite` / `yonbip`；
-8. `YY_APPROVED_API_CONTRACTS`：企业已授权的精确 API 名称/版本，逗号分隔；
-9. `YY_ALLOWED_HOSTS`：企业确认的 base/token 精确主机名，不接受通配符或 IP；
-10. `YY_BASE_URL`
-11. `YY_TOKEN_URL`
-12. 沙箱企业/账套和生产企业/账套；
-13. 获批 API 的官方路径、字段文档与授权证明；
-14. 先接入哪些范围：成本读取、供应商/货品主档、凭证、委外结算（请排序）；
-15. 组织、账簿、币种、税率、会计期间的口径；
-16. SKU/供应商与用友编码的对照导出；
-17. IP 白名单、限流、回调验签、错误码与 token 生命周期；
-18. 用友实施顾问/企业管理员的联系人。
+1. `YY_TENANT_ID`；
+2. `YY_ORG_ID`（必须是 SCM 对账使用的目标组织，不是随便一个部门）；
+3. `YY_TOKEN_URL`（企业自建 token 的官方完整 URL）；
+4. 当前 AK/SK 对八条契约的企业授权范围证明；
+5. 沙箱企业/账套和生产企业/账套；
+6. 组织、账簿、币种、税率、会计期间的口径；
+7. SKU/供应商与用友编码的对照导出；
+8. IP 白名单、限流、错误码与 token 生命周期；
+9. 用友实施顾问/企业管理员联系人；
+10. 一次只读 token 握手、组织查询和八契约控制总量对账。
 
 可先运行 `npx tsx src/jobs/cli.ts audit-yonyou-readiness` 做无网络、无 secret 输出的前置审计。
-在 1、2、7–14 未确认且沙箱只读对账未通过前，系统不会开启财务写入。
+上述范围未确认且沙箱只读对账未通过前，系统不会开启财务写入。
 
 ## 三、SKU 与数据治理需要你确认
 

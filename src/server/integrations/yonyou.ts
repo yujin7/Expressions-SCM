@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
+import { areKnownYonyouReadContracts } from "./yonyou-contracts";
 
 export interface YonyouOpenApiConfig {
   appKey: string;
@@ -163,6 +164,7 @@ export function parseYonyouApprovedApiContracts(
     values.length === 0
     || values.length > 50
     || values.some((value) => value.length > 160 || /[\u0000-\u001f\u007f]/.test(value))
+    || !areKnownYonyouReadContracts(values)
   ) return null;
   return values;
 }
