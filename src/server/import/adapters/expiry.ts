@@ -126,7 +126,19 @@ export const expiryAdapter: Adapter = async (filePath) => {
 };
 
 /** 全链路：别名解析 sku_code + warehouse（以页名为仓库别名，如「天猫保税仓」） */
-export async function stageExpiry(db: AnyDb, filePath: string, userId: number): Promise<StageSummary> {
+/**
+ * `sourceAsOf` 是**这份文件反映的业务时点**，不是代码写死的常量。
+ *
+ * 事故背景（2026-08-04）：这里原本硬编码 "2026-07-21"——那是最初一次性导入的那份文件的日期。
+ * 但本函数同时被 `/api/import/upload`（业务自助上传）调用，于是**以后每次重传都会被
+ * 盖上同一个过去的日期**：9 月传的库存会被记成 7 月的。后果不只是显示不准——
+ * `month-close.ts` 正是按 sourceAsOf 做月份区间过滤，数据会进错月份的结账证据。
+ *
+ * 现在改为参数：一次性回填脚本显式传历史日期；上传路径不传，
+ * 留 null 由 `month-close` 按既有约定回落 createdAt（真实上传时刻），
+ * 宁可"没有声明源时点"，也不要"声明一个错的"。
+ */
+export async function stageExpiry(db: AnyDb, filePath: string, userId: number, sourceAsOf: string | null = null): Promise<StageSummary> {
   return stagePipeline(db, {
     filePath,
     template: EXPIRY_TEMPLATE,
@@ -134,7 +146,7 @@ export async function stageExpiry(db: AnyDb, filePath: string, userId: number): 
     adapter: expiryAdapter,
     targetTable: TARGET_TABLE,
     job: {
-      sourceAsOf: "2026-07-21",
+      sourceAsOf,
       schemaVersion: "expiry-batch-v2",
       scope: { mode: "full", target: "batch_stocks", stocktakePeriod: "2026-07" },
     },
