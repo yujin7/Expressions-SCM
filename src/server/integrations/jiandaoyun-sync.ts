@@ -28,6 +28,7 @@ import {
   type JiandaoyunRecord,
 } from "./jiandaoyun";
 import { writeIntegrationEvidence, type IntegrationEvidence } from "./evidence";
+import { resolveSourceAsOf } from "./source-time";
 
 const CONNECTOR = "jdy";
 const CATALOG_STREAM = "catalog";
@@ -466,13 +467,16 @@ async function assertStableContractSchema(
   }
 }
 
+/**
+ * 源时点。**排除录入错误造成的未来日期**——简道云真实数据里存在 2051-07-31、
+ * 2028-11-12 这类脏行；一条就能把整批 sourceAsOf 顶到 2051，
+ * 进而让该批次被 month-close 的月份区间过滤排除在所有合法月份之外。
+ * 详见 source-time.ts 的取值纪律。
+ */
 function sourceUpdatedThrough(records: JiandaoyunRecord[]): string | null {
-  const latest = records.reduce<number | null>((maximum, record) => {
-    const instant = Date.parse(String(record.updateTime ?? record.update_time ?? "").trim());
-    if (!Number.isFinite(instant)) return maximum;
-    return maximum === null ? instant : Math.max(maximum, instant);
-  }, null);
-  return latest === null ? null : new Date(latest).toISOString();
+  return resolveSourceAsOf(
+    records.map((record) => String(record.updateTime ?? record.update_time ?? "")),
+  ).sourceAsOf;
 }
 
 async function assertPriorSourceRecordContinuity(
