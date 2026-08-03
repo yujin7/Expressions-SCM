@@ -68,6 +68,37 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
    * 契约进注册表不等于启用，仍需在 `JIANDAOYUN_SYNC_CONTRACTS` 里显式选中。
    */
   /*
+   * 唯品会商品列表观察（2026-08-04 加入）——**条码桥的主力来源**。
+   *
+   * 实测：405 个唯一条码里 169 个命中 `skus.barcode`、163 个命中 `sku_identifiers`
+   * （约四成），而条码/货号命中 `skus.code` 为 0 —— 印证了"编码体系不通、条码通"。
+   * 唯品会的货号与条码同值，故只映射一次。
+   *
+   * `barcode` 交给条码桥解析（精确、唯一命中才算；歧义与未命中进认领队列）。
+   * 供应商编码只作观察，不参与解析——它是唯品会侧的供应商编号，与本系统供应商主档
+   * 未经确认对应关系，映了会造出错误的认领候选。
+   */
+  {
+    key: "vip-product-crosswalk-observation",
+    label: "数据中台/唯品会商品对照",
+    appId: "699ebeac318154b4f6d3dda6",
+    entryId: "69d5bd25c0c89899fec1c3eb",
+    targetTable: "jdy_vip_product_crosswalk_observation",
+    businessKey: ["platformProductId"],
+    freshnessMaxAgeDays: 45,
+    fields: [
+      field("platformProductId", "product_id"),
+      field("productName", "product_name"),
+      // 条码：落到系统 SKU 的桥
+      field("barcode", "barcode"),
+      field("goodsCode", "goods_code"),
+      field("platformSkuId", "v_sku"),
+      field("platformSpuId", "v_spu"),
+      field("brandName", "brand_name"),
+      field("supplierCode", "supplier_code"),
+    ],
+  },
+  /*
    * 拼多多 SKU 主数据观察（2026-08-04 加入）——**平台 SKU ↔ 系统 SKU 的对照来源**。
    *
    * 为什么需要它：销量表里的 `sku_id` 是平台 SKU（如 `1567203177846`），不是系统编码；
@@ -95,8 +126,9 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
       field("platformProductId", "product_id"),
       field("productName", "product_name"),
       field("productSpecification", "product_specification"),
-      // 平台侧「商家自己的 SKU 编码」——即系统 SKU 码，交给既有别名解析
-      field("productCode", "sku_external_code"),
+      // 平台侧「商家自己的 SKU 编码」。实测与系统编码是两套命名空间（SW1557 vs N006-001），
+      // 故**只作观察字段**，不再喂给 sku_code 解析——喂了只会造出一堆解析不到的认领项。
+      field("merchantSkuCode", "sku_external_code"),
       field("platformSkuId", "sku_id"),
       field("productStatus", "product_status"),
       field("inventory", "inventory"),

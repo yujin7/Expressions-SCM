@@ -14,7 +14,7 @@ import {
   type AnyDb,
   type StagingRowInput,
 } from "@/server/import/staging";
-import { resolveKnownOrQueue, type DimDb } from "@/server/modules/dimension/resolver";
+import { resolveKnownOrQueue, resolveSkuByBarcode, type DimDb } from "@/server/modules/dimension/resolver";
 import {
   jiandaoyunContractProjection,
   jiandaoyunContractWidgets,
@@ -560,7 +560,7 @@ async function resolveObservationIdentities(
   const resolved: Record<string, unknown> = {};
   const unresolved: string[] = [];
   const resolve = async (
-    aliasType: "sku_code" | "warehouse" | "supplier_oem",
+    aliasType: "sku_code" | "sku_barcode" | "warehouse" | "supplier_oem",
     raw: unknown,
     path: string,
   ): Promise<number | null> => {
@@ -580,6 +580,26 @@ async function resolveObservationIdentities(
 
   const skuId = await resolve("sku_code", data.productCode, "productCode");
   if (skuId !== null) resolved.skuId = skuId;
+
+  /*
+   * 条码桥（2026-08-04）：平台商品的「商家编码」与系统 SKU 编码是两套命名空间
+   * （拼多多 `SW1557` vs 系统 `N006-001`，5,376 个 SKU 里形如前者的有 0 个），
+   * 但**条码是通的**——唯品会 405 个唯一条码有 169 个命中 skus.barcode。
+   * 故 productCode 解析不到时，用条码再试一次；仍不中的照常进认领队列。
+   *
+   * 只做精确、唯一命中；同条码落在多个 SKU 上视为歧义，不挑、交人裁决。
+   */
+  if (resolved.skuId === undefined && data.barcode != null) {
+    const barcode = stringValue(data.barcode);
+    if (barcode) {
+      const byBarcode = await resolveSkuByBarcode(db as DimDb, barcode);
+      if (byBarcode !== null) {
+        resolved.skuId = byBarcode;
+      } else {
+        await resolve("sku_barcode", barcode, "barcode");
+      }
+    }
+  }
   const supplierId = await resolve(
     "supplier_oem",
     data.supplierCode ?? data.supplierName,
