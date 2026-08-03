@@ -46,7 +46,8 @@
     "data:queue-reference-aliases": "node --import tsx scripts/queue-reference-aliases.ts",
     "data:repair-import-statuses": "node --import tsx scripts/repair-import-job-statuses.ts",
     "data:backfill-snapshot-lineage": "node --import tsx scripts/backfill-snapshot-lineage.ts",
-    "data:backfill-npd-lineage": "node --import tsx scripts/backfill-npd-lineage.ts"
+    "data:backfill-npd-lineage": "node --import tsx scripts/backfill-npd-lineage.ts",
+    "readiness": "tsx scripts/connector-readiness.ts"
   },
   "dependencies": {
     "@ant-design/cssinjs": "1.24.0",
