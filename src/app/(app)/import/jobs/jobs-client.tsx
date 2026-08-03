@@ -25,6 +25,20 @@ const TEMPLATE_LABELS: Record<string, string> = {
   inventory_long_721: "仓库库存长表",
   expiry_batch_202607: "批次效期明细",
   sales_monthly_summary: "月度销量汇总",
+  // 三方连接器自动产生的任务。带「·观测」后缀以区别于人工上传的导入件——
+  // 观测数据只进 staging 供对账，不参与放行入账。
+  jst_daily_sales: "聚水潭出库日汇总·观测",
+  jst_inventory_observation: "聚水潭库存总量·观测",
+  yonyou_observation: "用友只读契约·观测",
+  jdy_product_observation: "简道云货品·观测",
+  jdy_supplier_observation: "简道云供应商·观测",
+  jdy_warehouse_observation: "简道云仓库·观测",
+  jdy_purchase_demand_observation: "简道云采购需求·观测",
+  jdy_purchase_order_observation: "简道云采购订单·观测",
+  jdy_purchase_receipt_observation: "简道云采购入库·观测",
+  jdy_inventory_count_observation: "简道云盘点·观测",
+  jdy_warehouse_transfer_observation: "简道云调拨·观测",
+  jdy_sample_observation: "简道云样品·观测",
 };
 const TABLE_LABELS: Record<string, string> = {
   spu_suggestion: "SPU 归组建议",
