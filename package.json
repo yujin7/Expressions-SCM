@@ -49,7 +49,8 @@
     "data:backfill-npd-lineage": "node --import tsx scripts/backfill-npd-lineage.ts",
     "readiness": "tsx scripts/connector-readiness.ts",
     "yy:probe": "tsx scripts/yonyou-probe.ts",
-    "jst:auth-url": "tsx scripts/jst-auth-url.ts"
+    "jst:auth-url": "tsx scripts/jst-auth-url.ts",
+    "jdy:survey": "tsx scripts/jiandaoyun-survey.ts"
   },
   "dependencies": {
     "@ant-design/cssinjs": "1.24.0",
