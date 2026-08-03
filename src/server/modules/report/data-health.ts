@@ -224,12 +224,30 @@ export async function getDataHealth(
        且已验证**归一化救不回来**：把未命中条码按去前导零/UPC-A↔EAN-13/GTIN-14/去分隔符
        生成变体重新对撞，额外命中为 0——对不上的是主档里根本没有，不是写法不同。 */
     const finishedAll = skuRows.filter((s) => s.skuType === "finished");
-    const noBarcode = finishedAll.filter((s) => s.barcodeStatus == null || s.barcodeStatus === "");
+    const noBarcodeAll = finishedAll.filter((s) => s.barcodeStatus == null || s.barcodeStatus === "");
+    /* 样例按近 12 个月销量倒序——补条码要从最值钱的补起。
+       只列 20 条，若不排序就等于随机给 20 个，业务无从下手（平台侧同理，
+       故另有 `npm run jdy:barcode-gap` 按未归属成交额排序列平台商品）。 */
+    const noBarcodeIds = new Set(noBarcodeAll.map((s) => s.id));
+    const salesRows: { skuId: number; qty: string | null }[] = noBarcodeIds.size > 0
+      ? await db
+        .select({ skuId: schema.salesMonthly.skuId, qty: schema.salesMonthly.qty })
+        .from(schema.salesMonthly)
+      : [];
+    const qtyBySku = new Map<number, number>();
+    for (const row of salesRows) {
+      if (!noBarcodeIds.has(row.skuId)) continue;
+      qtyBySku.set(row.skuId, (qtyBySku.get(row.skuId) ?? 0) + num(row.qty));
+    }
+    const noBarcode = [...noBarcodeAll].sort(
+      (a, b) => (qtyBySku.get(b.id) ?? 0) - (qtyBySku.get(a.id) ?? 0),
+    );
+    const withSales = noBarcode.filter((s) => (qtyBySku.get(s.id) ?? 0) > 0).length;
     if (noBarcode.length > 0) {
       structural.push({
         key: "barcode_missing",
         severity: "medium",
-        title: `${noBarcode.length} / ${finishedAll.length} 个在售成品主档无条码，电商平台销量落不到这些 SKU`,
+        title: `${noBarcode.length} / ${finishedAll.length} 个在售成品主档无条码，电商平台销量落不到这些 SKU（其中 ${withSales} 个有历史销量，应优先补）`,
         impact:
           "条码是平台商品与系统主档之间**唯一通的桥**——商家编码属另一套命名空间（实测 0 命中），" +
           "且归一化（前导零 / UPC-A↔EAN-13 / GTIN-14 / 去分隔符）额外命中为 0，" +
@@ -240,7 +258,10 @@ export async function getDataHealth(
           "因此当前平台销量只作观察，未接入销速；要接入需先补条码。" +
           "补的方式：主档补条码，以及在天猫后台补商品条形码（实测其对照表仅 44% 的行填了条码）。",
         count: noBarcode.length,
-        samples: noBarcode.slice(0, 20).map((s) => `${s.code} ${s.name}`),
+        samples: noBarcode.slice(0, 20).map((s) => {
+          const qty = qtyBySku.get(s.id) ?? 0;
+          return qty > 0 ? `${s.code} ${s.name}（近期销量 ${Math.round(qty)}）` : `${s.code} ${s.name}`;
+        }),
       });
     }
 

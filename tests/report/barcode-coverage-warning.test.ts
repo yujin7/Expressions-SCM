@@ -10,16 +10,20 @@
  * 没条码的 SKU 会显示为**零销量**并被判成滞销——零销量看起来像结论，其实是缺数据。
  */
 import { beforeAll, describe, expect, it } from "vitest";
-import { skus, spus } from "@/db/schema";
+import { channels, salesMonthly, skus, spus } from "@/db/schema";
 import { getDataHealth } from "@/server/modules/report/data-health";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 describe("主数据健康度：条码覆盖", () => {
   let db: TestDb;
 
-  async function mkFinished(code: string, barcodeStatus: string | null): Promise<void> {
+  async function mkFinished(
+    code: string,
+    barcodeStatus: string | null,
+    salesQty = 0,
+  ): Promise<void> {
     const [spu] = await db.insert(spus).values({ code: `SPU-${code}`, nameCn: code }).returning();
-    await db.insert(skus).values({
+    const [sku] = await db.insert(skus).values({
       spuId: spu.id,
       code,
       name: `成品 ${code}`,
@@ -27,14 +31,21 @@ describe("主数据健康度：条码覆盖", () => {
       baseUom: "个",
       active: true,
       barcodeStatus,
-    });
+    }).returning();
+    if (salesQty > 0) {
+      const [ch] = await db.insert(channels)
+        .values({ code: `CH-${code}`, name: `渠道${code}`, kind: "platform" }).returning();
+      await db.insert(salesMonthly).values({
+        skuId: sku.id, channelId: ch.id, yearMonth: "2026-06", qty: String(salesQty),
+      });
+    }
   }
 
   beforeAll(async () => {
     ({ db } = await createTestDb());
     await mkFinished("FG-A", "valid");
-    await mkFinished("FG-B", null); // 无条码
-    await mkFinished("FG-C", null); // 无条码
+    await mkFinished("FG-B", null, 10);   // 无条码，销量小
+    await mkFinished("FG-C", null, 900);  // 无条码，销量大 —— 应排在样例最前
   });
 
   it("统计无条码的在售成品，并在标题里给出覆盖分母", async () => {
@@ -44,6 +55,14 @@ describe("主数据健康度：条码覆盖", () => {
     expect(w!.count).toBe(2);
     expect(w!.title).toContain("2 / 3");
     expect(w!.samples.join()).toContain("FG-B");
+  });
+
+  it("样例按销量倒序——补条码要从最值钱的补起，否则 20 条等于随机给", async () => {
+    const r = await getDataHealth({ page: 1, pageSize: 50 }, db);
+    const w = r.structural.find((x) => x.key === "barcode_missing")!;
+    expect(w.samples[0], "销量 900 的 FG-C 应排最前").toContain("FG-C");
+    expect(w.samples[0]).toContain("近期销量 900");
+    expect(w.title, "标题要点明有销量者数量，指明优先级").toContain("2 个有历史销量");
   });
 
   it("影响说明写清「会错成什么样」，而不是「请检查」", async () => {
