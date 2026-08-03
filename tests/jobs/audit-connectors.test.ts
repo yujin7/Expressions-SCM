@@ -26,7 +26,7 @@ describe("连接器安全就绪审计", () => {
     const audit = auditConnectorReadiness(env, new Date("2026-07-30T12:00:00Z"));
     expect(audit.summary).toEqual({
       total: 4,
-      codeReady: 3,
+      codeReady: 4, // 2026-08-03 用友补齐运行时客户端后由 3 变 4
       configured: 2,
       explicitlyEnabled: 0,
       contractSetsSelected: 1,
@@ -41,7 +41,7 @@ describe("连接器安全就绪审计", () => {
       liveVerificationRef: env.JST_LIVE_VERIFIED_REF,
     });
     expect(audit.connectors.find((row) => row.key === "yy")).toMatchObject({
-      implementation: "contract_only",
+      implementation: "ready",
       configured: true,
       operational: false,
     });

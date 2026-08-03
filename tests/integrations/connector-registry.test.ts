@@ -424,7 +424,9 @@ describe("外部连接器目录", () => {
       });
   });
 
-  it("用友人工账号不构成机器配置；完整 OpenAPI 契约仍保持 contract_only", () => {
+  // 2026-08-03：yonyou-client.ts 补齐运行时客户端后，implementation 由 contract_only 转 ready。
+  // 本用例的真实意图不变——人工 UI 账号永远不构成机器配置，且没有实测证据就不算 operational。
+  it("用友人工账号不构成机器配置；机器凭据齐备后进入 ready 但仍非 operational", () => {
     for (const key of [
       "YY_APP_KEY", "YY_APP_SECRET", "YY_TENANT_ID", "YY_ORG_ID",
     ] as const) process.env[key] = "present";
@@ -435,7 +437,7 @@ describe("外部连接器目录", () => {
     process.env.YY_TOKEN_URL = "https://auth.yonyoucloud.com/token";
     process.env.YY_SYNC_ENABLED = "true";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "yy")).toMatchObject({
-      implementation: "contract_only",
+      implementation: "ready",
       configured: true,
       enablementState: "enabled",
       contractSelectionState: "selected",
@@ -444,7 +446,9 @@ describe("外部连接器目录", () => {
       missingEnv: [],
       expectedLiveVerificationBinding: expect.stringMatching(/^YY1_/),
     });
-    expect(configuredConnectors().some((connector) => connector.key === "yy")).toBe(false);
+    // 有了运行时客户端 + 完整机器凭据，yy 才进入"已配置连接器"集合；
+    // 但 operational 仍为 false（缺实测证据），二者不可混为一谈。
+    expect(configuredConnectors().some((connector) => connector.key === "yy")).toBe(true);
     process.env.YY_TOKEN_URL = "http://auth.yonyoucloud.com/token";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "yy")).toMatchObject({
       configured: false,

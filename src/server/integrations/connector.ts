@@ -405,7 +405,9 @@ export const CONNECTORS: Connector[] = [
   {
     key: "yy",
     label: "用友（财务/成本）",
-    implementation: "contract_only",
+    // 2026-08-03：yonyou-client.ts 补齐 token 客户端与契约白名单调用层（tests/integrations/
+    // yonyou-client.test.ts 用假 transport 跑完整路径），此前只有配置校验故为 contract_only。
+    implementation: "ready",
     auth: "oauth_app",
     systemOfRecord: "财务凭证、成本、结算与组织核算口径",
     capabilities: ["cost-authority", "settlement-posting", "financial-reconciliation"],
@@ -420,7 +422,7 @@ export const CONNECTORS: Connector[] = [
     liveVerificationEnv: "YY_LIVE_VERIFIED_AT",
     liveVerificationRefEnv: "YY_LIVE_VERIFIED_REF",
     sourceDocs: ["https://developer.yonyou.com/openAPI"],
-    blocker: "已核实目标企业 YonBIP、专用 AK/SK、八条只读契约与 C4 网关；仍缺租户/目标组织、token URL、企业授权范围和沙箱只读对账",
+    blocker: "网关与鉴权已实测打通（c4/iuap-api-gateway，token 正常）；八条只读契约在控制台逐条授权前全部返回 310037，仍缺企业 API 授权与租户/目标组织（授权后组织架构接口可直接读出）",
     isConfigured(env = process.env) {
       return yonyouConfigFromEnv(env) !== null;
     },
