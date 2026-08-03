@@ -22,6 +22,7 @@ export const SCHEDULES: Record<string, string> = {
   "doc-aging": "15 */6 * * *",
   "notify-dispatch": "30 */6 * * *",
   "jst-token-watchdog": "10 7 * * *",
+  "job-failure-watchdog": "20 */6 * * *",
   "data-freshness": "0 1 * * *",
   housekeeping: "30 1 * * *",
   rollup: "0 2 * * *",
