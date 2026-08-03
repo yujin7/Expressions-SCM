@@ -16,6 +16,7 @@ import { runHousekeeping } from "./housekeeping";
 import { stageJstDaily } from "@/server/import/adapters/jst-daily";
 import { runJstInventorySync, runJstSalesSync } from "./sync-jst";
 import { runYonyouSync } from "./sync-yonyou";
+import { runJstTokenWatchdog } from "./jst-token-watchdog";
 import {
   runJiandaoyunCatalogSync,
   runJiandaoyunConfiguredFormSyncs,
@@ -35,6 +36,7 @@ const USAGE = `用法:
   npx tsx src/jobs/cli.ts sync-jst [YYYY-MM-DD]          API 拉取 T-1/指定日到受控 staging
   npx tsx src/jobs/cli.ts sync-jst-inventory             增量库存总量观察到受控 staging（需显式启用）
   npx tsx src/jobs/cli.ts sync-yonyou [YYYY-MM-DD]       按已批准契约拉取用友只读观测到受控 staging
+  npx tsx src/jobs/cli.ts jst-token-watchdog             检查聚水潭 token 30 天有效期，临期开告警
   npx tsx src/jobs/cli.ts sync-jiandaoyun-catalog        同步可见应用/表单目录（不读取业务行）
   npx tsx src/jobs/cli.ts sync-jiandaoyun-forms          同步显式配置的最小化观察契约
   npx tsx src/jobs/cli.ts sync-jiandaoyun-form <key>     同步一条命名观察契约
@@ -79,6 +81,9 @@ async function main(): Promise<void> {
       break;
     case "sync-jst-inventory":
       out = await runJstInventorySync(db);
+      break;
+    case "jst-token-watchdog":
+      out = await runJstTokenWatchdog(db);
       break;
     case "sync-yonyou":
       out = await runYonyouSync(db, args[0] ?? shanghaiToday(-1));

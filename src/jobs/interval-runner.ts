@@ -22,6 +22,7 @@ import { runRollup } from "./rollup";
 import { dispatchNotifications, runDecisionDigestNotify, runExceptionNotify } from "./notify";
 import { runJstInventorySync, runJstSalesSync } from "./sync-jst";
 import { runYonyouSync } from "./sync-yonyou";
+import { runJstTokenWatchdog } from "./jst-token-watchdog";
 import {
   runJiandaoyunCatalogSync,
   runJiandaoyunConfiguredFormSyncs,
@@ -48,6 +49,8 @@ export const INTERVAL_JOBS: IntervalJob[] = [
   { name: "sync-jst-sales", everyMs: 6 * HOUR_MS, run: (db) => runJstSalesSync(db) },
   // 聚水潭全仓合计库存增量只作外部观察；显式开关启用，绝不直写库存真账/快照
   { name: "sync-jst-inventory", everyMs: 6 * HOUR_MS, run: (db) => runJstInventorySync(db) },
+  // 聚水潭 token 30 天过期，且过期后刷新接口失效、只能重走授权——必须在还来得及时喊出来
+  { name: "jst-token-watchdog", everyMs: 6 * HOUR_MS, run: (db) => runJstTokenWatchdog(db) },
   // 用友只读观测：按已批准契约拉数原样落 staging；缺配置/未开开关显式 skipped，
   // 契约未授权(310037)记为等授权而非故障，不推进 checkpoint
   { name: "sync-yonyou", everyMs: 6 * HOUR_MS, run: (db) => runYonyouSync(db) },

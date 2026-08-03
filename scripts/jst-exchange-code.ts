@@ -66,6 +66,8 @@ async function main(): Promise<void> {
   }
 
   setEnv("JST_ACCESS_TOKEN", token);
+  // 看门狗靠这个时刻评估 30 天有效期；不写就只能报"到期时间未知"
+  setEnv("JST_TOKEN_OBTAINED_AT", new Date().toISOString());
   if (typeof data?.refresh_token === "string") setEnv("JST_REFRESH_TOKEN", data.refresh_token);
 
   console.log(`✓ access_token 已写入 .env（长度 ${token.length}）`);
