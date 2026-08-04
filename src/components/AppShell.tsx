@@ -421,7 +421,10 @@ export default function AppShell({
               {/* eslint-disable-next-line @next/next/no-img-element -- 品牌标识为静态资源 */}
               <img src="/logo.png" alt="" aria-hidden="true" />
             </span>
-            <span className="app-brand__name">{collapsed ? "" : "供应链系统"}</span>
+            {/* 折叠时**整个不渲染**，而不是渲染空字符串：
+                空 span 仍参与 flex gap，会在 logo 右侧留 10px 幻影间距，
+                使其在居中容器里实际偏左。 */}
+            {collapsed ? null : <span className="app-brand__name">供应链系统</span>}
           </div>
           {navigationMenu}
         </Sider> : null}
