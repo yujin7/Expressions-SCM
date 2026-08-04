@@ -11,24 +11,39 @@ import { ensureExportWorkerStarted } from "./export-worker";
 
 const TZ = "Asia/Shanghai";
 export const SCHEDULES: Record<string, string> = {
-  "license-alert": "0 7 * * *",
-  "snapshot-age": "30 7 * * *",
-  "sync-jst-sales": "30 7 * * *",
-  "sync-jst-inventory": "40 7 * * *",
-  "sync-yonyou": "50 7 * * *",
-  "sync-jiandaoyun-catalog": "15 6 * * *",
-  "sync-jiandaoyun-forms": "30 */6 * * *",
-  "reconcile-jst": "0 8 * * *",
-  "doc-aging": "15 */6 * * *",
-  "notify-dispatch": "30 */6 * * *",
-  "jst-token-watchdog": "10 7 * * *",
-  "job-failure-watchdog": "20 */6 * * *",
-  "system-alert-notify": "25 */6 * * *",
+  /*
+   * 时区 Asia/Shanghai。**同步只在午饭前与傍晚前各一次**（2026-08-04 用户口径）：
+   * 拉数是给人看的——上午下班前、下班前各刷新一次即可。原来每 6 小时一轮，
+   * 深夜那两轮无人消费，白占三方接口配额（简道云单轮 8.5 万行、约 850 次分页、约 12 分钟）。
+   *
+   * 编排顺序：10:00 起依次拉数 → 11 点整跑对账/看门狗/告警投递，
+   * 让本轮同步暴露的问题**当轮就送到人手上**，而不是等下一轮。傍晚同理（16 点拉、17 点推）。
+   * 夜间维护类（freshness/housekeeping/rollup）不动，它们本就该在低峰跑。
+   */
+  "license-alert": "0 9 * * *",
+  "snapshot-age": "50 9 * * *",
+
+  // ── 午饭前批次：10 点拉数 → 11 点推告警 ──
+  "sync-jiandaoyun-catalog": "0 10 * * *",
+  "sync-yonyou": "5 10,16 * * *",
+  "sync-jst-sales": "15 10,16 * * *",
+  "sync-jst-inventory": "25 10,16 * * *",
+  "sync-jiandaoyun-forms": "30 10,16 * * *",
+  "reconcile-jst": "0 11,17 * * *",
+
+  // ── 傍晚批次：16 点拉数 → 17 点推告警（catalog 每日一次即可，不重复拉）──
+  // 同名任务无法登记两条 cron，故用「小时列表」表达两批：分钟相同、小时二选一
+  "doc-aging": "10 11,17 * * *",
+  "job-failure-watchdog": "20 11,17 * * *",
+  "system-alert-notify": "25 11,17 * * *",
+  "notify-dispatch": "30 11,17 * * *",
+  "exception-notify": "40 11 * * *",
+
+  "jst-token-watchdog": "10 9 * * *",
   "data-freshness": "0 1 * * *",
   housekeeping: "30 1 * * *",
   rollup: "0 2 * * *",
-  "exception-notify": "30 8 * * *",
-  "decision-digest": "45 8 * * 1",
+  "decision-digest": "45 11 * * 1",
 };
 
 export async function start(): Promise<{ stop: () => Promise<void> } | null> {
