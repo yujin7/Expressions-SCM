@@ -35,6 +35,8 @@ services:
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET-}
       FEISHU_CHAT_ID: ${FEISHU_CHAT_ID-}
       FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL-}
+      # 群机器人签名密钥：缺了它签名校验发不出消息（容器与本地行为分叉的典型来源）
+      FEISHU_WEBHOOK_SECRET: ${FEISHU_WEBHOOK_SECRET-}
       FEISHU_APP_LIVE_VERIFIED_AT: ${FEISHU_APP_LIVE_VERIFIED_AT-}
       FEISHU_APP_LIVE_VERIFIED_REF: ${FEISHU_APP_LIVE_VERIFIED_REF-}
       FEISHU_WEBHOOK_LIVE_VERIFIED_AT: ${FEISHU_WEBHOOK_LIVE_VERIFIED_AT-}
@@ -47,6 +49,10 @@ services:
       JST_SYNC_ACTOR_ID: ${JST_SYNC_ACTOR_ID-}
       JST_BASE_URL: ${JST_BASE_URL-}
       JST_INVENTORY_SYNC_ENABLED: ${JST_INVENTORY_SYNC_ENABLED-}
+      # 可信仓白名单：业务口径「只有一仓准」的落地开关，缺了库存流会被拒绝启用
+      JST_TRUSTED_WMS_CO_IDS: ${JST_TRUSTED_WMS_CO_IDS-}
+      JST_TOKEN_OBTAINED_AT: ${JST_TOKEN_OBTAINED_AT-}
+      JST_TOKEN_TTL_DAYS: ${JST_TOKEN_TTL_DAYS-}
       JST_LIVE_VERIFIED_AT: ${JST_LIVE_VERIFIED_AT-}
       JST_LIVE_VERIFIED_REF: ${JST_LIVE_VERIFIED_REF-}
 
@@ -71,8 +77,15 @@ services:
       YY_ALLOWED_HOSTS: ${YY_ALLOWED_HOSTS-}
       YY_BASE_URL: ${YY_BASE_URL-}
       YY_TOKEN_URL: ${YY_TOKEN_URL-}
+      YY_SYNC_ENABLED: ${YY_SYNC_ENABLED-}
+      YY_SYNC_ACTOR_ID: ${YY_SYNC_ACTOR_ID-}
 
       FILE_STORAGE_DIR: /data/uploads
+      # Next.js standalone 默认绑到容器主机名对应的那个 IP，而不是 0.0.0.0。
+      # 后果很隐蔽：宿主机通过端口映射访问正常，但容器内 127.0.0.1:3000 根本没监听，
+      # 于是 healthcheck（用的就是 127.0.0.1）**永远失败**——容器长期 unhealthy，
+      # 在真正的编排环境里会被判定为未就绪或反复重启。已实测 /proc/net/tcp 只有容器 IP 在听。
+      HOSTNAME: "0.0.0.0"
     volumes:
       - uploads:/data/uploads
     ports:
