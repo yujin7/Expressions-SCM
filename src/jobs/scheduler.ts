@@ -21,7 +21,9 @@ export const SCHEDULES: Record<string, string> = {
    * 夜间维护类（freshness/housekeeping/rollup）不动，它们本就该在低峰跑。
    */
   "license-alert": "0 9 * * *",
-  "snapshot-age": "50 9 * * *",
+  // 数据龄检查必须排在拉数**之后**：放 9:50 会在 10:00 同步刷新前十分钟
+  // 天天报一次"数据过期"，制造每日假警报。改到两批同步之后各查一次。
+  "snapshot-age": "5 11,17 * * *",
 
   // ── 午饭前批次：10 点拉数 → 11 点推告警 ──
   "sync-jiandaoyun-catalog": "0 10 * * *",

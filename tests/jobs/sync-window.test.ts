@@ -28,6 +28,8 @@ const PULL_JOBS = [
 ];
 /** 依赖同步结果的下游：必须排在拉数之后 */
 const DOWNSTREAM_JOBS = [
+  // 数据龄检查也算下游：排在拉数之前会在同步刷新前十分钟天天报假"数据过期"
+  "snapshot-age",
   "reconcile-jst",
   "job-failure-watchdog",
   "system-alert-notify",
