@@ -72,13 +72,19 @@ function LoginFormInner({ feishuEnabled }: { feishuEnabled: boolean }) {
       }}
     >
       <div className="login-brand-panel" aria-hidden="true">
-        <div className="login-brand-panel__mark">链</div>
+        <div className="login-brand-panel__mark">
+          {/* eslint-disable-next-line @next/next/no-img-element -- 品牌标识为静态资源，无需 next/image 的优化与布局开销 */}
+          <img src="/logo.png" alt="" aria-hidden="true" />
+        </div>
         <div className="login-brand-panel__eyebrow">EXPRESSIONS · SCM</div>
         <div className="login-brand-panel__title">让供应、库存与决策<br />保持在同一条链上</div>
         <div className="login-brand-panel__caption">一个事实口径 · 一个行动入口 · 全程可追溯</div>
       </div>
       <Card className="login-card">
-        <div className="login-card__mark">链</div>
+        <div className="login-card__mark">
+          {/* eslint-disable-next-line @next/next/no-img-element -- 同上 */}
+          <img src="/logo.png" alt="" aria-hidden="true" />
+        </div>
         <Typography.Title level={3} style={{ textAlign: "center", margin: "10px 0 6px" }}>
           欢迎回来
         </Typography.Title>

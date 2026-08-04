@@ -417,7 +417,10 @@ export default function AppShell({
               overflow: "hidden",
             }}
           >
-            <span className="app-brand__mark">链</span>
+            <span className="app-brand__mark">
+              {/* eslint-disable-next-line @next/next/no-img-element -- 品牌标识为静态资源 */}
+              <img src="/logo.png" alt="" aria-hidden="true" />
+            </span>
             <span className="app-brand__name">{collapsed ? "" : "供应链系统"}</span>
           </div>
           {navigationMenu}

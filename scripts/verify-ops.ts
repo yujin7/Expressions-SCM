@@ -38,6 +38,8 @@ requireText(".gitignore", ".env.backup");
 requireText("docker-compose.prod.yml", "healthcheck:");
 requireText("docker-compose.prod.yml", "max-size: \"10m\"");
 requireText("docker-compose.prod.yml", "uploads:/data/uploads:ro");
+// standalone 产物不含 public/，漏拷则生产环境所有静态资源 404（dev 却正常）。
+requireText("Dockerfile", "COPY --from=build /app/public ./public");
 // Next.js standalone 不设 HOSTNAME 会只绑容器 IP，容器内 127.0.0.1 无监听 →
 // healthcheck 永远失败、容器长期 unhealthy（宿主机端口映射却是通的，极易漏判）。
 requireText("docker-compose.prod.yml", 'HOSTNAME: "0.0.0.0"');

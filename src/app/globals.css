@@ -47,6 +47,10 @@ body {
   letter-spacing: 0.02em;
 }
 
+/* 品牌标识：公司 logo（青色心形+双叶，主色 #10ABBF）。
+   底色改为浅色而非原先的蓝色渐变——logo 本身是青色透明 PNG，
+   压在深蓝渐变上会糊成一团、也与品牌色冲突。
+   logo 宽高比约 5:3，用 object-fit: contain 保证不被方形容器拉变形。 */
 .app-brand__mark,
 .login-card__mark,
 .login-brand-panel__mark {
@@ -56,11 +60,30 @@ body {
   flex: 0 0 auto;
   width: 32px;
   height: 32px;
-  color: #fff;
-  font-weight: 750;
   border-radius: 10px;
-  background: linear-gradient(145deg, #6f8cff, #3157d5 58%, #1e3ca7);
-  box-shadow: 0 8px 18px rgba(49, 87, 213, 0.3);
+  background: #fff;
+  box-shadow: 0 6px 16px rgba(16, 171, 191, 0.28);
+}
+
+.app-brand__mark img,
+.login-card__mark img,
+.login-brand-panel__mark img {
+  width: 82%;
+  height: 82%;
+  object-fit: contain;
+}
+
+/* 登录页两处放大一点：那里是第一眼看到品牌的位置 */
+.login-card__mark,
+.login-brand-panel__mark {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+}
+
+/* 深色侧边栏上，白底小方块过于跳眼；换成半透明白，logo 仍清晰 */
+.app-sider .app-brand__mark {
+  background: rgba(255, 255, 255, 0.92);
 }
 
 .app-brand__name {
