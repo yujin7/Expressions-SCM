@@ -132,13 +132,24 @@ describe("外部连接器目录", () => {
         openScopedAliasExceptions: null,
         observedScopedIdentities: null,
       });
+    // 库存流是双重闸：光开开关不够，还要显式声明仓库可信范围。
+    // 业务事实（2026-08-04）：聚水潭只有一仓的数据准，而该接口不带 wms_co_id
+    // 时返回全仓合计——混入不准仓且拆不开，故仅声明 ALL 才放行。
     process.env.JST_INVENTORY_SYNC_ENABLED = "true";
+    expect(
+      getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst")
+        ?.effectiveCapabilities,
+      "未声明可信范围时不得出现库存能力",
+    ).not.toContain("inventory-total-delta-staging");
+
+    process.env.JST_TRUSTED_WMS_CO_IDS = "ALL";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst"))
       .toMatchObject({
         configurationReady: false,
         liveVerificationState: "unbound",
         effectiveCapabilities: expect.arrayContaining(["inventory-total-delta-staging"]),
       });
+    delete process.env.JST_TRUSTED_WMS_CO_IDS;
   });
 
   it("简道云把凭据、启用开关、契约选择和 UAT 分别判定", () => {
