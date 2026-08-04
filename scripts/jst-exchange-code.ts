@@ -34,11 +34,19 @@ function setEnv(key: string, value: string): void {
 }
 
 async function main(): Promise<void> {
+  /*
+   * 参数集**只能**是这五个 + sign（官方 docId=25「第五步：使用 code 换取 access_token」）：
+   * app_key / timestamp / grant_type / charset / code。
+   *
+   * 2026-08-04：这里原本也多传了 `version: "2"`（照搬业务接口的公共参数）。
+   * 授权类接口不吃 version，多出来的参数会进签名串导致验签失败——
+   * 而这个失败要等商家授权完、拿着仅 15 分钟有效的 code 回来才会暴露，
+   * 等于白白烧掉一次授权。授权页那边同样的错已经实测复现过（「参数签名错误」）。
+   */
   const params: Record<string, string> = {
     app_key: APP_KEY!,
     charset: "utf-8",
     timestamp: String(Math.floor(Date.now() / 1000)),
-    version: "2",
     code,
     grant_type: "authorization_code",
   };

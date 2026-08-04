@@ -29,10 +29,17 @@ if (!APP_KEY || !APP_SECRET) {
   process.exit(1);
 }
 
+/*
+ * 参数集**只能**是这五个（官方 docId=25「第二步：业务授权URL拼装」）：
+ * app_key / timestamp / state(非必填) / charset / sign。
+ *
+ * 2026-08-04 事故：我按业务接口的公共参数照搬，多传了 `version: "2"`，
+ * 授权页直接报「参数签名错误」——多出来的参数进了签名串，服务端按五参数验签自然对不上。
+ * **授权接口与业务接口的参数集不同**，不能拿业务接口那套公共参数套用。
+ */
 const params: Record<string, string> = {
   app_key: APP_KEY,
   charset: "utf-8",
-  version: "2",
   timestamp: String(Math.floor(Date.now() / 1000)),
   // state 原样回传，用于校验回调确实来自本次请求
   state: "scm-auth",
