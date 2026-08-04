@@ -71,6 +71,12 @@ export default function UiLab() {
               </Dropdown>
             </div>
           </Header>
+          <Content className="app-content" style={{ margin: 16 }}>
+            <main className="app-surface" style={{ background: colorBgContainer, padding: 24 }}>
+              <Typography.Title level={3}>页面标题</Typography.Title>
+              <Typography.Paragraph>正文内容占位，用于对齐测量。</Typography.Paragraph>
+            </main>
+          </Content>
         </Layout>
       </Layout>
     </AntApp>
