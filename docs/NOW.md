@@ -197,6 +197,26 @@
 - GitHub Pro 的 `main` 保护已启用：只允许 PR、要求线性历史与会话解决，管理员同样受约束；
   静态检查、全量测试、生产容器和 PostgreSQL 迁移契约四项 required checks 全绿后才能合并。
 
+## 局域网试用运维（同事在用的那套）
+
+- 同事访问的是**容器**（`0.0.0.0:3100`），不是 dev server。dev 只监听 127.0.0.1
+  且改代码就重编译，不能给人用。
+- **机器 IP 一变，登录就断**：页面还能打开（200），但登录回跳指向旧地址。
+  2026-08-05 一天内实测漂了四次（3.154 → 10.86 → 3.154 → 1.253 → 30.138）。
+  修复：`npm run lan:sync`（自动探测 IP、只改 `.env.prod` 的 AUTH_URL 一行、
+  重启 app、轮询健康检查转绿后打印该发给同事的地址）。
+- **AUTH_URL 不能靠 trustHost 省掉**。实测留空时 credentials 回调会解析成容器自身
+  绑定地址 `http://0.0.0.0:3000`——standalone 用 HOSTNAME/PORT 兜底而非请求 Host 头，
+  即便 `auth/config.ts` 与 `middleware.ts` 都已 `trustHost: true`。留空会把全组挡在登录页外。
+- **治本**：路由器上给这台机器做 DHCP 保留，或换固定 IP／内网域名；
+  长期使用应移到常开主机（笔记本合盖、休眠、换 Wi-Fi 都会断）。
+- 每次重新构建都会换 `BUILD_ID`，开着旧标签页的人需要硬刷新一次；
+  此后由 `(app)/error.tsx` 自动重载兜住（见下条）。
+- `(app)/loading.tsx` 必须是客户端组件：antd 5 组件自带 `"use client"`，
+  服务端组件里取 `Skeleton.Input` 会得到 undefined 并抛 React #130。
+  该文件只在客户端跳转时渲染，直接打开 URL 看不到，坏了很像"偶发"。
+  护栏：`tests/architecture/rsc-antd-compound.test.ts`。
+
 ## 当前优先级
 
 0. **待业务裁决（工程已阻塞在此，非工程问题）**，详见
