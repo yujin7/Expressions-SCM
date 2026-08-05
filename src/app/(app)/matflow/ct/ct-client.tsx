@@ -461,7 +461,7 @@ export default function CtClient() {
             key={q}
             allowClear
             defaultValue={q}
-            placeholder="搜索单据号"
+            placeholder="搜索单号 / SKU 编码 / 货品名称"
             style={{ width: 240 }}
             onSearch={(value) => listState.setFilter({ q: value.trim() })}
           />

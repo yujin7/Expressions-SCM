@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
    batches, ctDocs, ctLines, poDocs, poLines, skus, users, warehouses,
 } from "@/db/schema";
@@ -17,6 +17,7 @@ import { approveDocSchema } from "@/server/modules/outsource/schemas";
 import { completeApprovedDoc, requireRealtimeWarehouse } from "./common-notes";
 import { createCtSchema } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
+import { skuLineMatch } from "@/server/core/doc-search";
 
 /**
  * 采购退货单 CT（B9）：仓库 −，PO 已收数回冲（po_line.receivedQty −=，基础单位）。
@@ -251,7 +252,7 @@ export async function listCts(
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
   const conds = [];
-  if (q) conds.push(sql`${ctDocs.docNo} ILIKE ${"%" + q + "%"}`);
+  if (q) conds.push(or(sql`${ctDocs.docNo} ILIKE ${"%" + q + "%"}`, skuLineMatch("ct_lines", "ct_id", ctDocs.id, q)));
   if (opts.status) conds.push(eq(ctDocs.status, opts.status as DocStatus));
   if (opts.poId) conds.push(eq(ctDocs.poId, opts.poId));
   const where = conds.length ? and(...conds) : undefined;

@@ -54,6 +54,11 @@ export const approveDocSchema = z.object({
   version: z.number().int().positive(),
 });
 
+/** 撤回：只需乐观锁版本；不带 comment（不是审批动作，不进审批轨迹） */
+export const withdrawDocSchema = z.object({
+  version: z.number().int().positive(),
+});
+
 export const confirmDocSchema = z.object({
   version: z.number().int().positive(),
   note: z.string().trim().max(500).optional(),

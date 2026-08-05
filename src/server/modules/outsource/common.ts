@@ -49,6 +49,7 @@ const APPROVAL_STATUS: Record<string, number> = {
   SELF_APPROVAL: 403,
   NOT_FOUND: 404,
   BAD_STATUS: 409,
+  NOT_OWNER: 403,
   VERSION_CONFLICT: 409,
 };
 

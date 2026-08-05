@@ -1,14 +1,15 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {  bhDocs, bhLines, skus, users } from "@/db/schema";
 import { dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
+import { approveDoc, loadApprovalHistory, withdrawDoc } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb, rethrowApproval } from "./common";
-import { approveDocSchema, createBhSchema } from "./schemas";
+import { approveDocSchema, createBhSchema, withdrawDocSchema } from "./schemas";
+import { skuLineMatch } from "@/server/core/doc-search";
 
 /** 备货申请单 BH（《02》§3：运营发起，PMC 审批） */
 
@@ -167,7 +168,7 @@ export async function listBhs(
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
   const conds = [];
-  if (q) conds.push(sql`${bhDocs.docNo} ILIKE ${"%" + q + "%"}`);
+  if (q) conds.push(or(sql`${bhDocs.docNo} ILIKE ${"%" + q + "%"}`, skuLineMatch("bh_lines", "bh_id", bhDocs.id, q)));
   if (opts.status) conds.push(eq(bhDocs.status, opts.status as DocStatus));
   const where = conds.length ? and(...conds) : undefined;
 
@@ -201,4 +202,31 @@ export async function listBhs(
     db.select({ total: sql<number>`count(*)::int` }).from(bhDocs).where(where),
   ]);
   return { rows, total };
+}
+
+/** 撤回：待审批 → 草稿。仅制单人本人（管理员豁免）；不写审批轨迹、不占审批轮次。 */
+export async function withdrawBH(
+  user: SessionUser,
+  id: number,
+  input: unknown,
+  dbArg?: AnyDb,
+): Promise<{ status: string; idempotent: boolean }> {
+  const v = withdrawDocSchema.parse(input);
+  const db = await resolveDb(dbArg);
+  try {
+    return await db.transaction(async (tx: AnyDb) => {
+      const r = await withdrawDoc(tx, {
+        docType: "bh",
+        table: bhDocs,
+        docId: id,
+        user: { id: user.id, roles: user.roles },
+        expectedVersion: v.version,
+      });
+      if (r.idempotent) return r;
+      await writeAudit(tx, { userId: user.id, entity: "bh", entityId: id, action: "withdraw" });
+      return r;
+    });
+  } catch (e) {
+    rethrowApproval(e);
+  }
 }

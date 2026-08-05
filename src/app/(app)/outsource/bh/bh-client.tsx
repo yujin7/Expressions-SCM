@@ -131,6 +131,16 @@ function BhActions({
         <Button danger loading={loading} onClick={() => setRejectOpen(true)}>
           驳回
         </Button>
+        {/* 撤回：制单人收回自己的提交（服务端校验 createdBy，非制单人会被拒） */}
+        <Popconfirm
+          title="撤回本单？"
+          description="撤回后回到草稿，可继续修改再提交。"
+          okText="撤回"
+          cancelText="取消"
+          onConfirm={() => void post("withdraw", { version: doc.version }, "已撤回，单据回到草稿")}
+        >
+          <Button loading={loading}>撤回</Button>
+        </Popconfirm>
         <Modal
           title="驳回单据"
           open={rejectOpen}
@@ -339,7 +349,7 @@ function BhInner() {
             key={q}
             allowClear
             defaultValue={q}
-            placeholder="搜索单据号"
+            placeholder="搜索单号 / SKU 编码 / 货品名称"
             style={{ width: 240 }}
             onSearch={(value) => listState.setFilter({ q: value.trim() })}
           />

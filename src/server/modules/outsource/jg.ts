@@ -1,17 +1,18 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, or, sql } from "drizzle-orm";
 import {
    jgDocs, jgFeeSegments, pcDocs, skus, suppliers, users, woDocs,
 } from "@/db/schema";
 import { dDeviationPct, dMoney, dZero } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
+import { approveDoc, loadApprovalHistory, withdrawDoc } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb, rethrowApproval } from "./common";
-import { approveDocSchema, confirmDocSchema, createPcForJgFeeSchema } from "./schemas";
+import { approveDocSchema, confirmDocSchema, createPcForJgFeeSchema, withdrawDocSchema } from "./schemas";
 import { getSupplierCapacitySignal } from "@/server/modules/report/supplier-capacity";
+import { skuHeaderMatch } from "@/server/core/doc-search";
 
 /**
  * 委外加工通知单 JG。审批走 docType "jg"（JG 与 WO 同域=PMC 审批）；
@@ -235,7 +236,7 @@ export async function listJgs(
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
   const conds = [];
-  if (q) conds.push(sql`${jgDocs.docNo} ILIKE ${"%" + q + "%"}`);
+  if (q) conds.push(or(sql`${jgDocs.docNo} ILIKE ${"%" + q + "%"}`, skuHeaderMatch(jgDocs.productSkuId, q)));
   if (opts.status) conds.push(eq(jgDocs.status, opts.status as DocStatus));
   if (opts.woId) conds.push(eq(jgDocs.woId, opts.woId));
   const where = conds.length ? and(...conds) : undefined;
@@ -341,4 +342,31 @@ export async function reviseJgDueDate(user: SessionUser, id: number, input: unkn
     .returning();
   await writeAudit(db, { userId: user.id, entity: "jg", entityId: id, action: "revise_due", before: { dueDate: doc.dueDate }, after: entry });
   return updated;
+}
+
+/** 撤回：待审批 → 草稿。仅制单人本人（管理员豁免）；不写审批轨迹、不占审批轮次。 */
+export async function withdrawJG(
+  user: SessionUser,
+  id: number,
+  input: unknown,
+  dbArg?: AnyDb,
+): Promise<{ status: string; idempotent: boolean }> {
+  const v = withdrawDocSchema.parse(input);
+  const db = await resolveDb(dbArg);
+  try {
+    return await db.transaction(async (tx: AnyDb) => {
+      const r = await withdrawDoc(tx, {
+        docType: "jg",
+        table: jgDocs,
+        docId: id,
+        user: { id: user.id, roles: user.roles },
+        expectedVersion: v.version,
+      });
+      if (r.idempotent) return r;
+      await writeAudit(tx, { userId: user.id, entity: "jg", entityId: id, action: "withdraw" });
+      return r;
+    });
+  } catch (e) {
+    rethrowApproval(e);
+  }
 }
