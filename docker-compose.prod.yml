@@ -28,6 +28,11 @@ services:
     environment:
       DATABASE_URL: postgres://scm:${POSTGRES_PASSWORD}@db:5432/scm
       AUTH_SECRET: ${AUTH_SECRET:?}
+      # 必填，且不能靠 trustHost 省掉。
+      # 实测（2026-08-05，standalone 容器）：AUTH_URL 留空时 credentials 回调会解析成
+      # 服务端自身的绑定地址 http://0.0.0.0:3000 ——即便 auth/config.ts 与 middleware.ts
+      # 都已 trustHost: true 也一样，因为 standalone 用 HOSTNAME/PORT 兜底而非请求 Host 头。
+      # 机器 IP 变了就必须同步这里：`npm run lan:sync` 会自动改好并重启。
       AUTH_URL: ${AUTH_URL:?}
 
       # 飞书：留空仍是未配置；不在 Compose 内造出可运行默认值。

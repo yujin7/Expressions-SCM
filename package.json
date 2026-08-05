@@ -52,7 +52,8 @@
     "jst:auth-url": "tsx scripts/jst-auth-url.ts",
     "jdy:survey": "tsx scripts/jiandaoyun-survey.ts",
     "jdy:barcode-gap": "tsx scripts/jiandaoyun-barcode-gap.ts",
-    "jst:init-token": "tsx scripts/jst-init-token.ts"
+    "jst:init-token": "tsx scripts/jst-init-token.ts",
+    "lan:sync": "bash scripts/sync-lan-auth-url.sh"
   },
   "dependencies": {
     "@ant-design/cssinjs": "1.24.0",
