@@ -106,8 +106,9 @@ export async function listSkus(
   ]);
   const rows = rawRows.map((row) => {
     const assessment = assessSkuStandardName(row);
-    const namingStatus =
-      !assessment.ready ? "incomplete" : assessment.suggestion === row.name ? "standard" : "ready";
+    const namingStatus = assessment.publishedFormat
+      ? "published"
+      : !assessment.ready ? "incomplete" : assessment.suggestion === row.name ? "standard" : "ready";
     return { ...row, standardName: assessment.suggestion, namingStatus };
   });
   return { data: rows, total };
@@ -318,6 +319,14 @@ export async function applySkuStandardName(id: number, actor: SessionUser, dbArg
       .where(eq(schema.skus.id, id));
     if (!row) throw new ApiError(404, "SKU 不存在");
     const assessment = assessSkuStandardName(row);
+    // 不可逆降级闸：现名已符合公司公布的 (品牌)产品全称(规格) 格式时拒绝改写。
+    // 界面此时不渲染按钮，这里挡的是直接调 API 的路径。
+    if (assessment.publishedFormat) {
+      throw new ApiError(
+        409,
+        `「${row.name}」已符合公司公布的命名格式，不改写；两套命名口径需业务先行裁决`,
+      );
+    }
     if (!assessment.suggestion) {
       const missing = assessment.missing.map((field) => field === "brand" ? "品牌" : "产品简称").join("、");
       throw new ApiError(400, `采用标准名称前请补齐：${missing}`);

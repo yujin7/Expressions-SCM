@@ -90,14 +90,16 @@ describe("releaseSkus 阻塞原因写回 staging 行", () => {
     expect(run.blocked).toContainEqual({
       code: "XYZ-1",
       kind: "material",
-      reason: "物料段位无法判定（segment=unknown）",
+      reason: "物料段位无法判定（segment=unknown）：编码未命中公布标准的分类码或独立前缀族，需业务补编码或补字典",
     });
 
     const [row2] = await db
       .select()
       .from(schema.stagingRows)
       .where(and(eq(schema.stagingRows.importJobId, jobId), eq(schema.stagingRows.rowNo, 2)));
-    expect(row2.errorMsg).toBe("SKU 放行受阻：XYZ-1（物料段位无法判定（segment=unknown））");
+    expect(row2.errorMsg).toBe(
+      "SKU 放行受阻：XYZ-1（物料段位无法判定（segment=unknown）：编码未命中公布标准的分类码或独立前缀族，需业务补编码或补字典）",
+    );
     expect(row2.status).toBe("pending"); // 仍待处置——原因可见、不拒收
 
     const [row3] = await db

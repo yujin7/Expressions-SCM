@@ -28,6 +28,9 @@ export type BomSegment =
   | "secondary_pack"
   | "box"
   | "self_supplied"
+  | "semi_finished"
+  | "consumable"
+  | "fee"
   | "uncoded"
   | "unknown";
 
@@ -203,8 +206,11 @@ function buildColMap(row: CellValue[]): ColMap {
   return m;
 }
 
-/** 物料编码特征（段位后缀 -0101/-0201/-0401/-0402/-0801/-ZY/-X001 或 ZCYL 前缀） */
-const MAT_CODE_RE = /^ZCYL|-(?:0\d{3}|ZY\d*|X0\d{2})/i;
+/**
+ * 物料编码特征：四位分类码后缀、专用箱段，或公布标准里的独立前缀族。
+ * 只用于「数据锚定」定位原材料编码列，宁可多认不可少认——少认会导致整段列映射平移错位。
+ */
+const MAT_CODE_RE = /^(?:ZC(?:LY|YL)|TYCL01-|TYFY01-|ZYTY0\d-|P01-|F01-|FY-)|-(?:0\d{3}|ZY\d*|X0\d{2})/i;
 
 /**
  * 列映射数据校正（实测两类表头谎报列位：①产品批号/版本号列重复导致原材料区右移 2 列；
@@ -292,16 +298,81 @@ function classifyProductCode(raw: string): { code: string | null; reject: string
 
 /* ── 物料编码 → 段位 ────────────────────────────── */
 
+/**
+ * 公司《系统-物料资料标准基础规则-可发布》的四位分类码字典。
+ *
+ * 此前只认 0101/0201/0401/0402/0801 五个分类码，其余（标贴 0301、中英文标签 0501/0502、
+ * 膜布膜袋 0601-0603、封套 0403、进口内料 0102、热缩膜 0701…）一律落 unknown，
+ * 并在放行时被 `物料段位无法判定` 硬阻断——实跑库里 270 行物料码命中这一路径。
+ * 键 = 分类码，值 = 段位，注释 = 公布标准里的明细分类原文。
+ */
+const CATEGORY_SEGMENTS: Readonly<Record<string, BomSegment>> = {
+  "0101": "raw_bulk", // 料体-普通内料
+  "0102": "raw_bulk", // 料体-进口内料
+  "0111": "semi_finished", // 半成品-裸支入仓产品
+  "0201": "primary_pack", // 内包-瓶子及对应组件 / 软管及对应组件 / 勺子刮板（-1/-2/-3 顺延）
+  "0301": "secondary_pack", // 外包-标贴：瓶身标 / 瓶盖标 / 泵头标
+  "0302": "secondary_pack", // 外包-标贴：地址不干胶
+  "0303": "secondary_pack", // 外包-标贴：外盒不干胶
+  "0304": "secondary_pack", // 外包-标贴：其他标签 / 成分信息标 / 透明封口贴
+  "0401": "secondary_pack", // 外包-外盒：彩盒
+  "0402": "secondary_pack", // 外包-外盒：内托
+  "0403": "secondary_pack", // 外包-外盒：封套
+  "0501": "secondary_pack", // 外包-中文标签
+  "0502": "secondary_pack", // 外包-英文标签
+  "0601": "primary_pack", // 内包-膜布膜袋类：膜布
+  "0602": "primary_pack", // 内包-膜布膜袋类：膜袋
+  "0603": "primary_pack", // 内包-网纱衬/珠光膜 与 内包其他类（棉棒/棉布/pe袋/染发工具）
+  "0701": "secondary_pack", // 其他材料-热缩膜
+  "0801": "secondary_pack", // 外包-说明书
+  "0901": "fee", // 生产费用-对应成品的费用：过膜费 / 加工费 / 返工费
+};
+
+/**
+ * 不跟成品序号的独立前缀族（公布标准「通用材料 / 通用生产费用 / 包装物 / 消耗品 / 其他费用类」）。
+ * 顺序敏感：ZYTY 必须排在 ZY 之前，否则会被专用箱规则吞掉。
+ */
+const PREFIX_SEGMENTS: ReadonlyArray<readonly [RegExp, BomSegment]> = [
+  // 真实编码为 ZCLY（自供原料拼音序），ZCYL 为早期基线笔误——两式并认（2026-07-24 补遗轮实证）
+  [/^ZC(?:LY|YL)/, "self_supplied"], // 料体-自采原料 ZCYL-序号
+  [/^TYCL01-/, "primary_pack"], // 通用材料：海绵头 / 通用模具
+  [/^TYFY01-/, "fee"], // 通用生产费用：通用贴标费 / 通用加工费
+  [/^ZYTY0\d-/, "box"], // 包装物：通用专用箱 / 通用垫板 / 通用刀卡
+  [/^P01-/, "box"], // 包装物-打包纸箱 与 消耗品-耗材（包裹卡/气泡袋/缠绕膜/托盘）
+  [/^F01-/, "consumable"], // 消耗品-其他：香薰灯 / 天猫精灵 / 蜡烛
+  [/^FY-/, "fee"], // 其他费用类：打样费 / 加工费 / 模具费 / 翻译费
+];
+
+/** 末位四位分类码（允许 0201-1 的顺延段与 0101a 的多料体字母后缀）。 */
+const CATEGORY_RE = /-(\d{4})(?!\d)/g;
+
 function segmentOf(code: string | null): BomSegment {
   if (code == null) return "uncoded";
   const c = code.toUpperCase();
-  // 真实编码为 ZCLY（自供原料拼音序），ZCYL 为早期基线笔误——两式并认（2026-07-24 补遗轮实证）
-  if (c.startsWith("ZCLY") || c.startsWith("ZCYL")) return "self_supplied";
-  if (c.includes("-0101")) return "raw_bulk";
-  if (c.includes("-0201")) return "primary_pack";
-  if (c.includes("-0401") || c.includes("-0402") || c.includes("-0801")) return "secondary_pack";
+  for (const [re, segment] of PREFIX_SEGMENTS) if (re.test(c)) return segment;
+  // 专用箱 成品编码-ZY001/002/003；X001 为实测周转箱写法
   if (c.includes("-ZY") || c.includes("X001")) return "box";
+  const matched = [...c.matchAll(CATEGORY_RE)];
+  if (matched.length > 0) {
+    const category = matched[matched.length - 1][1];
+    const segment = CATEGORY_SEGMENTS[category];
+    if (segment) return segment;
+  }
   return "unknown";
+}
+
+/** 供测试与放行侧引用：已受支持的分类码，用于把「无法判定」的报错写成可操作的提示。 */
+export const SUPPORTED_MATERIAL_CATEGORIES = Object.freeze(Object.keys(CATEGORY_SEGMENTS));
+
+/**
+ * 公布标准列出的费用名目。费用不是物料，不得建成 SKU；
+ * 「加工费」保留原有字面判定（历史表格里大量出现在汇总行上，往往没有编码）。
+ */
+const FEE_NAME_RE = /(加工费|过膜费|返工费|贴标费|打样费|模具费|翻译费|报废费)/;
+
+function isFeeLine(matName: string, matCode: string, cleanCode: string | null): boolean {
+  if (FEE_NAME_RE.test(matName) || FEE_NAME_RE.test(matCode)) return true;
+  return segmentOf(cleanCode) === "fee";
 }
 
 function cleanMaterialCode(raw: string): string | null {
@@ -423,14 +494,16 @@ export function parseBomSheets(sheets: SheetData[], brandCode: string): { blocks
         const supplierRaw = cellStr(at(row, m.supplier));
         const note = cellStr(at(row, m.note));
 
-        // 加工费行 → feeLines，绝不入物料行（实测常与汇总行同行——先收费再关块）
-        if (matName.includes("加工费") || matCode.includes("加工费")) {
+        // 费用行 → feeLines，绝不入物料行（实测常与汇总行同行——先收费再关块）。
+        // 除字面「加工费」外，还认公布标准的三个费用编码族（成品序号-0901 / TYFY01 / FY）
+        // 与其余费用名目：过膜费、返工费、贴标费等此前会掉进物料行并被段位判定拦下。
+        const cleanCode = cleanMaterialCode(matCode);
+        if (isFeeLine(matName, matCode, cleanCode)) {
           ob.block.feeLines.push({
             supplierRaw,
             note: [matName || matCode, note].filter(Boolean).join(" | "),
           });
         } else {
-          const cleanCode = cleanMaterialCode(matCode);
           const qty = parseQty(at(row, m.qtyPer));
           ob.block.lines.push({
             materialCode: cleanCode,

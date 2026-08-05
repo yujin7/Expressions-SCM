@@ -457,7 +457,11 @@ export default function AppShell({
             className="app-header"
             style={{
               background: colorBgContainer,
-              padding: isMobile ? "0 12px" : isCompactHeader ? "0 16px" : "0 24px",
+              /* 内边距必须与下方 Content 的 margin 一致（移动端 8、其余 16）：
+                 顶栏是通栏白条，内容区却是一张内缩的卡片，两者内边距不同的话
+                 标题与右侧账号区就会与卡片左右边缘差几个像素——原先桌面端顶栏
+                 24px、卡片 16px，正是差 8px 的来源。 */
+              padding: isMobile ? "0 8px" : "0 16px",
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",

@@ -51,7 +51,7 @@ interface SkuRow {
   shelfLifeDays: number | null;
   nearExpiryDays: number | null;
   standardName: string | null;
-  namingStatus: "incomplete" | "ready" | "standard";
+  namingStatus: "incomplete" | "ready" | "standard" | "published";
   lifecycle: string;
   active: boolean;
 }
@@ -178,9 +178,23 @@ export default function SkuClient() {
             dataIndex: "namingStatus",
             width: 105,
             render: (v: SkuRow["namingStatus"], r) => (
-              <Tooltip title={r.standardName ? `建议：${r.standardName}` : "请先补齐品牌与产品简称"}>
-                <Tag color={v === "standard" ? "success" : v === "ready" ? "processing" : "warning"}>
-                  {v === "standard" ? "已标准" : v === "ready" ? "可采用" : "资料不足"}
+              <Tooltip
+                title={
+                  v === "published"
+                    ? "已符合公司公布的 (品牌)产品全称(规格) 格式；两套命名口径裁决前不改写"
+                    : r.standardName ? `建议：${r.standardName}` : "请先补齐品牌与产品简称"
+                }
+              >
+                <Tag
+                  color={
+                    v === "standard" || v === "published"
+                      ? "success"
+                      : v === "ready" ? "processing" : "warning"
+                  }
+                >
+                  {v === "published"
+                    ? "公司格式"
+                    : v === "standard" ? "已标准" : v === "ready" ? "可采用" : "资料不足"}
                 </Tag>
               </Tooltip>
             ),
