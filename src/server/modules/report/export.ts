@@ -80,6 +80,7 @@ export function fmtShanghai(v: Date | string | null | undefined): string {
 /* ── 导出种类注册表（UAT 缺口 #4：同步路由与异步 worker 共享行生产器） ───────── */
 
 import {
+  COMMERCIAL_ROLE_LABELS,
   DOC_STATUS_LABELS, LEDGER_SOURCE_LABELS, STOCK_SUBTYPE_LABELS, WAREHOUSE_KIND_LABELS,
 } from "@/components/labels";
 import type { SessionUser } from "@/server/core/dto";
@@ -122,16 +123,25 @@ export const EXPORT_KINDS: Record<string, ExportKindDef> = {
       q: (sp.get("q") ?? "").trim(),
       warehouseId: Number(sp.get("warehouseId")) || undefined,
       nonzero: sp.get("nonzero") !== "0",
+      commercialRole: sp.get("commercialRole") ?? undefined,
     }),
     async produce(_user, params, cap, db) {
       const { listBalances } = await import("@/server/modules/inventory/queries");
       const { rows, total } = await listBalances(
-        { q: str(params.q) ?? "", warehouseId: num(params.warehouseId), nonzero: params.nonzero !== false, page: 1, pageSize: cap },
+        {
+          q: str(params.q) ?? "",
+          warehouseId: num(params.warehouseId),
+          nonzero: params.nonzero !== false,
+          commercialRole: str(params.commercialRole),
+          page: 1,
+          pageSize: cap,
+        },
         db,
       );
       const data = (rows as Record<string, unknown>[]).map((r) => ({
         ...r,
         warehouseKind: WAREHOUSE_KIND_LABELS[String(r.warehouseKind)] ?? r.warehouseKind,
+        commercialRole: COMMERCIAL_ROLE_LABELS[String(r.commercialRole)] ?? r.commercialRole,
       }));
       return {
         rows: data,
@@ -139,6 +149,7 @@ export const EXPORT_KINDS: Record<string, ExportKindDef> = {
         columns: [
           { key: "skuCode", title: "SKU编码" },
           { key: "skuName", title: "SKU名称" },
+          { key: "commercialRole", title: "业务用途" },
           { key: "spuCode", title: "产品编码" },
           { key: "spuNameCn", title: "产品名称" },
           { key: "warehouseName", title: "仓库" },
