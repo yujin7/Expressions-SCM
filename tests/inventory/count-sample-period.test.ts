@@ -85,3 +85,39 @@ describe("盘点：盘点期与小样分组", () => {
     for (const g of detail.roleSummary) expect(Number(g.diffQty)).toBe(0);
   });
 });
+
+describe("盘点明细导出（交付给业务的那份清单）", () => {
+  it("按盘点期导出，行带小样标注与差异", async () => {
+    const { db, actor, wh } = await setup();
+    await createCountTask(actor, { warehouseId: wh.id, mode: "full", bizDate: "2026-07-31" }, db);
+    await createCountTask(actor, { warehouseId: wh.id, mode: "full", bizDate: "2026-08-03" }, db);
+
+    const { listCountLinesForExport } = await import("@/server/modules/inventory/count");
+    const july = await listCountLinesForExport({ period: "2026-07", limit: 5000 }, db);
+    expect(july.total).toBe(4); // 只有 7 月那张单的 4 行
+    const rows = july.rows as { bizDate: string; commercialRole: string; diffQty: string }[];
+    expect(rows.every((r) => r.bizDate === "2026-07-31")).toBe(true);
+    expect(rows.every((r) => typeof r.commercialRole === "string")).toBe(true);
+    expect(rows.every((r) => Number(r.diffQty) === 0)).toBe(true); // 刚建单实盘=账面
+  });
+
+  it("可只导小样——这正是要交给孙明的那份", async () => {
+    const { db, actor, wh } = await setup();
+    await createCountTask(actor, { warehouseId: wh.id, mode: "full", bizDate: "2026-07-31" }, db);
+    const { listCountLinesForExport } = await import("@/server/modules/inventory/count");
+    const only = await listCountLinesForExport(
+      { period: "2026-07", commercialRole: "sample", limit: 5000 }, db,
+    );
+    expect(only.total).toBe(2);
+    const codes = (only.rows as { skuCode: string }[]).map((r) => r.skuCode).sort();
+    expect(codes).toEqual(["PD-SAMPLE-1", "PD-SAMPLE-2"]);
+  });
+
+  it("total 与 rows 同口径——不能只裁当页却报全表", async () => {
+    const { db, actor, wh } = await setup();
+    await createCountTask(actor, { warehouseId: wh.id, mode: "full", bizDate: "2026-07-31" }, db);
+    const { listCountLinesForExport } = await import("@/server/modules/inventory/count");
+    const r = await listCountLinesForExport({ period: "2026-07", limit: 5000 }, db);
+    expect(r.total).toBe((r.rows as unknown[]).length);
+  });
+});

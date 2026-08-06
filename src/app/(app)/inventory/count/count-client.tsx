@@ -15,6 +15,8 @@ import { fetchJson, postJson } from "@/components/fetchJson";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
 import ScannerEntry from "@/components/ScannerEntry";
 import { addScanQty, findUniqueScanMatch } from "@/components/scanner";
+import { COMMERCIAL_ROLE_LABELS } from "@/components/labels";
+import ExportButton from "@/components/ExportButton";
 
 /** 抽盘=循环抽点（原 PRD"永续盘点"）；full=定期全盘 */
 const MODE_LABELS: Record<string, string> = { full: "定期全盘", partial: "抽盘" };
@@ -26,6 +28,7 @@ interface TaskRow {
   status: string;
   mode: string;
   warehouseName: string | null;
+  bizDate: string | null;
   lineCount: number;
   diffCount: number;
   diffTotal: string;
@@ -38,6 +41,7 @@ interface TaskLine {
   skuId: number;
   skuCode: string;
   skuName: string;
+  commercialRole: string;
   barcode: string | null;
   baseUom: string;
   batchId: number | null;
@@ -63,7 +67,9 @@ interface TaskDetail {
   version: number;
   warehouseId: number;
   warehouseName: string | null;
+  bizDate: string | null;
   lines: TaskLine[];
+  roleSummary: { group: "sample" | "retail"; lineCount: number; bookQty: string; countedQty: string; diffQty: string }[];
   adjustDocs: { id: number; docNo: string }[];
   approvals: TaskApproval[];
   createdByName: string | null;
@@ -73,6 +79,7 @@ interface TaskDetail {
 interface CreateFormValues {
   warehouseId: number;
   mode: "full" | "partial";
+  bizDate?: string;
   q?: string;
   skuIds?: number[];
   remark?: string;
@@ -133,13 +140,14 @@ function CountInner() {
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   const listState = useListState({
     key: "count",
-    defaults: { q: "", status: "", mode: "" },
+    defaults: { q: "", status: "", mode: "", period: "" },
     defaultPageSize: 20,
   });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
   const mode = filters.mode || undefined;
+  const period = filters.period || undefined;
 
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -160,6 +168,7 @@ function CountInner() {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (status) params.set("status", status);
       if (mode) params.set("mode", mode);
+      if (period) params.set("period", period);
       const res = await fetchJson<{ rows: TaskRow[]; total: number }>(`/api/inventory/count?${params.toString()}`);
       setRows(res.rows);
       setTotal(res.total);
@@ -168,7 +177,7 @@ function CountInner() {
     } finally {
       setLoading(false);
     }
-  }, [q, status, mode, page, pageSize, message]);
+  }, [q, status, mode, period, page, pageSize, message]);
 
   useEffect(() => {
     void load();
@@ -286,6 +295,13 @@ function CountInner() {
       render: (v: string, r) => <Typography.Link onClick={() => setDetailId(r.id)}>{v}</Typography.Link>,
     },
     {
+      // 盘点期＝业务日期，不是录入时间。补录/次月才录的盘点按这个归期。
+      title: "盘点期",
+      dataIndex: "bizDate",
+      width: 110,
+      render: (v: string | null) => v ?? "—",
+    },
+    {
       title: "模式",
       dataIndex: "mode",
       width: 100,
@@ -320,6 +336,17 @@ function CountInner() {
   const lineColumns: ColumnsType<TaskLine> = [
     { title: "SKU 编码", dataIndex: "skuCode", width: 110 },
     { title: "名称", dataIndex: "skuName" },
+    {
+      // 0727 行动项：「单独标注小样分类」——导出的清单要能一眼区分库存类别
+      title: "业务用途",
+      dataIndex: "commercialRole",
+      width: 96,
+      render: (v: string) => (
+        <Tag color={v === "sample" ? "purple" : v === "unclassified" ? "warning" : undefined}>
+          {COMMERCIAL_ROLE_LABELS[v] ?? v}
+        </Tag>
+      ),
+    },
     { title: "单位", dataIndex: "baseUom", width: 70 },
     { title: "账面数", dataIndex: "bookQty", width: 100, align: "right" },
     {
@@ -377,6 +404,13 @@ function CountInner() {
             <Button icon={<ReloadOutlined />} onClick={() => void load()}>
               刷新
             </Button>
+            {/* 0727 行动项 #1 的交付物：按盘点期导出带小样标注的明细，直接给业务 */}
+            <ExportButton
+              href={`/api/export/count-lines?${new URLSearchParams({
+                ...(period ? { period } : {}),
+              }).toString()}`}
+              label="导出盘点明细"
+            />
             <Button
               type="primary"
               icon={<PlusOutlined />}
@@ -392,6 +426,14 @@ function CountInner() {
         }
         extra={
           <>
+            <Input
+              allowClear
+              placeholder="盘点期 YYYY-MM"
+              style={{ width: 150 }}
+              defaultValue={period}
+              onBlur={(e) => listState.setFilter({ period: e.target.value.trim() })}
+              onPressEnter={(e) => listState.setFilter({ period: (e.target as HTMLInputElement).value.trim() })}
+            />
             <SearchInput
               key={q}
               allowClear
@@ -546,6 +588,7 @@ function CountInner() {
           <div>
             <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="仓库">{detail.warehouseName ?? "—"}</Descriptions.Item>
+              <Descriptions.Item label="盘点期">{detail.bizDate ?? "—"}</Descriptions.Item>
               <Descriptions.Item label="模式">{MODE_LABELS[detail.mode] ?? detail.mode}</Descriptions.Item>
               <Descriptions.Item label="制单人">{detail.createdByName ?? "—"}</Descriptions.Item>
               <Descriptions.Item label="制单时间">{dayjs(detail.createdAt).format("YYYY-MM-DD HH:mm")}</Descriptions.Item>
@@ -562,6 +605,43 @@ function CountInner() {
                     : "—"}
               </Descriptions.Item>
             </Descriptions>
+            {/*
+              小样/非小样分组小计（0727 行动项：便于孙明「清晰区分库存类别」）。
+              「未分类」按参与正常销售归入非小样——与全站口径一致，
+              所以存量没打标之前这两行会显得小样为 0，这不是算错。
+            */}
+            <Table
+              size="small"
+              bordered
+              pagination={false}
+              style={{ marginBottom: 16 }}
+              rowKey="group"
+              dataSource={detail.roleSummary}
+              columns={[
+                {
+                  title: "库存类别",
+                  dataIndex: "group",
+                  width: 150,
+                  render: (v: string) => (
+                    <Tag color={v === "sample" ? "purple" : "blue"}>
+                      {v === "sample" ? "小样/赠品/试用/内用" : "正常销售（含未分类）"}
+                    </Tag>
+                  ),
+                },
+                { title: "行数", dataIndex: "lineCount", width: 80, align: "right" },
+                { title: "账面合计", dataIndex: "bookQty", width: 120, align: "right" },
+                { title: "实盘合计", dataIndex: "countedQty", width: 120, align: "right" },
+                {
+                  title: "差异",
+                  dataIndex: "diffQty",
+                  width: 120,
+                  align: "right",
+                  render: (v: string) => (
+                    <Typography.Text type={Number(v) === 0 ? undefined : "danger"}>{v}</Typography.Text>
+                  ),
+                },
+              ]}
+            />
             {editable ? (
               <>
                 <ScannerEntry

@@ -162,6 +162,52 @@ export const EXPORT_KINDS: Record<string, ExportKindDef> = {
     },
   },
 
+  /**
+   * 盘点明细（带小样标注）——0727 会议行动项 #1 的交付物：
+   * 「整理 7 月底盘点的小样库存数据，单独标注小样分类，提供给孙明」。
+   * 按盘点期取单、按业务用途可筛，导出即可直接交付，不必再手工拼表。
+   */
+  countLines: {
+    nameCn: "盘点明细",
+    paramsFromSearch: (sp) => ({
+      period: sp.get("period") ?? undefined,
+      pdId: Number(sp.get("pdId")) || undefined,
+      commercialRole: sp.get("commercialRole") ?? undefined,
+    }),
+    async produce(_user, params, cap, db) {
+      const { listCountLinesForExport } = await import("@/server/modules/inventory/count");
+      const { rows, total } = await listCountLinesForExport(
+        {
+          period: str(params.period),
+          pdId: num(params.pdId),
+          commercialRole: str(params.commercialRole),
+          limit: cap,
+        },
+        db,
+      );
+      const data = (rows as Record<string, unknown>[]).map((r) => ({
+        ...r,
+        commercialRole: COMMERCIAL_ROLE_LABELS[String(r.commercialRole)] ?? r.commercialRole,
+      }));
+      return {
+        rows: data,
+        total,
+        columns: [
+          { key: "docNo", title: "盘点单号" },
+          { key: "bizDate", title: "盘点期" },
+          { key: "warehouseName", title: "仓库" },
+          { key: "skuCode", title: "SKU编码" },
+          { key: "skuName", title: "货品名称" },
+          { key: "commercialRole", title: "业务用途" },
+          { key: "baseUom", title: "单位" },
+          { key: "bookQty", title: "账面数" },
+          { key: "countedQty", title: "实盘数" },
+          { key: "diffQty", title: "差异" },
+        ],
+      };
+    },
+  },
+
   ledger: {
     nameCn: "库存流水",
     paramsFromSearch: (sp) => ({

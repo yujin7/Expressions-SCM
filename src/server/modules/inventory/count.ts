@@ -537,3 +537,52 @@ export async function listCountTasks(
   ]);
   return { rows, total };
 }
+
+/**
+ * 盘点明细导出（0727 行动项 #1 的交付物）。
+ *
+ * 「整理 7 月底盘点的小样库存数据，单独标注小样分类，提供给孙明」——
+ * 按盘点期取单、按业务用途可筛，一次导出即可交付，不必再手工拼表。
+ * 差异在 SQL 里算（numeric 运算，禁 JS float）。
+ */
+export async function listCountLinesForExport(
+  opts: { period?: string; pdId?: number; commercialRole?: string; limit: number },
+  dbArg?: AnyDb,
+): Promise<{ rows: unknown[]; total: number }> {
+  const db = await resolveDb(dbArg);
+  const conds = [];
+  if (opts.pdId) conds.push(eq(pdDocs.id, opts.pdId));
+  if (opts.period) conds.push(sql`to_char(${pdDocs.bizDate}, 'YYYY-MM') = ${opts.period}`);
+  if (opts.commercialRole) conds.push(eq(skus.commercialRole, opts.commercialRole));
+  const where = conds.length ? and(...conds) : undefined;
+
+  const [rows, [{ total }]] = await Promise.all([
+    db
+      .select({
+        docNo: pdDocs.docNo,
+        bizDate: pdDocs.bizDate,
+        warehouseName: warehouses.name,
+        skuCode: skus.code,
+        skuName: skus.name,
+        commercialRole: skus.commercialRole,
+        baseUom: skus.baseUom,
+        bookQty: pdLines.bookQty,
+        countedQty: pdLines.countedQty,
+        diffQty: sql<string>`(${pdLines.countedQty} - ${pdLines.bookQty})`,
+      })
+      .from(pdLines)
+      .innerJoin(pdDocs, eq(pdLines.pdId, pdDocs.id))
+      .innerJoin(skus, eq(pdLines.skuId, skus.id))
+      .leftJoin(warehouses, eq(pdDocs.warehouseId, warehouses.id))
+      .where(where)
+      .orderBy(pdDocs.docNo, skus.code)
+      .limit(opts.limit),
+    db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(pdLines)
+      .innerJoin(pdDocs, eq(pdLines.pdId, pdDocs.id))
+      .innerJoin(skus, eq(pdLines.skuId, skus.id))
+      .where(where),
+  ]);
+  return { rows, total };
+}
