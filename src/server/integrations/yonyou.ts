@@ -126,7 +126,7 @@ export function isPublicYonyouAddress(address: string): boolean {
   return false;
 }
 
-type DnsLookup = (
+export type DnsLookup = (
   hostname: string,
 ) => Promise<readonly { address: string; family: number }[]>;
 

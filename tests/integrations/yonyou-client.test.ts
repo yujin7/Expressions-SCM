@@ -33,9 +33,15 @@ function jsonResponse(body: unknown): Response {
 
 const TOKEN_OK = { code: "00000", message: "成功！", data: { expire: 7200, access_token: "tok-abc" } };
 
-/** DNS 校验会真的解析域名；测试里注入一个恒定公网地址，避免依赖网络。 */
+/**
+ * 出站防重绑守卫会真的做 DNS 解析。此前这里没有注入点，单测每次都去解析
+ * c4.yonyoucloud.com——挂 VPN 或断网时每条用例卡满 30 秒超时（实测 5/9 失败、
+ * 单文件跑 150 秒）。注入一个恒定公网地址（不能用 203.0.113.x 这类文档保留段——守卫会正确地判它非公网）。
+ */
+const STUB_DNS = async () => [{ address: "121.199.0.1", family: 4 }] as const;
+
 function makeClient(fetchImpl: typeof fetch, now = () => new Date(1_700_000_000_000)) {
-  return new YonyouClient(CONFIG, { fetchImpl, retries: 0, now });
+  return new YonyouClient(CONFIG, { fetchImpl, retries: 0, now, dnsLookup: STUB_DNS });
 }
 
 describe("用友运行时客户端", () => {

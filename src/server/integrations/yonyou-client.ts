@@ -19,6 +19,7 @@ import { createHmac } from "node:crypto";
 import { fetchJson, type FetchJsonOptions } from "./http";
 import {
   assertYonyouDnsResolutionSafe,
+  type DnsLookup,
   isSafeYonyouEndpoint,
   type YonyouOpenApiConfig,
 } from "./yonyou";
@@ -64,13 +65,22 @@ export class YonyouClient {
   private readonly now: () => Date;
   private cachedToken: CachedToken | null = null;
 
+  private readonly dnsLookup?: DnsLookup;
+
   constructor(
     config: YonyouOpenApiConfig,
-    options: FetchJsonOptions & { now?: () => Date } = {},
+    /**
+     * `dnsLookup` 只用于测试注入。生产不传 → 走 node:dns 真实解析，
+     * 出站防重绑保护不变。此前没有这个注入点，单测每次都真去解析
+     * c4.yonyoucloud.com——挂 VPN 或断网时每条用例卡满 30 秒超时，
+     * 合并门因此变得又慢又不可信。
+     */
+    options: FetchJsonOptions & { now?: () => Date; dnsLookup?: DnsLookup } = {},
   ) {
     this.config = { ...config, baseUrl: config.baseUrl.replace(/\/+$/, "") };
     this.transport = options;
     this.now = options.now ?? (() => new Date());
+    this.dnsLookup = options.dnsLookup;
   }
 
   /** HMAC-SHA256(appSecret) over key-sorted `key+value` concatenation, base64. */
@@ -85,7 +95,7 @@ export class YonyouClient {
     if (!isSafeYonyouEndpoint(url, this.config.allowedHosts)) {
       throw new Error(`用友端点未通过白名单校验，拒绝发送凭据：${url}`);
     }
-    await assertYonyouDnsResolutionSafe(url);
+    await assertYonyouDnsResolutionSafe(url, this.dnsLookup);
   }
 
   /**

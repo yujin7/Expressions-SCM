@@ -59,6 +59,16 @@ export const withdrawDocSchema = z.object({
   version: z.number().int().positive(),
 });
 
+/** 手工状态流转：完成/短关/作废/重开。短关必须留原因（服务层同样再校验一次）。 */
+export const transitionDocSchema = z.object({
+  action: z.enum(["complete", "short_close", "void", "reopen"]),
+  reason: z.string().trim().max(500).optional(),
+  version: z.number().int().positive(),
+}).refine(
+  (v) => v.action !== "short_close" || (v.reason?.trim().length ?? 0) > 0,
+  { message: "短关必须填写原因", path: ["reason"] },
+);
+
 export const confirmDocSchema = z.object({
   version: z.number().int().positive(),
   note: z.string().trim().max(500).optional(),

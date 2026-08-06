@@ -44,7 +44,13 @@ function clientReturning(bizBody: unknown) {
     return json(bizBody);
   });
   return {
-    client: new YonyouClient(CONFIG, { fetchImpl: fetchMock as unknown as typeof fetch, retries: 0 }),
+    // 注入 DNS 桩：出站防重绑守卫会真的解析域名，不注入的话挂 VPN/断网时
+    // 每条用例卡满 30 秒超时（本轮实测 4/4 失败）。地址须是真公网段。
+    client: new YonyouClient(CONFIG, {
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      retries: 0,
+      dnsLookup: async () => [{ address: "121.199.0.1", family: 4 }],
+    }),
     fetchMock,
   };
 }

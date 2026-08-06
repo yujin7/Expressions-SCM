@@ -17,8 +17,9 @@ import { nextDocNo } from "@/server/docflow/doc-no";
 import type { DocStatus } from "@/server/docflow/state";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb, rethrowApproval } from "./common";
-import { approveDocSchema, createWoSchema, generateDocsSchema, withdrawDocSchema } from "./schemas";
+import { approveDocSchema, createWoSchema, generateDocsSchema, transitionDocSchema, withdrawDocSchema } from "./schemas";
 import { skuHeaderMatch } from "@/server/core/doc-search";
+import { transitionDoc } from "@/server/docflow/transition";
 import {
   capacityAuditSnapshot,
   getSupplierCapacitySignal,
@@ -561,6 +562,43 @@ export async function withdrawWO(
       });
       if (r.idempotent) return r;
       await writeAudit(tx, { userId: user.id, entity: "wo", entityId: id, action: "withdraw" });
+      return r;
+    });
+  } catch (e) {
+    rethrowApproval(e);
+  }
+}
+
+/**
+ * 手工状态流转：完成 / 短关 / 作废 / 重开。
+ * 此前 wo 没有任何到达「已完成」的路径，短关也全仓未实现——
+ * 少送尾数的单据会永久卡在「执行中」。这里只补人工收口，不做自动完成。
+ */
+export async function transitionWO(
+  user: SessionUser,
+  id: number,
+  input: unknown,
+  dbArg?: AnyDb,
+): Promise<{ status: string; idempotent: boolean }> {
+  const v = transitionDocSchema.parse(input);
+  if (v.action !== "void" && v.action !== "reopen") requireAnyRole(user, "pmc", "ops");
+  const db = await resolveDb(dbArg);
+  try {
+    return await db.transaction(async (tx: AnyDb) => {
+      const r = await transitionDoc(tx, {
+        docType: "wo",
+        table: woDocs,
+        docId: id,
+        user: { id: user.id, roles: user.roles },
+        action: v.action,
+        reason: v.reason,
+        expectedVersion: v.version,
+      });
+      if (r.idempotent) return r;
+      await writeAudit(tx, {
+        userId: user.id, entity: "wo", entityId: id, action: v.action,
+        after: { status: r.status, reason: v.reason ?? null },
+      });
       return r;
     });
   } catch (e) {
