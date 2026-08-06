@@ -303,6 +303,12 @@ export const pdDocs = pgTable("pd_docs", {
   ...docColumns(),
   warehouseId: integer("warehouse_id").notNull().references(() => warehouses.id),
   mode: text("mode").notNull().default("full"), // full 定期全盘 / partial 抽盘
+  /**
+   * 盘点期（业务日期）。0727 会议行动项要「7 月底盘点期的小样库存明细」，
+   * 而此前 pd_docs 只有 created_at——按创建时间筛等于按录入时间筛，
+   * 补录/次月才录的盘点会落到错误的期间里。可空：存量单据没有这个事实，不臆造。
+   */
+  bizDate: date("biz_date"),
 });
 export const pdLines = pgTable("pd_lines", {
   id: serial("id").primaryKey(),

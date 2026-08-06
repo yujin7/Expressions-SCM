@@ -61,6 +61,22 @@ describe("手工状态流转", () => {
     expect(r.status).toBe("closed");
     const logs = await db.select().from(auditLogs).where(eq(auditLogs.action, "short_close"));
     expect((logs[0].after as { reason?: string }).reason).toContain("少送");
+    // 原因必须落在单据自己的列上：列表/详情要直接看得到，不能只躺在审计里
+    const [after] = await db.select().from(bhDocs).where(eq(bhDocs.id, doc.id));
+    expect(after.closedReason).toContain("少送");
+  });
+
+  it("重开会清空短关原因，避免旧原因挂在重新执行中的单据上", async () => {
+    const { db, ops, admin, mkDoc } = await setup();
+    const doc = await mkDoc("in_progress");
+    await transitionBH(ops, doc.id, { action: "short_close", reason: "先关掉", version: 1 }, db);
+    const [closed] = await db.select().from(bhDocs).where(eq(bhDocs.id, doc.id));
+    expect(closed.closedReason).toBe("先关掉");
+
+    await transitionBH(admin, doc.id, { action: "reopen", version: closed.version }, db);
+    const [reopened] = await db.select().from(bhDocs).where(eq(bhDocs.id, doc.id));
+    expect(reopened.status).toBe("in_progress");
+    expect(reopened.closedReason).toBeNull();
   });
 
   it("已审批也能短关（还没开始执行就确定不做了）", async () => {

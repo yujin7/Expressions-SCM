@@ -288,6 +288,13 @@
       "when": 1785421900081,
       "tag": "0040_red_metal_master",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1786023223145,
+      "tag": "0041_modern_bulldozer",
+      "breakpoints": true
     }
   ]
 }

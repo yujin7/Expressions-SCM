@@ -13,6 +13,8 @@ export async function GET(req: NextRequest) {
         status: searchParams.get("status") ?? undefined,
         mode: searchParams.get("mode") ?? undefined,
         warehouseId,
+        // 盘点期 YYYY-MM：0727 行动项要按「7 月底盘点」这类期间取数
+        period: searchParams.get("period") ?? undefined,
         page,
         pageSize,
       }),

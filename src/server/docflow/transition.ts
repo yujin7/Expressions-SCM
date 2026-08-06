@@ -83,10 +83,19 @@ export async function transitionDoc(
       }
     }
 
+    // 短关原因写进单据自己的 closed_reason 列（docColumns 早就留了这一列），
+    // 不能只落审计——列表和详情要直接看得到"为什么关的"，否则每次都得翻审计日志。
+    // 重开时清空，避免上一次的原因挂在一张重新执行中的单据上。
+    const reasonPatch: Record<string, unknown> =
+      i.action === "short_close" ? { closedReason: i.reason!.trim() }
+        : i.action === "reopen" ? { closedReason: null }
+          : {};
+
     const updated = await tx
       .update(i.table)
       .set({
         status: target,
+        ...reasonPatch,
         version: sql`${cols.version} + 1`,
         updatedAt: new Date(),
       } as Record<string, unknown>)
