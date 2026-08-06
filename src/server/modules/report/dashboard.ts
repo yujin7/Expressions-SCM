@@ -24,8 +24,31 @@ import { participatesInNormalSalesMovement } from "@/server/rules/sku-standardiz
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
+/**
+ * 驾驶舱的跨维筛选范围。
+ *
+ * 口径（重要，界面必须如实呈现）：**只有销售类聚合跟随筛选**——
+ * 销量趋势、渠道结构、品牌销量、Top SKU、上月销量。
+ * 库存/临期/待审批/复核积压这些不跟随：它们不是按品牌或渠道记账的事实，
+ * 强行按销售维度切会得到似是而非的数字。
+ * 因此返回体里带 `scope.appliesTo` / `scope.notAppliedTo`，
+ * 让页面明确标注哪些卡片没跟着筛——否则同一页会自相矛盾
+ * （顶上写着"品牌=NING"，下面库存 KPI 却仍是全量）。
+ */
+export interface DashboardScope {
+  brand?: string;
+  channel?: string;
+}
+
 export interface DashboardData {
   generatedAt: string;
+  /** 当前筛选与其适用范围；无筛选时 brand/channel 均为 null */
+  scope: {
+    brand: string | null;
+    channel: string | null;
+    appliesTo: string[];
+    notAppliedTo: string[];
+  };
   kpi: {
     skuActive: number;
     spuCount: number;
@@ -77,19 +100,56 @@ export function clearDashboardCache(): void {
   dashboardCache.clear();
 }
 
-export async function getDashboard(roles: string[], dbArg?: AnyDb): Promise<DashboardData> {
+export async function getDashboard(
+  roles: string[],
+  scope: DashboardScope = {},
+  dbArg?: AnyDb,
+): Promise<DashboardData> {
   const bypass = dbArg !== undefined || process.env.NODE_ENV === "test";
-  const key = [...roles].sort().join(",");
+  // 缓存键必须含筛选，否则带筛选的结果会污染无筛选的缓存（反之亦然）
+  const key = [
+    [...roles].sort().join(","),
+    scope.brand ?? "",
+    scope.channel ?? "",
+  ].join("|");
   if (!bypass) {
     const hit = dashboardCache.get(key);
     if (hit && hit.expiresAt > Date.now()) return hit.value;
   }
-  const value = await computeDashboard(roles, dbArg);
+  const value = await computeDashboard(roles, scope, dbArg);
   if (!bypass) dashboardCache.set(key, { value, expiresAt: Date.now() + DASHBOARD_TTL_MS });
   return value;
 }
 
-async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<DashboardData> {
+const SCOPE_APPLIES_TO = ["销量趋势", "渠道结构", "品牌销量", "Top SKU", "上月销量"];
+const SCOPE_NOT_APPLIED_TO = ["库存总量", "临期风险", "待审批", "复核积压", "滞销/样品计数"];
+
+/**
+ * 销售类聚合的跨维筛选。用 EXISTS 而非加 join：只过滤、不改变行的纳入口径，
+ * 保证"不加筛选"时与改动前逐字等价（与决策工作室同一套做法）。
+ */
+function salesScopeConds(scope: DashboardScope) {
+  const conds = [];
+  if (scope.brand) {
+    conds.push(sql`EXISTS (
+      SELECT 1 FROM skus ss LEFT JOIN brands bb ON bb.id = ss.brand_id
+      WHERE ss.id = ${schema.salesMonthly.skuId} AND bb.code = ${scope.brand}
+    )`);
+  }
+  if (scope.channel) {
+    conds.push(sql`EXISTS (
+      SELECT 1 FROM channels cc
+      WHERE cc.id = ${schema.salesMonthly.channelId} AND cc.code = ${scope.channel}
+    )`);
+  }
+  return conds;
+}
+
+async function computeDashboard(
+  roles: string[],
+  scope: DashboardScope = {},
+  dbArg?: AnyDb,
+): Promise<DashboardData> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const today = new Date();
   const todayStr = todayShanghai(); // 效期天数的午夜锚点（与效期页/风险页同源）
@@ -102,6 +162,7 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
 
   /* ── 销量：月×品牌趋势 / 渠道 / 品牌 / TOP SKU（窗口动态推导） ── */
   const sm = schema.salesMonthly;
+  const scopeConds = salesScopeConds(scope);
   const { maxYm } = await salesWindow(db);
   const months6 = maxYm ? lastMonths(maxYm, 6) : [];
   const months3 = maxYm ? lastMonths(maxYm, 3) : [];
@@ -114,7 +175,7 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
     .from(sm)
     .innerJoin(schema.skus, eq(sm.skuId, schema.skus.id))
     .leftJoin(schema.brands, eq(schema.skus.brandId, schema.brands.id))
-    .where(months6.length ? inArray(sm.yearMonth, months6) : sql`false`)
+    .where(months6.length ? and(inArray(sm.yearMonth, months6), ...scopeConds) : sql`false`)
     .groupBy(sm.yearMonth, schema.brands.nameCn)
     .orderBy(sm.yearMonth);
 
@@ -145,7 +206,7 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
     .select({ name: schema.channels.name, qty: sql<string>`sum(${sm.qty})` })
     .from(sm)
     .innerJoin(schema.channels, eq(sm.channelId, schema.channels.id))
-    .where(months6.length ? inArray(sm.yearMonth, months6) : sql`false`)
+    .where(months6.length ? and(inArray(sm.yearMonth, months6), ...scopeConds) : sql`false`)
     .groupBy(schema.channels.name);
   const channelMix = channelRows
     .map((r) => ({ name: r.name, qty: Math.round(num(r.qty)) }))
@@ -159,7 +220,7 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
     .select({ code: schema.skus.code, name: schema.skus.name, lifecycle: schema.skus.lifecycle, qty: sql<string>`sum(${sm.qty})` })
     .from(sm)
     .innerJoin(schema.skus, eq(sm.skuId, schema.skus.id))
-    .where(months6.length ? inArray(sm.yearMonth, months6) : sql`false`)
+    .where(months6.length ? and(inArray(sm.yearMonth, months6), ...scopeConds) : sql`false`)
     .groupBy(schema.skus.code, schema.skus.name, schema.skus.lifecycle)
     .orderBy(sql`sum(${sm.qty}) desc`)
     .limit(10);
@@ -467,6 +528,12 @@ async function computeDashboard(roles: string[], dbArg?: AnyDb): Promise<Dashboa
   }
 
   return {
+    scope: {
+      brand: scope.brand ?? null,
+      channel: scope.channel ?? null,
+      appliesTo: SCOPE_APPLIES_TO,
+      notAppliedTo: SCOPE_NOT_APPLIED_TO,
+    },
     generatedAt: today.toISOString(),
     salesWindow: { months6, months3 },
     kpi: {

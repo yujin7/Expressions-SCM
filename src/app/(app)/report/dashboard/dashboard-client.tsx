@@ -49,6 +49,7 @@ import { exportCsv } from "@/components/exportCsv";
 import { DOC_STATUS_LABELS } from "@/components/labels";
 import { useListState } from "@/components/useListState";
 import type { DashboardData } from "@/server/modules/report/dashboard";
+import RemoteSelect from "@/components/RemoteSelect";
 
 const PALETTE = SERIES_COLORS;
 const EXP_COLORS: Record<string, string> = {
@@ -133,6 +134,17 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
     paginated: false,
   });
   const trendMode = viewState.filters.trend === "total" ? "总量" : "按品牌";
+  const scopeActive = Boolean(data.scope.brand || data.scope.channel);
+  /** 筛选写进 URL：本页服务端取数，链接即口径，复制给别人看到的是同一份结果 */
+  const pushScope = (next: { brand?: string; channel?: string }) => {
+    const params = new URLSearchParams();
+    const brand = "brand" in next ? next.brand : data.scope.brand ?? undefined;
+    const channel = "channel" in next ? next.channel : data.scope.channel ?? undefined;
+    if (brand) params.set("brand", brand);
+    if (channel) params.set("channel", channel);
+    const qs = params.toString();
+    router.push(qs ? `/report/dashboard?${qs}` : "/report/dashboard");
+  };
 
   const { kpi } = data;
   const channelTotal = data.channelMix.reduce((a, c) => a + c.qty, 0);
@@ -193,6 +205,47 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
           <Typography.Title level={4} className="dashboard-header__title">
             经营驾驶舱
           </Typography.Title>
+          {/*
+            跨维筛选：只作用于销售类聚合。哪些跟随、哪些不跟随必须写在明面上——
+            只筛一半却不说明，同一页会自相矛盾（顶上"品牌=NING"，下面库存 KPI 仍全量）。
+          */}
+          <Space wrap style={{ marginBottom: 8 }}>
+            <RemoteSelect
+              api="/api/master/brand"
+              getLabel={(r) => String(r.nameCn ?? r.code)}
+              getValue={(r) => String(r.code)}
+              allowClear
+              placeholder="全部品牌"
+              style={{ width: 160 }}
+              value={data.scope.brand ?? undefined}
+              onChange={(v) => pushScope({ brand: v == null ? undefined : String(v) })}
+            />
+            <RemoteSelect
+              api="/api/master/channel"
+              getLabel={(r) => String(r.name ?? r.code)}
+              getValue={(r) => String(r.code)}
+              allowClear
+              placeholder="全部渠道"
+              style={{ width: 160 }}
+              value={data.scope.channel ?? undefined}
+              onChange={(v) => pushScope({ channel: v == null ? undefined : String(v) })}
+            />
+          </Space>
+          {scopeActive ? (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 8 }}
+              message={`已按${data.scope.brand ? ` 品牌=${data.scope.brand}` : ""}${data.scope.channel ? ` 渠道=${data.scope.channel}` : ""} 筛选`}
+              description={
+                <>
+                  跟随筛选：{data.scope.appliesTo.join("、")}。
+                  <b>不随筛选变化</b>：{data.scope.notAppliedTo.join("、")}
+                  —— 这些不是按品牌/渠道记账的事实，按销售维度切会得到似是而非的数字。
+                </>
+              }
+            />
+          ) : null}
           <CaliberNote
             summary={`最后生成 ${generatedDate}。先看异常与覆盖，再下钻到责任工作台；数量跨 SKU 汇总只反映规模。`}
             detail={
