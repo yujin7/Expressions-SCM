@@ -91,3 +91,18 @@ describe("驾驶舱缓存键", () => {
     expect(keyBlock).toContain("scope.channel");
   });
 });
+
+describe("驾驶舱缓存容量", () => {
+  it("缓存必须有上限与淘汰——键含品牌/渠道后组合数无界，否则是内存泄漏", () => {
+    const src = readFileSync("src/server/modules/report/dashboard.ts", "utf8");
+    // 有上限常量
+    expect(src).toMatch(/DASHBOARD_CACHE_MAX\s*=\s*\d+/);
+    // 写入走带淘汰的函数，而不是裸 set
+    expect(src).toContain("rememberDashboard(key,");
+    expect(src).not.toMatch(/if \(!bypass\) dashboardCache\.set\(/);
+    // 淘汰逻辑真的会删除条目（过期清理 + 超限淘汰）
+    const fn = src.slice(src.indexOf("function rememberDashboard"), src.indexOf("/** 仅供测试断言缓存规模"));
+    expect(fn).toContain("dashboardCache.delete(");
+    expect(fn).toContain("expiresAt <= now");
+  });
+});

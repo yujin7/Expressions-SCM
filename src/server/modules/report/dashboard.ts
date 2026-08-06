@@ -95,9 +95,38 @@ interface DashboardCacheEntry {
 }
 const dashboardCache = new Map<string, DashboardCacheEntry>();
 const DASHBOARD_TTL_MS = 60_000;
+/**
+ * 缓存条目上限。
+ *
+ * 加跨维筛选前，键只由角色组合构成，天然有界（几十个）。加了 brand/channel 之后
+ * 键变成 角色×品牌×渠道，**没有上限**——而过期条目此前只在读取时被忽略、从不删除，
+ * 于是每选一个新组合就永久多留一份完整 DashboardData（含趋势、TopSKU、临期分桶）。
+ * 长期运行的服务器上这是内存泄漏。写入时先清过期，仍超限再按插入序淘汰最旧的。
+ */
+const DASHBOARD_CACHE_MAX = 200;
 
 export function clearDashboardCache(): void {
   dashboardCache.clear();
+}
+
+function rememberDashboard(key: string, entry: DashboardCacheEntry): void {
+  dashboardCache.set(key, entry);
+  if (dashboardCache.size <= DASHBOARD_CACHE_MAX) return;
+  const now = Date.now();
+  for (const [k, v] of dashboardCache) {
+    if (v.expiresAt <= now) dashboardCache.delete(k);
+  }
+  // 仍超限说明短时间内涌入大量不同组合：按 Map 的插入序淘汰最旧的
+  while (dashboardCache.size > DASHBOARD_CACHE_MAX) {
+    const oldest = dashboardCache.keys().next();
+    if (oldest.done) break;
+    dashboardCache.delete(oldest.value);
+  }
+}
+
+/** 仅供测试断言缓存规模，不参与业务逻辑。 */
+export function dashboardCacheSizeForTest(): number {
+  return dashboardCache.size;
 }
 
 export async function getDashboard(
@@ -117,7 +146,7 @@ export async function getDashboard(
     if (hit && hit.expiresAt > Date.now()) return hit.value;
   }
   const value = await computeDashboard(roles, scope, dbArg);
-  if (!bypass) dashboardCache.set(key, { value, expiresAt: Date.now() + DASHBOARD_TTL_MS });
+  if (!bypass) rememberDashboard(key, { value, expiresAt: Date.now() + DASHBOARD_TTL_MS });
   return value;
 }
 
