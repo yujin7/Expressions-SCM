@@ -240,6 +240,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/admin/users", label: "用户管理" },
       { key: "/admin/audit", label: "审计日志" },
       { key: "/admin/params", label: "运行参数" },
+      { key: "/admin/approval-config", label: "审批节点配置" },
       { key: "/admin/health", label: "运维面板" },
     ],
   },
@@ -267,6 +268,8 @@ const MENU_ROLES: Record<string, string[]> = {
   "/admin/users": [],
   "/admin/audit": ["finance"],
   "/admin/params": ["pmc", "purchasing", "finance"],
+  // 空数组=仅管理员（同 /admin/users）：这是 maker-checker 闸本身的配置
+  "/admin/approval-config": [],
   "/settlement/js": ["finance", "purchasing"],
   "/report/settlement-summary": ["finance"],
   "/report/process-mining": ["pmc", "finance"],
