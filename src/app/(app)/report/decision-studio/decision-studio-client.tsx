@@ -40,6 +40,7 @@ import { VISUAL_COLOR } from "@/components/decision-visuals";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import { useListState } from "@/components/useListState";
+import RemoteSelect from "@/components/RemoteSelect";
 import type {
   DecisionStudioResult,
   StudioDimension,
@@ -49,6 +50,7 @@ const DIMENSION_LABEL: Record<StudioDimension, string> = {
   brand: "品牌",
   channel: "渠道",
   sku: "SKU",
+  month: "月份",
 };
 
 function pctLabel(value: number | null): string {
@@ -76,13 +78,16 @@ export default function DecisionStudioClient() {
   const [loading, setLoading] = useState(true);
   const view = useListState({
     key: "decision-studio",
-    defaults: { dimension: "brand", key: "", tab: "focus" },
+    defaults: { dimension: "brand", key: "", tab: "focus", brand: "", channel: "" },
     paginated: false,
   });
-  const dimension = (["brand", "channel", "sku"].includes(view.filters.dimension)
+  const dimension = (["brand", "channel", "sku", "month"].includes(view.filters.dimension)
     ? view.filters.dimension
     : "brand") as StudioDimension;
   const selectedKey = view.filters.key;
+  // 跨维筛选：与分组维度正交，可同时收窄品牌与渠道（0727 会议的「NING × 天猫」）
+  const scopeBrand = view.filters.brand;
+  const scopeChannel = view.filters.channel;
   const activeTab = view.filters.tab || "focus";
 
   const load = useCallback(async () => {
@@ -90,6 +95,8 @@ export default function DecisionStudioClient() {
     try {
       const query = new URLSearchParams({ dimension });
       if (selectedKey) query.set("key", selectedKey);
+      if (scopeBrand) query.set("brand", scopeBrand);
+      if (scopeChannel) query.set("channel", scopeChannel);
       setData(await fetchJson<DecisionStudioResult>(
         `/api/report/decision-studio?${query.toString()}`,
       ));
@@ -98,7 +105,7 @@ export default function DecisionStudioClient() {
     } finally {
       setLoading(false);
     }
-  }, [dimension, selectedKey, message]);
+  }, [dimension, selectedKey, scopeBrand, scopeChannel, message]);
 
   useEffect(() => {
     void load();
@@ -112,7 +119,12 @@ export default function DecisionStudioClient() {
     [data],
   );
   const scope = data?.selectedLabel ?? "全部";
-  const filters = [`维度：${DIMENSION_LABEL[dimension]}`, `范围：${scope}`];
+  const filters = [
+    `维度：${DIMENSION_LABEL[dimension]}`,
+    `范围：${scope}`,
+    ...(scopeBrand ? [`品牌：${scopeBrand}`] : []),
+    ...(scopeChannel ? [`渠道：${scopeChannel}`] : []),
+  ];
   const paretoRows = (data?.pareto ?? []).slice(0, 30);
   const heatMax = Math.max(0, ...(data?.daily.dates ?? []).map((item) => item.qty));
 
@@ -188,11 +200,37 @@ export default function DecisionStudioClient() {
               { label: "品牌", value: "brand" },
               { label: "渠道", value: "channel" },
               { label: "SKU", value: "sku" },
+              { label: "月份", value: "month" },
             ]}
             onChange={(event) => view.setFilter({
               dimension: event.target.value as StudioDimension,
               key: "",
             })}
+          />
+          {/*
+            跨维筛选：与上面的分组维度**正交**。旧实现只有一个 dimension + 一个 key，
+            品牌与渠道互斥单选，做不到「NING × 天猫」——0727 会议要的正是这种组合。
+            这里走主数据接口取候选，选中后进 SQL（EXISTS），不是前端裁剪。
+          */}
+          <RemoteSelect
+            api="/api/master/brand"
+            getLabel={(r) => String(r.nameCn ?? r.code)}
+            getValue={(r) => String(r.code)}
+            allowClear
+            placeholder="全部品牌"
+            style={{ width: 160 }}
+            value={scopeBrand || undefined}
+            onChange={(v) => view.setFilter({ brand: v == null ? "" : String(v), key: "" })}
+          />
+          <RemoteSelect
+            api="/api/master/channel"
+            getLabel={(r) => String(r.name ?? r.code)}
+            getValue={(r) => String(r.code)}
+            allowClear
+            placeholder="全部渠道"
+            style={{ width: 160 }}
+            value={scopeChannel || undefined}
+            onChange={(v) => view.setFilter({ channel: v == null ? "" : String(v), key: "" })}
           />
           <Select
             allowClear
