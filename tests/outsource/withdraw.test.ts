@@ -13,6 +13,7 @@ import { eq } from "drizzle-orm";
 import { approvals, auditLogs, bhDocs, bhLines, skus, spus, users } from "@/db/schema";
 import { createTestDb } from "../helpers/db";
 import { withdrawBH } from "@/server/modules/outsource/bh";
+import type { DocStatus } from "@/server/docflow/state";
 
 async function setup() {
   const { db } = await createTestDb();
@@ -31,7 +32,7 @@ async function setup() {
     code: "WD-001", name: "撤回测试 SKU", spuId: spu.id, skuType: "finished", baseUom: "支",
   }).returning();
 
-  const mkDoc = async (status: string) => {
+  const mkDoc = async (status: DocStatus) => {
     const [doc] = await db.insert(bhDocs).values({
       docNo: `BH-WD-${Math.abs(status.length * 7 + Date.parse("2026-08-06"))}-${status}`,
       status, createdBy: maker.id, version: 1,
@@ -95,7 +96,7 @@ describe("单据撤回", () => {
 
   it("已审批/执行中不可撤回——纠错走红字冲销，不是逆向流转", async () => {
     const { db, maker, mkDoc } = await setup();
-    for (const status of ["approved", "in_progress", "completed"]) {
+    for (const status of ["approved", "in_progress", "completed"] as const) {
       const doc = await mkDoc(status);
       await expect(
         withdrawBH(maker, doc.id, { version: 1 }, db),

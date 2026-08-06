@@ -12,6 +12,7 @@ import { eq } from "drizzle-orm";
 import { auditLogs, bhDocs, users } from "@/db/schema";
 import { createTestDb } from "../helpers/db";
 import { transitionBH } from "@/server/modules/outsource/bh";
+import type { DocStatus } from "@/server/docflow/state";
 
 async function setup() {
   const { db } = await createTestDb();
@@ -26,7 +27,7 @@ async function setup() {
   const admin = await mk("tr_admin", ["admin"]);
 
   let seq = 0;
-  const mkDoc = async (status: string, createdBy = ops.id) => {
+  const mkDoc = async (status: DocStatus, createdBy = ops.id) => {
     seq += 1;
     const [doc] = await db.insert(bhDocs).values({
       docNo: `BH-TR-${seq}`, status, createdBy, version: 1,
