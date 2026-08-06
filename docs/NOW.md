@@ -225,7 +225,14 @@
 
 - 同事访问的是**容器**（`0.0.0.0:3100`），不是 dev server。dev 只监听 127.0.0.1
   且改代码就重编译，不能给人用。
-- **对外地址已改用 Bonjour 主机名 `http://MacBook-Pro-3.local:3100`——它不随 IP 变**，
+- **对外地址：`http://exp-scm.local:3100`**（发这个给同事，不要发 IP）。
+  由 `npm run lan:alias` 装的用户级 LaunchAgent 用 `dns-sd -P` 广播一条 mDNS 代理记录，
+  **不需要 sudo、不改这台 Mac 的机器名**（同事看不出是谁的机器），
+  IP 变了守护会在 20 秒内自动重新注册，进程被杀也会自愈（实测 12 秒恢复）。
+  守护脚本必须装在 `~/Library/Application Support/exp-scm/`——本仓库在 `~/Downloads` 下，
+  属 macOS TCC 保护目录，launchd 派生进程读不到，实测报 `Operation not permitted`。
+  卸载：`npm run lan:alias:remove`。
+- ~~对外地址曾用 Bonjour 主机名 `MacBook-Pro-3.local`~~（会暴露机器主人，已弃用）——它不随 IP 变，
   这是这一串故障的治本办法。2026-08-05~06 实测这台机器一天内漂了六次
   （3.154 → 10.86 → 3.154 → 1.253 → 30.138 → 31.49），每次 AUTH_URL 指向旧地址
   就表现为"网站打不开"：页面还能开（200），但登录回跳进黑洞。

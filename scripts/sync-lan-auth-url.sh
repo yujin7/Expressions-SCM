@@ -33,9 +33,12 @@ esac
 if [[ -n "$MANUAL" ]]; then
   TARGET="$MANUAL"
 elif [[ "$MODE" == "host" ]]; then
-  TARGET="$(scutil --get LocalHostName 2>/dev/null || true).local"
-  if [[ "$TARGET" == ".local" ]]; then
-    echo "✗ 取不到 Bonjour 主机名，改用 IP：npm run lan:sync -- --ip" >&2
+  # 固定别名（由 npm run lan:alias 的守护广播，不随 IP 变、也不暴露机器主人）
+  TARGET="exp-scm.local"
+  if ! curl -s -m 4 -o /dev/null "http://${TARGET}:${PORT}/api/health" 2>/dev/null; then
+    echo "⚠ ${TARGET} 当前解析不到——mDNS 别名守护可能没在跑。" >&2
+    echo "  先执行：npm run lan:alias" >&2
+    echo "  或临时改用 IP：npm run lan:sync -- --ip" >&2
     exit 1
   fi
 else
