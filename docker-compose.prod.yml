@@ -19,6 +19,20 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+  # 迁移门禁（ops/deploy.sh 调用；profiles 保证它不会随 `up -d` 一起常驻）。
+  # 必须用 migrator 阶段——runner 里没有 drizzle-kit 的依赖，见 Dockerfile 注释。
+  migrate:
+    build:
+      context: .
+      target: migrator
+    profiles: ["tools"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://scm:${POSTGRES_PASSWORD}@db:5432/scm
+    restart: "no"
+
   app:
     build: .
     restart: unless-stopped

@@ -37,7 +37,7 @@ else
   ops/check-backup.sh
 fi
 echo "==> 迁移门禁（drizzle-kit migrate，对 prod 库）"
-compose run --rm app npx drizzle-kit migrate
+compose --profile tools run --rm migrate
 echo "==> 滚动重启"
 compose up -d
 

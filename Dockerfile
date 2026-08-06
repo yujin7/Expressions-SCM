@@ -12,6 +12,21 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
+# 迁移门禁专用镜像。
+#
+# 为什么单独一个阶段：runner 是 standalone 精简产物，虽然拷了 drizzle-kit 目录，
+# 但既没有 node_modules/.bin 的 shim，也没有它的依赖（esbuild）——
+# `compose run --rm app npx drizzle-kit migrate`（ops/deploy.sh 的迁移步骤）
+# 实测先报 `drizzle-kit: not found`，绕开 shim 直接 `node bin.cjs` 又报
+# `Cannot find module 'esbuild'`（读 drizzle.config.ts 需要它）。
+# 也就是说**只要有待应用的迁移，文档里的部署流程就会失败**。
+# build 阶段本来就带完整 node_modules 与源码，直接复用最省事，也不会把
+# 这些开发期依赖带进运行镜像。
+FROM build AS migrator
+WORKDIR /app
+ENV NODE_ENV=production
+CMD ["npx", "drizzle-kit", "migrate"]
+
 FROM node:24-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000
