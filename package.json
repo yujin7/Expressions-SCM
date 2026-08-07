@@ -55,7 +55,9 @@
     "jst:init-token": "tsx scripts/jst-init-token.ts",
     "lan:sync": "bash scripts/sync-lan-auth-url.sh",
     "lan:alias": "bash scripts/install-mdns-alias.sh",
-    "lan:alias:remove": "bash scripts/remove-mdns-alias.sh"
+    "lan:alias:remove": "bash scripts/remove-mdns-alias.sh",
+    "access:tunnel": "bash scripts/setup-public-tunnel.sh",
+    "access:tailscale": "bash scripts/setup-tailscale-access.sh"
   },
   "dependencies": {
     "@ant-design/cssinjs": "1.24.0",
