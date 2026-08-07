@@ -55,7 +55,13 @@ async function main() {
       bump("users", false);
       continue;
     }
-    await db.insert(schema.users).values({ ...u, passwordHash, active: true });
+    await db.insert(schema.users).values({
+      ...u,
+      passwordHash,
+      active: true,
+      // 所有种子账号共享同一初始口令，只能作为一次性引导凭证。
+      mustChangePassword: true,
+    });
     bump("users", true);
   }
 

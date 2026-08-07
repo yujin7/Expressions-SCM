@@ -138,8 +138,8 @@ export default function UsersClient() {
       title: "状态",
       dataIndex: "active",
       width: 110,
-      render: (v: boolean, r) =>
-        !v ? <Tag color="default">已停用</Tag> : r.lockedUntil && new Date(r.lockedUntil) > new Date() ? <Tag color="red">已锁定</Tag> : <Tag color="green">正常</Tag>,
+      render: (v: boolean) =>
+        !v ? <Tag color="default">已停用</Tag> : <Tag color="green">正常</Tag>,
     },
     {
       title: "飞书登录",

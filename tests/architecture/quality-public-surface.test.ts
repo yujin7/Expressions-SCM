@@ -44,7 +44,8 @@ describe("quality API and public electronic-label surface", () => {
     const middleware = read("src/middleware.ts");
 
     expect(publicRoute).toContain("getPublicElectronicLabel(token)");
-    expect(publicRoute).toContain('"Cache-Control", "no-store"');
+    expect(publicRoute).toContain('"Cache-Control", "private, no-store, max-age=0"');
+    expect(publicRoute).toContain("protectTokenResponse(errorResponse(");
     expect(publicRoute).not.toContain("guardRead");
     expect(publicRoute).not.toContain("guardFreshWrite");
     expect(page).toContain("getPublicElectronicLabel(token)");

@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { errorResponse } from "@/server/modules/master/common";
 import { getPublicElectronicLabel } from "@/server/modules/quality/service";
 
+function protectTokenResponse(response: NextResponse): NextResponse {
+  response.headers.set("Cache-Control", "private, no-store, max-age=0");
+  response.headers.set("X-Content-Type-Options", "nosniff");
+  return response;
+}
+
 /** Public electronic-label read model. The service returns an explicit allow-listed DTO. */
 export async function GET(
   _req: NextRequest,
@@ -10,10 +16,8 @@ export async function GET(
   try {
     const { token } = await params;
     const response = NextResponse.json(await getPublicElectronicLabel(token));
-    response.headers.set("Cache-Control", "no-store");
-    response.headers.set("X-Content-Type-Options", "nosniff");
-    return response;
+    return protectTokenResponse(response);
   } catch (e) {
-    return errorResponse(e, { path: "/api/public/e-label/[token]", method: "GET" });
+    return protectTokenResponse(errorResponse(e, { path: "/api/public/e-label/[token]", method: "GET" }));
   }
 }

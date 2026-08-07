@@ -1,7 +1,7 @@
 /**
  * 登录限速（红队第五轮）：内存滑动窗口纯逻辑直测（不触库、不走 next-auth 流程）。
- * 口径：每 IP 全部尝试 20 次 / 5 分钟；每用户名失败尝试 10 次 / 5 分钟（成功清零）；
- * 窗口滑动后自动放行；陈旧键可被清扫，Map 不无界增长。
+ * 口径：每 IP 全部尝试 20 次 / 5 分钟；每用户名+来源失败 10 次 / 5 分钟；
+ * 攻击来源不能全局锁账号，窗口滑动后自动放行，陈旧键可被清扫。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -44,26 +44,32 @@ describe("loginRateLimiter", () => {
     expect(loginRateLimiter.touchIp("9.9.9.9", T0 + 5 * MIN + 20)).toBe(true);
   });
 
-  it("每用户名失败 10 次 / 5 分钟：第 11 次前 userBlocked；成功登录清零", () => {
-    for (let i = 0; i < 9; i++) loginRateLimiter.recordFailure("alice", T0 + i * 1000);
-    expect(loginRateLimiter.userBlocked("alice", T0 + 10_000)).toBe(false);
-    loginRateLimiter.recordFailure("alice", T0 + 10_000);
-    expect(loginRateLimiter.userBlocked("alice", T0 + 11_000)).toBe(true);
-    // 其他用户名不受影响
-    expect(loginRateLimiter.userBlocked("bob", T0 + 11_000)).toBe(false);
-    // 成功登录清零
-    loginRateLimiter.clearUser("alice");
-    expect(loginRateLimiter.userBlocked("alice", T0 + 12_000)).toBe(false);
-    // 窗口滑动自然解封
-    for (let i = 0; i < 10; i++) loginRateLimiter.recordFailure("carol", T0 + i);
-    expect(loginRateLimiter.userBlocked("carol", T0 + 10_000)).toBe(true);
-    expect(loginRateLimiter.userBlocked("carol", T0 + 5 * MIN + 1)).toBe(false);
+  it("同一用户名+来源失败 10 次后限速；其他来源仍能合法登录", () => {
+    for (let i = 0; i < 9; i++) loginRateLimiter.recordFailure("alice", "203.0.113.7", T0 + i * 1000);
+    expect(loginRateLimiter.principalSourceBlocked("alice", "203.0.113.7", T0 + 10_000)).toBe(false);
+    loginRateLimiter.recordFailure("alice", "203.0.113.7", T0 + 10_000);
+    expect(loginRateLimiter.principalSourceBlocked("alice", "203.0.113.7", T0 + 11_000)).toBe(true);
+
+    // 同名账号的另一来源不受攻击桶影响——这是防公开账号锁死的关键不变量。
+    expect(loginRateLimiter.principalSourceBlocked("alice", "198.51.100.9", T0 + 11_000)).toBe(false);
+    // 其他用户名也不受影响。
+    expect(loginRateLimiter.principalSourceBlocked("bob", "203.0.113.7", T0 + 11_000)).toBe(false);
+
+    // 成功只清当前来源；不能替攻击来源清桶。
+    loginRateLimiter.recordFailure("carol", "203.0.113.7", T0);
+    loginRateLimiter.recordFailure("carol", "198.51.100.9", T0);
+    loginRateLimiter.clearPrincipalSource("carol", "198.51.100.9");
+    expect(loginRateLimiter.principalSourceBlocked("carol", "198.51.100.9", T0 + 1000)).toBe(false);
+    expect(loginRateLimiter.failedByPrincipalSource.size).toBe(2);
+
+    // 窗口滑动自然解封。
+    expect(loginRateLimiter.principalSourceBlocked("alice", "203.0.113.7", T0 + 5 * MIN + 11_000)).toBe(false);
   });
 
   it("陈旧键清理：出窗检查即删除条目，Map 不残留", () => {
-    loginRateLimiter.recordFailure("dave", T0);
-    expect(loginRateLimiter.failedByUser.has("dave")).toBe(true);
-    loginRateLimiter.userBlocked("dave", T0 + 6 * MIN); // 出窗检查触发删除
-    expect(loginRateLimiter.failedByUser.has("dave")).toBe(false);
+    loginRateLimiter.recordFailure("dave", "direct", T0);
+    expect(loginRateLimiter.failedByPrincipalSource.size).toBe(1);
+    loginRateLimiter.principalSourceBlocked("dave", "direct", T0 + 6 * MIN); // 出窗检查触发删除
+    expect(loginRateLimiter.failedByPrincipalSource.size).toBe(0);
   });
 });

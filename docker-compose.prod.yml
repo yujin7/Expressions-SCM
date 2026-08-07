@@ -34,7 +34,14 @@ services:
     restart: "no"
 
   app:
-    build: .
+    build:
+      context: .
+      args:
+        # HSTS 是构建期开关（next.config.ts 的 headers() 在 next build 时求值并烘焙进
+        # routes-manifest.json）。放在 environment 里是无效的——2026-08-07 实测容器 env
+        # 有 PUBLIC_HTTPS=1 但响应头里没有 HSTS。走稳定 HTTPS 域名时才置 1，
+        # 且必须重新构建镜像：docker compose build --build-arg PUBLIC_HTTPS=1 app
+        PUBLIC_HTTPS: ${PUBLIC_HTTPS-}
     restart: unless-stopped
     depends_on:
       db:
@@ -48,8 +55,8 @@ services:
       # 都已 trustHost: true 也一样，因为 standalone 用 HOSTNAME/PORT 兜底而非请求 Host 头。
       # 机器 IP 变了就必须同步这里：`npm run lan:sync` 会自动改好并重启。
       AUTH_URL: ${AUTH_URL:?}
-      # 走 HTTPS（Cloudflare 隧道）时置 1 以启用 HSTS；明文 HTTP 时必须留空
-      PUBLIC_HTTPS: ${PUBLIC_HTTPS-}
+      # 注意：PUBLIC_HTTPS 刻意**不**放在这里。它只在构建期有意义（见上面 build.args），
+      # 放运行期会让人以为改了就生效，实际什么也不会发生。
 
       # 飞书：留空仍是未配置；不在 Compose 内造出可运行默认值。
       FEISHU_APP_ID: ${FEISHU_APP_ID-}

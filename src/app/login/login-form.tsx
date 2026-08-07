@@ -9,7 +9,6 @@ import { useRouter } from "next/navigation";
 const ERROR_MESSAGES: Record<string, string> = {
   invalid: "用户名或密码错误",
   disabled: "账号已停用，请联系管理员",
-  locked: "连续失败次数过多，账号已锁定，请 15 分钟后重试",
   rate_limited: "尝试过于频繁，请稍后再试",
 };
 

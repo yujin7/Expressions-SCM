@@ -9,6 +9,11 @@ FROM node:24-alpine AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# HSTS 开关必须在**构建期**给：next.config.ts 的 headers() 由 next build 求值后
+# 烘焙进 routes-manifest.json，运行期再设这个变量对已构建的镜像无效（2026-08-07 实测）。
+# 走稳定 HTTPS 域名时：docker compose build --build-arg PUBLIC_HTTPS=1 app
+ARG PUBLIC_HTTPS=""
+ENV PUBLIC_HTTPS=${PUBLIC_HTTPS}
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

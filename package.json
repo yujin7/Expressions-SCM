@@ -56,6 +56,9 @@
     "lan:sync": "bash scripts/sync-lan-auth-url.sh",
     "lan:alias": "bash scripts/install-mdns-alias.sh",
     "lan:alias:remove": "bash scripts/remove-mdns-alias.sh",
+    "access:public": "bash scripts/install-public-tunnel.sh",
+    "access:public:remove": "bash scripts/remove-public-tunnel.sh",
+    "access:link": "bash scripts/show-access-link.sh",
     "access:tunnel": "bash scripts/setup-public-tunnel.sh",
     "access:tailscale": "bash scripts/setup-tailscale-access.sh"
   },
