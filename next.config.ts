@@ -46,6 +46,15 @@ const nextConfig: NextConfig = {
           // 跳外链时不泄露内部路径（路径里带单号、SKU 编码）
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+          /*
+           * HSTS 只在确认走 HTTPS 后才开（PUBLIC_HTTPS=1 由 scripts/setup-public-tunnel.sh 设置）。
+           * 明文 HTTP 时开会把自己锁在门外——浏览器记住后会强制跳 https，
+           * 而局域网 http://<ip>:3100 没有证书，直接变成打不开。
+           * 走 Cloudflare 隧道后由 Cloudflare 终止 TLS，这时开才是对的。
+           */
+          ...(process.env.PUBLIC_HTTPS === "1"
+            ? [{ key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" }]
+            : []),
         ],
       },
     ];

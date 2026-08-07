@@ -48,6 +48,8 @@ services:
       # 都已 trustHost: true 也一样，因为 standalone 用 HOSTNAME/PORT 兜底而非请求 Host 头。
       # 机器 IP 变了就必须同步这里：`npm run lan:sync` 会自动改好并重启。
       AUTH_URL: ${AUTH_URL:?}
+      # 走 HTTPS（Cloudflare 隧道）时置 1 以启用 HSTS；明文 HTTP 时必须留空
+      PUBLIC_HTTPS: ${PUBLIC_HTTPS-}
 
       # 飞书：留空仍是未配置；不在 Compose 内造出可运行默认值。
       FEISHU_APP_ID: ${FEISHU_APP_ID-}
