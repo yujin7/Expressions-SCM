@@ -13,7 +13,7 @@
     "dev:session": "node --import tsx scripts/dev-session.ts",
     "scm": "node --import tsx scripts/scm.ts",
     "clean:cache": "node --import tsx scripts/clean-caches.ts",
-    "build": "next build && node --import tsx scripts/sanitize-standalone.ts",
+    "build": "next build && node --import tsx scripts/sanitize-standalone.ts && node --import tsx scripts/normalize-next-env.ts",
     "start": "next start",
     "postinstall": "node scripts/patch-minimatch-brace-api.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",

@@ -128,13 +128,14 @@ export const INTERVAL_JOBS: IntervalJob[] = [
 export async function runIntervalJobOnce(
   job: IntervalJob,
   dbArg?: AnyDb,
-): Promise<{ ok: boolean; message: string }> {
+): Promise<{ ok: boolean; message: string; summary?: unknown }> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const startedAt = new Date();
   let ok = true;
   let message = "";
+  let summary: unknown;
   try {
-    const summary = await job.run(db);
+    summary = await job.run(db);
     try {
       message = JSON.stringify(summary) ?? "";
     } catch {
@@ -151,7 +152,25 @@ export async function runIntervalJobOnce(
   } catch (e) {
     log({ level: "warn", msg: "job_runs 落库失败", job: job.name, error: String(e) });
   }
-  return { ok, message };
+  return { ok, message, summary };
+}
+
+/**
+ * 运维手跑已登记任务的唯一入口。
+ *
+ * 直接调用任务函数虽能完成恢复，却不会写 job_runs；失败看门狗因此仍会把任务判作
+ * 连续失败。这里复用同一任务目录和同一留痕路径，并把失败重新抛给 CLI，确保退出码非 0。
+ */
+export async function runNamedIntervalJobOnce(name: string, dbArg?: AnyDb): Promise<unknown> {
+  const job = INTERVAL_JOBS.find((candidate) => candidate.name === name);
+  if (!job) {
+    throw new Error(`未知已登记任务: ${name}`);
+  }
+  const result = await runIntervalJobOnce(job, dbArg);
+  if (!result.ok) {
+    throw new Error(result.message || `任务 ${name} 执行失败`);
+  }
+  return result.summary;
 }
 
 const RUNNER_KEY = Symbol.for("supply-chain.interval-runner");

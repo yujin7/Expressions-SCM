@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { createTestDb, type TestDb } from "../helpers/db";
 import { jobRuns } from "@/db/schema";
-import { ensureIntervalJobsStarted, INTERVAL_JOBS, runIntervalJobOnce } from "@/jobs/interval-runner";
+import {
+  ensureIntervalJobsStarted,
+  INTERVAL_JOBS,
+  runIntervalJobOnce,
+  runNamedIntervalJobOnce,
+} from "@/jobs/interval-runner";
 
 describe("interval-runner 进程内调度回退", () => {
   let db: TestDb;
@@ -78,5 +83,13 @@ describe("interval-runner 进程内调度回退", () => {
     expect(r.ok).toBe(true);
     const rows = await db.select().from(jobRuns);
     expect(rows.some((x) => x.job === "snapshot-age" && x.ok)).toBe(true);
+  });
+
+  it("运维手跑只接受已登记任务，并与调度器共用 job_runs 留痕", async () => {
+    await expect(runNamedIntervalJobOnce("snapshot-age", db)).resolves.toBeDefined();
+    await expect(runNamedIntervalJobOnce("not-registered", db)).rejects.toThrow("未知已登记任务");
+    const rows = await db.select().from(jobRuns);
+    expect(rows.some((x) => x.job === "snapshot-age" && x.ok)).toBe(true);
+    expect(rows.some((x) => x.job === "not-registered")).toBe(false);
   });
 });
