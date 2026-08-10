@@ -6,18 +6,14 @@
  *
  * 事故背景（2026-08-03）：曾同时存在 .env 与 .env.local，Next.js 里 .env.local 覆盖 .env，
  * 而临时体检脚本只读 .env —— 于是"体检说没配"和"应用实际在用"是两套值，
- * 简道云明明配好了却被报成缺 API Key。现已统一为 .env 单一配置源，本脚本也走同一份。
+ * 简道云明明配好了却被报成缺 API Key。现已统一为单一配置源，本脚本也直接复用
+ * Next 的加载器，保持引号、注释、变量展开和优先级语义完全一致。
  */
-import { readFileSync } from "node:fs";
-
-for (const line of readFileSync(".env", "utf8").split(/\r?\n/)) {
-  const m = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim());
-  if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2];
-}
-
+import { loadJobEnvironment } from "../src/jobs/load-env";
 import { getConnectorReadiness } from "../src/server/integrations/connector";
 
 function main(): void {
+  loadJobEnvironment();
   const rows = getConnectorReadiness(process.env) as unknown as Record<string, unknown>[];
   for (const o of rows) {
     console.log(`\n── ${String(o.label)} [${String(o.key)}]`);
