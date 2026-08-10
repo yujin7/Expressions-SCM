@@ -42,6 +42,7 @@ tests/
 scripts/*
 !scripts/patch-minimatch-brace-api.mjs
 !scripts/sanitize-standalone.ts
+!scripts/normalize-next-env.ts
 **/*.test.ts
 **/*.test.tsx
 README.md

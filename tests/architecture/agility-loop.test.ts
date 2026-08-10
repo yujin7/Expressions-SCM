@@ -12,6 +12,9 @@ describe("agile delivery loop", () => {
     expect(pkg.scripts.dev).toContain("NEXT_DIST_DIR=.next-dev");
     expect(pkg.scripts["dev:webpack"]).toContain("NEXT_DIST_DIR=.next-webpack");
     expect(pkg.scripts["dev:jobs"]).toContain("SCM_RUN_JOBS=1");
+    expect(pkg.scripts.build).toContain("normalize-next-env.ts");
+    expect(read("scripts/normalize-next-env.ts")).toContain(".next-dev/types/routes.d.ts");
+    expect(read(".dockerignore")).toContain("!scripts/normalize-next-env.ts");
     expect(read("src/instrumentation.ts")).toContain('process.env.SCM_RUN_JOBS === "1"');
   });
 

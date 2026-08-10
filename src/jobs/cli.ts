@@ -30,6 +30,7 @@ import { auditYonyouReadiness } from "./audit-yonyou";
 import { auditConnectorReadiness } from "./audit-connectors";
 import { probeJstReadiness } from "./probe-jst";
 import { loadJobEnvironment } from "./load-env";
+import { runNamedIntervalJobOnce } from "./interval-runner";
 
 loadJobEnvironment();
 
@@ -49,6 +50,7 @@ const USAGE = `用法:
   npx tsx src/jobs/cli.ts audit-yonyou-readiness          只读检查用友配置/授权前置，不请求 token
   npx tsx src/jobs/cli.ts audit-connectors                 只读汇总全部连接器/UAT 证据，不输出秘密
   npx tsx src/jobs/cli.ts probe-jst [YYYY-MM-DD]            只读验证聚水潭签名、店铺/仓库/出库/库存权限
+  npx tsx src/jobs/cli.ts run-job <已登记任务名>          运维手跑定时任务并写 job_runs（失败退出非 0）
   npx tsx src/jobs/cli.ts license-alert [YYYY-MM-DD]     缺省=今日
   npx tsx src/jobs/cli.ts snapshot-age [YYYY-MM-DD] [阈值天数=3]
   npx tsx src/jobs/cli.ts export-worker                  处理一批待办导出任务
@@ -80,6 +82,10 @@ async function main(): Promise<void> {
   const db = await getDbAsync();
   let out: unknown;
   switch (cmd) {
+    case "run-job":
+      if (!args[0]) throw new Error(`run-job 需要 <已登记任务名>\n${USAGE}`);
+      out = await runNamedIntervalJobOnce(args[0], db);
+      break;
     case "sync-jst":
       out = await runJstSalesSync(db, args[0] ?? shanghaiToday(-1));
       break;
