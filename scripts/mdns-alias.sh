@@ -16,6 +16,7 @@
 set -uo pipefail
 
 ALIAS_NAME="${SCM_MDNS_ALIAS:-expscm}"
+ALIAS_NAME="${ALIAS_NAME%.local}"
 PORT=3100
 CHECK_INTERVAL=20
 

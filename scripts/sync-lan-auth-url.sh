@@ -34,7 +34,8 @@ if [[ -n "$MANUAL" ]]; then
   TARGET="$MANUAL"
 elif [[ "$MODE" == "host" ]]; then
   # 固定别名（由 npm run lan:alias 的守护广播，不随 IP 变、也不暴露机器主人）
-  TARGET="expscm.local"
+  ALIAS_NAME="${SCM_MDNS_ALIAS:-expscm}"
+  TARGET="${ALIAS_NAME%.local}.local"
   if ! curl -s -m 4 -o /dev/null "http://${TARGET}:${PORT}/api/health" 2>/dev/null; then
     echo "⚠ ${TARGET} 当前解析不到——mDNS 别名守护可能没在跑。" >&2
     echo "  先执行：npm run lan:alias" >&2
