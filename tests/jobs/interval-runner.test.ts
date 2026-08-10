@@ -92,4 +92,37 @@ describe("interval-runner 进程内调度回退", () => {
     expect(rows.some((x) => x.job === "snapshot-age" && x.ok)).toBe(true);
     expect(rows.some((x) => x.job === "not-registered")).toBe(false);
   });
+
+  it("运维恢复拒绝 skipped，并把它留成失败记录而非虚假恢复", async () => {
+    const job = {
+      name: "manual-skipped-test",
+      everyMs: 1,
+      run: async () => ({ status: "skipped", reason: "连接器未启用" }),
+    };
+    INTERVAL_JOBS.push(job);
+    try {
+      await expect(runNamedIntervalJobOnce(job.name, db)).rejects.toThrow("Skipped: 连接器未启用");
+    } finally {
+      INTERVAL_JOBS.splice(INTERVAL_JOBS.indexOf(job), 1);
+    }
+    const rows = await db.select().from(jobRuns);
+    expect(rows.some((x) => x.job === job.name && !x.ok && x.message?.includes("Skipped"))).toBe(true);
+  });
+
+  it("运维恢复要求 job_runs 真正落库，不能在留痕失败时退出 0", async () => {
+    const job = {
+      name: "manual-ledger-failure-test",
+      everyMs: 1,
+      run: async () => ({ status: "succeeded" }),
+    };
+    const brokenLedgerDb = {
+      insert: () => ({ values: async () => { throw new Error("ledger unavailable"); } }),
+    };
+    INTERVAL_JOBS.push(job);
+    try {
+      await expect(runNamedIntervalJobOnce(job.name, brokenLedgerDb)).rejects.toThrow("job_runs 留痕失败");
+    } finally {
+      INTERVAL_JOBS.splice(INTERVAL_JOBS.indexOf(job), 1);
+    }
+  });
 });

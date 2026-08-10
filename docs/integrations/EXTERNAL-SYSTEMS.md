@@ -205,7 +205,8 @@ npx tsx src/jobs/cli.ts sync-jiandaoyun-form sample-management-observation
 
 定时任务的故障恢复必须使用 `run-job <已登记任务名>`：它从调度器的唯一任务目录查找任务，
 并把成功/失败写入 `job_runs`，让连续失败看门狗能自动关闭已恢复告警；未知任务会被拒绝，
-失败保持非零退出码。其他逐契约命令用于诊断/定向重放，不冒充完整调度恢复。
+任务返回 `skipped` 或 `job_runs` 留痕失败也会保持非零退出码，不能冒充恢复。其他逐契约命令
+用于诊断/定向重放，不冒充完整调度恢复。
 
 `audit-jiandaoyun-contracts` 不打开 SCM 数据库、不落源业务值，只输出九条契约的聚合控制量：
 目录应用/表单数、重复 `entry_id`/名称组数、已选视图唯一性、主/子表行数、活跃/删除行、
