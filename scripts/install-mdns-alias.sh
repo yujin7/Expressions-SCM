@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # 把 mDNS 别名守护装成用户级 LaunchAgent（**不需要 sudo**）。
-# 装完 `exp-scm.local` 常驻可用：开机自启、崩溃自拉、IP 变了自动重注册。
+# 装完 `expscm.local` 常驻可用：开机自启、崩溃自拉、IP 变了自动重注册。
 #
 # 注意：脚本会被**复制**到 ~/Library/Application Support/ 再由 launchd 拉起。
 # 不能直接从仓库路径运行——本仓库在 ~/Downloads 下，属于 macOS TCC 保护目录，
