@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# 用 mDNS 代理把固定名字 `exp-scm.local` 指向本机当前局域网 IP。
+# 用 mDNS 代理把固定名字 `expscm.local` 指向本机当前局域网 IP。
 #
 # 为什么不直接改机器名：`scutil --set LocalHostName` 需要管理员密码，
 # 而且会连带改掉这台 Mac 在 AirDrop/访达里的身份。这里用 `dns-sd -P`
 # 注册一条**代理记录**，不需要 sudo、不动机器本身的名字，
-# 同事看到的只有 `exp-scm.local`，看不出是谁的机器。
+# 同事看到的只有 `expscm.local`，看不出是谁的机器。
 #
 # 为什么要常驻：
 # - `dns-sd -P` 的注册随进程存活，进程退出记录就没了；
@@ -15,7 +15,8 @@
 # 由 LaunchAgent 常驻拉起（用户级，无需 sudo）：npm run lan:alias
 set -uo pipefail
 
-ALIAS_NAME="exp-scm"
+ALIAS_NAME="${SCM_MDNS_ALIAS:-expscm}"
+ALIAS_NAME="${ALIAS_NAME%.local}"
 PORT=3100
 CHECK_INTERVAL=20
 

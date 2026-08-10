@@ -5,5 +5,6 @@ LABEL="com.expressions.scm-mdns-alias"
 launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
 rm -f "$HOME/Library/LaunchAgents/${LABEL}.plist"
 rm -rf "$HOME/Library/Application Support/exp-scm"
+pkill -f "dns-sd -P expscm" 2>/dev/null || true
 pkill -f "dns-sd -P exp-scm" 2>/dev/null || true
-echo "已卸载 ${LABEL}，exp-scm.local 不再广播"
+echo "已卸载 ${LABEL}，expscm.local 不再广播"
