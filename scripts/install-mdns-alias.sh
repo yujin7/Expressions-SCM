@@ -45,7 +45,38 @@ PLISTEOF
 
 # 幂等：先卸后装，避免重复注册
 launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+
+# bootout 返回时 launchd 仍可能在异步清理旧 job（其最短运行窗口约 10 秒），
+# 紧接着 bootstrap 会报 `Bootstrap failed: 5: Input/output error`。先等旧 job
+# 真正消失，再有限重试 bootstrap；超时仍返回非零，不伪装成安装成功。
+JOB_GONE=false
+for _ in $(seq 1 20); do
+  if ! launchctl print "gui/$(id -u)/${LABEL}" >/dev/null 2>&1; then
+    JOB_GONE=true
+    break
+  fi
+  sleep 1
+done
+
+if [[ "$JOB_GONE" != "true" ]]; then
+  echo "✗ 等待旧 ${LABEL} 退出超时" >&2
+  exit 1
+fi
+
+STARTED=false
+for attempt in 1 2 3; do
+  if launchctl bootstrap "gui/$(id -u)" "$PLIST"; then
+    STARTED=true
+    break
+  fi
+  sleep "$attempt"
+done
+
+if [[ "$STARTED" != "true" ]]; then
+  echo "✗ 三次尝试后仍无法启动 ${LABEL}" >&2
+  exit 1
+fi
+
 launchctl enable "gui/$(id -u)/${LABEL}" 2>/dev/null || true
 
 echo "已安装并启动：${LABEL}"
