@@ -12,10 +12,11 @@
 #
 # 快速隧道唯一的代价：**地址在 cloudflared 进程重启时会变**（Cloudflare 随机分配）。
 # 本守护就是为了让这个代价不落到人身上：
-#   1. KeepAlive 保证进程活着 —— 只要不重启机器，地址就不变；
-#   2. 地址真变了，自动把 AUTH_URL 同步过去并重启应用（不同步的话表现为
+#   1. 同时守进程与公网端到端健康；即使 PID 还在，只要 DNS/控制流连续失效也会主动
+#      杀掉旧隧道、申请新地址（2026-08-10 的真实中断证明只看 PID 不够）；
+#   2. 地址变化后，自动把 AUTH_URL 同步过去并重启应用（不同步的话表现为
 #      「页面能打开但登不进去」，因为登录回跳会指向上一个已失效的地址）；
-#   3. 变更后自动往飞书群推新链接 —— 同事不用来问「怎么又打不开了」。
+#   3. 端到端验活后才写状态并往飞书群推新链接 —— 同事不用来问「怎么又打不开了」。
 #
 # 为什么配置要从 ~/Library/Application Support 读，而不是直接读仓库：
 #   仓库在 ~/Downloads 下，属于 macOS TCC 保护目录。**launchd 派生的进程读不到**，
@@ -40,6 +41,8 @@ COMPOSE_LOCAL="$RUNTIME_DIR/docker-compose.local.yml"
 # 表现就是「数据全没了」。实测既有项目名 supply-chain，卷 supply-chain_pgdata/_uploads。
 PROJECT="supply-chain"
 LOCAL_PORT=3100
+TUNNEL_CHECK_SECONDS=30
+TUNNEL_FAILURE_LIMIT=3
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
@@ -106,6 +109,21 @@ wait_for_docker() {
   return 1
 }
 
+# 同时验证公网健康与登录回跳。cloudflared 进程存活不代表隧道可用：2026-08-10
+# 实测进程连续两天存活，但控制流持续失败，旧 trycloudflare 主机已经没有 DNS 记录。
+# 只看 PID 会把整段公网中断误报成“正常运行”。
+public_probe() {
+  local url="$1" code redir
+  code="$(curl -s --connect-timeout 2 -m 3 -o /dev/null -w '%{http_code}' \
+    "${url}/api/health" 2>/dev/null || true)"
+  [[ "$code" == "200" ]] || return 1
+
+  redir="$(curl -s --connect-timeout 2 -m 3 -o /dev/null -w '%{redirect_url}' \
+    "${url}/" 2>/dev/null || true)"
+  [[ "$redir" == "${url}"* ]] && return 0
+  return 2
+}
+
 # 把新地址落到应用上。
 # 关键：用**环境变量覆盖**而不是改写 env 文件——compose 的插值优先级是
 # shell 环境 > --env-file，因此磁盘上的配置始终只有一份真相，不会漂。
@@ -121,27 +139,25 @@ apply_url() {
     return 1
   fi
 
-  local i code redir
-  for i in $(seq 1 30); do
-    sleep 3
-    code="$(curl -s -m 8 -o /dev/null -w '%{http_code}' "${url}/api/health" 2>/dev/null)"
-    [[ "$code" == "200" ]] || continue
+  local i probe_status
+  for i in $(seq 1 15); do
+    sleep 2
     # 健康 200 还不够：AUTH_URL 没生效时页面照样能开，但登录回跳会指向旧地址。
-    # 真正的证据是根路径的跳转目标已经换成新域名。
-    redir="$(curl -s -m 8 -o /dev/null -w '%{redirect_url}' "${url}/" 2>/dev/null)"
-    if [[ "$redir" == "${url}"* ]]; then
+    public_probe "$url"
+    probe_status=$?
+    if [[ "$probe_status" == "0" ]]; then
       printf '%s\n' "$url" > "$URL_FILE"
-      log "✓ 已生效：${url}（登录回跳指向 ${redir}）"
+      log "✓ 已生效：${url}（公网健康与登录回跳均通过）"
       # 只有换了新地址才打扰群里；修复漂移不播报（地址没变，同事无需知道）
       if [[ "$prev" != "$url" ]]; then
         announce "$url" "new"
       fi
       return 0
     fi
-    log "健康检查已通过，但回跳仍指向 ${redir}，继续等待应用完成重建…"
+    [[ "$probe_status" == "2" ]] && log "公网健康已通过，但登录回跳仍未同步，继续等待…"
   done
 
-  log "✗ 90 秒内未确认生效，保留旧状态待下轮重试"
+  log "✗ 约 2 分钟内未确认公网健康与登录回跳"
   return 1
 }
 
@@ -152,14 +168,23 @@ apply_url() {
 # 于是守护以为一切正常，实际表现是「网页能打开但登不进去」。
 # 因此判据取应用的**实际行为**（根路径回跳指向哪里），而不是守护自己的记忆。
 ensure_url() {
-  local url="$1" redir
-  redir="$(curl -s -m 8 -o /dev/null -w '%{redirect_url}' "${url}/" 2>/dev/null)"
-  if [[ -n "$redir" && "$redir" == "${url}"* ]]; then
-    [[ "$(cat "$URL_FILE" 2>/dev/null || true)" == "$url" ]] || printf '%s\n' "$url" > "$URL_FILE"
-    return 0
-  fi
-  [[ -n "$redir" ]] && log "应用回跳指向 ${redir}，与隧道地址不符——重新同步"
-  apply_url "$url"
+  local url="$1" probe_status
+  public_probe "$url"
+  probe_status=$?
+  case "$probe_status" in
+    0)
+      [[ "$(cat "$URL_FILE" 2>/dev/null || true)" == "$url" ]] || printf '%s\n' "$url" > "$URL_FILE"
+      return 0
+      ;;
+    2)
+      log "公网健康正常但登录回跳不符——重新同步 AUTH_URL"
+      apply_url "$url"
+      ;;
+    *)
+      log "公网端点不可达（PID 存活也不能算健康）"
+      return 1
+      ;;
+  esac
 }
 
 log "=== 公网入口守护启动 ==="
@@ -179,7 +204,7 @@ while true; do
   URL=""
   for _ in $(seq 1 40); do
     sleep 3
-    URL="$(/usr/bin/grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | head -1)"
+    URL="$(/usr/bin/grep -m1 -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null || true)"
     [[ -n "$URL" ]] && break
     kill -0 "$CF_PID" 2>/dev/null || break
   done
@@ -194,13 +219,33 @@ while true; do
   fi
 
   log "隧道地址：${URL}"
-  ensure_url "$URL"
+  if ! apply_url "$URL"; then
+    log "新隧道未能通过端到端验活，立即重建"
+    kill "$CF_PID" 2>/dev/null
+    wait "$CF_PID" 2>/dev/null
+    CF_PID=""
+    sleep 15
+    continue
+  fi
 
-  # 守着 cloudflared。只要它活着，地址就不会变；期间每分钟核对一次应用是否还在用这个
-  # 地址，防的是「别人手工重启了容器把 AUTH_URL 还原」这类静默漂移。
+  # 同时守 PID 与端到端结果。连续三次失败即判该 quick tunnel 已死亡，清掉旧链接并
+  # 杀进程申请新地址；不能让 cloudflared 自己无限重连一个已失去 DNS 的临时端点。
+  PUBLIC_FAILURES=0
   while kill -0 "$CF_PID" 2>/dev/null; do
-    sleep 60
-    ensure_url "$URL"
+    sleep "$TUNNEL_CHECK_SECONDS"
+    if ensure_url "$URL"; then
+      PUBLIC_FAILURES=0
+      continue
+    fi
+    PUBLIC_FAILURES=$((PUBLIC_FAILURES + 1))
+    log "公网验活连续失败 ${PUBLIC_FAILURES}/${TUNNEL_FAILURE_LIMIT}"
+    if [[ "$PUBLIC_FAILURES" -ge "$TUNNEL_FAILURE_LIMIT" ]]; then
+      log "隧道进程仍在但端到端已失效——停止旧隧道并申请新地址"
+      rm -f "$URL_FILE"
+      kill "$CF_PID" 2>/dev/null
+      wait "$CF_PID" 2>/dev/null
+      break
+    fi
   done
 
   log "cloudflared 已退出，5 秒后重建隧道（地址会变，届时自动同步并播报）"
