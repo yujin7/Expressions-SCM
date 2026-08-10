@@ -24,4 +24,11 @@ describe("公网快速隧道 watchdog", () => {
     expect(daemon).toContain('if ! apply_url "$URL"; then');
     expect(daemon).toContain("新隧道未能通过端到端验活，立即重建");
   });
+
+  it("只接受带连字符的快速隧道域名，不把 API 控制端点当公网地址", () => {
+    expect(daemon).toContain(
+      "https://[a-z0-9]+(-[a-z0-9]+)+\\.trycloudflare\\.com",
+    );
+    expect(daemon).not.toContain("https://[a-z0-9-]+\\.trycloudflare\\.com");
+  });
 });

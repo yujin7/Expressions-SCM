@@ -204,7 +204,10 @@ while true; do
   URL=""
   for _ in $(seq 1 40); do
     sleep 3
-    URL="$(/usr/bin/grep -m1 -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null || true)"
+    # Quick Tunnel hostnames contain multiple hyphen-separated words. Requiring
+    # a hyphen keeps cloudflared's control endpoint (api.trycloudflare.com) from
+    # being mistaken for the user-facing tunnel URL.
+    URL="$(/usr/bin/grep -m1 -oE 'https://[a-z0-9]+(-[a-z0-9]+)+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null || true)"
     [[ -n "$URL" ]] && break
     kill -0 "$CF_PID" 2>/dev/null || break
   done
