@@ -1,0 +1,17 @@
+title = "Expressions SCM secret scanning"
+
+[extend]
+useDefault = true
+
+# This is the public app_key from the Jushuitan docId=70 signature example.
+# Keep the exception scoped to the exact value, rule, and self-check script so
+# real connector credentials remain covered by the default detector set.
+[[rules]]
+id = "generic-api-key"
+
+  [[rules.allowlists]]
+  description = "Jushuitan public signature-example app key"
+  condition = "AND"
+  regexTarget = "secret"
+  regexes = ['''^5b53060f23d84ddf9703056e84fa5a2d$''']
+  paths = ['''^scripts/jst-init-token\.ts$''']
