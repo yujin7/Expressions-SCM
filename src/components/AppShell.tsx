@@ -240,6 +240,7 @@ const menuItems: MenuProps["items"] = [
       { key: "/admin/users", label: "用户管理" },
       { key: "/admin/audit", label: "审计日志" },
       { key: "/admin/params", label: "运行参数" },
+      { key: "/admin/approval-config", label: "审批节点配置" },
       { key: "/admin/health", label: "运维面板" },
     ],
   },
@@ -267,6 +268,8 @@ const MENU_ROLES: Record<string, string[]> = {
   "/admin/users": [],
   "/admin/audit": ["finance"],
   "/admin/params": ["pmc", "purchasing", "finance"],
+  // 空数组=仅管理员（同 /admin/users）：这是 maker-checker 闸本身的配置
+  "/admin/approval-config": [],
   "/settlement/js": ["finance", "purchasing"],
   "/report/settlement-summary": ["finance"],
   "/report/process-mining": ["pmc", "finance"],
@@ -417,8 +420,14 @@ export default function AppShell({
               overflow: "hidden",
             }}
           >
-            <span className="app-brand__mark">链</span>
-            <span className="app-brand__name">{collapsed ? "" : "供应链系统"}</span>
+            <span className="app-brand__mark">
+              {/* eslint-disable-next-line @next/next/no-img-element -- 品牌标识为静态资源 */}
+              <img src="/logo.png" alt="" aria-hidden="true" />
+            </span>
+            {/* 折叠时**整个不渲染**，而不是渲染空字符串：
+                空 span 仍参与 flex gap，会在 logo 右侧留 10px 幻影间距，
+                使其在居中容器里实际偏左。 */}
+            {collapsed ? null : <span className="app-brand__name">供应链系统</span>}
           </div>
           {navigationMenu}
         </Sider> : null}
@@ -451,7 +460,11 @@ export default function AppShell({
             className="app-header"
             style={{
               background: colorBgContainer,
-              padding: isMobile ? "0 12px" : isCompactHeader ? "0 16px" : "0 24px",
+              /* 内边距必须与下方 Content 的 margin 一致（移动端 8、其余 16）：
+                 顶栏是通栏白条，内容区却是一张内缩的卡片，两者内边距不同的话
+                 标题与右侧账号区就会与卡片左右边缘差几个像素——原先桌面端顶栏
+                 24px、卡片 16px，正是差 8px 的来源。 */
+              padding: isMobile ? "0 8px" : "0 16px",
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",

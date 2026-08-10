@@ -30,6 +30,7 @@ import { getSegmentation } from "@/server/modules/report/segmentation";
 import { AGING_BUCKETS, fifoAging, turnover, type AgingBucket } from "@/server/rules/inventory-metrics";
 import { num, r1, r1n } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
+import { participatesInNormalSalesMovement } from "@/server/rules/sku-standardization";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -125,12 +126,17 @@ export async function getInventoryAnalytics(
     avgOnHandNote: AVG_ONHAND_NOTE,
   });
 
-  /* ── 成品主档（finished + active，与 ABC/XYZ 分层同范围） ── */
-  const skuRows: { id: number; code: string; name: string; brand: string | null }[] = await db
-    .select({ id: schema.skus.id, code: schema.skus.code, name: schema.skus.name, brand: schema.brands.nameCn })
+  /* ── 成品主档（finished + active，且排除非销售用途，与 ABC/XYZ 分层同范围） ── */
+  const skuRowsRaw: { id: number; code: string; name: string; brand: string | null; commercialRole: string }[] = await db
+    .select({
+      id: schema.skus.id, code: schema.skus.code, name: schema.skus.name,
+      brand: schema.brands.nameCn, commercialRole: schema.skus.commercialRole,
+    })
     .from(schema.skus)
     .leftJoin(schema.brands, eq(schema.skus.brandId, schema.brands.id))
     .where(sql`${schema.skus.active} = true and ${schema.skus.skuType} = 'finished'`);
+  // 与驾驶舱/风险页同口径：非销售用途留在库存总量里，但不进按销量的健康/滞销分析。
+  const skuRows = skuRowsRaw.filter((r) => participatesInNormalSalesMovement(r.commercialRole));
   if (skuRows.length === 0) return emptyResult();
   const skuIds = skuRows.map((s) => s.id);
 

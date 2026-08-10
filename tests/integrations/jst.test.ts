@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   JstClient,
+  jstEvidenceRefHasLiveBinding,
   jstConfigFromEnv,
+  jstLiveEvidenceBinding,
   normalizeJstBaseUrl,
   signJstParams,
 } from "@/server/integrations/jst";
@@ -457,5 +459,78 @@ describe("聚水潭 v2 client", () => {
       },
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("店铺目录按 shop_id 去重分页且只保留非敏感授权元数据", async () => {
+    const pages = [
+      {
+        code: 0,
+        data: {
+          has_next: true,
+          shops: [{
+            shop_id: 20,
+            shop_name: "二号店",
+            co_id: 100,
+            shop_site: "tmall",
+            auth_status: 2,
+          }],
+        },
+      },
+      {
+        code: 0,
+        data: {
+          has_next: false,
+          shops: [{
+            shop_id: 10,
+            platform_shop_name: "主店",
+            co_id: 100,
+            platform: "douyin",
+            authorization_status: "authorized",
+          }],
+        },
+      },
+    ];
+    const fetchMock = vi.fn(async () => response(pages.shift()));
+    const client = new JstClient({
+      appKey: "app",
+      appSecret: "secret",
+      accessToken: "token",
+      baseUrl: "https://example.invalid",
+    }, { fetchImpl: fetchMock as unknown as typeof fetch, retries: 0 });
+
+    await expect(client.fetchShops()).resolves.toEqual([
+      {
+        shopId: "10",
+        name: "主店",
+        companyCode: "100",
+        platform: "douyin",
+        authorizationStatus: "authorized",
+      },
+      {
+        shopId: "20",
+        name: "二号店",
+        companyCode: "100",
+        platform: "tmall",
+        authorizationStatus: "2",
+      },
+    ]);
+  });
+
+  it("UAT 证据绑定应用和启用能力；打开库存流后旧证据自动失效", () => {
+    const env = {
+      NODE_ENV: "test",
+      JST_APP_KEY: "app-one",
+      JST_INVENTORY_SYNC_ENABLED: "false",
+    } satisfies NodeJS.ProcessEnv;
+    const salesOnly = jstLiveEvidenceBinding(env);
+    expect(salesOnly).toMatch(/^JST1_[A-F0-9]{24}$/);
+    expect(jstEvidenceRefHasLiveBinding(`UAT-20260803-${salesOnly}`, env)).toBe(true);
+
+    const inventoryEnabled = {
+      ...env,
+      JST_INVENTORY_SYNC_ENABLED: "true",
+    } satisfies NodeJS.ProcessEnv;
+    expect(jstLiveEvidenceBinding(inventoryEnabled)).not.toBe(salesOnly);
+    expect(jstEvidenceRefHasLiveBinding(`UAT-20260803-${salesOnly}`, inventoryEnabled)).toBe(false);
   });
 });

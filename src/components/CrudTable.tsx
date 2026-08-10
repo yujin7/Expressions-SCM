@@ -43,6 +43,8 @@ export interface CrudTableProps<T extends { id: number }> {
   canCreate?: boolean;
   /** 额外行操作（如 BOM 生效） */
   rowActions?: (record: T, reload: () => void) => React.ReactNode;
+  /** 批量操作（如批量设置业务用途）；与 rowActions 一样把 reload 交出去，避免各页自己造刷新。 */
+  toolbarActions?: (reload: () => void) => React.ReactNode;
   /** 透传 Table 属性（如 expandable） */
   tableProps?: Omit<TableProps<T>, "columns" | "dataSource" | "loading" | "pagination" | "rowKey">;
 }
@@ -63,6 +65,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
     canEdit,
     canCreate = true,
     rowActions,
+    toolbarActions,
     tableProps,
   } = props;
 
@@ -207,6 +210,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
         />
         {toolbarFilters}
         <Space className="crud-table__toolbar-actions" wrap>
+          {toolbarActions?.(() => void load())}
           <Button icon={<ReloadOutlined />} onClick={() => void load()}>
             刷新
           </Button>

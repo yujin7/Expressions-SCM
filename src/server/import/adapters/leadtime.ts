@@ -149,7 +149,17 @@ export const leadtimeAdapter: Adapter = async (filePath) => {
 };
 
 /** 全链路：别名解析 sku_code + supplier_oem */
-export async function stageLeadtime(db: AnyDb, filePath: string, userId: number): Promise<StageSummary> {
+/**
+ * `sourceAsOf` 同 inventory-long/expiry/sales-monthly：不再写死。
+ * 原为 `fromSales ? "2026-06-30" : null`——那是最初那份销量文件的日期，
+ * 业务自助重传会被盖上同一个过去的时点，进而在 month-close 里进错月份。
+ */
+export async function stageLeadtime(
+  db: AnyDb,
+  filePath: string,
+  userId: number,
+  sourceAsOf: string | null = null,
+): Promise<StageSummary> {
   const fromSales = filePath.includes("销量汇总");
   return stagePipeline(db, {
     filePath,
@@ -158,7 +168,7 @@ export async function stageLeadtime(db: AnyDb, filePath: string, userId: number)
     adapter: leadtimeAdapter,
     targetTable: TARGET_TABLE,
     job: {
-      sourceAsOf: fromSales ? "2026-06-30" : null,
+      sourceAsOf,
       schemaVersion: "sku-leadtime-v2",
       scope: {
         mode: "full",

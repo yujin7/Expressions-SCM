@@ -72,9 +72,16 @@ function semanticText(value: string | null | undefined): string {
   return String(value ?? "").normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase("zh-CN");
 }
 
-function materialSkuType(segment: BomLine["segment"]): "raw" | "packaging" | null {
+function materialSkuType(segment: BomLine["segment"]): "raw" | "packaging" | "semi" | null {
   if (segment === "raw_bulk" || segment === "self_supplied") return "raw";
-  if (segment === "primary_pack" || segment === "secondary_pack" || segment === "box") return "packaging";
+  if (
+    segment === "primary_pack"
+    || segment === "secondary_pack"
+    || segment === "box"
+    || segment === "consumable"
+  ) return "packaging";
+  if (segment === "semi_finished") return "semi";
+  // fee 已在解析期分流进 feeLines；uncoded/unknown 不建物料主档，留给人工裁决。
   return null;
 }
 
@@ -634,10 +641,18 @@ async function releaseSkusInternal(
         continue;
       }
     }
-    let skuType: "raw" | "packaging";
+    let skuType: "raw" | "packaging" | "semi";
     if (expectedType) skuType = expectedType;
     else {
-      blocked.push({ code: m.code, kind: "material", reason: "物料段位无法判定（segment=unknown）" });
+      blocked.push({
+        code: m.code,
+        kind: "material",
+        // 报错要能直接指出下一步：编码没落在公布标准的分类码/独立前缀族里。
+        // 不在此展开完整字典——逐行重复几百字会把 staging 的 errorMsg 撑爆，
+        // 权威码表见 CATEGORY_SEGMENTS 与 tests/import/bom.test.ts 的公布标准全覆盖用例。
+        reason: `物料段位无法判定（segment=${m.segment}）：`
+          + `编码未命中公布标准的分类码或独立前缀族，需业务补编码或补字典`,
+      });
       continue;
     }
     // v1 关系仍挂首个已放行父 SPU；S1 来源则按全部父产品一致性计算，避免首行品牌污染共享料。
@@ -677,7 +692,9 @@ async function releaseSkusInternal(
       spuId: spuOfCode.get(parentWithSpu)!,
       spec: m.spec || null,
       skuType,
-      lossCategory: skuType === "raw" ? "raw" : "packaging",
+      // 损耗品类是 sys_param scope=category:<key> 的查找键；缺参数时结算侧告警并按 0% 计，
+      // 故半成品用自己的键，不冒充包材（js.ts:264 会显式提示补参数）。
+      lossCategory: skuType === "semi" ? "semi" : skuType === "raw" ? "raw" : "packaging",
       baseUom,
       lifecycle: "on_sale",
       attrs: { needsReview: flag ? ["baseUom"] : [], source: "bom_import" },

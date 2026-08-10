@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+#
+# 一条命令开通「所有人都能访问」的公网 HTTPS 链接 —— 不需要域名、不需要注册任何账号。
+#
+# 装完之后：开机自启、崩溃自拉；地址若变化会自动同步 AUTH_URL 并把新链接推到飞书群。
+#
+# 卸载：npm run access:public:remove
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+REPO="$(pwd)"
+
+LABEL="com.expressions.scm-public-tunnel"
+PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+STATE_DIR="$HOME/Library/Application Support/exp-scm"
+RUNTIME_DIR="$STATE_DIR/runtime"
+TARGET="$STATE_DIR/public-tunnel-daemon.sh"
+URL_FILE="$STATE_DIR/current-url.txt"
+LOG_DIR="$HOME/Library/Logs"
+LOG_FILE="$LOG_DIR/scm-public-tunnel.log"
+LOCAL_PORT=3100
+
+command -v cloudflared >/dev/null 2>&1 || {
+  echo "✗ 未安装 cloudflared：brew install cloudflared" >&2; exit 1; }
+[[ -f "$REPO/.env.prod" ]] || {
+  echo "✗ 缺少 $REPO/.env.prod，不能安全重建生产镜像" >&2; exit 1; }
+
+echo "==> 1/7 确认应用本机可达"
+if [[ "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "http://localhost:${LOCAL_PORT}/api/health")" != "200" ]]; then
+  echo "✗ http://localhost:${LOCAL_PORT} 不通。先把容器跑起来：docker ps | grep supply-chain" >&2
+  exit 1
+fi
+echo "    http://localhost:${LOCAL_PORT} ✓"
+
+echo "==> 2/7 构建 HTTPS 安全头镜像"
+# HSTS 在 next build 时烘焙进 routes-manifest；只给运行期环境变量不会生效。
+# 这里先构建，守护拿到 URL 后再用同一镜像重建 app 并同步 AUTH_URL。
+PUBLIC_HTTPS=1 docker compose -p supply-chain --env-file "$REPO/.env.prod" \
+  -f "$REPO/docker-compose.prod.yml" -f "$REPO/docker-compose.local.yml" build app
+
+echo "==> 3/7 复制运行期配置出 TCC 保护目录"
+# 仓库在 ~/Downloads 下，launchd 派生的进程读不到（实测 Operation not permitted）。
+# 因此把 compose 与 env 复制到 Application Support；每次安装都覆盖，避免与仓库版本漂移。
+mkdir -p "$RUNTIME_DIR" "$LOG_DIR" "$HOME/Library/LaunchAgents"
+chmod 700 "$STATE_DIR" "$RUNTIME_DIR"
+cp "$REPO/docker-compose.prod.yml" "$RUNTIME_DIR/"
+cp "$REPO/docker-compose.local.yml" "$RUNTIME_DIR/"
+cp "$REPO/.env.prod" "$RUNTIME_DIR/.env.prod"
+chmod 600 "$RUNTIME_DIR/.env.prod"   # 含密钥，只给本人读
+echo "    ${RUNTIME_DIR}（.env.prod 权限 600）"
+
+echo "==> 4/7 安装守护脚本"
+cp "$REPO/scripts/public-tunnel-daemon.sh" "$TARGET"
+chmod +x "$TARGET"
+
+echo "==> 5/7 收掉手工起的隧道，避免同时开两条"
+pkill -f 'cloudflared tunnel --no-autoupdate --url' 2>/dev/null || true
+rm -f "$URL_FILE"   # 清掉旧地址，强制本轮重新同步 AUTH_URL
+
+echo "==> 6/7 写入并加载 LaunchAgent"
+cat > "$PLIST" <<PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>${TARGET}</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${LOG_FILE}</string>
+  <key>StandardErrorPath</key><string>${LOG_FILE}</string>
+</dict>
+</plist>
+PLISTEOF
+
+launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$PLIST"
+launchctl enable "gui/$(id -u)/${LABEL}" 2>/dev/null || true
+
+echo "==> 7/7 等待隧道就绪并验证（最多 3 分钟）"
+for _ in $(seq 1 60); do
+  sleep 3
+  if [[ -s "$URL_FILE" ]]; then
+    URL="$(cat "$URL_FILE")"
+    echo
+    echo "✓ 公网链接已就绪，把这条发给所有人："
+    echo
+    echo "    ${URL}"
+    echo
+    echo "  · 任何设备、任何网络都能打开，不用装任何东西"
+    echo "  · 真 HTTPS，密码不再明文传输"
+    echo "  · 与本机局域网 IP 无关，换 Wi-Fi、IP 再漂都不受影响"
+    echo
+    echo "  日志：${LOG_FILE}"
+    echo "  随时查当前链接：npm run access:link"
+    exit 0
+  fi
+done
+
+echo "✗ 3 分钟内未就绪。看日志：tail -50 ${LOG_FILE}" >&2
+exit 1

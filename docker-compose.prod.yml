@@ -19,8 +19,29 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+  # 迁移门禁（ops/deploy.sh 调用；profiles 保证它不会随 `up -d` 一起常驻）。
+  # 必须用 migrator 阶段——runner 里没有 drizzle-kit 的依赖，见 Dockerfile 注释。
+  migrate:
+    build:
+      context: .
+      target: migrator
+    profiles: ["tools"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://scm:${POSTGRES_PASSWORD}@db:5432/scm
+    restart: "no"
+
   app:
-    build: .
+    build:
+      context: .
+      args:
+        # HSTS 是构建期开关（next.config.ts 的 headers() 在 next build 时求值并烘焙进
+        # routes-manifest.json）。放在 environment 里是无效的——2026-08-07 实测容器 env
+        # 有 PUBLIC_HTTPS=1 但响应头里没有 HSTS。走稳定 HTTPS 域名时才置 1，
+        # 且必须重新构建镜像：docker compose build --build-arg PUBLIC_HTTPS=1 app
+        PUBLIC_HTTPS: ${PUBLIC_HTTPS-}
     restart: unless-stopped
     depends_on:
       db:
@@ -28,13 +49,22 @@ services:
     environment:
       DATABASE_URL: postgres://scm:${POSTGRES_PASSWORD}@db:5432/scm
       AUTH_SECRET: ${AUTH_SECRET:?}
+      # 必填，且不能靠 trustHost 省掉。
+      # 实测（2026-08-05，standalone 容器）：AUTH_URL 留空时 credentials 回调会解析成
+      # 服务端自身的绑定地址 http://0.0.0.0:3000 ——即便 auth/config.ts 与 middleware.ts
+      # 都已 trustHost: true 也一样，因为 standalone 用 HOSTNAME/PORT 兜底而非请求 Host 头。
+      # 机器 IP 变了就必须同步这里：`npm run lan:sync` 会自动改好并重启。
       AUTH_URL: ${AUTH_URL:?}
+      # 注意：PUBLIC_HTTPS 刻意**不**放在这里。它只在构建期有意义（见上面 build.args），
+      # 放运行期会让人以为改了就生效，实际什么也不会发生。
 
       # 飞书：留空仍是未配置；不在 Compose 内造出可运行默认值。
       FEISHU_APP_ID: ${FEISHU_APP_ID-}
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET-}
       FEISHU_CHAT_ID: ${FEISHU_CHAT_ID-}
       FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL-}
+      # 群机器人签名密钥：缺了它签名校验发不出消息（容器与本地行为分叉的典型来源）
+      FEISHU_WEBHOOK_SECRET: ${FEISHU_WEBHOOK_SECRET-}
       FEISHU_APP_LIVE_VERIFIED_AT: ${FEISHU_APP_LIVE_VERIFIED_AT-}
       FEISHU_APP_LIVE_VERIFIED_REF: ${FEISHU_APP_LIVE_VERIFIED_REF-}
       FEISHU_WEBHOOK_LIVE_VERIFIED_AT: ${FEISHU_WEBHOOK_LIVE_VERIFIED_AT-}
@@ -47,6 +77,10 @@ services:
       JST_SYNC_ACTOR_ID: ${JST_SYNC_ACTOR_ID-}
       JST_BASE_URL: ${JST_BASE_URL-}
       JST_INVENTORY_SYNC_ENABLED: ${JST_INVENTORY_SYNC_ENABLED-}
+      # 可信仓白名单：业务口径「只有一仓准」的落地开关，缺了库存流会被拒绝启用
+      JST_TRUSTED_WMS_CO_IDS: ${JST_TRUSTED_WMS_CO_IDS-}
+      JST_TOKEN_OBTAINED_AT: ${JST_TOKEN_OBTAINED_AT-}
+      JST_TOKEN_TTL_DAYS: ${JST_TOKEN_TTL_DAYS-}
       JST_LIVE_VERIFIED_AT: ${JST_LIVE_VERIFIED_AT-}
       JST_LIVE_VERIFIED_REF: ${JST_LIVE_VERIFIED_REF-}
 
@@ -71,8 +105,15 @@ services:
       YY_ALLOWED_HOSTS: ${YY_ALLOWED_HOSTS-}
       YY_BASE_URL: ${YY_BASE_URL-}
       YY_TOKEN_URL: ${YY_TOKEN_URL-}
+      YY_SYNC_ENABLED: ${YY_SYNC_ENABLED-}
+      YY_SYNC_ACTOR_ID: ${YY_SYNC_ACTOR_ID-}
 
       FILE_STORAGE_DIR: /data/uploads
+      # Next.js standalone 默认绑到容器主机名对应的那个 IP，而不是 0.0.0.0。
+      # 后果很隐蔽：宿主机通过端口映射访问正常，但容器内 127.0.0.1:3000 根本没监听，
+      # 于是 healthcheck（用的就是 127.0.0.1）**永远失败**——容器长期 unhealthy，
+      # 在真正的编排环境里会被判定为未就绪或反复重启。已实测 /proc/net/tcp 只有容器 IP 在听。
+      HOSTNAME: "0.0.0.0"
     volumes:
       - uploads:/data/uploads
     ports:

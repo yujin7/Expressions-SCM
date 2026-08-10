@@ -53,10 +53,10 @@ async function main() {
     const r = await stageBom(db, file, brand, uid);
     summary[`bom:${brand}`] = { jobId: r.jobId, stagedRows: r.stagedRows };
   }
-  summary["inventory"] = (await stageInventoryLong(db, FILES.inventory, uid)).stats;
-  summary["expiry"] = (await stageExpiry(db, FILES.expiry, uid)).stats;
-  summary["sales"] = (await stageSalesMonthly(db, FILES.sales, uid)).stats;
-  summary["leadtime:sales"] = (await stageLeadtime(db, FILES.sales, uid)).stats;
+  summary["inventory"] = (await stageInventoryLong(db, FILES.inventory, uid, "2026-07-21")).stats;
+  summary["expiry"] = (await stageExpiry(db, FILES.expiry, uid, "2026-07-21")).stats;
+  summary["sales"] = (await stageSalesMonthly(db, FILES.sales, uid, "2026-06-30")).stats;
+  summary["leadtime:sales"] = (await stageLeadtime(db, FILES.sales, uid, "2026-06-30")).stats;
   summary["leadtime:transit"] = (await stageLeadtime(db, FILES.leadtime2, uid)).stats;
 
   // ── 阶段1a：仓库创建 + 认领 ──

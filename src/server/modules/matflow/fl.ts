@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
    batches, flDocs, flLines, jgDocs, skus, users, warehouses, woLines,
@@ -21,6 +21,7 @@ import {
 } from "./common-notes";
 import { createFlSchema } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
+import { skuLineMatch } from "@/server/core/doc-search";
 
 /**
  * 发料单 FL（《01》§3/§4）：自有仓 → 委外仓，按 wo_line 预填；
@@ -280,7 +281,7 @@ export async function listFls(
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
   const conds = [];
-  if (q) conds.push(sql`${flDocs.docNo} ILIKE ${"%" + q + "%"}`);
+  if (q) conds.push(or(sql`${flDocs.docNo} ILIKE ${"%" + q + "%"}`, skuLineMatch("fl_lines", "fl_id", flDocs.id, q)));
   if (opts.status) conds.push(eq(flDocs.status, opts.status as DocStatus));
   if (opts.jgId) conds.push(eq(flDocs.jgId, opts.jgId));
   const where = conds.length ? and(...conds) : undefined;

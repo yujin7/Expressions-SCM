@@ -37,7 +37,10 @@ export default auth((req) => {
 
 export const config = {
   // 除 /login、/api/auth/*、/_next/*、favicon、公开 token 门户外全部需要登录
+  /* 品牌静态资源必须放行：logo.png / icon.png 出现在**登录页**与浏览器标签页上，
+     而登录页正是未登录状态。被中间件拦下会 302 到登录页本身，
+     结果是"登录页上的 logo 裂图"——本机实跑时实测就是这样发现的。 */
   matcher: [
-    "/((?!login(?:/|$)|api/auth(?:/|$)|api/health(?:/|$)|supplier/confirm(?:/|$)|e-label(?:/|$)|api/public(?:/|$)|_next/static(?:/|$)|_next/image(?:/|$)|favicon\\.ico$).*)",
+    "/((?!login(?:/|$)|api/auth(?:/|$)|api/health(?:/|$)|supplier/confirm(?:/|$)|e-label(?:/|$)|api/public(?:/|$)|_next/static(?:/|$)|_next/image(?:/|$)|favicon\\.ico$|logo\\.png$|icon\\.png$).*)",
   ],
 };

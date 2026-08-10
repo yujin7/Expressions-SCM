@@ -37,7 +37,7 @@ else
   ops/check-backup.sh
 fi
 echo "==> 迁移门禁（drizzle-kit migrate，对 prod 库）"
-compose run --rm app npx drizzle-kit migrate
+compose --profile tools run --rm migrate
 echo "==> 滚动重启"
 compose up -d
 
@@ -81,10 +81,13 @@ install_backup_schedule() {
 install_backup_schedule
 
 echo "==> 健康检查"
+# 先取值再匹配，不要写成 `curl | grep -q`：本脚本开了 pipefail，而 grep -q 命中即退出会让
+# curl 收到 SIGPIPE，整条管道退出码变 141——健康的部署会被判成失败。
 for i in $(seq 1 30); do
-  if curl -fsS http://127.0.0.1:3000/api/health | grep -q '"ok":true'; then
-    echo "部署完成 ✓"; exit 0
-  fi
+  health="$(curl -fsS http://127.0.0.1:3000/api/health 2>/dev/null || true)"
+  case "$health" in
+    *'"ok":true'*) echo "部署完成 ✓"; exit 0 ;;
+  esac
   sleep 2
 done
 echo "健康检查失败——检查 docker compose logs app" >&2

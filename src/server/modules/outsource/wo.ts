@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
    bhDocs, bomLines, boms, jgDocs, jgFeeSegments, poDocs, poLines,
   skus, stockBalances, suppliers, uomConvs, users, warehouses, woDocs, woLines,
@@ -12,12 +12,14 @@ import {
   explode,
   type BomLineLike,
 } from "@/server/rules/bom-explode";
-import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
+import { approveDoc, loadApprovalHistory, withdrawDoc } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import type { DocStatus } from "@/server/docflow/state";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb, rethrowApproval } from "./common";
-import { approveDocSchema, createWoSchema, generateDocsSchema } from "./schemas";
+import { approveDocSchema, createWoSchema, generateDocsSchema, transitionDocSchema, withdrawDocSchema } from "./schemas";
+import { skuHeaderMatch } from "@/server/core/doc-search";
+import { transitionDoc } from "@/server/docflow/transition";
 import {
   capacityAuditSnapshot,
   getSupplierCapacitySignal,
@@ -508,7 +510,7 @@ export async function listWos(
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
   const conds = [];
-  if (q) conds.push(sql`${woDocs.docNo} ILIKE ${"%" + q + "%"}`);
+  if (q) conds.push(or(sql`${woDocs.docNo} ILIKE ${"%" + q + "%"}`, skuHeaderMatch(woDocs.productSkuId, q)));
   if (opts.status) conds.push(eq(woDocs.status, opts.status as DocStatus));
   const where = conds.length ? and(...conds) : undefined;
 
@@ -538,4 +540,68 @@ export async function listWos(
     db.select({ total: sql<number>`count(*)::int` }).from(woDocs).where(where),
   ]);
   return { rows, total };
+}
+
+/** 撤回：待审批 → 草稿。仅制单人本人（管理员豁免）；不写审批轨迹、不占审批轮次。 */
+export async function withdrawWO(
+  user: SessionUser,
+  id: number,
+  input: unknown,
+  dbArg?: AnyDb,
+): Promise<{ status: string; idempotent: boolean }> {
+  const v = withdrawDocSchema.parse(input);
+  const db = await resolveDb(dbArg);
+  try {
+    return await db.transaction(async (tx: AnyDb) => {
+      const r = await withdrawDoc(tx, {
+        docType: "wo",
+        table: woDocs,
+        docId: id,
+        user: { id: user.id, roles: user.roles },
+        expectedVersion: v.version,
+      });
+      if (r.idempotent) return r;
+      await writeAudit(tx, { userId: user.id, entity: "wo", entityId: id, action: "withdraw" });
+      return r;
+    });
+  } catch (e) {
+    rethrowApproval(e);
+  }
+}
+
+/**
+ * 手工状态流转：完成 / 短关 / 作废 / 重开。
+ * 此前 wo 没有任何到达「已完成」的路径，短关也全仓未实现——
+ * 少送尾数的单据会永久卡在「执行中」。这里只补人工收口，不做自动完成。
+ */
+export async function transitionWO(
+  user: SessionUser,
+  id: number,
+  input: unknown,
+  dbArg?: AnyDb,
+): Promise<{ status: string; idempotent: boolean }> {
+  const v = transitionDocSchema.parse(input);
+  if (v.action !== "void" && v.action !== "reopen") requireAnyRole(user, "pmc", "ops");
+  const db = await resolveDb(dbArg);
+  try {
+    return await db.transaction(async (tx: AnyDb) => {
+      const r = await transitionDoc(tx, {
+        docType: "wo",
+        table: woDocs,
+        docId: id,
+        user: { id: user.id, roles: user.roles },
+        action: v.action,
+        reason: v.reason,
+        expectedVersion: v.version,
+      });
+      if (r.idempotent) return r;
+      await writeAudit(tx, {
+        userId: user.id, entity: "wo", entityId: id, action: v.action,
+        after: { status: r.status, reason: v.reason ?? null },
+      });
+      return r;
+    });
+  } catch (e) {
+    rethrowApproval(e);
+  }
 }

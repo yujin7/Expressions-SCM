@@ -7,13 +7,24 @@ import { resolveDb } from "@/server/core/svc";
 
 /** SKU×仓库×批次 余额（实时仓口径；快照仓 1.1 并入）。nonzero 默认 true=隐藏零余额行 */
 export async function listBalances(
-  opts: { q?: string; warehouseId?: number; nonzero?: boolean; page: number; pageSize: number },
+  opts: {
+    q?: string;
+    warehouseId?: number;
+    nonzero?: boolean;
+    /** 业务用途筛选（0727 会议：小样要能单独查库存明细）。 */
+    commercialRole?: string;
+    page: number;
+    pageSize: number;
+  },
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
   const conds = [];
   if (opts.nonzero !== false) conds.push(sql`${stockBalances.qty} <> 0`);
   if (opts.warehouseId) conds.push(eq(stockBalances.warehouseId, opts.warehouseId));
+  // 能筛小样的地方（SKU 主档）没有库存数量，有库存数量的地方没有业务用途——
+  // M-22 说的「输入=小样、输出=库存明细」此前无处可做，这里补上入口。
+  if (opts.commercialRole) conds.push(eq(skus.commercialRole, opts.commercialRole));
   if (opts.q) {
     conds.push(
       or(
@@ -33,6 +44,7 @@ export async function listBalances(
         skuCode: skus.code,
         skuName: skus.name,
         baseUom: skus.baseUom,
+        commercialRole: skus.commercialRole,
         spuCode: spus.code,
         spuNameCn: spus.nameCn,
         warehouseId: warehouses.id,

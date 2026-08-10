@@ -16,6 +16,10 @@ import {
 import { resolveKnownOrQueue, type DimDb } from "@/server/modules/dimension/resolver";
 import { writeIntegrationEvidence, type IntegrationEvidence } from "./evidence";
 import { JstClient, type JstInventoryRow } from "./jst";
+import {
+  inventoryStreamBlockReason,
+  jstWarehouseTrustFromEnv,
+} from "./jst-warehouse-trust";
 
 const CONNECTOR = "jst";
 const STREAM = "inventory-total-delta";
@@ -356,6 +360,33 @@ export async function syncJstInventoryObservations(
   }
 }
 
+/**
+ * 库存流是否启用。
+ *
+ * **仅有环境变量为真还不够**：本接口在不带 wms_co_id 时返回的是**全仓合计**。
+ * 而业务已明确（2026-08-04）聚水潭只有「一仓」的数据准、其余仓不准——
+ * 那个合计把准仓与不准仓加在一起且拆不开，看起来却像一个完整库存总量。
+ * 这种数字比没有数字更危险：它会被当成事实引用进补货与对账。
+ *
+ * 所以这里是**双重闸**：开关为真，且仓库可信范围检查放行，才算启用。
+ * 想真正启用，正确做法是改为逐仓拉取，而不是把可信清单删掉绕过检查
+ * （删掉只会落到"未声明"分支，同样被拒）。
+ */
 export function jstInventorySyncEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return ["1", "true", "yes"].includes(env.JST_INVENTORY_SYNC_ENABLED?.trim().toLowerCase() ?? "");
+  const flagOn = ["1", "true", "yes"].includes(
+    env.JST_INVENTORY_SYNC_ENABLED?.trim().toLowerCase() ?? "",
+  );
+  if (!flagOn) return false;
+  return inventoryStreamBlockReason(jstWarehouseTrustFromEnv(env)) === null;
+}
+
+/** 未启用时的具体原因，供运维面板/日志显示，避免只看到一个 false */
+export function jstInventorySyncBlockReason(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const flagOn = ["1", "true", "yes"].includes(
+    env.JST_INVENTORY_SYNC_ENABLED?.trim().toLowerCase() ?? "",
+  );
+  if (!flagOn) return "JST_INVENTORY_SYNC_ENABLED 未开启";
+  return inventoryStreamBlockReason(jstWarehouseTrustFromEnv(env));
 }

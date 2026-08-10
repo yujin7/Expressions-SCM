@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
   jgDocs,
   poDocs,
@@ -14,6 +14,7 @@ import { loadApprovalHistory } from "@/server/docflow/approval";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, resolveDb } from "@/server/modules/outsource/common";
 import type { DocStatus } from "@/server/docflow/state";
+import { skuLineMatch } from "@/server/core/doc-search";
 
 type QcRecordRow = typeof qcRecords.$inferSelect;
 
@@ -111,7 +112,7 @@ export async function listShs(
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
   const conds = [];
-  if (q) conds.push(sql`${shDocs.docNo} ILIKE ${"%" + q + "%"}`);
+  if (q) conds.push(or(sql`${shDocs.docNo} ILIKE ${"%" + q + "%"}`, skuLineMatch("sh_lines", "sh_id", shDocs.id, q)));
   if (opts.status) conds.push(eq(shDocs.status, opts.status as DocStatus));
   if (opts.sourceType) conds.push(eq(shDocs.sourceType, opts.sourceType));
   if (opts.sourceId) conds.push(eq(shDocs.sourceId, opts.sourceId));

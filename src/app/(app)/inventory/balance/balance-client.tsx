@@ -4,7 +4,7 @@ import SearchInput from "@/components/SearchInput";
 
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Alert, App, Space, Switch, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Select, Space, Switch, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import ExportButton from "@/components/ExportButton";
 import RemoteSelect from "@/components/RemoteSelect";
@@ -12,13 +12,14 @@ import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
-import { WAREHOUSE_KIND_LABELS } from "@/components/labels";
+import { COMMERCIAL_ROLE_LABELS, toOptions, WAREHOUSE_KIND_LABELS } from "@/components/labels";
 
 interface BalanceRow {
   skuId: number;
   skuCode: string;
   skuName: string;
   baseUom: string;
+  commercialRole: string;
   spuCode: string;
   spuNameCn: string;
   warehouseId: number;
@@ -53,13 +54,14 @@ function SkuBalanceTab() {
   // 列表页状态平台（E6-P1）：筛选/分页进 URL（?q= 驾驶舱风险表点击直达 RT4 UX-P1-3），密度与已保存视图存本地
   const listState = useListState({
     key: "balance",
-    defaults: { q: "", warehouseId: "", includeZero: "" },
+    defaults: { q: "", warehouseId: "", includeZero: "", commercialRole: "" },
     defaultPageSize: 20,
   });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const warehouseId = filters.warehouseId ? Number(filters.warehouseId) : undefined;
   const includeZero = filters.includeZero === "1";
+  const commercialRole = filters.commercialRole;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -71,6 +73,7 @@ function SkuBalanceTab() {
         pageSize: String(pageSize),
       });
       if (warehouseId != null) params.set("warehouseId", String(warehouseId));
+      if (commercialRole) params.set("commercialRole", commercialRole);
       const res = await fetchJson<{ rows: BalanceRow[]; total: number }>(
         `/api/inventory/balance?${params.toString()}`,
       );
@@ -81,7 +84,7 @@ function SkuBalanceTab() {
     } finally {
       setLoading(false);
     }
-  }, [q, warehouseId, includeZero, page, pageSize, message]);
+  }, [q, warehouseId, includeZero, commercialRole, page, pageSize, message]);
 
   useEffect(() => {
     void load();
@@ -90,6 +93,17 @@ function SkuBalanceTab() {
   const columns: ColumnsType<BalanceRow> = [
     { title: "编码", dataIndex: "skuCode", width: 110 },
     { title: "名称", dataIndex: "skuName", width: 180 },
+    {
+      // 0727 会议：小样要能单独查库存明细。此前能筛小样的地方没有数量，有数量的地方没有用途。
+      title: "业务用途",
+      dataIndex: "commercialRole",
+      width: 96,
+      render: (v: string) => (
+        <Tag color={v === "sample" ? "purple" : v === "unclassified" ? "warning" : undefined}>
+          {COMMERCIAL_ROLE_LABELS[v] ?? v}
+        </Tag>
+      ),
+    },
     { title: "所属产品", dataIndex: "spuNameCn", render: (_, r) => `${r.spuCode} ${r.spuNameCn}` },
     { title: "仓库", dataIndex: "warehouseName", width: 140 },
     {
@@ -125,6 +139,7 @@ function SkuBalanceTab() {
               q,
               nonzero: includeZero ? "0" : "1",
               ...(warehouseId != null ? { warehouseId: String(warehouseId) } : {}),
+              ...(commercialRole ? { commercialRole } : {}),
             }).toString()}`}
           />
         }
@@ -147,6 +162,14 @@ function SkuBalanceTab() {
               style={{ width: 280 }}
               value={warehouseId}
               onChange={(v) => listState.setFilter({ warehouseId: v == null ? "" : String(v) })}
+            />
+            <Select
+              allowClear
+              value={commercialRole || undefined}
+              placeholder="全部业务用途"
+              options={toOptions(COMMERCIAL_ROLE_LABELS)}
+              style={{ width: 150 }}
+              onChange={(v) => listState.setFilter({ commercialRole: v ?? "" })}
             />
             <Space size={8}>
               <Switch
@@ -315,6 +338,17 @@ function SnapshotTab() {
   const columns: ColumnsType<SnapshotRow> = [
     { title: "编码", dataIndex: "skuCode", width: 110 },
     { title: "名称", dataIndex: "skuName", width: 180 },
+    {
+      // 0727 会议：小样要能单独查库存明细。此前能筛小样的地方没有数量，有数量的地方没有用途。
+      title: "业务用途",
+      dataIndex: "commercialRole",
+      width: 96,
+      render: (v: string) => (
+        <Tag color={v === "sample" ? "purple" : v === "unclassified" ? "warning" : undefined}>
+          {COMMERCIAL_ROLE_LABELS[v] ?? v}
+        </Tag>
+      ),
+    },
     { title: "所属产品", dataIndex: "spuNameCn", render: (_, r) => `${r.spuCode} ${r.spuNameCn}` },
     { title: "仓库", dataIndex: "warehouseName", width: 160 },
     { title: "数量", dataIndex: "qty", width: 120, align: "right", render: (v: string) => formatQty(v) },

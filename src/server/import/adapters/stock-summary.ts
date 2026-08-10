@@ -17,6 +17,11 @@ import type { TransitPayload } from "./transit";
 
 export const STOCK_SUMMARY_TEMPLATE = "stock_summary";
 const TARGET_TABLE = "transit_ref";
+/**
+ * 最初那份「总库存明细2026-7-21.xlsx」的业务时点。
+ * **只用于一次性回填脚本**（load-npd-stock），不再作为上传路径的默认值——
+ * 业务自助重传若被盖上这个日期，month-close 会把新数据算进 2026-07 的月结。
+ */
 export const STOCK_SUMMARY_AS_OF = "2026-07-21";
 
 const str = (v: CellValue): string | null => {
@@ -26,7 +31,7 @@ const str = (v: CellValue): string | null => {
 };
 const num = (v: CellValue): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
-export function parseStockSummarySheet(sheet: SheetData): StagingRowInput[] {
+export function parseStockSummarySheet(sheet: SheetData, asOf: string | null = null): StagingRowInput[] {
   const hi = sheet.rows.findIndex((r) => r.some((c) => typeof c === "string" && String(c).includes("商家编码")));
   if (hi < 0) throw new Error("总库存文件未找到表头行（商家编码）");
   const col = new Map<string, number>();
@@ -56,7 +61,7 @@ export function parseStockSummarySheet(sheet: SheetData): StagingRowInput[] {
       usedQty: null,
       remainQty: null,
       orderDate: null, needDate: null, replyDate: null, revisedDate: null, expectDate: null, startDate: null,
-      progress: STOCK_SUMMARY_AS_OF,
+      progress: asOf,
       urgentDept: null,
       follower: null,
       exception: null,
@@ -67,15 +72,25 @@ export function parseStockSummarySheet(sheet: SheetData): StagingRowInput[] {
   return rows;
 }
 
-export async function stageStockSummary(db: AnyDb, filePath: string, userId: number) {
+/**
+ * `asOf` 是这份文件反映的业务时点：一次性回填脚本显式传，
+ * 上传路径不传（null），由 month-close 回落 createdAt。理由同其余适配器。
+ * 注意 `progress` 也用同一时点——它标的是这批总库存快照对应的期次。
+ */
+export async function stageStockSummary(
+  db: AnyDb,
+  filePath: string,
+  userId: number,
+  asOf: string | null = null,
+) {
   const wb = await readWorkbook(filePath, { forceRaw: true });
-  const rows = parseStockSummarySheet(wb.sheets[0]);
+  const rows = parseStockSummarySheet(wb.sheets[0], asOf);
   if (rows.length === 0) throw new Error("总库存文件未解析到任何 SKU 行");
   const job = await createImportJob(db, {
     template: STOCK_SUMMARY_TEMPLATE,
     filePath,
     createdBy: userId,
-    sourceAsOf: STOCK_SUMMARY_AS_OF,
+    sourceAsOf: asOf,
     scope: { mode: "full", targetKinds: ["stock_summary"] },
   });
   try {

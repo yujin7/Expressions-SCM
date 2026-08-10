@@ -6,7 +6,14 @@ import { Alert, App, List, Tag, Typography } from "antd";
 import { fetchJson } from "@/components/fetchJson";
 
 interface Row { id: number; category: string; title: string; detail: string | null; severity: string | null; createdAt: string }
-const CAT: Record<string, string> = { data_freshness: "数据过期", doc_aging: "单据超时" };
+// 与 systemAlerts 的 category 一一对应；新增告警类别必须同步补标签，
+// 否则页面上会冒出 job_failure 这样的英文 slug（护栏：tests/architecture/alert-category-labels.test.ts）
+const CAT: Record<string, string> = {
+  data_freshness: "数据过期",
+  doc_aging: "单据超时",
+  integration_token: "凭据到期",
+  job_failure: "任务失败",
+};
 const SEV: Record<string, string> = { high: "orange", medium: "gold" };
 
 export default function AlertsClient() {

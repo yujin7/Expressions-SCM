@@ -1,24 +1,22 @@
 # 外部系统集成契约：聚水潭、简道云、用友、飞书
 
-更新日期：2026-08-03
+更新日期：2026-08-07
 当前实现锚点：`main` 上的连接器代码、`docs/NOW.md` 与 `docs/spec/CURRENT.md`
 
 ## 1. 系统边界与唯一权威
 
 | 事实域 | 权威系统 | SCM 的角色 | 当前接入状态 |
 |---|---|---|---|
-| 电商订单、实际出库销量、平台/WMS 库存观察 | 聚水潭 | 拉取、留证、映射、staging、与 SCM 自有仓出库对账 | 出库日事实与跨仓库存增量观察代码就绪；待真实 app/token/IP/权限 |
+| 电商订单、实际出库销量、平台/WMS 库存观察 | 聚水潭 | 拉取、留证、映射、staging、与 SCM 自有仓出库对账 | app/token 已配置；出库卡 IP 白名单，店铺/仓库/库存卡 API 权限 |
 | 现行低代码 ERP 表单与历史流程 | 简道云 | 全量目录、显式表单观察、字段最小化、留证与 staging；不直接成为 SCM 正式事实 | OpenAPI 已完成只读握手；目录与九条观察契约代码就绪，待密钥轮换、业务对账控制总量与 UAT |
 | SCM 委外单据、实时仓库存账、批次、质量、计划与审批 | 本 SCM | 业务与库存账权威 | 已运行；外部系统不得直接覆写 |
-| 财务凭证、成本、结算与组织核算口径 | 用友 | 读取财务权威、提交获批业务结果、双向对账 | 仅契约；待企业 OpenAPI 应用与接口清单 |
-| 协同触达 | 飞书 | 接收 SCM outbox 消息；不成为业务状态权威 | 代码就绪；现有共享应用已上线但严重过度授权且看不到群，待最小权限隔离、目标群与 UAT |
+| 财务凭证、成本、结算与组织核算口径 | 用友 | 读取财务权威、提交获批业务结果、双向对账 | 客户端与 token 握手就绪；8 条只读 API 0/8 授权，缺 tenant/org |
+| 协同触达 | 飞书 | 接收 SCM outbox 消息；不成为业务状态权威 | 群 webhook 已真实投递并有有效 UAT；过度授权的共享应用不作为生产通知身份 |
 
-截至 2026-08-03 的实证结论：简道云 OpenAPI 密钥已完成只读握手，九条契约的 API 技术
-行/子表计数与 schema hash 再次稳定；飞书应用凭据可换取 tenant token，应用已启用并存在
-在线机器人版本。但简道云尚未完成权威视图裁决、业务对账控制总量/业务方 UAT；飞书共享
-应用拥有 1,107 项权限（其中 1,007 项为高级/超敏感）且仍看不到任何测试群；用友也缺少完整
-企业授权上下文。因此任何面板都不得把「代码存在」「凭据可鉴权」或「人能登录」显示成
-live/operational。
+截至 2026-08-07 的实证结论：简道云链路已通但仍是受控观察层；飞书群 webhook 已真实投递，
+共享应用因 1,107 项权限（其中 1,007 项高级/超敏感）不作为生产身份。聚水潭真实只读探针
+返回出库 `110`、店铺/仓库/库存 `190`；用友 token 握手成功但八条只读契约全部 `310037`。
+因此只有飞书 webhook 可标 operational，其余仍必须区分代码就绪、凭据、权限和 UAT。
 
 任何外部事实都走：
 
@@ -33,6 +31,8 @@ live/operational。
 
 - [接入准备](https://openweb.jushuitan.com/doc?docId=20)：应用需 `app_key`、
   `app_secret`、`access_token`，并完成 IP 白名单和 API 权限；token 有有效期。
+- [商家自研系统授权](https://openweb.jushuitan.com/doc?docId=23)：应用审核通过后在应用详情
+  「我的授权」取得初始 `access_token`；只有 AppKey/AppSecret 不能替代商家授权。
 - [调用规范](https://openweb.jushuitan.com/doc?docId=30)：POST、
   `application/x-www-form-urlencoded;charset=UTF-8`，系统参数与 `biz` 都在 body；
   时间戳为秒且容许窗口有限；每商家受并发与分钟限流。
@@ -50,6 +50,8 @@ live/operational。
 - [仓库查询](https://openweb.jushuitan.com/dev-doc?docType=1&docId=3)使用
   `/open/wms/partner/query`，仅返回启用仓库；客户端按 `has_next` 翻页、去重并排序，
   供后续仓库别名覆盖核验使用。
+- [店铺查询](https://openweb.jushuitan.com/dev-doc)使用 `/open/shops/query`；目录只保留店铺 ID、
+  展示名、公司、平台和授权状态，不落消费者、收件地址或订单联系人数据。
 
 ### 已实现
 
@@ -68,6 +70,8 @@ live/operational。
   `jst_inventory_observation` staging → SKU alias/未知值认领。它只表示
   `changed-since-cursor`，缺失行保持未知，绝不写 `stock_snapshots`、库存台账或把缺失补 0。
 - 仓库目录客户端已实现，但在真实权限、仓库覆盖和仓别名验收前不自动改变 SCM 仓库主数据。
+- 店铺目录客户端与 `probe-jst` 只读探针已实现；探针各取最小页验证店铺、仓库、销售出库和
+  库存四个权限面，只输出聚合计数/安全错误分类，不保存源标识、不推进游标、不写 staging。
 - 证据文件存于 `FILE_STORAGE_DIR/integration-evidence/jst/...`，内容寻址、SHA-256、
   0600 权限，并由 `integration_runs` 关联。
 - SKU/仓库走通用 alias；未知值进入人工认领，绝不猜。
@@ -93,7 +97,7 @@ JST_LIVE_VERIFIED_REF（非秘密 UAT 证据编号，例如 UAT-20260730-JST-001
 
 `JST_SYNC_ACTOR_ID` 必须指向 SCM 内启用的责任人/服务账号。生产启用前还要完成：
 
-1. 在聚水潭开放平台确认应用类型、商家授权、出库/库存接口权限和生产 IP 白名单。
+1. 商家授权与 token 已完成；仍须把部署出口加入 IP 白名单，并申请店铺/仓库/库存 API 权限。
 2. 建立 access/refresh token 轮换责任人；当前代码不会用过期 token 猜测刷新流程。
 3. 确认 ERP 与分仓是否开启生产批次管理；若开启，验证 `batchs.ioi_id` 能与商品明细关联，
    并核对批次数量合计、空批号和效期字段覆盖。
@@ -101,11 +105,14 @@ JST_LIVE_VERIFIED_REF（非秘密 UAT 证据编号，例如 UAT-20260730-JST-001
    未解析别名和最大游标。
 5. 库存先以只读观察流接 staging/snapshot；在完整性、仓映射和控制总量验收前不得写实时账。
 6. 连续运行至少 7 天，验证迟到修改、重复调度、限流、网络失败和恢复重放。
+7. UAT 证据编号必须带运维面板输出的 `JST1_...` 绑定；换 AppKey 或从销量-only 开启库存流会
+   自动使旧证据失效，禁止沿用旧日期冒充新权限已验收。
 
 手工触发：
 
 ```bash
 npx tsx src/jobs/cli.ts audit-connectors
+npx tsx src/jobs/cli.ts probe-jst 2026-07-28
 npx tsx src/jobs/cli.ts sync-jst 2026-07-28
 npx tsx src/jobs/cli.ts sync-jst-inventory
 npx tsx src/jobs/cli.ts reconcile-jst 2026-07-28
@@ -316,18 +323,20 @@ npx tsx src/jobs/cli.ts probe-feishu-chats
 企业授权后调用；并支持 IP 白名单、分层限流和熔断。
 
 提供的 C4 人工登录账号只能供人在管理界面操作，**不能**作为服务器 API 凭据，也未写入代码、
-环境模板、日志或 Git。2026-07-29 已用该账号只读验证：
+环境模板、日志或 Git。2026-08-03 已用该账号只读复核目标租户：
 
-- 可以通过 SSO 进入 YonSuite/C4 业务租户与用友开放平台；
-- 开放平台控制台实际进入 `#/unregister`，说明当前账号尚未注册开发者/ISV 身份；
-- 因此目前不存在可供 SCM 使用的企业应用 client ID/secret、已申请服务或企业应用授权。
+- 成功进入企业“广东爱碧生生物科技有限公司”，产品页面明确标识为 YonBIP；
+- 「API调用」存在一条 2026-07-30 创建且已启用的“供应链系统调用1”AK/SK，项目本地 AppKey
+  与该记录一致，AppSecret 仍只保存在忽略的本地密钥文件；
+- 官方 API 文档确认当前数据中心网关为 `https://c4.yonyoucloud.com/iuap-api-gateway`；
+- 已核对八条只读优先契约：`分页查询当前租户组织架构`、`供应商档案列表查询`、
+  `物料档案分页查询 V2`、`采购订单列表查询`、`采购入库列表查询`、`现存量查询 V2`、
+  `存货成本查询`、`凭证列表查询`。
 
-当前收到的 AppKey/AppSecret 只满足凭据对中的一部分，仍缺租户、组织、token URL、base URL、
-已申请服务及企业授权证据。当前保持 `contract_only`，避免在未知产品版本/租户/组织/接口下伪接通。未自动注册开发者身份，
-因为注册会接受平台条款、创建外部主体并可能要求企业/伙伴资料，属于必须由企业明确批准的外部变更。
-
-2026-08-03 再次执行无网络 readiness 审计：AppKey/AppSecret 均存在，但产品 profile、租户、
-组织、获批 API 契约、允许主机、base URL 与 token URL 仍全部缺失，故 `safeToCall=false`。
+本地已据此锁定 `yonbip`、八条精确契约、`c4.yonyoucloud.com` allowlist 和网关 base URL；
+readiness 现在只缺租户 ID、目标组织 ID 与企业自建 token URL。OpenAPI Explorer 的真实 token
+握手与组织查询仍未执行，企业授权范围、账簿/币种/税/会计期间和业务控制总量也未验收，故继续
+保持 `contract_only`、`safeToCall=false`，不会因门户可登录或 AK/SK 存在而伪报 live。
 
 所需机器配置：
 
@@ -341,6 +350,9 @@ YY_APPROVED_API_CONTRACTS
 YY_ALLOWED_HOSTS
 YY_BASE_URL
 YY_TOKEN_URL
+YY_SYNC_ENABLED
+YY_LIVE_VERIFIED_AT
+YY_LIVE_VERIFIED_REF
 ```
 
 `YY_PRODUCT_PROFILE` 只接受 `c4`、`yonsuite`、`yonbip`，必须由企业管理员/实施方确认；
@@ -349,6 +361,11 @@ YY_TOKEN_URL
 精确主机名，不接受通配符、IP 或任意公网域名。主/别名凭据冲突、HTTP、带用户名密码、
 IPv6 zone、loopback、私网或本地域名 endpoint 会被拒绝；未来 token 客户端还必须在连接前
 重新解析 DNS、拒绝非公网地址并把已验证 IP 固定到同一次请求，避免 DNS rebinding。
+
+`YY_SYNC_ENABLED` 默认关闭；企业应用授权、只读沙箱对账、错误码/限流和失败恢复没有验收前
+不得开启。`YY_LIVE_VERIFIED_REF` 必须以当前应用、租户/组织、产品 profile、精确契约集和端点生成的
+`YY1_...` 非秘密指纹绑定；任一范围变更都会使旧 UAT 证据失效。轮换同一应用的 AppSecret 不改变业务
+范围，但仍须单独证明新凭据握手成功。人工 C4 密码始终不进入服务器环境变量。
 
 在不请求 token、不调用业务 API 的情况下可先运行：
 

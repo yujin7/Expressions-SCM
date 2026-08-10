@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 
 const root = process.cwd();
@@ -38,43 +38,53 @@ requireText(".gitignore", ".env.backup");
 requireText("docker-compose.prod.yml", "healthcheck:");
 requireText("docker-compose.prod.yml", "max-size: \"10m\"");
 requireText("docker-compose.prod.yml", "uploads:/data/uploads:ro");
+// standalone 产物不含 public/，漏拷则生产环境所有静态资源 404（dev 却正常）。
+requireText("Dockerfile", "COPY --from=build /app/public ./public");
+// Next.js standalone 不设 HOSTNAME 会只绑容器 IP，容器内 127.0.0.1 无监听 →
+// healthcheck 永远失败、容器长期 unhealthy（宿主机端口映射却是通的，极易漏判）。
+requireText("docker-compose.prod.yml", 'HOSTNAME: "0.0.0.0"');
 
-for (const key of [
-  "FEISHU_APP_ID",
-  "FEISHU_APP_SECRET",
-  "FEISHU_CHAT_ID",
-  "FEISHU_WEBHOOK_URL",
-  "FEISHU_APP_LIVE_VERIFIED_AT",
-  "FEISHU_APP_LIVE_VERIFIED_REF",
-  "FEISHU_WEBHOOK_LIVE_VERIFIED_AT",
-  "FEISHU_WEBHOOK_LIVE_VERIFIED_REF",
-  "JST_APP_KEY",
-  "JST_APP_SECRET",
-  "JST_ACCESS_TOKEN",
-  "JST_SYNC_ACTOR_ID",
-  "JST_BASE_URL",
-  "JST_INVENTORY_SYNC_ENABLED",
-  "JST_LIVE_VERIFIED_AT",
-  "JST_LIVE_VERIFIED_REF",
-  "JIANDAOYUN_API_KEY",
-  "JIANDAOYUN_SYNC_ACTOR_ID",
-  "JIANDAOYUN_SYNC_ENABLED",
-  "JIANDAOYUN_SYNC_CONTRACTS",
-  "JIANDAOYUN_BASE_URL",
-  "JIANDAOYUN_LIVE_VERIFIED_AT",
-  "JIANDAOYUN_LIVE_VERIFIED_REF",
-  "YY_APP_KEY",
-  "YY_APP_SECRET",
-  "YY_CLIENT_ID",
-  "YY_CLIENT_SECRET",
-  "YY_TENANT_ID",
-  "YY_ORG_ID",
-  "YY_PRODUCT_PROFILE",
-  "YY_APPROVED_API_CONTRACTS",
-  "YY_ALLOWED_HOSTS",
-  "YY_BASE_URL",
-  "YY_TOKEN_URL",
-]) {
+/*
+ * 连接器环境变量必须逐个透传进生产 compose，否则容器里那条集成静默失效。
+ *
+ * ⚠ 本检查原来是**一份手写清单**——于是本轮新增 FEISHU_WEBHOOK_SECRET、
+ * JST_TRUSTED_WMS_CO_IDS 等变量时，compose 漏了、检查却照样绿。
+ * 尤其 FEISHU_WEBHOOK_SECRET 缺失会让唯一跑通的那条集成（签名 webhook）
+ * 在容器里发不出消息，而本地却是好的——最难查的那类差异。
+ *
+ * 改为**从源码推导**：扫描集成层与任务层里读取的 `env.XXX` / `process.env.XXX`，
+ * 凡是连接器前缀的键都必须在 compose 里出现。新增变量时不会再漏。
+ */
+const CONNECTOR_PREFIXES = ["FEISHU_", "JST_", "JIANDAOYUN_", "YY_"];
+const SOURCE_DIRS = ["src/server/integrations", "src/jobs"];
+
+function collectConnectorEnvKeys(): string[] {
+  const keys = new Set<string>();
+  for (const dir of SOURCE_DIRS) {
+    for (const entry of readdirSync(path.join(root, dir))) {
+      if (!entry.endsWith(".ts")) continue;
+      const src = read(path.join(dir, entry));
+      // ① 直接读取：env.JST_XXX / process.env["JST_XXX"]
+      for (const match of src.matchAll(/(?:process\.)?env(?:\.|\[")([A-Z][A-Z0-9_]+)/g)) {
+        const key = match[1];
+        if (CONNECTOR_PREFIXES.some((prefix) => key.startsWith(prefix))) keys.add(key);
+      }
+      // ② 间接读取：const TRUSTED_WMS_ENV = "JST_TRUSTED_WMS_CO_IDS" 之后 env[TRUSTED_WMS_ENV]。
+      //    只扫①会漏掉这种写法——本轮 JST_TRUSTED_WMS_CO_IDS 正是这样被漏掉的。
+      for (const match of src.matchAll(/=\s*"([A-Z][A-Z0-9_]+)"/g)) {
+        const key = match[1];
+        if (CONNECTOR_PREFIXES.some((prefix) => key.startsWith(prefix))) keys.add(key);
+      }
+    }
+  }
+  return [...keys].sort();
+}
+
+const connectorEnvKeys = collectConnectorEnvKeys();
+if (connectorEnvKeys.length < 20) {
+  failures.push(`connector env scan only found ${connectorEnvKeys.length} keys — scanner likely broken`);
+}
+for (const key of connectorEnvKeys) {
   requireText("docker-compose.prod.yml", `${key}: \${${key}-}`);
 }
 

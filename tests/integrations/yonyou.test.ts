@@ -7,9 +7,17 @@ import {
   parseYonyouApprovedApiContracts,
   parseYonyouProductProfile,
   yonyouConfigFromEnv,
+  yonyouEvidenceRefHasLiveBinding,
+  yonyouLiveEvidenceBinding,
   yonyouMissingEnv,
+  yonyouSyncEnabled,
 } from "@/server/integrations/yonyou";
 import { auditYonyouReadiness } from "@/jobs/audit-yonyou";
+import {
+  YONYOU_READ_CONTRACTS,
+  areKnownYonyouReadContracts,
+  yonyouReadContractByName,
+} from "@/server/integrations/yonyou-contracts";
 
 function completeEnv(): NodeJS.ProcessEnv {
   return {
@@ -18,11 +26,11 @@ function completeEnv(): NodeJS.ProcessEnv {
     YY_APP_SECRET: "app-secret",
     YY_TENANT_ID: "tenant",
     YY_ORG_ID: "org",
-    YY_PRODUCT_PROFILE: "yonsuite",
-    YY_APPROVED_API_CONTRACTS: "supplier.read@v1, cost.read@v1,supplier.read@v1",
-    YY_ALLOWED_HOSTS: "api.yonyoucloud.com, auth.yonyoucloud.com",
-    YY_BASE_URL: "https://api.yonyoucloud.com/openapi",
-    YY_TOKEN_URL: "https://auth.yonyoucloud.com/oauth/token",
+    YY_PRODUCT_PROFILE: "yonbip",
+    YY_APPROVED_API_CONTRACTS: "供应商档案列表查询, 存货成本查询,供应商档案列表查询",
+    YY_ALLOWED_HOSTS: "c4.yonyoucloud.com",
+    YY_BASE_URL: "https://c4.yonyoucloud.com/iuap-api-gateway",
+    YY_TOKEN_URL: "https://c4.yonyoucloud.com/iuap-api-auth/open-auth/token",
   };
 }
 
@@ -31,9 +39,9 @@ describe("用友 OpenAPI 前置契约", () => {
     const env = completeEnv();
     expect(yonyouMissingEnv(env)).toEqual([]);
     expect(yonyouConfigFromEnv(env)).toMatchObject({
-      productProfile: "yonsuite",
-      approvedApiContracts: ["supplier.read@v1", "cost.read@v1"],
-      allowedHosts: ["api.yonyoucloud.com", "auth.yonyoucloud.com"],
+      productProfile: "yonbip",
+      approvedApiContracts: ["供应商档案列表查询", "存货成本查询"],
+      allowedHosts: ["c4.yonyoucloud.com"],
     });
     delete env.YY_PRODUCT_PROFILE;
     expect(yonyouConfigFromEnv(env)).toBeNull();
@@ -76,13 +84,34 @@ describe("用友 OpenAPI 前置契约", () => {
   it("解析受控产品与去重后的 API 契约清单", () => {
     expect(parseYonyouProductProfile(" YONBIP ")).toBe("yonbip");
     expect(parseYonyouProductProfile("unknown")).toBeNull();
-    expect(parseYonyouApprovedApiContracts("a@v1, b@v2, a@v1")).toEqual(["a@v1", "b@v2"]);
+    expect(parseYonyouApprovedApiContracts(
+      "供应商档案列表查询, 存货成本查询,供应商档案列表查询",
+    )).toEqual(["供应商档案列表查询", "存货成本查询"]);
+    expect(parseYonyouApprovedApiContracts("unknown.read@v1")).toBeNull();
     expect(parseYonyouApprovedApiContracts(" , ")).toBeNull();
     expect(parseYonyouAllowedHosts("API.YONYOUCLOUD.COM, api.yonyoucloud.com")).toEqual([
       "api.yonyoucloud.com",
     ]);
     expect(parseYonyouAllowedHosts("*.yonyoucloud.com")).toBeNull();
     expect(parseYonyouAllowedHosts("127.0.0.1")).toBeNull();
+    expect(yonyouSyncEnabled({ NODE_ENV: "test", YY_SYNC_ENABLED: " YES " })).toBe(true);
+    expect(yonyouSyncEnabled({ NODE_ENV: "test", YY_SYNC_ENABLED: "false" })).toBe(false);
+  });
+
+  it("UAT 绑定覆盖应用、租户/组织、产品、契约和端点且不暴露原值", () => {
+    const env = completeEnv();
+    const binding = yonyouLiveEvidenceBinding(env);
+    expect(binding).toMatch(/^YY1_[A-F0-9]{24}$/);
+    expect(yonyouEvidenceRefHasLiveBinding(`UAT-20260803-${binding}`, env)).toBe(true);
+    expect(yonyouEvidenceRefHasLiveBinding(`UAT-${binding}-EXTRA`, env)).toBe(false);
+    expect(binding).not.toContain(env.YY_APP_KEY!);
+    expect(binding).not.toContain(env.YY_TENANT_ID!);
+    expect(yonyouLiveEvidenceBinding({ ...env, YY_ORG_ID: "other-org" })).not.toBe(binding);
+    expect(yonyouLiveEvidenceBinding({
+      ...env,
+      YY_APPROVED_API_CONTRACTS: "供应商档案列表查询,凭证列表查询",
+    })).not.toBe(binding);
+    expect(yonyouLiveEvidenceBinding({ ...env, YY_APP_SECRET: "rotated" })).toBe(binding);
   });
 
   it("连接前 DNS 检查拒绝私网、回环、保留和 IPv4-mapped IPv6", async () => {
@@ -128,8 +157,10 @@ describe("用友 OpenAPI 前置契约", () => {
       implementation: "contract_only",
       safeToCall: false,
       credentialsPresent: { appKey: true, appSecret: true },
-      productProfile: "yonsuite",
+      productProfile: "yonbip",
       approvedApiContractCount: 2,
+      syncEnabled: false,
+      expectedLiveVerificationBinding: expect.stringMatching(/^YY1_/),
       missingEnv: [],
     });
     const serialized = JSON.stringify(report);
@@ -140,7 +171,21 @@ describe("用友 OpenAPI 前置契约", () => {
       env.YY_ORG_ID,
       env.YY_BASE_URL,
       env.YY_TOKEN_URL,
-      "supplier.read@v1",
+      "供应商档案列表查询",
     ]) expect(serialized).not.toContain(secretValue!);
+  });
+
+  it("只接受在目标 YonBIP 租户官方目录核实过的八条只读契约", () => {
+    expect(YONYOU_READ_CONTRACTS).toHaveLength(8);
+    expect(new Set(YONYOU_READ_CONTRACTS.map((contract) => contract.name)).size).toBe(8);
+    expect(new Set(YONYOU_READ_CONTRACTS.map((contract) => contract.path)).size).toBe(8);
+    expect(areKnownYonyouReadContracts(YONYOU_READ_CONTRACTS.map((contract) => contract.name))).toBe(true);
+    expect(areKnownYonyouReadContracts(["凭证保存"])).toBe(false);
+    expect(yonyouReadContractByName("现存量查询 V2")).toMatchObject({
+      method: "POST",
+      path: "/yonbip/scm/stock/QueryCurrentStocksByCondition",
+      domain: "inventory",
+    });
+    expect(YONYOU_READ_CONTRACTS.every((contract) => !contract.path.includes("save"))).toBe(true);
   });
 });

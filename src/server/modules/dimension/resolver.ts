@@ -319,3 +319,47 @@ export async function resolveKnownOrQueue(
   }, options);
   return null;
 }
+
+/**
+ * 按条码精确解析 SKU —— 平台商品落到系统主档的那座桥。
+ *
+ * 背景（2026-08-04 实测）：简道云数据中台的平台商品对照表里，**商家编码与系统 SKU
+ * 编码是两套命名空间**（拼多多样本 `SW1557` vs 系统 `N006-001`，5,376 个 SKU 里
+ * 形如 SW1557 的有 0 个）。但**条码是通的**：唯品会 405 个唯一条码里，
+ * 169 个命中 `skus.barcode`、163 个命中 `sku_identifiers`（约四成）。
+ * 天猫对照表同样带条形码（填充率 45%），走同一条路。
+ *
+ * 纪律与既有别名解析一致：
+ *  - **只做精确匹配**，不归一化去横杠、不模糊匹配；
+ *  - **命中多个即视为未命中**（返回 null）——同条码落在多个 SKU 上属归属歧义，
+ *    必须由人在认领工作台裁决，系统不许挑一个；
+ *  - 只读，不写任何主档。
+ *
+ * 先查 `sku_identifiers`（受治理的标识表，带归属与停用状态），再回落 `skus.barcode`。
+ */
+export async function resolveSkuByBarcode(
+  db: DimDb,
+  rawBarcode: string,
+): Promise<number | null> {
+  const value = String(rawBarcode ?? "").trim();
+  if (!value) return null;
+
+  const identified = await db
+    .select({ skuId: schema.skuIdentifiers.skuId })
+    .from(schema.skuIdentifiers)
+    .where(and(
+      eq(schema.skuIdentifiers.value, value),
+      eq(schema.skuIdentifiers.active, true),
+    ));
+  const identifiedIds = [...new Set(identified.map((row) => row.skuId))];
+  if (identifiedIds.length === 1) return identifiedIds[0];
+  // 命中多个 = 归属歧义，交人裁决；不在这里挑一个
+  if (identifiedIds.length > 1) return null;
+
+  const direct = await db
+    .select({ id: schema.skus.id })
+    .from(schema.skus)
+    .where(eq(schema.skus.barcode, value));
+  const directIds = [...new Set(direct.map((row) => row.id))];
+  return directIds.length === 1 ? directIds[0] : null;
+}

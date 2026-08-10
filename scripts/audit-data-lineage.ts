@@ -1,7 +1,7 @@
 /**
  * 全域数据血缘只读巡检。
  *
- * 运行前必须停掉占用同一 PGlite 目录的 dev server：
+ * 若连接本地 PGlite，运行前必须停掉占用同一目录的 dev server；PostgreSQL 可只读并行：
  *   npm run data:audit -- --source-root /Users/yj/Desktop/SCM
  *
  * 输出 JSON，供人工审计/CI 留证；不改源文件、不写业务表、不自动合并疑似重复 SKU。
@@ -60,6 +60,13 @@ function arg(name: string): string | undefined {
 
 function md5(file: string): string {
   return createHash("md5").update(readFileSync(file)).digest("hex");
+}
+
+function configuredDatabaseScope(): string {
+  const url = process.env.DATABASE_URL?.trim() ?? "pglite:.data/dev";
+  if (url.startsWith("pglite:")) return `PGlite ${url.slice("pglite:".length) || ".data/dev"}`;
+  if (/^postgres(?:ql)?:\/\//.test(url)) return "configured PostgreSQL database";
+  return "configured database (unrecognized driver)";
 }
 
 function scopeSourceHashes(scope: unknown): Set<string> {
@@ -300,7 +307,8 @@ async function main() {
 
   const report = {
     generatedAt: new Date().toISOString(),
-    revisionScope: "current working tree + local PGlite .data/dev",
+    // 只披露驱动/本地路径，不输出可能带账号口令的 DATABASE_URL。
+    revisionScope: `current working tree + ${configuredDatabaseScope()}`,
     sourceRoot,
     sourceSummary: {
       total: sources.length,

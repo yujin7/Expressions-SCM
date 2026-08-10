@@ -7,7 +7,7 @@
  * - 同比、SPC、日级归因不满足前提时返回明确 gate，不用 0 或演示数据补位；
  * - 跨 SKU 数量直加只用于结构与趋势，不代表收入、利润或统一实物量。
  */
-import { sql } from "drizzle-orm";
+import { and, sql } from "drizzle-orm";
 
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
@@ -17,11 +17,25 @@ import { detectSignals, type SpcResult } from "@/server/rules/spc";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
-export type StudioDimension = "brand" | "channel" | "sku";
+export type StudioDimension = "brand" | "channel" | "sku" | "month";
+
+/**
+ * 跨维筛选范围。与 `dimension`（分组维度）**正交**：
+ * dimension 决定"按什么分组"，scope 决定"看哪一部分数据"。
+ * 0727 会议要的「NING × 天猫」这类组合此前做不到——旧实现只有一个
+ * dimension + 一个 key，品牌与渠道互斥单选。
+ */
+export interface StudioScope {
+  /** 品牌 code；未分配品牌用 "(unassigned)" */
+  brand?: string;
+  /** 渠道 code */
+  channel?: string;
+}
 
 export interface StudioQuery {
   dimension?: StudioDimension;
   key?: string;
+  scope?: StudioScope;
 }
 
 export interface MonthlyGroupFact {
@@ -89,8 +103,12 @@ export interface DecisionStudioResult {
   limitations: string[];
 }
 
-const DIMENSIONS: StudioDimension[] = ["brand", "channel", "sku"];
+const DIMENSIONS: StudioDimension[] = ["brand", "channel", "sku", "month"];
 const NO_BRAND = "(unassigned)";
+
+const DIMENSION_LABELS: Record<StudioDimension, string> = {
+  brand: "品牌", channel: "渠道", sku: "SKU", month: "月份",
+};
 const SPC_MIN_MONTHS = 12;
 const PIVOT_GROUP_LIMIT = 20;
 
@@ -241,7 +259,7 @@ export function buildDecisionStudio(
       ? "环比：缺少可比较的上一期或上一期为零，暂不计算。"
       : `环比：${momPct >= 0 ? "增长" : "下降"} ${Math.abs(momPct).toFixed(1)}%。`,
     top
-      ? `${pareto80Count} 个${dimension === "brand" ? "品牌" : dimension === "channel" ? "渠道" : "SKU"}贡献最新月约 80% 销量；第一位 ${top.label} 占 ${top.sharePct.toFixed(1)}%。`
+      ? `${pareto80Count} 个${DIMENSION_LABELS[dimension]}贡献最新月约 80% 销量；第一位 ${top.label} 占 ${top.sharePct.toFixed(1)}%。`
       : "结构：当前期间没有可排名事实。",
     yoyPct == null
       ? `同比：缺少 ${yearAgoMonth ?? "去年同期"} 一致口径数据，保持留白。`
@@ -301,8 +319,52 @@ export function buildDecisionStudio(
   };
 }
 
-async function loadMonthlyFacts(db: AnyDb, dimension: StudioDimension): Promise<MonthlyGroupFact[]> {
+/**
+ * 跨维筛选一律用 EXISTS 子查询，**不动各分支原有的 join 结构**。
+ * 直接加 join 会改变行的纳入口径——例如 sku 维加 innerJoin channels 会把无渠道的行
+ * 整批丢掉，于是"没加筛选时"的既有数字也会跟着变。EXISTS 只过滤，不影响基数。
+ * 无筛选时 where 传 undefined（drizzle 视作不加条件），保证与改动前逐字等价。
+ */
+function scopeWhere(scope: StudioScope) {
+  const conds = [];
+  if (scope.brand) {
+    conds.push(sql`EXISTS (
+      SELECT 1 FROM skus ss LEFT JOIN brands bb ON bb.id = ss.brand_id
+      WHERE ss.id = ${schema.salesMonthly.skuId}
+        AND coalesce(bb.code, ${NO_BRAND}) = ${scope.brand}
+    )`);
+  }
+  if (scope.channel) {
+    conds.push(sql`EXISTS (
+      SELECT 1 FROM channels cc
+      WHERE cc.id = ${schema.salesMonthly.channelId} AND cc.code = ${scope.channel}
+    )`);
+  }
+  return conds.length ? and(...conds) : undefined;
+}
+
+async function loadMonthlyFacts(
+  db: AnyDb,
+  dimension: StudioDimension,
+  scope: StudioScope = {},
+): Promise<MonthlyGroupFact[]> {
   const qtyExpr = sql<string>`sum(${schema.salesMonthly.qty})`;
+  const where = scopeWhere(scope);
+
+  if (dimension === "month") {
+    // 月份维：只按月分组，配合 scope 就是「NING × 天猫 的月度走势」
+    const rows: { month: string; key: string; label: string; qty: string }[] = await db
+      .select({
+        month: schema.salesMonthly.yearMonth,
+        key: schema.salesMonthly.yearMonth,
+        label: schema.salesMonthly.yearMonth,
+        qty: qtyExpr,
+      })
+      .from(schema.salesMonthly)
+      .where(where)
+      .groupBy(schema.salesMonthly.yearMonth);
+    return rows.map((item) => ({ ...item, qty: num(item.qty) }));
+  }
   if (dimension === "channel") {
     const rows: { month: string; key: string; label: string; qty: string }[] = await db
       .select({
@@ -313,6 +375,7 @@ async function loadMonthlyFacts(db: AnyDb, dimension: StudioDimension): Promise<
       })
       .from(schema.salesMonthly)
       .innerJoin(schema.channels, sql`${schema.salesMonthly.channelId} = ${schema.channels.id}`)
+      .where(where)
       .groupBy(schema.salesMonthly.yearMonth, schema.channels.code, schema.channels.name);
     return rows.map((item) => ({ ...item, qty: num(item.qty) }));
   }
@@ -326,6 +389,7 @@ async function loadMonthlyFacts(db: AnyDb, dimension: StudioDimension): Promise<
       })
       .from(schema.salesMonthly)
       .innerJoin(schema.skus, sql`${schema.salesMonthly.skuId} = ${schema.skus.id}`)
+      .where(where)
       .groupBy(schema.salesMonthly.yearMonth, schema.skus.code, schema.skus.name);
     return rows.map((item) => ({ ...item, qty: num(item.qty) }));
   }
@@ -341,6 +405,7 @@ async function loadMonthlyFacts(db: AnyDb, dimension: StudioDimension): Promise<
     .from(schema.salesMonthly)
     .innerJoin(schema.skus, sql`${schema.salesMonthly.skuId} = ${schema.skus.id}`)
     .leftJoin(schema.brands, sql`${schema.skus.brandId} = ${schema.brands.id}`)
+    .where(where)
     .groupBy(schema.salesMonthly.yearMonth, schema.brands.code, schema.brands.nameCn);
   return rows.map((item) => ({ ...item, qty: num(item.qty) }));
 }
@@ -395,8 +460,9 @@ export async function getDecisionStudio(
   const dimension = DIMENSIONS.includes(query.dimension as StudioDimension)
     ? (query.dimension as StudioDimension)
     : "brand";
+  const scope = query.scope ?? {};
   const [facts, daily] = await Promise.all([
-    loadMonthlyFacts(db, dimension),
+    loadMonthlyFacts(db, dimension, scope),
     loadDailyFacts(db),
   ]);
   return buildDecisionStudio(facts, daily, { ...query, dimension });

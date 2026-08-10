@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
    batches, flDocs, flLines, jgDocs, skus, tlDocs, tlLines, users, warehouses,
@@ -21,6 +21,7 @@ import {
 } from "./common-notes";
 import { createTlSchema } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
+import { skuLineMatch } from "@/server/core/doc-search";
 
 /**
  * 委外退料单 TL（R5「退回量」唯一数据源）：委外仓 → 自有仓。
@@ -257,7 +258,7 @@ export async function listTls(
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
   const conds = [];
-  if (q) conds.push(sql`${tlDocs.docNo} ILIKE ${"%" + q + "%"}`);
+  if (q) conds.push(or(sql`${tlDocs.docNo} ILIKE ${"%" + q + "%"}`, skuLineMatch("tl_lines", "tl_id", tlDocs.id, q)));
   if (opts.status) conds.push(eq(tlDocs.status, opts.status as DocStatus));
   if (opts.jgId) conds.push(eq(tlDocs.jgId, opts.jgId));
   const where = conds.length ? and(...conds) : undefined;

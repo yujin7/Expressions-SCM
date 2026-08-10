@@ -4,7 +4,7 @@ import { z } from "zod";
 import {
    pdDocs, pdLines, skus, spus, stockBalances, stockDocLines, stockDocs, users, warehouses,
 } from "@/db/schema";
-import { dCmp, dQty, dSub } from "@/server/core/decimal";
+import { dAdd, dCmp, dQty, dSub } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { requireRole } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
@@ -12,8 +12,9 @@ import { ApprovalError, approveDoc, loadApprovalHistory } from "@/server/docflow
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { post, PostingError, type AnyDb, type PostingLine } from "@/server/posting/post";
-import { ApiError } from "@/server/modules/master/common";
+import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { resolveDb } from "@/server/core/svc";
+import { participatesInNormalSalesMovement } from "@/server/rules/sku-standardization";
 
 /**
  * 盘点任务（PD）——定期全盘 full / 抽盘 partial（=原 PRD"永续盘点"的落地形式：循环抽点）。
@@ -55,6 +56,8 @@ export const createCountTaskSchema = z
       })
       .optional(),
     remark: z.string().trim().max(500).optional(),
+    /** 盘点期（业务日期）。不传按今天（Asia/Shanghai）——补录时可显式指定。 */
+    bizDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "盘点期格式 YYYY-MM-DD").optional(),
   })
   .superRefine((v, ctx) => {
     const f = v.filters;
@@ -109,6 +112,32 @@ function mapApprovalError(e: ApprovalError): ApiError {
   return new ApiError(APPROVAL_STATUS[e.code] ?? 500, APPROVAL_HUMAN[e.code] ?? e.message);
 }
 
+/**
+ * 按业务用途把盘点行分成「小样等非销售用途」与「正常销售」两组。
+ * 未分类保守计入正常销售——与全站口径一致；这也正是必须先给存量打标的原因。
+ */
+function summarizeByRole(
+  rows: { commercialRole: string; bookQty: string; countedQty: string }[],
+): { group: "sample" | "retail"; lineCount: number; bookQty: string; countedQty: string; diffQty: string }[] {
+  const acc = {
+    sample: { lineCount: 0, bookQty: "0", countedQty: "0" },
+    retail: { lineCount: 0, bookQty: "0", countedQty: "0" },
+  };
+  for (const r of rows) {
+    const key = participatesInNormalSalesMovement(r.commercialRole) ? "retail" : "sample";
+    acc[key].lineCount += 1;
+    acc[key].bookQty = dAdd(acc[key].bookQty, r.bookQty);
+    acc[key].countedQty = dAdd(acc[key].countedQty, r.countedQty);
+  }
+  return (["sample", "retail"] as const).map((group) => ({
+    group,
+    lineCount: acc[group].lineCount,
+    bookQty: acc[group].bookQty,
+    countedQty: acc[group].countedQty,
+    diffQty: dSub(acc[group].countedQty, acc[group].bookQty),
+  }));
+}
+
 // ---------- 创建：快照账面数 ----------
 
 export async function createCountTask(user: SessionUser, input: unknown, dbArg?: AnyDb): Promise<PdDocRow> {
@@ -153,6 +182,8 @@ export async function createCountTask(user: SessionUser, input: unknown, dbArg?:
         warehouseId: v.warehouseId,
         mode: v.mode,
         remark: v.remark ?? null,
+        // 按业务日期而不是录入时间归期：补录/次月才录的盘点不能落到错误的期间
+        bizDate: v.bizDate ?? todayShanghai(),
         createdBy: user.id,
       })
       .returning();
@@ -362,7 +393,9 @@ export async function approveCountTask(
 
 export async function getCountTask(id: number, dbArg?: AnyDb) {
   const db = await resolveDb(dbArg);
-  const [doc]: (PdDocRow & { warehouseName: string | null; createdByName: string | null })[] = await db
+  const [doc]: (PdDocRow & {
+    warehouseName: string | null; createdByName: string | null; bizDate: string | null;
+  })[] = await db
     .select({
       id: pdDocs.id,
       docNo: pdDocs.docNo,
@@ -375,6 +408,7 @@ export async function getCountTask(id: number, dbArg?: AnyDb) {
       version: pdDocs.version,
       closedReason: pdDocs.closedReason,
       warehouseId: pdDocs.warehouseId,
+      bizDate: pdDocs.bizDate,
       createdBy: pdDocs.createdBy,
       createdAt: pdDocs.createdAt,
       updatedAt: pdDocs.updatedAt,
@@ -389,6 +423,7 @@ export async function getCountTask(id: number, dbArg?: AnyDb) {
 
   const lineRows: {
     id: number; skuId: number; skuCode: string; skuName: string; barcode: string | null; baseUom: string;
+    commercialRole: string;
     batchId: number | null; bookQty: string; countedQty: string; adjustDocId: number | null;
   }[] = await db
     .select({
@@ -398,6 +433,7 @@ export async function getCountTask(id: number, dbArg?: AnyDb) {
       skuName: skus.name,
       barcode: skus.barcode,
       baseUom: skus.baseUom,
+      commercialRole: skus.commercialRole,
       batchId: pdLines.batchId,
       bookQty: pdLines.bookQty,
       countedQty: pdLines.countedQty,
@@ -425,10 +461,17 @@ export async function getCountTask(id: number, dbArg?: AnyDb) {
     version: doc.version,
     warehouseId: doc.warehouseId,
     warehouseName: doc.warehouseName,
+    bizDate: doc.bizDate,
     lines: lineRows.map((l) => ({
       ...l,
       diffQty: dSub(l.countedQty, l.bookQty), // 差异=实盘−账面（+盘盈 −盘亏）
     })),
+    /**
+     * 小样/非小样分组汇总（0727 行动项：「单独标注小样分类，提供给孙明，便于其清晰区分库存类别」）。
+     * 判定走共享规则 participatesInNormalSalesMovement，与驾驶舱/风险页同口径；
+     * 数量用 decimal 字符串累加，禁 float。
+     */
+    roleSummary: summarizeByRole(lineRows),
     adjustDocs: adjRows,
     approvals: approvalRows,
     createdByName: doc.createdByName,
@@ -438,7 +481,12 @@ export async function getCountTask(id: number, dbArg?: AnyDb) {
 
 export async function listCountTasks(
   q: string,
-  opts: { status?: string; mode?: string; warehouseId?: number; page: number; pageSize: number },
+  opts: {
+    status?: string; mode?: string; warehouseId?: number;
+    /** 盘点期 YYYY-MM，用于「7 月底盘点」这类按期取数 */
+    period?: string;
+    page: number; pageSize: number;
+  },
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
@@ -447,6 +495,7 @@ export async function listCountTasks(
   if (opts.status) conds.push(eq(pdDocs.status, opts.status as DocStatus));
   if (opts.mode) conds.push(eq(pdDocs.mode, opts.mode));
   if (opts.warehouseId) conds.push(eq(pdDocs.warehouseId, opts.warehouseId));
+  if (opts.period) conds.push(sql`to_char(${pdDocs.bizDate}, 'YYYY-MM') = ${opts.period}`);
   const where = conds.length ? and(...conds) : undefined;
 
   // 行聚合：行数 / 差异行数 / 盈亏合计（SQL numeric 运算，非 JS float）
@@ -469,6 +518,7 @@ export async function listCountTasks(
         status: pdDocs.status,
         mode: pdDocs.mode,
         warehouseName: warehouses.name,
+        bizDate: pdDocs.bizDate,
         lineCount: sql<number>`coalesce(${lineAgg.lineCount}, 0)`,
         diffCount: sql<number>`coalesce(${lineAgg.diffCount}, 0)`,
         diffTotal: sql<string>`coalesce(${lineAgg.diffTotal}, 0)`,
@@ -484,6 +534,55 @@ export async function listCountTasks(
       .limit(opts.pageSize)
       .offset((opts.page - 1) * opts.pageSize),
     db.select({ total: sql<number>`count(*)::int` }).from(pdDocs).where(where),
+  ]);
+  return { rows, total };
+}
+
+/**
+ * 盘点明细导出（0727 行动项 #1 的交付物）。
+ *
+ * 「整理 7 月底盘点的小样库存数据，单独标注小样分类，提供给孙明」——
+ * 按盘点期取单、按业务用途可筛，一次导出即可交付，不必再手工拼表。
+ * 差异在 SQL 里算（numeric 运算，禁 JS float）。
+ */
+export async function listCountLinesForExport(
+  opts: { period?: string; pdId?: number; commercialRole?: string; limit: number },
+  dbArg?: AnyDb,
+): Promise<{ rows: unknown[]; total: number }> {
+  const db = await resolveDb(dbArg);
+  const conds = [];
+  if (opts.pdId) conds.push(eq(pdDocs.id, opts.pdId));
+  if (opts.period) conds.push(sql`to_char(${pdDocs.bizDate}, 'YYYY-MM') = ${opts.period}`);
+  if (opts.commercialRole) conds.push(eq(skus.commercialRole, opts.commercialRole));
+  const where = conds.length ? and(...conds) : undefined;
+
+  const [rows, [{ total }]] = await Promise.all([
+    db
+      .select({
+        docNo: pdDocs.docNo,
+        bizDate: pdDocs.bizDate,
+        warehouseName: warehouses.name,
+        skuCode: skus.code,
+        skuName: skus.name,
+        commercialRole: skus.commercialRole,
+        baseUom: skus.baseUom,
+        bookQty: pdLines.bookQty,
+        countedQty: pdLines.countedQty,
+        diffQty: sql<string>`(${pdLines.countedQty} - ${pdLines.bookQty})`,
+      })
+      .from(pdLines)
+      .innerJoin(pdDocs, eq(pdLines.pdId, pdDocs.id))
+      .innerJoin(skus, eq(pdLines.skuId, skus.id))
+      .leftJoin(warehouses, eq(pdDocs.warehouseId, warehouses.id))
+      .where(where)
+      .orderBy(pdDocs.docNo, skus.code)
+      .limit(opts.limit),
+    db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(pdLines)
+      .innerJoin(pdDocs, eq(pdLines.pdId, pdDocs.id))
+      .innerJoin(skus, eq(pdLines.skuId, skus.id))
+      .where(where),
   ]);
   return { rows, total };
 }

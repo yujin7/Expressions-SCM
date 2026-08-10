@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
    jgDocs, jgFeeSegments, pcDocs, poDocs, poLines, priceLists,
   skus, suppliers, sysParams, users,
@@ -6,13 +6,15 @@ import {
 import { dCmp } from "@/server/core/decimal";
 import { canSeePrices, type SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
+import { approveDoc, loadApprovalHistory, withdrawDoc } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { checkPriceDeviation, normalizeToBaseNet } from "@/server/rules/price";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb, rethrowApproval } from "./common";
-import { approveDocSchema, confirmDocSchema } from "./schemas";
+import { approveDocSchema, confirmDocSchema, transitionDocSchema, withdrawDocSchema } from "./schemas";
+import { skuLineMatch } from "@/server/core/doc-search";
+import { transitionDoc } from "@/server/docflow/transition";
 
 /** 采购订单 PO + 价格变更 PC（R1：基础单位未税比价；异动自动生成 PC，PO 留在草稿） */
 
@@ -350,7 +352,7 @@ export async function listPos(
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
   const conds = [];
-  if (q) conds.push(sql`${poDocs.docNo} ILIKE ${"%" + q + "%"}`);
+  if (q) conds.push(or(sql`${poDocs.docNo} ILIKE ${"%" + q + "%"}`, skuLineMatch("po_lines", "po_id", poDocs.id, q)));
   if (opts.status) conds.push(eq(poDocs.status, opts.status as DocStatus));
   if (opts.woId) conds.push(eq(poDocs.woId, opts.woId));
   const where = conds.length ? and(...conds) : undefined;
@@ -432,4 +434,68 @@ export async function listPcs(
     ? rawRows
     : rawRows.map(({ oldPrice: _o, newPrice: _n, deviationPct: _d, ...rest }) => rest);
   return { rows, total };
+}
+
+/** 撤回：待审批 → 草稿。仅制单人本人（管理员豁免）；不写审批轨迹、不占审批轮次。 */
+export async function withdrawPO(
+  user: SessionUser,
+  id: number,
+  input: unknown,
+  dbArg?: AnyDb,
+): Promise<{ status: string; idempotent: boolean }> {
+  const v = withdrawDocSchema.parse(input);
+  const db = await resolveDb(dbArg);
+  try {
+    return await db.transaction(async (tx: AnyDb) => {
+      const r = await withdrawDoc(tx, {
+        docType: "po",
+        table: poDocs,
+        docId: id,
+        user: { id: user.id, roles: user.roles },
+        expectedVersion: v.version,
+      });
+      if (r.idempotent) return r;
+      await writeAudit(tx, { userId: user.id, entity: "po", entityId: id, action: "withdraw" });
+      return r;
+    });
+  } catch (e) {
+    rethrowApproval(e);
+  }
+}
+
+/**
+ * 手工状态流转：完成 / 短关 / 作废 / 重开。
+ * 此前 po 没有任何到达「已完成」的路径，短关也全仓未实现——
+ * 少送尾数的单据会永久卡在「执行中」。这里只补人工收口，不做自动完成。
+ */
+export async function transitionPO(
+  user: SessionUser,
+  id: number,
+  input: unknown,
+  dbArg?: AnyDb,
+): Promise<{ status: string; idempotent: boolean }> {
+  const v = transitionDocSchema.parse(input);
+  if (v.action !== "void" && v.action !== "reopen") requireAnyRole(user, "pmc", "ops");
+  const db = await resolveDb(dbArg);
+  try {
+    return await db.transaction(async (tx: AnyDb) => {
+      const r = await transitionDoc(tx, {
+        docType: "po",
+        table: poDocs,
+        docId: id,
+        user: { id: user.id, roles: user.roles },
+        action: v.action,
+        reason: v.reason,
+        expectedVersion: v.version,
+      });
+      if (r.idempotent) return r;
+      await writeAudit(tx, {
+        userId: user.id, entity: "po", entityId: id, action: v.action,
+        after: { status: r.status, reason: v.reason ?? null },
+      });
+      return r;
+    });
+  } catch (e) {
+    rethrowApproval(e);
+  }
 }

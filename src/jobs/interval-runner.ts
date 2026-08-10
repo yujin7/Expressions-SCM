@@ -21,6 +21,10 @@ import { runDocAging } from "./doc-aging";
 import { runRollup } from "./rollup";
 import { dispatchNotifications, runDecisionDigestNotify, runExceptionNotify } from "./notify";
 import { runJstInventorySync, runJstSalesSync } from "./sync-jst";
+import { runYonyouSync } from "./sync-yonyou";
+import { runJstTokenWatchdog } from "./jst-token-watchdog";
+import { runJobFailureWatchdog } from "./job-failure-watchdog";
+import { runSystemAlertNotify } from "./system-alert-notify";
 import {
   runJiandaoyunCatalogSync,
   runJiandaoyunConfiguredFormSyncs,
@@ -35,23 +39,77 @@ export const FIRST_TICK_DELAY_MS = 60 * 1000;
 export interface IntervalJob {
   name: string;
   everyMs: number;
+  /**
+   * 只在这些「上海时区整点」跑（同一小时内只跑一次）。
+   *
+   * 业务口径（2026-08-04 用户确认）：**同步只需要在午饭前与傍晚前各一次**。
+   * 拉数是给人看的——上午下班前和下班前各刷新一次就够，
+   * 每 6 小时空跑一遍既无人消费，也白白占用三方接口配额
+   * （简道云单轮 8.5 万行、约 850 次分页往返、耗时约 12 分钟）。
+   *
+   * 给了 atHours 时 everyMs 退化为**轮询间隔**（多久检查一次是否到点），
+   * 不再是"每隔这么久跑一次"。
+   */
+  atHours?: number[];
   run: (db: AnyDb) => Promise<unknown>;
 }
 
+/**
+ * 是否该在此刻执行——纯函数，便于直测。
+ *
+ * 抽出来的理由：这段判断原本埋在 `ensureIntervalJobsStarted` 的闭包里，
+ * 而该函数在 NODE_ENV=test 下直接 return，等于**永远测不到**。
+ * 定点执行一旦判错，后果是"该同步的时候没同步"——静默且不报错，
+ * 正是最该有测试的那类逻辑。
+ */
+export function shouldRunAt(
+  job: Pick<IntervalJob, "name" | "atHours">,
+  now: Date,
+  lastRunHour: ReadonlyMap<string, string>,
+): { run: boolean; hourKey: string | null } {
+  if (!job.atHours || job.atHours.length === 0) return { run: true, hourKey: null };
+  const { hour, key } = shanghaiHourKey(now);
+  if (!job.atHours.includes(hour)) return { run: false, hourKey: key };
+  if (lastRunHour.get(job.name) === key) return { run: false, hourKey: key };
+  return { run: true, hourKey: key };
+}
+
+/** 上海时区的「年-月-日 时」，用于判断是否到点、以及同一小时内不重复跑 */
+export function shanghaiHourKey(now: Date): { hour: number; key: string } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hour12: false,
+  }).formatToParts(now);
+  const get = (type: string): string => parts.find((p) => p.type === type)?.value ?? "";
+  const hour = Number(get("hour"));
+  return { hour, key: `${get("year")}-${get("month")}-${get("day")}T${get("hour")}` };
+}
+
 export const INTERVAL_JOBS: IntervalJob[] = [
-  // 快照数据龄告警（纯查询）——语义为每日，6h 一跑覆盖白天时段即可
-  { name: "snapshot-age", everyMs: 6 * HOUR_MS, run: (db) => runSnapshotAgeAlert(db) },
+  // 快照数据龄告警（纯查询）——**必须排在拉数之后**，否则会在同步刷新前报一次假的"数据过期"
+  { name: "snapshot-age", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runSnapshotAgeAlert(db) },
   // 营业执照到期提醒（纯查询）
   { name: "license-alert", everyMs: 6 * HOUR_MS, run: (db) => runLicenseAlert(db) },
   // 聚水潭 T-1 出库全量快照先进入受控 staging；缺配置时显式 skipped
-  { name: "sync-jst-sales", everyMs: 6 * HOUR_MS, run: (db) => runJstSalesSync(db) },
+  { name: "sync-jst-sales", everyMs: 20 * 60 * 1000, atHours: [10, 16], run: (db) => runJstSalesSync(db) },
   // 聚水潭全仓合计库存增量只作外部观察；显式开关启用，绝不直写库存真账/快照
-  { name: "sync-jst-inventory", everyMs: 6 * HOUR_MS, run: (db) => runJstInventorySync(db) },
+  { name: "sync-jst-inventory", everyMs: 20 * 60 * 1000, atHours: [10, 16], run: (db) => runJstInventorySync(db) },
+  // 把 system_alerts 推进发件箱→飞书/站内。此前这些告警只躺在 /alerts 页面上，
+  // 三方同步挂了、凭据快过期了都不会通知任何人——监控链路断在最后一米
+  { name: "system-alert-notify", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runSystemAlertNotify(db) },
+  // 定时任务连续失败告警：job_runs 一直记着成败但没人被通知，
+  // 对 6h 一跑的同步就是"三周前挂了没人知道"。连续 3 次才开单，避免抖动变噪音
+  { name: "job-failure-watchdog", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runJobFailureWatchdog(db) },
+  // 聚水潭 token 30 天过期，且过期后刷新接口失效、只能重走授权——必须在还来得及时喊出来
+  { name: "jst-token-watchdog", everyMs: 6 * HOUR_MS, run: (db) => runJstTokenWatchdog(db) },
+  // 用友只读观测：按已批准契约拉数原样落 staging；缺配置/未开开关显式 skipped，
+  // 契约未授权(310037)记为等授权而非故障，不推进 checkpoint
+  { name: "sync-yonyou", everyMs: 20 * 60 * 1000, atHours: [10, 16], run: (db) => runYonyouSync(db) },
   // 简道云目录不含业务行；观察数据只拉显式契约、最小化字段并停在 staging
-  { name: "sync-jiandaoyun-catalog", everyMs: 24 * HOUR_MS, run: (db) => runJiandaoyunCatalogSync(db) },
-  { name: "sync-jiandaoyun-forms", everyMs: 6 * HOUR_MS, run: (db) => runJiandaoyunConfiguredFormSyncs(db) },
+  { name: "sync-jiandaoyun-catalog", everyMs: 20 * 60 * 1000, atHours: [10], run: (db) => runJiandaoyunCatalogSync(db) },
+  { name: "sync-jiandaoyun-forms", everyMs: 20 * 60 * 1000, atHours: [10, 16], run: (db) => runJiandaoyunConfiguredFormSyncs(db) },
   // 对 T-1 对账；无流水/无 staging 数据时返回空 summary（skuCount=0），自然优雅跳过
-  { name: "reconcile-jst", everyMs: 6 * HOUR_MS, run: (db) => runReconcileJst(db, shanghaiToday(-1)) },
+  { name: "reconcile-jst", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runReconcileJst(db, shanghaiToday(-1)) },
   // 保洁（删除幂等）
   { name: "housekeeping", everyMs: 24 * HOUR_MS, run: (db) => runHousekeeping(db) },
   // E7-01 预聚合物化（夜间全量重建，幂等 upsert）——BI 秒开 + 交期波动喂给安全库存
@@ -63,7 +121,7 @@ export const INTERVAL_JOBS: IntervalJob[] = [
   // 异常入队（每日去重）+ 通知分发（飞书/站内）
   { name: "exception-notify", everyMs: 24 * HOUR_MS, run: (db) => runExceptionNotify(db) },
   { name: "decision-digest", everyMs: 7 * 24 * HOUR_MS, run: (db) => runDecisionDigestNotify(db) },
-  { name: "notify-dispatch", everyMs: 6 * HOUR_MS, run: (db) => dispatchNotifications(db) },
+  { name: "notify-dispatch", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => dispatchNotifications(db) },
 ];
 
 /** 跑一次并落 job_runs（job_runs 写失败仅打日志——监控不能反噬任务本身） */
@@ -107,8 +165,13 @@ export function ensureIntervalJobsStarted(): void {
 
   const timers: ReturnType<typeof setInterval>[] = [];
   const busy = new Set<string>();
+  /** atHours 任务上次实际执行的「上海小时」键，防同一小时内重复跑 */
+  const lastRunHour = new Map<string, string>();
   const tick = (job: IntervalJob): void => {
     if (busy.has(job.name)) return; // 重入保护：上一轮未结束不叠跑
+    const decision = shouldRunAt(job, new Date(), lastRunHour);
+    if (!decision.run) return; // 没到点，或这个小时已经跑过
+    if (decision.hourKey) lastRunHour.set(job.name, decision.hourKey);
     busy.add(job.name);
     void runIntervalJobOnce(job)
       .catch((e: unknown) => log({ level: "error", msg: "interval runner 异常", job: job.name, error: String(e) }))

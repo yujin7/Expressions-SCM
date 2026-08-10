@@ -15,6 +15,7 @@ import { lastMonths } from "@/server/core/velocity";
 import { classifyAbc } from "@/server/rules/abc";
 import { num, r1 } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
+import { participatesInNormalSalesMovement } from "@/server/rules/sku-standardization";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -100,12 +101,18 @@ export async function getSegmentation(
   const { maxYm } = await salesWindow(db);
   const months = maxYm ? lastMonths(maxYm, 6) : [];
 
-  /* ── 成品主档（finished + active） ── */
-  const skuRows: { id: number; code: string; name: string; brand: string | null }[] = await db
-    .select({ id: schema.skus.id, code: schema.skus.code, name: schema.skus.name, brand: schema.brands.nameCn })
+  /* ── 成品主档（finished + active，且排除非销售用途——口径同驾驶舱/风险页） ── */
+  const skuRowsRaw: { id: number; code: string; name: string; brand: string | null; commercialRole: string }[] = await db
+    .select({
+      id: schema.skus.id, code: schema.skus.code, name: schema.skus.name,
+      brand: schema.brands.nameCn, commercialRole: schema.skus.commercialRole,
+    })
     .from(schema.skus)
     .leftJoin(schema.brands, eq(schema.skus.brandId, schema.brands.id))
     .where(sql`${schema.skus.active} = true and ${schema.skus.skuType} = 'finished'`);
+  // 样品/赠品/试用/内用不参与按销量的帕累托分层，否则会把"从来不卖"的品算成 C 类拖低基数。
+  // 判定走共享规则，禁止在此本地重实现（口径漂移根因）。
+  const skuRows = skuRowsRaw.filter((r) => participatesInNormalSalesMovement(r.commercialRole));
   if (skuRows.length === 0) {
     return { months, rows: [], total: 0, matrix: emptyMatrix(), policy: SEG_POLICY };
   }

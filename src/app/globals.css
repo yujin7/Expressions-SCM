@@ -47,6 +47,14 @@ body {
   letter-spacing: 0.02em;
 }
 
+/* 品牌标识：公司 logo（青色心形+双叶，主色 #10ABBF）。
+   ⚠ 这三个 mark 的样式**只在这一处定义**。此前文件末尾还有两条同名规则
+   （.login-brand-panel__mark 改尺寸、.login-card__mark 重复 margin），
+   位置更靠后因而静默覆盖前面的定义——同一个类分散在两处、后者赢，
+   是这类"改了没生效"最常见的原因。已合并，请勿再在别处追加。
+   底色改为浅色而非原先的蓝色渐变——logo 本身是青色透明 PNG，
+   压在深蓝渐变上会糊成一团、也与品牌色冲突。
+   logo 宽高比约 5:3，用 object-fit: contain 保证不被方形容器拉变形。 */
 .app-brand__mark,
 .login-card__mark,
 .login-brand-panel__mark {
@@ -56,11 +64,43 @@ body {
   flex: 0 0 auto;
   width: 32px;
   height: 32px;
-  color: #fff;
-  font-weight: 750;
   border-radius: 10px;
-  background: linear-gradient(145deg, #6f8cff, #3157d5 58%, #1e3ca7);
-  box-shadow: 0 8px 18px rgba(49, 87, 213, 0.3);
+  background: #fff;
+  box-shadow: 0 6px 16px rgba(16, 171, 191, 0.28);
+}
+
+.app-brand__mark img,
+.login-card__mark img,
+.login-brand-panel__mark img {
+  width: 82%;
+  height: 82%;
+  object-fit: contain;
+}
+
+/* 登录页两处放大一点：那里是第一眼看到品牌的位置。
+   注意必须用 display:flex 而不是继承来的 inline-flex——
+   `margin: 0 auto` 只对**块级**元素生效，inline-flex 上写了也不会居中，
+   表现就是 logo 贴在卡片左上角。 */
+.login-card__mark,
+.login-brand-panel__mark {
+  display: flex;
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+}
+
+.login-card__mark {
+  margin: 0 auto 4px;
+}
+
+/* 左侧品牌面板：logo 与下方文案之间留出呼吸 */
+.login-brand-panel__mark {
+  margin-bottom: 28px;
+}
+
+/* 深色侧边栏上，白底小方块过于跳眼；换成半透明白，logo 仍清晰 */
+.app-sider .app-brand__mark {
+  background: rgba(255, 255, 255, 0.92);
 }
 
 .app-brand__name {
@@ -109,6 +149,31 @@ body {
 
 .global-search {
   width: 100%;
+}
+
+/* 顶栏三件套（搜索框 / 反馈按钮 / 头像）统一高度与圆角。
+   AntD 的 size="small" 对 Input 与 Button 给的是同一档，但搜索框外面套了
+   AutoComplete，其包裹层不会把高度透传下去，于是搜索框比按钮高出几个像素、
+   看着就是没对齐。这里显式钉死高度，不依赖组件库默认值恰好相同。 */
+.app-header__actions .ant-input-affix-wrapper,
+.app-header__actions .ant-btn {
+  height: 32px;
+  border-radius: 8px;
+}
+
+.app-header__actions .ant-input-affix-wrapper > input.ant-input {
+  height: auto;
+  line-height: 1.4;
+}
+
+/* AutoComplete 包裹层本身也要撑满，否则内部输入框虽高、外层仍按内容高度参与对齐 */
+.app-header__actions .ant-select,
+.app-header__actions .ant-select .ant-select-selector {
+  height: 32px;
+}
+
+.app-header__identity .ant-avatar {
+  flex: 0 0 auto;
 }
 
 .app-header__user,
@@ -938,13 +1003,6 @@ body {
   padding: 40px;
 }
 
-.login-brand-panel__mark {
-  width: 48px;
-  height: 48px;
-  margin-bottom: 28px;
-  font-size: 20px;
-  border-radius: 15px;
-}
 
 .login-brand-panel__eyebrow {
   margin-bottom: 16px;
@@ -979,9 +1037,6 @@ body {
   padding: 36px;
 }
 
-.login-card__mark {
-  margin: 0 auto;
-}
 
 @keyframes app-shimmer {
   0% { background-position: 100% 0; }

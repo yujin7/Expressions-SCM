@@ -11,6 +11,7 @@ import {
   jiandaoyunContract,
   jiandaoyunContractSetEvidenceBinding,
 } from "@/server/integrations/jiandaoyun-contracts";
+import { jstLiveEvidenceBinding } from "@/server/integrations/jst";
 
 const envKeys = [
   "JST_APP_KEY", "JST_APP_SECRET", "JST_ACCESS_TOKEN", "JST_SYNC_ACTOR_ID", "JST_BASE_URL",
@@ -21,7 +22,7 @@ const envKeys = [
   "YY_APP_KEY", "YY_APP_SECRET",
   "YY_CLIENT_ID", "YY_CLIENT_SECRET", "YY_TENANT_ID", "YY_ORG_ID", "YY_BASE_URL", "YY_TOKEN_URL",
   "YY_PRODUCT_PROFILE", "YY_APPROVED_API_CONTRACTS",
-  "YY_ALLOWED_HOSTS",
+  "YY_ALLOWED_HOSTS", "YY_SYNC_ENABLED", "YY_LIVE_VERIFIED_AT", "YY_LIVE_VERIFIED_REF",
   "FEISHU_WEBHOOK_URL", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID",
   "FEISHU_LIVE_VERIFIED_AT", "FEISHU_LIVE_VERIFIED_REF",
   "FEISHU_APP_LIVE_VERIFIED_AT", "FEISHU_APP_LIVE_VERIFIED_REF",
@@ -68,6 +69,7 @@ describe("外部连接器目录", () => {
       liveVerificationState: "missing",
       effectiveCapabilities: [
         "outbound-sales-daily",
+        "shop-discovery-client",
         "warehouse-discovery-client",
         "batch-allocation-evidence",
       ],
@@ -88,12 +90,20 @@ describe("外部连接器目录", () => {
     });
     process.env.JST_LIVE_VERIFIED_REF = "UAT-20260729-JST-001";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst")).toMatchObject({
-      configurationReady: true,
+      configurationReady: false,
       operational: false,
       identityClearanceState: "unknown",
       liveVerifiedAt: "2026-07-29T00:00:00.000Z",
       liveVerificationRef: "UAT-20260729-JST-001",
+      liveVerificationState: "unbound",
+    });
+    const jstBinding = jstLiveEvidenceBinding(process.env);
+    expect(jstBinding).toMatch(/^JST1_[A-F0-9]{24}$/);
+    process.env.JST_LIVE_VERIFIED_REF = `UAT-20260729-JST-${jstBinding}`;
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst")).toMatchObject({
+      configurationReady: true,
       liveVerificationState: "valid",
+      expectedLiveVerificationBinding: jstBinding,
     });
     expect(getConnectorReadiness(process.env, NOW, {
       JST: { openExceptions: 0, observedIdentities: 1 },
@@ -122,9 +132,24 @@ describe("外部连接器目录", () => {
         openScopedAliasExceptions: null,
         observedScopedIdentities: null,
       });
+    // 库存流是双重闸：光开开关不够，还要显式声明仓库可信范围。
+    // 业务事实（2026-08-04）：聚水潭只有一仓的数据准，而该接口不带 wms_co_id
+    // 时返回全仓合计——混入不准仓且拆不开，故仅声明 ALL 才放行。
     process.env.JST_INVENTORY_SYNC_ENABLED = "true";
-    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst")
-      ?.effectiveCapabilities).toContain("inventory-total-delta-staging");
+    expect(
+      getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst")
+        ?.effectiveCapabilities,
+      "未声明可信范围时不得出现库存能力",
+    ).not.toContain("inventory-total-delta-staging");
+
+    process.env.JST_TRUSTED_WMS_CO_IDS = "ALL";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst"))
+      .toMatchObject({
+        configurationReady: false,
+        liveVerificationState: "unbound",
+        effectiveCapabilities: expect.arrayContaining(["inventory-total-delta-staging"]),
+      });
+    delete process.env.JST_TRUSTED_WMS_CO_IDS;
   });
 
   it("简道云把凭据、启用开关、契约选择和 UAT 分别判定", () => {
@@ -410,26 +435,60 @@ describe("外部连接器目录", () => {
       });
   });
 
-  it("用友人工账号不构成机器配置；完整 OpenAPI 契约仍保持 contract_only", () => {
+  // 2026-08-03：yonyou-client.ts 补齐运行时客户端后，implementation 由 contract_only 转 ready。
+  // 本用例的真实意图不变——人工 UI 账号永远不构成机器配置，且没有实测证据就不算 operational。
+  it("用友人工账号不构成机器配置；机器凭据齐备后进入 ready 但仍非 operational", () => {
     for (const key of [
       "YY_APP_KEY", "YY_APP_SECRET", "YY_TENANT_ID", "YY_ORG_ID",
     ] as const) process.env[key] = "present";
-    process.env.YY_PRODUCT_PROFILE = "yonsuite";
-    process.env.YY_APPROVED_API_CONTRACTS = "supplier.read@v1,cost.read@v1";
+    process.env.YY_PRODUCT_PROFILE = "yonbip";
+    process.env.YY_APPROVED_API_CONTRACTS = "供应商档案列表查询,存货成本查询";
     process.env.YY_ALLOWED_HOSTS = "api.yonyoucloud.com,auth.yonyoucloud.com";
     process.env.YY_BASE_URL = "https://api.yonyoucloud.com";
     process.env.YY_TOKEN_URL = "https://auth.yonyoucloud.com/token";
+    process.env.YY_SYNC_ENABLED = "true";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "yy")).toMatchObject({
-      implementation: "contract_only",
+      implementation: "ready",
       configured: true,
+      enablementState: "enabled",
+      contractSelectionState: "selected",
+      selectedContractCount: 2,
       operational: false,
       missingEnv: [],
+      expectedLiveVerificationBinding: expect.stringMatching(/^YY1_/),
     });
-    expect(configuredConnectors().some((connector) => connector.key === "yy")).toBe(false);
+    // 有了运行时客户端 + 完整机器凭据，yy 才进入"已配置连接器"集合；
+    // 但 operational 仍为 false（缺实测证据），二者不可混为一谈。
+    expect(configuredConnectors().some((connector) => connector.key === "yy")).toBe(true);
     process.env.YY_TOKEN_URL = "http://auth.yonyoucloud.com/token";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "yy")).toMatchObject({
       configured: false,
       missingEnv: ["YY_TOKEN_URL"],
+    });
+  });
+
+  it("用友无契约、非法开关和未绑定 UAT 证据分开报告", () => {
+    for (const key of [
+      "YY_APP_KEY", "YY_APP_SECRET", "YY_TENANT_ID", "YY_ORG_ID",
+    ] as const) process.env[key] = "present";
+    process.env.YY_PRODUCT_PROFILE = "yonbip";
+    process.env.YY_ALLOWED_HOSTS = "api.yonyoucloud.com,auth.yonyoucloud.com";
+    process.env.YY_BASE_URL = "https://api.yonyoucloud.com";
+    process.env.YY_TOKEN_URL = "https://auth.yonyoucloud.com/token";
+    process.env.YY_SYNC_ENABLED = "sometimes";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "yy")).toMatchObject({
+      enablementState: "invalid",
+      contractSelectionState: "missing",
+      selectedContractCount: 0,
+    });
+
+    process.env.YY_SYNC_ENABLED = "true";
+    process.env.YY_APPROVED_API_CONTRACTS = "供应商档案列表查询,存货成本查询";
+    process.env.YY_LIVE_VERIFIED_AT = "2026-07-29T03:00:00Z";
+    process.env.YY_LIVE_VERIFIED_REF = "UAT-20260729-GENERIC";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "yy")).toMatchObject({
+      liveVerificationState: "unbound",
+      operational: false,
     });
   });
 

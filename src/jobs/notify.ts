@@ -11,6 +11,7 @@
  *
  * 网络失败标记 failed（保留 error），下轮重试。全部 best-effort，绝不反噬业务。
  */
+import { createHmac } from "node:crypto";
 import { and, eq, inArray, lt, or, sql } from "drizzle-orm";
 import { notifications } from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
@@ -59,6 +60,22 @@ export async function enqueueNotification(db: AnyDb, n: NotifyInput): Promise<bo
   return true;
 }
 
+/**
+ * 群自定义机器人的「签名校验」。
+ *
+ * 为什么要支持：不开签名校验的话，**任何拿到 webhook 地址的人都能往群里发消息**——
+ * 而这个地址会存在 .env、CI 密钥、部署脚本里，泄露面比想象大。飞书官方也提示
+ * 「请妥善保存好此 webhook 地址，不要公布在可公开查阅的网站上」。
+ * 开了签名校验，光有地址没有密钥也发不了。
+ *
+ * 算法（飞书官方）：把 `timestamp + "\n" + 密钥` 整体当作 HMAC 的**密钥**，
+ * 对**空字符串**做 HmacSHA256，再 Base64。注意不是对拼接串做摘要——
+ * 这一点很容易写反，写反了会一直 19021 签名校验失败。
+ */
+function feishuWebhookSignature(secret: string, timestampSec: number): string {
+  return createHmac("sha256", `${timestampSec}\n${secret}`).update("").digest("base64");
+}
+
 async function pushFeishu(url: string, title: string, body: string, href?: string | null): Promise<void> {
   const safeUrl = feishuWebhookUrlFromEnv({
     FEISHU_WEBHOOK_URL: url,
@@ -67,10 +84,18 @@ async function pushFeishu(url: string, title: string, body: string, href?: strin
     throw new Error("FEISHU_WEBHOOK_URL 必须是飞书官方群机器人 HTTPS 地址");
   }
   const text = `【供应链】${title}\n${body}${href ? `\n${href}` : ""}`;
+  // 配了 FEISHU_WEBHOOK_SECRET 就带签名；没配则按未开启签名校验发送
+  const secret = process.env.FEISHU_WEBHOOK_SECRET?.trim();
+  const requestBody: Record<string, unknown> = { msg_type: "text", content: { text } };
+  if (secret) {
+    const timestamp = Math.floor(Date.now() / 1000);
+    requestBody.timestamp = String(timestamp);
+    requestBody.sign = feishuWebhookSignature(secret, timestamp);
+  }
   const payload = await fetchJson("飞书 webhook", safeUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ msg_type: "text", content: { text } }),
+    body: JSON.stringify(requestBody),
   }, { retries: 0 });
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
     throw new Error("飞书 webhook 响应结构非法");

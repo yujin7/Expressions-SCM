@@ -82,6 +82,8 @@ function BhActions({
   const [loading, setLoading] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
+  const [shortCloseOpen, setShortCloseOpen] = useState(false);
+  const [shortCloseReason, setShortCloseReason] = useState("");
 
   const post = async (path: string, body: unknown, successText: string) => {
     setLoading(true);
@@ -131,6 +133,16 @@ function BhActions({
         <Button danger loading={loading} onClick={() => setRejectOpen(true)}>
           驳回
         </Button>
+        {/* 撤回：制单人收回自己的提交（服务端校验 createdBy，非制单人会被拒） */}
+        <Popconfirm
+          title="撤回本单？"
+          description="撤回后回到草稿，可继续修改再提交。"
+          okText="撤回"
+          cancelText="取消"
+          onConfirm={() => void post("withdraw", { version: doc.version }, "已撤回，单据回到草稿")}
+        >
+          <Button loading={loading}>撤回</Button>
+        </Popconfirm>
         <Modal
           title="驳回单据"
           open={rejectOpen}
@@ -158,6 +170,70 @@ function BhActions({
             placeholder="驳回意见（可选）"
             value={rejectComment}
             onChange={(e) => setRejectComment(e.target.value)}
+          />
+        </Modal>
+      </Space>
+    );
+  }
+
+  // 草稿：制单人可作废（错单不必留着占列表）
+  if (doc.status === "draft") {
+    return (
+      <Popconfirm
+        title="作废本单？"
+        description="作废后不可恢复；只有制单人本人可作废自己的草稿。"
+        okText="作废"
+        okButtonProps={{ danger: true }}
+        cancelText="取消"
+        onConfirm={() => void post("transition", { action: "void", version: doc.version }, "已作废")}
+      >
+        <Button danger loading={loading}>作废</Button>
+      </Popconfirm>
+    );
+  }
+
+  // 已审批/执行中：完成 或 短关。此前 BH/WO/PO 没有任何到达「已完成」的路径，
+  // 少送尾数的单据会永久卡在「执行中」。
+  if (doc.status === "approved" || doc.status === "in_progress") {
+    return (
+      <Space>
+        {doc.status === "in_progress" ? (
+          <Popconfirm
+            title="标记本单已完成？"
+            okText="完成"
+            cancelText="取消"
+            onConfirm={() => void post("transition", { action: "complete", version: doc.version }, "已完成")}
+          >
+            <Button type="primary" loading={loading}>完成</Button>
+          </Popconfirm>
+        ) : null}
+        <Button loading={loading} onClick={() => setShortCloseOpen(true)}>短关</Button>
+        <Modal
+          title="短关单据"
+          open={shortCloseOpen}
+          okText="确认短关"
+          cancelText="取消"
+          confirmLoading={loading}
+          onCancel={() => setShortCloseOpen(false)}
+          onOk={() =>
+            void post(
+              "transition",
+              { action: "short_close", reason: shortCloseReason.trim(), version: doc.version },
+              "已短关",
+            ).then((ok) => {
+              if (ok) {
+                setShortCloseOpen(false);
+                setShortCloseReason("");
+              }
+            })
+          }
+        >
+          <Input.TextArea
+            rows={3}
+            maxLength={200}
+            placeholder="短关原因（必填，例如：供应商少送 3 支，不再补）"
+            value={shortCloseReason}
+            onChange={(e) => setShortCloseReason(e.target.value)}
           />
         </Modal>
       </Space>
@@ -339,7 +415,7 @@ function BhInner() {
             key={q}
             allowClear
             defaultValue={q}
-            placeholder="搜索单据号"
+            placeholder="搜索单号 / SKU 编码 / 货品名称"
             style={{ width: 240 }}
             onSearch={(value) => listState.setFilter({ q: value.trim() })}
           />

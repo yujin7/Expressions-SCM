@@ -51,7 +51,7 @@ interface SkuRow {
   shelfLifeDays: number | null;
   nearExpiryDays: number | null;
   standardName: string | null;
-  namingStatus: "incomplete" | "ready" | "standard";
+  namingStatus: "incomplete" | "ready" | "standard" | "published";
   lifecycle: string;
   active: boolean;
 }
@@ -74,6 +74,31 @@ export default function SkuClient() {
   const [identifierSku, setIdentifierSku] = useState<SkuRow | null>(null);
   const [commercialRole, setCommercialRole] = useState<string>();
   const [codeGuideOpen, setCodeGuideOpen] = useState(false);
+  /* 批量设置业务用途：存量 5,376 个 SKU 全是「未分类」，逐条改主档不现实 */
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [bulkRole, setBulkRole] = useState<string>();
+  const [bulkSaving, setBulkSaving] = useState(false);
+
+  const applyBulkRole = async (reload: () => void) => {
+    if (!bulkRole || selectedIds.length === 0) return;
+    setBulkSaving(true);
+    try {
+      const res = await postJson<{ updated: number; unchanged: number }>(
+        "/api/master/sku/commercial-role",
+        { ids: selectedIds, role: bulkRole },
+      );
+      message.success(
+        `已设为「${COMMERCIAL_ROLE_LABELS[bulkRole] ?? bulkRole}」：更新 ${res.updated} 个`
+        + (res.unchanged > 0 ? `，${res.unchanged} 个本就相同` : ""),
+      );
+      setSelectedIds([]);
+      reload();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setBulkSaving(false);
+    }
+  };
   return (
     <div>
       <Space align="center" style={{ marginBottom: 16 }}>
@@ -140,6 +165,41 @@ export default function SkuClient() {
             onChange={setCommercialRole}
           />
         )}
+        toolbarActions={canWrite ? (reload) => (
+          <Space.Compact>
+            <Select
+              value={bulkRole}
+              placeholder={selectedIds.length > 0 ? `设为…（已选 ${selectedIds.length}）` : "批量设业务用途"}
+              options={toOptions(COMMERCIAL_ROLE_LABELS)}
+              style={{ width: 190 }}
+              disabled={selectedIds.length === 0}
+              onChange={setBulkRole}
+            />
+            <Button
+              type="primary"
+              loading={bulkSaving}
+              disabled={selectedIds.length === 0 || !bulkRole}
+              onClick={() => {
+                modal.confirm({
+                  title: `将 ${selectedIds.length} 个 SKU 设为「${COMMERCIAL_ROLE_LABELS[bulkRole!] ?? bulkRole}」`,
+                  content: "业务用途会改变无动销、滞销与库存分析的统计口径；本次变更逐条记入审计。",
+                  okText: "确认设置",
+                  cancelText: "取消",
+                  onOk: () => applyBulkRole(reload),
+                });
+              }}
+            >
+              应用
+            </Button>
+          </Space.Compact>
+        ) : undefined}
+        tableProps={canWrite ? {
+          rowSelection: {
+            selectedRowKeys: selectedIds,
+            preserveSelectedRowKeys: true,
+            onChange: (keys) => setSelectedIds(keys as number[]),
+          },
+        } : undefined}
         modalWidth={640}
         columns={[
           { title: "编码", dataIndex: "code", width: 110 },
@@ -178,9 +238,23 @@ export default function SkuClient() {
             dataIndex: "namingStatus",
             width: 105,
             render: (v: SkuRow["namingStatus"], r) => (
-              <Tooltip title={r.standardName ? `建议：${r.standardName}` : "请先补齐品牌与产品简称"}>
-                <Tag color={v === "standard" ? "success" : v === "ready" ? "processing" : "warning"}>
-                  {v === "standard" ? "已标准" : v === "ready" ? "可采用" : "资料不足"}
+              <Tooltip
+                title={
+                  v === "published"
+                    ? "已符合公司公布的 (品牌)产品全称(规格) 格式；两套命名口径裁决前不改写"
+                    : r.standardName ? `建议：${r.standardName}` : "请先补齐品牌与产品简称"
+                }
+              >
+                <Tag
+                  color={
+                    v === "standard" || v === "published"
+                      ? "success"
+                      : v === "ready" ? "processing" : "warning"
+                  }
+                >
+                  {v === "published"
+                    ? "公司格式"
+                    : v === "standard" ? "已标准" : v === "ready" ? "可采用" : "资料不足"}
                 </Tag>
               </Tooltip>
             ),

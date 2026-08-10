@@ -65,7 +65,7 @@ export interface DataHealthSummary {
 
 /** 结构性告警：不归属单个 SKU 的主数据问题（无命中则数组为空，页面不占位） */
 export interface StructuralWarning {
-  key: "bom_cycle" | "bom_depth" | "near_expiry_below_channel" | "near_expiry_using_default" | "shelf_life_missing";
+  key: "bom_cycle" | "bom_depth" | "near_expiry_below_channel" | "near_expiry_using_default" | "shelf_life_missing" | "barcode_missing";
   severity: "high" | "medium";
   title: string;
   /** 影响说明——写清「会错成什么样」，不写「请检查」 */
@@ -218,6 +218,53 @@ export async function getDataHealth(
   const CHANNEL_RULE = (shelf: number) => Math.max(Math.round(shelf * 0.2), 100);
   const DEFAULT_NEAR = 90; // 与 report/risk.ts 的兜底一致
   {
+    /* 条码覆盖——决定电商平台销量能不能落到 SKU。
+       2026-08-04 实测：平台商品与系统主档之间**唯一通的桥是条码**
+       （商家编码是另一套命名空间：拼多多 SW1557 vs 系统 N006-001，5,376 个 SKU 里 0 命中）。
+       且已验证**归一化救不回来**：把未命中条码按去前导零/UPC-A↔EAN-13/GTIN-14/去分隔符
+       生成变体重新对撞，额外命中为 0——对不上的是主档里根本没有，不是写法不同。 */
+    const finishedAll = skuRows.filter((s) => s.skuType === "finished");
+    const noBarcodeAll = finishedAll.filter((s) => s.barcodeStatus == null || s.barcodeStatus === "");
+    /* 样例按近 12 个月销量倒序——补条码要从最值钱的补起。
+       只列 20 条，若不排序就等于随机给 20 个，业务无从下手（平台侧同理，
+       故另有 `npm run jdy:barcode-gap` 按未归属成交额排序列平台商品）。 */
+    const noBarcodeIds = new Set(noBarcodeAll.map((s) => s.id));
+    const salesRows: { skuId: number; qty: string | null }[] = noBarcodeIds.size > 0
+      ? await db
+        .select({ skuId: schema.salesMonthly.skuId, qty: schema.salesMonthly.qty })
+        .from(schema.salesMonthly)
+      : [];
+    const qtyBySku = new Map<number, number>();
+    for (const row of salesRows) {
+      if (!noBarcodeIds.has(row.skuId)) continue;
+      qtyBySku.set(row.skuId, (qtyBySku.get(row.skuId) ?? 0) + num(row.qty));
+    }
+    const noBarcode = [...noBarcodeAll].sort(
+      (a, b) => (qtyBySku.get(b.id) ?? 0) - (qtyBySku.get(a.id) ?? 0),
+    );
+    const withSales = noBarcode.filter((s) => (qtyBySku.get(s.id) ?? 0) > 0).length;
+    if (noBarcode.length > 0) {
+      structural.push({
+        key: "barcode_missing",
+        severity: "medium",
+        title: `${noBarcode.length} / ${finishedAll.length} 个在售成品主档无条码，电商平台销量落不到这些 SKU（其中 ${withSales} 个有历史销量，应优先补）`,
+        impact:
+          "条码是平台商品与系统主档之间**唯一通的桥**——商家编码属另一套命名空间（实测 0 命中），" +
+          "且归一化（前导零 / UPC-A↔EAN-13 / GTIN-14 / 去分隔符）额外命中为 0，" +
+          "即对不上的条码是主档里**根本没有**，不是写法不同，代码侧无法弥补。" +
+          "**会错成什么样**：若拿覆盖不全的平台销量去算全局销速 / ABC，" +
+          "这些没条码的 SKU 会一律显示为**零销量**，进而被判成滞销并触发错误的处置建议——" +
+          "零销量看起来像结论，其实是缺数据，比明确缺失更危险。" +
+          "因此当前平台销量只作观察，未接入销速；要接入需先补条码。" +
+          "补的方式：主档补条码，以及在天猫后台补商品条形码（实测其对照表仅 44% 的行填了条码）。",
+        count: noBarcode.length,
+        samples: noBarcode.slice(0, 20).map((s) => {
+          const qty = qtyBySku.get(s.id) ?? 0;
+          return qty > 0 ? `${s.code} ${s.name}（近期销量 ${Math.round(qty)}）` : `${s.code} ${s.name}`;
+        }),
+      });
+    }
+
     const finished = skuRows.filter((s) => s.skuType === "finished");
     const hasShelf = finished.filter((s) => s.shelfLifeDays != null && s.shelfLifeDays > 0);
     const noShelf = finished.filter((s) => s.shelfLifeDays == null || s.shelfLifeDays <= 0);

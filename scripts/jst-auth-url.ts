@@ -1,0 +1,58 @@
+/**
+ * 生成聚水潭商家授权链接（OAuth 第一步）。
+ *
+ * 聚水潭开放接口是 OAuth 模式：光有 APP Key/Secret 不够，还需要商家（你们自己的聚水潭账号）
+ * 授权这个应用，换出 access_token。本脚本只做签名和拼串，不发任何请求、不碰账号口令。
+ *
+ * 用法：
+ *   npm run jst:auth-url
+ * 然后用你们的聚水潭账号打开输出的链接 → 同意授权 → 回调地址上会带 code 参数
+ * （code 仅 15 分钟有效），再用 `npx tsx scripts/jst-exchange-code.ts <code>` 换 token。
+ *
+ * 签名一律复用 `src/server/integrations/jst.ts` 的 signJstParams——不要在这里另写一份。
+ * 该实现已被服务端证明正确：用它调业务接口返回的是 `130 入参缺少access_token`
+ * 而不是 `120 验证失败!无效签名`，说明签名这一关是过的。
+ */
+import { readFileSync } from "node:fs";
+
+for (const line of readFileSync(".env", "utf8").split(/\r?\n/)) {
+  const m = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim());
+  if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2];
+}
+
+import { signJstParams } from "../src/server/integrations/jst";
+
+const APP_KEY = process.env.JST_APP_KEY;
+const APP_SECRET = process.env.JST_APP_SECRET;
+if (!APP_KEY || !APP_SECRET) {
+  console.error("缺少 JST_APP_KEY / JST_APP_SECRET（应在 .env 中）");
+  process.exit(1);
+}
+
+/*
+ * 参数集**只能**是这五个（官方 docId=25「第二步：业务授权URL拼装」）：
+ * app_key / timestamp / state(非必填) / charset / sign。
+ *
+ * 2026-08-04 事故：我按业务接口的公共参数照搬，多传了 `version: "2"`，
+ * 授权页直接报「参数签名错误」——多出来的参数进了签名串，服务端按五参数验签自然对不上。
+ * **授权接口与业务接口的参数集不同**，不能拿业务接口那套公共参数套用。
+ */
+const params: Record<string, string> = {
+  app_key: APP_KEY,
+  charset: "utf-8",
+  timestamp: String(Math.floor(Date.now() / 1000)),
+  // state 原样回传，用于校验回调确实来自本次请求
+  state: "scm-auth",
+};
+params.sign = signJstParams(APP_SECRET, params);
+
+const url = `https://openweb.jushuitan.com/auth?${new URLSearchParams(params).toString()}`;
+
+console.log("\n═══ 聚水潭商家授权链接（15 分钟内使用）═══\n");
+console.log(url);
+console.log("\n步骤：");
+console.log("  1. 用你们的聚水潭账号打开上面的链接；");
+console.log("  2. 确认授权范围后点「同意授权」；");
+console.log("  3. 跳转后地址栏会带 code=xxxx，把这个 code 发给我，或直接运行：");
+console.log("     npx tsx scripts/jst-exchange-code.ts <code>");
+console.log("\n注意：code 仅 15 分钟有效，过期需重新生成本链接。\n");

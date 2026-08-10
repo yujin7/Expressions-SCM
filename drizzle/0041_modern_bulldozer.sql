@@ -1,0 +1,1 @@
+ALTER TABLE "pd_docs" ADD COLUMN "biz_date" date;

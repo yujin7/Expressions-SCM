@@ -46,7 +46,21 @@
     "data:queue-reference-aliases": "node --import tsx scripts/queue-reference-aliases.ts",
     "data:repair-import-statuses": "node --import tsx scripts/repair-import-job-statuses.ts",
     "data:backfill-snapshot-lineage": "node --import tsx scripts/backfill-snapshot-lineage.ts",
-    "data:backfill-npd-lineage": "node --import tsx scripts/backfill-npd-lineage.ts"
+    "data:backfill-npd-lineage": "node --import tsx scripts/backfill-npd-lineage.ts",
+    "readiness": "tsx scripts/connector-readiness.ts",
+    "yy:probe": "tsx scripts/yonyou-probe.ts",
+    "jst:auth-url": "tsx scripts/jst-auth-url.ts",
+    "jdy:survey": "tsx scripts/jiandaoyun-survey.ts",
+    "jdy:barcode-gap": "tsx scripts/jiandaoyun-barcode-gap.ts",
+    "jst:init-token": "tsx scripts/jst-init-token.ts",
+    "lan:sync": "bash scripts/sync-lan-auth-url.sh",
+    "lan:alias": "bash scripts/install-mdns-alias.sh",
+    "lan:alias:remove": "bash scripts/remove-mdns-alias.sh",
+    "access:public": "bash scripts/install-public-tunnel.sh",
+    "access:public:remove": "bash scripts/remove-public-tunnel.sh",
+    "access:link": "bash scripts/show-access-link.sh",
+    "access:tunnel": "bash scripts/setup-public-tunnel.sh",
+    "access:tailscale": "bash scripts/setup-tailscale-access.sh"
   },
   "dependencies": {
     "@ant-design/cssinjs": "1.24.0",

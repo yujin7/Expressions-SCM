@@ -143,7 +143,7 @@ async function main() {
 
   /* ── B) 月销修复：重导销量文件 → 聚合放行重算 ── */
   const before: { total: string | null }[] = await db.select({ total: sql<string | null>`sum(${schema.salesMonthly.qty})` }).from(schema.salesMonthly);
-  const stage = await stageSalesMonthly(db, SALES_FILE, admin.id);
+  const stage = await stageSalesMonthly(db, SALES_FILE, admin.id, "2026-06-30");
   console.log("重导销量:", JSON.stringify(stage.stats));
   const rel = await releaseSalesMonthly(admin, { dryRun: false });
   const after: { total: string | null }[] = await db.select({ total: sql<string | null>`sum(${schema.salesMonthly.qty})` }).from(schema.salesMonthly);

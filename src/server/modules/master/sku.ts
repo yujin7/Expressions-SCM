@@ -106,8 +106,9 @@ export async function listSkus(
   ]);
   const rows = rawRows.map((row) => {
     const assessment = assessSkuStandardName(row);
-    const namingStatus =
-      !assessment.ready ? "incomplete" : assessment.suggestion === row.name ? "standard" : "ready";
+    const namingStatus = assessment.publishedFormat
+      ? "published"
+      : !assessment.ready ? "incomplete" : assessment.suggestion === row.name ? "standard" : "ready";
     return { ...row, standardName: assessment.suggestion, namingStatus };
   });
   return { data: rows, total };
@@ -222,6 +223,68 @@ export async function createSku(input: unknown, actor?: SessionUser, dbArg?: Any
   });
 }
 
+/**
+ * 批量设置业务用途（样品/赠品/试用/内用/正常销售）。
+ *
+ * 为什么必须有：`commercial_role` 此前只能在主档表单里逐条改，BOM 批量放行路径
+ * 根本不写这一列——实跑库 5,376 个 SKU **全部** 停在 `unclassified`，
+ * 而「未分类」在分析口径里按参与正常销售处理，于是 0727 会议要的
+ * 「小样拆出来独立统计、避免无动销失真」在真实数据上一直没生效。
+ *
+ * 写路径口径：
+ * - 身份在路由层用 `guardWrite("sku")` 回查 DB（新鲜授权，界面可见性不算授权）；
+ * - 整批一个事务：要么全改要么全不改，不接受静默部分成功；
+ * - 逐 SKU 写审计，before/after 都记，便于事后追是谁把哪一批归成了样品；
+ * - 幂等：值相同的行不写库也不记审计，重放返回同样的计数而不是报错；
+ * - 不存在的 id 直接整批回滚报 404——宁可让人重选，也不要"改了一半还说成功"。
+ */
+export async function setSkuCommercialRoles(
+  ids: number[],
+  role: CommercialRole,
+  actor: SessionUser,
+  dbArg?: AnyTx,
+): Promise<{ updated: number; unchanged: number; role: CommercialRole }> {
+  if (!COMMERCIAL_ROLES.includes(role)) throw new ApiError(400, "业务用途取值非法");
+  const unique = [...new Set(ids)].filter((id) => Number.isInteger(id) && id > 0);
+  if (unique.length === 0) throw new ApiError(400, "请先选择要设置的 SKU");
+  if (unique.length > 2000) throw new ApiError(400, "单次最多设置 2000 个 SKU，请分批");
+
+  const db: AnyTx = dbArg ?? (await getDbAsync());
+  return db.transaction(async (tx: AnyTx) => {
+    const rows = await tx
+      .select({ id: schema.skus.id, code: schema.skus.code, commercialRole: schema.skus.commercialRole })
+      .from(schema.skus)
+      .where(inArray(schema.skus.id, unique))
+      // 确定性顺序：避免并发批次交叉时的行锁死锁
+      .orderBy(schema.skus.id);
+    if (rows.length !== unique.length) {
+      const found = new Set(rows.map((r: { id: number }) => r.id));
+      const missing = unique.filter((id) => !found.has(id));
+      throw new ApiError(404, `以下 SKU 不存在，整批未改：${missing.slice(0, 10).join("、")}`);
+    }
+
+    const changed = rows.filter((r: { commercialRole: string }) => r.commercialRole !== role);
+    if (changed.length === 0) return { updated: 0, unchanged: rows.length, role };
+
+    await tx
+      .update(schema.skus)
+      .set({ commercialRole: role, updatedAt: new Date() })
+      .where(inArray(schema.skus.id, changed.map((r: { id: number }) => r.id)));
+
+    for (const r of changed) {
+      await writeAudit(tx, {
+        userId: actor.id,
+        entity: "sku",
+        entityId: r.id,
+        action: "set_commercial_role",
+        before: { commercialRole: r.commercialRole, code: r.code },
+        after: { commercialRole: role, code: r.code },
+      });
+    }
+    return { updated: changed.length, unchanged: rows.length - changed.length, role };
+  });
+}
+
 export async function updateSku(id: number, input: unknown, actor?: SessionUser, dbArg?: AnyTx) {
   const v = skuSchema.parse(input);
   const db: AnyTx = dbArg ?? (await getDbAsync());
@@ -318,6 +381,14 @@ export async function applySkuStandardName(id: number, actor: SessionUser, dbArg
       .where(eq(schema.skus.id, id));
     if (!row) throw new ApiError(404, "SKU 不存在");
     const assessment = assessSkuStandardName(row);
+    // 不可逆降级闸：现名已符合公司公布的 (品牌)产品全称(规格) 格式时拒绝改写。
+    // 界面此时不渲染按钮，这里挡的是直接调 API 的路径。
+    if (assessment.publishedFormat) {
+      throw new ApiError(
+        409,
+        `「${row.name}」已符合公司公布的命名格式，不改写；两套命名口径需业务先行裁决`,
+      );
+    }
     if (!assessment.suggestion) {
       const missing = assessment.missing.map((field) => field === "brand" ? "品牌" : "产品简称").join("、");
       throw new ApiError(400, `采用标准名称前请补齐：${missing}`);

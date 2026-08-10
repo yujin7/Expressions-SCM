@@ -10,6 +10,7 @@ import {
   normalizeBomProductName,
   parseBomSheets,
   parseBomWorkbook,
+  SUPPORTED_MATERIAL_CATEGORIES,
   type BomBlock,
 } from "@/server/import/adapters/bom";
 
@@ -242,6 +243,87 @@ describe("BOM 块解析：结构规则（合成）", () => {
   });
 });
 
+/* ── 公布编码标准全覆盖（《系统-物料资料标准基础规则-可发布》） ───── */
+
+describe("公布物料编码标准：32 个编码族全部可判定", () => {
+  /**
+   * 逐条摘自公布标准的分类表。此前只认 0101/0201/0401/0402/0801 五族，
+   * 其余 23 族一律 segment=unknown 并在放行时被硬阻断（实跑库 270 行命中）。
+   * 新增一族就必须在这里补一行——否则业务按标准录的码又会被拦。
+   */
+  const PUBLISHED: [code: string, label: string, expected: string][] = [
+    ["E001-0101", "料体-普通内料", "raw_bulk"],
+    ["E001-0102", "料体-进口内料", "raw_bulk"],
+    ["ZCYL-001", "料体-自采原料（早期笔误式）", "self_supplied"],
+    ["ZCLY-016", "料体-自采原料（真实式）", "self_supplied"],
+    ["E001-0111", "半成品-裸支入仓", "semi_finished"],
+    ["E001-0201-1", "内包-瓶身", "primary_pack"],
+    ["E001-0201-2", "内包-软管", "primary_pack"],
+    ["E001-0201-3", "内包-勺子/刮板", "primary_pack"],
+    ["E001-0601", "内包-膜布", "primary_pack"],
+    ["E001-0602", "内包-膜袋", "primary_pack"],
+    ["E001-0603", "内包-网纱衬/棉棒/PE袋", "primary_pack"],
+    ["E001-0301", "外包-瓶身标/瓶盖标/泵头标", "secondary_pack"],
+    ["E001-0302", "外包-地址不干胶", "secondary_pack"],
+    ["E001-0303", "外包-外盒不干胶", "secondary_pack"],
+    ["E001-0304", "外包-其他标签", "secondary_pack"],
+    ["E001-0401", "外包-彩盒", "secondary_pack"],
+    ["E001-0402", "外包-内托", "secondary_pack"],
+    ["E001-0403", "外包-封套", "secondary_pack"],
+    ["E001-0501", "外包-中文标签", "secondary_pack"],
+    ["E001-0502", "外包-英文标签", "secondary_pack"],
+    ["E001-0801", "外包-说明书", "secondary_pack"],
+    ["E001-0701", "其他材料-热缩膜", "secondary_pack"],
+    ["TYCL01-001", "通用材料-海绵头/通用模具", "primary_pack"],
+    ["E081-ZY001", "包装物-专用箱", "box"],
+    ["E081-ZY002", "包装物-专用箱垫板", "box"],
+    ["E081-ZY003", "包装物-专用箱刀卡", "box"],
+    ["ZYTY01-001", "包装物-通用专用箱", "box"],
+    ["ZYTY02-001", "包装物-通用垫板", "box"],
+    ["ZYTY03-001", "包装物-通用刀卡", "box"],
+    ["P01-001", "包装物-打包纸箱 / 消耗品-耗材", "box"],
+    ["F01-001", "消耗品-其他（香薰灯/蜡烛）", "consumable"],
+    ["E001-0901", "生产费用-过膜/加工/返工费", "fee"],
+    ["TYFY01-001", "通用生产费用-贴标/加工费", "fee"],
+    ["FY-001", "其他费用类-打样/模具/翻译费", "fee"],
+  ];
+
+  it.each(PUBLISHED)("%s（%s）→ %s", (code, _label, expected) => {
+    const rows = [
+      HDR,
+      mat({ seq: 1, pc: "E001-000", pn: "(EXPRESSIONS)测试品(100ml)", mc: code, mn: "测试物料", qty: 1 }),
+      summary(null),
+    ];
+    const { blocks } = parseBomSheets([sheet("PUB", rows)], "EXP");
+    // 费用族在解析期就分流进 feeLines，不留在物料行
+    if (expected === "fee") {
+      expect(blocks[0].lines).toHaveLength(0);
+      expect(blocks[0].feeLines).toHaveLength(1);
+      return;
+    }
+    expect(blocks[0].lines[0]?.segment).toBe(expected);
+  });
+
+  it("公布标准里的每个四位分类码都在字典内（新增分类码必须同步补进来）", () => {
+    const published = PUBLISHED
+      .map(([code]) => code.match(/-(\d{4})(?!\d)/)?.[1])
+      .filter((c): c is string => c != null);
+    for (const code of published) {
+      expect(SUPPORTED_MATERIAL_CATEGORIES, `分类码 ${code} 未进字典`).toContain(code);
+    }
+  });
+
+  it("未公布的分类码仍落 unknown——不猜，交人工裁决", () => {
+    const rows = [
+      HDR,
+      mat({ seq: 1, pc: "E001-000", pn: "(EXPRESSIONS)测试品(100ml)", mc: "E001-9999", mn: "未知物料", qty: 1 }),
+      summary(null),
+    ];
+    const { blocks } = parseBomSheets([sheet("UNK", rows)], "EXP");
+    expect(blocks[0].lines[0]?.segment).toBe("unknown");
+  });
+});
+
 /* ── 真实文件基线（事实核查 ±1% 带；文件缺席则跳过） ───── */
 
 const REAL = {
@@ -260,6 +342,8 @@ function checkInvariants(blocks: BomBlock[]): void {
     // 加工费绝不混入物料行
     expect(b.lines.some((l) => l.materialName.includes("加工费"))).toBe(false);
     expect(b.lines.some((l) => (l.materialCode ?? "").includes("加工费"))).toBe(false);
+    // 费用编码族（0901 / TYFY01 / FY）同样不得留在物料行——留下就会在放行时被当成待建主档
+    expect(b.lines.some((l) => l.segment === "fee")).toBe(false);
     // 无标记同名多块必须全部落人工闸——抽查：ambiguous=false 的块要么名唯一要么组内全标记（由实现保证，此处仅类型完整性）
     expect(["retired", "preferred", "none"]).toContain(b.versionMarker);
   }
@@ -272,7 +356,9 @@ describe.runIf(existsSync(REAL.NING))("真实文件：NING（199 sheets）", () 
     // 加工费：文件内含「加工费」字样的行共 554（本适配器全量捕获并核对过原始扫描）。
     // 复核基准 525 系早期分析漏掉 5 张列位错位 sheet（光感润白淡斑精华液/紧致修护眼霜 等）
     // 的 29 行——554 = 525 + 29，为更强的事实核查值。
-    expect(r.stats.feeLines).toBe(554);
+    // 555 = 554 + 1：公布标准的 0901「生产费用」编码族接入后，
+    // 「次抛灌装、贴标、喷码费、组装费」那一行从物料行归位到费用行（此前会因段位无法判定被放行拦下）。
+    expect(r.stats.feeLines).toBe(555);
     expect(r.stats.feeLines).toBeGreaterThanOrEqual(Math.floor(525 * 0.99));
     // 去重产品编码基准 490–493（±1% 带）
     expect(r.stats.distinctProductCodes).toBeGreaterThanOrEqual(Math.floor(490 * 0.99));
@@ -308,7 +394,9 @@ describe.runIf(existsSync(REAL.DEV))("真实文件：DEVIANCE（41 sheets）", (
   it("解析基线", async () => {
     const r = await parseBomWorkbook(REAL.DEV, "DEV");
     expect(r.stats.sheets).toBe(41);
-    expect(r.stats.feeLines).toBe(84); // 基准精确命中
+    // 87 = 84 + 3：两条「OEM返工费」按公布标准的费用名目归位，
+    // 一条「次抛灌装、贴标、喷码费」按 0901 编码族归位。
+    expect(r.stats.feeLines).toBe(87);
     within(r.stats.distinctProductCodes, 72);
     within(r.stats.materialLines + r.stats.feeLines, 859);
     checkInvariants(r.blocks);

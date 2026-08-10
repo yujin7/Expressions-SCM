@@ -51,6 +51,169 @@ const JIANDAOYUN_SYSTEM_FIELDS = ["createTime", "updateTime", "deleteTime"] as c
  * grants authority to update SCM masters, prices, stock or documents.
  */
 export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
+  /*
+   * 数据中台的平台销量观察（2026-08-04 加入）。
+   *
+   * 背景：原有 9 条契约全部指向「采购供应链」，那批表全量拉数后 sourceAsOf 停在
+   * 2024-12-11。而用服务端 filter 按 statistical_date 逐月探针查实，
+   * 数据中台的这两张表 **2026 年 5~8 月每月都有数据，包括当月**——
+   * 是一条活的、日级、SKU 级的销量事实来源，且当前 API key 本来就读得到。
+   *
+   * 字段最小化：只取统计日期/店铺/商品与 SKU 标识/件数与金额。
+   * 这两张表本身不含 PII（对比 `Pdd_C.01_订单查询列表` 有消费者资料与买家留言，
+   * 故**刻意不纳入**）。
+   *
+   * 与其余契约同样只进 staging、releaseBlocked——**不授予任何更新主档/销量正式表的权限**。
+   *
+   * ⚠ **净销量口径（实测 2026-07）**：退款率件数 14.7%、金额 14.5%，
+   * 两张表按 `(统计日, 店铺, SKU)` 可对上（退款行 69% 找到同键销量行，其余多为跨月退款）。
+   * **拿 `paid_number` 直接当销速会高估约 15% 的真实需求**，接入时必须用
+   * `C.01 支付件数 − C.02 成功退款子订单数`。是否用它喂销速仍属业务裁决；
+   * 契约进注册表不等于启用，仍需在 `JIANDAOYUN_SYNC_CONTRACTS` 里显式选中。
+   */
+  /*
+   * 天猫 SKU 详情观察（2026-08-04 加入）——条码桥的第二个来源。
+   *
+   * 实测填充率：条形码 45%、商家编码 48%、关联货品 100%、skuId 100%。
+   * **只用条形码解析**：商家编码与系统 SKU 编码是两套命名空间（已在拼多多侧证实），
+   * 拿它喂 sku_code 只会造出解析不到的认领项。
+   * `关联货品` 虽 100% 填充，但那是天猫店内的商品别名（形如 `maonangyfangtuo`），
+   * 与主档的对应关系未经业务确认，故只作观察字段。
+   *
+   * 天猫条形码只填了 45%，意味着约一半天猫 SKU 落不到主档——
+   * 这部分要靠业务在平台侧补条码，代码这边无法弥补。
+   */
+  {
+    key: "tmall-sku-crosswalk-observation",
+    label: "数据中台/天猫 SKU 对照",
+    appId: "699ebeac318154b4f6d3dda6",
+    entryId: "69a7aca01406712eef7abdba",
+    targetTable: "jdy_tmall_sku_crosswalk_observation",
+    businessKey: ["shopName", "platformSkuId"],
+    freshnessMaxAgeDays: 45,
+    fields: [
+      field("shopName", "shop_name"),
+      field("platformProductId", "product_id"),
+      field("specification", "net_content"),
+      field("price", "price"),
+      // 条码：落到系统 SKU 的桥（填充率 45%）
+      field("barcode", "bar_code"),
+      // 商家编码与关联货品只作观察，不参与解析
+      field("merchantSkuCode", "merchant_id"),
+      field("relatedGoods", "related_goods"),
+      field("skuClassification", "sku_classification"),
+      field("platformSkuId", "sku_id"),
+    ],
+  },
+  /*
+   * 唯品会商品列表观察（2026-08-04 加入）——**条码桥的主力来源**。
+   *
+   * 实测：405 个唯一条码里 169 个命中 `skus.barcode`、163 个命中 `sku_identifiers`
+   * （约四成），而条码/货号命中 `skus.code` 为 0 —— 印证了"编码体系不通、条码通"。
+   * 唯品会的货号与条码同值，故只映射一次。
+   *
+   * `barcode` 交给条码桥解析（精确、唯一命中才算；歧义与未命中进认领队列）。
+   * 供应商编码只作观察，不参与解析——它是唯品会侧的供应商编号，与本系统供应商主档
+   * 未经确认对应关系，映了会造出错误的认领候选。
+   */
+  {
+    key: "vip-product-crosswalk-observation",
+    label: "数据中台/唯品会商品对照",
+    appId: "699ebeac318154b4f6d3dda6",
+    entryId: "69d5bd25c0c89899fec1c3eb",
+    targetTable: "jdy_vip_product_crosswalk_observation",
+    businessKey: ["platformProductId"],
+    freshnessMaxAgeDays: 45,
+    fields: [
+      field("platformProductId", "product_id"),
+      field("productName", "product_name"),
+      // 条码：落到系统 SKU 的桥
+      field("barcode", "barcode"),
+      field("goodsCode", "goods_code"),
+      field("platformSkuId", "v_sku"),
+      field("platformSpuId", "v_spu"),
+      field("brandName", "brand_name"),
+      field("supplierCode", "supplier_code"),
+    ],
+  },
+  /*
+   * 拼多多 SKU 主数据观察（2026-08-04 加入）——**平台 SKU ↔ 系统 SKU 的对照来源**。
+   *
+   * 为什么需要它：销量表里的 `sku_id` 是平台 SKU（如 `1567203177846`），不是系统编码；
+   * 不做对照，销量行落不到主档，就只是一堆躺在 staging 的数字。
+   *
+   * 这里把 `SKU外部编码`（平台上"商家自己的 SKU 编码"，实测填充率 95%）映射到
+   * `productCode`，从而走既有的 `resolveKnownOrQueue`：能对上的直接解析，
+   * 对不上的进人工认领队列（scope=JIANDAOYUN），**不猜、不自动改主档**。
+   *
+   * 另两个平台的对照现状（各取 3000 行实测）：
+   *   唯品会 Vip_X.01：条码/货号/供应商编码/V_SKU 均 100% —— 可用，但"哪个字段是权威
+   *     系统编码"需业务确认，故暂不映射 productCode，避免造出错误的认领候选；
+   *   天猫 Tmall_X.02：商家编码仅 48%、条形码 45% —— 约一半对不上，需业务补编码。
+   */
+  {
+    key: "pdd-sku-crosswalk-observation",
+    label: "数据中台/拼多多 SKU 对照",
+    appId: "699ebeac318154b4f6d3dda6",
+    entryId: "69b8cc2549504b2026c15fa2",
+    targetTable: "jdy_pdd_sku_crosswalk_observation",
+    businessKey: ["shopName", "platformSkuId"],
+    freshnessMaxAgeDays: 45,
+    fields: [
+      field("shopName", "shop_name"),
+      field("platformProductId", "product_id"),
+      field("productName", "product_name"),
+      field("productSpecification", "product_specification"),
+      // 平台侧「商家自己的 SKU 编码」。实测与系统编码是两套命名空间（SW1557 vs N006-001），
+      // 故**只作观察字段**，不再喂给 sku_code 解析——喂了只会造出一堆解析不到的认领项。
+      field("merchantSkuCode", "sku_external_code"),
+      field("platformSkuId", "sku_id"),
+      field("productStatus", "product_status"),
+      field("inventory", "inventory"),
+    ],
+  },
+  {
+    key: "tmall-sku-sales-observation",
+    label: "数据中台/天猫 SKU 日销量",
+    appId: "699ebeac318154b4f6d3dda6",
+    entryId: "69a79b2c29154c9870ddaf00",
+    targetTable: "jdy_tmall_sku_sales_observation",
+    businessKey: ["statisticalDate", "shopName", "skuId"],
+    freshnessMaxAgeDays: 45,
+    fields: [
+      field("statisticalDate", "statistical_date"),
+      field("shopName", "shop_name"),
+      field("productId", "product_id"),
+      field("productName", "product_name"),
+      field("skuId", "sku_id"),
+      field("skuName", "sku_name"),
+      field("placedOrdersNumber", "placed_orders_number"),
+      field("placedOrdersAmount", "placed_orders_amount"),
+      field("paidNumber", "paid_number"),
+      field("paidAmount", "paid_amount"),
+    ],
+  },
+  {
+    key: "tmall-sku-refund-observation",
+    label: "数据中台/天猫 SKU 退款分布",
+    appId: "699ebeac318154b4f6d3dda6",
+    entryId: "69a79cf5180dcc9f36294d4a",
+    targetTable: "jdy_tmall_sku_refund_observation",
+    businessKey: ["statisticalDate", "shopName", "skuId"],
+    freshnessMaxAgeDays: 45,
+    fields: [
+      field("statisticalDate", "statistical_date"),
+      field("shopName", "shop_name"),
+      field("productId", "product_id"),
+      field("skuId", "sku_id"),
+      field("skuName", "sku_name"),
+      field("timeType", "time_type"),
+      field("paidAmount", "paid_amount"),
+      field("paidSuborderNumber", "paid_suborder_number"),
+      field("successRefundSuborderNumber", "success_refund_suborders_number"),
+      field("successRefundAmount", "success_refund_amount"),
+    ],
+  },
   {
     key: "product-master-observation",
     label: "进销存/产品信息",
