@@ -127,10 +127,19 @@ function calendarDayTimestamp(value: string): number | null {
   return parsed;
 }
 
+function shanghaiDate(value: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(value);
+}
+
 function dateValue(value: unknown): string | null {
   if (value == null) return null;
   if (value instanceof Date) {
-    return Number.isFinite(value.getTime()) ? value.toISOString().slice(0, 10) : null;
+    return Number.isFinite(value.getTime()) ? shanghaiDate(value) : null;
   }
   const text = String(value);
   if (calendarDayTimestamp(text) != null) return text;
@@ -155,7 +164,7 @@ function dateValue(value: unknown): string | null {
     || (offsetHour === 14 && offsetMinute !== 0)
   ) return null;
   const parsed = Date.parse(text);
-  return Number.isFinite(parsed) ? calendarDay : null;
+  return Number.isFinite(parsed) ? shanghaiDate(new Date(parsed)) : null;
 }
 
 function streamKeys(value: unknown): string[] {
@@ -185,15 +194,6 @@ function ageSince(value: string | null, now: Date, divisor: number): number | nu
   const elapsed = now.getTime() - parsed;
   if (elapsed < 0) return null;
   return Math.round((elapsed / divisor) * 10) / 10;
-}
-
-function shanghaiDate(value: Date): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(value);
 }
 
 function businessAgeDaysSince(value: string | null, now: Date): number | null {

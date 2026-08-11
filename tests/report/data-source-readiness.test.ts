@@ -252,4 +252,35 @@ describe("三方数据来源证据矩阵", () => {
       await client.close();
     }
   });
+
+  it("按上海业务日解释跨时区时间戳并阻断未来证据", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      await db.insert(schema.integrationRuns).values({
+        connector: "jst",
+        stream: "outbound-sales-daily",
+        idempotencyKey: "jst-cross-zone-future-cutoff",
+        status: "succeeded",
+        sourceRows: 1,
+        stagedRows: 1,
+        requestScope: { sourceAsOf: "2026-08-11T23:00:00-12:00" },
+        startedAt: new Date("2026-08-11T14:00:00.000Z"),
+        finishedAt: new Date("2026-08-11T14:01:00.000Z"),
+      });
+
+      const result = await loadDataSourceReadiness(db, {
+        env: {} as NodeJS.ProcessEnv,
+        now: new Date("2026-08-11T14:30:00.000Z"),
+      });
+      expect(result.find((row) => row.key === "JST")?.streams).toEqual([
+        expect.objectContaining({
+          sourceAsOf: "2026-08-12",
+          sourceTimeInvalid: true,
+          freshness: "unknown",
+        }),
+      ]);
+    } finally {
+      await client.close();
+    }
+  });
 });
