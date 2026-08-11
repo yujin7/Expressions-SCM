@@ -18,6 +18,7 @@ function stream(
     stagedRows: 1,
     rejectedRows: 0,
     authorizationBlocked: false,
+    sourceTimeInvalid: false,
     releaseBlocked: false,
     emptySource: false,
     freshnessMaxAgeDays: 2,

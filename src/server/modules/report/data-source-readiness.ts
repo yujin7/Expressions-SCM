@@ -34,6 +34,7 @@ export interface DataStreamEvidence {
   stagedRows: number;
   rejectedRows: number;
   authorizationBlocked: boolean;
+  sourceTimeInvalid: boolean;
   releaseBlocked: boolean;
   emptySource: boolean;
   freshnessMaxAgeDays: number | null;
@@ -191,20 +192,25 @@ const STREAM_FRESHNESS_DAYS = new Map<string, number>([
 
 function streamEvidence(row: StreamRunAggregate, now: Date): DataStreamEvidence {
   const scope = objectValue(row.request_scope);
-  const sourceAsOf = dateValue(row.source_as_of)
-    ?? dateValue(scope.sourceAsOf)
-    ?? dateValue(scope.bizDate)
-    ?? dateValue(scope.observedAt);
+  const sourceAsOfCandidate = row.source_as_of
+    ?? scope.sourceAsOf
+    ?? scope.bizDate
+    ?? scope.observedAt
+    ?? null;
+  const sourceAsOf = dateValue(sourceAsOfCandidate);
   const lastSuccessAt = instant(row.last_success_at);
   const businessAgeDays = businessAgeDaysSince(sourceAsOf, now);
   const pipelineAgeHours = ageSince(lastSuccessAt, now, 3_600_000);
+  const sourceTimeInvalid = sourceAsOfCandidate != null && businessAgeDays == null;
   const authorizationBlocked = row.connector === "yonyou"
     && row.latest_import_job_id == null
     && String(row.latest_error ?? "").startsWith("待控制台授权：");
   const freshnessMaxAgeDays = STREAM_FRESHNESS_DAYS.get(`${row.connector}\u0000${row.stream}`) ?? null;
-  const comparableAgeDays = businessAgeDays ?? (pipelineAgeHours == null ? null : pipelineAgeHours / 24);
+  const comparableAgeDays = sourceAsOfCandidate == null
+    ? (pipelineAgeHours == null ? null : pipelineAgeHours / 24)
+    : businessAgeDays;
   const freshness: DataStreamFreshness = authorizationBlocked
-    || freshnessMaxAgeDays == null || comparableAgeDays == null
+    || sourceTimeInvalid || freshnessMaxAgeDays == null || comparableAgeDays == null
     ? "unknown"
     : comparableAgeDays > freshnessMaxAgeDays ? "stale" : "current";
   const latestStatus = String(row.latest_status);
@@ -218,6 +224,7 @@ function streamEvidence(row: StreamRunAggregate, now: Date): DataStreamEvidence 
     stagedRows: intValue(row.staged_rows),
     rejectedRows: intValue(row.rejected_rows),
     authorizationBlocked,
+    sourceTimeInvalid,
     releaseBlocked: scope.releaseBlocked === true,
     emptySource: scope.emptySource === true,
     freshnessMaxAgeDays,
@@ -264,7 +271,7 @@ async function loadRunEvidence(db: ReadDb, now: Date) {
           CASE WHEN ir.connector IN ('yy', 'yonyou') THEN 'yonyou' ELSE ir.connector END AS connector_key,
           row_number() OVER (
             PARTITION BY CASE WHEN ir.connector IN ('yy', 'yonyou') THEN 'yonyou' ELSE ir.connector END, ir.stream
-            ORDER BY ir.id DESC
+            ORDER BY ir.started_at DESC, ir.id DESC
           ) AS rn
         FROM integration_runs ir
         LEFT JOIN import_jobs ij ON ij.id = ir.import_job_id
@@ -293,7 +300,7 @@ async function loadRunEvidence(db: ReadDb, now: Date) {
           CASE WHEN ir.connector IN ('yy', 'yonyou') THEN 'yonyou' ELSE ir.connector END AS connector_key,
           row_number() OVER (
             PARTITION BY CASE WHEN ir.connector IN ('yy', 'yonyou') THEN 'yonyou' ELSE ir.connector END, ir.stream
-            ORDER BY ir.id DESC
+            ORDER BY ir.started_at DESC, ir.id DESC
           ) AS rn
         FROM integration_runs ir
       )
@@ -310,7 +317,7 @@ async function loadRunEvidence(db: ReadDb, now: Date) {
           CASE WHEN ir.connector IN ('yy', 'yonyou') THEN 'yonyou' ELSE ir.connector END AS connector_key,
           row_number() OVER (
             PARTITION BY CASE WHEN ir.connector IN ('yy', 'yonyou') THEN 'yonyou' ELSE ir.connector END, ir.stream
-            ORDER BY ir.id DESC
+            ORDER BY ir.started_at DESC, ir.id DESC
           ) AS rn
         FROM integration_runs ir
       ), latest_success AS (
@@ -318,7 +325,7 @@ async function loadRunEvidence(db: ReadDb, now: Date) {
           CASE WHEN ir.connector IN ('yy', 'yonyou') THEN 'yonyou' ELSE ir.connector END AS connector_key,
           row_number() OVER (
             PARTITION BY CASE WHEN ir.connector IN ('yy', 'yonyou') THEN 'yonyou' ELSE ir.connector END, ir.stream
-            ORDER BY ir.id DESC
+            ORDER BY ir.started_at DESC, ir.id DESC
           ) AS rn
         FROM integration_runs ir
         LEFT JOIN import_jobs ij ON ij.id = ir.import_job_id

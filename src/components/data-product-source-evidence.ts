@@ -81,6 +81,7 @@ function streamState(
   }
   const limitations: string[] = [];
   if (evidence.authorizationBlocked) limitations.push("源系统授权被阻断");
+  if (evidence.sourceTimeInvalid) limitations.push("业务截止日无效或晚于当前上海业务日");
   if (evidence.latestStatus === "failed") limitations.push("最近一次运行失败");
   if (evidence.latestStatus === "running") limitations.push("最新批次仍在运行");
   if (evidence.rejectedRows > 0) limitations.push(`有 ${evidence.rejectedRows} 行拒收`);
