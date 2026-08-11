@@ -34,6 +34,7 @@ export interface DataStreamEvidence {
   stagedRows: number;
   rejectedRows: number;
   authorizationBlocked: boolean;
+  sourceTimeInvalid: boolean;
   releaseBlocked: boolean;
   emptySource: boolean;
   freshnessMaxAgeDays: number | null;
@@ -119,10 +120,51 @@ function instant(value: unknown): string | null {
   return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
 }
 
+function calendarDayTimestamp(value: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const parsed = Date.parse(`${value}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 10) !== value) return null;
+  return parsed;
+}
+
+function shanghaiDate(value: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(value);
+}
+
 function dateValue(value: unknown): string | null {
   if (value == null) return null;
-  const text = String(value).slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? shanghaiDate(value) : null;
+  }
+  const text = String(value);
+  if (calendarDayTimestamp(text) != null) return text;
+  // API evidence may carry a full RFC 3339 instant. Validate the complete value
+  // before deriving its source calendar day; never accept a valid prefix followed
+  // by malformed trailing data.
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|([+-])(\d{2}):(\d{2}))$/.exec(text);
+  if (!match) return null;
+  const [, calendarDay, hourText, minuteText, secondText, zone, , offsetHourText, offsetMinuteText] = match;
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const offsetHour = zone === "Z" ? 0 : Number(offsetHourText);
+  const offsetMinute = zone === "Z" ? 0 : Number(offsetMinuteText);
+  if (
+    calendarDayTimestamp(calendarDay) == null
+    || hour > 23
+    || minute > 59
+    || second > 59
+    || offsetHour > 14
+    || offsetMinute > 59
+    || (offsetHour === 14 && offsetMinute !== 0)
+  ) return null;
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? shanghaiDate(new Date(parsed)) : null;
 }
 
 function streamKeys(value: unknown): string[] {
@@ -154,20 +196,15 @@ function ageSince(value: string | null, now: Date, divisor: number): number | nu
   return Math.round((elapsed / divisor) * 10) / 10;
 }
 
-function shanghaiDate(value: Date): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(value);
-}
-
 function businessAgeDaysSince(value: string | null, now: Date): number | null {
   if (!value) return null;
-  const sourceDay = Date.parse(`${value}T00:00:00.000Z`);
+  const sourceDay = calendarDayTimestamp(value);
   const today = Date.parse(`${shanghaiDate(now)}T00:00:00.000Z`);
-  if (!Number.isFinite(sourceDay) || !Number.isFinite(today) || today < sourceDay) return null;
+  if (
+    sourceDay == null
+    || !Number.isFinite(today)
+    || today < sourceDay
+  ) return null;
   return Math.round((today - sourceDay) / 86_400_000);
 }
 
@@ -191,20 +228,25 @@ const STREAM_FRESHNESS_DAYS = new Map<string, number>([
 
 function streamEvidence(row: StreamRunAggregate, now: Date): DataStreamEvidence {
   const scope = objectValue(row.request_scope);
-  const sourceAsOf = dateValue(row.source_as_of)
-    ?? dateValue(scope.sourceAsOf)
-    ?? dateValue(scope.bizDate)
-    ?? dateValue(scope.observedAt);
+  const sourceAsOfCandidate = row.source_as_of
+    ?? scope.sourceAsOf
+    ?? scope.bizDate
+    ?? scope.observedAt
+    ?? null;
+  const sourceAsOf = dateValue(sourceAsOfCandidate);
   const lastSuccessAt = instant(row.last_success_at);
   const businessAgeDays = businessAgeDaysSince(sourceAsOf, now);
   const pipelineAgeHours = ageSince(lastSuccessAt, now, 3_600_000);
+  const sourceTimeInvalid = sourceAsOfCandidate != null && businessAgeDays == null;
   const authorizationBlocked = row.connector === "yonyou"
     && row.latest_import_job_id == null
     && String(row.latest_error ?? "").startsWith("待控制台授权：");
   const freshnessMaxAgeDays = STREAM_FRESHNESS_DAYS.get(`${row.connector}\u0000${row.stream}`) ?? null;
-  const comparableAgeDays = businessAgeDays ?? (pipelineAgeHours == null ? null : pipelineAgeHours / 24);
+  const comparableAgeDays = sourceAsOfCandidate == null
+    ? (pipelineAgeHours == null ? null : pipelineAgeHours / 24)
+    : businessAgeDays;
   const freshness: DataStreamFreshness = authorizationBlocked
-    || freshnessMaxAgeDays == null || comparableAgeDays == null
+    || sourceTimeInvalid || freshnessMaxAgeDays == null || comparableAgeDays == null
     ? "unknown"
     : comparableAgeDays > freshnessMaxAgeDays ? "stale" : "current";
   const latestStatus = String(row.latest_status);
@@ -218,6 +260,7 @@ function streamEvidence(row: StreamRunAggregate, now: Date): DataStreamEvidence 
     stagedRows: intValue(row.staged_rows),
     rejectedRows: intValue(row.rejected_rows),
     authorizationBlocked,
+    sourceTimeInvalid,
     releaseBlocked: scope.releaseBlocked === true,
     emptySource: scope.emptySource === true,
     freshnessMaxAgeDays,
@@ -264,7 +307,7 @@ async function loadRunEvidence(db: ReadDb, now: Date) {
           CASE WHEN ir.connector IN ('yy', 'yonyou') THEN 'yonyou' ELSE ir.connector END AS connector_key,
           row_number() OVER (
             PARTITION BY CASE WHEN ir.connector IN ('yy', 'yonyou') THEN 'yonyou' ELSE ir.connector END, ir.stream
-            ORDER BY ir.id DESC
+            ORDER BY ir.started_at DESC, ir.id DESC
           ) AS rn
         FROM integration_runs ir
         LEFT JOIN import_jobs ij ON ij.id = ir.import_job_id
@@ -293,7 +336,7 @@ async function loadRunEvidence(db: ReadDb, now: Date) {
           CASE WHEN ir.connector IN ('yy', 'yonyou') THEN 'yonyou' ELSE ir.connector END AS connector_key,
           row_number() OVER (
             PARTITION BY CASE WHEN ir.connector IN ('yy', 'yonyou') THEN 'yonyou' ELSE ir.connector END, ir.stream
-            ORDER BY ir.id DESC
+            ORDER BY ir.started_at DESC, ir.id DESC
           ) AS rn
         FROM integration_runs ir
       )
@@ -310,7 +353,7 @@ async function loadRunEvidence(db: ReadDb, now: Date) {
           CASE WHEN ir.connector IN ('yy', 'yonyou') THEN 'yonyou' ELSE ir.connector END AS connector_key,
           row_number() OVER (
             PARTITION BY CASE WHEN ir.connector IN ('yy', 'yonyou') THEN 'yonyou' ELSE ir.connector END, ir.stream
-            ORDER BY ir.id DESC
+            ORDER BY ir.started_at DESC, ir.id DESC
           ) AS rn
         FROM integration_runs ir
       ), latest_success AS (
@@ -318,7 +361,7 @@ async function loadRunEvidence(db: ReadDb, now: Date) {
           CASE WHEN ir.connector IN ('yy', 'yonyou') THEN 'yonyou' ELSE ir.connector END AS connector_key,
           row_number() OVER (
             PARTITION BY CASE WHEN ir.connector IN ('yy', 'yonyou') THEN 'yonyou' ELSE ir.connector END, ir.stream
-            ORDER BY ir.id DESC
+            ORDER BY ir.started_at DESC, ir.id DESC
           ) AS rn
         FROM integration_runs ir
         LEFT JOIN import_jobs ij ON ij.id = ir.import_job_id

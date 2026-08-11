@@ -20,6 +20,15 @@ describe("三方数据来源证据矩阵", () => {
         {
           connector: "jdy",
           stream: "tmall-sku-sales-observation",
+          idempotencyKey: "jdy-latest-failed",
+          status: "failed",
+          error: "schema drift",
+          startedAt: new Date("2026-08-12T02:00:00.000Z"),
+          finishedAt: new Date("2026-08-12T02:01:00.000Z"),
+        },
+        {
+          connector: "jdy",
+          stream: "tmall-sku-sales-observation",
           idempotencyKey: "jdy-success",
           status: "succeeded",
           sourceRows: 10,
@@ -29,15 +38,6 @@ describe("三方数据来源证据矩阵", () => {
           importJobId: job.id,
           startedAt: new Date("2026-08-12T01:00:00.000Z"),
           finishedAt: new Date("2026-08-12T01:01:00.000Z"),
-        },
-        {
-          connector: "jdy",
-          stream: "tmall-sku-sales-observation",
-          idempotencyKey: "jdy-latest-failed",
-          status: "failed",
-          error: "schema drift",
-          startedAt: new Date("2026-08-12T02:00:00.000Z"),
-          finishedAt: new Date("2026-08-12T02:01:00.000Z"),
         },
         {
           connector: "yy",
@@ -61,6 +61,28 @@ describe("三方数据来源证据矩阵", () => {
           error: "待控制台授权：310037",
           startedAt: new Date("2026-08-12T02:30:00.000Z"),
           finishedAt: new Date("2026-08-12T02:31:00.000Z"),
+        },
+        {
+          connector: "jst",
+          stream: "outbound-sales-daily",
+          idempotencyKey: "jst-future-source-date",
+          status: "succeeded",
+          sourceRows: 1,
+          stagedRows: 1,
+          requestScope: { sourceAsOf: "2026-08-14" },
+          startedAt: new Date("2026-08-12T16:00:00.000Z"),
+          finishedAt: new Date("2026-08-12T16:01:00.000Z"),
+        },
+        {
+          connector: "jst",
+          stream: "inventory-total-delta",
+          idempotencyKey: "jst-invalid-calendar-date",
+          status: "succeeded",
+          sourceRows: 1,
+          stagedRows: 1,
+          requestScope: { sourceAsOf: "2026-02-30" },
+          startedAt: new Date("2026-08-12T16:05:00.000Z"),
+          finishedAt: new Date("2026-08-12T16:06:00.000Z"),
         },
       ]);
       await db.insert(schema.aliasExceptions).values({
@@ -104,10 +126,26 @@ describe("三方数据来源证据矩阵", () => {
         }),
       ]);
       expect(result.find((row) => row.key === "JST")).toMatchObject({
-        state: "contract_only",
+        state: "observation",
         contractSelectionState: "not_required",
         selectedContractCount: 0,
+        successfulStreams: 2,
       });
+      expect(result.find((row) => row.key === "JST")?.streams).toEqual([
+        expect.objectContaining({
+          stream: "inventory-total-delta",
+          sourceAsOf: null,
+          sourceTimeInvalid: true,
+          freshness: "unknown",
+        }),
+        expect.objectContaining({
+          stream: "outbound-sales-daily",
+          sourceAsOf: "2026-08-14",
+          sourceTimeInvalid: true,
+          pipelineAgeHours: 0.5,
+          freshness: "unknown",
+        }),
+      ]);
       expect(result.find((row) => row.key === "YONYOU")).toMatchObject({
         state: "observation",
         successfulStreams: 1,
@@ -123,6 +161,121 @@ describe("三方数据来源证据矩阵", () => {
           stream: "yonbip-scm-purchaseorder-list",
           authorizationBlocked: true,
           lastSuccessAt: null,
+          freshness: "unknown",
+        }),
+      ]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("拒绝带尾随垃圾的截止日并保留完整 RFC3339 时间戳", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      await db.insert(schema.integrationRuns).values([
+        {
+          connector: "jst",
+          stream: "outbound-sales-daily",
+          idempotencyKey: "jst-malformed-source-date",
+          status: "succeeded",
+          sourceRows: 1,
+          stagedRows: 1,
+          requestScope: { sourceAsOf: "2026-08-11garbage" },
+          startedAt: new Date("2026-08-12T00:00:00.000Z"),
+          finishedAt: new Date("2026-08-12T00:01:00.000Z"),
+        },
+        {
+          connector: "jst",
+          stream: "inventory-total-delta",
+          idempotencyKey: "jst-valid-rfc3339-source-time",
+          status: "succeeded",
+          sourceRows: 1,
+          stagedRows: 1,
+          requestScope: { observedAt: "2026-08-11T23:59:00+08:00" },
+          startedAt: new Date("2026-08-12T00:05:00.000Z"),
+          finishedAt: new Date("2026-08-12T00:06:00.000Z"),
+        },
+      ]);
+
+      const result = await loadDataSourceReadiness(db, {
+        env: {} as NodeJS.ProcessEnv,
+        now: new Date("2026-08-12T00:30:00.000Z"),
+      });
+      const streams = result.find((row) => row.key === "JST")?.streams;
+
+      expect(streams).toEqual([
+        expect.objectContaining({
+          stream: "inventory-total-delta",
+          sourceAsOf: "2026-08-11",
+          sourceTimeInvalid: false,
+          freshness: "current",
+        }),
+        expect.objectContaining({
+          stream: "outbound-sales-daily",
+          sourceAsOf: null,
+          sourceTimeInvalid: true,
+          freshness: "unknown",
+        }),
+      ]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("拒绝会被运行时归一化的越界 RFC3339 时间", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      await db.insert(schema.integrationRuns).values({
+        connector: "jst",
+        stream: "outbound-sales-daily",
+        idempotencyKey: "jst-out-of-range-rfc3339-time",
+        status: "succeeded",
+        sourceRows: 1,
+        stagedRows: 1,
+        requestScope: { sourceAsOf: "2026-08-11T24:00:00Z" },
+        startedAt: new Date("2026-08-11T14:00:00.000Z"),
+        finishedAt: new Date("2026-08-11T14:01:00.000Z"),
+      });
+
+      const result = await loadDataSourceReadiness(db, {
+        env: {} as NodeJS.ProcessEnv,
+        now: new Date("2026-08-11T14:30:00.000Z"),
+      });
+      expect(result.find((row) => row.key === "JST")?.streams).toEqual([
+        expect.objectContaining({
+          sourceAsOf: null,
+          sourceTimeInvalid: true,
+          freshness: "unknown",
+        }),
+      ]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("按上海业务日解释跨时区时间戳并阻断未来证据", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      await db.insert(schema.integrationRuns).values({
+        connector: "jst",
+        stream: "outbound-sales-daily",
+        idempotencyKey: "jst-cross-zone-future-cutoff",
+        status: "succeeded",
+        sourceRows: 1,
+        stagedRows: 1,
+        requestScope: { sourceAsOf: "2026-08-11T23:00:00-12:00" },
+        startedAt: new Date("2026-08-11T14:00:00.000Z"),
+        finishedAt: new Date("2026-08-11T14:01:00.000Z"),
+      });
+
+      const result = await loadDataSourceReadiness(db, {
+        env: {} as NodeJS.ProcessEnv,
+        now: new Date("2026-08-11T14:30:00.000Z"),
+      });
+      expect(result.find((row) => row.key === "JST")?.streams).toEqual([
+        expect.objectContaining({
+          sourceAsOf: "2026-08-12",
+          sourceTimeInvalid: true,
           freshness: "unknown",
         }),
       ]);
