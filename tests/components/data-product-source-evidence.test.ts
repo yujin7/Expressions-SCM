@@ -17,6 +17,7 @@ function stream(
     sourceRows: 1,
     stagedRows: 1,
     rejectedRows: 0,
+    authorizationBlocked: false,
     releaseBlocked: false,
     emptySource: false,
     freshnessMaxAgeDays: 2,
@@ -123,6 +124,26 @@ describe("数据产品所需流证据", () => {
     const degraded = evaluateProductSourceEvidence(product, [source("SCM", "operational", []), failedJst]);
     expect(degraded).toMatchObject({ observedSources: 2, operationalSources: 1, degradedStreams: 1 });
     expect(degraded.sources[1]).toMatchObject({ state: "degraded" });
+
+    const yonyouProduct = {
+      ...product,
+      sources: ["SCM", "YONYOU"],
+      requiredStreams: { YONYOU: ["yonbip-scm-purchaseorder-list"] },
+    } satisfies DataProductDefinition;
+    const deniedYonyou = source("YONYOU", "operational", ["yonbip-scm-purchaseorder-list"]);
+    deniedYonyou.streams = [stream("yonbip-scm-purchaseorder-list", {
+      authorizationBlocked: true,
+      freshness: "unknown",
+    })];
+    const denied = evaluateProductSourceEvidence(yonyouProduct, [
+      source("SCM", "operational", []),
+      deniedYonyou,
+    ]);
+    expect(denied).toMatchObject({ observedSources: 2, operationalSources: 1, degradedStreams: 1 });
+    expect(denied.sources[1]).toMatchObject({
+      state: "degraded",
+      streams: [expect.objectContaining({ reason: "源系统授权被阻断；时效门限或源时点不完整" })],
+    });
   });
 
   it("旧标签页缓存没有流列表时安全降级，不崩页也不误放行", () => {

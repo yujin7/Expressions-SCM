@@ -33,6 +33,7 @@ export interface DataStreamEvidence {
   sourceRows: number;
   stagedRows: number;
   rejectedRows: number;
+  authorizationBlocked: boolean;
   releaseBlocked: boolean;
   emptySource: boolean;
   freshnessMaxAgeDays: number | null;
@@ -97,6 +98,8 @@ interface StreamRunAggregate {
   staged_rows: unknown;
   rejected_rows: unknown;
   request_scope: unknown;
+  latest_error: unknown;
+  latest_import_job_id: unknown;
 }
 
 function resultRows<T>(result: unknown): T[] {
@@ -151,6 +154,23 @@ function ageSince(value: string | null, now: Date, divisor: number): number | nu
   return Math.round((elapsed / divisor) * 10) / 10;
 }
 
+function shanghaiDate(value: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(value);
+}
+
+function businessAgeDaysSince(value: string | null, now: Date): number | null {
+  if (!value) return null;
+  const sourceDay = Date.parse(`${value}T00:00:00.000Z`);
+  const today = Date.parse(`${shanghaiDate(now)}T00:00:00.000Z`);
+  if (!Number.isFinite(sourceDay) || !Number.isFinite(today) || today < sourceDay) return null;
+  return Math.round((today - sourceDay) / 86_400_000);
+}
+
 function yonyouStream(path: string): string {
   return path.replace(/^\/+/, "").replace(/[^A-Za-z0-9]+/g, "-").toLowerCase();
 }
@@ -176,13 +196,15 @@ function streamEvidence(row: StreamRunAggregate, now: Date): DataStreamEvidence 
     ?? dateValue(scope.bizDate)
     ?? dateValue(scope.observedAt);
   const lastSuccessAt = instant(row.last_success_at);
-  const businessAgeDays = sourceAsOf
-    ? ageSince(`${sourceAsOf}T00:00:00.000Z`, now, 86_400_000)
-    : null;
+  const businessAgeDays = businessAgeDaysSince(sourceAsOf, now);
   const pipelineAgeHours = ageSince(lastSuccessAt, now, 3_600_000);
+  const authorizationBlocked = row.connector === "yonyou"
+    && row.latest_import_job_id == null
+    && String(row.latest_error ?? "").startsWith("待控制台授权：");
   const freshnessMaxAgeDays = STREAM_FRESHNESS_DAYS.get(`${row.connector}\u0000${row.stream}`) ?? null;
   const comparableAgeDays = businessAgeDays ?? (pipelineAgeHours == null ? null : pipelineAgeHours / 24);
-  const freshness: DataStreamFreshness = freshnessMaxAgeDays == null || comparableAgeDays == null
+  const freshness: DataStreamFreshness = authorizationBlocked
+    || freshnessMaxAgeDays == null || comparableAgeDays == null
     ? "unknown"
     : comparableAgeDays > freshnessMaxAgeDays ? "stale" : "current";
   const latestStatus = String(row.latest_status);
@@ -195,6 +217,7 @@ function streamEvidence(row: StreamRunAggregate, now: Date): DataStreamEvidence 
     sourceRows: intValue(row.source_rows),
     stagedRows: intValue(row.staged_rows),
     rejectedRows: intValue(row.rejected_rows),
+    authorizationBlocked,
     releaseBlocked: scope.releaseBlocked === true,
     emptySource: scope.emptySource === true,
     freshnessMaxAgeDays,
@@ -246,6 +269,11 @@ async function loadRunEvidence(db: ReadDb, now: Date) {
         FROM integration_runs ir
         LEFT JOIN import_jobs ij ON ij.id = ir.import_job_id
         WHERE ir.status = 'succeeded'
+          AND NOT (
+            ir.connector IN ('yy', 'yonyou')
+            AND ir.import_job_id IS NULL
+            AND ir.error LIKE '待控制台授权：%'
+          )
       )
       SELECT connector_key AS connector,
         count(*)::int AS successful_streams,
@@ -295,10 +323,17 @@ async function loadRunEvidence(db: ReadDb, now: Date) {
         FROM integration_runs ir
         LEFT JOIN import_jobs ij ON ij.id = ir.import_job_id
         WHERE ir.status = 'succeeded'
+          AND NOT (
+            ir.connector IN ('yy', 'yonyou')
+            AND ir.import_job_id IS NULL
+            AND ir.error LIKE '待控制台授权：%'
+          )
       )
       SELECT la.connector_key AS connector, la.stream,
         la.status AS latest_status,
         la.started_at AS latest_run_at,
+        la.error AS latest_error,
+        la.import_job_id AS latest_import_job_id,
         ls.finished_at AS last_success_at,
         ls.source_as_of,
         coalesce(ls.source_rows, 0)::int AS source_rows,

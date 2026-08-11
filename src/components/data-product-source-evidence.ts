@@ -60,7 +60,15 @@ function streamState(
       : { source, stream, state: "missing", reason: "尚无成功运行证据", evidence: null };
   }
   if (!evidence.lastSuccessAt) {
-    return { source, stream, state: "missing", reason: "尚无成功运行证据", evidence };
+    return {
+      source,
+      stream,
+      state: "missing",
+      reason: evidence.authorizationBlocked
+        ? "源系统授权被阻断，尚无成功业务证据"
+        : "尚无成功运行证据",
+      evidence,
+    };
   }
   if (evidence.freshness === "stale") {
     return {
@@ -72,6 +80,7 @@ function streamState(
     };
   }
   const limitations: string[] = [];
+  if (evidence.authorizationBlocked) limitations.push("源系统授权被阻断");
   if (evidence.latestStatus === "failed") limitations.push("最近一次运行失败");
   if (evidence.latestStatus === "running") limitations.push("最新批次仍在运行");
   if (evidence.rejectedRows > 0) limitations.push(`有 ${evidence.rejectedRows} 行拒收`);
