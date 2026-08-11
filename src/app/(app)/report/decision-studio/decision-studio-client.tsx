@@ -46,6 +46,10 @@ import {
   buildExternalDemandIdentityExport,
   externalDemandIdentityAction,
 } from "@/components/external-demand-export";
+import {
+  buildCommerceIdentityRepairExport,
+  COMMERCE_IDENTITY_ISSUE_LABEL,
+} from "@/components/commerce-identity-export";
 import { useListState } from "@/components/useListState";
 import RemoteSelect from "@/components/RemoteSelect";
 import type {
@@ -206,6 +210,16 @@ export default function DecisionStudioClient() {
     const payload = buildExternalDemandIdentityExport(external);
     exportCsv(payload.filename, payload.headers, payload.rows);
     message.success("已导出平台 SKU 身份修复队列");
+  };
+
+  const exportCommerceIdentityQueue = () => {
+    if (!identity || identity.repairQueue.length === 0) {
+      message.warning("当前没有可导出的三平台身份修复项");
+      return;
+    }
+    const payload = buildCommerceIdentityRepairExport(identity);
+    exportCsv(payload.filename, payload.headers, payload.rows);
+    message.success("已导出三平台身份修复行动清单");
   };
 
   return (
@@ -844,12 +858,19 @@ export default function DecisionStudioClient() {
                   type={identity?.state === "ready" ? "warning" : "error"}
                   message="三平台商品身份控制塔：只观察覆盖与质量，不提升任何外部表为系统主档"
                   description={identity?.gate}
-                  action={(
-                    <Button href="/import/exceptions?status=open&scope=JIANDAOYUN">
-                      处理身份认领
-                    </Button>
-                  )}
                 />
+                <Space wrap style={{ width: "100%", justifyContent: "flex-end" }}>
+                  <Button
+                    icon={<DownloadOutlined />}
+                    disabled={!identity?.repairQueue.length}
+                    onClick={exportCommerceIdentityQueue}
+                  >
+                    导出修复队列
+                  </Button>
+                  <Button href="/import/exceptions?status=open&scope=JIANDAOYUN">
+                    处理身份认领
+                  </Button>
+                </Space>
                 <Row gutter={[10, 10]} className="compact-kpi-row">
                   <Col xs={12} lg={6}>
                     <Card size="small">
@@ -863,9 +884,10 @@ export default function DecisionStudioClient() {
                   <Col xs={12} lg={6}>
                     <Card size="small">
                       <Statistic
-                        title="最新批次原始行"
-                        value={identity?.summary.sourceRows ?? 0}
+                        title="待修平台身份"
+                        value={identity?.summary.repairBacklog ?? 0}
                         formatter={(value) => Number(value).toLocaleString("zh-CN")}
+                        valueStyle={{ color: VISUAL_COLOR.warning }}
                       />
                     </Card>
                   </Col>
@@ -997,6 +1019,95 @@ export default function DecisionStudioClient() {
                             <Typography.Text type="secondary" title={row.bridgePolicy}>{row.bridgePolicy}</Typography.Text>
                           </Space>
                         ),
+                      },
+                    ]}
+                  />
+                </Card>
+                <Card
+                  size="small"
+                  title="优先修复队列"
+                  extra={(
+                    <Typography.Text type="secondary">
+                      每平台最多 20 条 · 共 {identity?.summary.repairBacklog.toLocaleString("zh-CN") ?? 0} 条待修
+                    </Typography.Text>
+                  )}
+                  styles={{ body: { padding: 0 } }}
+                >
+                  <Table
+                    rowKey={(row) => `${row.platformKey}:${row.shopName ?? ""}:${row.externalId}:${row.issue}`}
+                    size="small"
+                    dataSource={identity?.repairQueue ?? []}
+                    pagination={{ pageSize: 10, showSizeChanger: false }}
+                    scroll={{ x: 1040 }}
+                    columns={[
+                      {
+                        title: "优先级",
+                        dataIndex: "priority",
+                        width: 90,
+                        fixed: "left",
+                        sorter: (a, b) => a.priority - b.priority,
+                        defaultSortOrder: "ascend",
+                        render: (value) => <Tag color={value === 1 ? "error" : value === 2 ? "warning" : "default"}>P{value}</Tag>,
+                      },
+                      {
+                        title: "平台",
+                        dataIndex: "platform",
+                        width: 100,
+                        sorter: (a, b) => a.platform.localeCompare(b.platform, "zh-CN"),
+                      },
+                      {
+                        title: "店铺 / 平台身份",
+                        key: "identity",
+                        width: 260,
+                        render: (_, row) => (
+                          <Space direction="vertical" size={0}>
+                            <Typography.Text>{row.externalId}</Typography.Text>
+                            <Typography.Text type="secondary">{row.shopName || "不适用"}</Typography.Text>
+                          </Space>
+                        ),
+                      },
+                      {
+                        title: "商品",
+                        dataIndex: "productName",
+                        width: 220,
+                        ellipsis: true,
+                        render: (value) => value || <Typography.Text type="secondary">未提供</Typography.Text>,
+                      },
+                      {
+                        title: "问题",
+                        dataIndex: "issue",
+                        width: 150,
+                        sorter: (a, b) => a.issue.localeCompare(b.issue),
+                        render: (value: keyof typeof COMMERCE_IDENTITY_ISSUE_LABEL) => (
+                          <Tag>{COMMERCE_IDENTITY_ISSUE_LABEL[value]}</Tag>
+                        ),
+                      },
+                      {
+                        title: "桥接证据",
+                        key: "bridge",
+                        width: 210,
+                        render: (_, row) => (
+                          <Space direction="vertical" size={0}>
+                            <Typography.Text>{row.bridgeValue || "未提供"}</Typography.Text>
+                            <Typography.Text type="secondary">{row.bridgeLabel} · {row.sourceRows} 行</Typography.Text>
+                          </Space>
+                        ),
+                      },
+                      {
+                        title: "下一步",
+                        dataIndex: "action",
+                        width: 280,
+                        fixed: "right",
+                        render: (value, row) => {
+                          if (!row.claimable || !row.bridgeValue) return value;
+                          const query = new URLSearchParams({
+                            status: "open",
+                            scope: "JIANDAOYUN",
+                            aliasType: "sku_barcode",
+                            rawValue: row.bridgeValue,
+                          });
+                          return <Button type="link" size="small" href={`/import/exceptions?${query.toString()}`}>{value}</Button>;
+                        },
                       },
                     ]}
                   />

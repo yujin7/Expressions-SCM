@@ -95,6 +95,7 @@ describe("简道云多平台商品身份覆盖", () => {
         mappedIdentities: 2,
         identityPct: 33.3,
         qualityIssues: 5,
+        repairBacklog: 5,
       });
       const tmallRow = result.platforms.find((item) => item.key === "tmall");
       expect(tmallRow).toMatchObject({
@@ -108,6 +109,7 @@ describe("简道云多平台商品身份覆盖", () => {
         duplicateGroups: 1,
         duplicateRows: 1,
         conflictingMappings: 0,
+        repairBacklog: 2,
         ageDays: 1,
         fresh: true,
       });
@@ -118,12 +120,35 @@ describe("简道云多平台商品身份覆盖", () => {
         identityPct: 0,
         bridgeIdentities: 1,
         duplicateGroups: 1,
+        repairBacklog: 2,
       });
       expect(result.platforms.find((item) => item.key === "vip")).toMatchObject({
         uniqueIdentities: 2,
         mappedIdentities: 1,
         conflictingMappings: 1,
+        repairBacklog: 1,
       });
+      expect(result.repairQueue).toHaveLength(5);
+      expect(result.repairQueue[0]).toMatchObject({
+        platformKey: "vip",
+        externalId: "V2",
+        issue: "conflicting_mapping",
+        priority: 1,
+        claimable: false,
+      });
+      expect(result.repairQueue.find((item) => item.platformKey === "tmall" && item.externalId === "T2"))
+        .toMatchObject({
+          bridgeValue: "6902",
+          issue: "unmapped_with_bridge",
+          priority: 2,
+          claimable: true,
+        });
+      expect(result.repairQueue.find((item) => item.platformKey === "pdd" && item.externalId === "P1"))
+        .toMatchObject({
+          issue: "unmapped_with_bridge",
+          priority: 2,
+          claimable: false,
+        });
     } finally {
       await client.close();
     }
@@ -137,6 +162,7 @@ describe("简道云多平台商品身份覆盖", () => {
       expect(result.summary.identityPct).toBeNull();
       expect(result.platforms).toHaveLength(3);
       expect(result.platforms.every((item) => item.state === "insufficient")).toBe(true);
+      expect(result.repairQueue).toEqual([]);
     } finally {
       await client.close();
     }
