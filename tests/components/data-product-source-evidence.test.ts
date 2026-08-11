@@ -4,6 +4,29 @@ import { evaluateProductSourceEvidence } from "@/components/data-product-source-
 import type { DataProductDefinition } from "@/components/data-products";
 import type { DataSourceReadiness } from "@/server/modules/report/data-source-readiness";
 
+function stream(
+  key: string,
+  overrides: Partial<DataSourceReadiness["streams"][number]> = {},
+): DataSourceReadiness["streams"][number] {
+  return {
+    stream: key,
+    latestStatus: "succeeded",
+    latestRunAt: "2026-08-12T01:00:00.000Z",
+    lastSuccessAt: "2026-08-12T01:00:00.000Z",
+    sourceAsOf: "2026-08-11",
+    sourceRows: 1,
+    stagedRows: 1,
+    rejectedRows: 0,
+    releaseBlocked: false,
+    emptySource: false,
+    freshnessMaxAgeDays: 2,
+    businessAgeDays: 1,
+    pipelineAgeHours: 3,
+    freshness: "current",
+    ...overrides,
+  };
+}
+
 function source(
   key: DataSourceReadiness["key"],
   state: DataSourceReadiness["state"],
@@ -19,6 +42,7 @@ function source(
     selectedContractCount: 1,
     successfulStreams: successfulStreamKeys.length,
     successfulStreamKeys,
+    streams: successfulStreamKeys.map((key) => stream(key)),
     latestFailedStreams: 0,
     latestRunningStreams: 0,
     sourceRows: 1,
@@ -81,9 +105,30 @@ describe("数据产品所需流证据", () => {
     expect(operational).toMatchObject({ observedSources: 2, operationalSources: 2, missingStreams: 0 });
   });
 
+  it("过期、最近失败和拒收证据不能把数据产品提升为已放行", () => {
+    const staleJst = source("JST", "operational", ["outbound-sales-daily"]);
+    staleJst.streams = [stream("outbound-sales-daily", {
+      freshness: "stale",
+      businessAgeDays: 4,
+    })];
+    const stale = evaluateProductSourceEvidence(product, [source("SCM", "operational", []), staleJst]);
+    expect(stale).toMatchObject({ observedSources: 1, operationalSources: 1, staleStreams: 1 });
+    expect(stale.sources[1]).toMatchObject({ state: "stale", staleStreams: ["outbound-sales-daily"] });
+
+    const failedJst = source("JST", "operational", ["outbound-sales-daily"]);
+    failedJst.streams = [stream("outbound-sales-daily", {
+      latestStatus: "failed",
+      rejectedRows: 2,
+    })];
+    const degraded = evaluateProductSourceEvidence(product, [source("SCM", "operational", []), failedJst]);
+    expect(degraded).toMatchObject({ observedSources: 2, operationalSources: 1, degradedStreams: 1 });
+    expect(degraded.sources[1]).toMatchObject({ state: "degraded" });
+  });
+
   it("旧标签页缓存没有流列表时安全降级，不崩页也不误放行", () => {
     const legacyJst = source("JST", "observation", []);
     delete (legacyJst as Partial<DataSourceReadiness>).successfulStreamKeys;
+    delete (legacyJst as Partial<DataSourceReadiness>).streams;
     const result = evaluateProductSourceEvidence(product, [
       source("SCM", "operational", []),
       legacyJst,

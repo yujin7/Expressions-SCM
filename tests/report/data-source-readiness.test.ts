@@ -25,6 +25,7 @@ describe("三方数据来源证据矩阵", () => {
           sourceRows: 10,
           stagedRows: 9,
           rejectedRows: 1,
+          requestScope: { releaseBlocked: true, sourceAsOf: "2026-08-11" },
           importJobId: job.id,
           startedAt: new Date("2026-08-12T01:00:00.000Z"),
           finishedAt: new Date("2026-08-12T01:01:00.000Z"),
@@ -37,6 +38,18 @@ describe("三方数据来源证据矩阵", () => {
           error: "schema drift",
           startedAt: new Date("2026-08-12T02:00:00.000Z"),
           finishedAt: new Date("2026-08-12T02:01:00.000Z"),
+        },
+        {
+          connector: "yy",
+          stream: "yonbip-digitalmodel-vendor-list",
+          idempotencyKey: "yy-success",
+          status: "succeeded",
+          sourceRows: 3,
+          stagedRows: 3,
+          requestScope: { releaseBlocked: true, sourceAsOf: "2026-08-11" },
+          importJobId: job.id,
+          startedAt: new Date("2026-08-12T01:30:00.000Z"),
+          finishedAt: new Date("2026-08-12T01:31:00.000Z"),
         },
       ]);
       await db.insert(schema.aliasExceptions).values({
@@ -66,12 +79,28 @@ describe("三方数据来源证据矩阵", () => {
         openIdentityExceptions: 1,
         observedIdentities: 1,
       });
+      expect(result.find((row) => row.key === "JIANDAOYUN")?.streams).toEqual([
+        expect.objectContaining({
+          stream: "tmall-sku-sales-observation",
+          latestStatus: "failed",
+          sourceAsOf: "2026-08-11",
+          sourceRows: 10,
+          rejectedRows: 1,
+          releaseBlocked: true,
+          freshness: "current",
+          freshnessMaxAgeDays: 45,
+        }),
+      ]);
       expect(result.find((row) => row.key === "JST")).toMatchObject({
         state: "contract_only",
         contractSelectionState: "not_required",
         selectedContractCount: 0,
       });
-      expect(result.find((row) => row.key === "YONYOU")?.state).toBe("contract_only");
+      expect(result.find((row) => row.key === "YONYOU")).toMatchObject({
+        state: "observation",
+        successfulStreams: 1,
+        successfulStreamKeys: ["yonbip-digitalmodel-vendor-list"],
+      });
     } finally {
       await client.close();
     }
