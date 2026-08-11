@@ -168,4 +168,57 @@ describe("三方数据来源证据矩阵", () => {
       await client.close();
     }
   });
+
+  it("拒绝带尾随垃圾的截止日并保留完整 RFC3339 时间戳", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      await db.insert(schema.integrationRuns).values([
+        {
+          connector: "jst",
+          stream: "outbound-sales-daily",
+          idempotencyKey: "jst-malformed-source-date",
+          status: "succeeded",
+          sourceRows: 1,
+          stagedRows: 1,
+          requestScope: { sourceAsOf: "2026-08-11garbage" },
+          startedAt: new Date("2026-08-12T00:00:00.000Z"),
+          finishedAt: new Date("2026-08-12T00:01:00.000Z"),
+        },
+        {
+          connector: "jst",
+          stream: "inventory-total-delta",
+          idempotencyKey: "jst-valid-rfc3339-source-time",
+          status: "succeeded",
+          sourceRows: 1,
+          stagedRows: 1,
+          requestScope: { observedAt: "2026-08-11T23:59:00+08:00" },
+          startedAt: new Date("2026-08-12T00:05:00.000Z"),
+          finishedAt: new Date("2026-08-12T00:06:00.000Z"),
+        },
+      ]);
+
+      const result = await loadDataSourceReadiness(db, {
+        env: {} as NodeJS.ProcessEnv,
+        now: new Date("2026-08-12T00:30:00.000Z"),
+      });
+      const streams = result.find((row) => row.key === "JST")?.streams;
+
+      expect(streams).toEqual([
+        expect.objectContaining({
+          stream: "inventory-total-delta",
+          sourceAsOf: "2026-08-11",
+          sourceTimeInvalid: false,
+          freshness: "current",
+        }),
+        expect.objectContaining({
+          stream: "outbound-sales-daily",
+          sourceAsOf: null,
+          sourceTimeInvalid: true,
+          freshness: "unknown",
+        }),
+      ]);
+    } finally {
+      await client.close();
+    }
+  });
 });
