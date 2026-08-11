@@ -45,6 +45,15 @@ export const METRICS: Record<string, MetricDef> = {
     tier: "snapshot",
     caveat: "当前只有月粒度数量；没有日销、收入、客户、区域和促销维度",
   },
+  externalNetDemand: {
+    id: "externalNetDemand",
+    label: "外部净需求信号",
+    short: "简道云最新成功批次中，天猫支付件数扣除成功退款件数后的观察需求",
+    formula: "Σ支付件数 − Σ成功退款件数（销量、退款、SKU 对照各取最新成功批次）",
+    unit: "qty",
+    tier: "registry",
+    caveat: "这是 observation-only 经营信号，未映射平台 SKU 不得归属系统 SKU；在身份覆盖、控制总量和 UAT 通过前，不得作为正式销量、补货或财务口径",
+  },
   salesConcentration: {
     id: "salesConcentration",
     label: "销量集中度",

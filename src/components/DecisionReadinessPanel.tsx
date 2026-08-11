@@ -1,11 +1,17 @@
 "use client";
 
-import { Alert, Card, Col, Progress, Row, Space, Tag, Typography } from "antd";
+import { Alert, Card, Col, Progress, Row, Space, Table, Tag, Typography } from "antd";
 import {
   capabilityReadiness,
   DECISION_CAPABILITIES,
   type CapabilityReadiness,
 } from "@/components/decision-capabilities";
+import {
+  DATA_PRODUCTS,
+  DATA_PRODUCT_AUTHORITY_LABEL,
+  DATA_PRODUCT_SOURCE_LABEL,
+  type DataProductAuthority,
+} from "@/components/data-products";
 
 const STATE_META: Record<CapabilityReadiness, { label: string; color: string; stroke: string }> = {
   ready: { label: "当前可用", color: "success", stroke: "#16a34a" },
@@ -75,6 +81,66 @@ export default function DecisionReadinessPanel() {
           );
         })}
       </Row>
+      <Card
+        size="small"
+        title="三方数据产品目录"
+        style={{ marginTop: 16 }}
+        extra={<Tag color="blue">10 个目标契约</Tag>}
+      >
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="目录定义不等于当前已解锁"
+          description="每个产品列出目标粒度、来源、责任人与放行门禁；当前是否可用仍以上方能力证据、连接器运行证据和 UAT 为准。"
+        />
+        <Table
+          rowKey="id"
+          size="small"
+          pagination={false}
+          dataSource={DATA_PRODUCTS}
+          scroll={{ x: 1080 }}
+          columns={[
+            {
+              title: "数据产品",
+              dataIndex: "title",
+              width: 150,
+              fixed: "left",
+              render: (value: string, row) => (
+                <div>
+                  <Typography.Text strong>{value}</Typography.Text>
+                  <Typography.Text type="secondary" style={{ display: "block", fontSize: 12 }}>
+                    {row.grain}
+                  </Typography.Text>
+                </div>
+              ),
+            },
+            { title: "要回答的决策", dataIndex: "decision", width: 270 },
+            {
+              title: "来源",
+              dataIndex: "sources",
+              width: 250,
+              render: (sources: (keyof typeof DATA_PRODUCT_SOURCE_LABEL)[]) => (
+                <Space size={[4, 4]} wrap>
+                  {sources.map((source) => <Tag key={source}>{DATA_PRODUCT_SOURCE_LABEL[source]}</Tag>)}
+                </Space>
+              ),
+            },
+            { title: "Owner", dataIndex: "owner", width: 150 },
+            {
+              title: "目标权威级",
+              dataIndex: "targetAuthority",
+              width: 120,
+              render: (authority: DataProductAuthority) => (
+                <Tag color={authority === "financial" ? "purple" : authority === "operational" ? "green" : "gold"}>
+                  {DATA_PRODUCT_AUTHORITY_LABEL[authority]}
+                </Tag>
+              ),
+            },
+            { title: "放行门禁", dataIndex: "releaseGate", width: 330 },
+          ]}
+        />
+      </Card>
     </div>
   );
 }

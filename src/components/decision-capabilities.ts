@@ -61,6 +61,24 @@ export const DECISION_CAPABILITIES: DecisionCapability[] = [
     nextAction: "按 SKU×渠道×日接入订单、退款、活动与缺货事实，并保留原始来源时间戳。",
   },
   {
+    id: "external-demand-observation",
+    title: "简道云外部需求观察",
+    decision: "在不污染正式销量的前提下，哪些天猫需求变化和未映射 SKU 最值得先处理？",
+    owner: "电商 / 数据 / PMC",
+    proven: [
+      "简道云日级支付与退款最新批次",
+      "平台 SKU 身份覆盖与未映射优先队列",
+      "来源截止日、非法行和观察权限披露",
+    ],
+    required: [
+      "简道云日级支付与退款最新批次",
+      "平台 SKU 身份覆盖与未映射优先队列",
+      "来源截止日、非法行和观察权限披露",
+      "平台导出控制总量与业务 UAT",
+    ],
+    nextAction: "先处理高支付件数的 Q1 可认领队列，同时在源端补齐 Q2 缺条码对照；再用同截止日平台导出完成总量 UAT。",
+  },
+  {
     id: "unit-economics",
     title: "收入、毛利与营运资金",
     decision: "增长是否创造利润，库存和付款条件占用了多少现金？",
@@ -86,6 +104,21 @@ export const DECISION_CAPABILITIES: DecisionCapability[] = [
     proven: ["受控文件导入与放行", "连接器契约与就绪状态"],
     required: ["受控文件导入与放行", "连接器契约与就绪状态", "聚水潭库存/销量接口", "用友财务/成本接口", "源系统 SLA 与失败补偿"],
     nextAction: "由 IT 提供凭据、租户和字段契约；先并行核对，再逐源切换并保留回滚。",
+  },
+  {
+    id: "three-system-reconciliation",
+    title: "简道云 × 聚水潭 × 用友三角对账",
+    decision: "业务观察、实际履约与财务确认的差异在哪里，由谁说明并关闭？",
+    owner: "数据 / 电商 / 仓储 / 财务",
+    proven: ["简道云受控 observation staging"],
+    required: [
+      "简道云受控 observation staging",
+      "聚水潭订单、出库、退货与库存只读 UAT",
+      "用友组织、采购、库存、成本与凭证只读 UAT",
+      "SKU、店铺、仓库、供应商和组织统一身份",
+      "同时间窗、同单位、同状态的三方控制总量",
+    ],
+    nextAction: "聚水潭先解锁固定出口 IP 和只读 API，用友先授权 8 条白名单契约并读取 tenant/org；两边都完成小窗 UAT 后再开三角差异队列。",
   },
 ];
 
