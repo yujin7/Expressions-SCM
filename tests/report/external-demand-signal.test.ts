@@ -37,7 +37,7 @@ describe("简道云外部需求信号", () => {
         {
           importJobId: crosswalk.id, rowNo: 2, status: "pending",
           targetTable: "jdy_tmall_sku_crosswalk_observation",
-          payload: { data: { shopName: "旗舰店", platformSkuId: "P2" }, _identity: {} },
+          payload: { data: { shopName: "旗舰店", platformSkuId: "P2", barcode: "690000000002" }, _identity: {} },
         },
         {
           importJobId: sales.id, rowNo: 1, status: "pending",
@@ -65,6 +65,13 @@ describe("简道云外部需求信号", () => {
           payload: { data: { statisticalDate: "2026-08-10", shopName: "旗舰店", skuId: "P2", successRefundSuborderNumber: "5" } },
         },
       ]);
+      await db.insert(schema.aliasExceptions).values({
+        aliasType: "sku_barcode",
+        scope: "JIANDAOYUN",
+        rawValue: "690000000002",
+        context: { connector: "jdy", field: "barcode" },
+        status: "open",
+      });
 
       const result = await loadJiandaoyunExternalDemandSignal(db);
 
@@ -95,7 +102,12 @@ describe("简道云外部需求信号", () => {
       });
       expect(result.quality.invalidSalesRows).toBe(1);
       expect(result.gate).toContain("质量问题");
-      expect(result.topUnmapped[0]).toMatchObject({ platformSkuId: "P2", netQty: 45 });
+      expect(result.topUnmapped[0]).toMatchObject({
+        platformSkuId: "P2",
+        barcode: "690000000002",
+        exceptionStatus: "open",
+        netQty: 45,
+      });
       expect(result.daily.some((row) => row.netQty === 999)).toBe(false);
     } finally {
       await client.close();

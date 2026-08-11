@@ -384,7 +384,7 @@ export const CONNECTORS: Connector[] = [
       "https://hc.jiandaoyun.com/open/14216",
       "https://hc.jiandaoyun.com/open/14220",
     ],
-    blocker: "目录与九条最小化观察契约已就绪；数据只进入 evidence/staging。需轮换已在聊天暴露的密钥、配置责任人和显式表单契约，并完成控制总量/重复视图/UAT 后记录时间与非秘密证据编号",
+    blocker: "目录与 14 条显式观察契约（9 条核心供应链 + 5 条现行电商）已就绪；数据只进入 evidence/staging。需轮换已在聊天暴露的密钥、完成高价值身份认领与源端条码补齐、控制总量/重复视图/UAT，再记录时间与非秘密证据编号",
     isConfigured(env = process.env) {
       try {
         return jiandaoyunConfigFromEnv(env) !== null && jiandaoyunSyncActorId(env) !== null;
@@ -747,6 +747,8 @@ export function getConnectorReadiness(
         : securityReview.state === "unbound"
           ? "飞书最小权限复核证据未绑定当前应用及当前权限清单；权限变化后必须重新复核"
           : "飞书应用缺少当前且有效的最小权限复核证据；未复核前不得标记生产就绪";
+    const operational = configurationReady
+      && ["not_required", "clear"].includes(identityClearanceState);
     return {
       key: connector.key,
       label: connector.label,
@@ -756,9 +758,7 @@ export function getConnectorReadiness(
       contractSelectionState: activation.contractSelectionState,
       selectedContractCount: activation.selectedContractCount,
       configurationReady,
-      operational:
-        configurationReady
-        && ["not_required", "clear"].includes(identityClearanceState),
+      operational,
       auth: connector.auth,
       systemOfRecord: connector.systemOfRecord,
       capabilities: [...connector.capabilities],
@@ -782,13 +782,15 @@ export function getConnectorReadiness(
       securityReviewRef: securityReview.evidenceRef,
       expectedSecurityReviewBinding,
       securityReviewMaxAgeDays: LIVE_VERIFICATION_MAX_AGE_DAYS,
-      blocker: [
-        connector.blocker,
-        verificationBindingBlocker,
-        feishuPermissionBlocker,
-        securityReviewBlocker,
-        identityBlocker,
-      ].filter(Boolean).join("；") || null,
+      blocker: operational
+        ? null
+        : [
+            connector.blocker,
+            verificationBindingBlocker,
+            feishuPermissionBlocker,
+            securityReviewBlocker,
+            identityBlocker,
+          ].filter(Boolean).join("；") || null,
     };
   });
 }

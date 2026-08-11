@@ -277,6 +277,7 @@ describe("外部连接器目录", () => {
     process.env.FEISHU_WEBHOOK_LIVE_VERIFIED_REF = "UAT-20260729-FEISHU-WEBHOOK";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "feishu")).toMatchObject({
       operational: true,
+      blocker: null,
       liveVerifiedAt: "2026-07-29T01:00:00.000Z",
       liveVerificationState: "valid",
     });

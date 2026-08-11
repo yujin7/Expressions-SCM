@@ -17,7 +17,7 @@ import {
   skuImportIdentityModeOf,
   type SkuImportIdentityMode,
 } from "@/server/import/sku-identity-mode";
-import { claimAlias } from "@/server/modules/dimension/resolver";
+import { claimAlias, normalizeAliasText } from "@/server/modules/dimension/resolver";
 import { ApiError } from "@/server/modules/master/common";
 import { ensureExternalSkuIdentifierInTransaction } from "@/server/modules/master/sku-identifier";
 import { requireAnyRole } from "@/server/modules/outsource/common";
@@ -29,7 +29,14 @@ type AnyDb = any;
 const resolveDb = async (db?: AnyDb): Promise<AnyDb> => db ?? (await getDbAsync());
 
 export async function listExceptions(
-  opts: { status?: string; aliasType?: string; scope?: string; page: number; pageSize: number },
+  opts: {
+    status?: string;
+    aliasType?: string;
+    scope?: string;
+    rawValue?: string;
+    page: number;
+    pageSize: number;
+  },
   dbArg?: AnyDb,
 ) {
   const db = await resolveDb(dbArg);
@@ -37,6 +44,11 @@ export async function listExceptions(
   if (opts.status) conds.push(eq(aliasExceptions.status, opts.status as never));
   if (opts.aliasType) conds.push(eq(aliasExceptions.aliasType, opts.aliasType as never));
   if (opts.scope) conds.push(eq(aliasExceptions.scope, opts.scope));
+  // 身份工作台从业务信号页携带条码跳转时必须精确定位，避免相似短码误认领。
+  if (opts.rawValue) {
+    const normalizedRawValue = normalizeAliasText(opts.rawValue);
+    if (normalizedRawValue) conds.push(eq(aliasExceptions.rawValue, normalizedRawValue));
+  }
   const { and } = await import("drizzle-orm");
   const where = conds.length ? and(...conds) : undefined;
   const rows = await db

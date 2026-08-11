@@ -740,19 +740,48 @@ export default function DecisionStudioClient() {
                   title="优先处理：高销量未映射平台 SKU"
                   extra={<Tag color="gold">TOP {external?.topUnmapped.length ?? 0}</Tag>}
                 >
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 12 }}
+                    message="先认领条码，再重新同步“天猫 SKU 对照”"
+                    description="认领只建立简道云作用域身份；旧证据批次保持不可变，新同步批次才会取得系统 SKU 归属。"
+                  />
                   <Table
                     rowKey={(row) => `${row.shopName}\u0000${row.platformSkuId}`}
                     size="small"
                     pagination={{ pageSize: 10, showSizeChanger: false }}
                     dataSource={external?.topUnmapped ?? []}
-                    scroll={{ x: 900 }}
+                    scroll={{ x: 1180 }}
                     columns={[
                       { title: "店铺", dataIndex: "shopName", width: 160, sorter: (a, b) => a.shopName.localeCompare(b.shopName, "zh-CN") },
                       { title: "平台 SKU", dataIndex: "platformSkuId", width: 180, sorter: (a, b) => a.platformSkuId.localeCompare(b.platformSkuId) },
+                      { title: "条码", dataIndex: "barcode", width: 170, render: (value) => value || <Typography.Text type="secondary">未提供</Typography.Text> },
                       { title: "商品 / 规格", key: "name", ellipsis: true, render: (_, row) => row.skuName || row.productName || "（未提供）" },
                       { title: "支付件数", dataIndex: "paidQty", width: 130, align: "right", defaultSortOrder: "descend", sorter: (a, b) => a.paidQty - b.paidQty, render: formatQty },
                       { title: "退款", dataIndex: "refundQty", width: 110, align: "right", sorter: (a, b) => a.refundQty - b.refundQty, render: formatQty },
                       { title: "净需求", dataIndex: "netQty", width: 120, align: "right", sorter: (a, b) => a.netQty - b.netQty, render: formatQty },
+                      {
+                        title: "身份动作",
+                        key: "identityAction",
+                        width: 150,
+                        fixed: "right",
+                        render: (_, row) => {
+                          if (!row.barcode) return <Tag color="error">回源补对照/条码</Tag>;
+                          if (row.exceptionStatus === "open") {
+                            const query = new URLSearchParams({
+                              status: "open",
+                              scope: "JIANDAOYUN",
+                              aliasType: "sku_barcode",
+                              rawValue: row.barcode,
+                            });
+                            return <Button type="link" size="small" href={`/import/exceptions?${query.toString()}`}>去认领</Button>;
+                          }
+                          if (row.exceptionStatus === "resolved") return <Tag color="processing">已认领·待同步</Tag>;
+                          if (row.exceptionStatus === "ignored") return <Tag>已忽略·回源核对</Tag>;
+                          return <Tag color="warning">待同步核对</Tag>;
+                        },
+                      },
                     ]}
                   />
                 </Card>

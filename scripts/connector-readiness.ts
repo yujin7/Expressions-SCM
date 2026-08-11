@@ -25,6 +25,13 @@ function main(): void {
       `   启用=${String(o.enablementState)}  实测证据=${String(o.liveVerificationState)}  ` +
         `契约=${String(o.contractSelectionState)}(${String(o.selectedContractCount)})`,
     );
+    console.log(
+      `   身份=${String(o.identityClearanceState)}  待裁决=${String(o.openScopedAliasExceptions ?? "未读取数据库")}  ` +
+        `已观察=${String(o.observedScopedIdentities ?? "未读取数据库")}`,
+    );
+    if (typeof o.blocker === "string" && o.blocker.trim()) {
+      console.log(`   下一步: ${o.blocker}`);
+    }
     for (const k of ["missingEnv", "blockers", "gaps", "notes"]) {
       const v = o[k];
       if (Array.isArray(v) && v.length) {

@@ -57,6 +57,9 @@ export interface ExternalDemandSignal {
   topUnmapped: {
     shopName: string;
     platformSkuId: string;
+    barcode: string | null;
+    exceptionId: number | null;
+    exceptionStatus: "open" | "resolved" | "ignored" | null;
     productName: string | null;
     skuName: string | null;
     paidQty: number;
@@ -135,6 +138,7 @@ export async function loadJiandaoyunExternalDemandSignal(db: ReadDb): Promise<Ex
       SELECT
         coalesce(payload->'data'->>'shopName', '') AS shop_name,
         coalesce(payload->'data'->>'platformSkuId', '') AS platform_sku_id,
+        nullif(trim(payload->'data'->>'barcode'), '') AS barcode,
         CASE WHEN coalesce(payload->'_identity'->>'skuId', '') ~ '^[0-9]+$'
           THEN (payload->'_identity'->>'skuId')::int ELSE NULL END AS scm_sku_id
       FROM staging_rows
@@ -143,6 +147,8 @@ export async function loadJiandaoyunExternalDemandSignal(db: ReadDb): Promise<Ex
         AND status IN ('pending', 'validated', 'committed')
     ), crosswalk AS (
       SELECT shop_name, platform_sku_id,
+        CASE WHEN count(DISTINCT barcode) FILTER (WHERE barcode IS NOT NULL) = 1
+          THEN max(barcode) ELSE NULL END AS barcode,
         CASE WHEN count(DISTINCT scm_sku_id) FILTER (WHERE scm_sku_id IS NOT NULL) = 1
           THEN max(scm_sku_id) ELSE NULL END AS scm_sku_id,
         count(DISTINCT scm_sku_id) FILTER (WHERE scm_sku_id IS NOT NULL) > 1 AS conflicting
@@ -193,10 +199,15 @@ export async function loadJiandaoyunExternalDemandSignal(db: ReadDb): Promise<Ex
         s.paid_qty, coalesce(r.refund_qty, 0) AS refund_qty,
         s.source_rows, s.invalid_rows AS invalid_sales_rows,
         coalesce(r.invalid_rows, 0) AS invalid_refund_rows,
-        c.scm_sku_id, coalesce(c.conflicting, false) AS conflicting
+        c.barcode, c.scm_sku_id, coalesce(c.conflicting, false) AS conflicting,
+        ae.id AS exception_id, ae.status AS exception_status
       FROM sales s
       LEFT JOIN refunds r USING (biz_date, shop_name, platform_sku_id)
       LEFT JOIN crosswalk c USING (shop_name, platform_sku_id)
+      LEFT JOIN alias_exceptions ae
+        ON ae.alias_type = 'sku_barcode'
+        AND ae.scope = 'JIANDAOYUN'
+        AND ae.raw_value = c.barcode
     )`;
 
   const [dailyResult, coverageResult, topUnmappedResult, qualityResult] = await Promise.all([
@@ -222,7 +233,9 @@ export async function loadJiandaoyunExternalDemandSignal(db: ReadDb): Promise<Ex
         coalesce(sum(refund_qty) FILTER (WHERE scm_sku_id IS NOT NULL), 0) AS mapped_refund_qty
       FROM combined`),
     db.execute(sql`${baseCtes}
-      SELECT shop_name, platform_sku_id, max(product_name) AS product_name,
+      SELECT shop_name, platform_sku_id, max(barcode) AS barcode,
+        max(exception_id) AS exception_id, max(exception_status) AS exception_status,
+        max(product_name) AS product_name,
         max(sku_name) AS sku_name, coalesce(sum(paid_qty), 0) AS paid_qty,
         coalesce(sum(refund_qty), 0) AS refund_qty,
         coalesce(sum(paid_qty), 0) - coalesce(sum(refund_qty), 0) AS net_qty
@@ -295,6 +308,12 @@ export async function loadJiandaoyunExternalDemandSignal(db: ReadDb): Promise<Ex
     topUnmapped: resultRows<Record<string, unknown>>(topUnmappedResult).map((row) => ({
       shopName: String(row.shop_name ?? ""),
       platformSkuId: String(row.platform_sku_id ?? ""),
+      barcode: row.barcode == null ? null : String(row.barcode),
+      exceptionId: row.exception_id == null ? null : intValue(row.exception_id),
+      exceptionStatus:
+        row.exception_status === "open" || row.exception_status === "resolved" || row.exception_status === "ignored"
+          ? row.exception_status
+          : null,
       productName: row.product_name == null ? null : String(row.product_name),
       skuName: row.sku_name == null ? null : String(row.sku_name),
       paidQty: numberValue(row.paid_qty),
