@@ -27,6 +27,8 @@ export interface ProductStreamEvidence {
 export interface ProductSourceEvidence {
   source: DataProductSource;
   state: ProductSourceEvidenceState;
+  /** 当前配置、启用、受控契约与 live binding 仍有效；与产品级 UAT 放行分开。 */
+  configurationReady: boolean;
   missingStreams: string[];
   staleStreams: string[];
   degradedStreams: string[];
@@ -117,6 +119,7 @@ export function evaluateProductSourceEvidence(
       return {
         source,
         state: row?.state === "operational" ? "operational" : "missing",
+        configurationReady: row?.configurationReady === true,
         missingStreams: [],
         staleStreams: [],
         degradedStreams: [],
@@ -139,7 +142,15 @@ export function evaluateProductSourceEvidence(
             : row.state === "observation"
               ? "observation"
               : "missing";
-    return { source, state, missingStreams, staleStreams, degradedStreams, streams };
+    return {
+      source,
+      state,
+      configurationReady: row?.configurationReady === true,
+      missingStreams,
+      staleStreams,
+      degradedStreams,
+      streams,
+    };
   });
   const operationalSources = sources.filter((row) => row.state === "operational").length;
   const observedSources = sources.filter((row) => ["observation", "degraded", "operational"].includes(row.state)).length;
@@ -181,7 +192,9 @@ export function currentProductAutomation(
 ): ProductAutomationReadiness {
   const safe = summary.sources.every((source) => source.source === "SCM"
     ? source.state === "operational"
-    : source.streams.length > 0 && source.streams.every(streamSafeForExplanation));
+    : source.configurationReady
+      && source.streams.length > 0
+      && source.streams.every(streamSafeForExplanation));
   return safe
     ? {
         level: "A1",
@@ -189,6 +202,6 @@ export function currentProductAutomation(
       }
     : {
         level: "A0",
-        reason: "所需来源存在缺失、过期、失败、拒收、空源或授权/时间异常；只能观察门禁与修复队列。",
+        reason: "所需来源存在连接配置失效、缺失、过期、失败、拒收、空源或授权/时间异常；只能观察门禁与修复队列。",
       };
 }

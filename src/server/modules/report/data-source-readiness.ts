@@ -49,6 +49,8 @@ export interface DataSourceReadiness {
   state: DataSourceState;
   configured: boolean;
   enabled: boolean;
+  /** 当前凭据、启用、契约和 live binding 是否仍可用于读取；不代表业务 UAT 已放行。 */
+  configurationReady: boolean;
   contractSelectionState: ConnectorContractSelectionState;
   selectedContractCount: number;
   successfulStreams: number;
@@ -434,6 +436,7 @@ function connectorSource(
     state,
     configured: readiness.configured,
     enabled,
+    configurationReady: readiness.configurationReady,
     contractSelectionState: readiness.contractSelectionState,
     selectedContractCount: readiness.selectedContractCount,
     successfulStreams,
@@ -489,6 +492,7 @@ export async function loadDataSourceReadiness(
     state: "operational",
     configured: true,
     enabled: true,
+    configurationReady: true,
     contractSelectionState: "not_required",
     selectedContractCount: 0,
     successfulStreams: 0,
@@ -525,6 +529,7 @@ export async function loadDataSourceReadiness(
           state: "blocked" as const,
           configured: false,
           enabled: false,
+          configurationReady: false,
           contractSelectionState: "missing" as const,
           selectedContractCount: 0,
           successfulStreams: 0,

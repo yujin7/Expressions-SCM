@@ -43,6 +43,7 @@ function source(
     state,
     configured: true,
     enabled: true,
+    configurationReady: true,
     contractSelectionState: "selected",
     selectedContractCount: 1,
     successfulStreams: successfulStreamKeys.length,
@@ -176,6 +177,13 @@ describe("数据产品所需流证据", () => {
       safeObservation,
     ]));
     expect(explanation).toMatchObject({ level: "A1" });
+
+    const invalidated = source("JST", "observation", ["outbound-sales-daily"]);
+    invalidated.configurationReady = false;
+    expect(currentProductAutomation(evaluateProductSourceEvidence(product, [
+      source("SCM", "operational", []),
+      invalidated,
+    ]))).toMatchObject({ level: "A0" });
 
     const rejected = source("JST", "operational", ["outbound-sales-daily"]);
     rejected.streams = [stream("outbound-sales-daily", { rejectedRows: 1 })];

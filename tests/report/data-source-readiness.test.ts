@@ -98,9 +98,14 @@ describe("三方数据来源证据矩阵", () => {
       });
 
       expect(result.map((row) => row.key)).toEqual(["SCM", "JIANDAOYUN", "JST", "YONYOU"]);
-      expect(result[0]).toMatchObject({ state: "operational", configured: true });
+      expect(result[0]).toMatchObject({
+        state: "operational",
+        configured: true,
+        configurationReady: true,
+      });
       expect(result.find((row) => row.key === "JIANDAOYUN")).toMatchObject({
         state: "observation",
+        configurationReady: false,
         successfulStreams: 1,
         successfulStreamKeys: ["tmall-sku-sales-observation"],
         latestFailedStreams: 1,
@@ -127,6 +132,7 @@ describe("三方数据来源证据矩阵", () => {
       ]);
       expect(result.find((row) => row.key === "JST")).toMatchObject({
         state: "observation",
+        configurationReady: false,
         contractSelectionState: "not_required",
         selectedContractCount: 0,
         successfulStreams: 2,
@@ -148,6 +154,7 @@ describe("三方数据来源证据矩阵", () => {
       ]);
       expect(result.find((row) => row.key === "YONYOU")).toMatchObject({
         state: "observation",
+        configurationReady: false,
         successfulStreams: 1,
         successfulStreamKeys: ["yonbip-digitalmodel-vendor-list"],
       });
