@@ -25,6 +25,7 @@ describe("三方数据来源证据矩阵", () => {
           sourceRows: 10,
           stagedRows: 9,
           rejectedRows: 1,
+          requestScope: { releaseBlocked: true, sourceAsOf: "2026-08-11" },
           importJobId: job.id,
           startedAt: new Date("2026-08-12T01:00:00.000Z"),
           finishedAt: new Date("2026-08-12T01:01:00.000Z"),
@@ -38,6 +39,29 @@ describe("三方数据来源证据矩阵", () => {
           startedAt: new Date("2026-08-12T02:00:00.000Z"),
           finishedAt: new Date("2026-08-12T02:01:00.000Z"),
         },
+        {
+          connector: "yy",
+          stream: "yonbip-digitalmodel-vendor-list",
+          idempotencyKey: "yy-success",
+          status: "succeeded",
+          sourceRows: 3,
+          stagedRows: 3,
+          requestScope: { releaseBlocked: true, sourceAsOf: "2026-08-11" },
+          importJobId: job.id,
+          startedAt: new Date("2026-08-12T01:30:00.000Z"),
+          finishedAt: new Date("2026-08-12T01:31:00.000Z"),
+        },
+        {
+          connector: "yy",
+          stream: "yonbip-scm-purchaseorder-list",
+          idempotencyKey: "yy-console-grant-blocked",
+          status: "succeeded",
+          sourceRows: 0,
+          stagedRows: 0,
+          error: "待控制台授权：310037",
+          startedAt: new Date("2026-08-12T02:30:00.000Z"),
+          finishedAt: new Date("2026-08-12T02:31:00.000Z"),
+        },
       ]);
       await db.insert(schema.aliasExceptions).values({
         aliasType: "sku_barcode",
@@ -48,7 +72,7 @@ describe("三方数据来源证据矩阵", () => {
 
       const result = await loadDataSourceReadiness(db, {
         env: {} as NodeJS.ProcessEnv,
-        now: new Date("2026-08-12T04:00:00.000Z"),
+        now: new Date("2026-08-12T16:30:00.000Z"),
       });
 
       expect(result.map((row) => row.key)).toEqual(["SCM", "JIANDAOYUN", "JST", "YONYOU"]);
@@ -66,12 +90,42 @@ describe("三方数据来源证据矩阵", () => {
         openIdentityExceptions: 1,
         observedIdentities: 1,
       });
+      expect(result.find((row) => row.key === "JIANDAOYUN")?.streams).toEqual([
+        expect.objectContaining({
+          stream: "tmall-sku-sales-observation",
+          latestStatus: "failed",
+          sourceAsOf: "2026-08-11",
+          sourceRows: 10,
+          rejectedRows: 1,
+          releaseBlocked: true,
+          freshness: "current",
+          freshnessMaxAgeDays: 45,
+          businessAgeDays: 2,
+        }),
+      ]);
       expect(result.find((row) => row.key === "JST")).toMatchObject({
         state: "contract_only",
         contractSelectionState: "not_required",
         selectedContractCount: 0,
       });
-      expect(result.find((row) => row.key === "YONYOU")?.state).toBe("contract_only");
+      expect(result.find((row) => row.key === "YONYOU")).toMatchObject({
+        state: "observation",
+        successfulStreams: 1,
+        successfulStreamKeys: ["yonbip-digitalmodel-vendor-list"],
+      });
+      expect(result.find((row) => row.key === "YONYOU")?.streams).toEqual([
+        expect.objectContaining({
+          stream: "yonbip-digitalmodel-vendor-list",
+          authorizationBlocked: false,
+          lastSuccessAt: "2026-08-12T01:31:00.000Z",
+        }),
+        expect.objectContaining({
+          stream: "yonbip-scm-purchaseorder-list",
+          authorizationBlocked: true,
+          lastSuccessAt: null,
+          freshness: "unknown",
+        }),
+      ]);
     } finally {
       await client.close();
     }

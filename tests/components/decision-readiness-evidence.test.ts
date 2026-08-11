@@ -16,6 +16,10 @@ describe("决策能力页的来源证据", () => {
     expect(source).toContain("来源/所需流缺失");
     expect(source).toContain("来源齐·未放行");
     expect(source).toContain("来源已放行");
+    expect(source).toContain("所需流已过期");
+    expect(source).toContain("RequiredStreamEvidence");
+    expect(source).toContain("业务截止 / 时效");
+    expect(source).toContain("源行 / Staging / 拒收");
   });
 
   it("不把固定契约误报为零契约，也不把源行差额自动当成丢数", () => {
@@ -23,6 +27,7 @@ describe("决策能力页的来源证据", () => {
     expect(source).toContain("差额不自动等于丢数");
     expect(source).toContain('timeZone: "Asia/Shanghai"');
     expect(source).toContain("evaluateProductSourceEvidence(row, dataSources)");
+    expect(source).toContain("当前 {current} · 过期 {stale} · 未定 {unknown}");
     expect(source).toContain("ellipsis={{ rows: 2, tooltip: row.gate }}");
     expect(source).toContain("ellipsis={{ rows: 2, tooltip: row.nextAction }}");
   });

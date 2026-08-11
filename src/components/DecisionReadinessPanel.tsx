@@ -12,7 +12,11 @@ import {
   DATA_PRODUCT_SOURCE_LABEL,
   type DataProductAuthority,
 } from "@/components/data-products";
-import { evaluateProductSourceEvidence } from "@/components/data-product-source-evidence";
+import {
+  evaluateProductSourceEvidence,
+  type ProductEvidenceSummary,
+  type ProductStreamEvidence,
+} from "@/components/data-product-source-evidence";
 import type {
   DataSourceReadiness,
   DataSourceState,
@@ -31,6 +35,13 @@ const SOURCE_STATE_META: Record<DataSourceState, { label: string; color: string 
   blocked: { label: "未接入", color: "error" },
 };
 
+const STREAM_STATE_META: Record<ProductStreamEvidence["state"], { label: string; color: string }> = {
+  current: { label: "证据当前", color: "success" },
+  degraded: { label: "受限观察", color: "warning" },
+  stale: { label: "业务时点过期", color: "error" },
+  missing: { label: "尚无证据", color: "default" },
+};
+
 function fmtDateTime(value: string | null): string {
   if (!value) return "—";
   return new Date(value).toLocaleString("zh-CN", {
@@ -45,6 +56,77 @@ function contractEvidenceLabel(row: DataSourceReadiness): string {
   if (row.contractSelectionState === "invalid") return "契约配置无效";
   if (row.contractSelectionState === "missing") return "未选择受控契约";
   return `${row.selectedContractCount} 条已选契约`;
+}
+
+function streamAgeLabel(row: ProductStreamEvidence): string {
+  const evidence = row.evidence;
+  if (!evidence) return "—";
+  if (evidence.businessAgeDays != null) {
+    return `业务龄 ${evidence.businessAgeDays} 天 / 门限 ${evidence.freshnessMaxAgeDays ?? "—"} 天`;
+  }
+  if (evidence.pipelineAgeHours != null) return `成功距今 ${evidence.pipelineAgeHours} 小时`;
+  return "未取得可比较时效";
+}
+
+function RequiredStreamEvidence({ summary }: { summary: ProductEvidenceSummary }) {
+  const rows = summary.sources.flatMap((source) => source.streams);
+  return (
+    <Table
+      rowKey={(row) => `${row.source}\u0000${row.stream}`}
+      size="small"
+      pagination={false}
+      dataSource={rows}
+      scroll={{ x: 1_100 }}
+      locale={{ emptyText: "SCM 内部事实不需要外部流证据" }}
+      columns={[
+        {
+          title: "来源",
+          dataIndex: "source",
+          width: 120,
+          render: (source: ProductStreamEvidence["source"]) => DATA_PRODUCT_SOURCE_LABEL[source],
+        },
+        {
+          title: "所需数据流",
+          dataIndex: "stream",
+          width: 260,
+          render: (stream: string) => <Typography.Text code>{stream}</Typography.Text>,
+        },
+        {
+          title: "证据状态",
+          dataIndex: "state",
+          width: 130,
+          render: (state: ProductStreamEvidence["state"]) => (
+            <Tag color={STREAM_STATE_META[state].color}>{STREAM_STATE_META[state].label}</Tag>
+          ),
+        },
+        {
+          title: "业务截止 / 时效",
+          key: "freshness",
+          width: 250,
+          render: (_, row) => (
+            <Space direction="vertical" size={2}>
+              <Typography.Text>{row.evidence?.sourceAsOf ?? "未取得业务时点"}</Typography.Text>
+              <Typography.Text type="secondary">{streamAgeLabel(row)}</Typography.Text>
+            </Space>
+          ),
+        },
+        {
+          title: "源行 / Staging / 拒收",
+          key: "volume",
+          width: 210,
+          align: "right",
+          render: (_, row) => row.evidence
+            ? `${row.evidence.sourceRows.toLocaleString("zh-CN")} / ${row.evidence.stagedRows.toLocaleString("zh-CN")} / ${row.evidence.rejectedRows.toLocaleString("zh-CN")}`
+            : "—",
+        },
+        {
+          title: "为何受限",
+          dataIndex: "reason",
+          width: 300,
+        },
+      ]}
+    />
+  );
 }
 
 export default function DecisionReadinessPanel({
@@ -171,18 +253,26 @@ export default function DecisionReadinessPanel({
               ),
             },
             {
-              title: "成功流 / 最新异常流",
+              title: "成功流 / 时效 / 异常",
               key: "streams",
-              width: 180,
+              width: 220,
               sorter: (a, b) => a.successfulStreams - b.successfulStreams,
-              render: (_, row) => (
-                <Space direction="vertical" size={2}>
-                  <Typography.Text>{row.successfulStreams} 条成功流</Typography.Text>
-                  <Typography.Text type={row.latestFailedStreams + row.latestRunningStreams > 0 ? "danger" : "secondary"}>
-                    失败 {row.latestFailedStreams} · 运行中 {row.latestRunningStreams}
-                  </Typography.Text>
-                </Space>
-              ),
+              render: (_, row) => {
+                const current = row.streams?.filter((item) => item.freshness === "current").length ?? 0;
+                const stale = row.streams?.filter((item) => item.freshness === "stale").length ?? 0;
+                const unknown = Math.max(0, row.successfulStreams - current - stale);
+                return (
+                  <Space direction="vertical" size={2}>
+                    <Typography.Text>{row.successfulStreams} 条成功流</Typography.Text>
+                    <Typography.Text type={stale > 0 ? "danger" : "secondary"}>
+                      当前 {current} · 过期 {stale} · 未定 {unknown}
+                    </Typography.Text>
+                    <Typography.Text type={row.latestFailedStreams + row.latestRunningStreams > 0 ? "danger" : "secondary"}>
+                      最新失败 {row.latestFailedStreams} · 运行中 {row.latestRunningStreams}
+                    </Typography.Text>
+                  </Space>
+                );
+              },
             },
             {
               title: "业务截止 / 最近成功",
@@ -256,7 +346,7 @@ export default function DecisionReadinessPanel({
           showIcon
           style={{ marginBottom: 12 }}
           message="目录定义不等于当前已解锁"
-          description="每个产品列出目标粒度、来源、责任人与放行门禁；当前是否可用仍以上方能力证据、连接器运行证据和 UAT 为准。"
+          description="每个产品列出目标粒度、来源、责任人与放行门禁；展开行可逐流查看业务截止、时效门限、源行、Staging、拒收和受限原因。"
         />
         <Table
           rowKey="id"
@@ -264,6 +354,13 @@ export default function DecisionReadinessPanel({
           pagination={false}
           dataSource={DATA_PRODUCTS}
           scroll={{ x: 1080 }}
+          expandable={{
+            expandedRowRender: (row) => (
+              <RequiredStreamEvidence summary={evaluateProductSourceEvidence(row, dataSources)} />
+            ),
+            rowExpandable: (row) => row.sources.some((source) => source !== "SCM"),
+            columnWidth: 44,
+          }}
           columns={[
             {
               title: "数据产品",
@@ -298,16 +395,26 @@ export default function DecisionReadinessPanel({
                 const evidence = evaluateProductSourceEvidence(row, dataSources);
                 const color = evidence.operationalSources === row.sources.length
                   ? "success"
-                  : evidence.observedSources === row.sources.length ? "warning" : "error";
+                  : evidence.observedSources === row.sources.length && evidence.staleStreams === 0
+                    ? "warning"
+                    : "error";
                 const label = evidence.operationalSources === row.sources.length
                   ? "来源已放行"
-                  : evidence.observedSources === row.sources.length ? "来源齐·未放行" : "来源/所需流缺失";
+                  : evidence.missingStreams > 0
+                    ? "来源/所需流缺失"
+                    : evidence.staleStreams > 0
+                      ? "所需流已过期"
+                      : evidence.observedSources === row.sources.length
+                        ? "来源齐·未放行"
+                        : "来源尚不可用";
                 return (
                   <Space direction="vertical" size={2}>
                     <Tag color={color}>{label}</Tag>
                     <Typography.Text type="secondary">
                       观察 {evidence.observedSources}/{row.sources.length} · 放行 {evidence.operationalSources}/{row.sources.length}
                       {evidence.missingStreams > 0 ? ` · 缺流 ${evidence.missingStreams}` : ""}
+                      {evidence.staleStreams > 0 ? ` · 过期 ${evidence.staleStreams}` : ""}
+                      {evidence.degradedStreams > 0 ? ` · 受限 ${evidence.degradedStreams}` : ""}
                     </Typography.Text>
                   </Space>
                 );
