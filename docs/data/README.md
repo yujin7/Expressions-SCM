@@ -14,6 +14,7 @@ staging、正式事实和衍生指标分别保留；系统通过 hash、批次�
 | 简道云、聚水潭、用友融合蓝图 | [`三方数据融合与组织蓝图-2026-08-12.md`](三方数据融合与组织蓝图-2026-08-12.md) |
 | 数据结构与业务规则 | [`../spec/04-数据整合架构与实施计划.md`](../spec/04-数据整合架构与实施计划.md) |
 | 外部授权仍需人工完成的动作 | [`../integrations/待办-控制台动作清单.md`](../integrations/待办-控制台动作清单.md) |
+| 简道云外部需求业务核对与签认 | [`../integrations/简道云外部需求-UAT操作手册.md`](../integrations/简道云外部需求-UAT操作手册.md) |
 
 ## 不重复原则
 
@@ -32,4 +33,3 @@ staging、正式事实和衍生指标分别保留；系统通过 hash、批次�
 | 待裁决数据 | `import_jobs` + `staging_rows` + `alias_exceptions` | 批次化、可拒绝、可重放 |
 | 正式事实与台账 | PostgreSQL 业务表 | 通过 release/posting 受控写入 |
 | 文档与决策记录 | `docs/` | Git 版本化；不存账号、口令、token |
-
