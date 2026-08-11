@@ -12,6 +12,11 @@ import {
   DATA_PRODUCT_SOURCE_LABEL,
   type DataProductAuthority,
 } from "@/components/data-products";
+import { evaluateProductSourceEvidence } from "@/components/data-product-source-evidence";
+import type {
+  DataSourceReadiness,
+  DataSourceState,
+} from "@/server/modules/report/data-source-readiness";
 
 const STATE_META: Record<CapabilityReadiness, { label: string; color: string; stroke: string }> = {
   ready: { label: "当前可用", color: "success", stroke: "#16a34a" },
@@ -19,9 +24,39 @@ const STATE_META: Record<CapabilityReadiness, { label: string; color: string; st
   blocked: { label: "尚未解锁", color: "error", stroke: "#dc2626" },
 };
 
-export default function DecisionReadinessPanel() {
+const SOURCE_STATE_META: Record<DataSourceState, { label: string; color: string }> = {
+  operational: { label: "已放行", color: "success" },
+  observation: { label: "仅观察", color: "warning" },
+  contract_only: { label: "仅契约", color: "default" },
+  blocked: { label: "未接入", color: "error" },
+};
+
+function fmtDateTime(value: string | null): string {
+  if (!value) return "—";
+  return new Date(value).toLocaleString("zh-CN", {
+    hour12: false,
+    timeZone: "Asia/Shanghai",
+  });
+}
+
+function contractEvidenceLabel(row: DataSourceReadiness): string {
+  if (row.key === "SCM") return "内部受控事实";
+  if (row.contractSelectionState === "not_required") return "固定契约·无需手选";
+  if (row.contractSelectionState === "invalid") return "契约配置无效";
+  if (row.contractSelectionState === "missing") return "未选择受控契约";
+  return `${row.selectedContractCount} 条已选契约`;
+}
+
+export default function DecisionReadinessPanel({
+  dataSources = [],
+}: {
+  dataSources?: DataSourceReadiness[];
+}) {
   const ready = DECISION_CAPABILITIES.filter((item) => capabilityReadiness(item) === "ready").length;
   const partial = DECISION_CAPABILITIES.filter((item) => capabilityReadiness(item) === "partial").length;
+  const external = dataSources.filter((item) => item.key !== "SCM");
+  const operationalSources = external.filter((item) => item.state === "operational").length;
+  const observedSources = external.filter((item) => item.state === "observation").length;
 
   return (
     <div>
@@ -83,9 +118,138 @@ export default function DecisionReadinessPanel() {
       </Row>
       <Card
         size="small"
+        title="三方来源证据矩阵"
+        style={{ marginTop: 16 }}
+        extra={(
+          <Space size={4} wrap>
+            <Tag color="green">外部已放行 {operationalSources}/3</Tag>
+            <Tag color="gold">仅观察 {observedSources}/3</Tag>
+          </Space>
+        )}
+        styles={{ body: { padding: 0 } }}
+      >
+        <Alert
+          banner
+          showIcon
+          type="info"
+          message="源行是连接器读取的当前成功流合计；目录和控制流可以不入 staging，因此差额不自动等于丢数。拒收行需单独处理。"
+        />
+        <Table
+          rowKey="key"
+          size="small"
+          pagination={false}
+          dataSource={dataSources}
+          scroll={{ x: 1_260 }}
+          locale={{ emptyText: "尚无来源证据；不能把静态目录当成数据接入" }}
+          columns={[
+            {
+              title: "来源 / 当前权威",
+              key: "source",
+              width: 190,
+              fixed: "left",
+              sorter: (a, b) => a.label.localeCompare(b.label, "zh-CN"),
+              render: (_, row) => (
+                <Space direction="vertical" size={2}>
+                  <Typography.Text strong>{row.label}</Typography.Text>
+                  <Tag color={SOURCE_STATE_META[row.state].color}>
+                    {SOURCE_STATE_META[row.state].label}
+                  </Tag>
+                </Space>
+              ),
+            },
+            {
+              title: "配置 / 契约",
+              key: "contract",
+              width: 170,
+              render: (_, row) => (
+                <Space direction="vertical" size={2}>
+                  <Typography.Text>{row.configured ? "凭据已配置" : "凭据未齐"}</Typography.Text>
+                  <Typography.Text type="secondary">
+                    {contractEvidenceLabel(row)}
+                  </Typography.Text>
+                </Space>
+              ),
+            },
+            {
+              title: "成功流 / 最新异常流",
+              key: "streams",
+              width: 180,
+              sorter: (a, b) => a.successfulStreams - b.successfulStreams,
+              render: (_, row) => (
+                <Space direction="vertical" size={2}>
+                  <Typography.Text>{row.successfulStreams} 条成功流</Typography.Text>
+                  <Typography.Text type={row.latestFailedStreams + row.latestRunningStreams > 0 ? "danger" : "secondary"}>
+                    失败 {row.latestFailedStreams} · 运行中 {row.latestRunningStreams}
+                  </Typography.Text>
+                </Space>
+              ),
+            },
+            {
+              title: "业务截止 / 最近成功",
+              key: "time",
+              width: 230,
+              sorter: (a, b) => String(a.sourceAsOfEnd ?? "").localeCompare(String(b.sourceAsOfEnd ?? "")),
+              render: (_, row) => (
+                <Space direction="vertical" size={2}>
+                  <Typography.Text>
+                    {row.sourceAsOfStart && row.sourceAsOfEnd
+                      ? row.sourceAsOfStart === row.sourceAsOfEnd
+                        ? row.sourceAsOfEnd
+                        : `${row.sourceAsOfStart} → ${row.sourceAsOfEnd}`
+                      : "内部实时 / 未提供"}
+                  </Typography.Text>
+                  <Typography.Text type="secondary">{fmtDateTime(row.lastSuccessAt)}</Typography.Text>
+                </Space>
+              ),
+            },
+            {
+              title: "源行 / Staging / 拒收",
+              key: "volume",
+              width: 220,
+              align: "right",
+              sorter: (a, b) => a.sourceRows - b.sourceRows,
+              render: (_, row) => `${row.sourceRows.toLocaleString("zh-CN")} / ${row.stagedRows.toLocaleString("zh-CN")} / ${row.rejectedRows.toLocaleString("zh-CN")}`,
+            },
+            {
+              title: "身份观察 / 开放异常",
+              key: "identity",
+              width: 180,
+              align: "right",
+              sorter: (a, b) => (a.openIdentityExceptions ?? -1) - (b.openIdentityExceptions ?? -1),
+              render: (_, row) => row.openIdentityExceptions == null
+                ? "不适用"
+                : `${(row.observedIdentities ?? 0).toLocaleString("zh-CN")} / ${row.openIdentityExceptions.toLocaleString("zh-CN")}`,
+            },
+            {
+              title: "当前门禁与下一步",
+              key: "gate",
+              width: 360,
+              render: (_, row) => (
+                <Space direction="vertical" size={2}>
+                  <Typography.Paragraph
+                    ellipsis={{ rows: 2, tooltip: row.gate }}
+                    style={{ marginBottom: 0 }}
+                  >
+                    {row.gate}
+                  </Typography.Paragraph>
+                  <Typography.Paragraph
+                    type="secondary"
+                    ellipsis={{ rows: 2, tooltip: row.nextAction }}
+                    style={{ marginBottom: 0 }}
+                  >
+                    {row.nextAction}
+                  </Typography.Paragraph>
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Card>
+      <Card
+        size="small"
         title="三方数据产品目录"
         style={{ marginTop: 16 }}
-        extra={<Tag color="blue">10 个目标契约</Tag>}
+        extra={<Tag color="blue">{DATA_PRODUCTS.length} 个目标契约</Tag>}
       >
         <Alert
           type="warning"
@@ -125,6 +289,29 @@ export default function DecisionReadinessPanel() {
                   {sources.map((source) => <Tag key={source}>{DATA_PRODUCT_SOURCE_LABEL[source]}</Tag>)}
                 </Space>
               ),
+            },
+            {
+              title: "当前来源证据",
+              key: "sourceEvidence",
+              width: 170,
+              render: (_, row) => {
+                const evidence = evaluateProductSourceEvidence(row, dataSources);
+                const color = evidence.operationalSources === row.sources.length
+                  ? "success"
+                  : evidence.observedSources === row.sources.length ? "warning" : "error";
+                const label = evidence.operationalSources === row.sources.length
+                  ? "来源已放行"
+                  : evidence.observedSources === row.sources.length ? "来源齐·未放行" : "来源/所需流缺失";
+                return (
+                  <Space direction="vertical" size={2}>
+                    <Tag color={color}>{label}</Tag>
+                    <Typography.Text type="secondary">
+                      观察 {evidence.observedSources}/{row.sources.length} · 放行 {evidence.operationalSources}/{row.sources.length}
+                      {evidence.missingStreams > 0 ? ` · 缺流 ${evidence.missingStreams}` : ""}
+                    </Typography.Text>
+                  </Space>
+                );
+              },
             },
             { title: "Owner", dataIndex: "owner", width: 150 },
             {

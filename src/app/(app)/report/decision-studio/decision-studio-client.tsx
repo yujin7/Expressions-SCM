@@ -1162,7 +1162,7 @@ export default function DecisionStudioClient() {
           {
             key: "readiness",
             label: "能力解锁",
-            children: <DecisionReadinessPanel />,
+            children: <DecisionReadinessPanel dataSources={data?.dataSources ?? []} />,
           },
         ]}
       />

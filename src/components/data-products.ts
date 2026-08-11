@@ -15,6 +15,8 @@ export interface DataProductDefinition {
   grain: string;
   owner: string;
   sources: DataProductSource[];
+  /** 每个外部来源必须有过最新成功证据的具体流；不能用同连接器的无关流替代。 */
+  requiredStreams: Partial<Record<DataProductSource, string[]>>;
   targetAuthority: DataProductAuthority;
   releaseGate: string;
 }
@@ -40,6 +42,14 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "平台 × 店铺 × 平台商品/SKU 身份",
     owner: "商品 / 电商 / 数据",
     sources: ["JIANDAOYUN", "SCM", "JST"],
+    requiredStreams: {
+      JIANDAOYUN: [
+        "tmall-sku-crosswalk-observation",
+        "pdd-sku-crosswalk-observation",
+        "vip-product-crosswalk-observation",
+      ],
+      JST: ["item-master"],
+    },
     targetAuthority: "operational",
     releaseGate: "最新批次、唯一业务键、精确条码/别名、冲突清零、覆盖阈值与业务 UAT",
   },
@@ -50,6 +60,14 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "日 × 店铺 × 平台 SKU",
     owner: "电商 / PMC",
     sources: ["JIANDAOYUN", "JST", "SCM"],
+    requiredStreams: {
+      JIANDAOYUN: [
+        "tmall-sku-sales-observation",
+        "tmall-sku-refund-observation",
+        "tmall-sku-crosswalk-observation",
+      ],
+      JST: ["outbound-sales-daily"],
+    },
     targetAuthority: "operational",
     releaseGate: "身份覆盖、时间窗、退款状态与 JST 订单/出库总量对账",
   },
@@ -60,6 +78,13 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "来源订单 × 收款/凭证",
     owner: "财务 / 电商",
     sources: ["JST", "YONYOU", "SCM"],
+    requiredStreams: {
+      JST: ["orders-daily", "outbound-sales-daily", "returns-daily"],
+      YONYOU: [
+        "yonbip-fi-ficloud-openapi-voucher-queryvouchers",
+        "yonbip-finance-receivables-settlement",
+      ],
+    },
     targetAuthority: "financial",
     releaseGate: "订单、退款、发票/凭证和收款一对一/一对多链路对账",
   },
@@ -70,6 +95,10 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "截止时点 × 仓库 × SKU × 批次",
     owner: "仓储 / PMC / 财务",
     sources: ["SCM", "JST", "YONYOU"],
+    requiredStreams: {
+      JST: ["inventory-total-delta"],
+      YONYOU: ["yonbip-scm-stock-querycurrentstocksbycondition"],
+    },
     targetAuthority: "operational",
     releaseGate: "仓库与 SKU 精确映射、相同截止时点、缺失不补零、差异超阈停止",
   },
@@ -80,6 +109,11 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "供应单行 × 承诺日 × 实际到货",
     owner: "采购 / PMC",
     sources: ["SCM", "JIANDAOYUN", "JST", "YONYOU"],
+    requiredStreams: {
+      JIANDAOYUN: ["purchase-order-observation", "purchase-receipt-observation"],
+      JST: ["inbound-receipts-daily"],
+      YONYOU: ["yonbip-scm-purchaseorder-list", "yonbip-scm-purinrecord-list"],
+    },
     targetAuthority: "operational",
     releaseGate: "单号复合身份、数量/单位、承诺日与收货状态映射可重放",
   },
@@ -90,6 +124,18 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "期间 × 渠道 × SKU",
     owner: "财务 / 业务",
     sources: ["JIANDAOYUN", "JST", "YONYOU", "SCM"],
+    requiredStreams: {
+      JIANDAOYUN: [
+        "tmall-sku-sales-observation",
+        "tmall-sku-refund-observation",
+        "platform-fee-observation",
+      ],
+      JST: ["outbound-sales-daily", "returns-daily"],
+      YONYOU: [
+        "yonbip-efi-fieia-querybalance",
+        "yonbip-fi-ficloud-openapi-voucher-queryvouchers",
+      ],
+    },
     targetAuthority: "financial",
     releaseGate: "净收入、退款、平台费、存货成本和期间口径均已关账",
   },
@@ -100,6 +146,13 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "供应商 × 期间 × 产品/物料",
     owner: "采购 / 品质 / 财务",
     sources: ["SCM", "YONYOU"],
+    requiredStreams: {
+      YONYOU: [
+        "yonbip-digitalmodel-vendor-list",
+        "yonbip-scm-purchaseorder-list",
+        "yonbip-scm-purinrecord-list",
+      ],
+    },
     targetAuthority: "operational",
     releaseGate: "供应商身份、承诺交期、收货、检验、价格和样本量同口径",
   },
@@ -110,6 +163,19 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "SKU × 仓/渠道 × 建议日",
     owner: "PMC / 采购",
     sources: ["SCM", "JIANDAOYUN", "JST", "YONYOU"],
+    requiredStreams: {
+      JIANDAOYUN: [
+        "tmall-sku-sales-observation",
+        "tmall-sku-refund-observation",
+        "tmall-sku-crosswalk-observation",
+      ],
+      JST: ["outbound-sales-daily", "inventory-total-delta"],
+      YONYOU: [
+        "yonbip-scm-purchaseorder-list",
+        "yonbip-scm-purinrecord-list",
+        "yonbip-scm-stock-querycurrentstocksbycondition",
+      ],
+    },
     targetAuthority: "operational",
     releaseGate: "正式库存优先；观察需求不能单独下单；MOQ/周期/在途均可追溯",
   },
@@ -120,6 +186,15 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "新品项目 × 里程碑/上市窗口",
     owner: "产品 / PMC / 电商",
     sources: ["SCM", "JIANDAOYUN", "YONYOU", "JST"],
+    requiredStreams: {
+      JIANDAOYUN: ["npd-milestone-observation", "product-master-observation"],
+      YONYOU: [
+        "yonbip-digitalmodel-product-listproductbycondition",
+        "yonbip-scm-purchaseorder-list",
+        "yonbip-scm-purinrecord-list",
+      ],
+      JST: ["outbound-sales-daily"],
+    },
     targetAuthority: "operational",
     releaseGate: "标准里程碑、首单、备货、正式上市日和首销口径一致",
   },
@@ -130,6 +205,16 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "业务日 × 店铺/仓 × SKU × 差异类型",
     owner: "数据 / 财务 / 运营",
     sources: ["JIANDAOYUN", "JST", "YONYOU", "SCM"],
+    requiredStreams: {
+      JIANDAOYUN: ["tmall-sku-sales-observation", "tmall-sku-refund-observation"],
+      JST: ["outbound-sales-daily", "inventory-total-delta"],
+      YONYOU: [
+        "yonbip-scm-purchaseorder-list",
+        "yonbip-scm-purinrecord-list",
+        "yonbip-scm-stock-querycurrentstocksbycondition",
+        "yonbip-fi-ficloud-openapi-voucher-queryvouchers",
+      ],
+    },
     targetAuthority: "operational",
     releaseGate: "三边独立显示、统一时间/身份/单位，差异有 owner、原因和 SLA，禁止自动调平",
   },
@@ -140,6 +225,21 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "周 × 品牌/渠道 × 情景版本",
     owner: "经营层 / PMC / 财务",
     sources: ["SCM", "JIANDAOYUN", "JST", "YONYOU"],
+    requiredStreams: {
+      JIANDAOYUN: [
+        "tmall-sku-sales-observation",
+        "tmall-sku-refund-observation",
+        "platform-fee-observation",
+      ],
+      JST: ["outbound-sales-daily", "inventory-total-delta", "returns-daily"],
+      YONYOU: [
+        "yonbip-scm-purchaseorder-list",
+        "yonbip-scm-purinrecord-list",
+        "yonbip-scm-stock-querycurrentstocksbycondition",
+        "yonbip-efi-fieia-querybalance",
+        "yonbip-fi-ficloud-openapi-voucher-queryvouchers",
+      ],
+    },
     targetAuthority: "financial",
     releaseGate: "上游数据产品已放行，指标版本/owner/关账状态完整，情景不覆盖正式事实",
   },
