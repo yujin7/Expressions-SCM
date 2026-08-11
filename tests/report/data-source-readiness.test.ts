@@ -134,7 +134,7 @@ describe("三方数据来源证据矩阵", () => {
       expect(result.find((row) => row.key === "JST")?.streams).toEqual([
         expect.objectContaining({
           stream: "inventory-total-delta",
-          sourceAsOf: "2026-02-30",
+          sourceAsOf: null,
           sourceTimeInvalid: true,
           freshness: "unknown",
         }),
@@ -212,6 +212,37 @@ describe("三方数据来源证据矩阵", () => {
         }),
         expect.objectContaining({
           stream: "outbound-sales-daily",
+          sourceAsOf: null,
+          sourceTimeInvalid: true,
+          freshness: "unknown",
+        }),
+      ]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("拒绝会被运行时归一化的越界 RFC3339 时间", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      await db.insert(schema.integrationRuns).values({
+        connector: "jst",
+        stream: "outbound-sales-daily",
+        idempotencyKey: "jst-out-of-range-rfc3339-time",
+        status: "succeeded",
+        sourceRows: 1,
+        stagedRows: 1,
+        requestScope: { sourceAsOf: "2026-08-11T24:00:00Z" },
+        startedAt: new Date("2026-08-11T14:00:00.000Z"),
+        finishedAt: new Date("2026-08-11T14:01:00.000Z"),
+      });
+
+      const result = await loadDataSourceReadiness(db, {
+        env: {} as NodeJS.ProcessEnv,
+        now: new Date("2026-08-11T14:30:00.000Z"),
+      });
+      expect(result.find((row) => row.key === "JST")?.streams).toEqual([
+        expect.objectContaining({
           sourceAsOf: null,
           sourceTimeInvalid: true,
           freshness: "unknown",

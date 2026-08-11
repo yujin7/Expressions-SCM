@@ -120,21 +120,42 @@ function instant(value: unknown): string | null {
   return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
 }
 
+function calendarDayTimestamp(value: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const parsed = Date.parse(`${value}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 10) !== value) return null;
+  return parsed;
+}
+
 function dateValue(value: unknown): string | null {
   if (value == null) return null;
   if (value instanceof Date) {
     return Number.isFinite(value.getTime()) ? value.toISOString().slice(0, 10) : null;
   }
   const text = String(value);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  if (calendarDayTimestamp(text) != null) return text;
   // API evidence may carry a full RFC 3339 instant. Validate the complete value
   // before deriving its source calendar day; never accept a valid prefix followed
   // by malformed trailing data.
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(text)) {
-    return null;
-  }
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|([+-])(\d{2}):(\d{2}))$/.exec(text);
+  if (!match) return null;
+  const [, calendarDay, hourText, minuteText, secondText, zone, , offsetHourText, offsetMinuteText] = match;
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const offsetHour = zone === "Z" ? 0 : Number(offsetHourText);
+  const offsetMinute = zone === "Z" ? 0 : Number(offsetMinuteText);
+  if (
+    calendarDayTimestamp(calendarDay) == null
+    || hour > 23
+    || minute > 59
+    || second > 59
+    || offsetHour > 14
+    || offsetMinute > 59
+    || (offsetHour === 14 && offsetMinute !== 0)
+  ) return null;
   const parsed = Date.parse(text);
-  return Number.isFinite(parsed) ? text.slice(0, 10) : null;
+  return Number.isFinite(parsed) ? calendarDay : null;
 }
 
 function streamKeys(value: unknown): string[] {
@@ -176,15 +197,11 @@ function shanghaiDate(value: Date): string {
 }
 
 function businessAgeDaysSince(value: string | null, now: Date): number | null {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-  const sourceDay = Date.parse(`${value}T00:00:00.000Z`);
+  if (!value) return null;
+  const sourceDay = calendarDayTimestamp(value);
   const today = Date.parse(`${shanghaiDate(now)}T00:00:00.000Z`);
-  // Date.parse normalizes some impossible calendar dates (for example 2026-02-30)
-  // instead of rejecting them. Round-trip the UTC calendar day so malformed source
-  // evidence cannot pass a freshness gate.
   if (
-    !Number.isFinite(sourceDay)
-    || new Date(sourceDay).toISOString().slice(0, 10) !== value
+    sourceDay == null
     || !Number.isFinite(today)
     || today < sourceDay
   ) return null;
