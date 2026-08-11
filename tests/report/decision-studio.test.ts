@@ -40,6 +40,7 @@ describe("decision studio evidence model", () => {
     expect(result.pivot[0].byMonth["2026-07"]).toBe(82);
     expect(result.spc.samples).toBe(13);
     expect(result.spc.bands).not.toBeNull();
+    expect(result.commerceIdentity.state).toBe("insufficient");
   });
 
   it("keeps unavailable YoY, SPC and daily analysis explicitly gated", () => {
