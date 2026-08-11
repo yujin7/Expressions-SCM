@@ -12,6 +12,7 @@ import {
   DATA_PRODUCT_SOURCE_LABEL,
   type DataProductAuthority,
 } from "@/components/data-products";
+import { evaluateProductSourceEvidence } from "@/components/data-product-source-evidence";
 import type {
   DataSourceReadiness,
   DataSourceState,
@@ -32,7 +33,10 @@ const SOURCE_STATE_META: Record<DataSourceState, { label: string; color: string 
 
 function fmtDateTime(value: string | null): string {
   if (!value) return "—";
-  return new Date(value).toLocaleString("zh-CN", { hour12: false });
+  return new Date(value).toLocaleString("zh-CN", {
+    hour12: false,
+    timeZone: "Asia/Shanghai",
+  });
 }
 
 function contractEvidenceLabel(row: DataSourceReadiness): string {
@@ -50,7 +54,6 @@ export default function DecisionReadinessPanel({
 }) {
   const ready = DECISION_CAPABILITIES.filter((item) => capabilityReadiness(item) === "ready").length;
   const partial = DECISION_CAPABILITIES.filter((item) => capabilityReadiness(item) === "partial").length;
-  const sourceByKey = new Map(dataSources.map((item) => [item.key, item]));
   const external = dataSources.filter((item) => item.key !== "SCM");
   const operationalSources = external.filter((item) => item.state === "operational").length;
   const observedSources = external.filter((item) => item.state === "observation").length;
@@ -292,20 +295,20 @@ export default function DecisionReadinessPanel({
               key: "sourceEvidence",
               width: 170,
               render: (_, row) => {
-                const rows = row.sources.map((source) => sourceByKey.get(source)).filter(Boolean);
-                const observed = rows.filter((source) => source?.state === "observation" || source?.state === "operational").length;
-                const operational = rows.filter((source) => source?.state === "operational").length;
-                const complete = rows.length === row.sources.length;
-                const color = complete && operational === row.sources.length
+                const evidence = evaluateProductSourceEvidence(row, dataSources);
+                const color = evidence.operationalSources === row.sources.length
                   ? "success"
-                  : complete && observed === row.sources.length ? "warning" : "error";
-                const label = complete && operational === row.sources.length
+                  : evidence.observedSources === row.sources.length ? "warning" : "error";
+                const label = evidence.operationalSources === row.sources.length
                   ? "来源已放行"
-                  : complete && observed === row.sources.length ? "来源齐·未放行" : "来源缺失";
+                  : evidence.observedSources === row.sources.length ? "来源齐·未放行" : "来源/所需流缺失";
                 return (
                   <Space direction="vertical" size={2}>
                     <Tag color={color}>{label}</Tag>
-                    <Typography.Text type="secondary">观察 {observed}/{row.sources.length} · 放行 {operational}/{row.sources.length}</Typography.Text>
+                    <Typography.Text type="secondary">
+                      观察 {evidence.observedSources}/{row.sources.length} · 放行 {evidence.operationalSources}/{row.sources.length}
+                      {evidence.missingStreams > 0 ? ` · 缺流 ${evidence.missingStreams}` : ""}
+                    </Typography.Text>
                   </Space>
                 );
               },

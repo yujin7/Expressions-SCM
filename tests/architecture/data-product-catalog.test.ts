@@ -17,7 +17,12 @@ describe("三方数据产品目录", () => {
       expect(product.releaseGate.trim()).not.toBe("");
       expect(product.sources.length).toBeGreaterThanOrEqual(2);
       expect(DATA_PRODUCT_AUTHORITY_LABEL[product.targetAuthority]).toBeTruthy();
-      for (const source of product.sources) expect(DATA_PRODUCT_SOURCE_LABEL[source]).toBeTruthy();
+      for (const source of product.sources) {
+        expect(DATA_PRODUCT_SOURCE_LABEL[source]).toBeTruthy();
+        if (source !== "SCM") {
+          expect(product.requiredStreams[source]?.length, `${product.id}:${source}`).toBeGreaterThan(0);
+        }
+      }
     }
   });
 

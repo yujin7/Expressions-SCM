@@ -30,6 +30,7 @@ export interface DataSourceReadiness {
   contractSelectionState: ConnectorContractSelectionState;
   selectedContractCount: number;
   successfulStreams: number;
+  successfulStreamKeys: string[];
   latestFailedStreams: number;
   latestRunningStreams: number;
   sourceRows: number;
@@ -48,6 +49,7 @@ export interface DataSourceReadiness {
 interface SourceRunAggregate {
   connector: string;
   successful_streams: unknown;
+  successful_stream_keys: unknown;
   source_rows: unknown;
   staged_rows: unknown;
   rejected_rows: unknown;
@@ -84,6 +86,11 @@ function dateValue(value: unknown): string | null {
   if (value == null) return null;
   const text = String(value).slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
+}
+
+function streamKeys(value: unknown): string[] {
+  if (typeof value !== "string" || !value) return [];
+  return value.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
 async function loadIdentityEvidence(
@@ -127,6 +134,7 @@ async function loadRunEvidence(db: ReadDb) {
       )
       SELECT connector,
         count(*)::int AS successful_streams,
+        string_agg(stream, ',' ORDER BY stream) AS successful_stream_keys,
         coalesce(sum(source_rows), 0)::int AS source_rows,
         coalesce(sum(staged_rows), 0)::int AS staged_rows,
         coalesce(sum(rejected_rows), 0)::int AS rejected_rows,
@@ -189,6 +197,7 @@ function connectorSource(
     contractSelectionState: readiness.contractSelectionState,
     selectedContractCount: readiness.selectedContractCount,
     successfulStreams,
+    successfulStreamKeys: streamKeys(success?.successful_stream_keys),
     latestFailedStreams,
     latestRunningStreams,
     sourceRows: intValue(success?.source_rows),
@@ -242,6 +251,7 @@ export async function loadDataSourceReadiness(
     contractSelectionState: "not_required",
     selectedContractCount: 0,
     successfulStreams: 0,
+    successfulStreamKeys: [],
     latestFailedStreams: 0,
     latestRunningStreams: 0,
     sourceRows: skuCount + balanceCount + ledgerCount,
@@ -276,6 +286,7 @@ export async function loadDataSourceReadiness(
           contractSelectionState: "missing" as const,
           selectedContractCount: 0,
           successfulStreams: 0,
+          successfulStreamKeys: [],
           latestFailedStreams: 0,
           latestRunningStreams: 0,
           sourceRows: 0,

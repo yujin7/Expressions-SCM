@@ -56,6 +56,7 @@ describe("三方数据来源证据矩阵", () => {
       expect(result.find((row) => row.key === "JIANDAOYUN")).toMatchObject({
         state: "observation",
         successfulStreams: 1,
+        successfulStreamKeys: ["tmall-sku-sales-observation"],
         latestFailedStreams: 1,
         sourceRows: 10,
         stagedRows: 9,
