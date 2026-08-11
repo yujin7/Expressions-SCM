@@ -253,8 +253,10 @@
 ## 对外访问（含外网）— 选型见 [`guides/对外访问方案-选型与步骤.md`](guides/对外访问方案-选型与步骤.md)
 
 - **状态：2026-08-10 已恢复并验证在线。** 查链接：`npm run access:link`。
-- 方案：**Cloudflare 快速隧道**（约束是不买域名、不注册账号）。真 HTTPS、同事零安装、
-  与本机 IP 无关。实测淘汰的替代品：具名隧道/Tailscale 需注册，serveo 22 端口超时，
+- 方案：**Cloudflare 快速隧道**（当前账户没有任何域名）。真 HTTPS、同事零安装、
+  与本机 IP 无关。2026-08-12 已确认具名隧道在线但没有 ingress/public hostname，账户域名清单为空；
+  因此仍不能生成固定 `expscm` 地址。固定地址必须先购买或接入一个域名，再把
+  `scm.<域名>` 绑定到具名隧道。实测淘汰的替代品：Tailscale 需逐人安装，serveo 22 端口超时，
   localhost.run 无响应，`.local` 按定义出不了网段（RFC 6762）。
 - 代价：**地址在 cloudflared 进程重启时会变**（Cloudflare 随机分配，无法指定）。
   由 `npm run access:public` 装的 LaunchAgent 兜住：进程保活并每 30 秒验证公网健康+登录回跳；
