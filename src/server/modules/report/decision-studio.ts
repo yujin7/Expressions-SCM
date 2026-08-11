@@ -13,6 +13,11 @@ import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { num } from "@/server/core/svc";
 import { detectSignals, type SpcResult } from "@/server/rules/spc";
+import {
+  emptyExternalDemandSignal,
+  loadJiandaoyunExternalDemandSignal,
+  type ExternalDemandSignal,
+} from "@/server/modules/report/external-demand-signal";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -95,6 +100,7 @@ export interface DecisionStudioResult {
     totalRows: number;
     latestDate: string | null;
   };
+  externalDemand: ExternalDemandSignal;
   review: {
     headline: string;
     bullets: string[];
@@ -149,6 +155,7 @@ export function buildDecisionStudio(
   rawFacts: MonthlyGroupFact[],
   rawDaily: DailyFact[],
   query: StudioQuery = {},
+  externalDemand: ExternalDemandSignal = emptyExternalDemandSignal(),
 ): DecisionStudioResult {
   const dimension = DIMENSIONS.includes(query.dimension as StudioDimension)
     ? (query.dimension as StudioDimension)
@@ -309,6 +316,7 @@ export function buildDecisionStudio(
       totalRows: latestDaily.length,
       latestDate: dailyDates.at(-1)?.date ?? null,
     },
+    externalDemand,
     review: { headline, bullets, markdown },
     limitations: [
       "sales_monthly 目前是月粒度数量事实；跨 SKU 相加可能混合件、箱、kg，仅作结构和趋势。",
@@ -461,9 +469,10 @@ export async function getDecisionStudio(
     ? (query.dimension as StudioDimension)
     : "brand";
   const scope = query.scope ?? {};
-  const [facts, daily] = await Promise.all([
+  const [facts, daily, externalDemand] = await Promise.all([
     loadMonthlyFacts(db, dimension, scope),
     loadDailyFacts(db),
+    loadJiandaoyunExternalDemandSignal(db),
   ]);
-  return buildDecisionStudio(facts, daily, { ...query, dimension });
+  return buildDecisionStudio(facts, daily, { ...query, dimension }, externalDemand);
 }

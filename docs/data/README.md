@@ -1,0 +1,35 @@
+# 数据与信息总入口
+
+这里是项目的数据治理入口，不复制源文件，也不建立第二套事实。源文件原件、API 响应、
+staging、正式事实和衍生指标分别保留；系统通过 hash、批次、契约和血缘把它们串起来。
+
+## 当前权威入口
+
+| 要找什么 | 唯一入口 |
+|---|---|
+| 当前系统边界与已完成/未完成 | [`../spec/CURRENT.md`](../spec/CURRENT.md) |
+| 当前运行状态与下一步 | [`../NOW.md`](../NOW.md) |
+| 三方连接器契约与真实就绪度 | [`../integrations/EXTERNAL-SYSTEMS.md`](../integrations/EXTERNAL-SYSTEMS.md) |
+| 文件数据的血缘、嵌套、去重与利用率 | [`DATA-LINEAGE-AUDIT-2026-07-27.md`](DATA-LINEAGE-AUDIT-2026-07-27.md) |
+| 简道云、聚水潭、用友融合蓝图 | [`三方数据融合与组织蓝图-2026-08-12.md`](三方数据融合与组织蓝图-2026-08-12.md) |
+| 数据结构与业务规则 | [`../spec/04-数据整合架构与实施计划.md`](../spec/04-数据整合架构与实施计划.md) |
+| 外部授权仍需人工完成的动作 | [`../integrations/待办-控制台动作清单.md`](../integrations/待办-控制台动作清单.md) |
+
+## 不重复原则
+
+- 原始 Excel/PDF 保留原件，不因“整理”重命名或复制出多个版本；`import_jobs.file_hash` 负责去重。
+- API 响应先落不可变证据和 `integration_runs`，再进 `staging_rows`；连接器不直写账本。
+- 业务主数据只在主档表维护；外部编码通过带来源 scope 的身份/别名连接，不覆盖原编码。
+- 报表只引用已登记的数据产品和口径，不在页面内另写一套公式。
+- 旧审计是历史证据；当前事实以 `CURRENT.md`、`NOW.md` 和运行时台账为准。
+
+## 五类数据的物理位置
+
+| 类别 | 位置 | 保留方式 |
+|---|---|---|
+| 原件 | 外部受控源目录 / 对方平台 | 只读；hash 登记 |
+| 最小化证据 | `FILE_STORAGE_DIR/integration-evidence` | 不可变、可校验、去除非必要 PII |
+| 待裁决数据 | `import_jobs` + `staging_rows` + `alias_exceptions` | 批次化、可拒绝、可重放 |
+| 正式事实与台账 | PostgreSQL 业务表 | 通过 release/posting 受控写入 |
+| 文档与决策记录 | `docs/` | Git 版本化；不存账号、口令、token |
+

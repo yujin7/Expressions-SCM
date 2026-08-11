@@ -127,6 +127,8 @@ export default function DecisionStudioClient() {
   ];
   const paretoRows = (data?.pareto ?? []).slice(0, 30);
   const heatMax = Math.max(0, ...(data?.daily.dates ?? []).map((item) => item.qty));
+  const external = data?.externalDemand;
+  const externalReady = external?.state === "ready";
 
   const pivotColumns = useMemo<ColumnsType<DecisionStudioResult["pivot"][number]>>(
     () => [
@@ -293,6 +295,7 @@ export default function DecisionStudioClient() {
       </Row>
 
       <Tabs
+        destroyOnHidden
         activeKey={activeTab}
         onChange={(tab) => view.setFilter({ tab })}
         items={[
@@ -340,7 +343,7 @@ export default function DecisionStudioClient() {
                   />
                 }
               >
-                <ResponsiveContainer minWidth={0}>
+                <ResponsiveContainer minWidth={0} minHeight={1}>
                   <ComposedChart data={paretoRows} margin={{ top: 8, right: 22, left: 8, bottom: 86 }}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis
@@ -457,7 +460,7 @@ export default function DecisionStudioClient() {
                     />
                   }
                 >
-                  <ResponsiveContainer minWidth={0}>
+                  <ResponsiveContainer minWidth={0} minHeight={1}>
                     <LineChart data={data?.monthly ?? []} margin={{ top: 8, right: 18, left: 8, bottom: 20 }}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="month" />
@@ -614,6 +617,146 @@ export default function DecisionStudioClient() {
                   })}
                 </div>
               </DecisionVisual>
+            ),
+          },
+          {
+            key: "external",
+            label: "外部需求信号",
+            children: (
+              <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                <Alert
+                  showIcon
+                  type={external?.state === "ready" ? "warning" : "error"}
+                  message="观察口径：可用于发现趋势与身份缺口，不可直接驱动正式销量、库存、财务或补货"
+                  description={external?.gate}
+                  action={(
+                    <Button href="/import/exceptions?status=open&scope=JIANDAOYUN">
+                      处理简道云身份认领
+                    </Button>
+                  )}
+                />
+                <Row gutter={[10, 10]} className="compact-kpi-row">
+                  <Col xs={12} lg={6}>
+                    <Card size="small">
+                      <Statistic
+                        title="支付件数"
+                        value={externalReady ? external.totals.paidQty : "数据不足"}
+                        formatter={externalReady ? (v) => formatQty(Number(v)) : undefined}
+                      />
+                    </Card>
+                  </Col>
+                  <Col xs={12} lg={6}>
+                    <Card size="small">
+                      <Statistic
+                        title="成功退款件数 / 退款率"
+                        value={externalReady ? external.totals.refundQty : "数据不足"}
+                        formatter={externalReady ? (v) => formatQty(Number(v)) : undefined}
+                        suffix={externalReady && external.totals.paidQty > 0
+                          ? ` / ${(external.totals.refundQty / external.totals.paidQty * 100).toFixed(1)}%`
+                          : undefined}
+                      />
+                    </Card>
+                  </Col>
+                  <Col xs={12} lg={6}>
+                    <Card size="small">
+                      <Statistic
+                        title="净需求信号"
+                        value={externalReady ? external.totals.netQty : "数据不足"}
+                        formatter={externalReady ? (v) => formatQty(Number(v)) : undefined}
+                      />
+                    </Card>
+                  </Col>
+                  <Col xs={12} lg={6}>
+                    <Card size="small">
+                      <Statistic
+                        title="平台 SKU 身份覆盖"
+                        value={externalReady && external.coverage.identityPct != null
+                          ? external.coverage.identityPct
+                          : "数据不足"}
+                        precision={externalReady ? 1 : undefined}
+                        suffix={externalReady && external.coverage.identityPct != null ? "%" : undefined}
+                        valueStyle={{ color: externalReady && (external.coverage.identityPct ?? 0) >= 80
+                          ? VISUAL_COLOR.positive
+                          : VISUAL_COLOR.warning }}
+                      />
+                    </Card>
+                  </Col>
+                </Row>
+                <DecisionVisual
+                  title="简道云 · 天猫支付、退款与净需求趋势"
+                  question="扣除成功退款后，外部需求信号如何变化；其中多少已经能安全归属系统 SKU？"
+                  metricId="externalNetDemand"
+                  grain="日 × 天猫平台 SKU"
+                  unit="件"
+                  source={{
+                    tier: "reference",
+                    source: "简道云天猫日销量 + 退款 + SKU 对照（各取最新成功批次）",
+                    asOf: external?.sourceAsOf,
+                  }}
+                  coverage={{
+                    covered: external?.coverage.mappedIdentities ?? 0,
+                    total: external?.coverage.platformIdentities ?? 0,
+                    label: "已映射平台 SKU 身份",
+                  }}
+                  activeFilters={["来源：简道云", "平台：天猫", "权限：只读观察", "当前经营筛选不作用于未映射平台身份"]}
+                  summary={external?.state === "ready"
+                    ? `观察净需求 ${formatQty(external.totals.netQty)}；已映射净需求 ${formatQty(external.totals.mappedNetQty)}；支付件数覆盖 ${external.coverage.paidQtyPct?.toFixed(1) ?? "—"}%。`
+                    : external?.gate ?? "正在读取简道云外部需求证据。"}
+                  caveat={external?.limitations.join(" ")}
+                  state={loading && !data ? "loading" : external?.state ?? "insufficient"}
+                  stateDetail={external?.gate}
+                  height={390}
+                  dataView={(
+                    <Table
+                      rowKey="date"
+                      size="small"
+                      pagination={false}
+                      dataSource={external?.daily ?? []}
+                      columns={[
+                        { title: "日期", dataIndex: "date", sorter: (a, b) => a.date.localeCompare(b.date) },
+                        { title: "支付件数", dataIndex: "paidQty", align: "right", sorter: (a, b) => a.paidQty - b.paidQty, render: formatQty },
+                        { title: "成功退款", dataIndex: "refundQty", align: "right", sorter: (a, b) => a.refundQty - b.refundQty, render: formatQty },
+                        { title: "净需求", dataIndex: "netQty", align: "right", sorter: (a, b) => a.netQty - b.netQty, render: formatQty },
+                        { title: "已映射净需求", dataIndex: "mappedNetQty", align: "right", sorter: (a, b) => a.mappedNetQty - b.mappedNetQty, render: formatQty },
+                      ]}
+                    />
+                  )}
+                >
+                  <ResponsiveContainer minWidth={0} minHeight={1}>
+                    <LineChart data={external?.daily ?? []} margin={{ top: 8, right: 18, left: 8, bottom: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="date" minTickGap={28} />
+                      <YAxis tickFormatter={shortQty} />
+                      <RechartsTooltip formatter={(value) => formatQty(Number(value))} />
+                      <Line type="monotone" dataKey="paidQty" name="支付件数" stroke={VISUAL_COLOR.primary} dot={false} />
+                      <Line type="monotone" dataKey="refundQty" name="成功退款" stroke={VISUAL_COLOR.critical} dot={false} />
+                      <Line type="monotone" dataKey="netQty" name="净需求信号" stroke={VISUAL_COLOR.positive} strokeWidth={3} dot={false} />
+                      <Line type="monotone" dataKey="mappedNetQty" name="已映射净需求" stroke={VISUAL_COLOR.warning} strokeDasharray="5 4" dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </DecisionVisual>
+                <Card
+                  size="small"
+                  title="优先处理：高销量未映射平台 SKU"
+                  extra={<Tag color="gold">TOP {external?.topUnmapped.length ?? 0}</Tag>}
+                >
+                  <Table
+                    rowKey={(row) => `${row.shopName}\u0000${row.platformSkuId}`}
+                    size="small"
+                    pagination={{ pageSize: 10, showSizeChanger: false }}
+                    dataSource={external?.topUnmapped ?? []}
+                    scroll={{ x: 900 }}
+                    columns={[
+                      { title: "店铺", dataIndex: "shopName", width: 160, sorter: (a, b) => a.shopName.localeCompare(b.shopName, "zh-CN") },
+                      { title: "平台 SKU", dataIndex: "platformSkuId", width: 180, sorter: (a, b) => a.platformSkuId.localeCompare(b.platformSkuId) },
+                      { title: "商品 / 规格", key: "name", ellipsis: true, render: (_, row) => row.skuName || row.productName || "（未提供）" },
+                      { title: "支付件数", dataIndex: "paidQty", width: 130, align: "right", defaultSortOrder: "descend", sorter: (a, b) => a.paidQty - b.paidQty, render: formatQty },
+                      { title: "退款", dataIndex: "refundQty", width: 110, align: "right", sorter: (a, b) => a.refundQty - b.refundQty, render: formatQty },
+                      { title: "净需求", dataIndex: "netQty", width: 120, align: "right", sorter: (a, b) => a.netQty - b.netQty, render: formatQty },
+                    ]}
+                  />
+                </Card>
+              </Space>
             ),
           },
           {
