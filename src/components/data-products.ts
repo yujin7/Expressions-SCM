@@ -34,6 +34,16 @@ export const DATA_PRODUCT_AUTHORITY_LABEL: Record<DataProductAuthority, string> 
 
 export const DATA_PRODUCTS: DataProductDefinition[] = [
   {
+    id: "commerce-identity-control",
+    title: "平台身份控制塔",
+    decision: "哪些天猫、拼多多、唯品会商品身份阻塞跨系统对账与自动化？",
+    grain: "平台 × 店铺 × 平台商品/SKU 身份",
+    owner: "商品 / 电商 / 数据",
+    sources: ["JIANDAOYUN", "SCM", "JST"],
+    targetAuthority: "operational",
+    releaseGate: "最新批次、唯一业务键、精确条码/别名、冲突清零、覆盖阈值与业务 UAT",
+  },
+  {
     id: "demand-pulse",
     title: "需求脉搏",
     decision: "哪些 SKU/渠道是真增长、退款上升或履约落差？",

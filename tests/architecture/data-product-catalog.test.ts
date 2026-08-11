@@ -7,8 +7,8 @@ import {
 } from "@/components/data-products";
 
 describe("三方数据产品目录", () => {
-  it("保持十个唯一、可执行的目标契约", () => {
-    expect(DATA_PRODUCTS).toHaveLength(10);
+  it("保持十一个唯一、可执行的目标契约", () => {
+    expect(DATA_PRODUCTS).toHaveLength(11);
     expect(new Set(DATA_PRODUCTS.map((item) => item.id)).size).toBe(DATA_PRODUCTS.length);
     for (const product of DATA_PRODUCTS) {
       expect(product.decision.trim()).not.toBe("");

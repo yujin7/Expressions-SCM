@@ -18,6 +18,11 @@ import {
   loadJiandaoyunExternalDemandSignal,
   type ExternalDemandSignal,
 } from "@/server/modules/report/external-demand-signal";
+import {
+  emptyCommerceIdentityCoverage,
+  loadCommerceIdentityCoverage,
+  type CommerceIdentityCoverage,
+} from "@/server/modules/report/commerce-identity-coverage";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -101,6 +106,7 @@ export interface DecisionStudioResult {
     latestDate: string | null;
   };
   externalDemand: ExternalDemandSignal;
+  commerceIdentity: CommerceIdentityCoverage;
   review: {
     headline: string;
     bullets: string[];
@@ -156,6 +162,7 @@ export function buildDecisionStudio(
   rawDaily: DailyFact[],
   query: StudioQuery = {},
   externalDemand: ExternalDemandSignal = emptyExternalDemandSignal(),
+  commerceIdentity: CommerceIdentityCoverage = emptyCommerceIdentityCoverage(),
 ): DecisionStudioResult {
   const dimension = DIMENSIONS.includes(query.dimension as StudioDimension)
     ? (query.dimension as StudioDimension)
@@ -317,6 +324,7 @@ export function buildDecisionStudio(
       latestDate: dailyDates.at(-1)?.date ?? null,
     },
     externalDemand,
+    commerceIdentity,
     review: { headline, bullets, markdown },
     limitations: [
       "sales_monthly 目前是月粒度数量事实；跨 SKU 相加可能混合件、箱、kg，仅作结构和趋势。",
@@ -469,10 +477,17 @@ export async function getDecisionStudio(
     ? (query.dimension as StudioDimension)
     : "brand";
   const scope = query.scope ?? {};
-  const [facts, daily, externalDemand] = await Promise.all([
+  const [facts, daily, externalDemand, commerceIdentity] = await Promise.all([
     loadMonthlyFacts(db, dimension, scope),
     loadDailyFacts(db),
     loadJiandaoyunExternalDemandSignal(db),
+    loadCommerceIdentityCoverage(db),
   ]);
-  return buildDecisionStudio(facts, daily, { ...query, dimension }, externalDemand);
+  return buildDecisionStudio(
+    facts,
+    daily,
+    { ...query, dimension },
+    externalDemand,
+    commerceIdentity,
+  );
 }

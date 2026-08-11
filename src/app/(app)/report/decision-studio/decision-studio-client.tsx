@@ -7,6 +7,7 @@ import {
   Button,
   Card,
   Col,
+  Progress,
   Radio,
   Row,
   Select,
@@ -135,6 +136,7 @@ export default function DecisionStudioClient() {
   const heatMax = Math.max(0, ...(data?.daily.dates ?? []).map((item) => item.qty));
   const external = data?.externalDemand;
   const externalReady = external?.state === "ready";
+  const identity = data?.commerceIdentity;
 
   const pivotColumns = useMemo<ColumnsType<DecisionStudioResult["pivot"][number]>>(
     () => [
@@ -829,6 +831,182 @@ export default function DecisionStudioClient() {
                     ]}
                   />
                 </Card>
+              </Space>
+            ),
+          },
+          {
+            key: "identity",
+            label: "平台身份覆盖",
+            children: (
+              <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                <Alert
+                  showIcon
+                  type={identity?.state === "ready" ? "warning" : "error"}
+                  message="三平台商品身份控制塔：只观察覆盖与质量，不提升任何外部表为系统主档"
+                  description={identity?.gate}
+                  action={(
+                    <Button href="/import/exceptions?status=open&scope=JIANDAOYUN">
+                      处理身份认领
+                    </Button>
+                  )}
+                />
+                <Row gutter={[10, 10]} className="compact-kpi-row">
+                  <Col xs={12} lg={6}>
+                    <Card size="small">
+                      <Statistic
+                        title="有可用批次的平台"
+                        value={identity?.summary.availablePlatforms ?? 0}
+                        suffix={`/ ${identity?.summary.totalPlatforms ?? 3}`}
+                      />
+                    </Card>
+                  </Col>
+                  <Col xs={12} lg={6}>
+                    <Card size="small">
+                      <Statistic
+                        title="最新批次原始行"
+                        value={identity?.summary.sourceRows ?? 0}
+                        formatter={(value) => Number(value).toLocaleString("zh-CN")}
+                      />
+                    </Card>
+                  </Col>
+                  <Col xs={12} lg={6}>
+                    <Card size="small">
+                      <Statistic
+                        title="平台唯一身份"
+                        value={identity?.summary.uniqueIdentities ?? 0}
+                        formatter={(value) => Number(value).toLocaleString("zh-CN")}
+                      />
+                    </Card>
+                  </Col>
+                  <Col xs={12} lg={6}>
+                    <Card size="small">
+                      <Statistic
+                        title="跨平台加权身份覆盖"
+                        value={identity?.summary.identityPct ?? "数据不足"}
+                        precision={identity?.summary.identityPct == null ? undefined : 1}
+                        suffix={identity?.summary.identityPct == null ? undefined : "%"}
+                        valueStyle={{
+                          color: (identity?.summary.identityPct ?? 0) >= 80
+                            ? VISUAL_COLOR.positive
+                            : VISUAL_COLOR.warning,
+                        }}
+                      />
+                    </Card>
+                  </Col>
+                </Row>
+                <Card
+                  size="small"
+                  title="平台身份覆盖与放行门禁"
+                  extra={<Tag color="warning">观察口径</Tag>}
+                  styles={{ body: { padding: 0 } }}
+                >
+                  <Table
+                    rowKey="key"
+                    size="small"
+                    pagination={false}
+                    dataSource={identity?.platforms ?? []}
+                    scroll={{ x: 1180 }}
+                    columns={[
+                      {
+                        title: "平台",
+                        dataIndex: "platform",
+                        fixed: "left",
+                        width: 100,
+                        sorter: (a, b) => a.platform.localeCompare(b.platform, "zh-CN"),
+                        render: (value, row) => (
+                          <Space size={6}>
+                            <Typography.Text strong>{value}</Typography.Text>
+                            <Tag color={row.fresh === true ? "success" : row.fresh === false ? "error" : "default"}>
+                              {row.fresh === true ? "新鲜" : row.fresh === false ? "陈旧" : "未知"}
+                            </Tag>
+                          </Space>
+                        ),
+                      },
+                      {
+                        title: "数据截至",
+                        dataIndex: "sourceAsOf",
+                        width: 130,
+                        sorter: (a, b) => String(a.sourceAsOf ?? "").localeCompare(String(b.sourceAsOf ?? "")),
+                        render: (value, row) => value
+                          ? <span>{String(value).slice(0, 10)} · {row.ageDays}天</span>
+                          : <Typography.Text type="secondary">无批次</Typography.Text>,
+                      },
+                      {
+                        title: "原始行 / 唯一身份",
+                        key: "volume",
+                        width: 170,
+                        align: "right",
+                        sorter: (a, b) => a.sourceRows - b.sourceRows,
+                        render: (_, row) => `${row.sourceRows.toLocaleString("zh-CN")} / ${row.uniqueIdentities.toLocaleString("zh-CN")}`,
+                      },
+                      {
+                        title: "已映射 / 覆盖率",
+                        key: "coverage",
+                        width: 210,
+                        sorter: (a, b) => (a.identityPct ?? -1) - (b.identityPct ?? -1),
+                        defaultSortOrder: "ascend",
+                        render: (_, row) => row.identityPct == null ? (
+                          <Typography.Text type="secondary">数据不足</Typography.Text>
+                        ) : (
+                          <Space direction="vertical" size={0} style={{ width: "100%" }}>
+                            <Typography.Text>{row.mappedIdentities.toLocaleString("zh-CN")} / {row.uniqueIdentities.toLocaleString("zh-CN")}</Typography.Text>
+                            <Progress
+                              percent={row.identityPct}
+                              size="small"
+                              status={row.identityPct >= 80 ? "success" : "exception"}
+                              format={(value) => `${Number(value).toFixed(1)}%`}
+                            />
+                          </Space>
+                        ),
+                      },
+                      {
+                        title: "可用桥接字段",
+                        key: "bridge",
+                        width: 190,
+                        sorter: (a, b) => (a.bridgePct ?? -1) - (b.bridgePct ?? -1),
+                        render: (_, row) => (
+                          <Space direction="vertical" size={0}>
+                            <Typography.Text>{row.bridgeLabel}</Typography.Text>
+                            <Typography.Text type="secondary">
+                              {row.bridgePct == null ? "数据不足" : `${row.bridgeIdentities.toLocaleString("zh-CN")} · ${row.bridgePct.toFixed(1)}%`}
+                            </Typography.Text>
+                          </Space>
+                        ),
+                      },
+                      {
+                        title: "重复组 / 冲突",
+                        key: "quality",
+                        width: 150,
+                        align: "right",
+                        sorter: (a, b) => (a.duplicateGroups + a.conflictingMappings) - (b.duplicateGroups + b.conflictingMappings),
+                        render: (_, row) => (
+                          <Typography.Text type={row.duplicateGroups + row.conflictingMappings > 0 ? "danger" : "secondary"}>
+                            {row.duplicateGroups.toLocaleString("zh-CN")} / {row.conflictingMappings.toLocaleString("zh-CN")}
+                          </Typography.Text>
+                        ),
+                      },
+                      {
+                        title: "当前门禁",
+                        dataIndex: "gate",
+                        width: 320,
+                        ellipsis: true,
+                        render: (value, row) => (
+                          <Space direction="vertical" size={0}>
+                            <Tag color="error">禁止放行</Tag>
+                            <Typography.Text type="secondary" title={value}>{value}</Typography.Text>
+                            <Typography.Text type="secondary" title={row.bridgePolicy}>{row.bridgePolicy}</Typography.Text>
+                          </Space>
+                        ),
+                      },
+                    ]}
+                  />
+                </Card>
+                <Alert
+                  showIcon
+                  type="info"
+                  message="如何利用：先修身份，再做总量对账，最后才让聚水潭履约与用友财务进入同一业务链"
+                  description={identity?.limitations.join("")}
+                />
               </Space>
             ),
           },
