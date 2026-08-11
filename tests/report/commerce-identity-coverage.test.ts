@@ -80,6 +80,12 @@ describe("简道云多平台商品身份覆盖", () => {
           payload: { data: { platformProductId: "V2", barcode: "6912" }, _identity: { skuId: 203 } },
         },
       ]);
+      await db.insert(schema.aliasExceptions).values({
+        aliasType: "sku_barcode",
+        scope: "JIANDAOYUN",
+        rawValue: "6902",
+        status: "open",
+      });
 
       const result = await loadCommerceIdentityCoverage(db, {
         now: new Date("2026-08-12T04:00:00.000Z"),
@@ -95,6 +101,7 @@ describe("简道云多平台商品身份覆盖", () => {
         mappedIdentities: 2,
         identityPct: 33.3,
         qualityIssues: 5,
+        repairBacklog: 5,
       });
       const tmallRow = result.platforms.find((item) => item.key === "tmall");
       expect(tmallRow).toMatchObject({
@@ -108,6 +115,7 @@ describe("简道云多平台商品身份覆盖", () => {
         duplicateGroups: 1,
         duplicateRows: 1,
         conflictingMappings: 0,
+        repairBacklog: 2,
         ageDays: 1,
         fresh: true,
       });
@@ -118,12 +126,79 @@ describe("简道云多平台商品身份覆盖", () => {
         identityPct: 0,
         bridgeIdentities: 1,
         duplicateGroups: 1,
+        repairBacklog: 2,
       });
       expect(result.platforms.find((item) => item.key === "vip")).toMatchObject({
         uniqueIdentities: 2,
         mappedIdentities: 1,
         conflictingMappings: 1,
+        repairBacklog: 1,
       });
+      expect(result.repairQueue).toHaveLength(5);
+      expect(result.repairQueue[0]).toMatchObject({
+        platformKey: "vip",
+        externalId: "V2",
+        issue: "conflicting_mapping",
+        priority: 1,
+        claimable: false,
+      });
+      expect(result.repairQueue.find((item) => item.platformKey === "tmall" && item.externalId === "T2"))
+        .toMatchObject({
+          bridgeValue: "6902",
+          issue: "unmapped_with_bridge",
+          priority: 2,
+          claimable: true,
+          exceptionStatus: "open",
+        });
+      expect(result.repairQueue.find((item) => item.platformKey === "pdd" && item.externalId === "P1"))
+        .toMatchObject({
+          issue: "unmapped_with_bridge",
+          priority: 2,
+          claimable: false,
+        });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("仅开放异常可直接认领；已解决、已忽略和缺异常保留各自下一步", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "身份裁决人" }).returning();
+      const [job] = await db.insert(schema.importJobs).values({
+        template: "jdy_tmall_sku_crosswalk_observation",
+        filename: "tmall-exception-states",
+        sourceAsOf: "2026-08-11",
+        createdBy: actor.id,
+        status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy",
+        stream: "tmall-sku-crosswalk-observation",
+        idempotencyKey: "tmall-exception-states",
+        status: "succeeded",
+        importJobId: job.id,
+        finishedAt: new Date("2026-08-11T03:00:00.000Z"),
+      });
+      await db.insert(schema.stagingRows).values([
+        { importJobId: job.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation", payload: { data: { shopName: "旗舰店", platformSkuId: "OPEN", barcode: "6901" }, _identity: {} } },
+        { importJobId: job.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation", payload: { data: { shopName: "旗舰店", platformSkuId: "RESOLVED", barcode: "6902" }, _identity: {} } },
+        { importJobId: job.id, rowNo: 3, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation", payload: { data: { shopName: "旗舰店", platformSkuId: "IGNORED", barcode: "6903" }, _identity: {} } },
+        { importJobId: job.id, rowNo: 4, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation", payload: { data: { shopName: "旗舰店", platformSkuId: "MISSING", barcode: "6904" }, _identity: {} } },
+      ]);
+      await db.insert(schema.aliasExceptions).values([
+        { aliasType: "sku_barcode", scope: "JIANDAOYUN", rawValue: "6901", status: "open" },
+        { aliasType: "sku_barcode", scope: "JIANDAOYUN", rawValue: "6902", status: "resolved", resolvedTargetId: 101, resolvedBy: actor.id, resolvedAt: new Date("2026-08-11T04:00:00.000Z") },
+        { aliasType: "sku_barcode", scope: "JIANDAOYUN", rawValue: "6903", status: "ignored" },
+      ]);
+
+      const result = await loadCommerceIdentityCoverage(db);
+      const rows = new Map(result.repairQueue.map((row) => [row.externalId, row]));
+      expect(rows.get("OPEN")).toMatchObject({ claimable: true, exceptionStatus: "open" });
+      expect(rows.get("RESOLVED")).toMatchObject({ claimable: false, exceptionStatus: "resolved" });
+      expect(rows.get("RESOLVED")?.action).toContain("重新同步");
+      expect(rows.get("IGNORED")).toMatchObject({ claimable: false, exceptionStatus: "ignored" });
+      expect(rows.get("MISSING")).toMatchObject({ claimable: false, exceptionStatus: null });
     } finally {
       await client.close();
     }
@@ -137,6 +212,7 @@ describe("简道云多平台商品身份覆盖", () => {
       expect(result.summary.identityPct).toBeNull();
       expect(result.platforms).toHaveLength(3);
       expect(result.platforms.every((item) => item.state === "insufficient")).toBe(true);
+      expect(result.repairQueue).toEqual([]);
     } finally {
       await client.close();
     }
