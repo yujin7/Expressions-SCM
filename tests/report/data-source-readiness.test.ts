@@ -73,6 +73,17 @@ describe("三方数据来源证据矩阵", () => {
           startedAt: new Date("2026-08-12T16:00:00.000Z"),
           finishedAt: new Date("2026-08-12T16:01:00.000Z"),
         },
+        {
+          connector: "jst",
+          stream: "inventory-total-delta",
+          idempotencyKey: "jst-invalid-calendar-date",
+          status: "succeeded",
+          sourceRows: 1,
+          stagedRows: 1,
+          requestScope: { sourceAsOf: "2026-02-30" },
+          startedAt: new Date("2026-08-12T16:05:00.000Z"),
+          finishedAt: new Date("2026-08-12T16:06:00.000Z"),
+        },
       ]);
       await db.insert(schema.aliasExceptions).values({
         aliasType: "sku_barcode",
@@ -118,9 +129,15 @@ describe("三方数据来源证据矩阵", () => {
         state: "observation",
         contractSelectionState: "not_required",
         selectedContractCount: 0,
-        successfulStreams: 1,
+        successfulStreams: 2,
       });
       expect(result.find((row) => row.key === "JST")?.streams).toEqual([
+        expect.objectContaining({
+          stream: "inventory-total-delta",
+          sourceAsOf: "2026-02-30",
+          sourceTimeInvalid: true,
+          freshness: "unknown",
+        }),
         expect.objectContaining({
           stream: "outbound-sales-daily",
           sourceAsOf: "2026-08-14",

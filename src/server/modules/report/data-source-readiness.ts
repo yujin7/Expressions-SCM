@@ -165,10 +165,18 @@ function shanghaiDate(value: Date): string {
 }
 
 function businessAgeDaysSince(value: string | null, now: Date): number | null {
-  if (!value) return null;
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
   const sourceDay = Date.parse(`${value}T00:00:00.000Z`);
   const today = Date.parse(`${shanghaiDate(now)}T00:00:00.000Z`);
-  if (!Number.isFinite(sourceDay) || !Number.isFinite(today) || today < sourceDay) return null;
+  // Date.parse normalizes some impossible calendar dates (for example 2026-02-30)
+  // instead of rejecting them. Round-trip the UTC calendar day so malformed source
+  // evidence cannot pass a freshness gate.
+  if (
+    !Number.isFinite(sourceDay)
+    || new Date(sourceDay).toISOString().slice(0, 10) !== value
+    || !Number.isFinite(today)
+    || today < sourceDay
+  ) return null;
   return Math.round((today - sourceDay) / 86_400_000);
 }
 
