@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { evaluateProductSourceEvidence } from "@/components/data-product-source-evidence";
+import {
+  currentProductAutomation,
+  evaluateProductSourceEvidence,
+} from "@/components/data-product-source-evidence";
 import type { DataProductDefinition } from "@/components/data-products";
 import type { DataSourceReadiness } from "@/server/modules/report/data-source-readiness";
 
@@ -67,6 +70,12 @@ const product: DataProductDefinition = {
   decision: "test",
   grain: "day x sku",
   owner: "test",
+  contractVersion: "1.0.0",
+  cadence: "daily",
+  decisionSlaHours: 24,
+  metricIds: ["externalNetDemand"],
+  maxAutomation: "A2",
+  automationGuardrail: "test",
   sources: ["SCM", "JST"],
   requiredStreams: { JST: ["outbound-sales-daily"] },
   targetAuthority: "operational",
@@ -157,5 +166,28 @@ describe("数据产品所需流证据", () => {
     ]);
 
     expect(result).toMatchObject({ observedSources: 1, missingSources: 1, missingStreams: 1 });
+  });
+
+  it("运行证据只解锁 A0/A1，不绕过产品级 UAT 升到目标 A2/A3", () => {
+    const safeObservation = source("JST", "observation", ["outbound-sales-daily"]);
+    safeObservation.streams = [stream("outbound-sales-daily", { releaseBlocked: true })];
+    const explanation = currentProductAutomation(evaluateProductSourceEvidence(product, [
+      source("SCM", "operational", []),
+      safeObservation,
+    ]));
+    expect(explanation).toMatchObject({ level: "A1" });
+
+    const rejected = source("JST", "operational", ["outbound-sales-daily"]);
+    rejected.streams = [stream("outbound-sales-daily", { rejectedRows: 1 })];
+    expect(currentProductAutomation(evaluateProductSourceEvidence(product, [
+      source("SCM", "operational", []),
+      rejected,
+    ]))).toMatchObject({ level: "A0" });
+
+    expect(currentProductAutomation(evaluateProductSourceEvidence(product, [
+      source("SCM", "operational", []),
+      source("JST", "operational", ["outbound-sales-daily"]),
+    ]))).toMatchObject({ level: "A1" });
+    expect(product.maxAutomation).toBe("A2");
   });
 });

@@ -1,4 +1,8 @@
-import type { DataProductDefinition, DataProductSource } from "@/components/data-products";
+import type {
+  DataProductAutomationLevel,
+  DataProductDefinition,
+  DataProductSource,
+} from "@/components/data-products";
 import type {
   DataSourceReadiness,
   DataStreamEvidence,
@@ -39,6 +43,11 @@ export interface ProductEvidenceSummary {
   missingStreams: number;
   staleStreams: number;
   degradedStreams: number;
+}
+
+export interface ProductAutomationReadiness {
+  level: Extract<DataProductAutomationLevel, "A0" | "A1">;
+  reason: string;
 }
 
 function streamState(
@@ -148,4 +157,38 @@ export function evaluateProductSourceEvidence(
     staleStreams: sources.reduce((sum, row) => sum + row.staleStreams.length, 0),
     degradedStreams: sources.reduce((sum, row) => sum + row.degradedStreams.length, 0),
   };
+}
+
+function streamSafeForExplanation(row: ProductStreamEvidence): boolean {
+  const evidence = row.evidence;
+  return evidence != null
+    && evidence.lastSuccessAt != null
+    && evidence.freshness === "current"
+    && evidence.latestStatus === "succeeded"
+    && !evidence.authorizationBlocked
+    && !evidence.sourceTimeInvalid
+    && !evidence.emptySource
+    && evidence.rejectedRows === 0;
+}
+
+/**
+ * 当前运行证据最多自动解锁 A1（解释）。A2/A3 还需要产品级控制总量、UAT、审批和
+ * 回滚证据；仅凭连接器状态永远不能越级。observation-only/releaseBlocked 可以用于带标记
+ * 的解释，但失败、过期、拒收、空源、授权阻断或无证据必须退回 A0。
+ */
+export function currentProductAutomation(
+  summary: ProductEvidenceSummary,
+): ProductAutomationReadiness {
+  const safe = summary.sources.every((source) => source.source === "SCM"
+    ? source.state === "operational"
+    : source.streams.length > 0 && source.streams.every(streamSafeForExplanation));
+  return safe
+    ? {
+        level: "A1",
+        reason: "所需流具备当前、成功且无拒收的证据；仅允许带来源口径的解释，仍待产品级 UAT 后升级。",
+      }
+    : {
+        level: "A0",
+        reason: "所需来源存在缺失、过期、失败、拒收、空源或授权/时间异常；只能观察门禁与修复队列。",
+      };
 }

@@ -18,6 +18,13 @@ describe("决策能力页的来源证据", () => {
     expect(source).toContain("来源已放行");
     expect(source).toContain("所需流已过期");
     expect(source).toContain("RequiredStreamEvidence");
+    expect(source).toContain("ProductOperatingContract");
+    expect(source).toContain("currentProductAutomation");
+    expect(source).toContain("契约 v{product.contractVersion}");
+    expect(source).toContain("决策 SLA {product.decisionSlaHours}h");
+    expect(source).toContain("UAT 后上限");
+    expect(source).toContain("核心指标：");
+    expect(source).toContain("自动化护栏：");
     expect(source).toContain("业务截止 / 时效");
     expect(source).toContain("源行 / Staging / 拒收");
   });

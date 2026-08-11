@@ -7,6 +7,8 @@
 
 export type DataProductSource = "SCM" | "JIANDAOYUN" | "JST" | "YONYOU";
 export type DataProductAuthority = "observation" | "operational" | "financial";
+export type DataProductCadence = "intraday" | "daily" | "weekly" | "monthly";
+export type DataProductAutomationLevel = "A0" | "A1" | "A2" | "A3";
 
 export interface DataProductDefinition {
   id: string;
@@ -14,6 +16,15 @@ export interface DataProductDefinition {
   decision: string;
   grain: string;
   owner: string;
+  contractVersion: string;
+  cadence: DataProductCadence;
+  /** 数据满足契约后，从异常出现到 owner 作出决定的目标时限。 */
+  decisionSlaHours: number;
+  /** 只引用全局指标注册表，不在产品目录复制公式。 */
+  metricIds: string[];
+  /** 完整放行并通过产品级 UAT 后仍不得越过的自动化上限。 */
+  maxAutomation: DataProductAutomationLevel;
+  automationGuardrail: string;
   sources: DataProductSource[];
   /** 每个外部来源必须有过最新成功证据的具体流；不能用同连接器的无关流替代。 */
   requiredStreams: Partial<Record<DataProductSource, string[]>>;
@@ -34,6 +45,20 @@ export const DATA_PRODUCT_AUTHORITY_LABEL: Record<DataProductAuthority, string> 
   financial: "财务/关账",
 };
 
+export const DATA_PRODUCT_CADENCE_LABEL: Record<DataProductCadence, string> = {
+  intraday: "日内",
+  daily: "每日",
+  weekly: "每周",
+  monthly: "每月/关账",
+};
+
+export const DATA_PRODUCT_AUTOMATION_LABEL: Record<DataProductAutomationLevel, string> = {
+  A0: "观察",
+  A1: "解释",
+  A2: "建议",
+  A3: "草稿",
+};
+
 export const DATA_PRODUCTS: DataProductDefinition[] = [
   {
     id: "commerce-identity-control",
@@ -41,6 +66,12 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "哪些天猫、拼多多、唯品会商品身份阻塞跨系统对账与自动化？",
     grain: "平台 × 店铺 × 平台商品/SKU 身份",
     owner: "商品 / 电商 / 数据",
+    contractVersion: "1.0.0",
+    cadence: "daily",
+    decisionSlaHours: 24,
+    metricIds: ["platformIdentityCoverage", "identityConflictCount"],
+    maxAutomation: "A2",
+    automationGuardrail: "只排序并解释身份修复建议；禁止模糊匹配或自动认领 SKU。",
     sources: ["JIANDAOYUN", "SCM", "JST"],
     requiredStreams: {
       JIANDAOYUN: [
@@ -59,6 +90,12 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "哪些 SKU/渠道是真增长、退款上升或履约落差？",
     grain: "日 × 店铺 × 平台 SKU",
     owner: "电商 / PMC",
+    contractVersion: "1.0.0",
+    cadence: "daily",
+    decisionSlaHours: 24,
+    metricIds: ["externalNetDemand", "refundRate", "mappedDemandCoverage"],
+    maxAutomation: "A2",
+    automationGuardrail: "观察需求只生成解释和建议；不得直接改写正式销量、预测或补货量。",
     sources: ["JIANDAOYUN", "JST", "SCM"],
     requiredStreams: {
       JIANDAOYUN: [
@@ -77,6 +114,12 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "销售、履约、开票、收款在哪个环节卡住？",
     grain: "来源订单 × 收款/凭证",
     owner: "财务 / 电商",
+    contractVersion: "1.0.0",
+    cadence: "daily",
+    decisionSlaHours: 48,
+    metricIds: ["orderFulfillmentRate", "cashConversionDays", "unreconciledOrderCount"],
+    maxAutomation: "A2",
+    automationGuardrail: "只生成差异和催办建议；禁止自动开票、认款、核销或生成正式凭证。",
     sources: ["JST", "YONYOU", "SCM"],
     requiredStreams: {
       JST: ["orders-daily", "outbound-sales-daily", "returns-daily"],
@@ -94,6 +137,12 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "货在哪里、哪些可用、哪些是账实差异或未知？",
     grain: "截止时点 × 仓库 × SKU × 批次",
     owner: "仓储 / PMC / 财务",
+    contractVersion: "1.0.0",
+    cadence: "intraday",
+    decisionSlaHours: 4,
+    metricIds: ["onHandSystem", "inventoryReconciliationGap", "coverageSku"],
+    maxAutomation: "A2",
+    automationGuardrail: "差异只进入核对队列；不得自动调平、补零或绕过库存过账。",
     sources: ["SCM", "JST", "YONYOU"],
     requiredStreams: {
       JST: ["inventory-total-delta"],
@@ -108,6 +157,12 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "PO/加工/在途何时可用，承诺日是否可信？",
     grain: "供应单行 × 承诺日 × 实际到货",
     owner: "采购 / PMC",
+    contractVersion: "1.0.0",
+    cadence: "daily",
+    decisionSlaHours: 24,
+    metricIds: ["openSupplyQty", "onTimeRate", "promiseReliability"],
+    maxAutomation: "A3",
+    automationGuardrail: "最多生成催交、改期或补单草稿；任何单据变更仍须 owner 审批。",
     sources: ["SCM", "JIANDAOYUN", "JST", "YONYOU"],
     requiredStreams: {
       JIANDAOYUN: ["purchase-order-observation", "purchase-receipt-observation"],
@@ -123,6 +178,12 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "销量增长扣除退款、平台费、物流和成本后还剩多少？",
     grain: "期间 × 渠道 × SKU",
     owner: "财务 / 业务",
+    contractVersion: "1.0.0",
+    cadence: "monthly",
+    decisionSlaHours: 72,
+    metricIds: ["netRevenue", "contributionMarginRate", "costCoverage"],
+    maxAutomation: "A2",
+    automationGuardrail: "未关账期间只解释差异；禁止自动分摊费用、改成本或形成财务凭证。",
     sources: ["JIANDAOYUN", "JST", "YONYOU", "SCM"],
     requiredStreams: {
       JIANDAOYUN: [
@@ -145,6 +206,12 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "哪些供应商交期、质量、价格或资金风险最高？",
     grain: "供应商 × 期间 × 产品/物料",
     owner: "采购 / 品质 / 财务",
+    contractVersion: "1.0.0",
+    cadence: "weekly",
+    decisionSlaHours: 72,
+    metricIds: ["onTimeRate", "qcPassRate", "supplierPriceVariance"],
+    maxAutomation: "A2",
+    automationGuardrail: "评分只生成复核建议；不得自动停用供应商、改等级或变更付款条件。",
     sources: ["SCM", "YONYOU"],
     requiredStreams: {
       YONYOU: [
@@ -162,6 +229,12 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "什么时候、补多少、哪个假设会使建议失效？",
     grain: "SKU × 仓/渠道 × 建议日",
     owner: "PMC / 采购",
+    contractVersion: "1.0.0",
+    cadence: "daily",
+    decisionSlaHours: 24,
+    metricIds: ["daysCover", "safetyQty", "suggestQty", "wape"],
+    maxAutomation: "A3",
+    automationGuardrail: "最多生成补货/调拨草稿；金额、数量、MOQ、交期与库存事实仍需审批。",
     sources: ["SCM", "JIANDAOYUN", "JST", "YONYOU"],
     requiredStreams: {
       JIANDAOYUN: [
@@ -185,6 +258,12 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "上市前还缺什么，首销后 30/60/90 天是否达到假设？",
     grain: "新品项目 × 里程碑/上市窗口",
     owner: "产品 / PMC / 电商",
+    contractVersion: "1.0.0",
+    cadence: "daily",
+    decisionSlaHours: 24,
+    metricIds: ["npdProgress", "launchOnTimeRate", "first90DayAchievement"],
+    maxAutomation: "A3",
+    automationGuardrail: "最多生成任务、提醒和补救草稿；不得自动移动正式里程碑或上市日。",
     sources: ["SCM", "JIANDAOYUN", "YONYOU", "JST"],
     requiredStreams: {
       JIANDAOYUN: ["npd-milestone-observation", "product-master-observation"],
@@ -204,6 +283,12 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "简道云观察、聚水潭履约和用友财务为什么不一致？",
     grain: "业务日 × 店铺/仓 × SKU × 差异类型",
     owner: "数据 / 财务 / 运营",
+    contractVersion: "1.0.0",
+    cadence: "intraday",
+    decisionSlaHours: 4,
+    metricIds: ["triangulationExceptionCount", "exceptionSlaRate", "inventoryReconciliationGap"],
+    maxAutomation: "A2",
+    automationGuardrail: "只定位、归因和分派异常；三边事实保持独立，禁止自动调平。",
     sources: ["JIANDAOYUN", "JST", "YONYOU", "SCM"],
     requiredStreams: {
       JIANDAOYUN: ["tmall-sku-sales-observation", "tmall-sku-refund-observation"],
@@ -224,6 +309,12 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "13 周销量、供给、库存和现金在什么情景下会失衡？",
     grain: "周 × 品牌/渠道 × 情景版本",
     owner: "经营层 / PMC / 财务",
+    contractVersion: "1.0.0",
+    cadence: "weekly",
+    decisionSlaHours: 48,
+    metricIds: ["salesQty", "onHandSystem", "cashGap13Week", "scenarioCoverage"],
+    maxAutomation: "A2",
+    automationGuardrail: "情景只生成决策建议；不得覆盖预算、关账事实、正式预测或资金指令。",
     sources: ["SCM", "JIANDAOYUN", "JST", "YONYOU"],
     requiredStreams: {
       JIANDAOYUN: [
