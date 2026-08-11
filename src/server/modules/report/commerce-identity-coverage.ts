@@ -134,6 +134,8 @@ export interface CommerceIdentityRepairItem {
   productName: string | null;
   bridgeLabel: string;
   bridgeValue: string | null;
+  exceptionId: number | null;
+  exceptionStatus: "open" | "resolved" | "ignored" | null;
   sourceRows: number;
   issue: CommerceIdentityIssue;
   priority: 1 | 2 | 3 | 4;
@@ -324,6 +326,7 @@ async function loadPlatform(
 function repairAction(
   issue: CommerceIdentityIssue,
   contract: PlatformContract,
+  exceptionStatus: CommerceIdentityRepairItem["exceptionStatus"],
 ): { action: string; claimable: boolean } {
   if (issue === "conflicting_mapping") {
     return { action: "裁决同一平台身份的多 SKU 归属", claimable: false };
@@ -332,7 +335,16 @@ function repairAction(
     return { action: `回源修正同一身份的多个${contract.bridgeLabel}`, claimable: false };
   }
   if (issue === "unmapped_with_bridge" && contract.bridgeCanClaim) {
-    return { action: `按唯一${contract.bridgeLabel}进入人工认领`, claimable: true };
+    if (exceptionStatus === "open") {
+      return { action: `按唯一${contract.bridgeLabel}进入人工认领`, claimable: true };
+    }
+    if (exceptionStatus === "resolved") {
+      return { action: "已认领；重新同步对照批次取得系统 SKU 归属", claimable: false };
+    }
+    if (exceptionStatus === "ignored") {
+      return { action: "异常已忽略；回源核对后决定是否重新开放", claimable: false };
+    }
+    return { action: "先同步生成开放异常，再进入人工认领", claimable: false };
   }
   if (issue === "unmapped_with_bridge") {
     return { action: "先确认外部编码命名空间，再登记受治理别名", claimable: false };
@@ -394,8 +406,15 @@ async function loadRepairQueue(
       FROM grouped
       WHERE mapped_values <> 1 OR source_rows > 1 OR bridge_values > 1
     )
-    SELECT shop_name, external_id, product_name, bridge_value, source_rows, issue, priority
-    FROM classified
+    SELECT c.shop_name, c.external_id, c.product_name, c.bridge_value,
+      c.source_rows, c.issue, c.priority,
+      ae.id AS exception_id, ae.status AS exception_status
+    FROM classified c
+    LEFT JOIN alias_exceptions ae
+      ON ${contract.bridgeCanClaim} = true
+      AND ae.alias_type = 'sku_barcode'
+      AND ae.scope = 'JIANDAOYUN'
+      AND ae.raw_value = c.bridge_value
     ORDER BY priority, source_rows DESC, platform_identity
     LIMIT 20
   `);
@@ -406,7 +425,12 @@ async function loadRepairQueue(
       "conflicting_mapping", "conflicting_bridge", "unmapped_with_bridge",
       "missing_bridge", "duplicate_source",
     ].includes(rawIssue) ? rawIssue : "missing_bridge";
-    const { action, claimable } = repairAction(issue, contract);
+    const exceptionStatus = row.exception_status === "open"
+      || row.exception_status === "resolved"
+      || row.exception_status === "ignored"
+      ? row.exception_status
+      : null;
+    const { action, claimable } = repairAction(issue, contract, exceptionStatus);
     const rawPriority = intValue(row.priority);
     const priority = (rawPriority >= 1 && rawPriority <= 4 ? rawPriority : 4) as 1 | 2 | 3 | 4;
     return {
@@ -417,6 +441,8 @@ async function loadRepairQueue(
       productName: row.product_name == null ? null : String(row.product_name),
       bridgeLabel: contract.bridgeLabel,
       bridgeValue: row.bridge_value == null ? null : String(row.bridge_value),
+      exceptionId: row.exception_id == null ? null : intValue(row.exception_id),
+      exceptionStatus,
       sourceRows: intValue(row.source_rows),
       issue,
       priority,

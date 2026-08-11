@@ -38,7 +38,7 @@ export function buildCommerceIdentityRepairExport(
     headers: [
       "记录类型", "权限口径", "来源系统", "平台", "来源截止", "导出时间",
       "优先级", "问题类型", "店铺", "平台商品或SKU", "商品名", "桥接字段",
-      "桥接值", "源记录数", "可直接进入认领", "下一步动作", "放行状态",
+      "桥接值", "异常单ID", "异常状态", "源记录数", "可直接进入认领", "下一步动作", "放行状态",
     ],
     rows: coverage.repairQueue.map((row) => [
       "commerce_identity_repair",
@@ -54,6 +54,8 @@ export function buildCommerceIdentityRepairExport(
       row.productName,
       row.bridgeLabel,
       row.bridgeValue,
+      row.exceptionId,
+      row.exceptionStatus,
       row.sourceRows,
       row.claimable ? "是" : "否",
       row.action,
