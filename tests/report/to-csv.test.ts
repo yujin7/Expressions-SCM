@@ -37,6 +37,20 @@ describe("W5 导出基础设施：toCsv/buildCsv/stripMoneyColumns", () => {
     expect(csv.endsWith("\r\n")).toBe(true);
   });
 
+  it("外部文本按 spreadsheet formula injection 防护，数值与负 decimal 不变", () => {
+    const csv = toCsv(
+      [
+        { skuCode: "=HYPERLINK(\"https://bad.example\")", qty: "-0.5000" },
+        { skuCode: "  +CMD", qty: -2 },
+      ],
+      cols,
+    );
+    expect(csv).toContain("'=");
+    expect(csv).toContain("'  +CMD");
+    expect(csv).toContain("-0.5000");
+    expect(csv).toContain("-2");
+  });
+
   it("buildCsv 截断：truncated=true 追加提示行（占第一列）", () => {
     const csv = buildCsv([{ skuCode: "X", qty: "1" }], cols, { truncated: true });
     const lines = csv.slice(1).split("\r\n").filter((l) => l !== "");

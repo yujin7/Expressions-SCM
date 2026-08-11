@@ -32,13 +32,19 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { CopyOutlined } from "@ant-design/icons";
+import { CopyOutlined, DownloadOutlined } from "@ant-design/icons";
 
 import DecisionReadinessPanel from "@/components/DecisionReadinessPanel";
 import DecisionVisual from "@/components/DecisionVisual";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
+import { exportCsv } from "@/components/exportCsv";
+import {
+  buildExternalDemandDailyExport,
+  buildExternalDemandIdentityExport,
+  externalDemandIdentityAction,
+} from "@/components/external-demand-export";
 import { useListState } from "@/components/useListState";
 import RemoteSelect from "@/components/RemoteSelect";
 import type {
@@ -178,6 +184,26 @@ export default function DecisionStudioClient() {
     } catch {
       message.warning("浏览器未允许复制，请使用地址栏分享当前分析。");
     }
+  };
+
+  const exportExternalDaily = () => {
+    if (!externalReady || !external || external.daily.length === 0) {
+      message.warning("当前没有可导出的简道云日核对证据");
+      return;
+    }
+    const payload = buildExternalDemandDailyExport(external);
+    exportCsv(payload.filename, payload.headers, payload.rows);
+    message.success("已导出简道云日控制总量 UAT 证据");
+  };
+
+  const exportExternalIdentityQueue = () => {
+    if (!externalReady || !external || external.topUnmapped.length === 0) {
+      message.warning("当前没有待导出的平台 SKU 身份修复项");
+      return;
+    }
+    const payload = buildExternalDemandIdentityExport(external);
+    exportCsv(payload.filename, payload.headers, payload.rows);
+    message.success("已导出平台 SKU 身份修复队列");
   };
 
   return (
@@ -706,6 +732,10 @@ export default function DecisionStudioClient() {
                   state={loading && !data ? "loading" : external?.state ?? "insufficient"}
                   stateDetail={external?.gate}
                   height={390}
+                  onExport={externalReady && (external?.daily.length ?? 0) > 0
+                    ? exportExternalDaily
+                    : undefined}
+                  exportLabel="导出日控制总量 UAT 证据"
                   dataView={(
                     <Table
                       rowKey="date"
@@ -738,7 +768,20 @@ export default function DecisionStudioClient() {
                 <Card
                   size="small"
                   title="优先处理：高销量未映射平台 SKU"
-                  extra={<Tag color="gold">TOP {external?.topUnmapped.length ?? 0}</Tag>}
+                  extra={(
+                    <Space size={6} wrap>
+                      <Tag color="gold">TOP {external?.topUnmapped.length ?? 0}</Tag>
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<DownloadOutlined />}
+                        disabled={!externalReady || (external?.topUnmapped.length ?? 0) === 0}
+                        onClick={exportExternalIdentityQueue}
+                      >
+                        导出修复队列
+                      </Button>
+                    </Space>
+                  )}
                 >
                   <Alert
                     type="info"
@@ -767,7 +810,8 @@ export default function DecisionStudioClient() {
                         width: 150,
                         fixed: "right",
                         render: (_, row) => {
-                          if (!row.barcode) return <Tag color="error">回源补对照/条码</Tag>;
+                          const action = externalDemandIdentityAction(row);
+                          if (!row.barcode) return <Tag color="error">{action}</Tag>;
                           if (row.exceptionStatus === "open") {
                             const query = new URLSearchParams({
                               status: "open",
@@ -775,11 +819,11 @@ export default function DecisionStudioClient() {
                               aliasType: "sku_barcode",
                               rawValue: row.barcode,
                             });
-                            return <Button type="link" size="small" href={`/import/exceptions?${query.toString()}`}>去认领</Button>;
+                            return <Button type="link" size="small" href={`/import/exceptions?${query.toString()}`}>{action}</Button>;
                           }
-                          if (row.exceptionStatus === "resolved") return <Tag color="processing">已认领·待同步</Tag>;
-                          if (row.exceptionStatus === "ignored") return <Tag>已忽略·回源核对</Tag>;
-                          return <Tag color="warning">待同步核对</Tag>;
+                          if (row.exceptionStatus === "resolved") return <Tag color="processing">{action}</Tag>;
+                          if (row.exceptionStatus === "ignored") return <Tag>{action}</Tag>;
+                          return <Tag color="warning">{action}</Tag>;
                         },
                       },
                     ]}

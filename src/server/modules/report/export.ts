@@ -33,6 +33,16 @@ function csvCell(v: unknown): string {
   let s: string;
   if (v instanceof Date) s = v.toISOString();
   else s = String(v);
+  // 外部字段不可默认可信：阻止 Excel/Numbers 把 CSV 单元格解释为公式。
+  // 真正的 number 以及合法负数字符串保持原样，避免破坏数量/decimal 口径。
+  if (typeof v !== "number" && !(v instanceof Date)) {
+    const firstNonSpace = s.search(/\S/);
+    const candidate = firstNonSpace < 0 ? "" : s.slice(firstNonSpace);
+    const isNegativeNumber = /^-[0-9]+(?:\.[0-9]+)?$/.test(candidate);
+    if (/^[=+@]/.test(candidate) || (candidate.startsWith("-") && !isNegativeNumber)) {
+      s = `'${s}`;
+    }
+  }
   // 含分隔符/引号/换行 → 引号包裹，内部引号加倍（RFC4180）
   if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
