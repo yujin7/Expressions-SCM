@@ -1,7 +1,7 @@
 # 供应链系统（委外闭环 MVP 1.0）
 
-内部供应链管理系统。当前入口见 [`docs/NOW.md`](docs/NOW.md)，规格与决议见
-[`docs/spec/CURRENT.md`](docs/spec/CURRENT.md)。
+内部供应链管理系统。中文资料总入口见 [`docs/README.md`](docs/README.md)，当前状态见
+[`docs/NOW.md`](docs/NOW.md)，规格与决议见 [`docs/spec/CURRENT.md`](docs/spec/CURRENT.md)。
 
 ## 技术栈
 Next.js 15 · TypeScript · Ant Design 5 · PostgreSQL 16 · Drizzle ORM · NextAuth v5 · pg-boss · vitest(+PGlite)
