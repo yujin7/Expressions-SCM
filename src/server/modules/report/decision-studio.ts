@@ -23,6 +23,10 @@ import {
   loadCommerceIdentityCoverage,
   type CommerceIdentityCoverage,
 } from "@/server/modules/report/commerce-identity-coverage";
+import {
+  loadDataSourceReadiness,
+  type DataSourceReadiness,
+} from "@/server/modules/report/data-source-readiness";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -107,6 +111,7 @@ export interface DecisionStudioResult {
   };
   externalDemand: ExternalDemandSignal;
   commerceIdentity: CommerceIdentityCoverage;
+  dataSources: DataSourceReadiness[];
   review: {
     headline: string;
     bullets: string[];
@@ -163,6 +168,7 @@ export function buildDecisionStudio(
   query: StudioQuery = {},
   externalDemand: ExternalDemandSignal = emptyExternalDemandSignal(),
   commerceIdentity: CommerceIdentityCoverage = emptyCommerceIdentityCoverage(),
+  dataSources: DataSourceReadiness[] = [],
 ): DecisionStudioResult {
   const dimension = DIMENSIONS.includes(query.dimension as StudioDimension)
     ? (query.dimension as StudioDimension)
@@ -325,6 +331,7 @@ export function buildDecisionStudio(
     },
     externalDemand,
     commerceIdentity,
+    dataSources,
     review: { headline, bullets, markdown },
     limitations: [
       "sales_monthly 目前是月粒度数量事实；跨 SKU 相加可能混合件、箱、kg，仅作结构和趋势。",
@@ -477,11 +484,12 @@ export async function getDecisionStudio(
     ? (query.dimension as StudioDimension)
     : "brand";
   const scope = query.scope ?? {};
-  const [facts, daily, externalDemand, commerceIdentity] = await Promise.all([
+  const [facts, daily, externalDemand, commerceIdentity, dataSources] = await Promise.all([
     loadMonthlyFacts(db, dimension, scope),
     loadDailyFacts(db),
     loadJiandaoyunExternalDemandSignal(db),
     loadCommerceIdentityCoverage(db),
+    loadDataSourceReadiness(db),
   ]);
   return buildDecisionStudio(
     facts,
@@ -489,5 +497,6 @@ export async function getDecisionStudio(
     { ...query, dimension },
     externalDemand,
     commerceIdentity,
+    dataSources,
   );
 }
