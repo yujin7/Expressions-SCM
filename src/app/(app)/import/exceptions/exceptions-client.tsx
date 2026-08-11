@@ -24,6 +24,7 @@ import RemoteSelect from "@/components/RemoteSelect";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { toOptions } from "@/components/labels";
 import ListToolbar from "@/components/ListToolbar";
+import SearchInput from "@/components/SearchInput";
 import { useListState } from "@/components/useListState";
 
 interface ExceptionRow {
@@ -138,17 +139,21 @@ export default function ExceptionsClient() {
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   const listState = useListState({
     key: "import-exceptions",
-    defaults: { status: "open", aliasType: "", scope: "" },
+    defaults: { status: "open", aliasType: "", scope: "", rawValue: "" },
     defaultPageSize: 20,
   });
   const { filters, page, pageSize } = listState;
   const status = filters.status;
   const aliasType = filters.aliasType;
   const scope = filters.scope;
+  const rawValue = filters.rawValue;
+  const [rawValueDraft, setRawValueDraft] = useState(rawValue);
 
   const [claiming, setClaiming] = useState<ExceptionRow | null>(null);
   const [saving, setSaving] = useState(false);
   const [ignoreNote, setIgnoreNote] = useState("");
+
+  useEffect(() => setRawValueDraft(rawValue), [rawValue]);
 
   const load = useCallback(async () => {
     requestRef.current?.abort();
@@ -164,6 +169,7 @@ export default function ExceptionsClient() {
       });
       if (aliasType) params.set("aliasType", aliasType);
       if (scope) params.set("scope", scope);
+      if (rawValue) params.set("rawValue", rawValue);
       const res = await fetchJson<{ data: ExceptionRow[]; total: number }>(
         `/api/import/exceptions?${params.toString()}`,
         { signal: controller.signal },
@@ -181,7 +187,7 @@ export default function ExceptionsClient() {
         if (requestRef.current === controller) requestRef.current = null;
       }
     }
-  }, [status, aliasType, scope, page, pageSize, message]);
+  }, [status, aliasType, scope, rawValue, page, pageSize, message]);
 
   useEffect(() => {
     void load();
@@ -356,6 +362,14 @@ export default function ExceptionsClient() {
         }
         extra={(
           <Space wrap size={[8, 8]}>
+            <SearchInput
+              allowClear
+              placeholder="精确查找原始值"
+              style={{ width: 220 }}
+              value={rawValueDraft}
+              onChange={(event) => setRawValueDraft(event.target.value)}
+              onSearch={(value) => listState.setFilter({ rawValue: value.trim() })}
+            />
             <Select
               allowClear
               placeholder="全部来源"

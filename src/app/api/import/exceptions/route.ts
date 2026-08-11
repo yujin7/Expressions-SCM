@@ -11,6 +11,7 @@ export async function GET(req: NextRequest) {
         status: searchParams.get("status") ?? "open",
         aliasType: searchParams.get("aliasType") ?? undefined,
         scope: searchParams.get("scope") ?? undefined,
+        rawValue: searchParams.get("rawValue") ?? undefined,
         page,
         pageSize,
       }),

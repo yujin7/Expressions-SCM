@@ -7,8 +7,10 @@ const read = (relative: string): string => readFileSync(path.join(process.cwd(),
 describe("import exception scoped-clearance UI", () => {
   it("lets operators isolate external-system queues and explains the zero-open gate", () => {
     const client = read("src/app/(app)/import/exceptions/exceptions-client.tsx");
-    expect(client).toContain('defaults: { status: "open", aliasType: "", scope: "" }');
+    expect(client).toContain('defaults: { status: "open", aliasType: "", scope: "", rawValue: "" }');
     expect(client).toContain('params.set("scope", scope)');
+    expect(client).toContain('params.set("rawValue", rawValue)');
+    expect(client).toContain('placeholder="精确查找原始值"');
     expect(client).toContain('placeholder="全部来源"');
     expect(client).toContain("外部系统作用域的待认领项必须清零");
   });
