@@ -7,6 +7,7 @@ import type {
   DataSourceReadiness,
   DataStreamEvidence,
 } from "@/server/modules/report/data-source-readiness";
+import { SCM_EVIDENCE_LABEL } from "@/lib/scm-evidence";
 
 export type ProductSourceEvidenceState =
   | "missing"
@@ -117,14 +118,29 @@ export function evaluateProductSourceEvidence(
   const sources = product.sources.map<ProductSourceEvidence>((source) => {
     const row = sourceByKey.get(source);
     if (source === "SCM") {
+      const streams = product.requiredScmEvidence.map<ProductStreamEvidence>((stream) => {
+        const count = row?.scmEvidenceCounts[stream] ?? 0;
+        return {
+          source,
+          stream,
+          state: count > 0 ? "current" : "missing",
+          reason: count > 0
+            ? `${SCM_EVIDENCE_LABEL[stream]}：${count.toLocaleString("zh-CN")} 行受控事实`
+            : `${SCM_EVIDENCE_LABEL[stream]}尚无受控事实`,
+          evidence: null,
+        };
+      });
+      const missingStreams = streams.filter((item) => item.state === "missing").map((item) => item.stream);
       return {
         source,
-        state: row?.state === "operational" ? "operational" : "missing",
+        state: row?.state === "operational" && streams.length > 0 && missingStreams.length === 0
+          ? "operational"
+          : "missing",
         configurationReady: row?.configurationReady === true,
-        missingStreams: [],
+        missingStreams,
         staleStreams: [],
         degradedStreams: [],
-        streams: [],
+        streams,
       };
     }
     const streams = (product.requiredStreams[source] ?? []).map((stream) => streamState(source, stream, row));
@@ -193,6 +209,8 @@ export function currentProductAutomation(
 ): ProductAutomationReadiness {
   const safe = summary.sources.every((source) => source.source === "SCM"
     ? source.state === "operational"
+      && source.streams.length > 0
+      && source.streams.every((stream) => stream.state === "current")
     : source.configurationReady
       && source.streams.length > 0
       && source.streams.every(streamSafeForExplanation));

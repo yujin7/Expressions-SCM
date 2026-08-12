@@ -102,6 +102,11 @@ describe("三方数据来源证据矩阵", () => {
         state: "operational",
         configured: true,
         configurationReady: true,
+        scmEvidenceCounts: expect.objectContaining({
+          "sku-master": 0,
+          "quality-inspections": 0,
+          "planning-lines": 0,
+        }),
       });
       expect(result.find((row) => row.key === "JIANDAOYUN")).toMatchObject({
         state: "observation",

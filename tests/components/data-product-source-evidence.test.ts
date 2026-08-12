@@ -60,6 +60,7 @@ function source(
     sourceAsOfEnd: null,
     openIdentityExceptions: 0,
     observedIdentities: 1,
+    scmEvidenceCounts: key === "SCM" ? { "sku-master": 1 } : {},
     gate: "gate",
     nextAction: "next",
   };
@@ -78,6 +79,7 @@ const product: DataProductDefinition = {
   maxAutomation: "A2",
   automationGuardrail: "test",
   sources: ["SCM", "JST"],
+  requiredScmEvidence: ["sku-master"],
   requiredStreams: { JST: ["outbound-sales-daily"] },
   targetAuthority: "operational",
   releaseGate: "test",
@@ -177,6 +179,18 @@ describe("数据产品所需流证据", () => {
       safeObservation,
     ]));
     expect(explanation).toMatchObject({ level: "A1" });
+
+    const missingScm = source("SCM", "operational", []);
+    missingScm.scmEvidenceCounts = {};
+    const missingScmSummary = evaluateProductSourceEvidence(product, [
+      missingScm,
+      safeObservation,
+    ]);
+    expect(missingScmSummary.sources[0]).toMatchObject({
+      state: "missing",
+      missingStreams: ["sku-master"],
+    });
+    expect(currentProductAutomation(missingScmSummary)).toMatchObject({ level: "A0" });
 
     const invalidated = source("JST", "observation", ["outbound-sales-daily"]);
     invalidated.configurationReady = false;

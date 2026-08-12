@@ -8,6 +8,7 @@ import {
   DATA_PRODUCT_SOURCE_LABEL,
 } from "@/components/data-products";
 import { METRICS } from "@/components/metrics";
+import { SCM_EVIDENCE_LABEL } from "@/lib/scm-evidence";
 
 describe("三方数据产品目录", () => {
   it("保持十一个唯一、可执行的目标契约", () => {
@@ -25,6 +26,11 @@ describe("三方数据产品目录", () => {
       expect(DATA_PRODUCT_AUTOMATION_LABEL[product.maxAutomation]).toBeTruthy();
       expect(product.maxAutomation).not.toBe("A4");
       expect(product.automationGuardrail.trim()).not.toBe("");
+      expect(product.requiredScmEvidence.length).toBeGreaterThan(0);
+      expect(new Set(product.requiredScmEvidence).size).toBe(product.requiredScmEvidence.length);
+      for (const evidenceKey of product.requiredScmEvidence) {
+        expect(SCM_EVIDENCE_LABEL[evidenceKey], `${product.id}:${evidenceKey}`).toBeTruthy();
+      }
       for (const metricId of product.metricIds) {
         expect(METRICS[metricId], `${product.id}:${metricId}`).toBeTruthy();
       }

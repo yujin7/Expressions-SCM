@@ -15,6 +15,7 @@ import {
 } from "@/server/integrations/connector";
 import { JIANDAOYUN_FORM_CONTRACTS } from "@/server/integrations/jiandaoyun-contracts";
 import { YONYOU_READ_CONTRACTS } from "@/server/integrations/yonyou-contracts";
+import type { ScmEvidenceKey } from "@/lib/scm-evidence";
 
 interface ReadDb {
   execute(query: SQL): Promise<unknown>;
@@ -67,6 +68,8 @@ export interface DataSourceReadiness {
   sourceAsOfEnd: string | null;
   openIdentityExceptions: number | null;
   observedIdentities: number | null;
+  /** 仅 SCM 使用：数据产品所需受控事实的当前行数；外部来源保持空对象。 */
+  scmEvidenceCounts: Partial<Record<ScmEvidenceKey, number>>;
   gate: string;
   nextAction: string;
 }
@@ -455,6 +458,7 @@ function connectorSource(
     sourceAsOfEnd: dateValue(success?.source_as_of_end),
     openIdentityExceptions: readiness.openScopedAliasExceptions,
     observedIdentities: readiness.observedScopedIdentities,
+    scmEvidenceCounts: {},
     gate: state === "operational"
       ? "当前连接器与身份门禁已通过；具体数据产品仍须满足各自控制总量和业务口径。"
       : observedGate,
@@ -473,8 +477,21 @@ export async function loadDataSourceReadiness(
     db.execute(sql`
       SELECT
         (SELECT count(*)::int FROM skus) AS sku_count,
+        (SELECT count(*)::int FROM sku_identifiers WHERE active = true) AS sku_identifier_count,
+        (SELECT count(*)::int FROM sales_monthly) AS sales_history_count,
         (SELECT count(*)::int FROM stock_balances) AS balance_count,
-        (SELECT count(*)::int FROM stock_ledger) AS ledger_count
+        (SELECT count(*)::int FROM stock_ledger) AS ledger_count,
+        (SELECT count(*)::int FROM po_lines) AS po_line_count,
+        (SELECT count(*)::int FROM sh_lines) AS receipt_line_count,
+        (SELECT count(*)::int FROM sku_costs) AS sku_cost_count,
+        (SELECT count(*)::int FROM suppliers) AS supplier_count,
+        (SELECT count(*)::int FROM qc_lines) AS quality_inspection_count,
+        (SELECT count(*)::int FROM sku_params) AS sku_param_count,
+        (SELECT count(*)::int FROM npd_projects) AS npd_project_count,
+        (SELECT count(*)::int FROM npd_tasks) AS npd_task_count,
+        (SELECT count(*)::int FROM recon_diffs) AS recon_diff_count,
+        (SELECT count(*)::int FROM planning_version_lines) AS planning_line_count,
+        (SELECT count(*)::int FROM sop_cycles) AS sop_cycle_count
     `),
   ]);
   const connectorRows = getConnectorReadiness(
@@ -487,6 +504,24 @@ export async function loadDataSourceReadiness(
   const skuCount = intValue(scm.sku_count);
   const balanceCount = intValue(scm.balance_count);
   const ledgerCount = intValue(scm.ledger_count);
+  const scmEvidenceCounts: Record<ScmEvidenceKey, number> = {
+    "sku-master": skuCount,
+    "sku-identifiers": intValue(scm.sku_identifier_count),
+    "sales-history": intValue(scm.sales_history_count),
+    "stock-ledger": ledgerCount,
+    "stock-balances": balanceCount,
+    "purchase-order-lines": intValue(scm.po_line_count),
+    "receipt-lines": intValue(scm.receipt_line_count),
+    "sku-costs": intValue(scm.sku_cost_count),
+    "supplier-master": intValue(scm.supplier_count),
+    "quality-inspections": intValue(scm.quality_inspection_count),
+    "sku-planning-params": intValue(scm.sku_param_count),
+    "npd-projects": intValue(scm.npd_project_count),
+    "npd-tasks": intValue(scm.npd_task_count),
+    "reconciliation-diffs": intValue(scm.recon_diff_count),
+    "planning-lines": intValue(scm.planning_line_count),
+    "sop-cycles": intValue(scm.sop_cycle_count),
+  };
 
   const internal: DataSourceReadiness = {
     key: "SCM",
@@ -511,6 +546,7 @@ export async function loadDataSourceReadiness(
     sourceAsOfEnd: null,
     openIdentityExceptions: null,
     observedIdentities: skuCount,
+    scmEvidenceCounts,
     gate: "主档、库存余额与只追加库存流水受 SCM 事务、审计和 posting 门禁约束。",
     nextAction: "继续修复未分批、来源不明与外部身份覆盖，不允许外部观察绕过 posting。",
   };
@@ -548,6 +584,7 @@ export async function loadDataSourceReadiness(
           sourceAsOfEnd: null,
           openIdentityExceptions: null,
           observedIdentities: null,
+          scmEvidenceCounts: {},
           gate: "连接器未登记。",
           nextAction: "先登记显式只读契约和安全边界。",
         };
