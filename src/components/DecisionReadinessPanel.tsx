@@ -8,15 +8,20 @@ import {
 } from "@/components/decision-capabilities";
 import {
   DATA_PRODUCTS,
+  DATA_PRODUCT_AUTOMATION_LABEL,
   DATA_PRODUCT_AUTHORITY_LABEL,
+  DATA_PRODUCT_CADENCE_LABEL,
   DATA_PRODUCT_SOURCE_LABEL,
   type DataProductAuthority,
+  type DataProductDefinition,
 } from "@/components/data-products";
 import {
+  currentProductAutomation,
   evaluateProductSourceEvidence,
   type ProductEvidenceSummary,
   type ProductStreamEvidence,
 } from "@/components/data-product-source-evidence";
+import { metric, metricTooltip } from "@/components/metrics";
 import type {
   DataSourceReadiness,
   DataSourceState,
@@ -59,6 +64,13 @@ function contractEvidenceLabel(row: DataSourceReadiness): string {
 }
 
 function streamAgeLabel(row: ProductStreamEvidence): string {
+  if (row.scmEvidence) {
+    if (row.scmEvidence.freshnessMaxAgeDays == null) return "当前状态 / 主档（无历史门限）";
+    if (row.scmEvidence.businessAgeDays != null) {
+      return `业务龄 ${row.scmEvidence.businessAgeDays} 天 / 门限 ${row.scmEvidence.freshnessMaxAgeDays} 天`;
+    }
+    return "未取得可比较业务时点";
+  }
   const evidence = row.evidence;
   if (!evidence) return "—";
   if (evidence.businessAgeDays != null) {
@@ -105,7 +117,7 @@ function RequiredStreamEvidence({ summary }: { summary: ProductEvidenceSummary }
           width: 250,
           render: (_, row) => (
             <Space direction="vertical" size={2}>
-              <Typography.Text>{row.evidence?.sourceAsOf ?? "未取得业务时点"}</Typography.Text>
+              <Typography.Text>{row.evidence?.sourceAsOf ?? row.scmEvidence?.asOf ?? "当前状态 / 未取得业务时点"}</Typography.Text>
               <Typography.Text type="secondary">{streamAgeLabel(row)}</Typography.Text>
             </Space>
           ),
@@ -117,7 +129,9 @@ function RequiredStreamEvidence({ summary }: { summary: ProductEvidenceSummary }
           align: "right",
           render: (_, row) => row.evidence
             ? `${row.evidence.sourceRows.toLocaleString("zh-CN")} / ${row.evidence.stagedRows.toLocaleString("zh-CN")} / ${row.evidence.rejectedRows.toLocaleString("zh-CN")}`
-            : "—",
+            : row.scmEvidence
+              ? `${row.scmEvidence.rows.toLocaleString("zh-CN")} / — / —`
+              : "—",
         },
         {
           title: "为何受限",
@@ -126,6 +140,50 @@ function RequiredStreamEvidence({ summary }: { summary: ProductEvidenceSummary }
         },
       ]}
     />
+  );
+}
+
+function ProductOperatingContract({
+  product,
+  summary,
+}: {
+  product: DataProductDefinition;
+  summary: ProductEvidenceSummary;
+}) {
+  const current = currentProductAutomation(summary);
+  return (
+    <Space direction="vertical" size={10} style={{ display: "flex" }}>
+      <Space size={[6, 6]} wrap>
+        <Tag color="blue">契约 v{product.contractVersion}</Tag>
+        <Tag>{DATA_PRODUCT_CADENCE_LABEL[product.cadence]}刷新</Tag>
+        <Tag>决策 SLA {product.decisionSlaHours}h</Tag>
+        <Tag color={current.level === "A1" ? "gold" : "default"}>
+          当前 {current.level} · {DATA_PRODUCT_AUTOMATION_LABEL[current.level]}
+        </Tag>
+        <Tag color="purple">
+          UAT 后上限 {product.maxAutomation} · {DATA_PRODUCT_AUTOMATION_LABEL[product.maxAutomation]}
+        </Tag>
+      </Space>
+      <div>
+        <Typography.Text strong>核心指标：</Typography.Text>
+        <Space size={[4, 4]} wrap style={{ marginLeft: 6 }}>
+          {product.metricIds.map((metricId) => (
+            <Tag key={metricId} title={metricTooltip(metricId)}>
+              {metric(metricId)?.label ?? metricId}
+            </Tag>
+          ))}
+        </Space>
+      </div>
+      <Typography.Paragraph style={{ marginBottom: 0 }}>
+        <Typography.Text strong>当前自动化判断：</Typography.Text>
+        {current.reason}
+      </Typography.Paragraph>
+      <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+        <Typography.Text strong>自动化护栏：</Typography.Text>
+        {product.automationGuardrail}
+      </Typography.Paragraph>
+      <RequiredStreamEvidence summary={summary} />
+    </Space>
   );
 }
 
@@ -346,18 +404,19 @@ export default function DecisionReadinessPanel({
           showIcon
           style={{ marginBottom: 12 }}
           message="目录定义不等于当前已解锁"
-          description="每个产品列出目标粒度、来源、责任人与放行门禁；展开行可逐流查看业务截止、时效门限、源行、Staging、拒收和受限原因。"
+          description="每个产品登记唯一指标、版本、刷新节奏、决策 SLA、自动化上限与放行门禁；展开行可逐流查看业务截止、时效、质量和当前 A0/A1 判断。"
         />
         <Table
           rowKey="id"
           size="small"
           pagination={false}
           dataSource={DATA_PRODUCTS}
-          scroll={{ x: 1080 }}
+          scroll={{ x: 1_260 }}
           expandable={{
-            expandedRowRender: (row) => (
-              <RequiredStreamEvidence summary={evaluateProductSourceEvidence(row, dataSources)} />
-            ),
+            expandedRowRender: (row) => {
+              const summary = evaluateProductSourceEvidence(row, dataSources);
+              return <ProductOperatingContract product={row} summary={summary} />;
+            },
             rowExpandable: (row) => row.sources.some((source) => source !== "SCM"),
             columnWidth: 44,
           }}
@@ -371,7 +430,7 @@ export default function DecisionReadinessPanel({
                 <div>
                   <Typography.Text strong>{value}</Typography.Text>
                   <Typography.Text type="secondary" style={{ display: "block", fontSize: 12 }}>
-                    {row.grain}
+                    v{row.contractVersion} · {DATA_PRODUCT_CADENCE_LABEL[row.cadence]} · {row.grain}
                   </Typography.Text>
                 </div>
               ),
@@ -420,7 +479,35 @@ export default function DecisionReadinessPanel({
                 );
               },
             },
-            { title: "Owner", dataIndex: "owner", width: 150 },
+            {
+              title: "Owner / SLA",
+              key: "owner",
+              width: 170,
+              render: (_, row) => (
+                <Space direction="vertical" size={2}>
+                  <Typography.Text>{row.owner}</Typography.Text>
+                  <Typography.Text type="secondary">{row.decisionSlaHours} 小时</Typography.Text>
+                </Space>
+              ),
+            },
+            {
+              title: "自动化边界",
+              key: "automation",
+              width: 165,
+              render: (_, row) => {
+                const current = currentProductAutomation(evaluateProductSourceEvidence(row, dataSources));
+                return (
+                  <Space direction="vertical" size={2}>
+                    <Tag color={current.level === "A1" ? "gold" : "default"}>
+                      当前 {current.level} · {DATA_PRODUCT_AUTOMATION_LABEL[current.level]}
+                    </Tag>
+                    <Typography.Text type="secondary">
+                      UAT 后上限 {row.maxAutomation} · {DATA_PRODUCT_AUTOMATION_LABEL[row.maxAutomation]}
+                    </Typography.Text>
+                  </Space>
+                );
+              },
+            },
             {
               title: "目标权威级",
               dataIndex: "targetAuthority",

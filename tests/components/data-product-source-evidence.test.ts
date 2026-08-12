@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { evaluateProductSourceEvidence } from "@/components/data-product-source-evidence";
+import {
+  currentProductAutomation,
+  evaluateProductSourceEvidence,
+} from "@/components/data-product-source-evidence";
 import type { DataProductDefinition } from "@/components/data-products";
 import type { DataSourceReadiness } from "@/server/modules/report/data-source-readiness";
 
@@ -40,6 +43,7 @@ function source(
     state,
     configured: true,
     enabled: true,
+    configurationReady: true,
     contractSelectionState: "selected",
     selectedContractCount: 1,
     successfulStreams: successfulStreamKeys.length,
@@ -56,6 +60,15 @@ function source(
     sourceAsOfEnd: null,
     openIdentityExceptions: 0,
     observedIdentities: 1,
+    scmEvidence: key === "SCM" ? {
+      "sku-master": {
+        rows: 1,
+        asOf: null,
+        freshnessMaxAgeDays: null,
+        businessAgeDays: null,
+        freshness: "current",
+      },
+    } : {},
     gate: "gate",
     nextAction: "next",
   };
@@ -67,7 +80,14 @@ const product: DataProductDefinition = {
   decision: "test",
   grain: "day x sku",
   owner: "test",
+  contractVersion: "1.0.0",
+  cadence: "daily",
+  decisionSlaHours: 24,
+  metricIds: ["externalNetDemand"],
+  maxAutomation: "A2",
+  automationGuardrail: "test",
   sources: ["SCM", "JST"],
+  requiredScmEvidence: ["sku-master"],
   requiredStreams: { JST: ["outbound-sales-daily"] },
   targetAuthority: "operational",
   releaseGate: "test",
@@ -157,5 +177,83 @@ describe("数据产品所需流证据", () => {
     ]);
 
     expect(result).toMatchObject({ observedSources: 1, missingSources: 1, missingStreams: 1 });
+  });
+
+  it("运行证据只解锁 A0/A1，不绕过产品级 UAT 升到目标 A2/A3", () => {
+    const safeObservation = source("JST", "observation", ["outbound-sales-daily"]);
+    safeObservation.streams = [stream("outbound-sales-daily", { releaseBlocked: true })];
+    const explanation = currentProductAutomation(evaluateProductSourceEvidence(product, [
+      source("SCM", "operational", []),
+      safeObservation,
+    ]));
+    expect(explanation).toMatchObject({ level: "A1" });
+
+    const missingScm = source("SCM", "operational", []);
+    missingScm.scmEvidence = {};
+    const missingScmSummary = evaluateProductSourceEvidence(product, [
+      missingScm,
+      safeObservation,
+    ]);
+    expect(missingScmSummary.sources[0]).toMatchObject({
+      state: "missing",
+      missingStreams: ["sku-master"],
+    });
+    expect(currentProductAutomation(missingScmSummary)).toMatchObject({ level: "A0" });
+
+    const stalePlanningProduct = {
+      ...product,
+      requiredScmEvidence: ["planning-lines"],
+    } satisfies DataProductDefinition;
+    const staleScm = source("SCM", "operational", []);
+    staleScm.scmEvidence = {
+      "planning-lines": {
+        rows: 12,
+        asOf: "2026-07-01",
+        freshnessMaxAgeDays: 8,
+        businessAgeDays: 42,
+        freshness: "stale",
+      },
+    };
+    const staleScmSummary = evaluateProductSourceEvidence(stalePlanningProduct, [
+      staleScm,
+      safeObservation,
+    ]);
+    expect(staleScmSummary.sources[0]).toMatchObject({
+      state: "stale",
+      staleStreams: ["planning-lines"],
+    });
+    expect(currentProductAutomation(staleScmSummary)).toMatchObject({ level: "A0" });
+
+    const invalidated = source("JST", "observation", ["outbound-sales-daily"]);
+    invalidated.configurationReady = false;
+    expect(currentProductAutomation(evaluateProductSourceEvidence(product, [
+      source("SCM", "operational", []),
+      invalidated,
+    ]))).toMatchObject({ level: "A0" });
+
+    const rejected = source("JST", "operational", ["outbound-sales-daily"]);
+    rejected.streams = [stream("outbound-sales-daily", { rejectedRows: 1 })];
+    expect(currentProductAutomation(evaluateProductSourceEvidence(product, [
+      source("SCM", "operational", []),
+      rejected,
+    ]))).toMatchObject({ level: "A0" });
+
+    const empty = source("JST", "operational", ["outbound-sales-daily"]);
+    empty.streams = [stream("outbound-sales-daily", { sourceRows: 0, stagedRows: 0, emptySource: true })];
+    const emptySummary = evaluateProductSourceEvidence(product, [
+      source("SCM", "operational", []),
+      empty,
+    ]);
+    expect(emptySummary.sources[1]).toMatchObject({
+      state: "degraded",
+      streams: [expect.objectContaining({ reason: "源端返回 0 行，尚无业务证据" })],
+    });
+    expect(currentProductAutomation(emptySummary)).toMatchObject({ level: "A0" });
+
+    expect(currentProductAutomation(evaluateProductSourceEvidence(product, [
+      source("SCM", "operational", []),
+      source("JST", "operational", ["outbound-sales-daily"]),
+    ]))).toMatchObject({ level: "A1" });
+    expect(product.maxAutomation).toBe("A2");
   });
 });

@@ -1,8 +1,14 @@
-import type { DataProductDefinition, DataProductSource } from "@/components/data-products";
+import type {
+  DataProductAutomationLevel,
+  DataProductDefinition,
+  DataProductSource,
+} from "@/components/data-products";
 import type {
   DataSourceReadiness,
   DataStreamEvidence,
+  ScmEvidenceSnapshot,
 } from "@/server/modules/report/data-source-readiness";
+import { SCM_EVIDENCE_LABEL } from "@/lib/scm-evidence";
 
 export type ProductSourceEvidenceState =
   | "missing"
@@ -18,11 +24,14 @@ export interface ProductStreamEvidence {
   state: ProductStreamEvidenceState;
   reason: string;
   evidence: DataStreamEvidence | null;
+  scmEvidence?: ScmEvidenceSnapshot;
 }
 
 export interface ProductSourceEvidence {
   source: DataProductSource;
   state: ProductSourceEvidenceState;
+  /** 当前配置、启用、受控契约与 live binding 仍有效；与产品级 UAT 放行分开。 */
+  configurationReady: boolean;
   missingStreams: string[];
   staleStreams: string[];
   degradedStreams: string[];
@@ -39,6 +48,11 @@ export interface ProductEvidenceSummary {
   missingStreams: number;
   staleStreams: number;
   degradedStreams: number;
+}
+
+export interface ProductAutomationReadiness {
+  level: Extract<DataProductAutomationLevel, "A0" | "A1">;
+  reason: string;
 }
 
 function streamState(
@@ -85,6 +99,7 @@ function streamState(
   if (evidence.latestStatus === "failed") limitations.push("最近一次运行失败");
   if (evidence.latestStatus === "running") limitations.push("最新批次仍在运行");
   if (evidence.rejectedRows > 0) limitations.push(`有 ${evidence.rejectedRows} 行拒收`);
+  if (evidence.emptySource) limitations.push("源端返回 0 行，尚无业务证据");
   if (evidence.releaseBlocked) limitations.push("观察层禁止放行");
   if (evidence.freshness === "unknown") limitations.push("时效门限或源时点不完整");
   if (limitations.length > 0) {
@@ -105,13 +120,52 @@ export function evaluateProductSourceEvidence(
   const sources = product.sources.map<ProductSourceEvidence>((source) => {
     const row = sourceByKey.get(source);
     if (source === "SCM") {
+      const streams = product.requiredScmEvidence.map<ProductStreamEvidence>((stream) => {
+        const snapshot = row?.scmEvidence[stream];
+        const state: ProductStreamEvidenceState = !snapshot || snapshot.rows === 0
+          ? "missing"
+          : snapshot.freshness === "stale"
+            ? "stale"
+            : snapshot.freshness === "unknown"
+              ? "degraded"
+              : "current";
+        const reason = !snapshot || snapshot.rows === 0
+          ? `${SCM_EVIDENCE_LABEL[stream]}尚无受控事实`
+          : snapshot.freshness === "stale"
+            ? `${SCM_EVIDENCE_LABEL[stream]}业务时点超过 ${snapshot.freshnessMaxAgeDays} 天门限`
+            : snapshot.freshness === "unknown"
+              ? `${SCM_EVIDENCE_LABEL[stream]}缺少可比较业务时点`
+              : `${SCM_EVIDENCE_LABEL[stream]}：${snapshot.rows.toLocaleString("zh-CN")} 行当前受控事实`;
+        return {
+          source,
+          stream,
+          state,
+          reason,
+          evidence: null,
+          scmEvidence: snapshot,
+        };
+      });
+      const missingStreams = streams.filter((item) => item.state === "missing").map((item) => item.stream);
+      const staleStreams = streams.filter((item) => item.state === "stale").map((item) => item.stream);
+      const degradedStreams = streams.filter((item) => item.state === "degraded").map((item) => item.stream);
       return {
         source,
-        state: row?.state === "operational" ? "operational" : "missing",
-        missingStreams: [],
-        staleStreams: [],
-        degradedStreams: [],
-        streams: [],
+        state: row?.state === "operational"
+          && streams.length > 0
+          && missingStreams.length === 0
+          && staleStreams.length === 0
+          && degradedStreams.length === 0
+          ? "operational"
+          : missingStreams.length > 0
+            ? "missing"
+            : staleStreams.length > 0
+              ? "stale"
+              : "degraded",
+        configurationReady: row?.configurationReady === true,
+        missingStreams,
+        staleStreams,
+        degradedStreams,
+        streams,
       };
     }
     const streams = (product.requiredStreams[source] ?? []).map((stream) => streamState(source, stream, row));
@@ -130,7 +184,15 @@ export function evaluateProductSourceEvidence(
             : row.state === "observation"
               ? "observation"
               : "missing";
-    return { source, state, missingStreams, staleStreams, degradedStreams, streams };
+    return {
+      source,
+      state,
+      configurationReady: row?.configurationReady === true,
+      missingStreams,
+      staleStreams,
+      degradedStreams,
+      streams,
+    };
   });
   const operationalSources = sources.filter((row) => row.state === "operational").length;
   const observedSources = sources.filter((row) => ["observation", "degraded", "operational"].includes(row.state)).length;
@@ -148,4 +210,42 @@ export function evaluateProductSourceEvidence(
     staleStreams: sources.reduce((sum, row) => sum + row.staleStreams.length, 0),
     degradedStreams: sources.reduce((sum, row) => sum + row.degradedStreams.length, 0),
   };
+}
+
+function streamSafeForExplanation(row: ProductStreamEvidence): boolean {
+  const evidence = row.evidence;
+  return evidence != null
+    && evidence.lastSuccessAt != null
+    && evidence.freshness === "current"
+    && evidence.latestStatus === "succeeded"
+    && !evidence.authorizationBlocked
+    && !evidence.sourceTimeInvalid
+    && !evidence.emptySource
+    && evidence.rejectedRows === 0;
+}
+
+/**
+ * 当前运行证据最多自动解锁 A1（解释）。A2/A3 还需要产品级控制总量、UAT、审批和
+ * 回滚证据；仅凭连接器状态永远不能越级。observation-only/releaseBlocked 可以用于带标记
+ * 的解释，但失败、过期、拒收、空源、授权阻断或无证据必须退回 A0。
+ */
+export function currentProductAutomation(
+  summary: ProductEvidenceSummary,
+): ProductAutomationReadiness {
+  const safe = summary.sources.every((source) => source.source === "SCM"
+    ? source.state === "operational"
+      && source.streams.length > 0
+      && source.streams.every((stream) => stream.state === "current")
+    : source.configurationReady
+      && source.streams.length > 0
+      && source.streams.every(streamSafeForExplanation));
+  return safe
+    ? {
+        level: "A1",
+        reason: "所需流具备当前、成功且无拒收的证据；仅允许带来源口径的解释，仍待产品级 UAT 后升级。",
+      }
+    : {
+        level: "A0",
+        reason: "所需来源存在连接配置失效、缺失、过期、失败、拒收、空源或授权/时间异常；只能观察门禁与修复队列。",
+      };
 }
