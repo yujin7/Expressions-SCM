@@ -11,6 +11,7 @@ import { and, sql } from "drizzle-orm";
 
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
+import type { SessionUser } from "@/server/core/dto";
 import { num } from "@/server/core/svc";
 import { detectSignals, type SpcResult } from "@/server/rules/spc";
 import {
@@ -27,6 +28,10 @@ import {
   loadDataSourceReadiness,
   type DataSourceReadiness,
 } from "@/server/modules/report/data-source-readiness";
+import {
+  loadDataProductReleaseReadiness,
+  type DataProductReleaseReadiness,
+} from "@/server/modules/report/data-product-release";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -112,6 +117,7 @@ export interface DecisionStudioResult {
   externalDemand: ExternalDemandSignal;
   commerceIdentity: CommerceIdentityCoverage;
   dataSources: DataSourceReadiness[];
+  dataProductReleases: DataProductReleaseReadiness[];
   review: {
     headline: string;
     bullets: string[];
@@ -332,6 +338,7 @@ export function buildDecisionStudio(
     externalDemand,
     commerceIdentity,
     dataSources,
+    dataProductReleases: [],
     review: { headline, bullets, markdown },
     limitations: [
       "sales_monthly 目前是月粒度数量事实；跨 SKU 相加可能混合件、箱、kg，仅作结构和趋势。",
@@ -478,6 +485,7 @@ async function loadDailyFacts(db: AnyDb): Promise<DailyFact[]> {
 export async function getDecisionStudio(
   query: StudioQuery = {},
   dbArg?: AnyDb,
+  user?: SessionUser,
 ): Promise<DecisionStudioResult> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const dimension = DIMENSIONS.includes(query.dimension as StudioDimension)
@@ -491,7 +499,7 @@ export async function getDecisionStudio(
     loadCommerceIdentityCoverage(db),
     loadDataSourceReadiness(db),
   ]);
-  return buildDecisionStudio(
+  const studio = buildDecisionStudio(
     facts,
     daily,
     { ...query, dimension },
@@ -499,4 +507,8 @@ export async function getDecisionStudio(
     commerceIdentity,
     dataSources,
   );
+  return {
+    ...studio,
+    dataProductReleases: await loadDataProductReleaseReadiness(dataSources, user, db),
+  };
 }

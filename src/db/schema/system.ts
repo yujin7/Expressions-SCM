@@ -1,5 +1,5 @@
 import {
-  pgTable, serial, integer, text, timestamp, jsonb, unique, numeric, date, primaryKey, index, boolean, check,
+  pgTable, serial, integer, text, timestamp, jsonb, unique, uniqueIndex, numeric, date, primaryKey, index, boolean, check,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { approvalActionEnum, importStatusEnum, reconStatusEnum } from "./enums";
@@ -234,6 +234,53 @@ export const integrationCheckpoints = pgTable("integration_checkpoints", {
 }, (t) => [
   primaryKey({ columns: [t.connector, t.stream] }),
   check("ck_integration_checkpoint_version", sql`${t.version} > 0`),
+]);
+
+/**
+ * 数据产品放行台账：把 A2/A3 从口头许可变成可验证、可失效、可撤回的产品级证据。
+ *
+ * sourceEvidenceDigest 绑定产品契约、必需流和连接配置范围；应用、租户、组织、契约或能力
+ * 范围变化会令批准失效。每次运行的失败、过期、拒收或空源由实时门禁另行自动退回 A0/A1，
+ * 正常日常刷新无需反复人工审批。批准记录本身不覆盖来源事实，也不直接触发写业务单据。
+ */
+export const dataProductReleases = pgTable("data_product_releases", {
+  id: serial("id").primaryKey(),
+  productId: text("product_id").notNull(),
+  contractVersion: text("contract_version").notNull(),
+  targetLevel: text("target_level").notNull(), // A2 | A3
+  sourceEvidenceDigest: text("source_evidence_digest").notNull(),
+  sourceEvidence: jsonb("source_evidence").notNull(),
+  controlTotalRef: text("control_total_ref").notNull(),
+  uatRef: text("uat_ref").notNull(),
+  rollbackPlan: text("rollback_plan").notNull(),
+  scopeNote: text("scope_note"),
+  status: text("status").notNull().default("pending"), // pending | approved | rejected | revoked
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+  requestedBy: integer("requested_by").notNull().references(() => users.id),
+  requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
+  decidedBy: integer("decided_by").references(() => users.id),
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+  decisionNote: text("decision_note"),
+  revokedBy: integer("revoked_by").references(() => users.id),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  version: integer("version").notNull().default(1),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("ix_data_product_release_product_time").on(t.productId, t.requestedAt),
+  uniqueIndex("uq_data_product_release_open").on(t.productId).where(sql`${t.status} IN ('pending', 'approved')`),
+  check("ck_data_product_release_level", sql`${t.targetLevel} IN ('A2', 'A3')`),
+  check("ck_data_product_release_status", sql`${t.status} IN ('pending', 'approved', 'rejected', 'revoked')`),
+  check("ck_data_product_release_version", sql`${t.version} > 0`),
+  check(
+    "ck_data_product_release_decision",
+    sql`(${t.status} = 'pending' AND ${t.decidedBy} IS NULL AND ${t.decidedAt} IS NULL)
+      OR (${t.status} IN ('approved', 'rejected', 'revoked') AND ${t.decidedBy} IS NOT NULL AND ${t.decidedAt} IS NOT NULL)`,
+  ),
+  check(
+    "ck_data_product_release_revocation",
+    sql`(${t.status} <> 'revoked' AND ${t.revokedBy} IS NULL AND ${t.revokedAt} IS NULL)
+      OR (${t.status} = 'revoked' AND ${t.revokedBy} IS NOT NULL AND ${t.revokedAt} IS NOT NULL)`,
+  ),
 ]);
 
 /** #8 通知发件箱（outbox 模式）：应用内产生通知 → 排队 → 分发任务按渠道推送。

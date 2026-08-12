@@ -295,6 +295,20 @@
       "when": 1786023223145,
       "tag": "0041_modern_bulldozer",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1786513820808,
+      "tag": "0042_opposite_lockheed",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1786514672483,
+      "tag": "0043_loving_roulette",
+      "breakpoints": true
     }
   ]
 }

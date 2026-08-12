@@ -63,6 +63,8 @@ export interface DataSourceReadiness {
   enabled: boolean;
   /** 当前凭据、启用、契约和 live binding 是否仍可用于读取；不代表业务 UAT 已放行。 */
   configurationReady: boolean;
+  /** 非秘密配置指纹；应用、租户、组织、契约或能力范围改变时随之改变。 */
+  configurationBinding: string;
   contractSelectionState: ConnectorContractSelectionState;
   selectedContractCount: number;
   successfulStreams: number;
@@ -480,6 +482,7 @@ function connectorSource(
     configured: readiness.configured,
     enabled,
     configurationReady: readiness.configurationReady,
+    configurationBinding: readiness.expectedLiveVerificationBinding ?? `unbound:${key}`,
     contractSelectionState: readiness.contractSelectionState,
     selectedContractCount: readiness.selectedContractCount,
     successfulStreams,
@@ -599,6 +602,7 @@ export async function loadDataSourceReadiness(
     configured: true,
     enabled: true,
     configurationReady: true,
+    configurationBinding: "scm-controlled-facts/v1",
     contractSelectionState: "not_required",
     selectedContractCount: 0,
     successfulStreams: 0,
@@ -637,6 +641,7 @@ export async function loadDataSourceReadiness(
           configured: false,
           enabled: false,
           configurationReady: false,
+          configurationBinding: `unregistered:${source}`,
           contractSelectionState: "missing" as const,
           selectedContractCount: 0,
           successfulStreams: 0,

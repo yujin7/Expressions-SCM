@@ -1,0 +1,2 @@
+DROP INDEX "uq_data_product_release_active";--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_data_product_release_open" ON "data_product_releases" USING btree ("product_id") WHERE "data_product_releases"."status" IN ('pending', 'approved');
