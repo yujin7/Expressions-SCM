@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Alert,
   App,
@@ -30,6 +30,7 @@ import {
   DATA_PRODUCT_AUTHORITY_LABEL,
   DATA_PRODUCT_CADENCE_LABEL,
   DATA_PRODUCT_SOURCE_LABEL,
+  dataProductStreamLabel,
   type DataProductAuthority,
   type DataProductDefinition,
 } from "@/components/data-products";
@@ -49,6 +50,10 @@ import type {
   DataProductReleaseReadiness,
   ReleasedAutomationLevel,
 } from "@/server/modules/report/data-product-release";
+import {
+  buildDataProductWorkQueue,
+  type DataProductWorkStage,
+} from "@/components/data-product-work-queue";
 
 const STATE_META: Record<CapabilityReadiness, { label: string; color: string; stroke: string }> = {
   ready: { label: "当前可用", color: "success", stroke: "#16a34a" },
@@ -68,6 +73,14 @@ const STREAM_STATE_META: Record<ProductStreamEvidence["state"], { label: string;
   degraded: { label: "受限观察", color: "warning" },
   stale: { label: "业务时点过期", color: "error" },
   missing: { label: "尚无证据", color: "default" },
+};
+
+const WORK_STAGE_META: Record<DataProductWorkStage, { label: string; color: string }> = {
+  safeguard: { label: "先止损", color: "error" },
+  approval: { label: "待会签", color: "processing" },
+  release_ready: { label: "可验收放行", color: "purple" },
+  repair: { label: "修复证据", color: "warning" },
+  monitor: { label: "持续监控", color: "success" },
 };
 
 function fmtDateTime(value: string | null): string {
@@ -124,7 +137,12 @@ function RequiredStreamEvidence({ summary }: { summary: ProductEvidenceSummary }
           title: "所需数据流",
           dataIndex: "stream",
           width: 260,
-          render: (stream: string) => <Typography.Text code>{stream}</Typography.Text>,
+          render: (stream: string, row) => (
+            <Space direction="vertical" size={2}>
+              <Typography.Text>{dataProductStreamLabel(row.source, stream)}</Typography.Text>
+              <Typography.Text type="secondary" code>{stream}</Typography.Text>
+            </Space>
+          ),
         },
         {
           title: "证据状态",
@@ -410,6 +428,10 @@ export default function DecisionReadinessPanel({
   const external = dataSources.filter((item) => item.key !== "SCM");
   const operationalSources = external.filter((item) => item.state === "operational").length;
   const observedSources = external.filter((item) => item.state === "observation").length;
+  const workQueue = useMemo(
+    () => buildDataProductWorkQueue(DATA_PRODUCTS, dataSources, dataProductReleases),
+    [dataSources, dataProductReleases],
+  );
 
   return (
     <div>
@@ -469,6 +491,78 @@ export default function DecisionReadinessPanel({
           );
         })}
       </Row>
+      <Card
+        size="small"
+        title="数据产品动态行动队列"
+        style={{ marginTop: 16 }}
+        extra={<Tag color="blue">待推进 {workQueue.filter((item) => item.stage !== "monitor").length}/{workQueue.length}</Tag>}
+        styles={{ body: { padding: 0 } }}
+      >
+        <Alert
+          banner
+          showIcon
+          type="info"
+          message="优先级由当前证据自动重排：失效放行 → 待会签 → 可验收放行 → 证据修复 → 持续监控。同组内按决策 SLA 排序，不伪造商业价值精确分。"
+        />
+        <Table
+          rowKey="productId"
+          size="small"
+          pagination={false}
+          dataSource={workQueue}
+          scroll={{ x: 1_160 }}
+          columns={[
+            {
+              title: "顺位",
+              key: "priority",
+              width: 70,
+              align: "center",
+              render: (_, __, index) => index + 1,
+            },
+            {
+              title: "数据产品",
+              dataIndex: "title",
+              width: 170,
+              fixed: "left",
+              render: (title: string, row) => (
+                <Space direction="vertical" size={2}>
+                  <Typography.Text strong>{title}</Typography.Text>
+                  <Typography.Text type="secondary">当前 {row.effectiveLevel}</Typography.Text>
+                </Space>
+              ),
+            },
+            {
+              title: "处置阶段",
+              dataIndex: "stage",
+              width: 120,
+              render: (stage: DataProductWorkStage) => (
+                <Tag color={WORK_STAGE_META[stage].color}>{WORK_STAGE_META[stage].label}</Tag>
+              ),
+            },
+            { title: "下一个最佳动作", dataIndex: "nextAction", width: 360 },
+            {
+              title: "首要阻塞 / 当前证据",
+              dataIndex: "bottleneck",
+              width: 390,
+              render: (value: string) => (
+                <Typography.Paragraph ellipsis={{ rows: 2, tooltip: value }} style={{ marginBottom: 0 }}>
+                  {value}
+                </Typography.Paragraph>
+              ),
+            },
+            {
+              title: "Owner / SLA",
+              key: "owner",
+              width: 180,
+              render: (_, row) => (
+                <Space direction="vertical" size={2}>
+                  <Typography.Text>{row.owner}</Typography.Text>
+                  <Typography.Text type="secondary">{row.decisionSlaHours} 小时</Typography.Text>
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Card>
       <Card
         size="small"
         title="三方来源证据矩阵"

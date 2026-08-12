@@ -4,7 +4,7 @@
  * 这是目标契约，不是当前就绪清单。界面不得因为目录中有某产品，
  * 就宣称聚水潭或用友数据已经可用。当前就绪度仍以运行时连接器、身份、对账和 UAT 证据为准。
  */
-import type { ScmEvidenceKey } from "@/lib/scm-evidence";
+import { SCM_EVIDENCE_LABEL, type ScmEvidenceKey } from "@/lib/scm-evidence";
 import type { Role } from "@/server/core/constants";
 
 export type DataProductSource = "SCM" | "JIANDAOYUN" | "JST" | "YONYOU";
@@ -57,6 +57,40 @@ export const DATA_PRODUCT_CADENCE_LABEL: Record<DataProductCadence, string> = {
   weekly: "每周",
   monthly: "每月/关账",
 };
+
+/** 业务界面使用中文流名；原始契约键仍保留在证据、日志和展开详情中。 */
+export const DATA_PRODUCT_STREAM_LABEL: Record<string, string> = {
+  "tmall-sku-crosswalk-observation": "天猫 SKU 对照",
+  "pdd-sku-crosswalk-observation": "拼多多 SKU 对照",
+  "vip-product-crosswalk-observation": "唯品会商品对照",
+  "item-master": "聚水潭商品主档",
+  "tmall-sku-sales-observation": "天猫日销量",
+  "tmall-sku-refund-observation": "天猫退款",
+  "outbound-sales-daily": "聚水潭日出库销量",
+  "orders-daily": "聚水潭日订单",
+  "returns-daily": "聚水潭日退货",
+  "inventory-total-delta": "聚水潭库存总量增量",
+  "inbound-receipts-daily": "聚水潭日入库",
+  "purchase-order-observation": "简道云采购订单",
+  "purchase-receipt-observation": "简道云采购入库",
+  "platform-fee-observation": "平台费用",
+  "npd-milestone-observation": "新品里程碑",
+  "product-master-observation": "简道云产品主档",
+  "yonbip-fi-ficloud-openapi-voucher-queryvouchers": "用友财务凭证",
+  "yonbip-finance-receivables-settlement": "用友应收结算",
+  "yonbip-scm-stock-querycurrentstocksbycondition": "用友现存量",
+  "yonbip-scm-purchaseorder-list": "用友采购订单",
+  "yonbip-scm-purinrecord-list": "用友采购入库",
+  "yonbip-efi-fieia-querybalance": "用友科目余额",
+  "yonbip-digitalmodel-vendor-list": "用友供应商主档",
+  "yonbip-digitalmodel-product-listproductbycondition": "用友物料/产品主档",
+};
+
+export function dataProductStreamLabel(source: DataProductSource, stream: string): string {
+  return source === "SCM"
+    ? SCM_EVIDENCE_LABEL[stream as ScmEvidenceKey] ?? stream
+    : DATA_PRODUCT_STREAM_LABEL[stream] ?? stream;
+}
 
 export const DATA_PRODUCT_AUTOMATION_LABEL: Record<DataProductAutomationLevel, string> = {
   A0: "观察",
