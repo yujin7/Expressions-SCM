@@ -230,6 +230,7 @@ const STREAM_FRESHNESS_DAYS = new Map<string, number>([
 
 function streamEvidence(row: StreamRunAggregate, now: Date): DataStreamEvidence {
   const scope = objectValue(row.request_scope);
+  const sourceRows = intValue(row.source_rows);
   const sourceAsOfCandidate = row.source_as_of
     ?? scope.sourceAsOf
     ?? scope.bizDate
@@ -258,13 +259,14 @@ function streamEvidence(row: StreamRunAggregate, now: Date): DataStreamEvidence 
     latestRunAt: instant(row.latest_run_at) ?? now.toISOString(),
     lastSuccessAt,
     sourceAsOf,
-    sourceRows: intValue(row.source_rows),
+    sourceRows,
     stagedRows: intValue(row.staged_rows),
     rejectedRows: intValue(row.rejected_rows),
     authorizationBlocked,
     sourceTimeInvalid,
     releaseBlocked: scope.releaseBlocked === true,
-    emptySource: scope.emptySource === true,
+    // 部分连接器旧写入器未显式保存 emptySource；0 源行本身不能证明业务数据存在。
+    emptySource: scope.emptySource === true || sourceRows === 0,
     freshnessMaxAgeDays,
     businessAgeDays,
     pipelineAgeHours,

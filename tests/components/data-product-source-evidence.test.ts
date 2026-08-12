@@ -192,6 +192,18 @@ describe("数据产品所需流证据", () => {
       rejected,
     ]))).toMatchObject({ level: "A0" });
 
+    const empty = source("JST", "operational", ["outbound-sales-daily"]);
+    empty.streams = [stream("outbound-sales-daily", { sourceRows: 0, stagedRows: 0, emptySource: true })];
+    const emptySummary = evaluateProductSourceEvidence(product, [
+      source("SCM", "operational", []),
+      empty,
+    ]);
+    expect(emptySummary.sources[1]).toMatchObject({
+      state: "degraded",
+      streams: [expect.objectContaining({ reason: "源端返回 0 行，尚无业务证据" })],
+    });
+    expect(currentProductAutomation(emptySummary)).toMatchObject({ level: "A0" });
+
     expect(currentProductAutomation(evaluateProductSourceEvidence(product, [
       source("SCM", "operational", []),
       source("JST", "operational", ["outbound-sales-daily"]),

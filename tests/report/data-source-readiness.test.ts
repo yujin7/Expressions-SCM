@@ -290,4 +290,36 @@ describe("三方数据来源证据矩阵", () => {
       await client.close();
     }
   });
+
+  it("没有显式 emptySource 标志时仍从零源行推导空源", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      await db.insert(schema.integrationRuns).values({
+        connector: "jst",
+        stream: "outbound-sales-daily",
+        idempotencyKey: "jst-zero-source-rows",
+        status: "succeeded",
+        sourceRows: 0,
+        stagedRows: 0,
+        requestScope: { sourceAsOf: "2026-08-11" },
+        startedAt: new Date("2026-08-12T00:00:00.000Z"),
+        finishedAt: new Date("2026-08-12T00:01:00.000Z"),
+      });
+
+      const result = await loadDataSourceReadiness(db, {
+        env: {} as NodeJS.ProcessEnv,
+        now: new Date("2026-08-12T00:30:00.000Z"),
+      });
+      expect(result.find((row) => row.key === "JST")?.streams).toEqual([
+        expect.objectContaining({
+          sourceRows: 0,
+          stagedRows: 0,
+          emptySource: true,
+          freshness: "current",
+        }),
+      ]);
+    } finally {
+      await client.close();
+    }
+  });
 });

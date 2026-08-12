@@ -96,6 +96,7 @@ function streamState(
   if (evidence.latestStatus === "failed") limitations.push("最近一次运行失败");
   if (evidence.latestStatus === "running") limitations.push("最新批次仍在运行");
   if (evidence.rejectedRows > 0) limitations.push(`有 ${evidence.rejectedRows} 行拒收`);
+  if (evidence.emptySource) limitations.push("源端返回 0 行，尚无业务证据");
   if (evidence.releaseBlocked) limitations.push("观察层禁止放行");
   if (evidence.freshness === "unknown") limitations.push("时效门限或源时点不完整");
   if (limitations.length > 0) {
