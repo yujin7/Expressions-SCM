@@ -5,6 +5,7 @@
  * 就宣称聚水潭或用友数据已经可用。当前就绪度仍以运行时连接器、身份、对账和 UAT 证据为准。
  */
 import type { ScmEvidenceKey } from "@/lib/scm-evidence";
+import type { Role } from "@/server/core/constants";
 
 export type DataProductSource = "SCM" | "JIANDAOYUN" | "JST" | "YONYOU";
 export type DataProductAuthority = "observation" | "operational" | "financial";
@@ -17,6 +18,8 @@ export interface DataProductDefinition {
   decision: string;
   grain: string;
   owner: string;
+  /** 可发起并会签该产品放行的业务责任角色；admin 仅作受控兜底。 */
+  ownerRoles: Role[];
   contractVersion: string;
   cadence: DataProductCadence;
   /** 数据满足契约后，从异常出现到 owner 作出决定的目标时限。 */
@@ -69,6 +72,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "哪些天猫、拼多多、唯品会商品身份阻塞跨系统对账与自动化？",
     grain: "平台 × 店铺 × 平台商品/SKU 身份",
     owner: "商品 / 电商 / 数据",
+    ownerRoles: ["ops", "pmc"],
     contractVersion: "1.0.1",
     cadence: "daily",
     decisionSlaHours: 24,
@@ -94,6 +98,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "哪些 SKU/渠道是真增长、退款上升或履约落差？",
     grain: "日 × 店铺 × 平台 SKU",
     owner: "电商 / PMC",
+    ownerRoles: ["ops", "pmc"],
     contractVersion: "1.0.1",
     cadence: "daily",
     decisionSlaHours: 24,
@@ -119,6 +124,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "销售、履约、开票、收款在哪个环节卡住？",
     grain: "来源订单 × 收款/凭证",
     owner: "财务 / 电商",
+    ownerRoles: ["finance", "ops"],
     contractVersion: "1.0.1",
     cadence: "daily",
     decisionSlaHours: 48,
@@ -143,6 +149,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "货在哪里、哪些可用、哪些是账实差异或未知？",
     grain: "截止时点 × 仓库 × SKU × 批次",
     owner: "仓储 / PMC / 财务",
+    ownerRoles: ["warehouse", "pmc", "finance"],
     contractVersion: "1.0.1",
     cadence: "intraday",
     decisionSlaHours: 4,
@@ -164,6 +171,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "PO/加工/在途何时可用，承诺日是否可信？",
     grain: "供应单行 × 承诺日 × 实际到货",
     owner: "采购 / PMC",
+    ownerRoles: ["purchasing", "pmc"],
     contractVersion: "1.0.1",
     cadence: "daily",
     decisionSlaHours: 24,
@@ -186,6 +194,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "销量增长扣除退款、平台费、物流和成本后还剩多少？",
     grain: "期间 × 渠道 × SKU",
     owner: "财务 / 业务",
+    ownerRoles: ["finance", "ops"],
     contractVersion: "1.0.1",
     cadence: "monthly",
     decisionSlaHours: 72,
@@ -215,6 +224,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "哪些供应商交期、质量、价格或资金风险最高？",
     grain: "供应商 × 期间 × 产品/物料",
     owner: "采购 / 品质 / 财务",
+    ownerRoles: ["purchasing", "quality", "finance"],
     contractVersion: "1.0.1",
     cadence: "weekly",
     decisionSlaHours: 72,
@@ -239,6 +249,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "什么时候、补多少、哪个假设会使建议失效？",
     grain: "SKU × 仓/渠道 × 建议日",
     owner: "PMC / 采购",
+    ownerRoles: ["pmc", "purchasing"],
     contractVersion: "1.0.1",
     cadence: "daily",
     decisionSlaHours: 24,
@@ -269,6 +280,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "上市前还缺什么，首销后 30/60/90 天是否达到假设？",
     grain: "新品项目 × 里程碑/上市窗口",
     owner: "产品 / PMC / 电商",
+    ownerRoles: ["pmc", "ops"],
     contractVersion: "1.0.1",
     cadence: "daily",
     decisionSlaHours: 24,
@@ -295,6 +307,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "简道云观察、聚水潭履约和用友财务为什么不一致？",
     grain: "业务日 × 店铺/仓 × SKU × 差异类型",
     owner: "数据 / 财务 / 运营",
+    ownerRoles: ["finance", "ops"],
     contractVersion: "1.0.1",
     cadence: "intraday",
     decisionSlaHours: 4,
@@ -322,6 +335,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     decision: "13 周销量、供给、库存和现金在什么情景下会失衡？",
     grain: "周 × 品牌/渠道 × 情景版本",
     owner: "经营层 / PMC / 财务",
+    ownerRoles: ["pmc", "finance", "ops"],
     contractVersion: "1.0.1",
     cadence: "weekly",
     decisionSlaHours: 48,

@@ -8,7 +8,7 @@ import {
 
 export async function GET(request: NextRequest) {
   try {
-    await guardRead();
+    const user = await guardRead();
     const dimension = request.nextUrl.searchParams.get("dimension") as StudioDimension | null;
     const key = request.nextUrl.searchParams.get("key")?.trim() || undefined;
     // 跨维筛选与分组维度正交：可同时按品牌+渠道收窄，再按任意维度分组
@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
       dimension: dimension ?? undefined,
       key,
       scope: { brand, channel },
-    }));
+    }, undefined, user));
   } catch (error) {
     return errorResponse(error);
   }

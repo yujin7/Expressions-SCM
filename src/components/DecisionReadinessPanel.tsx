@@ -1,6 +1,24 @@
 "use client";
 
-import { Alert, Card, Col, Progress, Row, Space, Table, Tag, Typography } from "antd";
+import { useRef, useState } from "react";
+import {
+  Alert,
+  App,
+  Button,
+  Card,
+  Col,
+  Descriptions,
+  Form,
+  Input,
+  Modal,
+  Progress,
+  Row,
+  Select,
+  Space,
+  Table,
+  Tag,
+  Typography,
+} from "antd";
 import {
   capabilityReadiness,
   DECISION_CAPABILITIES,
@@ -22,10 +40,15 @@ import {
   type ProductStreamEvidence,
 } from "@/components/data-product-source-evidence";
 import { metric, metricTooltip } from "@/components/metrics";
+import { postJson, putJson } from "@/components/fetchJson";
 import type {
   DataSourceReadiness,
   DataSourceState,
 } from "@/server/modules/report/data-source-readiness";
+import type {
+  DataProductReleaseReadiness,
+  ReleasedAutomationLevel,
+} from "@/server/modules/report/data-product-release";
 
 const STATE_META: Record<CapabilityReadiness, { label: string; color: string; stroke: string }> = {
   ready: { label: "当前可用", color: "success", stroke: "#16a34a" },
@@ -143,22 +166,207 @@ function RequiredStreamEvidence({ summary }: { summary: ProductEvidenceSummary }
   );
 }
 
+const RELEASE_STATUS_META = {
+  pending: { label: "待会签", color: "processing" },
+  approved: { label: "已批准", color: "success" },
+  rejected: { label: "已拒绝", color: "error" },
+  revoked: { label: "已撤回", color: "default" },
+} as const;
+
+function DataProductReleaseControl({
+  product,
+  readiness,
+  onChanged,
+}: {
+  product: DataProductDefinition;
+  readiness?: DataProductReleaseReadiness;
+  onChanged?: () => void | Promise<void>;
+}) {
+  const { message } = App.useApp();
+  const [requestOpen, setRequestOpen] = useState(false);
+  const [decisionAction, setDecisionAction] = useState<"approve" | "reject" | "revoke" | null>(null);
+  const [saving, setSaving] = useState(false);
+  const requestIdempotencyKey = useRef<string | null>(null);
+  const [requestForm] = Form.useForm<{
+    targetLevel: ReleasedAutomationLevel;
+    controlTotalRef: string;
+    uatRef: string;
+    rollbackPlan: string;
+    scopeNote?: string;
+  }>();
+  const [decisionForm] = Form.useForm<{ note: string }>();
+  if (!readiness) return <Alert type="warning" showIcon message="放行台账尚未加载" />;
+
+  const reference = readiness.pendingRelease ?? readiness.activeRelease ?? readiness.latestRelease;
+  const submitRequest = async () => {
+    const values = await requestForm.validateFields();
+    setSaving(true);
+    try {
+      await postJson("/api/report/data-product-releases", {
+        productId: product.id,
+        ...values,
+        idempotencyKey: requestIdempotencyKey.current ??= globalThis.crypto.randomUUID(),
+      });
+      message.success("放行申请已进入责任人会签");
+      setRequestOpen(false);
+      requestIdempotencyKey.current = null;
+      requestForm.resetFields();
+      await onChanged?.();
+    } catch (error) {
+      message.error((error as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const submitDecision = async () => {
+    if (!decisionAction || !reference) return;
+    const { note } = await decisionForm.validateFields();
+    setSaving(true);
+    try {
+      await putJson("/api/report/data-product-releases", {
+        id: reference.id,
+        action: decisionAction,
+        note,
+        expectedVersion: reference.version,
+      });
+      message.success(decisionAction === "approve" ? "放行已批准" : decisionAction === "reject" ? "申请已拒绝" : "放行已立即撤回");
+      setDecisionAction(null);
+      decisionForm.resetFields();
+      await onChanged?.();
+    } catch (error) {
+      message.error((error as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card
+      size="small"
+      title="产品级放行与回滚"
+      extra={(
+        <Space size={4} wrap>
+          <Tag color={readiness.effectiveLevel === "A0" ? "default" : readiness.effectiveLevel === "A1" ? "gold" : "purple"}>
+            当前 {readiness.effectiveLevel} · {DATA_PRODUCT_AUTOMATION_LABEL[readiness.effectiveLevel]}
+          </Tag>
+          {reference ? <Tag color={RELEASE_STATUS_META[reference.status].color}>{RELEASE_STATUS_META[reference.status].label}</Tag> : null}
+        </Space>
+      )}
+    >
+      <Typography.Paragraph style={{ marginBottom: reference ? 10 : 12 }}>
+        {readiness.gate}
+      </Typography.Paragraph>
+      {reference ? (
+        <Descriptions size="small" column={{ xs: 1, md: 2, xl: 4 }} styles={{ label: { color: "#64748b" } }}>
+          <Descriptions.Item label="申请目标">{reference.targetLevel} · {DATA_PRODUCT_AUTOMATION_LABEL[reference.targetLevel]}</Descriptions.Item>
+          <Descriptions.Item label="发起人">{reference.requestedByName ?? `用户#${reference.requestedBy}`}</Descriptions.Item>
+          <Descriptions.Item label="控制总量证据">{reference.controlTotalRef}</Descriptions.Item>
+          <Descriptions.Item label="UAT 证据">{reference.uatRef}</Descriptions.Item>
+          <Descriptions.Item label="回滚方案" span={2}>{reference.rollbackPlan}</Descriptions.Item>
+          <Descriptions.Item label="审批结论" span={2}>{reference.decisionNote ?? "待会签"}</Descriptions.Item>
+        </Descriptions>
+      ) : null}
+      <Space size={[8, 8]} wrap style={{ marginTop: reference ? 8 : 0 }}>
+        {readiness.canRequest ? (
+          <Button type="primary" size="small" onClick={() => {
+            requestForm.setFieldsValue({ targetLevel: product.maxAutomation === "A3" ? "A3" : "A2" });
+            requestIdempotencyKey.current = globalThis.crypto.randomUUID();
+            setRequestOpen(true);
+          }}>
+            发起受控放行
+          </Button>
+        ) : null}
+        {readiness.canApprove ? <Button type="primary" size="small" onClick={() => setDecisionAction("approve")}>批准</Button> : null}
+        {readiness.canReject ? <Button danger size="small" onClick={() => setDecisionAction("reject")}>拒绝</Button> : null}
+        {readiness.canRevoke ? <Button danger size="small" onClick={() => setDecisionAction("revoke")}>立即撤回</Button> : null}
+        {!readiness.canRequest && !readiness.canApprove && !readiness.canReject && !readiness.canRevoke ? (
+          <Typography.Text type="secondary">当前无可执行动作；先完成上方门禁或由另一名责任审批人会签。</Typography.Text>
+        ) : null}
+      </Space>
+
+      <Modal
+        title={`申请放行 · ${product.title}`}
+        open={requestOpen}
+        okText="提交会签"
+        cancelText="取消"
+        confirmLoading={saving}
+        onCancel={() => {
+          setRequestOpen(false);
+          requestIdempotencyKey.current = null;
+        }}
+        onOk={() => void submitRequest()}
+        destroyOnHidden
+      >
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="批准只提升数据产品的建议/草稿能力，不会直接过账、核销或修改正式主数据。"
+        />
+        <Form form={requestForm} layout="vertical">
+          <Form.Item name="targetLevel" label="申请级别" rules={[{ required: true }]}>
+            <Select options={product.maxAutomation === "A3"
+              ? [{ value: "A2", label: "A2 · 建议" }, { value: "A3", label: "A3 · 草稿（仍需业务审批）" }]
+              : [{ value: "A2", label: "A2 · 建议" }]}
+            />
+          </Form.Item>
+          <Form.Item name="controlTotalRef" label="控制总量证据编号" rules={[{ required: true, min: 3 }]}>
+            <Input placeholder="例如：CT-20260812-001" maxLength={200} />
+          </Form.Item>
+          <Form.Item name="uatRef" label="业务 UAT 证据编号" rules={[{ required: true, min: 3 }]}>
+            <Input placeholder="例如：UAT-20260812-责任人" maxLength={200} />
+          </Form.Item>
+          <Form.Item name="rollbackPlan" label="回滚/停用方案" rules={[{ required: true, min: 10 }]}>
+            <Input.TextArea rows={3} maxLength={1_000} showCount placeholder="说明触发条件、责任人，以及如何停止建议或草稿生成" />
+          </Form.Item>
+          <Form.Item name="scopeNote" label="适用范围（可选）">
+            <Input.TextArea rows={2} maxLength={500} showCount placeholder="品牌、渠道、仓库、日期窗口或其他限制" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={decisionAction === "approve" ? "批准数据产品放行" : decisionAction === "reject" ? "拒绝放行申请" : "立即撤回数据产品放行"}
+        open={decisionAction != null}
+        okText={decisionAction === "approve" ? "确认批准" : decisionAction === "reject" ? "确认拒绝" : "确认撤回"}
+        okButtonProps={{ danger: decisionAction !== "approve" }}
+        cancelText="取消"
+        confirmLoading={saving}
+        onCancel={() => setDecisionAction(null)}
+        onOk={() => void submitDecision()}
+        destroyOnHidden
+      >
+        <Form form={decisionForm} layout="vertical">
+          <Form.Item name="note" label="审批/撤回说明" rules={[{ required: true, min: 5 }]}>
+            <Input.TextArea rows={3} maxLength={500} showCount />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </Card>
+  );
+}
+
 function ProductOperatingContract({
   product,
   summary,
+  release,
+  onReleaseChanged,
 }: {
   product: DataProductDefinition;
   summary: ProductEvidenceSummary;
+  release?: DataProductReleaseReadiness;
+  onReleaseChanged?: () => void | Promise<void>;
 }) {
   const current = currentProductAutomation(summary);
+  const effectiveLevel = release?.effectiveLevel ?? current.level;
   return (
     <Space direction="vertical" size={10} style={{ display: "flex" }}>
       <Space size={[6, 6]} wrap>
         <Tag color="blue">契约 v{product.contractVersion}</Tag>
         <Tag>{DATA_PRODUCT_CADENCE_LABEL[product.cadence]}刷新</Tag>
         <Tag>决策 SLA {product.decisionSlaHours}h</Tag>
-        <Tag color={current.level === "A1" ? "gold" : "default"}>
-          当前 {current.level} · {DATA_PRODUCT_AUTOMATION_LABEL[current.level]}
+        <Tag color={effectiveLevel === "A0" ? "default" : effectiveLevel === "A1" ? "gold" : "purple"}>
+          当前 {effectiveLevel} · {DATA_PRODUCT_AUTOMATION_LABEL[effectiveLevel]}
         </Tag>
         <Tag color="purple">
           UAT 后上限 {product.maxAutomation} · {DATA_PRODUCT_AUTOMATION_LABEL[product.maxAutomation]}
@@ -182,6 +390,7 @@ function ProductOperatingContract({
         <Typography.Text strong>自动化护栏：</Typography.Text>
         {product.automationGuardrail}
       </Typography.Paragraph>
+      <DataProductReleaseControl product={product} readiness={release} onChanged={onReleaseChanged} />
       <RequiredStreamEvidence summary={summary} />
     </Space>
   );
@@ -189,8 +398,12 @@ function ProductOperatingContract({
 
 export default function DecisionReadinessPanel({
   dataSources = [],
+  dataProductReleases = [],
+  onReleaseChanged,
 }: {
   dataSources?: DataSourceReadiness[];
+  dataProductReleases?: DataProductReleaseReadiness[];
+  onReleaseChanged?: () => void | Promise<void>;
 }) {
   const ready = DECISION_CAPABILITIES.filter((item) => capabilityReadiness(item) === "ready").length;
   const partial = DECISION_CAPABILITIES.filter((item) => capabilityReadiness(item) === "partial").length;
@@ -415,7 +628,14 @@ export default function DecisionReadinessPanel({
           expandable={{
             expandedRowRender: (row) => {
               const summary = evaluateProductSourceEvidence(row, dataSources);
-              return <ProductOperatingContract product={row} summary={summary} />;
+              return (
+                <ProductOperatingContract
+                  product={row}
+                  summary={summary}
+                  release={dataProductReleases.find((item) => item.productId === row.id)}
+                  onReleaseChanged={onReleaseChanged}
+                />
+              );
             },
             rowExpandable: (row) => row.sources.some((source) => source !== "SCM"),
             columnWidth: 44,
@@ -496,10 +716,11 @@ export default function DecisionReadinessPanel({
               width: 165,
               render: (_, row) => {
                 const current = currentProductAutomation(evaluateProductSourceEvidence(row, dataSources));
+                const effective = dataProductReleases.find((item) => item.productId === row.id)?.effectiveLevel ?? current.level;
                 return (
                   <Space direction="vertical" size={2}>
-                    <Tag color={current.level === "A1" ? "gold" : "default"}>
-                      当前 {current.level} · {DATA_PRODUCT_AUTOMATION_LABEL[current.level]}
+                    <Tag color={effective === "A0" ? "default" : effective === "A1" ? "gold" : "purple"}>
+                      当前 {effective} · {DATA_PRODUCT_AUTOMATION_LABEL[effective]}
                     </Tag>
                     <Typography.Text type="secondary">
                       UAT 后上限 {row.maxAutomation} · {DATA_PRODUCT_AUTOMATION_LABEL[row.maxAutomation]}
