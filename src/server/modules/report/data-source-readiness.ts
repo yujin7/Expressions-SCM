@@ -15,7 +15,10 @@ import {
 } from "@/server/integrations/connector";
 import { JIANDAOYUN_FORM_CONTRACTS } from "@/server/integrations/jiandaoyun-contracts";
 import { YONYOU_READ_CONTRACTS } from "@/server/integrations/yonyou-contracts";
-import type { ScmEvidenceKey } from "@/lib/scm-evidence";
+import {
+  SCM_EVIDENCE_MAX_AGE_DAYS,
+  type ScmEvidenceKey,
+} from "@/lib/scm-evidence";
 
 interface ReadDb {
   execute(query: SQL): Promise<unknown>;
@@ -44,6 +47,14 @@ export interface DataStreamEvidence {
   freshness: DataStreamFreshness;
 }
 
+export interface ScmEvidenceSnapshot {
+  rows: number;
+  asOf: string | null;
+  freshnessMaxAgeDays: number | null;
+  businessAgeDays: number | null;
+  freshness: DataStreamFreshness;
+}
+
 export interface DataSourceReadiness {
   key: DataSourceKey;
   label: string;
@@ -68,8 +79,8 @@ export interface DataSourceReadiness {
   sourceAsOfEnd: string | null;
   openIdentityExceptions: number | null;
   observedIdentities: number | null;
-  /** 仅 SCM 使用：数据产品所需受控事实的当前行数；外部来源保持空对象。 */
-  scmEvidenceCounts: Partial<Record<ScmEvidenceKey, number>>;
+  /** 仅 SCM 使用：产品专属受控事实的行数、业务时点与时效；外部来源保持空对象。 */
+  scmEvidence: Partial<Record<ScmEvidenceKey, ScmEvidenceSnapshot>>;
   gate: string;
   nextAction: string;
 }
@@ -211,6 +222,33 @@ function businessAgeDaysSince(value: string | null, now: Date): number | null {
     || today < sourceDay
   ) return null;
   return Math.round((today - sourceDay) / 86_400_000);
+}
+
+function scmEvidenceSnapshot(
+  key: ScmEvidenceKey,
+  rowsValue: unknown,
+  asOfValue: unknown,
+  now: Date,
+): ScmEvidenceSnapshot {
+  const rows = intValue(rowsValue);
+  const maxAgeDays = SCM_EVIDENCE_MAX_AGE_DAYS[key];
+  const timestamp = instant(asOfValue);
+  const asOf = dateValue(asOfValue) ?? (timestamp ? shanghaiDate(new Date(timestamp)) : null);
+  const businessAgeDays = businessAgeDaysSince(asOf, now);
+  const freshness: DataStreamFreshness = rows === 0
+    ? "unknown"
+    : maxAgeDays == null
+      ? "current"
+      : businessAgeDays == null
+        ? "unknown"
+        : businessAgeDays > maxAgeDays ? "stale" : "current";
+  return {
+    rows,
+    asOf,
+    freshnessMaxAgeDays: maxAgeDays,
+    businessAgeDays,
+    freshness,
+  };
 }
 
 function yonyouStream(path: string): string {
@@ -458,7 +496,7 @@ function connectorSource(
     sourceAsOfEnd: dateValue(success?.source_as_of_end),
     openIdentityExceptions: readiness.openScopedAliasExceptions,
     observedIdentities: readiness.observedScopedIdentities,
-    scmEvidenceCounts: {},
+    scmEvidence: {},
     gate: state === "operational"
       ? "当前连接器与身份门禁已通过；具体数据产品仍须满足各自控制总量和业务口径。"
       : observedGate,
@@ -477,21 +515,52 @@ export async function loadDataSourceReadiness(
     db.execute(sql`
       SELECT
         (SELECT count(*)::int FROM skus) AS sku_count,
+        (SELECT max(updated_at) FROM skus) AS sku_as_of,
         (SELECT count(*)::int FROM sku_identifiers WHERE active = true) AS sku_identifier_count,
+        (SELECT max(updated_at) FROM sku_identifiers WHERE active = true) AS sku_identifier_as_of,
         (SELECT count(*)::int FROM sales_monthly) AS sales_history_count,
+        (SELECT max(year_month) || '-01' FROM sales_monthly) AS sales_history_as_of,
         (SELECT count(*)::int FROM stock_balances) AS balance_count,
         (SELECT count(*)::int FROM stock_ledger) AS ledger_count,
-        (SELECT count(*)::int FROM po_lines) AS po_line_count,
-        (SELECT count(*)::int FROM sh_lines) AS receipt_line_count,
+        (SELECT max(occurred_at) FROM stock_ledger) AS ledger_as_of,
+        (SELECT count(*)::int FROM po_lines pl
+          JOIN po_docs pd ON pd.id = pl.po_id
+          WHERE pd.status IN ('approved', 'in_progress')) AS po_line_count,
+        (SELECT max(pd.updated_at) FROM po_lines pl
+          JOIN po_docs pd ON pd.id = pl.po_id
+          WHERE pd.status IN ('approved', 'in_progress')) AS po_line_as_of,
+        (SELECT count(*)::int FROM sh_lines sl
+          JOIN sh_docs sd ON sd.id = sl.sh_id
+          WHERE sd.status IN ('approved', 'in_progress', 'completed')) AS receipt_line_count,
+        (SELECT max(sd.updated_at) FROM sh_lines sl
+          JOIN sh_docs sd ON sd.id = sl.sh_id
+          WHERE sd.status IN ('approved', 'in_progress', 'completed')) AS receipt_line_as_of,
         (SELECT count(*)::int FROM sku_costs) AS sku_cost_count,
+        (SELECT max(updated_at) FROM sku_costs) AS sku_cost_as_of,
         (SELECT count(*)::int FROM suppliers) AS supplier_count,
+        (SELECT max(updated_at) FROM suppliers) AS supplier_as_of,
         (SELECT count(*)::int FROM qc_lines) AS quality_inspection_count,
+        (SELECT max(qr.created_at) FROM qc_lines ql
+          JOIN qc_records qr ON qr.id = ql.qc_id) AS quality_inspection_as_of,
         (SELECT count(*)::int FROM sku_params) AS sku_param_count,
-        (SELECT count(*)::int FROM npd_projects) AS npd_project_count,
-        (SELECT count(*)::int FROM npd_tasks) AS npd_task_count,
+        (SELECT max(updated_at) FROM sku_params) AS sku_param_as_of,
+        (SELECT count(*)::int FROM npd_projects WHERE status = 'active') AS npd_project_count,
+        (SELECT max(updated_at) FROM npd_projects WHERE status = 'active') AS npd_project_as_of,
+        (SELECT count(*)::int FROM npd_tasks nt
+          JOIN npd_projects np ON np.id = nt.project_id
+          WHERE np.status = 'active') AS npd_task_count,
+        (SELECT max(nt.updated_at) FROM npd_tasks nt
+          JOIN npd_projects np ON np.id = nt.project_id
+          WHERE np.status = 'active') AS npd_task_as_of,
         (SELECT count(*)::int FROM recon_diffs) AS recon_diff_count,
-        (SELECT count(*)::int FROM planning_version_lines) AS planning_line_count,
-        (SELECT count(*)::int FROM sop_cycles) AS sop_cycle_count
+        (SELECT max(biz_date) FROM recon_diffs) AS recon_diff_as_of,
+        (SELECT count(*)::int FROM planning_version_lines pvl
+          JOIN planning_versions pv ON pv.id = pvl.version_id
+          WHERE pv.week_start = (SELECT max(week_start) FROM planning_versions)) AS planning_line_count,
+        (SELECT max(week_start) FROM planning_versions) AS planning_line_as_of,
+        (SELECT count(*)::int FROM sop_cycles WHERE status IN ('consensus', 'frozen', 'executing')) AS sop_cycle_count,
+        (SELECT max(month) || '-01' FROM sop_cycles
+          WHERE status IN ('consensus', 'frozen', 'executing')) AS sop_cycle_as_of
     `),
   ]);
   const connectorRows = getConnectorReadiness(
@@ -504,23 +573,23 @@ export async function loadDataSourceReadiness(
   const skuCount = intValue(scm.sku_count);
   const balanceCount = intValue(scm.balance_count);
   const ledgerCount = intValue(scm.ledger_count);
-  const scmEvidenceCounts: Record<ScmEvidenceKey, number> = {
-    "sku-master": skuCount,
-    "sku-identifiers": intValue(scm.sku_identifier_count),
-    "sales-history": intValue(scm.sales_history_count),
-    "stock-ledger": ledgerCount,
-    "stock-balances": balanceCount,
-    "purchase-order-lines": intValue(scm.po_line_count),
-    "receipt-lines": intValue(scm.receipt_line_count),
-    "sku-costs": intValue(scm.sku_cost_count),
-    "supplier-master": intValue(scm.supplier_count),
-    "quality-inspections": intValue(scm.quality_inspection_count),
-    "sku-planning-params": intValue(scm.sku_param_count),
-    "npd-projects": intValue(scm.npd_project_count),
-    "npd-tasks": intValue(scm.npd_task_count),
-    "reconciliation-diffs": intValue(scm.recon_diff_count),
-    "planning-lines": intValue(scm.planning_line_count),
-    "sop-cycles": intValue(scm.sop_cycle_count),
+  const scmEvidence: Record<ScmEvidenceKey, ScmEvidenceSnapshot> = {
+    "sku-master": scmEvidenceSnapshot("sku-master", scm.sku_count, scm.sku_as_of, now),
+    "sku-identifiers": scmEvidenceSnapshot("sku-identifiers", scm.sku_identifier_count, scm.sku_identifier_as_of, now),
+    "sales-history": scmEvidenceSnapshot("sales-history", scm.sales_history_count, scm.sales_history_as_of, now),
+    "stock-ledger": scmEvidenceSnapshot("stock-ledger", scm.ledger_count, scm.ledger_as_of, now),
+    "stock-balances": scmEvidenceSnapshot("stock-balances", scm.balance_count, null, now),
+    "purchase-order-lines": scmEvidenceSnapshot("purchase-order-lines", scm.po_line_count, scm.po_line_as_of, now),
+    "receipt-lines": scmEvidenceSnapshot("receipt-lines", scm.receipt_line_count, scm.receipt_line_as_of, now),
+    "sku-costs": scmEvidenceSnapshot("sku-costs", scm.sku_cost_count, scm.sku_cost_as_of, now),
+    "supplier-master": scmEvidenceSnapshot("supplier-master", scm.supplier_count, scm.supplier_as_of, now),
+    "quality-inspections": scmEvidenceSnapshot("quality-inspections", scm.quality_inspection_count, scm.quality_inspection_as_of, now),
+    "sku-planning-params": scmEvidenceSnapshot("sku-planning-params", scm.sku_param_count, scm.sku_param_as_of, now),
+    "npd-projects": scmEvidenceSnapshot("npd-projects", scm.npd_project_count, scm.npd_project_as_of, now),
+    "npd-tasks": scmEvidenceSnapshot("npd-tasks", scm.npd_task_count, scm.npd_task_as_of, now),
+    "reconciliation-diffs": scmEvidenceSnapshot("reconciliation-diffs", scm.recon_diff_count, scm.recon_diff_as_of, now),
+    "planning-lines": scmEvidenceSnapshot("planning-lines", scm.planning_line_count, scm.planning_line_as_of, now),
+    "sop-cycles": scmEvidenceSnapshot("sop-cycles", scm.sop_cycle_count, scm.sop_cycle_as_of, now),
   };
 
   const internal: DataSourceReadiness = {
@@ -546,7 +615,7 @@ export async function loadDataSourceReadiness(
     sourceAsOfEnd: null,
     openIdentityExceptions: null,
     observedIdentities: skuCount,
-    scmEvidenceCounts,
+    scmEvidence,
     gate: "主档、库存余额与只追加库存流水受 SCM 事务、审计和 posting 门禁约束。",
     nextAction: "继续修复未分批、来源不明与外部身份覆盖，不允许外部观察绕过 posting。",
   };
@@ -584,7 +653,7 @@ export async function loadDataSourceReadiness(
           sourceAsOfEnd: null,
           openIdentityExceptions: null,
           observedIdentities: null,
-          scmEvidenceCounts: {},
+          scmEvidence: {},
           gate: "连接器未登记。",
           nextAction: "先登记显式只读契约和安全边界。",
         };

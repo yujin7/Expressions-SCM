@@ -102,10 +102,10 @@ describe("三方数据来源证据矩阵", () => {
         state: "operational",
         configured: true,
         configurationReady: true,
-        scmEvidenceCounts: expect.objectContaining({
-          "sku-master": 0,
-          "quality-inspections": 0,
-          "planning-lines": 0,
+        scmEvidence: expect.objectContaining({
+          "sku-master": expect.objectContaining({ rows: 0, freshness: "unknown" }),
+          "quality-inspections": expect.objectContaining({ rows: 0, freshness: "unknown" }),
+          "planning-lines": expect.objectContaining({ rows: 0, freshness: "unknown" }),
         }),
       });
       expect(result.find((row) => row.key === "JIANDAOYUN")).toMatchObject({
@@ -323,6 +323,80 @@ describe("三方数据来源证据矩阵", () => {
           freshness: "current",
         }),
       ]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("把旧计划判为过期并排除已关闭 S&OP 周期", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "计划责任人" }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "P-STALE", nameCn: "旧计划产品" }).returning();
+      const [sku] = await db.insert(schema.skus).values({
+        code: "SKU-STALE",
+        name: "旧计划 SKU",
+        spuId: spu.id,
+        baseUom: "pcs",
+        skuType: "finished",
+      }).returning();
+      const [version] = await db.insert(schema.planningVersions).values({
+        name: "旧周计划",
+        weekStart: "2026-06-01",
+        engineVersion: "test",
+        parameters: {},
+        sourceMeta: {},
+        lineCount: 1,
+        suggestedCount: 1,
+        suppressedCount: 0,
+        digest: "stale-plan",
+        idempotencyKey: "stale-plan",
+        createdBy: actor.id,
+      }).returning();
+      await db.insert(schema.planningVersionLines).values({
+        versionId: version.id,
+        skuId: sku.id,
+        skuCode: sku.code,
+        skuName: sku.name,
+        baseUom: sku.baseUom,
+        suggestedQty: "10",
+        onHand: "0",
+        inTransit: "0",
+        daily: "1",
+        safetyQty: "5",
+        explanation: {},
+      });
+      await db.insert(schema.sopCycles).values({
+        month: "2026-06",
+        name: "已关闭旧周期",
+        status: "closed",
+        planningVersionId: version.id,
+        planDigest: version.digest,
+        idempotencyKey: "closed-old-cycle",
+        createdBy: actor.id,
+        frozenBy: actor.id,
+        frozenAt: new Date("2026-06-02T00:00:00.000Z"),
+        executingBy: actor.id,
+        executingAt: new Date("2026-06-03T00:00:00.000Z"),
+        closedBy: actor.id,
+        closedAt: new Date("2026-06-30T00:00:00.000Z"),
+      });
+
+      const result = await loadDataSourceReadiness(db, {
+        env: {} as NodeJS.ProcessEnv,
+        now: new Date("2026-08-12T00:30:00.000Z"),
+      });
+      const scm = result.find((row) => row.key === "SCM");
+      expect(scm?.scmEvidence["planning-lines"]).toMatchObject({
+        rows: 1,
+        asOf: "2026-06-01",
+        freshnessMaxAgeDays: 8,
+        freshness: "stale",
+      });
+      expect(scm?.scmEvidence["sop-cycles"]).toMatchObject({
+        rows: 0,
+        freshness: "unknown",
+      });
     } finally {
       await client.close();
     }

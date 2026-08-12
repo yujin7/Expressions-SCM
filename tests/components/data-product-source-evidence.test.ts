@@ -60,7 +60,15 @@ function source(
     sourceAsOfEnd: null,
     openIdentityExceptions: 0,
     observedIdentities: 1,
-    scmEvidenceCounts: key === "SCM" ? { "sku-master": 1 } : {},
+    scmEvidence: key === "SCM" ? {
+      "sku-master": {
+        rows: 1,
+        asOf: null,
+        freshnessMaxAgeDays: null,
+        businessAgeDays: null,
+        freshness: "current",
+      },
+    } : {},
     gate: "gate",
     nextAction: "next",
   };
@@ -181,7 +189,7 @@ describe("数据产品所需流证据", () => {
     expect(explanation).toMatchObject({ level: "A1" });
 
     const missingScm = source("SCM", "operational", []);
-    missingScm.scmEvidenceCounts = {};
+    missingScm.scmEvidence = {};
     const missingScmSummary = evaluateProductSourceEvidence(product, [
       missingScm,
       safeObservation,
@@ -191,6 +199,30 @@ describe("数据产品所需流证据", () => {
       missingStreams: ["sku-master"],
     });
     expect(currentProductAutomation(missingScmSummary)).toMatchObject({ level: "A0" });
+
+    const stalePlanningProduct = {
+      ...product,
+      requiredScmEvidence: ["planning-lines"],
+    } satisfies DataProductDefinition;
+    const staleScm = source("SCM", "operational", []);
+    staleScm.scmEvidence = {
+      "planning-lines": {
+        rows: 12,
+        asOf: "2026-07-01",
+        freshnessMaxAgeDays: 8,
+        businessAgeDays: 42,
+        freshness: "stale",
+      },
+    };
+    const staleScmSummary = evaluateProductSourceEvidence(stalePlanningProduct, [
+      staleScm,
+      safeObservation,
+    ]);
+    expect(staleScmSummary.sources[0]).toMatchObject({
+      state: "stale",
+      staleStreams: ["planning-lines"],
+    });
+    expect(currentProductAutomation(staleScmSummary)).toMatchObject({ level: "A0" });
 
     const invalidated = source("JST", "observation", ["outbound-sales-daily"]);
     invalidated.configurationReady = false;

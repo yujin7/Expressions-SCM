@@ -64,6 +64,13 @@ function contractEvidenceLabel(row: DataSourceReadiness): string {
 }
 
 function streamAgeLabel(row: ProductStreamEvidence): string {
+  if (row.scmEvidence) {
+    if (row.scmEvidence.freshnessMaxAgeDays == null) return "当前状态 / 主档（无历史门限）";
+    if (row.scmEvidence.businessAgeDays != null) {
+      return `业务龄 ${row.scmEvidence.businessAgeDays} 天 / 门限 ${row.scmEvidence.freshnessMaxAgeDays} 天`;
+    }
+    return "未取得可比较业务时点";
+  }
   const evidence = row.evidence;
   if (!evidence) return "—";
   if (evidence.businessAgeDays != null) {
@@ -110,7 +117,7 @@ function RequiredStreamEvidence({ summary }: { summary: ProductEvidenceSummary }
           width: 250,
           render: (_, row) => (
             <Space direction="vertical" size={2}>
-              <Typography.Text>{row.evidence?.sourceAsOf ?? "未取得业务时点"}</Typography.Text>
+              <Typography.Text>{row.evidence?.sourceAsOf ?? row.scmEvidence?.asOf ?? "当前状态 / 未取得业务时点"}</Typography.Text>
               <Typography.Text type="secondary">{streamAgeLabel(row)}</Typography.Text>
             </Space>
           ),
@@ -122,7 +129,9 @@ function RequiredStreamEvidence({ summary }: { summary: ProductEvidenceSummary }
           align: "right",
           render: (_, row) => row.evidence
             ? `${row.evidence.sourceRows.toLocaleString("zh-CN")} / ${row.evidence.stagedRows.toLocaleString("zh-CN")} / ${row.evidence.rejectedRows.toLocaleString("zh-CN")}`
-            : "—",
+            : row.scmEvidence
+              ? `${row.scmEvidence.rows.toLocaleString("zh-CN")} / — / —`
+              : "—",
         },
         {
           title: "为何受限",

@@ -440,7 +440,7 @@ export const METRICS: Record<string, MetricDef> = {
     id: "cashGap13Week",
     label: "13 周现金缺口",
     short: "滚动 13 周情景中最低可用现金相对安全下限的不足金额",
-    formula: "max(安全现金下限 − min(期初现金 + 周流入 − 周流出), 0)",
+    formula: "max(安全现金下限 − minₜ₌₁…₁₃(期初现金 + Σᵗ₍w₌₁₎(周流入_w − 周流出_w)), 0)",
     unit: "money",
     tier: "derived",
     caveat: "情景不是资金指令；未关账实际、税费、账期和融资边界必须明确",

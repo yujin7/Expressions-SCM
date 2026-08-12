@@ -34,4 +34,9 @@ describe("指标注册表引用完整性", () => {
       expect(definition.short.trim()).not.toBe("");
     }
   });
+
+  it("13 周现金缺口按逐周累计现金路径取最低点", () => {
+    expect(METRICS.cashGap13Week.formula).toContain("Σ");
+    expect(METRICS.cashGap13Week.formula).toContain("min");
+  });
 });

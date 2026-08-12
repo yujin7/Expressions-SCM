@@ -22,3 +22,23 @@ export const SCM_EVIDENCE_LABEL = {
 } as const;
 
 export type ScmEvidenceKey = keyof typeof SCM_EVIDENCE_LABEL;
+
+/** null 表示读取的是当前状态/主档，非历史快照；有门限的事实必须提供可比较业务时点。 */
+export const SCM_EVIDENCE_MAX_AGE_DAYS: Record<ScmEvidenceKey, number | null> = {
+  "sku-master": null,
+  "sku-identifiers": null,
+  "sales-history": 62,
+  "stock-ledger": 2,
+  "stock-balances": null,
+  "purchase-order-lines": null,
+  "receipt-lines": 35,
+  "sku-costs": 35,
+  "supplier-master": null,
+  "quality-inspections": 180,
+  "sku-planning-params": 180,
+  "npd-projects": null,
+  "npd-tasks": 30,
+  "reconciliation-diffs": 2,
+  "planning-lines": 8,
+  "sop-cycles": 35,
+};

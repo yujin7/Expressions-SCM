@@ -6,6 +6,7 @@ import type {
 import type {
   DataSourceReadiness,
   DataStreamEvidence,
+  ScmEvidenceSnapshot,
 } from "@/server/modules/report/data-source-readiness";
 import { SCM_EVIDENCE_LABEL } from "@/lib/scm-evidence";
 
@@ -23,6 +24,7 @@ export interface ProductStreamEvidence {
   state: ProductStreamEvidenceState;
   reason: string;
   evidence: DataStreamEvidence | null;
+  scmEvidence?: ScmEvidenceSnapshot;
 }
 
 export interface ProductSourceEvidence {
@@ -119,27 +121,50 @@ export function evaluateProductSourceEvidence(
     const row = sourceByKey.get(source);
     if (source === "SCM") {
       const streams = product.requiredScmEvidence.map<ProductStreamEvidence>((stream) => {
-        const count = row?.scmEvidenceCounts[stream] ?? 0;
+        const snapshot = row?.scmEvidence[stream];
+        const state: ProductStreamEvidenceState = !snapshot || snapshot.rows === 0
+          ? "missing"
+          : snapshot.freshness === "stale"
+            ? "stale"
+            : snapshot.freshness === "unknown"
+              ? "degraded"
+              : "current";
+        const reason = !snapshot || snapshot.rows === 0
+          ? `${SCM_EVIDENCE_LABEL[stream]}尚无受控事实`
+          : snapshot.freshness === "stale"
+            ? `${SCM_EVIDENCE_LABEL[stream]}业务时点超过 ${snapshot.freshnessMaxAgeDays} 天门限`
+            : snapshot.freshness === "unknown"
+              ? `${SCM_EVIDENCE_LABEL[stream]}缺少可比较业务时点`
+              : `${SCM_EVIDENCE_LABEL[stream]}：${snapshot.rows.toLocaleString("zh-CN")} 行当前受控事实`;
         return {
           source,
           stream,
-          state: count > 0 ? "current" : "missing",
-          reason: count > 0
-            ? `${SCM_EVIDENCE_LABEL[stream]}：${count.toLocaleString("zh-CN")} 行受控事实`
-            : `${SCM_EVIDENCE_LABEL[stream]}尚无受控事实`,
+          state,
+          reason,
           evidence: null,
+          scmEvidence: snapshot,
         };
       });
       const missingStreams = streams.filter((item) => item.state === "missing").map((item) => item.stream);
+      const staleStreams = streams.filter((item) => item.state === "stale").map((item) => item.stream);
+      const degradedStreams = streams.filter((item) => item.state === "degraded").map((item) => item.stream);
       return {
         source,
-        state: row?.state === "operational" && streams.length > 0 && missingStreams.length === 0
+        state: row?.state === "operational"
+          && streams.length > 0
+          && missingStreams.length === 0
+          && staleStreams.length === 0
+          && degradedStreams.length === 0
           ? "operational"
-          : "missing",
+          : missingStreams.length > 0
+            ? "missing"
+            : staleStreams.length > 0
+              ? "stale"
+              : "degraded",
         configurationReady: row?.configurationReady === true,
         missingStreams,
-        staleStreams: [],
-        degradedStreams: [],
+        staleStreams,
+        degradedStreams,
         streams,
       };
     }
