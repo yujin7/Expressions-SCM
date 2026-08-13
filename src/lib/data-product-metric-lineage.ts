@@ -33,7 +33,7 @@ export interface DataProductMetricLineageContract {
   nextAction: string;
 }
 
-export const DATA_PRODUCT_METRIC_LINEAGE_VERSION = "data-product-metric-lineage/v2" as const;
+export const DATA_PRODUCT_METRIC_LINEAGE_VERSION = "data-product-metric-lineage/v3" as const;
 
 export const METRIC_COMPUTATION_STATE_LABEL: Record<MetricComputationState, string> = {
   implemented: "可重放计算",
@@ -234,7 +234,7 @@ export const DATA_PRODUCT_METRIC_LINEAGE_CONTRACTS: DataProductMetricLineageCont
     nextAction: "保留原承诺及改期版本，三边分列计算后做总量 UAT",
   }),
   contract({
-    productId: "supply-commitment", metricId: "promiseReliability", state: "not_implemented",
+    productId: "supply-commitment", metricId: "promiseReliability", state: "partial",
     inputs: [
       scm("purchase-order-lines", "承诺日与承诺数"), scm("receipt-lines", "实收日与实收数"),
       stream("JST", "inbound-receipts-daily", "仓配到货佐证"),
@@ -243,8 +243,8 @@ export const DATA_PRODUCT_METRIC_LINEAGE_CONTRACTS: DataProductMetricLineageCont
     ],
     joinKeys: ["供应单行", "承诺版本", "SKU", "单位"],
     missingPolicy: "exclude_with_coverage",
-    evidence: "有通用交期统计，但没有按期且足量的产品级可重放计算器",
-    nextAction: "实现已到期供应行分母、改期版本链和按期足量判定",
+    evidence: "SCM 已实现当前承诺日下的已到期唯一 PO×SKU 行、基础单位、质检接收、采购退货回冲、按期足量/迟到补齐/逾期未齐和控制量硬闸；三条外部对照边与改期版本链尚未完成",
+    nextAction: "补不可变改期版本链；待三方身份、单位、状态和 UAT 后分别加入简道云流程、JST 入库与用友 PO/入库对照，不互相抵销",
   }),
 
   contract({

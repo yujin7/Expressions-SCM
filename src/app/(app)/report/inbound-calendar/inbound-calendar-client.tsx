@@ -6,9 +6,23 @@ import { Alert, App, Card, DatePicker, Empty, Space, Spin, Statistic, Table, Tag
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
+import {
+  Bar,
+  BarChart,
+  Cell,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip as RechartsTooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import DecisionVisual from "@/components/DecisionVisual";
+import { exportCsv } from "@/components/exportCsv";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import SkuHoverCard from "@/components/SkuHoverCard";
+import { buildPromiseReliabilityExport } from "@/components/supply-commitment-export";
+import type { PromiseReliability } from "@/server/modules/report/supply-commitment";
 
 interface CalendarLine {
   skuId: number;
@@ -38,6 +52,7 @@ interface CalendarData {
     undatedLines: number;
     bySource: Record<string, number>;
   };
+  promiseReliability: PromiseReliability;
 }
 
 /** 来源中文名与配色（与 server/modules/report/inbound-calendar.ts SUPPLY_SOURCE_LABELS 保持一致） */
@@ -55,6 +70,12 @@ const SOURCE_COLORS: Record<string, string> = {
 };
 
 const nz = (v: number): string => v.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+
+const PROMISE_STATUS = {
+  on_time_in_full: { label: "按期足量", color: "green" },
+  late_full: { label: "迟到补齐", color: "orange" },
+  overdue_short: { label: "逾期未齐", color: "red" },
+} as const;
 
 export default function InboundCalendarClient() {
   const { message } = App.useApp();
@@ -125,6 +146,38 @@ export default function InboundCalendarClient() {
         .map(([k, v]) => `${SOURCE_LABELS[k] ?? k} ${nz(v)}`)
         .join(" · ")
     : "";
+  const promise = data?.promiseReliability;
+  const promiseChart = promise
+    ? [
+        { name: "按期足量", value: promise.totals.onTimeInFull, fill: "#52c41a" },
+        { name: "迟到补齐", value: promise.totals.lateFull, fill: "#fa8c16" },
+        { name: "逾期未齐", value: promise.totals.overdueShort, fill: "#ff4d4f" },
+      ]
+    : [];
+  const promiseColumns: ColumnsType<PromiseReliability["exceptions"][number]> = [
+    { title: "采购单", dataIndex: "docNo", width: 170, sorter: (a, b) => a.docNo.localeCompare(b.docNo) },
+    { title: "供应商", dataIndex: "supplierName", width: 160, ellipsis: true },
+    { title: "SKU", dataIndex: "skuCode", width: 145, render: (value: string) => <SkuHoverCard code={value} /> },
+    { title: "名称", dataIndex: "skuName", width: 190, ellipsis: true },
+    { title: "承诺日", dataIndex: "promisedDate", width: 112, sorter: (a, b) => a.promisedDate.localeCompare(b.promisedDate) },
+    {
+      title: "状态", dataIndex: "status", width: 104,
+      render: (value: keyof typeof PROMISE_STATUS) => {
+        const item = PROMISE_STATUS[value];
+        return <Tag color={item.color}>{item.label}</Tag>;
+      },
+    },
+    { title: "迟延天数", dataIndex: "daysLate", width: 100, align: "right", defaultSortOrder: "descend", sorter: (a, b) => a.daysLate - b.daysLate },
+    { title: "订购量", dataIndex: "orderedQty", width: 100, align: "right", render: (value: number, row) => `${formatQty(value)} ${row.baseUom}` },
+    { title: "截止实收", dataIndex: "receivedAsOf", width: 105, align: "right", render: (value: number) => formatQty(value) },
+    { title: "仍缺", dataIndex: "shortQty", width: 90, align: "right", sorter: (a, b) => a.shortQty - b.shortQty, render: (value: number) => formatQty(value) },
+  ];
+
+  const exportPromise = () => {
+    if (!promise) return;
+    const output = buildPromiseReliabilityExport(promise);
+    exportCsv(output.filename, output.headers, output.rows);
+  };
 
   return (
     <div>
@@ -157,6 +210,69 @@ export default function InboundCalendarClient() {
           }
         />
       ) : null}
+
+      <DecisionVisual
+        title="采购承诺可信度（系统内基线）"
+        question="已到期采购承诺中，多少在当前承诺日前按基础单位足量兑现？"
+        metricId="promiseReliability"
+        grain={promise?.grain ?? "PO × SKU（仅唯一行）"}
+        unit="采购承诺行占比"
+        source={{
+          tier: "ledger",
+          source: "SCM 采购单、质检接收与采购退货事件",
+          asOf: promise?.asOf,
+          note: "外部三边未通过 UAT 前不并入口径",
+        }}
+        coverage={{
+          covered: promise?.totals.eligibleLines ?? 0,
+          total: promise
+            ? promise.totals.eligibleLines + promise.totals.ambiguous + promise.totals.controlMismatch
+            : 0,
+          label: "到期且可安全归属的采购承诺行",
+        }}
+        activeFilters={promise
+          ? [
+              `观察窗：${promise.windowFrom} 至 ${promise.asOf}`,
+              "承诺版本：当前承诺",
+              "数量：基础单位",
+              "重复 PO×SKU 行排除",
+              "缺失不补零",
+            ]
+          : []}
+        summary={promise?.rate == null
+          ? promise?.gate ?? "正在计算供给承诺基线。"
+          : `承诺可信度 ${promise.rate.toFixed(1)}%；按期足量 ${promise.totals.onTimeInFull} 行，迟到补齐 ${promise.totals.lateFull} 行，逾期未齐 ${promise.totals.overdueShort} 行。`}
+        caveat={promise?.limitations.join(" ")}
+        state={loading && !data ? "loading" : promise?.state === "ready" ? "ready" : "insufficient"}
+        stateDetail={promise?.gate ?? undefined}
+        height={270}
+        onExport={promise ? exportPromise : undefined}
+        exportLabel="导出承诺例外证据"
+        dataView={(
+          <Table
+            rowKey="lineId"
+            size="small"
+            pagination={false}
+            columns={promiseColumns}
+            dataSource={promise?.exceptions ?? []}
+            scroll={{ x: 1260 }}
+          />
+        )}
+      >
+        <ResponsiveContainer minWidth={0} minHeight={1}>
+          <BarChart data={promiseChart} margin={{ top: 12, right: 18, left: 0, bottom: 4 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="name" />
+            <YAxis allowDecimals={false} />
+            <RechartsTooltip formatter={(value) => [`${Number(value)} 行`, "采购承诺"]} />
+            <Bar dataKey="value" name="采购承诺行" radius={[4, 4, 0, 0]}>
+              {promiseChart.map((item) => (
+                <Cell key={item.name} fill={item.fill} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </DecisionVisual>
 
       <Space style={{ marginBottom: 16 }} wrap>
         <DatePicker.RangePicker

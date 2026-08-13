@@ -321,7 +321,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "供应单行 × 承诺日 × 实际到货",
     owner: "采购 / PMC",
     ownerRoles: ["purchasing", "pmc"],
-    contractVersion: "1.2.0",
+    contractVersion: "1.2.1",
     cadence: "daily",
     decisionSlaHours: 24,
     metricIds: ["openSupplyQty", "onTimeRate", "promiseReliability"],
