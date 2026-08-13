@@ -86,6 +86,7 @@ function usableForExplanation(evidence: DataStreamEvidence | null): boolean {
     && evidence.freshness === "current"
     && !evidence.authorizationBlocked
     && !evidence.sourceTimeInvalid
+    && !evidence.schemaDrift
     && !evidence.emptySource
     && evidence.rejectedRows === 0;
 }

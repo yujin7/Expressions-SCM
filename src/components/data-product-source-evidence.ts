@@ -226,6 +226,7 @@ function streamSafeForExplanation(row: ProductStreamEvidence): boolean {
     && evidence.latestStatus === "succeeded"
     && !evidence.authorizationBlocked
     && !evidence.sourceTimeInvalid
+    && !evidence.schemaDrift
     && !evidence.emptySource
     && evidence.rejectedRows === 0;
 }
@@ -233,7 +234,7 @@ function streamSafeForExplanation(row: ProductStreamEvidence): boolean {
 /**
  * 当前运行证据最多自动解锁 A1（解释）。A2/A3 还需要产品级控制总量、UAT、审批和
  * 回滚证据；仅凭连接器状态永远不能越级。observation-only/releaseBlocked 可以用于带标记
- * 的解释，但失败、过期、拒收、空源、授权阻断或无证据必须退回 A0。
+ * 的解释，但结构漂移、失败、过期、拒收、空源、授权阻断或无证据必须退回 A0。
  */
 export function currentProductAutomation(
   summary: ProductEvidenceSummary,
@@ -255,6 +256,6 @@ export function currentProductAutomation(
       }
     : {
         level: "A0",
-        reason: "所需来源存在连接配置失效、缺失、过期、失败、拒收、空源或授权/时间异常；只能观察门禁与修复队列。",
+        reason: "所需来源存在连接配置失效、结构漂移、缺失、过期、失败、拒收、空源或授权/时间异常；只能观察门禁与修复队列。",
       };
 }

@@ -223,4 +223,23 @@ describe("三方数据资产到业务决策覆盖", () => {
     });
     expect(portfolio.rows[0].stateReason).toContain("未进入观察或运营状态");
   });
+
+  it("结构漂移批次保留证据但不得计入可解释覆盖", () => {
+    const portfolio = buildDataAssetDecisionPortfolio([
+      product("p1", "用友库存决策", 4, { YONYOU: ["inventory"] }),
+    ], [
+      source("YONYOU", [stream("inventory", {
+        schemaDrift: true,
+        releaseBlocked: true,
+      })], "observation"),
+    ]);
+
+    expect(portfolio.rows[0]).toMatchObject({
+      state: "degraded",
+      explanationUsable: false,
+      actionLabel: "修复连接证据",
+    });
+    expect(portfolio.rows[0].stateReason).toContain("外部字段结构变化");
+    expect(portfolio).toMatchObject({ explanationUsableCount: 0, operationalReadyCount: 0 });
+  });
 });

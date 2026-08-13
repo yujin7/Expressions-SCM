@@ -285,5 +285,9 @@ describe("数据产品所需流证据", () => {
       state: "degraded",
       reason: "外部字段结构变化，待契约评审",
     });
+    expect(currentProductAutomation(result)).toMatchObject({
+      level: "A0",
+      reason: expect.stringContaining("结构漂移"),
+    });
   });
 });
