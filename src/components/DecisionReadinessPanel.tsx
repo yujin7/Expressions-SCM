@@ -53,6 +53,7 @@ import type {
   ReleasedAutomationLevel,
 } from "@/server/modules/report/data-product-release";
 import type { DataProductOutcomeReadiness } from "@/server/modules/report/data-product-outcome";
+import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 import DataProductOutcomeControl from "@/components/DataProductOutcomeControl";
 import DataAssetDecisionCoverage from "@/components/DataAssetDecisionCoverage";
 import {
@@ -216,11 +217,14 @@ function RequiredStreamEvidence({ summary }: { summary: ProductEvidenceSummary }
 function SupportingStreamEvidence({
   product,
   dataSources,
+  supportingObservations,
 }: {
   product: DataProductDefinition;
   dataSources: readonly DataSourceReadiness[];
+  supportingObservations: readonly JiandaoyunSupportingObservation[];
 }) {
   const rows = evaluateProductSupportingEvidence(product, dataSources);
+  const observationByStream = new Map(supportingObservations.map((item) => [item.stream, item]));
   if (rows.length === 0) return null;
   return (
     <Card
@@ -239,7 +243,7 @@ function SupportingStreamEvidence({
         size="small"
         pagination={false}
         dataSource={rows}
-        scroll={{ x: 1_210 }}
+        scroll={{ x: 1_550 }}
         columns={[
           {
             title: "来源",
@@ -285,6 +289,31 @@ function SupportingStreamEvidence({
             render: (_, row) => row.evidence
               ? `${row.evidence.sourceRows.toLocaleString("zh-CN")} / ${row.evidence.stagedRows.toLocaleString("zh-CN")} / ${row.evidence.rejectedRows.toLocaleString("zh-CN")}`
               : "—",
+          },
+          {
+            title: "历史观察摘要",
+            key: "observation",
+            width: 340,
+            render: (_, row) => {
+              const observation = row.source === "JIANDAOYUN"
+                ? observationByStream.get(row.stream as JiandaoyunSupportingObservation["stream"])
+                : undefined;
+              if (!observation) return <Typography.Text type="secondary">尚无可安全聚合的历史批次</Typography.Text>;
+              const period = observation.businessDateFrom && observation.businessDateThrough
+                ? `${observation.businessDateFrom} 至 ${observation.businessDateThrough}`
+                : `批次截止 ${observation.sourceAsOf ?? "未取得"}`;
+              return (
+                <Space direction="vertical" size={2}>
+                  <Typography.Paragraph
+                    ellipsis={{ rows: 2, tooltip: observation.summary }}
+                    style={{ marginBottom: 0 }}
+                  >
+                    {observation.summary}
+                  </Typography.Paragraph>
+                  <Typography.Text type="secondary">历史期间：{period}</Typography.Text>
+                </Space>
+              );
+            },
           },
           {
             title: "解释边界",
@@ -486,6 +515,7 @@ function ProductOperatingContract({
   product,
   summary,
   dataSources,
+  supportingObservations,
   release,
   outcome,
   onReleaseChanged,
@@ -493,6 +523,7 @@ function ProductOperatingContract({
   product: DataProductDefinition;
   summary: ProductEvidenceSummary;
   dataSources: readonly DataSourceReadiness[];
+  supportingObservations: readonly JiandaoyunSupportingObservation[];
   release?: DataProductReleaseReadiness;
   outcome?: DataProductOutcomeReadiness;
   onReleaseChanged?: () => void | Promise<void>;
@@ -543,7 +574,11 @@ function ProductOperatingContract({
       <DataProductReleaseControl product={product} readiness={release} onChanged={onReleaseChanged} />
       <DataProductOutcomeControl product={product} readiness={outcome} onChanged={onReleaseChanged} />
       <RequiredStreamEvidence summary={summary} />
-      <SupportingStreamEvidence product={product} dataSources={dataSources} />
+      <SupportingStreamEvidence
+        product={product}
+        dataSources={dataSources}
+        supportingObservations={supportingObservations}
+      />
     </Space>
   );
 }
@@ -552,12 +587,14 @@ export default function DecisionReadinessPanel({
   dataSources = [],
   dataProductReleases = [],
   dataProductOutcomes = [],
+  supportingObservations = [],
   onReleaseChanged,
   focusProductId,
 }: {
   dataSources?: DataSourceReadiness[];
   dataProductReleases?: DataProductReleaseReadiness[];
   dataProductOutcomes?: DataProductOutcomeReadiness[];
+  supportingObservations?: JiandaoyunSupportingObservation[];
   onReleaseChanged?: () => void | Promise<void>;
   focusProductId?: string;
 }) {
@@ -572,7 +609,14 @@ export default function DecisionReadinessPanel({
     [dataSources, dataProductReleases, dataProductOutcomes],
   );
   const exportEvidence = () => {
-    const payload = buildDataProductEvidenceExport(DATA_PRODUCTS, dataSources, dataProductReleases, dataProductOutcomes);
+    const payload = buildDataProductEvidenceExport(
+      DATA_PRODUCTS,
+      dataSources,
+      dataProductReleases,
+      dataProductOutcomes,
+      new Date(),
+      supportingObservations,
+    );
     exportCsv(payload.filename, payload.headers, payload.rows);
     message.success(`已导出 ${payload.rows.length} 行三方数据产品决策证据`);
   };
@@ -901,6 +945,7 @@ export default function DecisionReadinessPanel({
                   product={row}
                   summary={summary}
                   dataSources={dataSources}
+                  supportingObservations={supportingObservations}
                   release={dataProductReleases.find((item) => item.productId === row.id)}
                   outcome={dataProductOutcomes.find((item) => item.productId === row.id)}
                   onReleaseChanged={onReleaseChanged}

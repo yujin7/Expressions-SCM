@@ -29,6 +29,9 @@ describe("决策能力页的来源证据", () => {
     expect(source).toContain("源行 / Staging / 拒收");
     expect(source).toContain("导出决策证据包");
     expect(source).toContain("buildDataProductEvidenceExport");
+    expect(source).toContain("历史观察摘要");
+    expect(source).toContain("supportingObservations");
+    expect(source).toContain("尚无可安全聚合的历史批次");
   });
 
   it("不把固定契约误报为零契约，也不把源行差额自动当成丢数", () => {

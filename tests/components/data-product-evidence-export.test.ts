@@ -4,6 +4,7 @@ import { buildDataProductEvidenceExport } from "@/components/data-product-eviden
 import type { DataProductDefinition } from "@/components/data-products";
 import type { DataSourceReadiness, DataStreamEvidence } from "@/server/modules/report/data-source-readiness";
 import type { DataProductOutcomeReadiness } from "@/server/modules/report/data-product-outcome";
+import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 
 function stream(
   key: string,
@@ -126,6 +127,20 @@ const outcome: DataProductOutcomeReadiness = {
   }],
 };
 
+const supportingObservation: JiandaoyunSupportingObservation = {
+  stream: "inventory-count-observation",
+  authority: "historical_observation",
+  runId: 10,
+  importJobId: 20,
+  sourceAsOf: "2024-07-22",
+  businessDateFrom: "2024-07-20",
+  businessDateThrough: "2024-07-22",
+  rows: 2,
+  metrics: [{ key: "loss", label: "盘亏数量", value: "3.0000", unit: "" }],
+  summary: "盘点单 2单 · 盘亏数量 3",
+  gate: "历史辅助观察：不参与产品放行。",
+};
+
 describe("三方数据产品决策证据导出", () => {
   it("逐产品逐流导出共同截止、责任动作和技术回查键，不泄露连接指纹", () => {
     const result = buildDataProductEvidenceExport([
@@ -150,7 +165,7 @@ describe("三方数据产品决策证据导出", () => {
         freshness: "stale",
         businessAgeDays: 43,
       })),
-    ], [], [outcome], new Date("2026-08-13T02:03:04.000Z"));
+    ], [], [outcome], new Date("2026-08-13T02:03:04.000Z"), [supportingObservation]);
 
     expect(result.filename).toBe("三方数据-产品决策证据-2026-08-13T02-03-04-000Z.csv");
     expect(result.rows).toHaveLength(3);
@@ -192,6 +207,8 @@ describe("三方数据产品决策证据导出", () => {
         数据流技术键: "inventory-count-observation",
         流证据状态: "stale",
         共同可比截止: "2026-08-10",
+        辅助历史摘要: "盘点单 2单 · 盘亏数量 3",
+        辅助历史期间: "2024-07-20 至 2024-07-22",
       }),
     ]);
     expect(JSON.stringify(result)).not.toContain("must-not-export");

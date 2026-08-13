@@ -1168,6 +1168,7 @@ export default function DecisionStudioClient() {
                 dataSources={data?.dataSources ?? []}
                 dataProductReleases={data?.dataProductReleases ?? []}
                 dataProductOutcomes={data?.dataProductOutcomes ?? []}
+                supportingObservations={data?.supportingObservations ?? []}
                 onReleaseChanged={load}
                 focusProductId={focusProductId}
               />

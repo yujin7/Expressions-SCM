@@ -18,6 +18,7 @@ import {
 import type { DataSourceReadiness } from "@/server/modules/report/data-source-readiness";
 import type { DataProductOutcomeReadiness } from "@/server/modules/report/data-product-outcome";
 import type { DataProductReleaseReadiness } from "@/server/modules/report/data-product-release";
+import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 
 export interface DataProductEvidenceCsvExport {
   filename: string;
@@ -52,6 +53,7 @@ const HEADERS = [
   "结果学习状态", "真实结果有效记录数", "已评价决策数", "采纳数", "待观察数", "已形成结果数", "误报数",
   "采纳率%", "误报率%", "平均处理分钟", "实际节省工时", "现金影响可见", "实际现金影响CNY",
   "最新结果决策编号", "最新结果业务日", "最新业务决定", "最新真实结果",
+  "辅助历史摘要", "辅助历史期间",
 ];
 
 const OUTCOME_DECISION_LABEL = {
@@ -83,10 +85,12 @@ export function buildDataProductEvidenceExport(
   releases: readonly DataProductReleaseReadiness[],
   outcomes: readonly DataProductOutcomeReadiness[] = [],
   now = new Date(),
+  supportingObservations: readonly JiandaoyunSupportingObservation[] = [],
 ): DataProductEvidenceCsvExport {
   const generatedAt = now.toISOString();
   const releaseByProduct = new Map(releases.map((release) => [release.productId, release]));
   const outcomeByProduct = new Map(outcomes.map((outcome) => [outcome.productId, outcome]));
+  const observationByStream = new Map(supportingObservations.map((item) => [item.stream, item]));
   const workByProduct = new Map(
     buildDataProductWorkQueue(products, dataSources, releases, outcomes).map((item) => [item.productId, item]),
   );
@@ -123,6 +127,12 @@ export function buildDataProductEvidenceExport(
     return [...requiredRows, ...supportingRows].map(({ source, stream, usage }) => {
       const evidence = stream.evidence;
       const scmEvidence = stream.scmEvidence;
+      const observation = usage === "辅助证据（不参与放行）" && source.source === "JIANDAOYUN"
+        ? observationByStream.get(stream.stream as JiandaoyunSupportingObservation["stream"])
+        : undefined;
+      const observationPeriod = observation?.businessDateFrom && observation.businessDateThrough
+        ? `${observation.businessDateFrom} 至 ${observation.businessDateThrough}`
+        : observation?.sourceAsOf ?? null;
       return [
         "data_product_stream_evidence",
         generatedAt,
@@ -192,6 +202,8 @@ export function buildDataProductEvidenceExport(
         latestOutcome?.businessDate ?? null,
         latestOutcome ? OUTCOME_DECISION_LABEL[latestOutcome.decision] : null,
         latestOutcome ? OUTCOME_RESULT_LABEL[latestOutcome.result] : null,
+        observation?.summary ?? null,
+        observationPeriod,
       ];
     });
   });

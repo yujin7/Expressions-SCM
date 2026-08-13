@@ -36,6 +36,10 @@ import {
   loadDataProductOutcomeReadiness,
   type DataProductOutcomeReadiness,
 } from "@/server/modules/report/data-product-outcome";
+import {
+  loadJiandaoyunSupportingObservations,
+  type JiandaoyunSupportingObservation,
+} from "@/server/modules/report/jiandaoyun-supporting-observation";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -123,6 +127,7 @@ export interface DecisionStudioResult {
   dataSources: DataSourceReadiness[];
   dataProductReleases: DataProductReleaseReadiness[];
   dataProductOutcomes: DataProductOutcomeReadiness[];
+  supportingObservations: JiandaoyunSupportingObservation[];
   review: {
     headline: string;
     bullets: string[];
@@ -345,6 +350,7 @@ export function buildDecisionStudio(
     dataSources,
     dataProductReleases: [],
     dataProductOutcomes: [],
+    supportingObservations: [],
     review: { headline, bullets, markdown },
     limitations: [
       "sales_monthly 目前是月粒度数量事实；跨 SKU 相加可能混合件、箱、kg，仅作结构和趋势。",
@@ -498,12 +504,13 @@ export async function getDecisionStudio(
     ? (query.dimension as StudioDimension)
     : "brand";
   const scope = query.scope ?? {};
-  const [facts, daily, externalDemand, commerceIdentity, dataSources] = await Promise.all([
+  const [facts, daily, externalDemand, commerceIdentity, dataSources, supportingObservations] = await Promise.all([
     loadMonthlyFacts(db, dimension, scope),
     loadDailyFacts(db),
     loadJiandaoyunExternalDemandSignal(db),
     loadCommerceIdentityCoverage(db),
     loadDataSourceReadiness(db),
+    loadJiandaoyunSupportingObservations(db),
   ]);
   const studio = buildDecisionStudio(
     facts,
@@ -516,6 +523,7 @@ export async function getDecisionStudio(
   const dataProductReleases = await loadDataProductReleaseReadiness(dataSources, user, db);
   return {
     ...studio,
+    supportingObservations,
     dataProductReleases,
     dataProductOutcomes: await loadDataProductOutcomeReadiness(dataProductReleases, user, db),
   };
