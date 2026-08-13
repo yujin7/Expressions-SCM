@@ -80,6 +80,12 @@ describe("简道云历史辅助洞察", () => {
           createdBy: actor.id,
         },
       ]);
+      await db.insert(schema.aliasExceptions).values({
+        aliasType: "sku_code",
+        scope: "JIANDAOYUN",
+        rawValue: "SKU-SECRET-B",
+        status: "open",
+      });
       await db.insert(schema.stagingRows).values([
         {
           importJobId: oldDemand.id,
@@ -136,12 +142,16 @@ describe("简道云历史辅助洞察", () => {
           distinctValues: 2,
           governedMatches: 1,
           openValues: 1,
+          queuedValues: 1,
+          unqueuedValues: 0,
         }, {
           kind: "supplier",
           label: "供应商身份",
           distinctValues: 1,
           governedMatches: 0,
           openValues: 1,
+          queuedValues: 0,
+          unqueuedValues: 1,
         }]),
       });
       expect(result[0].metrics).toEqual([
@@ -162,6 +172,8 @@ describe("简道云历史辅助洞察", () => {
           distinctValues: 1,
           governedMatches: 0,
           openValues: 1,
+          queuedValues: 0,
+          unqueuedValues: 1,
         }],
       });
       expect(result.every((row) => row.gate.includes("JIANDAOYUN 作用域人工认领"))).toBe(true);

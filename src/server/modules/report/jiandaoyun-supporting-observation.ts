@@ -33,6 +33,8 @@ export interface SupportingIdentityCoverage {
   distinctValues: number;
   governedMatches: number;
   openValues: number;
+  queuedValues: number;
+  unqueuedValues: number;
 }
 
 export interface JiandaoyunSupportingObservation {
@@ -304,6 +306,13 @@ export async function loadJiandaoyunSupportingObservations(
     WHERE scope = 'JIANDAOYUN'
       AND alias_type IN ('sku_code', 'supplier_oem', 'warehouse')
   `);
+  const exceptionResult = await db.execute(sql`
+    SELECT alias_type, raw_value
+    FROM alias_exceptions
+    WHERE scope = 'JIANDAOYUN'
+      AND status = 'open'
+      AND alias_type IN ('sku_code', 'supplier_oem', 'warehouse')
+  `);
 
   const identityByStream = new Map<JiandaoyunSupportingStream, SupportingIdentityCoverage[]>();
   const identityLabel: Record<SupportingIdentityCoverage["kind"], string> = {
@@ -325,6 +334,15 @@ export async function loadJiandaoyunSupportingObservations(
     current.add(value);
     governedAliases.set(aliasType, current);
   }
+  const queuedAliases = new Map<string, Set<string>>();
+  for (const row of resultRows<Record<string, unknown>>(exceptionResult)) {
+    const aliasType = String(row.alias_type);
+    const value = normalizeAliasText(String(row.raw_value ?? ""));
+    if (!value) continue;
+    const current = queuedAliases.get(aliasType) ?? new Set<string>();
+    current.add(value);
+    queuedAliases.set(aliasType, current);
+  }
   const candidatesByStreamAndKind = new Map<string, Set<string>>();
   for (const row of resultRows<Record<string, unknown>>(identityResult)) {
     const stream = String(row.stream) as JiandaoyunSupportingStream;
@@ -342,8 +360,11 @@ export async function loadJiandaoyunSupportingObservations(
     const stream = streamText as JiandaoyunSupportingStream;
     const kind = kindText as SupportingIdentityCoverage["kind"];
     const governed = governedAliases.get(aliasTypeByKind[kind]) ?? new Set<string>();
+    const queued = queuedAliases.get(aliasTypeByKind[kind]) ?? new Set<string>();
     const distinctValues = values.size;
     const governedMatches = [...values].filter((value) => governed.has(value)).length;
+    const openCandidates = [...values].filter((value) => !governed.has(value));
+    const queuedValues = openCandidates.filter((value) => queued.has(value)).length;
     const current = identityByStream.get(stream) ?? [];
     current.push({
       kind,
@@ -351,6 +372,8 @@ export async function loadJiandaoyunSupportingObservations(
       distinctValues,
       governedMatches,
       openValues: distinctValues - governedMatches,
+      queuedValues,
+      unqueuedValues: openCandidates.length - queuedValues,
     });
     identityByStream.set(stream, current);
   }

@@ -134,7 +134,7 @@ export function buildDataProductEvidenceExport(
         ? `${observation.businessDateFrom} 至 ${observation.businessDateThrough}`
         : observation?.sourceAsOf ?? null;
       const observationIdentity = observation?.identityCoverage.map((item) =>
-        `${item.label} ${item.governedMatches}/${item.distinctValues}（待认领 ${item.openValues}）`
+        `${item.label} ${item.governedMatches}/${item.distinctValues}（待认领 ${item.openValues}，已入队 ${item.queuedValues}，未入队 ${item.unqueuedValues}）`
       ).join(" · ") || null;
       return [
         "data_product_stream_evidence",

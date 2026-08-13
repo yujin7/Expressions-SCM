@@ -143,6 +143,8 @@ const supportingObservation: JiandaoyunSupportingObservation = {
     distinctValues: 2,
     governedMatches: 0,
     openValues: 2,
+    queuedValues: 1,
+    unqueuedValues: 1,
   }],
   summary: "盘点单 2单 · 盘亏数量 3",
   gate: "历史辅助观察：不参与产品放行。",
@@ -216,7 +218,7 @@ describe("三方数据产品决策证据导出", () => {
         共同可比截止: "2026-08-10",
         辅助历史摘要: "盘点单 2单 · 盘亏数量 3",
         辅助历史期间: "2024-07-20 至 2024-07-22",
-        辅助身份认领覆盖: "仓库身份 0/2（待认领 2）",
+        辅助身份认领覆盖: "仓库身份 0/2（待认领 2，已入队 1，未入队 1）",
       }),
     ]);
     expect(JSON.stringify(result)).not.toContain("must-not-export");

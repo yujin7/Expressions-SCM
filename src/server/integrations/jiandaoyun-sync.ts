@@ -604,10 +604,15 @@ async function resolveObservationIdentities(
       }
     }
   }
+  const supplierCandidate = ([
+    ["supplierCode", data.supplierCode],
+    ["supplierName", data.supplierName],
+    ["supplier", data.supplier],
+  ] as const).find(([, value]) => stringValue(value) !== null);
   const supplierId = await resolve(
     "supplier_oem",
-    data.supplierCode ?? data.supplierName,
-    data.supplierCode ? "supplierCode" : "supplierName",
+    supplierCandidate?.[1],
+    supplierCandidate?.[0] ?? "supplier",
   );
   if (supplierId !== null) resolved.supplierId = supplierId;
   for (const key of ["warehouse", "fromWarehouse", "toWarehouse"] as const) {

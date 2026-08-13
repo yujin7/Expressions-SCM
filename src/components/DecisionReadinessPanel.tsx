@@ -230,6 +230,18 @@ function SupportingStreamEvidence({
     <Card
       size="small"
       title="辅助证据（不参与放行）"
+      extra={supportingObservations.some((item) =>
+        item.identityCoverage.some((identity) => identity.openValues > 0)
+      ) ? (
+        <Button
+          type="link"
+          size="small"
+          href="/import/exceptions?status=open&scope=JIANDAOYUN"
+          style={{ paddingInline: 0 }}
+        >
+          打开简道云认领队列 <ArrowRightOutlined />
+        </Button>
+      ) : null}
       styles={{ body: { padding: 0 } }}
     >
       <Alert
@@ -316,7 +328,7 @@ function SupportingStreamEvidence({
                       type={observation.identityCoverage.some((item) => item.openValues > 0) ? "warning" : "success"}
                     >
                       身份认领：{observation.identityCoverage.map((item) =>
-                        `${item.label} ${item.governedMatches}/${item.distinctValues}`
+                        `${item.label} ${item.governedMatches}/${item.distinctValues}（已入队 ${item.queuedValues}，未入队 ${item.unqueuedValues}）`
                       ).join(" · ")}
                     </Typography.Text>
                   ) : null}

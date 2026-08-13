@@ -14,6 +14,63 @@ function response(body: unknown): Response {
 }
 
 describe("简道云外部身份边界", () => {
+  it("采购需求池的 supplier 字段会进入 JIANDAOYUN 认领队列", async () => {
+    const { db } = await createTestDb();
+    const [actor] = await db.insert(schema.users).values({ name: "采购身份责任人" }).returning();
+    const contract: JiandaoyunFormContract = {
+      key: "purchase-demand-observation",
+      label: "采购供应链/采购需求池",
+      appId: "a".repeat(24),
+      entryId: "b".repeat(24),
+      targetTable: "jdy_purchase_demand_observation",
+      fields: [{ source: "_supplier", target: "supplier" }],
+    };
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const path = new URL(String(url)).pathname;
+      if (path.endsWith("/app/entry/widget/list")) {
+        return response({ widgets: [{ name: "_supplier", label: "供应商", type: "text" }] });
+      }
+      if (path.endsWith("/app/entry/data/list")) {
+        return response({
+          data: [{
+            _id: "c".repeat(24),
+            appId: contract.appId,
+            entryId: contract.entryId,
+            updateTime: "2026-08-01T03:00:00.000Z",
+            _supplier: { value: "采购需求供应商" },
+          }],
+        });
+      }
+      throw new Error(`unexpected ${path}`);
+    }) as unknown as typeof fetch;
+    const client = new JiandaoyunClient({
+      apiKey: "secret",
+      baseUrl: "https://example.invalid/api/v5",
+    }, { fetchImpl, retries: 0 });
+
+    const summary = await syncJiandaoyunForm(db, {
+      client,
+      actorId: actor.id,
+      contract,
+      writeEvidence: async (_connector, _stream, envelope) => ({
+        relativePath: "integration-evidence/jdy/purchase-demand/evidence.json",
+        hash: "d".repeat(64),
+        bytes: `${JSON.stringify(envelope)}\n`,
+      }),
+    });
+
+    expect(summary).toMatchObject({ sourceRows: 1, stagedRows: 1, unresolvedAliases: 1 });
+    const exceptions = await db.select().from(schema.aliasExceptions);
+    expect(exceptions).toEqual([
+      expect.objectContaining({
+        aliasType: "supplier_oem",
+        scope: "JIANDAOYUN",
+        rawValue: "采购需求供应商",
+        status: "open",
+      }),
+    ]);
+  });
+
   it("内部主档与 GLOBAL 别名即使精确同码/同名也不自动认领", async () => {
     const { db } = await createTestDb();
     const [actor] = await db.insert(schema.users).values({ name: "简道云身份责任人" }).returning();
