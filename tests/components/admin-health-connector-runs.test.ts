@@ -27,6 +27,7 @@ describe("admin connector run layout contract", () => {
     expect(client).toContain("保留上次成功位点");
     expect(client).toContain("空观察，旧批次保留");
     expect(client).toContain("仅观察，不可放行");
+    expect(client).toContain("字段结构");
     expect(client).toContain("配置 / UAT 就绪");
     expect(client).toContain("connectorRuntimeState(connectorRuns)");
     expect(client).toContain("data.connectorRuns.filter");
@@ -36,6 +37,7 @@ describe("admin connector run layout contract", () => {
     expect(dto).toContain("errorSummary: string | null");
     expect(dto).toContain("emptySource: boolean");
     expect(dto).toContain("releaseBlocked: boolean");
+    expect(dto).toContain("fieldProfile:");
     expect(dto).not.toContain("evidencePath");
     expect(dto).not.toContain("evidenceHash");
     expect(dto).not.toMatch(/\berror:/);

@@ -41,6 +41,15 @@ describe("admin connector run health", () => {
         schemaHash: "B".repeat(64),
         unresolvedAliases: "2",
         releaseBlocked: true,
+        fieldProfile: {
+          version: "yonyou-field-profile/v1",
+          sampledRecords: 12,
+          fieldCount: 8,
+          sensitiveFieldCount: 2,
+          sensitiveCategories: ["financial", "contact", "untrusted-category"],
+          truncated: true,
+          fields: [{ path: "bankAccount", leakedValue: "NEVER_RETURN_VALUE" }],
+        },
       },
       evidencePath: "/protected/evidence/never-return.json",
       evidenceHash: "f".repeat(64),
@@ -129,6 +138,14 @@ describe("admin connector run health", () => {
       checkpointOnLatestRun: false,
       emptySource: false,
       releaseBlocked: true,
+      fieldProfile: {
+        version: "yonyou-field-profile/v1",
+        sampledRecords: 12,
+        fieldCount: 8,
+        sensitiveFieldCount: 2,
+        sensitiveCategories: ["contact", "financial"],
+        truncated: true,
+      },
       errorSummary: "外部系统认证或授权失败",
     });
     expect(jdy?.checkpointAgeHours).toBeGreaterThanOrEqual(5.9);
@@ -145,6 +162,7 @@ describe("admin connector run health", () => {
       checkpointOnLatestRun: true,
       emptySource: true,
       releaseBlocked: false,
+      fieldProfile: null,
       errorSummary: null,
     });
 
@@ -175,6 +193,9 @@ describe("admin connector run health", () => {
     expect(serialized).not.toContain("example.invalid");
     expect(serialized).not.toContain("protected/evidence");
     expect(serialized).not.toContain("protected-cursor");
+    expect(serialized).not.toContain("bankAccount");
+    expect(serialized).not.toContain("NEVER_RETURN_VALUE");
+    expect(serialized).not.toContain("untrusted-category");
     expect(jdy).not.toHaveProperty("evidencePath");
     expect(jdy).not.toHaveProperty("evidenceHash");
     expect(jdy).not.toHaveProperty("error");

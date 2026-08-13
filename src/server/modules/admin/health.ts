@@ -74,6 +74,15 @@ export interface ConnectorRunHealthRow {
   /** Safe operational flags copied from the run envelope; no source payload is exposed. */
   emptySource: boolean;
   releaseBlocked: boolean;
+  /** Safe structural summary only; field paths and source values remain in protected evidence. */
+  fieldProfile: {
+    version: "yonyou-field-profile/v1";
+    sampledRecords: number;
+    fieldCount: number;
+    sensitiveFieldCount: number;
+    sensitiveCategories: string[];
+    truncated: boolean;
+  } | null;
   errorSummary: string | null;
 }
 
@@ -132,6 +141,29 @@ function schemaHashPrefix(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   return /^[0-9a-f]{12,128}$/i.test(normalized) ? normalized.slice(0, 12).toLowerCase() : null;
+}
+
+function fieldProfileSummary(value: unknown): ConnectorRunHealthRow["fieldProfile"] {
+  const profile = scopeObject(value);
+  if (profile.version !== "yonyou-field-profile/v1") return null;
+  const sampledRecords = nonNegativeInteger(profile.sampledRecords);
+  const fieldCount = nonNegativeInteger(profile.fieldCount);
+  const sensitiveFieldCount = nonNegativeInteger(profile.sensitiveFieldCount);
+  if (sampledRecords === null || fieldCount === null || sensitiveFieldCount === null) return null;
+  const allowedCategories = new Set(["contact", "credential", "financial", "identity", "location"]);
+  const sensitiveCategories = Array.isArray(profile.sensitiveCategories)
+    ? [...new Set(profile.sensitiveCategories.filter(
+      (category): category is string => typeof category === "string" && allowedCategories.has(category),
+    ))].sort()
+    : [];
+  return {
+    version: "yonyou-field-profile/v1",
+    sampledRecords,
+    fieldCount,
+    sensitiveFieldCount: Math.min(sensitiveFieldCount, fieldCount),
+    sensitiveCategories,
+    truncated: profile.truncated === true,
+  };
 }
 
 /**
@@ -328,6 +360,7 @@ async function getConnectorRunHealth(db: AnyDb, now: Date): Promise<ConnectorHea
       checkpointOnLatestRun: checkpoint?.lastRunId === run.id,
       emptySource: scope.emptySource === true,
       releaseBlocked: scope.releaseBlocked === true,
+      fieldProfile: fieldProfileSummary(scope.fieldProfile),
       errorSummary: run.status === "failed" ? connectorErrorSummary(run.error) : null,
     };
   });

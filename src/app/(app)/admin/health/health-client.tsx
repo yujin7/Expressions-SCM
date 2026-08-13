@@ -311,6 +311,12 @@ export default function HealthClient() {
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {row.schemaHashPrefix ? `schema ${row.schemaHashPrefix}` : "无 schema hash"}
           </Typography.Text>
+          {row.fieldProfile ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {`字段结构 ${row.fieldProfile.fieldCount} · 敏感 ${row.fieldProfile.sensitiveFieldCount}`}
+              {row.fieldProfile.truncated ? " · 有界采样" : ""}
+            </Typography.Text>
+          ) : null}
         </Space>
       ),
     },

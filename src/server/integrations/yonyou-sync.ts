@@ -29,6 +29,41 @@ const SCHEMA_VERSION = "yonyou-observation-v1";
 /** staging 目标表名：观测层，非业务表。放行阶段才会有人决定它变成什么。 */
 const TARGET_TABLE = "yonyou_observation";
 const RUN_STALE_AFTER_MS = 2 * 60 * 60 * 1_000;
+const SHAPE_ARRAY_SAMPLE_LIMIT = 100;
+const FIELD_PROFILE_RECORD_LIMIT = 100;
+const FIELD_PROFILE_NESTED_ARRAY_LIMIT = 20;
+const FIELD_PROFILE_FIELD_LIMIT = 256;
+const FIELD_PROFILE_DEPTH_LIMIT = 6;
+
+export type YonyouSensitiveFieldCategory =
+  | "contact"
+  | "credential"
+  | "financial"
+  | "identity"
+  | "location";
+
+export interface YonyouFieldProfileEntry {
+  /** Sanitized key path only; source values are never copied into the profile. */
+  path: string;
+  types: string[];
+  presentInRecords: number;
+  optional: boolean;
+  nullable: boolean;
+  sensitiveCategory: YonyouSensitiveFieldCategory | null;
+}
+
+export interface YonyouFieldProfile {
+  version: "yonyou-field-profile/v1";
+  totalRecords: number;
+  sampledRecords: number;
+  fieldCount: number;
+  sensitiveFieldCount: number;
+  sensitiveCategories: YonyouSensitiveFieldCategory[];
+  truncated: boolean;
+  fields: YonyouFieldProfileEntry[];
+}
+
+export type YonyouFieldProfileSummary = Omit<YonyouFieldProfile, "fields">;
 
 export interface YonyouSyncSummary {
   runId: number;
@@ -40,6 +75,8 @@ export interface YonyouSyncSummary {
   evidenceHash: string;
   /** 观测到的响应结构指纹，供后续写映射时比对是否稳定。 */
   shapeFingerprint: string;
+  /** 字段画像的聚合统计；完整无值路径只留在受控 evidence/run/job scope。 */
+  fieldProfileSummary: YonyouFieldProfileSummary | null;
   replayed: boolean;
   /** 未授权时不算失败，如实记录并返回，便于运维看到"还差控制台授权"。 */
   blockedByConsoleGrant: boolean;
@@ -53,6 +90,7 @@ interface PriorRun {
   sourceRows: number;
   stagedRows: number;
   evidenceHash: string | null;
+  requestScope: unknown;
 }
 
 function streamOf(contract: YonyouReadContractName): string {
@@ -70,13 +108,178 @@ export function yonyouShapeFingerprint(value: unknown, depth = 0): string {
   if (depth > 6) return "…";
   if (value === null) return "null";
   if (Array.isArray(value)) {
-    return value.length === 0 ? "[]" : `[${yonyouShapeFingerprint(value[0], depth + 1)}]`;
+    if (value.length === 0) return "[]";
+    const shapes = new Set(
+      sampleArray(value, SHAPE_ARRAY_SAMPLE_LIMIT)
+        .map((item) => yonyouShapeFingerprint(item, depth + 1)),
+    );
+    return `[${[...shapes].sort().join("|")}]`;
   }
   if (typeof value === "object") {
     const keys = Object.keys(value as Record<string, unknown>).sort();
     return `{${keys.map((k) => `${k}:${yonyouShapeFingerprint((value as Record<string, unknown>)[k], depth + 1)}`).join(",")}}`;
   }
   return typeof value;
+}
+
+function sampleArray<T>(values: readonly T[], limit: number): T[] {
+  if (values.length <= limit) return [...values];
+  if (limit <= 1) return [values[0]];
+  const indexes = new Set<number>();
+  for (let index = 0; index < limit; index += 1) {
+    indexes.add(Math.round((index * (values.length - 1)) / (limit - 1)));
+  }
+  return [...indexes].sort((a, b) => a - b).map((index) => values[index]);
+}
+
+function valueType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+function safePathSegment(key: string): string {
+  const normalized = key.trim().replace(/[\u0000-\u001f\u007f.[\]\\]/g, "_");
+  if (!normalized) return "<empty-key>";
+  if (
+    /^\d{6,}$/.test(normalized)
+    || /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(normalized)
+    || (/^[A-Za-z0-9_-]{32,}$/.test(normalized) && /\d/.test(normalized))
+  ) return "<dynamic-key>";
+  return normalized.slice(0, 80);
+}
+
+function sensitiveCategory(key: string): YonyouSensitiveFieldCategory | null {
+  const normalized = key.toLowerCase().replace(/[\s_.-]/g, "");
+  if (/token|secret|password|passwd|pwd|accesskey|appkey|密钥|密码|令牌/.test(normalized)) {
+    return "credential";
+  }
+  if (/idcard|identityno|citizenno|身份证|证件号|统一社会信用代码/.test(normalized)) {
+    return "identity";
+  }
+  if (/bank|iban|accountno|bankaccount|taxno|开户|银行|账号|税号|银行卡/.test(normalized)) {
+    return "financial";
+  }
+  if (/phone|mobile|telephone|email|contact|手机|电话|邮箱|联系人/.test(normalized)) {
+    return "contact";
+  }
+  if (/address|postcode|zipcode|地址|住址|邮编/.test(normalized)) {
+    return "location";
+  }
+  return null;
+}
+
+interface MutableFieldProfile {
+  path: string;
+  types: Set<string>;
+  records: Set<number>;
+  sensitiveCategory: YonyouSensitiveFieldCategory | null;
+}
+
+/**
+ * Build a bounded mapping aid from observed records. The result contains schema metadata only:
+ * no values, request parameters, source identifiers or credentials are copied into it.
+ */
+export function profileYonyouFields(records: readonly unknown[]): YonyouFieldProfile {
+  const sampled = sampleArray(records, FIELD_PROFILE_RECORD_LIMIT);
+  const fields = new Map<string, MutableFieldProfile>();
+  let truncated = records.length > sampled.length;
+
+  const recordField = (
+    path: string,
+    type: string,
+    recordIndex: number,
+    category: YonyouSensitiveFieldCategory | null,
+  ) => {
+    const existing = fields.get(path);
+    if (existing) {
+      existing.types.add(type);
+      existing.records.add(recordIndex);
+      if (!existing.sensitiveCategory && category) existing.sensitiveCategory = category;
+      return;
+    }
+    if (fields.size >= FIELD_PROFILE_FIELD_LIMIT) {
+      truncated = true;
+      return;
+    }
+    fields.set(path, {
+      path,
+      types: new Set([type]),
+      records: new Set([recordIndex]),
+      sensitiveCategory: category,
+    });
+  };
+
+  const visit = (
+    value: unknown,
+    path: string,
+    depth: number,
+    recordIndex: number,
+    category: YonyouSensitiveFieldCategory | null,
+  ): void => {
+    if (depth > FIELD_PROFILE_DEPTH_LIMIT) {
+      truncated = true;
+      return;
+    }
+    if (path) recordField(path, valueType(value), recordIndex, category);
+    if (Array.isArray(value)) {
+      const nested = sampleArray(value, FIELD_PROFILE_NESTED_ARRAY_LIMIT);
+      if (nested.length < value.length) truncated = true;
+      for (const item of nested) visit(item, `${path}[]`, depth + 1, recordIndex, category);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      const nextPath = path ? `${path}.${safePathSegment(key)}` : safePathSegment(key);
+      visit(
+        (value as Record<string, unknown>)[key],
+        nextPath,
+        depth + 1,
+        recordIndex,
+        sensitiveCategory(key),
+      );
+    }
+  };
+
+  sampled.forEach((record, index) => visit(record, "", 0, index, null));
+  const entries = [...fields.values()]
+    .sort((a, b) => a.path.localeCompare(b.path, "zh-CN"))
+    .map((field): YonyouFieldProfileEntry => ({
+      path: field.path,
+      types: [...field.types].sort(),
+      presentInRecords: field.records.size,
+      optional: field.records.size < sampled.length,
+      nullable: field.types.has("null"),
+      sensitiveCategory: field.sensitiveCategory,
+    }));
+  const categories = new Set(
+    entries.flatMap((entry) => entry.sensitiveCategory ? [entry.sensitiveCategory] : []),
+  );
+  return {
+    version: "yonyou-field-profile/v1",
+    totalRecords: records.length,
+    sampledRecords: sampled.length,
+    fieldCount: entries.length,
+    sensitiveFieldCount: entries.filter((entry) => entry.sensitiveCategory !== null).length,
+    sensitiveCategories: [...categories].sort(),
+    truncated,
+    fields: entries,
+  };
+}
+
+function fieldProfileFromScope(value: unknown): YonyouFieldProfile | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const profile = (value as Record<string, unknown>).fieldProfile;
+  if (!profile || typeof profile !== "object" || Array.isArray(profile)) return null;
+  return (profile as Record<string, unknown>).version === "yonyou-field-profile/v1"
+    ? profile as YonyouFieldProfile
+    : null;
+}
+
+function summarizeFieldProfile(profile: YonyouFieldProfile | null): YonyouFieldProfileSummary | null {
+  if (!profile) return null;
+  const { fields: _fields, ...summary } = profile;
+  return summary;
 }
 
 /** 尽力找出"记录数组"在哪；找不到就诚实返回 null，不猜。 */
@@ -110,6 +313,7 @@ async function priorRun(db: AnyDb, idempotencyKey: string): Promise<PriorRun | n
       sourceRows: integrationRuns.sourceRows,
       stagedRows: integrationRuns.stagedRows,
       evidenceHash: integrationRuns.evidenceHash,
+      requestScope: integrationRuns.requestScope,
     })
     .from(integrationRuns)
     .where(eq(integrationRuns.idempotencyKey, idempotencyKey))
@@ -216,6 +420,7 @@ export async function syncYonyouContract(
       stagedRows: existing.stagedRows,
       evidenceHash: existing.evidenceHash ?? "",
       shapeFingerprint: "",
+      fieldProfileSummary: summarizeFieldProfile(fieldProfileFromScope(existing.requestScope)),
       replayed: true,
       blockedByConsoleGrant: false,
     };
@@ -255,6 +460,7 @@ export async function syncYonyouContract(
           stagedRows: 0,
           evidenceHash: "",
           shapeFingerprint: "",
+          fieldProfileSummary: null,
           replayed: false,
           blockedByConsoleGrant: true,
         };
@@ -264,6 +470,8 @@ export async function syncYonyouContract(
 
     const records = extractRecordArray(data);
     const shapeFingerprint = yonyouShapeFingerprint(data);
+    const rows: unknown[] = records ?? [data];
+    const fieldProfile = profileYonyouFields(rows);
     const envelope = {
       contract,
       connector: CONNECTOR,
@@ -271,12 +479,12 @@ export async function syncYonyouContract(
       schemaVersion: SCHEMA_VERSION,
       scope: { scopeKey, request },
       shapeFingerprint,
+      fieldProfile,
       data,
     };
     const evidence = await writeIntegrationEvidence(CONNECTOR, stream, envelope);
 
     // 找不到记录数组时，把整个 data 当作一行原样落库——诚实优于臆测分页结构
-    const rows: unknown[] = records ?? [data];
     const stagingRowsInput: StagingRowInput[] = rows.map((row, index) => ({
       rowNo: index + 1,
       targetTable: TARGET_TABLE,
@@ -315,7 +523,7 @@ export async function syncYonyouContract(
         createdBy: actorId,
         idempotencyKey,
         schemaVersion: SCHEMA_VERSION,
-        scope: { contract, scopeKey, shapeFingerprint },
+        scope: { contract, scopeKey, shapeFingerprint, fieldProfile },
       });
       await writeStagingRows(tx, job.id, stagingRowsInput);
       await finalizeImportJob(tx, job.id, {
@@ -331,7 +539,7 @@ export async function syncYonyouContract(
         stagedRows: stagingRowsInput.length,
         rejectedRows: 0,
         evidenceHash: evidence.hash,
-        requestScope: { contract, scopeKey, request, shapeFingerprint },
+        requestScope: { contract, scopeKey, request, shapeFingerprint, fieldProfile },
         cursorEnd: scopeKey,
         error: null,
         finishedAt,
@@ -371,6 +579,7 @@ export async function syncYonyouContract(
       stagedRows: stagingRowsInput.length,
       evidenceHash: evidence.hash,
       shapeFingerprint,
+      fieldProfileSummary: summarizeFieldProfile(fieldProfile),
       replayed: false,
       blockedByConsoleGrant: false,
     };

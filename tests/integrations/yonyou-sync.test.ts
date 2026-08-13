@@ -16,6 +16,7 @@ import { YonyouClient } from "@/server/integrations/yonyou-client";
 import type { YonyouOpenApiConfig } from "@/server/integrations/yonyou";
 import {
   extractRecordArray,
+  profileYonyouFields,
   syncYonyouContract,
   yonyouShapeFingerprint,
 } from "@/server/integrations/yonyou-sync";
@@ -90,6 +91,22 @@ describe("用友只读观测同步", () => {
     const [checkpoint] = await db.select().from(schema.integrationCheckpoints)
       .where(eq(schema.integrationCheckpoints.connector, "yy"));
     expect(checkpoint.cursor).toBe("2026-08-04");
+
+    const [run] = await db.select({ requestScope: schema.integrationRuns.requestScope })
+      .from(schema.integrationRuns)
+      .where(eq(schema.integrationRuns.id, summary.runId));
+    const scope = run.requestScope as { fieldProfile: unknown };
+    expect(scope.fieldProfile).toMatchObject({
+      version: "yonyou-field-profile/v1",
+      totalRecords: 2,
+      sampledRecords: 2,
+      fieldCount: 2,
+      sensitiveFieldCount: 0,
+      truncated: false,
+    });
+    const serializedProfile = JSON.stringify(scope.fieldProfile);
+    expect(serializedProfile).not.toContain("M001");
+    expect(serializedProfile).not.toContain("物料甲");
   });
 
   it("310037 未授权：不抛错、不推进 checkpoint、如实标记等待控制台授权", async () => {
@@ -178,6 +195,68 @@ describe("响应结构工具", () => {
   it("指纹区分数组与对象，且对空数组不臆断元素结构", () => {
     expect(yonyouShapeFingerprint({ rows: [] })).toBe("{rows:[]}");
     expect(yonyouShapeFingerprint({ rows: [{ a: 1 }] })).toBe("{rows:[{a:number}]}");
+  });
+
+  it("结构指纹联合数组内不同形状，且不受记录顺序影响", () => {
+    const a = yonyouShapeFingerprint({ rows: [{ code: "M1" }, { code: "M2", name: "物料" }] });
+    const b = yonyouShapeFingerprint({ rows: [{ code: "M2", name: "另一物料" }, { code: "M1" }] });
+    expect(a).toBe(b);
+    expect(a).toContain("{code:string,name:string}");
+    expect(a).toContain("{code:string}");
+  });
+
+  it("字段画像只保留路径/类型/出现率与敏感分类，不复制业务值", () => {
+    const profile = profileYonyouFields([
+      {
+        code: "M001",
+        mobile: "13800000000",
+        bankAccount: "6222000000000000",
+        lines: [{ qty: 1 }],
+      },
+      {
+        code: "M002",
+        mobile: null,
+        lines: [{ qty: "2", remark: "内部备注" }],
+      },
+    ]);
+
+    expect(profile).toMatchObject({
+      version: "yonyou-field-profile/v1",
+      totalRecords: 2,
+      sampledRecords: 2,
+      sensitiveFieldCount: 2,
+      sensitiveCategories: ["contact", "financial"],
+      truncated: false,
+    });
+    expect(profile.fields.find((field) => field.path === "bankAccount")).toMatchObject({
+      types: ["string"],
+      presentInRecords: 1,
+      optional: true,
+      nullable: false,
+      sensitiveCategory: "financial",
+    });
+    expect(profile.fields.find((field) => field.path === "mobile")).toMatchObject({
+      types: ["null", "string"],
+      presentInRecords: 2,
+      optional: false,
+      nullable: true,
+      sensitiveCategory: "contact",
+    });
+    expect(profile.fields.find((field) => field.path === "lines[].remark")).toMatchObject({
+      presentInRecords: 1,
+      optional: true,
+    });
+    const serialized = JSON.stringify(profile);
+    expect(serialized).not.toContain("13800000000");
+    expect(serialized).not.toContain("6222000000000000");
+    expect(serialized).not.toContain("内部备注");
+  });
+
+  it("字段画像有字段数上限，异常宽响应不会撑大运行元数据", () => {
+    const record = Object.fromEntries(Array.from({ length: 400 }, (_, index) => [`field_${index}`, index]));
+    const profile = profileYonyouFields([record]);
+    expect(profile.fieldCount).toBe(256);
+    expect(profile.truncated).toBe(true);
   });
 
   it("能在常见包裹键下找到记录数组", () => {

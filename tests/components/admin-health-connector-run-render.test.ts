@@ -26,6 +26,7 @@ function run(overrides: Partial<RunRow>): RunRow {
     checkpointOnLatestRun: true,
     emptySource: false,
     releaseBlocked: false,
+    fieldProfile: null,
     errorSummary: null,
     ...overrides,
   };
