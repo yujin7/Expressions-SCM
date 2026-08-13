@@ -30,6 +30,8 @@ export interface ProductStreamEvidence {
 export interface ProductSourceEvidence {
   source: DataProductSource;
   state: ProductSourceEvidenceState;
+  /** 连接器当前真实状态；历史成功流不能覆盖 contract_only / blocked。 */
+  connectorState: DataSourceReadiness["state"] | "missing";
   /** 当前配置、启用、受控契约与 live binding 仍有效；与产品级 UAT 放行分开。 */
   configurationReady: boolean;
   missingStreams: string[];
@@ -161,6 +163,7 @@ export function evaluateProductSourceEvidence(
             : staleStreams.length > 0
               ? "stale"
               : "degraded",
+        connectorState: row?.state ?? "missing",
         configurationReady: row?.configurationReady === true,
         missingStreams,
         staleStreams,
@@ -188,6 +191,7 @@ export function evaluateProductSourceEvidence(
     return {
       source,
       state,
+      connectorState: row?.state ?? "missing",
       configurationReady: row?.configurationReady === true,
       missingStreams,
       staleStreams,
@@ -234,10 +238,13 @@ export function currentProductAutomation(
   summary: ProductEvidenceSummary,
 ): ProductAutomationReadiness {
   const safe = summary.sources.every((source) => source.source === "SCM"
-    ? source.state === "operational"
+    ? source.connectorState === "operational"
+      && source.configurationReady
+      && source.state === "operational"
       && source.streams.length > 0
       && source.streams.every((stream) => stream.state === "current")
-    : source.configurationReady
+    : (source.connectorState === "observation" || source.connectorState === "operational")
+      && source.configurationReady
       && source.streams.length > 0
       && source.streams.every(streamSafeForExplanation));
   return safe

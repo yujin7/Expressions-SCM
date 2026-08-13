@@ -233,6 +233,17 @@ describe("数据产品所需流证据", () => {
       invalidated,
     ]))).toMatchObject({ level: "A0" });
 
+    for (const connectorState of ["contract_only", "blocked"] as const) {
+      const historicalSuccess = source("JST", connectorState, ["outbound-sales-daily"]);
+      historicalSuccess.configurationReady = true;
+      const summary = evaluateProductSourceEvidence(product, [
+        source("SCM", "operational", []),
+        historicalSuccess,
+      ]);
+      expect(summary.sources[1]).toMatchObject({ connectorState });
+      expect(currentProductAutomation(summary)).toMatchObject({ level: "A0" });
+    }
+
     const rejected = source("JST", "operational", ["outbound-sales-daily"]);
     rejected.streams = [stream("outbound-sales-daily", { rejectedRows: 1 })];
     expect(currentProductAutomation(evaluateProductSourceEvidence(product, [

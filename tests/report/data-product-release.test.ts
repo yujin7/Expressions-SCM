@@ -237,6 +237,18 @@ describe("数据产品放行闭环", () => {
     const invalidated = (await loadDataProductReleaseReadiness(changed, operator, db)).find((item) => item.productId === product.id)!;
     expect(invalidated).toMatchObject({ effectiveLevel: "A1", activeReleaseCurrent: false });
 
+    const blocked = currentSources();
+    blocked[1].state = "contract_only";
+    blocked[1].configurationReady = true;
+    const blockedByCurrentConnectorState = (await loadDataProductReleaseReadiness(blocked, operator, db))
+      .find((item) => item.productId === product.id)!;
+    expect(blockedByCurrentConnectorState).toMatchObject({
+      runtimeLevel: "A0",
+      effectiveLevel: "A0",
+      activeReleaseCurrent: false,
+    });
+    expect(blockedByCurrentConnectorState.gate).toContain("自动降回 A0/A1");
+
     const revoked = await decideDataProductRelease(operator, {
       id: approved.id,
       action: "revoke",
