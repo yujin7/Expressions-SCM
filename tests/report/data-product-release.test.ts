@@ -21,10 +21,11 @@ import {
   CROSS_SYSTEM_IDENTITY_ORDER,
 } from "@/lib/cross-system-identity";
 import { CROSS_SYSTEM_SEMANTIC_CONTRACT_VERSION } from "@/lib/cross-system-semantics";
+import { DATA_PRODUCT_METRIC_LINEAGE_VERSION } from "@/lib/data-product-metric-lineage";
 import { createTestDb } from "../helpers/db";
 
 /*
- * 本文件验证放行台账本身；把已登记的逐流提取契约提升为“已完成”的受控夹具，
+ * 本文件验证放行台账本身；把已登记的逐流提取、业务语义和指标计算契约提升为“已完成”的受控夹具，
  * 避免真实目录中刻意保持 fail-closed 的外部缺口掩盖会签/失效测试。
  */
 vi.mock("@/lib/cross-system-identity", async (importOriginal) => {
@@ -70,6 +71,24 @@ vi.mock("@/lib/cross-system-semantics", async (importOriginal) => {
         ])),
       };
     },
+  };
+});
+
+vi.mock("@/lib/data-product-metric-lineage", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/data-product-metric-lineage")>();
+  return {
+    ...actual,
+    getDataProductMetricLineage: (productId: string, metricId: string) => ({
+      productId,
+      metricId,
+      state: "implemented",
+      outputGrain: "测试粒度",
+      inputs: [{ kind: "scm_evidence", ref: "test-controlled-input", purpose: "受控测试输入" }],
+      joinKeys: ["测试业务键"],
+      missingPolicy: "unknown_not_zero",
+      evidence: "测试夹具：指标计算与重放证据已完成",
+      nextAction: "持续监测",
+    }),
   };
 });
 
@@ -336,7 +355,7 @@ describe("数据产品放行闭环", () => {
   it("正常日常刷新不使批准失效，但连接配置范围变化会改变指纹", () => {
     const firstSources = currentSources();
     const first = buildDataProductReleaseEvidence(product, firstSources, new Date("2026-08-12T02:00:00Z"));
-    expect(first.envelope.schemaVersion).toBe("data-product-release/v5");
+    expect(first.envelope.schemaVersion).toBe("data-product-release/v6");
     expect(first.envelope.product.identityExtractionContractVersion)
       .toBe(CROSS_SYSTEM_IDENTITY_EXTRACTION_CONTRACT_VERSION);
     expect(first.envelope.product.identityExtractionScope).toEqual(expect.arrayContaining([
@@ -355,6 +374,15 @@ describe("数据产品放行闭环", () => {
         stream: "pdd-sku-crosswalk-observation",
         domain: "identifier_namespace",
         state: "business_review_pending",
+      }),
+    ]));
+    expect(first.envelope.product.metricLineageVersion).toBe(DATA_PRODUCT_METRIC_LINEAGE_VERSION);
+    expect(first.envelope.product.metricIds).toEqual([...product.metricIds].sort());
+    expect(first.envelope.product.metricLineageScope).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        productId: product.id,
+        metricId: "platformIdentityCoverage",
+        state: "partial",
       }),
     ]));
     const refreshedSources = currentSources();

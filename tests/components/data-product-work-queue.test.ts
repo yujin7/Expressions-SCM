@@ -337,8 +337,10 @@ describe("data product dynamic work queue", () => {
     const base = DATA_PRODUCTS[0];
     const downstream = {
       ...base,
-      id: "test-downstream",
+      // 依赖路由测试使用真实已实现指标，避免指标门禁抢先成为阻塞。
+      id: "replenishment-evidence",
       title: "下游组合决策",
+      metricIds: ["daysCover"],
       sources: [],
       requiredStreams: {},
       requiredIdentities: {},

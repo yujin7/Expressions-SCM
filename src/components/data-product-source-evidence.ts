@@ -25,6 +25,12 @@ import {
   type CrossSystemSemanticSource,
   type CrossSystemSemanticState,
 } from "@/lib/cross-system-semantics";
+import {
+  getDataProductMetricLineage,
+  type DataProductMetricLineageContract,
+  type MetricComputationState,
+} from "@/lib/data-product-metric-lineage";
+import { metric } from "@/components/metrics";
 
 export type ProductSourceEvidenceState =
   | "missing"
@@ -88,6 +94,18 @@ export interface ProductSemanticEvidence {
   nextAction: string;
 }
 
+export interface ProductMetricEvidence {
+  metricId: string;
+  label: string;
+  state: MetricComputationState;
+  outputGrain: string;
+  inputs: DataProductMetricLineageContract["inputs"];
+  joinKeys: string[];
+  missingPolicy: DataProductMetricLineageContract["missingPolicy"] | null;
+  reason: string;
+  nextAction: string;
+}
+
 export interface ProductEvidenceSummary {
   sources: ProductSourceEvidence[];
   observedSources: number;
@@ -105,6 +123,8 @@ export interface ProductEvidenceSummary {
   unreadyExtractionIdentities: number;
   semanticGates: ProductSemanticEvidence[];
   unreadySemantics: number;
+  metricGates: ProductMetricEvidence[];
+  unreadyMetrics: number;
   businessTimeWindow: ProductBusinessTimeWindow;
 }
 
@@ -258,6 +278,37 @@ function evaluateProductSemanticGates(product: DataProductDefinition): ProductSe
     || left.stream.localeCompare(right.stream)
     || left.domain.localeCompare(right.domain)
   );
+}
+
+function evaluateProductMetricGates(product: DataProductDefinition): ProductMetricEvidence[] {
+  return [...product.metricIds].sort().map((metricId): ProductMetricEvidence => {
+    const definition = metric(metricId);
+    const contract = getDataProductMetricLineage(product.id, metricId);
+    if (!contract) {
+      return {
+        metricId,
+        label: definition?.label ?? metricId,
+        state: "missing_contract",
+        outputGrain: "未登记",
+        inputs: [],
+        joinKeys: [],
+        missingPolicy: null,
+        reason: "数据产品引用了该指标，但没有产品级输入与计算血缘契约",
+        nextAction: "登记真实输入、连接键、缺失处理和可重放计算器；公式文案不能代替实现",
+      };
+    }
+    return {
+      metricId,
+      label: definition?.label ?? metricId,
+      state: contract.state,
+      outputGrain: contract.outputGrain,
+      inputs: contract.inputs,
+      joinKeys: contract.joinKeys,
+      missingPolicy: contract.missingPolicy,
+      reason: contract.evidence,
+      nextAction: contract.nextAction,
+    };
+  });
 }
 
 function qualityReviewReason(evidence: DataStreamEvidence): string | null {
@@ -512,6 +563,7 @@ export function evaluateProductSourceEvidence(
       : businessDates.length < timeSensitive.length ? "partial" : "complete",
   };
   const semanticGates = evaluateProductSemanticGates(product);
+  const metricGates = evaluateProductMetricGates(product);
   return {
     sources,
     observedSources,
@@ -529,6 +581,8 @@ export function evaluateProductSourceEvidence(
     unreadyExtractionIdentities: identityGates.filter((item) => item.extractionState !== "implemented").length,
     semanticGates,
     unreadySemantics: semanticGates.filter((item) => item.state !== "implemented").length,
+    metricGates,
+    unreadyMetrics: metricGates.filter((item) => item.state !== "implemented").length,
     businessTimeWindow,
   };
 }
@@ -570,6 +624,7 @@ export function currentProductAutomation(
   const identitiesSafe = summary.identityGates.every((identity) =>
     identity.state === "ready" && identity.extractionState === "implemented");
   const semanticsSafe = summary.semanticGates.every((semantic) => semantic.state === "implemented");
+  const metricsSafe = summary.metricGates.every((metricEvidence) => metricEvidence.state === "implemented");
   if (sourcesSafe && !identitiesSafe) {
     const blocker = summary.identityGates.find((identity) =>
       identity.extractionState !== "implemented" || identity.state !== "ready")!;
@@ -591,10 +646,17 @@ export function currentProductAutomation(
       reason: `${blocker.source} 的「${blocker.label}」语义门禁未通过：${blocker.reason}。数据可读且身份可对上，也不能在粒度、单位、时间或正负号未固化时进入 BI 解释。`,
     };
   }
-  return sourcesSafe && identitiesSafe && semanticsSafe
+  if (sourcesSafe && identitiesSafe && semanticsSafe && !metricsSafe) {
+    const blocker = summary.metricGates.find((metricEvidence) => metricEvidence.state !== "implemented")!;
+    return {
+      level: "A0",
+      reason: `「${blocker.label}」指标计算门禁未通过：${blocker.reason}。有公式和有数据不等于已有可重放计算器。`,
+    };
+  }
+  return sourcesSafe && identitiesSafe && semanticsSafe && metricsSafe
     ? {
         level: "A1",
-        reason: "所需流具备当前、成功且无拒收的证据，身份维度已受控统一，使用到的业务语义也已固化；仅允许带来源口径的解释，仍待产品级 UAT 后升级。",
+        reason: "所需流具备当前、成功且无拒收的证据，身份维度已受控统一，使用到的业务语义已固化，指标也有可重放的输入与计算血缘；仅允许带来源口径的解释，仍待产品级 UAT 后升级。",
       }
     : {
         level: "A0",

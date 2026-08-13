@@ -238,7 +238,7 @@ describe("三方数据产品决策证据导出", () => {
     ], [release], [outcome], new Date("2026-08-13T02:03:04.000Z"), [supportingObservation]);
 
     expect(result.filename).toBe("三方数据-产品决策证据-2026-08-13T02-03-04-000Z.csv");
-    expect(result.rows).toHaveLength(5);
+    expect(result.rows).toHaveLength(6);
     const asObjects = result.rows.map((row) => Object.fromEntries(
       result.headers.map((header, index) => [header, row[index]]),
     ));
@@ -310,6 +310,15 @@ describe("三方数据产品决策证据导出", () => {
         身份下一步: "按租户+组织 ID 建立映射",
         身份提取契约状态: "schema_profile_pending",
         身份适用数据流: "用友财务凭证[schema_profile_pending]",
+      }),
+      expect.objectContaining({
+        记录类型: "data_product_metric_lineage",
+        证据用途: "指标计算血缘",
+        指标技术键: "inventoryReconciliationGap",
+        指标名称: "库存核对差异",
+        指标计算状态: "缺计算契约",
+        指标输出粒度: "未登记",
+        指标计算实证: "数据产品引用了该指标，但没有产品级输入与计算血缘契约",
       }),
     ]);
     expect(JSON.stringify(result)).not.toContain("must-not-export");

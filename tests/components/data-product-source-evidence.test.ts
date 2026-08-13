@@ -80,7 +80,9 @@ function source(
 }
 
 const product: DataProductDefinition = {
-  id: "demand-pulse-test",
+  // 该文件隔离验证来源/身份/语义门禁，因此使用一个真实已实现的指标契约，
+  // 避免“指标待实现”先于本文件所测试的门禁生效。
+  id: "replenishment-evidence",
   title: "需求脉搏测试",
   decision: "test",
   grain: "day x sku",
@@ -89,7 +91,7 @@ const product: DataProductDefinition = {
   contractVersion: "1.0.0",
   cadence: "daily",
   decisionSlaHours: 24,
-  metricIds: ["externalNetDemand"],
+  metricIds: ["daysCover"],
   maxAutomation: "A2",
   automationGuardrail: "test",
   sources: ["SCM", "JST"],
@@ -102,6 +104,29 @@ const product: DataProductDefinition = {
 };
 
 describe("数据产品所需流证据", () => {
+  it("数据源、身份和语义都安全时，未实现的指标仍保持 A0", () => {
+    const metricProduct = {
+      ...product,
+      id: "order-to-cash",
+      metricIds: ["orderFulfillmentRate"],
+    } satisfies DataProductDefinition;
+    const summary = evaluateProductSourceEvidence(metricProduct, [
+      source("SCM", "operational", []),
+      source("JST", "observation", ["outbound-sales-daily"]),
+    ]);
+
+    expect(summary.metricGates).toEqual([
+      expect.objectContaining({
+        metricId: "orderFulfillmentRate",
+        state: "not_implemented",
+      }),
+    ]);
+    expect(currentProductAutomation(summary)).toMatchObject({
+      level: "A0",
+      reason: expect.stringContaining("指标计算门禁未通过"),
+    });
+  });
+
   it("数据与身份都就绪时，未固化的数量/纠错语义仍必须保持 A0", () => {
     const semanticProduct = {
       ...product,

@@ -54,6 +54,24 @@ vi.mock("@/lib/cross-system-semantics", async (importOriginal) => {
   };
 });
 
+vi.mock("@/lib/data-product-metric-lineage", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/data-product-metric-lineage")>();
+  return {
+    ...actual,
+    getDataProductMetricLineage: (productId: string, metricId: string) => ({
+      productId,
+      metricId,
+      state: "implemented",
+      outputGrain: "测试粒度",
+      inputs: [{ kind: "scm_evidence", ref: "test-controlled-input", purpose: "受控测试输入" }],
+      joinKeys: ["测试业务键"],
+      missingPolicy: "unknown_not_zero",
+      evidence: "结果闭环测试夹具已有可重放计算",
+      nextAction: "持续监测",
+    }),
+  };
+});
+
 const product = DATA_PRODUCTS.find((item) => item.id === "commerce-identity-control")!;
 
 function stream(key: string): DataStreamEvidence {

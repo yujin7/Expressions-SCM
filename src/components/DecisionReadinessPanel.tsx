@@ -41,6 +41,7 @@ import {
   evaluateProductSupportingEvidence,
   type ProductEvidenceSummary,
   type ProductIdentityEvidence,
+  type ProductMetricEvidence,
   type ProductSemanticEvidence,
   type ProductStreamEvidence,
 } from "@/components/data-product-source-evidence";
@@ -69,6 +70,11 @@ import {
   CROSS_SYSTEM_SEMANTIC_STATE_LABEL,
   type CrossSystemSemanticState,
 } from "@/lib/cross-system-semantics";
+import {
+  METRIC_COMPUTATION_STATE_LABEL,
+  type MetricComputationState,
+  type MetricLineageInput,
+} from "@/lib/data-product-metric-lineage";
 
 const STATE_META: Record<CapabilityReadiness, { label: string; color: string; stroke: string }> = {
   ready: { label: "当前可用", color: "success", stroke: "#16a34a" },
@@ -117,6 +123,13 @@ const SEMANTIC_STATE_COLOR: Record<CrossSystemSemanticState, string> = {
   schema_profile_pending: "processing",
   not_implemented: "warning",
   not_available: "error",
+  missing_contract: "error",
+};
+
+const METRIC_STATE_COLOR: Record<MetricComputationState, string> = {
+  implemented: "success",
+  partial: "warning",
+  not_implemented: "error",
   missing_contract: "error",
 };
 
@@ -475,6 +488,124 @@ function RequiredSemanticEvidence({ summary }: { summary: ProductEvidenceSummary
                 </Space>
               ) : "—";
             },
+          },
+        ]}
+      />
+    </Card>
+  );
+}
+
+function metricInputLabel(input: MetricLineageInput): string {
+  if (input.kind === "stream" && input.source) {
+    return `${DATA_PRODUCT_SOURCE_LABEL[input.source]} · ${dataProductStreamLabel(input.source, input.ref)}`;
+  }
+  if (input.kind === "scm_evidence") {
+    return `SCM 受控事实 · ${dataProductStreamLabel("SCM", input.ref)}`;
+  }
+  const upstream = DATA_PRODUCTS.find((item) => item.id === input.ref);
+  return `上游产品 · ${upstream?.title ?? input.ref}`;
+}
+
+function RequiredMetricLineage({ summary }: { summary: ProductEvidenceSummary }) {
+  const ready = summary.metricGates.length - summary.unreadyMetrics;
+  return (
+    <Card
+      size="small"
+      title="指标计算与血缘门禁"
+      extra={(
+        <Space size={4} wrap>
+          <Tag color="success">可重放 {ready}</Tag>
+          <Tag color={summary.unreadyMetrics > 0 ? "error" : "success"}>
+            待补齐 {summary.unreadyMetrics}
+          </Tag>
+        </Space>
+      )}
+      styles={{ body: { padding: 0 } }}
+    >
+      <Alert
+        banner
+        showIcon
+        type="info"
+        message="指标有文字公式还不够：必须能追溯到具体数据流/上游产品、连接键和缺失处理，并存在可重放计算器。局部实现不得冒充完整 BI 产品。"
+      />
+      <Table
+        rowKey="metricId"
+        size="small"
+        pagination={false}
+        dataSource={summary.metricGates}
+        scroll={{ x: 1_480 }}
+        columns={[
+          {
+            title: "指标 / 公式",
+            dataIndex: "metricId",
+            width: 250,
+            render: (metricId: string, row: ProductMetricEvidence) => (
+              <Space direction="vertical" size={2}>
+                <Typography.Text strong>{row.label}</Typography.Text>
+                <Typography.Text type="secondary" code>{metricId}</Typography.Text>
+                <Typography.Paragraph
+                  type="secondary"
+                  ellipsis={{ rows: 2, tooltip: metric(metricId)?.formula ?? "未登记公式" }}
+                  style={{ marginBottom: 0 }}
+                >
+                  {metric(metricId)?.formula ?? "未登记公式"}
+                </Typography.Paragraph>
+              </Space>
+            ),
+          },
+          {
+            title: "计算状态",
+            dataIndex: "state",
+            width: 140,
+            render: (state: MetricComputationState) => (
+              <Tag color={METRIC_STATE_COLOR[state]}>{METRIC_COMPUTATION_STATE_LABEL[state]}</Tag>
+            ),
+          },
+          {
+            title: "输入血缘",
+            dataIndex: "inputs",
+            width: 380,
+            render: (inputs: MetricLineageInput[]) => (
+              <Space direction="vertical" size={2}>
+                {inputs.map((input, index) => (
+                  <Typography.Text key={`${input.kind}:${input.source ?? ""}:${input.ref}:${index}`} title={input.purpose}>
+                    {metricInputLabel(input)}
+                  </Typography.Text>
+                ))}
+              </Space>
+            ),
+          },
+          {
+            title: "连接键 / 缺失策略",
+            key: "join",
+            width: 300,
+            render: (_, row: ProductMetricEvidence) => (
+              <Space direction="vertical" size={2}>
+                <Typography.Text>{row.joinKeys.join(" · ") || "未登记"}</Typography.Text>
+                <Typography.Text type="secondary">
+                  {row.missingPolicy === "unknown_not_zero"
+                    ? "缺失保持未知，不补 0"
+                    : row.missingPolicy === "exclude_with_coverage"
+                      ? "排除时必须同时披露覆盖率"
+                      : row.missingPolicy === "not_applicable" ? "分母不适用时留白" : "未登记"}
+                </Typography.Text>
+              </Space>
+            ),
+          },
+          {
+            title: "实证 / 下一步",
+            key: "evidence",
+            width: 410,
+            render: (_, row: ProductMetricEvidence) => (
+              <Space direction="vertical" size={2}>
+                <Typography.Paragraph ellipsis={{ rows: 2, tooltip: row.reason }} style={{ marginBottom: 0 }}>
+                  {row.reason}
+                </Typography.Paragraph>
+                <Typography.Paragraph type="secondary" ellipsis={{ rows: 2, tooltip: row.nextAction }} style={{ marginBottom: 0 }}>
+                  {row.nextAction}
+                </Typography.Paragraph>
+              </Space>
+            ),
           },
         ]}
       />
@@ -904,6 +1035,7 @@ function ProductOperatingContract({
       ) : null}
       <RequiredIdentityEvidence summary={summary} />
       <RequiredSemanticEvidence summary={summary} />
+      <RequiredMetricLineage summary={summary} />
       <DataProductReleaseControl product={product} readiness={release} onChanged={onReleaseChanged} />
       <DataProductOutcomeControl product={product} readiness={outcome} onChanged={onReleaseChanged} />
       <RequiredStreamEvidence summary={summary} />

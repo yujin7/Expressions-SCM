@@ -19,6 +19,7 @@ import type { DataSourceReadiness } from "@/server/modules/report/data-source-re
 import type { DataProductOutcomeReadiness } from "@/server/modules/report/data-product-outcome";
 import type { DataProductReleaseReadiness } from "@/server/modules/report/data-product-release";
 import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
+import { METRIC_COMPUTATION_STATE_LABEL } from "@/lib/data-product-metric-lineage";
 
 export interface DataProductEvidenceCsvExport {
   filename: string;
@@ -59,6 +60,8 @@ const HEADERS = [
   "身份开放异常数", "身份忽略数", "身份下一步", "身份提取契约状态",
   "身份适用数据流", "身份提取契约说明", "身份提取契约下一步",
   "业务语义门禁", "源业务粒度", "本产品使用语义", "业务语义说明", "业务语义下一步",
+  "指标技术键", "指标名称", "指标计算状态", "指标输出粒度", "指标输入血缘",
+  "指标连接键", "指标缺失策略", "指标计算实证", "指标下一步",
 ];
 
 const OUTCOME_DECISION_LABEL = {
@@ -122,6 +125,7 @@ export function buildDataProductEvidenceExport(
       stream,
       usage: "放行依赖",
       identity: null,
+      metricLineage: null,
     })));
     const supportingRows = evaluateProductSupportingEvidence(product, dataSources).map((stream) => {
       const readiness = dataSources.find((source) => source.key === stream.source);
@@ -134,6 +138,7 @@ export function buildDataProductEvidenceExport(
         stream,
         usage: "辅助证据（不参与放行）",
         identity: null,
+        metricLineage: null,
       };
     });
     const identityRows = summary.identityGates.map((identity) => {
@@ -147,9 +152,24 @@ export function buildDataProductEvidenceExport(
         stream: null,
         usage: "身份门禁",
         identity,
+        metricLineage: null,
       };
     });
-    return [...requiredRows, ...supportingRows, ...identityRows].map(({ source, stream, usage, identity }) => {
+    const scmReadiness = dataSources.find((source) => source.key === "SCM");
+    const metricRows = summary.metricGates.map((metricLineage) => ({
+      source: {
+        source: "SCM" as const,
+        state: scmReadiness?.state ?? "missing" as const,
+        configurationReady: scmReadiness?.configurationReady === true,
+      },
+      stream: null,
+      usage: "指标计算血缘",
+      identity: null,
+      metricLineage,
+    }));
+    return [...requiredRows, ...supportingRows, ...identityRows, ...metricRows].map(({
+      source, stream, usage, identity, metricLineage,
+    }) => {
       const evidence = stream?.evidence ?? null;
       const scmEvidence = stream?.scmEvidence;
       const observation = stream && usage === "辅助证据（不参与放行）" && source.source === "JIANDAOYUN"
@@ -170,7 +190,9 @@ export function buildDataProductEvidenceExport(
         ? null
         : semanticBlockers.length === 0 ? "implemented" : semanticBlockers[0].state;
       return [
-        identity ? "data_product_identity_evidence" : "data_product_stream_evidence",
+        metricLineage
+          ? "data_product_metric_lineage"
+          : identity ? "data_product_identity_evidence" : "data_product_stream_evidence",
         generatedAt,
         product.id,
         product.title,
@@ -261,6 +283,17 @@ export function buildDataProductEvidenceExport(
         semanticControls.map((item) => `${item.label}[${item.state}]`).join("；") || null,
         semanticControls.map((item) => `${item.label}：${item.reason}`).join("；") || null,
         semanticBlockers.map((item) => `${item.label}：${item.nextAction}`).join("；") || null,
+        metricLineage?.metricId ?? null,
+        metricLineage?.label ?? null,
+        metricLineage ? METRIC_COMPUTATION_STATE_LABEL[metricLineage.state] : null,
+        metricLineage?.outputGrain ?? null,
+        metricLineage?.inputs.map((input) =>
+          `${input.kind}:${input.source ? `${input.source}:` : ""}${input.ref}(${input.purpose})`
+        ).join("；") ?? null,
+        metricLineage?.joinKeys.join("；") ?? null,
+        metricLineage?.missingPolicy ?? null,
+        metricLineage?.reason ?? null,
+        metricLineage?.nextAction ?? null,
       ];
     });
   });
