@@ -1,5 +1,6 @@
 import {
-  pgTable, serial, text, integer, numeric, date, timestamp, boolean, unique, jsonb } from "drizzle-orm/pg-core";
+  pgTable, serial, text, integer, numeric, date, timestamp, boolean, unique, jsonb, index, check } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import {
   docStatusEnum, poLineTypeEnum, shLineTypeEnum, qcHandlingEnum,
   pcTargetEnum, pcScopeEnum, stockDocSubtypeEnum, tlReasonEnum,
@@ -105,6 +106,45 @@ export const poLines = pgTable("po_lines", {
   // func#11 供应商按行回交期（同单不同物料交期不同）
   expectedDate: date("expected_date"),
 });
+
+/**
+ * 采购承诺版本事件：每次有效承诺日改变只追加一行，禁止覆盖历史。
+ *
+ * 以 PO 行为粒度记录“有效承诺日”（行交期优先，否则继承表头）；迁移前遗留数据只能作为
+ * legacy_backfill 当前快照，不能冒充原始承诺。未来简道云/聚水潭/用友只可作为独立来源事件
+ * 或对照证据写入，不能直接覆盖 SCM 当前字段。
+ */
+export const poPromiseRevisions = pgTable("po_promise_revisions", {
+  id: serial("id").primaryKey(),
+  poId: integer("po_id").notNull().references(() => poDocs.id),
+  poLineId: integer("po_line_id").notNull().references(() => poLines.id),
+  sequence: integer("sequence").notNull(),
+  previousDate: date("previous_date"),
+  promisedDate: date("promised_date"),
+  source: text("source").notNull(),
+  actorType: text("actor_type").notNull(),
+  recordedBy: integer("recorded_by").references(() => users.id),
+  reason: text("reason"),
+  externalSource: text("external_source"),
+  externalRef: text("external_ref"),
+  idempotencyKey: text("idempotency_key").notNull(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique("uq_po_promise_line_sequence").on(t.poLineId, t.sequence),
+  unique("uq_po_promise_idempotency").on(t.idempotencyKey),
+  index("ix_po_promise_po_occurred").on(t.poId, t.occurredAt),
+  index("ix_po_promise_line_occurred").on(t.poLineId, t.occurredAt),
+  check("ck_po_promise_sequence", sql`${t.sequence} > 0`),
+  check(
+    "ck_po_promise_source",
+    sql`${t.source} IN ('supplier_confirm', 'buyer_revision', 'legacy_backfill', 'external_observation')`,
+  ),
+  check(
+    "ck_po_promise_actor_type",
+    sql`${t.actorType} IN ('supplier_token', 'internal_user', 'system_backfill', 'external_system')`,
+  ),
+  check("ck_po_promise_date_changed", sql`${t.previousDate} IS DISTINCT FROM ${t.promisedDate}`),
+]);
 
 /* ── 价格变更申请单 PC ──────────────────────── */
 export const pcDocs = pgTable("pc_docs", {

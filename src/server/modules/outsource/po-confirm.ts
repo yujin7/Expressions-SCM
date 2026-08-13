@@ -16,6 +16,7 @@ import { enqueueNotification } from "@/jobs/notify";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { ApiError } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
+import { appendPoPromiseRevisions, capturePoPromiseSnapshot } from "@/server/modules/outsource/po-promise";
 import type { SessionUser } from "@/server/core/dto";
 import { resolveDb } from "@/server/core/svc";
 
@@ -125,6 +126,9 @@ export async function submitPoConfirm(
 
   // 校验逐行交期
   const lineInputs = Array.isArray(input?.lines) ? input.lines : [];
+  if (new Set(lineInputs.map((line) => line?.poLineId)).size !== lineInputs.length) {
+    throw new ApiError(400, "同一采购单行不能重复提交交期");
+  }
   for (const l of lineInputs) {
     if (typeof l?.poLineId !== "number" || !Number.isInteger(l.poLineId)) throw new ApiError(400, "行标识无效");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(l?.expectedDate ?? "").trim())) throw new ApiError(400, "请填写有效的行交货日期（YYYY-MM-DD）");
@@ -152,6 +156,7 @@ export async function submitPoConfirm(
 
   const now = new Date();
   const confirmed = await db.transaction(async (tx: AnyDb) => {
+    const promiseSnapshot = await capturePoPromiseSnapshot(tx, doc.id);
     const validDates = lineInputs.map((line) => String(line.expectedDate).trim());
     const headerDate = validDates.length > 0 ? validDates.slice().sort()[0] : headerInput;
 
@@ -202,6 +207,15 @@ export async function submitPoConfirm(
       }
     }
 
+    const promiseRevision = await appendPoPromiseRevisions(tx, promiseSnapshot, {
+      nextHeaderDate: headerDate,
+      nextLineDates: new Map(lineInputs.map((line) => [line.poLineId, String(line.expectedDate).trim()])),
+      source: "supplier_confirm",
+      actorType: "supplier_token",
+      reason: note || "供应商确认交期",
+      occurredAt: now,
+    });
+
     await writeAudit(tx, {
       userId: doc.createdBy,
       entity: "po",
@@ -211,6 +225,7 @@ export async function submitPoConfirm(
         source: "supplier_via_token",
         expectedDate: headerDate,
         lines: validDates.length,
+        promiseRevisionLines: promiseRevision.inserted,
         note: note || null,
         status: target ?? doc.status,
       },

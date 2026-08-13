@@ -41,6 +41,9 @@ export interface PromiseLineFact {
   uomFactor: string;
   currentReceivedQty: string;
   promisedDate: string | null;
+  originalPromisedDate: string | null;
+  promiseHistoryState: "trusted" | "backfilled" | "missing";
+  revisionCount: number;
 }
 
 export interface PromiseReceiptFact {
@@ -66,7 +69,12 @@ export interface PromiseReliabilityRow {
   skuCode: string;
   skuName: string;
   baseUom: string;
+  basis: "original" | "current";
   promisedDate: string;
+  originalPromisedDate: string | null;
+  currentPromisedDate: string | null;
+  promiseHistoryState: PromiseLineFact["promiseHistoryState"];
+  revisionCount: number;
   status: PromiseReliabilityStatus;
   orderedQty: number;
   receivedByPromise: number;
@@ -83,8 +91,9 @@ export interface PromiseReliability {
   windowDays: number;
   windowFrom: string;
   grain: "PO × SKU（仅唯一行）";
-  promiseVersionState: "current_only";
+  promiseVersionState: "immutable_history" | "mixed_history" | "current_only";
   rate: number | null;
+  originalRate: number | null;
   totals: {
     effectiveLines: number;
     promisedLines: number;
@@ -98,12 +107,27 @@ export interface PromiseReliability {
     ambiguous: number;
     controlMismatch: number;
   };
+  originalTotals: {
+    eligibleLines: number;
+    onTimeInFull: number;
+    lateFull: number;
+    overdueShort: number;
+    historyTrusted: number;
+    historyBackfilled: number;
+    historyMissing: number;
+    future: number;
+    outsideWindow: number;
+    ambiguous: number;
+    controlMismatch: number;
+  };
   coverage: {
     promisePct: number | null;
     calculablePct: number | null;
+    historyPct: number | null;
   };
   exceptions: PromiseReliabilityRow[];
   gate: string | null;
+  historyGate: string | null;
   limitations: string[];
   externalEdges: Array<{
     source: "JIANDAOYUN" | "JST" | "YONYOU";
@@ -201,72 +225,111 @@ export function buildPromiseReliability(
     ambiguous: 0,
     controlMismatch: 0,
   };
+  const originalTotals = {
+    eligibleLines: 0,
+    onTimeInFull: 0,
+    lateFull: 0,
+    overdueShort: 0,
+    historyTrusted: 0,
+    historyBackfilled: 0,
+    historyMissing: 0,
+    future: 0,
+    outsideWindow: 0,
+    ambiguous: 0,
+    controlMismatch: 0,
+  };
   const rows: PromiseReliabilityRow[] = [];
 
   for (const line of lines) {
+    if (line.promiseHistoryState === "trusted" && line.originalPromisedDate) {
+      originalTotals.historyTrusted += 1;
+    } else if (line.promiseHistoryState === "backfilled") {
+      originalTotals.historyBackfilled += 1;
+    } else if (line.promisedDate) {
+      originalTotals.historyMissing += 1;
+    }
+
+    let currentEligible = false;
     if (!line.promisedDate) {
       totals.undated += 1;
-      continue;
+    } else {
+      totals.promisedLines += 1;
+      if (line.promisedDate > asOf) totals.future += 1;
+      else if (line.promisedDate < windowFrom) totals.outsideWindow += 1;
+      else currentEligible = true;
     }
-    totals.promisedLines += 1;
-    if (line.promisedDate > asOf) {
-      totals.future += 1;
-      continue;
+
+    let originalEligible = false;
+    if (line.promiseHistoryState === "trusted" && line.originalPromisedDate) {
+      if (line.originalPromisedDate > asOf) originalTotals.future += 1;
+      else if (line.originalPromisedDate < windowFrom) originalTotals.outsideWindow += 1;
+      else originalEligible = true;
     }
-    if (line.promisedDate < windowFrom) {
-      totals.outsideWindow += 1;
-      continue;
-    }
+    if (!currentEligible && !originalEligible) continue;
+
     const key = `${line.poId}\u0000${line.skuId}`;
     if ((lineCountByPoSku.get(key) ?? 0) !== 1) {
-      totals.ambiguous += 1;
+      if (currentEligible) totals.ambiguous += 1;
+      if (originalEligible) originalTotals.ambiguous += 1;
       continue;
     }
     const lineReceipts = receiptsByPoSku.get(key) ?? [];
     const lineReturns = returnsByLine.get(line.lineId) ?? [];
     const receivedAsOf = cumulativeNet(lineReceipts, lineReturns, asOf);
     if (dCmp(receivedAsOf, line.currentReceivedQty) !== 0) {
-      totals.controlMismatch += 1;
+      if (currentEligible) totals.controlMismatch += 1;
+      if (originalEligible) originalTotals.controlMismatch += 1;
       continue;
     }
 
     const orderedQty = dMul(line.orderQty, line.uomFactor, 6);
-    const receivedByPromise = cumulativeNet(lineReceipts, lineReturns, line.promisedDate);
     const fulfilledDate = firstFulfilledDate(lineReceipts, lineReturns, orderedQty, asOf);
-    let status: PromiseReliabilityStatus;
-    if (dCmp(receivedByPromise, orderedQty) >= 0) {
-      status = "on_time_in_full";
-      totals.onTimeInFull += 1;
-    } else if (dCmp(receivedAsOf, orderedQty) >= 0) {
-      status = "late_full";
-      totals.lateFull += 1;
-    } else {
-      status = "overdue_short";
-      totals.overdueShort += 1;
-    }
-    totals.eligibleLines += 1;
     const short = dSub(orderedQty, receivedAsOf);
-    rows.push({
-      lineId: line.lineId,
-      poId: line.poId,
-      docNo: line.docNo,
-      supplierCode: line.supplierCode,
-      supplierName: line.supplierName,
-      skuId: line.skuId,
-      skuCode: line.skuCode,
-      skuName: line.skuName,
-      baseUom: line.baseUom,
-      promisedDate: line.promisedDate,
-      status,
-      orderedQty: q(orderedQty),
-      receivedByPromise: q(receivedByPromise),
-      receivedAsOf: q(receivedAsOf),
-      shortQty: dCmp(short, "0") > 0 ? q(short) : 0,
-      daysLate: status === "on_time_in_full"
-        ? 0
-        : daysBetween(line.promisedDate, fulfilledDate ?? asOf),
-      fulfilledDate,
-    });
+    const addBasis = (
+      basis: "original" | "current",
+      promisedDate: string,
+      basisTotals: Pick<typeof totals, "eligibleLines" | "onTimeInFull" | "lateFull" | "overdueShort">,
+    ) => {
+      const receivedByPromise = cumulativeNet(lineReceipts, lineReturns, promisedDate);
+      let status: PromiseReliabilityStatus;
+      if (dCmp(receivedByPromise, orderedQty) >= 0) {
+        status = "on_time_in_full";
+        basisTotals.onTimeInFull += 1;
+      } else if (dCmp(receivedAsOf, orderedQty) >= 0) {
+        status = "late_full";
+        basisTotals.lateFull += 1;
+      } else {
+        status = "overdue_short";
+        basisTotals.overdueShort += 1;
+      }
+      basisTotals.eligibleLines += 1;
+      rows.push({
+        lineId: line.lineId,
+        poId: line.poId,
+        docNo: line.docNo,
+        supplierCode: line.supplierCode,
+        supplierName: line.supplierName,
+        skuId: line.skuId,
+        skuCode: line.skuCode,
+        skuName: line.skuName,
+        baseUom: line.baseUom,
+        basis,
+        promisedDate,
+        originalPromisedDate: line.originalPromisedDate,
+        currentPromisedDate: line.promisedDate,
+        promiseHistoryState: line.promiseHistoryState,
+        revisionCount: line.revisionCount,
+        status,
+        orderedQty: q(orderedQty),
+        receivedByPromise: q(receivedByPromise),
+        receivedAsOf: q(receivedAsOf),
+        shortQty: dCmp(short, "0") > 0 ? q(short) : 0,
+        daysLate: status === "on_time_in_full" ? 0 : daysBetween(promisedDate, fulfilledDate ?? asOf),
+        fulfilledDate,
+      });
+    };
+    if (originalEligible) addBasis("original", line.originalPromisedDate!, originalTotals);
+    if (currentEligible) addBasis("current", line.promisedDate!, totals);
   }
 
   const exceptions = rows
@@ -278,13 +341,20 @@ export function buildPromiseReliability(
         on_time_in_full: 2,
       };
       return statusOrder[a.status] - statusOrder[b.status]
+        || (a.basis === b.basis ? 0 : a.basis === "original" ? -1 : 1)
         || b.daysLate - a.daysLate
         || b.shortQty - a.shortQty
         || a.docNo.localeCompare(b.docNo);
     })
     .slice(0, limit);
   const calculableBase = totals.eligibleLines + totals.ambiguous + totals.controlMismatch;
-  const state = totals.eligibleLines > 0 ? "ready" : "insufficient";
+  const historyBase = originalTotals.historyTrusted + originalTotals.historyBackfilled + originalTotals.historyMissing;
+  const state = totals.eligibleLines > 0 || originalTotals.eligibleLines > 0 ? "ready" : "insufficient";
+  const promiseVersionState = originalTotals.historyTrusted === 0
+    ? "current_only"
+    : originalTotals.historyBackfilled > 0 || originalTotals.historyMissing > 0
+      ? "mixed_history"
+      : "immutable_history";
   return {
     state,
     authority: "scm_internal_baseline",
@@ -292,20 +362,26 @@ export function buildPromiseReliability(
     windowDays,
     windowFrom,
     grain: "PO × SKU（仅唯一行）",
-    promiseVersionState: "current_only",
+    promiseVersionState,
     rate: pct(totals.onTimeInFull, totals.eligibleLines),
+    originalRate: pct(originalTotals.onTimeInFull, originalTotals.eligibleLines),
     totals,
+    originalTotals,
     coverage: {
       promisePct: pct(totals.promisedLines, totals.effectiveLines),
       calculablePct: pct(totals.eligibleLines, calculableBase),
+      historyPct: pct(originalTotals.historyTrusted, historyBase),
     },
     exceptions,
     gate: state === "ready"
       ? null
-      : "窗口内没有可安全计算的已到期采购承诺行；无交期、未来交期、重复 SKU 行和控制量不一致均不会被当作零。",
+      : "窗口内没有可安全计算的已到期采购承诺行；无交期、未来交期、重复 SKU 行、版本缺口和控制量不一致均不会被当作零。",
+    historyGate: originalTotals.eligibleLines > 0
+      ? null
+      : "窗口内尚无可安全使用的原始承诺版本分母；迁移快照与缺失历史不会冒充原始承诺。",
     limitations: [
-      "当前仅计算 SCM 内部采购承诺基线；简道云流程、聚水潭入库和用友 PO/入库尚未通过身份、单位、状态与 UAT，不参与本率值。",
-      "采购交期尚无不可变改期版本链，因此结果只解释当前承诺日，不能冒充原始承诺兑现率。",
+      "当前只计算 SCM 内部采购承诺基线；简道云流程、聚水潭入库和用友 PO/入库尚未通过身份、单位、状态与 UAT，不参与本率值。",
+      "新发生的供应商承诺与改期已进入不可变版本链；迁移前日期仅标为当前快照，不倒推、不冒充原始承诺。原始承诺与当前承诺分列，避免改期覆盖掩盖迟延。",
       "同一 PO 的重复 SKU 行无法从 SH 安全反推到具体 PO 行，已从分母排除并单列覆盖缺口。",
       "跨 SKU 数量不汇总；率值以采购承诺行计数，质量、价格与财务责任需在各自证据链独立判断。",
     ],
@@ -326,7 +402,11 @@ export async function loadPromiseReliability(
   dbArg?: AnyDb,
 ): Promise<PromiseReliability> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
-  const lines: PromiseLineFact[] = await db
+  type LoadedLine = Omit<
+    PromiseLineFact,
+    "promisedDate" | "originalPromisedDate" | "promiseHistoryState" | "revisionCount"
+  > & { promisedDate: string | null; docPromisedDate: string | null };
+  const rawLines: LoadedLine[] = await db
     .select({
       lineId: schema.poLines.id,
       poId: schema.poDocs.id,
@@ -347,13 +427,45 @@ export async function loadPromiseReliability(
     .innerJoin(schema.poDocs, eq(schema.poLines.poId, schema.poDocs.id))
     .innerJoin(schema.suppliers, eq(schema.poDocs.supplierId, schema.suppliers.id))
     .innerJoin(schema.skus, eq(schema.poLines.skuId, schema.skus.id))
-    .where(inArray(schema.poDocs.status, [...EFFECTIVE_PO_STATUSES]))
-    .then((rows: Array<PromiseLineFact & { docPromisedDate: string | null }>) =>
-      rows.map(({ docPromisedDate, ...line }) => ({
-        ...line,
-        promisedDate: line.promisedDate ?? docPromisedDate ?? null,
-      })),
-    );
+    .where(inArray(schema.poDocs.status, [...EFFECTIVE_PO_STATUSES]));
+  const revisionRows: Array<{
+    poLineId: number;
+    sequence: number;
+    promisedDate: string | null;
+    source: string;
+  }> = rawLines.length > 0
+    ? await db
+      .select({
+        poLineId: schema.poPromiseRevisions.poLineId,
+        sequence: schema.poPromiseRevisions.sequence,
+        promisedDate: schema.poPromiseRevisions.promisedDate,
+        source: schema.poPromiseRevisions.source,
+      })
+      .from(schema.poPromiseRevisions)
+      .where(inArray(schema.poPromiseRevisions.poLineId, rawLines.map((line) => line.lineId)))
+      .orderBy(schema.poPromiseRevisions.poLineId, schema.poPromiseRevisions.sequence)
+    : [];
+  const revisionsByLine = new Map<number, typeof revisionRows>();
+  for (const revision of revisionRows) {
+    const list = revisionsByLine.get(revision.poLineId) ?? [];
+    list.push(revision);
+    revisionsByLine.set(revision.poLineId, list);
+  }
+  const lines: PromiseLineFact[] = rawLines.map(({ docPromisedDate, ...line }) => {
+    const revisions = revisionsByLine.get(line.lineId) ?? [];
+    const startsWithLegacy = revisions[0]?.source === "legacy_backfill";
+    const firstTrusted = startsWithLegacy
+      ? undefined
+      : revisions.find((revision) => revision.source !== "legacy_backfill" && revision.promisedDate != null);
+    const nonLegacyCount = revisions.filter((revision) => revision.source !== "legacy_backfill").length;
+    return {
+      ...line,
+      promisedDate: line.promisedDate ?? docPromisedDate ?? null,
+      originalPromisedDate: firstTrusted?.promisedDate ?? null,
+      promiseHistoryState: startsWithLegacy ? "backfilled" : firstTrusted ? "trusted" : "missing",
+      revisionCount: startsWithLegacy ? nonLegacyCount : Math.max(0, nonLegacyCount - 1),
+    };
+  });
 
   const receiptRows: Array<{
     poId: number;

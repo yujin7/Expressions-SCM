@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   poDocs,
   poLines,
+  poPromiseRevisions,
   qcLines,
   qcRecords,
   shDocs,
@@ -34,6 +35,9 @@ function line(seed: Partial<PromiseLineFact> & Pick<PromiseLineFact, "lineId" | 
     uomFactor: seed.uomFactor ?? "1",
     currentReceivedQty: seed.currentReceivedQty ?? "0",
     promisedDate: seed.promisedDate === undefined ? "2026-08-05" : seed.promisedDate,
+    originalPromisedDate: seed.originalPromisedDate ?? null,
+    promiseHistoryState: seed.promiseHistoryState ?? "missing",
+    revisionCount: seed.revisionCount ?? 0,
   };
 }
 
@@ -76,7 +80,9 @@ describe("供给承诺可信度纯计算", () => {
       ambiguous: 2,
       controlMismatch: 1,
     });
-    expect(result.coverage).toEqual({ promisePct: 88.89, calculablePct: 50 });
+    expect(result.coverage).toEqual({ promisePct: 88.89, calculablePct: 50, historyPct: 0 });
+    expect(result.originalRate).toBeNull();
+    expect(result.promiseVersionState).toBe("current_only");
     expect(result.exceptions.map((item) => ({
       lineId: item.lineId,
       status: item.status,
@@ -99,6 +105,31 @@ describe("供给承诺可信度纯计算", () => {
     expect(result.state).toBe("insufficient");
     expect(result.rate).toBeNull();
     expect(result.gate).toContain("不会被当作零");
+  });
+
+  it("原始承诺与当前承诺分列，改期不能覆盖掉原始迟延", () => {
+    const result = buildPromiseReliability(
+      [line({
+        lineId: 1,
+        poId: 1,
+        skuId: 1,
+        promisedDate: "2026-08-08",
+        originalPromisedDate: "2026-08-05",
+        promiseHistoryState: "trusted",
+        revisionCount: 1,
+        currentReceivedQty: "10",
+      })],
+      [{ poId: 1, skuId: 1, acceptedQty: "10", acceptedDate: "2026-08-07" }],
+      [],
+      { asOf: "2026-08-10", windowDays: 30 },
+    );
+    expect(result.rate).toBe(100);
+    expect(result.originalRate).toBe(0);
+    expect(result.promiseVersionState).toBe("immutable_history");
+    expect(result.originalTotals).toMatchObject({ eligibleLines: 1, lateFull: 1, historyTrusted: 1 });
+    expect(result.exceptions).toEqual([
+      expect.objectContaining({ basis: "original", status: "late_full", promisedDate: "2026-08-05", revisionCount: 1 }),
+    ]);
   });
 });
 
@@ -129,7 +160,7 @@ describe("供给承诺可信度数据库加载", () => {
       expectedDate: "2026-08-05",
       createdBy: 1,
     }).returning();
-    await db.insert(poLines).values({
+    const [poLine] = await db.insert(poLines).values({
       poId: po.id,
       skuId: sku.id,
       lineType: "raw",
@@ -138,6 +169,17 @@ describe("供给承诺可信度数据库加载", () => {
       qty: "2",
       price: "100",
       receivedQty: "10",
+    }).returning();
+    await db.insert(poPromiseRevisions).values({
+      poId: po.id,
+      poLineId: poLine.id,
+      sequence: 1,
+      previousDate: null,
+      promisedDate: "2026-08-05",
+      source: "supplier_confirm",
+      actorType: "supplier_token",
+      reason: "首次承诺",
+      idempotencyKey: `test:promise:${poLine.id}:1`,
     });
     const [sh] = await db.insert(shDocs).values({
       docNo: "SH-PROMISE-1",
@@ -173,6 +215,9 @@ describe("供给承诺可信度数据库加载", () => {
     expect(result.totals.eligibleLines).toBe(1);
     expect(result.totals.lateFull).toBe(1);
     expect(result.rate).toBe(0);
+    expect(result.originalRate).toBe(0);
+    expect(result.originalTotals.lateFull).toBe(1);
+    expect(result.promiseVersionState).toBe("immutable_history");
     expect(result.totals.controlMismatch).toBe(0);
     expect(result.exceptions[0]).toMatchObject({
       status: "late_full",

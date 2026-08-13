@@ -9,8 +9,8 @@ import dayjs, { type Dayjs } from "dayjs";
 import {
   Bar,
   BarChart,
-  Cell,
   CartesianGrid,
+  Legend,
   ResponsiveContainer,
   Tooltip as RechartsTooltip,
   XAxis,
@@ -75,6 +75,12 @@ const PROMISE_STATUS = {
   on_time_in_full: { label: "按期足量", color: "green" },
   late_full: { label: "迟到补齐", color: "orange" },
   overdue_short: { label: "逾期未齐", color: "red" },
+} as const;
+
+const PROMISE_VERSION_LABEL = {
+  immutable_history: "不可变版本完整",
+  mixed_history: "新版本链＋历史快照",
+  current_only: "仅当前承诺",
 } as const;
 
 export default function InboundCalendarClient() {
@@ -149,17 +155,19 @@ export default function InboundCalendarClient() {
   const promise = data?.promiseReliability;
   const promiseChart = promise
     ? [
-        { name: "按期足量", value: promise.totals.onTimeInFull, fill: "#52c41a" },
-        { name: "迟到补齐", value: promise.totals.lateFull, fill: "#fa8c16" },
-        { name: "逾期未齐", value: promise.totals.overdueShort, fill: "#ff4d4f" },
+        { name: "按期足量", current: promise.totals.onTimeInFull, original: promise.originalTotals.onTimeInFull },
+        { name: "迟到补齐", current: promise.totals.lateFull, original: promise.originalTotals.lateFull },
+        { name: "逾期未齐", current: promise.totals.overdueShort, original: promise.originalTotals.overdueShort },
       ]
     : [];
   const promiseColumns: ColumnsType<PromiseReliability["exceptions"][number]> = [
+    { title: "口径", dataIndex: "basis", width: 100, render: (value: "original" | "current") => value === "original" ? <Tag color="purple">原始承诺</Tag> : <Tag>当前承诺</Tag> },
     { title: "采购单", dataIndex: "docNo", width: 170, sorter: (a, b) => a.docNo.localeCompare(b.docNo) },
     { title: "供应商", dataIndex: "supplierName", width: 160, ellipsis: true },
     { title: "SKU", dataIndex: "skuCode", width: 145, render: (value: string) => <SkuHoverCard code={value} /> },
     { title: "名称", dataIndex: "skuName", width: 190, ellipsis: true },
-    { title: "承诺日", dataIndex: "promisedDate", width: 112, sorter: (a, b) => a.promisedDate.localeCompare(b.promisedDate) },
+    { title: "判断承诺日", dataIndex: "promisedDate", width: 120, sorter: (a, b) => a.promisedDate.localeCompare(b.promisedDate) },
+    { title: "改期", dataIndex: "revisionCount", width: 76, align: "right", sorter: (a, b) => a.revisionCount - b.revisionCount },
     {
       title: "状态", dataIndex: "status", width: 104,
       render: (value: keyof typeof PROMISE_STATUS) => {
@@ -212,8 +220,8 @@ export default function InboundCalendarClient() {
       ) : null}
 
       <DecisionVisual
-        title="采购承诺可信度（系统内基线）"
-        question="已到期采购承诺中，多少在当前承诺日前按基础单位足量兑现？"
+        title="采购承诺可信度（版本化基线）"
+        question="已到期采购承诺中，多少在原始承诺日前按基础单位足量兑现；改期是否掩盖迟延？"
         metricId="promiseReliability"
         grain={promise?.grain ?? "PO × SKU（仅唯一行）"}
         unit="采购承诺行占比"
@@ -221,7 +229,7 @@ export default function InboundCalendarClient() {
           tier: "ledger",
           source: "SCM 采购单、质检接收与采购退货事件",
           asOf: promise?.asOf,
-          note: "外部三边未通过 UAT 前不并入口径",
+          note: "原始与当前承诺分列；外部三边未通过 UAT 前不并入口径",
         }}
         coverage={{
           covered: promise?.totals.eligibleLines ?? 0,
@@ -233,16 +241,19 @@ export default function InboundCalendarClient() {
         activeFilters={promise
           ? [
               `观察窗：${promise.windowFrom} 至 ${promise.asOf}`,
-              "承诺版本：当前承诺",
+              `承诺版本：${PROMISE_VERSION_LABEL[promise.promiseVersionState]}`,
+              `原始版本覆盖：${promise.coverage.historyPct == null ? "未知" : `${promise.coverage.historyPct.toFixed(1)}%`}`,
               "数量：基础单位",
               "重复 PO×SKU 行排除",
               "缺失不补零",
             ]
           : []}
-        summary={promise?.rate == null
-          ? promise?.gate ?? "正在计算供给承诺基线。"
-          : `承诺可信度 ${promise.rate.toFixed(1)}%；按期足量 ${promise.totals.onTimeInFull} 行，迟到补齐 ${promise.totals.lateFull} 行，逾期未齐 ${promise.totals.overdueShort} 行。`}
-        caveat={promise?.limitations.join(" ")}
+        summary={promise?.originalRate != null
+          ? `原始承诺可信度 ${promise.originalRate.toFixed(1)}%；当前承诺口径 ${promise.rate == null ? "未知" : `${promise.rate.toFixed(1)}%`}。原始口径按期 ${promise.originalTotals.onTimeInFull} 行、迟到补齐 ${promise.originalTotals.lateFull} 行、逾期未齐 ${promise.originalTotals.overdueShort} 行。`
+          : promise?.rate != null
+            ? `当前承诺基线 ${promise.rate.toFixed(1)}%；${promise.historyGate ?? "原始承诺版本仍不足。"}`
+            : promise?.gate ?? "正在计算供给承诺基线。"}
+        caveat={[promise?.historyGate, ...(promise?.limitations ?? [])].filter(Boolean).join(" ")}
         state={loading && !data ? "loading" : promise?.state === "ready" ? "ready" : "insufficient"}
         stateDetail={promise?.gate ?? undefined}
         height={270}
@@ -250,12 +261,12 @@ export default function InboundCalendarClient() {
         exportLabel="导出承诺例外证据"
         dataView={(
           <Table
-            rowKey="lineId"
+            rowKey={(row) => `${row.basis}:${row.lineId}`}
             size="small"
             pagination={false}
             columns={promiseColumns}
             dataSource={promise?.exceptions ?? []}
-            scroll={{ x: 1260 }}
+            scroll={{ x: 1430 }}
           />
         )}
       >
@@ -265,11 +276,9 @@ export default function InboundCalendarClient() {
             <XAxis dataKey="name" />
             <YAxis allowDecimals={false} />
             <RechartsTooltip formatter={(value) => [`${Number(value)} 行`, "采购承诺"]} />
-            <Bar dataKey="value" name="采购承诺行" radius={[4, 4, 0, 0]}>
-              {promiseChart.map((item) => (
-                <Cell key={item.name} fill={item.fill} />
-              ))}
-            </Bar>
+            <Legend />
+            <Bar dataKey="original" name="原始承诺" fill="#722ed1" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="current" name="当前承诺" fill="#1677ff" radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       </DecisionVisual>

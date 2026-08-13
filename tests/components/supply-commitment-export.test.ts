@@ -10,8 +10,9 @@ const fixture: PromiseReliability = {
   windowDays: 180,
   windowFrom: "2026-02-12",
   grain: "PO × SKU（仅唯一行）",
-  promiseVersionState: "current_only",
+  promiseVersionState: "immutable_history",
   rate: 50,
+  originalRate: 0,
   totals: {
     effectiveLines: 3,
     promisedLines: 2,
@@ -25,7 +26,20 @@ const fixture: PromiseReliability = {
     ambiguous: 0,
     controlMismatch: 0,
   },
-  coverage: { promisePct: 66.67, calculablePct: 100 },
+  originalTotals: {
+    eligibleLines: 1,
+    onTimeInFull: 0,
+    lateFull: 0,
+    overdueShort: 1,
+    historyTrusted: 1,
+    historyBackfilled: 0,
+    historyMissing: 0,
+    future: 0,
+    outsideWindow: 0,
+    ambiguous: 0,
+    controlMismatch: 0,
+  },
+  coverage: { promisePct: 66.67, calculablePct: 100, historyPct: 100 },
   exceptions: [{
     lineId: 7,
     poId: 3,
@@ -36,7 +50,12 @@ const fixture: PromiseReliability = {
     skuCode: "YL001",
     skuName: "原料甲",
     baseUom: "kg",
+    basis: "original",
     promisedDate: "2026-08-01",
+    originalPromisedDate: "2026-08-01",
+    currentPromisedDate: "2026-08-04",
+    promiseHistoryState: "trusted",
+    revisionCount: 1,
     status: "overdue_short",
     orderedQty: 10,
     receivedByPromise: 3,
@@ -46,6 +65,7 @@ const fixture: PromiseReliability = {
     fulfilledDate: null,
   }],
   gate: null,
+  historyGate: null,
   limitations: ["测试限制"],
   externalEdges: [
     { source: "JIANDAOYUN", state: "awaiting_uat", purpose: "历史流程佐证" },
@@ -59,7 +79,9 @@ describe("供给承诺可信度导出", () => {
     const output = buildPromiseReliabilityExport(fixture);
     expect(output.filename).toBe("供给承诺可信度-2026-08-10.csv");
     expect(output.headers).toContain("可计算覆盖率");
+    expect(output.headers).toContain("原始承诺可信度");
     expect(output.rows).toHaveLength(1);
+    expect(output.rows[0]).toContain("原始承诺");
     expect(output.rows[0]).toContain("逾期未齐");
     expect(output.rows[0]).toContain("=PO-001");
     expect(output.rows[0].at(-1)).toContain("JIANDAOYUN:awaiting_uat");
