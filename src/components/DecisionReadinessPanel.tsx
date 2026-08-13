@@ -63,6 +63,7 @@ import {
 } from "@/components/data-product-work-queue";
 import { buildDataProductEvidenceExport } from "@/components/data-product-evidence-export";
 import { exportCsv } from "@/components/exportCsv";
+import { CROSS_SYSTEM_IDENTITY_EXTRACTION_STATE_LABEL } from "@/lib/cross-system-identity";
 
 const STATE_META: Record<CapabilityReadiness, { label: string; color: string; stroke: string }> = {
   ready: { label: "当前可用", color: "success", stroke: "#16a34a" },
@@ -96,6 +97,14 @@ const IDENTITY_GOVERNANCE_LABEL = {
   external_reference: "来源+类型+单号对照",
   planned_master: "受控主档待建",
 } as const;
+
+const IDENTITY_EXTRACTION_COLOR: Record<ProductIdentityEvidence["extractionState"], string> = {
+  implemented: "success",
+  not_implemented: "warning",
+  schema_profile_pending: "processing",
+  not_available: "error",
+  missing_contract: "error",
+};
 
 const WORK_STAGE_META: Record<DataProductWorkStage, { label: string; color: string }> = {
   safeguard: { label: "先止损", color: "error" },
@@ -234,15 +243,18 @@ function RequiredStreamEvidence({ summary }: { summary: ProductEvidenceSummary }
 
 function RequiredIdentityEvidence({ summary }: { summary: ProductEvidenceSummary }) {
   if (summary.identityGates.length === 0) return null;
+  const ready = summary.identityGates.filter((item) =>
+    item.state === "ready" && item.extractionState === "implemented").length;
+  const pending = summary.identityGates.length - ready;
   return (
     <Card
       size="small"
       title="跨系统身份门禁"
       extra={(
         <Space size={4} wrap>
-          <Tag color="success">已统一 {summary.identityGates.filter((item) => item.state === "ready").length}</Tag>
-          <Tag color={summary.missingIdentities + summary.partialIdentities + summary.unimplementedIdentities > 0 ? "error" : "success"}>
-            待补齐 {summary.missingIdentities + summary.partialIdentities + summary.unimplementedIdentities}
+          <Tag color="success">双门禁通过 {ready}</Tag>
+          <Tag color={pending > 0 ? "error" : "success"}>
+            待补齐 {pending}
           </Tag>
         </Space>
       )}
@@ -252,14 +264,14 @@ function RequiredIdentityEvidence({ summary }: { summary: ProductEvidenceSummary
         banner
         showIcon
         type="info"
-        message="只认可来源作用域内的精确认领/对照；字段存在、名称相同或一次成功拉数都不等于身份已统一。"
+        message="双门禁：具体必需流必须先把身份送入受控治理，来源作用域内候选还必须全部精确认领；字段存在、名称相同或另一条流成功都不能替代。"
       />
       <Table
         rowKey={(row) => `${row.source}\u0000${row.domain}`}
         size="small"
         pagination={false}
         dataSource={summary.identityGates}
-        scroll={{ x: 1_080 }}
+        scroll={{ x: 1_420 }}
         columns={[
           {
             title: "来源",
@@ -285,6 +297,29 @@ function RequiredIdentityEvidence({ summary }: { summary: ProductEvidenceSummary
             ),
           },
           {
+            title: "逐流提取契约",
+            key: "extraction",
+            width: 280,
+            render: (_, row) => {
+              const streamNames = row.extractionStreams.map((item) =>
+                dataProductStreamLabel(row.source, item.stream)).join("、");
+              return (
+                <Space direction="vertical" size={2}>
+                  <Tag color={IDENTITY_EXTRACTION_COLOR[row.extractionState]}>
+                    {CROSS_SYSTEM_IDENTITY_EXTRACTION_STATE_LABEL[row.extractionState]}
+                  </Tag>
+                  <Typography.Text
+                    type="secondary"
+                    ellipsis={{ tooltip: streamNames || "没有必需流声明提供该身份" }}
+                    style={{ maxWidth: 250 }}
+                  >
+                    {streamNames || "未声明适用流"}
+                  </Typography.Text>
+                </Space>
+              );
+            },
+          },
+          {
             title: "已认领 / 候选 / 开放 / 忽略",
             key: "coverage",
             width: 250,
@@ -299,11 +334,18 @@ function RequiredIdentityEvidence({ summary }: { summary: ProductEvidenceSummary
             width: 430,
             render: (_, row) => (
               <Space direction="vertical" size={2}>
-                <Typography.Paragraph ellipsis={{ rows: 2, tooltip: row.reason }} style={{ marginBottom: 0 }}>
-                  {row.reason}
+                <Typography.Paragraph
+                  ellipsis={{ rows: 2, tooltip: `${row.extractionReason}；${row.reason}` }}
+                  style={{ marginBottom: 0 }}
+                >
+                  {row.extractionState === "implemented" ? row.reason : row.extractionReason}
                 </Typography.Paragraph>
-                <Typography.Paragraph type="secondary" ellipsis={{ rows: 2, tooltip: row.nextAction }} style={{ marginBottom: 0 }}>
-                  {row.nextAction}
+                <Typography.Paragraph
+                  type="secondary"
+                  ellipsis={{ rows: 2, tooltip: row.extractionState === "implemented" ? row.nextAction : row.extractionNextAction }}
+                  style={{ marginBottom: 0 }}
+                >
+                  {row.extractionState === "implemented" ? row.nextAction : row.extractionNextAction}
                 </Typography.Paragraph>
               </Space>
             ),

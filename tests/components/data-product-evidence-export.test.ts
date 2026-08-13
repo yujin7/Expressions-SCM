@@ -106,7 +106,10 @@ const product: DataProductDefinition = {
   automationGuardrail: "只定位，不调平",
   sources: ["JST", "YONYOU"],
   requiredScmEvidence: [],
-  requiredStreams: { JST: ["sales"], YONYOU: ["voucher"] },
+  requiredStreams: {
+    JST: ["outbound-sales-daily"],
+    YONYOU: ["yonbip-fi-ficloud-openapi-voucher-queryvouchers"],
+  },
   requiredIdentities: { JST: ["warehouse"], YONYOU: ["organization"] },
   supportingStreams: { JIANDAOYUN: ["inventory-count-observation"] },
   targetAuthority: "financial",
@@ -209,7 +212,7 @@ describe("三方数据产品决策证据导出", () => {
     const result = buildDataProductEvidenceExport([
       product,
     ], [
-      source("JST", stream("sales", "2026-08-10", {
+      source("JST", stream("outbound-sales-daily", "2026-08-10", {
         quality: {
           status: "review",
           activeRows: 12,
@@ -223,7 +226,7 @@ describe("三方数据产品决策证据导出", () => {
           reconciliationInsufficientRows: 0,
         },
       })),
-      source("YONYOU", stream("voucher", "2026-08-12")),
+      source("YONYOU", stream("yonbip-fi-ficloud-openapi-voucher-queryvouchers", "2026-08-12")),
       source("JIANDAOYUN", stream("inventory-count-observation", "2026-07-01", {
         freshness: "stale",
         businessAgeDays: 43,
@@ -240,7 +243,7 @@ describe("三方数据产品决策证据导出", () => {
         数据产品ID: "triangulation-test",
         证据用途: "放行依赖",
         来源技术键: "JST",
-        数据流技术键: "sales",
+        数据流技术键: "outbound-sales-daily",
         共同可比截止: "2026-08-10",
         最新来源日期: "2026-08-12",
         跨源时点跨度天数: 2,
@@ -263,7 +266,7 @@ describe("三方数据产品决策证据导出", () => {
       expect.objectContaining({
         来源技术键: "YONYOU",
         证据用途: "放行依赖",
-        数据流技术键: "voucher",
+        数据流技术键: "yonbip-fi-ficloud-openapi-voucher-queryvouchers",
         观察层阻断: "是",
       }),
       expect.objectContaining({
@@ -286,6 +289,8 @@ describe("三方数据产品决策证据导出", () => {
         身份状态: "ready",
         身份候选数: 5,
         身份已认领数: 5,
+        身份提取契约状态: "implemented",
+        身份适用数据流: "聚水潭日出库销量[implemented]",
       }),
       expect.objectContaining({
         证据用途: "身份门禁",
@@ -294,6 +299,8 @@ describe("三方数据产品决策证据导出", () => {
         身份维度: "组织",
         身份状态: "not_implemented",
         身份下一步: "按租户+组织 ID 建立映射",
+        身份提取契约状态: "schema_profile_pending",
+        身份适用数据流: "用友财务凭证[schema_profile_pending]",
       }),
     ]);
     expect(JSON.stringify(result)).not.toContain("must-not-export");

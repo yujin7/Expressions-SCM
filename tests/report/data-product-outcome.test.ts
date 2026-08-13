@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { DATA_PRODUCTS } from "@/components/data-products";
 import { auditLogs, dataProductOutcomeEvents, dataProductReleases, users } from "@/db/schema";
@@ -19,6 +19,23 @@ import type {
 } from "@/server/modules/report/data-source-readiness";
 import { createTestDb } from "../helpers/db";
 import { CROSS_SYSTEM_IDENTITY_LABEL, CROSS_SYSTEM_IDENTITY_ORDER } from "@/lib/cross-system-identity";
+
+vi.mock("@/lib/cross-system-identity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/cross-system-identity")>();
+  return {
+    ...actual,
+    getCrossSystemIdentityStreamContract: (source: "JIANDAOYUN" | "JST" | "YONYOU", stream: string) => {
+      const contract = actual.getCrossSystemIdentityStreamContract(source, stream);
+      return contract ? {
+        ...contract,
+        identities: Object.fromEntries(Object.entries(contract.identities).map(([domain, control]) => [
+          domain,
+          { ...control, state: "implemented", evidence: "结果闭环测试夹具已治理", nextAction: "持续监测" },
+        ])),
+      } : null;
+    },
+  };
+});
 
 const product = DATA_PRODUCTS.find((item) => item.id === "commerce-identity-control")!;
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 
 import { DATA_PRODUCTS } from "@/components/data-products";
@@ -17,9 +17,37 @@ import type {
 } from "@/server/modules/report/data-source-readiness";
 import {
   CROSS_SYSTEM_IDENTITY_LABEL,
+  CROSS_SYSTEM_IDENTITY_EXTRACTION_CONTRACT_VERSION,
   CROSS_SYSTEM_IDENTITY_ORDER,
 } from "@/lib/cross-system-identity";
 import { createTestDb } from "../helpers/db";
+
+/*
+ * 本文件验证放行台账本身；把已登记的逐流提取契约提升为“已完成”的受控夹具，
+ * 避免真实目录中刻意保持 fail-closed 的外部缺口掩盖会签/失效测试。
+ */
+vi.mock("@/lib/cross-system-identity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/cross-system-identity")>();
+  return {
+    ...actual,
+    getCrossSystemIdentityStreamContract: (source: "JIANDAOYUN" | "JST" | "YONYOU", stream: string) => {
+      const contract = actual.getCrossSystemIdentityStreamContract(source, stream);
+      if (!contract) return null;
+      return {
+        ...contract,
+        identities: Object.fromEntries(Object.entries(contract.identities).map(([domain, control]) => [
+          domain,
+          {
+            ...control,
+            state: "implemented",
+            evidence: "测试夹具：逐流身份已进入受控治理",
+            nextAction: "持续监测",
+          },
+        ])),
+      };
+    },
+  };
+});
 
 const product = DATA_PRODUCTS.find((item) => item.id === "commerce-identity-control")!;
 
@@ -284,6 +312,18 @@ describe("数据产品放行闭环", () => {
   it("正常日常刷新不使批准失效，但连接配置范围变化会改变指纹", () => {
     const firstSources = currentSources();
     const first = buildDataProductReleaseEvidence(product, firstSources, new Date("2026-08-12T02:00:00Z"));
+    expect(first.envelope.schemaVersion).toBe("data-product-release/v4");
+    expect(first.envelope.product.identityExtractionContractVersion)
+      .toBe(CROSS_SYSTEM_IDENTITY_EXTRACTION_CONTRACT_VERSION);
+    expect(first.envelope.product.identityExtractionScope).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "JIANDAOYUN",
+        stream: "pdd-sku-crosswalk-observation",
+        identities: expect.arrayContaining([
+          expect.objectContaining({ domain: "sku", state: "not_implemented" }),
+        ]),
+      }),
+    ]));
     const refreshedSources = currentSources();
     refreshedSources[1].streams[0] = stream("tmall-sku-crosswalk-observation", {
       latestRunAt: "2026-08-13T01:00:00.000Z",

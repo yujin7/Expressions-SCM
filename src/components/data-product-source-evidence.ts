@@ -11,9 +11,12 @@ import type {
 import { SCM_EVIDENCE_LABEL } from "@/lib/scm-evidence";
 import {
   CROSS_SYSTEM_IDENTITY_LABEL,
+  getCrossSystemIdentityStreamContract,
   type CrossSystemIdentityCoverage,
   type CrossSystemIdentityDomain,
+  type CrossSystemIdentityExtractionState,
   type CrossSystemIdentityState,
+  type CrossSystemIdentitySource,
 } from "@/lib/cross-system-identity";
 
 export type ProductSourceEvidenceState =
@@ -53,7 +56,18 @@ export interface ProductIdentityEvidence {
   state: CrossSystemIdentityState;
   reason: string;
   nextAction: string;
+  extractionState: CrossSystemIdentityExtractionState;
+  extractionReason: string;
+  extractionNextAction: string;
+  extractionStreams: ProductIdentityStreamExtractionEvidence[];
   evidence: CrossSystemIdentityCoverage | null;
+}
+
+export interface ProductIdentityStreamExtractionEvidence {
+  stream: string;
+  state: CrossSystemIdentityExtractionState;
+  evidence: string;
+  nextAction: string;
 }
 
 export interface ProductEvidenceSummary {
@@ -70,6 +84,7 @@ export interface ProductEvidenceSummary {
   missingIdentities: number;
   partialIdentities: number;
   unimplementedIdentities: number;
+  unreadyExtractionIdentities: number;
   businessTimeWindow: ProductBusinessTimeWindow;
 }
 
@@ -107,6 +122,72 @@ export interface ProductBusinessTimeWindow {
 export interface ProductAutomationReadiness {
   level: Extract<DataProductAutomationLevel, "A0" | "A1">;
   reason: string;
+}
+
+const EXTRACTION_STATE_ORDER: Record<CrossSystemIdentityExtractionState, number> = {
+  missing_contract: 0,
+  not_available: 1,
+  schema_profile_pending: 2,
+  not_implemented: 3,
+  implemented: 4,
+};
+
+function evaluateIdentityExtraction(
+  source: DataProductSource,
+  streams: readonly string[],
+  domain: CrossSystemIdentityDomain,
+): Pick<
+  ProductIdentityEvidence,
+  "extractionState" | "extractionReason" | "extractionNextAction" | "extractionStreams"
+> {
+  if (source === "SCM") {
+    return {
+      extractionState: "missing_contract",
+      extractionReason: "SCM 身份应由受控事实门禁，不应配置为外部流身份提取",
+      extractionNextAction: "从 requiredIdentities 移除 SCM，并改用 requiredScmEvidence",
+      extractionStreams: [],
+    };
+  }
+  const extractionStreams: ProductIdentityStreamExtractionEvidence[] = [];
+  const missingContracts: ProductIdentityStreamExtractionEvidence[] = [];
+  for (const stream of streams) {
+    const contract = getCrossSystemIdentityStreamContract(source as CrossSystemIdentitySource, stream);
+    if (!contract) {
+      missingContracts.push({
+        stream,
+        state: "missing_contract",
+        evidence: "该必需流未登记逐流身份提取契约",
+        nextAction: "核对真实读取与暂存实现，并显式登记该流提供或不提供的身份维度",
+      });
+      continue;
+    }
+    const control = contract.identities[domain];
+    if (control) extractionStreams.push({ stream, ...control });
+  }
+  const relevant = [...missingContracts, ...extractionStreams];
+  if (relevant.length === 0) {
+    return {
+      extractionState: "missing_contract",
+      extractionReason: "产品要求该身份，但没有任何必需流声明会提供并治理它",
+      extractionNextAction: "确认身份应来自哪条必需流，并登记字段到受控身份治理的精确契约",
+      extractionStreams: [],
+    };
+  }
+  const blocker = [...relevant].sort((left, right) =>
+    EXTRACTION_STATE_ORDER[left.state] - EXTRACTION_STATE_ORDER[right.state]
+      || left.stream.localeCompare(right.stream)
+  )[0];
+  const allImplemented = relevant.every((item) => item.state === "implemented");
+  return {
+    extractionState: allImplemented ? "implemented" : blocker.state,
+    extractionReason: allImplemented
+      ? `适用的 ${relevant.length} 条必需流均已把该身份送入受控治理`
+      : `${blocker.stream}：${blocker.evidence}`,
+    extractionNextAction: allImplemented
+      ? "持续监测逐流候选、未认领与结构漂移"
+      : blocker.nextAction,
+    extractionStreams: relevant.sort((left, right) => left.stream.localeCompare(right.stream)),
+  };
 }
 
 function qualityReviewReason(evidence: DataStreamEvidence): string | null {
@@ -306,6 +387,11 @@ export function evaluateProductSourceEvidence(
     const row = sourceByKey.get(source);
     return domains.map<ProductIdentityEvidence>((domain) => {
       const evidence = row?.identityCoverage?.find((item) => item.domain === domain) ?? null;
+      const extraction = evaluateIdentityExtraction(
+        source,
+        product.requiredStreams[source] ?? [],
+        domain,
+      );
       return evidence
         ? {
             source,
@@ -314,6 +400,7 @@ export function evaluateProductSourceEvidence(
             state: evidence.state,
             reason: evidence.reason,
             nextAction: evidence.nextAction,
+            ...extraction,
             evidence,
           }
         : {
@@ -323,6 +410,7 @@ export function evaluateProductSourceEvidence(
             state: "missing",
             reason: "当前运行证据未提供该身份维度的覆盖统计",
             nextAction: "先运行受控读取并建立来源作用域身份候选与认领证据",
+            ...extraction,
             evidence: null,
           };
     });
@@ -367,6 +455,7 @@ export function evaluateProductSourceEvidence(
     missingIdentities: identityGates.filter((item) => item.state === "missing").length,
     partialIdentities: identityGates.filter((item) => item.state === "partial").length,
     unimplementedIdentities: identityGates.filter((item) => item.state === "not_implemented").length,
+    unreadyExtractionIdentities: identityGates.filter((item) => item.extractionState !== "implemented").length,
     businessTimeWindow,
   };
 }
@@ -405,9 +494,17 @@ export function currentProductAutomation(
       && source.configurationReady
       && source.streams.length > 0
       && source.streams.every(streamSafeForExplanation));
-  const identitiesSafe = summary.identityGates.every((identity) => identity.state === "ready");
+  const identitiesSafe = summary.identityGates.every((identity) =>
+    identity.state === "ready" && identity.extractionState === "implemented");
   if (sourcesSafe && !identitiesSafe) {
-    const blocker = summary.identityGates.find((identity) => identity.state !== "ready")!;
+    const blocker = summary.identityGates.find((identity) =>
+      identity.extractionState !== "implemented" || identity.state !== "ready")!;
+    if (blocker.extractionState !== "implemented") {
+      return {
+        level: "A0",
+        reason: `${blocker.source} 的「${blocker.label}」逐流提取契约未通过：${blocker.extractionReason}。来源总体覆盖不能代替具体流的身份可达性。`,
+      };
+    }
     return {
       level: "A0",
       reason: `${blocker.source} 的「${blocker.label}」身份门禁未通过：${blocker.reason}。流成功不能代替身份统一。`,

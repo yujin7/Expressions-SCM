@@ -88,6 +88,7 @@ function actionTarget(
   if (
     stage === "repair"
     && identityBlocker
+    && identityBlocker.extractionState === "implemented"
     && identityBlocker.source !== "SCM"
     && (identityBlocker.evidence?.open ?? 0) > 0
   ) {
@@ -198,18 +199,30 @@ function blockerLabel(blocker: ProductStreamEvidence | null): string {
 
 function firstIdentityBlocker(summary: ProductEvidenceSummary): ProductIdentityEvidence | null {
   const rank = { not_implemented: 0, partial: 1, missing: 2, ready: 3 } as const;
+  const extractionRank = {
+    missing_contract: 0,
+    not_available: 1,
+    schema_profile_pending: 2,
+    not_implemented: 3,
+    implemented: 4,
+  } as const;
   return [...summary.identityGates]
     .sort((a, b) => {
+      const extraction = extractionRank[a.extractionState] - extractionRank[b.extractionState];
+      if (extraction !== 0) return extraction;
       const state = rank[a.state] - rank[b.state];
       if (state !== 0) return state;
       const source = a.source.localeCompare(b.source);
       return source !== 0 ? source : a.domain.localeCompare(b.domain);
     })
-    .find((identity) => identity.state !== "ready") ?? null;
+    .find((identity) => identity.extractionState !== "implemented" || identity.state !== "ready") ?? null;
 }
 
 function identityBlockerLabel(blocker: ProductIdentityEvidence): string {
-  return `${DATA_PRODUCT_SOURCE_LABEL[blocker.source]} · ${blocker.label}：${blocker.reason}`;
+  const reason = blocker.extractionState === "implemented"
+    ? blocker.reason
+    : blocker.extractionReason;
+  return `${DATA_PRODUCT_SOURCE_LABEL[blocker.source]} · ${blocker.label}：${reason}`;
 }
 
 function repairAction(blocker: ProductStreamEvidence | null): string {
@@ -222,7 +235,15 @@ function repairAction(blocker: ProductStreamEvidence | null): string {
 }
 
 function identityRepairAction(blocker: ProductIdentityEvidence): string {
-  return `${blocker.nextAction}（${DATA_PRODUCT_SOURCE_LABEL[blocker.source]} · ${blocker.label}）`;
+  const action = blocker.extractionState === "implemented"
+    ? blocker.nextAction
+    : blocker.extractionNextAction;
+  const stream = blocker.extractionState === "implemented"
+    ? ""
+    : blocker.extractionStreams[0]
+      ? ` · ${dataProductStreamLabel(blocker.source, blocker.extractionStreams[0].stream)}`
+      : "";
+  return `${action}（${DATA_PRODUCT_SOURCE_LABEL[blocker.source]}${stream} · ${blocker.label}）`;
 }
 
 function pendingEvidenceCurrent(

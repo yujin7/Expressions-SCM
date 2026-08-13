@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DATA_PRODUCTS } from "@/components/data-products";
+import { DATA_PRODUCTS, type DataProductDefinition } from "@/components/data-products";
 import { buildDataProductWorkQueue } from "@/components/data-product-work-queue";
 import type { DataSourceReadiness } from "@/server/modules/report/data-source-readiness";
 import type { DataProductOutcomeReadiness } from "@/server/modules/report/data-product-outcome";
@@ -165,7 +165,13 @@ describe("data product dynamic work queue", () => {
   });
 
   it("routes an external identity blocker to the scoped human-claim queue", () => {
-    const product = DATA_PRODUCTS.find((item) => item.id === "commerce-identity-control")!;
+    const catalogProduct = DATA_PRODUCTS.find((item) => item.id === "commerce-identity-control")!;
+    const product: DataProductDefinition = {
+      ...catalogProduct,
+      sources: ["SCM", "JIANDAOYUN"],
+      requiredStreams: { JIANDAOYUN: ["tmall-sku-crosswalk-observation"] },
+      requiredIdentities: { JIANDAOYUN: ["sku"] },
+    };
     const withIdentityExceptions = sources.map((source) => {
       if (source.key === "SCM") {
         const snapshot = {
@@ -198,12 +204,12 @@ describe("data product dynamic work queue", () => {
           domain,
           label: CROSS_SYSTEM_IDENTITY_LABEL[domain],
           governance: "scoped_alias" as const,
-          state: source.key === "JIANDAOYUN" && domain === "shop" ? "partial" as const : "ready" as const,
+          state: source.key === "JIANDAOYUN" && domain === "sku" ? "partial" as const : "ready" as const,
           observed: 20,
-          governed: source.key === "JIANDAOYUN" && domain === "shop" ? 8 : 20,
-          open: source.key === "JIANDAOYUN" && domain === "shop" ? 12 : 0,
+          governed: source.key === "JIANDAOYUN" && domain === "sku" ? 8 : 20,
+          open: source.key === "JIANDAOYUN" && domain === "sku" ? 12 : 0,
           ignored: 0,
-          coveragePct: source.key === "JIANDAOYUN" && domain === "shop" ? 40 : 100,
+          coveragePct: source.key === "JIANDAOYUN" && domain === "sku" ? 40 : 100,
           reason: "测试身份门禁",
           nextAction: "人工认领",
         })),
@@ -215,6 +221,62 @@ describe("data product dynamic work queue", () => {
       actionLabel: "处理身份异常",
       actionHref: "/import/exceptions?status=open&scope=JIANDAOYUN",
     });
+  });
+
+  it("keeps a source-wide ready identity blocked when a required stream never extracts it", () => {
+    const product = DATA_PRODUCTS.find((item) => item.id === "commerce-identity-control")!;
+    const readySources = sources.map((source) => {
+      if (source.key === "SCM") {
+        const snapshot = {
+          rows: 10,
+          asOf: null,
+          freshnessMaxAgeDays: null,
+          businessAgeDays: null,
+          freshness: "current" as const,
+        };
+        return { ...source, sourceRows: 20, scmEvidence: { "sku-master": snapshot, "sku-identifiers": snapshot } };
+      }
+      const streams = (product.requiredStreams[source.key] ?? []).map(currentStream);
+      return {
+        ...source,
+        state: "observation" as const,
+        configured: true,
+        enabled: true,
+        configurationReady: true,
+        contractSelectionState: "selected" as const,
+        selectedContractCount: streams.length,
+        selectedStreamKeys: streams.map((item) => item.stream),
+        successfulStreams: streams.length,
+        successfulStreamKeys: streams.map((item) => item.stream),
+        streams,
+        sourceRows: 10,
+        stagedRows: 10,
+        openIdentityExceptions: 0,
+        observedIdentities: 20,
+        identityCoverage: (product.requiredIdentities[source.key] ?? []).map((domain) => ({
+          domain,
+          label: CROSS_SYSTEM_IDENTITY_LABEL[domain],
+          governance: "scoped_alias" as const,
+          state: "ready" as const,
+          observed: 20,
+          governed: 20,
+          open: 0,
+          ignored: 0,
+          coveragePct: 100,
+          reason: "测试来源总体覆盖已完成",
+          nextAction: "持续监测",
+        })),
+      };
+    });
+
+    const [item] = buildDataProductWorkQueue([product], readySources, []);
+    expect(item).toMatchObject({
+      stage: "repair",
+      blockerState: "identity",
+      actionLabel: "查看逐流证据",
+      nextAction: expect.stringContaining("拼多多店铺身份"),
+    });
+    expect(item.bottleneck).toContain("店铺字段尚未进入受控店铺");
   });
 
   it("routes a source-ready downstream product to its first unsatisfied upstream gate", () => {

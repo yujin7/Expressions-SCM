@@ -15,6 +15,12 @@ import * as schema from "@/db/schema";
 import { digestDecisionEvidence } from "@/server/core/decision-envelope";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
+import {
+  CROSS_SYSTEM_IDENTITY_EXTRACTION_CONTRACT_VERSION,
+  crossSystemIdentityExtractionScope,
+  type CrossSystemIdentityDomain,
+  type CrossSystemIdentitySource,
+} from "@/lib/cross-system-identity";
 import { type AnyDb, resolveDb } from "@/server/core/svc";
 import { ApiError } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
@@ -23,7 +29,7 @@ import {
   type DataSourceReadiness,
 } from "@/server/modules/report/data-source-readiness";
 
-export const DATA_PRODUCT_RELEASE_SCHEMA_VERSION = "data-product-release/v3" as const;
+export const DATA_PRODUCT_RELEASE_SCHEMA_VERSION = "data-product-release/v4" as const;
 export type DataProductReleaseStatus = "pending" | "approved" | "rejected" | "revoked";
 export type ReleasedAutomationLevel = Extract<DataProductAutomationLevel, "A2" | "A3">;
 
@@ -89,6 +95,8 @@ interface EvidenceEnvelope {
     requiredSources: string[];
     requiredStreams: Record<string, string[]>;
     requiredIdentities: Record<string, string[]>;
+    identityExtractionContractVersion: typeof CROSS_SYSTEM_IDENTITY_EXTRACTION_CONTRACT_VERSION;
+    identityExtractionScope: ReturnType<typeof crossSystemIdentityExtractionScope>;
     requiredScmEvidence: string[];
     requiredProducts: Array<{
       productId: string;
@@ -224,6 +232,11 @@ export function buildDataProductReleaseEvidence(
         Object.entries(product.requiredIdentities)
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([source, identities]) => [source, [...(identities ?? [])].sort()]),
+      ),
+      identityExtractionContractVersion: CROSS_SYSTEM_IDENTITY_EXTRACTION_CONTRACT_VERSION,
+      identityExtractionScope: crossSystemIdentityExtractionScope(
+        product.requiredStreams as Partial<Record<CrossSystemIdentitySource, string[]>>,
+        product.requiredIdentities as Partial<Record<CrossSystemIdentitySource, CrossSystemIdentityDomain[]>>,
       ),
       requiredScmEvidence: [...product.requiredScmEvidence].sort(),
       requiredProducts: [...(product.requiredProducts ?? [])]

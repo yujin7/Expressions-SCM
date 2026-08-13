@@ -56,7 +56,8 @@ const HEADERS = [
   "最新结果决策编号", "最新结果业务日", "最新业务决定", "最新真实结果",
   "辅助历史摘要", "辅助历史期间", "辅助身份认领覆盖",
   "身份维度", "身份治理方式", "身份状态", "身份候选数", "身份已认领数",
-  "身份开放异常数", "身份忽略数", "身份下一步",
+  "身份开放异常数", "身份忽略数", "身份下一步", "身份提取契约状态",
+  "身份适用数据流", "身份提取契约说明", "身份提取契约下一步",
 ];
 
 const OUTCOME_DECISION_LABEL = {
@@ -241,6 +242,11 @@ export function buildDataProductEvidenceExport(
         identity?.evidence?.open ?? null,
         identity?.evidence?.ignored ?? null,
         identity?.nextAction ?? null,
+        identity?.extractionState ?? null,
+        identity?.extractionStreams.map((item) =>
+          `${dataProductStreamLabel(identity.source, item.stream)}[${item.state}]`).join("；") ?? null,
+        identity?.extractionReason ?? null,
+        identity?.extractionNextAction ?? null,
       ];
     });
   });

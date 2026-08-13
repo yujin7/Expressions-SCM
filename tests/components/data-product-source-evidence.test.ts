@@ -143,6 +143,75 @@ describe("数据产品所需流证据", () => {
     ])).level).toBe("A1");
   });
 
+  it("来源总体覆盖即使为 100%，具体库存流缺少仓库粒度仍保持 A0", () => {
+    const inventoryProduct = {
+      ...product,
+      requiredStreams: { JST: ["inventory-total-delta"] },
+      requiredIdentities: { JST: ["sku", "warehouse"] },
+    } satisfies DataProductDefinition;
+    const jst = source("JST", "observation", ["inventory-total-delta"]);
+    jst.identityCoverage = (["sku", "warehouse"] as const).map((domain) => ({
+      domain,
+      label: CROSS_SYSTEM_IDENTITY_LABEL[domain],
+      governance: "scoped_alias" as const,
+      state: "ready" as const,
+      observed: 10,
+      governed: 10,
+      open: 0,
+      ignored: 0,
+      coveragePct: 100,
+      reason: "来源总体覆盖已完成",
+      nextAction: "持续监测",
+    }));
+
+    const summary = evaluateProductSourceEvidence(inventoryProduct, [
+      source("SCM", "operational", []),
+      jst,
+    ]);
+    expect(summary.identityGates.find((item) => item.domain === "warehouse")).toMatchObject({
+      state: "ready",
+      extractionState: "not_available",
+      extractionReason: expect.stringContaining("全仓汇总"),
+    });
+    expect(summary.unreadyExtractionIdentities).toBe(1);
+    expect(currentProductAutomation(summary)).toMatchObject({
+      level: "A0",
+      reason: expect.stringContaining("来源总体覆盖不能代替具体流"),
+    });
+  });
+
+  it("未知流或未声明身份适用性默认拒绝，不靠猜测放行", () => {
+    const unknownProduct = {
+      ...product,
+      requiredStreams: { JST: ["unknown-read-stream"] },
+      requiredIdentities: { JST: ["sku"] },
+    } satisfies DataProductDefinition;
+    const jst = source("JST", "observation", ["unknown-read-stream"]);
+    jst.identityCoverage = [{
+      domain: "sku",
+      label: CROSS_SYSTEM_IDENTITY_LABEL.sku,
+      governance: "scoped_alias",
+      state: "ready",
+      observed: 10,
+      governed: 10,
+      open: 0,
+      ignored: 0,
+      coveragePct: 100,
+      reason: "来源总体覆盖已完成",
+      nextAction: "持续监测",
+    }];
+
+    const summary = evaluateProductSourceEvidence(unknownProduct, [
+      source("SCM", "operational", []),
+      jst,
+    ]);
+    expect(summary.identityGates[0]).toMatchObject({
+      extractionState: "missing_contract",
+      extractionStreams: [expect.objectContaining({ stream: "unknown-read-stream" })],
+    });
+    expect(currentProductAutomation(summary).level).toBe("A0");
+  });
+
   it("辅助证据可用于产品内回查，但不会改变必需流门禁或自动化级别", () => {
     const withSupporting = {
       ...product,

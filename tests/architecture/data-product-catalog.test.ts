@@ -10,7 +10,16 @@ import {
 } from "@/components/data-products";
 import { METRICS } from "@/components/metrics";
 import { SCM_EVIDENCE_LABEL } from "@/lib/scm-evidence";
-import { CROSS_SYSTEM_IDENTITY_LABEL } from "@/lib/cross-system-identity";
+import {
+  CROSS_SYSTEM_IDENTITY_LABEL,
+  getCrossSystemIdentityStreamContract,
+  type CrossSystemIdentitySource,
+} from "@/lib/cross-system-identity";
+import { JIANDAOYUN_FORM_CONTRACTS } from "@/server/integrations/jiandaoyun-contracts";
+import {
+  YONYOU_READ_CONTRACTS,
+  yonyouContractStreamKey,
+} from "@/server/integrations/yonyou-contracts";
 
 describe("三方数据产品目录", () => {
   it("保持十一个唯一、可执行的目标契约", () => {
@@ -60,6 +69,39 @@ describe("三方数据产品目录", () => {
           expect(CROSS_SYSTEM_IDENTITY_LABEL[identity], `${product.id}:${source}:${identity}`).toBeTruthy();
         }
       }
+    }
+  });
+
+  it("每条外部必需流都有逐流身份提取契约，且每个必需身份至少有一条适用流", () => {
+    for (const product of DATA_PRODUCTS) {
+      for (const [source, streams] of Object.entries(product.requiredStreams)) {
+        if (source === "SCM") continue;
+        const externalSource = source as CrossSystemIdentitySource;
+        const contracts = streams.map((stream) => {
+          const contract = getCrossSystemIdentityStreamContract(externalSource, stream);
+          expect(contract, `${product.id}:${source}:${stream}:identity-extraction-contract`).toBeTruthy();
+          return contract!;
+        });
+        for (const domain of product.requiredIdentities[externalSource] ?? []) {
+          expect(
+            contracts.some((contract) => contract.identities[domain] != null),
+            `${product.id}:${source}:${domain}:applicable-stream`,
+          ).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("简道云与用友所有已实现读取契约都登记了身份可达性，避免新增流静默绕过", () => {
+    for (const contract of JIANDAOYUN_FORM_CONTRACTS) {
+      expect(
+        getCrossSystemIdentityStreamContract("JIANDAOYUN", contract.key),
+        `JIANDAOYUN:${contract.key}`,
+      ).toBeTruthy();
+    }
+    for (const contract of YONYOU_READ_CONTRACTS) {
+      const stream = yonyouContractStreamKey(contract.path);
+      expect(getCrossSystemIdentityStreamContract("YONYOU", stream), `YONYOU:${stream}`).toBeTruthy();
     }
   });
 
