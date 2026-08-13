@@ -11,7 +11,7 @@
  */
 import { TIER, type TierKey } from "@/components/dictionary";
 
-export type MetricUnit = "qty" | "days" | "pct" | "count" | "money" | "ratio";
+export type MetricUnit = "qty" | "days" | "pct" | "count" | "money" | "ratio" | "minutes" | "hours";
 
 export interface MetricDef {
   id: string;
@@ -453,6 +453,51 @@ export const METRICS: Record<string, MetricDef> = {
     unit: "pct",
     tier: "derived",
     caveat: "覆盖不足时必须显示缺口，不得用零或乐观默认值补齐情景",
+  },
+  dataProductAdoptionRate: {
+    id: "dataProductAdoptionRate",
+    label: "真实建议采用率",
+    short: "有明确业务决定的建议中，被采纳或修改后采纳的比例",
+    formula: "（采纳 + 修改后采纳）÷（采纳 + 修改后采纳 + 拒绝）",
+    unit: "pct",
+    tier: "derived",
+    caveat: "暂缓不进入分母；采用不等于结果正向，必须与真实结果和样本量一起看",
+  },
+  dataProductFalsePositiveRate: {
+    id: "dataProductFalsePositiveRate",
+    label: "真实误报率",
+    short: "已经得到终局证据的建议中，被业务证据确认属于误报的比例",
+    formula: "误报结果数 ÷ 非待观察结果数",
+    unit: "pct",
+    tier: "derived",
+    caveat: "待观察样本不进入分母；结果纠正后只计算版本链叶子",
+  },
+  dataProductHandlingMinutes: {
+    id: "dataProductHandlingMinutes",
+    label: "平均处理时长",
+    short: "已填写处理时长的当前有效结果记录的平均分钟数",
+    formula: "Σ处理分钟 ÷ 有处理时长的有效结果数",
+    unit: "minutes",
+    tier: "derived",
+    caveat: "缺失时保持空值，不按 0 分钟计入平均",
+  },
+  dataProductSavedHours: {
+    id: "dataProductSavedHours",
+    label: "实际节省工时",
+    short: "有受控结果证据支持的实际节省工时合计",
+    formula: "Σ当前有效结果.saved_hours",
+    unit: "hours",
+    tier: "derived",
+    caveat: "只登记已发生、可核验的节省，不登记预测收益；缺失保持空值",
+  },
+  dataProductCashImpact: {
+    id: "dataProductCashImpact",
+    label: "实际现金影响",
+    short: "有受控结果证据支持的实际现金改善或损失合计",
+    formula: "Σ当前有效结果.cash_impact（CNY）",
+    unit: "money",
+    tier: "derived",
+    caveat: "允许正负值；按采购、PMC、财务和管理员角色可见，缺失不按零处理",
   },
 };
 

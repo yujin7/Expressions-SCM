@@ -1167,6 +1167,7 @@ export default function DecisionStudioClient() {
               <DecisionReadinessPanel
                 dataSources={data?.dataSources ?? []}
                 dataProductReleases={data?.dataProductReleases ?? []}
+                dataProductOutcomes={data?.dataProductOutcomes ?? []}
                 onReleaseChanged={load}
                 focusProductId={focusProductId}
               />

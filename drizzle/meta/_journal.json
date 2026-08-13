@@ -309,6 +309,13 @@
       "when": 1786514672483,
       "tag": "0043_loving_roulette",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1786626693405,
+      "tag": "0044_special_big_bertha",
+      "breakpoints": true
     }
   ]
 }

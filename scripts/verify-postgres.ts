@@ -51,6 +51,7 @@ async function main(): Promise<void> {
         "notifications",
         "aliases",
         "alias_exceptions",
+        "data_product_outcome_events",
       ]],
     );
     const found = new Set(tables.rows.map((row) => row.table_name));
@@ -81,6 +82,7 @@ async function main(): Promise<void> {
       "notifications",
       "aliases",
       "alias_exceptions",
+      "data_product_outcome_events",
     ].filter((name) => !found.has(name));
     if (missing.length) throw new Error(`Missing migrated tables: ${missing.join(", ")}`);
 
@@ -249,6 +251,9 @@ async function main(): Promise<void> {
         "quality_actions_evidence_immutability",
         "regulatory_records_version_chain",
         "electronic_label_versions_version_chain",
+        "data_product_outcome_chain_identity",
+        "data_product_outcomes_append_only",
+        "data_product_outcomes_append_only_truncate",
       ]],
     );
     const triggerPairs = new Set(
@@ -283,6 +288,9 @@ async function main(): Promise<void> {
       "quality_actions:quality_actions_evidence_immutability",
       "regulatory_records:regulatory_records_version_chain",
       "electronic_label_versions:electronic_label_versions_version_chain",
+      "data_product_outcome_events:data_product_outcome_chain_identity",
+      "data_product_outcome_events:data_product_outcomes_append_only",
+      "data_product_outcome_events:data_product_outcomes_append_only_truncate",
     ];
     const missingTriggers = requiredTriggerPairs.filter((pair) => !triggerPairs.has(pair));
     if (missingTriggers.length) {
@@ -376,6 +384,16 @@ async function main(): Promise<void> {
       "ck_sku_identifier_gtin_level",
       "uq_alias_type_scope_value",
       "uq_alias_exc_type_scope_value",
+      "data_product_outcome_events_idempotency_key_unique",
+      "ck_data_product_outcome_decision",
+      "ck_data_product_outcome_result",
+      "ck_data_product_outcome_handling",
+      "ck_data_product_outcome_saved_hours",
+      "ck_data_product_outcome_currency",
+      "ck_data_product_outcome_reason",
+      "ck_data_product_outcome_reason_required",
+      "ck_data_product_outcome_evidence_required",
+      "ck_data_product_outcome_no_self_supersede",
     ];
     const locationConstraints = await client.query<{ conname: string }>(
       `select conname
@@ -414,6 +432,36 @@ async function main(): Promise<void> {
       throw new Error(
         `Missing previous_id self-reference constraints: ${missingVersionChainFks.join(", ")}`,
       );
+    }
+
+    const outcomeChainFk = await client.query<{ definition: string }>(
+      `select pg_get_constraintdef(oid) as definition
+         from pg_constraint
+        where contype = 'f'
+          and conrelid = 'data_product_outcome_events'::regclass
+          and confrelid = 'data_product_outcome_events'::regclass`,
+    );
+    if (!outcomeChainFk.rows.some((row) => row.definition.startsWith("FOREIGN KEY (supersedes_id) REFERENCES "))) {
+      throw new Error("Missing data_product_outcome_events.supersedes_id self-reference constraint");
+    }
+
+    const requiredOutcomeIndexes = [
+      "ix_data_product_outcome_product_date",
+      "uq_data_product_outcome_root",
+      "uq_data_product_outcome_supersedes",
+    ];
+    const outcomeIndexes = await client.query<{ indexname: string }>(
+      `select indexname
+         from pg_indexes
+        where schemaname = 'public'
+          and tablename = 'data_product_outcome_events'
+          and indexname = any($1::text[])`,
+      [requiredOutcomeIndexes],
+    );
+    const foundOutcomeIndexes = new Set(outcomeIndexes.rows.map((row) => row.indexname));
+    const missingOutcomeIndexes = requiredOutcomeIndexes.filter((name) => !foundOutcomeIndexes.has(name));
+    if (missingOutcomeIndexes.length) {
+      throw new Error(`Missing data product outcome indexes: ${missingOutcomeIndexes.join(", ")}`);
     }
 
     const lifecycleIndexes = await client.query<{ indexname: string }>(
@@ -504,6 +552,7 @@ async function main(): Promise<void> {
       immutableTriggers: [...triggerPairs].sort(),
       locationConstraints: [...foundConstraints].sort(),
       versionChainSelfReferences: [...versionChainSelfReferences].sort(),
+      outcomeIndexes: [...foundOutcomeIndexes].sort(),
       supplierLifecycleIndexes: [...foundLifecycleIndexes].sort(),
       qualityComplianceIndexes: [...foundQualityIndexes].sort(),
       skuIdentifierIndexes: [...foundSkuIdentifierIndexes].sort(),
