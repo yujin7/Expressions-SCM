@@ -403,7 +403,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "供应商 × 期间 × 产品/物料",
     owner: "采购 / 品质 / 财务",
     ownerRoles: ["purchasing", "quality", "finance"],
-    contractVersion: "1.3.0",
+    contractVersion: "1.3.1",
     cadence: "weekly",
     decisionSlaHours: 72,
     metricIds: ["onTimeRate", "qcPassRate", "supplierPriceVariance"],

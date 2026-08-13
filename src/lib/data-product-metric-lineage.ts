@@ -33,7 +33,7 @@ export interface DataProductMetricLineageContract {
   nextAction: string;
 }
 
-export const DATA_PRODUCT_METRIC_LINEAGE_VERSION = "data-product-metric-lineage/v4" as const;
+export const DATA_PRODUCT_METRIC_LINEAGE_VERSION = "data-product-metric-lineage/v5" as const;
 
 export const METRIC_COMPUTATION_STATE_LABEL: Record<MetricComputationState, string> = {
   implemented: "可重放计算",
@@ -298,11 +298,12 @@ export const DATA_PRODUCT_METRIC_LINEAGE_CONTRACTS: DataProductMetricLineageCont
     nextAction: continuous,
   }),
   contract({
-    productId: "supplier-360", metricId: "supplierPriceVariance", state: "not_implemented",
+    productId: "supplier-360", metricId: "supplierPriceVariance", state: "partial",
     inputs: [product("supply-commitment", "同物料供应单行实际价"), stream("YONYOU", "yonbip-digitalmodel-vendor-list", "供应商权威身份")],
     joinKeys: ["供应商", "物料", "规格", "单位", "币种", "税制", "期间"],
-    evidence: "评分卡只有价格变更次数，尚无同口径价格偏差计算器",
-    nextAction: "在用友供应商身份和供给单行放行后，按单位/币种/税制实现偏差",
+    missingPolicy: "exclude_with_coverage",
+    evidence: "SCM 已生效 PO 行可按采购单位、换算系数和税率归一为基础单位未税价，并按供应商×SKU计算数量加权均价、最低可比价、偏差与覆盖；PO 行币种尚未显式记录且用友供应商身份未 UAT，故只作观察值",
+    nextAction: "在 PO 行固化凭证币种并完成用友供应商/组织身份真实读取、映射例外清零与业务 UAT 后，升级为可用于正式采购复核的完整计算",
   }),
 
   contract({

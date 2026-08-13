@@ -3,11 +3,12 @@
 import SearchInput from "@/components/SearchInput";
 
 /**
- * E5-06 + E5-07 供应商记分卡 / 质检透视（只读报表 + 人工采纳分级）。
+ * E5-06 + E5-07 供应商记分卡 / 质检透视 / 价格偏差（只读报表 + 人工采纳分级）。
  *
  * 两个页签回答两个问题：
  * - 记分卡：这家供应商到底几分？分从哪来？（展开行逐维度拆给你看——不可解释的评分没人敢用）
  * - 质检透视：质量问题在时间上怎么走？（按月堆叠，让步/报废是不是在变多）
+ * - 价格偏差：同 SKU 的已生效采购价统一到基础单位未税后，哪些供应商值得复核？
  * 评分只是**数据建议**：采纳与否由采购判断，点「采纳」才写档案等级；样本不足者不评级而非给低分。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -90,6 +91,58 @@ interface QcData {
   rows: QcRow[];
   totals: Omit<QcRow, "supplierId" | "code" | "name" | "month">;
   months: string[];
+}
+
+interface PriceVarianceRow {
+  key: string;
+  supplierId: number;
+  supplierCode: string;
+  supplierName: string;
+  skuId: number;
+  skuCode: string;
+  skuName: string;
+  baseUom: string;
+  currency: "CNY";
+  lineCount: number;
+  orderedBaseQty: string;
+  averageBaseNetPrice: string;
+  benchmarkBaseNetPrice: string;
+  variancePct: string;
+  isBenchmark: boolean;
+}
+
+interface PriceVarianceData {
+  rows: PriceVarianceRow[];
+  total: number;
+  supplierSummary: Array<{
+    supplierId: number;
+    supplierCode: string;
+    supplierName: string;
+    comparableSkuCount: number;
+    aboveBenchmarkSkuCount: number;
+    medianVariancePct: string;
+  }>;
+  summary: {
+    inputLineCount: number;
+    validLineCount: number;
+    comparableLineCount: number;
+    excludedInvalidLineCount: number;
+    singleSupplierLineCount: number;
+    comparableSkuCount: number;
+    comparableSupplierCount: number;
+    coveragePct: string;
+    windowDays: number;
+    asOf: string;
+  };
+  readiness: {
+    level: "observation";
+    decisionReady: false;
+    currencyState: "system_default_not_line_level";
+    yonyouSupplierIdentityState: "uat_required";
+    blockers: string[];
+    permittedUse: string;
+    prohibitedUse: string;
+  };
 }
 
 /* ───────────────── 展示常量 ───────────────── */
@@ -573,12 +626,281 @@ function QcSummaryTab() {
   );
 }
 
+/* ───────────────── 页签三：价格偏差观察 ───────────────── */
+
+function PriceVarianceTab() {
+  const { message } = App.useApp();
+  const [data, setData] = useState<PriceVarianceData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const listState = useListState({
+    key: "supplier-price-variance",
+    paramPrefix: "pv",
+    defaults: { q: "", windowDays: "180" },
+    defaultPageSize: 20,
+  });
+  const { filters, page, pageSize } = listState;
+  const q = filters.q;
+  const windowDays = Number(filters.windowDays);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize), windowDays: String(windowDays) });
+      setData(await fetchJson<PriceVarianceData>(`/api/report/supplier-price-variance?${params.toString()}`));
+    } catch (error) {
+      const text = error instanceof Error ? error.message : "供应商价格偏差加载失败";
+      setData(null);
+      setLoadError(text);
+      message.error(text);
+    } finally {
+      setLoading(false);
+    }
+  }, [q, page, pageSize, windowDays, message]);
+  useEffect(() => { void load(); }, [load]);
+
+  const chartData = useMemo(
+    () => (data?.supplierSummary ?? []).slice(0, 12).map((row) => ({
+      name: row.supplierName,
+      code: row.supplierCode,
+      medianVariancePct: Number(row.medianVariancePct),
+      comparableSkuCount: row.comparableSkuCount,
+    })),
+    [data],
+  );
+
+  const download = useCallback(async () => {
+    try {
+      const params = new URLSearchParams({ q, windowDays: String(windowDays), format: "csv" });
+      const response = await fetch(`/api/report/supplier-price-variance?${params.toString()}`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? `导出失败（HTTP ${response.status}）`);
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `供应商价格偏差观察值-${data?.summary.asOf ?? "当前"}.csv`;
+      anchor.style.display = "none";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      // Safari/部分 WebKit 在同一事件循环立即 revoke 会吞掉下载；延迟释放仍不泄漏对象 URL。
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "导出失败");
+    }
+  }, [q, windowDays, data?.summary.asOf, message]);
+
+  const columns: ColumnsType<PriceVarianceRow> = [
+    {
+      title: "供应商",
+      dataIndex: "supplierName",
+      width: 220,
+      fixed: "left",
+      ellipsis: true,
+      sorter: (a, b) => a.supplierName.localeCompare(b.supplierName),
+      render: (value: string, row) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{value}</Typography.Text>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>{row.supplierCode}</Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: "SKU",
+      dataIndex: "skuName",
+      width: 280,
+      ellipsis: true,
+      sorter: (a, b) => a.skuCode.localeCompare(b.skuCode),
+      render: (value: string, row) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{value}</Typography.Text>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>{row.skuCode}</Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: "数量加权未税价",
+      dataIndex: "averageBaseNetPrice",
+      width: 165,
+      align: "right",
+      sorter: (a, b) => Number(a.averageBaseNetPrice) - Number(b.averageBaseNetPrice),
+      render: (value: string, row) => (
+        <Tooltip title="已按采购单位换算系数和税率归一到基础单位未税价；CNY 为系统默认而非 PO 行级凭证币种">
+          <span>{value} / {row.baseUom} <Typography.Text type="secondary">CNY*</Typography.Text></span>
+        </Tooltip>
+      ),
+    },
+    {
+      title: "窗口最低可比价",
+      dataIndex: "benchmarkBaseNetPrice",
+      width: 150,
+      align: "right",
+      sorter: (a, b) => Number(a.benchmarkBaseNetPrice) - Number(b.benchmarkBaseNetPrice),
+    },
+    {
+      title: "相对偏差",
+      dataIndex: "variancePct",
+      width: 120,
+      align: "right",
+      defaultSortOrder: "descend",
+      sorter: (a, b) => Number(a.variancePct) - Number(b.variancePct),
+      render: (value: string, row) => row.isBenchmark
+        ? <Tag color="green">基准</Tag>
+        : <Typography.Text style={{ color: Number(value) >= 5 ? "#cf1322" : "#fa8c16", fontWeight: 600 }}>+{value}%</Typography.Text>,
+    },
+    { title: "有效采购行", dataIndex: "lineCount", width: 110, align: "right", sorter: (a, b) => a.lineCount - b.lineCount },
+    {
+      title: "采购基础数量",
+      dataIndex: "orderedBaseQty",
+      width: 140,
+      align: "right",
+      sorter: (a, b) => Number(a.orderedBaseQty) - Number(b.orderedBaseQty),
+      render: (value: string, row) => `${value} ${row.baseUom}`,
+    },
+  ];
+
+  const summary = data?.summary;
+  const readiness = data?.readiness;
+  const coverage = Number(summary?.coveragePct ?? 0);
+
+  return (
+    <div>
+      <Alert
+        type="warning"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="当前是采购价格观察值，尚未达到财务定价或自动供应商排名条件"
+        description={
+          <div>
+            <Typography.Paragraph style={{ marginBottom: 6 }}>{readiness?.permittedUse ?? "用于发现值得采购复核的同口径价格信号。"}</Typography.Paragraph>
+            <ul style={{ margin: 0, paddingInlineStart: 20 }}>
+              {(readiness?.blockers ?? ["PO 行币种与用友供应商权威身份仍待验收。"] ).map((blocker) => <li key={blocker}>{blocker}</li>)}
+            </ul>
+            <Typography.Text type="secondary">{readiness?.prohibitedUse}</Typography.Text>
+          </div>
+        }
+      />
+
+      {loadError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="供应商价格偏差加载失败"
+          description={loadError}
+          action={<Button size="small" icon={<ReloadOutlined />} onClick={() => void load()}>重试</Button>}
+          style={{ marginBottom: 12 }}
+        />
+      ) : null}
+
+      <div className="supplier-scorecard-kpis">
+        <Card size="small"><Statistic title="可比 SKU" value={summary?.comparableSkuCount ?? "—"} /></Card>
+        <Card size="small"><Statistic title="可比供应商" value={summary?.comparableSupplierCount ?? "—"} /></Card>
+        <Card size="small"><Statistic title="可比采购行覆盖" value={summary ? coverage : "—"} precision={summary ? 1 : undefined} suffix={summary ? "%" : undefined} /></Card>
+        <Card size="small"><Statistic title="被排除/单一供应商行" value={summary ? summary.excludedInvalidLineCount + summary.singleSupplierLineCount : "—"} /></Card>
+      </div>
+
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            <SearchInput
+              key={q}
+              allowClear
+              size="small"
+              defaultValue={q}
+              placeholder="搜索供应商或 SKU"
+              style={{ width: 260 }}
+              onSearch={(value) => listState.setFilter({ q: value.trim() })}
+            />
+            <Segmented
+              size="small"
+              value={windowDays}
+              onChange={(value) => listState.setFilter({ windowDays: String(value) })}
+              options={[{ label: "近 90 天", value: 90 }, { label: "近 180 天", value: 180 }, { label: "近 365 天", value: 365 }]}
+            />
+          </>
+        }
+      />
+
+      <div style={{ marginBottom: 12 }}>
+        <DecisionVisual
+          title="供应商同 SKU 采购价偏差"
+          question="哪些供应商在可比 SKU 上持续高于窗口内最低已生效采购价，值得进一步解释或议价？"
+          metricId="supplierPriceVariance"
+          grain="供应商 × SKU × 窗口"
+          unit="偏差百分比"
+          source={{
+            tier: "derived",
+            source: "SCM 已生效 PO 行（基础单位未税归一）",
+            asOf: summary?.asOf,
+            note: "CNY 为系统默认；用友供应商身份仍待 UAT",
+          }}
+          coverage={{ covered: summary?.comparableLineCount ?? 0, total: summary?.inputLineCount ?? 0, label: "有效 PO 行" }}
+          activeFilters={[`近 ${windowDays} 天`, q ? `搜索：${q}` : "全部供应商与 SKU"]}
+          summary={summary
+            ? `完整窗口共 ${summary.comparableSkuCount} 个可比 SKU、${summary.comparableSupplierCount} 家供应商，采购行覆盖 ${summary.coveragePct}%。${q ? "图表与明细已按搜索条件收窄；" : ""}图中为供应商跨可比 SKU 的偏差中位数。`
+            : "数据尚未成功加载。"}
+          caveat="同 SKU 先按采购数量加权；跨 SKU 只取无量纲偏差百分比中位数，不跨物料轧差数量或金额。最低价不等于最优供应商，MOQ、账期、规格、质量和交期仍需人工复核。"
+          state={loading && !data ? "loading" : loadError ? "error" : chartData.length === 0 ? "insufficient" : "ready"}
+          stateDetail={loadError ?? "当前窗口缺少至少两家供应商采购同一 SKU 的可比样本。"}
+          height={300}
+          onExport={() => void download()}
+          exportLabel="导出完整筛选结果（最多 5000 行）"
+          dataView={
+            <Table
+              rowKey="supplierId"
+              size="small"
+              pagination={false}
+              dataSource={data?.supplierSummary ?? []}
+              columns={[
+                { title: "供应商", dataIndex: "supplierName" },
+                { title: "编码", dataIndex: "supplierCode" },
+                { title: "可比 SKU", dataIndex: "comparableSkuCount", align: "right" },
+                { title: "高于基准 SKU", dataIndex: "aboveBenchmarkSkuCount", align: "right" },
+                { title: "偏差中位数", dataIndex: "medianVariancePct", align: "right", render: (value: string) => `${value}%` },
+              ]}
+            />
+          }
+        >
+          <ResponsiveContainer>
+            <BarChart data={chartData} layout="vertical" margin={{ top: 8, right: 24, bottom: 8, left: 12 }}>
+              <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+              <XAxis type="number" unit="%" />
+              <YAxis type="category" dataKey="name" width={110} tick={{ fontSize: 12 }} />
+              <RTooltip
+                formatter={(value) => [`${Number(value).toFixed(2)}%`, "偏差中位数"]}
+                labelFormatter={(label, payload) => `${label}${payload?.[0]?.payload?.code ? `（${payload[0].payload.code}）` : ""}`}
+              />
+              <Bar dataKey="medianVariancePct" name="偏差中位数" fill="#fa8c16" radius={[0, 4, 4, 0]} isAnimationActive={false} />
+            </BarChart>
+          </ResponsiveContainer>
+        </DecisionVisual>
+      </div>
+
+      <Table<PriceVarianceRow>
+        rowKey="key"
+        size={listState.tableSize}
+        columns={columns}
+        dataSource={data?.rows ?? []}
+        loading={loading}
+        scroll={{ x: "max-content" }}
+        pagination={listState.paginationProps({ total: data?.total ?? 0, showTotal: (total) => `共 ${total} 条可比记录` })}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前窗口没有至少两家供应商采购同一 SKU 的可比记录" }}
+      />
+    </div>
+  );
+}
+
 /* ───────────────── 页面外壳 ───────────────── */
 
 export default function SupplierScorecardClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const activeTab = searchParams.get("tab") === "qc" ? "qc" : "scorecard";
+  const requestedTab = searchParams.get("tab");
+  const activeTab = requestedTab === "qc" || requestedTab === "price" ? requestedTab : "scorecard";
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>供应商记分卡</Typography.Title>
@@ -593,6 +915,7 @@ export default function SupplierScorecardClient() {
         items={[
           { key: "scorecard", label: "记分卡", children: <ScorecardTab /> },
           { key: "qc", label: "质检透视", children: <QcSummaryTab /> },
+          { key: "price", label: "价格偏差", children: <PriceVarianceTab /> },
         ]}
       />
     </div>

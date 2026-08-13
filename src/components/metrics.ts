@@ -403,11 +403,11 @@ export const METRICS: Record<string, MetricDef> = {
   supplierPriceVariance: {
     id: "supplierPriceVariance",
     label: "供应商价格偏差",
-    short: "同物料同单位的实际采购价相对批准基准价的偏差",
-    formula: "(实际含税/未税同口径价 − 批准基准价) ÷ 批准基准价",
+    short: "同 SKU 的供应商数量加权基础单位未税价相对窗口最低可比价的偏差",
+    formula: "(供应商×SKU 数量加权基础单位未税价 − 同 SKU 窗口最低可比价) ÷ 同 SKU 窗口最低可比价",
     unit: "pct",
     tier: "derived",
-    caveat: "币种、税制、单位、MOQ、账期和规格未对齐前不可横向排名",
+    caveat: "PO 行币种、用友供应商身份、MOQ、账期和规格未验收前只作采购观察值；最低价不等于最优供应商，不可自动排名",
   },
   launchOnTimeRate: {
     id: "launchOnTimeRate",
