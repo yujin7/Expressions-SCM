@@ -57,6 +57,7 @@ function source(
     sourceAsOfEnd: streams.at(-1)?.sourceAsOf ?? null,
     openIdentityExceptions: 0,
     observedIdentities: 0,
+    identityCoverage: [],
     scmEvidence: {},
     gate: "gate",
     nextAction: "next",
@@ -86,6 +87,7 @@ function product(
     sources,
     requiredScmEvidence: [],
     requiredStreams,
+    requiredIdentities: {},
     targetAuthority: "operational",
     releaseGate: "test",
   };

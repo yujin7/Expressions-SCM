@@ -5,6 +5,29 @@ import { buildDataProductWorkQueue } from "@/components/data-product-work-queue"
 import type { DataSourceReadiness } from "@/server/modules/report/data-source-readiness";
 import type { DataProductOutcomeReadiness } from "@/server/modules/report/data-product-outcome";
 import type { DataProductReleaseReadiness } from "@/server/modules/report/data-product-release";
+import { CROSS_SYSTEM_IDENTITY_LABEL } from "@/lib/cross-system-identity";
+
+function currentStream(key: string): DataSourceReadiness["streams"][number] {
+  return {
+    stream: key,
+    latestStatus: "succeeded",
+    latestRunAt: "2026-08-14T01:00:00.000Z",
+    lastSuccessAt: "2026-08-14T01:00:00.000Z",
+    sourceAsOf: "2026-08-14",
+    sourceRows: 10,
+    stagedRows: 10,
+    rejectedRows: 0,
+    authorizationBlocked: false,
+    sourceTimeInvalid: false,
+    releaseBlocked: false,
+    schemaDrift: false,
+    emptySource: false,
+    freshnessMaxAgeDays: 45,
+    businessAgeDays: 0,
+    pipelineAgeHours: 1,
+    freshness: "current",
+  };
+}
 
 function emptySource(key: DataSourceReadiness["key"]): DataSourceReadiness {
   return {
@@ -24,6 +47,7 @@ function emptySource(key: DataSourceReadiness["key"]): DataSourceReadiness {
     rejectedRows: 0,
     observedIdentities: key === "SCM" ? null : 0,
     openIdentityExceptions: key === "SCM" ? null : 0,
+    identityCoverage: [],
     sourceAsOfStart: null,
     sourceAsOfEnd: null,
     latestRunAt: null,
@@ -142,9 +166,49 @@ describe("data product dynamic work queue", () => {
 
   it("routes an external identity blocker to the scoped human-claim queue", () => {
     const product = DATA_PRODUCTS.find((item) => item.id === "commerce-identity-control")!;
-    const withIdentityExceptions = sources.map((source) => source.key === "JIANDAOYUN"
-      ? { ...source, openIdentityExceptions: 12 }
-      : source);
+    const withIdentityExceptions = sources.map((source) => {
+      if (source.key === "SCM") {
+        const snapshot = {
+          rows: 10,
+          asOf: null,
+          freshnessMaxAgeDays: null,
+          businessAgeDays: null,
+          freshness: "current" as const,
+        };
+        return { ...source, sourceRows: 20, scmEvidence: { "sku-master": snapshot, "sku-identifiers": snapshot } };
+      }
+      const streams = (product.requiredStreams[source.key] ?? []).map(currentStream);
+      return {
+        ...source,
+        state: "observation" as const,
+        configured: true,
+        enabled: true,
+        configurationReady: true,
+        contractSelectionState: "selected" as const,
+        selectedContractCount: streams.length,
+        selectedStreamKeys: streams.map((item) => item.stream),
+        successfulStreams: streams.length,
+        successfulStreamKeys: streams.map((item) => item.stream),
+        streams,
+        sourceRows: 10,
+        stagedRows: 10,
+        openIdentityExceptions: source.key === "JIANDAOYUN" ? 12 : 0,
+        observedIdentities: 20,
+        identityCoverage: (product.requiredIdentities[source.key] ?? []).map((domain) => ({
+          domain,
+          label: CROSS_SYSTEM_IDENTITY_LABEL[domain],
+          governance: "scoped_alias" as const,
+          state: source.key === "JIANDAOYUN" && domain === "shop" ? "partial" as const : "ready" as const,
+          observed: 20,
+          governed: source.key === "JIANDAOYUN" && domain === "shop" ? 8 : 20,
+          open: source.key === "JIANDAOYUN" && domain === "shop" ? 12 : 0,
+          ignored: 0,
+          coveragePct: source.key === "JIANDAOYUN" && domain === "shop" ? 40 : 100,
+          reason: "测试身份门禁",
+          nextAction: "人工认领",
+        })),
+      };
+    });
     const [item] = buildDataProductWorkQueue([product], withIdentityExceptions, []);
     expect(item).toMatchObject({
       stage: "repair",
@@ -161,6 +225,7 @@ describe("data product dynamic work queue", () => {
       title: "下游组合决策",
       sources: [],
       requiredStreams: {},
+      requiredIdentities: {},
       requiredScmEvidence: [],
       requiredProducts: [{
         productId: "demand-pulse",

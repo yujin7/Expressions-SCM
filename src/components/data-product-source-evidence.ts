@@ -9,6 +9,12 @@ import type {
   ScmEvidenceSnapshot,
 } from "@/server/modules/report/data-source-readiness";
 import { SCM_EVIDENCE_LABEL } from "@/lib/scm-evidence";
+import {
+  CROSS_SYSTEM_IDENTITY_LABEL,
+  type CrossSystemIdentityCoverage,
+  type CrossSystemIdentityDomain,
+  type CrossSystemIdentityState,
+} from "@/lib/cross-system-identity";
 
 export type ProductSourceEvidenceState =
   | "missing"
@@ -40,6 +46,16 @@ export interface ProductSourceEvidence {
   streams: ProductStreamEvidence[];
 }
 
+export interface ProductIdentityEvidence {
+  source: DataProductSource;
+  domain: CrossSystemIdentityDomain;
+  label: string;
+  state: CrossSystemIdentityState;
+  reason: string;
+  nextAction: string;
+  evidence: CrossSystemIdentityCoverage | null;
+}
+
 export interface ProductEvidenceSummary {
   sources: ProductSourceEvidence[];
   observedSources: number;
@@ -50,6 +66,10 @@ export interface ProductEvidenceSummary {
   missingStreams: number;
   staleStreams: number;
   degradedStreams: number;
+  identityGates: ProductIdentityEvidence[];
+  missingIdentities: number;
+  partialIdentities: number;
+  unimplementedIdentities: number;
   businessTimeWindow: ProductBusinessTimeWindow;
 }
 
@@ -279,6 +299,37 @@ export function evaluateProductSourceEvidence(
   const missingSources = sources.filter((row) => row.state === "missing").length;
   const staleSources = sources.filter((row) => row.state === "stale").length;
   const degradedSources = sources.filter((row) => row.state === "degraded").length;
+  const identityGates = (Object.entries(product.requiredIdentities ?? {}) as [
+    DataProductSource,
+    CrossSystemIdentityDomain[],
+  ][]).flatMap(([source, domains]) => {
+    const row = sourceByKey.get(source);
+    return domains.map<ProductIdentityEvidence>((domain) => {
+      const evidence = row?.identityCoverage?.find((item) => item.domain === domain) ?? null;
+      return evidence
+        ? {
+            source,
+            domain,
+            label: evidence.label,
+            state: evidence.state,
+            reason: evidence.reason,
+            nextAction: evidence.nextAction,
+            evidence,
+          }
+        : {
+            source,
+            domain,
+            label: CROSS_SYSTEM_IDENTITY_LABEL[domain],
+            state: "missing",
+            reason: "当前运行证据未提供该身份维度的覆盖统计",
+            nextAction: "先运行受控读取并建立来源作用域身份候选与认领证据",
+            evidence: null,
+          };
+    });
+  }).sort((left, right) => {
+    const source = left.source.localeCompare(right.source);
+    return source !== 0 ? source : left.domain.localeCompare(right.domain);
+  });
   const timeSensitive = sources
     .flatMap((source) => source.streams)
     .filter((stream) => (stream.evidence?.freshnessMaxAgeDays ?? stream.scmEvidence?.freshnessMaxAgeDays) != null);
@@ -312,6 +363,10 @@ export function evaluateProductSourceEvidence(
     missingStreams: sources.reduce((sum, row) => sum + row.missingStreams.length, 0),
     staleStreams: sources.reduce((sum, row) => sum + row.staleStreams.length, 0),
     degradedStreams: sources.reduce((sum, row) => sum + row.degradedStreams.length, 0),
+    identityGates,
+    missingIdentities: identityGates.filter((item) => item.state === "missing").length,
+    partialIdentities: identityGates.filter((item) => item.state === "partial").length,
+    unimplementedIdentities: identityGates.filter((item) => item.state === "not_implemented").length,
     businessTimeWindow,
   };
 }
@@ -340,7 +395,7 @@ function streamSafeForExplanation(row: ProductStreamEvidence): boolean {
 export function currentProductAutomation(
   summary: ProductEvidenceSummary,
 ): ProductAutomationReadiness {
-  const safe = summary.sources.every((source) => source.source === "SCM"
+  const sourcesSafe = summary.sources.every((source) => source.source === "SCM"
     ? source.connectorState === "operational"
       && source.configurationReady
       && source.state === "operational"
@@ -350,10 +405,18 @@ export function currentProductAutomation(
       && source.configurationReady
       && source.streams.length > 0
       && source.streams.every(streamSafeForExplanation));
-  return safe
+  const identitiesSafe = summary.identityGates.every((identity) => identity.state === "ready");
+  if (sourcesSafe && !identitiesSafe) {
+    const blocker = summary.identityGates.find((identity) => identity.state !== "ready")!;
+    return {
+      level: "A0",
+      reason: `${blocker.source} 的「${blocker.label}」身份门禁未通过：${blocker.reason}。流成功不能代替身份统一。`,
+    };
+  }
+  return sourcesSafe && identitiesSafe
     ? {
         level: "A1",
-        reason: "所需流具备当前、成功且无拒收的证据；仅允许带来源口径的解释，仍待产品级 UAT 后升级。",
+        reason: "所需流具备当前、成功且无拒收的证据，所需身份维度也已受控统一；仅允许带来源口径的解释，仍待产品级 UAT 后升级。",
       }
     : {
         level: "A0",

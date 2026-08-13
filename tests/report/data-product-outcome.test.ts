@@ -18,6 +18,7 @@ import type {
   ScmEvidenceSnapshot,
 } from "@/server/modules/report/data-source-readiness";
 import { createTestDb } from "../helpers/db";
+import { CROSS_SYSTEM_IDENTITY_LABEL, CROSS_SYSTEM_IDENTITY_ORDER } from "@/lib/cross-system-identity";
 
 const product = DATA_PRODUCTS.find((item) => item.id === "commerce-identity-control")!;
 
@@ -72,6 +73,19 @@ function source(
     sourceAsOfEnd: streams.at(-1)?.sourceAsOf ?? null,
     openIdentityExceptions: 0,
     observedIdentities: 10,
+    identityCoverage: key === "SCM" ? [] : CROSS_SYSTEM_IDENTITY_ORDER.map((domain) => ({
+      domain,
+      label: CROSS_SYSTEM_IDENTITY_LABEL[domain],
+      governance: domain === "document" ? "external_reference" as const : "scoped_alias" as const,
+      state: "ready" as const,
+      observed: 10,
+      governed: 10,
+      open: 0,
+      ignored: 0,
+      coveragePct: 100,
+      reason: "测试夹具已统一",
+      nextAction: "持续监测",
+    })),
     scmEvidence,
     gate: "test gate",
     nextAction: "test next",

@@ -40,6 +40,7 @@ import {
   evaluateProductSourceEvidence,
   evaluateProductSupportingEvidence,
   type ProductEvidenceSummary,
+  type ProductIdentityEvidence,
   type ProductStreamEvidence,
 } from "@/components/data-product-source-evidence";
 import { metric, metricTooltip } from "@/components/metrics";
@@ -82,6 +83,19 @@ const STREAM_STATE_META: Record<ProductStreamEvidence["state"], { label: string;
   stale: { label: "业务时点过期", color: "error" },
   missing: { label: "尚无证据", color: "default" },
 };
+
+const IDENTITY_STATE_META: Record<ProductIdentityEvidence["state"], { label: string; color: string }> = {
+  ready: { label: "已统一", color: "success" },
+  partial: { label: "部分统一", color: "warning" },
+  missing: { label: "尚无证据", color: "default" },
+  not_implemented: { label: "治理模型待建", color: "error" },
+};
+
+const IDENTITY_GOVERNANCE_LABEL = {
+  scoped_alias: "来源作用域精确认领",
+  external_reference: "来源+类型+单号对照",
+  planned_master: "受控主档待建",
+} as const;
 
 const WORK_STAGE_META: Record<DataProductWorkStage, { label: string; color: string }> = {
   safeguard: { label: "先止损", color: "error" },
@@ -215,6 +229,88 @@ function RequiredStreamEvidence({ summary }: { summary: ProductEvidenceSummary }
         },
       ]}
     />
+  );
+}
+
+function RequiredIdentityEvidence({ summary }: { summary: ProductEvidenceSummary }) {
+  if (summary.identityGates.length === 0) return null;
+  return (
+    <Card
+      size="small"
+      title="跨系统身份门禁"
+      extra={(
+        <Space size={4} wrap>
+          <Tag color="success">已统一 {summary.identityGates.filter((item) => item.state === "ready").length}</Tag>
+          <Tag color={summary.missingIdentities + summary.partialIdentities + summary.unimplementedIdentities > 0 ? "error" : "success"}>
+            待补齐 {summary.missingIdentities + summary.partialIdentities + summary.unimplementedIdentities}
+          </Tag>
+        </Space>
+      )}
+      styles={{ body: { padding: 0 } }}
+    >
+      <Alert
+        banner
+        showIcon
+        type="info"
+        message="只认可来源作用域内的精确认领/对照；字段存在、名称相同或一次成功拉数都不等于身份已统一。"
+      />
+      <Table
+        rowKey={(row) => `${row.source}\u0000${row.domain}`}
+        size="small"
+        pagination={false}
+        dataSource={summary.identityGates}
+        scroll={{ x: 1_080 }}
+        columns={[
+          {
+            title: "来源",
+            dataIndex: "source",
+            width: 120,
+            render: (source: ProductIdentityEvidence["source"]) => DATA_PRODUCT_SOURCE_LABEL[source],
+          },
+          { title: "身份维度", dataIndex: "label", width: 150 },
+          {
+            title: "治理方式",
+            key: "governance",
+            width: 210,
+            render: (_, row) => row.evidence
+              ? IDENTITY_GOVERNANCE_LABEL[row.evidence.governance]
+              : "当前证据缺失",
+          },
+          {
+            title: "状态",
+            dataIndex: "state",
+            width: 140,
+            render: (state: ProductIdentityEvidence["state"]) => (
+              <Tag color={IDENTITY_STATE_META[state].color}>{IDENTITY_STATE_META[state].label}</Tag>
+            ),
+          },
+          {
+            title: "已认领 / 候选 / 开放 / 忽略",
+            key: "coverage",
+            width: 250,
+            align: "right",
+            render: (_, row) => row.evidence
+              ? `${row.evidence.governed.toLocaleString("zh-CN")} / ${row.evidence.observed.toLocaleString("zh-CN")} / ${row.evidence.open.toLocaleString("zh-CN")} / ${row.evidence.ignored.toLocaleString("zh-CN")}`
+              : "—",
+          },
+          {
+            title: "门禁原因 / 下一步",
+            key: "reason",
+            width: 430,
+            render: (_, row) => (
+              <Space direction="vertical" size={2}>
+                <Typography.Paragraph ellipsis={{ rows: 2, tooltip: row.reason }} style={{ marginBottom: 0 }}>
+                  {row.reason}
+                </Typography.Paragraph>
+                <Typography.Paragraph type="secondary" ellipsis={{ rows: 2, tooltip: row.nextAction }} style={{ marginBottom: 0 }}>
+                  {row.nextAction}
+                </Typography.Paragraph>
+              </Space>
+            ),
+          },
+        ]}
+      />
+    </Card>
   );
 }
 
@@ -638,6 +734,7 @@ function ProductOperatingContract({
           />
         </Card>
       ) : null}
+      <RequiredIdentityEvidence summary={summary} />
       <DataProductReleaseControl product={product} readiness={release} onChanged={onReleaseChanged} />
       <DataProductOutcomeControl product={product} readiness={outcome} onChanged={onReleaseChanged} />
       <RequiredStreamEvidence summary={summary} />
@@ -956,7 +1053,18 @@ export default function DecisionReadinessPanel({
               sorter: (a, b) => (a.openIdentityExceptions ?? -1) - (b.openIdentityExceptions ?? -1),
               render: (_, row) => row.openIdentityExceptions == null
                 ? "不适用"
-                : `${(row.observedIdentities ?? 0).toLocaleString("zh-CN")} / ${row.openIdentityExceptions.toLocaleString("zh-CN")}`,
+                : (() => {
+                    const required = row.identityCoverage.filter((item) => item.state !== "missing").length;
+                    const ready = row.identityCoverage.filter((item) => item.state === "ready").length;
+                    return (
+                      <Space direction="vertical" size={2}>
+                        <Typography.Text>{(row.observedIdentities ?? 0).toLocaleString("zh-CN")} / {row.openIdentityExceptions.toLocaleString("zh-CN")}</Typography.Text>
+                        <Typography.Text type={ready < required ? "danger" : "secondary"}>
+                          维度已统一 {ready}/{row.identityCoverage.length}
+                        </Typography.Text>
+                      </Space>
+                    );
+                  })(),
             },
             {
               title: "当前门禁与下一步",

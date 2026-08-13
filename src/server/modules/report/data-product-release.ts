@@ -23,7 +23,7 @@ import {
   type DataSourceReadiness,
 } from "@/server/modules/report/data-source-readiness";
 
-export const DATA_PRODUCT_RELEASE_SCHEMA_VERSION = "data-product-release/v2" as const;
+export const DATA_PRODUCT_RELEASE_SCHEMA_VERSION = "data-product-release/v3" as const;
 export type DataProductReleaseStatus = "pending" | "approved" | "rejected" | "revoked";
 export type ReleasedAutomationLevel = Extract<DataProductAutomationLevel, "A2" | "A3">;
 
@@ -88,6 +88,7 @@ interface EvidenceEnvelope {
     maxAutomation: DataProductAutomationLevel;
     requiredSources: string[];
     requiredStreams: Record<string, string[]>;
+    requiredIdentities: Record<string, string[]>;
     requiredScmEvidence: string[];
     requiredProducts: Array<{
       productId: string;
@@ -218,6 +219,11 @@ export function buildDataProductReleaseEvidence(
         Object.entries(product.requiredStreams)
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([source, streams]) => [source, [...(streams ?? [])].sort()]),
+      ),
+      requiredIdentities: Object.fromEntries(
+        Object.entries(product.requiredIdentities)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([source, identities]) => [source, [...(identities ?? [])].sort()]),
       ),
       requiredScmEvidence: [...product.requiredScmEvidence].sort(),
       requiredProducts: [...(product.requiredProducts ?? [])]

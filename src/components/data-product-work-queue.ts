@@ -7,6 +7,7 @@ import {
 import {
   currentProductAutomation,
   evaluateProductSourceEvidence,
+  type ProductIdentityEvidence,
   type ProductEvidenceSummary,
   type ProductStreamEvidence,
 } from "@/components/data-product-source-evidence";
@@ -35,7 +36,7 @@ export interface DataProductWorkItem {
   actionLabel: string;
   actionHref: string;
   bottleneck: string;
-  blockerState: ProductStreamEvidence["state"] | "release" | "outcome" | "none";
+  blockerState: ProductStreamEvidence["state"] | "identity" | "release" | "outcome" | "none";
 }
 
 const PRODUCT_DECISION_HREF: Record<string, string> = {
@@ -67,6 +68,7 @@ function actionTarget(
   product: DataProductDefinition,
   stage: DataProductWorkStage,
   blocker: ProductStreamEvidence | null,
+  identityBlocker: ProductIdentityEvidence | null,
   dataSources: readonly DataSourceReadiness[],
 ): Pick<DataProductWorkItem, "actionLabel" | "actionHref"> {
   if (stage === "monitor") {
@@ -80,6 +82,18 @@ function actionTarget(
     return {
       actionLabel: "复盘真实结果",
       actionHref: productEvidenceHref(product.id),
+    };
+  }
+
+  if (
+    stage === "repair"
+    && identityBlocker
+    && identityBlocker.source !== "SCM"
+    && (identityBlocker.evidence?.open ?? 0) > 0
+  ) {
+    return {
+      actionLabel: "处理身份异常",
+      actionHref: `/import/exceptions?status=open&scope=${encodeURIComponent(identityBlocker.source)}`,
     };
   }
 
@@ -116,11 +130,12 @@ const STAGE_ORDER: Record<DataProductWorkStage, number> = {
 const BLOCKER_ORDER: Record<DataProductWorkItem["blockerState"], number> = {
   release: 0,
   stale: 1,
-  degraded: 2,
-  missing: 3,
-  current: 4,
-  outcome: 5,
-  none: 6,
+  identity: 2,
+  degraded: 3,
+  missing: 4,
+  current: 5,
+  outcome: 6,
+  none: 7,
 };
 
 export function summarizeDataProductLearning(
@@ -181,6 +196,22 @@ function blockerLabel(blocker: ProductStreamEvidence | null): string {
   return `${DATA_PRODUCT_SOURCE_LABEL[blocker.source]} · ${dataProductStreamLabel(blocker.source, blocker.stream)}：${blocker.reason}`;
 }
 
+function firstIdentityBlocker(summary: ProductEvidenceSummary): ProductIdentityEvidence | null {
+  const rank = { not_implemented: 0, partial: 1, missing: 2, ready: 3 } as const;
+  return [...summary.identityGates]
+    .sort((a, b) => {
+      const state = rank[a.state] - rank[b.state];
+      if (state !== 0) return state;
+      const source = a.source.localeCompare(b.source);
+      return source !== 0 ? source : a.domain.localeCompare(b.domain);
+    })
+    .find((identity) => identity.state !== "ready") ?? null;
+}
+
+function identityBlockerLabel(blocker: ProductIdentityEvidence): string {
+  return `${DATA_PRODUCT_SOURCE_LABEL[blocker.source]} · ${blocker.label}：${blocker.reason}`;
+}
+
 function repairAction(blocker: ProductStreamEvidence | null): string {
   if (!blocker) return "复核连接配置、身份覆盖和产品专属 SCM 事实";
   const source = DATA_PRODUCT_SOURCE_LABEL[blocker.source];
@@ -188,6 +219,10 @@ function repairAction(blocker: ProductStreamEvidence | null): string {
   if (blocker.state === "stale") return `刷新 ${source}的「${stream}」，并重做控制总量核对`;
   if (blocker.state === "degraded") return `解除 ${source}「${stream}」的授权/质量/时效限制`;
   return `补齐 ${source}「${stream}」的成功业务证据`;
+}
+
+function identityRepairAction(blocker: ProductIdentityEvidence): string {
+  return `${blocker.nextAction}（${DATA_PRODUCT_SOURCE_LABEL[blocker.source]} · ${blocker.label}）`;
 }
 
 function pendingEvidenceCurrent(
@@ -220,10 +255,15 @@ export function buildDataProductWorkQueue(
     const runtime = currentProductAutomation(summary);
     const release = releaseByProduct.get(product.id);
     const blocker = firstBlocker(summary);
+    // 先取得当前、可解释的流证据，再处理其内部身份。否则“未拉数”
+    // 会被误排成“去认领一个根本尚未观测到的身份”。
+    const streamsReadyForIdentityWork = summary.sources.every((source) =>
+      source.state === "observation" || source.state === "operational");
+    const identityBlocker = streamsReadyForIdentityWork ? firstIdentityBlocker(summary) : null;
     const effectiveLevel = release?.effectiveLevel ?? runtime.level;
 
     if (release?.activeRelease && !release.activeReleaseCurrent) {
-      const action = actionTarget(product, "safeguard", blocker, dataSources);
+      const action = actionTarget(product, "safeguard", blocker, identityBlocker, dataSources);
       return {
         productId: product.id,
         title: product.title,
@@ -233,7 +273,7 @@ export function buildDataProductWorkQueue(
         stage: "safeguard",
         nextAction: `撤回已失效的 ${release.activeRelease.targetLevel} 放行，再按当前证据重新申请`,
         ...action,
-        bottleneck: blockerLabel(blocker),
+        bottleneck: identityBlocker ? identityBlockerLabel(identityBlocker) : blockerLabel(blocker),
         blockerState: "release",
       };
     }
@@ -241,7 +281,7 @@ export function buildDataProductWorkQueue(
     if (release?.pendingRelease) {
       const current = pendingEvidenceCurrent(product, release);
       const stage = current ? "approval" : "safeguard";
-      const action = actionTarget(product, stage, blocker, dataSources);
+      const action = actionTarget(product, stage, blocker, identityBlocker, dataSources);
       return {
         productId: product.id,
         title: product.title,
@@ -253,7 +293,9 @@ export function buildDataProductWorkQueue(
           ? "由同责任域的另一名审批人复核控制总量、UAT 和回滚方案"
           : "拒绝已失效的申请；修复实时门禁后重新发起",
         ...action,
-        bottleneck: current ? "实时证据与申请范围一致，等待独立会签" : blockerLabel(blocker),
+        bottleneck: current
+          ? "实时证据与申请范围一致，等待独立会签"
+          : identityBlocker ? identityBlockerLabel(identityBlocker) : blockerLabel(blocker),
         blockerState: "release",
       };
     }
@@ -261,7 +303,7 @@ export function buildDataProductWorkQueue(
     if (release?.activeReleaseCurrent && release.activeRelease) {
       const learning = summarizeDataProductLearning(outcomeByProduct.get(product.id));
       const stage = learning.state === "measured" ? "monitor" : "learning";
-      const action = actionTarget(product, stage, blocker, dataSources);
+      const action = actionTarget(product, stage, blocker, identityBlocker, dataSources);
       return {
         productId: product.id,
         title: product.title,
@@ -296,7 +338,7 @@ export function buildDataProductWorkQueue(
     }
 
     if (runtime.level === "A1" && release?.eligibleForRequest !== false) {
-      const action = actionTarget(product, "release_ready", blocker, dataSources);
+      const action = actionTarget(product, "release_ready", blocker, identityBlocker, dataSources);
       return {
         productId: product.id,
         title: product.title,
@@ -311,7 +353,7 @@ export function buildDataProductWorkQueue(
       };
     }
 
-    const action = actionTarget(product, "repair", blocker, dataSources);
+    const action = actionTarget(product, "repair", blocker, identityBlocker, dataSources);
     return {
       productId: product.id,
       title: product.title,
@@ -319,10 +361,10 @@ export function buildDataProductWorkQueue(
       decisionSlaHours: product.decisionSlaHours,
       effectiveLevel,
       stage: "repair",
-      nextAction: repairAction(blocker),
+      nextAction: identityBlocker ? identityRepairAction(identityBlocker) : repairAction(blocker),
       ...action,
-      bottleneck: blockerLabel(blocker),
-      blockerState: blocker?.state ?? "none",
+      bottleneck: identityBlocker ? identityBlockerLabel(identityBlocker) : blockerLabel(blocker),
+      blockerState: identityBlocker ? "identity" : blocker?.state ?? "none",
     };
   });
 

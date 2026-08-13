@@ -108,6 +108,12 @@ describe("三方数据来源证据矩阵", () => {
         rawValue: "6901",
         status: "open",
       });
+      await db.insert(schema.aliases).values({
+        aliasType: "sku_code",
+        scope: "JIANDAOYUN",
+        rawValue: "EXT-SKU-1",
+        targetId: 1,
+      });
 
       const result = await loadDataSourceReadiness(db, {
         env: {} as NodeJS.ProcessEnv,
@@ -144,7 +150,32 @@ describe("三方数据来源证据矩阵", () => {
         sourceAsOfStart: "2026-08-11",
         sourceAsOfEnd: "2026-08-11",
         openIdentityExceptions: 1,
-        observedIdentities: 1,
+        observedIdentities: 2,
+        identityCoverage: expect.arrayContaining([
+          expect.objectContaining({
+            domain: "sku",
+            state: "partial",
+            observed: 2,
+            governed: 1,
+            open: 1,
+            coveragePct: 50,
+          }),
+          expect.objectContaining({
+            domain: "shop",
+            governance: "planned_master",
+            state: "not_implemented",
+          }),
+          expect.objectContaining({
+            domain: "organization",
+            governance: "planned_master",
+            state: "not_implemented",
+          }),
+          expect.objectContaining({
+            domain: "document",
+            governance: "external_reference",
+            state: "missing",
+          }),
+        ]),
       });
       expect(result.find((row) => row.key === "JIANDAOYUN")?.streams).toEqual([
         expect.objectContaining({

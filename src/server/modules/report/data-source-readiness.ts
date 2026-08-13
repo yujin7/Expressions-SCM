@@ -31,6 +31,12 @@ import {
   SCM_EVIDENCE_MAX_AGE_DAYS,
   type ScmEvidenceKey,
 } from "@/lib/scm-evidence";
+import {
+  CROSS_SYSTEM_IDENTITY_LABEL,
+  CROSS_SYSTEM_IDENTITY_ORDER,
+  type CrossSystemIdentityCoverage,
+  type CrossSystemIdentityDomain,
+} from "@/lib/cross-system-identity";
 
 interface ReadDb {
   execute(query: SQL): Promise<unknown>;
@@ -115,6 +121,8 @@ export interface DataSourceReadiness {
   sourceAsOfEnd: string | null;
   openIdentityExceptions: number | null;
   observedIdentities: number | null;
+  /** 按实体维度拆分的身份治理证据；不含任何外部原值。 */
+  identityCoverage: CrossSystemIdentityCoverage[];
   /** 仅 SCM 使用：产品专属受控事实的行数、业务时点与时效；外部来源保持空对象。 */
   scmEvidence: Partial<Record<ScmEvidenceKey, ScmEvidenceSnapshot>>;
   gate: string;
@@ -406,33 +414,191 @@ function streamEvidence(row: StreamRunAggregate, now: Date): DataStreamEvidence 
   };
 }
 
-async function loadIdentityEvidence(
-  db: ReadDb,
-): Promise<Partial<Record<ConnectorIdentityScope, ConnectorIdentityEvidence>>> {
-  const result = await db.execute(sql`
-    WITH scopes(scope) AS (
-      VALUES ('JST'), ('JIANDAOYUN'), ('YONYOU')
-    )
-    SELECT s.scope,
-      (SELECT count(*)::int FROM alias_exceptions ae
-        WHERE ae.scope = s.scope AND ae.status = 'open') AS open_exceptions,
-      (SELECT count(*)::int FROM alias_exceptions ae
-        WHERE ae.scope = s.scope AND ae.status IN ('open', 'ignored'))
-      + (SELECT count(*)::int FROM aliases a WHERE a.scope = s.scope)
-      + (SELECT count(*)::int FROM sku_identifiers si
-          WHERE si.scope = s.scope AND si.active = true) AS observed_identities
-    FROM scopes s
-  `);
-  const evidence: Partial<Record<ConnectorIdentityScope, ConnectorIdentityEvidence>> = {};
-  for (const row of resultRows<Record<string, unknown>>(result)) {
+type GovernedIdentityDomain = Extract<
+  CrossSystemIdentityDomain,
+  "sku" | "warehouse" | "supplier" | "channel"
+>;
+
+interface IdentityEvidenceRow {
+  scope: unknown;
+  alias_type: unknown;
+  raw_value: unknown;
+  evidence_state: unknown;
+}
+
+const IDENTITY_SCOPES = ["JST", "JIANDAOYUN", "YONYOU"] as const;
+
+function governedIdentityDomain(aliasType: string): GovernedIdentityDomain | null {
+  if (aliasType === "sku_code" || aliasType === "sku_barcode") return "sku";
+  if (aliasType === "warehouse") return "warehouse";
+  if (aliasType === "supplier_oem") return "supplier";
+  if (aliasType === "channel") return "channel";
+  return null;
+}
+
+function percent(governed: number, observed: number): number | null {
+  if (observed <= 0) return null;
+  return Math.round((governed / observed) * 1_000) / 10;
+}
+
+function plannedIdentityCoverage(
+  domain: Extract<CrossSystemIdentityDomain, "shop" | "organization">,
+): CrossSystemIdentityCoverage {
+  return {
+    domain,
+    label: CROSS_SYSTEM_IDENTITY_LABEL[domain],
+    governance: "planned_master",
+    state: "not_implemented",
+    observed: 0,
+    governed: 0,
+    open: 0,
+    ignored: 0,
+    coveragePct: null,
+    reason: domain === "shop"
+      ? "当前只保留店铺名/ID 上下文，尚无可区分同平台多店的受控店铺主档与来源映射"
+      : "用友租户/org 只在连接配置中绑定，尚无 SCM 组织主档与外部组织映射",
+    nextAction: domain === "shop"
+      ? "建立平台+店铺 ID 主档，再人工绑定渠道/品牌；禁止把店铺名直接当渠道编码"
+      : "读取用友组织目录后按租户+组织 ID 人工绑定；禁止只按组织名合并",
+  };
+}
+
+function documentIdentityCoverage(governed: number): CrossSystemIdentityCoverage {
+  return {
+    domain: "document",
+    label: CROSS_SYSTEM_IDENTITY_LABEL.document,
+    governance: "external_reference",
+    state: governed > 0 ? "partial" : "missing",
+    observed: governed,
+    governed,
+    open: 0,
+    ignored: 0,
+    coveragePct: governed > 0 ? 100 : null,
+    reason: governed > 0
+      ? `已登记 ${governed} 个外部单号对照，但尚无“逐流候选单号总量 + 未对照异常队列”，不能证明全量覆盖`
+      : "尚无当前来源作用域的外部单号对照证据",
+    nextAction: "为订单、采购、入库、退货和凭证逐流登记“来源+单据类型+单号”候选总量、精确对照与未匹配队列",
+  };
+}
+
+async function loadIdentityEvidence(db: ReadDb): Promise<{
+  connectorEvidence: Partial<Record<ConnectorIdentityScope, ConnectorIdentityEvidence>>;
+  coverage: Partial<Record<ConnectorIdentityScope, CrossSystemIdentityCoverage[]>>;
+}> {
+  const [identityResult, documentResult] = await Promise.all([
+    db.execute(sql`
+      SELECT scope, alias_type, raw_value, 'governed'::text AS evidence_state
+      FROM aliases
+      WHERE scope IN ('JST', 'JIANDAOYUN', 'YONYOU')
+        AND alias_type IN ('sku_code', 'sku_barcode', 'warehouse', 'supplier_oem', 'channel')
+      UNION ALL
+      SELECT scope,
+        CASE WHEN kind = 'gtin' THEN 'sku_barcode' ELSE 'sku_code' END AS alias_type,
+        value AS raw_value, 'governed'::text AS evidence_state
+      FROM sku_identifiers
+      WHERE scope IN ('JST', 'JIANDAOYUN', 'YONYOU') AND active = true
+      UNION ALL
+      SELECT scope, alias_type, raw_value, status AS evidence_state
+      FROM alias_exceptions
+      WHERE scope IN ('JST', 'JIANDAOYUN', 'YONYOU')
+        AND status IN ('open', 'ignored')
+        AND alias_type IN ('sku_code', 'sku_barcode', 'warehouse', 'supplier_oem', 'channel')
+    `),
+    db.execute(sql`
+      SELECT CASE
+        WHEN lower(system) IN ('jst', 'jushuitan') THEN 'JST'
+        WHEN lower(system) IN ('yy', 'yonyou', 'yonbip') THEN 'YONYOU'
+        WHEN lower(system) IN ('jdy', 'jiandaoyun') THEN 'JIANDAOYUN'
+        ELSE NULL
+      END AS scope,
+      count(DISTINCT doc_type || chr(31) || ref_no)::int AS governed
+      FROM external_doc_refs
+      GROUP BY 1
+    `),
+  ]);
+
+  const stateByScope = new Map<ConnectorIdentityScope, Map<string, "governed" | "open" | "ignored">>();
+  const domainByKey = new Map<string, GovernedIdentityDomain>();
+  const priority = { ignored: 0, open: 1, governed: 2 } as const;
+  for (const row of resultRows<IdentityEvidenceRow>(identityResult)) {
     const scope = String(row.scope) as ConnectorIdentityScope;
-    if (!(["JST", "JIANDAOYUN", "YONYOU"] as const).includes(scope)) continue;
-    evidence[scope] = {
-      openExceptions: intValue(row.open_exceptions),
-      observedIdentities: intValue(row.observed_identities),
+    if (!IDENTITY_SCOPES.includes(scope)) continue;
+    const aliasType = String(row.alias_type);
+    const domain = governedIdentityDomain(aliasType);
+    const rawValue = String(row.raw_value ?? "").trim();
+    const rawEvidenceState = String(row.evidence_state);
+    if (
+      !domain
+      || !rawValue
+      || !(["governed", "open", "ignored"] as const).includes(
+        rawEvidenceState as "governed" | "open" | "ignored",
+      )
+    ) continue;
+    const evidenceState = rawEvidenceState as "governed" | "open" | "ignored";
+    const key = `${aliasType}\u0000${rawValue}`;
+    const states = stateByScope.get(scope) ?? new Map<string, "governed" | "open" | "ignored">();
+    const existing = states.get(key);
+    if (!existing || priority[evidenceState] > priority[existing]) states.set(key, evidenceState);
+    stateByScope.set(scope, states);
+    domainByKey.set(`${scope}\u0000${key}`, domain);
+  }
+
+  const documentCounts = new Map<ConnectorIdentityScope, number>();
+  for (const row of resultRows<Record<string, unknown>>(documentResult)) {
+    const scope = String(row.scope) as ConnectorIdentityScope;
+    if (IDENTITY_SCOPES.includes(scope)) documentCounts.set(scope, intValue(row.governed));
+  }
+
+  const connectorEvidence: Partial<Record<ConnectorIdentityScope, ConnectorIdentityEvidence>> = {};
+  const coverage: Partial<Record<ConnectorIdentityScope, CrossSystemIdentityCoverage[]>> = {};
+  for (const scope of IDENTITY_SCOPES) {
+    const states = stateByScope.get(scope) ?? new Map();
+    const governedCoverage = (["sku", "warehouse", "supplier", "channel"] as const).map((domain) => {
+      const domainStates = [...states.entries()]
+        .filter(([key]) => domainByKey.get(`${scope}\u0000${key}`) === domain)
+        .map(([, state]) => state);
+      const observed = domainStates.length;
+      const governed = domainStates.filter((state) => state === "governed").length;
+      const open = domainStates.filter((state) => state === "open").length;
+      const ignored = domainStates.filter((state) => state === "ignored").length;
+      return {
+        domain,
+        label: CROSS_SYSTEM_IDENTITY_LABEL[domain],
+        governance: "scoped_alias" as const,
+        state: observed === 0 ? "missing" as const
+          : open > 0 || ignored > 0 || governed < observed ? "partial" as const
+            : "ready" as const,
+        observed,
+        governed,
+        open,
+        ignored,
+        coveragePct: percent(governed, observed),
+        reason: observed === 0
+          ? "尚无该来源作用域的身份候选或已认领证据"
+          : open > 0 || ignored > 0
+            ? `已精确认领 ${governed}/${observed}；待认领 ${open}，已忽略 ${ignored}`
+            : `当前作用域 ${observed} 个身份候选已全部精确认领`,
+        nextAction: open > 0
+          ? `在 ${scope} 作用域人工裁决 ${open} 个开放异常，再重跑对应数据流`
+          : observed === 0
+            ? "先运行受控读取契约并将外部编码进入作用域认领队列"
+            : "持续监测新身份、冲突与覆盖率回退",
+      } satisfies CrossSystemIdentityCoverage;
+    });
+    const rows = [
+      ...governedCoverage,
+      plannedIdentityCoverage("shop"),
+      plannedIdentityCoverage("organization"),
+      documentIdentityCoverage(documentCounts.get(scope) ?? 0),
+    ].sort((left, right) =>
+      CROSS_SYSTEM_IDENTITY_ORDER.indexOf(left.domain) - CROSS_SYSTEM_IDENTITY_ORDER.indexOf(right.domain));
+    coverage[scope] = rows;
+    connectorEvidence[scope] = {
+      openExceptions: governedCoverage.reduce((sum, item) => sum + item.open, 0),
+      observedIdentities: governedCoverage.reduce((sum, item) => sum + item.observed, 0),
     };
   }
-  return evidence;
+  return { connectorEvidence, coverage };
 }
 
 async function loadRunEvidence(db: ReadDb, now: Date) {
@@ -550,6 +716,7 @@ function connectorSource(
   latest: LatestRunAggregate | undefined,
   streams: DataStreamEvidence[],
   selectedStreamKeys: string[],
+  identityCoverage: CrossSystemIdentityCoverage[],
 ): DataSourceReadiness {
   const successfulStreams = intValue(success?.successful_streams);
   const latestFailedStreams = intValue(latest?.latest_failed_streams);
@@ -594,6 +761,7 @@ function connectorSource(
     sourceAsOfEnd: dateValue(success?.source_as_of_end),
     openIdentityExceptions: readiness.openScopedAliasExceptions,
     observedIdentities: readiness.observedScopedIdentities,
+    identityCoverage,
     scmEvidence: {},
     gate: state === "operational"
       ? "当前连接器与身份门禁已通过；具体数据产品仍须满足各自控制总量和业务口径。"
@@ -664,7 +832,7 @@ export async function loadDataSourceReadiness(
   const connectorRows = getConnectorReadiness(
     options.env ?? process.env,
     now,
-    identityEvidence,
+    identityEvidence.connectorEvidence,
   );
   const byKey = new Map(connectorRows.map((row) => [row.key, row]));
   const [scm = {}] = resultRows<Record<string, unknown>>(scmResult);
@@ -716,6 +884,7 @@ export async function loadDataSourceReadiness(
     sourceAsOfEnd: null,
     openIdentityExceptions: null,
     observedIdentities: skuCount,
+    identityCoverage: [],
     scmEvidence,
     gate: "主档、库存余额与只追加库存流水受 SCM 事务、审计和 posting 门禁约束。",
     nextAction: "继续修复未分批、来源不明与外部身份覆盖，不允许外部观察绕过 posting。",
@@ -760,6 +929,7 @@ export async function loadDataSourceReadiness(
           sourceAsOfEnd: null,
           openIdentityExceptions: null,
           observedIdentities: null,
+          identityCoverage: identityEvidence.coverage[source] ?? [],
           scmEvidence: {},
           gate: "连接器未登记。",
           nextAction: "先登记显式只读契约和安全边界。",
@@ -772,6 +942,7 @@ export async function loadDataSourceReadiness(
         runEvidence.latest.get(connector === "yy" ? "yonyou" : connector),
         runEvidence.streams.get(connector === "yy" ? "yonyou" : connector) ?? [],
         selectedExternalStreamKeys(source, options.env ?? process.env),
+        identityEvidence.coverage[source] ?? [],
       );
     }),
   ];

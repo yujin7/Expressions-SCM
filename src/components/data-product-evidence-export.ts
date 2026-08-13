@@ -55,6 +55,8 @@ const HEADERS = [
   "采纳率%", "误报率%", "平均处理分钟", "实际节省工时", "现金影响可见", "实际现金影响CNY",
   "最新结果决策编号", "最新结果业务日", "最新业务决定", "最新真实结果",
   "辅助历史摘要", "辅助历史期间", "辅助身份认领覆盖",
+  "身份维度", "身份治理方式", "身份状态", "身份候选数", "身份已认领数",
+  "身份开放异常数", "身份忽略数", "身份下一步",
 ];
 
 const OUTCOME_DECISION_LABEL = {
@@ -117,6 +119,7 @@ export function buildDataProductEvidenceExport(
       },
       stream,
       usage: "放行依赖",
+      identity: null,
     })));
     const supportingRows = evaluateProductSupportingEvidence(product, dataSources).map((stream) => {
       const readiness = dataSources.find((source) => source.key === stream.source);
@@ -128,12 +131,26 @@ export function buildDataProductEvidenceExport(
         },
         stream,
         usage: "辅助证据（不参与放行）",
+        identity: null,
       };
     });
-    return [...requiredRows, ...supportingRows].map(({ source, stream, usage }) => {
-      const evidence = stream.evidence;
-      const scmEvidence = stream.scmEvidence;
-      const observation = usage === "辅助证据（不参与放行）" && source.source === "JIANDAOYUN"
+    const identityRows = summary.identityGates.map((identity) => {
+      const readiness = dataSources.find((source) => source.key === identity.source);
+      return {
+        source: {
+          source: identity.source,
+          state: readiness?.state ?? "missing",
+          configurationReady: readiness?.configurationReady === true,
+        },
+        stream: null,
+        usage: "身份门禁",
+        identity,
+      };
+    });
+    return [...requiredRows, ...supportingRows, ...identityRows].map(({ source, stream, usage, identity }) => {
+      const evidence = stream?.evidence ?? null;
+      const scmEvidence = stream?.scmEvidence;
+      const observation = stream && usage === "辅助证据（不参与放行）" && source.source === "JIANDAOYUN"
         ? observationByStream.get(stream.stream as JiandaoyunSupportingObservation["stream"])
         : undefined;
       const observationPeriod = observation?.businessDateFrom && observation.businessDateThrough
@@ -143,7 +160,7 @@ export function buildDataProductEvidenceExport(
         `${item.label} ${item.governedMatches}/${item.distinctValues}（待认领 ${item.openValues}，已入队 ${item.queuedValues}，未入队 ${item.unqueuedValues}）`
       ).join(" · ") || null;
       return [
-        "data_product_stream_evidence",
+        identity ? "data_product_identity_evidence" : "data_product_stream_evidence",
         generatedAt,
         product.id,
         product.title,
@@ -174,10 +191,10 @@ export function buildDataProductEvidenceExport(
         source.source,
         source.state,
         source.configurationReady ? "是" : "否",
-        dataProductStreamLabel(stream.source, stream.stream),
-        stream.stream,
-        stream.state,
-        stream.reason,
+        identity?.label ?? (stream ? dataProductStreamLabel(stream.source, stream.stream) : null),
+        identity ? `identity:${identity.domain}` : stream?.stream ?? null,
+        identity?.state ?? stream?.state ?? null,
+        identity?.reason ?? stream?.reason ?? null,
         evidence?.sourceAsOf ?? scmEvidence?.asOf ?? null,
         evidence?.lastSuccessAt ?? null,
         evidence?.sourceRows ?? scmEvidence?.rows ?? 0,
@@ -216,6 +233,14 @@ export function buildDataProductEvidenceExport(
         observation?.summary ?? null,
         observationPeriod,
         observationIdentity,
+        identity?.label ?? null,
+        identity?.evidence?.governance ?? null,
+        identity?.state ?? null,
+        identity?.evidence?.observed ?? null,
+        identity?.evidence?.governed ?? null,
+        identity?.evidence?.open ?? null,
+        identity?.evidence?.ignored ?? null,
+        identity?.nextAction ?? null,
       ];
     });
   });

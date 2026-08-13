@@ -6,6 +6,7 @@ import type { DataSourceReadiness, DataStreamEvidence } from "@/server/modules/r
 import type { DataProductOutcomeReadiness } from "@/server/modules/report/data-product-outcome";
 import type { DataProductReleaseReadiness } from "@/server/modules/report/data-product-release";
 import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
+import { CROSS_SYSTEM_IDENTITY_LABEL } from "@/lib/cross-system-identity";
 
 function stream(
   key: string,
@@ -59,6 +60,31 @@ function source(key: "JIANDAOYUN" | "JST" | "YONYOU", row: DataStreamEvidence): 
     sourceAsOfEnd: row.sourceAsOf,
     openIdentityExceptions: 0,
     observedIdentities: 12,
+    identityCoverage: key === "JST" ? [{
+      domain: "warehouse",
+      label: CROSS_SYSTEM_IDENTITY_LABEL.warehouse,
+      governance: "scoped_alias",
+      state: "ready",
+      observed: 5,
+      governed: 5,
+      open: 0,
+      ignored: 0,
+      coveragePct: 100,
+      reason: "已精确认领",
+      nextAction: "持续监测",
+    }] : key === "YONYOU" ? [{
+      domain: "organization",
+      label: CROSS_SYSTEM_IDENTITY_LABEL.organization,
+      governance: "planned_master",
+      state: "not_implemented",
+      observed: 0,
+      governed: 0,
+      open: 0,
+      ignored: 0,
+      coveragePct: null,
+      reason: "组织主档待建",
+      nextAction: "按租户+组织 ID 建立映射",
+    }] : [],
     scmEvidence: {},
     gate: "gate",
     nextAction: "next",
@@ -81,6 +107,7 @@ const product: DataProductDefinition = {
   sources: ["JST", "YONYOU"],
   requiredScmEvidence: [],
   requiredStreams: { JST: ["sales"], YONYOU: ["voucher"] },
+  requiredIdentities: { JST: ["warehouse"], YONYOU: ["organization"] },
   supportingStreams: { JIANDAOYUN: ["inventory-count-observation"] },
   targetAuthority: "financial",
   releaseGate: "test",
@@ -204,7 +231,7 @@ describe("三方数据产品决策证据导出", () => {
     ], [release], [outcome], new Date("2026-08-13T02:03:04.000Z"), [supportingObservation]);
 
     expect(result.filename).toBe("三方数据-产品决策证据-2026-08-13T02-03-04-000Z.csv");
-    expect(result.rows).toHaveLength(3);
+    expect(result.rows).toHaveLength(5);
     const asObjects = result.rows.map((row) => Object.fromEntries(
       result.headers.map((header, index) => [header, row[index]]),
     ));
@@ -248,6 +275,25 @@ describe("三方数据产品决策证据导出", () => {
         辅助历史摘要: "盘点单 2单 · 盘亏数量 3",
         辅助历史期间: "2024-07-20 至 2024-07-22",
         辅助身份认领覆盖: "仓库身份 0/2（待认领 2，已入队 1，未入队 1）",
+      }),
+      expect.objectContaining({
+        记录类型: "data_product_identity_evidence",
+        证据用途: "身份门禁",
+        来源技术键: "JST",
+        数据流技术键: "identity:warehouse",
+        身份维度: "仓库",
+        身份治理方式: "scoped_alias",
+        身份状态: "ready",
+        身份候选数: 5,
+        身份已认领数: 5,
+      }),
+      expect.objectContaining({
+        证据用途: "身份门禁",
+        来源技术键: "YONYOU",
+        数据流技术键: "identity:organization",
+        身份维度: "组织",
+        身份状态: "not_implemented",
+        身份下一步: "按租户+组织 ID 建立映射",
       }),
     ]);
     expect(JSON.stringify(result)).not.toContain("must-not-export");

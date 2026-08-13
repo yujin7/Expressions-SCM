@@ -7,6 +7,7 @@ import {
 } from "@/components/data-product-source-evidence";
 import type { DataProductDefinition } from "@/components/data-products";
 import type { DataSourceReadiness } from "@/server/modules/report/data-source-readiness";
+import { CROSS_SYSTEM_IDENTITY_LABEL } from "@/lib/cross-system-identity";
 
 function stream(
   key: string,
@@ -63,6 +64,7 @@ function source(
     sourceAsOfEnd: null,
     openIdentityExceptions: 0,
     observedIdentities: 1,
+    identityCoverage: [],
     scmEvidence: key === "SCM" ? {
       "sku-master": {
         rows: 1,
@@ -93,11 +95,54 @@ const product: DataProductDefinition = {
   sources: ["SCM", "JST"],
   requiredScmEvidence: ["sku-master"],
   requiredStreams: { JST: ["outbound-sales-daily"] },
+  requiredIdentities: {},
   targetAuthority: "operational",
   releaseGate: "test",
 };
 
 describe("数据产品所需流证据", () => {
+  it("数据流全部当前时，缺失或部分统一的身份仍必须保持 A0", () => {
+    const identityProduct = {
+      ...product,
+      requiredIdentities: { JST: ["warehouse"] },
+    } satisfies DataProductDefinition;
+    const jst = source("JST", "observation", ["outbound-sales-daily"]);
+    jst.identityCoverage = [{
+      domain: "warehouse",
+      label: CROSS_SYSTEM_IDENTITY_LABEL.warehouse,
+      governance: "scoped_alias",
+      state: "partial",
+      observed: 10,
+      governed: 8,
+      open: 2,
+      ignored: 0,
+      coveragePct: 80,
+      reason: "仍有 2 个仓库待认领",
+      nextAction: "人工认领后重跑",
+    }];
+
+    const summary = evaluateProductSourceEvidence(identityProduct, [
+      source("SCM", "operational", []),
+      jst,
+    ]);
+    expect(summary).toMatchObject({
+      partialIdentities: 1,
+      missingIdentities: 0,
+      unimplementedIdentities: 0,
+      identityGates: [expect.objectContaining({ source: "JST", domain: "warehouse", state: "partial" })],
+    });
+    expect(currentProductAutomation(summary)).toMatchObject({
+      level: "A0",
+      reason: expect.stringContaining("仓库」身份门禁未通过"),
+    });
+
+    jst.identityCoverage[0] = { ...jst.identityCoverage[0], state: "ready", governed: 10, open: 0, coveragePct: 100 };
+    expect(currentProductAutomation(evaluateProductSourceEvidence(identityProduct, [
+      source("SCM", "operational", []),
+      jst,
+    ])).level).toBe("A1");
+  });
+
   it("辅助证据可用于产品内回查，但不会改变必需流门禁或自动化级别", () => {
     const withSupporting = {
       ...product,

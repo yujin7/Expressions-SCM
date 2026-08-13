@@ -10,6 +10,7 @@ import {
 } from "@/components/data-products";
 import { METRICS } from "@/components/metrics";
 import { SCM_EVIDENCE_LABEL } from "@/lib/scm-evidence";
+import { CROSS_SYSTEM_IDENTITY_LABEL } from "@/lib/cross-system-identity";
 
 describe("三方数据产品目录", () => {
   it("保持十一个唯一、可执行的目标契约", () => {
@@ -47,6 +48,16 @@ describe("三方数据产品目录", () => {
         expect(DATA_PRODUCT_SOURCE_LABEL[source]).toBeTruthy();
         if (source !== "SCM") {
           expect(product.requiredStreams[source]?.length, `${product.id}:${source}`).toBeGreaterThan(0);
+          expect(product.requiredIdentities[source]?.length, `${product.id}:${source}:identity`)
+            .toBeGreaterThan(0);
+        }
+      }
+      for (const [source, identities] of Object.entries(product.requiredIdentities)) {
+        expect(product.sources).toContain(source);
+        expect(source).not.toBe("SCM");
+        expect(new Set(identities).size).toBe(identities.length);
+        for (const identity of identities) {
+          expect(CROSS_SYSTEM_IDENTITY_LABEL[identity], `${product.id}:${source}:${identity}`).toBeTruthy();
         }
       }
     }
