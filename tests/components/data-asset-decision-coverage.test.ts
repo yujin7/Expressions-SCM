@@ -111,6 +111,26 @@ function approved(productId: string): DataProductReleaseReadiness {
 }
 
 describe("三方数据资产到业务决策覆盖", () => {
+  it("已演练但未选入当前同步的流不计入可解释资产", () => {
+    const jdy = source("JIANDAOYUN", [stream("platform-fee-observation", {
+      selectedForSync: false,
+      releaseBlocked: true,
+    })]);
+    jdy.selectedStreamKeys = [];
+    jdy.availableStreamKeys = ["platform-fee-observation"];
+
+    const portfolio = buildDataAssetDecisionPortfolio([
+      product("margin", "净毛利桥", 72, { JIANDAOYUN: ["platform-fee-observation"] }),
+    ], [jdy]);
+
+    expect(portfolio.rows[0]).toMatchObject({
+      implementationState: "implemented",
+      state: "degraded",
+      explanationUsable: false,
+      stateReason: expect.stringContaining("当前部署未显式选中"),
+    });
+  });
+
   it("去重计算一条流影响的多个产品，并保留最短已登记 SLA", () => {
     const products = [
       product("p1", "库存决策", 4, { JST: ["inventory-total-delta"] }),
@@ -295,7 +315,7 @@ describe("三方数据资产到业务决策覆盖", () => {
     });
   });
 
-  it("机械列出当前目录中仍只有目标定义的五条三方数据流", () => {
+  it("机械列出当前目录中仍只有目标定义的四条三方数据流", () => {
     const jdy = source("JIANDAOYUN", []);
     jdy.availableStreamKeys = [
       "tmall-sku-crosswalk-observation",
@@ -312,6 +332,7 @@ describe("三方数据资产到业务决策覆盖", () => {
       "warehouse-transfer-observation",
       "inventory-count-observation",
       "sample-management-observation",
+      "platform-fee-observation",
     ];
     const jst = source("JST", []);
     jst.availableStreamKeys = [
@@ -338,12 +359,11 @@ describe("三方数据资产到业务决策覆盖", () => {
       .map((row) => row.key)
       .sort()).toEqual([
       "JIANDAOYUN:npd-milestone-observation",
-      "JIANDAOYUN:platform-fee-observation",
       "JST:orders-daily",
       "JST:returns-daily",
       "YONYOU:yonbip-finance-receivables-settlement",
     ]);
-    expect(portfolio.plannedAssetCount).toBe(5);
+    expect(portfolio.plannedAssetCount).toBe(4);
   });
 
   it("只有近期运行时间但缺源业务截止日时不计入当前或可解释覆盖", () => {

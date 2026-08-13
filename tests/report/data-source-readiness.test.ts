@@ -128,6 +128,7 @@ describe("三方数据来源证据矩阵", () => {
       expect(result.find((row) => row.key === "JIANDAOYUN")).toMatchObject({
         state: "observation",
         configurationReady: false,
+        selectedStreamKeys: [],
         availableStreamKeys: expect.arrayContaining([
           "tmall-sku-crosswalk-observation",
           "tmall-sku-sales-observation",
@@ -153,6 +154,7 @@ describe("三方数据来源证据矩阵", () => {
           sourceRows: 10,
           rejectedRows: 1,
           releaseBlocked: true,
+          selectedForSync: false,
           freshness: "current",
           freshnessMaxAgeDays: 45,
           businessAgeDays: 2,
@@ -175,6 +177,7 @@ describe("三方数据来源证据矩阵", () => {
         configurationReady: false,
         contractSelectionState: "not_required",
         selectedContractCount: 0,
+        selectedStreamKeys: ["outbound-sales-daily"],
         availableStreamKeys: [
           "inbound-receipts-daily",
           "inventory-total-delta",
@@ -210,7 +213,7 @@ describe("三方数据来源证据矩阵", () => {
         successfulStreams: 1,
         successfulStreamKeys: ["yonbip-digitalmodel-vendor-list"],
       });
-      expect(result.find((row) => row.key === "JIANDAOYUN")?.availableStreamKeys).toHaveLength(14);
+      expect(result.find((row) => row.key === "JIANDAOYUN")?.availableStreamKeys).toHaveLength(15);
       expect(result.find((row) => row.key === "YONYOU")?.availableStreamKeys).toHaveLength(8);
       expect(result.find((row) => row.key === "YONYOU")?.streams).toEqual([
         expect.objectContaining({

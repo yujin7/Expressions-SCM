@@ -93,6 +93,7 @@ const IMPLEMENTATION_ORDER: Record<DataAssetImplementationState, number> = {
 
 function usableForExplanation(evidence: DataStreamEvidence | null): boolean {
   return evidence != null
+    && evidence.selectedForSync !== false
     && evidence.lastSuccessAt != null
     && evidence.latestStatus === "succeeded"
     && evidence.freshness === "current"
@@ -120,6 +121,14 @@ function assetState(
     return evidence?.lastSuccessAt
       ? { state: "degraded", reason: "历史运行仍可追溯，但当前代码没有登记这条受控读取契约，不能继续用于决策" }
       : { state: "missing", reason: "数据产品已声明需要该流，但当前代码尚未实现受控读取契约" };
+  }
+  if (evidence?.selectedForSync === false) {
+    return {
+      state: evidence.lastSuccessAt ? "degraded" : "missing",
+      reason: evidence.lastSuccessAt
+        ? "历史/手工演练证据仍可追溯，但当前部署未显式选中该流，不能用于持续决策"
+        : "读取契约已实现，但当前部署未显式选中该流",
+    };
   }
   if (evidence?.lastSuccessAt && sourceRow?.configurationReady !== true) {
     return { state: "degraded", reason: "历史批次仍可追溯，但当前凭据、契约或连接范围已失效，不能继续用于决策" };

@@ -97,6 +97,25 @@ const product: DataProductDefinition = {
 };
 
 describe("数据产品所需流证据", () => {
+  it("历史手工演练成功不能代替当前部署契约选择", () => {
+    const scm = source("SCM", "operational", []);
+    const jst = source("JST", "observation", ["outbound-sales-daily"]);
+    jst.selectedStreamKeys = [];
+    jst.streams = jst.streams.map((item) => ({ ...item, selectedForSync: false }));
+
+    const result = evaluateProductSourceEvidence(product, [scm, jst]);
+
+    expect(result.sources.find((item) => item.source === "JST")).toMatchObject({
+      state: "degraded",
+      degradedStreams: ["outbound-sales-daily"],
+      streams: [expect.objectContaining({
+        state: "degraded",
+        reason: expect.stringContaining("当前部署未显式选中"),
+      })],
+    });
+    expect(currentProductAutomation(result).level).toBe("A0");
+  });
+
   it("不用同连接器的无关成功流代替产品所需流", () => {
     const result = evaluateProductSourceEvidence(product, [
       source("SCM", "operational", []),

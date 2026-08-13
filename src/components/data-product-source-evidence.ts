@@ -96,6 +96,15 @@ export function evaluateExternalStreamEvidence(
 ): ProductStreamEvidence {
   const evidence = row?.streams?.find((item) => item.stream === stream) ?? null;
   if (!evidence) {
+    if (row?.selectedStreamKeys != null && !row.selectedStreamKeys.includes(stream)) {
+      return {
+        source,
+        stream,
+        state: "missing",
+        reason: "读取契约已实现，但当前部署未显式选中该流",
+        evidence: null,
+      };
+    }
     const legacySuccess = row?.successfulStreamKeys?.includes(stream) ?? false;
     return legacySuccess
       ? {
@@ -106,6 +115,17 @@ export function evaluateExternalStreamEvidence(
           evidence: null,
         }
       : { source, stream, state: "missing", reason: "尚无成功运行证据", evidence: null };
+  }
+  if (evidence.selectedForSync === false) {
+    return {
+      source,
+      stream,
+      state: evidence.lastSuccessAt ? "degraded" : "missing",
+      reason: evidence.lastSuccessAt
+        ? "历史/手工演练证据仍可追溯，但当前部署未显式选中该流，不能用于持续决策"
+        : "当前部署未显式选中该流",
+      evidence,
+    };
   }
   if (!evidence.lastSuccessAt) {
     return {
@@ -280,6 +300,7 @@ export function evaluateProductSourceEvidence(
 function streamSafeForExplanation(row: ProductStreamEvidence): boolean {
   const evidence = row.evidence;
   return evidence != null
+    && evidence.selectedForSync !== false
     && evidence.lastSuccessAt != null
     && evidence.freshness === "current"
     && evidence.latestStatus === "succeeded"

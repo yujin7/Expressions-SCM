@@ -214,6 +214,46 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
       field("successRefundAmount", "success_refund_amount"),
     ],
   },
+  /*
+   * 天猫费用项目汇总观察（2026-08-14 加入）。
+   *
+   * 实时只读画像：12,624 行，统计日期 2026-01-01～2026-08-12；日期、店铺、
+   * 计费金额和支付金额均无缺失。753 行负数是冲销/退回语义，必须原样保留，
+   * 禁止取绝对值或自动抵消。
+   *
+   * 这是「天猫 × 店铺 × 费用项」的渠道级费用观察，不含 SKU 归属。
+   * 因此它可以支撑净毛利桥的渠道费用侧，但不允许按销量或名称自动分摊到 SKU，
+   * 也不能代表拼多多/唯品会/其他渠道。源表同一业务维度可以出现多条汇总行，
+   * 故只用简道云不变 `_id` 作源记录身份，不伪造业务唯一键。
+   */
+  {
+    key: "platform-fee-observation",
+    label: "数据中台/天猫账单费用项目汇总（仅天猫）",
+    appId: "699ebeac318154b4f6d3dda6",
+    entryId: "69bca8af197da6e6ce36cbd5",
+    targetTable: "jdy_tmall_platform_fee_observation",
+    freshnessMaxAgeDays: 7,
+    numericControls: [
+      { target: "billingAmount", scale: 2 },
+      { target: "paidAmount", scale: 2 },
+      { target: "mainLineCount", scale: 4 },
+    ],
+    fields: [
+      field("statisticalDate", "statistical_date"),
+      field("shopName", "shop_name"),
+      field("feeItem", "fee_item"),
+      field("billingType", "billing_type"),
+      field("billingCurrency", "billing_currency"),
+      field("billingAmount", "billing_amount"),
+      field("paidCurrency", "paid_currency"),
+      field("paidAmount", "paid_amount"),
+      field("serviceProduct", "service_product"),
+      field("logisticsProduct", "logistics_product"),
+      field("mainLineCount", "main_single_items_num"),
+      field("deductionType", "deduction_type"),
+      field("expenseType", "expense_type"),
+    ],
+  },
   {
     key: "product-master-observation",
     label: "进销存/产品信息",

@@ -390,7 +390,7 @@ export const CONNECTORS: Connector[] = [
       "https://hc.jiandaoyun.com/open/14216",
       "https://hc.jiandaoyun.com/open/14220",
     ],
-    blocker: "目录与 14 条显式观察契约（9 条核心供应链 + 5 条现行电商）已就绪；数据只进入 evidence/staging。需轮换已在聊天暴露的密钥、完成高价值身份认领与源端条码补齐、控制总量/重复视图/UAT，再记录时间与非秘密证据编号",
+    blocker: "目录与 15 条显式观察契约（14 条现行已选 + 1 条天猫费用候选）已就绪；数据只进入 evidence/staging。天猫费用仍需财务控制总量/UAT 后才能显式启用；其余仍需轮换已在聊天暴露的密钥、完成高价值身份认领与源端条码补齐、重复视图/UAT，再记录时间与非秘密证据编号",
     isConfigured(env = process.env) {
       try {
         return jiandaoyunConfigFromEnv(env) !== null && jiandaoyunSyncActorId(env) !== null;

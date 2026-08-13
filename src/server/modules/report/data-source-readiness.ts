@@ -13,8 +13,16 @@ import {
   type ConnectorIdentityScope,
   type ConnectorReadiness,
 } from "@/server/integrations/connector";
-import { JIANDAOYUN_FORM_CONTRACTS } from "@/server/integrations/jiandaoyun-contracts";
-import { JST_GOVERNED_OBSERVATION_CONTRACTS } from "@/server/integrations/jst-observation-sync";
+import {
+  configuredJiandaoyunContracts,
+  JIANDAOYUN_FORM_CONTRACTS,
+} from "@/server/integrations/jiandaoyun-contracts";
+import { jstInventorySyncEnabled } from "@/server/integrations/jst-inventory-sync";
+import {
+  configuredJstGovernedObservationContracts,
+  JST_GOVERNED_OBSERVATION_CONTRACTS,
+} from "@/server/integrations/jst-observation-sync";
+import { parseYonyouApprovedApiContracts } from "@/server/integrations/yonyou";
 import {
   YONYOU_READ_CONTRACTS,
   yonyouContractStreamKey,
@@ -63,6 +71,8 @@ export interface DataStreamEvidence {
   businessAgeDays: number | null;
   pipelineAgeHours: number | null;
   freshness: DataStreamFreshness;
+  /** 当前部署是否显式选中该流；历史手工演练成功不能代替这道门。 */
+  selectedForSync?: boolean;
   /** 仅在同步运行固化了受控聚合质量摘要时提供；绝不包含原始业务值。 */
   quality?: DataStreamQualityEvidence | null;
 }
@@ -87,6 +97,8 @@ export interface DataSourceReadiness {
   configurationBinding: string;
   contractSelectionState: ConnectorContractSelectionState;
   selectedContractCount: number;
+  /** 当前部署显式选中的技术流键；与已实现目录、历史成功流分开。 */
+  selectedStreamKeys?: string[];
   /** 当前代码已经实现并受控登记的逐流读取能力；与是否获授权、是否跑成功分开。 */
   availableStreamKeys?: string[];
   successfulStreams: number;
@@ -322,6 +334,29 @@ const AVAILABLE_EXTERNAL_STREAMS: Record<Exclude<DataSourceKey, "SCM">, string[]
   YONYOU: YONYOU_READ_CONTRACTS.map((contract) => yonyouContractStreamKey(contract.path)).sort(),
 };
 
+function selectedExternalStreamKeys(
+  source: Exclude<DataSourceKey, "SCM">,
+  env: NodeJS.ProcessEnv,
+): string[] {
+  try {
+    if (source === "JIANDAOYUN") {
+      return configuredJiandaoyunContracts(env).map((contract) => contract.key).sort();
+    }
+    if (source === "JST") {
+      return [
+        "outbound-sales-daily",
+        ...(jstInventorySyncEnabled(env) ? ["inventory-total-delta"] : []),
+        ...configuredJstGovernedObservationContracts(env),
+      ].sort();
+    }
+    const paths = parseYonyouApprovedApiContracts(env.YY_APPROVED_API_CONTRACTS) ?? [];
+    return paths.map(yonyouContractStreamKey).sort();
+  } catch {
+    // 非法契约选择已由连接器就绪度标记为 invalid；这里必须 fail closed。
+    return [];
+  }
+}
+
 function streamEvidence(row: StreamRunAggregate, now: Date): DataStreamEvidence {
   const scope = objectValue(row.request_scope);
   const quality = streamQualityEvidence(scope);
@@ -514,6 +549,7 @@ function connectorSource(
   success: SourceRunAggregate | undefined,
   latest: LatestRunAggregate | undefined,
   streams: DataStreamEvidence[],
+  selectedStreamKeys: string[],
 ): DataSourceReadiness {
   const successfulStreams = intValue(success?.successful_streams);
   const latestFailedStreams = intValue(latest?.latest_failed_streams);
@@ -539,10 +575,14 @@ function connectorSource(
     configurationBinding: readiness.expectedLiveVerificationBinding ?? `unbound:${key}`,
     contractSelectionState: readiness.contractSelectionState,
     selectedContractCount: readiness.selectedContractCount,
+    selectedStreamKeys,
     availableStreamKeys: key === "SCM" ? [] : AVAILABLE_EXTERNAL_STREAMS[key],
     successfulStreams,
     successfulStreamKeys: streamKeys(success?.successful_stream_keys),
-    streams,
+    streams: streams.map((stream) => ({
+      ...stream,
+      selectedForSync: selectedStreamKeys.includes(stream.stream),
+    })),
     latestFailedStreams,
     latestRunningStreams,
     sourceRows: intValue(success?.source_rows),
@@ -660,6 +700,7 @@ export async function loadDataSourceReadiness(
     configurationBinding: "scm-controlled-facts/v1",
     contractSelectionState: "not_required",
     selectedContractCount: 0,
+    selectedStreamKeys: [],
     availableStreamKeys: [],
     successfulStreams: 0,
     successfulStreamKeys: [],
@@ -680,7 +721,10 @@ export async function loadDataSourceReadiness(
     nextAction: "继续修复未分批、来源不明与外部身份覆盖，不允许外部观察绕过 posting。",
   };
 
-  const specs: { source: DataSourceKey; connector: "jdy" | "jst" | "yy" }[] = [
+  const specs: {
+    source: Exclude<DataSourceKey, "SCM">;
+    connector: "jdy" | "jst" | "yy";
+  }[] = [
     { source: "JIANDAOYUN", connector: "jdy" },
     { source: "JST", connector: "jst" },
     { source: "YONYOU", connector: "yy" },
@@ -700,6 +744,7 @@ export async function loadDataSourceReadiness(
           configurationBinding: `unregistered:${source}`,
           contractSelectionState: "missing" as const,
           selectedContractCount: 0,
+          selectedStreamKeys: [],
           availableStreamKeys: [],
           successfulStreams: 0,
           successfulStreamKeys: [],
@@ -726,6 +771,7 @@ export async function loadDataSourceReadiness(
         runEvidence.successes.get(connector === "yy" ? "yonyou" : connector),
         runEvidence.latest.get(connector === "yy" ? "yonyou" : connector),
         runEvidence.streams.get(connector === "yy" ? "yonyou" : connector) ?? [],
+        selectedExternalStreamKeys(source, options.env ?? process.env),
       );
     }),
   ];

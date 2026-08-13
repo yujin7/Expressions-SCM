@@ -43,7 +43,8 @@ function pct(value: number, total: number): number {
 function evidenceLabel(row: DataAssetDecisionCoverageRow): string {
   if (!row.evidence?.lastSuccessAt) return "无成功业务批次";
   const asOf = row.evidence.sourceAsOf ?? "截止日未提供";
-  return `${asOf} · ${row.evidence.sourceRows.toLocaleString("zh-CN")} 源行`;
+  const selection = row.evidence.selectedForSync === false ? "未选定时同步 · " : "";
+  return `${selection}${asOf} · ${row.evidence.sourceRows.toLocaleString("zh-CN")} 源行`;
 }
 
 function uniqueOwners(row: DataAssetDecisionCoverageRow): string[] {
