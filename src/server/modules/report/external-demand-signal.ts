@@ -54,6 +54,47 @@ export interface ExternalDemandSignal {
     invalidRefundRows: number;
     conflictingCrosswalks: number;
   };
+  fulfillment: {
+    state: "ready" | "insufficient";
+    authority: "comparison_only";
+    jstSourceAsOf: string | null;
+    grain: "业务日 × SCM SKU（跨店铺、跨仓汇总）";
+    gate: string;
+    totals: {
+      jdyMappedNetQty: number;
+      jstMappedOutboundQty: number;
+      comparableDemandQty: number;
+      comparableOutboundQty: number;
+      gapQty: number | null;
+      absoluteGapQty: number | null;
+    };
+    coverage: {
+      jdyMappedSkuDays: number;
+      jstMappedSkuDays: number;
+      comparableSkuDays: number;
+      jdyComparablePct: number | null;
+      jstComparablePct: number | null;
+    };
+    daily: {
+      date: string;
+      mappedNetDemandQty: number;
+      jstOutboundQty: number;
+      comparableDemandQty: number;
+      comparableOutboundQty: number;
+      gapQty: number | null;
+      onlyJdySkuDays: number;
+      onlyJstSkuDays: number;
+    }[];
+    topGaps: {
+      date: string;
+      skuId: number;
+      skuCode: string | null;
+      mappedNetDemandQty: number;
+      jstOutboundQty: number;
+      gapQty: number;
+      absoluteGapQty: number;
+    }[];
+  };
   topUnmapped: {
     shopName: string;
     platformSkuId: string;
@@ -94,12 +135,16 @@ function resultRows<T>(result: unknown): T[] {
   return Array.isArray(rows) ? rows as T[] : [];
 }
 
-async function latestBatch(db: ReadDb, stream: string): Promise<LatestBatch | null> {
+async function latestBatch(
+  db: ReadDb,
+  connector: "jdy" | "jst",
+  stream: string,
+): Promise<LatestBatch | null> {
   const result = await db.execute(sql`
     SELECT ir.import_job_id, ij.source_as_of
     FROM integration_runs ir
     INNER JOIN import_jobs ij ON ij.id = ir.import_job_id
-    WHERE ir.connector = 'jdy' AND ir.stream = ${stream}
+    WHERE ir.connector = ${connector} AND ir.stream = ${stream}
       AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
     ORDER BY ir.id DESC
     LIMIT 1
@@ -118,10 +163,11 @@ async function latestBatch(db: ReadDb, stream: string): Promise<LatestBatch | nu
  * - 销售与退款分别聚合后再相减，避免明细多对多连接放大数量。
  */
 export async function loadJiandaoyunExternalDemandSignal(db: ReadDb): Promise<ExternalDemandSignal> {
-  const [crosswalkBatch, salesBatch, refundBatch] = await Promise.all([
-    latestBatch(db, STREAM.crosswalk),
-    latestBatch(db, STREAM.sales),
-    latestBatch(db, STREAM.refunds),
+  const [crosswalkBatch, salesBatch, refundBatch, jstOutboundBatch] = await Promise.all([
+    latestBatch(db, "jdy", STREAM.crosswalk),
+    latestBatch(db, "jdy", STREAM.sales),
+    latestBatch(db, "jdy", STREAM.refunds),
+    latestBatch(db, "jst", "outbound-sales-daily"),
   ]);
 
   const missing = [
@@ -267,6 +313,9 @@ export async function loadJiandaoyunExternalDemandSignal(db: ReadDb): Promise<Ex
   const invalidRefundRows = intValue(quality.invalid_refund_rows);
   const conflictingCrosswalks = intValue(quality.conflicting_crosswalks);
   const qualityBlockers = invalidSalesRows + invalidRefundRows + conflictingCrosswalks;
+  const fulfillment = jstOutboundBatch
+    ? await loadFulfillmentComparison(db, baseCtes, jstOutboundBatch)
+    : emptyFulfillmentComparison("尚无聚水潭日出库成功批次，无法建立同窗履约对比。");
 
   return {
     state: dailyRows.length > 0 ? "ready" : "insufficient",
@@ -305,6 +354,7 @@ export async function loadJiandaoyunExternalDemandSignal(db: ReadDb): Promise<Ex
       paidQtyPct: percent(mappedPaidQty, paidQty),
     },
     quality: { invalidSalesRows, invalidRefundRows, conflictingCrosswalks },
+    fulfillment,
     topUnmapped: resultRows<Record<string, unknown>>(topUnmappedResult).map((row) => ({
       shopName: String(row.shop_name ?? ""),
       platformSkuId: String(row.platform_sku_id ?? ""),
@@ -348,7 +398,173 @@ export function emptyExternalDemandSignal(gate = "尚未取得完整的简道云
       platformIdentities: 0, mappedIdentities: 0, identityPct: null, paidQtyPct: null,
     },
     quality: { invalidSalesRows: 0, invalidRefundRows: 0, conflictingCrosswalks: 0 },
+    fulfillment: emptyFulfillmentComparison("简道云需求证据不完整，无法与聚水潭建立可比窗口。"),
     topUnmapped: [],
     limitations: ["缺少完整的销售、退款或 SKU 对照证据，系统不会用 0 填补。"],
+  };
+}
+
+function emptyFulfillmentComparison(gate: string): ExternalDemandSignal["fulfillment"] {
+  return {
+    state: "insufficient",
+    authority: "comparison_only",
+    jstSourceAsOf: null,
+    grain: "业务日 × SCM SKU（跨店铺、跨仓汇总）",
+    gate,
+    totals: {
+      jdyMappedNetQty: 0,
+      jstMappedOutboundQty: 0,
+      comparableDemandQty: 0,
+      comparableOutboundQty: 0,
+      gapQty: null,
+      absoluteGapQty: null,
+    },
+    coverage: {
+      jdyMappedSkuDays: 0,
+      jstMappedSkuDays: 0,
+      comparableSkuDays: 0,
+      jdyComparablePct: null,
+      jstComparablePct: null,
+    },
+    daily: [],
+    topGaps: [],
+  };
+}
+
+async function loadFulfillmentComparison(
+  db: ReadDb,
+  demandCtes: SQL,
+  jstBatch: LatestBatch,
+): Promise<ExternalDemandSignal["fulfillment"]> {
+  const result = await db.execute(sql`${demandCtes},
+    demand_by_sku_day AS (
+      SELECT biz_date, scm_sku_id,
+        coalesce(sum(paid_qty), 0) - coalesce(sum(refund_qty), 0) AS demand_qty
+      FROM combined
+      WHERE scm_sku_id IS NOT NULL
+        AND biz_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+      GROUP BY biz_date, scm_sku_id
+    ), jst_raw AS (
+      SELECT
+        payload->>'bizDate' AS biz_date,
+        CASE WHEN coalesce(payload->'_resolved'->>'skuId', '') ~ '^[0-9]+$'
+          THEN (payload->'_resolved'->>'skuId')::int ELSE NULL END AS scm_sku_id,
+        CASE WHEN trim(coalesce(payload->>'qty', '')) ~ '^-?[0-9]+([.][0-9]+)?$'
+          THEN trim(payload->>'qty')::numeric ELSE NULL END AS outbound_qty
+      FROM staging_rows
+      WHERE import_job_id = ${jstBatch.importJobId}
+        AND target_table = 'jst_daily_sales'
+        AND status IN ('validated', 'committed')
+    ), jst_by_sku_day AS (
+      SELECT biz_date, scm_sku_id, sum(outbound_qty) AS outbound_qty
+      FROM jst_raw
+      WHERE scm_sku_id IS NOT NULL AND outbound_qty IS NOT NULL
+        AND biz_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+      GROUP BY biz_date, scm_sku_id
+    ), compared AS (
+      SELECT
+        coalesce(d.biz_date, j.biz_date) AS biz_date,
+        coalesce(d.scm_sku_id, j.scm_sku_id) AS scm_sku_id,
+        d.demand_qty,
+        j.outbound_qty
+      FROM demand_by_sku_day d
+      FULL OUTER JOIN jst_by_sku_day j
+        ON j.biz_date = d.biz_date AND j.scm_sku_id = d.scm_sku_id
+    )
+    SELECT c.biz_date, c.scm_sku_id, s.code AS sku_code,
+      c.demand_qty, c.outbound_qty
+    FROM compared c
+    LEFT JOIN skus s ON s.id = c.scm_sku_id
+    ORDER BY c.biz_date, c.scm_sku_id`);
+
+  const rows = resultRows<Record<string, unknown>>(result).map((row) => ({
+    date: String(row.biz_date ?? ""),
+    skuId: intValue(row.scm_sku_id),
+    skuCode: row.sku_code == null ? null : String(row.sku_code),
+    demandQty: row.demand_qty == null ? null : numberValue(row.demand_qty),
+    outboundQty: row.outbound_qty == null ? null : numberValue(row.outbound_qty),
+  })).filter((row) => row.date && row.skuId > 0);
+
+  const comparable = rows.filter((row) => row.demandQty !== null && row.outboundQty !== null);
+  if (comparable.length === 0) {
+    const empty = emptyFulfillmentComparison(
+      "简道云与聚水潭最新成功批次没有同业务日、同已映射 SCM SKU 的可比样本；缺失保持未知。",
+    );
+    empty.jstSourceAsOf = jstBatch.sourceAsOf;
+    empty.coverage.jdyMappedSkuDays = rows.filter((row) => row.demandQty !== null).length;
+    empty.coverage.jstMappedSkuDays = rows.filter((row) => row.outboundQty !== null).length;
+    return empty;
+  }
+
+  const jdyRows = rows.filter((row) => row.demandQty !== null);
+  const jstRows = rows.filter((row) => row.outboundQty !== null);
+  const comparableDemandQty = comparable.reduce((sum, row) => sum + (row.demandQty ?? 0), 0);
+  const comparableOutboundQty = comparable.reduce((sum, row) => sum + (row.outboundQty ?? 0), 0);
+  const byDate = new Map<string, ExternalDemandSignal["fulfillment"]["daily"][number]>();
+  for (const row of rows) {
+    const current = byDate.get(row.date) ?? {
+      date: row.date,
+      mappedNetDemandQty: 0,
+      jstOutboundQty: 0,
+      comparableDemandQty: 0,
+      comparableOutboundQty: 0,
+      gapQty: null,
+      onlyJdySkuDays: 0,
+      onlyJstSkuDays: 0,
+    };
+    if (row.demandQty !== null) current.mappedNetDemandQty += row.demandQty;
+    if (row.outboundQty !== null) current.jstOutboundQty += row.outboundQty;
+    if (row.demandQty !== null && row.outboundQty !== null) {
+      current.comparableDemandQty += row.demandQty;
+      current.comparableOutboundQty += row.outboundQty;
+    } else if (row.demandQty !== null) current.onlyJdySkuDays++;
+    else current.onlyJstSkuDays++;
+    byDate.set(row.date, current);
+  }
+  const daily = [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+  for (const row of daily) {
+    if (row.comparableDemandQty !== 0 || row.comparableOutboundQty !== 0) {
+      row.gapQty = row.comparableOutboundQty - row.comparableDemandQty;
+    }
+  }
+  const topGaps = comparable.map((row) => {
+    const gapQty = (row.outboundQty ?? 0) - (row.demandQty ?? 0);
+    return {
+      date: row.date,
+      skuId: row.skuId,
+      skuCode: row.skuCode,
+      mappedNetDemandQty: row.demandQty ?? 0,
+      jstOutboundQty: row.outboundQty ?? 0,
+      gapQty,
+      absoluteGapQty: Math.abs(gapQty),
+    };
+  }).sort((left, right) => right.absoluteGapQty - left.absoluteGapQty
+    || left.date.localeCompare(right.date)
+    || left.skuId - right.skuId).slice(0, 30);
+  const gapQty = comparableOutboundQty - comparableDemandQty;
+
+  return {
+    state: "ready",
+    authority: "comparison_only",
+    jstSourceAsOf: jstBatch.sourceAsOf,
+    grain: "业务日 × SCM SKU（跨店铺、跨仓汇总）",
+    gate: "已建立同业务日、同 SCM SKU 的独立观察对比；店铺/仓身份、控制总量和业务 UAT 完成前禁止解释为漏单或改写正式事实。",
+    totals: {
+      jdyMappedNetQty: jdyRows.reduce((sum, row) => sum + (row.demandQty ?? 0), 0),
+      jstMappedOutboundQty: jstRows.reduce((sum, row) => sum + (row.outboundQty ?? 0), 0),
+      comparableDemandQty,
+      comparableOutboundQty,
+      gapQty,
+      absoluteGapQty: Math.abs(gapQty),
+    },
+    coverage: {
+      jdyMappedSkuDays: jdyRows.length,
+      jstMappedSkuDays: jstRows.length,
+      comparableSkuDays: comparable.length,
+      jdyComparablePct: percent(comparable.length, jdyRows.length),
+      jstComparablePct: percent(comparable.length, jstRows.length),
+    },
+    daily,
+    topGaps,
   };
 }

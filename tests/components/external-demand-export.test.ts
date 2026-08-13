@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildExternalDemandDailyExport,
+  buildExternalDemandFulfillmentExport,
   buildExternalDemandIdentityExport,
   externalDemandIdentityAction,
 } from "@/components/external-demand-export";
@@ -28,6 +29,31 @@ const signal: ExternalDemandSignal = {
     platformIdentities: 8, mappedIdentities: 6, identityPct: 75, paidQtyPct: 79.2,
   },
   quality: { invalidSalesRows: 1, invalidRefundRows: 2, conflictingCrosswalks: 3 },
+  fulfillment: {
+    state: "ready",
+    authority: "comparison_only",
+    jstSourceAsOf: "2026-08-11",
+    grain: "业务日 × SCM SKU（跨店铺、跨仓汇总）",
+    gate: "仅用于 UAT 核对。",
+    totals: {
+      jdyMappedNetQty: 90, jstMappedOutboundQty: 88,
+      comparableDemandQty: 90, comparableOutboundQty: 88,
+      gapQty: -2, absoluteGapQty: 2,
+    },
+    coverage: {
+      jdyMappedSkuDays: 2, jstMappedSkuDays: 2, comparableSkuDays: 1,
+      jdyComparablePct: 50, jstComparablePct: 50,
+    },
+    daily: [{
+      date: "2026-08-11", mappedNetDemandQty: 90, jstOutboundQty: 88,
+      comparableDemandQty: 90, comparableOutboundQty: 88, gapQty: -2,
+      onlyJdySkuDays: 1, onlyJstSkuDays: 1,
+    }],
+    topGaps: [{
+      date: "2026-08-11", skuId: 101, skuCode: "E001-001",
+      mappedNetDemandQty: 90, jstOutboundQty: 88, gapQty: -2, absoluteGapQty: 2,
+    }],
+  },
   topUnmapped: [
     {
       shopName: "EXP 天猫店", platformSkuId: "=HYPERLINK(\"bad\")", barcode: null,
@@ -71,5 +97,15 @@ describe("简道云外部需求 UAT 导出", () => {
     expect(csv).toContain("'=HYPERLINK");
     expect(csv).toContain("'+外部商品");
     expect(serializeCsv(["值"], [[-2], ["-0.5000"]])).toContain("-2\r\n-0.5000");
+  });
+
+  it("跨源履约导出只携带可比样本、两边截止和覆盖率", () => {
+    const result = buildExternalDemandFulfillmentExport(signal, now);
+    expect(result.filename).toContain("2026-08-11");
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toEqual(expect.arrayContaining([
+      "demand_fulfillment_comparison", "comparison_only", "E001-001",
+      90, 88, -2, 2, "50.0", "仅用于 UAT 核对。",
+    ]));
   });
 });

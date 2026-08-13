@@ -43,6 +43,7 @@ import { formatQty } from "@/components/format";
 import { exportCsv } from "@/components/exportCsv";
 import {
   buildExternalDemandDailyExport,
+  buildExternalDemandFulfillmentExport,
   buildExternalDemandIdentityExport,
   externalDemandIdentityAction,
 } from "@/components/external-demand-export";
@@ -211,6 +212,16 @@ export default function DecisionStudioClient() {
     const payload = buildExternalDemandIdentityExport(external);
     exportCsv(payload.filename, payload.headers, payload.rows);
     message.success("已导出平台 SKU 身份修复队列");
+  };
+
+  const exportExternalFulfillment = () => {
+    if (!external || external.fulfillment.state !== "ready" || external.fulfillment.topGaps.length === 0) {
+      message.warning("当前没有可导出的简道云 × 聚水潭可比样本");
+      return;
+    }
+    const payload = buildExternalDemandFulfillmentExport(external);
+    exportCsv(payload.filename, payload.headers, payload.rows);
+    message.success("已导出简道云 × 聚水潭需求履约核对证据");
   };
 
   const exportCommerceIdentityQueue = () => {
@@ -779,6 +790,62 @@ export default function DecisionStudioClient() {
                       <Line type="monotone" dataKey="refundQty" name="成功退款" stroke={VISUAL_COLOR.critical} dot={false} />
                       <Line type="monotone" dataKey="netQty" name="净需求信号" stroke={VISUAL_COLOR.positive} strokeWidth={3} dot={false} />
                       <Line type="monotone" dataKey="mappedNetQty" name="已映射净需求" stroke={VISUAL_COLOR.warning} strokeDasharray="5 4" dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </DecisionVisual>
+                <DecisionVisual
+                  title="简道云净需求 × 聚水潭实际出库"
+                  question="同一业务日、同一已映射 SCM SKU 下，支付扣退款后的需求与真实出库相差多少？"
+                  metricId="externalNetDemand"
+                  grain={external?.fulfillment.grain ?? "业务日 × SCM SKU"}
+                  unit="件"
+                  source={{
+                    tier: "reference",
+                    source: "简道云需求观察 + 聚水潭日出库观察（两边独立保留）",
+                    asOf: external?.fulfillment.jstSourceAsOf,
+                  }}
+                  coverage={{
+                    covered: external?.fulfillment.coverage.comparableSkuDays ?? 0,
+                    total: external?.fulfillment.coverage.jdyMappedSkuDays ?? 0,
+                    label: "简道云映射 SKU日中可与聚水潭同窗比较",
+                  }}
+                  activeFilters={["共同键：业务日 + SCM SKU", "跨店铺/仓汇总", "缺失不补零", "差异不自动定责"]}
+                  summary={external?.fulfillment.state === "ready"
+                    ? `可比 ${external.fulfillment.coverage.comparableSkuDays} 个 SKU日；简道云净需求 ${formatQty(external.fulfillment.totals.comparableDemandQty)}，聚水潭出库 ${formatQty(external.fulfillment.totals.comparableOutboundQty)}，差异 ${formatQty(external.fulfillment.totals.gapQty ?? 0)}。`
+                    : external?.fulfillment.gate ?? "正在建立跨源可比窗口。"}
+                  caveat="该差异可能来自店铺/仓映射、订单与出库时间差、取消、跨期退款或数据覆盖；不能直接判定漏单、超发或责任归属。"
+                  state={loading && !data ? "loading" : external?.fulfillment.state ?? "insufficient"}
+                  stateDetail={external?.fulfillment.gate}
+                  height={340}
+                  onExport={external?.fulfillment.state === "ready" && external.fulfillment.topGaps.length > 0
+                    ? exportExternalFulfillment
+                    : undefined}
+                  exportLabel="导出跨源 UAT 明细"
+                  dataView={(
+                    <Table
+                      rowKey={(row) => `${row.date}\u0000${row.skuId}`}
+                      size="small"
+                      pagination={{ pageSize: 10, showSizeChanger: false }}
+                      dataSource={external?.fulfillment.topGaps ?? []}
+                      scroll={{ x: 820 }}
+                      columns={[
+                        { title: "日期", dataIndex: "date", width: 120, sorter: (a, b) => a.date.localeCompare(b.date) },
+                        { title: "SCM SKU", dataIndex: "skuCode", width: 150, render: (value, row) => value ?? `ID ${row.skuId}` },
+                        { title: "简道云净需求", dataIndex: "mappedNetDemandQty", width: 150, align: "right", sorter: (a, b) => a.mappedNetDemandQty - b.mappedNetDemandQty, render: formatQty },
+                        { title: "聚水潭出库", dataIndex: "jstOutboundQty", width: 140, align: "right", sorter: (a, b) => a.jstOutboundQty - b.jstOutboundQty, render: formatQty },
+                        { title: "差异", dataIndex: "gapQty", width: 120, align: "right", defaultSortOrder: "descend", sorter: (a, b) => a.absoluteGapQty - b.absoluteGapQty, render: (value) => <Tag color={Number(value) === 0 ? "green" : "orange"}>{formatQty(value)}</Tag> },
+                      ]}
+                    />
+                  )}
+                >
+                  <ResponsiveContainer minWidth={0} minHeight={1}>
+                    <LineChart data={external?.fulfillment.daily ?? []} margin={{ top: 8, right: 18, left: 8, bottom: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="date" minTickGap={28} />
+                      <YAxis tickFormatter={shortQty} />
+                      <RechartsTooltip formatter={(value) => formatQty(Number(value))} />
+                      <Line type="monotone" dataKey="comparableDemandQty" name="简道云可比净需求" stroke={VISUAL_COLOR.primary} strokeWidth={3} dot={false} />
+                      <Line type="monotone" dataKey="comparableOutboundQty" name="聚水潭可比出库" stroke={VISUAL_COLOR.positive} strokeWidth={3} dot={false} />
                     </LineChart>
                   </ResponsiveContainer>
                 </DecisionVisual>

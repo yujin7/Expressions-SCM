@@ -76,3 +76,40 @@ export function buildExternalDemandIdentityExport(
     ]),
   };
 }
+
+const FULFILLMENT_HEADERS = [
+  "记录类型", "权限口径", "对比粒度", "简道云来源截止", "聚水潭来源截止", "导出时间",
+  "日期", "系统SKU ID", "系统SKU编码", "简道云已映射净需求", "聚水潭实际出库",
+  "差异（出库-净需求）", "绝对差异", "简道云可比覆盖率%", "聚水潭可比覆盖率%", "放行状态",
+];
+
+/** 跨源 UAT 明细：只导出同业务日、同 SCM SKU 的可比样本，不把单边缺失补成零。 */
+export function buildExternalDemandFulfillmentExport(
+  signal: ExternalDemandSignal,
+  now = new Date(),
+): ExternalDemandCsvExport {
+  const generatedAt = now.toISOString();
+  const comparison = signal.fulfillment;
+  return {
+    filename: `简道云-聚水潭-需求履约核对-${comparison.jstSourceAsOf ?? "无可比批次"}-${exportTimestamp(now)}.csv`,
+    headers: FULFILLMENT_HEADERS,
+    rows: comparison.topGaps.map((row) => [
+      "demand_fulfillment_comparison",
+      comparison.authority,
+      comparison.grain,
+      signal.sourceAsOf,
+      comparison.jstSourceAsOf,
+      generatedAt,
+      row.date,
+      row.skuId,
+      row.skuCode,
+      row.mappedNetDemandQty,
+      row.jstOutboundQty,
+      row.gapQty,
+      row.absoluteGapQty,
+      pct(comparison.coverage.jdyComparablePct),
+      pct(comparison.coverage.jstComparablePct),
+      comparison.gate,
+    ]),
+  };
+}

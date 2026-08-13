@@ -196,7 +196,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "日 × 店铺 × 平台 SKU",
     owner: "电商 / PMC",
     ownerRoles: ["ops", "pmc"],
-    contractVersion: "1.3.0",
+    contractVersion: "1.3.1",
     cadence: "daily",
     decisionSlaHours: 24,
     metricIds: ["externalNetDemand", "refundRate", "mappedDemandCoverage"],

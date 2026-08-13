@@ -14,14 +14,16 @@ describe("简道云外部需求信号", () => {
         { template: "jdy_tmall_sku_crosswalk_observation", filename: "crosswalk", sourceAsOf: "2026-08-10", createdBy: actor.id, status: "done" },
         { template: "jdy_tmall_sku_sales_observation", filename: "sales", sourceAsOf: "2026-08-11", createdBy: actor.id, status: "done" },
         { template: "jdy_tmall_sku_refund_observation", filename: "refunds", sourceAsOf: "2026-08-11", createdBy: actor.id, status: "done" },
+        { template: "jst_daily_sales", filename: "jst-outbound", sourceAsOf: "2026-08-10", createdBy: actor.id, status: "done" },
       ]).returning();
-      const [oldSales, crosswalk, sales, refunds] = jobs;
+      const [oldSales, crosswalk, sales, refunds, jstOutbound] = jobs;
       const finishedAt = new Date("2026-08-11T03:00:00.000Z");
       await db.insert(schema.integrationRuns).values([
         { connector: "jdy", stream: "tmall-sku-sales-observation", idempotencyKey: "old-sales", status: "succeeded", importJobId: oldSales.id, finishedAt },
         { connector: "jdy", stream: "tmall-sku-crosswalk-observation", idempotencyKey: "crosswalk", status: "succeeded", importJobId: crosswalk.id, finishedAt },
         { connector: "jdy", stream: "tmall-sku-sales-observation", idempotencyKey: "sales", status: "succeeded", importJobId: sales.id, finishedAt },
         { connector: "jdy", stream: "tmall-sku-refund-observation", idempotencyKey: "refunds", status: "succeeded", importJobId: refunds.id, finishedAt },
+        { connector: "jst", stream: "outbound-sales-daily", idempotencyKey: "jst-outbound", status: "succeeded", importJobId: jstOutbound.id, finishedAt },
       ]);
       await db.insert(schema.stagingRows).values([
         {
@@ -64,6 +66,16 @@ describe("简道云外部需求信号", () => {
           targetTable: "jdy_tmall_sku_refund_observation",
           payload: { data: { statisticalDate: "2026-08-10", shopName: "旗舰店", skuId: "P2", successRefundSuborderNumber: "5" } },
         },
+        {
+          importJobId: jstOutbound.id, rowNo: 1, status: "validated",
+          targetTable: "jst_daily_sales",
+          payload: { bizDate: "2026-08-10", skuCode: "JST-P1", qty: "88", _resolved: { skuId: 101 } },
+        },
+        {
+          importJobId: jstOutbound.id, rowNo: 2, status: "validated",
+          targetTable: "jst_daily_sales",
+          payload: { bizDate: "2026-08-10", skuCode: "JST-ONLY", qty: "7", _resolved: { skuId: 202 } },
+        },
       ]);
       await db.insert(schema.aliasExceptions).values({
         aliasType: "sku_barcode",
@@ -101,6 +113,36 @@ describe("简道云外部需求信号", () => {
         mappedNetQty: 90,
       });
       expect(result.quality.invalidSalesRows).toBe(1);
+      expect(result.fulfillment).toMatchObject({
+        state: "ready",
+        jstSourceAsOf: "2026-08-10",
+        totals: {
+          comparableDemandQty: 90,
+          comparableOutboundQty: 88,
+          gapQty: -2,
+          absoluteGapQty: 2,
+        },
+        coverage: {
+          jdyMappedSkuDays: 1,
+          jstMappedSkuDays: 2,
+          comparableSkuDays: 1,
+          jdyComparablePct: 100,
+          jstComparablePct: 50,
+        },
+      });
+      expect(result.fulfillment.daily[0]).toMatchObject({
+        date: "2026-08-10",
+        comparableDemandQty: 90,
+        comparableOutboundQty: 88,
+        gapQty: -2,
+        onlyJstSkuDays: 1,
+      });
+      expect(result.fulfillment.topGaps[0]).toMatchObject({
+        skuId: 101,
+        mappedNetDemandQty: 90,
+        jstOutboundQty: 88,
+        gapQty: -2,
+      });
       expect(result.gate).toContain("质量问题");
       expect(result.topUnmapped[0]).toMatchObject({
         platformSkuId: "P2",
@@ -121,6 +163,7 @@ describe("简道云外部需求信号", () => {
       expect(result.state).toBe("insufficient");
       expect(result.gate).toContain("缺少最新成功批次");
       expect(result.coverage.identityPct).toBeNull();
+      expect(result.fulfillment.state).toBe("insufficient");
     } finally {
       await client.close();
     }

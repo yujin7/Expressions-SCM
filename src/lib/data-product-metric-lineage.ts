@@ -33,7 +33,7 @@ export interface DataProductMetricLineageContract {
   nextAction: string;
 }
 
-export const DATA_PRODUCT_METRIC_LINEAGE_VERSION = "data-product-metric-lineage/v1" as const;
+export const DATA_PRODUCT_METRIC_LINEAGE_VERSION = "data-product-metric-lineage/v2" as const;
 
 export const METRIC_COMPUTATION_STATE_LABEL: Record<MetricComputationState, string> = {
   implemented: "可重放计算",
@@ -101,7 +101,7 @@ export const DATA_PRODUCT_METRIC_LINEAGE_CONTRACTS: DataProductMetricLineageCont
   }),
 
   contract({
-    productId: "demand-pulse", metricId: "externalNetDemand", state: "partial",
+    productId: "demand-pulse", metricId: "externalNetDemand", state: "implemented",
     inputs: [
       stream("JIANDAOYUN", "tmall-sku-sales-observation", "支付件数"),
       stream("JIANDAOYUN", "tmall-sku-refund-observation", "成功退款件数"),
@@ -110,11 +110,11 @@ export const DATA_PRODUCT_METRIC_LINEAGE_CONTRACTS: DataProductMetricLineageCont
     ],
     joinKeys: ["业务日", "店铺", "平台 SKU", "SCM SKU"],
     missingPolicy: "exclude_with_coverage",
-    evidence: "简道云支付减退款日级计算已实现；尚未把 JST 出库纳入同窗口校验",
-    nextAction: "获得 JST 真实出库后实现日×店铺×SKU 差异列，不覆盖原观察值",
+    evidence: "简道云支付减退款日级计算与 JST 同业务日×SCM SKU 独立出库对比均已实现；缺批次或缺身份时保持未知",
+    nextAction: "用真实 JST 批次完成店铺/仓身份 UAT，并将跨店铺/仓汇总逐步下钻到产品目标粒度",
   }),
   contract({
-    productId: "demand-pulse", metricId: "refundRate", state: "partial",
+    productId: "demand-pulse", metricId: "refundRate", state: "implemented",
     inputs: [
       stream("JIANDAOYUN", "tmall-sku-sales-observation", "支付件数分母"),
       stream("JIANDAOYUN", "tmall-sku-refund-observation", "成功退款件数分子"),
@@ -122,11 +122,11 @@ export const DATA_PRODUCT_METRIC_LINEAGE_CONTRACTS: DataProductMetricLineageCont
     ],
     joinKeys: ["业务日", "店铺", "平台 SKU"],
     missingPolicy: "not_applicable",
-    evidence: "支付和成功退款数已聚合，但尚未与 JST 履约事件对齐",
-    nextAction: "固化跨期退款窗口并用 JST 出库进行独立总量校验",
+    evidence: "支付与成功退款按固定业务日、店铺、平台 SKU 聚合，JST 出库以独立同窗对比呈现且不改写退款定义",
+    nextAction: "用真实业务样本确认跨期退款观察窗口，并保留退款申请、成功退款和退货入库的事件差异",
   }),
   contract({
-    productId: "demand-pulse", metricId: "mappedDemandCoverage", state: "partial",
+    productId: "demand-pulse", metricId: "mappedDemandCoverage", state: "implemented",
     inputs: [
       stream("JIANDAOYUN", "tmall-sku-sales-observation", "全部及已映射支付需求"),
       stream("JIANDAOYUN", "tmall-sku-refund-observation", "全部及已映射退款需求"),
@@ -134,8 +134,8 @@ export const DATA_PRODUCT_METRIC_LINEAGE_CONTRACTS: DataProductMetricLineageCont
     ],
     joinKeys: ["业务日", "店铺", "平台 SKU"],
     missingPolicy: "exclude_with_coverage",
-    evidence: "简道云映射需求覆盖已实现；上游身份产品尚未形成 A2 放行",
-    nextAction: "以已放行身份产品取代未放行候选后重做覆盖 UAT",
+    evidence: "简道云映射需求覆盖、未映射高需求队列与 JST 可比 SKU日覆盖均可重放；上游身份放行仍由独立产品门禁控制",
+    nextAction: "身份产品达到 A2 后重做覆盖 UAT；在此之前计算器可用但数据产品仍不得放行",
   }),
 
   contract({
