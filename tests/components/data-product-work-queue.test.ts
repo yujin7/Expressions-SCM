@@ -279,6 +279,60 @@ describe("data product dynamic work queue", () => {
     expect(item.bottleneck).toContain("店铺字段尚未进入受控店铺");
   });
 
+  it("routes source-ready data with unresolved unit semantics to semantic review", () => {
+    const base = DATA_PRODUCTS[0];
+    const product: DataProductDefinition = {
+      ...base,
+      id: "semantic-review-test",
+      title: "语义门禁测试",
+      sources: ["SCM", "JST"],
+      requiredScmEvidence: ["sku-master"],
+      requiredStreams: { JST: ["outbound-sales-daily"] },
+      requiredIdentities: {},
+      requiredSemantics: { JST: { "outbound-sales-daily": ["grain", "quantity_unit"] } },
+      requiredProducts: [],
+    };
+    const readySources = sources.map((source) => {
+      if (source.key === "SCM") {
+        return {
+          ...source,
+          scmEvidence: {
+            "sku-master": {
+              rows: 10,
+              asOf: null,
+              freshnessMaxAgeDays: null,
+              businessAgeDays: null,
+              freshness: "current" as const,
+            },
+          },
+        };
+      }
+      if (source.key !== "JST") return source;
+      return {
+        ...source,
+        state: "observation" as const,
+        configured: true,
+        enabled: true,
+        configurationReady: true,
+        contractSelectionState: "selected" as const,
+        selectedContractCount: 1,
+        selectedStreamKeys: ["outbound-sales-daily"],
+        successfulStreams: 1,
+        successfulStreamKeys: ["outbound-sales-daily"],
+        streams: [currentStream("outbound-sales-daily")],
+      };
+    });
+
+    const [item] = buildDataProductWorkQueue([product], readySources, []);
+    expect(item).toMatchObject({
+      stage: "repair",
+      blockerState: "semantic",
+      actionLabel: "查看逐流证据",
+      nextAction: expect.stringContaining("逐 SKU 数量控制总量 UAT"),
+    });
+    expect(item.bottleneck).toContain("数量单位");
+  });
+
   it("routes a source-ready downstream product to its first unsatisfied upstream gate", () => {
     const base = DATA_PRODUCTS[0];
     const downstream = {
@@ -288,6 +342,7 @@ describe("data product dynamic work queue", () => {
       sources: [],
       requiredStreams: {},
       requiredIdentities: {},
+      requiredSemantics: {},
       requiredScmEvidence: [],
       requiredProducts: [{
         productId: "demand-pulse",

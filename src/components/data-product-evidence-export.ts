@@ -58,6 +58,7 @@ const HEADERS = [
   "身份维度", "身份治理方式", "身份状态", "身份候选数", "身份已认领数",
   "身份开放异常数", "身份忽略数", "身份下一步", "身份提取契约状态",
   "身份适用数据流", "身份提取契约说明", "身份提取契约下一步",
+  "业务语义门禁", "源业务粒度", "本产品使用语义", "业务语义说明", "业务语义下一步",
 ];
 
 const OUTCOME_DECISION_LABEL = {
@@ -160,6 +161,14 @@ export function buildDataProductEvidenceExport(
       const observationIdentity = observation?.identityCoverage.map((item) =>
         `${item.label} ${item.governedMatches}/${item.distinctValues}（待认领 ${item.openValues}，已入队 ${item.queuedValues}，未入队 ${item.unqueuedValues}）`
       ).join(" · ") || null;
+      const semanticControls = stream
+        ? summary.semanticGates.filter((item) =>
+            item.source === stream.source && item.stream === stream.stream)
+        : [];
+      const semanticBlockers = semanticControls.filter((item) => item.state !== "implemented");
+      const semanticState = semanticControls.length === 0
+        ? null
+        : semanticBlockers.length === 0 ? "implemented" : semanticBlockers[0].state;
       return [
         identity ? "data_product_identity_evidence" : "data_product_stream_evidence",
         generatedAt,
@@ -247,6 +256,11 @@ export function buildDataProductEvidenceExport(
           `${dataProductStreamLabel(identity.source, item.stream)}[${item.state}]`).join("；") ?? null,
         identity?.extractionReason ?? null,
         identity?.extractionNextAction ?? null,
+        semanticState,
+        semanticControls[0]?.grain ?? null,
+        semanticControls.map((item) => `${item.label}[${item.state}]`).join("；") || null,
+        semanticControls.map((item) => `${item.label}：${item.reason}`).join("；") || null,
+        semanticBlockers.map((item) => `${item.label}：${item.nextAction}`).join("；") || null,
       ];
     });
   });

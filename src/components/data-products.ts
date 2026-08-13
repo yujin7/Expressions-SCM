@@ -6,6 +6,10 @@
  */
 import { SCM_EVIDENCE_LABEL, type ScmEvidenceKey } from "@/lib/scm-evidence";
 import type { CrossSystemIdentityDomain } from "@/lib/cross-system-identity";
+import type {
+  CrossSystemSemanticDomain,
+  CrossSystemSemanticSource,
+} from "@/lib/cross-system-semantics";
 import type { Role } from "@/server/core/constants";
 
 export type DataProductSource = "SCM" | "JIANDAOYUN" | "JST" | "YONYOU";
@@ -47,6 +51,14 @@ export interface DataProductDefinition {
    * 控制总量和 UAT 分开；“字段存在”或“名称相同”不等于已统一身份。
    */
   requiredIdentities: Partial<Record<DataProductSource, CrossSystemIdentityDomain[]>>;
+  /**
+   * 每条必需外部流在本产品中真正使用的业务语义。只检查这里声明的语义，避免一条流中
+   * 未使用的字段阻塞产品；但每条 requiredStreams 必须至少声明粒度及实际使用的口径。
+   */
+  requiredSemantics: Partial<Record<
+    CrossSystemSemanticSource,
+    Record<string, CrossSystemSemanticDomain[]>
+  >>;
   /**
    * 可补充解释、身份或回查路径，但不参与 A2/A3 放行判定的参考流。
    * 过期或缺失的辅助流不得阻塞核心产品，也不得替代 requiredStreams。
@@ -146,7 +158,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "平台 × 店铺 × 平台商品/SKU 身份",
     owner: "商品 / 电商 / 数据",
     ownerRoles: ["ops", "pmc"],
-    contractVersion: "1.1.0",
+    contractVersion: "1.2.0",
     cadence: "daily",
     decisionSlaHours: 24,
     metricIds: ["platformIdentityCoverage", "identityConflictCount"],
@@ -166,6 +178,14 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
       JIANDAOYUN: ["sku", "shop"],
       JST: ["sku"],
     },
+    requiredSemantics: {
+      JIANDAOYUN: {
+        "tmall-sku-crosswalk-observation": ["grain", "identifier_namespace"],
+        "pdd-sku-crosswalk-observation": ["grain", "identifier_namespace"],
+        "vip-product-crosswalk-observation": ["grain", "identifier_namespace"],
+      },
+      JST: { "item-master": ["grain", "identifier_namespace", "status_semantics"] },
+    },
     targetAuthority: "operational",
     releaseGate: "最新批次、唯一业务键、精确条码/别名、冲突清零、覆盖阈值与业务 UAT",
   },
@@ -176,7 +196,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "日 × 店铺 × 平台 SKU",
     owner: "电商 / PMC",
     ownerRoles: ["ops", "pmc"],
-    contractVersion: "1.2.0",
+    contractVersion: "1.3.0",
     cadence: "daily",
     decisionSlaHours: 24,
     metricIds: ["externalNetDemand", "refundRate", "mappedDemandCoverage"],
@@ -195,6 +215,15 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
       JIANDAOYUN: ["sku", "shop"],
       JST: ["sku", "shop", "document"],
     },
+    requiredSemantics: {
+      JIANDAOYUN: {
+        "tmall-sku-sales-observation": ["grain", "business_time", "quantity_unit", "sign_convention", "correction_semantics"],
+        "tmall-sku-refund-observation": ["grain", "business_time", "quantity_unit", "sign_convention", "correction_semantics"],
+      },
+      JST: {
+        "outbound-sales-daily": ["grain", "business_time", "quantity_unit", "sign_convention", "status_semantics", "correction_semantics"],
+      },
+    },
     requiredProducts: [
       { productId: "commerce-identity-control", minimumLevel: "A2", purpose: "复用已验收的平台 SKU、条码与别名身份口径" },
     ],
@@ -208,7 +237,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "来源订单 × 收款/凭证",
     owner: "财务 / 电商",
     ownerRoles: ["finance", "ops"],
-    contractVersion: "1.2.0",
+    contractVersion: "1.3.0",
     cadence: "daily",
     decisionSlaHours: 48,
     metricIds: ["orderFulfillmentRate", "cashConversionDays", "unreconciledOrderCount"],
@@ -227,6 +256,17 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
       JST: ["sku", "shop", "document"],
       YONYOU: ["organization", "document"],
     },
+    requiredSemantics: {
+      JST: {
+        "orders-daily": ["grain", "business_time", "identifier_namespace", "quantity_unit", "currency", "amount_scale", "sign_convention", "status_semantics", "correction_semantics"],
+        "outbound-sales-daily": ["grain", "business_time", "identifier_namespace", "quantity_unit", "sign_convention", "status_semantics", "correction_semantics"],
+        "returns-daily": ["grain", "business_time", "identifier_namespace", "quantity_unit", "currency", "amount_scale", "sign_convention", "status_semantics", "correction_semantics"],
+      },
+      YONYOU: {
+        "yonbip-fi-ficloud-openapi-voucher-queryvouchers": ["grain", "business_time", "identifier_namespace", "currency", "amount_scale", "sign_convention", "status_semantics", "correction_semantics"],
+        "yonbip-finance-receivables-settlement": ["grain", "business_time", "identifier_namespace", "currency", "amount_scale", "sign_convention", "status_semantics", "correction_semantics"],
+      },
+    },
     requiredProducts: [
       { productId: "commerce-identity-control", minimumLevel: "A2", purpose: "复用已验收的平台商品与 SKU 身份口径" },
     ],
@@ -240,7 +280,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "截止时点 × 仓库 × SKU × 批次",
     owner: "仓储 / PMC / 财务",
     ownerRoles: ["warehouse", "pmc", "finance"],
-    contractVersion: "1.1.0",
+    contractVersion: "1.2.0",
     cadence: "intraday",
     decisionSlaHours: 4,
     metricIds: ["onHandSystem", "inventoryReconciliationGap", "coverageSku"],
@@ -255,6 +295,14 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     requiredIdentities: {
       JST: ["sku", "warehouse"],
       YONYOU: ["sku", "warehouse", "organization"],
+    },
+    requiredSemantics: {
+      JST: {
+        "inventory-total-delta": ["grain", "business_time", "identifier_namespace", "quantity_unit", "inventory_scope", "correction_semantics"],
+      },
+      YONYOU: {
+        "yonbip-scm-stock-querycurrentstocksbycondition": ["grain", "business_time", "identifier_namespace", "quantity_unit", "inventory_scope", "status_semantics"],
+      },
     },
     supportingStreams: {
       JIANDAOYUN: [
@@ -273,7 +321,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "供应单行 × 承诺日 × 实际到货",
     owner: "采购 / PMC",
     ownerRoles: ["purchasing", "pmc"],
-    contractVersion: "1.1.0",
+    contractVersion: "1.2.0",
     cadence: "daily",
     decisionSlaHours: 24,
     metricIds: ["openSupplyQty", "onTimeRate", "promiseReliability"],
@@ -291,6 +339,19 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
       JST: ["sku", "warehouse", "document"],
       YONYOU: ["sku", "supplier", "warehouse", "organization", "document"],
     },
+    requiredSemantics: {
+      JIANDAOYUN: {
+        "purchase-order-observation": ["grain", "business_time", "quantity_unit", "amount_scale", "status_semantics", "correction_semantics"],
+        "purchase-receipt-observation": ["grain", "business_time", "quantity_unit", "amount_scale", "status_semantics", "correction_semantics"],
+      },
+      JST: {
+        "inbound-receipts-daily": ["grain", "business_time", "identifier_namespace", "quantity_unit", "status_semantics", "correction_semantics"],
+      },
+      YONYOU: {
+        "yonbip-scm-purchaseorder-list": ["grain", "business_time", "identifier_namespace", "quantity_unit", "currency", "amount_scale", "status_semantics", "correction_semantics"],
+        "yonbip-scm-purinrecord-list": ["grain", "business_time", "identifier_namespace", "quantity_unit", "currency", "amount_scale", "status_semantics", "correction_semantics"],
+      },
+    },
     supportingStreams: {
       JIANDAOYUN: ["purchase-demand-observation"],
     },
@@ -304,7 +365,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "期间 × 渠道（SKU 仅在可直接归属时下钻）",
     owner: "财务 / 业务",
     ownerRoles: ["finance", "ops"],
-    contractVersion: "1.2.0",
+    contractVersion: "1.3.0",
     cadence: "monthly",
     decisionSlaHours: 72,
     metricIds: ["netRevenue", "platformFeePaidAmount", "contributionMarginRate", "costCoverage"],
@@ -320,6 +381,14 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
       JIANDAOYUN: ["channel", "shop"],
       YONYOU: ["organization"],
     },
+    requiredSemantics: {
+      JIANDAOYUN: {
+        "platform-fee-observation": ["grain", "business_time", "currency", "amount_scale", "sign_convention", "correction_semantics"],
+      },
+      YONYOU: {
+        "yonbip-efi-fieia-querybalance": ["grain", "business_time", "identifier_namespace", "currency", "amount_scale", "sign_convention", "correction_semantics"],
+      },
+    },
     requiredProducts: [
       { productId: "demand-pulse", minimumLevel: "A2", purpose: "复用已验收的渠道净需求、退款与身份口径" },
       { productId: "order-to-cash", minimumLevel: "A2", purpose: "复用已验收的订单履约、凭证与收款链路" },
@@ -334,7 +403,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "供应商 × 期间 × 产品/物料",
     owner: "采购 / 品质 / 财务",
     ownerRoles: ["purchasing", "quality", "finance"],
-    contractVersion: "1.2.0",
+    contractVersion: "1.3.0",
     cadence: "weekly",
     decisionSlaHours: 72,
     metricIds: ["onTimeRate", "qcPassRate", "supplierPriceVariance"],
@@ -347,6 +416,11 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     },
     requiredIdentities: {
       YONYOU: ["supplier", "organization"],
+    },
+    requiredSemantics: {
+      YONYOU: {
+        "yonbip-digitalmodel-vendor-list": ["grain", "business_time", "identifier_namespace", "status_semantics"],
+      },
     },
     supportingStreams: {
       JIANDAOYUN: ["supplier-observation"],
@@ -374,6 +448,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     requiredScmEvidence: ["stock-balances", "sales-history", "sku-planning-params", "purchase-order-lines"],
     requiredStreams: {},
     requiredIdentities: {},
+    requiredSemantics: {},
     requiredProducts: [
       { productId: "demand-pulse", minimumLevel: "A2", purpose: "复用已验收的净需求、退款与身份口径" },
       { productId: "unified-inventory", minimumLevel: "A2", purpose: "复用已验收的可用库存与账实差异口径" },
@@ -389,7 +464,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "新品项目 × 里程碑/上市窗口",
     owner: "产品 / PMC / 电商",
     ownerRoles: ["pmc", "ops"],
-    contractVersion: "1.2.0",
+    contractVersion: "1.3.0",
     cadence: "daily",
     decisionSlaHours: 24,
     metricIds: ["npdProgress", "launchOnTimeRate", "first90DayAchievement"],
@@ -404,6 +479,15 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     requiredIdentities: {
       JIANDAOYUN: ["sku"],
       YONYOU: ["sku", "organization"],
+    },
+    requiredSemantics: {
+      JIANDAOYUN: {
+        "npd-milestone-observation": ["grain", "business_time", "identifier_namespace", "status_semantics", "correction_semantics"],
+        "product-master-observation": ["grain", "identifier_namespace", "quantity_unit"],
+      },
+      YONYOU: {
+        "yonbip-digitalmodel-product-listproductbycondition": ["grain", "business_time", "identifier_namespace", "quantity_unit", "status_semantics"],
+      },
     },
     supportingStreams: {
       JIANDAOYUN: ["sample-management-observation"],
@@ -433,6 +517,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     requiredScmEvidence: ["reconciliation-diffs", "sku-identifiers"],
     requiredStreams: {},
     requiredIdentities: {},
+    requiredSemantics: {},
     requiredProducts: [
       { productId: "demand-pulse", minimumLevel: "A2", purpose: "复用已验收的需求、退款与履约口径" },
       { productId: "unified-inventory", minimumLevel: "A2", purpose: "复用已验收的库存位置与账实差异口径" },
@@ -459,6 +544,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     requiredScmEvidence: ["planning-lines", "sop-cycles", "stock-balances", "sku-costs"],
     requiredStreams: {},
     requiredIdentities: {},
+    requiredSemantics: {},
     requiredProducts: [
       { productId: "demand-pulse", minimumLevel: "A2", purpose: "需求与退款情景基线" },
       { productId: "unified-inventory", minimumLevel: "A2", purpose: "库存位置、可用量与差异基线" },

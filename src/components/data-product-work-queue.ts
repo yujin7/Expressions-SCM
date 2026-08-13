@@ -9,6 +9,7 @@ import {
   evaluateProductSourceEvidence,
   type ProductIdentityEvidence,
   type ProductEvidenceSummary,
+  type ProductSemanticEvidence,
   type ProductStreamEvidence,
 } from "@/components/data-product-source-evidence";
 import type { DataSourceReadiness } from "@/server/modules/report/data-source-readiness";
@@ -36,7 +37,7 @@ export interface DataProductWorkItem {
   actionLabel: string;
   actionHref: string;
   bottleneck: string;
-  blockerState: ProductStreamEvidence["state"] | "identity" | "release" | "outcome" | "none";
+  blockerState: ProductStreamEvidence["state"] | "identity" | "semantic" | "release" | "outcome" | "none";
 }
 
 const PRODUCT_DECISION_HREF: Record<string, string> = {
@@ -132,11 +133,12 @@ const BLOCKER_ORDER: Record<DataProductWorkItem["blockerState"], number> = {
   release: 0,
   stale: 1,
   identity: 2,
-  degraded: 3,
-  missing: 4,
-  current: 5,
-  outcome: 6,
-  none: 7,
+  semantic: 3,
+  degraded: 4,
+  missing: 5,
+  current: 6,
+  outcome: 7,
+  none: 8,
 };
 
 export function summarizeDataProductLearning(
@@ -225,6 +227,33 @@ function identityBlockerLabel(blocker: ProductIdentityEvidence): string {
   return `${DATA_PRODUCT_SOURCE_LABEL[blocker.source]} · ${blocker.label}：${reason}`;
 }
 
+function firstSemanticBlocker(summary: ProductEvidenceSummary): ProductSemanticEvidence | null {
+  const rank = {
+    missing_contract: 0,
+    not_available: 1,
+    schema_profile_pending: 2,
+    not_implemented: 3,
+    business_review_pending: 4,
+    implemented: 5,
+  } as const;
+  return [...summary.semanticGates]
+    .sort((a, b) =>
+      rank[a.state] - rank[b.state]
+      || a.source.localeCompare(b.source)
+      || a.stream.localeCompare(b.stream)
+      || a.domain.localeCompare(b.domain)
+    )
+    .find((semantic) => semantic.state !== "implemented") ?? null;
+}
+
+function semanticBlockerLabel(blocker: ProductSemanticEvidence): string {
+  return `${DATA_PRODUCT_SOURCE_LABEL[blocker.source]} · ${dataProductStreamLabel(blocker.source, blocker.stream)} · ${blocker.label}：${blocker.reason}`;
+}
+
+function semanticRepairAction(blocker: ProductSemanticEvidence): string {
+  return `${blocker.nextAction}（${DATA_PRODUCT_SOURCE_LABEL[blocker.source]} · ${dataProductStreamLabel(blocker.source, blocker.stream)} · ${blocker.label}）`;
+}
+
 function repairAction(blocker: ProductStreamEvidence | null): string {
   if (!blocker) return "复核连接配置、身份覆盖和产品专属 SCM 事实";
   const source = DATA_PRODUCT_SOURCE_LABEL[blocker.source];
@@ -281,6 +310,7 @@ export function buildDataProductWorkQueue(
     const streamsReadyForIdentityWork = summary.sources.every((source) =>
       source.state === "observation" || source.state === "operational");
     const identityBlocker = streamsReadyForIdentityWork ? firstIdentityBlocker(summary) : null;
+    const semanticBlocker = streamsReadyForIdentityWork ? firstSemanticBlocker(summary) : null;
     const effectiveLevel = release?.effectiveLevel ?? runtime.level;
 
     if (release?.activeRelease && !release.activeReleaseCurrent) {
@@ -294,7 +324,9 @@ export function buildDataProductWorkQueue(
         stage: "safeguard",
         nextAction: `撤回已失效的 ${release.activeRelease.targetLevel} 放行，再按当前证据重新申请`,
         ...action,
-        bottleneck: identityBlocker ? identityBlockerLabel(identityBlocker) : blockerLabel(blocker),
+        bottleneck: identityBlocker
+          ? identityBlockerLabel(identityBlocker)
+          : semanticBlocker ? semanticBlockerLabel(semanticBlocker) : blockerLabel(blocker),
         blockerState: "release",
       };
     }
@@ -316,7 +348,9 @@ export function buildDataProductWorkQueue(
         ...action,
         bottleneck: current
           ? "实时证据与申请范围一致，等待独立会签"
-          : identityBlocker ? identityBlockerLabel(identityBlocker) : blockerLabel(blocker),
+          : identityBlocker
+            ? identityBlockerLabel(identityBlocker)
+            : semanticBlocker ? semanticBlockerLabel(semanticBlocker) : blockerLabel(blocker),
         blockerState: "release",
       };
     }
@@ -382,10 +416,14 @@ export function buildDataProductWorkQueue(
       decisionSlaHours: product.decisionSlaHours,
       effectiveLevel,
       stage: "repair",
-      nextAction: identityBlocker ? identityRepairAction(identityBlocker) : repairAction(blocker),
       ...action,
-      bottleneck: identityBlocker ? identityBlockerLabel(identityBlocker) : blockerLabel(blocker),
-      blockerState: identityBlocker ? "identity" : blocker?.state ?? "none",
+      nextAction: identityBlocker
+        ? identityRepairAction(identityBlocker)
+        : semanticBlocker ? semanticRepairAction(semanticBlocker) : repairAction(blocker),
+      bottleneck: identityBlocker
+        ? identityBlockerLabel(identityBlocker)
+        : semanticBlocker ? semanticBlockerLabel(semanticBlocker) : blockerLabel(blocker),
+      blockerState: identityBlocker ? "identity" : semanticBlocker ? "semantic" : blocker?.state ?? "none",
     };
   });
 

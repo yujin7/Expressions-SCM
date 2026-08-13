@@ -18,6 +18,13 @@ import {
   type CrossSystemIdentityState,
   type CrossSystemIdentitySource,
 } from "@/lib/cross-system-identity";
+import {
+  CROSS_SYSTEM_SEMANTIC_LABEL,
+  getCrossSystemSemanticStreamContract,
+  type CrossSystemSemanticDomain,
+  type CrossSystemSemanticSource,
+  type CrossSystemSemanticState,
+} from "@/lib/cross-system-semantics";
 
 export type ProductSourceEvidenceState =
   | "missing"
@@ -70,6 +77,17 @@ export interface ProductIdentityStreamExtractionEvidence {
   nextAction: string;
 }
 
+export interface ProductSemanticEvidence {
+  source: CrossSystemSemanticSource;
+  stream: string;
+  grain: string;
+  domain: CrossSystemSemanticDomain;
+  label: string;
+  state: CrossSystemSemanticState;
+  reason: string;
+  nextAction: string;
+}
+
 export interface ProductEvidenceSummary {
   sources: ProductSourceEvidence[];
   observedSources: number;
@@ -85,6 +103,8 @@ export interface ProductEvidenceSummary {
   partialIdentities: number;
   unimplementedIdentities: number;
   unreadyExtractionIdentities: number;
+  semanticGates: ProductSemanticEvidence[];
+  unreadySemantics: number;
   businessTimeWindow: ProductBusinessTimeWindow;
 }
 
@@ -188,6 +208,56 @@ function evaluateIdentityExtraction(
       : blocker.nextAction,
     extractionStreams: relevant.sort((left, right) => left.stream.localeCompare(right.stream)),
   };
+}
+
+function evaluateProductSemanticGates(product: DataProductDefinition): ProductSemanticEvidence[] {
+  return (Object.entries(product.requiredSemantics) as [
+    CrossSystemSemanticSource,
+    Record<string, CrossSystemSemanticDomain[]>,
+  ][]).flatMap(([source, streams]) => Object.entries(streams).flatMap(([stream, domains]) => {
+    const contract = getCrossSystemSemanticStreamContract(source, stream);
+    return domains.map<ProductSemanticEvidence>((domain) => {
+      const control = contract?.controls[domain];
+      if (!contract) {
+        return {
+          source,
+          stream,
+          grain: "未登记",
+          domain,
+          label: CROSS_SYSTEM_SEMANTIC_LABEL[domain],
+          state: "missing_contract",
+          reason: "该必需流没有逐流业务语义契约",
+          nextAction: "核对真实读取、源粒度和字段语义后显式登记；禁止按字段名猜测",
+        };
+      }
+      if (!control) {
+        return {
+          source,
+          stream,
+          grain: contract.grain,
+          domain,
+          label: CROSS_SYSTEM_SEMANTIC_LABEL[domain],
+          state: "missing_contract",
+          reason: "产品使用了该语义，但逐流契约没有声明",
+          nextAction: "依据真实源证据补齐该语义控制，或从产品需求中移除未使用语义",
+        };
+      }
+      return {
+        source,
+        stream,
+        grain: contract.grain,
+        domain,
+        label: CROSS_SYSTEM_SEMANTIC_LABEL[domain],
+        state: control.state,
+        reason: control.evidence,
+        nextAction: control.nextAction,
+      };
+    });
+  })).sort((left, right) =>
+    left.source.localeCompare(right.source)
+    || left.stream.localeCompare(right.stream)
+    || left.domain.localeCompare(right.domain)
+  );
 }
 
 function qualityReviewReason(evidence: DataStreamEvidence): string | null {
@@ -441,6 +511,7 @@ export function evaluateProductSourceEvidence(
       ? "unavailable"
       : businessDates.length < timeSensitive.length ? "partial" : "complete",
   };
+  const semanticGates = evaluateProductSemanticGates(product);
   return {
     sources,
     observedSources,
@@ -456,6 +527,8 @@ export function evaluateProductSourceEvidence(
     partialIdentities: identityGates.filter((item) => item.state === "partial").length,
     unimplementedIdentities: identityGates.filter((item) => item.state === "not_implemented").length,
     unreadyExtractionIdentities: identityGates.filter((item) => item.extractionState !== "implemented").length,
+    semanticGates,
+    unreadySemantics: semanticGates.filter((item) => item.state !== "implemented").length,
     businessTimeWindow,
   };
 }
@@ -496,6 +569,7 @@ export function currentProductAutomation(
       && source.streams.every(streamSafeForExplanation));
   const identitiesSafe = summary.identityGates.every((identity) =>
     identity.state === "ready" && identity.extractionState === "implemented");
+  const semanticsSafe = summary.semanticGates.every((semantic) => semantic.state === "implemented");
   if (sourcesSafe && !identitiesSafe) {
     const blocker = summary.identityGates.find((identity) =>
       identity.extractionState !== "implemented" || identity.state !== "ready")!;
@@ -510,10 +584,17 @@ export function currentProductAutomation(
       reason: `${blocker.source} 的「${blocker.label}」身份门禁未通过：${blocker.reason}。流成功不能代替身份统一。`,
     };
   }
-  return sourcesSafe && identitiesSafe
+  if (sourcesSafe && identitiesSafe && !semanticsSafe) {
+    const blocker = summary.semanticGates.find((semantic) => semantic.state !== "implemented")!;
+    return {
+      level: "A0",
+      reason: `${blocker.source} 的「${blocker.label}」语义门禁未通过：${blocker.reason}。数据可读且身份可对上，也不能在粒度、单位、时间或正负号未固化时进入 BI 解释。`,
+    };
+  }
+  return sourcesSafe && identitiesSafe && semanticsSafe
     ? {
         level: "A1",
-        reason: "所需流具备当前、成功且无拒收的证据，所需身份维度也已受控统一；仅允许带来源口径的解释，仍待产品级 UAT 后升级。",
+        reason: "所需流具备当前、成功且无拒收的证据，身份维度已受控统一，使用到的业务语义也已固化；仅允许带来源口径的解释，仍待产品级 UAT 后升级。",
       }
     : {
         level: "A0",

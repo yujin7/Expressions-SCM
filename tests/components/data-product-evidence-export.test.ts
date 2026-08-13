@@ -111,6 +111,10 @@ const product: DataProductDefinition = {
     YONYOU: ["yonbip-fi-ficloud-openapi-voucher-queryvouchers"],
   },
   requiredIdentities: { JST: ["warehouse"], YONYOU: ["organization"] },
+  requiredSemantics: {
+    JST: { "outbound-sales-daily": ["grain", "quantity_unit"] },
+    YONYOU: { "yonbip-fi-ficloud-openapi-voucher-queryvouchers": ["grain", "currency"] },
+  },
   supportingStreams: { JIANDAOYUN: ["inventory-count-observation"] },
   targetAuthority: "financial",
   releaseGate: "test",
@@ -262,12 +266,17 @@ describe("三方数据产品决策证据导出", () => {
         重复键组: 2,
         重复键行: 5,
         对账差异行: 1,
+        业务语义门禁: "business_review_pending",
+        源业务粒度: "业务日 × 聚水潭仓库 × SKU",
+        本产品使用语义: "业务粒度[implemented]；数量单位[business_review_pending]",
       }),
       expect.objectContaining({
         来源技术键: "YONYOU",
         证据用途: "放行依赖",
         数据流技术键: "yonbip-fi-ficloud-openapi-voucher-queryvouchers",
         观察层阻断: "是",
+        业务语义门禁: "schema_profile_pending",
+        本产品使用语义: "币种[schema_profile_pending]；业务粒度[schema_profile_pending]",
       }),
       expect.objectContaining({
         来源技术键: "JIANDAOYUN",

@@ -96,11 +96,55 @@ const product: DataProductDefinition = {
   requiredScmEvidence: ["sku-master"],
   requiredStreams: { JST: ["outbound-sales-daily"] },
   requiredIdentities: {},
+  requiredSemantics: {},
   targetAuthority: "operational",
   releaseGate: "test",
 };
 
 describe("数据产品所需流证据", () => {
+  it("数据与身份都就绪时，未固化的数量/纠错语义仍必须保持 A0", () => {
+    const semanticProduct = {
+      ...product,
+      requiredSemantics: {
+        JST: {
+          "outbound-sales-daily": ["grain", "quantity_unit", "correction_semantics"],
+        },
+      },
+    } satisfies DataProductDefinition;
+    const summary = evaluateProductSourceEvidence(semanticProduct, [
+      source("SCM", "operational", []),
+      source("JST", "observation", ["outbound-sales-daily"]),
+    ]);
+
+    expect(summary.semanticGates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ domain: "grain", state: "implemented" }),
+      expect.objectContaining({ domain: "quantity_unit", state: "business_review_pending" }),
+      expect.objectContaining({ domain: "correction_semantics", state: "business_review_pending" }),
+    ]));
+    expect(summary.unreadySemantics).toBe(2);
+    expect(currentProductAutomation(summary)).toMatchObject({
+      level: "A0",
+      reason: expect.stringContaining("语义门禁未通过"),
+    });
+  });
+
+  it("产品要求的流或语义未登记时默认拒绝，不按字段名猜测", () => {
+    const semanticProduct = {
+      ...product,
+      requiredStreams: { JST: ["unknown-read-stream"] },
+      requiredSemantics: { JST: { "unknown-read-stream": ["grain"] } },
+    } satisfies DataProductDefinition;
+    const summary = evaluateProductSourceEvidence(semanticProduct, [
+      source("SCM", "operational", []),
+      source("JST", "observation", ["unknown-read-stream"]),
+    ]);
+
+    expect(summary.semanticGates).toEqual([
+      expect.objectContaining({ stream: "unknown-read-stream", state: "missing_contract" }),
+    ]);
+    expect(currentProductAutomation(summary).level).toBe("A0");
+  });
+
   it("数据流全部当前时，缺失或部分统一的身份仍必须保持 A0", () => {
     const identityProduct = {
       ...product,

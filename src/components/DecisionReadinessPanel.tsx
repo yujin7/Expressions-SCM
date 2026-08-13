@@ -41,6 +41,7 @@ import {
   evaluateProductSupportingEvidence,
   type ProductEvidenceSummary,
   type ProductIdentityEvidence,
+  type ProductSemanticEvidence,
   type ProductStreamEvidence,
 } from "@/components/data-product-source-evidence";
 import { metric, metricTooltip } from "@/components/metrics";
@@ -64,6 +65,10 @@ import {
 import { buildDataProductEvidenceExport } from "@/components/data-product-evidence-export";
 import { exportCsv } from "@/components/exportCsv";
 import { CROSS_SYSTEM_IDENTITY_EXTRACTION_STATE_LABEL } from "@/lib/cross-system-identity";
+import {
+  CROSS_SYSTEM_SEMANTIC_STATE_LABEL,
+  type CrossSystemSemanticState,
+} from "@/lib/cross-system-semantics";
 
 const STATE_META: Record<CapabilityReadiness, { label: string; color: string; stroke: string }> = {
   ready: { label: "当前可用", color: "success", stroke: "#16a34a" },
@@ -102,6 +107,15 @@ const IDENTITY_EXTRACTION_COLOR: Record<ProductIdentityEvidence["extractionState
   implemented: "success",
   not_implemented: "warning",
   schema_profile_pending: "processing",
+  not_available: "error",
+  missing_contract: "error",
+};
+
+const SEMANTIC_STATE_COLOR: Record<CrossSystemSemanticState, string> = {
+  implemented: "success",
+  business_review_pending: "warning",
+  schema_profile_pending: "processing",
+  not_implemented: "warning",
   not_available: "error",
   missing_contract: "error",
 };
@@ -349,6 +363,118 @@ function RequiredIdentityEvidence({ summary }: { summary: ProductEvidenceSummary
                 </Typography.Paragraph>
               </Space>
             ),
+          },
+        ]}
+      />
+    </Card>
+  );
+}
+
+interface SemanticStreamRow {
+  source: ProductSemanticEvidence["source"];
+  stream: string;
+  grain: string;
+  controls: ProductSemanticEvidence[];
+}
+
+function RequiredSemanticEvidence({ summary }: { summary: ProductEvidenceSummary }) {
+  if (summary.semanticGates.length === 0) return null;
+  const grouped = new Map<string, SemanticStreamRow>();
+  for (const control of summary.semanticGates) {
+    const key = `${control.source}\u0000${control.stream}`;
+    const row = grouped.get(key) ?? {
+      source: control.source,
+      stream: control.stream,
+      grain: control.grain,
+      controls: [],
+    };
+    row.controls.push(control);
+    grouped.set(key, row);
+  }
+  const rows = [...grouped.values()].sort((a, b) =>
+    a.source.localeCompare(b.source) || a.stream.localeCompare(b.stream));
+  const ready = summary.semanticGates.length - summary.unreadySemantics;
+  return (
+    <Card
+      size="small"
+      title="业务语义门禁"
+      extra={(
+        <Space size={4} wrap>
+          <Tag color="success">已固化 {ready}</Tag>
+          <Tag color={summary.unreadySemantics > 0 ? "error" : "success"}>
+            待补齐 {summary.unreadySemantics}
+          </Tag>
+        </Space>
+      )}
+      styles={{ body: { padding: 0 } }}
+    >
+      <Alert
+        banner
+        showIcon
+        type="info"
+        message="数据可读、身份可对上仍不等于可相加：产品实际使用的粒度、业务时间、单位、币种、正负号、状态、库存范围和纠错语义必须逐流固化。"
+      />
+      <Table
+        rowKey={(row) => `${row.source}\u0000${row.stream}`}
+        size="small"
+        pagination={false}
+        dataSource={rows}
+        scroll={{ x: 1_300 }}
+        columns={[
+          {
+            title: "来源",
+            dataIndex: "source",
+            width: 120,
+            render: (source: SemanticStreamRow["source"]) => DATA_PRODUCT_SOURCE_LABEL[source],
+          },
+          {
+            title: "必需数据流",
+            dataIndex: "stream",
+            width: 250,
+            render: (stream: string, row) => (
+              <Space direction="vertical" size={2}>
+                <Typography.Text>{dataProductStreamLabel(row.source, stream)}</Typography.Text>
+                <Typography.Text type="secondary" code>{stream}</Typography.Text>
+              </Space>
+            ),
+          },
+          { title: "源业务粒度", dataIndex: "grain", width: 260 },
+          {
+            title: "本产品使用的语义",
+            dataIndex: "controls",
+            width: 360,
+            render: (controls: ProductSemanticEvidence[]) => (
+              <Space size={[4, 4]} wrap>
+                {controls.map((control) => (
+                  <Tag
+                    key={control.domain}
+                    color={SEMANTIC_STATE_COLOR[control.state]}
+                    title={`${CROSS_SYSTEM_SEMANTIC_STATE_LABEL[control.state]}：${control.reason}`}
+                  >
+                    {control.label}
+                  </Tag>
+                ))}
+              </Space>
+            ),
+          },
+          {
+            title: "首要缺口 / 下一步",
+            dataIndex: "controls",
+            width: 420,
+            render: (controls: ProductSemanticEvidence[]) => {
+              const blocker = controls.find((control) => control.state !== "implemented");
+              const control = blocker ?? controls[0];
+              return control ? (
+                <Space direction="vertical" size={2}>
+                  <Typography.Paragraph ellipsis={{ rows: 2, tooltip: control.reason }} style={{ marginBottom: 0 }}>
+                    {control.reason}
+                  </Typography.Paragraph>
+                  <Typography.Paragraph type="secondary" ellipsis={{ rows: 2, tooltip: control.nextAction }} style={{ marginBottom: 0 }}>
+                    {control.nextAction}
+                  </Typography.Paragraph>
+                </Space>
+              ) : "—";
+            },
           },
         ]}
       />
@@ -777,6 +903,7 @@ function ProductOperatingContract({
         </Card>
       ) : null}
       <RequiredIdentityEvidence summary={summary} />
+      <RequiredSemanticEvidence summary={summary} />
       <DataProductReleaseControl product={product} readiness={release} onChanged={onReleaseChanged} />
       <DataProductOutcomeControl product={product} readiness={outcome} onChanged={onReleaseChanged} />
       <RequiredStreamEvidence summary={summary} />

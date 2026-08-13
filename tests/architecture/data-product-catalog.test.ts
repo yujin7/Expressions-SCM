@@ -15,6 +15,12 @@ import {
   getCrossSystemIdentityStreamContract,
   type CrossSystemIdentitySource,
 } from "@/lib/cross-system-identity";
+import {
+  CROSS_SYSTEM_SEMANTIC_LABEL,
+  CROSS_SYSTEM_SEMANTIC_STREAM_CONTRACTS,
+  getCrossSystemSemanticStreamContract,
+  type CrossSystemSemanticSource,
+} from "@/lib/cross-system-semantics";
 import { JIANDAOYUN_FORM_CONTRACTS } from "@/server/integrations/jiandaoyun-contracts";
 import {
   YONYOU_READ_CONTRACTS,
@@ -69,6 +75,37 @@ describe("三方数据产品目录", () => {
           expect(CROSS_SYSTEM_IDENTITY_LABEL[identity], `${product.id}:${source}:${identity}`).toBeTruthy();
         }
       }
+      for (const [source, streams] of Object.entries(product.requiredSemantics)) {
+        expect(product.sources).toContain(source);
+        expect(source).not.toBe("SCM");
+        for (const [stream, semantics] of Object.entries(streams)) {
+          expect(product.requiredStreams[source as keyof typeof product.requiredStreams], `${product.id}:${source}:${stream}:required-stream`)
+            .toContain(stream);
+          expect(semantics.length, `${product.id}:${source}:${stream}:semantic-controls`).toBeGreaterThan(0);
+          expect(new Set(semantics).size).toBe(semantics.length);
+          for (const semantic of semantics) {
+            expect(CROSS_SYSTEM_SEMANTIC_LABEL[semantic], `${product.id}:${source}:${stream}:${semantic}`).toBeTruthy();
+          }
+        }
+      }
+    }
+  });
+
+  it("每条外部必需流都声明本产品使用的语义，且逐流契约逐项覆盖", () => {
+    for (const product of DATA_PRODUCTS) {
+      for (const [source, streams] of Object.entries(product.requiredStreams)) {
+        if (source === "SCM") continue;
+        const externalSource = source as CrossSystemSemanticSource;
+        for (const stream of streams) {
+          const required = product.requiredSemantics[externalSource]?.[stream];
+          expect(required?.length, `${product.id}:${source}:${stream}:required-semantics`).toBeGreaterThan(0);
+          const contract = getCrossSystemSemanticStreamContract(externalSource, stream);
+          expect(contract, `${product.id}:${source}:${stream}:semantic-contract`).toBeTruthy();
+          for (const domain of required ?? []) {
+            expect(contract?.controls[domain], `${product.id}:${source}:${stream}:${domain}:control`).toBeTruthy();
+          }
+        }
+      }
     }
   });
 
@@ -102,6 +139,21 @@ describe("三方数据产品目录", () => {
     for (const contract of YONYOU_READ_CONTRACTS) {
       const stream = yonyouContractStreamKey(contract.path);
       expect(getCrossSystemIdentityStreamContract("YONYOU", stream), `YONYOU:${stream}`).toBeTruthy();
+    }
+  });
+
+  it("简道云与用友所有已实现读取契约都登记了业务语义，注册键唯一", () => {
+    const keys = CROSS_SYSTEM_SEMANTIC_STREAM_CONTRACTS.map((contract) => `${contract.source}:${contract.stream}`);
+    expect(new Set(keys).size).toBe(keys.length);
+    for (const contract of JIANDAOYUN_FORM_CONTRACTS) {
+      expect(
+        getCrossSystemSemanticStreamContract("JIANDAOYUN", contract.key),
+        `JIANDAOYUN:${contract.key}`,
+      ).toBeTruthy();
+    }
+    for (const contract of YONYOU_READ_CONTRACTS) {
+      const stream = yonyouContractStreamKey(contract.path);
+      expect(getCrossSystemSemanticStreamContract("YONYOU", stream), `YONYOU:${stream}`).toBeTruthy();
     }
   });
 

@@ -37,6 +37,23 @@ vi.mock("@/lib/cross-system-identity", async (importOriginal) => {
   };
 });
 
+vi.mock("@/lib/cross-system-semantics", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/cross-system-semantics")>();
+  return {
+    ...actual,
+    getCrossSystemSemanticStreamContract: (source: "JIANDAOYUN" | "JST" | "YONYOU", stream: string) => {
+      const contract = actual.getCrossSystemSemanticStreamContract(source, stream);
+      return contract ? {
+        ...contract,
+        controls: Object.fromEntries(Object.entries(contract.controls).map(([domain, control]) => [
+          domain,
+          { ...control, state: "implemented", evidence: "结果闭环测试夹具已固化", nextAction: "持续监测" },
+        ])),
+      } : null;
+    },
+  };
+});
+
 const product = DATA_PRODUCTS.find((item) => item.id === "commerce-identity-control")!;
 
 function stream(key: string): DataStreamEvidence {

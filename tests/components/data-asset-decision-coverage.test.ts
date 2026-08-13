@@ -88,6 +88,7 @@ function product(
     requiredScmEvidence: [],
     requiredStreams,
     requiredIdentities: {},
+    requiredSemantics: {},
     targetAuthority: "operational",
     releaseGate: "test",
   };

@@ -20,6 +20,7 @@ import {
   CROSS_SYSTEM_IDENTITY_EXTRACTION_CONTRACT_VERSION,
   CROSS_SYSTEM_IDENTITY_ORDER,
 } from "@/lib/cross-system-identity";
+import { CROSS_SYSTEM_SEMANTIC_CONTRACT_VERSION } from "@/lib/cross-system-semantics";
 import { createTestDb } from "../helpers/db";
 
 /*
@@ -41,6 +42,29 @@ vi.mock("@/lib/cross-system-identity", async (importOriginal) => {
             ...control,
             state: "implemented",
             evidence: "测试夹具：逐流身份已进入受控治理",
+            nextAction: "持续监测",
+          },
+        ])),
+      };
+    },
+  };
+});
+
+vi.mock("@/lib/cross-system-semantics", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/cross-system-semantics")>();
+  return {
+    ...actual,
+    getCrossSystemSemanticStreamContract: (source: "JIANDAOYUN" | "JST" | "YONYOU", stream: string) => {
+      const contract = actual.getCrossSystemSemanticStreamContract(source, stream);
+      if (!contract) return null;
+      return {
+        ...contract,
+        controls: Object.fromEntries(Object.entries(contract.controls).map(([domain, control]) => [
+          domain,
+          {
+            ...control,
+            state: "implemented",
+            evidence: "测试夹具：业务语义已固化",
             nextAction: "持续监测",
           },
         ])),
@@ -312,7 +336,7 @@ describe("数据产品放行闭环", () => {
   it("正常日常刷新不使批准失效，但连接配置范围变化会改变指纹", () => {
     const firstSources = currentSources();
     const first = buildDataProductReleaseEvidence(product, firstSources, new Date("2026-08-12T02:00:00Z"));
-    expect(first.envelope.schemaVersion).toBe("data-product-release/v4");
+    expect(first.envelope.schemaVersion).toBe("data-product-release/v5");
     expect(first.envelope.product.identityExtractionContractVersion)
       .toBe(CROSS_SYSTEM_IDENTITY_EXTRACTION_CONTRACT_VERSION);
     expect(first.envelope.product.identityExtractionScope).toEqual(expect.arrayContaining([
@@ -322,6 +346,15 @@ describe("数据产品放行闭环", () => {
         identities: expect.arrayContaining([
           expect.objectContaining({ domain: "sku", state: "not_implemented" }),
         ]),
+      }),
+    ]));
+    expect(first.envelope.product.semanticContractVersion).toBe(CROSS_SYSTEM_SEMANTIC_CONTRACT_VERSION);
+    expect(first.envelope.product.semanticScope).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "JIANDAOYUN",
+        stream: "pdd-sku-crosswalk-observation",
+        domain: "identifier_namespace",
+        state: "business_review_pending",
       }),
     ]));
     const refreshedSources = currentSources();
