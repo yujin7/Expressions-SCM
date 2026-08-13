@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getDbAsync } from "@/db";
 import { errorResponse, parseListQuery, readJson } from "@/server/modules/master/common";
 import { getMarginReport, upsertSkuCost } from "@/server/modules/report/margin";
+import { loadJiandaoyunPlatformFeeObservation } from "@/server/modules/report/platform-fee-observation";
 import { guardFreshWrite, requireAnyRole } from "@/server/modules/outsource/common";
 import { PRICE_VISIBLE_ROLES } from "@/server/core/constants";
 
@@ -18,8 +20,12 @@ export async function GET(req: NextRequest) {
     requireAnyRole(user, ...PRICE_VISIBLE_ROLES);
     const { q, page, pageSize, searchParams } = parseListQuery(req.url);
     const onlyCosted = searchParams.get("onlyCosted") === "1" || searchParams.get("onlyCosted") === "true";
-    const data = await getMarginReport({ q, page, pageSize, onlyCosted });
-    return NextResponse.json(data);
+    const db = await getDbAsync();
+    const [data, platformFee] = await Promise.all([
+      getMarginReport({ q, page, pageSize, onlyCosted }, db),
+      loadJiandaoyunPlatformFeeObservation(db),
+    ]);
+    return NextResponse.json({ ...data, platformFee });
   } catch (e) {
     return errorResponse(e);
   }

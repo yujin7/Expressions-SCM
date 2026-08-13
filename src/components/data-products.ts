@@ -232,7 +232,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     contractVersion: "1.0.1",
     cadence: "monthly",
     decisionSlaHours: 72,
-    metricIds: ["netRevenue", "contributionMarginRate", "costCoverage"],
+    metricIds: ["netRevenue", "platformFeePaidAmount", "contributionMarginRate", "costCoverage"],
     maxAutomation: "A2",
     automationGuardrail: "未关账期间只解释差异；天猫渠道费用不得冒充全渠道，无 SKU 直接归属时禁止按销量自动分摊，也不得改成本或形成财务凭证。",
     sources: ["JIANDAOYUN", "JST", "YONYOU", "SCM"],

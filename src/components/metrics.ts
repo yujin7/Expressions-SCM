@@ -373,6 +373,15 @@ export const METRICS: Record<string, MetricDef> = {
     tier: "derived",
     caveat: "未关账、费用覆盖不足或币种未统一时只能作为观察值",
   },
+  platformFeePaidAmount: {
+    id: "platformFeePaidAmount",
+    label: "平台费用支付金额",
+    short: "简道云天猫费用项目汇总中，按币种分别累计的支付金额",
+    formula: "Σ支付金额（负数按冲销/退回原样保留；按月份、店铺、费用项和币种分别汇总）",
+    unit: "money",
+    tier: "registry",
+    caveat: "当前仅覆盖天猫渠道；财务确认正式费用字段、控制总量和关账期间前只能用于 UAT 与结构解释，且不得无依据分摊到 SKU",
+  },
   contributionMarginRate: {
     id: "contributionMarginRate",
     label: "贡献毛利率",
