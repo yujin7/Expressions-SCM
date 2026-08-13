@@ -156,6 +156,12 @@ npx tsx src/jobs/cli.ts reconcile-jst 2026-07-28
 状态和非秘密证据编号；对有显式开关/契约的连接器还分别输出启用状态、契约选择状态与数量。
 它不会输出凭据、租户/组织值、端点或获批接口清单，可附在内部发布单。
 
+简道云聚合审计既可全量运行，也可按契约 key 定向运行。例如需求脉搏复核可只传
+`tmall-sku-crosswalk-observation tmall-sku-sales-observation tmall-sku-refund-observation`；
+输出会明确标注 `scope.mode=selected` 与实际审计契约，避免一次全表扫描拖慢日常例外处理，
+并跳过只有全量审计才需要的 297 视图目录普查。结果以 `catalogAudited=false` 明确披露该边界，
+避免把局部审计误报成全量覆盖。
+
 ## 3. 简道云
 
 ### 已验证的源事实
