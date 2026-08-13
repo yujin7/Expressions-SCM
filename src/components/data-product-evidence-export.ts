@@ -53,7 +53,7 @@ const HEADERS = [
   "结果学习状态", "真实结果有效记录数", "已评价决策数", "采纳数", "待观察数", "已形成结果数", "误报数",
   "采纳率%", "误报率%", "平均处理分钟", "实际节省工时", "现金影响可见", "实际现金影响CNY",
   "最新结果决策编号", "最新结果业务日", "最新业务决定", "最新真实结果",
-  "辅助历史摘要", "辅助历史期间",
+  "辅助历史摘要", "辅助历史期间", "辅助身份认领覆盖",
 ];
 
 const OUTCOME_DECISION_LABEL = {
@@ -133,6 +133,9 @@ export function buildDataProductEvidenceExport(
       const observationPeriod = observation?.businessDateFrom && observation.businessDateThrough
         ? `${observation.businessDateFrom} 至 ${observation.businessDateThrough}`
         : observation?.sourceAsOf ?? null;
+      const observationIdentity = observation?.identityCoverage.map((item) =>
+        `${item.label} ${item.governedMatches}/${item.distinctValues}（待认领 ${item.openValues}）`
+      ).join(" · ") || null;
       return [
         "data_product_stream_evidence",
         generatedAt,
@@ -204,6 +207,7 @@ export function buildDataProductEvidenceExport(
         latestOutcome ? OUTCOME_RESULT_LABEL[latestOutcome.result] : null,
         observation?.summary ?? null,
         observationPeriod,
+        observationIdentity,
       ];
     });
   });

@@ -6,6 +6,7 @@
  * 判断，也不能替代 SCM/聚水潭/用友的当前事实。
  */
 import { sql, type SQL } from "drizzle-orm";
+import { normalizeAliasText } from "@/server/modules/dimension/resolver";
 
 interface ReadDb {
   execute(query: SQL): Promise<unknown>;
@@ -26,6 +27,14 @@ export interface SupportingObservationMetric {
   unit: string;
 }
 
+export interface SupportingIdentityCoverage {
+  kind: "sku_code" | "supplier" | "warehouse";
+  label: string;
+  distinctValues: number;
+  governedMatches: number;
+  openValues: number;
+}
+
 export interface JiandaoyunSupportingObservation {
   stream: JiandaoyunSupportingStream;
   authority: "historical_observation";
@@ -36,6 +45,7 @@ export interface JiandaoyunSupportingObservation {
   businessDateThrough: string | null;
   rows: number;
   metrics: SupportingObservationMetric[];
+  identityCoverage: SupportingIdentityCoverage[];
   summary: string;
   gate: string;
 }
@@ -229,6 +239,122 @@ export async function loadJiandaoyunSupportingObservations(
     SELECT * FROM aggregated
   `);
 
+  // 外部身份只认可 JIANDAOYUN 作用域的人工认领；即使原文恰好等于内部主码或 GLOBAL
+  // 别名，也只能算待裁决候选，不能静默升级为已匹配。
+  const identityResult = await db.execute(sql`
+    WITH latest AS (
+      SELECT DISTINCT ON (ir.stream)
+        ir.stream, ir.import_job_id
+      FROM integration_runs ir
+      WHERE ir.connector = 'jdy'
+        AND ir.stream IN (
+          'purchase-demand-observation',
+          'supplier-observation',
+          'warehouse-observation',
+          'warehouse-transfer-observation',
+          'inventory-count-observation',
+          'sample-management-observation'
+        )
+        AND ir.status = 'succeeded'
+        AND ir.import_job_id IS NOT NULL
+      ORDER BY ir.stream, ir.started_at DESC, ir.id DESC
+    ), base AS (
+      SELECT l.stream, sr.payload->'data' AS data
+      FROM latest l
+      INNER JOIN staging_rows sr ON sr.import_job_id = l.import_job_id
+        AND sr.status IN ('pending', 'validated', 'committed')
+    ), candidates AS (
+      SELECT stream, 'sku_code'::text AS kind, nullif(trim(data->>'productCode'), '') AS value
+      FROM base WHERE stream = 'purchase-demand-observation'
+      UNION ALL
+      SELECT stream, 'supplier', nullif(trim(data->>'supplier'), '')
+      FROM base WHERE stream = 'purchase-demand-observation'
+      UNION ALL
+      SELECT stream, 'warehouse', nullif(trim(data->>'warehouse'), '')
+      FROM base WHERE stream = 'purchase-demand-observation'
+      UNION ALL
+      SELECT stream, 'supplier', coalesce(
+        nullif(trim(data->>'supplierCode'), ''),
+        nullif(trim(data->>'supplierName'), '')
+      )
+      FROM base WHERE stream IN ('supplier-observation', 'sample-management-observation')
+      UNION ALL
+      SELECT stream, 'warehouse', coalesce(
+        nullif(trim(data->>'warehouseCode'), ''),
+        nullif(trim(data->>'warehouseName'), ''),
+        nullif(trim(data->>'warehouse'), '')
+      )
+      FROM base WHERE stream IN (
+        'warehouse-observation', 'inventory-count-observation', 'sample-management-observation'
+      )
+      UNION ALL
+      SELECT stream, 'warehouse', nullif(trim(data->>'fromWarehouse'), '')
+      FROM base WHERE stream = 'warehouse-transfer-observation'
+      UNION ALL
+      SELECT stream, 'warehouse', nullif(trim(data->>'toWarehouse'), '')
+      FROM base WHERE stream = 'warehouse-transfer-observation'
+    )
+    SELECT DISTINCT stream, kind, value
+    FROM candidates
+    WHERE value IS NOT NULL
+  `);
+  const aliasResult = await db.execute(sql`
+    SELECT alias_type, raw_value
+    FROM aliases
+    WHERE scope = 'JIANDAOYUN'
+      AND alias_type IN ('sku_code', 'supplier_oem', 'warehouse')
+  `);
+
+  const identityByStream = new Map<JiandaoyunSupportingStream, SupportingIdentityCoverage[]>();
+  const identityLabel: Record<SupportingIdentityCoverage["kind"], string> = {
+    sku_code: "SKU 身份",
+    supplier: "供应商身份",
+    warehouse: "仓库身份",
+  };
+  const aliasTypeByKind: Record<SupportingIdentityCoverage["kind"], string> = {
+    sku_code: "sku_code",
+    supplier: "supplier_oem",
+    warehouse: "warehouse",
+  };
+  const governedAliases = new Map<string, Set<string>>();
+  for (const row of resultRows<Record<string, unknown>>(aliasResult)) {
+    const aliasType = String(row.alias_type);
+    const value = normalizeAliasText(String(row.raw_value ?? ""));
+    if (!value) continue;
+    const current = governedAliases.get(aliasType) ?? new Set<string>();
+    current.add(value);
+    governedAliases.set(aliasType, current);
+  }
+  const candidatesByStreamAndKind = new Map<string, Set<string>>();
+  for (const row of resultRows<Record<string, unknown>>(identityResult)) {
+    const stream = String(row.stream) as JiandaoyunSupportingStream;
+    const kind = String(row.kind) as SupportingIdentityCoverage["kind"];
+    if (!STREAM_ORDER.includes(stream) || !(kind in identityLabel)) continue;
+    const value = normalizeAliasText(String(row.value ?? ""));
+    if (!value) continue;
+    const key = `${stream}\u0000${kind}`;
+    const values = candidatesByStreamAndKind.get(key) ?? new Set<string>();
+    values.add(value);
+    candidatesByStreamAndKind.set(key, values);
+  }
+  for (const [key, values] of candidatesByStreamAndKind) {
+    const [streamText, kindText] = key.split("\u0000");
+    const stream = streamText as JiandaoyunSupportingStream;
+    const kind = kindText as SupportingIdentityCoverage["kind"];
+    const governed = governedAliases.get(aliasTypeByKind[kind]) ?? new Set<string>();
+    const distinctValues = values.size;
+    const governedMatches = [...values].filter((value) => governed.has(value)).length;
+    const current = identityByStream.get(stream) ?? [];
+    current.push({
+      kind,
+      label: identityLabel[kind],
+      distinctValues,
+      governedMatches,
+      openValues: distinctValues - governedMatches,
+    });
+    identityByStream.set(stream, current);
+  }
+
   const byStream = new Map<JiandaoyunSupportingStream, JiandaoyunSupportingObservation>();
   for (const row of resultRows<Record<string, unknown>>(result)) {
     const stream = String(row.stream) as JiandaoyunSupportingStream;
@@ -244,8 +370,11 @@ export async function loadJiandaoyunSupportingObservations(
       businessDateThrough: dateValue(row.business_date_through),
       rows: intValue(row.rows),
       metrics,
+      identityCoverage: (identityByStream.get(stream) ?? []).sort((a, b) =>
+        a.label.localeCompare(b.label, "zh-CN")
+      ),
       summary: metrics.map(metricSummary).join(" · "),
-      gate: "历史辅助观察：只用于流程基线、身份映射与回查；不参与产品放行，不代表当前状态。",
+      gate: "历史辅助观察：只用于流程基线、身份映射与回查；只有 JIANDAOYUN 作用域人工认领才算身份命中；不参与产品放行，不代表当前状态。",
     });
   }
   return STREAM_ORDER.flatMap((stream) => {

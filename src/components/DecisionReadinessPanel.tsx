@@ -311,6 +311,15 @@ function SupportingStreamEvidence({
                     {observation.summary}
                   </Typography.Paragraph>
                   <Typography.Text type="secondary">历史期间：{period}</Typography.Text>
+                  {observation.identityCoverage.length > 0 ? (
+                    <Typography.Text
+                      type={observation.identityCoverage.some((item) => item.openValues > 0) ? "warning" : "success"}
+                    >
+                      身份认领：{observation.identityCoverage.map((item) =>
+                        `${item.label} ${item.governedMatches}/${item.distinctValues}`
+                      ).join(" · ")}
+                    </Typography.Text>
+                  ) : null}
                 </Space>
               );
             },

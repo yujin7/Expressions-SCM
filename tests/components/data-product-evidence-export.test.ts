@@ -137,6 +137,13 @@ const supportingObservation: JiandaoyunSupportingObservation = {
   businessDateThrough: "2024-07-22",
   rows: 2,
   metrics: [{ key: "loss", label: "盘亏数量", value: "3.0000", unit: "" }],
+  identityCoverage: [{
+    kind: "warehouse",
+    label: "仓库身份",
+    distinctValues: 2,
+    governedMatches: 0,
+    openValues: 2,
+  }],
   summary: "盘点单 2单 · 盘亏数量 3",
   gate: "历史辅助观察：不参与产品放行。",
 };
@@ -209,6 +216,7 @@ describe("三方数据产品决策证据导出", () => {
         共同可比截止: "2026-08-10",
         辅助历史摘要: "盘点单 2单 · 盘亏数量 3",
         辅助历史期间: "2024-07-20 至 2024-07-22",
+        辅助身份认领覆盖: "仓库身份 0/2（待认领 2）",
       }),
     ]);
     expect(JSON.stringify(result)).not.toContain("must-not-export");
