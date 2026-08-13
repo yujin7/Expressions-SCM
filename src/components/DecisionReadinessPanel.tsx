@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
-import { ArrowRightOutlined } from "@ant-design/icons";
+import { ArrowRightOutlined, DownloadOutlined } from "@ant-design/icons";
 import {
   Alert,
   App,
@@ -58,6 +58,8 @@ import {
   buildDataProductWorkQueue,
   type DataProductWorkStage,
 } from "@/components/data-product-work-queue";
+import { buildDataProductEvidenceExport } from "@/components/data-product-evidence-export";
+import { exportCsv } from "@/components/exportCsv";
 
 const STATE_META: Record<CapabilityReadiness, { label: string; color: string; stroke: string }> = {
   ready: { label: "当前可用", color: "success", stroke: "#16a34a" },
@@ -444,6 +446,7 @@ export default function DecisionReadinessPanel({
   onReleaseChanged?: () => void | Promise<void>;
   focusProductId?: string;
 }) {
+  const { message } = App.useApp();
   const ready = DECISION_CAPABILITIES.filter((item) => capabilityReadiness(item) === "ready").length;
   const partial = DECISION_CAPABILITIES.filter((item) => capabilityReadiness(item) === "partial").length;
   const external = dataSources.filter((item) => item.key !== "SCM");
@@ -453,6 +456,11 @@ export default function DecisionReadinessPanel({
     () => buildDataProductWorkQueue(DATA_PRODUCTS, dataSources, dataProductReleases),
     [dataSources, dataProductReleases],
   );
+  const exportEvidence = () => {
+    const payload = buildDataProductEvidenceExport(DATA_PRODUCTS, dataSources, dataProductReleases);
+    exportCsv(payload.filename, payload.headers, payload.rows);
+    message.success(`已导出 ${payload.rows.length} 行三方数据产品决策证据`);
+  };
 
   return (
     <div>
@@ -516,7 +524,14 @@ export default function DecisionReadinessPanel({
         size="small"
         title="数据产品动态行动队列"
         style={{ marginTop: 16 }}
-        extra={<Tag color="blue">待推进 {workQueue.filter((item) => item.stage !== "monitor").length}/{workQueue.length}</Tag>}
+        extra={(
+          <Space size={6} wrap>
+            <Tag color="blue">待推进 {workQueue.filter((item) => item.stage !== "monitor").length}/{workQueue.length}</Tag>
+            <Button size="small" icon={<DownloadOutlined />} onClick={exportEvidence}>
+              导出决策证据包
+            </Button>
+          </Space>
+        )}
         styles={{ body: { padding: 0 } }}
       >
         <Alert
