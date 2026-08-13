@@ -23,8 +23,69 @@ export interface DataProductWorkItem {
   effectiveLevel: DataProductAutomationLevel;
   stage: DataProductWorkStage;
   nextAction: string;
+  actionLabel: string;
+  actionHref: string;
   bottleneck: string;
   blockerState: ProductStreamEvidence["state"] | "release" | "none";
+}
+
+const PRODUCT_DECISION_HREF: Record<string, string> = {
+  "commerce-identity-control": "/report/decision-studio?tab=identity",
+  "demand-pulse": "/report/decision-studio?tab=external",
+  "order-to-cash": "/report/margin",
+  "unified-inventory": "/report/inventory-analytics",
+  "supply-commitment": "/report/inbound-calendar",
+  "net-margin-bridge": "/report/margin",
+  "supplier-360": "/report/supplier-scorecard",
+  "replenishment-evidence": "/replenish",
+  "launch-readiness": "/npd",
+  "exception-triangulation": "/report/data-health",
+  "cash-sop": "/report/dashboard",
+};
+
+const IDENTITY_STREAMS = new Set([
+  "tmall-sku-crosswalk-observation",
+  "pdd-sku-crosswalk-observation",
+  "vip-product-crosswalk-observation",
+  "item-master",
+]);
+
+function productEvidenceHref(productId: string): string {
+  return `/report/decision-studio?tab=readiness&product=${encodeURIComponent(productId)}#data-product-${encodeURIComponent(productId)}`;
+}
+
+function actionTarget(
+  product: DataProductDefinition,
+  stage: DataProductWorkStage,
+  blocker: ProductStreamEvidence | null,
+  dataSources: readonly DataSourceReadiness[],
+): Pick<DataProductWorkItem, "actionLabel" | "actionHref"> {
+  if (stage === "monitor") {
+    return {
+      actionLabel: "进入业务分析",
+      actionHref: PRODUCT_DECISION_HREF[product.id] ?? productEvidenceHref(product.id),
+    };
+  }
+
+  if (
+    stage === "repair"
+    && blocker
+    && blocker.source !== "SCM"
+    && IDENTITY_STREAMS.has(blocker.stream)
+  ) {
+    const source = dataSources.find((row) => row.key === blocker.source);
+    if ((source?.openIdentityExceptions ?? 0) > 0) {
+      return {
+        actionLabel: "处理身份异常",
+        actionHref: `/import/exceptions?status=open&scope=${encodeURIComponent(blocker.source)}`,
+      };
+    }
+  }
+
+  return {
+    actionLabel: stage === "repair" ? "查看逐流证据" : "打开产品门禁",
+    actionHref: productEvidenceHref(product.id),
+  };
 }
 
 const STAGE_ORDER: Record<DataProductWorkStage, number> = {
@@ -99,6 +160,7 @@ export function buildDataProductWorkQueue(
     const effectiveLevel = release?.effectiveLevel ?? runtime.level;
 
     if (release?.activeRelease && !release.activeReleaseCurrent) {
+      const action = actionTarget(product, "safeguard", blocker, dataSources);
       return {
         productId: product.id,
         title: product.title,
@@ -107,6 +169,7 @@ export function buildDataProductWorkQueue(
         effectiveLevel,
         stage: "safeguard",
         nextAction: `撤回已失效的 ${release.activeRelease.targetLevel} 放行，再按当前证据重新申请`,
+        ...action,
         bottleneck: blockerLabel(blocker),
         blockerState: "release",
       };
@@ -114,22 +177,26 @@ export function buildDataProductWorkQueue(
 
     if (release?.pendingRelease) {
       const current = pendingEvidenceCurrent(product, release);
+      const stage = current ? "approval" : "safeguard";
+      const action = actionTarget(product, stage, blocker, dataSources);
       return {
         productId: product.id,
         title: product.title,
         owner: product.owner,
         decisionSlaHours: product.decisionSlaHours,
         effectiveLevel,
-        stage: current ? "approval" : "safeguard",
+        stage,
         nextAction: current
           ? "由同责任域的另一名审批人复核控制总量、UAT 和回滚方案"
           : "拒绝已失效的申请；修复实时门禁后重新发起",
+        ...action,
         bottleneck: current ? "实时证据与申请范围一致，等待独立会签" : blockerLabel(blocker),
         blockerState: "release",
       };
     }
 
     if (release?.activeReleaseCurrent && release.activeRelease) {
+      const action = actionTarget(product, "monitor", blocker, dataSources);
       return {
         productId: product.id,
         title: product.title,
@@ -138,12 +205,14 @@ export function buildDataProductWorkQueue(
         effectiveLevel,
         stage: "monitor",
         nextAction: "监控建议采纳、实际结果、误报与门禁自动降级",
+        ...action,
         bottleneck: `当前 ${release.activeRelease.targetLevel} 放行有效`,
         blockerState: "none",
       };
     }
 
     if (runtime.level === "A1") {
+      const action = actionTarget(product, "release_ready", blocker, dataSources);
       return {
         productId: product.id,
         title: product.title,
@@ -152,11 +221,13 @@ export function buildDataProductWorkQueue(
         effectiveLevel,
         stage: "release_ready",
         nextAction: "用当前批次完成控制总量和业务 UAT，登记回滚后发起放行",
+        ...action,
         bottleneck: "来源证据可用于解释；尚缺产品级 UAT/会签",
         blockerState: "release",
       };
     }
 
+    const action = actionTarget(product, "repair", blocker, dataSources);
     return {
       productId: product.id,
       title: product.title,
@@ -165,6 +236,7 @@ export function buildDataProductWorkQueue(
       effectiveLevel,
       stage: "repair",
       nextAction: repairAction(blocker),
+      ...action,
       bottleneck: blockerLabel(blocker),
       blockerState: blocker?.state ?? "none",
     };

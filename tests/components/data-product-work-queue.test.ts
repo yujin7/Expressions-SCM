@@ -94,6 +94,10 @@ describe("data product dynamic work queue", () => {
     })]);
     expect(queue[0]).toMatchObject({ productId: product.id, stage: "safeguard", blockerState: "release" });
     expect(queue[0].nextAction).toContain("撤回已失效");
+    expect(queue[0]).toMatchObject({
+      actionLabel: "打开产品门禁",
+      actionHref: expect.stringContaining(`product=${product.id}`),
+    });
   });
 
   it("orders ordinary repairs by the declared decision SLA without invented value scores", () => {
@@ -105,6 +109,33 @@ describe("data product dynamic work queue", () => {
     expect(queue[0].bottleneck).toContain("尚无成功运行证据");
     expect(queue.find((item) => item.productId === "demand-pulse")?.nextAction).toContain("天猫 SKU 对照");
     expect(queue.find((item) => item.productId === "demand-pulse")?.nextAction).not.toContain("tmall-sku-crosswalk-observation");
+    expect(queue.find((item) => item.productId === "demand-pulse")?.actionLabel).toBe("查看逐流证据");
+  });
+
+  it("routes an external identity blocker to the scoped human-claim queue", () => {
+    const product = DATA_PRODUCTS.find((item) => item.id === "commerce-identity-control")!;
+    const withIdentityExceptions = sources.map((source) => source.key === "JIANDAOYUN"
+      ? { ...source, openIdentityExceptions: 12 }
+      : source);
+    const [item] = buildDataProductWorkQueue([product], withIdentityExceptions, []);
+    expect(item).toMatchObject({
+      stage: "repair",
+      actionLabel: "处理身份异常",
+      actionHref: "/import/exceptions?status=open&scope=JIANDAOYUN",
+    });
+  });
+
+  it("keeps non-identity source failures on their exact stream evidence", () => {
+    const product = DATA_PRODUCTS.find((item) => item.id === "exception-triangulation")!;
+    const withUnrelatedIdentityExceptions = sources.map((source) => source.key === "JIANDAOYUN"
+      ? { ...source, openIdentityExceptions: 12 }
+      : source);
+    const [item] = buildDataProductWorkQueue([product], withUnrelatedIdentityExceptions, []);
+    expect(item).toMatchObject({
+      stage: "repair",
+      actionLabel: "查看逐流证据",
+      actionHref: expect.stringContaining(`product=${product.id}`),
+    });
   });
 
   it("moves a current approved product to monitoring instead of asking for another release", () => {
@@ -139,6 +170,11 @@ describe("data product dynamic work queue", () => {
       activeReleaseCurrent: true,
       canRevoke: true,
     })]);
-    expect(queue).toEqual([expect.objectContaining({ stage: "monitor", effectiveLevel: "A2" })]);
+    expect(queue).toEqual([expect.objectContaining({
+      stage: "monitor",
+      effectiveLevel: "A2",
+      actionLabel: "进入业务分析",
+      actionHref: "/report/decision-studio?tab=identity",
+    })]);
   });
 });
