@@ -14,7 +14,10 @@ import {
   type ConnectorReadiness,
 } from "@/server/integrations/connector";
 import { JIANDAOYUN_FORM_CONTRACTS } from "@/server/integrations/jiandaoyun-contracts";
-import { YONYOU_READ_CONTRACTS } from "@/server/integrations/yonyou-contracts";
+import {
+  YONYOU_READ_CONTRACTS,
+  yonyouContractStreamKey,
+} from "@/server/integrations/yonyou-contracts";
 import {
   SCM_EVIDENCE_MAX_AGE_DAYS,
   type ScmEvidenceKey,
@@ -83,6 +86,8 @@ export interface DataSourceReadiness {
   configurationBinding: string;
   contractSelectionState: ConnectorContractSelectionState;
   selectedContractCount: number;
+  /** 当前代码已经实现并受控登记的逐流读取能力；与是否获授权、是否跑成功分开。 */
+  availableStreamKeys?: string[];
   successfulStreams: number;
   successfulStreamKeys: string[];
   streams: DataStreamEvidence[];
@@ -269,10 +274,6 @@ function scmEvidenceSnapshot(
   };
 }
 
-function yonyouStream(path: string): string {
-  return path.replace(/^\/+/, "").replace(/[^A-Za-z0-9]+/g, "-").toLowerCase();
-}
-
 function streamQualityEvidence(scope: Record<string, unknown>): DataStreamQualityEvidence | null {
   const control = objectValue(scope.controlSummary);
   if (control.version !== "jdy-control-v1") return null;
@@ -301,12 +302,18 @@ const STREAM_FRESHNESS_DAYS = new Map<string, number>([
   ["jst\u0000outbound-sales-daily", 2],
   ["jst\u0000inventory-total-delta", 1],
   ...YONYOU_READ_CONTRACTS.map((contract) => [
-    `yonyou\u0000${yonyouStream(contract.path)}`,
+    `yonyou\u0000${yonyouContractStreamKey(contract.path)}`,
     contract.domain === "inventory" || contract.domain === "procurement"
       ? 2
       : contract.domain === "finance" ? 35 : 30,
   ] as const),
 ]);
+
+const AVAILABLE_EXTERNAL_STREAMS: Record<Exclude<DataSourceKey, "SCM">, string[]> = {
+  JIANDAOYUN: JIANDAOYUN_FORM_CONTRACTS.map((contract) => contract.key).sort(),
+  JST: ["inventory-total-delta", "outbound-sales-daily"],
+  YONYOU: YONYOU_READ_CONTRACTS.map((contract) => yonyouContractStreamKey(contract.path)).sort(),
+};
 
 function streamEvidence(row: StreamRunAggregate, now: Date): DataStreamEvidence {
   const scope = objectValue(row.request_scope);
@@ -525,6 +532,7 @@ function connectorSource(
     configurationBinding: readiness.expectedLiveVerificationBinding ?? `unbound:${key}`,
     contractSelectionState: readiness.contractSelectionState,
     selectedContractCount: readiness.selectedContractCount,
+    availableStreamKeys: key === "SCM" ? [] : AVAILABLE_EXTERNAL_STREAMS[key],
     successfulStreams,
     successfulStreamKeys: streamKeys(success?.successful_stream_keys),
     streams,
@@ -645,6 +653,7 @@ export async function loadDataSourceReadiness(
     configurationBinding: "scm-controlled-facts/v1",
     contractSelectionState: "not_required",
     selectedContractCount: 0,
+    availableStreamKeys: [],
     successfulStreams: 0,
     successfulStreamKeys: [],
     streams: [],
@@ -684,6 +693,7 @@ export async function loadDataSourceReadiness(
           configurationBinding: `unregistered:${source}`,
           contractSelectionState: "missing" as const,
           selectedContractCount: 0,
+          availableStreamKeys: [],
           successfulStreams: 0,
           successfulStreamKeys: [],
           streams: [],

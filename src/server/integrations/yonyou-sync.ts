@@ -22,7 +22,11 @@ import {
 } from "@/server/import/staging";
 import { writeIntegrationEvidence } from "./evidence";
 import { YonyouApiError, YonyouClient } from "./yonyou-client";
-import { yonyouReadContractByName, type YonyouReadContractName } from "./yonyou-contracts";
+import {
+  yonyouContractStreamKey,
+  yonyouReadContractByName,
+  type YonyouReadContractName,
+} from "./yonyou-contracts";
 
 const CONNECTOR = "yy";
 const SCHEMA_VERSION = "yonyou-observation-v1";
@@ -101,7 +105,7 @@ function streamOf(contract: YonyouReadContractName): string {
   const meta = yonyouReadContractByName(contract);
   if (!meta) throw new Error(`未知的用友契约：${contract}`);
   // stream 用契约路径派生，避免中文名进 checkpoint 键
-  return meta.path.replace(/^\/+/, "").replace(/[^A-Za-z0-9]+/g, "-").toLowerCase();
+  return yonyouContractStreamKey(meta.path);
 }
 
 /**

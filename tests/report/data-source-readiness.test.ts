@@ -128,6 +128,12 @@ describe("三方数据来源证据矩阵", () => {
       expect(result.find((row) => row.key === "JIANDAOYUN")).toMatchObject({
         state: "observation",
         configurationReady: false,
+        availableStreamKeys: expect.arrayContaining([
+          "tmall-sku-crosswalk-observation",
+          "tmall-sku-sales-observation",
+          "purchase-order-observation",
+          "inventory-count-observation",
+        ]),
         successfulStreams: 1,
         successfulStreamKeys: ["tmall-sku-sales-observation"],
         latestFailedStreams: 1,
@@ -169,6 +175,7 @@ describe("三方数据来源证据矩阵", () => {
         configurationReady: false,
         contractSelectionState: "not_required",
         selectedContractCount: 0,
+        availableStreamKeys: ["inventory-total-delta", "outbound-sales-daily"],
         successfulStreams: 2,
       });
       expect(result.find((row) => row.key === "JST")?.streams).toEqual([
@@ -189,9 +196,17 @@ describe("三方数据来源证据矩阵", () => {
       expect(result.find((row) => row.key === "YONYOU")).toMatchObject({
         state: "observation",
         configurationReady: false,
+        availableStreamKeys: expect.arrayContaining([
+          "yonbip-digitalmodel-vendor-list",
+          "yonbip-scm-purchaseorder-list",
+          "yonbip-scm-stock-querycurrentstocksbycondition",
+          "yonbip-fi-ficloud-openapi-voucher-queryvouchers",
+        ]),
         successfulStreams: 1,
         successfulStreamKeys: ["yonbip-digitalmodel-vendor-list"],
       });
+      expect(result.find((row) => row.key === "JIANDAOYUN")?.availableStreamKeys).toHaveLength(14);
+      expect(result.find((row) => row.key === "YONYOU")?.availableStreamKeys).toHaveLength(8);
       expect(result.find((row) => row.key === "YONYOU")?.streams).toEqual([
         expect.objectContaining({
           stream: "yonbip-digitalmodel-vendor-list",

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildDataAssetDecisionPortfolio } from "@/components/data-asset-decision-coverage";
-import type { DataProductDefinition } from "@/components/data-products";
+import { DATA_PRODUCTS, type DataProductDefinition } from "@/components/data-products";
 import type { DataSourceReadiness, DataStreamEvidence } from "@/server/modules/report/data-source-readiness";
 import type { DataProductReleaseReadiness } from "@/server/modules/report/data-product-release";
 
@@ -241,6 +241,106 @@ describe("三方数据资产到业务决策覆盖", () => {
     });
     expect(portfolio.rows[0].stateReason).toContain("外部字段结构变化");
     expect(portfolio).toMatchObject({ explanationUsableCount: 0, operationalReadyCount: 0 });
+  });
+
+  it("聚合质量待复核时不得计入可解释覆盖", () => {
+    const portfolio = buildDataAssetDecisionPortfolio([
+      product("p1", "简道云需求决策", 24, { JIANDAOYUN: ["sales"] }),
+    ], [
+      source("JIANDAOYUN", [stream("sales", {
+        releaseBlocked: true,
+        quality: {
+          status: "review",
+          activeRows: 10,
+          deletedRows: 0,
+          missingFieldValues: 0,
+          missingBusinessKeyRows: 0,
+          duplicateKeyGroups: 2,
+          duplicateRows: 5,
+          invalidNumericValues: 0,
+          reconciliationMismatchedRows: 0,
+          reconciliationInsufficientRows: 0,
+        },
+      })], "observation"),
+    ]);
+
+    expect(portfolio.rows[0]).toMatchObject({
+      state: "degraded",
+      explanationUsable: false,
+      actionLabel: "修复连接证据",
+    });
+    expect(portfolio.rows[0].stateReason).toContain("业务键重复 2 组/5 行");
+  });
+
+  it("把未实现读取契约与只差授权明确分开", () => {
+    const jst = source("JST", []);
+    jst.availableStreamKeys = ["outbound-sales-daily"];
+    const portfolio = buildDataAssetDecisionPortfolio([
+      product("p1", "订单履约", 4, { JST: ["orders-daily"] }),
+      product("p2", "出库销量", 24, { JST: ["outbound-sales-daily"] }),
+    ], [jst]);
+
+    expect(portfolio.rows.find((row) => row.stream === "orders-daily")).toMatchObject({
+      implementationState: "planned",
+      state: "missing",
+      explanationUsable: false,
+      actionLabel: "补齐读取契约",
+    });
+    expect(portfolio.rows.find((row) => row.stream === "orders-daily")?.stateReason)
+      .toContain("尚未实现受控读取契约");
+    expect(portfolio).toMatchObject({
+      requiredAssetCount: 2,
+      implementedAssetCount: 1,
+      plannedAssetCount: 1,
+    });
+  });
+
+  it("机械列出当前目录中仍只有目标定义的七条三方数据流", () => {
+    const jdy = source("JIANDAOYUN", []);
+    jdy.availableStreamKeys = [
+      "tmall-sku-crosswalk-observation",
+      "vip-product-crosswalk-observation",
+      "pdd-sku-crosswalk-observation",
+      "tmall-sku-sales-observation",
+      "tmall-sku-refund-observation",
+      "product-master-observation",
+      "purchase-demand-observation",
+      "purchase-order-observation",
+      "purchase-receipt-observation",
+      "supplier-observation",
+      "warehouse-observation",
+      "warehouse-transfer-observation",
+      "inventory-count-observation",
+      "sample-management-observation",
+    ];
+    const jst = source("JST", []);
+    jst.availableStreamKeys = ["inventory-total-delta", "outbound-sales-daily"];
+    const yonyou = source("YONYOU", []);
+    yonyou.availableStreamKeys = [
+      "yonbip-uspace-org-page-list",
+      "yonbip-digitalmodel-vendor-list",
+      "yonbip-digitalmodel-product-listproductbycondition",
+      "yonbip-scm-purchaseorder-list",
+      "yonbip-scm-purinrecord-list",
+      "yonbip-scm-stock-querycurrentstocksbycondition",
+      "yonbip-efi-fieia-querybalance",
+      "yonbip-fi-ficloud-openapi-voucher-queryvouchers",
+    ];
+
+    const portfolio = buildDataAssetDecisionPortfolio(DATA_PRODUCTS, [jdy, jst, yonyou]);
+    expect(portfolio.rows
+      .filter((row) => row.cataloged && row.implementationState === "planned")
+      .map((row) => row.key)
+      .sort()).toEqual([
+      "JIANDAOYUN:npd-milestone-observation",
+      "JIANDAOYUN:platform-fee-observation",
+      "JST:inbound-receipts-daily",
+      "JST:item-master",
+      "JST:orders-daily",
+      "JST:returns-daily",
+      "YONYOU:yonbip-finance-receivables-settlement",
+    ]);
+    expect(portfolio.plannedAssetCount).toBe(7);
   });
 
   it("只有近期运行时间但缺源业务截止日时不计入当前或可解释覆盖", () => {

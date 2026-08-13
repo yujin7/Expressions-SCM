@@ -8,6 +8,7 @@ import {
   buildDataAssetDecisionPortfolio,
   type DataAssetDecisionCoverageRow,
   type DataAssetDecisionState,
+  type DataAssetImplementationState,
 } from "@/components/data-asset-decision-coverage";
 import { DATA_PRODUCTS } from "@/components/data-products";
 import type { DataSourceReadiness } from "@/server/modules/report/data-source-readiness";
@@ -27,6 +28,12 @@ const STATE_ORDER: Record<DataAssetDecisionState, number> = {
   missing: 2,
   observation: 3,
   current: 4,
+};
+
+const IMPLEMENTATION_META: Record<DataAssetImplementationState, { label: string; color: string }> = {
+  implemented: { label: "读取契约已实现", color: "blue" },
+  planned: { label: "仅目标·待实现", color: "volcano" },
+  unknown: { label: "旧载荷未声明", color: "default" },
 };
 
 function pct(value: number, total: number): number {
@@ -63,6 +70,10 @@ export default function DataAssetDecisionCoverage({
       extra={(
         <Space size={4} wrap>
           <Tag color="blue">目录资产 {portfolio.requiredAssetCount}</Tag>
+          <Tag color="cyan">读取已实现 {portfolio.implementedAssetCount}</Tag>
+          <Tag color={portfolio.plannedAssetCount > 0 ? "volcano" : "default"}>
+            待实现 {portfolio.plannedAssetCount}
+          </Tag>
           <Tag color={portfolio.unusedObservedCount > 0 ? "gold" : "default"}>
             已读取未编入 {portfolio.unusedObservedCount}
           </Tag>
@@ -73,8 +84,8 @@ export default function DataAssetDecisionCoverage({
         banner
         showIcon
         type="info"
-        message={`当前 ${portfolio.explanationUsableCount}/${portfolio.requiredAssetCount} 条外部资产可用于带口径解释，${portfolio.operationalReadyCount}/${portfolio.requiredAssetCount} 条满足运营就绪；${portfolio.affectedProductCount} 个数据产品仍受数据门禁影响。`}
-        description="每条 API 数据流都反向关联到使用它的产品、决策、Owner 和 SLA。成功但无人使用的数据会单独暴露；观察数据不会与正式事实混成一个数字。"
+        message={`目录所需 ${portfolio.requiredAssetCount} 条外部资产中，${portfolio.implementedAssetCount} 条已有受控读取契约、${portfolio.plannedAssetCount} 条仍只有目标定义；当前 ${portfolio.explanationUsableCount} 条可用于带口径解释，${portfolio.operationalReadyCount} 条满足运营就绪。`}
+        description={`每条 API 数据流都反向关联到使用它的产品、决策、Owner 和 SLA；${portfolio.affectedProductCount} 个数据产品仍受门禁影响。成功但无人使用的数据会单独暴露，未实现契约不会被误报成“只差授权”。`}
         style={{ marginBottom: 12 }}
       />
       <Row gutter={[10, 10]} style={{ marginBottom: 12 }}>
@@ -94,6 +105,10 @@ export default function DataAssetDecisionCoverage({
                     format={() => `${source.explanationUsableCount}/${source.requiredAssetCount}`}
                   />
                 </div>
+                <Typography.Text type="secondary">
+                  读取已实现 {source.implementedAssetCount}/{source.requiredAssetCount}
+                  {source.plannedAssetCount > 0 ? ` · 待实现 ${source.plannedAssetCount}` : ""}
+                </Typography.Text>
                 <Typography.Text type="secondary">
                   运营就绪 {source.operationalReadyCount}/{source.requiredAssetCount}
                   {source.unusedObservedCount > 0 ? ` · 已读取未编入 ${source.unusedObservedCount}` : ""}
@@ -132,6 +147,9 @@ export default function DataAssetDecisionCoverage({
             sorter: (a, b) => STATE_ORDER[a.state] - STATE_ORDER[b.state],
             render: (_, row) => (
               <Space direction="vertical" size={2}>
+                <Tag color={IMPLEMENTATION_META[row.implementationState].color}>
+                  {IMPLEMENTATION_META[row.implementationState].label}
+                </Tag>
                 <Tag color={STATE_META[row.state].color}>{STATE_META[row.state].label}</Tag>
                 <Typography.Text type="secondary">{evidenceLabel(row)}</Typography.Text>
               </Space>

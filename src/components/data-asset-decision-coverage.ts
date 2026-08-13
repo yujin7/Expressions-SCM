@@ -14,6 +14,7 @@ import type { DataProductReleaseReadiness } from "@/server/modules/report/data-p
 type ExternalSource = Exclude<DataProductSource, "SCM">;
 
 export type DataAssetDecisionState = ProductStreamEvidenceState | "observation";
+export type DataAssetImplementationState = "implemented" | "planned" | "unknown";
 
 export interface DataAssetDecisionDependency {
   productId: string;
@@ -33,6 +34,7 @@ export interface DataAssetDecisionCoverageRow {
   state: DataAssetDecisionState;
   stateReason: string;
   explanationUsable: boolean;
+  implementationState: DataAssetImplementationState;
   cataloged: boolean;
   dependencies: DataAssetDecisionDependency[];
   dependencyCount: number;
@@ -47,6 +49,8 @@ export interface DataAssetSourceCoverage {
   source: ExternalSource;
   sourceLabel: string;
   requiredAssetCount: number;
+  implementedAssetCount: number;
+  plannedAssetCount: number;
   explanationUsableCount: number;
   operationalReadyCount: number;
   unusedObservedCount: number;
@@ -57,6 +61,8 @@ export interface DataAssetDecisionPortfolio {
   rows: DataAssetDecisionCoverageRow[];
   sources: DataAssetSourceCoverage[];
   requiredAssetCount: number;
+  implementedAssetCount: number;
+  plannedAssetCount: number;
   explanationUsableCount: number;
   operationalReadyCount: number;
   unusedObservedCount: number;
@@ -79,6 +85,12 @@ const STATE_ORDER: Record<DataAssetDecisionState, number> = {
   current: 4,
 };
 
+const IMPLEMENTATION_ORDER: Record<DataAssetImplementationState, number> = {
+  planned: 0,
+  unknown: 1,
+  implemented: 2,
+};
+
 function usableForExplanation(evidence: DataStreamEvidence | null): boolean {
   return evidence != null
     && evidence.lastSuccessAt != null
@@ -89,7 +101,8 @@ function usableForExplanation(evidence: DataStreamEvidence | null): boolean {
     && !evidence.sourceTimeInvalid
     && !evidence.schemaDrift
     && !evidence.emptySource
-    && evidence.rejectedRows === 0;
+    && evidence.rejectedRows === 0
+    && evidence.quality?.status !== "review";
 }
 
 function sourceCanExplain(sourceRow: DataSourceReadiness | undefined): boolean {
@@ -101,7 +114,13 @@ function assetState(
   state: ProductStreamEvidenceState,
   evidence: DataStreamEvidence | null,
   sourceRow: DataSourceReadiness | undefined,
+  implementationState: DataAssetImplementationState,
 ): { state: DataAssetDecisionState; reason: string | null } {
+  if (implementationState === "planned") {
+    return evidence?.lastSuccessAt
+      ? { state: "degraded", reason: "历史运行仍可追溯，但当前代码没有登记这条受控读取契约，不能继续用于决策" }
+      : { state: "missing", reason: "数据产品已声明需要该流，但当前代码尚未实现受控读取契约" };
+  }
   if (evidence?.lastSuccessAt && sourceRow?.configurationReady !== true) {
     return { state: "degraded", reason: "历史批次仍可追溯，但当前凭据、契约或连接范围已失效，不能继续用于决策" };
   }
@@ -137,7 +156,11 @@ function actionFor(
   state: DataAssetDecisionState,
   dependencies: readonly DataAssetDecisionDependency[],
   sourceRow: DataSourceReadiness | undefined,
+  implementationState: DataAssetImplementationState,
 ): Pick<DataAssetDecisionCoverageRow, "actionLabel" | "actionHref"> {
+  if (implementationState === "planned") {
+    return { actionLabel: "补齐读取契约", actionHref: "/admin/health" };
+  }
   if (
     state !== "current"
     && state !== "observation"
@@ -190,6 +213,9 @@ export function buildDataAssetDecisionPortfolio(
     const streamKeys = [...new Set([...dependenciesByStream.keys(), ...runtimeStreams])];
     for (const stream of streamKeys) {
       const evaluated = evaluateExternalStreamEvidence(source, stream, sourceRow);
+      const implementationState: DataAssetImplementationState = sourceRow?.availableStreamKeys == null
+        ? "unknown"
+        : sourceRow.availableStreamKeys.includes(stream) ? "implemented" : "planned";
       const dependencies = (dependenciesByStream.get(stream) ?? [])
         .map<DataAssetDecisionDependency>((product) => ({
           productId: product.id,
@@ -200,9 +226,21 @@ export function buildDataAssetDecisionPortfolio(
           effectiveLevel: releaseByProduct.get(product.id)?.effectiveLevel ?? "A0",
         }))
         .sort((a, b) => a.decisionSlaHours - b.decisionSlaHours || a.title.localeCompare(b.title, "zh-CN"));
-      const evaluatedAsset = assetState(evaluated.state, evaluated.evidence, sourceRow);
+      const evaluatedAsset = assetState(
+        evaluated.state,
+        evaluated.evidence,
+        sourceRow,
+        implementationState,
+      );
       const state = evaluatedAsset.state;
-      const action = actionFor(source, stream, state, dependencies, sourceRow);
+      const action = actionFor(
+        source,
+        stream,
+        state,
+        dependencies,
+        sourceRow,
+        implementationState,
+      );
       rows.push({
         key: `${source}:${stream}`,
         source,
@@ -211,7 +249,10 @@ export function buildDataAssetDecisionPortfolio(
         streamLabel: dataProductStreamLabel(source, stream),
         state,
         stateReason: evaluatedAsset.reason ?? evaluated.reason,
-        explanationUsable: sourceCanExplain(sourceRow) && usableForExplanation(evaluated.evidence),
+        explanationUsable: implementationState !== "planned"
+          && sourceCanExplain(sourceRow)
+          && usableForExplanation(evaluated.evidence),
+        implementationState,
         cataloged: dependencies.length > 0,
         dependencies,
         dependencyCount: dependencies.length,
@@ -228,6 +269,9 @@ export function buildDataAssetDecisionPortfolio(
     if (catalog !== 0) return catalog;
     const state = STATE_ORDER[a.state] - STATE_ORDER[b.state];
     if (state !== 0) return state;
+    const implementation = IMPLEMENTATION_ORDER[a.implementationState]
+      - IMPLEMENTATION_ORDER[b.implementationState];
+    if (implementation !== 0) return implementation;
     const sla = (a.minDecisionSlaHours ?? Number.MAX_SAFE_INTEGER) - (b.minDecisionSlaHours ?? Number.MAX_SAFE_INTEGER);
     if (sla !== 0) return sla;
     const dependencies = b.dependencyCount - a.dependencyCount;
@@ -247,6 +291,8 @@ export function buildDataAssetDecisionPortfolio(
       source,
       sourceLabel: DATA_PRODUCT_SOURCE_LABEL[source],
       requiredAssetCount: requiredRows.length,
+      implementedAssetCount: requiredRows.filter((row) => row.implementationState === "implemented").length,
+      plannedAssetCount: requiredRows.filter((row) => row.implementationState === "planned").length,
       explanationUsableCount: requiredRows.filter((row) => row.explanationUsable).length,
       operationalReadyCount: requiredRows.filter((row) => row.state === "current").length,
       unusedObservedCount: sourceRows.filter((row) => !row.cataloged && row.explanationUsable).length,
@@ -258,6 +304,8 @@ export function buildDataAssetDecisionPortfolio(
     rows,
     sources: sourceSummaries,
     requiredAssetCount: requiredRows.length,
+    implementedAssetCount: requiredRows.filter((row) => row.implementationState === "implemented").length,
+    plannedAssetCount: requiredRows.filter((row) => row.implementationState === "planned").length,
     explanationUsableCount: requiredRows.filter((row) => row.explanationUsable).length,
     operationalReadyCount: requiredRows.filter((row) => row.state === "current").length,
     unusedObservedCount: rows.filter((row) => !row.cataloged && row.explanationUsable).length,
