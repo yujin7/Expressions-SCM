@@ -131,7 +131,7 @@ function RequiredStreamEvidence({ summary }: { summary: ProductEvidenceSummary }
       size="small"
       pagination={false}
       dataSource={rows}
-      scroll={{ x: 1_100 }}
+      scroll={{ x: 1_330 }}
       locale={{ emptyText: "SCM 内部事实不需要外部流证据" }}
       columns={[
         {
@@ -180,6 +180,27 @@ function RequiredStreamEvidence({ summary }: { summary: ProductEvidenceSummary }
             : row.scmEvidence
               ? `${row.scmEvidence.rows.toLocaleString("zh-CN")} / — / —`
               : "—",
+        },
+        {
+          title: "聚合质量控制",
+          key: "quality",
+          width: 230,
+          render: (_, row) => {
+            const quality = row.evidence?.quality;
+            if (!quality) return <Typography.Text type="secondary">未随批次固化</Typography.Text>;
+            if (quality.status === "pass") return <Tag color="success">业务键/数值/对账通过</Tag>;
+            return (
+              <Space direction="vertical" size={2}>
+                <Tag color="warning">待复核</Tag>
+                <Typography.Text type="secondary">
+                  缺键 {quality.missingBusinessKeyRows} · 重复 {quality.duplicateKeyGroups}组/{quality.duplicateRows}行
+                </Typography.Text>
+                <Typography.Text type="secondary">
+                  非法数值 {quality.invalidNumericValues} · 对账差异 {quality.reconciliationMismatchedRows} · 覆盖不足 {quality.reconciliationInsufficientRows}
+                </Typography.Text>
+              </Space>
+            );
+          },
         },
         {
           title: "为何受限",
@@ -682,6 +703,7 @@ export default function DecisionReadinessPanel({
               render: (_, row) => {
                 const current = row.streams?.filter((item) => item.freshness === "current").length ?? 0;
                 const stale = row.streams?.filter((item) => item.freshness === "stale").length ?? 0;
+                const qualityReview = row.streams?.filter((item) => item.quality?.status === "review").length ?? 0;
                 const unknown = Math.max(0, row.successfulStreams - current - stale);
                 return (
                   <Space direction="vertical" size={2}>
@@ -689,8 +711,8 @@ export default function DecisionReadinessPanel({
                     <Typography.Text type={stale > 0 ? "danger" : "secondary"}>
                       当前 {current} · 过期 {stale} · 未定 {unknown}
                     </Typography.Text>
-                    <Typography.Text type={row.latestFailedStreams + row.latestRunningStreams > 0 ? "danger" : "secondary"}>
-                      最新失败 {row.latestFailedStreams} · 运行中 {row.latestRunningStreams}
+                    <Typography.Text type={row.latestFailedStreams + row.latestRunningStreams + qualityReview > 0 ? "danger" : "secondary"}>
+                      失败 {row.latestFailedStreams} · 运行中 {row.latestRunningStreams} · 质量待复核 {qualityReview}
                     </Typography.Text>
                   </Space>
                 );

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   auditJiandaoyunCatalog,
   auditJiandaoyunContracts,
+  summarizeJiandaoyunContractControl,
 } from "@/server/integrations/jiandaoyun-audit";
 import type { JiandaoyunFormContract } from "@/server/integrations/jiandaoyun-contracts";
 
@@ -110,6 +111,19 @@ describe("简道云只读控制总量", () => {
     expect(JSON.stringify(result)).not.toContain("SKU-001");
     expect(JSON.stringify(result)).not.toContain("sensitive");
     expect(result.schemaHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(summarizeJiandaoyunContractControl(result)).toEqual({
+      version: "jdy-control-v1",
+      status: "pass",
+      activeRows: 1,
+      deletedRows: 0,
+      missingFieldValues: 1,
+      missingBusinessKeyRows: 0,
+      duplicateKeyGroups: 0,
+      duplicateRows: 0,
+      invalidNumericValues: 0,
+      reconciliationMismatchedRows: 0,
+      reconciliationInsufficientRows: 0,
+    });
   });
 
   it("用活跃行验证业务键、定点数值总量和实际新鲜度", async () => {
@@ -196,6 +210,14 @@ describe("简道云只读控制总量", () => {
     });
     expect(JSON.stringify(result)).not.toContain("SKU-A");
     expect(JSON.stringify(result)).not.toContain("DELETED");
+    expect(summarizeJiandaoyunContractControl(result)).toMatchObject({
+      status: "review",
+      missingFieldValues: 1,
+      missingBusinessKeyRows: 1,
+      duplicateKeyGroups: 1,
+      duplicateRows: 2,
+      invalidNumericValues: 1,
+    });
   });
 
   it("只以目录聚合控制量标记重复视图的权威裁决需求", () => {
@@ -296,5 +318,10 @@ describe("简道云只读控制总量", () => {
       mismatchedRows: 1,
       insufficientRows: 0,
     }]);
+    expect(summarizeJiandaoyunContractControl(result)).toMatchObject({
+      status: "review",
+      reconciliationMismatchedRows: 1,
+      reconciliationInsufficientRows: 0,
+    });
   });
 });

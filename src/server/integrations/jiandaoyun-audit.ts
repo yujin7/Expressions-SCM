@@ -12,6 +12,7 @@ import {
   type JiandaoyunApp,
   type JiandaoyunForm,
   type JiandaoyunRecord,
+  type JiandaoyunWidget,
 } from "./jiandaoyun";
 import { dAdd, dCmp, dNeg, dSub } from "@/server/core/decimal";
 
@@ -101,6 +102,23 @@ export interface JiandaoyunContractControl {
   numericControls: JiandaoyunNumericControl[];
   reconciliations: JiandaoyunReconciliationControl[];
   subforms: JiandaoyunSubformControl[];
+}
+
+/**
+ * 可随同步运行固化的最小质量摘要。只保存聚合控制，不复制业务字段值、人员信息或源记录。
+ */
+export interface JiandaoyunControlSummary {
+  version: "jdy-control-v1";
+  status: "pass" | "review";
+  activeRows: number;
+  deletedRows: number;
+  missingFieldValues: number;
+  missingBusinessKeyRows: number;
+  duplicateKeyGroups: number;
+  duplicateRows: number;
+  invalidNumericValues: number;
+  reconciliationMismatchedRows: number;
+  reconciliationInsufficientRows: number;
 }
 
 function unwrap(value: unknown): unknown {
@@ -446,6 +464,111 @@ function subformRows(
   return rows;
 }
 
+export function inspectJiandaoyunContractControl(
+  contract: JiandaoyunFormContract,
+  widgets: JiandaoyunWidget[],
+  records: JiandaoyunRecord[],
+  now = new Date(),
+): JiandaoyunContractControl {
+  const selectedWidgets = jiandaoyunContractWidgets(contract, widgets);
+  const projection = jiandaoyunContractProjection(contract);
+  const activeRecords = records.filter((record) => !deleted(record));
+  const created = instantRange(records, ["createTime", "create_time"]);
+  const updated = instantRange(records, ["updateTime", "update_time"]);
+  const activeUpdated = instantRange(activeRecords, ["updateTime", "update_time"]);
+  const updatedMaximum = activeUpdated.maximum === null ? null : Date.parse(activeUpdated.maximum);
+  const topRows = activeRecords as Array<Record<string, unknown>>;
+  const ageDays = updatedMaximum === null
+    ? null
+    : Math.max(0, Math.floor((now.getTime() - updatedMaximum) / 86_400_000));
+  const headerNumericControls = numericControls(
+    topRows,
+    contract.fields,
+    contract.numericControls,
+  );
+  const subformControls = (contract.subforms ?? []).map((subform) => {
+    const rows = subformRows(activeRecords, subform.source);
+    return {
+      target: subform.target,
+      rows: rows.length,
+      fieldCoverage: coverage(rows, subform.items),
+      numericControls: numericControls(rows, subform.items, subform.numericControls),
+    };
+  });
+  return {
+    contractKey: contract.key,
+    label: contract.label,
+    appId: contract.appId,
+    entryId: contract.entryId,
+    schemaHash: jiandaoyunSchemaHash(selectedWidgets),
+    projectionFields: projection.length,
+    sourceRows: records.length,
+    activeRows: activeRecords.length,
+    deletedRows: records.length - activeRecords.length,
+    createdFrom: created.minimum,
+    updatedThrough: updated.maximum,
+    activeUpdatedThrough: activeUpdated.maximum,
+    ageDays,
+    freshness: freshnessControl(ageDays, contract.freshnessMaxAgeDays),
+    fieldCoverage: coverage(topRows, contract.fields),
+    businessKey: businessKeyControl(topRows, contract.fields, contract.businessKey),
+    numericControls: headerNumericControls,
+    reconciliations: reconciliationControls(
+      contract,
+      activeRecords,
+      headerNumericControls,
+      subformControls,
+    ),
+    subforms: subformControls,
+  };
+}
+
+export function summarizeJiandaoyunContractControl(
+  control: JiandaoyunContractControl,
+): JiandaoyunControlSummary {
+  const allCoverage = [
+    ...control.fieldCoverage,
+    ...control.subforms.flatMap((subform) => subform.fieldCoverage),
+  ];
+  const allNumeric = [
+    ...control.numericControls,
+    ...control.subforms.flatMap((subform) => subform.numericControls),
+  ];
+  const missingBusinessKeyRows = control.businessKey?.missingRows ?? 0;
+  const duplicateKeyGroups = control.businessKey?.duplicateKeyGroups ?? 0;
+  const duplicateRows = control.businessKey?.duplicateRows ?? 0;
+  const invalidNumericValues = allNumeric.reduce((sum, item) => sum + item.invalid, 0);
+  const reconciliationMismatchedRows = control.reconciliations.reduce(
+    (sum, item) => sum + item.mismatchedRows,
+    0,
+  );
+  const reconciliationInsufficientRows = control.reconciliations.reduce(
+    (sum, item) => sum + item.insufficientRows,
+    0,
+  );
+  const review = missingBusinessKeyRows > 0
+    || duplicateRows > 0
+    || invalidNumericValues > 0
+    || reconciliationMismatchedRows > 0
+    || reconciliationInsufficientRows > 0;
+  return {
+    version: "jdy-control-v1",
+    status: review ? "review" : "pass",
+    activeRows: control.activeRows,
+    deletedRows: control.deletedRows,
+    missingFieldValues: allCoverage.reduce(
+      (sum, item) => sum + Math.max(0, item.total - item.populated),
+      0,
+    ),
+    missingBusinessKeyRows,
+    duplicateKeyGroups,
+    duplicateRows,
+    invalidNumericValues,
+    reconciliationMismatchedRows,
+    reconciliationInsufficientRows,
+  };
+}
+
 export async function auditJiandaoyunContracts(
   client: Pick<JiandaoyunClient, "listWidgets" | "listRecords">,
   options: {
@@ -458,58 +581,9 @@ export async function auditJiandaoyunContracts(
   const results: JiandaoyunContractControl[] = [];
   for (const contract of contracts) {
     const widgets = await client.listWidgets(contract.appId, contract.entryId);
-    const selectedWidgets = jiandaoyunContractWidgets(contract, widgets);
     const projection = jiandaoyunContractProjection(contract);
     const records = await client.listRecords(contract.appId, contract.entryId, projection);
-    const activeRecords = records.filter((record) => !deleted(record));
-    const created = instantRange(records, ["createTime", "create_time"]);
-    const updated = instantRange(records, ["updateTime", "update_time"]);
-    const activeUpdated = instantRange(activeRecords, ["updateTime", "update_time"]);
-    const updatedMaximum = activeUpdated.maximum === null ? null : Date.parse(activeUpdated.maximum);
-    const topRows = activeRecords as Array<Record<string, unknown>>;
-    const ageDays = updatedMaximum === null
-      ? null
-      : Math.max(0, Math.floor((now.getTime() - updatedMaximum) / 86_400_000));
-    const headerNumericControls = numericControls(
-      topRows,
-      contract.fields,
-      contract.numericControls,
-    );
-    const subformControls = (contract.subforms ?? []).map((subform) => {
-      const rows = subformRows(activeRecords, subform.source);
-      return {
-        target: subform.target,
-        rows: rows.length,
-        fieldCoverage: coverage(rows, subform.items),
-        numericControls: numericControls(rows, subform.items, subform.numericControls),
-      };
-    });
-    results.push({
-      contractKey: contract.key,
-      label: contract.label,
-      appId: contract.appId,
-      entryId: contract.entryId,
-      schemaHash: jiandaoyunSchemaHash(selectedWidgets),
-      projectionFields: projection.length,
-      sourceRows: records.length,
-      activeRows: activeRecords.length,
-      deletedRows: records.length - activeRecords.length,
-      createdFrom: created.minimum,
-      updatedThrough: updated.maximum,
-      activeUpdatedThrough: activeUpdated.maximum,
-      ageDays,
-      freshness: freshnessControl(ageDays, contract.freshnessMaxAgeDays),
-      fieldCoverage: coverage(topRows, contract.fields),
-      businessKey: businessKeyControl(topRows, contract.fields, contract.businessKey),
-      numericControls: headerNumericControls,
-      reconciliations: reconciliationControls(
-        contract,
-        activeRecords,
-        headerNumericControls,
-        subformControls,
-      ),
-      subforms: subformControls,
-    });
+    results.push(inspectJiandaoyunContractControl(contract, widgets, records, now));
   }
   return results;
 }

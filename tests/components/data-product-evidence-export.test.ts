@@ -5,7 +5,11 @@ import type { DataProductDefinition } from "@/components/data-products";
 import type { DataSourceReadiness, DataStreamEvidence } from "@/server/modules/report/data-source-readiness";
 import type { DataProductOutcomeReadiness } from "@/server/modules/report/data-product-outcome";
 
-function stream(key: string, sourceAsOf: string): DataStreamEvidence {
+function stream(
+  key: string,
+  sourceAsOf: string,
+  overrides: Partial<DataStreamEvidence> = {},
+): DataStreamEvidence {
   return {
     stream: key,
     latestStatus: "succeeded",
@@ -24,6 +28,7 @@ function stream(key: string, sourceAsOf: string): DataStreamEvidence {
     businessAgeDays: 1,
     pipelineAgeHours: 2,
     freshness: "current",
+    ...overrides,
   };
 }
 
@@ -125,7 +130,20 @@ describe("三方数据产品决策证据导出", () => {
     const result = buildDataProductEvidenceExport([
       product,
     ], [
-      source("JST", stream("sales", "2026-08-10")),
+      source("JST", stream("sales", "2026-08-10", {
+        quality: {
+          status: "review",
+          activeRows: 12,
+          deletedRows: 0,
+          missingFieldValues: 2,
+          missingBusinessKeyRows: 1,
+          duplicateKeyGroups: 2,
+          duplicateRows: 5,
+          invalidNumericValues: 0,
+          reconciliationMismatchedRows: 1,
+          reconciliationInsufficientRows: 0,
+        },
+      })),
       source("YONYOU", stream("voucher", "2026-08-12")),
     ], [], [outcome], new Date("2026-08-13T02:03:04.000Z"));
 
@@ -142,14 +160,19 @@ describe("三方数据产品决策证据导出", () => {
         共同可比截止: "2026-08-10",
         最新来源日期: "2026-08-12",
         跨源时点跨度天数: 2,
-        处置阶段: "可验收放行",
-        当前有效级别: "A1",
+        处置阶段: "修复证据",
+        当前有效级别: "A0",
         结果学习状态: "已形成真实反馈",
         真实结果有效记录数: 3,
         "采纳率%": "66.7",
         最新结果决策编号: "TRI-20260813-001",
         最新业务决定: "修改后采纳",
         最新真实结果: "正向",
+        聚合质量状态: "待复核",
+        业务键缺失行: 1,
+        重复键组: 2,
+        重复键行: 5,
+        对账差异行: 1,
       }),
       expect.objectContaining({
         来源技术键: "YONYOU",

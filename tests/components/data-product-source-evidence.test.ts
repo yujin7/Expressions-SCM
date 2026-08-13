@@ -251,6 +251,33 @@ describe("数据产品所需流证据", () => {
     ]));
     expect(explanation).toMatchObject({ level: "A1" });
 
+    const qualityReview = source("JST", "observation", ["outbound-sales-daily"]);
+    qualityReview.streams = [stream("outbound-sales-daily", {
+      quality: {
+        status: "review",
+        activeRows: 10,
+        deletedRows: 0,
+        missingFieldValues: 1,
+        missingBusinessKeyRows: 0,
+        duplicateKeyGroups: 2,
+        duplicateRows: 5,
+        invalidNumericValues: 0,
+        reconciliationMismatchedRows: 1,
+        reconciliationInsufficientRows: 0,
+      },
+    })];
+    const qualitySummary = evaluateProductSourceEvidence(product, [
+      source("SCM", "operational", []),
+      qualityReview,
+    ]);
+    expect(qualitySummary.sources[1]).toMatchObject({
+      state: "degraded",
+      streams: [expect.objectContaining({
+        reason: expect.stringContaining("业务键重复 2 组/5 行"),
+      })],
+    });
+    expect(currentProductAutomation(qualitySummary)).toMatchObject({ level: "A0" });
+
     const missingScm = source("SCM", "operational", []);
     missingScm.scmEvidence = {};
     const missingScmSummary = evaluateProductSourceEvidence(product, [

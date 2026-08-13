@@ -27,13 +27,17 @@ import {
   jiandaoyunSchemaHash,
   type JiandaoyunRecord,
 } from "./jiandaoyun";
+import {
+  inspectJiandaoyunContractControl,
+  summarizeJiandaoyunContractControl,
+} from "./jiandaoyun-audit";
 import { writeIntegrationEvidence, type IntegrationEvidence } from "./evidence";
 import { resolveSourceAsOf } from "./source-time";
 
 const CONNECTOR = "jdy";
 const CATALOG_STREAM = "catalog";
 const CATALOG_SCHEMA_VERSION = "jiandaoyun-catalog-v1";
-const RECORD_SCHEMA_VERSION = "jiandaoyun-observation-v3";
+const RECORD_SCHEMA_VERSION = "jiandaoyun-observation-v4";
 /** Running claims older than this can be fenced off and recovered by a retry. */
 const RUN_STALE_AFTER_MS = 2 * 60 * 60 * 1_000;
 
@@ -664,6 +668,8 @@ export async function syncJiandaoyunForm(
     input.contract.entryId,
     projection,
   );
+  const control = inspectJiandaoyunContractControl(input.contract, widgets, records);
+  const controlSummary = summarizeJiandaoyunContractControl(control);
   const minimized = records
     .map((record) => minimizeRecord(record, input.contract))
     .sort((left, right) =>
@@ -696,6 +702,7 @@ export async function syncJiandaoyunForm(
       authority: "observation-only",
       fieldMinimized: true,
       sourceProjection: projection,
+      controlSummary,
     },
     records: minimized,
   };
@@ -722,6 +729,8 @@ export async function syncJiandaoyunForm(
       sourceAsOf: asOf,
       sourceUpdatedThrough: updatedThrough,
       authority: "observation-only",
+      controlSummary,
+      qualityBlocked: controlSummary.status === "review",
     },
     evidencePath: evidence.relativePath,
     evidenceHash: evidence.hash,
@@ -825,6 +834,8 @@ export async function syncJiandaoyunForm(
           mode: "full",
           authority: "observation-only",
           releaseBlocked: true,
+          controlSummary,
+          qualityBlocked: controlSummary.status === "review",
           evidencePath: evidence.relativePath,
           evidenceHash: evidence.hash,
         },
@@ -888,6 +899,8 @@ export async function syncJiandaoyunForm(
         deletionPolicy: "no-tombstone-fail-closed",
         supersededImportJobs,
         unresolvedAliases,
+        controlSummary,
+        qualityBlocked: controlSummary.status === "review",
       };
       await finishRunInTransaction(tx, {
         runId: run.id,

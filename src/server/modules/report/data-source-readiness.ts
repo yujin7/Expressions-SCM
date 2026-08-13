@@ -28,6 +28,19 @@ export type DataSourceKey = "SCM" | "JIANDAOYUN" | "JST" | "YONYOU";
 export type DataSourceState = "operational" | "observation" | "contract_only" | "blocked";
 export type DataStreamFreshness = "current" | "stale" | "unknown";
 
+export interface DataStreamQualityEvidence {
+  status: "pass" | "review";
+  activeRows: number;
+  deletedRows: number;
+  missingFieldValues: number;
+  missingBusinessKeyRows: number;
+  duplicateKeyGroups: number;
+  duplicateRows: number;
+  invalidNumericValues: number;
+  reconciliationMismatchedRows: number;
+  reconciliationInsufficientRows: number;
+}
+
 export interface DataStreamEvidence {
   stream: string;
   latestStatus: "running" | "succeeded" | "failed";
@@ -46,6 +59,8 @@ export interface DataStreamEvidence {
   businessAgeDays: number | null;
   pipelineAgeHours: number | null;
   freshness: DataStreamFreshness;
+  /** 仅在同步运行固化了受控聚合质量摘要时提供；绝不包含原始业务值。 */
+  quality?: DataStreamQualityEvidence | null;
 }
 
 export interface ScmEvidenceSnapshot {
@@ -258,6 +273,27 @@ function yonyouStream(path: string): string {
   return path.replace(/^\/+/, "").replace(/[^A-Za-z0-9]+/g, "-").toLowerCase();
 }
 
+function streamQualityEvidence(scope: Record<string, unknown>): DataStreamQualityEvidence | null {
+  const control = objectValue(scope.controlSummary);
+  if (control.version !== "jdy-control-v1") return null;
+  const status = control.status === "pass" || control.status === "review"
+    ? control.status
+    : null;
+  if (status === null) return null;
+  return {
+    status,
+    activeRows: intValue(control.activeRows),
+    deletedRows: intValue(control.deletedRows),
+    missingFieldValues: intValue(control.missingFieldValues),
+    missingBusinessKeyRows: intValue(control.missingBusinessKeyRows),
+    duplicateKeyGroups: intValue(control.duplicateKeyGroups),
+    duplicateRows: intValue(control.duplicateRows),
+    invalidNumericValues: intValue(control.invalidNumericValues),
+    reconciliationMismatchedRows: intValue(control.reconciliationMismatchedRows),
+    reconciliationInsufficientRows: intValue(control.reconciliationInsufficientRows),
+  };
+}
+
 const STREAM_FRESHNESS_DAYS = new Map<string, number>([
   ...JIANDAOYUN_FORM_CONTRACTS.flatMap((contract) => contract.freshnessMaxAgeDays == null
     ? []
@@ -274,6 +310,7 @@ const STREAM_FRESHNESS_DAYS = new Map<string, number>([
 
 function streamEvidence(row: StreamRunAggregate, now: Date): DataStreamEvidence {
   const scope = objectValue(row.request_scope);
+  const quality = streamQualityEvidence(scope);
   const sourceRows = intValue(row.source_rows);
   const sourceAsOfCandidate = row.source_as_of
     ?? scope.sourceAsOf
@@ -316,6 +353,7 @@ function streamEvidence(row: StreamRunAggregate, now: Date): DataStreamEvidence 
     businessAgeDays,
     pipelineAgeHours,
     freshness,
+    ...(quality ? { quality } : {}),
   };
 }
 

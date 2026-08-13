@@ -70,6 +70,25 @@ export interface ProductAutomationReadiness {
   reason: string;
 }
 
+function qualityReviewReason(evidence: DataStreamEvidence): string | null {
+  const quality = evidence.quality;
+  if (!quality || quality.status !== "review") return null;
+  const issues = [
+    quality.missingBusinessKeyRows > 0 ? `业务键缺失 ${quality.missingBusinessKeyRows} 行` : null,
+    quality.duplicateRows > 0
+      ? `业务键重复 ${quality.duplicateKeyGroups} 组/${quality.duplicateRows} 行`
+      : null,
+    quality.invalidNumericValues > 0 ? `非法数值 ${quality.invalidNumericValues} 个` : null,
+    quality.reconciliationMismatchedRows > 0
+      ? `表头明细不一致 ${quality.reconciliationMismatchedRows} 行`
+      : null,
+    quality.reconciliationInsufficientRows > 0
+      ? `对账覆盖不足 ${quality.reconciliationInsufficientRows} 行`
+      : null,
+  ].filter(Boolean);
+  return `聚合质量控制待复核${issues.length > 0 ? `（${issues.join("；")}）` : ""}`;
+}
+
 export function evaluateExternalStreamEvidence(
   source: DataProductSource,
   stream: string,
@@ -117,6 +136,8 @@ export function evaluateExternalStreamEvidence(
   if (evidence.rejectedRows > 0) limitations.push(`有 ${evidence.rejectedRows} 行拒收`);
   if (evidence.emptySource) limitations.push("源端返回 0 行，尚无业务证据");
   if (evidence.schemaDrift) limitations.push("外部字段结构变化，待契约评审");
+  const qualityReason = qualityReviewReason(evidence);
+  if (qualityReason) limitations.push(qualityReason);
   if (evidence.releaseBlocked && !evidence.schemaDrift) limitations.push("观察层禁止放行");
   if (evidence.freshness === "unknown") limitations.push("时效门限或源时点不完整");
   if (limitations.length > 0) {
@@ -267,7 +288,8 @@ function streamSafeForExplanation(row: ProductStreamEvidence): boolean {
     && !evidence.schemaDrift
     && evidence.sourceAsOf != null
     && !evidence.emptySource
-    && evidence.rejectedRows === 0;
+    && evidence.rejectedRows === 0
+    && evidence.quality?.status !== "review";
 }
 
 /**
@@ -295,6 +317,6 @@ export function currentProductAutomation(
       }
     : {
         level: "A0",
-        reason: "所需来源存在连接配置失效、缺业务截止日、结构漂移、缺失、过期、失败、拒收、空源或授权/时间异常；只能观察门禁与修复队列。",
+        reason: "所需来源存在连接配置失效、缺业务截止日、结构漂移、质量待复核、缺失、过期、失败、拒收、空源或授权/时间异常；只能观察门禁与修复队列。",
       };
 }
