@@ -89,7 +89,7 @@ export default function DecisionStudioClient() {
   const [loading, setLoading] = useState(true);
   const view = useListState({
     key: "decision-studio",
-    defaults: { dimension: "brand", key: "", tab: "focus", brand: "", channel: "" },
+    defaults: { dimension: "brand", key: "", tab: "focus", brand: "", channel: "", product: "" },
     paginated: false,
   });
   const dimension = (["brand", "channel", "sku", "month"].includes(view.filters.dimension)
@@ -100,6 +100,7 @@ export default function DecisionStudioClient() {
   const scopeBrand = view.filters.brand;
   const scopeChannel = view.filters.channel;
   const activeTab = view.filters.tab || "focus";
+  const focusProductId = view.filters.product;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1167,6 +1168,7 @@ export default function DecisionStudioClient() {
                 dataSources={data?.dataSources ?? []}
                 dataProductReleases={data?.dataProductReleases ?? []}
                 onReleaseChanged={load}
+                focusProductId={focusProductId}
               />
             ),
           },

@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import { ArrowRightOutlined } from "@ant-design/icons";
 import {
   Alert,
   App,
@@ -418,10 +419,12 @@ export default function DecisionReadinessPanel({
   dataSources = [],
   dataProductReleases = [],
   onReleaseChanged,
+  focusProductId,
 }: {
   dataSources?: DataSourceReadiness[];
   dataProductReleases?: DataProductReleaseReadiness[];
   onReleaseChanged?: () => void | Promise<void>;
+  focusProductId?: string;
 }) {
   const ready = DECISION_CAPABILITIES.filter((item) => capabilityReadiness(item) === "ready").length;
   const partial = DECISION_CAPABILITIES.filter((item) => capabilityReadiness(item) === "partial").length;
@@ -509,7 +512,7 @@ export default function DecisionReadinessPanel({
           size="small"
           pagination={false}
           dataSource={workQueue}
-          scroll={{ x: 1_160 }}
+          scroll={{ x: 1_420 }}
           columns={[
             {
               title: "顺位",
@@ -558,6 +561,22 @@ export default function DecisionReadinessPanel({
                   <Typography.Text>{row.owner}</Typography.Text>
                   <Typography.Text type="secondary">{row.decisionSlaHours} 小时</Typography.Text>
                 </Space>
+              ),
+            },
+            {
+              title: "行动入口",
+              key: "action",
+              width: 150,
+              fixed: "right",
+              render: (_, row) => (
+                <Button
+                  type="link"
+                  size="small"
+                  href={row.actionHref}
+                  style={{ paddingInline: 0 }}
+                >
+                  {row.actionLabel} <ArrowRightOutlined />
+                </Button>
               ),
             },
           ]}
@@ -714,12 +733,14 @@ export default function DecisionReadinessPanel({
           description="每个产品登记唯一指标、版本、刷新节奏、决策 SLA、自动化上限与放行门禁；展开行可逐流查看业务截止、时效、质量和当前 A0/A1 判断。"
         />
         <Table
+          key={focusProductId || "data-product-catalog"}
           rowKey="id"
           size="small"
           pagination={false}
           dataSource={DATA_PRODUCTS}
           scroll={{ x: 1_260 }}
           expandable={{
+            defaultExpandedRowKeys: focusProductId ? [focusProductId] : [],
             expandedRowRender: (row) => {
               const summary = evaluateProductSourceEvidence(row, dataSources);
               return (
@@ -734,6 +755,7 @@ export default function DecisionReadinessPanel({
             rowExpandable: (row) => row.sources.some((source) => source !== "SCM"),
             columnWidth: 44,
           }}
+          onRow={(row) => ({ id: `data-product-${row.id}` })}
           columns={[
             {
               title: "数据产品",
