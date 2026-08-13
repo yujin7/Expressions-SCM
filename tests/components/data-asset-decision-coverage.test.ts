@@ -338,6 +338,8 @@ describe("三方数据资产到业务决策覆盖", () => {
     });
     expect(portfolio.rows.find((row) => row.stream === "orders-daily")?.stateReason)
       .toContain("尚未实现受控读取契约");
+    expect(portfolio.rows.find((row) => row.stream === "orders-daily")?.stateReason)
+      .toContain("标准订单查询明确不返回这两类订单");
     expect(portfolio).toMatchObject({
       requiredAssetCount: 2,
       implementedAssetCount: 1,
@@ -394,6 +396,10 @@ describe("三方数据资产到业务决策覆盖", () => {
       "YONYOU:yonbip-finance-receivables-settlement",
     ]);
     expect(portfolio.plannedAssetCount).toBe(4);
+    expect(portfolio.rows.find((row) => row.stream === "returns-daily")?.stateReason)
+      .toContain("标准售后查询只返回自有商城单据");
+    expect(portfolio.rows.find((row) => row.stream === "yonbip-finance-receivables-settlement")?.stateReason)
+      .toContain("目标 YonBIP 租户官方 API 目录");
     expect(portfolio.supportingOnlyAssetCount).toBe(6);
     expect(portfolio.rows
       .filter((row) => row.cataloged && !row.releaseRequired)

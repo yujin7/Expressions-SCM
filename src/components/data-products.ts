@@ -72,8 +72,8 @@ export const DATA_PRODUCT_STREAM_LABEL: Record<string, string> = {
   "tmall-sku-sales-observation": "天猫日销量",
   "tmall-sku-refund-observation": "天猫退款",
   "outbound-sales-daily": "聚水潭日出库销量",
-  "orders-daily": "聚水潭日订单",
-  "returns-daily": "聚水潭日退货",
+  "orders-daily": "聚水潭全渠道日订单（含淘系/拼多多）",
+  "returns-daily": "聚水潭全渠道日退货（含淘系/拼多多）",
   "inventory-total-delta": "聚水潭库存总量增量",
   "inbound-receipts-daily": "聚水潭日入库",
   "purchase-order-observation": "简道云采购订单",
@@ -95,6 +95,16 @@ export const DATA_PRODUCT_STREAM_LABEL: Record<string, string> = {
   "yonbip-efi-fieia-querybalance": "用友科目余额",
   "yonbip-digitalmodel-vendor-list": "用友供应商主档",
   "yonbip-digitalmodel-product-listproductbycondition": "用友物料/产品主档",
+};
+
+/**
+ * 只有目标定义、尚未实现的流所必须保留的语义边界。
+ * 这些说明会直接进入数据资产行动队列，防止用覆盖更窄的现成 API 冒充目标契约。
+ */
+export const DATA_PRODUCT_STREAM_IMPLEMENTATION_NOTE: Partial<Record<string, string>> = {
+  "orders-daily": "必须覆盖淘系与拼多多；聚水潭标准订单查询明确不返回这两类订单，不能用窄接口冒充全渠道事实",
+  "returns-daily": "必须覆盖淘系与拼多多售后；聚水潭标准售后查询只返回自有商城单据，不能用它冒充全渠道退货",
+  "yonbip-finance-receivables-settlement": "必须先在目标 YonBIP 租户官方 API 目录确认应收、收款与核销的只读契约，再冻结路径和字段映射",
 };
 
 export function dataProductStreamLabel(source: DataProductSource, stream: string): string {

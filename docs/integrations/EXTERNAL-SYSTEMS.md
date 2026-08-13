@@ -72,6 +72,11 @@ SCM 数据库，二者都不落业务数据。
 - [采购入库查询](https://open.jushuitan.com/document/2019.html)对应 `/open/purchasein/query`；
   只保留入库/采购单身份、供应商、仓库、状态、时间、SKU 数量和批次/效期，排除联系人、地址、
   备注与成本金额。按修改时间取数不等于 SCM 已收货，仍必须人工对账与正式过账。
+- [标准订单查询](https://open.jushuitan.com/document/2125.html)明确不返回淘宝/天猫和拼多多订单；
+  [标准售后查询](https://open.jushuitan.com/document/15.html)只返回自有商城单据。系统目录要求的
+  `orders-daily` / `returns-daily` 是含淘系/拼多多的全渠道事实，因此这两个标准接口只能作为
+  覆盖更窄的候选，不能直接绑定目标流。必须由聚水潭确认奇门/平台专用授权、`customer_id`
+  路由和可覆盖店铺后再冻结契约，并用平台控制总量证明没有渠道漏数。
 
 ### 已实现
 

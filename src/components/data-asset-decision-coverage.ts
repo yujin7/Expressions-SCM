@@ -1,5 +1,6 @@
 import {
   DATA_PRODUCT_SOURCE_LABEL,
+  DATA_PRODUCT_STREAM_IMPLEMENTATION_NOTE,
   dataProductStreamLabel,
   type DataProductDefinition,
   type DataProductSource,
@@ -119,15 +120,22 @@ function sourceCanExplain(sourceRow: DataSourceReadiness | undefined): boolean {
 }
 
 function assetState(
+  stream: string,
   state: ProductStreamEvidenceState,
   evidence: DataStreamEvidence | null,
   sourceRow: DataSourceReadiness | undefined,
   implementationState: DataAssetImplementationState,
 ): { state: DataAssetDecisionState; reason: string | null } {
   if (implementationState === "planned") {
+    const implementationNote = DATA_PRODUCT_STREAM_IMPLEMENTATION_NOTE[stream];
     return evidence?.lastSuccessAt
       ? { state: "degraded", reason: "历史运行仍可追溯，但当前代码没有登记这条受控读取契约，不能继续用于决策" }
-      : { state: "missing", reason: "数据产品已声明需要该流，但当前代码尚未实现受控读取契约" };
+      : {
+          state: "missing",
+          reason: implementationNote
+            ? `数据产品已声明需要该流，但当前代码尚未实现受控读取契约；${implementationNote}`
+            : "数据产品已声明需要该流，但当前代码尚未实现受控读取契约",
+        };
   }
   if (evidence?.selectedForSync === false) {
     return {
@@ -274,6 +282,7 @@ export function buildDataAssetDecisionPortfolio(
         }))
         .sort((a, b) => a.decisionSlaHours - b.decisionSlaHours || a.title.localeCompare(b.title, "zh-CN"));
       const evaluatedAsset = assetState(
+        stream,
         evaluated.state,
         evaluated.evidence,
         sourceRow,
