@@ -84,6 +84,7 @@ function usableForExplanation(evidence: DataStreamEvidence | null): boolean {
     && evidence.lastSuccessAt != null
     && evidence.latestStatus === "succeeded"
     && evidence.freshness === "current"
+    && evidence.sourceAsOf != null
     && !evidence.authorizationBlocked
     && !evidence.sourceTimeInvalid
     && !evidence.schemaDrift

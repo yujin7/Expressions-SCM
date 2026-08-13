@@ -404,6 +404,14 @@ export interface YonyouSyncOptions {
   request?: Record<string, unknown>;
   /** 幂等窗口标识（例如 bizDate）。同 key 重跑直接返回上次结果。 */
   scopeKey: string;
+  /** 明确的源业务/观察日期；与幂等键分离，禁止从任意 scopeKey 猜日期。 */
+  sourceAsOf?: string;
+}
+
+function validSourceAsOf(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = Date.parse(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === value;
 }
 
 /**
@@ -418,6 +426,10 @@ export async function syncYonyouContract(
   options: YonyouSyncOptions,
 ): Promise<YonyouSyncSummary> {
   const { client, contract, actorId, scopeKey } = options;
+  const sourceAsOf = options.sourceAsOf ?? null;
+  if (sourceAsOf != null && !validSourceAsOf(sourceAsOf)) {
+    throw new Error("用友 sourceAsOf 必须是有效的 YYYY-MM-DD 业务日期");
+  }
   const request = options.request ?? {};
   const stream = streamOf(contract);
   const idempotencyKey = `${CONNECTOR}:${stream}:${scopeKey}`;
@@ -560,6 +572,7 @@ export async function syncYonyouContract(
       const controlledScope = {
         contract,
         scopeKey,
+        sourceAsOf,
         schemaVersion: SCHEMA_VERSION,
         shapeFingerprint,
         fieldProfile,
@@ -574,6 +587,7 @@ export async function syncYonyouContract(
         sourceBytes: evidence.bytes,
         createdBy: actorId,
         idempotencyKey,
+        sourceAsOf,
         schemaVersion: SCHEMA_VERSION,
         scope: controlledScope,
       });

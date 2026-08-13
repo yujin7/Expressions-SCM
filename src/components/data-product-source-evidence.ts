@@ -50,6 +50,19 @@ export interface ProductEvidenceSummary {
   missingStreams: number;
   staleStreams: number;
   degradedStreams: number;
+  businessTimeWindow: ProductBusinessTimeWindow;
+}
+
+export interface ProductBusinessTimeWindow {
+  /** 只统计已有证据且声明了时效门限的流；主档/当前状态等无历史门限事实不强行编造日期。 */
+  timeSensitiveStreams: number;
+  datedStreams: number;
+  undatedStreams: number;
+  /** 多源比较只能诚实地截至最早业务日期。 */
+  commonAsOf: string | null;
+  latestAsOf: string | null;
+  spanDays: number | null;
+  state: "complete" | "partial" | "unavailable";
 }
 
 export interface ProductAutomationReadiness {
@@ -96,6 +109,7 @@ export function evaluateExternalStreamEvidence(
     };
   }
   const limitations: string[] = [];
+  if (!evidence.sourceAsOf) limitations.push("缺少源业务截止日");
   if (evidence.authorizationBlocked) limitations.push("源系统授权被阻断");
   if (evidence.sourceTimeInvalid) limitations.push("业务截止日无效或晚于当前上海业务日");
   if (evidence.latestStatus === "failed") limitations.push("最近一次运行失败");
@@ -205,6 +219,29 @@ export function evaluateProductSourceEvidence(
   const missingSources = sources.filter((row) => row.state === "missing").length;
   const staleSources = sources.filter((row) => row.state === "stale").length;
   const degradedSources = sources.filter((row) => row.state === "degraded").length;
+  const timeSensitive = sources
+    .flatMap((source) => source.streams)
+    .filter((stream) => (stream.evidence?.freshnessMaxAgeDays ?? stream.scmEvidence?.freshnessMaxAgeDays) != null);
+  const businessDates = timeSensitive
+    .map((stream) => stream.evidence?.sourceAsOf ?? stream.scmEvidence?.asOf ?? null)
+    .filter((value): value is string => value != null)
+    .sort();
+  const commonAsOf = businessDates[0] ?? null;
+  const latestAsOf = businessDates.at(-1) ?? null;
+  const spanDays = commonAsOf && latestAsOf
+    ? Math.round((Date.parse(`${latestAsOf}T00:00:00.000Z`) - Date.parse(`${commonAsOf}T00:00:00.000Z`)) / 86_400_000)
+    : null;
+  const businessTimeWindow: ProductBusinessTimeWindow = {
+    timeSensitiveStreams: timeSensitive.length,
+    datedStreams: businessDates.length,
+    undatedStreams: timeSensitive.length - businessDates.length,
+    commonAsOf,
+    latestAsOf,
+    spanDays,
+    state: timeSensitive.length === 0 || businessDates.length === 0
+      ? "unavailable"
+      : businessDates.length < timeSensitive.length ? "partial" : "complete",
+  };
   return {
     sources,
     observedSources,
@@ -215,6 +252,7 @@ export function evaluateProductSourceEvidence(
     missingStreams: sources.reduce((sum, row) => sum + row.missingStreams.length, 0),
     staleStreams: sources.reduce((sum, row) => sum + row.staleStreams.length, 0),
     degradedStreams: sources.reduce((sum, row) => sum + row.degradedStreams.length, 0),
+    businessTimeWindow,
   };
 }
 
@@ -227,6 +265,7 @@ function streamSafeForExplanation(row: ProductStreamEvidence): boolean {
     && !evidence.authorizationBlocked
     && !evidence.sourceTimeInvalid
     && !evidence.schemaDrift
+    && evidence.sourceAsOf != null
     && !evidence.emptySource
     && evidence.rejectedRows === 0;
 }
@@ -234,7 +273,7 @@ function streamSafeForExplanation(row: ProductStreamEvidence): boolean {
 /**
  * 当前运行证据最多自动解锁 A1（解释）。A2/A3 还需要产品级控制总量、UAT、审批和
  * 回滚证据；仅凭连接器状态永远不能越级。observation-only/releaseBlocked 可以用于带标记
- * 的解释，但结构漂移、失败、过期、拒收、空源、授权阻断或无证据必须退回 A0。
+ * 的解释，但缺业务截止日、结构漂移、失败、过期、拒收、空源、授权阻断或无证据必须退回 A0。
  */
 export function currentProductAutomation(
   summary: ProductEvidenceSummary,
@@ -256,6 +295,6 @@ export function currentProductAutomation(
       }
     : {
         level: "A0",
-        reason: "所需来源存在连接配置失效、结构漂移、缺失、过期、失败、拒收、空源或授权/时间异常；只能观察门禁与修复队列。",
+        reason: "所需来源存在连接配置失效、缺业务截止日、结构漂移、缺失、过期、失败、拒收、空源或授权/时间异常；只能观察门禁与修复队列。",
       };
 }

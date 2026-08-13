@@ -74,7 +74,7 @@ describe("用友只读观测同步", () => {
     });
 
     const summary = await syncYonyouContract(db, {
-      client, contract: "物料档案分页查询 V2", actorId, scopeKey: "2026-08-04",
+      client, contract: "物料档案分页查询 V2", actorId, scopeKey: "2026-08-04", sourceAsOf: "2026-08-04",
     });
 
     expect(summary.blockedByConsoleGrant).toBe(false);
@@ -82,6 +82,11 @@ describe("用友只读观测同步", () => {
     expect(summary.stagedRows).toBe(2);
     expect(summary.evidenceHash).toMatch(/^[a-f0-9]{64}$/);
     expect(summary.importJobId).not.toBeNull();
+
+    const [job] = await db.select({ sourceAsOf: schema.importJobs.sourceAsOf })
+      .from(schema.importJobs)
+      .where(eq(schema.importJobs.id, summary.importJobId!));
+    expect(job.sourceAsOf).toBe("2026-08-04");
 
     const rows = await db.select().from(schema.stagingRows)
       .where(eq(schema.stagingRows.importJobId, summary.importJobId!));
@@ -96,7 +101,8 @@ describe("用友只读观测同步", () => {
     const [run] = await db.select({ requestScope: schema.integrationRuns.requestScope })
       .from(schema.integrationRuns)
       .where(eq(schema.integrationRuns.id, summary.runId));
-    const scope = run.requestScope as { fieldProfile: unknown };
+    const scope = run.requestScope as { fieldProfile: unknown; sourceAsOf: string };
+    expect(scope.sourceAsOf).toBe("2026-08-04");
     expect(scope.fieldProfile).toMatchObject({
       version: "yonyou-field-profile/v1",
       totalRecords: 2,
@@ -108,6 +114,20 @@ describe("用友只读观测同步", () => {
     const serializedProfile = JSON.stringify(scope.fieldProfile);
     expect(serializedProfile).not.toContain("M001");
     expect(serializedProfile).not.toContain("物料甲");
+  });
+
+  it("源业务日期与任意幂等 scope 分离，并在外呼前拒绝无效日期", async () => {
+    const { db, actorId } = await seedActor();
+    const { client, fetchMock } = clientReturning({ code: "00000", data: { recordList: [] } });
+
+    await expect(syncYonyouContract(db, {
+      client,
+      contract: "物料档案分页查询 V2",
+      actorId,
+      scopeKey: "manual-replay-1",
+      sourceAsOf: "2026-02-30",
+    })).rejects.toThrow("sourceAsOf 必须是有效的 YYYY-MM-DD");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("310037 未授权：不抛错、不推进 checkpoint、如实标记等待控制台授权", async () => {

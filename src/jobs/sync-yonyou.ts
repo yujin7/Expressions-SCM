@@ -69,6 +69,7 @@ export async function runYonyouSync(
       contract: contract as YonyouReadContractName,
       actorId,
       scopeKey,
+      sourceAsOf: scopeKey,
     });
     results.push(summary);
     if (summary.blockedByConsoleGrant) awaitingConsoleGrant.push(contract);

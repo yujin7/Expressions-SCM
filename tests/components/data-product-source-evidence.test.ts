@@ -128,6 +128,66 @@ describe("数据产品所需流证据", () => {
       source("JST", "operational", ["outbound-sales-daily"]),
     ]);
     expect(operational).toMatchObject({ observedSources: 2, operationalSources: 2, missingStreams: 0 });
+    expect(operational.businessTimeWindow).toEqual({
+      timeSensitiveStreams: 1,
+      datedStreams: 1,
+      undatedStreams: 0,
+      commonAsOf: "2026-08-11",
+      latestAsOf: "2026-08-11",
+      spanDays: 0,
+      state: "complete",
+    });
+  });
+
+  it("计算多源共同可比截止与时点跨度，不用运行时间冒充业务日期", () => {
+    const multiSourceProduct = {
+      ...product,
+      sources: ["SCM", "JST", "YONYOU"],
+      requiredStreams: {
+        JST: ["outbound-sales-daily"],
+        YONYOU: ["yonbip-scm-purchaseorder-list"],
+      },
+    } satisfies DataProductDefinition;
+    const jst = source("JST", "observation", ["outbound-sales-daily"]);
+    jst.streams = [stream("outbound-sales-daily", { sourceAsOf: "2026-08-10" })];
+    const yonyou = source("YONYOU", "observation", ["yonbip-scm-purchaseorder-list"]);
+    yonyou.streams = [stream("yonbip-scm-purchaseorder-list", { sourceAsOf: null })];
+
+    const result = evaluateProductSourceEvidence(multiSourceProduct, [
+      source("SCM", "operational", []),
+      jst,
+      yonyou,
+    ]);
+
+    expect(result.businessTimeWindow).toEqual({
+      timeSensitiveStreams: 2,
+      datedStreams: 1,
+      undatedStreams: 1,
+      commonAsOf: "2026-08-10",
+      latestAsOf: "2026-08-10",
+      spanDays: 0,
+      state: "partial",
+    });
+    expect(result.sources.find((row) => row.source === "YONYOU")).toMatchObject({
+      state: "degraded",
+      streams: [expect.objectContaining({ reason: "缺少源业务截止日" })],
+    });
+    expect(currentProductAutomation(result)).toMatchObject({
+      level: "A0",
+      reason: expect.stringContaining("缺业务截止日"),
+    });
+
+    yonyou.streams = [stream("yonbip-scm-purchaseorder-list", { sourceAsOf: "2026-08-13" })];
+    expect(evaluateProductSourceEvidence(multiSourceProduct, [
+      source("SCM", "operational", []),
+      jst,
+      yonyou,
+    ]).businessTimeWindow).toMatchObject({
+      commonAsOf: "2026-08-10",
+      latestAsOf: "2026-08-13",
+      spanDays: 3,
+      state: "complete",
+    });
   });
 
   it("过期、最近失败和拒收证据不能把数据产品提升为已放行", () => {

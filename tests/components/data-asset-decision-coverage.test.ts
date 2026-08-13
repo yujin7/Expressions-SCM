@@ -242,4 +242,20 @@ describe("三方数据资产到业务决策覆盖", () => {
     expect(portfolio.rows[0].stateReason).toContain("外部字段结构变化");
     expect(portfolio).toMatchObject({ explanationUsableCount: 0, operationalReadyCount: 0 });
   });
+
+  it("只有近期运行时间但缺源业务截止日时不计入当前或可解释覆盖", () => {
+    const portfolio = buildDataAssetDecisionPortfolio([
+      product("p1", "聚水潭库存决策", 4, { JST: ["inventory"] }),
+    ], [
+      source("JST", [stream("inventory", { sourceAsOf: null })], "operational"),
+    ]);
+
+    expect(portfolio.rows[0]).toMatchObject({
+      state: "degraded",
+      explanationUsable: false,
+      actionLabel: "修复连接证据",
+    });
+    expect(portfolio.rows[0].stateReason).toContain("缺少源业务截止日");
+    expect(portfolio).toMatchObject({ explanationUsableCount: 0, operationalReadyCount: 0 });
+  });
 });

@@ -383,6 +383,7 @@ function ProductOperatingContract({
 }) {
   const current = currentProductAutomation(summary);
   const effectiveLevel = release?.effectiveLevel ?? current.level;
+  const timeWindow = summary.businessTimeWindow;
   return (
     <Space direction="vertical" size={10} style={{ display: "flex" }}>
       <Space size={[6, 6]} wrap>
@@ -409,6 +410,15 @@ function ProductOperatingContract({
       <Typography.Paragraph style={{ marginBottom: 0 }}>
         <Typography.Text strong>当前自动化判断：</Typography.Text>
         {current.reason}
+      </Typography.Paragraph>
+      <Typography.Paragraph style={{ marginBottom: 0 }}>
+        <Typography.Text strong>共同可比截止：</Typography.Text>
+        {timeWindow.state === "unavailable"
+          ? "尚无可比较的业务日期证据"
+          : `${timeWindow.commonAsOf}（最新来源 ${timeWindow.latestAsOf}，时点跨度 ${timeWindow.spanDays} 天）`}
+        {timeWindow.undatedStreams > 0
+          ? `；另有 ${timeWindow.undatedStreams} 条时效敏感流缺业务日期`
+          : ""}
       </Typography.Paragraph>
       <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
         <Typography.Text strong>自动化护栏：</Typography.Text>
