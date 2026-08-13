@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { DATA_PRODUCTS } from "@/components/data-products";
 import { buildDataProductWorkQueue } from "@/components/data-product-work-queue";
 import type { DataSourceReadiness } from "@/server/modules/report/data-source-readiness";
+import type { DataProductOutcomeReadiness } from "@/server/modules/report/data-product-outcome";
 import type { DataProductReleaseReadiness } from "@/server/modules/report/data-product-release";
 
 function emptySource(key: DataSourceReadiness["key"]): DataSourceReadiness {
@@ -55,6 +56,32 @@ function release(
     canApprove: false,
     canReject: false,
     canRevoke: false,
+    ...overrides,
+  };
+}
+
+function outcome(
+  productId: string,
+  overrides: Partial<DataProductOutcomeReadiness> = {},
+): DataProductOutcomeReadiness {
+  return {
+    productId,
+    canRecord: true,
+    canCorrect: true,
+    gate: "可登记真实结果",
+    cashVisible: false,
+    outcomeCount: 0,
+    evaluatedDecisionCount: 0,
+    adoptedCount: 0,
+    pendingCount: 0,
+    terminalResultCount: 0,
+    falsePositiveCount: 0,
+    adoptionRatePct: null,
+    falsePositiveRatePct: null,
+    avgHandlingMinutes: null,
+    savedHoursTotal: null,
+    cashImpactTotal: null,
+    latest: [],
     ...overrides,
   };
 }
@@ -138,7 +165,7 @@ describe("data product dynamic work queue", () => {
     });
   });
 
-  it("moves a current approved product to monitoring instead of asking for another release", () => {
+  it("moves a current approved product into result learning before claiming stable monitoring", () => {
     const product = DATA_PRODUCTS[0];
     const approved = {
       id: 8,
@@ -169,12 +196,97 @@ describe("data product dynamic work queue", () => {
       latestRelease: approved,
       activeReleaseCurrent: true,
       canRevoke: true,
+    })], [outcome(product.id)]);
+    expect(queue).toEqual([expect.objectContaining({
+      stage: "learning",
+      effectiveLevel: "A2",
+      actionLabel: "复盘真实结果",
+      actionHref: expect.stringContaining(`product=${product.id}`),
+      nextAction: expect.stringContaining("第一条可核验证据"),
+    })]);
+  });
+
+  it("keeps pending real-world outcomes in the learning queue", () => {
+    const product = DATA_PRODUCTS[0];
+    const approved = {
+      id: 9,
+      productId: product.id,
+      contractVersion: product.contractVersion,
+      targetLevel: "A2" as const,
+      sourceEvidenceDigest: "current",
+      controlTotalRef: "CT-9",
+      uatRef: "UAT-9",
+      rollbackPlan: "立即停用建议并恢复人工复核",
+      scopeNote: null,
+      status: "approved" as const,
+      requestedBy: 1,
+      requestedByName: "A",
+      requestedAt: new Date().toISOString(),
+      decidedBy: 2,
+      decidedByName: "B",
+      decidedAt: new Date().toISOString(),
+      decisionNote: "已批准",
+      revokedBy: null,
+      revokedByName: null,
+      revokedAt: null,
+      version: 2,
+    };
+    const queue = buildDataProductWorkQueue([product], sources, [release(product.id, {
+      effectiveLevel: "A2",
+      activeRelease: approved,
+      latestRelease: approved,
+      activeReleaseCurrent: true,
+    })], [outcome(product.id, { outcomeCount: 3, evaluatedDecisionCount: 2, pendingCount: 1 })]);
+    expect(queue[0]).toMatchObject({
+      stage: "learning",
+      blockerState: "outcome",
+      nextAction: "补齐 1 条待观察事项的真实结果与证据编号",
+    });
+  });
+
+  it("moves only measured and closed feedback into stable monitoring", () => {
+    const product = DATA_PRODUCTS[0];
+    const approved = {
+      id: 10,
+      productId: product.id,
+      contractVersion: product.contractVersion,
+      targetLevel: "A2" as const,
+      sourceEvidenceDigest: "current",
+      controlTotalRef: "CT-10",
+      uatRef: "UAT-10",
+      rollbackPlan: "立即停用建议并恢复人工复核",
+      scopeNote: null,
+      status: "approved" as const,
+      requestedBy: 1,
+      requestedByName: "A",
+      requestedAt: new Date().toISOString(),
+      decidedBy: 2,
+      decidedByName: "B",
+      decidedAt: new Date().toISOString(),
+      decisionNote: "已批准",
+      revokedBy: null,
+      revokedByName: null,
+      revokedAt: null,
+      version: 2,
+    };
+    const queue = buildDataProductWorkQueue([product], sources, [release(product.id, {
+      effectiveLevel: "A2",
+      activeRelease: approved,
+      latestRelease: approved,
+      activeReleaseCurrent: true,
+    })], [outcome(product.id, {
+      outcomeCount: 3,
+      evaluatedDecisionCount: 3,
+      adoptedCount: 2,
+      terminalResultCount: 3,
+      adoptionRatePct: "66.7",
+      falsePositiveRatePct: "0.0",
     })]);
     expect(queue).toEqual([expect.objectContaining({
       stage: "monitor",
-      effectiveLevel: "A2",
       actionLabel: "进入业务分析",
       actionHref: "/report/decision-studio?tab=identity",
+      nextAction: expect.stringContaining("持续复核采纳"),
     })]);
   });
 });

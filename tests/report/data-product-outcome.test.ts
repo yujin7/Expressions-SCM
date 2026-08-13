@@ -11,6 +11,7 @@ import {
   buildDataProductReleaseEvidence,
   loadDataProductReleaseReadiness,
 } from "@/server/modules/report/data-product-release";
+import { todayShanghai } from "@/server/modules/master/common";
 import type {
   DataSourceReadiness,
   DataStreamEvidence,
@@ -125,7 +126,7 @@ function input(overrides: Record<string, unknown> = {}) {
   return {
     productId: product.id,
     decisionRef: "IDENTITY-20260813-001",
-    businessDate: "2026-08-13",
+    businessDate: todayShanghai(),
     decision: "accepted",
     result: "positive",
     handlingMinutes: 30,
@@ -135,6 +136,11 @@ function input(overrides: Record<string, unknown> = {}) {
     idempotencyKey: globalThis.crypto.randomUUID(),
     ...overrides,
   };
+}
+
+function shiftBusinessDate(date: string, days: number): string {
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
 }
 
 describe("数据产品真实结果闭环", () => {
@@ -156,16 +162,17 @@ describe("数据产品真实结果闭环", () => {
     ]).returning();
     const operator: SessionUser = { id: people[0].id, name: people[0].name, roles: ["ops"], isApprover: false };
     await seedApprovedRelease(db, people[0].id, people[1].id);
+    const today = todayShanghai();
 
     await expect(recordDataProductOutcome(
       operator,
-      input({ businessDate: "2026-08-12" }),
+      input({ businessDate: shiftBusinessDate(today, -1) }),
       db,
       currentSources(),
     )).rejects.toMatchObject({ status: 409 });
     await expect(recordDataProductOutcome(
       operator,
-      input({ businessDate: "2026-08-14" }),
+      input({ businessDate: shiftBusinessDate(today, 1) }),
       db,
       currentSources(),
     )).rejects.toThrow("真实结果不能登记未来业务日期");

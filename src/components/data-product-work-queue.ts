@@ -11,9 +11,18 @@ import {
   type ProductStreamEvidence,
 } from "@/components/data-product-source-evidence";
 import type { DataSourceReadiness } from "@/server/modules/report/data-source-readiness";
+import type { DataProductOutcomeReadiness } from "@/server/modules/report/data-product-outcome";
 import type { DataProductReleaseReadiness } from "@/server/modules/report/data-product-release";
 
-export type DataProductWorkStage = "safeguard" | "approval" | "release_ready" | "repair" | "monitor";
+export type DataProductWorkStage = "safeguard" | "approval" | "release_ready" | "repair" | "learning" | "monitor";
+export type DataProductLearningState = "unavailable" | "empty" | "pending" | "unevaluated" | "measured";
+
+export interface DataProductLearningSummary {
+  state: DataProductLearningState;
+  label: string;
+  nextAction: string;
+  bottleneck: string;
+}
 
 export interface DataProductWorkItem {
   productId: string;
@@ -26,7 +35,7 @@ export interface DataProductWorkItem {
   actionLabel: string;
   actionHref: string;
   bottleneck: string;
-  blockerState: ProductStreamEvidence["state"] | "release" | "none";
+  blockerState: ProductStreamEvidence["state"] | "release" | "outcome" | "none";
 }
 
 const PRODUCT_DECISION_HREF: Record<string, string> = {
@@ -67,6 +76,13 @@ function actionTarget(
     };
   }
 
+  if (stage === "learning") {
+    return {
+      actionLabel: "复盘真实结果",
+      actionHref: productEvidenceHref(product.id),
+    };
+  }
+
   if (
     stage === "repair"
     && blocker
@@ -93,7 +109,8 @@ const STAGE_ORDER: Record<DataProductWorkStage, number> = {
   approval: 1,
   release_ready: 2,
   repair: 3,
-  monitor: 4,
+  learning: 4,
+  monitor: 5,
 };
 
 const BLOCKER_ORDER: Record<DataProductWorkItem["blockerState"], number> = {
@@ -102,8 +119,52 @@ const BLOCKER_ORDER: Record<DataProductWorkItem["blockerState"], number> = {
   degraded: 2,
   missing: 3,
   current: 4,
-  none: 5,
+  outcome: 5,
+  none: 6,
 };
+
+export function summarizeDataProductLearning(
+  outcome: DataProductOutcomeReadiness | undefined,
+): DataProductLearningSummary {
+  if (!outcome) {
+    return {
+      state: "unavailable",
+      label: "结果台账未加载",
+      nextAction: "加载并核验真实结果台账；结果可见前不得宣称数据产品已产生价值",
+      bottleneck: "真实结果台账未加载，无法验证采纳、误报、处理时长或业务影响",
+    };
+  }
+  if (outcome.outcomeCount === 0) {
+    return {
+      state: "empty",
+      label: "尚无真实结果",
+      nextAction: "从第一条可核验证据开始登记真实业务决定与结果，不以预测收益代替",
+      bottleneck: "当前有效放行尚无真实结果样本",
+    };
+  }
+  if (outcome.pendingCount > 0) {
+    return {
+      state: "pending",
+      label: `${outcome.pendingCount} 条待观察`,
+      nextAction: `补齐 ${outcome.pendingCount} 条待观察事项的真实结果与证据编号`,
+      bottleneck: `${outcome.pendingCount} 条结果尚未闭环；采纳、误报与实际影响仍不完整`,
+    };
+  }
+  if (outcome.evaluatedDecisionCount === 0) {
+    return {
+      state: "unevaluated",
+      label: "仅有暂缓记录",
+      nextAction: "补齐至少一条已评价的真实业务决定；暂缓记录不计入采纳率",
+      bottleneck: `已有 ${outcome.outcomeCount} 条记录但均未形成可评价决定`,
+    };
+  }
+  return {
+    state: "measured",
+    label: "已形成真实反馈",
+    nextAction: "持续复核采纳、实际结果、误报、处理时长与门禁自动降级",
+    bottleneck: `已评价 ${outcome.evaluatedDecisionCount} 条 · 已形成结果 ${outcome.terminalResultCount} 条 · 待观察 0 条`,
+  };
+}
 
 function firstBlocker(summary: ProductEvidenceSummary): ProductStreamEvidence | null {
   const streams = summary.sources.flatMap((source) => source.streams);
@@ -143,15 +204,17 @@ function pendingEvidenceCurrent(
 
 /**
  * 将静态产品目录与实时来源/放行证据组成一条确定性工作队列。
- * 优先级不伪造精确的“商业价值分”：先止损，再审批，再放行，再修复，最后监控；
+ * 优先级不伪造精确的“商业价值分”：先止损，再审批，再放行，再修复，再学习真实结果，最后监控；
  * 同组只按产品已声明的决策 SLA 和可观测阻塞状态排序。
  */
 export function buildDataProductWorkQueue(
   products: readonly DataProductDefinition[],
   dataSources: readonly DataSourceReadiness[],
   releases: readonly DataProductReleaseReadiness[],
+  outcomes: readonly DataProductOutcomeReadiness[] = [],
 ): DataProductWorkItem[] {
   const releaseByProduct = new Map(releases.map((release) => [release.productId, release]));
+  const outcomeByProduct = new Map(outcomes.map((outcome) => [outcome.productId, outcome]));
   const items = products.map<DataProductWorkItem>((product) => {
     const summary = evaluateProductSourceEvidence(product, dataSources);
     const runtime = currentProductAutomation(summary);
@@ -196,18 +259,22 @@ export function buildDataProductWorkQueue(
     }
 
     if (release?.activeReleaseCurrent && release.activeRelease) {
-      const action = actionTarget(product, "monitor", blocker, dataSources);
+      const learning = summarizeDataProductLearning(outcomeByProduct.get(product.id));
+      const stage = learning.state === "measured" ? "monitor" : "learning";
+      const action = actionTarget(product, stage, blocker, dataSources);
       return {
         productId: product.id,
         title: product.title,
         owner: product.owner,
         decisionSlaHours: product.decisionSlaHours,
         effectiveLevel,
-        stage: "monitor",
-        nextAction: "监控建议采纳、实际结果、误报与门禁自动降级",
+        stage,
+        nextAction: learning.nextAction,
         ...action,
-        bottleneck: `当前 ${release.activeRelease.targetLevel} 放行有效`,
-        blockerState: "none",
+        bottleneck: stage === "monitor"
+          ? `当前 ${release.activeRelease.targetLevel} 放行有效 · ${learning.bottleneck}`
+          : `${learning.bottleneck}；当前 ${release.activeRelease.targetLevel} 放行仍有效`,
+        blockerState: stage === "monitor" ? "none" : "outcome",
       };
     }
 

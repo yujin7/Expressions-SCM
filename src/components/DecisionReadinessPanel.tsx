@@ -86,6 +86,7 @@ const WORK_STAGE_META: Record<DataProductWorkStage, { label: string; color: stri
   approval: { label: "待会签", color: "processing" },
   release_ready: { label: "可验收放行", color: "purple" },
   repair: { label: "修复证据", color: "warning" },
+  learning: { label: "真实结果学习", color: "cyan" },
   monitor: { label: "持续监控", color: "success" },
 };
 
@@ -453,11 +454,11 @@ export default function DecisionReadinessPanel({
   const operationalSources = external.filter((item) => item.state === "operational").length;
   const observedSources = external.filter((item) => item.state === "observation").length;
   const workQueue = useMemo(
-    () => buildDataProductWorkQueue(DATA_PRODUCTS, dataSources, dataProductReleases),
-    [dataSources, dataProductReleases],
+    () => buildDataProductWorkQueue(DATA_PRODUCTS, dataSources, dataProductReleases, dataProductOutcomes),
+    [dataSources, dataProductReleases, dataProductOutcomes],
   );
   const exportEvidence = () => {
-    const payload = buildDataProductEvidenceExport(DATA_PRODUCTS, dataSources, dataProductReleases);
+    const payload = buildDataProductEvidenceExport(DATA_PRODUCTS, dataSources, dataProductReleases, dataProductOutcomes);
     exportCsv(payload.filename, payload.headers, payload.rows);
     message.success(`已导出 ${payload.rows.length} 行三方数据产品决策证据`);
   };
@@ -538,7 +539,7 @@ export default function DecisionReadinessPanel({
           banner
           showIcon
           type="info"
-          message="优先级由当前证据自动重排：失效放行 → 待会签 → 可验收放行 → 证据修复 → 持续监控。同组内按决策 SLA 排序，不伪造商业价值精确分。"
+          message="优先级由当前证据自动重排：失效放行 → 待会签 → 可验收放行 → 证据修复 → 真实结果学习 → 持续监控。同组内按决策 SLA 排序，不伪造商业价值精确分。"
         />
         <Table
           rowKey="productId"

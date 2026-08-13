@@ -11,9 +11,11 @@ import {
 } from "@/components/data-product-source-evidence";
 import {
   buildDataProductWorkQueue,
+  summarizeDataProductLearning,
   type DataProductWorkStage,
 } from "@/components/data-product-work-queue";
 import type { DataSourceReadiness } from "@/server/modules/report/data-source-readiness";
+import type { DataProductOutcomeReadiness } from "@/server/modules/report/data-product-outcome";
 import type { DataProductReleaseReadiness } from "@/server/modules/report/data-product-release";
 
 export interface DataProductEvidenceCsvExport {
@@ -27,6 +29,7 @@ const STAGE_LABEL: Record<DataProductWorkStage, string> = {
   approval: "待会签",
   release_ready: "可验收放行",
   repair: "修复证据",
+  learning: "真实结果学习",
   monitor: "持续监控",
 };
 
@@ -44,7 +47,25 @@ const HEADERS = [
   "时效敏感流数", "缺业务日期流数", "来源系统", "来源技术键", "来源当前状态", "来源配置仍有效",
   "所需数据流", "数据流技术键", "流证据状态", "受限原因", "业务截止", "最近成功", "源行", "Staging行",
   "拒收行", "结构漂移", "观察层阻断", "当前放行记录状态", "放行目标级别",
+  "结果学习状态", "真实结果有效记录数", "已评价决策数", "采纳数", "待观察数", "已形成结果数", "误报数",
+  "采纳率%", "误报率%", "平均处理分钟", "实际节省工时", "现金影响可见", "实际现金影响CNY",
+  "最新结果决策编号", "最新结果业务日", "最新业务决定", "最新真实结果",
 ];
+
+const OUTCOME_DECISION_LABEL = {
+  accepted: "采纳",
+  modified: "修改后采纳",
+  rejected: "拒绝",
+  deferred: "暂缓",
+} as const;
+
+const OUTCOME_RESULT_LABEL = {
+  pending: "待观察",
+  positive: "正向",
+  neutral: "中性",
+  negative: "负向",
+  false_positive: "误报",
+} as const;
 
 function exportTimestamp(now: Date): string {
   return now.toISOString().replace(/[:.]/g, "-");
@@ -58,17 +79,22 @@ export function buildDataProductEvidenceExport(
   products: readonly DataProductDefinition[],
   dataSources: readonly DataSourceReadiness[],
   releases: readonly DataProductReleaseReadiness[],
+  outcomes: readonly DataProductOutcomeReadiness[] = [],
   now = new Date(),
 ): DataProductEvidenceCsvExport {
   const generatedAt = now.toISOString();
   const releaseByProduct = new Map(releases.map((release) => [release.productId, release]));
+  const outcomeByProduct = new Map(outcomes.map((outcome) => [outcome.productId, outcome]));
   const workByProduct = new Map(
-    buildDataProductWorkQueue(products, dataSources, releases).map((item) => [item.productId, item]),
+    buildDataProductWorkQueue(products, dataSources, releases, outcomes).map((item) => [item.productId, item]),
   );
   const rows = products.flatMap((product) => {
     const summary = evaluateProductSourceEvidence(product, dataSources);
     const runtime = currentProductAutomation(summary);
     const release = releaseByProduct.get(product.id);
+    const outcome = outcomeByProduct.get(product.id);
+    const learning = summarizeDataProductLearning(outcome);
+    const latestOutcome = outcome?.latest[0] ?? null;
     const work = workByProduct.get(product.id);
     const releaseRecord = release?.activeRelease ?? release?.pendingRelease ?? release?.latestRelease ?? null;
     return summary.sources.flatMap((source) => source.streams.map((stream) => {
@@ -116,6 +142,23 @@ export function buildDataProductEvidenceExport(
         evidence?.releaseBlocked ? "是" : "否",
         releaseRecord ? RELEASE_STATUS_LABEL[releaseRecord.status] : "无",
         releaseRecord?.targetLevel ?? null,
+        learning.label,
+        outcome?.outcomeCount ?? null,
+        outcome?.evaluatedDecisionCount ?? null,
+        outcome?.adoptedCount ?? null,
+        outcome?.pendingCount ?? null,
+        outcome?.terminalResultCount ?? null,
+        outcome?.falsePositiveCount ?? null,
+        outcome?.adoptionRatePct ?? null,
+        outcome?.falsePositiveRatePct ?? null,
+        outcome?.avgHandlingMinutes ?? null,
+        outcome?.savedHoursTotal ?? null,
+        outcome ? (outcome.cashVisible ? "是" : "按角色隐藏") : null,
+        outcome?.cashVisible ? outcome.cashImpactTotal : null,
+        latestOutcome?.decisionRef ?? null,
+        latestOutcome?.businessDate ?? null,
+        latestOutcome ? OUTCOME_DECISION_LABEL[latestOutcome.decision] : null,
+        latestOutcome ? OUTCOME_RESULT_LABEL[latestOutcome.result] : null,
       ];
     }));
   });

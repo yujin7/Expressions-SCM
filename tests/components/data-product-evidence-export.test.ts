@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { buildDataProductEvidenceExport } from "@/components/data-product-evidence-export";
 import type { DataProductDefinition } from "@/components/data-products";
 import type { DataSourceReadiness, DataStreamEvidence } from "@/server/modules/report/data-source-readiness";
+import type { DataProductOutcomeReadiness } from "@/server/modules/report/data-product-outcome";
 
 function stream(key: string, sourceAsOf: string): DataStreamEvidence {
   return {
@@ -77,6 +78,48 @@ const product: DataProductDefinition = {
   releaseGate: "test",
 };
 
+const outcome: DataProductOutcomeReadiness = {
+  productId: product.id,
+  canRecord: true,
+  canCorrect: true,
+  gate: "可登记真实结果",
+  cashVisible: true,
+  outcomeCount: 3,
+  evaluatedDecisionCount: 3,
+  adoptedCount: 2,
+  pendingCount: 0,
+  terminalResultCount: 3,
+  falsePositiveCount: 1,
+  adoptionRatePct: "66.7",
+  falsePositiveRatePct: "33.3",
+  avgHandlingMinutes: "18.0",
+  savedHoursTotal: "7.50",
+  cashImpactTotal: "1200.00",
+  latest: [{
+    id: 7,
+    productId: product.id,
+    contractVersion: product.contractVersion,
+    releaseId: 3,
+    sourceEvidenceDigest: "must-not-export:scope-digest",
+    decisionRef: "TRI-20260813-001",
+    businessDate: "2026-08-13",
+    decision: "modified",
+    result: "positive",
+    handlingMinutes: 18,
+    savedHours: "2.50",
+    cashImpact: "500.00",
+    currency: "CNY",
+    cashVisible: true,
+    reasonCode: "business_constraint",
+    evidenceRef: "internal-evidence-7",
+    note: "受约束后执行并形成正向结果",
+    supersedesId: null,
+    recordedBy: 1,
+    recordedByName: "财务",
+    createdAt: "2026-08-13T04:00:00.000Z",
+  }],
+};
+
 describe("三方数据产品决策证据导出", () => {
   it("逐产品逐流导出共同截止、责任动作和技术回查键，不泄露连接指纹", () => {
     const result = buildDataProductEvidenceExport([
@@ -84,7 +127,7 @@ describe("三方数据产品决策证据导出", () => {
     ], [
       source("JST", stream("sales", "2026-08-10")),
       source("YONYOU", stream("voucher", "2026-08-12")),
-    ], [], new Date("2026-08-13T02:03:04.000Z"));
+    ], [], [outcome], new Date("2026-08-13T02:03:04.000Z"));
 
     expect(result.filename).toBe("三方数据-产品决策证据-2026-08-13T02-03-04-000Z.csv");
     expect(result.rows).toHaveLength(2);
@@ -101,6 +144,12 @@ describe("三方数据产品决策证据导出", () => {
         跨源时点跨度天数: 2,
         处置阶段: "可验收放行",
         当前有效级别: "A1",
+        结果学习状态: "已形成真实反馈",
+        真实结果有效记录数: 3,
+        "采纳率%": "66.7",
+        最新结果决策编号: "TRI-20260813-001",
+        最新业务决定: "修改后采纳",
+        最新真实结果: "正向",
       }),
       expect.objectContaining({
         来源技术键: "YONYOU",
@@ -109,5 +158,6 @@ describe("三方数据产品决策证据导出", () => {
       }),
     ]);
     expect(JSON.stringify(result)).not.toContain("must-not-export");
+    expect(JSON.stringify(result)).not.toContain("internal-evidence-7");
   });
 });
