@@ -37,6 +37,7 @@ export const SCHEDULES: Record<string, string> = {
   // 同名任务无法登记两条 cron，故用「小时列表」表达两批：分钟相同、小时二选一
   "doc-aging": "10 11,17 * * *",
   "job-failure-watchdog": "20 11,17 * * *",
+  "data-product-gate-watchdog": "22 11,17 * * *",
   "system-alert-notify": "25 11,17 * * *",
   "notify-dispatch": "30 11,17 * * *",
   "exception-notify": "40 11 * * *",

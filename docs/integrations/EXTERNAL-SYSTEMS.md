@@ -29,6 +29,10 @@
 SCM 数据库，二者都不落业务数据。
 因此只有飞书 webhook 可标 operational，其余仍必须区分代码就绪、凭据、权限和 UAT。
 
+已批准数据产品的运行门禁由 `data-product-gate-watchdog` 在两批同步/对账后复核：任一所需来源
+退回仅契约/阻断、过期、失败、拒收、空源或范围变化时，A2/A3 立即降级并向该产品责任角色
+开告警；恢复后自动关闭。它只负责止损和通知，不会据此自动修数、过账或改变源系统。
+
 任何外部事实都走：
 
 `received → parsed → validated → staged → reconciled → released / rejected`

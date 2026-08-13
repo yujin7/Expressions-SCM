@@ -25,6 +25,7 @@ import { runYonyouSync } from "./sync-yonyou";
 import { runJstTokenWatchdog } from "./jst-token-watchdog";
 import { runJobFailureWatchdog } from "./job-failure-watchdog";
 import { runSystemAlertNotify } from "./system-alert-notify";
+import { runDataProductGateWatchdog } from "./data-product-gate-watchdog";
 import {
   runJiandaoyunCatalogSync,
   runJiandaoyunConfiguredFormSyncs,
@@ -109,12 +110,13 @@ export const INTERVAL_JOBS: IntervalJob[] = [
   { name: "sync-jst-sales", everyMs: 20 * 60 * 1000, atHours: [10, 16], run: (db) => runJstSalesSync(db) },
   // 聚水潭全仓合计库存增量只作外部观察；显式开关启用，绝不直写库存真账/快照
   { name: "sync-jst-inventory", everyMs: 20 * 60 * 1000, atHours: [10, 16], run: (db) => runJstInventorySync(db) },
-  // 把 system_alerts 推进发件箱→飞书/站内。此前这些告警只躺在 /alerts 页面上，
-  // 三方同步挂了、凭据快过期了都不会通知任何人——监控链路断在最后一米
-  { name: "system-alert-notify", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runSystemAlertNotify(db) },
   // 定时任务连续失败告警：job_runs 一直记着成败但没人被通知，
   // 对 6h 一跑的同步就是"三周前挂了没人知道"。连续 3 次才开单，避免抖动变噪音
   { name: "job-failure-watchdog", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runJobFailureWatchdog(db) },
+  // 已批准的数据产品一旦因授权、时效、质量或范围变化降级，立即开责任域告警；恢复后自动关闭。
+  { name: "data-product-gate-watchdog", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runDataProductGateWatchdog(db) },
+  // 必须排在各看门狗之后，把本轮新开的 system_alerts 当轮推进飞书/站内。
+  { name: "system-alert-notify", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runSystemAlertNotify(db) },
   // 聚水潭 token 30 天过期，且过期后刷新接口失效、只能重走授权——必须在还来得及时喊出来
   { name: "jst-token-watchdog", everyMs: 6 * HOUR_MS, run: (db) => runJstTokenWatchdog(db) },
   // 用友只读观测：按已批准契约拉数原样落 staging；缺配置/未开开关显式 skipped，
