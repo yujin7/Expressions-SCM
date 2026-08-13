@@ -6,6 +6,7 @@ import {
   DATA_PRODUCT_AUTHORITY_LABEL,
   DATA_PRODUCT_CADENCE_LABEL,
   DATA_PRODUCT_SOURCE_LABEL,
+  DATA_PRODUCT_STREAM_LABEL,
 } from "@/components/data-products";
 import { METRICS } from "@/components/metrics";
 import { SCM_EVIDENCE_LABEL } from "@/lib/scm-evidence";
@@ -52,6 +53,20 @@ describe("三方数据产品目录", () => {
     for (const product of financial) {
       expect(product.sources).toContain("YONYOU");
       expect(product.sources).toContain("SCM");
+    }
+  });
+
+  it("辅助证据有中文业务名、产品内不与放行依赖重叠", () => {
+    for (const product of DATA_PRODUCTS) {
+      for (const [source, streams] of Object.entries(product.supportingStreams ?? {})) {
+        expect(DATA_PRODUCT_SOURCE_LABEL[source as keyof typeof DATA_PRODUCT_SOURCE_LABEL]).toBeTruthy();
+        expect(new Set(streams).size).toBe(streams.length);
+        for (const stream of streams) {
+          expect(DATA_PRODUCT_STREAM_LABEL[stream], `${product.id}:${source}:${stream}`).toBeTruthy();
+          expect(product.requiredStreams[source as keyof typeof product.requiredStreams] ?? [])
+            .not.toContain(stream);
+        }
+      }
     }
   });
 });

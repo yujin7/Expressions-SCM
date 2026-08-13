@@ -23,6 +23,7 @@ export interface DataAssetDecisionDependency {
   owner: string;
   decisionSlaHours: number;
   effectiveLevel: "A0" | "A1" | "A2" | "A3";
+  usage: "required" | "supporting";
 }
 
 export interface DataAssetDecisionCoverageRow {
@@ -36,8 +37,11 @@ export interface DataAssetDecisionCoverageRow {
   explanationUsable: boolean;
   implementationState: DataAssetImplementationState;
   cataloged: boolean;
+  releaseRequired: boolean;
   dependencies: DataAssetDecisionDependency[];
   dependencyCount: number;
+  requiredDependencyCount: number;
+  supportingDependencyCount: number;
   releasedDependencyCount: number;
   minDecisionSlaHours: number | null;
   evidence: DataStreamEvidence | null;
@@ -49,6 +53,7 @@ export interface DataAssetSourceCoverage {
   source: ExternalSource;
   sourceLabel: string;
   requiredAssetCount: number;
+  supportingOnlyAssetCount: number;
   implementedAssetCount: number;
   plannedAssetCount: number;
   explanationUsableCount: number;
@@ -61,6 +66,8 @@ export interface DataAssetDecisionPortfolio {
   rows: DataAssetDecisionCoverageRow[];
   sources: DataAssetSourceCoverage[];
   requiredAssetCount: number;
+  catalogedAssetCount: number;
+  supportingOnlyAssetCount: number;
   implementedAssetCount: number;
   plannedAssetCount: number;
   explanationUsableCount: number;
@@ -166,9 +173,13 @@ function actionFor(
   dependencies: readonly DataAssetDecisionDependency[],
   sourceRow: DataSourceReadiness | undefined,
   implementationState: DataAssetImplementationState,
+  releaseRequired: boolean,
 ): Pick<DataAssetDecisionCoverageRow, "actionLabel" | "actionHref"> {
   if (implementationState === "planned") {
-    return { actionLabel: "补齐读取契约", actionHref: "/admin/health" };
+    return {
+      actionLabel: releaseRequired ? "补齐读取契约" : "补齐辅助读取",
+      actionHref: "/admin/health",
+    };
   }
   if (
     state !== "current"
@@ -182,10 +193,19 @@ function actionFor(
     };
   }
   if (state === "missing" || state === "stale" || state === "degraded") {
-    return { actionLabel: "修复连接证据", actionHref: "/admin/health" };
+    return {
+      actionLabel: releaseRequired ? "修复连接证据" : "刷新辅助证据",
+      actionHref: "/admin/health",
+    };
   }
   if (dependencies.length === 0) {
     return { actionLabel: "评估资产用途", actionHref: "/report/decision-studio?tab=readiness" };
+  }
+  if (!releaseRequired) {
+    return {
+      actionLabel: "查看辅助用途",
+      actionHref: productEvidenceHref(dependencies[0].productId),
+    };
   }
   return {
     actionLabel: state === "observation" ? "完成产品 UAT" : "查看产品门禁",
@@ -211,28 +231,46 @@ export function buildDataAssetDecisionPortfolio(
   for (const source of EXTERNAL_SOURCES) {
     const sourceRow = sourceByKey.get(source);
     const dependenciesByStream = new Map<string, DataProductDefinition[]>();
+    const supportingDependenciesByStream = new Map<string, DataProductDefinition[]>();
     for (const product of products) {
       for (const stream of product.requiredStreams[source] ?? []) {
         const dependencies = dependenciesByStream.get(stream) ?? [];
         dependencies.push(product);
         dependenciesByStream.set(stream, dependencies);
       }
+      for (const stream of product.supportingStreams?.[source] ?? []) {
+        const dependencies = supportingDependenciesByStream.get(stream) ?? [];
+        dependencies.push(product);
+        supportingDependenciesByStream.set(stream, dependencies);
+      }
     }
     const runtimeStreams = sourceRow?.streams?.map((stream) => stream.stream) ?? [];
-    const streamKeys = [...new Set([...dependenciesByStream.keys(), ...runtimeStreams])];
+    const streamKeys = [...new Set([
+      ...dependenciesByStream.keys(),
+      ...supportingDependenciesByStream.keys(),
+      ...runtimeStreams,
+    ])];
     for (const stream of streamKeys) {
       const evaluated = evaluateExternalStreamEvidence(source, stream, sourceRow);
       const implementationState: DataAssetImplementationState = sourceRow?.availableStreamKeys == null
         ? "unknown"
         : sourceRow.availableStreamKeys.includes(stream) ? "implemented" : "planned";
-      const dependencies = (dependenciesByStream.get(stream) ?? [])
-        .map<DataAssetDecisionDependency>((product) => ({
+      const requiredProducts = dependenciesByStream.get(stream) ?? [];
+      const supportingProducts = supportingDependenciesByStream.get(stream) ?? [];
+      const dependencies = [
+        ...requiredProducts.map((product) => ({ product, usage: "required" as const })),
+        ...supportingProducts
+          .filter((product) => !requiredProducts.some((required) => required.id === product.id))
+          .map((product) => ({ product, usage: "supporting" as const })),
+      ]
+        .map<DataAssetDecisionDependency>(({ product, usage }) => ({
           productId: product.id,
           title: product.title,
           decision: product.decision,
           owner: product.owner,
           decisionSlaHours: product.decisionSlaHours,
           effectiveLevel: releaseByProduct.get(product.id)?.effectiveLevel ?? "A0",
+          usage,
         }))
         .sort((a, b) => a.decisionSlaHours - b.decisionSlaHours || a.title.localeCompare(b.title, "zh-CN"));
       const evaluatedAsset = assetState(
@@ -242,6 +280,7 @@ export function buildDataAssetDecisionPortfolio(
         implementationState,
       );
       const state = evaluatedAsset.state;
+      const releaseRequired = requiredProducts.length > 0;
       const action = actionFor(
         source,
         stream,
@@ -249,7 +288,11 @@ export function buildDataAssetDecisionPortfolio(
         dependencies,
         sourceRow,
         implementationState,
+        releaseRequired,
       );
+      const stateReason = !releaseRequired && dependencies.length > 0
+        ? `辅助证据不参与产品放行，也不替代正式事实；${evaluatedAsset.reason ?? evaluated.reason}`
+        : evaluatedAsset.reason ?? evaluated.reason;
       rows.push({
         key: `${source}:${stream}`,
         source,
@@ -257,15 +300,19 @@ export function buildDataAssetDecisionPortfolio(
         stream,
         streamLabel: dataProductStreamLabel(source, stream),
         state,
-        stateReason: evaluatedAsset.reason ?? evaluated.reason,
+        stateReason,
         explanationUsable: implementationState !== "planned"
           && sourceCanExplain(sourceRow)
           && usableForExplanation(evaluated.evidence),
         implementationState,
         cataloged: dependencies.length > 0,
+        releaseRequired,
         dependencies,
         dependencyCount: dependencies.length,
-        releasedDependencyCount: dependencies.filter((item) => item.effectiveLevel === "A2" || item.effectiveLevel === "A3").length,
+        requiredDependencyCount: dependencies.filter((item) => item.usage === "required").length,
+        supportingDependencyCount: dependencies.filter((item) => item.usage === "supporting").length,
+        releasedDependencyCount: dependencies.filter((item) => item.usage === "required"
+          && (item.effectiveLevel === "A2" || item.effectiveLevel === "A3")).length,
         minDecisionSlaHours: dependencies[0]?.decisionSlaHours ?? null,
         evidence: evaluated.evidence,
         ...action,
@@ -276,6 +323,8 @@ export function buildDataAssetDecisionPortfolio(
   rows.sort((a, b) => {
     const catalog = Number(b.cataloged) - Number(a.cataloged);
     if (catalog !== 0) return catalog;
+    const releaseRequired = Number(b.releaseRequired) - Number(a.releaseRequired);
+    if (releaseRequired !== 0) return releaseRequired;
     const state = STATE_ORDER[a.state] - STATE_ORDER[b.state];
     if (state !== 0) return state;
     const implementation = IMPLEMENTATION_ORDER[a.implementationState]
@@ -290,16 +339,20 @@ export function buildDataAssetDecisionPortfolio(
 
   const sourceSummaries = EXTERNAL_SOURCES.map<DataAssetSourceCoverage>((source) => {
     const sourceRows = rows.filter((row) => row.source === source);
-    const requiredRows = sourceRows.filter((row) => row.cataloged);
+    const requiredRows = sourceRows.filter((row) => row.releaseRequired);
+    const supportingOnlyRows = sourceRows.filter((row) => row.cataloged && !row.releaseRequired);
     const affectedProducts = new Set(
       requiredRows
         .filter((row) => row.state !== "current")
-        .flatMap((row) => row.dependencies.map((dependency) => dependency.productId)),
+        .flatMap((row) => row.dependencies
+          .filter((dependency) => dependency.usage === "required")
+          .map((dependency) => dependency.productId)),
     );
     return {
       source,
       sourceLabel: DATA_PRODUCT_SOURCE_LABEL[source],
       requiredAssetCount: requiredRows.length,
+      supportingOnlyAssetCount: supportingOnlyRows.length,
       implementedAssetCount: requiredRows.filter((row) => row.implementationState === "implemented").length,
       plannedAssetCount: requiredRows.filter((row) => row.implementationState === "planned").length,
       explanationUsableCount: requiredRows.filter((row) => row.explanationUsable).length,
@@ -308,11 +361,15 @@ export function buildDataAssetDecisionPortfolio(
       affectedProductCount: affectedProducts.size,
     };
   });
-  const requiredRows = rows.filter((row) => row.cataloged);
+  const catalogedRows = rows.filter((row) => row.cataloged);
+  const requiredRows = rows.filter((row) => row.releaseRequired);
+  const supportingOnlyRows = catalogedRows.filter((row) => !row.releaseRequired);
   return {
     rows,
     sources: sourceSummaries,
     requiredAssetCount: requiredRows.length,
+    catalogedAssetCount: catalogedRows.length,
+    supportingOnlyAssetCount: supportingOnlyRows.length,
     implementedAssetCount: requiredRows.filter((row) => row.implementationState === "implemented").length,
     plannedAssetCount: requiredRows.filter((row) => row.implementationState === "planned").length,
     explanationUsableCount: requiredRows.filter((row) => row.explanationUsable).length,
@@ -321,7 +378,9 @@ export function buildDataAssetDecisionPortfolio(
     affectedProductCount: new Set(
       requiredRows
         .filter((row) => row.state !== "current")
-        .flatMap((row) => row.dependencies.map((dependency) => dependency.productId)),
+        .flatMap((row) => row.dependencies
+          .filter((dependency) => dependency.usage === "required")
+          .map((dependency) => dependency.productId)),
     ).size,
   };
 }

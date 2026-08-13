@@ -70,7 +70,8 @@ export default function DataAssetDecisionCoverage({
       style={{ marginTop: 16 }}
       extra={(
         <Space size={4} wrap>
-          <Tag color="blue">目录资产 {portfolio.requiredAssetCount}</Tag>
+          <Tag color="blue">放行依赖 {portfolio.requiredAssetCount}</Tag>
+          <Tag color="purple">辅助证据 {portfolio.supportingOnlyAssetCount}</Tag>
           <Tag color="cyan">读取已实现 {portfolio.implementedAssetCount}</Tag>
           <Tag color={portfolio.plannedAssetCount > 0 ? "volcano" : "default"}>
             待实现 {portfolio.plannedAssetCount}
@@ -85,8 +86,8 @@ export default function DataAssetDecisionCoverage({
         banner
         showIcon
         type="info"
-        message={`目录所需 ${portfolio.requiredAssetCount} 条外部资产中，${portfolio.implementedAssetCount} 条已有受控读取契约、${portfolio.plannedAssetCount} 条仍只有目标定义；当前 ${portfolio.explanationUsableCount} 条可用于带口径解释，${portfolio.operationalReadyCount} 条满足运营就绪。`}
-        description={`每条 API 数据流都反向关联到使用它的产品、决策、Owner 和 SLA；${portfolio.affectedProductCount} 个数据产品仍受门禁影响。成功但无人使用的数据会单独暴露，未实现契约不会被误报成“只差授权”。`}
+        message={`目录登记 ${portfolio.catalogedAssetCount} 条外部资产：${portfolio.requiredAssetCount} 条参与放行、${portfolio.supportingOnlyAssetCount} 条只作辅助解释；放行依赖中 ${portfolio.implementedAssetCount} 条已有受控读取契约、${portfolio.plannedAssetCount} 条仍只有目标定义。`}
+        description={`辅助证据过期或缺失不会阻塞产品，也不能替代正式事实；当前放行依赖有 ${portfolio.explanationUsableCount} 条可解释、${portfolio.operationalReadyCount} 条运营就绪，${portfolio.affectedProductCount} 个数据产品仍受门禁影响。成功但无人使用的数据会单独暴露。`}
         style={{ marginBottom: 12 }}
       />
       <Row gutter={[10, 10]} style={{ marginBottom: 12 }}>
@@ -109,6 +110,7 @@ export default function DataAssetDecisionCoverage({
                 <Typography.Text type="secondary">
                   读取已实现 {source.implementedAssetCount}/{source.requiredAssetCount}
                   {source.plannedAssetCount > 0 ? ` · 待实现 ${source.plannedAssetCount}` : ""}
+                  {source.supportingOnlyAssetCount > 0 ? ` · 辅助 ${source.supportingOnlyAssetCount}` : ""}
                 </Typography.Text>
                 <Typography.Text type="secondary">
                   运营就绪 {source.operationalReadyCount}/{source.requiredAssetCount}
@@ -165,7 +167,9 @@ export default function DataAssetDecisionCoverage({
               <Space direction="vertical" size={2}>
                 <Tooltip title={row.dependencies.map((item) => `${item.title}：${item.decision}`).join("\n")}>
                   <Typography.Text>
-                    影响 {row.dependencyCount} 个产品 · 已放行 {row.releasedDependencyCount}
+                    {row.requiredDependencyCount > 0 ? `放行依赖 ${row.requiredDependencyCount}` : "不参与放行"}
+                    {row.supportingDependencyCount > 0 ? ` · 辅助 ${row.supportingDependencyCount}` : ""}
+                    {row.requiredDependencyCount > 0 ? ` · 已放行 ${row.releasedDependencyCount}` : ""}
                   </Typography.Text>
                 </Tooltip>
                 <Typography.Text type="secondary" ellipsis={{ tooltip: row.dependencies.map((item) => item.title).join("、") }} style={{ maxWidth: 225 }}>
@@ -199,7 +203,7 @@ export default function DataAssetDecisionCoverage({
             },
           },
           {
-            title: "门禁与下一步",
+            title: "边界与下一步",
             dataIndex: "stateReason",
             width: 300,
             render: (value: string) => (

@@ -34,6 +34,11 @@ export interface DataProductDefinition {
   requiredScmEvidence: ScmEvidenceKey[];
   /** 每个外部来源必须有过最新成功证据的具体流；不能用同连接器的无关流替代。 */
   requiredStreams: Partial<Record<DataProductSource, string[]>>;
+  /**
+   * 可补充解释、身份或回查路径，但不参与 A2/A3 放行判定的参考流。
+   * 过期或缺失的辅助流不得阻塞核心产品，也不得替代 requiredStreams。
+   */
+  supportingStreams?: Partial<Record<DataProductSource, string[]>>;
   targetAuthority: DataProductAuthority;
   releaseGate: string;
 }
@@ -74,6 +79,12 @@ export const DATA_PRODUCT_STREAM_LABEL: Record<string, string> = {
   "purchase-order-observation": "简道云采购订单",
   "purchase-receipt-observation": "简道云采购入库",
   "platform-fee-observation": "天猫费用项目汇总（渠道级）",
+  "purchase-demand-observation": "简道云采购需求",
+  "inventory-count-observation": "简道云库存盘点记录",
+  "warehouse-observation": "简道云仓库资料",
+  "warehouse-transfer-observation": "简道云调拨记录",
+  "supplier-observation": "简道云供应商资料",
+  "sample-management-observation": "简道云样品管理",
   "npd-milestone-observation": "新品里程碑",
   "product-master-observation": "简道云产品主档",
   "yonbip-fi-ficloud-openapi-voucher-queryvouchers": "用友财务凭证",
@@ -196,6 +207,13 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
       JST: ["inventory-total-delta"],
       YONYOU: ["yonbip-scm-stock-querycurrentstocksbycondition"],
     },
+    supportingStreams: {
+      JIANDAOYUN: [
+        "inventory-count-observation",
+        "warehouse-observation",
+        "warehouse-transfer-observation",
+      ],
+    },
     targetAuthority: "operational",
     releaseGate: "仓库与 SKU 精确映射、相同截止时点、缺失不补零、差异超阈停止",
   },
@@ -218,6 +236,9 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
       JIANDAOYUN: ["purchase-order-observation", "purchase-receipt-observation"],
       JST: ["inbound-receipts-daily"],
       YONYOU: ["yonbip-scm-purchaseorder-list", "yonbip-scm-purinrecord-list"],
+    },
+    supportingStreams: {
+      JIANDAOYUN: ["purchase-demand-observation"],
     },
     targetAuthority: "operational",
     releaseGate: "单号复合身份、数量/单位、承诺日与收货状态映射可重放",
@@ -274,6 +295,9 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
         "yonbip-scm-purinrecord-list",
       ],
     },
+    supportingStreams: {
+      JIANDAOYUN: ["supplier-observation"],
+    },
     targetAuthority: "operational",
     releaseGate: "供应商身份、承诺交期、收货、检验、价格和样本量同口径",
   },
@@ -305,6 +329,9 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
         "yonbip-scm-stock-querycurrentstocksbycondition",
       ],
     },
+    supportingStreams: {
+      JIANDAOYUN: ["purchase-demand-observation", "warehouse-transfer-observation"],
+    },
     targetAuthority: "operational",
     releaseGate: "正式库存优先；观察需求不能单独下单；MOQ/周期/在途均可追溯",
   },
@@ -331,6 +358,9 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
         "yonbip-scm-purinrecord-list",
       ],
       JST: ["outbound-sales-daily"],
+    },
+    supportingStreams: {
+      JIANDAOYUN: ["sample-management-observation"],
     },
     targetAuthority: "operational",
     releaseGate: "标准里程碑、首单、备货、正式上市日和首销口径一致",

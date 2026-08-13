@@ -182,6 +182,36 @@ describe("三方数据资产到业务决策覆盖", () => {
     expect(portfolio.sources.find((item) => item.source === "JIANDAOYUN")?.unusedObservedCount).toBe(1);
   });
 
+  it("辅助证据被编入决策但不增加放行依赖，也不因过期阻塞产品", () => {
+    const p = product("inventory", "统一库存", 4, { JST: ["inventory-total-delta"] });
+    p.supportingStreams = { JIANDAOYUN: ["inventory-count-observation"] };
+    const portfolio = buildDataAssetDecisionPortfolio([p], [
+      source("JST", [stream("inventory-total-delta")], "operational"),
+      source("JIANDAOYUN", [stream("inventory-count-observation", {
+        freshness: "stale",
+        businessAgeDays: 30,
+      })]),
+    ]);
+    const supporting = portfolio.rows.find((row) => row.stream === "inventory-count-observation")!;
+
+    expect(supporting).toMatchObject({
+      cataloged: true,
+      releaseRequired: false,
+      requiredDependencyCount: 0,
+      supportingDependencyCount: 1,
+      dependencies: [expect.objectContaining({ productId: "inventory", usage: "supporting" })],
+    });
+    expect(portfolio).toMatchObject({
+      catalogedAssetCount: 2,
+      requiredAssetCount: 1,
+      supportingOnlyAssetCount: 1,
+      affectedProductCount: 0,
+      unusedObservedCount: 0,
+    });
+    expect(portfolio.rows.findIndex((row) => row.stream === "inventory-total-delta"))
+      .toBeLessThan(portfolio.rows.findIndex((row) => row.stream === "inventory-count-observation"));
+  });
+
   it("授权/质量受限优先于过期和缺失，不用主观价值分", () => {
     const products = [
       product("degraded", "用友财务", 72, { YONYOU: ["voucher"] }),
@@ -364,6 +394,18 @@ describe("三方数据资产到业务决策覆盖", () => {
       "YONYOU:yonbip-finance-receivables-settlement",
     ]);
     expect(portfolio.plannedAssetCount).toBe(4);
+    expect(portfolio.supportingOnlyAssetCount).toBe(6);
+    expect(portfolio.rows
+      .filter((row) => row.cataloged && !row.releaseRequired)
+      .map((row) => row.key)
+      .sort()).toEqual([
+      "JIANDAOYUN:inventory-count-observation",
+      "JIANDAOYUN:purchase-demand-observation",
+      "JIANDAOYUN:sample-management-observation",
+      "JIANDAOYUN:supplier-observation",
+      "JIANDAOYUN:warehouse-observation",
+      "JIANDAOYUN:warehouse-transfer-observation",
+    ]);
   });
 
   it("只有近期运行时间但缺源业务截止日时不计入当前或可解释覆盖", () => {
