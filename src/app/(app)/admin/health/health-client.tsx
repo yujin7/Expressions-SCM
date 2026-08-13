@@ -7,7 +7,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { App, Card, Col, Row, Space, Spin, Table, Tag, Typography } from "antd";
-import { DownloadOutlined, ReloadOutlined } from "@ant-design/icons";
+import { DownloadOutlined, ExportOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { Button } from "antd";
 import { fetchJson } from "@/components/fetchJson";
@@ -512,6 +512,30 @@ export default function HealthClient() {
                   <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
                     {connector.blocker ?? "—"}
                   </Typography.Paragraph>
+                  <div>
+                    <Space style={{ justifyContent: "space-between", width: "100%", marginBottom: 4 }}>
+                      <Typography.Text strong>解锁步骤</Typography.Text>
+                      {connector.managementUrl ? (
+                        <Button
+                          type="link"
+                          size="small"
+                          icon={<ExportOutlined />}
+                          href={connector.managementUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          打开官方后台
+                        </Button>
+                      ) : null}
+                    </Space>
+                    <ol style={{ margin: 0, paddingInlineStart: 22 }}>
+                      {connector.remediationSteps.map((step) => (
+                        <li key={step} style={{ marginBottom: 4 }}>
+                          <Typography.Text style={{ fontSize: 12 }}>{step}</Typography.Text>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
                   {connector.liveVerifiedAt ? (
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                       验证时间：{fmtTime(connector.liveVerifiedAt)}

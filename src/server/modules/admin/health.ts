@@ -31,6 +31,7 @@ import {
   type ConnectorReadiness,
 } from "@/server/integrations/connector";
 import { ApiError } from "@/server/modules/master/common";
+import { YONYOU_READ_CONTRACTS } from "@/server/integrations/yonyou-contracts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -149,6 +150,20 @@ export interface OpsHealth {
   backupFreshness: { dir: string; file: string; mtime: string; ageHours: number } | null;
   connectors: ConnectorReadiness[];
   connectorRuns: ConnectorRunHealthRow[];
+}
+
+function adminConnectorReadiness(
+  connectors: ConnectorReadiness[],
+): ConnectorReadiness[] {
+  const yonyouNames = YONYOU_READ_CONTRACTS.map((contract) => contract.name).join("、");
+  return connectors.map((connector) => connector.key !== "yy"
+    ? connector
+    : {
+        ...connector,
+        remediationSteps: connector.remediationSteps.map((step, index) => index === 0
+          ? `在用友开放平台给当前应用逐条授权 8 项只读 API：${yonyouNames}。`
+          : step),
+      });
 }
 
 const ALIAS_SCOPE_BY_CONNECTOR: Readonly<Record<string, string>> = {
@@ -708,7 +723,9 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
     exportQueue,
     snapshotAges,
     backupFreshness: readBackupFreshness(),
-    connectors: getConnectorReadiness(process.env, generatedAt, identityEvidence),
+    connectors: adminConnectorReadiness(
+      getConnectorReadiness(process.env, generatedAt, identityEvidence),
+    ),
     connectorRuns: connectorHealth.rows,
   };
 }

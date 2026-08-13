@@ -513,6 +513,68 @@ export interface ConnectorReadiness {
   expectedSecurityReviewBinding: string | null;
   securityReviewMaxAgeDays: number;
   blocker: string | null;
+  /** 面向业务管理员的确定性解锁路径；不包含密钥、外部原值或未经验证的成功声明。 */
+  remediationSteps: string[];
+  /** 连接器官方管理入口；仅用于人工授权与核对。 */
+  managementUrl: string | null;
+}
+
+const CONNECTOR_MANAGEMENT_URL: Readonly<Partial<Record<Connector["key"], string>>> = {
+  jst: "https://open.jushuitan.com/",
+  jdy: "https://www.jiandaoyun.com/",
+  yy: "https://c4.yonyoucloud.com/",
+  feishu: "https://open.feishu.cn/app",
+};
+
+function remediationSteps(
+  connector: Connector,
+  readiness: {
+    configured: boolean;
+    activation: ConnectorActivation;
+    verification: LiveVerificationState;
+    identity: IdentityClearanceState;
+  },
+): string[] {
+  const steps: string[] = [];
+  if (!readiness.configured) {
+    steps.push("先补齐系统列出的缺失配置，再做任何外部读取；不得把网页可登录当成 API 已接通。");
+  }
+  if (connector.key === "jst") {
+    steps.push(
+      "在聚水潭开放平台把 SCM 运行机器的固定出口 IP 加入白名单，并确认应用、商家与 token 属于同一授权范围。",
+      "只授予店铺、仓库、销售出库、库存、普通商品、采购入库六类只读接口；淘系/拼多多订单与售后须另走平台专用授权，不能用标准接口冒充全渠道。",
+      "用单日最小窗口重跑 6 项只读探针；每项都成功后再进入 staging，不写库存账、不推进正式销售事实。",
+      "完成 SKU/仓库精确映射、逐 SKU 控制总量、失败重放与连续 7 天恢复 UAT，最后绑定当前应用和启用能力的非秘密证据编号。",
+    );
+  } else if (connector.key === "yy") {
+    steps.push(
+      "在用友开放平台给当前应用逐条授权代码白名单中的 8 项只读 API；精确名称只在管理员运维页展示，不进入可外发审计摘要。",
+      "授权后先读取当前租户与组织 ID；组织、供应商、物料必须按外部 ID 精确映射，禁止只按名称猜测。",
+      "依次跑主档 → PO/入库 → 现存量 → 成本/凭证的有界无值字段画像；结构漂移或字段语义未评审时持续阻止放行。",
+      "采购与库存由业务 owner 核对控制总量，成本与凭证由财务审批；完成后绑定当前应用、租户、组织、产品和契约范围的 UAT 证据。",
+    );
+  } else if (connector.key === "jdy") {
+    steps.push(
+      "先处理高销量平台 SKU、仓库和供应商身份队列；唯一条码可人工认领，缺桥接字段必须回源补齐。",
+      "用同截止日平台导出核对销售、退款、SKU 对照和费用流的行数、数量、币种、负数冲销与净额。",
+      "只有控制总量、身份覆盖、业务 UAT 和责任人会签完成后才启用对应契约；历史批次继续保留但不冒充正式事实。",
+    );
+  } else {
+    steps.push(
+      "确认当前应用/机器人只具备 SCM 通知所需最小权限，并绑定唯一目标群。",
+      "完成真实消息投递与回读 UAT；不得用网页登录或一次 token 获取代替目标群验证。",
+    );
+  }
+  if (readiness.activation.enablementState === "disabled") {
+    steps.push("当前同步保持关闭；完成前述授权、核对和 UAT 后再显式启用，避免未验收数据进入持续任务。");
+  }
+  if (readiness.activation.contractSelectionState === "missing") {
+    steps.push("当前尚未选择同步契约；只选择业务已批准且已完成字段/权限评审的最小集合。");
+  }
+  if (readiness.verification === "valid" && readiness.identity === "clear") {
+    steps.push("持续监控时效、拒收、结构漂移和身份异常；任一门禁失效会自动降级。");
+  }
+  return steps;
 }
 
 const IDENTITY_SCOPE_BY_CONNECTOR: Readonly<Partial<Record<Connector["key"], ConnectorIdentityScope>>> = {
@@ -811,6 +873,13 @@ export function getConnectorReadiness(
             securityReviewBlocker,
             identityBlocker,
           ].filter(Boolean).join("；") || null,
+      remediationSteps: remediationSteps(connector, {
+        configured,
+        activation,
+        verification: verification.state,
+        identity: identityClearanceState,
+      }),
+      managementUrl: CONNECTOR_MANAGEMENT_URL[connector.key] ?? null,
     };
   });
 }

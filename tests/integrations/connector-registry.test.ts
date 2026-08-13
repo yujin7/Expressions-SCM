@@ -74,7 +74,12 @@ describe("外部连接器目录", () => {
         "warehouse-discovery-client",
         "batch-allocation-evidence",
       ],
+      managementUrl: "https://open.jushuitan.com/",
     });
+    const jstRemediation = getConnectorReadiness(process.env, NOW)
+      .find((row) => row.key === "jst")?.remediationSteps.join("\n") ?? "";
+    expect(jstRemediation).toContain("固定出口 IP");
+    expect(jstRemediation).toContain("销售出库、库存、普通商品、采购入库");
     expect(configuredConnectors().some((connector) => connector.key === "jst")).toBe(true);
     process.env.JST_BASE_URL = "https://openapi.jushuitan.com.evil.example";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst")).toMatchObject({
@@ -162,6 +167,21 @@ describe("外部连接器目录", () => {
           "inbound-receipts-observation-staging",
         ]),
       });
+  });
+
+  it("用友通用就绪对象只声明八条白名单范围且不把鉴权配置当作授权成功", () => {
+    process.env.YY_APP_KEY = "app";
+    process.env.YY_APP_SECRET = "secret";
+    const row = getConnectorReadiness(process.env, NOW).find((item) => item.key === "yy");
+    expect(row).toMatchObject({
+      configured: false,
+      operational: false,
+      managementUrl: "https://c4.yonyoucloud.com/",
+    });
+    const text = row?.remediationSteps.join("\n") ?? "";
+    expect(text).toContain("代码白名单中的 8 项只读 API");
+    expect(text).not.toContain("供应商档案列表查询");
+    expect(text).toContain("禁止只按名称猜测");
   });
 
   it("简道云把凭据、启用开关、契约选择和 UAT 分别判定", () => {
