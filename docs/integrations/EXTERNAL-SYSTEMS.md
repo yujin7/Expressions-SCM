@@ -405,6 +405,9 @@ IPv6 zone、loopback、私网或本地域名 endpoint 会被拒绝；未来 toke
 `schemaBaselineRunId` 和 `releaseBlocked=true`；通用放行引擎必须拒绝该任务。被阻断的新结构即使连续多批出现也不会自动转为基线；
 业务与实施方确认真实字段语义、映射、控制总量和 UAT 后，由代码评审升级契约版本才可重建基线。
 
+管理员可在运维健康页对有字段画像的精确 run 下载「用友字段映射评审」CSV。每行绑定 run、stream、API 契约、契约版本、基线 run 和结构指纹 SHA-256，
+并列出字段路径/类型/覆盖/空值/敏感分类及待填的业务映射列。该路由新鲜回查 admin 权限，禁止缓存，使用公式注入防护；服务不读取也不输出 request、原始证据、staging 载荷或字段值。
+
 在不请求 token、不调用业务 API 的情况下可先运行：
 
 ```bash

@@ -8,6 +8,7 @@ type RunRow = OpsHealth["connectorRuns"][number];
 
 function run(overrides: Partial<RunRow>): RunRow {
   return {
+    runId: 1,
     connector: "jdy",
     stream: "product-master-observation",
     status: "succeeded",

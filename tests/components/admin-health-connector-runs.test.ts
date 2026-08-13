@@ -28,6 +28,8 @@ describe("admin connector run layout contract", () => {
     expect(client).toContain("空观察，旧批次保留");
     expect(client).toContain("仅观察，不可放行");
     expect(client).toContain("字段结构变化，阻止放行");
+    expect(client).toContain("下载映射评审表");
+    expect(client).toContain("/api/admin/health/connector-runs/${row.runId}/field-profile");
     expect(client).toContain("字段结构");
     expect(client).toContain("配置 / UAT 就绪");
     expect(client).toContain("connectorRuntimeState(connectorRuns)");
@@ -39,6 +41,7 @@ describe("admin connector run layout contract", () => {
     expect(dto).toContain("emptySource: boolean");
     expect(dto).toContain("releaseBlocked: boolean");
     expect(dto).toContain("schemaDrift: boolean");
+    expect(dto).toContain("runId: number");
     expect(dto).toContain("fieldProfile:");
     expect(dto).not.toContain("evidencePath");
     expect(dto).not.toContain("evidenceHash");

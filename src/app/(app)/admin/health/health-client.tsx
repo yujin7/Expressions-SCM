@@ -7,7 +7,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { App, Card, Col, Row, Space, Spin, Table, Tag, Typography } from "antd";
-import { ReloadOutlined } from "@ant-design/icons";
+import { DownloadOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { Button } from "antd";
 import { fetchJson } from "@/components/fetchJson";
@@ -124,7 +124,8 @@ function connectorRuntimeState(rows: OpsHealth["connectorRuns"]) {
   const failed = rows.filter((row) => row.status === "failed").length;
   const running = rows.filter((row) => row.status === "running").length;
   const empty = rows.filter((row) => row.emptySource).length;
-  const releaseBlocked = rows.filter((row) => row.releaseBlocked).length;
+  const schemaDrift = rows.filter((row) => row.schemaDrift).length;
+  const releaseBlocked = rows.filter((row) => row.releaseBlocked && !row.schemaDrift).length;
   return (
     <Space wrap size={[4, 4]}>
       {failed > 0
@@ -133,6 +134,7 @@ function connectorRuntimeState(rows: OpsHealth["connectorRuns"]) {
           ? <Tag color="processing">{running} 条数据流运行中</Tag>
           : <Tag color="green">{rows.length} 条数据流最近成功</Tag>}
       {empty > 0 ? <Tag color="orange">{empty} 条空观察，旧批次保留</Tag> : null}
+      {schemaDrift > 0 ? <Tag color="red">{schemaDrift} 条字段结构变化</Tag> : null}
       {releaseBlocked > 0 ? <Tag color="orange">{releaseBlocked} 条仅观察，不可放行</Tag> : null}
     </Space>
   );
@@ -314,10 +316,23 @@ export default function HealthClient() {
             {row.schemaHashPrefix ? `schema ${row.schemaHashPrefix}` : "无 schema hash"}
           </Typography.Text>
           {row.fieldProfile ? (
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {`字段结构 ${row.fieldProfile.fieldCount} · 敏感 ${row.fieldProfile.sensitiveFieldCount}`}
-              {row.fieldProfile.truncated ? " · 有界采样" : ""}
-            </Typography.Text>
+            <>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {`字段结构 ${row.fieldProfile.fieldCount} · 敏感 ${row.fieldProfile.sensitiveFieldCount}`}
+                {row.fieldProfile.truncated ? " · 有界采样" : ""}
+              </Typography.Text>
+              {row.connector === "yy" || row.connector === "yonyou" ? (
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<DownloadOutlined />}
+                  href={`/api/admin/health/connector-runs/${row.runId}/field-profile`}
+                  style={{ height: "auto", paddingInline: 0, fontSize: 12 }}
+                >
+                  下载映射评审表
+                </Button>
+              ) : null}
+            </>
           ) : null}
         </Space>
       ),
