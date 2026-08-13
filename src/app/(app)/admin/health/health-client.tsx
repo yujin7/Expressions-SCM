@@ -112,7 +112,9 @@ export function ConnectorRunState({ row }: { row: OpsHealth["connectorRuns"][num
     <Space wrap size={[4, 4]}>
       {status}
       {row.emptySource ? <Tag color="orange">空观察，旧批次保留</Tag> : null}
-      {row.releaseBlocked ? <Tag color="orange">仅观察，不可放行</Tag> : null}
+      {row.schemaDrift
+        ? <Tag color="red">字段结构变化，阻止放行</Tag>
+        : row.releaseBlocked ? <Tag color="orange">仅观察，不可放行</Tag> : null}
     </Space>
   );
 }

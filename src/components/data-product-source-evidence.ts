@@ -102,7 +102,8 @@ export function evaluateExternalStreamEvidence(
   if (evidence.latestStatus === "running") limitations.push("最新批次仍在运行");
   if (evidence.rejectedRows > 0) limitations.push(`有 ${evidence.rejectedRows} 行拒收`);
   if (evidence.emptySource) limitations.push("源端返回 0 行，尚无业务证据");
-  if (evidence.releaseBlocked) limitations.push("观察层禁止放行");
+  if (evidence.schemaDrift) limitations.push("外部字段结构变化，待契约评审");
+  if (evidence.releaseBlocked && !evidence.schemaDrift) limitations.push("观察层禁止放行");
   if (evidence.freshness === "unknown") limitations.push("时效门限或源时点不完整");
   if (limitations.length > 0) {
     return { source, stream, state: "degraded", reason: limitations.join("；"), evidence };

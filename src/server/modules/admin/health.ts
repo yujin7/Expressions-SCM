@@ -74,6 +74,7 @@ export interface ConnectorRunHealthRow {
   /** Safe operational flags copied from the run envelope; no source payload is exposed. */
   emptySource: boolean;
   releaseBlocked: boolean;
+  schemaDrift: boolean;
   /** Safe structural summary only; field paths and source values remain in protected evidence. */
   fieldProfile: {
     version: "yonyou-field-profile/v1";
@@ -360,6 +361,7 @@ async function getConnectorRunHealth(db: AnyDb, now: Date): Promise<ConnectorHea
       checkpointOnLatestRun: checkpoint?.lastRunId === run.id,
       emptySource: scope.emptySource === true,
       releaseBlocked: scope.releaseBlocked === true,
+      schemaDrift: scope.schemaDrift === true,
       fieldProfile: fieldProfileSummary(scope.fieldProfile),
       errorSummary: run.status === "failed" ? connectorErrorSummary(run.error) : null,
     };

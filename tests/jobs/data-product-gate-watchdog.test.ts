@@ -26,6 +26,7 @@ function stream(key: string): DataStreamEvidence {
     authorizationBlocked: false,
     sourceTimeInvalid: false,
     releaseBlocked: false,
+    schemaDrift: false,
     emptySource: false,
     freshnessMaxAgeDays: 2,
     businessAgeDays: 1,

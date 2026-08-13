@@ -26,6 +26,7 @@ function run(overrides: Partial<RunRow>): RunRow {
     checkpointOnLatestRun: true,
     emptySource: false,
     releaseBlocked: false,
+    schemaDrift: false,
     fieldProfile: null,
     errorSummary: null,
     ...overrides,
@@ -49,5 +50,14 @@ describe("connector run state rendering", () => {
     ));
     expect(html).toContain("运行中");
     expect(html).toContain("空观察，旧批次保留");
+  });
+
+  it("shows schema drift as the specific hard release blocker", () => {
+    const html = renderToStaticMarkup(createElement(
+      ConnectorRunState,
+      { row: run({ schemaDrift: true, releaseBlocked: true }) },
+    ));
+    expect(html).toContain("字段结构变化，阻止放行");
+    expect(html).not.toContain("仅观察，不可放行");
   });
 });

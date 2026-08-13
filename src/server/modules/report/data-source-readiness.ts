@@ -40,6 +40,7 @@ export interface DataStreamEvidence {
   authorizationBlocked: boolean;
   sourceTimeInvalid: boolean;
   releaseBlocked: boolean;
+  schemaDrift: boolean;
   emptySource: boolean;
   freshnessMaxAgeDays: number | null;
   businessAgeDays: number | null;
@@ -308,6 +309,7 @@ function streamEvidence(row: StreamRunAggregate, now: Date): DataStreamEvidence 
     authorizationBlocked,
     sourceTimeInvalid,
     releaseBlocked: scope.releaseBlocked === true,
+    schemaDrift: scope.schemaDrift === true,
     // 部分连接器旧写入器未显式保存 emptySource；0 源行本身不能证明业务数据存在。
     emptySource: scope.emptySource === true || sourceRows === 0,
     freshnessMaxAgeDays,

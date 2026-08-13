@@ -34,7 +34,7 @@ describe("三方数据来源证据矩阵", () => {
           sourceRows: 10,
           stagedRows: 9,
           rejectedRows: 1,
-          requestScope: { releaseBlocked: true, sourceAsOf: "2026-08-11" },
+          requestScope: { releaseBlocked: true, schemaDrift: false, sourceAsOf: "2026-08-11" },
           importJobId: job.id,
           startedAt: new Date("2026-08-12T01:00:00.000Z"),
           finishedAt: new Date("2026-08-12T01:01:00.000Z"),
@@ -46,7 +46,7 @@ describe("三方数据来源证据矩阵", () => {
           status: "succeeded",
           sourceRows: 3,
           stagedRows: 3,
-          requestScope: { releaseBlocked: true, sourceAsOf: "2026-08-11" },
+          requestScope: { releaseBlocked: true, schemaDrift: true, sourceAsOf: "2026-08-11" },
           importJobId: job.id,
           startedAt: new Date("2026-08-12T01:30:00.000Z"),
           finishedAt: new Date("2026-08-12T01:31:00.000Z"),
@@ -167,6 +167,8 @@ describe("三方数据来源证据矩阵", () => {
         expect.objectContaining({
           stream: "yonbip-digitalmodel-vendor-list",
           authorizationBlocked: false,
+          schemaDrift: true,
+          releaseBlocked: true,
           lastSuccessAt: "2026-08-12T01:31:00.000Z",
         }),
         expect.objectContaining({

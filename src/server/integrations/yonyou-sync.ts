@@ -11,7 +11,7 @@
  *
  * 与 D16 同一口径：用友数据是**观测/对账参照**，永远不直接进库存台账或总账。
  */
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import { integrationCheckpoints, integrationRuns, users } from "@/db/schema";
 import {
   createSourceImportJobInTransaction,
@@ -77,6 +77,10 @@ export interface YonyouSyncSummary {
   shapeFingerprint: string;
   /** 字段画像的聚合统计；完整无值路径只留在受控 evidence/run/job scope。 */
   fieldProfileSummary: YonyouFieldProfileSummary | null;
+  /** 当前结构是否偏离同契约版本最后一个已接受基线。 */
+  schemaDrift: boolean;
+  /** 漂移时为 true；原始证据仍留存，但通用放行引擎会硬拒绝。 */
+  releaseBlocked: boolean;
   replayed: boolean;
   /** 未授权时不算失败，如实记录并返回，便于运维看到"还差控制台授权"。 */
   blockedByConsoleGrant: boolean;
@@ -268,12 +272,22 @@ export function profileYonyouFields(records: readonly unknown[]): YonyouFieldPro
 }
 
 function fieldProfileFromScope(value: unknown): YonyouFieldProfile | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const profile = (value as Record<string, unknown>).fieldProfile;
+  const profile = scopeObject(value).fieldProfile;
   if (!profile || typeof profile !== "object" || Array.isArray(profile)) return null;
   return (profile as Record<string, unknown>).version === "yonyou-field-profile/v1"
     ? profile as YonyouFieldProfile
     : null;
+}
+
+function scopeObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function scopeText(value: unknown, key: string): string | null {
+  const candidate = scopeObject(value)[key];
+  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
 }
 
 function summarizeFieldProfile(profile: YonyouFieldProfile | null): YonyouFieldProfileSummary | null {
@@ -412,6 +426,7 @@ export async function syncYonyouContract(
 
   const existing = await priorRun(db, idempotencyKey);
   if (existing?.status === "succeeded") {
+    const existingScope = scopeObject(existing.requestScope);
     return {
       runId: existing.id,
       importJobId: existing.importJobId,
@@ -419,8 +434,10 @@ export async function syncYonyouContract(
       sourceRows: existing.sourceRows,
       stagedRows: existing.stagedRows,
       evidenceHash: existing.evidenceHash ?? "",
-      shapeFingerprint: "",
+      shapeFingerprint: scopeText(existing.requestScope, "shapeFingerprint") ?? "",
       fieldProfileSummary: summarizeFieldProfile(fieldProfileFromScope(existing.requestScope)),
+      schemaDrift: existingScope.schemaDrift === true,
+      releaseBlocked: existingScope.releaseBlocked === true,
       replayed: true,
       blockedByConsoleGrant: false,
     };
@@ -431,7 +448,6 @@ export async function syncYonyouContract(
     stream,
     status: "running",
     idempotencyKey,
-    schemaVersion: SCHEMA_VERSION,
   } as typeof integrationRuns.$inferInsert);
   if (!attempt) throw new Error(`用友 ${stream} 同步已被其他运行占用`);
 
@@ -461,6 +477,8 @@ export async function syncYonyouContract(
           evidenceHash: "",
           shapeFingerprint: "",
           fieldProfileSummary: null,
+          schemaDrift: false,
+          releaseBlocked: false,
           replayed: false,
           blockedByConsoleGrant: true,
         };
@@ -500,6 +518,7 @@ export async function syncYonyouContract(
     const finishedAt = new Date();
     // 事务闭包内产生的 jobId 要带出来；用函数内局部变量，切忌模块级共享（并发会串号）
     let stagedJobId: number | null = null;
+    let schemaDrift = false;
     await db.transaction(async (tx: AnyDb) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`${CONNECTOR}:${stream}`}))`);
 
@@ -516,6 +535,39 @@ export async function syncYonyouContract(
         .limit(1);
       if (newer) throw new Error(`用友 ${stream} 已有更新成功运行 #${newer.id}，拒绝较旧运行覆盖`);
 
+      // 基线只取同一契约版本中最后一个未阻断、且确实落过业务观察 job 的结构。
+      // 漂移批次不会成为下一批的基线，因此不会因连续两天返回同一新结构而自动解封。
+      // 若业务确认新结构，必须在受评审代码中升级 SCHEMA_VERSION，再建立新基线。
+      const [baseline]: { id: number; requestScope: unknown }[] = await tx
+        .select({ id: integrationRuns.id, requestScope: integrationRuns.requestScope })
+        .from(integrationRuns)
+        .where(and(
+          inArray(integrationRuns.connector, [CONNECTOR, "yonyou"]),
+          eq(integrationRuns.stream, stream),
+          eq(integrationRuns.status, "succeeded"),
+          isNotNull(integrationRuns.importJobId),
+          lt(integrationRuns.id, attempt.id),
+          sql`coalesce(${integrationRuns.requestScope} ->> 'schemaVersion', '') = ${SCHEMA_VERSION}`,
+          sql`coalesce(${integrationRuns.requestScope} ->> 'shapeFingerprint', '') <> ''`,
+          sql`coalesce(${integrationRuns.requestScope} ->> 'releaseBlocked', 'false') <> 'true'`,
+        ))
+        .orderBy(desc(integrationRuns.startedAt), desc(integrationRuns.id))
+        .limit(1);
+      const baselineFingerprint = baseline
+        ? scopeText(baseline.requestScope, "shapeFingerprint")
+        : null;
+      schemaDrift = baselineFingerprint !== null && baselineFingerprint !== shapeFingerprint;
+      const controlledScope = {
+        contract,
+        scopeKey,
+        schemaVersion: SCHEMA_VERSION,
+        shapeFingerprint,
+        fieldProfile,
+        schemaDrift,
+        schemaBaselineRunId: baseline?.id ?? null,
+        releaseBlocked: schemaDrift,
+      };
+
       const job = await createSourceImportJobInTransaction(tx, {
         template: TARGET_TABLE,
         sourceName: `${stream}-${scopeKey}.json`,
@@ -523,7 +575,7 @@ export async function syncYonyouContract(
         createdBy: actorId,
         idempotencyKey,
         schemaVersion: SCHEMA_VERSION,
-        scope: { contract, scopeKey, shapeFingerprint, fieldProfile },
+        scope: controlledScope,
       });
       await writeStagingRows(tx, job.id, stagingRowsInput);
       await finalizeImportJob(tx, job.id, {
@@ -539,7 +591,7 @@ export async function syncYonyouContract(
         stagedRows: stagingRowsInput.length,
         rejectedRows: 0,
         evidenceHash: evidence.hash,
-        requestScope: { contract, scopeKey, request, shapeFingerprint, fieldProfile },
+        requestScope: { ...controlledScope, request },
         cursorEnd: scopeKey,
         error: null,
         finishedAt,
@@ -580,6 +632,8 @@ export async function syncYonyouContract(
       evidenceHash: evidence.hash,
       shapeFingerprint,
       fieldProfileSummary: summarizeFieldProfile(fieldProfile),
+      schemaDrift,
+      releaseBlocked: schemaDrift,
       replayed: false,
       blockedByConsoleGrant: false,
     };

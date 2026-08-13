@@ -41,6 +41,7 @@ describe("admin connector run health", () => {
         schemaHash: "B".repeat(64),
         unresolvedAliases: "2",
         releaseBlocked: true,
+        schemaDrift: true,
         fieldProfile: {
           version: "yonyou-field-profile/v1",
           sampledRecords: 12,
@@ -138,6 +139,7 @@ describe("admin connector run health", () => {
       checkpointOnLatestRun: false,
       emptySource: false,
       releaseBlocked: true,
+      schemaDrift: true,
       fieldProfile: {
         version: "yonyou-field-profile/v1",
         sampledRecords: 12,
@@ -162,6 +164,7 @@ describe("admin connector run health", () => {
       checkpointOnLatestRun: true,
       emptySource: true,
       releaseBlocked: false,
+      schemaDrift: false,
       fieldProfile: null,
       errorSummary: null,
     });

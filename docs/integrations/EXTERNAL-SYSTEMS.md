@@ -400,6 +400,11 @@ IPv6 zone、loopback、私网或本地域名 endpoint 会被拒绝；未来 toke
 完整画像绑定该 run/import job，健康页只显示字段数、敏感字段数与是否有界截断。该画像只是
 字段映射评审的输入，不代表字段语义已确认，也不会触发主档、库存或财务写入。
 
+每条流在同一 `yonyou-observation-v*` 契约版本内保留最后一个未阻断结构基线。后续响应指纹变化时，原始证据和 staging
+仍会按幂等批次落地，但 `integration_runs.request_scope` 与 `import_jobs.scope` 会在同一事务内写入 `schemaDrift=true`、
+`schemaBaselineRunId` 和 `releaseBlocked=true`；通用放行引擎必须拒绝该任务。被阻断的新结构即使连续多批出现也不会自动转为基线；
+业务与实施方确认真实字段语义、映射、控制总量和 UAT 后，由代码评审升级契约版本才可重建基线。
+
 在不请求 token、不调用业务 API 的情况下可先运行：
 
 ```bash
@@ -441,7 +446,8 @@ Gitleaks 扫描完整 Git 历史；只有经人工核实的非秘密测试不变
 - `notifications`：飞书或站内投递状态。
 
 用友运行还会在 `integration_runs.request_scope` 与 `import_jobs.scope` 保存无值字段画像，供授权后
-按真实结构完成映射评审；浏览器只接收聚合摘要，原始路径与数据值不从健康接口返回。
+按真实结构完成映射评审；浏览器只接收聚合摘要，原始路径与数据值不从健康接口返回。跨批结构漂移另外作为显式放行阻断显示，
+不与普通“仅观察”提示混在一起。
 
 上线门：
 

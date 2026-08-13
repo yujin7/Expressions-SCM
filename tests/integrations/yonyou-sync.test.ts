@@ -20,6 +20,7 @@ import {
   syncYonyouContract,
   yonyouShapeFingerprint,
 } from "@/server/integrations/yonyou-sync";
+import { loadStagedRows } from "@/server/modules/release/engine/common";
 import { createTestDb } from "../helpers/db";
 
 const CONFIG: YonyouOpenApiConfig = {
@@ -163,6 +164,57 @@ describe("用友只读观测同步", () => {
 
     expect(replay.replayed).toBe(true);
     expect(fetchMock.mock.calls.length, "重放不应再打接口").toBe(callsAfterFirst);
+  });
+
+  it("结构漂移持续阻断放行，连续返回同一新结构也不会自动建立新基线", async () => {
+    const { db, actorId } = await seedActor();
+    const baselineClient = clientReturning({
+      code: "00000", data: { rows: [{ code: "M001", name: "物料甲" }] },
+    }).client;
+    const sameShapeClient = clientReturning({
+      code: "00000", data: { rows: [{ code: "M002", name: "物料乙" }] },
+    }).client;
+    const changedClient = clientReturning({
+      code: "00000", data: { rows: [{ code: "M003", name: "物料丙", mobile: "13800000000" }] },
+    }).client;
+
+    const baseline = await syncYonyouContract(db, {
+      client: baselineClient, contract: "物料档案分页查询 V2", actorId, scopeKey: "baseline",
+    });
+    expect(baseline).toMatchObject({ schemaDrift: false, releaseBlocked: false });
+
+    const stable = await syncYonyouContract(db, {
+      client: sameShapeClient, contract: "物料档案分页查询 V2", actorId, scopeKey: "stable",
+    });
+    expect(stable).toMatchObject({ schemaDrift: false, releaseBlocked: false });
+
+    const drift = await syncYonyouContract(db, {
+      client: changedClient, contract: "物料档案分页查询 V2", actorId, scopeKey: "drift-1",
+    });
+    expect(drift).toMatchObject({ schemaDrift: true, releaseBlocked: true });
+    expect(drift.importJobId).not.toBeNull();
+
+    const [job] = await db.select({ scope: schema.importJobs.scope })
+      .from(schema.importJobs)
+      .where(eq(schema.importJobs.id, drift.importJobId!));
+    expect(job.scope).toMatchObject({
+      schemaVersion: "yonyou-observation-v1",
+      schemaDrift: true,
+      schemaBaselineRunId: stable.runId,
+      releaseBlocked: true,
+    });
+    await expect(loadStagedRows(db, "yonyou_observation", [drift.importJobId!]))
+      .rejects.toThrow(/releaseBlocked，禁止进入正式放行引擎/);
+
+    const stillDrift = await syncYonyouContract(db, {
+      client: changedClient, contract: "物料档案分页查询 V2", actorId, scopeKey: "drift-2",
+    });
+    expect(stillDrift).toMatchObject({ schemaDrift: true, releaseBlocked: true });
+    const replay = await syncYonyouContract(db, {
+      client: changedClient, contract: "物料档案分页查询 V2", actorId, scopeKey: "drift-1",
+    });
+    expect(replay).toMatchObject({ replayed: true, schemaDrift: true, releaseBlocked: true });
+    expect(replay.shapeFingerprint).toBe(drift.shapeFingerprint);
   });
 
   it("未批准的契约拒绝同步（双重白名单的第二道）", async () => {

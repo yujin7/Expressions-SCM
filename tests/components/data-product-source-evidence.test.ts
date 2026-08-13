@@ -23,6 +23,7 @@ function stream(
     authorizationBlocked: false,
     sourceTimeInvalid: false,
     releaseBlocked: false,
+    schemaDrift: false,
     emptySource: false,
     freshnessMaxAgeDays: 2,
     businessAgeDays: 1,
@@ -268,5 +269,21 @@ describe("数据产品所需流证据", () => {
       source("JST", "operational", ["outbound-sales-daily"]),
     ]))).toMatchObject({ level: "A1" });
     expect(product.maxAutomation).toBe("A2");
+  });
+
+  it("把外部字段结构漂移解释为契约评审阻断，而不是普通观察限制", () => {
+    const drifting = source("JST", "observation", ["outbound-sales-daily"]);
+    drifting.streams = [stream("outbound-sales-daily", {
+      schemaDrift: true,
+      releaseBlocked: true,
+    })];
+    const result = evaluateProductSourceEvidence(product, [
+      source("SCM", "operational", []),
+      drifting,
+    ]);
+    expect(result.sources[1].streams[0]).toMatchObject({
+      state: "degraded",
+      reason: "外部字段结构变化，待契约评审",
+    });
   });
 });
