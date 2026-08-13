@@ -8,6 +8,7 @@ import {
 import {
   currentProductAutomation,
   evaluateProductSourceEvidence,
+  evaluateProductSupportingEvidence,
 } from "@/components/data-product-source-evidence";
 import {
   buildDataProductWorkQueue,
@@ -44,8 +45,8 @@ const HEADERS = [
   "记录类型", "导出时间", "数据产品ID", "数据产品", "产品契约版本", "要回答的决策", "决策粒度",
   "Owner", "责任角色", "决策SLA小时", "刷新节奏", "目标权威级", "自动化上限", "运行时级别", "当前有效级别",
   "处置阶段", "下一个最佳动作", "行动入口", "首要阻塞", "共同可比截止", "最新来源日期", "跨源时点跨度天数",
-  "时效敏感流数", "缺业务日期流数", "来源系统", "来源技术键", "来源当前状态", "来源配置仍有效",
-  "所需数据流", "数据流技术键", "流证据状态", "受限原因", "业务截止", "最近成功", "源行", "Staging行",
+  "时效敏感流数", "缺业务日期流数", "证据用途", "来源系统", "来源技术键", "来源当前状态", "来源配置仍有效",
+  "数据流", "数据流技术键", "流证据状态", "受限原因", "业务截止", "最近成功", "源行", "Staging行",
   "拒收行", "结构漂移", "观察层阻断", "聚合质量状态", "业务键缺失行", "重复键组", "重复键行",
   "非法数值", "对账差异行", "对账覆盖不足行", "当前放行记录状态", "放行目标级别",
   "结果学习状态", "真实结果有效记录数", "已评价决策数", "采纳数", "待观察数", "已形成结果数", "误报数",
@@ -98,7 +99,28 @@ export function buildDataProductEvidenceExport(
     const latestOutcome = outcome?.latest[0] ?? null;
     const work = workByProduct.get(product.id);
     const releaseRecord = release?.activeRelease ?? release?.pendingRelease ?? release?.latestRelease ?? null;
-    return summary.sources.flatMap((source) => source.streams.map((stream) => {
+    const requiredRows = summary.sources.flatMap((source) => source.streams.map((stream) => ({
+      source: {
+        source: source.source,
+        state: source.state,
+        configurationReady: source.configurationReady,
+      },
+      stream,
+      usage: "放行依赖",
+    })));
+    const supportingRows = evaluateProductSupportingEvidence(product, dataSources).map((stream) => {
+      const readiness = dataSources.find((source) => source.key === stream.source);
+      return {
+        source: {
+          source: stream.source,
+          state: readiness?.state ?? "missing",
+          configurationReady: readiness?.configurationReady === true,
+        },
+        stream,
+        usage: "辅助证据（不参与放行）",
+      };
+    });
+    return [...requiredRows, ...supportingRows].map(({ source, stream, usage }) => {
       const evidence = stream.evidence;
       const scmEvidence = stream.scmEvidence;
       return [
@@ -126,6 +148,7 @@ export function buildDataProductEvidenceExport(
         summary.businessTimeWindow.spanDays,
         summary.businessTimeWindow.timeSensitiveStreams,
         summary.businessTimeWindow.undatedStreams,
+        usage,
         DATA_PRODUCT_SOURCE_LABEL[source.source],
         source.source,
         source.state,
@@ -170,7 +193,7 @@ export function buildDataProductEvidenceExport(
         latestOutcome ? OUTCOME_DECISION_LABEL[latestOutcome.decision] : null,
         latestOutcome ? OUTCOME_RESULT_LABEL[latestOutcome.result] : null,
       ];
-    }));
+    });
   });
 
   return {

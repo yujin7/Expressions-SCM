@@ -53,6 +53,25 @@ export interface ProductEvidenceSummary {
   businessTimeWindow: ProductBusinessTimeWindow;
 }
 
+/**
+ * 返回产品可用于身份、历史与回查解释的辅助外部证据。
+ * 这些行与 requiredStreams 分开计算，绝不参与自动化级别或 A2/A3 放行判断。
+ */
+export function evaluateProductSupportingEvidence(
+  product: DataProductDefinition,
+  dataSources: readonly DataSourceReadiness[],
+): ProductStreamEvidence[] {
+  const sourceByKey = new Map(dataSources.map((row) => [row.key, row]));
+  return (Object.entries(product.supportingStreams ?? {}) as [DataProductSource, string[]][])
+    .flatMap(([source, streams]) => streams.map((stream) => (
+      evaluateExternalStreamEvidence(source, stream, sourceByKey.get(source))
+    )))
+    .sort((a, b) => {
+      const source = a.source.localeCompare(b.source);
+      return source !== 0 ? source : a.stream.localeCompare(b.stream);
+    });
+}
+
 export interface ProductBusinessTimeWindow {
   /** 只统计已有证据且声明了时效门限的流；主档/当前状态等无历史门限事实不强行编造日期。 */
   timeSensitiveStreams: number;

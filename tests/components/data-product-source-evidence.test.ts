@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   currentProductAutomation,
   evaluateProductSourceEvidence,
+  evaluateProductSupportingEvidence,
 } from "@/components/data-product-source-evidence";
 import type { DataProductDefinition } from "@/components/data-products";
 import type { DataSourceReadiness } from "@/server/modules/report/data-source-readiness";
@@ -97,6 +98,34 @@ const product: DataProductDefinition = {
 };
 
 describe("数据产品所需流证据", () => {
+  it("辅助证据可用于产品内回查，但不会改变必需流门禁或自动化级别", () => {
+    const withSupporting = {
+      ...product,
+      supportingStreams: { JIANDAOYUN: ["inventory-count-observation"] },
+    } satisfies DataProductDefinition;
+    const jdy = source("JIANDAOYUN", "observation", ["inventory-count-observation"]);
+    jdy.streams = [stream("inventory-count-observation", {
+      freshness: "stale",
+      businessAgeDays: 30,
+    })];
+    const required = evaluateProductSourceEvidence(withSupporting, [
+      source("SCM", "operational", []),
+      source("JST", "observation", ["outbound-sales-daily"]),
+      jdy,
+    ]);
+    const supporting = evaluateProductSupportingEvidence(withSupporting, [jdy]);
+
+    expect(supporting).toEqual([
+      expect.objectContaining({
+        source: "JIANDAOYUN",
+        stream: "inventory-count-observation",
+        state: "stale",
+      }),
+    ]);
+    expect(required.sources.map((row) => row.source)).toEqual(["SCM", "JST"]);
+    expect(currentProductAutomation(required).level).toBe("A1");
+  });
+
   it("历史手工演练成功不能代替当前部署契约选择", () => {
     const scm = source("SCM", "operational", []);
     const jst = source("JST", "observation", ["outbound-sales-daily"]);

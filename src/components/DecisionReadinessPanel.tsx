@@ -38,6 +38,7 @@ import {
 import {
   currentProductAutomation,
   evaluateProductSourceEvidence,
+  evaluateProductSupportingEvidence,
   type ProductEvidenceSummary,
   type ProductStreamEvidence,
 } from "@/components/data-product-source-evidence";
@@ -209,6 +210,95 @@ function RequiredStreamEvidence({ summary }: { summary: ProductEvidenceSummary }
         },
       ]}
     />
+  );
+}
+
+function SupportingStreamEvidence({
+  product,
+  dataSources,
+}: {
+  product: DataProductDefinition;
+  dataSources: readonly DataSourceReadiness[];
+}) {
+  const rows = evaluateProductSupportingEvidence(product, dataSources);
+  if (rows.length === 0) return null;
+  return (
+    <Card
+      size="small"
+      title="辅助证据（不参与放行）"
+      styles={{ body: { padding: 0 } }}
+    >
+      <Alert
+        banner
+        showIcon
+        type="info"
+        message="用于身份、历史与回查解释；过期或缺失不阻塞产品，也不能替代正式事实或必需流。"
+      />
+      <Table
+        rowKey={(row) => `${row.source}\u0000${row.stream}`}
+        size="small"
+        pagination={false}
+        dataSource={rows}
+        scroll={{ x: 1_210 }}
+        columns={[
+          {
+            title: "来源",
+            dataIndex: "source",
+            width: 110,
+            render: (source: ProductStreamEvidence["source"]) => DATA_PRODUCT_SOURCE_LABEL[source],
+          },
+          {
+            title: "辅助数据",
+            dataIndex: "stream",
+            width: 250,
+            render: (stream: string, row) => (
+              <Space direction="vertical" size={2}>
+                <Typography.Text>{dataProductStreamLabel(row.source, stream)}</Typography.Text>
+                <Typography.Text type="secondary" code>{stream}</Typography.Text>
+              </Space>
+            ),
+          },
+          {
+            title: "当前证据",
+            dataIndex: "state",
+            width: 130,
+            render: (state: ProductStreamEvidence["state"]) => (
+              <Tag color={STREAM_STATE_META[state].color}>{STREAM_STATE_META[state].label}</Tag>
+            ),
+          },
+          {
+            title: "业务截止 / 最近成功",
+            key: "time",
+            width: 220,
+            render: (_, row) => (
+              <Space direction="vertical" size={2}>
+                <Typography.Text>{row.evidence?.sourceAsOf ?? "未取得业务时点"}</Typography.Text>
+                <Typography.Text type="secondary">{fmtDateTime(row.evidence?.lastSuccessAt ?? null)}</Typography.Text>
+              </Space>
+            ),
+          },
+          {
+            title: "源行 / Staging / 拒收",
+            key: "volume",
+            width: 200,
+            align: "right",
+            render: (_, row) => row.evidence
+              ? `${row.evidence.sourceRows.toLocaleString("zh-CN")} / ${row.evidence.stagedRows.toLocaleString("zh-CN")} / ${row.evidence.rejectedRows.toLocaleString("zh-CN")}`
+              : "—",
+          },
+          {
+            title: "解释边界",
+            dataIndex: "reason",
+            width: 300,
+            render: (reason: string) => (
+              <Typography.Paragraph ellipsis={{ rows: 2, tooltip: reason }} style={{ marginBottom: 0 }}>
+                {reason}
+              </Typography.Paragraph>
+            ),
+          },
+        ]}
+      />
+    </Card>
   );
 }
 
@@ -395,12 +485,14 @@ function DataProductReleaseControl({
 function ProductOperatingContract({
   product,
   summary,
+  dataSources,
   release,
   outcome,
   onReleaseChanged,
 }: {
   product: DataProductDefinition;
   summary: ProductEvidenceSummary;
+  dataSources: readonly DataSourceReadiness[];
   release?: DataProductReleaseReadiness;
   outcome?: DataProductOutcomeReadiness;
   onReleaseChanged?: () => void | Promise<void>;
@@ -451,6 +543,7 @@ function ProductOperatingContract({
       <DataProductReleaseControl product={product} readiness={release} onChanged={onReleaseChanged} />
       <DataProductOutcomeControl product={product} readiness={outcome} onChanged={onReleaseChanged} />
       <RequiredStreamEvidence summary={summary} />
+      <SupportingStreamEvidence product={product} dataSources={dataSources} />
     </Space>
   );
 }
@@ -807,13 +900,15 @@ export default function DecisionReadinessPanel({
                 <ProductOperatingContract
                   product={row}
                   summary={summary}
+                  dataSources={dataSources}
                   release={dataProductReleases.find((item) => item.productId === row.id)}
                   outcome={dataProductOutcomes.find((item) => item.productId === row.id)}
                   onReleaseChanged={onReleaseChanged}
                 />
               );
             },
-            rowExpandable: (row) => row.sources.some((source) => source !== "SCM"),
+            rowExpandable: (row) => row.sources.some((source) => source !== "SCM")
+              || Object.keys(row.supportingStreams ?? {}).length > 0,
             columnWidth: 44,
           }}
           onRow={(row) => ({ id: `data-product-${row.id}` })}

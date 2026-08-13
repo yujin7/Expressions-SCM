@@ -59,6 +59,7 @@ describe("三方数据产品目录", () => {
   it("辅助证据有中文业务名、产品内不与放行依赖重叠", () => {
     for (const product of DATA_PRODUCTS) {
       for (const [source, streams] of Object.entries(product.supportingStreams ?? {})) {
+        expect(source).not.toBe("SCM");
         expect(DATA_PRODUCT_SOURCE_LABEL[source as keyof typeof DATA_PRODUCT_SOURCE_LABEL]).toBeTruthy();
         expect(new Set(streams).size).toBe(streams.length);
         for (const stream of streams) {

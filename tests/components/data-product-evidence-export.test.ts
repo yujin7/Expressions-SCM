@@ -32,7 +32,7 @@ function stream(
   };
 }
 
-function source(key: "JST" | "YONYOU", row: DataStreamEvidence): DataSourceReadiness {
+function source(key: "JIANDAOYUN" | "JST" | "YONYOU", row: DataStreamEvidence): DataSourceReadiness {
   return {
     key,
     label: key,
@@ -79,6 +79,7 @@ const product: DataProductDefinition = {
   sources: ["JST", "YONYOU"],
   requiredScmEvidence: [],
   requiredStreams: { JST: ["sales"], YONYOU: ["voucher"] },
+  supportingStreams: { JIANDAOYUN: ["inventory-count-observation"] },
   targetAuthority: "financial",
   releaseGate: "test",
 };
@@ -145,16 +146,21 @@ describe("三方数据产品决策证据导出", () => {
         },
       })),
       source("YONYOU", stream("voucher", "2026-08-12")),
+      source("JIANDAOYUN", stream("inventory-count-observation", "2026-07-01", {
+        freshness: "stale",
+        businessAgeDays: 43,
+      })),
     ], [], [outcome], new Date("2026-08-13T02:03:04.000Z"));
 
     expect(result.filename).toBe("三方数据-产品决策证据-2026-08-13T02-03-04-000Z.csv");
-    expect(result.rows).toHaveLength(2);
+    expect(result.rows).toHaveLength(3);
     const asObjects = result.rows.map((row) => Object.fromEntries(
       result.headers.map((header, index) => [header, row[index]]),
     ));
     expect(asObjects).toEqual([
       expect.objectContaining({
         数据产品ID: "triangulation-test",
+        证据用途: "放行依赖",
         来源技术键: "JST",
         数据流技术键: "sales",
         共同可比截止: "2026-08-10",
@@ -176,8 +182,16 @@ describe("三方数据产品决策证据导出", () => {
       }),
       expect.objectContaining({
         来源技术键: "YONYOU",
+        证据用途: "放行依赖",
         数据流技术键: "voucher",
         观察层阻断: "是",
+      }),
+      expect.objectContaining({
+        来源技术键: "JIANDAOYUN",
+        证据用途: "辅助证据（不参与放行）",
+        数据流技术键: "inventory-count-observation",
+        流证据状态: "stale",
+        共同可比截止: "2026-08-10",
       }),
     ]);
     expect(JSON.stringify(result)).not.toContain("must-not-export");
