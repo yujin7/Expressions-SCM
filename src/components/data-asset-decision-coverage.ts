@@ -24,7 +24,9 @@ export interface DataAssetDecisionDependency {
   owner: string;
   decisionSlaHours: number;
   effectiveLevel: "A0" | "A1" | "A2" | "A3";
-  usage: "required" | "supporting";
+  usage: "required" | "supporting" | "nested";
+  /** 仅 nested 使用：该原始资产先进入哪些直接产品，再被本产品复用。 */
+  viaProductIds: string[];
 }
 
 export interface DataAssetDecisionCoverageRow {
@@ -43,6 +45,7 @@ export interface DataAssetDecisionCoverageRow {
   dependencyCount: number;
   requiredDependencyCount: number;
   supportingDependencyCount: number;
+  nestedDependencyCount: number;
   releasedDependencyCount: number;
   minDecisionSlaHours: number | null;
   evidence: DataStreamEvidence | null;
@@ -98,6 +101,47 @@ const IMPLEMENTATION_ORDER: Record<DataAssetImplementationState, number> = {
   unknown: 1,
   implemented: 2,
 };
+
+const USAGE_ORDER: Record<DataAssetDecisionDependency["usage"], number> = {
+  required: 0,
+  supporting: 1,
+  nested: 2,
+};
+
+function nestedConsumers(
+  roots: readonly DataProductDefinition[],
+  products: readonly DataProductDefinition[],
+  excludedProductIds: ReadonlySet<string>,
+): Array<{ product: DataProductDefinition; viaProductIds: string[] }> {
+  const consumersByProduct = new Map<string, DataProductDefinition[]>();
+  for (const product of products) {
+    for (const dependency of product.requiredProducts ?? []) {
+      const consumers = consumersByProduct.get(dependency.productId) ?? [];
+      consumers.push(product);
+      consumersByProduct.set(dependency.productId, consumers);
+    }
+  }
+  const nested = new Map<string, { product: DataProductDefinition; viaProductIds: Set<string> }>();
+  for (const root of roots) {
+    const visited = new Set<string>([root.id]);
+    const queue = [...(consumersByProduct.get(root.id) ?? [])];
+    while (queue.length > 0) {
+      const product = queue.shift()!;
+      if (visited.has(product.id)) continue;
+      visited.add(product.id);
+      if (!excludedProductIds.has(product.id)) {
+        const existing = nested.get(product.id) ?? { product, viaProductIds: new Set<string>() };
+        existing.viaProductIds.add(root.id);
+        nested.set(product.id, existing);
+      }
+      queue.push(...(consumersByProduct.get(product.id) ?? []));
+    }
+  }
+  return [...nested.values()].map(({ product, viaProductIds }) => ({
+    product,
+    viaProductIds: [...viaProductIds].sort(),
+  }));
+}
 
 function usableForExplanation(evidence: DataStreamEvidence | null): boolean {
   return evidence != null
@@ -265,13 +309,31 @@ export function buildDataAssetDecisionPortfolio(
         : sourceRow.availableStreamKeys.includes(stream) ? "implemented" : "planned";
       const requiredProducts = dependenciesByStream.get(stream) ?? [];
       const supportingProducts = supportingDependenciesByStream.get(stream) ?? [];
+      const directProductIds = new Set([
+        ...requiredProducts.map((product) => product.id),
+        ...supportingProducts.map((product) => product.id),
+      ]);
+      const inheritedProducts = nestedConsumers(requiredProducts, products, directProductIds);
       const dependencies = [
-        ...requiredProducts.map((product) => ({ product, usage: "required" as const })),
+        ...requiredProducts.map((product) => ({
+          product,
+          usage: "required" as const,
+          viaProductIds: [] as string[],
+        })),
         ...supportingProducts
           .filter((product) => !requiredProducts.some((required) => required.id === product.id))
-          .map((product) => ({ product, usage: "supporting" as const })),
+          .map((product) => ({
+            product,
+            usage: "supporting" as const,
+            viaProductIds: [] as string[],
+          })),
+        ...inheritedProducts.map(({ product, viaProductIds }) => ({
+          product,
+          usage: "nested" as const,
+          viaProductIds,
+        })),
       ]
-        .map<DataAssetDecisionDependency>(({ product, usage }) => ({
+        .map<DataAssetDecisionDependency>(({ product, usage, viaProductIds }) => ({
           productId: product.id,
           title: product.title,
           decision: product.decision,
@@ -279,8 +341,11 @@ export function buildDataAssetDecisionPortfolio(
           decisionSlaHours: product.decisionSlaHours,
           effectiveLevel: releaseByProduct.get(product.id)?.effectiveLevel ?? "A0",
           usage,
+          viaProductIds,
         }))
-        .sort((a, b) => a.decisionSlaHours - b.decisionSlaHours || a.title.localeCompare(b.title, "zh-CN"));
+        .sort((a, b) => USAGE_ORDER[a.usage] - USAGE_ORDER[b.usage]
+          || a.decisionSlaHours - b.decisionSlaHours
+          || a.title.localeCompare(b.title, "zh-CN"));
       const evaluatedAsset = assetState(
         stream,
         evaluated.state,
@@ -320,9 +385,12 @@ export function buildDataAssetDecisionPortfolio(
         dependencyCount: dependencies.length,
         requiredDependencyCount: dependencies.filter((item) => item.usage === "required").length,
         supportingDependencyCount: dependencies.filter((item) => item.usage === "supporting").length,
+        nestedDependencyCount: dependencies.filter((item) => item.usage === "nested").length,
         releasedDependencyCount: dependencies.filter((item) => item.usage === "required"
           && (item.effectiveLevel === "A2" || item.effectiveLevel === "A3")).length,
-        minDecisionSlaHours: dependencies[0]?.decisionSlaHours ?? null,
+        minDecisionSlaHours: dependencies.length > 0
+          ? Math.min(...dependencies.map((item) => item.decisionSlaHours))
+          : null,
         evidence: evaluated.evidence,
         ...action,
       });
@@ -354,7 +422,7 @@ export function buildDataAssetDecisionPortfolio(
       requiredRows
         .filter((row) => row.state !== "current")
         .flatMap((row) => row.dependencies
-          .filter((dependency) => dependency.usage === "required")
+          .filter((dependency) => dependency.usage !== "supporting")
           .map((dependency) => dependency.productId)),
     );
     return {
@@ -388,7 +456,7 @@ export function buildDataAssetDecisionPortfolio(
       requiredRows
         .filter((row) => row.state !== "current")
         .flatMap((row) => row.dependencies
-          .filter((dependency) => dependency.usage === "required")
+          .filter((dependency) => dependency.usage !== "supporting")
           .map((dependency) => dependency.productId)),
     ).size,
   };

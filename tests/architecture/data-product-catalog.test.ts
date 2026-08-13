@@ -36,7 +36,12 @@ describe("三方数据产品目录", () => {
         expect(METRICS[metricId], `${product.id}:${metricId}`).toBeTruthy();
       }
       expect(product.releaseGate.trim()).not.toBe("");
-      expect(product.sources.length).toBeGreaterThanOrEqual(2);
+      expect(product.sources.length).toBeGreaterThanOrEqual(1);
+      if (product.sources.length === 1) {
+        expect(product.sources).toEqual(["SCM"]);
+        expect(product.requiredProducts?.length, `${product.id}: 单来源产品必须复用上游产品`)
+          .toBeGreaterThan(0);
+      }
       expect(DATA_PRODUCT_AUTHORITY_LABEL[product.targetAuthority]).toBeTruthy();
       for (const source of product.sources) {
         expect(DATA_PRODUCT_SOURCE_LABEL[source]).toBeTruthy();
@@ -48,11 +53,23 @@ describe("三方数据产品目录", () => {
   });
 
   it("用友财务数据产品不得绕过 SCM 受控证据", () => {
+    const byId = new Map(DATA_PRODUCTS.map((item) => [item.id, item]));
+    const inheritedSources = (productId: string, visited = new Set<string>()): Set<string> => {
+      if (visited.has(productId)) return new Set();
+      visited.add(productId);
+      const product = byId.get(productId)!;
+      const sources = new Set<string>(product.sources);
+      for (const dependency of product.requiredProducts ?? []) {
+        for (const source of inheritedSources(dependency.productId, visited)) sources.add(source);
+      }
+      return sources;
+    };
     const financial = DATA_PRODUCTS.filter((item) => item.targetAuthority === "financial");
     expect(financial.length).toBeGreaterThan(0);
     for (const product of financial) {
-      expect(product.sources).toContain("YONYOU");
-      expect(product.sources).toContain("SCM");
+      const sources = inheritedSources(product.id);
+      expect(sources.has("YONYOU"), product.id).toBe(true);
+      expect(sources.has("SCM"), product.id).toBe(true);
     }
   });
 
@@ -96,5 +113,39 @@ describe("三方数据产品目录", () => {
       .toEqual(["demand-pulse", "unified-inventory", "supply-commitment"]);
     expect(byId.get("cash-sop")?.requiredProducts?.map((item) => item.productId))
       .toEqual(["demand-pulse", "unified-inventory", "supply-commitment", "net-margin-bridge"]);
+    expect(byId.get("demand-pulse")?.requiredProducts?.map((item) => item.productId))
+      .toEqual(["commerce-identity-control"]);
+    expect(byId.get("net-margin-bridge")?.requiredProducts?.map((item) => item.productId))
+      .toEqual(["demand-pulse", "order-to-cash"]);
+    expect(byId.get("launch-readiness")?.requiredProducts?.map((item) => item.productId))
+      .toEqual(["commerce-identity-control", "demand-pulse", "supply-commitment"]);
+    expect(byId.get("exception-triangulation")?.requiredProducts?.map((item) => item.productId))
+      .toEqual(["demand-pulse", "unified-inventory", "supply-commitment", "order-to-cash"]);
+  });
+
+  it("下游产品不重复直读已经由上游产品验收的外部原始流", () => {
+    const byId = new Map(DATA_PRODUCTS.map((product) => [product.id, product]));
+    const upstreamStreams = (productId: string, visited = new Set<string>()): Set<string> => {
+      if (visited.has(productId)) return new Set();
+      visited.add(productId);
+      const product = byId.get(productId)!;
+      const streams = new Set<string>();
+      for (const dependency of product.requiredProducts ?? []) {
+        const upstream = byId.get(dependency.productId)!;
+        for (const [source, keys] of Object.entries(upstream.requiredStreams)) {
+          for (const key of keys) streams.add(`${source}:${key}`);
+        }
+        for (const key of upstreamStreams(upstream.id, visited)) streams.add(key);
+      }
+      return streams;
+    };
+
+    for (const product of DATA_PRODUCTS.filter((item) => (item.requiredProducts?.length ?? 0) > 0)) {
+      const inherited = upstreamStreams(product.id);
+      const duplicated = Object.entries(product.requiredStreams)
+        .flatMap(([source, streams]) => streams.map((stream) => `${source}:${stream}`))
+        .filter((stream) => inherited.has(stream));
+      expect(duplicated, product.id).toEqual([]);
+    }
   });
 });

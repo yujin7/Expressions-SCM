@@ -36,6 +36,8 @@ const IMPLEMENTATION_META: Record<DataAssetImplementationState, { label: string;
   unknown: { label: "旧载荷未声明", color: "default" },
 };
 
+const PRODUCT_TITLE_BY_ID = new Map(DATA_PRODUCTS.map((product) => [product.id, product.title]));
+
 function pct(value: number, total: number): number {
   return total === 0 ? 0 : Math.round((value / total) * 100);
 }
@@ -49,6 +51,18 @@ function evidenceLabel(row: DataAssetDecisionCoverageRow): string {
 
 function uniqueOwners(row: DataAssetDecisionCoverageRow): string[] {
   return [...new Set(row.dependencies.map((item) => item.owner))];
+}
+
+function dependencyTooltip(row: DataAssetDecisionCoverageRow): string {
+  return row.dependencies.map((item) => {
+    const usage = item.usage === "required"
+      ? "直接放行"
+      : item.usage === "supporting" ? "辅助解释" : "经上游产品复用";
+    const via = item.viaProductIds.length > 0
+      ? `（经 ${item.viaProductIds.map((id) => PRODUCT_TITLE_BY_ID.get(id) ?? id).join("、")}）`
+      : "";
+    return `${item.title} · ${usage}${via}：${item.decision}`;
+  }).join("\n");
 }
 
 export default function DataAssetDecisionCoverage({
@@ -165,10 +179,11 @@ export default function DataAssetDecisionCoverage({
             sorter: (a, b) => a.dependencyCount - b.dependencyCount,
             render: (_, row) => row.cataloged ? (
               <Space direction="vertical" size={2}>
-                <Tooltip title={row.dependencies.map((item) => `${item.title}：${item.decision}`).join("\n")}>
+                <Tooltip title={dependencyTooltip(row)}>
                   <Typography.Text>
                     {row.requiredDependencyCount > 0 ? `放行依赖 ${row.requiredDependencyCount}` : "不参与放行"}
                     {row.supportingDependencyCount > 0 ? ` · 辅助 ${row.supportingDependencyCount}` : ""}
+                    {row.nestedDependencyCount > 0 ? ` · 下游复用 ${row.nestedDependencyCount}` : ""}
                     {row.requiredDependencyCount > 0 ? ` · 已放行 ${row.releasedDependencyCount}` : ""}
                   </Typography.Text>
                 </Tooltip>

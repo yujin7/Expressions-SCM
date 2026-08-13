@@ -135,8 +135,8 @@ describe("data product dynamic work queue", () => {
       [...queue.map((item) => item.decisionSlaHours)].sort((a, b) => a - b),
     );
     expect(queue[0].bottleneck).toContain("尚无成功运行证据");
-    expect(queue.find((item) => item.productId === "demand-pulse")?.nextAction).toContain("天猫 SKU 对照");
-    expect(queue.find((item) => item.productId === "demand-pulse")?.nextAction).not.toContain("tmall-sku-crosswalk-observation");
+    expect(queue.find((item) => item.productId === "demand-pulse")?.nextAction).toContain("天猫退款");
+    expect(queue.find((item) => item.productId === "demand-pulse")?.nextAction).not.toContain("tmall-sku-refund-observation");
     expect(queue.find((item) => item.productId === "demand-pulse")?.actionLabel).toBe("查看逐流证据");
   });
 

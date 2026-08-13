@@ -190,12 +190,19 @@ describe("数据产品放行闭环", () => {
   it("上游放行失效会通过真实读取模型级联关闭补货产品资格", async () => {
     const { db } = await createTestDb();
     const [owner] = await db.insert(users).values({ name: "PMC", roles: ["pmc"], isApprover: true }).returning();
-    const productIds = ["demand-pulse", "unified-inventory", "supply-commitment", "replenishment-evidence"];
+    const productIds = [
+      "commerce-identity-control",
+      "demand-pulse",
+      "unified-inventory",
+      "supply-commitment",
+      "replenishment-evidence",
+    ];
     const sources = currentSourcesForProducts(productIds);
-    const upstreamProducts = DATA_PRODUCTS.filter((item) => productIds.slice(0, 3).includes(item.id));
+    const upstreamProducts = DATA_PRODUCTS.filter((item) => productIds.slice(0, 4).includes(item.id));
     const createdIds: number[] = [];
     for (const [index, upstream] of upstreamProducts.entries()) {
-      const evidence = buildDataProductReleaseEvidence(upstream, sources);
+      const currentReadiness = await loadDataProductReleaseReadiness(sources, undefined, db);
+      const evidence = buildDataProductReleaseEvidence(upstream, sources, new Date(), currentReadiness);
       expect(evidence.eligible).toBe(true);
       const [created] = await db.insert(dataProductReleases).values({
         productId: upstream.id,

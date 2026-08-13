@@ -160,6 +160,38 @@ describe("三方数据资产到业务决策覆盖", () => {
     });
   });
 
+  it("沿产品依赖图追踪原始资产对下游组合决策的间接影响", () => {
+    const demand = product("demand", "需求脉搏", 24, {
+      JIANDAOYUN: ["tmall-sku-sales-observation"],
+    });
+    const replenishment = product("replenishment", "补货证据包", 4, { SCM: [] });
+    replenishment.sources = ["SCM"];
+    replenishment.requiredScmEvidence = [];
+    replenishment.requiredProducts = [{
+      productId: "demand",
+      minimumLevel: "A2",
+      purpose: "复用需求口径",
+    }];
+    const portfolio = buildDataAssetDecisionPortfolio([demand, replenishment], [
+      source("JIANDAOYUN", [stream("tmall-sku-sales-observation", { freshness: "stale" })]),
+    ]);
+    const row = portfolio.rows.find((item) => item.stream === "tmall-sku-sales-observation")!;
+
+    expect(row).toMatchObject({
+      releaseRequired: true,
+      requiredDependencyCount: 1,
+      supportingDependencyCount: 0,
+      nestedDependencyCount: 1,
+      dependencyCount: 2,
+    });
+    expect(row.dependencies).toEqual([
+      expect.objectContaining({ productId: "demand", usage: "required", viaProductIds: [] }),
+      expect.objectContaining({ productId: "replenishment", usage: "nested", viaProductIds: ["demand"] }),
+    ]);
+    expect(portfolio.affectedProductCount).toBe(2);
+    expect(portfolio.sources.find((item) => item.source === "JIANDAOYUN")?.affectedProductCount).toBe(2);
+  });
+
   it("显式暴露已成功读取但没有任何数据产品消费的流", () => {
     const portfolio = buildDataAssetDecisionPortfolio([
       product("p1", "需求决策", 24, { JIANDAOYUN: ["tmall-sku-sales-observation"] }),
@@ -200,6 +232,7 @@ describe("三方数据资产到业务决策覆盖", () => {
       releaseRequired: false,
       requiredDependencyCount: 0,
       supportingDependencyCount: 1,
+      nestedDependencyCount: 0,
       dependencies: [expect.objectContaining({ productId: "inventory", usage: "supporting" })],
     });
     expect(portfolio).toMatchObject({
