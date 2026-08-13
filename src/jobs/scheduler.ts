@@ -29,6 +29,8 @@ export const SCHEDULES: Record<string, string> = {
   "sync-jiandaoyun-catalog": "0 10 * * *",
   "sync-yonyou": "5 10,16 * * *",
   "sync-jst-sales": "15 10,16 * * *",
+  "sync-jst-item-master": "18 10,16 * * *",
+  "sync-jst-inbound": "20 10,16 * * *",
   "sync-jst-inventory": "25 10,16 * * *",
   "sync-jiandaoyun-forms": "30 10,16 * * *",
   "reconcile-jst": "0 11,17 * * *",

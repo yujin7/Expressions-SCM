@@ -22,7 +22,7 @@ describe("interval-runner 进程内调度回退", () => {
     expect(g[Symbol.for("supply-chain.interval-runner")]).toBeUndefined();
   });
 
-  it("注册了 19 个任务（含三方观察、门禁看门狗、rollup 与决策摘要）", () => {
+  it("注册了 21 个任务（含三方观察、门禁看门狗、rollup 与决策摘要）", () => {
     expect(INTERVAL_JOBS.map((j) => j.name).sort()).toEqual([
       "data-freshness",
       "data-product-gate-watchdog",
@@ -39,7 +39,9 @@ describe("interval-runner 进程内调度回退", () => {
       "snapshot-age",
       "sync-jiandaoyun-catalog",
       "sync-jiandaoyun-forms",
+      "sync-jst-inbound",
       "sync-jst-inventory",
+      "sync-jst-item-master",
       "sync-jst-sales",
       "sync-yonyou",
       "system-alert-notify",

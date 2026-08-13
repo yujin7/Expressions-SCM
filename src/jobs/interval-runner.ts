@@ -20,7 +20,11 @@ import { runFreshnessCheck } from "./freshness";
 import { runDocAging } from "./doc-aging";
 import { runRollup } from "./rollup";
 import { dispatchNotifications, runDecisionDigestNotify, runExceptionNotify } from "./notify";
-import { runJstInventorySync, runJstSalesSync } from "./sync-jst";
+import {
+  runJstGovernedObservationSync,
+  runJstInventorySync,
+  runJstSalesSync,
+} from "./sync-jst";
 import { runYonyouSync } from "./sync-yonyou";
 import { runJstTokenWatchdog } from "./jst-token-watchdog";
 import { runJobFailureWatchdog } from "./job-failure-watchdog";
@@ -108,6 +112,9 @@ export const INTERVAL_JOBS: IntervalJob[] = [
   { name: "license-alert", everyMs: 6 * HOUR_MS, run: (db) => runLicenseAlert(db) },
   // 聚水潭 T-1 出库全量快照先进入受控 staging；缺配置时显式 skipped
   { name: "sync-jst-sales", everyMs: 20 * 60 * 1000, atHours: [10, 16], run: (db) => runJstSalesSync(db) },
+  // 聚水潭商品与入库只读观察须显式选择契约；均停在 releaseBlocked staging。
+  { name: "sync-jst-item-master", everyMs: 20 * 60 * 1000, atHours: [10, 16], run: (db) => runJstGovernedObservationSync(db, "item-master") },
+  { name: "sync-jst-inbound", everyMs: 20 * 60 * 1000, atHours: [10, 16], run: (db) => runJstGovernedObservationSync(db, "inbound-receipts-daily") },
   // 聚水潭全仓合计库存增量只作外部观察；显式开关启用，绝不直写库存真账/快照
   { name: "sync-jst-inventory", everyMs: 20 * 60 * 1000, atHours: [10, 16], run: (db) => runJstInventorySync(db) },
   // 定时任务连续失败告警：job_runs 一直记着成败但没人被通知，

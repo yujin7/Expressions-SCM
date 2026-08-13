@@ -5,6 +5,11 @@ import {
   syncJstInventoryObservations,
 } from "@/server/integrations/jst-inventory-sync";
 import { jstSyncActorId, syncJstDailySales } from "@/server/integrations/jst-sync";
+import {
+  configuredJstGovernedObservationContracts,
+  syncJstGovernedObservation,
+  type JstGovernedObservationContract,
+} from "@/server/integrations/jst-observation-sync";
 import { shanghaiToday } from "./reconcile-jst";
 
 export type JstSyncJobResult =
@@ -14,6 +19,10 @@ export type JstSyncJobResult =
 export type JstInventorySyncJobResult =
   | { status: "skipped"; reason: string }
   | ({ status: "succeeded" } & Awaited<ReturnType<typeof syncJstInventoryObservations>>);
+
+export type JstGovernedObservationSyncJobResult =
+  | { status: "skipped"; reason: string; contract: JstGovernedObservationContract; bizDate: string }
+  | ({ status: "succeeded" } & Awaited<ReturnType<typeof syncJstGovernedObservation>>);
 
 /**
  * Safe scheduler entrypoint. Missing configuration is visible as skipped, never a fabricated
@@ -74,6 +83,51 @@ export async function runJstInventorySync(db: AnyDb): Promise<JstInventorySyncJo
   }
   const summary = await syncJstInventoryObservations(db, {
     client: new JstClient(config),
+    actorId,
+  });
+  return { status: "succeeded", ...summary };
+}
+
+/**
+ * Optional item/receipt observers. Selection is explicit so a deployment cannot start consuming
+ * newly granted API scopes merely because code was deployed; the operator must name each stream.
+ */
+export async function runJstGovernedObservationSync(
+  db: AnyDb,
+  contract: JstGovernedObservationContract,
+  bizDate = shanghaiToday(-1),
+): Promise<JstGovernedObservationSyncJobResult> {
+  const selected = configuredJstGovernedObservationContracts();
+  if (!selected.includes(contract)) {
+    return {
+      status: "skipped",
+      reason: `JST_OBSERVATION_SYNC_CONTRACTS 未启用 ${contract}`,
+      contract,
+      bizDate,
+    };
+  }
+  const config = jstConfigFromEnv();
+  const actorId = jstSyncActorId();
+  if (!config) {
+    return {
+      status: "skipped",
+      reason: "缺少 JST_APP_KEY/JST_APP_SECRET/JST_ACCESS_TOKEN",
+      contract,
+      bizDate,
+    };
+  }
+  if (actorId === null) {
+    return {
+      status: "skipped",
+      reason: "缺少有效 JST_SYNC_ACTOR_ID",
+      contract,
+      bizDate,
+    };
+  }
+  const summary = await syncJstGovernedObservation(db, {
+    client: new JstClient(config),
+    contract,
+    sourceAsOf: bizDate,
     actorId,
   });
   return { status: "succeeded", ...summary };

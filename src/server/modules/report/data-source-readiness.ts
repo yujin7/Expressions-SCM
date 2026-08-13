@@ -14,6 +14,7 @@ import {
   type ConnectorReadiness,
 } from "@/server/integrations/connector";
 import { JIANDAOYUN_FORM_CONTRACTS } from "@/server/integrations/jiandaoyun-contracts";
+import { JST_GOVERNED_OBSERVATION_CONTRACTS } from "@/server/integrations/jst-observation-sync";
 import {
   YONYOU_READ_CONTRACTS,
   yonyouContractStreamKey,
@@ -301,6 +302,8 @@ const STREAM_FRESHNESS_DAYS = new Map<string, number>([
     : [[`jdy\u0000${contract.key}`, contract.freshnessMaxAgeDays] as const]),
   ["jst\u0000outbound-sales-daily", 2],
   ["jst\u0000inventory-total-delta", 1],
+  ["jst\u0000item-master", 2],
+  ["jst\u0000inbound-receipts-daily", 2],
   ...YONYOU_READ_CONTRACTS.map((contract) => [
     `yonyou\u0000${yonyouContractStreamKey(contract.path)}`,
     contract.domain === "inventory" || contract.domain === "procurement"
@@ -311,7 +314,11 @@ const STREAM_FRESHNESS_DAYS = new Map<string, number>([
 
 const AVAILABLE_EXTERNAL_STREAMS: Record<Exclude<DataSourceKey, "SCM">, string[]> = {
   JIANDAOYUN: JIANDAOYUN_FORM_CONTRACTS.map((contract) => contract.key).sort(),
-  JST: ["inventory-total-delta", "outbound-sales-daily"],
+  JST: [
+    "inventory-total-delta",
+    "outbound-sales-daily",
+    ...Object.keys(JST_GOVERNED_OBSERVATION_CONTRACTS),
+  ].sort(),
   YONYOU: YONYOU_READ_CONTRACTS.map((contract) => yonyouContractStreamKey(contract.path)).sort(),
 };
 

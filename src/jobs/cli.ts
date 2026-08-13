@@ -3,6 +3,8 @@
  *   npx tsx src/jobs/cli.ts reconcile-jst [YYYY-MM-DD]   # 缺省=昨日（Asia/Shanghai）
  *   npx tsx src/jobs/cli.ts sync-jst [YYYY-MM-DD]        # API 拉取到受控 staging
  *   npx tsx src/jobs/cli.ts sync-jst-inventory           # 增量库存观察到受控 staging
+ *   npx tsx src/jobs/cli.ts sync-jst-item-master [day]   # 商品身份/生命周期观察
+ *   npx tsx src/jobs/cli.ts sync-jst-inbound [day]       # 采购入库观察（不入账）
  *   npx tsx src/jobs/cli.ts license-alert [YYYY-MM-DD]   # 缺省=今日
  *   npx tsx src/jobs/cli.ts stage-jst <file.xlsx|csv> <userId>
  * 输出 JSON summary；失败退出码非 0。
@@ -14,7 +16,11 @@ import { runSnapshotAgeAlert } from "./snapshot-age";
 import { runExportWorkerOnce } from "./export-worker";
 import { runHousekeeping } from "./housekeeping";
 import { stageJstDaily } from "@/server/import/adapters/jst-daily";
-import { runJstInventorySync, runJstSalesSync } from "./sync-jst";
+import {
+  runJstGovernedObservationSync,
+  runJstInventorySync,
+  runJstSalesSync,
+} from "./sync-jst";
 import { runYonyouSync } from "./sync-yonyou";
 import { runJstTokenWatchdog } from "./jst-token-watchdog";
 import { runJobFailureWatchdog } from "./job-failure-watchdog";
@@ -39,6 +45,8 @@ const USAGE = `用法:
   npx tsx src/jobs/cli.ts reconcile-jst [YYYY-MM-DD]     缺省=昨日（Asia/Shanghai）
   npx tsx src/jobs/cli.ts sync-jst [YYYY-MM-DD]          API 拉取 T-1/指定日到受控 staging
   npx tsx src/jobs/cli.ts sync-jst-inventory             增量库存总量观察到受控 staging（需显式启用）
+  npx tsx src/jobs/cli.ts sync-jst-item-master [YYYY-MM-DD] 商品身份/生命周期观察（需显式选契约）
+  npx tsx src/jobs/cli.ts sync-jst-inbound [YYYY-MM-DD]  采购入库观察，不写库存账（需显式选契约）
   npx tsx src/jobs/cli.ts sync-yonyou [YYYY-MM-DD]       按已批准契约拉取用友只读观测到受控 staging
   npx tsx src/jobs/cli.ts jst-token-watchdog             检查聚水潭 token 有效期，临期开告警
   npx tsx src/jobs/cli.ts job-failure-watchdog           定时任务连续失败开告警，恢复后自动关闭
@@ -93,6 +101,20 @@ async function main(): Promise<void> {
       break;
     case "sync-jst-inventory":
       out = await runJstInventorySync(db);
+      break;
+    case "sync-jst-item-master":
+      out = await runJstGovernedObservationSync(
+        db,
+        "item-master",
+        args[0] ?? shanghaiToday(-1),
+      );
+      break;
+    case "sync-jst-inbound":
+      out = await runJstGovernedObservationSync(
+        db,
+        "inbound-receipts-daily",
+        args[0] ?? shanghaiToday(-1),
+      );
       break;
     case "system-alert-notify":
       out = await runSystemAlertNotify(db);

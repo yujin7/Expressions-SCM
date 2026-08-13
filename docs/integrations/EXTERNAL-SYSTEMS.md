@@ -1,6 +1,6 @@
 # 外部系统集成契约：聚水潭、简道云、用友、飞书
 
-更新日期：2026-08-13
+更新日期：2026-08-14
 当前实现锚点：`main` 上的连接器代码、`docs/NOW.md` 与 `docs/spec/CURRENT.md`
 
 > 2026-08-12 增量：决策工作室已加入“外部需求信号”。它只读取简道云天猫销量、退款、
@@ -22,10 +22,10 @@
 | 财务凭证、成本、结算与组织核算口径 | 用友 | 读取财务权威、提交获批业务结果、双向对账 | 客户端与 token 握手就绪；8 条只读 API 0/8 授权，缺 tenant/org |
 | 协同触达 | 飞书 | 接收 SCM outbox 消息；不成为业务状态权威 | 群 webhook 已真实投递并有有效 UAT；过度授权的共享应用不作为生产通知身份 |
 
-截至 2026-08-13 的实证结论：简道云链路已通但仍是受控观察层；飞书群 webhook 已真实投递，
+截至 2026-08-14 的实证结论：简道云链路已通但仍是受控观察层；飞书群 webhook 已真实投递，
 共享应用因 1,107 项权限（其中 1,007 项高级/超敏感）不作为生产身份。聚水潭真实只读探针
-返回出库 `110`、店铺/仓库/库存 `190`；用友 token 握手成功但八条只读契约全部 `310037`。
-8 月 13 日复探针结果与上述状态一致；聚水潭明确 `writesPerformed=false`，用友授权探针不连接
+返回出库 `110`，店铺/仓库/库存/普通商品/采购入库均为 `190`；用友 token 握手成功但八条只读契约全部 `310037`。
+聚水潭探针明确 `writesPerformed=false`，用友授权探针不连接
 SCM 数据库，二者都不落业务数据。
 因此只有飞书 webhook 可标 operational，其余仍必须区分代码就绪、凭据、权限和 UAT。
 
@@ -67,6 +67,11 @@ SCM 数据库，二者都不落业务数据。
   供后续仓库别名覆盖核验使用。
 - [店铺查询](https://openweb.jushuitan.com/dev-doc)使用 `/open/shops/query`；目录只保留店铺 ID、
   展示名、公司、平台和授权状态，不落消费者、收件地址或订单联系人数据。
+- [普通商品资料查询](https://open.jushuitan.com/document/2167.html)对应 `/open/sku/query`；
+  只保留 SKU/款号、名称、规格、启停、品牌、供应商编码和修改时点，排除价格、图片、扩展描述。
+- [采购入库查询](https://open.jushuitan.com/document/2019.html)对应 `/open/purchasein/query`；
+  只保留入库/采购单身份、供应商、仓库、状态、时间、SKU 数量和批次/效期，排除联系人、地址、
+  备注与成本金额。按修改时间取数不等于 SCM 已收货，仍必须人工对账与正式过账。
 
 ### 已实现
 
@@ -86,7 +91,12 @@ SCM 数据库，二者都不落业务数据。
   `changed-since-cursor`，缺失行保持未知，绝不写 `stock_snapshots`、库存台账或把缺失补 0。
 - 仓库目录客户端已实现，但在真实权限、仓库覆盖和仓别名验收前不自动改变 SCM 仓库主数据。
 - 店铺目录客户端与 `probe-jst` 只读探针已实现；探针各取最小页验证店铺、仓库、销售出库和
-  库存四个权限面，只输出聚合计数/安全错误分类，不保存源标识、不推进游标、不写 staging。
+  库存、普通商品、采购入库六个权限面，只输出聚合计数/安全错误分类，不保存源标识、
+  不推进游标、不写 staging。
+- 普通商品与采购入库已形成两个可独立选择的观察契约：按自然日修改窗口完整翻页、字段最小化、
+  证据哈希、JST 作用域身份异常、幂等重放和 `releaseBlocked` staging。商品观察不新建/更新 SKU；
+  入库观察不生成收货单、不写库存账。两条流默认关闭，只有显式列入
+  `JST_OBSERVATION_SYNC_CONTRACTS` 才会由调度器调用。
 - 证据文件存于 `FILE_STORAGE_DIR/integration-evidence/jst/...`，内容寻址、SHA-256、
   0600 权限，并由 `integration_runs` 关联。
 - SKU/仓库走通用 alias；未知值进入人工认领，绝不猜。
@@ -103,6 +113,7 @@ JST_ACCESS_TOKEN
 JST_SYNC_ACTOR_ID
 JST_BASE_URL（可选）
 JST_INVENTORY_SYNC_ENABLED（可选，默认 false）
+JST_OBSERVATION_SYNC_CONTRACTS（可选：item-master,inbound-receipts-daily）
 JST_LIVE_VERIFIED_AT（真实 UAT 通过后的 ISO-8601 时间）
 JST_LIVE_VERIFIED_REF（非秘密 UAT 证据编号，例如 UAT-20260730-JST-001）
 ```
@@ -113,6 +124,7 @@ JST_LIVE_VERIFIED_REF（非秘密 UAT 证据编号，例如 UAT-20260730-JST-001
 `JST_SYNC_ACTOR_ID` 必须指向 SCM 内启用的责任人/服务账号。生产启用前还要完成：
 
 1. 商家授权与 token 已完成；仍须把部署出口加入 IP 白名单，并申请店铺/仓库/库存 API 权限。
+   普通商品与采购入库探针也返回 `190`，启用前须分别申请这两条只读权限。
 2. 建立 access/refresh token 轮换责任人；当前代码不会用过期 token 猜测刷新流程。
 3. 确认 ERP 与分仓是否开启生产批次管理；若开启，验证 `batchs.ioi_id` 能与商品明细关联，
    并核对批次数量合计、空批号和效期字段覆盖。
@@ -130,6 +142,8 @@ npx tsx src/jobs/cli.ts audit-connectors
 npx tsx src/jobs/cli.ts probe-jst 2026-07-28
 npx tsx src/jobs/cli.ts sync-jst 2026-07-28
 npx tsx src/jobs/cli.ts sync-jst-inventory
+npx tsx src/jobs/cli.ts sync-jst-item-master 2026-08-13
+npx tsx src/jobs/cli.ts sync-jst-inbound 2026-08-13
 npx tsx src/jobs/cli.ts reconcile-jst 2026-07-28
 ```
 

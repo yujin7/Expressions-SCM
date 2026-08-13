@@ -295,7 +295,7 @@ describe("三方数据资产到业务决策覆盖", () => {
     });
   });
 
-  it("机械列出当前目录中仍只有目标定义的七条三方数据流", () => {
+  it("机械列出当前目录中仍只有目标定义的五条三方数据流", () => {
     const jdy = source("JIANDAOYUN", []);
     jdy.availableStreamKeys = [
       "tmall-sku-crosswalk-observation",
@@ -314,7 +314,12 @@ describe("三方数据资产到业务决策覆盖", () => {
       "sample-management-observation",
     ];
     const jst = source("JST", []);
-    jst.availableStreamKeys = ["inventory-total-delta", "outbound-sales-daily"];
+    jst.availableStreamKeys = [
+      "inbound-receipts-daily",
+      "inventory-total-delta",
+      "item-master",
+      "outbound-sales-daily",
+    ];
     const yonyou = source("YONYOU", []);
     yonyou.availableStreamKeys = [
       "yonbip-uspace-org-page-list",
@@ -334,13 +339,11 @@ describe("三方数据资产到业务决策覆盖", () => {
       .sort()).toEqual([
       "JIANDAOYUN:npd-milestone-observation",
       "JIANDAOYUN:platform-fee-observation",
-      "JST:inbound-receipts-daily",
-      "JST:item-master",
       "JST:orders-daily",
       "JST:returns-daily",
       "YONYOU:yonbip-finance-receivables-settlement",
     ]);
-    expect(portfolio.plannedAssetCount).toBe(7);
+    expect(portfolio.plannedAssetCount).toBe(5);
   });
 
   it("只有近期运行时间但缺源业务截止日时不计入当前或可解释覆盖", () => {

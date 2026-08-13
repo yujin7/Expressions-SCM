@@ -15,7 +15,8 @@ import { jstLiveEvidenceBinding } from "@/server/integrations/jst";
 
 const envKeys = [
   "JST_APP_KEY", "JST_APP_SECRET", "JST_ACCESS_TOKEN", "JST_SYNC_ACTOR_ID", "JST_BASE_URL",
-  "JST_INVENTORY_SYNC_ENABLED", "JST_LIVE_VERIFIED_AT", "JST_LIVE_VERIFIED_REF",
+  "JST_INVENTORY_SYNC_ENABLED", "JST_OBSERVATION_SYNC_CONTRACTS",
+  "JST_LIVE_VERIFIED_AT", "JST_LIVE_VERIFIED_REF",
   "JIANDAOYUN_API_KEY", "JIANDAOYUN_SYNC_ACTOR_ID", "JIANDAOYUN_SYNC_ENABLED",
   "JIANDAOYUN_SYNC_CONTRACTS", "JIANDAOYUN_BASE_URL", "JIANDAOYUN_LIVE_VERIFIED_AT",
   "JIANDAOYUN_LIVE_VERIFIED_REF",
@@ -150,6 +151,17 @@ describe("外部连接器目录", () => {
         effectiveCapabilities: expect.arrayContaining(["inventory-total-delta-staging"]),
       });
     delete process.env.JST_TRUSTED_WMS_CO_IDS;
+
+    process.env.JST_OBSERVATION_SYNC_CONTRACTS = "item-master,inbound-receipts-daily";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst"))
+      .toMatchObject({
+        configurationReady: false,
+        liveVerificationState: "unbound",
+        effectiveCapabilities: expect.arrayContaining([
+          "item-master-observation-staging",
+          "inbound-receipts-observation-staging",
+        ]),
+      });
   });
 
   it("简道云把凭据、启用开关、契约选择和 UAT 分别判定", () => {

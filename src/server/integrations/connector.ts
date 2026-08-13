@@ -26,6 +26,7 @@ import {
   normalizeJstBaseUrl,
 } from "./jst";
 import { jstInventorySyncEnabled } from "./jst-inventory-sync";
+import { configuredJstGovernedObservationContracts } from "./jst-observation-sync";
 import {
   YONYOU_REQUIRED_ENV,
   parseYonyouApprovedApiContracts,
@@ -313,6 +314,8 @@ export const CONNECTORS: Connector[] = [
     capabilities: [
       "outbound-sales-daily",
       "inventory-total-delta-staging",
+      "item-master-observation-staging",
+      "inbound-receipts-observation-staging",
       "shop-discovery-client",
       "warehouse-discovery-client",
       "batch-allocation-evidence",
@@ -321,6 +324,7 @@ export const CONNECTORS: Connector[] = [
     optionalEnv: [
       "JST_BASE_URL",
       "JST_INVENTORY_SYNC_ENABLED",
+      "JST_OBSERVATION_SYNC_CONTRACTS",
       "JST_LIVE_VERIFIED_AT",
       "JST_LIVE_VERIFIED_REF",
     ],
@@ -335,8 +339,10 @@ export const CONNECTORS: Connector[] = [
       "https://openweb.jushuitan.com/dev-doc?docType=8&docId=34",
       "https://openweb.jushuitan.com/dev-doc?docType=3&docId=15",
       "https://openweb.jushuitan.com/dev-doc?docType=1&docId=3",
+      "https://open.jushuitan.com/document/2167.html",
+      "https://open.jushuitan.com/document/2019.html",
     ],
-    blocker: "日出库与库存总量增量均进入受控 staging；需开放平台 app/token、IP 白名单、接口权限、责任人 ID，并在真实对账/UAT 后设置时间与非秘密证据编号",
+    blocker: "日出库、库存增量、商品主档与采购入库均只进入受控 staging；需开放平台 app/token、IP 白名单、逐接口权限、显式读取契约选择与责任人 ID，并在真实对账/UAT 后设置时间与非秘密证据编号",
     isConfigured(env = process.env) {
       const actor = Number(env.JST_SYNC_ACTOR_ID);
       try {
@@ -552,9 +558,23 @@ function effectiveCapabilities(
       ? ["app-bot-message", "deduplicated-delivery"]
       : ["group-webhook"];
   }
-  if (connector.key === "jst" && !jstInventorySyncEnabled(env)) {
-    return connector.capabilities.filter((capability) =>
-      capability !== "inventory-total-delta-staging");
+  if (connector.key === "jst") {
+    let observationContracts: string[] = [];
+    try {
+      observationContracts = configuredJstGovernedObservationContracts(env);
+    } catch {
+      observationContracts = [];
+    }
+    return connector.capabilities.filter((capability) => {
+      if (capability === "inventory-total-delta-staging") return jstInventorySyncEnabled(env);
+      if (capability === "item-master-observation-staging") {
+        return observationContracts.includes("item-master");
+      }
+      if (capability === "inbound-receipts-observation-staging") {
+        return observationContracts.includes("inbound-receipts-daily");
+      }
+      return true;
+    });
   }
   return [...connector.capabilities];
 }

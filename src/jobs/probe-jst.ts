@@ -10,7 +10,12 @@ import { shanghaiToday } from "./reconcile-jst";
 
 type JstProbeClient = Pick<
   JstClient,
-  "queryShopsPage" | "queryWarehousesPage" | "queryOutboundOrdersPage" | "queryInventoryPage"
+  | "queryShopsPage"
+  | "queryWarehousesPage"
+  | "queryOutboundOrdersPage"
+  | "queryInventoryPage"
+  | "queryItemsPage"
+  | "queryInboundReceiptsPage"
 >;
 
 type ProbeExercise =
@@ -100,19 +105,31 @@ export async function probeJstReadiness(
     page_size: 1,
     has_lock_qty: true,
   }));
-  const exercises = { shops, warehouses, outboundSales, inventory };
+  const itemMaster = await exercise(() => client.queryItemsPage({
+    ...requestDay,
+    page_index: 1,
+    page_size: 1,
+  }));
+  const inboundReceipts = await exercise(() => client.queryInboundReceiptsPage({
+    ...requestDay,
+    page_index: 1,
+    page_size: 1,
+  }));
+  const exercises = { shops, warehouses, outboundSales, inventory, itemMaster, inboundReceipts };
   const passed = Object.values(exercises).filter((item) => item.status === "succeeded").length;
   const requiredChecks: string[] = [];
   if (shops.status === "failed") requiredChecks.push("确认基础店铺查询权限与商家授权状态");
   if (warehouses.status === "failed") requiredChecks.push("确认仓库查询权限与仓库授权范围");
   if (outboundSales.status === "failed") requiredChecks.push("确认销售出库查询权限、生产 IP 白名单与 token 有效期");
   if (inventory.status === "failed") requiredChecks.push("确认库存查询权限；未通过前保持库存观察流关闭");
+  if (itemMaster.status === "failed") requiredChecks.push("申请普通商品查询权限；未通过前商品身份观察流保持关闭");
+  if (inboundReceipts.status === "failed") requiredChecks.push("申请采购入库查询权限；未通过前入库观察流保持关闭");
   requiredChecks.push(
     "探针不等于 UAT：仍需逐 SKU 控制总量、别名清零、失败重放与连续 7 天恢复演练",
   );
 
   return {
-    status: passed === 4 ? "succeeded" as const : "partial" as const,
+    status: passed === 6 ? "succeeded" as const : "partial" as const,
     authentication: passed > 0 ? "validated_by_signed_call" as const : "not_validated" as const,
     actor: { configured: true, id: actorId },
     bizDate,

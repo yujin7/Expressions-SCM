@@ -11,13 +11,15 @@ const env = {
 } satisfies NodeJS.ProcessEnv;
 
 describe("聚水潭只读权限探针", () => {
-  it("验证四个最小读取面但不返回源标识或执行写入", async () => {
+  it("验证六个最小读取面但不返回源标识或执行写入", async () => {
     const page = { rows: [{ secretVendorIdentifier: "must-not-leak" }], hasNext: false };
     const client = {
       queryShopsPage: vi.fn(async () => page),
       queryWarehousesPage: vi.fn(async () => page),
       queryOutboundOrdersPage: vi.fn(async () => page),
       queryInventoryPage: vi.fn(async () => page),
+      queryItemsPage: vi.fn(async () => page),
+      queryInboundReceiptsPage: vi.fn(async () => page),
     };
 
     const result = await probeJstReadiness({
@@ -37,6 +39,8 @@ describe("聚水潭只读权限探针", () => {
         warehouses: { status: "succeeded", rows: 1, hasMore: false },
         outboundSales: { status: "succeeded", rows: 1, hasMore: false },
         inventory: { status: "succeeded", rows: 1, hasMore: false },
+        itemMaster: { status: "succeeded", rows: 1, hasMore: false },
+        inboundReceipts: { status: "succeeded", rows: 1, hasMore: false },
       },
     });
     const serialized = JSON.stringify(result);
@@ -57,6 +61,8 @@ describe("聚水潭只读权限探针", () => {
       queryWarehousesPage: vi.fn(async () => { throw new JstApiError(401, "sensitive"); }),
       queryOutboundOrdersPage: vi.fn(async () => { throw new Error("raw vendor payload"); }),
       queryInventoryPage: vi.fn(async () => ({ rows: [], hasNext: null })),
+      queryItemsPage: vi.fn(async () => ({ rows: [], hasNext: false })),
+      queryInboundReceiptsPage: vi.fn(async () => ({ rows: [], hasNext: false })),
     };
 
     const result = await probeJstReadiness({ env, client: client as never });
@@ -80,6 +86,8 @@ describe("聚水潭只读权限探针", () => {
       queryWarehousesPage: vi.fn(),
       queryOutboundOrdersPage: vi.fn(),
       queryInventoryPage: vi.fn(),
+      queryItemsPage: vi.fn(),
+      queryInboundReceiptsPage: vi.fn(),
     };
     const result = await probeJstReadiness({
       env: { ...env, JST_ACCESS_TOKEN: "" },

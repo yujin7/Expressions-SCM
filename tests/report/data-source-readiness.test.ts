@@ -175,7 +175,12 @@ describe("三方数据来源证据矩阵", () => {
         configurationReady: false,
         contractSelectionState: "not_required",
         selectedContractCount: 0,
-        availableStreamKeys: ["inventory-total-delta", "outbound-sales-daily"],
+        availableStreamKeys: [
+          "inbound-receipts-daily",
+          "inventory-total-delta",
+          "item-master",
+          "outbound-sales-daily",
+        ],
         successfulStreams: 2,
       });
       expect(result.find((row) => row.key === "JST")?.streams).toEqual([

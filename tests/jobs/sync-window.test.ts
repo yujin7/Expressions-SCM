@@ -23,6 +23,8 @@ function cronHours(expr: string): number[] {
 const PULL_JOBS = [
   "sync-yonyou",
   "sync-jst-sales",
+  "sync-jst-item-master",
+  "sync-jst-inbound",
   "sync-jst-inventory",
   "sync-jiandaoyun-forms",
 ];
