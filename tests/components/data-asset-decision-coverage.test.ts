@@ -1,0 +1,225 @@
+import { describe, expect, it } from "vitest";
+
+import { buildDataAssetDecisionPortfolio } from "@/components/data-asset-decision-coverage";
+import type { DataProductDefinition } from "@/components/data-products";
+import type { DataSourceReadiness, DataStreamEvidence } from "@/server/modules/report/data-source-readiness";
+import type { DataProductReleaseReadiness } from "@/server/modules/report/data-product-release";
+
+function stream(key: string, overrides: Partial<DataStreamEvidence> = {}): DataStreamEvidence {
+  return {
+    stream: key,
+    latestStatus: "succeeded",
+    latestRunAt: "2026-08-13T01:00:00.000Z",
+    lastSuccessAt: "2026-08-13T01:00:00.000Z",
+    sourceAsOf: "2026-08-13",
+    sourceRows: 10,
+    stagedRows: 10,
+    rejectedRows: 0,
+    authorizationBlocked: false,
+    sourceTimeInvalid: false,
+    releaseBlocked: false,
+    emptySource: false,
+    freshnessMaxAgeDays: 2,
+    businessAgeDays: 0,
+    pipelineAgeHours: 2,
+    freshness: "current",
+    ...overrides,
+  };
+}
+
+function source(
+  key: DataSourceReadiness["key"],
+  streams: DataStreamEvidence[],
+  stateOverride?: DataSourceReadiness["state"],
+): DataSourceReadiness {
+  return {
+    key,
+    label: key,
+    state: stateOverride ?? (key === "SCM" ? "operational" : streams.length > 0 ? "observation" : "contract_only"),
+    configured: key === "SCM" || streams.length > 0,
+    enabled: key === "SCM" || streams.length > 0,
+    configurationReady: key === "SCM" || streams.length > 0,
+    configurationBinding: `binding:${key}`,
+    contractSelectionState: key === "SCM" ? "not_required" : "selected",
+    selectedContractCount: streams.length,
+    successfulStreams: streams.filter((item) => item.lastSuccessAt != null).length,
+    successfulStreamKeys: streams.filter((item) => item.lastSuccessAt != null).map((item) => item.stream),
+    streams,
+    latestFailedStreams: streams.filter((item) => item.latestStatus === "failed").length,
+    latestRunningStreams: streams.filter((item) => item.latestStatus === "running").length,
+    sourceRows: streams.reduce((sum, item) => sum + item.sourceRows, 0),
+    stagedRows: streams.reduce((sum, item) => sum + item.stagedRows, 0),
+    rejectedRows: streams.reduce((sum, item) => sum + item.rejectedRows, 0),
+    latestRunAt: streams[0]?.latestRunAt ?? null,
+    lastSuccessAt: streams[0]?.lastSuccessAt ?? null,
+    sourceAsOfStart: streams[0]?.sourceAsOf ?? null,
+    sourceAsOfEnd: streams.at(-1)?.sourceAsOf ?? null,
+    openIdentityExceptions: 0,
+    observedIdentities: 0,
+    scmEvidence: {},
+    gate: "gate",
+    nextAction: "next",
+  };
+}
+
+function product(
+  id: string,
+  title: string,
+  sla: number,
+  requiredStreams: DataProductDefinition["requiredStreams"],
+): DataProductDefinition {
+  const sources = Object.keys(requiredStreams) as DataProductDefinition["sources"];
+  return {
+    id,
+    title,
+    decision: `${title}要回答的决策`,
+    grain: "day x sku",
+    owner: `${title} owner`,
+    ownerRoles: ["pmc"],
+    contractVersion: "1.0.0",
+    cadence: "daily",
+    decisionSlaHours: sla,
+    metricIds: ["salesQty"],
+    maxAutomation: "A2",
+    automationGuardrail: "test",
+    sources,
+    requiredScmEvidence: [],
+    requiredStreams,
+    targetAuthority: "operational",
+    releaseGate: "test",
+  };
+}
+
+function approved(productId: string): DataProductReleaseReadiness {
+  return {
+    productId,
+    runtimeLevel: "A1",
+    effectiveLevel: "A2",
+    eligibleForRequest: false,
+    gate: "approved",
+    currentScopeDigest: "digest",
+    activeRelease: null,
+    pendingRelease: null,
+    latestRelease: null,
+    activeReleaseCurrent: true,
+    canRequest: false,
+    canApprove: false,
+    canReject: false,
+    canRevoke: false,
+  };
+}
+
+describe("三方数据资产到业务决策覆盖", () => {
+  it("去重计算一条流影响的多个产品，并保留最短已登记 SLA", () => {
+    const products = [
+      product("p1", "库存决策", 4, { JST: ["inventory-total-delta"] }),
+      product("p2", "补货决策", 24, { JST: ["inventory-total-delta"] }),
+    ];
+    const portfolio = buildDataAssetDecisionPortfolio(products, [
+      source("JST", [stream("inventory-total-delta", { releaseBlocked: true })]),
+    ], [approved("p1")]);
+    const row = portfolio.rows.find((item) => item.key === "JST:inventory-total-delta")!;
+
+    expect(row).toMatchObject({
+      state: "observation",
+      explanationUsable: true,
+      cataloged: true,
+      dependencyCount: 2,
+      releasedDependencyCount: 1,
+      minDecisionSlaHours: 4,
+      actionLabel: "完成产品 UAT",
+    });
+    expect(row.dependencies.map((item) => item.productId)).toEqual(["p1", "p2"]);
+    expect(portfolio).toMatchObject({
+      requiredAssetCount: 1,
+      explanationUsableCount: 1,
+      operationalReadyCount: 0,
+      affectedProductCount: 2,
+    });
+  });
+
+  it("显式暴露已成功读取但没有任何数据产品消费的流", () => {
+    const portfolio = buildDataAssetDecisionPortfolio([
+      product("p1", "需求决策", 24, { JIANDAOYUN: ["tmall-sku-sales-observation"] }),
+    ], [
+      source("JIANDAOYUN", [
+        stream("tmall-sku-sales-observation", { releaseBlocked: true }),
+        stream("legacy-success-not-in-catalog"),
+        stream("legacy-success-not-in-catalog"),
+      ]),
+    ]);
+    const unused = portfolio.rows.find((item) => item.stream === "legacy-success-not-in-catalog")!;
+
+    expect(unused).toMatchObject({
+      cataloged: false,
+      dependencyCount: 0,
+      explanationUsable: true,
+      actionLabel: "评估资产用途",
+    });
+    expect(portfolio.rows.filter((item) => item.stream === "legacy-success-not-in-catalog")).toHaveLength(1);
+    expect(portfolio.unusedObservedCount).toBe(1);
+    expect(portfolio.sources.find((item) => item.source === "JIANDAOYUN")?.unusedObservedCount).toBe(1);
+  });
+
+  it("授权/质量受限优先于过期和缺失，不用主观价值分", () => {
+    const products = [
+      product("degraded", "用友财务", 72, { YONYOU: ["voucher"] }),
+      product("stale", "聚水潭履约", 4, { JST: ["orders"] }),
+      product("missing", "简道云需求", 4, { JIANDAOYUN: ["sales"] }),
+    ];
+    const portfolio = buildDataAssetDecisionPortfolio(products, [
+      source("YONYOU", [stream("voucher", { authorizationBlocked: true, freshness: "unknown" })]),
+      source("JST", [stream("orders", { freshness: "stale", businessAgeDays: 9 })]),
+      source("JIANDAOYUN", []),
+    ]);
+
+    expect(portfolio.rows.filter((item) => item.cataloged).map((item) => item.state))
+      .toEqual(["degraded", "stale", "missing"]);
+    expect(portfolio.rows[0]).toMatchObject({ source: "YONYOU", actionLabel: "修复连接证据" });
+  });
+
+  it("相同流名仍按来源 scope 隔离，不跨系统串用证据", () => {
+    const portfolio = buildDataAssetDecisionPortfolio([
+      product("jst", "JST 决策", 24, { JST: ["shared-key"] }),
+      product("yy", "YY 决策", 24, { YONYOU: ["shared-key"] }),
+    ], [source("JST", [stream("shared-key")], "operational"), source("YONYOU", [])]);
+
+    expect(portfolio.rows.find((item) => item.key === "JST:shared-key")).toMatchObject({
+      state: "current",
+      dependencyCount: 1,
+    });
+    expect(portfolio.rows.find((item) => item.key === "YONYOU:shared-key")).toMatchObject({
+      state: "missing",
+      dependencyCount: 1,
+    });
+  });
+
+  it("当前连接配置已失效时，不用历史成功批次伪报可解释或运营就绪", () => {
+    const jst = source("JST", [stream("orders")], "operational");
+    jst.configurationReady = false;
+    const portfolio = buildDataAssetDecisionPortfolio([
+      product("p1", "履约决策", 24, { JST: ["orders"] }),
+    ], [jst]);
+
+    expect(portfolio.rows[0]).toMatchObject({
+      state: "degraded",
+      explanationUsable: false,
+      actionLabel: "修复连接证据",
+    });
+    expect(portfolio).toMatchObject({ explanationUsableCount: 0, operationalReadyCount: 0 });
+  });
+
+  it("当前来源仍被契约门禁阻断时，不用历史成功批次伪报可解释", () => {
+    const jst = source("JST", [stream("orders")], "contract_only");
+    const portfolio = buildDataAssetDecisionPortfolio([
+      product("p1", "履约决策", 24, { JST: ["orders"] }),
+    ], [jst]);
+
+    expect(portfolio.rows[0]).toMatchObject({
+      state: "degraded",
+      explanationUsable: false,
+      actionLabel: "修复连接证据",
+    });
+    expect(portfolio.rows[0].stateReason).toContain("未进入观察或运营状态");
+  });
+});

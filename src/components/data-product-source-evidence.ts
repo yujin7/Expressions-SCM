@@ -55,7 +55,7 @@ export interface ProductAutomationReadiness {
   reason: string;
 }
 
-function streamState(
+export function evaluateExternalStreamEvidence(
   source: DataProductSource,
   stream: string,
   row: DataSourceReadiness | undefined,
@@ -168,7 +168,8 @@ export function evaluateProductSourceEvidence(
         streams,
       };
     }
-    const streams = (product.requiredStreams[source] ?? []).map((stream) => streamState(source, stream, row));
+    const streams = (product.requiredStreams[source] ?? [])
+      .map((stream) => evaluateExternalStreamEvidence(source, stream, row));
     const missingStreams = streams.filter((item) => item.state === "missing").map((item) => item.stream);
     const staleStreams = streams.filter((item) => item.state === "stale").map((item) => item.stream);
     const degradedStreams = streams.filter((item) => item.state === "degraded").map((item) => item.stream);

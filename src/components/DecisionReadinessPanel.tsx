@@ -53,6 +53,7 @@ import type {
 } from "@/server/modules/report/data-product-release";
 import type { DataProductOutcomeReadiness } from "@/server/modules/report/data-product-outcome";
 import DataProductOutcomeControl from "@/components/DataProductOutcomeControl";
+import DataAssetDecisionCoverage from "@/components/DataAssetDecisionCoverage";
 import {
   buildDataProductWorkQueue,
   type DataProductWorkStage,
@@ -589,6 +590,10 @@ export default function DecisionReadinessPanel({
           ]}
         />
       </Card>
+      <DataAssetDecisionCoverage
+        dataSources={dataSources}
+        dataProductReleases={dataProductReleases}
+      />
       <Card
         size="small"
         title="三方来源证据矩阵"

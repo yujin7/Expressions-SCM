@@ -46,7 +46,7 @@ const expectedCounts: Record<Category, number> = {
   PROJECT_SKILL: 7,
   LINT_EXCEPTION: 90,
   DATA_SOURCE: 20,
-  CRITICAL_INVARIANT: 33,
+  CRITICAL_INVARIANT: 34,
 };
 
 function walkFiles(relative: string, matcher: string | RegExp): string[] {
@@ -177,13 +177,13 @@ function verify(control: Control): void {
   assertTestModule(testPath);
 }
 
-describe("573 项系统执行审计台账", () => {
-  it("ID 恰好 A001–A573、对象唯一、分类数量固定", () => {
-    expect(controls).toHaveLength(573);
+describe("574 项系统执行审计台账", () => {
+  it("ID 恰好 A001–A574、对象唯一、分类数量固定", () => {
+    expect(controls).toHaveLength(574);
     expect(controls.map((control) => control.id)).toEqual(
-      Array.from({ length: 573 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
+      Array.from({ length: 574 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
     );
-    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(573);
+    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(574);
     for (const [category, count] of Object.entries(expectedCounts)) {
       expect(
         controls.filter((control) => control.category === category).length,
