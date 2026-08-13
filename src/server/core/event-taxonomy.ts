@@ -100,6 +100,8 @@ const CATALOG: Record<string, CatalogEntry> = {
   import: { domain: "data", label: "导入", verb: "import", isStateChange: false },
   upload: { domain: "data", label: "上传文件", verb: "upload", isStateChange: false },
   release: { domain: "data", label: "放行", verb: "release", isStateChange: false },
+  record: { domain: "data", label: "登记真实结果", verb: "record", isStateChange: false },
+  correct: { domain: "data", label: "纠正真实结果", verb: "correct", isStateChange: false },
   snapshot: { domain: "data", label: "快照", verb: "snapshot", isStateChange: false },
   claim: { domain: "data", label: "认领别名", verb: "claim", isStateChange: false },
   ignore: { domain: "data", label: "忽略", verb: "ignore", isStateChange: false },

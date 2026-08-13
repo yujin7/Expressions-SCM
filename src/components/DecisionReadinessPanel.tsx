@@ -51,6 +51,8 @@ import type {
   DataProductReleaseReadiness,
   ReleasedAutomationLevel,
 } from "@/server/modules/report/data-product-release";
+import type { DataProductOutcomeReadiness } from "@/server/modules/report/data-product-outcome";
+import DataProductOutcomeControl from "@/components/DataProductOutcomeControl";
 import {
   buildDataProductWorkQueue,
   type DataProductWorkStage,
@@ -369,11 +371,13 @@ function ProductOperatingContract({
   product,
   summary,
   release,
+  outcome,
   onReleaseChanged,
 }: {
   product: DataProductDefinition;
   summary: ProductEvidenceSummary;
   release?: DataProductReleaseReadiness;
+  outcome?: DataProductOutcomeReadiness;
   onReleaseChanged?: () => void | Promise<void>;
 }) {
   const current = currentProductAutomation(summary);
@@ -410,6 +414,7 @@ function ProductOperatingContract({
         {product.automationGuardrail}
       </Typography.Paragraph>
       <DataProductReleaseControl product={product} readiness={release} onChanged={onReleaseChanged} />
+      <DataProductOutcomeControl product={product} readiness={outcome} onChanged={onReleaseChanged} />
       <RequiredStreamEvidence summary={summary} />
     </Space>
   );
@@ -418,11 +423,13 @@ function ProductOperatingContract({
 export default function DecisionReadinessPanel({
   dataSources = [],
   dataProductReleases = [],
+  dataProductOutcomes = [],
   onReleaseChanged,
   focusProductId,
 }: {
   dataSources?: DataSourceReadiness[];
   dataProductReleases?: DataProductReleaseReadiness[];
+  dataProductOutcomes?: DataProductOutcomeReadiness[];
   onReleaseChanged?: () => void | Promise<void>;
   focusProductId?: string;
 }) {
@@ -748,6 +755,7 @@ export default function DecisionReadinessPanel({
                   product={row}
                   summary={summary}
                   release={dataProductReleases.find((item) => item.productId === row.id)}
+                  outcome={dataProductOutcomes.find((item) => item.productId === row.id)}
                   onReleaseChanged={onReleaseChanged}
                 />
               );

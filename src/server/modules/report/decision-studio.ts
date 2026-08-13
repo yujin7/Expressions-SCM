@@ -32,6 +32,10 @@ import {
   loadDataProductReleaseReadiness,
   type DataProductReleaseReadiness,
 } from "@/server/modules/report/data-product-release";
+import {
+  loadDataProductOutcomeReadiness,
+  type DataProductOutcomeReadiness,
+} from "@/server/modules/report/data-product-outcome";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -118,6 +122,7 @@ export interface DecisionStudioResult {
   commerceIdentity: CommerceIdentityCoverage;
   dataSources: DataSourceReadiness[];
   dataProductReleases: DataProductReleaseReadiness[];
+  dataProductOutcomes: DataProductOutcomeReadiness[];
   review: {
     headline: string;
     bullets: string[];
@@ -339,6 +344,7 @@ export function buildDecisionStudio(
     commerceIdentity,
     dataSources,
     dataProductReleases: [],
+    dataProductOutcomes: [],
     review: { headline, bullets, markdown },
     limitations: [
       "sales_monthly 目前是月粒度数量事实；跨 SKU 相加可能混合件、箱、kg，仅作结构和趋势。",
@@ -507,8 +513,10 @@ export async function getDecisionStudio(
     commerceIdentity,
     dataSources,
   );
+  const dataProductReleases = await loadDataProductReleaseReadiness(dataSources, user, db);
   return {
     ...studio,
-    dataProductReleases: await loadDataProductReleaseReadiness(dataSources, user, db),
+    dataProductReleases,
+    dataProductOutcomes: await loadDataProductOutcomeReadiness(dataProductReleases, user, db),
   };
 }

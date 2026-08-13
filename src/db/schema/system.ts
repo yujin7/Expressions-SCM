@@ -1,5 +1,6 @@
 import {
   pgTable, serial, integer, text, timestamp, jsonb, unique, uniqueIndex, numeric, date, primaryKey, index, boolean, check,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { approvalActionEnum, importStatusEnum, reconStatusEnum } from "./enums";
@@ -281,6 +282,62 @@ export const dataProductReleases = pgTable("data_product_releases", {
     sql`(${t.status} <> 'revoked' AND ${t.revokedBy} IS NULL AND ${t.revokedAt} IS NULL)
       OR (${t.status} = 'revoked' AND ${t.revokedBy} IS NOT NULL AND ${t.revokedAt} IS NOT NULL)`,
   ),
+]);
+
+/**
+ * 数据产品真实结果台账：把“系统给了什么建议、业务如何决定、后来结果如何”固化为可学习证据。
+ *
+ * 台账只追加。录错时新增 supersedesId 纠正记录，不 UPDATE/DELETE 原事实；每条记录绑定当时的
+ * 产品契约、有效放行和来源范围指纹，防止把后来变化的模型/数据范围倒灌到历史绩效。
+ * 它只用于采用率、误报率、处理时长、节省工时与现金影响复盘，不会自动提升 A2/A3 或过账。
+ */
+export const dataProductOutcomeEvents = pgTable("data_product_outcome_events", {
+  id: serial("id").primaryKey(),
+  productId: text("product_id").notNull(),
+  contractVersion: text("contract_version").notNull(),
+  releaseId: integer("release_id").notNull().references(() => dataProductReleases.id),
+  sourceEvidenceDigest: text("source_evidence_digest").notNull(),
+  decisionRef: text("decision_ref").notNull(),
+  businessDate: date("business_date").notNull(),
+  decision: text("decision").notNull(), // accepted | modified | rejected | deferred
+  result: text("result").notNull(), // pending | positive | neutral | negative | false_positive
+  handlingMinutes: integer("handling_minutes"),
+  savedHours: numeric("saved_hours", { precision: 12, scale: 2 }),
+  cashImpact: numeric("cash_impact", { precision: 18, scale: 2 }),
+  currency: text("currency"),
+  reasonCode: text("reason_code"),
+  evidenceRef: text("evidence_ref"),
+  note: text("note").notNull(),
+  supersedesId: integer("supersedes_id").references((): AnyPgColumn => dataProductOutcomeEvents.id),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+  recordedBy: integer("recorded_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("ix_data_product_outcome_product_date").on(t.productId, t.businessDate),
+  uniqueIndex("uq_data_product_outcome_root")
+    .on(t.productId, t.decisionRef)
+    .where(sql`${t.supersedesId} IS NULL`),
+  uniqueIndex("uq_data_product_outcome_supersedes")
+    .on(t.supersedesId)
+    .where(sql`${t.supersedesId} IS NOT NULL`),
+  check("ck_data_product_outcome_decision", sql`${t.decision} IN ('accepted', 'modified', 'rejected', 'deferred')`),
+  check("ck_data_product_outcome_result", sql`${t.result} IN ('pending', 'positive', 'neutral', 'negative', 'false_positive')`),
+  check("ck_data_product_outcome_handling", sql`${t.handlingMinutes} IS NULL OR (${t.handlingMinutes} >= 0 AND ${t.handlingMinutes} <= 525600)`),
+  check("ck_data_product_outcome_saved_hours", sql`${t.savedHours} IS NULL OR ${t.savedHours} >= 0`),
+  check("ck_data_product_outcome_currency", sql`(${t.cashImpact} IS NULL AND ${t.currency} IS NULL) OR (${t.cashImpact} IS NOT NULL AND ${t.currency} = 'CNY')`),
+  check(
+    "ck_data_product_outcome_reason",
+    sql`${t.reasonCode} IS NULL OR ${t.reasonCode} IN ('data_quality', 'identity_gap', 'timing', 'business_constraint', 'duplicate', 'low_confidence', 'other')`,
+  ),
+  check(
+    "ck_data_product_outcome_reason_required",
+    sql`${t.decision} NOT IN ('modified', 'rejected') AND ${t.result} NOT IN ('negative', 'false_positive') OR ${t.reasonCode} IS NOT NULL`,
+  ),
+  check(
+    "ck_data_product_outcome_evidence_required",
+    sql`${t.result} = 'pending' OR ${t.evidenceRef} IS NOT NULL`,
+  ),
+  check("ck_data_product_outcome_no_self_supersede", sql`${t.supersedesId} IS NULL OR ${t.supersedesId} <> ${t.id}`),
 ]);
 
 /** #8 通知发件箱（outbox 模式）：应用内产生通知 → 排队 → 分发任务按渠道推送。
