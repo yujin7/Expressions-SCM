@@ -108,6 +108,10 @@ function contractEvidenceLabel(row: DataSourceReadiness): string {
   return `${row.selectedContractCount} 条已选契约`;
 }
 
+function productEvidenceHref(productId: string): string {
+  return `/report/decision-studio?tab=readiness&product=${encodeURIComponent(productId)}#data-product-${encodeURIComponent(productId)}`;
+}
+
 function streamAgeLabel(row: ProductStreamEvidence): string {
   if (row.scmEvidence) {
     if (row.scmEvidence.freshnessMaxAgeDays == null) return "当前状态 / 主档（无历史门限）";
@@ -592,6 +596,48 @@ function ProductOperatingContract({
         <Typography.Text strong>自动化护栏：</Typography.Text>
         {product.automationGuardrail}
       </Typography.Paragraph>
+      {(product.requiredProducts?.length ?? 0) > 0 ? (
+        <Card size="small" title="上游数据产品门禁" styles={{ body: { padding: 0 } }}>
+          <Alert
+            banner
+            showIcon
+            type="info"
+            message="下游不重复解释原始数据；上游必须先以自己的控制总量、UAT 和会签形成有效放行。任何上游失效都会使本产品自动降级。"
+          />
+          <Table
+            rowKey="productId"
+            size="small"
+            pagination={false}
+            dataSource={release?.dependencyGates ?? []}
+            columns={[
+              {
+                title: "上游产品",
+                dataIndex: "title",
+                render: (title, row) => (
+                  <Button type="link" size="small" href={productEvidenceHref(row.productId)} style={{ paddingInline: 0 }}>
+                    {title} <ArrowRightOutlined />
+                  </Button>
+                ),
+              },
+              { title: "复用目的", dataIndex: "purpose" },
+              {
+                title: "最低 / 当前",
+                key: "level",
+                width: 150,
+                render: (_, row) => `${row.minimumLevel} / ${row.effectiveLevel}`,
+              },
+              {
+                title: "依赖状态",
+                dataIndex: "satisfied",
+                width: 130,
+                render: (satisfied: boolean) => (
+                  <Tag color={satisfied ? "success" : "error"}>{satisfied ? "已满足" : "未满足"}</Tag>
+                ),
+              },
+            ]}
+          />
+        </Card>
+      ) : null}
       <DataProductReleaseControl product={product} readiness={release} onChanged={onReleaseChanged} />
       <DataProductOutcomeControl product={product} readiness={outcome} onChanged={onReleaseChanged} />
       <RequiredStreamEvidence summary={summary} />
@@ -1047,6 +1093,18 @@ export default function DecisionReadinessPanel({
                   <Typography.Text type="secondary">{row.decisionSlaHours} 小时</Typography.Text>
                 </Space>
               ),
+            },
+            {
+              title: "上游产品",
+              key: "requiredProducts",
+              width: 170,
+              render: (_, row) => row.requiredProducts?.length ? (
+                <Space size={[4, 4]} wrap>
+                  {row.requiredProducts.map((dependency) => (
+                    <Tag key={dependency.productId}>{DATA_PRODUCTS.find((item) => item.id === dependency.productId)?.title ?? dependency.productId} ≥ {dependency.minimumLevel}</Tag>
+                  ))}
+                </Space>
+              ) : <Typography.Text type="secondary">无</Typography.Text>,
             },
             {
               title: "自动化边界",

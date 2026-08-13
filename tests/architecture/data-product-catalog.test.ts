@@ -70,4 +70,31 @@ describe("三方数据产品目录", () => {
       }
     }
   });
+
+  it("组合决策通过无环产品依赖复用上游口径，而不是绕过上游 UAT", () => {
+    const byId = new Map(DATA_PRODUCTS.map((product) => [product.id, product]));
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    const visit = (productId: string) => {
+      if (visited.has(productId)) return;
+      expect(visiting.has(productId), `循环依赖：${productId}`).toBe(false);
+      visiting.add(productId);
+      const product = byId.get(productId);
+      expect(product, `缺少上游产品：${productId}`).toBeTruthy();
+      for (const dependency of product?.requiredProducts ?? []) {
+        expect(dependency.productId).not.toBe(productId);
+        expect(["A2", "A3"]).toContain(dependency.minimumLevel);
+        expect(dependency.purpose.trim()).not.toBe("");
+        visit(dependency.productId);
+      }
+      visiting.delete(productId);
+      visited.add(productId);
+    };
+    for (const product of DATA_PRODUCTS) visit(product.id);
+
+    expect(byId.get("replenishment-evidence")?.requiredProducts?.map((item) => item.productId))
+      .toEqual(["demand-pulse", "unified-inventory", "supply-commitment"]);
+    expect(byId.get("cash-sop")?.requiredProducts?.map((item) => item.productId))
+      .toEqual(["demand-pulse", "unified-inventory", "supply-commitment", "net-margin-bridge"]);
+  });
 });

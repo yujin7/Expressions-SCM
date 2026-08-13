@@ -107,6 +107,7 @@ function approved(productId: string): DataProductReleaseReadiness {
     canApprove: false,
     canReject: false,
     canRevoke: false,
+    dependencyGates: [],
   };
 }
 

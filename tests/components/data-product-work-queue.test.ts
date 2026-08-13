@@ -56,6 +56,7 @@ function release(
     canApprove: false,
     canReject: false,
     canRevoke: false,
+    dependencyGates: [],
     ...overrides,
   };
 }
@@ -149,6 +150,44 @@ describe("data product dynamic work queue", () => {
       stage: "repair",
       actionLabel: "处理身份异常",
       actionHref: "/import/exceptions?status=open&scope=JIANDAOYUN",
+    });
+  });
+
+  it("routes a source-ready downstream product to its first unsatisfied upstream gate", () => {
+    const base = DATA_PRODUCTS[0];
+    const downstream = {
+      ...base,
+      id: "test-downstream",
+      title: "下游组合决策",
+      sources: [],
+      requiredStreams: {},
+      requiredScmEvidence: [],
+      requiredProducts: [{
+        productId: "demand-pulse",
+        minimumLevel: "A2" as const,
+        purpose: "复用净需求基线",
+      }],
+    };
+    const [item] = buildDataProductWorkQueue([downstream], sources, [release(downstream.id, {
+      runtimeLevel: "A1",
+      effectiveLevel: "A1",
+      gate: "上游尚未放行",
+      dependencyGates: [{
+        productId: "demand-pulse",
+        title: "需求脉搏",
+        minimumLevel: "A2",
+        effectiveLevel: "A1",
+        activeReleaseCurrent: false,
+        satisfied: false,
+        purpose: "复用净需求基线",
+      }],
+    })]);
+    expect(item).toMatchObject({
+      stage: "repair",
+      blockerState: "release",
+      nextAction: "先将上游「需求脉搏」验收放行到 A2",
+      actionLabel: "打开上游门禁",
+      actionHref: expect.stringContaining("product=demand-pulse"),
     });
   });
 

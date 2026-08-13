@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 
 import { DATA_PRODUCTS } from "@/components/data-products";
 import { auditLogs, dataProductReleases, users } from "@/db/schema";
@@ -7,6 +8,7 @@ import {
   buildDataProductReleaseEvidence,
   decideDataProductRelease,
   loadDataProductReleaseReadiness,
+  type DataProductReleaseReadiness,
 } from "@/server/modules/report/data-product-release";
 import type {
   DataSourceReadiness,
@@ -94,7 +96,141 @@ function currentSources(): DataSourceReadiness[] {
   ];
 }
 
+function currentSourcesForProducts(productIds: string[]): DataSourceReadiness[] {
+  const products = DATA_PRODUCTS.filter((item) => productIds.includes(item.id));
+  const scm: ScmEvidenceSnapshot = {
+    rows: 10,
+    asOf: null,
+    freshnessMaxAgeDays: null,
+    businessAgeDays: null,
+    freshness: "current",
+  };
+  const scmEvidence = Object.fromEntries(
+    [...new Set(products.flatMap((item) => item.requiredScmEvidence))].map((key) => [key, scm]),
+  ) as DataSourceReadiness["scmEvidence"];
+  return (["SCM", "JIANDAOYUN", "JST", "YONYOU"] as const).map((key) => {
+    const streams = [...new Set(products.flatMap((item) => item.requiredStreams[key] ?? []))].map((key) => stream(key));
+    return source(key, streams, { scmEvidence: key === "SCM" ? scmEvidence : {} });
+  });
+}
+
 describe("数据产品放行闭环", () => {
+  it("下游组合产品必须绑定当前有效的上游产品放行，且上游换版会改变范围指纹", () => {
+    const composed = {
+      ...product,
+      id: "test-composed-product",
+      contractVersion: "1.1.0",
+      requiredProducts: [{
+        productId: product.id,
+        minimumLevel: "A2" as const,
+        purpose: "复用已验收的平台身份口径",
+      }],
+    };
+    const withoutUpstream = buildDataProductReleaseEvidence(composed, currentSources());
+    expect(withoutUpstream.eligible).toBe(false);
+    expect(withoutUpstream.gate).toContain("平台身份控制塔需A2（当前A0）");
+
+    const activeRelease = {
+      id: 91,
+      productId: product.id,
+      contractVersion: product.contractVersion,
+      targetLevel: "A2" as const,
+      sourceEvidenceDigest: "upstream-scope-v1",
+      controlTotalRef: "CT-UPSTREAM",
+      uatRef: "UAT-UPSTREAM",
+      rollbackPlan: "立即退回人工身份复核并停止输出建议",
+      scopeNote: null,
+      status: "approved" as const,
+      requestedBy: 1,
+      requestedByName: "A",
+      requestedAt: "2026-08-14T01:00:00.000Z",
+      decidedBy: 2,
+      decidedByName: "B",
+      decidedAt: "2026-08-14T02:00:00.000Z",
+      decisionNote: "通过",
+      revokedBy: null,
+      revokedByName: null,
+      revokedAt: null,
+      version: 2,
+    };
+    const upstream: DataProductReleaseReadiness = {
+      productId: product.id,
+      runtimeLevel: "A1",
+      effectiveLevel: "A2",
+      eligibleForRequest: true,
+      gate: "有效",
+      currentScopeDigest: "upstream-scope-v1",
+      activeRelease,
+      pendingRelease: null,
+      latestRelease: activeRelease,
+      activeReleaseCurrent: true,
+      canRequest: false,
+      canApprove: false,
+      canReject: false,
+      canRevoke: true,
+      dependencyGates: [],
+    };
+    const withUpstream = buildDataProductReleaseEvidence(composed, currentSources(), new Date(), [upstream]);
+    expect(withUpstream.eligible).toBe(true);
+    expect(withUpstream.envelope.dependencyBindings).toEqual([expect.objectContaining({
+      productId: product.id,
+      activeReleaseId: 91,
+      sourceEvidenceDigest: "upstream-scope-v1",
+    })]);
+
+    const changed = buildDataProductReleaseEvidence(composed, currentSources(), new Date(), [{
+      ...upstream,
+      activeRelease: { ...activeRelease, id: 92, sourceEvidenceDigest: "upstream-scope-v2" },
+      latestRelease: { ...activeRelease, id: 92, sourceEvidenceDigest: "upstream-scope-v2" },
+      currentScopeDigest: "upstream-scope-v2",
+    }]);
+    expect(changed.scopeDigest).not.toBe(withUpstream.scopeDigest);
+  });
+
+  it("上游放行失效会通过真实读取模型级联关闭补货产品资格", async () => {
+    const { db } = await createTestDb();
+    const [owner] = await db.insert(users).values({ name: "PMC", roles: ["pmc"], isApprover: true }).returning();
+    const productIds = ["demand-pulse", "unified-inventory", "supply-commitment", "replenishment-evidence"];
+    const sources = currentSourcesForProducts(productIds);
+    const upstreamProducts = DATA_PRODUCTS.filter((item) => productIds.slice(0, 3).includes(item.id));
+    const createdIds: number[] = [];
+    for (const [index, upstream] of upstreamProducts.entries()) {
+      const evidence = buildDataProductReleaseEvidence(upstream, sources);
+      expect(evidence.eligible).toBe(true);
+      const [created] = await db.insert(dataProductReleases).values({
+        productId: upstream.id,
+        contractVersion: upstream.contractVersion,
+        targetLevel: "A2",
+        sourceEvidenceDigest: evidence.scopeDigest,
+        sourceEvidence: evidence.envelope,
+        controlTotalRef: `CT-UP-${index}`,
+        uatRef: `UAT-UP-${index}`,
+        rollbackPlan: "立即关闭上游建议并恢复人工复核",
+        status: "approved",
+        idempotencyKey: `00000000-0000-4000-8000-00000000010${index}`,
+        requestedBy: owner.id,
+        decidedBy: owner.id,
+        decidedAt: new Date(),
+        decisionNote: "测试放行",
+      }).returning();
+      createdIds.push(created.id);
+    }
+
+    const ready = (await loadDataProductReleaseReadiness(sources, undefined, db))
+      .find((item) => item.productId === "replenishment-evidence")!;
+    expect(ready.eligibleForRequest).toBe(true);
+    expect(ready.dependencyGates.every((item) => item.satisfied)).toBe(true);
+
+    await db.update(dataProductReleases)
+      .set({ status: "revoked", revokedBy: owner.id, revokedAt: new Date(), decisionNote: "测试撤回" })
+      .where(eq(dataProductReleases.id, createdIds[0]));
+    const degraded = (await loadDataProductReleaseReadiness(sources, undefined, db))
+      .find((item) => item.productId === "replenishment-evidence")!;
+    expect(degraded.eligibleForRequest).toBe(false);
+    expect(degraded.gate).toContain("需求脉搏需A2（当前A1）");
+    expect(degraded.dependencyGates.find((item) => item.productId === "demand-pulse")?.satisfied).toBe(false);
+  });
+
   it("没有待会签申请时，审批人也不得看到批准或拒绝动作", async () => {
     const { db } = await createTestDb();
     const [person] = await db.insert(users).values({

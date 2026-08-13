@@ -45,6 +45,7 @@ const RELEASE_STATUS_LABEL = {
 const HEADERS = [
   "记录类型", "导出时间", "数据产品ID", "数据产品", "产品契约版本", "要回答的决策", "决策粒度",
   "Owner", "责任角色", "决策SLA小时", "刷新节奏", "目标权威级", "自动化上限", "运行时级别", "当前有效级别",
+  "上游产品门禁", "未满足上游产品数",
   "处置阶段", "下一个最佳动作", "行动入口", "首要阻塞", "共同可比截止", "最新来源日期", "跨源时点跨度天数",
   "时效敏感流数", "缺业务日期流数", "证据用途", "来源系统", "来源技术键", "来源当前状态", "来源配置仍有效",
   "数据流", "数据流技术键", "流证据状态", "受限原因", "业务截止", "最近成功", "源行", "Staging行",
@@ -103,6 +104,11 @@ export function buildDataProductEvidenceExport(
     const latestOutcome = outcome?.latest[0] ?? null;
     const work = workByProduct.get(product.id);
     const releaseRecord = release?.activeRelease ?? release?.pendingRelease ?? release?.latestRelease ?? null;
+    const productDependencyGate = (release?.dependencyGates ?? []).map((dependency) =>
+      `${dependency.title}≥${dependency.minimumLevel}:${dependency.satisfied ? "已满足" : `未满足(当前${dependency.effectiveLevel})`}`
+    ).join("；") || "无";
+    const unsatisfiedProductDependencies = (release?.dependencyGates ?? [])
+      .filter((dependency) => !dependency.satisfied).length;
     const requiredRows = summary.sources.flatMap((source) => source.streams.map((stream) => ({
       source: {
         source: source.source,
@@ -152,6 +158,8 @@ export function buildDataProductEvidenceExport(
         product.maxAutomation,
         runtime.level,
         release?.effectiveLevel ?? runtime.level,
+        productDependencyGate,
+        unsatisfiedProductDependencies,
         work ? STAGE_LABEL[work.stage] : "",
         work?.nextAction ?? "",
         work?.actionHref ?? "",

@@ -278,7 +278,24 @@ export function buildDataProductWorkQueue(
       };
     }
 
-    if (runtime.level === "A1") {
+    const dependencyBlocker = release?.dependencyGates?.find((dependency) => !dependency.satisfied);
+    if (runtime.level === "A1" && dependencyBlocker) {
+      return {
+        productId: product.id,
+        title: product.title,
+        owner: product.owner,
+        decisionSlaHours: product.decisionSlaHours,
+        effectiveLevel,
+        stage: "repair",
+        nextAction: `先将上游「${dependencyBlocker.title}」验收放行到 ${dependencyBlocker.minimumLevel}`,
+        actionLabel: "打开上游门禁",
+        actionHref: productEvidenceHref(dependencyBlocker.productId),
+        bottleneck: `${dependencyBlocker.purpose}；当前 ${dependencyBlocker.effectiveLevel}，且没有有效产品级放行`,
+        blockerState: "release",
+      };
+    }
+
+    if (runtime.level === "A1" && release?.eligibleForRequest !== false) {
       const action = actionTarget(product, "release_ready", blocker, dataSources);
       return {
         productId: product.id,

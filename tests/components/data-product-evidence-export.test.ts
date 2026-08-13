@@ -4,6 +4,7 @@ import { buildDataProductEvidenceExport } from "@/components/data-product-eviden
 import type { DataProductDefinition } from "@/components/data-products";
 import type { DataSourceReadiness, DataStreamEvidence } from "@/server/modules/report/data-source-readiness";
 import type { DataProductOutcomeReadiness } from "@/server/modules/report/data-product-outcome";
+import type { DataProductReleaseReadiness } from "@/server/modules/report/data-product-release";
 import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 
 function stream(
@@ -150,6 +151,32 @@ const supportingObservation: JiandaoyunSupportingObservation = {
   gate: "历史辅助观察：不参与产品放行。",
 };
 
+const release: DataProductReleaseReadiness = {
+  productId: product.id,
+  runtimeLevel: "A0",
+  effectiveLevel: "A0",
+  eligibleForRequest: false,
+  gate: "上游未满足",
+  currentScopeDigest: "must-not-export:current-scope",
+  activeRelease: null,
+  pendingRelease: null,
+  latestRelease: null,
+  activeReleaseCurrent: false,
+  canRequest: false,
+  canApprove: false,
+  canReject: false,
+  canRevoke: false,
+  dependencyGates: [{
+    productId: "upstream-test",
+    title: "上游基线",
+    minimumLevel: "A2",
+    effectiveLevel: "A1",
+    activeReleaseCurrent: false,
+    satisfied: false,
+    purpose: "复用上游口径",
+  }],
+};
+
 describe("三方数据产品决策证据导出", () => {
   it("逐产品逐流导出共同截止、责任动作和技术回查键，不泄露连接指纹", () => {
     const result = buildDataProductEvidenceExport([
@@ -174,7 +201,7 @@ describe("三方数据产品决策证据导出", () => {
         freshness: "stale",
         businessAgeDays: 43,
       })),
-    ], [], [outcome], new Date("2026-08-13T02:03:04.000Z"), [supportingObservation]);
+    ], [release], [outcome], new Date("2026-08-13T02:03:04.000Z"), [supportingObservation]);
 
     expect(result.filename).toBe("三方数据-产品决策证据-2026-08-13T02-03-04-000Z.csv");
     expect(result.rows).toHaveLength(3);
@@ -192,6 +219,8 @@ describe("三方数据产品决策证据导出", () => {
         跨源时点跨度天数: 2,
         处置阶段: "修复证据",
         当前有效级别: "A0",
+        上游产品门禁: "上游基线≥A2:未满足(当前A1)",
+        未满足上游产品数: 1,
         结果学习状态: "已形成真实反馈",
         真实结果有效记录数: 3,
         "采纳率%": "66.7",

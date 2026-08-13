@@ -12,6 +12,13 @@ export type DataProductAuthority = "observation" | "operational" | "financial";
 export type DataProductCadence = "intraday" | "daily" | "weekly" | "monthly";
 export type DataProductAutomationLevel = "A0" | "A1" | "A2" | "A3";
 
+export interface DataProductDependency {
+  productId: string;
+  /** 下游产品可申请放行前，上游至少需要达到的产品级放行。 */
+  minimumLevel: Extract<DataProductAutomationLevel, "A2" | "A3">;
+  purpose: string;
+}
+
 export interface DataProductDefinition {
   id: string;
   title: string;
@@ -39,6 +46,11 @@ export interface DataProductDefinition {
    * 过期或缺失的辅助流不得阻塞核心产品，也不得替代 requiredStreams。
    */
   supportingStreams?: Partial<Record<DataProductSource, string[]>>;
+  /**
+   * 真正的产品级嵌套，而不是重复读取同一批原始流。上游放行记录或证据范围失效时，
+   * 下游放行必须自动失效；仅有 A1 观察证据不能满足该依赖。
+   */
+  requiredProducts?: DataProductDependency[];
   targetAuthority: DataProductAuthority;
   releaseGate: string;
 }
@@ -318,7 +330,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "SKU × 仓/渠道 × 建议日",
     owner: "PMC / 采购",
     ownerRoles: ["pmc", "purchasing"],
-    contractVersion: "1.0.1",
+    contractVersion: "1.1.0",
     cadence: "daily",
     decisionSlaHours: 24,
     metricIds: ["daysCover", "safetyQty", "suggestQty", "wape"],
@@ -342,6 +354,11 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     supportingStreams: {
       JIANDAOYUN: ["purchase-demand-observation", "warehouse-transfer-observation"],
     },
+    requiredProducts: [
+      { productId: "demand-pulse", minimumLevel: "A2", purpose: "复用已验收的净需求、退款与身份口径" },
+      { productId: "unified-inventory", minimumLevel: "A2", purpose: "复用已验收的可用库存与账实差异口径" },
+      { productId: "supply-commitment", minimumLevel: "A2", purpose: "复用已验收的在途、承诺日与到货可信度" },
+    ],
     targetAuthority: "operational",
     releaseGate: "正式库存优先；观察需求不能单独下单；MOQ/周期/在途均可追溯",
   },
@@ -410,7 +427,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "周 × 品牌/渠道 × 情景版本",
     owner: "经营层 / PMC / 财务",
     ownerRoles: ["pmc", "finance", "ops"],
-    contractVersion: "1.0.1",
+    contractVersion: "1.1.0",
     cadence: "weekly",
     decisionSlaHours: 48,
     metricIds: ["salesQty", "onHandSystem", "cashGap13Week", "scenarioCoverage"],
@@ -433,6 +450,12 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
         "yonbip-fi-ficloud-openapi-voucher-queryvouchers",
       ],
     },
+    requiredProducts: [
+      { productId: "demand-pulse", minimumLevel: "A2", purpose: "需求与退款情景基线" },
+      { productId: "unified-inventory", minimumLevel: "A2", purpose: "库存位置、可用量与差异基线" },
+      { productId: "supply-commitment", minimumLevel: "A2", purpose: "采购、在途与到货承诺基线" },
+      { productId: "net-margin-bridge", minimumLevel: "A2", purpose: "收入、费用、成本与贡献毛利基线" },
+    ],
     targetAuthority: "financial",
     releaseGate: "上游数据产品已放行，指标版本/owner/关账状态完整，情景不覆盖正式事实",
   },
