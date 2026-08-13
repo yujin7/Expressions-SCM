@@ -25,6 +25,10 @@ export const SCHEDULES: Record<string, string> = {
   // 天天报一次"数据过期"，制造每日假警报。改到两批同步之后各查一次。
   "snapshot-age": "5 11,17 * * *",
 
+  // 同步前半小时探测权限，便于把“未授权”与“同步代码失败”分开。
+  "probe-jst-permissions": "30 9,15 * * *",
+  "probe-yonyou-permissions": "35 9,15 * * *",
+
   // ── 午饭前批次：10 点拉数 → 11 点推告警 ──
   "sync-jiandaoyun-catalog": "0 10 * * *",
   "sync-yonyou": "5 10,16 * * *",

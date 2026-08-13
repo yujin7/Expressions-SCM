@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { probeJstReadiness } from "@/jobs/probe-jst";
+import { probeJstReadiness, runJstPermissionProbe } from "@/jobs/probe-jst";
 import { JstApiError } from "@/server/integrations/jst";
 
 const env = {
@@ -95,5 +95,21 @@ describe("聚水潭只读权限探针", () => {
     });
     expect(result).toMatchObject({ status: "skipped" });
     expect(client.queryShopsPage).not.toHaveBeenCalled();
+  });
+
+  it("调度留痕只保留有界权限结果，不保留源行", async () => {
+    const client = {
+      queryShopsPage: vi.fn(async () => ({ rows: [{ secret: "never" }], hasNext: false })),
+      queryWarehousesPage: vi.fn(async () => { throw new JstApiError(190, "raw"); }),
+      queryOutboundOrdersPage: vi.fn(async () => { throw new JstApiError(110, "raw"); }),
+      queryInventoryPage: vi.fn(async () => ({ rows: [], hasNext: false })),
+      queryItemsPage: vi.fn(async () => ({ rows: [], hasNext: false })),
+      queryInboundReceiptsPage: vi.fn(async () => ({ rows: [], hasNext: false })),
+    };
+    const result = await runJstPermissionProbe({ env, client: client as never });
+    expect(result).toMatchObject({ c: "jst", s: "partial", a: "validated", p: 4, t: 6, w: false });
+    expect(result.r).toEqual(["ok", "api_code_190", "api_code_110", "ok", "ok", "ok"]);
+    expect(JSON.stringify(result)).not.toContain("never");
+    expect(JSON.stringify(result).length).toBeLessThanOrEqual(500);
   });
 });

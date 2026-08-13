@@ -7,6 +7,7 @@ import {
   operationalErrorSummary,
 } from "@/server/modules/admin/health";
 import { createTestDb } from "../helpers/db";
+import { connectorProbeEvidence } from "@/server/integrations/connector-probe-evidence";
 
 describe("admin connector run health", () => {
   it("returns only the latest run per stream with checkpoint and scoped alias controls", async () => {
@@ -120,6 +121,21 @@ describe("admin connector run health", () => {
       startedAt: failedAt,
       finishedAt: failedAt,
     });
+    await db.insert(schema.jobRuns).values({
+      job: "probe-jst-permissions",
+      ok: true,
+      message: JSON.stringify(connectorProbeEvidence({
+        c: "jst",
+        s: "partial",
+        a: "validated",
+        p: 1,
+        t: 6,
+        r: ["ok", "api_code_190", "api_code_110", "api_code_190", "api_code_190", "api_code_190"],
+        b: null,
+      })),
+      startedAt: failedAt,
+      finishedAt: failedAt,
+    });
 
     const result = await getOpsHealth(db);
     expect(result.connectorRuns).toHaveLength(2);
@@ -190,6 +206,20 @@ describe("admin connector run health", () => {
       observedScopedIdentities: null,
       operational: false,
     });
+    expect(result.connectorProbes).toHaveLength(1);
+    expect(result.connectorProbes[0]).toMatchObject({
+      connector: "jst",
+      status: "partial",
+      authentication: "validated",
+      passed: 1,
+      total: 6,
+      bindingMatches: false,
+      writesPerformed: false,
+    });
+    expect(result.connectorProbes[0]?.checks.slice(0, 2)).toEqual([
+      { key: "shops", label: "店铺", result: "ok", passed: true, checked: true },
+      { key: "warehouses", label: "仓库", result: "api_code_190", passed: false, checked: true },
+    ]);
 
     const serialized = JSON.stringify(result.connectorRuns);
     expect(serialized).not.toContain("raw-secret");
@@ -208,11 +238,11 @@ describe("admin connector run health", () => {
       errorId: "deadbeef",
       message: "认证或授权异常（详情仅限受控日志）",
     }]);
-    expect(result.lastJobRuns).toMatchObject([{
+    expect(result.lastJobRuns.find((row) => row.job === "connector-probe")).toMatchObject({
       job: "connector-probe",
       ok: false,
       message: "认证或授权异常（详情仅限受控日志）",
-    }]);
+    });
     const healthPayload = JSON.stringify(result);
     expect(healthPayload).not.toContain("DEMO_SECRET_VALUE");
     expect(healthPayload).not.toContain("DEMO_JOB_SECRET");

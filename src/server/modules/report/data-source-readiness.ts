@@ -28,6 +28,11 @@ import {
   yonyouContractStreamKey,
 } from "@/server/integrations/yonyou-contracts";
 import {
+  CONNECTOR_PROBE_JOB_NAMES,
+  CONNECTOR_PROBE_MAX_AGE_HOURS,
+  parseConnectorProbeEvidence,
+} from "@/server/integrations/connector-probe-evidence";
+import {
   SCM_EVIDENCE_MAX_AGE_DAYS,
   type ScmEvidenceKey,
 } from "@/lib/scm-evidence";
@@ -107,6 +112,17 @@ export interface DataSourceReadiness {
   selectedStreamKeys?: string[];
   /** 当前代码已经实现并受控登记的逐流读取能力；与是否获授权、是否跑成功分开。 */
   availableStreamKeys?: string[];
+  /** 最近一次实时只读权限探测；只是连通/授权证据，不是业务 UAT。 */
+  authorizationProbe?: {
+    status: "succeeded" | "partial" | "skipped";
+    authentication: "validated" | "not_validated" | "not_checked";
+    passed: number;
+    total: number;
+    checkedAt: string;
+    freshness: "current" | "stale" | "invalid";
+    bindingMatches: boolean;
+    writesPerformed: false;
+  } | null;
   successfulStreams: number;
   successfulStreamKeys: string[];
   streams: DataStreamEvidence[];
@@ -161,6 +177,23 @@ interface StreamRunAggregate {
   request_scope: unknown;
   latest_error: unknown;
   latest_import_job_id: unknown;
+}
+
+interface ProbeRunAggregate {
+  job: unknown;
+  message: unknown;
+  finished_at: unknown;
+}
+
+interface LoadedAuthorizationProbe {
+  status: "succeeded" | "partial" | "skipped";
+  authentication: "validated" | "not_validated" | "not_checked";
+  passed: number;
+  total: number;
+  checkedAt: string;
+  freshness: "current" | "stale" | "invalid";
+  binding: string | null;
+  writesPerformed: false;
 }
 
 function resultRows<T>(result: unknown): T[] {
@@ -254,6 +287,44 @@ function ageSince(value: string | null, now: Date, divisor: number): number | nu
   const elapsed = now.getTime() - parsed;
   if (elapsed < 0) return null;
   return Math.round((elapsed / divisor) * 10) / 10;
+}
+
+async function loadAuthorizationProbeEvidence(
+  db: ReadDb,
+  now: Date,
+): Promise<Map<"jst" | "yy", LoadedAuthorizationProbe>> {
+  const result = await db.execute(sql`
+    SELECT DISTINCT ON (job) job, message, finished_at
+    FROM job_runs
+    WHERE job IN ('probe-jst-permissions', 'probe-yonyou-permissions')
+    ORDER BY job, finished_at DESC, id DESC
+  `);
+  const byConnector = new Map<"jst" | "yy", LoadedAuthorizationProbe>();
+  for (const row of resultRows<ProbeRunAggregate>(result)) {
+    if (typeof row.job !== "string" || typeof row.message !== "string") continue;
+    const connector = row.job === CONNECTOR_PROBE_JOB_NAMES.jst
+      ? "jst"
+      : row.job === CONNECTOR_PROBE_JOB_NAMES.yy ? "yy" : null;
+    if (!connector) continue;
+    const evidence = parseConnectorProbeEvidence(row.message);
+    const checkedAt = instant(row.finished_at);
+    if (!evidence || evidence.c !== connector || !checkedAt) continue;
+    const elapsedMs = now.getTime() - Date.parse(checkedAt);
+    const freshness = elapsedMs < 0
+      ? "invalid" as const
+      : elapsedMs > CONNECTOR_PROBE_MAX_AGE_HOURS * 3_600_000 ? "stale" as const : "current" as const;
+    byConnector.set(connector, {
+      status: evidence.s,
+      authentication: evidence.a,
+      passed: evidence.p,
+      total: evidence.t,
+      checkedAt,
+      freshness,
+      binding: evidence.b,
+      writesPerformed: false,
+    });
+  }
+  return byConnector;
 }
 
 function businessAgeDaysSince(value: string | null, now: Date): number | null {
@@ -717,6 +788,7 @@ function connectorSource(
   streams: DataStreamEvidence[],
   selectedStreamKeys: string[],
   identityCoverage: CrossSystemIdentityCoverage[],
+  authorizationProbe: LoadedAuthorizationProbe | null,
 ): DataSourceReadiness {
   const successfulStreams = intValue(success?.successful_streams);
   const latestFailedStreams = intValue(latest?.latest_failed_streams);
@@ -732,6 +804,23 @@ function connectorSource(
   const observedGate = successfulStreams > 0
     ? `${successfulStreams} 条数据流已有最近成功证据，但连接器仍未同时通过配置、身份、控制总量与 UAT 门禁。`
     : "尚无成功数据流证据；代码或凭据存在不能证明业务数据可用。";
+  const probe = authorizationProbe ? {
+    status: authorizationProbe.status,
+    authentication: authorizationProbe.authentication,
+    passed: authorizationProbe.passed,
+    total: authorizationProbe.total,
+    checkedAt: authorizationProbe.checkedAt,
+    freshness: authorizationProbe.freshness,
+    bindingMatches: Boolean(
+      authorizationProbe.binding
+      && readiness.expectedLiveVerificationBinding
+      && authorizationProbe.binding === readiness.expectedLiveVerificationBinding
+    ),
+    writesPerformed: false as const,
+  } : null;
+  const probeGate = probe
+    ? `实时只读权限探测 ${probe.passed}/${probe.total}${probe.bindingMatches ? "，已绑定当前目标" : "，未绑定当前目标"}${probe.freshness === "current" ? "" : "，证据已过期或时间无效"}。`
+    : "尚无可审计的实时只读权限探测。";
   return {
     key,
     label: readiness.label,
@@ -744,6 +833,7 @@ function connectorSource(
     selectedContractCount: readiness.selectedContractCount,
     selectedStreamKeys,
     availableStreamKeys: key === "SCM" ? [] : AVAILABLE_EXTERNAL_STREAMS[key],
+    authorizationProbe: probe,
     successfulStreams,
     successfulStreamKeys: streamKeys(success?.successful_stream_keys),
     streams: streams.map((stream) => ({
@@ -763,10 +853,14 @@ function connectorSource(
     observedIdentities: readiness.observedScopedIdentities,
     identityCoverage,
     scmEvidence: {},
-    gate: state === "operational"
+    gate: `${state === "operational"
       ? "当前连接器与身份门禁已通过；具体数据产品仍须满足各自控制总量和业务口径。"
-      : observedGate,
-    nextAction: readiness.blocker ?? "持续监控运行、时效、覆盖和身份异常。",
+      : observedGate} ${probeGate}`,
+    nextAction: probe && (!probe.bindingMatches || probe.freshness !== "current")
+      ? "先重跑已登记的只读权限探测，用当前配置生成新的可审计证据。"
+      : probe && probe.passed < probe.total
+      ? `先在外部平台补齐只读授权（当前 ${probe.passed}/${probe.total}）；再进行身份映射、控制总量与业务 UAT。`
+      : readiness.blocker ?? "持续监控运行、时效、覆盖和身份异常。",
   };
 }
 
@@ -775,9 +869,10 @@ export async function loadDataSourceReadiness(
   options: { env?: NodeJS.ProcessEnv; now?: Date } = {},
 ): Promise<DataSourceReadiness[]> {
   const now = options.now ?? new Date();
-  const [identityEvidence, runEvidence, scmResult] = await Promise.all([
+  const [identityEvidence, runEvidence, authorizationProbes, scmResult] = await Promise.all([
     loadIdentityEvidence(db),
     loadRunEvidence(db, now),
+    loadAuthorizationProbeEvidence(db, now),
     db.execute(sql`
       SELECT
         (SELECT count(*)::int FROM skus) AS sku_count,
@@ -943,6 +1038,7 @@ export async function loadDataSourceReadiness(
         runEvidence.streams.get(connector === "yy" ? "yonyou" : connector) ?? [],
         selectedExternalStreamKeys(source, options.env ?? process.env),
         identityEvidence.coverage[source] ?? [],
+        connector === "jdy" ? null : authorizationProbes.get(connector) ?? null,
       );
     }),
   ];

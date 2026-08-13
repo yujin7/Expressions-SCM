@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import * as schema from "@/db/schema";
 import { loadDataSourceReadiness } from "@/server/modules/report/data-source-readiness";
+import { connectorProbeEvidence } from "@/server/integrations/connector-probe-evidence";
+import { jstLiveEvidenceBinding } from "@/server/integrations/jst";
 import { createTestDb } from "../helpers/db";
 
 describe("三方数据来源证据矩阵", () => {
@@ -482,6 +484,65 @@ describe("三方数据来源证据矩阵", () => {
         rows: 0,
         freshness: "unknown",
       });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("把最近实时只读权限探测并入 BI 就绪证据，但不冒充 UAT", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const env = {
+        NODE_ENV: "test",
+        JST_APP_KEY: "probe-app",
+        JST_APP_SECRET: "probe-secret",
+        JST_ACCESS_TOKEN: "probe-token",
+        JST_SYNC_ACTOR_ID: "1",
+      } satisfies NodeJS.ProcessEnv;
+      const binding = jstLiveEvidenceBinding(env);
+      await db.insert(schema.jobRuns).values({
+        job: "probe-jst-permissions",
+        ok: true,
+        message: JSON.stringify(connectorProbeEvidence({
+          c: "jst",
+          s: "partial",
+          a: "validated",
+          p: 2,
+          t: 6,
+          r: ["ok", "ok", "api_code_110", "api_code_190", "api_code_190", "api_code_190"],
+          b: binding,
+        })),
+        startedAt: new Date("2026-08-13T01:30:00.000Z"),
+        finishedAt: new Date("2026-08-13T01:31:00.000Z"),
+      });
+
+      const result = await loadDataSourceReadiness(db, {
+        env,
+        now: new Date("2026-08-13T02:00:00.000Z"),
+      });
+      const jst = result.find((row) => row.key === "JST");
+      expect(jst?.authorizationProbe).toEqual({
+        status: "partial",
+        authentication: "validated",
+        passed: 2,
+        total: 6,
+        checkedAt: "2026-08-13T01:31:00.000Z",
+        freshness: "current",
+        bindingMatches: true,
+        writesPerformed: false,
+      });
+      expect(jst?.state).toBe("contract_only");
+      expect(jst?.configurationReady).toBe(false);
+      expect(jst?.gate).toContain("实时只读权限探测 2/6");
+      expect(jst?.nextAction).toContain("补齐只读授权");
+
+      const staleResult = await loadDataSourceReadiness(db, {
+        env,
+        now: new Date("2026-08-15T06:00:00.000Z"),
+      });
+      const staleJst = staleResult.find((row) => row.key === "JST");
+      expect(staleJst?.authorizationProbe?.freshness).toBe("stale");
+      expect(staleJst?.nextAction).toContain("重跑已登记的只读权限探测");
     } finally {
       await client.close();
     }

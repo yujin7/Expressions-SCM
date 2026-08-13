@@ -152,10 +152,17 @@ function fmtDateTime(value: string | null): string {
 
 function contractEvidenceLabel(row: DataSourceReadiness): string {
   if (row.key === "SCM") return "内部受控事实";
-  if (row.contractSelectionState === "not_required") return "固定契约·无需手选";
-  if (row.contractSelectionState === "invalid") return "契约配置无效";
-  if (row.contractSelectionState === "missing") return "未选择受控契约";
-  return `${row.selectedContractCount} 条已选契约`;
+  const contract = row.contractSelectionState === "not_required"
+    ? "固定契约·无需手选"
+    : row.contractSelectionState === "invalid"
+      ? "契约配置无效"
+      : row.contractSelectionState === "missing"
+        ? "未选择受控契约"
+        : `${row.selectedContractCount} 条已选契约`;
+  const probe = row.authorizationProbe;
+  return probe
+    ? `${contract}·实时授权 ${probe.passed}/${probe.total}`
+    : `${contract}·尚无实时授权证据`;
 }
 
 function productEvidenceHref(productId: string): string {

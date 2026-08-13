@@ -98,6 +98,9 @@ SCM 数据库，二者都不落业务数据。
 - 店铺目录客户端与 `probe-jst` 只读探针已实现；探针各取最小页验证店铺、仓库、销售出库和
   库存、普通商品、采购入库六个权限面，只输出聚合计数/安全错误分类，不保存源标识、
   不推进游标、不写 staging。
+- `probe-jst-permissions` 已进入统一任务目录：每次同步前运行，将通过数、安全错误码、
+  当前配置绑定和 `writesPerformed=false` 以 `connector-probe/v1` 写入 `job_runs`。
+  健康页和 BI 就绪矩阵共用该证据；26 小时后自动标为过期，不代替 UAT。
 - 普通商品与采购入库已形成两个可独立选择的观察契约：按自然日修改窗口完整翻页、字段最小化、
   证据哈希、JST 作用域身份异常、幂等重放和 `releaseBlocked` staging。商品观察不新建/更新 SKU；
   入库观察不生成收货单、不写库存账。两条流默认关闭，只有显式列入
@@ -106,7 +109,7 @@ SCM 数据库，二者都不落业务数据。
   0600 权限，并由 `integration_runs` 关联。
 - SKU/仓库走通用 alias；未知值进入人工认领，绝不猜。
 - 相同源信封重放返回原结果；失败不推进 `integration_checkpoints`。
-- 每日 07:30 拉 T-1，08:00 再对账。缺配置记录 `skipped`；缺源覆盖时对账停止，
+- 每日 10:15/16:15 拉 T-1，11:00/17:00 再对账。缺配置记录 `skipped`；缺源覆盖时对账停止，
   不把未知当成 0。
 
 ### 运行配置
@@ -145,12 +148,17 @@ JST_LIVE_VERIFIED_REF（非秘密 UAT 证据编号，例如 UAT-20260730-JST-001
 ```bash
 npx tsx src/jobs/cli.ts audit-connectors
 npx tsx src/jobs/cli.ts probe-jst 2026-07-28
+npx tsx src/jobs/cli.ts run-job probe-jst-permissions
+npx tsx src/jobs/cli.ts run-job probe-yonyou-permissions
 npx tsx src/jobs/cli.ts sync-jst 2026-07-28
 npx tsx src/jobs/cli.ts sync-jst-inventory
 npx tsx src/jobs/cli.ts sync-jst-item-master 2026-08-13
 npx tsx src/jobs/cli.ts sync-jst-inbound 2026-08-13
 npx tsx src/jobs/cli.ts reconcile-jst 2026-07-28
 ```
+
+`run-job` 是运维恢复/重验的权威入口：它与调度器执行同一实现并强制写入
+`job_runs`；直接跑交互探针只适合排查，不能当作可审计恢复证据。
 
 `audit-connectors` 不打开数据库或调用外部 API，只输出代码状态、缺失环境变量名、UAT
 状态和非秘密证据编号；对有显式开关/契约的连接器还分别输出启用状态、契约选择状态与数量。

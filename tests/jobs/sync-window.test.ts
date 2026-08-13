@@ -28,6 +28,7 @@ const PULL_JOBS = [
   "sync-jst-inventory",
   "sync-jiandaoyun-forms",
 ];
+const PERMISSION_PROBES = ["probe-jst-permissions", "probe-yonyou-permissions"];
 /** 依赖同步结果的下游：必须排在拉数之后 */
 const DOWNSTREAM_JOBS = [
   // 数据龄检查也算下游：排在拉数之前会在同步刷新前十分钟天天报假"数据过期"
@@ -43,6 +44,14 @@ describe("同步时间窗：午饭前与傍晚前各一次", () => {
     for (const name of PULL_JOBS) {
       expect(SCHEDULES[name], `${name} 缺 cron`).toBeTruthy();
       expect(cronHours(SCHEDULES[name]), `${name} 的小时窗不对`).toEqual([10, 16]);
+    }
+  });
+
+  it("只读权限探测在同步前一小时运行，不与拉数同时抢占配额", () => {
+    const byName = new Map(INTERVAL_JOBS.map((job) => [job.name, job]));
+    for (const name of PERMISSION_PROBES) {
+      expect(cronHours(SCHEDULES[name]), `${name} 应在同步前探测`).toEqual([9, 15]);
+      expect(byName.get(name)?.atHours).toEqual([9, 15]);
     }
   });
 

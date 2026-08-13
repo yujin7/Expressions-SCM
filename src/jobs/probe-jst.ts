@@ -6,6 +6,11 @@ import {
 } from "@/server/integrations/jst";
 import { IntegrationHttpError } from "@/server/integrations/http";
 import { jstSyncActorId } from "@/server/integrations/jst-sync";
+import {
+  connectorProbeEvidence,
+  JST_PROBE_CHECKS,
+  type ConnectorProbeEvidence,
+} from "@/server/integrations/connector-probe-evidence";
 import { shanghaiToday } from "./reconcile-jst";
 
 type JstProbeClient = Pick<
@@ -138,4 +143,43 @@ export async function probeJstReadiness(
     writesPerformed: false as const,
     requiredChecks,
   };
+}
+
+/**
+ * Scheduler/job-ledger form of the JST probe. The verbose operator result above remains useful
+ * at the CLI, while this adapter guarantees a bounded, value-free message that survives the
+ * 500-character job_runs limit and can be safely rendered by admin/BI readiness views.
+ */
+export async function runJstPermissionProbe(
+  options: Parameters<typeof probeJstReadiness>[0] = {},
+): Promise<ConnectorProbeEvidence> {
+  const result = await probeJstReadiness(options);
+  if (result.status === "skipped") {
+    const reason = result.reason.includes("JST_SYNC_ACTOR_ID")
+      ? "invalid_actor"
+      : result.reason.includes("JST_BASE_URL")
+        ? "invalid_configuration"
+        : "missing_configuration";
+    return connectorProbeEvidence({
+      c: "jst",
+      s: "skipped",
+      a: "not_checked",
+      p: 0,
+      t: JST_PROBE_CHECKS.length,
+      r: [reason],
+      b: jstLiveEvidenceBinding(options.env ?? process.env),
+    });
+  }
+  return connectorProbeEvidence({
+    c: "jst",
+    s: result.status,
+    a: result.authentication === "validated_by_signed_call" ? "validated" : "not_validated",
+    p: 0,
+    t: JST_PROBE_CHECKS.length,
+    r: JST_PROBE_CHECKS.map(({ id }) => {
+      const check = result.exercises[id];
+      return check.status === "succeeded" ? "ok" : check.error;
+    }),
+    b: result.expectedLiveVerificationBinding,
+  });
 }

@@ -30,6 +30,9 @@ import { runJstTokenWatchdog } from "./jst-token-watchdog";
 import { runJobFailureWatchdog } from "./job-failure-watchdog";
 import { runSystemAlertNotify } from "./system-alert-notify";
 import { runDataProductGateWatchdog } from "./data-product-gate-watchdog";
+import { runJstPermissionProbe } from "./probe-jst";
+import { runYonyouPermissionProbe } from "./probe-yonyou";
+import { CONNECTOR_PROBE_VERSION } from "@/server/integrations/connector-probe-evidence";
 import {
   runJiandaoyunCatalogSync,
   runJiandaoyunConfiguredFormSyncs,
@@ -65,13 +68,20 @@ type IntervalJobRunOptions = {
 };
 
 function skippedSummary(summary: unknown): { skipped: boolean; reason: string } {
-  if (!summary || typeof summary !== "object" || !("status" in summary)) {
+  if (!summary || typeof summary !== "object") {
     return { skipped: false, reason: "" };
   }
-  const candidate = summary as { status?: unknown; reason?: unknown };
-  return candidate.status === "skipped"
-    ? { skipped: true, reason: typeof candidate.reason === "string" ? candidate.reason : "任务返回 skipped" }
-    : { skipped: false, reason: "" };
+  const candidate = summary as { status?: unknown; reason?: unknown; v?: unknown; s?: unknown };
+  if (candidate.status === "skipped") {
+    return {
+      skipped: true,
+      reason: typeof candidate.reason === "string" ? candidate.reason : "任务返回 skipped",
+    };
+  }
+  if (candidate.v === CONNECTOR_PROBE_VERSION && candidate.s === "skipped") {
+    return { skipped: true, reason: "连接器权限探测因配置不完整未执行" };
+  }
+  return { skipped: false, reason: "" };
 }
 
 /**
@@ -106,6 +116,9 @@ export function shanghaiHourKey(now: Date): { hour: number; key: string } {
 }
 
 export const INTERVAL_JOBS: IntervalJob[] = [
+  // 同步前先做最小只读权限探测；结果是无业务值的版本化证据，不代替 UAT。
+  { name: "probe-jst-permissions", everyMs: 20 * 60 * 1000, atHours: [9, 15], run: () => runJstPermissionProbe() },
+  { name: "probe-yonyou-permissions", everyMs: 20 * 60 * 1000, atHours: [9, 15], run: () => runYonyouPermissionProbe() },
   // 快照数据龄告警（纯查询）——**必须排在拉数之后**，否则会在同步刷新前报一次假的"数据过期"
   { name: "snapshot-age", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runSnapshotAgeAlert(db) },
   // 营业执照到期提醒（纯查询）

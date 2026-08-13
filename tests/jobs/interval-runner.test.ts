@@ -22,7 +22,7 @@ describe("interval-runner 进程内调度回退", () => {
     expect(g[Symbol.for("supply-chain.interval-runner")]).toBeUndefined();
   });
 
-  it("注册了 21 个任务（含三方观察、门禁看门狗、rollup 与决策摘要）", () => {
+  it("注册了 23 个任务（含只读权限探测、三方观察、门禁看门狗、rollup 与决策摘要）", () => {
     expect(INTERVAL_JOBS.map((j) => j.name).sort()).toEqual([
       "data-freshness",
       "data-product-gate-watchdog",
@@ -34,6 +34,8 @@ describe("interval-runner 进程内调度回退", () => {
       "jst-token-watchdog",
       "license-alert",
       "notify-dispatch",
+      "probe-jst-permissions",
+      "probe-yonyou-permissions",
       "reconcile-jst",
       "rollup",
       "snapshot-age",
@@ -105,6 +107,34 @@ describe("interval-runner 进程内调度回退", () => {
     INTERVAL_JOBS.push(job);
     try {
       await expect(runNamedIntervalJobOnce(job.name, db)).rejects.toThrow("Skipped: 连接器未启用");
+    } finally {
+      INTERVAL_JOBS.splice(INTERVAL_JOBS.indexOf(job), 1);
+    }
+    const rows = await db.select().from(jobRuns);
+    expect(rows.some((x) => x.job === job.name && !x.ok && x.message?.includes("Skipped"))).toBe(true);
+  });
+
+  it("运维恢复同样拒绝紧凑 connector-probe/v1 skipped 证据", async () => {
+    const job = {
+      name: "manual-compact-probe-skipped-test",
+      everyMs: 1,
+      run: async () => ({
+        v: "connector-probe/v1",
+        c: "jst",
+        s: "skipped",
+        a: "not_checked",
+        p: 0,
+        t: 6,
+        r: Array.from({ length: 6 }, () => "not_checked"),
+        b: null,
+        w: false,
+      }),
+    };
+    INTERVAL_JOBS.push(job);
+    try {
+      await expect(runNamedIntervalJobOnce(job.name, db)).rejects.toThrow(
+        "Skipped: 连接器权限探测因配置不完整未执行",
+      );
     } finally {
       INTERVAL_JOBS.splice(INTERVAL_JOBS.indexOf(job), 1);
     }

@@ -32,6 +32,13 @@ import {
 } from "@/server/integrations/connector";
 import { ApiError } from "@/server/modules/master/common";
 import { YONYOU_READ_CONTRACTS } from "@/server/integrations/yonyou-contracts";
+import {
+  CONNECTOR_PROBE_JOB_NAMES,
+  CONNECTOR_PROBE_MAX_AGE_HOURS,
+  JST_PROBE_CHECKS,
+  parseConnectorProbeEvidence,
+  type ConnectorProbeKey,
+} from "@/server/integrations/connector-probe-evidence";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -45,6 +52,26 @@ export interface JobRunRow {
   message: string | null;
   startedAt: string;
   finishedAt: string;
+}
+
+export interface ConnectorProbeHealthRow {
+  connector: ConnectorProbeKey;
+  status: "succeeded" | "partial" | "skipped";
+  authentication: "validated" | "not_validated" | "not_checked";
+  passed: number;
+  total: number;
+  checkedAt: string;
+  ageHours: number | null;
+  freshness: "current" | "stale" | "invalid";
+  bindingMatches: boolean;
+  writesPerformed: false;
+  checks: {
+    key: string;
+    label: string;
+    result: string;
+    passed: boolean;
+    checked: boolean;
+  }[];
 }
 
 export interface ErrorLogRow {
@@ -149,6 +176,7 @@ export interface OpsHealth {
   /** null=备份目录不存在（开发环境正常） */
   backupFreshness: { dir: string; file: string; mtime: string; ageHours: number } | null;
   connectors: ConnectorReadiness[];
+  connectorProbes: ConnectorProbeHealthRow[];
   connectorRuns: ConnectorRunHealthRow[];
 }
 
@@ -164,6 +192,60 @@ function adminConnectorReadiness(
           ? `在用友开放平台给当前应用逐条授权 8 项只读 API：${yonyouNames}。`
           : step),
       });
+}
+
+function connectorProbeHealth(
+  rows: readonly (typeof jobRuns.$inferSelect)[],
+  connectors: readonly ConnectorReadiness[],
+  now: Date,
+): ConnectorProbeHealthRow[] {
+  const latestByJob = new Map<string, typeof jobRuns.$inferSelect>();
+  for (const row of rows) {
+    if (!latestByJob.has(row.job)) latestByJob.set(row.job, row);
+  }
+  const expectedBindings = new Map(
+    connectors.map((connector) => [connector.key, connector.expectedLiveVerificationBinding]),
+  );
+  const labels: Record<ConnectorProbeKey, { key: string; label: string }[]> = {
+    jst: JST_PROBE_CHECKS.map((check) => ({ key: check.id, label: check.label })),
+    yy: YONYOU_READ_CONTRACTS.map((contract) => ({
+      key: contract.name,
+      label: contract.name,
+    })),
+  };
+  return (Object.entries(CONNECTOR_PROBE_JOB_NAMES) as [ConnectorProbeKey, string][])
+    .flatMap(([connector, job]) => {
+      const run = latestByJob.get(job);
+      if (!run?.message) return [];
+      const evidence = parseConnectorProbeEvidence(run.message);
+      if (!evidence || evidence.c !== connector) return [];
+      const expectedBinding = expectedBindings.get(connector) ?? null;
+      const elapsedMs = now.getTime() - run.finishedAt.getTime();
+      const ageHours = elapsedMs >= 0
+        ? Math.round((elapsedMs / 3_600_000) * 10) / 10
+        : null;
+      return [{
+        connector,
+        status: evidence.s,
+        authentication: evidence.a,
+        passed: evidence.p,
+        total: evidence.t,
+        checkedAt: run.finishedAt.toISOString(),
+        ageHours,
+        freshness: ageHours === null
+          ? "invalid" as const
+          : ageHours > CONNECTOR_PROBE_MAX_AGE_HOURS ? "stale" as const : "current" as const,
+        bindingMatches: Boolean(evidence.b && expectedBinding && evidence.b === expectedBinding),
+        writesPerformed: false as const,
+        checks: labels[connector].map((check, index) => ({
+          key: check.key,
+          label: check.label,
+          result: evidence.r[index],
+          passed: evidence.r[index] === "ok",
+          checked: evidence.r[index] !== "not_checked",
+        })),
+      }];
+    });
 }
 
 const ALIAS_SCOPE_BY_CONNECTOR: Readonly<Record<string, string>> = {
@@ -703,6 +785,9 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
     [...connectorHealth.identityEvidenceByScope.entries()]
       .filter(([scope]) => ["JST", "JIANDAOYUN", "YONYOU"].includes(scope)),
   ) as Partial<Record<ConnectorIdentityScope, ConnectorIdentityEvidence>>;
+  const connectors = adminConnectorReadiness(
+    getConnectorReadiness(process.env, generatedAt, identityEvidence),
+  );
 
   return {
     generatedAt: generatedAt.toISOString(),
@@ -723,9 +808,8 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
     exportQueue,
     snapshotAges,
     backupFreshness: readBackupFreshness(),
-    connectors: adminConnectorReadiness(
-      getConnectorReadiness(process.env, generatedAt, identityEvidence),
-    ),
+    connectors,
+    connectorProbes: connectorProbeHealth(runRows, connectors, generatedAt),
     connectorRuns: connectorHealth.rows,
   };
 }
