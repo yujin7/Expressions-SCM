@@ -7,7 +7,7 @@
  */
 import { sql, type SQL } from "drizzle-orm";
 
-import { dAdd, dQty, dSub } from "@/server/core/decimal";
+import { dAdd, dCmp, dDiv, dMul, dQty, dSub } from "@/server/core/decimal";
 
 interface ReadDb {
   execute(query: SQL): Promise<unknown>;
@@ -18,7 +18,55 @@ const STREAM = {
   sales: "tmall-sku-sales-observation",
   refunds: "tmall-sku-refund-observation",
 } as const;
-const READ_MODEL_CACHE_KEY = "jiandaoyun-external-demand/v1";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-external-demand/v2";
+
+export interface ExternalDemandDailyRow {
+  date: string;
+  sourceRows: number;
+  validPaidRows: number;
+  invalidSalesRows: number;
+  invalidRefundRows: number;
+  paidQty: number;
+  refundQty: number;
+  netQty: number;
+  mappedPaidQty: number;
+  mappedRefundQty: number;
+  mappedNetQty: number;
+}
+
+export interface RollingDemandWindow {
+  startDate: string | null;
+  endDate: string | null;
+  observedDays: number;
+  requiredDays: 7;
+  paidQty: number;
+  refundQty: number;
+  netQty: number;
+  mappedPaidQty: number;
+  mappedRefundQty: number;
+  mappedNetQty: number;
+  refundRatePct: number | null;
+  mappedPaidCoveragePct: number | null;
+}
+
+export interface RollingDemandBrief {
+  state: "ready" | "insufficient";
+  gate: string;
+  anchorDate: string | null;
+  current: RollingDemandWindow;
+  previous: RollingDemandWindow;
+  change: {
+    paidQtyPct: number | null;
+    netQtyPct: number | null;
+    refundRateDeltaPp: number | null;
+    mappedPaidCoverageDeltaPp: number | null;
+  };
+  movement: {
+    netDemand: "up" | "down" | "flat" | "unknown";
+    refundRate: "up" | "down" | "flat" | "unknown";
+    mappedPaidCoverage: "up" | "down" | "flat" | "unknown";
+  };
+}
 
 export interface ExternalDemandSignal {
   state: "ready" | "insufficient";
@@ -28,13 +76,8 @@ export interface ExternalDemandSignal {
   platform: "天猫";
   sourceAsOf: string | null;
   crosswalkAsOf: string | null;
-  daily: {
-    date: string;
-    paidQty: number;
-    refundQty: number;
-    netQty: number;
-    mappedNetQty: number;
-  }[];
+  daily: ExternalDemandDailyRow[];
+  decisionBrief: RollingDemandBrief;
   totals: {
     paidQty: number;
     refundQty: number;
@@ -189,6 +232,184 @@ function qtyNumber(value: Qty): number {
   return Number(dQty(value));
 }
 
+function qtyPercent(numerator: Qty, denominator: Qty): number | null {
+  if (dCmp(denominator, 0) <= 0) return null;
+  return Number(dMul(dDiv(numerator, denominator, 6), 100, 1));
+}
+
+function qtyChangePct(current: Qty, previous: Qty): number | null {
+  if (dCmp(previous, 0) <= 0) return null;
+  return Number(dMul(dDiv(dSub(current, previous, 6), previous, 6), 100, 1));
+}
+
+function rateDelta(current: number | null, previous: number | null): number | null {
+  if (current === null || previous === null) return null;
+  return Number(dSub(String(current), String(previous), 1));
+}
+
+function shiftIsoDay(day: string, offset: number): string | null {
+  if (!ISO_DAY.test(day)) return null;
+  const date = new Date(`${day}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) return null;
+  date.setUTCDate(date.getUTCDate() + offset);
+  return date.toISOString().slice(0, 10);
+}
+
+function emptyRollingWindow(): RollingDemandWindow {
+  return {
+    startDate: null,
+    endDate: null,
+    observedDays: 0,
+    requiredDays: 7,
+    paidQty: 0,
+    refundQty: 0,
+    netQty: 0,
+    mappedPaidQty: 0,
+    mappedRefundQty: 0,
+    mappedNetQty: 0,
+    refundRatePct: null,
+    mappedPaidCoveragePct: null,
+  };
+}
+
+function emptyRollingDemandBrief(gate: string): RollingDemandBrief {
+  return {
+    state: "insufficient",
+    gate,
+    anchorDate: null,
+    current: emptyRollingWindow(),
+    previous: emptyRollingWindow(),
+    change: {
+      paidQtyPct: null,
+      netQtyPct: null,
+      refundRateDeltaPp: null,
+      mappedPaidCoverageDeltaPp: null,
+    },
+    movement: {
+      netDemand: "unknown",
+      refundRate: "unknown",
+      mappedPaidCoverage: "unknown",
+    },
+  };
+}
+
+interface RollingWindowCalculation {
+  result: RollingDemandWindow;
+  paidQty: Qty;
+  netQty: Qty;
+}
+
+function calculateRollingWindow(
+  rows: readonly ExternalDemandDailyRow[],
+  startDate: string,
+  endDate: string,
+): RollingWindowCalculation {
+  const selected = rows.filter((row) =>
+    row.date >= startDate && row.date <= endDate && row.validPaidRows > 0);
+  let paidQty = ZERO_QTY;
+  let refundQty = ZERO_QTY;
+  let mappedPaidQty = ZERO_QTY;
+  let mappedRefundQty = ZERO_QTY;
+  for (const row of selected) {
+    paidQty = qtyAdd(paidQty, dQty(String(row.paidQty)));
+    refundQty = qtyAdd(refundQty, dQty(String(row.refundQty)));
+    mappedPaidQty = qtyAdd(mappedPaidQty, dQty(String(row.mappedPaidQty)));
+    mappedRefundQty = qtyAdd(mappedRefundQty, dQty(String(row.mappedRefundQty)));
+  }
+  const netQty = qtySub(paidQty, refundQty);
+  const mappedNetQty = qtySub(mappedPaidQty, mappedRefundQty);
+  return {
+    paidQty,
+    netQty,
+    result: {
+      startDate,
+      endDate,
+      observedDays: new Set(selected.map((row) => row.date)).size,
+      requiredDays: 7,
+      paidQty: qtyNumber(paidQty),
+      refundQty: qtyNumber(refundQty),
+      netQty: qtyNumber(netQty),
+      mappedPaidQty: qtyNumber(mappedPaidQty),
+      mappedRefundQty: qtyNumber(mappedRefundQty),
+      mappedNetQty: qtyNumber(mappedNetQty),
+      refundRatePct: qtyPercent(refundQty, paidQty),
+      mappedPaidCoveragePct: qtyPercent(mappedPaidQty, paidQty),
+    },
+  };
+}
+
+function metricMovement(
+  current: string | number | null,
+  previous: string | number | null,
+): "up" | "down" | "flat" | "unknown" {
+  if (current === null || previous === null) return "unknown";
+  const comparison = dCmp(String(current), String(previous));
+  return comparison > 0 ? "up" : comparison < 0 ? "down" : "flat";
+}
+
+/**
+ * 以最新来源日期为锚点比较两个完整的自然日窗口。缺任意一天就关闭变化判断，
+ * 避免把“未到达/无记录”误解释为 0 销量。
+ */
+export function buildRollingDemandBrief(
+  rows: readonly ExternalDemandDailyRow[],
+): RollingDemandBrief {
+  const anchorDate = [...new Set(rows.map((row) => row.date).filter((day) => ISO_DAY.test(day)))]
+    .sort((left, right) => left.localeCompare(right)).at(-1) ?? null;
+  if (!anchorDate) return emptyRollingDemandBrief("没有有效来源日期，滚动需求判断保持关闭。");
+
+  const currentStart = shiftIsoDay(anchorDate, -6);
+  const previousStart = shiftIsoDay(anchorDate, -13);
+  const previousEnd = shiftIsoDay(anchorDate, -7);
+  if (!currentStart || !previousStart || !previousEnd) {
+    return emptyRollingDemandBrief("来源日期无法建立两个自然日窗口，滚动需求判断保持关闭。");
+  }
+
+  const current = calculateRollingWindow(rows, currentStart, anchorDate);
+  const previous = calculateRollingWindow(rows, previousStart, previousEnd);
+  const complete = current.result.observedDays === 7 && previous.result.observedDays === 7;
+  if (!complete) {
+    return {
+      ...emptyRollingDemandBrief(
+        `最近窗口覆盖 ${current.result.observedDays}/7 天，前一窗口覆盖 ${previous.result.observedDays}/7 天；缺失日不补零，变化判断保持关闭。`,
+      ),
+      anchorDate,
+      current: current.result,
+      previous: previous.result,
+    };
+  }
+
+  const refundRateDeltaPp = rateDelta(
+    current.result.refundRatePct,
+    previous.result.refundRatePct,
+  );
+  const mappedPaidCoverageDeltaPp = rateDelta(
+    current.result.mappedPaidCoveragePct,
+    previous.result.mappedPaidCoveragePct,
+  );
+  return {
+    state: "ready",
+    gate: "两个自然日窗口均完整覆盖 7 天；仅用于需求观察，未通过控制总量、业务 UAT 与放行审批前不得驱动正式事实或自动决策。",
+    anchorDate,
+    current: current.result,
+    previous: previous.result,
+    change: {
+      paidQtyPct: qtyChangePct(current.paidQty, previous.paidQty),
+      netQtyPct: qtyChangePct(current.netQty, previous.netQty),
+      refundRateDeltaPp,
+      mappedPaidCoverageDeltaPp,
+    },
+    movement: {
+      netDemand: metricMovement(current.netQty, previous.netQty),
+      refundRate: metricMovement(current.result.refundRatePct, previous.result.refundRatePct),
+      mappedPaidCoverage: metricMovement(
+        current.result.mappedPaidCoveragePct,
+        previous.result.mappedPaidCoveragePct,
+      ),
+    },
+  };
+}
+
 function maxText(current: string | null, candidate: unknown): string | null {
   const value = textValue(candidate);
   if (!value) return current;
@@ -260,6 +481,7 @@ function cachedSignal(value: unknown): ExternalDemandSignal | null {
     && Array.isArray(candidate.daily)
     && Array.isArray(candidate.topUnmapped)
     && Array.isArray(candidate.limitations)
+    && candidate.decisionBrief !== null && typeof candidate.decisionBrief === "object"
     && candidate.coverage !== null && typeof candidate.coverage === "object"
     && candidate.quality !== null && typeof candidate.quality === "object"
     && candidate.fulfillment !== null && typeof candidate.fulfillment === "object"
@@ -419,9 +641,15 @@ async function computeJiandaoyunExternalDemandSignal(
 
   type DailyAccumulator = {
     date: string;
+    sourceRows: number;
+    validPaidRows: number;
+    invalidSalesRows: number;
+    invalidRefundRows: number;
     paidQty: Qty;
     refundQty: Qty;
     netQty: Qty;
+    mappedPaidQty: Qty;
+    mappedRefundQty: Qty;
     mappedNetQty: Qty;
   };
   type UnmappedAccumulator = Omit<ExternalDemandSignal["topUnmapped"][number], "paidQty" | "refundQty" | "netQty"> & {
@@ -462,16 +690,28 @@ async function computeJiandaoyunExternalDemandSignal(
     if (ISO_DAY.test(sale.date)) {
       const row = daily.get(sale.date) ?? {
         date: sale.date,
+        sourceRows: 0,
+        validPaidRows: 0,
+        invalidSalesRows: 0,
+        invalidRefundRows: 0,
         paidQty: ZERO_QTY,
         refundQty: ZERO_QTY,
         netQty: ZERO_QTY,
+        mappedPaidQty: ZERO_QTY,
+        mappedRefundQty: ZERO_QTY,
         mappedNetQty: ZERO_QTY,
       };
+      row.sourceRows += sale.sourceRows;
+      row.validPaidRows += sale.validPaidRows;
+      row.invalidSalesRows += sale.invalidRows;
+      row.invalidRefundRows += refund.invalidRows;
       row.paidQty = qtyAdd(row.paidQty, sale.paidQty);
       row.refundQty = qtyAdd(row.refundQty, refund.refundQty);
       row.netQty = qtySub(row.paidQty, row.refundQty);
       if (mapped && sale.validPaidRows > 0) {
-        row.mappedNetQty = qtyAdd(row.mappedNetQty, qtySub(sale.paidQty, refund.refundQty));
+        row.mappedPaidQty = qtyAdd(row.mappedPaidQty, sale.paidQty);
+        row.mappedRefundQty = qtyAdd(row.mappedRefundQty, refund.refundQty);
+        row.mappedNetQty = qtySub(row.mappedPaidQty, row.mappedRefundQty);
       }
       daily.set(sale.date, row);
       if (mapped) {
@@ -508,11 +748,18 @@ async function computeJiandaoyunExternalDemandSignal(
     .sort((left, right) => left.date.localeCompare(right.date))
     .map((row) => ({
       date: row.date,
+      sourceRows: row.sourceRows,
+      validPaidRows: row.validPaidRows,
+      invalidSalesRows: row.invalidSalesRows,
+      invalidRefundRows: row.invalidRefundRows,
       paidQty: qtyNumber(row.paidQty),
       refundQty: qtyNumber(row.refundQty),
       netQty: qtyNumber(row.netQty),
+      mappedPaidQty: qtyNumber(row.mappedPaidQty),
+      mappedRefundQty: qtyNumber(row.mappedRefundQty),
       mappedNetQty: qtyNumber(row.mappedNetQty),
     }));
+  const decisionBrief = buildRollingDemandBrief(dailyRows);
   const platformIdentities = platformIdentitySet.size;
   const mappedIdentities = mappedIdentitySet.size;
   const topUnmappedRows = [...unmapped.values()].sort((left, right) =>
@@ -543,6 +790,7 @@ async function computeJiandaoyunExternalDemandSignal(
     sourceAsOf: salesBatch.sourceAsOf,
     crosswalkAsOf: crosswalkBatch.sourceAsOf,
     daily: dailyRows,
+    decisionBrief,
     totals: {
       paidQty: qtyNumber(paidQty),
       refundQty: qtyNumber(refundQty),
@@ -582,6 +830,7 @@ export function emptyExternalDemandSignal(gate = "尚未取得完整的简道云
     sourceAsOf: null,
     crosswalkAsOf: null,
     daily: [],
+    decisionBrief: emptyRollingDemandBrief("缺少完整的销售、退款或 SKU 对照证据，滚动需求判断保持关闭。"),
     totals: {
       paidQty: 0, refundQty: 0, netQty: 0,
       mappedPaidQty: 0, mappedRefundQty: 0, mappedNetQty: 0,

@@ -31,6 +31,15 @@ async function refreshDemandReadModel(db: AnyDb) {
     salesRows: signal.coverage.salesRows,
     mappedIdentities: signal.coverage.mappedIdentities,
     platformIdentities: signal.coverage.platformIdentities,
+    decisionBrief: {
+      state: signal.decisionBrief.state,
+      anchorDate: signal.decisionBrief.anchorDate,
+      currentObservedDays: signal.decisionBrief.current.observedDays,
+      previousObservedDays: signal.decisionBrief.previous.observedDays,
+      netDemandChangePct: signal.decisionBrief.change.netQtyPct,
+      refundRateDeltaPp: signal.decisionBrief.change.refundRateDeltaPp,
+      mappedPaidCoverageDeltaPp: signal.decisionBrief.change.mappedPaidCoverageDeltaPp,
+    },
   };
 }
 

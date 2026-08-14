@@ -27,7 +27,9 @@ export function externalDemandIdentityAction(
 const DAILY_HEADERS = [
   "记录类型", "权限口径", "来源系统", "平台", "来源截止", "对照截止", "导出时间",
   "平台SKU身份数", "已映射身份数", "身份覆盖率%", "支付量覆盖率%", "质量问题数",
-  "日期", "支付件数", "成功退款件数", "净需求信号", "已映射净需求", "放行状态",
+  "日期", "来源行数", "有效支付行数", "无效销售行数", "无效退款行数",
+  "支付件数", "成功退款件数", "净需求信号", "已映射支付件数",
+  "已映射退款件数", "已映射净需求", "放行状态",
 ];
 
 /** 日控制总量证据：一行一个业务日期，所有口径/覆盖/截止日随行，不产生孤儿数字。 */
@@ -47,7 +49,61 @@ export function buildExternalDemandDailyExport(
       signal.sourceAsOf, signal.crosswalkAsOf, generatedAt,
       signal.coverage.platformIdentities, signal.coverage.mappedIdentities,
       pct(signal.coverage.identityPct), pct(signal.coverage.paidQtyPct), qualityIssues,
-      row.date, row.paidQty, row.refundQty, row.netQty, row.mappedNetQty, signal.gate,
+      row.date, row.sourceRows, row.validPaidRows, row.invalidSalesRows, row.invalidRefundRows,
+      row.paidQty, row.refundQty, row.netQty,
+      row.mappedPaidQty, row.mappedRefundQty, row.mappedNetQty, signal.gate,
+    ]),
+  };
+}
+
+const ROLLING_HEADERS = [
+  "记录类型", "权限口径", "来源系统", "平台", "来源截止", "导出时间",
+  "判断状态", "判断口径", "窗口", "开始日期", "结束日期", "观察天数", "要求天数",
+  "支付件数", "成功退款件数", "净需求", "已映射支付件数", "已映射退款件数",
+  "已映射净需求", "退款率%", "已映射支付覆盖率%", "支付量变化%", "净需求变化%",
+  "退款率变化百分点", "已映射支付覆盖变化百分点",
+];
+
+/** 两个完整自然日窗口的决策证据；判断关闭时仍导出观察天数和门禁原因。 */
+export function buildExternalDemandRollingBriefExport(
+  signal: ExternalDemandSignal,
+  now = new Date(),
+): ExternalDemandCsvExport {
+  const generatedAt = now.toISOString();
+  const brief = signal.decisionBrief;
+  const rows = [
+    ["current_7d", brief.current],
+    ["previous_7d", brief.previous],
+  ] as const;
+  return {
+    filename: `简道云-天猫滚动需求简报-${brief.anchorDate ?? "无有效日期"}-${exportTimestamp(now)}.csv`,
+    headers: ROLLING_HEADERS,
+    rows: rows.map(([window, period]) => [
+      "rolling_demand_brief",
+      signal.authority,
+      signal.source,
+      signal.platform,
+      signal.sourceAsOf,
+      generatedAt,
+      brief.state,
+      brief.gate,
+      window,
+      period.startDate,
+      period.endDate,
+      period.observedDays,
+      period.requiredDays,
+      period.paidQty,
+      period.refundQty,
+      period.netQty,
+      period.mappedPaidQty,
+      period.mappedRefundQty,
+      period.mappedNetQty,
+      pct(period.refundRatePct),
+      pct(period.mappedPaidCoveragePct),
+      pct(brief.change.paidQtyPct),
+      pct(brief.change.netQtyPct),
+      pct(brief.change.refundRateDeltaPp),
+      pct(brief.change.mappedPaidCoverageDeltaPp),
     ]),
   };
 }

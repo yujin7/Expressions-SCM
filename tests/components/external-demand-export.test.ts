@@ -4,6 +4,7 @@ import {
   buildExternalDemandDailyExport,
   buildExternalDemandFulfillmentExport,
   buildExternalDemandIdentityExport,
+  buildExternalDemandRollingBriefExport,
   externalDemandIdentityAction,
 } from "@/components/external-demand-export";
 import { serializeCsv } from "@/components/exportCsv";
@@ -18,8 +19,42 @@ const signal: ExternalDemandSignal = {
   sourceAsOf: "2026-08-11",
   crosswalkAsOf: "2026-08-10",
   daily: [
-    { date: "2026-08-11", paidQty: 120, refundQty: 5, netQty: 115, mappedNetQty: 90 },
+    {
+      date: "2026-08-11",
+      sourceRows: 12,
+      validPaidRows: 11,
+      invalidSalesRows: 1,
+      invalidRefundRows: 2,
+      paidQty: 120,
+      refundQty: 5,
+      netQty: 115,
+      mappedPaidQty: 95,
+      mappedRefundQty: 5,
+      mappedNetQty: 90,
+    },
   ],
+  decisionBrief: {
+    state: "insufficient",
+    gate: "两个窗口尚不完整。",
+    anchorDate: "2026-08-11",
+    current: {
+      startDate: "2026-08-05", endDate: "2026-08-11", observedDays: 1, requiredDays: 7,
+      paidQty: 120, refundQty: 5, netQty: 115,
+      mappedPaidQty: 95, mappedRefundQty: 5, mappedNetQty: 90,
+      refundRatePct: 4.2, mappedPaidCoveragePct: 79.2,
+    },
+    previous: {
+      startDate: "2026-07-29", endDate: "2026-08-04", observedDays: 0, requiredDays: 7,
+      paidQty: 0, refundQty: 0, netQty: 0,
+      mappedPaidQty: 0, mappedRefundQty: 0, mappedNetQty: 0,
+      refundRatePct: null, mappedPaidCoveragePct: null,
+    },
+    change: {
+      paidQtyPct: null, netQtyPct: null,
+      refundRateDeltaPp: null, mappedPaidCoverageDeltaPp: null,
+    },
+    movement: { netDemand: "unknown", refundRate: "unknown", mappedPaidCoverage: "unknown" },
+  },
   totals: {
     paidQty: 120, refundQty: 5, netQty: 115,
     mappedPaidQty: 95, mappedRefundQty: 5, mappedNetQty: 90,
@@ -89,6 +124,19 @@ describe("简道云外部需求 UAT 导出", () => {
     expect(result.rows[1]).toEqual(expect.arrayContaining([42, "open", "去认领"]));
     expect(externalDemandIdentityAction({ ...signal.topUnmapped[1], exceptionStatus: "resolved" }))
       .toBe("已认领·待同步");
+  });
+
+  it("滚动简报导出保留两个窗口的日覆盖与关闭原因", () => {
+    const result = buildExternalDemandRollingBriefExport(signal, now);
+    expect(result.filename).toContain("2026-08-11");
+    expect(result.rows).toHaveLength(2);
+    expect(result.rows[0]).toEqual(expect.arrayContaining([
+      "rolling_demand_brief", "observation_only", "insufficient", "两个窗口尚不完整。",
+      "current_7d", "2026-08-05", "2026-08-11", 1, 7, 120, 5, 115,
+    ]));
+    expect(result.rows[1]).toEqual(expect.arrayContaining([
+      "previous_7d", "2026-07-29", "2026-08-04", 0, 7,
+    ]));
   });
 
   it("导出层把外部公式样式字段强制作为文本，同时保留负数", () => {

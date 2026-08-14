@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import * as schema from "@/db/schema";
 import {
+  buildRollingDemandBrief,
   loadJiandaoyunExternalDemandSignal,
   refreshJiandaoyunExternalDemandReadModel,
 } from "@/server/modules/report/external-demand-signal";
@@ -115,8 +116,12 @@ describe("简道云外部需求信号", () => {
         paidQty: 150,
         refundQty: 15,
         netQty: 135,
+        mappedPaidQty: 100,
+        mappedRefundQty: 10,
         mappedNetQty: 90,
       });
+      expect(result.decisionBrief.state).toBe("insufficient");
+      expect(result.decisionBrief.gate).toContain("1/7 天");
       expect(result.quality.invalidSalesRows).toBe(1);
       expect(result.fulfillment).toMatchObject({
         state: "ready",
@@ -193,5 +198,87 @@ describe("简道云外部需求信号", () => {
     } finally {
       await client.close();
     }
+  });
+
+  it("只在两个自然日窗口均完整时生成最近7天对前7天的决策简报", () => {
+    const rows = Array.from({ length: 14 }, (_, index) => {
+      const day = String(index + 1).padStart(2, "0");
+      const current = index >= 7;
+      return {
+        date: `2026-08-${day}`,
+        sourceRows: 1,
+        validPaidRows: 1,
+        invalidSalesRows: 0,
+        invalidRefundRows: 0,
+        paidQty: current ? 20 : 10,
+        refundQty: current ? 2 : 1,
+        netQty: current ? 18 : 9,
+        mappedPaidQty: current ? 12 : 5,
+        mappedRefundQty: current ? 1 : 0.5,
+        mappedNetQty: current ? 11 : 4.5,
+      };
+    });
+
+    const result = buildRollingDemandBrief(rows);
+
+    expect(result.state).toBe("ready");
+    expect(result.anchorDate).toBe("2026-08-14");
+    expect(result.previous).toMatchObject({
+      startDate: "2026-08-01",
+      endDate: "2026-08-07",
+      observedDays: 7,
+      paidQty: 70,
+      netQty: 63,
+      refundRatePct: 10,
+      mappedPaidCoveragePct: 50,
+    });
+    expect(result.current).toMatchObject({
+      startDate: "2026-08-08",
+      endDate: "2026-08-14",
+      observedDays: 7,
+      paidQty: 140,
+      netQty: 126,
+      refundRatePct: 10,
+      mappedPaidCoveragePct: 60,
+    });
+    expect(result.change).toEqual({
+      paidQtyPct: 100,
+      netQtyPct: 100,
+      refundRateDeltaPp: 0,
+      mappedPaidCoverageDeltaPp: 10,
+    });
+    expect(result.movement).toEqual({
+      netDemand: "up",
+      refundRate: "flat",
+      mappedPaidCoverage: "up",
+    });
+  });
+
+  it("缺日与零分母都保持未知，不把缺失或无法计算伪装成0", () => {
+    const complete = Array.from({ length: 14 }, (_, index) => ({
+      date: `2026-08-${String(index + 1).padStart(2, "0")}`,
+      sourceRows: 1,
+      validPaidRows: 1,
+      invalidSalesRows: 0,
+      invalidRefundRows: 0,
+      paidQty: index >= 7 ? 1 : 0,
+      refundQty: 0,
+      netQty: index >= 7 ? 1 : 0,
+      mappedPaidQty: 0,
+      mappedRefundQty: 0,
+      mappedNetQty: 0,
+    }));
+    const zeroBase = buildRollingDemandBrief(complete);
+    expect(zeroBase.state).toBe("ready");
+    expect(zeroBase.change.paidQtyPct).toBeNull();
+    expect(zeroBase.change.netQtyPct).toBeNull();
+    expect(zeroBase.previous.refundRatePct).toBeNull();
+    expect(zeroBase.change.refundRateDeltaPp).toBeNull();
+
+    const missingDay = buildRollingDemandBrief(complete.filter((row) => row.date !== "2026-08-03"));
+    expect(missingDay.state).toBe("insufficient");
+    expect(missingDay.previous.observedDays).toBe(6);
+    expect(missingDay.change.netQtyPct).toBeNull();
+    expect(missingDay.gate).toContain("缺失日不补零");
   });
 });

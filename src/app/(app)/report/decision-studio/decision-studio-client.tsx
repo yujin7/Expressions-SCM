@@ -45,6 +45,7 @@ import {
   buildExternalDemandDailyExport,
   buildExternalDemandFulfillmentExport,
   buildExternalDemandIdentityExport,
+  buildExternalDemandRollingBriefExport,
   externalDemandIdentityAction,
 } from "@/components/external-demand-export";
 import {
@@ -68,6 +69,20 @@ const DIMENSION_LABEL: Record<StudioDimension, string> = {
 function pctLabel(value: number | null): string {
   if (value == null) return "数据不足";
   return `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
+}
+
+function ppLabel(value: number | null): string {
+  if (value == null) return "无法计算";
+  return `${value >= 0 ? "+" : ""}${value.toFixed(1)} 个百分点`;
+}
+
+function movementColor(
+  movement: "up" | "down" | "flat" | "unknown",
+  inverse = false,
+): string | undefined {
+  if (movement === "unknown" || movement === "flat") return undefined;
+  const favorable = inverse ? movement === "down" : movement === "up";
+  return favorable ? VISUAL_COLOR.positive : VISUAL_COLOR.critical;
 }
 
 function shortQty(value: number): string {
@@ -212,6 +227,16 @@ export default function DecisionStudioClient() {
     const payload = buildExternalDemandIdentityExport(external);
     exportCsv(payload.filename, payload.headers, payload.rows);
     message.success("已导出平台 SKU 身份修复队列");
+  };
+
+  const exportExternalRollingBrief = () => {
+    if (!external || !external.decisionBrief.anchorDate) {
+      message.warning("当前没有可导出的滚动需求窗口证据");
+      return;
+    }
+    const payload = buildExternalDemandRollingBriefExport(external);
+    exportCsv(payload.filename, payload.headers, payload.rows);
+    message.success("已导出最近7天对前7天的需求决策证据");
   };
 
   const exportExternalFulfillment = () => {
@@ -739,6 +764,119 @@ export default function DecisionStudioClient() {
                     </Card>
                   </Col>
                 </Row>
+                <Card
+                  size="small"
+                  title="滚动需求决策简报"
+                  extra={(
+                    <Space size={8} wrap>
+                      <Tag
+                        style={external?.decisionBrief.state === "ready"
+                          ? { color: "#166534", background: "#dcfce7", borderColor: "#86efac" }
+                          : { color: "#854d0e", background: "#fef9c3", borderColor: "#fde047" }}
+                      >
+                        {external?.decisionBrief.state === "ready" ? "双窗口完整" : "窗口不完整"}
+                      </Tag>
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<DownloadOutlined />}
+                        disabled={!external?.decisionBrief.anchorDate}
+                        onClick={exportExternalRollingBrief}
+                      >
+                        导出窗口证据
+                      </Button>
+                    </Space>
+                  )}
+                  styles={{ body: { padding: 12 } }}
+                >
+                  <Alert
+                    showIcon
+                    type={external?.decisionBrief.state === "ready" ? "info" : "warning"}
+                    message={external?.decisionBrief.gate ?? "正在建立两个自然日窗口。"}
+                    style={{ marginBottom: 10 }}
+                  />
+                  <Row gutter={[10, 10]} className="compact-kpi-row">
+                    <Col xs={12} lg={6}>
+                      <Card size="small">
+                        <Statistic
+                          title={`最近7天净需求 · ${external?.decisionBrief.current.observedDays ?? 0}/7天`}
+                          value={external?.decisionBrief.state === "ready"
+                            ? external.decisionBrief.current.netQty
+                            : "数据不足"}
+                          formatter={external?.decisionBrief.state === "ready"
+                            ? (value) => formatQty(Number(value))
+                            : undefined}
+                        />
+                        <Typography.Text type="secondary">
+                          {external?.decisionBrief.current.startDate ?? "—"} 至 {external?.decisionBrief.current.endDate ?? "—"}
+                        </Typography.Text>
+                      </Card>
+                    </Col>
+                    <Col xs={12} lg={6}>
+                      <Card size="small">
+                        <Statistic
+                          title="净需求较前7天"
+                          value={external?.decisionBrief.state === "ready"
+                            ? pctLabel(external.decisionBrief.change.netQtyPct)
+                            : "数据不足"}
+                          valueStyle={{
+                            color: movementColor(external?.decisionBrief.movement.netDemand ?? "unknown"),
+                          }}
+                        />
+                        <Typography.Text type="secondary">
+                          前窗净需求 {external?.decisionBrief.state === "ready"
+                            ? formatQty(external.decisionBrief.previous.netQty)
+                            : "—"}
+                        </Typography.Text>
+                      </Card>
+                    </Col>
+                    <Col xs={12} lg={6}>
+                      <Card size="small">
+                        <Statistic
+                          title="最近7天退款率"
+                          value={external?.decisionBrief.state === "ready"
+                            && external.decisionBrief.current.refundRatePct != null
+                            ? external.decisionBrief.current.refundRatePct
+                            : "数据不足"}
+                          precision={1}
+                          suffix={external?.decisionBrief.state === "ready"
+                            && external.decisionBrief.current.refundRatePct != null ? "%" : undefined}
+                          valueStyle={{
+                            color: movementColor(
+                              external?.decisionBrief.movement.refundRate ?? "unknown",
+                              true,
+                            ),
+                          }}
+                        />
+                        <Typography.Text type="secondary">
+                          较前窗 {ppLabel(external?.decisionBrief.change.refundRateDeltaPp ?? null)}
+                        </Typography.Text>
+                      </Card>
+                    </Col>
+                    <Col xs={12} lg={6}>
+                      <Card size="small">
+                        <Statistic
+                          title="最近7天已映射支付覆盖"
+                          value={external?.decisionBrief.state === "ready"
+                            && external.decisionBrief.current.mappedPaidCoveragePct != null
+                            ? external.decisionBrief.current.mappedPaidCoveragePct
+                            : "数据不足"}
+                          precision={1}
+                          suffix={external?.decisionBrief.state === "ready"
+                            && external.decisionBrief.current.mappedPaidCoveragePct != null ? "%" : undefined}
+                          valueStyle={{
+                            color: movementColor(
+                              external?.decisionBrief.movement.mappedPaidCoverage ?? "unknown",
+                            ),
+                          }}
+                        />
+                        <Typography.Text type="secondary">
+                          较前窗 {ppLabel(external?.decisionBrief.change.mappedPaidCoverageDeltaPp ?? null)}
+                        </Typography.Text>
+                      </Card>
+                    </Col>
+                  </Row>
+                </Card>
                 <DecisionVisual
                   title="简道云 · 天猫支付、退款与净需求趋势"
                   question="扣除成功退款后，外部需求信号如何变化；其中多少已经能安全归属系统 SKU？"
