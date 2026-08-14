@@ -4,8 +4,10 @@ import {
   buildExternalDemandDailyExport,
   buildExternalDemandFulfillmentExport,
   buildExternalDemandIdentityExport,
+  buildExternalDemandRefundDriversExport,
   buildExternalDemandRollingBriefExport,
   externalDemandIdentityAction,
+  externalRefundDriverAction,
 } from "@/components/external-demand-export";
 import { serializeCsv } from "@/components/exportCsv";
 import type { ExternalDemandSignal } from "@/server/modules/report/external-demand-signal";
@@ -54,6 +56,27 @@ const signal: ExternalDemandSignal = {
       refundRateDeltaPp: null, mappedPaidCoverageDeltaPp: null,
     },
     movement: { netDemand: "unknown", refundRate: "unknown", mappedPaidCoverage: "unknown" },
+  },
+  refundDrivers: {
+    state: "insufficient",
+    authority: "observation_only",
+    grain: "店铺 × 天猫平台 SKU × 双自然日窗口",
+    gate: "双窗口未开放。",
+    movement: "unknown",
+    totals: {
+      currentRefundQty: 5,
+      previousRefundQty: 0,
+      deltaRefundQty: null,
+      changePct: null,
+      movementPoolQty: null,
+    },
+    eligibleDrivers: 0,
+    identityCoverage: {
+      mappedDrivers: 0, unmappedDrivers: 0,
+      mappedMovementPoolQty: 0, mappedMovementPoolPct: null,
+    },
+    byShop: [],
+    topContributors: [],
   },
   totals: {
     paidQty: 120, refundQty: 5, netQty: 115,
@@ -137,6 +160,71 @@ describe("简道云外部需求 UAT 导出", () => {
     expect(result.rows[1]).toEqual(expect.arrayContaining([
       "previous_7d", "2026-07-29", "2026-08-04", 0, 7,
     ]));
+  });
+
+  it("退款驱动导出保留同向贡献池、身份动作和双窗口数值", () => {
+    const withDrivers: ExternalDemandSignal = {
+      ...signal,
+      refundDrivers: {
+        state: "ready",
+        authority: "observation_only",
+        grain: "店铺 × 天猫平台 SKU × 双自然日窗口",
+        gate: "只呈现同方向变化贡献。",
+        movement: "up",
+        totals: {
+          currentRefundQty: 42,
+          previousRefundQty: 21,
+          deltaRefundQty: 21,
+          changePct: 100,
+          movementPoolQty: 21,
+        },
+        eligibleDrivers: 1,
+        identityCoverage: {
+          mappedDrivers: 0,
+          unmappedDrivers: 1,
+          mappedMovementPoolQty: 0,
+          mappedMovementPoolPct: 0,
+        },
+        byShop: [{
+          shopName: "EXP 天猫店",
+          currentRefundQty: 42,
+          previousRefundQty: 21,
+          netDeltaRefundQty: 21,
+          movementPoolQty: 21,
+          movementPoolSharePct: 100,
+          eligibleDrivers: 1,
+          unmappedDrivers: 1,
+        }],
+        topContributors: [{
+          shopName: "EXP 天猫店",
+          platformSkuId: "P1",
+          barcode: "6901",
+          skuId: null,
+          exceptionId: 42,
+          exceptionStatus: "open",
+          productName: "商品A",
+          skuName: "规格A",
+          currentPaidQty: 70,
+          currentRefundQty: 21,
+          currentRefundRatePct: 30,
+          previousPaidQty: 70,
+          previousRefundQty: 7,
+          previousRefundRatePct: 10,
+          deltaRefundQty: 14,
+          refundRateDeltaPp: 20,
+          movementPoolSharePct: 66.7,
+        }],
+      },
+    };
+    const result = buildExternalDemandRefundDriversExport(withDrivers, now);
+    expect(result.filename).toContain("2026-08-11");
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toEqual(expect.arrayContaining([
+      "refund_change_driver", "observation_only", "up", 42, 21, 21, "100.0",
+      "EXP 天猫店", "P1", "6901", 70, 21, "30.0", 70, 7, "10.0",
+      14, "20.0", "66.7", "去认领", "只呈现同方向变化贡献。",
+    ]));
+    expect(externalRefundDriverAction(withDrivers.refundDrivers.topContributors[0])).toBe("去认领");
   });
 
   it("导出层把外部公式样式字段强制作为文本，同时保留负数", () => {

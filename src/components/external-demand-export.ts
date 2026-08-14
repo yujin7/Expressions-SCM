@@ -27,7 +27,7 @@ export function externalDemandIdentityAction(
 const DAILY_HEADERS = [
   "记录类型", "权限口径", "来源系统", "平台", "来源截止", "对照截止", "导出时间",
   "平台SKU身份数", "已映射身份数", "身份覆盖率%", "支付量覆盖率%", "质量问题数",
-  "日期", "来源行数", "有效支付行数", "无效销售行数", "无效退款行数",
+  "日期", "销售来源行数", "有效支付行数", "无效销售行数", "无效退款行数",
   "支付件数", "成功退款件数", "净需求信号", "已映射支付件数",
   "已映射退款件数", "已映射净需求", "放行状态",
 ];
@@ -104,6 +104,76 @@ export function buildExternalDemandRollingBriefExport(
       pct(brief.change.netQtyPct),
       pct(brief.change.refundRateDeltaPp),
       pct(brief.change.mappedPaidCoverageDeltaPp),
+    ]),
+  };
+}
+
+export function externalRefundDriverAction(
+  row: ExternalDemandSignal["refundDrivers"]["topContributors"][number],
+): "已映射·核查退款原因" | "回源补对照/条码" | "去认领" | "已认领·待同步" | "已忽略·回源核对" | "待同步核对" {
+  if (row.skuId != null) return "已映射·核查退款原因";
+  if (!row.barcode) return "回源补对照/条码";
+  if (row.exceptionStatus === "open") return "去认领";
+  if (row.exceptionStatus === "resolved") return "已认领·待同步";
+  if (row.exceptionStatus === "ignored") return "已忽略·回源核对";
+  return "待同步核对";
+}
+
+const REFUND_DRIVER_HEADERS = [
+  "记录类型", "权限口径", "来源系统", "平台", "来源截止", "导出时间",
+  "变化方向", "本期退款", "前期退款", "退款变化", "退款变化率%", "同向变化池",
+  "可行动驱动数", "已映射驱动数", "未映射驱动数", "已映射变化池占比%",
+  "排名", "店铺", "店铺同向池占比%", "平台SKU", "条码", "系统SKU ID", "商品名", "规格名",
+  "本期支付", "本期退款", "本期退款率%", "前期支付", "前期退款", "前期退款率%",
+  "退款量变化", "退款率变化百分点", "同向变化池占比%", "身份动作", "判断口径",
+];
+
+/** 退款变化行动证据：只导出与总体变化同方向的驱动，不把相互抵销后的净变化自动归责。 */
+export function buildExternalDemandRefundDriversExport(
+  signal: ExternalDemandSignal,
+  now = new Date(),
+): ExternalDemandCsvExport {
+  const generatedAt = now.toISOString();
+  const drivers = signal.refundDrivers;
+  return {
+    filename: `简道云-天猫退款驱动-${signal.decisionBrief.anchorDate ?? "无有效日期"}-${exportTimestamp(now)}.csv`,
+    headers: REFUND_DRIVER_HEADERS,
+    rows: drivers.topContributors.map((row, index) => [
+      "refund_change_driver",
+      drivers.authority,
+      signal.source,
+      signal.platform,
+      signal.sourceAsOf,
+      generatedAt,
+      drivers.movement,
+      drivers.totals.currentRefundQty,
+      drivers.totals.previousRefundQty,
+      drivers.totals.deltaRefundQty,
+      pct(drivers.totals.changePct),
+      drivers.totals.movementPoolQty,
+      drivers.eligibleDrivers,
+      drivers.identityCoverage.mappedDrivers,
+      drivers.identityCoverage.unmappedDrivers,
+      pct(drivers.identityCoverage.mappedMovementPoolPct),
+      index + 1,
+      row.shopName,
+      pct(drivers.byShop.find((shop) => shop.shopName === row.shopName)?.movementPoolSharePct ?? null),
+      row.platformSkuId,
+      row.barcode,
+      row.skuId,
+      row.productName,
+      row.skuName,
+      row.currentPaidQty,
+      row.currentRefundQty,
+      pct(row.currentRefundRatePct),
+      row.previousPaidQty,
+      row.previousRefundQty,
+      pct(row.previousRefundRatePct),
+      row.deltaRefundQty,
+      pct(row.refundRateDeltaPp),
+      pct(row.movementPoolSharePct),
+      externalRefundDriverAction(row),
+      drivers.gate,
     ]),
   };
 }

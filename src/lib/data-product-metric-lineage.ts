@@ -33,7 +33,7 @@ export interface DataProductMetricLineageContract {
   nextAction: string;
 }
 
-export const DATA_PRODUCT_METRIC_LINEAGE_VERSION = "data-product-metric-lineage/v5" as const;
+export const DATA_PRODUCT_METRIC_LINEAGE_VERSION = "data-product-metric-lineage/v6" as const;
 
 export const METRIC_COMPUTATION_STATE_LABEL: Record<MetricComputationState, string> = {
   implemented: "可重放计算",
@@ -122,8 +122,8 @@ export const DATA_PRODUCT_METRIC_LINEAGE_CONTRACTS: DataProductMetricLineageCont
     ],
     joinKeys: ["业务日", "店铺", "平台 SKU"],
     missingPolicy: "not_applicable",
-    evidence: "支付与成功退款按固定业务日、店铺、平台 SKU 聚合，JST 出库以独立同窗对比呈现且不改写退款定义",
-    nextAction: "用真实业务样本确认跨期退款观察窗口，并保留退款申请、成功退款和退货入库的事件差异",
+    evidence: "支付与成功退款按固定业务日、店铺、平台 SKU 聚合；两个完整 7 日自然窗的退款率变化及同方向 SKU 驱动拆解已实现，JST 出库以独立同窗对比呈现且不改写退款定义",
+    nextAction: "业务 UAT 确认跨期退款观察窗，再接入退款原因、原支付订单与退货入库事件，避免将观察日变化直接归责",
   }),
   contract({
     productId: "demand-pulse", metricId: "mappedDemandCoverage", state: "implemented",

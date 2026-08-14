@@ -45,8 +45,10 @@ import {
   buildExternalDemandDailyExport,
   buildExternalDemandFulfillmentExport,
   buildExternalDemandIdentityExport,
+  buildExternalDemandRefundDriversExport,
   buildExternalDemandRollingBriefExport,
   externalDemandIdentityAction,
+  externalRefundDriverAction,
 } from "@/components/external-demand-export";
 import {
   buildCommerceIdentityRepairExport,
@@ -83,6 +85,13 @@ function movementColor(
   if (movement === "unknown" || movement === "flat") return undefined;
   const favorable = inverse ? movement === "down" : movement === "up";
   return favorable ? VISUAL_COLOR.positive : VISUAL_COLOR.critical;
+}
+
+function refundMovementLabel(movement: "up" | "down" | "flat" | "unknown"): string {
+  if (movement === "up") return "退款增加驱动";
+  if (movement === "down") return "退款减少驱动";
+  if (movement === "flat") return "退款结构变动";
+  return "退款驱动待判断";
 }
 
 function shortQty(value: number): string {
@@ -157,6 +166,8 @@ export default function DecisionStudioClient() {
   const heatMax = Math.max(0, ...(data?.daily.dates ?? []).map((item) => item.qty));
   const external = data?.externalDemand;
   const externalReady = external?.state === "ready";
+  const refundDrivers = external?.refundDrivers;
+  const refundShopChartRows = (refundDrivers?.byShop ?? []).slice(0, 10);
   const identity = data?.commerceIdentity;
 
   const pivotColumns = useMemo<ColumnsType<DecisionStudioResult["pivot"][number]>>(
@@ -237,6 +248,16 @@ export default function DecisionStudioClient() {
     const payload = buildExternalDemandRollingBriefExport(external);
     exportCsv(payload.filename, payload.headers, payload.rows);
     message.success("已导出最近7天对前7天的需求决策证据");
+  };
+
+  const exportExternalRefundDrivers = () => {
+    if (!external || external.refundDrivers.topContributors.length === 0) {
+      message.warning("当前没有可导出的退款变化驱动项");
+      return;
+    }
+    const payload = buildExternalDemandRefundDriversExport(external);
+    exportCsv(payload.filename, payload.headers, payload.rows);
+    message.success("已导出退款变化驱动行动证据");
   };
 
   const exportExternalFulfillment = () => {
@@ -877,6 +898,123 @@ export default function DecisionStudioClient() {
                     </Col>
                   </Row>
                 </Card>
+                <DecisionVisual
+                  title={`退款变化拆解 · ${refundMovementLabel(refundDrivers?.movement ?? "unknown")}`}
+                  question="哪些店铺与平台 SKU 推动了最近 7 天的退款变化；它们是否已经具备可行动的系统身份？"
+                  metricId="refundRate"
+                  grain={refundDrivers?.grain ?? "店铺 × 天猫平台 SKU × 双自然日窗口"}
+                  unit="件 / %"
+                  source={{
+                    tier: "reference",
+                    source: "简道云天猫支付与成功退款（两个完整自然日窗口）",
+                    asOf: external?.sourceAsOf,
+                  }}
+                  coverage={{
+                    covered: refundDrivers?.identityCoverage.mappedDrivers ?? 0,
+                    total: refundDrivers?.eligibleDrivers ?? 0,
+                    label: "已有 SCM 身份的同向驱动",
+                  }}
+                  activeFilters={[
+                    "粒度：店铺 + 平台 SKU",
+                    "仅同方向变化池",
+                    "正负不相互抵销",
+                    "不自动归责",
+                  ]}
+                  summary={refundDrivers?.state === "ready"
+                    ? `退款 ${formatQty(refundDrivers.totals.previousRefundQty)} → ${formatQty(refundDrivers.totals.currentRefundQty)}，变化 ${formatQty(refundDrivers.totals.deltaRefundQty ?? 0)}；同向池 ${formatQty(refundDrivers.totals.movementPoolQty ?? 0)}，共 ${refundDrivers.eligibleDrivers} 个驱动；其中 ${refundDrivers.identityCoverage.mappedMovementPoolPct?.toFixed(1) ?? "—"}% 已有 SCM 身份。${refundDrivers.byShop[0] ? ` 首要店铺：${refundDrivers.byShop[0].shopName}（${refundDrivers.byShop[0].movementPoolSharePct?.toFixed(1) ?? "—"}%）。` : ""}`
+                    : refundDrivers?.gate ?? "正在建立退款驱动窗口。"}
+                  caveat="贡献占比只在与总体变化同方向的 SKU 变化池内计算；退款发生日不一定等于原支付日，必须结合退款原因、退货入库和平台明细复核。"
+                  state={loading && !data ? "loading" : refundDrivers?.state ?? "insufficient"}
+                  stateDetail={refundDrivers?.gate}
+                  height={360}
+                  onExport={(refundDrivers?.topContributors.length ?? 0) > 0
+                    ? exportExternalRefundDrivers
+                    : undefined}
+                  exportLabel="导出退款驱动行动证据"
+                  dataView={(
+                    <Table
+                      rowKey={(row) => `${row.shopName}\u0000${row.platformSkuId}`}
+                      size="small"
+                      pagination={{ pageSize: 10, showSizeChanger: false }}
+                      dataSource={refundDrivers?.topContributors ?? []}
+                      scroll={{ x: 1320 }}
+                      columns={[
+                        { title: "店铺", dataIndex: "shopName", width: 160, fixed: "left", sorter: (a, b) => a.shopName.localeCompare(b.shopName, "zh-CN") },
+                        { title: "平台 SKU", dataIndex: "platformSkuId", width: 170, sorter: (a, b) => a.platformSkuId.localeCompare(b.platformSkuId) },
+                        { title: "商品 / 规格", key: "name", width: 220, ellipsis: true, render: (_, row) => row.skuName || row.productName || "（未提供）" },
+                        { title: "本期退款", dataIndex: "currentRefundQty", width: 110, align: "right", sorter: (a, b) => a.currentRefundQty - b.currentRefundQty, render: formatQty },
+                        { title: "前期退款", dataIndex: "previousRefundQty", width: 110, align: "right", sorter: (a, b) => a.previousRefundQty - b.previousRefundQty, render: formatQty },
+                        {
+                          title: "退款变化",
+                          dataIndex: "deltaRefundQty",
+                          width: 120,
+                          align: "right",
+                          sorter: (a, b) => a.deltaRefundQty - b.deltaRefundQty,
+                          render: (value) => (
+                            <Typography.Text type={Number(value) > 0 ? "danger" : undefined}>
+                              {Number(value) > 0 ? "+" : ""}{formatQty(value)}
+                            </Typography.Text>
+                          ),
+                        },
+                        { title: "本期退款率", dataIndex: "currentRefundRatePct", width: 130, align: "right", sorter: (a, b) => (a.currentRefundRatePct ?? -1) - (b.currentRefundRatePct ?? -1), render: (value) => value == null ? "数据不足" : `${Number(value).toFixed(1)}%` },
+                        { title: "退款率变化", dataIndex: "refundRateDeltaPp", width: 140, align: "right", sorter: (a, b) => (a.refundRateDeltaPp ?? -Infinity) - (b.refundRateDeltaPp ?? -Infinity), render: (value) => ppLabel(value == null ? null : Number(value)) },
+                        { title: "同向池占比", dataIndex: "movementPoolSharePct", width: 130, align: "right", sorter: (a, b) => (a.movementPoolSharePct ?? -1) - (b.movementPoolSharePct ?? -1), render: (value) => value == null ? "数据不足" : `${Number(value).toFixed(1)}%` },
+                        {
+                          title: "下一步",
+                          key: "action",
+                          width: 175,
+                          fixed: "right",
+                          render: (_, row) => {
+                            const action = externalRefundDriverAction(row);
+                            if (row.skuId != null) return <Typography.Text>{action}</Typography.Text>;
+                            if (row.exceptionStatus === "open" && row.barcode) {
+                              const query = new URLSearchParams({
+                                status: "open",
+                                scope: "JIANDAOYUN",
+                                aliasType: "sku_barcode",
+                                rawValue: row.barcode,
+                              });
+                              return <Button type="link" size="small" href={`/import/exceptions?${query.toString()}`}>{action}</Button>;
+                            }
+                            return <Typography.Text type="warning">{action}</Typography.Text>;
+                          },
+                        },
+                      ]}
+                    />
+                  )}
+                >
+                  <ResponsiveContainer minWidth={0} minHeight={1}>
+                    <ComposedChart
+                      data={refundShopChartRows}
+                      layout="vertical"
+                      margin={{ top: 8, right: 28, left: 42, bottom: 20 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis type="number" tickFormatter={shortQty} />
+                      <YAxis
+                        type="category"
+                        dataKey="shopName"
+                        width={170}
+                        tickFormatter={(value) => String(value).slice(0, 18)}
+                      />
+                      <RechartsTooltip
+                        formatter={(value) => formatQty(Number(value))}
+                        labelFormatter={(_, payload) => payload?.[0]?.payload?.shopName ?? ""}
+                      />
+                      <ReferenceLine x={0} stroke={VISUAL_COLOR.neutral} />
+                      <Bar
+                        dataKey="movementPoolQty"
+                        name="同向退款变化池"
+                        fill={refundDrivers?.movement === "down"
+                          ? VISUAL_COLOR.positive
+                          : refundDrivers?.movement === "up"
+                            ? VISUAL_COLOR.critical
+                            : VISUAL_COLOR.warning}
+                        radius={[0, 4, 4, 0]}
+                      />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </DecisionVisual>
                 <DecisionVisual
                   title="简道云 · 天猫支付、退款与净需求趋势"
                   question="扣除成功退款后，外部需求信号如何变化；其中多少已经能安全归属系统 SKU？"

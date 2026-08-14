@@ -40,6 +40,17 @@ async function refreshDemandReadModel(db: AnyDb) {
       refundRateDeltaPp: signal.decisionBrief.change.refundRateDeltaPp,
       mappedPaidCoverageDeltaPp: signal.decisionBrief.change.mappedPaidCoverageDeltaPp,
     },
+    refundDrivers: {
+      state: signal.refundDrivers.state,
+      movement: signal.refundDrivers.movement,
+      deltaRefundQty: signal.refundDrivers.totals.deltaRefundQty,
+      eligibleDrivers: signal.refundDrivers.eligibleDrivers,
+      surfacedDrivers: signal.refundDrivers.topContributors.length,
+      mappedDrivers: signal.refundDrivers.identityCoverage.mappedDrivers,
+      mappedMovementPoolPct: signal.refundDrivers.identityCoverage.mappedMovementPoolPct,
+      leadingShop: signal.refundDrivers.byShop[0]?.shopName ?? null,
+      leadingShopMovementPoolPct: signal.refundDrivers.byShop[0]?.movementPoolSharePct ?? null,
+    },
   };
 }
 

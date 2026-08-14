@@ -7,7 +7,7 @@
  */
 import { sql, type SQL } from "drizzle-orm";
 
-import { dAdd, dCmp, dDiv, dMul, dQty, dSub } from "@/server/core/decimal";
+import { dAdd, dCmp, dDiv, dMul, dNeg, dQty, dSub } from "@/server/core/decimal";
 
 interface ReadDb {
   execute(query: SQL): Promise<unknown>;
@@ -18,7 +18,7 @@ const STREAM = {
   sales: "tmall-sku-sales-observation",
   refunds: "tmall-sku-refund-observation",
 } as const;
-const READ_MODEL_CACHE_KEY = "jiandaoyun-external-demand/v2";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-external-demand/v4";
 
 export interface ExternalDemandDailyRow {
   date: string;
@@ -68,6 +68,71 @@ export interface RollingDemandBrief {
   };
 }
 
+export interface RefundDriverObservation {
+  date: string;
+  shopName: string;
+  platformSkuId: string;
+  barcode: string | null;
+  skuId: number | null;
+  exceptionId: number | null;
+  exceptionStatus: "open" | "resolved" | "ignored" | null;
+  productName: string | null;
+  skuName: string | null;
+  paidQty: string;
+  refundQty: string;
+}
+
+export interface RefundDriverBreakdown {
+  state: "ready" | "insufficient";
+  authority: "observation_only";
+  grain: "店铺 × 天猫平台 SKU × 双自然日窗口";
+  gate: string;
+  movement: "up" | "down" | "flat" | "unknown";
+  totals: {
+    currentRefundQty: number;
+    previousRefundQty: number;
+    deltaRefundQty: number | null;
+    changePct: number | null;
+    movementPoolQty: number | null;
+  };
+  eligibleDrivers: number;
+  identityCoverage: {
+    mappedDrivers: number;
+    unmappedDrivers: number;
+    mappedMovementPoolQty: number;
+    mappedMovementPoolPct: number | null;
+  };
+  byShop: {
+    shopName: string;
+    currentRefundQty: number;
+    previousRefundQty: number;
+    netDeltaRefundQty: number;
+    movementPoolQty: number;
+    movementPoolSharePct: number | null;
+    eligibleDrivers: number;
+    unmappedDrivers: number;
+  }[];
+  topContributors: {
+    shopName: string;
+    platformSkuId: string;
+    barcode: string | null;
+    skuId: number | null;
+    exceptionId: number | null;
+    exceptionStatus: "open" | "resolved" | "ignored" | null;
+    productName: string | null;
+    skuName: string | null;
+    currentPaidQty: number;
+    currentRefundQty: number;
+    currentRefundRatePct: number | null;
+    previousPaidQty: number;
+    previousRefundQty: number;
+    previousRefundRatePct: number | null;
+    deltaRefundQty: number;
+    refundRateDeltaPp: number | null;
+    movementPoolSharePct: number | null;
+  }[];
+}
+
 export interface ExternalDemandSignal {
   state: "ready" | "insufficient";
   authority: "observation_only";
@@ -78,6 +143,7 @@ export interface ExternalDemandSignal {
   crosswalkAsOf: string | null;
   daily: ExternalDemandDailyRow[];
   decisionBrief: RollingDemandBrief;
+  refundDrivers: RefundDriverBreakdown;
   totals: {
     paidQty: number;
     refundQty: number;
@@ -410,6 +476,240 @@ export function buildRollingDemandBrief(
   };
 }
 
+function emptyRefundDriverBreakdown(gate: string): RefundDriverBreakdown {
+  return {
+    state: "insufficient",
+    authority: "observation_only",
+    grain: "店铺 × 天猫平台 SKU × 双自然日窗口",
+    gate,
+    movement: "unknown",
+    totals: {
+      currentRefundQty: 0,
+      previousRefundQty: 0,
+      deltaRefundQty: null,
+      changePct: null,
+      movementPoolQty: null,
+    },
+    eligibleDrivers: 0,
+    identityCoverage: {
+      mappedDrivers: 0,
+      unmappedDrivers: 0,
+      mappedMovementPoolQty: 0,
+      mappedMovementPoolPct: null,
+    },
+    byShop: [],
+    topContributors: [],
+  };
+}
+
+interface RefundDriverAccumulator {
+  shopName: string;
+  platformSkuId: string;
+  barcode: string | null;
+  skuId: number | null;
+  exceptionId: number | null;
+  exceptionStatus: RefundDriverObservation["exceptionStatus"];
+  productName: string | null;
+  skuName: string | null;
+  currentPaidQty: Qty;
+  currentRefundQty: Qty;
+  previousPaidQty: Qty;
+  previousRefundQty: Qty;
+}
+
+function absoluteQty(value: Qty): Qty {
+  return dCmp(value, 0) < 0 ? dNeg(value, 4) : dQty(value);
+}
+
+/**
+ * 将已通过双窗口门禁的退款变化拆到店铺 × 平台 SKU。贡献占比只在同方向变化池内计算，
+ * 因而不会把正负抵销后的净变化误称为单个 SKU 的“责任占比”。
+ */
+export function buildRefundDriverBreakdown(
+  observations: readonly RefundDriverObservation[],
+  brief: RollingDemandBrief,
+): RefundDriverBreakdown {
+  const { current, previous } = brief;
+  if (brief.state !== "ready"
+    || !current.startDate || !current.endDate
+    || !previous.startDate || !previous.endDate) {
+    return emptyRefundDriverBreakdown(
+      `双窗口需求简报未开放；${brief.gate}`,
+    );
+  }
+
+  const drivers = new Map<string, RefundDriverAccumulator>();
+  let currentRefundQty = ZERO_QTY;
+  let previousRefundQty = ZERO_QTY;
+  for (const observation of observations) {
+    const inCurrent = observation.date >= current.startDate && observation.date <= current.endDate;
+    const inPrevious = observation.date >= previous.startDate && observation.date <= previous.endDate;
+    if (!inCurrent && !inPrevious) continue;
+    const key = grainKey(observation.shopName, observation.platformSkuId);
+    const row = drivers.get(key) ?? {
+      shopName: observation.shopName,
+      platformSkuId: observation.platformSkuId,
+      barcode: observation.barcode,
+      skuId: observation.skuId,
+      exceptionId: observation.exceptionId,
+      exceptionStatus: observation.exceptionStatus,
+      productName: null,
+      skuName: null,
+      currentPaidQty: ZERO_QTY,
+      currentRefundQty: ZERO_QTY,
+      previousPaidQty: ZERO_QTY,
+      previousRefundQty: ZERO_QTY,
+    };
+    row.productName = maxText(row.productName, observation.productName);
+    row.skuName = maxText(row.skuName, observation.skuName);
+    if (inCurrent) {
+      row.currentPaidQty = qtyAdd(row.currentPaidQty, observation.paidQty);
+      row.currentRefundQty = qtyAdd(row.currentRefundQty, observation.refundQty);
+      currentRefundQty = qtyAdd(currentRefundQty, observation.refundQty);
+    } else {
+      row.previousPaidQty = qtyAdd(row.previousPaidQty, observation.paidQty);
+      row.previousRefundQty = qtyAdd(row.previousRefundQty, observation.refundQty);
+      previousRefundQty = qtyAdd(previousRefundQty, observation.refundQty);
+    }
+    drivers.set(key, row);
+  }
+
+  if (dCmp(currentRefundQty, String(current.refundQty)) !== 0
+    || dCmp(previousRefundQty, String(previous.refundQty)) !== 0) {
+    return {
+      ...emptyRefundDriverBreakdown(
+        "退款驱动明细与日级窗口控制总量不一致；保持关闭，禁止展示归因结果。",
+      ),
+      totals: {
+        currentRefundQty: qtyNumber(currentRefundQty),
+        previousRefundQty: qtyNumber(previousRefundQty),
+        deltaRefundQty: null,
+        changePct: null,
+        movementPoolQty: null,
+      },
+    };
+  }
+
+  const deltaRefundQty = qtySub(currentRefundQty, previousRefundQty);
+  const movement = metricMovement(currentRefundQty, previousRefundQty);
+  const candidates = [...drivers.values()].map((row) => ({
+    ...row,
+    deltaQty: qtySub(row.currentRefundQty, row.previousRefundQty),
+  })).filter((row) => {
+    const comparison = dCmp(row.deltaQty, 0);
+    if (movement === "up") return comparison > 0;
+    if (movement === "down") return comparison < 0;
+    return comparison !== 0;
+  });
+  candidates.sort((left, right) => {
+    if (movement === "up") return dCmp(right.deltaQty, left.deltaQty);
+    if (movement === "down") return dCmp(left.deltaQty, right.deltaQty);
+    return dCmp(absoluteQty(right.deltaQty), absoluteQty(left.deltaQty));
+  });
+  let movementPoolQty = ZERO_QTY;
+  let mappedMovementPoolQty = ZERO_QTY;
+  for (const row of candidates) {
+    movementPoolQty = qtyAdd(movementPoolQty, absoluteQty(row.deltaQty));
+    if (row.skuId !== null) {
+      mappedMovementPoolQty = qtyAdd(mappedMovementPoolQty, absoluteQty(row.deltaQty));
+    }
+  }
+
+  type ShopAccumulator = {
+    shopName: string;
+    currentRefundQty: Qty;
+    previousRefundQty: Qty;
+    movementPoolQty: Qty;
+    eligibleDrivers: number;
+    unmappedDrivers: number;
+  };
+  const shops = new Map<string, ShopAccumulator>();
+  for (const row of drivers.values()) {
+    const shop = shops.get(row.shopName) ?? {
+      shopName: row.shopName,
+      currentRefundQty: ZERO_QTY,
+      previousRefundQty: ZERO_QTY,
+      movementPoolQty: ZERO_QTY,
+      eligibleDrivers: 0,
+      unmappedDrivers: 0,
+    };
+    shop.currentRefundQty = qtyAdd(shop.currentRefundQty, row.currentRefundQty);
+    shop.previousRefundQty = qtyAdd(shop.previousRefundQty, row.previousRefundQty);
+    shops.set(row.shopName, shop);
+  }
+  for (const row of candidates) {
+    const shop = shops.get(row.shopName)!;
+    shop.movementPoolQty = qtyAdd(shop.movementPoolQty, absoluteQty(row.deltaQty));
+    shop.eligibleDrivers++;
+    if (row.skuId === null) shop.unmappedDrivers++;
+  }
+  const byShop = [...shops.values()].filter((shop) => shop.eligibleDrivers > 0)
+    .sort((left, right) => dCmp(right.movementPoolQty, left.movementPoolQty)
+      || left.shopName.localeCompare(right.shopName, "zh-CN"))
+    .map((shop) => ({
+      shopName: shop.shopName,
+      currentRefundQty: qtyNumber(shop.currentRefundQty),
+      previousRefundQty: qtyNumber(shop.previousRefundQty),
+      netDeltaRefundQty: qtyNumber(qtySub(shop.currentRefundQty, shop.previousRefundQty)),
+      movementPoolQty: qtyNumber(shop.movementPoolQty),
+      movementPoolSharePct: qtyPercent(shop.movementPoolQty, movementPoolQty),
+      eligibleDrivers: shop.eligibleDrivers,
+      unmappedDrivers: shop.unmappedDrivers,
+    }));
+
+  const topContributors = candidates.slice(0, 20).map((row) => {
+    const currentRate = qtyPercent(row.currentRefundQty, row.currentPaidQty);
+    const previousRate = qtyPercent(row.previousRefundQty, row.previousPaidQty);
+    return {
+      shopName: row.shopName,
+      platformSkuId: row.platformSkuId,
+      barcode: row.barcode,
+      skuId: row.skuId,
+      exceptionId: row.exceptionId,
+      exceptionStatus: row.exceptionStatus,
+      productName: row.productName,
+      skuName: row.skuName,
+      currentPaidQty: qtyNumber(row.currentPaidQty),
+      currentRefundQty: qtyNumber(row.currentRefundQty),
+      currentRefundRatePct: currentRate,
+      previousPaidQty: qtyNumber(row.previousPaidQty),
+      previousRefundQty: qtyNumber(row.previousRefundQty),
+      previousRefundRatePct: previousRate,
+      deltaRefundQty: qtyNumber(row.deltaQty),
+      refundRateDeltaPp: rateDelta(currentRate, previousRate),
+      movementPoolSharePct: qtyPercent(absoluteQty(row.deltaQty), movementPoolQty),
+    };
+  });
+  const movementLabel = movement === "up"
+    ? "退款增加"
+    : movement === "down"
+      ? "退款减少"
+      : "退款总量持平";
+  return {
+    state: "ready",
+    authority: "observation_only",
+    grain: "店铺 × 天猫平台 SKU × 双自然日窗口",
+    gate: `${movementLabel}；仅呈现同方向变化贡献，不将正负抵销后的净变化自动归责。跨期退款、退货入库和平台口径仍需业务 UAT。`,
+    movement,
+    totals: {
+      currentRefundQty: qtyNumber(currentRefundQty),
+      previousRefundQty: qtyNumber(previousRefundQty),
+      deltaRefundQty: qtyNumber(deltaRefundQty),
+      changePct: qtyChangePct(currentRefundQty, previousRefundQty),
+      movementPoolQty: qtyNumber(movementPoolQty),
+    },
+    eligibleDrivers: candidates.length,
+    identityCoverage: {
+      mappedDrivers: candidates.filter((row) => row.skuId !== null).length,
+      unmappedDrivers: candidates.filter((row) => row.skuId === null).length,
+      mappedMovementPoolQty: qtyNumber(mappedMovementPoolQty),
+      mappedMovementPoolPct: qtyPercent(mappedMovementPoolQty, movementPoolQty),
+    },
+    byShop,
+    topContributors,
+  };
+}
+
 function maxText(current: string | null, candidate: unknown): string | null {
   const value = textValue(candidate);
   if (!value) return current;
@@ -482,6 +782,11 @@ function cachedSignal(value: unknown): ExternalDemandSignal | null {
     && Array.isArray(candidate.topUnmapped)
     && Array.isArray(candidate.limitations)
     && candidate.decisionBrief !== null && typeof candidate.decisionBrief === "object"
+    && candidate.refundDrivers !== null && typeof candidate.refundDrivers === "object"
+    && Array.isArray((candidate.refundDrivers as Partial<RefundDriverBreakdown>).topContributors)
+    && Array.isArray((candidate.refundDrivers as Partial<RefundDriverBreakdown>).byShop)
+    && (candidate.refundDrivers as Partial<RefundDriverBreakdown>).identityCoverage !== null
+    && typeof (candidate.refundDrivers as Partial<RefundDriverBreakdown>).identityCoverage === "object"
     && candidate.coverage !== null && typeof candidate.coverage === "object"
     && candidate.quality !== null && typeof candidate.quality === "object"
     && candidate.fulfillment !== null && typeof candidate.fulfillment === "object"
@@ -569,7 +874,11 @@ async function computeJiandaoyunExternalDemandSignal(
     productName: string | null; skuName: string | null;
     paidQty: Qty; validPaidRows: number; sourceRows: number; invalidRows: number;
   };
-  type RefundAccumulator = { refundQty: Qty; invalidRows: number };
+  type RefundAccumulator = {
+    date: string; shopName: string; platformSkuId: string;
+    productName: string | null; skuName: string | null;
+    refundQty: Qty; validRows: number; sourceRows: number; invalidRows: number;
+  };
   const crosswalkRaw = new Map<string, CrosswalkAccumulator>();
   for (const row of resultRows<Record<string, unknown>>(crosswalkResult)) {
     const payload = objectValue(row.payload);
@@ -620,15 +929,20 @@ async function computeJiandaoyunExternalDemandSignal(
   const refunds = new Map<string, RefundAccumulator>();
   for (const row of resultRows<Record<string, unknown>>(refundResult)) {
     const data = objectValue(objectValue(row.payload).data);
-    const key = grainKey(
-      textValue(data.statisticalDate).slice(0, 10),
-      textValue(data.shopName),
-      textValue(data.skuId),
-    );
-    const current = refunds.get(key) ?? { refundQty: ZERO_QTY, invalidRows: 0 };
+    const date = textValue(data.statisticalDate).slice(0, 10);
+    const shopName = textValue(data.shopName);
+    const platformSkuId = textValue(data.skuId);
+    const key = grainKey(date, shopName, platformSkuId);
+    const current = refunds.get(key) ?? {
+      date, shopName, platformSkuId, productName: null, skuName: null,
+      refundQty: ZERO_QTY, validRows: 0, sourceRows: 0, invalidRows: 0,
+    };
     const qty = numericQty(data.successRefundSuborderNumber);
+    current.sourceRows++;
     if (qty === null) current.invalidRows++;
-    else current.refundQty = qtyAdd(current.refundQty, qty);
+    else { current.refundQty = qtyAdd(current.refundQty, qty); current.validRows++; }
+    current.productName = maxText(current.productName, data.productName);
+    current.skuName = maxText(current.skuName, data.skuName);
     refunds.set(key, current);
   }
   const exceptions = new Map<string, { id: number; status: ExternalDemandSignal["topUnmapped"][number]["exceptionStatus"] }>();
@@ -662,6 +976,7 @@ async function computeJiandaoyunExternalDemandSignal(
   const mappedIdentitySet = new Set<string>();
   const demandBySkuDay = new Map<string, Qty>();
   const unmapped = new Map<string, UnmappedAccumulator>();
+  const refundDriverObservations: RefundDriverObservation[] = [];
   let paidQty = ZERO_QTY;
   let refundQty = ZERO_QTY;
   let mappedPaidQty = ZERO_QTY;
@@ -670,22 +985,47 @@ async function computeJiandaoyunExternalDemandSignal(
   let mappedSalesRows = 0;
   let invalidSalesRows = 0;
   let invalidRefundRows = 0;
-  for (const [key, sale] of sales) {
-    const refund = refunds.get(key) ?? { refundQty: ZERO_QTY, invalidRows: 0 };
+  const demandKeys = new Set([...sales.keys(), ...refunds.keys()]);
+  for (const key of demandKeys) {
+    const existingSale = sales.get(key);
+    const existingRefund = refunds.get(key);
+    const sale = existingSale ?? {
+      date: existingRefund?.date ?? "",
+      shopName: existingRefund?.shopName ?? "",
+      platformSkuId: existingRefund?.platformSkuId ?? "",
+      productName: existingRefund?.productName ?? null,
+      skuName: existingRefund?.skuName ?? null,
+      paidQty: ZERO_QTY,
+      validPaidRows: 0,
+      sourceRows: 0,
+      invalidRows: 0,
+    };
+    const refund = existingRefund ?? {
+      date: sale.date,
+      shopName: sale.shopName,
+      platformSkuId: sale.platformSkuId,
+      productName: sale.productName,
+      skuName: sale.skuName,
+      refundQty: ZERO_QTY,
+      validRows: 0,
+      sourceRows: 0,
+      invalidRows: 0,
+    };
     const identityKey = grainKey(sale.shopName, sale.platformSkuId);
     const match = crosswalk.get(identityKey);
     const mapped = match?.skuId != null;
+    const exception = match?.barcode ? exceptions.get(match.barcode) : null;
     salesRows += sale.sourceRows;
     invalidSalesRows += sale.invalidRows;
     invalidRefundRows += refund.invalidRows;
     paidQty = qtyAdd(paidQty, sale.paidQty);
     refundQty = qtyAdd(refundQty, refund.refundQty);
-    platformIdentitySet.add(identityKey);
+    if (sale.sourceRows > 0) platformIdentitySet.add(identityKey);
     if (mapped) {
       mappedSalesRows += sale.sourceRows;
       mappedPaidQty = qtyAdd(mappedPaidQty, sale.paidQty);
       mappedRefundQty = qtyAdd(mappedRefundQty, refund.refundQty);
-      mappedIdentitySet.add(identityKey);
+      if (sale.sourceRows > 0) mappedIdentitySet.add(identityKey);
     }
     if (ISO_DAY.test(sale.date)) {
       const row = daily.get(sale.date) ?? {
@@ -708,7 +1048,7 @@ async function computeJiandaoyunExternalDemandSignal(
       row.paidQty = qtyAdd(row.paidQty, sale.paidQty);
       row.refundQty = qtyAdd(row.refundQty, refund.refundQty);
       row.netQty = qtySub(row.paidQty, row.refundQty);
-      if (mapped && sale.validPaidRows > 0) {
+      if (mapped) {
         row.mappedPaidQty = qtyAdd(row.mappedPaidQty, sale.paidQty);
         row.mappedRefundQty = qtyAdd(row.mappedRefundQty, refund.refundQty);
         row.mappedNetQty = qtySub(row.mappedPaidQty, row.mappedRefundQty);
@@ -721,9 +1061,23 @@ async function computeJiandaoyunExternalDemandSignal(
           qtyAdd(demandBySkuDay.get(demandKey) ?? ZERO_QTY, qtySub(sale.paidQty, refund.refundQty)),
         );
       }
+      if (sale.validPaidRows > 0 || refund.validRows > 0) {
+        refundDriverObservations.push({
+          date: sale.date,
+          shopName: sale.shopName,
+          platformSkuId: sale.platformSkuId,
+          barcode: match?.barcode ?? null,
+          skuId: match?.skuId ?? null,
+          exceptionId: exception?.id ?? null,
+          exceptionStatus: exception?.status ?? null,
+          productName: maxText(sale.productName, refund.productName),
+          skuName: maxText(sale.skuName, refund.skuName),
+          paidQty: sale.paidQty,
+          refundQty: refund.refundQty,
+        });
+      }
     }
     if (!mapped) {
-      const exception = match?.barcode ? exceptions.get(match.barcode) : null;
       const current = unmapped.get(identityKey) ?? {
         shopName: sale.shopName,
         platformSkuId: sale.platformSkuId,
@@ -758,8 +1112,9 @@ async function computeJiandaoyunExternalDemandSignal(
       mappedPaidQty: qtyNumber(row.mappedPaidQty),
       mappedRefundQty: qtyNumber(row.mappedRefundQty),
       mappedNetQty: qtyNumber(row.mappedNetQty),
-    }));
+  }));
   const decisionBrief = buildRollingDemandBrief(dailyRows);
+  const refundDrivers = buildRefundDriverBreakdown(refundDriverObservations, decisionBrief);
   const platformIdentities = platformIdentitySet.size;
   const mappedIdentities = mappedIdentitySet.size;
   const topUnmappedRows = [...unmapped.values()].sort((left, right) =>
@@ -791,6 +1146,7 @@ async function computeJiandaoyunExternalDemandSignal(
     crosswalkAsOf: crosswalkBatch.sourceAsOf,
     daily: dailyRows,
     decisionBrief,
+    refundDrivers,
     totals: {
       paidQty: qtyNumber(paidQty),
       refundQty: qtyNumber(refundQty),
@@ -831,6 +1187,7 @@ export function emptyExternalDemandSignal(gate = "尚未取得完整的简道云
     crosswalkAsOf: null,
     daily: [],
     decisionBrief: emptyRollingDemandBrief("缺少完整的销售、退款或 SKU 对照证据，滚动需求判断保持关闭。"),
+    refundDrivers: emptyRefundDriverBreakdown("缺少完整的双窗口退款证据，驱动拆解保持关闭。"),
     totals: {
       paidQty: 0, refundQty: 0, netQty: 0,
       mappedPaidQty: 0, mappedRefundQty: 0, mappedNetQty: 0,

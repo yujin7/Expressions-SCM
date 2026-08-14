@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import * as schema from "@/db/schema";
 import {
+  buildRefundDriverBreakdown,
   buildRollingDemandBrief,
   loadJiandaoyunExternalDemandSignal,
   refreshJiandaoyunExternalDemandReadModel,
@@ -71,6 +72,11 @@ describe("简道云外部需求信号", () => {
           payload: { data: { statisticalDate: "2026-08-10", shopName: "旗舰店", skuId: "P2", successRefundSuborderNumber: "5" } },
         },
         {
+          importJobId: refunds.id, rowNo: 3, status: "pending",
+          targetTable: "jdy_tmall_sku_refund_observation",
+          payload: { data: { statisticalDate: "2026-08-10", shopName: "旗舰店", skuId: "P4", successRefundSuborderNumber: "3" } },
+        },
+        {
           importJobId: jstOutbound.id, rowNo: 1, status: "validated",
           targetTable: "jst_daily_sales",
           payload: { bizDate: "2026-08-10", skuCode: "JST-P1", qty: "88", _resolved: { skuId: 101 } },
@@ -98,8 +104,8 @@ describe("简道云外部需求信号", () => {
       expect(result.sourceAsOf).toBe("2026-08-11");
       expect(result.totals).toMatchObject({
         paidQty: 150,
-        refundQty: 15,
-        netQty: 135,
+        refundQty: 18,
+        netQty: 132,
         mappedPaidQty: 100,
         mappedRefundQty: 10,
         mappedNetQty: 90,
@@ -114,8 +120,8 @@ describe("简道云外部需求信号", () => {
       });
       expect(result.daily.find((row) => row.date === "2026-08-10")).toMatchObject({
         paidQty: 150,
-        refundQty: 15,
-        netQty: 135,
+        refundQty: 18,
+        netQty: 132,
         mappedPaidQty: 100,
         mappedRefundQty: 10,
         mappedNetQty: 90,
@@ -280,5 +286,155 @@ describe("简道云外部需求信号", () => {
     expect(missingDay.previous.observedDays).toBe(6);
     expect(missingDay.change.netQtyPct).toBeNull();
     expect(missingDay.gate).toContain("缺失日不补零");
+  });
+
+  it("按店铺与平台SKU拆解退款变化，并在同方向变化池内计算贡献", () => {
+    const daily = Array.from({ length: 14 }, (_, index) => {
+      const current = index >= 7;
+      return {
+        date: `2026-08-${String(index + 1).padStart(2, "0")}`,
+        sourceRows: 2,
+        validPaidRows: 2,
+        invalidSalesRows: 0,
+        invalidRefundRows: 0,
+        paidQty: 20,
+        refundQty: current ? 6 : 4,
+        netQty: current ? 14 : 16,
+        mappedPaidQty: 10,
+        mappedRefundQty: current ? 3 : 1,
+        mappedNetQty: current ? 7 : 9,
+      };
+    });
+    const brief = buildRollingDemandBrief(daily);
+    const observations = Array.from({ length: 14 }, (_, index) => {
+      const current = index >= 7;
+      const date = `2026-08-${String(index + 1).padStart(2, "0")}`;
+      return [
+        {
+          date, shopName: "旗舰店", platformSkuId: "P1", barcode: "6901", skuId: 101,
+          exceptionId: null, exceptionStatus: null, productName: "商品A", skuName: "规格A",
+          paidQty: "10.0000", refundQty: current ? "3.0000" : "1.0000",
+        },
+        {
+          date, shopName: "旗舰店", platformSkuId: "P2", barcode: null, skuId: null,
+          exceptionId: null, exceptionStatus: null, productName: "商品B", skuName: "规格B",
+          paidQty: "10.0000", refundQty: current ? "3.0000" : "2.0000",
+        },
+        {
+          date, shopName: "专营店", platformSkuId: "P3", barcode: "6903", skuId: 103,
+          exceptionId: null, exceptionStatus: null, productName: "商品C", skuName: "规格C",
+          paidQty: "0.0000", refundQty: current ? "0.0000" : "1.0000",
+        },
+      ];
+    }).flat();
+
+    const result = buildRefundDriverBreakdown(observations, brief);
+
+    expect(result.state).toBe("ready");
+    expect(result.movement).toBe("up");
+    expect(result.totals).toEqual({
+      currentRefundQty: 42,
+      previousRefundQty: 28,
+      deltaRefundQty: 14,
+      changePct: 50,
+      movementPoolQty: 21,
+    });
+    expect(result.eligibleDrivers).toBe(2);
+    expect(result.identityCoverage).toEqual({
+      mappedDrivers: 1,
+      unmappedDrivers: 1,
+      mappedMovementPoolQty: 14,
+      mappedMovementPoolPct: 66.7,
+    });
+    expect(result.byShop).toEqual([
+      {
+        shopName: "旗舰店",
+        currentRefundQty: 42,
+        previousRefundQty: 21,
+        netDeltaRefundQty: 21,
+        movementPoolQty: 21,
+        movementPoolSharePct: 100,
+        eligibleDrivers: 2,
+        unmappedDrivers: 1,
+      },
+    ]);
+    expect(result.topContributors[0]).toMatchObject({
+      platformSkuId: "P1",
+      skuId: 101,
+      currentRefundQty: 21,
+      previousRefundQty: 7,
+      deltaRefundQty: 14,
+      currentRefundRatePct: 30,
+      previousRefundRatePct: 10,
+      refundRateDeltaPp: 20,
+      movementPoolSharePct: 66.7,
+    });
+    expect(result.topContributors[1]).toMatchObject({
+      platformSkuId: "P2",
+      skuId: null,
+      deltaRefundQty: 7,
+      movementPoolSharePct: 33.3,
+    });
+    expect(result.topContributors.some((row) => row.platformSkuId === "P3")).toBe(false);
+
+    const closed = buildRefundDriverBreakdown(observations, {
+      ...brief,
+      state: "insufficient",
+      gate: "缺 1 天",
+    });
+    expect(closed.state).toBe("insufficient");
+    expect(closed.topContributors).toHaveLength(0);
+    expect(closed.gate).toContain("缺 1 天");
+
+    const unreconciled = buildRefundDriverBreakdown(observations.slice(0, -2), brief);
+    expect(unreconciled.state).toBe("insufficient");
+    expect(unreconciled.totals.deltaRefundQty).toBeNull();
+    expect(unreconciled.gate).toContain("控制总量不一致");
+  });
+
+  it("总体退款下降时只呈现下降驱动，并保留负号而非反转语义", () => {
+    const daily = Array.from({ length: 14 }, (_, index) => {
+      const current = index >= 7;
+      return {
+        date: `2026-08-${String(index + 1).padStart(2, "0")}`,
+        sourceRows: 2, validPaidRows: 2, invalidSalesRows: 0, invalidRefundRows: 0,
+        paidQty: 20, refundQty: current ? 2 : 4, netQty: current ? 18 : 16,
+        mappedPaidQty: 20, mappedRefundQty: current ? 2 : 4, mappedNetQty: current ? 18 : 16,
+      };
+    });
+    const brief = buildRollingDemandBrief(daily);
+    const observations = Array.from({ length: 14 }, (_, index) => {
+      const current = index >= 7;
+      const date = `2026-08-${String(index + 1).padStart(2, "0")}`;
+      return [
+        {
+          date, shopName: "旗舰店", platformSkuId: "P1", barcode: "6901", skuId: 101,
+          exceptionId: null, exceptionStatus: null, productName: "商品A", skuName: "规格A",
+          paidQty: "10.0000", refundQty: current ? "1.0000" : "3.0000",
+        },
+        {
+          date, shopName: "旗舰店", platformSkuId: "P2", barcode: "6902", skuId: 102,
+          exceptionId: null, exceptionStatus: null, productName: "商品B", skuName: "规格B",
+          paidQty: "10.0000", refundQty: "1.0000",
+        },
+      ];
+    }).flat();
+
+    const result = buildRefundDriverBreakdown(observations, brief);
+    expect(result.state).toBe("ready");
+    expect(result.movement).toBe("down");
+    expect(result.totals).toMatchObject({
+      currentRefundQty: 14,
+      previousRefundQty: 28,
+      deltaRefundQty: -14,
+      changePct: -50,
+      movementPoolQty: 14,
+    });
+    expect(result.topContributors).toHaveLength(1);
+    expect(result.topContributors[0]).toMatchObject({
+      platformSkuId: "P1",
+      deltaRefundQty: -14,
+      movementPoolSharePct: 100,
+    });
   });
 });
