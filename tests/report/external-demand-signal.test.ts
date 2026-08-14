@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import * as schema from "@/db/schema";
-import { loadJiandaoyunExternalDemandSignal } from "@/server/modules/report/external-demand-signal";
+import {
+  loadJiandaoyunExternalDemandSignal,
+  refreshJiandaoyunExternalDemandReadModel,
+} from "@/server/modules/report/external-demand-signal";
 import { createTestDb } from "../helpers/db";
 
 describe("简道云外部需求信号", () => {
@@ -85,6 +88,8 @@ describe("简道云外部需求信号", () => {
         status: "open",
       });
 
+      const rebuilt = await refreshJiandaoyunExternalDemandReadModel(db);
+      expect(rebuilt.state).toBe("ready");
       const result = await loadJiandaoyunExternalDemandSignal(db);
 
       expect(result.state).toBe("ready");
@@ -151,6 +156,27 @@ describe("简道云外部需求信号", () => {
         netQty: 45,
       });
       expect(result.daily.some((row) => row.netQty === 999)).toBe(false);
+
+      // 新批次一到，旧缓存的来源绑定立即失效；报表保持关闭而不是展示旧值。
+      const [newSales] = await db.insert(schema.importJobs).values({
+        template: "jdy_tmall_sku_sales_observation",
+        filename: "new-sales-not-built",
+        sourceAsOf: "2026-08-12",
+        createdBy: actor.id,
+        status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy",
+        stream: "tmall-sku-sales-observation",
+        idempotencyKey: "new-sales-not-built",
+        status: "succeeded",
+        importJobId: newSales.id,
+        finishedAt: new Date("2026-08-12T03:00:00.000Z"),
+      });
+      const stale = await loadJiandaoyunExternalDemandSignal(db);
+      expect(stale.state).toBe("insufficient");
+      expect(stale.gate).toContain("BI 读模型尚未完成重建");
+      expect(stale.sourceAsOf).toBe("2026-08-12");
     } finally {
       await client.close();
     }

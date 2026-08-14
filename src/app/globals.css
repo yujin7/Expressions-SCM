@@ -200,6 +200,16 @@ body {
   min-width: 0;
 }
 
+/* AntD 预设 gold/error 标签的默认前景色在浅色背景上不足 WCAG AA。
+   保留语义色系，仅加深文字，让决策表格与全站状态标签都可读。 */
+.ant-tag-gold {
+  color: #854d0e !important;
+}
+
+.ant-tag-error {
+  color: #b42318 !important;
+}
+
 .app-surface {
   container-name: app-surface;
   container-type: inline-size;

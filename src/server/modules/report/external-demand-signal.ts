@@ -7,6 +7,8 @@
  */
 import { sql, type SQL } from "drizzle-orm";
 
+import { dAdd, dQty, dSub } from "@/server/core/decimal";
+
 interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
@@ -16,6 +18,7 @@ const STREAM = {
   sales: "tmall-sku-sales-observation",
   refunds: "tmall-sku-refund-observation",
 } as const;
+const READ_MODEL_CACHE_KEY = "jiandaoyun-external-demand/v1";
 
 export interface ExternalDemandSignal {
   state: "ready" | "insufficient";
@@ -115,6 +118,13 @@ interface LatestBatch {
   sourceAsOf: string | null;
 }
 
+interface ExternalDemandBatches {
+  crosswalkBatch: LatestBatch | null;
+  salesBatch: LatestBatch | null;
+  refundBatch: LatestBatch | null;
+  jstOutboundBatch: LatestBatch | null;
+}
+
 function numberValue(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -133,6 +143,60 @@ function resultRows<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
   const rows = (result as { rows?: unknown } | null)?.rows;
   return Array.isArray(rows) ? rows as T[] : [];
+}
+
+function jsonValue(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+const NUMERIC_TEXT = /^-?[0-9]+(?:[.][0-9]+)?$/;
+const ISO_DAY = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+
+function objectValue(value: unknown): Record<string, unknown> {
+  const parsed = jsonValue(value);
+  return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : {};
+}
+
+function textValue(value: unknown): string {
+  return value == null ? "" : String(value).trim();
+}
+
+type Qty = string;
+const ZERO_QTY: Qty = "0.0000";
+
+function numericQty(value: unknown): Qty | null {
+  const text = textValue(value);
+  if (!NUMERIC_TEXT.test(text)) return null;
+  return dQty(text);
+}
+
+function qtyAdd(left: Qty, right: Qty): Qty {
+  return dAdd(left, right, 4);
+}
+
+function qtySub(left: Qty, right: Qty): Qty {
+  return dSub(left, right, 4);
+}
+
+function qtyNumber(value: Qty): number {
+  return Number(dQty(value));
+}
+
+function maxText(current: string | null, candidate: unknown): string | null {
+  const value = textValue(candidate);
+  if (!value) return current;
+  return current === null || value.localeCompare(current) > 0 ? value : current;
+}
+
+function grainKey(...parts: string[]): string {
+  return parts.join("\u0000");
 }
 
 async function latestBatch(
@@ -156,165 +220,314 @@ async function latestBatch(
     : null;
 }
 
-/**
- * SQL 口径说明：
- * - 数字必须先过正则；缺失/非法值不按 0 冒充，而是计入 quality；
- * - 对照键为 (shopName, platformSkuId)，且只有唯一系统 skuId 才算已映射；
- * - 销售与退款分别聚合后再相减，避免明细多对多连接放大数量。
- */
-export async function loadJiandaoyunExternalDemandSignal(db: ReadDb): Promise<ExternalDemandSignal> {
+async function latestExternalDemandBatches(db: ReadDb): Promise<ExternalDemandBatches> {
   const [crosswalkBatch, salesBatch, refundBatch, jstOutboundBatch] = await Promise.all([
     latestBatch(db, "jdy", STREAM.crosswalk),
     latestBatch(db, "jdy", STREAM.sales),
     latestBatch(db, "jdy", STREAM.refunds),
     latestBatch(db, "jst", "outbound-sales-daily"),
   ]);
+  return { crosswalkBatch, salesBatch, refundBatch, jstOutboundBatch };
+}
 
+function readModelBinding(batches: ExternalDemandBatches): string | null {
+  if (!batches.crosswalkBatch || !batches.salesBatch || !batches.refundBatch) return null;
+  return [
+    `crosswalk:${batches.crosswalkBatch.importJobId}`,
+    `sales:${batches.salesBatch.importJobId}`,
+    `refunds:${batches.refundBatch.importJobId}`,
+    `jst:${batches.jstOutboundBatch?.importJobId ?? "none"}`,
+  ].join("|");
+}
+
+function missingBatchSignal(batches: ExternalDemandBatches): ExternalDemandSignal {
   const missing = [
-    !crosswalkBatch ? "天猫 SKU 对照" : null,
-    !salesBatch ? "天猫日销量" : null,
-    !refundBatch ? "天猫退款" : null,
-  ].filter(Boolean);
-  if (!crosswalkBatch || !salesBatch || !refundBatch) {
-    return emptyExternalDemandSignal(`缺少最新成功批次：${missing.join("、")}。外部信号保持关闭。`);
-  }
+    !batches.crosswalkBatch ? "天猫 SKU 对照" : null,
+    !batches.salesBatch ? "天猫日销量" : null,
+    !batches.refundBatch ? "天猫退款" : null,
+  ].filter((label): label is string => Boolean(label));
+  return emptyExternalDemandSignal(`缺少最新成功批次：${missing.join("、")}。外部信号保持关闭。`);
+}
 
-  const baseCtes = sql`
-    WITH crosswalk_raw AS (
-      SELECT
-        coalesce(payload->'data'->>'shopName', '') AS shop_name,
-        coalesce(payload->'data'->>'platformSkuId', '') AS platform_sku_id,
-        nullif(trim(payload->'data'->>'barcode'), '') AS barcode,
-        CASE WHEN coalesce(payload->'_identity'->>'skuId', '') ~ '^[0-9]+$'
-          THEN (payload->'_identity'->>'skuId')::int ELSE NULL END AS scm_sku_id
-      FROM staging_rows
+function cachedSignal(value: unknown): ExternalDemandSignal | null {
+  const parsed = jsonValue(value);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const candidate = parsed as Partial<ExternalDemandSignal>;
+  return candidate.authority === "observation_only"
+    && candidate.source === "JIANDAOYUN"
+    && candidate.platform === "天猫"
+    && (candidate.state === "ready" || candidate.state === "insufficient")
+    && Array.isArray(candidate.daily)
+    && Array.isArray(candidate.topUnmapped)
+    && Array.isArray(candidate.limitations)
+    && candidate.coverage !== null && typeof candidate.coverage === "object"
+    && candidate.quality !== null && typeof candidate.quality === "object"
+    && candidate.fulfillment !== null && typeof candidate.fulfillment === "object"
+    ? candidate as ExternalDemandSignal
+    : null;
+}
+
+/**
+ * 页面只读当前来源批次精确绑定的预计算结果；没有或过期时 fail closed。
+ * 重建只由连接器任务触发，避免一次用户打开报表就同步占用 10 万级 JSON 解析 CPU。
+ */
+export async function loadJiandaoyunExternalDemandSignal(db: ReadDb): Promise<ExternalDemandSignal> {
+  const batches = await latestExternalDemandBatches(db);
+  const binding = readModelBinding(batches);
+  if (!binding) return missingBatchSignal(batches);
+  const cacheResult = await db.execute(sql`
+    SELECT payload
+    FROM report_read_model_cache
+    WHERE key = ${READ_MODEL_CACHE_KEY} AND source_binding = ${binding}
+    LIMIT 1
+  `);
+  const [row] = resultRows<Record<string, unknown>>(cacheResult);
+  const cached = cachedSignal(row?.payload);
+  if (cached) return cached;
+
+  const pending = emptyExternalDemandSignal(
+    "最新简道云批次已到达，但 BI 读模型尚未完成重建；保持关闭，等待连接器任务重建后自动开放。",
+  );
+  pending.sourceAsOf = batches.salesBatch?.sourceAsOf ?? null;
+  pending.crosswalkAsOf = batches.crosswalkBatch?.sourceAsOf ?? null;
+  return pending;
+}
+
+/** 重建可丢弃的观察型读模型，并以精确批次绑定原子替换缓存。 */
+export async function refreshJiandaoyunExternalDemandReadModel(db: ReadDb): Promise<ExternalDemandSignal> {
+  const batches = await latestExternalDemandBatches(db);
+  const binding = readModelBinding(batches);
+  if (!binding) return missingBatchSignal(batches);
+  const result = await computeJiandaoyunExternalDemandSignal(db, batches);
+  await db.execute(sql`
+    INSERT INTO report_read_model_cache (key, source_binding, payload, built_at)
+    VALUES (${READ_MODEL_CACHE_KEY}, ${binding}, ${JSON.stringify(result)}::jsonb, now())
+    ON CONFLICT (key) DO UPDATE SET
+      source_binding = excluded.source_binding,
+      payload = excluded.payload,
+      built_at = excluded.built_at
+  `);
+  return result;
+}
+
+/**
+ * SQL 口径说明：
+ * - 数字必须先过正则；缺失/非法值不按 0 冒充，而是计入 quality；
+ * - 对照键为 (shopName, platformSkuId)，且只有唯一系统 skuId 才算已映射；
+ * - 销售与退款分别聚合后再相减，避免明细多对多连接放大数量。
+ */
+async function computeJiandaoyunExternalDemandSignal(
+  db: ReadDb,
+  batches: ExternalDemandBatches,
+): Promise<ExternalDemandSignal> {
+  const { crosswalkBatch, salesBatch, refundBatch, jstOutboundBatch } = batches;
+
+  if (!crosswalkBatch || !salesBatch || !refundBatch) return missingBatchSignal(batches);
+
+  const [crosswalkResult, salesResult, refundResult, exceptionResult] = await Promise.all([
+    db.execute(sql`SELECT payload FROM staging_rows
       WHERE import_job_id = ${crosswalkBatch.importJobId}
         AND target_table = 'jdy_tmall_sku_crosswalk_observation'
-        AND status IN ('pending', 'validated', 'committed')
-    ), crosswalk AS (
-      SELECT shop_name, platform_sku_id,
-        CASE WHEN count(DISTINCT barcode) FILTER (WHERE barcode IS NOT NULL) = 1
-          THEN max(barcode) ELSE NULL END AS barcode,
-        CASE WHEN count(DISTINCT scm_sku_id) FILTER (WHERE scm_sku_id IS NOT NULL) = 1
-          THEN max(scm_sku_id) ELSE NULL END AS scm_sku_id,
-        count(DISTINCT scm_sku_id) FILTER (WHERE scm_sku_id IS NOT NULL) > 1 AS conflicting
-      FROM crosswalk_raw
-      WHERE shop_name <> '' AND platform_sku_id <> ''
-      GROUP BY shop_name, platform_sku_id
-    ), sales_raw AS (
-      SELECT
-        left(payload->'data'->>'statisticalDate', 10) AS biz_date,
-        coalesce(payload->'data'->>'shopName', '') AS shop_name,
-        coalesce(payload->'data'->>'skuId', '') AS platform_sku_id,
-        nullif(payload->'data'->>'productName', '') AS product_name,
-        nullif(payload->'data'->>'skuName', '') AS sku_name,
-        CASE WHEN trim(coalesce(payload->'data'->>'paidNumber', '')) ~ '^-?[0-9]+([.][0-9]+)?$'
-          THEN trim(payload->'data'->>'paidNumber')::numeric ELSE NULL END AS paid_qty
-      FROM staging_rows
+        AND status IN ('pending', 'validated', 'committed')`),
+    db.execute(sql`SELECT payload FROM staging_rows
       WHERE import_job_id = ${salesBatch.importJobId}
         AND target_table = 'jdy_tmall_sku_sales_observation'
-        AND status IN ('pending', 'validated', 'committed')
-    ), refunds_raw AS (
-      SELECT
-        left(payload->'data'->>'statisticalDate', 10) AS biz_date,
-        coalesce(payload->'data'->>'shopName', '') AS shop_name,
-        coalesce(payload->'data'->>'skuId', '') AS platform_sku_id,
-        CASE WHEN trim(coalesce(payload->'data'->>'successRefundSuborderNumber', '')) ~ '^-?[0-9]+([.][0-9]+)?$'
-          THEN trim(payload->'data'->>'successRefundSuborderNumber')::numeric ELSE NULL END AS refund_qty
-      FROM staging_rows
+        AND status IN ('pending', 'validated', 'committed')`),
+    db.execute(sql`SELECT payload FROM staging_rows
       WHERE import_job_id = ${refundBatch.importJobId}
         AND target_table = 'jdy_tmall_sku_refund_observation'
-        AND status IN ('pending', 'validated', 'committed')
-    ), sales AS (
-      SELECT biz_date, shop_name, platform_sku_id,
-        max(product_name) AS product_name, max(sku_name) AS sku_name,
-        sum(paid_qty) AS paid_qty,
-        count(*)::int AS source_rows,
-        count(*) FILTER (WHERE paid_qty IS NULL)::int AS invalid_rows
-      FROM sales_raw
-      GROUP BY biz_date, shop_name, platform_sku_id
-    ), refunds AS (
-      SELECT biz_date, shop_name, platform_sku_id,
-        sum(refund_qty) AS refund_qty,
-        count(*) FILTER (WHERE refund_qty IS NULL)::int AS invalid_rows
-      FROM refunds_raw
-      GROUP BY biz_date, shop_name, platform_sku_id
-    ), combined AS (
-      SELECT
-        s.biz_date, s.shop_name, s.platform_sku_id, s.product_name, s.sku_name,
-        s.paid_qty, coalesce(r.refund_qty, 0) AS refund_qty,
-        s.source_rows, s.invalid_rows AS invalid_sales_rows,
-        coalesce(r.invalid_rows, 0) AS invalid_refund_rows,
-        c.barcode, c.scm_sku_id, coalesce(c.conflicting, false) AS conflicting,
-        ae.id AS exception_id, ae.status AS exception_status
-      FROM sales s
-      LEFT JOIN refunds r USING (biz_date, shop_name, platform_sku_id)
-      LEFT JOIN crosswalk c USING (shop_name, platform_sku_id)
-      LEFT JOIN alias_exceptions ae
-        ON ae.alias_type = 'sku_barcode'
-        AND ae.scope = 'JIANDAOYUN'
-        AND ae.raw_value = c.barcode
-    )`;
-
-  const [dailyResult, coverageResult, topUnmappedResult, qualityResult] = await Promise.all([
-    db.execute(sql`${baseCtes}
-      SELECT biz_date AS date,
-        coalesce(sum(paid_qty), 0) AS paid_qty,
-        coalesce(sum(refund_qty), 0) AS refund_qty,
-        coalesce(sum(paid_qty), 0) - coalesce(sum(refund_qty), 0) AS net_qty,
-        coalesce(sum(paid_qty - refund_qty) FILTER (WHERE scm_sku_id IS NOT NULL), 0) AS mapped_net_qty
-      FROM combined
-      WHERE biz_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
-      GROUP BY biz_date ORDER BY biz_date`),
-    db.execute(sql`${baseCtes}
-      SELECT
-        count(*)::int AS sales_groups,
-        coalesce(sum(source_rows), 0)::int AS sales_rows,
-        coalesce(sum(source_rows) FILTER (WHERE scm_sku_id IS NOT NULL), 0)::int AS mapped_sales_rows,
-        count(DISTINCT (shop_name, platform_sku_id))::int AS platform_identities,
-        count(DISTINCT (shop_name, platform_sku_id)) FILTER (WHERE scm_sku_id IS NOT NULL)::int AS mapped_identities,
-        coalesce(sum(paid_qty), 0) AS paid_qty,
-        coalesce(sum(refund_qty), 0) AS refund_qty,
-        coalesce(sum(paid_qty) FILTER (WHERE scm_sku_id IS NOT NULL), 0) AS mapped_paid_qty,
-        coalesce(sum(refund_qty) FILTER (WHERE scm_sku_id IS NOT NULL), 0) AS mapped_refund_qty
-      FROM combined`),
-    db.execute(sql`${baseCtes}
-      SELECT shop_name, platform_sku_id, max(barcode) AS barcode,
-        max(exception_id) AS exception_id, max(exception_status) AS exception_status,
-        max(product_name) AS product_name,
-        max(sku_name) AS sku_name, coalesce(sum(paid_qty), 0) AS paid_qty,
-        coalesce(sum(refund_qty), 0) AS refund_qty,
-        coalesce(sum(paid_qty), 0) - coalesce(sum(refund_qty), 0) AS net_qty
-      FROM combined
-      WHERE scm_sku_id IS NULL
-      GROUP BY shop_name, platform_sku_id
-      ORDER BY paid_qty DESC NULLS LAST, shop_name, platform_sku_id
-      LIMIT 30`),
-    db.execute(sql`${baseCtes}
-      SELECT
-        coalesce(sum(invalid_sales_rows), 0)::int AS invalid_sales_rows,
-        coalesce(sum(invalid_refund_rows), 0)::int AS invalid_refund_rows,
-        (SELECT count(*)::int FROM crosswalk WHERE conflicting) AS conflicting_crosswalks
-      FROM combined`),
+        AND status IN ('pending', 'validated', 'committed')`),
+    db.execute(sql`SELECT id, raw_value, status FROM alias_exceptions
+      WHERE alias_type = 'sku_barcode' AND scope = 'JIANDAOYUN'`),
   ]);
 
-  const dailyRows = resultRows<Record<string, unknown>>(dailyResult);
-  const [coverage = {}] = resultRows<Record<string, unknown>>(coverageResult);
-  const [quality = {}] = resultRows<Record<string, unknown>>(qualityResult);
-  const paidQty = numberValue(coverage.paid_qty);
-  const refundQty = numberValue(coverage.refund_qty);
-  const mappedPaidQty = numberValue(coverage.mapped_paid_qty);
-  const mappedRefundQty = numberValue(coverage.mapped_refund_qty);
-  const salesRows = intValue(coverage.sales_rows);
-  const mappedSalesRows = intValue(coverage.mapped_sales_rows);
-  const platformIdentities = intValue(coverage.platform_identities);
-  const mappedIdentities = intValue(coverage.mapped_identities);
-  const invalidSalesRows = intValue(quality.invalid_sales_rows);
-  const invalidRefundRows = intValue(quality.invalid_refund_rows);
-  const conflictingCrosswalks = intValue(quality.conflicting_crosswalks);
+  type CrosswalkAccumulator = { barcodes: Set<string>; skuIds: Set<number> };
+  type SalesAccumulator = {
+    date: string; shopName: string; platformSkuId: string;
+    productName: string | null; skuName: string | null;
+    paidQty: Qty; validPaidRows: number; sourceRows: number; invalidRows: number;
+  };
+  type RefundAccumulator = { refundQty: Qty; invalidRows: number };
+  const crosswalkRaw = new Map<string, CrosswalkAccumulator>();
+  for (const row of resultRows<Record<string, unknown>>(crosswalkResult)) {
+    const payload = objectValue(row.payload);
+    const data = objectValue(payload.data);
+    const identity = objectValue(payload._identity);
+    const shopName = textValue(data.shopName);
+    const platformSkuId = textValue(data.platformSkuId);
+    if (!shopName || !platformSkuId) continue;
+    const key = grainKey(shopName, platformSkuId);
+    const current = crosswalkRaw.get(key) ?? { barcodes: new Set<string>(), skuIds: new Set<number>() };
+    const barcode = textValue(data.barcode);
+    if (barcode) current.barcodes.add(barcode);
+    const skuId = intValue(identity.skuId);
+    if (skuId > 0) current.skuIds.add(skuId);
+    crosswalkRaw.set(key, current);
+  }
+  const crosswalk = new Map<string, { barcode: string | null; skuId: number | null; conflicting: boolean }>();
+  let conflictingCrosswalks = 0;
+  for (const [key, value] of crosswalkRaw) {
+    const conflicting = value.skuIds.size > 1;
+    if (conflicting) conflictingCrosswalks++;
+    crosswalk.set(key, {
+      barcode: value.barcodes.size === 1 ? [...value.barcodes][0] : null,
+      skuId: value.skuIds.size === 1 ? [...value.skuIds][0] : null,
+      conflicting,
+    });
+  }
+
+  const sales = new Map<string, SalesAccumulator>();
+  for (const row of resultRows<Record<string, unknown>>(salesResult)) {
+    const data = objectValue(objectValue(row.payload).data);
+    const date = textValue(data.statisticalDate).slice(0, 10);
+    const shopName = textValue(data.shopName);
+    const platformSkuId = textValue(data.skuId);
+    const key = grainKey(date, shopName, platformSkuId);
+    const current = sales.get(key) ?? {
+      date, shopName, platformSkuId, productName: null, skuName: null,
+      paidQty: ZERO_QTY, validPaidRows: 0, sourceRows: 0, invalidRows: 0,
+    };
+    const paid = numericQty(data.paidNumber);
+    current.sourceRows++;
+    if (paid === null) current.invalidRows++;
+    else { current.paidQty = qtyAdd(current.paidQty, paid); current.validPaidRows++; }
+    current.productName = maxText(current.productName, data.productName);
+    current.skuName = maxText(current.skuName, data.skuName);
+    sales.set(key, current);
+  }
+  const refunds = new Map<string, RefundAccumulator>();
+  for (const row of resultRows<Record<string, unknown>>(refundResult)) {
+    const data = objectValue(objectValue(row.payload).data);
+    const key = grainKey(
+      textValue(data.statisticalDate).slice(0, 10),
+      textValue(data.shopName),
+      textValue(data.skuId),
+    );
+    const current = refunds.get(key) ?? { refundQty: ZERO_QTY, invalidRows: 0 };
+    const qty = numericQty(data.successRefundSuborderNumber);
+    if (qty === null) current.invalidRows++;
+    else current.refundQty = qtyAdd(current.refundQty, qty);
+    refunds.set(key, current);
+  }
+  const exceptions = new Map<string, { id: number; status: ExternalDemandSignal["topUnmapped"][number]["exceptionStatus"] }>();
+  for (const row of resultRows<Record<string, unknown>>(exceptionResult)) {
+    const rawValue = textValue(row.raw_value);
+    const status = row.status === "open" || row.status === "resolved" || row.status === "ignored"
+      ? row.status : null;
+    if (rawValue) exceptions.set(rawValue, { id: intValue(row.id), status });
+  }
+
+  type DailyAccumulator = {
+    date: string;
+    paidQty: Qty;
+    refundQty: Qty;
+    netQty: Qty;
+    mappedNetQty: Qty;
+  };
+  type UnmappedAccumulator = Omit<ExternalDemandSignal["topUnmapped"][number], "paidQty" | "refundQty" | "netQty"> & {
+    paidQty: Qty;
+    refundQty: Qty;
+    netQty: Qty;
+  };
+  const daily = new Map<string, DailyAccumulator>();
+  const platformIdentitySet = new Set<string>();
+  const mappedIdentitySet = new Set<string>();
+  const demandBySkuDay = new Map<string, Qty>();
+  const unmapped = new Map<string, UnmappedAccumulator>();
+  let paidQty = ZERO_QTY;
+  let refundQty = ZERO_QTY;
+  let mappedPaidQty = ZERO_QTY;
+  let mappedRefundQty = ZERO_QTY;
+  let salesRows = 0;
+  let mappedSalesRows = 0;
+  let invalidSalesRows = 0;
+  let invalidRefundRows = 0;
+  for (const [key, sale] of sales) {
+    const refund = refunds.get(key) ?? { refundQty: ZERO_QTY, invalidRows: 0 };
+    const identityKey = grainKey(sale.shopName, sale.platformSkuId);
+    const match = crosswalk.get(identityKey);
+    const mapped = match?.skuId != null;
+    salesRows += sale.sourceRows;
+    invalidSalesRows += sale.invalidRows;
+    invalidRefundRows += refund.invalidRows;
+    paidQty = qtyAdd(paidQty, sale.paidQty);
+    refundQty = qtyAdd(refundQty, refund.refundQty);
+    platformIdentitySet.add(identityKey);
+    if (mapped) {
+      mappedSalesRows += sale.sourceRows;
+      mappedPaidQty = qtyAdd(mappedPaidQty, sale.paidQty);
+      mappedRefundQty = qtyAdd(mappedRefundQty, refund.refundQty);
+      mappedIdentitySet.add(identityKey);
+    }
+    if (ISO_DAY.test(sale.date)) {
+      const row = daily.get(sale.date) ?? {
+        date: sale.date,
+        paidQty: ZERO_QTY,
+        refundQty: ZERO_QTY,
+        netQty: ZERO_QTY,
+        mappedNetQty: ZERO_QTY,
+      };
+      row.paidQty = qtyAdd(row.paidQty, sale.paidQty);
+      row.refundQty = qtyAdd(row.refundQty, refund.refundQty);
+      row.netQty = qtySub(row.paidQty, row.refundQty);
+      if (mapped && sale.validPaidRows > 0) {
+        row.mappedNetQty = qtyAdd(row.mappedNetQty, qtySub(sale.paidQty, refund.refundQty));
+      }
+      daily.set(sale.date, row);
+      if (mapped) {
+        const demandKey = grainKey(sale.date, String(match.skuId));
+        demandBySkuDay.set(
+          demandKey,
+          qtyAdd(demandBySkuDay.get(demandKey) ?? ZERO_QTY, qtySub(sale.paidQty, refund.refundQty)),
+        );
+      }
+    }
+    if (!mapped) {
+      const exception = match?.barcode ? exceptions.get(match.barcode) : null;
+      const current = unmapped.get(identityKey) ?? {
+        shopName: sale.shopName,
+        platformSkuId: sale.platformSkuId,
+        barcode: match?.barcode ?? null,
+        exceptionId: exception?.id ?? null,
+        exceptionStatus: exception?.status ?? null,
+        productName: null,
+        skuName: null,
+        paidQty: ZERO_QTY,
+        refundQty: ZERO_QTY,
+        netQty: ZERO_QTY,
+      };
+      current.productName = maxText(current.productName, sale.productName);
+      current.skuName = maxText(current.skuName, sale.skuName);
+      current.paidQty = qtyAdd(current.paidQty, sale.paidQty);
+      current.refundQty = qtyAdd(current.refundQty, refund.refundQty);
+      current.netQty = qtySub(current.paidQty, current.refundQty);
+      unmapped.set(identityKey, current);
+    }
+  }
+  const dailyRows = [...daily.values()]
+    .sort((left, right) => left.date.localeCompare(right.date))
+    .map((row) => ({
+      date: row.date,
+      paidQty: qtyNumber(row.paidQty),
+      refundQty: qtyNumber(row.refundQty),
+      netQty: qtyNumber(row.netQty),
+      mappedNetQty: qtyNumber(row.mappedNetQty),
+    }));
+  const platformIdentities = platformIdentitySet.size;
+  const mappedIdentities = mappedIdentitySet.size;
+  const topUnmappedRows = [...unmapped.values()].sort((left, right) =>
+    Number(right.paidQty) - Number(left.paidQty)
+    || left.shopName.localeCompare(right.shopName)
+    || left.platformSkuId.localeCompare(right.platformSkuId)).slice(0, 30)
+    .map((row) => ({
+      ...row,
+      paidQty: qtyNumber(row.paidQty),
+      refundQty: qtyNumber(row.refundQty),
+      netQty: qtyNumber(row.netQty),
+    }));
   const qualityBlockers = invalidSalesRows + invalidRefundRows + conflictingCrosswalks;
   const fulfillment = jstOutboundBatch
-    ? await loadFulfillmentComparison(db, baseCtes, jstOutboundBatch)
+    ? await loadFulfillmentComparison(db, demandBySkuDay, jstOutboundBatch)
     : emptyFulfillmentComparison("尚无聚水潭日出库成功批次，无法建立同窗履约对比。");
 
   return {
@@ -329,20 +542,14 @@ export async function loadJiandaoyunExternalDemandSignal(db: ReadDb): Promise<Ex
     platform: "天猫",
     sourceAsOf: salesBatch.sourceAsOf,
     crosswalkAsOf: crosswalkBatch.sourceAsOf,
-    daily: dailyRows.map((row) => ({
-      date: String(row.date),
-      paidQty: numberValue(row.paid_qty),
-      refundQty: numberValue(row.refund_qty),
-      netQty: numberValue(row.net_qty),
-      mappedNetQty: numberValue(row.mapped_net_qty),
-    })),
+    daily: dailyRows,
     totals: {
-      paidQty,
-      refundQty,
-      netQty: paidQty - refundQty,
-      mappedPaidQty,
-      mappedRefundQty,
-      mappedNetQty: mappedPaidQty - mappedRefundQty,
+      paidQty: qtyNumber(paidQty),
+      refundQty: qtyNumber(refundQty),
+      netQty: qtyNumber(qtySub(paidQty, refundQty)),
+      mappedPaidQty: qtyNumber(mappedPaidQty),
+      mappedRefundQty: qtyNumber(mappedRefundQty),
+      mappedNetQty: qtyNumber(qtySub(mappedPaidQty, mappedRefundQty)),
     },
     coverage: {
       salesRows,
@@ -351,25 +558,11 @@ export async function loadJiandaoyunExternalDemandSignal(db: ReadDb): Promise<Ex
       platformIdentities,
       mappedIdentities,
       identityPct: percent(mappedIdentities, platformIdentities),
-      paidQtyPct: percent(mappedPaidQty, paidQty),
+      paidQtyPct: percent(qtyNumber(mappedPaidQty), qtyNumber(paidQty)),
     },
     quality: { invalidSalesRows, invalidRefundRows, conflictingCrosswalks },
     fulfillment,
-    topUnmapped: resultRows<Record<string, unknown>>(topUnmappedResult).map((row) => ({
-      shopName: String(row.shop_name ?? ""),
-      platformSkuId: String(row.platform_sku_id ?? ""),
-      barcode: row.barcode == null ? null : String(row.barcode),
-      exceptionId: row.exception_id == null ? null : intValue(row.exception_id),
-      exceptionStatus:
-        row.exception_status === "open" || row.exception_status === "resolved" || row.exception_status === "ignored"
-          ? row.exception_status
-          : null,
-      productName: row.product_name == null ? null : String(row.product_name),
-      skuName: row.sku_name == null ? null : String(row.sku_name),
-      paidQty: numberValue(row.paid_qty),
-      refundQty: numberValue(row.refund_qty),
-      netQty: numberValue(row.net_qty),
-    })),
+    topUnmapped: topUnmappedRows,
     limitations: [
       "这是简道云只读观察，不是聚水潭出库事实，也不是用友财务凭证。",
       "净需求信号 = 支付件数 − 成功退款子订单数；不含取消未付款、换货、平台时间差或刷单识别。",
@@ -433,57 +626,45 @@ function emptyFulfillmentComparison(gate: string): ExternalDemandSignal["fulfill
 
 async function loadFulfillmentComparison(
   db: ReadDb,
-  demandCtes: SQL,
+  demandBySkuDay: ReadonlyMap<string, Qty>,
   jstBatch: LatestBatch,
 ): Promise<ExternalDemandSignal["fulfillment"]> {
-  const result = await db.execute(sql`${demandCtes},
-    demand_by_sku_day AS (
-      SELECT biz_date, scm_sku_id,
-        coalesce(sum(paid_qty), 0) - coalesce(sum(refund_qty), 0) AS demand_qty
-      FROM combined
-      WHERE scm_sku_id IS NOT NULL
-        AND biz_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
-      GROUP BY biz_date, scm_sku_id
-    ), jst_raw AS (
-      SELECT
-        payload->>'bizDate' AS biz_date,
-        CASE WHEN coalesce(payload->'_resolved'->>'skuId', '') ~ '^[0-9]+$'
-          THEN (payload->'_resolved'->>'skuId')::int ELSE NULL END AS scm_sku_id,
-        CASE WHEN trim(coalesce(payload->>'qty', '')) ~ '^-?[0-9]+([.][0-9]+)?$'
-          THEN trim(payload->>'qty')::numeric ELSE NULL END AS outbound_qty
-      FROM staging_rows
+  const [jstResult, skuResult] = await Promise.all([
+    db.execute(sql`SELECT payload FROM staging_rows
       WHERE import_job_id = ${jstBatch.importJobId}
         AND target_table = 'jst_daily_sales'
-        AND status IN ('validated', 'committed')
-    ), jst_by_sku_day AS (
-      SELECT biz_date, scm_sku_id, sum(outbound_qty) AS outbound_qty
-      FROM jst_raw
-      WHERE scm_sku_id IS NOT NULL AND outbound_qty IS NOT NULL
-        AND biz_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
-      GROUP BY biz_date, scm_sku_id
-    ), compared AS (
-      SELECT
-        coalesce(d.biz_date, j.biz_date) AS biz_date,
-        coalesce(d.scm_sku_id, j.scm_sku_id) AS scm_sku_id,
-        d.demand_qty,
-        j.outbound_qty
-      FROM demand_by_sku_day d
-      FULL OUTER JOIN jst_by_sku_day j
-        ON j.biz_date = d.biz_date AND j.scm_sku_id = d.scm_sku_id
-    )
-    SELECT c.biz_date, c.scm_sku_id, s.code AS sku_code,
-      c.demand_qty, c.outbound_qty
-    FROM compared c
-    LEFT JOIN skus s ON s.id = c.scm_sku_id
-    ORDER BY c.biz_date, c.scm_sku_id`);
-
-  const rows = resultRows<Record<string, unknown>>(result).map((row) => ({
-    date: String(row.biz_date ?? ""),
-    skuId: intValue(row.scm_sku_id),
-    skuCode: row.sku_code == null ? null : String(row.sku_code),
-    demandQty: row.demand_qty == null ? null : numberValue(row.demand_qty),
-    outboundQty: row.outbound_qty == null ? null : numberValue(row.outbound_qty),
-  })).filter((row) => row.date && row.skuId > 0);
+        AND status IN ('validated', 'committed')`),
+    db.execute(sql`SELECT id, code FROM skus`),
+  ]);
+  const skuCodes = new Map<number, string>();
+  for (const row of resultRows<Record<string, unknown>>(skuResult)) {
+    const id = intValue(row.id);
+    if (id > 0) skuCodes.set(id, textValue(row.code));
+  }
+  const outboundBySkuDay = new Map<string, Qty>();
+  for (const row of resultRows<Record<string, unknown>>(jstResult)) {
+    const payload = objectValue(row.payload);
+    const identity = objectValue(payload._resolved);
+    const date = textValue(payload.bizDate);
+    const skuId = intValue(identity.skuId);
+    const qty = numericQty(payload.qty);
+    if (!ISO_DAY.test(date) || skuId <= 0 || qty === null) continue;
+    const key = grainKey(date, String(skuId));
+    outboundBySkuDay.set(key, qtyAdd(outboundBySkuDay.get(key) ?? ZERO_QTY, qty));
+  }
+  const keys = new Set([...demandBySkuDay.keys(), ...outboundBySkuDay.keys()]);
+  const rows = [...keys].map((key) => {
+    const [date, rawSkuId] = key.split("\u0000");
+    const skuId = intValue(rawSkuId);
+    return {
+      date,
+      skuId,
+      skuCode: skuCodes.get(skuId) || null,
+      demandQty: demandBySkuDay.has(key) ? qtyNumber(demandBySkuDay.get(key)!) : null,
+      outboundQty: outboundBySkuDay.has(key) ? qtyNumber(outboundBySkuDay.get(key)!) : null,
+    };
+  }).filter((row) => row.date && row.skuId > 0)
+    .sort((left, right) => left.date.localeCompare(right.date) || left.skuId - right.skuId);
 
   const comparable = rows.filter((row) => row.demandQty !== null && row.outboundQty !== null);
   if (comparable.length === 0) {

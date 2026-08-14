@@ -428,7 +428,7 @@ export const CONNECTORS: Connector[] = [
     liveVerificationEnv: "YY_LIVE_VERIFIED_AT",
     liveVerificationRefEnv: "YY_LIVE_VERIFIED_REF",
     sourceDocs: ["https://developer.yonyou.com/openAPI"],
-    blocker: "网关与鉴权已实测打通（c4/iuap-api-gateway，token 正常）；八条只读契约在控制台逐条授权前全部返回 310037，仍缺企业 API 授权与租户/目标组织（授权后组织架构接口可直接读出）",
+    blocker: "网关与鉴权已实测打通（c4/iuap-api-gateway，token 正常）；八条只读契约当前均返回 HTTP 403（早先同范围为 310037 未授权），仍缺企业 API 授权与租户/目标组织（授权后组织架构接口可直接读出）",
     isConfigured(env = process.env) {
       return yonyouConfigFromEnv(env) !== null;
     },

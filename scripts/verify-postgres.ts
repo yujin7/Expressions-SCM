@@ -52,6 +52,7 @@ async function main(): Promise<void> {
         "aliases",
         "alias_exceptions",
         "data_product_outcome_events",
+        "report_read_model_cache",
       ]],
     );
     const found = new Set(tables.rows.map((row) => row.table_name));
@@ -83,8 +84,37 @@ async function main(): Promise<void> {
       "aliases",
       "alias_exceptions",
       "data_product_outcome_events",
+      "report_read_model_cache",
     ].filter((name) => !found.has(name));
     if (missing.length) throw new Error(`Missing migrated tables: ${missing.join(", ")}`);
+
+    const readModelColumns = await client.query<{
+      column_name: string;
+      data_type: string;
+      is_nullable: string;
+    }>(
+      `select column_name, data_type, is_nullable
+         from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'report_read_model_cache'
+          and column_name = any($1::text[])`,
+      [["key", "source_binding", "payload", "built_at"]],
+    );
+    const readModelColumnMap = new Map(
+      readModelColumns.rows.map((row) => [row.column_name, row]),
+    );
+    if (
+      readModelColumnMap.get("key")?.data_type !== "text"
+      || readModelColumnMap.get("key")?.is_nullable !== "NO"
+      || readModelColumnMap.get("source_binding")?.data_type !== "text"
+      || readModelColumnMap.get("source_binding")?.is_nullable !== "NO"
+      || readModelColumnMap.get("payload")?.data_type !== "jsonb"
+      || readModelColumnMap.get("payload")?.is_nullable !== "NO"
+      || readModelColumnMap.get("built_at")?.data_type !== "timestamp with time zone"
+      || readModelColumnMap.get("built_at")?.is_nullable !== "NO"
+    ) {
+      throw new Error("report_read_model_cache migration contract is incomplete");
+    }
 
     const sessionColumn = await client.query<{
       data_type: string;

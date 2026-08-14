@@ -273,6 +273,7 @@ export default function DecisionStudioClient() {
             getLabel={(r) => String(r.nameCn ?? r.code)}
             getValue={(r) => String(r.code)}
             allowClear
+            aria-label="筛选品牌"
             placeholder="全部品牌"
             style={{ width: 160 }}
             value={scopeBrand || undefined}
@@ -283,6 +284,7 @@ export default function DecisionStudioClient() {
             getLabel={(r) => String(r.name ?? r.code)}
             getValue={(r) => String(r.code)}
             allowClear
+            aria-label="筛选渠道"
             placeholder="全部渠道"
             style={{ width: 160 }}
             value={scopeChannel || undefined}
@@ -292,6 +294,7 @@ export default function DecisionStudioClient() {
             allowClear
             showSearch
             optionFilterProp="label"
+            aria-label={`筛选${DIMENSION_LABEL[dimension]}`}
             style={{ minWidth: 260 }}
             placeholder={`筛选${DIMENSION_LABEL[dimension]}（全部）`}
             value={selectedKey || undefined}

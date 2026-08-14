@@ -243,6 +243,7 @@ export default function DecisionVisual({
       {coverageLabel ? (
         <Tooltip title={`覆盖：${coverageLabel}`}>
           <div
+            role="group"
             aria-label={`数据覆盖 ${coverageLabel}`}
             style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}
           >
@@ -251,6 +252,7 @@ export default function DecisionVisual({
             </Typography.Text>
             {coverageValue != null ? (
               <Progress
+                aria-label={`数据覆盖 ${coverageLabel}`}
                 percent={coverageValue}
                 showInfo={false}
                 size="small"

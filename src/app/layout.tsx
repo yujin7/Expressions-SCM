@@ -25,6 +25,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 colorBgLayout: "#f3f6fb",
                 colorText: "#172033",
                 colorTextSecondary: "#667085",
+                colorTextDescription: "#667085",
                 colorBorder: "#dfe5ee",
                 borderRadius: 8,
                 borderRadiusLG: 12,

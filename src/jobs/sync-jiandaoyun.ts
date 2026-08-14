@@ -13,8 +13,26 @@ import {
   syncJiandaoyunCatalog,
   syncJiandaoyunForm,
 } from "@/server/integrations/jiandaoyun-sync";
+import { refreshJiandaoyunExternalDemandReadModel } from "@/server/modules/report/external-demand-signal";
 
 type JiandaoyunSkipped = { status: "skipped"; reason: string };
+const EXTERNAL_DEMAND_CONTRACTS = new Set([
+  "tmall-sku-crosswalk-observation",
+  "tmall-sku-sales-observation",
+  "tmall-sku-refund-observation",
+]);
+
+async function refreshDemandReadModel(db: AnyDb) {
+  const signal = await refreshJiandaoyunExternalDemandReadModel(db);
+  return {
+    state: signal.state,
+    sourceAsOf: signal.sourceAsOf,
+    crosswalkAsOf: signal.crosswalkAsOf,
+    salesRows: signal.coverage.salesRows,
+    mappedIdentities: signal.coverage.mappedIdentities,
+    platformIdentities: signal.coverage.platformIdentities,
+  };
+}
 
 function runtime():
   | { client: JiandaoyunClient; actorId: number }
@@ -58,7 +76,10 @@ export async function runJiandaoyunContractSync(
   const contract = jiandaoyunContract(contractKey);
   if (!contract) throw new Error(`未知简道云观察契约: ${contractKey}`);
   const summary = await syncJiandaoyunForm(db, { ...ready, contract });
-  return { status: "succeeded" as const, ...summary };
+  const readModel = EXTERNAL_DEMAND_CONTRACTS.has(contract.key)
+    ? await refreshDemandReadModel(db)
+    : null;
+  return { status: "succeeded" as const, ...summary, readModel };
 }
 
 export async function runJiandaoyunConfiguredFormSyncs(db: AnyDb) {
@@ -75,9 +96,14 @@ export async function runJiandaoyunConfiguredFormSyncs(db: AnyDb) {
   for (const contract of contracts) {
     results.push(await syncJiandaoyunForm(db, { ...ready, contract }));
   }
+  const readModel = [...EXTERNAL_DEMAND_CONTRACTS]
+    .every((key) => contracts.some((contract) => contract.key === key))
+    ? await refreshDemandReadModel(db)
+    : null;
   return {
     status: "succeeded" as const,
     contracts: results.length,
     results,
+    readModel,
   };
 }

@@ -17,7 +17,7 @@
  * - 重建幂等：按自然键 upsert，重跑不产生重复行。
  */
 import {
-  pgTable, serial, integer, text, timestamp, numeric, date, boolean, unique, index, check,
+  pgTable, serial, integer, text, timestamp, numeric, date, boolean, unique, index, check, jsonb,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { skus, suppliers, warehouses, users } from "./masters";
@@ -42,6 +42,20 @@ export const rollupSupplierLead = pgTable("rollup_supplier_lead", {
   unique("uq_rollup_supplier_lead").on(t.supplierId, t.skuId),
   index("ix_rollup_lead_sku").on(t.skuId),
 ]);
+
+/**
+ * 外部观察型 BI 的可重建读模型缓存。
+ *
+ * staging 永远是证据权威；本表只保存经过门禁计算后的最终读模型和精确来源批次绑定。
+ * 连接器每次成功刷新后重建，页面只读匹配当前绑定的缓存，避免在请求热路径重复解析
+ * 10 万级 JSON staging。来源批次变化时旧缓存自动失效，绝不以旧值冒充当前值。
+ */
+export const reportReadModelCache = pgTable("report_read_model_cache", {
+  key: text("key").primaryKey(),
+  sourceBinding: text("source_binding").notNull(),
+  payload: jsonb("payload").$type<unknown>().notNull(),
+  builtAt: timestamp("built_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 /* ────────────────────────── E4-02 库位（bin） ────────────────────────── */
 
