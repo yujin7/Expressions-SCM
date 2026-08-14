@@ -253,7 +253,7 @@ export default function MarginClient() {
             stateDetail={channelContribution?.gate}
             height={320}
             onExport={channelContribution?.state === "preview" ? exportChannelContribution : undefined}
-            exportLabel="导出金额桥 UAT 证据"
+            exportLabel="导出金额桥 UAT 核对包"
             dataView={(
               <Table
                 rowKey="month"

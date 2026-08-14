@@ -15,7 +15,19 @@ describe("天猫渠道金额贡献桥导出", () => {
       latestClosedMonth: "2026-07",
       commonBusinessDateFrom: "2026-05-01",
       commonBusinessDateThrough: "2026-08-12",
-      sources: { sales: null, refunds: null, fees: null },
+      sources: {
+        sales: {
+          stream: "tmall-sku-sales-observation", sourceAsOf: "2026-08-13",
+          businessDateFrom: "2026-05-01", businessDateThrough: "2026-08-12",
+          sourceRows: 10, stagedRows: 10, validRows: 10, invalidRows: 0,
+        },
+        refunds: {
+          stream: "tmall-sku-refund-observation", sourceAsOf: "2026-08-13",
+          businessDateFrom: "2026-05-01", businessDateThrough: "2026-08-12",
+          sourceRows: 8, stagedRows: 8, validRows: 7, invalidRows: 1,
+        },
+        fees: null,
+      },
       coverage: {
         closedShopMonths: 2, comparableShopMonths: 1,
         missingSalesShopMonths: 1, missingRefundShopMonths: 1, missingFeeShopMonths: 0,
@@ -49,10 +61,16 @@ describe("天猫渠道金额贡献桥导出", () => {
     };
 
     const output = buildTmallChannelContributionExport(signal, new Date("2026-08-14T00:00:00.000Z"));
-    expect(output.rows).toHaveLength(3);
+    expect(output.rows).toHaveLength(5);
+    expect(output.rows.every((row) => row.length === output.headers.length)).toBe(true);
     expect(output.filename).toContain("2026-07");
     const csv = serializeCsv(output.headers, output.rows);
+    expect(csv).toContain("来源流,批次源更新时间,来源业务起始,来源业务截止,源行数,staging行数,有效行数,无效行数");
+    expect(csv).toContain("source_control");
+    expect(csv).toContain("tmall-sku-refund-observation,2026-08-13,2026-05-01,2026-08-12,8,8,7,1");
     expect(csv).toContain("支付金额,成功退款金额,净回款观察,平台费用支付金额,产品成本前渠道贡献");
+    expect(csv).toContain("源系统核对值,差异金额,差异原因,责任人,处理期限,证据编号,签认状态");
+    expect(csv).toContain("待签认");
     expect(csv).toContain("700.00");
     expect(csv).toContain("sales/refunds");
     expect(csv).toContain("'=HYPERLINK");
