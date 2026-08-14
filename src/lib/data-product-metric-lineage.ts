@@ -33,7 +33,7 @@ export interface DataProductMetricLineageContract {
   nextAction: string;
 }
 
-export const DATA_PRODUCT_METRIC_LINEAGE_VERSION = "data-product-metric-lineage/v6" as const;
+export const DATA_PRODUCT_METRIC_LINEAGE_VERSION = "data-product-metric-lineage/v7" as const;
 
 export const METRIC_COMPUTATION_STATE_LABEL: Record<MetricComputationState, string> = {
   implemented: "可重放计算",
@@ -248,15 +248,16 @@ export const DATA_PRODUCT_METRIC_LINEAGE_CONTRACTS: DataProductMetricLineageCont
   }),
 
   contract({
-    productId: "net-margin-bridge", metricId: "netRevenue", state: "not_implemented",
+    productId: "net-margin-bridge", metricId: "netRevenue", state: "partial",
     inputs: [
-      product("demand-pulse", "净需求与退款口径"), product("order-to-cash", "订单、履约与结算口径"),
-      stream("JIANDAOYUN", "platform-fee-observation", "可直接归属平台费用"),
+      product("demand-pulse", "已治理的支付与成功退款口径"),
+      product("order-to-cash", "折让、拒付、结算与收款链路"),
       stream("YONYOU", "yonbip-efi-fieia-querybalance", "关账科目余额校验"),
     ],
-    joinKeys: ["关账期间", "组织", "渠道", "店铺", "币种"],
-    evidence: "尚无将销售、退款、折让和费用联合的关账计算器",
-    nextAction: "待订单到现金与用友关账数据放行后，实现分币种净收入桥",
+    joinKeys: ["完整自然月", "店铺", "源表原币"],
+    missingPolicy: "exclude_with_coverage",
+    evidence: "简道云支付金额减成功退款金额的店铺×完整月观察计算器已实现；平台费用另列，不再错误混入净收入定义",
+    nextAction: "待订单到现金与用友关账数据放行后补齐折让、拒付、币种和收款核销，升级为会计可用净收入",
   }),
   contract({
     productId: "net-margin-bridge", metricId: "platformFeePaidAmount", state: "implemented",
@@ -264,6 +265,17 @@ export const DATA_PRODUCT_METRIC_LINEAGE_CONTRACTS: DataProductMetricLineageCont
     joinKeys: ["月份", "店铺", "费用项目", "币种"],
     evidence: "已按原币、原正负号及渠道粒度聚合，不无据分摊到 SKU",
     nextAction: continuous,
+  }),
+  contract({
+    productId: "net-margin-bridge", metricId: "channelContributionBeforeProductCost", state: "partial",
+    inputs: [
+      product("demand-pulse", "已治理的店铺支付与成功退款口径"),
+      stream("JIANDAOYUN", "platform-fee-observation", "店铺平台费用支付金额"),
+    ],
+    joinKeys: ["完整自然月", "店铺", "源表原币"],
+    missingPolicy: "exclude_with_coverage",
+    evidence: "三条最新成功批次已按店铺×完整月可重放连接；缺任一来源保持未知，费用孤立店铺金额单列排除，不分摊 SKU",
+    nextAction: "财务确认三表币种、费用分类与平台控制总量；补齐折让、拒付和产品成本后再计算贡献毛利率",
   }),
   contract({
     productId: "net-margin-bridge", metricId: "contributionMarginRate", state: "not_implemented",

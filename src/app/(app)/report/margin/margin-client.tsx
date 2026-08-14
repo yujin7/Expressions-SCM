@@ -21,6 +21,7 @@ import { fetchJson, postJson } from "@/components/fetchJson";
 import { exportCsv } from "@/components/exportCsv";
 import { formatQty } from "@/components/format";
 import { buildPlatformFeeUatExport } from "@/components/platform-fee-export";
+import { buildTmallChannelContributionExport } from "@/components/tmall-channel-contribution-export";
 import SkuHoverCard from "@/components/SkuHoverCard";
 import CaliberNote from "@/components/CaliberNote";
 import ListToolbar from "@/components/ListToolbar";
@@ -30,6 +31,10 @@ import type {
   JiandaoyunPlatformFeeObservation,
   PlatformFeeDimensionRow,
 } from "@/server/modules/report/platform-fee-observation";
+import type {
+  TmallChannelContributionObservation,
+  TmallContributionMonthSummary,
+} from "@/server/modules/report/tmall-channel-contribution";
 
 interface MarginRow {
   skuId: number;
@@ -51,6 +56,7 @@ interface MarginData {
   summary: { costedSkus: number; uncostedSkus: number; totalMargin3m: number | null };
   priceAvailable: boolean;
   platformFee: JiandaoyunPlatformFeeObservation;
+  channelContribution: TmallChannelContributionObservation;
 }
 
 function amountNumber(value: string): number {
@@ -116,11 +122,13 @@ export default function MarginClient() {
 
   const priceAvailable = data?.priceAvailable ?? false;
   const platformFee = data?.platformFee;
-  const monthlyFeeChart = (platformFee?.monthly ?? []).map((row) => ({
+  const channelContribution = data?.channelContribution;
+  const contributionChart = (channelContribution?.monthly ?? []).map((row) => ({
     ...row,
-    label: platformFee && platformFee.currencies.length > 1 ? `${row.key} · ${row.currency}` : row.key,
-    billing: amountNumber(row.billingAmount),
-    paid: amountNumber(row.paidAmount),
+    label: row.month,
+    netCollected: amountNumber(row.netCollectedObservation),
+    platformFee: amountNumber(row.platformFeePaidAmount),
+    contribution: amountNumber(row.contributionBeforeProductCost),
   }));
   const feeItemChart = (platformFee?.feeItems ?? []).slice(0, 10).map((row) => ({
     ...row,
@@ -130,10 +138,19 @@ export default function MarginClient() {
   const platformFeeState = loading && !data
     ? "loading"
     : platformFee?.state === "preview" ? "ready" : "insufficient";
+  const contributionState = loading && !data
+    ? "loading"
+    : channelContribution?.state === "preview" ? "ready" : "insufficient";
 
   const exportPlatformFee = () => {
     if (!platformFee) return;
     const output = buildPlatformFeeUatExport(platformFee);
+    exportCsv(output.filename, output.headers, output.rows);
+  };
+
+  const exportChannelContribution = () => {
+    if (!channelContribution) return;
+    const output = buildTmallChannelContributionExport(channelContribution);
     exportCsv(output.filename, output.headers, output.rows);
   };
 
@@ -159,6 +176,7 @@ export default function MarginClient() {
         <Space size={6}>
           <InputNumber
             size="small"
+            aria-label={`${r.code} 单位成本`}
             min={0}
             step={0.01}
             style={{ width: 110 }}
@@ -184,7 +202,9 @@ export default function MarginClient() {
       : []),
     {
       title: "状态", width: 110, fixed: "right",
-      render: (_, r) => (r.unitCost == null ? <Tag color="default">待录入成本</Tag> : <Tag color="green">已录成本</Tag>),
+      render: (_, r) => (r.unitCost == null
+        ? <Tag color="default">待录入成本</Tag>
+        : <Tag style={{ color: "#237804", background: "#f6ffed", borderColor: "#b7eb8f" }}>已录成本</Tag>),
     },
   ];
 
@@ -198,65 +218,70 @@ export default function MarginClient() {
       <Row gutter={[12, 12]} style={{ marginBottom: 16 }}>
         <Col xs={24} xl={14}>
           <DecisionVisual
-            title="天猫平台费用月度控制（财务 UAT 预览）"
-            question="每月平台计费与实际支付金额如何变化，冲销是否被完整保留？"
-            metricId="platformFeePaidAmount"
-            grain="月份 × 币种"
-            unit="原币金额"
+            title="天猫渠道金额贡献桥（完整月观察）"
+            question="支付金额扣除成功退款和平台费用后，在商品成本前还剩多少？"
+            metricId="channelContributionBeforeProductCost"
+            grain="完整自然月 × 店铺 × 源表原币"
+            unit="金额"
             source={{
               tier: "reference",
-              source: "简道云天猫账单费用项目汇总（最新成功批次）",
-              asOf: platformFee?.businessDateThrough,
-              note: platformFee?.selectedForSync ? "当前部署已选" : "当前部署未选，仅 UAT 预览",
+              source: "简道云天猫支付、成功退款、平台费用（各自最新成功批次）",
+              asOf: channelContribution?.commonBusinessDateThrough,
+              note: "三源同店铺完整月；缺任一来源不补零",
             }}
             coverage={{
-              covered: platformFee?.totals.validRows ?? 0,
-              total: platformFee?.totals.sourceRows ?? 0,
-              label: "通过字段与币种校验的记录",
+              covered: channelContribution?.coverage.comparableShopMonths ?? 0,
+              total: channelContribution?.coverage.closedShopMonths ?? 0,
+              label: "三源可比店铺月份",
             }}
             activeFilters={[
               "平台：天猫",
               "权限：只读观察",
-              platformFee?.businessDateFrom && platformFee?.businessDateThrough
-                ? `统计期：${platformFee.businessDateFrom} 至 ${platformFee.businessDateThrough}`
-                : "统计期：待核实",
-              platformFee?.sourceAsOf ? `批次源更新：${platformFee.sourceAsOf}` : "批次源更新：未提供",
-              platformFee?.selectedForSync ? "同步：当前已选" : "同步：当前未选",
+              channelContribution?.latestClosedMonth
+                ? `最近完整月：${channelContribution.latestClosedMonth}`
+                : "完整月：待核实",
+              "不含商品成本、折让、拒付与会计调整",
             ]}
-            summary={platformFee?.currencies.length
-              ? platformFee.currencies.map((row) => `${row.currency} 支付 ${formatAmount(row.paidAmount)}，其中冲销/退回 ${formatAmount(row.reversalPaidAmount)}`).join("；")
-              : platformFee?.gate ?? "正在读取费用观察证据。"}
-            caveat={platformFee?.limitations.join(" ")}
-            state={platformFeeState}
-            stateDetail={platformFee?.gate}
+            summary={channelContribution?.monthly.length
+              ? (() => {
+                  const latest = channelContribution.monthly.at(-1)!;
+                  return `${latest.month}：净回款观察 ${formatAmount(latest.netCollectedObservation)}，平台费用 ${formatAmount(latest.platformFeePaidAmount)}，产品成本前渠道贡献 ${formatAmount(latest.contributionBeforeProductCost)}；${latest.comparableShops}/${latest.totalShops} 个店铺可比。`;
+                })()
+              : channelContribution?.gate ?? "正在读取三源金额证据。"}
+            caveat={channelContribution?.limitations.join(" ")}
+            state={contributionState}
+            stateDetail={channelContribution?.gate}
             height={320}
-            onExport={platformFee?.state === "preview" ? exportPlatformFee : undefined}
-            exportLabel="导出财务 UAT 控制总量"
+            onExport={channelContribution?.state === "preview" ? exportChannelContribution : undefined}
+            exportLabel="导出金额桥 UAT 证据"
             dataView={(
               <Table
-                rowKey={(row) => `${row.key}:${row.currency}`}
+                rowKey="month"
                 size="small"
                 pagination={false}
-                dataSource={platformFee?.monthly ?? []}
+                dataSource={channelContribution?.monthly ?? []}
                 columns={[
-                  { title: "月份", dataIndex: "key", sorter: (a, b) => a.key.localeCompare(b.key) },
-                  { title: "币种", dataIndex: "currency", width: 76 },
-                  { title: "计费金额", dataIndex: "billingAmount", align: "right", render: formatAmount },
-                  { title: "支付金额", dataIndex: "paidAmount", align: "right", render: formatAmount },
-                  { title: "冲销/退回", dataIndex: "reversalPaidAmount", align: "right", render: formatAmount },
-                  { title: "负数行", dataIndex: "negativeRows", align: "right" },
-                ] as ColumnsType<PlatformFeeDimensionRow>}
+                  { title: "月份", dataIndex: "month", sorter: (a, b) => a.month.localeCompare(b.month) },
+                  { title: "可比店铺", width: 100, render: (_, row) => `${row.comparableShops}/${row.totalShops}` },
+                  { title: "支付金额", dataIndex: "grossPaidAmount", align: "right", sorter: (a, b) => amountNumber(a.grossPaidAmount) - amountNumber(b.grossPaidAmount), render: formatAmount },
+                  { title: "成功退款", dataIndex: "successfulRefundAmount", align: "right", sorter: (a, b) => amountNumber(a.successfulRefundAmount) - amountNumber(b.successfulRefundAmount), render: formatAmount },
+                  { title: "净回款观察", dataIndex: "netCollectedObservation", align: "right", sorter: (a, b) => amountNumber(a.netCollectedObservation) - amountNumber(b.netCollectedObservation), render: formatAmount },
+                  { title: "平台费用", dataIndex: "platformFeePaidAmount", align: "right", sorter: (a, b) => amountNumber(a.platformFeePaidAmount) - amountNumber(b.platformFeePaidAmount), render: formatAmount },
+                  { title: "产品成本前贡献", dataIndex: "contributionBeforeProductCost", align: "right", defaultSortOrder: "descend", sorter: (a, b) => amountNumber(a.contributionBeforeProductCost) - amountNumber(b.contributionBeforeProductCost), render: formatAmount },
+                  { title: "排除费用", dataIndex: "excludedFeePaidAmount", align: "right", render: formatAmount },
+                ] as ColumnsType<TmallContributionMonthSummary>}
               />
             )}
           >
             <ResponsiveContainer minWidth={0} minHeight={1}>
-              <BarChart data={monthlyFeeChart} margin={{ top: 8, right: 18, left: 8, bottom: 28 }}>
+              <BarChart data={contributionChart} margin={{ top: 8, right: 18, left: 8, bottom: 28 }}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="label" minTickGap={18} />
                 <YAxis tickFormatter={shortAmount} />
                 <RechartsTooltip formatter={(value) => formatAmount(Number(value))} />
-                <Bar dataKey="billing" name="计费金额" fill={VISUAL_COLOR.compare} radius={[3, 3, 0, 0]} />
-                <Bar dataKey="paid" name="支付金额" fill={VISUAL_COLOR.primary} radius={[3, 3, 0, 0]} />
+                <Bar dataKey="netCollected" name="净回款观察" fill={VISUAL_COLOR.primary} radius={[3, 3, 0, 0]} />
+                <Bar dataKey="platformFee" name="平台费用" fill={VISUAL_COLOR.warning} radius={[3, 3, 0, 0]} />
+                <Bar dataKey="contribution" name="产品成本前贡献" fill={VISUAL_COLOR.positive} radius={[3, 3, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </DecisionVisual>
@@ -281,6 +306,8 @@ export default function MarginClient() {
             state={platformFeeState}
             stateDetail={platformFee?.gate}
             height={320}
+            onExport={platformFee?.state === "preview" ? exportPlatformFee : undefined}
+            exportLabel="导出平台费用 UAT 控制总量"
             dataView={(
               <Table
                 rowKey={(row) => `${row.key}:${row.currency}`}
@@ -310,7 +337,7 @@ export default function MarginClient() {
         <Col>
           {priceAvailable
             ? <Statistic title="近3月毛利合计" value={data?.summary.totalMargin3m ?? 0} precision={2} />
-            : <Statistic title="近3月毛利合计" value="售价待接入" valueStyle={{ fontSize: 20, color: "#8c8c8c" }} />}
+            : <Statistic title="近3月毛利合计" value="售价待接入" valueStyle={{ fontSize: 20, color: "#595959" }} />}
         </Col>
       </Row>
       <ListToolbar

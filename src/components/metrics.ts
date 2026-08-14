@@ -366,12 +366,12 @@ export const METRICS: Record<string, MetricDef> = {
   },
   netRevenue: {
     id: "netRevenue",
-    label: "净收入",
-    short: "销售收入扣除成功退款、折让和明确归属平台费用后的金额",
-    formula: "销售收入 − 成功退款 − 折让 − 可归属平台费用",
+    label: "净回款/净收入",
+    short: "销售支付金额扣除成功退款、折让与拒付后的净收入；平台费用另列，不混入收入定义",
+    formula: "销售支付金额 − 成功退款 − 折让 − 拒付（平台费用另列）",
     unit: "money",
     tier: "derived",
-    caveat: "未关账、费用覆盖不足或币种未统一时只能作为观察值",
+    caveat: "当前简道云观察只实现支付金额减成功退款；折让、拒付、币种和关账未闭合时不得冒充会计净收入",
   },
   platformFeePaidAmount: {
     id: "platformFeePaidAmount",
@@ -381,6 +381,15 @@ export const METRICS: Record<string, MetricDef> = {
     unit: "money",
     tier: "registry",
     caveat: "当前仅覆盖天猫渠道；财务确认正式费用字段、控制总量和关账期间前只能用于 UAT 与结构解释，且不得无依据分摊到 SKU",
+  },
+  channelContributionBeforeProductCost: {
+    id: "channelContributionBeforeProductCost",
+    label: "产品成本前渠道贡献",
+    short: "净回款观察扣除可直接归属平台费用后的余额，尚未扣除商品成本",
+    formula: "(支付金额 − 成功退款金额) − 平台费用支付金额",
+    unit: "money",
+    tier: "derived",
+    caveat: "只在同一完整月份和店铺三源均有记录时计算；不含商品成本、折让、拒付和会计调整，绝不是毛利或利润",
   },
   contributionMarginRate: {
     id: "contributionMarginRate",
