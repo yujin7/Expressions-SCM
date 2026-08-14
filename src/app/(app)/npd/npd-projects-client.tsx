@@ -9,8 +9,10 @@ import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import DecisionVisual from "@/components/DecisionVisual";
+import ProductExternalDecisionEvidenceCard from "@/components/ProductExternalDecisionEvidenceCard";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { buildLaunchExternalEvidenceBriefs } from "@/components/launch-external-evidence";
+import type { ProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
 import { ACTION } from "@/components/dictionary";
 import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 
@@ -126,6 +128,7 @@ export default function NpdProjectsClient() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<ProjectRow[]>([]);
   const [supportingObservations, setSupportingObservations] = useState<JiandaoyunSupportingObservation[]>([]);
+  const [externalDecisionEvidence, setExternalDecisionEvidence] = useState<ProductExternalDecisionEvidenceBrief | null>(null);
   const [loading, setLoading] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -167,9 +170,14 @@ export default function NpdProjectsClient() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const d = await fetchJson<{ projects: ProjectRow[]; supportingObservations: JiandaoyunSupportingObservation[] }>("/api/npd/projects");
+      const d = await fetchJson<{
+        projects: ProjectRow[];
+        supportingObservations: JiandaoyunSupportingObservation[];
+        externalDecisionEvidence: ProductExternalDecisionEvidenceBrief;
+      }>("/api/npd/projects");
       setRows(d.projects);
       setSupportingObservations(d.supportingObservations ?? []);
+      setExternalDecisionEvidence(d.externalDecisionEvidence ?? null);
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -360,6 +368,7 @@ export default function NpdProjectsClient() {
         </Button>
       </Space>
       <LaunchExternalEvidence observations={supportingObservations} />
+      <ProductExternalDecisionEvidenceCard evidence={externalDecisionEvidence} />
       <DecisionVisual
         title="新品项目组合进度"
         question="哪些在研项目已落后计划，哪些节点需要本周优先解除阻塞？"

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { buildProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
 import { getDbAsync } from "@/db";
 import { errorResponse, guardRead, parseListQuery } from "@/server/modules/master/common";
+import { loadDataSourceReadiness } from "@/server/modules/report/data-source-readiness";
 import { getInventoryAnalytics } from "@/server/modules/report/inventory-analytics";
 import { loadJiandaoyunSupportingObservations } from "@/server/modules/report/jiandaoyun-supporting-observation";
 
@@ -11,10 +13,12 @@ export async function GET(req: NextRequest) {
     const { q, page, pageSize, searchParams } = parseListQuery(req.url);
     const raw = Number(searchParams.get("windowDays"));
     const windowDays = Number.isFinite(raw) && raw > 0 ? raw : undefined;
+    const includeExternalEvidence = searchParams.get("includeExternalEvidence") !== "0";
     const db = await getDbAsync();
-    const [data, supportingObservations] = await Promise.all([
+    const [data, supportingObservations, dataSources] = await Promise.all([
       getInventoryAnalytics({ q, windowDays, page, pageSize }, db),
-      loadJiandaoyunSupportingObservations(db),
+      includeExternalEvidence ? loadJiandaoyunSupportingObservations(db) : Promise.resolve([]),
+      includeExternalEvidence ? loadDataSourceReadiness(db) : Promise.resolve(null),
     ]);
     return NextResponse.json({
       ...data,
@@ -22,6 +26,9 @@ export async function GET(req: NextRequest) {
         observation.stream === "inventory-count-observation"
         || observation.stream === "warehouse-observation"
         || observation.stream === "warehouse-transfer-observation"),
+      externalDecisionEvidence: dataSources
+        ? buildProductExternalDecisionEvidenceBrief("unified-inventory", dataSources)
+        : null,
     });
   } catch (e) {
     return errorResponse(e);

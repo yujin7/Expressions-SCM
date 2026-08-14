@@ -17,12 +17,14 @@ import {
   YAxis,
 } from "recharts";
 import DecisionVisual from "@/components/DecisionVisual";
+import ProductExternalDecisionEvidenceCard from "@/components/ProductExternalDecisionEvidenceCard";
 import { exportCsv } from "@/components/exportCsv";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import SkuHoverCard from "@/components/SkuHoverCard";
 import { buildSupplyExternalEvidenceBrief } from "@/components/supply-external-evidence";
 import { buildPromiseReliabilityExport } from "@/components/supply-commitment-export";
+import type { ProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
 import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 import type { PromiseReliability } from "@/server/modules/report/supply-commitment";
 
@@ -56,6 +58,7 @@ interface CalendarData {
   };
   promiseReliability: PromiseReliability;
   supportingObservations: JiandaoyunSupportingObservation[];
+  externalDecisionEvidence: ProductExternalDecisionEvidenceBrief;
 }
 
 /** 来源中文名与配色（与 server/modules/report/inbound-calendar.ts SUPPLY_SOURCE_LABELS 保持一致） */
@@ -268,6 +271,7 @@ export default function InboundCalendarClient() {
       ) : null}
 
       <SupplyExternalEvidence observations={data?.supportingObservations ?? []} />
+      <ProductExternalDecisionEvidenceCard evidence={data?.externalDecisionEvidence} />
 
       <DecisionVisual
         title="采购承诺可信度（版本化基线）"

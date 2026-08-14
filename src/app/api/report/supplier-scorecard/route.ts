@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { buildProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
 import { getDbAsync } from "@/db";
 import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
+import { loadDataSourceReadiness } from "@/server/modules/report/data-source-readiness";
 import { loadJiandaoyunSupportingObservations } from "@/server/modules/report/jiandaoyun-supporting-observation";
 import { applySupplierLevel, getSupplierScorecard } from "@/server/modules/report/supplier-scorecard";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
@@ -12,15 +14,17 @@ export async function GET(req: NextRequest) {
     const { q, page, pageSize, searchParams } = parseListQuery(req.url);
     const windowDays = Number(searchParams.get("windowDays")) || undefined;
     const db = await getDbAsync();
-    const [scorecard, supportingObservations] = await Promise.all([
+    const [scorecard, supportingObservations, dataSources] = await Promise.all([
       getSupplierScorecard({ q, page, pageSize, windowDays }, db),
       loadJiandaoyunSupportingObservations(db),
+      loadDataSourceReadiness(db),
     ]);
     return NextResponse.json({
       ...scorecard,
       supportingObservations: supportingObservations.filter((observation) =>
         observation.stream === "supplier-observation"
         || observation.stream === "sample-management-observation"),
+      externalDecisionEvidence: buildProductExternalDecisionEvidenceBrief("supplier-360", dataSources),
     });
   } catch (e) {
     return errorResponse(e);

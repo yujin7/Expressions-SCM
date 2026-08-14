@@ -22,8 +22,10 @@ import { ReloadOutlined } from "@ant-design/icons";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import DecisionVisual from "@/components/DecisionVisual";
+import ProductExternalDecisionEvidenceCard from "@/components/ProductExternalDecisionEvidenceCard";
 import ListToolbar from "@/components/ListToolbar";
 import { buildSupplierExternalEvidenceBriefs } from "@/components/supplier-external-evidence";
+import type { ProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
 import { useListState } from "@/components/useListState";
 import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 
@@ -69,6 +71,7 @@ interface ScoreData {
     windowDays: number;
   };
   supportingObservations: JiandaoyunSupportingObservation[];
+  externalDecisionEvidence: ProductExternalDecisionEvidenceBrief;
 }
 
 interface QcRow {
@@ -425,6 +428,7 @@ function ScorecardTab() {
       ) : null}
 
       {!loadError ? <SupplierExternalEvidence observations={data?.supportingObservations ?? []} /> : null}
+      {!loadError ? <ProductExternalDecisionEvidenceCard evidence={data?.externalDecisionEvidence} /> : null}
 
       <div className="supplier-scorecard-kpis">
         <Card size="small"><Statistic title={`窗口内有往来的供应商（近 ${s?.windowDays ?? windowDays} 天）`} value={s ? s.suppliers : "—"} /></Card>

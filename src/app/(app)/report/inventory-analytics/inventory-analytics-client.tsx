@@ -33,10 +33,12 @@ import { fetchJson } from "@/components/fetchJson";
 import CaliberNote from "@/components/CaliberNote";
 import DecisionMetric from "@/components/DecisionMetric";
 import DecisionVisual from "@/components/DecisionVisual";
+import ProductExternalDecisionEvidenceCard from "@/components/ProductExternalDecisionEvidenceCard";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
 import { exportCsv } from "@/components/exportCsv";
 import ListToolbar from "@/components/ListToolbar";
 import { buildInventoryExternalEvidenceBriefs } from "@/components/inventory-external-evidence";
+import type { ProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
 import { useListState } from "@/components/useListState";
 import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 
@@ -94,6 +96,7 @@ interface Data {
   slowDaysThreshold: number;
   avgOnHandNote: string;
   supportingObservations: JiandaoyunSupportingObservation[];
+  externalDecisionEvidence: ProductExternalDecisionEvidenceBrief | null;
 }
 
 const fmt = (v: number | null | undefined): string => (v == null ? "—" : Number(v).toLocaleString("zh-CN"));
@@ -209,7 +212,7 @@ export default function InventoryAnalyticsClient() {
   /* 图表数据：只随筛选变化（分页翻页不重算，省一次全表计算） */
   const loadChart = useCallback(async () => {
     try {
-      const params = new URLSearchParams({ q, windowDays, page: "1", pageSize: String(CHART_LIMIT) });
+      const params = new URLSearchParams({ q, windowDays, page: "1", pageSize: String(CHART_LIMIT), includeExternalEvidence: "0" });
       setChart(await fetchJson<Data>(`/api/report/inventory-analytics?${params.toString()}`));
     } catch (e) {
       message.error((e as Error).message);
@@ -428,6 +431,7 @@ export default function InventoryAnalyticsClient() {
       </section>
 
       <InventoryExternalEvidence observations={data?.supportingObservations ?? []} />
+      <ProductExternalDecisionEvidenceCard evidence={data?.externalDecisionEvidence} />
 
       <ListToolbar
         state={listState}
