@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getDbAsync } from "@/db";
 import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
+import { loadJiandaoyunSupportingObservations } from "@/server/modules/report/jiandaoyun-supporting-observation";
 import { applySupplierLevel, getSupplierScorecard } from "@/server/modules/report/supplier-scorecard";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 
@@ -9,7 +11,17 @@ export async function GET(req: NextRequest) {
     await guardRead();
     const { q, page, pageSize, searchParams } = parseListQuery(req.url);
     const windowDays = Number(searchParams.get("windowDays")) || undefined;
-    return NextResponse.json(await getSupplierScorecard({ q, page, pageSize, windowDays }));
+    const db = await getDbAsync();
+    const [scorecard, supportingObservations] = await Promise.all([
+      getSupplierScorecard({ q, page, pageSize, windowDays }, db),
+      loadJiandaoyunSupportingObservations(db),
+    ]);
+    return NextResponse.json({
+      ...scorecard,
+      supportingObservations: supportingObservations.filter((observation) =>
+        observation.stream === "supplier-observation"
+        || observation.stream === "sample-management-observation"),
+    });
   } catch (e) {
     return errorResponse(e);
   }

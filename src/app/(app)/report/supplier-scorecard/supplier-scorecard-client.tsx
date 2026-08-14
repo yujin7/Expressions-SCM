@@ -23,7 +23,9 @@ import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip as R
 import { fetchJson, postJson } from "@/components/fetchJson";
 import DecisionVisual from "@/components/DecisionVisual";
 import ListToolbar from "@/components/ListToolbar";
+import { buildSupplierExternalEvidenceBriefs } from "@/components/supplier-external-evidence";
 import { useListState } from "@/components/useListState";
+import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 
 /* ───────────────── 类型（与服务端 DTO 对齐） ───────────────── */
 
@@ -66,6 +68,7 @@ interface ScoreData {
     avgOnTimeRate: number | null;
     windowDays: number;
   };
+  supportingObservations: JiandaoyunSupportingObservation[];
 }
 
 interface QcRow {
@@ -159,12 +162,73 @@ const QC_SERIES = [
 
 const pct = (v: number | null): string => (v == null ? "—" : `${(v * 100).toFixed(1)}%`);
 const fmt = (v: number): string => (Number.isInteger(v) ? String(v) : v.toFixed(2));
+const displayExternalMetric = (value: string): string => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed)
+    ? parsed.toLocaleString("zh-CN", { maximumFractionDigits: 4 })
+    : value;
+};
 
 /** 比率列：无数据显示「无数据」而不是 0%（0% 和「没测到」是两回事） */
 function RateCell({ v, warnAbove, warnBelow }: { v: number | null; warnAbove?: number; warnBelow?: number }) {
   if (v == null) return <Typography.Text type="secondary">无数据</Typography.Text>;
   const bad = (warnAbove != null && v > warnAbove) || (warnBelow != null && v < warnBelow);
   return <Typography.Text style={{ color: bad ? "#cf1322" : undefined }}>{pct(v)}</Typography.Text>;
+}
+
+function SupplierExternalEvidence({ observations }: { observations: readonly JiandaoyunSupportingObservation[] }) {
+  const briefs = buildSupplierExternalEvidenceBriefs(observations);
+  return (
+    <Card
+      size="small"
+      title="简道云供应商外部佐证（历史观察，不计分）"
+      extra={<Button type="link" size="small" href="/import/exceptions?status=open&scope=JIANDAOYUN">处理身份认领</Button>}
+      style={{ marginBottom: 12 }}
+    >
+      <Alert
+        banner
+        showIcon
+        type="warning"
+        message="这些数据用于发现主档缺口和样品历史风险；当前身份未闭合、时点较旧，不得混入当期供应商评分或自动改等级。"
+        style={{ marginBottom: 10 }}
+      />
+      <Row gutter={[10, 10]}>
+        {briefs.map((brief) => (
+          <Col xs={24} xl={12} key={brief.stream}>
+            <Card
+              type="inner"
+              size="small"
+              title={brief.label}
+              extra={<Tag color={brief.state === "available" ? "gold" : "default"}>{brief.state === "available" ? "历史辅助" : "缺失"}</Tag>}
+            >
+              {brief.state === "missing" ? (
+                <Typography.Text type="secondary">尚无最新成功批次；保持未知，不显示为 0。</Typography.Text>
+              ) : (
+                <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                  <Typography.Text type="secondary">
+                    源截止 {brief.sourceAsOf ?? "未提供"} · 业务期 {brief.period}
+                  </Typography.Text>
+                  <Space size={[6, 6]} wrap>
+                    {brief.metrics.map((metric) => (
+                      <Tag key={metric.key}>{metric.label} {displayExternalMetric(metric.value)}{metric.unit}</Tag>
+                    ))}
+                  </Space>
+                  {brief.supplierIdentity ? (
+                    <Typography.Text type={brief.supplierIdentity.openValues > 0 ? "warning" : "secondary"}>
+                      供应商身份已认领 {brief.supplierIdentity.governedMatches}/{brief.supplierIdentity.distinctValues}；
+                      待认领 {brief.supplierIdentity.openValues}
+                    </Typography.Text>
+                  ) : (
+                    <Typography.Text type="secondary">该批次未提供可治理的供应商身份。</Typography.Text>
+                  )}
+                </Space>
+              )}
+            </Card>
+          </Col>
+        ))}
+      </Row>
+    </Card>
+  );
 }
 
 /* ───────────────── 页签一：记分卡 ───────────────── */
@@ -359,6 +423,8 @@ function ScorecardTab() {
           style={{ marginBottom: 12 }}
         />
       ) : null}
+
+      {!loadError ? <SupplierExternalEvidence observations={data?.supportingObservations ?? []} /> : null}
 
       <div className="supplier-scorecard-kpis">
         <Card size="small"><Statistic title={`窗口内有往来的供应商（近 ${s?.windowDays ?? windowDays} 天）`} value={s ? s.suppliers : "—"} /></Card>

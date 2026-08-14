@@ -403,7 +403,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "供应商 × 期间 × 产品/物料",
     owner: "采购 / 品质 / 财务",
     ownerRoles: ["purchasing", "quality", "finance"],
-    contractVersion: "1.3.1",
+    contractVersion: "1.4.0",
     cadence: "weekly",
     decisionSlaHours: 72,
     metricIds: ["onTimeRate", "qcPassRate", "supplierPriceVariance"],
@@ -423,7 +423,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
       },
     },
     supportingStreams: {
-      JIANDAOYUN: ["supplier-observation"],
+      JIANDAOYUN: ["supplier-observation", "sample-management-observation"],
     },
     requiredProducts: [
       { productId: "supply-commitment", minimumLevel: "A2", purpose: "复用已验收的采购行、价格、承诺与收货口径" },
