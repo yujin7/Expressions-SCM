@@ -12,7 +12,7 @@ import SearchInput from "@/components/SearchInput";
  * 口径局限（平均在库用当前在库近似）在页面顶部与周转页签内均常驻提示，不做美化。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, App, Segmented, Space, Table, Tabs, Tag, Tooltip as AntTooltip, Typography } from "antd";
+import { Alert, App, Button, Card, Col, Row as GridRow, Segmented, Space, Table, Tabs, Tag, Tooltip as AntTooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
   Bar,
@@ -36,7 +36,9 @@ import DecisionVisual from "@/components/DecisionVisual";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
 import { exportCsv } from "@/components/exportCsv";
 import ListToolbar from "@/components/ListToolbar";
+import { buildInventoryExternalEvidenceBriefs } from "@/components/inventory-external-evidence";
 import { useListState } from "@/components/useListState";
+import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 
 type AgingBucket = "d30" | "d60" | "d90" | "d180" | "d180p";
 const BUCKETS: AgingBucket[] = ["d30", "d60", "d90", "d180", "d180p"];
@@ -91,6 +93,7 @@ interface Data {
   coverAlertDays: number;
   slowDaysThreshold: number;
   avgOnHandNote: string;
+  supportingObservations: JiandaoyunSupportingObservation[];
 }
 
 const fmt = (v: number | null | undefined): string => (v == null ? "—" : Number(v).toLocaleString("zh-CN"));
@@ -100,6 +103,69 @@ const CHART_LIMIT = 500;
 const COVER_CAP = 720;
 /** 对数横轴无法表示 0，无动销 SKU 用该占位值画在最左侧 */
 const DAILY_FLOOR = 0.01;
+
+const displayExternalMetric = (value: string): string => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed)
+    ? parsed.toLocaleString("zh-CN", { maximumFractionDigits: 4 })
+    : value;
+};
+
+function InventoryExternalEvidence({ observations }: { observations: readonly JiandaoyunSupportingObservation[] }) {
+  const briefs = buildInventoryExternalEvidenceBriefs(observations);
+  return (
+    <Card
+      size="small"
+      title="简道云库存外部佐证（历史观察，不调账）"
+      extra={<Button type="link" size="small" href="/import/exceptions?status=open&scope=JIANDAOYUN">处理仓库认领</Button>}
+      style={{ marginBottom: 12 }}
+    >
+      <Alert
+        banner
+        showIcon
+        type="warning"
+        message="仓库、盘点和调拨旧表只用于解释流程与发现身份缺口；不得改写当前在库、自动调平或替代聚水潭/用友实时库存。"
+        style={{ marginBottom: 10 }}
+      />
+      <GridRow gutter={[10, 10]}>
+        {briefs.map((brief) => (
+          <Col xs={24} xl={8} key={brief.stream}>
+            <Card
+              type="inner"
+              size="small"
+              title={brief.label}
+              extra={<Tag color={brief.state === "available" ? "gold" : "default"}>{brief.state === "available" ? "历史辅助" : "缺失"}</Tag>}
+            >
+              {brief.state === "missing" ? (
+                <Typography.Text type="secondary">尚无最新成功批次；保持未知，不显示为 0。</Typography.Text>
+              ) : (
+                <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                  <Typography.Text type="secondary">
+                    源截止 {brief.sourceAsOf ?? "未提供"} · 业务期 {brief.period}
+                  </Typography.Text>
+                  {brief.dateAnomaly ? <Tag color="orange" style={{ whiteSpace: "normal" }}>时间异常：{brief.dateAnomaly}</Tag> : null}
+                  <Space size={[6, 6]} wrap>
+                    {brief.metrics.map((metric) => (
+                      <Tag key={metric.key}>{metric.label} {displayExternalMetric(metric.value)}{metric.unit}</Tag>
+                    ))}
+                  </Space>
+                  {brief.warehouseIdentity ? (
+                    <Typography.Text type={brief.warehouseIdentity.openValues > 0 ? "warning" : "secondary"}>
+                      仓库身份已认领 {brief.warehouseIdentity.governedMatches}/{brief.warehouseIdentity.distinctValues}；
+                      待认领 {brief.warehouseIdentity.openValues}
+                    </Typography.Text>
+                  ) : (
+                    <Typography.Text type="secondary">该批次未提供可治理的仓库身份。</Typography.Text>
+                  )}
+                </Space>
+              )}
+            </Card>
+          </Col>
+        ))}
+      </GridRow>
+    </Card>
+  );
+}
 
 interface Point {
   code: string;
@@ -360,6 +426,8 @@ export default function InventoryAnalyticsClient() {
           />
         </div>
       </section>
+
+      <InventoryExternalEvidence observations={data?.supportingObservations ?? []} />
 
       <ListToolbar
         state={listState}

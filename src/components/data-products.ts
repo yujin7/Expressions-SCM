@@ -280,7 +280,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "截止时点 × 仓库 × SKU × 批次",
     owner: "仓储 / PMC / 财务",
     ownerRoles: ["warehouse", "pmc", "finance"],
-    contractVersion: "1.2.0",
+    contractVersion: "1.3.0",
     cadence: "intraday",
     decisionSlaHours: 4,
     metricIds: ["onHandSystem", "inventoryReconciliationGap", "coverageSku"],
