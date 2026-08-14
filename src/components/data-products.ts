@@ -132,9 +132,9 @@ export const DATA_PRODUCT_STREAM_LABEL: Record<string, string> = {
  * 这些说明会直接进入数据资产行动队列，防止用覆盖更窄的现成 API 冒充目标契约。
  */
 export const DATA_PRODUCT_STREAM_IMPLEMENTATION_NOTE: Partial<Record<string, string>> = {
-  "orders-daily": "必须覆盖淘系与拼多多；聚水潭标准订单查询明确不返回这两类订单，不能用窄接口冒充全渠道事实",
-  "returns-daily": "必须覆盖淘系与拼多多售后；聚水潭标准售后查询只返回自有商城单据，不能用它冒充全渠道退货",
-  "yonbip-finance-receivables-settlement": "必须先在目标 YonBIP 租户官方 API 目录确认应收、收款与核销的只读契约，再冻结路径和字段映射",
+  "orders-daily": "必须覆盖淘系与拼多多；标准订单接口明确不返回两者。淘系官方候选为奇门 jushuitan.order.list.query（target_app_key=23060081），必须按商家传 customer_id；拼多多覆盖仍需聚水潭逐店确认，不能用窄接口冒充全渠道事实",
+  "returns-daily": "必须覆盖淘系与拼多多售后；标准售后接口只返回自有商城。淘系官方候选为奇门 jushuitan.refund.list.query，按 customer_id 路由并使用 start_ts 增量；拼多多覆盖仍需逐店确认",
+  "yonbip-finance-receivables-settlement": "用友公开官方流程只能证明创建应用、申请服务和企业授权；必须先在目标 YonBIP C4 租户官方 API 目录确认应收、收款与核销的精确只读契约，再冻结路径和字段映射",
 };
 
 export function dataProductStreamLabel(source: DataProductSource, stream: string): string {

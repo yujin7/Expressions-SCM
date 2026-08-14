@@ -85,6 +85,11 @@ SCM 数据库，二者都不落业务数据。
   `orders-daily` / `returns-daily` 是含淘系/拼多多的全渠道事实，因此这两个标准接口只能作为
   覆盖更窄的候选，不能直接绑定目标流。必须由聚水潭确认奇门/平台专用授权、`customer_id`
   路由和可覆盖店铺后再冻结契约，并用平台控制总量证明没有渠道漏数。
+- [淘系订单奇门候选](https://open.jushuitan.com/document.aspx?doc_id=2352)指定
+  `jushuitan.order.list.query`、`target_app_key=23060081`，并要求不同商家传不同
+  `customer_id`；[淘系售后奇门候选](https://open.jushuitan.com/document.aspx?doc_id=2356)
+  指定 `jushuitan.refund.list.query`，并建议以返回最大 `ts` 继续增量扫描以避免分页漏单。
+  这两条只是淘系官方候选，不能反推拼多多一定已覆盖；仍须按店铺列表和平台导出逐一 UAT。
 
 ### 已实现
 
@@ -412,10 +417,13 @@ npx tsx src/jobs/cli.ts probe-feishu-chats
   `物料档案分页查询 V2`、`采购订单列表查询`、`采购入库列表查询`、`现存量查询 V2`、
   `存货成本查询`、`凭证列表查询`。
 
-本地已据此锁定 `yonbip`、八条精确契约、`c4.yonyoucloud.com` allowlist 和网关 base URL；
-readiness 现在只缺租户 ID、目标组织 ID 与企业自建 token URL。OpenAPI Explorer 的真实 token
-握手与组织查询仍未执行，企业授权范围、账簿/币种/税/会计期间和业务控制总量也未验收，故继续
-保持 `contract_only`、`safeToCall=false`，不会因门户可登录或 AK/SK 存在而伪报 live。
+本地已据此锁定 `yonbip`、八条精确只读契约、`c4.yonyoucloud.com` allowlist 和网关
+base/token URL。运行时客户端、token 缓存、契约白名单、出站限制与安全错误处理均已实现；
+真实 token 握手已成功。2026-08-14 重跑八条只读探针仍是 0/8（全部 HTTP 403，早先为
+`310037`），因此当前是“实现就绪、企业授权/租户组织未就绪、不可运行”，不是旧的
+`contract_only`。授权后先从组织查询读出租户/目标组织，再做账簿/币种/税/会计期间和控制总量 UAT。
+公开开发者中心只能证明“创建应用 → 申请服务 → 企业授权”流程，未公开目标 C4 租户的
+应收、收款、核销精确 API 路径；这三条仍必须在租户官方 API 目录内确认后才能冻结，不按客开资产包名称猜接口。
 
 所需机器配置：
 
@@ -470,8 +478,8 @@ npx tsx src/jobs/cli.ts audit-yonyou-readiness
 ```
 
 输出只包含配置存在性、产品类型、获批接口数量、缺失项和剩余控制；不会输出密钥、租户/组织、
-endpoint 或接口名。即使结果为 `contract_ready`，实现仍为 `contract_only`、`safeToCall=false`；
-沙箱只读握手与对账完成前不代表已接通。
+endpoint 或接口名。`contract_ready` 只是静态契约结果；运行时实现虽已为 `ready`，
+但企业 API 授权、租户/组织、只读对账和 UAT 完成前仍是 `operational=false`，不代表已接通。
 
 按官方顺序，企业管理员/用友实施方还必须：
 

@@ -341,6 +341,10 @@ export const CONNECTORS: Connector[] = [
       "https://openweb.jushuitan.com/dev-doc?docType=1&docId=3",
       "https://open.jushuitan.com/document/2167.html",
       "https://open.jushuitan.com/document/2019.html",
+      "https://open.jushuitan.com/document/2125.html",
+      "https://open.jushuitan.com/document/15.html",
+      "https://open.jushuitan.com/document.aspx?doc_id=2352",
+      "https://open.jushuitan.com/document.aspx?doc_id=2356",
     ],
     blocker: "日出库、库存增量、商品主档与采购入库均只进入受控 staging；需开放平台 app/token、IP 白名单、逐接口权限、显式读取契约选择与责任人 ID，并在真实对账/UAT 后设置时间与非秘密证据编号",
     isConfigured(env = process.env) {
