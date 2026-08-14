@@ -2,7 +2,7 @@
 
 /** E4-03 到货日历：未结供给按预计到货日排成收货计划（只读；空档日保留占位，无交期条数顶部明示） */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, App, Card, DatePicker, Empty, Space, Spin, Statistic, Table, Tag, Typography } from "antd";
+import { Alert, App, Button, Card, DatePicker, Empty, Space, Spin, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
@@ -21,7 +21,9 @@ import { exportCsv } from "@/components/exportCsv";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import SkuHoverCard from "@/components/SkuHoverCard";
+import { buildSupplyExternalEvidenceBrief } from "@/components/supply-external-evidence";
 import { buildPromiseReliabilityExport } from "@/components/supply-commitment-export";
+import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 import type { PromiseReliability } from "@/server/modules/report/supply-commitment";
 
 interface CalendarLine {
@@ -53,6 +55,7 @@ interface CalendarData {
     bySource: Record<string, number>;
   };
   promiseReliability: PromiseReliability;
+  supportingObservations: JiandaoyunSupportingObservation[];
 }
 
 /** 来源中文名与配色（与 server/modules/report/inbound-calendar.ts SUPPLY_SOURCE_LABELS 保持一致） */
@@ -70,6 +73,51 @@ const SOURCE_COLORS: Record<string, string> = {
 };
 
 const nz = (v: number): string => v.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+const displayExternalMetric = (value: string): string => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed)
+    ? parsed.toLocaleString("zh-CN", { maximumFractionDigits: 4 })
+    : value;
+};
+
+function SupplyExternalEvidence({ observations }: { observations: readonly JiandaoyunSupportingObservation[] }) {
+  const brief = buildSupplyExternalEvidenceBrief(observations);
+  return (
+    <Card
+      size="small"
+      title="简道云采购需求旁证（历史观察，不改承诺）"
+      extra={<Button type="link" size="small" href="/import/exceptions?status=open&scope=JIANDAOYUN">处理身份认领</Button>}
+      style={{ marginBottom: 12 }}
+    >
+      <Alert
+        banner
+        showIcon
+        type="warning"
+        message="需求/已采购数量是原表跨 SKU 控制量，单位未统一，不得据此计算采购达成率、生成 PO、改写在途或补货数量。"
+        style={{ marginBottom: 10 }}
+      />
+      {brief.state === "missing" ? (
+        <Typography.Text type="secondary">尚无最新成功批次；保持未知，不显示为 0 需求。</Typography.Text>
+      ) : (
+        <Space direction="vertical" size={8} style={{ width: "100%" }}>
+          <Typography.Text type="secondary">源截止 {brief.sourceAsOf ?? "未提供"} · 业务期 {brief.period}</Typography.Text>
+          <Space size={[6, 6]} wrap>
+            {brief.metrics.map((metric) => (
+              <Tag key={metric.key}>{metric.label} {displayExternalMetric(metric.value)}{metric.unit}</Tag>
+            ))}
+          </Space>
+          <Space size={[6, 6]} wrap>
+            {brief.identities.map((identity) => (
+              <Tag color={identity.openValues > 0 ? "orange" : "default"} key={identity.kind}>
+                {identity.label} {identity.governedMatches}/{identity.distinctValues} · 待认领 {identity.openValues}
+              </Tag>
+            ))}
+          </Space>
+        </Space>
+      )}
+    </Card>
+  );
+}
 
 const PROMISE_STATUS = {
   on_time_in_full: { label: "按期足量", color: "green" },
@@ -218,6 +266,8 @@ export default function InboundCalendarClient() {
           }
         />
       ) : null}
+
+      <SupplyExternalEvidence observations={data?.supportingObservations ?? []} />
 
       <DecisionVisual
         title="采购承诺可信度（版本化基线）"
