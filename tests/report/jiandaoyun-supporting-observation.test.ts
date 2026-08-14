@@ -197,4 +197,80 @@ describe("简道云历史辅助洞察", () => {
       await client.close();
     }
   });
+
+  it("产品主档只输出完整度与 JIANDAOYUN SKU 认领覆盖，不泄露原始产品值", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "新品数据责任人" }).returning();
+      const [job] = await db.insert(schema.importJobs).values({
+        template: "jdy_product_observation",
+        filename: "product-master",
+        sourceAsOf: "2024-07-29",
+        createdBy: actor.id,
+        status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy",
+        stream: "product-master-observation",
+        idempotencyKey: "product-master",
+        status: "succeeded",
+        importJobId: job.id,
+        sourceRows: 2,
+        stagedRows: 2,
+        finishedAt: new Date("2024-07-29T00:00:00.000Z"),
+      });
+      await db.insert(schema.aliases).values({
+        aliasType: "sku_code",
+        scope: "JIANDAOYUN",
+        rawValue: "PRODUCT-SECRET-A",
+        targetId: 1,
+        createdBy: actor.id,
+      });
+      await db.insert(schema.aliasExceptions).values({
+        aliasType: "sku_code",
+        scope: "JIANDAOYUN",
+        rawValue: "PRODUCT-SECRET-B",
+        status: "open",
+      });
+      await db.insert(schema.stagingRows).values([
+        {
+          importJobId: job.id,
+          rowNo: 1,
+          status: "pending",
+          targetTable: "jdy_product_observation",
+          payload: { data: { productCode: "PRODUCT-SECRET-A", productName: "秘密新品甲", brand: "品牌甲", unit: "盒" } },
+        },
+        {
+          importJobId: job.id,
+          rowNo: 2,
+          status: "validated",
+          targetTable: "jdy_product_observation",
+          payload: { data: { productCode: "PRODUCT-SECRET-B", productName: "秘密新品乙", brand: "品牌乙", unit: "瓶" } },
+        },
+      ]);
+
+      const result = await loadJiandaoyunSupportingObservations(db);
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({
+        stream: "product-master-observation",
+        sourceAsOf: "2024-07-29",
+        rows: 2,
+        summary: "产品记录 2条 · 编码完整 2条 · 名称完整 2条 · 品牌完整 2条 · 单位完整 2条",
+        identityCoverage: [{
+          kind: "sku_code",
+          distinctValues: 2,
+          governedMatches: 1,
+          openValues: 1,
+          queuedValues: 1,
+          unqueuedValues: 0,
+        }],
+      });
+      const serialized = JSON.stringify(result);
+      expect(serialized).not.toContain("PRODUCT-SECRET");
+      expect(serialized).not.toContain("秘密新品");
+      expect(serialized).not.toContain("品牌甲");
+    } finally {
+      await client.close();
+    }
+  });
 });

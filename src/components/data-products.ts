@@ -464,7 +464,7 @@ export const DATA_PRODUCTS: DataProductDefinition[] = [
     grain: "新品项目 × 里程碑/上市窗口",
     owner: "产品 / PMC / 电商",
     ownerRoles: ["pmc", "ops"],
-    contractVersion: "1.3.0",
+    contractVersion: "1.4.0",
     cadence: "daily",
     decisionSlaHours: 24,
     metricIds: ["npdProgress", "launchOnTimeRate", "first90DayAchievement"],

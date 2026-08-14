@@ -13,6 +13,7 @@ interface ReadDb {
 }
 
 export type JiandaoyunSupportingStream =
+  | "product-master-observation"
   | "purchase-demand-observation"
   | "supplier-observation"
   | "warehouse-observation"
@@ -53,6 +54,7 @@ export interface JiandaoyunSupportingObservation {
 }
 
 const STREAM_ORDER: JiandaoyunSupportingStream[] = [
+  "product-master-observation",
   "purchase-demand-observation",
   "inventory-count-observation",
   "warehouse-observation",
@@ -109,7 +111,7 @@ function metricSummary(metric: SupportingObservationMetric): string {
 }
 
 /**
- * 统一输出六条辅助流的历史流程/完整性摘要。数量用 PostgreSQL numeric 聚合并以字符串输出；
+ * 统一输出七条历史流的流程/完整性摘要。数量用 PostgreSQL numeric 聚合并以字符串输出；
  * 缺失批次保持缺失，不用 0 伪装。
  */
 export async function loadJiandaoyunSupportingObservations(
@@ -123,6 +125,7 @@ export async function loadJiandaoyunSupportingObservations(
       INNER JOIN import_jobs ij ON ij.id = ir.import_job_id
       WHERE ir.connector = 'jdy'
         AND ir.stream IN (
+          'product-master-observation',
           'purchase-demand-observation',
           'supplier-observation',
           'warehouse-observation',
@@ -169,6 +172,18 @@ export async function loadJiandaoyunSupportingObservations(
           THEN trim(data->>'totalQty')::numeric ELSE NULL END AS total_qty
       FROM base WHERE stream = 'sample-management-observation'
     ), aggregated AS (
+      SELECT stream, min(run_id)::int AS run_id, min(import_job_id)::int AS import_job_id,
+        min(source_as_of) AS source_as_of, null AS business_date_from, null AS business_date_through,
+        count(data)::int AS rows,
+        jsonb_build_array(
+          jsonb_build_object('key','rows','label','产品记录','value',count(data)::text,'unit','条'),
+          jsonb_build_object('key','coded','label','编码完整','value',count(*) FILTER (WHERE nullif(trim(data->>'productCode'),'') IS NOT NULL)::text,'unit','条'),
+          jsonb_build_object('key','named','label','名称完整','value',count(*) FILTER (WHERE nullif(trim(data->>'productName'),'') IS NOT NULL)::text,'unit','条'),
+          jsonb_build_object('key','branded','label','品牌完整','value',count(*) FILTER (WHERE nullif(trim(data->>'brand'),'') IS NOT NULL)::text,'unit','条'),
+          jsonb_build_object('key','united','label','单位完整','value',count(*) FILTER (WHERE nullif(trim(data->>'unit'),'') IS NOT NULL)::text,'unit','条')
+        ) AS metrics
+      FROM base WHERE stream = 'product-master-observation' GROUP BY stream
+      UNION ALL
       SELECT stream, min(run_id)::int AS run_id, min(import_job_id)::int AS import_job_id,
         min(source_as_of) AS source_as_of,
         min(left(data->>'requestedAt', 10)) FILTER (WHERE left(data->>'requestedAt', 10) ~ '^\\d{4}-\\d{2}-\\d{2}$') AS business_date_from,
@@ -250,6 +265,7 @@ export async function loadJiandaoyunSupportingObservations(
       FROM integration_runs ir
       WHERE ir.connector = 'jdy'
         AND ir.stream IN (
+          'product-master-observation',
           'purchase-demand-observation',
           'supplier-observation',
           'warehouse-observation',
@@ -266,6 +282,9 @@ export async function loadJiandaoyunSupportingObservations(
       INNER JOIN staging_rows sr ON sr.import_job_id = l.import_job_id
         AND sr.status IN ('pending', 'validated', 'committed')
     ), candidates AS (
+      SELECT stream, 'sku_code'::text AS kind, nullif(trim(data->>'productCode'), '') AS value
+      FROM base WHERE stream = 'product-master-observation'
+      UNION ALL
       SELECT stream, 'sku_code'::text AS kind, nullif(trim(data->>'productCode'), '') AS value
       FROM base WHERE stream = 'purchase-demand-observation'
       UNION ALL
