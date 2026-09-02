@@ -249,6 +249,40 @@ export const CROSS_SYSTEM_IDENTITY_STREAM_CONTRACTS: readonly CrossSystemIdentit
   },
   {
     source: "JIANDAOYUN",
+    stream: "tmall-unit-daily-observation",
+    identities: {
+      sku: implemented("条码已进入 JIANDAOYUN 作用域精确解析/人工认领；子货品编码只作精确候选线索，不自动认领"),
+      shop: notImplemented("店铺字段已保留但尚未进入受控店铺治理", "建立来源作用域店铺主档并逐值认领"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "pdd-order-observation",
+    identities: {
+      sku: notImplemented("商家 SKU 编码已保留，但与 SCM SKU 不是已证实的同一命名空间", "通过已验收的拼多多对照表精确映射，冲突和缺失值进人工认领"),
+      shop: notImplemented("店铺字段已保留但尚未进入受控店铺治理", "建立来源作用域店铺主档并逐值认领"),
+      document: notImplemented("订单号已保留在不可变观察行，尚未登记为外部单据引用", "以来源+订单类型+单号登记外部单据引用"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "vip-shop-trading-observation",
+    identities: {
+      shop: notImplemented("店铺与品牌只保留在品牌级观察中，尚未进入店铺主档", "建立唯品会店铺主档并完成品牌归属 UAT"),
+      channel: notImplemented("渠道由表单语义隐含，尚未用受控渠道身份显式标识", "绑定唯品会渠道主档并冻结店铺归属"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "tmall-product-pnl-observation",
+    identities: {
+      sku: notAvailable("当前粒度只到平台商品，没有可唯一归属的 SKU 字段", "仅作商品级损益观察；取得商品→SKU 受控关系前不下沉到 SKU"),
+      shop: notImplemented("店铺字段已保留但尚未进入受控店铺治理", "建立来源作用域店铺主档并逐值认领"),
+      channel: notImplemented("渠道由表单语义隐含，尚未用受控渠道身份显式标识", "绑定天猫渠道主档并冻结店铺归属"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
     stream: "npd-milestone-observation",
     identities: {
       sku: notImplemented("目标流尚未实现，里程碑产品身份未进入治理", "先冻结新品里程碑读取契约，再将产品编码精确映射到 SCM SKU"),

@@ -15,6 +15,7 @@ import { getNumParam } from "@/server/core/params";
 import { getRiskWorklist } from "@/server/modules/report/risk";
 import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";
+import { loadExternalVelocitySafe } from "@/server/modules/report/external-velocity";
 import { getLatestSnapshotRows, daysLeftOf, EXPIRY_TIER_DAYS } from "@/server/core/stock-view";
 import { num, r1 } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
@@ -80,7 +81,25 @@ export interface DashboardData {
   expiryBuckets: { bucket: string; qty: number; batches: number }[];
   expiryRiskTop: { code: string; name: string; warehouse: string; expiryDate: string; daysLeft: number; qty: number; lifecycle: string }[];
   coverBuckets: { bucket: string; count: number }[];
-  slowTop: { code: string; name: string; onHand: number; sales3m: number; daysCover: number | null; lifecycle: string }[];
+  slowTop: {
+    code: string; name: string; onHand: number; sales3m: number; daysCover: number | null; lifecycle: string;
+    /** 外部观察（简道云天猫）近 30 / 90 天净需求；未映射或读模型缺席 = null，不是 0 */
+    externalNet30: number | null; externalNet90: number | null; externalLastSold: string | null;
+  }[];
+  /**
+   * 外部观察与内部事实的时点差。内部 sales_monthly 停在哪个月、外部观察到哪一天、
+   * 以及「内部判无动销但外部近 30 天仍在售」的 SKU 数——这是最容易错杀（打折/报废）的那批。
+   */
+  externalDemand: {
+    state: "ready" | "insufficient";
+    gate: string;
+    sourceAsOf: string | null;
+    anchorDate: string | null;
+    internalThroughMonth: string | null;
+    lagDays: number | null;
+    mappedSkus: number;
+    internalNoMoveButExternalSelling: number;
+  };
   outsource: { docType: string; label: string; total: number; byStatus: Record<string, number> }[];
   settlement: { docs: number; amountSum: string } | null; // 仅 admin/finance
   insights: string[];
@@ -96,6 +115,15 @@ interface DashboardCacheEntry {
 const dashboardCache = new Map<string, DashboardCacheEntry>();
 const DASHBOARD_TTL_MS = 60_000;
 /**
+ * 最多可立即返回 5 分钟内的旧快照；generatedAt 仍是真实生成时间。
+ *
+ * 外部观察批次更换后，首次重建可能扫描数万行。如果让请求同步等待，
+ * 驾驶舱会从毫秒级退化到数秒。这里用 bounded stale-while-revalidate：
+ * 旧快照尚在安全窗口内时先返回，后台单飞刷新；超过窗口则等待新值或显式失败。
+ */
+const DASHBOARD_MAX_STALE_MS = 5 * 60_000;
+const dashboardRefreshes = new Map<string, Promise<DashboardData>>();
+/**
  * 缓存条目上限。
  *
  * 加跨维筛选前，键只由角色组合构成，天然有界（几十个）。加了 brand/channel 之后
@@ -107,6 +135,7 @@ const DASHBOARD_CACHE_MAX = 200;
 
 export function clearDashboardCache(): void {
   dashboardCache.clear();
+  dashboardRefreshes.clear();
 }
 
 function rememberDashboard(key: string, entry: DashboardCacheEntry): void {
@@ -129,6 +158,26 @@ export function dashboardCacheSizeForTest(): number {
   return dashboardCache.size;
 }
 
+function refreshDashboard(
+  key: string,
+  roles: string[],
+  scope: DashboardScope,
+): Promise<DashboardData> {
+  const running = dashboardRefreshes.get(key);
+  if (running) return running;
+  const refresh = computeDashboard(roles, scope)
+    .then((value) => {
+      rememberDashboard(key, { value, expiresAt: Date.now() + DASHBOARD_TTL_MS });
+      return value;
+    })
+    .finally(() => {
+      // 只删除自己，避免旧 Promise 的 finally 误删后续任务。
+      if (dashboardRefreshes.get(key) === refresh) dashboardRefreshes.delete(key);
+    });
+  dashboardRefreshes.set(key, refresh);
+  return refresh;
+}
+
 export async function getDashboard(
   roles: string[],
   scope: DashboardScope = {},
@@ -143,10 +192,17 @@ export async function getDashboard(
   ].join("|");
   if (!bypass) {
     const hit = dashboardCache.get(key);
-    if (hit && hit.expiresAt > Date.now()) return hit.value;
+    const now = Date.now();
+    if (hit && hit.expiresAt > now) return hit.value;
+    if (hit && hit.expiresAt + DASHBOARD_MAX_STALE_MS > now) {
+      // 限定陈旧窗口内立即回旧快照，后台更新；用户不承担读模型重建延迟。
+      void refreshDashboard(key, roles, scope).catch(() => undefined);
+      return hit.value;
+    }
+    // 冷启动/超出最大陈旧窗口：多个并发请求共享一次计算。
+    return refreshDashboard(key, roles, scope);
   }
   const value = await computeDashboard(roles, scope, dbArg);
-  if (!bypass) rememberDashboard(key, { value, expiresAt: Date.now() + DASHBOARD_TTL_MS });
   return value;
 }
 
@@ -365,6 +421,10 @@ async function computeDashboard(
     count: coverCount.get(bucket) ?? 0,
   }));
   const slowMoverCount = slowCandidates.length;
+  // 外部观察销速：影子列 + 「内部无动销但外部在售」计数。读模型缺席时全部 null，不影响内部口径。
+  const externalVelocity = await loadExternalVelocitySafe(db);
+  const externalOf = (skuId: number) => externalVelocity.bySku[String(skuId)] ?? null;
+  const internalNoMoveButExternalSelling = slowCandidates.filter((c) => c.s3m <= 0 && (externalOf(c.skuId)?.net30 ?? 0) > 0).length;
   const slowSorted = slowCandidates.sort((a, b) => b.onHand - a.onHand).slice(0, 10);
   const slowSkuInfo: { id: number; code: string; name: string; lifecycle: string }[] = slowSorted.length
     ? await db
@@ -380,7 +440,24 @@ async function computeDashboard(
     onHand: Math.round(s.onHand),
     sales3m: Math.round(s.s3m),
     daysCover: s.daysCover == null ? null : Math.round(s.daysCover),
+    externalNet30: externalOf(s.skuId)?.net30 ?? null,
+    externalNet90: externalOf(s.skuId)?.net90 ?? null,
+    externalLastSold: externalOf(s.skuId)?.lastSoldDate ?? null,
   }));
+  const internalThroughMonth = maxYm ?? null;
+  const lagDays = externalVelocity.anchorDate && internalThroughMonth
+    ? Math.round((Date.parse(externalVelocity.anchorDate) - Date.parse(`${internalThroughMonth}-01`)) / 86_400_000) - 30
+    : null;
+  const externalDemand: DashboardData["externalDemand"] = {
+    state: externalVelocity.state,
+    gate: externalVelocity.gate,
+    sourceAsOf: externalVelocity.sourceAsOf,
+    anchorDate: externalVelocity.anchorDate,
+    internalThroughMonth,
+    lagDays: lagDays == null ? null : Math.max(0, lagDays),
+    mappedSkus: externalVelocity.coverage.mappedSkus,
+    internalNoMoveButExternalSelling,
+  };
 
   /* ── 效期六段位（批次参考层） ── */
   const batchRows: { skuId: number; warehouseId: number; expiryDate: string | null; qty: string }[] = await db
@@ -545,7 +622,8 @@ async function computeDashboard(
   }
 
   /* ── F 项：风险处置工作台汇总（同库同事务级只读；驾驶舱缓存 60s 吸收成本） ── */
-  const risk = await getRiskWorklist({ pageSize: 1 }, dbArg);
+  // 复用本页已读取的影子销速，避免再做一次批次绑定 + 缓存查询。
+  const risk = await getRiskWorklist({ pageSize: 1 }, db, externalVelocity);
   const watchCount = risk.byAction["滞销关注"] ?? 0;
   const riskActionCount = risk.total - watchCount; // #7：行动类（报废/禁售/商务/促销/优先出库），关注类不混入紧迫计数
   const scrapCount = risk.byAction["报废评审"] ?? 0;
@@ -592,6 +670,7 @@ async function computeDashboard(
     expiryRiskTop,
     coverBuckets,
     slowTop,
+    externalDemand,
     outsource,
     settlement,
     insights,

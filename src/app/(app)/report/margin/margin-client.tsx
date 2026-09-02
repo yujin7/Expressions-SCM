@@ -3,7 +3,7 @@
 import SearchInput from "@/components/SearchInput";
 
 /** 毛利视角 v1——手工成本基准 × 近3月销量（成本录入=finance/admin；售价源未接入时留白，绝不臆造） */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { App, Col, InputNumber, Row, Space, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
@@ -27,6 +27,7 @@ import CaliberNote from "@/components/CaliberNote";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 import type {
   JiandaoyunPlatformFeeObservation,
   PlatformFeeDimensionRow,
@@ -82,6 +83,8 @@ export default function MarginClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<MarginData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   const listState = useListState({ key: "margin", defaults: { q: "", onlyCosted: "" }, defaultPageSize: 50 });
   const { filters, page, pageSize } = listState;
@@ -91,19 +94,31 @@ export default function MarginClient() {
   const [saving, setSaving] = useState<number | null>(null);
 
   const load = useCallback(async () => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setLoading(true);
+    setLoadError(null);
+    setData(null);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (onlyCosted) params.set("onlyCosted", "1");
-      setData(await fetchJson<MarginData>(`/api/report/margin?${params.toString()}`));
-      setEdits({});
+      const next = await fetchJson<MarginData>(`/api/report/margin?${params.toString()}`, { signal: controller.signal });
+      if (!controller.signal.aborted) {
+        setData(next);
+        setEdits({});
+      }
     } catch (e) {
-      message.error((e as Error).message);
+      if (!controller.signal.aborted) setLoadError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (requestRef.current === controller) {
+        requestRef.current = null;
+        setLoading(false);
+      }
     }
-  }, [q, onlyCosted, page, pageSize, message]);
+  }, [q, onlyCosted, page, pageSize]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => () => requestRef.current?.abort(), []);
 
   const saveCost = async (r: MarginRow) => {
     const v = edits[r.skuId] ?? r.unitCost;
@@ -120,7 +135,7 @@ export default function MarginClient() {
     }
   };
 
-  const priceAvailable = data?.priceAvailable ?? false;
+  const priceAvailable = data?.priceAvailable;
   const platformFee = data?.platformFee;
   const channelContribution = data?.channelContribution;
   const contributionChart = (channelContribution?.monthly ?? []).map((row) => ({
@@ -135,10 +150,14 @@ export default function MarginClient() {
     label: row.key.length > 16 ? `${row.key.slice(0, 15)}…` : row.key,
     paid: amountNumber(row.paidAmount),
   }));
-  const platformFeeState = loading && !data
+  const platformFeeState = loadError
+    ? "error"
+    : loading && !data
     ? "loading"
     : platformFee?.state === "preview" ? "ready" : "insufficient";
-  const contributionState = loading && !data
+  const contributionState = loadError
+    ? "error"
+    : loading && !data
     ? "loading"
     : channelContribution?.state === "preview" ? "ready" : "insufficient";
 
@@ -250,7 +269,7 @@ export default function MarginClient() {
               : channelContribution?.gate ?? "正在读取三源金额证据。"}
             caveat={channelContribution?.limitations.join(" ")}
             state={contributionState}
-            stateDetail={channelContribution?.gate}
+            stateDetail={loadError ?? channelContribution?.gate}
             height={320}
             onExport={channelContribution?.state === "preview" ? exportChannelContribution : undefined}
             exportLabel="导出金额桥 UAT 核对包"
@@ -304,7 +323,7 @@ export default function MarginClient() {
               : platformFee?.gate ?? "正在读取费用项结构。"}
             caveat="排序用于确定核对优先级，不代表费用合理性；负数仍按冲销/退回解释。"
             state={platformFeeState}
-            stateDetail={platformFee?.gate}
+            stateDetail={loadError ?? platformFee?.gate}
             height={320}
             onExport={platformFee?.state === "preview" ? exportPlatformFee : undefined}
             exportLabel="导出平台费用 UAT 控制总量"
@@ -331,13 +350,16 @@ export default function MarginClient() {
           </DecisionVisual>
         </Col>
       </Row>
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="毛利与平台费数据" retrying={loading} />
       <Row gutter={[10, 10]} className="compact-kpi-row">
-        <Col><Statistic title="已录成本 SKU 数" value={data?.summary.costedSkus ?? 0} /></Col>
-        <Col><Statistic title="待录入成本" value={data?.summary.uncostedSkus ?? 0} /></Col>
+        <Col><Statistic title="已录成本 SKU 数" value={data ? data.summary.costedSkus : "—"} /></Col>
+        <Col><Statistic title="待录入成本" value={data ? data.summary.uncostedSkus : "—"} /></Col>
         <Col>
-          {priceAvailable
-            ? <Statistic title="近3月毛利合计" value={data?.summary.totalMargin3m ?? 0} precision={2} />
-            : <Statistic title="近3月毛利合计" value="售价待接入" valueStyle={{ fontSize: 20, color: "#595959" }} />}
+          {!data
+            ? <Statistic title="近3月毛利合计" value="—" />
+            : priceAvailable
+              ? <Statistic title="近3月毛利合计" value={data.summary.totalMargin3m ?? "数据不足"} precision={2} />
+              : <Statistic title="近3月毛利合计" value="售价待接入" valueStyle={{ fontSize: 20, color: "#595959" }} />}
         </Col>
       </Row>
       <ListToolbar
@@ -368,6 +390,7 @@ export default function MarginClient() {
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前条件下无 SKU" }}
         scroll={{ x: "max-content" }}
         pagination={listState.paginationProps({ total: data?.total ?? 0 })}
       />

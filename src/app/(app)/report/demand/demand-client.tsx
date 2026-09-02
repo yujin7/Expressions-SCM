@@ -8,7 +8,7 @@ import { useRouter, useSearchParams } from "next/navigation";
  * 月度需求达成参考（demand 域 P1.5 前的登记层）：SKU×渠道 需求/期初/期末/销售达成。
  * 达成率=达成/需求 前端现算（源文件公式未缓存——不落假数）；月度重导整类替换。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, App, Col, Progress, Row, Select, Space, Statistic, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
@@ -17,6 +17,7 @@ import DecisionVisual from "@/components/DecisionVisual";
 import { formatQty } from "@/components/format";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 
 interface Row {
   id: number;
@@ -49,12 +50,13 @@ interface DemandSummary {
 }
 
 function DemandTab() {
-  const { message } = App.useApp();
   const [rows, setRows] = useState<Row[]>([]);
   const [total, setTotal] = useState(0);
   const [importedAt, setImportedAt] = useState<string | null>(null);
   const [summary, setSummary] = useState<DemandSummary | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
   // 本页签独立列表状态：URL 参数命名空间 dm_*（与「货盘处置」「总库存核对」互不干扰）
   const listState = useListState({
     key: "demand-demand",
@@ -67,7 +69,15 @@ function DemandTab() {
   const channel = listState.filters.channel;
 
   const load = useCallback(async () => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setLoading(true);
+    setLoadError(null);
+    setRows([]);
+    setTotal(0);
+    setImportedAt(null);
+    setSummary(null);
     try {
       const params = new URLSearchParams({
         kind: "demand",
@@ -79,21 +89,28 @@ function DemandTab() {
       });
       const res = await fetchJson<{ rows: Row[]; total: number; importedAt: string | null; summary: DemandSummary | null }>(
         `/api/report/transit?${params.toString()}`,
+        { signal: controller.signal },
       );
-      setRows(res.rows);
-      setTotal(res.total);
-      setImportedAt(res.importedAt);
-      setSummary(res.summary);
+      if (!controller.signal.aborted) {
+        setRows(res.rows);
+        setTotal(res.total);
+        setImportedAt(res.importedAt);
+        setSummary(res.summary);
+      }
     } catch (e) {
-      message.error((e as Error).message);
+      if (!controller.signal.aborted) setLoadError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (requestRef.current === controller) {
+        requestRef.current = null;
+        setLoading(false);
+      }
     }
-  }, [q, channel, page, pageSize, message]);
+  }, [q, channel, page, pageSize]);
 
   useEffect(() => {
     void load();
   }, [load]);
+  useEffect(() => () => requestRef.current?.abort(), []);
 
   const rate = (r: Row): string | null => {
     const d = Number(r.qty ?? 0);
@@ -146,6 +163,7 @@ function DemandTab() {
         showIcon
         message="口径：月度「需求&计划&达成统计表」重导登记（整类替换）；达成率=销售达成÷需求 现算。源文件的总需求/动销率等公式列未缓存值——本页只呈现字面数据，不造数（D30 销售金额域 P1）。"
       />
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="需求达成" retrying={loading} />
       <DecisionVisual
         title="需求达成总览"
         question="本月登记需求完成了多少，缺口集中在哪些渠道？"
@@ -169,8 +187,8 @@ function DemandTab() {
             : "需求达成数据尚未加载。"
         }
         caveat="登记文件是月度参考层，不等同于实时订单承诺；缺收入、毛利、促销与库存断货事实。"
-        state={loading && !summary ? "loading" : !summary || summary.rowCount === 0 ? "empty" : summary.achievementRate == null ? "insufficient" : "ready"}
-        stateDetail="请先导入月度需求与达成文件，或调整当前筛选。"
+        state={loadError ? "error" : loading && !summary ? "loading" : !summary || summary.rowCount === 0 ? "empty" : summary.achievementRate == null ? "insufficient" : "ready"}
+        stateDetail={loadError ?? "请先导入月度需求与达成文件，或调整当前筛选。"}
         height={Math.max(220, (summary?.byChannel.length ?? 0) * 42 + 72)}
         fitContent
         dataView={
@@ -190,13 +208,13 @@ function DemandTab() {
       >
         <Row gutter={[12, 12]} className="compact-kpi-row">
           <Col xs={12} md={8}>
-            <Statistic title="登记需求" value={summary?.demandQty ?? 0} />
+            <Statistic title="登记需求" value={summary ? summary.demandQty : "—"} />
           </Col>
           <Col xs={12} md={8}>
-            <Statistic title="销售达成" value={summary?.doneQty ?? 0} />
+            <Statistic title="销售达成" value={summary ? summary.doneQty : "—"} />
           </Col>
           <Col xs={24} md={8}>
-            <Statistic title="加权达成率" value={summary?.achievementRate ?? 0} suffix="%" />
+            <Statistic title="加权达成率" value={summary?.achievementRate ?? "—"} suffix={summary?.achievementRate == null ? undefined : "%"} />
           </Col>
         </Row>
         <Space direction="vertical" size={8} style={{ width: "100%", marginTop: 12 }}>
@@ -245,6 +263,7 @@ function DemandTab() {
         columns={columns}
         dataSource={rows}
         loading={loading}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前条件下无需求登记" }}
         scroll={{ x: "max-content" }}
         pagination={listState.paginationProps({ total: total, showTotal: (n) => `共 ${n} 条（SKU×渠道）` })}
       />

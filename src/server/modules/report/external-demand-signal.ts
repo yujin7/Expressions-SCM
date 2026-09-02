@@ -232,6 +232,7 @@ interface ExternalDemandBatches {
   salesBatch: LatestBatch | null;
   refundBatch: LatestBatch | null;
   jstOutboundBatch: LatestBatch | null;
+  directIdentifierVersion: string;
 }
 
 function numberValue(value: unknown): number {
@@ -742,13 +743,22 @@ async function latestBatch(
 }
 
 async function latestExternalDemandBatches(db: ReadDb): Promise<ExternalDemandBatches> {
-  const [crosswalkBatch, salesBatch, refundBatch, jstOutboundBatch] = await Promise.all([
+  const [crosswalkBatch, salesBatch, refundBatch, jstOutboundBatch, directResult] = await Promise.all([
     latestBatch(db, "jdy", STREAM.crosswalk),
     latestBatch(db, "jdy", STREAM.sales),
     latestBatch(db, "jdy", STREAM.refunds),
     latestBatch(db, "jst", "outbound-sales-daily"),
+    db.execute(sql`
+      SELECT count(*)::int AS n,
+             coalesce(max(id), 0)::int AS max_id,
+             coalesce(max(updated_at), 'epoch')::text AS updated
+      FROM sku_identifiers
+      WHERE kind = 'external' AND scope = 'JIANDAOYUN:TMALL'
+    `),
   ]);
-  return { crosswalkBatch, salesBatch, refundBatch, jstOutboundBatch };
+  const [direct] = resultRows<Record<string, unknown>>(directResult);
+  const directIdentifierVersion = `direct:${intValue(direct?.n)}:${intValue(direct?.max_id)}:${String(direct?.updated ?? "")}`;
+  return { crosswalkBatch, salesBatch, refundBatch, jstOutboundBatch, directIdentifierVersion };
 }
 
 function readModelBinding(batches: ExternalDemandBatches): string | null {
@@ -758,6 +768,7 @@ function readModelBinding(batches: ExternalDemandBatches): string | null {
     `sales:${batches.salesBatch.importJobId}`,
     `refunds:${batches.refundBatch.importJobId}`,
     `jst:${batches.jstOutboundBatch?.importJobId ?? "none"}`,
+    batches.directIdentifierVersion,
   ].join("|");
 }
 
@@ -851,7 +862,7 @@ async function computeJiandaoyunExternalDemandSignal(
 
   if (!crosswalkBatch || !salesBatch || !refundBatch) return missingBatchSignal(batches);
 
-  const [crosswalkResult, salesResult, refundResult, exceptionResult] = await Promise.all([
+  const [crosswalkResult, salesResult, refundResult, exceptionResult, directResult] = await Promise.all([
     db.execute(sql`SELECT payload FROM staging_rows
       WHERE import_job_id = ${crosswalkBatch.importJobId}
         AND target_table = 'jdy_tmall_sku_crosswalk_observation'
@@ -866,6 +877,10 @@ async function computeJiandaoyunExternalDemandSignal(
         AND status IN ('pending', 'validated', 'committed')`),
     db.execute(sql`SELECT id, raw_value, status FROM alias_exceptions
       WHERE alias_type = 'sku_barcode' AND scope = 'JIANDAOYUN'`),
+    // 第二条身份桥（2026-09-02）：业务直接把「店铺|平台SKU」认领到系统 SKU 的外部标识。
+    // 对照表只覆盖 859/2,076 个平台 SKU，另 44% 的金额根本不在对照表里，只能靠这条桥。
+    db.execute(sql`SELECT value, sku_id FROM sku_identifiers
+      WHERE kind = 'external' AND scope = 'JIANDAOYUN:TMALL' AND active = true`),
   ]);
 
   type CrosswalkAccumulator = { barcodes: Set<string>; skuIds: Set<number> };
@@ -905,6 +920,18 @@ async function computeJiandaoyunExternalDemandSignal(
       skuId: value.skuIds.size === 1 ? [...value.skuIds][0] : null,
       conflicting,
     });
+  }
+
+  // 直接认领只在对照表给不出唯一 skuId 时生效；对照表已有明确归属或冲突的行不被覆盖
+  for (const row of resultRows<Record<string, unknown>>(directResult)) {
+    const value = textValue(row.value);
+    const skuId = intValue(row.sku_id);
+    const separator = value.indexOf("|");
+    if (!value || skuId <= 0 || separator <= 0) continue;
+    const key = grainKey(value.slice(0, separator), value.slice(separator + 1));
+    const existing = crosswalk.get(key);
+    if (!existing) crosswalk.set(key, { barcode: null, skuId, conflicting: false });
+    else if (existing.skuId === null && !existing.conflicting) existing.skuId = skuId;
   }
 
   const sales = new Map<string, SalesAccumulator>();

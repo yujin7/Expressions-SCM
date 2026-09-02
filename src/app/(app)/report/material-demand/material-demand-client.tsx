@@ -3,13 +3,14 @@
 import SearchInput from "@/components/SearchInput";
 
 /** E2-07 物料需求展开（MRP）：成品需求（在制 WO 剩余产出 + 成品补货建议）经生效 BOM 展开为物料相关需求（只读） */
-import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Alert, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import SkuHoverCard from "@/components/SkuHoverCard";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 
 interface MaterialDemandRow {
   materialSkuId: number;
@@ -60,26 +61,37 @@ function qty(v: string): string {
 }
 
 export default function MaterialDemandClient() {
-  const { message } = App.useApp();
   const [data, setData] = useState<MaterialDemandData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   const listState = useListState({ key: "material-demand", defaults: { q: "" }, defaultPageSize: 50 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
 
   const load = useCallback(async () => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setLoading(true);
+    setLoadError(null);
+    setData(null);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
-      setData(await fetchJson<MaterialDemandData>(`/api/report/material-demand?${params.toString()}`));
+      const next = await fetchJson<MaterialDemandData>(`/api/report/material-demand?${params.toString()}`, { signal: controller.signal });
+      if (!controller.signal.aborted) setData(next);
     } catch (e) {
-      message.error((e as Error).message);
+      if (!controller.signal.aborted) setLoadError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (requestRef.current === controller) {
+        requestRef.current = null;
+        setLoading(false);
+      }
     }
-  }, [q, page, pageSize, message]);
+  }, [q, page, pageSize]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => () => requestRef.current?.abort(), []);
 
   const columns: ColumnsType<MaterialDemandRow> = [
     {
@@ -242,16 +254,17 @@ export default function MaterialDemandClient() {
           description={`${data.summary.bomIssues.join("；")}。系统未返回部分需求，请先修复 BOM 后再决策。`}
         />
       ) : null}
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="物料需求" retrying={loading} />
       <Space className="compact-stat-strip" wrap>
-        <Statistic title="涉及物料数" value={data?.summary.materialCount ?? 0} />
+        <Statistic title="涉及物料数" value={data ? data.summary.materialCount : "—"} />
         <Statistic
           title="缺口物料数（净需求 > 0）"
-          value={data?.summary.shortageCount ?? 0}
-          valueStyle={{ color: (data?.summary.shortageCount ?? 0) > 0 ? "#cf1322" : undefined }}
+          value={data ? data.summary.shortageCount : "—"}
+          valueStyle={{ color: data && data.summary.shortageCount > 0 ? "#cf1322" : undefined }}
         />
         <Statistic
           title="有旧台账旁证的物料"
-          value={data?.summary.referenceMaterialCount ?? 0}
+          value={data ? data.summary.referenceMaterialCount : "—"}
           suffix={data?.summary.referenceMatchedLines ? ` / ${data.summary.referenceMatchedLines} 行` : undefined}
         />
       </Space>
@@ -274,6 +287,7 @@ export default function MaterialDemandClient() {
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前条件下无物料需求" }}
         scroll={{ x: "max-content" }}
         pagination={listState.paginationProps({ total: data?.total ?? 0 })}
       />

@@ -56,6 +56,7 @@ import {
 } from "@/components/commerce-identity-export";
 import { useListState } from "@/components/useListState";
 import RemoteSelect from "@/components/RemoteSelect";
+import PlatformSkuGapCard from "./platform-sku-gap-card";
 import type {
   DecisionStudioResult,
   StudioDimension,
@@ -1320,6 +1321,7 @@ export default function DecisionStudioClient() {
                     </Card>
                   </Col>
                 </Row>
+                <PlatformSkuGapCard active={activeTab === "identity"} />
                 <Card
                   size="small"
                   title="平台身份覆盖与放行门禁"

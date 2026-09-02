@@ -437,7 +437,7 @@ function KpiCard({
   color,
 }: {
   title: string;
-  value: number;
+  value: number | string;
   color?: string;
 }) {
   return (
@@ -1183,10 +1183,10 @@ function CasesTab() {
   return (
     <>
       <Row className="compact-kpi-row">
-        <KpiCard title="未关闭案件" value={data?.summary.open ?? 0} />
-        <KpiCard title="待报告严重事件" value={data?.summary.adverseDue ?? 0} color={data?.summary.adverseDue ? "#cf1322" : undefined} />
-        <KpiCard title="进行中召回" value={data?.summary.recalls ?? 0} color={data?.summary.recalls ? "#d46b08" : undefined} />
-        <KpiCard title="本年 GMP 自查" value={data?.summary.inspectionsThisYear ?? 0} />
+        <KpiCard title="未关闭案件" value={data ? data.summary.open : "—"} />
+        <KpiCard title="待报告严重事件" value={data ? data.summary.adverseDue : "—"} color={data?.summary.adverseDue ? "#cf1322" : undefined} />
+        <KpiCard title="进行中召回" value={data ? data.summary.recalls : "—"} color={data?.summary.recalls ? "#d46b08" : undefined} />
+        <KpiCard title="本年 GMP 自查" value={data ? data.summary.inspectionsThisYear : "—"} />
       </Row>
       {data?.summary.adverseDue ? (
         <Alert

@@ -4,6 +4,7 @@ import * as schema from "@/db/schema";
 import { loadDataSourceReadiness } from "@/server/modules/report/data-source-readiness";
 import { connectorProbeEvidence } from "@/server/integrations/connector-probe-evidence";
 import { jstLiveEvidenceBinding } from "@/server/integrations/jst";
+import { JIANDAOYUN_FORM_CONTRACTS } from "@/server/integrations/jiandaoyun-contracts";
 import { createTestDb } from "../helpers/db";
 
 describe("三方数据来源证据矩阵", () => {
@@ -246,7 +247,7 @@ describe("三方数据来源证据矩阵", () => {
         successfulStreams: 1,
         successfulStreamKeys: ["yonbip-digitalmodel-vendor-list"],
       });
-      expect(result.find((row) => row.key === "JIANDAOYUN")?.availableStreamKeys).toHaveLength(15);
+      expect(result.find((row) => row.key === "JIANDAOYUN")?.availableStreamKeys).toHaveLength(JIANDAOYUN_FORM_CONTRACTS.length);
       expect(result.find((row) => row.key === "YONYOU")?.availableStreamKeys).toHaveLength(8);
       expect(result.find((row) => row.key === "YONYOU")?.streams).toEqual([
         expect.objectContaining({

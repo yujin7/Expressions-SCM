@@ -11,8 +11,8 @@ import SearchInput from "@/components/SearchInput";
  * - 周转：一年转几次 / 压几天（管理层语言）。
  * 口径局限（平均在库用当前在库近似）在页面顶部与周转页签内均常驻提示，不做美化。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, App, Button, Card, Col, Row as GridRow, Segmented, Space, Table, Tabs, Tag, Tooltip as AntTooltip, Typography } from "antd";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Alert, Button, Card, Col, Row as GridRow, Segmented, Space, Table, Tabs, Tag, Tooltip as AntTooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
   Bar,
@@ -41,6 +41,7 @@ import { buildInventoryExternalEvidenceBriefs } from "@/components/inventory-ext
 import type { ProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
 import { useListState } from "@/components/useListState";
 import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 
 type AgingBucket = "d30" | "d60" | "d90" | "d180" | "d180p";
 const BUCKETS: AgingBucket[] = ["d30", "d60", "d90", "d180", "d180p"];
@@ -185,10 +186,13 @@ interface Point {
 }
 
 export default function InventoryAnalyticsClient() {
-  const { message } = App.useApp();
   const [data, setData] = useState<Data | null>(null);
   const [chart, setChart] = useState<Data | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [chartError, setChartError] = useState<string | null>(null);
+  const tableRequestRef = useRef<AbortController | null>(null);
+  const chartRequestRef = useRef<AbortController | null>(null);
   const listState = useListState({ key: "inventory-analytics", defaults: { q: "", windowDays: "90", view: "scatter" }, defaultPageSize: 50 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
@@ -197,28 +201,49 @@ export default function InventoryAnalyticsClient() {
 
   /* 表格数据：随分页变化 */
   const load = useCallback(async () => {
+    tableRequestRef.current?.abort();
+    const controller = new AbortController();
+    tableRequestRef.current = controller;
     setLoading(true);
+    setLoadError(null);
+    setData(null);
     try {
       const params = new URLSearchParams({ q, windowDays, page: String(page), pageSize: String(pageSize) });
-      setData(await fetchJson<Data>(`/api/report/inventory-analytics?${params.toString()}`));
+      const next = await fetchJson<Data>(`/api/report/inventory-analytics?${params.toString()}`, { signal: controller.signal });
+      if (!controller.signal.aborted) setData(next);
     } catch (e) {
-      message.error((e as Error).message);
+      if (!controller.signal.aborted) setLoadError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (tableRequestRef.current === controller) {
+        tableRequestRef.current = null;
+        setLoading(false);
+      }
     }
-  }, [q, windowDays, page, pageSize, message]);
+  }, [q, windowDays, page, pageSize]);
   useEffect(() => { void load(); }, [load]);
 
   /* 图表数据：只随筛选变化（分页翻页不重算，省一次全表计算） */
   const loadChart = useCallback(async () => {
+    chartRequestRef.current?.abort();
+    const controller = new AbortController();
+    chartRequestRef.current = controller;
+    setChartError(null);
+    setChart(null);
     try {
       const params = new URLSearchParams({ q, windowDays, page: "1", pageSize: String(CHART_LIMIT), includeExternalEvidence: "0" });
-      setChart(await fetchJson<Data>(`/api/report/inventory-analytics?${params.toString()}`));
+      const next = await fetchJson<Data>(`/api/report/inventory-analytics?${params.toString()}`, { signal: controller.signal });
+      if (!controller.signal.aborted) setChart(next);
     } catch (e) {
-      message.error((e as Error).message);
+      if (!controller.signal.aborted) setChartError((e as Error).message);
+    } finally {
+      if (chartRequestRef.current === controller) chartRequestRef.current = null;
     }
-  }, [q, windowDays, message]);
+  }, [q, windowDays]);
   useEffect(() => { void loadChart(); }, [loadChart]);
+  useEffect(() => () => {
+    tableRequestRef.current?.abort();
+    chartRequestRef.current?.abort();
+  }, []);
 
   const chartRows = useMemo(() => chart?.rows ?? [], [chart]);
   const truncated = (chart?.total ?? 0) > CHART_LIMIT;
@@ -392,11 +417,14 @@ export default function InventoryAnalyticsClient() {
         }
       />
 
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="库存分析明细" retrying={loading} />
+      <LoadErrorAlert error={chartError} onRetry={() => void loadChart()} subject="库存分析图表" />
+
       <section className="dashboard-kpi-grid" aria-label="库存分析关键指标" style={{ marginBottom: 12 }}>
         <div className="dashboard-kpi-grid__item">
           <DecisionMetric
             metricId="finishedSkuCount"
-            value={summary?.skuCount ?? 0}
+            value={summary ? summary.skuCount : "—"}
             source={{ tier: "ledger", name: "SKU 主数据" }}
             asOf={data?.today}
           />
@@ -420,8 +448,8 @@ export default function InventoryAnalyticsClient() {
         <div className="dashboard-kpi-grid__item">
           <DecisionMetric
             metricId="unknownOriginQty"
-            value={summary?.unknownOriginQty ?? 0}
-            status={(summary?.unknownOriginQty ?? 0) > 0 ? "warning" : "positive"}
+            value={summary ? summary.unknownOriginQty : "—"}
+            status={summary ? (summary.unknownOriginQty > 0 ? "warning" : "positive") : "neutral"}
             source={{ tier: "derived", name: "当前在库 − 可追溯历史入库" }}
             asOf={data?.today}
             actionHref="/inventory/ledger"
@@ -492,8 +520,8 @@ export default function InventoryAnalyticsClient() {
                 activeFilters={[`周转窗口 ${windowDays} 天`, q ? `搜索：${q}` : "全部 SKU"]}
                 caveat={`对数轴无法显示 0，无动销 SKU 放在最左占位并降低透明度；可销天数超过 ${COVER_CAP} 天封顶绘制。`}
                 summary={`图中 ${points.length} 个 SKU；橙色虚线为 ${data?.coverAlertDays ?? 30} 天缺货告警线，黄色虚线为 ${data?.slowDaysThreshold ?? 180} 天滞销线。气泡越大表示在库越多。`}
-                state={chart == null ? "loading" : points.length === 0 ? "empty" : "ready"}
-                stateDetail="当前筛选范围内没有在库成品。"
+                state={chartError ? "error" : chart == null ? "loading" : points.length === 0 ? "empty" : "ready"}
+                stateDetail={chartError ?? "当前筛选范围内没有在库成品。"}
                 extra={<Space size={4}>{(["A", "B", "C"] as const).map((a) => <Tag key={a} color={a === "A" ? "red" : a === "B" ? "orange" : "default"}>{a} 类</Tag>)}</Space>}
                 height={460}
                 dataView={
@@ -601,7 +629,7 @@ export default function InventoryAnalyticsClient() {
                 />
                 <Space wrap size={8} style={{ marginBottom: 12 }}>
                   {BUCKETS.map((b) => (
-                    <Tag key={b} color={BUCKET_COLORS[b]}>{BUCKET_LABELS[b]}：{fmt(summary?.agingTotals[b] ?? 0)}</Tag>
+                    <Tag key={b} color={BUCKET_COLORS[b]}>{BUCKET_LABELS[b]}：{summary ? fmt(summary.agingTotals[b]) : "—"}</Tag>
                   ))}
                 </Space>
                 <div style={{ marginBottom: 12 }}>
@@ -623,8 +651,8 @@ export default function InventoryAnalyticsClient() {
                     }}
                     caveat="来源不明库存按最坏假设计入 >180 天桶，但不参与加权库龄；图形是聚焦视图，分页明细完整。"
                     summary={`展示在库量最高的 ${agingBarData.length} 个 SKU；颜色从绿到红依次表示由新到老的五个账龄区间。`}
-                    state={chart == null ? "loading" : agingBarData.length === 0 ? "empty" : "ready"}
-                    stateDetail="当前筛选范围内没有在库成品。"
+                    state={chartError ? "error" : chart == null ? "loading" : agingBarData.length === 0 ? "empty" : "ready"}
+                    stateDetail={chartError ?? "当前筛选范围内没有在库成品。"}
                     height={340}
                     dataView={
                       <Table
@@ -665,6 +693,7 @@ export default function InventoryAnalyticsClient() {
                   columns={agingColumns}
                   dataSource={data?.rows ?? []}
                   loading={loading}
+                  locale={{ emptyText: loadError ? "数据未加载" : "当前条件下无在库成品" }}
                   scroll={{ x: "max-content" }}
                   pagination={pagination}
                 />
@@ -696,6 +725,7 @@ export default function InventoryAnalyticsClient() {
                   columns={turnoverColumns}
                   dataSource={data?.rows ?? []}
                   loading={loading}
+                  locale={{ emptyText: loadError ? "数据未加载" : "当前条件下无库存周转数据" }}
                   scroll={{ x: "max-content" }}
                   pagination={pagination}
                 />

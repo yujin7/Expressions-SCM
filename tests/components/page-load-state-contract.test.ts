@@ -29,6 +29,35 @@ describe("page load-state contract", () => {
     expect(read("src/app/(app)/replenish/replenish-client.tsx")).toContain("数据未加载");
   });
 
+  it("keeps decision-critical reports honest, retryable, and race-safe", () => {
+    const files = [
+      "src/app/(app)/report/transfer-suggest/transfer-suggest-client.tsx",
+      "src/app/(app)/report/material-demand/material-demand-client.tsx",
+      "src/app/(app)/report/margin/margin-client.tsx",
+      "src/app/(app)/report/data-health/data-health-client.tsx",
+      "src/app/(app)/report/inventory-analytics/inventory-analytics-client.tsx",
+      "src/app/(app)/report/demand/demand-client.tsx",
+    ];
+
+    for (const file of files) {
+      const source = read(file);
+      expect(source, file).toContain("LoadErrorAlert");
+      expect(source, file).toContain("AbortController");
+      expect(source, file).toContain("signal: controller.signal");
+      expect(source, file).toContain("数据未加载");
+    }
+
+    const inbox = read("src/app/(app)/inbox/inbox-client.tsx");
+    const lifecycle = read("src/app/(app)/master/supplier/lifecycle/supplier-lifecycle-client.tsx");
+    const auto = read("src/app/(app)/report/auto-replenish/auto-replenish-client.tsx");
+    expect(inbox).toContain("LoadErrorAlert");
+    expect(inbox).toContain('data ? data.total : "—"');
+    expect(lifecycle).toContain("LoadErrorAlert");
+    expect(lifecycle).toContain('value={data ? data.summary.open : "—"}');
+    expect(auto).toContain("LoadErrorAlert");
+    expect(auto).toContain('value={data ? data.summary.candidateCount : "—"}');
+  });
+
   it("does not present missing KPI payloads as valid zeroes", () => {
     const scorecard = read(
       "src/app/(app)/report/supplier-scorecard/supplier-scorecard-client.tsx",
@@ -42,6 +71,9 @@ describe("page load-state contract", () => {
     const studio = read(
       "src/app/(app)/report/decision-studio/decision-studio-client.tsx",
     );
+    const platformGap = read(
+      "src/app/(app)/report/decision-studio/platform-sku-gap-card.tsx",
+    );
 
     expect(scorecard).toContain('value={s ? s.suppliers : "—"}');
     expect(scorecard).toContain('value={t ? t.batches : "—"}');
@@ -49,6 +81,10 @@ describe("page load-state contract", () => {
     expect(versions).toContain('value={data ? data.current.lineCount : "—"}');
     expect(studio).toContain('value={data?.comparison.current ?? "—"}');
     expect(studio).not.toContain("comparison.current ?? 0");
+    expect(platformGap).toContain('value={totals ? totals.byStatus.not_in_crosswalk.skus : "—"}');
+    expect(platformGap).toContain('message="平台 SKU 身份缺口加载失败"');
+    expect(platformGap).toContain('onClick={() => void load()}');
+    expect(platformGap).not.toContain("not_in_crosswalk.skus ?? 0");
   });
 
   it("keeps decision-studio navigation fast without making refresh stale", () => {

@@ -47,6 +47,10 @@ const TEMPLATE_LABELS: Record<string, string> = {
   jdy_vip_product_crosswalk_observation: "简道云唯品会商品对照·观测",
   jdy_tmall_sku_crosswalk_observation: "简道云天猫SKU对照·观测",
   jdy_tmall_platform_fee_observation: "简道云天猫费用项目·观测",
+  jdy_tmall_unit_daily_observation: "简道云天猫单品日汇总·观测",
+  jdy_pdd_order_observation: "简道云拼多多订单·观测",
+  jdy_vip_shop_trading_observation: "简道云唯品会店铺交易·观测",
+  jdy_tmall_product_pnl_observation: "简道云天猫商品损益·观测",
 };
 const TABLE_LABELS: Record<string, string> = {
   spu_suggestion: "SPU 归组建议",
