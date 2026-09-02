@@ -7,6 +7,7 @@
  * 只读装配，不写库、不写审计。
  */
 import { readdirSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { desc, eq, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
@@ -29,6 +30,15 @@ import {
   type ConnectorIdentityScope,
   type ConnectorReadiness,
 } from "@/server/integrations/connector";
+import { ApiError } from "@/server/modules/master/common";
+import { YONYOU_READ_CONTRACTS } from "@/server/integrations/yonyou-contracts";
+import {
+  CONNECTOR_PROBE_JOB_NAMES,
+  CONNECTOR_PROBE_MAX_AGE_HOURS,
+  JST_PROBE_CHECKS,
+  parseConnectorProbeEvidence,
+  type ConnectorProbeKey,
+} from "@/server/integrations/connector-probe-evidence";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -44,6 +54,26 @@ export interface JobRunRow {
   finishedAt: string;
 }
 
+export interface ConnectorProbeHealthRow {
+  connector: ConnectorProbeKey;
+  status: "succeeded" | "partial" | "skipped";
+  authentication: "validated" | "not_validated" | "not_checked";
+  passed: number;
+  total: number;
+  checkedAt: string;
+  ageHours: number | null;
+  freshness: "current" | "stale" | "invalid";
+  bindingMatches: boolean;
+  writesPerformed: false;
+  checks: {
+    key: string;
+    label: string;
+    result: string;
+    passed: boolean;
+    checked: boolean;
+  }[];
+}
+
 export interface ErrorLogRow {
   id: number;
   errorId: string;
@@ -55,6 +85,7 @@ export interface ErrorLogRow {
 }
 
 export interface ConnectorRunHealthRow {
+  runId: number;
   connector: string;
   stream: string;
   status: "running" | "succeeded" | "failed";
@@ -74,7 +105,54 @@ export interface ConnectorRunHealthRow {
   /** Safe operational flags copied from the run envelope; no source payload is exposed. */
   emptySource: boolean;
   releaseBlocked: boolean;
+  schemaDrift: boolean;
+  /** Safe structural summary only; field paths and source values remain in protected evidence. */
+  fieldProfile: {
+    version: "yonyou-field-profile/v1";
+    sampledRecords: number;
+    fieldCount: number;
+    sensitiveFieldCount: number;
+    sensitiveCategories: string[];
+    truncated: boolean;
+  } | null;
   errorSummary: string | null;
+}
+
+export interface YonyouFieldProfileReviewRow {
+  fieldPath: string;
+  types: string;
+  presentInRecords: number;
+  sampledRecords: number;
+  coveragePercent: string;
+  optional: boolean;
+  nullable: boolean;
+  sensitiveCategory: string;
+  sensitiveCategoryLabel: string;
+  mappingStatus: "待评审";
+  businessMeaning: "";
+  targetEntity: "";
+  targetField: "";
+  unitOrTimezone: "";
+  missingValueMeaning: "";
+  intendedUse: "";
+  reviewer: "";
+  notes: "";
+}
+
+export interface YonyouFieldProfileReview {
+  runId: number;
+  stream: string;
+  contract: string;
+  schemaVersion: string;
+  schemaDrift: boolean;
+  schemaBaselineRunId: number | null;
+  shapeFingerprintHash: string;
+  totalRecords: number;
+  sampledRecords: number;
+  fieldCount: number;
+  sensitiveFieldCount: number;
+  truncated: boolean;
+  rows: YonyouFieldProfileReviewRow[];
 }
 
 export interface OpsHealth {
@@ -98,7 +176,76 @@ export interface OpsHealth {
   /** null=备份目录不存在（开发环境正常） */
   backupFreshness: { dir: string; file: string; mtime: string; ageHours: number } | null;
   connectors: ConnectorReadiness[];
+  connectorProbes: ConnectorProbeHealthRow[];
   connectorRuns: ConnectorRunHealthRow[];
+}
+
+function adminConnectorReadiness(
+  connectors: ConnectorReadiness[],
+): ConnectorReadiness[] {
+  const yonyouNames = YONYOU_READ_CONTRACTS.map((contract) => contract.name).join("、");
+  return connectors.map((connector) => connector.key !== "yy"
+    ? connector
+    : {
+        ...connector,
+        remediationSteps: connector.remediationSteps.map((step, index) => index === 0
+          ? `在用友开放平台给当前应用逐条授权 8 项只读 API：${yonyouNames}。`
+          : step),
+      });
+}
+
+function connectorProbeHealth(
+  rows: readonly (typeof jobRuns.$inferSelect)[],
+  connectors: readonly ConnectorReadiness[],
+  now: Date,
+): ConnectorProbeHealthRow[] {
+  const latestByJob = new Map<string, typeof jobRuns.$inferSelect>();
+  for (const row of rows) {
+    if (!latestByJob.has(row.job)) latestByJob.set(row.job, row);
+  }
+  const expectedBindings = new Map(
+    connectors.map((connector) => [connector.key, connector.expectedLiveVerificationBinding]),
+  );
+  const labels: Record<ConnectorProbeKey, { key: string; label: string }[]> = {
+    jst: JST_PROBE_CHECKS.map((check) => ({ key: check.id, label: check.label })),
+    yy: YONYOU_READ_CONTRACTS.map((contract) => ({
+      key: contract.name,
+      label: contract.name,
+    })),
+  };
+  return (Object.entries(CONNECTOR_PROBE_JOB_NAMES) as [ConnectorProbeKey, string][])
+    .flatMap(([connector, job]) => {
+      const run = latestByJob.get(job);
+      if (!run?.message) return [];
+      const evidence = parseConnectorProbeEvidence(run.message);
+      if (!evidence || evidence.c !== connector) return [];
+      const expectedBinding = expectedBindings.get(connector) ?? null;
+      const elapsedMs = now.getTime() - run.finishedAt.getTime();
+      const ageHours = elapsedMs >= 0
+        ? Math.round((elapsedMs / 3_600_000) * 10) / 10
+        : null;
+      return [{
+        connector,
+        status: evidence.s,
+        authentication: evidence.a,
+        passed: evidence.p,
+        total: evidence.t,
+        checkedAt: run.finishedAt.toISOString(),
+        ageHours,
+        freshness: ageHours === null
+          ? "invalid" as const
+          : ageHours > CONNECTOR_PROBE_MAX_AGE_HOURS ? "stale" as const : "current" as const,
+        bindingMatches: Boolean(evidence.b && expectedBinding && evidence.b === expectedBinding),
+        writesPerformed: false as const,
+        checks: labels[connector].map((check, index) => ({
+          key: check.key,
+          label: check.label,
+          result: evidence.r[index],
+          passed: evidence.r[index] === "ok",
+          checked: evidence.r[index] !== "not_checked",
+        })),
+      }];
+    });
 }
 
 const ALIAS_SCOPE_BY_CONNECTOR: Readonly<Record<string, string>> = {
@@ -132,6 +279,168 @@ function schemaHashPrefix(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   return /^[0-9a-f]{12,128}$/i.test(normalized) ? normalized.slice(0, 12).toLowerCase() : null;
+}
+
+function fieldProfileSummary(value: unknown): ConnectorRunHealthRow["fieldProfile"] {
+  const profile = scopeObject(value);
+  if (profile.version !== "yonyou-field-profile/v1") return null;
+  const sampledRecords = nonNegativeInteger(profile.sampledRecords);
+  const fieldCount = nonNegativeInteger(profile.fieldCount);
+  const sensitiveFieldCount = nonNegativeInteger(profile.sensitiveFieldCount);
+  if (sampledRecords === null || fieldCount === null || sensitiveFieldCount === null) return null;
+  const allowedCategories = new Set(["contact", "credential", "financial", "identity", "location"]);
+  const sensitiveCategories = Array.isArray(profile.sensitiveCategories)
+    ? [...new Set(profile.sensitiveCategories.filter(
+      (category): category is string => typeof category === "string" && allowedCategories.has(category),
+    ))].sort()
+    : [];
+  return {
+    version: "yonyou-field-profile/v1",
+    sampledRecords,
+    fieldCount,
+    sensitiveFieldCount: Math.min(sensitiveFieldCount, fieldCount),
+    sensitiveCategories,
+    truncated: profile.truncated === true,
+  };
+}
+
+const YONYOU_CONNECTOR_KEYS = new Set(["yy", "yonyou"]);
+const YONYOU_FIELD_TYPES = new Set(["array", "boolean", "null", "number", "object", "string"]);
+const YONYOU_SENSITIVE_CATEGORY_LABELS: Readonly<Record<string, string>> = {
+  contact: "联系方式",
+  credential: "凭据/密钥",
+  financial: "财务",
+  identity: "身份",
+  location: "地址",
+};
+
+function boundedScopeText(scope: Record<string, unknown>, key: string, max = 500): string {
+  const value = scope[key];
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, max) : "";
+}
+
+/**
+ * Build an admin-only, value-free worksheet from one exact Yonyou run.
+ * The service deliberately ignores request parameters and raw staging/evidence payloads.
+ */
+export async function getYonyouFieldProfileReview(
+  runId: number,
+  dbArg?: AnyDb,
+): Promise<YonyouFieldProfileReview> {
+  if (!Number.isSafeInteger(runId) || runId <= 0) throw new ApiError(400, "运行 ID 无效");
+  const db: AnyDb = dbArg ?? (await getDbAsync());
+  const [run]: {
+    id: number;
+    connector: string;
+    stream: string;
+    requestScope: unknown;
+  }[] = await db
+    .select({
+      id: integrationRuns.id,
+      connector: integrationRuns.connector,
+      stream: integrationRuns.stream,
+      requestScope: integrationRuns.requestScope,
+    })
+    .from(integrationRuns)
+    .where(eq(integrationRuns.id, runId))
+    .limit(1);
+  if (!run) throw new ApiError(404, "连接器运行不存在");
+  if (!YONYOU_CONNECTOR_KEYS.has(run.connector)) {
+    throw new ApiError(400, "该运行不是用友字段观察批次");
+  }
+
+  const scope = scopeObject(run.requestScope);
+  const profile = scopeObject(scope.fieldProfile);
+  if (profile.version !== "yonyou-field-profile/v1") {
+    throw new ApiError(404, "该用友运行尚无字段结构画像");
+  }
+  const totalRecords = nonNegativeInteger(profile.totalRecords);
+  const sampledRecords = nonNegativeInteger(profile.sampledRecords);
+  const fieldCount = nonNegativeInteger(profile.fieldCount);
+  const sensitiveFieldCount = nonNegativeInteger(profile.sensitiveFieldCount);
+  if (
+    totalRecords === null
+    || sampledRecords === null
+    || sampledRecords > totalRecords
+    || fieldCount === null
+    || sensitiveFieldCount === null
+    || sensitiveFieldCount > fieldCount
+    || !Array.isArray(profile.fields)
+    || profile.fields.length !== fieldCount
+    || fieldCount > 256
+  ) {
+    throw new ApiError(409, "用友字段画像损坏或超出受控范围");
+  }
+
+  const rows = profile.fields.map((value, index): YonyouFieldProfileReviewRow => {
+    const field = scopeObject(value);
+    const fieldPath = typeof field.path === "string" ? field.path.trim() : "";
+    const presentInRecords = nonNegativeInteger(field.presentInRecords);
+    const types = Array.isArray(field.types)
+      ? [...new Set(field.types.filter(
+        (type): type is string => typeof type === "string" && YONYOU_FIELD_TYPES.has(type),
+      ))].sort()
+      : [];
+    const category = field.sensitiveCategory === null
+      ? ""
+      : typeof field.sensitiveCategory === "string"
+        && Object.hasOwn(YONYOU_SENSITIVE_CATEGORY_LABELS, field.sensitiveCategory)
+        ? field.sensitiveCategory
+        : null;
+    if (
+      !fieldPath
+      || fieldPath.length > 1_024
+      || types.length === 0
+      || presentInRecords === null
+      || presentInRecords > sampledRecords
+      || typeof field.optional !== "boolean"
+      || typeof field.nullable !== "boolean"
+      || category === null
+    ) {
+      throw new ApiError(409, `用友字段画像第 ${index + 1} 行损坏`);
+    }
+    return {
+      fieldPath,
+      types: types.join(" | "),
+      presentInRecords,
+      sampledRecords,
+      coveragePercent: sampledRecords === 0
+        ? ""
+        : `${((presentInRecords / sampledRecords) * 100).toFixed(1)}%`,
+      optional: field.optional,
+      nullable: field.nullable,
+      sensitiveCategory: category,
+      sensitiveCategoryLabel: category ? YONYOU_SENSITIVE_CATEGORY_LABELS[category] : "非敏感",
+      mappingStatus: "待评审",
+      businessMeaning: "",
+      targetEntity: "",
+      targetField: "",
+      unitOrTimezone: "",
+      missingValueMeaning: "",
+      intendedUse: "",
+      reviewer: "",
+      notes: "",
+    };
+  });
+
+  const fingerprint = typeof scope.shapeFingerprint === "string" ? scope.shapeFingerprint : "";
+  return {
+    runId: run.id,
+    stream: run.stream,
+    contract: boundedScopeText(scope, "contract"),
+    schemaVersion: boundedScopeText(scope, "schemaVersion", 100),
+    schemaDrift: scope.schemaDrift === true,
+    schemaBaselineRunId: nonNegativeInteger(scope.schemaBaselineRunId),
+    shapeFingerprintHash: fingerprint
+      ? createHash("sha256").update(fingerprint).digest("hex")
+      : "",
+    totalRecords,
+    sampledRecords,
+    fieldCount,
+    sensitiveFieldCount,
+    truncated: profile.truncated === true,
+    rows,
+  };
 }
 
 /**
@@ -308,6 +617,7 @@ async function getConnectorRunHealth(db: AnyDb, now: Date): Promise<ConnectorHea
       ? Math.round(((now.getTime() - checkpoint.lastSuccessAt.getTime()) / 3_600_000) * 10) / 10
       : null;
     return {
+      runId: run.id,
       connector: run.connector,
       stream: run.stream,
       status: run.status as ConnectorRunHealthRow["status"],
@@ -328,6 +638,8 @@ async function getConnectorRunHealth(db: AnyDb, now: Date): Promise<ConnectorHea
       checkpointOnLatestRun: checkpoint?.lastRunId === run.id,
       emptySource: scope.emptySource === true,
       releaseBlocked: scope.releaseBlocked === true,
+      schemaDrift: scope.schemaDrift === true,
+      fieldProfile: fieldProfileSummary(scope.fieldProfile),
       errorSummary: run.status === "failed" ? connectorErrorSummary(run.error) : null,
     };
   });
@@ -473,6 +785,9 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
     [...connectorHealth.identityEvidenceByScope.entries()]
       .filter(([scope]) => ["JST", "JIANDAOYUN", "YONYOU"].includes(scope)),
   ) as Partial<Record<ConnectorIdentityScope, ConnectorIdentityEvidence>>;
+  const connectors = adminConnectorReadiness(
+    getConnectorReadiness(process.env, generatedAt, identityEvidence),
+  );
 
   return {
     generatedAt: generatedAt.toISOString(),
@@ -493,7 +808,8 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
     exportQueue,
     snapshotAges,
     backupFreshness: readBackupFreshness(),
-    connectors: getConnectorReadiness(process.env, generatedAt, identityEvidence),
+    connectors,
+    connectorProbes: connectorProbeHealth(runRows, connectors, generatedAt),
     connectorRuns: connectorHealth.rows,
   };
 }

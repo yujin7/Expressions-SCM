@@ -39,6 +39,10 @@ export function auditConnectorReadiness(
       configurationReady: connectors.filter((row) => row.configurationReady).length,
       operational: connectors.filter((row) => row.operational).length,
     },
-    connectors,
+    // 可外发审计摘要不携带任何外部管理端点；精确授权清单只在 admin-only 健康接口中展开。
+    connectors: connectors.map((connector) => ({
+      ...connector,
+      managementUrl: null,
+    })),
   };
 }

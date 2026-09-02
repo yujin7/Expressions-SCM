@@ -516,7 +516,125 @@ describe("聚水潭 v2 client", () => {
     ]);
   });
 
-  it("UAT 证据绑定应用和启用能力；打开库存流后旧证据自动失效", () => {
+  it("商品主档按修改窗口分页，只保留身份与生命周期字段", async () => {
+    const fetchMock = vi.fn(async () => response({
+      code: 0,
+      data: {
+        has_next: false,
+        datas: [{
+          sku_id: "SKU-A",
+          i_id: "ITEM-A",
+          name: "测试商品",
+          properties_value: "50ml",
+          enabled: 1,
+          brand: "EXPRESSIONS",
+          supplier_id: 8,
+          modified: "2026-08-13 10:00:00",
+          cost_price: "99.99",
+          pic: "https://example.invalid/private.jpg",
+          mobile: "13800000000",
+        }],
+      },
+    }));
+    const client = new JstClient({
+      appKey: "app", appSecret: "secret", accessToken: "token", baseUrl: "https://example.invalid",
+    }, { fetchImpl: fetchMock as unknown as typeof fetch, retries: 0 });
+
+    const rows = await client.fetchItemsModified(
+      "2026-08-13 00:00:00",
+      "2026-08-13 23:59:59",
+    );
+
+    expect(rows).toEqual([{
+      skuCode: "SKU-A",
+      itemId: "ITEM-A",
+      name: "测试商品",
+      propertiesValue: "50ml",
+      enabled: "1",
+      brand: "EXPRESSIONS",
+      supplierId: "8",
+      modifiedAt: "2026-08-13 10:00:00",
+    }]);
+    expect(JSON.stringify(rows)).not.toContain("99.99");
+    expect(JSON.stringify(rows)).not.toContain("13800000000");
+    expect(JSON.stringify(rows)).not.toContain("private.jpg");
+    const form = new URLSearchParams(
+      String((fetchMock.mock.calls[0] as unknown as [unknown, RequestInit])[1].body),
+    );
+    expect(JSON.parse(form.get("biz")!)).toMatchObject({
+      modified_begin: "2026-08-13 00:00:00",
+      modified_end: "2026-08-13 23:59:59",
+      page_index: 1,
+      page_size: 50,
+    });
+  });
+
+  it("采购入库只读解析保留批次谱系并排除成本、备注与联系人字段", async () => {
+    const fetchMock = vi.fn(async () => response({
+      code: 0,
+      data: {
+        has_next: false,
+        datas: [{
+          io_id: 100,
+          po_id: 200,
+          so_id: "EXT-1",
+          supplier_id: 8,
+          supplier_name: "合规供应商",
+          wms_co_id: 10,
+          status: "Confirmed",
+          io_date: "2026-08-13 11:00:00",
+          modified: "2026-08-13 11:05:00",
+          type: "采购入库",
+          receiver_mobile: "13800000000",
+          remark: "敏感备注",
+          items: [{
+            ioi_id: 300,
+            sku_id: "SKU-A",
+            i_id: "ITEM-A",
+            name: "测试商品",
+            qty: "2.0000",
+            cost_price: "99.99",
+            cost_amount: "199.98",
+          }],
+          batchs: [{
+            batch_no: "LOT-1",
+            ioi_id: 300,
+            sku_id: "SKU-A",
+            qty: "2",
+            product_date: "2026-07-01",
+            expiration_date: "2028-07-01",
+          }],
+        }],
+      },
+    }));
+    const client = new JstClient({
+      appKey: "app", appSecret: "secret", accessToken: "token", baseUrl: "https://example.invalid",
+    }, { fetchImpl: fetchMock as unknown as typeof fetch, retries: 0 });
+
+    const rows = await client.fetchInboundReceiptsModified(
+      "2026-08-13 00:00:00",
+      "2026-08-13 23:59:59",
+    );
+
+    expect(rows).toEqual([expect.objectContaining({
+      receiptId: "100",
+      purchaseOrderId: "200",
+      warehouseCode: "10",
+      items: [expect.objectContaining({ skuCode: "SKU-A", qty: "2.0000" })],
+      batches: [expect.objectContaining({
+        batchNo: "LOT-1",
+        skuCode: "SKU-A",
+        expirationDate: "2028-07-01",
+      })],
+    })]);
+    const serialized = JSON.stringify(rows);
+    expect(serialized).not.toContain("13800000000");
+    expect(serialized).not.toContain("敏感备注");
+    expect(serialized).not.toContain("99.99");
+    expect(serialized).not.toContain("199.98");
+  });
+
+  it("UAT 证据绑定应用和启用能力；打开库存或新增观察流后旧证据自动失效", () => {
     const env = {
       NODE_ENV: "test",
       JST_APP_KEY: "app-one",
@@ -532,5 +650,12 @@ describe("聚水潭 v2 client", () => {
     } satisfies NodeJS.ProcessEnv;
     expect(jstLiveEvidenceBinding(inventoryEnabled)).not.toBe(salesOnly);
     expect(jstEvidenceRefHasLiveBinding(`UAT-20260803-${salesOnly}`, inventoryEnabled)).toBe(false);
+
+    const itemMasterEnabled = {
+      ...env,
+      JST_OBSERVATION_SYNC_CONTRACTS: "item-master",
+    } satisfies NodeJS.ProcessEnv;
+    expect(jstLiveEvidenceBinding(itemMasterEnabled)).not.toBe(salesOnly);
+    expect(jstEvidenceRefHasLiveBinding(`UAT-20260803-${salesOnly}`, itemMasterEnabled)).toBe(false);
   });
 });

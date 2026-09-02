@@ -15,7 +15,8 @@ import { jstLiveEvidenceBinding } from "@/server/integrations/jst";
 
 const envKeys = [
   "JST_APP_KEY", "JST_APP_SECRET", "JST_ACCESS_TOKEN", "JST_SYNC_ACTOR_ID", "JST_BASE_URL",
-  "JST_INVENTORY_SYNC_ENABLED", "JST_LIVE_VERIFIED_AT", "JST_LIVE_VERIFIED_REF",
+  "JST_INVENTORY_SYNC_ENABLED", "JST_OBSERVATION_SYNC_CONTRACTS",
+  "JST_LIVE_VERIFIED_AT", "JST_LIVE_VERIFIED_REF",
   "JIANDAOYUN_API_KEY", "JIANDAOYUN_SYNC_ACTOR_ID", "JIANDAOYUN_SYNC_ENABLED",
   "JIANDAOYUN_SYNC_CONTRACTS", "JIANDAOYUN_BASE_URL", "JIANDAOYUN_LIVE_VERIFIED_AT",
   "JIANDAOYUN_LIVE_VERIFIED_REF",
@@ -73,7 +74,12 @@ describe("外部连接器目录", () => {
         "warehouse-discovery-client",
         "batch-allocation-evidence",
       ],
+      managementUrl: "https://open.jushuitan.com/",
     });
+    const jstRemediation = getConnectorReadiness(process.env, NOW)
+      .find((row) => row.key === "jst")?.remediationSteps.join("\n") ?? "";
+    expect(jstRemediation).toContain("固定出口 IP");
+    expect(jstRemediation).toContain("销售出库、库存、普通商品、采购入库");
     expect(configuredConnectors().some((connector) => connector.key === "jst")).toBe(true);
     process.env.JST_BASE_URL = "https://openapi.jushuitan.com.evil.example";
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst")).toMatchObject({
@@ -150,6 +156,32 @@ describe("外部连接器目录", () => {
         effectiveCapabilities: expect.arrayContaining(["inventory-total-delta-staging"]),
       });
     delete process.env.JST_TRUSTED_WMS_CO_IDS;
+
+    process.env.JST_OBSERVATION_SYNC_CONTRACTS = "item-master,inbound-receipts-daily";
+    expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jst"))
+      .toMatchObject({
+        configurationReady: false,
+        liveVerificationState: "unbound",
+        effectiveCapabilities: expect.arrayContaining([
+          "item-master-observation-staging",
+          "inbound-receipts-observation-staging",
+        ]),
+      });
+  });
+
+  it("用友通用就绪对象只声明八条白名单范围且不把鉴权配置当作授权成功", () => {
+    process.env.YY_APP_KEY = "app";
+    process.env.YY_APP_SECRET = "secret";
+    const row = getConnectorReadiness(process.env, NOW).find((item) => item.key === "yy");
+    expect(row).toMatchObject({
+      configured: false,
+      operational: false,
+      managementUrl: "https://c4.yonyoucloud.com/",
+    });
+    const text = row?.remediationSteps.join("\n") ?? "";
+    expect(text).toContain("代码白名单中的 8 项只读 API");
+    expect(text).not.toContain("供应商档案列表查询");
+    expect(text).toContain("禁止只按名称猜测");
   });
 
   it("简道云把凭据、启用开关、契约选择和 UAT 分别判定", () => {

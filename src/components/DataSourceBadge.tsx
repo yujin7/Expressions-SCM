@@ -41,6 +41,7 @@ export default function DataSourceBadge({
   return (
     <Tooltip title={<span style={{ whiteSpace: "pre-line" }}>{lines.join("\n")}</span>}>
       <sup
+        role="img"
         aria-label={lines.join("；")}
         tabIndex={0}
         style={{

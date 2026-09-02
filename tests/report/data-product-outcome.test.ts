@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { DATA_PRODUCTS } from "@/components/data-products";
 import { auditLogs, dataProductOutcomeEvents, dataProductReleases, users } from "@/db/schema";
@@ -11,12 +11,66 @@ import {
   buildDataProductReleaseEvidence,
   loadDataProductReleaseReadiness,
 } from "@/server/modules/report/data-product-release";
+import { todayShanghai } from "@/server/modules/master/common";
 import type {
   DataSourceReadiness,
   DataStreamEvidence,
   ScmEvidenceSnapshot,
 } from "@/server/modules/report/data-source-readiness";
 import { createTestDb } from "../helpers/db";
+import { CROSS_SYSTEM_IDENTITY_LABEL, CROSS_SYSTEM_IDENTITY_ORDER } from "@/lib/cross-system-identity";
+
+vi.mock("@/lib/cross-system-identity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/cross-system-identity")>();
+  return {
+    ...actual,
+    getCrossSystemIdentityStreamContract: (source: "JIANDAOYUN" | "JST" | "YONYOU", stream: string) => {
+      const contract = actual.getCrossSystemIdentityStreamContract(source, stream);
+      return contract ? {
+        ...contract,
+        identities: Object.fromEntries(Object.entries(contract.identities).map(([domain, control]) => [
+          domain,
+          { ...control, state: "implemented", evidence: "结果闭环测试夹具已治理", nextAction: "持续监测" },
+        ])),
+      } : null;
+    },
+  };
+});
+
+vi.mock("@/lib/cross-system-semantics", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/cross-system-semantics")>();
+  return {
+    ...actual,
+    getCrossSystemSemanticStreamContract: (source: "JIANDAOYUN" | "JST" | "YONYOU", stream: string) => {
+      const contract = actual.getCrossSystemSemanticStreamContract(source, stream);
+      return contract ? {
+        ...contract,
+        controls: Object.fromEntries(Object.entries(contract.controls).map(([domain, control]) => [
+          domain,
+          { ...control, state: "implemented", evidence: "结果闭环测试夹具已固化", nextAction: "持续监测" },
+        ])),
+      } : null;
+    },
+  };
+});
+
+vi.mock("@/lib/data-product-metric-lineage", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/data-product-metric-lineage")>();
+  return {
+    ...actual,
+    getDataProductMetricLineage: (productId: string, metricId: string) => ({
+      productId,
+      metricId,
+      state: "implemented",
+      outputGrain: "测试粒度",
+      inputs: [{ kind: "scm_evidence", ref: "test-controlled-input", purpose: "受控测试输入" }],
+      joinKeys: ["测试业务键"],
+      missingPolicy: "unknown_not_zero",
+      evidence: "结果闭环测试夹具已有可重放计算",
+      nextAction: "持续监测",
+    }),
+  };
+});
 
 const product = DATA_PRODUCTS.find((item) => item.id === "commerce-identity-control")!;
 
@@ -33,6 +87,7 @@ function stream(key: string): DataStreamEvidence {
     authorizationBlocked: false,
     sourceTimeInvalid: false,
     releaseBlocked: false,
+    schemaDrift: false,
     emptySource: false,
     freshnessMaxAgeDays: 2,
     businessAgeDays: 1,
@@ -70,6 +125,19 @@ function source(
     sourceAsOfEnd: streams.at(-1)?.sourceAsOf ?? null,
     openIdentityExceptions: 0,
     observedIdentities: 10,
+    identityCoverage: key === "SCM" ? [] : CROSS_SYSTEM_IDENTITY_ORDER.map((domain) => ({
+      domain,
+      label: CROSS_SYSTEM_IDENTITY_LABEL[domain],
+      governance: domain === "document" ? "external_reference" as const : "scoped_alias" as const,
+      state: "ready" as const,
+      observed: 10,
+      governed: 10,
+      open: 0,
+      ignored: 0,
+      coveragePct: 100,
+      reason: "测试夹具已统一",
+      nextAction: "持续监测",
+    })),
     scmEvidence,
     gate: "test gate",
     nextAction: "test next",
@@ -124,7 +192,7 @@ function input(overrides: Record<string, unknown> = {}) {
   return {
     productId: product.id,
     decisionRef: "IDENTITY-20260813-001",
-    businessDate: "2026-08-13",
+    businessDate: todayShanghai(),
     decision: "accepted",
     result: "positive",
     handlingMinutes: 30,
@@ -134,6 +202,11 @@ function input(overrides: Record<string, unknown> = {}) {
     idempotencyKey: globalThis.crypto.randomUUID(),
     ...overrides,
   };
+}
+
+function shiftBusinessDate(date: string, days: number): string {
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
 }
 
 describe("数据产品真实结果闭环", () => {
@@ -155,16 +228,17 @@ describe("数据产品真实结果闭环", () => {
     ]).returning();
     const operator: SessionUser = { id: people[0].id, name: people[0].name, roles: ["ops"], isApprover: false };
     await seedApprovedRelease(db, people[0].id, people[1].id);
+    const today = todayShanghai();
 
     await expect(recordDataProductOutcome(
       operator,
-      input({ businessDate: "2026-08-12" }),
+      input({ businessDate: shiftBusinessDate(today, -1) }),
       db,
       currentSources(),
     )).rejects.toMatchObject({ status: 409 });
     await expect(recordDataProductOutcome(
       operator,
-      input({ businessDate: "2026-08-14" }),
+      input({ businessDate: shiftBusinessDate(today, 1) }),
       db,
       currentSources(),
     )).rejects.toThrow("真实结果不能登记未来业务日期");

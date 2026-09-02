@@ -3,14 +3,18 @@
 /** NPD 1.x 项目跟踪（D19 激活）：69 节点标准模板实例化 → 计划推算 → 任务推进 */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Alert, App, Button, DatePicker, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Table, Tag, Typography,
+  Alert, App, Button, Card, Col, DatePicker, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Progress, Row, Select, Space, Table, Tag, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import DecisionVisual from "@/components/DecisionVisual";
+import ProductExternalDecisionEvidenceCard from "@/components/ProductExternalDecisionEvidenceCard";
 import { fetchJson, postJson } from "@/components/fetchJson";
+import { buildLaunchExternalEvidenceBriefs } from "@/components/launch-external-evidence";
+import type { ProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
 import { ACTION } from "@/components/dictionary";
+import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 
 interface ProjectRow {
   id: number;
@@ -54,6 +58,65 @@ const TASK_STATUS: Record<string, { color: string; label: string }> = {
   skipped: { color: "warning", label: "跳过" },
 };
 
+const displayExternalMetric = (value: string): string => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed)
+    ? parsed.toLocaleString("zh-CN", { maximumFractionDigits: 4 })
+    : value;
+};
+
+function LaunchExternalEvidence({ observations }: { observations: readonly JiandaoyunSupportingObservation[] }) {
+  const briefs = buildLaunchExternalEvidenceBriefs(observations);
+  return (
+    <Card
+      size="small"
+      title="简道云新品外部佐证（历史观察，非上市就绪）"
+      extra={<Button type="link" size="small" href="/import/exceptions?status=open&scope=JIANDAOYUN">处理身份认领</Button>}
+      style={{ marginBottom: 12 }}
+    >
+      <Alert
+        banner
+        showIcon
+        type="warning"
+        message="新品里程碑流尚未实现；产品主档和样品旧表只能补充背景，不能证明里程碑、首单到货或首销已完成。"
+        style={{ marginBottom: 10 }}
+      />
+      <Row gutter={[10, 10]}>
+        {briefs.map((brief) => (
+          <Col xs={24} xl={12} key={brief.stream}>
+            <Card
+              type="inner"
+              size="small"
+              title={brief.label}
+              extra={<Tag color={brief.state === "available" ? "gold" : "default"}>{brief.state === "available" ? "历史辅助" : "缺失"}</Tag>}
+            >
+              {brief.state === "missing" ? (
+                <Typography.Text type="secondary">尚无最新成功批次；保持未知，不显示为 0。</Typography.Text>
+              ) : (
+                <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                  <Typography.Text type="secondary">源截止 {brief.sourceAsOf ?? "未提供"} · 业务期 {brief.period}</Typography.Text>
+                  <Space size={[6, 6]} wrap>
+                    {brief.metrics.map((metric) => (
+                      <Tag key={metric.key}>{metric.label} {displayExternalMetric(metric.value)}{metric.unit}</Tag>
+                    ))}
+                  </Space>
+                  <Space size={[6, 6]} wrap>
+                    {brief.identities.length > 0 ? brief.identities.map((identity) => (
+                      <Tag color={identity.openValues > 0 ? "orange" : "default"} key={identity.kind}>
+                        {identity.label} {identity.governedMatches}/{identity.distinctValues} · 待认领 {identity.openValues}
+                      </Tag>
+                    )) : <Typography.Text type="secondary">该批次未提供可治理身份。</Typography.Text>}
+                  </Space>
+                </Space>
+              )}
+            </Card>
+          </Col>
+        ))}
+      </Row>
+    </Card>
+  );
+}
+
 async function patchJson<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const data = (await res.json()) as T & { error?: string };
@@ -64,6 +127,8 @@ async function patchJson<T>(url: string, body: unknown): Promise<T> {
 export default function NpdProjectsClient() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<ProjectRow[]>([]);
+  const [supportingObservations, setSupportingObservations] = useState<JiandaoyunSupportingObservation[]>([]);
+  const [externalDecisionEvidence, setExternalDecisionEvidence] = useState<ProductExternalDecisionEvidenceBrief | null>(null);
   const [loading, setLoading] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -105,8 +170,14 @@ export default function NpdProjectsClient() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const d = await fetchJson<{ projects: ProjectRow[] }>("/api/npd/projects");
+      const d = await fetchJson<{
+        projects: ProjectRow[];
+        supportingObservations: JiandaoyunSupportingObservation[];
+        externalDecisionEvidence: ProductExternalDecisionEvidenceBrief;
+      }>("/api/npd/projects");
       setRows(d.projects);
+      setSupportingObservations(d.supportingObservations ?? []);
+      setExternalDecisionEvidence(d.externalDecisionEvidence ?? null);
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -296,6 +367,8 @@ export default function NpdProjectsClient() {
           新建 NPD 项目
         </Button>
       </Space>
+      <LaunchExternalEvidence observations={supportingObservations} />
+      <ProductExternalDecisionEvidenceCard evidence={externalDecisionEvidence} />
       <DecisionVisual
         title="新品项目组合进度"
         question="哪些在研项目已落后计划，哪些节点需要本周优先解除阻塞？"

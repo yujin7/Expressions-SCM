@@ -20,11 +20,19 @@ import { runFreshnessCheck } from "./freshness";
 import { runDocAging } from "./doc-aging";
 import { runRollup } from "./rollup";
 import { dispatchNotifications, runDecisionDigestNotify, runExceptionNotify } from "./notify";
-import { runJstInventorySync, runJstSalesSync } from "./sync-jst";
+import {
+  runJstGovernedObservationSync,
+  runJstInventorySync,
+  runJstSalesSync,
+} from "./sync-jst";
 import { runYonyouSync } from "./sync-yonyou";
 import { runJstTokenWatchdog } from "./jst-token-watchdog";
 import { runJobFailureWatchdog } from "./job-failure-watchdog";
 import { runSystemAlertNotify } from "./system-alert-notify";
+import { runDataProductGateWatchdog } from "./data-product-gate-watchdog";
+import { runJstPermissionProbe } from "./probe-jst";
+import { runYonyouPermissionProbe } from "./probe-yonyou";
+import { CONNECTOR_PROBE_VERSION } from "@/server/integrations/connector-probe-evidence";
 import {
   runJiandaoyunCatalogSync,
   runJiandaoyunConfiguredFormSyncs,
@@ -60,13 +68,20 @@ type IntervalJobRunOptions = {
 };
 
 function skippedSummary(summary: unknown): { skipped: boolean; reason: string } {
-  if (!summary || typeof summary !== "object" || !("status" in summary)) {
+  if (!summary || typeof summary !== "object") {
     return { skipped: false, reason: "" };
   }
-  const candidate = summary as { status?: unknown; reason?: unknown };
-  return candidate.status === "skipped"
-    ? { skipped: true, reason: typeof candidate.reason === "string" ? candidate.reason : "任务返回 skipped" }
-    : { skipped: false, reason: "" };
+  const candidate = summary as { status?: unknown; reason?: unknown; v?: unknown; s?: unknown };
+  if (candidate.status === "skipped") {
+    return {
+      skipped: true,
+      reason: typeof candidate.reason === "string" ? candidate.reason : "任务返回 skipped",
+    };
+  }
+  if (candidate.v === CONNECTOR_PROBE_VERSION && candidate.s === "skipped") {
+    return { skipped: true, reason: "连接器权限探测因配置不完整未执行" };
+  }
+  return { skipped: false, reason: "" };
 }
 
 /**
@@ -101,20 +116,27 @@ export function shanghaiHourKey(now: Date): { hour: number; key: string } {
 }
 
 export const INTERVAL_JOBS: IntervalJob[] = [
+  // 同步前先做最小只读权限探测；结果是无业务值的版本化证据，不代替 UAT。
+  { name: "probe-jst-permissions", everyMs: 20 * 60 * 1000, atHours: [9, 15], run: () => runJstPermissionProbe() },
+  { name: "probe-yonyou-permissions", everyMs: 20 * 60 * 1000, atHours: [9, 15], run: () => runYonyouPermissionProbe() },
   // 快照数据龄告警（纯查询）——**必须排在拉数之后**，否则会在同步刷新前报一次假的"数据过期"
   { name: "snapshot-age", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runSnapshotAgeAlert(db) },
   // 营业执照到期提醒（纯查询）
   { name: "license-alert", everyMs: 6 * HOUR_MS, run: (db) => runLicenseAlert(db) },
   // 聚水潭 T-1 出库全量快照先进入受控 staging；缺配置时显式 skipped
   { name: "sync-jst-sales", everyMs: 20 * 60 * 1000, atHours: [10, 16], run: (db) => runJstSalesSync(db) },
+  // 聚水潭商品与入库只读观察须显式选择契约；均停在 releaseBlocked staging。
+  { name: "sync-jst-item-master", everyMs: 20 * 60 * 1000, atHours: [10, 16], run: (db) => runJstGovernedObservationSync(db, "item-master") },
+  { name: "sync-jst-inbound", everyMs: 20 * 60 * 1000, atHours: [10, 16], run: (db) => runJstGovernedObservationSync(db, "inbound-receipts-daily") },
   // 聚水潭全仓合计库存增量只作外部观察；显式开关启用，绝不直写库存真账/快照
   { name: "sync-jst-inventory", everyMs: 20 * 60 * 1000, atHours: [10, 16], run: (db) => runJstInventorySync(db) },
-  // 把 system_alerts 推进发件箱→飞书/站内。此前这些告警只躺在 /alerts 页面上，
-  // 三方同步挂了、凭据快过期了都不会通知任何人——监控链路断在最后一米
-  { name: "system-alert-notify", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runSystemAlertNotify(db) },
   // 定时任务连续失败告警：job_runs 一直记着成败但没人被通知，
   // 对 6h 一跑的同步就是"三周前挂了没人知道"。连续 3 次才开单，避免抖动变噪音
   { name: "job-failure-watchdog", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runJobFailureWatchdog(db) },
+  // 已批准的数据产品一旦因授权、时效、质量或范围变化降级，立即开责任域告警；恢复后自动关闭。
+  { name: "data-product-gate-watchdog", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runDataProductGateWatchdog(db) },
+  // 必须排在各看门狗之后，把本轮新开的 system_alerts 当轮推进飞书/站内。
+  { name: "system-alert-notify", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runSystemAlertNotify(db) },
   // 聚水潭 token 30 天过期，且过期后刷新接口失效、只能重走授权——必须在还来得及时喊出来
   { name: "jst-token-watchdog", everyMs: 6 * HOUR_MS, run: (db) => runJstTokenWatchdog(db) },
   // 用友只读观测：按已批准契约拉数原样落 staging；缺配置/未开开关显式 skipped，

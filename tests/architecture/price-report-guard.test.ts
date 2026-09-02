@@ -19,6 +19,13 @@ const API = path.resolve(__dirname, "../../src/app/api");
 const PRICE_REPORT_ROUTES = [
   "report/margin/route.ts",
   "report/settlement-summary/route.ts",
+  "report/supplier-price-variance/route.ts",
+];
+
+/** 这些路由在 route 层直接判 PRICE_VISIBLE_ROLES；settlement-summary 在 service 内判采购/PMC/财务。 */
+const DIRECT_PRICE_ROLE_ROUTES = [
+  "report/margin/route.ts",
+  "report/supplier-price-variance/route.ts",
 ];
 
 describe("架构护栏：金额报表的角色门", () => {
@@ -37,9 +44,11 @@ describe("架构护栏：金额报表的角色门", () => {
     ).toEqual([]);
   });
 
-  it("margin 路由确实做了 PRICE_VISIBLE_ROLES 判定（有门但不判角色等于没门）", () => {
-    const src = readFileSync(path.join(API, "report/margin/route.ts"), "utf8");
-    expect(src).toContain("PRICE_VISIBLE_ROLES");
-    expect(src).toMatch(/requireAnyRole\s*\(\s*user\s*,\s*\.\.\.PRICE_VISIBLE_ROLES/);
+  it("每个金额报表确实做了 PRICE_VISIBLE_ROLES 判定（有门但不判角色等于没门）", () => {
+    for (const rel of DIRECT_PRICE_ROLE_ROUTES) {
+      const src = readFileSync(path.join(API, rel), "utf8");
+      expect(src, rel).toContain("PRICE_VISIBLE_ROLES");
+      expect(src, rel).toMatch(/requireAnyRole\s*\(\s*user\s*,\s*\.\.\.PRICE_VISIBLE_ROLES/);
+    }
   });
 });

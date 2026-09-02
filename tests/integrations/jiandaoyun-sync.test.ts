@@ -326,13 +326,34 @@ describe("简道云受控同步", () => {
     });
     expect(JSON.stringify(staged[0].payload)).not.toContain("sensitive-phone");
     expect(JSON.stringify(staged[0].payload)).not.toContain("sensitive-image");
+    expect(formEvidence.mock.calls[0]?.[2]).toMatchObject({
+      contract: "jiandaoyun-observation-v4",
+      scope: {
+        controlSummary: {
+          version: "jdy-control-v1",
+          status: "pass",
+          activeRows: 1,
+          duplicateRows: 0,
+          invalidNumericValues: 0,
+          reconciliationMismatchedRows: 0,
+        },
+      },
+    });
     const runs = await db.select().from(schema.integrationRuns);
     const checkpoints = await db.select().from(schema.integrationCheckpoints);
     const aliasQueue = await db.select().from(schema.aliasExceptions);
     const jobs = await db.select().from(schema.importJobs);
     expect(runs).toHaveLength(3);
     expect(runs.every((run) => run.status === "succeeded")).toBe(true);
+    expect(runs.find((run) => run.id === first.runId)?.requestScope).toMatchObject({
+      qualityBlocked: false,
+      controlSummary: { version: "jdy-control-v1", status: "pass" },
+    });
     expect(jobs.map((job) => job.status)).toEqual(["done", "done"]);
+    expect(jobs.find((job) => job.id === first.importJobId)?.scope).toMatchObject({
+      qualityBlocked: false,
+      controlSummary: { version: "jdy-control-v1", status: "pass" },
+    });
     expect(staged[0].status).toBe("pending");
     expect(checkpoints.map((row) => row.stream).sort()).toEqual(["catalog", "test-observation"]);
     expect(checkpoints.find((row) => row.stream === "test-observation")?.lastRunId).toBe(first.runId);
@@ -364,6 +385,42 @@ describe("简道云受控同步", () => {
     })).rejects.toThrow("字段契约漂移");
     expect(await db.select().from(schema.integrationRuns)).toHaveLength(0);
     expect(await db.select().from(schema.stagingRows)).toHaveLength(0);
+  });
+
+  it("把业务键重复固化为不含原始值的质量门禁摘要", async () => {
+    const { db } = await createTestDb();
+    const [actor] = await db.insert(schema.users).values({ name: "简道云质量责任人" }).returning();
+    const controlled = { ...contract, businessKey: ["productCode"] } satisfies JiandaoyunFormContract;
+    const client = observationClient(() => [
+      { id: "1".repeat(24), code: "DUPLICATE-SKU", updatedAt: "2026-07-30T02:00:00.000Z" },
+      { id: "2".repeat(24), code: "duplicate-sku", updatedAt: "2026-07-30T02:00:00.000Z" },
+    ]);
+    const writeEvidence = vi.fn(observationEvidence("d"));
+
+    const result = await syncJiandaoyunForm(db, {
+      client,
+      actorId: actor.id,
+      contract: controlled,
+      writeEvidence,
+    });
+    const [run] = await db
+      .select({ requestScope: schema.integrationRuns.requestScope })
+      .from(schema.integrationRuns)
+      .where(eq(schema.integrationRuns.id, result.runId));
+
+    expect(run.requestScope).toMatchObject({
+      qualityBlocked: true,
+      controlSummary: {
+        version: "jdy-control-v1",
+        status: "review",
+        duplicateKeyGroups: 1,
+        duplicateRows: 2,
+      },
+    });
+    expect(JSON.stringify(run.requestScope)).not.toContain("DUPLICATE-SKU");
+    expect(writeEvidence.mock.calls[0]?.[2]).toMatchObject({
+      scope: { controlSummary: { status: "review", duplicateRows: 2 } },
+    });
   });
 
   it("新的非空全量观察替代旧待复核批次，但保留追溯记录", async () => {

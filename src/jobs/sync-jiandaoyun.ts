@@ -13,8 +13,46 @@ import {
   syncJiandaoyunCatalog,
   syncJiandaoyunForm,
 } from "@/server/integrations/jiandaoyun-sync";
+import { refreshJiandaoyunExternalDemandReadModel } from "@/server/modules/report/external-demand-signal";
 
 type JiandaoyunSkipped = { status: "skipped"; reason: string };
+const EXTERNAL_DEMAND_CONTRACTS = new Set([
+  "tmall-sku-crosswalk-observation",
+  "tmall-sku-sales-observation",
+  "tmall-sku-refund-observation",
+]);
+
+async function refreshDemandReadModel(db: AnyDb) {
+  const signal = await refreshJiandaoyunExternalDemandReadModel(db);
+  return {
+    state: signal.state,
+    sourceAsOf: signal.sourceAsOf,
+    crosswalkAsOf: signal.crosswalkAsOf,
+    salesRows: signal.coverage.salesRows,
+    mappedIdentities: signal.coverage.mappedIdentities,
+    platformIdentities: signal.coverage.platformIdentities,
+    decisionBrief: {
+      state: signal.decisionBrief.state,
+      anchorDate: signal.decisionBrief.anchorDate,
+      currentObservedDays: signal.decisionBrief.current.observedDays,
+      previousObservedDays: signal.decisionBrief.previous.observedDays,
+      netDemandChangePct: signal.decisionBrief.change.netQtyPct,
+      refundRateDeltaPp: signal.decisionBrief.change.refundRateDeltaPp,
+      mappedPaidCoverageDeltaPp: signal.decisionBrief.change.mappedPaidCoverageDeltaPp,
+    },
+    refundDrivers: {
+      state: signal.refundDrivers.state,
+      movement: signal.refundDrivers.movement,
+      deltaRefundQty: signal.refundDrivers.totals.deltaRefundQty,
+      eligibleDrivers: signal.refundDrivers.eligibleDrivers,
+      surfacedDrivers: signal.refundDrivers.topContributors.length,
+      mappedDrivers: signal.refundDrivers.identityCoverage.mappedDrivers,
+      mappedMovementPoolPct: signal.refundDrivers.identityCoverage.mappedMovementPoolPct,
+      leadingShop: signal.refundDrivers.byShop[0]?.shopName ?? null,
+      leadingShopMovementPoolPct: signal.refundDrivers.byShop[0]?.movementPoolSharePct ?? null,
+    },
+  };
+}
 
 function runtime():
   | { client: JiandaoyunClient; actorId: number }
@@ -58,7 +96,10 @@ export async function runJiandaoyunContractSync(
   const contract = jiandaoyunContract(contractKey);
   if (!contract) throw new Error(`未知简道云观察契约: ${contractKey}`);
   const summary = await syncJiandaoyunForm(db, { ...ready, contract });
-  return { status: "succeeded" as const, ...summary };
+  const readModel = EXTERNAL_DEMAND_CONTRACTS.has(contract.key)
+    ? await refreshDemandReadModel(db)
+    : null;
+  return { status: "succeeded" as const, ...summary, readModel };
 }
 
 export async function runJiandaoyunConfiguredFormSyncs(db: AnyDb) {
@@ -75,9 +116,14 @@ export async function runJiandaoyunConfiguredFormSyncs(db: AnyDb) {
   for (const contract of contracts) {
     results.push(await syncJiandaoyunForm(db, { ...ready, contract }));
   }
+  const readModel = [...EXTERNAL_DEMAND_CONTRACTS]
+    .every((key) => contracts.some((contract) => contract.key === key))
+    ? await refreshDemandReadModel(db)
+    : null;
   return {
     status: "succeeded" as const,
     contracts: results.length,
     results,
+    readModel,
   };
 }

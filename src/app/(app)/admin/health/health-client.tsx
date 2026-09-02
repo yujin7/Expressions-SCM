@@ -7,7 +7,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { App, Card, Col, Row, Space, Spin, Table, Tag, Typography } from "antd";
-import { ReloadOutlined } from "@ant-design/icons";
+import { DownloadOutlined, ExportOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { Button } from "antd";
 import { fetchJson } from "@/components/fetchJson";
@@ -112,7 +112,9 @@ export function ConnectorRunState({ row }: { row: OpsHealth["connectorRuns"][num
     <Space wrap size={[4, 4]}>
       {status}
       {row.emptySource ? <Tag color="orange">空观察，旧批次保留</Tag> : null}
-      {row.releaseBlocked ? <Tag color="orange">仅观察，不可放行</Tag> : null}
+      {row.schemaDrift
+        ? <Tag color="red">字段结构变化，阻止放行</Tag>
+        : row.releaseBlocked ? <Tag color="orange">仅观察，不可放行</Tag> : null}
     </Space>
   );
 }
@@ -122,7 +124,8 @@ function connectorRuntimeState(rows: OpsHealth["connectorRuns"]) {
   const failed = rows.filter((row) => row.status === "failed").length;
   const running = rows.filter((row) => row.status === "running").length;
   const empty = rows.filter((row) => row.emptySource).length;
-  const releaseBlocked = rows.filter((row) => row.releaseBlocked).length;
+  const schemaDrift = rows.filter((row) => row.schemaDrift).length;
+  const releaseBlocked = rows.filter((row) => row.releaseBlocked && !row.schemaDrift).length;
   return (
     <Space wrap size={[4, 4]}>
       {failed > 0
@@ -131,6 +134,7 @@ function connectorRuntimeState(rows: OpsHealth["connectorRuns"]) {
           ? <Tag color="processing">{running} 条数据流运行中</Tag>
           : <Tag color="green">{rows.length} 条数据流最近成功</Tag>}
       {empty > 0 ? <Tag color="orange">{empty} 条空观察，旧批次保留</Tag> : null}
+      {schemaDrift > 0 ? <Tag color="red">{schemaDrift} 条字段结构变化</Tag> : null}
       {releaseBlocked > 0 ? <Tag color="orange">{releaseBlocked} 条仅观察，不可放行</Tag> : null}
     </Space>
   );
@@ -144,6 +148,25 @@ function authPathLabel(path: string): string {
   if (path === "webhook") return "Webhook";
   if (path === "app_bot") return "应用机器人";
   return path;
+}
+
+function probeStatusTag(row: OpsHealth["connectorProbes"][number]) {
+  if (row.freshness !== "current") return <Tag color="orange">探测证据已过期</Tag>;
+  if (row.status === "succeeded") return <Tag color="green">权限探测 {row.passed}/{row.total}</Tag>;
+  if (row.status === "skipped") return <Tag>探测未执行</Tag>;
+  return <Tag color="red">权限探测 {row.passed}/{row.total}</Tag>;
+}
+
+function probeResultTag(result: string, label: string) {
+  if (result === "ok") return <Tag key={label} color="green">{label}·已通过</Tag>;
+  if (result === "not_checked") return <Tag key={label}>{label}·未探测</Tag>;
+  if (result === "missing_configuration") return <Tag key={label}>{label}·缺配置</Tag>;
+  if (result === "invalid_configuration") return <Tag key={label} color="red">{label}·配置无效</Tag>;
+  if (result === "invalid_actor") return <Tag key={label} color="red">{label}·执行人无效</Tag>;
+  if (result === "network_or_timeout") return <Tag key={label} color="orange">{label}·网络/超时</Tag>;
+  if (result.startsWith("http_")) return <Tag key={label} color="red">{label}·HTTP {result.slice(5)}</Tag>;
+  if (result.startsWith("api_code_")) return <Tag key={label} color="red">{label}·未通过 {result.slice(9)}</Tag>;
+  return <Tag key={label} color="red">{label}·响应异常</Tag>;
 }
 
 export default function HealthClient() {
@@ -311,6 +334,25 @@ export default function HealthClient() {
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {row.schemaHashPrefix ? `schema ${row.schemaHashPrefix}` : "无 schema hash"}
           </Typography.Text>
+          {row.fieldProfile ? (
+            <>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {`字段结构 ${row.fieldProfile.fieldCount} · 敏感 ${row.fieldProfile.sensitiveFieldCount}`}
+                {row.fieldProfile.truncated ? " · 有界采样" : ""}
+              </Typography.Text>
+              {row.connector === "yy" || row.connector === "yonyou" ? (
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<DownloadOutlined />}
+                  href={`/api/admin/health/connector-runs/${row.runId}/field-profile`}
+                  style={{ height: "auto", paddingInline: 0, fontSize: 12 }}
+                >
+                  下载映射评审表
+                </Button>
+              ) : null}
+            </>
+          ) : null}
         </Space>
       ),
     },
@@ -426,6 +468,7 @@ export default function HealthClient() {
         <Row gutter={[12, 12]}>
           {data.connectors.map((connector) => {
             const connectorRuns = data.connectorRuns.filter((row) => row.connector === connector.key);
+            const probe = data.connectorProbes.find((row) => row.connector === connector.key);
             return (
               <Col key={connector.key} xs={24} xl={12}>
                 <Card size="small" style={{ height: "100%" }}>
@@ -446,6 +489,7 @@ export default function HealthClient() {
                       ? <Tag color="green">配置 / UAT 就绪</Tag>
                       : <Tag>配置 / UAT 未就绪</Tag>}
                     {identityClearanceTag(connector)}
+                    {probe ? probeStatusTag(probe) : null}
                     {connectorRuntimeState(connectorRuns)}
                   </Space>
 
@@ -489,6 +533,30 @@ export default function HealthClient() {
                   <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
                     {connector.blocker ?? "—"}
                   </Typography.Paragraph>
+                  <div>
+                    <Space style={{ justifyContent: "space-between", width: "100%", marginBottom: 4 }}>
+                      <Typography.Text strong>解锁步骤</Typography.Text>
+                      {connector.managementUrl ? (
+                        <Button
+                          type="link"
+                          size="small"
+                          icon={<ExportOutlined />}
+                          href={connector.managementUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          打开官方后台
+                        </Button>
+                      ) : null}
+                    </Space>
+                    <ol style={{ margin: 0, paddingInlineStart: 22 }}>
+                      {connector.remediationSteps.map((step) => (
+                        <li key={step} style={{ marginBottom: 4 }}>
+                          <Typography.Text style={{ fontSize: 12 }}>{step}</Typography.Text>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
                   {connector.liveVerifiedAt ? (
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                       验证时间：{fmtTime(connector.liveVerifiedAt)}
@@ -526,6 +594,68 @@ export default function HealthClient() {
             );
           })}
         </Row>
+      </Card>
+
+      <Card size="small" title="连接器只读权限探测（实时 API，不写业务数据）">
+        <Table
+          rowKey="connector"
+          size="small"
+          tableLayout="fixed"
+          pagination={false}
+          dataSource={data.connectorProbes}
+          scroll={{ x: 1_100 }}
+          locale={{ emptyText: "尚无已留痕的权限探测；可手动运行已登记任务" }}
+          columns={[
+            {
+              title: "系统",
+              width: 110,
+              render: (_, row) => data.connectors.find((connector) => connector.key === row.connector)?.label
+                ?? row.connector.toUpperCase(),
+            },
+            {
+              title: "结果",
+              width: 150,
+              render: (_, row) => probeStatusTag(row),
+            },
+            {
+              title: "鉴权 / 目标绑定",
+              width: 190,
+              render: (_, row) => (
+                <Space wrap size={[4, 4]}>
+                  <Tag color={row.authentication === "validated" ? "green" : row.authentication === "not_checked" ? "default" : "red"}>
+                    {row.authentication === "validated" ? "签名鉴权已通过" : row.authentication === "not_checked" ? "未鉴权" : "鉴权未通过"}
+                  </Tag>
+                  <Tag color={row.bindingMatches ? "green" : "red"}>
+                    {row.bindingMatches ? "当前目标已绑定" : "目标绑定不一致"}
+                  </Tag>
+                </Space>
+              ),
+            },
+            {
+              title: "逐项只读权限",
+              render: (_, row) => (
+                <Space wrap size={[4, 4]}>
+                  {row.checks.map((check) => probeResultTag(check.result, check.label))}
+                </Space>
+              ),
+            },
+            {
+              title: "留痕时间",
+              width: 170,
+              render: (_, row) => (
+                <Space direction="vertical" size={0}>
+                  <Typography.Text>{fmtTime(row.checkedAt)}</Typography.Text>
+                  <Typography.Text type={row.freshness === "current" ? "secondary" : "warning"} style={{ fontSize: 12 }}>
+                    {row.ageHours === null ? "时间无效" : row.freshness === "current" ? fmtAgeHours(row.ageHours) : `${fmtAgeHours(row.ageHours)}·已过期`}
+                  </Typography.Text>
+                </Space>
+              ),
+            },
+          ]}
+        />
+        <Typography.Paragraph type="secondary" style={{ margin: "8px 0 0" }}>
+          探测只证明当前凭据在当前目标上可读；不代替 SKU/供应商身份映射、控制总量、失败重放、连续 7 天恢复演练和业务 UAT。
+        </Typography.Paragraph>
       </Card>
 
       <Card size="small" title="连接器最近运行与检查点">

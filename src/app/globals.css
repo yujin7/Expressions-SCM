@@ -200,6 +200,16 @@ body {
   min-width: 0;
 }
 
+/* AntD 预设 gold/error 标签的默认前景色在浅色背景上不足 WCAG AA。
+   保留语义色系，仅加深文字，让决策表格与全站状态标签都可读。 */
+.ant-tag-gold {
+  color: #854d0e !important;
+}
+
+.ant-tag-error {
+  color: #b42318 !important;
+}
+
 .app-surface {
   container-name: app-surface;
   container-type: inline-size;
@@ -423,6 +433,52 @@ body {
 .compact-kpi-row .ant-statistic-content {
   font-size: 23px;
   line-height: 1.2;
+}
+
+/* 决策工作室把“按什么分组”和“筛哪一部分”分成两个清晰区域。
+   旧版将标题、四段单选和三个固定宽度下拉塞进同一个 Space，在侧栏展开或
+   125% 缩放时会横向溢出并截断最后一个筛选。 */
+.decision-studio-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 12px;
+}
+
+.decision-studio-filterbar {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+  width: 100%;
+  padding: 6px;
+  margin-bottom: 12px;
+  border: 1px solid #e8edf5;
+  border-radius: 10px;
+  background: #fafbfe;
+}
+
+.decision-studio-dimensions {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.decision-studio-dimensions .ant-radio-group {
+  display: flex;
+  white-space: nowrap;
+}
+
+.decision-studio-scope-filters {
+  display: grid;
+  grid-template-columns: minmax(132px, 180px) minmax(132px, 180px) minmax(210px, 1fr) max-content;
+  gap: 8px;
+  min-width: 0;
+}
+
+.decision-studio-scope-filters .ant-select {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .compact-stat-strip.ant-space {
@@ -1196,6 +1252,15 @@ body {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .decision-studio-filterbar {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .decision-studio-scope-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .list-toolbar {
     width: auto;
     max-width: 100%;
@@ -1291,6 +1356,14 @@ body {
 
   .compact-kpi-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .decision-studio-scope-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .decision-studio-scope-filters > :last-child {
+    grid-column: auto;
   }
 
   .compact-stat-strip.ant-space {

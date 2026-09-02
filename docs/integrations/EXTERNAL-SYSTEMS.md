@@ -1,6 +1,6 @@
 # 外部系统集成契约：聚水潭、简道云、用友、飞书
 
-更新日期：2026-08-12
+更新日期：2026-08-14
 当前实现锚点：`main` 上的连接器代码、`docs/NOW.md` 与 `docs/spec/CURRENT.md`
 
 > 2026-08-12 增量：决策工作室已加入“外部需求信号”。它只读取简道云天猫销量、退款、
@@ -11,23 +11,35 @@
 > 明确回源补对照；认领后必须重跑对照契约生成新批次，不会篡改既有观察证据。
 > 业务核对请直接使用中文手册：
 > [`简道云外部需求-UAT操作手册.md`](简道云外部需求-UAT操作手册.md)。
+> 天猫金额与平台费用核对请使用：
+> [`简道云天猫金额桥-财务UAT操作手册.md`](简道云天猫金额桥-财务UAT操作手册.md)。
 
 ## 1. 系统边界与唯一权威
 
 | 事实域 | 权威系统 | SCM 的角色 | 当前接入状态 |
 |---|---|---|---|
 | 电商订单、实际出库销量、平台/WMS 库存观察 | 聚水潭 | 拉取、留证、映射、staging、与 SCM 自有仓出库对账 | app/token 已配置；出库卡 IP 白名单，店铺/仓库/库存卡 API 权限 |
-| 现行低代码 ERP 表单与历史流程 | 简道云 | 全量目录、显式表单观察、字段最小化、留证与 staging；不直接成为 SCM 正式事实 | OpenAPI 已完成只读握手；目录与 14 条观察契约代码就绪，待密钥轮换、业务对账控制总量与 UAT |
+| 现行低代码 ERP 表单与历史流程 | 简道云 | 全量目录、显式表单观察、字段最小化、留证与 staging；不直接成为 SCM 正式事实 | OpenAPI 已完成只读握手；15 条契约代码就绪，当前受控部署已显式选择 15 条；天猫费用已形成真实 staging 控制数，待财务 UAT 后才可提升使用等级 |
 | SCM 委外单据、实时仓库存账、批次、质量、计划与审批 | 本 SCM | 业务与库存账权威 | 已运行；外部系统不得直接覆写 |
-| 财务凭证、成本、结算与组织核算口径 | 用友 | 读取财务权威、提交获批业务结果、双向对账 | 客户端与 token 握手就绪；8 条只读 API 0/8 授权，缺 tenant/org |
+| 财务凭证、成本、结算与组织核算口径 | 用友 | 读取财务权威、提交获批业务结果、双向对账 | 客户端与 token 握手就绪；8 条只读 API 当前 0/8（HTTP 403；早先为 310037），缺 tenant/org |
 | 协同触达 | 飞书 | 接收 SCM outbox 消息；不成为业务状态权威 | 群 webhook 已真实投递并有有效 UAT；过度授权的共享应用不作为生产通知身份 |
 
-截至 2026-08-12 的实证结论：简道云链路已通但仍是受控观察层；飞书群 webhook 已真实投递，
+截至 2026-08-14 的实证结论：简道云链路已通但仍是受控观察层；飞书群 webhook 已真实投递，
 共享应用因 1,107 项权限（其中 1,007 项高级/超敏感）不作为生产身份。聚水潭真实只读探针
-返回出库 `110`、店铺/仓库/库存 `190`；用友 token 握手成功但八条只读契约全部 `310037`。
-8 月 12 日复探针结果与上述状态一致；聚水潭明确 `writesPerformed=false`，用友授权探针不连接
+返回出库 `110`，店铺/仓库/库存/普通商品/采购入库均为 `190`；用友 token 握手成功但八条只读契约
+当前均为 HTTP `403`（早先同范围为 `310037` 未授权）。
+聚水潭探针明确 `writesPerformed=false`，用友授权探针不连接
 SCM 数据库，二者都不落业务数据。
 因此只有飞书 webhook 可标 operational，其余仍必须区分代码就绪、凭据、权限和 UAT。
+
+已批准数据产品的运行门禁由 `data-product-gate-watchdog` 在两批同步/对账后复核：任一所需来源
+退回仅契约/阻断、过期、失败、拒收、空源或范围变化时，A2/A3 立即降级并向该产品责任角色
+开告警；恢复后自动关闭。它只负责止损和通知，不会据此自动修数、过账或改变源系统。
+
+简道云三条需求信号契约每次同步成功后会重建 `jiandaoyun-external-demand/v1` 读模型缓存。
+缓存精确绑定最新销量、退款、SKU 对照和可选 JST 出库批次；任一批次变化即失效，页面不会回退到
+旧结果。缓存是可丢弃派生层，staging/evidence 仍是唯一证据权威；该设计把 10 万级 JSON 解析从
+用户请求热路径移到每日两次同步任务，同时保留截止日、覆盖、质量与 UAT 门禁。
 
 任何外部事实都走：
 
@@ -63,6 +75,21 @@ SCM 数据库，二者都不落业务数据。
   供后续仓库别名覆盖核验使用。
 - [店铺查询](https://openweb.jushuitan.com/dev-doc)使用 `/open/shops/query`；目录只保留店铺 ID、
   展示名、公司、平台和授权状态，不落消费者、收件地址或订单联系人数据。
+- [普通商品资料查询](https://open.jushuitan.com/document/2167.html)对应 `/open/sku/query`；
+  只保留 SKU/款号、名称、规格、启停、品牌、供应商编码和修改时点，排除价格、图片、扩展描述。
+- [采购入库查询](https://open.jushuitan.com/document/2019.html)对应 `/open/purchasein/query`；
+  只保留入库/采购单身份、供应商、仓库、状态、时间、SKU 数量和批次/效期，排除联系人、地址、
+  备注与成本金额。按修改时间取数不等于 SCM 已收货，仍必须人工对账与正式过账。
+- [标准订单查询](https://open.jushuitan.com/document/2125.html)明确不返回淘宝/天猫和拼多多订单；
+  [标准售后查询](https://open.jushuitan.com/document/15.html)只返回自有商城单据。系统目录要求的
+  `orders-daily` / `returns-daily` 是含淘系/拼多多的全渠道事实，因此这两个标准接口只能作为
+  覆盖更窄的候选，不能直接绑定目标流。必须由聚水潭确认奇门/平台专用授权、`customer_id`
+  路由和可覆盖店铺后再冻结契约，并用平台控制总量证明没有渠道漏数。
+- [淘系订单奇门候选](https://open.jushuitan.com/document.aspx?doc_id=2352)指定
+  `jushuitan.order.list.query`、`target_app_key=23060081`，并要求不同商家传不同
+  `customer_id`；[淘系售后奇门候选](https://open.jushuitan.com/document.aspx?doc_id=2356)
+  指定 `jushuitan.refund.list.query`，并建议以返回最大 `ts` 继续增量扫描以避免分页漏单。
+  这两条只是淘系官方候选，不能反推拼多多一定已覆盖；仍须按店铺列表和平台导出逐一 UAT。
 
 ### 已实现
 
@@ -82,12 +109,20 @@ SCM 数据库，二者都不落业务数据。
   `changed-since-cursor`，缺失行保持未知，绝不写 `stock_snapshots`、库存台账或把缺失补 0。
 - 仓库目录客户端已实现，但在真实权限、仓库覆盖和仓别名验收前不自动改变 SCM 仓库主数据。
 - 店铺目录客户端与 `probe-jst` 只读探针已实现；探针各取最小页验证店铺、仓库、销售出库和
-  库存四个权限面，只输出聚合计数/安全错误分类，不保存源标识、不推进游标、不写 staging。
+  库存、普通商品、采购入库六个权限面，只输出聚合计数/安全错误分类，不保存源标识、
+  不推进游标、不写 staging。
+- `probe-jst-permissions` 已进入统一任务目录：每次同步前运行，将通过数、安全错误码、
+  当前配置绑定和 `writesPerformed=false` 以 `connector-probe/v1` 写入 `job_runs`。
+  健康页和 BI 就绪矩阵共用该证据；26 小时后自动标为过期，不代替 UAT。
+- 普通商品与采购入库已形成两个可独立选择的观察契约：按自然日修改窗口完整翻页、字段最小化、
+  证据哈希、JST 作用域身份异常、幂等重放和 `releaseBlocked` staging。商品观察不新建/更新 SKU；
+  入库观察不生成收货单、不写库存账。两条流默认关闭，只有显式列入
+  `JST_OBSERVATION_SYNC_CONTRACTS` 才会由调度器调用。
 - 证据文件存于 `FILE_STORAGE_DIR/integration-evidence/jst/...`，内容寻址、SHA-256、
   0600 权限，并由 `integration_runs` 关联。
 - SKU/仓库走通用 alias；未知值进入人工认领，绝不猜。
 - 相同源信封重放返回原结果；失败不推进 `integration_checkpoints`。
-- 每日 07:30 拉 T-1，08:00 再对账。缺配置记录 `skipped`；缺源覆盖时对账停止，
+- 每日 10:15/16:15 拉 T-1，11:00/17:00 再对账。缺配置记录 `skipped`；缺源覆盖时对账停止，
   不把未知当成 0。
 
 ### 运行配置
@@ -99,6 +134,7 @@ JST_ACCESS_TOKEN
 JST_SYNC_ACTOR_ID
 JST_BASE_URL（可选）
 JST_INVENTORY_SYNC_ENABLED（可选，默认 false）
+JST_OBSERVATION_SYNC_CONTRACTS（可选：item-master,inbound-receipts-daily）
 JST_LIVE_VERIFIED_AT（真实 UAT 通过后的 ISO-8601 时间）
 JST_LIVE_VERIFIED_REF（非秘密 UAT 证据编号，例如 UAT-20260730-JST-001）
 ```
@@ -109,6 +145,7 @@ JST_LIVE_VERIFIED_REF（非秘密 UAT 证据编号，例如 UAT-20260730-JST-001
 `JST_SYNC_ACTOR_ID` 必须指向 SCM 内启用的责任人/服务账号。生产启用前还要完成：
 
 1. 商家授权与 token 已完成；仍须把部署出口加入 IP 白名单，并申请店铺/仓库/库存 API 权限。
+   普通商品与采购入库探针也返回 `190`，启用前须分别申请这两条只读权限。
 2. 建立 access/refresh token 轮换责任人；当前代码不会用过期 token 猜测刷新流程。
 3. 确认 ERP 与分仓是否开启生产批次管理；若开启，验证 `batchs.ioi_id` 能与商品明细关联，
    并核对批次数量合计、空批号和效期字段覆盖。
@@ -124,14 +161,27 @@ JST_LIVE_VERIFIED_REF（非秘密 UAT 证据编号，例如 UAT-20260730-JST-001
 ```bash
 npx tsx src/jobs/cli.ts audit-connectors
 npx tsx src/jobs/cli.ts probe-jst 2026-07-28
+npx tsx src/jobs/cli.ts run-job probe-jst-permissions
+npx tsx src/jobs/cli.ts run-job probe-yonyou-permissions
 npx tsx src/jobs/cli.ts sync-jst 2026-07-28
 npx tsx src/jobs/cli.ts sync-jst-inventory
+npx tsx src/jobs/cli.ts sync-jst-item-master 2026-08-13
+npx tsx src/jobs/cli.ts sync-jst-inbound 2026-08-13
 npx tsx src/jobs/cli.ts reconcile-jst 2026-07-28
 ```
+
+`run-job` 是运维恢复/重验的权威入口：它与调度器执行同一实现并强制写入
+`job_runs`；直接跑交互探针只适合排查，不能当作可审计恢复证据。
 
 `audit-connectors` 不打开数据库或调用外部 API，只输出代码状态、缺失环境变量名、UAT
 状态和非秘密证据编号；对有显式开关/契约的连接器还分别输出启用状态、契约选择状态与数量。
 它不会输出凭据、租户/组织值、端点或获批接口清单，可附在内部发布单。
+
+简道云聚合审计既可全量运行，也可按契约 key 定向运行。例如需求脉搏复核可只传
+`tmall-sku-crosswalk-observation tmall-sku-sales-observation tmall-sku-refund-observation`；
+输出会明确标注 `scope.mode=selected` 与实际审计契约，避免一次全表扫描拖慢日常例外处理，
+并跳过只有全量审计才需要的 297 视图目录普查。结果以 `catalogAudited=false` 明确披露该边界，
+避免把局部审计误报成全量覆盖。
 
 ## 3. 简道云
 
@@ -154,10 +204,11 @@ npx tsx src/jobs/cli.ts reconcile-jst 2026-07-28
   防止授权视图或响应串表。简道云对子表投影仍会返回整个子表，因此未入契约的子字段只在
   进程内短暂存在，写 evidence/staging 前继续强制剔除。
 - `catalog` 流只留存所有可见应用/表单的元数据，不读取业务行。
-- 14 条显式观察契约：9 条核心契约覆盖产品、采购需求、采购订单、采购入库、供应商、仓库、
+- 15 条显式观察契约：9 条核心契约覆盖产品、采购需求、采购订单、采购入库、供应商、仓库、
   调拨、盘点和样品；5 条现行电商契约覆盖天猫 SKU 日销量/退款及天猫、唯品会、拼多多商品
-  对照。全部只保留供应链决策所需字段，排除联系人、手机、地址、银行账号、税号、附件、
-  图片及用户/部门对象。
+  对照；第 15 条是「天猫账单费用项目汇总」候选。后者只有日期×店铺×费用项粒度，
+  不允许冒充全渠道或 SKU 直接成本。全部契约只保留供应链决策所需字段，排除联系人、手机、地址、
+  银行账号、税号、附件、图片及用户/部门对象。
 - 每次表单同步先校验字段契约并计算 schema hash；字段缺失即停止，额外字段默认忽略，
   防止简道云改表后静默错列。
 - 业务行按 `app_id + entry_id + data_id` 身份进入内容寻址 evidence 和现有
@@ -253,6 +304,16 @@ schema hash 与源数据时间范围。数值总量用定点小数累加；删�
 对照 3,434 行源时点为 2026-08-04。两次幂等重放均复用既有 evidence/staging 运行并由
 `run-job` 记录成功；随后失败看门狗自动关闭简道云网络抖动告警。现行电商观察证明数据可达，
 但在平台编码 crosswalk、业务控制总量和 Live UAT 完成前仍不得释放为 SCM 正式事实。
+
+2026-08-14 对新增天猫费用候选做了实时只读无值画像：12,624 行，统计日期
+2026-01-01～2026-08-12，日期、店铺、计费金额与支付金额均无缺失；753 行负数按冲销/退回
+原样保留，不取绝对值。它已加入契约目录，但未加入当前 14 条运行选择；在财务用平台
+账单完成行数、币种、费用项和净额控制总量/UAT 前，净毛利桥保持 UAT 预览，不显示「已放行」。
+毛利页读端现只消费最新成功不可变批次，并按币种、月份、店铺及全部费用项分别聚合；现有
+run #166 / import job #397 复验为 12,624 行全有效、CNY 支付净额 13,336,884.49、753 条负数
+合计 -100,709.18、8 个月/4 店铺/69 费用项。页面与导出分开披露业务统计期
+2026-01-01～2026-08-12 和批次源更新时间 2026-08-13，并携带 run/job、源行/staging/
+无效行与门禁；服务端不跨币种相加、不写财务事实，也不分摊到 SKU。
 
 上线前必须：
 
@@ -356,10 +417,13 @@ npx tsx src/jobs/cli.ts probe-feishu-chats
   `物料档案分页查询 V2`、`采购订单列表查询`、`采购入库列表查询`、`现存量查询 V2`、
   `存货成本查询`、`凭证列表查询`。
 
-本地已据此锁定 `yonbip`、八条精确契约、`c4.yonyoucloud.com` allowlist 和网关 base URL；
-readiness 现在只缺租户 ID、目标组织 ID 与企业自建 token URL。OpenAPI Explorer 的真实 token
-握手与组织查询仍未执行，企业授权范围、账簿/币种/税/会计期间和业务控制总量也未验收，故继续
-保持 `contract_only`、`safeToCall=false`，不会因门户可登录或 AK/SK 存在而伪报 live。
+本地已据此锁定 `yonbip`、八条精确只读契约、`c4.yonyoucloud.com` allowlist 和网关
+base/token URL。运行时客户端、token 缓存、契约白名单、出站限制与安全错误处理均已实现；
+真实 token 握手已成功。2026-08-14 重跑八条只读探针仍是 0/8（全部 HTTP 403，早先为
+`310037`），因此当前是“实现就绪、企业授权/租户组织未就绪、不可运行”，不是旧的
+`contract_only`。授权后先从组织查询读出租户/目标组织，再做账簿/币种/税/会计期间和控制总量 UAT。
+公开开发者中心只能证明“创建应用 → 申请服务 → 企业授权”流程，未公开目标 C4 租户的
+应收、收款、核销精确 API 路径；这三条仍必须在租户官方 API 目录内确认后才能冻结，不按客开资产包名称猜接口。
 
 所需机器配置：
 
@@ -390,6 +454,23 @@ IPv6 zone、loopback、私网或本地域名 endpoint 会被拒绝；未来 toke
 `YY1_...` 非秘密指纹绑定；任一范围变更都会使旧 UAT 证据失效。轮换同一应用的 AppSecret 不改变业务
 范围，但仍须单独证明新凭据握手成功。人工 C4 密码始终不进入服务器环境变量。
 
+授权后的每条成功响应会同时产生 `yonyou-field-profile/v1` 结构画像：最多跨 100 条记录联合
+数组内不同形状，登记最多 256 个字段路径、类型、可选/空值状态和敏感类别。画像不包含字段值；
+手机号、银行账号、凭据等真实内容只存在于受控原始证据和 staging，不进入任务摘要或管理员 DTO。
+完整画像绑定该 run/import job，健康页只显示字段数、敏感字段数与是否有界截断。该画像只是
+字段映射评审的输入，不代表字段语义已确认，也不会触发主档、库存或财务写入。
+
+每条流在同一 `yonyou-observation-v*` 契约版本内保留最后一个未阻断结构基线。后续响应指纹变化时，原始证据和 staging
+仍会按幂等批次落地，但 `integration_runs.request_scope` 与 `import_jobs.scope` 会在同一事务内写入 `schemaDrift=true`、
+`schemaBaselineRunId` 和 `releaseBlocked=true`；通用放行引擎必须拒绝该任务。被阻断的新结构即使连续多批出现也不会自动转为基线；
+业务与实施方确认真实字段语义、映射、控制总量和 UAT 后，由代码评审升级契约版本才可重建基线。
+
+管理员可在运维健康页对有字段画像的精确 run 下载「用友字段映射评审」CSV。每行绑定 run、stream、API 契约、契约版本、基线 run 和结构指纹 SHA-256，
+并列出字段路径/类型/覆盖/空值/敏感分类及待填的业务映射列。该路由新鲜回查 admin 权限，禁止缓存，使用公式注入防护；服务不读取也不输出 request、原始证据、staging 载荷或字段值。
+
+正式用友调度把 T-1 作为独立 `sourceAsOf` 写入运行范围和导入任务；它不从可任意命名的幂等
+`scopeKey` 猜测日期。无效日期在外呼前拒绝，缺业务截止日的历史/手工观察不得解锁数据产品 A1。
+
 在不请求 token、不调用业务 API 的情况下可先运行：
 
 ```bash
@@ -397,8 +478,8 @@ npx tsx src/jobs/cli.ts audit-yonyou-readiness
 ```
 
 输出只包含配置存在性、产品类型、获批接口数量、缺失项和剩余控制；不会输出密钥、租户/组织、
-endpoint 或接口名。即使结果为 `contract_ready`，实现仍为 `contract_only`、`safeToCall=false`；
-沙箱只读握手与对账完成前不代表已接通。
+endpoint 或接口名。`contract_ready` 只是静态契约结果；运行时实现虽已为 `ready`，
+但企业 API 授权、租户/组织、只读对账和 UAT 完成前仍是 `operational=false`，不代表已接通。
 
 按官方顺序，企业管理员/用友实施方还必须：
 
@@ -429,6 +510,10 @@ Gitleaks 扫描完整 Git 历史；只有经人工核实的非秘密测试不变
 - `import_jobs` / `staging_rows`：来源日期、schema 版本、full/delta 范围、别名与拒收；
 - `job_runs`：调度是否真正执行；
 - `notifications`：飞书或站内投递状态。
+
+用友运行还会在 `integration_runs.request_scope` 与 `import_jobs.scope` 保存无值字段画像，供授权后
+按真实结构完成映射评审；浏览器只接收聚合摘要，原始路径与数据值不从健康接口返回。跨批结构漂移另外作为显式放行阻断显示，
+不与普通“仅观察”提示混在一起。
 
 上线门：
 

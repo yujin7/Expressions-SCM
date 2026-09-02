@@ -68,6 +68,49 @@ export interface JstInventoryRow {
   cursor: string;
 }
 
+export interface JstItemMasterRow {
+  skuCode: string;
+  itemId: string | null;
+  name: string | null;
+  propertiesValue: string | null;
+  enabled: string | null;
+  brand: string | null;
+  supplierId: string | null;
+  modifiedAt: string | null;
+}
+
+export interface JstInboundReceiptItem {
+  lineId: string | null;
+  skuCode: string;
+  itemId: string | null;
+  name: string | null;
+  qty: string;
+}
+
+export interface JstInboundReceiptBatch {
+  batchNo: string | null;
+  lineId: string | null;
+  skuCode: string;
+  qty: string;
+  productionDate: string | null;
+  expirationDate: string | null;
+}
+
+export interface JstInboundReceipt {
+  receiptId: string;
+  purchaseOrderId: string | null;
+  externalOrderId: string | null;
+  supplierId: string | null;
+  supplierName: string | null;
+  warehouseCode: string | null;
+  status: string;
+  receiptDate: string;
+  modifiedAt: string | null;
+  receiptType: string | null;
+  items: JstInboundReceiptItem[];
+  batches: JstInboundReceiptBatch[];
+}
+
 export interface JstWarehouse {
   warehouseCode: string;
   companyCode: string;
@@ -156,18 +199,18 @@ function cursorString(value: unknown, field: string): string {
   return result;
 }
 
-function assertInventoryWindow(begin: string, end: string): void {
+function assertModifiedWindow(begin: string, end: string): void {
   const format = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
   if (!format.test(begin) || !format.test(end)) {
-    throw new Error("聚水潭库存修改时间须为 YYYY-MM-DD HH:mm:ss");
+    throw new Error("聚水潭修改时间须为 YYYY-MM-DD HH:mm:ss");
   }
   const beginMs = Date.parse(`${begin.replace(" ", "T")}Z`);
   const endMs = Date.parse(`${end.replace(" ", "T")}Z`);
   if (!Number.isFinite(beginMs) || !Number.isFinite(endMs) || endMs < beginMs) {
-    throw new Error("聚水潭库存修改时间范围非法");
+    throw new Error("聚水潭修改时间范围非法");
   }
   if (endMs - beginMs > 7 * 24 * 60 * 60 * 1000) {
-    throw new Error("聚水潭库存修改时间范围不能超过七天");
+    throw new Error("聚水潭修改时间范围不能超过七天");
   }
 }
 
@@ -226,7 +269,7 @@ export function jstConfigFromEnv(env: NodeJS.ProcessEnv = process.env): JstConfi
   };
 }
 
-const JST_UAT_CONTRACT_VERSION = "jst-uat-v1";
+const JST_UAT_CONTRACT_VERSION = "jst-uat-v2";
 
 /**
  * Binds a dated UAT reference to the exact application and exercised capability set without
@@ -241,6 +284,12 @@ export function jstLiveEvidenceBinding(
   const inventoryEnabled = ["1", "true", "yes"].includes(
     env.JST_INVENTORY_SYNC_ENABLED?.trim().toLowerCase() ?? "",
   );
+  const observationContracts = [...new Set(
+    (env.JST_OBSERVATION_SYNC_CONTRACTS ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  )].sort();
   const digest = createHash("sha256").update(JSON.stringify({
     contract: JST_UAT_CONTRACT_VERSION,
     appKey,
@@ -250,6 +299,7 @@ export function jstLiveEvidenceBinding(
       "warehouse-discovery-client",
       "batch-allocation-evidence",
       ...(inventoryEnabled ? ["inventory-total-delta-staging"] : []),
+      ...observationContracts.map((contract) => `observation:${contract}`),
     ],
   }), "utf8").digest("hex").slice(0, 24).toUpperCase();
   return `JST1_${digest}`;
@@ -396,6 +446,124 @@ export class JstClient {
     return [...latestByOrder.values()];
   }
 
+  async queryItemsPage(biz: Record<string, unknown>): Promise<JstPage<JstItemMasterRow>> {
+    const data = await this.call("/open/sku/query", biz);
+    const rows = extractRows(data).map((raw, index) => {
+      const row = asObject(raw, `items[${index}]`);
+      return {
+        skuCode: required(row.sku_id, "sku_id"),
+        itemId: nonEmpty(row.i_id),
+        name: nonEmpty(row.name),
+        propertiesValue: nonEmpty(row.properties_value),
+        enabled: nonEmpty(row.enabled),
+        brand: nonEmpty(row.brand),
+        supplierId: nonEmpty(row.supplier_id),
+        modifiedAt: nonEmpty(row.modified),
+      };
+    });
+    return { rows, hasNext: parseHasNext(data) };
+  }
+
+  /**
+   * Read-only item-master delta. The response is reduced to identity and lifecycle fields before
+   * it can enter evidence; prices, images, descriptions and any vendor extension fields stay out.
+   */
+  async fetchItemsModified(modifiedBegin: string, modifiedEnd: string): Promise<JstItemMasterRow[]> {
+    assertModifiedWindow(modifiedBegin, modifiedEnd);
+    const pageSize = 50;
+    const bySku = new Map<string, JstItemMasterRow>();
+    let complete = false;
+    for (let pageIndex = 1; pageIndex <= MAX_CURSOR_PAGES; pageIndex++) {
+      const page = await this.queryItemsPage({
+        modified_begin: modifiedBegin,
+        modified_end: modifiedEnd,
+        page_index: pageIndex,
+        page_size: pageSize,
+      });
+      for (const row of page.rows) bySku.set(row.skuCode, row);
+      if (page.hasNext === false || (page.hasNext === null && page.rows.length < pageSize)) {
+        complete = true;
+        break;
+      }
+    }
+    if (!complete) throw new Error("聚水潭商品分页超过安全上限，拒绝返回不完整结果");
+    return [...bySku.values()].sort((left, right) => left.skuCode.localeCompare(right.skuCode, "en"));
+  }
+
+  async queryInboundReceiptsPage(
+    biz: Record<string, unknown>,
+  ): Promise<JstPage<JstInboundReceipt>> {
+    const data = await this.call("/open/purchasein/query", biz);
+    const rows = extractRows(data).map((raw, receiptIndex) => {
+      const receipt = asObject(raw, `receipts[${receiptIndex}]`);
+      const rawItems = asArray(receipt.items ?? [], `receipts[${receiptIndex}].items`);
+      const rawBatches = asArray(receipt.batchs ?? [], `receipts[${receiptIndex}].batchs`);
+      return {
+        receiptId: required(receipt.io_id, "io_id"),
+        purchaseOrderId: nonEmpty(receipt.po_id),
+        externalOrderId: nonEmpty(receipt.so_id),
+        supplierId: nonEmpty(receipt.supplier_id),
+        supplierName: nonEmpty(receipt.supplier_name),
+        warehouseCode: nonEmpty(receipt.wms_co_id ?? receipt.wh_id),
+        status: required(receipt.status, "status"),
+        receiptDate: required(receipt.io_date, "io_date"),
+        modifiedAt: nonEmpty(receipt.modified),
+        receiptType: nonEmpty(receipt.type),
+        items: rawItems.map((rawItem, itemIndex) => {
+          const item = asObject(rawItem, `receipts[${receiptIndex}].items[${itemIndex}]`);
+          return {
+            lineId: nonEmpty(item.ioi_id),
+            skuCode: required(item.sku_id, "items.sku_id"),
+            itemId: nonEmpty(item.i_id),
+            name: nonEmpty(item.name),
+            qty: decimalString(item.qty, "items.qty"),
+          };
+        }),
+        batches: rawBatches.map((rawBatch, batchIndex) => {
+          const batch = asObject(rawBatch, `receipts[${receiptIndex}].batchs[${batchIndex}]`);
+          return {
+            batchNo: nonEmpty(batch.batch_no),
+            lineId: nonEmpty(batch.ioi_id),
+            skuCode: required(batch.sku_id, "batchs.sku_id"),
+            qty: decimalString(batch.qty, "batchs.qty"),
+            productionDate: nonEmpty(batch.product_date),
+            expirationDate: nonEmpty(batch.expiration_date),
+          };
+        }),
+      };
+    });
+    return { rows, hasNext: parseHasNext(data) };
+  }
+
+  /**
+   * Pulls receipts changed inside an explicit <=7-day window. It is a modification-window
+   * observation, not permission to post receipts or replace SCM warehouse truth.
+   */
+  async fetchInboundReceiptsModified(
+    modifiedBegin: string,
+    modifiedEnd: string,
+  ): Promise<JstInboundReceipt[]> {
+    assertModifiedWindow(modifiedBegin, modifiedEnd);
+    const pageSize = 30;
+    const byReceipt = new Map<string, JstInboundReceipt>();
+    let complete = false;
+    for (let pageIndex = 1; pageIndex <= MAX_CURSOR_PAGES; pageIndex++) {
+      const page = await this.queryInboundReceiptsPage({
+        modified_begin: modifiedBegin,
+        modified_end: modifiedEnd,
+        page_index: pageIndex,
+        page_size: pageSize,
+      });
+      for (const row of page.rows) byReceipt.set(row.receiptId, row);
+      if (page.hasNext === false || (page.hasNext === null && page.rows.length < pageSize)) {
+        complete = true;
+        break;
+      }
+    }
+    if (!complete) throw new Error("聚水潭采购入库分页超过安全上限，拒绝返回不完整结果");
+    return [...byReceipt.values()].sort((left, right) => left.receiptId.localeCompare(right.receiptId, "en"));
+  }
+
   async queryInventoryPage(biz: Record<string, unknown>): Promise<JstPage<JstInventoryRow>> {
     const data = await this.call("/open/inventory/query", biz);
     const rows = extractRows(data).map((raw, index) => {
@@ -441,7 +609,7 @@ export class JstClient {
       if (!input.modifiedBegin || !input.modifiedEnd) {
         throw new Error("聚水潭库存修改起止时间必须同时提供");
       }
-      assertInventoryWindow(input.modifiedBegin, input.modifiedEnd);
+      assertModifiedWindow(input.modifiedBegin, input.modifiedEnd);
     }
 
     let cursor = cursorMode ? cursorString(input.startCursor, "startCursor") : null;

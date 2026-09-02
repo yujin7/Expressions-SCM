@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   auditLogs,
   batches,
@@ -20,6 +20,7 @@ import {
   warehouses,
 } from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
+import * as masterCommon from "@/server/modules/master/common";
 import {
   createQualityAction,
   createQualityCase,
@@ -33,6 +34,8 @@ import {
   transitionQualityAction,
   transitionQualityCase,
 } from "@/server/modules/quality/service";
+
+afterEach(() => vi.restoreAllMocks());
 import { canonicalJsonSha256 } from "@/server/rules/quality-compliance";
 import { createTestDb, type TestDb } from "../helpers/db";
 
@@ -1007,6 +1010,8 @@ describe("immutable regulatory and public electronic-label versions", () => {
   });
 
   it("publishes only against the latest active dossier and keeps every public token immutable", async () => {
+    // 标签生命周期依赖上海业务日期；固定时钟，避免“未来版本”随日历推进后永久变成 current。
+    vi.spyOn(masterCommon, "todayShanghai").mockReturnValue("2026-08-01");
     const [v1, v2, v3] = await f.db.select().from(regulatoryRecords)
       .where(eq(regulatoryRecords.recordKey, "CN-FILING-QA-SKU-01"))
       .orderBy(regulatoryRecords.version);

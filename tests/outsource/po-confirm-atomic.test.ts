@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  auditLogs, poDocs, poLines, skus, spus, suppliers, users,
+  auditLogs, poDocs, poLines, poPromiseRevisions, skus, spus, suppliers, users,
 } from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
 import { generateConfirmToken, submitPoConfirm } from "@/server/modules/outsource/po-confirm";
@@ -66,6 +66,7 @@ describe("供应商确认 token 原子消费", () => {
     expect(po.expectedDate).toBeNull();
     const audits = await db.select().from(auditLogs).where(eq(auditLogs.action, "supplier_confirm"));
     expect(audits).toHaveLength(0);
+    expect(await db.select().from(poPromiseRevisions)).toHaveLength(0);
   });
 
   it("并发提交只有一个请求能消费 token，且只落一条确认审计", async () => {
@@ -82,5 +83,40 @@ describe("供应商确认 token 原子消费", () => {
     const [po] = await db.select().from(poDocs).where(eq(poDocs.id, poId));
     expect(po.confirmTokenUsedAt).not.toBeNull();
     expect(["2026-08-10", "2026-08-11"]).toContain(po.expectedDate);
+    const revisions = await db.select().from(poPromiseRevisions);
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]).toMatchObject({
+      poId,
+      poLineId: lineId,
+      sequence: 1,
+      previousDate: null,
+      promisedDate: po.expectedDate,
+      source: "supplier_confirm",
+      actorType: "supplier_token",
+      recordedBy: null,
+    });
+  });
+
+  it("再次确认会追加新版本，旧承诺不可被覆盖", async () => {
+    const first = await generateConfirmToken(buyer, poId, db);
+    await submitPoConfirm(first.token, { expectedDate: "2026-08-10", note: "首次承诺" }, db);
+    const second = await generateConfirmToken(buyer, poId, db);
+    await submitPoConfirm(second.token, { expectedDate: "2026-08-15", note: "原料延迟" }, db);
+
+    const revisions = await db.select().from(poPromiseRevisions).orderBy(poPromiseRevisions.sequence);
+    expect(revisions.map((row) => ({
+      sequence: row.sequence,
+      previousDate: row.previousDate,
+      promisedDate: row.promisedDate,
+      reason: row.reason,
+    }))).toEqual([
+      { sequence: 1, previousDate: null, promisedDate: "2026-08-10", reason: "首次承诺" },
+      { sequence: 2, previousDate: "2026-08-10", promisedDate: "2026-08-15", reason: "原料延迟" },
+    ]);
+    await expect(
+      db.update(poPromiseRevisions).set({ reason: "覆盖历史" }).where(eq(poPromiseRevisions.id, revisions[0].id)),
+    ).rejects.toThrow();
+    const [unchanged] = await db.select().from(poPromiseRevisions).where(eq(poPromiseRevisions.id, revisions[0].id));
+    expect(unchanged.reason).toBe("首次承诺");
   });
 });

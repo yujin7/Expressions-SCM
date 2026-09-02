@@ -2,13 +2,31 @@
 
 /** E4-03 到货日历：未结供给按预计到货日排成收货计划（只读；空档日保留占位，无交期条数顶部明示） */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, App, Card, DatePicker, Empty, Space, Spin, Statistic, Table, Tag, Typography } from "antd";
+import { Alert, App, Button, Card, DatePicker, Empty, Space, Spin, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  ResponsiveContainer,
+  Tooltip as RechartsTooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import DecisionVisual from "@/components/DecisionVisual";
+import ProductExternalDecisionEvidenceCard from "@/components/ProductExternalDecisionEvidenceCard";
+import { exportCsv } from "@/components/exportCsv";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import SkuHoverCard from "@/components/SkuHoverCard";
+import { buildSupplyExternalEvidenceBrief } from "@/components/supply-external-evidence";
+import { buildPromiseReliabilityExport } from "@/components/supply-commitment-export";
+import type { ProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
+import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
+import type { PromiseReliability } from "@/server/modules/report/supply-commitment";
 
 interface CalendarLine {
   skuId: number;
@@ -38,6 +56,9 @@ interface CalendarData {
     undatedLines: number;
     bySource: Record<string, number>;
   };
+  promiseReliability: PromiseReliability;
+  supportingObservations: JiandaoyunSupportingObservation[];
+  externalDecisionEvidence: ProductExternalDecisionEvidenceBrief;
 }
 
 /** 来源中文名与配色（与 server/modules/report/inbound-calendar.ts SUPPLY_SOURCE_LABELS 保持一致） */
@@ -55,6 +76,63 @@ const SOURCE_COLORS: Record<string, string> = {
 };
 
 const nz = (v: number): string => v.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+const displayExternalMetric = (value: string): string => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed)
+    ? parsed.toLocaleString("zh-CN", { maximumFractionDigits: 4 })
+    : value;
+};
+
+function SupplyExternalEvidence({ observations }: { observations: readonly JiandaoyunSupportingObservation[] }) {
+  const brief = buildSupplyExternalEvidenceBrief(observations);
+  return (
+    <Card
+      size="small"
+      title="简道云采购需求旁证（历史观察，不改承诺）"
+      extra={<Button type="link" size="small" href="/import/exceptions?status=open&scope=JIANDAOYUN">处理身份认领</Button>}
+      style={{ marginBottom: 12 }}
+    >
+      <Alert
+        banner
+        showIcon
+        type="warning"
+        message="需求/已采购数量是原表跨 SKU 控制量，单位未统一，不得据此计算采购达成率、生成 PO、改写在途或补货数量。"
+        style={{ marginBottom: 10 }}
+      />
+      {brief.state === "missing" ? (
+        <Typography.Text type="secondary">尚无最新成功批次；保持未知，不显示为 0 需求。</Typography.Text>
+      ) : (
+        <Space direction="vertical" size={8} style={{ width: "100%" }}>
+          <Typography.Text type="secondary">源截止 {brief.sourceAsOf ?? "未提供"} · 业务期 {brief.period}</Typography.Text>
+          <Space size={[6, 6]} wrap>
+            {brief.metrics.map((metric) => (
+              <Tag key={metric.key}>{metric.label} {displayExternalMetric(metric.value)}{metric.unit}</Tag>
+            ))}
+          </Space>
+          <Space size={[6, 6]} wrap>
+            {brief.identities.map((identity) => (
+              <Tag color={identity.openValues > 0 ? "orange" : "default"} key={identity.kind}>
+                {identity.label} {identity.governedMatches}/{identity.distinctValues} · 待认领 {identity.openValues}
+              </Tag>
+            ))}
+          </Space>
+        </Space>
+      )}
+    </Card>
+  );
+}
+
+const PROMISE_STATUS = {
+  on_time_in_full: { label: "按期足量", color: "green" },
+  late_full: { label: "迟到补齐", color: "orange" },
+  overdue_short: { label: "逾期未齐", color: "red" },
+} as const;
+
+const PROMISE_VERSION_LABEL = {
+  immutable_history: "不可变版本完整",
+  mixed_history: "新版本链＋历史快照",
+  current_only: "仅当前承诺",
+} as const;
 
 export default function InboundCalendarClient() {
   const { message } = App.useApp();
@@ -125,6 +203,40 @@ export default function InboundCalendarClient() {
         .map(([k, v]) => `${SOURCE_LABELS[k] ?? k} ${nz(v)}`)
         .join(" · ")
     : "";
+  const promise = data?.promiseReliability;
+  const promiseChart = promise
+    ? [
+        { name: "按期足量", current: promise.totals.onTimeInFull, original: promise.originalTotals.onTimeInFull },
+        { name: "迟到补齐", current: promise.totals.lateFull, original: promise.originalTotals.lateFull },
+        { name: "逾期未齐", current: promise.totals.overdueShort, original: promise.originalTotals.overdueShort },
+      ]
+    : [];
+  const promiseColumns: ColumnsType<PromiseReliability["exceptions"][number]> = [
+    { title: "口径", dataIndex: "basis", width: 100, render: (value: "original" | "current") => value === "original" ? <Tag color="purple">原始承诺</Tag> : <Tag>当前承诺</Tag> },
+    { title: "采购单", dataIndex: "docNo", width: 170, sorter: (a, b) => a.docNo.localeCompare(b.docNo) },
+    { title: "供应商", dataIndex: "supplierName", width: 160, ellipsis: true },
+    { title: "SKU", dataIndex: "skuCode", width: 145, render: (value: string) => <SkuHoverCard code={value} /> },
+    { title: "名称", dataIndex: "skuName", width: 190, ellipsis: true },
+    { title: "判断承诺日", dataIndex: "promisedDate", width: 120, sorter: (a, b) => a.promisedDate.localeCompare(b.promisedDate) },
+    { title: "改期", dataIndex: "revisionCount", width: 76, align: "right", sorter: (a, b) => a.revisionCount - b.revisionCount },
+    {
+      title: "状态", dataIndex: "status", width: 104,
+      render: (value: keyof typeof PROMISE_STATUS) => {
+        const item = PROMISE_STATUS[value];
+        return <Tag color={item.color}>{item.label}</Tag>;
+      },
+    },
+    { title: "迟延天数", dataIndex: "daysLate", width: 100, align: "right", defaultSortOrder: "descend", sorter: (a, b) => a.daysLate - b.daysLate },
+    { title: "订购量", dataIndex: "orderedQty", width: 100, align: "right", render: (value: number, row) => `${formatQty(value)} ${row.baseUom}` },
+    { title: "截止实收", dataIndex: "receivedAsOf", width: 105, align: "right", render: (value: number) => formatQty(value) },
+    { title: "仍缺", dataIndex: "shortQty", width: 90, align: "right", sorter: (a, b) => a.shortQty - b.shortQty, render: (value: number) => formatQty(value) },
+  ];
+
+  const exportPromise = () => {
+    if (!promise) return;
+    const output = buildPromiseReliabilityExport(promise);
+    exportCsv(output.filename, output.headers, output.rows);
+  };
 
   return (
     <div>
@@ -157,6 +269,73 @@ export default function InboundCalendarClient() {
           }
         />
       ) : null}
+
+      <SupplyExternalEvidence observations={data?.supportingObservations ?? []} />
+      <ProductExternalDecisionEvidenceCard evidence={data?.externalDecisionEvidence} />
+
+      <DecisionVisual
+        title="采购承诺可信度（版本化基线）"
+        question="已到期采购承诺中，多少在原始承诺日前按基础单位足量兑现；改期是否掩盖迟延？"
+        metricId="promiseReliability"
+        grain={promise?.grain ?? "PO × SKU（仅唯一行）"}
+        unit="采购承诺行占比"
+        source={{
+          tier: "ledger",
+          source: "SCM 采购单、质检接收与采购退货事件",
+          asOf: promise?.asOf,
+          note: "原始与当前承诺分列；外部三边未通过 UAT 前不并入口径",
+        }}
+        coverage={{
+          covered: promise?.totals.eligibleLines ?? 0,
+          total: promise
+            ? promise.totals.eligibleLines + promise.totals.ambiguous + promise.totals.controlMismatch
+            : 0,
+          label: "到期且可安全归属的采购承诺行",
+        }}
+        activeFilters={promise
+          ? [
+              `观察窗：${promise.windowFrom} 至 ${promise.asOf}`,
+              `承诺版本：${PROMISE_VERSION_LABEL[promise.promiseVersionState]}`,
+              `原始版本覆盖：${promise.coverage.historyPct == null ? "未知" : `${promise.coverage.historyPct.toFixed(1)}%`}`,
+              "数量：基础单位",
+              "重复 PO×SKU 行排除",
+              "缺失不补零",
+            ]
+          : []}
+        summary={promise?.originalRate != null
+          ? `原始承诺可信度 ${promise.originalRate.toFixed(1)}%；当前承诺口径 ${promise.rate == null ? "未知" : `${promise.rate.toFixed(1)}%`}。原始口径按期 ${promise.originalTotals.onTimeInFull} 行、迟到补齐 ${promise.originalTotals.lateFull} 行、逾期未齐 ${promise.originalTotals.overdueShort} 行。`
+          : promise?.rate != null
+            ? `当前承诺基线 ${promise.rate.toFixed(1)}%；${promise.historyGate ?? "原始承诺版本仍不足。"}`
+            : promise?.gate ?? "正在计算供给承诺基线。"}
+        caveat={[promise?.historyGate, ...(promise?.limitations ?? [])].filter(Boolean).join(" ")}
+        state={loading && !data ? "loading" : promise?.state === "ready" ? "ready" : "insufficient"}
+        stateDetail={promise?.gate ?? undefined}
+        height={270}
+        onExport={promise ? exportPromise : undefined}
+        exportLabel="导出承诺例外证据"
+        dataView={(
+          <Table
+            rowKey={(row) => `${row.basis}:${row.lineId}`}
+            size="small"
+            pagination={false}
+            columns={promiseColumns}
+            dataSource={promise?.exceptions ?? []}
+            scroll={{ x: 1430 }}
+          />
+        )}
+      >
+        <ResponsiveContainer minWidth={0} minHeight={1}>
+          <BarChart data={promiseChart} margin={{ top: 12, right: 18, left: 0, bottom: 4 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="name" />
+            <YAxis allowDecimals={false} />
+            <RechartsTooltip formatter={(value) => [`${Number(value)} 行`, "采购承诺"]} />
+            <Legend />
+            <Bar dataKey="original" name="原始承诺" fill="#722ed1" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="current" name="当前承诺" fill="#1677ff" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </DecisionVisual>
 
       <Space style={{ marginBottom: 16 }} wrap>
         <DatePicker.RangePicker

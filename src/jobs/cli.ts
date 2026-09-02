@@ -3,6 +3,8 @@
  *   npx tsx src/jobs/cli.ts reconcile-jst [YYYY-MM-DD]   # 缺省=昨日（Asia/Shanghai）
  *   npx tsx src/jobs/cli.ts sync-jst [YYYY-MM-DD]        # API 拉取到受控 staging
  *   npx tsx src/jobs/cli.ts sync-jst-inventory           # 增量库存观察到受控 staging
+ *   npx tsx src/jobs/cli.ts sync-jst-item-master [day]   # 商品身份/生命周期观察
+ *   npx tsx src/jobs/cli.ts sync-jst-inbound [day]       # 采购入库观察（不入账）
  *   npx tsx src/jobs/cli.ts license-alert [YYYY-MM-DD]   # 缺省=今日
  *   npx tsx src/jobs/cli.ts stage-jst <file.xlsx|csv> <userId>
  * 输出 JSON summary；失败退出码非 0。
@@ -14,11 +16,16 @@ import { runSnapshotAgeAlert } from "./snapshot-age";
 import { runExportWorkerOnce } from "./export-worker";
 import { runHousekeeping } from "./housekeeping";
 import { stageJstDaily } from "@/server/import/adapters/jst-daily";
-import { runJstInventorySync, runJstSalesSync } from "./sync-jst";
+import {
+  runJstGovernedObservationSync,
+  runJstInventorySync,
+  runJstSalesSync,
+} from "./sync-jst";
 import { runYonyouSync } from "./sync-yonyou";
 import { runJstTokenWatchdog } from "./jst-token-watchdog";
 import { runJobFailureWatchdog } from "./job-failure-watchdog";
 import { runSystemAlertNotify } from "./system-alert-notify";
+import { runDataProductGateWatchdog } from "./data-product-gate-watchdog";
 import {
   runJiandaoyunCatalogSync,
   runJiandaoyunConfiguredFormSyncs,
@@ -29,6 +36,7 @@ import { runJiandaoyunContractAudit } from "./audit-jiandaoyun";
 import { auditYonyouReadiness } from "./audit-yonyou";
 import { auditConnectorReadiness } from "./audit-connectors";
 import { probeJstReadiness } from "./probe-jst";
+import { runYonyouPermissionProbe } from "./probe-yonyou";
 import { loadJobEnvironment } from "./load-env";
 import { runNamedIntervalJobOnce } from "./interval-runner";
 
@@ -38,18 +46,22 @@ const USAGE = `用法:
   npx tsx src/jobs/cli.ts reconcile-jst [YYYY-MM-DD]     缺省=昨日（Asia/Shanghai）
   npx tsx src/jobs/cli.ts sync-jst [YYYY-MM-DD]          API 拉取 T-1/指定日到受控 staging
   npx tsx src/jobs/cli.ts sync-jst-inventory             增量库存总量观察到受控 staging（需显式启用）
+  npx tsx src/jobs/cli.ts sync-jst-item-master [YYYY-MM-DD] 商品身份/生命周期观察（需显式选契约）
+  npx tsx src/jobs/cli.ts sync-jst-inbound [YYYY-MM-DD]  采购入库观察，不写库存账（需显式选契约）
   npx tsx src/jobs/cli.ts sync-yonyou [YYYY-MM-DD]       按已批准契约拉取用友只读观测到受控 staging
   npx tsx src/jobs/cli.ts jst-token-watchdog             检查聚水潭 token 有效期，临期开告警
   npx tsx src/jobs/cli.ts job-failure-watchdog           定时任务连续失败开告警，恢复后自动关闭
   npx tsx src/jobs/cli.ts system-alert-notify            把未处理系统告警推进发件箱（飞书/站内）
+  npx tsx src/jobs/cli.ts data-product-gate-watchdog      已批准数据产品失效时开责任域告警
   npx tsx src/jobs/cli.ts sync-jiandaoyun-catalog        同步可见应用/表单目录（不读取业务行）
   npx tsx src/jobs/cli.ts sync-jiandaoyun-forms          同步显式配置的最小化观察契约
   npx tsx src/jobs/cli.ts sync-jiandaoyun-form <key>     同步一条命名观察契约
-  npx tsx src/jobs/cli.ts audit-jiandaoyun-contracts     只读输出九条契约的聚合控制总量
+  npx tsx src/jobs/cli.ts audit-jiandaoyun-contracts [契约key ...]  全量或定向输出聚合控制总量
   npx tsx src/jobs/cli.ts probe-feishu-chats              只读检查应用/权限聚合并列出可见群/chat_id
   npx tsx src/jobs/cli.ts audit-yonyou-readiness          只读检查用友配置/授权前置，不请求 token
   npx tsx src/jobs/cli.ts audit-connectors                 只读汇总全部连接器/UAT 证据，不输出秘密
-  npx tsx src/jobs/cli.ts probe-jst [YYYY-MM-DD]            只读验证聚水潭签名、店铺/仓库/出库/库存权限
+  npx tsx src/jobs/cli.ts probe-jst [YYYY-MM-DD]            只读验证聚水潭签名与 6 个最小读取面
+  npx tsx src/jobs/cli.ts probe-yonyou                       只读验证用友 token 与 8 条代码白名单权限
   npx tsx src/jobs/cli.ts run-job <已登记任务名>          运维手跑定时任务并写 job_runs（失败退出非 0）
   npx tsx src/jobs/cli.ts license-alert [YYYY-MM-DD]     缺省=今日
   npx tsx src/jobs/cli.ts snapshot-age [YYYY-MM-DD] [阈值天数=3]
@@ -64,7 +76,7 @@ async function main(): Promise<void> {
     return;
   }
   if (cmd === "audit-jiandaoyun-contracts") {
-    console.log(JSON.stringify(await runJiandaoyunContractAudit(), null, 2));
+    console.log(JSON.stringify(await runJiandaoyunContractAudit({ contractKeys: args }), null, 2));
     return;
   }
   if (cmd === "audit-yonyou-readiness") {
@@ -77,6 +89,10 @@ async function main(): Promise<void> {
   }
   if (cmd === "probe-jst") {
     console.log(JSON.stringify(await probeJstReadiness({ bizDate: args[0] }), null, 2));
+    return;
+  }
+  if (cmd === "probe-yonyou") {
+    console.log(JSON.stringify(await runYonyouPermissionProbe(), null, 2));
     return;
   }
   const db = await getDbAsync();
@@ -92,8 +108,25 @@ async function main(): Promise<void> {
     case "sync-jst-inventory":
       out = await runJstInventorySync(db);
       break;
+    case "sync-jst-item-master":
+      out = await runJstGovernedObservationSync(
+        db,
+        "item-master",
+        args[0] ?? shanghaiToday(-1),
+      );
+      break;
+    case "sync-jst-inbound":
+      out = await runJstGovernedObservationSync(
+        db,
+        "inbound-receipts-daily",
+        args[0] ?? shanghaiToday(-1),
+      );
+      break;
     case "system-alert-notify":
       out = await runSystemAlertNotify(db);
+      break;
+    case "data-product-gate-watchdog":
+      out = await runDataProductGateWatchdog(db);
       break;
     case "job-failure-watchdog":
       out = await runJobFailureWatchdog(db);

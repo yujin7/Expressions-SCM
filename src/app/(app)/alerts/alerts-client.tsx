@@ -13,6 +13,7 @@ const CAT: Record<string, string> = {
   doc_aging: "单据超时",
   integration_token: "凭据到期",
   job_failure: "任务失败",
+  data_product_gate: "决策门禁降级",
 };
 const SEV: Record<string, string> = { high: "orange", medium: "gold" };
 
@@ -32,7 +33,7 @@ export default function AlertsClient() {
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>系统告警</Typography.Title>
       <Alert type="info" showIcon style={{ marginBottom: 12 }}
-        message="看门狗自动产出的数据/单据告警（数据过期、单据超时）。数据重传或单据流转后系统自动关闭。人工裁决事项见「复核清单与提醒」。" />
+        message="看门狗自动产出的数据、单据与决策门禁告警。来源恢复、数据重传或单据流转后系统自动关闭；失效的 A2/A3 仍须责任人撤回或重新验收。人工裁决事项见「复核清单与提醒」。" />
       <List
         loading={loading}
         dataSource={rows}

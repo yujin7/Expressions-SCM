@@ -54,7 +54,7 @@ cp "$REPO/scripts/public-tunnel-daemon.sh" "$TARGET"
 chmod +x "$TARGET"
 
 echo "==> 5/7 收掉手工起的隧道，避免同时开两条"
-pkill -f 'cloudflared tunnel --no-autoupdate --url' 2>/dev/null || true
+pkill -f 'cloudflared tunnel --no-autoupdate' 2>/dev/null || true
 rm -f "$URL_FILE"   # 清掉旧地址，强制本轮重新同步 AUTH_URL
 
 echo "==> 6/7 写入并加载 LaunchAgent"
@@ -71,6 +71,8 @@ cat > "$PLIST" <<PLISTEOF
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <!-- 守护退出时不要 SIGKILL 它拉起的 cloudflared：新守护要接管旧隧道，地址才不会变 -->
+  <key>AbandonProcessGroup</key><true/>
   <key>StandardOutPath</key><string>${LOG_FILE}</string>
   <key>StandardErrorPath</key><string>${LOG_FILE}</string>
 </dict>
@@ -78,7 +80,21 @@ cat > "$PLIST" <<PLISTEOF
 PLISTEOF
 
 launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+# bootout 是异步的：旧实例还没完全退出时立刻 bootstrap 会报 "Bootstrap failed: 5: Input/output error"，
+# 并且此时守护**没有**被加载——2026-09-02 实测因此把公网入口整个打掉。先等旧实例消失，再带重试加载。
+for _ in $(seq 1 20); do
+  launchctl print "gui/$(id -u)/${LABEL}" >/dev/null 2>&1 || break
+  sleep 1
+done
+BOOTSTRAPPED=0
+for _ in 1 2 3; do
+  if launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; then BOOTSTRAPPED=1; break; fi
+  sleep 2
+done
+if [[ "$BOOTSTRAPPED" != "1" ]]; then
+  echo "✗ LaunchAgent 加载失败：launchctl bootstrap gui/$(id -u) $PLIST" >&2
+  exit 1
+fi
 launchctl enable "gui/$(id -u)/${LABEL}" 2>/dev/null || true
 
 echo "==> 7/7 等待隧道就绪并验证（最多 3 分钟）"

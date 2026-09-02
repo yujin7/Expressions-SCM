@@ -15,6 +15,20 @@ import * as schema from "@/db/schema";
 import { digestDecisionEvidence } from "@/server/core/decision-envelope";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
+import {
+  CROSS_SYSTEM_IDENTITY_EXTRACTION_CONTRACT_VERSION,
+  crossSystemIdentityExtractionScope,
+  type CrossSystemIdentityDomain,
+  type CrossSystemIdentitySource,
+} from "@/lib/cross-system-identity";
+import {
+  CROSS_SYSTEM_SEMANTIC_CONTRACT_VERSION,
+  crossSystemSemanticScope,
+} from "@/lib/cross-system-semantics";
+import {
+  DATA_PRODUCT_METRIC_LINEAGE_VERSION,
+  dataProductMetricLineageScope,
+} from "@/lib/data-product-metric-lineage";
 import { type AnyDb, resolveDb } from "@/server/core/svc";
 import { ApiError } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
@@ -23,7 +37,7 @@ import {
   type DataSourceReadiness,
 } from "@/server/modules/report/data-source-readiness";
 
-export const DATA_PRODUCT_RELEASE_SCHEMA_VERSION = "data-product-release/v1" as const;
+export const DATA_PRODUCT_RELEASE_SCHEMA_VERSION = "data-product-release/v6" as const;
 export type DataProductReleaseStatus = "pending" | "approved" | "rejected" | "revoked";
 export type ReleasedAutomationLevel = Extract<DataProductAutomationLevel, "A2" | "A3">;
 
@@ -66,6 +80,17 @@ export interface DataProductReleaseReadiness {
   canApprove: boolean;
   canReject: boolean;
   canRevoke: boolean;
+  dependencyGates: DataProductDependencyGate[];
+}
+
+export interface DataProductDependencyGate {
+  productId: string;
+  title: string;
+  minimumLevel: ReleasedAutomationLevel;
+  effectiveLevel: DataProductAutomationLevel;
+  activeReleaseCurrent: boolean;
+  satisfied: boolean;
+  purpose: string;
 }
 
 interface EvidenceEnvelope {
@@ -77,7 +102,21 @@ interface EvidenceEnvelope {
     maxAutomation: DataProductAutomationLevel;
     requiredSources: string[];
     requiredStreams: Record<string, string[]>;
+    requiredIdentities: Record<string, string[]>;
+    identityExtractionContractVersion: typeof CROSS_SYSTEM_IDENTITY_EXTRACTION_CONTRACT_VERSION;
+    identityExtractionScope: ReturnType<typeof crossSystemIdentityExtractionScope>;
+    semanticContractVersion: typeof CROSS_SYSTEM_SEMANTIC_CONTRACT_VERSION;
+    requiredSemantics: DataProductDefinition["requiredSemantics"];
+    semanticScope: ReturnType<typeof crossSystemSemanticScope>;
+    metricLineageVersion: typeof DATA_PRODUCT_METRIC_LINEAGE_VERSION;
+    metricIds: string[];
+    metricLineageScope: ReturnType<typeof dataProductMetricLineageScope>;
     requiredScmEvidence: string[];
+    requiredProducts: Array<{
+      productId: string;
+      minimumLevel: ReleasedAutomationLevel;
+      purpose: string;
+    }>;
   };
   sourceBindings: Array<{
     source: string;
@@ -88,6 +127,14 @@ interface EvidenceEnvelope {
   runtimeLevel: "A0" | "A1";
   runtimeReason: string;
   sourceEvidence: ProductEvidenceSummary;
+  dependencyBindings: Array<{
+    productId: string;
+    minimumLevel: ReleasedAutomationLevel;
+    contractVersion: string;
+    effectiveLevel: DataProductAutomationLevel;
+    activeReleaseId: number;
+    sourceEvidenceDigest: string;
+  }>;
 }
 
 const requestSchema = z.object({
@@ -125,10 +172,36 @@ function maxAllows(product: DataProductDefinition, level: ReleasedAutomationLeve
   return level === "A2" || product.maxAutomation === "A3";
 }
 
+function levelAtLeast(level: DataProductAutomationLevel, minimum: ReleasedAutomationLevel): boolean {
+  const rank: Record<DataProductAutomationLevel, number> = { A0: 0, A1: 1, A2: 2, A3: 3 };
+  return rank[level] >= rank[minimum];
+}
+
+function dependencyGates(
+  product: DataProductDefinition,
+  dependencies: readonly DataProductReleaseReadiness[],
+): DataProductDependencyGate[] {
+  const readinessById = new Map(dependencies.map((item) => [item.productId, item]));
+  return (product.requiredProducts ?? []).map((dependency) => {
+    const upstreamProduct = DATA_PRODUCTS.find((item) => item.id === dependency.productId);
+    const readiness = readinessById.get(dependency.productId);
+    const effectiveLevel = readiness?.effectiveLevel ?? "A0";
+    const activeReleaseCurrent = readiness?.activeReleaseCurrent === true;
+    return {
+      ...dependency,
+      title: upstreamProduct?.title ?? dependency.productId,
+      effectiveLevel,
+      activeReleaseCurrent,
+      satisfied: activeReleaseCurrent && levelAtLeast(effectiveLevel, dependency.minimumLevel),
+    };
+  });
+}
+
 export function buildDataProductReleaseEvidence(
   product: DataProductDefinition,
   dataSources: readonly DataSourceReadiness[],
   now = new Date(),
+  dependencies: readonly DataProductReleaseReadiness[] = [],
 ): { envelope: EvidenceEnvelope; scopeDigest: string; eligible: boolean; gate: string } {
   const sourceEvidence = evaluateProductSourceEvidence(product, dataSources);
   const runtime = currentProductAutomation(sourceEvidence);
@@ -142,6 +215,21 @@ export function buildDataProductReleaseEvidence(
       selectedContractCount: row?.selectedContractCount ?? 0,
     };
   });
+  const productDependencyGates = dependencyGates(product, dependencies);
+  const dependencyBindings = productDependencyGates
+    .filter((item) => item.satisfied)
+    .map((item) => {
+      const readiness = dependencies.find((dependency) => dependency.productId === item.productId)!;
+      return {
+        productId: item.productId,
+        minimumLevel: item.minimumLevel,
+        contractVersion: getProduct(item.productId).contractVersion,
+        effectiveLevel: readiness.effectiveLevel,
+        activeReleaseId: readiness.activeRelease!.id,
+        sourceEvidenceDigest: readiness.activeRelease!.sourceEvidenceDigest,
+      };
+    })
+    .sort((a, b) => a.productId.localeCompare(b.productId));
   const scopeContract = {
     schemaVersion: DATA_PRODUCT_RELEASE_SCHEMA_VERSION,
     product: {
@@ -154,9 +242,37 @@ export function buildDataProductReleaseEvidence(
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([source, streams]) => [source, [...(streams ?? [])].sort()]),
       ),
+      requiredIdentities: Object.fromEntries(
+        Object.entries(product.requiredIdentities)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([source, identities]) => [source, [...(identities ?? [])].sort()]),
+      ),
+      identityExtractionContractVersion: CROSS_SYSTEM_IDENTITY_EXTRACTION_CONTRACT_VERSION,
+      identityExtractionScope: crossSystemIdentityExtractionScope(
+        product.requiredStreams as Partial<Record<CrossSystemIdentitySource, string[]>>,
+        product.requiredIdentities as Partial<Record<CrossSystemIdentitySource, CrossSystemIdentityDomain[]>>,
+      ),
+      semanticContractVersion: CROSS_SYSTEM_SEMANTIC_CONTRACT_VERSION,
+      requiredSemantics: Object.fromEntries(
+        Object.entries(product.requiredSemantics)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([source, streams]) => [source, Object.fromEntries(
+            Object.entries(streams ?? {})
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([stream, domains]) => [stream, [...domains].sort()]),
+          )]),
+      ) as DataProductDefinition["requiredSemantics"],
+      semanticScope: crossSystemSemanticScope(product.requiredSemantics),
+      metricLineageVersion: DATA_PRODUCT_METRIC_LINEAGE_VERSION,
+      metricIds: [...product.metricIds].sort(),
+      metricLineageScope: dataProductMetricLineageScope(product.id, product.metricIds),
       requiredScmEvidence: [...product.requiredScmEvidence].sort(),
+      requiredProducts: [...(product.requiredProducts ?? [])]
+        .sort((a, b) => a.productId.localeCompare(b.productId))
+        .map((item) => ({ ...item })),
     },
     sourceBindings: [...sourceBindings].sort((a, b) => a.source.localeCompare(b.source)),
+    dependencyBindings,
   };
   const envelope: EvidenceEnvelope = {
     ...scopeContract,
@@ -165,14 +281,18 @@ export function buildDataProductReleaseEvidence(
     runtimeReason: runtime.reason,
     sourceEvidence,
   };
-  const eligible = runtime.level === "A1";
+  const missingDependencies = productDependencyGates.filter((item) => !item.satisfied);
+  const eligible = runtime.level === "A1" && missingDependencies.length === 0;
+  const dependencyGate = missingDependencies.length > 0
+    ? `上游数据产品尚未满足：${missingDependencies.map((item) => `${item.title}需${item.minimumLevel}（当前${item.effectiveLevel}）`).join("；")}`
+    : null;
   return {
     envelope,
     scopeDigest: digestDecisionEvidence(scopeContract),
     eligible,
     gate: eligible
       ? "实时来源门禁已达到 A1；补齐控制总量、业务 UAT、责任人审批和回滚方案后可受控升级。"
-      : runtime.reason,
+      : runtime.level !== "A1" ? runtime.reason : dependencyGate!,
   };
 }
 
@@ -216,15 +336,42 @@ async function loadReleaseRows(db: AnyDb): Promise<DataProductReleaseDto[]> {
   return rows.map((row) => toDto(row, new Map(users.map((item) => [item.id, item.name]))));
 }
 
-export async function loadDataProductReleaseReadiness(
+function topologicalProducts(): DataProductDefinition[] {
+  const byId = new Map(DATA_PRODUCTS.map((product) => [product.id, product]));
+  const ordered: DataProductDefinition[] = [];
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (product: DataProductDefinition) => {
+    if (visited.has(product.id)) return;
+    if (visiting.has(product.id)) throw new Error(`数据产品依赖存在循环：${product.id}`);
+    visiting.add(product.id);
+    for (const dependency of product.requiredProducts ?? []) {
+      const upstream = byId.get(dependency.productId);
+      if (!upstream) throw new Error(`数据产品 ${product.id} 引用了不存在的上游：${dependency.productId}`);
+      visit(upstream);
+    }
+    visiting.delete(product.id);
+    visited.add(product.id);
+    ordered.push(product);
+  };
+  for (const product of DATA_PRODUCTS) visit(product);
+  return ordered;
+}
+
+function computeReleaseReadiness(
   dataSources: readonly DataSourceReadiness[],
+  releases: readonly DataProductReleaseDto[],
   user?: SessionUser,
-  dbArg?: AnyDb,
-): Promise<DataProductReleaseReadiness[]> {
-  const db = await resolveDb(dbArg);
-  const releases = await loadReleaseRows(db);
-  return DATA_PRODUCTS.map((product) => {
-    const evidence = buildDataProductReleaseEvidence(product, dataSources);
+): Array<{ readiness: DataProductReleaseReadiness; evidence: ReturnType<typeof buildDataProductReleaseEvidence> }> {
+  const computed = new Map<string, DataProductReleaseReadiness>();
+  const result: Array<{ readiness: DataProductReleaseReadiness; evidence: ReturnType<typeof buildDataProductReleaseEvidence> }> = [];
+  for (const product of topologicalProducts()) {
+    const dependencies = (product.requiredProducts ?? []).flatMap((dependency) => {
+      const readiness = computed.get(dependency.productId);
+      return readiness ? [readiness] : [];
+    });
+    const productDependencyGates = dependencyGates(product, dependencies);
+    const evidence = buildDataProductReleaseEvidence(product, dataSources, new Date(), dependencies);
     const productRows = releases.filter((row) => row.productId === product.id);
     const activeRelease = productRows.find((row) => row.status === "approved") ?? null;
     const pendingRelease = productRows.find((row) => row.status === "pending") ?? null;
@@ -247,15 +394,15 @@ export async function loadDataProductReleaseReadiness(
       ? activeRelease.targetLevel
       : evidence.envelope.runtimeLevel;
     const gate = activeReleaseCurrent
-      ? `产品级放行有效：${activeRelease.targetLevel}；实时失败、过期、拒收、空源或范围变化会自动降级。`
+      ? `产品级放行有效：${activeRelease.targetLevel}；实时失败、过期、拒收、空源、上游产品或范围变化会自动降级。`
       : activeRelease
-        ? "已有批准记录，但当前来源、契约范围或产品版本已变化；已自动降回 A0/A1，需撤回旧记录后重新申请。"
+        ? "已有批准记录，但当前来源、上游产品、契约范围或产品版本已变化；已自动降回 A0/A1，需撤回旧记录后重新申请。"
         : pendingRelease
           ? pendingEvidenceCurrent
-            ? "放行申请待责任人会签；会签时会再次核对实时证据和范围指纹。"
-            : "待审批申请的实时证据、契约范围或产品版本已失效；禁止批准，只能拒绝后在门禁恢复时重新申请。"
+            ? "放行申请待责任人会签；会签时会再次核对实时证据、上游产品和范围指纹。"
+            : "待审批申请的实时证据、上游产品、契约范围或产品版本已失效；禁止批准，只能拒绝后在门禁恢复时重新申请。"
           : evidence.gate;
-    return {
+    const readiness: DataProductReleaseReadiness = {
       productId: product.id,
       runtimeLevel: evidence.envelope.runtimeLevel,
       effectiveLevel,
@@ -270,8 +417,22 @@ export async function loadDataProductReleaseReadiness(
       canApprove: Boolean(canDecide && pendingEvidenceCurrent),
       canReject: Boolean(canDecide),
       canRevoke: owner && activeRelease != null,
+      dependencyGates: productDependencyGates,
     };
-  });
+    computed.set(product.id, readiness);
+    result.push({ readiness, evidence });
+  }
+  return result;
+}
+
+export async function loadDataProductReleaseReadiness(
+  dataSources: readonly DataSourceReadiness[],
+  user?: SessionUser,
+  dbArg?: AnyDb,
+): Promise<DataProductReleaseReadiness[]> {
+  const db = await resolveDb(dbArg);
+  const releases = await loadReleaseRows(db);
+  return computeReleaseReadiness(dataSources, releases, user).map((item) => item.readiness);
 }
 
 async function findByIdempotency(db: AnyDb, key: string): Promise<ReleaseRow | null> {
@@ -301,7 +462,10 @@ export async function requestDataProductRelease(
     return toDto(replay);
   }
   const dataSources = await loadDataSourceReadiness(db);
-  const evidence = buildDataProductReleaseEvidence(product, dataSources);
+  const releaseRows = await loadReleaseRows(db);
+  const productState = computeReleaseReadiness(dataSources, releaseRows, user)
+    .find((item) => item.readiness.productId === product.id)!;
+  const evidence = productState.evidence;
   if (!evidence.eligible) throw new ApiError(409, `当前不能申请放行：${evidence.gate}`);
 
   return db.transaction(async (tx: AnyDb) => {
@@ -425,7 +589,10 @@ export async function decideDataProductRelease(
 
     if (value.action === "approve") {
       const dataSources = await loadDataSourceReadiness(tx);
-      const evidence = buildDataProductReleaseEvidence(product, dataSources);
+      const releaseRows = await loadReleaseRows(tx);
+      const productState = computeReleaseReadiness(dataSources, releaseRows, user)
+        .find((item) => item.readiness.productId === product.id)!;
+      const evidence = productState.evidence;
       if (!evidence.eligible) throw new ApiError(409, `实时证据已不满足放行条件：${evidence.gate}`);
       if (before.contractVersion !== product.contractVersion || before.sourceEvidenceDigest !== evidence.scopeDigest) {
         throw new ApiError(409, "产品契约或连接范围已变化；请拒绝旧申请并重新发起");

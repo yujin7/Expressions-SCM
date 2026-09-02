@@ -79,6 +79,11 @@ export const YONYOU_READ_CONTRACTS = [
 
 export type YonyouReadContractName = (typeof YONYOU_READ_CONTRACTS)[number]["name"];
 
+/** 单一、稳定的运行流键；目录、同步与 BI 证据必须共用，避免路径归一化各写一份。 */
+export function yonyouContractStreamKey(path: string): string {
+  return path.replace(/^\/+/, "").replace(/[^A-Za-z0-9]+/g, "-").toLowerCase();
+}
+
 const contractByName = new Map<string, YonyouReadContract>(
   YONYOU_READ_CONTRACTS.map((contract) => [contract.name, contract]),
 );

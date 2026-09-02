@@ -26,6 +26,7 @@ import {
   normalizeJstBaseUrl,
 } from "./jst";
 import { jstInventorySyncEnabled } from "./jst-inventory-sync";
+import { configuredJstGovernedObservationContracts } from "./jst-observation-sync";
 import {
   YONYOU_REQUIRED_ENV,
   parseYonyouApprovedApiContracts,
@@ -313,6 +314,8 @@ export const CONNECTORS: Connector[] = [
     capabilities: [
       "outbound-sales-daily",
       "inventory-total-delta-staging",
+      "item-master-observation-staging",
+      "inbound-receipts-observation-staging",
       "shop-discovery-client",
       "warehouse-discovery-client",
       "batch-allocation-evidence",
@@ -321,6 +324,7 @@ export const CONNECTORS: Connector[] = [
     optionalEnv: [
       "JST_BASE_URL",
       "JST_INVENTORY_SYNC_ENABLED",
+      "JST_OBSERVATION_SYNC_CONTRACTS",
       "JST_LIVE_VERIFIED_AT",
       "JST_LIVE_VERIFIED_REF",
     ],
@@ -335,8 +339,14 @@ export const CONNECTORS: Connector[] = [
       "https://openweb.jushuitan.com/dev-doc?docType=8&docId=34",
       "https://openweb.jushuitan.com/dev-doc?docType=3&docId=15",
       "https://openweb.jushuitan.com/dev-doc?docType=1&docId=3",
+      "https://open.jushuitan.com/document/2167.html",
+      "https://open.jushuitan.com/document/2019.html",
+      "https://open.jushuitan.com/document/2125.html",
+      "https://open.jushuitan.com/document/15.html",
+      "https://open.jushuitan.com/document.aspx?doc_id=2352",
+      "https://open.jushuitan.com/document.aspx?doc_id=2356",
     ],
-    blocker: "日出库与库存总量增量均进入受控 staging；需开放平台 app/token、IP 白名单、接口权限、责任人 ID，并在真实对账/UAT 后设置时间与非秘密证据编号",
+    blocker: "日出库、库存增量、商品主档与采购入库均只进入受控 staging；需开放平台 app/token、IP 白名单、逐接口权限、显式读取契约选择与责任人 ID，并在真实对账/UAT 后设置时间与非秘密证据编号",
     isConfigured(env = process.env) {
       const actor = Number(env.JST_SYNC_ACTOR_ID);
       try {
@@ -384,7 +394,7 @@ export const CONNECTORS: Connector[] = [
       "https://hc.jiandaoyun.com/open/14216",
       "https://hc.jiandaoyun.com/open/14220",
     ],
-    blocker: "目录与 14 条显式观察契约（9 条核心供应链 + 5 条现行电商）已就绪；数据只进入 evidence/staging。需轮换已在聊天暴露的密钥、完成高价值身份认领与源端条码补齐、控制总量/重复视图/UAT，再记录时间与非秘密证据编号",
+    blocker: "目录与 15 条显式观察契约（14 条现行已选 + 1 条天猫费用候选）已就绪；数据只进入 evidence/staging。天猫费用仍需财务控制总量/UAT 后才能显式启用；其余仍需轮换已在聊天暴露的密钥、完成高价值身份认领与源端条码补齐、重复视图/UAT，再记录时间与非秘密证据编号",
     isConfigured(env = process.env) {
       try {
         return jiandaoyunConfigFromEnv(env) !== null && jiandaoyunSyncActorId(env) !== null;
@@ -422,7 +432,7 @@ export const CONNECTORS: Connector[] = [
     liveVerificationEnv: "YY_LIVE_VERIFIED_AT",
     liveVerificationRefEnv: "YY_LIVE_VERIFIED_REF",
     sourceDocs: ["https://developer.yonyou.com/openAPI"],
-    blocker: "网关与鉴权已实测打通（c4/iuap-api-gateway，token 正常）；八条只读契约在控制台逐条授权前全部返回 310037，仍缺企业 API 授权与租户/目标组织（授权后组织架构接口可直接读出）",
+    blocker: "网关与鉴权已实测打通（c4/iuap-api-gateway，token 正常）；八条只读契约当前均返回 HTTP 403（早先同范围为 310037 未授权），仍缺企业 API 授权与租户/目标组织（授权后组织架构接口可直接读出）",
     isConfigured(env = process.env) {
       return yonyouConfigFromEnv(env) !== null;
     },
@@ -507,6 +517,68 @@ export interface ConnectorReadiness {
   expectedSecurityReviewBinding: string | null;
   securityReviewMaxAgeDays: number;
   blocker: string | null;
+  /** 面向业务管理员的确定性解锁路径；不包含密钥、外部原值或未经验证的成功声明。 */
+  remediationSteps: string[];
+  /** 连接器官方管理入口；仅用于人工授权与核对。 */
+  managementUrl: string | null;
+}
+
+const CONNECTOR_MANAGEMENT_URL: Readonly<Partial<Record<Connector["key"], string>>> = {
+  jst: "https://open.jushuitan.com/",
+  jdy: "https://www.jiandaoyun.com/",
+  yy: "https://c4.yonyoucloud.com/",
+  feishu: "https://open.feishu.cn/app",
+};
+
+function remediationSteps(
+  connector: Connector,
+  readiness: {
+    configured: boolean;
+    activation: ConnectorActivation;
+    verification: LiveVerificationState;
+    identity: IdentityClearanceState;
+  },
+): string[] {
+  const steps: string[] = [];
+  if (!readiness.configured) {
+    steps.push("先补齐系统列出的缺失配置，再做任何外部读取；不得把网页可登录当成 API 已接通。");
+  }
+  if (connector.key === "jst") {
+    steps.push(
+      "在聚水潭开放平台把 SCM 运行机器的固定出口 IP 加入白名单，并确认应用、商家与 token 属于同一授权范围。",
+      "只授予店铺、仓库、销售出库、库存、普通商品、采购入库六类只读接口；淘系/拼多多订单与售后须另走平台专用授权，不能用标准接口冒充全渠道。",
+      "用单日最小窗口重跑 6 项只读探针；每项都成功后再进入 staging，不写库存账、不推进正式销售事实。",
+      "完成 SKU/仓库精确映射、逐 SKU 控制总量、失败重放与连续 7 天恢复 UAT，最后绑定当前应用和启用能力的非秘密证据编号。",
+    );
+  } else if (connector.key === "yy") {
+    steps.push(
+      "在用友开放平台给当前应用逐条授权代码白名单中的 8 项只读 API；精确名称只在管理员运维页展示，不进入可外发审计摘要。",
+      "授权后先读取当前租户与组织 ID；组织、供应商、物料必须按外部 ID 精确映射，禁止只按名称猜测。",
+      "依次跑主档 → PO/入库 → 现存量 → 成本/凭证的有界无值字段画像；结构漂移或字段语义未评审时持续阻止放行。",
+      "采购与库存由业务 owner 核对控制总量，成本与凭证由财务审批；完成后绑定当前应用、租户、组织、产品和契约范围的 UAT 证据。",
+    );
+  } else if (connector.key === "jdy") {
+    steps.push(
+      "先处理高销量平台 SKU、仓库和供应商身份队列；唯一条码可人工认领，缺桥接字段必须回源补齐。",
+      "用同截止日平台导出核对销售、退款、SKU 对照和费用流的行数、数量、币种、负数冲销与净额。",
+      "只有控制总量、身份覆盖、业务 UAT 和责任人会签完成后才启用对应契约；历史批次继续保留但不冒充正式事实。",
+    );
+  } else {
+    steps.push(
+      "确认当前应用/机器人只具备 SCM 通知所需最小权限，并绑定唯一目标群。",
+      "完成真实消息投递与回读 UAT；不得用网页登录或一次 token 获取代替目标群验证。",
+    );
+  }
+  if (readiness.activation.enablementState === "disabled") {
+    steps.push("当前同步保持关闭；完成前述授权、核对和 UAT 后再显式启用，避免未验收数据进入持续任务。");
+  }
+  if (readiness.activation.contractSelectionState === "missing") {
+    steps.push("当前尚未选择同步契约；只选择业务已批准且已完成字段/权限评审的最小集合。");
+  }
+  if (readiness.verification === "valid" && readiness.identity === "clear") {
+    steps.push("持续监控时效、拒收、结构漂移和身份异常；任一门禁失效会自动降级。");
+  }
+  return steps;
 }
 
 const IDENTITY_SCOPE_BY_CONNECTOR: Readonly<Partial<Record<Connector["key"], ConnectorIdentityScope>>> = {
@@ -552,9 +624,23 @@ function effectiveCapabilities(
       ? ["app-bot-message", "deduplicated-delivery"]
       : ["group-webhook"];
   }
-  if (connector.key === "jst" && !jstInventorySyncEnabled(env)) {
-    return connector.capabilities.filter((capability) =>
-      capability !== "inventory-total-delta-staging");
+  if (connector.key === "jst") {
+    let observationContracts: string[] = [];
+    try {
+      observationContracts = configuredJstGovernedObservationContracts(env);
+    } catch {
+      observationContracts = [];
+    }
+    return connector.capabilities.filter((capability) => {
+      if (capability === "inventory-total-delta-staging") return jstInventorySyncEnabled(env);
+      if (capability === "item-master-observation-staging") {
+        return observationContracts.includes("item-master");
+      }
+      if (capability === "inbound-receipts-observation-staging") {
+        return observationContracts.includes("inbound-receipts-daily");
+      }
+      return true;
+    });
   }
   return [...connector.capabilities];
 }
@@ -791,6 +877,13 @@ export function getConnectorReadiness(
             securityReviewBlocker,
             identityBlocker,
           ].filter(Boolean).join("；") || null,
+      remediationSteps: remediationSteps(connector, {
+        configured,
+        activation,
+        verification: verification.state,
+        identity: identityClearanceState,
+      }),
+      managementUrl: CONNECTOR_MANAGEMENT_URL[connector.key] ?? null,
     };
   });
 }

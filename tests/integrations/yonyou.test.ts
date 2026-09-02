@@ -16,6 +16,7 @@ import { auditYonyouReadiness } from "@/jobs/audit-yonyou";
 import {
   YONYOU_READ_CONTRACTS,
   areKnownYonyouReadContracts,
+  yonyouContractStreamKey,
   yonyouReadContractByName,
 } from "@/server/integrations/yonyou-contracts";
 
@@ -187,5 +188,9 @@ describe("用友 OpenAPI 前置契约", () => {
       domain: "inventory",
     });
     expect(YONYOU_READ_CONTRACTS.every((contract) => !contract.path.includes("save"))).toBe(true);
+    expect(YONYOU_READ_CONTRACTS.map((contract) => yonyouContractStreamKey(contract.path)))
+      .toContain("yonbip-scm-stock-querycurrentstocksbycondition");
+    expect(new Set(YONYOU_READ_CONTRACTS.map((contract) => yonyouContractStreamKey(contract.path))).size)
+      .toBe(8);
   });
 });

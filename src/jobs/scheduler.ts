@@ -25,10 +25,16 @@ export const SCHEDULES: Record<string, string> = {
   // 天天报一次"数据过期"，制造每日假警报。改到两批同步之后各查一次。
   "snapshot-age": "5 11,17 * * *",
 
+  // 同步前半小时探测权限，便于把“未授权”与“同步代码失败”分开。
+  "probe-jst-permissions": "30 9,15 * * *",
+  "probe-yonyou-permissions": "35 9,15 * * *",
+
   // ── 午饭前批次：10 点拉数 → 11 点推告警 ──
   "sync-jiandaoyun-catalog": "0 10 * * *",
   "sync-yonyou": "5 10,16 * * *",
   "sync-jst-sales": "15 10,16 * * *",
+  "sync-jst-item-master": "18 10,16 * * *",
+  "sync-jst-inbound": "20 10,16 * * *",
   "sync-jst-inventory": "25 10,16 * * *",
   "sync-jiandaoyun-forms": "30 10,16 * * *",
   "reconcile-jst": "0 11,17 * * *",
@@ -37,6 +43,7 @@ export const SCHEDULES: Record<string, string> = {
   // 同名任务无法登记两条 cron，故用「小时列表」表达两批：分钟相同、小时二选一
   "doc-aging": "10 11,17 * * *",
   "job-failure-watchdog": "20 11,17 * * *",
+  "data-product-gate-watchdog": "22 11,17 * * *",
   "system-alert-notify": "25 11,17 * * *",
   "notify-dispatch": "30 11,17 * * *",
   "exception-notify": "40 11 * * *",

@@ -7,7 +7,7 @@
  * - 同比、SPC、日级归因不满足前提时返回明确 gate，不用 0 或演示数据补位；
  * - 跨 SKU 数量直加只用于结构与趋势，不代表收入、利润或统一实物量。
  */
-import { and, sql } from "drizzle-orm";
+import { and, inArray, sql } from "drizzle-orm";
 
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
@@ -36,11 +36,16 @@ import {
   loadDataProductOutcomeReadiness,
   type DataProductOutcomeReadiness,
 } from "@/server/modules/report/data-product-outcome";
+import {
+  loadJiandaoyunSupportingObservations,
+  type JiandaoyunSupportingObservation,
+} from "@/server/modules/report/jiandaoyun-supporting-observation";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
 export type StudioDimension = "brand" | "channel" | "sku" | "month";
+export type StudioSection = "core" | "daily" | "external" | "identity" | "readiness";
 
 /**
  * 跨维筛选范围。与 `dimension`（分组维度）**正交**：
@@ -59,6 +64,11 @@ export interface StudioQuery {
   dimension?: StudioDimension;
   key?: string;
   scope?: StudioScope;
+  /**
+   * 页面按当前标签页只取所需读模型，避免首屏串行等待外部证据与发布门禁。
+   * 省略时保留完整结果，供通知任务、测试和其他服务端调用使用。
+   */
+  sections?: StudioSection[];
 }
 
 export interface MonthlyGroupFact {
@@ -79,6 +89,7 @@ export interface DailyFact {
 
 export interface DecisionStudioResult {
   generatedAt: string;
+  loadedSections: StudioSection[];
   dimension: StudioDimension;
   selectedKey: string | null;
   selectedLabel: string | null;
@@ -123,6 +134,7 @@ export interface DecisionStudioResult {
   dataSources: DataSourceReadiness[];
   dataProductReleases: DataProductReleaseReadiness[];
   dataProductOutcomes: DataProductOutcomeReadiness[];
+  supportingObservations: JiandaoyunSupportingObservation[];
   review: {
     headline: string;
     bullets: string[];
@@ -310,6 +322,7 @@ export function buildDecisionStudio(
 
   return {
     generatedAt: new Date().toISOString(),
+    loadedSections: ["core", "daily", "external", "identity", "readiness"],
     dimension,
     selectedKey,
     selectedLabel,
@@ -345,6 +358,7 @@ export function buildDecisionStudio(
     dataSources,
     dataProductReleases: [],
     dataProductOutcomes: [],
+    supportingObservations: [],
     review: { headline, bullets, markdown },
     limitations: [
       "sales_monthly 目前是月粒度数量事实；跨 SKU 相加可能混合件、箱、kg，仅作结构和趋势。",
@@ -447,6 +461,16 @@ async function loadMonthlyFacts(
 }
 
 async function loadDailyFacts(db: AnyDb): Promise<DailyFact[]> {
+  // staging_rows 已超过百万行，且既有索引是 (import_job_id, status)，不是 target_table。
+  // 先从很小的 import_jobs 找到合法模板批次，再按 import_job_id 走索引；若尚无 JST
+  // 批次则立即返回。禁止直接按 target_table 扫 staging_rows 的 JSON 大表。
+  const jobs: { id: number }[] = await db
+    .select({ id: schema.importJobs.id })
+    .from(schema.importJobs)
+    .where(sql`${schema.importJobs.template} = 'jst_daily_sales'`);
+  const jobIds = jobs.map((item) => item.id);
+  if (jobIds.length === 0) return [];
+
   const rows: {
     importJobId: number;
     status: "pending" | "validated" | "committed";
@@ -459,7 +483,11 @@ async function loadDailyFacts(db: AnyDb): Promise<DailyFact[]> {
     })
     .from(schema.stagingRows)
     .where(
-      sql`${schema.stagingRows.targetTable} = 'jst_daily_sales' and ${schema.stagingRows.status} in ('pending', 'validated', 'committed')`,
+      and(
+        inArray(schema.stagingRows.importJobId, jobIds),
+        sql`${schema.stagingRows.targetTable} = 'jst_daily_sales'`,
+        sql`${schema.stagingRows.status} in ('pending', 'validated', 'committed')`,
+      ),
     );
   const facts: DailyFact[] = [];
   for (const row of rows) {
@@ -498,12 +526,22 @@ export async function getDecisionStudio(
     ? (query.dimension as StudioDimension)
     : "brand";
   const scope = query.scope ?? {};
-  const [facts, daily, externalDemand, commerceIdentity, dataSources] = await Promise.all([
+  const allSections: StudioSection[] = ["core", "daily", "external", "identity", "readiness"];
+  const requestedSections = query.sections?.length
+    ? [...new Set<StudioSection>(["core", ...query.sections])].filter((section) => allSections.includes(section))
+    : allSections;
+  const includes = (section: StudioSection) => requestedSections.includes(section);
+  const [facts, daily, externalDemand, commerceIdentity, dataSources, supportingObservations] = await Promise.all([
     loadMonthlyFacts(db, dimension, scope),
-    loadDailyFacts(db),
-    loadJiandaoyunExternalDemandSignal(db),
-    loadCommerceIdentityCoverage(db),
-    loadDataSourceReadiness(db),
+    includes("daily") ? loadDailyFacts(db) : Promise.resolve([]),
+    includes("external")
+      ? loadJiandaoyunExternalDemandSignal(db)
+      : Promise.resolve(emptyExternalDemandSignal("切换到外部需求信号后加载。")),
+    includes("identity")
+      ? loadCommerceIdentityCoverage(db)
+      : Promise.resolve(emptyCommerceIdentityCoverage()),
+    includes("readiness") ? loadDataSourceReadiness(db) : Promise.resolve([]),
+    includes("readiness") ? loadJiandaoyunSupportingObservations(db) : Promise.resolve([]),
   ]);
   const studio = buildDecisionStudio(
     facts,
@@ -513,10 +551,16 @@ export async function getDecisionStudio(
     commerceIdentity,
     dataSources,
   );
-  const dataProductReleases = await loadDataProductReleaseReadiness(dataSources, user, db);
+  const dataProductReleases = includes("readiness")
+    ? await loadDataProductReleaseReadiness(dataSources, user, db)
+    : [];
   return {
     ...studio,
+    loadedSections: requestedSections,
+    supportingObservations,
     dataProductReleases,
-    dataProductOutcomes: await loadDataProductOutcomeReadiness(dataProductReleases, user, db),
+    dataProductOutcomes: includes("readiness")
+      ? await loadDataProductOutcomeReadiness(dataProductReleases, user, db)
+      : [],
   };
 }

@@ -25,7 +25,11 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
 export async function POST(req: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
     const { token } = await params;
-    const body = (await readJson(req)) as { expectedDate: string; note?: string };
+    const body = (await readJson(req)) as {
+      expectedDate: string;
+      note?: string;
+      lines?: Array<{ poLineId: number; expectedDate: string }>;
+    };
     return protectTokenResponse(NextResponse.json(await submitPoConfirm(token, body), { status: 200 }));
   } catch (e) {
     return protectTokenResponse(errorResponse(e));

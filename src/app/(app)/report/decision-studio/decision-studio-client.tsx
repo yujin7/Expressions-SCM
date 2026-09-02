@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   Alert,
   App,
@@ -33,9 +34,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { CopyOutlined, DownloadOutlined } from "@ant-design/icons";
+import { CopyOutlined, DownloadOutlined, ReloadOutlined } from "@ant-design/icons";
 
-import DecisionReadinessPanel from "@/components/DecisionReadinessPanel";
 import DecisionVisual from "@/components/DecisionVisual";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
 import { fetchJson } from "@/components/fetchJson";
@@ -43,8 +43,12 @@ import { formatQty } from "@/components/format";
 import { exportCsv } from "@/components/exportCsv";
 import {
   buildExternalDemandDailyExport,
+  buildExternalDemandFulfillmentExport,
   buildExternalDemandIdentityExport,
+  buildExternalDemandRefundDriversExport,
+  buildExternalDemandRollingBriefExport,
   externalDemandIdentityAction,
+  externalRefundDriverAction,
 } from "@/components/external-demand-export";
 import {
   buildCommerceIdentityRepairExport,
@@ -57,6 +61,12 @@ import type {
   StudioDimension,
 } from "@/server/modules/report/decision-studio";
 
+// 能力解锁面板只在 readiness 标签出现；不让它和整套数据产品治理 UI 阻塞常用首屏。
+const DecisionReadinessPanel = dynamic(
+  () => import("@/components/DecisionReadinessPanel"),
+  { loading: () => <Card loading style={{ minHeight: 220 }} /> },
+);
+
 const DIMENSION_LABEL: Record<StudioDimension, string> = {
   brand: "品牌",
   channel: "渠道",
@@ -67,6 +77,27 @@ const DIMENSION_LABEL: Record<StudioDimension, string> = {
 function pctLabel(value: number | null): string {
   if (value == null) return "数据不足";
   return `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
+}
+
+function ppLabel(value: number | null): string {
+  if (value == null) return "无法计算";
+  return `${value >= 0 ? "+" : ""}${value.toFixed(1)} 个百分点`;
+}
+
+function movementColor(
+  movement: "up" | "down" | "flat" | "unknown",
+  inverse = false,
+): string | undefined {
+  if (movement === "unknown" || movement === "flat") return undefined;
+  const favorable = inverse ? movement === "down" : movement === "up";
+  return favorable ? VISUAL_COLOR.positive : VISUAL_COLOR.critical;
+}
+
+function refundMovementLabel(movement: "up" | "down" | "flat" | "unknown"): string {
+  if (movement === "up") return "退款增加驱动";
+  if (movement === "down") return "退款减少驱动";
+  if (movement === "flat") return "退款结构变动";
+  return "退款驱动待判断";
 }
 
 function shortQty(value: number): string {
@@ -87,6 +118,9 @@ export default function DecisionStudioClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<DecisionStudioResult | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const activeRequest = useRef<AbortController | null>(null);
+  const responseCache = useRef(new Map<string, { data: DecisionStudioResult; cachedAt: number }>());
   const view = useListState({
     key: "decision-studio",
     defaults: { dimension: "brand", key: "", tab: "focus", brand: "", channel: "", product: "" },
@@ -102,25 +136,55 @@ export default function DecisionStudioClient() {
   const activeTab = view.filters.tab || "focus";
   const focusProductId = view.filters.product;
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const query = new URLSearchParams({ dimension });
-      if (selectedKey) query.set("key", selectedKey);
-      if (scopeBrand) query.set("brand", scopeBrand);
-      if (scopeChannel) query.set("channel", scopeChannel);
-      setData(await fetchJson<DecisionStudioResult>(
-        `/api/report/decision-studio?${query.toString()}`,
-      ));
-    } catch (error) {
-      message.error((error as Error).message);
-    } finally {
+  const load = useCallback(async (force = false) => {
+    const query = new URLSearchParams({ dimension });
+    query.set("tab", activeTab);
+    if (selectedKey) query.set("key", selectedKey);
+    if (scopeBrand) query.set("brand", scopeBrand);
+    if (scopeChannel) query.set("channel", scopeChannel);
+    const cacheKey = query.toString();
+    const cached = responseCache.current.get(cacheKey);
+    if (!force && cached && Date.now() - cached.cachedAt < 30_000) {
+      activeRequest.current?.abort();
+      activeRequest.current = null;
+      setLoadError(null);
+      setData(cached.data);
       setLoading(false);
+      return;
     }
-  }, [dimension, selectedKey, scopeBrand, scopeChannel, message]);
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    setLoading(true);
+    setLoadError(null);
+    setData(null);
+    try {
+      const nextData = await fetchJson<DecisionStudioResult>(
+        `/api/report/decision-studio?${query.toString()}`,
+        { signal: controller.signal },
+      );
+      responseCache.current.set(cacheKey, { data: nextData, cachedAt: Date.now() });
+      if (responseCache.current.size > 12) {
+        const oldestKey = responseCache.current.keys().next().value as string | undefined;
+        if (oldestKey) responseCache.current.delete(oldestKey);
+      }
+      setData(nextData);
+    } catch (error) {
+      if ((error as Error).name === "AbortError") return;
+      const detail = (error as Error).message;
+      setLoadError(detail);
+      message.error(detail);
+    } finally {
+      if (activeRequest.current === controller) {
+        setLoading(false);
+        activeRequest.current = null;
+      }
+    }
+  }, [activeTab, dimension, selectedKey, scopeBrand, scopeChannel, message]);
 
   useEffect(() => {
     void load();
+    return () => activeRequest.current?.abort();
   }, [load]);
 
   const groupOptions = useMemo(
@@ -141,6 +205,8 @@ export default function DecisionStudioClient() {
   const heatMax = Math.max(0, ...(data?.daily.dates ?? []).map((item) => item.qty));
   const external = data?.externalDemand;
   const externalReady = external?.state === "ready";
+  const refundDrivers = external?.refundDrivers;
+  const refundShopChartRows = (refundDrivers?.byShop ?? []).slice(0, 10);
   const identity = data?.commerceIdentity;
 
   const pivotColumns = useMemo<ColumnsType<DecisionStudioResult["pivot"][number]>>(
@@ -213,6 +279,36 @@ export default function DecisionStudioClient() {
     message.success("已导出平台 SKU 身份修复队列");
   };
 
+  const exportExternalRollingBrief = () => {
+    if (!external || !external.decisionBrief.anchorDate) {
+      message.warning("当前没有可导出的滚动需求窗口证据");
+      return;
+    }
+    const payload = buildExternalDemandRollingBriefExport(external);
+    exportCsv(payload.filename, payload.headers, payload.rows);
+    message.success("已导出最近7天对前7天的需求决策证据");
+  };
+
+  const exportExternalRefundDrivers = () => {
+    if (!external || external.refundDrivers.topContributors.length === 0) {
+      message.warning("当前没有可导出的退款变化驱动项");
+      return;
+    }
+    const payload = buildExternalDemandRefundDriversExport(external);
+    exportCsv(payload.filename, payload.headers, payload.rows);
+    message.success("已导出退款变化驱动行动证据");
+  };
+
+  const exportExternalFulfillment = () => {
+    if (!external || external.fulfillment.state !== "ready" || external.fulfillment.topGaps.length === 0) {
+      message.warning("当前没有可导出的简道云 × 聚水潭可比样本");
+      return;
+    }
+    const payload = buildExternalDemandFulfillmentExport(external);
+    exportCsv(payload.filename, payload.headers, payload.rows);
+    message.success("已导出简道云 × 聚水潭需求履约核对证据");
+  };
+
   const exportCommerceIdentityQueue = () => {
     if (!identity || identity.repairQueue.length === 0) {
       message.warning("当前没有可导出的三平台身份修复项");
@@ -225,18 +321,14 @@ export default function DecisionStudioClient() {
 
   return (
     <div>
-      <Space
-        align="start"
-        style={{ width: "100%", justifyContent: "space-between", marginBottom: 12 }}
-        wrap
-      >
-        <div>
-          <Typography.Title level={3} style={{ margin: 0 }}>决策工作室</Typography.Title>
-          <Typography.Text type="secondary">
-            用一套筛选联动结构、趋势、透视、日级节奏和月度回顾；缺数据的能力保持留白。
-          </Typography.Text>
-        </div>
-        <Space wrap>
+      <div className="decision-studio-heading">
+        <Typography.Title level={3} style={{ margin: 0 }}>决策工作室</Typography.Title>
+        <Typography.Text type="secondary">
+          用一套筛选联动结构、趋势、透视、日级节奏和月度回顾；缺数据的能力保持留白。
+        </Typography.Text>
+      </div>
+      <div className="decision-studio-filterbar">
+        <div className="decision-studio-dimensions">
           <Radio.Group
             optionType="button"
             buttonStyle="solid"
@@ -252,6 +344,8 @@ export default function DecisionStudioClient() {
               key: "",
             })}
           />
+        </div>
+        <div className="decision-studio-scope-filters">
           {/*
             跨维筛选：与上面的分组维度**正交**。旧实现只有一个 dimension + 一个 key，
             品牌与渠道互斥单选，做不到「NING × 天猫」——0727 会议要的正是这种组合。
@@ -262,8 +356,9 @@ export default function DecisionStudioClient() {
             getLabel={(r) => String(r.nameCn ?? r.code)}
             getValue={(r) => String(r.code)}
             allowClear
+            aria-label="筛选品牌"
             placeholder="全部品牌"
-            style={{ width: 160 }}
+            style={{ width: "100%" }}
             value={scopeBrand || undefined}
             onChange={(v) => view.setFilter({ brand: v == null ? "" : String(v), key: "" })}
           />
@@ -272,8 +367,9 @@ export default function DecisionStudioClient() {
             getLabel={(r) => String(r.name ?? r.code)}
             getValue={(r) => String(r.code)}
             allowClear
+            aria-label="筛选渠道"
             placeholder="全部渠道"
-            style={{ width: 160 }}
+            style={{ width: "100%" }}
             value={scopeChannel || undefined}
             onChange={(v) => view.setFilter({ channel: v == null ? "" : String(v), key: "" })}
           />
@@ -281,14 +377,22 @@ export default function DecisionStudioClient() {
             allowClear
             showSearch
             optionFilterProp="label"
-            style={{ minWidth: 260 }}
+            aria-label={`筛选${DIMENSION_LABEL[dimension]}`}
+            style={{ width: "100%" }}
             placeholder={`筛选${DIMENSION_LABEL[dimension]}（全部）`}
             value={selectedKey || undefined}
             options={groupOptions}
             onChange={(key) => view.setFilter({ key: key ?? "" })}
           />
-        </Space>
-      </Space>
+          <Button
+            icon={<ReloadOutlined />}
+            loading={loading}
+            onClick={() => void load(true)}
+          >
+            刷新
+          </Button>
+        </div>
+      </div>
 
       <Alert
         showIcon
@@ -298,40 +402,53 @@ export default function DecisionStudioClient() {
         description={data?.limitations[0]}
       />
 
+      {loadError ? (
+        <Alert
+          showIcon
+          type="error"
+          style={{ marginBottom: 12 }}
+          message="决策数据加载失败"
+          description={loadError}
+          action={<Button size="small" onClick={() => void load(true)}>重新加载</Button>}
+        />
+      ) : null}
+
       <Row gutter={[10, 10]} className="compact-kpi-row">
         <Col xs={12} md={6}>
-          <Card size="small">
+          <Card size="small" loading={loading && !data}>
             <Statistic
               title={`${data?.latestMonth ?? "最新月"}销量`}
-              value={data?.comparison.current ?? 0}
-              formatter={(value) => formatQty(Number(value))}
+              value={data?.comparison.current ?? "—"}
+              formatter={(value) => Number.isFinite(Number(value)) ? formatQty(Number(value)) : "—"}
             />
           </Card>
         </Col>
         <Col xs={12} md={6}>
-          <Card size="small">
+          <Card size="small" loading={loading && !data}>
             <Statistic
               title="环比"
               value={pctLabel(data?.comparison.momPct ?? null)}
               valueStyle={{
-                color: (data?.comparison.momPct ?? 0) < 0
-                  ? VISUAL_COLOR.critical
-                  : VISUAL_COLOR.positive,
+                color: data?.comparison.momPct == null
+                  ? undefined
+                  : data.comparison.momPct < 0
+                    ? VISUAL_COLOR.critical
+                    : VISUAL_COLOR.positive,
               }}
             />
           </Card>
         </Col>
         <Col xs={12} md={6}>
-          <Card size="small">
+          <Card size="small" loading={loading && !data}>
             <Statistic title="同比" value={pctLabel(data?.comparison.yoyPct ?? null)} />
           </Card>
         </Col>
         <Col xs={12} md={6}>
-          <Card size="small">
+          <Card size="small" loading={loading && !data}>
             <Statistic
               title={`贡献 80% 的${DIMENSION_LABEL[dimension]}数`}
-              value={data?.pareto80Count ?? 0}
-              suffix={`/ ${data?.pareto.length ?? 0}`}
+              value={data ? data.pareto80Count : "—"}
+              suffix={data ? `/ ${data.pareto.length}` : undefined}
             />
           </Card>
         </Col>
@@ -725,6 +842,236 @@ export default function DecisionStudioClient() {
                     </Card>
                   </Col>
                 </Row>
+                <Card
+                  size="small"
+                  title="滚动需求决策简报"
+                  extra={(
+                    <Space size={8} wrap>
+                      <Tag
+                        style={external?.decisionBrief.state === "ready"
+                          ? { color: "#166534", background: "#dcfce7", borderColor: "#86efac" }
+                          : { color: "#854d0e", background: "#fef9c3", borderColor: "#fde047" }}
+                      >
+                        {external?.decisionBrief.state === "ready" ? "双窗口完整" : "窗口不完整"}
+                      </Tag>
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<DownloadOutlined />}
+                        disabled={!external?.decisionBrief.anchorDate}
+                        onClick={exportExternalRollingBrief}
+                      >
+                        导出窗口证据
+                      </Button>
+                    </Space>
+                  )}
+                  styles={{ body: { padding: 12 } }}
+                >
+                  <Alert
+                    showIcon
+                    type={external?.decisionBrief.state === "ready" ? "info" : "warning"}
+                    message={external?.decisionBrief.gate ?? "正在建立两个自然日窗口。"}
+                    style={{ marginBottom: 10 }}
+                  />
+                  <Row gutter={[10, 10]} className="compact-kpi-row">
+                    <Col xs={12} lg={6}>
+                      <Card size="small">
+                        <Statistic
+                          title={`最近7天净需求 · ${external?.decisionBrief.current.observedDays ?? 0}/7天`}
+                          value={external?.decisionBrief.state === "ready"
+                            ? external.decisionBrief.current.netQty
+                            : "数据不足"}
+                          formatter={external?.decisionBrief.state === "ready"
+                            ? (value) => formatQty(Number(value))
+                            : undefined}
+                        />
+                        <Typography.Text type="secondary">
+                          {external?.decisionBrief.current.startDate ?? "—"} 至 {external?.decisionBrief.current.endDate ?? "—"}
+                        </Typography.Text>
+                      </Card>
+                    </Col>
+                    <Col xs={12} lg={6}>
+                      <Card size="small">
+                        <Statistic
+                          title="净需求较前7天"
+                          value={external?.decisionBrief.state === "ready"
+                            ? pctLabel(external.decisionBrief.change.netQtyPct)
+                            : "数据不足"}
+                          valueStyle={{
+                            color: movementColor(external?.decisionBrief.movement.netDemand ?? "unknown"),
+                          }}
+                        />
+                        <Typography.Text type="secondary">
+                          前窗净需求 {external?.decisionBrief.state === "ready"
+                            ? formatQty(external.decisionBrief.previous.netQty)
+                            : "—"}
+                        </Typography.Text>
+                      </Card>
+                    </Col>
+                    <Col xs={12} lg={6}>
+                      <Card size="small">
+                        <Statistic
+                          title="最近7天退款率"
+                          value={external?.decisionBrief.state === "ready"
+                            && external.decisionBrief.current.refundRatePct != null
+                            ? external.decisionBrief.current.refundRatePct
+                            : "数据不足"}
+                          precision={1}
+                          suffix={external?.decisionBrief.state === "ready"
+                            && external.decisionBrief.current.refundRatePct != null ? "%" : undefined}
+                          valueStyle={{
+                            color: movementColor(
+                              external?.decisionBrief.movement.refundRate ?? "unknown",
+                              true,
+                            ),
+                          }}
+                        />
+                        <Typography.Text type="secondary">
+                          较前窗 {ppLabel(external?.decisionBrief.change.refundRateDeltaPp ?? null)}
+                        </Typography.Text>
+                      </Card>
+                    </Col>
+                    <Col xs={12} lg={6}>
+                      <Card size="small">
+                        <Statistic
+                          title="最近7天已映射支付覆盖"
+                          value={external?.decisionBrief.state === "ready"
+                            && external.decisionBrief.current.mappedPaidCoveragePct != null
+                            ? external.decisionBrief.current.mappedPaidCoveragePct
+                            : "数据不足"}
+                          precision={1}
+                          suffix={external?.decisionBrief.state === "ready"
+                            && external.decisionBrief.current.mappedPaidCoveragePct != null ? "%" : undefined}
+                          valueStyle={{
+                            color: movementColor(
+                              external?.decisionBrief.movement.mappedPaidCoverage ?? "unknown",
+                            ),
+                          }}
+                        />
+                        <Typography.Text type="secondary">
+                          较前窗 {ppLabel(external?.decisionBrief.change.mappedPaidCoverageDeltaPp ?? null)}
+                        </Typography.Text>
+                      </Card>
+                    </Col>
+                  </Row>
+                </Card>
+                <DecisionVisual
+                  title={`退款变化拆解 · ${refundMovementLabel(refundDrivers?.movement ?? "unknown")}`}
+                  question="哪些店铺与平台 SKU 推动了最近 7 天的退款变化；它们是否已经具备可行动的系统身份？"
+                  metricId="refundRate"
+                  grain={refundDrivers?.grain ?? "店铺 × 天猫平台 SKU × 双自然日窗口"}
+                  unit="件 / %"
+                  source={{
+                    tier: "reference",
+                    source: "简道云天猫支付与成功退款（两个完整自然日窗口）",
+                    asOf: external?.sourceAsOf,
+                  }}
+                  coverage={{
+                    covered: refundDrivers?.identityCoverage.mappedDrivers ?? 0,
+                    total: refundDrivers?.eligibleDrivers ?? 0,
+                    label: "已有 SCM 身份的同向驱动",
+                  }}
+                  activeFilters={[
+                    "粒度：店铺 + 平台 SKU",
+                    "仅同方向变化池",
+                    "正负不相互抵销",
+                    "不自动归责",
+                  ]}
+                  summary={refundDrivers?.state === "ready"
+                    ? `退款 ${formatQty(refundDrivers.totals.previousRefundQty)} → ${formatQty(refundDrivers.totals.currentRefundQty)}，变化 ${formatQty(refundDrivers.totals.deltaRefundQty ?? 0)}；同向池 ${formatQty(refundDrivers.totals.movementPoolQty ?? 0)}，共 ${refundDrivers.eligibleDrivers} 个驱动；其中 ${refundDrivers.identityCoverage.mappedMovementPoolPct?.toFixed(1) ?? "—"}% 已有 SCM 身份。${refundDrivers.byShop[0] ? ` 首要店铺：${refundDrivers.byShop[0].shopName}（${refundDrivers.byShop[0].movementPoolSharePct?.toFixed(1) ?? "—"}%）。` : ""}`
+                    : refundDrivers?.gate ?? "正在建立退款驱动窗口。"}
+                  caveat="贡献占比只在与总体变化同方向的 SKU 变化池内计算；退款发生日不一定等于原支付日，必须结合退款原因、退货入库和平台明细复核。"
+                  state={loading && !data ? "loading" : refundDrivers?.state ?? "insufficient"}
+                  stateDetail={refundDrivers?.gate}
+                  height={360}
+                  onExport={(refundDrivers?.topContributors.length ?? 0) > 0
+                    ? exportExternalRefundDrivers
+                    : undefined}
+                  exportLabel="导出退款驱动行动证据"
+                  dataView={(
+                    <Table
+                      rowKey={(row) => `${row.shopName}\u0000${row.platformSkuId}`}
+                      size="small"
+                      pagination={{ pageSize: 10, showSizeChanger: false }}
+                      dataSource={refundDrivers?.topContributors ?? []}
+                      scroll={{ x: 1320 }}
+                      columns={[
+                        { title: "店铺", dataIndex: "shopName", width: 160, fixed: "left", sorter: (a, b) => a.shopName.localeCompare(b.shopName, "zh-CN") },
+                        { title: "平台 SKU", dataIndex: "platformSkuId", width: 170, sorter: (a, b) => a.platformSkuId.localeCompare(b.platformSkuId) },
+                        { title: "商品 / 规格", key: "name", width: 220, ellipsis: true, render: (_, row) => row.skuName || row.productName || "（未提供）" },
+                        { title: "本期退款", dataIndex: "currentRefundQty", width: 110, align: "right", sorter: (a, b) => a.currentRefundQty - b.currentRefundQty, render: formatQty },
+                        { title: "前期退款", dataIndex: "previousRefundQty", width: 110, align: "right", sorter: (a, b) => a.previousRefundQty - b.previousRefundQty, render: formatQty },
+                        {
+                          title: "退款变化",
+                          dataIndex: "deltaRefundQty",
+                          width: 120,
+                          align: "right",
+                          sorter: (a, b) => a.deltaRefundQty - b.deltaRefundQty,
+                          render: (value) => (
+                            <Typography.Text type={Number(value) > 0 ? "danger" : undefined}>
+                              {Number(value) > 0 ? "+" : ""}{formatQty(value)}
+                            </Typography.Text>
+                          ),
+                        },
+                        { title: "本期退款率", dataIndex: "currentRefundRatePct", width: 130, align: "right", sorter: (a, b) => (a.currentRefundRatePct ?? -1) - (b.currentRefundRatePct ?? -1), render: (value) => value == null ? "数据不足" : `${Number(value).toFixed(1)}%` },
+                        { title: "退款率变化", dataIndex: "refundRateDeltaPp", width: 140, align: "right", sorter: (a, b) => (a.refundRateDeltaPp ?? -Infinity) - (b.refundRateDeltaPp ?? -Infinity), render: (value) => ppLabel(value == null ? null : Number(value)) },
+                        { title: "同向池占比", dataIndex: "movementPoolSharePct", width: 130, align: "right", sorter: (a, b) => (a.movementPoolSharePct ?? -1) - (b.movementPoolSharePct ?? -1), render: (value) => value == null ? "数据不足" : `${Number(value).toFixed(1)}%` },
+                        {
+                          title: "下一步",
+                          key: "action",
+                          width: 175,
+                          fixed: "right",
+                          render: (_, row) => {
+                            const action = externalRefundDriverAction(row);
+                            if (row.skuId != null) return <Typography.Text>{action}</Typography.Text>;
+                            if (row.exceptionStatus === "open" && row.barcode) {
+                              const query = new URLSearchParams({
+                                status: "open",
+                                scope: "JIANDAOYUN",
+                                aliasType: "sku_barcode",
+                                rawValue: row.barcode,
+                              });
+                              return <Button type="link" size="small" href={`/import/exceptions?${query.toString()}`}>{action}</Button>;
+                            }
+                            return <Typography.Text type="warning">{action}</Typography.Text>;
+                          },
+                        },
+                      ]}
+                    />
+                  )}
+                >
+                  <ResponsiveContainer minWidth={0} minHeight={1}>
+                    <ComposedChart
+                      data={refundShopChartRows}
+                      layout="vertical"
+                      margin={{ top: 8, right: 28, left: 42, bottom: 20 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis type="number" tickFormatter={shortQty} />
+                      <YAxis
+                        type="category"
+                        dataKey="shopName"
+                        width={170}
+                        tickFormatter={(value) => String(value).slice(0, 18)}
+                      />
+                      <RechartsTooltip
+                        formatter={(value) => formatQty(Number(value))}
+                        labelFormatter={(_, payload) => payload?.[0]?.payload?.shopName ?? ""}
+                      />
+                      <ReferenceLine x={0} stroke={VISUAL_COLOR.neutral} />
+                      <Bar
+                        dataKey="movementPoolQty"
+                        name="同向退款变化池"
+                        fill={refundDrivers?.movement === "down"
+                          ? VISUAL_COLOR.positive
+                          : refundDrivers?.movement === "up"
+                            ? VISUAL_COLOR.critical
+                            : VISUAL_COLOR.warning}
+                        radius={[0, 4, 4, 0]}
+                      />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </DecisionVisual>
                 <DecisionVisual
                   title="简道云 · 天猫支付、退款与净需求趋势"
                   question="扣除成功退款后，外部需求信号如何变化；其中多少已经能安全归属系统 SKU？"
@@ -779,6 +1126,62 @@ export default function DecisionStudioClient() {
                       <Line type="monotone" dataKey="refundQty" name="成功退款" stroke={VISUAL_COLOR.critical} dot={false} />
                       <Line type="monotone" dataKey="netQty" name="净需求信号" stroke={VISUAL_COLOR.positive} strokeWidth={3} dot={false} />
                       <Line type="monotone" dataKey="mappedNetQty" name="已映射净需求" stroke={VISUAL_COLOR.warning} strokeDasharray="5 4" dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </DecisionVisual>
+                <DecisionVisual
+                  title="简道云净需求 × 聚水潭实际出库"
+                  question="同一业务日、同一已映射 SCM SKU 下，支付扣退款后的需求与真实出库相差多少？"
+                  metricId="externalNetDemand"
+                  grain={external?.fulfillment.grain ?? "业务日 × SCM SKU"}
+                  unit="件"
+                  source={{
+                    tier: "reference",
+                    source: "简道云需求观察 + 聚水潭日出库观察（两边独立保留）",
+                    asOf: external?.fulfillment.jstSourceAsOf,
+                  }}
+                  coverage={{
+                    covered: external?.fulfillment.coverage.comparableSkuDays ?? 0,
+                    total: external?.fulfillment.coverage.jdyMappedSkuDays ?? 0,
+                    label: "简道云映射 SKU日中可与聚水潭同窗比较",
+                  }}
+                  activeFilters={["共同键：业务日 + SCM SKU", "跨店铺/仓汇总", "缺失不补零", "差异不自动定责"]}
+                  summary={external?.fulfillment.state === "ready"
+                    ? `可比 ${external.fulfillment.coverage.comparableSkuDays} 个 SKU日；简道云净需求 ${formatQty(external.fulfillment.totals.comparableDemandQty)}，聚水潭出库 ${formatQty(external.fulfillment.totals.comparableOutboundQty)}，差异 ${formatQty(external.fulfillment.totals.gapQty ?? 0)}。`
+                    : external?.fulfillment.gate ?? "正在建立跨源可比窗口。"}
+                  caveat="该差异可能来自店铺/仓映射、订单与出库时间差、取消、跨期退款或数据覆盖；不能直接判定漏单、超发或责任归属。"
+                  state={loading && !data ? "loading" : external?.fulfillment.state ?? "insufficient"}
+                  stateDetail={external?.fulfillment.gate}
+                  height={340}
+                  onExport={external?.fulfillment.state === "ready" && external.fulfillment.topGaps.length > 0
+                    ? exportExternalFulfillment
+                    : undefined}
+                  exportLabel="导出跨源 UAT 明细"
+                  dataView={(
+                    <Table
+                      rowKey={(row) => `${row.date}\u0000${row.skuId}`}
+                      size="small"
+                      pagination={{ pageSize: 10, showSizeChanger: false }}
+                      dataSource={external?.fulfillment.topGaps ?? []}
+                      scroll={{ x: 820 }}
+                      columns={[
+                        { title: "日期", dataIndex: "date", width: 120, sorter: (a, b) => a.date.localeCompare(b.date) },
+                        { title: "SCM SKU", dataIndex: "skuCode", width: 150, render: (value, row) => value ?? `ID ${row.skuId}` },
+                        { title: "简道云净需求", dataIndex: "mappedNetDemandQty", width: 150, align: "right", sorter: (a, b) => a.mappedNetDemandQty - b.mappedNetDemandQty, render: formatQty },
+                        { title: "聚水潭出库", dataIndex: "jstOutboundQty", width: 140, align: "right", sorter: (a, b) => a.jstOutboundQty - b.jstOutboundQty, render: formatQty },
+                        { title: "差异", dataIndex: "gapQty", width: 120, align: "right", defaultSortOrder: "descend", sorter: (a, b) => a.absoluteGapQty - b.absoluteGapQty, render: (value) => <Tag color={Number(value) === 0 ? "green" : "orange"}>{formatQty(value)}</Tag> },
+                      ]}
+                    />
+                  )}
+                >
+                  <ResponsiveContainer minWidth={0} minHeight={1}>
+                    <LineChart data={external?.fulfillment.daily ?? []} margin={{ top: 8, right: 18, left: 8, bottom: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="date" minTickGap={28} />
+                      <YAxis tickFormatter={shortQty} />
+                      <RechartsTooltip formatter={(value) => formatQty(Number(value))} />
+                      <Line type="monotone" dataKey="comparableDemandQty" name="简道云可比净需求" stroke={VISUAL_COLOR.primary} strokeWidth={3} dot={false} />
+                      <Line type="monotone" dataKey="comparableOutboundQty" name="聚水潭可比出库" stroke={VISUAL_COLOR.positive} strokeWidth={3} dot={false} />
                     </LineChart>
                   </ResponsiveContainer>
                 </DecisionVisual>
@@ -1168,6 +1571,7 @@ export default function DecisionStudioClient() {
                 dataSources={data?.dataSources ?? []}
                 dataProductReleases={data?.dataProductReleases ?? []}
                 dataProductOutcomes={data?.dataProductOutcomes ?? []}
+                supportingObservations={data?.supportingObservations ?? []}
                 onReleaseChanged={load}
                 focusProductId={focusProductId}
               />

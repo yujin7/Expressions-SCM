@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   currentProductAutomation,
   evaluateProductSourceEvidence,
+  evaluateProductSupportingEvidence,
 } from "@/components/data-product-source-evidence";
 import type { DataProductDefinition } from "@/components/data-products";
 import type { DataSourceReadiness } from "@/server/modules/report/data-source-readiness";
+import { CROSS_SYSTEM_IDENTITY_LABEL } from "@/lib/cross-system-identity";
 
 function stream(
   key: string,
@@ -23,6 +25,7 @@ function stream(
     authorizationBlocked: false,
     sourceTimeInvalid: false,
     releaseBlocked: false,
+    schemaDrift: false,
     emptySource: false,
     freshnessMaxAgeDays: 2,
     businessAgeDays: 1,
@@ -61,6 +64,7 @@ function source(
     sourceAsOfEnd: null,
     openIdentityExceptions: 0,
     observedIdentities: 1,
+    identityCoverage: [],
     scmEvidence: key === "SCM" ? {
       "sku-master": {
         rows: 1,
@@ -76,7 +80,9 @@ function source(
 }
 
 const product: DataProductDefinition = {
-  id: "demand-pulse-test",
+  // 该文件隔离验证来源/身份/语义门禁，因此使用一个真实已实现的指标契约，
+  // 避免“指标待实现”先于本文件所测试的门禁生效。
+  id: "replenishment-evidence",
   title: "需求脉搏测试",
   decision: "test",
   grain: "day x sku",
@@ -85,17 +91,243 @@ const product: DataProductDefinition = {
   contractVersion: "1.0.0",
   cadence: "daily",
   decisionSlaHours: 24,
-  metricIds: ["externalNetDemand"],
+  metricIds: ["daysCover"],
   maxAutomation: "A2",
   automationGuardrail: "test",
   sources: ["SCM", "JST"],
   requiredScmEvidence: ["sku-master"],
   requiredStreams: { JST: ["outbound-sales-daily"] },
+  requiredIdentities: {},
+  requiredSemantics: {},
   targetAuthority: "operational",
   releaseGate: "test",
 };
 
 describe("数据产品所需流证据", () => {
+  it("数据源、身份和语义都安全时，未实现的指标仍保持 A0", () => {
+    const metricProduct = {
+      ...product,
+      id: "order-to-cash",
+      metricIds: ["orderFulfillmentRate"],
+    } satisfies DataProductDefinition;
+    const summary = evaluateProductSourceEvidence(metricProduct, [
+      source("SCM", "operational", []),
+      source("JST", "observation", ["outbound-sales-daily"]),
+    ]);
+
+    expect(summary.metricGates).toEqual([
+      expect.objectContaining({
+        metricId: "orderFulfillmentRate",
+        state: "not_implemented",
+      }),
+    ]);
+    expect(currentProductAutomation(summary)).toMatchObject({
+      level: "A0",
+      reason: expect.stringContaining("指标计算门禁未通过"),
+    });
+  });
+
+  it("数据与身份都就绪时，未固化的数量/纠错语义仍必须保持 A0", () => {
+    const semanticProduct = {
+      ...product,
+      requiredSemantics: {
+        JST: {
+          "outbound-sales-daily": ["grain", "quantity_unit", "correction_semantics"],
+        },
+      },
+    } satisfies DataProductDefinition;
+    const summary = evaluateProductSourceEvidence(semanticProduct, [
+      source("SCM", "operational", []),
+      source("JST", "observation", ["outbound-sales-daily"]),
+    ]);
+
+    expect(summary.semanticGates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ domain: "grain", state: "implemented" }),
+      expect.objectContaining({ domain: "quantity_unit", state: "business_review_pending" }),
+      expect.objectContaining({ domain: "correction_semantics", state: "business_review_pending" }),
+    ]));
+    expect(summary.unreadySemantics).toBe(2);
+    expect(currentProductAutomation(summary)).toMatchObject({
+      level: "A0",
+      reason: expect.stringContaining("语义门禁未通过"),
+    });
+  });
+
+  it("产品要求的流或语义未登记时默认拒绝，不按字段名猜测", () => {
+    const semanticProduct = {
+      ...product,
+      requiredStreams: { JST: ["unknown-read-stream"] },
+      requiredSemantics: { JST: { "unknown-read-stream": ["grain"] } },
+    } satisfies DataProductDefinition;
+    const summary = evaluateProductSourceEvidence(semanticProduct, [
+      source("SCM", "operational", []),
+      source("JST", "observation", ["unknown-read-stream"]),
+    ]);
+
+    expect(summary.semanticGates).toEqual([
+      expect.objectContaining({ stream: "unknown-read-stream", state: "missing_contract" }),
+    ]);
+    expect(currentProductAutomation(summary).level).toBe("A0");
+  });
+
+  it("数据流全部当前时，缺失或部分统一的身份仍必须保持 A0", () => {
+    const identityProduct = {
+      ...product,
+      requiredIdentities: { JST: ["warehouse"] },
+    } satisfies DataProductDefinition;
+    const jst = source("JST", "observation", ["outbound-sales-daily"]);
+    jst.identityCoverage = [{
+      domain: "warehouse",
+      label: CROSS_SYSTEM_IDENTITY_LABEL.warehouse,
+      governance: "scoped_alias",
+      state: "partial",
+      observed: 10,
+      governed: 8,
+      open: 2,
+      ignored: 0,
+      coveragePct: 80,
+      reason: "仍有 2 个仓库待认领",
+      nextAction: "人工认领后重跑",
+    }];
+
+    const summary = evaluateProductSourceEvidence(identityProduct, [
+      source("SCM", "operational", []),
+      jst,
+    ]);
+    expect(summary).toMatchObject({
+      partialIdentities: 1,
+      missingIdentities: 0,
+      unimplementedIdentities: 0,
+      identityGates: [expect.objectContaining({ source: "JST", domain: "warehouse", state: "partial" })],
+    });
+    expect(currentProductAutomation(summary)).toMatchObject({
+      level: "A0",
+      reason: expect.stringContaining("仓库」身份门禁未通过"),
+    });
+
+    jst.identityCoverage[0] = { ...jst.identityCoverage[0], state: "ready", governed: 10, open: 0, coveragePct: 100 };
+    expect(currentProductAutomation(evaluateProductSourceEvidence(identityProduct, [
+      source("SCM", "operational", []),
+      jst,
+    ])).level).toBe("A1");
+  });
+
+  it("来源总体覆盖即使为 100%，具体库存流缺少仓库粒度仍保持 A0", () => {
+    const inventoryProduct = {
+      ...product,
+      requiredStreams: { JST: ["inventory-total-delta"] },
+      requiredIdentities: { JST: ["sku", "warehouse"] },
+    } satisfies DataProductDefinition;
+    const jst = source("JST", "observation", ["inventory-total-delta"]);
+    jst.identityCoverage = (["sku", "warehouse"] as const).map((domain) => ({
+      domain,
+      label: CROSS_SYSTEM_IDENTITY_LABEL[domain],
+      governance: "scoped_alias" as const,
+      state: "ready" as const,
+      observed: 10,
+      governed: 10,
+      open: 0,
+      ignored: 0,
+      coveragePct: 100,
+      reason: "来源总体覆盖已完成",
+      nextAction: "持续监测",
+    }));
+
+    const summary = evaluateProductSourceEvidence(inventoryProduct, [
+      source("SCM", "operational", []),
+      jst,
+    ]);
+    expect(summary.identityGates.find((item) => item.domain === "warehouse")).toMatchObject({
+      state: "ready",
+      extractionState: "not_available",
+      extractionReason: expect.stringContaining("全仓汇总"),
+    });
+    expect(summary.unreadyExtractionIdentities).toBe(1);
+    expect(currentProductAutomation(summary)).toMatchObject({
+      level: "A0",
+      reason: expect.stringContaining("来源总体覆盖不能代替具体流"),
+    });
+  });
+
+  it("未知流或未声明身份适用性默认拒绝，不靠猜测放行", () => {
+    const unknownProduct = {
+      ...product,
+      requiredStreams: { JST: ["unknown-read-stream"] },
+      requiredIdentities: { JST: ["sku"] },
+    } satisfies DataProductDefinition;
+    const jst = source("JST", "observation", ["unknown-read-stream"]);
+    jst.identityCoverage = [{
+      domain: "sku",
+      label: CROSS_SYSTEM_IDENTITY_LABEL.sku,
+      governance: "scoped_alias",
+      state: "ready",
+      observed: 10,
+      governed: 10,
+      open: 0,
+      ignored: 0,
+      coveragePct: 100,
+      reason: "来源总体覆盖已完成",
+      nextAction: "持续监测",
+    }];
+
+    const summary = evaluateProductSourceEvidence(unknownProduct, [
+      source("SCM", "operational", []),
+      jst,
+    ]);
+    expect(summary.identityGates[0]).toMatchObject({
+      extractionState: "missing_contract",
+      extractionStreams: [expect.objectContaining({ stream: "unknown-read-stream" })],
+    });
+    expect(currentProductAutomation(summary).level).toBe("A0");
+  });
+
+  it("辅助证据可用于产品内回查，但不会改变必需流门禁或自动化级别", () => {
+    const withSupporting = {
+      ...product,
+      supportingStreams: { JIANDAOYUN: ["inventory-count-observation"] },
+    } satisfies DataProductDefinition;
+    const jdy = source("JIANDAOYUN", "observation", ["inventory-count-observation"]);
+    jdy.streams = [stream("inventory-count-observation", {
+      freshness: "stale",
+      businessAgeDays: 30,
+    })];
+    const required = evaluateProductSourceEvidence(withSupporting, [
+      source("SCM", "operational", []),
+      source("JST", "observation", ["outbound-sales-daily"]),
+      jdy,
+    ]);
+    const supporting = evaluateProductSupportingEvidence(withSupporting, [jdy]);
+
+    expect(supporting).toEqual([
+      expect.objectContaining({
+        source: "JIANDAOYUN",
+        stream: "inventory-count-observation",
+        state: "stale",
+      }),
+    ]);
+    expect(required.sources.map((row) => row.source)).toEqual(["SCM", "JST"]);
+    expect(currentProductAutomation(required).level).toBe("A1");
+  });
+
+  it("历史手工演练成功不能代替当前部署契约选择", () => {
+    const scm = source("SCM", "operational", []);
+    const jst = source("JST", "observation", ["outbound-sales-daily"]);
+    jst.selectedStreamKeys = [];
+    jst.streams = jst.streams.map((item) => ({ ...item, selectedForSync: false }));
+
+    const result = evaluateProductSourceEvidence(product, [scm, jst]);
+
+    expect(result.sources.find((item) => item.source === "JST")).toMatchObject({
+      state: "degraded",
+      degradedStreams: ["outbound-sales-daily"],
+      streams: [expect.objectContaining({
+        state: "degraded",
+        reason: expect.stringContaining("当前部署未显式选中"),
+      })],
+    });
+    expect(currentProductAutomation(result).level).toBe("A0");
+  });
+
   it("不用同连接器的无关成功流代替产品所需流", () => {
     const result = evaluateProductSourceEvidence(product, [
       source("SCM", "operational", []),
@@ -127,6 +359,66 @@ describe("数据产品所需流证据", () => {
       source("JST", "operational", ["outbound-sales-daily"]),
     ]);
     expect(operational).toMatchObject({ observedSources: 2, operationalSources: 2, missingStreams: 0 });
+    expect(operational.businessTimeWindow).toEqual({
+      timeSensitiveStreams: 1,
+      datedStreams: 1,
+      undatedStreams: 0,
+      commonAsOf: "2026-08-11",
+      latestAsOf: "2026-08-11",
+      spanDays: 0,
+      state: "complete",
+    });
+  });
+
+  it("计算多源共同可比截止与时点跨度，不用运行时间冒充业务日期", () => {
+    const multiSourceProduct = {
+      ...product,
+      sources: ["SCM", "JST", "YONYOU"],
+      requiredStreams: {
+        JST: ["outbound-sales-daily"],
+        YONYOU: ["yonbip-scm-purchaseorder-list"],
+      },
+    } satisfies DataProductDefinition;
+    const jst = source("JST", "observation", ["outbound-sales-daily"]);
+    jst.streams = [stream("outbound-sales-daily", { sourceAsOf: "2026-08-10" })];
+    const yonyou = source("YONYOU", "observation", ["yonbip-scm-purchaseorder-list"]);
+    yonyou.streams = [stream("yonbip-scm-purchaseorder-list", { sourceAsOf: null })];
+
+    const result = evaluateProductSourceEvidence(multiSourceProduct, [
+      source("SCM", "operational", []),
+      jst,
+      yonyou,
+    ]);
+
+    expect(result.businessTimeWindow).toEqual({
+      timeSensitiveStreams: 2,
+      datedStreams: 1,
+      undatedStreams: 1,
+      commonAsOf: "2026-08-10",
+      latestAsOf: "2026-08-10",
+      spanDays: 0,
+      state: "partial",
+    });
+    expect(result.sources.find((row) => row.source === "YONYOU")).toMatchObject({
+      state: "degraded",
+      streams: [expect.objectContaining({ reason: "缺少源业务截止日" })],
+    });
+    expect(currentProductAutomation(result)).toMatchObject({
+      level: "A0",
+      reason: expect.stringContaining("缺业务截止日"),
+    });
+
+    yonyou.streams = [stream("yonbip-scm-purchaseorder-list", { sourceAsOf: "2026-08-13" })];
+    expect(evaluateProductSourceEvidence(multiSourceProduct, [
+      source("SCM", "operational", []),
+      jst,
+      yonyou,
+    ]).businessTimeWindow).toMatchObject({
+      commonAsOf: "2026-08-10",
+      latestAsOf: "2026-08-13",
+      spanDays: 3,
+      state: "complete",
+    });
   });
 
   it("过期、最近失败和拒收证据不能把数据产品提升为已放行", () => {
@@ -190,6 +482,33 @@ describe("数据产品所需流证据", () => {
     ]));
     expect(explanation).toMatchObject({ level: "A1" });
 
+    const qualityReview = source("JST", "observation", ["outbound-sales-daily"]);
+    qualityReview.streams = [stream("outbound-sales-daily", {
+      quality: {
+        status: "review",
+        activeRows: 10,
+        deletedRows: 0,
+        missingFieldValues: 1,
+        missingBusinessKeyRows: 0,
+        duplicateKeyGroups: 2,
+        duplicateRows: 5,
+        invalidNumericValues: 0,
+        reconciliationMismatchedRows: 1,
+        reconciliationInsufficientRows: 0,
+      },
+    })];
+    const qualitySummary = evaluateProductSourceEvidence(product, [
+      source("SCM", "operational", []),
+      qualityReview,
+    ]);
+    expect(qualitySummary.sources[1]).toMatchObject({
+      state: "degraded",
+      streams: [expect.objectContaining({
+        reason: expect.stringContaining("业务键重复 2 组/5 行"),
+      })],
+    });
+    expect(currentProductAutomation(qualitySummary)).toMatchObject({ level: "A0" });
+
     const missingScm = source("SCM", "operational", []);
     missingScm.scmEvidence = {};
     const missingScmSummary = evaluateProductSourceEvidence(product, [
@@ -233,6 +552,17 @@ describe("数据产品所需流证据", () => {
       invalidated,
     ]))).toMatchObject({ level: "A0" });
 
+    for (const connectorState of ["contract_only", "blocked"] as const) {
+      const historicalSuccess = source("JST", connectorState, ["outbound-sales-daily"]);
+      historicalSuccess.configurationReady = true;
+      const summary = evaluateProductSourceEvidence(product, [
+        source("SCM", "operational", []),
+        historicalSuccess,
+      ]);
+      expect(summary.sources[1]).toMatchObject({ connectorState });
+      expect(currentProductAutomation(summary)).toMatchObject({ level: "A0" });
+    }
+
     const rejected = source("JST", "operational", ["outbound-sales-daily"]);
     rejected.streams = [stream("outbound-sales-daily", { rejectedRows: 1 })];
     expect(currentProductAutomation(evaluateProductSourceEvidence(product, [
@@ -257,5 +587,25 @@ describe("数据产品所需流证据", () => {
       source("JST", "operational", ["outbound-sales-daily"]),
     ]))).toMatchObject({ level: "A1" });
     expect(product.maxAutomation).toBe("A2");
+  });
+
+  it("把外部字段结构漂移解释为契约评审阻断，而不是普通观察限制", () => {
+    const drifting = source("JST", "observation", ["outbound-sales-daily"]);
+    drifting.streams = [stream("outbound-sales-daily", {
+      schemaDrift: true,
+      releaseBlocked: true,
+    })];
+    const result = evaluateProductSourceEvidence(product, [
+      source("SCM", "operational", []),
+      drifting,
+    ]);
+    expect(result.sources[1].streams[0]).toMatchObject({
+      state: "degraded",
+      reason: "外部字段结构变化，待契约评审",
+    });
+    expect(currentProductAutomation(result)).toMatchObject({
+      level: "A0",
+      reason: expect.stringContaining("结构漂移"),
+    });
   });
 });

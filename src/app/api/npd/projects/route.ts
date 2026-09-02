@@ -1,15 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
+import { buildProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
+import { getDbAsync } from "@/db";
 import { errorResponse, guardRead, readJson } from "@/server/modules/master/common";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { createNpdFirstOrder, createNpdProject, getNpdProject, listNpdProjects, rescheduleNpd, updateNpdProject, updateNpdProjectSkuCode } from "@/server/modules/npd/service";
+import { loadDataSourceReadiness } from "@/server/modules/report/data-source-readiness";
+import { loadJiandaoyunSupportingObservations } from "@/server/modules/report/jiandaoyun-supporting-observation";
 
 /** NPD 项目：GET 列表 / ?id= 详情；POST 建项目（模板实例化）；PATCH 项目状态 */
 export async function GET(req: NextRequest) {
   try {
     await guardRead();
     const id = new URL(req.url).searchParams.get("id");
-    if (id) return NextResponse.json(await getNpdProject(Number(id)));
-    return NextResponse.json({ projects: await listNpdProjects() });
+    const db = await getDbAsync();
+    if (id) return NextResponse.json(await getNpdProject(Number(id), db));
+    const [projects, supportingObservations, dataSources] = await Promise.all([
+      listNpdProjects(db),
+      loadJiandaoyunSupportingObservations(db),
+      loadDataSourceReadiness(db),
+    ]);
+    return NextResponse.json({
+      projects,
+      supportingObservations: supportingObservations.filter((observation) =>
+        observation.stream === "product-master-observation"
+        || observation.stream === "sample-management-observation"),
+      externalDecisionEvidence: buildProductExternalDecisionEvidenceBrief("launch-readiness", dataSources),
+    });
   } catch (e) {
     return errorResponse(e);
   }

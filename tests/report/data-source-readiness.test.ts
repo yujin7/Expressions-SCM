@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import * as schema from "@/db/schema";
 import { loadDataSourceReadiness } from "@/server/modules/report/data-source-readiness";
+import { connectorProbeEvidence } from "@/server/integrations/connector-probe-evidence";
+import { jstLiveEvidenceBinding } from "@/server/integrations/jst";
 import { createTestDb } from "../helpers/db";
 
 describe("三方数据来源证据矩阵", () => {
@@ -34,7 +36,24 @@ describe("三方数据来源证据矩阵", () => {
           sourceRows: 10,
           stagedRows: 9,
           rejectedRows: 1,
-          requestScope: { releaseBlocked: true, sourceAsOf: "2026-08-11" },
+          requestScope: {
+            releaseBlocked: true,
+            schemaDrift: false,
+            sourceAsOf: "2026-08-11",
+            controlSummary: {
+              version: "jdy-control-v1",
+              status: "review",
+              activeRows: 10,
+              deletedRows: 0,
+              missingFieldValues: 4,
+              missingBusinessKeyRows: 1,
+              duplicateKeyGroups: 2,
+              duplicateRows: 5,
+              invalidNumericValues: 1,
+              reconciliationMismatchedRows: 3,
+              reconciliationInsufficientRows: 2,
+            },
+          },
           importJobId: job.id,
           startedAt: new Date("2026-08-12T01:00:00.000Z"),
           finishedAt: new Date("2026-08-12T01:01:00.000Z"),
@@ -46,7 +65,7 @@ describe("三方数据来源证据矩阵", () => {
           status: "succeeded",
           sourceRows: 3,
           stagedRows: 3,
-          requestScope: { releaseBlocked: true, sourceAsOf: "2026-08-11" },
+          requestScope: { releaseBlocked: true, schemaDrift: true, sourceAsOf: "2026-08-11" },
           importJobId: job.id,
           startedAt: new Date("2026-08-12T01:30:00.000Z"),
           finishedAt: new Date("2026-08-12T01:31:00.000Z"),
@@ -91,6 +110,12 @@ describe("三方数据来源证据矩阵", () => {
         rawValue: "6901",
         status: "open",
       });
+      await db.insert(schema.aliases).values({
+        aliasType: "sku_code",
+        scope: "JIANDAOYUN",
+        rawValue: "EXT-SKU-1",
+        targetId: 1,
+      });
 
       const result = await loadDataSourceReadiness(db, {
         env: {} as NodeJS.ProcessEnv,
@@ -111,6 +136,13 @@ describe("三方数据来源证据矩阵", () => {
       expect(result.find((row) => row.key === "JIANDAOYUN")).toMatchObject({
         state: "observation",
         configurationReady: false,
+        selectedStreamKeys: [],
+        availableStreamKeys: expect.arrayContaining([
+          "tmall-sku-crosswalk-observation",
+          "tmall-sku-sales-observation",
+          "purchase-order-observation",
+          "inventory-count-observation",
+        ]),
         successfulStreams: 1,
         successfulStreamKeys: ["tmall-sku-sales-observation"],
         latestFailedStreams: 1,
@@ -120,7 +152,32 @@ describe("三方数据来源证据矩阵", () => {
         sourceAsOfStart: "2026-08-11",
         sourceAsOfEnd: "2026-08-11",
         openIdentityExceptions: 1,
-        observedIdentities: 1,
+        observedIdentities: 2,
+        identityCoverage: expect.arrayContaining([
+          expect.objectContaining({
+            domain: "sku",
+            state: "partial",
+            observed: 2,
+            governed: 1,
+            open: 1,
+            coveragePct: 50,
+          }),
+          expect.objectContaining({
+            domain: "shop",
+            governance: "planned_master",
+            state: "not_implemented",
+          }),
+          expect.objectContaining({
+            domain: "organization",
+            governance: "planned_master",
+            state: "not_implemented",
+          }),
+          expect.objectContaining({
+            domain: "document",
+            governance: "external_reference",
+            state: "missing",
+          }),
+        ]),
       });
       expect(result.find((row) => row.key === "JIANDAOYUN")?.streams).toEqual([
         expect.objectContaining({
@@ -130,9 +187,22 @@ describe("三方数据来源证据矩阵", () => {
           sourceRows: 10,
           rejectedRows: 1,
           releaseBlocked: true,
+          selectedForSync: false,
           freshness: "current",
           freshnessMaxAgeDays: 45,
           businessAgeDays: 2,
+          quality: {
+            status: "review",
+            activeRows: 10,
+            deletedRows: 0,
+            missingFieldValues: 4,
+            missingBusinessKeyRows: 1,
+            duplicateKeyGroups: 2,
+            duplicateRows: 5,
+            invalidNumericValues: 1,
+            reconciliationMismatchedRows: 3,
+            reconciliationInsufficientRows: 2,
+          },
         }),
       ]);
       expect(result.find((row) => row.key === "JST")).toMatchObject({
@@ -140,6 +210,13 @@ describe("三方数据来源证据矩阵", () => {
         configurationReady: false,
         contractSelectionState: "not_required",
         selectedContractCount: 0,
+        selectedStreamKeys: ["outbound-sales-daily"],
+        availableStreamKeys: [
+          "inbound-receipts-daily",
+          "inventory-total-delta",
+          "item-master",
+          "outbound-sales-daily",
+        ],
         successfulStreams: 2,
       });
       expect(result.find((row) => row.key === "JST")?.streams).toEqual([
@@ -160,13 +237,23 @@ describe("三方数据来源证据矩阵", () => {
       expect(result.find((row) => row.key === "YONYOU")).toMatchObject({
         state: "observation",
         configurationReady: false,
+        availableStreamKeys: expect.arrayContaining([
+          "yonbip-digitalmodel-vendor-list",
+          "yonbip-scm-purchaseorder-list",
+          "yonbip-scm-stock-querycurrentstocksbycondition",
+          "yonbip-fi-ficloud-openapi-voucher-queryvouchers",
+        ]),
         successfulStreams: 1,
         successfulStreamKeys: ["yonbip-digitalmodel-vendor-list"],
       });
+      expect(result.find((row) => row.key === "JIANDAOYUN")?.availableStreamKeys).toHaveLength(15);
+      expect(result.find((row) => row.key === "YONYOU")?.availableStreamKeys).toHaveLength(8);
       expect(result.find((row) => row.key === "YONYOU")?.streams).toEqual([
         expect.objectContaining({
           stream: "yonbip-digitalmodel-vendor-list",
           authorizationBlocked: false,
+          schemaDrift: true,
+          releaseBlocked: true,
           lastSuccessAt: "2026-08-12T01:31:00.000Z",
         }),
         expect.objectContaining({
@@ -397,6 +484,65 @@ describe("三方数据来源证据矩阵", () => {
         rows: 0,
         freshness: "unknown",
       });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("把最近实时只读权限探测并入 BI 就绪证据，但不冒充 UAT", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const env = {
+        NODE_ENV: "test",
+        JST_APP_KEY: "probe-app",
+        JST_APP_SECRET: "probe-secret",
+        JST_ACCESS_TOKEN: "probe-token",
+        JST_SYNC_ACTOR_ID: "1",
+      } satisfies NodeJS.ProcessEnv;
+      const binding = jstLiveEvidenceBinding(env);
+      await db.insert(schema.jobRuns).values({
+        job: "probe-jst-permissions",
+        ok: true,
+        message: JSON.stringify(connectorProbeEvidence({
+          c: "jst",
+          s: "partial",
+          a: "validated",
+          p: 2,
+          t: 6,
+          r: ["ok", "ok", "api_code_110", "api_code_190", "api_code_190", "api_code_190"],
+          b: binding,
+        })),
+        startedAt: new Date("2026-08-13T01:30:00.000Z"),
+        finishedAt: new Date("2026-08-13T01:31:00.000Z"),
+      });
+
+      const result = await loadDataSourceReadiness(db, {
+        env,
+        now: new Date("2026-08-13T02:00:00.000Z"),
+      });
+      const jst = result.find((row) => row.key === "JST");
+      expect(jst?.authorizationProbe).toEqual({
+        status: "partial",
+        authentication: "validated",
+        passed: 2,
+        total: 6,
+        checkedAt: "2026-08-13T01:31:00.000Z",
+        freshness: "current",
+        bindingMatches: true,
+        writesPerformed: false,
+      });
+      expect(jst?.state).toBe("contract_only");
+      expect(jst?.configurationReady).toBe(false);
+      expect(jst?.gate).toContain("实时只读权限探测 2/6");
+      expect(jst?.nextAction).toContain("补齐只读授权");
+
+      const staleResult = await loadDataSourceReadiness(db, {
+        env,
+        now: new Date("2026-08-15T06:00:00.000Z"),
+      });
+      const staleJst = staleResult.find((row) => row.key === "JST");
+      expect(staleJst?.authorizationProbe?.freshness).toBe("stale");
+      expect(staleJst?.nextAction).toContain("重跑已登记的只读权限探测");
     } finally {
       await client.close();
     }

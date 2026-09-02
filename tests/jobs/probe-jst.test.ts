@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { probeJstReadiness } from "@/jobs/probe-jst";
+import { probeJstReadiness, runJstPermissionProbe } from "@/jobs/probe-jst";
 import { JstApiError } from "@/server/integrations/jst";
 
 const env = {
@@ -11,13 +11,15 @@ const env = {
 } satisfies NodeJS.ProcessEnv;
 
 describe("聚水潭只读权限探针", () => {
-  it("验证四个最小读取面但不返回源标识或执行写入", async () => {
+  it("验证六个最小读取面但不返回源标识或执行写入", async () => {
     const page = { rows: [{ secretVendorIdentifier: "must-not-leak" }], hasNext: false };
     const client = {
       queryShopsPage: vi.fn(async () => page),
       queryWarehousesPage: vi.fn(async () => page),
       queryOutboundOrdersPage: vi.fn(async () => page),
       queryInventoryPage: vi.fn(async () => page),
+      queryItemsPage: vi.fn(async () => page),
+      queryInboundReceiptsPage: vi.fn(async () => page),
     };
 
     const result = await probeJstReadiness({
@@ -37,6 +39,8 @@ describe("聚水潭只读权限探针", () => {
         warehouses: { status: "succeeded", rows: 1, hasMore: false },
         outboundSales: { status: "succeeded", rows: 1, hasMore: false },
         inventory: { status: "succeeded", rows: 1, hasMore: false },
+        itemMaster: { status: "succeeded", rows: 1, hasMore: false },
+        inboundReceipts: { status: "succeeded", rows: 1, hasMore: false },
       },
     });
     const serialized = JSON.stringify(result);
@@ -57,6 +61,8 @@ describe("聚水潭只读权限探针", () => {
       queryWarehousesPage: vi.fn(async () => { throw new JstApiError(401, "sensitive"); }),
       queryOutboundOrdersPage: vi.fn(async () => { throw new Error("raw vendor payload"); }),
       queryInventoryPage: vi.fn(async () => ({ rows: [], hasNext: null })),
+      queryItemsPage: vi.fn(async () => ({ rows: [], hasNext: false })),
+      queryInboundReceiptsPage: vi.fn(async () => ({ rows: [], hasNext: false })),
     };
 
     const result = await probeJstReadiness({ env, client: client as never });
@@ -80,6 +86,8 @@ describe("聚水潭只读权限探针", () => {
       queryWarehousesPage: vi.fn(),
       queryOutboundOrdersPage: vi.fn(),
       queryInventoryPage: vi.fn(),
+      queryItemsPage: vi.fn(),
+      queryInboundReceiptsPage: vi.fn(),
     };
     const result = await probeJstReadiness({
       env: { ...env, JST_ACCESS_TOKEN: "" },
@@ -87,5 +95,21 @@ describe("聚水潭只读权限探针", () => {
     });
     expect(result).toMatchObject({ status: "skipped" });
     expect(client.queryShopsPage).not.toHaveBeenCalled();
+  });
+
+  it("调度留痕只保留有界权限结果，不保留源行", async () => {
+    const client = {
+      queryShopsPage: vi.fn(async () => ({ rows: [{ secret: "never" }], hasNext: false })),
+      queryWarehousesPage: vi.fn(async () => { throw new JstApiError(190, "raw"); }),
+      queryOutboundOrdersPage: vi.fn(async () => { throw new JstApiError(110, "raw"); }),
+      queryInventoryPage: vi.fn(async () => ({ rows: [], hasNext: false })),
+      queryItemsPage: vi.fn(async () => ({ rows: [], hasNext: false })),
+      queryInboundReceiptsPage: vi.fn(async () => ({ rows: [], hasNext: false })),
+    };
+    const result = await runJstPermissionProbe({ env, client: client as never });
+    expect(result).toMatchObject({ c: "jst", s: "partial", a: "validated", p: 4, t: 6, w: false });
+    expect(result.r).toEqual(["ok", "api_code_190", "api_code_110", "ok", "ok", "ok"]);
+    expect(JSON.stringify(result)).not.toContain("never");
+    expect(JSON.stringify(result).length).toBeLessThanOrEqual(500);
   });
 });

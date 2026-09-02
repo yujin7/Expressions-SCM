@@ -16,9 +16,11 @@ import { YonyouClient } from "@/server/integrations/yonyou-client";
 import type { YonyouOpenApiConfig } from "@/server/integrations/yonyou";
 import {
   extractRecordArray,
+  profileYonyouFields,
   syncYonyouContract,
   yonyouShapeFingerprint,
 } from "@/server/integrations/yonyou-sync";
+import { loadStagedRows } from "@/server/modules/release/engine/common";
 import { createTestDb } from "../helpers/db";
 
 const CONFIG: YonyouOpenApiConfig = {
@@ -72,7 +74,7 @@ describe("用友只读观测同步", () => {
     });
 
     const summary = await syncYonyouContract(db, {
-      client, contract: "物料档案分页查询 V2", actorId, scopeKey: "2026-08-04",
+      client, contract: "物料档案分页查询 V2", actorId, scopeKey: "2026-08-04", sourceAsOf: "2026-08-04",
     });
 
     expect(summary.blockedByConsoleGrant).toBe(false);
@@ -80,6 +82,11 @@ describe("用友只读观测同步", () => {
     expect(summary.stagedRows).toBe(2);
     expect(summary.evidenceHash).toMatch(/^[a-f0-9]{64}$/);
     expect(summary.importJobId).not.toBeNull();
+
+    const [job] = await db.select({ sourceAsOf: schema.importJobs.sourceAsOf })
+      .from(schema.importJobs)
+      .where(eq(schema.importJobs.id, summary.importJobId!));
+    expect(job.sourceAsOf).toBe("2026-08-04");
 
     const rows = await db.select().from(schema.stagingRows)
       .where(eq(schema.stagingRows.importJobId, summary.importJobId!));
@@ -90,6 +97,37 @@ describe("用友只读观测同步", () => {
     const [checkpoint] = await db.select().from(schema.integrationCheckpoints)
       .where(eq(schema.integrationCheckpoints.connector, "yy"));
     expect(checkpoint.cursor).toBe("2026-08-04");
+
+    const [run] = await db.select({ requestScope: schema.integrationRuns.requestScope })
+      .from(schema.integrationRuns)
+      .where(eq(schema.integrationRuns.id, summary.runId));
+    const scope = run.requestScope as { fieldProfile: unknown; sourceAsOf: string };
+    expect(scope.sourceAsOf).toBe("2026-08-04");
+    expect(scope.fieldProfile).toMatchObject({
+      version: "yonyou-field-profile/v1",
+      totalRecords: 2,
+      sampledRecords: 2,
+      fieldCount: 2,
+      sensitiveFieldCount: 0,
+      truncated: false,
+    });
+    const serializedProfile = JSON.stringify(scope.fieldProfile);
+    expect(serializedProfile).not.toContain("M001");
+    expect(serializedProfile).not.toContain("物料甲");
+  });
+
+  it("源业务日期与任意幂等 scope 分离，并在外呼前拒绝无效日期", async () => {
+    const { db, actorId } = await seedActor();
+    const { client, fetchMock } = clientReturning({ code: "00000", data: { recordList: [] } });
+
+    await expect(syncYonyouContract(db, {
+      client,
+      contract: "物料档案分页查询 V2",
+      actorId,
+      scopeKey: "manual-replay-1",
+      sourceAsOf: "2026-02-30",
+    })).rejects.toThrow("sourceAsOf 必须是有效的 YYYY-MM-DD");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("310037 未授权：不抛错、不推进 checkpoint、如实标记等待控制台授权", async () => {
@@ -148,6 +186,57 @@ describe("用友只读观测同步", () => {
     expect(fetchMock.mock.calls.length, "重放不应再打接口").toBe(callsAfterFirst);
   });
 
+  it("结构漂移持续阻断放行，连续返回同一新结构也不会自动建立新基线", async () => {
+    const { db, actorId } = await seedActor();
+    const baselineClient = clientReturning({
+      code: "00000", data: { rows: [{ code: "M001", name: "物料甲" }] },
+    }).client;
+    const sameShapeClient = clientReturning({
+      code: "00000", data: { rows: [{ code: "M002", name: "物料乙" }] },
+    }).client;
+    const changedClient = clientReturning({
+      code: "00000", data: { rows: [{ code: "M003", name: "物料丙", mobile: "13800000000" }] },
+    }).client;
+
+    const baseline = await syncYonyouContract(db, {
+      client: baselineClient, contract: "物料档案分页查询 V2", actorId, scopeKey: "baseline",
+    });
+    expect(baseline).toMatchObject({ schemaDrift: false, releaseBlocked: false });
+
+    const stable = await syncYonyouContract(db, {
+      client: sameShapeClient, contract: "物料档案分页查询 V2", actorId, scopeKey: "stable",
+    });
+    expect(stable).toMatchObject({ schemaDrift: false, releaseBlocked: false });
+
+    const drift = await syncYonyouContract(db, {
+      client: changedClient, contract: "物料档案分页查询 V2", actorId, scopeKey: "drift-1",
+    });
+    expect(drift).toMatchObject({ schemaDrift: true, releaseBlocked: true });
+    expect(drift.importJobId).not.toBeNull();
+
+    const [job] = await db.select({ scope: schema.importJobs.scope })
+      .from(schema.importJobs)
+      .where(eq(schema.importJobs.id, drift.importJobId!));
+    expect(job.scope).toMatchObject({
+      schemaVersion: "yonyou-observation-v1",
+      schemaDrift: true,
+      schemaBaselineRunId: stable.runId,
+      releaseBlocked: true,
+    });
+    await expect(loadStagedRows(db, "yonyou_observation", [drift.importJobId!]))
+      .rejects.toThrow(/releaseBlocked，禁止进入正式放行引擎/);
+
+    const stillDrift = await syncYonyouContract(db, {
+      client: changedClient, contract: "物料档案分页查询 V2", actorId, scopeKey: "drift-2",
+    });
+    expect(stillDrift).toMatchObject({ schemaDrift: true, releaseBlocked: true });
+    const replay = await syncYonyouContract(db, {
+      client: changedClient, contract: "物料档案分页查询 V2", actorId, scopeKey: "drift-1",
+    });
+    expect(replay).toMatchObject({ replayed: true, schemaDrift: true, releaseBlocked: true });
+    expect(replay.shapeFingerprint).toBe(drift.shapeFingerprint);
+  });
+
   it("未批准的契约拒绝同步（双重白名单的第二道）", async () => {
     const { db, actorId } = await seedActor();
     const { client } = clientReturning({ code: "00000", data: {} });
@@ -178,6 +267,68 @@ describe("响应结构工具", () => {
   it("指纹区分数组与对象，且对空数组不臆断元素结构", () => {
     expect(yonyouShapeFingerprint({ rows: [] })).toBe("{rows:[]}");
     expect(yonyouShapeFingerprint({ rows: [{ a: 1 }] })).toBe("{rows:[{a:number}]}");
+  });
+
+  it("结构指纹联合数组内不同形状，且不受记录顺序影响", () => {
+    const a = yonyouShapeFingerprint({ rows: [{ code: "M1" }, { code: "M2", name: "物料" }] });
+    const b = yonyouShapeFingerprint({ rows: [{ code: "M2", name: "另一物料" }, { code: "M1" }] });
+    expect(a).toBe(b);
+    expect(a).toContain("{code:string,name:string}");
+    expect(a).toContain("{code:string}");
+  });
+
+  it("字段画像只保留路径/类型/出现率与敏感分类，不复制业务值", () => {
+    const profile = profileYonyouFields([
+      {
+        code: "M001",
+        mobile: "13800000000",
+        bankAccount: "6222000000000000",
+        lines: [{ qty: 1 }],
+      },
+      {
+        code: "M002",
+        mobile: null,
+        lines: [{ qty: "2", remark: "内部备注" }],
+      },
+    ]);
+
+    expect(profile).toMatchObject({
+      version: "yonyou-field-profile/v1",
+      totalRecords: 2,
+      sampledRecords: 2,
+      sensitiveFieldCount: 2,
+      sensitiveCategories: ["contact", "financial"],
+      truncated: false,
+    });
+    expect(profile.fields.find((field) => field.path === "bankAccount")).toMatchObject({
+      types: ["string"],
+      presentInRecords: 1,
+      optional: true,
+      nullable: false,
+      sensitiveCategory: "financial",
+    });
+    expect(profile.fields.find((field) => field.path === "mobile")).toMatchObject({
+      types: ["null", "string"],
+      presentInRecords: 2,
+      optional: false,
+      nullable: true,
+      sensitiveCategory: "contact",
+    });
+    expect(profile.fields.find((field) => field.path === "lines[].remark")).toMatchObject({
+      presentInRecords: 1,
+      optional: true,
+    });
+    const serialized = JSON.stringify(profile);
+    expect(serialized).not.toContain("13800000000");
+    expect(serialized).not.toContain("6222000000000000");
+    expect(serialized).not.toContain("内部备注");
+  });
+
+  it("字段画像有字段数上限，异常宽响应不会撑大运行元数据", () => {
+    const record = Object.fromEntries(Array.from({ length: 400 }, (_, index) => [`field_${index}`, index]));
+    const profile = profileYonyouFields([record]);
+    expect(profile.fieldCount).toBe(256);
+    expect(profile.truncated).toBe(true);
   });
 
   it("能在常见包裹键下找到记录数组", () => {

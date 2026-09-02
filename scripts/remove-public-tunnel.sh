@@ -12,7 +12,7 @@ STATE_DIR="$HOME/Library/Application Support/exp-scm"
 
 launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
 rm -f "$PLIST"
-pkill -f 'cloudflared tunnel --no-autoupdate --url' 2>/dev/null || true
+pkill -f 'cloudflared tunnel --no-autoupdate' 2>/dev/null || true
 rm -f "$STATE_DIR/current-url.txt"
 
 echo "✓ 公网入口已关闭，隧道已断开。"

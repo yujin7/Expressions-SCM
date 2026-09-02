@@ -29,6 +29,8 @@ const TEMPLATE_LABELS: Record<string, string> = {
   // 观测数据只进 staging 供对账，不参与放行入账。
   jst_daily_sales: "聚水潭出库日汇总·观测",
   jst_inventory_observation: "聚水潭库存总量·观测",
+  jst_item_master_observation: "聚水潭商品主档·观测",
+  jst_inbound_receipts_observation: "聚水潭采购入库·观测",
   yonyou_observation: "用友只读契约·观测",
   jdy_product_observation: "简道云货品·观测",
   jdy_supplier_observation: "简道云供应商·观测",
@@ -44,6 +46,7 @@ const TEMPLATE_LABELS: Record<string, string> = {
   jdy_pdd_sku_crosswalk_observation: "简道云拼多多SKU对照·观测",
   jdy_vip_product_crosswalk_observation: "简道云唯品会商品对照·观测",
   jdy_tmall_sku_crosswalk_observation: "简道云天猫SKU对照·观测",
+  jdy_tmall_platform_fee_observation: "简道云天猫费用项目·观测",
 };
 const TABLE_LABELS: Record<string, string> = {
   spu_suggestion: "SPU 归组建议",

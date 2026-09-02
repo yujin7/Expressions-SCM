@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
-import { ArrowRightOutlined } from "@ant-design/icons";
+import { ArrowRightOutlined, DownloadOutlined } from "@ant-design/icons";
 import {
   Alert,
   App,
@@ -38,7 +38,11 @@ import {
 import {
   currentProductAutomation,
   evaluateProductSourceEvidence,
+  evaluateProductSupportingEvidence,
   type ProductEvidenceSummary,
+  type ProductIdentityEvidence,
+  type ProductMetricEvidence,
+  type ProductSemanticEvidence,
   type ProductStreamEvidence,
 } from "@/components/data-product-source-evidence";
 import { metric, metricTooltip } from "@/components/metrics";
@@ -52,11 +56,25 @@ import type {
   ReleasedAutomationLevel,
 } from "@/server/modules/report/data-product-release";
 import type { DataProductOutcomeReadiness } from "@/server/modules/report/data-product-outcome";
+import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 import DataProductOutcomeControl from "@/components/DataProductOutcomeControl";
+import DataAssetDecisionCoverage from "@/components/DataAssetDecisionCoverage";
 import {
   buildDataProductWorkQueue,
   type DataProductWorkStage,
 } from "@/components/data-product-work-queue";
+import { buildDataProductEvidenceExport } from "@/components/data-product-evidence-export";
+import { exportCsv } from "@/components/exportCsv";
+import { CROSS_SYSTEM_IDENTITY_EXTRACTION_STATE_LABEL } from "@/lib/cross-system-identity";
+import {
+  CROSS_SYSTEM_SEMANTIC_STATE_LABEL,
+  type CrossSystemSemanticState,
+} from "@/lib/cross-system-semantics";
+import {
+  METRIC_COMPUTATION_STATE_LABEL,
+  type MetricComputationState,
+  type MetricLineageInput,
+} from "@/lib/data-product-metric-lineage";
 
 const STATE_META: Record<CapabilityReadiness, { label: string; color: string; stroke: string }> = {
   ready: { label: "当前可用", color: "success", stroke: "#16a34a" },
@@ -78,11 +96,49 @@ const STREAM_STATE_META: Record<ProductStreamEvidence["state"], { label: string;
   missing: { label: "尚无证据", color: "default" },
 };
 
+const IDENTITY_STATE_META: Record<ProductIdentityEvidence["state"], { label: string; color: string }> = {
+  ready: { label: "已统一", color: "success" },
+  partial: { label: "部分统一", color: "warning" },
+  missing: { label: "尚无证据", color: "default" },
+  not_implemented: { label: "治理模型待建", color: "error" },
+};
+
+const IDENTITY_GOVERNANCE_LABEL = {
+  scoped_alias: "来源作用域精确认领",
+  external_reference: "来源+类型+单号对照",
+  planned_master: "受控主档待建",
+} as const;
+
+const IDENTITY_EXTRACTION_COLOR: Record<ProductIdentityEvidence["extractionState"], string> = {
+  implemented: "success",
+  not_implemented: "warning",
+  schema_profile_pending: "processing",
+  not_available: "error",
+  missing_contract: "error",
+};
+
+const SEMANTIC_STATE_COLOR: Record<CrossSystemSemanticState, string> = {
+  implemented: "success",
+  business_review_pending: "warning",
+  schema_profile_pending: "processing",
+  not_implemented: "warning",
+  not_available: "error",
+  missing_contract: "error",
+};
+
+const METRIC_STATE_COLOR: Record<MetricComputationState, string> = {
+  implemented: "success",
+  partial: "warning",
+  not_implemented: "error",
+  missing_contract: "error",
+};
+
 const WORK_STAGE_META: Record<DataProductWorkStage, { label: string; color: string }> = {
   safeguard: { label: "先止损", color: "error" },
   approval: { label: "待会签", color: "processing" },
   release_ready: { label: "可验收放行", color: "purple" },
   repair: { label: "修复证据", color: "warning" },
+  learning: { label: "真实结果学习", color: "cyan" },
   monitor: { label: "持续监控", color: "success" },
 };
 
@@ -96,10 +152,21 @@ function fmtDateTime(value: string | null): string {
 
 function contractEvidenceLabel(row: DataSourceReadiness): string {
   if (row.key === "SCM") return "内部受控事实";
-  if (row.contractSelectionState === "not_required") return "固定契约·无需手选";
-  if (row.contractSelectionState === "invalid") return "契约配置无效";
-  if (row.contractSelectionState === "missing") return "未选择受控契约";
-  return `${row.selectedContractCount} 条已选契约`;
+  const contract = row.contractSelectionState === "not_required"
+    ? "固定契约·无需手选"
+    : row.contractSelectionState === "invalid"
+      ? "契约配置无效"
+      : row.contractSelectionState === "missing"
+        ? "未选择受控契约"
+        : `${row.selectedContractCount} 条已选契约`;
+  const probe = row.authorizationProbe;
+  return probe
+    ? `${contract}·实时授权 ${probe.passed}/${probe.total}`
+    : `${contract}·尚无实时授权证据`;
+}
+
+function productEvidenceHref(productId: string): string {
+  return `/report/decision-studio?tab=readiness&product=${encodeURIComponent(productId)}#data-product-${encodeURIComponent(productId)}`;
 }
 
 function streamAgeLabel(row: ProductStreamEvidence): string {
@@ -127,7 +194,7 @@ function RequiredStreamEvidence({ summary }: { summary: ProductEvidenceSummary }
       size="small"
       pagination={false}
       dataSource={rows}
-      scroll={{ x: 1_100 }}
+      scroll={{ x: 1_330 }}
       locale={{ emptyText: "SCM 内部事实不需要外部流证据" }}
       columns={[
         {
@@ -178,12 +245,516 @@ function RequiredStreamEvidence({ summary }: { summary: ProductEvidenceSummary }
               : "—",
         },
         {
+          title: "聚合质量控制",
+          key: "quality",
+          width: 230,
+          render: (_, row) => {
+            const quality = row.evidence?.quality;
+            if (!quality) return <Typography.Text type="secondary">未随批次固化</Typography.Text>;
+            if (quality.status === "pass") return <Tag color="success">业务键/数值/对账通过</Tag>;
+            return (
+              <Space direction="vertical" size={2}>
+                <Tag color="warning">待复核</Tag>
+                <Typography.Text type="secondary">
+                  缺键 {quality.missingBusinessKeyRows} · 重复 {quality.duplicateKeyGroups}组/{quality.duplicateRows}行
+                </Typography.Text>
+                <Typography.Text type="secondary">
+                  非法数值 {quality.invalidNumericValues} · 对账差异 {quality.reconciliationMismatchedRows} · 覆盖不足 {quality.reconciliationInsufficientRows}
+                </Typography.Text>
+              </Space>
+            );
+          },
+        },
+        {
           title: "为何受限",
           dataIndex: "reason",
           width: 300,
         },
       ]}
     />
+  );
+}
+
+function RequiredIdentityEvidence({ summary }: { summary: ProductEvidenceSummary }) {
+  if (summary.identityGates.length === 0) return null;
+  const ready = summary.identityGates.filter((item) =>
+    item.state === "ready" && item.extractionState === "implemented").length;
+  const pending = summary.identityGates.length - ready;
+  return (
+    <Card
+      size="small"
+      title="跨系统身份门禁"
+      extra={(
+        <Space size={4} wrap>
+          <Tag color="success">双门禁通过 {ready}</Tag>
+          <Tag color={pending > 0 ? "error" : "success"}>
+            待补齐 {pending}
+          </Tag>
+        </Space>
+      )}
+      styles={{ body: { padding: 0 } }}
+    >
+      <Alert
+        banner
+        showIcon
+        type="info"
+        message="双门禁：具体必需流必须先把身份送入受控治理，来源作用域内候选还必须全部精确认领；字段存在、名称相同或另一条流成功都不能替代。"
+      />
+      <Table
+        rowKey={(row) => `${row.source}\u0000${row.domain}`}
+        size="small"
+        pagination={false}
+        dataSource={summary.identityGates}
+        scroll={{ x: 1_420 }}
+        columns={[
+          {
+            title: "来源",
+            dataIndex: "source",
+            width: 120,
+            render: (source: ProductIdentityEvidence["source"]) => DATA_PRODUCT_SOURCE_LABEL[source],
+          },
+          { title: "身份维度", dataIndex: "label", width: 150 },
+          {
+            title: "治理方式",
+            key: "governance",
+            width: 210,
+            render: (_, row) => row.evidence
+              ? IDENTITY_GOVERNANCE_LABEL[row.evidence.governance]
+              : "当前证据缺失",
+          },
+          {
+            title: "状态",
+            dataIndex: "state",
+            width: 140,
+            render: (state: ProductIdentityEvidence["state"]) => (
+              <Tag color={IDENTITY_STATE_META[state].color}>{IDENTITY_STATE_META[state].label}</Tag>
+            ),
+          },
+          {
+            title: "逐流提取契约",
+            key: "extraction",
+            width: 280,
+            render: (_, row) => {
+              const streamNames = row.extractionStreams.map((item) =>
+                dataProductStreamLabel(row.source, item.stream)).join("、");
+              return (
+                <Space direction="vertical" size={2}>
+                  <Tag color={IDENTITY_EXTRACTION_COLOR[row.extractionState]}>
+                    {CROSS_SYSTEM_IDENTITY_EXTRACTION_STATE_LABEL[row.extractionState]}
+                  </Tag>
+                  <Typography.Text
+                    type="secondary"
+                    ellipsis={{ tooltip: streamNames || "没有必需流声明提供该身份" }}
+                    style={{ maxWidth: 250 }}
+                  >
+                    {streamNames || "未声明适用流"}
+                  </Typography.Text>
+                </Space>
+              );
+            },
+          },
+          {
+            title: "已认领 / 候选 / 开放 / 忽略",
+            key: "coverage",
+            width: 250,
+            align: "right",
+            render: (_, row) => row.evidence
+              ? `${row.evidence.governed.toLocaleString("zh-CN")} / ${row.evidence.observed.toLocaleString("zh-CN")} / ${row.evidence.open.toLocaleString("zh-CN")} / ${row.evidence.ignored.toLocaleString("zh-CN")}`
+              : "—",
+          },
+          {
+            title: "门禁原因 / 下一步",
+            key: "reason",
+            width: 430,
+            render: (_, row) => (
+              <Space direction="vertical" size={2}>
+                <Typography.Paragraph
+                  ellipsis={{ rows: 2, tooltip: `${row.extractionReason}；${row.reason}` }}
+                  style={{ marginBottom: 0 }}
+                >
+                  {row.extractionState === "implemented" ? row.reason : row.extractionReason}
+                </Typography.Paragraph>
+                <Typography.Paragraph
+                  type="secondary"
+                  ellipsis={{ rows: 2, tooltip: row.extractionState === "implemented" ? row.nextAction : row.extractionNextAction }}
+                  style={{ marginBottom: 0 }}
+                >
+                  {row.extractionState === "implemented" ? row.nextAction : row.extractionNextAction}
+                </Typography.Paragraph>
+              </Space>
+            ),
+          },
+        ]}
+      />
+    </Card>
+  );
+}
+
+interface SemanticStreamRow {
+  source: ProductSemanticEvidence["source"];
+  stream: string;
+  grain: string;
+  controls: ProductSemanticEvidence[];
+}
+
+function RequiredSemanticEvidence({ summary }: { summary: ProductEvidenceSummary }) {
+  if (summary.semanticGates.length === 0) return null;
+  const grouped = new Map<string, SemanticStreamRow>();
+  for (const control of summary.semanticGates) {
+    const key = `${control.source}\u0000${control.stream}`;
+    const row = grouped.get(key) ?? {
+      source: control.source,
+      stream: control.stream,
+      grain: control.grain,
+      controls: [],
+    };
+    row.controls.push(control);
+    grouped.set(key, row);
+  }
+  const rows = [...grouped.values()].sort((a, b) =>
+    a.source.localeCompare(b.source) || a.stream.localeCompare(b.stream));
+  const ready = summary.semanticGates.length - summary.unreadySemantics;
+  return (
+    <Card
+      size="small"
+      title="业务语义门禁"
+      extra={(
+        <Space size={4} wrap>
+          <Tag color="success">已固化 {ready}</Tag>
+          <Tag color={summary.unreadySemantics > 0 ? "error" : "success"}>
+            待补齐 {summary.unreadySemantics}
+          </Tag>
+        </Space>
+      )}
+      styles={{ body: { padding: 0 } }}
+    >
+      <Alert
+        banner
+        showIcon
+        type="info"
+        message="数据可读、身份可对上仍不等于可相加：产品实际使用的粒度、业务时间、单位、币种、正负号、状态、库存范围和纠错语义必须逐流固化。"
+      />
+      <Table
+        rowKey={(row) => `${row.source}\u0000${row.stream}`}
+        size="small"
+        pagination={false}
+        dataSource={rows}
+        scroll={{ x: 1_300 }}
+        columns={[
+          {
+            title: "来源",
+            dataIndex: "source",
+            width: 120,
+            render: (source: SemanticStreamRow["source"]) => DATA_PRODUCT_SOURCE_LABEL[source],
+          },
+          {
+            title: "必需数据流",
+            dataIndex: "stream",
+            width: 250,
+            render: (stream: string, row) => (
+              <Space direction="vertical" size={2}>
+                <Typography.Text>{dataProductStreamLabel(row.source, stream)}</Typography.Text>
+                <Typography.Text type="secondary" code>{stream}</Typography.Text>
+              </Space>
+            ),
+          },
+          { title: "源业务粒度", dataIndex: "grain", width: 260 },
+          {
+            title: "本产品使用的语义",
+            dataIndex: "controls",
+            width: 360,
+            render: (controls: ProductSemanticEvidence[]) => (
+              <Space size={[4, 4]} wrap>
+                {controls.map((control) => (
+                  <Tag
+                    key={control.domain}
+                    color={SEMANTIC_STATE_COLOR[control.state]}
+                    title={`${CROSS_SYSTEM_SEMANTIC_STATE_LABEL[control.state]}：${control.reason}`}
+                  >
+                    {control.label}
+                  </Tag>
+                ))}
+              </Space>
+            ),
+          },
+          {
+            title: "首要缺口 / 下一步",
+            dataIndex: "controls",
+            width: 420,
+            render: (controls: ProductSemanticEvidence[]) => {
+              const blocker = controls.find((control) => control.state !== "implemented");
+              const control = blocker ?? controls[0];
+              return control ? (
+                <Space direction="vertical" size={2}>
+                  <Typography.Paragraph ellipsis={{ rows: 2, tooltip: control.reason }} style={{ marginBottom: 0 }}>
+                    {control.reason}
+                  </Typography.Paragraph>
+                  <Typography.Paragraph type="secondary" ellipsis={{ rows: 2, tooltip: control.nextAction }} style={{ marginBottom: 0 }}>
+                    {control.nextAction}
+                  </Typography.Paragraph>
+                </Space>
+              ) : "—";
+            },
+          },
+        ]}
+      />
+    </Card>
+  );
+}
+
+function metricInputLabel(input: MetricLineageInput): string {
+  if (input.kind === "stream" && input.source) {
+    return `${DATA_PRODUCT_SOURCE_LABEL[input.source]} · ${dataProductStreamLabel(input.source, input.ref)}`;
+  }
+  if (input.kind === "scm_evidence") {
+    return `SCM 受控事实 · ${dataProductStreamLabel("SCM", input.ref)}`;
+  }
+  const upstream = DATA_PRODUCTS.find((item) => item.id === input.ref);
+  return `上游产品 · ${upstream?.title ?? input.ref}`;
+}
+
+function RequiredMetricLineage({ summary }: { summary: ProductEvidenceSummary }) {
+  const ready = summary.metricGates.length - summary.unreadyMetrics;
+  return (
+    <Card
+      size="small"
+      title="指标计算与血缘门禁"
+      extra={(
+        <Space size={4} wrap>
+          <Tag color="success">可重放 {ready}</Tag>
+          <Tag color={summary.unreadyMetrics > 0 ? "error" : "success"}>
+            待补齐 {summary.unreadyMetrics}
+          </Tag>
+        </Space>
+      )}
+      styles={{ body: { padding: 0 } }}
+    >
+      <Alert
+        banner
+        showIcon
+        type="info"
+        message="指标有文字公式还不够：必须能追溯到具体数据流/上游产品、连接键和缺失处理，并存在可重放计算器。局部实现不得冒充完整 BI 产品。"
+      />
+      <Table
+        rowKey="metricId"
+        size="small"
+        pagination={false}
+        dataSource={summary.metricGates}
+        scroll={{ x: 1_480 }}
+        columns={[
+          {
+            title: "指标 / 公式",
+            dataIndex: "metricId",
+            width: 250,
+            render: (metricId: string, row: ProductMetricEvidence) => (
+              <Space direction="vertical" size={2}>
+                <Typography.Text strong>{row.label}</Typography.Text>
+                <Typography.Text type="secondary" code>{metricId}</Typography.Text>
+                <Typography.Paragraph
+                  type="secondary"
+                  ellipsis={{ rows: 2, tooltip: metric(metricId)?.formula ?? "未登记公式" }}
+                  style={{ marginBottom: 0 }}
+                >
+                  {metric(metricId)?.formula ?? "未登记公式"}
+                </Typography.Paragraph>
+              </Space>
+            ),
+          },
+          {
+            title: "计算状态",
+            dataIndex: "state",
+            width: 140,
+            render: (state: MetricComputationState) => (
+              <Tag color={METRIC_STATE_COLOR[state]}>{METRIC_COMPUTATION_STATE_LABEL[state]}</Tag>
+            ),
+          },
+          {
+            title: "输入血缘",
+            dataIndex: "inputs",
+            width: 380,
+            render: (inputs: MetricLineageInput[]) => (
+              <Space direction="vertical" size={2}>
+                {inputs.map((input, index) => (
+                  <Typography.Text key={`${input.kind}:${input.source ?? ""}:${input.ref}:${index}`} title={input.purpose}>
+                    {metricInputLabel(input)}
+                  </Typography.Text>
+                ))}
+              </Space>
+            ),
+          },
+          {
+            title: "连接键 / 缺失策略",
+            key: "join",
+            width: 300,
+            render: (_, row: ProductMetricEvidence) => (
+              <Space direction="vertical" size={2}>
+                <Typography.Text>{row.joinKeys.join(" · ") || "未登记"}</Typography.Text>
+                <Typography.Text type="secondary">
+                  {row.missingPolicy === "unknown_not_zero"
+                    ? "缺失保持未知，不补 0"
+                    : row.missingPolicy === "exclude_with_coverage"
+                      ? "排除时必须同时披露覆盖率"
+                      : row.missingPolicy === "not_applicable" ? "分母不适用时留白" : "未登记"}
+                </Typography.Text>
+              </Space>
+            ),
+          },
+          {
+            title: "实证 / 下一步",
+            key: "evidence",
+            width: 410,
+            render: (_, row: ProductMetricEvidence) => (
+              <Space direction="vertical" size={2}>
+                <Typography.Paragraph ellipsis={{ rows: 2, tooltip: row.reason }} style={{ marginBottom: 0 }}>
+                  {row.reason}
+                </Typography.Paragraph>
+                <Typography.Paragraph type="secondary" ellipsis={{ rows: 2, tooltip: row.nextAction }} style={{ marginBottom: 0 }}>
+                  {row.nextAction}
+                </Typography.Paragraph>
+              </Space>
+            ),
+          },
+        ]}
+      />
+    </Card>
+  );
+}
+
+function SupportingStreamEvidence({
+  product,
+  dataSources,
+  supportingObservations,
+}: {
+  product: DataProductDefinition;
+  dataSources: readonly DataSourceReadiness[];
+  supportingObservations: readonly JiandaoyunSupportingObservation[];
+}) {
+  const rows = evaluateProductSupportingEvidence(product, dataSources);
+  const observationByStream = new Map(supportingObservations.map((item) => [item.stream, item]));
+  if (rows.length === 0) return null;
+  return (
+    <Card
+      size="small"
+      title="辅助证据（不参与放行）"
+      extra={supportingObservations.some((item) =>
+        item.identityCoverage.some((identity) => identity.openValues > 0)
+      ) ? (
+        <Button
+          type="link"
+          size="small"
+          href="/import/exceptions?status=open&scope=JIANDAOYUN"
+          style={{ paddingInline: 0 }}
+        >
+          打开简道云认领队列 <ArrowRightOutlined />
+        </Button>
+      ) : null}
+      styles={{ body: { padding: 0 } }}
+    >
+      <Alert
+        banner
+        showIcon
+        type="info"
+        message="用于身份、历史与回查解释；过期或缺失不阻塞产品，也不能替代正式事实或必需流。"
+      />
+      <Table
+        rowKey={(row) => `${row.source}\u0000${row.stream}`}
+        size="small"
+        pagination={false}
+        dataSource={rows}
+        scroll={{ x: 1_550 }}
+        columns={[
+          {
+            title: "来源",
+            dataIndex: "source",
+            width: 110,
+            render: (source: ProductStreamEvidence["source"]) => DATA_PRODUCT_SOURCE_LABEL[source],
+          },
+          {
+            title: "辅助数据",
+            dataIndex: "stream",
+            width: 250,
+            render: (stream: string, row) => (
+              <Space direction="vertical" size={2}>
+                <Typography.Text>{dataProductStreamLabel(row.source, stream)}</Typography.Text>
+                <Typography.Text type="secondary" code>{stream}</Typography.Text>
+              </Space>
+            ),
+          },
+          {
+            title: "当前证据",
+            dataIndex: "state",
+            width: 130,
+            render: (state: ProductStreamEvidence["state"]) => (
+              <Tag color={STREAM_STATE_META[state].color}>{STREAM_STATE_META[state].label}</Tag>
+            ),
+          },
+          {
+            title: "业务截止 / 最近成功",
+            key: "time",
+            width: 220,
+            render: (_, row) => (
+              <Space direction="vertical" size={2}>
+                <Typography.Text>{row.evidence?.sourceAsOf ?? "未取得业务时点"}</Typography.Text>
+                <Typography.Text type="secondary">{fmtDateTime(row.evidence?.lastSuccessAt ?? null)}</Typography.Text>
+              </Space>
+            ),
+          },
+          {
+            title: "源行 / Staging / 拒收",
+            key: "volume",
+            width: 200,
+            align: "right",
+            render: (_, row) => row.evidence
+              ? `${row.evidence.sourceRows.toLocaleString("zh-CN")} / ${row.evidence.stagedRows.toLocaleString("zh-CN")} / ${row.evidence.rejectedRows.toLocaleString("zh-CN")}`
+              : "—",
+          },
+          {
+            title: "历史观察摘要",
+            key: "observation",
+            width: 340,
+            render: (_, row) => {
+              const observation = row.source === "JIANDAOYUN"
+                ? observationByStream.get(row.stream as JiandaoyunSupportingObservation["stream"])
+                : undefined;
+              if (!observation) return <Typography.Text type="secondary">尚无可安全聚合的历史批次</Typography.Text>;
+              const period = observation.businessDateFrom && observation.businessDateThrough
+                ? `${observation.businessDateFrom} 至 ${observation.businessDateThrough}`
+                : `批次截止 ${observation.sourceAsOf ?? "未取得"}`;
+              return (
+                <Space direction="vertical" size={2}>
+                  <Typography.Paragraph
+                    ellipsis={{ rows: 2, tooltip: observation.summary }}
+                    style={{ marginBottom: 0 }}
+                  >
+                    {observation.summary}
+                  </Typography.Paragraph>
+                  <Typography.Text type="secondary">历史期间：{period}</Typography.Text>
+                  {observation.identityCoverage.length > 0 ? (
+                    <Typography.Text
+                      type={observation.identityCoverage.some((item) => item.openValues > 0) ? "warning" : "success"}
+                    >
+                      身份认领：{observation.identityCoverage.map((item) =>
+                        `${item.label} ${item.governedMatches}/${item.distinctValues}（已入队 ${item.queuedValues}，未入队 ${item.unqueuedValues}）`
+                      ).join(" · ")}
+                    </Typography.Text>
+                  ) : null}
+                </Space>
+              );
+            },
+          },
+          {
+            title: "解释边界",
+            dataIndex: "reason",
+            width: 300,
+            render: (reason: string) => (
+              <Typography.Paragraph ellipsis={{ rows: 2, tooltip: reason }} style={{ marginBottom: 0 }}>
+                {reason}
+              </Typography.Paragraph>
+            ),
+          },
+        ]}
+      />
+    </Card>
   );
 }
 
@@ -370,18 +941,23 @@ function DataProductReleaseControl({
 function ProductOperatingContract({
   product,
   summary,
+  dataSources,
+  supportingObservations,
   release,
   outcome,
   onReleaseChanged,
 }: {
   product: DataProductDefinition;
   summary: ProductEvidenceSummary;
+  dataSources: readonly DataSourceReadiness[];
+  supportingObservations: readonly JiandaoyunSupportingObservation[];
   release?: DataProductReleaseReadiness;
   outcome?: DataProductOutcomeReadiness;
   onReleaseChanged?: () => void | Promise<void>;
 }) {
   const current = currentProductAutomation(summary);
   const effectiveLevel = release?.effectiveLevel ?? current.level;
+  const timeWindow = summary.businessTimeWindow;
   return (
     <Space direction="vertical" size={10} style={{ display: "flex" }}>
       <Space size={[6, 6]} wrap>
@@ -409,13 +985,72 @@ function ProductOperatingContract({
         <Typography.Text strong>当前自动化判断：</Typography.Text>
         {current.reason}
       </Typography.Paragraph>
+      <Typography.Paragraph style={{ marginBottom: 0 }}>
+        <Typography.Text strong>共同可比截止：</Typography.Text>
+        {timeWindow.state === "unavailable"
+          ? "尚无可比较的业务日期证据"
+          : `${timeWindow.commonAsOf}（最新来源 ${timeWindow.latestAsOf}，时点跨度 ${timeWindow.spanDays} 天）`}
+        {timeWindow.undatedStreams > 0
+          ? `；另有 ${timeWindow.undatedStreams} 条时效敏感流缺业务日期`
+          : ""}
+      </Typography.Paragraph>
       <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
         <Typography.Text strong>自动化护栏：</Typography.Text>
         {product.automationGuardrail}
       </Typography.Paragraph>
+      {(product.requiredProducts?.length ?? 0) > 0 ? (
+        <Card size="small" title="上游数据产品门禁" styles={{ body: { padding: 0 } }}>
+          <Alert
+            banner
+            showIcon
+            type="info"
+            message="下游不重复解释原始数据；上游必须先以自己的控制总量、UAT 和会签形成有效放行。任何上游失效都会使本产品自动降级。"
+          />
+          <Table
+            rowKey="productId"
+            size="small"
+            pagination={false}
+            dataSource={release?.dependencyGates ?? []}
+            columns={[
+              {
+                title: "上游产品",
+                dataIndex: "title",
+                render: (title, row) => (
+                  <Button type="link" size="small" href={productEvidenceHref(row.productId)} style={{ paddingInline: 0 }}>
+                    {title} <ArrowRightOutlined />
+                  </Button>
+                ),
+              },
+              { title: "复用目的", dataIndex: "purpose" },
+              {
+                title: "最低 / 当前",
+                key: "level",
+                width: 150,
+                render: (_, row) => `${row.minimumLevel} / ${row.effectiveLevel}`,
+              },
+              {
+                title: "依赖状态",
+                dataIndex: "satisfied",
+                width: 130,
+                render: (satisfied: boolean) => (
+                  <Tag color={satisfied ? "success" : "error"}>{satisfied ? "已满足" : "未满足"}</Tag>
+                ),
+              },
+            ]}
+          />
+        </Card>
+      ) : null}
+      <RequiredIdentityEvidence summary={summary} />
+      <RequiredSemanticEvidence summary={summary} />
+      <RequiredMetricLineage summary={summary} />
       <DataProductReleaseControl product={product} readiness={release} onChanged={onReleaseChanged} />
       <DataProductOutcomeControl product={product} readiness={outcome} onChanged={onReleaseChanged} />
       <RequiredStreamEvidence summary={summary} />
+      <SupportingStreamEvidence
+        product={product}
+        dataSources={dataSources}
+        supportingObservations={supportingObservations}
+      />
     </Space>
   );
 }
@@ -424,24 +1059,39 @@ export default function DecisionReadinessPanel({
   dataSources = [],
   dataProductReleases = [],
   dataProductOutcomes = [],
+  supportingObservations = [],
   onReleaseChanged,
   focusProductId,
 }: {
   dataSources?: DataSourceReadiness[];
   dataProductReleases?: DataProductReleaseReadiness[];
   dataProductOutcomes?: DataProductOutcomeReadiness[];
+  supportingObservations?: JiandaoyunSupportingObservation[];
   onReleaseChanged?: () => void | Promise<void>;
   focusProductId?: string;
 }) {
+  const { message } = App.useApp();
   const ready = DECISION_CAPABILITIES.filter((item) => capabilityReadiness(item) === "ready").length;
   const partial = DECISION_CAPABILITIES.filter((item) => capabilityReadiness(item) === "partial").length;
   const external = dataSources.filter((item) => item.key !== "SCM");
   const operationalSources = external.filter((item) => item.state === "operational").length;
   const observedSources = external.filter((item) => item.state === "observation").length;
   const workQueue = useMemo(
-    () => buildDataProductWorkQueue(DATA_PRODUCTS, dataSources, dataProductReleases),
-    [dataSources, dataProductReleases],
+    () => buildDataProductWorkQueue(DATA_PRODUCTS, dataSources, dataProductReleases, dataProductOutcomes),
+    [dataSources, dataProductReleases, dataProductOutcomes],
   );
+  const exportEvidence = () => {
+    const payload = buildDataProductEvidenceExport(
+      DATA_PRODUCTS,
+      dataSources,
+      dataProductReleases,
+      dataProductOutcomes,
+      new Date(),
+      supportingObservations,
+    );
+    exportCsv(payload.filename, payload.headers, payload.rows);
+    message.success(`已导出 ${payload.rows.length} 行三方数据产品决策证据`);
+  };
 
   return (
     <div>
@@ -505,14 +1155,21 @@ export default function DecisionReadinessPanel({
         size="small"
         title="数据产品动态行动队列"
         style={{ marginTop: 16 }}
-        extra={<Tag color="blue">待推进 {workQueue.filter((item) => item.stage !== "monitor").length}/{workQueue.length}</Tag>}
+        extra={(
+          <Space size={6} wrap>
+            <Tag color="blue">待推进 {workQueue.filter((item) => item.stage !== "monitor").length}/{workQueue.length}</Tag>
+            <Button size="small" icon={<DownloadOutlined />} onClick={exportEvidence}>
+              导出决策证据包
+            </Button>
+          </Space>
+        )}
         styles={{ body: { padding: 0 } }}
       >
         <Alert
           banner
           showIcon
           type="info"
-          message="优先级由当前证据自动重排：失效放行 → 待会签 → 可验收放行 → 证据修复 → 持续监控。同组内按决策 SLA 排序，不伪造商业价值精确分。"
+          message="优先级由当前证据自动重排：失效放行 → 待会签 → 可验收放行 → 证据修复 → 真实结果学习 → 持续监控。同组内按决策 SLA 排序，不伪造商业价值精确分。"
         />
         <Table
           rowKey="productId"
@@ -589,6 +1246,10 @@ export default function DecisionReadinessPanel({
           ]}
         />
       </Card>
+      <DataAssetDecisionCoverage
+        dataSources={dataSources}
+        dataProductReleases={dataProductReleases}
+      />
       <Card
         size="small"
         title="三方来源证据矩阵"
@@ -651,6 +1312,7 @@ export default function DecisionReadinessPanel({
               render: (_, row) => {
                 const current = row.streams?.filter((item) => item.freshness === "current").length ?? 0;
                 const stale = row.streams?.filter((item) => item.freshness === "stale").length ?? 0;
+                const qualityReview = row.streams?.filter((item) => item.quality?.status === "review").length ?? 0;
                 const unknown = Math.max(0, row.successfulStreams - current - stale);
                 return (
                   <Space direction="vertical" size={2}>
@@ -658,8 +1320,8 @@ export default function DecisionReadinessPanel({
                     <Typography.Text type={stale > 0 ? "danger" : "secondary"}>
                       当前 {current} · 过期 {stale} · 未定 {unknown}
                     </Typography.Text>
-                    <Typography.Text type={row.latestFailedStreams + row.latestRunningStreams > 0 ? "danger" : "secondary"}>
-                      最新失败 {row.latestFailedStreams} · 运行中 {row.latestRunningStreams}
+                    <Typography.Text type={row.latestFailedStreams + row.latestRunningStreams + qualityReview > 0 ? "danger" : "secondary"}>
+                      失败 {row.latestFailedStreams} · 运行中 {row.latestRunningStreams} · 质量待复核 {qualityReview}
                     </Typography.Text>
                   </Space>
                 );
@@ -699,7 +1361,18 @@ export default function DecisionReadinessPanel({
               sorter: (a, b) => (a.openIdentityExceptions ?? -1) - (b.openIdentityExceptions ?? -1),
               render: (_, row) => row.openIdentityExceptions == null
                 ? "不适用"
-                : `${(row.observedIdentities ?? 0).toLocaleString("zh-CN")} / ${row.openIdentityExceptions.toLocaleString("zh-CN")}`,
+                : (() => {
+                    const required = row.identityCoverage.filter((item) => item.state !== "missing").length;
+                    const ready = row.identityCoverage.filter((item) => item.state === "ready").length;
+                    return (
+                      <Space direction="vertical" size={2}>
+                        <Typography.Text>{(row.observedIdentities ?? 0).toLocaleString("zh-CN")} / {row.openIdentityExceptions.toLocaleString("zh-CN")}</Typography.Text>
+                        <Typography.Text type={ready < required ? "danger" : "secondary"}>
+                          维度已统一 {ready}/{row.identityCoverage.length}
+                        </Typography.Text>
+                      </Space>
+                    );
+                  })(),
             },
             {
               title: "当前门禁与下一步",
@@ -754,13 +1427,16 @@ export default function DecisionReadinessPanel({
                 <ProductOperatingContract
                   product={row}
                   summary={summary}
+                  dataSources={dataSources}
+                  supportingObservations={supportingObservations}
                   release={dataProductReleases.find((item) => item.productId === row.id)}
                   outcome={dataProductOutcomes.find((item) => item.productId === row.id)}
                   onReleaseChanged={onReleaseChanged}
                 />
               );
             },
-            rowExpandable: (row) => row.sources.some((source) => source !== "SCM"),
+            rowExpandable: (row) => row.sources.some((source) => source !== "SCM")
+              || Object.keys(row.supportingStreams ?? {}).length > 0,
             columnWidth: 44,
           }}
           onRow={(row) => ({ id: `data-product-${row.id}` })}
@@ -833,6 +1509,18 @@ export default function DecisionReadinessPanel({
                   <Typography.Text type="secondary">{row.decisionSlaHours} 小时</Typography.Text>
                 </Space>
               ),
+            },
+            {
+              title: "上游产品",
+              key: "requiredProducts",
+              width: 170,
+              render: (_, row) => row.requiredProducts?.length ? (
+                <Space size={[4, 4]} wrap>
+                  {row.requiredProducts.map((dependency) => (
+                    <Tag key={dependency.productId}>{DATA_PRODUCTS.find((item) => item.id === dependency.productId)?.title ?? dependency.productId} ≥ {dependency.minimumLevel}</Tag>
+                  ))}
+                </Space>
+              ) : <Typography.Text type="secondary">无</Typography.Text>,
             },
             {
               title: "自动化边界",

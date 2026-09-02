@@ -125,6 +125,45 @@ describe("decision studio evidence model", () => {
         { skuId: sku.id, channelId: channel.id, yearMonth: "2026-06", qty: "10" },
         { skuId: sku.id, channelId: channel.id, yearMonth: "2026-07", qty: "15" },
       ]);
+      const [actor] = await db.insert(schema.users).values({ name: "数据责任人" }).returning();
+      const [job] = await db.insert(schema.importJobs).values({
+        template: "jdy_purchase_demand_observation",
+        filename: "decision-studio-demand",
+        sourceAsOf: "2024-12-11",
+        createdBy: actor.id,
+        status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy",
+        stream: "purchase-demand-observation",
+        idempotencyKey: "decision-studio-demand",
+        status: "succeeded",
+        importJobId: job.id,
+        sourceRows: 1,
+        stagedRows: 1,
+        finishedAt: new Date("2024-12-11T00:00:00.000Z"),
+      });
+      await db.insert(schema.stagingRows).values({
+        importJobId: job.id,
+        rowNo: 1,
+        status: "pending",
+        targetTable: "jdy_purchase_demand_observation",
+        payload: { data: { requestedAt: "2024-12-10", requestedQty: "100", purchasedQty: "80", purchaseStatus: "部分采购" } },
+      });
+      const [jstJob] = await db.insert(schema.importJobs).values({
+        template: "jst_daily_sales",
+        filename: "jst-daily",
+        sourceAsOf: "2026-07-25",
+        createdBy: actor.id,
+        status: "done",
+      }).returning();
+      await db.insert(schema.stagingRows).values({
+        importJobId: jstJob.id,
+        rowNo: 1,
+        status: "validated",
+        targetTable: "jst_daily_sales",
+        payload: { bizDate: "2026-07-25", skuCode: "CS90001", qty: "3", _resolved: { skuId: sku.id } },
+      });
 
       const byBrand = await getDecisionStudio({ dimension: "brand" }, db);
       const byChannel = await getDecisionStudio({ dimension: "channel" }, db);
@@ -134,6 +173,27 @@ describe("decision studio evidence model", () => {
       expect(byChannel.groups[0]).toMatchObject({ key: "tmall", label: "天猫", total: 25 });
       expect(bySku.groups[0]).toMatchObject({ key: "CS90001", label: "测试货品", total: 25 });
       expect(byBrand.comparison.momPct).toBe(50);
+      expect(byBrand.supportingObservations).toEqual([
+        expect.objectContaining({
+          stream: "purchase-demand-observation",
+          summary: "需求行 1行 · 需求数量 100 · 已采购数量 80 · 未/部分采购 1行",
+        }),
+      ]);
+
+      const coreOnly = await getDecisionStudio({ dimension: "brand", sections: ["core"] }, db);
+      expect(coreOnly.loadedSections).toEqual(["core"]);
+      expect(coreOnly.daily.dates).toEqual([]);
+      expect(coreOnly.dataSources).toEqual([]);
+      expect(coreOnly.supportingObservations).toEqual([]);
+
+      const dailyOnly = await getDecisionStudio({ dimension: "sku", sections: ["daily"] }, db);
+      expect(dailyOnly.loadedSections).toEqual(["core", "daily"]);
+      expect(dailyOnly.daily).toMatchObject({
+        state: "ready",
+        dates: [{ date: "2026-07-25", qty: 3 }],
+        coveredRows: 1,
+        totalRows: 1,
+      });
     } finally {
       await client.close();
     }

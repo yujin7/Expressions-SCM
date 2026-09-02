@@ -6,11 +6,21 @@ import {
 } from "@/server/integrations/jst";
 import { IntegrationHttpError } from "@/server/integrations/http";
 import { jstSyncActorId } from "@/server/integrations/jst-sync";
+import {
+  connectorProbeEvidence,
+  JST_PROBE_CHECKS,
+  type ConnectorProbeEvidence,
+} from "@/server/integrations/connector-probe-evidence";
 import { shanghaiToday } from "./reconcile-jst";
 
 type JstProbeClient = Pick<
   JstClient,
-  "queryShopsPage" | "queryWarehousesPage" | "queryOutboundOrdersPage" | "queryInventoryPage"
+  | "queryShopsPage"
+  | "queryWarehousesPage"
+  | "queryOutboundOrdersPage"
+  | "queryInventoryPage"
+  | "queryItemsPage"
+  | "queryInboundReceiptsPage"
 >;
 
 type ProbeExercise =
@@ -100,19 +110,31 @@ export async function probeJstReadiness(
     page_size: 1,
     has_lock_qty: true,
   }));
-  const exercises = { shops, warehouses, outboundSales, inventory };
+  const itemMaster = await exercise(() => client.queryItemsPage({
+    ...requestDay,
+    page_index: 1,
+    page_size: 1,
+  }));
+  const inboundReceipts = await exercise(() => client.queryInboundReceiptsPage({
+    ...requestDay,
+    page_index: 1,
+    page_size: 1,
+  }));
+  const exercises = { shops, warehouses, outboundSales, inventory, itemMaster, inboundReceipts };
   const passed = Object.values(exercises).filter((item) => item.status === "succeeded").length;
   const requiredChecks: string[] = [];
   if (shops.status === "failed") requiredChecks.push("确认基础店铺查询权限与商家授权状态");
   if (warehouses.status === "failed") requiredChecks.push("确认仓库查询权限与仓库授权范围");
   if (outboundSales.status === "failed") requiredChecks.push("确认销售出库查询权限、生产 IP 白名单与 token 有效期");
   if (inventory.status === "failed") requiredChecks.push("确认库存查询权限；未通过前保持库存观察流关闭");
+  if (itemMaster.status === "failed") requiredChecks.push("申请普通商品查询权限；未通过前商品身份观察流保持关闭");
+  if (inboundReceipts.status === "failed") requiredChecks.push("申请采购入库查询权限；未通过前入库观察流保持关闭");
   requiredChecks.push(
     "探针不等于 UAT：仍需逐 SKU 控制总量、别名清零、失败重放与连续 7 天恢复演练",
   );
 
   return {
-    status: passed === 4 ? "succeeded" as const : "partial" as const,
+    status: passed === 6 ? "succeeded" as const : "partial" as const,
     authentication: passed > 0 ? "validated_by_signed_call" as const : "not_validated" as const,
     actor: { configured: true, id: actorId },
     bizDate,
@@ -121,4 +143,43 @@ export async function probeJstReadiness(
     writesPerformed: false as const,
     requiredChecks,
   };
+}
+
+/**
+ * Scheduler/job-ledger form of the JST probe. The verbose operator result above remains useful
+ * at the CLI, while this adapter guarantees a bounded, value-free message that survives the
+ * 500-character job_runs limit and can be safely rendered by admin/BI readiness views.
+ */
+export async function runJstPermissionProbe(
+  options: Parameters<typeof probeJstReadiness>[0] = {},
+): Promise<ConnectorProbeEvidence> {
+  const result = await probeJstReadiness(options);
+  if (result.status === "skipped") {
+    const reason = result.reason.includes("JST_SYNC_ACTOR_ID")
+      ? "invalid_actor"
+      : result.reason.includes("JST_BASE_URL")
+        ? "invalid_configuration"
+        : "missing_configuration";
+    return connectorProbeEvidence({
+      c: "jst",
+      s: "skipped",
+      a: "not_checked",
+      p: 0,
+      t: JST_PROBE_CHECKS.length,
+      r: [reason],
+      b: jstLiveEvidenceBinding(options.env ?? process.env),
+    });
+  }
+  return connectorProbeEvidence({
+    c: "jst",
+    s: result.status,
+    a: result.authentication === "validated_by_signed_call" ? "validated" : "not_validated",
+    p: 0,
+    t: JST_PROBE_CHECKS.length,
+    r: JST_PROBE_CHECKS.map(({ id }) => {
+      const check = result.exercises[id];
+      return check.status === "succeeded" ? "ok" : check.error;
+    }),
+    b: result.expectedLiveVerificationBinding,
+  });
 }

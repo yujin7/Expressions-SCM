@@ -88,6 +88,23 @@ describe("system_alerts 推进通知发件箱", () => {
     expect(await db.select().from(notifications)).toHaveLength(3);
   });
 
+  it("数据产品门禁降级通知产品责任角色，并直达对应门禁", async () => {
+    const { db } = await createTestDb();
+    await db.insert(systemAlerts).values({
+      category: "data_product_gate",
+      refKey: "demand-pulse:41",
+      title: "数据产品「需求脉搏」已从 A2 自动降级",
+      severity: "medium",
+    });
+
+    const result = await runSystemAlertNotify(db);
+    expect(result).toMatchObject({ enqueued: 2, scanned: 1 });
+    const notes = await db.select().from(notifications);
+    expect(notes.map((row) => row.targetRole).sort()).toEqual(["ops", "pmc"]);
+    expect(notes.every((row) => row.title.includes("【决策门禁降级】"))).toBe(true);
+    expect(notes.every((row) => row.href?.includes("product=demand-pulse"))).toBe(true);
+  });
+
   it("没有未处理告警时什么也不做", async () => {
     const { db } = await createTestDb();
     expect(await runSystemAlertNotify(db)).toMatchObject({ enqueued: 0, scanned: 0 });

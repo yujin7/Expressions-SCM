@@ -13,7 +13,9 @@ describe("公网快速隧道 watchdog", () => {
   });
 
   it("PID 存活但公网连续失败时清状态、终止旧隧道并回到外层重建", () => {
-    expect(daemon).toContain("TUNNEL_FAILURE_LIMIT=3");
+    // 阈值 3 → 5（2026-09-02）：隧道往返本就 0.6–1.4 s，30 秒一探、3 次即判死曾把正常抖动当故障，
+    // 8/22 起每天换址 2–8 次。放宽到 5 次（2.5 分钟）仍能在真实中断时重建。
+    expect(daemon).toContain("TUNNEL_FAILURE_LIMIT=5");
     expect(daemon).toContain("PUBLIC_FAILURES=$((PUBLIC_FAILURES + 1))");
     expect(daemon).toContain('rm -f "$URL_FILE"');
     expect(daemon).toContain('kill "$CF_PID"');
