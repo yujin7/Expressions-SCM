@@ -3,10 +3,12 @@ import { CredentialsSignin, type DefaultSession, type NextAuthConfig } from "nex
 import type {} from "next-auth/jwt";
 import Credentials from "next-auth/providers/credentials";
 import type { OAuth2Config } from "next-auth/providers";
+import type { NextRequest } from "next/server";
 import { verify } from "@node-rs/argon2";
 import { eq } from "drizzle-orm";
 import { getDbAsync, schema } from "@/db";
 import type { Role } from "@/server/core/constants";
+import { authCookieConfig } from "./cookies";
 import { refreshSessionIdentity } from "./session-version";
 
 /* ---------- 类型扩展：session/jwt 携带 userId/roles/isApprover ---------- */
@@ -326,3 +328,8 @@ export const authConfig: NextAuthConfig = {
     },
   },
 };
+
+/** Request-aware wrapper: loopback HTTP and the HTTPS tunnel must both authenticate safely. */
+export function authConfigForRequest(request?: NextRequest): NextAuthConfig {
+  return { ...authConfig, ...authCookieConfig(request) };
+}
