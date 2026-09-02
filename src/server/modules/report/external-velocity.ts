@@ -216,27 +216,64 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
     -- 仅计有支付时间或明确已支付状态，且未取消/退款成功的订单。
     pdd_batches AS (
       SELECT ir.import_job_id,
-             nullif(ir.request_scope->'window'->>'fromBusinessDate', '')::date AS observed_from,
-             nullif(ir.request_scope->'window'->>'throughBusinessDate', '')::date AS observed_through
+             nullif(ir.request_scope->'window'->>'from', '')::timestamptz AS observed_from_at,
+             least(
+               nullif(ir.request_scope->'window'->>'to', '')::timestamptz,
+               nullif(ir.request_scope->'window'->>'extractionCutoff', '')::timestamptz
+             ) AS observed_through_at
       FROM integration_runs ir
       WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation'
         AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
         AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
         AND ir.finished_at > now() - interval '90 days'
     ),
-    -- 覆盖来自每次成功查询的真实边界，而不是“有订单的日期”。因此零订单日会
-    -- 正确推进观察完整性，迟到更新的历史订单也不会伪造已经连续观察过的天数。
+    -- 先把每次成功抽取的 updateTime 查询范围合并成连续区间。若停机超过重叠窗口，
+    -- 下一次 from 会晚于上次实际抽取 cutoff，形成新岛；缺口之后不能冒充连续覆盖。
+    pdd_intervals AS (
+      SELECT observed_from_at AS from_at, observed_through_at AS through_at
+      FROM pdd_batches
+      WHERE observed_from_at IS NOT NULL
+        AND observed_through_at IS NOT NULL
+        AND observed_from_at <= observed_through_at
+    ),
+    pdd_ordered_intervals AS (
+      SELECT from_at, through_at,
+             max(through_at) OVER (
+               ORDER BY from_at, through_at
+               ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+             ) AS prior_max_through
+      FROM pdd_intervals
+    ),
+    pdd_interval_groups AS (
+      SELECT from_at, through_at,
+             sum(CASE WHEN prior_max_through IS NULL OR from_at > prior_max_through THEN 1 ELSE 0 END)
+               OVER (ORDER BY from_at, through_at) AS island_id
+      FROM pdd_ordered_intervals
+    ),
+    pdd_islands AS (
+      SELECT min(from_at) AS from_at, max(through_at) AS through_at
+      FROM pdd_interval_groups
+      GROUP BY island_id
+    ),
+    pdd_latest_island AS (
+      SELECT from_at, through_at
+      FROM pdd_islands
+      ORDER BY through_at DESC
+      LIMIT 1
+    ),
+    -- 覆盖来自最新连续抽取岛，而不是“有订单的日期”或未来结束的请求范围。
+    -- 只计从中国业务日 00:00 到次日 00:00 都被覆盖的完整日：零订单日能推进，
+    -- 迟到历史订单不能伪造覆盖，抽取当日未走完也不会提前开门。
     pdd_observation_days AS (
       SELECT DISTINCT day::date AS d
-      FROM pdd_batches b
+      FROM pdd_latest_island island
       CROSS JOIN LATERAL generate_series(
-        b.observed_from,
-        b.observed_through,
+        (island.from_at + interval '8 hours')::date,
+        (island.through_at + interval '8 hours')::date,
         interval '1 day'
       ) AS day
-      WHERE b.observed_from IS NOT NULL
-        AND b.observed_through IS NOT NULL
-        AND b.observed_from <= b.observed_through
+      WHERE (day::date)::timestamp - interval '8 hours' >= island.from_at
+        AND ((day::date + 1)::timestamp - interval '8 hours') <= island.through_at
     ),
     pdd_raw AS (
       SELECT DISTINCT ON (payload->'data'->>'orderNumber', payload->'data'->>'productId', coalesce(payload->'data'->>'merchantSkuCode', ''))

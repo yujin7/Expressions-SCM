@@ -672,14 +672,18 @@ export async function syncJiandaoyunForm(
   await assertStableContractSchema(db, input.contract.key, schemaHash);
   const projection = jiandaoyunContractProjection(input.contract);
   const includeUpdatedSince = input.contract.window?.includeUpdatedSince === true;
+  const extractionCutoff = input.now?.() ?? new Date();
   const resolvedWindow = input.contract.window
-    ? resolveJiandaoyunWindow(input.contract.window.days, input.now?.() ?? new Date())
+    ? resolveJiandaoyunWindow(input.contract.window.days, extractionCutoff)
     : null;
   const evidenceWindow = input.contract.window ? {
     field: input.contract.window.field,
     days: input.contract.window.days,
     includeUpdatedSince,
     ...resolvedWindow!,
+    // The source has no snapshot token. This is the conservative upper bound:
+    // changes committed before extraction started are expected to be queryable.
+    extractionCutoff: extractionCutoff.toISOString(),
   } : null;
   const records = await input.client.listRecords(
     input.contract.appId,

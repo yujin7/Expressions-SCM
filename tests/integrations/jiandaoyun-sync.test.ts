@@ -615,6 +615,7 @@ describe("简道云受控同步", () => {
         to: "2026-09-01T16:00:00.000Z",
         fromBusinessDate: "2026-08-30",
         throughBusinessDate: "2026-09-01",
+        extractionCutoff: "2026-09-01T06:00:00.000Z",
       } },
     });
     expect(listRecords).toHaveBeenCalledWith(

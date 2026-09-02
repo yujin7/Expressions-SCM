@@ -172,7 +172,11 @@ describe("外部观察销速读模型", () => {
       await db.insert(schema.integrationRuns).values([
         { connector: "jdy", stream: "pdd-sku-crosswalk-observation", idempotencyKey: "pdd-cw", status: "succeeded", importJobId: pddCw.id, finishedAt },
         { connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-orders", status: "succeeded", importJobId: pddOrders.id, finishedAt,
-          requestScope: { window: { fromBusinessDate: "2026-08-31", throughBusinessDate: "2026-09-02" } } },
+          requestScope: { window: {
+            from: "2026-08-30T16:00:00.000Z",
+            to: "2026-09-02T16:00:00.000Z",
+            extractionCutoff: "2026-09-02T04:00:00.000Z",
+          } } },
       ]);
       const shop = "(拼多多国际)NING官方海外旗舰店";
       const order = (rowNo: number, no: string, date: string, qty: string, status: string, afterSalesStatus = "", paymentTime = "") => ({
@@ -197,8 +201,8 @@ describe("外部观察销速读模型", () => {
       expect(cw.tmallNet30).toBe(13);
       expect(cw.net30).toBe(18);         // 天猫 13 + 拼多多 5
       expect(v.pddSourceAsOf).toBe("2026-09-02");
-      // 迟到更新带回 5 个订单日期，但本次只实际观察了 3 个自然日。
-      expect(v.coverage.pddObservedDays30).toBe(3);
+      // 迟到更新带回 5 个订单日期，但实际抽取截止中午，只完整观察了 2 个自然日。
+      expect(v.coverage.pddObservedDays30).toBe(2);
       expect(v.coverage.pddWindowComplete30).toBe(false);
     } finally {
       await client.close();
@@ -214,9 +218,10 @@ describe("外部观察销速读模型", () => {
         sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done",
       }).returning();
       const runs = Array.from({ length: 10 }, (_, index) => {
-        const from = new Date(Date.UTC(2026, 7, 4 + index * 3));
-        const through = new Date(Date.UTC(2026, 7, 6 + index * 3));
-        const finishedAt = new Date(Date.UTC(2026, 7, 6 + index * 3, 4));
+        // UTC 16:00 = 中国业务日次日 00:00。十个无缝 3 日抽取岛共覆盖 30 个完整业务日。
+        const from = new Date(Date.UTC(2026, 6, 30 + index * 3, 16));
+        const cutoff = new Date(Date.UTC(2026, 7, 2 + index * 3, 16));
+        const finishedAt = new Date(cutoff.getTime() + 60_000);
         return {
           connector: "jdy",
           stream: "pdd-order-observation",
@@ -225,8 +230,9 @@ describe("外部观察销速读模型", () => {
           importJobId: job.id,
           finishedAt,
           requestScope: { window: {
-            fromBusinessDate: from.toISOString().slice(0, 10),
-            throughBusinessDate: through.toISOString().slice(0, 10),
+            from: from.toISOString(),
+            to: cutoff.toISOString(),
+            extractionCutoff: cutoff.toISOString(),
           } },
         };
       });
@@ -234,9 +240,28 @@ describe("外部观察销速读模型", () => {
 
       const result = await computeExternalVelocity(db);
       expect(result.state).toBe("insufficient");
-      expect(result.anchorDate).toBe("2026-09-02");
+      expect(result.anchorDate).toBe("2026-08-29");
       expect(result.coverage.pddObservedDays30).toBe(30);
       expect(result.coverage.pddWindowComplete30).toBe(true);
+
+      // 停机一天超过连续边界后，最新抽取岛从 8/31 重新计数；不能沿用旧 30 天资格。
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy",
+        stream: "pdd-order-observation",
+        idempotencyKey: "window-after-outage",
+        status: "succeeded",
+        importJobId: job.id,
+        finishedAt: new Date("2026-09-02T16:01:00.000Z"),
+        requestScope: { window: {
+          from: "2026-08-30T16:00:00.000Z",
+          to: "2026-09-02T16:00:00.000Z",
+          extractionCutoff: "2026-09-02T16:00:00.000Z",
+        } },
+      });
+      const afterOutage = await computeExternalVelocity(db);
+      expect(afterOutage.anchorDate).toBe("2026-09-02");
+      expect(afterOutage.coverage.pddObservedDays30).toBe(3);
+      expect(afterOutage.coverage.pddWindowComplete30).toBe(false);
     } finally {
       await client.close();
     }
