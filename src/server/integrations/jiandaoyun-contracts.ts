@@ -889,6 +889,7 @@ export function jiandaoyunContractSetEvidenceBinding(
     numericControls: contract.numericControls ?? [],
     freshnessMaxAgeDays: contract.freshnessMaxAgeDays ?? null,
     reconciliations: contract.reconciliations ?? [],
+    window: contract.window ?? null,
   }));
   const digest = createHash("sha256")
     .update(`jiandaoyun-contract-set-v1\0${JSON.stringify(contractMaterial)}`)

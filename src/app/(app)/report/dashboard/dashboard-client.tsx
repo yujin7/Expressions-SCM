@@ -264,7 +264,7 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
               type={data.externalDemand.internalNoMoveButExternalSelling > 0 ? "warning" : "info"}
               showIcon
               style={{ marginBottom: 8 }}
-              message={`内部销量事实到 ${data.externalDemand.internalThroughMonth ?? "—"}，简道云天猫观察到 ${data.externalDemand.anchorDate ?? "—"}${data.externalDemand.lagDays != null ? `（内部晚 ${data.externalDemand.lagDays} 天）` : ""}`}
+              message={`内部销量事实到 ${data.externalDemand.internalThroughMonth ?? "—"}，简道云外部平台观察到 ${data.externalDemand.anchorDate ?? "—"}${data.externalDemand.lagDays != null ? `（内部晚 ${data.externalDemand.lagDays} 天）` : ""}`}
               description={
                 <>
                   已映射 {data.externalDemand.mappedSkus.toLocaleString("zh-CN")} 个系统 SKU 的外部近 30/90 天净需求作为影子列显示；

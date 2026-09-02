@@ -520,18 +520,31 @@ describe("简道云受控同步", () => {
       window: { field: "statistical_date", days: 3 },
     };
     const client = observationClient(() => rows);
+    const envelopes: unknown[] = [];
+    const captureEvidence = (hashPart: string) => async (
+      _connector: string,
+      _stream: string,
+      envelope: unknown,
+    ) => {
+      envelopes.push(envelope);
+      return {
+        relativePath: `integration-evidence/jdy/test-observation/${hashPart}.json`,
+        hash: hashPart.repeat(64),
+        bytes: `${JSON.stringify(envelope)}\n`,
+      };
+    };
     const first = await syncJiandaoyunForm(db, {
       client,
       actorId: actor.id,
       contract: windowedContract,
-      writeEvidence: observationEvidence("3"),
+      writeEvidence: captureEvidence("3"),
     });
     rows = [{ id: "2".repeat(24), code: "NEWER-SKU", updatedAt: "2026-09-02T02:00:00.000Z" }];
     const second = await syncJiandaoyunForm(db, {
       client,
       actorId: actor.id,
       contract: windowedContract,
-      writeEvidence: observationEvidence("4"),
+      writeEvidence: captureEvidence("4"),
     });
 
     const jobs = await db.select().from(schema.importJobs);
@@ -544,6 +557,15 @@ describe("简道云受控同步", () => {
     expect(staged.every((row) => row.status === "pending")).toBe(true);
     expect(staged.map((row) => (row.payload as { data: { productCode: string } }).data.productCode).sort())
       .toEqual(["NEWER-SKU", "OLDER-SKU"]);
+    expect(envelopes).toHaveLength(2);
+    expect(envelopes[0]).toMatchObject({
+      scope: { window: { field: "statistical_date", days: 3 } },
+    });
+    const runs = await db.select().from(schema.integrationRuns);
+    expect(runs.map((run) => run.requestScope)).toEqual([
+      expect.objectContaining({ window: { field: "statistical_date", days: 3 } }),
+      expect.objectContaining({ window: { field: "statistical_date", days: 3 } }),
+    ]);
   });
 
   it("全量行数下降时失败并保留旧批次，不把权限缩减当删除", async () => {

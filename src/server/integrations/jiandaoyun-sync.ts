@@ -708,6 +708,7 @@ export async function syncJiandaoyunForm(
       authority: "observation-only",
       fieldMinimized: true,
       sourceProjection: projection,
+      window: input.contract.window ?? null,
       controlSummary,
     },
     records: minimized,
@@ -737,6 +738,7 @@ export async function syncJiandaoyunForm(
       authority: "observation-only",
       controlSummary,
       qualityBlocked: controlSummary.status === "review",
+      window: input.contract.window ?? null,
     },
     evidencePath: evidence.relativePath,
     evidenceHash: evidence.hash,
@@ -916,6 +918,7 @@ export async function syncJiandaoyunForm(
         unresolvedAliases,
         controlSummary,
         qualityBlocked: controlSummary.status === "review",
+        window: input.contract.window ?? null,
       };
       await finishRunInTransaction(tx, {
         runId: run.id,

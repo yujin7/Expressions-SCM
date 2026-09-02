@@ -242,6 +242,10 @@ describe("外部连接器目录", () => {
       ...productContract!,
       entryId: "changed-entry",
     }])).not.toBe(jdyBinding);
+    expect(jiandaoyunContractSetEvidenceBinding([{
+      ...productContract!,
+      window: { field: "statisticalDate", days: 3 },
+    }])).not.toBe(jdyBinding);
     process.env.JIANDAOYUN_LIVE_VERIFIED_REF = `UAT-20260730-JDY-${jdyBinding}`;
     expect(getConnectorReadiness(process.env, NOW).find((row) => row.key === "jdy")).toMatchObject({
       configurationReady: true,

@@ -30,9 +30,10 @@ describe("全渠道外部观察", () => {
       ]);
       const tShop = "(天猫国际)NING海外旗舰店";
       await db.insert(schema.stagingRows).values([
-        { importJobId: sales.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_sales_observation", payload: { data: { statisticalDate: "2026-09-01", shopName: tShop, skuId: "P1", paidNumber: "10", paidAmount: "1000.50" } } },
+        { importJobId: sales.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_sales_observation", payload: { data: { statisticalDate: "2026-09-01", shopName: tShop, skuId: "P1", paidNumber: "10", paidAmount: "1000.505" } } },
         { importJobId: sales.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_sku_sales_observation", payload: { data: { statisticalDate: "2026-06-01", shopName: tShop, skuId: "P1", paidNumber: "99", paidAmount: "9999" } } }, // 窗口外
         { importJobId: refunds.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_refund_observation", payload: { data: { statisticalDate: "2026-08-30", shopName: tShop, skuId: "P1", successRefundSuborderNumber: "2" } } },
+        { importJobId: refunds.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_sku_refund_observation", payload: { data: { statisticalDate: "2026-09-02", shopName: tShop, skuId: "P1", successRefundSuborderNumber: "50" } } },
         { importJobId: vip.id, rowNo: 1, status: "pending", targetTable: "jdy_vip_shop_trading_observation", payload: { data: { statisticalDate: "2026-08-20", shopName: "(唯品会)NING PTE. LTD.", brandName: "NING", salesAmount: "5000", salesQuantity: "40" } } },
         { importJobId: vip.id, rowNo: 2, status: "pending", targetTable: "jdy_vip_shop_trading_observation", payload: { data: { statisticalDate: "2026-08-21", shopName: "(唯品会)NING PTE. LTD.", brandName: "DEVIANCE", salesAmount: "1200", salesQuantity: "6" } } },
         { importJobId: pnl.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_product_pnl_observation", payload: { data: { statisticalDate: "2026-08-25", shopName: tShop, platformProductId: "PP1", productName: "赚钱的", actualTransactionAmount: "3000", totalSalesCost: "1000", estimatedGrossProfit: "2000", estimatedNetProfit: "1500", paidNumber: "30" } } },
@@ -44,8 +45,9 @@ describe("全渠道外部观察", () => {
       expect(tmall.state).toBe("ready");
       expect(tmall.anchorDate).toBe("2026-09-01");
       expect(tmall.units).toBe(8);               // 10 − 2，窗口外的 99 不算
-      expect(tmall.amount).toBe("1000.50");
-      expect(tmall.byBrand[0]).toEqual({ brand: "NING", units: 8, amount: "1000.50" });
+      expect(tmall.amount).toBe("1000.51"); // 十进制定点半进位；不得经 Number 把 .005 舍掉
+      expect(tmall.refundUnits).toBe(2); // 销售锚点之后的退款不能混入本窗口
+      expect(tmall.byBrand[0]).toEqual({ brand: "NING", units: 8, amount: "1000.51" });
       const pdd = o.platforms.find((p) => p.platform === "拼多多")!;
       expect(pdd.state).toBe("insufficient");     // 未同步 → 不补零
       expect(pdd.units).toBeNull();
@@ -68,6 +70,12 @@ describe("全渠道外部观察", () => {
     const { db, client } = await createTestDb();
     try {
       const [actor] = await db.insert(schema.users).values({ name: "拼多多观察责任人" }).returning();
+      const [brand] = await db.insert(schema.brands).values({ code: "NING", nameCn: "NING" }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "P-PDD-BRAND", nameCn: "拼多多品牌归属" }).returning();
+      const [sku] = await db.insert(schema.skus).values({
+        code: "PDD-BRAND-001", name: "拼多多品牌归属成品", spuId: spu.id,
+        skuType: "finished", baseUom: "支", brandId: brand.id,
+      }).returning();
       const [job] = await db.insert(schema.importJobs).values({
         template: "jdy_pdd_order_observation",
         filename: "pdd-orders",
@@ -85,10 +93,15 @@ describe("全渠道外部观察", () => {
       });
       const base = {
         statisticalDate: "2026-09-01",
-        shopName: "(拼多多国际)NING官方海外旗舰店",
+        shopName: "不含品牌名称的多品牌店",
         productId: "PID1",
         merchantSkuCode: "NING-001",
       };
+      await db.insert(schema.skuIdentifiers).values({
+        skuId: sku.id, kind: "external", scope: "JIANDAOYUN:PDD",
+        value: `${base.shopName}|${base.productId}|${base.merchantSkuCode}`,
+        active: true, isPrimary: false, createdBy: actor.id,
+      });
       await db.insert(schema.stagingRows).values([
         { importJobId: job.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation", payload: { data: { ...base, orderNumber: "O1", productQuantity: "4", orderStatus: "已发货", afterSalesStatus: "" } } },
         { importJobId: job.id, rowNo: 2, status: "pending", targetTable: "jdy_pdd_order_observation", payload: { data: { ...base, orderNumber: "O2", productQuantity: "9", orderStatus: "已发货", afterSalesStatus: "退款成功" } } },
@@ -99,6 +112,7 @@ describe("全渠道外部观察", () => {
       const pdd = observation.platforms.find((row) => row.platform === "拼多多")!;
       expect(pdd.state).toBe("ready");
       expect(pdd.units).toBe(4);
+      expect(pdd.byBrand).toEqual([{ brand: "NING", units: 4, amount: null }]);
     } finally {
       await client.close();
     }

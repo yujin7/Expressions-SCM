@@ -97,9 +97,9 @@ async function binding(db: ReadDb): Promise<string | null> {
     db.execute(sql`SELECT count(*)::int AS n, coalesce(max(id), 0)::int AS max_id, coalesce(max(updated_at), 'epoch')::text AS updated
       FROM sku_identifiers WHERE kind = 'external' AND scope IN (${PLATFORM_SKU_IDENTIFIER_SCOPE}, 'JIANDAOYUN:PDD')`),
   ]);
-  if (!sales) return null;
+  if (!sales && !pddOrders) return null;
   const [d] = resultRows<Record<string, unknown>>(direct);
-  return `sales:${sales.importJobId}|refunds:${refunds?.importJobId ?? "none"}|crosswalk:${crosswalk?.importJobId ?? "none"}|pdd:${pddOrders?.importJobId ?? "none"}:${pddCrosswalk?.importJobId ?? "none"}|direct:${intValue(d?.n)}:${intValue(d?.max_id)}:${String(d?.updated ?? "")}`;
+  return `sales:${sales?.importJobId ?? "none"}|refunds:${refunds?.importJobId ?? "none"}|crosswalk:${crosswalk?.importJobId ?? "none"}|pdd:${pddOrders?.importJobId ?? "none"}:${pddCrosswalk?.importJobId ?? "none"}|direct:${intValue(d?.n)}:${intValue(d?.max_id)}:${String(d?.updated ?? "")}`;
 }
 
 export function emptyExternalVelocity(gate: string): ExternalVelocity {
@@ -126,7 +126,9 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
     latestBatch(db, "pdd-order-observation"),
     latestBatch(db, "pdd-sku-crosswalk-observation"),
   ]);
-  if (!sales) return emptyExternalVelocity("缺少天猫日销量的成功批次，外部销速保持关闭。");
+  if (!sales && !pddOrders) {
+    return emptyExternalVelocity("缺少天猫日销量和拼多多订单的成功批次，外部销速保持关闭。");
+  }
 
   // 全部在 SQL 里做：身份映射（对照表唯一 skuId ∪ 直接认领）→ 按 SKU × 窗口聚合。
   // 每批 6.8 万行，聚合约 0.3 s；页面永远只读缓存。
@@ -163,7 +165,7 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
              CASE WHEN trim(coalesce(payload->'data'->>'paidNumber','')) ~ '^-?[0-9]+([.][0-9]+)?$'
                   THEN (payload->'data'->>'paidNumber')::numeric ELSE 0 END AS paid
       FROM staging_rows
-      WHERE import_job_id = ${sales.importJobId}
+      WHERE import_job_id = ${sales?.importJobId ?? -1}
         AND target_table = 'jdy_tmall_sku_sales_observation'
         AND status IN ('pending', 'validated', 'committed')
         AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
@@ -309,7 +311,7 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
     gate: ready
       ? `观察口径：天猫支付件数 − 成功退款子订单数 + 拼多多有效订单件数（剔除已取消/退款成功），锚点 ${anchorDate}；只覆盖已映射到系统 SKU 的平台 SKU（天猫 ${mappedPlatformSkus}/${platformSkus}${pddOrders ? "，拼多多按对照表身份" : "，拼多多订单未同步"}）。`
       : "最新批次里没有能归到系统 SKU 的天猫销量，外部销速保持关闭。",
-    sourceAsOf: sales.sourceAsOf,
+    sourceAsOf: sales?.sourceAsOf ?? null,
     pddSourceAsOf: pddOrders?.sourceAsOf ?? null,
     anchorDate,
     coverage: { platformSkus, mappedPlatformSkus, mappedSkus },
@@ -324,7 +326,7 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
 
 export async function loadExternalVelocity(db: ReadDb): Promise<ExternalVelocity> {
   const key = await binding(db);
-  if (!key) return emptyExternalVelocity("缺少天猫日销量的成功批次，外部销速保持关闭。");
+  if (!key) return emptyExternalVelocity("缺少天猫日销量和拼多多订单的成功批次，外部销速保持关闭。");
   const cached = await db.execute(sql`
     SELECT payload FROM report_read_model_cache WHERE key = ${READ_MODEL_CACHE_KEY} AND source_binding = ${key} LIMIT 1
   `);
@@ -339,7 +341,7 @@ export async function loadExternalVelocity(db: ReadDb): Promise<ExternalVelocity
 
 export async function refreshExternalVelocity(db: ReadDb): Promise<ExternalVelocity> {
   const key = await binding(db);
-  if (!key) return emptyExternalVelocity("缺少天猫日销量的成功批次，外部销速保持关闭。");
+  if (!key) return emptyExternalVelocity("缺少天猫日销量和拼多多订单的成功批次，外部销速保持关闭。");
   const result = await computeExternalVelocity(db);
   await db.execute(sql`
     INSERT INTO report_read_model_cache (key, source_binding, payload, built_at)

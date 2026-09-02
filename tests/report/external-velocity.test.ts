@@ -185,4 +185,41 @@ describe("外部观察销速读模型", () => {
       await client.close();
     }
   });
+
+  it("没有天猫批次时，拼多多成功批次仍可独立形成外部销速并命中缓存", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "拼多多独立观察责任人" }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "P-PDD-ONLY", nameCn: "拼多多独立观察" }).returning();
+      const [sku] = await db.insert(schema.skus).values({
+        code: "PDD-ONLY-001", name: "拼多多独立观察成品", spuId: spu.id,
+        skuType: "finished", baseUom: "支", commercialRole: "retail",
+      }).returning();
+      const [job] = await db.insert(schema.importJobs).values({
+        template: "jdy_pdd_order_observation", filename: "pdd-only", sourceAsOf: "2026-09-02",
+        createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-only",
+        status: "succeeded", importJobId: job.id, finishedAt: new Date("2026-09-02T04:00:00.000Z"),
+      });
+      const shop = "无品牌名的拼多多店";
+      await db.insert(schema.skuIdentifiers).values({
+        skuId: sku.id, kind: "external", scope: "JIANDAOYUN:PDD",
+        value: `${shop}|PID-ONLY|M-ONLY`, active: true, isPrimary: false, createdBy: actor.id,
+      });
+      await db.insert(schema.stagingRows).values({
+        importJobId: job.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation",
+        payload: { data: { statisticalDate: "2026-09-01", shopName: shop, orderNumber: "PDD-ONLY-O1", productId: "PID-ONLY", merchantSkuCode: "M-ONLY", productQuantity: "6", orderStatus: "待发货" } },
+      });
+
+      const computed = await computeExternalVelocity(db);
+      expect(computed).toMatchObject({ state: "ready", sourceAsOf: null, pddSourceAsOf: "2026-09-02", anchorDate: "2026-09-01" });
+      expect(computed.bySku[String(sku.id)]).toMatchObject({ pddNet30: 6, net30: 6 });
+      const cached = await loadExternalVelocity(db);
+      expect(cached.bySku[String(sku.id)]?.pddNet30).toBe(6);
+    } finally {
+      await client.close();
+    }
+  });
 });
