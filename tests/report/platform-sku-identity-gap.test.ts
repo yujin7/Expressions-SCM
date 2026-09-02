@@ -96,6 +96,9 @@ async function seed() {
     // P2：对照表里只有条码、没解析 → 对照表无编码
     { importJobId: crosswalk.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation",
       payload: { data: { shopName: shop, platformSkuId: "P2", barcode: "6900000000002" }, _identity: {} } },
+    // P5：没有商家编码，但「关联货品」就是系统编码 → 第四条确定性线索
+    { importJobId: crosswalk.id, rowNo: 4, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation",
+      payload: { data: { shopName: shop, platformSkuId: "P5", relatedGoods: "N062-000" }, _identity: {} } },
     // P4：商家编码与系统编码逐字相等但同步未认领（治理：外部码不自动认领）→ 精确命中候选
     { importJobId: crosswalk.id, rowNo: 3, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation",
       payload: { data: { shopName: shop, platformSkuId: "P4", merchantSkuCode: "N009-000" }, _identity: {} } },
@@ -110,6 +113,8 @@ async function seed() {
       payload: { data: { statisticalDate: "2026-08-10", shopName: shop, skuId: "P2", productName: "NING眼霜", skuName: "净含量:15g", paidNumber: "1", paidAmount: "199" } } },
     { importJobId: sales.id, rowNo: 5, status: "pending", targetTable: "jdy_tmall_sku_sales_observation",
       payload: { data: { statisticalDate: "2026-08-10", shopName: shop, skuId: "P4", productName: "NING泥膜", skuName: "净含量:220g", paidNumber: "2", paidAmount: "300" } } },
+    { importJobId: sales.id, rowNo: 6, status: "pending", targetTable: "jdy_tmall_sku_sales_observation",
+      payload: { data: { statisticalDate: "2026-08-10", shopName: shop, skuId: "P5", productName: "NING面膜", skuName: "净含量:100g", paidNumber: "1", paidAmount: "100" } } },
     { importJobId: refunds.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
       payload: { data: { statisticalDate: "2026-08-11", shopName: shop, skuId: "P3", successRefundSuborderNumber: "1" } } },
   ]);
@@ -118,21 +123,21 @@ async function seed() {
 
 describe("平台 SKU 身份缺口读模型", () => {
   it("按支付金额倒序、状态分类正确、只给缺口算候选", async () => {
-    const { db, client, mudMask } = await seed();
+    const { db, client, mudMask, mapped } = await seed();
     try {
       const gap = await computePlatformSkuIdentityGap(db);
       expect(gap.state).toBe("ready");
-      expect(gap.totals.platformSkus).toBe(4);
+      expect(gap.totals.platformSkus).toBe(5);
       expect(gap.totals.mappedSkus).toBe(1);
-      expect(gap.totals.paidAmount).toBe("10499.50");
+      expect(gap.totals.paidAmount).toBe("10599.50");
       expect(gap.totals.mappedPaidAmount).toBe("3000.00");
-      expect(gap.totals.unmappedPaidAmount).toBe("7499.50");
-      expect(gap.totals.mappedAmountPct).toBe(28.6);
+      expect(gap.totals.unmappedPaidAmount).toBe("7599.50");
+      expect(gap.totals.mappedAmountPct).toBe(28.3);
       expect(gap.totals.byStatus.not_in_crosswalk.skus).toBe(1);
-      expect(gap.totals.byStatus.crosswalk_without_code.skus).toBe(2);
+      expect(gap.totals.byStatus.crosswalk_without_code.skus).toBe(3);
 
       // top 只含缺口，P3（¥7000.5）排第一
-      expect(gap.top.map((r) => r.platformSkuId)).toEqual(["P3", "P4", "P2"]);
+      expect(gap.top.map((r) => r.platformSkuId)).toEqual(["P3", "P4", "P2", "P5"]);
       const p3 = gap.top[0]!;
       expect(p3.status).toBe("not_in_crosswalk");
       expect(p3.paidAmount).toBe("7000.50");
@@ -149,8 +154,11 @@ describe("平台 SKU 身份缺口读模型", () => {
       // P4：精确命中 → 候选分 100，并进入 exactHits 供批量认领
       expect(gap.top[1]!.platformSkuId).toBe("P4");
       expect(gap.top[1]!.candidates[0]).toMatchObject({ skuId: mudMask.id, score: 100 });
-      expect(gap.exactHits).toEqual([{ shopName: gap.top[1]!.shopName, platformSkuId: "P4", skuId: mudMask.id, skuCode: "N009-000", paidAmount: "300.00", source: "crosswalk" }]);
-      expect(gap.exactHitAmountPct).toBe(2.9);
+      expect(gap.exactHits).toEqual([
+        { shopName: gap.top[1]!.shopName, platformSkuId: "P4", skuId: mudMask.id, skuCode: "N009-000", paidAmount: "300.00", source: "crosswalk" },
+        { shopName: gap.top[1]!.shopName, platformSkuId: "P5", skuId: mapped.id, skuCode: "N062-000", paidAmount: "100.00", source: "related_goods" },
+      ]);
+      expect(gap.exactHitAmountPct).toBe(3.8);
       expect(gap.top[2]!.status).toBe("crosswalk_without_code");
       expect(gap.top[2]!.barcode).toBe("6900000000002");
     } finally {
@@ -184,7 +192,7 @@ describe("平台 SKU 身份缺口读模型", () => {
       const gap = await computePlatformSkuIdentityGap(db);
       expect(gap.totals.byStatus.direct_claimed.skus).toBe(1);
       expect(gap.totals.mappedPaidAmount).toBe("10000.50");
-      expect(gap.top.map((r) => r.platformSkuId)).toEqual(["P4", "P2"]);
+      expect(gap.top.map((r) => r.platformSkuId)).toEqual(["P4", "P2", "P5"]);
 
       const after = await refreshJiandaoyunExternalDemandReadModel(db);
       expect(after.coverage.mappedIdentities).toBe(2);
@@ -321,7 +329,8 @@ describe("平台 SKU 身份缺口读模型", () => {
       expect(r.results[1]!.error).toMatch(/已关联/);
       const gap = await computePlatformSkuIdentityGap(db);
       expect(gap.totals.byStatus.direct_claimed.skus).toBe(2);
-      expect(gap.exactHits).toEqual([]);
+      // P3/P4 已认领；只剩「关联货品」线索的 P5
+      expect(gap.exactHits.map((h) => h.platformSkuId)).toEqual(["P5"]);
     } finally {
       await client.close();
     }
@@ -347,7 +356,7 @@ describe("平台 SKU 身份缺口读模型", () => {
       const p3 = gap.top.find((r) => r.platformSkuId === "P3")!;
       expect(p3.status).toBe("not_in_crosswalk");
       expect(p3.candidates[0]).toMatchObject({ skuId: mudMask.id, score: 100 });
-      expect(gap.exactHits.map((h) => [h.platformSkuId, h.source]).sort()).toEqual([["P3", "unit_daily"], ["P4", "crosswalk"]]);
+      expect(gap.exactHits.map((h) => [h.platformSkuId, h.source]).sort()).toEqual([["P3", "unit_daily"], ["P4", "crosswalk"], ["P5", "related_goods"]]);
     } finally {
       await client.close();
     }

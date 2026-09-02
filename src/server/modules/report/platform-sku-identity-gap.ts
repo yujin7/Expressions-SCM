@@ -27,7 +27,8 @@ interface ReadDb {
 }
 
 export const PLATFORM_SKU_IDENTIFIER_SCOPE = "JIANDAOYUN:TMALL";
-const READ_MODEL_CACHE_KEY = "jiandaoyun-platform-sku-identity-gap/v2";
+// v3（2026-09-02）：冲突优先于直接认领，候选覆盖率按全部缺口计算；升版避免复用旧口径缓存
+const READ_MODEL_CACHE_KEY = "jiandaoyun-platform-sku-identity-gap/v3";
 const TOP_ROWS = 60;
 const MAX_CANDIDATES = 3;
 const MIN_CANDIDATE_SCORE = 60;
@@ -99,7 +100,7 @@ export interface PlatformSkuIdentityGap {
    * 治理规定外部码即使同码也不自动认领（tests/integrations/jiandaoyun-identity-boundary），
    * 所以这里只是把确定性线索攒成一批，供人复核后一次确认。
    */
-  exactHits: { shopName: string; platformSkuId: string; skuId: number; skuCode: string; paidAmount: string; source: "crosswalk" | "unit_daily" }[];
+  exactHits: { shopName: string; platformSkuId: string; skuId: number; skuCode: string; paidAmount: string; source: "crosswalk" | "related_goods" | "unit_daily" }[];
   exactHitAmountPct: number | null;
   /**
    * 拼多多：对照表商家编码与系统编码逐字相等、且尚未认领到 JIANDAOYUN:PDD 的 (店铺, 商品ID, 商家编码)。
@@ -288,6 +289,9 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
                payload->'data'->>'platformSkuId' AS platform_sku_id,
                max(nullif(trim(payload->'data'->>'barcode'), '')) AS barcode,
                max(nullif(trim(payload->'data'->>'merchantSkuCode'), '')) AS merchant_code,
+               -- 「关联货品」实核是系统 SKU 编码（DEV034-000 这类），对照表里 100% 填充；同步只解析条码，这里当第四条确定性线索
+               count(DISTINCT nullif(trim(payload->'data'->>'relatedGoods'), ''))::int AS related_count,
+               max(nullif(trim(payload->'data'->>'relatedGoods'), '')) AS related_goods,
                count(DISTINCT (payload->'_identity'->>'skuId'))::int AS identity_count,
                max(payload->'_identity'->>'skuId') AS sku_id
         FROM staging_rows
@@ -373,12 +377,13 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
   for (const row of resultRows<Record<string, unknown>>(refundResult)) {
     refunds.set(`${textValue(row.shop_name)}|${textValue(row.platform_sku_id)}`, intValue(row.refund_qty));
   }
-  const crosswalk = new Map<string, { barcode: string | null; merchantCode: string | null; skuId: number | null; conflicting: boolean }>();
+  const crosswalk = new Map<string, { barcode: string | null; merchantCode: string | null; relatedGoods: string | null; skuId: number | null; conflicting: boolean }>();
   for (const row of resultRows<Record<string, unknown>>(crosswalkResult)) {
     const identityCount = intValue(row.identity_count);
     crosswalk.set(`${textValue(row.shop_name)}|${textValue(row.platform_sku_id)}`, {
       barcode: textValue(row.barcode),
       merchantCode: textValue(row.merchant_code),
+      relatedGoods: intValue(row.related_count) === 1 ? textValue(row.related_goods) : null,
       skuId: identityCount === 1 ? intValue(row.sku_id) || null : null,
       conflicting: identityCount > 1,
     });
@@ -466,18 +471,19 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
     }
   }
   /** 确定性线索：对照表商家编码 或 单品汇总子货品编码 与系统编码逐字相等（两者冲突则不给） */
-  const exactFor = (row: PlatformSkuGapRow): { sku: SkuCandidateSource; reason: string; source: "crosswalk" | "unit_daily" } | null => {
+  const exactFor = (row: PlatformSkuGapRow): { sku: SkuCandidateSource; reason: string; source: "crosswalk" | "related_goods" | "unit_daily" } | null => {
     const key = `${row.shopName}|${row.platformSkuId}`;
     const bridge = crosswalk.get(key);
     if (bridge?.conflicting) return null;
-    const merchantCode = bridge?.merchantCode;
-    const unitCode = unitBridge.get(key) ?? null;
-    const byMerchant = merchantCode ? skuByCode.get(merchantCode) : undefined;
-    const byUnit = unitCode ? skuByCode.get(unitCode) : undefined;
-    if (byMerchant && byUnit && byMerchant.skuId !== byUnit.skuId) return null;
-    if (byMerchant) return { sku: byMerchant, reason: "对照表商家编码精确命中系统编码", source: "crosswalk" };
-    if (byUnit) return { sku: byUnit, reason: "天猫单品汇总子货品编码精确命中系统编码", source: "unit_daily" };
-    return null;
+    const candidates = [
+      { sku: bridge?.merchantCode ? skuByCode.get(bridge.merchantCode) : undefined, reason: "对照表商家编码精确命中系统编码", source: "crosswalk" as const },
+      { sku: bridge?.relatedGoods ? skuByCode.get(bridge.relatedGoods) : undefined, reason: "对照表「关联货品」精确命中系统编码", source: "related_goods" as const },
+      { sku: unitBridge.get(key) ? skuByCode.get(unitBridge.get(key)!) : undefined, reason: "天猫单品汇总子货品编码精确命中系统编码", source: "unit_daily" as const },
+    ].filter((c): c is { sku: SkuCandidateSource; reason: string; source: "crosswalk" | "related_goods" | "unit_daily" } => Boolean(c.sku));
+    if (candidates.length === 0) return null;
+    // 多条线索指向不同 SKU 视为冲突，不给确定性线索
+    if (new Set(candidates.map((c) => c.sku.skuId)).size > 1) return null;
+    return candidates[0]!;
   };
   const candidatesFor = (row: PlatformSkuGapRow): PlatformSkuGapCandidate[] => {
     const exact = exactFor(row);

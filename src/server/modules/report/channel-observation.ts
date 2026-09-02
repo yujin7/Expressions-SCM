@@ -100,9 +100,10 @@ function brandOfShop(shop: string, brands: { code: string; names: string[] }[]):
 }
 
 export async function computeChannelObservation(db: ReadDb): Promise<ChannelObservation> {
-  const [tmallSales, tmallRefunds, vip, pnl, brandRows] = await Promise.all([
+  const [tmallSales, tmallRefunds, crosswalkBatch, vip, pnl, brandRows] = await Promise.all([
     latestBatch(db, "tmall-sku-sales-observation"),
     latestBatch(db, "tmall-sku-refund-observation"),
+    latestBatch(db, "tmall-sku-crosswalk-observation"),
     latestBatch(db, "vip-shop-trading-observation"),
     latestBatch(db, "tmall-product-pnl-observation"),
     db.execute(sql`SELECT code, name_cn, name_en FROM brands`),
@@ -116,41 +117,76 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
   if (tmallSales) {
     const rows = resultRows<Record<string, unknown>>(await db.execute(sql`
       WITH s AS (
-        SELECT payload->'data'->>'shopName' AS shop, left(payload->'data'->>'statisticalDate', 10)::date AS d,
+        SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'skuId' AS psku, left(payload->'data'->>'statisticalDate', 10)::date AS d,
                CASE WHEN trim(coalesce(payload->'data'->>'paidNumber','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'paidNumber')::numeric ELSE 0 END AS paid,
                CASE WHEN trim(coalesce(payload->'data'->>'paidAmount','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'paidAmount')::numeric ELSE 0 END AS amt
         FROM staging_rows WHERE import_job_id = ${tmallSales.importJobId} AND target_table = 'jdy_tmall_sku_sales_observation'
           AND status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
       ),
       r AS (
-        SELECT payload->'data'->>'shopName' AS shop, left(payload->'data'->>'statisticalDate', 10)::date AS d,
+        SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'skuId' AS psku, left(payload->'data'->>'statisticalDate', 10)::date AS d,
                CASE WHEN trim(coalesce(payload->'data'->>'successRefundSuborderNumber','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'successRefundSuborderNumber')::numeric ELSE 0 END AS refund
         FROM staging_rows WHERE import_job_id = ${tmallRefunds?.importJobId ?? -1} AND target_table = 'jdy_tmall_sku_refund_observation'
           AND status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
       ),
-      a AS (SELECT max(d) AS d FROM s)
-      SELECT 'anchor' AS kind, a.d::text AS shop, NULL::numeric AS paid, NULL::numeric AS amt, NULL::numeric AS refund FROM a
+      a AS (SELECT max(d) AS d FROM s),
+      cw AS (
+        SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'platformSkuId' AS psku,
+               max((payload->'_identity'->>'skuId')::int) AS sku_id, count(DISTINCT payload->'_identity'->>'skuId') AS n
+        FROM staging_rows WHERE import_job_id = ${crosswalkBatch?.importJobId ?? -1} AND target_table = 'jdy_tmall_sku_crosswalk_observation'
+          AND status IN ('pending','validated','committed') AND payload->'_identity'->>'skuId' IS NOT NULL
+        GROUP BY 1, 2
+      ),
+      direct AS (
+        SELECT split_part(value, '|', 1) AS shop, split_part(value, '|', 2) AS psku, sku_id
+        FROM sku_identifiers WHERE kind = 'external' AND scope = 'JIANDAOYUN:TMALL' AND active = true
+      ),
+      map AS (
+        SELECT coalesce(cw.shop, d.shop) AS shop, coalesce(cw.psku, d.psku) AS psku,
+               CASE WHEN cw.n = 1 THEN cw.sku_id WHEN cw.n IS NULL THEN d.sku_id ELSE NULL END AS sku_id
+        FROM cw FULL JOIN direct d ON d.shop = cw.shop AND d.psku = cw.psku
+      ),
+      sb AS (
+        SELECT s.shop, coalesce(b.code, '') AS brand, s.paid, s.amt
+        FROM s CROSS JOIN a
+        LEFT JOIN map m ON m.shop = s.shop AND m.psku = s.psku
+        LEFT JOIN skus k ON k.id = m.sku_id
+        LEFT JOIN brands b ON b.id = k.brand_id
+        WHERE s.d > a.d - ${WINDOW_DAYS}::int
+      )
+      SELECT 'anchor' AS kind, a.d::text AS shop, NULL::text AS brand, NULL::numeric AS paid, NULL::numeric AS amt, NULL::numeric AS refund FROM a
       UNION ALL
-      SELECT 'shop', s.shop, sum(s.paid), sum(s.amt), 0 FROM s CROSS JOIN a WHERE s.d > a.d - ${WINDOW_DAYS}::int GROUP BY s.shop
+      SELECT 'shop', sb.shop, sb.brand, sum(sb.paid), sum(sb.amt), 0 FROM sb GROUP BY sb.shop, sb.brand
       UNION ALL
-      SELECT 'refund', r.shop, 0, 0, sum(r.refund) FROM r CROSS JOIN a WHERE r.d > a.d - ${WINDOW_DAYS}::int GROUP BY r.shop
+      SELECT 'refund', r.shop, coalesce(b.code, ''), 0, 0, sum(r.refund)
+      FROM r CROSS JOIN a
+      LEFT JOIN map m ON m.shop = r.shop AND m.psku = r.psku
+      LEFT JOIN skus k ON k.id = m.sku_id
+      LEFT JOIN brands b ON b.id = k.brand_id
+      WHERE r.d > a.d - ${WINDOW_DAYS}::int GROUP BY r.shop, coalesce(b.code, '')
     `));
     const anchor = rows.find((x) => x.kind === "anchor")?.shop ? String(rows.find((x) => x.kind === "anchor")!.shop) : null;
     const byShop = new Map<string, { units: number; amount: string; refund: number }>();
+    const byBrand = new Map<string, { units: number; amount: string }>();
+    let units = 0, refund = 0, amount = "0.00";
     for (const x of rows) {
       if (x.kind === "anchor") continue;
       const shop = String(x.shop ?? "");
       const cur = byShop.get(shop) ?? { units: 0, amount: "0.00", refund: 0 };
       cur.units += num(x.paid); cur.amount = dAdd(cur.amount, money(x.amt), 2); cur.refund += num(x.refund);
       byShop.set(shop, cur);
-    }
-    const byBrand = new Map<string, { units: number; amount: string }>();
-    let units = 0, refund = 0, amount = "0.00";
-    for (const [shop, v] of byShop) {
-      units += v.units - v.refund; refund += v.refund; amount = dAdd(amount, v.amount, 2);
-      const b = brandOfShop(shop, brands);
-      const cur = byBrand.get(b) ?? { units: 0, amount: "0.00" };
-      cur.units += v.units - v.refund; cur.amount = dAdd(cur.amount, v.amount, 2); byBrand.set(b, cur);
+      if (x.kind === "shop") {
+        // 已映射的平台 SKU 用系统 SKU 的品牌；未映射的才按店铺名推断（双品牌店不再一律"未归属"）
+        const brand = text(x.brand) ?? brandOfShop(shop, brands);
+        const b = byBrand.get(brand) ?? { units: 0, amount: "0.00" };
+        b.units += num(x.paid); b.amount = dAdd(b.amount, money(x.amt), 2); byBrand.set(brand, b);
+        units += num(x.paid); amount = dAdd(amount, money(x.amt), 2);
+      } else if (x.kind === "refund") {
+        refund += num(x.refund); units -= num(x.refund);
+        const brand = text(x.brand) ?? brandOfShop(shop, brands);
+        const b = byBrand.get(brand) ?? { units: 0, amount: "0.00" };
+        b.units -= num(x.refund); byBrand.set(brand, b);
+      }
     }
     tmall = {
       platform: "天猫", state: anchor ? "ready" : "insufficient", grain: "统计日 × 店铺 × 平台 SKU",
@@ -158,7 +194,7 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
       units, amount, refundUnits: refund,
       byBrand: [...byBrand.entries()].map(([brand, v]) => ({ brand, ...v })).sort((a, b) => b.units - a.units),
       byShop: [...byShop.entries()].map(([shop, v]) => ({ shop, units: v.units - v.refund, amount: v.amount })).sort((a, b) => b.units - a.units),
-      gate: "支付件数 − 成功退款子订单数；金额为支付金额（未扣退款与费用）。",
+      gate: "支付件数 − 成功退款子订单数；金额为支付金额（未扣退款与费用）。品牌按已映射系统 SKU 归属，未映射按店铺名推断。",
     };
   }
 
@@ -327,7 +363,9 @@ async function binding(db: ReadDb): Promise<string> {
   const pdd = resultRows<Record<string, unknown>>(await db.execute(sql`
     SELECT coalesce(max(ir.import_job_id), 0)::int AS j FROM integration_runs ir
     WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation' AND ir.status = 'succeeded'`))[0];
-  return `tmall:${a?.importJobId ?? "none"}:${b?.importJobId ?? "none"}|vip:${c?.importJobId ?? "none"}|pnl:${d?.importJobId ?? "none"}|pdd:${num(pdd?.j)}`;
+  const cw = await latestBatch(db, "tmall-sku-crosswalk-observation");
+  const claims = resultRows<Record<string, unknown>>(await db.execute(sql`SELECT count(*)::int AS n, coalesce(max(id), 0)::int AS m FROM sku_identifiers WHERE kind = 'external' AND scope = 'JIANDAOYUN:TMALL'`))[0];
+  return `tmall:${a?.importJobId ?? "none"}:${b?.importJobId ?? "none"}:${cw?.importJobId ?? "none"}:${num(claims?.n)}:${num(claims?.m)}|vip:${c?.importJobId ?? "none"}|pnl:${d?.importJobId ?? "none"}|pdd:${num(pdd?.j)}`;
 }
 
 export async function loadChannelObservation(db: ReadDb): Promise<ChannelObservation> {
