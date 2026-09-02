@@ -20,7 +20,7 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v7";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v8";
 const PLATFORM_SKU_IDENTIFIER_SCOPE = "JIANDAOYUN:TMALL";
 
 export interface ExternalVelocityBySku {
@@ -29,7 +29,7 @@ export interface ExternalVelocityBySku {
   net30: string;
   paid90: string;
   refund90: string;
-  net90: string;
+  net90: string | null;
   /** 最近一次有支付件数的业务日 */
   lastSoldDate: string | null;
   /** 近 90 天有支付的天数 */
@@ -61,6 +61,8 @@ export interface ExternalVelocity {
     mappedSkus: number;
     pddObservedDays30: number;
     pddWindowComplete30: boolean;
+    pddObservedDays90: number;
+    pddWindowComplete90: boolean;
   };
   bySku: Record<string, ExternalVelocityBySku>;
   limitations: string[];
@@ -138,7 +140,15 @@ export function emptyExternalVelocity(gate: string): ExternalVelocity {
     sourceAsOf: null,
     pddSourceAsOf: null,
     anchorDate: null,
-    coverage: { platformSkus: 0, mappedPlatformSkus: 0, mappedSkus: 0, pddObservedDays30: 0, pddWindowComplete30: false },
+    coverage: {
+      platformSkus: 0,
+      mappedPlatformSkus: 0,
+      mappedSkus: 0,
+      pddObservedDays30: 0,
+      pddWindowComplete30: false,
+      pddObservedDays90: 0,
+      pddWindowComplete90: false,
+    },
     bySku: {},
     limitations: [gate],
   };
@@ -152,8 +162,13 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
     latestBatch(db, "pdd-order-observation"),
     latestBatch(db, "pdd-sku-crosswalk-observation"),
   ]);
-  if (!sales && !pddOrders) {
-    return emptyExternalVelocity("缺少天猫日销量和拼多多订单的成功批次，外部销速保持关闭。");
+  const tmallReady = Boolean(sales && refunds);
+  if (!tmallReady && !pddOrders) {
+    return emptyExternalVelocity(
+      sales && !refunds
+        ? "缺少天猫成功退款成功批次，净需求保持关闭。"
+        : "缺少天猫日销量和拼多多订单的成功批次，外部销速保持关闭。",
+    );
   }
 
   // 全部在 SQL 里做：身份映射（对照表唯一 skuId ∪ 直接认领）→ 按 SKU × 窗口聚合。
@@ -192,7 +207,7 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
              CASE WHEN trim(coalesce(payload->'data'->>'paidNumber','')) ~ '^-?[0-9]+([.][0-9]+)?$'
                   THEN (payload->'data'->>'paidNumber')::numeric ELSE 0 END AS paid
       FROM staging_rows
-      WHERE import_job_id = ${sales?.importJobId ?? -1}
+      WHERE import_job_id = ${tmallReady ? sales!.importJobId : -1}
         AND target_table = 'jdy_tmall_sku_sales_observation'
         AND status IN ('pending', 'validated', 'committed')
         AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
@@ -204,7 +219,7 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
              CASE WHEN trim(coalesce(payload->'data'->>'successRefundSuborderNumber','')) ~ '^-?[0-9]+([.][0-9]+)?$'
                   THEN (payload->'data'->>'successRefundSuborderNumber')::numeric ELSE 0 END AS refund
       FROM staging_rows
-      WHERE import_job_id = ${refunds?.importJobId ?? -1}
+      WHERE import_job_id = ${tmallReady ? refunds!.importJobId : -1}
         AND target_table = 'jdy_tmall_sku_refund_observation'
         AND status IN ('pending', 'validated', 'committed')
         AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
@@ -365,27 +380,32 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
       FROM s LEFT JOIN map m ON m.shop = s.shop AND m.psku = s.psku
     ),
     pdd_cov AS (
-      SELECT count(DISTINCT o.d) FILTER (WHERE o.d > a.d - 30 AND o.d <= a.d)::int AS observed_days30
+      SELECT count(DISTINCT o.d) FILTER (WHERE o.d > a.d - 30 AND o.d <= a.d)::int AS observed_days30,
+             count(DISTINCT o.d) FILTER (WHERE o.d > a.d - 90 AND o.d <= a.d)::int AS observed_days90
       FROM anchor a LEFT JOIN pdd_observation_days o ON true
     )
     SELECT 'anchor' AS kind, a.d::text AS anchor, NULL::int AS sku_id, NULL::numeric AS paid30, NULL::numeric AS refund30, NULL::numeric AS paid90, NULL::numeric AS refund90,
            NULL::text AS last_sold, NULL::int AS active_days90, cov.platform_skus::int AS platform_skus, cov.mapped_platform_skus::int AS mapped_platform_skus,
            NULL::numeric AS tmall_paid30, NULL::numeric AS tmall_refund30, NULL::numeric AS pdd_net30, NULL::numeric AS tmall_paid90, NULL::numeric AS tmall_refund90, NULL::numeric AS pdd_net90,
            NULL::boolean AS pdd_identity_covered,
-           pdd_cov.observed_days30
+           pdd_cov.observed_days30, pdd_cov.observed_days90
     FROM anchor a CROSS JOIN cov CROSS JOIN pdd_cov
     UNION ALL
     SELECT 'sku', NULL, p.sku_id, coalesce(p.paid30, 0), coalesce(p.refund30, 0), coalesce(p.paid90, 0), coalesce(p.refund90, 0),
            p.last_sold::text, p.active_days90::int, p.platform_skus::int, NULL,
            coalesce(p.tmall_paid30, 0), coalesce(p.tmall_refund30, 0), coalesce(p.pdd_net30, 0), coalesce(p.tmall_paid90, 0), coalesce(p.tmall_refund90, 0), coalesce(p.pdd_net90, 0),
            EXISTS (SELECT 1 FROM pdd_identity pi WHERE pi.sku_id = p.sku_id),
-           NULL::int
+           NULL::int, NULL::int
     FROM per_sku p
   `);
 
   const rows = resultRows<Record<string, unknown>>(result);
   const anchorRow = rows.find((r) => r.kind === "anchor");
   const anchorDate = anchorRow?.anchor ? String(anchorRow.anchor).slice(0, 10) : null;
+  const pddObservedDays30 = intValue(anchorRow?.observed_days30);
+  const pddWindowComplete30 = !pddOrders || pddObservedDays30 >= 30;
+  const pddObservedDays90 = intValue(anchorRow?.observed_days90);
+  const pddWindowComplete90 = !pddOrders || pddObservedDays90 >= 90;
   const bySku: Record<string, ExternalVelocityBySku> = {};
   for (const row of rows) {
     if (row.kind !== "sku") continue;
@@ -397,11 +417,14 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
     const tmallNet90 = dSub(qtyValue(row.tmall_paid90), qtyValue(row.tmall_refund90), 4);
     const pddNet30 = qtyValue(row.pdd_net30);
     const pddNet90 = qtyValue(row.pdd_net90);
+    const pddIdentityCovered = row.pdd_identity_covered === true;
     bySku[String(skuId)] = {
       paid30, refund30, net30: dAdd(tmallNet30, pddNet30, 4),
-      paid90, refund90, net90: dAdd(tmallNet90, pddNet90, 4),
+      paid90, refund90,
+      // 有拼多多身份但 90 天抽取不连续时，组合 90 天总量未知；绝不把缺失日当 0。
+      net90: pddIdentityCovered && !pddWindowComplete90 ? null : dAdd(tmallNet90, pddNet90, 4),
       tmallNet30, pddNet30, tmallNet90, pddNet90,
-      pddIdentityCovered: row.pdd_identity_covered === true,
+      pddIdentityCovered,
       lastSoldDate: row.last_sold ? String(row.last_sold).slice(0, 10) : null,
       activeDays90: intValue(row.active_days90),
       platformSkus: intValue(row.platform_skus),
@@ -410,8 +433,6 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
   const mappedSkus = Object.keys(bySku).length;
   const platformSkus = intValue(anchorRow?.platform_skus);
   const mappedPlatformSkus = intValue(anchorRow?.mapped_platform_skus);
-  const pddObservedDays30 = intValue(anchorRow?.observed_days30);
-  const pddWindowComplete30 = !pddOrders || pddObservedDays30 >= 30;
   const ready = anchorDate != null && mappedSkus > 0;
   return {
     state: ready ? "ready" : "insufficient",
@@ -421,10 +442,18 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
     gate: ready
       ? `观察口径：天猫支付件数 − 成功退款子订单数 + 拼多多已付款有效订单件数，锚点 ${anchorDate}；只覆盖已映射到系统 SKU 的平台 SKU（天猫 ${mappedPlatformSkus}/${platformSkus}${pddOrders ? "，拼多多按对照表身份" : "，拼多多订单未同步"}）。`
       : "最新可用批次里没有能归到系统 SKU 的天猫/拼多多需求，外部销速保持关闭。",
-    sourceAsOf: sales?.sourceAsOf ?? null,
+    sourceAsOf: tmallReady ? sales!.sourceAsOf : null,
     pddSourceAsOf: pddOrders?.sourceAsOf ?? null,
     anchorDate,
-    coverage: { platformSkus, mappedPlatformSkus, mappedSkus, pddObservedDays30, pddWindowComplete30 },
+    coverage: {
+      platformSkus,
+      mappedPlatformSkus,
+      mappedSkus,
+      pddObservedDays30,
+      pddWindowComplete30,
+      pddObservedDays90,
+      pddWindowComplete90,
+    },
     bySku,
     limitations: [
       "只是影子列：不改销速口径、不写 sales_monthly、不驱动补货；内部事实与外部观察时点不同。",
@@ -433,6 +462,9 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
       pddOrders && !pddWindowComplete30
         ? `拼多多在共同锚点前 30 天内仅观测到 ${pddObservedDays30} 个业务日；包含拼多多的 SKU 暂不折算 30 天日均。`
         : "拼多多近 30 天观测窗口已达到折算日均的要求。",
+      pddOrders && !pddWindowComplete90
+        ? `拼多多在共同锚点前 90 天内仅观测到 ${pddObservedDays90} 个业务日；包含拼多多的 SKU 暂不发布组合 90 天净需求。`
+        : "拼多多近 90 天观测窗口已达到汇总要求。",
     ],
   };
 }

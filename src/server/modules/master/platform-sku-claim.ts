@@ -83,6 +83,8 @@ async function assertClaimIsConsistent(
         AND ir.stream = 'tmall-sku-crosswalk-observation'
         AND ir.status = 'succeeded'
         AND ir.import_job_id IS NOT NULL
+        AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+        AND coalesce(ir.request_scope->>'emptySource', 'false') = 'false'
       ORDER BY ir.started_at DESC, ir.id DESC
       LIMIT 1
     )
@@ -93,6 +95,7 @@ async function assertClaimIsConsistent(
     INNER JOIN latest ON latest.import_job_id = sr.import_job_id
     WHERE sr.target_table = 'jdy_tmall_sku_crosswalk_observation'
       AND sr.status IN ('pending', 'validated', 'committed')
+      AND nullif(trim(sr.payload->>'sourceDeletedAt'), '') IS NULL
       AND sr.payload->'data'->>'shopName' = ${input.shopName}
       AND sr.payload->'data'->>'platformSkuId' = ${input.platformSkuId}
   ` as SQL);

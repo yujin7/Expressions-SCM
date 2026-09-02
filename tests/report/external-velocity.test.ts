@@ -93,6 +93,41 @@ describe("外部观察销速读模型", () => {
       await client.close();
     }
   });
+
+  it("天猫退款流缺失时不发布净需求，避免把未知退款当零", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "退款流门禁责任人" }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "P-NO-REFUND", nameCn: "退款门禁商品" }).returning();
+      const [sku] = await db.insert(schema.skus).values({
+        code: "NO-REFUND-001", name: "退款门禁成品", spuId: spu.id,
+        skuType: "finished", baseUom: "支", commercialRole: "retail",
+      }).returning();
+      const [sales] = await db.insert(schema.importJobs).values({
+        template: "jdy_tmall_sku_sales_observation", filename: "sales-without-refunds", sourceAsOf: "2026-09-02",
+        createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "tmall-sku-sales-observation", idempotencyKey: "sales-without-refunds",
+        status: "succeeded", importJobId: sales.id, finishedAt: new Date("2026-09-02T03:00:00.000Z"),
+      });
+      const shop = "天猫退款门禁店";
+      await db.insert(schema.skuIdentifiers).values({
+        skuId: sku.id, kind: "external", scope: "JIANDAOYUN:TMALL", value: `${shop}|P1`, createdBy: actor.id,
+      });
+      await db.insert(schema.stagingRows).values({
+        importJobId: sales.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_sales_observation",
+        payload: { data: { statisticalDate: "2026-09-01", shopName: shop, skuId: "P1", paidNumber: "99" } },
+      });
+
+      const result = await computeExternalVelocity(db);
+      expect(result).toMatchObject({ state: "insufficient", sourceAsOf: null, bySku: {} });
+      expect(result.gate).toMatch(/退款/);
+    } finally {
+      await client.close();
+    }
+  });
+
   it("按批次最大业务日锚定 30/90 天窗口，两条身份桥都算，未映射不计入", async () => {
     const { db, client, actor, viaCrosswalk, viaDirect, unmapped } = await seed();
     try {
@@ -116,6 +151,8 @@ describe("外部观察销速读模型", () => {
         mappedSkus: 2,
         pddObservedDays30: 0,
         pddWindowComplete30: true,
+        pddObservedDays90: 0,
+        pddWindowComplete90: true,
       });
 
       const [emptySales] = await db.insert(schema.importJobs).values({
@@ -207,6 +244,9 @@ describe("外部观察销速读模型", () => {
       // 迟到更新带回 5 个订单日期，但实际抽取截止中午，只完整观察了 2 个自然日。
       expect(v.coverage.pddObservedDays30).toBe(2);
       expect(v.coverage.pddWindowComplete30).toBe(false);
+      expect(v.coverage.pddObservedDays90).toBe(2);
+      expect(v.coverage.pddWindowComplete90).toBe(false);
+      expect(cw.net90).toBeNull();
 
       // 新批次的删除标记必须压过旧订单版本；不能让已删除的 O1 继续贡献 2 件。
       const [deletedOrders] = await db.insert(schema.importJobs).values({
@@ -294,6 +334,8 @@ describe("外部观察销速读模型", () => {
       expect(result.anchorDate).toBe("2026-08-29");
       expect(result.coverage.pddObservedDays30).toBe(30);
       expect(result.coverage.pddWindowComplete30).toBe(true);
+      expect(result.coverage.pddObservedDays90).toBe(30);
+      expect(result.coverage.pddWindowComplete90).toBe(false);
 
       // 停机一天超过连续边界后，最新抽取岛从 8/31 重新计数；不能沿用旧 30 天资格。
       await db.insert(schema.integrationRuns).values({
@@ -313,6 +355,8 @@ describe("外部观察销速读模型", () => {
       expect(afterOutage.anchorDate).toBe("2026-09-02");
       expect(afterOutage.coverage.pddObservedDays30).toBe(3);
       expect(afterOutage.coverage.pddWindowComplete30).toBe(false);
+      expect(afterOutage.coverage.pddObservedDays90).toBe(3);
+      expect(afterOutage.coverage.pddWindowComplete90).toBe(false);
     } finally {
       await client.close();
     }

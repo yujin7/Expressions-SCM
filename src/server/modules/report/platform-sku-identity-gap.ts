@@ -269,6 +269,7 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
       WHERE import_job_id = ${salesBatch?.importJobId ?? -1}
         AND target_table = 'jdy_tmall_sku_sales_observation'
         AND status IN ('pending', 'validated', 'committed')
+        AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
         AND nullif(trim(payload->'data'->>'shopName'), '') IS NOT NULL
         AND nullif(trim(payload->'data'->>'skuId'), '') IS NOT NULL
       GROUP BY 1, 2
@@ -283,6 +284,7 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
         WHERE import_job_id = ${refundBatch.importJobId}
           AND target_table = 'jdy_tmall_sku_refund_observation'
           AND status IN ('pending', 'validated', 'committed')
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
         GROUP BY 1, 2
       `)
       : Promise.resolve([]),
@@ -301,6 +303,7 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
         WHERE import_job_id = ${crosswalkBatch.importJobId}
           AND target_table = 'jdy_tmall_sku_crosswalk_observation'
           AND status IN ('pending', 'validated', 'committed')
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
         GROUP BY 1, 2
       `)
       : Promise.resolve([]),
@@ -328,27 +331,17 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
           AND coalesce(ir.request_scope->>'emptySource', 'false') = 'false'
         ORDER BY ir.id DESC LIMIT 1
       ),
-      latest_rows AS (
-        SELECT DISTINCT ON (
-                 payload->'data'->>'shopName',
-                 payload->'data'->>'platformProductId',
-                 coalesce(payload->'data'->>'merchantSkuCode', '')
-               )
-               payload->'data'->>'shopName' AS shop,
+      rows AS (
+        SELECT payload->'data'->>'shopName' AS shop,
                payload->'data'->>'platformProductId' AS pid,
                nullif(trim(payload->'data'->>'merchantSkuCode'), '') AS mcode,
-               payload->'data'->>'productName' AS pname,
-               payload->>'sourceDeletedAt' AS source_deleted_at
-        FROM staging_rows WHERE import_job_id = (SELECT import_job_id FROM b)
-          AND target_table = 'jdy_pdd_sku_crosswalk_observation' AND status IN ('pending', 'validated', 'committed')
-        ORDER BY payload->'data'->>'shopName', payload->'data'->>'platformProductId',
-                 coalesce(payload->'data'->>'merchantSkuCode', ''), row_no DESC
-      ),
-      rows AS (
-        SELECT shop, pid, mcode, max(pname) AS pname
-        FROM latest_rows
-        WHERE nullif(trim(source_deleted_at), '') IS NULL
-        GROUP BY shop, pid, mcode
+               max(payload->'data'->>'productName') AS pname
+        FROM staging_rows
+        WHERE import_job_id = (SELECT import_job_id FROM b)
+          AND target_table = 'jdy_pdd_sku_crosswalk_observation'
+          AND status IN ('pending', 'validated', 'committed')
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
+        GROUP BY 1, 2, 3
       )
       SELECT r.shop, r.pid, r.mcode, r.pname, k.id AS sku_id, k.code AS sku_code,
              EXISTS (SELECT 1 FROM sku_identifiers i WHERE i.kind = 'external' AND i.scope = 'JIANDAOYUN:PDD' AND i.active = true
@@ -367,6 +360,7 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
         WHERE import_job_id = ${unitBatch.importJobId}
           AND target_table = 'jdy_tmall_unit_daily_observation'
           AND status IN ('pending', 'validated', 'committed')
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
           AND nullif(trim(payload->'data'->>'platformSkuId'), '') IS NOT NULL
         GROUP BY 1, 2
       `)

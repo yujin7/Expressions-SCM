@@ -106,6 +106,9 @@ async function seed() {
     // P2：对照表里只有条码、没解析 → 对照表无编码
     { importJobId: crosswalk.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation",
       payload: { data: { shopName: shop, platformSkuId: "P2", barcode: "6900000000002" }, _identity: {} } },
+    // 已删除的旧桥即使带精确系统编码，也不得覆盖 P2 的有效条码行或进入确定性线索。
+    { importJobId: crosswalk.id, rowNo: 20, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation",
+      payload: { sourceDeletedAt: "2026-08-11T02:00:00.000Z", data: { shopName: shop, platformSkuId: "P2", merchantSkuCode: "N009-000" }, _identity: { skuId: mudMask.id } } },
     // P5：没有商家编码，但「关联货品」就是系统编码 → 第四条确定性线索
     { importJobId: crosswalk.id, rowNo: 4, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation",
       payload: { data: { shopName: shop, platformSkuId: "P5", relatedGoods: "N062-000" }, _identity: {} } },
@@ -249,6 +252,9 @@ describe("平台 SKU 身份缺口读模型", () => {
         .rejects.toThrow(/相互矛盾/);
       await expect(claimPlatformSku(user, { shopName: shop, platformSkuId: "P1", skuId: mapped.id }, db))
         .resolves.toMatchObject({ created: true });
+      // 已删除的旧对照身份不得阻止人工把 P2 认领到另一个有效系统 SKU。
+      await expect(claimPlatformSku(user, { shopName: shop, platformSkuId: "P2", skuId: mapped.id }, db))
+        .resolves.toMatchObject({ created: true });
     } finally {
       await client.close();
     }
@@ -361,6 +367,8 @@ describe("平台 SKU 身份缺口读模型", () => {
           payload: { data: { statisticalDate: "2026-01-05", shopName: shop, platformSkuId: "P3", unitCode: "N009-000", paidNumber: "1" } } },
         { importJobId: unitJob.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_unit_daily_observation",
           payload: { data: { statisticalDate: "2026-01-06", shopName: shop, platformSkuId: "P3", unitCode: "N009-000", paidNumber: "2" } } },
+        { importJobId: unitJob.id, rowNo: 3, status: "pending", targetTable: "jdy_tmall_unit_daily_observation",
+          payload: { sourceDeletedAt: "2026-01-10T02:00:00.000Z", data: { statisticalDate: "2026-01-06", shopName: shop, platformSkuId: "P2", unitCode: "N009-000", paidNumber: "9" } } },
       ]);
       const gap = await computePlatformSkuIdentityGap(db);
       const p3 = gap.top.find((r) => r.platformSkuId === "P3")!;
@@ -388,9 +396,9 @@ describe("平台 SKU 身份缺口读模型", () => {
         { importJobId: pddCw.id, rowNo: 2, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
           payload: { data: { shopName: shop, platformSkuId: "PS2", platformProductId: "PID2", merchantSkuCode: "SW1557", productName: "别的命名空间" }, _identity: {} } },
         { importJobId: pddCw.id, rowNo: 3, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
-          payload: { data: { shopName: shop, platformSkuId: "PS3", platformProductId: "PID3", merchantSkuCode: "N009-000", productName: "已删泥膜" }, _identity: {} } },
+          payload: { sourceRecordId: "A-ACTIVE-REPLACEMENT", data: { shopName: shop, platformSkuId: "PS3", platformProductId: "PID3", merchantSkuCode: "N009-000", productName: "替换后的泥膜" }, _identity: {} } },
         { importJobId: pddCw.id, rowNo: 4, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
-          payload: { sourceDeletedAt: "2026-09-01T02:59:00.000Z", data: { shopName: shop, platformSkuId: "PS3", platformProductId: "PID3", merchantSkuCode: "N009-000", productName: "已删泥膜" }, _identity: {} } },
+          payload: { sourceRecordId: "Z-DELETED-OLD-RECORD", sourceDeletedAt: "2026-09-01T02:59:00.000Z", data: { shopName: shop, platformSkuId: "PS3", platformProductId: "PID3", merchantSkuCode: "N009-000", productName: "已删旧泥膜" }, _identity: {} } },
       ]);
       const [blockedJob, emptyJob] = await db.insert(schema.importJobs).values([
         { template: "jdy_pdd_sku_crosswalk_observation", filename: "pdd-cw-blocked", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
@@ -405,17 +413,23 @@ describe("平台 SKU 身份缺口读模型", () => {
         payload: { data: { shopName: "阻断店", platformProductId: "BAD", merchantSkuCode: "N009-000", productName: "不得认领" }, _identity: {} },
       });
       let gap = await computePlatformSkuIdentityGap(db);
-      expect(gap.pddSummary).toEqual({ crosswalkRows: 2, merchantCodes: 2, exactCodes: 1, claimed: 0 });
-      expect(gap.pddExactHits).toEqual([{ shopName: shop, platformSkuId: "PID1|N009-000", skuId: mudMask.id, skuCode: "N009-000", productName: "泥膜" }]);
+      expect(gap.pddSummary).toEqual({ crosswalkRows: 3, merchantCodes: 3, exactCodes: 2, claimed: 0 });
+      expect(gap.pddExactHits).toEqual([
+        { shopName: shop, platformSkuId: "PID1|N009-000", skuId: mudMask.id, skuCode: "N009-000", productName: "泥膜" },
+        { shopName: shop, platformSkuId: "PID3|N009-000", skuId: mudMask.id, skuCode: "N009-000", productName: "替换后的泥膜" },
+      ]);
 
       const user = { id: actor.id, name: actor.name, roles: ["pmc"], isApprover: false };
       const r = await claimPlatformSkusBulk(user, { items: gap.pddExactHits.map((h) => ({ shopName: h.shopName, platformSkuId: h.platformSkuId, skuId: h.skuId, platform: "pdd" })) }, db);
-      expect(r.claimed).toBe(1);
-      const [ident] = await db.select().from(schema.skuIdentifiers).where(eq(schema.skuIdentifiers.scope, "JIANDAOYUN:PDD"));
-      expect(ident?.value).toBe(`${shop}|PID1|N009-000`);
+      expect(r.claimed).toBe(2);
+      const identifiers = await db.select().from(schema.skuIdentifiers).where(eq(schema.skuIdentifiers.scope, "JIANDAOYUN:PDD"));
+      expect(identifiers.map((ident) => ident.value).sort()).toEqual([
+        `${shop}|PID1|N009-000`,
+        `${shop}|PID3|N009-000`,
+      ]);
       gap = await computePlatformSkuIdentityGap(db);
       expect(gap.pddExactHits).toEqual([]);
-      expect(gap.pddSummary.claimed).toBe(1);
+      expect(gap.pddSummary.claimed).toBe(2);
     } finally {
       await client.close();
     }

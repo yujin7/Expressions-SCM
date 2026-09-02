@@ -124,8 +124,15 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
   }));
 
   /* ── 天猫 ── */
-  let tmall = insufficient("天猫", "统计日 × 店铺 × 平台 SKU", "缺少天猫日销量成功批次。");
-  if (tmallSales) {
+  let tmall = insufficient(
+    "天猫",
+    "统计日 × 店铺 × 平台 SKU",
+    tmallSales
+      ? "缺少天猫成功退款成功批次，净销量保持不可用。"
+      : "缺少天猫日销量成功批次。",
+  );
+  // 净销量是“支付件数 − 成功退款子订单数”。两条流必须同时可用；缺任一条都不能把未知退款补成 0。
+  if (tmallSales && tmallRefunds) {
     const rows = resultRows<Record<string, unknown>>(await db.execute(sql`
       WITH s AS (
         SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'skuId' AS psku, left(payload->'data'->>'statisticalDate', 10)::date AS d,
@@ -139,7 +146,7 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
       r AS (
         SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'skuId' AS psku, left(payload->'data'->>'statisticalDate', 10)::date AS d,
                CASE WHEN trim(coalesce(payload->'data'->>'successRefundSuborderNumber','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'successRefundSuborderNumber')::numeric ELSE 0 END AS refund
-        FROM staging_rows WHERE import_job_id = ${tmallRefunds?.importJobId ?? -1} AND target_table = 'jdy_tmall_sku_refund_observation'
+        FROM staging_rows WHERE import_job_id = ${tmallRefunds.importJobId} AND target_table = 'jdy_tmall_sku_refund_observation'
           AND status IN ('pending','validated','committed')
           AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
           AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'

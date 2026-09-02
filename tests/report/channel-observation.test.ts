@@ -268,29 +268,37 @@ describe("全渠道外部观察", () => {
         baseUom: "支",
         brandId: brand.id,
       }).returning();
-      const [job] = await db.insert(schema.importJobs).values({
-        template: "jdy_tmall_sku_sales_observation",
-        filename: "tmall-cache-sales",
-        sourceAsOf: "2026-09-02",
-        createdBy: actor.id,
-        status: "done",
-      }).returning();
-      await db.insert(schema.integrationRuns).values({
-        connector: "jdy",
-        stream: "tmall-sku-sales-observation",
-        idempotencyKey: "tmall-cache-sales",
-        status: "succeeded",
-        importJobId: job.id,
-        finishedAt: new Date("2026-09-02T03:00:00.000Z"),
-      });
+      const [job, refundJob] = await db.insert(schema.importJobs).values([
+        {
+          template: "jdy_tmall_sku_sales_observation", filename: "tmall-cache-sales", sourceAsOf: "2026-09-02",
+          createdBy: actor.id, status: "done",
+        },
+        {
+          template: "jdy_tmall_sku_refund_observation", filename: "tmall-cache-refunds", sourceAsOf: "2026-09-02",
+          createdBy: actor.id, status: "done",
+        },
+      ]).returning();
+      await db.insert(schema.integrationRuns).values([
+        {
+          connector: "jdy", stream: "tmall-sku-sales-observation", idempotencyKey: "tmall-cache-sales",
+          status: "succeeded", importJobId: job.id, finishedAt: new Date("2026-09-02T03:00:00.000Z"),
+        },
+        {
+          connector: "jdy", stream: "tmall-sku-refund-observation", idempotencyKey: "tmall-cache-refunds",
+          status: "succeeded", importJobId: refundJob.id, finishedAt: new Date("2026-09-02T03:00:00.000Z"),
+        },
+      ]);
       const shop = "不含品牌名称的测试店";
-      await db.insert(schema.stagingRows).values({
-        importJobId: job.id,
-        rowNo: 1,
-        status: "pending",
-        targetTable: "jdy_tmall_sku_sales_observation",
-        payload: { data: { statisticalDate: "2026-09-01", shopName: shop, skuId: "PSKU-CACHE", paidNumber: "5", paidAmount: "100" } },
-      });
+      await db.insert(schema.stagingRows).values([
+        {
+          importJobId: job.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_sales_observation",
+          payload: { data: { statisticalDate: "2026-09-01", shopName: shop, skuId: "PSKU-CACHE", paidNumber: "5", paidAmount: "100" } },
+        },
+        {
+          importJobId: refundJob.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
+          payload: { data: { statisticalDate: "2026-09-01", shopName: shop, skuId: "PSKU-CACHE", successRefundSuborderNumber: "0" } },
+        },
+      ]);
       const [identifier] = await db.insert(schema.skuIdentifiers).values({
         skuId: sku.id,
         kind: "external",
@@ -306,6 +314,33 @@ describe("全渠道外部观察", () => {
         .where(eq(schema.skuIdentifiers.id, identifier.id));
       const deactivated = await loadChannelObservation(db);
       expect(deactivated.platforms.find((row) => row.platform === "天猫")?.byBrand[0]?.brand).toBe("(未归属)");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("天猫退款流缺失时净销量保持 insufficient，不把未知退款补成零", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "退款流门禁责任人" }).returning();
+      const [sales] = await db.insert(schema.importJobs).values({
+        template: "jdy_tmall_sku_sales_observation", filename: "sales-without-refunds", sourceAsOf: "2026-09-02",
+        createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "tmall-sku-sales-observation", idempotencyKey: "sales-without-refunds",
+        status: "succeeded", importJobId: sales.id, finishedAt: new Date("2026-09-02T03:00:00.000Z"),
+      });
+      await db.insert(schema.stagingRows).values({
+        importJobId: sales.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_sales_observation",
+        payload: { data: { statisticalDate: "2026-09-01", shopName: "天猫测试店", skuId: "P1", paidNumber: "99", paidAmount: "999" } },
+      });
+
+      const observation = await computeChannelObservation(db);
+      expect(observation.platforms.find((row) => row.platform === "天猫")).toMatchObject({
+        state: "insufficient", units: null, amount: null, refundUnits: null,
+      });
+      expect(observation.platforms.find((row) => row.platform === "天猫")?.gate).toMatch(/退款/);
     } finally {
       await client.close();
     }
