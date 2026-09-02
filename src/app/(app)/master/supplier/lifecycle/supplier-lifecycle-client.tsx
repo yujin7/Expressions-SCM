@@ -123,6 +123,7 @@ export default function SupplierLifecycleClient() {
   const [closing, setClosing] = useState<LifecycleRow | null>(null);
   const [searchText, setSearchText] = useState("");
   const loadSequence = useRef(0);
+  const requestRef = useRef<AbortController | null>(null);
   const kind = Form.useWatch("kind", openForm) ?? "corrective";
   const closeOutcome = Form.useWatch("outcome", closeForm);
 
@@ -135,24 +136,33 @@ export default function SupplierLifecycleClient() {
   const apiQuery = listState.queryString();
 
   const load = useCallback(async () => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     const sequence = ++loadSequence.current;
     setLoading(true);
     setLoadError(null);
+    setData(null);
     try {
       const next = await fetchJson<LifecycleData>(
         `/api/master/supplier/lifecycle?${apiQuery}`,
+        { signal: controller.signal },
       );
       if (sequence === loadSequence.current) setData(next);
     } catch (error) {
-      if (sequence === loadSequence.current) setLoadError((error as Error).message);
+      if (sequence === loadSequence.current && !controller.signal.aborted) setLoadError((error as Error).message);
     } finally {
-      if (sequence === loadSequence.current) setLoading(false);
+      if (sequence === loadSequence.current) {
+        requestRef.current = null;
+        setLoading(false);
+      }
     }
   }, [apiQuery]);
 
   useEffect(() => {
     void load();
   }, [load]);
+  useEffect(() => () => requestRef.current?.abort(), []);
   useEffect(() => {
     setSearchText(filters.q);
   }, [filters.q]);

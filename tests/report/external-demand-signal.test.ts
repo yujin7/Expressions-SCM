@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 
 import * as schema from "@/db/schema";
 import {
@@ -167,6 +168,27 @@ describe("简道云外部需求信号", () => {
         netQty: 45,
       });
       expect(result.daily.some((row) => row.netQty === 999)).toBe(false);
+
+      // 直接认领也属于读模型来源：新增或停用后，旧缓存必须立即失效。
+      const [spu] = await db.insert(schema.spus).values({ code: "P-EXT-CACHE", nameCn: "外部身份缓存" }).returning();
+      const [sku] = await db.insert(schema.skus).values({
+        code: "FG-EXT-CACHE", name: "外部身份缓存成品", spuId: spu.id, skuType: "finished", baseUom: "支",
+      }).returning();
+      const [identifier] = await db.insert(schema.skuIdentifiers).values({
+        skuId: sku.id, kind: "external", scope: "JIANDAOYUN:TMALL", value: "旗舰店|P2",
+        updatedAt: new Date("2026-08-11T04:00:00.000Z"),
+      }).returning();
+      const identityStale = await loadJiandaoyunExternalDemandSignal(db);
+      expect(identityStale.state).toBe("insufficient");
+      expect(identityStale.gate).toContain("BI 读模型尚未完成重建");
+      const identityRebuilt = await refreshJiandaoyunExternalDemandReadModel(db);
+      expect(identityRebuilt.coverage.mappedIdentities).toBe(2);
+      await db.update(schema.skuIdentifiers).set({
+        active: false, updatedAt: new Date("2026-08-11T05:00:00.000Z"),
+      }).where(eq(schema.skuIdentifiers.id, identifier.id));
+      const deactivatedStale = await loadJiandaoyunExternalDemandSignal(db);
+      expect(deactivatedStale.state).toBe("insufficient");
+      expect(deactivatedStale.gate).toContain("BI 读模型尚未完成重建");
 
       // 新批次一到，旧缓存的来源绑定立即失效；报表保持关闭而不是展示旧值。
       const [newSales] = await db.insert(schema.importJobs).values({

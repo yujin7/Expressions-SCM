@@ -11,6 +11,7 @@
  * 这里从不读取候选分数，落什么以人工传入的 skuId 为准。
  */
 import { z } from "zod";
+import { sql, type SQL } from "drizzle-orm";
 
 import { getDbAsync } from "@/db";
 import type { SessionUser } from "@/server/core/dto";
@@ -35,17 +36,83 @@ export function platformSkuIdentifierValue(shopName: string, platformSkuId: stri
   return value;
 }
 
+function resultRows<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  const rows = (result as { rows?: unknown } | null)?.rows;
+  return Array.isArray(rows) ? rows as T[] : [];
+}
+
+async function assertClaimIsConsistent(
+  tx: AnyDb,
+  input: Pick<PlatformSkuClaimInput, "shopName" | "platformSkuId" | "skuId">,
+) {
+  const skuResult = await tx.execute(sql`
+    SELECT id, code, sku_type, active FROM skus WHERE id = ${input.skuId} FOR UPDATE
+  ` as SQL);
+  const [sku] = resultRows<Record<string, unknown>>(skuResult);
+  if (!sku) throw new ApiError(404, "SKU 不存在");
+  if (sku.active !== true || sku.sku_type !== "finished") {
+    throw new ApiError(409, "平台 SKU 只能认领到启用中的成品 SKU");
+  }
+
+  const crosswalkResult = await tx.execute(sql`
+    WITH latest AS (
+      SELECT ir.import_job_id
+      FROM integration_runs ir
+      WHERE ir.connector = 'jdy'
+        AND ir.stream = 'tmall-sku-crosswalk-observation'
+        AND ir.status = 'succeeded'
+        AND ir.import_job_id IS NOT NULL
+      ORDER BY ir.started_at DESC, ir.id DESC
+      LIMIT 1
+    )
+    SELECT
+      count(DISTINCT nullif(sr.payload->'_identity'->>'skuId', ''))::int AS identity_count,
+      max(nullif(sr.payload->'_identity'->>'skuId', '')) AS sku_id
+    FROM staging_rows sr
+    INNER JOIN latest ON latest.import_job_id = sr.import_job_id
+    WHERE sr.target_table = 'jdy_tmall_sku_crosswalk_observation'
+      AND sr.status IN ('pending', 'validated', 'committed')
+      AND sr.payload->'data'->>'shopName' = ${input.shopName}
+      AND sr.payload->'data'->>'platformSkuId' = ${input.platformSkuId}
+  ` as SQL);
+  const [crosswalk] = resultRows<Record<string, unknown>>(crosswalkResult);
+  const identityCount = Number(crosswalk?.identity_count ?? 0);
+  const crosswalkSkuId = Number(crosswalk?.sku_id ?? 0);
+  if (identityCount > 1) {
+    throw new ApiError(409, "该平台 SKU 在最新对照表中存在多个系统 SKU，请先完成人工归属裁决");
+  }
+  if (identityCount === 1 && crosswalkSkuId !== input.skuId) {
+    throw new ApiError(
+      409,
+      `该平台 SKU 已由最新对照表映射到另一系统 SKU，不能登记相互矛盾的直接认领`,
+    );
+  }
+}
+
+async function claimOne(
+  tx: AnyDb,
+  actor: SessionUser,
+  input: Pick<PlatformSkuClaimInput, "shopName" | "platformSkuId" | "skuId"> & { note: string },
+) {
+  await assertClaimIsConsistent(tx, input);
+  return ensureExternalSkuIdentifierInTransaction(tx, {
+    skuId: input.skuId,
+    value: platformSkuIdentifierValue(input.shopName, input.platformSkuId),
+    scope: PLATFORM_SKU_IDENTIFIER_SCOPE,
+    note: input.note,
+  }, actor);
+}
+
 export async function claimPlatformSku(actor: SessionUser, input: unknown, dbArg?: AnyDb) {
   const v = platformSkuClaimSchema.parse(input);
   const db = dbArg ?? (await getDbAsync());
   const value = platformSkuIdentifierValue(v.shopName, v.platformSkuId);
   const result = await db.transaction(async (tx: AnyDb) =>
-    ensureExternalSkuIdentifierInTransaction(tx, {
-      skuId: v.skuId,
-      value,
-      scope: PLATFORM_SKU_IDENTIFIER_SCOPE,
+    claimOne(tx, actor, {
+      ...v,
       note: v.note ?? `天猫平台 SKU 认领（${v.shopName}）`,
-    }, actor),
+    }),
   );
   // 读模型刷新是可丢弃的派生物：失败不回滚认领，只让页面等下一次同步重建
   let readModels: "refreshed" | "deferred" = "refreshed";
@@ -81,12 +148,11 @@ export async function claimPlatformSkusBulk(actor: SessionUser, input: unknown, 
   const results: { shopName: string; platformSkuId: string; skuId: number; ok: boolean; created?: boolean; error?: string }[] = [];
   for (const item of v.items) {
     try {
-      const value = platformSkuIdentifierValue(item.shopName, item.platformSkuId);
       const r = await db.transaction(async (tx: AnyDb) =>
-        ensureExternalSkuIdentifierInTransaction(tx, {
-          skuId: item.skuId, value, scope: PLATFORM_SKU_IDENTIFIER_SCOPE,
+        claimOne(tx, actor, {
+          ...item,
           note: `天猫平台 SKU 批量认领（${item.shopName}）`,
-        }, actor),
+        }),
       );
       results.push({ ...item, ok: true, created: r.created });
     } catch (error) {

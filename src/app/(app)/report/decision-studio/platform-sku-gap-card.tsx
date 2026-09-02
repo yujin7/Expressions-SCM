@@ -22,6 +22,7 @@ import type {
 const STATUS_LABEL: Record<PlatformSkuGapStatus, { text: string; color: string }> = {
   mapped: { text: "已映射", color: "success" },
   direct_claimed: { text: "已认领", color: "success" },
+  crosswalk_conflict: { text: "对照表冲突", color: "error" },
   crosswalk_without_code: { text: "对照表无编码", color: "warning" },
   barcode_claim_pending: { text: "条码待认领", color: "processing" },
   not_in_crosswalk: { text: "不在对照表", color: "error" },
@@ -200,7 +201,9 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
       key: "action",
       width: 90,
       fixed: "right",
-      render: (_, r) => <Button size="small" onClick={() => openClaim(r)}>手动认领</Button>,
+      render: (_, r) => r.status === "crosswalk_conflict"
+        ? <Typography.Text type="danger">先裁决对照表</Typography.Text>
+        : <Button size="small" onClick={() => openClaim(r)}>手动认领</Button>,
     },
   ];
 

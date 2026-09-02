@@ -27,7 +27,7 @@ interface ReadDb {
 }
 
 export const PLATFORM_SKU_IDENTIFIER_SCOPE = "JIANDAOYUN:TMALL";
-const READ_MODEL_CACHE_KEY = "jiandaoyun-platform-sku-identity-gap/v1";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-platform-sku-identity-gap/v2";
 const TOP_ROWS = 60;
 const MAX_CANDIDATES = 3;
 const MIN_CANDIDATE_SCORE = 60;
@@ -36,6 +36,7 @@ const MIN_TOKEN_OVERLAP = 2; // 只有规格+品牌、名称一个词都不沾�
 export type PlatformSkuGapStatus =
   | "mapped"
   | "direct_claimed"
+  | "crosswalk_conflict"
   | "crosswalk_without_code"
   | "barcode_claim_pending"
   | "not_in_crosswalk";
@@ -333,12 +334,10 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
   }
   const skuCodeById = new Map<number, string>();
   const candidateSource: SkuCandidateSource[] = [];
-  const allSkus: SkuCandidateSource[] = [];
   for (const row of resultRows<Record<string, unknown>>(skuResult)) {
     const skuId = intValue(row.id);
     skuCodeById.set(skuId, String(row.code ?? ""));
     const entry = { skuId, code: String(row.code ?? ""), name: String(row.name ?? ""), brandCode: textValue(row.brand_code), spec: textValue(row.spec) };
-    allSkus.push(entry);
     if (row.sku_type === "finished") candidateSource.push(entry);
   }
   const brands = resultRows<Record<string, unknown>>(brandResult).map((b) => ({
@@ -359,7 +358,8 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
     const claimed = direct.get(key);
     let status: PlatformSkuGapStatus;
     let skuId: number | null = null;
-    if (bridge?.skuId) { status = "mapped"; skuId = bridge.skuId; }
+    if (bridge?.conflicting) status = "crosswalk_conflict";
+    else if (bridge?.skuId) { status = "mapped"; skuId = bridge.skuId; }
     else if (claimed) { status = "direct_claimed"; skuId = claimed.skuId; }
     else if (!bridge) status = "not_in_crosswalk";
     else if (bridge.barcode && exceptions.get(bridge.barcode)?.status === "open") status = "barcode_claim_pending";
@@ -390,13 +390,35 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
   }
   rows.sort((a, b) => dCmp(b.paidAmount, a.paidAmount) || a.platformSkuId.localeCompare(b.platformSkuId));
 
-  // 只给排在前面的缺口算候选：候选是给人看的，不是给全量算的
+  // 页面只展示金额前 60 个缺口，但覆盖率必须以全部缺口为分母和候选集合。
+  // 用名称词元倒排索引先收窄候选，避免对每个平台 SKU 扫描全部成品。
   const unmapped = rows.filter((r) => r.status !== "mapped" && r.status !== "direct_claimed");
-  const skuByCode = new Map(allSkus.map((k) => [k.code, k]));
+  const skuByCode = new Map(candidateSource.map((k) => [k.code, k]));
+  const skuById = new Map(candidateSource.map((k) => [k.skuId, k]));
+  const candidatesByToken = new Map<string, number[]>();
+  for (const sku of candidateSource) {
+    for (const token of nameTokens(sku.name)) {
+      const ids = candidatesByToken.get(token) ?? [];
+      ids.push(sku.skuId);
+      candidatesByToken.set(token, ids);
+    }
+  }
   const candidatesFor = (row: PlatformSkuGapRow): PlatformSkuGapCandidate[] => {
-    const merchantCode = crosswalk.get(`${row.shopName}|${row.platformSkuId}`)?.merchantCode;
+    const bridge = crosswalk.get(`${row.shopName}|${row.platformSkuId}`);
+    if (bridge?.conflicting) return [];
+    const merchantCode = bridge?.merchantCode;
     const exact = merchantCode ? skuByCode.get(merchantCode) : undefined;
-    const scored = scoreCandidates(row, candidateSource).filter((c) => c.skuId !== exact?.skuId);
+    const counts = new Map<number, number>();
+    for (const token of nameTokens(row.productName)) {
+      for (const skuId of candidatesByToken.get(token) ?? []) {
+        counts.set(skuId, (counts.get(skuId) ?? 0) + 1);
+      }
+    }
+    const shortlist = [...counts.entries()]
+      .filter(([, count]) => count >= MIN_TOKEN_OVERLAP)
+      .map(([skuId]) => skuById.get(skuId))
+      .filter((sku): sku is SkuCandidateSource => Boolean(sku));
+    const scored = scoreCandidates(row, shortlist).filter((c) => c.skuId !== exact?.skuId);
     // 对照表里的商家编码与系统编码逐字相等：这是确定性线索（同步时未解析多因当时主档尚无此码），
     // 仍交人一键确认，不自动落库
     return exact
@@ -405,18 +427,30 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
   };
   const exactHits: PlatformSkuIdentityGap["exactHits"] = [];
   for (const row of unmapped) {
-    const merchantCode = crosswalk.get(`${row.shopName}|${row.platformSkuId}`)?.merchantCode;
+    const bridge = crosswalk.get(`${row.shopName}|${row.platformSkuId}`);
+    if (bridge?.conflicting) continue;
+    const merchantCode = bridge?.merchantCode;
     const exact = merchantCode ? skuByCode.get(merchantCode) : undefined;
     if (exact) exactHits.push({ shopName: row.shopName, platformSkuId: row.platformSkuId, skuId: exact.skuId, skuCode: exact.code, paidAmount: row.paidAmount });
   }
   const top = unmapped.slice(0, TOP_ROWS);
-  for (const row of top) row.candidates = candidatesFor(row);
-  const withCandidates = unmapped.slice(0, 200).map((r) => (r.candidates.length ? r : { ...r, candidates: candidatesFor(r) }));
+  const topKeys = new Set(top.map((row) => `${row.shopName}|${row.platformSkuId}`));
+  let candidateAmount = "0.00";
+  let unmappedWithCandidates = 0;
+  for (const row of unmapped) {
+    const candidates = candidatesFor(row);
+    if (topKeys.has(`${row.shopName}|${row.platformSkuId}`)) row.candidates = candidates;
+    if (candidates.length) {
+      unmappedWithCandidates++;
+      candidateAmount = dAdd(candidateAmount, row.paidAmount, 2);
+    }
+  }
 
   const zero = "0.00";
   const byStatus: PlatformSkuIdentityGap["totals"]["byStatus"] = {
     mapped: { skus: 0, paidAmount: zero },
     direct_claimed: { skus: 0, paidAmount: zero },
+    crosswalk_conflict: { skus: 0, paidAmount: zero },
     crosswalk_without_code: { skus: 0, paidAmount: zero },
     barcode_claim_pending: { skus: 0, paidAmount: zero },
     not_in_crosswalk: { skus: 0, paidAmount: zero },
@@ -439,11 +473,7 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
   }
   let exactHitAmount = zero;
   for (const hit of exactHits) exactHitAmount = dAdd(exactHitAmount, hit.paidAmount, 2);
-  let coverableAmount = mappedPaidAmount;
-  let unmappedWithCandidates = 0;
-  for (const row of withCandidates) {
-    if (row.candidates.length) { unmappedWithCandidates++; coverableAmount = dAdd(coverableAmount, row.paidAmount, 2); }
-  }
+  const coverableAmount = dAdd(mappedPaidAmount, candidateAmount, 2);
   const pct = (part: string, whole: string): number | null =>
     dCmp(whole, zero) > 0 ? Math.round(Number(dDiv(part, whole, 6)) * 1000) / 10 : null;
 
@@ -502,7 +532,7 @@ export function emptyPlatformSkuIdentityGap(gate: string): PlatformSkuIdentityGa
     totals: {
       platformSkus: 0, mappedSkus: 0, paidAmount: zero, mappedPaidAmount: zero, unmappedPaidAmount: zero,
       mappedAmountPct: null,
-      byStatus: { mapped: { ...empty }, direct_claimed: { ...empty }, crosswalk_without_code: { ...empty }, barcode_claim_pending: { ...empty }, not_in_crosswalk: { ...empty } },
+      byStatus: { mapped: { ...empty }, direct_claimed: { ...empty }, crosswalk_conflict: { ...empty }, crosswalk_without_code: { ...empty }, barcode_claim_pending: { ...empty }, not_in_crosswalk: { ...empty } },
       unmappedWithCandidates: 0, coverableAmountPct: null,
     },
     byShop: [],

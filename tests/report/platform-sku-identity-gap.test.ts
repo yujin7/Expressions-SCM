@@ -8,6 +8,7 @@
  *   3. 认领落库后，缺口读模型与外部需求信号都把它当作已映射——这是"第二条桥"存在的意义。
  */
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { createTestDb } from "../helpers/db";
 import {
@@ -206,6 +207,97 @@ describe("平台 SKU 身份缺口读模型", () => {
       await expect(
         claimPlatformSku(user, { shopName: shop, platformSkuId: "P3", skuId: mapped.id }, db),
       ).rejects.toThrow(/已关联/);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("只允许认领到启用成品，并拒绝与最新唯一对照归属矛盾", async () => {
+    const { db, client, actor, mudMask, mapped, shop } = await seed();
+    try {
+      const user = { id: actor.id, name: actor.name, roles: ["pmc"], isApprover: false };
+      const [material] = await db.insert(schema.skus).values({
+        code: "RM-CLAIM-1", name: "原料", spuId: mudMask.spuId, skuType: "raw", baseUom: "kg",
+      }).returning();
+      const [inactive] = await db.insert(schema.skus).values({
+        code: "FG-INACTIVE-1", name: "停用成品", spuId: mudMask.spuId, skuType: "finished", baseUom: "支", active: false,
+      }).returning();
+
+      await expect(claimPlatformSku(user, { shopName: shop, platformSkuId: "P3", skuId: material.id }, db))
+        .rejects.toThrow(/启用中的成品/);
+      await expect(claimPlatformSku(user, { shopName: shop, platformSkuId: "P3", skuId: inactive.id }, db))
+        .rejects.toThrow(/启用中的成品/);
+      await expect(claimPlatformSku(user, { shopName: shop, platformSkuId: "P1", skuId: mudMask.id }, db))
+        .rejects.toThrow(/相互矛盾/);
+      await expect(claimPlatformSku(user, { shopName: shop, platformSkuId: "P1", skuId: mapped.id }, db))
+        .resolves.toMatchObject({ created: true });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("对照表多归属冲突不会被直接认领掩盖，也不给候选", async () => {
+    const { db, client, actor, mudMask, mapped, shop } = await seed();
+    try {
+      const [crosswalkJob] = await db.select().from(schema.importJobs)
+        .where(eq(schema.importJobs.template, "jdy_tmall_sku_crosswalk_observation"));
+      const [salesJob] = await db.select().from(schema.importJobs)
+        .where(eq(schema.importJobs.template, "jdy_tmall_sku_sales_observation"));
+      await db.insert(schema.stagingRows).values([
+        { importJobId: crosswalkJob!.id, rowNo: 50, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation",
+          payload: { data: { shopName: shop, platformSkuId: "P5", merchantSkuCode: "N009-000" }, _identity: { skuId: mudMask.id } } },
+        { importJobId: crosswalkJob!.id, rowNo: 51, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation",
+          payload: { data: { shopName: shop, platformSkuId: "P5", merchantSkuCode: "N009-000" }, _identity: { skuId: mapped.id } } },
+        { importJobId: salesJob!.id, rowNo: 50, status: "pending", targetTable: "jdy_tmall_sku_sales_observation",
+          payload: { data: { statisticalDate: "2026-08-11", shopName: shop, skuId: "P5", productName: "NING清洁泥膜", skuName: "净含量:220g", paidNumber: "2", paidAmount: "800" } } },
+      ]);
+      await db.insert(schema.skuIdentifiers).values({
+        skuId: mudMask.id, kind: "external", scope: "JIANDAOYUN:TMALL", value: `${shop}|P5`, createdBy: actor.id,
+      });
+
+      const gap = await computePlatformSkuIdentityGap(db);
+      const conflict = gap.top.find((row) => row.platformSkuId === "P5");
+      expect(conflict).toMatchObject({ status: "crosswalk_conflict", skuId: null, candidates: [] });
+      expect(gap.totals.byStatus.crosswalk_conflict.skus).toBe(1);
+      await expect(claimPlatformSku(
+        { id: actor.id, name: actor.name, roles: ["pmc"], isApprover: false },
+        { shopName: shop, platformSkuId: "P5", skuId: mudMask.id }, db,
+      )).rejects.toThrow(/多个系统 SKU/);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("候选数量与可覆盖金额按全部缺口计算，不截断在前 200 行", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "候选口径测试" }).returning();
+      const [brand] = await db.insert(schema.brands).values({ code: "NING", nameCn: "NING" }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "P91000", nameCn: "泥膜" }).returning();
+      await db.insert(schema.skus).values({
+        code: "N910-000", name: "NING冰川净澈清洁泥膜(220g)", spuId: spu.id,
+        skuType: "finished", baseUom: "支", brandId: brand.id, spec: "220g",
+      });
+      const jobs = await db.insert(schema.importJobs).values([
+        { template: "jdy_tmall_sku_crosswalk_observation", filename: "empty-crosswalk", sourceAsOf: "2026-08-11", createdBy: actor.id, status: "done" },
+        { template: "jdy_tmall_sku_sales_observation", filename: "205-sales", sourceAsOf: "2026-08-11", createdBy: actor.id, status: "done" },
+      ]).returning();
+      await db.insert(schema.integrationRuns).values([
+        { connector: "jdy", stream: "tmall-sku-crosswalk-observation", idempotencyKey: "empty-cw", status: "succeeded", importJobId: jobs[0]!.id, finishedAt: new Date() },
+        { connector: "jdy", stream: "tmall-sku-sales-observation", idempotencyKey: "205-sales", status: "succeeded", importJobId: jobs[1]!.id, finishedAt: new Date() },
+      ]);
+      await db.insert(schema.stagingRows).values(Array.from({ length: 205 }, (_, index) => ({
+        importJobId: jobs[1]!.id,
+        rowNo: index + 1,
+        status: "pending" as const,
+        targetTable: "jdy_tmall_sku_sales_observation",
+        payload: { data: { statisticalDate: "2026-08-11", shopName: "NING旗舰店", skuId: `PX${index}`, productName: "NING冰川净澈清洁泥膜", skuName: "净含量:220g", paidNumber: "1", paidAmount: "1" } },
+      })));
+
+      const gap = await computePlatformSkuIdentityGap(db);
+      expect(gap.top).toHaveLength(60);
+      expect(gap.totals.unmappedWithCandidates).toBe(205);
+      expect(gap.totals.coverableAmountPct).toBe(100);
     } finally {
       await client.close();
     }

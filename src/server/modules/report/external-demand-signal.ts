@@ -232,6 +232,7 @@ interface ExternalDemandBatches {
   salesBatch: LatestBatch | null;
   refundBatch: LatestBatch | null;
   jstOutboundBatch: LatestBatch | null;
+  directIdentifierVersion: string;
 }
 
 function numberValue(value: unknown): number {
@@ -742,13 +743,22 @@ async function latestBatch(
 }
 
 async function latestExternalDemandBatches(db: ReadDb): Promise<ExternalDemandBatches> {
-  const [crosswalkBatch, salesBatch, refundBatch, jstOutboundBatch] = await Promise.all([
+  const [crosswalkBatch, salesBatch, refundBatch, jstOutboundBatch, directResult] = await Promise.all([
     latestBatch(db, "jdy", STREAM.crosswalk),
     latestBatch(db, "jdy", STREAM.sales),
     latestBatch(db, "jdy", STREAM.refunds),
     latestBatch(db, "jst", "outbound-sales-daily"),
+    db.execute(sql`
+      SELECT count(*)::int AS n,
+             coalesce(max(id), 0)::int AS max_id,
+             coalesce(max(updated_at), 'epoch')::text AS updated
+      FROM sku_identifiers
+      WHERE kind = 'external' AND scope = 'JIANDAOYUN:TMALL'
+    `),
   ]);
-  return { crosswalkBatch, salesBatch, refundBatch, jstOutboundBatch };
+  const [direct] = resultRows<Record<string, unknown>>(directResult);
+  const directIdentifierVersion = `direct:${intValue(direct?.n)}:${intValue(direct?.max_id)}:${String(direct?.updated ?? "")}`;
+  return { crosswalkBatch, salesBatch, refundBatch, jstOutboundBatch, directIdentifierVersion };
 }
 
 function readModelBinding(batches: ExternalDemandBatches): string | null {
@@ -758,6 +768,7 @@ function readModelBinding(batches: ExternalDemandBatches): string | null {
     `sales:${batches.salesBatch.importJobId}`,
     `refunds:${batches.refundBatch.importJobId}`,
     `jst:${batches.jstOutboundBatch?.importJobId ?? "none"}`,
+    batches.directIdentifierVersion,
   ].join("|");
 }
 
