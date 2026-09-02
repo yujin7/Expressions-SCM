@@ -42,7 +42,7 @@ COMPOSE_LOCAL="$RUNTIME_DIR/docker-compose.local.yml"
 PROJECT="supply-chain"
 LOCAL_PORT=3100
 TUNNEL_CHECK_SECONDS=30
-TUNNEL_FAILURE_LIMIT=3
+TUNNEL_FAILURE_LIMIT=5
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
@@ -114,11 +114,11 @@ wait_for_docker() {
 # 只看 PID 会把整段公网中断误报成“正常运行”。
 public_probe() {
   local url="$1" code redir
-  code="$(curl -s --connect-timeout 2 -m 3 -o /dev/null -w '%{http_code}' \
+  code="$(curl -s --connect-timeout 5 -m 10 -o /dev/null -w '%{http_code}' \
     "${url}/api/health" 2>/dev/null || true)"
   [[ "$code" == "200" ]] || return 1
 
-  redir="$(curl -s --connect-timeout 2 -m 3 -o /dev/null -w '%{redirect_url}' \
+  redir="$(curl -s --connect-timeout 5 -m 10 -o /dev/null -w '%{redirect_url}' \
     "${url}/" 2>/dev/null || true)"
   [[ "$redir" == "${url}"* ]] && return 0
   return 2
@@ -139,9 +139,11 @@ apply_url() {
     return 1
   fi
 
+  # 新 quick tunnel 的 DNS 传播经常超过 30 秒。2026-09-02 17:44–17:49 实测：30 秒内判"未通过"就杀掉重建，
+  # 结果 5 分钟内换了 4 个地址、应用重启 4 次、飞书群收到 4 条新链接。这里等足 3 分钟。
   local i probe_status
-  for i in $(seq 1 15); do
-    sleep 2
+  for i in $(seq 1 60); do
+    sleep 3
     # 健康 200 还不够：AUTH_URL 没生效时页面照样能开，但登录回跳会指向旧地址。
     public_probe "$url"
     probe_status=$?
@@ -157,7 +159,7 @@ apply_url() {
     [[ "$probe_status" == "2" ]] && log "公网健康已通过，但登录回跳仍未同步，继续等待…"
   done
 
-  log "✗ 约 2 分钟内未确认公网健康与登录回跳"
+  log "✗ 约 3 分钟内未确认公网健康与登录回跳"
   return 1
 }
 
@@ -181,6 +183,11 @@ ensure_url() {
       apply_url "$url"
       ;;
     *)
+      # 先分清是隧道死了还是应用在重启：本机 3100 不通时，公网探针必然失败，不能记到隧道头上
+      if [[ "$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://localhost:${LOCAL_PORT}/api/health" 2>/dev/null)" != "200" ]]; then
+        log "本机应用未就绪，本轮不计入隧道失败"
+        return 0
+      fi
       log "公网端点不可达（PID 存活也不能算健康）"
       return 1
       ;;
@@ -196,32 +203,45 @@ while true; do
     continue
   fi
 
-  : > "$TUNNEL_LOG"
-  # --protocol http2：默认 QUIC(UDP) 出境实测被显著劣化——同一时刻同一应用，
-  # QUIC 隧道 /api/health 0.65–1.4 s、并发拉 33 个前端分块墙钟 6.4 s；
-  # HTTP/2(TCP) 隧道 0.32–0.36 s，并发分块见守护日志同名实测。每个请求都省一半，页面整体提速最直接。
-  cloudflared tunnel --no-autoupdate --protocol http2 --url "http://localhost:${LOCAL_PORT}" >> "$TUNNEL_LOG" 2>&1 &
-  CF_PID=$!
-  log "cloudflared 已启动 (pid=${CF_PID})，等待分配地址…"
-
+  # 守护自身重启（升级脚本、崩溃拉起）时，接管仍在运行的隧道而不是另起一条——否则每次升级守护都换地址。
   URL=""
-  for _ in $(seq 1 40); do
-    sleep 3
-    # Quick Tunnel hostnames contain multiple hyphen-separated words. Requiring
-    # a hyphen keeps cloudflared's control endpoint (api.trycloudflare.com) from
-    # being mistaken for the user-facing tunnel URL.
-    URL="$(/usr/bin/grep -m1 -oE 'https://[a-z0-9]+(-[a-z0-9]+)+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null || true)"
-    [[ -n "$URL" ]] && break
-    kill -0 "$CF_PID" 2>/dev/null || break
-  done
+  # 锚定行首：不锚定会匹配到任何命令行里含这串字的 shell（例如正在 grep 它的终端），把别的进程当成隧道
+  EXISTING_PID="$(pgrep -f '^cloudflared tunnel --no-autoupdate' | head -1 || true)"
+  EXISTING_URL="$(/usr/bin/grep -m1 -oE 'https://[a-z0-9]+(-[a-z0-9]+)+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null || true)"
+  if [[ -n "$EXISTING_PID" && -n "$EXISTING_URL" ]] && public_probe "$EXISTING_URL" >/dev/null 2>&1; then
+    CF_PID="$EXISTING_PID"
+    URL="$EXISTING_URL"
+    log "接管已在运行的隧道 (pid=${CF_PID})：${URL}（守护重启不换址）"
+  else
+    [[ -n "$EXISTING_PID" ]] && { log "已有隧道进程 ${EXISTING_PID} 但不可用，先清掉"; kill "$EXISTING_PID" 2>/dev/null; sleep 2; }
+    : > "$TUNNEL_LOG"
+    # --protocol http2：默认 QUIC(UDP) 出境实测被显著劣化——同一时刻同一应用，
+    # QUIC 隧道 /api/health 0.65–1.4 s、并发拉 33 个前端分块墙钟 6.4 s；
+    # HTTP/2(TCP) 隧道 0.32–0.42 s。每个请求都省一半，页面整体提速最直接。
+    # 用 setsid 把 cloudflared 放进独立会话：launchd 在守护退出时会 SIGKILL 整个任务进程组，
+    # 2026-09-02 实测 kill -9 守护后隧道随之被杀、接管失败、地址又换。脱离进程组后守护重启才能真正接管。
+    /usr/bin/python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+      cloudflared tunnel --no-autoupdate --protocol http2 --url "http://localhost:${LOCAL_PORT}" >> "$TUNNEL_LOG" 2>&1 &
+    CF_PID=$!
+    log "cloudflared 已启动 (pid=${CF_PID})，等待分配地址…"
 
-  if [[ -z "$URL" ]]; then
-    log "✗ 未取到隧道地址，重建（cloudflared 日志见 ${TUNNEL_LOG}）"
-    kill "$CF_PID" 2>/dev/null
-    wait "$CF_PID" 2>/dev/null
-    CF_PID=""
-    sleep 15
-    continue
+    for _ in $(seq 1 40); do
+      sleep 3
+      # Quick Tunnel 主机名由多个连字符分隔的词组成；要求带连字符可避免把控制端点
+      # api.trycloudflare.com 误认为对外地址。
+      URL="$(/usr/bin/grep -m1 -oE 'https://[a-z0-9]+(-[a-z0-9]+)+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null || true)"
+      [[ -n "$URL" ]] && break
+      kill -0 "$CF_PID" 2>/dev/null || break
+    done
+
+    if [[ -z "$URL" ]]; then
+      log "✗ 未取到隧道地址，重建（cloudflared 日志见 ${TUNNEL_LOG}）"
+      kill "$CF_PID" 2>/dev/null
+      wait "$CF_PID" 2>/dev/null
+      CF_PID=""
+      sleep 15
+      continue
+    fi
   fi
 
   log "隧道地址：${URL}"

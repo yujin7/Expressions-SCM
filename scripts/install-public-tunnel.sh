@@ -54,7 +54,7 @@ cp "$REPO/scripts/public-tunnel-daemon.sh" "$TARGET"
 chmod +x "$TARGET"
 
 echo "==> 5/7 收掉手工起的隧道，避免同时开两条"
-pkill -f 'cloudflared tunnel --no-autoupdate --url' 2>/dev/null || true
+pkill -f 'cloudflared tunnel --no-autoupdate' 2>/dev/null || true
 rm -f "$URL_FILE"   # 清掉旧地址，强制本轮重新同步 AUTH_URL
 
 echo "==> 6/7 写入并加载 LaunchAgent"
@@ -71,6 +71,8 @@ cat > "$PLIST" <<PLISTEOF
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <!-- 守护退出时不要 SIGKILL 它拉起的 cloudflared：新守护要接管旧隧道，地址才不会变 -->
+  <key>AbandonProcessGroup</key><true/>
   <key>StandardOutPath</key><string>${LOG_FILE}</string>
   <key>StandardErrorPath</key><string>${LOG_FILE}</string>
 </dict>
