@@ -115,6 +115,15 @@ interface DashboardCacheEntry {
 const dashboardCache = new Map<string, DashboardCacheEntry>();
 const DASHBOARD_TTL_MS = 60_000;
 /**
+ * 最多可立即返回 5 分钟内的旧快照；generatedAt 仍是真实生成时间。
+ *
+ * 外部观察批次更换后，首次重建可能扫描数万行。如果让请求同步等待，
+ * 驾驶舱会从毫秒级退化到数秒。这里用 bounded stale-while-revalidate：
+ * 旧快照尚在安全窗口内时先返回，后台单飞刷新；超过窗口则等待新值或显式失败。
+ */
+const DASHBOARD_MAX_STALE_MS = 5 * 60_000;
+const dashboardRefreshes = new Map<string, Promise<DashboardData>>();
+/**
  * 缓存条目上限。
  *
  * 加跨维筛选前，键只由角色组合构成，天然有界（几十个）。加了 brand/channel 之后
@@ -126,6 +135,7 @@ const DASHBOARD_CACHE_MAX = 200;
 
 export function clearDashboardCache(): void {
   dashboardCache.clear();
+  dashboardRefreshes.clear();
 }
 
 function rememberDashboard(key: string, entry: DashboardCacheEntry): void {
@@ -148,6 +158,26 @@ export function dashboardCacheSizeForTest(): number {
   return dashboardCache.size;
 }
 
+function refreshDashboard(
+  key: string,
+  roles: string[],
+  scope: DashboardScope,
+): Promise<DashboardData> {
+  const running = dashboardRefreshes.get(key);
+  if (running) return running;
+  const refresh = computeDashboard(roles, scope)
+    .then((value) => {
+      rememberDashboard(key, { value, expiresAt: Date.now() + DASHBOARD_TTL_MS });
+      return value;
+    })
+    .finally(() => {
+      // 只删除自己，避免旧 Promise 的 finally 误删后续任务。
+      if (dashboardRefreshes.get(key) === refresh) dashboardRefreshes.delete(key);
+    });
+  dashboardRefreshes.set(key, refresh);
+  return refresh;
+}
+
 export async function getDashboard(
   roles: string[],
   scope: DashboardScope = {},
@@ -162,10 +192,17 @@ export async function getDashboard(
   ].join("|");
   if (!bypass) {
     const hit = dashboardCache.get(key);
-    if (hit && hit.expiresAt > Date.now()) return hit.value;
+    const now = Date.now();
+    if (hit && hit.expiresAt > now) return hit.value;
+    if (hit && hit.expiresAt + DASHBOARD_MAX_STALE_MS > now) {
+      // 限定陈旧窗口内立即回旧快照，后台更新；用户不承担读模型重建延迟。
+      void refreshDashboard(key, roles, scope).catch(() => undefined);
+      return hit.value;
+    }
+    // 冷启动/超出最大陈旧窗口：多个并发请求共享一次计算。
+    return refreshDashboard(key, roles, scope);
   }
   const value = await computeDashboard(roles, scope, dbArg);
-  if (!bypass) rememberDashboard(key, { value, expiresAt: Date.now() + DASHBOARD_TTL_MS });
   return value;
 }
 

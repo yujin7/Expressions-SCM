@@ -105,4 +105,13 @@ describe("驾驶舱缓存容量", () => {
     expect(fn).toContain("dashboardCache.delete(");
     expect(fn).toContain("expiresAt <= now");
   });
+
+  it("过期快照在有界窗口内立即返回并后台单飞刷新", () => {
+    const src = readFileSync("src/server/modules/report/dashboard.ts", "utf8");
+    expect(src).toMatch(/DASHBOARD_MAX_STALE_MS\s*=\s*5\s*\*\s*60_000/);
+    expect(src).toContain("dashboardRefreshes.get(key)");
+    expect(src).toContain("void refreshDashboard(key, roles, scope).catch");
+    expect(src).toContain("return hit.value");
+    expect(src).toContain("return refreshDashboard(key, roles, scope)");
+  });
 });

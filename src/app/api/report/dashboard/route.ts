@@ -13,7 +13,12 @@ export async function GET(req: NextRequest) {
     const sp = req.nextUrl.searchParams;
     const brand = sp.get("brand")?.trim() || undefined;
     const channel = sp.get("channel")?.trim() || undefined;
-    return NextResponse.json(await getDashboard(fresh.roles, { brand, channel }));
+    const started = performance.now();
+    const result = await getDashboard(fresh.roles, { brand, channel });
+    const response = NextResponse.json(result);
+    response.headers.set("Cache-Control", "private, no-store");
+    response.headers.set("Server-Timing", `dashboard;dur=${(performance.now() - started).toFixed(1)}`);
+    return response;
   } catch (e) {
     return errorResponse(e);
   }
