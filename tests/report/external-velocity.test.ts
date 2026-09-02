@@ -6,6 +6,7 @@
  * 影子列不改内部销速与可销天数。
  */
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { createTestDb } from "../helpers/db";
 import { computeExternalVelocity, loadExternalVelocity } from "@/server/modules/report/external-velocity";
@@ -59,13 +60,15 @@ async function seed() {
     sale(2, "P-CW", "2026-08-15", "5"),
     sale(3, "P-CW", "2026-07-01", "20"),
     sale(4, "P-CW", "2026-05-01", "100"),
-    // P-DIRECT：只在 30 天内卖了 3
-    sale(5, "P-DIRECT", "2026-08-20", "3"),
+    // P-DIRECT：小数数量验证全链路定点；0.3 − 0.1 必须精确等于 0.2。
+    sale(5, "P-DIRECT", "2026-08-20", "0.3"),
     // P-NONE 没有任何身份桥 → 不归任何 SKU
     sale(6, "P-NONE", "2026-08-30", "999"),
     sale(7, "P-CONFLICT", "2026-08-30", "777"),
     { importJobId: refunds.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
       payload: { data: { statisticalDate: "2026-08-20", shopName: shop, skuId: "P-CW", successRefundSuborderNumber: "2" } } },
+    { importJobId: refunds.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
+      payload: { data: { statisticalDate: "2026-08-20", shopName: shop, skuId: "P-DIRECT", successRefundSuborderNumber: "0.1" } } },
   ]);
   return { db, client, actor, viaCrosswalk, viaDirect, unmapped };
 }
@@ -97,15 +100,15 @@ describe("外部观察销速读模型", () => {
       expect(v.state).toBe("ready");
       expect(v.anchorDate).toBe("2026-09-01");
       const cw = v.bySku[String(viaCrosswalk.id)]!;
-      expect(cw.paid30).toBe(15);
-      expect(cw.refund30).toBe(2);
-      expect(cw.net30).toBe(13);
-      expect(cw.paid90).toBe(35);
-      expect(cw.net90).toBe(33);
+      expect(cw.paid30).toBe("15.0000");
+      expect(cw.refund30).toBe("2.0000");
+      expect(cw.net30).toBe("13.0000");
+      expect(cw.paid90).toBe("35.0000");
+      expect(cw.net90).toBe("33.0000");
       expect(cw.lastSoldDate).toBe("2026-09-01");
       expect(cw.activeDays90).toBe(3);
       const direct = v.bySku[String(viaDirect.id)]!;
-      expect(direct.net30).toBe(3);
+      expect(direct.net30).toBe("0.2000");
       expect(v.bySku[String(unmapped.id)]).toBeUndefined();
       expect(v.coverage).toEqual({
         platformSkus: 4,
@@ -125,11 +128,11 @@ describe("外部观察销速读模型", () => {
         finishedAt: new Date("2026-09-03T03:00:00.000Z"),
       });
       const afterEmptyRead = await computeExternalVelocity(db);
-      expect(afterEmptyRead.bySku[String(viaCrosswalk.id)]?.net30).toBe(13);
+      expect(afterEmptyRead.bySku[String(viaCrosswalk.id)]?.net30).toBe("13.0000");
 
       // 缓存命中：第二次读取不重算也一致
       const again = await loadExternalVelocity(db);
-      expect(again.bySku[String(viaCrosswalk.id)]?.net30).toBe(13);
+      expect(again.bySku[String(viaCrosswalk.id)]?.net30).toBe("13.0000");
     } finally {
       await client.close();
     }
@@ -145,14 +148,14 @@ describe("外部观察销速读模型", () => {
       expect(d.externalDemand.internalNoMoveButExternalSelling).toBe(2);
       const cwRow = d.slowTop.find((r) => r.code === viaCrosswalk.code)!;
       expect(cwRow.daysCover).toBeNull();          // 内部口径不变
-      expect(cwRow.externalNet30).toBe(13);
+      expect(cwRow.externalNet30).toBe("13.0000");
       expect(cwRow.externalLastSold).toBe("2026-09-01");
       const noneRow = d.slowTop.find((r) => r.code === unmapped.code)!;
       expect(noneRow.externalNet30).toBeNull();    // 未映射不是 0
 
       const risk = await getRiskWorklist({ pageSize: 100 }, db);
       const riskCw = risk.rows.find((r) => r.code === viaCrosswalk.code);
-      expect(riskCw?.externalNet30).toBe(13);
+      expect(riskCw?.externalNet30).toBe("13.0000");
       const riskNone = risk.rows.find((r) => r.code === unmapped.code);
       expect(riskNone?.externalNet30 ?? null).toBeNull();
     } finally {
@@ -195,11 +198,11 @@ describe("外部观察销速读模型", () => {
       ]);
       const v = await computeExternalVelocity(db);
       const cw = v.bySku[String(viaCrosswalk.id)]!;
-      expect(cw.pddNet30).toBe(5);       // 2 + 3，取消的 5 不算
+      expect(cw.pddNet30).toBe("5.0000");       // 2 + 3，取消的 5 不算
       expect(cw.pddIdentityCovered).toBe(true);
-      expect(cw.pddNet90).toBe(12);      // 再加 90 天内的 7
-      expect(cw.tmallNet30).toBe(13);
-      expect(cw.net30).toBe(18);         // 天猫 13 + 拼多多 5
+      expect(cw.pddNet90).toBe("12.0000");      // 再加 90 天内的 7
+      expect(cw.tmallNet30).toBe("13.0000");
+      expect(cw.net30).toBe("18.0000");         // 天猫 13 + 拼多多 5
       expect(v.pddSourceAsOf).toBe("2026-09-02");
       // 迟到更新带回 5 个订单日期，但实际抽取截止中午，只完整观察了 2 个自然日。
       expect(v.coverage.pddObservedDays30).toBe(2);
@@ -227,8 +230,8 @@ describe("外部观察销速读模型", () => {
         },
       });
       const afterDelete = await computeExternalVelocity(db);
-      expect(afterDelete.bySku[String(viaCrosswalk.id)]?.pddNet30).toBe(3);
-      expect(afterDelete.bySku[String(viaCrosswalk.id)]?.pddNet90).toBe(10);
+      expect(afterDelete.bySku[String(viaCrosswalk.id)]?.pddNet30).toBe("3.0000");
+      expect(afterDelete.bySku[String(viaCrosswalk.id)]?.pddNet90).toBe("10.0000");
     } finally {
       await client.close();
     }
@@ -309,9 +312,9 @@ describe("外部观察销速读模型", () => {
           payload: { data: { statisticalDate: "2026-08-28", shopName: shop, orderNumber: "X1", productId: "PID9", merchantSkuCode: "GE028-000", productQuantity: "4", orderStatus: "待发货" } } },
       ]);
       const v = await computeExternalVelocity(db);
-      expect(v.bySku[String(viaDirect.id)]?.pddNet30).toBe(4);
+      expect(v.bySku[String(viaDirect.id)]?.pddNet30).toBe("4.0000");
       expect(v.bySku[String(viaDirect.id)]?.pddIdentityCovered).toBe(true);
-      expect(v.bySku[String(viaDirect.id)]?.net30).toBe(3 + 4);
+      expect(v.bySku[String(viaDirect.id)]?.net30).toBe("4.2000");
     } finally {
       await client.close();
     }
@@ -330,10 +333,10 @@ describe("外部观察销速读模型", () => {
         template: "jdy_pdd_order_observation", filename: "pdd-only", sourceAsOf: "2026-09-02",
         createdBy: actor.id, status: "done",
       }).returning();
-      await db.insert(schema.integrationRuns).values({
+      const [run] = await db.insert(schema.integrationRuns).values({
         connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-only",
         status: "succeeded", importJobId: job.id, finishedAt: new Date("2026-09-02T04:00:00.000Z"),
-      });
+      }).returning();
       const shop = "无品牌名的拼多多店";
       await db.insert(schema.skuIdentifiers).values({
         skuId: sku.id, kind: "external", scope: "JIANDAOYUN:PDD",
@@ -346,9 +349,16 @@ describe("外部观察销速读模型", () => {
 
       const computed = await computeExternalVelocity(db);
       expect(computed).toMatchObject({ state: "ready", sourceAsOf: null, pddSourceAsOf: "2026-09-02", anchorDate: "2026-09-01" });
-      expect(computed.bySku[String(sku.id)]).toMatchObject({ pddNet30: 6, net30: 6 });
+      expect(computed.bySku[String(sku.id)]).toMatchObject({ pddNet30: "6.0000", net30: "6.0000" });
       const cached = await loadExternalVelocity(db);
-      expect(cached.bySku[String(sku.id)]?.pddNet30).toBe(6);
+      expect(cached.bySku[String(sku.id)]?.pddNet30).toBe("6.0000");
+
+      // 90 天保留边界越过后，同一 job ID 也不能继续命中旧 ready 缓存。
+      await db.update(schema.integrationRuns)
+        .set({ finishedAt: new Date("2025-01-01T00:00:00.000Z") })
+        .where(eq(schema.integrationRuns.id, run.id));
+      const expired = await loadExternalVelocity(db);
+      expect(expired).toMatchObject({ state: "insufficient", bySku: {} });
     } finally {
       await client.close();
     }

@@ -19,7 +19,7 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-channel-observation/v3";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-channel-observation/v4";
 const WINDOW_DAYS = 30;
 
 export interface ChannelPlatformRow {
@@ -451,7 +451,8 @@ async function binding(db: ReadDb): Promise<string> {
   const pdd = resultRows<Record<string, unknown>>(await db.execute(sql`
     SELECT coalesce(max(ir.import_job_id), 0)::int AS j FROM integration_runs ir
     WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation' AND ir.status = 'succeeded'
-      AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'`))[0];
+      AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+      AND ir.finished_at > now() - interval '90 days'`))[0];
   const cw = await latestBatch(db, "tmall-sku-crosswalk-observation");
   const claims = resultRows<Record<string, unknown>>(await db.execute(sql`
     SELECT count(*)::int AS n,

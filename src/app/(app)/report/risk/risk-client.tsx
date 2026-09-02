@@ -30,7 +30,7 @@ interface RiskRow {
   remarkMonth: string | null;
   disposalOpen: boolean;
   disposalId: number | null;
-  externalNet30: number | null;
+  externalNet30: string | null;
   externalLastSold: string | null;
 }
 
@@ -189,11 +189,11 @@ export default function RiskClient() {
       dataIndex: "externalNet30",
       width: 105,
       align: "right",
-      render: (v: number | null, r) => v == null
+      render: (v: string | null, r) => v == null
         ? <Typography.Text type="secondary">未映射</Typography.Text>
         : (
           <Tooltip title={`简道云天猫观察净需求，最近售出 ${r.externalLastSold ?? "—"}；内部判无动销而外部仍在售的，处置前先核对`}>
-            <Typography.Text type={v > 0 && r.cover == null ? "danger" : undefined} strong={v > 0 && r.cover == null}>{v.toLocaleString("zh-CN")}</Typography.Text>
+            <Typography.Text type={Number(v) > 0 && r.cover == null ? "danger" : undefined} strong={Number(v) > 0 && r.cover == null}>{Number(v).toLocaleString("zh-CN")}</Typography.Text>
           </Tooltip>
         ),
     },

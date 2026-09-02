@@ -215,6 +215,15 @@ describe("全渠道外部观察", () => {
       expect(observation.platforms.find((row) => row.platform === "拼多多")).toMatchObject({
         state: "ready", anchorDate: "2026-09-03", units: "0.0000",
       });
+      const cached = await loadChannelObservation(db);
+      expect(cached.platforms.find((row) => row.platform === "拼多多")?.state).toBe("ready");
+
+      // 计算与缓存绑定必须使用同一 90 天保留集；ID 不变但全部过期后不得返回旧 ready。
+      await db.update(schema.integrationRuns)
+        .set({ finishedAt: new Date("2025-01-01T00:00:00.000Z") })
+        .where(eq(schema.integrationRuns.stream, "pdd-order-observation"));
+      const expired = await loadChannelObservation(db);
+      expect(expired.platforms.find((row) => row.platform === "拼多多")).toMatchObject({ state: "insufficient", units: null });
     } finally {
       await client.close();
     }

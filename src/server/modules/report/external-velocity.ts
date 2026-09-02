@@ -13,22 +13,23 @@
  * 未映射的平台 SKU 不计入任何系统 SKU（不按名称猜）。
  */
 import { sql, type SQL } from "drizzle-orm";
+import { dAdd, dQty, dSub } from "@/server/core/decimal";
 import { pddDemandEligibilitySql } from "@/server/rules/pdd-demand";
 
 interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v5";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v6";
 const PLATFORM_SKU_IDENTIFIER_SCOPE = "JIANDAOYUN:TMALL";
 
 export interface ExternalVelocityBySku {
-  paid30: number;
-  refund30: number;
-  net30: number;
-  paid90: number;
-  refund90: number;
-  net90: number;
+  paid30: string;
+  refund30: string;
+  net30: string;
+  paid90: string;
+  refund90: string;
+  net90: string;
   /** 最近一次有支付件数的业务日 */
   lastSoldDate: string | null;
   /** 近 90 天有支付的天数 */
@@ -36,10 +37,10 @@ export interface ExternalVelocityBySku {
   /** 归到该 SKU 的平台 SKU 个数（跨店铺） */
   platformSkus: number;
   /** 分平台拆解（净需求）；总量 net30/net90 = 天猫 + 拼多多 */
-  tmallNet30: number;
-  pddNet30: number;
-  tmallNet90: number;
-  pddNet90: number;
+  tmallNet30: string;
+  pddNet30: string;
+  tmallNet90: string;
+  pddNet90: string;
   /** 已有受控拼多多身份；即使当前净量为 0，也仍受拼多多观察窗口完整性约束。 */
   pddIdentityCovered: boolean;
 }
@@ -74,6 +75,10 @@ function intValue(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
 }
+function qtyValue(value: unknown): string {
+  const candidate = value == null ? "" : String(value).trim();
+  return /^-?\d+(\.\d+)?$/.test(candidate) ? dQty(candidate) : "0.0000";
+}
 
 async function latestBatch(db: ReadDb, stream: string): Promise<{ importJobId: number; sourceAsOf: string | null } | null> {
   const result = await db.execute(sql`
@@ -85,6 +90,8 @@ async function latestBatch(db: ReadDb, stream: string): Promise<{ importJobId: n
       AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
       -- 滚动订单流的空窗口本身是有效观察；只有完整快照的空读不能覆盖旧事实。
       AND (${stream} = 'pdd-order-observation' OR coalesce(ir.request_scope->>'emptySource', 'false') = 'false')
+      -- 与实际聚合的 90 天保留集一致；越过边界后 binding 会变为 none，旧 ready 缓存不能继续命中。
+      AND (${stream} <> 'pdd-order-observation' OR ir.finished_at > now() - interval '90 days')
     ORDER BY ir.started_at DESC, ir.id DESC
     LIMIT 1
   `);
@@ -369,14 +376,16 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
     if (row.kind !== "sku") continue;
     const skuId = intValue(row.sku_id);
     if (skuId <= 0) continue;
-    const paid30 = Number(row.paid30), refund30 = Number(row.refund30);
-    const paid90 = Number(row.paid90), refund90 = Number(row.refund90);
-    const tmallNet30 = Number(row.tmall_paid30) - Number(row.tmall_refund30);
-    const tmallNet90 = Number(row.tmall_paid90) - Number(row.tmall_refund90);
+    const paid30 = qtyValue(row.paid30), refund30 = qtyValue(row.refund30);
+    const paid90 = qtyValue(row.paid90), refund90 = qtyValue(row.refund90);
+    const tmallNet30 = dSub(qtyValue(row.tmall_paid30), qtyValue(row.tmall_refund30), 4);
+    const tmallNet90 = dSub(qtyValue(row.tmall_paid90), qtyValue(row.tmall_refund90), 4);
+    const pddNet30 = qtyValue(row.pdd_net30);
+    const pddNet90 = qtyValue(row.pdd_net90);
     bySku[String(skuId)] = {
-      paid30, refund30, net30: paid30 - refund30,
-      paid90, refund90, net90: paid90 - refund90,
-      tmallNet30, pddNet30: Number(row.pdd_net30), tmallNet90, pddNet90: Number(row.pdd_net90),
+      paid30, refund30, net30: dAdd(tmallNet30, pddNet30, 4),
+      paid90, refund90, net90: dAdd(tmallNet90, pddNet90, 4),
+      tmallNet30, pddNet30, tmallNet90, pddNet90,
       pddIdentityCovered: row.pdd_identity_covered === true,
       lastSoldDate: row.last_sold ? String(row.last_sold).slice(0, 10) : null,
       activeDays90: intValue(row.active_days90),

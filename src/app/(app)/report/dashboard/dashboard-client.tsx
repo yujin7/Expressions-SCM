@@ -201,11 +201,11 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
       dataIndex: "externalNet30",
       width: 150,
       align: "right",
-      render: (v: number | null, r) => v == null
+      render: (v: string | null, r) => v == null
         ? <Typography.Text type="secondary">未映射</Typography.Text>
         : (
           <AntTooltip title={`简道云天猫观察，最近售出 ${r.externalLastSold ?? "—"}；近 90 天净需求 ${fmt(r.externalNet90)}`}>
-            <Tag color={v > 0 && r.daysCover == null ? "volcano" : v > 0 ? "blue" : "default"}>{fmt(v)}</Tag>
+            <Tag color={Number(v) > 0 && r.daysCover == null ? "volcano" : Number(v) > 0 ? "blue" : "default"}>{fmt(v)}</Tag>
           </AntTooltip>
         ),
     },

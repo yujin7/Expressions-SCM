@@ -51,7 +51,7 @@ export interface SegRow {
   xyz: "X" | "Y" | "Z";
   cell: SegCell;
   /** 外部观察（简道云天猫）近 90 天净需求：影子列，看内部 ABC 是否已与平台实际销量漂移；未映射 = null */
-  externalNet90: number | null;
+  externalNet90: string | null;
 }
 
 export interface SegMatrixCell {
