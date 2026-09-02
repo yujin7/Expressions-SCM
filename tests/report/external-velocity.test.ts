@@ -122,4 +122,66 @@ describe("外部观察销速读模型", () => {
       await client.close();
     }
   });
+
+  it("拼多多订单经对照表身份并入净需求：剔除已取消/退款成功，分平台可拆", async () => {
+    const { db, client, viaCrosswalk } = await seed();
+    try {
+      const [actor] = await db.select().from(schema.users).limit(1);
+      const [pddCw, pddOrders] = await db.insert(schema.importJobs).values([
+        { template: "jdy_pdd_sku_crosswalk_observation", filename: "pdd-cw", sourceAsOf: "2026-09-01", createdBy: actor.id, status: "done" },
+        { template: "jdy_pdd_order_observation", filename: "pdd-orders", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+      ]).returning();
+      const finishedAt = new Date("2026-09-02T04:00:00.000Z");
+      await db.insert(schema.integrationRuns).values([
+        { connector: "jdy", stream: "pdd-sku-crosswalk-observation", idempotencyKey: "pdd-cw", status: "succeeded", importJobId: pddCw.id, finishedAt },
+        { connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-orders", status: "succeeded", importJobId: pddOrders.id, finishedAt },
+      ]);
+      const shop = "(拼多多国际)NING官方海外旗舰店";
+      const order = (rowNo: number, no: string, date: string, qty: string, status: string) => ({
+        importJobId: pddOrders.id, rowNo, status: "pending" as const, targetTable: "jdy_pdd_order_observation",
+        payload: { data: { statisticalDate: date, shopName: shop, orderNumber: no, productId: "PID1", merchantSkuCode: "GW1", productQuantity: qty, orderStatus: status } },
+      });
+      await db.insert(schema.stagingRows).values([
+        { importJobId: pddCw.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
+          payload: { data: { shopName: shop, platformSkuId: "PS1", platformProductId: "PID1", merchantSkuCode: "GW1" }, _identity: { skuId: viaCrosswalk.id } } },
+        order(1, "O1", "2026-08-25", "2", "已发货，待收货"),
+        order(2, "O2", "2026-08-26", "3", "待发货"),
+        order(3, "O3", "2026-08-27", "5", "已取消，退款成功"),
+        order(4, "O4", "2026-06-20", "7", "已发货，待收货"),
+      ]);
+      const v = await computeExternalVelocity(db);
+      const cw = v.bySku[String(viaCrosswalk.id)]!;
+      expect(cw.pddNet30).toBe(5);       // 2 + 3，取消的 5 不算
+      expect(cw.pddNet90).toBe(12);      // 再加 90 天内的 7
+      expect(cw.tmallNet30).toBe(13);
+      expect(cw.net30).toBe(18);         // 天猫 13 + 拼多多 5
+      expect(v.pddSourceAsOf).toBe("2026-09-02");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("拼多多直接认领（JIANDAOYUN:PDD）也能把订单件数归到系统 SKU", async () => {
+    const { db, client, viaDirect } = await seed();
+    try {
+      const [actor] = await db.select().from(schema.users).limit(1);
+      const [pddOrders] = await db.insert(schema.importJobs).values([
+        { template: "jdy_pdd_order_observation", filename: "pdd-orders", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+      ]).returning();
+      await db.insert(schema.integrationRuns).values([
+        { connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-orders-2", status: "succeeded", importJobId: pddOrders.id, finishedAt: new Date("2026-09-02T04:00:00.000Z") },
+      ]);
+      const shop = "(拼多多国际)EXPRESSIONS海外旗舰店";
+      await db.insert(schema.skuIdentifiers).values({ skuId: viaDirect.id, kind: "external", scope: "JIANDAOYUN:PDD", value: `${shop}|PID9|GE028-000`, active: true, isPrimary: false, createdBy: actor.id });
+      await db.insert(schema.stagingRows).values([
+        { importJobId: pddOrders.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation",
+          payload: { data: { statisticalDate: "2026-08-28", shopName: shop, orderNumber: "X1", productId: "PID9", merchantSkuCode: "GE028-000", productQuantity: "4", orderStatus: "待发货" } } },
+      ]);
+      const v = await computeExternalVelocity(db);
+      expect(v.bySku[String(viaDirect.id)]?.pddNet30).toBe(4);
+      expect(v.bySku[String(viaDirect.id)]?.net30).toBe(3 + 4);
+    } finally {
+      await client.close();
+    }
+  });
 });

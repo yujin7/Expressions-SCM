@@ -64,6 +64,8 @@ interface ReplenishRow {
   orderByDate: string | null;
   orderWindowMissed: boolean;
   planExplain: string[];
+  externalDaily30: number | null;
+  externalLastSold: string | null;
 }
 
 interface ReplenishResult {
@@ -313,6 +315,16 @@ export default function ReplenishClient() {
         title: "判定",
         children: [
           { title: "日均销", dataIndex: "daily", width: 95, align: "right" as const, ...sortable("daily") },
+          {
+            title: "外部日均(30天)", dataIndex: "externalDaily30", width: 125, align: "right" as const,
+            render: (v: number | null, r: ReplenishRow) => v == null
+              ? <Typography.Text type="secondary">未映射</Typography.Text>
+              : (
+                <Tooltip title={`简道云天猫观察近 30 天净需求折日均，最近售出 ${r.externalLastSold ?? "—"}；影子列，不进入建议量`}>
+                  <Typography.Text type={r.daily === 0 && v > 0 ? "danger" : v > r.daily * 2 ? "warning" : undefined}>{v}</Typography.Text>
+                </Tooltip>
+              ),
+          },
           {
             title: "预测日均", dataIndex: "forecastDaily", width: 115, align: "right" as const, ...sortable("forecastDaily"),
             render: (v: number, r: ReplenishRow) => {

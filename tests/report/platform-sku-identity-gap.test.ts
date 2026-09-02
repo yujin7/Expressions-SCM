@@ -149,7 +149,7 @@ describe("平台 SKU 身份缺口读模型", () => {
       // P4：精确命中 → 候选分 100，并进入 exactHits 供批量认领
       expect(gap.top[1]!.platformSkuId).toBe("P4");
       expect(gap.top[1]!.candidates[0]).toMatchObject({ skuId: mudMask.id, score: 100 });
-      expect(gap.exactHits).toEqual([{ shopName: gap.top[1]!.shopName, platformSkuId: "P4", skuId: mudMask.id, skuCode: "N009-000", paidAmount: "300.00" }]);
+      expect(gap.exactHits).toEqual([{ shopName: gap.top[1]!.shopName, platformSkuId: "P4", skuId: mudMask.id, skuCode: "N009-000", paidAmount: "300.00", source: "crosswalk" }]);
       expect(gap.exactHitAmountPct).toBe(2.9);
       expect(gap.top[2]!.status).toBe("crosswalk_without_code");
       expect(gap.top[2]!.barcode).toBe("6900000000002");
@@ -322,6 +322,65 @@ describe("平台 SKU 身份缺口读模型", () => {
       const gap = await computePlatformSkuIdentityGap(db);
       expect(gap.totals.byStatus.direct_claimed.skus).toBe(2);
       expect(gap.exactHits).toEqual([]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("天猫单品汇总的子货品编码 = 系统编码：作为第三条确定性线索进入 exactHits（source=unit_daily）", async () => {
+    const { db, client, actor, mudMask, shop } = await seed();
+    try {
+      const [unitJob] = await db.insert(schema.importJobs).values([
+        { template: "jdy_tmall_unit_daily_observation", filename: "unit", sourceAsOf: "2026-01-10", createdBy: actor.id, status: "done" },
+      ]).returning();
+      await db.insert(schema.integrationRuns).values([
+        { connector: "jdy", stream: "tmall-unit-daily-observation", idempotencyKey: "unit", status: "succeeded", importJobId: unitJob.id, finishedAt: new Date("2026-01-10T03:00:00.000Z") },
+      ]);
+      await db.insert(schema.stagingRows).values([
+        // P3 不在对照表，但单品汇总里 P3 的子货品编码就是 N009-000
+        { importJobId: unitJob.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_unit_daily_observation",
+          payload: { data: { statisticalDate: "2026-01-05", shopName: shop, platformSkuId: "P3", unitCode: "N009-000", paidNumber: "1" } } },
+        { importJobId: unitJob.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_unit_daily_observation",
+          payload: { data: { statisticalDate: "2026-01-06", shopName: shop, platformSkuId: "P3", unitCode: "N009-000", paidNumber: "2" } } },
+      ]);
+      const gap = await computePlatformSkuIdentityGap(db);
+      const p3 = gap.top.find((r) => r.platformSkuId === "P3")!;
+      expect(p3.status).toBe("not_in_crosswalk");
+      expect(p3.candidates[0]).toMatchObject({ skuId: mudMask.id, score: 100 });
+      expect(gap.exactHits.map((h) => [h.platformSkuId, h.source]).sort()).toEqual([["P3", "unit_daily"], ["P4", "crosswalk"]]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("拼多多：对照表商家编码精确命中进入 pddExactHits，按 platform=pdd 认领后从队列消失", async () => {
+    const { db, client, actor, mudMask } = await seed();
+    try {
+      const [pddCw] = await db.insert(schema.importJobs).values([
+        { template: "jdy_pdd_sku_crosswalk_observation", filename: "pdd-cw", sourceAsOf: "2026-09-01", createdBy: actor.id, status: "done" },
+      ]).returning();
+      await db.insert(schema.integrationRuns).values([
+        { connector: "jdy", stream: "pdd-sku-crosswalk-observation", idempotencyKey: "pdd-cw", status: "succeeded", importJobId: pddCw.id, finishedAt: new Date("2026-09-01T03:00:00.000Z") },
+      ]);
+      const shop = "(拼多多国际)NING官方海外旗舰店";
+      await db.insert(schema.stagingRows).values([
+        { importJobId: pddCw.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
+          payload: { data: { shopName: shop, platformSkuId: "PS1", platformProductId: "PID1", merchantSkuCode: "N009-000", productName: "泥膜" }, _identity: {} } },
+        { importJobId: pddCw.id, rowNo: 2, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
+          payload: { data: { shopName: shop, platformSkuId: "PS2", platformProductId: "PID2", merchantSkuCode: "SW1557", productName: "别的命名空间" }, _identity: {} } },
+      ]);
+      let gap = await computePlatformSkuIdentityGap(db);
+      expect(gap.pddSummary).toEqual({ crosswalkRows: 2, merchantCodes: 2, exactCodes: 1, claimed: 0 });
+      expect(gap.pddExactHits).toEqual([{ shopName: shop, platformSkuId: "PID1|N009-000", skuId: mudMask.id, skuCode: "N009-000", productName: "泥膜" }]);
+
+      const user = { id: actor.id, name: actor.name, roles: ["pmc"], isApprover: false };
+      const r = await claimPlatformSkusBulk(user, { items: gap.pddExactHits.map((h) => ({ shopName: h.shopName, platformSkuId: h.platformSkuId, skuId: h.skuId, platform: "pdd" })) }, db);
+      expect(r.claimed).toBe(1);
+      const [ident] = await db.select().from(schema.skuIdentifiers).where(eq(schema.skuIdentifiers.scope, "JIANDAOYUN:PDD"));
+      expect(ident?.value).toBe(`${shop}|PID1|N009-000`);
+      gap = await computePlatformSkuIdentityGap(db);
+      expect(gap.pddExactHits).toEqual([]);
+      expect(gap.pddSummary.claimed).toBe(1);
     } finally {
       await client.close();
     }

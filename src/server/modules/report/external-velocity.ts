@@ -34,15 +34,21 @@ export interface ExternalVelocityBySku {
   activeDays90: number;
   /** 归到该 SKU 的平台 SKU 个数（跨店铺） */
   platformSkus: number;
+  /** 分平台拆解（净需求）；总量 net30/net90 = 天猫 + 拼多多 */
+  tmallNet30: number;
+  pddNet30: number;
+  tmallNet90: number;
+  pddNet90: number;
 }
 
 export interface ExternalVelocity {
   state: "ready" | "insufficient";
   authority: "observation_only";
   source: "JIANDAOYUN";
-  platform: "天猫";
+  platform: "天猫+拼多多";
   gate: string;
   sourceAsOf: string | null;
+  pddSourceAsOf: string | null;
   /** 观察窗口锚点 = 批次内最大业务日；30/90 天窗口都从它往回数 */
   anchorDate: string | null;
   coverage: {
@@ -82,16 +88,18 @@ async function latestBatch(db: ReadDb, stream: string): Promise<{ importJobId: n
 }
 
 async function binding(db: ReadDb): Promise<string | null> {
-  const [sales, refunds, crosswalk, direct] = await Promise.all([
+  const [sales, refunds, crosswalk, pddOrders, pddCrosswalk, direct] = await Promise.all([
     latestBatch(db, "tmall-sku-sales-observation"),
     latestBatch(db, "tmall-sku-refund-observation"),
     latestBatch(db, "tmall-sku-crosswalk-observation"),
+    latestBatch(db, "pdd-order-observation"),
+    latestBatch(db, "pdd-sku-crosswalk-observation"),
     db.execute(sql`SELECT count(*)::int AS n, coalesce(max(id), 0)::int AS max_id, coalesce(max(updated_at), 'epoch')::text AS updated
-      FROM sku_identifiers WHERE kind = 'external' AND scope = ${PLATFORM_SKU_IDENTIFIER_SCOPE}`),
+      FROM sku_identifiers WHERE kind = 'external' AND scope IN (${PLATFORM_SKU_IDENTIFIER_SCOPE}, 'JIANDAOYUN:PDD')`),
   ]);
   if (!sales) return null;
   const [d] = resultRows<Record<string, unknown>>(direct);
-  return `sales:${sales.importJobId}|refunds:${refunds?.importJobId ?? "none"}|crosswalk:${crosswalk?.importJobId ?? "none"}|direct:${intValue(d?.n)}:${intValue(d?.max_id)}:${String(d?.updated ?? "")}`;
+  return `sales:${sales.importJobId}|refunds:${refunds?.importJobId ?? "none"}|crosswalk:${crosswalk?.importJobId ?? "none"}|pdd:${pddOrders?.importJobId ?? "none"}:${pddCrosswalk?.importJobId ?? "none"}|direct:${intValue(d?.n)}:${intValue(d?.max_id)}:${String(d?.updated ?? "")}`;
 }
 
 export function emptyExternalVelocity(gate: string): ExternalVelocity {
@@ -99,9 +107,10 @@ export function emptyExternalVelocity(gate: string): ExternalVelocity {
     state: "insufficient",
     authority: "observation_only",
     source: "JIANDAOYUN",
-    platform: "天猫",
+    platform: "天猫+拼多多",
     gate,
     sourceAsOf: null,
+    pddSourceAsOf: null,
     anchorDate: null,
     coverage: { platformSkus: 0, mappedPlatformSkus: 0, mappedSkus: 0 },
     bySku: {},
@@ -110,10 +119,12 @@ export function emptyExternalVelocity(gate: string): ExternalVelocity {
 }
 
 export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVelocity> {
-  const [sales, refunds, crosswalk] = await Promise.all([
+  const [sales, refunds, crosswalk, pddOrders, pddCrosswalk] = await Promise.all([
     latestBatch(db, "tmall-sku-sales-observation"),
     latestBatch(db, "tmall-sku-refund-observation"),
     latestBatch(db, "tmall-sku-crosswalk-observation"),
+    latestBatch(db, "pdd-order-observation"),
+    latestBatch(db, "pdd-sku-crosswalk-observation"),
   ]);
   if (!sales) return emptyExternalVelocity("缺少天猫日销量的成功批次，外部销速保持关闭。");
 
@@ -168,14 +179,74 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
         AND status IN ('pending', 'validated', 'committed')
         AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
     ),
-    anchor AS (SELECT max(d) AS d FROM s),
+    pdd_map AS (
+      SELECT payload->'data'->>'shopName' AS shop,
+             payload->'data'->>'platformProductId' AS pid,
+             nullif(trim(payload->'data'->>'merchantSkuCode'), '') AS mcode,
+             max((payload->'_identity'->>'skuId')::int) AS sku_id,
+             count(DISTINCT payload->'_identity'->>'skuId') AS n
+      FROM staging_rows
+      WHERE import_job_id = ${pddCrosswalk?.importJobId ?? -1}
+        AND target_table = 'jdy_pdd_sku_crosswalk_observation'
+        AND status IN ('pending', 'validated', 'committed')
+        AND payload->'_identity'->>'skuId' IS NOT NULL
+      GROUP BY 1, 2, 3
+    ),
+    pdd_direct AS (
+      SELECT split_part(value, '|', 1) AS shop, split_part(value, '|', 2) AS pid, nullif(split_part(value, '|', 3), '') AS mcode, sku_id
+      FROM sku_identifiers WHERE kind = 'external' AND scope = 'JIANDAOYUN:PDD' AND active = true
+    ),
+    pdd_identity AS (
+      SELECT coalesce(m.shop, d.shop) AS shop, coalesce(m.pid, d.pid) AS pid, coalesce(m.mcode, d.mcode) AS mcode,
+             CASE WHEN m.n = 1 THEN m.sku_id WHEN m.n IS NULL THEN d.sku_id ELSE NULL END AS sku_id
+      FROM pdd_map m FULL JOIN pdd_direct d ON d.shop = m.shop AND d.pid = m.pid AND d.mcode IS NOT DISTINCT FROM m.mcode
+    ),
+    -- 拼多多订单：每批只是最近 3 天的滚动快照（每天 3~6 千行明细，全量超安全页上限），
+    -- 这里把最近 90 天内所有成功批次按业务键（订单号+商品+商家编码）去重、取最新批次的状态后累加。
+    -- 已取消/退款成功的订单不算需求；发货与否不影响需求口径。
+    pdd_batches AS (
+      SELECT ir.import_job_id
+      FROM integration_runs ir
+      WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation'
+        AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
+        AND ir.finished_at > now() - interval '90 days'
+    ),
+    pdd_raw AS (
+      SELECT DISTINCT ON (payload->'data'->>'orderNumber', payload->'data'->>'productId', coalesce(payload->'data'->>'merchantSkuCode', ''))
+             payload->'data'->>'shopName' AS shop,
+             payload->'data'->>'productId' AS pid,
+             nullif(trim(payload->'data'->>'merchantSkuCode'), '') AS mcode,
+             left(payload->'data'->>'statisticalDate', 10)::date AS d,
+             CASE WHEN trim(coalesce(payload->'data'->>'productQuantity','')) ~ '^-?[0-9]+([.][0-9]+)?$'
+                  THEN (payload->'data'->>'productQuantity')::numeric ELSE 0 END AS qty,
+             coalesce(payload->'data'->>'orderStatus', '') AS status
+      FROM staging_rows
+      WHERE import_job_id IN (SELECT import_job_id FROM pdd_batches)
+        AND target_table = 'jdy_pdd_order_observation'
+        AND status IN ('pending', 'validated', 'committed')
+        AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+      ORDER BY payload->'data'->>'orderNumber', payload->'data'->>'productId', coalesce(payload->'data'->>'merchantSkuCode', ''), import_job_id DESC
+    ),
+    pdd AS (SELECT shop, pid, mcode, d, qty, status FROM pdd_raw),
+    anchor AS (SELECT greatest(max(s.d), (SELECT max(d) FROM pdd)) AS d FROM s),
     joined AS (
-      SELECT m.sku_id, s.shop, s.psku, s.d, s.paid, 0::numeric AS refund FROM s INNER JOIN map m ON m.shop = s.shop AND m.psku = s.psku AND m.sku_id IS NOT NULL
+      SELECT m.sku_id, s.shop, s.psku, s.d, s.paid, 0::numeric AS refund, 'tmall' AS platform FROM s INNER JOIN map m ON m.shop = s.shop AND m.psku = s.psku AND m.sku_id IS NOT NULL
       UNION ALL
-      SELECT m.sku_id, r.shop, r.psku, r.d, 0::numeric, r.refund FROM r INNER JOIN map m ON m.shop = r.shop AND m.psku = r.psku AND m.sku_id IS NOT NULL
+      SELECT m.sku_id, r.shop, r.psku, r.d, 0::numeric, r.refund, 'tmall' FROM r INNER JOIN map m ON m.shop = r.shop AND m.psku = r.psku AND m.sku_id IS NOT NULL
+      UNION ALL
+      SELECT pm.sku_id, p.shop, coalesce(p.mcode, p.pid), p.d,
+             CASE WHEN p.status LIKE '%取消%' OR p.status LIKE '%退款成功%' THEN 0 ELSE p.qty END,
+             0::numeric, 'pdd'
+      FROM pdd p INNER JOIN pdd_identity pm ON pm.shop = p.shop AND pm.pid = p.pid AND pm.mcode IS NOT DISTINCT FROM p.mcode AND pm.sku_id IS NOT NULL
     ),
     per_sku AS (
       SELECT j.sku_id,
+        sum(j.paid) FILTER (WHERE j.d > a.d - 30 AND j.platform = 'tmall') AS tmall_paid30,
+        sum(j.refund) FILTER (WHERE j.d > a.d - 30 AND j.platform = 'tmall') AS tmall_refund30,
+        sum(j.paid) FILTER (WHERE j.d > a.d - 30 AND j.platform = 'pdd') AS pdd_net30,
+        sum(j.paid) FILTER (WHERE j.d > a.d - 90 AND j.platform = 'tmall') AS tmall_paid90,
+        sum(j.refund) FILTER (WHERE j.d > a.d - 90 AND j.platform = 'tmall') AS tmall_refund90,
+        sum(j.paid) FILTER (WHERE j.d > a.d - 90 AND j.platform = 'pdd') AS pdd_net90,
         sum(j.paid) FILTER (WHERE j.d > a.d - 30) AS paid30,
         sum(j.refund) FILTER (WHERE j.d > a.d - 30) AS refund30,
         sum(j.paid) FILTER (WHERE j.d > a.d - 90) AS paid90,
@@ -192,11 +263,13 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
       FROM s LEFT JOIN map m ON m.shop = s.shop AND m.psku = s.psku
     )
     SELECT 'anchor' AS kind, a.d::text AS anchor, NULL::int AS sku_id, NULL::numeric AS paid30, NULL::numeric AS refund30, NULL::numeric AS paid90, NULL::numeric AS refund90,
-           NULL::text AS last_sold, NULL::int AS active_days90, cov.platform_skus::int AS platform_skus, cov.mapped_platform_skus::int AS mapped_platform_skus
+           NULL::text AS last_sold, NULL::int AS active_days90, cov.platform_skus::int AS platform_skus, cov.mapped_platform_skus::int AS mapped_platform_skus,
+           NULL::numeric AS tmall_paid30, NULL::numeric AS tmall_refund30, NULL::numeric AS pdd_net30, NULL::numeric AS tmall_paid90, NULL::numeric AS tmall_refund90, NULL::numeric AS pdd_net90
     FROM anchor a CROSS JOIN cov
     UNION ALL
     SELECT 'sku', NULL, p.sku_id, coalesce(p.paid30, 0), coalesce(p.refund30, 0), coalesce(p.paid90, 0), coalesce(p.refund90, 0),
-           p.last_sold::text, p.active_days90::int, p.platform_skus::int, NULL
+           p.last_sold::text, p.active_days90::int, p.platform_skus::int, NULL,
+           coalesce(p.tmall_paid30, 0), coalesce(p.tmall_refund30, 0), coalesce(p.pdd_net30, 0), coalesce(p.tmall_paid90, 0), coalesce(p.tmall_refund90, 0), coalesce(p.pdd_net90, 0)
     FROM per_sku p
   `);
 
@@ -210,9 +283,12 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
     if (skuId <= 0) continue;
     const paid30 = Number(row.paid30), refund30 = Number(row.refund30);
     const paid90 = Number(row.paid90), refund90 = Number(row.refund90);
+    const tmallNet30 = Number(row.tmall_paid30) - Number(row.tmall_refund30);
+    const tmallNet90 = Number(row.tmall_paid90) - Number(row.tmall_refund90);
     bySku[String(skuId)] = {
       paid30, refund30, net30: paid30 - refund30,
       paid90, refund90, net90: paid90 - refund90,
+      tmallNet30, pddNet30: Number(row.pdd_net30), tmallNet90, pddNet90: Number(row.pdd_net90),
       lastSoldDate: row.last_sold ? String(row.last_sold).slice(0, 10) : null,
       activeDays90: intValue(row.active_days90),
       platformSkus: intValue(row.platform_skus),
@@ -226,11 +302,12 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
     state: ready ? "ready" : "insufficient",
     authority: "observation_only",
     source: "JIANDAOYUN",
-    platform: "天猫",
+    platform: "天猫+拼多多",
     gate: ready
-      ? `观察口径：天猫支付件数 − 成功退款子订单数，锚点 ${anchorDate}；只覆盖已映射到系统 SKU 的平台 SKU（${mappedPlatformSkus}/${platformSkus}）。`
+      ? `观察口径：天猫支付件数 − 成功退款子订单数 + 拼多多有效订单件数（剔除已取消/退款成功），锚点 ${anchorDate}；只覆盖已映射到系统 SKU 的平台 SKU（天猫 ${mappedPlatformSkus}/${platformSkus}${pddOrders ? "，拼多多按对照表身份" : "，拼多多订单未同步"}）。`
       : "最新批次里没有能归到系统 SKU 的天猫销量，外部销速保持关闭。",
     sourceAsOf: sales.sourceAsOf,
+    pddSourceAsOf: pddOrders?.sourceAsOf ?? null,
     anchorDate,
     coverage: { platformSkus, mappedPlatformSkus, mappedSkus },
     bySku,

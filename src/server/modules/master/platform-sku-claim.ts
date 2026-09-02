@@ -17,15 +17,23 @@ import { getDbAsync } from "@/db";
 import type { SessionUser } from "@/server/core/dto";
 import { ApiError } from "@/server/modules/master/common";
 import { ensureExternalSkuIdentifierInTransaction } from "@/server/modules/master/sku-identifier";
-import { PLATFORM_SKU_IDENTIFIER_SCOPE, refreshPlatformSkuIdentityGap } from "@/server/modules/report/platform-sku-identity-gap";
+import { refreshPlatformSkuIdentityGap } from "@/server/modules/report/platform-sku-identity-gap";
 import { refreshJiandaoyunExternalDemandReadModel } from "@/server/modules/report/external-demand-signal";
 import { refreshExternalVelocity } from "@/server/modules/report/external-velocity";
 import type { AnyDb } from "@/server/core/svc";
 
+export const PLATFORM_SCOPES = {
+  tmall: "JIANDAOYUN:TMALL",
+  // 拼多多没有 SKU 级销量表，订单按 (店铺, 商品ID, 商家编码-规格) 归属，platformSkuId 传 `${商品ID}|${商家编码}`
+  pdd: "JIANDAOYUN:PDD",
+} as const;
+export type PlatformKey = keyof typeof PLATFORM_SCOPES;
+
 export const platformSkuClaimSchema = z.object({
   shopName: z.string().trim().min(1, "店铺名必填").max(60).refine((value) => !value.includes("|"), "店铺名不能包含 |分隔符"),
-  platformSkuId: z.string().trim().min(1, "平台 SKU ID 必填").max(40).regex(/^[A-Za-z0-9_-]+$/, "平台 SKU ID 只能是字母数字"),
+  platformSkuId: z.string().trim().min(1, "平台 SKU ID 必填").max(60).regex(/^[A-Za-z0-9_|.-]+$/, "平台 SKU ID 只能是字母数字（拼多多可含 | 分隔）"),
   skuId: z.number().int().positive(),
+  platform: z.enum(["tmall", "pdd"]).default("tmall"),
   note: z.string().trim().max(200).optional(),
 });
 export type PlatformSkuClaimInput = z.infer<typeof platformSkuClaimSchema>;
@@ -44,7 +52,7 @@ function resultRows<T>(result: unknown): T[] {
 
 async function assertClaimIsConsistent(
   tx: AnyDb,
-  input: Pick<PlatformSkuClaimInput, "shopName" | "platformSkuId" | "skuId">,
+  input: Pick<PlatformSkuClaimInput, "shopName" | "platformSkuId" | "skuId" | "platform">,
 ) {
   const skuResult = await tx.execute(sql`
     SELECT id, code, sku_type, active FROM skus WHERE id = ${input.skuId} FOR UPDATE
@@ -54,6 +62,7 @@ async function assertClaimIsConsistent(
   if (sku.active !== true || sku.sku_type !== "finished") {
     throw new ApiError(409, "平台 SKU 只能认领到启用中的成品 SKU");
   }
+  if (input.platform !== "tmall") return;
 
   const crosswalkResult = await tx.execute(sql`
     WITH latest AS (
@@ -93,13 +102,13 @@ async function assertClaimIsConsistent(
 async function claimOne(
   tx: AnyDb,
   actor: SessionUser,
-  input: Pick<PlatformSkuClaimInput, "shopName" | "platformSkuId" | "skuId"> & { note: string },
+  input: Pick<PlatformSkuClaimInput, "shopName" | "platformSkuId" | "skuId" | "platform"> & { note: string },
 ) {
   await assertClaimIsConsistent(tx, input);
   return ensureExternalSkuIdentifierInTransaction(tx, {
     skuId: input.skuId,
     value: platformSkuIdentifierValue(input.shopName, input.platformSkuId),
-    scope: PLATFORM_SKU_IDENTIFIER_SCOPE,
+    scope: PLATFORM_SCOPES[input.platform],
     note: input.note,
   }, actor);
 }
@@ -108,10 +117,11 @@ export async function claimPlatformSku(actor: SessionUser, input: unknown, dbArg
   const v = platformSkuClaimSchema.parse(input);
   const db = dbArg ?? (await getDbAsync());
   const value = platformSkuIdentifierValue(v.shopName, v.platformSkuId);
+  const scope = PLATFORM_SCOPES[v.platform];
   const result = await db.transaction(async (tx: AnyDb) =>
     claimOne(tx, actor, {
       ...v,
-      note: v.note ?? `天猫平台 SKU 认领（${v.shopName}）`,
+      note: v.note ?? `${v.platform === "pdd" ? "拼多多" : "天猫"}平台 SKU 认领（${v.shopName}）`,
     }),
   );
   // 读模型刷新是可丢弃的派生物：失败不回滚认领，只让页面等下一次同步重建
@@ -127,7 +137,7 @@ export async function claimPlatformSku(actor: SessionUser, input: unknown, dbArg
     identifierId: result.identifier.id,
     skuId: v.skuId,
     value,
-    scope: PLATFORM_SKU_IDENTIFIER_SCOPE,
+    scope,
     created: result.created,
     reactivated: result.reactivated,
     readModels,
@@ -151,7 +161,7 @@ export async function claimPlatformSkusBulk(actor: SessionUser, input: unknown, 
       const r = await db.transaction(async (tx: AnyDb) =>
         claimOne(tx, actor, {
           ...item,
-          note: `天猫平台 SKU 批量认领（${item.shopName}）`,
+          note: `${item.platform === "pdd" ? "拼多多" : "天猫"}平台 SKU 批量认领（${item.shopName}）`,
         }),
       );
       results.push({ ...item, ok: true, created: r.created });

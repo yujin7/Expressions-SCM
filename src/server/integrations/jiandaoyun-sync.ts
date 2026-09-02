@@ -672,6 +672,7 @@ export async function syncJiandaoyunForm(
     input.contract.appId,
     input.contract.entryId,
     projection,
+    input.contract.window ? { field: input.contract.window.field, sinceDays: input.contract.window.days } : undefined,
   );
   const control = inspectJiandaoyunContractControl(input.contract, widgets, records);
   const controlSummary = summarizeJiandaoyunContractControl(control);
@@ -804,17 +805,22 @@ export async function syncJiandaoyunForm(
             `简道云 ${stream} 源时点回退（${updatedThrough} < ${priorUpdatedThrough}），拒绝覆盖`,
           );
         }
-        if (minimized.length < priorFull.controlRows!) {
-          throw new Error(
-            `简道云 ${stream} 全量行数下降（${minimized.length} < ${priorFull.controlRows}），可能是权限或分页缩减；需人工复核`,
-          );
+        // 时间窗契约（contract.window）每批只是"最近 N 天"的滚动快照：行数随窗口内业务量起伏、
+        // 窗口外的记录本来就不再出现，"全量行数不得下降 / 旧记录必须仍在"这两条只适用于全量快照。
+        // 2026-09-02 实测：拼多多订单 14 天批 42,256 行 → 3 天批 7,141 行被误判为"分页缩减"。
+        if (!input.contract.window) {
+          if (minimized.length < priorFull.controlRows!) {
+            throw new Error(
+              `简道云 ${stream} 全量行数下降（${minimized.length} < ${priorFull.controlRows}），可能是权限或分页缩减；需人工复核`,
+            );
+          }
+          priorSourceRecordIdsVerified = await assertPriorSourceRecordContinuity(tx, {
+            stream,
+            priorJobId: priorFull.id,
+            expectedRows: priorFull.controlRows!,
+            currentSourceRecordIds: sourceRecordIds,
+          });
         }
-        priorSourceRecordIdsVerified = await assertPriorSourceRecordContinuity(tx, {
-          stream,
-          priorJobId: priorFull.id,
-          expectedRows: priorFull.controlRows!,
-          currentSourceRecordIds: sourceRecordIds,
-        });
       }
 
       const job = await createSourceImportJobInTransaction(tx, {
@@ -832,6 +838,8 @@ export async function syncJiandaoyunForm(
           stream,
           appId: input.contract.appId,
           entryId: input.contract.entryId,
+          // 时间窗快照：读模型必须按业务键跨批次去重累加，不能把单批当全量
+          ...(input.contract.window ? { window: { field: input.contract.window.field, days: input.contract.window.days } } : {}),
           schemaHash,
           sourceUpdatedThrough: updatedThrough,
           priorSourceRecordIdsVerified,

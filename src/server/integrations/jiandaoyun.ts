@@ -248,6 +248,7 @@ export class JiandaoyunClient {
     appIdInput: string,
     entryIdInput: string,
     fieldsInput?: readonly string[],
+    filter?: { field: string; sinceDays: number },
   ): Promise<JiandaoyunRecord[]> {
     const appId = objectId(appIdInput, "简道云 app_id");
     const entryId = objectId(entryIdInput, "简道云 entry_id");
@@ -266,6 +267,16 @@ export class JiandaoyunClient {
         limit: PAGE_SIZE,
       };
       if (fields) body.fields = fields;
+      if (filter) {
+        // 简道云官方 filter：datetime range，上界取"明天"以含当天；窗口内是完整快照
+        const to = new Date();
+        to.setUTCDate(to.getUTCDate() + 1);
+        const from = new Date(to.getTime() - (filter.sinceDays + 1) * 86_400_000);
+        body.filter = {
+          rel: "and",
+          cond: [{ field: filter.field, type: "datetime", method: "range", value: [from.toISOString(), to.toISOString()] }],
+        };
+      }
       if (cursor) body.data_id = cursor;
       const page = parseRecords(
         await this.post("/app/entry/data/list", body),
