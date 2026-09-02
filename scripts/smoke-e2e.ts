@@ -124,11 +124,15 @@ async function main(): Promise<void> {
   // 2) 各角色登录
   const jars = new Map<string, Jar>();
   for (const u of ROLE_USERS) {
-    const password = u === "admin"
-      ? ADMIN_PASSWORD
-      : u === "quality01"
-        ? QUALITY_PASSWORD
-        : ROLE_PASSWORD;
+    // 每个账号各自独立的口令（set-initial-passwords.ts 的纪律）优先：SMOKE_PASSWORD_<用户名大写>；
+    // 未提供时回落到管理员/角色/质量三档共享口令。
+    const perUser = process.env[`SMOKE_PASSWORD_${u.toUpperCase()}`]?.trim();
+    const password = perUser
+      || (u === "admin"
+        ? ADMIN_PASSWORD
+        : u === "quality01"
+          ? QUALITY_PASSWORD
+          : ROLE_PASSWORD);
     const jar = await login(u, password);
     if (jar) {
       jars.set(u, jar);
