@@ -333,7 +333,7 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
       SELECT r.shop, r.pid, r.mcode, r.pname, k.id AS sku_id, k.code AS sku_code,
              EXISTS (SELECT 1 FROM sku_identifiers i WHERE i.kind = 'external' AND i.scope = 'JIANDAOYUN:PDD' AND i.active = true
                      AND i.value = r.shop || '|' || r.pid || '|' || r.mcode) AS claimed
-      FROM rows r LEFT JOIN skus k ON k.code = r.mcode AND k.active = true
+      FROM rows r LEFT JOIN skus k ON k.code = r.mcode AND k.active = true AND k.sku_type = 'finished'
       WHERE r.shop IS NOT NULL AND r.pid IS NOT NULL
     `),
     // 第三条身份线索：天猫单品日汇总的「子货品编码」= 系统编码（2026-09-02 实核，形如 E028-000）。
