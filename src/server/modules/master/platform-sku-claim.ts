@@ -29,13 +29,24 @@ export const PLATFORM_SCOPES = {
 } as const;
 export type PlatformKey = keyof typeof PLATFORM_SCOPES;
 
-export const platformSkuClaimSchema = z.object({
+const claimCommonShape = {
   shopName: z.string().trim().min(1, "店铺名必填").max(60).refine((value) => !value.includes("|"), "店铺名不能包含 |分隔符"),
-  platformSkuId: z.string().trim().min(1, "平台 SKU ID 必填").max(60).regex(/^[A-Za-z0-9_|.-]+$/, "平台 SKU ID 只能是字母数字（拼多多可含 | 分隔）"),
   skuId: z.number().int().positive(),
-  platform: z.enum(["tmall", "pdd"]).default("tmall"),
-  note: z.string().trim().max(200).optional(),
-});
+};
+const tmallPlatformSkuId = z.string().trim().min(1, "平台 SKU ID 必填").max(60)
+  .regex(/^[A-Za-z0-9_.-]+$/, "天猫平台 SKU ID 只能包含字母、数字、点、横线或下划线，不能包含 | 分隔符");
+const pddPlatformSkuId = z.string().trim().min(1, "拼多多商品 ID 与商家编码必填").max(60)
+  .regex(/^[A-Za-z0-9_.-]+\|[A-Za-z0-9_.-]+$/, "拼多多平台 SKU ID 必须是 商品ID|商家编码 的完整二元组");
+
+const platformSkuClaimItemSchema = z.union([
+  z.object({ ...claimCommonShape, platform: z.literal("pdd"), platformSkuId: pddPlatformSkuId }),
+  z.object({ ...claimCommonShape, platform: z.literal("tmall").default("tmall"), platformSkuId: tmallPlatformSkuId }),
+]);
+
+export const platformSkuClaimSchema = z.union([
+  z.object({ ...claimCommonShape, platform: z.literal("pdd"), platformSkuId: pddPlatformSkuId, note: z.string().trim().max(200).optional() }),
+  z.object({ ...claimCommonShape, platform: z.literal("tmall").default("tmall"), platformSkuId: tmallPlatformSkuId, note: z.string().trim().max(200).optional() }),
+]);
 export type PlatformSkuClaimInput = z.infer<typeof platformSkuClaimSchema>;
 
 export function platformSkuIdentifierValue(shopName: string, platformSkuId: string): string {
@@ -145,7 +156,7 @@ export async function claimPlatformSku(actor: SessionUser, input: unknown, dbArg
 }
 
 export const platformSkuBulkClaimSchema = z.object({
-  items: z.array(platformSkuClaimSchema.omit({ note: true })).min(1).max(300),
+  items: z.array(platformSkuClaimItemSchema).min(1).max(300),
 });
 
 /**

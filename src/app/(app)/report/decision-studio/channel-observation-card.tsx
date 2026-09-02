@@ -19,6 +19,15 @@ function yuan(value: string | null | undefined): string {
   return n.toLocaleString("zh-CN", { maximumFractionDigits: 0 });
 }
 
+function quantity(value: string | null | undefined): string {
+  if (value == null || !/^-?\d+(\.\d+)?$/.test(value)) return "—";
+  const negative = value.startsWith("-");
+  const [whole, fraction = ""] = (negative ? value.slice(1) : value).split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const trimmed = fraction.replace(/0+$/, "");
+  return `${negative ? "-" : ""}${grouped}${trimmed ? `.${trimmed}` : ""}`;
+}
+
 export default function ChannelObservationCard({ active }: { active: boolean }) {
   const { message } = App.useApp();
   const [data, setData] = useState<ChannelObservation | null>(null);
@@ -38,10 +47,10 @@ export default function ChannelObservationCard({ active }: { active: boolean }) 
   const platformCols: ColumnsType<ChannelPlatformRow> = [
     { title: "平台", dataIndex: "platform", width: 90, render: (v: string, r) => <Space size={6}><Typography.Text strong>{v}</Typography.Text><Tag color={r.state === "ready" ? "success" : "default"}>{r.state === "ready" ? "有数" : "缺流"}</Tag></Space> },
     { title: "窗口", key: "window", width: 200, render: (_, r) => r.anchorDate ? `${r.windowFrom} ～ ${r.anchorDate}` : <Typography.Text type="secondary">—</Typography.Text> },
-    { title: "近30天件数", dataIndex: "units", width: 120, align: "right", render: (v: number | null) => v == null ? "—" : v.toLocaleString("zh-CN") },
+    { title: "近30天件数", dataIndex: "units", width: 120, align: "right", render: (v: string | null) => quantity(v) },
     { title: "近30天金额", dataIndex: "amount", width: 120, align: "right", render: (v: string | null) => v == null ? <Typography.Text type="secondary">无金额字段</Typography.Text> : `¥${yuan(v)}` },
-    { title: "退款件数", dataIndex: "refundUnits", width: 100, align: "right", render: (v: number | null) => v == null ? "—" : v.toLocaleString("zh-CN") },
-    { title: "按品牌", key: "brand", render: (_, r) => r.byBrand.length ? r.byBrand.slice(0, 5).map((b) => `${b.brand} ${b.units.toLocaleString("zh-CN")}`).join(" · ") : "—" },
+    { title: "退款件数", dataIndex: "refundUnits", width: 100, align: "right", render: (v: string | null) => quantity(v) },
+    { title: "按品牌", key: "brand", render: (_, r) => r.byBrand.length ? r.byBrand.slice(0, 5).map((b) => `${b.brand} ${quantity(b.units)}`).join(" · ") : "—" },
     { title: "口径", dataIndex: "gate", ellipsis: true },
   ];
   const pnlCols: ColumnsType<ProductPnlRow> = [
@@ -49,7 +58,7 @@ export default function ChannelObservationCard({ active }: { active: boolean }) 
     { title: "真实成交", dataIndex: "actualTransactionAmount", width: 110, align: "right", render: (v: string) => `¥${yuan(v)}` },
     { title: "销售费用", dataIndex: "totalSalesCost", width: 110, align: "right", render: (v: string) => `¥${yuan(v)}` },
     { title: "预估净利", dataIndex: "estimatedNetProfit", width: 110, align: "right", render: (v: string) => <Typography.Text type={Number(v) < 0 ? "danger" : undefined} strong>¥{yuan(v)}</Typography.Text> },
-    { title: "支付件数", dataIndex: "paidNumber", width: 90, align: "right" },
+    { title: "支付件数", dataIndex: "paidNumber", width: 90, align: "right", render: (v: string) => quantity(v) },
   ];
   const pnl = data?.productPnl;
   return (

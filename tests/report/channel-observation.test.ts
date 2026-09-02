@@ -58,8 +58,8 @@ describe("全渠道外部观察", () => {
         { importJobId: sales.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_sku_sales_observation", payload: { data: { statisticalDate: "2026-06-01", shopName: tShop, skuId: "P1", paidNumber: "99", paidAmount: "9999" } } }, // 窗口外
         { importJobId: refunds.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_refund_observation", payload: { data: { statisticalDate: "2026-08-30", shopName: tShop, skuId: "P1", successRefundSuborderNumber: "2" } } },
         { importJobId: refunds.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_sku_refund_observation", payload: { data: { statisticalDate: "2026-09-02", shopName: tShop, skuId: "P1", successRefundSuborderNumber: "50" } } },
-        { importJobId: vip.id, rowNo: 1, status: "pending", targetTable: "jdy_vip_shop_trading_observation", payload: { data: { statisticalDate: "2026-08-20", shopName: "(唯品会)NING PTE. LTD.", brandName: "NING", salesAmount: "5000", salesQuantity: "40" } } },
-        { importJobId: vip.id, rowNo: 2, status: "pending", targetTable: "jdy_vip_shop_trading_observation", payload: { data: { statisticalDate: "2026-08-21", shopName: "(唯品会)NING PTE. LTD.", brandName: "DEVIANCE", salesAmount: "1200", salesQuantity: "6" } } },
+        { importJobId: vip.id, rowNo: 1, status: "pending", targetTable: "jdy_vip_shop_trading_observation", payload: { data: { statisticalDate: "2026-08-20", shopName: "(唯品会)NING PTE. LTD.", brandName: "NING", salesAmount: "5000", salesQuantity: "0.1" } } },
+        { importJobId: vip.id, rowNo: 2, status: "pending", targetTable: "jdy_vip_shop_trading_observation", payload: { data: { statisticalDate: "2026-08-21", shopName: "(唯品会)NING PTE. LTD.", brandName: "DEVIANCE", salesAmount: "1200", salesQuantity: "0.2" } } },
         { importJobId: pnl.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_product_pnl_observation", payload: { data: { statisticalDate: "2026-08-25", shopName: tShop, platformProductId: "PP1", productName: "赚钱的", actualTransactionAmount: "3000", totalSalesCost: "1000", estimatedGrossProfit: "2000", estimatedNetProfit: "1500", paidNumber: "30" } } },
         { importJobId: pnl.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_product_pnl_observation", payload: { data: { statisticalDate: "2026-08-26", shopName: tShop, platformProductId: "PP2", productName: "亏钱的", actualTransactionAmount: "500", totalSalesCost: "900", estimatedGrossProfit: "-400", estimatedNetProfit: "-450", paidNumber: "5" } } },
       ]);
@@ -68,17 +68,18 @@ describe("全渠道外部观察", () => {
       const tmall = o.platforms.find((p) => p.platform === "天猫")!;
       expect(tmall.state).toBe("ready");
       expect(tmall.anchorDate).toBe("2026-09-01");
-      expect(tmall.units).toBe(8);               // 10 − 2，窗口外的 99 不算
+      expect(tmall.units).toBe("8.0000");               // 10 − 2，窗口外的 99 不算
       expect(tmall.amount).toBe("1000.51"); // 十进制定点半进位；不得经 Number 把 .005 舍掉
-      expect(tmall.refundUnits).toBe(2); // 销售锚点之后的退款不能混入本窗口
-      expect(tmall.byBrand[0]).toEqual({ brand: "NING", units: 8, amount: "1000.51" });
+      expect(tmall.refundUnits).toBe("2.0000"); // 销售锚点之后的退款不能混入本窗口
+      expect(tmall.byBrand[0]).toEqual({ brand: "NING", units: "8.0000", amount: "1000.51" });
       const pdd = o.platforms.find((p) => p.platform === "拼多多")!;
       expect(pdd.state).toBe("insufficient");     // 未同步 → 不补零
       expect(pdd.units).toBeNull();
       const vipRow = o.platforms.find((p) => p.platform === "唯品会")!;
-      expect(vipRow.units).toBe(46);
+      expect(vipRow.units).toBe("0.3000"); // 十进制定点累加；不得出现 0.30000000000000004
       expect(vipRow.amount).toBe("6200.00");
-      expect(vipRow.byBrand.map((b) => b.brand)).toEqual(["NING", "DEV"]);
+      expect(vipRow.byBrand.map((b) => b.brand)).toEqual(["DEV", "NING"]);
+      expect(vipRow.byBrand.map((b) => b.units)).toEqual(["0.2000", "0.1000"]);
       expect(o.productPnl.state).toBe("ready");
       expect(o.productPnl.totals.estimatedNetProfit).toBe("1050.00");
       expect(o.productPnl.topNetProfit[0]?.productName).toBe("赚钱的");
@@ -93,9 +94,9 @@ describe("全渠道外部观察", () => {
         finishedAt: new Date("2026-09-03T03:00:00.000Z"),
       });
       const afterEmptyRead = await computeChannelObservation(db);
-      expect(afterEmptyRead.platforms.find((p) => p.platform === "天猫")?.units).toBe(8);
+      expect(afterEmptyRead.platforms.find((p) => p.platform === "天猫")?.units).toBe("8.0000");
       const cached = await loadChannelObservation(db);
-      expect(cached.platforms.find((p) => p.platform === "天猫")?.units).toBe(8);
+      expect(cached.platforms.find((p) => p.platform === "天猫")?.units).toBe("8.0000");
     } finally {
       await client.close();
     }
@@ -153,8 +154,8 @@ describe("全渠道外部观察", () => {
       const pdd = observation.platforms.find((row) => row.platform === "拼多多")!;
       expect(pdd.state).toBe("ready");
       expect(pdd.anchorDate).toBe("2026-09-02");
-      expect(pdd.units).toBe(4);
-      expect(pdd.byBrand).toEqual([{ brand: "NING", units: 4, amount: null }]);
+      expect(pdd.units).toBe("4.0000");
+      expect(pdd.byBrand).toEqual([{ brand: "NING", units: "4.0000", amount: null }]);
 
       const [deletedJob] = await db.insert(schema.importJobs).values({
         template: "jdy_pdd_order_observation", filename: "pdd-orders-tombstone", sourceAsOf: "2026-09-03",
@@ -178,7 +179,7 @@ describe("全渠道外部观察", () => {
       });
       const afterDelete = await computeChannelObservation(db);
       expect(afterDelete.platforms.find((row) => row.platform === "拼多多")).toMatchObject({
-        state: "ready", anchorDate: "2026-09-03", units: 0,
+        state: "ready", anchorDate: "2026-09-03", units: "0.0000",
       });
     } finally {
       await client.close();
@@ -212,7 +213,7 @@ describe("全渠道外部观察", () => {
 
       const observation = await computeChannelObservation(db);
       expect(observation.platforms.find((row) => row.platform === "拼多多")).toMatchObject({
-        state: "ready", anchorDate: "2026-09-03", units: 0,
+        state: "ready", anchorDate: "2026-09-03", units: "0.0000",
       });
     } finally {
       await client.close();

@@ -40,6 +40,15 @@ describe("规格与候选打分（纯函数）", () => {
     expect(brandCodeForShop("(天猫国际)Expressions爱碧生海外旗舰店", brands)).toBeNull();
   });
 
+  it("平台认领 ID 按平台严格区分格式，拒绝会被误解析的分隔符", async () => {
+    const { platformSkuClaimSchema } = await import("@/server/modules/master/platform-sku-claim");
+    expect(platformSkuClaimSchema.parse({ shopName: "天猫店", platformSkuId: "TM-100_1", skuId: 1 })).toMatchObject({ platform: "tmall" });
+    expect(() => platformSkuClaimSchema.parse({ shopName: "天猫店", platformSkuId: "店|商品|编码", skuId: 1 })).toThrow(/天猫平台 SKU ID/);
+    expect(platformSkuClaimSchema.parse({ shopName: "拼多多店", platformSkuId: "PID-1|SKU-1", skuId: 1, platform: "pdd" })).toMatchObject({ platform: "pdd" });
+    expect(() => platformSkuClaimSchema.parse({ shopName: "拼多多店", platformSkuId: "PID-1", skuId: 1, platform: "pdd" })).toThrow(/完整二元组/);
+    expect(() => platformSkuClaimSchema.parse({ shopName: "拼多多店", platformSkuId: "店|PID-1|SKU-1", skuId: 1, platform: "pdd" })).toThrow(/完整二元组/);
+  });
+
   it("规格一致 + 名称词元重合的成品排第一；规格不同被扣分；跨品牌不给候选", () => {
     const skus = [
       { skuId: 1, code: "N062-000", name: "(NING DERMOLOGIE)控油净颜面膜(100g)", brandCode: "NING", spec: "100g" },
@@ -378,6 +387,10 @@ describe("平台 SKU 身份缺口读模型", () => {
           payload: { data: { shopName: shop, platformSkuId: "PS1", platformProductId: "PID1", merchantSkuCode: "N009-000", productName: "泥膜" }, _identity: {} } },
         { importJobId: pddCw.id, rowNo: 2, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
           payload: { data: { shopName: shop, platformSkuId: "PS2", platformProductId: "PID2", merchantSkuCode: "SW1557", productName: "别的命名空间" }, _identity: {} } },
+        { importJobId: pddCw.id, rowNo: 3, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
+          payload: { data: { shopName: shop, platformSkuId: "PS3", platformProductId: "PID3", merchantSkuCode: "N009-000", productName: "已删泥膜" }, _identity: {} } },
+        { importJobId: pddCw.id, rowNo: 4, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
+          payload: { sourceDeletedAt: "2026-09-01T02:59:00.000Z", data: { shopName: shop, platformSkuId: "PS3", platformProductId: "PID3", merchantSkuCode: "N009-000", productName: "已删泥膜" }, _identity: {} } },
       ]);
       const [blockedJob, emptyJob] = await db.insert(schema.importJobs).values([
         { template: "jdy_pdd_sku_crosswalk_observation", filename: "pdd-cw-blocked", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },

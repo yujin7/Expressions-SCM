@@ -12,7 +12,7 @@
  */
 import { sql, type SQL } from "drizzle-orm";
 
-import { dAdd, dCmp, dMoney, dSub } from "@/server/core/decimal";
+import { dAdd, dCmp, dMoney, dQty, dSub } from "@/server/core/decimal";
 import { pddDemandEligibilitySql } from "@/server/rules/pdd-demand";
 
 interface ReadDb {
@@ -30,12 +30,12 @@ export interface ChannelPlatformRow {
   anchorDate: string | null;
   windowFrom: string | null;
   /** 近 30 天件数（天猫=支付件数−成功退款子订单；拼多多=有效订单件数；唯品会=销售量） */
-  units: number | null;
+  units: string | null;
   /** 近 30 天金额（天猫=支付金额；拼多多=无金额字段 → null；唯品会=销售额） */
   amount: string | null;
-  refundUnits: number | null;
-  byBrand: { brand: string; units: number; amount: string | null }[];
-  byShop: { shop: string; units: number; amount: string | null }[];
+  refundUnits: string | null;
+  byBrand: { brand: string; units: string; amount: string | null }[];
+  byShop: { shop: string; units: string; amount: string | null }[];
   gate: string;
 }
 
@@ -47,7 +47,7 @@ export interface ProductPnlRow {
   totalSalesCost: string;
   estimatedGrossProfit: string;
   estimatedNetProfit: string;
-  paidNumber: number;
+  paidNumber: string;
 }
 
 export interface ChannelObservation {
@@ -77,6 +77,10 @@ const num = (v: unknown): number => { const n = Number(v); return Number.isFinit
 const money = (v: unknown): string => {
   const t = v == null ? "" : String(v).trim();
   return /^-?\d+(\.\d+)?$/.test(t) ? dMoney(t) : "0.00";
+};
+const qty = (v: unknown): string => {
+  const t = v == null ? "" : String(v).trim();
+  return /^-?\d+(\.\d+)?$/.test(t) ? dQty(t) : "0.0000";
 };
 const text = (v: unknown): string | null => { const t = v == null ? "" : String(v).trim(); return t ? t : null; };
 
@@ -173,34 +177,34 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
       WHERE r.d > a.d - ${WINDOW_DAYS}::int AND r.d <= a.d GROUP BY r.shop, coalesce(b.code, '')
     `));
     const anchor = rows.find((x) => x.kind === "anchor")?.shop ? String(rows.find((x) => x.kind === "anchor")!.shop) : null;
-    const byShop = new Map<string, { units: number; amount: string; refund: number }>();
-    const byBrand = new Map<string, { units: number; amount: string }>();
-    let units = 0, refund = 0, amount = "0.00";
+    const byShop = new Map<string, { units: string; amount: string; refund: string }>();
+    const byBrand = new Map<string, { units: string; amount: string }>();
+    let units = "0.0000", refund = "0.0000", amount = "0.00";
     for (const x of rows) {
       if (x.kind === "anchor") continue;
       const shop = String(x.shop ?? "");
-      const cur = byShop.get(shop) ?? { units: 0, amount: "0.00", refund: 0 };
-      cur.units += num(x.paid); cur.amount = dAdd(cur.amount, money(x.amt), 2); cur.refund += num(x.refund);
+      const cur = byShop.get(shop) ?? { units: "0.0000", amount: "0.00", refund: "0.0000" };
+      cur.units = dAdd(cur.units, qty(x.paid), 4); cur.amount = dAdd(cur.amount, money(x.amt), 2); cur.refund = dAdd(cur.refund, qty(x.refund), 4);
       byShop.set(shop, cur);
       if (x.kind === "shop") {
         // 已映射的平台 SKU 用系统 SKU 的品牌；未映射的才按店铺名推断（双品牌店不再一律"未归属"）
         const brand = text(x.brand) ?? brandOfShop(shop, brands);
-        const b = byBrand.get(brand) ?? { units: 0, amount: "0.00" };
-        b.units += num(x.paid); b.amount = dAdd(b.amount, money(x.amt), 2); byBrand.set(brand, b);
-        units += num(x.paid); amount = dAdd(amount, money(x.amt), 2);
+        const b = byBrand.get(brand) ?? { units: "0.0000", amount: "0.00" };
+        b.units = dAdd(b.units, qty(x.paid), 4); b.amount = dAdd(b.amount, money(x.amt), 2); byBrand.set(brand, b);
+        units = dAdd(units, qty(x.paid), 4); amount = dAdd(amount, money(x.amt), 2);
       } else if (x.kind === "refund") {
-        refund += num(x.refund); units -= num(x.refund);
+        refund = dAdd(refund, qty(x.refund), 4); units = dSub(units, qty(x.refund), 4);
         const brand = text(x.brand) ?? brandOfShop(shop, brands);
-        const b = byBrand.get(brand) ?? { units: 0, amount: "0.00" };
-        b.units -= num(x.refund); byBrand.set(brand, b);
+        const b = byBrand.get(brand) ?? { units: "0.0000", amount: "0.00" };
+        b.units = dSub(b.units, qty(x.refund), 4); byBrand.set(brand, b);
       }
     }
     tmall = {
       platform: "天猫", state: anchor ? "ready" : "insufficient", grain: "统计日 × 店铺 × 平台 SKU",
       sourceAsOf: tmallSales.sourceAsOf, anchorDate: anchor, windowFrom: anchor ? shiftDate(anchor, -(WINDOW_DAYS - 1)) : null,
       units, amount, refundUnits: refund,
-      byBrand: [...byBrand.entries()].map(([brand, v]) => ({ brand, ...v })).sort((a, b) => b.units - a.units),
-      byShop: [...byShop.entries()].map(([shop, v]) => ({ shop, units: v.units - v.refund, amount: v.amount })).sort((a, b) => b.units - a.units),
+      byBrand: [...byBrand.entries()].map(([brand, v]) => ({ brand, ...v })).sort((a, b) => dCmp(b.units, a.units)),
+      byShop: [...byShop.entries()].map(([shop, v]) => ({ shop, units: dSub(v.units, v.refund, 4), amount: v.amount })).sort((a, b) => dCmp(b.units, a.units)),
       gate: "支付件数 − 成功退款子订单数；金额为支付金额（未扣退款与费用）。品牌按已映射系统 SKU 归属，未映射按店铺名推断。",
     };
   }
@@ -308,22 +312,22 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
     const anchorRow = rows.find((x) => x.kind === "anchor");
     const anchor = anchorRow?.shop ? String(anchorRow.shop) : null;
     if (anchor) {
-      const byBrand = new Map<string, number>();
-      let units = 0;
-      const byShop = new Map<string, number>();
+      const byBrand = new Map<string, string>();
+      let units = "0.0000";
+      const byShop = new Map<string, string>();
       for (const x of rows) {
         if (x.kind !== "shop") continue;
-        const shop = String(x.shop ?? ""); const q = num(x.qty);
-        units += q; byShop.set(shop, (byShop.get(shop) ?? 0) + q);
+        const shop = String(x.shop ?? ""); const q = qty(x.qty);
+        units = dAdd(units, q, 4); byShop.set(shop, dAdd(byShop.get(shop) ?? "0.0000", q, 4));
         const b = text(x.brand) ?? brandOfShop(shop, brands);
-        byBrand.set(b, (byBrand.get(b) ?? 0) + q);
+        byBrand.set(b, dAdd(byBrand.get(b) ?? "0.0000", q, 4));
       }
       pdd = {
         platform: "拼多多", state: "ready", grain: "订单 × 商品 × 商家编码（3 天滚动快照去重累加）",
         sourceAsOf: anchorRow?.as_of ? String(anchorRow.as_of).slice(0, 10) : null, anchorDate: anchor, windowFrom: shiftDate(anchor, -(WINDOW_DAYS - 1)),
         units, amount: null, refundUnits: null,
-        byBrand: [...byBrand.entries()].map(([brand, u]) => ({ brand, units: u, amount: null })).sort((a, b) => b.units - a.units),
-        byShop: [...byShop.entries()].map(([shop, u]) => ({ shop, units: u, amount: null })).sort((a, b) => b.units - a.units),
+        byBrand: [...byBrand.entries()].map(([brand, u]) => ({ brand, units: u, amount: null })).sort((a, b) => dCmp(b.units, a.units)),
+        byShop: [...byShop.entries()].map(([shop, u]) => ({ shop, units: u, amount: null })).sort((a, b) => dCmp(b.units, a.units)),
         gate: "已付款有效订单件数（剔除待付款、已取消/退款成功）；订单流无金额字段。品牌优先按已映射系统 SKU 归属，未映射才按店铺名推断。窗口内批次不足 30 天时件数偏低。",
       };
     }
@@ -347,23 +351,23 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
     `));
     const anchor = rows.find((x) => x.kind === "anchor")?.shop ? String(rows.find((x) => x.kind === "anchor")!.shop) : null;
     if (anchor) {
-      const byBrand = new Map<string, { units: number; amount: string }>();
-      const byShop = new Map<string, { units: number; amount: string }>();
-      let units = 0, amount = "0.00";
+      const byBrand = new Map<string, { units: string; amount: string }>();
+      const byShop = new Map<string, { units: string; amount: string }>();
+      let units = "0.0000", amount = "0.00";
       for (const x of rows) {
         if (x.kind !== "row") continue;
-        const q = num(x.qty); const m = money(x.amt);
-        units += q; amount = dAdd(amount, m, 2);
+        const q = qty(x.qty); const m = money(x.amt);
+        units = dAdd(units, q, 4); amount = dAdd(amount, m, 2);
         const brandKey = brandOfShop(String(x.brand ?? ""), brands);
-        const b = byBrand.get(brandKey) ?? { units: 0, amount: "0.00" }; b.units += q; b.amount = dAdd(b.amount, m, 2); byBrand.set(brandKey, b);
-        const s = byShop.get(String(x.shop ?? "")) ?? { units: 0, amount: "0.00" }; s.units += q; s.amount = dAdd(s.amount, m, 2); byShop.set(String(x.shop ?? ""), s);
+        const b = byBrand.get(brandKey) ?? { units: "0.0000", amount: "0.00" }; b.units = dAdd(b.units, q, 4); b.amount = dAdd(b.amount, m, 2); byBrand.set(brandKey, b);
+        const s = byShop.get(String(x.shop ?? "")) ?? { units: "0.0000", amount: "0.00" }; s.units = dAdd(s.units, q, 4); s.amount = dAdd(s.amount, m, 2); byShop.set(String(x.shop ?? ""), s);
       }
       vipRow = {
         platform: "唯品会", state: "ready", grain: "统计日 × 店铺 × 品牌",
         sourceAsOf: vip.sourceAsOf, anchorDate: anchor, windowFrom: shiftDate(anchor, -(WINDOW_DAYS - 1)),
         units, amount, refundUnits: null,
-        byBrand: [...byBrand.entries()].map(([brand, v]) => ({ brand, ...v })).sort((a, b) => b.units - a.units),
-        byShop: [...byShop.entries()].map(([shop, v]) => ({ shop, ...v })).sort((a, b) => b.units - a.units),
+        byBrand: [...byBrand.entries()].map(([brand, v]) => ({ brand, ...v })).sort((a, b) => dCmp(b.units, a.units)),
+        byShop: [...byShop.entries()].map(([shop, v]) => ({ shop, ...v })).sort((a, b) => dCmp(b.units, a.units)),
         gate: "平台报表的销售额/销售量（品牌级，不到 SKU）。",
       };
     }
@@ -396,7 +400,7 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
     const anchor = rows.find((x) => x.kind === "anchor")?.shop ? String(rows.find((x) => x.kind === "anchor")!.shop) : null;
     const products: ProductPnlRow[] = rows.filter((x) => x.kind === "product").map((x) => ({
       shopName: String(x.shop ?? ""), platformProductId: String(x.pid ?? ""), productName: text(x.pname),
-      actualTransactionAmount: money(x.amt), totalSalesCost: money(x.cost), estimatedGrossProfit: money(x.gross), estimatedNetProfit: money(x.net), paidNumber: num(x.paid),
+      actualTransactionAmount: money(x.amt), totalSalesCost: money(x.cost), estimatedGrossProfit: money(x.gross), estimatedNetProfit: money(x.net), paidNumber: qty(x.paid),
     }));
     const totals = products.reduce((acc, p) => ({
       actualTransactionAmount: dAdd(acc.actualTransactionAmount, p.actualTransactionAmount, 2),
