@@ -232,6 +232,20 @@ describe("外部观察销速读模型", () => {
       const afterDelete = await computeExternalVelocity(db);
       expect(afterDelete.bySku[String(viaCrosswalk.id)]?.pddNet30).toBe("3.0000");
       expect(afterDelete.bySku[String(viaCrosswalk.id)]?.pddNet90).toBe("10.0000");
+
+      // 对照表 tombstone 必须先压过同一三元组旧映射，再整体退出身份桥。
+      await db.insert(schema.stagingRows).values({
+        importJobId: pddCw.id, rowNo: 2, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
+        payload: {
+          sourceDeletedAt: "2026-09-03T05:00:00.000Z",
+          data: { shopName: shop, platformSkuId: "PS1", platformProductId: "PID1", merchantSkuCode: "GW1" },
+          _identity: { skuId: viaCrosswalk.id },
+        },
+      });
+      const afterMappingDelete = await computeExternalVelocity(db);
+      expect(afterMappingDelete.bySku[String(viaCrosswalk.id)]).toMatchObject({
+        tmallNet30: "13.0000", pddNet30: "0.0000", net30: "13.0000",
+      });
     } finally {
       await client.close();
     }
@@ -329,36 +343,36 @@ describe("外部观察销速读模型", () => {
         code: "PDD-ONLY-001", name: "拼多多独立观察成品", spuId: spu.id,
         skuType: "finished", baseUom: "支", commercialRole: "retail",
       }).returning();
-      const [job] = await db.insert(schema.importJobs).values({
-        template: "jdy_pdd_order_observation", filename: "pdd-only", sourceAsOf: "2026-09-02",
-        createdBy: actor.id, status: "done",
-      }).returning();
-      const [run] = await db.insert(schema.integrationRuns).values({
-        connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-only",
-        status: "succeeded", importJobId: job.id, finishedAt: new Date("2026-09-02T04:00:00.000Z"),
-      }).returning();
+      const [olderJob, job] = await db.insert(schema.importJobs).values([
+        { template: "jdy_pdd_order_observation", filename: "pdd-only-older", sourceAsOf: "2026-08-26", createdBy: actor.id, status: "done" },
+        { template: "jdy_pdd_order_observation", filename: "pdd-only", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+      ]).returning();
+      const [olderRun] = await db.insert(schema.integrationRuns).values([
+        { connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-only-older", status: "succeeded", importJobId: olderJob.id, finishedAt: new Date("2026-08-26T04:00:00.000Z") },
+        { connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-only", status: "succeeded", importJobId: job.id, finishedAt: new Date("2026-09-02T04:00:00.000Z") },
+      ]).returning();
       const shop = "无品牌名的拼多多店";
       await db.insert(schema.skuIdentifiers).values({
         skuId: sku.id, kind: "external", scope: "JIANDAOYUN:PDD",
         value: `${shop}|PID-ONLY|M-ONLY`, active: true, isPrimary: false, createdBy: actor.id,
       });
-      await db.insert(schema.stagingRows).values({
-        importJobId: job.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation",
-        payload: { data: { statisticalDate: "2026-09-01", shopName: shop, orderNumber: "PDD-ONLY-O1", productId: "PID-ONLY", merchantSkuCode: "M-ONLY", productQuantity: "6", orderStatus: "待发货" } },
-      });
+      await db.insert(schema.stagingRows).values([
+        { importJobId: olderJob.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation", payload: { data: { statisticalDate: "2026-08-25", shopName: shop, orderNumber: "PDD-ONLY-OLD", productId: "PID-ONLY", merchantSkuCode: "M-ONLY", productQuantity: "2", orderStatus: "待发货" } } },
+        { importJobId: job.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation", payload: { data: { statisticalDate: "2026-09-01", shopName: shop, orderNumber: "PDD-ONLY-O1", productId: "PID-ONLY", merchantSkuCode: "M-ONLY", productQuantity: "6", orderStatus: "待发货" } } },
+      ]);
 
       const computed = await computeExternalVelocity(db);
       expect(computed).toMatchObject({ state: "ready", sourceAsOf: null, pddSourceAsOf: "2026-09-02", anchorDate: "2026-09-01" });
-      expect(computed.bySku[String(sku.id)]).toMatchObject({ pddNet30: "6.0000", net30: "6.0000" });
+      expect(computed.bySku[String(sku.id)]).toMatchObject({ pddNet30: "8.0000", net30: "8.0000" });
       const cached = await loadExternalVelocity(db);
-      expect(cached.bySku[String(sku.id)]?.pddNet30).toBe("6.0000");
+      expect(cached.bySku[String(sku.id)]?.pddNet30).toBe("8.0000");
 
-      // 90 天保留边界越过后，同一 job ID 也不能继续命中旧 ready 缓存。
+      // 最新批次仍保留且最新 job ID 不变；任一较早批次过期也必须刷新缓存并移除其数量。
       await db.update(schema.integrationRuns)
         .set({ finishedAt: new Date("2025-01-01T00:00:00.000Z") })
-        .where(eq(schema.integrationRuns.id, run.id));
+        .where(eq(schema.integrationRuns.id, olderRun.id));
       const expired = await loadExternalVelocity(db);
-      expect(expired).toMatchObject({ state: "insufficient", bySku: {} });
+      expect(expired.bySku[String(sku.id)]).toMatchObject({ pddNet30: "6.0000", net30: "6.0000" });
     } finally {
       await client.close();
     }

@@ -19,7 +19,7 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-channel-observation/v4";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-channel-observation/v5";
 const WINDOW_DAYS = 30;
 
 export interface ChannelPlatformRow {
@@ -132,21 +132,37 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
                CASE WHEN trim(coalesce(payload->'data'->>'paidNumber','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'paidNumber')::numeric ELSE 0 END AS paid,
                CASE WHEN trim(coalesce(payload->'data'->>'paidAmount','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'paidAmount')::numeric ELSE 0 END AS amt
         FROM staging_rows WHERE import_job_id = ${tmallSales.importJobId} AND target_table = 'jdy_tmall_sku_sales_observation'
-          AND status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          AND status IN ('pending','validated','committed')
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
+          AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
       ),
       r AS (
         SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'skuId' AS psku, left(payload->'data'->>'statisticalDate', 10)::date AS d,
                CASE WHEN trim(coalesce(payload->'data'->>'successRefundSuborderNumber','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'successRefundSuborderNumber')::numeric ELSE 0 END AS refund
         FROM staging_rows WHERE import_job_id = ${tmallRefunds?.importJobId ?? -1} AND target_table = 'jdy_tmall_sku_refund_observation'
-          AND status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          AND status IN ('pending','validated','committed')
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
+          AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
       ),
       a AS (SELECT max(d) AS d FROM s),
-      cw AS (
+      cw_rows AS (
         SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'platformSkuId' AS psku,
-               max((payload->'_identity'->>'skuId')::int) AS sku_id, count(DISTINCT payload->'_identity'->>'skuId') AS n
+               (payload->'_identity'->>'skuId')::int AS sku_id,
+               payload->>'sourceDeletedAt' AS source_deleted_at,
+               row_no
         FROM staging_rows WHERE import_job_id = ${crosswalkBatch?.importJobId ?? -1} AND target_table = 'jdy_tmall_sku_crosswalk_observation'
-          AND status IN ('pending','validated','committed') AND payload->'_identity'->>'skuId' IS NOT NULL
-        GROUP BY 1, 2
+          AND status IN ('pending','validated','committed')
+      ),
+      cw_tombstones AS (
+        SELECT shop, psku, max(row_no) FILTER (WHERE nullif(trim(source_deleted_at), '') IS NOT NULL) AS tombstone_row
+        FROM cw_rows GROUP BY shop, psku
+      ),
+      cw AS (
+        SELECT rows.shop, rows.psku, max(rows.sku_id) AS sku_id, count(DISTINCT rows.sku_id) AS n
+        FROM cw_rows rows INNER JOIN cw_tombstones state ON state.shop = rows.shop AND state.psku = rows.psku
+        WHERE nullif(trim(rows.source_deleted_at), '') IS NULL AND rows.sku_id IS NOT NULL
+          AND (state.tombstone_row IS NULL OR rows.row_no > state.tombstone_row)
+        GROUP BY rows.shop, rows.psku
       ),
       direct AS (
         SELECT split_part(value, '|', 1) AS shop, split_part(value, '|', 2) AS psku, sku_id
@@ -247,18 +263,29 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
         FROM o_latest
         WHERE nullif(trim(source_deleted_at), '') IS NULL
       ),
-      cw AS (
+      cw_rows AS (
         SELECT payload->'data'->>'shopName' AS shop,
                payload->'data'->>'platformProductId' AS pid,
                nullif(trim(payload->'data'->>'merchantSkuCode'), '') AS mcode,
-               max((payload->'_identity'->>'skuId')::int) AS sku_id,
-               count(DISTINCT payload->'_identity'->>'skuId') AS n
+               (payload->'_identity'->>'skuId')::int AS sku_id,
+               payload->>'sourceDeletedAt' AS source_deleted_at,
+               row_no
         FROM staging_rows
         WHERE import_job_id = ${pddCrosswalkBatch?.importJobId ?? -1}
           AND target_table = 'jdy_pdd_sku_crosswalk_observation'
           AND status IN ('pending','validated','committed')
-          AND payload->'_identity'->>'skuId' IS NOT NULL
-        GROUP BY 1, 2, 3
+      ),
+      cw_tombstones AS (
+        SELECT shop, pid, mcode, max(row_no) FILTER (WHERE nullif(trim(source_deleted_at), '') IS NOT NULL) AS tombstone_row
+        FROM cw_rows GROUP BY shop, pid, mcode
+      ),
+      cw AS (
+        SELECT rows.shop, rows.pid, rows.mcode, max(rows.sku_id) AS sku_id, count(DISTINCT rows.sku_id) AS n
+        FROM cw_rows rows INNER JOIN cw_tombstones state
+          ON state.shop = rows.shop AND state.pid = rows.pid AND state.mcode IS NOT DISTINCT FROM rows.mcode
+        WHERE nullif(trim(rows.source_deleted_at), '') IS NULL AND rows.sku_id IS NOT NULL
+          AND (state.tombstone_row IS NULL OR rows.row_no > state.tombstone_row)
+        GROUP BY rows.shop, rows.pid, rows.mcode
       ),
       direct AS (
         SELECT split_part(value, '|', 1) AS shop,
@@ -342,7 +369,9 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
                CASE WHEN trim(coalesce(payload->'data'->>'salesQuantity','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'salesQuantity')::numeric ELSE 0 END AS qty,
                CASE WHEN trim(coalesce(payload->'data'->>'salesAmount','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'salesAmount')::numeric ELSE 0 END AS amt
         FROM staging_rows WHERE import_job_id = ${vip.importJobId} AND target_table = 'jdy_vip_shop_trading_observation'
-          AND status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          AND status IN ('pending','validated','committed')
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
+          AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
       ),
       a AS (SELECT max(d) AS d FROM v)
       SELECT 'anchor' AS kind, a.d::text AS shop, NULL::text AS brand, NULL::numeric AS qty, NULL::numeric AS amt FROM a
@@ -388,7 +417,9 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
                  `CASE WHEN trim(coalesce(payload->'data'->>'${f}','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'${f}')::numeric ELSE 0 END AS ${f.toLowerCase()}`).join(", "))},
                CASE WHEN trim(coalesce(payload->'data'->>'paidNumber','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'paidNumber')::numeric ELSE 0 END AS paid
         FROM staging_rows WHERE import_job_id = ${pnl.importJobId} AND target_table = 'jdy_tmall_product_pnl_observation'
-          AND status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          AND status IN ('pending','validated','committed')
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
+          AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
         GROUP BY 1, 2, 4, payload->'data'->>'actualTransactionAmount', payload->'data'->>'totalSalesCost', payload->'data'->>'estimatedGrossProfit', payload->'data'->>'estimatedNetProfit', payload->'data'->>'paidNumber'
       ),
       a AS (SELECT max(d) AS d FROM p)
@@ -449,7 +480,10 @@ async function binding(db: ReadDb): Promise<string> {
     latestBatch(db, "pdd-sku-crosswalk-observation"),
   ]);
   const pdd = resultRows<Record<string, unknown>>(await db.execute(sql`
-    SELECT coalesce(max(ir.import_job_id), 0)::int AS j FROM integration_runs ir
+    SELECT coalesce(string_agg(
+      ir.id::text || ':' || ir.import_job_id::text || ':' || ir.finished_at::text || ':' || coalesce(ir.request_scope::text, '{}'),
+      ',' ORDER BY ir.id
+    ), 'none') AS retained FROM integration_runs ir
     WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation' AND ir.status = 'succeeded'
       AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
       AND ir.finished_at > now() - interval '90 days'`))[0];
@@ -462,7 +496,7 @@ async function binding(db: ReadDb): Promise<string> {
     FROM sku_identifiers
     WHERE kind = 'external' AND scope IN ('JIANDAOYUN:TMALL', 'JIANDAOYUN:PDD')
   `))[0];
-  return `tmall:${a?.importJobId ?? "none"}:${b?.importJobId ?? "none"}:${cw?.importJobId ?? "none"}:${num(claims?.n)}:${num(claims?.m)}:${num(claims?.active_n)}:${String(claims?.updated ?? "")}|vip:${c?.importJobId ?? "none"}|pnl:${d?.importJobId ?? "none"}|pdd:${num(pdd?.j)}:${pddCw?.importJobId ?? "none"}`;
+  return `tmall:${a?.importJobId ?? "none"}:${b?.importJobId ?? "none"}:${cw?.importJobId ?? "none"}:${num(claims?.n)}:${num(claims?.m)}:${num(claims?.active_n)}:${String(claims?.updated ?? "")}|vip:${c?.importJobId ?? "none"}|pnl:${d?.importJobId ?? "none"}|pdd:${String(pdd?.retained ?? "none")}:${pddCw?.importJobId ?? "none"}`;
 }
 
 export async function loadChannelObservation(db: ReadDb): Promise<ChannelObservation> {

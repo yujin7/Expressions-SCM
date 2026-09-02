@@ -20,7 +20,7 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v6";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v7";
 const PLATFORM_SKU_IDENTIFIER_SCOPE = "JIANDAOYUN:TMALL";
 
 export interface ExternalVelocityBySku {
@@ -103,7 +103,7 @@ async function latestBatch(db: ReadDb, stream: string): Promise<{ importJobId: n
 }
 
 async function binding(db: ReadDb): Promise<string | null> {
-  const [sales, refunds, crosswalk, pddOrders, pddCrosswalk, direct] = await Promise.all([
+  const [sales, refunds, crosswalk, pddOrders, pddCrosswalk, direct, pddRetained] = await Promise.all([
     latestBatch(db, "tmall-sku-sales-observation"),
     latestBatch(db, "tmall-sku-refund-observation"),
     latestBatch(db, "tmall-sku-crosswalk-observation"),
@@ -111,10 +111,21 @@ async function binding(db: ReadDb): Promise<string | null> {
     latestBatch(db, "pdd-sku-crosswalk-observation"),
     db.execute(sql`SELECT count(*)::int AS n, coalesce(max(id), 0)::int AS max_id, coalesce(max(updated_at), 'epoch')::text AS updated
       FROM sku_identifiers WHERE kind = 'external' AND scope IN (${PLATFORM_SKU_IDENTIFIER_SCOPE}, 'JIANDAOYUN:PDD')`),
+    db.execute(sql`
+      SELECT coalesce(string_agg(
+        ir.id::text || ':' || ir.import_job_id::text || ':' || ir.finished_at::text || ':' || coalesce(ir.request_scope::text, '{}'),
+        ',' ORDER BY ir.id
+      ), 'none') AS retained
+      FROM integration_runs ir
+      WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation'
+        AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
+        AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+        AND ir.finished_at > now() - interval '90 days'`),
   ]);
   if (!sales && !pddOrders) return null;
   const [d] = resultRows<Record<string, unknown>>(direct);
-  return `sales:${sales?.importJobId ?? "none"}|refunds:${refunds?.importJobId ?? "none"}|crosswalk:${crosswalk?.importJobId ?? "none"}|pdd:${pddOrders?.importJobId ?? "none"}:${pddCrosswalk?.importJobId ?? "none"}|direct:${intValue(d?.n)}:${intValue(d?.max_id)}:${String(d?.updated ?? "")}`;
+  const [retained] = resultRows<Record<string, unknown>>(pddRetained);
+  return `sales:${sales?.importJobId ?? "none"}|refunds:${refunds?.importJobId ?? "none"}|crosswalk:${crosswalk?.importJobId ?? "none"}|pdd:${String(retained?.retained ?? "none")}:${pddCrosswalk?.importJobId ?? "none"}|direct:${intValue(d?.n)}:${intValue(d?.max_id)}:${String(d?.updated ?? "")}`;
 }
 
 export function emptyExternalVelocity(gate: string): ExternalVelocity {
@@ -148,17 +159,27 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
   // 全部在 SQL 里做：身份映射（对照表唯一 skuId ∪ 直接认领）→ 按 SKU × 窗口聚合。
   // 每批 6.8 万行，聚合约 0.3 s；页面永远只读缓存。
   const result = await db.execute(sql`
-    WITH cw AS (
+    WITH cw_rows AS (
       SELECT payload->'data'->>'shopName' AS shop,
              payload->'data'->>'platformSkuId' AS psku,
-             max((payload->'_identity'->>'skuId')::int) AS sku_id,
-             count(DISTINCT payload->'_identity'->>'skuId') AS n
+             (payload->'_identity'->>'skuId')::int AS sku_id,
+             payload->>'sourceDeletedAt' AS source_deleted_at,
+             row_no
       FROM staging_rows
       WHERE import_job_id = ${crosswalk?.importJobId ?? -1}
         AND target_table = 'jdy_tmall_sku_crosswalk_observation'
         AND status IN ('pending', 'validated', 'committed')
-        AND payload->'_identity'->>'skuId' IS NOT NULL
-      GROUP BY 1, 2
+    ),
+    cw_tombstones AS (
+      SELECT shop, psku, max(row_no) FILTER (WHERE nullif(trim(source_deleted_at), '') IS NOT NULL) AS tombstone_row
+      FROM cw_rows GROUP BY shop, psku
+    ),
+    cw AS (
+      SELECT rows.shop, rows.psku, max(rows.sku_id) AS sku_id, count(DISTINCT rows.sku_id) AS n
+      FROM cw_rows rows INNER JOIN cw_tombstones state ON state.shop = rows.shop AND state.psku = rows.psku
+      WHERE nullif(trim(rows.source_deleted_at), '') IS NULL AND rows.sku_id IS NOT NULL
+        AND (state.tombstone_row IS NULL OR rows.row_no > state.tombstone_row)
+      GROUP BY rows.shop, rows.psku
     ),
     direct AS (
       SELECT split_part(value, '|', 1) AS shop, split_part(value, '|', 2) AS psku, sku_id
@@ -183,6 +204,7 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
       WHERE import_job_id = ${sales?.importJobId ?? -1}
         AND target_table = 'jdy_tmall_sku_sales_observation'
         AND status IN ('pending', 'validated', 'committed')
+        AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
         AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
     ),
     r AS (
@@ -194,20 +216,32 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
       WHERE import_job_id = ${refunds?.importJobId ?? -1}
         AND target_table = 'jdy_tmall_sku_refund_observation'
         AND status IN ('pending', 'validated', 'committed')
+        AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
         AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
     ),
-    pdd_map AS (
+    pdd_map_rows AS (
       SELECT payload->'data'->>'shopName' AS shop,
              payload->'data'->>'platformProductId' AS pid,
              nullif(trim(payload->'data'->>'merchantSkuCode'), '') AS mcode,
-             max((payload->'_identity'->>'skuId')::int) AS sku_id,
-             count(DISTINCT payload->'_identity'->>'skuId') AS n
+             (payload->'_identity'->>'skuId')::int AS sku_id,
+             payload->>'sourceDeletedAt' AS source_deleted_at,
+             row_no
       FROM staging_rows
       WHERE import_job_id = ${pddCrosswalk?.importJobId ?? -1}
         AND target_table = 'jdy_pdd_sku_crosswalk_observation'
         AND status IN ('pending', 'validated', 'committed')
-        AND payload->'_identity'->>'skuId' IS NOT NULL
-      GROUP BY 1, 2, 3
+    ),
+    pdd_map_tombstones AS (
+      SELECT shop, pid, mcode, max(row_no) FILTER (WHERE nullif(trim(source_deleted_at), '') IS NOT NULL) AS tombstone_row
+      FROM pdd_map_rows GROUP BY shop, pid, mcode
+    ),
+    pdd_map AS (
+      SELECT rows.shop, rows.pid, rows.mcode, max(rows.sku_id) AS sku_id, count(DISTINCT rows.sku_id) AS n
+      FROM pdd_map_rows rows INNER JOIN pdd_map_tombstones state
+        ON state.shop = rows.shop AND state.pid = rows.pid AND state.mcode IS NOT DISTINCT FROM rows.mcode
+      WHERE nullif(trim(rows.source_deleted_at), '') IS NULL AND rows.sku_id IS NOT NULL
+        AND (state.tombstone_row IS NULL OR rows.row_no > state.tombstone_row)
+      GROUP BY rows.shop, rows.pid, rows.mcode
     ),
     pdd_direct AS (
       SELECT split_part(value, '|', 1) AS shop, split_part(value, '|', 2) AS pid, nullif(split_part(value, '|', 3), '') AS mcode, sku_id
