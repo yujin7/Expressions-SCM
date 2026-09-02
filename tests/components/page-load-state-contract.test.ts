@@ -39,11 +39,27 @@ describe("page load-state contract", () => {
     const versions = read(
       "src/app/(app)/replenish/versions/plan-versions-client.tsx",
     );
+    const studio = read(
+      "src/app/(app)/report/decision-studio/decision-studio-client.tsx",
+    );
 
     expect(scorecard).toContain('value={s ? s.suppliers : "—"}');
     expect(scorecard).toContain('value={t ? t.batches : "—"}');
     expect(mining).toContain('value={summary ? summary.totalEvents : "—"}');
     expect(versions).toContain('value={data ? data.current.lineCount : "—"}');
+    expect(studio).toContain('value={data?.comparison.current ?? "—"}');
+    expect(studio).not.toContain("comparison.current ?? 0");
+  });
+
+  it("keeps decision-studio navigation fast without making refresh stale", () => {
+    const studio = read(
+      "src/app/(app)/report/decision-studio/decision-studio-client.tsx",
+    );
+
+    expect(studio).toContain("responseCache");
+    expect(studio).toContain("responseCache.current.size > 12");
+    expect(studio).toContain("Date.now() - cached.cachedAt < 30_000");
+    expect(studio).toContain("onClick={() => void load(true)}");
   });
 
   it("gates genuine-empty guidance behind a successful load", () => {
