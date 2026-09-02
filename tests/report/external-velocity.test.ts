@@ -67,7 +67,7 @@ async function seed() {
     { importJobId: refunds.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
       payload: { data: { statisticalDate: "2026-08-20", shopName: shop, skuId: "P-CW", successRefundSuborderNumber: "2" } } },
   ]);
-  return { db, client, viaCrosswalk, viaDirect, unmapped };
+  return { db, client, actor, viaCrosswalk, viaDirect, unmapped };
 }
 
 describe("外部观察销速读模型", () => {
@@ -91,7 +91,7 @@ describe("外部观察销速读模型", () => {
     }
   });
   it("按批次最大业务日锚定 30/90 天窗口，两条身份桥都算，未映射不计入", async () => {
-    const { db, client, viaCrosswalk, viaDirect, unmapped } = await seed();
+    const { db, client, actor, viaCrosswalk, viaDirect, unmapped } = await seed();
     try {
       const v = await computeExternalVelocity(db);
       expect(v.state).toBe("ready");
@@ -114,6 +114,18 @@ describe("外部观察销速读模型", () => {
         pddObservedDays30: 0,
         pddWindowComplete30: true,
       });
+
+      const [emptySales] = await db.insert(schema.importJobs).values({
+        template: "jdy_tmall_sku_sales_observation", filename: "empty-sales", sourceAsOf: "2026-09-03",
+        createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "tmall-sku-sales-observation", idempotencyKey: "empty-sales",
+        status: "succeeded", importJobId: emptySales.id, requestScope: { emptySource: true },
+        finishedAt: new Date("2026-09-03T03:00:00.000Z"),
+      });
+      const afterEmptyRead = await computeExternalVelocity(db);
+      expect(afterEmptyRead.bySku[String(viaCrosswalk.id)]?.net30).toBe(13);
 
       // 缓存命中：第二次读取不重算也一致
       const again = await loadExternalVelocity(db);

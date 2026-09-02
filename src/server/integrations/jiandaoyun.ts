@@ -248,7 +248,7 @@ export class JiandaoyunClient {
     appIdInput: string,
     entryIdInput: string,
     fieldsInput?: readonly string[],
-    filter?: { field: string; sinceDays: number },
+    filter?: { field: string; sinceDays: number; includeUpdatedSince?: boolean },
   ): Promise<JiandaoyunRecord[]> {
     const appId = objectId(appIdInput, "简道云 app_id");
     const entryId = objectId(entryIdInput, "简道云 entry_id");
@@ -272,10 +272,16 @@ export class JiandaoyunClient {
         const to = new Date();
         to.setUTCDate(to.getUTCDate() + 1);
         const from = new Date(to.getTime() - (filter.sinceDays + 1) * 86_400_000);
-        body.filter = {
-          rel: "and",
-          cond: [{ field: filter.field, type: "datetime", method: "range", value: [from.toISOString(), to.toISOString()] }],
-        };
+        const range = [from.toISOString(), to.toISOString()];
+        const cond = [
+          { field: filter.field, type: "datetime", method: "range", value: range },
+        ];
+        // 订单可能在业务日期窗口外才退款或取消。把近期更新的旧订单一并回采，
+        // 后续按源记录 ID 幂等去重，避免已失效的付款快照继续进入需求口径。
+        if (filter.includeUpdatedSince) {
+          cond.push({ field: "updateTime", type: "datetime", method: "range", value: range });
+        }
+        body.filter = { rel: filter.includeUpdatedSince ? "or" : "and", cond };
       }
       if (cursor) body.data_id = cursor;
       const page = parseRecords(

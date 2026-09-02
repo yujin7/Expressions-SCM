@@ -516,10 +516,11 @@ describe("简道云受控同步", () => {
     }];
     const windowedContract: JiandaoyunFormContract = {
       ...contract,
-      key: "windowed-test-observation",
+      key: "pdd-order-observation",
       window: { field: "statistical_date", days: 3 },
     };
     const client = observationClient(() => rows);
+    const listRecords = vi.spyOn(client, "listRecords");
     const envelopes: unknown[] = [];
     const captureEvidence = (hashPart: string) => async (
       _connector: string,
@@ -561,6 +562,12 @@ describe("简道云受控同步", () => {
     expect(envelopes[0]).toMatchObject({
       scope: { window: { field: "statistical_date", days: 3 } },
     });
+    expect(listRecords).toHaveBeenCalledWith(
+      windowedContract.appId,
+      windowedContract.entryId,
+      expect.any(Array),
+      { field: "statistical_date", sinceDays: 3, includeUpdatedSince: true },
+    );
     const runs = await db.select().from(schema.integrationRuns);
     expect(runs.map((run) => run.requestScope)).toEqual([
       expect.objectContaining({ window: { field: "statistical_date", days: 3 } }),

@@ -83,6 +83,17 @@ describe("全渠道外部观察", () => {
       expect(o.productPnl.totals.estimatedNetProfit).toBe("1050.00");
       expect(o.productPnl.topNetProfit[0]?.productName).toBe("赚钱的");
       expect(o.productPnl.bottomNetProfit[0]?.productName).toBe("亏钱的");
+      const [emptySales] = await db.insert(schema.importJobs).values({
+        template: "jdy_tmall_sku_sales_observation", filename: "empty-sales", sourceAsOf: "2026-09-03",
+        createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "tmall-sku-sales-observation", idempotencyKey: "empty-sales",
+        status: "succeeded", importJobId: emptySales.id, requestScope: { emptySource: true },
+        finishedAt: new Date("2026-09-03T03:00:00.000Z"),
+      });
+      const afterEmptyRead = await computeChannelObservation(db);
+      expect(afterEmptyRead.platforms.find((p) => p.platform === "天猫")?.units).toBe(8);
       const cached = await loadChannelObservation(db);
       expect(cached.platforms.find((p) => p.platform === "天猫")?.units).toBe(8);
     } finally {

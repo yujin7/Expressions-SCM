@@ -379,6 +379,18 @@ describe("平台 SKU 身份缺口读模型", () => {
         { importJobId: pddCw.id, rowNo: 2, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
           payload: { data: { shopName: shop, platformSkuId: "PS2", platformProductId: "PID2", merchantSkuCode: "SW1557", productName: "别的命名空间" }, _identity: {} } },
       ]);
+      const [blockedJob, emptyJob] = await db.insert(schema.importJobs).values([
+        { template: "jdy_pdd_sku_crosswalk_observation", filename: "pdd-cw-blocked", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+        { template: "jdy_pdd_sku_crosswalk_observation", filename: "pdd-cw-empty", sourceAsOf: "2026-09-03", createdBy: actor.id, status: "done" },
+      ]).returning();
+      await db.insert(schema.integrationRuns).values([
+        { connector: "jdy", stream: "pdd-sku-crosswalk-observation", idempotencyKey: "pdd-cw-blocked", status: "succeeded", importJobId: blockedJob.id, requestScope: { qualityBlocked: true }, finishedAt: new Date("2026-09-02T03:00:00.000Z") },
+        { connector: "jdy", stream: "pdd-sku-crosswalk-observation", idempotencyKey: "pdd-cw-empty", status: "succeeded", importJobId: emptyJob.id, requestScope: { emptySource: true }, finishedAt: new Date("2026-09-03T03:00:00.000Z") },
+      ]);
+      await db.insert(schema.stagingRows).values({
+        importJobId: blockedJob.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
+        payload: { data: { shopName: "阻断店", platformProductId: "BAD", merchantSkuCode: "N009-000", productName: "不得认领" }, _identity: {} },
+      });
       let gap = await computePlatformSkuIdentityGap(db);
       expect(gap.pddSummary).toEqual({ crosswalkRows: 2, merchantCodes: 2, exactCodes: 1, claimed: 0 });
       expect(gap.pddExactHits).toEqual([{ shopName: shop, platformSkuId: "PID1|N009-000", skuId: mudMask.id, skuCode: "N009-000", productName: "泥膜" }]);

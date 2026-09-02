@@ -86,6 +86,7 @@ async function latestBatch(db: ReadDb, stream: string): Promise<{ importJobId: n
     INNER JOIN import_jobs ij ON ij.id = ir.import_job_id
     WHERE ir.connector = 'jdy' AND ir.stream = ${stream} AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
       AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+      AND coalesce(ir.request_scope->>'emptySource', 'false') = 'false'
     ORDER BY ir.id DESC LIMIT 1
   `);
   const [row] = resultRows<Record<string, unknown>>(result);

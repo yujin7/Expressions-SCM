@@ -672,7 +672,12 @@ export async function syncJiandaoyunForm(
     input.contract.appId,
     input.contract.entryId,
     projection,
-    input.contract.window ? { field: input.contract.window.field, sinceDays: input.contract.window.days } : undefined,
+    input.contract.window ? {
+      field: input.contract.window.field,
+      sinceDays: input.contract.window.days,
+      // 拼多多订单会在下单数日后才取消/退款；同步近期更新可撤销旧的付款观察。
+      includeUpdatedSince: input.contract.key === "pdd-order-observation",
+    } : undefined,
   );
   const control = inspectJiandaoyunContractControl(input.contract, widgets, records);
   const controlSummary = summarizeJiandaoyunContractControl(control);

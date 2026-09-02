@@ -139,6 +139,8 @@ async function latestBatch(db: ReadDb, stream: string): Promise<LatestBatch | nu
     INNER JOIN import_jobs ij ON ij.id = ir.import_job_id
     WHERE ir.connector = 'jdy' AND ir.stream = ${stream}
       AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
+      AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+      AND coalesce(ir.request_scope->>'emptySource', 'false') = 'false'
     ORDER BY ir.started_at DESC, ir.id DESC
     LIMIT 1
   `);
@@ -322,6 +324,8 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
       WITH b AS (
         SELECT ir.import_job_id FROM integration_runs ir
         WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-sku-crosswalk-observation' AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
+          AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+          AND coalesce(ir.request_scope->>'emptySource', 'false') = 'false'
         ORDER BY ir.id DESC LIMIT 1
       ),
       rows AS (

@@ -81,6 +81,8 @@ async function latestBatch(db: ReadDb, stream: string): Promise<{ importJobId: n
     WHERE ir.connector = 'jdy' AND ir.stream = ${stream}
       AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
       AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+      -- 滚动订单流的空窗口本身是有效观察；只有完整快照的空读不能覆盖旧事实。
+      AND (${stream} = 'pdd-order-observation' OR coalesce(ir.request_scope->>'emptySource', 'false') = 'false')
     ORDER BY ir.started_at DESC, ir.id DESC
     LIMIT 1
   `);
