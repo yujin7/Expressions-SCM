@@ -34,7 +34,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { CopyOutlined, DownloadOutlined } from "@ant-design/icons";
+import { CopyOutlined, DownloadOutlined, ReloadOutlined } from "@ant-design/icons";
 
 import DecisionVisual from "@/components/DecisionVisual";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
@@ -120,6 +120,7 @@ export default function DecisionStudioClient() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
+  const responseCache = useRef(new Map<string, { data: DecisionStudioResult; cachedAt: number }>());
   const view = useListState({
     key: "decision-studio",
     defaults: { dimension: "brand", key: "", tab: "focus", brand: "", channel: "", product: "" },
@@ -135,7 +136,22 @@ export default function DecisionStudioClient() {
   const activeTab = view.filters.tab || "focus";
   const focusProductId = view.filters.product;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (force = false) => {
+    const query = new URLSearchParams({ dimension });
+    query.set("tab", activeTab);
+    if (selectedKey) query.set("key", selectedKey);
+    if (scopeBrand) query.set("brand", scopeBrand);
+    if (scopeChannel) query.set("channel", scopeChannel);
+    const cacheKey = query.toString();
+    const cached = responseCache.current.get(cacheKey);
+    if (!force && cached && Date.now() - cached.cachedAt < 30_000) {
+      activeRequest.current?.abort();
+      activeRequest.current = null;
+      setLoadError(null);
+      setData(cached.data);
+      setLoading(false);
+      return;
+    }
     activeRequest.current?.abort();
     const controller = new AbortController();
     activeRequest.current = controller;
@@ -143,15 +159,16 @@ export default function DecisionStudioClient() {
     setLoadError(null);
     setData(null);
     try {
-      const query = new URLSearchParams({ dimension });
-      query.set("tab", activeTab);
-      if (selectedKey) query.set("key", selectedKey);
-      if (scopeBrand) query.set("brand", scopeBrand);
-      if (scopeChannel) query.set("channel", scopeChannel);
-      setData(await fetchJson<DecisionStudioResult>(
+      const nextData = await fetchJson<DecisionStudioResult>(
         `/api/report/decision-studio?${query.toString()}`,
         { signal: controller.signal },
-      ));
+      );
+      responseCache.current.set(cacheKey, { data: nextData, cachedAt: Date.now() });
+      if (responseCache.current.size > 12) {
+        const oldestKey = responseCache.current.keys().next().value as string | undefined;
+        if (oldestKey) responseCache.current.delete(oldestKey);
+      }
+      setData(nextData);
     } catch (error) {
       if ((error as Error).name === "AbortError") return;
       const detail = (error as Error).message;
@@ -367,6 +384,13 @@ export default function DecisionStudioClient() {
             options={groupOptions}
             onChange={(key) => view.setFilter({ key: key ?? "" })}
           />
+          <Button
+            icon={<ReloadOutlined />}
+            loading={loading}
+            onClick={() => void load(true)}
+          >
+            刷新
+          </Button>
         </div>
       </div>
 
@@ -385,7 +409,7 @@ export default function DecisionStudioClient() {
           style={{ marginBottom: 12 }}
           message="决策数据加载失败"
           description={loadError}
-          action={<Button size="small" onClick={() => void load()}>重新加载</Button>}
+          action={<Button size="small" onClick={() => void load(true)}>重新加载</Button>}
         />
       ) : null}
 

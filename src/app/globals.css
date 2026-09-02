@@ -471,7 +471,7 @@ body {
 
 .decision-studio-scope-filters {
   display: grid;
-  grid-template-columns: minmax(132px, 180px) minmax(132px, 180px) minmax(210px, 1fr);
+  grid-template-columns: minmax(132px, 180px) minmax(132px, 180px) minmax(210px, 1fr) max-content;
   gap: 8px;
   min-width: 0;
 }
@@ -1259,10 +1259,6 @@ body {
 
   .decision-studio-scope-filters {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .decision-studio-scope-filters > :last-child {
-    grid-column: 1 / -1;
   }
 
   .list-toolbar {
