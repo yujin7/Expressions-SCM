@@ -1,4 +1,5 @@
 import NextAuth from "next-auth";
+import { authCookieConfig } from "@/server/auth/cookies";
 
 /**
  * 中间件里单独实例化一个"空 provider"的 NextAuth：
@@ -12,6 +13,8 @@ const { auth } = NextAuth({
   // 8 小时 JWT 会话；所有业务写操作通过 getFreshSessionUser 回查 active/session_version/角色，变更即时生效。
   session: { strategy: "jwt" },
   pages: { signIn: "/login" },
+  // 中间件只读取会话，不签发 Cookie；固定名称必须与请求感知的认证路由一致。
+  ...authCookieConfig(),
 });
 
 /** 公开路径根：仅根本身或其子路径公开，名称相近的兄弟路径仍须认证。 */
