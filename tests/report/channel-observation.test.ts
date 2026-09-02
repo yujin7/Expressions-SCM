@@ -9,6 +9,30 @@ import { createTestDb } from "../helpers/db";
 import { computeChannelObservation, loadChannelObservation } from "@/server/modules/report/channel-observation";
 
 describe("全渠道外部观察", () => {
+  it("质量阻断的成功批次不得进入读模型", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "质量闸责任人" }).returning();
+      const [job] = await db.insert(schema.importJobs).values({
+        template: "jdy_pdd_order_observation", filename: "quality-blocked", sourceAsOf: "2026-09-03",
+        createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "quality-blocked",
+        status: "succeeded", importJobId: job.id, requestScope: { qualityBlocked: true },
+        finishedAt: new Date("2026-09-03T03:00:00.000Z"),
+      });
+      await db.insert(schema.stagingRows).values({
+        importJobId: job.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation",
+        payload: { data: { statisticalDate: "2026-09-02", shopName: "阻断店", orderNumber: "B1", productId: "P1", productQuantity: "999", orderStatus: "待发货" } },
+      });
+      const observation = await computeChannelObservation(db);
+      expect(observation.platforms.find((row) => row.platform === "拼多多")).toMatchObject({ state: "insufficient", units: null });
+    } finally {
+      await client.close();
+    }
+  });
+
   it("三平台按各自锚点汇总近 30 天；缺流保持 insufficient；损益给出正负两端", async () => {
     const { db, client } = await createTestDb();
     try {
@@ -106,6 +130,7 @@ describe("全渠道外部观察", () => {
         { importJobId: job.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation", payload: { data: { ...base, orderNumber: "O1", productQuantity: "4", orderStatus: "已发货", afterSalesStatus: "" } } },
         { importJobId: job.id, rowNo: 2, status: "pending", targetTable: "jdy_pdd_order_observation", payload: { data: { ...base, orderNumber: "O2", productQuantity: "9", orderStatus: "已发货", afterSalesStatus: "退款成功" } } },
         { importJobId: job.id, rowNo: 3, status: "pending", targetTable: "jdy_pdd_order_observation", payload: { data: { ...base, orderNumber: "O3", productQuantity: "7", orderStatus: "已取消", afterSalesStatus: "" } } },
+        { importJobId: job.id, rowNo: 4, status: "pending", targetTable: "jdy_pdd_order_observation", payload: { data: { ...base, orderNumber: "O4", productQuantity: "100", orderStatus: "待付款", afterSalesStatus: "", paymentTime: "" } } },
       ]);
 
       const observation = await computeChannelObservation(db);

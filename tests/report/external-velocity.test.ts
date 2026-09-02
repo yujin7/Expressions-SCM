@@ -71,6 +71,25 @@ async function seed() {
 }
 
 describe("外部观察销速读模型", () => {
+  it("质量阻断的拼多多批次不得被当成可用销速", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "质量闸责任人" }).returning();
+      const [job] = await db.insert(schema.importJobs).values({
+        template: "jdy_pdd_order_observation", filename: "quality-blocked", sourceAsOf: "2026-09-03",
+        createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "quality-blocked",
+        status: "succeeded", importJobId: job.id, requestScope: { qualityBlocked: true },
+        finishedAt: new Date("2026-09-03T03:00:00.000Z"),
+      });
+      const result = await computeExternalVelocity(db);
+      expect(result).toMatchObject({ state: "insufficient", bySku: {} });
+    } finally {
+      await client.close();
+    }
+  });
   it("按批次最大业务日锚定 30/90 天窗口，两条身份桥都算，未映射不计入", async () => {
     const { db, client, viaCrosswalk, viaDirect, unmapped } = await seed();
     try {
@@ -88,7 +107,13 @@ describe("外部观察销速读模型", () => {
       const direct = v.bySku[String(viaDirect.id)]!;
       expect(direct.net30).toBe(3);
       expect(v.bySku[String(unmapped.id)]).toBeUndefined();
-      expect(v.coverage).toEqual({ platformSkus: 4, mappedPlatformSkus: 2, mappedSkus: 2 });
+      expect(v.coverage).toEqual({
+        platformSkus: 4,
+        mappedPlatformSkus: 2,
+        mappedSkus: 2,
+        pddObservedDays30: 0,
+        pddWindowComplete30: true,
+      });
 
       // 缓存命中：第二次读取不重算也一致
       const again = await loadExternalVelocity(db);
@@ -137,9 +162,9 @@ describe("外部观察销速读模型", () => {
         { connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-orders", status: "succeeded", importJobId: pddOrders.id, finishedAt },
       ]);
       const shop = "(拼多多国际)NING官方海外旗舰店";
-      const order = (rowNo: number, no: string, date: string, qty: string, status: string, afterSalesStatus = "") => ({
+      const order = (rowNo: number, no: string, date: string, qty: string, status: string, afterSalesStatus = "", paymentTime = "") => ({
         importJobId: pddOrders.id, rowNo, status: "pending" as const, targetTable: "jdy_pdd_order_observation",
-        payload: { data: { statisticalDate: date, shopName: shop, orderNumber: no, productId: "PID1", merchantSkuCode: "GW1", productQuantity: qty, orderStatus: status, afterSalesStatus } },
+        payload: { data: { statisticalDate: date, shopName: shop, orderNumber: no, productId: "PID1", merchantSkuCode: "GW1", productQuantity: qty, orderStatus: status, afterSalesStatus, paymentTime } },
       });
       await db.insert(schema.stagingRows).values([
         { importJobId: pddCw.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
@@ -149,6 +174,7 @@ describe("外部观察销速读模型", () => {
         order(3, "O3", "2026-08-27", "5", "已取消，退款成功"),
         order(4, "O4", "2026-06-20", "7", "已发货，待收货"),
         order(5, "O5", "2026-08-29", "11", "已发货，待收货", "退款成功"),
+        order(6, "O6", "2026-08-30", "100", "待付款"),
       ]);
       const v = await computeExternalVelocity(db);
       const cw = v.bySku[String(viaCrosswalk.id)]!;
@@ -157,6 +183,8 @@ describe("外部观察销速读模型", () => {
       expect(cw.tmallNet30).toBe(13);
       expect(cw.net30).toBe(18);         // 天猫 13 + 拼多多 5
       expect(v.pddSourceAsOf).toBe("2026-09-02");
+      expect(v.coverage.pddObservedDays30).toBe(5);
+      expect(v.coverage.pddWindowComplete30).toBe(false);
     } finally {
       await client.close();
     }

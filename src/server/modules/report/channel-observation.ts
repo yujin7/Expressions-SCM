@@ -13,12 +13,13 @@
 import { sql, type SQL } from "drizzle-orm";
 
 import { dAdd, dCmp, dMoney, dSub } from "@/server/core/decimal";
+import { pddDemandEligibilitySql } from "@/server/rules/pdd-demand";
 
 interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-channel-observation/v1";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-channel-observation/v2";
 const WINDOW_DAYS = 30;
 
 export interface ChannelPlatformRow {
@@ -84,6 +85,7 @@ async function latestBatch(db: ReadDb, stream: string): Promise<{ importJobId: n
     SELECT ir.import_job_id, ij.source_as_of FROM integration_runs ir
     INNER JOIN import_jobs ij ON ij.id = ir.import_job_id
     WHERE ir.connector = 'jdy' AND ir.stream = ${stream} AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
+      AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
     ORDER BY ir.id DESC LIMIT 1
   `);
   const [row] = resultRows<Record<string, unknown>>(result);
@@ -209,6 +211,7 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
       WITH b AS (
         SELECT ir.import_job_id FROM integration_runs ir
         WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation' AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
+          AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
           AND ir.finished_at > now() - interval '90 days'
       ),
       o AS (
@@ -220,6 +223,7 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
                CASE WHEN trim(coalesce(payload->'data'->>'productQuantity','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'productQuantity')::numeric ELSE 0 END AS qty,
                coalesce(payload->'data'->>'orderStatus','') AS status,
                coalesce(payload->'data'->>'afterSalesStatus','') AS after_sales_status,
+               coalesce(payload->'data'->>'paymentTime','') AS payment_time,
                ij.source_as_of
         FROM staging_rows sr INNER JOIN import_jobs ij ON ij.id = sr.import_job_id
         WHERE sr.import_job_id IN (SELECT import_job_id FROM b) AND sr.target_table = 'jdy_pdd_order_observation'
@@ -257,9 +261,11 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
       ),
       attributed AS (
         SELECT o.shop, coalesce(br.code, '') AS brand,
-               CASE WHEN o.status LIKE '%取消%' OR o.status LIKE '%退款成功%'
-                          OR o.after_sales_status LIKE '%取消%' OR o.after_sales_status LIKE '%退款成功%'
-                    THEN 0 ELSE o.qty END AS qty,
+               CASE WHEN ${pddDemandEligibilitySql({
+                 paymentTime: sql`o.payment_time`,
+                 orderStatus: sql`o.status`,
+                 afterSalesStatus: sql`o.after_sales_status`,
+               })} THEN o.qty ELSE 0 END AS qty,
                o.d, o.source_as_of
         FROM o
         LEFT JOIN identity i ON i.shop = o.shop AND i.pid = o.pid AND i.mcode IS NOT DISTINCT FROM o.mcode
@@ -293,7 +299,7 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
         units, amount: null, refundUnits: null,
         byBrand: [...byBrand.entries()].map(([brand, u]) => ({ brand, units: u, amount: null })).sort((a, b) => b.units - a.units),
         byShop: [...byShop.entries()].map(([shop, u]) => ({ shop, units: u, amount: null })).sort((a, b) => b.units - a.units),
-        gate: "有效订单件数（剔除已取消/退款成功）；订单流无金额字段。品牌优先按已映射系统 SKU 归属，未映射才按店铺名推断。窗口内批次不足 30 天时件数偏低。",
+        gate: "已付款有效订单件数（剔除待付款、已取消/退款成功）；订单流无金额字段。品牌优先按已映射系统 SKU 归属，未映射才按店铺名推断。窗口内批次不足 30 天时件数偏低。",
       };
     }
   }
@@ -415,7 +421,8 @@ async function binding(db: ReadDb): Promise<string> {
   ]);
   const pdd = resultRows<Record<string, unknown>>(await db.execute(sql`
     SELECT coalesce(max(ir.import_job_id), 0)::int AS j FROM integration_runs ir
-    WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation' AND ir.status = 'succeeded'`))[0];
+    WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation' AND ir.status = 'succeeded'
+      AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'`))[0];
   const cw = await latestBatch(db, "tmall-sku-crosswalk-observation");
   const claims = resultRows<Record<string, unknown>>(await db.execute(sql`
     SELECT count(*)::int AS n,

@@ -55,8 +55,9 @@ export interface ReplenishRow {
   daysCover: number | null;
   /** R11 建议补货量（qty scale=4）；未触发预警为 null */
   suggestQty: string | null;
-  /** 外部观察（简道云天猫）近 30 天净需求折日均与最近售出日：影子列，只并排显示，不进入建议量。未映射 = null */
+  /** 外部观察（简道云天猫+拼多多）近 30 天净需求折日均与最近售出日：影子列，只并排显示，不进入建议量。未映射 = null */
   externalDaily30: number | null;
+  externalDaily30Gate: string | null;
   externalLastSold: string | null;
   /** 全口径参考在库（总库存明细文件，2026-07-21 时点；无参考 = null） */
   refQty: number | null;
@@ -169,6 +170,7 @@ export const REPLENISH_SORT_FIELDS = [
   "onOrder",
   "borrowOut",
   "daily",
+  "externalDaily30",
   "forecastDaily",
   "daysCover",
   "coverFull",
@@ -589,6 +591,16 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
           targetLevel,
           6,
         );
+    const pddWindowIncomplete = Boolean(
+      externalRow
+      && dCmp(String(externalRow.pddNet30), "0") !== 0
+      && !externalVelocity.coverage.pddWindowComplete30,
+    );
+    const externalDaily30Gate = !externalRow
+      ? "该 SKU 尚无已映射的外部需求"
+      : pddWindowIncomplete
+        ? `拼多多近 30 天仅观测到 ${externalVelocity.coverage.pddObservedDays30} 个业务日，暂不折算日均`
+        : null;
     return {
       skuId: s.id,
       code: s.code,
@@ -600,7 +612,10 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       daily: r1(dailyNum),
       daysCover: cover == null ? null : r1(cover),
       suggestQty: suggest,
-      externalDaily30: externalRow ? r1(externalRow.net30 / 30) : null,
+      externalDaily30: externalRow && !pddWindowIncomplete
+        ? r1(num(dDiv(String(externalRow.net30), "30", 6)))
+        : null,
+      externalDaily30Gate,
       externalLastSold: externalRow?.lastSoldDate ?? null,
       refQty: ref?.qty == null ? null : r1(ref.qty),
       onOrder: ref?.onOrder == null ? null : r1(ref.onOrder),
@@ -667,6 +682,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     daysCover: r.daysCover,
     suggestQty: r.suggestQty,
     externalDaily30: r.externalDaily30,
+    externalDaily30Gate: r.externalDaily30Gate,
     externalLastSold: r.externalLastSold,
     refQty: r.refQty,
     onOrder: r.onOrder,

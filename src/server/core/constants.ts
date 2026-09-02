@@ -55,6 +55,10 @@ export const SENSITIVE_FIELDS = [
   "taxRatePct", // 税率（RT4：与含税价互推，随价格同权限）
   "taxIncluded", // 含/未税标志（同上）
   "bankAccount", // 供应商银行账户（合规审计补落）
+  "actualTransactionAmount", // 平台实际成交金额
+  "totalSalesCost", // 平台销售总成本
+  "estimatedGrossProfit", // 平台预估毛利
+  "estimatedNetProfit", // 平台预估净利
 ] as const;
 
 /** 可见敏感价格的角色（●）：采购/PMC/财务/管理员 */
