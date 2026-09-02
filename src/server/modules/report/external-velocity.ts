@@ -20,13 +20,13 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v10";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v11";
 const PLATFORM_SKU_IDENTIFIER_SCOPE = "JIANDAOYUN:TMALL";
 
 export interface ExternalVelocityBySku {
   paid30: string;
   refund30: string;
-  net30: string;
+  net30: string | null;
   paid90: string;
   refund90: string;
   net90: string | null;
@@ -475,7 +475,10 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
     const pddNet90 = qtyValue(row.pdd_net90);
     const pddIdentityCovered = row.pdd_identity_covered === true;
     bySku[String(skuId)] = {
-      paid30, refund30, net30: dAdd(tmallNet30, pddNet30, 4),
+      // 拼多多身份只要参与该 SKU，30 天连续覆盖不足时组合总量就是未知；
+      // 即使当前只有取消/未付款/窗口外订单，也绝不能把聚合出的 0 发布给 dashboard / risk。
+      paid30, refund30,
+      net30: pddIdentityCovered && !pddWindowComplete30 ? null : dAdd(tmallNet30, pddNet30, 4),
       paid90, refund90,
       // 有拼多多身份但 90 天抽取不连续时，组合 90 天总量未知；绝不把缺失日当 0。
       net90: pddIdentityCovered && !pddWindowComplete90 ? null : dAdd(tmallNet90, pddNet90, 4),
@@ -516,7 +519,7 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
       "未映射的平台 SKU 不计入任何系统 SKU，故某 SKU 的外部数字可能偏低；覆盖率见决策工作室「平台身份覆盖」。",
       "净需求仅含有支付时间或明确已支付状态的订单，不含待付款、取消、退款成功、换货与平台时间差。",
       pddOrders && !pddWindowComplete30
-        ? `拼多多在共同锚点前 30 天内仅观测到 ${pddObservedDays30} 个业务日；包含拼多多的 SKU 暂不折算 30 天日均。`
+        ? `拼多多在共同锚点前 30 天内仅观测到 ${pddObservedDays30} 个业务日；包含拼多多的 SKU 暂不发布组合 30 天净需求。`
         : "拼多多近 30 天观测窗口已达到折算日均的要求。",
       pddOrders && !pddWindowComplete90
         ? `拼多多在共同锚点前 90 天内仅观测到 ${pddObservedDays90} 个业务日；包含拼多多的 SKU 暂不发布组合 90 天净需求。`

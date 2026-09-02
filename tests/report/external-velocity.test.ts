@@ -285,7 +285,7 @@ describe("外部观察销速读模型", () => {
       expect(cw.pddIdentityCovered).toBe(true);
       expect(cw.pddNet90).toBe("12.0000");      // 再加 90 天内的 7
       expect(cw.tmallNet30).toBe("13.0000");
-      expect(cw.net30).toBe("18.0000");         // 天猫 13 + 拼多多 5
+      expect(cw.net30).toBeNull();               // 拼多多窗口不完整，组合 30 天需求未知
       expect(v.pddSourceAsOf).toBe("2026-09-02");
       // 迟到更新带回 5 个订单日期，但实际抽取截止中午，只完整观察了 2 个自然日。
       expect(v.coverage.pddObservedDays30).toBe(2);
@@ -388,8 +388,8 @@ describe("外部观察销速读模型", () => {
       await db.insert(schema.stagingRows).values({
         importJobId: job.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation",
         payload: { data: {
-          statisticalDate: "2026-08-30", shopName: "其他店", orderNumber: "PARTIAL-DAY-1",
-          productId: "PID-OTHER", merchantSkuCode: "M-OTHER", productQuantity: "9", orderStatus: "待发货",
+          statisticalDate: "2026-08-30", shopName: shop, orderNumber: "PARTIAL-DAY-1",
+          productId: "PID-ZERO", merchantSkuCode: "M-ZERO", productQuantity: "9", orderStatus: "已取消，退款成功",
         } },
       });
 
@@ -424,7 +424,7 @@ describe("外部观察销速读模型", () => {
       expect(afterOutage.coverage.pddWindowComplete30).toBe(false);
       expect(afterOutage.coverage.pddObservedDays90).toBe(3);
       expect(afterOutage.coverage.pddWindowComplete90).toBe(false);
-      expect(afterOutage.bySku[String(sku.id)]).toBeUndefined();
+      expect(afterOutage.bySku[String(sku.id)]).toMatchObject({ pddNet30: "0.0000", net30: null });
 
       // 旧版批次没有 extractionCutoff，不能用未来的请求 to 桥接停机缺口；
       // 该批次的事实仍保留在去重集合中，但不贡献“已完整观察”的天数。
@@ -446,7 +446,7 @@ describe("外部观察销速读模型", () => {
       expect(afterLegacyWindow.coverage.pddWindowComplete30).toBe(false);
       expect(afterLegacyWindow.coverage.pddObservedDays90).toBe(3);
       expect(afterLegacyWindow.coverage.pddWindowComplete90).toBe(false);
-      expect(afterLegacyWindow.bySku[String(sku.id)]).toBeUndefined();
+      expect(afterLegacyWindow.bySku[String(sku.id)]).toMatchObject({ pddNet30: "0.0000", net30: null });
     } finally {
       await client.close();
     }
@@ -471,7 +471,7 @@ describe("外部观察销速读模型", () => {
       const v = await computeExternalVelocity(db);
       expect(v.bySku[String(viaDirect.id)]?.pddNet30).toBe("4.0000");
       expect(v.bySku[String(viaDirect.id)]?.pddIdentityCovered).toBe(true);
-      expect(v.bySku[String(viaDirect.id)]?.net30).toBe("4.2000");
+      expect(v.bySku[String(viaDirect.id)]?.net30).toBeNull();
     } finally {
       await client.close();
     }
@@ -506,7 +506,7 @@ describe("外部观察销速读模型", () => {
 
       const computed = await computeExternalVelocity(db);
       expect(computed).toMatchObject({ state: "ready", sourceAsOf: null, pddSourceAsOf: "2026-09-02", anchorDate: "2026-09-01" });
-      expect(computed.bySku[String(sku.id)]).toMatchObject({ pddNet30: "8.0000", net30: "8.0000" });
+      expect(computed.bySku[String(sku.id)]).toMatchObject({ pddNet30: "8.0000", net30: null });
       const cached = await loadExternalVelocity(db);
       expect(cached.bySku[String(sku.id)]?.pddNet30).toBe("8.0000");
 
@@ -515,7 +515,7 @@ describe("外部观察销速读模型", () => {
         .set({ finishedAt: new Date("2025-01-01T00:00:00.000Z") })
         .where(eq(schema.integrationRuns.id, olderRun.id));
       const expired = await loadExternalVelocity(db);
-      expect(expired.bySku[String(sku.id)]).toMatchObject({ pddNet30: "6.0000", net30: "6.0000" });
+      expect(expired.bySku[String(sku.id)]).toMatchObject({ pddNet30: "6.0000", net30: null });
     } finally {
       await client.close();
     }
