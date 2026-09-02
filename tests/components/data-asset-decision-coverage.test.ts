@@ -153,6 +153,7 @@ describe("三方数据资产到业务决策覆盖", () => {
       releasedDependencyCount: 1,
       minDecisionSlaHours: 4,
       actionLabel: "完成产品 UAT",
+      actionHref: "/report/decision-studio?tab=readiness&product=p2#data-product-p2",
     });
     expect(row.dependencies.map((item) => item.productId)).toEqual(["p1", "p2"]);
     expect(portfolio).toMatchObject({
@@ -160,6 +161,26 @@ describe("三方数据资产到业务决策覆盖", () => {
       explanationUsableCount: 1,
       operationalReadyCount: 0,
       affectedProductCount: 2,
+    });
+  });
+
+  it("共享资产把 UAT 行动指向首个未放行产品，全部放行后回到总门禁", () => {
+    const products = [
+      product("p1", "库存决策", 4, { JST: ["inventory-total-delta"] }),
+      product("p2", "补货决策", 24, { JST: ["inventory-total-delta"] }),
+    ];
+    const evidence = [source("JST", [stream("inventory-total-delta", { releaseBlocked: true })])];
+
+    const pending = buildDataAssetDecisionPortfolio(products, evidence, [approved("p1")]);
+    expect(pending.rows[0]).toMatchObject({
+      actionLabel: "完成产品 UAT",
+      actionHref: "/report/decision-studio?tab=readiness&product=p2#data-product-p2",
+    });
+
+    const released = buildDataAssetDecisionPortfolio(products, evidence, [approved("p1"), approved("p2")]);
+    expect(released.rows[0]).toMatchObject({
+      actionLabel: "查看产品门禁",
+      actionHref: "/report/decision-studio?tab=readiness",
     });
   });
 

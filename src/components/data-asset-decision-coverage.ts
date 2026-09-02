@@ -259,9 +259,19 @@ function actionFor(
       actionHref: productEvidenceHref(dependencies[0].productId),
     };
   }
+  const pendingDependency = dependencies.find((dependency) =>
+    dependency.usage !== "supporting"
+    && dependency.effectiveLevel !== "A2"
+    && dependency.effectiveLevel !== "A3");
+  if (!pendingDependency) {
+    return {
+      actionLabel: "查看产品门禁",
+      actionHref: "/report/decision-studio?tab=readiness",
+    };
+  }
   return {
     actionLabel: state === "observation" ? "完成产品 UAT" : "查看产品门禁",
-    actionHref: productEvidenceHref(dependencies[0].productId),
+    actionHref: productEvidenceHref(pendingDependency.productId),
   };
 }
 
