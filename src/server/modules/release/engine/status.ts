@@ -1,5 +1,5 @@
 /** release 流水线：status（自 engine.ts 拆出，行为未变） */
-import { eq } from "drizzle-orm";
+import { count, eq } from "drizzle-orm";
 
 import * as schema from "@/db/schema";
 
@@ -23,28 +23,34 @@ export async function releaseStatus(
 ): Promise<{ tables: ReleaseStatusTable[]; preflight: ImportPreflightResult | null }> {
   const db = await resolveDb(dbArg);
   const where = jobId != null ? eq(schema.stagingRows.importJobId, jobId) : undefined;
-  const rows: { targetTable: string | null; status: string; errorMsg: string | null }[] = await db
+  // 聚合下推到 SQL。此前把全部 staging 行拉进 Node 再逐行计数：生产库 staging_rows 有 360 万行
+  // （单个任务约 6.8 万行），实测无 jobId 时 1.4–1.6 s 全表扫描、带 jobId 时 0.5–0.6 s，
+  // 而响应只有不到 1 KB。按 (表, 状态, 原因) 分组后回传行数只和"原因种类"同阶。
+  const grouped: { targetTable: string | null; status: string; errorMsg: string | null; n: number }[] = await db
     .select({
       targetTable: schema.stagingRows.targetTable,
       status: schema.stagingRows.status,
       errorMsg: schema.stagingRows.errorMsg,
+      n: count(),
     })
     .from(schema.stagingRows)
-    .where(where);
+    .where(where)
+    .groupBy(schema.stagingRows.targetTable, schema.stagingRows.status, schema.stagingRows.errorMsg);
 
   const byTable = new Map<string, { staged: number; committed: number; error: number; reasons: Map<string, number> }>();
-  for (const r of rows) {
+  for (const r of grouped) {
     const t = r.targetTable ?? "(unknown)";
     let agg = byTable.get(t);
     if (!agg) {
       agg = { staged: 0, committed: 0, error: 0, reasons: new Map() };
       byTable.set(t, agg);
     }
-    if (r.status === "committed") agg.committed++;
-    else if (r.status === "error") agg.error++;
-    else agg.staged++;
+    const n = Number(r.n);
+    if (r.status === "committed") agg.committed += n;
+    else if (r.status === "error") agg.error += n;
+    else agg.staged += n;
     if (r.status !== "committed" && r.errorMsg) {
-      agg.reasons.set(r.errorMsg, (agg.reasons.get(r.errorMsg) ?? 0) + 1);
+      agg.reasons.set(r.errorMsg, (agg.reasons.get(r.errorMsg) ?? 0) + n);
     }
   }
   const tables = [...byTable.entries()]

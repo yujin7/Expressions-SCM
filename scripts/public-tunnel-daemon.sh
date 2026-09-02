@@ -197,7 +197,10 @@ while true; do
   fi
 
   : > "$TUNNEL_LOG"
-  cloudflared tunnel --no-autoupdate --url "http://localhost:${LOCAL_PORT}" >> "$TUNNEL_LOG" 2>&1 &
+  # --protocol http2：默认 QUIC(UDP) 出境实测被显著劣化——同一时刻同一应用，
+  # QUIC 隧道 /api/health 0.65–1.4 s、并发拉 33 个前端分块墙钟 6.4 s；
+  # HTTP/2(TCP) 隧道 0.32–0.36 s，并发分块见守护日志同名实测。每个请求都省一半，页面整体提速最直接。
+  cloudflared tunnel --no-autoupdate --protocol http2 --url "http://localhost:${LOCAL_PORT}" >> "$TUNNEL_LOG" 2>&1 &
   CF_PID=$!
   log "cloudflared 已启动 (pid=${CF_PID})，等待分配地址…"
 

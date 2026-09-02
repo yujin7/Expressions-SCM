@@ -509,6 +509,9 @@
   旧会话并追加审计。当前生产管理员已按该流程恢复，公网实测登录成功并被正确引导到改密页。
 - 全站已启用 CSP 基线；登录、Auth.js 与公开 token 响应均禁止缓存。HTTPS 镜像已在构建期
   启用 HSTS，公网实测同时具备 CSP、HSTS、`X-Frame-Options: DENY` 与 `nosniff`。
+- **2026-09-02 提速**：隧道改走 HTTP/2（QUIC 出境实测慢一倍：健康接口 0.7 s→0.35 s，
+  33 个前端分块并发 4.3–7.8 s→2.0–2.8 s）；`/api/release/status` 聚合下推 SQL（无 jobId 2.7 s→0.58 s）。
+  安装脚本修复了 `launchctl bootout` 后立即 `bootstrap` 报 I/O error 且守护未加载的问题（会把公网入口整个打掉）。
 - 治本仍是搬离笔记本：合盖/休眠/带出门都会让全组断线，与地址无关；
   且 Cloudflare 明示账号级快速隧道不保证可用性、不适合长期生产。
 - `access:tunnel`（具名隧道，需域名）与 `access:tailscale` 仍保留，供将来迁到稳定域名时用。
