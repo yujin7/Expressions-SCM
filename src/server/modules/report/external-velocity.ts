@@ -20,7 +20,7 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v8";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v9";
 const PLATFORM_SKU_IDENTIFIER_SCOPE = "JIANDAOYUN:TMALL";
 
 export interface ExternalVelocityBySku {
@@ -104,6 +104,19 @@ async function latestBatch(db: ReadDb, stream: string): Promise<{ importJobId: n
     : null;
 }
 
+function tmallStreamsCoverSameHorizon(
+  sales: { sourceAsOf: string | null } | null,
+  refunds: { sourceAsOf: string | null } | null,
+): boolean {
+  return Boolean(
+    sales?.sourceAsOf
+    && refunds?.sourceAsOf
+    && /^\d{4}-\d{2}-\d{2}$/.test(sales.sourceAsOf)
+    && /^\d{4}-\d{2}-\d{2}$/.test(refunds.sourceAsOf)
+    && refunds.sourceAsOf >= sales.sourceAsOf,
+  );
+}
+
 async function binding(db: ReadDb): Promise<string | null> {
   const [sales, refunds, crosswalk, pddOrders, pddCrosswalk, direct, pddRetained] = await Promise.all([
     latestBatch(db, "tmall-sku-sales-observation"),
@@ -162,11 +175,13 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
     latestBatch(db, "pdd-order-observation"),
     latestBatch(db, "pdd-sku-crosswalk-observation"),
   ]);
-  const tmallReady = Boolean(sales && refunds);
+  const tmallReady = tmallStreamsCoverSameHorizon(sales, refunds);
   if (!tmallReady && !pddOrders) {
     return emptyExternalVelocity(
-      sales && !refunds
-        ? "缺少天猫成功退款成功批次，净需求保持关闭。"
+      sales && refunds
+        ? "天猫退款观察时点落后于销量观察，净需求保持关闭。"
+        : sales && !refunds
+          ? "缺少天猫成功退款成功批次，净需求保持关闭。"
         : "缺少天猫日销量和拼多多订单的成功批次，外部销速保持关闭。",
     );
   }
@@ -254,10 +269,13 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
     pdd_batches AS (
       SELECT ir.import_job_id,
              nullif(ir.request_scope->'window'->>'from', '')::timestamptz AS observed_from_at,
-             least(
-               nullif(ir.request_scope->'window'->>'to', '')::timestamptz,
-               nullif(ir.request_scope->'window'->>'extractionCutoff', '')::timestamptz
-             ) AS observed_through_at
+             CASE
+               WHEN nullif(ir.request_scope->'window'->>'extractionCutoff', '') IS NULL THEN NULL
+               ELSE least(
+                 nullif(ir.request_scope->'window'->>'to', '')::timestamptz,
+                 nullif(ir.request_scope->'window'->>'extractionCutoff', '')::timestamptz
+               )
+             END AS observed_through_at
       FROM integration_runs ir
       WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation'
         AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL

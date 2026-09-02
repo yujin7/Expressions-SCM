@@ -19,7 +19,7 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-channel-observation/v6";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-channel-observation/v7";
 const WINDOW_DAYS = 30;
 
 export interface ChannelPlatformRow {
@@ -98,6 +98,19 @@ async function latestBatch(db: ReadDb, stream: string): Promise<{ importJobId: n
   return importJobId > 0 ? { importJobId, sourceAsOf: row?.source_as_of == null ? null : String(row.source_as_of) } : null;
 }
 
+function tmallStreamsCoverSameHorizon(
+  sales: { sourceAsOf: string | null } | null,
+  refunds: { sourceAsOf: string | null } | null,
+): boolean {
+  return Boolean(
+    sales?.sourceAsOf
+    && refunds?.sourceAsOf
+    && /^\d{4}-\d{2}-\d{2}$/.test(sales.sourceAsOf)
+    && /^\d{4}-\d{2}-\d{2}$/.test(refunds.sourceAsOf)
+    && refunds.sourceAsOf >= sales.sourceAsOf,
+  );
+}
+
 function insufficient(platform: ChannelPlatformRow["platform"], grain: string, gate: string): ChannelPlatformRow {
   return { platform, state: "insufficient", grain, sourceAsOf: null, anchorDate: null, windowFrom: null, units: null, amount: null, refundUnits: null, byBrand: [], byShop: [], gate };
 }
@@ -127,12 +140,15 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
   let tmall = insufficient(
     "天猫",
     "统计日 × 店铺 × 平台 SKU",
-    tmallSales
-      ? "缺少天猫成功退款成功批次，净销量保持不可用。"
+    tmallSales && tmallRefunds
+      ? "天猫退款观察时点落后于销量观察，净销量保持不可用。"
+      : tmallSales
+        ? "缺少天猫成功退款成功批次，净销量保持不可用。"
       : "缺少天猫日销量成功批次。",
   );
-  // 净销量是“支付件数 − 成功退款子订单数”。两条流必须同时可用；缺任一条都不能把未知退款补成 0。
-  if (tmallSales && tmallRefunds) {
+  // 净销量是“支付件数 − 成功退款子订单数”。两条流必须同时可用且退款观察至少覆盖销量时点；
+  // 否则旧退款快照会把新日期的未知退款误当成 0。
+  if (tmallSales && tmallRefunds && tmallStreamsCoverSameHorizon(tmallSales, tmallRefunds)) {
     const rows = resultRows<Record<string, unknown>>(await db.execute(sql`
       WITH s AS (
         SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'skuId' AS psku, left(payload->'data'->>'statisticalDate', 10)::date AS d,
@@ -229,10 +245,13 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
     const rows = resultRows<Record<string, unknown>>(await db.execute(sql`
       WITH b AS (
         SELECT ir.import_job_id,
-               least(
-                 nullif(ir.request_scope->'window'->>'to', '')::timestamptz,
-                 nullif(ir.request_scope->'window'->>'extractionCutoff', '')::timestamptz
-               ) AS observed_through_at
+               CASE
+                 WHEN nullif(ir.request_scope->'window'->>'extractionCutoff', '') IS NULL THEN NULL
+                 ELSE least(
+                   nullif(ir.request_scope->'window'->>'to', '')::timestamptz,
+                   nullif(ir.request_scope->'window'->>'extractionCutoff', '')::timestamptz
+                 )
+               END AS observed_through_at
         FROM integration_runs ir
         WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation' AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
           AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'

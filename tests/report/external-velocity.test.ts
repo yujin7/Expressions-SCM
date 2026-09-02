@@ -128,6 +128,49 @@ describe("外部观察销速读模型", () => {
     }
   });
 
+  it("天猫退款观察落后于销量观察时不发布净需求", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "退款时点门禁责任人" }).returning();
+      const [sales, refunds] = await db.insert(schema.importJobs).values([
+        {
+          template: "jdy_tmall_sku_sales_observation", filename: "current-sales", sourceAsOf: "2026-09-02",
+          createdBy: actor.id, status: "done",
+        },
+        {
+          template: "jdy_tmall_sku_refund_observation", filename: "stale-refunds", sourceAsOf: "2026-08-30",
+          createdBy: actor.id, status: "done",
+        },
+      ]).returning();
+      await db.insert(schema.integrationRuns).values([
+        {
+          connector: "jdy", stream: "tmall-sku-sales-observation", idempotencyKey: "current-sales-velocity",
+          status: "succeeded", importJobId: sales.id, finishedAt: new Date("2026-09-02T03:00:00.000Z"),
+        },
+        {
+          connector: "jdy", stream: "tmall-sku-refund-observation", idempotencyKey: "stale-refunds-velocity",
+          status: "succeeded", importJobId: refunds.id, finishedAt: new Date("2026-08-30T03:00:00.000Z"),
+        },
+      ]);
+      await db.insert(schema.stagingRows).values([
+        {
+          importJobId: sales.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_sales_observation",
+          payload: { data: { statisticalDate: "2026-09-01", shopName: "天猫时点测试店", skuId: "P1", paidNumber: "99" } },
+        },
+        {
+          importJobId: refunds.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
+          payload: { data: { statisticalDate: "2026-08-29", shopName: "天猫时点测试店", skuId: "P1", successRefundSuborderNumber: "1" } },
+        },
+      ]);
+
+      const result = await computeExternalVelocity(db);
+      expect(result).toMatchObject({ state: "insufficient", sourceAsOf: null, bySku: {} });
+      expect(result.gate).toMatch(/落后/);
+    } finally {
+      await client.close();
+    }
+  });
+
   it("按批次最大业务日锚定 30/90 天窗口，两条身份桥都算，未映射不计入", async () => {
     const { db, client, actor, viaCrosswalk, viaDirect, unmapped } = await seed();
     try {
@@ -357,6 +400,27 @@ describe("外部观察销速读模型", () => {
       expect(afterOutage.coverage.pddWindowComplete30).toBe(false);
       expect(afterOutage.coverage.pddObservedDays90).toBe(3);
       expect(afterOutage.coverage.pddWindowComplete90).toBe(false);
+
+      // 旧版批次没有 extractionCutoff，不能用未来的请求 to 桥接停机缺口；
+      // 该批次的事实仍保留在去重集合中，但不贡献“已完整观察”的天数。
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy",
+        stream: "pdd-order-observation",
+        idempotencyKey: "legacy-window-without-cutoff",
+        status: "succeeded",
+        importJobId: job.id,
+        finishedAt: new Date("2026-09-03T01:00:00.000Z"),
+        requestScope: { window: {
+          from: "2026-08-29T16:00:00.000Z",
+          to: "2026-09-05T16:00:00.000Z",
+        } },
+      });
+      const afterLegacyWindow = await computeExternalVelocity(db);
+      expect(afterLegacyWindow.anchorDate).toBe("2026-09-02");
+      expect(afterLegacyWindow.coverage.pddObservedDays30).toBe(3);
+      expect(afterLegacyWindow.coverage.pddWindowComplete30).toBe(false);
+      expect(afterLegacyWindow.coverage.pddObservedDays90).toBe(3);
+      expect(afterLegacyWindow.coverage.pddWindowComplete90).toBe(false);
     } finally {
       await client.close();
     }

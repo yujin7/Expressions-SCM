@@ -345,4 +345,49 @@ describe("全渠道外部观察", () => {
       await client.close();
     }
   });
+
+  it("天猫退款观察落后于销量观察时保持 insufficient", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "退款时点门禁责任人" }).returning();
+      const [sales, refunds] = await db.insert(schema.importJobs).values([
+        {
+          template: "jdy_tmall_sku_sales_observation", filename: "current-sales", sourceAsOf: "2026-09-02",
+          createdBy: actor.id, status: "done",
+        },
+        {
+          template: "jdy_tmall_sku_refund_observation", filename: "stale-refunds", sourceAsOf: "2026-08-30",
+          createdBy: actor.id, status: "done",
+        },
+      ]).returning();
+      await db.insert(schema.integrationRuns).values([
+        {
+          connector: "jdy", stream: "tmall-sku-sales-observation", idempotencyKey: "current-sales",
+          status: "succeeded", importJobId: sales.id, finishedAt: new Date("2026-09-02T03:00:00.000Z"),
+        },
+        {
+          connector: "jdy", stream: "tmall-sku-refund-observation", idempotencyKey: "stale-refunds",
+          status: "succeeded", importJobId: refunds.id, finishedAt: new Date("2026-08-30T03:00:00.000Z"),
+        },
+      ]);
+      await db.insert(schema.stagingRows).values([
+        {
+          importJobId: sales.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_sales_observation",
+          payload: { data: { statisticalDate: "2026-09-01", shopName: "天猫时点测试店", skuId: "P1", paidNumber: "99" } },
+        },
+        {
+          importJobId: refunds.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
+          payload: { data: { statisticalDate: "2026-08-29", shopName: "天猫时点测试店", skuId: "P1", successRefundSuborderNumber: "1" } },
+        },
+      ]);
+
+      const observation = await computeChannelObservation(db);
+      expect(observation.platforms.find((row) => row.platform === "天猫")).toMatchObject({
+        state: "insufficient", units: null, amount: null, refundUnits: null,
+      });
+      expect(observation.platforms.find((row) => row.platform === "天猫")?.gate).toMatch(/落后/);
+    } finally {
+      await client.close();
+    }
+  });
 });
