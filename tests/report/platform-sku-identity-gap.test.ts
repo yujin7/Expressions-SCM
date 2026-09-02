@@ -57,6 +57,13 @@ describe("规格与候选打分（纯函数）", () => {
   });
 });
 
+describe("平台 SKU 认领输入边界", () => {
+  it("拒绝会破坏店铺+平台 SKU 复合键的分隔符", async () => {
+    const { platformSkuClaimSchema } = await import("@/server/modules/master/platform-sku-claim");
+    expect(() => platformSkuClaimSchema.parse({ shopName: "店铺|A", platformSkuId: "P1", skuId: 1 })).toThrow(/分隔符/);
+  });
+});
+
 async function seed() {
   const { db, client } = await createTestDb();
   const [actor] = await db.insert(schema.users).values({ name: "外部数据责任人", roles: ["pmc"] }).returning();

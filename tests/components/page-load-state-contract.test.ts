@@ -42,6 +42,9 @@ describe("page load-state contract", () => {
     const studio = read(
       "src/app/(app)/report/decision-studio/decision-studio-client.tsx",
     );
+    const platformGap = read(
+      "src/app/(app)/report/decision-studio/platform-sku-gap-card.tsx",
+    );
 
     expect(scorecard).toContain('value={s ? s.suppliers : "—"}');
     expect(scorecard).toContain('value={t ? t.batches : "—"}');
@@ -49,6 +52,10 @@ describe("page load-state contract", () => {
     expect(versions).toContain('value={data ? data.current.lineCount : "—"}');
     expect(studio).toContain('value={data?.comparison.current ?? "—"}');
     expect(studio).not.toContain("comparison.current ?? 0");
+    expect(platformGap).toContain('value={totals ? totals.byStatus.not_in_crosswalk.skus : "—"}');
+    expect(platformGap).toContain('message="平台 SKU 身份缺口加载失败"');
+    expect(platformGap).toContain('onClick={() => void load()}');
+    expect(platformGap).not.toContain("not_in_crosswalk.skus ?? 0");
   });
 
   it("keeps decision-studio navigation fast without making refresh stale", () => {

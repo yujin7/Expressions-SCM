@@ -131,7 +131,7 @@ async function latestBatch(db: ReadDb, stream: string): Promise<LatestBatch | nu
     INNER JOIN import_jobs ij ON ij.id = ir.import_job_id
     WHERE ir.connector = 'jdy' AND ir.stream = ${stream}
       AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
-    ORDER BY ir.id DESC
+    ORDER BY ir.started_at DESC, ir.id DESC
     LIMIT 1
   `);
   const [row] = resultRows<Record<string, unknown>>(result);

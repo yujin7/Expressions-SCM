@@ -7,7 +7,7 @@
  * 这张卡告诉你**先补哪 60 个**、每个值多少钱、系统猜它是谁。
  * 候选只是建议；认领必须由人选定目标 SKU 后提交，写路径在服务端做冲突与权限校验。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, App, Button, Card, Col, Modal, Progress, Row, Space, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
@@ -38,24 +38,38 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
   const { message } = App.useApp();
   const [data, setData] = useState<PlatformSkuIdentityGap | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [claiming, setClaiming] = useState<PlatformSkuGapRow | null>(null);
   const [targetSkuId, setTargetSkuId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  const requestRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setLoading(true);
+    setLoadError(null);
     try {
-      setData(await fetchJson<PlatformSkuIdentityGap>("/api/report/platform-sku-identity-gap"));
+      const next = await fetchJson<PlatformSkuIdentityGap>("/api/report/platform-sku-identity-gap", {
+        signal: controller.signal,
+      });
+      if (!controller.signal.aborted) setData(next);
     } catch (e) {
-      message.error((e as Error).message);
+      if (!controller.signal.aborted) setLoadError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (requestRef.current === controller) {
+        requestRef.current = null;
+        setLoading(false);
+      }
     }
-  }, [message]);
+  }, []);
 
   useEffect(() => {
     if (active && !data) void load();
   }, [active, data, load]);
+
+  useEffect(() => () => requestRef.current?.abort(), []);
 
   const openClaim = (row: PlatformSkuGapRow, presetSkuId?: number) => {
     setClaiming(row);
@@ -69,14 +83,18 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
     }
     setSaving(true);
     try {
-      await postJson("/api/master/sku/platform-claim", {
+      const result = await postJson<{ readModels: "refreshed" | "deferred" }>("/api/master/sku/platform-claim", {
         shopName: claiming.shopName,
         platformSkuId: claiming.platformSkuId,
         skuId: targetSkuId,
       });
-      message.success("已认领；覆盖率与外部需求信号已按新身份重建");
+      if (result.readModels === "refreshed") {
+        message.success("已认领；覆盖率与外部需求信号已按新身份重建");
+      } else {
+        message.warning("认领已保存，但统计刷新未完成；页面将立即重试");
+      }
       setClaiming(null);
-      setData(null); // 触发重新加载
+      await load();
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -89,13 +107,15 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
     if (!data?.exactHits.length) return;
     setSaving(true);
     try {
-      const r = await postJson<{ total: number; claimed: number; alreadyClaimed: number; failed: number }>(
+      const r = await postJson<{ total: number; claimed: number; alreadyClaimed: number; failed: number; readModels: "refreshed" | "deferred" }>(
         "/api/master/sku/platform-claim/bulk",
         { items: data.exactHits.slice(0, 300).map((h) => ({ shopName: h.shopName, platformSkuId: h.platformSkuId, skuId: h.skuId })) },
       );
-      message.success(`本批 ${r.total} 行：新认领 ${r.claimed}，此前已认领 ${r.alreadyClaimed}，失败 ${r.failed}`);
+      const summary = `本批 ${r.total} 行：新认领 ${r.claimed}，此前已认领 ${r.alreadyClaimed}，失败 ${r.failed}`;
+      if (r.readModels === "refreshed") message.success(summary);
+      else message.warning(`${summary}；统计刷新未完成，页面将立即重试`);
       setBulkOpen(false);
-      setData(null);
+      await load();
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -198,17 +218,26 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
             disabled={!data?.exactHits.length}
             onClick={() => setBulkOpen(true)}
           >
-            一键认领精确命中 ({data?.exactHits.length ?? 0})
+            一键认领精确命中 ({data ? data.exactHits.length : "—"})
           </Button>
-          <Button size="small" onClick={() => { setData(null); }} loading={loading}>刷新</Button>
+          <Button size="small" onClick={() => void load()} loading={loading}>刷新</Button>
         </Space>
       }
     >
       <Space direction="vertical" size={12} style={{ width: "100%" }}>
+        {loadError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="平台 SKU 身份缺口加载失败"
+            description={loadError}
+            action={<Button size="small" onClick={() => void load()}>重试</Button>}
+          />
+        ) : null}
         <Alert
-          type={data?.state === "ready" ? "info" : "warning"}
+          type={loadError ? "error" : data?.state === "ready" ? "info" : "warning"}
           showIcon
-          message={data?.gate ?? "加载中…"}
+          message={loadError ? "本区块数据未加载" : data?.gate ?? "加载中…"}
           description={data ? `批次截至 ${data.sourceAsOf?.slice(0, 10) ?? "—"}，销售日 ${data.window.from ?? "—"} ～ ${data.window.to ?? "—"}；对照表截至 ${data.crosswalkAsOf?.slice(0, 10) ?? "—"}。` : undefined}
         />
         <Row gutter={[10, 10]} className="compact-kpi-row">
@@ -233,8 +262,8 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
             <Card size="small">
               <Statistic
                 title="不在对照表的平台 SKU"
-                value={totals?.byStatus.not_in_crosswalk.skus ?? 0}
-                suffix={`/ ${totals?.platformSkus ?? 0}`}
+                value={totals ? totals.byStatus.not_in_crosswalk.skus : "—"}
+                suffix={totals ? `/ ${totals.platformSkus}` : undefined}
               />
               <Typography.Text type="secondary">金额 ¥{totals ? yuan(totals.byStatus.not_in_crosswalk.paidAmount) : "—"}</Typography.Text>
             </Card>
@@ -246,7 +275,7 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
                 value={totals?.coverableAmountPct ?? "数据不足"}
                 suffix={totals?.coverableAmountPct == null ? undefined : "%"}
               />
-              <Typography.Text type="secondary">{totals?.unmappedWithCandidates ?? 0} 个缺口有候选</Typography.Text>
+              <Typography.Text type="secondary">{totals ? `${totals.unmappedWithCandidates} 个缺口有候选` : "—"}</Typography.Text>
             </Card>
           </Col>
         </Row>
