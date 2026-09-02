@@ -196,6 +196,19 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
       align: "right",
       render: (v: number | null) => (v == null ? <Tag color="red">无动销</Tag> : <Tag color="orange">{fmt(v)}天</Tag>),
     },
+    {
+      title: "外部近30天净需求",
+      dataIndex: "externalNet30",
+      width: 150,
+      align: "right",
+      render: (v: number | null, r) => v == null
+        ? <Typography.Text type="secondary">未映射</Typography.Text>
+        : (
+          <AntTooltip title={`简道云天猫观察，最近售出 ${r.externalLastSold ?? "—"}；近 90 天净需求 ${fmt(r.externalNet90)}`}>
+            <Tag color={v > 0 && r.daysCover == null ? "volcano" : v > 0 ? "blue" : "default"}>{fmt(v)}</Tag>
+          </AntTooltip>
+        ),
+    },
   ];
 
   return (
@@ -242,6 +255,21 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
                   跟随筛选：{data.scope.appliesTo.join("、")}。
                   <b>不随筛选变化</b>：{data.scope.notAppliedTo.join("、")}
                   —— 这些不是按品牌/渠道记账的事实，按销售维度切会得到似是而非的数字。
+                </>
+              }
+            />
+          ) : null}
+          {data.externalDemand.state === "ready" ? (
+            <Alert
+              type={data.externalDemand.internalNoMoveButExternalSelling > 0 ? "warning" : "info"}
+              showIcon
+              style={{ marginBottom: 8 }}
+              message={`内部销量事实到 ${data.externalDemand.internalThroughMonth ?? "—"}，简道云天猫观察到 ${data.externalDemand.anchorDate ?? "—"}${data.externalDemand.lagDays != null ? `（内部晚 ${data.externalDemand.lagDays} 天）` : ""}`}
+              description={
+                <>
+                  已映射 {data.externalDemand.mappedSkus.toLocaleString("zh-CN")} 个系统 SKU 的外部近 30/90 天净需求作为影子列显示；
+                  <b>{data.externalDemand.internalNoMoveButExternalSelling}</b> 个 SKU 内部判「无动销」但外部近 30 天仍在售——处置或打折前先核对。
+                  观察口径，不改销速与补货。
                 </>
               }
             />

@@ -18,10 +18,11 @@ import { ApiError } from "@/server/modules/master/common";
 import { ensureExternalSkuIdentifierInTransaction } from "@/server/modules/master/sku-identifier";
 import { PLATFORM_SKU_IDENTIFIER_SCOPE, refreshPlatformSkuIdentityGap } from "@/server/modules/report/platform-sku-identity-gap";
 import { refreshJiandaoyunExternalDemandReadModel } from "@/server/modules/report/external-demand-signal";
+import { refreshExternalVelocity } from "@/server/modules/report/external-velocity";
 import type { AnyDb } from "@/server/core/svc";
 
 export const platformSkuClaimSchema = z.object({
-  shopName: z.string().trim().min(1, "店铺名必填").max(60),
+  shopName: z.string().trim().min(1, "店铺名必填").max(60).refine((value) => !value.includes("|"), "店铺名不能包含 |分隔符"),
   platformSkuId: z.string().trim().min(1, "平台 SKU ID 必填").max(40).regex(/^[A-Za-z0-9_-]+$/, "平台 SKU ID 只能是字母数字"),
   skuId: z.number().int().positive(),
   note: z.string().trim().max(200).optional(),
@@ -51,6 +52,7 @@ export async function claimPlatformSku(actor: SessionUser, input: unknown, dbArg
   try {
     await refreshPlatformSkuIdentityGap(db);
     await refreshJiandaoyunExternalDemandReadModel(db);
+    await refreshExternalVelocity(db);
   } catch {
     readModels = "deferred";
   }
@@ -95,6 +97,7 @@ export async function claimPlatformSkusBulk(actor: SessionUser, input: unknown, 
   try {
     await refreshPlatformSkuIdentityGap(db);
     await refreshJiandaoyunExternalDemandReadModel(db);
+    await refreshExternalVelocity(db);
   } catch {
     readModels = "deferred";
   }

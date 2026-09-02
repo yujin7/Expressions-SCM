@@ -10,6 +10,7 @@
  * 全表无金额字段，免脱敏；只读不写库。
  */
 import { and, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
+import { loadExternalVelocitySafe, type ExternalVelocity } from "@/server/modules/report/external-velocity";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { getNumParam } from "@/server/core/params";
@@ -53,6 +54,9 @@ export interface RiskRow {
   disposalOpen: boolean;
   /** 未关闭处置登记 ID；用于把报废出库单精确绑定到本登记。 */
   disposalId: number | null;
+  /** 外部观察（简道云天猫）近 30 天净需求与最近售出日；未映射/缺席 = null，不是 0 */
+  externalNet30: number | null;
+  externalLastSold: string | null;
 }
 
 export interface RiskWorklist {
@@ -66,8 +70,11 @@ export interface RiskWorklist {
 export async function getRiskWorklist(
   query: { q?: string; action?: string; page?: number; pageSize?: number; precise?: boolean },
   dbArg?: AnyDb,
+  externalVelocityArg?: ExternalVelocity,
 ): Promise<RiskWorklist> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
+  // 外部观察销速影子列：内部说"无动销"、外部近 30 天仍在售的 SKU，处置前必须先看到
+  const externalVelocity = externalVelocityArg ?? await loadExternalVelocitySafe(db);
   /** E1-06：导出走全精度（precise），屏显仍 1dp——截断值不得流入对账口径 */
   const rq = (v: number): number => (query.precise ? v : r1(v));
   const today = todayShanghai();
@@ -196,6 +203,8 @@ export async function getRiskWorklist(
       remarkMonth: remark?.month ?? null,
       disposalOpen: dispBySku.has(sku.code),
       disposalId: dispBySku.get(sku.code) ?? null,
+      externalNet30: externalVelocity.bySku[String(sku.id)]?.net30 ?? null,
+      externalLastSold: externalVelocity.bySku[String(sku.id)]?.lastSoldDate ?? null,
     });
   }
 

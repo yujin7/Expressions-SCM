@@ -15,6 +15,7 @@ import {
 } from "@/server/integrations/jiandaoyun-sync";
 import { refreshJiandaoyunExternalDemandReadModel } from "@/server/modules/report/external-demand-signal";
 import { refreshPlatformSkuIdentityGap } from "@/server/modules/report/platform-sku-identity-gap";
+import { refreshExternalVelocity } from "@/server/modules/report/external-velocity";
 
 type JiandaoyunSkipped = { status: "skipped"; reason: string };
 const EXTERNAL_DEMAND_CONTRACTS = new Set([
@@ -25,6 +26,7 @@ const EXTERNAL_DEMAND_CONTRACTS = new Set([
 
 async function refreshDemandReadModel(db: AnyDb) {
   const signal = await refreshJiandaoyunExternalDemandReadModel(db);
+  await refreshExternalVelocity(db);
   // 身份缺口读模型与需求信号绑定同一批次，随同步一起重建，页面不再现算
   const identityGap = await refreshPlatformSkuIdentityGap(db);
   return {
