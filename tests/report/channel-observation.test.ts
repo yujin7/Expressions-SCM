@@ -150,17 +150,36 @@ describe("全渠道外部观察", () => {
       expect(pdd.units).toBe("4.0000");
       expect(pdd.byBrand).toEqual([{ brand: "NING", units: "4.0000", amount: null }]);
 
-      await db.insert(schema.stagingRows).values({
-        importJobId: crosswalkJob.id, rowNo: 2, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
-        payload: {
-          sourceDeletedAt: "2026-09-02T04:00:00.000Z",
-          data: { shopName: base.shopName, platformProductId: base.productId, merchantSkuCode: base.merchantSkuCode },
-          _identity: { skuId: sku.id },
-        },
+      const [deletedCrosswalk] = await db.insert(schema.importJobs).values({
+        template: "jdy_pdd_sku_crosswalk_observation", filename: "pdd-crosswalk-tombstone", sourceAsOf: "2026-09-03",
+        createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "pdd-sku-crosswalk-observation", idempotencyKey: "pdd-crosswalk-tombstone",
+        status: "succeeded", importJobId: deletedCrosswalk.id, finishedAt: new Date("2026-09-03T04:00:00.000Z"),
       });
+      await db.insert(schema.stagingRows).values([
+        {
+          importJobId: deletedCrosswalk.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
+          payload: {
+            sourceRecordId: "A-ACTIVE-REPLACEMENT",
+            data: { shopName: base.shopName, platformProductId: base.productId, merchantSkuCode: base.merchantSkuCode },
+            _identity: { skuId: sku.id },
+          },
+        },
+        {
+          importJobId: deletedCrosswalk.id, rowNo: 2, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
+          payload: {
+            sourceRecordId: "Z-DELETED-OLD-RECORD",
+            sourceDeletedAt: "2026-09-02T04:00:00.000Z",
+            data: { shopName: base.shopName, platformProductId: base.productId, merchantSkuCode: base.merchantSkuCode },
+            _identity: { skuId: sku.id },
+          },
+        },
+      ]);
       const afterMappingDelete = await computeChannelObservation(db);
       expect(afterMappingDelete.platforms.find((row) => row.platform === "拼多多")?.byBrand).toEqual([
-        { brand: "(未归属)", units: "4.0000", amount: null },
+        { brand: "NING", units: "4.0000", amount: null },
       ]);
 
       const [deletedJob] = await db.insert(schema.importJobs).values({

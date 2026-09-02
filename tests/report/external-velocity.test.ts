@@ -233,10 +233,19 @@ describe("外部观察销速读模型", () => {
       expect(afterDelete.bySku[String(viaCrosswalk.id)]?.pddNet30).toBe("3.0000");
       expect(afterDelete.bySku[String(viaCrosswalk.id)]?.pddNet90).toBe("10.0000");
 
-      // 对照表 tombstone 必须先压过同一三元组旧映射，再整体退出身份桥。
+      // 新全量快照里的 tombstone 代表该源记录已删除；不得继续作为身份桥。
+      const [deletedCrosswalk] = await db.insert(schema.importJobs).values({
+        template: "jdy_pdd_sku_crosswalk_observation", filename: "pdd-cw-tombstone", sourceAsOf: "2026-09-03",
+        createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "pdd-sku-crosswalk-observation", idempotencyKey: "pdd-cw-tombstone",
+        status: "succeeded", importJobId: deletedCrosswalk.id, finishedAt: new Date("2026-09-03T05:00:00.000Z"),
+      });
       await db.insert(schema.stagingRows).values({
-        importJobId: pddCw.id, rowNo: 2, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
+        importJobId: deletedCrosswalk.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
         payload: {
+          sourceRecordId: "PDD-CW-1",
           sourceDeletedAt: "2026-09-03T05:00:00.000Z",
           data: { shopName: shop, platformSkuId: "PS1", platformProductId: "PID1", merchantSkuCode: "GW1" },
           _identity: { skuId: viaCrosswalk.id },

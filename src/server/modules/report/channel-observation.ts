@@ -145,24 +145,15 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
           AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
       ),
       a AS (SELECT max(d) AS d FROM s),
-      cw_rows AS (
+      cw AS (
         SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'platformSkuId' AS psku,
-               (payload->'_identity'->>'skuId')::int AS sku_id,
-               payload->>'sourceDeletedAt' AS source_deleted_at,
-               row_no
+               max((payload->'_identity'->>'skuId')::int) AS sku_id,
+               count(DISTINCT payload->'_identity'->>'skuId') AS n
         FROM staging_rows WHERE import_job_id = ${crosswalkBatch?.importJobId ?? -1} AND target_table = 'jdy_tmall_sku_crosswalk_observation'
           AND status IN ('pending','validated','committed')
-      ),
-      cw_tombstones AS (
-        SELECT shop, psku, max(row_no) FILTER (WHERE nullif(trim(source_deleted_at), '') IS NOT NULL) AS tombstone_row
-        FROM cw_rows GROUP BY shop, psku
-      ),
-      cw AS (
-        SELECT rows.shop, rows.psku, max(rows.sku_id) AS sku_id, count(DISTINCT rows.sku_id) AS n
-        FROM cw_rows rows INNER JOIN cw_tombstones state ON state.shop = rows.shop AND state.psku = rows.psku
-        WHERE nullif(trim(rows.source_deleted_at), '') IS NULL AND rows.sku_id IS NOT NULL
-          AND (state.tombstone_row IS NULL OR rows.row_no > state.tombstone_row)
-        GROUP BY rows.shop, rows.psku
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
+          AND payload->'_identity'->>'skuId' IS NOT NULL
+        GROUP BY 1, 2
       ),
       direct AS (
         SELECT split_part(value, '|', 1) AS shop, split_part(value, '|', 2) AS psku, sku_id
@@ -263,29 +254,19 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
         FROM o_latest
         WHERE nullif(trim(source_deleted_at), '') IS NULL
       ),
-      cw_rows AS (
+      cw AS (
         SELECT payload->'data'->>'shopName' AS shop,
                payload->'data'->>'platformProductId' AS pid,
                nullif(trim(payload->'data'->>'merchantSkuCode'), '') AS mcode,
-               (payload->'_identity'->>'skuId')::int AS sku_id,
-               payload->>'sourceDeletedAt' AS source_deleted_at,
-               row_no
+               max((payload->'_identity'->>'skuId')::int) AS sku_id,
+               count(DISTINCT payload->'_identity'->>'skuId') AS n
         FROM staging_rows
         WHERE import_job_id = ${pddCrosswalkBatch?.importJobId ?? -1}
           AND target_table = 'jdy_pdd_sku_crosswalk_observation'
           AND status IN ('pending','validated','committed')
-      ),
-      cw_tombstones AS (
-        SELECT shop, pid, mcode, max(row_no) FILTER (WHERE nullif(trim(source_deleted_at), '') IS NOT NULL) AS tombstone_row
-        FROM cw_rows GROUP BY shop, pid, mcode
-      ),
-      cw AS (
-        SELECT rows.shop, rows.pid, rows.mcode, max(rows.sku_id) AS sku_id, count(DISTINCT rows.sku_id) AS n
-        FROM cw_rows rows INNER JOIN cw_tombstones state
-          ON state.shop = rows.shop AND state.pid = rows.pid AND state.mcode IS NOT DISTINCT FROM rows.mcode
-        WHERE nullif(trim(rows.source_deleted_at), '') IS NULL AND rows.sku_id IS NOT NULL
-          AND (state.tombstone_row IS NULL OR rows.row_no > state.tombstone_row)
-        GROUP BY rows.shop, rows.pid, rows.mcode
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
+          AND payload->'_identity'->>'skuId' IS NOT NULL
+        GROUP BY 1, 2, 3
       ),
       direct AS (
         SELECT split_part(value, '|', 1) AS shop,
