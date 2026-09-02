@@ -58,3 +58,21 @@
   导致全应用（含 /api/health）齐刷刷 500 且随编译顺序漂移。需要类型用 `import type`；
   需要常量则由服务端 API 下发，或放进零依赖纯常量模块。
   自动化护栏：`tests/architecture/client-server-boundary.test.ts`（含白名单防腐化断言）。
+- 运维与集成护栏（2026-08/09 真实事故沉淀，均有测试钉住）：
+  - **构建期 env 必须走 Dockerfile `ARG`**：`next.config.ts` 的 `headers()` 在 `next build` 烘焙进 routes-manifest，
+    放 compose `environment:` 永远不生效（`tests/architecture/build-time-env.test.ts`）。
+  - **`set -o pipefail` 的脚本禁止 `… | grep -q`**：命中即 SIGPIPE，退出码 141，把"命中"判成"失败"
+    （曾把健康的守护判成没跑、会把健康的部署判成失败；`tests/architecture/shell-pipefail-grep.test.ts`）。
+  - **读模型缓存键随口径升版**（`report_read_model_cache` 的 `key` 带 `/vN`）：只改逻辑不改键，旧缓存会把新线索藏起来。
+  - **外部平台身份绝不自动认领**：确定性线索也只进 exactHits 供人一键确认，落库唯一入口 `master/platform-sku-claim.ts`
+    （`tests/integrations/jiandaoyun-identity-boundary.test.ts` 钉住"同码也不自动"）。
+  - **简道云时间窗契约**（`contract.window`）每批是滚动快照：不适用"全量行数不得下降/旧记录必须仍在"守卫，读模型必须跨批次按业务键去重。
+  - **公网隧道必须 `--protocol http2`**（QUIC 出境实测慢一倍，`tests/architecture/public-tunnel-transport.test.ts`）；
+    守护脚本运行在 `~/Library/Application Support/exp-scm/`，仓库在 `~/Downloads` 下 launchd 读不到（TCC）。
+  - **mac 上 `npm install` 会剪掉 lock 里 Linux/wasm 专属嵌套条目**（`@unrs/resolver-binding-wasm32-wasi/node_modules/@emnapi/*`），
+    CI 镜像随即装不齐；改依赖后 `git diff package-lock.json` 只允许出现你要的条目，多删的先 `git checkout` 再手改根块
+    （`tests/architecture/agility-loop.test.ts` 钉住）。
+  - **门禁结论只认汇总行**：`npm run check:pr | tail` 会吞掉失败退出码，必须看 `Test Files … passed` 且无 `failed`；
+    加护栏后要验证它对真实违规写法变红。
+- 并行会话（`parallel-sessions`）：提交只 `git add` 自己改过的路径，提交前 `git status` 核对别人在改的文件；
+  临时脚本用唯一文件名（曾因同名 tmp 文件互删丢过输出）。

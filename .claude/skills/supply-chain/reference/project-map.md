@@ -84,6 +84,8 @@ Verify these live before relying on them:
 - Shape: modular monolith with server modules, pure rules, a central posting engine, a unified approval/state layer, imports through staging/release, and reports/decision support.
 - Data states: transactional ledger for controlled warehouses, external snapshots/reference facts for other coverage, derived planning views, and review queues for ambiguity.
 - Delivery state: treat the system as UAT-ready, not production-proven, until current staging PostgreSQL load, environment, stakeholder review, UAT, parallel reconciliation, and sign-off evidence say otherwise.
+- External data layer (2026-09-02): Jiandaoyun is the only live external source (19 explicit contracts into observation staging; JST/Yonyou blocked by platform authorization). Read models over it are `observation_only` and cached in `report_read_model_cache` bound to exact batches: `external-demand-signal`, `external-velocity`, `platform-sku-identity-gap`, `channel-observation`, `tmall-channel-contribution`. Platform identity is the bottleneck; claims go through `master/platform-sku-claim.ts` only.
+- Deployment (laptop): production compose stack `supply-chain` on port 3100, public entry via Cloudflare quick tunnel (HTTP/2) managed by a launchd daemon in `~/Library/Application Support/exp-scm/`; link rotates on tunnel rebuild and is announced to Feishu. See `docs/guides/对外访问方案-选型与步骤.md`.
 
 Do not infer that all brands are legally “cosmetics.” Keep product regulatory class and destination market explicit.
 
@@ -150,6 +152,11 @@ These were observed on 2026-07-25. Re-check rather than preserving them as perma
 - Supplier `retired`, centralized permission policy, and full FEFO/batch execution have appeared as design directions without necessarily being complete.
 - Wider-company inventory reference coverage can suppress false replenishment advice but is dated and incomplete. Re-check coverage and freshness before planning.
 - A clean test suite does not establish staging/prod readiness, data coverage, user adoption, or sign-off.
+
+- A read-model cache can mask new logic: `report_read_model_cache` rows are keyed by `key` + `source_binding`; if logic changes without bumping the key version, pages keep serving the old payload. Verify with a fresh compute, not the API alone.
+- Windowed Jiandaoyun batches (`contract.window`) are rolling snapshots, not full snapshots: row counts legitimately shrink and old records legitimately disappear; never read one batch as the population.
+- launchd-spawned processes cannot read `~/Downloads` (TCC); "file not found" from a LaunchAgent usually means this, not a missing file.
+- The public URL is ephemeral: any evidence citing a `trycloudflare.com` host is stale the moment the tunnel rebuilds; use `npm run access:link`.
 
 ## 8. Change and verification discipline
 

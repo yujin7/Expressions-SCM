@@ -37,11 +37,17 @@
 - 可直接转发的授权说明：[`integrations/授权操作手册-可直接转发.md`](integrations/授权操作手册-可直接转发.md)
 - 简道云业务核对：[`integrations/简道云外部需求-UAT操作手册.md`](integrations/简道云外部需求-UAT操作手册.md)
 - 天猫金额桥财务核对：[`integrations/简道云天猫金额桥-财务UAT操作手册.md`](integrations/简道云天猫金额桥-财务UAT操作手册.md)
-- 固定公网地址与 Cloudflare：[`guides/对外访问方案-选型与步骤.md`](guides/对外访问方案-选型与步骤.md)
+- 公网访问（快速隧道 + 守护、换址、审计结论）：[`guides/对外访问方案-选型与步骤.md`](guides/对外访问方案-选型与步骤.md)
+- 三方数据融合计划与事实（身份桥、时间窗契约、全渠道观察）：[`engineering/外部数据融合-决策增强计划-2026-09-02.md`](engineering/外部数据融合-决策增强计划-2026-09-02.md)
+- 简道云 297 张表单时效普查（选表前先看）：[`integrations/简道云表单时效普查-2026-08-04.md`](integrations/简道云表单时效普查-2026-08-04.md)
 
 ### 操作、部署与恢复
 
 - 日常命令和开发启动：项目根目录 [`../README.md`](../README.md)
+- 本机生产容器实跑、账号发放、线上冒烟：[`engineering/本机实跑指南.md`](engineering/本机实跑指南.md)
+- 编码/命名标准裁决简报（用实跑数据算过）：[`engineering/CODING-STANDARD-DECISION-2026-08-07.md`](engineering/CODING-STANDARD-DECISION-2026-08-07.md)
+- 一次性运维脚本清单与历史脚本说明：项目根目录 `scripts/README.md`
+- 变更日志：本项目不维护单独 CHANGELOG；`git log` 是唯一变更史，状态结论只写进 `NOW.md`
 - 生产发布：项目根目录 `ops/deploy.sh`
 - 发布门禁：项目根目录 `ops/SCM-AUDIT-RELEASE-CHECKLIST.md`
 - 恢复演练：项目根目录 `ops/RESTORE-DRILL.md`
@@ -60,7 +66,7 @@
 
 | 系统 | 在整体架构中的角色 | 当前权限边界 |
 |---|---|---|
-| 简道云 | 经营信号与现行人工流程观察 | 当前部署已选择 15 条显式契约；未完成控制总量/UAT前保持观察层 |
+| 简道云 | 经营信号与现行人工流程观察 | 当前部署已选择 19 条显式契约（含天猫日销/退款/对照、拼多多订单时间窗、唯品会店铺交易、天猫宝贝损益）；未完成控制总量/UAT前保持观察层 |
 | 聚水潭 | 电商订单、仓配、出库与库存运营事实 | 代码和签名就绪；平台权限/IP 白名单未通过前不进入正式事实 |
 | 用友 | 组织、采购、库存、成本、凭证与财务权威 | token 可取；8 条只读 API 授权和 tenant/org 未齐前保持关闭 |
 | SCM | 统一身份、受控 staging、库存账、单据、审批、对账与决策产品 | 任何外部源都不能绕过 release/posting 直接改账 |
