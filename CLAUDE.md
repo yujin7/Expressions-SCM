@@ -72,6 +72,9 @@
   - **mac 上 `npm install` 会剪掉 lock 里 Linux/wasm 专属嵌套条目**（`@unrs/resolver-binding-wasm32-wasi/node_modules/@emnapi/*`），
     CI 镜像随即装不齐；改依赖后 `git diff package-lock.json` 只允许出现你要的条目，多删的先 `git checkout` 再手改根块
     （`tests/architecture/agility-loop.test.ts` 钉住）。
+  - **观察读模型的批次选择三档**（2026-09-03 生产实况）：交易流（拼多多订单）review 即不用；对照表/维表只经 `_identity` 引用，review 不影响；
+    平台日快照若 review 只因业务键重复/缺失仍可用、读模型按业务键 `DISTINCT ON` 去重。被 supersede 的批次任何情况下不再可用——
+    否则一次重同步就把外部销速从 1,703 个平台 SKU 静默打回 681（`tests/report/external-velocity.test.ts`、`channel-observation.test.ts` 钉住）。
   - **门禁结论只认汇总行**：`npm run check:pr | tail` 会吞掉失败退出码，必须看 `Test Files … passed` 且无 `failed`；
     加护栏后要验证它对真实违规写法变红。
 - 并行会话（`parallel-sessions`）：提交只 `git add` 自己改过的路径，提交前 `git status` 核对别人在改的文件；

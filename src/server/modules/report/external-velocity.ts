@@ -75,14 +75,35 @@ function intValue(value: unknown): number {
   return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
 }
 
-async function latestBatch(db: ReadDb, stream: string): Promise<{ importJobId: number; sourceAsOf: string | null } | null> {
+/**
+ * 最新可用批次。事实流（销量/退款/订单）遇到 qualityBlocked 批次一律不用（fail closed）；
+ * 对照表这类**身份维表**例外：它只经 `_identity`（同步时的身份治理结果）被引用，2026-09-03 实测
+ * 一批 3,648 行里 2 行缺业务键就被标成 review，而上一批已被 supersede（可用行为 0），
+ * 若照旧过滤，外部销速会静默退化成"只剩直接认领"（1,703 → 681 个平台 SKU）。
+ * 被 supersede 的批次任何情况下都不再当作可用批次。
+ */
+async function latestBatch(
+  db: ReadDb,
+  stream: string,
+  options: { allowQualityBlocked?: boolean | "snapshot" } = {},
+): Promise<{ importJobId: number; sourceAsOf: string | null } | null> {
+  // "snapshot"：平台日快照的 review 若只是业务键重复/缺失仍可用（读模型按业务键去重）；数值非法/对账不符/有删除仍不用
+  const qualityFilter = options.allowQualityBlocked === true
+    ? sql`true`
+    : options.allowQualityBlocked === "snapshot"
+      ? sql`(coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+             OR (coalesce((ir.request_scope->'controlSummary'->>'invalidNumericValues')::int, 0) = 0
+                 AND coalesce((ir.request_scope->'controlSummary'->>'reconciliationMismatchedRows')::int, 0) = 0
+                 AND coalesce((ir.request_scope->'controlSummary'->>'deletedRows')::int, 0) = 0))`
+      : sql`coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'`;
   const result = await db.execute(sql`
     SELECT ir.import_job_id, ij.source_as_of
     FROM integration_runs ir
     INNER JOIN import_jobs ij ON ij.id = ir.import_job_id
     WHERE ir.connector = 'jdy' AND ir.stream = ${stream}
       AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
-      AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+      AND ij.status <> 'superseded'
+      AND ${qualityFilter}
     ORDER BY ir.started_at DESC, ir.id DESC
     LIMIT 1
   `);
@@ -95,12 +116,12 @@ async function latestBatch(db: ReadDb, stream: string): Promise<{ importJobId: n
 
 async function binding(db: ReadDb): Promise<string | null> {
   const [sales, refunds, crosswalk, pddOrders, pddCrosswalk, bundle, direct] = await Promise.all([
-    latestBatch(db, "tmall-sku-sales-observation"),
-    latestBatch(db, "tmall-sku-refund-observation"),
-    latestBatch(db, "tmall-sku-crosswalk-observation"),
+    latestBatch(db, "tmall-sku-sales-observation", { allowQualityBlocked: "snapshot" }),
+    latestBatch(db, "tmall-sku-refund-observation", { allowQualityBlocked: "snapshot" }),
+    latestBatch(db, "tmall-sku-crosswalk-observation", { allowQualityBlocked: true }),
     latestBatch(db, "pdd-order-observation"),
-    latestBatch(db, "pdd-sku-crosswalk-observation"),
-    latestBatch(db, "tmall-bundle-detail-observation"),
+    latestBatch(db, "pdd-sku-crosswalk-observation", { allowQualityBlocked: true }),
+    latestBatch(db, "tmall-bundle-detail-observation", { allowQualityBlocked: true }),
     db.execute(sql`SELECT count(*)::int AS n, coalesce(max(id), 0)::int AS max_id, coalesce(max(updated_at), 'epoch')::text AS updated
       FROM sku_identifiers WHERE kind = 'external' AND scope IN (${PLATFORM_SKU_IDENTIFIER_SCOPE}, 'JIANDAOYUN:PDD')`),
   ]);
@@ -127,12 +148,12 @@ export function emptyExternalVelocity(gate: string): ExternalVelocity {
 
 export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVelocity> {
   const [sales, refunds, crosswalk, pddOrders, pddCrosswalk, bundle] = await Promise.all([
-    latestBatch(db, "tmall-sku-sales-observation"),
-    latestBatch(db, "tmall-sku-refund-observation"),
-    latestBatch(db, "tmall-sku-crosswalk-observation"),
+    latestBatch(db, "tmall-sku-sales-observation", { allowQualityBlocked: "snapshot" }),
+    latestBatch(db, "tmall-sku-refund-observation", { allowQualityBlocked: "snapshot" }),
+    latestBatch(db, "tmall-sku-crosswalk-observation", { allowQualityBlocked: true }),
     latestBatch(db, "pdd-order-observation"),
-    latestBatch(db, "pdd-sku-crosswalk-observation"),
-    latestBatch(db, "tmall-bundle-detail-observation"),
+    latestBatch(db, "pdd-sku-crosswalk-observation", { allowQualityBlocked: true }),
+    latestBatch(db, "tmall-bundle-detail-observation", { allowQualityBlocked: true }),
   ]);
   if (!sales && !pddOrders) {
     return emptyExternalVelocity("缺少天猫日销量和拼多多订单的成功批次，外部销速保持关闭。");
@@ -205,7 +226,8 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
         AND (SELECT count(DISTINCT bc) FROM bom_resolved b2 WHERE b2.complete AND b2.bc IN (c.mcode, c.rg)) = 1
     ),
     s AS (
-      SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'skuId' AS psku,
+      SELECT DISTINCT ON (payload->'data'->>'shopName', payload->'data'->>'skuId', left(payload->'data'->>'statisticalDate', 10))
+             payload->'data'->>'shopName' AS shop, payload->'data'->>'skuId' AS psku,
              left(payload->'data'->>'statisticalDate', 10)::date AS d,
              CASE WHEN trim(coalesce(payload->'data'->>'paidNumber','')) ~ '^-?[0-9]+([.][0-9]+)?$'
                   THEN (payload->'data'->>'paidNumber')::numeric ELSE 0 END AS paid
@@ -214,9 +236,11 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
         AND target_table = 'jdy_tmall_sku_sales_observation'
         AND status IN ('pending', 'validated', 'committed')
         AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+      ORDER BY payload->'data'->>'shopName', payload->'data'->>'skuId', left(payload->'data'->>'statisticalDate', 10), row_no DESC
     ),
     r AS (
-      SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'skuId' AS psku,
+      SELECT DISTINCT ON (payload->'data'->>'shopName', payload->'data'->>'skuId', left(payload->'data'->>'statisticalDate', 10))
+             payload->'data'->>'shopName' AS shop, payload->'data'->>'skuId' AS psku,
              left(payload->'data'->>'statisticalDate', 10)::date AS d,
              CASE WHEN trim(coalesce(payload->'data'->>'successRefundSuborderNumber','')) ~ '^-?[0-9]+([.][0-9]+)?$'
                   THEN (payload->'data'->>'successRefundSuborderNumber')::numeric ELSE 0 END AS refund
@@ -225,6 +249,7 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
         AND target_table = 'jdy_tmall_sku_refund_observation'
         AND status IN ('pending', 'validated', 'committed')
         AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+      ORDER BY payload->'data'->>'shopName', payload->'data'->>'skuId', left(payload->'data'->>'statisticalDate', 10), row_no DESC
     ),
     pdd_map AS (
       SELECT payload->'data'->>'shopName' AS shop,

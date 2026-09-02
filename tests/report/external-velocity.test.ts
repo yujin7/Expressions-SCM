@@ -6,6 +6,7 @@
  * 影子列不改内部销速与可销天数。
  */
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { createTestDb } from "../helpers/db";
 import { computeExternalVelocity, loadExternalVelocity } from "@/server/modules/report/external-velocity";
@@ -67,7 +68,7 @@ async function seed() {
     { importJobId: refunds.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
       payload: { data: { statisticalDate: "2026-08-20", shopName: shop, skuId: "P-CW", successRefundSuborderNumber: "2" } } },
   ]);
-  return { db, client, viaCrosswalk, viaDirect, unmapped };
+  return { db, client, viaCrosswalk, viaDirect, unmapped, crosswalk };
 }
 
 describe("外部观察销速读模型", () => {
@@ -246,6 +247,33 @@ describe("外部观察销速读模型", () => {
       expect(computed.bySku[String(sku.id)]).toMatchObject({ pddNet30: 6, net30: 6 });
       const cached = await loadExternalVelocity(db);
       expect(cached.bySku[String(sku.id)]?.pddNet30).toBe(6);
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+describe("对照表批次被标 review 且上一批已 supersede（2026-09-03 生产实况）", () => {
+  it("身份维表允许 qualityBlocked 批次；被 supersede 的批次不再当作可用批次", async () => {
+    const { db, client, viaCrosswalk, crosswalk } = await seed();
+    try {
+      const [actor] = await db.select().from(schema.users).limit(1);
+      // 上一批被 supersede（可用行清零）
+      await db.update(schema.importJobs).set({ status: "superseded" }).where(eq(schema.importJobs.id, crosswalk.id));
+      await db.update(schema.stagingRows).set({ status: "error" }).where(eq(schema.stagingRows.importJobId, crosswalk.id));
+      const [next] = await db.insert(schema.importJobs).values({ template: "jdy_tmall_sku_crosswalk_observation", filename: "cw2", sourceAsOf: "2026-09-03", createdBy: actor.id, status: "done" }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "tmall-sku-crosswalk-observation", idempotencyKey: "cw2", status: "succeeded", importJobId: next.id,
+        startedAt: new Date("2026-09-03T05:00:00.000Z"), finishedAt: new Date("2026-09-03T05:01:00.000Z"),
+        requestScope: { qualityBlocked: true, releaseBlocked: true, controlSummary: { status: "review", missingBusinessKeyRows: 2 } },
+      });
+      await db.insert(schema.stagingRows).values({
+        importJobId: next.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation",
+        payload: { data: { shopName: "(天猫国际)NING海外旗舰店", platformSkuId: "P-CW" }, _identity: { skuId: viaCrosswalk.id } },
+      });
+      const v = await computeExternalVelocity(db);
+      expect(v.bySku[String(viaCrosswalk.id)]).toBeDefined();
+      expect(v.coverage.mappedPlatformSkus).toBeGreaterThanOrEqual(2);
     } finally {
       await client.close();
     }

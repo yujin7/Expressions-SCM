@@ -200,3 +200,93 @@ describe("全渠道外部观察", () => {
     }
   });
 });
+
+describe("第四阶段：天猫流量先行指标 + SKU 级毛利（2026-09-03）", () => {
+  it("近 7 天 vs 前 7 天访客环比、支付转化；SKU 毛利按关联货品映射到系统 SKU 与品牌", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "外部数据责任人" }).returning();
+      const [ning] = await db.insert(schema.brands).values({ code: "NING", nameCn: "NING", nameEn: "NING" }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "P90009", nameCn: "毛利测试" }).returning();
+      const [sku] = await db.insert(schema.skus).values({ code: "N009-000", name: "泥膜", spuId: spu.id, skuType: "finished", baseUom: "支", brandId: ning.id }).returning();
+      const [trafficJob, costJob] = await db.insert(schema.importJobs).values([
+        { template: "jdy_tmall_product_traffic_observation", filename: "t", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+        { template: "jdy_tmall_sku_cost_pnl_observation", filename: "c", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+      ]).returning();
+      const finishedAt = new Date("2026-09-03T03:00:00.000Z");
+      await db.insert(schema.integrationRuns).values([
+        { connector: "jdy", stream: "tmall-product-traffic-observation", idempotencyKey: "t", status: "succeeded", importJobId: trafficJob.id, finishedAt },
+        { connector: "jdy", stream: "tmall-sku-cost-pnl-observation", idempotencyKey: "c", status: "succeeded", importJobId: costJob.id, finishedAt },
+      ]);
+      const shop = "(天猫国际)NING海外旗舰店";
+      const t = (rowNo: number, date: string, pid: string, visitors: string, buyers: string, amt: string) => ({
+        importJobId: trafficJob.id, rowNo, status: "pending" as const, targetTable: "jdy_tmall_product_traffic_observation",
+        payload: { data: { statisticalDate: date, shopName: shop, productId: pid, productName: `商品${pid}`, visitors, paidBuyers: buyers, paidAmount: amt, addonPeople: "1", collections: "2" } },
+      });
+      await db.insert(schema.stagingRows).values([
+        // 商品 A：近 7 天 300 访客（前 7 天 100）→ 上升；商品 B：近 7 天 50（前 7 天 200）→ 下滑
+        t(1, "2026-09-02", "A", "200", "10", "1000"), t(2, "2026-08-30", "A", "100", "5", "500"), t(3, "2026-08-25", "A", "100", "1", "100"),
+        t(4, "2026-09-01", "B", "50", "1", "50"), t(5, "2026-08-24", "B", "200", "4", "400"),
+        t(6, "2026-08-01", "A", "9999", "9", "9"), // 14 天外，不计
+        { importJobId: costJob.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_cost_pnl_observation",
+          payload: { data: { statisticalDate: "2026-09-01", shopName: shop, skuId: "S1", relatedGoods: "N009-000", paidAmount: "1000", refundAmount: "100", goodsCostSubtotal: "400", paidNumber: "10" } } },
+        { importJobId: costJob.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_sku_cost_pnl_observation",
+          payload: { data: { statisticalDate: "2026-08-20", shopName: shop, skuId: "S2", relatedGoods: "UNKNOWN", paidAmount: "200", refundAmount: "0", goodsCostSubtotal: "300", paidNumber: "2" } } },
+        { importJobId: costJob.id, rowNo: 3, status: "pending", targetTable: "jdy_tmall_sku_cost_pnl_observation",
+          payload: { data: { statisticalDate: "2026-06-01", shopName: shop, skuId: "S1", relatedGoods: "N009-000", paidAmount: "99999", refundAmount: "0", goodsCostSubtotal: "0", paidNumber: "1" } } }, // 窗口外
+      ]);
+      const obs = await computeChannelObservation(db);
+      expect(obs.traffic.state).toBe("ready");
+      expect(obs.traffic.anchorDate).toBe("2026-09-02");
+      expect(obs.traffic.totals.visitors7).toBe(350);
+      expect(obs.traffic.totals.visitorsPrev7).toBe(300);
+      expect(obs.traffic.totals.paidAmount7).toBe("1550.00");
+      expect(obs.traffic.rising[0]?.productId).toBe("A");
+      expect(obs.traffic.rising[0]?.visitorDelta).toBe(200);
+      expect(obs.traffic.falling[0]?.productId).toBe("B");
+      expect(obs.traffic.rising[0]?.conversion7).toBe(5);
+      expect(obs.skuMargin.state).toBe("ready");
+      expect(obs.skuMargin.totals.paidAmount).toBe("1200.00");
+      expect(obs.skuMargin.totals.margin).toBe("400.00"); // (1000-100-400) + (200-0-300)
+      expect(obs.skuMargin.totals.mappedSkus).toBe(1);
+      expect(obs.skuMargin.top[0]?.systemSkuCode).toBe(sku.code);
+      expect(obs.skuMargin.top[0]?.brand).toBe("NING");
+      expect(obs.skuMargin.bottom[0]?.platformSkuId).toBe("S2");
+      expect(obs.skuMargin.byBrand.find((b) => b.brand === "NING")?.marginPct).toBe(55.6);
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+describe("平台日快照的 review 批次（业务键重复）不整批丢弃，读模型按业务键去重", () => {
+  it("流量批次因 2 行重复被标 review：仍进入读模型且重复行只计一次；数值非法的 review 批次仍不用", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "外部数据责任人" }).returning();
+      const [dupJob, badJob] = await db.insert(schema.importJobs).values([
+        { template: "jdy_tmall_product_traffic_observation", filename: "t", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+        { template: "jdy_tmall_sku_cost_pnl_observation", filename: "c", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+      ]).returning();
+      await db.insert(schema.integrationRuns).values([
+        { connector: "jdy", stream: "tmall-product-traffic-observation", idempotencyKey: "t-dup", status: "succeeded", importJobId: dupJob.id, finishedAt: new Date("2026-09-03T03:00:00.000Z"),
+          requestScope: { qualityBlocked: true, controlSummary: { status: "review", duplicateRows: 2, duplicateKeyGroups: 1, invalidNumericValues: 0, reconciliationMismatchedRows: 0, deletedRows: 0 } } },
+        { connector: "jdy", stream: "tmall-sku-cost-pnl-observation", idempotencyKey: "c-bad", status: "succeeded", importJobId: badJob.id, finishedAt: new Date("2026-09-03T03:00:00.000Z"),
+          requestScope: { qualityBlocked: true, controlSummary: { status: "review", duplicateRows: 0, invalidNumericValues: 3, reconciliationMismatchedRows: 0, deletedRows: 0 } } },
+      ]);
+      const shop = "(天猫国际)NING海外旗舰店";
+      await db.insert(schema.stagingRows).values([
+        { importJobId: dupJob.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_product_traffic_observation", payload: { data: { statisticalDate: "2026-09-02", shopName: shop, productId: "A", visitors: "100", paidBuyers: "5", paidAmount: "500" } } },
+        { importJobId: dupJob.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_product_traffic_observation", payload: { data: { statisticalDate: "2026-09-02", shopName: shop, productId: "A", visitors: "100", paidBuyers: "5", paidAmount: "500" } } }, // 重复上传
+        { importJobId: badJob.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_cost_pnl_observation", payload: { data: { statisticalDate: "2026-09-02", shopName: shop, skuId: "S1", paidAmount: "100", refundAmount: "0", goodsCostSubtotal: "10", paidNumber: "1" } } },
+      ]);
+      const obs = await computeChannelObservation(db);
+      expect(obs.traffic.state).toBe("ready");
+      expect(obs.traffic.totals.visitors7).toBe(100);
+      expect(obs.traffic.totals.paidAmount7).toBe("500.00");
+      expect(obs.skuMargin.state).toBe("insufficient");
+    } finally {
+      await client.close();
+    }
+  });
+});

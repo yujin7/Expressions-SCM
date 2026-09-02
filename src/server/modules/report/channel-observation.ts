@@ -19,7 +19,7 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-channel-observation/v2";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-channel-observation/v3";
 const WINDOW_DAYS = 30;
 
 export interface ChannelPlatformRow {
@@ -50,6 +50,30 @@ export interface ProductPnlRow {
   paidNumber: number;
 }
 
+export interface TrafficProductRow {
+  shopName: string;
+  productId: string;
+  productName: string | null;
+  visitors7: number;
+  visitorsPrev7: number;
+  visitorDelta: number;
+  paidAmount7: string;
+  paidBuyers7: number;
+  conversion7: number | null;
+}
+export interface SkuMarginRow {
+  shopName: string;
+  platformSkuId: string;
+  relatedGoods: string | null;
+  systemSkuCode: string | null;
+  brand: string;
+  paidAmount: string;
+  refundAmount: string;
+  goodsCost: string;
+  margin: string;
+  marginPct: number | null;
+  paidNumber: number;
+}
 export interface ChannelObservation {
   state: "ready" | "insufficient";
   authority: "observation_only";
@@ -65,8 +89,40 @@ export interface ChannelObservation {
     bottomNetProfit: ProductPnlRow[];
     gate: string;
   };
+  /** 天猫商品流量先行指标（近 7 天 vs 前 7 天；数据中台「天猫商品整体」90 天时间窗） */
+  traffic: {
+    state: "ready" | "insufficient";
+    sourceAsOf: string | null;
+    anchorDate: string | null;
+    totals: { visitors7: number; visitorsPrev7: number; paidAmount7: string; paidAmountPrev7: string; paidBuyers7: number; conversion7: number | null; addonPeople7: number; collections7: number; products: number };
+    rising: TrafficProductRow[];
+    falling: TrafficProductRow[];
+    gate: string;
+  };
+  /** 天猫 SKU 级毛利观察（近 30 天；数据中台「SKU 销售成本核算」，货品成本口径来自源表） */
+  skuMargin: {
+    state: "ready" | "insufficient";
+    sourceAsOf: string | null;
+    anchorDate: string | null;
+    totals: {
+      paidAmount: string; refundAmount: string; goodsCost: string; margin: string;
+      /** 只按「货品成本有值」的 SKU 计算，源表大量行成本为 0，否则毛利率会被虚高 */
+      marginPct: number | null;
+      skus: number; mappedSkus: number;
+      /** 货品成本 > 0 的 SKU 数与其支付金额（毛利率的分母口径） */
+      costCoveredSkus: number; costCoveredPaidAmount: string;
+    };
+    byBrand: { brand: string; paidAmount: string; margin: string; marginPct: number | null; skus: number }[];
+    top: SkuMarginRow[];
+    bottom: SkuMarginRow[];
+    gate: string;
+  };
   limitations: string[];
 }
+const numExpr = (field: string) =>
+  `CASE WHEN trim(coalesce(payload->'data'->>'${field}','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'${field}')::numeric ELSE 0 END`;
+const pctOf = (part: string, whole: string): number | null =>
+  dCmp(whole, "0") > 0 ? Math.round((Number(part) / Number(whole)) * 1000) / 10 : null;
 
 function resultRows<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
@@ -80,12 +136,33 @@ const money = (v: unknown): string => {
 };
 const text = (v: unknown): string | null => { const t = v == null ? "" : String(v).trim(); return t ? t : null; };
 
-async function latestBatch(db: ReadDb, stream: string): Promise<{ importJobId: number; sourceAsOf: string | null } | null> {
+/**
+ * 最新可用批次。被 supersede 的批次一律不用。qualityBlocked 的处理分三档（2026-09-03 生产实况）：
+ * - 交易流（拼多多订单）：fail closed，review 批次不用；
+ * - 对照表/维表（allowQualityBlocked: true）：只经 `_identity` 引用，review 不影响；
+ * - 平台日快照（allowQualityBlocked: "snapshot"）：review 若只是业务键重复/缺失（源表重复上传），仍可用，
+ *   读模型按业务键 DISTINCT ON 去重；数值非法、对账不符、有删除的批次仍不用。
+ *   否则 85,465 行的宝贝损益会因 1 行缺键整批消失，48,885 行的 SKU 损益会因 280 行重复整批消失。
+ */
+async function latestBatch(
+  db: ReadDb,
+  stream: string,
+  options: { allowQualityBlocked?: boolean | "snapshot" } = {},
+): Promise<{ importJobId: number; sourceAsOf: string | null } | null> {
+  const qualityFilter = options.allowQualityBlocked === true
+    ? sql`true`
+    : options.allowQualityBlocked === "snapshot"
+      ? sql`(coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+             OR (coalesce((ir.request_scope->'controlSummary'->>'invalidNumericValues')::int, 0) = 0
+                 AND coalesce((ir.request_scope->'controlSummary'->>'reconciliationMismatchedRows')::int, 0) = 0
+                 AND coalesce((ir.request_scope->'controlSummary'->>'deletedRows')::int, 0) = 0))`
+      : sql`coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'`;
   const result = await db.execute(sql`
     SELECT ir.import_job_id, ij.source_as_of FROM integration_runs ir
     INNER JOIN import_jobs ij ON ij.id = ir.import_job_id
     WHERE ir.connector = 'jdy' AND ir.stream = ${stream} AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
-      AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+      AND ij.status <> 'superseded'
+      AND ${qualityFilter}
     ORDER BY ir.id DESC LIMIT 1
   `);
   const [row] = resultRows<Record<string, unknown>>(result);
@@ -105,14 +182,16 @@ function brandOfShop(shop: string, brands: { code: string; names: string[] }[]):
 }
 
 export async function computeChannelObservation(db: ReadDb): Promise<ChannelObservation> {
-  const [tmallSales, tmallRefunds, crosswalkBatch, pddCrosswalkBatch, vip, pnl, brandRows] = await Promise.all([
-    latestBatch(db, "tmall-sku-sales-observation"),
-    latestBatch(db, "tmall-sku-refund-observation"),
-    latestBatch(db, "tmall-sku-crosswalk-observation"),
-    latestBatch(db, "pdd-sku-crosswalk-observation"),
-    latestBatch(db, "vip-shop-trading-observation"),
-    latestBatch(db, "tmall-product-pnl-observation"),
+  const [tmallSales, tmallRefunds, crosswalkBatch, pddCrosswalkBatch, vip, pnl, brandRows, trafficBatch, costBatch] = await Promise.all([
+    latestBatch(db, "tmall-sku-sales-observation", { allowQualityBlocked: "snapshot" }),
+    latestBatch(db, "tmall-sku-refund-observation", { allowQualityBlocked: "snapshot" }),
+    latestBatch(db, "tmall-sku-crosswalk-observation", { allowQualityBlocked: true }),
+    latestBatch(db, "pdd-sku-crosswalk-observation", { allowQualityBlocked: true }),
+    latestBatch(db, "vip-shop-trading-observation", { allowQualityBlocked: "snapshot" }),
+    latestBatch(db, "tmall-product-pnl-observation", { allowQualityBlocked: "snapshot" }),
     db.execute(sql`SELECT code, name_cn, name_en FROM brands`),
+    latestBatch(db, "tmall-product-traffic-observation", { allowQualityBlocked: "snapshot" }),
+    latestBatch(db, "tmall-sku-cost-pnl-observation", { allowQualityBlocked: "snapshot" }),
   ]);
   const brands = resultRows<Record<string, unknown>>(brandRows).map((b) => ({
     code: String(b.code ?? ""), names: [String(b.code ?? ""), text(b.name_cn) ?? "", text(b.name_en) ?? ""].filter(Boolean),
@@ -353,14 +432,16 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
   if (pnl) {
     const rows = resultRows<Record<string, unknown>>(await db.execute(sql`
       WITH p AS (
-        SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'platformProductId' AS pid, max(payload->'data'->>'productName') AS pname,
+        SELECT DISTINCT ON (payload->'data'->>'shopName', payload->'data'->>'platformProductId', left(payload->'data'->>'statisticalDate', 10))
+               payload->'data'->>'shopName' AS shop, payload->'data'->>'platformProductId' AS pid, payload->'data'->>'productName' AS pname,
                left(payload->'data'->>'statisticalDate', 10)::date AS d,
                ${sql.raw(["actualTransactionAmount", "totalSalesCost", "estimatedGrossProfit", "estimatedNetProfit"].map((f) =>
-                 `CASE WHEN trim(coalesce(payload->'data'->>'${f}','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'${f}')::numeric ELSE 0 END AS ${f.toLowerCase()}`).join(", "))},
-               CASE WHEN trim(coalesce(payload->'data'->>'paidNumber','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'paidNumber')::numeric ELSE 0 END AS paid
+                 `${numExpr(f)} AS ${f.toLowerCase()}`).join(", "))},
+               ${sql.raw(`${numExpr("paidNumber")} AS paid`)}
         FROM staging_rows WHERE import_job_id = ${pnl.importJobId} AND target_table = 'jdy_tmall_product_pnl_observation'
           AND status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
-        GROUP BY 1, 2, 4, payload->'data'->>'actualTransactionAmount', payload->'data'->>'totalSalesCost', payload->'data'->>'estimatedGrossProfit', payload->'data'->>'estimatedNetProfit', payload->'data'->>'paidNumber'
+          AND nullif(trim(payload->'data'->>'platformProductId'), '') IS NOT NULL AND nullif(trim(payload->'data'->>'shopName'), '') IS NOT NULL
+        ORDER BY payload->'data'->>'shopName', payload->'data'->>'platformProductId', left(payload->'data'->>'statisticalDate', 10), row_no DESC
       ),
       a AS (SELECT max(d) AS d FROM p)
       SELECT 'anchor' AS kind, a.d::text AS shop, NULL::text AS pid, NULL::text AS pname, NULL::numeric AS amt, NULL::numeric AS cost, NULL::numeric AS gross, NULL::numeric AS net, NULL::numeric AS paid FROM a
@@ -391,6 +472,129 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
     };
   }
 
+  /* ── 天猫商品流量先行指标（近 7 天 vs 前 7 天） ── */
+  let traffic: ChannelObservation["traffic"] = {
+    state: "insufficient", sourceAsOf: null, anchorDate: null,
+    totals: { visitors7: 0, visitorsPrev7: 0, paidAmount7: "0.00", paidAmountPrev7: "0.00", paidBuyers7: 0, conversion7: null, addonPeople7: 0, collections7: 0, products: 0 },
+    rising: [], falling: [], gate: "天猫商品整体（流量）尚未同步。",
+  };
+  if (trafficBatch) {
+    const rows = resultRows<Record<string, unknown>>(await db.execute(sql`
+      WITH t AS (
+        SELECT DISTINCT ON (payload->'data'->>'shopName', payload->'data'->>'productId', left(payload->'data'->>'statisticalDate', 10))
+               payload->'data'->>'shopName' AS shop, payload->'data'->>'productId' AS pid, payload->'data'->>'productName' AS pname,
+               left(payload->'data'->>'statisticalDate', 10)::date AS d,
+               ${sql.raw(`${numExpr("visitors")} AS v, ${numExpr("paidAmount")} AS amt, ${numExpr("paidBuyers")} AS buyers, ${numExpr("addonPeople")} AS addon, ${numExpr("collections")} AS coll`)}
+        FROM staging_rows WHERE import_job_id = ${trafficBatch.importJobId} AND target_table = 'jdy_tmall_product_traffic_observation'
+          AND status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          AND nullif(trim(payload->'data'->>'productId'), '') IS NOT NULL
+        ORDER BY payload->'data'->>'shopName', payload->'data'->>'productId', left(payload->'data'->>'statisticalDate', 10), row_no DESC
+      ),
+      a AS (SELECT max(d) AS d FROM t)
+      SELECT 'anchor' AS kind, a.d::text AS shop, NULL::text AS pid, NULL::text AS pname, NULL::numeric AS v7, NULL::numeric AS vprev, NULL::numeric AS amt7, NULL::numeric AS amtprev, NULL::numeric AS b7, NULL::numeric AS addon7, NULL::numeric AS coll7 FROM a
+      UNION ALL
+      SELECT 'product', t.shop, t.pid, max(t.pname),
+             sum(t.v) FILTER (WHERE t.d > a.d - 7), sum(t.v) FILTER (WHERE t.d <= a.d - 7),
+             sum(t.amt) FILTER (WHERE t.d > a.d - 7), sum(t.amt) FILTER (WHERE t.d <= a.d - 7),
+             sum(t.buyers) FILTER (WHERE t.d > a.d - 7), sum(t.addon) FILTER (WHERE t.d > a.d - 7), sum(t.coll) FILTER (WHERE t.d > a.d - 7)
+      FROM t CROSS JOIN a WHERE t.d > a.d - 14 GROUP BY t.shop, t.pid
+    `));
+    const anchor = rows.find((x) => x.kind === "anchor")?.shop ? String(rows.find((x) => x.kind === "anchor")!.shop) : null;
+    const products: TrafficProductRow[] = rows.filter((x) => x.kind === "product").map((x) => {
+      const visitors7 = num(x.v7), visitorsPrev7 = num(x.vprev), paidBuyers7 = num(x.b7);
+      return {
+        shopName: String(x.shop ?? ""), productId: String(x.pid ?? ""), productName: text(x.pname),
+        visitors7, visitorsPrev7, visitorDelta: visitors7 - visitorsPrev7,
+        paidAmount7: money(x.amt7), paidBuyers7,
+        conversion7: visitors7 > 0 ? Math.round((paidBuyers7 / visitors7) * 1000) / 10 : null,
+      };
+    });
+    const totals = products.reduce((acc, r, i) => ({
+      visitors7: acc.visitors7 + r.visitors7, visitorsPrev7: acc.visitorsPrev7 + r.visitorsPrev7,
+      paidAmount7: dAdd(acc.paidAmount7, r.paidAmount7, 2), paidAmountPrev7: dAdd(acc.paidAmountPrev7, money(rows.filter((x) => x.kind === "product")[i]?.amtprev), 2),
+      paidBuyers7: acc.paidBuyers7 + r.paidBuyers7, conversion7: null as number | null,
+      addonPeople7: acc.addonPeople7 + num(rows.filter((x) => x.kind === "product")[i]?.addon7), collections7: acc.collections7 + num(rows.filter((x) => x.kind === "product")[i]?.coll7),
+      products: acc.products + 1,
+    }), { visitors7: 0, visitorsPrev7: 0, paidAmount7: "0.00", paidAmountPrev7: "0.00", paidBuyers7: 0, conversion7: null as number | null, addonPeople7: 0, collections7: 0, products: 0 });
+    totals.conversion7 = totals.visitors7 > 0 ? Math.round((totals.paidBuyers7 / totals.visitors7) * 1000) / 10 : null;
+    const byDelta = [...products].sort((a, b) => b.visitorDelta - a.visitorDelta || dCmp(b.paidAmount7, a.paidAmount7));
+    traffic = {
+      state: anchor && products.length ? "ready" : "insufficient",
+      sourceAsOf: trafficBatch.sourceAsOf, anchorDate: anchor, totals,
+      rising: byDelta.filter((r) => r.visitorDelta > 0).slice(0, 10),
+      falling: byDelta.filter((r) => r.visitorDelta < 0).slice(-10).reverse(),
+      gate: "平台侧商品访客/支付买家/加购/收藏（宝贝级，不到 SKU）；近 7 天与其前 7 天对比只是先行信号，不进入销速或补货。",
+    };
+  }
+  /* ── 天猫 SKU 级毛利观察（近 30 天） ── */
+  let skuMargin: ChannelObservation["skuMargin"] = {
+    state: "insufficient", sourceAsOf: null, anchorDate: null,
+    totals: { paidAmount: "0.00", refundAmount: "0.00", goodsCost: "0.00", margin: "0.00", marginPct: null, skus: 0, mappedSkus: 0, costCoveredSkus: 0, costCoveredPaidAmount: "0.00" },
+    byBrand: [], top: [], bottom: [], gate: "天猫 SKU 销售成本核算尚未同步。",
+  };
+  if (costBatch) {
+    const rows = resultRows<Record<string, unknown>>(await db.execute(sql`
+      WITH c AS (
+        SELECT DISTINCT ON (payload->'data'->>'shopName', payload->'data'->>'skuId', left(payload->'data'->>'statisticalDate', 10))
+               payload->'data'->>'shopName' AS shop, payload->'data'->>'skuId' AS psku, nullif(trim(payload->'data'->>'relatedGoods'), '') AS rg,
+               left(payload->'data'->>'statisticalDate', 10)::date AS d,
+               ${sql.raw(`${numExpr("paidAmount")} AS paid, ${numExpr("refundAmount")} AS refund, ${numExpr("goodsCostSubtotal")} AS cost, ${numExpr("paidNumber")} AS n`)}
+        FROM staging_rows WHERE import_job_id = ${costBatch.importJobId} AND target_table = 'jdy_tmall_sku_cost_pnl_observation'
+          AND status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          AND nullif(trim(payload->'data'->>'skuId'), '') IS NOT NULL
+        ORDER BY payload->'data'->>'shopName', payload->'data'->>'skuId', left(payload->'data'->>'statisticalDate', 10), row_no DESC
+      ),
+      a AS (SELECT max(d) AS d FROM c)
+      SELECT 'anchor' AS kind, a.d::text AS shop, NULL::text AS psku, NULL::text AS rg, NULL::text AS code, NULL::text AS brand, NULL::numeric AS paid, NULL::numeric AS refund, NULL::numeric AS cost, NULL::numeric AS n FROM a
+      UNION ALL
+      SELECT 'sku', c.shop, c.psku, max(c.rg), k.code, coalesce(b.code, '(未归属)'), sum(c.paid), sum(c.refund), sum(c.cost), sum(c.n)
+      FROM c CROSS JOIN a
+      LEFT JOIN skus k ON k.code = c.rg AND k.active = true
+      LEFT JOIN brands b ON b.id = k.brand_id
+      WHERE c.d > a.d - ${WINDOW_DAYS}::int
+      GROUP BY c.shop, c.psku, k.code, b.code
+    `));
+    const anchor = rows.find((x) => x.kind === "anchor")?.shop ? String(rows.find((x) => x.kind === "anchor")!.shop) : null;
+    const skus: SkuMarginRow[] = rows.filter((x) => x.kind === "sku").map((x) => {
+      const paidAmount = money(x.paid), refundAmount = money(x.refund), goodsCost = money(x.cost);
+      const margin = dSub(dSub(paidAmount, refundAmount, 2), goodsCost, 2);
+      return {
+        shopName: String(x.shop ?? ""), platformSkuId: String(x.psku ?? ""), relatedGoods: text(x.rg), systemSkuCode: text(x.code),
+        brand: String(x.brand ?? "(未归属)"), paidAmount, refundAmount, goodsCost, margin,
+        marginPct: pctOf(margin, dSub(paidAmount, refundAmount, 2)), paidNumber: num(x.n),
+      };
+    });
+    const hasCost = (r: SkuMarginRow) => dCmp(r.goodsCost, "0") > 0;
+    const totals = skus.reduce((acc, r) => ({
+      paidAmount: dAdd(acc.paidAmount, r.paidAmount, 2), refundAmount: dAdd(acc.refundAmount, r.refundAmount, 2),
+      goodsCost: dAdd(acc.goodsCost, r.goodsCost, 2), margin: dAdd(acc.margin, r.margin, 2), marginPct: null as number | null,
+      skus: acc.skus + 1, mappedSkus: acc.mappedSkus + (r.systemSkuCode ? 1 : 0),
+      costCoveredSkus: acc.costCoveredSkus + (hasCost(r) ? 1 : 0),
+      costCoveredPaidAmount: hasCost(r) ? dAdd(acc.costCoveredPaidAmount, r.paidAmount, 2) : acc.costCoveredPaidAmount,
+    }), { paidAmount: "0.00", refundAmount: "0.00", goodsCost: "0.00", margin: "0.00", marginPct: null as number | null, skus: 0, mappedSkus: 0, costCoveredSkus: 0, costCoveredPaidAmount: "0.00" });
+    // 毛利率只按成本有值的 SKU 算：净额 = 支付 − 退款；毛利 = 净额 − 成本
+    const covered = skus.filter(hasCost);
+    const coveredNet = covered.reduce((acc, r) => dAdd(acc, dSub(r.paidAmount, r.refundAmount, 2), 2), "0.00");
+    const coveredMargin = covered.reduce((acc, r) => dAdd(acc, r.margin, 2), "0.00");
+    totals.marginPct = pctOf(coveredMargin, coveredNet);
+    const brandAgg = new Map<string, { paidAmount: string; refundAmount: string; margin: string; skus: number; coveredNet: string; coveredMargin: string }>();
+    for (const r of skus) {
+      const b = brandAgg.get(r.brand) ?? { paidAmount: "0.00", refundAmount: "0.00", margin: "0.00", skus: 0, coveredNet: "0.00", coveredMargin: "0.00" };
+      b.paidAmount = dAdd(b.paidAmount, r.paidAmount, 2); b.refundAmount = dAdd(b.refundAmount, r.refundAmount, 2); b.margin = dAdd(b.margin, r.margin, 2); b.skus++;
+      if (hasCost(r)) { b.coveredNet = dAdd(b.coveredNet, dSub(r.paidAmount, r.refundAmount, 2), 2); b.coveredMargin = dAdd(b.coveredMargin, r.margin, 2); }
+      brandAgg.set(r.brand, b);
+    }
+    const sorted = [...skus].sort((a, b) => dCmp(b.margin, a.margin));
+    skuMargin = {
+      state: anchor && skus.length ? "ready" : "insufficient",
+      sourceAsOf: costBatch.sourceAsOf, anchorDate: anchor, totals,
+      byBrand: [...brandAgg.entries()].map(([brand, b]) => ({ brand, paidAmount: b.paidAmount, margin: b.margin, marginPct: pctOf(b.coveredMargin, b.coveredNet), skus: b.skus }))
+        .sort((a, b) => dCmp(b.paidAmount, a.paidAmount)),
+      top: sorted.filter(hasCost).slice(0, 10),
+      bottom: sorted.filter((r) => hasCost(r) && dCmp(r.margin, "0") < 0).slice(-10).reverse(),
+      gate: `毛利 = 支付金额 − 成功退款金额 − 货品成本小计（源表运营成本单价 × 件数）；成本有值的 SKU ${totals.costCoveredSkus}/${totals.skus}（支付 ¥${totals.costCoveredPaidAmount}），毛利率与榜单只按这些 SKU 计；不含平台费用与物流，品牌按「关联货品」映射到系统 SKU。只作 SKU 级损益旁证。`,
+    };
+  }
   const platforms = [tmall, pdd, vipRow];
   return {
     state: platforms.some((p) => p.state === "ready") ? "ready" : "insufficient",
@@ -399,6 +603,8 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
     windowDays: 30,
     platforms,
     productPnl,
+    traffic,
+    skuMargin,
     limitations: [
       "三个平台各自按自身批次的最大业务日锚定近 30 天，时点不完全对齐；件数口径也不同（天猫净件数、拼多多有效订单件数、唯品会销售量）。",
       "只是观察：不与内部 sales_monthly 相加、不进入销速/补货/关账。",
@@ -414,16 +620,17 @@ function shiftDate(iso: string, days: number): string {
 }
 
 async function binding(db: ReadDb): Promise<string> {
-  const [a, b, c, d, pddCw] = await Promise.all([
-    latestBatch(db, "tmall-sku-sales-observation"), latestBatch(db, "tmall-sku-refund-observation"),
-    latestBatch(db, "vip-shop-trading-observation"), latestBatch(db, "tmall-product-pnl-observation"),
-    latestBatch(db, "pdd-sku-crosswalk-observation"),
+  const [a, b, c, d, pddCw, traffic, cost] = await Promise.all([
+    latestBatch(db, "tmall-sku-sales-observation", { allowQualityBlocked: "snapshot" }), latestBatch(db, "tmall-sku-refund-observation", { allowQualityBlocked: "snapshot" }),
+    latestBatch(db, "vip-shop-trading-observation", { allowQualityBlocked: "snapshot" }), latestBatch(db, "tmall-product-pnl-observation", { allowQualityBlocked: "snapshot" }),
+    latestBatch(db, "pdd-sku-crosswalk-observation", { allowQualityBlocked: true }),
+    latestBatch(db, "tmall-product-traffic-observation", { allowQualityBlocked: "snapshot" }), latestBatch(db, "tmall-sku-cost-pnl-observation", { allowQualityBlocked: "snapshot" }),
   ]);
   const pdd = resultRows<Record<string, unknown>>(await db.execute(sql`
     SELECT coalesce(max(ir.import_job_id), 0)::int AS j FROM integration_runs ir
     WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation' AND ir.status = 'succeeded'
       AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'`))[0];
-  const cw = await latestBatch(db, "tmall-sku-crosswalk-observation");
+  const cw = await latestBatch(db, "tmall-sku-crosswalk-observation", { allowQualityBlocked: true });
   const claims = resultRows<Record<string, unknown>>(await db.execute(sql`
     SELECT count(*)::int AS n,
            coalesce(max(id), 0)::int AS m,
@@ -432,7 +639,7 @@ async function binding(db: ReadDb): Promise<string> {
     FROM sku_identifiers
     WHERE kind = 'external' AND scope IN ('JIANDAOYUN:TMALL', 'JIANDAOYUN:PDD')
   `))[0];
-  return `tmall:${a?.importJobId ?? "none"}:${b?.importJobId ?? "none"}:${cw?.importJobId ?? "none"}:${num(claims?.n)}:${num(claims?.m)}:${num(claims?.active_n)}:${String(claims?.updated ?? "")}|vip:${c?.importJobId ?? "none"}|pnl:${d?.importJobId ?? "none"}|pdd:${num(pdd?.j)}:${pddCw?.importJobId ?? "none"}`;
+  return `tmall:${a?.importJobId ?? "none"}:${b?.importJobId ?? "none"}:${cw?.importJobId ?? "none"}:${num(claims?.n)}:${num(claims?.m)}:${num(claims?.active_n)}:${String(claims?.updated ?? "")}|vip:${c?.importJobId ?? "none"}|pnl:${d?.importJobId ?? "none"}|pdd:${num(pdd?.j)}:${pddCw?.importJobId ?? "none"}|traffic:${traffic?.importJobId ?? "none"}|cost:${cost?.importJobId ?? "none"}`;
 }
 
 export async function loadChannelObservation(db: ReadDb): Promise<ChannelObservation> {

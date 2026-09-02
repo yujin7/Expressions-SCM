@@ -35,6 +35,8 @@ const EXTERNAL_DEMAND_CONTRACTS = new Set([
   "finance-goods-master-observation",
   "jst-item-master-mirror-observation",
   "vip-bundle-crosswalk-observation",
+  "tmall-product-traffic-observation",
+  "tmall-sku-cost-pnl-observation",
 ]);
 
 export function shouldRefreshJiandaoyunDemandModels(contractKeys: readonly string[]): boolean {
