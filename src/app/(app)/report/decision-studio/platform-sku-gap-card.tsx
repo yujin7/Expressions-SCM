@@ -104,6 +104,26 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
   };
 
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [pddBulkOpen, setPddBulkOpen] = useState(false);
+  const submitPddBulk = async () => {
+    if (!data?.pddExactHits?.length) return;
+    setSaving(true);
+    try {
+      const r = await postJson<{ total: number; claimed: number; alreadyClaimed: number; failed: number; readModels: "refreshed" | "deferred" }>(
+        "/api/master/sku/platform-claim/bulk",
+        { items: data.pddExactHits.slice(0, 300).map((h) => ({ shopName: h.shopName, platformSkuId: h.platformSkuId, skuId: h.skuId, platform: "pdd" })) },
+      );
+      const summary = `拼多多本批 ${r.total} 行：新认领 ${r.claimed}，此前已认领 ${r.alreadyClaimed}，失败 ${r.failed}`;
+      if (r.readModels === "refreshed") message.success(summary);
+      else message.warning(`${summary}；统计刷新未完成，页面将立即重试`);
+      setPddBulkOpen(false);
+      await load();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
   const submitBulk = async () => {
     if (!data?.exactHits.length) return;
     setSaving(true);
@@ -211,7 +231,7 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
   return (
     <Card
       size="small"
-      title="天猫平台 SKU 身份缺口 · 按销售额排序"
+      title="平台 SKU 身份缺口 · 按价值排序"
       extra={
         <Space>
           <Tag color="warning">观察口径</Tag>
@@ -222,6 +242,9 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
             onClick={() => setBulkOpen(true)}
           >
             一键认领精确命中 ({data ? data.exactHits.length : "—"})
+          </Button>
+          <Button size="small" disabled={!data?.pddExactHits?.length} onClick={() => setPddBulkOpen(true)}>
+            拼多多精确命中 ({data ? data.pddExactHits?.length ?? 0 : "—"})
           </Button>
           <Button size="small" onClick={() => void load()} loading={loading}>刷新</Button>
         </Space>
@@ -295,6 +318,37 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
           {(data?.limitations ?? []).map((l) => <div key={l}>· {l}</div>)}
         </Typography.Paragraph>
       </Space>
+      <Modal
+        title="批量认领：拼多多对照表商家编码 = 系统编码"
+        open={pddBulkOpen}
+        onOk={() => void submitPddBulk()}
+        onCancel={() => setPddBulkOpen(false)}
+        confirmLoading={saving}
+        maskClosable={false}
+        okText={`确认认领 ${Math.min(300, data?.pddExactHits?.length ?? 0)} 行`}
+        cancelText="取消"
+      >
+        <Space direction="vertical" size={8} style={{ width: "100%" }}>
+          <Typography.Paragraph style={{ marginBottom: 0 }}>
+            拼多多没有 SKU 级销量表，订单按「店铺 + 商品ID + 商家编码」归属。对照表里这些商家编码与系统编码逐字相等；
+            确认后登记为 JIANDAOYUN:PDD 外部身份，拼多多订单件数才会进入外部销速。
+          </Typography.Paragraph>
+          <Typography.Text>
+            对照表 {data?.pddSummary?.crosswalkRows ?? 0} 行，含商家编码 {data?.pddSummary?.merchantCodes ?? 0}，精确命中 {data?.pddSummary?.exactCodes ?? 0}，已认领 {data?.pddSummary?.claimed ?? 0}。
+          </Typography.Text>
+          <Table
+            size="small"
+            rowKey={(h) => `${h.shopName}|${h.platformSkuId}`}
+            dataSource={(data?.pddExactHits ?? []).slice(0, 8)}
+            pagination={false}
+            columns={[
+              { title: "商品ID|商家编码", dataIndex: "platformSkuId", width: 220 },
+              { title: "→ 系统 SKU", dataIndex: "skuCode", width: 130 },
+              { title: "商品", dataIndex: "productName", ellipsis: true },
+            ]}
+          />
+        </Space>
+      </Modal>
       <Modal
         title="批量认领：对照表商家编码 = 系统编码"
         open={bulkOpen}

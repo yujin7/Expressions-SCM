@@ -38,6 +38,12 @@ export interface JiandaoyunFormContract {
   numericControls?: JiandaoyunNumericControlRule[];
   freshnessMaxAgeDays?: number;
   reconciliations?: JiandaoyunReconciliationRule[];
+  /**
+   * 服务端时间窗：只拉最近 N 天（按该日期字段，简道云 data/list filter）。
+   * 用于订单级大表——拼多多订单全量超过 1,000 页安全上限；30/90 天需求窗口只需要最近几个月。
+   * 每批是窗口内的完整快照（不是增量），读模型只取最新批次，与其它观察流口径一致。
+   */
+  window?: { field: string; days: number; includeUpdatedSince?: boolean };
 }
 
 const field = (target: string, source: string): JiandaoyunFieldRule => ({ target, source });
@@ -679,6 +685,131 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
       },
     ],
   },
+  /*
+   * 2026-09-02 第三阶段：把「全渠道」补齐（数据中台，appId 同天猫日销）。
+   * 选表依据是 /app/entry/widget/list 实核字段 + 服务端按统计日期过滤的时效探针，不是表名。
+   * 全部只进观察 staging、releaseBlocked；不含消费者资料、买家留言、商家备注等 PII 字段。
+   */
+  {
+    // 天猫单品日汇总：带「子货品编码」= 系统 SKU 编码 与 商品SKUID。
+    // 实测 2026 年 1 月有值、8~9 月无行（已停更），但平台 SKU ID 不会变——
+    // 它是平台 SKU → 系统编码的**第三条身份线索**（对照表只覆盖 859/2,076）。
+    key: "tmall-unit-daily-observation",
+    label: "数据中台/天猫单品日汇总（子货品编码桥）",
+    appId: "699ebeac318154b4f6d3dda6",
+    entryId: "69cb668276cf12d2a35a1449",
+    targetTable: "jdy_tmall_unit_daily_observation",
+    businessKey: ["statisticalDate", "shopName", "platformSkuId"],
+    freshnessMaxAgeDays: 400,
+    fields: [
+      field("statisticalDate", "_widget_1774937730433"),
+      field("shopName", "_widget_1774937730434"),
+      field("unitCode", "_widget_1774937730432"),
+      field("platformProductId", "_widget_1774937730435"),
+      field("platformSkuId", "_widget_1774937730436"),
+      field("paidSuborderNumber", "_widget_1774937730437"),
+      field("paidNumber", "_widget_1774937730439"),
+      field("successRefundSuborderNumber", "_widget_1774937730440"),
+      field("unitQty", "_widget_1774937730442"),
+      field("relatedGoods", "_widget_1774937730443"),
+      field("paidAmount", "_widget_1774937730448"),
+      field("successRefundAmount", "_widget_1774937730449"),
+      field("isBundle", "_widget_1774937730450"),
+      field("systemProductName", "_widget_1774937730452"),
+      field("barcode", "_widget_1774937730460"),
+    ],
+  },
+  {
+    // 拼多多订单查询列表：订单级、带「商家编码-规格维度」。106 个字段只取需求测算所需的 12 个，
+    // 消费者资料 / 买家留言 / 商家备注 / 赠品明细一律不取。
+    key: "pdd-order-observation",
+    label: "数据中台/拼多多订单（字段最小化）",
+    appId: "699ebeac318154b4f6d3dda6",
+    entryId: "69b2195752dfffff3fcd5da1",
+    targetTable: "jdy_pdd_order_observation",
+    businessKey: ["orderNumber", "productId", "merchantSkuCode"],
+    freshnessMaxAgeDays: 45,
+    numericControls: [{ target: "productQuantity", scale: 4 }],
+    // 实测每天 3,000~6,000 行订单明细，60 天就超 1,000 页安全上限；每次只拉最近 3 天（约 1~2 万行），
+    // 读模型把最近 90 天内各批次按业务键去重后累加——滚动快照随每日同步自然累积成 90 天窗口
+    window: { field: "statistical_date", days: 3, includeUpdatedSince: true },
+    fields: [
+      field("statisticalDate", "statistical_date"),
+      field("shopName", "shop_name"),
+      field("orderNumber", "order_number"),
+      field("orderStatus", "order_status"),
+      field("productQuantity", "product_quantity"),
+      field("paymentTime", "payment_time"),
+      field("shipTime", "ship_time"),
+      field("productId", "product_id"),
+      field("productName", "product"),
+      field("productSpecification", "product_specification"),
+      field("merchantSkuCode", "merchant_code_specification_dimension"),
+      field("merchantProductCode", "merchant_code_product_dimension"),
+      field("afterSalesStatus", "after_sales_status"),
+    ],
+  },
+  {
+    // 唯品会店铺交易：店铺 × 品牌 × 日，销售额/销售量/转化率——品牌级，不到 SKU。
+    key: "vip-shop-trading-observation",
+    label: "数据中台/唯品会店铺交易",
+    appId: "699ebeac318154b4f6d3dda6",
+    entryId: "69d5be62308e25ac8ec1d754",
+    targetTable: "jdy_vip_shop_trading_observation",
+    businessKey: ["statisticalDate", "shopName", "brandName"],
+    freshnessMaxAgeDays: 45,
+    numericControls: [
+      { target: "salesAmount", scale: 2 },
+      { target: "salesQuantity", scale: 4 },
+    ],
+    fields: [
+      field("statisticalDate", "statistical_date"),
+      field("shopName", "shop_name"),
+      field("brandName", "brand_name"),
+      field("salesAmount", "sales_amount"),
+      field("salesQuantity", "sales_quantity"),
+      field("customerNumber", "customer_number"),
+      field("subOrderNumber", "sub_order_number"),
+      field("productDetailUv", "product_detail_uv"),
+      field("purchaseConversionRate", "purchase_conversion_rate"),
+      field("couponAmount", "coupon_amount"),
+    ],
+  },
+  {
+    // 天猫宝贝日汇总：商品 × 日 的真实成交、销售费用、预估毛利/净利——渠道贡献与毛利视角的产品级旁证。
+    key: "tmall-product-pnl-observation",
+    label: "数据中台/天猫宝贝日汇总（产品级损益观察）",
+    appId: "699ebeac318154b4f6d3dda6",
+    entryId: "69aa70f3b0231cb3399b7a77",
+    targetTable: "jdy_tmall_product_pnl_observation",
+    businessKey: ["statisticalDate", "shopName", "platformProductId"],
+    freshnessMaxAgeDays: 45,
+    numericControls: [
+      { target: "actualTransactionAmount", scale: 2 },
+      { target: "totalSalesCost", scale: 2 },
+      { target: "estimatedGrossProfit", scale: 2 },
+      { target: "estimatedNetProfit", scale: 2 },
+      { target: "paidAmount", scale: 2 },
+      { target: "successRefundAmount", scale: 2 },
+      { target: "paidNumber", scale: 4 },
+    ],
+    fields: [
+      field("statisticalDate", "statistical_date"),
+      field("shopName", "shop_name"),
+      field("platformProductId", "product_id"),
+      field("productName", "product_display_name"),
+      field("categoryName", "category_name"),
+      field("actualTransactionAmount", "actual_transaction_amount"),
+      field("totalSalesCost", "total_sales_cost"),
+      field("estimatedGrossProfit", "estimated_gross_profit"),
+      field("estimatedNetProfit", "estimated_net_profit"),
+      field("paidAmount", "payment_amount"),
+      field("successRefundAmount", "successful_refund_amount"),
+      field("paidNumber", "paid_quantity_count"),
+      field("successRefundOrderCount", "successful_refund_order_count"),
+      field("productVisitorCount", "product_visitor_count"),
+    ],
+  },
 ];
 
 export function jiandaoyunContract(key: string): JiandaoyunFormContract | null {
@@ -772,6 +903,7 @@ export function jiandaoyunContractSetEvidenceBinding(
     numericControls: contract.numericControls ?? [],
     freshnessMaxAgeDays: contract.freshnessMaxAgeDays ?? null,
     reconciliations: contract.reconciliations ?? [],
+    window: contract.window ?? null,
   }));
   const digest = createHash("sha256")
     .update(`jiandaoyun-contract-set-v1\0${JSON.stringify(contractMaterial)}`)

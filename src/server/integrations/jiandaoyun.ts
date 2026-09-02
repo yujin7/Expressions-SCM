@@ -37,6 +37,49 @@ export interface JiandaoyunRecord {
   [key: string]: unknown;
 }
 
+export interface JiandaoyunWindowBounds {
+  /** API range lower bound, inclusive. */
+  from: string;
+  /** API range upper bound, exclusive. */
+  to: string;
+  /** China business-date labels used by downstream coverage calculations. */
+  fromBusinessDate: string;
+  throughBusinessDate: string;
+}
+
+const CHINA_OFFSET_MS = 8 * 60 * 60 * 1_000;
+const DAY_MS = 86_400_000;
+
+/**
+ * Resolve a rolling window once so the exact range sent upstream can also be
+ * bound into immutable evidence and synchronization idempotency.
+ */
+export function resolveJiandaoyunWindow(
+  sinceDays: number,
+  now: Date = new Date(),
+): JiandaoyunWindowBounds {
+  if (!Number.isInteger(sinceDays) || sinceDays <= 0) {
+    throw new Error("简道云滚动窗口天数必须是正整数");
+  }
+  if (!Number.isFinite(now.getTime())) throw new Error("简道云滚动窗口时间非法");
+  const chinaNow = new Date(now.getTime() + CHINA_OFFSET_MS);
+  const toMs = Date.UTC(
+    chinaNow.getUTCFullYear(),
+    chinaNow.getUTCMonth(),
+    chinaNow.getUTCDate() + 1,
+  ) - CHINA_OFFSET_MS;
+  const fromMs = toMs - sinceDays * DAY_MS;
+  const businessDate = (utcMs: number) => new Date(utcMs + CHINA_OFFSET_MS)
+    .toISOString()
+    .slice(0, 10);
+  return {
+    from: new Date(fromMs).toISOString(),
+    to: new Date(toMs).toISOString(),
+    fromBusinessDate: businessDate(fromMs),
+    throughBusinessDate: businessDate(toMs - DAY_MS),
+  };
+}
+
 export function normalizeJiandaoyunBaseUrl(
   raw: string | null | undefined,
 ): string | null {
@@ -248,6 +291,12 @@ export class JiandaoyunClient {
     appIdInput: string,
     entryIdInput: string,
     fieldsInput?: readonly string[],
+    filter?: {
+      field: string;
+      sinceDays: number;
+      includeUpdatedSince?: boolean;
+      bounds?: JiandaoyunWindowBounds;
+    },
   ): Promise<JiandaoyunRecord[]> {
     const appId = objectId(appIdInput, "简道云 app_id");
     const entryId = objectId(entryIdInput, "简道云 entry_id");
@@ -257,6 +306,11 @@ export class JiandaoyunClient {
     if (fields !== null && fields.length === 0) {
       throw new Error("简道云 fields 不得为空");
     }
+    // Freeze the cutoff before pagination. Crossing China midnight between pages
+    // must not turn one logical extraction into two different query windows.
+    const filterBounds = filter
+      ? filter.bounds ?? resolveJiandaoyunWindow(filter.sinceDays)
+      : null;
     const result = new Map<string, JiandaoyunRecord>();
     let cursor: string | null = null;
     for (let pageNo = 1; pageNo <= MAX_DATA_PAGES; pageNo++) {
@@ -266,6 +320,20 @@ export class JiandaoyunClient {
         limit: PAGE_SIZE,
       };
       if (fields) body.fields = fields;
+      if (filter) {
+        // 简道云官方 filter：datetime range，上界取中国业务日的明日零点以含当天。
+        // 同步编排器会传入已解析边界，使请求、证据与覆盖口径完全同源。
+        const range = [filterBounds!.from, filterBounds!.to];
+        const cond = [
+          { field: filter.field, type: "datetime", method: "range", value: range },
+        ];
+        // 订单可能在业务日期窗口外才退款或取消。把近期更新的旧订单一并回采，
+        // 后续按源记录 ID 幂等去重，避免已失效的付款快照继续进入需求口径。
+        if (filter.includeUpdatedSince) {
+          cond.push({ field: "updateTime", type: "datetime", method: "range", value: range });
+        }
+        body.filter = { rel: filter.includeUpdatedSince ? "or" : "and", cond };
+      }
       if (cursor) body.data_id = cursor;
       const page = parseRecords(
         await this.post("/app/entry/data/list", body),

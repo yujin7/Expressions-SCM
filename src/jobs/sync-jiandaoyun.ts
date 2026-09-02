@@ -16,17 +16,29 @@ import {
 import { refreshJiandaoyunExternalDemandReadModel } from "@/server/modules/report/external-demand-signal";
 import { refreshPlatformSkuIdentityGap } from "@/server/modules/report/platform-sku-identity-gap";
 import { refreshExternalVelocity } from "@/server/modules/report/external-velocity";
+import { refreshChannelObservation } from "@/server/modules/report/channel-observation";
 
 type JiandaoyunSkipped = { status: "skipped"; reason: string };
 const EXTERNAL_DEMAND_CONTRACTS = new Set([
   "tmall-sku-crosswalk-observation",
   "tmall-sku-sales-observation",
   "tmall-sku-refund-observation",
+  // 2026-09-02 第三阶段：这些流进来后同样要重建身份缺口 / 外部销速 / 全渠道观察
+  "tmall-unit-daily-observation",
+  "pdd-order-observation",
+  "pdd-sku-crosswalk-observation",
+  "vip-shop-trading-observation",
+  "tmall-product-pnl-observation",
 ]);
+
+export function shouldRefreshJiandaoyunDemandModels(contractKeys: readonly string[]): boolean {
+  return contractKeys.some((key) => EXTERNAL_DEMAND_CONTRACTS.has(key));
+}
 
 async function refreshDemandReadModel(db: AnyDb) {
   const signal = await refreshJiandaoyunExternalDemandReadModel(db);
   await refreshExternalVelocity(db);
+  await refreshChannelObservation(db);
   // 身份缺口读模型与需求信号绑定同一批次，随同步一起重建，页面不再现算
   const identityGap = await refreshPlatformSkuIdentityGap(db);
   return {
@@ -128,8 +140,7 @@ export async function runJiandaoyunConfiguredFormSyncs(db: AnyDb) {
   for (const contract of contracts) {
     results.push(await syncJiandaoyunForm(db, { ...ready, contract }));
   }
-  const readModel = [...EXTERNAL_DEMAND_CONTRACTS]
-    .every((key) => contracts.some((contract) => contract.key === key))
+  const readModel = shouldRefreshJiandaoyunDemandModels(contracts.map((contract) => contract.key))
     ? await refreshDemandReadModel(db)
     : null;
   return {

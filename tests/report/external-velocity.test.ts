@@ -6,6 +6,7 @@
  * 影子列不改内部销速与可销天数。
  */
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { createTestDb } from "../helpers/db";
 import { computeExternalVelocity, loadExternalVelocity } from "@/server/modules/report/external-velocity";
@@ -59,40 +60,162 @@ async function seed() {
     sale(2, "P-CW", "2026-08-15", "5"),
     sale(3, "P-CW", "2026-07-01", "20"),
     sale(4, "P-CW", "2026-05-01", "100"),
-    // P-DIRECT：只在 30 天内卖了 3
-    sale(5, "P-DIRECT", "2026-08-20", "3"),
+    // P-DIRECT：小数数量验证全链路定点；0.3 − 0.1 必须精确等于 0.2。
+    sale(5, "P-DIRECT", "2026-08-20", "0.3"),
     // P-NONE 没有任何身份桥 → 不归任何 SKU
     sale(6, "P-NONE", "2026-08-30", "999"),
     sale(7, "P-CONFLICT", "2026-08-30", "777"),
     { importJobId: refunds.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
       payload: { data: { statisticalDate: "2026-08-20", shopName: shop, skuId: "P-CW", successRefundSuborderNumber: "2" } } },
+    { importJobId: refunds.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
+      payload: { data: { statisticalDate: "2026-08-20", shopName: shop, skuId: "P-DIRECT", successRefundSuborderNumber: "0.1" } } },
+    { importJobId: refunds.id, rowNo: 3, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
+      payload: { data: { statisticalDate: "2026-09-01", shopName: shop, skuId: "P-CW", successRefundSuborderNumber: "0" } } },
   ]);
-  return { db, client, viaCrosswalk, viaDirect, unmapped };
+  return { db, client, actor, viaCrosswalk, viaDirect, unmapped };
 }
 
 describe("外部观察销速读模型", () => {
+  it("质量阻断的拼多多批次不得被当成可用销速", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "质量闸责任人" }).returning();
+      const [job] = await db.insert(schema.importJobs).values({
+        template: "jdy_pdd_order_observation", filename: "quality-blocked", sourceAsOf: "2026-09-03",
+        createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "quality-blocked",
+        status: "succeeded", importJobId: job.id, requestScope: { qualityBlocked: true },
+        finishedAt: new Date("2026-09-03T03:00:00.000Z"),
+      });
+      const result = await computeExternalVelocity(db);
+      expect(result).toMatchObject({ state: "insufficient", bySku: {} });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("天猫退款流缺失时不发布净需求，避免把未知退款当零", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "退款流门禁责任人" }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "P-NO-REFUND", nameCn: "退款门禁商品" }).returning();
+      const [sku] = await db.insert(schema.skus).values({
+        code: "NO-REFUND-001", name: "退款门禁成品", spuId: spu.id,
+        skuType: "finished", baseUom: "支", commercialRole: "retail",
+      }).returning();
+      const [sales] = await db.insert(schema.importJobs).values({
+        template: "jdy_tmall_sku_sales_observation", filename: "sales-without-refunds", sourceAsOf: "2026-09-02",
+        createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "tmall-sku-sales-observation", idempotencyKey: "sales-without-refunds",
+        status: "succeeded", importJobId: sales.id, finishedAt: new Date("2026-09-02T03:00:00.000Z"),
+      });
+      const shop = "天猫退款门禁店";
+      await db.insert(schema.skuIdentifiers).values({
+        skuId: sku.id, kind: "external", scope: "JIANDAOYUN:TMALL", value: `${shop}|P1`, createdBy: actor.id,
+      });
+      await db.insert(schema.stagingRows).values({
+        importJobId: sales.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_sales_observation",
+        payload: { data: { statisticalDate: "2026-09-01", shopName: shop, skuId: "P1", paidNumber: "99" } },
+      });
+
+      const result = await computeExternalVelocity(db);
+      expect(result).toMatchObject({ state: "insufficient", sourceAsOf: null, bySku: {} });
+      expect(result.gate).toMatch(/退款/);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("天猫退款观察落后于销量观察时不发布净需求", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "退款时点门禁责任人" }).returning();
+      const [sales, refunds] = await db.insert(schema.importJobs).values([
+        {
+          template: "jdy_tmall_sku_sales_observation", filename: "current-sales", sourceAsOf: "2026-09-02",
+          createdBy: actor.id, status: "done",
+        },
+        {
+          // 旧业务行今天被编辑：更新时间与销量相同，但退款业务日期仍落后。
+          template: "jdy_tmall_sku_refund_observation", filename: "stale-refunds", sourceAsOf: "2026-09-02",
+          createdBy: actor.id, status: "done",
+        },
+      ]).returning();
+      await db.insert(schema.integrationRuns).values([
+        {
+          connector: "jdy", stream: "tmall-sku-sales-observation", idempotencyKey: "current-sales-velocity",
+          status: "succeeded", importJobId: sales.id, finishedAt: new Date("2026-09-02T03:00:00.000Z"),
+        },
+        {
+          connector: "jdy", stream: "tmall-sku-refund-observation", idempotencyKey: "stale-refunds-velocity",
+          status: "succeeded", importJobId: refunds.id, finishedAt: new Date("2026-09-02T03:01:00.000Z"),
+        },
+      ]);
+      await db.insert(schema.stagingRows).values([
+        {
+          importJobId: sales.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_sales_observation",
+          payload: { data: { statisticalDate: "2026-09-01", shopName: "天猫时点测试店", skuId: "P1", paidNumber: "99" } },
+        },
+        {
+          importJobId: refunds.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
+          payload: { data: { statisticalDate: "2026-08-29", shopName: "天猫时点测试店", skuId: "P1", successRefundSuborderNumber: "1" } },
+        },
+      ]);
+
+      const result = await computeExternalVelocity(db);
+      expect(result).toMatchObject({ state: "insufficient", sourceAsOf: null, bySku: {} });
+      expect(result.gate).toMatch(/落后/);
+    } finally {
+      await client.close();
+    }
+  });
+
   it("按批次最大业务日锚定 30/90 天窗口，两条身份桥都算，未映射不计入", async () => {
-    const { db, client, viaCrosswalk, viaDirect, unmapped } = await seed();
+    const { db, client, actor, viaCrosswalk, viaDirect, unmapped } = await seed();
     try {
       const v = await computeExternalVelocity(db);
       expect(v.state).toBe("ready");
       expect(v.anchorDate).toBe("2026-09-01");
       const cw = v.bySku[String(viaCrosswalk.id)]!;
-      expect(cw.paid30).toBe(15);
-      expect(cw.refund30).toBe(2);
-      expect(cw.net30).toBe(13);
-      expect(cw.paid90).toBe(35);
-      expect(cw.net90).toBe(33);
+      expect(cw.paid30).toBe("15.0000");
+      expect(cw.refund30).toBe("2.0000");
+      expect(cw.net30).toBe("13.0000");
+      expect(cw.paid90).toBe("35.0000");
+      expect(cw.net90).toBe("33.0000");
       expect(cw.lastSoldDate).toBe("2026-09-01");
       expect(cw.activeDays90).toBe(3);
       const direct = v.bySku[String(viaDirect.id)]!;
-      expect(direct.net30).toBe(3);
+      expect(direct.net30).toBe("0.2000");
       expect(v.bySku[String(unmapped.id)]).toBeUndefined();
-      expect(v.coverage).toEqual({ platformSkus: 4, mappedPlatformSkus: 2, mappedSkus: 2 });
+      expect(v.coverage).toEqual({
+        platformSkus: 4,
+        mappedPlatformSkus: 2,
+        mappedSkus: 2,
+        pddObservedDays30: 0,
+        pddWindowComplete30: true,
+        pddObservedDays90: 0,
+        pddWindowComplete90: true,
+      });
+
+      const [emptySales] = await db.insert(schema.importJobs).values({
+        template: "jdy_tmall_sku_sales_observation", filename: "empty-sales", sourceAsOf: "2026-09-03",
+        createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "tmall-sku-sales-observation", idempotencyKey: "empty-sales",
+        status: "succeeded", importJobId: emptySales.id, requestScope: { emptySource: true },
+        finishedAt: new Date("2026-09-03T03:00:00.000Z"),
+      });
+      const afterEmptyRead = await computeExternalVelocity(db);
+      expect(afterEmptyRead.bySku[String(viaCrosswalk.id)]?.net30).toBe("13.0000");
 
       // 缓存命中：第二次读取不重算也一致
       const again = await loadExternalVelocity(db);
-      expect(again.bySku[String(viaCrosswalk.id)]?.net30).toBe(13);
+      expect(again.bySku[String(viaCrosswalk.id)]?.net30).toBe("13.0000");
     } finally {
       await client.close();
     }
@@ -108,16 +231,291 @@ describe("外部观察销速读模型", () => {
       expect(d.externalDemand.internalNoMoveButExternalSelling).toBe(2);
       const cwRow = d.slowTop.find((r) => r.code === viaCrosswalk.code)!;
       expect(cwRow.daysCover).toBeNull();          // 内部口径不变
-      expect(cwRow.externalNet30).toBe(13);
+      expect(cwRow.externalNet30).toBe("13.0000");
       expect(cwRow.externalLastSold).toBe("2026-09-01");
       const noneRow = d.slowTop.find((r) => r.code === unmapped.code)!;
       expect(noneRow.externalNet30).toBeNull();    // 未映射不是 0
 
       const risk = await getRiskWorklist({ pageSize: 100 }, db);
       const riskCw = risk.rows.find((r) => r.code === viaCrosswalk.code);
-      expect(riskCw?.externalNet30).toBe(13);
+      expect(riskCw?.externalNet30).toBe("13.0000");
       const riskNone = risk.rows.find((r) => r.code === unmapped.code);
       expect(riskNone?.externalNet30 ?? null).toBeNull();
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("拼多多订单经对照表身份并入净需求：剔除已取消/退款成功，分平台可拆", async () => {
+    const { db, client, viaCrosswalk } = await seed();
+    try {
+      const [actor] = await db.select().from(schema.users).limit(1);
+      const [pddCw, pddOrders] = await db.insert(schema.importJobs).values([
+        { template: "jdy_pdd_sku_crosswalk_observation", filename: "pdd-cw", sourceAsOf: "2026-09-01", createdBy: actor.id, status: "done" },
+        { template: "jdy_pdd_order_observation", filename: "pdd-orders", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+      ]).returning();
+      const finishedAt = new Date("2026-09-02T04:00:00.000Z");
+      await db.insert(schema.integrationRuns).values([
+        { connector: "jdy", stream: "pdd-sku-crosswalk-observation", idempotencyKey: "pdd-cw", status: "succeeded", importJobId: pddCw.id, finishedAt },
+        { connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-orders", status: "succeeded", importJobId: pddOrders.id, finishedAt,
+          requestScope: { window: {
+            from: "2026-08-30T16:00:00.000Z",
+            to: "2026-09-02T16:00:00.000Z",
+            extractionCutoff: "2026-09-02T04:00:00.000Z",
+          } } },
+      ]);
+      const shop = "(拼多多国际)NING官方海外旗舰店";
+      const order = (rowNo: number, no: string, date: string, qty: string, status: string, afterSalesStatus = "", paymentTime = "") => ({
+        importJobId: pddOrders.id, rowNo, status: "pending" as const, targetTable: "jdy_pdd_order_observation",
+        payload: { data: { statisticalDate: date, shopName: shop, orderNumber: no, productId: "PID1", merchantSkuCode: "GW1", productQuantity: qty, orderStatus: status, afterSalesStatus, paymentTime } },
+      });
+      await db.insert(schema.stagingRows).values([
+        { importJobId: pddCw.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
+          payload: { data: { shopName: shop, platformSkuId: "PS1", platformProductId: "PID1", merchantSkuCode: "GW1" }, _identity: { skuId: viaCrosswalk.id } } },
+        order(1, "O1", "2026-08-25", "2", "已发货，待收货"),
+        order(2, "O2", "2026-08-26", "3", "待发货"),
+        order(3, "O3", "2026-08-27", "5", "已取消，退款成功"),
+        order(4, "O4", "2026-06-20", "7", "已发货，待收货"),
+        order(5, "O5", "2026-08-29", "11", "已发货，待收货", "退款成功"),
+        order(6, "O6", "2026-08-30", "100", "待付款"),
+      ]);
+      const v = await computeExternalVelocity(db);
+      const cw = v.bySku[String(viaCrosswalk.id)]!;
+      expect(cw.pddNet30).toBe("5.0000");       // 2 + 3，取消的 5 不算
+      expect(cw.pddIdentityCovered).toBe(true);
+      expect(cw.pddNet90).toBe("12.0000");      // 再加 90 天内的 7
+      expect(cw.tmallNet30).toBe("13.0000");
+      expect(cw.net30).toBeNull();               // 拼多多窗口不完整，组合 30 天需求未知
+      expect(v.pddSourceAsOf).toBe("2026-09-02");
+      // 迟到更新带回 5 个订单日期，但实际抽取截止中午，只完整观察了 2 个自然日。
+      expect(v.coverage.pddObservedDays30).toBe(2);
+      expect(v.coverage.pddWindowComplete30).toBe(false);
+      expect(v.coverage.pddObservedDays90).toBe(2);
+      expect(v.coverage.pddWindowComplete90).toBe(false);
+      expect(cw.net90).toBeNull();
+
+      // 新批次的删除标记必须压过旧订单版本；不能让已删除的 O1 继续贡献 2 件。
+      const [deletedOrders] = await db.insert(schema.importJobs).values({
+        template: "jdy_pdd_order_observation", filename: "pdd-orders-tombstone", sourceAsOf: "2026-09-03",
+        createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-orders-tombstone",
+        status: "succeeded", importJobId: deletedOrders.id, finishedAt: new Date("2026-09-03T04:00:00.000Z"),
+        requestScope: { window: {
+          from: "2026-08-31T16:00:00.000Z",
+          to: "2026-09-03T16:00:00.000Z",
+          extractionCutoff: "2026-09-03T04:00:00.000Z",
+        } },
+      });
+      await db.insert(schema.stagingRows).values({
+        importJobId: deletedOrders.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation",
+        payload: {
+          sourceDeletedAt: "2026-09-03T03:30:00.000Z",
+          data: { statisticalDate: "2026-08-25", shopName: shop, orderNumber: "O1", productId: "PID1", merchantSkuCode: "GW1", productQuantity: "2", orderStatus: "已发货，待收货" },
+        },
+      });
+      const afterDelete = await computeExternalVelocity(db);
+      expect(afterDelete.bySku[String(viaCrosswalk.id)]?.pddNet30).toBe("3.0000");
+      expect(afterDelete.bySku[String(viaCrosswalk.id)]?.pddNet90).toBe("10.0000");
+
+      // 新全量快照里的 tombstone 代表该源记录已删除；不得继续作为身份桥。
+      const [deletedCrosswalk] = await db.insert(schema.importJobs).values({
+        template: "jdy_pdd_sku_crosswalk_observation", filename: "pdd-cw-tombstone", sourceAsOf: "2026-09-03",
+        createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "pdd-sku-crosswalk-observation", idempotencyKey: "pdd-cw-tombstone",
+        status: "succeeded", importJobId: deletedCrosswalk.id, finishedAt: new Date("2026-09-03T05:00:00.000Z"),
+      });
+      await db.insert(schema.stagingRows).values({
+        importJobId: deletedCrosswalk.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
+        payload: {
+          sourceRecordId: "PDD-CW-1",
+          sourceDeletedAt: "2026-09-03T05:00:00.000Z",
+          data: { shopName: shop, platformSkuId: "PS1", platformProductId: "PID1", merchantSkuCode: "GW1" },
+          _identity: { skuId: viaCrosswalk.id },
+        },
+      });
+      const afterMappingDelete = await computeExternalVelocity(db);
+      expect(afterMappingDelete.bySku[String(viaCrosswalk.id)]).toMatchObject({
+        tmallNet30: "13.0000", pddNet30: "0.0000", net30: "13.0000",
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("拼多多覆盖按成功查询窗口累计，零订单身份保留且当日部分数据不移动锚点", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "拼多多窗口责任人" }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "P-PDD-ZERO", nameCn: "拼多多零需求观察" }).returning();
+      const [sku] = await db.insert(schema.skus).values({
+        code: "PDD-ZERO-001", name: "拼多多零需求成品", spuId: spu.id,
+        skuType: "finished", baseUom: "支", commercialRole: "retail",
+      }).returning();
+      const [job] = await db.insert(schema.importJobs).values({
+        template: "jdy_pdd_order_observation", filename: "empty-pdd-windows",
+        sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done",
+      }).returning();
+      const shop = "拼多多零需求店";
+      await db.insert(schema.skuIdentifiers).values({
+        skuId: sku.id, kind: "external", scope: "JIANDAOYUN:PDD",
+        value: `${shop}|PID-ZERO|M-ZERO`, active: true, isPrimary: false, createdBy: actor.id,
+      });
+      const runs = Array.from({ length: 10 }, (_, index) => {
+        // UTC 16:00 = 中国业务日次日 00:00。十个无缝 3 日抽取岛共覆盖 30 个完整业务日。
+        const from = new Date(Date.UTC(2026, 6, 30 + index * 3, 16));
+        const cutoff = new Date(Date.UTC(2026, 7, 2 + index * 3, 16));
+        const finishedAt = new Date(cutoff.getTime() + 60_000);
+        return {
+          connector: "jdy",
+          stream: "pdd-order-observation",
+          idempotencyKey: `empty-window-${index}`,
+          status: "succeeded",
+          importJobId: job.id,
+          finishedAt,
+          requestScope: { window: {
+            from: from.toISOString(),
+            to: cutoff.toISOString(),
+            extractionCutoff: cutoff.toISOString(),
+          } },
+        };
+      });
+      await db.insert(schema.integrationRuns).values(runs);
+      // 当天只有部分抽取时，即使已出现订单事实，也不能把窗口锚点推进到未完整日。
+      await db.insert(schema.stagingRows).values({
+        importJobId: job.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation",
+        payload: { data: {
+          statisticalDate: "2026-08-30", shopName: shop, orderNumber: "PARTIAL-DAY-1",
+          productId: "PID-ZERO", merchantSkuCode: "M-ZERO", productQuantity: "9", orderStatus: "已取消，退款成功",
+        } },
+      });
+
+      const result = await computeExternalVelocity(db);
+      expect(result.state).toBe("ready");
+      expect(result.anchorDate).toBe("2026-08-29");
+      expect(result.coverage.pddObservedDays30).toBe(30);
+      expect(result.coverage.pddWindowComplete30).toBe(true);
+      expect(result.coverage.pddObservedDays90).toBe(30);
+      expect(result.coverage.pddWindowComplete90).toBe(false);
+      expect(result.bySku[String(sku.id)]).toMatchObject({
+        pddIdentityCovered: true, pddNet30: "0.0000", net30: "0.0000", net90: null,
+      });
+
+      // 停机一天超过连续边界后，最新抽取岛从 8/31 重新计数；不能沿用旧 30 天资格。
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy",
+        stream: "pdd-order-observation",
+        idempotencyKey: "window-after-outage",
+        status: "succeeded",
+        importJobId: job.id,
+        finishedAt: new Date("2026-09-02T16:01:00.000Z"),
+        requestScope: { window: {
+          from: "2026-08-30T16:00:00.000Z",
+          to: "2026-09-02T16:00:00.000Z",
+          extractionCutoff: "2026-09-02T16:00:00.000Z",
+        } },
+      });
+      const afterOutage = await computeExternalVelocity(db);
+      expect(afterOutage.anchorDate).toBe("2026-09-02");
+      expect(afterOutage.coverage.pddObservedDays30).toBe(3);
+      expect(afterOutage.coverage.pddWindowComplete30).toBe(false);
+      expect(afterOutage.coverage.pddObservedDays90).toBe(3);
+      expect(afterOutage.coverage.pddWindowComplete90).toBe(false);
+      expect(afterOutage.bySku[String(sku.id)]).toMatchObject({ pddNet30: "0.0000", net30: null });
+
+      // 旧版批次没有 extractionCutoff，不能用未来的请求 to 桥接停机缺口；
+      // 该批次的事实仍保留在去重集合中，但不贡献“已完整观察”的天数。
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy",
+        stream: "pdd-order-observation",
+        idempotencyKey: "legacy-window-without-cutoff",
+        status: "succeeded",
+        importJobId: job.id,
+        finishedAt: new Date("2026-09-03T01:00:00.000Z"),
+        requestScope: { window: {
+          from: "2026-08-29T16:00:00.000Z",
+          to: "2026-09-05T16:00:00.000Z",
+        } },
+      });
+      const afterLegacyWindow = await computeExternalVelocity(db);
+      expect(afterLegacyWindow.anchorDate).toBe("2026-09-02");
+      expect(afterLegacyWindow.coverage.pddObservedDays30).toBe(3);
+      expect(afterLegacyWindow.coverage.pddWindowComplete30).toBe(false);
+      expect(afterLegacyWindow.coverage.pddObservedDays90).toBe(3);
+      expect(afterLegacyWindow.coverage.pddWindowComplete90).toBe(false);
+      expect(afterLegacyWindow.bySku[String(sku.id)]).toMatchObject({ pddNet30: "0.0000", net30: null });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("拼多多直接认领（JIANDAOYUN:PDD）也能把订单件数归到系统 SKU", async () => {
+    const { db, client, viaDirect } = await seed();
+    try {
+      const [actor] = await db.select().from(schema.users).limit(1);
+      const [pddOrders] = await db.insert(schema.importJobs).values([
+        { template: "jdy_pdd_order_observation", filename: "pdd-orders", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+      ]).returning();
+      await db.insert(schema.integrationRuns).values([
+        { connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-orders-2", status: "succeeded", importJobId: pddOrders.id, finishedAt: new Date("2026-09-02T04:00:00.000Z") },
+      ]);
+      const shop = "(拼多多国际)EXPRESSIONS海外旗舰店";
+      await db.insert(schema.skuIdentifiers).values({ skuId: viaDirect.id, kind: "external", scope: "JIANDAOYUN:PDD", value: `${shop}|PID9|GE028-000`, active: true, isPrimary: false, createdBy: actor.id });
+      await db.insert(schema.stagingRows).values([
+        { importJobId: pddOrders.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation",
+          payload: { data: { statisticalDate: "2026-08-28", shopName: shop, orderNumber: "X1", productId: "PID9", merchantSkuCode: "GE028-000", productQuantity: "4", orderStatus: "待发货" } } },
+      ]);
+      const v = await computeExternalVelocity(db);
+      expect(v.bySku[String(viaDirect.id)]?.pddNet30).toBe("4.0000");
+      expect(v.bySku[String(viaDirect.id)]?.pddIdentityCovered).toBe(true);
+      expect(v.bySku[String(viaDirect.id)]?.net30).toBeNull();
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("没有天猫批次时，拼多多成功批次仍可独立形成外部销速并命中缓存", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "拼多多独立观察责任人" }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "P-PDD-ONLY", nameCn: "拼多多独立观察" }).returning();
+      const [sku] = await db.insert(schema.skus).values({
+        code: "PDD-ONLY-001", name: "拼多多独立观察成品", spuId: spu.id,
+        skuType: "finished", baseUom: "支", commercialRole: "retail",
+      }).returning();
+      const [olderJob, job] = await db.insert(schema.importJobs).values([
+        { template: "jdy_pdd_order_observation", filename: "pdd-only-older", sourceAsOf: "2026-08-26", createdBy: actor.id, status: "done" },
+        { template: "jdy_pdd_order_observation", filename: "pdd-only", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+      ]).returning();
+      const [olderRun] = await db.insert(schema.integrationRuns).values([
+        { connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-only-older", status: "succeeded", importJobId: olderJob.id, finishedAt: new Date("2026-08-26T04:00:00.000Z") },
+        { connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-only", status: "succeeded", importJobId: job.id, finishedAt: new Date("2026-09-02T04:00:00.000Z") },
+      ]).returning();
+      const shop = "无品牌名的拼多多店";
+      await db.insert(schema.skuIdentifiers).values({
+        skuId: sku.id, kind: "external", scope: "JIANDAOYUN:PDD",
+        value: `${shop}|PID-ONLY|M-ONLY`, active: true, isPrimary: false, createdBy: actor.id,
+      });
+      await db.insert(schema.stagingRows).values([
+        { importJobId: olderJob.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation", payload: { data: { statisticalDate: "2026-08-25", shopName: shop, orderNumber: "PDD-ONLY-OLD", productId: "PID-ONLY", merchantSkuCode: "M-ONLY", productQuantity: "2", orderStatus: "待发货" } } },
+        { importJobId: job.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation", payload: { data: { statisticalDate: "2026-09-01", shopName: shop, orderNumber: "PDD-ONLY-O1", productId: "PID-ONLY", merchantSkuCode: "M-ONLY", productQuantity: "6", orderStatus: "待发货" } } },
+      ]);
+
+      const computed = await computeExternalVelocity(db);
+      expect(computed).toMatchObject({ state: "ready", sourceAsOf: null, pddSourceAsOf: "2026-09-02", anchorDate: "2026-09-01" });
+      expect(computed.bySku[String(sku.id)]).toMatchObject({ pddNet30: "8.0000", net30: null });
+      const cached = await loadExternalVelocity(db);
+      expect(cached.bySku[String(sku.id)]?.pddNet30).toBe("8.0000");
+
+      // 最新批次仍保留且最新 job ID 不变；任一较早批次过期也必须刷新缓存并移除其数量。
+      await db.update(schema.integrationRuns)
+        .set({ finishedAt: new Date("2025-01-01T00:00:00.000Z") })
+        .where(eq(schema.integrationRuns.id, olderRun.id));
+      const expired = await loadExternalVelocity(db);
+      expect(expired.bySku[String(sku.id)]).toMatchObject({ pddNet30: "6.0000", net30: null });
     } finally {
       await client.close();
     }

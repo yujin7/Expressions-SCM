@@ -20,12 +20,14 @@ const PRICE_REPORT_ROUTES = [
   "report/margin/route.ts",
   "report/settlement-summary/route.ts",
   "report/supplier-price-variance/route.ts",
+  "report/channel-observation/route.ts",
 ];
 
 /** 这些路由在 route 层直接判 PRICE_VISIBLE_ROLES；settlement-summary 在 service 内判采购/PMC/财务。 */
 const DIRECT_PRICE_ROLE_ROUTES = [
   "report/margin/route.ts",
   "report/supplier-price-variance/route.ts",
+  "report/channel-observation/route.ts",
 ];
 
 describe("架构护栏：金额报表的角色门", () => {
@@ -50,5 +52,11 @@ describe("架构护栏：金额报表的角色门", () => {
       expect(src, rel).toContain("PRICE_VISIBLE_ROLES");
       expect(src, rel).toMatch(/requireAnyRole\s*\(\s*user\s*,\s*\.\.\.PRICE_VISIBLE_ROLES/);
     }
+  });
+
+  it("渠道观察的成本/利润还必须经过统一脱敏边界", () => {
+    const src = readFileSync(path.join(API, "report/channel-observation/route.ts"), "utf8");
+    expect(src).toContain("maskSensitive");
+    expect(src).toMatch(/maskSensitive\s*\([^;]+user\.roles/);
   });
 });

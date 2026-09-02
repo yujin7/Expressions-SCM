@@ -48,6 +48,11 @@ describe("简道云外部需求信号", () => {
           payload: { data: { shopName: "旗舰店", platformSkuId: "P2", barcode: "690000000002" }, _identity: {} },
         },
         {
+          importJobId: crosswalk.id, rowNo: 20, status: "pending",
+          targetTable: "jdy_tmall_sku_crosswalk_observation",
+          payload: { sourceDeletedAt: "2026-08-11T02:00:00.000Z", data: { shopName: "旗舰店", platformSkuId: "P2" }, _identity: { skuId: 999 } },
+        },
+        {
           importJobId: sales.id, rowNo: 1, status: "pending",
           targetTable: "jdy_tmall_sku_sales_observation",
           payload: { data: { statisticalDate: "2026-08-10T00:00:00.000Z", shopName: "旗舰店", skuId: "P1", skuName: "已映射", paidNumber: "100" } },
@@ -63,6 +68,11 @@ describe("简道云外部需求信号", () => {
           payload: { data: { statisticalDate: "2026-08-11", shopName: "旗舰店", skuId: "P3", paidNumber: "坏值" } },
         },
         {
+          importJobId: sales.id, rowNo: 20, status: "pending",
+          targetTable: "jdy_tmall_sku_sales_observation",
+          payload: { sourceDeletedAt: "2026-08-11T02:00:00.000Z", data: { statisticalDate: "2026-08-10", shopName: "旗舰店", skuId: "P-DELETED", paidNumber: "999" } },
+        },
+        {
           importJobId: refunds.id, rowNo: 1, status: "pending",
           targetTable: "jdy_tmall_sku_refund_observation",
           payload: { data: { statisticalDate: "2026-08-10", shopName: "旗舰店", skuId: "P1", successRefundSuborderNumber: "10" } },
@@ -76,6 +86,11 @@ describe("简道云外部需求信号", () => {
           importJobId: refunds.id, rowNo: 3, status: "pending",
           targetTable: "jdy_tmall_sku_refund_observation",
           payload: { data: { statisticalDate: "2026-08-10", shopName: "旗舰店", skuId: "P4", successRefundSuborderNumber: "3" } },
+        },
+        {
+          importJobId: refunds.id, rowNo: 20, status: "pending",
+          targetTable: "jdy_tmall_sku_refund_observation",
+          payload: { sourceDeletedAt: "2026-08-11T02:00:00.000Z", data: { statisticalDate: "2026-08-10", shopName: "旗舰店", skuId: "P-DELETED", successRefundSuborderNumber: "999" } },
         },
         {
           importJobId: jstOutbound.id, rowNo: 1, status: "validated",

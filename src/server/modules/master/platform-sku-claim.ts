@@ -17,17 +17,36 @@ import { getDbAsync } from "@/db";
 import type { SessionUser } from "@/server/core/dto";
 import { ApiError } from "@/server/modules/master/common";
 import { ensureExternalSkuIdentifierInTransaction } from "@/server/modules/master/sku-identifier";
-import { PLATFORM_SKU_IDENTIFIER_SCOPE, refreshPlatformSkuIdentityGap } from "@/server/modules/report/platform-sku-identity-gap";
+import { refreshPlatformSkuIdentityGap } from "@/server/modules/report/platform-sku-identity-gap";
 import { refreshJiandaoyunExternalDemandReadModel } from "@/server/modules/report/external-demand-signal";
 import { refreshExternalVelocity } from "@/server/modules/report/external-velocity";
 import type { AnyDb } from "@/server/core/svc";
 
-export const platformSkuClaimSchema = z.object({
+export const PLATFORM_SCOPES = {
+  tmall: "JIANDAOYUN:TMALL",
+  // 拼多多没有 SKU 级销量表，订单按 (店铺, 商品ID, 商家编码-规格) 归属，platformSkuId 传 `${商品ID}|${商家编码}`
+  pdd: "JIANDAOYUN:PDD",
+} as const;
+export type PlatformKey = keyof typeof PLATFORM_SCOPES;
+
+const claimCommonShape = {
   shopName: z.string().trim().min(1, "店铺名必填").max(60).refine((value) => !value.includes("|"), "店铺名不能包含 |分隔符"),
-  platformSkuId: z.string().trim().min(1, "平台 SKU ID 必填").max(40).regex(/^[A-Za-z0-9_-]+$/, "平台 SKU ID 只能是字母数字"),
   skuId: z.number().int().positive(),
-  note: z.string().trim().max(200).optional(),
-});
+};
+const tmallPlatformSkuId = z.string().trim().min(1, "平台 SKU ID 必填").max(60)
+  .regex(/^[A-Za-z0-9_.-]+$/, "天猫平台 SKU ID 只能包含字母、数字、点、横线或下划线，不能包含 | 分隔符");
+const pddPlatformSkuId = z.string().trim().min(1, "拼多多商品 ID 与商家编码必填").max(60)
+  .regex(/^[A-Za-z0-9_.-]+\|[A-Za-z0-9_.-]+$/, "拼多多平台 SKU ID 必须是 商品ID|商家编码 的完整二元组");
+
+const platformSkuClaimItemSchema = z.union([
+  z.object({ ...claimCommonShape, platform: z.literal("pdd"), platformSkuId: pddPlatformSkuId }),
+  z.object({ ...claimCommonShape, platform: z.literal("tmall").default("tmall"), platformSkuId: tmallPlatformSkuId }),
+]);
+
+export const platformSkuClaimSchema = z.union([
+  z.object({ ...claimCommonShape, platform: z.literal("pdd"), platformSkuId: pddPlatformSkuId, note: z.string().trim().max(200).optional() }),
+  z.object({ ...claimCommonShape, platform: z.literal("tmall").default("tmall"), platformSkuId: tmallPlatformSkuId, note: z.string().trim().max(200).optional() }),
+]);
 export type PlatformSkuClaimInput = z.infer<typeof platformSkuClaimSchema>;
 
 export function platformSkuIdentifierValue(shopName: string, platformSkuId: string): string {
@@ -44,7 +63,7 @@ function resultRows<T>(result: unknown): T[] {
 
 async function assertClaimIsConsistent(
   tx: AnyDb,
-  input: Pick<PlatformSkuClaimInput, "shopName" | "platformSkuId" | "skuId">,
+  input: Pick<PlatformSkuClaimInput, "shopName" | "platformSkuId" | "skuId" | "platform">,
 ) {
   const skuResult = await tx.execute(sql`
     SELECT id, code, sku_type, active FROM skus WHERE id = ${input.skuId} FOR UPDATE
@@ -54,15 +73,30 @@ async function assertClaimIsConsistent(
   if (sku.active !== true || sku.sku_type !== "finished") {
     throw new ApiError(409, "平台 SKU 只能认领到启用中的成品 SKU");
   }
+  const [pddProductId, pddMerchantCode] = input.platform === "pdd"
+    ? input.platformSkuId.split("|", 2)
+    : ["", ""];
+  const crosswalkStream = input.platform === "pdd"
+    ? "pdd-sku-crosswalk-observation"
+    : "tmall-sku-crosswalk-observation";
+  const crosswalkTable = input.platform === "pdd"
+    ? "jdy_pdd_sku_crosswalk_observation"
+    : "jdy_tmall_sku_crosswalk_observation";
+  const platformIdentity = input.platform === "pdd"
+    ? sql`sr.payload->'data'->>'platformProductId' = ${pddProductId}
+          AND sr.payload->'data'->>'merchantSkuCode' = ${pddMerchantCode}`
+    : sql`sr.payload->'data'->>'platformSkuId' = ${input.platformSkuId}`;
 
   const crosswalkResult = await tx.execute(sql`
     WITH latest AS (
       SELECT ir.import_job_id
       FROM integration_runs ir
       WHERE ir.connector = 'jdy'
-        AND ir.stream = 'tmall-sku-crosswalk-observation'
+        AND ir.stream = ${crosswalkStream}
         AND ir.status = 'succeeded'
         AND ir.import_job_id IS NOT NULL
+        AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+        AND coalesce(ir.request_scope->>'emptySource', 'false') = 'false'
       ORDER BY ir.started_at DESC, ir.id DESC
       LIMIT 1
     )
@@ -71,10 +105,11 @@ async function assertClaimIsConsistent(
       max(nullif(sr.payload->'_identity'->>'skuId', '')) AS sku_id
     FROM staging_rows sr
     INNER JOIN latest ON latest.import_job_id = sr.import_job_id
-    WHERE sr.target_table = 'jdy_tmall_sku_crosswalk_observation'
+    WHERE sr.target_table = ${crosswalkTable}
       AND sr.status IN ('pending', 'validated', 'committed')
+      AND nullif(trim(sr.payload->>'sourceDeletedAt'), '') IS NULL
       AND sr.payload->'data'->>'shopName' = ${input.shopName}
-      AND sr.payload->'data'->>'platformSkuId' = ${input.platformSkuId}
+      AND ${platformIdentity}
   ` as SQL);
   const [crosswalk] = resultRows<Record<string, unknown>>(crosswalkResult);
   const identityCount = Number(crosswalk?.identity_count ?? 0);
@@ -93,13 +128,13 @@ async function assertClaimIsConsistent(
 async function claimOne(
   tx: AnyDb,
   actor: SessionUser,
-  input: Pick<PlatformSkuClaimInput, "shopName" | "platformSkuId" | "skuId"> & { note: string },
+  input: Pick<PlatformSkuClaimInput, "shopName" | "platformSkuId" | "skuId" | "platform"> & { note: string },
 ) {
   await assertClaimIsConsistent(tx, input);
   return ensureExternalSkuIdentifierInTransaction(tx, {
     skuId: input.skuId,
     value: platformSkuIdentifierValue(input.shopName, input.platformSkuId),
-    scope: PLATFORM_SKU_IDENTIFIER_SCOPE,
+    scope: PLATFORM_SCOPES[input.platform],
     note: input.note,
   }, actor);
 }
@@ -108,10 +143,11 @@ export async function claimPlatformSku(actor: SessionUser, input: unknown, dbArg
   const v = platformSkuClaimSchema.parse(input);
   const db = dbArg ?? (await getDbAsync());
   const value = platformSkuIdentifierValue(v.shopName, v.platformSkuId);
+  const scope = PLATFORM_SCOPES[v.platform];
   const result = await db.transaction(async (tx: AnyDb) =>
     claimOne(tx, actor, {
       ...v,
-      note: v.note ?? `天猫平台 SKU 认领（${v.shopName}）`,
+      note: v.note ?? `${v.platform === "pdd" ? "拼多多" : "天猫"}平台 SKU 认领（${v.shopName}）`,
     }),
   );
   // 读模型刷新是可丢弃的派生物：失败不回滚认领，只让页面等下一次同步重建
@@ -127,7 +163,7 @@ export async function claimPlatformSku(actor: SessionUser, input: unknown, dbArg
     identifierId: result.identifier.id,
     skuId: v.skuId,
     value,
-    scope: PLATFORM_SKU_IDENTIFIER_SCOPE,
+    scope,
     created: result.created,
     reactivated: result.reactivated,
     readModels,
@@ -135,7 +171,7 @@ export async function claimPlatformSku(actor: SessionUser, input: unknown, dbArg
 }
 
 export const platformSkuBulkClaimSchema = z.object({
-  items: z.array(platformSkuClaimSchema.omit({ note: true })).min(1).max(300),
+  items: z.array(platformSkuClaimItemSchema).min(1).max(300),
 });
 
 /**
@@ -151,7 +187,7 @@ export async function claimPlatformSkusBulk(actor: SessionUser, input: unknown, 
       const r = await db.transaction(async (tx: AnyDb) =>
         claimOne(tx, actor, {
           ...item,
-          note: `天猫平台 SKU 批量认领（${item.shopName}）`,
+          note: `${item.platform === "pdd" ? "拼多多" : "天猫"}平台 SKU 批量认领（${item.shopName}）`,
         }),
       );
       results.push({ ...item, ok: true, created: r.created });

@@ -23,6 +23,7 @@ interface SegRow {
   abc: "A" | "B" | "C";
   xyz: "X" | "Y" | "Z";
   cell: string;
+  externalNet90: string | null;
 }
 
 interface MatrixCell {
@@ -78,6 +79,13 @@ export default function SegmentationClient() {
     { title: "名称", dataIndex: "name", ellipsis: true, width: 240 },
     { title: "品牌", dataIndex: "brand", width: 110, render: (v: string | null) => v ?? "—" },
     { title: "近6月销量", dataIndex: "sales6m", width: 110, align: "right", render: (v: number) => v.toLocaleString("zh-CN") },
+    {
+      title: "外部近90天",
+      dataIndex: "externalNet90",
+      width: 105,
+      align: "right",
+      render: (v: string | null) => v == null ? <Typography.Text type="secondary">未映射</Typography.Text> : Number(v).toLocaleString("zh-CN"),
+    },
     { title: "月均", dataIndex: "avgMonthly", width: 100, align: "right", render: (v: number) => v.toLocaleString("zh-CN") },
     { title: "变异系数", dataIndex: "cv", width: 90, align: "right" },
     { title: "ABC", dataIndex: "abc", width: 70, render: (v: string) => <Tag color={ABC_COLORS[v]}>{v}</Tag> },

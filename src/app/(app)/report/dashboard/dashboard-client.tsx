@@ -201,11 +201,11 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
       dataIndex: "externalNet30",
       width: 150,
       align: "right",
-      render: (v: number | null, r) => v == null
+      render: (v: string | null, r) => v == null
         ? <Typography.Text type="secondary">未映射</Typography.Text>
         : (
           <AntTooltip title={`简道云天猫观察，最近售出 ${r.externalLastSold ?? "—"}；近 90 天净需求 ${fmt(r.externalNet90)}`}>
-            <Tag color={v > 0 && r.daysCover == null ? "volcano" : v > 0 ? "blue" : "default"}>{fmt(v)}</Tag>
+            <Tag color={Number(v) > 0 && r.daysCover == null ? "volcano" : Number(v) > 0 ? "blue" : "default"}>{fmt(v)}</Tag>
           </AntTooltip>
         ),
     },
@@ -264,7 +264,7 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
               type={data.externalDemand.internalNoMoveButExternalSelling > 0 ? "warning" : "info"}
               showIcon
               style={{ marginBottom: 8 }}
-              message={`内部销量事实到 ${data.externalDemand.internalThroughMonth ?? "—"}，简道云天猫观察到 ${data.externalDemand.anchorDate ?? "—"}${data.externalDemand.lagDays != null ? `（内部晚 ${data.externalDemand.lagDays} 天）` : ""}`}
+              message={`内部销量事实到 ${data.externalDemand.internalThroughMonth ?? "—"}，简道云外部平台观察到 ${data.externalDemand.anchorDate ?? "—"}${data.externalDemand.lagDays != null ? `（内部晚 ${data.externalDemand.lagDays} 天）` : ""}`}
               description={
                 <>
                   已映射 {data.externalDemand.mappedSkus.toLocaleString("zh-CN")} 个系统 SKU 的外部近 30/90 天净需求作为影子列显示；

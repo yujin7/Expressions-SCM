@@ -25,6 +25,7 @@ import {
 import {
   JiandaoyunClient,
   jiandaoyunSchemaHash,
+  resolveJiandaoyunWindow,
   type JiandaoyunRecord,
 } from "./jiandaoyun";
 import {
@@ -37,7 +38,7 @@ import { resolveSourceAsOf } from "./source-time";
 const CONNECTOR = "jdy";
 const CATALOG_STREAM = "catalog";
 const CATALOG_SCHEMA_VERSION = "jiandaoyun-catalog-v1";
-const RECORD_SCHEMA_VERSION = "jiandaoyun-observation-v4";
+const RECORD_SCHEMA_VERSION = "jiandaoyun-observation-v5";
 /** Running claims older than this can be fenced off and recovered by a retry. */
 const RUN_STALE_AFTER_MS = 2 * 60 * 60 * 1_000;
 
@@ -659,6 +660,8 @@ export async function syncJiandaoyunForm(
       stream: string,
       envelope: unknown,
     ) => Promise<IntegrationEvidence>;
+    /** Testable clock; production resolves the window once from wall time. */
+    now?: () => Date;
   },
 ): Promise<JiandaoyunFormSummary> {
   await assertActor(db, input.actorId);
@@ -668,10 +671,31 @@ export async function syncJiandaoyunForm(
   );
   await assertStableContractSchema(db, input.contract.key, schemaHash);
   const projection = jiandaoyunContractProjection(input.contract);
+  const includeUpdatedSince = input.contract.window?.includeUpdatedSince === true;
+  const extractionCutoff = input.now?.() ?? new Date();
+  const resolvedWindow = input.contract.window
+    ? resolveJiandaoyunWindow(input.contract.window.days, extractionCutoff)
+    : null;
+  const evidenceWindow = input.contract.window ? {
+    field: input.contract.window.field,
+    days: input.contract.window.days,
+    includeUpdatedSince,
+    ...resolvedWindow!,
+    // The source has no snapshot token. This is the conservative upper bound:
+    // changes committed before extraction started are expected to be queryable.
+    extractionCutoff: extractionCutoff.toISOString(),
+  } : null;
   const records = await input.client.listRecords(
     input.contract.appId,
     input.contract.entryId,
     projection,
+    input.contract.window ? {
+      field: input.contract.window.field,
+      sinceDays: input.contract.window.days,
+      // 拼多多订单会在下单数日后才取消/退款；同步近期更新可撤销旧的付款观察。
+      includeUpdatedSince,
+      bounds: resolvedWindow!,
+    } : undefined,
   );
   const control = inspectJiandaoyunContractControl(input.contract, widgets, records);
   const controlSummary = summarizeJiandaoyunContractControl(control);
@@ -707,6 +731,7 @@ export async function syncJiandaoyunForm(
       authority: "observation-only",
       fieldMinimized: true,
       sourceProjection: projection,
+      window: evidenceWindow,
       controlSummary,
     },
     records: minimized,
@@ -736,6 +761,7 @@ export async function syncJiandaoyunForm(
       authority: "observation-only",
       controlSummary,
       qualityBlocked: controlSummary.status === "review",
+      window: evidenceWindow,
     },
     evidencePath: evidence.relativePath,
     evidenceHash: evidence.hash,
@@ -782,7 +808,8 @@ export async function syncJiandaoyunForm(
           && scope.stream === stream
           && scope.mode === "full"
           && scope.authority === "observation-only"
-          && scope.releaseBlocked === true;
+          && scope.releaseBlocked === true
+          && scope.qualityBlocked !== true;
       });
       let priorSourceRecordIdsVerified = 0;
       if (minimized.length > 0 && priorFull) {
@@ -804,17 +831,22 @@ export async function syncJiandaoyunForm(
             `简道云 ${stream} 源时点回退（${updatedThrough} < ${priorUpdatedThrough}），拒绝覆盖`,
           );
         }
-        if (minimized.length < priorFull.controlRows!) {
-          throw new Error(
-            `简道云 ${stream} 全量行数下降（${minimized.length} < ${priorFull.controlRows}），可能是权限或分页缩减；需人工复核`,
-          );
+        // 时间窗契约（contract.window）每批只是"最近 N 天"的滚动快照：行数随窗口内业务量起伏、
+        // 窗口外的记录本来就不再出现，"全量行数不得下降 / 旧记录必须仍在"这两条只适用于全量快照。
+        // 2026-09-02 实测：拼多多订单 14 天批 42,256 行 → 3 天批 7,141 行被误判为"分页缩减"。
+        if (!input.contract.window) {
+          if (minimized.length < priorFull.controlRows!) {
+            throw new Error(
+              `简道云 ${stream} 全量行数下降（${minimized.length} < ${priorFull.controlRows}），可能是权限或分页缩减；需人工复核`,
+            );
+          }
+          priorSourceRecordIdsVerified = await assertPriorSourceRecordContinuity(tx, {
+            stream,
+            priorJobId: priorFull.id,
+            expectedRows: priorFull.controlRows!,
+            currentSourceRecordIds: sourceRecordIds,
+          });
         }
-        priorSourceRecordIdsVerified = await assertPriorSourceRecordContinuity(tx, {
-          stream,
-          priorJobId: priorFull.id,
-          expectedRows: priorFull.controlRows!,
-          currentSourceRecordIds: sourceRecordIds,
-        });
       }
 
       const job = await createSourceImportJobInTransaction(tx, {
@@ -832,6 +864,8 @@ export async function syncJiandaoyunForm(
           stream,
           appId: input.contract.appId,
           entryId: input.contract.entryId,
+          // 时间窗快照：读模型必须按业务键跨批次去重累加，不能把单批当全量
+          ...(evidenceWindow ? { window: evidenceWindow } : {}),
           schemaHash,
           sourceUpdatedThrough: updatedThrough,
           priorSourceRecordIdsVerified,
@@ -845,9 +879,13 @@ export async function syncJiandaoyunForm(
           evidenceHash: evidence.hash,
         },
       });
-      // Only a successful, non-empty full observation may retire prior review batches. An empty
+      // Only a successful, non-empty, quality-passing full observation may retire prior review batches. An empty
       // response is retained as evidence but cannot imply that previously observed facts vanished.
+      // 滚动窗口每批只覆盖最近 N 天，旧批次是 30/90 天累计历史的一部分，不能退役。
+      // 只有非窗口的完整快照才能用新批次替换旧批次。
       const supersededImportJobs = minimized.length > 0
+        && !input.contract.window
+        && controlSummary.status !== "review"
         ? await supersedeSourceObservationJobsInTransaction(tx, {
           keepJobId: job.id,
           template: input.contract.targetTable,
@@ -906,6 +944,7 @@ export async function syncJiandaoyunForm(
         unresolvedAliases,
         controlSummary,
         qualityBlocked: controlSummary.status === "review",
+        window: evidenceWindow,
       };
       await finishRunInTransaction(tx, {
         runId: run.id,

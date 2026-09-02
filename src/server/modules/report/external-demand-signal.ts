@@ -18,7 +18,7 @@ const STREAM = {
   sales: "tmall-sku-sales-observation",
   refunds: "tmall-sku-refund-observation",
 } as const;
-const READ_MODEL_CACHE_KEY = "jiandaoyun-external-demand/v4";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-external-demand/v5";
 
 export interface ExternalDemandDailyRow {
   date: string;
@@ -732,6 +732,8 @@ async function latestBatch(
     INNER JOIN import_jobs ij ON ij.id = ir.import_job_id
     WHERE ir.connector = ${connector} AND ir.stream = ${stream}
       AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
+      AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+      AND (${connector} <> 'jdy' OR coalesce(ir.request_scope->>'emptySource', 'false') = 'false')
     ORDER BY ir.id DESC
     LIMIT 1
   `);
@@ -866,15 +868,18 @@ async function computeJiandaoyunExternalDemandSignal(
     db.execute(sql`SELECT payload FROM staging_rows
       WHERE import_job_id = ${crosswalkBatch.importJobId}
         AND target_table = 'jdy_tmall_sku_crosswalk_observation'
-        AND status IN ('pending', 'validated', 'committed')`),
+        AND status IN ('pending', 'validated', 'committed')
+        AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL`),
     db.execute(sql`SELECT payload FROM staging_rows
       WHERE import_job_id = ${salesBatch.importJobId}
         AND target_table = 'jdy_tmall_sku_sales_observation'
-        AND status IN ('pending', 'validated', 'committed')`),
+        AND status IN ('pending', 'validated', 'committed')
+        AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL`),
     db.execute(sql`SELECT payload FROM staging_rows
       WHERE import_job_id = ${refundBatch.importJobId}
         AND target_table = 'jdy_tmall_sku_refund_observation'
-        AND status IN ('pending', 'validated', 'committed')`),
+        AND status IN ('pending', 'validated', 'committed')
+        AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL`),
     db.execute(sql`SELECT id, raw_value, status FROM alias_exceptions
       WHERE alias_type = 'sku_barcode' AND scope = 'JIANDAOYUN'`),
     // 第二条身份桥（2026-09-02）：业务直接把「店铺|平台SKU」认领到系统 SKU 的外部标识。

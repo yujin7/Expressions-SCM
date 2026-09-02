@@ -9,6 +9,7 @@
  * 全表无金额字段，免脱敏；只读不写库。
  */
 import { inArray, eq, sql } from "drizzle-orm";
+import { loadExternalVelocitySafe } from "@/server/modules/report/external-velocity";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";
@@ -49,6 +50,8 @@ export interface SegRow {
   abc: "A" | "B" | "C";
   xyz: "X" | "Y" | "Z";
   cell: SegCell;
+  /** 外部观察（简道云天猫）近 90 天净需求：影子列，看内部 ABC 是否已与平台实际销量漂移；未映射 = null */
+  externalNet90: string | null;
 }
 
 export interface SegMatrixCell {
@@ -87,6 +90,7 @@ export async function getSegmentation(
   dbArg?: AnyDb,
 ): Promise<SegmentationResult> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
+  const externalVelocity = await loadExternalVelocitySafe(db);
   const page = Math.max(1, query.page ?? 1);
   // allRows：内部消费者（自动补货候选等）取全量，防静默截断；HTTP 层永不传 true
   const pageSize = query.allRows ? Number.MAX_SAFE_INTEGER : Math.min(500, Math.max(1, query.pageSize ?? 50));
@@ -152,6 +156,7 @@ export async function getSegmentation(
       abc: "C",
       xyz: classifyXyz(quantities, mean),
       cell: "CZ",
+      externalNet90: externalVelocity.bySku[String(sku.id)]?.net90 ?? null,
     });
   }
 
