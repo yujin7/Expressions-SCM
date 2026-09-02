@@ -28,7 +28,7 @@ interface ReadDb {
 
 export const PLATFORM_SKU_IDENTIFIER_SCOPE = "JIANDAOYUN:TMALL";
 // v3（2026-09-02）：冲突优先于直接认领，候选覆盖率按全部缺口计算；升版避免复用旧口径缓存
-const READ_MODEL_CACHE_KEY = "jiandaoyun-platform-sku-identity-gap/v3";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-platform-sku-identity-gap/v4";
 const TOP_ROWS = 60;
 const MAX_CANDIDATES = 3;
 const MIN_CANDIDATE_SCORE = 60;

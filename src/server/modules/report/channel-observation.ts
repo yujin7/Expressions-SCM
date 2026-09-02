@@ -19,7 +19,7 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-channel-observation/v5";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-channel-observation/v6";
 const WINDOW_DAYS = 30;
 
 export interface ChannelPlatformRow {
