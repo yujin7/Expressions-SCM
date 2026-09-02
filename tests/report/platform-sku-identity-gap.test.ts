@@ -15,6 +15,7 @@ import {
   brandCodeForShop,
   computePlatformSkuIdentityGap,
   extractSpecToken,
+  loadPlatformSkuIdentityGap,
   scoreCandidates,
 } from "@/server/modules/report/platform-sku-identity-gap";
 import { claimPlatformSku, claimPlatformSkusBulk } from "@/server/modules/master/platform-sku-claim";
@@ -390,6 +391,59 @@ describe("平台 SKU 身份缺口读模型", () => {
       gap = await computePlatformSkuIdentityGap(db);
       expect(gap.pddExactHits).toEqual([]);
       expect(gap.pddSummary.claimed).toBe(1);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("只有拼多多对照表、没有天猫销量时，仍开放拼多多精确认领线索", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "拼多多身份责任人" }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "P-PDD-ONLY", nameCn: "拼多多独立商品" }).returning();
+      const [sku] = await db.insert(schema.skus).values({
+        code: "PDD-ONLY-001",
+        name: "拼多多独立成品",
+        spuId: spu.id,
+        skuType: "finished",
+        baseUom: "支",
+      }).returning();
+      const [job] = await db.insert(schema.importJobs).values({
+        template: "jdy_pdd_sku_crosswalk_observation",
+        filename: "pdd-only-crosswalk",
+        sourceAsOf: "2026-09-02",
+        createdBy: actor.id,
+        status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy",
+        stream: "pdd-sku-crosswalk-observation",
+        idempotencyKey: "pdd-only-crosswalk",
+        status: "succeeded",
+        importJobId: job.id,
+        finishedAt: new Date("2026-09-02T04:00:00.000Z"),
+      });
+      await db.insert(schema.stagingRows).values({
+        importJobId: job.id,
+        rowNo: 1,
+        status: "pending",
+        targetTable: "jdy_pdd_sku_crosswalk_observation",
+        payload: { data: { shopName: "拼多多测试店", platformProductId: "PID-ONLY", merchantSkuCode: sku.code, productName: sku.name }, _identity: {} },
+      });
+
+      const computed = await computePlatformSkuIdentityGap(db);
+      expect(computed.state).toBe("ready");
+      expect(computed.totals.platformSkus).toBe(0);
+      expect(computed.gate).toMatch(/拼多多对照表身份线索仍可独立/);
+      expect(computed.pddExactHits).toEqual([{
+        shopName: "拼多多测试店",
+        platformSkuId: "PID-ONLY|PDD-ONLY-001",
+        skuId: sku.id,
+        skuCode: sku.code,
+        productName: sku.name,
+      }]);
+      const loaded = await loadPlatformSkuIdentityGap(db);
+      expect(loaded.pddExactHits).toEqual(computed.pddExactHits);
     } finally {
       await client.close();
     }

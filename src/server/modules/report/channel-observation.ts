@@ -370,8 +370,15 @@ async function binding(db: ReadDb): Promise<string> {
     SELECT coalesce(max(ir.import_job_id), 0)::int AS j FROM integration_runs ir
     WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation' AND ir.status = 'succeeded'`))[0];
   const cw = await latestBatch(db, "tmall-sku-crosswalk-observation");
-  const claims = resultRows<Record<string, unknown>>(await db.execute(sql`SELECT count(*)::int AS n, coalesce(max(id), 0)::int AS m FROM sku_identifiers WHERE kind = 'external' AND scope = 'JIANDAOYUN:TMALL'`))[0];
-  return `tmall:${a?.importJobId ?? "none"}:${b?.importJobId ?? "none"}:${cw?.importJobId ?? "none"}:${num(claims?.n)}:${num(claims?.m)}|vip:${c?.importJobId ?? "none"}|pnl:${d?.importJobId ?? "none"}|pdd:${num(pdd?.j)}`;
+  const claims = resultRows<Record<string, unknown>>(await db.execute(sql`
+    SELECT count(*)::int AS n,
+           coalesce(max(id), 0)::int AS m,
+           count(*) FILTER (WHERE active = true)::int AS active_n,
+           coalesce(max(updated_at), 'epoch')::text AS updated
+    FROM sku_identifiers
+    WHERE kind = 'external' AND scope = 'JIANDAOYUN:TMALL'
+  `))[0];
+  return `tmall:${a?.importJobId ?? "none"}:${b?.importJobId ?? "none"}:${cw?.importJobId ?? "none"}:${num(claims?.n)}:${num(claims?.m)}:${num(claims?.active_n)}:${String(claims?.updated ?? "")}|vip:${c?.importJobId ?? "none"}|pnl:${d?.importJobId ?? "none"}|pdd:${num(pdd?.j)}`;
 }
 
 export async function loadChannelObservation(db: ReadDb): Promise<ChannelObservation> {

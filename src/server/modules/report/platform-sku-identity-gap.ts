@@ -239,14 +239,15 @@ export function brandCodeForShop(
 /* ---------- 计算 ---------- */
 
 export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<PlatformSkuIdentityGap> {
-  const [salesBatch, refundBatch, crosswalkBatch, unitBatch] = await Promise.all([
+  const [salesBatch, refundBatch, crosswalkBatch, unitBatch, pddBatch] = await Promise.all([
     latestBatch(db, "tmall-sku-sales-observation"),
     latestBatch(db, "tmall-sku-refund-observation"),
     latestBatch(db, "tmall-sku-crosswalk-observation"),
     latestBatch(db, "tmall-unit-daily-observation"),
+    latestBatch(db, "pdd-sku-crosswalk-observation"),
   ]);
-  if (!salesBatch) {
-    return emptyPlatformSkuIdentityGap("缺少天猫日销量的成功批次，身份缺口保持关闭。");
+  if (!salesBatch && !pddBatch) {
+    return emptyPlatformSkuIdentityGap("缺少天猫日销量与拼多多对照表的成功批次，身份缺口保持关闭。");
   }
 
   const [salesResult, refundResult, crosswalkResult, directResult, exceptionResult, skuResult, brandResult, pddResult, unitResult] = await Promise.all([
@@ -263,7 +264,7 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
              max(left(payload->'data'->>'statisticalDate', 10)) AS last_date,
              count(DISTINCT left(payload->'data'->>'statisticalDate', 10))::int AS active_days
       FROM staging_rows
-      WHERE import_job_id = ${salesBatch.importJobId}
+      WHERE import_job_id = ${salesBatch?.importJobId ?? -1}
         AND target_table = 'jdy_tmall_sku_sales_observation'
         AND status IN ('pending', 'validated', 'committed')
         AND nullif(trim(payload->'data'->>'shopName'), '') IS NOT NULL
@@ -553,14 +554,16 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
     dCmp(whole, zero) > 0 ? Math.round(Number(dDiv(part, whole, 6)) * 1000) / 10 : null;
 
   return {
-    state: rows.length ? "ready" : "insufficient",
+    state: rows.length || pddSummary.crosswalkRows ? "ready" : "insufficient",
     authority: "observation_only",
     source: "JIANDAOYUN",
     platform: "天猫",
     gate: rows.length
       ? "观察口径：金额来自简道云天猫日销量批次的支付金额；候选只是建议，认领后才成为系统身份。"
+      : pddSummary.crosswalkRows
+        ? "缺少天猫日销量成功批次；拼多多对照表身份线索仍可独立复核和认领。"
       : "最新批次里没有可用的天猫 SKU 销量行。",
-    sourceAsOf: salesBatch.sourceAsOf,
+    sourceAsOf: salesBatch?.sourceAsOf ?? pddBatch?.sourceAsOf ?? null,
     crosswalkAsOf: crosswalkBatch?.sourceAsOf ?? null,
     window: { from: windowFrom, to: windowTo },
     totals: {
@@ -623,14 +626,16 @@ export function emptyPlatformSkuIdentityGap(gate: string): PlatformSkuIdentityGa
 }
 
 async function readModelBinding(db: ReadDb): Promise<string | null> {
-  const [sales, refunds, crosswalk, direct] = await Promise.all([
+  const [sales, refunds, crosswalk, unit, pdd, direct] = await Promise.all([
     latestBatch(db, "tmall-sku-sales-observation"),
     latestBatch(db, "tmall-sku-refund-observation"),
     latestBatch(db, "tmall-sku-crosswalk-observation"),
+    latestBatch(db, "tmall-unit-daily-observation"),
+    latestBatch(db, "pdd-sku-crosswalk-observation"),
     directIdentifierVersion(db),
   ]);
-  if (!sales) return null;
-  return `sales:${sales.importJobId}|refunds:${refunds?.importJobId ?? "none"}|crosswalk:${crosswalk?.importJobId ?? "none"}|${direct}`;
+  if (!sales && !pdd) return null;
+  return `sales:${sales?.importJobId ?? "none"}|refunds:${refunds?.importJobId ?? "none"}|crosswalk:${crosswalk?.importJobId ?? "none"}|unit:${unit?.importJobId ?? "none"}|pdd:${pdd?.importJobId ?? "none"}|${direct}`;
 }
 
 function cachedGap(value: unknown): PlatformSkuIdentityGap | null {
@@ -649,7 +654,7 @@ function safeJson(text: string): unknown {
 /** 页面读取：命中精确绑定的缓存；未命中则现算并写入（单批 6.8 万行的 SQL 聚合约 0.5 s，可接受）。 */
 export async function loadPlatformSkuIdentityGap(db: ReadDb): Promise<PlatformSkuIdentityGap> {
   const binding = await readModelBinding(db);
-  if (!binding) return emptyPlatformSkuIdentityGap("缺少天猫日销量的成功批次，身份缺口保持关闭。");
+  if (!binding) return emptyPlatformSkuIdentityGap("缺少天猫日销量与拼多多对照表的成功批次，身份缺口保持关闭。");
   const cacheResult = await db.execute(sql`
     SELECT payload FROM report_read_model_cache
     WHERE key = ${READ_MODEL_CACHE_KEY} AND source_binding = ${binding}
@@ -664,7 +669,7 @@ export async function loadPlatformSkuIdentityGap(db: ReadDb): Promise<PlatformSk
 /** 重算并以精确绑定原子替换缓存；连接器同步与认领写路径都会调用。 */
 export async function refreshPlatformSkuIdentityGap(db: ReadDb): Promise<PlatformSkuIdentityGap> {
   const binding = await readModelBinding(db);
-  if (!binding) return emptyPlatformSkuIdentityGap("缺少天猫日销量的成功批次，身份缺口保持关闭。");
+  if (!binding) return emptyPlatformSkuIdentityGap("缺少天猫日销量与拼多多对照表的成功批次，身份缺口保持关闭。");
   const result = await computePlatformSkuIdentityGap(db);
   await db.execute(sql`
     INSERT INTO report_read_model_cache (key, source_binding, payload, built_at)

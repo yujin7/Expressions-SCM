@@ -3,6 +3,7 @@
  * 天猫宝贝损益给出 Top/Bottom 净利。
  */
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { createTestDb } from "../helpers/db";
 import { computeChannelObservation, loadChannelObservation } from "@/server/modules/report/channel-observation";
@@ -98,6 +99,63 @@ describe("全渠道外部观察", () => {
       const pdd = observation.platforms.find((row) => row.platform === "拼多多")!;
       expect(pdd.state).toBe("ready");
       expect(pdd.units).toBe(4);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("停用天猫直接认领会改变缓存绑定并立即移除旧品牌归属", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "认领缓存责任人" }).returning();
+      const [brand] = await db.insert(schema.brands).values({ code: "NING", nameCn: "NING" }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "P-CACHE", nameCn: "缓存验证商品" }).returning();
+      const [sku] = await db.insert(schema.skus).values({
+        code: "CACHE-001",
+        name: "缓存验证成品",
+        spuId: spu.id,
+        skuType: "finished",
+        baseUom: "支",
+        brandId: brand.id,
+      }).returning();
+      const [job] = await db.insert(schema.importJobs).values({
+        template: "jdy_tmall_sku_sales_observation",
+        filename: "tmall-cache-sales",
+        sourceAsOf: "2026-09-02",
+        createdBy: actor.id,
+        status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy",
+        stream: "tmall-sku-sales-observation",
+        idempotencyKey: "tmall-cache-sales",
+        status: "succeeded",
+        importJobId: job.id,
+        finishedAt: new Date("2026-09-02T03:00:00.000Z"),
+      });
+      const shop = "不含品牌名称的测试店";
+      await db.insert(schema.stagingRows).values({
+        importJobId: job.id,
+        rowNo: 1,
+        status: "pending",
+        targetTable: "jdy_tmall_sku_sales_observation",
+        payload: { data: { statisticalDate: "2026-09-01", shopName: shop, skuId: "PSKU-CACHE", paidNumber: "5", paidAmount: "100" } },
+      });
+      const [identifier] = await db.insert(schema.skuIdentifiers).values({
+        skuId: sku.id,
+        kind: "external",
+        scope: "JIANDAOYUN:TMALL",
+        value: `${shop}|PSKU-CACHE`,
+        createdBy: actor.id,
+      }).returning();
+
+      const mapped = await loadChannelObservation(db);
+      expect(mapped.platforms.find((row) => row.platform === "天猫")?.byBrand[0]?.brand).toBe("NING");
+      await db.update(schema.skuIdentifiers)
+        .set({ active: false, updatedAt: new Date("2026-09-03T00:00:00.000Z") })
+        .where(eq(schema.skuIdentifiers.id, identifier.id));
+      const deactivated = await loadChannelObservation(db);
+      expect(deactivated.platforms.find((row) => row.platform === "天猫")?.byBrand[0]?.brand).toBe("(未归属)");
     } finally {
       await client.close();
     }

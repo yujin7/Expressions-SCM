@@ -231,7 +231,7 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
   return (
     <Card
       size="small"
-      title="天猫平台 SKU 身份缺口 · 按销售额排序"
+      title="平台 SKU 身份缺口 · 按价值排序"
       extra={
         <Space>
           <Tag color="warning">观察口径</Tag>
