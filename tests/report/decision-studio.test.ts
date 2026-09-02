@@ -150,6 +150,20 @@ describe("decision studio evidence model", () => {
         targetTable: "jdy_purchase_demand_observation",
         payload: { data: { requestedAt: "2024-12-10", requestedQty: "100", purchasedQty: "80", purchaseStatus: "部分采购" } },
       });
+      const [jstJob] = await db.insert(schema.importJobs).values({
+        template: "jst_daily_sales",
+        filename: "jst-daily",
+        sourceAsOf: "2026-07-25",
+        createdBy: actor.id,
+        status: "done",
+      }).returning();
+      await db.insert(schema.stagingRows).values({
+        importJobId: jstJob.id,
+        rowNo: 1,
+        status: "validated",
+        targetTable: "jst_daily_sales",
+        payload: { bizDate: "2026-07-25", skuCode: "CS90001", qty: "3", _resolved: { skuId: sku.id } },
+      });
 
       const byBrand = await getDecisionStudio({ dimension: "brand" }, db);
       const byChannel = await getDecisionStudio({ dimension: "channel" }, db);
@@ -165,6 +179,21 @@ describe("decision studio evidence model", () => {
           summary: "需求行 1行 · 需求数量 100 · 已采购数量 80 · 未/部分采购 1行",
         }),
       ]);
+
+      const coreOnly = await getDecisionStudio({ dimension: "brand", sections: ["core"] }, db);
+      expect(coreOnly.loadedSections).toEqual(["core"]);
+      expect(coreOnly.daily.dates).toEqual([]);
+      expect(coreOnly.dataSources).toEqual([]);
+      expect(coreOnly.supportingObservations).toEqual([]);
+
+      const dailyOnly = await getDecisionStudio({ dimension: "sku", sections: ["daily"] }, db);
+      expect(dailyOnly.loadedSections).toEqual(["core", "daily"]);
+      expect(dailyOnly.daily).toMatchObject({
+        state: "ready",
+        dates: [{ date: "2026-07-25", qty: 3 }],
+        coveredRows: 1,
+        totalRows: 1,
+      });
     } finally {
       await client.close();
     }

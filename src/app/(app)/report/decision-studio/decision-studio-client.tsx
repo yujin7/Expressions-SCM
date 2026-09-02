@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   Alert,
   App,
@@ -35,7 +36,6 @@ import {
 } from "recharts";
 import { CopyOutlined, DownloadOutlined } from "@ant-design/icons";
 
-import DecisionReadinessPanel from "@/components/DecisionReadinessPanel";
 import DecisionVisual from "@/components/DecisionVisual";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
 import { fetchJson } from "@/components/fetchJson";
@@ -60,6 +60,12 @@ import type {
   DecisionStudioResult,
   StudioDimension,
 } from "@/server/modules/report/decision-studio";
+
+// 能力解锁面板只在 readiness 标签出现；不让它和整套数据产品治理 UI 阻塞常用首屏。
+const DecisionReadinessPanel = dynamic(
+  () => import("@/components/DecisionReadinessPanel"),
+  { loading: () => <Card loading style={{ minHeight: 220 }} /> },
+);
 
 const DIMENSION_LABEL: Record<StudioDimension, string> = {
   brand: "品牌",
@@ -112,6 +118,8 @@ export default function DecisionStudioClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<DecisionStudioResult | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const activeRequest = useRef<AbortController | null>(null);
   const view = useListState({
     key: "decision-studio",
     defaults: { dimension: "brand", key: "", tab: "focus", brand: "", channel: "", product: "" },
@@ -128,24 +136,38 @@ export default function DecisionStudioClient() {
   const focusProductId = view.filters.product;
 
   const load = useCallback(async () => {
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
     setLoading(true);
+    setLoadError(null);
+    setData(null);
     try {
       const query = new URLSearchParams({ dimension });
+      query.set("tab", activeTab);
       if (selectedKey) query.set("key", selectedKey);
       if (scopeBrand) query.set("brand", scopeBrand);
       if (scopeChannel) query.set("channel", scopeChannel);
       setData(await fetchJson<DecisionStudioResult>(
         `/api/report/decision-studio?${query.toString()}`,
+        { signal: controller.signal },
       ));
     } catch (error) {
-      message.error((error as Error).message);
+      if ((error as Error).name === "AbortError") return;
+      const detail = (error as Error).message;
+      setLoadError(detail);
+      message.error(detail);
     } finally {
-      setLoading(false);
+      if (activeRequest.current === controller) {
+        setLoading(false);
+        activeRequest.current = null;
+      }
     }
-  }, [dimension, selectedKey, scopeBrand, scopeChannel, message]);
+  }, [activeTab, dimension, selectedKey, scopeBrand, scopeChannel, message]);
 
   useEffect(() => {
     void load();
+    return () => activeRequest.current?.abort();
   }, [load]);
 
   const groupOptions = useMemo(
@@ -282,18 +304,14 @@ export default function DecisionStudioClient() {
 
   return (
     <div>
-      <Space
-        align="start"
-        style={{ width: "100%", justifyContent: "space-between", marginBottom: 12 }}
-        wrap
-      >
-        <div>
-          <Typography.Title level={3} style={{ margin: 0 }}>决策工作室</Typography.Title>
-          <Typography.Text type="secondary">
-            用一套筛选联动结构、趋势、透视、日级节奏和月度回顾；缺数据的能力保持留白。
-          </Typography.Text>
-        </div>
-        <Space wrap>
+      <div className="decision-studio-heading">
+        <Typography.Title level={3} style={{ margin: 0 }}>决策工作室</Typography.Title>
+        <Typography.Text type="secondary">
+          用一套筛选联动结构、趋势、透视、日级节奏和月度回顾；缺数据的能力保持留白。
+        </Typography.Text>
+      </div>
+      <div className="decision-studio-filterbar">
+        <div className="decision-studio-dimensions">
           <Radio.Group
             optionType="button"
             buttonStyle="solid"
@@ -309,6 +327,8 @@ export default function DecisionStudioClient() {
               key: "",
             })}
           />
+        </div>
+        <div className="decision-studio-scope-filters">
           {/*
             跨维筛选：与上面的分组维度**正交**。旧实现只有一个 dimension + 一个 key，
             品牌与渠道互斥单选，做不到「NING × 天猫」——0727 会议要的正是这种组合。
@@ -321,7 +341,7 @@ export default function DecisionStudioClient() {
             allowClear
             aria-label="筛选品牌"
             placeholder="全部品牌"
-            style={{ width: 160 }}
+            style={{ width: "100%" }}
             value={scopeBrand || undefined}
             onChange={(v) => view.setFilter({ brand: v == null ? "" : String(v), key: "" })}
           />
@@ -332,7 +352,7 @@ export default function DecisionStudioClient() {
             allowClear
             aria-label="筛选渠道"
             placeholder="全部渠道"
-            style={{ width: 160 }}
+            style={{ width: "100%" }}
             value={scopeChannel || undefined}
             onChange={(v) => view.setFilter({ channel: v == null ? "" : String(v), key: "" })}
           />
@@ -341,14 +361,14 @@ export default function DecisionStudioClient() {
             showSearch
             optionFilterProp="label"
             aria-label={`筛选${DIMENSION_LABEL[dimension]}`}
-            style={{ minWidth: 260 }}
+            style={{ width: "100%" }}
             placeholder={`筛选${DIMENSION_LABEL[dimension]}（全部）`}
             value={selectedKey || undefined}
             options={groupOptions}
             onChange={(key) => view.setFilter({ key: key ?? "" })}
           />
-        </Space>
-      </Space>
+        </div>
+      </div>
 
       <Alert
         showIcon
@@ -358,40 +378,53 @@ export default function DecisionStudioClient() {
         description={data?.limitations[0]}
       />
 
+      {loadError ? (
+        <Alert
+          showIcon
+          type="error"
+          style={{ marginBottom: 12 }}
+          message="决策数据加载失败"
+          description={loadError}
+          action={<Button size="small" onClick={() => void load()}>重新加载</Button>}
+        />
+      ) : null}
+
       <Row gutter={[10, 10]} className="compact-kpi-row">
         <Col xs={12} md={6}>
-          <Card size="small">
+          <Card size="small" loading={loading && !data}>
             <Statistic
               title={`${data?.latestMonth ?? "最新月"}销量`}
-              value={data?.comparison.current ?? 0}
-              formatter={(value) => formatQty(Number(value))}
+              value={data?.comparison.current ?? "—"}
+              formatter={(value) => Number.isFinite(Number(value)) ? formatQty(Number(value)) : "—"}
             />
           </Card>
         </Col>
         <Col xs={12} md={6}>
-          <Card size="small">
+          <Card size="small" loading={loading && !data}>
             <Statistic
               title="环比"
               value={pctLabel(data?.comparison.momPct ?? null)}
               valueStyle={{
-                color: (data?.comparison.momPct ?? 0) < 0
-                  ? VISUAL_COLOR.critical
-                  : VISUAL_COLOR.positive,
+                color: data?.comparison.momPct == null
+                  ? undefined
+                  : data.comparison.momPct < 0
+                    ? VISUAL_COLOR.critical
+                    : VISUAL_COLOR.positive,
               }}
             />
           </Card>
         </Col>
         <Col xs={12} md={6}>
-          <Card size="small">
+          <Card size="small" loading={loading && !data}>
             <Statistic title="同比" value={pctLabel(data?.comparison.yoyPct ?? null)} />
           </Card>
         </Col>
         <Col xs={12} md={6}>
-          <Card size="small">
+          <Card size="small" loading={loading && !data}>
             <Statistic
               title={`贡献 80% 的${DIMENSION_LABEL[dimension]}数`}
-              value={data?.pareto80Count ?? 0}
-              suffix={`/ ${data?.pareto.length ?? 0}`}
+              value={data ? data.pareto80Count : "—"}
+              suffix={data ? `/ ${data.pareto.length}` : undefined}
             />
           </Card>
         </Col>

@@ -12,6 +12,7 @@ import { createTestDb, type TestDb } from "../helpers/db";
  * ③ 没有分批余额时是否诚实降级（不报错、不假装分配）。
  */
 describe("suggestFefoAllocation", () => {
+  const testToday = "2026-07-25";
   let db: TestDb;
   let skuId = 0;
   let whA = 0;
@@ -46,7 +47,7 @@ describe("suggestFefoAllocation", () => {
     await bal(whA, early, "100");
     await bal(whB, early, "999"); // 他仓库存不得参与
 
-    const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "150" });
+    const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "150", today: testToday });
     expect(r.batchCoverage).toBe(true);
     expect(r.allocations.map((a) => a.batchNo)).toEqual(["L-EARLY", "L-LATE"]);
     expect(r.allocations[0].qty).toBe("100.0000");
@@ -57,7 +58,7 @@ describe("suggestFefoAllocation", () => {
 
   it("**无分批余额时诚实降级**：空分配 + 说明，不报错", async () => {
     await bal(whA, null, "500"); // 只有历史无批次库存
-    const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "100" });
+    const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "100", today: testToday });
     expect(r.batchCoverage).toBe(false);
     expect(r.allocations).toEqual([]);
     expect(r.shortBy).toBe("0.0000");
@@ -69,7 +70,7 @@ describe("suggestFefoAllocation", () => {
     await bal(whA, b1, "30");
     await bal(whA, null, "200"); // 历史库存
 
-    const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "100" });
+    const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "100", today: testToday });
     expect(r.allocations[0].qty).toBe("30.0000");
     expect(r.fallbackQty).toBe("70.0000"); // 不回落的话这 200 就成了死库存
     expect(r.shortBy).toBe("0.0000");
@@ -82,7 +83,7 @@ describe("suggestFefoAllocation", () => {
     await bal(whA, b1, "30");
     await bal(whA, null, "20");
 
-    const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "100" });
+    const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "100", today: testToday });
     expect(r.fallbackQty).toBe("20.0000");
     expect(r.shortBy).toBe("50.0000");
     expect(r.note).toContain("仍缺 50");
@@ -94,7 +95,7 @@ describe("suggestFefoAllocation", () => {
     await bal(whA, undated, "100");
     await bal(whA, dated, "40");
 
-    const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "90" });
+    const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "90", today: testToday });
     expect(r.allocations.map((a) => a.batchNo)).toEqual(["L-D", "L-N"]);
     expect(r.allocations[1].qty).toBe("50.0000");
   });
@@ -125,7 +126,7 @@ describe("suggestFefoAllocation", () => {
       qty: "70",
     });
 
-    const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "50" });
+    const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "50", today: testToday });
     expect(r.allocations).toEqual([
       expect.objectContaining({ batchId: batch, qty: "30.0000" }),
     ]);
@@ -146,7 +147,7 @@ describe("suggestFefoAllocation", () => {
     await bal(whA, b1, "40");
     await bal(whA, b2, "80");
 
-    const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "55" });
+    const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "55", today: testToday });
     const sum = r.allocations.reduce((s, a) => s + Number(a.qty), 0);
     expect(sum).toBe(55);
     expect(r.allocations[1].qty).toBe("15.0000");
