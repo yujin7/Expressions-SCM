@@ -356,7 +356,8 @@ describe("全渠道外部观察", () => {
           createdBy: actor.id, status: "done",
         },
         {
-          template: "jdy_tmall_sku_refund_observation", filename: "stale-refunds", sourceAsOf: "2026-08-30",
+          // 旧业务行今天被编辑：更新时间与销量相同，但退款业务日期仍落后。
+          template: "jdy_tmall_sku_refund_observation", filename: "stale-refunds", sourceAsOf: "2026-09-02",
           createdBy: actor.id, status: "done",
         },
       ]).returning();
@@ -367,7 +368,7 @@ describe("全渠道外部观察", () => {
         },
         {
           connector: "jdy", stream: "tmall-sku-refund-observation", idempotencyKey: "stale-refunds",
-          status: "succeeded", importJobId: refunds.id, finishedAt: new Date("2026-08-30T03:00:00.000Z"),
+          status: "succeeded", importJobId: refunds.id, finishedAt: new Date("2026-09-02T03:01:00.000Z"),
         },
       ]);
       await db.insert(schema.stagingRows).values([

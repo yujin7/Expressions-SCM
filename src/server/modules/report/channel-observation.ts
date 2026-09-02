@@ -98,17 +98,32 @@ async function latestBatch(db: ReadDb, stream: string): Promise<{ importJobId: n
   return importJobId > 0 ? { importJobId, sourceAsOf: row?.source_as_of == null ? null : String(row.source_as_of) } : null;
 }
 
-function tmallStreamsCoverSameHorizon(
-  sales: { sourceAsOf: string | null } | null,
-  refunds: { sourceAsOf: string | null } | null,
-): boolean {
-  return Boolean(
-    sales?.sourceAsOf
-    && refunds?.sourceAsOf
-    && /^\d{4}-\d{2}-\d{2}$/.test(sales.sourceAsOf)
-    && /^\d{4}-\d{2}-\d{2}$/.test(refunds.sourceAsOf)
-    && refunds.sourceAsOf >= sales.sourceAsOf,
-  );
+async function tmallStreamsCoverSameHorizon(
+  db: ReadDb,
+  salesImportJobId: number,
+  refundImportJobId: number,
+): Promise<boolean> {
+  const [row] = resultRows<Record<string, unknown>>(await db.execute(sql`
+    SELECT
+      max(left(payload->'data'->>'statisticalDate', 10)) FILTER (
+        WHERE import_job_id = ${salesImportJobId}
+          AND target_table = 'jdy_tmall_sku_sales_observation'
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
+          AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+      ) AS sales_through,
+      max(left(payload->'data'->>'statisticalDate', 10)) FILTER (
+        WHERE import_job_id = ${refundImportJobId}
+          AND target_table = 'jdy_tmall_sku_refund_observation'
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
+          AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+      ) AS refunds_through
+    FROM staging_rows
+    WHERE status IN ('pending', 'validated', 'committed')
+      AND import_job_id IN (${salesImportJobId}, ${refundImportJobId})
+  `));
+  const salesThrough = text(row?.sales_through);
+  const refundsThrough = text(row?.refunds_through);
+  return Boolean(salesThrough && refundsThrough && refundsThrough >= salesThrough);
 }
 
 function insufficient(platform: ChannelPlatformRow["platform"], grain: string, gate: string): ChannelPlatformRow {
@@ -135,6 +150,9 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
   const brands = resultRows<Record<string, unknown>>(brandRows).map((b) => ({
     code: String(b.code ?? ""), names: [String(b.code ?? ""), text(b.name_cn) ?? "", text(b.name_en) ?? ""].filter(Boolean),
   }));
+  const tmallHorizonReady = tmallSales && tmallRefunds
+    ? await tmallStreamsCoverSameHorizon(db, tmallSales.importJobId, tmallRefunds.importJobId)
+    : false;
 
   /* ── 天猫 ── */
   let tmall = insufficient(
@@ -148,7 +166,7 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
   );
   // 净销量是“支付件数 − 成功退款子订单数”。两条流必须同时可用且退款观察至少覆盖销量时点；
   // 否则旧退款快照会把新日期的未知退款误当成 0。
-  if (tmallSales && tmallRefunds && tmallStreamsCoverSameHorizon(tmallSales, tmallRefunds)) {
+  if (tmallSales && tmallRefunds && tmallHorizonReady) {
     const rows = resultRows<Record<string, unknown>>(await db.execute(sql`
       WITH s AS (
         SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'skuId' AS psku, left(payload->'data'->>'statisticalDate', 10)::date AS d,

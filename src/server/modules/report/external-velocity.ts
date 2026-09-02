@@ -104,17 +104,32 @@ async function latestBatch(db: ReadDb, stream: string): Promise<{ importJobId: n
     : null;
 }
 
-function tmallStreamsCoverSameHorizon(
-  sales: { sourceAsOf: string | null } | null,
-  refunds: { sourceAsOf: string | null } | null,
-): boolean {
-  return Boolean(
-    sales?.sourceAsOf
-    && refunds?.sourceAsOf
-    && /^\d{4}-\d{2}-\d{2}$/.test(sales.sourceAsOf)
-    && /^\d{4}-\d{2}-\d{2}$/.test(refunds.sourceAsOf)
-    && refunds.sourceAsOf >= sales.sourceAsOf,
-  );
+async function tmallStreamsCoverSameHorizon(
+  db: ReadDb,
+  salesImportJobId: number,
+  refundImportJobId: number,
+): Promise<boolean> {
+  const [row] = resultRows<Record<string, unknown>>(await db.execute(sql`
+    SELECT
+      max(left(payload->'data'->>'statisticalDate', 10)) FILTER (
+        WHERE import_job_id = ${salesImportJobId}
+          AND target_table = 'jdy_tmall_sku_sales_observation'
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
+          AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+      ) AS sales_through,
+      max(left(payload->'data'->>'statisticalDate', 10)) FILTER (
+        WHERE import_job_id = ${refundImportJobId}
+          AND target_table = 'jdy_tmall_sku_refund_observation'
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
+          AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+      ) AS refunds_through
+    FROM staging_rows
+    WHERE status IN ('pending', 'validated', 'committed')
+      AND import_job_id IN (${salesImportJobId}, ${refundImportJobId})
+  `));
+  const salesThrough = row?.sales_through == null ? "" : String(row.sales_through).trim();
+  const refundsThrough = row?.refunds_through == null ? "" : String(row.refunds_through).trim();
+  return Boolean(salesThrough && refundsThrough && refundsThrough >= salesThrough);
 }
 
 async function binding(db: ReadDb): Promise<string | null> {
@@ -175,7 +190,9 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
     latestBatch(db, "pdd-order-observation"),
     latestBatch(db, "pdd-sku-crosswalk-observation"),
   ]);
-  const tmallReady = tmallStreamsCoverSameHorizon(sales, refunds);
+  const tmallReady = sales && refunds
+    ? await tmallStreamsCoverSameHorizon(db, sales.importJobId, refunds.importJobId)
+    : false;
   if (!tmallReady && !pddOrders) {
     return emptyExternalVelocity(
       sales && refunds

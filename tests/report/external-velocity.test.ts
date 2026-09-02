@@ -69,6 +69,8 @@ async function seed() {
       payload: { data: { statisticalDate: "2026-08-20", shopName: shop, skuId: "P-CW", successRefundSuborderNumber: "2" } } },
     { importJobId: refunds.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
       payload: { data: { statisticalDate: "2026-08-20", shopName: shop, skuId: "P-DIRECT", successRefundSuborderNumber: "0.1" } } },
+    { importJobId: refunds.id, rowNo: 3, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
+      payload: { data: { statisticalDate: "2026-09-01", shopName: shop, skuId: "P-CW", successRefundSuborderNumber: "0" } } },
   ]);
   return { db, client, actor, viaCrosswalk, viaDirect, unmapped };
 }
@@ -138,7 +140,8 @@ describe("外部观察销速读模型", () => {
           createdBy: actor.id, status: "done",
         },
         {
-          template: "jdy_tmall_sku_refund_observation", filename: "stale-refunds", sourceAsOf: "2026-08-30",
+          // 旧业务行今天被编辑：更新时间与销量相同，但退款业务日期仍落后。
+          template: "jdy_tmall_sku_refund_observation", filename: "stale-refunds", sourceAsOf: "2026-09-02",
           createdBy: actor.id, status: "done",
         },
       ]).returning();
@@ -149,7 +152,7 @@ describe("外部观察销速读模型", () => {
         },
         {
           connector: "jdy", stream: "tmall-sku-refund-observation", idempotencyKey: "stale-refunds-velocity",
-          status: "succeeded", importJobId: refunds.id, finishedAt: new Date("2026-08-30T03:00:00.000Z"),
+          status: "succeeded", importJobId: refunds.id, finishedAt: new Date("2026-09-02T03:01:00.000Z"),
         },
       ]);
       await db.insert(schema.stagingRows).values([
