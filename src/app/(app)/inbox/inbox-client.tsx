@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, App, Button, Modal, Popconfirm, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { fetchJson, postJson } from "@/components/fetchJson";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 
 interface InboxItem {
   docType: string;
@@ -52,6 +53,8 @@ export default function InboxClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<InboxData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
 
   /* E5-03 批量审批：逐单独立、部分成功可见（失败分列+原因，不做全或无） */
   const [selected, setSelected] = useState<InboxItem[]>([]);
@@ -60,15 +63,23 @@ export default function InboxClient() {
   const BATCHABLE = new Set(["bh", "wo", "po", "pc", "jg"]);
 
   const load = useCallback(async () => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setLoading(true);
+    setLoadError(null);
     try {
-      setData(await fetchJson<InboxData>("/api/inbox"));
+      const next = await fetchJson<InboxData>("/api/inbox", { signal: controller.signal });
+      if (!controller.signal.aborted) setData(next);
     } catch (e) {
-      message.error((e as Error).message);
+      if (!controller.signal.aborted) setLoadError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (requestRef.current === controller) {
+        requestRef.current = null;
+        setLoading(false);
+      }
     }
-  }, [message]);
+  }, []);
 
   const doBatch = async () => {
     const items = selected.filter((r) => BATCHABLE.has(r.docType)).map((r) => ({ docType: r.docType, id: r.id, version: r.version }));
@@ -92,6 +103,7 @@ export default function InboxClient() {
   useEffect(() => {
     void load();
   }, [load]);
+  useEffect(() => () => requestRef.current?.abort(), []);
 
   const columns = (actionText: string): ColumnsType<InboxItem> => [
     {
@@ -139,6 +151,7 @@ export default function InboxClient() {
           刷新
         </Button>
       </Space>
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="待办" retrying={loading} />
       {empty ? (
         <Typography.Paragraph type="secondary" style={{ marginTop: 24 }}>
           当前无待办事项。
@@ -146,7 +159,7 @@ export default function InboxClient() {
       ) : (
         <>
           <Typography.Title level={5} style={{ marginTop: 8 }}>
-            待我审批（{data?.total ?? 0}）
+            待我审批（{data ? data.total : "—"}）
           </Typography.Title>
           {selected.length > 0 ? (
             <div style={{ marginBottom: 8, padding: "8px 12px", background: "#e6f4ff", borderRadius: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -179,10 +192,10 @@ export default function InboxClient() {
               preserveSelectedRowKeys: true,
               onChange: (_k, rows) => setSelected(rows.filter((r) => r != null)),
             }}
-            locale={{ emptyText: "没有等待您审批的单据" }}
+            locale={{ emptyText: loadError ? "数据未加载" : "没有等待您审批的单据" }}
             style={{ marginBottom: 24 }}
           />
-          <Typography.Title level={5}>我提交的待审（{data?.submitted.length ?? 0}）</Typography.Title>
+          <Typography.Title level={5}>我提交的待审（{data ? data.submitted.length : "—"}）</Typography.Title>
           <Table<InboxItem>
             rowKey={(r) => `${r.docType}-${r.id}`}
             size="middle"
@@ -190,7 +203,7 @@ export default function InboxClient() {
             dataSource={data?.submitted ?? []}
             loading={loading}
             pagination={false}
-            locale={{ emptyText: "没有您提交的待审单据" }}
+            locale={{ emptyText: loadError ? "数据未加载" : "没有您提交的待审单据" }}
           />
         </>
       )}

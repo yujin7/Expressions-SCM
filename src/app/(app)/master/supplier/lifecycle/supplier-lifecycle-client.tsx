@@ -33,6 +33,7 @@ import {
   SUPPLIER_STATUS_COLORS,
   SUPPLIER_STATUS_LABELS,
 } from "@/components/labels";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 
 type CaseKind = "admission" | "corrective";
 type CaseStatus = "open" | "closed";
@@ -116,6 +117,7 @@ export default function SupplierLifecycleClient() {
   const [closeForm] = Form.useForm<CloseForm>();
   const [data, setData] = useState<LifecycleData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [openModal, setOpenModal] = useState(false);
   const [closing, setClosing] = useState<LifecycleRow | null>(null);
@@ -135,17 +137,18 @@ export default function SupplierLifecycleClient() {
   const load = useCallback(async () => {
     const sequence = ++loadSequence.current;
     setLoading(true);
+    setLoadError(null);
     try {
       const next = await fetchJson<LifecycleData>(
         `/api/master/supplier/lifecycle?${apiQuery}`,
       );
       if (sequence === loadSequence.current) setData(next);
     } catch (error) {
-      if (sequence === loadSequence.current) message.error((error as Error).message);
+      if (sequence === loadSequence.current) setLoadError((error as Error).message);
     } finally {
       if (sequence === loadSequence.current) setLoading(false);
     }
-  }, [apiQuery, message]);
+  }, [apiQuery]);
 
   useEffect(() => {
     void load();
@@ -330,11 +333,13 @@ export default function SupplierLifecycleClient() {
         message="最小闭环：发起 → 明确责任人与截止日 → 提交完成证据 → 人工决定供应商状态；全部变更与审计同事务。"
       />
 
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="供应商准入与整改" retrying={loading} />
+
       <Row gutter={[12, 12]} className="supplier-lifecycle-kpis">
-        <Col xs={12} md={6}><Card size="small"><Statistic title="进行中" value={data?.summary.open ?? 0} /></Card></Col>
-        <Col xs={12} md={6}><Card size="small"><Statistic title="已逾期" value={data?.summary.overdue ?? 0} valueStyle={{ color: data?.summary.overdue ? "#cf1322" : undefined }} /></Card></Col>
-        <Col xs={12} md={6}><Card size="small"><Statistic title="待准入" value={data?.summary.admissions ?? 0} /></Card></Col>
-        <Col xs={12} md={6}><Card size="small"><Statistic title="整改中" value={data?.summary.corrective ?? 0} /></Card></Col>
+        <Col xs={12} md={6}><Card size="small"><Statistic title="进行中" value={data ? data.summary.open : "—"} /></Card></Col>
+        <Col xs={12} md={6}><Card size="small"><Statistic title="已逾期" value={data ? data.summary.overdue : "—"} valueStyle={{ color: data?.summary.overdue ? "#cf1322" : undefined }} /></Card></Col>
+        <Col xs={12} md={6}><Card size="small"><Statistic title="待准入" value={data ? data.summary.admissions : "—"} /></Card></Col>
+        <Col xs={12} md={6}><Card size="small"><Statistic title="整改中" value={data ? data.summary.corrective : "—"} /></Card></Col>
       </Row>
 
       <ListToolbar
@@ -392,6 +397,7 @@ export default function SupplierLifecycleClient() {
         dataSource={data?.rows ?? []}
         pagination={listState.paginationProps({ total: data?.total })}
         scroll={{ x: 1265 }}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前条件下无供应商工作项" }}
         expandable={{
           expandedRowRender: (row) => (
             <div className="supplier-lifecycle-evidence">

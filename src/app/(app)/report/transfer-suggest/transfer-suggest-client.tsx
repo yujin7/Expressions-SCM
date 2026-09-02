@@ -3,13 +3,14 @@
 import SearchInput from "@/components/SearchInput";
 
 /** E3-04 仓间调拨建议：逐仓出库流水代理逐仓需求，盈余仓 → 缺口仓贪心分配（只读，不自动开单） */
-import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Alert, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import SkuHoverCard from "@/components/SkuHoverCard";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 
 interface TransferSuggestRow {
   skuId: number;
@@ -42,26 +43,37 @@ interface TransferSuggestData {
 const nz = (v: number): string => v.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
 
 export default function TransferSuggestClient() {
-  const { message } = App.useApp();
   const [data, setData] = useState<TransferSuggestData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   const listState = useListState({ key: "transfer-suggest", defaults: { q: "" }, defaultPageSize: 50 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
 
   const load = useCallback(async () => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setLoading(true);
+    setLoadError(null);
+    setData(null);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
-      setData(await fetchJson<TransferSuggestData>(`/api/report/transfer-suggest?${params.toString()}`));
+      const next = await fetchJson<TransferSuggestData>(`/api/report/transfer-suggest?${params.toString()}`, { signal: controller.signal });
+      if (!controller.signal.aborted) setData(next);
     } catch (e) {
-      message.error((e as Error).message);
+      if (!controller.signal.aborted) setLoadError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (requestRef.current === controller) {
+        requestRef.current = null;
+        setLoading(false);
+      }
     }
-  }, [q, page, pageSize, message]);
+  }, [q, page, pageSize]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => () => requestRef.current?.abort(), []);
 
   const columns: ColumnsType<TransferSuggestRow> = [
     {
@@ -144,10 +156,11 @@ export default function TransferSuggestClient() {
           ) : null
         }
       />
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="调拨建议" retrying={loading} />
       <Space className="compact-stat-strip" wrap>
-        <Statistic title="涉及 SKU 数" value={data?.summary.skuCount ?? 0} />
-        <Statistic title="建议条数" value={data?.summary.lineCount ?? 0} />
-        <Statistic title="建议总量（基础单位）" value={data?.summary.totalQty ?? 0} />
+        <Statistic title="涉及 SKU 数" value={data ? data.summary.skuCount : "—"} />
+        <Statistic title="建议条数" value={data ? data.summary.lineCount : "—"} />
+        <Statistic title="建议总量（基础单位）" value={data ? data.summary.totalQty : "—"} />
       </Space>
       <ListToolbar
         state={listState}
@@ -168,6 +181,7 @@ export default function TransferSuggestClient() {
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前条件下无调拨建议" }}
         scroll={{ x: "max-content" }}
         pagination={listState.paginationProps({ total: data?.total ?? 0 })}
       />

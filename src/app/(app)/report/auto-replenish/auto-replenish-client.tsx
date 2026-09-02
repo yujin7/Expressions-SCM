@@ -6,6 +6,7 @@ import {  App, Button, Popconfirm, Space, Statistic, Table, Tabs, Tag, Typograph
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import CaliberNote from "@/components/CaliberNote";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 
 /** E1-03：与 createReplenishDraftSchema 的 200 项上限对齐（服务端契约） */
 const DRAFT_MAX = 200;
@@ -44,19 +45,21 @@ export default function AutoReplenishClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<AutoData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Candidate[]>([]);
   const [drafting, setDrafting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       setData(await fetchJson<AutoData>("/api/report/auto-replenish"));
     } catch (e) {
-      message.error((e as Error).message);
+      setLoadError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [message]);
+  }, []);
   useEffect(() => { void load(); }, [load]);
 
   const bulkDraft = async () => {
@@ -168,15 +171,16 @@ export default function AutoReplenishClient() {
         summary={<>守护式：仅 A/B 类·需求稳定(X/Y)·非覆盖缺口·有生产周期的告急 SKU 列为可自动；其余转人工。生成草稿仍走审批。</>}
         detail={<div><p>自动候选五门：有真实建议量、ABC ∈ A/B、XYZ ∈ X/Y（波动大不宜自动）、非覆盖缺口（防对海外仓已有库存重复下单）、生产周期在档。</p><p>批准 BH 后如需自动开工单，在 系统管理→运行参数 开启 auto_wo_on_bh（D33 自动链）。</p></div>}
       />
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="自动补货候选" retrying={loading} />
       <Space className="compact-stat-strip" wrap>
-        <Statistic title="可自动候选数" value={data?.summary.candidateCount ?? 0} />
-        <Statistic title="需人工数" value={data?.summary.exceptionCount ?? 0} />
-        <Statistic title="候选建议总量" value={Number(data?.summary.totalSuggestQty ?? 0).toLocaleString("zh-CN")} />
+        <Statistic title="可自动候选数" value={data ? data.summary.candidateCount : "—"} />
+        <Statistic title="需人工数" value={data ? data.summary.exceptionCount : "—"} />
+        <Statistic title="候选建议总量" value={data ? Number(data.summary.totalSuggestQty).toLocaleString("zh-CN") : "—"} />
       </Space>
       <Tabs
         items={[
-          { key: "auto", label: `可自动候选（${data?.summary.candidateCount ?? 0}）`, children: candidateTab },
-          { key: "manual", label: `需人工判断（${data?.summary.exceptionCount ?? 0}）`, children: exceptionTab },
+          { key: "auto", label: `可自动候选（${data ? data.summary.candidateCount : "—"}）`, children: candidateTab },
+          { key: "manual", label: `需人工判断（${data ? data.summary.exceptionCount : "—"}）`, children: exceptionTab },
         ]}
       />
     </div>

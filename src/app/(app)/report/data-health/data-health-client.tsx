@@ -8,9 +8,9 @@ import SearchInput from "@/components/SearchInput";
  *  - 缺失清单：主数据**缺什么**（逐 SKU 完整度评分）
  *  - 疑似重复：主数据**多了什么**（同一实物被建了多条主档）
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Alert, App, Progress, Select, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, Progress, Select, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import { Tabs } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
@@ -19,6 +19,7 @@ import DecisionReadinessPanel from "@/components/DecisionReadinessPanel";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
 import SkuHoverCard from "@/components/SkuHoverCard";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 
 interface DataHealthRow {
   skuId: number;
@@ -80,9 +81,10 @@ function warningLead(value: string): string {
 /* ─────────────────────────── 页签一：缺失清单 ─────────────────────────── */
 
 function MissingTab() {
-  const { message } = App.useApp();
   const [data, setData] = useState<DataHealthData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
   // 本页签独立列表状态：URL 参数命名空间 ms_*（与「疑似重复」互不干扰）
   const listState = useListState({
     key: "data-health",
@@ -95,21 +97,31 @@ function MissingTab() {
   const missing = filters.missing;
 
   const load = useCallback(async () => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setLoading(true);
+    setLoadError(null);
+    setData(null);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (missing) params.set("missing", missing);
-      setData(await fetchJson<DataHealthData>(`/api/report/data-health?${params.toString()}`));
+      const next = await fetchJson<DataHealthData>(`/api/report/data-health?${params.toString()}`, { signal: controller.signal });
+      if (!controller.signal.aborted) setData(next);
     } catch (e) {
-      message.error((e as Error).message);
+      if (!controller.signal.aborted) setLoadError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (requestRef.current === controller) {
+        requestRef.current = null;
+        setLoading(false);
+      }
     }
-  }, [q, missing, page, pageSize, message]);
+  }, [q, missing, page, pageSize]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => () => requestRef.current?.abort(), []);
 
   const summary = data?.summary;
-  const healthRate = summary && summary.totalSkus > 0 ? Math.round((100 * summary.fullyHealthy) / summary.totalSkus) : 0;
+  const healthRate = summary && summary.totalSkus > 0 ? Math.round((100 * summary.fullyHealthy) / summary.totalSkus) : null;
 
   const columns: ColumnsType<DataHealthRow> = [
     {
@@ -172,10 +184,11 @@ function MissingTab() {
           }
         />
       ))}
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="主数据缺失清单" retrying={loading} />
       <Space className="compact-stat-strip" wrap>
-        <Statistic title="在售成品 SKU" value={summary?.totalSkus ?? 0} />
-        <Statistic title="完全健康" value={summary?.fullyHealthy ?? 0} suffix={summary ? `/ ${healthRate}%` : undefined} />
-        <Statistic title="待修复" value={data?.total ?? 0} valueStyle={{ color: "#cf1322" }} />
+        <Statistic title="在售成品 SKU" value={summary ? summary.totalSkus : "—"} />
+        <Statistic title="完全健康" value={summary ? summary.fullyHealthy : "—"} suffix={healthRate == null ? undefined : `/ ${healthRate}%`} />
+        <Statistic title="待修复" value={data ? data.total : "—"} valueStyle={{ color: data ? "#cf1322" : undefined }} />
       </Space>
       <ListToolbar
         state={listState}
@@ -189,7 +202,7 @@ function MissingTab() {
               style={{ width: 230 }}
               options={DIMENSIONS.map((dimension) => ({
                 value: dimension,
-                label: `${dimension} 缺失（${summary?.byDimension[dimension] ?? 0}）`,
+                label: `${dimension} 缺失（${summary ? summary.byDimension[dimension] ?? 0 : "—"}）`,
               }))}
               onChange={(value) => listState.setFilter({ missing: value ?? "" })}
             />
@@ -210,6 +223,7 @@ function MissingTab() {
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前条件下无待修复 SKU" }}
         scroll={{ x: "max-content" }}
         pagination={listState.paginationProps({ total: data?.total ?? 0, showTotal: (t) => `共 ${t} 条待修复` })}
       />
@@ -251,9 +265,10 @@ interface DupeData {
 }
 
 function DuplicatesTab() {
-  const { message } = App.useApp();
   const [data, setData] = useState<DupeData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
   // 本页签独立列表状态：URL 参数命名空间 dp_*
   const listState = useListState({
     key: "data-health-dupe",
@@ -267,19 +282,29 @@ function DuplicatesTab() {
   const sameBrandOnly = filters.sameBrandOnly === "1";
 
   const load = useCallback(async () => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setLoading(true);
+    setLoadError(null);
+    setData(null);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (exactOnly) params.set("exactOnly", "1");
       if (sameBrandOnly) params.set("crossBrand", "0");
-      setData(await fetchJson<DupeData>(`/api/report/data-health/duplicates?${params.toString()}`));
+      const next = await fetchJson<DupeData>(`/api/report/data-health/duplicates?${params.toString()}`, { signal: controller.signal });
+      if (!controller.signal.aborted) setData(next);
     } catch (e) {
-      message.error((e as Error).message);
+      if (!controller.signal.aborted) setLoadError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (requestRef.current === controller) {
+        requestRef.current = null;
+        setLoading(false);
+      }
     }
-  }, [q, exactOnly, sameBrandOnly, page, pageSize, message]);
+  }, [q, exactOnly, sameBrandOnly, page, pageSize]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => () => requestRef.current?.abort(), []);
 
   const columns: ColumnsType<DupeClusterRow> = [
     {
@@ -360,11 +385,12 @@ function DuplicatesTab() {
           message={data.note}
         />
       ) : null}
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="疑似重复主数据" retrying={loading} />
       <Space className="compact-stat-strip" wrap>
-        <Statistic title="疑似重复组" value={data?.total ?? 0} valueStyle={{ color: "#d46b08" }} />
-        <Statistic title="完全同名（建议先处理）" value={data?.exactCount ?? 0} valueStyle={{ color: "#cf1322" }} />
-        <Statistic title="涉及 SKU" value={data?.affectedSkus ?? 0} suffix={data ? `/ ${data.scanned}` : undefined} />
-        <Statistic title="待并项有库存" value={data?.clustersWithStock ?? 0} />
+        <Statistic title="疑似重复组" value={data ? data.total : "—"} valueStyle={{ color: data ? "#d46b08" : undefined }} />
+        <Statistic title="完全同名（建议先处理）" value={data ? data.exactCount : "—"} valueStyle={{ color: data ? "#cf1322" : undefined }} />
+        <Statistic title="涉及 SKU" value={data ? data.affectedSkus : "—"} suffix={data ? `/ ${data.scanned}` : undefined} />
+        <Statistic title="待并项有库存" value={data ? data.clustersWithStock : "—"} />
       </Space>
       <ListToolbar
         state={listState}
@@ -403,6 +429,7 @@ function DuplicatesTab() {
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前条件下无疑似重复组" }}
         scroll={{ x: "max-content" }}
         pagination={listState.paginationProps({ total: data?.total ?? 0, showTotal: (t) => `共 ${t} 组候选` })}
       />
