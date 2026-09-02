@@ -57,6 +57,7 @@ import {
 import { useListState } from "@/components/useListState";
 import RemoteSelect from "@/components/RemoteSelect";
 import PlatformSkuGapCard from "./platform-sku-gap-card";
+import ChannelObservationCard from "./channel-observation-card";
 import type {
   DecisionStudioResult,
   StudioDimension,
@@ -796,6 +797,7 @@ export default function DecisionStudioClient() {
                     </Button>
                   )}
                 />
+                <ChannelObservationCard active={activeTab === "external"} />
                 <Row gutter={[10, 10]} className="compact-kpi-row">
                   <Col xs={12} lg={6}>
                     <Card size="small">
