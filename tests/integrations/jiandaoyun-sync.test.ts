@@ -327,7 +327,7 @@ describe("简道云受控同步", () => {
     expect(JSON.stringify(staged[0].payload)).not.toContain("sensitive-phone");
     expect(JSON.stringify(staged[0].payload)).not.toContain("sensitive-image");
     expect(formEvidence.mock.calls[0]?.[2]).toMatchObject({
-      contract: "jiandaoyun-observation-v4",
+      contract: "jiandaoyun-observation-v5",
       scope: {
         controlSummary: {
           version: "jdy-control-v1",
@@ -584,6 +584,7 @@ describe("简道云受控同步", () => {
       actorId: actor.id,
       contract: windowedContract,
       writeEvidence: captureEvidence("3"),
+      now: () => new Date("2026-09-01T06:00:00.000Z"),
     });
     rows = [{ id: "2".repeat(24), code: "NEWER-SKU", updatedAt: "2026-09-02T02:00:00.000Z" }];
     const second = await syncJiandaoyunForm(db, {
@@ -591,6 +592,7 @@ describe("简道云受控同步", () => {
       actorId: actor.id,
       contract: windowedContract,
       writeEvidence: captureEvidence("4"),
+      now: () => new Date("2026-09-02T06:00:00.000Z"),
     });
 
     const jobs = await db.select().from(schema.importJobs);
@@ -605,18 +607,42 @@ describe("简道云受控同步", () => {
       .toEqual(["NEWER-SKU", "OLDER-SKU"]);
     expect(envelopes).toHaveLength(2);
     expect(envelopes[0]).toMatchObject({
-      scope: { window: { field: "statistical_date", days: 3, includeUpdatedSince: true } },
+      scope: { window: {
+        field: "statistical_date",
+        days: 3,
+        includeUpdatedSince: true,
+        from: "2026-08-29T16:00:00.000Z",
+        to: "2026-09-01T16:00:00.000Z",
+        fromBusinessDate: "2026-08-30",
+        throughBusinessDate: "2026-09-01",
+      } },
     });
     expect(listRecords).toHaveBeenCalledWith(
       windowedContract.appId,
       windowedContract.entryId,
       expect.any(Array),
-      { field: "statistical_date", sinceDays: 3, includeUpdatedSince: true },
+      {
+        field: "statistical_date",
+        sinceDays: 3,
+        includeUpdatedSince: true,
+        bounds: {
+          from: "2026-08-29T16:00:00.000Z",
+          to: "2026-09-01T16:00:00.000Z",
+          fromBusinessDate: "2026-08-30",
+          throughBusinessDate: "2026-09-01",
+        },
+      },
     );
     const runs = await db.select().from(schema.integrationRuns);
     expect(runs.map((run) => run.requestScope)).toEqual([
-      expect.objectContaining({ window: { field: "statistical_date", days: 3, includeUpdatedSince: true } }),
-      expect.objectContaining({ window: { field: "statistical_date", days: 3, includeUpdatedSince: true } }),
+      expect.objectContaining({ window: expect.objectContaining({
+        field: "statistical_date", days: 3, includeUpdatedSince: true,
+        fromBusinessDate: "2026-08-30", throughBusinessDate: "2026-09-01",
+      }) }),
+      expect.objectContaining({ window: expect.objectContaining({
+        field: "statistical_date", days: 3, includeUpdatedSince: true,
+        fromBusinessDate: "2026-08-31", throughBusinessDate: "2026-09-02",
+      }) }),
     ]);
   });
 

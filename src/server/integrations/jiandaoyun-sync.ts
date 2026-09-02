@@ -25,6 +25,7 @@ import {
 import {
   JiandaoyunClient,
   jiandaoyunSchemaHash,
+  resolveJiandaoyunWindow,
   type JiandaoyunRecord,
 } from "./jiandaoyun";
 import {
@@ -37,7 +38,7 @@ import { resolveSourceAsOf } from "./source-time";
 const CONNECTOR = "jdy";
 const CATALOG_STREAM = "catalog";
 const CATALOG_SCHEMA_VERSION = "jiandaoyun-catalog-v1";
-const RECORD_SCHEMA_VERSION = "jiandaoyun-observation-v4";
+const RECORD_SCHEMA_VERSION = "jiandaoyun-observation-v5";
 /** Running claims older than this can be fenced off and recovered by a retry. */
 const RUN_STALE_AFTER_MS = 2 * 60 * 60 * 1_000;
 
@@ -659,6 +660,8 @@ export async function syncJiandaoyunForm(
       stream: string,
       envelope: unknown,
     ) => Promise<IntegrationEvidence>;
+    /** Testable clock; production resolves the window once from wall time. */
+    now?: () => Date;
   },
 ): Promise<JiandaoyunFormSummary> {
   await assertActor(db, input.actorId);
@@ -669,10 +672,14 @@ export async function syncJiandaoyunForm(
   await assertStableContractSchema(db, input.contract.key, schemaHash);
   const projection = jiandaoyunContractProjection(input.contract);
   const includeUpdatedSince = input.contract.window?.includeUpdatedSince === true;
+  const resolvedWindow = input.contract.window
+    ? resolveJiandaoyunWindow(input.contract.window.days, input.now?.() ?? new Date())
+    : null;
   const evidenceWindow = input.contract.window ? {
     field: input.contract.window.field,
     days: input.contract.window.days,
     includeUpdatedSince,
+    ...resolvedWindow!,
   } : null;
   const records = await input.client.listRecords(
     input.contract.appId,
@@ -683,6 +690,7 @@ export async function syncJiandaoyunForm(
       sinceDays: input.contract.window.days,
       // 拼多多订单会在下单数日后才取消/退款；同步近期更新可撤销旧的付款观察。
       includeUpdatedSince,
+      bounds: resolvedWindow!,
     } : undefined,
   );
   const control = inspectJiandaoyunContractControl(input.contract, widgets, records);

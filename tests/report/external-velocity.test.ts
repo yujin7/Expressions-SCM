@@ -171,7 +171,8 @@ describe("外部观察销速读模型", () => {
       const finishedAt = new Date("2026-09-02T04:00:00.000Z");
       await db.insert(schema.integrationRuns).values([
         { connector: "jdy", stream: "pdd-sku-crosswalk-observation", idempotencyKey: "pdd-cw", status: "succeeded", importJobId: pddCw.id, finishedAt },
-        { connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-orders", status: "succeeded", importJobId: pddOrders.id, finishedAt },
+        { connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-orders", status: "succeeded", importJobId: pddOrders.id, finishedAt,
+          requestScope: { window: { fromBusinessDate: "2026-08-31", throughBusinessDate: "2026-09-02" } } },
       ]);
       const shop = "(拼多多国际)NING官方海外旗舰店";
       const order = (rowNo: number, no: string, date: string, qty: string, status: string, afterSalesStatus = "", paymentTime = "") => ({
@@ -196,8 +197,46 @@ describe("外部观察销速读模型", () => {
       expect(cw.tmallNet30).toBe(13);
       expect(cw.net30).toBe(18);         // 天猫 13 + 拼多多 5
       expect(v.pddSourceAsOf).toBe("2026-09-02");
-      expect(v.coverage.pddObservedDays30).toBe(5);
+      // 迟到更新带回 5 个订单日期，但本次只实际观察了 3 个自然日。
+      expect(v.coverage.pddObservedDays30).toBe(3);
       expect(v.coverage.pddWindowComplete30).toBe(false);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("拼多多覆盖按成功查询窗口累计，零订单日也能形成完整 30 天观察", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "拼多多窗口责任人" }).returning();
+      const [job] = await db.insert(schema.importJobs).values({
+        template: "jdy_pdd_order_observation", filename: "empty-pdd-windows",
+        sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done",
+      }).returning();
+      const runs = Array.from({ length: 10 }, (_, index) => {
+        const from = new Date(Date.UTC(2026, 7, 4 + index * 3));
+        const through = new Date(Date.UTC(2026, 7, 6 + index * 3));
+        const finishedAt = new Date(Date.UTC(2026, 7, 6 + index * 3, 4));
+        return {
+          connector: "jdy",
+          stream: "pdd-order-observation",
+          idempotencyKey: `empty-window-${index}`,
+          status: "succeeded",
+          importJobId: job.id,
+          finishedAt,
+          requestScope: { window: {
+            fromBusinessDate: from.toISOString().slice(0, 10),
+            throughBusinessDate: through.toISOString().slice(0, 10),
+          } },
+        };
+      });
+      await db.insert(schema.integrationRuns).values(runs);
+
+      const result = await computeExternalVelocity(db);
+      expect(result.state).toBe("insufficient");
+      expect(result.anchorDate).toBe("2026-09-02");
+      expect(result.coverage.pddObservedDays30).toBe(30);
+      expect(result.coverage.pddWindowComplete30).toBe(true);
     } finally {
       await client.close();
     }

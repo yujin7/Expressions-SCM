@@ -19,7 +19,7 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v3";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v4";
 const PLATFORM_SKU_IDENTIFIER_SCOPE = "JIANDAOYUN:TMALL";
 
 export interface ExternalVelocityBySku {
@@ -215,12 +215,28 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
     -- 这里把最近 90 天内所有成功批次按业务键（订单号+商品+商家编码）去重、取最新批次的状态后累加。
     -- 仅计有支付时间或明确已支付状态，且未取消/退款成功的订单。
     pdd_batches AS (
-      SELECT ir.import_job_id
+      SELECT ir.import_job_id,
+             nullif(ir.request_scope->'window'->>'fromBusinessDate', '')::date AS observed_from,
+             nullif(ir.request_scope->'window'->>'throughBusinessDate', '')::date AS observed_through
       FROM integration_runs ir
       WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation'
         AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
         AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
         AND ir.finished_at > now() - interval '90 days'
+    ),
+    -- 覆盖来自每次成功查询的真实边界，而不是“有订单的日期”。因此零订单日会
+    -- 正确推进观察完整性，迟到更新的历史订单也不会伪造已经连续观察过的天数。
+    pdd_observation_days AS (
+      SELECT DISTINCT day::date AS d
+      FROM pdd_batches b
+      CROSS JOIN LATERAL generate_series(
+        b.observed_from,
+        b.observed_through,
+        interval '1 day'
+      ) AS day
+      WHERE b.observed_from IS NOT NULL
+        AND b.observed_through IS NOT NULL
+        AND b.observed_from <= b.observed_through
     ),
     pdd_raw AS (
       SELECT DISTINCT ON (payload->'data'->>'orderNumber', payload->'data'->>'productId', coalesce(payload->'data'->>'merchantSkuCode', ''))
@@ -241,7 +257,11 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
       ORDER BY payload->'data'->>'orderNumber', payload->'data'->>'productId', coalesce(payload->'data'->>'merchantSkuCode', ''), import_job_id DESC
     ),
     pdd AS (SELECT shop, pid, mcode, d, qty, status, after_sales_status, payment_time FROM pdd_raw),
-    anchor AS (SELECT greatest(max(s.d), (SELECT max(d) FROM pdd)) AS d FROM s),
+    anchor AS (SELECT greatest(
+      max(s.d),
+      (SELECT max(d) FROM pdd),
+      (SELECT max(d) FROM pdd_observation_days)
+    ) AS d FROM s),
     joined AS (
       SELECT m.sku_id, s.shop, s.psku, s.d, s.paid, 0::numeric AS refund, 'tmall' AS platform FROM s INNER JOIN map m ON m.shop = s.shop AND m.psku = s.psku AND m.sku_id IS NOT NULL
       UNION ALL
@@ -280,8 +300,8 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
       FROM s LEFT JOIN map m ON m.shop = s.shop AND m.psku = s.psku
     ),
     pdd_cov AS (
-      SELECT count(DISTINCT p.d) FILTER (WHERE p.d > a.d - 30 AND p.d <= a.d)::int AS observed_days30
-      FROM anchor a LEFT JOIN pdd p ON true
+      SELECT count(DISTINCT o.d) FILTER (WHERE o.d > a.d - 30 AND o.d <= a.d)::int AS observed_days30
+      FROM anchor a LEFT JOIN pdd_observation_days o ON true
     )
     SELECT 'anchor' AS kind, a.d::text AS anchor, NULL::int AS sku_id, NULL::numeric AS paid30, NULL::numeric AS refund30, NULL::numeric AS paid90, NULL::numeric AS refund90,
            NULL::text AS last_sold, NULL::int AS active_days90, cov.platform_skus::int AS platform_skus, cov.mapped_platform_skus::int AS mapped_platform_skus,
