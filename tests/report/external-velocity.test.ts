@@ -137,9 +137,9 @@ describe("外部观察销速读模型", () => {
         { connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-orders", status: "succeeded", importJobId: pddOrders.id, finishedAt },
       ]);
       const shop = "(拼多多国际)NING官方海外旗舰店";
-      const order = (rowNo: number, no: string, date: string, qty: string, status: string) => ({
+      const order = (rowNo: number, no: string, date: string, qty: string, status: string, afterSalesStatus = "") => ({
         importJobId: pddOrders.id, rowNo, status: "pending" as const, targetTable: "jdy_pdd_order_observation",
-        payload: { data: { statisticalDate: date, shopName: shop, orderNumber: no, productId: "PID1", merchantSkuCode: "GW1", productQuantity: qty, orderStatus: status } },
+        payload: { data: { statisticalDate: date, shopName: shop, orderNumber: no, productId: "PID1", merchantSkuCode: "GW1", productQuantity: qty, orderStatus: status, afterSalesStatus } },
       });
       await db.insert(schema.stagingRows).values([
         { importJobId: pddCw.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
@@ -148,6 +148,7 @@ describe("外部观察销速读模型", () => {
         order(2, "O2", "2026-08-26", "3", "待发货"),
         order(3, "O3", "2026-08-27", "5", "已取消，退款成功"),
         order(4, "O4", "2026-06-20", "7", "已发货，待收货"),
+        order(5, "O5", "2026-08-29", "11", "已发货，待收货", "退款成功"),
       ]);
       const v = await computeExternalVelocity(db);
       const cw = v.bySku[String(viaCrosswalk.id)]!;

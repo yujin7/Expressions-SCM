@@ -31,6 +31,10 @@ const EXTERNAL_DEMAND_CONTRACTS = new Set([
   "tmall-product-pnl-observation",
 ]);
 
+export function shouldRefreshJiandaoyunDemandModels(contractKeys: readonly string[]): boolean {
+  return contractKeys.some((key) => EXTERNAL_DEMAND_CONTRACTS.has(key));
+}
+
 async function refreshDemandReadModel(db: AnyDb) {
   const signal = await refreshJiandaoyunExternalDemandReadModel(db);
   await refreshExternalVelocity(db);
@@ -136,8 +140,7 @@ export async function runJiandaoyunConfiguredFormSyncs(db: AnyDb) {
   for (const contract of contracts) {
     results.push(await syncJiandaoyunForm(db, { ...ready, contract }));
   }
-  const readModel = [...EXTERNAL_DEMAND_CONTRACTS]
-    .every((key) => contracts.some((contract) => contract.key === key))
+  const readModel = shouldRefreshJiandaoyunDemandModels(contracts.map((contract) => contract.key))
     ? await refreshDemandReadModel(db)
     : null;
   return {

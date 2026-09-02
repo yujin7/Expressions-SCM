@@ -855,7 +855,9 @@ export async function syncJiandaoyunForm(
       });
       // Only a successful, non-empty full observation may retire prior review batches. An empty
       // response is retained as evidence but cannot imply that previously observed facts vanished.
-      const supersededImportJobs = minimized.length > 0
+      // 滚动窗口每批只覆盖最近 N 天，旧批次是 30/90 天累计历史的一部分，不能退役。
+      // 只有非窗口的完整快照才能用新批次替换旧批次。
+      const supersededImportJobs = minimized.length > 0 && !input.contract.window
         ? await supersedeSourceObservationJobsInTransaction(tx, {
           keepJobId: job.id,
           template: input.contract.targetTable,

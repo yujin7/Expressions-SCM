@@ -508,6 +508,44 @@ describe("简道云受控同步", () => {
     expect(await db.select().from(schema.integrationRuns)).toHaveLength(2);
   });
 
+  it("滚动窗口观察保留旧批次，供 30/90 天读模型跨批去重累加", async () => {
+    const { db } = await createTestDb();
+    const [actor] = await db.insert(schema.users).values({ name: "简道云窗口责任人" }).returning();
+    let rows: readonly TestObservationRow[] = [{
+      id: "1".repeat(24), code: "OLDER-SKU", updatedAt: "2026-08-30T02:00:00.000Z",
+    }];
+    const windowedContract: JiandaoyunFormContract = {
+      ...contract,
+      key: "windowed-test-observation",
+      window: { field: "statistical_date", days: 3 },
+    };
+    const client = observationClient(() => rows);
+    const first = await syncJiandaoyunForm(db, {
+      client,
+      actorId: actor.id,
+      contract: windowedContract,
+      writeEvidence: observationEvidence("3"),
+    });
+    rows = [{ id: "2".repeat(24), code: "NEWER-SKU", updatedAt: "2026-09-02T02:00:00.000Z" }];
+    const second = await syncJiandaoyunForm(db, {
+      client,
+      actorId: actor.id,
+      contract: windowedContract,
+      writeEvidence: observationEvidence("4"),
+    });
+
+    const jobs = await db.select().from(schema.importJobs);
+    expect(jobs.map((job) => [job.id, job.status])).toEqual([
+      [first.importJobId, "done"],
+      [second.importJobId, "done"],
+    ]);
+    const staged = await db.select().from(schema.stagingRows);
+    expect(staged).toHaveLength(2);
+    expect(staged.every((row) => row.status === "pending")).toBe(true);
+    expect(staged.map((row) => (row.payload as { data: { productCode: string } }).data.productCode).sort())
+      .toEqual(["NEWER-SKU", "OLDER-SKU"]);
+  });
+
   it("全量行数下降时失败并保留旧批次，不把权限缩减当删除", async () => {
     const { db } = await createTestDb();
     const [actor] = await db.insert(schema.users).values({ name: "简道云完整性责任人" }).returning();

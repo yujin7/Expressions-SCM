@@ -219,7 +219,8 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
              left(payload->'data'->>'statisticalDate', 10)::date AS d,
              CASE WHEN trim(coalesce(payload->'data'->>'productQuantity','')) ~ '^-?[0-9]+([.][0-9]+)?$'
                   THEN (payload->'data'->>'productQuantity')::numeric ELSE 0 END AS qty,
-             coalesce(payload->'data'->>'orderStatus', '') AS status
+             coalesce(payload->'data'->>'orderStatus', '') AS status,
+             coalesce(payload->'data'->>'afterSalesStatus', '') AS after_sales_status
       FROM staging_rows
       WHERE import_job_id IN (SELECT import_job_id FROM pdd_batches)
         AND target_table = 'jdy_pdd_order_observation'
@@ -227,7 +228,7 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
         AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
       ORDER BY payload->'data'->>'orderNumber', payload->'data'->>'productId', coalesce(payload->'data'->>'merchantSkuCode', ''), import_job_id DESC
     ),
-    pdd AS (SELECT shop, pid, mcode, d, qty, status FROM pdd_raw),
+    pdd AS (SELECT shop, pid, mcode, d, qty, status, after_sales_status FROM pdd_raw),
     anchor AS (SELECT greatest(max(s.d), (SELECT max(d) FROM pdd)) AS d FROM s),
     joined AS (
       SELECT m.sku_id, s.shop, s.psku, s.d, s.paid, 0::numeric AS refund, 'tmall' AS platform FROM s INNER JOIN map m ON m.shop = s.shop AND m.psku = s.psku AND m.sku_id IS NOT NULL
@@ -235,7 +236,9 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
       SELECT m.sku_id, r.shop, r.psku, r.d, 0::numeric, r.refund, 'tmall' FROM r INNER JOIN map m ON m.shop = r.shop AND m.psku = r.psku AND m.sku_id IS NOT NULL
       UNION ALL
       SELECT pm.sku_id, p.shop, coalesce(p.mcode, p.pid), p.d,
-             CASE WHEN p.status LIKE '%取消%' OR p.status LIKE '%退款成功%' THEN 0 ELSE p.qty END,
+             CASE WHEN p.status LIKE '%取消%' OR p.status LIKE '%退款成功%'
+                        OR p.after_sales_status LIKE '%取消%' OR p.after_sales_status LIKE '%退款成功%'
+                  THEN 0 ELSE p.qty END,
              0::numeric, 'pdd'
       FROM pdd p INNER JOIN pdd_identity pm ON pm.shop = p.shop AND pm.pid = p.pid AND pm.mcode IS NOT DISTINCT FROM p.mcode AND pm.sku_id IS NOT NULL
     ),

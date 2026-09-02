@@ -62,4 +62,44 @@ describe("全渠道外部观察", () => {
       await client.close();
     }
   });
+
+  it("拼多多同时按订单状态和售后状态剔除取消与退款成功", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "拼多多观察责任人" }).returning();
+      const [job] = await db.insert(schema.importJobs).values({
+        template: "jdy_pdd_order_observation",
+        filename: "pdd-orders",
+        sourceAsOf: "2026-09-02",
+        createdBy: actor.id,
+        status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy",
+        stream: "pdd-order-observation",
+        idempotencyKey: "pdd-orders-status-test",
+        status: "succeeded",
+        importJobId: job.id,
+        finishedAt: new Date("2026-09-02T03:00:00.000Z"),
+      });
+      const base = {
+        statisticalDate: "2026-09-01",
+        shopName: "(拼多多国际)NING官方海外旗舰店",
+        productId: "PID1",
+        merchantSkuCode: "NING-001",
+      };
+      await db.insert(schema.stagingRows).values([
+        { importJobId: job.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation", payload: { data: { ...base, orderNumber: "O1", productQuantity: "4", orderStatus: "已发货", afterSalesStatus: "" } } },
+        { importJobId: job.id, rowNo: 2, status: "pending", targetTable: "jdy_pdd_order_observation", payload: { data: { ...base, orderNumber: "O2", productQuantity: "9", orderStatus: "已发货", afterSalesStatus: "退款成功" } } },
+        { importJobId: job.id, rowNo: 3, status: "pending", targetTable: "jdy_pdd_order_observation", payload: { data: { ...base, orderNumber: "O3", productQuantity: "7", orderStatus: "已取消", afterSalesStatus: "" } } },
+      ]);
+
+      const observation = await computeChannelObservation(db);
+      const pdd = observation.platforms.find((row) => row.platform === "拼多多")!;
+      expect(pdd.state).toBe("ready");
+      expect(pdd.units).toBe(4);
+    } finally {
+      await client.close();
+    }
+  });
 });

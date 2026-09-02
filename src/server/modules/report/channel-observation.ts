@@ -211,7 +211,9 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
         SELECT DISTINCT ON (payload->'data'->>'orderNumber', payload->'data'->>'productId', coalesce(payload->'data'->>'merchantSkuCode',''))
                payload->'data'->>'shopName' AS shop, left(payload->'data'->>'statisticalDate', 10)::date AS d,
                CASE WHEN trim(coalesce(payload->'data'->>'productQuantity','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'productQuantity')::numeric ELSE 0 END AS qty,
-               coalesce(payload->'data'->>'orderStatus','') AS status, ij.source_as_of
+               coalesce(payload->'data'->>'orderStatus','') AS status,
+               coalesce(payload->'data'->>'afterSalesStatus','') AS after_sales_status,
+               ij.source_as_of
         FROM staging_rows sr INNER JOIN import_jobs ij ON ij.id = sr.import_job_id
         WHERE sr.import_job_id IN (SELECT import_job_id FROM b) AND sr.target_table = 'jdy_pdd_order_observation'
           AND sr.status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
@@ -220,7 +222,11 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
       a AS (SELECT max(d) AS d, max(source_as_of)::text AS as_of FROM o)
       SELECT 'anchor' AS kind, a.d::text AS shop, NULL::numeric AS qty, a.as_of FROM a
       UNION ALL
-      SELECT 'shop', o.shop, sum(CASE WHEN o.status LIKE '%取消%' OR o.status LIKE '%退款成功%' THEN 0 ELSE o.qty END), NULL
+      SELECT 'shop', o.shop,
+             sum(CASE WHEN o.status LIKE '%取消%' OR o.status LIKE '%退款成功%'
+                           OR o.after_sales_status LIKE '%取消%' OR o.after_sales_status LIKE '%退款成功%'
+                      THEN 0 ELSE o.qty END),
+             NULL
       FROM o CROSS JOIN a WHERE o.d > a.d - ${WINDOW_DAYS}::int GROUP BY o.shop
     `));
     const anchorRow = rows.find((x) => x.kind === "anchor");
