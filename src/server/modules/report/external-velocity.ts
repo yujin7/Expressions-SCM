@@ -20,7 +20,7 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v9";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v10";
 const PLATFORM_SKU_IDENTIFIER_SCOPE = "JIANDAOYUN:TMALL";
 
 export interface ExternalVelocityBySku {
@@ -53,7 +53,7 @@ export interface ExternalVelocity {
   gate: string;
   sourceAsOf: string | null;
   pddSourceAsOf: string | null;
-  /** 观察窗口锚点 = 批次内最大业务日；30/90 天窗口都从它往回数 */
+  /** 观察窗口锚点 = 各参与平台共同完整覆盖到的最后业务日；30/90 天窗口都从它往回数 */
   anchorDate: string | null;
   coverage: {
     platformSkus: number;
@@ -372,11 +372,24 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
       FROM pdd_raw
       WHERE nullif(trim(source_deleted_at), '') IS NULL
     ),
-    anchor AS (SELECT greatest(
-      max(s.d),
-      (SELECT max(d) FROM pdd),
-      (SELECT max(d) FROM pdd_observation_days)
-    ) AS d FROM s),
+    anchor_sources AS (
+      SELECT max(d) AS tmall_through FROM s
+    ),
+    pdd_anchor AS (
+      SELECT max(d) AS observed_through FROM pdd_observation_days
+    ),
+    -- 组合窗口只能锚定在双方都已完整观察的业务日；白天出现的拼多多当日订单
+    -- 不能把连续 30 天覆盖挤成 29 天，也不能混入尚未走完的业务日。
+    anchor AS (
+      SELECT CASE
+        WHEN t.tmall_through IS NOT NULL AND p.observed_through IS NOT NULL
+          THEN least(t.tmall_through, p.observed_through)
+        WHEN t.tmall_through IS NOT NULL THEN t.tmall_through
+        WHEN p.observed_through IS NOT NULL THEN p.observed_through
+        ELSE (SELECT max(d) FROM pdd)
+      END AS d
+      FROM anchor_sources t CROSS JOIN pdd_anchor p
+    ),
     joined AS (
       SELECT m.sku_id, s.shop, s.psku, s.d, s.paid, 0::numeric AS refund, 'tmall' AS platform FROM s INNER JOIN map m ON m.shop = s.shop AND m.psku = s.psku AND m.sku_id IS NOT NULL
       UNION ALL
@@ -391,23 +404,29 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
              0::numeric, 'pdd'
       FROM pdd p INNER JOIN pdd_identity pm ON pm.shop = p.shop AND pm.pid = p.pid AND pm.mcode IS NOT DISTINCT FROM p.mcode AND pm.sku_id IS NOT NULL
     ),
+    report_skus AS (
+      SELECT DISTINCT sku_id FROM joined
+      UNION
+      SELECT DISTINCT sku_id FROM pdd_identity
+      WHERE sku_id IS NOT NULL AND ${pddOrders != null}
+    ),
     per_sku AS (
-      SELECT j.sku_id,
-        sum(j.paid) FILTER (WHERE j.d > a.d - 30 AND j.platform = 'tmall') AS tmall_paid30,
-        sum(j.refund) FILTER (WHERE j.d > a.d - 30 AND j.platform = 'tmall') AS tmall_refund30,
-        sum(j.paid) FILTER (WHERE j.d > a.d - 30 AND j.platform = 'pdd') AS pdd_net30,
-        sum(j.paid) FILTER (WHERE j.d > a.d - 90 AND j.platform = 'tmall') AS tmall_paid90,
-        sum(j.refund) FILTER (WHERE j.d > a.d - 90 AND j.platform = 'tmall') AS tmall_refund90,
-        sum(j.paid) FILTER (WHERE j.d > a.d - 90 AND j.platform = 'pdd') AS pdd_net90,
-        sum(j.paid) FILTER (WHERE j.d > a.d - 30) AS paid30,
-        sum(j.refund) FILTER (WHERE j.d > a.d - 30) AS refund30,
-        sum(j.paid) FILTER (WHERE j.d > a.d - 90) AS paid90,
-        sum(j.refund) FILTER (WHERE j.d > a.d - 90) AS refund90,
-        max(j.d) FILTER (WHERE j.paid > 0) AS last_sold,
-        count(DISTINCT j.d) FILTER (WHERE j.paid > 0 AND j.d > a.d - 90) AS active_days90,
-        count(DISTINCT (j.shop, j.psku)) AS platform_skus
-      FROM joined j CROSS JOIN anchor a
-      GROUP BY j.sku_id
+      SELECT rs.sku_id,
+        sum(j.paid) FILTER (WHERE j.d > a.d - 30 AND j.d <= a.d AND j.platform = 'tmall') AS tmall_paid30,
+        sum(j.refund) FILTER (WHERE j.d > a.d - 30 AND j.d <= a.d AND j.platform = 'tmall') AS tmall_refund30,
+        sum(j.paid) FILTER (WHERE j.d > a.d - 30 AND j.d <= a.d AND j.platform = 'pdd') AS pdd_net30,
+        sum(j.paid) FILTER (WHERE j.d > a.d - 90 AND j.d <= a.d AND j.platform = 'tmall') AS tmall_paid90,
+        sum(j.refund) FILTER (WHERE j.d > a.d - 90 AND j.d <= a.d AND j.platform = 'tmall') AS tmall_refund90,
+        sum(j.paid) FILTER (WHERE j.d > a.d - 90 AND j.d <= a.d AND j.platform = 'pdd') AS pdd_net90,
+        sum(j.paid) FILTER (WHERE j.d > a.d - 30 AND j.d <= a.d) AS paid30,
+        sum(j.refund) FILTER (WHERE j.d > a.d - 30 AND j.d <= a.d) AS refund30,
+        sum(j.paid) FILTER (WHERE j.d > a.d - 90 AND j.d <= a.d) AS paid90,
+        sum(j.refund) FILTER (WHERE j.d > a.d - 90 AND j.d <= a.d) AS refund90,
+        max(j.d) FILTER (WHERE j.paid > 0 AND j.d <= a.d) AS last_sold,
+        count(DISTINCT j.d) FILTER (WHERE j.paid > 0 AND j.d > a.d - 90 AND j.d <= a.d) AS active_days90,
+        count(DISTINCT (j.shop, j.psku)) FILTER (WHERE j.shop IS NOT NULL AND j.psku IS NOT NULL) AS platform_skus
+      FROM report_skus rs LEFT JOIN joined j ON j.sku_id = rs.sku_id CROSS JOIN anchor a
+      GROUP BY rs.sku_id
     ),
     cov AS (
       SELECT count(DISTINCT (s.shop, s.psku)) AS platform_skus,

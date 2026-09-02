@@ -346,14 +346,24 @@ describe("外部观察销速读模型", () => {
     }
   });
 
-  it("拼多多覆盖按成功查询窗口累计，零订单日也能形成完整 30 天观察", async () => {
+  it("拼多多覆盖按成功查询窗口累计，零订单身份保留且当日部分数据不移动锚点", async () => {
     const { db, client } = await createTestDb();
     try {
       const [actor] = await db.insert(schema.users).values({ name: "拼多多窗口责任人" }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "P-PDD-ZERO", nameCn: "拼多多零需求观察" }).returning();
+      const [sku] = await db.insert(schema.skus).values({
+        code: "PDD-ZERO-001", name: "拼多多零需求成品", spuId: spu.id,
+        skuType: "finished", baseUom: "支", commercialRole: "retail",
+      }).returning();
       const [job] = await db.insert(schema.importJobs).values({
         template: "jdy_pdd_order_observation", filename: "empty-pdd-windows",
         sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done",
       }).returning();
+      const shop = "拼多多零需求店";
+      await db.insert(schema.skuIdentifiers).values({
+        skuId: sku.id, kind: "external", scope: "JIANDAOYUN:PDD",
+        value: `${shop}|PID-ZERO|M-ZERO`, active: true, isPrimary: false, createdBy: actor.id,
+      });
       const runs = Array.from({ length: 10 }, (_, index) => {
         // UTC 16:00 = 中国业务日次日 00:00。十个无缝 3 日抽取岛共覆盖 30 个完整业务日。
         const from = new Date(Date.UTC(2026, 6, 30 + index * 3, 16));
@@ -374,14 +384,25 @@ describe("外部观察销速读模型", () => {
         };
       });
       await db.insert(schema.integrationRuns).values(runs);
+      // 当天只有部分抽取时，即使已出现订单事实，也不能把窗口锚点推进到未完整日。
+      await db.insert(schema.stagingRows).values({
+        importJobId: job.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation",
+        payload: { data: {
+          statisticalDate: "2026-08-30", shopName: "其他店", orderNumber: "PARTIAL-DAY-1",
+          productId: "PID-OTHER", merchantSkuCode: "M-OTHER", productQuantity: "9", orderStatus: "待发货",
+        } },
+      });
 
       const result = await computeExternalVelocity(db);
-      expect(result.state).toBe("insufficient");
+      expect(result.state).toBe("ready");
       expect(result.anchorDate).toBe("2026-08-29");
       expect(result.coverage.pddObservedDays30).toBe(30);
       expect(result.coverage.pddWindowComplete30).toBe(true);
       expect(result.coverage.pddObservedDays90).toBe(30);
       expect(result.coverage.pddWindowComplete90).toBe(false);
+      expect(result.bySku[String(sku.id)]).toMatchObject({
+        pddIdentityCovered: true, pddNet30: "0.0000", net30: "0.0000", net90: null,
+      });
 
       // 停机一天超过连续边界后，最新抽取岛从 8/31 重新计数；不能沿用旧 30 天资格。
       await db.insert(schema.integrationRuns).values({
