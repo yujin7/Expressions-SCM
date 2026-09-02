@@ -29,6 +29,12 @@ const EXTERNAL_DEMAND_CONTRACTS = new Set([
   "pdd-sku-crosswalk-observation",
   "vip-shop-trading-observation",
   "tmall-product-pnl-observation",
+  // 2026-09-03 第四阶段：身份桥/组合表/成本标准/条码来源变了也要重建
+  "tmall-bundle-detail-observation",
+  "pdd-sku-cost-standard-observation",
+  "finance-goods-master-observation",
+  "jst-item-master-mirror-observation",
+  "vip-bundle-crosswalk-observation",
 ]);
 
 export function shouldRefreshJiandaoyunDemandModels(contractKeys: readonly string[]): boolean {

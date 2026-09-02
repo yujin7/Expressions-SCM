@@ -109,7 +109,7 @@ describe("外部观察销速读模型", () => {
       expect(v.bySku[String(unmapped.id)]).toBeUndefined();
       expect(v.coverage).toEqual({
         platformSkus: 4,
-        mappedPlatformSkus: 2,
+        bundlePlatformSkus: 0, mappedPlatformSkus: 2,
         mappedSkus: 2,
         pddObservedDays30: 0,
         pddWindowComplete30: true,

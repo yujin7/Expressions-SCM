@@ -189,3 +189,5 @@ The local environment may lack `rg`; prefer it when available and fall back to `
 `/usr/bin/grep`. Avoid competing writers against the same `.data/dev` PGlite directory. Identify
 ports and PIDs with `lsof`, stop only a process owned by the current session, and restart it after
 new migrations.
+
+- 2026-09-03：简道云契约 33 条（`jiandaoyun-contracts.ts`）；身份缺口读模型 `/v4` 含组合装拆解（`bundle_resolved`）、拼多多成本标准线索、条码补齐候选；外部销速 `/v3` 按 BOM 拆解；条码补齐写路径 `master/sku-barcode-fill.ts`（只写空白 + 审计）。

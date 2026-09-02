@@ -26,6 +26,7 @@ const STATUS_LABEL: Record<PlatformSkuGapStatus, { text: string; color: string }
   crosswalk_without_code: { text: "对照表无编码", color: "warning" },
   barcode_claim_pending: { text: "条码待认领", color: "processing" },
   not_in_crosswalk: { text: "不在对照表", color: "error" },
+  bundle_resolved: { text: "组合装（已拆到组件）", color: "geekblue" },
 };
 
 function yuan(value: string | number): string {
@@ -105,6 +106,26 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
 
   const [bulkOpen, setBulkOpen] = useState(false);
   const [pddBulkOpen, setPddBulkOpen] = useState(false);
+  const [barcodeOpen, setBarcodeOpen] = useState(false);
+  const submitBarcodeFill = async () => {
+    if (!data?.barcodeFillHits?.length) return;
+    setSaving(true);
+    try {
+      const r = await postJson<{ filled: number; unchanged: number; conflicts: number; readModels: "refreshed" | "deferred" }>(
+        "/api/master/sku/barcode-fill/bulk",
+        { items: data.barcodeFillHits.slice(0, 500).map((h) => ({ skuId: h.skuId, barcode: h.barcode })), source: "jiandaoyun-master-mirror" },
+      );
+      const summary = `本批补齐条码 ${r.filled} 个，已一致 ${r.unchanged}，冲突 ${r.conflicts}`;
+      if (r.readModels === "refreshed") message.success(summary);
+      else message.warning(`${summary}；统计刷新未完成，页面将立即重试`);
+      setBarcodeOpen(false);
+      await load();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
   const submitPddBulk = async () => {
     if (!data?.pddExactHits?.length) return;
     setSaving(true);
@@ -193,7 +214,16 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
       title: "状态",
       dataIndex: "status",
       width: 120,
-      render: (v: PlatformSkuGapStatus) => <Tag color={STATUS_LABEL[v].color}>{STATUS_LABEL[v].text}</Tag>,
+      render: (v: PlatformSkuGapStatus, row: PlatformSkuGapRow) => (
+        <Space direction="vertical" size={0}>
+          <Tag color={STATUS_LABEL[v].color}>{STATUS_LABEL[v].text}</Tag>
+          {row.bundleComponents?.length ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {row.bundleComponents.map((c) => `${c.skuCode}×${c.qty}`).join(" + ")}
+            </Typography.Text>
+          ) : null}
+        </Space>
+      ),
     },
     {
       title: "系统建议（仅供核对）",
@@ -246,6 +276,9 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
           <Button size="small" disabled={!data?.pddExactHits?.length} onClick={() => setPddBulkOpen(true)}>
             拼多多精确命中 ({data ? data.pddExactHits?.length ?? 0 : "—"})
           </Button>
+          <Button size="small" disabled={!data?.barcodeFillHits?.length} onClick={() => setBarcodeOpen(true)}>
+            补齐条码 ({data ? data.barcodeFillHits?.length ?? 0 : "—"})
+          </Button>
           <Button size="small" onClick={() => void load()} loading={loading}>刷新</Button>
         </Space>
       }
@@ -276,6 +309,11 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
                 valueStyle={{ color: (totals?.mappedAmountPct ?? 0) >= 80 ? VISUAL_COLOR.positive : VISUAL_COLOR.warning }}
               />
               {totals?.mappedAmountPct != null ? <Progress percent={totals.mappedAmountPct} size="small" showInfo={false} /> : null}
+              <Typography.Text type="secondary">
+                {totals && data?.bundleSummary
+                  ? `含组合装拆解后 ${totals.effectiveAmountPct == null ? "—" : `${totals.effectiveAmountPct}%`}（${data.bundleSummary.platformSkus} 个平台 SKU 拆到组件）`
+                  : "—"}
+              </Typography.Text>
             </Card>
           </Col>
           <Col xs={12} lg={6}>
@@ -319,6 +357,38 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
         </Typography.Paragraph>
       </Space>
       <Modal
+        title="补齐 SKU 条码：财务货品档案 / 聚水潭商品资料镜像"
+        open={barcodeOpen}
+        onOk={() => void submitBarcodeFill()}
+        onCancel={() => setBarcodeOpen(false)}
+        confirmLoading={saving}
+        maskClosable={false}
+        okText={`确认写入 ${Math.min(500, data?.barcodeFillHits?.length ?? 0)} 个条码`}
+        cancelText="取消"
+      >
+        <Space direction="vertical" size={8} style={{ width: "100%" }}>
+          <Typography.Paragraph style={{ marginBottom: 0 }}>
+            系统 {data?.barcodeFillSummary?.activeSkus ?? 0} 个启用 SKU 里只有 {data?.barcodeFillSummary?.skusWithBarcode ?? 0} 个有条码。
+            这些候选来自简道云里财务「货品档案」与聚水潭「商品资料」镜像，两来源一致、系统字段空白、条码未被其它 SKU 占用；
+            另有 {data?.barcodeFillSummary?.conflicts ?? 0} 个冲突项不在此列，需人工裁决。
+            条码是天猫/唯品会对照表与同步身份解析的通用键，补齐后后续同步会自动解析更多外部行。
+          </Typography.Paragraph>
+          <Table
+            size="small"
+            rowKey="skuId"
+            dataSource={(data?.barcodeFillHits ?? []).slice(0, 8)}
+            pagination={false}
+            columns={[
+              { title: "系统 SKU", dataIndex: "skuCode", width: 130 },
+              { title: "名称", dataIndex: "skuName", ellipsis: true },
+              { title: "条码", dataIndex: "barcode", width: 150 },
+              { title: "来源", dataIndex: "source", width: 90, render: (v: string) => (v === "both" ? "财务+聚水潭" : v === "jst_mirror" ? "聚水潭" : "财务") },
+            ]}
+          />
+          {(data?.barcodeFillHits?.length ?? 0) > 8 ? <Typography.Text type="secondary">…仅预览前 8 行，每次最多写入 500 个</Typography.Text> : null}
+        </Space>
+      </Modal>
+      <Modal
         title="批量认领：拼多多对照表商家编码 = 系统编码"
         open={pddBulkOpen}
         onOk={() => void submitPddBulk()}
@@ -334,7 +404,8 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
             确认后登记为 JIANDAOYUN:PDD 外部身份，拼多多订单件数才会进入外部销速。
           </Typography.Paragraph>
           <Typography.Text>
-            对照表 {data?.pddSummary?.crosswalkRows ?? 0} 行，含商家编码 {data?.pddSummary?.merchantCodes ?? 0}，精确命中 {data?.pddSummary?.exactCodes ?? 0}，已认领 {data?.pddSummary?.claimed ?? 0}。
+            对照表 {data?.pddSummary?.crosswalkRows ?? 0} 行，含商家编码 {data?.pddSummary?.merchantCodes ?? 0}，精确命中 {data?.pddSummary?.exactCodes ?? 0}，
+            经「商品成本标准」翻译命中 {data?.pddSummary?.bridgedCodes ?? 0}，已认领 {data?.pddSummary?.claimed ?? 0}。
           </Typography.Text>
           <Table
             size="small"
@@ -342,8 +413,9 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
             dataSource={(data?.pddExactHits ?? []).slice(0, 8)}
             pagination={false}
             columns={[
-              { title: "商品ID|商家编码", dataIndex: "platformSkuId", width: 220 },
-              { title: "→ 系统 SKU", dataIndex: "skuCode", width: 130 },
+              { title: "商品ID|商家编码", dataIndex: "platformSkuId", width: 200 },
+              { title: "→ 系统 SKU", dataIndex: "skuCode", width: 120 },
+              { title: "线索", dataIndex: "source", width: 96, render: (v: string) => (v === "cost_standard" ? <Tag color="purple">成本标准</Tag> : <Tag>同码</Tag>) },
               { title: "商品", dataIndex: "productName", ellipsis: true },
             ]}
           />

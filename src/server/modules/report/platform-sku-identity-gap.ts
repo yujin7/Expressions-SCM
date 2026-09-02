@@ -28,7 +28,7 @@ interface ReadDb {
 
 export const PLATFORM_SKU_IDENTIFIER_SCOPE = "JIANDAOYUN:TMALL";
 // v3（2026-09-02）：冲突优先于直接认领，候选覆盖率按全部缺口计算；升版避免复用旧口径缓存
-const READ_MODEL_CACHE_KEY = "jiandaoyun-platform-sku-identity-gap/v3";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-platform-sku-identity-gap/v4";
 const TOP_ROWS = 60;
 const MAX_CANDIDATES = 3;
 const MIN_CANDIDATE_SCORE = 60;
@@ -40,6 +40,7 @@ export type PlatformSkuGapStatus =
   | "crosswalk_conflict"
   | "crosswalk_without_code"
   | "barcode_claim_pending"
+  | "bundle_resolved"
   | "not_in_crosswalk";
 
 export interface PlatformSkuGapCandidate {
@@ -70,7 +71,10 @@ export interface PlatformSkuGapRow {
   exceptionId: number | null;
   exceptionStatus: "open" | "resolved" | "ignored" | null;
   candidates: PlatformSkuGapCandidate[];
+  /** 天猫组合表拆出的组件（多件组合装；单件组合作为精确命中候选进入 exactHits） */
+  bundleComponents: { skuId: number; skuCode: string; qty: number }[] | null;
 }
+export type PlatformSkuExactHitSource = "crosswalk" | "related_goods" | "unit_daily" | "bundle_single";
 
 export interface PlatformSkuIdentityGap {
   state: "ready" | "insufficient";
@@ -92,7 +96,19 @@ export interface PlatformSkuIdentityGap {
     unmappedWithCandidates: number;
     /** 若把"有候选"的缺口全部认领，金额覆盖率会到多少——给业务一个投入产出的预期 */
     coverableAmountPct: number | null;
+    /** 已映射 + 组合表拆解 的销售额占比（需求可以落到系统 SKU 的真实覆盖） */
+    effectiveAmountPct: number | null;
   };
+  bundleSummary: {
+    bundles: number;
+    multiComponentBundles: number;
+    unresolvedComponents: number;
+    platformSkus: number;
+    paidAmount: string;
+    amountPct: number | null;
+  };
+  barcodeFillHits: { skuId: number; skuCode: string; skuName: string; barcode: string; source: "finance_master" | "jst_mirror" | "both" }[];
+  barcodeFillSummary: { candidates: number; conflicts: number; skusWithBarcode: number; activeSkus: number };
   byShop: { shopName: string; brandCode: string | null; paidAmount: string; mappedAmountPct: number | null; platformSkus: number; unmappedSkus: number }[];
   top: PlatformSkuGapRow[];
   /**
@@ -100,14 +116,14 @@ export interface PlatformSkuIdentityGap {
    * 治理规定外部码即使同码也不自动认领（tests/integrations/jiandaoyun-identity-boundary），
    * 所以这里只是把确定性线索攒成一批，供人复核后一次确认。
    */
-  exactHits: { shopName: string; platformSkuId: string; skuId: number; skuCode: string; paidAmount: string; source: "crosswalk" | "related_goods" | "unit_daily" }[];
+  exactHits: { shopName: string; platformSkuId: string; skuId: number; skuCode: string; paidAmount: string; source: PlatformSkuExactHitSource }[];
   exactHitAmountPct: number | null;
   /**
    * 拼多多：对照表商家编码与系统编码逐字相等、且尚未认领到 JIANDAOYUN:PDD 的 (店铺, 商品ID, 商家编码)。
    * 拼多多没有 SKU 级销量表，订单按这三元组归属；认领后 external-velocity 的拼多多分量才会有数。
    */
-  pddExactHits: { shopName: string; platformSkuId: string; skuId: number; skuCode: string; productName: string | null }[];
-  pddSummary: { crosswalkRows: number; merchantCodes: number; exactCodes: number; claimed: number };
+  pddExactHits: { shopName: string; platformSkuId: string; skuId: number; skuCode: string; productName: string | null; source: "merchant_code" | "cost_standard" }[];
+  pddSummary: { crosswalkRows: number; merchantCodes: number; exactCodes: number; bridgedCodes: number; claimed: number };
   limitations: string[];
 }
 
@@ -239,18 +255,22 @@ export function brandCodeForShop(
 /* ---------- 计算 ---------- */
 
 export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<PlatformSkuIdentityGap> {
-  const [salesBatch, refundBatch, crosswalkBatch, unitBatch, pddBatch] = await Promise.all([
+  const [salesBatch, refundBatch, crosswalkBatch, unitBatch, pddBatch, bundleBatch, costBatch, financeBatch, jstBatch] = await Promise.all([
     latestBatch(db, "tmall-sku-sales-observation"),
     latestBatch(db, "tmall-sku-refund-observation"),
     latestBatch(db, "tmall-sku-crosswalk-observation"),
     latestBatch(db, "tmall-unit-daily-observation"),
     latestBatch(db, "pdd-sku-crosswalk-observation"),
+    latestBatch(db, "tmall-bundle-detail-observation"),
+    latestBatch(db, "pdd-sku-cost-standard-observation"),
+    latestBatch(db, "finance-goods-master-observation"),
+    latestBatch(db, "jst-item-master-mirror-observation"),
   ]);
   if (!salesBatch && !pddBatch) {
     return emptyPlatformSkuIdentityGap("缺少天猫日销量与拼多多对照表的成功批次，身份缺口保持关闭。");
   }
 
-  const [salesResult, refundResult, crosswalkResult, directResult, exceptionResult, skuResult, brandResult, pddResult, unitResult] = await Promise.all([
+  const [salesResult, refundResult, crosswalkResult, directResult, exceptionResult, skuResult, brandResult, pddResult, unitResult, bundleResult, barcodeResult] = await Promise.all([
     db.execute(sql`
       SELECT payload->'data'->>'shopName' AS shop_name,
              payload->'data'->>'skuId' AS platform_sku_id,
@@ -312,7 +332,7 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
       WHERE alias_type = 'sku_barcode' AND scope = 'JIANDAOYUN'
     `),
     db.execute(sql`
-      SELECT s.id, s.code, s.name, s.spec, s.sku_type, b.code AS brand_code
+      SELECT s.id, s.code, s.name, s.spec, s.sku_type, s.barcode, b.code AS brand_code
       FROM skus s LEFT JOIN brands b ON b.id = s.brand_id
       WHERE s.active = true
     `),
@@ -330,11 +350,24 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
         FROM staging_rows WHERE import_job_id = (SELECT import_job_id FROM b)
           AND target_table = 'jdy_pdd_sku_crosswalk_observation' AND status IN ('pending', 'validated', 'committed')
         GROUP BY 1, 2, 3
-      )
+      ),
+      -- 第二条拼多多线索（2026-09-03）：数据中台「拼多多商品成本标准」把商家编码翻译成聚水潭编码/匹配编码，
+      -- 其中 61% 与系统编码同名；只有翻译结果唯一命中一个启用成品才给线索。
+      cs AS (
+        SELECT nullif(trim(payload->'data'->>'merchantSkuCode'), '') AS mcode, k2.id AS sku_id, k2.code AS sku_code
+        FROM staging_rows JOIN skus k2 ON k2.active = true AND k2.sku_type = 'finished'
+          AND k2.code IN (nullif(trim(payload->'data'->>'matchProductCode'), ''), nullif(trim(payload->'data'->>'jstSkuCode'), ''))
+        WHERE import_job_id = ${costBatch?.importJobId ?? -1}
+          AND target_table = 'jdy_pdd_sku_cost_standard_observation' AND status IN ('pending', 'validated', 'committed')
+      ),
+      bridged AS (SELECT mcode, count(DISTINCT sku_id)::int AS n, max(sku_id) AS sku_id, max(sku_code) AS sku_code FROM cs WHERE mcode IS NOT NULL GROUP BY 1)
       SELECT r.shop, r.pid, r.mcode, r.pname, k.id AS sku_id, k.code AS sku_code,
+             CASE WHEN k.id IS NULL AND b.n = 1 THEN b.sku_id END AS bridged_sku_id,
+             CASE WHEN k.id IS NULL AND b.n = 1 THEN b.sku_code END AS bridged_sku_code,
              EXISTS (SELECT 1 FROM sku_identifiers i WHERE i.kind = 'external' AND i.scope = 'JIANDAOYUN:PDD' AND i.active = true
                      AND i.value = r.shop || '|' || r.pid || '|' || r.mcode) AS claimed
       FROM rows r LEFT JOIN skus k ON k.code = r.mcode AND k.active = true AND k.sku_type = 'finished'
+      LEFT JOIN bridged b ON b.mcode = r.mcode
       WHERE r.shop IS NOT NULL AND r.pid IS NOT NULL
     `),
     // 第三条身份线索：天猫单品日汇总的「子货品编码」= 系统编码（2026-09-02 实核，形如 E028-000）。
@@ -352,21 +385,105 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
         GROUP BY 1, 2
       `)
       : Promise.resolve([]),
+    // 第五条线索 / 组合装 BOM（2026-09-03）：数据中台「天猫组合详情列表」= 天猫货品编码 → 子货品编码 × 数量，
+    // 子货品编码 97% 逐字等于系统编码；对照表「商家编码/关联货品」= 货品编码。
+    // 多件组合不做 1:1 认领，只在读模型里按数量拆到组件；单件组合作为精确候选交人确认。
+    bundleBatch
+      ? db.execute(sql`
+        SELECT nullif(trim(payload->'data'->>'bundleCode'), '') AS bundle_code,
+               nullif(trim(payload->'data'->>'subproductCode'), '') AS sub_code,
+               min(CASE WHEN trim(coalesce(payload->'data'->>'quantity','')) ~ '^[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'quantity')::numeric ELSE 1 END) AS qty,
+               max(k.id) AS sku_id, max(k.code) AS sku_code
+        FROM staging_rows
+        LEFT JOIN skus k ON k.code = nullif(trim(payload->'data'->>'subproductCode'), '') AND k.active = true
+        WHERE import_job_id = ${bundleBatch.importJobId}
+          AND target_table = 'jdy_tmall_bundle_detail_observation'
+          AND status IN ('pending', 'validated', 'committed')
+        GROUP BY 1, 2
+      `)
+      : Promise.resolve([]),
+    // 条码补齐候选（2026-09-03）：财务货品档案 + 聚水潭商品资料镜像都维护「系统编码 ↔ 条码」，
+    // 系统 5,376 个启用 SKU 只有 692 个有条码。只补空白、两来源不冲突、条码未被其它 SKU 占用；由人一键确认落库。
+    financeBatch || jstBatch
+      ? db.execute(sql`
+        WITH cand AS (
+          SELECT nullif(trim(payload->'data'->>'systemSkuCode'), '') AS code, nullif(trim(payload->'data'->>'barcode'), '') AS bc, 'finance_master' AS src
+          FROM staging_rows WHERE import_job_id = ${financeBatch?.importJobId ?? -1}
+            AND target_table = 'jdy_finance_goods_master_observation' AND status IN ('pending', 'validated', 'committed')
+          UNION
+          SELECT nullif(trim(payload->'data'->>'skuCode'), ''), nullif(trim(payload->'data'->>'barcode'), ''), 'jst_mirror'
+          FROM staging_rows WHERE import_job_id = ${jstBatch?.importJobId ?? -1}
+            AND target_table = 'jdy_jst_item_master_mirror_observation' AND status IN ('pending', 'validated', 'committed')
+        ),
+        agg AS (
+          SELECT code, count(DISTINCT bc)::int AS n, min(bc) AS bc, count(DISTINCT src)::int AS sources, min(src) AS src
+          FROM cand WHERE code IS NOT NULL AND bc IS NOT NULL AND bc ~ '^[0-9A-Za-z-]{6,32}$' GROUP BY 1
+        )
+        SELECT k.id AS sku_id, k.code, k.name, agg.bc, agg.n, agg.sources, agg.src,
+               nullif(trim(k.barcode), '') AS current_barcode,
+               EXISTS (SELECT 1 FROM skus o WHERE o.barcode = agg.bc AND o.id <> k.id) AS taken
+        FROM agg JOIN skus k ON k.code = agg.code AND k.active = true
+      `)
+      : Promise.resolve([]),
   ]);
   const pddExactHits: PlatformSkuIdentityGap["pddExactHits"] = [];
-  const pddSummary = { crosswalkRows: 0, merchantCodes: 0, exactCodes: 0, claimed: 0 };
+  const pddSummary = { crosswalkRows: 0, merchantCodes: 0, exactCodes: 0, bridgedCodes: 0, claimed: 0 };
   for (const row of resultRows<Record<string, unknown>>(pddResult)) {
     pddSummary.crosswalkRows++;
     if (textValue(row.mcode)) pddSummary.merchantCodes++;
-    const skuId = intValue(row.sku_id);
+    const directSkuId = intValue(row.sku_id);
+    const bridgedSkuId = intValue(row.bridged_sku_id);
+    const skuId = directSkuId > 0 ? directSkuId : bridgedSkuId;
     if (skuId <= 0) continue;
-    pddSummary.exactCodes++;
+    if (directSkuId > 0) pddSummary.exactCodes++; else pddSummary.bridgedCodes++;
     if (row.claimed === true || row.claimed === "t") { pddSummary.claimed++; continue; }
     pddExactHits.push({
       shopName: String(row.shop), platformSkuId: `${String(row.pid)}|${String(row.mcode)}`,
-      skuId, skuCode: String(row.sku_code ?? ""), productName: textValue(row.pname),
+      skuId, skuCode: String((directSkuId > 0 ? row.sku_code : row.bridged_sku_code) ?? ""), productName: textValue(row.pname),
+      source: directSkuId > 0 ? "merchant_code" : "cost_standard",
     });
   }
+  // 组合装 BOM：货品编码 → 组件；组件编码解析不到系统 SKU 的按 unresolved 计，且该组合不用于拆解
+  const bom = new Map<string, { components: { skuId: number; skuCode: string; qty: number }[]; unresolved: number }>();
+  for (const row of resultRows<Record<string, unknown>>(bundleResult)) {
+    const bundleCode = textValue(row.bundle_code);
+    if (!bundleCode) continue;
+    const entry = bom.get(bundleCode) ?? { components: [], unresolved: 0 };
+    const skuId = intValue(row.sku_id);
+    if (skuId > 0) entry.components.push({ skuId, skuCode: String(row.sku_code ?? ""), qty: Math.max(1, Math.round(Number(row.qty) || 1)) });
+    else entry.unresolved++;
+    bom.set(bundleCode, entry);
+  }
+  const bundleSummary: PlatformSkuIdentityGap["bundleSummary"] = { bundles: bom.size, multiComponentBundles: 0, unresolvedComponents: 0, platformSkus: 0, paidAmount: "0.00", amountPct: null };
+  for (const entry of bom.values()) {
+    if (entry.components.length + entry.unresolved > 1) bundleSummary.multiComponentBundles++;
+    bundleSummary.unresolvedComponents += entry.unresolved;
+  }
+  /** 对照表商家编码 / 关联货品 指向的组合（两者指向不同组合视为歧义） */
+  const bomFor = (bridge: { merchantCode: string | null; relatedGoods: string | null } | undefined) => {
+    if (!bridge) return null;
+    const codes = [...new Set([bridge.merchantCode, bridge.relatedGoods].filter((c): c is string => Boolean(c) && bom.has(c!)))];
+    if (codes.length !== 1) return null;
+    const entry = bom.get(codes[0]!)!;
+    return entry.unresolved === 0 && entry.components.length > 0 ? { code: codes[0]!, ...entry } : null;
+  };
+  // 条码补齐候选
+  const barcodeFillHits: PlatformSkuIdentityGap["barcodeFillHits"] = [];
+  let barcodeConflicts = 0;
+  for (const row of resultRows<Record<string, unknown>>(barcodeResult)) {
+    const skuId = intValue(row.sku_id);
+    const barcode = textValue(row.bc);
+    if (skuId <= 0 || !barcode) continue;
+    const current = textValue(row.current_barcode);
+    const taken = row.taken === true || row.taken === "t";
+    if (intValue(row.n) > 1 || (current && current !== barcode) || taken) { barcodeConflicts++; continue; }
+    if (current) continue; // 已有且一致
+    barcodeFillHits.push({
+      skuId, skuCode: String(row.code ?? ""), skuName: String(row.name ?? ""), barcode,
+      source: intValue(row.sources) > 1 ? "both" : row.src === "jst_mirror" ? "jst_mirror" : "finance_master",
+    });
+  }
+  barcodeFillHits.sort((a, b) => a.skuCode.localeCompare(b.skuCode));
   const unitBridge = new Map<string, string | null>(); // 唯一子货品编码；歧义 = null
   for (const row of resultRows<Record<string, unknown>>(unitResult)) {
     const codes = (Array.isArray(row.unit_codes) ? row.unit_codes : String(row.unit_codes ?? "").replace(/^\{|\}$/g, "").split(","))
@@ -426,9 +543,12 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
     const claimed = direct.get(key);
     let status: PlatformSkuGapStatus;
     let skuId: number | null = null;
+    let bundleComponents: PlatformSkuGapRow["bundleComponents"] = null;
+    const bundle = bomFor(bridge);
     if (bridge?.conflicting) status = "crosswalk_conflict";
     else if (bridge?.skuId) { status = "mapped"; skuId = bridge.skuId; }
     else if (claimed) { status = "direct_claimed"; skuId = claimed.skuId; }
+    else if (bundle && bundle.components.length > 1) { status = "bundle_resolved"; bundleComponents = bundle.components; }
     else if (!bridge) status = "not_in_crosswalk";
     else if (bridge.barcode && exceptions.get(bridge.barcode)?.status === "open") status = "barcode_claim_pending";
     else status = "crosswalk_without_code";
@@ -454,13 +574,14 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
       exceptionId: exception?.id ?? null,
       exceptionStatus: exception?.status ?? null,
       candidates: [],
+      bundleComponents,
     });
   }
   rows.sort((a, b) => dCmp(b.paidAmount, a.paidAmount) || a.platformSkuId.localeCompare(b.platformSkuId));
 
   // 页面只展示金额前 60 个缺口，但覆盖率必须以全部缺口为分母和候选集合。
   // 用名称词元倒排索引先收窄候选，避免对每个平台 SKU 扫描全部成品。
-  const unmapped = rows.filter((r) => r.status !== "mapped" && r.status !== "direct_claimed");
+  const unmapped = rows.filter((r) => r.status !== "mapped" && r.status !== "direct_claimed" && r.status !== "bundle_resolved");
   const skuByCode = new Map(candidateSource.map((k) => [k.code, k]));
   const skuById = new Map(candidateSource.map((k) => [k.skuId, k]));
   const candidatesByToken = new Map<string, number[]>();
@@ -472,15 +593,18 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
     }
   }
   /** 确定性线索：对照表商家编码 或 单品汇总子货品编码 与系统编码逐字相等（两者冲突则不给） */
-  const exactFor = (row: PlatformSkuGapRow): { sku: SkuCandidateSource; reason: string; source: "crosswalk" | "related_goods" | "unit_daily" } | null => {
+  const exactFor = (row: PlatformSkuGapRow): { sku: SkuCandidateSource; reason: string; source: PlatformSkuExactHitSource } | null => {
     const key = `${row.shopName}|${row.platformSkuId}`;
     const bridge = crosswalk.get(key);
     if (bridge?.conflicting) return null;
+    const bundle = bomFor(bridge);
+    const single = bundle && bundle.components.length === 1 && bundle.components[0]!.qty === 1 ? skuById.get(bundle.components[0]!.skuId) : undefined;
     const candidates = [
       { sku: bridge?.merchantCode ? skuByCode.get(bridge.merchantCode) : undefined, reason: "对照表商家编码精确命中系统编码", source: "crosswalk" as const },
       { sku: bridge?.relatedGoods ? skuByCode.get(bridge.relatedGoods) : undefined, reason: "对照表「关联货品」精确命中系统编码", source: "related_goods" as const },
       { sku: unitBridge.get(key) ? skuByCode.get(unitBridge.get(key)!) : undefined, reason: "天猫单品汇总子货品编码精确命中系统编码", source: "unit_daily" as const },
-    ].filter((c): c is { sku: SkuCandidateSource; reason: string; source: "crosswalk" | "related_goods" | "unit_daily" } => Boolean(c.sku));
+      { sku: single, reason: "天猫组合表：该货品编码只含 1 件子货品，子货品编码精确命中系统编码", source: "bundle_single" as const },
+    ].filter((c): c is { sku: SkuCandidateSource; reason: string; source: PlatformSkuExactHitSource } => Boolean(c.sku));
     if (candidates.length === 0) return null;
     // 多条线索指向不同 SKU 视为冲突，不给确定性线索
     if (new Set(candidates.map((c) => c.sku.skuId)).size > 1) return null;
@@ -529,10 +653,12 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
     crosswalk_conflict: { skus: 0, paidAmount: zero },
     crosswalk_without_code: { skus: 0, paidAmount: zero },
     barcode_claim_pending: { skus: 0, paidAmount: zero },
+    bundle_resolved: { skus: 0, paidAmount: zero },
     not_in_crosswalk: { skus: 0, paidAmount: zero },
   };
   let paidAmount = zero;
   let mappedPaidAmount = zero;
+  let bundlePaidAmount = zero;
   const shops = new Map<string, { paidAmount: string; mappedPaidAmount: string; platformSkus: number; unmappedSkus: number }>();
   for (const row of rows) {
     paidAmount = dAdd(paidAmount, row.paidAmount, 2);
@@ -540,6 +666,7 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
     byStatus[row.status].paidAmount = dAdd(byStatus[row.status].paidAmount, row.paidAmount, 2);
     const isMapped = row.status === "mapped" || row.status === "direct_claimed";
     if (isMapped) mappedPaidAmount = dAdd(mappedPaidAmount, row.paidAmount, 2);
+    if (row.status === "bundle_resolved") { bundlePaidAmount = dAdd(bundlePaidAmount, row.paidAmount, 2); bundleSummary.platformSkus++; }
     const shop = shops.get(row.shopName) ?? { paidAmount: zero, mappedPaidAmount: zero, platformSkus: 0, unmappedSkus: 0 };
     shop.paidAmount = dAdd(shop.paidAmount, row.paidAmount, 2);
     if (isMapped) shop.mappedPaidAmount = dAdd(shop.mappedPaidAmount, row.paidAmount, 2);
@@ -552,6 +679,10 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
   const coverableAmount = dAdd(mappedPaidAmount, candidateAmount, 2);
   const pct = (part: string, whole: string): number | null =>
     dCmp(whole, zero) > 0 ? Math.round(Number(dDiv(part, whole, 6)) * 1000) / 10 : null;
+  bundleSummary.paidAmount = bundlePaidAmount;
+  bundleSummary.amountPct = pct(bundlePaidAmount, paidAmount);
+  let skusWithBarcode = 0;
+  for (const row of resultRows<Record<string, unknown>>(skuResult)) if (textValue(row.barcode)) skusWithBarcode++;
 
   return {
     state: rows.length || pddSummary.crosswalkRows ? "ready" : "insufficient",
@@ -576,7 +707,11 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
       byStatus,
       unmappedWithCandidates,
       coverableAmountPct: pct(coverableAmount, paidAmount),
+      effectiveAmountPct: pct(dAdd(mappedPaidAmount, bundlePaidAmount, 2), paidAmount),
     },
+    bundleSummary,
+    barcodeFillHits,
+    barcodeFillSummary: { candidates: barcodeFillHits.length, conflicts: barcodeConflicts, skusWithBarcode, activeSkus: resultRows(skuResult).length },
     byShop: [...shops.entries()]
       .map(([shopName, s]) => ({
         shopName, brandCode: shopBrand.get(shopName) ?? null, paidAmount: s.paidAmount,
@@ -593,6 +728,8 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
       "候选按店铺推断品牌，再比对规格与名称词元；分数只表示相似度，不表示归属，认领前必须人工核对。",
       "同一平台 SKU 在对照表里有多个系统 SKU 视为冲突，不给候选，交人裁决。",
       "认领只登记外部标识（kind=external, scope=JIANDAOYUN:TMALL），不改任何主档、库存或销量事实。",
+      "多件组合装不做 1:1 认领：读模型按天猫组合表把销量拆到组件（观察口径），组件编码解析不全的组合不拆。",
+      "条码补齐只提议「系统里空白、两来源一致、未被其它 SKU 占用」的条码，落库需人工确认，且只写空白字段。",
     ],
   };
 }
@@ -612,30 +749,39 @@ export function emptyPlatformSkuIdentityGap(gate: string): PlatformSkuIdentityGa
     totals: {
       platformSkus: 0, mappedSkus: 0, paidAmount: zero, mappedPaidAmount: zero, unmappedPaidAmount: zero,
       mappedAmountPct: null,
-      byStatus: { mapped: { ...empty }, direct_claimed: { ...empty }, crosswalk_conflict: { ...empty }, crosswalk_without_code: { ...empty }, barcode_claim_pending: { ...empty }, not_in_crosswalk: { ...empty } },
-      unmappedWithCandidates: 0, coverableAmountPct: null,
+      byStatus: { mapped: { ...empty }, direct_claimed: { ...empty }, crosswalk_conflict: { ...empty }, crosswalk_without_code: { ...empty }, barcode_claim_pending: { ...empty }, bundle_resolved: { ...empty }, not_in_crosswalk: { ...empty } },
+      unmappedWithCandidates: 0, coverableAmountPct: null, effectiveAmountPct: null,
     },
+    bundleSummary: { bundles: 0, multiComponentBundles: 0, unresolvedComponents: 0, platformSkus: 0, paidAmount: zero, amountPct: null },
+    barcodeFillHits: [],
+    barcodeFillSummary: { candidates: 0, conflicts: 0, skusWithBarcode: 0, activeSkus: 0 },
     byShop: [],
     top: [],
     exactHits: [],
     exactHitAmountPct: null,
     pddExactHits: [],
-    pddSummary: { crosswalkRows: 0, merchantCodes: 0, exactCodes: 0, claimed: 0 },
+    pddSummary: { crosswalkRows: 0, merchantCodes: 0, exactCodes: 0, bridgedCodes: 0, claimed: 0 },
     limitations: [gate],
   };
 }
 
 async function readModelBinding(db: ReadDb): Promise<string | null> {
-  const [sales, refunds, crosswalk, unit, pdd, direct] = await Promise.all([
+  const [sales, refunds, crosswalk, unit, pdd, bundle, cost, finance, jst, direct, barcodes] = await Promise.all([
     latestBatch(db, "tmall-sku-sales-observation"),
     latestBatch(db, "tmall-sku-refund-observation"),
     latestBatch(db, "tmall-sku-crosswalk-observation"),
     latestBatch(db, "tmall-unit-daily-observation"),
     latestBatch(db, "pdd-sku-crosswalk-observation"),
+    latestBatch(db, "tmall-bundle-detail-observation"),
+    latestBatch(db, "pdd-sku-cost-standard-observation"),
+    latestBatch(db, "finance-goods-master-observation"),
+    latestBatch(db, "jst-item-master-mirror-observation"),
     directIdentifierVersion(db),
+    db.execute(sql`SELECT count(*)::int AS n FROM skus WHERE active = true AND nullif(trim(barcode), '') IS NOT NULL`),
   ]);
   if (!sales && !pdd) return null;
-  return `sales:${sales?.importJobId ?? "none"}|refunds:${refunds?.importJobId ?? "none"}|crosswalk:${crosswalk?.importJobId ?? "none"}|unit:${unit?.importJobId ?? "none"}|pdd:${pdd?.importJobId ?? "none"}|${direct}`;
+  const [bc] = resultRows<Record<string, unknown>>(barcodes);
+  return `sales:${sales?.importJobId ?? "none"}|refunds:${refunds?.importJobId ?? "none"}|crosswalk:${crosswalk?.importJobId ?? "none"}|unit:${unit?.importJobId ?? "none"}|pdd:${pdd?.importJobId ?? "none"}|bundle:${bundle?.importJobId ?? "none"}|cost:${cost?.importJobId ?? "none"}|finance:${finance?.importJobId ?? "none"}|jst:${jst?.importJobId ?? "none"}|${direct}|barcodes:${intValue(bc?.n)}`;
 }
 
 function cachedGap(value: unknown): PlatformSkuIdentityGap | null {

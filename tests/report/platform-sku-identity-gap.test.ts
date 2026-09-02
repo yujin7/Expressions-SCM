@@ -119,7 +119,7 @@ async function seed() {
     { importJobId: refunds.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
       payload: { data: { statisticalDate: "2026-08-11", shopName: shop, skuId: "P3", successRefundSuborderNumber: "1" } } },
   ]);
-  return { db, client, actor, mudMask, mapped, shop };
+  return { db, client, actor, mudMask, mapped, shop, crosswalk, sales, refunds };
 }
 
 describe("平台 SKU 身份缺口读模型", () => {
@@ -380,8 +380,8 @@ describe("平台 SKU 身份缺口读模型", () => {
           payload: { data: { shopName: shop, platformSkuId: "PS2", platformProductId: "PID2", merchantSkuCode: "SW1557", productName: "别的命名空间" }, _identity: {} } },
       ]);
       let gap = await computePlatformSkuIdentityGap(db);
-      expect(gap.pddSummary).toEqual({ crosswalkRows: 2, merchantCodes: 2, exactCodes: 1, claimed: 0 });
-      expect(gap.pddExactHits).toEqual([{ shopName: shop, platformSkuId: "PID1|N009-000", skuId: mudMask.id, skuCode: "N009-000", productName: "泥膜" }]);
+      expect(gap.pddSummary).toEqual({ crosswalkRows: 2, merchantCodes: 2, exactCodes: 1, bridgedCodes: 0, claimed: 0 });
+      expect(gap.pddExactHits).toEqual([{ shopName: shop, platformSkuId: "PID1|N009-000", skuId: mudMask.id, skuCode: "N009-000", productName: "泥膜", source: "merchant_code" }]);
 
       const user = { id: actor.id, name: actor.name, roles: ["pmc"], isApprover: false };
       const r = await claimPlatformSkusBulk(user, { items: gap.pddExactHits.map((h) => ({ shopName: h.shopName, platformSkuId: h.platformSkuId, skuId: h.skuId, platform: "pdd" })) }, db);
@@ -441,9 +441,131 @@ describe("平台 SKU 身份缺口读模型", () => {
         skuId: sku.id,
         skuCode: sku.code,
         productName: sku.name,
+        source: "merchant_code",
       }]);
       const loaded = await loadPlatformSkuIdentityGap(db);
       expect(loaded.pddExactHits).toEqual(computed.pddExactHits);
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+describe("第四阶段：组合装 BOM / 拼多多成本标准桥 / 条码补齐（2026-09-03）", () => {
+  async function seedPhase4() {
+    const ctx = await seed();
+    const { db, actor, mudMask, mapped, shop } = ctx;
+    const [bundleJob, costJob, financeJob, pddCwJob] = await db.insert(schema.importJobs).values([
+      { template: "jdy_tmall_bundle_detail_observation", filename: "bundle", sourceAsOf: "2026-09-01", createdBy: actor.id, status: "done" },
+      { template: "jdy_pdd_sku_cost_standard_observation", filename: "cost", sourceAsOf: "2026-09-01", createdBy: actor.id, status: "done" },
+      { template: "jdy_finance_goods_master_observation", filename: "finance", sourceAsOf: "2026-09-01", createdBy: actor.id, status: "done" },
+      { template: "jdy_pdd_sku_crosswalk_observation", filename: "pddcw", sourceAsOf: "2026-09-01", createdBy: actor.id, status: "done" },
+    ]).returning();
+    const finishedAt = new Date("2026-09-03T03:00:00.000Z");
+    await db.insert(schema.integrationRuns).values([
+      { connector: "jdy", stream: "tmall-bundle-detail-observation", idempotencyKey: "bundle", status: "succeeded", importJobId: bundleJob.id, finishedAt },
+      { connector: "jdy", stream: "pdd-sku-cost-standard-observation", idempotencyKey: "cost", status: "succeeded", importJobId: costJob.id, finishedAt },
+      { connector: "jdy", stream: "finance-goods-master-observation", idempotencyKey: "finance", status: "succeeded", importJobId: financeJob.id, finishedAt },
+      { connector: "jdy", stream: "pdd-sku-crosswalk-observation", idempotencyKey: "pddcw", status: "succeeded", importJobId: pddCwJob.id, finishedAt },
+    ]);
+    await db.insert(schema.stagingRows).values([
+      // 组合 yanmo2 = 2 × N009-000 + 1 × N062-000（多件 → 拆到组件）；组合 single1 = 1 × N062-000（单件 → 精确候选）
+      { importJobId: bundleJob.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_bundle_detail_observation",
+        payload: { data: { shopName: shop, productId: "G1", bundleCode: "yanmo2", subproductId: "S1", subproductCode: "N009-000", quantity: "2" } } },
+      { importJobId: bundleJob.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_bundle_detail_observation",
+        payload: { data: { shopName: shop, productId: "G1", bundleCode: "yanmo2", subproductId: "S2", subproductCode: "N062-000", quantity: "1" } } },
+      { importJobId: bundleJob.id, rowNo: 3, status: "pending", targetTable: "jdy_tmall_bundle_detail_observation",
+        payload: { data: { shopName: shop, productId: "G2", bundleCode: "single1", subproductId: "S3", subproductCode: "N062-000", quantity: "1" } } },
+      // 对照表：P6 商家编码 = yanmo2（组合）；P7 关联货品 = single1（单件组合）
+      { importJobId: ctx.crosswalk.id, rowNo: 10, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation",
+        payload: { data: { shopName: shop, platformSkuId: "P6", merchantSkuCode: "yanmo2" }, _identity: {} } },
+      { importJobId: ctx.crosswalk.id, rowNo: 11, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation",
+        payload: { data: { shopName: shop, platformSkuId: "P7", relatedGoods: "single1" }, _identity: {} } },
+      { importJobId: ctx.sales.id, rowNo: 10, status: "pending", targetTable: "jdy_tmall_sku_sales_observation",
+        payload: { data: { statisticalDate: "2026-08-11", shopName: shop, skuId: "P6", productName: "泥膜两支装", skuName: "2支", paidNumber: "3", paidAmount: "600" } } },
+      { importJobId: ctx.sales.id, rowNo: 11, status: "pending", targetTable: "jdy_tmall_sku_sales_observation",
+        payload: { data: { statisticalDate: "2026-08-11", shopName: shop, skuId: "P7", productName: "面膜单支", skuName: "1支", paidNumber: "1", paidAmount: "100" } } },
+      // 拼多多对照表：商家编码 PDD-X 不是系统编码，但成本标准把它翻译成聚水潭编码 N062-000
+      { importJobId: pddCwJob.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
+        payload: { data: { shopName: "拼多多店", platformProductId: "PP1", merchantSkuCode: "PDD-X", productName: "控油面膜" }, _identity: {} } },
+      { importJobId: costJob.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_sku_cost_standard_observation",
+        payload: { data: { merchantSkuCode: "PDD-X", matchProductCode: "N062-000", jstSkuCode: "N062-000" } } },
+      // 财务货品档案：N009-000 条码空白可补；N062-000 条码与系统冲突
+      { importJobId: financeJob.id, rowNo: 1, status: "pending", targetTable: "jdy_finance_goods_master_observation",
+        payload: { data: { systemSkuCode: "N009-000", barcode: "6900000000009" } } },
+      { importJobId: financeJob.id, rowNo: 2, status: "pending", targetTable: "jdy_finance_goods_master_observation",
+        payload: { data: { systemSkuCode: "N062-000", barcode: "6900000000062" } } },
+    ]);
+    await db.update(schema.skus).set({ barcode: "6900000000999" }).where(eq(schema.skus.id, mapped.id));
+    return { ...ctx, mudMask, mapped };
+  }
+
+  it("多件组合装按天猫组合表拆到组件（bundle_resolved），单件组合进入 exactHits（source=bundle_single）", async () => {
+    const { db, client, mudMask, mapped } = await seedPhase4();
+    try {
+      const gap = await computePlatformSkuIdentityGap(db);
+      const p6 = gap.top.find((r) => r.platformSkuId === "P6");
+      expect(p6).toBeUndefined(); // 已拆解，不再是缺口
+      expect(gap.totals.byStatus.bundle_resolved.skus).toBe(1);
+      expect(gap.bundleSummary.platformSkus).toBe(1);
+      expect(gap.bundleSummary.multiComponentBundles).toBe(1);
+      expect(gap.totals.effectiveAmountPct).not.toBeNull();
+      expect(gap.totals.effectiveAmountPct!).toBeGreaterThan(gap.totals.mappedAmountPct ?? 0);
+      const single = gap.exactHits.find((h) => h.platformSkuId === "P7");
+      expect(single?.source).toBe("bundle_single");
+      expect(single?.skuId).toBe(mapped.id);
+      expect(gap.exactHits.find((h) => h.platformSkuId === "P6")).toBeUndefined();
+      // 外部销速：P6 的 3 件 → N009-000 得 6 件、N062-000 得 3 件（观察口径按数量拆解）
+      const { computeExternalVelocity } = await import("@/server/modules/report/external-velocity");
+      const v = await computeExternalVelocity(db);
+      // 销速里单件组合（P7）也按 BOM 归到组件——观察口径不等于认领；身份卡上它仍作为精确候选交人确认
+      expect(v.coverage.bundlePlatformSkus).toBe(2);
+      expect(v.bySku[String(mudMask.id)]?.tmallNet90).toBe(6);
+      expect(v.bySku[String(mapped.id)]?.tmallNet90).toBeGreaterThanOrEqual(3);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("拼多多：商家编码经「商品成本标准」翻译为系统编码 → pddExactHits(source=cost_standard)，认领后消失", async () => {
+    const { db, client, actor, mapped } = await seedPhase4();
+    try {
+      const gap = await computePlatformSkuIdentityGap(db);
+      const hit = gap.pddExactHits.find((h) => h.platformSkuId === "PP1|PDD-X");
+      expect(hit?.source).toBe("cost_standard");
+      expect(hit?.skuId).toBe(mapped.id);
+      expect(gap.pddSummary.bridgedCodes).toBe(1);
+      await claimPlatformSku({ id: actor.id, name: actor.name, roles: ["pmc"] } as never, { shopName: "拼多多店", platformSkuId: "PP1|PDD-X", skuId: mapped.id, platform: "pdd" }, db);
+      const after = await computePlatformSkuIdentityGap(db);
+      expect(after.pddExactHits.find((h) => h.platformSkuId === "PP1|PDD-X")).toBeUndefined();
+      expect(after.pddSummary.claimed).toBe(1);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("条码补齐：只提议系统空白且不冲突的条码；服务只写空白、拒绝覆盖与占用，并写审计", async () => {
+    const { db, client, actor, mudMask, mapped } = await seedPhase4();
+    try {
+      const gap = await computePlatformSkuIdentityGap(db);
+      expect(gap.barcodeFillHits.map((h) => h.skuCode)).toEqual(["N009-000"]);
+      expect(gap.barcodeFillSummary.conflicts).toBe(1);
+      const { fillSkuBarcodesBulk } = await import("@/server/modules/master/sku-barcode-fill");
+      const user = { id: actor.id, name: actor.name, roles: ["pmc"] } as never;
+      const r = await fillSkuBarcodesBulk(user, { items: [
+        { skuId: mudMask.id, barcode: "6900000000009" },
+        { skuId: mapped.id, barcode: "6900000000062" }, // 已有不同条码 → 冲突
+        { skuId: mudMask.id, barcode: "6900000000009" }, // 第二次 → 已一致
+      ] }, db);
+      expect(r.filled).toBe(1);
+      expect(r.conflicts).toBe(1);
+      expect(r.unchanged).toBe(1);
+      const [row] = await db.select({ barcode: schema.skus.barcode }).from(schema.skus).where(eq(schema.skus.id, mudMask.id));
+      expect(row?.barcode).toBe("6900000000009");
+      const audits = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.action, "barcode_fill"));
+      expect(audits).toHaveLength(1);
+      const after = await computePlatformSkuIdentityGap(db);
+      expect(after.barcodeFillHits).toHaveLength(0);
     } finally {
       await client.close();
     }
