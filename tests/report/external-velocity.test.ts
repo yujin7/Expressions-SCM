@@ -424,6 +424,7 @@ describe("外部观察销速读模型", () => {
       expect(afterOutage.coverage.pddWindowComplete30).toBe(false);
       expect(afterOutage.coverage.pddObservedDays90).toBe(3);
       expect(afterOutage.coverage.pddWindowComplete90).toBe(false);
+      expect(afterOutage.bySku[String(sku.id)]).toBeUndefined();
 
       // 旧版批次没有 extractionCutoff，不能用未来的请求 to 桥接停机缺口；
       // 该批次的事实仍保留在去重集合中，但不贡献“已完整观察”的天数。
@@ -445,6 +446,7 @@ describe("外部观察销速读模型", () => {
       expect(afterLegacyWindow.coverage.pddWindowComplete30).toBe(false);
       expect(afterLegacyWindow.coverage.pddObservedDays90).toBe(3);
       expect(afterLegacyWindow.coverage.pddWindowComplete90).toBe(false);
+      expect(afterLegacyWindow.bySku[String(sku.id)]).toBeUndefined();
     } finally {
       await client.close();
     }

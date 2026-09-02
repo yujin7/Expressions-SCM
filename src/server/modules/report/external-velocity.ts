@@ -404,11 +404,18 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
              0::numeric, 'pdd'
       FROM pdd p INNER JOIN pdd_identity pm ON pm.shop = p.shop AND pm.pid = p.pid AND pm.mcode IS NOT DISTINCT FROM p.mcode AND pm.sku_id IS NOT NULL
     ),
+    pdd_cov AS (
+      SELECT count(DISTINCT o.d) FILTER (WHERE o.d > a.d - 30 AND o.d <= a.d)::int AS observed_days30,
+             count(DISTINCT o.d) FILTER (WHERE o.d > a.d - 90 AND o.d <= a.d)::int AS observed_days90
+      FROM anchor a LEFT JOIN pdd_observation_days o ON true
+    ),
     report_skus AS (
       SELECT DISTINCT sku_id FROM joined
       UNION
-      SELECT DISTINCT sku_id FROM pdd_identity
-      WHERE sku_id IS NOT NULL AND ${pddOrders != null}
+      -- 没有订单的受控身份只有在 30 个业务日都被完整观察后才能发布为已知 0；
+      -- 在此之前 dashboard / risk 必须继续得到未知，而不是误导性的零需求。
+      SELECT DISTINCT pi.sku_id FROM pdd_identity pi CROSS JOIN pdd_cov c
+      WHERE pi.sku_id IS NOT NULL AND c.observed_days30 >= 30
     ),
     per_sku AS (
       SELECT rs.sku_id,
@@ -432,11 +439,6 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
       SELECT count(DISTINCT (s.shop, s.psku)) AS platform_skus,
              count(DISTINCT (s.shop, s.psku)) FILTER (WHERE m.sku_id IS NOT NULL) AS mapped_platform_skus
       FROM s LEFT JOIN map m ON m.shop = s.shop AND m.psku = s.psku
-    ),
-    pdd_cov AS (
-      SELECT count(DISTINCT o.d) FILTER (WHERE o.d > a.d - 30 AND o.d <= a.d)::int AS observed_days30,
-             count(DISTINCT o.d) FILTER (WHERE o.d > a.d - 90 AND o.d <= a.d)::int AS observed_days90
-      FROM anchor a LEFT JOIN pdd_observation_days o ON true
     )
     SELECT 'anchor' AS kind, a.d::text AS anchor, NULL::int AS sku_id, NULL::numeric AS paid30, NULL::numeric AS refund30, NULL::numeric AS paid90, NULL::numeric AS refund90,
            NULL::text AS last_sold, NULL::int AS active_days90, cov.platform_skus::int AS platform_skus, cov.mapped_platform_skus::int AS mapped_platform_skus,
