@@ -5,6 +5,7 @@ import {
   jiandaoyunSchemaHash,
   normalizeJiandaoyunBaseUrl,
 } from "@/server/integrations/jiandaoyun";
+import { jiandaoyunContract } from "@/server/integrations/jiandaoyun-contracts";
 
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -14,6 +15,25 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe("简道云 OpenAPI 客户端", () => {
+  it("进入需求、渠道和损益决策的数量金额字段都有数值质量门禁", () => {
+    const controls = (key: string) => new Map(
+      (jiandaoyunContract(key)?.numericControls ?? []).map((rule) => [rule.target, rule.scale]),
+    );
+    expect([...controls("pdd-order-observation")]).toEqual(expect.arrayContaining([
+      ["productQuantity", 4],
+    ]));
+    expect([...controls("vip-shop-trading-observation")]).toEqual(expect.arrayContaining([
+      ["salesAmount", 2],
+      ["salesQuantity", 4],
+    ]));
+    expect([...controls("tmall-product-pnl-observation")]).toEqual(expect.arrayContaining([
+      ["actualTransactionAmount", 2],
+      ["totalSalesCost", 2],
+      ["estimatedGrossProfit", 2],
+      ["estimatedNetProfit", 2],
+      ["paidNumber", 4],
+    ]));
+  });
   it("分页目录和数据，使用 app+entry 身份且不把凭据写入错误", async () => {
     const appId = "a".repeat(24);
     const entryId = "b".repeat(24);

@@ -193,6 +193,13 @@ export function normalizeReplenishSort(
   };
 }
 
+export function isPddWindowIncomplete(
+  externalRow: { pddIdentityCovered: boolean } | null,
+  pddWindowComplete30: boolean,
+): boolean {
+  return externalRow?.pddIdentityCovered === true && !pddWindowComplete30;
+}
+
 export interface ReplenishQuery {
   coverDaysTarget?: number;
   minCoverAlert?: number;
@@ -591,10 +598,9 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
           targetLevel,
           6,
         );
-    const pddWindowIncomplete = Boolean(
-      externalRow
-      && dCmp(String(externalRow.pddNet30), "0") !== 0
-      && !externalVelocity.coverage.pddWindowComplete30,
+    const pddWindowIncomplete = isPddWindowIncomplete(
+      externalRow,
+      externalVelocity.coverage.pddWindowComplete30,
     );
     const externalDaily30Gate = !externalRow
       ? "该 SKU 尚无已映射的外部需求"

@@ -191,6 +191,7 @@ describe("外部观察销速读模型", () => {
       const v = await computeExternalVelocity(db);
       const cw = v.bySku[String(viaCrosswalk.id)]!;
       expect(cw.pddNet30).toBe(5);       // 2 + 3，取消的 5 不算
+      expect(cw.pddIdentityCovered).toBe(true);
       expect(cw.pddNet90).toBe(12);      // 再加 90 天内的 7
       expect(cw.tmallNet30).toBe(13);
       expect(cw.net30).toBe(18);         // 天猫 13 + 拼多多 5
@@ -220,6 +221,7 @@ describe("外部观察销速读模型", () => {
       ]);
       const v = await computeExternalVelocity(db);
       expect(v.bySku[String(viaDirect.id)]?.pddNet30).toBe(4);
+      expect(v.bySku[String(viaDirect.id)]?.pddIdentityCovered).toBe(true);
       expect(v.bySku[String(viaDirect.id)]?.net30).toBe(3 + 4);
     } finally {
       await client.close();

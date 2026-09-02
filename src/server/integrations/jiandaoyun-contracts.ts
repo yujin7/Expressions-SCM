@@ -729,6 +729,7 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     targetTable: "jdy_pdd_order_observation",
     businessKey: ["orderNumber", "productId", "merchantSkuCode"],
     freshnessMaxAgeDays: 45,
+    numericControls: [{ target: "productQuantity", scale: 4 }],
     // 实测每天 3,000~6,000 行订单明细，60 天就超 1,000 页安全上限；每次只拉最近 3 天（约 1~2 万行），
     // 读模型把最近 90 天内各批次按业务键去重后累加——滚动快照随每日同步自然累积成 90 天窗口
     window: { field: "statistical_date", days: 3, includeUpdatedSince: true },
@@ -757,6 +758,10 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     targetTable: "jdy_vip_shop_trading_observation",
     businessKey: ["statisticalDate", "shopName", "brandName"],
     freshnessMaxAgeDays: 45,
+    numericControls: [
+      { target: "salesAmount", scale: 2 },
+      { target: "salesQuantity", scale: 4 },
+    ],
     fields: [
       field("statisticalDate", "statistical_date"),
       field("shopName", "shop_name"),
@@ -779,6 +784,15 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     targetTable: "jdy_tmall_product_pnl_observation",
     businessKey: ["statisticalDate", "shopName", "platformProductId"],
     freshnessMaxAgeDays: 45,
+    numericControls: [
+      { target: "actualTransactionAmount", scale: 2 },
+      { target: "totalSalesCost", scale: 2 },
+      { target: "estimatedGrossProfit", scale: 2 },
+      { target: "estimatedNetProfit", scale: 2 },
+      { target: "paidAmount", scale: 2 },
+      { target: "successRefundAmount", scale: 2 },
+      { target: "paidNumber", scale: 4 },
+    ],
     fields: [
       field("statisticalDate", "statistical_date"),
       field("shopName", "shop_name"),

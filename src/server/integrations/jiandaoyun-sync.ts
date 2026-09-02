@@ -796,7 +796,8 @@ export async function syncJiandaoyunForm(
           && scope.stream === stream
           && scope.mode === "full"
           && scope.authority === "observation-only"
-          && scope.releaseBlocked === true;
+          && scope.releaseBlocked === true
+          && scope.qualityBlocked !== true;
       });
       let priorSourceRecordIdsVerified = 0;
       if (minimized.length > 0 && priorFull) {

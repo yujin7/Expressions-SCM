@@ -397,7 +397,7 @@ describe("简道云受控同步", () => {
     const client = observationClient(() => rows);
     let evidenceNo = 0;
     const writeEvidence = vi.fn(async (_connector: string, _stream: string, envelope: unknown) => {
-      const hashPart = evidenceNo++ === 0 ? "c" : "d";
+      const hashPart = ["c", "d", "e"][evidenceNo++] ?? "f";
       return {
         relativePath: `integration-evidence/jdy/test-observation/${hashPart}.json`,
         hash: hashPart.repeat(64),
@@ -446,6 +446,26 @@ describe("简道云受控同步", () => {
       .where(eq(schema.stagingRows.importJobId, trusted.importJobId));
     expect(trustedRows).toHaveLength(1);
     expect(trustedRows[0]?.status).toBe("pending");
+
+    // 源端修复重复键后应以最后可信批次（而非被阻断批次）做连续性基线并恢复。
+    rows = [
+      { id: "0".repeat(24), code: "TRUSTED-SKU", updatedAt: "2026-07-31T02:00:00.000Z" },
+    ];
+    const recovered = await syncJiandaoyunForm(db, {
+      client,
+      actorId: actor.id,
+      contract: controlled,
+      writeEvidence,
+    });
+    expect(recovered.replayed).toBe(false);
+    const recoveredJobs = await db.select().from(schema.importJobs);
+    expect(recoveredJobs.map((job) => job.status)).toEqual(["superseded", "superseded", "done"]);
+    const [recoveredRun] = await db.select().from(schema.integrationRuns)
+      .where(eq(schema.integrationRuns.id, recovered.runId));
+    expect(recoveredRun.requestScope).toMatchObject({
+      qualityBlocked: false,
+      priorSourceRecordIdsVerified: 1,
+    });
   });
 
   it("新的非空全量观察替代旧待复核批次，但保留追溯记录", async () => {

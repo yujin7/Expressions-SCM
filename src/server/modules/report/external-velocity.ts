@@ -19,7 +19,7 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v2";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v3";
 const PLATFORM_SKU_IDENTIFIER_SCOPE = "JIANDAOYUN:TMALL";
 
 export interface ExternalVelocityBySku {
@@ -40,6 +40,8 @@ export interface ExternalVelocityBySku {
   pddNet30: number;
   tmallNet90: number;
   pddNet90: number;
+  /** 已有受控拼多多身份；即使当前净量为 0，也仍受拼多多观察窗口完整性约束。 */
+  pddIdentityCovered: boolean;
 }
 
 export interface ExternalVelocity {
@@ -284,12 +286,14 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
     SELECT 'anchor' AS kind, a.d::text AS anchor, NULL::int AS sku_id, NULL::numeric AS paid30, NULL::numeric AS refund30, NULL::numeric AS paid90, NULL::numeric AS refund90,
            NULL::text AS last_sold, NULL::int AS active_days90, cov.platform_skus::int AS platform_skus, cov.mapped_platform_skus::int AS mapped_platform_skus,
            NULL::numeric AS tmall_paid30, NULL::numeric AS tmall_refund30, NULL::numeric AS pdd_net30, NULL::numeric AS tmall_paid90, NULL::numeric AS tmall_refund90, NULL::numeric AS pdd_net90,
+           NULL::boolean AS pdd_identity_covered,
            pdd_cov.observed_days30
     FROM anchor a CROSS JOIN cov CROSS JOIN pdd_cov
     UNION ALL
     SELECT 'sku', NULL, p.sku_id, coalesce(p.paid30, 0), coalesce(p.refund30, 0), coalesce(p.paid90, 0), coalesce(p.refund90, 0),
            p.last_sold::text, p.active_days90::int, p.platform_skus::int, NULL,
            coalesce(p.tmall_paid30, 0), coalesce(p.tmall_refund30, 0), coalesce(p.pdd_net30, 0), coalesce(p.tmall_paid90, 0), coalesce(p.tmall_refund90, 0), coalesce(p.pdd_net90, 0),
+           EXISTS (SELECT 1 FROM pdd_identity pi WHERE pi.sku_id = p.sku_id),
            NULL::int
     FROM per_sku p
   `);
@@ -310,6 +314,7 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
       paid30, refund30, net30: paid30 - refund30,
       paid90, refund90, net90: paid90 - refund90,
       tmallNet30, pddNet30: Number(row.pdd_net30), tmallNet90, pddNet90: Number(row.pdd_net90),
+      pddIdentityCovered: row.pdd_identity_covered === true,
       lastSoldDate: row.last_sold ? String(row.last_sold).slice(0, 10) : null,
       activeDays90: intValue(row.active_days90),
       platformSkus: intValue(row.platform_skus),

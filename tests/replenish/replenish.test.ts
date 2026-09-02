@@ -8,6 +8,7 @@ import type { SessionUser } from "@/server/core/dto";
 import {
   createReplenishDraft,
   getReplenishSuggestions,
+  isPddWindowIncomplete,
   normalizeReplenishSort,
 } from "@/server/modules/replenish/service";
 import { createTestDb, type TestDb } from "../helpers/db";
@@ -20,6 +21,11 @@ import { createTestDb, type TestDb } from "../helpers/db";
  * - 草稿生成=复用 createBh（R13 人工闸），pmc/admin。
  */
 describe("R11 补货建议：口径 + 建议量 + BH 草稿", () => {
+  it("拼多多身份已覆盖但净量恰为零时，窗口不足仍不得折算日均", () => {
+    expect(isPddWindowIncomplete({ pddIdentityCovered: true }, false)).toBe(true);
+    expect(isPddWindowIncomplete({ pddIdentityCovered: true }, true)).toBe(false);
+    expect(isPddWindowIncomplete({ pddIdentityCovered: false }, false)).toBe(false);
+  });
   let db: TestDb;
   let pmcUser: SessionUser;
   let whUser: SessionUser; // 无权限角色（403 用）
