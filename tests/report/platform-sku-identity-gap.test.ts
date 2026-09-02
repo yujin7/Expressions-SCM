@@ -435,6 +435,38 @@ describe("平台 SKU 身份缺口读模型", () => {
     }
   });
 
+  it("拼多多直接认领拒绝与最新唯一对照表归属矛盾", async () => {
+    const { db, client, actor, mudMask, mapped } = await seed();
+    try {
+      const [job] = await db.insert(schema.importJobs).values({
+        template: "jdy_pdd_sku_crosswalk_observation", filename: "pdd-claim-conflict",
+        sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "pdd-sku-crosswalk-observation",
+        idempotencyKey: "pdd-claim-conflict", status: "succeeded",
+        importJobId: job.id, finishedAt: new Date("2026-09-02T04:00:00.000Z"),
+      });
+      const shop = "拼多多冲突测试店";
+      await db.insert(schema.stagingRows).values({
+        importJobId: job.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_sku_crosswalk_observation",
+        payload: {
+          data: { shopName: shop, platformProductId: "PID-CONFLICT", merchantSkuCode: "M-CONFLICT" },
+          _identity: { skuId: mapped.id },
+        },
+      });
+      const user = { id: actor.id, name: actor.name, roles: ["pmc"], isApprover: false };
+      await expect(claimPlatformSku(user, {
+        shopName: shop, platformSkuId: "PID-CONFLICT|M-CONFLICT", skuId: mudMask.id, platform: "pdd",
+      }, db)).rejects.toThrow(/相互矛盾/);
+      await expect(claimPlatformSku(user, {
+        shopName: shop, platformSkuId: "PID-CONFLICT|M-CONFLICT", skuId: mapped.id, platform: "pdd",
+      }, db)).resolves.toMatchObject({ created: true, scope: "JIANDAOYUN:PDD" });
+    } finally {
+      await client.close();
+    }
+  });
+
   it("只有拼多多对照表、没有天猫销量时，仍开放拼多多精确认领线索", async () => {
     const { db, client } = await createTestDb();
     try {

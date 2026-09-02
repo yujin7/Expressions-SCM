@@ -73,14 +73,26 @@ async function assertClaimIsConsistent(
   if (sku.active !== true || sku.sku_type !== "finished") {
     throw new ApiError(409, "平台 SKU 只能认领到启用中的成品 SKU");
   }
-  if (input.platform !== "tmall") return;
+  const [pddProductId, pddMerchantCode] = input.platform === "pdd"
+    ? input.platformSkuId.split("|", 2)
+    : ["", ""];
+  const crosswalkStream = input.platform === "pdd"
+    ? "pdd-sku-crosswalk-observation"
+    : "tmall-sku-crosswalk-observation";
+  const crosswalkTable = input.platform === "pdd"
+    ? "jdy_pdd_sku_crosswalk_observation"
+    : "jdy_tmall_sku_crosswalk_observation";
+  const platformIdentity = input.platform === "pdd"
+    ? sql`sr.payload->'data'->>'platformProductId' = ${pddProductId}
+          AND sr.payload->'data'->>'merchantSkuCode' = ${pddMerchantCode}`
+    : sql`sr.payload->'data'->>'platformSkuId' = ${input.platformSkuId}`;
 
   const crosswalkResult = await tx.execute(sql`
     WITH latest AS (
       SELECT ir.import_job_id
       FROM integration_runs ir
       WHERE ir.connector = 'jdy'
-        AND ir.stream = 'tmall-sku-crosswalk-observation'
+        AND ir.stream = ${crosswalkStream}
         AND ir.status = 'succeeded'
         AND ir.import_job_id IS NOT NULL
         AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
@@ -93,11 +105,11 @@ async function assertClaimIsConsistent(
       max(nullif(sr.payload->'_identity'->>'skuId', '')) AS sku_id
     FROM staging_rows sr
     INNER JOIN latest ON latest.import_job_id = sr.import_job_id
-    WHERE sr.target_table = 'jdy_tmall_sku_crosswalk_observation'
+    WHERE sr.target_table = ${crosswalkTable}
       AND sr.status IN ('pending', 'validated', 'committed')
       AND nullif(trim(sr.payload->>'sourceDeletedAt'), '') IS NULL
       AND sr.payload->'data'->>'shopName' = ${input.shopName}
-      AND sr.payload->'data'->>'platformSkuId' = ${input.platformSkuId}
+      AND ${platformIdentity}
   ` as SQL);
   const [crosswalk] = resultRows<Record<string, unknown>>(crosswalkResult);
   const identityCount = Number(crosswalk?.identity_count ?? 0);
