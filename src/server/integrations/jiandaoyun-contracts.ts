@@ -43,7 +43,7 @@ export interface JiandaoyunFormContract {
    * 用于订单级大表——拼多多订单全量超过 1,000 页安全上限；30/90 天需求窗口只需要最近几个月。
    * 每批是窗口内的完整快照（不是增量），读模型只取最新批次，与其它观察流口径一致。
    */
-  window?: { field: string; days: number };
+  window?: { field: string; days: number; includeUpdatedSince?: boolean };
 }
 
 const field = (target: string, source: string): JiandaoyunFieldRule => ({ target, source });
@@ -731,7 +731,7 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     freshnessMaxAgeDays: 45,
     // 实测每天 3,000~6,000 行订单明细，60 天就超 1,000 页安全上限；每次只拉最近 3 天（约 1~2 万行），
     // 读模型把最近 90 天内各批次按业务键去重后累加——滚动快照随每日同步自然累积成 90 天窗口
-    window: { field: "statistical_date", days: 3 },
+    window: { field: "statistical_date", days: 3, includeUpdatedSince: true },
     fields: [
       field("statisticalDate", "statistical_date"),
       field("shopName", "shop_name"),

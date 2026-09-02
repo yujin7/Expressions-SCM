@@ -668,6 +668,12 @@ export async function syncJiandaoyunForm(
   );
   await assertStableContractSchema(db, input.contract.key, schemaHash);
   const projection = jiandaoyunContractProjection(input.contract);
+  const includeUpdatedSince = input.contract.window?.includeUpdatedSince === true;
+  const evidenceWindow = input.contract.window ? {
+    field: input.contract.window.field,
+    days: input.contract.window.days,
+    includeUpdatedSince,
+  } : null;
   const records = await input.client.listRecords(
     input.contract.appId,
     input.contract.entryId,
@@ -676,7 +682,7 @@ export async function syncJiandaoyunForm(
       field: input.contract.window.field,
       sinceDays: input.contract.window.days,
       // 拼多多订单会在下单数日后才取消/退款；同步近期更新可撤销旧的付款观察。
-      includeUpdatedSince: input.contract.key === "pdd-order-observation",
+      includeUpdatedSince,
     } : undefined,
   );
   const control = inspectJiandaoyunContractControl(input.contract, widgets, records);
@@ -713,7 +719,7 @@ export async function syncJiandaoyunForm(
       authority: "observation-only",
       fieldMinimized: true,
       sourceProjection: projection,
-      window: input.contract.window ?? null,
+      window: evidenceWindow,
       controlSummary,
     },
     records: minimized,
@@ -743,7 +749,7 @@ export async function syncJiandaoyunForm(
       authority: "observation-only",
       controlSummary,
       qualityBlocked: controlSummary.status === "review",
-      window: input.contract.window ?? null,
+      window: evidenceWindow,
     },
     evidencePath: evidence.relativePath,
     evidenceHash: evidence.hash,
@@ -846,7 +852,7 @@ export async function syncJiandaoyunForm(
           appId: input.contract.appId,
           entryId: input.contract.entryId,
           // 时间窗快照：读模型必须按业务键跨批次去重累加，不能把单批当全量
-          ...(input.contract.window ? { window: { field: input.contract.window.field, days: input.contract.window.days } } : {}),
+          ...(evidenceWindow ? { window: evidenceWindow } : {}),
           schemaHash,
           sourceUpdatedThrough: updatedThrough,
           priorSourceRecordIdsVerified,
@@ -860,11 +866,13 @@ export async function syncJiandaoyunForm(
           evidenceHash: evidence.hash,
         },
       });
-      // Only a successful, non-empty full observation may retire prior review batches. An empty
+      // Only a successful, non-empty, quality-passing full observation may retire prior review batches. An empty
       // response is retained as evidence but cannot imply that previously observed facts vanished.
       // 滚动窗口每批只覆盖最近 N 天，旧批次是 30/90 天累计历史的一部分，不能退役。
       // 只有非窗口的完整快照才能用新批次替换旧批次。
-      const supersededImportJobs = minimized.length > 0 && !input.contract.window
+      const supersededImportJobs = minimized.length > 0
+        && !input.contract.window
+        && controlSummary.status !== "review"
         ? await supersedeSourceObservationJobsInTransaction(tx, {
           keepJobId: job.id,
           template: input.contract.targetTable,
@@ -923,7 +931,7 @@ export async function syncJiandaoyunForm(
         unresolvedAliases,
         controlSummary,
         qualityBlocked: controlSummary.status === "review",
-        window: input.contract.window ?? null,
+        window: evidenceWindow,
       };
       await finishRunInTransaction(tx, {
         runId: run.id,

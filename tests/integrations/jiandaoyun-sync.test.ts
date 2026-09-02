@@ -391,11 +391,30 @@ describe("简道云受控同步", () => {
     const { db } = await createTestDb();
     const [actor] = await db.insert(schema.users).values({ name: "简道云质量责任人" }).returning();
     const controlled = { ...contract, businessKey: ["productCode"] } satisfies JiandaoyunFormContract;
-    const client = observationClient(() => [
+    let rows: readonly TestObservationRow[] = [
+      { id: "0".repeat(24), code: "TRUSTED-SKU", updatedAt: "2026-07-29T02:00:00.000Z" },
+    ];
+    const client = observationClient(() => rows);
+    let evidenceNo = 0;
+    const writeEvidence = vi.fn(async (_connector: string, _stream: string, envelope: unknown) => {
+      const hashPart = evidenceNo++ === 0 ? "c" : "d";
+      return {
+        relativePath: `integration-evidence/jdy/test-observation/${hashPart}.json`,
+        hash: hashPart.repeat(64),
+        bytes: `${JSON.stringify(envelope)}\n`,
+      };
+    });
+    const trusted = await syncJiandaoyunForm(db, {
+      client,
+      actorId: actor.id,
+      contract: controlled,
+      writeEvidence,
+    });
+    rows = [
+      { id: "0".repeat(24), code: "TRUSTED-SKU", updatedAt: "2026-07-29T02:00:00.000Z" },
       { id: "1".repeat(24), code: "DUPLICATE-SKU", updatedAt: "2026-07-30T02:00:00.000Z" },
       { id: "2".repeat(24), code: "duplicate-sku", updatedAt: "2026-07-30T02:00:00.000Z" },
-    ]);
-    const writeEvidence = vi.fn(observationEvidence("d"));
+    ];
 
     const result = await syncJiandaoyunForm(db, {
       client,
@@ -418,9 +437,15 @@ describe("简道云受控同步", () => {
       },
     });
     expect(JSON.stringify(run.requestScope)).not.toContain("DUPLICATE-SKU");
-    expect(writeEvidence.mock.calls[0]?.[2]).toMatchObject({
+    expect(writeEvidence.mock.calls[1]?.[2]).toMatchObject({
       scope: { controlSummary: { status: "review", duplicateRows: 2 } },
     });
+    const jobs = await db.select().from(schema.importJobs);
+    expect(jobs.map((job) => job.status)).toEqual(["done", "done"]);
+    const trustedRows = await db.select().from(schema.stagingRows)
+      .where(eq(schema.stagingRows.importJobId, trusted.importJobId));
+    expect(trustedRows).toHaveLength(1);
+    expect(trustedRows[0]?.status).toBe("pending");
   });
 
   it("新的非空全量观察替代旧待复核批次，但保留追溯记录", async () => {
@@ -517,7 +542,7 @@ describe("简道云受控同步", () => {
     const windowedContract: JiandaoyunFormContract = {
       ...contract,
       key: "pdd-order-observation",
-      window: { field: "statistical_date", days: 3 },
+      window: { field: "statistical_date", days: 3, includeUpdatedSince: true },
     };
     const client = observationClient(() => rows);
     const listRecords = vi.spyOn(client, "listRecords");
@@ -560,7 +585,7 @@ describe("简道云受控同步", () => {
       .toEqual(["NEWER-SKU", "OLDER-SKU"]);
     expect(envelopes).toHaveLength(2);
     expect(envelopes[0]).toMatchObject({
-      scope: { window: { field: "statistical_date", days: 3 } },
+      scope: { window: { field: "statistical_date", days: 3, includeUpdatedSince: true } },
     });
     expect(listRecords).toHaveBeenCalledWith(
       windowedContract.appId,
@@ -570,8 +595,8 @@ describe("简道云受控同步", () => {
     );
     const runs = await db.select().from(schema.integrationRuns);
     expect(runs.map((run) => run.requestScope)).toEqual([
-      expect.objectContaining({ window: { field: "statistical_date", days: 3 } }),
-      expect.objectContaining({ window: { field: "statistical_date", days: 3 } }),
+      expect.objectContaining({ window: { field: "statistical_date", days: 3, includeUpdatedSince: true } }),
+      expect.objectContaining({ window: { field: "statistical_date", days: 3, includeUpdatedSince: true } }),
     ]);
   });
 
