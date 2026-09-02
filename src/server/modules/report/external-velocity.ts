@@ -19,7 +19,7 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v4";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v5";
 const PLATFORM_SKU_IDENTIFIER_SCOPE = "JIANDAOYUN:TMALL";
 
 export interface ExternalVelocityBySku {
@@ -285,7 +285,8 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
                   THEN (payload->'data'->>'productQuantity')::numeric ELSE 0 END AS qty,
              coalesce(payload->'data'->>'orderStatus', '') AS status,
              coalesce(payload->'data'->>'afterSalesStatus', '') AS after_sales_status,
-             coalesce(payload->'data'->>'paymentTime', '') AS payment_time
+             coalesce(payload->'data'->>'paymentTime', '') AS payment_time,
+             payload->>'sourceDeletedAt' AS source_deleted_at
       FROM staging_rows
       WHERE import_job_id IN (SELECT import_job_id FROM pdd_batches)
         AND target_table = 'jdy_pdd_order_observation'
@@ -293,7 +294,12 @@ export async function computeExternalVelocity(db: ReadDb): Promise<ExternalVeloc
         AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
       ORDER BY payload->'data'->>'orderNumber', payload->'data'->>'productId', coalesce(payload->'data'->>'merchantSkuCode', ''), import_job_id DESC
     ),
-    pdd AS (SELECT shop, pid, mcode, d, qty, status, after_sales_status, payment_time FROM pdd_raw),
+    -- 删除记录必须先参与“最新版本”竞选，再从结果里剔除；否则旧订单会被复活并继续计量。
+    pdd AS (
+      SELECT shop, pid, mcode, d, qty, status, after_sales_status, payment_time
+      FROM pdd_raw
+      WHERE nullif(trim(source_deleted_at), '') IS NULL
+    ),
     anchor AS (SELECT greatest(
       max(s.d),
       (SELECT max(d) FROM pdd),

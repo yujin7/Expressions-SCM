@@ -19,7 +19,7 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-channel-observation/v2";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-channel-observation/v3";
 const WINDOW_DAYS = 30;
 
 export interface ChannelPlatformRow {
@@ -210,12 +210,17 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
   {
     const rows = resultRows<Record<string, unknown>>(await db.execute(sql`
       WITH b AS (
-        SELECT ir.import_job_id FROM integration_runs ir
+        SELECT ir.import_job_id,
+               least(
+                 nullif(ir.request_scope->'window'->>'to', '')::timestamptz,
+                 nullif(ir.request_scope->'window'->>'extractionCutoff', '')::timestamptz
+               ) AS observed_through_at
+        FROM integration_runs ir
         WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation' AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
           AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
           AND ir.finished_at > now() - interval '90 days'
       ),
-      o AS (
+      o_latest AS (
         SELECT DISTINCT ON (payload->'data'->>'orderNumber', payload->'data'->>'productId', coalesce(payload->'data'->>'merchantSkuCode',''))
                payload->'data'->>'shopName' AS shop,
                payload->'data'->>'productId' AS pid,
@@ -225,11 +230,18 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
                coalesce(payload->'data'->>'orderStatus','') AS status,
                coalesce(payload->'data'->>'afterSalesStatus','') AS after_sales_status,
                coalesce(payload->'data'->>'paymentTime','') AS payment_time,
-               ij.source_as_of
+               ij.source_as_of,
+               payload->>'sourceDeletedAt' AS source_deleted_at
         FROM staging_rows sr INNER JOIN import_jobs ij ON ij.id = sr.import_job_id
         WHERE sr.import_job_id IN (SELECT import_job_id FROM b) AND sr.target_table = 'jdy_pdd_order_observation'
           AND sr.status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
         ORDER BY payload->'data'->>'orderNumber', payload->'data'->>'productId', coalesce(payload->'data'->>'merchantSkuCode',''), sr.import_job_id DESC
+      ),
+      -- tombstone 先压过旧版本，再被排除，防止已删除订单继续贡献销量。
+      o AS (
+        SELECT shop, pid, mcode, d, qty, status, after_sales_status, payment_time, source_as_of
+        FROM o_latest
+        WHERE nullif(trim(source_deleted_at), '') IS NULL
       ),
       cw AS (
         SELECT payload->'data'->>'shopName' AS shop,
@@ -273,12 +285,24 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
         LEFT JOIN skus sku ON sku.id = i.sku_id
         LEFT JOIN brands br ON br.id = sku.brand_id
       ),
-      a AS (SELECT max(d) AS d, max(source_as_of)::text AS as_of FROM attributed)
+      -- 有效的空窗口也代表“已观察到这里”：锚点优先取实际抽取截止的中国业务日，
+      -- 旧批次没有窗口元数据时才退回订单最大业务日。
+      a AS (
+        SELECT coalesce(
+                 (SELECT max((observed_through_at + interval '8 hours')::date) FROM b),
+                 max(d)
+               ) AS d,
+               coalesce(
+                 (SELECT max(observed_through_at)::text FROM b),
+                 max(source_as_of)::text
+               ) AS as_of
+        FROM attributed
+      )
       SELECT 'anchor' AS kind, a.d::text AS shop, NULL::text AS brand, NULL::numeric AS qty, a.as_of FROM a
       UNION ALL
       SELECT 'shop', attributed.shop, attributed.brand, sum(attributed.qty), NULL
       FROM attributed CROSS JOIN a
-      WHERE attributed.d > a.d - ${WINDOW_DAYS}::int
+      WHERE attributed.d > a.d - ${WINDOW_DAYS}::int AND attributed.d <= a.d
       GROUP BY attributed.shop, attributed.brand
     `));
     const anchorRow = rows.find((x) => x.kind === "anchor");

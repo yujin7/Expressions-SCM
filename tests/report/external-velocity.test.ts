@@ -204,6 +204,31 @@ describe("外部观察销速读模型", () => {
       // 迟到更新带回 5 个订单日期，但实际抽取截止中午，只完整观察了 2 个自然日。
       expect(v.coverage.pddObservedDays30).toBe(2);
       expect(v.coverage.pddWindowComplete30).toBe(false);
+
+      // 新批次的删除标记必须压过旧订单版本；不能让已删除的 O1 继续贡献 2 件。
+      const [deletedOrders] = await db.insert(schema.importJobs).values({
+        template: "jdy_pdd_order_observation", filename: "pdd-orders-tombstone", sourceAsOf: "2026-09-03",
+        createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-orders-tombstone",
+        status: "succeeded", importJobId: deletedOrders.id, finishedAt: new Date("2026-09-03T04:00:00.000Z"),
+        requestScope: { window: {
+          from: "2026-08-31T16:00:00.000Z",
+          to: "2026-09-03T16:00:00.000Z",
+          extractionCutoff: "2026-09-03T04:00:00.000Z",
+        } },
+      });
+      await db.insert(schema.stagingRows).values({
+        importJobId: deletedOrders.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation",
+        payload: {
+          sourceDeletedAt: "2026-09-03T03:30:00.000Z",
+          data: { statisticalDate: "2026-08-25", shopName: shop, orderNumber: "O1", productId: "PID1", merchantSkuCode: "GW1", productQuantity: "2", orderStatus: "已发货，待收货" },
+        },
+      });
+      const afterDelete = await computeExternalVelocity(db);
+      expect(afterDelete.bySku[String(viaCrosswalk.id)]?.pddNet30).toBe(3);
+      expect(afterDelete.bySku[String(viaCrosswalk.id)]?.pddNet90).toBe(10);
     } finally {
       await client.close();
     }

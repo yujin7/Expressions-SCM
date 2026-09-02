@@ -125,6 +125,11 @@ describe("全渠道外部观察", () => {
         status: "succeeded",
         importJobId: job.id,
         finishedAt: new Date("2026-09-02T03:00:00.000Z"),
+        requestScope: { window: {
+          from: "2026-08-30T16:00:00.000Z",
+          to: "2026-09-02T16:00:00.000Z",
+          extractionCutoff: "2026-09-02T03:00:00.000Z",
+        } },
       });
       const base = {
         statisticalDate: "2026-09-01",
@@ -147,8 +152,68 @@ describe("全渠道外部观察", () => {
       const observation = await computeChannelObservation(db);
       const pdd = observation.platforms.find((row) => row.platform === "拼多多")!;
       expect(pdd.state).toBe("ready");
+      expect(pdd.anchorDate).toBe("2026-09-02");
       expect(pdd.units).toBe(4);
       expect(pdd.byBrand).toEqual([{ brand: "NING", units: 4, amount: null }]);
+
+      const [deletedJob] = await db.insert(schema.importJobs).values({
+        template: "jdy_pdd_order_observation", filename: "pdd-orders-tombstone", sourceAsOf: "2026-09-03",
+        createdBy: actor.id, status: "done",
+      }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "pdd-orders-status-tombstone",
+        status: "succeeded", importJobId: deletedJob.id, finishedAt: new Date("2026-09-03T03:00:00.000Z"),
+        requestScope: { window: {
+          from: "2026-08-31T16:00:00.000Z",
+          to: "2026-09-03T16:00:00.000Z",
+          extractionCutoff: "2026-09-03T03:00:00.000Z",
+        } },
+      });
+      await db.insert(schema.stagingRows).values({
+        importJobId: deletedJob.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation",
+        payload: {
+          sourceDeletedAt: "2026-09-03T02:30:00.000Z",
+          data: { ...base, orderNumber: "O1", productQuantity: "4", orderStatus: "已发货", afterSalesStatus: "" },
+        },
+      });
+      const afterDelete = await computeChannelObservation(db);
+      expect(afterDelete.platforms.find((row) => row.platform === "拼多多")).toMatchObject({
+        state: "ready", anchorDate: "2026-09-03", units: 0,
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("拼多多有效空窗口会推进观察锚点并让过期订单退出近 30 天", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "拼多多空窗责任人" }).returning();
+      const [oldJob, emptyJob] = await db.insert(schema.importJobs).values([
+        { template: "jdy_pdd_order_observation", filename: "old-order", sourceAsOf: "2026-08-02", createdBy: actor.id, status: "done" },
+        { template: "jdy_pdd_order_observation", filename: "empty-window", sourceAsOf: "2026-09-03", createdBy: actor.id, status: "done" },
+      ]).returning();
+      await db.insert(schema.integrationRuns).values([
+        {
+          connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "old-order-window",
+          status: "succeeded", importJobId: oldJob.id, finishedAt: new Date("2026-08-02T04:00:00.000Z"),
+          requestScope: { window: { from: "2026-07-30T16:00:00.000Z", to: "2026-08-02T16:00:00.000Z", extractionCutoff: "2026-08-02T04:00:00.000Z" } },
+        },
+        {
+          connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "new-empty-window",
+          status: "succeeded", importJobId: emptyJob.id, finishedAt: new Date("2026-09-03T04:00:00.000Z"),
+          requestScope: { emptySource: true, window: { from: "2026-08-31T16:00:00.000Z", to: "2026-09-03T16:00:00.000Z", extractionCutoff: "2026-09-03T04:00:00.000Z" } },
+        },
+      ]);
+      await db.insert(schema.stagingRows).values({
+        importJobId: oldJob.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation",
+        payload: { data: { statisticalDate: "2026-08-01", shopName: "空窗测试店", orderNumber: "OLD-1", productId: "PID-OLD", productQuantity: "9", orderStatus: "已发货" } },
+      });
+
+      const observation = await computeChannelObservation(db);
+      expect(observation.platforms.find((row) => row.platform === "拼多多")).toMatchObject({
+        state: "ready", anchorDate: "2026-09-03", units: 0,
+      });
     } finally {
       await client.close();
     }
