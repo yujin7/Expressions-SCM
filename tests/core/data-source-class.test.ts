@@ -48,6 +48,14 @@ describe("data-source-class 注册表", () => {
     expect(SOURCE_CLASS_DEFS.reference_file.targetAccuracyPct).toBeNull();
   });
 
+  it("准确率口径如实：rpa 栏来源是自有实时仓出库 vs 聚水潭日销（非快照仓）；external 仅覆盖天猫", () => {
+    expect(SOURCE_CLASS_DEFS.rpa_warehouse.accuracyBasis).toContain("自有实时仓出库");
+    expect(SOURCE_CLASS_DEFS.rpa_warehouse.accuracyBasis).toContain("stock_ledger sales_out");
+    expect(SOURCE_CLASS_DEFS.rpa_warehouse.accuracyBasis).toContain("聚水潭日销");
+    expect(SOURCE_CLASS_DEFS.external_platform.accuracyBasis).toContain("仅覆盖天猫");
+    expect(SOURCE_CLASS_DEFS.external_platform.accuracyBasis).toContain("拼多多/唯品会不度量");
+  });
+
   it("未登记模板按前缀兜底并标 registered=false", () => {
     expect(sourceClassForTemplate("jdy_future_master_observation")).toEqual({ sourceClass: "reference_file", registered: false });
     expect(sourceClassForTemplate("jdy_future_daily_observation")).toEqual({ sourceClass: "external_platform", registered: false });

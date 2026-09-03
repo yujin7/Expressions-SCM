@@ -5,7 +5,8 @@
  *   数据质量读模型切片（准确率/及时性/完整性/覆盖），只读证据不回算。有操作人时同事务 writeAudit；
  *   由定时任务生成（无操作人）时 evidence.generatedBy='job'，不写审计（系统无伪用户，与 snapshot-age 同型）。
  * - closeReview：完成 / 豁免（豁免必须写原因）；只允许 pending → completed|waived；同事务 writeAudit(entity=data_quality_review)。
- * - resolveCadence：连续 4 周完成且达标 → 月核对（rules 在 dq/periods.decideCadence）。
+ * - resolveCadence：连续 4 周完成且达标 → 月核对（rules 在 dq/periods.decideCadence）；评估时排除本次即将生成的周期，
+ *   切到月核对后粘滞（最近月核对待完成或完成且达标 → 维持），月核对被豁免/未达标才退回周核对（详见函数注释）。
  * 写守卫：角色 pmc / finance / warehouse（admin 兜底），非法角色 ApiError 403。
  */
 import { and, desc, eq, sql } from "drizzle-orm";
@@ -20,7 +21,8 @@ import { type AnyDb, resolveDb } from "@/server/core/svc";
 import { ApiError } from "@/server/modules/master/common";
 import { computeDataQuality, type DataQualityReport, type DqSourceRow } from "@/server/modules/report/data-quality";
 import {
-  decideCadence, MONTH_KEY_RE, periodRange, previousPeriodKey, reviewPeriodKeyFor, type ReviewPeriodKind, todayShanghai, WEEK_KEY_RE,
+  decideCadence, isoWeekRange, MONTH_KEY_RE, monthRange, periodRange, previousPeriodKey, reviewPeriodKeyFor, type ReviewPeriodKind,
+  todayShanghai, WEEK_KEY_RE,
 } from "./periods";
 
 export const DQ_REVIEW_ROLES = ["pmc", "finance", "warehouse"] as const;
@@ -258,33 +260,43 @@ export async function pendingReviewCount(dbArg: AnyDb): Promise<number> {
   return Number(n);
 }
 
+type CadenceRow = { periodKey: string; sourceClass: string; status: string; evidence: unknown };
+
+/** 单行是否「完成且达标」：completed 且准确率 ≥ 该类目标（无目标类只看 completed）；waived 不算达标 */
+function rowMet(r: { sourceClass: string; status: string; evidence: unknown }): boolean {
+  if (r.status !== "completed") return false;
+  const target = SOURCE_CLASS_DEFS[r.sourceClass as ReviewedSourceClass]?.targetAccuracyPct ?? null;
+  const rate = (r.evidence as Partial<DqReviewEvidence> | null)?.accuracy?.rate ?? null;
+  return target == null || (rate != null && rate >= target);
+}
+
+/** 单行是否已「注定不达标」：被豁免，或已完成但准确率低于目标（待核对行不算） */
+function rowFailed(r: { sourceClass: string; status: string; evidence: unknown }): boolean {
+  return r.status === "waived" || (r.status === "completed" && !rowMet(r));
+}
+
 /** 某周期是否「完成且达标」：三类全部 completed 且各自准确率 ≥ 目标（无目标类只看 completed） */
 export function periodMet(rows: { sourceClass: string; status: string; evidence: unknown }[]): boolean {
   const byClass = new Map(rows.map((r) => [r.sourceClass, r]));
   for (const cls of REVIEWED_SOURCE_CLASSES) {
     const r = byClass.get(cls);
-    if (!r || r.status !== "completed") return false;
-    const target = SOURCE_CLASS_DEFS[cls].targetAccuracyPct;
-    const rate = (r.evidence as Partial<DqReviewEvidence> | null)?.accuracy?.rate ?? null;
-    if (target != null && (rate == null || rate < target)) return false;
+    if (!r || !rowMet(r)) return false;
   }
   return true;
 }
 
-/** D65 节奏：最近 4 个连续 ISO 周（不含本周）全部完成且达标 → 月核对 */
-export async function resolveCadence(
-  dbArg: AnyDb,
-  today: string = todayShanghai(),
-  requiredStreak = 4,
-): Promise<{ cadence: ReviewPeriodKind; streak: number; reason: string; periodKey: string }> {
-  const db = await resolveDb(dbArg);
-  const keys: string[] = [];
-  let key = reviewPeriodKeyFor("week", today);
-  for (let i = 0; i < requiredStreak; i += 1) {
-    keys.push(key);
-    key = previousPeriodKey("week", key);
-  }
-  const rows: { periodKey: string; sourceClass: string; status: string; evidence: unknown }[] = await db
+export interface CadenceDecision {
+  cadence: ReviewPeriodKind;
+  streak: number;
+  reason: string;
+  /** 本次应生成的核对包周期键（周：上一完整 ISO 周；月：上一完整月） */
+  periodKey: string;
+  /** 当前粘滞的月核对包（最近一个月核对包的周期键；没有则 null） */
+  monthPeriodKey: string | null;
+}
+
+async function loadCadenceRows(db: AnyDb, periodKind: ReviewPeriodKind): Promise<CadenceRow[]> {
+  return db
     .select({
       periodKey: schema.dataQualityReviews.periodKey,
       sourceClass: schema.dataQualityReviews.sourceClass,
@@ -292,8 +304,66 @@ export async function resolveCadence(
       evidence: schema.dataQualityReviews.evidence,
     })
     .from(schema.dataQualityReviews)
-    .where(eq(schema.dataQualityReviews.periodKind, "week"));
-  const history = keys.map((k) => ({ periodKey: k, met: periodMet(rows.filter((r) => r.periodKey === k)) }));
+    .where(eq(schema.dataQualityReviews.periodKind, periodKind));
+}
+
+/**
+ * D65 节奏裁决（真实路径可达且粘滞）。规则：
+ *
+ * 1. 月核对粘滞：若已存在月核对包（取 periodKey 最大者）——
+ *    - 任一来源类被豁免、或已完成但准确率低于目标 → 该月核对「未达标」，退回周核对（转到第 2 步，且只数该月之后的周）；
+ *    - 否则（三类全部完成且达标，或仍有待核对行）→ 维持月核对；本次周期键 = 上一完整月（同月重复运行幂等）。
+ * 2. 周核对累计：评估「本次即将生成的周核对包」**之前**的 requiredStreak（默认 4）个连续 ISO 周——
+ *    本次周期（reviewPeriodKeyFor("week", today)）此刻尚未核对，若计入，月核对在定时任务的真实路径上永远不可达；
+ *    这 4 周全部完成且达标 → 转月核对，否则维持周核对。
+ *    从月核对退回后，只数结束日晚于该月核对包月份的周（月核对期间没有生成的周不算达标），需重新累计 4 周。
+ * 3. 豁免（waived）在任何一步都不算达标。
+ */
+export async function resolveCadence(
+  dbArg: AnyDb,
+  today: string = todayShanghai(),
+  requiredStreak = 4,
+): Promise<CadenceDecision> {
+  const db = await resolveDb(dbArg);
+  const [weekRows, monthRows] = await Promise.all([loadCadenceRows(db, "week"), loadCadenceRows(db, "month")]);
+
+  // 1) 月核对粘滞
+  const monthPeriodKey = monthRows.reduce<string | null>((acc, r) => (acc == null || r.periodKey > acc ? r.periodKey : acc), null);
+  let monthFailedReason: string | null = null;
+  if (monthPeriodKey != null) {
+    const latest = monthRows.filter((r) => r.periodKey === monthPeriodKey);
+    const failed = latest.filter(rowFailed);
+    if (failed.length === 0) {
+      const met = periodMet(latest);
+      return {
+        cadence: "month",
+        streak: requiredStreak,
+        reason: met ? `月核对 ${monthPeriodKey} 完成且达标，维持月核对` : `月核对 ${monthPeriodKey} 待完成，维持月核对`,
+        periodKey: reviewPeriodKeyFor("month", today),
+        monthPeriodKey,
+      };
+    }
+    const waived = failed.some((r) => r.status === "waived");
+    monthFailedReason = `月核对 ${monthPeriodKey} ${waived ? "被豁免" : "未达标"}，退回周核对`;
+  }
+
+  // 2) 周核对累计：排除本次即将生成的周期，只数退回月份之后的周
+  const monthThrough = monthPeriodKey != null ? monthRange(monthPeriodKey).through : null;
+  const keys: string[] = [];
+  let key = previousPeriodKey("week", reviewPeriodKeyFor("week", today));
+  for (let i = 0; i < requiredStreak; i += 1) {
+    keys.push(key);
+    key = previousPeriodKey("week", key);
+  }
+  const history = keys.map((k) => ({
+    periodKey: k,
+    met: (monthThrough == null || isoWeekRange(k).through > monthThrough) && periodMet(weekRows.filter((r) => r.periodKey === k)),
+  }));
   const decision = decideCadence(history, requiredStreak);
-  return { ...decision, periodKey: reviewPeriodKeyFor(decision.cadence, today) };
+  return {
+    ...decision,
+    reason: monthFailedReason && decision.cadence === "week" ? `${monthFailedReason}；${decision.reason}` : decision.reason,
+    periodKey: reviewPeriodKeyFor(decision.cadence, today),
+    monthPeriodKey,
+  };
 }

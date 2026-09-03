@@ -681,11 +681,11 @@ Object.assign(METRICS, {
   dataAccuracyRpa: {
     id: "dataAccuracyRpa",
     label: "RPA 仓库准确率",
-    short: "RPA/电商部库存快照与聚水潭对账在 SKU 日级的一致率",
-    formula: "近 30 天 recon_diffs 中 |系统数量 − 聚水潭数量| ≤ 容差(dq_tolerance_pct)% 的行数 ÷ 总行数",
+    short: "自有实时仓出库（stock_ledger sales_out）与聚水潭日销在 SKU 日级的一致率；不是 RPA 快照仓本身的准确率",
+    formula: "近 30 天 recon_diffs 中 |自有实时仓 sales_out 出库量 − 聚水潭日销量| ≤ 容差(dq_tolerance_pct)% 的行数 ÷ 总行数",
     unit: "pct",
     tier: "derived",
-    caveat: "目标 95%；并列的盘点命中率把未改动行计为命中、偏高；快照跳变只警告不阻断",
+    caveat: "目标 95%；来源是实时仓出库 vs 聚水潭，快照仓本身只有相邻批次跳变与盘点命中率佐证；盘点命中率把未改动行计为命中、偏高；快照跳变只警告不阻断",
   },
   dataAccuracyManual: {
     id: "dataAccuracyManual",
@@ -712,7 +712,7 @@ Object.assign(METRICS, {
     formula: "一致行 ÷（一致行 + 例外行）；一致 = |内部 − 外部| ≤ max(绝对下限, max(内部,外部) × 相对容差)；两侧均低于量下限的行不进分母",
     unit: "pct",
     tier: "registry",
-    caveat: "只比较两侧都有记录的完整月，单侧缺失记为未覆盖不补 0；一致率不裁定谁对谁错；观察数据不进过账",
+    caveat: "只比较两侧都有数据的完整月（内部缺月跳过、外部不完整月不比），单侧缺失记为未覆盖不补 0、不记为不一致；目前仅覆盖天猫，拼多多/唯品会不度量；一致率不裁定谁对谁错；观察数据不进过账",
   },
   dqReviewsPending: {
     id: "dqReviewsPending",

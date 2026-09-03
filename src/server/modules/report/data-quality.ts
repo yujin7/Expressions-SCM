@@ -1,13 +1,16 @@
 /**
- * D65 数据质量总览读模型（`data-quality/v1`）：来源类 × 维度（及时性 / 完整性 / 唯一性 / 准确性）。
+ * D65 数据质量总览读模型（`data-quality/v2`）：来源类 × 维度（及时性 / 完整性 / 唯一性 / 准确性）。
  *
  * 只算能算的、算不了的留 null 并写明原因（DQ-5）；不做综合分。准确率三条纯规则各自消费：
- * - rules/data-accuracy：recon_diffs SKU 日级一致率（rpa）、staging 放行率（manual / external 完整性）；
+ * - rules/data-accuracy：recon_diffs SKU 日级一致率（rpa 栏；来源如实为「自有实时仓出库 stock_ledger sales_out
+ *   vs 聚水潭日销」，不是快照仓本身）、staging 放行率（manual / external 完整性）；
  * - rules/count-accuracy：已审批盘点单命中率（rpa 并列，仅实时仓）；
  * - rules/snapshot-quality：快照仓相邻批次跳变（rpa 并列，告警数）；
- * - report/sales-consistency：sales_monthly vs 天猫观察 SKU×月一致率（external）。
+ * - report/sales-consistency：sales_monthly vs 天猫观察 SKU×月一致率（external；只比两侧都有数据的完整月，
+ *   内部缺月跳过不记为不一致；目前仅覆盖天猫，拼多多/唯品会不度量）。
  * 本期手工改写指标数（DQ-6）独立列，不进任何准确率分子分母。覆盖起止日按来源类各自取证，缺失不补 0。
- * 缓存：report_read_model_cache key `data-quality/v1`，source_binding = 各事实表最大 id/计数 + 容差 + 今日。
+ * 缓存：report_read_model_cache key `data-quality/v2`（v2：一致性只比重叠完整月 + 准确率来源文案纠正），
+ * source_binding = 各事实表最大 id/计数 + 容差 + 今日。
  */
 import { sql, type SQL } from "drizzle-orm";
 
@@ -25,7 +28,7 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-export const DATA_QUALITY_CACHE_KEY = "data-quality/v1";
+export const DATA_QUALITY_CACHE_KEY = "data-quality/v2";
 export const DQ_RECON_WINDOW_DAYS = 30;
 export const DQ_COUNT_WINDOW_DAYS = 90;
 
@@ -94,6 +97,10 @@ export interface DataQualityReport {
     exceptionRows: number;
     belowFloorRows: number;
     anchorDate: string | null;
+    /** 实际比较月 / 内部缺月（跳过不比）/ 外部不完整月（不比） */
+    comparedMonths: string[];
+    skippedMonths: string[];
+    partialMonths: string[];
     thresholds: SalesConsistencyThresholds;
   };
   manualOverrides: { period: string; count: number; entities: { entity: string; count: number }[] };
@@ -306,7 +313,7 @@ export async function computeDataQuality(db: ReadDb, opts: { today?: string } = 
         completeness,
         uniqueness: { rate: null, n: 0, duplicates: 0, basis: "不度量：同仓同码多行按批次维合法聚合，(仓,SKU,日) 由 UNIQUE 约束保证" },
         accuracy: accuracy(recon.rate, recon.total, def.targetAccuracyPct,
-          `近 ${DQ_RECON_WINDOW_DAYS} 天 recon_diffs SKU 日级一致率（容差 ${tolerancePct}%）；并列盘点命中率 ${count.rate ?? "—"}%（${count.lines} 行）与快照跳变告警 ${snap.alerts} 仓`),
+          `近 ${DQ_RECON_WINDOW_DAYS} 天自有实时仓出库（stock_ledger sales_out）vs 聚水潭日销 SKU 日级一致率（recon_diffs，容差 ${tolerancePct}%），不是快照仓本身；并列盘点命中率 ${count.rate ?? "—"}%（${count.lines} 行）与快照跳变告警 ${snap.alerts} 仓`),
         coverage: { from: dateValue(snapRow?.from_d), through: latest, basis: "stock_snapshots.biz_date 起止" },
       };
     }
@@ -333,7 +340,7 @@ export async function computeDataQuality(db: ReadDb, opts: { today?: string } = 
           basis: "最新天猫日销批次业务键 (店铺,SKU,统计日) 去重率；读模型按业务键 DISTINCT ON 去重",
         },
         accuracy: accuracy(sales.consistencyPct, sales.comparedRows - sales.belowFloorRows, def.targetAccuracyPct,
-          `sales_monthly vs 天猫观察 SKU×完整月一致率（相对 ${sales.thresholds.relPct}% / 绝对 ${sales.thresholds.absFloorQty} 件 / 量下限 ${sales.thresholds.minBaseQty} 件）`),
+          `sales_monthly vs 天猫观察 SKU×完整月一致率（相对 ${sales.thresholds.relPct}% / 绝对 ${sales.thresholds.absFloorQty} 件 / 量下限 ${sales.thresholds.minBaseQty} 件）；只比两侧都有数据的月（比较 ${sales.comparedMonths.length > 0 ? sales.comparedMonths.join("、") : "无"}；内部缺月 ${sales.skippedMonths.length > 0 ? sales.skippedMonths.join("、") : "无"} 跳过不计）；仅覆盖天猫`),
         coverage: { from: jobCoverage.from, through: jobCoverage.through, basis: "该类连接器批次 source_as_of 起止" },
       };
     }
@@ -359,7 +366,8 @@ export async function computeDataQuality(db: ReadDb, opts: { today?: string } = 
     snapshotQuality: snap,
     salesConsistency: {
       state: sales.state, consistencyPct: sales.consistencyPct, comparedRows: sales.comparedRows,
-      exceptionRows: sales.exceptionRows, belowFloorRows: sales.belowFloorRows, anchorDate: sales.anchorDate, thresholds: sales.thresholds,
+      exceptionRows: sales.exceptionRows, belowFloorRows: sales.belowFloorRows, anchorDate: sales.anchorDate,
+      comparedMonths: sales.comparedMonths, skippedMonths: sales.skippedMonths, partialMonths: sales.partialMonths, thresholds: sales.thresholds,
     },
     manualOverrides: overrides,
     reviews: { pending: intValue(pendingRow?.n), currentWeek: isoWeekKey(today), currentMonth: monthKey(today) },
@@ -367,7 +375,8 @@ export async function computeDataQuality(db: ReadDb, opts: { today?: string } = 
     limitations: [
       "各维度只算能算的；算不出的留空并写明原因，不做综合分、不补 0。",
       "盘点命中率把未改动行计为命中，偏高；仅实时仓已审批盘点单。",
-      "外部平台准确率是两套口径的一致率，不裁定谁对；观察数据不进过账、不定量。",
+      "RPA 仓库栏的准确率来源是自有实时仓出库（stock_ledger sales_out）vs 聚水潭日销的 SKU 日级一致率，不是快照仓本身；快照仓只有相邻批次跳变与盘点命中率可佐证。",
+      "外部平台准确率是两套口径的一致率，不裁定谁对；只比两侧都有数据的完整月，内部缺月跳过不记为不一致；目前仅覆盖天猫，拼多多/唯品会不度量；观察数据不进过账、不定量。",
       "本期手工改写指标数独立计数，不进任何准确率分子分母。",
     ],
   };

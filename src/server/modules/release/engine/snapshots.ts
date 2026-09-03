@@ -5,6 +5,7 @@ import { and, eq, isNull, lt, max } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { dAdd, dCmp, dQty } from "@/server/core/decimal";
+import { getNumParam } from "@/server/core/params";
 import { ApiError } from "@/server/modules/master/common";
 import { compareAdjacentSnapshots, type SnapshotQualityResult } from "@/server/rules/snapshot-quality";
 
@@ -13,7 +14,10 @@ import {
 } from "./common";
 import { assertImportPreflight, type PreflightOverrides } from "./preflight";
 
-/** D65 快照放行预检：同仓「上一批 vs 本批」控制量对比（rules/snapshot-quality），只警告不阻断 */
+/**
+ * D65 快照放行预检：同仓「上一批 vs 本批」控制量对比（rules/snapshot-quality），只警告不阻断。
+ * 阈值与数据质量读模型同源：sys_params dq_snapshot_qty_jump_pct（默认 30）/ dq_snapshot_vanished_pct（默认 10）。
+ */
 export interface SnapshotQualityWarning extends SnapshotQualityResult {
   warehouseId: number;
   prevBizDate: string | null;
@@ -48,6 +52,10 @@ async function snapshotQualityPreflight(
     list.push({ skuId: e.skuId, qty: e.qty });
     byWarehouse.set(e.warehouseId, list);
   }
+  const [qtyJumpPct, vanishedPct] = await Promise.all([
+    getNumParam("dq_snapshot_qty_jump_pct", 30, db),
+    getNumParam("dq_snapshot_vanished_pct", 10, db),
+  ]);
   const out: SnapshotQualityWarning[] = [];
   for (const [warehouseId, next] of [...byWarehouse.entries()].sort((a, b) => a[0] - b[0])) {
     const [prevRow]: { d: string | null }[] = await db
@@ -59,7 +67,7 @@ async function snapshotQualityPreflight(
       .select({ skuId: schema.stockSnapshots.skuId, qty: schema.stockSnapshots.qty })
       .from(schema.stockSnapshots)
       .where(and(eq(schema.stockSnapshots.warehouseId, warehouseId), eq(schema.stockSnapshots.bizDate, prevBizDate)));
-    const cmp = compareAdjacentSnapshots(prev, next);
+    const cmp = compareAdjacentSnapshots(prev, next, { qtyJumpPct, vanishedPct });
     out.push({
       ...cmp,
       warehouseId,

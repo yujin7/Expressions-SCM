@@ -1,6 +1,7 @@
 /**
  * D65 快照放行预检：同仓「上一批 vs 本批」控制量对比（rules/snapshot-quality）写入 dry-run 结果与 releaseManifest，
  * 只警告不阻断；无上一批只出行数（empty_prev，不告警）。
+ * 阈值与数据质量读模型同源（sys_params dq_snapshot_qty_jump_pct / dq_snapshot_vanished_pct）：改参数后预检警告随之变化。
  */
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
@@ -72,5 +73,25 @@ describe("releaseSnapshots 快照质量预检", () => {
     const last = audits[audits.length - 1].after as { snapshotQualityWarnings?: { warehouseId: number }[] };
     expect(last.snapshotQualityWarnings).toEqual([{ warehouseId: wh.id, flags: expect.arrayContaining(["qty_jump", "vanished"]) }]);
     expect(await db.select().from(schema.stockSnapshots)).toHaveLength(4);
+
+    // 预检阈值读 sys_params（与 data-quality 读模型同参）：放宽到 80% / 70% → 同样的跳变不再告警
+    await db.insert(schema.sysParams).values([
+      { scope: "global", key: "dq_snapshot_qty_jump_pct", value: "80" },
+      { scope: "global", key: "dq_snapshot_vanished_pct", value: "70" },
+    ]);
+    const job3 = await newJob(db, 1);
+    await writeStagingRows(db, job3, [
+      { rowNo: 1, targetTable: "stock_opening_candidate", payload: { warehouseRaw: "云仓", skuCode: "N003-000", qty: 300 } },
+    ]);
+    const dry3 = await releaseSnapshots(pmc, { jobIds: [job3], bizDate: "2026-09-03", dryRun: true }, db);
+    // 上一批 100（N002）→ 本批 300（N003）：跳变 +200%、消失 1/1=100% → 高于放宽后的阈值仍告警
+    expect(dry3.snapshotQuality[0]).toMatchObject({ prevBizDate: "2026-09-02", qtyDeltaPct: 200, vanishedPct: 100, warning: true });
+    await db.update(schema.sysParams).set({ value: "250" }).where(eq(schema.sysParams.key, "dq_snapshot_qty_jump_pct"));
+    await db.update(schema.sysParams).set({ value: "100" }).where(eq(schema.sysParams.key, "dq_snapshot_vanished_pct"));
+    const dry3b = await releaseSnapshots(pmc, { jobIds: [job3], bizDate: "2026-09-03", dryRun: true }, db);
+    expect(dry3b.snapshotQuality[0]).toMatchObject({ qtyDeltaPct: 200, vanishedPct: 100, flags: [], warning: false });
+    await db.update(schema.sysParams).set({ value: "150" }).where(eq(schema.sysParams.key, "dq_snapshot_qty_jump_pct"));
+    const dry3c = await releaseSnapshots(pmc, { jobIds: [job3], bizDate: "2026-09-03", dryRun: true }, db);
+    expect(dry3c.snapshotQuality[0]).toMatchObject({ flags: ["qty_jump"], warning: true });
   });
 });
