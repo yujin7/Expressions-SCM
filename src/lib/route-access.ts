@@ -59,6 +59,8 @@ export const ROUTE_REGISTRY = {
   /* ── 顶层 ── */
   workbench: { path: "/workbench", label: "工作台", group: "top", scopedMode: "public", keywords: "workbench home shouye" },
   inbox: { path: "/inbox", label: "我的待办", group: "top", scopedMode: "public", keywords: "inbox daiban todo" },
+  todo: { path: "/todo", label: "待办任务", group: "top", scopedMode: "public", keywords: "todo renwu daiban work item 待办任务" },
+  goals: { path: "/goals", label: "供应链目标", group: "top", scopedMode: "channel_scoped", keywords: "goals mubiao kpi 部门目标 供应链目标" },
 
   /* ── 消息与告警 ── */
   notifications: { path: "/notifications", label: "通知中心", group: "messages", scopedMode: "public" },
@@ -175,6 +177,8 @@ export type RouteKey = keyof typeof ROUTE_REGISTRY;
 export const MENU_SECTIONS: readonly MenuSection[] = [
   { kind: "route", route: "workbench" },
   { kind: "route", route: "inbox" },
+  { kind: "route", route: "todo" },
+  { kind: "route", route: "goals" },
   { kind: "group", key: "messages", label: "消息与告警" },
   { kind: "group", key: "analytics", label: "经营分析" },
   { kind: "group", key: "planning", label: "计划与补货" },

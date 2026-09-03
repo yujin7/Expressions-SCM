@@ -13,7 +13,7 @@
  */
 import { createHmac } from "node:crypto";
 import { and, eq, inArray, lt, or, sql } from "drizzle-orm";
-import { notifications } from "@/db/schema";
+import { notifications, users } from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
 import { computeExceptions } from "@/server/modules/workbench/focus";
 import { getDecisionStudio } from "@/server/modules/report/decision-studio";
@@ -120,7 +120,20 @@ interface FeishuSender {
     body: string;
     href?: string | null;
     uuid: string;
+    /** D61：按人私聊（users.feishu_union_id）；缺省群 chat_id */
+    receiveIdType?: "chat_id" | "union_id";
+    receiveId?: string | null;
   }): Promise<unknown>;
+}
+
+/** 定向个人的通知：查其飞书 union_id；无绑定 → null（回落群发） */
+async function feishuUnionIdOf(db: AnyDb, userId: number | null): Promise<string | null> {
+  if (userId == null) return null;
+  const [u]: { feishuUnionId: string | null }[] = await db
+    .select({ feishuUnionId: users.feishuUnionId })
+    .from(users)
+    .where(eq(users.id, userId));
+  return u?.feishuUnionId ?? null;
 }
 
 export function isFeishuDeliveryConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -150,6 +163,7 @@ export async function dispatchNotifications(
     title: string;
     body: string;
     href: string | null;
+    userId: number | null;
   }[] = await db
     .select({
       id: notifications.id,
@@ -157,6 +171,7 @@ export async function dispatchNotifications(
       title: notifications.title,
       body: notifications.body,
       href: notifications.href,
+      userId: notifications.userId,
     })
     .from(notifications)
     .where(or(
@@ -209,11 +224,14 @@ export async function dispatchNotifications(
       }
       try {
         if (appClient) {
+          // D61：定向个人且已绑定 union_id → 私聊；否则群发（webhook 只能进群）
+          const unionId = await feishuUnionIdOf(db, p.userId);
           await appClient.sendText({
             title: p.title,
             body: p.body,
             href: p.href,
             uuid: `scm-notification-${p.id}`,
+            ...(unionId ? { receiveIdType: "union_id" as const, receiveId: unionId } : {}),
           });
         } else if (webhookUrl) {
           await pushFeishu(webhookUrl, p.title, p.body, p.href);

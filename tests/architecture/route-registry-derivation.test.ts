@@ -19,6 +19,8 @@ type LegacyNode = { key: string; label: string; children?: { key: string; label:
 const LEGACY_MENU: LegacyNode[] = [
   { key: "/workbench", label: "工作台" },
   { key: "/inbox", label: "我的待办" },
+  { key: "/todo", label: "待办任务" },
+  { key: "/goals", label: "供应链目标" },
   { key: "messages", label: "消息与告警", children: [
     { key: "/notifications", label: "通知中心" }, { key: "/alerts", label: "系统告警" },
   ] },
@@ -128,7 +130,7 @@ const LEGACY_REPORT_GROUPS: Record<string, string> = {
 
 /** 旧 CommandPalette.PAGES 的 href 集合（顺序不做断言：面板改为菜单顺序） */
 const LEGACY_PALETTE_HREFS = [
-  "/workbench", "/inbox", "/report/dashboard", "/replenish", "/replenish/sop", "/report/demand", "/report/risk",
+  "/workbench", "/inbox", "/todo", "/goals", "/report/dashboard", "/replenish", "/replenish/sop", "/report/demand", "/report/risk",
   "/report/segmentation", "/report/sku-360", "/report/data-health", "/outsource/auto-chain", "/outsource/bh",
   "/outsource/wo", "/outsource/po", "/outsource/jg", "/inventory/balance", "/inventory/ledger",
   "/inventory/locations", "/inventory/expiry", "/inventory/count", "/quality", "/npd", "/report/npd",
@@ -211,6 +213,8 @@ describe("D62 路由注册表：菜单派生等价", () => {
     for (const [p, g] of Object.entries(LEGACY_REPORT_GROUPS)) expect(routeGroupForPath(p), p).toBe(g);
     expect(routeGroupForPath("/workbench")).toBeNull();
     expect(routeGroupForPath("/inbox")).toBeNull();
+    expect(routeGroupForPath("/todo")).toBeNull();
+    expect(routeGroupForPath("/goals")).toBeNull();
     expect(routeGroupForPath("/nowhere")).toBeNull();
     // 明确登记的改进：菜单项实际所在分组即导航分组（旧实现靠前缀落到 outsourcing / null）
     expect(routeGroupForPath("/outsource/auto-chain")).toBe("planning");

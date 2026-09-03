@@ -330,18 +330,28 @@ export class FeishuAppClient {
     return token;
   }
 
+  /**
+   * 发送文本。缺省发到配置的群（chat_id）；D61 按人私聊时传 `receiveIdType: "union_id"` + `receiveId`
+   * （users.feishu_union_id），走同一 im:message:send_as_bot 权限，零新增 scope。
+   */
   async sendText(input: {
     title: string;
     body: string;
     href?: string | null;
     uuid: string;
+    receiveIdType?: "chat_id" | "union_id";
+    receiveId?: string | null;
   }): Promise<{ messageId: string | null }> {
-    if (!this.config.chatId) throw new Error("飞书应用未配置目标 chat_id");
+    const receiveIdType = input.receiveIdType ?? "chat_id";
+    const receiveId = receiveIdType === "union_id" ? text(input.receiveId) : (text(input.receiveId) ?? this.config.chatId ?? null);
+    if (!receiveId) {
+      throw new Error(receiveIdType === "union_id" ? "飞书私聊缺少 union_id" : "飞书应用未配置目标 chat_id");
+    }
     const token = await this.tenantAccessToken();
     const content = `【供应链】${input.title}\n${input.body}${input.href ? `\n${input.href}` : ""}`;
     const payload = object(await fetchJson(
       "飞书消息",
-      `${MESSAGE_URL}?receive_id_type=chat_id`,
+      `${MESSAGE_URL}?receive_id_type=${receiveIdType}`,
       {
         method: "POST",
         headers: {
@@ -349,7 +359,7 @@ export class FeishuAppClient {
           "Content-Type": "application/json; charset=utf-8",
         },
         body: JSON.stringify({
-          receive_id: this.config.chatId,
+          receive_id: receiveId,
           msg_type: "text",
           content: JSON.stringify({ text: content }),
           uuid: input.uuid.slice(0, 50),
