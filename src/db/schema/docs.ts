@@ -297,7 +297,14 @@ export const stockDocs = pgTable("stock_docs", {
   sourceDocId: integer("source_doc_id"),
   reversalOfId: integer("reversal_of_id"), // 红字：引用原 stock_doc
   reason: text("reason"), // R16 借调等业务原因（04 §2；渠道占用由逻辑仓表达，不加渠道字段）
-});
+  /** D60 调拨类型（仅 subtype=transfer 有意义；清单权威 `src/lib/transfer-types.ts`，存量单可空） */
+  transferType: text("transfer_type"),
+}, (t) => [
+  check(
+    "ck_stock_docs_transfer_type",
+    sql`${t.transferType} IS NULL OR ${t.transferType} IN ('factory_to_warehouse', 'bonded_transfer', 'inter_warehouse', 'borrow', 'return_to_factory', 'other')`,
+  ),
+]);
 export const stockDocLines = pgTable("stock_doc_lines", {
   id: serial("id").primaryKey(),
   stockDocId: integer("stock_doc_id").notNull().references(() => stockDocs.id),

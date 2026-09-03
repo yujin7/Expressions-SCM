@@ -330,6 +330,13 @@
       "when": 1786675500000,
       "tag": "0046_calm_read_model",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1788417183712,
+      "tag": "0047_director_program",
+      "breakpoints": true
     }
   ]
 }

@@ -51,11 +51,17 @@ export const skuParams = pgTable("sku_params", {
   urgentLeadDays: integer("urgent_lead_days"),
   /** 生产完成后至可售仓的物流/调拨周期；与生产周期分开维护。 */
   logisticsLeadDays: integer("logistics_lead_days"),
+  /** D57：原料/包材采购周期（下单→到料），与加工周期分开；缺省走 sys_params default_* */
+  purchaseLeadDays: integer("purchase_lead_days"),
   updatedBy: integer("updated_by"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   check(
     "ck_sku_params_logistics_lead_days",
     sql`${t.logisticsLeadDays} IS NULL OR (${t.logisticsLeadDays} >= 0 AND ${t.logisticsLeadDays} <= 365)`,
+  ),
+  check(
+    "ck_sku_params_purchase_lead_days",
+    sql`${t.purchaseLeadDays} IS NULL OR (${t.purchaseLeadDays} >= 0 AND ${t.purchaseLeadDays} <= 365)`,
   ),
 ]);

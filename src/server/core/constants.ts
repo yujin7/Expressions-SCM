@@ -59,6 +59,8 @@ export const SENSITIVE_FIELDS = [
   "totalSalesCost", // 平台销售总成本
   "estimatedGrossProfit", // 平台预估毛利
   "estimatedNetProfit", // 平台预估净利
+  "salesAmount", // 月度销售金额（D53：默认仅 finance/admin/pmc 可见）
+  "unitFee", // 调拨/加工单位费用（D60 成本基线；可反推价格）
 ] as const;
 
 /** 可见敏感价格的角色（●）：采购/PMC/财务/管理员 */

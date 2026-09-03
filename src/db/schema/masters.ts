@@ -154,7 +154,26 @@ export const suppliers = pgTable("suppliers", {
   phone: text("phone"),
   email: text("email"),
   address: text("address"),
-});
+  // ── D64 账期结构化（payment_term 文本保留作原文；口径以下列三列为准）──
+  paymentTermType: text("payment_term_type"), // prepay 预付 | on_delivery 款到发货 | monthly_credit 月结
+  creditDays: integer("credit_days"), // 月结天数（0..180）
+  paymentTermEffectiveFrom: date("payment_term_effective_from"),
+  // ── D64/产能：供应商申报月产能（capacity_uom 为申报单位，不做换算）──
+  declaredMonthlyCapacity: numeric("declared_monthly_capacity", { precision: 14, scale: 4 }),
+  capacityUom: text("capacity_uom"),
+  surgeCapacityPct: integer("surge_capacity_pct"), // 爆单可加班放大比例（0..300）
+}, (t) => [
+  check(
+    "ck_suppliers_payment_term_type",
+    sql`${t.paymentTermType} IS NULL OR ${t.paymentTermType} IN ('prepay', 'on_delivery', 'monthly_credit')`,
+  ),
+  check("ck_suppliers_credit_days", sql`${t.creditDays} IS NULL OR (${t.creditDays} >= 0 AND ${t.creditDays} <= 180)`),
+  check("ck_suppliers_declared_capacity", sql`${t.declaredMonthlyCapacity} IS NULL OR ${t.declaredMonthlyCapacity} >= 0`),
+  check(
+    "ck_suppliers_surge_capacity_pct",
+    sql`${t.surgeCapacityPct} IS NULL OR (${t.surgeCapacityPct} >= 0 AND ${t.surgeCapacityPct} <= 300)`,
+  ),
+]);
 
 /**
  * C184：供应商准入与整改闭环。

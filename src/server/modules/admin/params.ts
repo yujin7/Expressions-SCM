@@ -47,6 +47,27 @@ export const PARAM_DEFS: ParamDef[] = [
   { key: "auto_wo_on_bh", label: "BH审批自动建WO", fallback: 0, min: 0, max: 1, unit: "", note: "D33 自动链开关①（0=关；上线前须预演验证——spec/11）" },
   { key: "auto_jg_on_ready", label: "齐套自动JG草稿", fallback: 0, min: 0, max: 1, unit: "", note: "D33 自动链开关②（0=关；自动仅产草稿，审批留人工闸）" },
   { key: "batch_posting_enabled", label: "批次过账与FEFO", fallback: 0, min: 0, max: 1, unit: "", note: "E2-12 迁移闸门（默认关；历史余额迁移、全出库路径UAT后方可开启）" },
+  /* ── 总监需求实施计划（2026-09-03，D50–D66）：口径类全部参数化，业务可改 ── */
+  { key: "inventory_sales_ratio_target_low", label: "库存占比目标下限", fallback: 45, min: 0, max: 200, unit: "%", note: "D54：月末库存金额÷当月销售金额目标区间下限（基线 50）" },
+  { key: "inventory_sales_ratio_target_high", label: "库存占比目标上限", fallback: 47, min: 0, max: 200, unit: "%", note: "D54：库存占比目标区间上限" },
+  { key: "default_production_lead_days", label: "默认加工周期", fallback: 30, min: 0, max: 365, unit: "天", note: "D57：sku_params.normal_lead_days 缺省时的加工周期" },
+  { key: "default_logistics_lead_days", label: "默认在途周期", fallback: 15, min: 0, max: 365, unit: "天", note: "D57：sku_params.logistics_lead_days 缺省时的在途周期" },
+  { key: "alert_buffer_days", label: "预警缓冲天数", fallback: 5, min: 0, max: 90, unit: "天", note: "D57：库存预警阈值 = 加工周期 + 在途周期 + 本缓冲" },
+  { key: "grade_s_pct", label: "S级累计占比", fallback: 50, min: 1, max: 99, unit: "%", note: "D58：近 6 月销量累计占比 ≤ 本值记 S（须 < A 级）" },
+  { key: "grade_a_pct", label: "A级累计占比", fallback: 80, min: 1, max: 99, unit: "%", note: "D58：累计占比 ≤ 本值记 A（须 < B 级）" },
+  { key: "grade_b_pct", label: "B级累计占比", fallback: 95, min: 1, max: 99, unit: "%", note: "D58：累计占比 ≤ 本值记 B，其余 C" },
+  { key: "spike_consecutive_days", label: "爆单连续天数", fallback: 3, min: 1, max: 14, unit: "天", note: "D56：最近 N 天每日销量均命中涨幅才判爆单" },
+  { key: "spike_rise_pct", label: "爆单涨幅阈值", fallback: 50, min: 10, max: 500, unit: "%", note: "D56：日销量 ≥ 前 7 日日均 × (1+本值%) 记命中" },
+  { key: "spike_min_base_qty", label: "爆单最小基数", fallback: 10, min: 0, max: 10000, unit: "件", note: "D56：前 7 日日均低于本值不判爆单（防小基数放大）" },
+  { key: "transfer_cost_window_days", label: "调拨成本基线窗口", fallback: 180, min: 30, max: 730, unit: "天", note: "D60：同线路(from,to,type) 已完成单据数量加权均价的回看窗口" },
+  { key: "transfer_cost_deviation_pct", label: "调拨成本偏差阈值", fallback: 20, min: 1, max: 200, unit: "%", note: "D60：单位调拨成本偏离基线超过即提醒（不阻断）" },
+  { key: "transfer_qty_deviation_x", label: "调拨数量异常倍数", fallback: 3, min: 1, max: 20, unit: "倍", note: "D60：单据数量 > 同线路中位数 × 本值记异常" },
+  { key: "transfer_batch_max_docs", label: "调拨零散上限", fallback: 4, min: 1, max: 50, unit: "单", note: "D60：30 天内同线路单据数超过本值记零散调拨" },
+  { key: "warehouse_max_active", label: "启用仓库上限", fallback: 12, min: 1, max: 100, unit: "个", note: "D60：实体仓（finished/raw/packaging）启用数量上限提醒" },
+  { key: "payment_term_min_years", label: "账期候选合作年限", fallback: 2, min: 0, max: 20, unit: "年", note: "D64：账期谈判候选 = 合作 ≥ 本值年且近 2 年采购额排名上升" },
+  { key: "payment_term_target_min_days", label: "目标账期下限", fallback: 45, min: 0, max: 180, unit: "天", note: "D64：月结目标区间下限（≤ 上限）" },
+  { key: "payment_term_target_max_days", label: "目标账期上限", fallback: 60, min: 0, max: 180, unit: "天", note: "D64：月结目标区间上限" },
+  { key: "dq_tolerance_pct", label: "数据质量一致容差", fallback: 1, min: 0, max: 20, unit: "%", note: "D65：SKU 日级数量差异 ≤ 本值视为一致" },
 ];
 
 export async function listParams(dbArg?: AnyDb): Promise<(ParamDef & { value: number; isDefault: boolean; lastChangedBy: string | null; lastChangedAt: string | null })[]> {
