@@ -4,6 +4,7 @@
 > 路由：`/cockpit`（业务域页，与 `/report/dashboard` 并列，D50）；Tab 写进 URL（`?tab=sources|alerts|inventory|ops`），
 > 每屏列表用 `useListState` 且 paramPrefix 分别为 `ds_` / `al_` / `inv_` / `todo_`；`page.tsx` 必须包 `<Suspense>`。
 > 实施映射见 `docs/engineering/总监需求-现状映射与实施计划-2026-09-03.md`。
+> 可分享的可视化版本（供总监签认）：https://claude.ai/code/artifact/28b8af6e-f23c-45dc-aafd-3642725f3c62
 >
 > 数据来源列的记法：表 = 正式事实表；读模型 = `report_read_model_cache` 键；契约 = 简道云契约键（observation_only）；
 > 指标 id：「已有」= `src/components/metrics.ts` 已登记；「新」= 命名建议，W3 登记。
