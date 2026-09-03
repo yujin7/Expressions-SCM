@@ -34,3 +34,10 @@ describe("公网快速隧道 watchdog", () => {
     expect(daemon).not.toContain("https://[a-z0-9-]+\\.trycloudflare\\.com");
   });
 });
+
+describe("Docker 退出自恢复（2026-09-04 实况）", () => {
+  it("daemon 不可用时守护会拉起 Docker Desktop 再轮询，而不是干等 5 分钟后放弃", () => {
+    expect(daemon).toContain("open -a Docker");
+    expect(daemon).toMatch(/wait_for_docker\(\) \{[\s\S]*open -a Docker[\s\S]*return 1\n\}/);
+  });
+});

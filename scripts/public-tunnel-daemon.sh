@@ -100,10 +100,17 @@ ${url}"
   esac
 }
 
+# Docker Desktop 退出时（2026-09-04 02:20 实测：构建 + 门禁 + 并行测试高负载下 Docker 自行退出，
+# 公网整站 502），守护负责把它拉起来：daemon 不可用时先 `open -a Docker`（每次等待只拉一次），再轮询。
 wait_for_docker() {
-  local i
+  local i launched=0
   for i in $(seq 1 60); do
     docker info >/dev/null 2>&1 && return 0
+    if [[ "$launched" == 0 ]]; then
+      log "Docker daemon 不可用，尝试启动 Docker Desktop"
+      open -a Docker >/dev/null 2>&1 || true
+      launched=1
+    fi
     sleep 5
   done
   return 1
