@@ -19,7 +19,7 @@ import type { SessionUser } from "@/server/core/dto";
 import { type AnyDb, r1, resolveDb } from "@/server/core/svc";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
-import { getSegmentation } from "@/server/modules/report/segmentation";
+import { getSegmentation, type SegRow } from "@/server/modules/report/segmentation";
 import { tierToAbc, type Tier } from "@/server/rules/abc";
 import { OWNERSHIP_LABELS, type Ownership } from "@/server/rules/replenish-ownership";
 import type { XyzClass } from "@/server/rules/volatility";
@@ -61,6 +61,23 @@ export interface PolicyRow {
   builtAt: string;
 }
 
+/**
+ * 「供应链直出为什么是 0」：S/A/B 规则分层中各阻塞维度的 SKU 数（一个 SKU 可同时计入多项；C 级不计）。
+ * 维度与 rules/replenish-ownership.decideOwnership 的 blockers 一一对应：
+ * leadDaysUnknown = 交期主数据缺失（去 /master/supply-params 补录即可解除）；
+ * xyzNull = 波动样本不足/无动销；xyzNotX = 需求波动 Y/Z；detectorHit = 异动侦测命中。
+ */
+export interface PolicyBlockers {
+  leadDaysUnknown: number;
+  xyzNull: number;
+  xyzNotX: number;
+  detectorHit: number;
+  /** S/A/B 规则分层 SKU 总数（分母） */
+  candidates: number;
+}
+
+export const emptyBlockers = (): PolicyBlockers => ({ leadDaysUnknown: 0, xyzNull: 0, xyzNotX: 0, detectorHit: 0, candidates: 0 });
+
 export interface PolicySummary {
   period: string | null;
   total: number;
@@ -70,6 +87,11 @@ export interface PolicySummary {
   overrides: number;
   pilot: number;
   builtAt: string | null;
+  /**
+   * 该期最近一次固化时的阻塞分布（取自固化审计快照 after.blockers；本功能上线前固化的期间 = null）。
+   * 实时分布看 report/replenish-pilot（含补录后立即变化）。
+   */
+  blockers: PolicyBlockers | null;
 }
 
 export interface PolicyResult {
@@ -140,6 +162,22 @@ export interface BuildResult {
   byOwnership: Record<Ownership, number>;
   /** 因 override 仍保留而生效分层 ≠ 规则分层的 SKU 数 */
   overridesKept: number;
+  /** 直出为 0 的原因分布（S/A/B 各阻塞维度；见 PolicyBlockers） */
+  blockers: PolicyBlockers;
+}
+
+/** 从分层行统计阻塞分布（与 rules/replenish-ownership 同维度；C 级不计） */
+export function countBlockers(rows: readonly Pick<SegRow, "tier" | "xyzRaw" | "leadDaysKnown" | "detectorHit">[]): PolicyBlockers {
+  const b = emptyBlockers();
+  for (const r of rows) {
+    if (r.tier === "C") continue;
+    b.candidates += 1;
+    if (!r.leadDaysKnown) b.leadDaysUnknown += 1;
+    if (r.xyzRaw == null) b.xyzNull += 1;
+    else if (r.xyzRaw !== "X") b.xyzNotX += 1;
+    if (r.detectorHit) b.detectorHit += 1;
+  }
+  return b;
 }
 
 /**
@@ -156,7 +194,7 @@ export async function buildSkuPlanningPolicy(
   const t = schema.skuPlanningPolicy;
   const byTier = emptyByTier();
   const byOwnership = emptyByOwnership();
-  const result: BuildResult = { period, total: seg.rows.length, inserted: 0, updated: 0, byTier, byOwnership, overridesKept: 0 };
+  const result: BuildResult = { period, total: seg.rows.length, inserted: 0, updated: 0, byTier, byOwnership, overridesKept: 0, blockers: countBlockers(seg.rows) };
   const actorId = opts.actor?.id ?? (await systemActorId(db));
 
   await db.transaction(async (tx: AnyDb) => {
@@ -201,6 +239,7 @@ export async function buildSkuPlanningPolicy(
         byTier,
         byOwnership,
         overridesKept: result.overridesKept,
+        blockers: result.blockers,
         tierCuts: seg.tierCuts,
         months: seg.months,
         source: opts.actor ? "manual" : "scheduler",
@@ -346,8 +385,10 @@ export async function getPolicy(query: PolicyQuery, dbArg?: AnyDb): Promise<Poli
     overrides: 0,
     pilot: 0,
     builtAt: null,
+    blockers: null,
   };
   if (!period) return { period: null, periods, rows: [], total: 0, summary };
+  summary.blockers = await loadBuildBlockers(db, period);
 
   const raw: {
     id: number; skuId: number; code: string; name: string; brand: string | null; period: string;
@@ -411,6 +452,22 @@ export async function getPolicy(query: PolicyQuery, dbArg?: AnyDb): Promise<Poli
   const order: Record<Tier, number> = { S: 0, A: 1, B: 2, C: 3 };
   filtered.sort((a, b) => order[a.effectiveTier] - order[b.effectiveTier] || a.code.localeCompare(b.code));
   return { period, periods, rows: filtered.slice((page - 1) * pageSize, page * pageSize), total: filtered.length, summary };
+}
+
+/** 该期最近一次固化审计的阻塞快照（entity=sku_planning_policy, action=build, after.period=期间）；无/旧格式 = null */
+async function loadBuildBlockers(db: AnyDb, period: string): Promise<PolicyBlockers | null> {
+  const a = schema.auditLogs;
+  const [row]: { after: unknown }[] = await db
+    .select({ after: a.after })
+    .from(a)
+    .where(and(eq(a.entity, "sku_planning_policy"), eq(a.action, "build"), sql`${a.after} ->> 'period' = ${period}`))
+    .orderBy(desc(a.id))
+    .limit(1);
+  const after = row?.after;
+  const b = after && typeof after === "object" ? (after as { blockers?: Partial<PolicyBlockers> | null }).blockers : null;
+  if (!b || typeof b !== "object") return null;
+  const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  return { leadDaysUnknown: n(b.leadDaysUnknown), xyzNull: n(b.xyzNull), xyzNotX: n(b.xyzNotX), detectorHit: n(b.detectorHit), candidates: n(b.candidates) };
 }
 
 /** 四档占比（skuTierShare 指标用）：count 与 % */

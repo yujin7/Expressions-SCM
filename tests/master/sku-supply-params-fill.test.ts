@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
-import { auditLogs, skuParams } from "@/db/schema";
-import { listSupplyParams, patchSupplyParams } from "@/server/modules/master/sku-supply-params-fill";
+import { auditLogs, skuParams, skus, spus } from "@/db/schema";
+import { leadFieldsFor, listSupplyParams, patchSupplyParams } from "@/server/modules/master/sku-supply-params-fill";
 import { buildSkuPlanningPolicy } from "@/server/modules/planning/policy";
 import { createTestDb, type TestDb } from "../helpers/db";
 import { seedTierWorld, type TierWorld } from "../helpers/tier-seed";
@@ -71,5 +71,34 @@ describe("master/sku-supply-params-fill", () => {
     // A 补齐后不再阻塞
     const r = await listSupplyParams({ blockedOnly: true }, db);
     expect(r.rows.map((x) => x.code)).toEqual(["TIER-B"]);
+  });
+
+  it("周期口径按类型（前后端唯一口径 leadFields）：半成品同成品=加工+在途；采购周期只对原料/包材；写路径拒绝不适用字段", async () => {
+    expect(leadFieldsFor("finished")).toEqual(["normalLeadDays", "logisticsLeadDays"]);
+    expect(leadFieldsFor("semi")).toEqual(["normalLeadDays", "logisticsLeadDays"]);
+    expect(leadFieldsFor("raw")).toEqual(["purchaseLeadDays"]);
+    expect(leadFieldsFor("packaging")).toEqual(["purchaseLeadDays"]);
+    expect(leadFieldsFor("service")).toEqual([]);
+
+    const [spu] = await db.select().from(spus).limit(1);
+    const [semi] = await db.insert(skus).values({ code: "SEMI-1", name: "半成品料体", spuId: spu.id, skuType: "semi", baseUom: "kg", active: true }).returning();
+    const [raw] = await db.insert(skus).values({ code: "RAW-1", name: "原料", spuId: spu.id, skuType: "raw", baseUom: "kg", active: true }).returning();
+
+    const s = (await listSupplyParams({ skuType: "semi" }, db)).rows.find((x) => x.skuId === semi.id)!;
+    expect(s.leadFields).toEqual(["normalLeadDays", "logisticsLeadDays"]);
+    expect(s.missing).toEqual(["production", "logistics", "moq", "cost"]);
+    expect(s).toMatchObject({ tier: null, blocked: false }); // 分层只对成品
+    const rw = (await listSupplyParams({ skuType: "raw" }, db)).rows.find((x) => x.skuId === raw.id)!;
+    expect(rw.leadFields).toEqual(["purchaseLeadDays"]);
+    expect(rw.missing).toEqual(["purchase", "moq", "cost"]);
+    expect((await listSupplyParams({}, db)).rows.find((x) => x.skuId === w.sku.S)!.leadFields).toEqual(["normalLeadDays", "logisticsLeadDays"]);
+
+    await expect(patchSupplyParams(w.pmc, semi.id, { purchaseLeadDays: 10 }, db)).rejects.toMatchObject({ status: 400 });
+    await expect(patchSupplyParams(w.pmc, raw.id, { normalLeadDays: 10 }, db)).rejects.toMatchObject({ status: 400 });
+    await expect(patchSupplyParams(w.pmc, w.sku.S, { purchaseLeadDays: 10 }, db)).rejects.toMatchObject({ status: 400 });
+    await patchSupplyParams(w.pmc, semi.id, { normalLeadDays: 12, logisticsLeadDays: 3 }, db);
+    await patchSupplyParams(w.pmc, raw.id, { purchaseLeadDays: 20 }, db);
+    expect((await listSupplyParams({ skuType: "semi" }, db)).rows.find((x) => x.skuId === semi.id)!.missing).toEqual(["moq", "cost"]);
+    expect((await listSupplyParams({ skuType: "raw" }, db)).rows.find((x) => x.skuId === raw.id)!.missing).toEqual(["moq", "cost"]);
   });
 });

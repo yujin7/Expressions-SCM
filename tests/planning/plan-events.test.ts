@@ -16,6 +16,7 @@ describe("planning/plan-events", () => {
   let db: TestDb;
   let w: TierWorld;
   let promoId = 0;
+  let launchId = 0;
 
   beforeAll(async () => {
     ({ db } = await createTestDb());
@@ -46,10 +47,12 @@ describe("planning/plan-events", () => {
     expect(audits[0]).toMatchObject({ action: "create", entityId: promoId, userId: w.ops.id });
   });
 
-  it("渠道范围（D62）：受限运营对范围外渠道 403；不分渠道事件可写", async () => {
+  it("渠道范围（D62）：受限运营对范围外渠道 403、缺渠道 403（channelId 必填且须在范围内）；不受限用户可建不分渠道事件", async () => {
     await expect(createPlanEvent(w.opsPdd, { skuId: w.sku.S, channelId: w.tmall, kind: "launch", startDate: "2099-02-01" }, db)).rejects.toMatchObject({ status: 403 });
-    await createPlanEvent(w.opsPdd, { skuId: w.sku.S, channelId: w.pdd, kind: "launch", startDate: "2099-02-01" }, db);
-    await createPlanEvent(w.opsPdd, { skuId: w.sku.A, kind: "price", startDate: "2099-03-01", expectedUpliftPct: -20 }, db);
+    await expect(createPlanEvent(w.opsPdd, { skuId: w.sku.A, kind: "price", startDate: "2099-03-01" }, db)).rejects.toMatchObject({ status: 403 });
+    await expect(createPlanEvent(w.opsPdd, { skuId: w.sku.A, channelId: null, kind: "price", startDate: "2099-03-01" }, db)).rejects.toMatchObject({ status: 403 });
+    launchId = (await createPlanEvent(w.opsPdd, { skuId: w.sku.S, channelId: w.pdd, kind: "launch", startDate: "2099-02-01" }, db)).id;
+    await createPlanEvent(w.ops, { skuId: w.sku.A, kind: "price", startDate: "2099-03-01", expectedUpliftPct: -20 }, db);
     // 已结束事件（补货行展开不应出现）
     await createPlanEvent(w.pmc, { skuId: w.sku.S, kind: "other", startDate: "2020-01-01", endDate: "2020-01-31" }, db);
   });
@@ -68,8 +71,13 @@ describe("planning/plan-events", () => {
     expect(bySku.rows[0]).toMatchObject({ kind: "price", kindLabel: "调价", skuCode: "TIER-A", expectedUpliftPct: -20 });
   });
 
-  it("修改：受限用户改不了范围外事件；窗口校验；审计 before/after", async () => {
+  it("修改：受限用户改不了范围外事件、不能把自己的事件改成不分渠道/范围外；窗口校验；审计 before/after", async () => {
     await expect(updatePlanEvent(w.opsPdd, promoId, { note: "x" }, db)).rejects.toMatchObject({ status: 403 });
+    await expect(updatePlanEvent(w.opsPdd, launchId, { channelId: null }, db)).rejects.toMatchObject({ status: 403 });
+    await expect(updatePlanEvent(w.opsPdd, launchId, { channelId: w.tmall }, db)).rejects.toMatchObject({ status: 403 });
+    await updatePlanEvent(w.opsPdd, launchId, { note: "范围内可改" }, db);
+    const [launch] = await db.select().from(opsPlanEvents).where(eq(opsPlanEvents.id, launchId));
+    expect(launch).toMatchObject({ channelId: w.pdd, note: "范围内可改" });
     await expect(updatePlanEvent(w.ops, promoId, { endDate: "2098-12-31" }, db)).rejects.toMatchObject({ status: 400 });
     await expect(updatePlanEvent(w.ops, 999999, { note: "x" }, db)).rejects.toMatchObject({ status: 404 });
     await updatePlanEvent(w.ops, promoId, { endDate: "2099-01-31", expectedUpliftPct: 120 }, db);

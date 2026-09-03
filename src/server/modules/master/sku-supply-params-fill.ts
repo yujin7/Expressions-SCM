@@ -6,7 +6,9 @@
  *     （facade 尚未暴露该列，此处补读，不改 facade——另一域文件）。
  * 写：PATCH 只允许**填空**（原值为 null）；覆盖非空值须 pmc（admin 兜底）；purchasing 只能填空。
  *     同事务 upsert sku_params + writeAudit(entity=sku_params, action=fill|override)。
- * 语义：成品 normal=加工、logistics=在途；部件（raw/packaging/semi）purchase=采购周期。
+ * 语义（前后端唯一口径，前端可编辑列同 `leadFieldsFor`）：成品与半成品 normal=加工、logistics=在途
+ * （半成品同成品：加工 + 在途，与 rules/alert-threshold 的 production+logistics 同构）；
+ * 原料/包材 purchase=采购周期（下单→到料）。其他类型不适用。
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -41,9 +43,11 @@ export interface SupplyParamRow {
   normalLeadDays: number | null;
   logisticsLeadDays: number | null;
   purchaseLeadDays: number | null;
+  /** 该类型适用/可编辑的周期字段（服务端唯一口径 leadFieldsFor；前端可编辑列据此渲染） */
+  leadFields: LeadField[];
   moq: string | null;
   hasCost: boolean;
-  /** 适用且缺失的维度（成品：production/logistics；部件：purchase；moq/cost 全类型） */
+  /** 适用且缺失的维度（成品/半成品：production/logistics；原料/包材：purchase；moq/cost 全类型） */
   missing: Exclude<SupplyParamMissingDim, "any">[];
   /** S/A/B 缺加工或在途周期 → 阻塞直出/试点/预警阈值 */
   blocked: boolean;
@@ -74,6 +78,20 @@ export interface SupplyParamQuery {
 }
 
 const APPLICABLE_TYPES = ["finished", "semi", "raw", "packaging"] as const;
+
+/** 加工+在途周期适用类型（成品、半成品）；采购周期适用类型（原料、包材） */
+export const PROCESS_LEAD_TYPES: readonly string[] = ["finished", "semi"];
+export const PURCHASE_LEAD_TYPES: readonly string[] = ["raw", "packaging"];
+
+/**
+ * 某类型适用/可编辑的周期字段（服务端唯一口径；前端可编辑列据此判定）：
+ * finished/semi → normalLeadDays + logisticsLeadDays；raw/packaging → purchaseLeadDays；其余 → 无。
+ */
+export function leadFieldsFor(skuType: string): readonly LeadField[] {
+  if (PROCESS_LEAD_TYPES.includes(skuType)) return ["normalLeadDays", "logisticsLeadDays"];
+  if (PURCHASE_LEAD_TYPES.includes(skuType)) return ["purchaseLeadDays"];
+  return [];
+}
 
 export async function listSupplyParams(query: SupplyParamQuery, dbArg?: AnyDb): Promise<SupplyParamListResult> {
   const db = await resolveDb(dbArg);
@@ -109,20 +127,21 @@ export async function listSupplyParams(query: SupplyParamQuery, dbArg?: AnyDb): 
   const all: SupplyParamRow[] = skuRows.map((s) => {
     const p = params.get(s.id);
     const isFinished = s.skuType === "finished";
+    const fields = leadFieldsFor(s.skuType);
     const pol = policy.bySku.get(s.id);
     const tier = isFinished ? (pol?.effectiveTier ?? null) : null;
     const normalLeadDays = p?.normalLeadDays ?? null;
     const logisticsLeadDays = p?.logisticsLeadDays ?? null;
     const purchaseLeadDays = purchaseBySku.get(s.id) ?? null;
     const missing: SupplyParamRow["missing"] = [];
-    if (isFinished) {
-      if (!(normalLeadDays != null && normalLeadDays > 0)) missing.push("production");
-      if (logisticsLeadDays == null) missing.push("logistics");
-    } else if (!(purchaseLeadDays != null && purchaseLeadDays > 0)) missing.push("purchase");
+    // 半成品同成品：加工 + 在途；采购周期只对原料/包材（leadFieldsFor 唯一口径）
+    if (fields.includes("normalLeadDays") && !(normalLeadDays != null && normalLeadDays > 0)) missing.push("production");
+    if (fields.includes("logisticsLeadDays") && logisticsLeadDays == null) missing.push("logistics");
+    if (fields.includes("purchaseLeadDays") && !(purchaseLeadDays != null && purchaseLeadDays > 0)) missing.push("purchase");
     if (p?.moq == null) missing.push("moq");
     if (p?.unitCost == null) missing.push("cost");
     const blocked = isFinished && tier != null && tier !== "C" && (missing.includes("production") || missing.includes("logistics"));
-    return { skuId: s.id, code: s.code, name: s.name, skuType: s.skuType, brand: s.brand, tier, normalLeadDays, logisticsLeadDays, purchaseLeadDays, moq: p?.moq ?? null, hasCost: p?.unitCost != null, missing, blocked };
+    return { skuId: s.id, code: s.code, name: s.name, skuType: s.skuType, brand: s.brand, tier, normalLeadDays, logisticsLeadDays, purchaseLeadDays, leadFields: [...fields], moq: p?.moq ?? null, hasCost: p?.unitCost != null, missing, blocked };
   });
 
   let complete = 0;
@@ -168,8 +187,9 @@ const patchSchema = z.object({
 }).refine((v) => v.normalLeadDays !== undefined || v.logisticsLeadDays !== undefined || v.purchaseLeadDays !== undefined, "至少提供一个周期字段");
 export type PatchSupplyParamsInput = z.infer<typeof patchSchema>;
 
-type LeadField = "normalLeadDays" | "logisticsLeadDays" | "purchaseLeadDays";
+export type LeadField = "normalLeadDays" | "logisticsLeadDays" | "purchaseLeadDays";
 const FIELD_LABELS: Record<LeadField, string> = { normalLeadDays: "加工周期", logisticsLeadDays: "在途周期", purchaseLeadDays: "采购周期" };
+const SKU_TYPE_LABELS: Record<string, string> = { finished: "成品", semi: "半成品", raw: "原料", packaging: "包材" };
 
 export async function patchSupplyParams(
   user: SessionUser,
@@ -182,8 +202,15 @@ export async function patchSupplyParams(
   const canOverride = user.roles.includes("admin") || user.roles.includes("pmc");
   const db = await resolveDb(dbArg);
   return db.transaction(async (tx: AnyDb) => {
-    const [sku] = await tx.select({ id: schema.skus.id, code: schema.skus.code }).from(schema.skus).where(eq(schema.skus.id, skuId));
+    const [sku] = await tx.select({ id: schema.skus.id, code: schema.skus.code, skuType: schema.skus.skuType }).from(schema.skus).where(eq(schema.skus.id, skuId));
     if (!sku) throw new ApiError(404, "SKU 不存在");
+    // 前后端同一口径：只接受该类型适用的周期字段（半成品=加工+在途；原料/包材=采购）
+    const applicable = leadFieldsFor(sku.skuType);
+    for (const f of ["normalLeadDays", "logisticsLeadDays", "purchaseLeadDays"] as const) {
+      if (v[f] !== undefined && !applicable.includes(f)) {
+        throw new ApiError(400, `「${FIELD_LABELS[f]}」不适用于 ${SKU_TYPE_LABELS[sku.skuType] ?? sku.skuType}（成品/半成品维护加工+在途周期，原料/包材维护采购周期）`);
+      }
+    }
     const [existing] = await tx.select().from(schema.skuParams).where(eq(schema.skuParams.skuId, skuId));
     const before = {
       normalLeadDays: existing?.normalLeadDays ?? null,

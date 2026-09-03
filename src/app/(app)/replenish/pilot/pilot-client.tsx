@@ -5,6 +5,7 @@
  * 同页提供「固化本期分层」（pmc）与「纳入/移出试点」（pmc）。读模型 replenish-pilot/v1。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Alert, App, Button, Col, Row, Select, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { CheckCircleOutlined, ReloadOutlined, ThunderboltOutlined } from "@ant-design/icons";
@@ -54,8 +55,46 @@ interface PilotModel {
   notes: string[];
 }
 
+/** 固化接口返回的阻塞分布（planning/policy.PolicyBlockers） */
+interface BuildBlockers { leadDaysUnknown: number; xyzNull: number; xyzNotX: number; detectorHit: number; candidates: number }
+
 const TIER_COLORS: Record<Tier, string> = { S: "magenta", A: "red", B: "orange", C: "default" };
 const XYZ_COLORS: Record<string, string> = { X: "green", Y: "gold", Z: "volcano" };
+
+/**
+ * 「为什么直出为 0」：S/A/B 中各阻塞维度的 SKU 数（一个 SKU 可同时计入多项）。
+ * 周期缺失可当场补录（/master/supply-params 只看阻塞）；波动/异动是数据事实，只能等窗口或人工联审。
+ */
+function WhyDirectZero({ model }: { model: PilotModel }) {
+  const sab = model.byTier.S.total + model.byTier.A.total + model.byTier.B.total;
+  const b = model.blockers;
+  const items: { label: string; count: number; hint: string }[] = [
+    { label: "加工/在途周期未维护", count: b.leadMissing, hint: "sku_params 加工周期 >0 且在途周期已填才算已知；可在周期主数据补录页当场解除" },
+    { label: "波动样本不足/无动销", count: b.xyzUnclassified, hint: "近 6 月不足 6 个有效点或无动销，规则层 XYZ=null（不假装 Z）" },
+    { label: "需求波动 Y/Z", count: b.xyzNotX, hint: "CV>0.5，规则层不判为稳定品" },
+    { label: "异动侦测命中", count: b.detectorHit, hint: "销量骤停/渠道迁移/速度突变任一命中（report/detectors）" },
+  ];
+  const zero = model.candidates === 0;
+  return (
+    <Alert
+      type={zero ? "warning" : "info"}
+      showIcon
+      style={{ marginBottom: 12 }}
+      message={zero ? `为什么「供应链直出」为 0：S/A/B 共 ${sab} 个 SKU，逐维度阻塞如下` : `直出候选 ${model.candidates} / S/A/B ${sab}：其余按阻塞维度分布如下`}
+      description={
+        <Space wrap size={[16, 4]}>
+          {items.map((it) => (
+            <Tooltip key={it.label} title={it.hint}>
+              <span>{it.label} <b style={{ color: it.count > 0 ? "#cf1322" : undefined }}>{it.count}</b></span>
+            </Tooltip>
+          ))}
+          <span>C 级长尾（不参与直出）<b>{b.tierC}</b></span>
+          <Link href="/master/supply-params?blockedOnly=1">去补录周期主数据（只看阻塞）→</Link>
+        </Space>
+      }
+    />
+  );
+}
 
 export default function PilotClient({ canManage }: { canManage: boolean }) {
   const { message, modal } = App.useApp();
@@ -102,8 +141,14 @@ export default function PilotClient({ canManage }: { canManage: boolean }) {
       onOk: async () => {
         setBuilding(true);
         try {
-          const res = await postJson<{ period: string; total: number; inserted: number; updated: number; overridesKept: number }>("/api/planning/policy", { action: "build" });
-          message.success(`已固化 ${res.period}：${res.total} 个 SKU（新增 ${res.inserted} / 更新 ${res.updated}，保留覆写 ${res.overridesKept}）`);
+          const res = await postJson<{ period: string; total: number; inserted: number; updated: number; overridesKept: number; byOwnership: Record<string, number>; blockers: BuildBlockers }>("/api/planning/policy", { action: "build" });
+          const direct = res.byOwnership?.supply_chain_direct ?? 0;
+          const b = res.blockers;
+          message.success(
+            `已固化 ${res.period}：${res.total} 个 SKU（新增 ${res.inserted} / 更新 ${res.updated}，保留覆写 ${res.overridesKept}）；供应链直出 ${direct}`
+            + (b ? `，S/A/B ${b.candidates} 中阻塞：周期未维护 ${b.leadDaysUnknown} / 样本不足 ${b.xyzNull} / 波动 Y-Z ${b.xyzNotX} / 异动 ${b.detectorHit}` : ""),
+            6,
+          );
           await load(true);
         } catch (e) {
           message.error((e as Error).message);
@@ -154,6 +199,7 @@ export default function PilotClient({ canManage }: { canManage: boolean }) {
       {model && !model.period ? (
         <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="尚未固化任何期间的分层（sku_planning_policy 为空）——分层暂按实时值显示；点击「固化本期分层」后才能标记试点。" />
       ) : null}
+      {model ? <WhyDirectZero model={model} /> : null}
       <Row gutter={16} style={{ marginBottom: 12 }}>
         <Col span={4}><Statistic title="候选 SKU" value={model?.candidates ?? "—"} suffix={model ? `/ ${model.scanned}` : undefined} /></Col>
         <Col span={4}><Statistic title="候选销量占比" value={model?.candidateSalesSharePct ?? "—"} suffix="%" /></Col>

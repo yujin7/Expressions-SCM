@@ -3,7 +3,8 @@
  *
  * 纪律（D55/D43）：事件只作**上下文展示**与情景推演的人工预填，绝不自动改建议量、不开单。
  * 写路径 ops/pmc（admin 兜底），同事务 writeAudit(entity=ops_plan_event)；删除为物理删除但留审计（事件不是账）。
- * 渠道范围（D62）：受限用户只能读/写自己范围内渠道的事件；不分渠道（channel_id 空）的事件全员可见。
+ * 渠道范围（D62）：受限用户只能读/写自己范围内渠道的事件；不分渠道（channel_id 空）的事件全员可见，
+ * 因此受限用户（channelScope 非空且非 admin）新建/改写时 channelId 必填且须在范围内，否则 403。
  */
 import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -91,9 +92,21 @@ async function validateTargets(db: AnyDb, v: PlanEventInput): Promise<void> {
 }
 
 function assertChannelWritable(user: SessionUser, channelId: number | null | undefined): void {
-  // 受限用户：范围外渠道 → resolveChannelScope 抛 403；不分渠道事件任何角色可写
+  // 既有事件：受限用户对范围外渠道 → resolveChannelScope 抛 403；不分渠道事件任何角色可改/删
   if (channelId == null) return;
   resolveChannelScope(user, channelId);
+}
+
+/**
+ * 新建/改写后的目标渠道：受限渠道用户（channelScope 非空且非 admin）必须指定范围内渠道——
+ * 不分渠道事件对全渠道可见，受限用户不得借此越过范围；不受限用户可建不分渠道事件。
+ */
+function requireChannelInScope(user: SessionUser, channelId: number | null | undefined): void {
+  const scope = resolveChannelScope(user, null);
+  if (scope.forced && channelId == null) {
+    throw new ApiError(403, "受限渠道用户必须指定本人范围内的渠道，不得创建不分渠道的计划事件");
+  }
+  assertChannelWritable(user, channelId);
 }
 
 export async function createPlanEvent(user: SessionUser, input: unknown, dbArg?: AnyDb): Promise<{ id: number }> {
@@ -101,7 +114,7 @@ export async function createPlanEvent(user: SessionUser, input: unknown, dbArg?:
   const v = baseSchema.parse(input);
   const db = await resolveDb(dbArg);
   await validateTargets(db, v);
-  assertChannelWritable(user, v.channelId);
+  requireChannelInScope(user, v.channelId);
   return db.transaction(async (tx: AnyDb) => {
     const [row] = await tx
       .insert(schema.opsPlanEvents)
@@ -141,7 +154,7 @@ export async function updatePlanEvent(user: SessionUser, id: number, input: unkn
       note: patch.note !== undefined ? patch.note : before.note,
     };
     await validateTargets(tx, merged);
-    assertChannelWritable(user, merged.channelId);
+    requireChannelInScope(user, merged.channelId); // 受限用户不得把事件改成不分渠道/范围外
     const [after] = await tx
       .update(schema.opsPlanEvents)
       .set({
