@@ -1,6 +1,6 @@
 /** D57 库存预警阈值（rules/alert-threshold.ts） */
 import { describe, expect, it } from "vitest";
-import { alertDays, coverStatus } from "@/server/rules/alert-threshold";
+import { alertDays, coverStatus, coverStatusWithSupply } from "@/server/rules/alert-threshold";
 
 const defaults = { production: 30, logistics: 15 };
 
@@ -43,5 +43,57 @@ describe("coverStatus", () => {
     expect(coverStatus(null, 50, 60)).toBe("ok");
     expect(coverStatus(Number.POSITIVE_INFINITY, 50, 60)).toBe("ok");
     expect(coverStatus(55, 50, null)).toBe("ok");
+  });
+});
+
+describe("alertDays：学习交期只观察不生效（审计 #6）", () => {
+  it("样本 ≥ 3 且 P90 超档案 > 容差 → basis 追加 learned 段（observeOnly），days 不变", () => {
+    const r = alertDays({ normalLeadDays: 20, logisticsLeadDays: 7, defaults, bufferDays: 5, learned: { p50: 22, p90: 30, samples: 12, onTimeRate: 0.6 }, learnedToleranceDays: 3 });
+    expect(r.days).toBe(32); // 阈值未变
+    expect(r.learned).toEqual({ archiveDays: 20, p50: 22, p90: 30, samples: 12, onTimeRate: 0.6, delta: 10, toleranceDays: 3, observeOnly: true, applied: false });
+    expect(r.basis.at(-1)).toEqual({ part: "learned", value: 10, source: "learned", field: null, observeOnly: true });
+    expect(r.basis.filter((b) => !b.observeOnly).reduce((a, b) => a + b.value, 0)).toBe(r.days);
+    expect(r.usedDefault).toBe(false); // learned 不算缺省
+  });
+  it("样本不足 / 超出不过容差 / 无 P90 / 未传 → 不记观察项", () => {
+    expect(alertDays({ normalLeadDays: 20, logisticsLeadDays: 7, defaults, bufferDays: 5, learned: { p50: 22, p90: 30, samples: 2, onTimeRate: null } }).learned).toBeNull();
+    expect(alertDays({ normalLeadDays: 20, logisticsLeadDays: 7, defaults, bufferDays: 5, learned: { p50: 22, p90: 23, samples: 9, onTimeRate: null } }).learned).toBeNull();
+    expect(alertDays({ normalLeadDays: 20, logisticsLeadDays: 7, defaults, bufferDays: 5, learned: { p50: 22, p90: 23.5, samples: 9, onTimeRate: null }, learnedToleranceDays: 3 }).learned?.delta).toBe(3.5); // 严格大于容差才记
+    expect(alertDays({ normalLeadDays: 20, logisticsLeadDays: 7, defaults, bufferDays: 5, learned: { p50: 22, p90: null, samples: 9, onTimeRate: null } }).learned).toBeNull();
+    expect(alertDays({ normalLeadDays: 20, logisticsLeadDays: 7, defaults, bufferDays: 5, learned: null }).learned).toBeNull();
+    expect(alertDays({ normalLeadDays: 20, logisticsLeadDays: 7, defaults, bufferDays: 5 }).learned).toBeNull();
+  });
+  it("档案缺省时比较基准是缺省加工周期；容差可为 0；P90 低于档案不记", () => {
+    const r = alertDays({ defaults, bufferDays: 5, learned: { p50: 30, p90: 40.5, samples: 3, onTimeRate: 0.9 }, learnedToleranceDays: 0 });
+    expect(r.days).toBe(50);
+    expect(r.learned).toMatchObject({ archiveDays: 30, delta: 10.5, toleranceDays: 0 });
+    expect(alertDays({ normalLeadDays: 20, defaults, bufferDays: 5, learned: { p50: 10, p90: 15, samples: 30, onTimeRate: 1 } }).learned).toBeNull();
+  });
+});
+
+describe("coverStatusWithSupply（审计 #1：阈值内确认到货 → 降为 watch）", () => {
+  const today = "2026-09-04";
+  const arrival = { date: "2026-09-20", qty: 300, source: "po", ref: "PO-1" };
+  it("在库 alert 且在库 > 0、到货日在阈值天数内 → watch + basis", () => {
+    const r = coverStatusWithSupply({ status: "alert", onHand: 100, nextArrival: arrival, today, alertDaysValue: 35 });
+    expect(r.status).toBe("watch");
+    expect(r.downgraded).toBe(true);
+    expect(r.basis).toContain("PO-1");
+    expect(r.basis).toContain("16 天内");
+    expect(r.basis).toContain("阈值 35 天");
+  });
+  it("在库 = 0 不降级（物理事实）；到货日超出阈值 / 逾期 / 无到货 / 数量 0 → 不降", () => {
+    expect(coverStatusWithSupply({ status: "alert", onHand: 0, nextArrival: arrival, today, alertDaysValue: 35 })).toEqual({ status: "alert", downgraded: false, basis: null });
+    expect(coverStatusWithSupply({ status: "alert", onHand: 100, nextArrival: { ...arrival, date: "2026-10-20" }, today, alertDaysValue: 35 }).status).toBe("alert");
+    expect(coverStatusWithSupply({ status: "alert", onHand: 100, nextArrival: { ...arrival, date: "2026-09-01" }, today, alertDaysValue: 35 }).status).toBe("alert");
+    expect(coverStatusWithSupply({ status: "alert", onHand: 100, nextArrival: null, today, alertDaysValue: 35 }).status).toBe("alert");
+    expect(coverStatusWithSupply({ status: "alert", onHand: 100, nextArrival: { ...arrival, qty: 0 }, today, alertDaysValue: 35 }).status).toBe("alert");
+  });
+  it("边界：到货日 = today 与 = today + alertDays 都算阈值内；非 alert 状态原样返回", () => {
+    expect(coverStatusWithSupply({ status: "alert", onHand: 1, nextArrival: { ...arrival, date: today }, today, alertDaysValue: 35 }).status).toBe("watch");
+    expect(coverStatusWithSupply({ status: "alert", onHand: 1, nextArrival: { ...arrival, date: "2026-10-09" }, today, alertDaysValue: 35 }).status).toBe("watch");
+    expect(coverStatusWithSupply({ status: "alert", onHand: 1, nextArrival: { ...arrival, date: "2026-10-10" }, today, alertDaysValue: 35 }).status).toBe("alert");
+    expect(coverStatusWithSupply({ status: "watch", onHand: 1, nextArrival: arrival, today, alertDaysValue: 35 })).toEqual({ status: "watch", downgraded: false, basis: null });
+    expect(coverStatusWithSupply({ status: "ok", onHand: 0, nextArrival: arrival, today, alertDaysValue: 35 }).status).toBe("ok");
   });
 });

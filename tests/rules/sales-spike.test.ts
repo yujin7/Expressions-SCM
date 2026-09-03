@@ -1,6 +1,6 @@
 /** D56 爆单规则（rules/sales-spike.ts）：正常爆单 / 基线不足 / 缺天 / 断货恢复 / 第 3 天回落 / 自动关闭窗口 */
 import { describe, expect, it } from "vitest";
-import { detectSalesSpike } from "@/server/rules/sales-spike";
+import { detectSalesSpike, matchExpectedPromo } from "@/server/rules/sales-spike";
 
 function series(start: string, qtys: (number | string)[]) {
   const t0 = Date.parse(`${start}T00:00:00Z`);
@@ -67,5 +67,32 @@ describe("detectSalesSpike", () => {
   });
   it("空序列 → 不命中、anchorDate null", () => {
     expect(detectSalesSpike([])).toMatchObject({ hit: false, anchorDate: null, days: [], gaps: 0 });
+  });
+});
+
+describe("matchExpectedPromo（审计 #7：判定窗口与大促事件重叠 → 预期内）", () => {
+  const win = { start: "2026-08-31", end: "2026-09-02" };
+  it("重叠 → expected + planEventRef + expectedUpliftPct + 窗口文案；不重叠 → 全空", () => {
+    const r = matchExpectedPromo(win, [{ id: 7, startDate: "2026-09-01", endDate: "2026-09-05", expectedUpliftPct: 80 }]);
+    expect(r).toEqual({ expected: true, planEventRef: 7, expectedUpliftPct: 80, planEventWindow: "大促 2026-09-01–2026-09-05" });
+    expect(matchExpectedPromo(win, [{ id: 8, startDate: "2026-09-03", endDate: "2026-09-05", expectedUpliftPct: 80 }]).expected).toBe(false);
+    expect(matchExpectedPromo(win, [{ id: 9, startDate: "2026-08-20", endDate: "2026-08-30", expectedUpliftPct: null }]).expected).toBe(false);
+    expect(matchExpectedPromo(win, [])).toEqual({ expected: false, planEventRef: null, expectedUpliftPct: null, planEventWindow: null });
+  });
+  it("边界含端点；未定结束（endDate null）视为持续；多事件取预期涨幅最大者", () => {
+    expect(matchExpectedPromo(win, [{ id: 1, startDate: "2026-09-02", endDate: "2026-09-09", expectedUpliftPct: null }]).expected).toBe(true);
+    expect(matchExpectedPromo(win, [{ id: 2, startDate: "2026-08-01", endDate: "2026-08-31", expectedUpliftPct: null }]).expected).toBe(true);
+    const open = matchExpectedPromo(win, [{ id: 3, startDate: "2026-08-01", endDate: null, expectedUpliftPct: 20 }]);
+    expect(open).toMatchObject({ expected: true, planEventRef: 3, planEventWindow: "大促 2026-08-01 起" });
+    const multi = matchExpectedPromo(win, [
+      { id: 4, startDate: "2026-08-30", endDate: "2026-09-03", expectedUpliftPct: 30 },
+      { id: 5, startDate: "2026-09-01", endDate: "2026-09-01", expectedUpliftPct: 120 },
+      { id: 6, startDate: "2026-09-01", endDate: "2026-09-01", expectedUpliftPct: null },
+    ]);
+    expect(multi).toMatchObject({ planEventRef: 5, expectedUpliftPct: 120 });
+  });
+  it("非法窗口（起 > 止 / 格式错）→ 不判", () => {
+    expect(matchExpectedPromo({ start: "2026-09-02", end: "2026-08-31" }, [{ id: 1, startDate: "2026-09-01", endDate: null, expectedUpliftPct: 1 }]).expected).toBe(false);
+    expect(matchExpectedPromo({ start: "bad", end: "2026-09-02" }, [{ id: 1, startDate: "2026-09-01", endDate: null, expectedUpliftPct: 1 }]).expected).toBe(false);
   });
 });

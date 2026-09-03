@@ -2,23 +2,38 @@ import { sql } from "drizzle-orm";
 import { getNumParam } from "@/server/core/params";
 import { resolveDb, type AnyDb } from "@/server/core/svc";
 import { getOnHandBySku } from "@/server/core/stock-view";
+import { getOpenSupplyLines, type OpenSupplyLine } from "@/server/core/supply";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
 import { classifyTier, DEFAULT_TIER_CUTS, type Tier } from "@/server/rules/abc";
-import { alertDays as computeAlertDays, coverStatus, type CoverStatus } from "@/server/rules/alert-threshold";
-import { pickPrimaryAlert, priorityScore, type AlertKind } from "@/server/rules/alert-priority";
+import {
+  alertDays as computeAlertDays, coverStatus, coverStatusWithSupply,
+  type CoverStatus, type LearnedLead, type LearnedLeadObservation, type SupplyArrival,
+} from "@/server/rules/alert-threshold";
+import { pickPrimaryAlert, priorityScore, type AlertKind, type PriorityScoreTerms } from "@/server/rules/alert-priority";
+import { isSlowMover } from "@/server/rules/risk-action";
+import { todayShanghai } from "@/server/modules/master/common";
+import { expiryCheck, type ExpiryCheckItem } from "@/server/modules/replenish/expiry";
 import { loadExternalVelocitySafe } from "@/server/modules/report/external-velocity";
 import { loadSalesSpike } from "@/server/modules/report/sales-spike";
 
 /**
- * 库存预警表读模型 `inventory-alerts/v1`（D57；四屏第 2 屏 B-左）。
+ * 库存预警表读模型 `inventory-alerts/v2`（D57；四屏第 2 屏 B-左）。
  *
  * 逐启用成品 SKU 一行：等级（sku_planning_policy 最新期，缺则按近 6 月内部销量现算四档）、
  * 日销三口径并列（外部平台净件数 ÷30 / 内部月表近 6 月折日 / 实时仓出库近 30 天折日）、
  * 在库、在库可销天数（按主日销）、阈值（加工+在途+缓冲，逐 SKU 主数据优先，缺省参数）、
  * 主预警（rules/alert-priority 一 SKU 一主预警）、优先级分数、动作链接。
  * 观察序列只用于预警，不进补货数量（D55）。
+ *
+ * v2 口径升级（审计 #1/#4/#5/#6/#11b，缓存键升版，旧缓存不再命中）：
+ * - 未结供给接入（core/supply 唯一权威）：inTransitDated/Undated/Overdue、nextArrival、coverDaysWithSupply；
+ *   在库口径 alert 且在库 > 0、下一笔确认到货日落在阈值天数内 → 降为 watch（statusBasis 写明依据）；
+ *   在库 = 0 是物理事实，out_of_stock 不因在途降级。在库可销 coverDays 仍按在库口径单独给出。
+ * - 学习交期只观察（rollup_supplier_lead，样本 ≥ 3 且 P90 超档案 > 容差）：basis 多一段 learned，阈值不变。
+ * - 优先级分带 terms/formula；临期（replenish/expiry）与积压（rules/risk-action.isSlowMover，C 级不判）
+ *   两个此前从未产出的预警种类开始产出，仍一 SKU 一主预警。
  */
-export const INVENTORY_ALERTS_CACHE_KEY = "inventory-alerts/v1";
+export const INVENTORY_ALERTS_CACHE_KEY = "inventory-alerts/v2";
 
 export type DailySource = "external" | "internal" | "ledger";
 
@@ -35,15 +50,39 @@ export interface InventoryAlertRow {
   net30External: number | null;
   primaryDaily: number | null;
   primaryDailySource: DailySource | null;
+  /** 在库可销天数（不含在途，原口径） */
   coverDays: number | null;
+  /** （在库 + 有确认到货日且未逾期的在途）÷ 主日销；粗口径，不做逐日推演（逐日推演在补货页） */
+  coverDaysWithSupply: number | null;
+  /** 有确认到货日且未逾期的在途量 */
+  inTransitDated: number;
+  /** 无到货日的在途量（曲线无法安放，须人工催交期） */
+  inTransitUndated: number;
+  /** 到货日已过仍未到的在途量（不作为可信供给） */
+  inTransitOverdue: number;
+  /** 最近一笔未逾期、有确认到货日的供给 */
+  nextArrival: SupplyArrival | null;
   alertDays: number;
   alertBasis: string;
   usedDefault: boolean;
+  /** 学习交期观察项（阈值未变） */
+  learnedLead: LearnedLeadObservation | null;
+  /** 在库口径三色（不看在途） */
+  statusOnHand: CoverStatus;
+  /** 最终三色：在库 alert 但阈值内有确认到货 → watch */
   status: CoverStatus;
+  downgradedBySupply: boolean;
+  statusBasis: string | null;
   primary: AlertKind | null;
   tags: AlertKind[];
   priorityScore: string;
+  priorityTerms: PriorityScoreTerms;
+  priorityFormula: string;
   spike: boolean;
+  /** 爆单在大促预期内（sales-spike/v2 expected） */
+  spikeExpected: boolean;
+  nearExpiry: { minDaysLeft: number | null; nearQty: number; expiredQty: number; thresholdDays: number } | null;
+  overstock: boolean;
   actions: { transfer: string; replenish: string };
 }
 
@@ -51,8 +90,16 @@ export interface InventoryAlertsReadModel {
   key: typeof INVENTORY_ALERTS_CACHE_KEY;
   builtAt: string;
   sourceBinding: string;
-  params: { productionDefault: number; logisticsDefault: number; bufferDays: number; targetDays: number | null; tierCuts: { sPct: number; aPct: number; bPct: number } };
-  totals: { skus: number; alert: number; watch: number; ok: number; outOfStock: number; byTier: Record<string, { skus: number; alert: number }> };
+  params: {
+    productionDefault: number; logisticsDefault: number; bufferDays: number; targetDays: number | null;
+    tierCuts: { sPct: number; aPct: number; bPct: number };
+    slowDaysThreshold: number; learnedToleranceDays: number; today: string;
+  };
+  totals: {
+    skus: number; alert: number; watch: number; ok: number; outOfStock: number;
+    downgradedBySupply: number; nearExpiry: number; overstock: number; learnedObserved: number;
+    byTier: Record<string, { skus: number; alert: number }>;
+  };
   rows: InventoryAlertRow[];
   limitations: string[];
 }
@@ -63,6 +110,8 @@ function resultRows<T>(result: unknown): T[] {
   return Array.isArray(rows) ? (rows as T[]) : [];
 }
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+const numOrNull = (v: unknown): number | null => { if (v == null) return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+const r1 = (v: number): number => Math.round(v * 10) / 10;
 
 async function binding(db: AnyDb): Promise<string> {
   const [b] = resultRows<Record<string, unknown>>(await db.execute(sql`
@@ -72,14 +121,46 @@ async function binding(db: AnyDb): Promise<string> {
            (SELECT coalesce(max(id),0) FROM sku_params) AS p,
            (SELECT coalesce(max(updated_at)::text,'') FROM sku_params) AS pu,
            (SELECT coalesce(max(id),0) FROM sku_planning_policy) AS pol,
-           (SELECT coalesce(max(built_at)::text,'') FROM report_read_model_cache WHERE key LIKE 'jiandaoyun-external-velocity/%') AS ev
+           (SELECT coalesce(max(built_at)::text,'') FROM report_read_model_cache WHERE key LIKE 'jiandaoyun-external-velocity/%') AS ev,
+           (SELECT coalesce(max(id),0)::text || ':' || coalesce(sum(received_qty),0)::text || ':' || coalesce(string_agg(DISTINCT expected_date::text, ','), '') FROM po_lines) AS pol_l,
+           (SELECT count(*) FILTER (WHERE status IN ('approved','in_progress'))::text || ':' || coalesce(max(id),0)::text || ':' || coalesce(string_agg(DISTINCT expected_date::text, ','), '') FROM po_docs) AS po_d,
+           (SELECT count(*) FILTER (WHERE status IN ('approved','in_progress') AND is_paused = false)::text || ':' || coalesce(max(id),0)::text || ':' || coalesce(string_agg(DISTINCT due_date::text, ','), '') FROM wo_docs) AS wo,
+           (SELECT coalesce(max(id),0)::text || ':' || coalesce(sum(inbound_qty),0)::text || ':' || coalesce(sum(closed_qty),0)::text FROM transit_refs WHERE kind = 'fg_order') AS tr,
+           (SELECT coalesce(max(id),0) FROM batch_stocks) AS bs,
+           (SELECT coalesce(max(built_at)::text,'') FROM rollup_supplier_lead) AS rl,
+           (SELECT coalesce(max(built_at)::text,'') FROM report_read_model_cache WHERE key LIKE 'sales-spike/%') AS sp
   `));
-  return `alerts:${b?.l}:${b?.s}:${b?.m}:${b?.p}:${b?.pu}:${b?.pol}|ev:${b?.ev}`;
+  return `alerts:${b?.l}:${b?.s}:${b?.m}:${b?.p}:${b?.pu}:${b?.pol}|ev:${b?.ev}|supply:${b?.pol_l}|${b?.po_d}|${b?.wo}|${b?.tr}|bs:${b?.bs}|rl:${b?.rl}|sp:${b?.sp}`;
+}
+
+/** 逐 SKU 汇总未结供给：有日期未逾期 / 无日期 / 逾期 / 下一笔到货 */
+export function summarizeSupplyForAlerts(lines: OpenSupplyLine[], today: string): Map<number, { dated: number; undated: number; overdue: number; next: SupplyArrival | null }> {
+  const out = new Map<number, { dated: number; undated: number; overdue: number; next: SupplyArrival | null }>();
+  for (const l of lines) {
+    const e = out.get(l.skuId) ?? { dated: 0, undated: 0, overdue: 0, next: null };
+    if (!l.expectDate) e.undated = num((e.undated + l.qty).toFixed(4));
+    else if (l.expectDate < today) e.overdue = num((e.overdue + l.qty).toFixed(4));
+    else {
+      e.dated = num((e.dated + l.qty).toFixed(4));
+      if (!e.next || l.expectDate < e.next.date) e.next = { date: l.expectDate, qty: l.qty, source: l.source, ref: l.ref };
+    }
+    out.set(l.skuId, e);
+  }
+  return out;
+}
+
+async function expiryBySku(db: AnyDb, skuIds: number[]): Promise<Map<number, ExpiryCheckItem>> {
+  const out = new Map<number, ExpiryCheckItem>();
+  for (let i = 0; i < skuIds.length; i += 200) { // expiryCheck 单次上限 200
+    const res = await expiryCheck({ skuIds: skuIds.slice(i, i + 200) }, db);
+    for (const it of res.items) if (it.nearBatches > 0) out.set(it.skuId, it);
+  }
+  return out;
 }
 
 export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAlertsReadModel> {
   const db = await resolveDb(dbArg);
-  const [productionDefault, logisticsDefault, bufferDays, targetDaysRaw, sPct, aPct, bPct] = await Promise.all([
+  const [productionDefault, logisticsDefault, bufferDays, targetDaysRaw, sPct, aPct, bPct, slowDaysThreshold, learnedToleranceDays] = await Promise.all([
     getNumParam("default_production_lead_days", 30, db),
     getNumParam("default_logistics_lead_days", 15, db),
     getNumParam("alert_buffer_days", 5, db),
@@ -87,8 +168,11 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
     getNumParam("grade_s_pct", DEFAULT_TIER_CUTS.sPct, db),
     getNumParam("grade_a_pct", DEFAULT_TIER_CUTS.aPct, db),
     getNumParam("grade_b_pct", DEFAULT_TIER_CUTS.bPct, db),
+    getNumParam("slow_days_threshold", 180, db),
+    getNumParam("alert_learned_lead_tolerance_days", 3, db),
   ]);
   const targetDays = targetDaysRaw > 0 ? targetDaysRaw : null;
+  const today = todayShanghai();
 
   // SKU 主档（启用成品）+ 周期主数据 + 最新期分层
   const skus = resultRows<{ id: number; code: string; name: string; brand: string | null; normal: number | null; logistics: number | null; purchase: number | null; tier: string | null; override: string | null }>(await db.execute(sql`
@@ -121,12 +205,24 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
     WHERE l.qty_delta < 0 AND l.occurred_at >= now() - interval '30 days' GROUP BY l.sku_id`));
   const ledgerOut30 = new Map(ledgerRows.map((r) => [Number(r.sku_id), num(r.out)]));
 
-  const [onHand, ev, spike] = await Promise.all([
+  // 学习交期（rollup_supplier_lead，每 SKU 取样本最多的供应商行）——只观察不生效
+  const learnedRows = resultRows<{ sku_id: number; samples: number; p50: string | null; p90: string | null; otr: string | null }>(await db.execute(sql`
+    SELECT DISTINCT ON (r.sku_id) r.sku_id, r.samples, r.lead_p50_days AS p50, r.lead_p90_days AS p90, r.on_time_rate AS otr
+    FROM rollup_supplier_lead r INNER JOIN skus k ON k.id = r.sku_id
+    WHERE k.active = true AND k.sku_type = 'finished'
+    ORDER BY r.sku_id, r.samples DESC, r.id DESC`));
+  const learnedBySku = new Map<number, LearnedLead>(learnedRows.map((r) => [Number(r.sku_id), { p50: numOrNull(r.p50), p90: numOrNull(r.p90), samples: num(r.samples), onTimeRate: numOrNull(r.otr) }]));
+
+  const [onHand, ev, spike, supplyLines, expiry] = await Promise.all([
     getOnHandBySku(db, { skuIds, finishedOnly: true }),
     loadExternalVelocitySafe(db),
     loadSalesSpike(db).catch(() => null),
+    getOpenSupplyLines(db, skuIds),
+    expiryBySku(db, skuIds),
   ]);
-  const spikeSkus = new Set((spike?.hits ?? []).map((h) => h.skuId).filter((x): x is number => typeof x === "number"));
+  const spikeHits = new Map<number, { expected: boolean }>();
+  for (const h of spike?.hits ?? []) if (typeof h.skuId === "number") spikeHits.set(h.skuId, { expected: h.expected === true });
+  const supplyBySku = summarizeSupplyForAlerts(supplyLines, today);
 
   const rows: InventoryAlertRow[] = skus.map((s) => {
     const oh = num(onHand.bySku.get(s.id) ?? "0");
@@ -138,13 +234,35 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
     const ledger = ledgerOut != null ? Math.round((ledgerOut / 30) * 100) / 100 : null;
     const primaryDailySource: DailySource | null = external != null && external > 0 ? "external" : internal != null && internal > 0 ? "internal" : ledger != null && ledger > 0 ? "ledger" : null;
     const primaryDaily = primaryDailySource === "external" ? external : primaryDailySource === "internal" ? internal : primaryDailySource === "ledger" ? ledger : null;
-    const cover = primaryDaily && primaryDaily > 0 ? Math.round((oh / primaryDaily) * 10) / 10 : null;
-    const ad = computeAlertDays({ normalLeadDays: s.normal, logisticsLeadDays: s.logistics, purchaseLeadDays: s.purchase, defaults: { production: productionDefault, logistics: logisticsDefault }, bufferDays });
-    const status = coverStatus(cover, ad.days, targetDays);
+    const cover = primaryDaily && primaryDaily > 0 ? r1(oh / primaryDaily) : null;
+    const sup = supplyBySku.get(s.id) ?? { dated: 0, undated: 0, overdue: 0, next: null };
+    const coverWithSupply = primaryDaily && primaryDaily > 0 ? r1((oh + sup.dated) / primaryDaily) : null;
+    const ad = computeAlertDays({
+      normalLeadDays: s.normal, logisticsLeadDays: s.logistics, purchaseLeadDays: s.purchase,
+      defaults: { production: productionDefault, logistics: logisticsDefault }, bufferDays,
+      learned: learnedBySku.get(s.id) ?? null, learnedToleranceDays,
+    });
+    const statusOnHand = coverStatus(cover, ad.days, targetDays);
+    const withSupply = coverStatusWithSupply({ status: statusOnHand, onHand: oh, nextArrival: sup.next, today, alertDaysValue: ad.days });
+    const status = withSupply.status;
     const hasDemand = (primaryDaily ?? 0) > 0;
-    const isSpike = spikeSkus.has(s.id);
-    const { primary, tags } = pickPrimaryAlert({ outOfStock: oh <= 0 && hasDemand, spike: isSpike, lowStock: status === "alert" && oh > 0 });
+    const spikeHit = spikeHits.get(s.id) ?? null;
     const tierValue = (s.override ?? s.tier ?? computedTier.get(s.id) ?? null) as Tier | null;
+    const exp = expiry.get(s.id) ?? null;
+    const overstock = tierValue != null && tierValue !== "C" && isSlowMover({ cover, onHand: oh, slowThreshold: slowDaysThreshold });
+    const { primary, tags } = pickPrimaryAlert({
+      outOfStock: oh <= 0 && hasDemand,
+      spike: spikeHit != null,
+      lowStock: status === "alert" && oh > 0,
+      nearExpiry: exp != null && exp.nearQty > 0,
+      overstock,
+    });
+    const ps = priorityScore({ dailyAvg: primaryDaily == null ? null : String(primaryDaily), alertDays: ad.days, coverDays: cover == null ? null : String(cover) });
+    const basisText = ad.basis.map((b) => {
+      if (b.part === "learned") return `学习修正 +${b.value}(P90, n=${ad.learned?.samples ?? "?"}, 观察)`;
+      const label = b.part === "production" ? "加工" : b.part === "logistics" ? "在途" : "缓冲";
+      return `${label} ${b.value}${b.source === "default" ? "(缺省)" : ""}`;
+    }).join(" + ");
     return {
       skuId: s.id, code: s.code, name: s.name, brand: s.brand,
       tier: tierValue, tierSource: s.tier || s.override ? "policy" : tierValue ? "computed" : null,
@@ -152,12 +270,18 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
       daily: { external, internal, ledger },
       net7External: null, net30External: evs ? evs.net30 : null,
       primaryDaily, primaryDailySource, coverDays: cover,
+      coverDaysWithSupply: coverWithSupply,
+      inTransitDated: sup.dated, inTransitUndated: sup.undated, inTransitOverdue: sup.overdue, nextArrival: sup.next,
       alertDays: ad.days,
-      alertBasis: ad.basis.map((b) => `${b.part === "production" ? "加工" : b.part === "logistics" ? "在途" : "缓冲"} ${b.value}${b.source === "default" ? "(缺省)" : ""}`).join(" + "),
+      alertBasis: basisText,
       usedDefault: ad.usedDefault,
-      status, primary, tags,
-      priorityScore: priorityScore({ dailyAvg: primaryDaily == null ? null : String(primaryDaily), alertDays: ad.days, coverDays: cover == null ? null : String(cover) }),
-      spike: isSpike,
+      learnedLead: ad.learned,
+      statusOnHand, status, downgradedBySupply: withSupply.downgraded, statusBasis: withSupply.basis,
+      primary, tags,
+      priorityScore: ps.score, priorityTerms: ps.terms, priorityFormula: ps.formula,
+      spike: spikeHit != null, spikeExpected: spikeHit?.expected === true,
+      nearExpiry: exp ? { minDaysLeft: exp.minDaysLeft, nearQty: exp.nearQty, expiredQty: exp.expiredQty, thresholdDays: exp.thresholdDays } : null,
+      overstock,
       actions: { transfer: `/report/transfer-suggest?skuIds=${s.id}`, replenish: `/replenish?sku=${encodeURIComponent(s.code)}` },
     };
   });
@@ -181,19 +305,26 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
     key: INVENTORY_ALERTS_CACHE_KEY,
     builtAt: new Date().toISOString(),
     sourceBinding: await binding(db),
-    params: { productionDefault, logisticsDefault, bufferDays, targetDays, tierCuts: { sPct, aPct, bPct } },
+    params: { productionDefault, logisticsDefault, bufferDays, targetDays, tierCuts: { sPct, aPct, bPct }, slowDaysThreshold, learnedToleranceDays, today },
     totals: {
       skus: rows.length,
       alert: rows.filter((r) => r.status === "alert").length,
       watch: rows.filter((r) => r.status === "watch").length,
       ok: rows.filter((r) => r.status === "ok").length,
       outOfStock: rows.filter((r) => r.primary === "out_of_stock").length,
+      downgradedBySupply: rows.filter((r) => r.downgradedBySupply).length,
+      nearExpiry: rows.filter((r) => r.primary === "near_expiry" || r.tags.includes("near_expiry")).length,
+      overstock: rows.filter((r) => r.primary === "overstock" || r.tags.includes("overstock")).length,
+      learnedObserved: rows.filter((r) => r.learnedLead != null).length,
       byTier,
     },
     rows,
     limitations: [
       "日销三口径不相加：外部 = 平台支付−退款近 30 天折日（observation_only，T+1）；内部 = 销量月表近 6 月折日（止于最新月）；实时仓 = 流水近 30 天出库折日（含调拨/发料，非纯销售）。主日销取外部 > 内部 > 实时仓。",
       "可销天数按「在库可销」（不含在途）；阈值 = 加工周期 + 在途周期 + 缓冲，逐 SKU 主数据优先，缺失用参数缺省并标注（D57）。",
+      "未结供给（core/supply：PO 未收、WO 在制、存量单在途）只用于降级：在库 alert 且在库 > 0、下一笔确认到货日落在阈值天数内 → watch 并写明依据；在库 = 0 不降级（物理事实）；逾期/无日期在途不算可信供给。含在途可销 = (在库 + 有日期未逾期在途) ÷ 主日销，粗口径，逐日推演以补货页为准。",
+      `学习交期只观察不生效：rollup_supplier_lead 样本 ≥ 3 且 P90 超档案加工周期 > ${learnedToleranceDays} 天（alert_learned_lead_tolerance_days）时在阈值依据里单列，阈值本周期不变。`,
+      `临期 = 批次参考层 batch_stocks 剩余天数 ≤ skus.nearExpiryDays（缺省 90）；积压 = 可销天数 > ${slowDaysThreshold} 天或有库存无动销（slow_days_threshold），C 级不判积压。仍一 SKU 一主预警（断货 > 爆单 > 低库存 > 临期 > 积压），其余作标签。`,
       "观察序列只用于预警，不进入补货数量（D55）；等级来自最新期分层固化，缺则按近 6 月内部销量现算（D58）。",
     ],
   };
