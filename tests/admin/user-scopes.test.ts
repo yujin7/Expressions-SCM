@@ -128,7 +128,7 @@ describe("export-worker runAs 透传", () => {
     EXPORT_KINDS[kind] = {
       nameCn: "范围探针",
       paramsFromSearch: () => ({}),
-      produce: async (user) => {
+      produce: async (user: SessionUser) => {
         seen = user;
         return { rows: [], columns: [{ key: "x", title: "x" }], total: 0 };
       },
