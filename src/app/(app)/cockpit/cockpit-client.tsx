@@ -12,6 +12,11 @@ import { fetchJson } from "@/components/fetchJson";
 import type { Block, CockpitData, RedlineItem, SourceStatusRow } from "@/server/modules/report/cockpit";
 import type { MonthEndPoint, WarehouseBlock } from "@/server/modules/report/inventory-position";
 import type { RatioMonthRow } from "@/server/modules/report/inventory-sales-ratio";
+import type { InventoryAlertRow } from "@/server/modules/report/inventory-alerts";
+import type { SpikeHit } from "@/server/modules/report/sales-spike";
+import type { TransferAnomalyRow, TransferLaneRow } from "@/server/modules/report/transfer-routes";
+import type { WarehouseInventoryRow } from "@/server/modules/report/warehouse-inventory";
+import type { GoalRow } from "@/server/modules/goals/service";
 
 const TABS = [
   { key: "sources", label: "数据来源与总量" },
@@ -208,10 +213,43 @@ export default function CockpitClient() {
             </Space>
           </Card>
           <Row gutter={[12, 12]}>
-            <Col xs={24} xl={14}><BlockCard title="库存预警表" block={s.alerts.inventoryAlerts} /></Col>
-            <Col xs={24} xl={10}><BlockCard title="爆单预警" block={s.alerts.salesSpike} /></Col>
+            <Col xs={24} xl={14}>
+              <BlockCard title="库存预警表（≤20 行，按主预警优先级）" block={s.alerts.inventoryAlerts} extra={<a href="/inventory/alerts?tab=cover">全部 →</a>}>
+                {s.alerts.inventoryAlerts.data ? <Table<InventoryAlertRow> rowKey="skuId" size="small" pagination={false} scroll={{ x: 900 }} dataSource={s.alerts.inventoryAlerts.data.rows} columns={[
+                  { title: "等级", dataIndex: "tier", width: 56, render: (v: string | null) => v ? <Tag color={v === "S" ? "red" : v === "A" ? "orange" : v === "B" ? "gold" : "default"}>{v}</Tag> : "—" },
+                  { title: "SKU", dataIndex: "code", width: 130 },
+                  { title: "日销", dataIndex: "primaryDaily", align: "right", width: 70, render: (v: number | null, r) => v == null ? "—" : `${v}${r.primaryDailySource === "external" ? "*" : ""}` },
+                  { title: "在库", dataIndex: "onHand", align: "right", width: 80, render: (v: string) => qty(v) },
+                  { title: "可销", dataIndex: "coverDays", align: "right", width: 70, render: (v: number | null) => v == null ? "—" : `${v}d` },
+                  { title: "阈值", dataIndex: "alertDays", align: "right", width: 60, render: (v: number) => `${v}d` },
+                  { title: "主预警", dataIndex: "primary", width: 90, render: (v: string | null) => v ? <Tag color={v === "out_of_stock" ? "error" : v === "spike" ? "magenta" : "warning"}>{v === "out_of_stock" ? "断货" : v === "spike" ? "爆单" : "低于阈值"}</Tag> : "—" },
+                  { title: "动作", key: "a", width: 100, render: (_, r) => <Space size={6}><a href={r.actions.transfer}>调拨</a><a href={r.actions.replenish}>补货</a></Space> },
+                ]} /> : null}
+              </BlockCard>
+            </Col>
+            <Col xs={24} xl={10}>
+              <BlockCard title="爆单预警" block={s.alerts.salesSpike} extra={<a href="/inventory/alerts?tab=spike">全部 →</a>}>
+                {s.alerts.salesSpike.data ? (<>
+                  <Typography.Text type="secondary">已映射 {s.alerts.salesSpike.data.hits.length} · 未映射 {s.alerts.salesSpike.data.unmappedHits.length} · 未知悉 {s.alerts.salesSpike.data.unacked}</Typography.Text>
+                  <Table<SpikeHit> rowKey={(r) => `${r.kind}:${r.skuId ?? r.platformSkuId}:${r.shopName}`} size="small" pagination={false} dataSource={[...s.alerts.salesSpike.data.hits, ...s.alerts.salesSpike.data.unmappedHits].slice(0, 10)} columns={[
+                    { title: "SKU / 平台 SKU", key: "k", render: (_, r) => r.kind === "sku" ? r.code : <span><Tag color="blue">未映射</Tag>{r.platformSkuId}</span> },
+                    { title: "近 3 日", key: "d", render: (_, r) => r.days.map((d) => d.qty).join("/") },
+                    { title: "涨幅", dataIndex: "risePct", align: "right", width: 80, render: (v: string | null) => v == null ? "—" : `+${v}%` },
+                  ]} />
+                </>) : null}
+              </BlockCard>
+            </Col>
           </Row>
-          <BlockCard title="订单系统（已下单 / 金额 / 订单至交付 / 成本下降）" block={s.alerts.orders} />
+          <BlockCard title="订单系统（已下单 / 金额 / 订单至交付 / 成本下降）" block={s.alerts.orders} extra={<a href="/report/purchase-orders">采购订单指标 →</a>}>
+            {s.alerts.orders.data ? (
+              <Row gutter={[12, 12]}>
+                <Col xs={12} lg={6}><Statistic title="本月已下单" value={s.alerts.orders.data.orderSystem.monthPoCount} suffix="单" /><Typography.Text type="secondary">{qty(s.alerts.orders.data.orderSystem.monthOrderedBaseQty)} 件</Typography.Text></Col>
+                <Col xs={12} lg={6}><Statistic title="已下单金额（未税）" value={s.alerts.orders.data.orderSystem.monthNetAmount == null ? "无权限 / 无数据" : yuan(s.alerts.orders.data.orderSystem.monthNetAmount)} /><Typography.Text type="secondary">含税 {s.alerts.orders.data.orderSystem.monthGrossAmount == null ? "—" : yuan(s.alerts.orders.data.orderSystem.monthGrossAmount)}</Typography.Text></Col>
+                <Col xs={12} lg={6}><Statistic title="订单 → 首批交付 P50" value={s.alerts.orders.data.orderSystem.cycleFirstP50 == null ? "样本不足" : `${s.alerts.orders.data.orderSystem.cycleFirstP50}d`} /><Typography.Text type="secondary">P90 {s.alerts.orders.data.orderSystem.cycleFirstP90 ?? "—"}d · n={s.alerts.orders.data.orderSystem.cycleSamples} · OTIF {pct(s.alerts.orders.data.orderSystem.otifRate)}</Typography.Text></Col>
+                <Col xs={12} lg={6}><Statistic title="成本下降 YTD" value={s.alerts.orders.data.costDown.savingYtd == null ? "无权限 / 无数据" : yuan(s.alerts.orders.data.costDown.savingYtd)} /><Typography.Text type="secondary">涨本另列 {s.alerts.orders.data.costDown.increaseYtd == null ? "—" : yuan(s.alerts.orders.data.costDown.increaseYtd)} · 可比行 {s.alerts.orders.data.costDown.comparableLines}</Typography.Text></Col>
+              </Row>
+            ) : null}
+          </BlockCard>
         </Space>
       ) : null}
 
@@ -227,17 +265,63 @@ export default function CockpitClient() {
             </>) : null}
           </BlockCard>
           <Row gutter={[12, 12]}>
-            <Col xs={24} xl={8}><BlockCard title="总周转 / 仓库数" block={s.inventory.turnover} /></Col>
-            <Col xs={24} xl={16}><BlockCard title="调拨线路（批次与均价）" block={s.inventory.transferLanes} /></Col>
+            <Col xs={24} xl={8}>
+              <BlockCard title="各仓周转 / 仓库数" block={s.inventory.turnover} extra={<a href="/inventory/warehouses">全部 →</a>}>
+                {s.inventory.turnover.data ? (<>
+                  <Space size={16} wrap><Statistic title="仓库" value={s.inventory.turnover.data.summary.warehouseCount} /><Statistic title="实时仓" value={s.inventory.turnover.data.summary.realtimeCount} /><Statistic title="实体启用仓" value={s.inventory.turnover.data.summary.physicalActiveCount} /></Space>
+                  <Table<WarehouseInventoryRow> rowKey="warehouseId" size="small" pagination={false} dataSource={s.inventory.turnover.data.rows.filter((r) => r.accountingMode === "realtime").slice(0, 8)} columns={[
+                    { title: "仓库", dataIndex: "name", ellipsis: true },
+                    { title: "在库", dataIndex: "onHand", align: "right", width: 90, render: (v: string) => qty(v) },
+                    { title: "周转", dataIndex: "turns", align: "right", width: 70, render: (v: number | null) => v == null ? "—" : v.toFixed(1) },
+                    { title: "DIO", dataIndex: "dio", align: "right", width: 70, render: (v: number | null) => v == null ? "—" : `${Math.round(v)}d` },
+                  ]} />
+                </>) : null}
+              </BlockCard>
+            </Col>
+            <Col xs={24} xl={16}>
+              <BlockCard title="调拨线路（批次与均价）" block={s.inventory.transferLanes} extra={<a href="/inventory/transfer-routes">全部 →</a>}>
+                {s.inventory.transferLanes.data ? <Table<TransferLaneRow> rowKey="laneKey" size="small" pagination={false} scroll={{ x: 800 }} dataSource={s.inventory.transferLanes.data.lanes} columns={[
+                  { title: "线路", key: "l", render: (_, r) => `${r.fromWarehouse} → ${r.toWarehouse}` },
+                  { title: "类型", dataIndex: "transferTypeLabel", width: 90 },
+                  { title: "30 天单数", dataIndex: "docCount30", align: "right", width: 90 },
+                  { title: "Σ 件", dataIndex: "totalQty", align: "right", width: 90, render: (v: string) => qty(v) },
+                  { title: "元 / 件", dataIndex: "avgUnitFee", align: "right", width: 90, render: (v: string | null) => v == null ? "—" : v },
+                  { title: "n", dataIndex: "samples", align: "right", width: 50 },
+                ]} /> : null}
+              </BlockCard>
+            </Col>
           </Row>
-          <BlockCard title="调拨异常 · 启动调拨计算" block={s.inventory.transferAnomalies} extra={<a href="/report/transfer-suggest">调拨建议 →</a>} />
+          <BlockCard title="调拨异常 · 启动调拨计算" block={s.inventory.transferAnomalies} extra={<a href="/report/transfer-suggest">启动调拨计算 →</a>}>
+            {s.inventory.transferAnomalies.data ? (<>
+              <Typography.Text type="secondary">异常 {s.inventory.transferAnomalies.data.anomalyCount} · 告警 {s.inventory.transferAnomalies.data.alertCount} · 零散线路 {s.inventory.transferAnomalies.data.scatteredLaneCount}</Typography.Text>
+              <Table<TransferAnomalyRow> rowKey="docId" size="small" pagination={false} dataSource={s.inventory.transferAnomalies.data.rows} columns={[
+                { title: "单号", dataIndex: "docNo", width: 130 },
+                { title: "线路", key: "l", render: (_, r) => `${r.fromWarehouse} → ${r.toWarehouse}（${r.transferTypeLabel}）` },
+                { title: "日期", dataIndex: "date", width: 100 },
+                { title: "数量", dataIndex: "qty", align: "right", width: 90, render: (v: string) => qty(v) },
+                { title: "元 / 件", dataIndex: "unitFee", align: "right", width: 90, render: (v: string | null) => v == null ? "—" : v },
+              ]} />
+            </>) : null}
+          </BlockCard>
         </Space>
       ) : null}
 
       {tab === "ops" && s ? (
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
           <Row gutter={[12, 12]}>
-            <Col xs={24} xl={14}><BlockCard title="待办跟进进度" block={s.ops.todo} /></Col>
+            <Col xs={24} xl={14}>
+              <BlockCard title="待办跟进进度" block={s.ops.todo} extra={<a href="/todo">全部待办 →</a>}>
+                {s.ops.todo.data ? (<>
+                  <Row gutter={12}>
+                    <Col span={6}><Statistic title="我的未完成" value={s.ops.todo.data.mine.open} /></Col>
+                    <Col span={6}><Statistic title="我的逾期" value={s.ops.todo.data.mine.overdue} valueStyle={{ color: s.ops.todo.data.mine.overdue ? "#B23A2E" : undefined }} /></Col>
+                    <Col span={6}><Statistic title="本月完成" value={s.ops.todo.data.totals.doneThisMonth} /></Col>
+                    <Col span={6}><Statistic title="完成率" value={pct(s.ops.todo.data.totals.completionRate)} /></Col>
+                  </Row>
+                  <div style={{ marginTop: 8 }}>{s.ops.todo.data.byRole.map((r) => <div key={r.role} style={{ fontSize: 12 }}>{r.role}：未完成 {r.open} · 逾期 {r.overdue} · 完成率 {pct(r.completionRate)}</div>)}</div>
+                </>) : null}
+              </BlockCard>
+            </Col>
             <Col xs={24} xl={10}>
               <BlockCard title="等我处理" block={s.ops.queues}>
                 {s.ops.queues.data ? (
@@ -249,7 +333,17 @@ export default function CockpitClient() {
               </BlockCard>
             </Col>
           </Row>
-          <BlockCard title="供应链目标（按部门）" block={s.ops.goals} />
+          <BlockCard title="供应链目标（按部门）" block={s.ops.goals} extra={<a href="/goals">设置目标 →</a>}>
+            {s.ops.goals.data ? <Table<GoalRow> rowKey="id" size="small" pagination={false} dataSource={s.ops.goals.data.rows.slice(0, 12)} columns={[
+              { title: "部门", dataIndex: "deptKey", width: 90 },
+              { title: "指标", dataIndex: "metricLabel" },
+              { title: "期间", dataIndex: "period", width: 90 },
+              { title: "目标", dataIndex: "targetValue", align: "right", width: 90, render: (v: string, r) => `${v}${r.unit ?? ""}` },
+              { title: "实际", dataIndex: "actualValue", align: "right", width: 90, render: (v: string | null, r) => v == null ? <Typography.Text type="secondary">{r.autoStatus === "unavailable" ? "来源未就绪" : "未填"}</Typography.Text> : `${v}${r.unit ?? ""}` },
+              { title: "达成", dataIndex: "attained", width: 80, render: (v: boolean | null, r) => v == null ? "—" : <Tag color={v ? "success" : "warning"}>{v ? "达成" : "未达"}{r.attainment ? ` ${r.attainment}` : ""}</Tag> },
+              { title: "来源", dataIndex: "actualSource", width: 70, render: (v: string | null) => v ?? "—" },
+            ]} /> : null}
+          </BlockCard>
           <Row gutter={[12, 12]}>
             <Col xs={24} xl={12}>
               <Card size="small" title="调研数据 / 结论">
@@ -259,7 +353,18 @@ export default function CockpitClient() {
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>措辞以 CURRENT.md 决议登记为准，待业务确认</Typography.Text>
               </Card>
             </Col>
-            <Col xs={24} xl={12}><BlockCard title="数据质量周核对" block={s.ops.dataQuality} /></Col>
+            <Col xs={24} xl={12}>
+              <BlockCard title="数据质量（本周）" block={s.ops.dataQuality} extra={<a href="/import/data-quality">核对清单 →</a>}>
+                {s.ops.dataQuality.data ? (<>
+                  {s.ops.dataQuality.data.sources.map((src) => (
+                    <div key={src.sourceClass} style={{ fontSize: 12, padding: "2px 0" }}>
+                      <Typography.Text strong>{src.label}</Typography.Text>：覆盖至 {src.coverage.through ?? "—"} · 通过 {src.completeness.ok} / 拒收 {src.completeness.rejected} · 重复 {src.uniqueness.duplicates}
+                    </div>
+                  ))}
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>对账一致率 {pct(s.ops.dataQuality.data.recon.rate)}（{s.ops.dataQuality.data.recon.matched}/{s.ops.dataQuality.data.recon.total}）· 快照跳变告警 {s.ops.dataQuality.data.snapshotQuality.alerts} · 销量一致性 {pct(s.ops.dataQuality.data.salesConsistency.consistencyPct)}</Typography.Text>
+                </>) : null}
+              </BlockCard>
+            </Col>
           </Row>
         </Space>
       ) : null}

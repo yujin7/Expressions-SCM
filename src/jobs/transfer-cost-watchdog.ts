@@ -9,7 +9,7 @@
  * - refKey `lane:<from>><to>:<type>`：零散线路（30 天 > transfer_batch_max_docs 单，medium）。
  * 本文件只导出 run，不在 interval-runner/scheduler 登记（由编排方登记：建议 "15 11,17 * * *"）。
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { systemAlerts } from "@/db/schema";
 import type { AnyDb } from "@/server/core/svc";
 import { refreshTransferRoutes, type TransferRoutesModel } from "@/server/modules/report/transfer-routes";
@@ -74,10 +74,18 @@ export async function run(db: AnyDb, opts?: { now?: Date; asOf?: string }): Prom
     openByKey.set(k, [...(openByKey.get(k) ?? []), o.id]);
   }
 
+  // 人工关闭（autoResolved=false）的同 refKey 在 180 天内不重开：本类条件在窗口内恒成立，否则每次 cron 都会重开（审阅 must-fix）
+  const manuallyClosedRows: { refKey: string | null }[] = await db
+    .select({ refKey: systemAlerts.refKey })
+    .from(systemAlerts)
+    .where(and(eq(systemAlerts.category, ALERT_CATEGORY), eq(systemAlerts.status, "resolved"), eq(systemAlerts.autoResolved, false),
+      sql`${systemAlerts.resolvedAt} >= ${new Date(now.getTime() - 180 * 24 * 3600 * 1000).toISOString()}::timestamptz`));
+  const manuallyClosed = new Set(manuallyClosedRows.map((r) => r.refKey ?? ""));
   let opened = 0;
   let autoClosed = 0;
   for (const s of signals) {
     if ((openByKey.get(s.refKey) ?? []).length > 0) continue; // 幂等：已有 open 项不重复开
+    if (manuallyClosed.has(s.refKey)) continue; // 人工已处理，不重开
     await db.insert(systemAlerts).values({ category: ALERT_CATEGORY, refKey: s.refKey, title: s.title, detail: s.detail, severity: s.severity });
     opened++;
   }

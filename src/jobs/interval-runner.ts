@@ -17,6 +17,13 @@ import { runReconcileJst, shanghaiToday } from "./reconcile-jst";
 import { runSnapshotAgeAlert } from "./snapshot-age";
 import { runInventoryPositionRefresh } from "./inventory-position-refresh";
 import { runInventoryCoverWatchdog, runSalesSpikeWatchdog } from "./alert-watchdogs";
+import { runTodoSync } from "./todo-sync";
+import { runWeeklyDqPack } from "./weekly-dq-pack";
+import { run as runTransferCostWatchdog } from "./transfer-cost-watchdog";
+import { refreshAutoActuals } from "@/server/modules/goals/service";
+import { refreshPurchaseOrderMetrics } from "@/server/modules/report/purchase-order-metrics";
+import { refreshSupplierPaymentTerm } from "@/server/modules/report/supplier-payment-term";
+import { runPolicyBuild } from "@/server/modules/planning/policy";
 import { runHousekeeping } from "./housekeeping";
 import { runFreshnessCheck } from "./freshness";
 import { runDocAging } from "./doc-aging";
@@ -126,6 +133,13 @@ export const INTERVAL_JOBS: IntervalJob[] = [
   { name: "inventory-position-refresh", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runInventoryPositionRefresh(db) },
   { name: "inventory-cover-watchdog", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runInventoryCoverWatchdog(db) },
   { name: "sales-spike-watchdog", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runSalesSpikeWatchdog(db) },
+  { name: "transfer-cost-watchdog", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runTransferCostWatchdog(db) },
+  { name: "todo-sync", everyMs: 30 * 60 * 1000, run: (db) => runTodoSync(db) },
+  { name: "goals-auto-actuals", everyMs: 6 * HOUR_MS, atHours: [6], run: (db) => refreshAutoActuals(db) },
+  { name: "purchase-order-metrics", everyMs: 6 * HOUR_MS, atHours: [2], run: (db) => refreshPurchaseOrderMetrics(db) },
+  { name: "supplier-payment-term", everyMs: 6 * HOUR_MS, atHours: [2], run: (db) => refreshSupplierPaymentTerm(db) },
+  { name: "weekly-dq-pack", everyMs: 6 * HOUR_MS, atHours: [7], run: (db) => runWeeklyDqPack(db) },
+  { name: "planning-policy-build", everyMs: 6 * HOUR_MS, atHours: [3], run: (db) => runPolicyBuild(db) },
   // 营业执照到期提醒（纯查询）
   { name: "license-alert", everyMs: 6 * HOUR_MS, run: (db) => runLicenseAlert(db) },
   // 聚水潭 T-1 出库全量快照先进入受控 staging；缺配置时显式 skipped

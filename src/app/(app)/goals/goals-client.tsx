@@ -67,7 +67,7 @@ export default function GoalsClient() {
     try {
       const params = new URLSearchParams();
       if (filters.period) params.set("period", filters.period);
-      if (refresh) params.set("refresh", "1");
+      if (refresh) await fetchJson("/api/goals/refresh", { method: "POST", body: JSON.stringify({}) });
       setData(await fetchJson<GoalsData>(`/api/goals?${params.toString()}`));
     } catch (e) {
       message.error((e as Error).message);

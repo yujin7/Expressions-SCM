@@ -30,7 +30,10 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await getFreshSessionUser();
-    const result = await createWorkItem(await readJson(req), user);
+    const body = (await readJson(req)) as Record<string, unknown>;
+    // 只有 admin 可声明 alert/review 来源；其他人一律 manual，防止伪造「系统触发」完成率或预占告警指纹（审阅 must-fix）
+    const input = user.roles.includes("admin") ? body : { ...body, sourceKind: "manual", sourceRef: null };
+    const result = await createWorkItem(input as never, user);
     return NextResponse.json(result, { status: result.created ? 201 : 200 });
   } catch (error) {
     return errorResponse(error, { path: "/api/todo", method: "POST" });

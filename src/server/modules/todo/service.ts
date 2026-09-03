@@ -17,7 +17,7 @@ import { users, workItems } from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { ROLES, type Role } from "@/server/core/constants";
 import type { SessionUser } from "@/server/core/dto";
-import { enqueueNotification, isFeishuDeliveryConfigured } from "@/jobs/notify";
+import { enqueueNotification, isFeishuAppConfigured } from "@/jobs/notify";
 import { ApiError } from "@/server/modules/master/common";
 import type { AnyDb } from "@/server/core/svc";
 import { fingerprintOf, type TodoCandidate } from "@/server/rules/task-triggers";
@@ -194,7 +194,7 @@ async function notifyAssignee(
       dedupeKey: `task:${item.id}:${event}`,
       userId: item.assigneeId,
     });
-    if (item.sourceKind !== "alert" && assignee.feishuUnionId && isFeishuDeliveryConfigured()) {
+    if (item.sourceKind !== "alert" && assignee.feishuUnionId && isFeishuAppConfigured()) {
       await enqueueNotification(db, {
         channel: "feishu",
         title: `【${titleMap[event]}】${item.title}`,

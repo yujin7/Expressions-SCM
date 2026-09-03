@@ -27,6 +27,13 @@ export const SCHEDULES: Record<string, string> = {
   "inventory-position-refresh": "25 11,17 * * *",
   "inventory-cover-watchdog": "35 11,17 * * *",
   "sales-spike-watchdog": "40 11,17 * * *",
+  "transfer-cost-watchdog": "45 11,17 * * *",
+  "todo-sync": "5,35 * * * *",
+  "goals-auto-actuals": "15 6 * * *",
+  "purchase-order-metrics": "10 2 * * *",
+  "supplier-payment-term": "20 2 * * *",
+  "weekly-dq-pack": "0 7 * * *",
+  "planning-policy-build": "0 3 * * *",
 
   // 同步前半小时探测权限，便于把“未授权”与“同步代码失败”分开。
   "probe-jst-permissions": "30 9,15 * * *",

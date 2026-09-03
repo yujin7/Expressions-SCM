@@ -19,9 +19,10 @@ describe("驾驶舱四屏装配", () => {
       expect(a.screens.sources.dataSources.state).toBe("ready");
       expect(["ready", "insufficient"]).toContain(a.screens.alerts.inventoryAlerts.state);
       expect(["ready", "insufficient"]).toContain(a.screens.alerts.salesSpike.state);
-      expect(a.screens.alerts.orders.state).toBe("pending_domain");
-      expect(a.screens.inventory.transferLanes.state).toBe("pending_domain");
-      expect(a.screens.ops.todo.state).toBe("pending_domain");
+      // 全部块已接入：空库下为 insufficient / ready，绝不能是 pending_domain 或 error（allSettled 把单块错误隔离，但空库不该有错）
+      for (const b of [a.screens.alerts.orders, a.screens.inventory.transferLanes, a.screens.inventory.transferAnomalies, a.screens.inventory.turnover, a.screens.ops.todo, a.screens.ops.goals, a.screens.ops.dataQuality]) {
+        expect(["ready", "insufficient"], b.note).toContain(b.state);
+      }
       expect(a.screens.ops.conclusions).toHaveLength(4);
       // 红卡条永远含爆单与断货两项（待接入时 count=0 但不消失）
       expect(a.screens.alerts.redline.map((r) => r.key)).toEqual(expect.arrayContaining(["sales_spike", "inventory_cover"]));

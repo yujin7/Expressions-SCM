@@ -5,9 +5,10 @@
  * 件数为主；组合装按 D47 拆到组件（在外部销速读模型里完成，本卡只消费）。
  */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Button, Card, Col, Input, Row, Select, Space, Statistic, Table, Tag, Typography } from "antd";
+import { Alert, App, Button, Card, Col, Row, Select, Space, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
+import SearchInput from "@/components/SearchInput";
 import { exportCsv } from "@/components/exportCsv";
 import { formatQty } from "@/components/format";
 import SkuHoverCard from "@/components/SkuHoverCard";
@@ -105,7 +106,7 @@ export default function ExternalSkuRankingCard({ active }: { active: boolean }) 
             options={[{ value: "all", label: "天猫+拼多多" }, { value: "tmall", label: "只看天猫有售" }, { value: "pdd", label: "只看拼多多有售" }]}
             onChange={(v) => setPlatform(v)}
           />
-          <Input.Search allowClear placeholder="搜索 SKU 编码/名称" style={{ width: 240 }} onSearch={(v) => setQ(v.trim())} />
+          <SearchInput allowClear placeholder="搜索 SKU 编码/名称" style={{ width: 240 }} onSearch={(v) => setQ(v.trim())} />
           <Select style={{ width: 120 }} value={limit} options={[50, 100, 300, 1000].map((n) => ({ value: n, label: `前 ${n} 名` }))} onChange={(v) => setLimit(v)} />
         </Space>
         <Table<ExternalSkuRankRow>

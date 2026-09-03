@@ -16,6 +16,8 @@ const CAT: Record<string, string> = {
   data_product_gate: "决策门禁降级",
   inventory_cover: "断货预警",
   sales_spike: "爆单预警",
+  transfer_cost: "调拨成本异常",
+  data_quality: "数据质量核对",
 };
 const SEV: Record<string, string> = { high: "orange", medium: "gold" };
 

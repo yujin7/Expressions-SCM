@@ -1,21 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getFreshSessionUser } from "@/server/core/dto";
-import { AUTO_METRIC_SOURCES, createGoal, getGoalsBlock, listGoals, refreshAutoActuals } from "@/server/modules/goals/service";
+import { AUTO_METRIC_SOURCES, createGoal, getGoalsBlock, listGoals } from "@/server/modules/goals/service";
 import { errorResponse, guardRead, readJson } from "@/server/modules/master/common";
 
 /**
  * D61 部门目标。
  *  GET ?period=&deptKey= → 列表（全员可读；D62 受限用户按部门范围裁剪）；?scope=summary → 第 4 屏数据块；
- *  GET ?refresh=1 → 先回填 auto 实际值再返回列表（需登录写守卫）；
+ *  自动实际值回填改为 POST /api/goals/refresh（GET 不得写，审阅 must-fix）；
  *  POST → 新建（admin 或本部门）。
  */
 export async function GET(req: NextRequest) {
   try {
     const sp = new URL(req.url).searchParams;
     if (sp.get("scope") === "summary") return NextResponse.json(await getGoalsBlock(await guardRead()));
-    const user = sp.get("refresh") === "1" ? await getFreshSessionUser() : await guardRead();
+    const user = await guardRead();
     const period = sp.get("period") || undefined;
-    if (sp.get("refresh") === "1") await refreshAutoActuals(undefined, { period, actorId: user.id });
     const list = await listGoals({ period, deptKey: sp.get("deptKey") || undefined }, user);
     return NextResponse.json({
       ...list,

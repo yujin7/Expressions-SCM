@@ -637,6 +637,10 @@ METRICS.leadTimeCoverage = {
   unit: "pct",
   tier: "ledger",
   caveat: "缺失时预警阈值回落 default_production/logistics_lead_days（D57），核心品的阈值建立在假设上；未固化分层的 SKU 归「未分层」桶，不假装分层",
+};
+
+/* ── 其余领域追加的指标（并行分支 union 合并后统一挂到注册表） ── */
+Object.assign(METRICS, {
   todoOpen: {
     id: "todoOpen",
     label: "未完成待办",
@@ -673,6 +677,7 @@ METRICS.leadTimeCoverage = {
     tier: "derived",
     caveat: "auto 实际值取自已登记读模型缓存，取不到留空不编造；手工值必附证据；部门 = 角色（D61）",
   /* ── D65 数据质量（W2-H） ── */
+  },
   dataAccuracyRpa: {
     id: "dataAccuracyRpa",
     label: "RPA 仓库准确率",
@@ -718,6 +723,7 @@ METRICS.leadTimeCoverage = {
     tier: "ledger",
     caveat: "连续 4 周完成且达标后转为月核对；豁免必须填原因且不算达标",
   /* ── W2-G 采购订单指标 / 降本 / 供应商账期（D63、D64） ── */
+  },
   poOrderedQty: {
     id: "poOrderedQty",
     label: "已下单数量",
@@ -781,6 +787,7 @@ METRICS.leadTimeCoverage = {
     tier: "derived",
     caveat: "代理指标：按采购订单/结算口径，不是应付余额占比；真应付待用友授权",
   /* ── D60 调拨线路 / 各仓周转（W2-C 登记） ── */
+  },
   transferLaneAvgFee: {
     id: "transferLaneAvgFee",
     label: "线路均价（元/件）",
@@ -817,7 +824,7 @@ METRICS.leadTimeCoverage = {
     tier: "derived",
     caveat: "窗口内零出库时为空（不用假数字表达「永远卖不完」）；快照仓不计算",
   },
-};
+});
 
 /** 取指标定义；未登记返回 undefined（调用方应回退到原文案） */
 export function metric(id: string): MetricDef | undefined {

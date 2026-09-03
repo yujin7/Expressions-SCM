@@ -22,13 +22,14 @@ describe("interval-runner 进程内调度回退", () => {
     expect(g[Symbol.for("supply-chain.interval-runner")]).toBeUndefined();
   });
 
-  it("注册了 26 个任务（含只读权限探测、三方观察、门禁看门狗、rollup 与决策摘要）", () => {
+  it("注册了 33 个任务（含只读权限探测、三方观察、门禁看门狗、rollup 与决策摘要）", () => {
     expect(INTERVAL_JOBS.map((j) => j.name).sort()).toEqual([
       "data-freshness",
       "data-product-gate-watchdog",
       "decision-digest",
       "doc-aging",
       "exception-notify",
+      "goals-auto-actuals",
       "housekeeping",
       "inventory-cover-watchdog",
       "inventory-position-refresh",
@@ -36,12 +37,15 @@ describe("interval-runner 进程内调度回退", () => {
       "jst-token-watchdog",
       "license-alert",
       "notify-dispatch",
+      "planning-policy-build",
       "probe-jst-permissions",
       "probe-yonyou-permissions",
+      "purchase-order-metrics",
       "reconcile-jst",
       "rollup",
       "sales-spike-watchdog",
       "snapshot-age",
+      "supplier-payment-term",
       "sync-jiandaoyun-catalog",
       "sync-jiandaoyun-forms",
       "sync-jst-inbound",
@@ -50,6 +54,9 @@ describe("interval-runner 进程内调度回退", () => {
       "sync-jst-sales",
       "sync-yonyou",
       "system-alert-notify",
+      "todo-sync",
+      "transfer-cost-watchdog",
+      "weekly-dq-pack",
     ]);
   });
 

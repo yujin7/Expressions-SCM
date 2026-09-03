@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { errorResponse } from "@/server/modules/master/common";
 import { getDbAsync } from "@/db";
 import { maskSensitive } from "@/server/core/dto";
-import { guardFreshWrite } from "@/server/modules/outsource/common";
+import { guardFreshWrite, requireAnyRole } from "@/server/modules/outsource/common";
+import { PRICE_VISIBLE_ROLES } from "@/server/core/constants";
 import {
   filterExternalSkuRanking,
   loadExternalSkuRanking,
@@ -16,6 +17,7 @@ import {
 export async function GET(request: NextRequest) {
   try {
     const user = await guardFreshWrite();
+    requireAnyRole(user, ...PRICE_VISIBLE_ROLES); // 与同页 channel-observation 路由一致（D62）
     const params = request.nextUrl.searchParams;
     const platformRaw = params.get("platform")?.trim();
     const platform: ExternalSkuRankPlatformFilter = platformRaw === "tmall" || platformRaw === "pdd" ? platformRaw : "all";

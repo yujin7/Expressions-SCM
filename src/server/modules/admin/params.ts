@@ -74,6 +74,11 @@ export const PARAM_DEFS: ParamDef[] = [
   { key: "otif_qty_tolerance_pct", label: "OTIF 足量容差", fallback: 0, min: 0, max: 20, unit: "%", note: "D63：累计已收 ≥ 应收 × (1 − 本值%) 记足量" },
   { key: "po_expected_date_required", label: "PO 提交须填交期", fallback: 0, min: 0, max: 1, unit: "", note: "D63：1=提交 PO 时表头或逐行必须有承诺交期（OTIF 可评前提）；0=不强制" },
   { key: "dq_tolerance_pct", label: "数据质量一致容差", fallback: 1, min: 0, max: 20, unit: "%", note: "D65：SKU 日级数量差异 ≤ 本值视为一致" },
+  { key: "dq_snapshot_qty_jump_pct", label: "快照总量跳变阈值", fallback: 30, min: 1, max: 500, unit: "%", note: "D65：同仓相邻快照 ΣQty 变动超过本值即告警 snapshot_quality" },
+  { key: "dq_snapshot_vanished_pct", label: "快照消失 SKU 阈值", fallback: 10, min: 1, max: 100, unit: "%", note: "D65：相邻快照消失 SKU 占比超过本值即告警" },
+  { key: "dq_sales_consistency_rel_pct", label: "销量一致性相对偏差", fallback: 15, min: 1, max: 100, unit: "%", note: "D65：sales_monthly 与天猫观察按 SKU×月相对偏差 ≥ 本值列为例外" },
+  { key: "dq_sales_consistency_abs_floor_qty", label: "销量一致性绝对差下限", fallback: 20, min: 0, max: 100000, unit: "件", note: "D65：|差| ≥ 本值才计例外（防小数放大）" },
+  { key: "dq_sales_consistency_min_base_qty", label: "销量一致性最低基数", fallback: 50, min: 0, max: 100000, unit: "件", note: "D65：max(两侧) ≥ 本值才纳入比较" },
   { key: "ops_demand_diff_pct", label: "运营提报核对阈值", fallback: 30, min: 1, max: 500, unit: "%", note: "D55/R3：运营提报量与系统基线（Holt 月量）差异绝对值 ≥ 本值标「需核对」" },
 ];
 

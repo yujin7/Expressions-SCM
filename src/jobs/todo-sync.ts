@@ -14,7 +14,7 @@ import type { SessionUser } from "@/server/core/dto";
 import type { AnyDb } from "@/server/core/svc";
 import { listDueReminderTargets, projectCandidates, type ProjectCandidatesSummary } from "@/server/modules/todo/service";
 import { collectTodoCandidates, type CollectTriggerOptions } from "@/server/modules/todo/triggers";
-import { enqueueNotification, isFeishuDeliveryConfigured } from "./notify";
+import { enqueueNotification, isFeishuAppConfigured } from "./notify";
 
 export interface TodoSyncSummary {
   projection: ProjectCandidatesSummary | null;
@@ -50,7 +50,7 @@ export async function runTodoSync(
     projection = await projectCandidates(db, candidates, actor, { now });
   }
 
-  const feishu = opts?.feishuConfigured ?? isFeishuDeliveryConfigured();
+  const feishu = opts?.feishuConfigured ?? isFeishuAppConfigured();
   const due = await listDueReminderTargets(db, today);
   let enqueued = 0;
   for (const item of due) {

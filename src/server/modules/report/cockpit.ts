@@ -18,6 +18,12 @@ import { computeExceptions, type ExceptionItem } from "@/server/modules/workbenc
 import { countOpenAlerts } from "@/server/modules/alerts/engine";
 import { loadInventoryAlerts, type InventoryAlertRow, type InventoryAlertsReadModel } from "@/server/modules/report/inventory-alerts";
 import { loadSalesSpike, type SalesSpikeReadModel, type SpikeHit } from "@/server/modules/report/sales-spike";
+import { loadPurchaseOrderMetrics, purchaseOrderCockpitBlock, type PurchaseOrderCockpitBlock } from "@/server/modules/report/purchase-order-metrics";
+import { loadTransferRoutes, topLanes, type TransferAnomalyRow, type TransferLaneRow, type TransferRoutesModel } from "@/server/modules/report/transfer-routes";
+import { loadWarehouseInventory, type WarehouseInventoryModel, type WarehouseInventoryRow } from "@/server/modules/report/warehouse-inventory";
+import { getTodoProgressBlock, type TodoProgressBlock } from "@/server/modules/todo/stats";
+import { getGoalsBlock, type GoalsBlock } from "@/server/modules/goals/service";
+import { loadDataQuality, type DataQualityReport } from "@/server/modules/report/data-quality";
 
 /**
  * 驾驶舱四屏装配（D50）。只读、只装配：每一块都来自已有的唯一权威读模型/服务，不在这里重算口径。
@@ -98,20 +104,26 @@ export interface CockpitData {
       redline: RedlineItem[];
       inventoryAlerts: Block<{ rows: InventoryAlertRow[]; totals: InventoryAlertsReadModel["totals"]; params: InventoryAlertsReadModel["params"]; limitations: string[] }>;
       salesSpike: Block<{ hits: SpikeHit[]; unmappedHits: SpikeHit[]; anchorDate: string | null; coverage: SalesSpikeReadModel["coverage"]; params: SalesSpikeReadModel["params"]; openAlerts: number; unacked: number }>;
-      orders: Block<null>;
+      orders: Block<PurchaseOrderCockpitBlock>;
     };
     inventory: {
       warehouses: Block<{ rows: WarehouseBlock[]; activeCount: number; realtimeCount: number; snapshotCount: number }>;
-      transferLanes: Block<null>;
-      transferAnomalies: Block<null>;
-      turnover: Block<null>;
+      transferLanes: Block<{ lanes: TransferLaneRow[]; summary: TransferRoutesModel["summary"]; asOf: string | null }>;
+      transferAnomalies: Block<{ rows: TransferAnomalyRow[]; anomalyCount: number; alertCount: number; scatteredLaneCount: number }>;
+      turnover: Block<{ rows: WarehouseInventoryRow[]; summary: WarehouseInventoryModel["summary"]; windowDays: number; asOf: string }>;
     };
     ops: {
       queues: Block<{ inboxPending: number; reviewOpen: number }>;
-      todo: Block<null>;
-      goals: Block<null>;
+      todo: Block<TodoProgressBlock>;
+      goals: Block<GoalsBlock>;
       conclusions: { text: string; evidenceHref: string; evidenceLabel: string }[];
-      dataQuality: Block<null>;
+      dataQuality: Block<{
+        sources: DataQualityReport["sources"];
+        recon: DataQualityReport["recon"];
+        snapshotQuality: { alerts: number; warehouses: number };
+        salesConsistency: DataQualityReport["salesConsistency"];
+        tolerancePct: number;
+      }>;
     };
   };
   limitations: string[];
@@ -128,6 +140,7 @@ export const SURVEY_CONCLUSIONS: CockpitData["screens"]["ops"]["conclusions"] = 
   { text: "规则制定 = 备货负责；运营模式 = 数据支撑；20% 创收利润单品先磨合备包材", evidenceHref: "/replenish/sop", evidenceLabel: "S&OP 周期" },
 ];
 
+// 保留：领域尚未接入时的占位（当前全部块已接入，函数留作后续新块使用）
 function pending(note: string, source: string): Block<null> {
   return { state: "pending_domain", data: null, note, source: { tier: "derived", source, asOf: null } };
 }
@@ -151,13 +164,15 @@ function severityOf(items: ExceptionItem[], key: string): RedlineItem["severity"
   return hit?.severity ?? "medium";
 }
 
+void pending;
+
 export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<CockpitData> {
   const db = await resolveDb(dbArg);
   const today = todayShanghai();
   const canSeeMoney = user.roles.some((r) => (PRICE_VISIBLE_ROLES as readonly string[]).includes(r));
   const isRestrictedOps = Array.isArray(user.channelScope) && user.channelScope.length > 0 && !user.roles.includes("admin");
 
-  const [posR, ratioR, readyR, excR, inboxR, reviewR, velR, alertsR, spikeR, spikeCountR, coverCountR] = await Promise.allSettled([
+  const [posR, ratioR, readyR, excR, inboxR, reviewR, velR, alertsR, spikeR, spikeCountR, coverCountR, poR, lanesR, whR, todoR, goalsR, dqR] = await Promise.allSettled([
     loadInventoryPosition(db),
     canSeeMoney ? loadInventorySalesRatio(db) : Promise.resolve(null),
     loadDataSourceReadiness(db),
@@ -169,6 +184,12 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
     loadSalesSpike(db),
     countOpenAlerts(db, "sales_spike"),
     countOpenAlerts(db, "inventory_cover"),
+    loadPurchaseOrderMetrics({}, db),
+    loadTransferRoutes(db),
+    loadWarehouseInventory(db),
+    getTodoProgressBlock(user, db),
+    getGoalsBlock(user, db),
+    loadDataQuality(db),
   ]);
 
   /* ── 屏 1 ── */
@@ -287,6 +308,85 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
       }
     : { state: "error", data: null, note: pos.error, source: { tier: "snapshot", source: "inventory-position/v1", asOf: null } };
 
+  /* ── 屏 2 · 订单系统（D63） ── */
+  const po = settled(poR);
+  const orders: CockpitData["screens"]["alerts"]["orders"] = po.ok
+    ? (() => {
+        const b = purchaseOrderCockpitBlock(po.value);
+        const gated: PurchaseOrderCockpitBlock = canSeeMoney ? b : {
+          orderSystem: { ...b.orderSystem, monthNetAmount: null, monthGrossAmount: null },
+          costDown: { ...b.costDown, savingYtd: null, increaseYtd: null },
+        } as PurchaseOrderCockpitBlock;
+        return {
+          state: b.orderSystem.monthPoCount > 0 || b.orderSystem.cycleSamples > 0 ? "ready" : "insufficient",
+          data: gated,
+          note: `${canSeeMoney ? "" : "金额仅价格可见角色；"}已下单 = PO 审批通过；交付 = 审批→首批收货，n=${b.orderSystem.cycleSamples}${b.orderSystem.cycleInsufficient ? "（样本不足）" : ""}；降本基线年 ${b.costDown.baselineYear}`,
+          source: { tier: "fact", source: "purchase-order-metrics/v1（SCM PO/SH 事实）", asOf: po.value.builtAt ?? null },
+        };
+      })()
+    : { state: "error", data: null, note: po.error, source: { tier: "fact", source: "purchase-order-metrics/v1", asOf: null } };
+
+  /* ── 屏 3 · 调拨线路 / 异常 / 各仓周转（D60） ── */
+  const lanesS = settled(lanesR);
+  const transferLanes: CockpitData["screens"]["inventory"]["transferLanes"] = lanesS.ok
+    ? {
+        state: lanesS.value.summary.docCount > 0 ? "ready" : "insufficient",
+        data: {
+          lanes: topLanes(lanesS.value, 20).map((l) => canSeeMoney ? l : { ...l, amount: null, avgUnitFee: null, medianUnitFee: null }),
+          summary: lanesS.value.summary,
+          asOf: (lanesS.value as { asOf?: string | null }).asOf ?? null,
+        },
+        note: lanesS.value.summary.docCount > 0 ? `线路 ${lanesS.value.summary.laneCount} · 单据 ${lanesS.value.summary.docCount}（登记费用 ${lanesS.value.summary.feeDocCount}）· 未分类存量 ${lanesS.value.summary.unclassifiedDocCount}` : "尚无已完成调拨单",
+        source: { tier: "fact", source: "transfer-routes/v1（已完成调拨单 + 人工登记费用）", asOf: (lanesS.value as { builtAt?: string }).builtAt ?? null },
+      }
+    : { state: "error", data: null, note: lanesS.error, source: { tier: "fact", source: "transfer-routes/v1", asOf: null } };
+  const transferAnomalies: CockpitData["screens"]["inventory"]["transferAnomalies"] = lanesS.ok
+    ? {
+        state: lanesS.value.anomalies.length ? "ready" : "insufficient",
+        data: {
+          rows: lanesS.value.anomalies.slice(0, 10).map((a) => canSeeMoney ? a : { ...a, amount: null, unitFee: null }),
+          anomalyCount: lanesS.value.summary.anomalyCount, alertCount: lanesS.value.summary.alertCount, scatteredLaneCount: lanesS.value.summary.scatteredLaneCount,
+        },
+        note: lanesS.value.anomalies.length ? "偏差 >20% 或数量 > 中位数×3 只提醒不阻断；样本 <8 不判定（D60）" : "当前没有数量/费用异常（或样本不足不判定）",
+        source: { tier: "derived", source: "rules/transfer-cost（线路基线 + spc）", asOf: (lanesS.value as { builtAt?: string }).builtAt ?? null },
+      }
+    : { state: "error", data: null, note: lanesS.error, source: { tier: "derived", source: "transfer-routes/v1", asOf: null } };
+  const whS = settled(whR);
+  const turnover: CockpitData["screens"]["inventory"]["turnover"] = whS.ok
+    ? {
+        state: whS.value.rows.length ? "ready" : "insufficient",
+        data: {
+          rows: whS.value.rows.map((r) => canSeeMoney ? r : { ...r, amount: null }),
+          summary: whS.value.summary, windowDays: whS.value.windowDays, asOf: whS.value.asOf,
+        },
+        note: `窗口 ${whS.value.windowDays} 天；周转 = 窗口出库 ÷ 平均在库（仅实时仓，出库含调拨/发料）；快照仓不计算`,
+        source: { tier: "snapshot", source: "warehouse-inventory/v1", asOf: whS.value.builtAt },
+      }
+    : { state: "error", data: null, note: whS.error, source: { tier: "snapshot", source: "warehouse-inventory/v1", asOf: null } };
+
+  /* ── 屏 4 · 待办 / 目标 / 数据质量（D61/D65） ── */
+  const todoS = settled(todoR);
+  const todo: CockpitData["screens"]["ops"]["todo"] = todoS.ok
+    ? { state: "ready", data: todoS.value, note: todoS.value.caliber, source: { tier: "fact", source: "work_items", asOf: todoS.value.generatedAt } }
+    : { state: "error", data: null, note: todoS.error, source: { tier: "fact", source: "work_items", asOf: null } };
+  const goalsS = settled(goalsR);
+  const goals: CockpitData["screens"]["ops"]["goals"] = goalsS.ok
+    ? { state: goalsS.value.rows.length ? "ready" : "insufficient", data: goalsS.value, note: goalsS.value.rows.length ? goalsS.value.caliber : "本部门尚未设置目标（/goals 可设置）", source: { tier: "manual", source: "department_goals + 各只读指标", asOf: goalsS.value.generatedAt } }
+    : { state: "error", data: null, note: goalsS.error, source: { tier: "manual", source: "department_goals", asOf: null } };
+  const dqS = settled(dqR);
+  const dataQuality: CockpitData["screens"]["ops"]["dataQuality"] = dqS.ok
+    ? {
+        state: dqS.value.sources.length ? "ready" : "insufficient",
+        data: {
+          sources: dqS.value.sources, recon: dqS.value.recon,
+          snapshotQuality: { alerts: dqS.value.snapshotQuality.alerts, warehouses: dqS.value.snapshotQuality.warehouses.length },
+          salesConsistency: dqS.value.salesConsistency, tolerancePct: dqS.value.tolerancePct,
+        },
+        note: `准确率容差 ${dqS.value.tolerancePct}%；人工链路为代理口径（staging 首次通过率）；外部平台一致性仅覆盖天猫（D65）`,
+        source: { tier: "derived", source: "data-quality/v1", asOf: dqS.value.today },
+      }
+    : { state: "error", data: null, note: dqS.error, source: { tier: "derived", source: "data-quality/v1", asOf: null } };
+
   /* ── 屏 4 ── */
   const inbox = settled(inboxR);
   const review = settled(reviewR);
@@ -325,20 +425,20 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
         redline,
         inventoryAlerts,
         salesSpike,
-        orders: pending("已下单 / 已下单金额 / 订单至交付 / 成本下降 由采购指标领域接入（D63）", "purchase-order-metrics/v1"),
+        orders,
       },
       inventory: {
         warehouses,
-        transferLanes: pending("各调拨线路批次与均价由调拨领域接入（D60）", "transfer-routes/v1"),
-        transferAnomalies: pending("调拨数量/费用异常与「启动调拨计算」由调拨领域接入（D60）", "transfer-routes/v1"),
-        turnover: pending("各仓周转率与总周转由调拨/周转领域接入", "warehouse-inventory/v1"),
+        transferLanes,
+        transferAnomalies,
+        turnover,
       },
       ops: {
         queues,
-        todo: pending("待办跟进进度（指派/状态/完成率）由待办领域接入（D61）", "work_items"),
-        goals: pending("供应链目标（按部门）由待办领域接入（D61）", "department_goals"),
+        todo,
+        goals,
         conclusions: SURVEY_CONCLUSIONS,
-        dataQuality: pending("数据质量周核对（RPA / 人工 / 外部三类准确率）由数据质量领域接入（D65）", "data-quality/v1"),
+        dataQuality,
       },
     },
     limitations: [

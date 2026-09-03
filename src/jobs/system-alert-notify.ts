@@ -29,11 +29,14 @@ const CATEGORY_LABEL: Record<string, string> = {
   data_product_gate: "决策门禁降级",
   inventory_cover: "断货预警",
   sales_spike: "爆单预警",
+  transfer_cost: "调拨成本异常",
+  data_quality: "数据质量核对",
 };
 
 function alertAudience(category: string, refKey: string | null): string[] {
   if (category === "inventory_cover") return ["pmc", "purchasing"];
   if (category === "sales_spike") return ["ops", "pmc", "purchasing"];
+  if (category === "transfer_cost") return ["warehouse", "pmc", "finance"];
   if (category !== "data_product_gate" || !refKey) return ["admin"];
   const productId = refKey.slice(0, refKey.lastIndexOf(":"));
   const product = DATA_PRODUCTS.find((item) => item.id === productId);
@@ -43,6 +46,7 @@ function alertAudience(category: string, refKey: string | null): string[] {
 function alertHref(category: string, refKey: string | null): string {
   if (category === "inventory_cover") return "/inventory/alerts?tab=cover";
   if (category === "sales_spike") return "/inventory/alerts?tab=spike";
+  if (category === "transfer_cost") return "/inventory/transfer-routes?tab=anomalies";
   if (category !== "data_product_gate" || !refKey) return "/alerts";
   const productId = refKey.slice(0, refKey.lastIndexOf(":"));
   return `/report/decision-studio?tab=readiness&product=${encodeURIComponent(productId)}#data-product-${encodeURIComponent(productId)}`;

@@ -136,6 +136,11 @@ async function feishuUnionIdOf(db: AnyDb, userId: number | null): Promise<string
   return u?.feishuUnionId ?? null;
 }
 
+/** 仅应用机器人（可按 union_id 私聊）；webhook-only 时私聊会退化成群发，调用方据此不入队定向私聊 */
+export function isFeishuAppConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return feishuAppConfigFromEnv(env) !== null;
+}
+
 export function isFeishuDeliveryConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
   return feishuWebhookUrlFromEnv(env) !== null || feishuAppConfigFromEnv(env) !== null;
 }
