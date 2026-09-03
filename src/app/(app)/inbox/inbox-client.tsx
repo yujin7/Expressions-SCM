@@ -145,7 +145,7 @@ export default function InboxClient() {
     <div>
       <Space style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }} wrap>
         <Typography.Title level={4} style={{ margin: 0 }}>
-          我的待办
+          待我审批
         </Typography.Title>
         <Button icon={<ReloadOutlined />} onClick={() => void load()}>
           刷新

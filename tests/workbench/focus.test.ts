@@ -190,10 +190,14 @@ describe("工作台角色聚焦 getWorkbenchFocus", () => {
 
   it("运营：近效期批次（90 天内、qty>0，含已到期）+ 驾驶舱链接卡", async () => {
     const { sections } = await getWorkbenchFocus(["ops"], db);
-    expect(metric(sections, "ops", "nearExpiryBatches").value).toBe(2);
+    const near = metric(sections, "ops", "nearExpiryBatches");
+    expect(near.value).toBe(2);
+    // 审计 #14：计数落到效期批次行清单页，而不是总览
+    expect(near.href).toBe("/inventory/expiry");
     const dash = metric(sections, "ops", "dashboard");
     expect(dash.value).toBeNull();
-    expect(dash.href).toBe("/report/dashboard");
+    // 审计 #7：登录首屏的驾驶舱入口指向四屏（例外优先）
+    expect(dash.href).toBe("/cockpit");
   });
 
   it("admin 全量可见 5 区块；无角色用户 0 区块", async () => {

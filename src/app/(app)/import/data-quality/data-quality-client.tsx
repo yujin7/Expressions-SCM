@@ -1,14 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, App, Button, Card, Col, Input, Modal, Row, Select, Space, Statistic, Table, Tag, Typography } from "antd";
+import { Alert, App, Button, Card, Col, Input, Modal, Row, Select, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined, ScheduleOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { fetchJson, postJson } from "@/components/fetchJson";
+import { exportCsv } from "@/components/exportCsv";
 import ListToolbar from "@/components/ListToolbar";
 import { metricTooltip } from "@/components/metrics";
 import { useListState } from "@/components/useListState";
+import { hasAnyRole, useMe } from "@/components/useMe";
 import type { DataQualityReport, DqSourceRow } from "@/server/modules/report/data-quality";
 import type { SalesConsistency, SalesConsistencyRow } from "@/server/modules/report/sales-consistency";
 import type { DqReviewRow } from "@/server/modules/dq/reviews";
@@ -45,6 +47,9 @@ const pct = (v: number | null | undefined) => (v == null ? "—" : `${v}%`);
 
 export default function DataQualityClient({ canReview }: { canReview: boolean }) {
   const { message } = App.useApp();
+  const me = useMe();
+  // 与 /api/report/data-quality 的 requireAnyRole(VIEW_ROLES) 一致；无权者不显示「重算」而不是点了再 403
+  const canRefresh = hasAnyRole(me, "pmc", "finance", "warehouse", "purchasing");
   const [report, setReport] = useState<DataQualityReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -138,15 +143,15 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
   const scPage = scRows.slice((scState.page - 1) * scState.pageSize, scState.page * scState.pageSize);
 
   const sourceColumns: ColumnsType<DqSourceRow> = [
-    { title: "来源", dataIndex: "label", width: 150, render: (v: string, r) => <span title={r.templates.join("、")}>{v}</span> },
+    { title: "来源", dataIndex: "label", width: 150, fixed: "left", render: (v: string, r) => <Tooltip title={`模板：${r.templates.join("、")}`}><span>{v}</span></Tooltip> },
     {
       title: "及时性", key: "timeliness", width: 190,
       render: (_v, r) => (
         <Space direction="vertical" size={0}>
-          <span title={r.timeliness.basis}>
+          <Tooltip title={r.timeliness.basis}><span>
             <Tag color={FRESH_LABEL[r.timeliness.status]?.color}>{FRESH_LABEL[r.timeliness.status]?.text}</Tag>
             {r.timeliness.latestAsOf ?? "—"}
-          </span>
+          </span></Tooltip>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {r.timeliness.ageDays == null ? "无时点" : `数据龄 ${r.timeliness.ageDays} 天（阈 ${r.timeliness.maxAgeDays}）`}
           </Typography.Text>
@@ -156,30 +161,31 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
     {
       title: "完整性", key: "completeness", width: 150,
       render: (_v, r) => (
-        <span title={r.completeness.basis}>
+        <Tooltip title={r.completeness.basis}><span>
           {pct(r.completeness.rate)}
           <Typography.Text type="secondary" style={{ fontSize: 12 }}> n={r.completeness.n}</Typography.Text>
-        </span>
+        </span></Tooltip>
       ),
     },
     {
       title: "唯一性", key: "uniqueness", width: 150,
       render: (_v, r) => (
-        <span title={r.uniqueness.basis}>
+        <Tooltip title={r.uniqueness.basis}><span>
           {r.uniqueness.rate == null ? <Typography.Text type="secondary">不度量</Typography.Text> : pct(r.uniqueness.rate)}
           {r.uniqueness.duplicates > 0 ? <Typography.Text type="danger" style={{ fontSize: 12 }}> 重复 {r.uniqueness.duplicates}</Typography.Text> : null}
-        </span>
+        </span></Tooltip>
       ),
     },
     {
       title: "准确性", key: "accuracy", width: 220,
+      sorter: (a, b) => (a.accuracy.rate ?? -1) - (b.accuracy.rate ?? -1),
       render: (_v, r) => (
         <Space direction="vertical" size={0}>
-          <span title={r.accuracy.basis}>
+          <Tooltip title={r.accuracy.basis}><span>
             <Tag color={ACC_LABEL[r.accuracy.status]?.color}>{ACC_LABEL[r.accuracy.status]?.text}</Tag>
             {pct(r.accuracy.rate)}
             {r.accuracy.targetPct != null ? <Typography.Text type="secondary" style={{ fontSize: 12 }}> / 目标 {r.accuracy.targetPct}%</Typography.Text> : null}
-          </span>
+          </span></Tooltip>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>n={r.accuracy.n}</Typography.Text>
         </Space>
       ),
@@ -187,13 +193,13 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
     {
       title: "覆盖起止", key: "coverage", width: 200,
       render: (_v, r) => (
-        <span title={r.coverage.basis}>{r.coverage.from ?? "—"} ~ {r.coverage.through ?? "—"}</span>
+        <Tooltip title={r.coverage.basis}><span>{r.coverage.from ?? "—"} ~ {r.coverage.through ?? "—"}</span></Tooltip>
       ),
     },
   ];
 
   const reviewColumns: ColumnsType<DqReviewRow> = [
-    { title: "周期", dataIndex: "periodKey", width: 110, render: (v: string, r) => <span>{r.periodKind === "week" ? "周" : "月"} {v}</span> },
+    { title: "周期", dataIndex: "periodKey", width: 110, fixed: "left", sorter: (a, b) => a.periodKey.localeCompare(b.periodKey), render: (v: string, r) => <span>{r.periodKind === "week" ? "周" : "月"} {v}</span> },
     { title: "来源", dataIndex: "sourceLabel", width: 140 },
     { title: "状态", dataIndex: "status", width: 100, render: (v: string) => <Tag color={REVIEW_STATUS[v]?.color}>{REVIEW_STATUS[v]?.text ?? v}</Tag> },
     {
@@ -216,13 +222,31 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
   ];
 
   const scColumns: ColumnsType<SalesConsistencyRow> = [
-    { title: "月份", dataIndex: "month", width: 90 },
-    { title: "SKU", dataIndex: "skuCode", width: 140, render: (v: string, r) => <span title={r.skuName}>{v}</span> },
+    { title: "月份", dataIndex: "month", width: 90, fixed: "left", sorter: (a, b) => a.month.localeCompare(b.month) },
+    { title: "SKU", dataIndex: "skuCode", width: 140, render: (v: string, r) => <Tooltip title={r.skuName}><span>{v}</span></Tooltip> },
     { title: "内部 sales_monthly", dataIndex: "internalQty", width: 140, align: "right" },
     { title: "天猫观察净件数", dataIndex: "externalQty", width: 140, align: "right" },
-    { title: "差异", dataIndex: "diffQty", width: 110, align: "right", render: (v: string) => <Typography.Text type="danger">{v}</Typography.Text> },
-    { title: "差异 %", dataIndex: "diffPct", width: 90, align: "right", render: (v: number | null) => pct(v) },
+    { title: "差异", dataIndex: "diffQty", width: 110, align: "right", sorter: (a, b) => Math.abs(Number(a.diffQty)) - Math.abs(Number(b.diffQty)), render: (v: string) => <Typography.Text type="danger">{v}</Typography.Text> },
+    { title: "差异 %", dataIndex: "diffPct", width: 90, align: "right", sorter: (a, b) => Math.abs(a.diffPct ?? 0) - Math.abs(b.diffPct ?? 0), render: (v: number | null) => pct(v) },
   ];
+
+  const exportReviews = () => {
+    if (!reviews) return;
+    exportCsv(
+      `数据质量核对清单-${reviews.cadence.periodKey}`,
+      ["周期类型", "周期", "来源", "状态", "生成时准确率%", "目标%", "及时性时点", "备注", "处理人", "处理时间"],
+      reviews.data.map((r) => [r.periodKind, r.periodKey, r.sourceLabel, REVIEW_STATUS[r.status]?.text ?? r.status, r.evidence?.accuracy.rate ?? "", r.evidence?.targetAccuracyPct ?? "", r.evidence?.timeliness.latestAsOf ?? "", r.note, r.reviewedByName, r.reviewedAt]),
+      reviews.total > reviews.data.length ? `仅导出当前页 ${reviews.data.length} 行，共 ${reviews.total} 行` : undefined,
+    );
+  };
+  const exportConsistency = () => {
+    if (!consistency) return;
+    exportCsv(
+      `销量口径一致性例外-${consistency.anchorDate ?? report?.today ?? ""}`,
+      ["月份", "SKU", "名称", "内部 sales_monthly", "天猫观察净件数", "差异", "差异%"],
+      scRows.map((r) => [r.month, r.skuCode, r.skuName, r.internalQty, r.externalQty, r.diffQty, r.diffPct]),
+    );
+  };
 
   const sq = report?.snapshotQuality;
 
@@ -241,7 +265,7 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
 
       <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
         <Col xs={12} md={6}>
-          <Card size="small" title={<span title={metricTooltip("dataAccuracyRpa")}>RPA 仓库准确率</span>}>
+          <Card size="small" title={<Tooltip title={metricTooltip("dataAccuracyRpa")}><span>RPA 仓库准确率</span></Tooltip>}>
             <Statistic value={report?.sources.find((s) => s.sourceClass === "rpa_warehouse")?.accuracy.rate ?? "—"} suffix="%" />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               来源：自有实时仓出库（stock_ledger sales_out）vs 聚水潭日销一致率，非快照仓本身 · 盘点命中 {pct(report?.count.rate)}（{report?.count.lines ?? 0} 行）
@@ -249,12 +273,12 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
           </Card>
         </Col>
         <Col xs={12} md={6}>
-          <Card size="small" title={<span title={metricTooltip("dataAccuracyManual")}>人工单据链准确率</span>}>
+          <Card size="small" title={<Tooltip title={metricTooltip("dataAccuracyManual")}><span>人工单据链准确率</span></Tooltip>}>
             <Statistic value={report?.sources.find((s) => s.sourceClass === "manual_po_chain")?.accuracy.rate ?? "—"} suffix="%" />
           </Card>
         </Col>
         <Col xs={12} md={6}>
-          <Card size="small" title={<span title={metricTooltip("salesConsistencyPct")}>销量口径一致率</span>}>
+          <Card size="small" title={<Tooltip title={metricTooltip("salesConsistencyPct")}><span>销量口径一致率</span></Tooltip>}>
             <Statistic value={report?.salesConsistency.consistencyPct ?? "—"} suffix="%" />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               比较 {report?.salesConsistency.comparedRows ?? 0} 行 · 例外 {report?.salesConsistency.exceptionRows ?? 0} ·
@@ -264,11 +288,11 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
           </Card>
         </Col>
         <Col xs={12} md={6}>
-          <Card size="small" title={<span title={metricTooltip("snapshotJumpAlerts")}>快照跳变告警 / 待核对 / 手工改写</span>}>
+          <Card size="small" title={<Tooltip title={metricTooltip("snapshotJumpAlerts")}><span>快照跳变告警 / 待核对 / 手工改写</span></Tooltip>}>
             <Space size="large">
-              <Statistic value={sq?.alerts ?? "—"} suffix="仓" />
-              <Statistic value={report?.reviews.pending ?? "—"} suffix="项" />
-              <Statistic value={report?.manualOverrides.count ?? "—"} suffix="项" />
+              <a href="#snapshot-quality"><Statistic value={sq?.alerts ?? "—"} suffix="仓" /></a>
+              <a onClick={() => reviewState.setFilter({ status: "pending" })} href="#reviews"><Statistic value={report?.reviews.pending ?? "—"} suffix="项" /></a>
+              <Tooltip title="手工改写按期独立计数，暂无逐条清单页"><Statistic value={report?.manualOverrides.count ?? "—"} suffix="项" /></Tooltip>
             </Space>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>手工改写 {report?.manualOverrides.period ?? ""}，独立计数不进准确率</Typography.Text>
           </Card>
@@ -276,7 +300,7 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
       </Row>
 
       <Card size="small" title="来源 × 维度" style={{ marginBottom: 12 }}
-        extra={<Button icon={<ReloadOutlined />} size="small" loading={loading} onClick={() => void loadReport(true)}>重算</Button>}>
+        extra={canRefresh ? <Button icon={<ReloadOutlined />} size="small" loading={loading} onClick={() => void loadReport(true)}>重算</Button> : null}>
         <Table<DqSourceRow> rowKey="sourceClass" size="small" columns={sourceColumns} dataSource={report?.sources ?? []}
           loading={loading} pagination={false} scroll={{ x: 1060 }} />
         {report ? (
@@ -286,7 +310,7 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
         ) : null}
       </Card>
 
-      <Card size="small" title="快照仓相邻批次对比" style={{ marginBottom: 12 }}>
+      <Card size="small" title="快照仓相邻批次对比" style={{ marginBottom: 12 }} id="snapshot-quality">
         <Table<DataQualityReport["snapshotQuality"]["warehouses"][number]> rowKey="warehouseId" size="small" pagination={false}
           dataSource={sq?.warehouses ?? []} loading={loading} locale={{ emptyText: "没有快照仓或尚无快照" }}
           columns={[
@@ -294,17 +318,18 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
             { title: "上一批", dataIndex: "prevBizDate", width: 110, render: (v: string | null) => v ?? "—" },
             { title: "本批", dataIndex: "nextBizDate", width: 110 },
             { title: "行数", key: "rows", width: 120, render: (_v, r) => `${r.prevRows} → ${r.nextRows}` },
-            { title: "总量变动", dataIndex: "qtyDeltaPct", width: 100, align: "right", render: (v: number | null) => pct(v) },
+            { title: "总量变动", dataIndex: "qtyDeltaPct", width: 100, align: "right", sorter: (a, b) => Math.abs(a.qtyDeltaPct ?? 0) - Math.abs(b.qtyDeltaPct ?? 0), render: (v: number | null) => pct(v) },
             { title: "消失 SKU", key: "vanished", width: 120, render: (_v, r) => `${r.vanished}（${pct(r.vanishedPct)}）` },
             { title: "负数行", dataIndex: "negatives", width: 80, align: "right" },
             { title: "标记", dataIndex: "flags", render: (flags: string[]) => flags.length === 0 ? <Tag color="success">正常</Tag> : flags.map((f) => <Tag key={f} color={f === "empty_prev" ? "default" : "warning"}>{FLAG_LABEL[f] ?? f}</Tag>) },
           ]} />
       </Card>
 
-      <Card size="small" style={{ marginBottom: 12 }}
+      <Card size="small" style={{ marginBottom: 12 }} id="reviews"
         title={`核对清单${reviews ? `（当前节奏：${reviews.cadence.cadence === "week" ? "周核对" : "月核对"}，${reviews.cadence.reason}）` : ""}`}>
         <ListToolbar
           state={reviewState}
+          onExport={reviews ? exportReviews : undefined}
           extra={
             <Select allowClear placeholder="状态" style={{ width: 140 }} value={reviewState.filters.status || undefined}
               onChange={(v) => reviewState.setFilter({ status: v ?? "" })}
@@ -337,6 +362,7 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
         ) : null}
         <ListToolbar
           state={scState}
+          onExport={consistency ? exportConsistency : undefined}
           extra={
             <Select allowClear placeholder="月份" style={{ width: 140 }} value={scState.filters.month || undefined}
               onChange={(v) => scState.setFilter({ month: v ?? "" })}
@@ -358,6 +384,8 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
         title={closing?.action === "complete" ? "完成核对" : "豁免核对"}
         okText={closing?.action === "complete" ? "完成" : "豁免"}
         confirmLoading={closingBusy}
+        // 豁免原因服务端必填（dq/reviews 400）：不让用户点了才知道
+        okButtonProps={{ disabled: closing?.action === "waive" && !closeNote.trim() }}
         onOk={() => void submitClose()}
         onCancel={() => setClosing(null)}
       >

@@ -282,7 +282,7 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
       spike: spikeHit != null, spikeExpected: spikeHit?.expected === true,
       nearExpiry: exp ? { minDaysLeft: exp.minDaysLeft, nearQty: exp.nearQty, expiredQty: exp.expiredQty, thresholdDays: exp.thresholdDays } : null,
       overstock,
-      actions: { transfer: `/report/transfer-suggest?skuIds=${s.id}`, replenish: `/replenish?sku=${encodeURIComponent(s.code)}` },
+      actions: { transfer: `/report/transfer-suggest?skuIds=${s.id}`, replenish: `/replenish?q=${encodeURIComponent(s.code)}` },
     };
   });
 

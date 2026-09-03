@@ -24,6 +24,7 @@ import { getOnHandBySku } from "@/server/core/stock-view";
 import { num } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
 import { getNextActions, type NextActionItem } from "@/server/modules/workbench/next-actions";
+import { getTodoProgressBlock } from "@/server/modules/todo/stats";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -230,8 +231,10 @@ async function opsSection(db: AnyDb): Promise<FocusSection> {
     role: "ops",
     roleLabel: ROLE_LABELS.ops,
     metrics: [
-      { key: "nearExpiryBatches", label: "近效期批次（90天内）", value: nearExpiry, href: "/report/dashboard", suffix: "批" },
-      { key: "dashboard", label: "经营驾驶舱", value: null, href: "/report/dashboard" },
+      // 审计 #14：计数必须落到行清单页（/inventory/expiry），而不是总览
+      { key: "nearExpiryBatches", label: "近效期批次（90天内）", value: nearExpiry, href: "/inventory/expiry", suffix: "批" },
+      // 审计 #7：登录首屏的驾驶舱入口指向四屏（例外优先）；经营分析总览在侧栏「经营分析」
+      { key: "dashboard", label: "驾驶舱四屏", value: null, href: "/cockpit" },
     ],
   };
 }
@@ -418,16 +421,21 @@ export async function getWorkbenchFocus(
          仓管点红色「待我审批 2」进去是空列表。
        - 未读通知：完全不带收件人条件，4 类角色恒显 8（实际可见 4），读完仍卡 4 且无法归零。
      现改为复用两处唯一权威：getInbox（审批域 + SoD）与 notifyVisibleWhere（收件人）。 */
-  const [pendingDocs, unreadNotify, openAlerts, openReview] = await Promise.all([
+  const [pendingDocs, unreadNotify, openAlerts, openReview, myTodo] = await Promise.all([
     user ? getInbox(user, db).then((r) => r.total) : Promise.resolve(0),
     user
       ? countWhere(db, schema.notifications, and(isNull(schema.notifications.readAt), notifyVisibleWhere(user)))
       : Promise.resolve(0),
     countWhere(db, schema.systemAlerts, eq(schema.systemAlerts.status, "open")),
     countWhere(db, schema.reviewItems, eq(schema.reviewItems.status, "open")),
+    // D61 待办任务（work_items）：与 /todo「我的待办」同源（getTodoProgressBlock.mine）；无登录人视角时不出卡
+    user ? getTodoProgressBlock(user, db).then((b) => b.mine) : Promise.resolve(null),
   ]);
   const queues = [
     { key: "inbox", label: "待我审批", count: pendingDocs, href: "/inbox" },
+    ...(myTodo
+      ? [{ key: "todo", label: myTodo.overdue > 0 ? `我的待办任务（逾期 ${myTodo.overdue}）` : "我的待办任务", count: myTodo.open, href: "/todo" }]
+      : []),
     { key: "notify", label: "未读通知", count: unreadNotify, href: "/notifications" },
     { key: "alerts", label: "系统告警", count: openAlerts, href: "/alerts" },
     { key: "review", label: "待复核事项", count: openReview, href: "/review/checklist" },

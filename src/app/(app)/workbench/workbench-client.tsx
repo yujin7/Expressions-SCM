@@ -238,7 +238,10 @@ export default function WorkbenchClient() {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <Typography.Title level={4} style={{ marginTop: 0 }}>工作台</Typography.Title>
-        <Link href="/report/digest">每日经营摘要（简报视图）→</Link>
+        <Space size={16}>
+          <Link href="/cockpit">驾驶舱四屏 →</Link>
+          <Link href="/report/digest">每日经营摘要（简报视图）→</Link>
+        </Space>
       </div>
       {focusError ? (
         <Alert

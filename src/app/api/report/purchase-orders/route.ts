@@ -4,13 +4,14 @@ import { maskSensitive } from "@/server/core/dto";
 import { ApiError, errorResponse } from "@/server/modules/master/common";
 import { guardFreshWrite, requireAnyRole } from "@/server/modules/outsource/common";
 import {
-  loadPurchaseOrderMetrics, refreshPurchaseOrderMetrics, stripPurchaseOrderMoney,
+  listPurchaseOrderYears, loadPurchaseOrderMetrics, refreshPurchaseOrderMetrics, stripPurchaseOrderMoney,
 } from "@/server/modules/report/purchase-order-metrics";
 
 /**
  * D63 采购订单指标（真报表）：已下单单数/数量/金额、订单至交付、降本、供应商 OTIF。
  * 单数/数量全员可读；金额只对 PRICE_VISIBLE_ROLES 下发（stripPurchaseOrderMoney），
  * 因含金额故回查新鲜身份（guardFreshWrite）而非只解 JWT。
+ * 响应另带 availableYears（读模型事实里有已下单 PO 的年份，恒含当年），供年份下拉，不再取浏览器时钟。
  */
 function parseYear(raw: string | null): number | undefined {
   if (!raw) return undefined;
@@ -24,8 +25,8 @@ export async function GET(req: NextRequest) {
     const user = await guardFreshWrite();
     const year = parseYear(new URL(req.url).searchParams.get("year"));
     const db = await getDbAsync();
-    const model = await loadPurchaseOrderMetrics({ year }, db);
-    return NextResponse.json(maskSensitive(stripPurchaseOrderMoney(model, user.roles), user.roles));
+    const [model, availableYears] = await Promise.all([loadPurchaseOrderMetrics({ year }, db), listPurchaseOrderYears(db)]);
+    return NextResponse.json({ ...maskSensitive(stripPurchaseOrderMoney(model, user.roles), user.roles), availableYears });
   } catch (e) {
     return errorResponse(e);
   }

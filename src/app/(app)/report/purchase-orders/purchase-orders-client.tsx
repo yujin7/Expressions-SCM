@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, App, Button, Card, Col, Row, Segmented, Select, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
+import CaliberNote from "@/components/CaliberNote";
 import { exportCsv } from "@/components/exportCsv";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
@@ -21,6 +22,8 @@ import type {
 } from "@/server/modules/report/purchase-order-metrics";
 
 type Dim = "month" | "supplier" | "brand";
+/** API 在读模型之外附带 availableYears（有已下单事实的年份，恒含当年），年份下拉不再取浏览器时钟 */
+type PurchaseOrderMetricsResponse = PurchaseOrderMetrics & { availableYears?: number[] };
 
 const money = (v: string | null | undefined): string =>
   v == null ? "—" : Number(v).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -50,7 +53,7 @@ export default function PurchaseOrdersClient() {
   const { message } = App.useApp();
   const me = useMe();
   const canRefresh = hasAnyRole(me, "pmc", "purchasing");
-  const [data, setData] = useState<PurchaseOrderMetrics | null>(null);
+  const [data, setData] = useState<PurchaseOrderMetricsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -67,7 +70,7 @@ export default function PurchaseOrdersClient() {
       const params = new URLSearchParams();
       if (year) params.set("year", year);
       const qs = params.toString();
-      setData(await fetchJson<PurchaseOrderMetrics>(`/api/report/purchase-orders${qs ? `?${qs}` : ""}`));
+      setData(await fetchJson<PurchaseOrderMetricsResponse>(`/api/report/purchase-orders${qs ? `?${qs}` : ""}`));
     } catch (e) {
       const text = e instanceof Error ? e.message : "采购订单指标加载失败";
       setData(null);
@@ -92,10 +95,12 @@ export default function PurchaseOrdersClient() {
     }
   };
 
+  // 年份来自读模型事实（availableYears，降序、恒含当年）；未加载前只列当前选中年，避免用浏览器时钟猜
   const yearOptions = useMemo(() => {
-    const now = new Date().getFullYear();
-    return [0, 1, 2].map((i) => ({ value: String(now - i), label: `${now - i} 年` }));
-  }, []);
+    const years = data?.availableYears?.length ? data.availableYears : (data ? [data.year] : (year ? [Number(year)] : []));
+    return years.map((y) => ({ value: String(y), label: `${y} 年` }));
+  }, [data, year]);
+  const currentYearValue = data?.availableYears?.[0] != null ? String(data.availableYears[0]) : (yearOptions[0]?.value ?? "");
 
   const supplierRows = useMemo(
     () => (data?.bySupplier ?? []).filter((r) => !q || r.name.toLowerCase().includes(q) || r.code.toLowerCase().includes(q)),
@@ -132,9 +137,9 @@ export default function PurchaseOrdersClient() {
       ),
     },
     ...volumeColumns<PoSupplierRow>(),
-    { title: <Tooltip title={metricTooltip("poOrderToDeliveryDays")}>订单→交付 P50/P90</Tooltip>, dataIndex: "cycle", width: 200, render: (c: CycleStats) => <CycleCell c={c} /> },
-    { title: <Tooltip title={metricTooltip("supplierOtif")}>OTIF</Tooltip>, dataIndex: "otif", width: 100, align: "right", render: (o: OtifStats) => <OtifCell o={o} /> },
-    { title: <Tooltip title={metricTooltip("costSavingYtd")}>降本额</Tooltip>, dataIndex: ["costSaving", "savingYtd"], width: 120, align: "right", render: (v: string | null) => money(v) },
+    { title: <Tooltip title={metricTooltip("poOrderToDeliveryDays")}>订单→交付 P50/P90</Tooltip>, dataIndex: "cycle", width: 200, sorter: (a, b) => (a.cycle.firstP50 ?? Number.MAX_SAFE_INTEGER) - (b.cycle.firstP50 ?? Number.MAX_SAFE_INTEGER), render: (c: CycleStats) => <CycleCell c={c} /> },
+    { title: <Tooltip title={metricTooltip("supplierOtif")}>OTIF</Tooltip>, dataIndex: "otif", width: 100, align: "right", sorter: (a, b) => (a.otif.rate ?? -1) - (b.otif.rate ?? -1), render: (o: OtifStats) => <OtifCell o={o} /> },
+    { title: <Tooltip title={metricTooltip("costSavingYtd")}>降本额</Tooltip>, dataIndex: ["costSaving", "savingYtd"], width: 120, align: "right", sorter: (a, b) => Number(a.costSaving.savingYtd ?? 0) - Number(b.costSaving.savingYtd ?? 0), render: (v: string | null) => money(v) },
     { title: "涨本额（另列）", dataIndex: ["costSaving", "increaseYtd"], width: 120, align: "right", render: (v: string | null) => money(v) },
     {
       title: "可比行", dataIndex: ["costSaving", "comparableLines"], width: 100, align: "right",
@@ -171,18 +176,16 @@ export default function PurchaseOrdersClient() {
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>采购订单指标</Typography.Title>
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 12 }}
-        message="已下单 = PO 审批通过时点；金额为采购订单口径（未税为主、含税并列），不是应付；订单→交付 = 审批 → 首批收货；降本只计降价，涨价另列不轧差（D63）。"
-        description={
-          <Typography.Text type="secondary">
-            来源：SCM PO / SH / 审批事实（不含简道云旧采购单）· 时点：{data ? `读模型 ${data.builtAt.slice(0, 16).replace("T", " ")} 构建，截至 ${data.asOf}` : "加载中"}
-            {data ? ` · 已批 PO 累计 ${data.summary.orderedPoAllTime} 张` : ""}
-            {data && data.summary.invalidLines > 0 ? ` · ${data.summary.invalidLines} 行因换算系数非法未计入` : ""}
-            {data && !mv ? " · 当前角色不可见金额" : ""}
-          </Typography.Text>
+      <CaliberNote
+        summary={<span>已下单 = PO 审批通过时点；订单→交付 = 审批 → 首批收货；降本只计降价，涨价另列不轧差（D63）。{data ? ` 截至 ${data.asOf}` : ""}{data && !mv ? " · 当前角色不可见金额" : ""}</span>}
+        detail={
+          <div>
+            <p>金额为采购订单口径（未税为主、含税并列），不是应付。</p>
+            <p>来源：SCM PO / SH / 审批事实（不含简道云旧采购单）· 时点：{data ? `读模型 ${data.builtAt.slice(0, 16).replace("T", " ")} 构建，截至 ${data.asOf}` : "加载中"}
+              {data ? ` · 已批 PO 累计 ${data.summary.orderedPoAllTime} 张` : ""}
+              {data && data.summary.invalidLines > 0 ? ` · ${data.summary.invalidLines} 行因换算系数非法未计入` : ""}
+            </p>
+          </div>
         }
       />
 
@@ -269,9 +272,9 @@ export default function PurchaseOrdersClient() {
             <Select
               size="small"
               style={{ width: 120 }}
-              value={year || yearOptions[0].value}
+              value={year || currentYearValue || undefined}
               options={yearOptions}
-              onChange={(v) => listState.setFilter({ year: v === yearOptions[0].value ? "" : v })}
+              onChange={(v) => listState.setFilter({ year: v === currentYearValue ? "" : v })}
             />
             {dim !== "month" ? (
               <SearchInput

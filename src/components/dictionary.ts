@@ -153,3 +153,40 @@ export function severityColor(s: string | null | undefined): string {
 export function docTypeLabel(t: string | null | undefined): string {
   return t ? (DOC_TYPE[t.toUpperCase()]?.label ?? t) : "—";
 }
+
+/* ────────────────────────── 六、数据来源 / 目标来源 / 告警类别（驾驶舱、目标页、告警页） ────────────────────────── */
+
+/** 数据来源就绪状态（data-source-readiness.state）——驾驶舱屏 1 表格 */
+export const SOURCE_STATE: Record<string, { label: string; color: string }> = {
+  operational: { label: "正式", color: "success" },
+  observation: { label: "观察", color: "blue" },
+  blocked: { label: "阻断", color: "error" },
+  contract_only: { label: "仅契约", color: "default" },
+};
+export function sourceStateLabel(s: string | null | undefined): string {
+  return s ? (SOURCE_STATE[s]?.label ?? "仅契约") : "—";
+}
+export function sourceStateColor(s: string | null | undefined): string {
+  return s ? (SOURCE_STATE[s]?.color ?? "default") : "default";
+}
+
+/** 部门目标实际值来源（goals：actualSource × autoStatus） */
+export const GOAL_SOURCE: Record<string, { label: string; color: string }> = {
+  auto: { label: "自动取值", color: "blue" },
+  manual: { label: "手工填报", color: "gold" },
+  auto_pending: { label: "自动·来源未就绪", color: "default" },
+  manual_pending: { label: "手工·待填报", color: "default" },
+};
+export function goalSourceKey(actualSource: string | null | undefined, autoStatus: string | null | undefined): keyof typeof GOAL_SOURCE {
+  if (actualSource === "auto") return "auto";
+  if (actualSource === "manual") return "manual";
+  return autoStatus === "unavailable" ? "auto_pending" : "manual_pending";
+}
+
+/** 角色中文（客户端可用；服务端权威在 core/constants.ROLE_LABELS） */
+export const ROLE_LABEL: Record<string, string> = {
+  ops: "运营", purchasing: "采购", warehouse: "仓管", quality: "质量合规", pmc: "生产计划", finance: "财务", admin: "管理员",
+};
+export function roleLabel(r: string | null | undefined): string {
+  return r ? (ROLE_LABEL[r] ?? r) : "—";
+}

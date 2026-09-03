@@ -12,6 +12,8 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
+import CaliberNote from "@/components/CaliberNote";
+import { exportCsv } from "@/components/exportCsv";
 import { formatQty } from "@/components/format";
 import ListToolbar from "@/components/ListToolbar";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
@@ -210,21 +212,33 @@ function LaneFilters({ state }: { state: ReturnType<typeof useListState<{ q: str
 }
 
 function LanesTab() {
-  const listState = useListState({ key: "transfer-routes-lanes", paramPrefix: "ln", defaults: { q: "", from: "", to: "", type: "" }, defaultPageSize: 20 });
+  const me = useMe();
+  const canRefresh = hasAnyRole(me, "warehouse", "pmc", "finance"); // 与 /api/report/transfer-routes 的 requireAnyRole 一致（D60/D62）
+  // scattered=1：只看零散线路（驾驶舱「零散线路 N」计数深链到此）
+  const listState = useListState({ key: "transfer-routes-lanes", paramPrefix: "ln", defaults: { q: "", from: "", to: "", type: "", scattered: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const { data, loading, error, reload } = useRoutesModel({ from: filters.from, to: filters.to, type: filters.type });
   const q = filters.q.trim().toLowerCase();
+  const onlyScattered = filters.scattered === "1";
   const rows = useMemo(() => {
-    const all = data?.lanes ?? [];
+    const all = (data?.lanes ?? []).filter((l) => !onlyScattered || l.scattered);
     return q ? all.filter((l) => `${l.fromWarehouse} ${l.toWarehouse} ${l.transferTypeLabel} ${l.latestDocNo ?? ""}`.toLowerCase().includes(q)) : all;
-  }, [data, q]);
+  }, [data, q, onlyScattered]);
   const visible = data?.moneyVisible ?? false;
+  const onExport = () => {
+    if (!data) return;
+    exportCsv(
+      `调拨线路-${data.asOf}`,
+      ["转出仓", "转入仓", "类型", "30天单数", "零散", "窗口单数", "Σ件", "元/件(基线)", "中位数元/件", "Σ费用", "n", "件数中位数", "最近一单", "最近日期", "偏差%", "σ", "状态", "判定"],
+      rows.map((r) => [r.fromWarehouse, r.toWarehouse, r.transferTypeLabel, r.docCount30, r.scattered ? "是" : "", r.docCount, r.totalQty, visible ? r.avgUnitFee : "***", visible ? r.medianUnitFee : "***", visible ? (r.amount ?? "") : "***", r.samples, r.medianQty, r.latestDocNo, r.latestDate, visible ? r.latestDeviationPct : "***", visible ? r.latestZ : "***", STATUS_TAG[r.status].text, feeReasonText(r.statusReason, r.latestDeviationPct, r.latestZ, visible)]),
+    );
+  };
   const columns: ColumnsType<LaneRow> = [
     { title: "线路", key: "lane", width: 240, fixed: "left", render: (_, r) => <span>{r.fromWarehouse} → {r.toWarehouse}</span> },
     { title: "类型", dataIndex: "transferTypeLabel", width: 110, render: (v: string, r) => <Tag color={r.transferType === "unclassified" ? "default" : "geekblue"}>{v}</Tag> },
-    { title: "30 天单数", dataIndex: "docCount30", width: 100, align: "right", render: (v: number, r) => r.scattered ? <Tooltip title={`30 天 > ${data?.params.batchMaxDocs ?? 4} 单：零散调拨，建议合并批次`}><Tag color="orange">{v} 零散</Tag></Tooltip> : v },
-    { title: `窗口单数`, dataIndex: "docCount", width: 90, align: "right" },
-    { title: "Σ件", dataIndex: "totalQty", width: 110, align: "right", render: (v: string) => formatQty(v) },
+    { title: "30 天单数", dataIndex: "docCount30", width: 100, align: "right", sorter: (a, b) => a.docCount30 - b.docCount30, render: (v: number, r) => r.scattered ? <Tooltip title={`30 天 > ${data?.params.batchMaxDocs ?? 4} 单：零散调拨，建议合并批次`}><Tag color="orange">{v} 零散</Tag></Tooltip> : v },
+    { title: `窗口单数`, dataIndex: "docCount", width: 90, align: "right", sorter: (a, b) => a.docCount - b.docCount },
+    { title: "Σ件", dataIndex: "totalQty", width: 110, align: "right", sorter: (a, b) => Number(a.totalQty) - Number(b.totalQty), render: (v: string) => formatQty(v) },
     { title: <Tooltip title={metricTooltip("transferLaneAvgFee")}>元/件（基线）</Tooltip>, dataIndex: "avgUnitFee", width: 120, align: "right", render: (v: string | null) => unit(v, visible) },
     { title: "中位数 元/件", dataIndex: "medianUnitFee", width: 120, align: "right", render: (v: string | null) => unit(v, visible) },
     { title: "Σ费用", dataIndex: "amount", width: 120, align: "right", render: (v: string | null | undefined) => money(v, visible) },
@@ -241,6 +255,7 @@ function LanesTab() {
       key: "dev",
       width: 110,
       align: "right",
+      sorter: visible ? (a, b) => Math.abs(Number(a.latestDeviationPct ?? 0)) - Math.abs(Number(b.latestDeviationPct ?? 0)) : undefined,
       render: (_, r) => !visible ? "***" : r.latestDeviationPct == null ? "—" : <span>{r.latestDeviationPct}%{r.latestZ != null ? <Typography.Text type="secondary"> · {r.latestZ}σ</Typography.Text> : null}</span>,
     },
     {
@@ -254,18 +269,24 @@ function LanesTab() {
     <div>
       <ListToolbar
         state={listState}
-        extra={<LaneFilters state={listState} />}
-        primaryActions={<Button onClick={() => void reload(true)} loading={loading}>重算</Button>}
+        onExport={data ? onExport : undefined}
+        extra={(
+          <Space wrap>
+            <LaneFilters state={listState as unknown as ReturnType<typeof useListState<{ q: string; from: string; to: string; type: string }>>} />
+            <Select allowClear placeholder="零散" style={{ width: 120 }} options={[{ value: "1", label: "仅零散线路" }]} value={filters.scattered || undefined} onChange={(v) => listState.setFilter({ scattered: v ?? "" })} />
+          </Space>
+        )}
+        primaryActions={canRefresh ? <Button onClick={() => void reload(true)} loading={loading}>重算</Button> : undefined}
       />
       {error ? <LoadErrorAlert error={error} onRetry={() => void reload()} /> : null}
       {data ? (
         <Space size="large" wrap style={{ marginBottom: 12 }}>
-          <Statistic title="线路" value={data.summary.laneCount} />
+          <a onClick={() => listState.setFilter({ scattered: "" })}><Statistic title="线路" value={data.summary.laneCount} /></a>
           <Statistic title={`窗口单数（${data.params.windowDays} 天）`} value={data.summary.docCount} />
-          <Statistic title="登记费用单数" value={data.summary.feeDocCount} />
+          <a href="/inventory/transfer-routes?tr_tab=fees&fee_view=active"><Statistic title="登记费用单数" value={data.summary.feeDocCount} /></a>
           <Statistic title="Σ费用" value={money(data.summary.amount, visible)} />
-          <Statistic title="零散线路" value={data.summary.scatteredLaneCount} />
-          <Statistic title="未分类存量单" value={data.summary.unclassifiedDocCount} />
+          <a onClick={() => listState.setFilter({ scattered: "1" })}><Statistic title="零散线路" value={data.summary.scatteredLaneCount} /></a>
+          <a onClick={() => listState.setFilter({ type: "unclassified", scattered: "" })}><Statistic title="未分类存量单" value={data.summary.unclassifiedDocCount} /></a>
         </Space>
       ) : null}
       <Table<LaneRow>
@@ -468,6 +489,8 @@ function FeesTab() {
 }
 
 function AnomaliesTab() {
+  const me = useMe();
+  const canRefresh = hasAnyRole(me, "warehouse", "pmc", "finance"); // 与 /api/report/transfer-routes 的 requireAnyRole 一致（D60/D62）
   const listState = useListState({ key: "transfer-anomalies", paramPrefix: "an", defaults: { q: "", from: "", to: "", type: "", level: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const { data, loading, error, reload } = useRoutesModel({ from: filters.from, to: filters.to, type: filters.type, level: filters.level });
@@ -477,6 +500,14 @@ function AnomaliesTab() {
     return q ? all.filter((a) => `${a.docNo} ${a.fromWarehouse} ${a.toWarehouse}`.toLowerCase().includes(q)) : all;
   }, [data, q]);
   const visible = data?.moneyVisible ?? false;
+  const onExport = () => {
+    if (!data) return;
+    exportCsv(
+      `调拨异常-${data.asOf}`,
+      ["级别", "单号", "转出仓", "转入仓", "类型", "完成日", "数量", "件数中位数", "倍数", "数量判定", "元/件", "费用偏差%", "σ", "费用样本", "费用判定"],
+      rows.map((r) => [r.level === "alert" ? "异常" : "提醒", r.docNo, r.fromWarehouse, r.toWarehouse, r.transferTypeLabel, r.date, r.qty, r.qtyMedian, r.qtyRatio, qtyReasonText(r), visible ? (r.unitFee ?? "") : "***", visible ? r.feePctDev : "***", visible ? r.feeZ : "***", r.feeSamples, feeReasonText(r.feeReason, r.feePctDev, r.feeZ, visible)]),
+    );
+  };
   const columns: ColumnsType<AnomalyRow> = [
     { title: "级别", dataIndex: "level", width: 80, fixed: "left", render: (v: AnomalyRow["level"]) => <Tag color={v === "alert" ? "red" : "orange"}>{v === "alert" ? "异常" : "提醒"}</Tag> },
     { title: "单号", dataIndex: "docNo", width: 170, render: (v: string) => <a href={`/inventory/docs?q=${encodeURIComponent(v)}`}>{v}</a> },
@@ -488,6 +519,7 @@ function AnomaliesTab() {
       key: "qty",
       width: 170,
       align: "right",
+      sorter: (a, b) => Number(a.qtyRatio ?? 0) - Number(b.qtyRatio ?? 0),
       render: (_, r) => (
         <span>
           {formatQty(r.qty)}
@@ -501,6 +533,7 @@ function AnomaliesTab() {
       key: "fee",
       width: 200,
       align: "right",
+      sorter: visible ? (a, b) => Math.abs(Number(a.feePctDev ?? 0)) - Math.abs(Number(b.feePctDev ?? 0)) : undefined,
       render: (_, r) => !visible ? "***" : (
         <span>
           {unit(r.unitFee, true)}
@@ -531,7 +564,8 @@ function AnomaliesTab() {
             <Select allowClear placeholder="级别" style={{ width: 110 }} options={[{ value: "alert", label: "异常" }, { value: "watch", label: "提醒" }]} value={filters.level || undefined} onChange={(v) => listState.setFilter({ level: v ?? "" })} />
           </Space>
         }
-        primaryActions={<Button onClick={() => void reload(true)} loading={loading}>重算</Button>}
+        onExport={data ? onExport : undefined}
+        primaryActions={canRefresh ? <Button onClick={() => void reload(true)} loading={loading}>重算</Button> : undefined}
       />
       {error ? <LoadErrorAlert error={error} onRetry={() => void reload()} /> : null}
       {data ? (
@@ -562,12 +596,9 @@ export default function TransferRoutesClient() {
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>调拨线路与费用</Typography.Title>
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 12 }}
-        message="线路 = (转出仓, 转入仓, 调拨类型)。基线 = 同线路近 180 天已完成单据的数量加权均价；偏差超阈值只提醒不阻断（D60，参数可在运行参数调整）。"
-        description="费用只做统计维度：不进库存成本、不参与过账、不跨线路轧差；金额仅采购/PMC/财务/管理员可见（服务端已剥离）。存量未分类调拨单归入「未分类」线路。"
+      <CaliberNote
+        summary="线路 = (转出仓, 转入仓, 调拨类型)；基线 = 同线路近 180 天已完成单据的数量加权均价；偏差超阈值只提醒不阻断（D60）。"
+        detail={<div><p>参数可在运行参数调整。费用只做统计维度：不进库存成本、不参与过账、不跨线路轧差；金额仅采购/PMC/财务/管理员可见（服务端已剥离）。</p><p>存量未分类调拨单归入「未分类」线路。</p></div>}
       />
       <Tabs
         activeKey={tab}

@@ -18,14 +18,14 @@ const read = (file: string) => readFileSync(path.join(root, file), "utf8");
 type LegacyNode = { key: string; label: string; children?: { key: string; label: string }[] };
 const LEGACY_MENU: LegacyNode[] = [
   {"key": "/workbench", "label": "工作台"},
-  {"key": "/inbox", "label": "我的待办"},
+  {"key": "/inbox", "label": "待我审批"},
   {"key": "/todo", "label": "待办任务"},
   {"key": "/goals", "label": "供应链目标"},
   { key: "messages", label: "消息与告警", children: [
     {"key": "/notifications", "label": "通知中心"}, {"key": "/alerts", "label": "系统告警"},
   ] },
   { key: "analytics", label: "经营分析", children: [
-    {"key": "/cockpit", "label": "驾驶舱四屏"}, {"key": "/report/dashboard", "label": "经营驾驶舱"}, {"key": "/report/decision-studio", "label": "决策工作室"}, {"key": "/report/sales-bridge", "label": "销量变化归因"}, {"key": "/report/funnel", "label": "全链达成漏斗"}, {"key": "/report/inventory-analytics", "label": "库存分析"}, {"key": "/report/process-mining", "label": "流程效率与瓶颈"},
+    {"key": "/cockpit", "label": "驾驶舱四屏（例外优先）"}, {"key": "/report/dashboard", "label": "经营分析总览"}, {"key": "/report/decision-studio", "label": "决策工作室"}, {"key": "/report/sales-bridge", "label": "销量变化归因"}, {"key": "/report/funnel", "label": "全链达成漏斗"}, {"key": "/report/inventory-analytics", "label": "库存分析"}, {"key": "/report/process-mining", "label": "流程效率与瓶颈"},
   ] },
   { key: "planning", label: "计划与补货", children: [
     {"key": "/replenish", "label": "补货建议"}, {"key": "/replenish/versions", "label": "计划版本与周差异"}, {"key": "/replenish/sop", "label": "S&OP 计划周期"}, {"key": "/replenish/reconcile", "label": "运营提报核对"}, {"key": "/replenish/pilot", "label": "补货试点候选"}, {"key": "/report/demand", "label": "需求达成与货盘"}, {"key": "/report/risk", "label": "风险库存处置"}, {"key": "/report/segmentation", "label": "库存分层 ABC/XYZ"}, {"key": "/report/closed-loop", "label": "建议闭环追踪"}, {"key": "/report/auto-replenish", "label": "自动补货候选"}, {"key": "/report/material-demand", "label": "物料需求展开 MRP"}, {"key": "/report/transfer-suggest", "label": "调拨建议"}, {"key": "/report/leadtime-learning", "label": "交期学习"}, {"key": "/report/forecast-accuracy", "label": "预测复盘"}, {"key": "/report/detectors", "label": "异动侦测"}, {"key": "/outsource/auto-chain", "label": "自动链预演"},

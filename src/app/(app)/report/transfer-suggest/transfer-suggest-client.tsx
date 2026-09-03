@@ -52,9 +52,11 @@ export default function TransferSuggestClient() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "transfer-suggest", defaults: { q: "" }, defaultPageSize: 50 });
+  // skuIds：预警行深链 `?skuIds=1,2`（D57 IAL-04）——API 早已支持，此前页面不读、落到全量列表（审计 #2）
+  const listState = useListState({ key: "transfer-suggest", defaults: { q: "", skuIds: "" }, defaultPageSize: 50 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
+  const skuIds = (filters.skuIds ?? "").trim();
 
   const load = useCallback(async () => {
     requestRef.current?.abort();
@@ -65,6 +67,7 @@ export default function TransferSuggestClient() {
     setData(null);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
+      if (skuIds) params.set("skuIds", skuIds);
       const next = await fetchJson<TransferSuggestData>(`/api/report/transfer-suggest?${params.toString()}`, { signal: controller.signal });
       if (!controller.signal.aborted) setData(next);
     } catch (e) {
@@ -75,7 +78,7 @@ export default function TransferSuggestClient() {
         setLoading(false);
       }
     }
-  }, [q, page, pageSize]);
+  }, [q, skuIds, page, pageSize]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => () => requestRef.current?.abort(), []);
 
@@ -183,14 +186,21 @@ export default function TransferSuggestClient() {
       <ListToolbar
         state={listState}
         extra={
-          <SearchInput
-            key={q}
-            allowClear
-            defaultValue={q}
-            placeholder="搜索 SKU 编码/名称"
-            style={{ width: 260 }}
-            onSearch={(v) => listState.setFilter({ q: v.trim() })}
-          />
+          <Space wrap>
+            <SearchInput
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索 SKU 编码/名称"
+              style={{ width: 260 }}
+              onSearch={(v) => listState.setFilter({ q: v.trim() })}
+            />
+            {skuIds ? (
+              <Tag closable onClose={() => listState.setFilter({ skuIds: "" })} color="processing">
+                仅预警行 SKU（{skuIds.split(",").filter(Boolean).length} 个）
+              </Tag>
+            ) : null}
+          </Space>
         }
       />
       <Table<TransferSuggestRow>
