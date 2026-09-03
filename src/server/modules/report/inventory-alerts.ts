@@ -158,7 +158,7 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
       status, primary, tags,
       priorityScore: priorityScore({ dailyAvg: primaryDaily == null ? null : String(primaryDaily), alertDays: ad.days, coverDays: cover == null ? null : String(cover) }),
       spike: isSpike,
-      actions: { transfer: `/report/transfer-suggest?skuIds=${s.id}`, replenish: `/replenish?sku=${encodeURIComponent(s.code)}` },
+      actions: { transfer: `/report/transfer-suggest?skuIds=${s.id}`, replenish: `/replenish?q=${encodeURIComponent(s.code)}` },
     };
   });
 

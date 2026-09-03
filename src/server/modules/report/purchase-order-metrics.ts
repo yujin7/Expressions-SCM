@@ -606,6 +606,26 @@ export async function refreshPurchaseOrderMetrics(dbArg?: AnyDb): Promise<Purcha
 /**
  * 页面读：当年走缓存（绑定一致才用），历史年份即时计算不缓存。
  */
+/**
+ * 有「已下单」事实的年份（审批通过时点按 Asia/Shanghai 取年），降序；恒含当年。
+ * 供报表页年份下拉（审计：年份列表曾来自浏览器时钟，与读模型 baselineYear 不一致、有数据的年份够不着）。
+ */
+export async function listPurchaseOrderYears(dbArg?: AnyDb): Promise<number[]> {
+  const db: AnyDb = dbArg ?? (await getDbAsync());
+  const ordered: { docId: number; orderedAt: Date | string }[] = await db
+    .select({ docId: schema.approvals.docId, orderedAt: sql<Date | string>`max(${schema.approvals.createdAt})` })
+    .from(schema.approvals)
+    .innerJoin(schema.poDocs, eq(schema.approvals.docId, schema.poDocs.id))
+    .where(and(eq(schema.approvals.docType, "po"), eq(schema.approvals.action, "approve"), inArray(schema.poDocs.status, [...ORDERED_PO_STATUSES])))
+    .groupBy(schema.approvals.docId);
+  const years = new Set<number>([currentYear()]);
+  for (const r of ordered) {
+    const day = shanghaiDay(r.orderedAt);
+    if (day) years.add(Number(day.slice(0, 4)));
+  }
+  return [...years].filter((y) => Number.isInteger(y) && y > 2000).sort((a, b) => b - a);
+}
+
 export async function loadPurchaseOrderMetrics(opts: { year?: number } = {}, dbArg?: AnyDb): Promise<PurchaseOrderMetrics> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const year = opts.year ?? currentYear();

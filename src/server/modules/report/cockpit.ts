@@ -1,5 +1,5 @@
 import { PRICE_VISIBLE_ROLES } from "@/server/core/constants";
-import { dAdd } from "@/server/core/decimal";
+import { dAdd, dMul } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { resolveDb, type AnyDb } from "@/server/core/svc";
 import { getInbox } from "@/server/modules/inbox/service";
@@ -103,20 +103,28 @@ export interface CockpitData {
     };
     alerts: {
       redline: RedlineItem[];
-      inventoryAlerts: Block<{ rows: InventoryAlertRow[]; totals: InventoryAlertsReadModel["totals"]; params: InventoryAlertsReadModel["params"]; limitations: string[] }>;
-      salesSpike: Block<{ hits: SpikeHit[]; unmappedHits: SpikeHit[]; anchorDate: string | null; coverage: SalesSpikeReadModel["coverage"]; params: SalesSpikeReadModel["params"]; openAlerts: number; unacked: number }>;
-      orders: Block<PurchaseOrderCockpitBlock>;
+      /** rows 只带前 20 行；alertRowCount = 有主预警/非 ok 的总行数（审计 #14：截断必须说出来） */
+      inventoryAlerts: Block<{ rows: InventoryAlertRow[]; alertRowCount: number; totals: InventoryAlertsReadModel["totals"]; params: InventoryAlertsReadModel["params"]; limitations: string[] }>;
+      /** hits/unmappedHits 各只带前 10 行；hitCount/unmappedCount 是读模型全量（审计 #3：数组长度不是总数） */
+      salesSpike: Block<{ hits: SpikeHit[]; unmappedHits: SpikeHit[]; hitCount: number; unmappedCount: number; anchorDate: string | null; coverage: SalesSpikeReadModel["coverage"]; params: SalesSpikeReadModel["params"]; openAlerts: number; unacked: number }>;
+      /** otifRatePct：服务端已折成百分数字符串（"83.3"），前端只拼 %（审计 #1：0.83 曾被显示成 0.83%） */
+      orders: Block<PurchaseOrderCockpitBlock & { otifRatePct: string | null }>;
     };
     inventory: {
-      warehouses: Block<{ rows: WarehouseBlock[]; activeCount: number; realtimeCount: number; snapshotCount: number }>;
+      /** rows 只带前 20 行，rowCount 为全部仓数 */
+      warehouses: Block<{ rows: WarehouseBlock[]; rowCount: number; activeCount: number; realtimeCount: number; snapshotCount: number }>;
       transferLanes: Block<{ lanes: TransferLaneRow[]; summary: TransferRoutesModel["summary"]; asOf: string | null }>;
+      /** rows 只带前 10 行；anomalyCount 为全部 */
       transferAnomalies: Block<{ rows: TransferAnomalyRow[]; anomalyCount: number; alertCount: number; scatteredLaneCount: number }>;
-      turnover: Block<{ rows: WarehouseInventoryRow[]; summary: WarehouseInventoryModel["summary"]; windowDays: number; asOf: string }>;
+      /** rows 只带实时仓前 8 行（「哪些仓参与周转」是服务端口径，不在浏览器过滤）；rowCount 为实时仓总数 */
+      turnover: Block<{ rows: WarehouseInventoryRow[]; rowCount: number; summary: WarehouseInventoryModel["summary"]; windowDays: number; asOf: string }>;
     };
     ops: {
-      queues: Block<{ inboxPending: number; reviewOpen: number }>;
+      /** 子查询失败 → 对应项 null + errors 里给原因；绝不显示 0（审计 #4） */
+      queues: Block<{ inboxPending: number | null; reviewOpen: number | null; errors: { inbox: string | null; review: string | null } }>;
       todo: Block<TodoProgressBlock>;
-      goals: Block<GoalsBlock>;
+      /** rows 只带前 12 行；rowCount 为本期全部 */
+      goals: Block<GoalsBlock & { rowCount: number }>;
       conclusions: { text: string; evidenceHref: string; evidenceLabel: string }[];
       dataQuality: Block<{
         sources: DataQualityReport["sources"];
@@ -163,6 +171,13 @@ function sum(values: (string | null | undefined)[]): string {
 function severityOf(items: ExceptionItem[], key: string): RedlineItem["severity"] {
   const hit = items.find((i) => i.key === key);
   return hit?.severity ?? "medium";
+}
+
+/** OTIF 0–1 比例 → 百分数字符串（1 位小数），decimal 字符串运算不走 float；null 保持 null（不可评 ≠ 0%） */
+export function otifRatePctOf(rate: number | string | null | undefined): string | null {
+  if (rate == null || rate === "") return null;
+  if (!/^-?\d+(\.\d+)?$/.test(String(rate))) return null;
+  return dMul(String(rate), 100, 1);
 }
 
 void pending;
@@ -279,7 +294,10 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
   const inventoryAlerts: CockpitData["screens"]["alerts"]["inventoryAlerts"] = alertsS.ok
     ? {
         state: alertsS.value.rows.length ? "ready" : "insufficient",
-        data: { rows: alertsS.value.rows.filter((r) => r.primary || r.status !== "ok").slice(0, 20), totals: alertsS.value.totals, params: alertsS.value.params, limitations: alertsS.value.limitations },
+        data: (() => {
+          const alertRows = alertsS.value.rows.filter((r) => r.primary || r.status !== "ok");
+          return { rows: alertRows.slice(0, 20), alertRowCount: alertRows.length, totals: alertsS.value.totals, params: alertsS.value.params, limitations: alertsS.value.limitations };
+        })(),
         note: `成品 ${alertsS.value.totals.skus} 个：断货 ${alertsS.value.totals.outOfStock}、低于阈值 ${alertsS.value.totals.alert}、关注 ${alertsS.value.totals.watch}；只显示前 20 行`,
         source: { tier: "observation", source: "inventory-alerts/v1（日销三口径并列；观察序列只预警不定量）", asOf: alertsS.value.builtAt },
       }
@@ -288,7 +306,7 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
   const salesSpike: CockpitData["screens"]["alerts"]["salesSpike"] = spikeS.ok
     ? {
         state: spikeS.value.state === "ready" ? "ready" : "insufficient",
-        data: { hits: spikeS.value.hits.slice(0, 10), unmappedHits: spikeS.value.unmappedHits.slice(0, 10), anchorDate: spikeS.value.anchorDate, coverage: spikeS.value.coverage, params: spikeS.value.params, openAlerts: spikeCount.ok ? spikeCount.value.open : 0, unacked: spikeCount.ok ? spikeCount.value.unacked : 0 },
+        data: { hits: spikeS.value.hits.slice(0, 10), unmappedHits: spikeS.value.unmappedHits.slice(0, 10), hitCount: spikeS.value.hits.length, unmappedCount: spikeS.value.unmappedHits.length, anchorDate: spikeS.value.anchorDate, coverage: spikeS.value.coverage, params: spikeS.value.params, openAlerts: spikeCount.ok ? spikeCount.value.open : 0, unacked: spikeCount.ok ? spikeCount.value.unacked : 0 },
         note: spikeS.value.state === "ready" ? `规则：最近 ${spikeS.value.params.consecutiveDays} 天每日 ≥ 前 7 日日均 ×${(1 + spikeS.value.params.risePct / 100).toFixed(2)}，基线 ≥ ${spikeS.value.params.minBaseQty}` : spikeS.value.limitations[0] ?? "缺流",
         source: { tier: "observation", source: "sales-spike/v1（简道云天猫日销，T+1）", asOf: spikeS.value.sourceAsOf ?? spikeS.value.builtAt },
       }
@@ -299,7 +317,8 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
     ? {
         state: pos.value.warehouses.length ? "ready" : "insufficient",
         data: {
-          rows: pos.value.warehouses,
+          rows: pos.value.warehouses.slice(0, 20),
+          rowCount: pos.value.warehouses.length,
           activeCount: pos.value.warehouses.filter((w) => w.active).length,
           realtimeCount: pos.value.warehouses.filter((w) => w.mode === "realtime").length,
           snapshotCount: pos.value.warehouses.filter((w) => w.mode === "snapshot").length,
@@ -320,7 +339,7 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
         } as PurchaseOrderCockpitBlock;
         return {
           state: b.orderSystem.monthPoCount > 0 || b.orderSystem.cycleSamples > 0 ? "ready" : "insufficient",
-          data: gated,
+          data: { ...gated, otifRatePct: otifRatePctOf(b.orderSystem.otifRate) },
           note: `${canSeeMoney ? "" : "金额仅价格可见角色；"}已下单 = PO 审批通过；交付 = 审批→首批收货，n=${b.orderSystem.cycleSamples}${b.orderSystem.cycleInsufficient ? "（样本不足）" : ""}；降本基线年 ${b.costDown.baselineYear}`,
           source: { tier: "fact", source: "purchase-order-metrics/v1（SCM PO/SH 事实）", asOf: po.value.builtAt ?? null },
         };
@@ -356,10 +375,15 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
   const turnover: CockpitData["screens"]["inventory"]["turnover"] = whS.ok
     ? {
         state: whS.value.rows.length ? "ready" : "insufficient",
-        data: {
-          rows: whS.value.rows.map((r) => canSeeMoney ? r : { ...r, amount: null }),
-          summary: whS.value.summary, windowDays: whS.value.windowDays, asOf: whS.value.asOf,
-        },
+        data: (() => {
+          // 周转只对实时仓有定义（快照仓无流水）：参与规则在服务端，不在浏览器过滤（审计「数字在客户端算」）
+          const realtime = whS.value.rows.filter((r) => r.accountingMode === "realtime");
+          return {
+            rows: realtime.slice(0, 8).map((r) => canSeeMoney ? r : { ...r, amount: null }),
+            rowCount: realtime.length,
+            summary: whS.value.summary, windowDays: whS.value.windowDays, asOf: whS.value.asOf,
+          };
+        })(),
         note: `窗口 ${whS.value.windowDays} 天；周转 = 窗口出库 ÷ 平均在库（仅实时仓，出库含调拨/发料）；快照仓不计算`,
         source: { tier: "snapshot", source: "warehouse-inventory/v1", asOf: whS.value.builtAt },
       }
@@ -372,7 +396,7 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
     : { state: "error", data: null, note: todoS.error, source: { tier: "fact", source: "work_items", asOf: null } };
   const goalsS = settled(goalsR);
   const goals: CockpitData["screens"]["ops"]["goals"] = goalsS.ok
-    ? { state: goalsS.value.rows.length ? "ready" : "insufficient", data: goalsS.value, note: goalsS.value.rows.length ? goalsS.value.caliber : "本部门尚未设置目标（/goals 可设置）", source: { tier: "manual", source: "department_goals + 各只读指标", asOf: goalsS.value.generatedAt } }
+    ? { state: goalsS.value.rows.length ? "ready" : "insufficient", data: { ...goalsS.value, rows: goalsS.value.rows.slice(0, 12), rowCount: goalsS.value.rows.length }, note: goalsS.value.rows.length ? goalsS.value.caliber : "本部门尚未设置目标（可在「供应链目标」页设置）", source: { tier: "manual", source: "department_goals + 各只读指标", asOf: goalsS.value.generatedAt } }
     : { state: "error", data: null, note: goalsS.error, source: { tier: "manual", source: "department_goals", asOf: null } };
   const dqS = settled(dqR);
   const dataQuality: CockpitData["screens"]["ops"]["dataQuality"] = dqS.ok
@@ -391,13 +415,18 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
   /* ── 屏 4 ── */
   const inbox = settled(inboxR);
   const review = settled(reviewR);
-  const reviewOpen = review.ok
+  // 审计 #4：任一子查询失败 → 该项 null（前端显示 — + 错误 chip），不把失败显示成 0
+  const reviewOpen: number | null = review.ok
     ? review.value.counts.filter((c) => !["done", "closed", "resolved"].includes(String(c.status))).reduce((n, c) => n + Number(c.count ?? 0), 0)
-    : 0;
+    : null;
   const queues: CockpitData["screens"]["ops"]["queues"] = inbox.ok || review.ok
     ? {
         state: "ready",
-        data: { inboxPending: inbox.ok ? inbox.value.total : 0, reviewOpen },
+        data: {
+          inboxPending: inbox.ok ? inbox.value.total : null,
+          reviewOpen,
+          errors: { inbox: inbox.ok ? null : inbox.error, review: review.ok ? null : review.error },
+        },
         note: [inbox.ok ? "" : `待我审批读取失败：${inbox.error}`, review.ok ? "" : `复核清单读取失败：${review.error}`].filter(Boolean).join("；"),
         source: { tier: "fact", source: "审批收件箱 / review_items", asOf: new Date().toISOString() },
       }

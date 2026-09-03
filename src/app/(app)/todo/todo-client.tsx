@@ -6,14 +6,16 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Alert, App, Button, Card, Col, DatePicker, Drawer, Form, Input, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography,
+  App, Button, Card, Col, DatePicker, Drawer, Form, Input, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { fetchJson, patchJson, postJson } from "@/components/fetchJson";
+import CaliberNote from "@/components/CaliberNote";
 import { exportCsv } from "@/components/exportCsv";
 import ListToolbar from "@/components/ListToolbar";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 import SearchInput from "@/components/SearchInput";
 import { useListState } from "@/components/useListState";
 import { useMe } from "@/components/useMe";
@@ -73,6 +75,7 @@ function ItemTable({ view, prefix, assignees, onChanged }: { view: "mine" | "all
   const me = useMe();
   const [data, setData] = useState<ListData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const listState = useListState<Filters>({
     key: `todo-${view}`,
     defaults: { q: "", status: view === "mine" ? "active" : "", ownerRole: "", overdue: "" },
@@ -83,6 +86,7 @@ function ItemTable({ view, prefix, assignees, onChanged }: { view: "mine" | "all
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const params = new URLSearchParams({ view, page: String(page), pageSize: String(pageSize) });
       if (filters.q) params.set("q", filters.q);
@@ -91,11 +95,11 @@ function ItemTable({ view, prefix, assignees, onChanged }: { view: "mine" | "all
       if (filters.overdue) params.set("overdue", "1");
       setData(await fetchJson<ListData>(`/api/todo?${params.toString()}`));
     } catch (e) {
-      message.error((e as Error).message);
+      setLoadError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [view, page, pageSize, filters.q, filters.status, filters.ownerRole, filters.overdue, message]);
+  }, [view, page, pageSize, filters.q, filters.status, filters.ownerRole, filters.overdue]);
   useEffect(() => { void load(); }, [load]);
 
   const act = async (row: WorkItemRow, patch: { status?: string; assigneeId?: number }) => {
@@ -114,7 +118,7 @@ function ItemTable({ view, prefix, assignees, onChanged }: { view: "mine" | "all
     !!me && (me.roles.includes("admin") || [r.assigneeId, r.assignerId, r.createdBy].includes(me.id) || (!!r.ownerRole && me.roles.includes(r.ownerRole)));
 
   const columns: ColumnsType<WorkItemRow> = [
-    { title: "#", dataIndex: "id", width: 70 },
+    { title: "#", dataIndex: "id", width: 70, fixed: "left" },
     {
       title: "标题", dataIndex: "title", ellipsis: true,
       render: (v: string, r) => (
@@ -124,9 +128,9 @@ function ItemTable({ view, prefix, assignees, onChanged }: { view: "mine" | "all
         </Space>
       ),
     },
-    { title: "优先级", dataIndex: "priority", width: 80, render: (v: string) => <Tag color={PRIORITY_COLOR[v]}>{PRIORITY_LABEL[v] ?? v}</Tag> },
+    { title: "优先级", dataIndex: "priority", width: 80, sorter: (a, b) => ({ high: 0, normal: 1, low: 2 }[a.priority] ?? 9) - ({ high: 0, normal: 1, low: 2 }[b.priority] ?? 9), render: (v: string) => <Tag color={PRIORITY_COLOR[v]}>{PRIORITY_LABEL[v] ?? v}</Tag> },
     {
-      title: "状态", dataIndex: "status", width: 110,
+      title: "状态", dataIndex: "status", width: 110, sorter: (a, b) => Number(b.overdue) - Number(a.overdue),
       render: (v: string, r) => (
         <Space size={4}>
           <Tag color={STATUS_COLOR[v]}>{STATUS_LABEL[v] ?? v}</Tag>
@@ -137,7 +141,7 @@ function ItemTable({ view, prefix, assignees, onChanged }: { view: "mine" | "all
     },
     { title: "责任人", dataIndex: "assigneeName", width: 100, render: (v: string | null, r) => v ?? `#${r.assigneeId}` },
     { title: "责任角色", dataIndex: "ownerRole", width: 100, render: (v: string | null) => (v ? ROLE_LABEL[v] ?? v : "—") },
-    { title: "截止", dataIndex: "dueDate", width: 110, render: (v: string | null) => v ?? "—" },
+    { title: "截止", dataIndex: "dueDate", width: 110, sorter: (a, b) => (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999"), render: (v: string | null) => v ?? "—" },
     { title: "来源", dataIndex: "sourceKind", width: 100, render: (v: string | null, r) => (v ? <Tag>{SOURCE_LABEL[v] ?? v}{r.sourceRef ? ` #${r.sourceRef}` : ""}</Tag> : "—") },
     { title: "指派人", dataIndex: "assignerName", width: 100, render: (v: string | null) => v ?? "—" },
     { title: "创建", dataIndex: "createdAt", width: 140, render: (v: string) => fmt(v) },
@@ -210,6 +214,7 @@ function ItemTable({ view, prefix, assignees, onChanged }: { view: "mine" | "all
           </Space>
         )}
       />
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="待办列表" retrying={loading} />
       <Table<WorkItemRow>
         rowKey="id"
         size={listState.tableSize}
@@ -217,6 +222,7 @@ function ItemTable({ view, prefix, assignees, onChanged }: { view: "mine" | "all
         dataSource={data?.rows ?? []}
         loading={loading}
         scroll={{ x: "max-content" }}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前条件下没有待办" }}
         pagination={listState.paginationProps({ total: data?.total ?? 0 })}
       />
     </>
@@ -283,7 +289,7 @@ function StatsTab() {
 
   return (
     <>
-      <Alert type="info" showIcon style={{ marginBottom: 12 }} message="只读统计，不打分；绩效 = 证据导出（D61）" description={data?.caliber} />
+      <CaliberNote summary="只读统计，不打分；绩效 = 证据导出（D61）。" detail={data?.caliber} />
       <ListToolbar
         state={listState}
         onExport={onExport}
@@ -362,11 +368,9 @@ export default function TodoClient() {
         <Col><Typography.Title level={4} style={{ margin: 0 }}>待办任务</Typography.Title></Col>
         <Col><Button type="primary" icon={<PlusOutlined />} onClick={() => setDrawer(true)}>新建待办</Button></Col>
       </Row>
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 12 }}
-        message="系统告警 / 复核项会自动生成待办（同来源只建一条，7 天内再触发则重新打开）；手工待办不计入完成率。审批类待办仍在「我的待办」(/inbox)。"
+      <CaliberNote
+        summary="系统告警 / 复核项自动生成待办（同来源只建一条）；手工待办不计入完成率。单据审批在「待我审批」。"
+        detail={<div>同来源 7 天内再触发则重新打开而不是新建。完成率 = 已完成 ÷ (总数 − 已取消)；按时率 = 按时完成 ÷ 已完成；创建后不足 10 分钟即关闭标「可疑」。审批类事项不在这里，见顶部菜单「待我审批」。</div>}
       />
       <Row gutter={[10, 10]} style={{ marginBottom: 12 }}>
         <Col xs={24} lg={14}><TodoProgressCard refreshKey={tick} /></Col>

@@ -58,7 +58,8 @@ export type MenuSection =
 export const ROUTE_REGISTRY = {
   /* ── 顶层 ── */
   workbench: { path: "/workbench", label: "工作台", group: "top", scopedMode: "public", keywords: "workbench home shouye" },
-  inbox: { path: "/inbox", label: "我的待办", group: "top", scopedMode: "public", keywords: "inbox daiban todo" },
+  // 审计 #7/#12：与 /todo「待办任务」撞名（其 Tab 也叫「我的待办」），改为驾驶舱已用的「待我审批」
+  inbox: { path: "/inbox", label: "待我审批", group: "top", scopedMode: "public", keywords: "inbox daiban todo shenpi approve 待我审批 我的待办" },
   todo: { path: "/todo", label: "待办任务", group: "top", scopedMode: "public", keywords: "todo renwu daiban work item 待办任务" },
   goals: { path: "/goals", label: "供应链目标", group: "top", scopedMode: "channel_scoped", keywords: "goals mubiao kpi 部门目标 供应链目标" },
 
@@ -67,8 +68,9 @@ export const ROUTE_REGISTRY = {
   alerts: { path: "/alerts", label: "系统告警", group: "messages", scopedMode: "channel_scoped" },
 
   /* ── 经营分析 ── */
-  cockpit: { path: "/cockpit", label: "驾驶舱四屏", group: "analytics", scopedMode: "channel_scoped", keywords: "cockpit jiashicang siping four screens" },
-  report_dashboard: { path: "/report/dashboard", label: "经营驾驶舱", group: "analytics", scopedMode: "channel_scoped", keywords: "dashboard jiashicang bi" },
+  // 审计 #7：三个「驾驶舱」并列不可分辨——四屏（例外优先）与经营分析总览（BI 趋势）明确分工
+  cockpit: { path: "/cockpit", label: "驾驶舱四屏（例外优先）", group: "analytics", scopedMode: "channel_scoped", keywords: "cockpit jiashicang siping four screens 驾驶舱" },
+  report_dashboard: { path: "/report/dashboard", label: "经营分析总览", group: "analytics", scopedMode: "channel_scoped", keywords: "dashboard jiashicang bi 经营驾驶舱 经营分析总览" },
   report_decision_studio: { path: "/report/decision-studio", label: "决策工作室", group: "analytics", scopedMode: "channel_scoped" },
   report_sales_bridge: { path: "/report/sales-bridge", label: "销量变化归因", group: "analytics", scopedMode: "channel_scoped" },
   report_funnel: { path: "/report/funnel", label: "全链达成漏斗", group: "analytics", scopedMode: "channel_scoped" },
