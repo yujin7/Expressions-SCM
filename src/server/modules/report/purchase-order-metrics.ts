@@ -6,27 +6,28 @@
  *   草稿/待审/驳回/作废不算；短关（closed）算已下单（下过单是事实）。
  * - 金额 = 采购订单口径（非应付）：**未税为主、含税并列**，按行 price × qty 去税/补税（税率取行上 taxRatePct）。
  * - 数量 = 基础单位（qty × uomFactor）。
- * - 订单至交付：`rules/po-cycle.ts`（审批 → 首批生效 SH；全收并列：已收 ≥ 应收 时取最后一张 SH）；P50/P90 样本 < 3 标样本不足。
+ * - 订单至交付：`rules/po-cycle.ts`（审批 → 首批生效 SH；全收并列：Σ已收 ≥ Σ应收 × (1 − otif_qty_tolerance_pct%) 时取最后一张 SH，
+ *   与 OTIF 足量判定同一口径）；P50/P90 样本 < 3 标样本不足。
  * - 降本：`rules/cost-saving.ts`；基线 = **上一年度**已批数量加权基础单位未税均价（按 SKU，跨供应商），
  *   上一年度无则取该 SKU 首个已批行价；只计降价，涨价另列不轧差。
  * - 供应商 OTIF：承诺日 = min(coalesce(行交期, 表头交期))；准时 = 全收完成日 ≤ 承诺日 + otif_window_days；
  *   足量 = Σ已收 ≥ Σ应收 × (1 − otif_qty_tolerance_pct%)；缺承诺日进「不可评」桶；未到期且未收齐进「待评」桶。
- * - 缓存：report_read_model_cache，source_binding 绑 po_docs / sh_docs / approvals max(id)+行数；
+ * - 月桶：只取统计年 `${year}-01` 至当前月（历史年份到 12 月），缺月为 0 单（「没下单」是事实，不是缺数据）。
+ * - 缓存：report_read_model_cache，source_binding 绑 po_docs / sh_docs / approvals max(id)+行数 + sys_params 里
+ *   otif_window_days / otif_qty_tolerance_pct 当前值（改口径即失效重算）；
  *   状态类变化（作废/短关）不改 id，故由每日任务 refreshPurchaseOrderMetrics 兜底重建。
  * - 金额只对 PRICE_VISIBLE_ROLES 可见：路由经 stripPurchaseOrderMoney 剥离（单数/数量全员可见）。
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { getDbAsync } from "@/db";
-import { type Dec, dAdd, dCmp, dDiv, dMoney, dMul, dQty } from "@/server/core/decimal";
+import { type Dec, dAdd, dCmp, dDiv, dMul, dQty } from "@/server/core/decimal";
 import { canSeePrices } from "@/server/core/dto";
 import { getNumParam } from "@/server/core/params";
+import { type AnyDb } from "@/server/core/svc";
 import { costSaving } from "@/server/rules/cost-saving";
 import { orderToDeliveryDays, shanghaiDay } from "@/server/rules/po-cycle";
-import { normalizeToBaseNet } from "@/server/rules/price";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
-type AnyDb = any;
+import { normalizeLineNetGross, normalizeToBaseNet } from "@/server/rules/price";
 
 export const PURCHASE_ORDER_METRICS_KEY = "purchase-order-metrics/v1";
 /** 「已下单」的 PO 状态（审批通过后的全部形态；void 不算） */
@@ -220,6 +221,21 @@ function promisedDate(po: PoFact): string | null {
 
 export type OtifOutcome = "hit" | "miss" | "pending" | "unevaluable";
 
+export interface OtifParams {
+  windowDays: number;
+  qtyTolerancePct: number;
+}
+
+/**
+ * 「全收」判定（OTIF 足量与全收周期共用同一口径）：
+ * Σ已收 ≥ Σ应收 × (1 − otif_qty_tolerance_pct/100)，应收 ≤ 0 不算全收。导出供测试直测。
+ */
+export function isFullReceipt(orderedBaseQty: Dec, receivedBaseQty: Dec, qtyTolerancePct: number): boolean {
+  if (dCmp(orderedBaseQty, 0) <= 0) return false;
+  const required = dMul(orderedBaseQty, dSubPct(qtyTolerancePct), 4);
+  return dCmp(receivedBaseQty, required) >= 0;
+}
+
 /** 单张 PO 的 OTIF 判定（导出供测试直测） */
 export function evaluateOtif(
   input: {
@@ -229,12 +245,11 @@ export function evaluateOtif(
     lastReceiptDay: string | null;
     today: string;
   },
-  params: { windowDays: number; qtyTolerancePct: number },
+  params: OtifParams,
 ): OtifOutcome {
   if (!input.promised) return "unevaluable";
   const deadline = addDays(input.promised, params.windowDays);
-  const required = dMul(input.orderedBaseQty, dSubPct(params.qtyTolerancePct), 4);
-  const full = dCmp(input.orderedBaseQty, 0) > 0 && dCmp(input.receivedBaseQty, required) >= 0;
+  const full = isFullReceipt(input.orderedBaseQty, input.receivedBaseQty, params.qtyTolerancePct);
   if (full) return input.lastReceiptDay != null && input.lastReceiptDay <= deadline ? "hit" : "miss";
   return input.today > deadline ? "miss" : "pending";
 }
@@ -243,9 +258,19 @@ function dSubPct(pct: number): string {
   return dDiv(100 - pct, 100, 6);
 }
 
+/** OTIF 参数（sys_params，PARAM_DEFS 已登记；测试传 db 走实时不走缓存） */
+async function readOtifParams(db: AnyDb): Promise<OtifParams> {
+  const [windowDays, qtyTolerancePct] = await Promise.all([
+    getNumParam("otif_window_days", 2, db),
+    getNumParam("otif_qty_tolerance_pct", 0, db),
+  ]);
+  return { windowDays, qtyTolerancePct };
+}
+
 /* ───────────────────────── 取数 ───────────────────────── */
 
-async function sourceBinding(db: AnyDb, year: number): Promise<string> {
+/** 绑定：三张事实表 max(id)+行数 + 统计年 + OTIF 口径参数（改参数即失效重算） */
+async function sourceBinding(db: AnyDb, year: number, otif: OtifParams): Promise<string> {
   const [po] = await db
     .select({ maxId: sql<number>`coalesce(max(${schema.poDocs.id}), 0)::int`, n: sql<number>`count(*)::int` })
     .from(schema.poDocs);
@@ -256,7 +281,7 @@ async function sourceBinding(db: AnyDb, year: number): Promise<string> {
     .select({ maxId: sql<number>`coalesce(max(${schema.approvals.id}), 0)::int` })
     .from(schema.approvals)
     .where(eq(schema.approvals.docType, "po"));
-  return `po:${po.maxId}/${po.n}|sh:${sh.maxId}/${sh.n}|appr:${ap.maxId}|year:${year}`;
+  return `po:${po.maxId}/${po.n}|sh:${sh.maxId}/${sh.n}|appr:${ap.maxId}|year:${year}|otif:${otif.windowDays}/${otif.qtyTolerancePct}`;
 }
 
 async function loadFacts(db: AnyDb): Promise<{ pos: PoFact[]; invalidLines: number }> {
@@ -352,10 +377,7 @@ async function loadFacts(db: AnyDb): Promise<{ pos: PoFact[]; invalidLines: numb
       invalidLines += 1;
       continue;
     }
-    const purchaseAmount = dMul(l.price, l.qty, 6);
-    const taxFactor = dAdd("1", dDiv(l.taxRatePct, "100", 6), 6);
-    const netAmount = l.taxIncluded ? dDiv(purchaseAmount, taxFactor, 2) : dMoney(purchaseAmount);
-    const grossAmount = l.taxIncluded ? dMoney(purchaseAmount) : dMul(purchaseAmount, taxFactor, 2);
+    const { net: netAmount, gross: grossAmount } = normalizeLineNetGross({ price: l.price, qty: l.qty, taxIncluded: l.taxIncluded, taxRatePct: l.taxRatePct });
     po.lines.push({
       poId: l.poId,
       skuId: l.skuId,
@@ -388,11 +410,8 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
   const isCurrentYear = year === Number(today.slice(0, 4));
   const month = isCurrentYear ? today.slice(0, 7) : `${year}-12`;
   const baselineYear = year - 1;
-  const [otifWindowDays, otifQtyTolerancePct] = await Promise.all([
-    getNumParam("otif_window_days", 2, db),
-    getNumParam("otif_qty_tolerance_pct", 0, db),
-  ]);
-  const otifParams = { windowDays: otifWindowDays, qtyTolerancePct: otifQtyTolerancePct };
+  const otifParams = await readOtifParams(db);
+  const { windowDays: otifWindowDays, qtyTolerancePct: otifQtyTolerancePct } = otifParams;
 
   const { pos, invalidLines } = await loadFacts(db);
   const inYear = pos.filter((p) => p.year === year);
@@ -429,11 +448,11 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
   const otifAll = emptyOtif();
   const savingAll = emptySaving();
 
-  // 近 12 个月（含当月）的月桶固定存在，缺月显示 0 单（这是「没下单」而非「缺数据」，两者不同：PO 是系统事实）
-  for (let i = 11; i >= 0; i -= 1) {
-    const [y, m] = month.split("-").map(Number);
-    const d = new Date(Date.UTC(y, m - 1 - i, 1));
-    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  // 统计年 01 月至当前月（历史年份至 12 月）的月桶固定存在，缺月显示 0 单（这是「没下单」而非「缺数据」，两者不同：PO 是系统事实）；
+  // 不再带上年 10–12 月桶（inYear 只含本年 PO，那些桶恒为 0，只会误导读者）
+  const lastMonthNo = Number(month.slice(5, 7));
+  for (let m = 1; m <= lastMonthNo; m += 1) {
+    const key = `${year}-${String(m).padStart(2, "0")}`;
     byMonth.set(key, { month: key, ...emptyVolume() });
   }
 
@@ -494,8 +513,8 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
       }
     }
 
-    // 周期
-    const full = dCmp(orderedBase, 0) > 0 && dCmp(receivedBase, orderedBase) >= 0;
+    // 周期：「全收」与 OTIF 足量同口径（含 otif_qty_tolerance_pct 容差）
+    const full = isFullReceipt(orderedBase, receivedBase, otifQtyTolerancePct);
     const cyc = orderToDeliveryDays({
       orderedAt: po.orderedAt,
       firstReceiptAt: po.firstReceiptAt,
@@ -533,7 +552,7 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
   return {
     key: PURCHASE_ORDER_METRICS_KEY,
     authority: "ledger",
-    sourceBinding: await sourceBinding(db, year),
+    sourceBinding: await sourceBinding(db, year, otifParams),
     builtAt: new Date().toISOString(),
     asOf: today,
     year,
@@ -556,9 +575,10 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
     limitations: [
       "已下单 = PO 审批通过时点（approvals），草稿/待审/驳回/作废不计；无审批记录的历史已批单不计入（不猜下单日）。",
       "金额为采购订单口径（未税为主、含税并列），不是应付或已付；采购退货（CT）只回冲数量（received_qty），不回冲已下单金额。",
-      "订单至交付 = 审批 → 首批生效收货（SH 建单日）；全收 = 累计已收 ≥ 应收时的最后一张 SH；样本 < 3 不出 P50/P90。",
+      `订单至交付 = 审批 → 首批生效收货（SH 建单日）；全收 = 累计已收 ≥ 应收 × (1 − ${otifQtyTolerancePct}%) 时的最后一张 SH（与 OTIF 足量同口径）；样本 < 3 不出 P50/P90。`,
       `降本基线 = ${baselineYear} 年已批数量加权基础单位未税均价（按 SKU 跨供应商），无则取该 SKU 首个已批行价；只计降价，涨价另列不轧差。`,
       `OTIF：承诺日 + ${otifWindowDays} 天窗口内收齐（足量容差 ${otifQtyTolerancePct}%）记准时足量；缺承诺日进「不可评」；未到期未收齐为「待评」。`,
+      `按月：只列 ${year}-01 至 ${month} 的月桶，缺月为 0 单（当年确无已批 PO），不含上年月份。`,
       "覆盖：仅 SCM 内 PO 事实，不含简道云旧采购单观察。",
     ],
   };
@@ -590,7 +610,7 @@ export async function loadPurchaseOrderMetrics(opts: { year?: number } = {}, dbA
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const year = opts.year ?? currentYear();
   if (year !== currentYear()) return computePurchaseOrderMetrics(db, { year });
-  const binding = await sourceBinding(db, year);
+  const binding = await sourceBinding(db, year, await readOtifParams(db));
   const [row] = await db
     .select({ payload: schema.reportReadModelCache.payload, sourceBinding: schema.reportReadModelCache.sourceBinding })
     .from(schema.reportReadModelCache)

@@ -5,7 +5,7 @@
  * - 偏差 = (新价−基准价)/基准价×100（scale=2）；|偏差| > 容差 → 需走 PC 价格变更
  * 纯函数，无副作用；全部经 decimal.ts 定点运算。
  */
-import { dAdd, dCmp, dDiv, dMoney, dNeg, dZero, dDeviationPct } from "@/server/core/decimal";
+import { dAdd, dCmp, dDiv, dMoney, dMul, dNeg, dZero, dDeviationPct } from "@/server/core/decimal";
 
 /** 价格规则业务异常（红队 m3：以可识别错误替代裸 division by zero） */
 export class PriceRuleError extends Error {
@@ -41,6 +41,34 @@ export function normalizeToBaseNet(i: NormalizeInput): string {
     net = dDiv(net, taxFactor, 6);
   }
   return dMoney(dDiv(net, i.uomFactor, 6));
+}
+
+export interface LineNetGrossInput {
+  /** 行单价（采购单位；含税与否见 taxIncluded） */
+  price: string;
+  /** 行数量（采购单位） */
+  qty: string;
+  taxIncluded: boolean;
+  /** 税率百分数，如 "13" */
+  taxRatePct: string;
+}
+
+export interface LineNetGross {
+  /** 行未税金额（scale=2） */
+  net: string;
+  /** 行含税金额（scale=2） */
+  gross: string;
+}
+
+/**
+ * 单据行「未税 / 含税」并列金额（D63/D64 采购订单口径唯一实现）：
+ * 行金额 = price × qty（中间 scale=6）；含税报价 → 去税求未税，未税报价 → 补税求含税；税率取行上 taxRatePct。
+ */
+export function normalizeLineNetGross(i: LineNetGrossInput): LineNetGross {
+  const amount = dMul(i.price, i.qty, 6);
+  const taxFactor = dAdd("1", dDiv(i.taxRatePct, "100", 6), 6);
+  if (i.taxIncluded) return { net: dDiv(amount, taxFactor, 2), gross: dMoney(amount) };
+  return { net: dMoney(amount), gross: dMul(amount, taxFactor, 2) };
 }
 
 export interface DeviationInput {

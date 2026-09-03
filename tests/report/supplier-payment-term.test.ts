@@ -19,6 +19,7 @@ describe("supplier-payment-term/v1 读模型（PGlite）", () => {
   let userId = 0;
   let supAId = 0;
   let supBId = 0;
+  let supCId = 0;
 
   beforeAll(async () => {
     ({ db } = await createTestDb());
@@ -32,6 +33,7 @@ describe("supplier-payment-term/v1 读模型（PGlite）", () => {
     ]).returning();
     supAId = supA.id;
     supBId = supB.id;
+    supCId = supC.id;
     const [spu] = await db.insert(spus).values({ code: "SPT-SPU", nameCn: "账期产品" }).returning();
     const [sku] = await db.insert(skus).values({ code: "SPT-SKU", name: "账期物料", spuId: spu.id, baseUom: "支", skuType: "raw" }).returning();
 
@@ -112,12 +114,25 @@ describe("supplier-payment-term/v1 读模型（PGlite）", () => {
     expect(m.summary.attainmentRate).toBe(1);
     expect(m.summary.creditTermSpendSharePct).toBe("83.33");
 
+    expect(m.sourceBinding).toContain("|pt:2/45/60");
     await db.insert(sysParams).values({ scope: "global", key: "payment_term_min_years", value: "10" });
     const strict = await computeSupplierPaymentTerm(db, { asOf: ASOF });
     expect(strict.params.minYears).toBe(10);
     expect(strict.summary.candidates).toBe(0);
     expect(strict.summary.attainmentRate).toBeNull();
+    expect(strict.sourceBinding).toContain("|pt:10/45/60");
+    expect(strict.sourceBinding).not.toBe(m.sourceBinding);
     await db.delete(sysParams).where(eq(sysParams.key, "payment_term_min_years"));
+  });
+
+  it("PO 行未税额走 rules/price normalizeLineNetGross：含税行去税后归年", async () => {
+    const [sku] = await db.select({ id: skus.id }).from(skus).where(eq(skus.code, "SPT-SKU"));
+    const [doc] = await db.insert(poDocs).values({ docNo: "SPT-C-26-TAX", status: "approved", supplierId: supCId, createdBy: userId, createdAt: new Date("2026-03-01T02:00:00Z") }).returning();
+    await db.insert(approvals).values({ docType: "po", docId: doc.id, approverId: userId, action: "approve", cycle: 1, createdAt: new Date("2026-03-02T02:00:00Z") });
+    await db.insert(poLines).values({ poId: doc.id, skuId: sku.id, lineType: "raw", purchaseUom: "支", qty: "10", price: "113.00", taxIncluded: true, taxRatePct: "13" });
+    const m = await computeSupplierPaymentTerm(db, { asOf: ASOF });
+    const c = m.rows.find((r) => r.code === "SPT-C")!;
+    expect(c.spend[0]).toMatchObject({ year: 2026, poNet: "2000.00", total: "2000.00" }); // 1000 + 1130 ÷ 1.13
   });
 
   it("金额出口：非价格角色剥掉采购额，名次/候选/账期保留", async () => {
@@ -141,5 +156,14 @@ describe("supplier-payment-term/v1 读模型（PGlite）", () => {
     const fresh = await loadSupplierPaymentTerm(db);
     expect(fresh.sourceBinding).not.toBe(built.sourceBinding);
     expect(fresh.rows.find((r) => r.code === "SPT-B")!.attainment).toBe("below_target");
+
+    // 改账期目标参数：绑定变化 → 缓存失效重算（目标下限降到 30，B 的 30 天转为达标）
+    await db.insert(sysParams).values({ scope: "global", key: "payment_term_target_min_days", value: "30" });
+    const reparam = await loadSupplierPaymentTerm(db);
+    expect(reparam.sourceBinding).not.toBe(fresh.sourceBinding);
+    expect(reparam.sourceBinding).toContain("|pt:2/30/60");
+    expect(reparam.params.targetMinDays).toBe(30);
+    expect(reparam.rows.find((r) => r.code === "SPT-B")!.attainment).toBe("attained");
+    await db.delete(sysParams).where(eq(sysParams.key, "payment_term_target_min_days"));
   });
 });
