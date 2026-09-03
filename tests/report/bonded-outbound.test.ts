@@ -1,6 +1,6 @@
 /**
  * 保税仓日出库观察（bonded-outbound/v1）：
- *   - 7 天滚动批次跨批次按源记录去重、取最新状态；取消不计出库；无发货时间不计出库；
+ *   - 跨批次按源记录去重、取最新状态（契约已改全量观察，源表为归档）；取消不计出库；无发货时间不计出库；
  *   - `_identity.skuId` 已解析的行用系统编码与品牌，未映射行按源编码单列；
  *   - 数量 decimal 字符串；缓存绑定随批次集合变化；缺流 insufficient 不补零。
  */
@@ -15,10 +15,10 @@ import { getCrossSystemSemanticStreamContract } from "@/lib/cross-system-semanti
 const TABLE = "jdy_bonded_warehouse_order_observation";
 
 describe("保税仓日出库观察", () => {
-  it("契约只取最小字段、7 天时间窗，且身份/语义登记表都有条目", () => {
+  it("契约只取最小字段、全量观察（源表为一次性归档，2026-09-04 去掉时间窗），且身份/语义登记表都有条目", () => {
     const contract = jiandaoyunContract("bonded-warehouse-order-observation")!;
     expect(contract.entryId).toBe("69bcf6dbbe2cb5ce06c1b827");
-    expect(contract.window).toEqual({ field: "statistical_date", days: 7 });
+    expect(contract.window).toBeUndefined(); // 探针实核：源表 507 行统计日期全为 2026-03-01，时间窗永远 0 行
     const sources = contract.fields.map((f) => f.source);
     for (const pii of ["recipient_name", "contact_phone", "recipient_full_address", "id_card_name", "id_card_number", "province", "city", "district", "courier_tracking_number"]) {
       expect(sources, pii).not.toContain(pii);
