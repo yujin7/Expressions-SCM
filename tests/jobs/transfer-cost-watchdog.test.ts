@@ -57,6 +57,9 @@ describe("transfer-cost watchdog", () => {
     expect(open1).toHaveLength(1);
     expect(open1[0]).toMatchObject({ refKey: "doc:DB-WD0009", severity: "high" });
     expect(open1[0].title).toContain("调拨成本异常");
+    // system_alerts 全员可读：detail 只有方向/档位文案，不得含偏差百分比、σ、倍数（可反推单位费用）
+    expect(open1[0].detail).toContain("费用：单位费用高于线路中位数，超出统计控制带");
+    expect(`${open1[0].title}\n${open1[0].detail}`).not.toMatch(/\d+(?:\.\d+)?\s*%|σ|×\s*\d/);
 
     const s2 = await run(db, { now: NOW, asOf: AS_OF });
     expect(s2.opened).toBe(0);
