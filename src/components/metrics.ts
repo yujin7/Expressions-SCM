@@ -517,6 +517,52 @@ export const METRICS: Record<string, MetricDef> = {
     tier: "derived",
     caveat: "允许正负值；按采购、PMC、财务和管理员角色可见，缺失不按零处理",
   },
+  /* ── D65 数据质量（W2-H） ── */
+  dataAccuracyRpa: {
+    id: "dataAccuracyRpa",
+    label: "RPA 仓库准确率",
+    short: "RPA/电商部库存快照与聚水潭对账在 SKU 日级的一致率",
+    formula: "近 30 天 recon_diffs 中 |系统数量 − 聚水潭数量| ≤ 容差(dq_tolerance_pct)% 的行数 ÷ 总行数",
+    unit: "pct",
+    tier: "derived",
+    caveat: "目标 95%；并列的盘点命中率把未改动行计为命中、偏高；快照跳变只警告不阻断",
+  },
+  dataAccuracyManual: {
+    id: "dataAccuracyManual",
+    label: "人工单据链准确率",
+    short: "人工上传模板的首次通过率，作为人工录入「首次正确率」的代理",
+    formula: "近 30 天该类模板 staging 成功行 ÷（成功行 + 拒收行）",
+    unit: "pct",
+    tier: "derived",
+    caveat: "目标 90%；只是代理口径，单据链本身的纠错靠红字冲销留痕，不在此统计",
+  },
+  snapshotJumpAlerts: {
+    id: "snapshotJumpAlerts",
+    label: "快照跳变告警",
+    short: "快照仓最近两批相邻快照出现总量跳变、SKU 大量消失或负数量的仓库数",
+    formula: "|ΣQty 变动| > 30% 或 消失 SKU 占比 > 10% 或 存在负数量 的快照仓计数",
+    unit: "count",
+    tier: "derived",
+    caveat: "阈值可调（dq_snapshot_qty_jump_pct / dq_snapshot_vanished_pct）；无上一批的仓只出行数不告警",
+  },
+  salesConsistencyPct: {
+    id: "salesConsistencyPct",
+    label: "销量口径一致率",
+    short: "内部 sales_monthly 与天猫日销观察（支付 − 退款）按 SKU × 完整月的一致比例",
+    formula: "一致行 ÷（一致行 + 例外行）；一致 = |内部 − 外部| ≤ max(绝对下限, max(内部,外部) × 相对容差)；两侧均低于量下限的行不进分母",
+    unit: "pct",
+    tier: "registry",
+    caveat: "只比较两侧都有记录的完整月，单侧缺失记为未覆盖不补 0；一致率不裁定谁对谁错；观察数据不进过账",
+  },
+  dqReviewsPending: {
+    id: "dqReviewsPending",
+    label: "待核对项",
+    short: "数据质量周/月核对包中尚未完成或豁免的记录数",
+    formula: "data_quality_reviews.status = pending 的行数",
+    unit: "count",
+    tier: "ledger",
+    caveat: "连续 4 周完成且达标后转为月核对；豁免必须填原因且不算达标",
+  },
 };
 
 /** 取指标定义；未登记返回 undefined（调用方应回退到原文案） */
