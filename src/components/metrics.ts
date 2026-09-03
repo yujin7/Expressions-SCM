@@ -517,6 +517,42 @@ export const METRICS: Record<string, MetricDef> = {
     tier: "derived",
     caveat: "允许正负值；按采购、PMC、财务和管理员角色可见，缺失不按零处理",
   },
+  todoOpen: {
+    id: "todoOpen",
+    label: "未完成待办",
+    short: "当前处于「待处理 / 进行中」的待办条数",
+    formula: "count(work_items.status ∈ {open, in_progress})",
+    unit: "count",
+    tier: "ledger",
+    caveat: "含手工来源；按人看「指派给我」，按角色看 owner_role；不是工作量，只是待跟进数",
+  },
+  todoOverdue: {
+    id: "todoOverdue",
+    label: "逾期待办",
+    short: "未完成且已过截止日的待办条数",
+    formula: "count(status ∈ {open, in_progress} ∧ due_date < 今天(Asia/Shanghai))",
+    unit: "count",
+    tier: "ledger",
+    caveat: "无截止日的待办不会逾期；完成晚于截止日在完成率口径里记「完成不按时」，不再算逾期",
+  },
+  todoCompletionRate: {
+    id: "todoCompletionRate",
+    label: "待办完成率",
+    short: "系统触发（告警/复核）待办的完成占比，按创建月统计，只读不打分",
+    formula: "已完成 ÷ (总数 − 已取消)；按时率 = 按时完成 ÷ 已完成",
+    unit: "pct",
+    tier: "derived",
+    caveat: "手工来源不计入；创建后不足 10 分钟即关闭的标「可疑」仅提示；D61：绩效 = 证据导出，不评分",
+  },
+  goalAttainment: {
+    id: "goalAttainment",
+    label: "目标达成度",
+    short: "部门目标的实际值相对目标值的达成百分比",
+    formula: "越高越好：实际 ÷ 目标 × 100；越低越好：目标 ÷ 实际 × 100",
+    unit: "pct",
+    tier: "derived",
+    caveat: "auto 实际值取自已登记读模型缓存，取不到留空不编造；手工值必附证据；部门 = 角色（D61）",
+  },
 };
 
 /** 取指标定义；未登记返回 undefined（调用方应回退到原文案） */
