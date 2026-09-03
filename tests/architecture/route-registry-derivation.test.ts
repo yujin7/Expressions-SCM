@@ -59,6 +59,8 @@ const LEGACY_MENU: LegacyNode[] = [
     // 2026-09-03 总监需求 W2-A 新增（D51/D52），登记在 src/lib/route-access.ts 的 inventory_position
     { key: "/inventory/position", label: "库存日级走向" },
     { key: "/inventory/alerts", label: "库存预警与爆单" },
+    // D60（2026-09-03 W2-C 新增，非旧快照）
+    { key: "/inventory/warehouses", label: "各仓库存与周转" }, { key: "/inventory/transfer-routes", label: "调拨线路与费用" },
   ] },
   { key: "quality", label: "质量与合规", children: [{ key: "/quality", label: "质量与合规" }] },
   { key: "npd", label: "新品开发", children: [
@@ -100,6 +102,7 @@ const LEGACY_MENU_ROLES: Record<string, string[]> = {
   "/master/supplier/lifecycle": ["purchasing", "pmc", "finance"],
   "/master/bin": ["warehouse"],
   "/inventory/locations": ["warehouse"],
+  "/inventory/transfer-routes": ["warehouse", "pmc", "finance"], // D60 W2-C 新增
   "/quality": ["quality", "purchasing", "warehouse", "pmc", "ops"],
   "/replenish": ["pmc", "purchasing"],
   "/replenish/versions": ["pmc", "purchasing"],
@@ -145,6 +148,7 @@ const LEGACY_PALETTE_HREFS = [
   "/cockpit",
   // W2-G 新增（2026-09-03 之后登记；非旧面板快照）
   "/report/purchase-orders",
+  "/inventory/warehouses", "/inventory/transfer-routes", // D60 W2-C 新增
 ];
 
 /** 旧 AppShell.filterMenuByRoles 的逐字语义，用来对 LEGACY 快照做同样过滤 */

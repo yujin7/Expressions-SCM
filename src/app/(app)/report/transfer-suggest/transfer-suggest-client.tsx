@@ -26,6 +26,10 @@ interface TransferSuggestRow {
   toCoverBefore: number;
   toCoverAfter: number;
   reason: string;
+  /** D57：该 SKU 预警阈值与取值来源（任一段落到全局缺省 → 行上标「按默认周期」） */
+  alertDays: number;
+  basis: { part: string; value: number; source: string; field: string | null }[];
+  usedDefault: boolean;
 }
 
 interface TransferSuggestData {
@@ -115,6 +119,20 @@ export default function TransferSuggestClient() {
           <Typography.Text type="success" strong>{nz(r.toCoverAfter)}</Typography.Text>
           {" 天"}
         </span>
+      ),
+    },
+    {
+      title: "预警阈值",
+      dataIndex: "alertDays",
+      width: 120,
+      align: "right",
+      render: (v: number, r) => (
+        <Tooltip title={r.basis.map((b) => `${b.part === "production" ? "加工" : b.part === "logistics" ? "在途" : "缓冲"} ${b.value} 天（${b.source === "sku_params" ? `SKU 参数 ${b.field ?? ""}` : b.source === "default" ? "全局缺省" : "参数"}）`).join("；")}>
+          <span>
+            {v} 天
+            {r.usedDefault ? <Tag style={{ marginInlineStart: 4 }}>按默认周期</Tag> : null}
+          </span>
+        </Tooltip>
       ),
     },
     {

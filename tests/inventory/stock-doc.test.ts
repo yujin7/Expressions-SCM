@@ -176,7 +176,7 @@ describe("库存单据 W2：期初/领料出/销售出/调拨 + 红字冲销", (
     await complete(openingInput(sku, wh1, "10"));
 
     const transferId = await complete({
-      subtype: "transfer", warehouseId: wh1, toWarehouseId: wh2, lines: [{ skuId: sku, qty: "4" }],
+      subtype: "transfer", transferType: "inter_warehouse", warehouseId: wh1, toWarehouseId: wh2, lines: [{ skuId: sku, qty: "4" }],
     });
     expect(dCmp(await getBalance(db, sku, wh1), "6")).toBe(0);
     expect(dCmp(await getBalance(db, sku, wh2), "4")).toBe(0);
@@ -185,9 +185,14 @@ describe("库存单据 W2：期初/领料出/销售出/调拨 + 红字冲销", (
     expect(detail.docNo.startsWith("DB-")).toBe(true);
     expect(detail.toWarehouseId).toBe(wh2);
     expect(detail.toWarehouseName).toBe("原料二仓");
+    expect(detail.transferType).toBe("inter_warehouse");
+    const listed = await listStockDocs("", { subtype: "transfer", transferType: "inter_warehouse", fromWarehouseId: wh1, toWarehouseId: wh2, page: 1, pageSize: 10 }, db);
+    expect((listed.rows as { id: number; transferType: string | null }[]).some((r) => r.id === transferId && r.transferType === "inter_warehouse")).toBe(true);
+    const none = await listStockDocs("", { subtype: "transfer", transferType: "unclassified", page: 1, pageSize: 10 }, db);
+    expect((none.rows as { id: number }[]).some((r) => r.id === transferId)).toBe(false);
 
     await expect(
-      createStockDoc(creator, { subtype: "transfer", warehouseId: wh1, toWarehouseId: whSnap, lines: [{ skuId: sku, qty: "1" }] }, db),
+      createStockDoc(creator, { subtype: "transfer", transferType: "bonded_transfer", warehouseId: wh1, toWarehouseId: whSnap, lines: [{ skuId: sku, qty: "1" }] }, db),
     ).rejects.toMatchObject({ name: "ApiError", status: 400, message: expect.stringContaining("快照仓 1.1 启用") });
 
     // 转出仓=快照仓亦拒绝
@@ -297,12 +302,22 @@ describe("库存单据 W2：期初/领料出/销售出/调拨 + 红字冲销", (
     await expect(
       createStockDoc(creator, { subtype: "purchase_in", warehouseId: wh1, lines: [{ skuId: sku, qty: "1" }] }, db),
     ).rejects.toMatchObject({ name: "ZodError" });
-    // 调拨缺转入仓 / 转入=转出 → 校验失败
+    // D60：调拨缺类型 / 清单外类型 / 非调拨带类型 → 校验失败
     await expect(
-      createStockDoc(creator, { subtype: "transfer", warehouseId: wh1, lines: [{ skuId: sku, qty: "1" }] }, db),
+      createStockDoc(creator, { subtype: "transfer", warehouseId: wh1, toWarehouseId: wh2, lines: [{ skuId: sku, qty: "1" }] }, db),
     ).rejects.toMatchObject({ name: "ZodError" });
     await expect(
-      createStockDoc(creator, { subtype: "transfer", warehouseId: wh1, toWarehouseId: wh1, lines: [{ skuId: sku, qty: "1" }] }, db),
+      createStockDoc(creator, { subtype: "transfer", transferType: "teleport", warehouseId: wh1, toWarehouseId: wh2, lines: [{ skuId: sku, qty: "1" }] }, db),
+    ).rejects.toMatchObject({ name: "ZodError" });
+    await expect(
+      createStockDoc(creator, { subtype: "issue_out", transferType: "inter_warehouse", warehouseId: wh1, lines: [{ skuId: sku, qty: "1" }] }, db),
+    ).rejects.toMatchObject({ name: "ZodError" });
+    // 调拨缺转入仓 / 转入=转出 → 校验失败
+    await expect(
+      createStockDoc(creator, { subtype: "transfer", transferType: "inter_warehouse", warehouseId: wh1, lines: [{ skuId: sku, qty: "1" }] }, db),
+    ).rejects.toMatchObject({ name: "ZodError" });
+    await expect(
+      createStockDoc(creator, { subtype: "transfer", transferType: "inter_warehouse", warehouseId: wh1, toWarehouseId: wh1, lines: [{ skuId: sku, qty: "1" }] }, db),
     ).rejects.toMatchObject({ name: "ZodError" });
   });
 

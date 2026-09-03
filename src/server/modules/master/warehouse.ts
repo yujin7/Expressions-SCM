@@ -1,5 +1,6 @@
-import { eq, ilike, or, sql } from "drizzle-orm";
+import { and, eq, ilike, inArray, ne, or, sql } from "drizzle-orm";
 import { writeAudit } from "@/server/core/audit";
+import { getNumParam } from "@/server/core/params";
 import type { SessionUser } from "@/server/core/dto";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyTx = any;
@@ -67,12 +68,57 @@ async function assertValidParent(tx: AnyTx, warehouseId: number | null, parentId
   }
 }
 
+/** D60 仓库上限口径：只数实体仓（成品/原料/包材），委外/在途/快照仓不计 */
+export const PHYSICAL_WAREHOUSE_KINDS = ["finished", "raw", "packaging"] as const;
+export const WAREHOUSE_MAX_ACTIVE_FALLBACK = 12;
+
+/** 启用中的实体仓数与上限（仓库页「已启用 N / 上限 M」） */
+export async function getWarehouseCapacity(dbArg?: AnyTx): Promise<{ activeCount: number; maxActive: number }> {
+  const db: AnyTx = dbArg ?? (await getDbAsync());
+  const [row]: { total: number }[] = await db
+    .select({ total: sql<number>`count(*)::int` })
+    .from(schema.warehouses)
+    .where(and(eq(schema.warehouses.active, true), inArray(schema.warehouses.kind, [...PHYSICAL_WAREHOUSE_KINDS])));
+  const maxActive = await getNumParam("warehouse_max_active", WAREHOUSE_MAX_ACTIVE_FALLBACK, dbArg);
+  return { activeCount: Number(row?.total ?? 0), maxActive };
+}
+
+/**
+ * D60 warehouse_max_active 守卫：新建/启用一个实体仓时，若其他启用中的实体仓数已 ≥ 上限 → 409。
+ * 只在「结果是启用的实体仓」时检查；停用、非实体仓、或本仓原本已是启用实体仓（仅改名等）不触发。
+ */
+async function assertWarehouseCapacity(tx: AnyTx, selfId: number | null, next: { kind: string; active: boolean }): Promise<void> {
+  if (!next.active || !(PHYSICAL_WAREHOUSE_KINDS as readonly string[]).includes(next.kind)) return;
+  if (selfId != null) {
+    const [existing]: { kind: string; active: boolean }[] = await tx
+      .select({ kind: schema.warehouses.kind, active: schema.warehouses.active })
+      .from(schema.warehouses)
+      .where(eq(schema.warehouses.id, selfId));
+    if (existing?.active && (PHYSICAL_WAREHOUSE_KINDS as readonly string[]).includes(existing.kind)) return; // 已占额度
+  }
+  const conds = [eq(schema.warehouses.active, true), inArray(schema.warehouses.kind, [...PHYSICAL_WAREHOUSE_KINDS])];
+  if (selfId != null) conds.push(ne(schema.warehouses.id, selfId));
+  const [row]: { total: number }[] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(schema.warehouses)
+    .where(and(...conds));
+  const maxActive = await getNumParam("warehouse_max_active", WAREHOUSE_MAX_ACTIVE_FALLBACK, tx);
+  const activeCount = Number(row?.total ?? 0);
+  if (activeCount >= maxActive) {
+    throw new ApiError(
+      409,
+      `启用中的实体仓已达上限（${activeCount} / ${maxActive}，参数 warehouse_max_active）；请先停用或合并仓库，或在运行参数中调整上限`,
+    );
+  }
+}
+
 /** @param actor 写入者；审计与写入同事务（路由层补记不原子，见 master/sku.ts 注释） */
 export async function createWarehouse(input: unknown, actor?: SessionUser, dbArg?: AnyTx) {
   const v = warehouseSchema.parse(input);
   const db: AnyTx = dbArg ?? (await getDbAsync());
   return db.transaction(async (tx: AnyTx) => {
   await assertValidParent(tx, null, v.parentId ?? null);
+  await assertWarehouseCapacity(tx, null, { kind: v.kind, active: v.active });
   const [created] = await tx
     .insert(schema.warehouses)
     .values({
@@ -101,6 +147,7 @@ export async function updateWarehouse(id: number, input: unknown, actor?: Sessio
   const [existing] = await tx.select().from(schema.warehouses).where(eq(schema.warehouses.id, id));
   if (!existing) throw new ApiError(404, "仓库不存在");
   await assertValidParent(tx, id, v.parentId ?? null);
+  await assertWarehouseCapacity(tx, id, { kind: v.kind, active: v.active });
   const nextAccountingMode = v.kind === "snapshot" ? "snapshot" : "realtime";
   if (nextAccountingMode !== existing.accountingMode) {
     const [balanceUsage]: { total: number }[] = await tx

@@ -1,6 +1,7 @@
 "use client";
 
 import SearchInput from "@/components/SearchInput";
+import { TRANSFER_TYPE_LABELS, TRANSFER_TYPES } from "@/lib/transfer-types";
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Alert, App, Button, Descriptions, Drawer, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Typography } from "antd";
@@ -24,6 +25,7 @@ interface DocRow {
   docNo: string;
   subtype: string;
   status: string;
+  transferType?: string | null;
   warehouseName: string;
   toWarehouseName: string | null;
   lineCount: number;
@@ -85,6 +87,7 @@ interface CreateFormValues {
   warehouseId: number;
   toWarehouseId?: number;
   reason?: string; // R16：调拨业务原因
+  transferType?: string; // D60：调拨类型（固定清单，调拨必填）
   remark?: string;
   riskDisposalId?: number;
   lines?: { skuId: number; qty: number; price?: number }[];
@@ -341,6 +344,7 @@ function DocsInner() {
         warehouseId: values.warehouseId,
         toWarehouseId: values.subtype === "transfer" ? values.toWarehouseId : undefined,
         reason: values.subtype === "transfer" ? values.reason || undefined : undefined,
+        transferType: values.subtype === "transfer" ? values.transferType : undefined,
         remark: values.remark?.trim() || undefined,
         riskDisposalId: values.riskDisposalId,
         lines: lines.map((l) => ({
@@ -370,7 +374,19 @@ function DocsInner() {
         <Typography.Link onClick={() => setDetailId(r.id)}>{v}</Typography.Link>
       ),
     },
-    { title: "类型", dataIndex: "subtype", width: 120, render: (v: string) => <SubtypeTag subtype={v} /> },
+    {
+      title: "类型",
+      dataIndex: "subtype",
+      width: 150,
+      render: (v: string, r) => (
+        <span>
+          <SubtypeTag subtype={v} />
+          {v === "transfer" ? (
+            <Tag style={{ marginInlineStart: 4 }}>{r.transferType ? (TRANSFER_TYPE_LABELS[r.transferType as keyof typeof TRANSFER_TYPE_LABELS] ?? r.transferType) : "未分类"}</Tag>
+          ) : null}
+        </span>
+      ),
+    },
     {
       title: "仓库",
       dataIndex: "warehouseName",
@@ -545,6 +561,18 @@ function DocsInner() {
               message="已绑定风险库存报废登记"
               description="请核对仓库、批次与实际报废数量。审批过账后处置登记会自动完成；若后续红字冲销，登记会自动重开。"
             />
+          ) : null}
+          {createSubtype === "transfer" ? (
+            <Form.Item
+              name="transferType"
+              label="调拨类型（D60 固定清单；线路成本基线按类型分列）"
+              rules={[{ required: true, message: "调拨必须选择调拨类型" }]}
+            >
+              <Select
+                placeholder="工厂发仓 / 保税转运 / 仓间调拨 / 借调 / 退回工厂 / 其他"
+                options={TRANSFER_TYPES.map((t) => ({ value: t, label: TRANSFER_TYPE_LABELS[t] }))}
+              />
+            </Form.Item>
           ) : null}
           {createSubtype === "transfer" ? (
             <Form.Item name="reason" label="业务原因（R16：借调将进入月末部门间借调对账）">

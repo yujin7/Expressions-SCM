@@ -96,7 +96,7 @@ describe("redteam/stock-doc", () => {
     const sku = await makeSku();
     await complete({ subtype: "opening", warehouseId: wh1, lines: [{ skuId: sku, qty: "10" }] });
     const trId = await complete({
-      subtype: "transfer", warehouseId: wh1, toWarehouseId: wh2, lines: [{ skuId: sku, qty: "4" }],
+      subtype: "transfer", transferType: "inter_warehouse", warehouseId: wh1, toWarehouseId: wh2, lines: [{ skuId: sku, qty: "4" }],
     });
     expect(dCmp(await getBalance(db, sku, wh1), "6")).toBe(0);
     expect(dCmp(await getBalance(db, sku, wh2), "4")).toBe(0);
@@ -118,7 +118,7 @@ describe("redteam/stock-doc", () => {
     const sku = await makeSku();
     await complete({ subtype: "opening", warehouseId: wh1, lines: [{ skuId: sku, qty: "10" }] });
     const trId = await complete({
-      subtype: "transfer", warehouseId: wh1, toWarehouseId: wh2,
+      subtype: "transfer", transferType: "inter_warehouse", warehouseId: wh1, toWarehouseId: wh2,
       lines: [{ skuId: sku, qty: "1" }, { skuId: sku, qty: "2" }],
     });
     const rows = await db.select().from(stockLedger)
