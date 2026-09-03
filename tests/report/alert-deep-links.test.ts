@@ -85,7 +85,7 @@ describe("inventory-alerts-query：服务端筛选与分页", () => {
     expect(filterInventoryAlertRows(rows, { q: "ning", onlyAlert: "0" }).map((r) => r.code)).toEqual(["B-OK"]);
   });
   it("分页只切 rows，totals 保持读模型全量，filtered.total 是筛选命中数", () => {
-    const model = { key: "inventory-alerts/v1", builtAt: "t", sourceBinding: "b", params: { productionDefault: 30, logisticsDefault: 15, bufferDays: 5, targetDays: null, tierCuts: { sPct: 50, aPct: 80, bPct: 95 } }, totals: { skus: 5, alert: 3, watch: 1, ok: 1, outOfStock: 1, byTier: {} }, rows, limitations: [] } as InventoryAlertsReadModel;
+    const model = { key: "inventory-alerts/v2", builtAt: "t", sourceBinding: "b", params: { productionDefault: 30, logisticsDefault: 15, bufferDays: 5, targetDays: null, tierCuts: { sPct: 50, aPct: 80, bPct: 95 } }, totals: { skus: 5, alert: 3, watch: 1, ok: 1, outOfStock: 1, byTier: {} }, rows, limitations: [] } as unknown as InventoryAlertsReadModel;
     const page = pageInventoryAlerts(model, { onlyAlert: "0", showC: "1", page: 2, pageSize: 2 });
     expect(page.filtered).toEqual({ total: 5, page: 2, pageSize: 2 });
     expect(page.rows.map((r) => r.code)).toEqual(["B-OK", "C-LOW"]);
@@ -94,9 +94,9 @@ describe("inventory-alerts-query：服务端筛选与分页", () => {
 });
 
 describe("sales-spike-query：q 筛选不改总数", () => {
-  const hit = (p: Partial<SpikeHit>): SpikeHit => ({ kind: "sku", skuId: 1, code: "N1", name: "爆款", shopName: "旗舰店", platformSkuId: null, anchorDate: "2026-09-03", days: [], baseline: "10", threshold: "15", risePct: "100", href: "/replenish?q=N1", ...p });
+  const hit = (p: Partial<SpikeHit>): SpikeHit => ({ kind: "sku", skuId: 1, code: "N1", name: "爆款", shopName: "旗舰店", platformSkuId: null, anchorDate: "2026-09-03", days: [], baseline: "10", threshold: "15", risePct: "100", href: "/replenish?q=N1", reason: "连续 3 天 ≥ 基线×1.5", gaps: 0, expected: false, planEventRef: null, expectedUpliftPct: null, planEventWindow: null, ...p });
   it("hitCount / unmappedCount 是筛选前全量；q 匹配编码/名称/平台 SKU/店铺", () => {
-    const model = { key: "sales-spike/v1", builtAt: "t", sourceBinding: "b", state: "ready", anchorDate: "2026-09-03", sourceAsOf: null, params: { consecutiveDays: 3, risePct: 50, minBaseQty: 10, baselineDays: 7 }, coverage: { platformSeries: 2, mappedSeries: 1, systemSkus: 1 }, hits: [hit({}), hit({ skuId: 2, code: "N2", name: "次爆" })], unmappedHits: [hit({ kind: "platform", skuId: null, code: null, name: null, platformSkuId: "P-X", shopName: "海外店" })], limitations: [] } as SalesSpikeReadModel;
+    const model = { key: "sales-spike/v2", builtAt: "t", sourceBinding: "b", state: "ready", anchorDate: "2026-09-03", sourceAsOf: null, params: { consecutiveDays: 3, risePct: 50, minBaseQty: 10, baselineDays: 7 }, coverage: { platformSeries: 2, mappedSeries: 1, systemSkus: 1 }, hits: [hit({}), hit({ skuId: 2, code: "N2", name: "次爆" })], unmappedHits: [hit({ kind: "platform", skuId: null, code: null, name: null, platformSkuId: "P-X", shopName: "海外店" })], limitations: [] } as unknown as SalesSpikeReadModel;
     const page = pageSalesSpike(model, "n2");
     expect(page.hitCount).toBe(2);
     expect(page.unmappedCount).toBe(1);
