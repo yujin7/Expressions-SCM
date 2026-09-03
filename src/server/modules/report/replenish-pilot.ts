@@ -7,10 +7,11 @@
  * 这与 rules/replenish-ownership 的 supply_chain_direct 条件相同；本读模型额外给出每个阻塞维度的人数与销量占比，
  * 让「名单为什么短」可见（研究结论：交期主数据覆盖率是最常见瓶颈）。
  *
- * 缓存：report_read_model_cache key=`replenish-pilot/v1`，source_binding = 期间|销量最新月|策略最近固化时刻|覆写数|业务日；
+ * 缓存：report_read_model_cache key=`replenish-pilot/v1`，source_binding = 期间|销量最新月|策略最近固化时刻|覆写数|试点数|
+ * sku_params 最近更新+行数|运行参数（grade_* / default_*_lead_days / alert_buffer_days / detector_*）当前值|业务日；
  * 任一变化即重算，绝不以旧值冒充当前值。授权层级 derived（内部销量 + 主数据），无金额。
  */
-import { sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { salesWindow } from "@/server/core/sales-window";
 import { type AnyDb, r1, resolveDb } from "@/server/core/svc";
@@ -144,7 +145,21 @@ export async function computeReplenishPilot(dbArg?: AnyDb): Promise<PilotReadMod
   };
 }
 
-/** 来源绑定：任一输入变化即失效 */
+/**
+ * 参与候选判定的运行参数键（sys_params global）：分层切点、缺省周期、预警缓冲、异动阈值。
+ * 任一值变化都会改变 XYZ/异动/阻塞判定，故纳入 source_binding。
+ */
+export const PILOT_BINDING_PARAM_KEYS = [
+  "grade_s_pct", "grade_a_pct", "grade_b_pct",
+  "default_production_lead_days", "default_logistics_lead_days", "alert_buffer_days",
+  "detector_sales_drop_pct", "detector_channel_shift_pct", "detector_velocity_dev_pct",
+] as const;
+
+/**
+ * 来源绑定：任一输入变化即失效。
+ * 组成 = 策略期 | 销量最新月 | 策略最近固化时刻 | 覆写数 | 试点数 | sku_params 最近更新时刻+行数 | 运行参数当前值 | 业务日。
+ * 周期主数据（sku_params）是最常见的阻塞维度：补录后读模型必须立即反映，不能等到次日。
+ */
 export async function pilotSourceBinding(db: AnyDb): Promise<string> {
   const period = await latestPolicyPeriod(db);
   const { maxYm } = await salesWindow(db);
@@ -155,7 +170,22 @@ export async function pilotSourceBinding(db: AnyDb): Promise<string> {
       pilots: sql<number>`count(*) filter (where ${schema.skuPlanningPolicy.pilot})::int`,
     })
     .from(schema.skuPlanningPolicy);
-  return [period ?? "none", maxYm ?? "none", pol?.builtAt ?? "none", pol?.overrides ?? 0, pol?.pilots ?? 0, todayShanghai()].join("|");
+  const [sp]: { updatedAt: string | null; rows: number }[] = await db
+    .select({
+      updatedAt: sql<string | null>`max(${schema.skuParams.updatedAt})::text`,
+      rows: sql<number>`count(*)::int`,
+    })
+    .from(schema.skuParams);
+  const paramRows: { key: string; value: string }[] = await db
+    .select({ key: schema.sysParams.key, value: schema.sysParams.value })
+    .from(schema.sysParams)
+    .where(and(eq(schema.sysParams.scope, "global"), inArray(schema.sysParams.key, [...PILOT_BINDING_PARAM_KEYS])));
+  const paramValues = new Map(paramRows.map((r) => [r.key, r.value]));
+  const params = PILOT_BINDING_PARAM_KEYS.map((k) => `${k}=${paramValues.get(k) ?? "default"}`).join(",");
+  return [
+    period ?? "none", maxYm ?? "none", pol?.builtAt ?? "none", pol?.overrides ?? 0, pol?.pilots ?? 0,
+    `sp:${sp?.updatedAt ?? "none"}/${sp?.rows ?? 0}`, params, todayShanghai(),
+  ].join("|");
 }
 
 export async function loadReplenishPilot(dbArg?: AnyDb, opts: { refresh?: boolean } = {}): Promise<PilotReadModel> {

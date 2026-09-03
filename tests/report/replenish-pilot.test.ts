@@ -1,5 +1,7 @@
 import { sql } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
+import { sysParams } from "@/db/schema";
+import { patchSupplyParams } from "@/server/modules/master/sku-supply-params-fill";
 import { buildSkuPlanningPolicy, overrideTier, setPilotFlags } from "@/server/modules/planning/policy";
 import { computeReplenishPilot, loadReplenishPilot, PILOT_CACHE_KEY, pilotSourceBinding } from "@/server/modules/report/replenish-pilot";
 import { createTestDb, type TestDb } from "../helpers/db";
@@ -65,5 +67,36 @@ describe("report/replenish-pilot", () => {
     // refresh=1 强制重算亦一致
     const forced = await loadReplenishPilot(db, { refresh: true });
     expect(forced.candidates).toBe(1);
+  });
+
+  it("补录周期后读模型立即反映：source_binding 含 sku_params 更新时刻/行数与运行参数当前值", async () => {
+    const before = await loadReplenishPilot(db);
+    expect(before.candidates).toBe(1);
+    expect(before.blockers.leadMissing).toBe(2);
+    expect(before.sourceBinding).toContain("|sp:");
+    expect(before.sourceBinding).toContain("grade_s_pct=default");
+
+    // A 尚无 sku_params 行：补录 = 新增行（行数变化）→ 旧缓存失效，A 立即成为候选
+    await patchSupplyParams(w.purchasing, w.sku.A, { normalLeadDays: 20, logisticsLeadDays: 10 }, db);
+    const afterA = await loadReplenishPilot(db);
+    expect(afterA.sourceBinding).not.toBe(before.sourceBinding);
+    expect(afterA.candidates).toBe(2);
+    expect(afterA.rows.find((r) => r.skuId === w.sku.A)).toMatchObject({ eligible: true, leadDaysKnown: true, blockers: [], ownership: "supply_chain_direct" });
+
+    // B 已有行、只补在途：行数不变，靠 updated_at 变化失效
+    await patchSupplyParams(w.purchasing, w.sku.B, { logisticsLeadDays: 7 }, db);
+    const afterB = await loadReplenishPilot(db);
+    expect(afterB.sourceBinding).not.toBe(afterA.sourceBinding);
+    expect(afterB.candidates).toBe(3);
+    expect(afterB.blockers.leadMissing).toBe(0);
+    const cachedAgain = await loadReplenishPilot(db);
+    expect(cachedAgain.builtAt).toBe(afterB.builtAt); // 无变化 → 命中缓存
+
+    // 运行参数（分层切点 / 缺省周期 / 异动阈值）变化同样失效
+    await db.insert(sysParams).values({ scope: "global", key: "grade_s_pct", value: "70" });
+    const afterParam = await loadReplenishPilot(db);
+    expect(afterParam.sourceBinding).not.toBe(afterB.sourceBinding);
+    expect(afterParam.sourceBinding).toContain("grade_s_pct=70");
+    expect(afterParam.builtAt).not.toBe(afterB.builtAt);
   });
 });

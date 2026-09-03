@@ -3,6 +3,8 @@
 /**
  * 周期主数据补录工作台（IAL-06 / FS-R6）：加工 / 采购 / 在途周期、MOQ、成本有无，按分层筛缺失维度，行内补录。
  * 写规则：只允许填空；覆盖非空值须 pmc/admin（采购只能补空）。每次保存留审计。
+ * 可编辑列以服务端下发的 row.leadFields 为准（master/sku-supply-params-fill.leadFieldsFor 唯一口径：
+ * 成品/半成品 = 加工 + 在途；原料/包材 = 采购），前端不另行按类型判定。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { App, Button, Col, InputNumber, Row, Select, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from "antd";
@@ -31,6 +33,8 @@ interface Row {
   normalLeadDays: number | null;
   logisticsLeadDays: number | null;
   purchaseLeadDays: number | null;
+  /** 该类型适用/可编辑的周期字段（服务端唯一口径） */
+  leadFields: LeadField[];
   moq: string | null;
   hasCost: boolean;
   missing: Dim[];
@@ -92,7 +96,7 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
 
   const save = async (r: Row) => {
     const body: Partial<Record<LeadField, number | null>> = {};
-    for (const f of ["normalLeadDays", "logisticsLeadDays", "purchaseLeadDays"] as const) {
+    for (const f of r.leadFields) {
       const k = editKey(r.skuId, f);
       if (k in edits && edits[k] !== r[f]) body[f] = edits[k];
     }
@@ -131,7 +135,7 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
     );
   };
 
-  const dirty = (r: Row) => (["normalLeadDays", "logisticsLeadDays", "purchaseLeadDays"] as const).some((f) => {
+  const dirty = (r: Row) => r.leadFields.some((f) => {
     const k = editKey(r.skuId, f);
     return k in edits && edits[k] !== r[f];
   });
@@ -145,9 +149,10 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
       render: (v: Tier | null, r) => v ? <Tag color={TIER_COLORS[v]}>{v}</Tag> : r.skuType === "finished" ? <Typography.Text type="secondary">未固化</Typography.Text> : "—",
     },
     { title: "阻塞", dataIndex: "blocked", width: 80, render: (v: boolean) => (v ? <Tooltip title="S/A/B 缺加工或在途周期：直出/试点/预警阈值都建立在默认周期上"><Tag color="red">阻塞</Tag></Tooltip> : "—") },
-    { title: "加工周期(天)", key: "normalLeadDays", width: 120, render: (_, r) => cell(r, "normalLeadDays", r.skuType === "finished" || r.skuType === "semi") },
-    { title: "在途周期(天)", key: "logisticsLeadDays", width: 120, render: (_, r) => cell(r, "logisticsLeadDays", r.skuType === "finished" || r.skuType === "semi") },
-    { title: "采购周期(天)", key: "purchaseLeadDays", width: 120, render: (_, r) => cell(r, "purchaseLeadDays", r.skuType !== "finished") },
+    // 可编辑列 = 服务端 leadFields（成品/半成品：加工+在途；原料/包材：采购）
+    { title: "加工周期(天)", key: "normalLeadDays", width: 120, render: (_, r) => cell(r, "normalLeadDays", r.leadFields.includes("normalLeadDays")) },
+    { title: "在途周期(天)", key: "logisticsLeadDays", width: 120, render: (_, r) => cell(r, "logisticsLeadDays", r.leadFields.includes("logisticsLeadDays")) },
+    { title: "采购周期(天)", key: "purchaseLeadDays", width: 120, render: (_, r) => cell(r, "purchaseLeadDays", r.leadFields.includes("purchaseLeadDays")) },
     { title: "MOQ", dataIndex: "moq", width: 100, align: "right", render: (v: string | null) => (v == null ? <Typography.Text type="warning">缺</Typography.Text> : formatQty(v)) },
     { title: "成本", dataIndex: "hasCost", width: 70, render: (v: boolean) => (v ? <Tag color="green">有</Tag> : <Tag color="orange">无</Tag>) },
     { title: "缺失", dataIndex: "missing", width: 200, render: (v: Dim[]) => (v.length ? v.map((d) => <Tag key={d}>{data?.dimLabels[d] ?? d}</Tag>) : <Tag color="green">齐全</Tag>) },
@@ -169,7 +174,7 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>周期主数据补录</Typography.Title>
       <CaliberNote
-        summary={<>成品：加工周期 + 在途周期；部件：采购周期。S/A/B 缺任一周期即阻塞直出/试点，预警阈值只能按默认周期（D57）。{data?.policyPeriod ? <>　分层取 {data.policyPeriod} 期固化值。</> : "　分层尚未固化。"}</>}
+        summary={<>成品/半成品：加工周期 + 在途周期；原料/包材：采购周期（可编辑列由服务端按类型下发）。S/A/B 缺任一周期即阻塞直出/试点，预警阈值只能按默认周期（D57）。{data?.policyPeriod ? <>　分层取 {data.policyPeriod} 期固化值。</> : "　分层尚未固化。"}</>}
         detail={<div><p>只允许填空；覆盖已有值须生产计划或管理员（采购只能补空值），每次保存留审计（sku_params）。MOQ 走 uom_convs（基础单位换算），成本走 sku_costs，本页只显示有无，不给金额。</p><p>缺省周期：加工 default_production_lead_days、在途 default_logistics_lead_days（运行参数）。</p></div>}
       />
       <Row gutter={16} style={{ marginBottom: 12 }}>

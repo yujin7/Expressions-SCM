@@ -37,6 +37,8 @@ describe("planning/policy：分层固化、覆写、试点", () => {
     expect(r.inserted).toBe(5);
     expect(r.byTier).toEqual({ S: 1, A: 1, B: 1, C: 2 });
     expect(r.byOwnership).toEqual({ supply_chain_direct: 1, joint_review: 2, ops_fallback: 2 });
+    // 「直出为什么少」：S/A/B 共 3，A/B 因交期主数据缺失阻塞；C 级不计
+    expect(r.blockers).toEqual({ leadDaysUnknown: 2, xyzNull: 0, xyzNotX: 0, detectorHit: 0, candidates: 3 });
 
     const rows = await db.select().from(skuPlanningPolicy).where(eq(skuPlanningPolicy.period, PERIOD));
     const by = new Map(rows.map((x) => [x.skuId, x]));
@@ -52,6 +54,7 @@ describe("planning/policy：分层固化、覆写、试点", () => {
     expect(audits[0].userId).toBe(w.pmc.id);
     expect((audits[0].after as { period: string; source: string }).period).toBe(PERIOD);
     expect((audits[0].after as { source: string }).source).toBe("manual");
+    expect((audits[0].after as { blockers: unknown }).blockers).toEqual(r.blockers);
   });
 
   it("loadPolicyMap：缺省取最近期；未固化期返回空", async () => {
@@ -115,6 +118,9 @@ describe("planning/policy：分层固化、覆写、试点", () => {
     expect(all.summary.byEffectiveTier).toEqual({ S: 0, A: 2, B: 1, C: 2 });
     expect(all.summary.overrides).toBe(1);
     expect(all.summary.pilot).toBe(2);
+    // 阻塞分布取该期最近一次固化的审计快照
+    expect(all.summary.blockers).toEqual({ leadDaysUnknown: 2, xyzNull: 0, xyzNotX: 0, detectorHit: 0, candidates: 3 });
+    expect((await getPolicy({ period: "2025-01" }, db)).summary.blockers).toBeNull();
     expect(all.rows[0].effectiveTier).toBe("A"); // S→A 排序按生效分层
     const ov = await getPolicy({ period: PERIOD, overriddenOnly: true }, db);
     expect(ov.rows.map((r) => r.skuId)).toEqual([w.sku.S]);

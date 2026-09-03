@@ -112,4 +112,22 @@ describe("replenish/reconcile", () => {
     expect(empty.total).toBe(0);
     expect(empty.periods).toEqual(["2026-07"]);
   });
+
+  it("受限渠道运营（D62）：提报 channelId 必填且须在范围内——缺渠道 403、范围外 403、范围内可提；不受限用户仍可提不分渠道", async () => {
+    await expect(submitOpsDemand(w.opsPdd, { rows: [{ skuCode: "TIER-S", period: "2026-08", qty: 1 }] }, db)).rejects.toMatchObject({ status: 403 });
+    await expect(submitOpsDemand(w.opsPdd, { rows: [{ skuId: w.sku.S, channelId: null, period: "2026-08", qty: 1 }] }, db)).rejects.toMatchObject({ status: 403 });
+    await expect(submitOpsDemand(w.opsPdd, { rows: [{ skuId: w.sku.S, channelId: w.tmall, period: "2026-08", qty: 1 }] }, db)).rejects.toMatchObject({ status: 403 });
+    // 混合批：任一行缺渠道即 403、整批不落
+    await expect(submitOpsDemand(w.opsPdd, {
+      rows: [{ skuCode: "TIER-S", channelCode: "pdd", period: "2026-08", qty: 1 }, { skuCode: "TIER-A", period: "2026-08", qty: 1 }],
+    }, db)).rejects.toMatchObject({ status: 403 });
+    expect(await db.select().from(opsDemandSubmissions).where(eq(opsDemandSubmissions.period, "2026-08"))).toHaveLength(0);
+
+    const ok = await submitOpsDemand(w.opsPdd, { rows: [{ skuCode: "TIER-S", channelCode: "pdd", period: "2026-08", qty: 5 }] }, db);
+    expect(ok).toMatchObject({ inserted: 1, superseded: 0 });
+    const scoped = await getReconcile(w.opsPdd, { period: "2026-08" }, db);
+    expect(scoped.rows.map((x) => [x.skuId, x.channelId])).toEqual([[w.sku.S, w.pdd]]);
+    const unrestricted = await submitOpsDemand(w.ops, { rows: [{ skuCode: "TIER-S", period: "2026-08", qty: 5 }] }, db);
+    expect(unrestricted).toMatchObject({ inserted: 1 });
+  });
 });

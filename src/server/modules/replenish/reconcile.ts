@@ -3,7 +3,8 @@
  *
  * - 提报 = 运营按 SKU×渠道×月 提交的需求量（件），append-only：修正 = 新行 supersedes 旧行（表上 UNIQUE 保证链式单向）。
  *   写路径 ops/pmc（admin 兜底），同事务 writeAudit(entity=ops_demand_submission, action=submit)；
- *   受限用户（D62）只能提报自己范围内的渠道；不分渠道（channel 空）任何角色可提。
+ *   受限用户（D62：channelScope 非空且非 admin）**必须**逐行指定范围内渠道，缺渠道或范围外一律 403；
+ *   不受限用户可提不分渠道（channel 空）需求。
  * - 导入：CSV 文本（模板列：SKU编码, 渠道编码, 月份, 数量, 依据）直接解析后走同一写路径；错误逐行返回、整批不落。
  * - 核对：提报量并排**系统基线**——月量基线 = rules/forecast.forecastDaily（Holt，近 6 月序列）的 forecastMonthly；
  *   朴素基线 = 近 3 月月均（core/velocity 月窗）。差异% = (提报 − 基线) ÷ 基线；|差异| ≥ ops_demand_diff_pct（缺省 30）标「需核对」。
@@ -138,6 +139,8 @@ export async function submitOpsDemand(user: SessionUser, input: unknown, dbArg?:
   requireAnyRole(user, "ops", "pmc");
   const v = submitSchema.parse(input);
   const db = await resolveDb(dbArg);
+  // D62：受限渠道用户（channelScope 非空且非 admin）提报必须逐行指定范围内渠道——「不分渠道」会越过范围写入全渠道口径
+  const channelRequired = resolveChannelScope(user, null).forced;
 
   // 解析编码 → id（一次查全）
   const skuCodes = [...new Set(v.rows.flatMap((r) => (r.skuId == null && r.skuCode ? [r.skuCode] : [])))];
@@ -176,10 +179,13 @@ export async function submitOpsDemand(user: SessionUser, input: unknown, dbArg?:
       if (id == null) { errors.push(`第 ${n} 行：渠道编码「${r.channelCode}」不存在`); return; }
       channelId = id;
     }
+    if (channelRequired && channelId == null) {
+      throw new ApiError(403, `第 ${n} 行：受限渠道用户提报必须指定渠道（仅限本人范围内），不得提报不分渠道需求`);
+    }
     try {
       if (channelId != null) resolveChannelScope(user, channelId); // 范围外渠道 → 403
     } catch (e) {
-      if (e instanceof ApiError && e.status === 403) { errors.push(`第 ${n} 行：无权提报该渠道`); return; }
+      if (e instanceof ApiError && e.status === 403) throw new ApiError(403, `第 ${n} 行：无权提报该渠道（不在本人渠道范围内）`);
       throw e;
     }
     resolved.push({ skuId: sku.id, channelId, period: r.period, qty: dQty(r.qty), basis: r.basis?.trim() ? r.basis.trim() : null });
