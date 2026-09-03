@@ -17,12 +17,14 @@ import type { SpikeHit } from "@/server/modules/report/sales-spike";
 import type { TransferAnomalyRow, TransferLaneRow } from "@/server/modules/report/transfer-routes";
 import type { WarehouseInventoryRow } from "@/server/modules/report/warehouse-inventory";
 import type { GoalRow } from "@/server/modules/goals/service";
+import CockpitTrends from "./trends/CockpitTrends";
 
 const TABS = [
   { key: "sources", label: "数据来源与总量" },
   { key: "alerts", label: "预警" },
   { key: "inventory", label: "库存管控" },
   { key: "ops", label: "日常事务" },
+  { key: "channels", label: "渠道观察" },
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
 
@@ -196,6 +198,7 @@ export default function CockpitClient() {
           <BlockCard title="数据来源状态" block={s.sources.dataSources} extra={<a href="/admin/health">运维面板 →</a>}>
             {s.sources.dataSources.data ? <Table<SourceStatusRow> rowKey="key" size="small" pagination={false} columns={srcCols} dataSource={s.sources.dataSources.data} scroll={{ x: 900 }} /> : null}
           </BlockCard>
+          <CockpitTrends screen="s1" />
         </Space>
       ) : null}
 
@@ -250,6 +253,7 @@ export default function CockpitClient() {
               </Row>
             ) : null}
           </BlockCard>
+          <CockpitTrends screen="s2" />
         </Space>
       ) : null}
 
@@ -303,6 +307,7 @@ export default function CockpitClient() {
               ]} />
             </>) : null}
           </BlockCard>
+          <CockpitTrends screen="s3" />
         </Space>
       ) : null}
 
@@ -366,8 +371,11 @@ export default function CockpitClient() {
               </BlockCard>
             </Col>
           </Row>
+          <CockpitTrends screen="s4" />
         </Space>
       ) : null}
+
+      {tab === "channels" && s ? <CockpitTrends screen="channels" /> : null}
 
       {data ? <Alert type="info" showIcon message={<div>{data.limitations.map((l) => <div key={l}>· {l}</div>)}</div>} /> : null}
     </Space>

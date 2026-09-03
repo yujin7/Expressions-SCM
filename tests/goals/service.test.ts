@@ -15,6 +15,8 @@ import {
   resolveAutoActual,
   updateGoal,
 } from "@/server/modules/goals/service";
+import { DATA_QUALITY_CACHE_KEY } from "@/server/modules/report/data-quality";
+import { EXTERNAL_VELOCITY_CACHE_KEY } from "@/server/modules/report/external-velocity";
 import { INVENTORY_SALES_RATIO_CACHE_KEY } from "@/server/modules/report/inventory-sales-ratio";
 import { PURCHASE_ORDER_METRICS_KEY } from "@/server/modules/report/purchase-order-metrics";
 import { SUPPLIER_PAYMENT_TERM_KEY } from "@/server/modules/report/supplier-payment-term";
@@ -63,9 +65,12 @@ describe("goals/service：部门目标 CRUD / auto 实际值（真实读模型�
 
   it("AUTO_METRIC_SOURCES 只引用真实存在的读模型缓存键（不再前缀猜测）", () => {
     // 仓库库存读模型实际落库的键带窗口后缀（/w90）：goals 必须读同一把键（审阅修复：原来读裸前缀永远取不到）
-    const real = new Set([INVENTORY_SALES_RATIO_CACHE_KEY, warehouseInventoryCacheKey(90), SUPPLIER_PAYMENT_TERM_KEY, PURCHASE_ORDER_METRICS_KEY]);
+    const real = new Set([INVENTORY_SALES_RATIO_CACHE_KEY, warehouseInventoryCacheKey(90), SUPPLIER_PAYMENT_TERM_KEY, PURCHASE_ORDER_METRICS_KEY, DATA_QUALITY_CACHE_KEY, EXTERNAL_VELOCITY_CACHE_KEY]);
     for (const s of AUTO_METRIC_SOURCES) expect(real.has(s.cacheKey), `${s.metricKey} → ${s.cacheKey}`).toBe(true);
-    expect(AUTO_METRIC_SOURCES.map((s) => s.metricKey)).toEqual(["inventorySalesRatio", "turns", "dio", "paymentTermAttainment", "creditTermSpendShare", "onTimeRate"]);
+    expect(AUTO_METRIC_SOURCES.map((s) => s.metricKey)).toEqual([
+      "inventorySalesRatio", "turns", "dio", "paymentTermAttainment", "creditTermSpendShare", "onTimeRate",
+      "salesConsistencyPct", "platformIdentityCoverage", "costSavingYtd",
+    ]);
   });
 
   it("达成度：up = 实际/目标，down = 目标/实际，decimal 一位小数；分母 0 → null", () => {
