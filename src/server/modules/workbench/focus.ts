@@ -24,7 +24,6 @@ import { getOnHandBySku } from "@/server/core/stock-view";
 import { num } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
 import { getNextActions, type NextActionItem } from "@/server/modules/workbench/next-actions";
-import { getTodoProgressBlock } from "@/server/modules/todo/stats";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -429,7 +428,8 @@ export async function getWorkbenchFocus(
     countWhere(db, schema.systemAlerts, eq(schema.systemAlerts.status, "open")),
     countWhere(db, schema.reviewItems, eq(schema.reviewItems.status, "open")),
     // D61 待办任务（work_items）：与 /todo「我的待办」同源（getTodoProgressBlock.mine）；无登录人视角时不出卡
-    user ? getTodoProgressBlock(user, db).then((b) => b.mine) : Promise.resolve(null),
+    // 动态导入：todo/service → jobs/notify → workbench/focus → todo/stats 会成环（next build 收集页面数据时 TDZ 报错）
+    user ? import("@/server/modules/todo/stats").then(({ getTodoProgressBlock }) => getTodoProgressBlock(user, db)).then((b) => b.mine) : Promise.resolve(null),
   ]);
   const queues = [
     { key: "inbox", label: "待我审批", count: pendingDocs, href: "/inbox" },
