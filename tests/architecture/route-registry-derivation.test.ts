@@ -54,6 +54,8 @@ const LEGACY_MENU: LegacyNode[] = [
     { key: "/inventory/batch-trace", label: "批次追溯" }, { key: "/report/inbound-calendar", label: "到货日历" },
     { key: "/report/sku-360", label: "SKU 360 事件轴" }, { key: "/report/demand?tab=stock_summary", label: "总库存核对" },
     { key: "/report/jiediao", label: "借调对账" },
+    // 2026-09-03 总监需求 W2-A 新增（D51/D52），登记在 src/lib/route-access.ts 的 inventory_position
+    { key: "/inventory/position", label: "库存日级走向" },
   ] },
   { key: "quality", label: "质量与合规", children: [{ key: "/quality", label: "质量与合规" }] },
   { key: "npd", label: "新品开发", children: [
@@ -132,6 +134,8 @@ const LEGACY_PALETTE_HREFS = [
   "/master/spu", "/master/sku", "/master/supplier", "/master/supplier/lifecycle", "/master/warehouse",
   "/master/bin", "/master/bom", "/import/upload", "/import/release", "/review/checklist", "/admin/users",
   "/admin/params", "/admin/health",
+  // 2026-09-03 总监需求 W2-A 新增（D51/D52）
+  "/inventory/position",
 ];
 
 /** 旧 AppShell.filterMenuByRoles 的逐字语义，用来对 LEGACY 快照做同样过滤 */

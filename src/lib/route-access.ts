@@ -117,6 +117,8 @@ export const ROUTE_REGISTRY = {
   report_sku_360: { path: "/report/sku-360", label: "SKU 360 事件轴", group: "inventory", scopedMode: "public", keywords: "sku360 timeline shijianzhou" },
   report_stock_summary: { path: "/report/demand?tab=stock_summary", label: "总库存核对", group: "inventory", scopedMode: "public" },
   report_jiediao: { path: "/report/jiediao", label: "借调对账", group: "inventory", scopedMode: "public" },
+  // D51/D52 库存日级 / 月级走向（inventory-position/v1；数量公开内容，金额按 PRICE_VISIBLE_ROLES 服务端剥离）
+  inventory_position: { path: "/inventory/position", label: "库存日级走向", group: "inventory", scopedMode: "public", keywords: "position daily zoushi rijikucun kucun yueme monthend" },
 
   /* ── 质量与合规 ── */
   quality: { path: "/quality", label: "质量与合规", roles: ["quality", "purchasing", "warehouse", "pmc", "ops"], group: "quality", scopedMode: "public", keywords: "quality compliance zhiliang hegui" },
