@@ -4,7 +4,8 @@
  * 单源（既有数据，不新增口径）：sales_monthly 近 6 月（窗口自 max(yearMonth) 动态回推，与 R11/风险表同法）。
  * - 分层范围：finished + active 成品 SKU（半成品/原料/包材不入销售分层）。
  * - ABC（销售贡献）：各 SKU 近6月总销量降序，按累计占比切分——A 累计前 80%，B 次 15%（80–95%），C 末 5%（95–100%）；零销量=C。
- * - XYZ（需求波动）：6 个月量的变异系数 CV=总体标准差/均值——X CV≤0.5 稳定，Y 0.5<CV≤1.0 中，Z CV>1.0 波动；零均值（无动销）=Z。
+ * - XYZ（需求波动）：rules/volatility.classifyXyz（唯一权威）——CV=总体标准差/均值，X CV≤0.5 稳定，Y 0.5<CV≤1.0 中，Z CV>1.0 波动；
+ *   规则对无动销/样本不足返回 null，本报表沿用历史展示口径映射为 Z（cv=0）并以 xyzUnclassified 单独计数。
  * - cell = ABC+XYZ（AX…CZ），每格给出建议补货策略。
  * 全表无金额字段，免脱敏；只读不写库。
  */
@@ -14,6 +15,7 @@ import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";
 import { classifyAbc } from "@/server/rules/abc";
+import { classifyXyz } from "@/server/rules/volatility";
 import { num, r1 } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
 import { participatesInNormalSalesMovement } from "@/server/rules/sku-standardization";
@@ -66,23 +68,17 @@ export interface SegmentationResult {
   total: number;
   matrix: Record<SegCell, SegMatrixCell>;
   policy: Record<SegCell, string>;
+  /** 规则层 xyz=null（无动销/样本不足）而按历史口径记为 Z 的 SKU 数 */
+  xyzUnclassified: number;
 }
 
-function classifyXyz(quantities: number[], mean: number): "X" | "Y" | "Z" {
-  if (mean <= 0) return "Z";
-  const n = quantities.length;
-  const variance = quantities.reduce((acc, v) => acc + (v - mean) * (v - mean), 0) / n;
-  const cv = Math.sqrt(variance) / mean;
-  if (cv <= 0.5) return "X";
-  if (cv <= 1.0) return "Y";
-  return "Z";
-}
-
-function cvOf(quantities: number[], mean: number): number {
-  if (mean <= 0) return 0;
-  const n = quantities.length;
-  const variance = quantities.reduce((acc, v) => acc + (v - mean) * (v - mean), 0) / n;
-  return Math.sqrt(variance) / mean;
+/**
+ * CV/XYZ 走共享规则 rules/volatility（唯一权威）。看板数值保持不变：
+ * 规则返回 null（样本 <6 点或无动销）时沿用旧展示口径 cv=0、xyz=Z，并由 xyzUnclassified 单独计数。
+ */
+function xyzOf(quantities: number[]): { cv: number; xyz: "X" | "Y" | "Z"; unclassified: boolean } {
+  const r = classifyXyz({ series: quantities, cuts: [0.5, 1.0], minPoints: 6 });
+  return { cv: r.cv ?? 0, xyz: r.xyz ?? "Z", unclassified: r.xyz == null };
 }
 
 export async function getSegmentation(
@@ -118,7 +114,7 @@ export async function getSegmentation(
   // 判定走共享规则，禁止在此本地重实现（口径漂移根因）。
   const skuRows = skuRowsRaw.filter((r) => participatesInNormalSalesMovement(r.commercialRole));
   if (skuRows.length === 0) {
-    return { months, rows: [], total: 0, matrix: emptyMatrix(), policy: SEG_POLICY };
+    return { months, rows: [], total: 0, matrix: emptyMatrix(), policy: SEG_POLICY, xyzUnclassified: 0 };
   }
 
   /* ── 近6月逐 SKU×月 销量（跨渠道汇总） ── */
@@ -139,12 +135,15 @@ export async function getSegmentation(
   /* ── 逐 SKU 组装 6 月量、总量、均值、CV、XYZ ── */
   const interims: SegRow[] = [];
   let totalSales = 0;
+  let xyzUnclassified = 0;
   for (const sku of skuRows) {
     const m = qtyBySku.get(sku.id);
     const quantities = months.map((ym) => (m ? m.get(ym) ?? 0 : 0));
     const sales6m = quantities.reduce((a, b) => a + b, 0);
     const mean = months.length ? sales6m / months.length : 0;
     totalSales += sales6m;
+    const vol = xyzOf(quantities);
+    if (vol.unclassified) xyzUnclassified += 1;
     interims.push({
       skuId: sku.id,
       code: sku.code,
@@ -152,9 +151,9 @@ export async function getSegmentation(
       brand: sku.brand,
       sales6m: r2(sales6m),
       avgMonthly: r2(mean),
-      cv: r2(cvOf(quantities, mean)),
+      cv: r2(vol.cv),
       abc: "C",
-      xyz: classifyXyz(quantities, mean),
+      xyz: vol.xyz,
       cell: "CZ",
       externalNet90: externalVelocity.bySku[String(sku.id)]?.net90 ?? null,
     });
@@ -190,5 +189,6 @@ export async function getSegmentation(
     total: filtered.length,
     matrix,
     policy: SEG_POLICY,
+    xyzUnclassified,
   };
 }

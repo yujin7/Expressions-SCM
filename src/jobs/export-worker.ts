@@ -10,6 +10,7 @@ import { and, asc, desc, eq } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { exportJobs, users } from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
+import { loadUserScopes } from "@/server/core/data-scope";
 import type { SessionUser } from "@/server/core/dto";
 import { ApiError } from "@/server/modules/master/common";
 import {
@@ -156,7 +157,18 @@ export async function runExportWorkerOnce(dbArg?: AnyDb, dirOverride?: string): 
     if (!def) throw new Error(`未知导出类型：${job.kind}`);
     const [u]: (typeof users.$inferSelect)[] = await db.select().from(users).where(eq(users.id, job.requestedBy));
     if (!u || !u.active) throw new Error("申请人账号已停用或不存在");
-    const runAs: SessionUser = { id: u.id, name: u.name, roles: u.roles as string[], isApprover: u.isApprover };
+    // D62：runAs 携带申请人**当前**的数据范围（与 HTTP 路径 getFreshSessionUser 同源），行生产器按同一口径裁剪
+    const scopes = await loadUserScopes(db, u.id);
+    const runAs: SessionUser = {
+      id: u.id,
+      name: u.name,
+      roles: u.roles as string[],
+      isApprover: u.isApprover,
+      sessionVersion: u.sessionVersion,
+      channelScope: scopes.channelScope,
+      deptScope: scopes.deptScope,
+      scopeVersion: u.sessionVersion,
+    };
 
     const params = (job.params ?? {}) as ExportParams;
     const { rows, columns, total } = await def.produce(runAs, params, EXPORT_ROW_CAP, db);

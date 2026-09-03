@@ -5,7 +5,8 @@ const read = (path: string) => readFileSync(path, "utf8");
 
 describe("C122 planning version reachability and boundaries", () => {
   it("connects menu, Suspense page, client, APIs, service, rule, and persisted tables", () => {
-    const shell = read("src/components/AppShell.tsx");
+    // D62：菜单条目迁至单一注册表 src/lib/route-access.ts（AppShell 只派生）
+    const shell = read("src/lib/route-access.ts");
     const page = read("src/app/(app)/replenish/versions/page.tsx");
     const client = read("src/app/(app)/replenish/versions/plan-versions-client.tsx");
     const versionsRoute = read("src/app/api/replenish/versions/route.ts");

@@ -2,51 +2,15 @@
 
 /**
  * #7 ⌘K 命令面板：任意页面 ⌘K/Ctrl+K 唤起，键盘直达页面 + 搜索 SKU/供应商/单据/NPD。
- * 页面清单静态内置（与菜单同步），实体搜索复用 /api/inbox/search。
+ * 页面清单与角色可见性来自 `@/lib/route-access` 注册表（与侧栏同源），实体搜索复用 /api/inbox/search。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AutoComplete, Modal } from "antd";
+import { isRouteVisible, PALETTE_PAGES, type PalettePage } from "@/lib/route-access";
 
-interface PageEntry { label: string; href: string; keywords: string; roles?: string[] }
-const PAGES: PageEntry[] = [
-  { label: "工作台", href: "/workbench", keywords: "workbench home shouye" },
-  { label: "我的待办", href: "/inbox", keywords: "inbox daiban todo" },
-  { label: "经营驾驶舱", href: "/report/dashboard", keywords: "dashboard jiashicang bi" },
-  { label: "补货建议", href: "/replenish", keywords: "replenish buhuo" },
-  { label: "S&OP 计划周期", href: "/replenish/sop", keywords: "sop consensus freeze execute 共识 冻结 执行" },
-  { label: "需求达成与货盘", href: "/report/demand", keywords: "demand xuqiu huopan" },
-  { label: "风险库存处置", href: "/report/risk", keywords: "risk fengxian chuzhi" },
-  { label: "库存分层 ABC/XYZ", href: "/report/segmentation", keywords: "abc xyz fenceng segmentation" },
-  { label: "SKU 360", href: "/report/sku-360", keywords: "sku360 timeline shijianzhou" },
-  { label: "主数据健康度", href: "/report/data-health", keywords: "health jiankang zhiliang quality" , roles: ["pmc","purchasing"] },
-  { label: "自动链预演", href: "/outsource/auto-chain", keywords: "auto chain zidonglian" },
-  { label: "备货申请", href: "/outsource/bh", keywords: "bh beihuo" },
-  { label: "委外工单", href: "/outsource/wo", keywords: "wo weiwai gongdan" },
-  { label: "采购订单", href: "/outsource/po", keywords: "po caigou" },
-  { label: "加工通知单", href: "/outsource/jg", keywords: "jg jiagong" },
-  { label: "库存余额", href: "/inventory/balance", keywords: "balance yue kucun" },
-  { label: "库存流水", href: "/inventory/ledger", keywords: "ledger liushui" },
-  { label: "库位作业", href: "/inventory/locations", keywords: "bin location kuwei zuoye", roles: ["warehouse"] },
-  { label: "效期批次", href: "/inventory/expiry", keywords: "expiry xiaoqi pici" },
-  { label: "盘点任务", href: "/inventory/count", keywords: "count pandian" },
-  { label: "质量与合规", href: "/quality", keywords: "quality compliance zhiliang hegui", roles: ["quality", "purchasing", "warehouse", "pmc", "ops"] },
-  { label: "NPD 项目跟踪", href: "/npd", keywords: "npd xinpin project" },
-  { label: "NPD 节点参考", href: "/report/npd", keywords: "npd jiedian node" },
-  { label: "SPU 产品", href: "/master/spu", keywords: "spu chanpin" },
-  { label: "SKU 货品", href: "/master/sku", keywords: "sku huopin" },
-  { label: "供应商", href: "/master/supplier", keywords: "supplier gongyingshang" },
-  { label: "供应商准入与整改", href: "/master/supplier/lifecycle", keywords: "supplier onboarding corrective gongyingshang zhunru zhenggai" },
-  { label: "仓库", href: "/master/warehouse", keywords: "warehouse cangku" },
-  { label: "库位", href: "/master/bin", keywords: "bin location kuwei", roles: ["warehouse"] },
-  { label: "BOM", href: "/master/bom", keywords: "bom wuliaoqingdan" },
-  { label: "文件上传", href: "/import/upload", keywords: "upload import shangchuan" , roles: ["pmc","finance"] },
-  { label: "导入放行", href: "/import/release", keywords: "release import fangxing" , roles: ["pmc","finance"] },
-  { label: "复核清单与提醒", href: "/review/checklist", keywords: "review fuhe checklist tixing" },
-  { label: "用户管理", href: "/admin/users", keywords: "users yonghu admin" , roles: [] },
-  { label: "运行参数", href: "/admin/params", keywords: "params canshu" , roles: ["pmc","purchasing","finance"] },
-  { label: "运维面板", href: "/admin/health", keywords: "health yunwei ops" , roles: [] },
-];
+/** 页面清单派生自 `@/lib/route-access`（D62 单一注册表）：登记了 keywords 的条目按菜单顺序进入面板 */
+const PAGES: readonly PalettePage[] = PALETTE_PAGES;
 
 interface Group { title: string; items: { label: string; href: string; tag?: string }[] }
 
@@ -96,8 +60,7 @@ export default function CommandPalette({ roles = [] }: { roles?: string[] }) {
     }, 300);
   }, [q]);
 
-  const isAdmin = roles.includes("admin");
-  const allowed = useMemo(() => PAGES.filter((p) => isAdmin || p.roles === undefined || p.roles.some((r) => roles.includes(r))), [isAdmin, roles]);
+  const allowed = useMemo(() => PAGES.filter((p) => isRouteVisible(p, roles)), [roles]);
   const pageOpts = useMemo(() => {
     const kw = q.trim().toLowerCase();
     const matched = kw

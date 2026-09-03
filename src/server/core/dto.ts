@@ -47,6 +47,18 @@ export interface SessionUser {
   isApprover: boolean;
   /** JWT 身份版本；直接调用 service 的测试/后台任务可省略，HTTP 写路径必须具备 */
   sessionVersion?: number;
+  /**
+   * D62 渠道范围：null = 不限（admin 或无范围记录）；undefined = 调用方未加载
+   * （仅限直接调 service 的测试/后台任务；HTTP 路径与 export-worker runAs 一律填充）。
+   */
+  channelScope?: number[] | null;
+  /** D62 部门范围（键 = 角色码，D61 部门先=角色）；语义同 channelScope */
+  deptScope?: string[] | null;
+  /**
+   * 范围载荷对应的 users.session_version：setUserScopes 变更范围即 +1，
+   * 旧 JWT 经 refreshSessionIdentity 失效，重新登录后才携带新范围。
+   */
+  scopeVersion?: number;
 }
 
 /** Authentication/session freshness failure that routes must return as 401, never as a logged 500. */
@@ -69,6 +81,9 @@ export async function getSessionUser(): Promise<SessionUser> {
     roles: u.roles ?? [],
     isApprover: u.isApprover ?? false,
     sessionVersion: u.sessionVersion,
+    channelScope: u.channelScope ?? null,
+    deptScope: u.deptScope ?? null,
+    scopeVersion: u.scopeVersion,
   };
 }
 
@@ -85,16 +100,28 @@ export function requireRole(user: { roles: string[] }, ...roles: string[]): void
  * 写操作专用（体检 #5）：JWT 会话下角色/停用不即时生效——写路径必须回查 DB 取新鲜身份。
  * 停用/角色/审批权/密码版本变化的用户在此被立即拦截。
  */
-export async function getFreshSessionUser(): Promise<{ id: number; name: string; roles: string[]; isApprover: boolean }> {
+export async function getFreshSessionUser(): Promise<SessionUser> {
   const tokenUser = await getSessionUser();
   const { getDbAsync } = await import("@/db");
   const { users } = await import("@/db/schema");
   const { eq } = await import("drizzle-orm");
+  const { loadUserScopes } = await import("@/server/core/data-scope");
   const db = await getDbAsync();
   const [row] = await db.select().from(users).where(eq(users.id, tokenUser.id));
   if (!row || !row.active) throw new SessionAuthError("账号已停用或不存在");
   if (tokenUser.sessionVersion == null || tokenUser.sessionVersion !== row.sessionVersion) {
     throw new SessionAuthError("会话已失效，请重新登录");
   }
-  return { id: row.id, name: row.name, roles: row.roles, isApprover: row.isApprover };
+  // D62：范围同样回查 DB（范围变更会 bump session_version，但这里不信任 JWT 载荷）
+  const scopes = await loadUserScopes(db, row.id);
+  return {
+    id: row.id,
+    name: row.name,
+    roles: row.roles,
+    isApprover: row.isApprover,
+    sessionVersion: row.sessionVersion,
+    channelScope: scopes.channelScope,
+    deptScope: scopes.deptScope,
+    scopeVersion: row.sessionVersion,
+  };
 }

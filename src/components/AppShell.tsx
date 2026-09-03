@@ -26,45 +26,36 @@ import GlobalSearch from "@/components/GlobalSearch";
 import CommandPalette from "@/components/CommandPalette";
 import FeedbackButton from "@/components/FeedbackButton";
 import { MeProvider, type Me } from "@/components/useMe";
+import { buildMenuTree, routeGroupForPath, type MenuNode, type RouteGroup, type RouteKey } from "@/lib/route-access";
 
 const { Header, Sider, Content } = Layout;
 
-const REPORT_GROUPS: Record<string, string> = {
-  "/replenish": "planning",
-  "/replenish/versions": "planning",
-  "/replenish/sop": "planning",
-  "/report/dashboard": "analytics",
-  "/report/decision-studio": "analytics",
-  "/report/sales-bridge": "analytics",
-  "/report/funnel": "analytics",
-  "/report/inventory-analytics": "analytics",
-  "/report/process-mining": "analytics",
-  "/report/demand": "planning",
-  "/report/risk": "planning",
-  "/report/segmentation": "planning",
-  "/report/closed-loop": "planning",
-  "/report/auto-replenish": "planning",
-  "/report/material-demand": "planning",
-  "/report/transfer-suggest": "planning",
-  "/report/leadtime-learning": "planning",
-  "/report/forecast-accuracy": "planning",
-  "/report/detectors": "planning",
-  "/report/wip": "outsourcing",
-  "/report/transit": "outsourcing",
-  "/report/supplier-scorecard": "outsourcing",
-  "/report/price-compare": "outsourcing",
-  "/report/inbound-calendar": "inventory",
-  "/report/sku-360": "inventory",
-  "/report/jiediao": "inventory",
-  "/report/npd": "npd",
-  "/report/margin": "finance",
-  "/report/settlement-summary": "finance",
-  "/report/data-health": "master",
-  "/report/exports": "import",
+/**
+ * 菜单/分组/角色可见性全部派生自 `@/lib/route-access`（D62 单一注册表）：
+ * 本文件只负责图标与渲染，新增页面请到注册表登记，勿在此加硬编码条目。
+ */
+const GROUP_ICONS: Record<Exclude<RouteGroup, "top">, React.ReactNode> = {
+  messages: <InboxOutlined />,
+  analytics: <BarChartOutlined />,
+  planning: <FundOutlined />,
+  outsourcing: <ApartmentOutlined />,
+  matflow: <SwapOutlined />,
+  inventory: <InboxOutlined />,
+  quality: <SafetyCertificateOutlined />,
+  npd: <ExperimentOutlined />,
+  finance: <AccountBookOutlined />,
+  master: <DatabaseOutlined />,
+  import: <ImportOutlined />,
+  admin: <SettingOutlined />,
+};
+const TOP_ROUTE_ICONS: Partial<Record<RouteKey, React.ReactNode>> = {
+  workbench: <DashboardOutlined />,
+  inbox: <InboxOutlined />,
 };
 
 export function navigationGroupForPath(pathname: string): string | null {
-  if (REPORT_GROUPS[pathname]) return REPORT_GROUPS[pathname];
+  const registered = routeGroupForPath(pathname);
+  if (registered) return registered;
   if (pathname.startsWith("/master/")) return "master";
   if (pathname.startsWith("/inventory/")) return "inventory";
   if (pathname.startsWith("/quality")) return "quality";
@@ -82,221 +73,19 @@ export function selectedMenuKeyForPath(pathname: string): string {
   return pathname;
 }
 
-const menuItems: MenuProps["items"] = [
-  { key: "/workbench", icon: <DashboardOutlined />, label: "工作台" },
-  { key: "/inbox", icon: <InboxOutlined />, label: "我的待办" },
-  {
-    key: "messages",
-    icon: <InboxOutlined />,
-    label: "消息与告警",
-    children: [
-      { key: "/notifications", label: "通知中心" },
-      { key: "/alerts", label: "系统告警" },
-    ],
-  },
-  {
-    key: "analytics",
-    icon: <BarChartOutlined />,
-    label: "经营分析",
-    children: [
-      { key: "/report/dashboard", label: "经营驾驶舱" },
-      { key: "/report/decision-studio", label: "决策工作室" },
-      { key: "/report/sales-bridge", label: "销量变化归因" },
-      { key: "/report/funnel", label: "全链达成漏斗" },
-      { key: "/report/inventory-analytics", label: "库存分析" },
-      { key: "/report/process-mining", label: "流程效率与瓶颈" },
-    ],
-  },
-  {
-    key: "planning",
-    icon: <FundOutlined />,
-    label: "计划与补货",
-    children: [
-      { key: "/replenish", label: "补货建议" },
-      { key: "/replenish/versions", label: "计划版本与周差异" },
-      { key: "/replenish/sop", label: "S&OP 计划周期" },
-      { key: "/report/demand", label: "需求达成与货盘" },
-      { key: "/report/risk", label: "风险库存处置" },
-      { key: "/report/segmentation", label: "库存分层 ABC/XYZ" },
-      { key: "/report/closed-loop", label: "建议闭环追踪" },
-      { key: "/report/auto-replenish", label: "自动补货候选" },
-      { key: "/report/material-demand", label: "物料需求展开 MRP" },
-      { key: "/report/transfer-suggest", label: "调拨建议" },
-      { key: "/report/leadtime-learning", label: "交期学习" },
-      { key: "/report/forecast-accuracy", label: "预测复盘" },
-      { key: "/report/detectors", label: "异动侦测" },
-      { key: "/outsource/auto-chain", label: "自动链预演" },
-    ],
-  },
-  {
-    key: "outsourcing",
-    icon: <ApartmentOutlined />,
-    label: "委外生产",
-    children: [
-      { key: "/outsource/bh", label: "备货申请" },
-      { key: "/outsource/wo", label: "委外工单" },
-      { key: "/outsource/po", label: "采购订单" },
-      { key: "/outsource/pc", label: "价格变更" },
-      { key: "/outsource/jg", label: "加工通知单" },
-      { key: "/report/wip", label: "委外在制看板" },
-      { key: "/report/transit", label: "在途参考" },
-      { key: "/report/supplier-scorecard", label: "供应商记分卡" },
-      { key: "/report/price-compare", label: "物料比价" },
-    ],
-  },
-  {
-    key: "matflow",
-    icon: <SwapOutlined />,
-    label: "物料收发",
-    children: [
-      { key: "/matflow/fl", label: "发料单" },
-      { key: "/matflow/tl", label: "退料单" },
-      { key: "/matflow/sh", label: "收货检验" },
-      { key: "/matflow/ct", label: "采购退货" },
-    ],
-  },
-  {
-    key: "inventory",
-    icon: <InboxOutlined />,
-    label: "库存",
-    children: [
-      { key: "/inventory/balance", label: "库存余额" },
-      { key: "/inventory/ledger", label: "库存流水" },
-      { key: "/inventory/docs", label: "库存单据" },
-      { key: "/inventory/locations", label: "库位作业" },
-      { key: "/inventory/count", label: "盘点任务" },
-      { key: "/inventory/expiry", label: "效期批次" },
-      { key: "/inventory/batch-trace", label: "批次追溯" },
-      { key: "/report/inbound-calendar", label: "到货日历" },
-      { key: "/report/sku-360", label: "SKU 360 事件轴" },
-      { key: "/report/demand?tab=stock_summary", label: "总库存核对" },
-      { key: "/report/jiediao", label: "借调对账" },
-    ],
-  },
-  {
-    key: "quality",
-    icon: <SafetyCertificateOutlined />,
-    label: "质量与合规",
-    children: [
-      { key: "/quality", label: "质量与合规" },
-    ],
-  },
-  {
-    key: "npd",
-    icon: <ExperimentOutlined />,
-    label: "新品开发",
-    children: [
-      { key: "/npd", label: "NPD 项目跟踪" },
-      { key: "/report/npd", label: "NPD 节点参考" },
-    ],
-  },
-  {
-    key: "finance",
-    icon: <AccountBookOutlined />,
-    label: "财务结算",
-    children: [
-      { key: "/settlement/js", label: "结算单" },
-      { key: "/report/margin", label: "毛利视角" },
-      { key: "/report/settlement-summary", label: "结算汇总表" },
-      { key: "/jobs/recon", label: "对账差异" },
-      { key: "/settlement/month-close", label: "月结控制台" },
-    ],
-  },
-  {
-    key: "master",
-    icon: <DatabaseOutlined />,
-    label: "主数据",
-    children: [
-      { key: "/master/spu", label: "SPU 产品" },
-      { key: "/master/sku", label: "SKU 货品" },
-      { key: "/master/category", label: "分类" },
-      { key: "/master/supplier", label: "供应商" },
-      { key: "/master/supplier/lifecycle", label: "供应商准入与整改" },
-      { key: "/master/warehouse", label: "仓库" },
-      { key: "/master/bin", label: "库位" },
-      { key: "/master/bom", label: "BOM" },
-      { key: "/master/feeref", label: "加工费参考价" },
-      { key: "/report/data-health", label: "主数据健康度" },
-    ],
-  },
-  {
-    key: "import",
-    icon: <ImportOutlined />,
-    label: "数据中心",
-    children: [
-      { key: "/import/upload", label: "文件上传" },
-      { key: "/import/release", label: "导入放行" },
-      { key: "/import/jobs", label: "导入任务" },
-      { key: "/import/exceptions", label: "编码别名认领" },
-      { key: "/review/checklist", label: "复核清单与提醒" },
-      { key: "/report/exports", label: "导出任务" },
-    ],
-  },
-  {
-    key: "admin",
-    icon: <SettingOutlined />,
-    label: "系统管理",
-    children: [
-      { key: "/admin/users", label: "用户管理" },
-      { key: "/admin/audit", label: "审计日志" },
-      { key: "/admin/params", label: "运行参数" },
-      { key: "/admin/approval-config", label: "审批节点配置" },
-      { key: "/admin/health", label: "运维面板" },
-    ],
-  },
-];
-
-/**
- * RT4 UX-P0（RT5 扩展为角色映射表）：按角色过滤菜单——非本角色的入口一律不渲染。
- * 未列出的 key = 全员可见；admin 恒通过。
- */
-const MENU_ROLES: Record<string, string[]> = {
-  "/import/upload": ["pmc", "finance"],
-  "/import/release": ["pmc", "finance"],
-  "/import/jobs": ["pmc", "finance"],
-  "/import/exceptions": ["pmc", "purchasing", "warehouse"],
-  "/review/checklist": ["pmc", "purchasing", "warehouse", "finance"],
-  "/master/feeref": ["purchasing", "pmc", "finance"],
-  "/master/supplier/lifecycle": ["purchasing", "pmc", "finance"],
-  "/master/bin": ["warehouse"],
-  "/inventory/locations": ["warehouse"],
-  "/quality": ["quality", "purchasing", "warehouse", "pmc", "ops"],
-  "/replenish": ["pmc", "purchasing"],
-  "/replenish/versions": ["pmc", "purchasing"],
-  "/replenish/sop": ["pmc", "purchasing", "ops", "finance"],
-  "/outsource/auto-chain": ["pmc"],
-  "/admin/users": [],
-  "/admin/audit": ["finance"],
-  "/admin/params": ["pmc", "purchasing", "finance"],
-  // 空数组=仅管理员（同 /admin/users）：这是 maker-checker 闸本身的配置
-  "/admin/approval-config": [],
-  "/settlement/js": ["finance", "purchasing"],
-  "/report/settlement-summary": ["finance"],
-  "/report/process-mining": ["pmc", "finance"],
-  "/jobs/recon": ["finance", "pmc"],
-  "/settlement/month-close": ["finance", "pmc"],
-};
-
-function filterMenuByRoles(items: MenuProps["items"], roles: string[]): MenuProps["items"] {
-  const isAdmin = roles.includes("admin");
-  const visible = (key: string): boolean => {
-    if (isAdmin) return true;
-    const need = MENU_ROLES[key];
-    if (need === undefined) return true;
-    return need.some((r) => roles.includes(r));
-  };
-  return (items ?? [])
-    .map((item) => {
-      if (!item) return item;
-      const it = item as { key?: string; children?: { key: string; label: string }[] };
-      if (it.children) {
-        const children = it.children.filter((c) => visible(c.key));
-        if (children.length === 0) return null;
-        return { ...item, children };
-      }
-      return visible(String(it.key ?? "")) ? item : null;
-    })
-    .filter(Boolean) as MenuProps["items"];
+/** 注册表树 → AntD Menu items（按角色过滤已在 buildMenuTree 内完成；admin 恒通过） */
+function menuItemsForRoles(roles: string[]): MenuProps["items"] {
+  return buildMenuTree(roles).map((node: MenuNode) => {
+    if (node.kind === "route") {
+      return { key: node.key, icon: TOP_ROUTE_ICONS[node.routeKey], label: node.label };
+    }
+    return {
+      key: node.key,
+      icon: GROUP_ICONS[node.key],
+      label: node.label,
+      children: node.children.map((c) => ({ key: c.key, label: c.label })),
+    };
+  });
 }
 
 export default function AppShell({
@@ -325,7 +114,7 @@ export default function AppShell({
 
   const activeGroup = useMemo(() => navigationGroupForPath(pathname), [pathname]);
   const [openKeys, setOpenKeys] = useState<string[]>(() => (activeGroup ? [activeGroup] : []));
-  const visibleMenuItems = useMemo(() => filterMenuByRoles(menuItems, roles), [roles]);
+  const visibleMenuItems = useMemo(() => menuItemsForRoles(roles), [roles]);
   const compactAccountItems = useMemo<MenuProps["items"]>(
     () => [
       {

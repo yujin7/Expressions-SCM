@@ -24,14 +24,14 @@ describe("SKU 成本导入边界", () => {
 
   it("财务角色同时拥有上传、任务和放行入口；PMC 不因页面可见获得成本写权", () => {
     const uploadRoute = read("src/app/api/import/upload/route.ts");
-    const shell = read("src/components/AppShell.tsx");
-    const palette = read("src/components/CommandPalette.tsx");
+    // D62：菜单/命令面板角色表迁至单一注册表 src/lib/route-access.ts（AppShell/CommandPalette 只派生）
+    const registry = read("src/lib/route-access.ts");
     const releasePage = read("src/app/(app)/import/release/page.tsx");
     expect(uploadRoute).toContain('v.template === "sku_cost"');
     expect(uploadRoute).toContain('requireAnyRole(user, "finance")');
-    expect(shell).toContain('"/import/upload": ["pmc", "finance"]');
-    expect(shell).toContain('"/import/release": ["pmc", "finance"]');
-    expect(palette).toContain('roles: ["pmc","finance"]');
+    expect(registry).toContain('path: "/import/upload", label: "文件上传", roles: ["pmc", "finance"]');
+    expect(registry).toContain('path: "/import/release", label: "导入放行", roles: ["pmc", "finance"]');
+    expect(registry).toContain('keywords: "upload import shangchuan"');
     expect(releasePage).toContain('"finance"');
   });
 });
