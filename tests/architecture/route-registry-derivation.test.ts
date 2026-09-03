@@ -79,6 +79,7 @@ const LEGACY_MENU: LegacyNode[] = [
   { key: "import", label: "数据中心", children: [
     { key: "/import/upload", label: "文件上传" }, { key: "/import/release", label: "导入放行" },
     { key: "/import/jobs", label: "导入任务" }, { key: "/import/exceptions", label: "编码别名认领" },
+    { key: "/import/data-quality", label: "数据质量" },
     { key: "/review/checklist", label: "复核清单与提醒" }, { key: "/report/exports", label: "导出任务" },
   ] },
   { key: "admin", label: "系统管理", children: [
@@ -93,6 +94,7 @@ const LEGACY_MENU_ROLES: Record<string, string[]> = {
   "/import/release": ["pmc", "finance"],
   "/import/jobs": ["pmc", "finance"],
   "/import/exceptions": ["pmc", "purchasing", "warehouse"],
+  "/import/data-quality": ["pmc", "finance", "warehouse", "purchasing"],
   "/review/checklist": ["pmc", "purchasing", "warehouse", "finance"],
   "/master/feeref": ["purchasing", "pmc", "finance"],
   "/master/supplier/lifecycle": ["purchasing", "pmc", "finance"],
@@ -135,7 +137,7 @@ const LEGACY_PALETTE_HREFS = [
   "/outsource/wo", "/outsource/po", "/outsource/jg", "/inventory/balance", "/inventory/ledger",
   "/inventory/locations", "/inventory/expiry", "/inventory/count", "/quality", "/npd", "/report/npd",
   "/master/spu", "/master/sku", "/master/supplier", "/master/supplier/lifecycle", "/master/warehouse",
-  "/master/bin", "/master/bom", "/import/upload", "/import/release", "/review/checklist", "/admin/users",
+  "/master/bin", "/master/bom", "/import/upload", "/import/release", "/import/data-quality", "/review/checklist", "/admin/users",
   "/admin/params", "/admin/health",
   // 2026-09-03 总监需求 W2-A 新增（D51/D52）
   "/inventory/position",

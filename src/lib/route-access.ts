@@ -159,6 +159,7 @@ export const ROUTE_REGISTRY = {
   import_release: { path: "/import/release", label: "导入放行", roles: ["pmc", "finance"], group: "import", scopedMode: "denied", keywords: "release import fangxing" },
   import_jobs: { path: "/import/jobs", label: "导入任务", roles: ["pmc", "finance"], group: "import", scopedMode: "denied" },
   import_exceptions: { path: "/import/exceptions", label: "编码别名认领", roles: ["pmc", "purchasing", "warehouse"], group: "import", scopedMode: "denied" },
+  import_data_quality: { path: "/import/data-quality", label: "数据质量", roles: ["pmc", "finance", "warehouse", "purchasing"], group: "import", scopedMode: "denied", keywords: "data quality dq shuju zhiliang hedui" },
   review_checklist: { path: "/review/checklist", label: "复核清单与提醒", roles: ["pmc", "purchasing", "warehouse", "finance"], group: "import", scopedMode: "denied", keywords: "review fuhe checklist tixing" },
   report_exports: { path: "/report/exports", label: "导出任务", group: "import", scopedMode: "public" },
 
