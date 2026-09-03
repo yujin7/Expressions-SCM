@@ -16,6 +16,7 @@ import { getDbAsync } from "@/db";
 import { users, workItems } from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { ROLES, type Role } from "@/server/core/constants";
+import { resolveDeptScope } from "@/server/core/data-scope";
 import type { SessionUser } from "@/server/core/dto";
 import { enqueueNotification, isFeishuAppConfigured } from "@/jobs/notify";
 import { ApiError } from "@/server/modules/master/common";
@@ -383,6 +384,43 @@ export function cancelWorkItem(id: number, actor: SessionUser, dbArg?: AnyDb, op
   return setWorkItemStatus(id, "cancelled", actor, dbArg, opts);
 }
 
+/* ────────────────────────── 可见性谓词（唯一权威：list / stats / 第 4 屏三处共用） ────────────────────────── */
+
+/** 待办可见范围：admin 全量；其他人 = 我相关（指派给我 / 我指派 / 我创建）∪ 我角色的责任项（ownerRole ∈ roleKeys） */
+export interface TodoVisibility {
+  /** true = 全量可见（admin） */
+  all: boolean;
+  /** 可按 ownerRole 看到的角色键：user.roles ∩ ROLES，D62 受限用户（deptScope 非空）再按 resolveDeptScope 裁剪；admin = 全部角色 */
+  roleKeys: string[];
+}
+
+export type WorkItemVisibilityFields = { assigneeId: number; assignerId: number; createdBy: number; ownerRole: string | null };
+
+export function resolveTodoVisibility(user: SessionUser): TodoVisibility {
+  if (user.roles.includes("admin")) return { all: true, roleKeys: [...ROLES] };
+  const scope = resolveDeptScope(user, null);
+  const roleKeys = user.roles.filter((r) => (ROLES as readonly string[]).includes(r) && (scope.deptKeys === null || scope.deptKeys.includes(r)));
+  return { all: false, roleKeys };
+}
+
+/** 内存判定（stats / 第 4 屏）——与 workItemVisibilitySql 必须同口径 */
+export function isWorkItemVisible(item: WorkItemVisibilityFields, user: SessionUser, vis: TodoVisibility = resolveTodoVisibility(user)): boolean {
+  if (vis.all) return true;
+  if (item.assigneeId === user.id || item.assignerId === user.id || item.createdBy === user.id) return true;
+  return item.ownerRole != null && vis.roleKeys.includes(item.ownerRole);
+}
+
+/** SQL 判定（列表）；undefined = 不限（admin） */
+export function workItemVisibilitySql(user: SessionUser, vis: TodoVisibility = resolveTodoVisibility(user)): SQL | undefined {
+  if (vis.all) return undefined;
+  return or(
+    eq(workItems.assigneeId, user.id),
+    eq(workItems.assignerId, user.id),
+    eq(workItems.createdBy, user.id),
+    vis.roleKeys.length ? inArray(workItems.ownerRole, vis.roleKeys) : sql`false`,
+  );
+}
+
 export type WorkItemView = "mine" | "all";
 
 export interface ListWorkItemsArgs {
@@ -400,8 +438,7 @@ export interface ListWorkItemsArgs {
 /**
  * 列表：
  *  - mine：指派给我；
- *  - all：admin 全量；其他人只见 我相关（指派给我/我指派/我创建）∪ 我角色的责任项（ownerRole ∈ roles）；
- *    D62 受限用户（deptScope 非空）再按部门键裁剪 ownerRole。
+ *  - all：按 workItemVisibilitySql（与 stats / 第 4 屏同一谓词 resolveTodoVisibility）。
  */
 export async function listWorkItems(args: ListWorkItemsArgs, user: SessionUser, dbArg?: AnyDb) {
   const db = dbArg ?? (await getDbAsync());
@@ -409,17 +446,9 @@ export async function listWorkItems(args: ListWorkItemsArgs, user: SessionUser, 
   const clauses: SQL[] = [];
   if (args.view === "mine") {
     clauses.push(eq(workItems.assigneeId, user.id));
-  } else if (!user.roles.includes("admin")) {
-    const roleKeys = user.deptScope && user.deptScope.length
-      ? user.roles.filter((r) => (user.deptScope as string[]).includes(r))
-      : user.roles;
-    const mine = or(
-      eq(workItems.assigneeId, user.id),
-      eq(workItems.assignerId, user.id),
-      eq(workItems.createdBy, user.id),
-      roleKeys.length ? inArray(workItems.ownerRole, roleKeys) : sql`false`,
-    );
-    if (mine) clauses.push(mine);
+  } else {
+    const visible = workItemVisibilitySql(user);
+    if (visible) clauses.push(visible);
   }
   if (args.q) {
     const m = /^#(\d+)$/.exec(args.q.trim());

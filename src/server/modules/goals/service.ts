@@ -4,12 +4,14 @@
  *  - 写路径：create / update 同事务 writeAudit(entity="department_goal")；
  *    编辑权 = admin 或 本部门（user.roles ∋ deptKey）；其他部门只读。
  *  - 读：全员可见全部部门（页面按部门 Tab，本部门可编辑）；D62 受限用户（deptScope 非空）只见范围内部门。
- *  - actual_source=auto：从**已登记读模型缓存**（report_read_model_cache）取值：
- *      库存占比 inventorySalesRatio / 周转 turns / 账期达成率 paymentTermAttainment / OTIF onTimeRate；
- *      取不到留 null（绝不编造），并在 DTO 里给出 autoStatus 说明。
+ *  - actual_source=auto：从**已登记读模型缓存**（report_read_model_cache）按**真实缓存键 + 真实 payload 路径**取值
+ *      （键与路径见 AUTO_METRIC_SOURCES；键常量直接引用各读模型模块，口径升版 /vN 时随之变更，不再前缀猜测）：
+ *      库存占比 inventorySalesRatio / 周转 turns / DIO dio / 账期达成率 paymentTermAttainment /
+ *      账期类采购额占比 creditTermSpendShare / OTIF onTimeRate；
+ *      取不到留 null（绝不编造），并在 DTO 里给出 autoStatus=unavailable 说明。
  *  - 达成度 goalAttainment：up = actual ÷ target；down = target ÷ actual；×100 保留 1 位（core/decimal，不用 float 运算）。
  */
-import { and, desc, eq, inArray, like, or, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { getDbAsync } from "@/db";
 import { departmentGoals, reportReadModelCache } from "@/db/schema";
@@ -21,27 +23,91 @@ import { dCmp, dDiv, dMul, dZero } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import type { AnyDb } from "@/server/core/svc";
 import { ApiError } from "@/server/modules/master/common";
+import { INVENTORY_SALES_RATIO_CACHE_KEY } from "@/server/modules/report/inventory-sales-ratio";
+import { PURCHASE_ORDER_METRICS_KEY } from "@/server/modules/report/purchase-order-metrics";
+import { SUPPLIER_PAYMENT_TERM_KEY } from "@/server/modules/report/supplier-payment-term";
+import { WAREHOUSE_INVENTORY_CACHE_KEY } from "@/server/modules/report/warehouse-inventory";
 
 export const GOAL_DIRECTIONS = ["up", "down"] as const;
 export type GoalDirection = (typeof GOAL_DIRECTIONS)[number];
 export const PERIOD_RE = /^(\d{4}-(0[1-9]|1[0-2])|\d{4}-Q[1-4])$/;
+const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
-/** auto 指标 → 已登记读模型缓存键前缀（取最新版本 /vN）与取值路径 */
+/**
+ * 读模型 payload 取值路径：点分段；数组段写 `rows[yearMonth=$period]`（取 yearMonth 等于期间的那一行），
+ * `$period` 在取值时替换为目标期间。
+ */
+export interface AutoMetricPath {
+  path: string;
+  /** 仅当期间是月份 / 季度时启用；缺省两者皆可 */
+  when?: "month" | "quarter";
+  /** payload 顶层该字段必须等于期间年份（年度口径读模型防串年）；缺省不校验 */
+  periodYearField?: string;
+  /** 读模型存 0–1 比例时 ×100 折成百分比（与 METRICS unit=pct 对齐） */
+  scale?: 100;
+}
+
 export interface AutoMetricSource {
   metricKey: string;
   label: string;
-  /** report_read_model_cache.key 前缀（不含 /vN） */
-  cacheKeyPrefixes: readonly string[];
-  /** 从 payload 里取 period 对应值的候选字段名 */
-  fields: readonly string[];
+  /** report_read_model_cache.key（精确匹配，引用读模型模块导出的常量） */
+  cacheKey: string;
+  /** 依次尝试的取值路径，首个命中即用 */
+  paths: readonly AutoMetricPath[];
   defaultDirection: GoalDirection;
 }
 
 export const AUTO_METRIC_SOURCES: readonly AutoMetricSource[] = [
-  { metricKey: "inventorySalesRatio", label: "库存占比", cacheKeyPrefixes: ["inventory-sales-ratio", "inventory-daily-position"], fields: ["inventorySalesRatio", "ratio", "value"], defaultDirection: "down" },
-  { metricKey: "turns", label: "库存周转", cacheKeyPrefixes: ["warehouse-turns", "inventory-daily-position"], fields: ["turns", "warehouseTurns", "value"], defaultDirection: "up" },
-  { metricKey: "paymentTermAttainment", label: "账期达成率", cacheKeyPrefixes: ["supplier-payment-term"], fields: ["paymentTermAttainment", "attainment", "value"], defaultDirection: "up" },
-  { metricKey: "onTimeRate", label: "OTIF 准时交付率", cacheKeyPrefixes: ["purchase-order-metrics"], fields: ["onTimeRate", "otif", "value"], defaultDirection: "up" },
+  {
+    metricKey: "inventorySalesRatio",
+    label: "库存占比",
+    cacheKey: INVENTORY_SALES_RATIO_CACHE_KEY,
+    // InventorySalesRatioReadModel：rows[].{yearMonth, ratioMonthEndPct}（已是百分比）；current = 最新月
+    paths: [
+      { path: "rows[yearMonth=$period].ratioMonthEndPct", when: "month" },
+      { path: "current.ratioMonthEndPct", when: "quarter" },
+    ],
+    defaultDirection: "down",
+  },
+  {
+    metricKey: "turns",
+    label: "库存周转次数",
+    cacheKey: WAREHOUSE_INVENTORY_CACHE_KEY,
+    // WarehouseInventoryModel.summary.turns（滚动窗口、非期间口径：取最新一次构建）
+    paths: [{ path: "summary.turns" }],
+    defaultDirection: "up",
+  },
+  {
+    metricKey: "dio",
+    label: "库存周转天数 DIO",
+    cacheKey: WAREHOUSE_INVENTORY_CACHE_KEY,
+    paths: [{ path: "summary.dio" }],
+    defaultDirection: "down",
+  },
+  {
+    metricKey: "paymentTermAttainment",
+    label: "账期达成率",
+    cacheKey: SUPPLIER_PAYMENT_TERM_KEY,
+    // SupplierPaymentTermModel.summary.attainmentRate 为 0–1 比例；payload.year 必须等于期间年份
+    paths: [{ path: "summary.attainmentRate", periodYearField: "year", scale: 100 }],
+    defaultDirection: "up",
+  },
+  {
+    metricKey: "creditTermSpendShare",
+    label: "账期类采购额占比",
+    cacheKey: SUPPLIER_PAYMENT_TERM_KEY,
+    // summary.creditTermSpendSharePct 已是百分比字符串
+    paths: [{ path: "summary.creditTermSpendSharePct", periodYearField: "year" }],
+    defaultDirection: "up",
+  },
+  {
+    metricKey: "onTimeRate",
+    label: "OTIF 准时交付率",
+    cacheKey: PURCHASE_ORDER_METRICS_KEY,
+    // PurchaseOrderMetrics.summary.otif.rate 为 0–1 比例（年度累计）；payload.year 必须等于期间年份
+    paths: [{ path: "summary.otif.rate", periodYearField: "year", scale: 100 }],
+    defaultDirection: "up",
+  },
 ];
 
 export function autoSourceFor(metricKey: string): AutoMetricSource | null {
@@ -181,51 +247,41 @@ function pickNumber(v: unknown): string | null {
   return null;
 }
 
+const PATH_SEG_RE = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[([A-Za-z_][A-Za-z0-9_]*)=([^\]]+)\])?$/;
+
 /**
- * 在读模型 payload 中按 period 找值。支持三种常见形状：
- *  A. { [period]: { field } } 或 { byPeriod / months / periods: { [period]: {...} } }
- *  B. { rows | items | series: [{ period|month|yearMonth|quarter, field }] }
- *  C. 顶层 { period|month, field } 且 period 相符；或顶层 summary/kpi 内含 field 且 payload.period 相符
+ * 按路径在 payload 中取数值（字符串形式）。路径段：`name` 取对象字段；`name[field=$period]` 取数组中
+ * field 等于期间的元素。任一段取不到 / 非数值 → null（不猜别名、不回退）。
  */
-export function extractPeriodValue(payload: unknown, period: string, fields: readonly string[]): string | null {
-  if (!payload || typeof payload !== "object") return null;
-  const p = payload as Record<string, unknown>;
-  const fromObj = (o: unknown): string | null => {
-    if (!o || typeof o !== "object") return null;
-    const rec = o as Record<string, unknown>;
-    for (const f of fields) {
-      const n = pickNumber(rec[f]);
-      if (n != null) return n;
-    }
-    return null;
-  };
-  const direct = fromObj(p[period]);
-  if (direct != null) return direct;
-  for (const k of ["byPeriod", "months", "periods", "byMonth", "byQuarter"]) {
-    const m = p[k];
-    if (m && typeof m === "object" && !Array.isArray(m)) {
-      const hit = fromObj((m as Record<string, unknown>)[period]);
-      if (hit != null) return hit;
+export function readPayloadPath(payload: unknown, path: string, period: string): string | null {
+  let cur: unknown = payload;
+  for (const seg of path.split(".")) {
+    const m = PATH_SEG_RE.exec(seg);
+    if (!m || !cur || typeof cur !== "object") return null;
+    cur = (cur as Record<string, unknown>)[m[1]];
+    if (m[2]) {
+      if (!Array.isArray(cur)) return null;
+      const want = m[3].replace("$period", period);
+      cur = cur.find((it) => it && typeof it === "object" && String((it as Record<string, unknown>)[m[2]]) === want);
     }
   }
-  for (const k of ["rows", "items", "series", "months"]) {
-    const arr = p[k];
-    if (Array.isArray(arr)) {
-      for (const it of arr) {
-        if (!it || typeof it !== "object") continue;
-        const rec = it as Record<string, unknown>;
-        const key = rec.period ?? rec.month ?? rec.yearMonth ?? rec.quarter;
-        if (key === period) {
-          const hit = fromObj(rec);
-          if (hit != null) return hit;
-        }
-      }
+  return pickNumber(cur);
+}
+
+/** 按 AutoMetricSource 的路径表取某期间的值：when / periodYearField 不满足即跳过该路径；scale=100 折百分比 */
+export function extractAutoValue(payload: unknown, period: string, paths: readonly AutoMetricPath[]): { value: string; path: string } | null {
+  const isMonth = MONTH_RE.test(period);
+  const year = period.slice(0, 4);
+  for (const p of paths) {
+    if (p.when === "month" && !isMonth) continue;
+    if (p.when === "quarter" && isMonth) continue;
+    if (p.periodYearField) {
+      const y = payload && typeof payload === "object" ? (payload as Record<string, unknown>)[p.periodYearField] : undefined;
+      if (String(y) !== year) continue;
     }
-  }
-  const top = p.period ?? p.month ?? p.yearMonth ?? p.latestMonth;
-  if (top === period) {
-    const hit = fromObj(p) ?? fromObj(p.summary) ?? fromObj(p.kpi);
-    if (hit != null) return hit;
+    const raw = readPayloadPath(payload, p.path, period);
+    if (raw == null) continue;
+    return { value: p.scale ? dMul(raw, p.scale, 4) : raw, path: p.path };
   }
   return null;
 }
@@ -233,23 +289,26 @@ export function extractPeriodValue(payload: unknown, period: string, fields: rea
 export interface AutoActual {
   value: string | null;
   sourceKey: string | null;
+  /** 命中的 payload 路径（审计留痕） */
+  path: string | null;
   builtAt: string | null;
 }
 
-/** 取某指标某期间的 auto 实际值；无缓存/无值 → value null（绝不编造） */
+/** 取某指标某期间的 auto 实际值；无缓存/无值 → value null（绝不编造，sourceKey 仍给出以便排查） */
 export async function resolveAutoActual(db: AnyDb, metricKey: string, period: string): Promise<AutoActual> {
   const src = autoSourceFor(metricKey);
-  if (!src) return { value: null, sourceKey: null, builtAt: null };
+  if (!src) return { value: null, sourceKey: null, path: null, builtAt: null };
   const rows: { key: string; payload: unknown; builtAt: Date }[] = await db
     .select({ key: reportReadModelCache.key, payload: reportReadModelCache.payload, builtAt: reportReadModelCache.builtAt })
     .from(reportReadModelCache)
-    .where(or(...src.cacheKeyPrefixes.map((pfx) => like(reportReadModelCache.key, `${pfx}/v%`))))
-    .orderBy(desc(reportReadModelCache.builtAt));
-  for (const r of rows) {
-    const v = extractPeriodValue(r.payload, period, src.fields);
-    if (v != null) return { value: v, sourceKey: r.key, builtAt: new Date(r.builtAt).toISOString() };
-  }
-  return { value: null, sourceKey: rows[0]?.key ?? null, builtAt: null };
+    .where(eq(reportReadModelCache.key, src.cacheKey))
+    .orderBy(desc(reportReadModelCache.builtAt))
+    .limit(1);
+  const r = rows[0];
+  if (!r) return { value: null, sourceKey: null, path: null, builtAt: null };
+  const hit = extractAutoValue(r.payload, period, src.paths);
+  if (!hit) return { value: null, sourceKey: r.key, path: null, builtAt: new Date(r.builtAt).toISOString() };
+  return { value: hit.value, sourceKey: r.key, path: hit.path, builtAt: new Date(r.builtAt).toISOString() };
 }
 
 /* ────────────────────────── 写路径 ────────────────────────── */
@@ -284,7 +343,7 @@ export async function createGoal(raw: GoalCreateInput, user: SessionUser, dbArg?
       entity: "department_goal",
       entityId: ins.id,
       action: "create",
-      after: { ...input, direction, actualSource, autoValue: auto?.value ?? null, autoSourceKey: auto?.sourceKey ?? null },
+      after: { ...input, direction, actualSource, autoValue: auto?.value ?? null, autoSourceKey: auto?.sourceKey ?? null, autoPath: auto?.path ?? null },
     });
     return ins.id;
   });
@@ -359,7 +418,7 @@ export async function refreshAutoActuals(dbArg?: AnyDb, opts?: { period?: string
         entityId: r.id,
         action: "refresh",
         before: { actualValue: r.actualValue, actualSource: r.actualSource },
-        after: { actualValue: auto.value, actualSource: "auto", sourceKey: auto.sourceKey, builtAt: auto.builtAt },
+        after: { actualValue: auto.value, actualSource: "auto", sourceKey: auto.sourceKey, path: auto.path, builtAt: auto.builtAt },
       });
     });
     summary.updated++;
