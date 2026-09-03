@@ -3,6 +3,7 @@ import { getFreshSessionUser, maskSensitive } from "@/server/core/dto";
 import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import { canSeePrices } from "@/server/core/dto";
+import { feeReasonText } from "@/server/modules/report/transfer-routes";
 import {
   addTransferFee, guardTransferFeeWrite, listTransferFees, reverseTransferFee,
 } from "@/server/modules/inventory/transfer-fees";
@@ -53,7 +54,7 @@ export async function POST(req: NextRequest) {
     const result = await addTransferFee(user, body);
     const safe = canSeePrices(user.roles) || !result || typeof result !== "object" || !("warning" in result) || !result.warning
       ? result
-      : { ...result, warning: { ...(result.warning as unknown as Record<string, unknown>), docUnitFee: null, baselineAvgUnitFee: null, pctDev: null, reason: "金额类偏差仅价格可见角色可读" } };
+      : { ...result, warning: { ...(result.warning as unknown as Record<string, unknown>), docUnitFee: null, baselineAvgUnitFee: null, pctDev: null, reason: feeReasonText((result.warning as { docUnitFee?: string | null }).docUnitFee ?? null, result.warning as never) } };
     return NextResponse.json(maskSensitive(safe, user.roles), { status: 201 });
   } catch (e) {
     return errorResponse(e, { path: "/api/inventory/transfer-fees", method: "POST" });

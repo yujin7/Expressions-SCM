@@ -9,7 +9,7 @@ const num = (v: string | null): number | undefined => {
   return Number.isInteger(n) && n > 0 ? n : undefined;
 };
 
-/** D60 调拨线路读模型（transfer-routes/v1）；元/件与费用按【新鲜】角色剥离，单数/件数全员 */
+/** D60 调拨线路读模型（transfer-routes/v2）；元/件与费用按【新鲜】角色剥离，单数/件数全员 */
 export async function GET(req: NextRequest) {
   try {
     const reader = await guardRead();

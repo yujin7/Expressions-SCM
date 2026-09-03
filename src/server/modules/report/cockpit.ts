@@ -337,9 +337,9 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
           asOf: (lanesS.value as { asOf?: string | null }).asOf ?? null,
         },
         note: lanesS.value.summary.docCount > 0 ? `线路 ${lanesS.value.summary.laneCount} · 单据 ${lanesS.value.summary.docCount}（登记费用 ${lanesS.value.summary.feeDocCount}）· 未分类存量 ${lanesS.value.summary.unclassifiedDocCount}` : "尚无已完成调拨单",
-        source: { tier: "fact", source: "transfer-routes/v1（已完成调拨单 + 人工登记费用）", asOf: (lanesS.value as { builtAt?: string }).builtAt ?? null },
+        source: { tier: "fact", source: "transfer-routes/v2（已完成调拨单 + 人工登记费用）", asOf: (lanesS.value as { builtAt?: string }).builtAt ?? null },
       }
-    : { state: "error", data: null, note: lanesS.error, source: { tier: "fact", source: "transfer-routes/v1", asOf: null } };
+    : { state: "error", data: null, note: lanesS.error, source: { tier: "fact", source: "transfer-routes/v2", asOf: null } };
   const transferAnomalies: CockpitData["screens"]["inventory"]["transferAnomalies"] = lanesS.ok
     ? {
         state: lanesS.value.anomalies.length ? "ready" : "insufficient",
@@ -350,7 +350,7 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
         note: lanesS.value.anomalies.length ? "偏差 >20% 或数量 > 中位数×3 只提醒不阻断；样本 <8 不判定（D60）" : "当前没有数量/费用异常（或样本不足不判定）",
         source: { tier: "derived", source: "rules/transfer-cost（线路基线 + spc）", asOf: (lanesS.value as { builtAt?: string }).builtAt ?? null },
       }
-    : { state: "error", data: null, note: lanesS.error, source: { tier: "derived", source: "transfer-routes/v1", asOf: null } };
+    : { state: "error", data: null, note: lanesS.error, source: { tier: "derived", source: "transfer-routes/v2", asOf: null } };
   const whS = settled(whR);
   const turnover: CockpitData["screens"]["inventory"]["turnover"] = whS.ok
     ? {

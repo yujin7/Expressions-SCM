@@ -1149,7 +1149,6 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
     targetTable: "jdy_bonded_warehouse_order_observation",
     businessKey: ["systemOrderNumber", "productCode", "batch"],
     freshnessMaxAgeDays: 400,
-    window: { field: "statistical_date", days: 7 },
     fields: [
       field("statisticalDate", "statistical_date"),
       field("systemOrderNumber", "system_order_number"),
