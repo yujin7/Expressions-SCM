@@ -14,9 +14,10 @@ import type { SessionUser } from "@/server/core/dto";
 import { resolveDb, type AnyDb } from "@/server/core/svc";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
+import { DECLINE_REASON_CODES, type DeclineReasonCode } from "@/lib/replenish-decline-reasons";
 
-export const DECLINE_REASON_CODES = ["reference_stock_sufficient", "demand_overstated", "supply_already_arranged", "delisting", "other"] as const;
-export type DeclineReasonCode = (typeof DECLINE_REASON_CODES)[number];
+/** 原因码唯一定义在零依赖模块 `src/lib/replenish-decline-reasons.ts`（客户端表单可直接导入），这里再导出保持既有路径 */
+export { DECLINE_REASON_CODES, type DeclineReasonCode };
 
 export const declineSuggestionSchema = z.object({
   skuId: z.number().int().positive({ message: "必须选择 SKU" }),

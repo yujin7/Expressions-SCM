@@ -5,7 +5,7 @@ import { Col, Row, Segmented, Space, Statistic, Table, Tag, Typography } from "a
 import { Bar, BarChart, CartesianGrid, Cell, Legend, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from "recharts";
 import { SERIES_COLORS, VISUAL_COLOR } from "@/components/decision-visuals";
 import type { Block } from "@/server/modules/report/cockpit";
-import type { ExternalDemandBriefBlock, PoTrendBlock, PoTrendPoint, Quadrant, QuadrantBlock, QuadrantPoint } from "@/server/modules/report/cockpit-trends";
+import type { AlertPrecisionBlock, AlertPrecisionRow, ExternalDemandBriefBlock, PoTrendBlock, PoTrendPoint, Quadrant, QuadrantBlock, QuadrantPoint } from "@/server/modules/report/cockpit-trends";
 import { metricLabel, Muted, num, pct, qty, signed, TrendCard, useChartTheme, yuan } from "./shared";
 
 /* ───────────── 采购订单月趋势 ───────────── */
@@ -226,6 +226,67 @@ export function QuadrantCard({ block }: { block: Block<QuadrantBlock> }) {
             </ResponsiveContainer>
           </div>
           <Muted>纵轴为观察口径（拼多多未接入，仅天猫），只用于定位象限，不进补货数量；点色 = ABC 等级。</Muted>
+        </div>
+      )}
+    </TrendCard>
+  );
+}
+
+/* ───────────── 预警命中率（已验证） ───────────── */
+
+export function AlertPrecisionCard({ block }: { block: Block<AlertPrecisionBlock> }) {
+  const t = useChartTheme();
+  const d = block.data;
+  const groups = d?.groups ?? [];
+  const precisionText = (g: AlertPrecisionRow, minSample: number) =>
+    g.insufficient ? `样本不足（真+误 ${g.scored} < ${minSample}）` : `${pct(g.precisionPct)} · n=${g.scored}`;
+  return (
+    <TrendCard
+      block={block}
+      title={`${metricLabel("alertPrecision", "预警命中率（已验证）")} · 近 ${d?.days ?? 90} 天`}
+      question="系统喊「要断货」的告警，后来到底断了没有？哪条规则误报多——该调阈值，而不是催人？"
+      metricId="alertPrecision"
+      grain="告警类别 × 来源规则（按核验时间）"
+      unit="条 · 精确率 %"
+      height={300}
+      summary={d
+        ? `已核验 ${d.verifiedTotal} 条：真 ${d.totals.truePositive}、误报 ${d.totals.falsePositive}、弃权 ${d.totals.unverifiable}；${groups.map((g) => `${g.label} ${precisionText(g, d.minSample)}`).join("，")}`
+        : "无数据"}
+      dataView={d ? (
+        <Table<AlertPrecisionRow> rowKey="key" size="small" pagination={false} scroll={{ x: 640 }} dataSource={d.groups} columns={[
+          { title: "类别 / 规则", dataIndex: "label", width: 220 },
+          { title: "已核验", dataIndex: "verified", align: "right", width: 80 },
+          { title: "真", dataIndex: "truePositive", align: "right", width: 70 },
+          { title: "误报", dataIndex: "falsePositive", align: "right", width: 70 },
+          { title: "弃权", dataIndex: "unverifiable", align: "right", width: 70 },
+          { title: "精确率", key: "p", align: "right", width: 170, render: (_, r) => precisionText(r, d.minSample) },
+        ]} />
+      ) : undefined}
+    >
+      {(data) => (
+        <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+          <Space wrap size={[6, 4]} style={{ marginBottom: 6 }}>
+            {data.groups.map((g) => (
+              <Tag key={g.key} color={g.insufficient ? "default" : "processing"}>
+                {g.label}：{precisionText(g, data.minSample)}
+              </Tag>
+            ))}
+          </Space>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={data.groups} layout="vertical" margin={{ top: 4, right: 16, left: 0, bottom: 0 }} barCategoryGap="30%">
+                <CartesianGrid stroke={t.grid} strokeDasharray="3 3" horizontal={false} />
+                <XAxis type="number" allowDecimals={false} tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} />
+                <YAxis type="category" dataKey="label" width={160} tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} />
+                <Tooltip {...t.tooltip} cursor={{ fill: t.grid, opacity: 0.4 }} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar dataKey="truePositive" name="真（断货确实发生）" stackId="s" fill={VISUAL_COLOR.positive} />
+                <Bar dataKey="falsePositive" name="误报（未断货且无入库）" stackId="s" fill={VISUAL_COLOR.critical} />
+                <Bar dataKey="unverifiable" name="弃权（不进分母）" stackId="s" fill={VISUAL_COLOR.muted} radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <Muted>{data.caliber}</Muted>
         </div>
       )}
     </TrendCard>

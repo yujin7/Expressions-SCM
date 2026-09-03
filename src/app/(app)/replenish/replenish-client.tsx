@@ -28,6 +28,9 @@ import { formatQty } from "@/components/format";
 import ProjectionDrawer from "@/components/ProjectionDrawer";
 import CaliberNote from "@/components/CaliberNote";
 import { useListState } from "@/components/useListState";
+import { hasAnyRole, useMe } from "@/components/useMe";
+import { DECLINE_REASON_LABELS } from "@/lib/replenish-decline-reasons";
+import DeclineSuggestionModal, { type DeclineResult, type DeclineTarget } from "./decline-modal";
 
 interface ReplenishRow {
   skuId: number;
@@ -142,6 +145,33 @@ type ReplenishSortBy =
   | "suggestQty";
 
 type ReplenishSortOrder = "ascend" | "descend";
+
+/* 闭环审计 #12：「不采纳」留痕后当天在行上打标（服务端按人×SKU×业务日幂等；这里只是当日的会话内提示，不是权威） */
+const DECLINED_STORE = "replenish:declined";
+function shanghaiToday(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date());
+}
+function loadDeclinedToday(): Record<number, DeclineResult> {
+  try {
+    const raw = sessionStorage.getItem(DECLINED_STORE);
+    if (!raw) return {};
+    const today = shanghaiToday();
+    const out: Record<number, DeclineResult> = {};
+    for (const v of Object.values(JSON.parse(raw) as Record<string, DeclineResult>)) {
+      if (v && v.businessDate === today) out[v.skuId] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+function saveDeclined(map: Record<number, DeclineResult>): void {
+  try {
+    sessionStorage.setItem(DECLINED_STORE, JSON.stringify(map));
+  } catch {
+    // 存储不可用（隐私模式等）时只保留内存态
+  }
+}
 
 
 function SharedPackagingPanel({ skuId }: { skuId: number }) {
@@ -280,6 +310,12 @@ export default function ReplenishClient() {
   const [submitting, setSubmitting] = useState(false);
   const [createdDocNo, setCreatedDocNo] = useState<string | null>(null);
   const [projSku, setProjSku] = useState<string | null>(null);
+  // 闭环审计 #12：「不采纳」（pmc/admin；服务端 requireAnyRole 仍是权威）
+  const me = useMe();
+  const canDecline = hasAnyRole(me, "pmc");
+  const [declineTarget, setDeclineTarget] = useState<DeclineTarget | null>(null);
+  const [declined, setDeclined] = useState<Record<number, DeclineResult>>({});
+  useEffect(() => { setDeclined(loadDeclinedToday()); }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -540,9 +576,31 @@ export default function ReplenishClient() {
         align: "center",
         render: (_: unknown, r: ReplenishRow) => <a onClick={() => setProjSku(r.code)}>查看</a>,
       },
+      ...(canDecline ? [{
+        title: "复核",
+        key: "decline",
+        width: 100,
+        align: "center" as const,
+        render: (_: unknown, r: ReplenishRow) => {
+          const d = declined[r.skuId];
+          if (d) {
+            return (
+              <Tooltip title={`今日已复核并放弃（${DECLINE_REASON_LABELS[d.reasonCode]?.label ?? d.reasonCode}）；已留痕审计，不进采纳率分母`}>
+                <Tag style={{ marginInlineEnd: 0 }}>今日已放弃</Tag>
+              </Tooltip>
+            );
+          }
+          if (r.suggestQty == null && r.heldQty == null) return "—";
+          return (
+            <a onClick={() => setDeclineTarget({ skuId: r.skuId, code: r.code, name: r.name, baseUom: r.baseUom, suggestQty: r.suggestQty, heldQty: r.heldQty })}>
+              不采纳
+            </a>
+          );
+        },
+      }] : []),
     ];
     },
-    [sortBy, sortOrder, policyPeriod],
+    [sortBy, sortOrder, policyPeriod, canDecline, declined],
   );
 
   const handleTableChange: TableProps<ReplenishRow>["onChange"] = (
@@ -578,6 +636,7 @@ export default function ReplenishClient() {
           <div>
             <p>建议引擎 v2：按安全库存与逐日到货推演首次短缺；只有短缺日落在生产周期内才触发建议（更早下单是浪费，更晚来不及）。</p>
             <p>融合参考层做标注与抑制（只提示不入账）：全口径参考（总库存明细）、存量在途（旧流程成品跟进表）、在制委外（WO 计划产出）、在订未出、借出未还、生产周期。覆盖缺口 SKU（参考显著高于系统）触发的建议会被抑制并逐行给出原因，人工核实后可放行。</p>
+            <p>看过建议、判断不需要下单时点行上「不采纳」留痕（计划/管理员）：只写审计、不改建议、不开单据；「已复核并放弃」在建议闭环追踪单列，不进采纳率分母。</p>
             {data?.meta ? (
               <p>
                 销速窗口：{data.meta.months3.length ? data.meta.months3.join("、") : "无销量数据"}
@@ -808,6 +867,18 @@ export default function ReplenishClient() {
         />
       </Modal>
       <ProjectionDrawer skuCode={projSku} open={projSku != null} onClose={() => setProjSku(null)} />
+      <DeclineSuggestionModal
+        target={declineTarget}
+        onCancel={() => setDeclineTarget(null)}
+        onDeclined={(r) => {
+          setDeclined((m) => {
+            const next = { ...m, [r.skuId]: r };
+            saveDeclined(next);
+            return next;
+          });
+          setDeclineTarget(null);
+        }}
+      />
     </div>
   );
 }
