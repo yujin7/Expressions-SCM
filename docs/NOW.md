@@ -701,6 +701,7 @@
   - 闭环 UI（agent/closed-loop-ui）：预警命中率块、严格完成率块、闭环报表「建议准确度」段、补货页「不采纳」动作、AlertCloseModal/AlertWhyList 组件。
   - 门禁：合并后 tsc/lint/全量测试通过（数字见提交）。本地实测驾驶舱 API 热态约 1 秒、趋势 API <1 秒；首次冷构建 v2 读模型在 PGlite 上会慢（生产 Postgres 未见问题）。
   - 口径变化要告知业务：断货预警数量会下降（阈值内有日期到货不再开）并小幅上升（临期/积压新增）；待办完成率出现「严格口径」；已知悉会在升级/7 天后重置。
+  - 已上线（2026-09-04 上午）：镜像 55135b31dd0b，51/51 迁移零漂移，alert_events 在库，34 条调度（新增 alert-outcome 05:30），公网健康 200；回滚标签 supply-chain-app:rollback-c5132ab。合并后曾因模块环（todo/service → jobs/notify → workbench/focus → todo/stats）导致 next build 失败，已用动态 import 断环——合并多分支后先本地 `next build` 再构建镜像（教训已记）。
 
 ## 维护规则
 
