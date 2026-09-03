@@ -8,6 +8,10 @@
  * - refKey `doc:<docNo>`：费用偏差 alert（severity high）/ watch（medium）、数量异常 watch（medium）；
  * - refKey `lane:<from>><to>:<type>`：零散线路（30 天 > transfer_batch_max_docs 单，medium）。
  * 本文件只导出 run，不在 interval-runner/scheduler 登记（由编排方登记：建议 "15 11,17 * * *"）。
+ *
+ * system_alerts 不经金额剥离、任何角色都可读：title/detail 只能用读模型的**不带数值**判定文案
+ * （feeReason/qtyReason），绝不拼 feePctDev/feeZ/unitFee/amount——偏差百分比与 σ 反推得出单位费用
+ * （tests/jobs/transfer-cost-watchdog.test.ts 钉住 detail 不含 %/σ）。
  */
 import { and, eq, sql } from "drizzle-orm";
 import { systemAlerts } from "@/db/schema";

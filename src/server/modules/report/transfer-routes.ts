@@ -1,6 +1,11 @@
 /**
- * D60 调拨线路读模型（缓存键 `transfer-routes/v1`）——驾驶舱屏 3「各调拨线路批次与均价」与
+ * D60 调拨线路读模型（缓存键 `transfer-routes/v2`）——驾驶舱屏 3「各调拨线路批次与均价」与
  * `/inventory/transfer-routes` 页**同读同缓存键**；cockpit 不得自推线路。
+ *
+ * v2（2026-09-04）：statusReason / feeReason / qtyReason 改为**不带数值**的判定文案（只说方向与档位），
+ * 偏差百分比 / σ / 倍数只走结构化字段（latestDeviationPct/latestZ/feePctDev/feeZ/qtyRatio），
+ * 由 stripLaneMoney 按角色置空、前端仅在 moneyVisible 时拼接——此前文案内嵌「偏离基线 150.00%」「2.5σ」
+ * 会绕过金额剥离泄露给仓库角色。缓存键随口径升版，旧缓存不再命中。
  *
  * 线路键 = (from, to, transfer_type)；存量未分类单（transfer_type 为空）归入 type="unclassified" 线路，不丢单。
  * 事实来源：
@@ -26,16 +31,47 @@ import { type AnyDb, resolveDb } from "@/server/core/svc";
 import {
   deviation,
   type DeviationLevel,
+  type DeviationResult,
   laneBaseline,
   qtyAnomaly,
   type QtyAnomalyLevel,
+  type QtyAnomalyResult,
   scatteredLane,
   unitFee,
 } from "@/server/rules/transfer-cost";
 import { TRANSFER_TYPE_LABELS, isTransferType } from "@/lib/transfer-types";
 
-export const TRANSFER_ROUTES_CACHE_KEY = "transfer-routes/v1";
+export const TRANSFER_ROUTES_CACHE_KEY = "transfer-routes/v2";
 export const UNCLASSIFIED_TRANSFER_TYPE = "unclassified";
+
+/**
+ * 费用偏差判定文案（全员可见口径）：只说方向（高于/低于）与档位（样本不足/统计带/阈值），
+ * **不含**百分比、σ、样本数等任何数值——数值只走 pctDev/z/samples 结构化字段，按角色置空。
+ * 档位与 rules/transfer-cost.deviation 的分支一一对应（本函数只翻译，不重判）。
+ */
+export function feeReasonText(unitFeeValue: string | null, dev: Pick<DeviationResult, "level" | "pctDev" | "z" | "insufficient">): string {
+  if (unitFeeValue == null) return "本单无单位费用（件数为 0 或未登记费用）";
+  if (dev.pctDev == null) return "同线路无历史基线，暂不判定";
+  const dir = dev.pctDev.startsWith("-") ? "低于" : "高于";
+  if (dev.insufficient) {
+    return dev.level === "ok" ? "样本不足，单位费用偏差在阈值内" : `样本不足，单位费用${dir}线路基线超过阈值，仅提醒`;
+  }
+  if (dev.z == null) {
+    return dev.level === "ok" ? "历史单价无波动，单位费用偏差在阈值内" : `历史单价无波动，不做统计判定；单位费用${dir}线路基线超过阈值，仅提醒`;
+  }
+  if (dev.level === "alert") return `单位费用${dir}线路中位数，超出统计控制带`;
+  if (dev.level === "watch") {
+    return Math.abs(dev.z) > 2 ? `单位费用${dir}线路中位数，接近统计控制带边界` : `统计带内，但单位费用${dir}线路基线超过阈值，仅提醒`;
+  }
+  return "统计带内，单位费用偏差在阈值内";
+}
+
+/** 数量异常判定文案（不含件数/中位数/倍数数值；数值走 qty/qtyMedian/qtyRatio） */
+export function qtyReasonText(qa: Pick<QtyAnomalyResult, "level">): string {
+  if (qa.level === "insufficient") return "同线路件数样本不足，暂不判定";
+  if (qa.level === "watch") return "本单件数超过同线路件数中位数的倍数阈值";
+  return "件数在中位数倍数范围内";
+}
 
 const SHANGHAI_DATE = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" });
 export function shanghaiDate(d: Date | string): string {
@@ -194,6 +230,7 @@ export interface TransferLaneRow {
   latestDate: string | null;
   latestDeviationPct: string | null;
   latestZ: number | null;
+  /** 最近一单判定文案（不含数值；数值见 latestDeviationPct/latestZ，按角色置空） */
   statusReason: string;
   recentDocs: TransferLaneRecentDoc[];
 }
@@ -227,12 +264,14 @@ export interface TransferAnomalyRow {
   feeZ: number | null;
   feeSamples: number;
   feeInsufficient: boolean;
+  /** 费用判定文案（不含百分比/σ；数值见 feePctDev/feeZ，按角色置空） */
   feeReason: string;
   /** 数量异常判定 */
   qtyLevel: QtyAnomalyLevel;
   qtyMedian: string | null;
   qtyRatio: string | null;
   qtySamples: number;
+  /** 数量判定文案（不含件数/倍数；数值见 qty/qtyMedian/qtyRatio） */
   qtyReason: string;
   /** 汇总级别：alert > watch */
   level: "alert" | "watch";
@@ -349,9 +388,11 @@ export function computeTransferRoutes(
       const uf = d.hasFee ? unitFee({ feeTotal: d.feeNet, qty: d.qty }) : null;
       const dev = deviation(uf, ownBase, { thresholdPct: params.deviationPct });
       const qa = qtyAnomaly(d.qty, docs.filter((o) => o.id !== d.id).map((o) => ({ qty: o.qty })), params.qtyDeviationX);
+      const feeReason = feeReasonText(uf, dev);
+      const qtyReason = qtyReasonText(qa);
       if (d.hasFee) {
         latestStatus = dev.level === "ok" && dev.insufficient ? "insufficient" : dev.level;
-        latestReason = dev.reason;
+        latestReason = feeReason;
         latestPct = dev.pctDev;
         latestZ = dev.z;
       }
@@ -375,12 +416,12 @@ export function computeTransferRoutes(
           feeZ: dev.z,
           feeSamples: dev.samples,
           feeInsufficient: dev.insufficient,
-          feeReason: dev.reason,
+          feeReason,
           qtyLevel: qa.level,
           qtyMedian: qa.median,
           qtyRatio: qa.ratio,
           qtySamples: qa.samples,
-          qtyReason: qa.reason,
+          qtyReason,
           level,
         });
       }

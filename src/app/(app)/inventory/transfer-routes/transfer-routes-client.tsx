@@ -2,8 +2,9 @@
 
 /**
  * D60 调拨线路与费用（/inventory/transfer-routes）：
- * Tab 线路汇总（transfer-routes/v1 读模型，paramPrefix ln）/ 费用明细（transfer_fees，paramPrefix fee）/
+ * Tab 线路汇总（transfer-routes/v2 读模型，paramPrefix ln）/ 费用明细（transfer_fees，paramPrefix fee）/
  * 异常（同读模型 anomalies，paramPrefix an）。元/件与费用仅 PRICE_VISIBLE_ROLES（服务端已剥离，前端只折叠展示）。
+ * 判定文案（statusReason/feeReason/qtyReason）服务端不带数值；偏差百分比/σ 只在 moneyVisible 时由本页拼接。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -135,6 +136,14 @@ const money = (v: string | null | undefined, visible: boolean): string =>
   !visible ? "***" : v == null ? "—" : Number(v).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const unit = (v: string | null | undefined, visible: boolean): string =>
   !visible ? "***" : v == null ? "—" : Number(v).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+/** 费用判定文案 + 数值：偏差 %/σ 只在价格可见时拼接（服务端文案本身不带数值） */
+const feeReasonText = (reason: string, pctDev: string | null, z: number | null, visible: boolean): string =>
+  !visible || pctDev == null ? reason : `${reason}（偏差 ${pctDev}%${z != null ? ` · ${z}σ` : ""}）`;
+/** 数量判定文案 + 数值：件数/中位数/倍数全员可见，仅在判定为数量异常时拼接 */
+const qtyReasonText = (r: Pick<AnomalyRow, "qtyLevel" | "qtyReason" | "qty" | "qtyMedian" | "qtyRatio">): string =>
+  r.qtyLevel === "watch" && r.qtyMedian != null
+    ? `${r.qtyReason}（本单 ${formatQty(r.qty)} 件 / 中位数 ${formatQty(r.qtyMedian)}${r.qtyRatio ? ` ×${r.qtyRatio}` : ""}）`
+    : r.qtyReason;
 
 function useRoutesModel(filters: { from?: string; to?: string; type?: string; level?: string }) {
   const [data, setData] = useState<RoutesModel | null>(null);
@@ -238,7 +247,7 @@ function LanesTab() {
       title: "状态",
       dataIndex: "status",
       width: 110,
-      render: (v: LaneRow["status"], r) => <Tooltip title={r.statusReason}><Tag color={STATUS_TAG[v].color}>{STATUS_TAG[v].text}</Tag></Tooltip>,
+      render: (v: LaneRow["status"], r) => <Tooltip title={feeReasonText(r.statusReason, r.latestDeviationPct, r.latestZ, visible)}><Tag color={STATUS_TAG[v].color}>{STATUS_TAG[v].text}</Tag></Tooltip>,
     },
   ];
   return (
@@ -501,7 +510,16 @@ function AnomaliesTab() {
         </span>
       ),
     },
-    { title: "说明", key: "reason", ellipsis: true, render: (_, r) => <Tooltip title={`${r.feeReason}；${r.qtyReason}`}><span>{r.feeLevel !== "ok" ? r.feeReason : r.qtyReason}</span></Tooltip> },
+    {
+      title: "说明",
+      key: "reason",
+      ellipsis: true,
+      render: (_, r) => {
+        const fee = feeReasonText(r.feeReason, r.feePctDev, r.feeZ, visible);
+        const qty = qtyReasonText(r);
+        return <Tooltip title={`${fee}；${qty}`}><span>{r.feeLevel !== "ok" ? fee : qty}</span></Tooltip>;
+      },
+    },
   ];
   return (
     <div>

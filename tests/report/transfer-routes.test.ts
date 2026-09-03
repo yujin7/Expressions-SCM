@@ -5,11 +5,15 @@
 import { sql } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { skus, spus, stockDocLines, stockDocs, transferFees, users, warehouses } from "@/db/schema";
+import { maskSensitive } from "@/server/core/dto";
 import {
-  computeTransferRoutes, filterTransferRoutes, laneKeyOf, loadTransferDocFacts, loadTransferRoutes, refreshTransferRoutes,
-  stripLaneMoney, TRANSFER_ROUTES_CACHE_KEY,
+  computeTransferRoutes, feeReasonText, filterTransferRoutes, laneKeyOf, loadTransferDocFacts, loadTransferRoutes, qtyReasonText,
+  refreshTransferRoutes, stripLaneMoney, TRANSFER_ROUTES_CACHE_KEY,
 } from "@/server/modules/report/transfer-routes";
 import { createTestDb, type TestDb } from "../helpers/db";
+
+/** 百分比（含小数）、σ、倍数 ×N——任何一种出现在非价格角色载荷里都算泄露 */
+const NUMERIC_DEVIATION = /\d+(?:\.\d+)?\s*%|σ|×\s*\d/;
 
 const AS_OF = "2026-09-03";
 const PARAMS = { windowDays: 180, deviationPct: 20, qtyDeviationX: 3, batchMaxDocs: 4 };
@@ -186,5 +190,60 @@ describe("transfer-routes 读模型", () => {
     const onlyAlert = filterTransferRoutes(m, { level: "alert" });
     expect(onlyAlert.anomalies.every((a) => a.level === "alert")).toBe(true);
     expect(onlyAlert.anomalies.length).toBe(1);
+  });
+
+  it("判定文案不带数值：非价格角色的 maskSensitive 出口里 lanes/anomalies/summary 不含任何百分比/σ/倍数", async () => {
+    const m = await loadTransferRoutes(db, { asOf: AS_OF });
+    // 价格可见角色：结构化数值仍在（前端据此拼接）
+    const outlier = m.anomalies.find((a) => a.docNo === "DB-TR0009")!;
+    expect(outlier.feePctDev).toBe("150.00");
+    expect(outlier.feeZ).not.toBeNull();
+    expect(outlier.feeReason).toBe("单位费用高于线路中位数，超出统计控制带");
+    const acWatch = m.anomalies.find((a) => a.docNo === "DB-TR0014")!;
+    expect(acWatch.feeReason).toBe("样本不足，单位费用高于线路基线超过阈值，仅提醒");
+    const qtyAnom = m.anomalies.find((a) => a.qtyLevel === "watch")!;
+    expect(qtyAnom.qtyReason).toBe("本单件数超过同线路件数中位数的倍数阈值");
+    const ab = m.lanes.find((l) => l.laneKey === laneKeyOf(whA, whB, "factory_to_warehouse"))!;
+    expect(ab.statusReason).not.toMatch(NUMERIC_DEVIATION);
+    // 全量文案（含价格可见角色）本身就不带数值——数值只走结构化字段
+    for (const a of m.anomalies) {
+      expect(a.feeReason).not.toMatch(NUMERIC_DEVIATION);
+      expect(a.qtyReason).not.toMatch(NUMERIC_DEVIATION);
+    }
+    for (const l of m.lanes) expect(l.statusReason).not.toMatch(NUMERIC_DEVIATION);
+
+    // 仓库角色出口 = 路由同款：stripLaneMoney → maskSensitive；params/limitations 只含阈值参数（20%/×3），不在断言范围
+    const masked = maskSensitive(stripLaneMoney(m), ["warehouse"]);
+    expect(masked.anomalies.length).toBeGreaterThan(0);
+    const payload = JSON.stringify({ lanes: masked.lanes, anomalies: masked.anomalies, summary: masked.summary });
+    expect(payload).not.toMatch(NUMERIC_DEVIATION);
+    expect(payload).not.toContain("150.00");
+    expect(masked.anomalies.every((a) => a.feePctDev == null && a.feeZ == null && a.unitFee == null && a.amount == null)).toBe(true);
+    expect(masked.lanes.every((l) => l.latestDeviationPct == null && l.latestZ == null)).toBe(true);
+    // 方向仍可读（仓库角色需要知道是高了还是低了才能复核）
+    expect(masked.anomalies.find((a) => a.docNo === "DB-TR0009")!.feeReason).toContain("高于");
+  });
+
+  it("feeReasonText/qtyReasonText 逐档翻译 rules/transfer-cost 分支，全部不含数值", () => {
+    const cases: [ReturnType<typeof feeReasonText>, string][] = [
+      [feeReasonText(null, { level: "ok", pctDev: null, z: null, insufficient: true }), "本单无单位费用（件数为 0 或未登记费用）"],
+      [feeReasonText("1.0000", { level: "ok", pctDev: null, z: null, insufficient: true }), "同线路无历史基线，暂不判定"],
+      [feeReasonText("1.0000", { level: "ok", pctDev: "5.00", z: null, insufficient: true }), "样本不足，单位费用偏差在阈值内"],
+      [feeReasonText("0.5000", { level: "watch", pctDev: "-50.00", z: null, insufficient: true }), "样本不足，单位费用低于线路基线超过阈值，仅提醒"],
+      [feeReasonText("1.5000", { level: "watch", pctDev: "50.00", z: null, insufficient: false }), "历史单价无波动，不做统计判定；单位费用高于线路基线超过阈值，仅提醒"],
+      [feeReasonText("1.0000", { level: "ok", pctDev: "0.00", z: null, insufficient: false }), "历史单价无波动，单位费用偏差在阈值内"],
+      [feeReasonText("2.5000", { level: "alert", pctDev: "150.00", z: 4.2, insufficient: false }), "单位费用高于线路中位数，超出统计控制带"],
+      [feeReasonText("0.2000", { level: "alert", pctDev: "-80.00", z: -3.5, insufficient: false }), "单位费用低于线路中位数，超出统计控制带"],
+      [feeReasonText("1.3000", { level: "watch", pctDev: "30.00", z: 2.5, insufficient: false }), "单位费用高于线路中位数，接近统计控制带边界"],
+      [feeReasonText("1.3000", { level: "watch", pctDev: "30.00", z: 1.2, insufficient: false }), "统计带内，但单位费用高于线路基线超过阈值，仅提醒"],
+      [feeReasonText("1.0500", { level: "ok", pctDev: "5.00", z: 0.3, insufficient: false }), "统计带内，单位费用偏差在阈值内"],
+      [qtyReasonText({ level: "insufficient" }), "同线路件数样本不足，暂不判定"],
+      [qtyReasonText({ level: "watch" }), "本单件数超过同线路件数中位数的倍数阈值"],
+      [qtyReasonText({ level: "ok" }), "件数在中位数倍数范围内"],
+    ];
+    for (const [actual, expected] of cases) {
+      expect(actual).toBe(expected);
+      expect(actual).not.toMatch(NUMERIC_DEVIATION);
+    }
   });
 });
