@@ -1,0 +1,216 @@
+"use client";
+
+/**
+ * 周期主数据补录工作台（IAL-06 / FS-R6）：加工 / 采购 / 在途周期、MOQ、成本有无，按分层筛缺失维度，行内补录。
+ * 写规则：只允许填空；覆盖非空值须 pmc/admin（采购只能补空）。每次保存留审计。
+ */
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { App, Button, Col, InputNumber, Row, Select, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from "antd";
+import type { ColumnsType } from "antd/es/table";
+import { ReloadOutlined } from "@ant-design/icons";
+import CaliberNote from "@/components/CaliberNote";
+import { fetchJson, patchJson } from "@/components/fetchJson";
+import { formatQty } from "@/components/format";
+import ListToolbar from "@/components/ListToolbar";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
+import SearchInput from "@/components/SearchInput";
+import SkuHoverCard from "@/components/SkuHoverCard";
+import { useListState } from "@/components/useListState";
+
+type Tier = "S" | "A" | "B" | "C";
+type Dim = "production" | "logistics" | "purchase" | "moq" | "cost";
+type LeadField = "normalLeadDays" | "logisticsLeadDays" | "purchaseLeadDays";
+
+interface Row {
+  skuId: number;
+  code: string;
+  name: string;
+  skuType: string;
+  brand: string | null;
+  tier: Tier | null;
+  normalLeadDays: number | null;
+  logisticsLeadDays: number | null;
+  purchaseLeadDays: number | null;
+  moq: string | null;
+  hasCost: boolean;
+  missing: Dim[];
+  blocked: boolean;
+}
+
+interface Data {
+  rows: Row[];
+  total: number;
+  policyPeriod: string | null;
+  summary: {
+    scanned: number;
+    complete: number;
+    byDimension: Record<Dim, number>;
+    blocked: number;
+    byTier: Record<Tier | "unclassified", { total: number; complete: number; blocked: number }>;
+  };
+  dimLabels: Record<Dim, string>;
+}
+
+const TYPE_LABELS: Record<string, string> = { finished: "成品", semi: "半成品", raw: "原料", packaging: "包材" };
+const TIER_COLORS: Record<Tier, string> = { S: "magenta", A: "red", B: "orange", C: "default" };
+
+export default function SupplyParamsClient({ canOverride }: { canOverride: boolean }) {
+  const { message } = App.useApp();
+  const listState = useListState({
+    key: "master-supply-params",
+    defaults: { q: "", skuType: "", missing: "any", tier: "", blockedOnly: "" },
+    defaultPageSize: 50,
+  });
+  const { filters, page, pageSize } = listState;
+  const [data, setData] = useState<Data | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [edits, setEdits] = useState<Record<string, number | null>>({});
+  const [saving, setSaving] = useState<number | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const params = new URLSearchParams({ q: filters.q, page: String(page), pageSize: String(pageSize) });
+      if (filters.skuType) params.set("skuType", filters.skuType);
+      if (filters.missing) params.set("missing", filters.missing);
+      if (filters.tier) params.set("tier", filters.tier);
+      if (filters.blockedOnly === "1") params.set("blockedOnly", "1");
+      setData(await fetchJson<Data>(`/api/master/supply-params?${params.toString()}`));
+      setEdits({});
+    } catch (e) {
+      setData(null);
+      setLoadError(e instanceof Error ? e.message : "加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [filters.q, filters.skuType, filters.missing, filters.tier, filters.blockedOnly, page, pageSize]);
+  useEffect(() => { void load(); }, [load]);
+
+  const editKey = (skuId: number, f: LeadField) => `${skuId}:${f}`;
+
+  const save = async (r: Row) => {
+    const body: Partial<Record<LeadField, number | null>> = {};
+    for (const f of ["normalLeadDays", "logisticsLeadDays", "purchaseLeadDays"] as const) {
+      const k = editKey(r.skuId, f);
+      if (k in edits && edits[k] !== r[f]) body[f] = edits[k];
+    }
+    if (Object.keys(body).length === 0) return;
+    setSaving(r.skuId);
+    try {
+      const res = await patchJson<{ action: "fill" | "override" }>(`/api/master/sku/${r.skuId}/supply-params`, body);
+      message.success(`${r.code} 已${res.action === "override" ? "覆盖" : "补录"}`);
+      await load();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const cell = (r: Row, f: LeadField, applicable: boolean) => {
+    if (!applicable) return <Typography.Text type="secondary">不适用</Typography.Text>;
+    const k = editKey(r.skuId, f);
+    const current = r[f];
+    const locked = current != null && !canOverride;
+    return (
+      <Tooltip title={locked ? "已有值，只有生产计划/管理员可覆盖" : current == null ? "空值：可直接补录" : "覆盖已有值将留审计"}>
+        <InputNumber
+          size="small"
+          min={0}
+          max={365}
+          precision={0}
+          value={k in edits ? edits[k] : current}
+          disabled={locked}
+          status={current == null && !(k in edits) ? "warning" : undefined}
+          onChange={(v) => setEdits((e) => ({ ...e, [k]: v == null ? null : Number(v) }))}
+          style={{ width: 90 }}
+        />
+      </Tooltip>
+    );
+  };
+
+  const dirty = (r: Row) => (["normalLeadDays", "logisticsLeadDays", "purchaseLeadDays"] as const).some((f) => {
+    const k = editKey(r.skuId, f);
+    return k in edits && edits[k] !== r[f];
+  });
+
+  const columns: ColumnsType<Row> = useMemo(() => [
+    { title: "SKU 编码", dataIndex: "code", width: 140, fixed: "left", render: (v: string) => <SkuHoverCard code={v} /> },
+    { title: "名称", dataIndex: "name", width: 220, ellipsis: true },
+    { title: "类型", dataIndex: "skuType", width: 80, render: (v: string) => TYPE_LABELS[v] ?? v },
+    {
+      title: "分层", dataIndex: "tier", width: 80,
+      render: (v: Tier | null, r) => v ? <Tag color={TIER_COLORS[v]}>{v}</Tag> : r.skuType === "finished" ? <Typography.Text type="secondary">未固化</Typography.Text> : "—",
+    },
+    { title: "阻塞", dataIndex: "blocked", width: 80, render: (v: boolean) => (v ? <Tooltip title="S/A/B 缺加工或在途周期：直出/试点/预警阈值都建立在默认周期上"><Tag color="red">阻塞</Tag></Tooltip> : "—") },
+    { title: "加工周期(天)", key: "normalLeadDays", width: 120, render: (_, r) => cell(r, "normalLeadDays", r.skuType === "finished" || r.skuType === "semi") },
+    { title: "在途周期(天)", key: "logisticsLeadDays", width: 120, render: (_, r) => cell(r, "logisticsLeadDays", r.skuType === "finished" || r.skuType === "semi") },
+    { title: "采购周期(天)", key: "purchaseLeadDays", width: 120, render: (_, r) => cell(r, "purchaseLeadDays", r.skuType !== "finished") },
+    { title: "MOQ", dataIndex: "moq", width: 100, align: "right", render: (v: string | null) => (v == null ? <Typography.Text type="warning">缺</Typography.Text> : formatQty(v)) },
+    { title: "成本", dataIndex: "hasCost", width: 70, render: (v: boolean) => (v ? <Tag color="green">有</Tag> : <Tag color="orange">无</Tag>) },
+    { title: "缺失", dataIndex: "missing", width: 200, render: (v: Dim[]) => (v.length ? v.map((d) => <Tag key={d}>{data?.dimLabels[d] ?? d}</Tag>) : <Tag color="green">齐全</Tag>) },
+    {
+      title: "", key: "save", width: 80, fixed: "right",
+      render: (_, r) => <Button size="small" type="primary" disabled={!dirty(r)} loading={saving === r.skuId} onClick={() => void save(r)}>保存</Button>,
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- cell/dirty/save 读取最新 edits/saving 闭包，列定义随其变化重建即可
+  ], [edits, saving, data?.dimLabels, canOverride]);
+
+  const s = data?.summary;
+  const tierCell = (k: Tier | "unclassified") => {
+    const b = s?.byTier[k];
+    if (!b || b.total === 0) return "—";
+    return `${b.complete}/${b.total}${b.blocked ? `（阻塞 ${b.blocked}）` : ""}`;
+  };
+
+  return (
+    <div>
+      <Typography.Title level={4} style={{ marginTop: 0 }}>周期主数据补录</Typography.Title>
+      <CaliberNote
+        summary={<>成品：加工周期 + 在途周期；部件：采购周期。S/A/B 缺任一周期即阻塞直出/试点，预警阈值只能按默认周期（D57）。{data?.policyPeriod ? <>　分层取 {data.policyPeriod} 期固化值。</> : "　分层尚未固化。"}</>}
+        detail={<div><p>只允许填空；覆盖已有值须生产计划或管理员（采购只能补空值），每次保存留审计（sku_params）。MOQ 走 uom_convs（基础单位换算），成本走 sku_costs，本页只显示有无，不给金额。</p><p>缺省周期：加工 default_production_lead_days、在途 default_logistics_lead_days（运行参数）。</p></div>}
+      />
+      <Row gutter={16} style={{ marginBottom: 12 }}>
+        <Col span={4}><Statistic title="扫描 SKU" value={s?.scanned ?? "—"} /></Col>
+        <Col span={4}><Statistic title="周期齐全" value={s?.complete ?? "—"} /></Col>
+        <Col span={4}><Statistic title="S/A/B 阻塞" value={s?.blocked ?? "—"} valueStyle={{ color: s && s.blocked > 0 ? "#cf1322" : undefined }} /></Col>
+        <Col span={3}><Statistic title="S 级齐全" value={tierCell("S")} /></Col>
+        <Col span={3}><Statistic title="A 级齐全" value={tierCell("A")} /></Col>
+        <Col span={3}><Statistic title="B 级齐全" value={tierCell("B")} /></Col>
+        <Col span={3}><Statistic title="C/未分层" value={`${tierCell("C")} / ${tierCell("unclassified")}`} /></Col>
+      </Row>
+      <ListToolbar
+        state={listState}
+        extra={
+          <>
+            <Select placeholder="类型" allowClear style={{ width: 100 }} value={filters.skuType || undefined}
+              options={Object.entries(TYPE_LABELS).map(([value, label]) => ({ value, label }))}
+              onChange={(v) => listState.setFilter({ skuType: v ?? "" })} />
+            <Select placeholder="缺失维度" allowClear style={{ width: 130 }} value={filters.missing || undefined}
+              options={[{ value: "any", label: "任一缺失" }, ...Object.entries(data?.dimLabels ?? {}).map(([value, label]) => ({ value, label: `缺${label}` }))]}
+              onChange={(v) => listState.setFilter({ missing: v ?? "" })} />
+            <Select placeholder="分层" allowClear style={{ width: 100 }} value={filters.tier || undefined}
+              options={[{ value: "S", label: "S 级" }, { value: "A", label: "A 级" }, { value: "B", label: "B 级" }, { value: "C", label: "C 级" }, { value: "NONE", label: "未固化" }]}
+              onChange={(v) => listState.setFilter({ tier: v ?? "" })} />
+            <span>只看阻塞 <Switch size="small" checked={filters.blockedOnly === "1"} onChange={(v) => listState.setFilter({ blockedOnly: v ? "1" : "" })} /></span>
+            <SearchInput allowClear placeholder="搜索 SKU 编码/名称" style={{ width: 200 }} onSearch={(v) => listState.setFilter({ q: v.trim() })} />
+          </>
+        }
+        primaryActions={<Space><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button></Space>}
+      />
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="周期主数据" />
+      <Table<Row>
+        rowKey="skuId"
+        size={listState.tableSize}
+        columns={columns}
+        dataSource={data?.rows ?? []}
+        loading={loading}
+        scroll={{ x: "max-content" }}
+        pagination={listState.paginationProps({ total: data?.total ?? 0 })}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前条件下没有 SKU" }}
+      />
+    </div>
+  );
+}

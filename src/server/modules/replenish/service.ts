@@ -10,6 +10,9 @@
  * - 日均销 = 近3月销量 ÷ 91（窗口由 sales_monthly max(yearMonth) 动态回推，与驾驶舱同法，本地重推导）；
  * - 建议量 = R11 纯函数（rules/netreq.ts）：净需求 = 毛需求(日均×目标覆盖天数) − 在库 − 在途，
  *   MOQ/订货倍数取 uom_convs 首行（按 id）兜底——与 wo.ts 快照同一 PoC 口径（值按基础单位解释）；无行则纯净需求向上取整由 dQty 收口。
+ * - D58/D59：tier / ownership / pilot 取 sku_planning_policy **最近固化期**（含人工覆写），不在此重算——
+ *   未固化任何期间时三列为 null 并在 meta.policyPeriod=null 提示；C 级默认折叠（hideTierC）并标「运营兜底」；
+ *   计划事件（ops_plan_events）只作行上下文标签，不进公式。
  * - 全表无金额字段，免脱敏。
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -38,6 +41,10 @@ import { makeResolver } from "@/server/core/scoped-params";
 import { type AnyDb, num, r1, resolveDb } from "@/server/core/svc";
 import { getSkuSupplyParams } from "@/server/modules/master/sku-supply-params";
 import { salesWindow } from "@/server/core/sales-window";
+import { loadPolicyMap } from "@/server/modules/planning/policy";
+import { loadOpenPlanEventsBySku, planEventTag } from "@/server/modules/planning/plan-events";
+import type { Tier } from "@/server/rules/abc";
+import { OWNERSHIP_LABELS, type Ownership } from "@/server/rules/replenish-ownership";
 
 export interface ReplenishRow {
   skuId: number;
@@ -72,6 +79,16 @@ export interface ReplenishRow {
   /** func#14 ABC 分层与生效目标覆盖天数 */
   abcClass: "A" | "B" | "C" | null;
   effectiveTarget: number;
+  /** D58 四档（最近固化期生效值，含覆写）；未固化 = null */
+  tier: Tier | null;
+  /** 是否人工覆写 */
+  tierOverridden: boolean;
+  /** D59 权责；未固化 = null */
+  ownership: Ownership | null;
+  ownershipLabel: string | null;
+  pilot: boolean;
+  /** 运营计划事件标签（未结束/即将开始），如「大促 9/15–9/30」 */
+  planEventTags: string[];
   /** 总供应周期（生产 + 物流/调拨；生产周期缺失时 = null） */
   leadDays: number | null;
   /** 常规生产周期（天） */
@@ -154,6 +171,12 @@ export interface ReplenishResult {
     engine: string;
     /** 目标服务水平（%） */
     serviceLevel: number;
+    /** D58 分层来源期（sku_planning_policy 最近固化期；null = 尚未固化） */
+    policyPeriod: string | null;
+    /** 因 hideTierC 折叠的 C 级行数 */
+    hiddenTierC: number;
+    /** 全部成品中已固化行的权责分布 */
+    ownershipMix: Record<Ownership, number>;
   };
 }
 
@@ -162,6 +185,8 @@ export const REPLENISH_SORT_FIELDS = [
   "name",
   "brand",
   "abcClass",
+  "tier",
+  "ownership",
   "onHand",
   "inTransit",
   "legacyTransit",
@@ -203,6 +228,14 @@ export interface ReplenishQuery {
   sortOrder?: ReplenishSortOrder;
   /** 内部消费者（如 MRP 相关需求展开）取全量，绕过 API 分页夹取——防静默截断。HTTP 层永不传 true。 */
   allRows?: boolean;
+  /** D58 四档筛选（S/A/B/C；"none" = 未固化） */
+  tier?: string;
+  /** D59 权责筛选 */
+  ownership?: string;
+  /** C 级默认折叠：true 时 C 级行不进列表（meta.hiddenTierC 计数），默认 false 以保持既有消费者不变 */
+  hideTierC?: boolean;
+  /** D62 渠道范围（计划事件标签按范围裁剪）；缺省不裁剪 */
+  scopeUser?: { roles: string[]; channelScope?: number[] | null };
 }
 
 const replenishCollator = new Intl.Collator("zh-CN", {
@@ -220,6 +253,8 @@ function replenishSortValue(
       return row[sortBy];
     case "brand":
     case "abcClass":
+    case "tier":
+    case "ownership":
       return row[sortBy];
     case "suggestQty":
       return row.suggestQty ?? row.heldQty;
@@ -283,10 +318,15 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     .from(schema.skus)
     .leftJoin(schema.brands, eq(schema.skus.brandId, schema.brands.id))
     .where(and(...conds));
+  const emptyMix = (): Record<Ownership, number> => ({ supply_chain_direct: 0, joint_review: 0, ops_fallback: 0 });
   if (skuRows.length === 0) {
-    return { rows: [], total: 0, meta: { coverDaysTarget, minCoverAlert, months3: [], snapDate: null, suggestCount: 0, refDate: null, suppressedCount: 0, engine: "time_phased", serviceLevel: 95 } };
+    return { rows: [], total: 0, meta: { coverDaysTarget, minCoverAlert, months3: [], snapDate: null, suggestCount: 0, refDate: null, suppressedCount: 0, engine: "time_phased", serviceLevel: 95, policyPeriod: null, hiddenTierC: 0, ownershipMix: emptyMix() } };
   }
   const skuIds = skuRows.map((s) => s.id);
+
+  /* ── D58/D59 固化策略（最近期）+ 运营计划事件标签 ── */
+  const policy = await loadPolicyMap(db);
+  const planEventsBySku = await loadOpenPlanEventsBySku(db, skuIds, query.scopeUser);
 
   /* ── 在库：全网口径（core/stock-view 唯一实现） ── */
   const onHandView = await getOnHandBySku(db, { skuIds });
@@ -509,6 +549,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
 
     const abcClass = abcBySku.get(s.id) ?? null;
     const effectiveTarget = targetForClass(abcClass ?? undefined);
+    const pol = policy.bySku.get(s.id) ?? null;
 
     /* ── E2-01 安全库存：统计法（需求σ×交期），样本/交期不足降级兜底天数并注明 ── */
     /* 解析上下文必须带齐三层，缺一层则那一层的覆盖**永远不命中**：
@@ -624,6 +665,12 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       borrowOut: r1(borrowOut),
       abcClass,
       effectiveTarget,
+      tier: pol?.effectiveTier ?? null,
+      tierOverridden: pol?.overrideTier != null,
+      ownership: pol?.ownership ?? null,
+      ownershipLabel: pol ? OWNERSHIP_LABELS[pol.ownership] : null,
+      pilot: pol?.pilot ?? false,
+      planEventTags: (planEventsBySku.get(s.id) ?? []).map((e) => planEventTag(e)),
       leadDays,
       productionLeadDays,
       logisticsLeadDays,
@@ -666,11 +713,26 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     };
   });
 
+  /* ── D58/D59 筛选：tier / ownership / C 级折叠（在排序分页之前，计数不受分页影响） ── */
+  const ownershipMix = emptyMix();
+  for (const r of all) if (r.ownership) ownershipMix[r.ownership] += 1;
+  let visible = all;
+  const tierFilter = (query.tier ?? "").trim();
+  if (tierFilter === "none") visible = visible.filter((r) => r.tier == null);
+  else if (tierFilter) visible = visible.filter((r) => r.tier === tierFilter.toUpperCase());
+  const ownershipFilter = (query.ownership ?? "").trim();
+  if (ownershipFilter) visible = visible.filter((r) => r.ownership === ownershipFilter);
+  let hiddenTierC = 0;
+  if (query.hideTierC && !tierFilter) {
+    hiddenTierC = visible.filter((r) => r.tier === "C").length;
+    visible = visible.filter((r) => r.tier !== "C");
+  }
+
   // 决策列按用户选择全量排序后再分页；默认全管道可销天数升序（越紧急越靠前）。
-  all.sort((a, b) => compareReplenishRows(a, b, sortBy, sortOrder));
-  const suggestCount = all.filter((r) => r.suggestQty != null).length;
-  const suppressedCount = all.filter((r) => r.suppressReason != null).length;
-  const rows: ReplenishRow[] = all.slice((page - 1) * pageSize, page * pageSize).map((r) => ({
+  visible.sort((a, b) => compareReplenishRows(a, b, sortBy, sortOrder));
+  const suggestCount = visible.filter((r) => r.suggestQty != null).length;
+  const suppressedCount = visible.filter((r) => r.suppressReason != null).length;
+  const rows: ReplenishRow[] = visible.slice((page - 1) * pageSize, page * pageSize).map((r) => ({
     skuId: r.skuId,
     code: r.code,
     name: r.name,
@@ -691,6 +753,12 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     borrowOut: r.borrowOut,
     abcClass: r.abcClass,
     effectiveTarget: r.effectiveTarget,
+    tier: r.tier,
+    tierOverridden: r.tierOverridden,
+    ownership: r.ownership,
+    ownershipLabel: r.ownershipLabel,
+    pilot: r.pilot,
+    planEventTags: r.planEventTags,
     leadDays: r.leadDays,
     productionLeadDays: r.productionLeadDays,
     logisticsLeadDays: r.logisticsLeadDays,
@@ -712,7 +780,11 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     forecastTrusted: r.forecastTrusted,
     decisionEvidence: r.decisionEvidence,
   }));
-  return { rows, total: all.length, meta: { coverDaysTarget, minCoverAlert, months3, snapDate, suggestCount, refDate, suppressedCount, engine: "time_phased", serviceLevel } };
+  return {
+    rows,
+    total: visible.length,
+    meta: { coverDaysTarget, minCoverAlert, months3, snapDate, suggestCount, refDate, suppressedCount, engine: "time_phased", serviceLevel, policyPeriod: policy.period, hiddenTierC, ownershipMix },
+  };
 }
 
 /* ────────────────────────── 生成 BH 草稿（R13 人工闸） ────────────────────────── */

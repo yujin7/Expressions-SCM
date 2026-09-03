@@ -1,6 +1,7 @@
 /**
  * 运行参数维护（D39 阈值参数化 + 既有 R 规则参数统一入口）。
- * 白名单制：仅暴露登记过的 global 参数；写=admin，读=admin/pmc/purchasing/finance。
+ * 白名单制：仅暴露登记过的 global 参数；读=admin/pmc/purchasing/finance。
+ * 写权限按**键组**（D59：补货规则单一主体 = pmc）：`replenish` 组 pmc 可写（admin 兜底），其余仅 admin；审计不变。
  */
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -69,9 +70,45 @@ export const PARAM_DEFS: ParamDef[] = [
   { key: "payment_term_target_min_days", label: "目标账期下限", fallback: 45, min: 0, max: 180, unit: "天", note: "D64：月结目标区间下限（≤ 上限）" },
   { key: "payment_term_target_max_days", label: "目标账期上限", fallback: 60, min: 0, max: 180, unit: "天", note: "D64：月结目标区间上限" },
   { key: "dq_tolerance_pct", label: "数据质量一致容差", fallback: 1, min: 0, max: 20, unit: "%", note: "D65：SKU 日级数量差异 ≤ 本值视为一致" },
+  { key: "ops_demand_diff_pct", label: "运营提报核对阈值", fallback: 30, min: 1, max: 500, unit: "%", note: "D55/R3：运营提报量与系统基线（Holt 月量）差异绝对值 ≥ 本值标「需核对」" },
 ];
 
-export async function listParams(dbArg?: AnyDb): Promise<(ParamDef & { value: number; isDefault: boolean; lastChangedBy: string | null; lastChangedAt: string | null })[]> {
+/**
+ * D59 参数写权限键组：补货/分层/预警口径归 pmc（单一规则主体）；其余（比价容差、自动链开关、调拨、账期、数据质量）仍仅 admin。
+ * 只在这里登记，updateParam 据此判定；页面通过 listParams 的 writableBy 展示。
+ */
+export const PMC_WRITABLE_PARAM_KEYS: readonly string[] = [
+  "slow_days_threshold",
+  "cover_alert_days",
+  "cover_target_days",
+  "cover_target_days_a",
+  "cover_target_days_b",
+  "cover_target_days_c",
+  "safety_days_fallback",
+  "service_level_pct",
+  "detector_sales_drop_pct",
+  "detector_channel_shift_pct",
+  "detector_velocity_dev_pct",
+  "default_production_lead_days",
+  "default_logistics_lead_days",
+  "alert_buffer_days",
+  "grade_s_pct",
+  "grade_a_pct",
+  "grade_b_pct",
+  "spike_consecutive_days",
+  "spike_rise_pct",
+  "spike_min_base_qty",
+  "ops_demand_diff_pct",
+];
+
+/** 该角色集合能否写某键：admin 恒可；pmc 仅限 replenish 键组 */
+export function canWriteParam(roles: readonly string[], key: string): boolean {
+  if (roles.includes("admin")) return true;
+  if (roles.includes("pmc")) return PMC_WRITABLE_PARAM_KEYS.includes(key);
+  return false;
+}
+
+export async function listParams(dbArg?: AnyDb): Promise<(ParamDef & { value: number; isDefault: boolean; lastChangedBy: string | null; lastChangedAt: string | null; writableBy: "admin" | "pmc" })[]> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const rows: { key: string; value: string }[] = await db
     .select({ key: sysParams.key, value: sysParams.value })
@@ -94,17 +131,26 @@ export async function listParams(dbArg?: AnyDb): Promise<(ParamDef & { value: nu
     const v = byKey.get(d.key);
     const ok = v != null && Number.isFinite(v);
     const last = lastByKey.get(d.key);
-    return { ...d, value: ok ? (v as number) : d.fallback, isDefault: !ok, lastChangedBy: last?.by ?? null, lastChangedAt: last?.at ?? null };
+    return {
+      ...d,
+      value: ok ? (v as number) : d.fallback,
+      isDefault: !ok,
+      lastChangedBy: last?.by ?? null,
+      lastChangedAt: last?.at ?? null,
+      writableBy: PMC_WRITABLE_PARAM_KEYS.includes(d.key) ? "pmc" : "admin",
+    };
   });
 }
 
 const updateSchema = z.object({ key: z.string(), value: z.number().finite() });
 
 export async function updateParam(user: SessionUser, input: unknown, dbArg?: AnyDb): Promise<void> {
-  if (!user.roles.includes("admin")) throw new ApiError(403, "仅管理员可修改运行参数");
   const v = updateSchema.parse(input);
   const def = PARAM_DEFS.find((d) => d.key === v.key);
   if (!def) throw new ApiError(400, "未登记的参数键");
+  if (!canWriteParam(user.roles, v.key)) {
+    throw new ApiError(403, PMC_WRITABLE_PARAM_KEYS.includes(v.key) ? "仅生产计划（pmc）或管理员可修改补货参数" : "仅管理员可修改该参数");
+  }
   if (v.value < def.min || v.value > def.max) {
     throw new ApiError(400, `「${def.label}」取值须在 ${def.min}–${def.max}${def.unit} 之间`);
   }

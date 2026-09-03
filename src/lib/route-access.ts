@@ -77,6 +77,8 @@ export const ROUTE_REGISTRY = {
   replenish: { path: "/replenish", label: "补货建议", roles: ["pmc", "purchasing"], group: "planning", scopedMode: "public", keywords: "replenish buhuo" },
   replenish_versions: { path: "/replenish/versions", label: "计划版本与周差异", roles: ["pmc", "purchasing"], group: "planning", scopedMode: "public" },
   replenish_sop: { path: "/replenish/sop", label: "S&OP 计划周期", roles: ["pmc", "purchasing", "ops", "finance"], group: "planning", scopedMode: "channel_scoped", keywords: "sop consensus freeze execute 共识 冻结 执行" },
+  replenish_reconcile: { path: "/replenish/reconcile", label: "运营提报核对", roles: ["pmc", "ops", "purchasing", "finance"], group: "planning", scopedMode: "channel_scoped", keywords: "reconcile ops demand tibao hedui 提报 核对" },
+  replenish_pilot: { path: "/replenish/pilot", label: "补货试点候选", roles: ["pmc", "purchasing", "ops", "finance"], group: "planning", scopedMode: "public", keywords: "pilot shidian tier ownership 试点 分层 权责" },
   report_demand: { path: "/report/demand", label: "需求达成与货盘", group: "planning", scopedMode: "channel_scoped", keywords: "demand xuqiu huopan" },
   report_risk: { path: "/report/risk", label: "风险库存处置", group: "planning", scopedMode: "public", keywords: "risk fengxian chuzhi" },
   report_segmentation: { path: "/report/segmentation", label: "库存分层 ABC/XYZ", group: "planning", scopedMode: "public", keywords: "abc xyz fenceng segmentation" },
@@ -148,6 +150,7 @@ export const ROUTE_REGISTRY = {
   master_bom: { path: "/master/bom", label: "BOM", group: "master", scopedMode: "public", keywords: "bom wuliaoqingdan" },
   master_feeref: { path: "/master/feeref", label: "加工费参考价", roles: ["purchasing", "pmc", "finance"], group: "master", scopedMode: "denied" },
   report_data_health: { path: "/report/data-health", label: "主数据健康度", group: "master", scopedMode: "public", keywords: "health jiankang zhiliang quality" },
+  master_supply_params: { path: "/master/supply-params", label: "周期主数据补录", roles: ["pmc", "purchasing"], group: "master", scopedMode: "denied", keywords: "supply params lead time zhouqi bulu 周期 补录" },
 
   /* ── 数据中心 ── */
   import_upload: { path: "/import/upload", label: "文件上传", roles: ["pmc", "finance"], group: "import", scopedMode: "denied", keywords: "upload import shangchuan" },

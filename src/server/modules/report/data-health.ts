@@ -33,6 +33,8 @@ import {
   findBomCycleFrom,
   type BomLineLike,
 } from "@/server/rules/bom-explode";
+import { latestPolicyPeriod, loadPolicyMap } from "@/server/modules/planning/policy";
+import type { Tier } from "@/server/rules/abc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -80,6 +82,34 @@ export interface DataHealthResult {
   total: number;
   summary: DataHealthSummary;
   structural: StructuralWarning[];
+  /** D58/D59：周期主数据完整度 × 分层（S/A/B 缺任一周期即阻塞直出/试点/预警阈值） */
+  leadTimeCoverage: LeadTimeCoverage;
+}
+
+export type LeadTimeTierKey = Tier | "unclassified";
+
+export interface LeadTimeCoverageBucket {
+  total: number;
+  /** 加工周期已维护（sku_params.normal_lead_days > 0） */
+  productionOk: number;
+  /** 在途周期已维护（sku_params.logistics_lead_days 非空） */
+  logisticsOk: number;
+  /** 两者都有 */
+  complete: number;
+  /** S/A/B 缺任一周期（C/未分层不计阻塞，只计缺失） */
+  blocked: number;
+  completePct: number | null;
+}
+
+export interface LeadTimeCoverage {
+  /** 分层来源期（sku_planning_policy 最近固化期；未固化 = null，此时全部计入 unclassified） */
+  policyPeriod: string | null;
+  scanned: number;
+  byTier: Record<LeadTimeTierKey, LeadTimeCoverageBucket>;
+  /** S/A/B 阻塞 SKU 数（去重） */
+  blocked: number;
+  /** 阻塞样例（按分层 S→A→B，最多 20 条） */
+  blockedSamples: string[];
 }
 
 export async function getDataHealth(
@@ -121,14 +151,18 @@ export async function getDataHealth(
 
   const emptyByDim = (): Record<string, number> => Object.fromEntries(ALL_DIMS.map((d) => [d, 0]));
   if (skuRows.length === 0) {
-    return { rows: [], total: 0, summary: { totalSkus: 0, fullyHealthy: 0, byDimension: emptyByDim() }, structural: [] };
+    return {
+      rows: [], total: 0, summary: { totalSkus: 0, fullyHealthy: 0, byDimension: emptyByDim() }, structural: [],
+      leadTimeCoverage: emptyLeadTimeCoverage(null),
+    };
   }
 
   /* ── 生产周期：sku_params.normalLeadDays>0 ── */
-  const leadRows: { skuId: number; normalLeadDays: number | null }[] = await db
-    .select({ skuId: schema.skuParams.skuId, normalLeadDays: schema.skuParams.normalLeadDays })
+  const leadRows: { skuId: number; normalLeadDays: number | null; logisticsLeadDays: number | null }[] = await db
+    .select({ skuId: schema.skuParams.skuId, normalLeadDays: schema.skuParams.normalLeadDays, logisticsLeadDays: schema.skuParams.logisticsLeadDays })
     .from(schema.skuParams);
   const hasLead = new Set<number>(leadRows.filter((r) => num(r.normalLeadDays) > 0).map((r) => r.skuId));
+  const hasLogistics = new Set<number>(leadRows.filter((r) => r.logisticsLeadDays != null).map((r) => r.skuId));
 
   /* ── 起订量：uom_convs.moq>0（任一采购单位） ── */
   const moqRows: { skuId: number; moq: string | null }[] = await db
@@ -374,12 +408,78 @@ export async function getDataHealth(
   if (q) filtered = filtered.filter((r) => r.code.toLowerCase().includes(q) || r.name.toLowerCase().includes(q));
   filtered.sort((a, b) => a.score - b.score || b.missing.length - a.missing.length || a.code.localeCompare(b.code));
 
+  const leadTimeCoverage = await computeLeadTimeCoverage(
+    db,
+    evaluatedSkus.map((s) => ({ id: s.id, code: s.code, name: s.name })),
+    hasLead,
+    hasLogistics,
+  );
+
   return {
     rows: filtered.slice((page - 1) * pageSize, page * pageSize),
     total: filtered.length,
     summary: { totalSkus: evaluatedSkus.length, fullyHealthy, byDimension },
     structural,
+    leadTimeCoverage,
   };
+}
+
+/* ══════════════════════ 周期主数据完整度 × 分层（D58/D59） ══════════════════════
+ * 直出 / 试点 / 预警阈值（D57 加工+在途+缓冲）都依赖这两个周期。缺失时系统会回落到默认周期——
+ * 这在 C 级只是「按默认周期」，在 S/A/B 却意味着核心品的预警阈值与权责判定都建立在假设上，
+ * 因此 S/A/B 缺任一周期即记为**阻塞**，并给出按分层的完成率，让「先补谁」有顺序。
+ * 分层来源：sku_planning_policy 最近固化期（含人工覆写）；未固化时全部记 unclassified（不假装分层）。 */
+
+const LEAD_TIER_KEYS: readonly LeadTimeTierKey[] = ["S", "A", "B", "C", "unclassified"];
+
+function emptyLeadBucket(): LeadTimeCoverageBucket {
+  return { total: 0, productionOk: 0, logisticsOk: 0, complete: 0, blocked: 0, completePct: null };
+}
+
+function emptyLeadTimeCoverage(policyPeriod: string | null): LeadTimeCoverage {
+  return {
+    policyPeriod,
+    scanned: 0,
+    byTier: Object.fromEntries(LEAD_TIER_KEYS.map((k) => [k, emptyLeadBucket()])) as Record<LeadTimeTierKey, LeadTimeCoverageBucket>,
+    blocked: 0,
+    blockedSamples: [],
+  };
+}
+
+async function computeLeadTimeCoverage(
+  db: AnyDb,
+  finished: { id: number; code: string; name: string }[],
+  hasLead: Set<number>,
+  hasLogistics: Set<number>,
+): Promise<LeadTimeCoverage> {
+  const policyPeriod = await latestPolicyPeriod(db);
+  const out = emptyLeadTimeCoverage(policyPeriod);
+  const { bySku } = await loadPolicyMap(db, policyPeriod);
+  const blockedRows: { tier: Tier; code: string; name: string; missing: string[] }[] = [];
+  for (const s of finished) {
+    const tier: LeadTimeTierKey = bySku.get(s.id)?.effectiveTier ?? "unclassified";
+    const b = out.byTier[tier];
+    const p = hasLead.has(s.id);
+    const l = hasLogistics.has(s.id);
+    b.total += 1;
+    if (p) b.productionOk += 1;
+    if (l) b.logisticsOk += 1;
+    if (p && l) b.complete += 1;
+    if ((tier === "S" || tier === "A" || tier === "B") && !(p && l)) {
+      b.blocked += 1;
+      blockedRows.push({ tier, code: s.code, name: s.name, missing: [...(!p ? ["加工周期"] : []), ...(!l ? ["在途周期"] : [])] });
+    }
+  }
+  out.scanned = finished.length;
+  for (const k of LEAD_TIER_KEYS) {
+    const b = out.byTier[k];
+    b.completePct = b.total > 0 ? Math.round((1000 * b.complete) / b.total) / 10 : null;
+  }
+  const order: Record<Tier, number> = { S: 0, A: 1, B: 2, C: 3 };
+  blockedRows.sort((a, b) => order[a.tier] - order[b.tier] || a.code.localeCompare(b.code));
+  out.blocked = blockedRows.length;
+  out.blockedSamples = blockedRows.slice(0, 20).map((r) => `${r.tier} 级 ${r.code} ${r.name}（缺${r.missing.join("、")}）`);
+  return out;
 }
 
 /* ══════════════════════ 疑似重复主档（E5-09） ══════════════════════

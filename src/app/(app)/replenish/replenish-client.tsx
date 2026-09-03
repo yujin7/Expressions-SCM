@@ -13,7 +13,9 @@ import {
   InputNumber,
   Modal,
   Popover,
+  Select,
   Space,
+  Switch,
   Table,
   Tag,
   Tooltip,
@@ -45,6 +47,14 @@ interface ReplenishRow {
   borrowOut: number;
   abcClass: "A" | "B" | "C" | null;
   effectiveTarget: number;
+  /** D58 四档（最近固化期，含覆写）；null = 未固化 */
+  tier: "S" | "A" | "B" | "C" | null;
+  tierOverridden: boolean;
+  /** D59 权责 */
+  ownership: "supply_chain_direct" | "joint_review" | "ops_fallback" | null;
+  ownershipLabel: string | null;
+  pilot: boolean;
+  planEventTags: string[];
   leadDays: number | null;
   productionLeadDays: number | null;
   logisticsLeadDays: number | null;
@@ -82,14 +92,40 @@ interface ReplenishResult {
     suppressedCount: number;
     engine: string;
     serviceLevel: number;
+    policyPeriod: string | null;
+    hiddenTierC: number;
+    ownershipMix: Record<"supply_chain_direct" | "joint_review" | "ops_fallback", number>;
   };
 }
+
+interface PlanEventRow {
+  id: number;
+  kindLabel: string;
+  channelName: string | null;
+  startDate: string;
+  endDate: string | null;
+  expectedUpliftPct: number | null;
+  note: string | null;
+  createdBy: string | null;
+  phase: "upcoming" | "active" | "past";
+}
+
+const TIER_COLORS: Record<string, string> = { S: "magenta", A: "red", B: "orange", C: "default" };
+const OWNERSHIP_COLORS: Record<string, string> = { supply_chain_direct: "green", joint_review: "gold", ops_fallback: "default" };
+const TIER_OPTIONS = [
+  { value: "S", label: "S 级" }, { value: "A", label: "A 级" }, { value: "B", label: "B 级" }, { value: "C", label: "C 级" }, { value: "none", label: "未固化" },
+];
+const OWNERSHIP_OPTIONS = [
+  { value: "supply_chain_direct", label: "供应链直出" }, { value: "joint_review", label: "联合评审" }, { value: "ops_fallback", label: "运营按需" },
+];
 
 type ReplenishSortBy =
   | "code"
   | "name"
   | "brand"
   | "abcClass"
+  | "tier"
+  | "ownership"
   | "onHand"
   | "inTransit"
   | "legacyTransit"
@@ -156,6 +192,45 @@ function SharedPackagingPanel({ skuId }: { skuId: number }) {
   );
 }
 
+/** D55：运营计划事件只作行上下文，不进公式；受限用户按渠道范围裁剪（API 侧） */
+function PlanEventsPanel({ skuId }: { skuId: number }) {
+  const [rows, setRows] = useState<PlanEventRow[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    setRows(null);
+    setLoadError(null);
+    try {
+      const data = await fetchJson<{ rows?: PlanEventRow[] }>(`/api/planning/events?skuId=${skuId}&openOnly=1&pageSize=20`);
+      setRows(data.rows ?? []);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "计划事件加载失败");
+    }
+  }, [skuId]);
+  useEffect(() => { void load(); }, [load]);
+  if (loadError) {
+    return <Alert type="error" showIcon message="计划事件加载失败" description={loadError} action={<Button size="small" onClick={() => void load()}>重试</Button>} />;
+  }
+  if (rows == null) return <Typography.Text type="secondary">载入运营计划事件…</Typography.Text>;
+  return (
+    <Space direction="vertical" size={4} style={{ padding: "4px 0" }}>
+      <Typography.Text strong style={{ fontSize: 12 }}>
+        运营计划事件（未结束，只作上下文、不改建议量）：
+        <Link href="/replenish/reconcile" style={{ marginLeft: 8, fontSize: 12 }}>去提报核对 →</Link>
+      </Typography.Text>
+      {rows.length === 0 ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>无未结束的计划事件</Typography.Text> : rows.map((e) => (
+        <Typography.Text key={e.id} style={{ fontSize: 12 }}>
+          <Tag color={e.phase === "active" ? "processing" : "default"} style={{ marginInlineEnd: 4 }}>{e.phase === "active" ? "进行中" : "即将"}</Tag>
+          <b>{e.kindLabel}</b> {e.startDate}{e.endDate ? ` ~ ${e.endDate}` : " 起"}
+          {e.channelName ? `　渠道 ${e.channelName}` : "　全渠道"}
+          {e.expectedUpliftPct != null ? `　预期 ${e.expectedUpliftPct > 0 ? "+" : ""}${e.expectedUpliftPct}%` : ""}
+          {e.note ? `　${e.note}` : ""}
+          {e.createdBy ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>　（{e.createdBy}）</Typography.Text> : null}
+        </Typography.Text>
+      ))}
+    </Space>
+  );
+}
+
 export default function ReplenishClient() {
   const { message } = App.useApp();
   const listState = useListState({
@@ -166,6 +241,10 @@ export default function ReplenishClient() {
       minCover: "30",
       sortBy: "coverFull",
       sortOrder: "ascend",
+      tier: "",
+      ownership: "",
+      // D58：C 级默认折叠（运营兜底），需要时手动展开
+      hideTierC: "1",
     },
     defaultPageSize: 50,
   });
@@ -175,6 +254,9 @@ export default function ReplenishClient() {
   const minCover = Number(filters.minCover) || 30;
   const sortBy = filters.sortBy as ReplenishSortBy;
   const sortOrder = filters.sortOrder as ReplenishSortOrder;
+  const tier = filters.tier;
+  const ownership = filters.ownership;
+  const hideTierC = filters.hideTierC === "1";
   const [data, setData] = useState<ReplenishResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -212,6 +294,9 @@ export default function ReplenishClient() {
         sortBy,
         sortOrder,
       });
+      if (tier) params.set("tier", tier);
+      if (ownership) params.set("ownership", ownership);
+      if (hideTierC) params.set("hideTierC", "1");
       const res = await fetchJson<ReplenishResult>(`/api/replenish/suggestions?${params.toString()}`);
       setData(res);
     } catch (e) {
@@ -223,7 +308,7 @@ export default function ReplenishClient() {
     } finally {
       setLoading(false);
     }
-  }, [coverDays, minCover, q, page, pageSize, sortBy, sortOrder, message]);
+  }, [coverDays, minCover, q, page, pageSize, sortBy, sortOrder, tier, ownership, hideTierC, message]);
 
   useEffect(() => {
     void load();
@@ -262,6 +347,7 @@ export default function ReplenishClient() {
     }
   };
 
+  const policyPeriod = data?.meta.policyPeriod ?? null;
   const columns: ColumnsType<ReplenishRow> = useMemo(
     () => {
       const sortable = (key: ReplenishSortBy) => ({
@@ -277,6 +363,30 @@ export default function ReplenishClient() {
       {
         title: "分层", dataIndex: "abcClass", width: 82, align: "center" as const, ...sortable("abcClass"),
         render: (v: string | null, r: ReplenishRow) => v ? <Tooltip title={`ABC ${v} 类——目标覆盖 ${r.effectiveTarget} 天（分层策略，可在运行参数调）`}><Tag color={v === "A" ? "red" : v === "B" ? "orange" : "default"}>{v}</Tag></Tooltip> : "—",
+      },
+      {
+        title: "四档", dataIndex: "tier", width: 82, align: "center" as const, ...sortable("tier"),
+        render: (v: ReplenishRow["tier"], r: ReplenishRow) => v
+          ? (
+            <Tooltip title={`${v} 级（${policyPeriod ?? ""} 期固化${r.tierOverridden ? "，人工覆写" : ""}${r.pilot ? "，已纳入试点" : ""}）`}>
+              <Space size={2}>
+                <Tag color={TIER_COLORS[v]} style={{ marginInlineEnd: 0 }}>{v}{r.tierOverridden ? "*" : ""}</Tag>
+                {r.pilot ? <Tag color="cyan" style={{ marginInlineEnd: 0 }}>试点</Tag> : null}
+              </Space>
+            </Tooltip>
+          )
+          : <Tooltip title="尚未固化分层（sku_planning_policy 为空或本 SKU 未入本期）——在「补货试点候选」页执行本期固化"><Typography.Text type="secondary">未固化</Typography.Text></Tooltip>,
+      },
+      {
+        title: "权责", dataIndex: "ownership", width: 110, align: "center" as const, ...sortable("ownership"),
+        render: (v: ReplenishRow["ownership"], r: ReplenishRow) => v
+          ? (
+            <Space size={2} wrap>
+              <Tag color={OWNERSHIP_COLORS[v]} style={{ marginInlineEnd: 0 }}>{v === "ops_fallback" ? "运营兜底" : r.ownershipLabel}</Tag>
+              {r.planEventTags.slice(0, 2).map((t) => <Tag key={t} color="purple" style={{ marginInlineEnd: 0 }}>{t}</Tag>)}
+            </Space>
+          )
+          : "—",
       },
       {
         title: "系统口径",
@@ -432,7 +542,7 @@ export default function ReplenishClient() {
       },
     ];
     },
-    [sortBy, sortOrder],
+    [sortBy, sortOrder, policyPeriod],
   );
 
   const handleTableChange: TableProps<ReplenishRow>["onChange"] = (
@@ -459,7 +569,10 @@ export default function ReplenishClient() {
       <CaliberNote
         summary={
           <>逐日推演引擎：断货日落在生产周期内才建议下单，建议量补至「安全库存＋目标覆盖」；生成草稿走审批。
-          {data?.meta ? <>　触发 <b>{data.meta.suggestCount}</b> 个建议{data.meta.suppressedCount > 0 ? <>，另 {data.meta.suppressedCount} 个因全口径参考充足被抑制（防重复下单）</> : null}。</> : null}</>
+          {data?.meta ? <>　触发 <b>{data.meta.suggestCount}</b> 个建议{data.meta.suppressedCount > 0 ? <>，另 {data.meta.suppressedCount} 个因全口径参考充足被抑制（防重复下单）</> : null}。</> : null}
+          {data?.meta ? (data.meta.policyPeriod
+            ? <>　分层取 {data.meta.policyPeriod} 期固化{data.meta.hiddenTierC > 0 ? <>，已折叠 <b>{data.meta.hiddenTierC}</b> 个 C 级（运营兜底）</> : null}。</>
+            : <>　<Typography.Text type="warning">分层尚未固化</Typography.Text>（四档/权责列为空；请在「补货试点候选」页固化本期）。</>) : null}</>
         }
         detail={
           <div>
@@ -501,6 +614,28 @@ export default function ReplenishClient() {
                 style={{ width: 90 }}
               />
             </span>
+            <Select
+              allowClear
+              placeholder="四档"
+              style={{ width: 100 }}
+              value={tier || undefined}
+              options={TIER_OPTIONS}
+              onChange={(v) => listState.setFilter({ tier: v ?? "" })}
+            />
+            <Select
+              allowClear
+              placeholder="权责"
+              style={{ width: 120 }}
+              value={ownership || undefined}
+              options={OWNERSHIP_OPTIONS}
+              onChange={(v) => listState.setFilter({ ownership: v ?? "" })}
+            />
+            <Tooltip title="D58：C 级长尾默认折叠（运营兜底），展开后 C 级行进入列表">
+              <span>
+                折叠 C 级{" "}
+                <Switch size="small" checked={hideTierC} disabled={Boolean(tier)} onChange={(v) => listState.setFilter({ hideTierC: v ? "1" : "0" })} />
+              </span>
+            </Tooltip>
             <SearchInput
               allowClear
               placeholder="搜索 SKU 编码/名称"
@@ -557,7 +692,12 @@ export default function ReplenishClient() {
         }}
         expandable={{
           rowExpandable: (r) => (r as { skuId?: number }).skuId != null,
-          expandedRowRender: (r) => <SharedPackagingPanel skuId={(r as { skuId: number }).skuId} />,
+          expandedRowRender: (r) => (
+            <Space direction="vertical" size={8} style={{ width: "100%" }}>
+              <SharedPackagingPanel skuId={(r as { skuId: number }).skuId} />
+              <PlanEventsPanel skuId={(r as { skuId: number }).skuId} />
+            </Space>
+          ),
         }}
         pagination={listState.paginationProps({ total: data?.total ?? 0 })}
         locale={{ emptyText: loadError ? "数据未加载" : "当前条件下没有补货建议" }}

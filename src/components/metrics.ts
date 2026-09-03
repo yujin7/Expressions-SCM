@@ -574,6 +574,44 @@ export const METRICS: Record<string, MetricDef> = {
   },
 };
 
+/* ── D58/D59 分层 / 权责 / 试点 / 周期主数据（2026-09-03 总监需求实施计划，W2 域 F） ── */
+METRICS.skuTierShare = {
+  id: "skuTierShare",
+  label: "S/A/B/C 分层占比",
+  short: "四档分层各有多少成品 SKU、各占近 6 月销量多少",
+  formula: "按近 6 月销量件数降序累计，加入本项前累计占比 <S 切点→S，<A 切点→A，<B 切点→B，其余 C（切点 grade_s/a/b_pct，缺省 50/80/95）；占比 = 该档销量 ÷ 总销量",
+  unit: "pct",
+  tier: "derived",
+  caveat: "按件数不按金额（unit_cost 覆盖率不足）；月度固化到 sku_planning_policy，人工覆写只改生效分层不改规则分层；零销量恒 C",
+};
+METRICS.ownershipMix = {
+  id: "ownershipMix",
+  label: "备货权责分布",
+  short: "供应链直出 / 联合评审 / 运营按需 各有多少 SKU",
+  formula: "S/A/B ∧ XYZ=X ∧ 无异动 ∧ 周期已知 → 供应链直出；S/A/B 其余 → 联合评审；C → 运营按需",
+  unit: "count",
+  tier: "derived",
+  caveat: "XYZ 样本 <6 月或无动销记「样本不足」而非 X，会落入联合评审；周期主数据缺失同样阻塞直出——名单短往往是主数据问题不是需求问题",
+};
+METRICS.pilotEligible = {
+  id: "pilotEligible",
+  label: "试点候选",
+  short: "满足「稳定品」四条件、可先纳入补货试点的 SKU 数与销量占比",
+  formula: "候选 = 生效分层 S/A/B ∧ XYZ=X ∧ 加工/在途周期已维护 ∧ 无异动命中；占比 = 候选近 6 月销量 ÷ 全部成品近 6 月销量",
+  unit: "count",
+  tier: "derived",
+  caveat: "候选 ≠ 已纳入（pilot 标记由生产计划人工点选）；成功指标与评估周期待业务确定，本指标不代表试点成效",
+};
+METRICS.leadTimeCoverage = {
+  id: "leadTimeCoverage",
+  label: "周期主数据完整度",
+  short: "各分层成品中加工周期与在途周期都已维护的比例",
+  formula: "完整 = sku_params.normal_lead_days>0 ∧ logistics_lead_days 非空；按最近固化期分层分桶；S/A/B 缺任一即阻塞",
+  unit: "pct",
+  tier: "ledger",
+  caveat: "缺失时预警阈值回落 default_production/logistics_lead_days（D57），核心品的阈值建立在假设上；未固化分层的 SKU 归「未分层」桶，不假装分层",
+};
+
 /** 取指标定义；未登记返回 undefined（调用方应回退到原文案） */
 export function metric(id: string): MetricDef | undefined {
   return METRICS[id];
