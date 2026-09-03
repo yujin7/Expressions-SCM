@@ -22,6 +22,8 @@ export interface AlertTriggerRow {
   title: string;
   detail: string | null;
   severity: string | null;
+  /** 引擎参数快照；断货告警带 orderByDate（最晚下单日）→ 待办真实截止日（闭环审计 #9） */
+  paramsSnapshot?: Record<string, unknown> | null;
 }
 
 export interface ReviewTriggerRow {
@@ -43,6 +45,14 @@ export interface TodoCandidate {
   ownerRole: Role;
   priority: TodoPriority;
   href: string;
+  /** 来源给出的真实截止日（YYYY-MM-DD，如断货告警的最晚下单日）；null = 落库时用优先级缺省表 {3,7,14} */
+  dueDate: string | null;
+}
+
+/** 从 paramsSnapshot 取最晚下单日；非法/缺失 → null（回退缺省表，不臆造日期） */
+export function dueDateFromParamsSnapshot(snapshot: unknown): string | null {
+  const v = (snapshot as { orderByDate?: unknown } | null | undefined)?.orderByDate;
+  return typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
 }
 
 /** 告警类别 → 责任角色（D56/D57/SSA-7：爆单/断货指向 pmc；运维类指向 admin） */
@@ -108,6 +118,7 @@ export function alertToCandidate(row: AlertTriggerRow): TodoCandidate {
     ownerRole: alertOwnerRole(row.category),
     priority: priorityFromSeverity(row.severity),
     href: `/alerts?category=${encodeURIComponent(row.category)}`,
+    dueDate: dueDateFromParamsSnapshot(row.paramsSnapshot),
   };
 }
 
@@ -123,6 +134,7 @@ export function reviewToCandidate(row: ReviewTriggerRow): TodoCandidate {
     ownerRole: reviewOwnerRole(row.category),
     priority: row.category.startsWith("blocked") ? "high" : "normal",
     href: `/review/checklist?category=${encodeURIComponent(row.category)}`,
+    dueDate: null,
   };
 }
 

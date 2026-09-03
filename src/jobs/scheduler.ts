@@ -63,6 +63,8 @@ export const SCHEDULES: Record<string, string> = {
   "data-freshness": "0 1 * * *",
   housekeeping: "30 1 * * *",
   rollup: "0 2 * * *",
+  // 告警结果核验只读流水，排在 rollup 之后、白天同步之前
+  "alert-outcome": "30 5 * * *",
   "decision-digest": "45 11 * * 1",
 };
 

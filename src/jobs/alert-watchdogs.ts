@@ -20,7 +20,14 @@ export async function runInventoryCoverWatchdog(db: AnyDb, now = new Date()) {
       ownerRole: "pmc",
       actionHref: `/inventory/alerts?tab=cover&cover_q=${encodeURIComponent(r.code)}`,
       sourceRule: "rules/alert-threshold + rules/alert-priority",
-      paramsSnapshot: { ...model.params, coverDays: r.coverDays, alertDays: r.alertDays, primaryDailySource: r.primaryDailySource },
+      paramsSnapshot: {
+        ...model.params, coverDays: r.coverDays, alertDays: r.alertDays, primaryDailySource: r.primaryDailySource,
+        priorityScore: r.priorityScore,
+        // 最晚下单日（闭环审计 #9，待办真实截止日）= 今天 + 在库可销天数 − 交期（阈值 − 缓冲）；断货/无日销 → 今天（窗口已过）
+        orderByDate: new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(
+          new Date(now.getTime() + Math.max(0, Math.floor((r.coverDays ?? 0) - (r.alertDays - model.params.bufferDays))) * 86_400_000),
+        ),
+      },
     }));
   const res = await upsertAlerts(db, { category: "inventory_cover", candidates, now });
   return { category: "inventory_cover", rows: model.rows.length, candidates: candidates.length, ...res };

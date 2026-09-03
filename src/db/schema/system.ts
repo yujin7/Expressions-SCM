@@ -394,3 +394,41 @@ export const systemAlerts = pgTable("system_alerts", {
   // 审阅修复：引擎"同 category+dedupeKey 只保留一条 open"由数据库保证（并发/重叠运行不再双开）
   uniqueIndex("uq_alert_open_dedupe").on(t.category, t.dedupeKey).where(sql`${t.status} = 'open'`),
 ]);
+
+/** alert_events 允许的事件 / 原因码（与 CHECK 约束、引擎与人工关闭写路径共用同一常量） */
+export const ALERT_EVENT_KINDS = ["open", "refresh", "ack", "close", "verify", "reopen"] as const;
+export type AlertEventKind = (typeof ALERT_EVENT_KINDS)[number];
+export const ALERT_CLOSE_REASON_CODES = ["fixed", "false_positive", "wont_fix", "superseded", "auto_hysteresis", "manual"] as const;
+export type AlertCloseReasonCode = (typeof ALERT_CLOSE_REASON_CODES)[number];
+/** 人工关闭可选原因（auto_hysteresis 只允许引擎写） */
+export const MANUAL_CLOSE_REASON_CODES = ["fixed", "false_positive", "wont_fix", "superseded", "manual"] as const;
+
+/**
+ * 告警事件台账（智能闭环审计 #2）：system_alerts 是"当前状态白板"，本表是"历史账本"。
+ *
+ * 只追加（数据库触发器 alert_events_append_only 拒绝 UPDATE/DELETE/TRUNCATE，与 stock_ledger / audit_logs 同一函数）。
+ * 引擎写 open / refresh / close(auto_hysteresis)；人工写 ack / close(reason)；结果核验任务写 verify(evidence_ref.result)。
+ * idempotencyKey 防止同一轮次/同一次核验重复落账（与 data_product_outcome_events 同型）。
+ * 它只用于精确率、处理时长与误报复盘，不回写 system_alerts、不触发任何单据。
+ */
+export const alertEvents = pgTable("alert_events", {
+  id: serial("id").primaryKey(),
+  alertId: integer("alert_id").notNull().references(() => systemAlerts.id),
+  event: text("event").notNull(), // open | refresh | ack | close | verify | reopen
+  at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+  actorId: integer("actor_id").references(() => users.id), // null = 系统
+  reasonCode: text("reason_code"), // fixed | false_positive | wont_fix | superseded | auto_hysteresis | manual
+  note: text("note"),
+  evidenceRef: jsonb("evidence_ref"),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+}, (t) => [
+  index("ix_alert_events_alert_time").on(t.alertId, t.at),
+  index("ix_alert_events_event_time").on(t.event, t.at),
+  check("ck_alert_events_event", sql`${t.event} IN ('open', 'refresh', 'ack', 'close', 'verify', 'reopen')`),
+  check(
+    "ck_alert_events_reason",
+    sql`${t.reasonCode} IS NULL OR ${t.reasonCode} IN ('fixed', 'false_positive', 'wont_fix', 'superseded', 'auto_hysteresis', 'manual')`,
+  ),
+  check("ck_alert_events_close_reason_required", sql`${t.event} <> 'close' OR ${t.reasonCode} IS NOT NULL`),
+  check("ck_alert_events_verify_evidence_required", sql`${t.event} <> 'verify' OR ${t.evidenceRef} IS NOT NULL`),
+]);

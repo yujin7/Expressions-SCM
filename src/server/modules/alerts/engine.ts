@@ -13,6 +13,8 @@ import { resolveDb, type AnyDb } from "@/server/core/svc";
  *   期间仍命中则续命。这样一天的数据缺口不会把告警关掉又打开。
  * - 已知悉：人工 ackAlert 只记 acked_by/acked_at，不改 status（事实闭环仍由引擎判定），写审计。
  * - 系统告警属系统写入（沿用既有看门狗先例不写审计）；ackAlert 是业务写路径，必须 writeAudit。
+ * - 事件台账（闭环审计 #2）：open / refresh(每上海日一条) / close(auto_hysteresis) 由引擎追加到 alert_events；
+ *   ack / close(人工原因) 与审计同事务追加。台账只追加（触发器），幂等键防重复落账；引擎不因台账失败回滚告警状态以外的任何事。
  */
 export interface AlertCandidate {
   refKey: string;
@@ -33,6 +35,33 @@ export interface UpsertAlertsResult {
   stillOpen: number;
 }
 
+/** alert_events 追加行（幂等键唯一；重复键静默跳过——同一轮/同一日重复落账不是错误） */
+export interface AlertEventInput {
+  alertId: number;
+  event: schema.AlertEventKind;
+  at: Date;
+  actorId?: number | null;
+  reasonCode?: schema.AlertCloseReasonCode | null;
+  note?: string | null;
+  evidenceRef?: Record<string, unknown> | null;
+  idempotencyKey: string;
+}
+
+const SH_DAY = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" });
+export function alertEventDay(d: Date): string {
+  return SH_DAY.format(d);
+}
+
+/** 追加告警事件（只追加表；ON CONFLICT (idempotency_key) DO NOTHING）。返回实际落账条数。 */
+export async function appendAlertEvents(db: AnyDb, rows: readonly AlertEventInput[]): Promise<number> {
+  if (!rows.length) return 0;
+  const inserted: { id: number }[] = await db.insert(schema.alertEvents).values(rows.map((r) => ({
+    alertId: r.alertId, event: r.event, at: r.at, actorId: r.actorId ?? null, reasonCode: r.reasonCode ?? null,
+    note: r.note ?? null, evidenceRef: r.evidenceRef ?? null, idempotencyKey: r.idempotencyKey,
+  }))).onConflictDoNothing({ target: schema.alertEvents.idempotencyKey }).returning({ id: schema.alertEvents.id });
+  return inserted.length;
+}
+
 export async function upsertAlerts(
   dbArg: AnyDb,
   input: { category: string; candidates: AlertCandidate[]; now?: Date; autoCloseAfterDays?: number },
@@ -48,6 +77,8 @@ export async function upsertAlerts(
 
   let opened = 0, refreshed = 0;
   const hitKeys = new Set<string>();
+  const events: AlertEventInput[] = [];
+  const day = alertEventDay(now);
   for (const c of input.candidates) {
     if (hitKeys.has(c.dedupeKey)) continue; // 同一轮内重复候选只算一次
     hitKeys.add(c.dedupeKey);
@@ -58,6 +89,7 @@ export async function upsertAlerts(
         actionHref: c.actionHref ?? null, sourceRule: c.sourceRule ?? null, paramsSnapshot: c.paramsSnapshot ?? null, lastHitAt: now,
       }).where(eq(schema.systemAlerts.id, existing.id));
       refreshed++;
+      events.push({ alertId: existing.id, event: "refresh", at: now, idempotencyKey: `${existing.id}:refresh:${day}` });
     } else {
       // 部分唯一索引 uq_alert_open_dedupe(category, dedupe_key) WHERE status='open'：
       // 与另一并发运行撞上时不插入（对方已开同键告警），按"已刷新"计数而不是双开。
@@ -67,7 +99,12 @@ export async function upsertAlerts(
         paramsSnapshot: c.paramsSnapshot ?? null, lastHitAt: now,
       }).onConflictDoNothing({ target: [schema.systemAlerts.category, schema.systemAlerts.dedupeKey], where: sql`${schema.systemAlerts.status} = 'open'` })
         .returning({ id: schema.systemAlerts.id });
-      if (ins.length) opened++; else refreshed++;
+      if (ins.length) {
+        opened++;
+        events.push({ alertId: ins[0].id, event: "open", at: now, idempotencyKey: `${ins[0].id}:open` });
+      } else {
+        refreshed++; // 并发对方已开同键告警：本轮不知其 id，事件由对方那轮落账
+      }
     }
   }
 
@@ -79,7 +116,15 @@ export async function upsertAlerts(
   if (toClose.length) {
     await db.update(schema.systemAlerts).set({ status: "resolved", autoResolved: true, resolvedAt: now })
       .where(inArray(schema.systemAlerts.id, toClose));
+    for (const id of toClose) {
+      events.push({
+        alertId: id, event: "close", at: now, reasonCode: "auto_hysteresis",
+        note: `连续 ${input.autoCloseAfterDays ?? 3} 天未命中，引擎迟滞关闭`,
+        idempotencyKey: `${id}:close:${now.toISOString()}`,
+      });
+    }
   }
+  await appendAlertEvents(db, events);
   const [still] = await db.select({ n: sql<number>`count(*)::int` }).from(schema.systemAlerts)
     .where(and(eq(schema.systemAlerts.category, input.category), eq(schema.systemAlerts.status, "open")));
   return { opened, refreshed, autoClosed: toClose.length, stillOpen: Number(still?.n ?? 0) };
@@ -99,7 +144,57 @@ export async function ackAlert(actor: SessionUser, alertId: number, dbArg?: AnyD
       userId: actor.id, entity: "system_alert", entityId: alertId, action: "ack",
       before: { ackedBy: row.ackedBy, ackedAt: row.ackedAt }, after: { ackedBy: actor.id, ackedAt: now.toISOString(), note: note ?? null },
     });
+    await appendAlertEvents(tx, [{
+      alertId, event: "ack", at: now, actorId: actor.id, note: note ?? null, idempotencyKey: `${alertId}:ack:${now.toISOString()}`,
+    }]);
     return { id: alertId, ackedAt: now.toISOString() };
+  });
+}
+
+export type ManualCloseReasonCode = (typeof schema.MANUAL_CLOSE_REASON_CODES)[number];
+
+/**
+ * 人工关闭告警（闭环审计 #2）：status→resolved、autoResolved=false、resolvedAt=now；
+ * 同事务写审计（action=close）与 alert_events(close, reason_code)。
+ * 权限：告警 ownerRole 对应角色或 admin（ownerRole 为空的历史告警只允许 admin）。
+ * reasonCode 只接受人工原因（fixed / false_positive / wont_fix / superseded / manual）；auto_hysteresis 保留给引擎。
+ * 关闭不删除告警、不阻止引擎下轮再次开新告警（同键新开是新事实，不是 reopen）。
+ */
+export async function closeAlert(
+  actor: SessionUser,
+  alertId: number,
+  reasonCode: string,
+  note?: string | null,
+  dbArg?: AnyDb,
+  opts?: { now?: Date },
+): Promise<{ id: number; resolvedAt: string; reasonCode: ManualCloseReasonCode }> {
+  const db = await resolveDb(dbArg);
+  if (!Number.isInteger(alertId) || alertId <= 0) throw new ApiError(400, "告警 id 非法");
+  if (!(schema.MANUAL_CLOSE_REASON_CODES as readonly string[]).includes(reasonCode)) {
+    throw new ApiError(400, `关闭原因非法：只接受 ${schema.MANUAL_CLOSE_REASON_CODES.join(" / ")}`);
+  }
+  const reason = reasonCode as ManualCloseReasonCode;
+  const trimmedNote = typeof note === "string" && note.trim() ? note.trim().slice(0, 500) : null;
+  return db.transaction(async (tx: AnyDb) => {
+    const [row] = await tx.select().from(schema.systemAlerts).where(eq(schema.systemAlerts.id, alertId)).limit(1);
+    if (!row) throw new ApiError(404, "告警不存在");
+    const isAdmin = actor.roles.includes("admin");
+    const isOwner = row.ownerRole != null && actor.roles.includes(row.ownerRole);
+    if (!isAdmin && !isOwner) throw new ApiError(403, `无权限关闭此告警：需要 ${row.ownerRole ?? "admin"} 角色`);
+    if (row.status !== "open") throw new ApiError(409, "告警已关闭");
+    const now = opts?.now ?? new Date();
+    await tx.update(schema.systemAlerts).set({ status: "resolved", autoResolved: false, resolvedAt: now })
+      .where(and(eq(schema.systemAlerts.id, alertId), eq(schema.systemAlerts.status, "open")));
+    await writeAudit(tx, {
+      userId: actor.id, entity: "system_alert", entityId: alertId, action: "close",
+      before: { status: row.status, autoResolved: row.autoResolved, resolvedAt: row.resolvedAt },
+      after: { status: "resolved", autoResolved: false, resolvedAt: now.toISOString(), reasonCode: reason, note: trimmedNote },
+    });
+    await appendAlertEvents(tx, [{
+      alertId, event: "close", at: now, actorId: actor.id, reasonCode: reason, note: trimmedNote,
+      idempotencyKey: `${alertId}:close:${now.toISOString()}`,
+    }]);
+    return { id: alertId, resolvedAt: now.toISOString(), reasonCode: reason };
   });
 }
 

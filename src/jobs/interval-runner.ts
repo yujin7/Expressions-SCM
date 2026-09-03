@@ -17,6 +17,7 @@ import { runReconcileJst, shanghaiToday } from "./reconcile-jst";
 import { runSnapshotAgeAlert } from "./snapshot-age";
 import { runInventoryPositionRefresh } from "./inventory-position-refresh";
 import { runInventoryCoverWatchdog, runSalesSpikeWatchdog } from "./alert-watchdogs";
+import { runAlertOutcome } from "./alert-outcome";
 import { runTodoSync } from "./todo-sync";
 import { runWeeklyDqPack } from "./weekly-dq-pack";
 import { run as runTransferCostWatchdog } from "./transfer-cost-watchdog";
@@ -170,6 +171,8 @@ export const INTERVAL_JOBS: IntervalJob[] = [
   { name: "housekeeping", everyMs: 24 * HOUR_MS, run: (db) => runHousekeeping(db) },
   // E7-01 预聚合物化（夜间全量重建，幂等 upsert）——BI 秒开 + 交期波动喂给安全库存
   { name: "rollup", everyMs: 24 * HOUR_MS, run: (db) => runRollup(db) },
+  // 告警结果核验（闭环审计 #3）：关闭 ≥3 天的断货告警回看实时仓流水写 verify 事件；夜间低峰、排在 rollup 之后
+  { name: "alert-outcome", everyMs: 24 * HOUR_MS, atHours: [5], run: (db) => runAlertOutcome(db) },
   // 参考数据新鲜度看门狗（开/关 review_items 幂等）
   { name: "data-freshness", everyMs: 24 * HOUR_MS, run: (db) => runFreshnessCheck(db) },
   // 单据时效看门狗（等待态停留超阈值 → review_items，离开态自动关闭）
