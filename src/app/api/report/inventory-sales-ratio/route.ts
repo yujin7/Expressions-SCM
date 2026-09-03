@@ -20,7 +20,9 @@ export async function GET(req: NextRequest) {
     const db = await getDbAsync();
     const user = refresh ? await guardFreshWrite() : await guardRead();
     requireAnyRole(user, ...PRICE_VISIBLE_ROLES);
-    const data = refresh ? await refreshInventorySalesRatio(db, { historyMonths }) : await loadInventorySalesRatio(db, { historyMonths });
+    const full = refresh ? await refreshInventorySalesRatio(db) : await loadInventorySalesRatio(db);
+    // 读模型固定 24 月窗口；?months= 只切片（含当月），不打穿缓存
+    const data = historyMonths == null ? full : { ...full, rows: full.rows.slice(-(historyMonths + 1)) };
     const res = NextResponse.json(maskSensitive(data, user.roles));
     res.headers.set("Cache-Control", "private, no-store");
     return res;

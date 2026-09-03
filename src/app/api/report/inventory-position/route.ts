@@ -22,11 +22,13 @@ export async function GET(req: NextRequest) {
     if (refresh) {
       user = await guardFreshWrite();
       requireAnyRole(user, "pmc", "finance");
-      data = await refreshInventoryPosition(db, { historyMonths });
+      data = await refreshInventoryPosition(db);
     } else {
       user = await guardRead();
-      data = await loadInventoryPosition(db, { historyMonths });
+      data = await loadInventoryPosition(db);
     }
+    // 读模型固定 24 月窗口；?months= 只在响应里切片（含当月），不改变缓存
+    if (historyMonths != null) data = { ...data, monthEnd: data.monthEnd.slice(-(historyMonths + 1)) };
     const res = NextResponse.json(maskSensitive(data, user.roles));
     res.headers.set("Cache-Control", "private, no-store");
     return res;

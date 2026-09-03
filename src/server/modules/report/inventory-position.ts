@@ -36,7 +36,7 @@ export const INVENTORY_POSITION_CACHE_KEY = "inventory-position/v1";
 /** D51：覆盖率门槛参数键（未登记时按 80） */
 export const VALUATION_COVERAGE_PARAM_KEY = "valuation_coverage_min_pct";
 export const DEFAULT_VALUATION_COVERAGE_MIN_PCT = 80;
-const DEFAULT_HISTORY_MONTHS = 12;
+const DEFAULT_HISTORY_MONTHS = 24; // 固定计算窗口：缓存只有一行，请求方按需切片（审阅 must-fix：months 参数不得打穿缓存）
 /** 快照日差分回看：前一期快照允许落在上月（月初第一期与上月末差分） */
 const SNAPSHOT_DELTA_LOOKBACK_DAYS = 45;
 
@@ -555,6 +555,7 @@ export async function computeInventoryPosition(
 /** 读缓存；绑定不一致则重算并写回 */
 export async function loadInventoryPosition(dbArg?: AnyDb, opts: InventoryPositionOptions = {}): Promise<InventoryPositionReadModel> {
   const db = await resolveDb(dbArg);
+  // 生产路径（API/任务/占比读模型）不传 historyMonths → 统一 24 月窗口、单一缓存绑定；只有测试/内部调用才传显式窗口
   const binding = await inventoryPositionBinding(db, opts);
   const [cached] = resultRows<{ payload: unknown }>(await db.execute(sql`
     SELECT payload FROM report_read_model_cache WHERE key = ${INVENTORY_POSITION_CACHE_KEY} AND source_binding = ${binding} LIMIT 1

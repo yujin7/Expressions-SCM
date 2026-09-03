@@ -552,14 +552,15 @@ export async function getDecisionStudio(
     loadMonthlyFacts(db, dimension, scope, channelScope),
     // JST 日事实没有渠道维度：受限用户不能诚实裁剪，直接不取（下方 gate 说明）
     includes("daily") && !channelScope.forced ? loadDailyFacts(db) : Promise.resolve([]),
-    includes("external")
+    // D62：外部平台观察是店铺级行（含他人渠道），受限用户一律不下发，给出空态与原因
+    includes("external") && !channelScope.forced
       ? loadJiandaoyunExternalDemandSignal(db)
-      : Promise.resolve(emptyExternalDemandSignal("切换到外部需求信号后加载。")),
-    includes("identity")
+      : Promise.resolve(emptyExternalDemandSignal(channelScope.forced ? "受限渠道范围不下发外部平台观察（D62）。" : "切换到外部需求信号后加载。")),
+    includes("identity") && !channelScope.forced
       ? loadCommerceIdentityCoverage(db)
       : Promise.resolve(emptyCommerceIdentityCoverage()),
     includes("readiness") ? loadDataSourceReadiness(db) : Promise.resolve([]),
-    includes("readiness") ? loadJiandaoyunSupportingObservations(db) : Promise.resolve([]),
+    includes("readiness") && !channelScope.forced ? loadJiandaoyunSupportingObservations(db) : Promise.resolve([]),
   ]);
   const studio = buildDecisionStudio(
     facts,

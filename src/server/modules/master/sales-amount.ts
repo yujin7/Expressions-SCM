@@ -318,14 +318,24 @@ interface MonthSum { amount: string | null; rows: number; through: string | null
 
 async function monthSum(db: AnyDb, jobId: number | null, table: string, field: string, yearMonth: string): Promise<MonthSum> {
   if (jobId == null) return { amount: null, rows: 0, through: null };
+  // 平台日快照按业务键去重（statisticalDate × shopName × skuId|brandName），与 channel-observation 同写法：
+  // 放行的「重复业务键」批次不能把建议值算大（审阅 must-fix）。
   const [row] = resultRows<{ amount: unknown; n: unknown; through: unknown }>(await db.execute(sql`
-    SELECT round(coalesce(sum(CASE WHEN left(payload->'data'->>'statisticalDate', 7) = ${yearMonth}
-                                  AND trim(coalesce(payload->'data'->>${field}, '')) ~ '^-?[0-9]+([.][0-9]+)?$'
-                             THEN (payload->'data'->>${field})::numeric ELSE 0 END), 0), 2)::text AS amount,
-           count(*) FILTER (WHERE left(payload->'data'->>'statisticalDate', 7) = ${yearMonth})::int AS n,
-           max(left(payload->'data'->>'statisticalDate', 10)) FILTER (WHERE left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') AS through
-    FROM staging_rows
-    WHERE import_job_id = ${jobId} AND target_table = ${table} AND status IN ('pending', 'validated', 'committed')
+    WITH d AS (
+      SELECT DISTINCT ON (
+          left(payload->'data'->>'statisticalDate', 10), payload->'data'->>'shopName',
+          coalesce(payload->'data'->>'skuId', payload->'data'->>'brandName', ''))
+        left(payload->'data'->>'statisticalDate', 10) AS day,
+        CASE WHEN trim(coalesce(payload->'data'->>${field}, '')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>${field})::numeric ELSE 0 END AS v
+      FROM staging_rows
+      WHERE import_job_id = ${jobId} AND target_table = ${table} AND status IN ('pending', 'validated', 'committed')
+      ORDER BY left(payload->'data'->>'statisticalDate', 10), payload->'data'->>'shopName',
+        coalesce(payload->'data'->>'skuId', payload->'data'->>'brandName', ''), row_no DESC
+    )
+    SELECT round(coalesce(sum(v) FILTER (WHERE left(day, 7) = ${yearMonth}), 0), 2)::text AS amount,
+           count(*) FILTER (WHERE left(day, 7) = ${yearMonth})::int AS n,
+           max(day) FILTER (WHERE day ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') AS through
+    FROM d
   `));
   const n = Number(row?.n ?? 0);
   return { amount: n > 0 ? dMoney(String(row?.amount ?? "0")) : null, rows: n, through: row?.through == null ? null : String(row.through) };

@@ -105,6 +105,7 @@ describe("sales_amount_monthly", () => {
       row(sales.id, 2, "jdy_tmall_sku_sales_observation", { statisticalDate: "2026-08-31", shopName: "A店", skuId: "2", paidAmount: "200" }),
       row(sales.id, 3, "jdy_tmall_sku_sales_observation", { statisticalDate: "2026-08-20", shopName: "A店", skuId: "3", paidAmount: "坏值" }),
       row(sales.id, 4, "jdy_tmall_sku_sales_observation", { statisticalDate: "2026-09-01", shopName: "A店", skuId: "1", paidAmount: "999" }), // 下月不算
+      row(sales.id, 5, "jdy_tmall_sku_sales_observation", { statisticalDate: "2026-08-31", shopName: "A店", skuId: "2", paidAmount: "200" }), // 业务键重复上传：按 DISTINCT ON 去重，不得算大
       row(refund.id, 1, "jdy_tmall_sku_refund_observation", { statisticalDate: "2026-08-31", shopName: "A店", skuId: "1", successRefundAmount: "50.5" }),
       row(vip.id, 1, "jdy_vip_shop_trading_observation", { statisticalDate: "2026-08-10", shopName: "V店", brandName: "NING", salesAmount: "300" }),
       row(vip.id, 2, "jdy_vip_shop_trading_observation", { statisticalDate: "2026-08-15", shopName: "V店", brandName: "NING", salesAmount: "40.25" }),
@@ -114,7 +115,7 @@ describe("sales_amount_monthly", () => {
     const p = await prefillFromObservation("2026-08", db);
     expect(p).toMatchObject({ yearMonth: "2026-08", authority: "observation_only", source: "prefill_observation" });
     const tmall = p.platforms.find((x) => x.platform === "天猫")!;
-    // rows = 该月行数（含坏值行 1 条，坏值不计入金额）：3 条日销 + 1 条退款
+    // rows = 该月去重后的业务键数（含坏值行 1 条，坏值不计入金额；重复行只计一次）：3 条日销 + 1 条退款
     expect(tmall).toMatchObject({ state: "ready", salesAmount: "250.00", channelId: channelTmall, rows: 4, importJobIds: [sales.id, refund.id] });
     expect(tmall.detail).toEqual({ paidAmount: "300.50", successRefundAmount: "50.50" });
     const vipRow = p.platforms.find((x) => x.platform === "唯品会")!;

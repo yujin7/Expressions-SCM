@@ -561,7 +561,7 @@ export const METRICS: Record<string, MetricDef> = {
     formula: "sales_amount_monthly 公司口径链尾；预填 = 天猫（支付 − 成功退款）+ 唯品会销售额 + 拼多多店铺成交额",
     unit: "money",
     tier: "registry",
-    caveat: "含税/退款/平台费口径待财务追认（D53）；append-only 修正留痕；仅财务/管理员/PMC 可见，不进入任何补货计算",
+    caveat: "含税/退款/平台费口径待财务追认（D53）；append-only 修正留痕；仅 PRICE_VISIBLE_ROLES（采购/计划/财务/管理员）可见，不进入任何补货计算",
   },
   inventorySalesRatio: {
     id: "inventorySalesRatio",

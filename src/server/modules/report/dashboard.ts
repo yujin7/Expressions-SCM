@@ -454,7 +454,7 @@ async function computeDashboard(
         .where(inArray(schema.skus.id, slowSorted.map((s) => s.skuId)))
     : [];
   const skuInfoMap = new Map(slowSkuInfo.map((s) => [s.id, s]));
-  const slowTop = slowSorted.map((s) => ({
+  const slowTop: DashboardData["slowTop"] = slowSorted.map((s) => ({
     code: skuInfoMap.get(s.skuId)?.code ?? `#${s.skuId}`,
     name: skuInfoMap.get(s.skuId)?.name ?? "",
     lifecycle: skuInfoMap.get(s.skuId)?.lifecycle ?? "on_sale",
@@ -479,6 +479,16 @@ async function computeDashboard(
     mappedSkus: externalVelocity.coverage.mappedSkus,
     internalNoMoveButExternalSelling,
   };
+  // D62：外部平台观察按店铺/平台 SKU 成行，含他人渠道，受限用户整块不下发；滞销行的外部影子列同样清空
+  if (channelScope.forced) {
+    externalDemand.state = "insufficient";
+    externalDemand.gate = "受限渠道范围不下发外部平台观察（D62）";
+    externalDemand.sourceAsOf = null;
+    externalDemand.anchorDate = null;
+    externalDemand.mappedSkus = 0;
+    externalDemand.internalNoMoveButExternalSelling = 0;
+    for (const row of slowTop) { row.externalNet30 = null; row.externalNet90 = null; row.externalLastSold = null; }
+  }
 
   /* ── 效期六段位（批次参考层） ── */
   const batchRows: { skuId: number; warehouseId: number; expiryDate: string | null; qty: string }[] = await db
@@ -664,7 +674,7 @@ async function computeDashboard(
       forced: channelScope.forced,
       scopeLabel: channelScope.scopeLabel,
       appliesTo: SCOPE_APPLIES_TO,
-      notAppliedTo: SCOPE_NOT_APPLIED_TO,
+      notAppliedTo: channelScope.forced ? [...SCOPE_NOT_APPLIED_TO, "可销天数分桶与滞销（全渠道销量）", "外部平台观察（受限范围不下发）"] : SCOPE_NOT_APPLIED_TO,
     },
     generatedAt: today.toISOString(),
     salesWindow: { months6, months3 },
