@@ -41,7 +41,7 @@ const LEGACY_MENU: LegacyNode[] = [
     { key: "/outsource/po", label: "采购订单" }, { key: "/outsource/pc", label: "价格变更" },
     { key: "/outsource/jg", label: "加工通知单" }, { key: "/report/wip", label: "委外在制看板" },
     { key: "/report/transit", label: "在途参考" }, { key: "/report/supplier-scorecard", label: "供应商记分卡" },
-    { key: "/report/price-compare", label: "物料比价" },
+    { key: "/report/price-compare", label: "物料比价" }, { key: "/report/purchase-orders", label: "采购订单指标" },
   ] },
   { key: "matflow", label: "物料收发", children: [
     { key: "/matflow/fl", label: "发料单" }, { key: "/matflow/tl", label: "退料单" },
@@ -117,7 +117,7 @@ const LEGACY_REPORT_GROUPS: Record<string, string> = {
   "/report/closed-loop": "planning", "/report/auto-replenish": "planning", "/report/material-demand": "planning",
   "/report/transfer-suggest": "planning", "/report/leadtime-learning": "planning", "/report/forecast-accuracy": "planning",
   "/report/detectors": "planning", "/report/wip": "outsourcing", "/report/transit": "outsourcing",
-  "/report/supplier-scorecard": "outsourcing", "/report/price-compare": "outsourcing",
+  "/report/supplier-scorecard": "outsourcing", "/report/price-compare": "outsourcing", "/report/purchase-orders": "outsourcing",
   "/report/inbound-calendar": "inventory", "/report/sku-360": "inventory", "/report/jiediao": "inventory",
   "/report/npd": "npd", "/report/margin": "finance", "/report/settlement-summary": "finance",
   "/report/data-health": "master", "/report/exports": "import",
@@ -132,6 +132,8 @@ const LEGACY_PALETTE_HREFS = [
   "/master/spu", "/master/sku", "/master/supplier", "/master/supplier/lifecycle", "/master/warehouse",
   "/master/bin", "/master/bom", "/import/upload", "/import/release", "/review/checklist", "/admin/users",
   "/admin/params", "/admin/health",
+  // W2-G 新增（2026-09-03 之后登记；非旧面板快照）
+  "/report/purchase-orders",
 ];
 
 /** 旧 AppShell.filterMenuByRoles 的逐字语义，用来对 LEGACY 快照做同样过滤 */
