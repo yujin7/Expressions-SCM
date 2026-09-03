@@ -104,6 +104,8 @@ export const ROUTE_REGISTRY = {
   report_transit: { path: "/report/transit", label: "在途参考", group: "outsourcing", scopedMode: "public" },
   report_supplier_scorecard: { path: "/report/supplier-scorecard", label: "供应商记分卡", group: "outsourcing", scopedMode: "public" },
   report_price_compare: { path: "/report/price-compare", label: "物料比价", group: "outsourcing", scopedMode: "denied" },
+  // W2-G（D63）：采购订单指标真报表——单数/数量全员，金额按 PRICE_VISIBLE_ROLES 在 API 剥离
+  report_purchase_orders: { path: "/report/purchase-orders", label: "采购订单指标", group: "outsourcing", scopedMode: "public", keywords: "purchase order po metrics caigou dingdan zhibiao" },
 
   /* ── 物料收发 ── */
   matflow_fl: { path: "/matflow/fl", label: "发料单", group: "matflow", scopedMode: "public" },

@@ -5,7 +5,7 @@ import type { SessionUser } from "@/server/core/dto";
 type AnyTx = any;
 import { getDbAsync, schema } from "@/db";
 import { ApiError } from "./common";
-import { supplierSchema } from "./schemas";
+import { supplierCapacitySchema, supplierPaymentTermSchema, supplierSchema } from "./schemas";
 
 function buildWhere(q: string) {
   return q ? or(ilike(schema.suppliers.code, `%${q}%`), ilike(schema.suppliers.name, `%${q}%`)) : undefined;
@@ -66,12 +66,112 @@ export async function createSupplier(input: unknown, actor?: SessionUser, dbArg?
       level: v.level ?? null,
       licenseExpiry: v.licenseExpiry ?? null,
       status: v.status ?? "pending",
+      ...termAndCapacityColumns(v),
     })
     .returning();
   if (actor) {
     await writeAudit(tx, { userId: actor.id, entity: "supplier", entityId: created.id, action: "create", after: created });
   }
   return created;
+  });
+}
+
+/** D64 账期三列 + 产能三列（档案通用写路径与专用写路径共用同一归一化） */
+function termAndCapacityColumns(v: {
+  paymentTermType?: string | null;
+  creditDays?: number | null;
+  paymentTermEffectiveFrom?: string | null;
+  declaredMonthlyCapacity?: string | null;
+  capacityUom?: string | null;
+  surgeCapacityPct?: number | null;
+}) {
+  return {
+    paymentTermType: v.paymentTermType ?? null,
+    creditDays: v.paymentTermType === "monthly_credit" ? (v.creditDays ?? null) : null,
+    paymentTermEffectiveFrom: v.paymentTermType == null ? null : (v.paymentTermEffectiveFrom ?? null),
+    declaredMonthlyCapacity: v.declaredMonthlyCapacity ?? null,
+    capacityUom: v.declaredMonthlyCapacity == null ? null : (v.capacityUom ?? null),
+    surgeCapacityPct: v.surgeCapacityPct ?? null,
+  };
+}
+
+const PAYMENT_TERM_COLUMNS = ["paymentTermType", "creditDays", "paymentTermEffectiveFrom", "paymentTerm"] as const;
+const CAPACITY_COLUMNS = ["declaredMonthlyCapacity", "capacityUom", "surgeCapacityPct"] as const;
+
+function pick<T extends object, K extends keyof T>(row: T, keys: readonly K[]): Pick<T, K> {
+  const out = {} as Pick<T, K>;
+  for (const k of keys) out[k] = row[k];
+  return out;
+}
+
+/**
+ * D64 账期登记（专用写路径）：只改账期四列，其余档案字段不动；审计 before/after 只含账期字段
+ * （变更历史 = audit_logs 上按 entity=supplier + action=payment_term 追溯，不另建表）。
+ * 角色：采购/管理员（路由层 guardWrite("supplier")；service 内再判一次，防绕过路由直调）。
+ */
+export async function setSupplierPaymentTerm(id: number, input: unknown, actor: SessionUser, dbArg?: AnyTx) {
+  const v = supplierPaymentTermSchema.parse(input);
+  if (!actor.roles.includes("admin") && !actor.roles.includes("purchasing")) {
+    throw new ApiError(403, "无权限执行此操作：需要采购/管理员角色");
+  }
+  const db: AnyTx = dbArg ?? (await getDbAsync());
+  return db.transaction(async (tx: AnyTx) => {
+    const [existing] = await tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, id));
+    if (!existing) throw new ApiError(404, "供应商不存在");
+    const cols = termAndCapacityColumns({ ...v });
+    const [updated] = await tx
+      .update(schema.suppliers)
+      .set({
+        paymentTermType: cols.paymentTermType,
+        creditDays: cols.creditDays,
+        paymentTermEffectiveFrom: cols.paymentTermEffectiveFrom,
+        paymentTerm: v.paymentTerm ?? existing.paymentTerm,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.suppliers.id, id))
+      .returning();
+    await writeAudit(tx, {
+      userId: actor.id,
+      entity: "supplier",
+      entityId: id,
+      action: "payment_term",
+      before: pick(existing, PAYMENT_TERM_COLUMNS),
+      after: { ...pick(updated, PAYMENT_TERM_COLUMNS), note: v.note ?? null },
+    });
+    return pick(updated, ["id", "code", "name", ...PAYMENT_TERM_COLUMNS]);
+  });
+}
+
+/** 产能申报（专用写路径）：只改产能三列；审计 action=capacity。角色同账期。 */
+export async function setSupplierCapacity(id: number, input: unknown, actor: SessionUser, dbArg?: AnyTx) {
+  const v = supplierCapacitySchema.parse(input);
+  if (!actor.roles.includes("admin") && !actor.roles.includes("purchasing")) {
+    throw new ApiError(403, "无权限执行此操作：需要采购/管理员角色");
+  }
+  const db: AnyTx = dbArg ?? (await getDbAsync());
+  return db.transaction(async (tx: AnyTx) => {
+    const [existing] = await tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, id));
+    if (!existing) throw new ApiError(404, "供应商不存在");
+    const cols = termAndCapacityColumns({ ...v });
+    const [updated] = await tx
+      .update(schema.suppliers)
+      .set({
+        declaredMonthlyCapacity: cols.declaredMonthlyCapacity,
+        capacityUom: cols.capacityUom,
+        surgeCapacityPct: cols.surgeCapacityPct,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.suppliers.id, id))
+      .returning();
+    await writeAudit(tx, {
+      userId: actor.id,
+      entity: "supplier",
+      entityId: id,
+      action: "capacity",
+      before: pick(existing, CAPACITY_COLUMNS),
+      after: { ...pick(updated, CAPACITY_COLUMNS), note: v.note ?? null },
+    });
+    return pick(updated, ["id", "code", "name", ...CAPACITY_COLUMNS]);
   });
 }
 
@@ -97,6 +197,7 @@ export async function updateSupplier(id: number, input: unknown, actor?: Session
       licenseExpiry: v.licenseExpiry ?? null,
       // 常规档案编辑不能绕过准入/整改闭环改状态。
       status: existing.status,
+      ...termAndCapacityColumns(v),
       updatedAt: new Date(),
     })
     .where(eq(schema.suppliers.id, id))

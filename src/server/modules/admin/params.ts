@@ -69,6 +69,10 @@ export const PARAM_DEFS: ParamDef[] = [
   { key: "payment_term_min_years", label: "账期候选合作年限", fallback: 2, min: 0, max: 20, unit: "年", note: "D64：账期谈判候选 = 合作 ≥ 本值年且近 2 年采购额排名上升" },
   { key: "payment_term_target_min_days", label: "目标账期下限", fallback: 45, min: 0, max: 180, unit: "天", note: "D64：月结目标区间下限（≤ 上限）" },
   { key: "payment_term_target_max_days", label: "目标账期上限", fallback: 60, min: 0, max: 180, unit: "天", note: "D64：月结目标区间上限" },
+  /* ── W2-G 采购订单指标 / OTIF（D63、D64） ── */
+  { key: "otif_window_days", label: "OTIF 准时窗口", fallback: 2, min: 0, max: 30, unit: "天", note: "D63：全收完成日 ≤ 承诺交期 + 本值 记准时" },
+  { key: "otif_qty_tolerance_pct", label: "OTIF 足量容差", fallback: 0, min: 0, max: 20, unit: "%", note: "D63：累计已收 ≥ 应收 × (1 − 本值%) 记足量" },
+  { key: "po_expected_date_required", label: "PO 提交须填交期", fallback: 0, min: 0, max: 1, unit: "", note: "D63：1=提交 PO 时表头或逐行必须有承诺交期（OTIF 可评前提）；0=不强制" },
   { key: "dq_tolerance_pct", label: "数据质量一致容差", fallback: 1, min: 0, max: 20, unit: "%", note: "D65：SKU 日级数量差异 ≤ 本值视为一致" },
   { key: "ops_demand_diff_pct", label: "运营提报核对阈值", fallback: 30, min: 1, max: 500, unit: "%", note: "D55/R3：运营提报量与系统基线（Holt 月量）差异绝对值 ≥ 本值标「需核对」" },
 ];

@@ -87,6 +87,8 @@ export type CategoryInput = z.infer<typeof categorySchema>;
 // ---------- 供应商 ----------
 export const SUPPLIER_KINDS = ["raw", "packaging", "processor", "service"] as const; // +服务（04 §3）
 export const SUPPLIER_LEVELS = ["S", "A", "B", "C", "D"] as const;
+export const PAYMENT_TERM_TYPES = ["prepay", "on_delivery", "monthly_credit"] as const;
+
 export const supplierSchema = z.object({
   code: z.string().trim().min(1, "编码必填").refine((c) => checkCode(c).ok, (c) => ({ message: checkCode(c).reason ?? "编码不合规" })),
   name: z.string().trim().min(1, "名称必填"),
@@ -101,8 +103,61 @@ export const supplierSchema = z.object({
   licenseExpiry: z.preprocess(emptyToUndef, dateStr.nullable().optional()),
   // 状态变化走 supplier-lifecycle；保留可选入参仅供 seed/迁移显式建档。
   status: z.enum(["pending", "qualified", "paused", "blacklisted"]).optional(),
-});
+  // ── D64 账期结构化（payment_term 文本保留作原文；口径以下三列为准）──
+  paymentTermType: z.enum(PAYMENT_TERM_TYPES).nullable().optional(),
+  creditDays: z.preprocess(emptyToUndef, z.coerce.number().int().min(0).max(180).nullable().optional()),
+  paymentTermEffectiveFrom: z.preprocess(emptyToUndef, dateStr.nullable().optional()),
+  // ── 产能申报（申报单位原样存，不换算）──
+  declaredMonthlyCapacity: z.preprocess(
+    emptyToUndef,
+    z.union([z.string(), z.number()]).transform(String).pipe(z.string().regex(/^\d+(\.\d{1,4})?$/, "月产能须为非负数（最多 4 位小数）")).nullable().optional(),
+  ),
+  capacityUom: optionalStr,
+  surgeCapacityPct: z.preprocess(emptyToUndef, z.coerce.number().int().min(0).max(300).nullable().optional()),
+}).superRefine((v, ctx) => refinePaymentTerm(v, ctx));
 export type SupplierInput = z.infer<typeof supplierSchema>;
+
+/** 月结必须有天数；非月结不得带天数；填了类型必须带生效日 */
+function refinePaymentTerm(
+  v: { paymentTermType?: string | null; creditDays?: number | null; paymentTermEffectiveFrom?: string | null },
+  ctx: z.RefinementCtx,
+) {
+  if (v.paymentTermType === "monthly_credit" && v.creditDays == null) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["creditDays"], message: "月结必须填写账期天数" });
+  }
+  if (v.paymentTermType != null && v.paymentTermType !== "monthly_credit" && v.creditDays != null && v.creditDays !== 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["creditDays"], message: "预付/款到发货不应带账期天数" });
+  }
+  if (v.paymentTermType != null && !v.paymentTermEffectiveFrom) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["paymentTermEffectiveFrom"], message: "登记账期必须填写生效日" });
+  }
+}
+
+/** D64 账期专用写路径入参（PUT /api/master/supplier/[id]/payment-term） */
+export const supplierPaymentTermSchema = z.object({
+  paymentTermType: z.enum(PAYMENT_TERM_TYPES).nullable(),
+  creditDays: z.preprocess(emptyToUndef, z.coerce.number().int().min(0).max(180).nullable().optional()),
+  paymentTermEffectiveFrom: z.preprocess(emptyToUndef, dateStr.nullable().optional()),
+  paymentTerm: optionalStr, // 原文（可空：不改）
+  note: optionalStr,
+}).superRefine((v, ctx) => refinePaymentTerm(v, ctx));
+export type SupplierPaymentTermInput = z.infer<typeof supplierPaymentTermSchema>;
+
+/** 产能申报专用写路径入参（PUT /api/master/supplier/[id]/capacity） */
+export const supplierCapacitySchema = z.object({
+  declaredMonthlyCapacity: z.preprocess(
+    emptyToUndef,
+    z.union([z.string(), z.number()]).transform(String).pipe(z.string().regex(/^\d+(\.\d{1,4})?$/, "月产能须为非负数（最多 4 位小数）")).nullable().optional(),
+  ),
+  capacityUom: optionalStr,
+  surgeCapacityPct: z.preprocess(emptyToUndef, z.coerce.number().int().min(0).max(300).nullable().optional()),
+  note: optionalStr,
+}).superRefine((v, ctx) => {
+  if (v.declaredMonthlyCapacity != null && !v.capacityUom) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["capacityUom"], message: "申报月产能必须带申报单位" });
+  }
+});
+export type SupplierCapacityInput = z.infer<typeof supplierCapacitySchema>;
 
 // ---------- 仓库 ----------
 export const WAREHOUSE_KINDS = ["finished", "raw", "packaging", "outsource", "transit", "snapshot"] as const;

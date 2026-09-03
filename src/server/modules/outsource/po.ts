@@ -5,6 +5,7 @@ import {
 } from "@/db/schema";
 import { dCmp } from "@/server/core/decimal";
 import { canSeePrices, type SessionUser } from "@/server/core/dto";
+import { getNumParam } from "@/server/core/params";
 import { writeAudit } from "@/server/core/audit";
 import { approveDoc, loadApprovalHistory, withdrawDoc } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
@@ -95,6 +96,13 @@ export async function submitPo(user: SessionUser, id: number, version: number, d
 
   const lines: PoLineRow[] = await db.select().from(poLines).where(eq(poLines.poId, id)).orderBy(poLines.id);
   if (lines.length === 0) throw new ApiError(409, "PO 无行，不可提交");
+  // D63/D64 OTIF 前置：承诺交期必填（sys_params po_expected_date_required=1 开启；表头或逐行任一有值即可）
+  if ((await getNumParam("po_expected_date_required", 0, db)) >= 1 && !doc.expectedDate) {
+    const missing = lines.filter((l) => !l.expectedDate).length;
+    if (missing > 0) {
+      throw new ApiError(409, `承诺交期必填：表头未填预计交期且 ${missing} 行缺行交期（运行参数 po_expected_date_required 可关闭）`);
+    }
+  }
   const tolerancePct = await getTolerancePct(db);
 
   // 逐行 R1：异动行需有「同价已批 PC」放行，否则挂/建 PC

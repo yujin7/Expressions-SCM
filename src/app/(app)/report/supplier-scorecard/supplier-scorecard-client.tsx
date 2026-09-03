@@ -9,6 +9,7 @@ import SearchInput from "@/components/SearchInput";
  * - 记分卡：这家供应商到底几分？分从哪来？（展开行逐维度拆给你看——不可解释的评分没人敢用）
  * - 质检透视：质量问题在时间上怎么走？（按月堆叠，让步/报废是不是在变多）
  * - 价格偏差：同 SKU 的已生效采购价统一到基础单位未税后，哪些供应商值得复核？
+ * - 账期候选（D64）：谁该谈账期、谈到了没有、账期类采购额占多少？（payment-term-tab.tsx）
  * 评分只是**数据建议**：采纳与否由采购判断，点「采纳」才写档案等级；样本不足者不评级而非给低分。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -28,6 +29,7 @@ import { buildSupplierExternalEvidenceBriefs } from "@/components/supplier-exter
 import type { ProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
 import { useListState } from "@/components/useListState";
 import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
+import PaymentTermTab from "./payment-term-tab";
 
 /* ───────────────── 类型（与服务端 DTO 对齐） ───────────────── */
 
@@ -970,7 +972,7 @@ export default function SupplierScorecardClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedTab = searchParams.get("tab");
-  const activeTab = requestedTab === "qc" || requestedTab === "price" ? requestedTab : "scorecard";
+  const activeTab = requestedTab === "qc" || requestedTab === "price" || requestedTab === "term" ? requestedTab : "scorecard";
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>供应商记分卡</Typography.Title>
@@ -986,6 +988,8 @@ export default function SupplierScorecardClient() {
           { key: "scorecard", label: "记分卡", children: <ScorecardTab /> },
           { key: "qc", label: "质检透视", children: <QcSummaryTab /> },
           { key: "price", label: "价格偏差", children: <PriceVarianceTab /> },
+          // W2-G（D64）：账期候选——独立 URL 参数命名空间 pt_*，与 sc_/qc_/pv_ 互不干扰
+          { key: "term", label: "账期候选", children: <PaymentTermTab /> },
         ]}
       />
     </div>

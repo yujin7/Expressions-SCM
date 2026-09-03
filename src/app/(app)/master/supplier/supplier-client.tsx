@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Button, DatePicker, Drawer, Form, Input, Select, Tag, Typography } from "antd";
+import { Button, DatePicker, Drawer, Form, Input, InputNumber, Select, Tag, Typography } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
 import AttachmentPanel from "@/components/AttachmentPanel";
 import CrudTable from "@/components/CrudTable";
@@ -78,10 +78,16 @@ export default function SupplierClient() {
         toFormValues={(r) => ({
           ...r,
           licenseExpiry: r.licenseExpiry ? dayjs(r.licenseExpiry) : undefined,
+          paymentTermEffectiveFrom: (r as SupplierRow & { paymentTermEffectiveFrom?: string | null }).paymentTermEffectiveFrom
+            ? dayjs((r as SupplierRow & { paymentTermEffectiveFrom?: string | null }).paymentTermEffectiveFrom)
+            : undefined,
         })}
         transformSubmit={(values) => ({
           ...values,
           licenseExpiry: values.licenseExpiry ? (values.licenseExpiry as Dayjs).format("YYYY-MM-DD") : null,
+          paymentTermEffectiveFrom: values.paymentTermEffectiveFrom ? (values.paymentTermEffectiveFrom as Dayjs).format("YYYY-MM-DD") : null,
+          creditDays: values.paymentTermType === "monthly_credit" ? values.creditDays ?? null : null,
+          declaredMonthlyCapacity: values.declaredMonthlyCapacity == null || values.declaredMonthlyCapacity === "" ? null : String(values.declaredMonthlyCapacity),
         })}
         formItems={() => (
           <>
@@ -124,6 +130,42 @@ export default function SupplierClient() {
             </Form.Item>
             <Form.Item name="licenseExpiry" label="营业执照到期日" tooltip="资质预警数据源（1.1 启用预警）">
               <DatePicker style={{ width: "100%" }} />
+            </Form.Item>
+            {/* D64 账期结构化：口径以三列为准，「结算方式」文本保留作原文 */}
+            <Form.Item name="paymentTermType" label="账期类型" tooltip="D64：预付 / 款到发货 / 月结；月结须填天数与生效日（账期候选看板据此判达标）">
+              <Select
+                allowClear
+                options={[
+                  { value: "prepay", label: "预付" },
+                  { value: "on_delivery", label: "款到发货" },
+                  { value: "monthly_credit", label: "月结" },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item noStyle shouldUpdate={(a, b) => a.paymentTermType !== b.paymentTermType}>
+              {({ getFieldValue }) => (
+                <>
+                  {getFieldValue("paymentTermType") === "monthly_credit" ? (
+                    <Form.Item name="creditDays" label="账期天数" rules={[{ required: true, message: "月结必须填写账期天数" }]}>
+                      <InputNumber min={0} max={180} style={{ width: "100%" }} addonAfter="天" />
+                    </Form.Item>
+                  ) : null}
+                  {getFieldValue("paymentTermType") ? (
+                    <Form.Item name="paymentTermEffectiveFrom" label="账期生效日" rules={[{ required: true, message: "登记账期必须填写生效日" }]}>
+                      <DatePicker style={{ width: "100%" }} />
+                    </Form.Item>
+                  ) : null}
+                </>
+              )}
+            </Form.Item>
+            <Form.Item name="declaredMonthlyCapacity" label="申报月产能" tooltip="供应商申报值，按申报单位原样记录，不做换算">
+              <InputNumber min={0} precision={4} style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item name="capacityUom" label="产能单位">
+              <Input maxLength={20} placeholder="如 万支 / 吨 / 万套" />
+            </Form.Item>
+            <Form.Item name="surgeCapacityPct" label="爆单加班放大比例" tooltip="爆单时可临时放大的产能比例（0–300%）">
+              <InputNumber min={0} max={300} style={{ width: "100%" }} addonAfter="%" />
             </Form.Item>
           </>
         )}
