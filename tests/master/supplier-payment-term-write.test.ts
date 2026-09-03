@@ -42,6 +42,14 @@ describe("master/supplier 账期与产能写路径", () => {
   });
 
   it("切换为款到发货：天数清空；再登记一次 = 第二条审计（历史可追溯）", async () => {
+    // 审阅修复：常规档案编辑（不携带账期/产能字段）不得把账期抹成 NULL
+    const [beforeEdit] = await db.select().from(suppliers).where(eq(suppliers.id, supplierId));
+    await updateSupplier(supplierId, { code: "SPTW-1", name: "账期写路径供应商（改名）", kinds: ["processor"] }, buyer, db);
+    const [afterEdit] = await db.select().from(suppliers).where(eq(suppliers.id, supplierId));
+    expect(afterEdit.name).toBe("账期写路径供应商（改名）");
+    expect(afterEdit.paymentTermType).toBe(beforeEdit.paymentTermType);
+    expect(afterEdit.creditDays).toBe(beforeEdit.creditDays);
+    expect(afterEdit.paymentTermEffectiveFrom).toBe(beforeEdit.paymentTermEffectiveFrom);
     await setSupplierPaymentTerm(supplierId, { paymentTermType: "on_delivery", paymentTermEffectiveFrom: "2026-10-01" }, buyer, db);
     const [row] = await db.select().from(suppliers).where(eq(suppliers.id, supplierId));
     expect(row.paymentTermType).toBe("on_delivery");

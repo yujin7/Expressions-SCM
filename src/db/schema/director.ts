@@ -8,7 +8,7 @@
  * 「当前有效行」（supersedes 链尾）由 service 保证，表上只放查询索引。
  */
 import {
-  pgTable, serial, integer, text, numeric, date, timestamp, boolean, jsonb, unique, index, check,
+  pgTable, serial, integer, text, numeric, date, timestamp, boolean, jsonb, unique, uniqueIndex, index, check,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -74,6 +74,8 @@ export const salesAmountMonthly = pgTable("sales_amount_monthly", {
 }, (t) => [
   index("ix_sales_amount_monthly_scope").on(t.yearMonth, t.scopeKind, t.scopeId),
   unique("uq_sales_amount_monthly_supersedes").on(t.supersedesId), // 链式单向：一行只能被替代一次
+  // 审阅修复：每键只能有一个链头（supersedes_id IS NULL）；并发首提由 23505 → 409 兜住（company 的 scope_id 为 NULL，coalesce 归零参与唯一）
+  uniqueIndex("uq_sales_amount_monthly_head").on(t.yearMonth, t.scopeKind, sql`coalesce(${t.scopeId}, 0)`).where(sql`${t.supersedesId} IS NULL`),
   check("ck_sales_amount_monthly_ym", sql`${t.yearMonth} ~ ${YEAR_MONTH_RE}`),
   check("ck_sales_amount_monthly_scope_kind", sql`${t.scopeKind} IN ('company', 'brand', 'channel')`),
   check(
@@ -129,6 +131,7 @@ export const workItems = pgTable("work_items", {
 }, (t) => [
   index("ix_work_items_assignee_status").on(t.assigneeId, t.status),
   index("ix_work_items_due").on(t.dueDate),
+  index("ix_work_items_source").on(t.sourceKind, t.sourceRef), // 指纹查找（todo-sync 每半小时按来源去重）
   check("ck_work_items_priority", sql`${t.priority} IN ('low', 'normal', 'high')`),
   check("ck_work_items_status", sql`${t.status} IN ('open', 'in_progress', 'done', 'cancelled')`),
   check("ck_work_items_source_kind", sql`${t.sourceKind} IS NULL OR ${t.sourceKind} IN ('alert', 'manual', 'review')`),
@@ -161,7 +164,8 @@ export const departmentGoals = pgTable("department_goals", {
   check("ck_department_goals_actual_source", sql`${t.actualSource} IS NULL OR ${t.actualSource} IN ('auto', 'manual')`),
   check(
     "ck_department_goals_actual_pair",
-    sql`(${t.actualValue} IS NULL AND ${t.actualSource} IS NULL) OR (${t.actualValue} IS NOT NULL AND ${t.actualSource} IS NOT NULL)`,
+    // 有值必有来源；auto 必有值；manual 允许暂无值（"声明手工填报、待附证据登记"——审阅修复：否则声明会被 refresh 当 auto 行覆盖）
+    sql`(${t.actualValue} IS NULL OR ${t.actualSource} IS NOT NULL) AND (${t.actualSource} IS DISTINCT FROM 'auto' OR ${t.actualValue} IS NOT NULL)`,
   ),
 ]);
 
@@ -257,6 +261,8 @@ export const opsDemandSubmissions = pgTable("ops_demand_submissions", {
 }, (t) => [
   index("ix_ops_demand_submissions_key").on(t.skuId, t.channelId, t.period),
   unique("uq_ops_demand_submissions_supersedes").on(t.supersedesId),
+  // 审阅修复：每键只能有一个链头（channel_id 为 NULL = 全渠道，coalesce 归零参与唯一）
+  uniqueIndex("uq_ops_demand_submissions_head").on(t.skuId, sql`coalesce(${t.channelId}, 0)`, t.period).where(sql`${t.supersedesId} IS NULL`),
   check("ck_ops_demand_submissions_period", sql`${t.period} ~ ${YEAR_MONTH_RE}`),
   check("ck_ops_demand_submissions_qty", sql`${t.qty} >= 0`),
 ]);

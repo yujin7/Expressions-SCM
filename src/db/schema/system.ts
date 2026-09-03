@@ -388,4 +388,9 @@ export const systemAlerts = pgTable("system_alerts", {
   lastHitAt: timestamp("last_hit_at", { withTimezone: true }),
   ackedBy: integer("acked_by"),
   ackedAt: timestamp("acked_at", { withTimezone: true }),
-}, (t) => [index("ix_alert_status_cat").on(t.status, t.category), index("ix_alert_dedupe").on(t.dedupeKey, t.status)]);
+}, (t) => [
+  index("ix_alert_status_cat").on(t.status, t.category),
+  index("ix_alert_dedupe").on(t.dedupeKey, t.status),
+  // 审阅修复：引擎"同 category+dedupeKey 只保留一条 open"由数据库保证（并发/重叠运行不再双开）
+  uniqueIndex("uq_alert_open_dedupe").on(t.category, t.dedupeKey).where(sql`${t.status} = 'open'`),
+]);

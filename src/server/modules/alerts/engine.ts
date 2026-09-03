@@ -59,12 +59,15 @@ export async function upsertAlerts(
       }).where(eq(schema.systemAlerts.id, existing.id));
       refreshed++;
     } else {
-      await db.insert(schema.systemAlerts).values({
+      // 部分唯一索引 uq_alert_open_dedupe(category, dedupe_key) WHERE status='open'：
+      // 与另一并发运行撞上时不插入（对方已开同键告警），按"已刷新"计数而不是双开。
+      const ins: { id: number }[] = await db.insert(schema.systemAlerts).values({
         category: input.category, refKey: c.refKey, dedupeKey: c.dedupeKey, title: c.title, detail: c.detail ?? null,
         severity: c.severity, ownerRole: c.ownerRole ?? null, actionHref: c.actionHref ?? null, sourceRule: c.sourceRule ?? null,
         paramsSnapshot: c.paramsSnapshot ?? null, lastHitAt: now,
-      });
-      opened++;
+      }).onConflictDoNothing({ target: [schema.systemAlerts.category, schema.systemAlerts.dedupeKey], where: sql`${schema.systemAlerts.status} = 'open'` })
+        .returning({ id: schema.systemAlerts.id });
+      if (ins.length) opened++; else refreshed++;
     }
   }
 

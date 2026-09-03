@@ -248,6 +248,10 @@ export async function createWorkItem(
             detail: input.detail ?? existing.detail,
             priority: input.priority,
             dueDate: input.dueDate ?? existing.dueDate,
+            // 审阅修复：reopen 采用本次（已校验在职的）指派人与责任角色，不把待办留在已离职的旧责任人名下
+            assigneeId: input.assigneeId,
+            assignerId: actor.id,
+            ownerRole: input.ownerRole ?? existing.ownerRole,
             updatedAt: now,
           }).where(eq(workItems.id, existing.id));
           await writeAudit(tx, {
@@ -255,8 +259,8 @@ export async function createWorkItem(
             entity: "work_item",
             entityId: existing.id,
             action: "reopen",
-            before: { status: existing.status, completedAt: existing.completedAt },
-            after: { status: "open", fingerprint: fingerprintOf(input.sourceKind as "alert" | "review", input.sourceRef as string), withinDays: REOPEN_WINDOW_DAYS },
+            before: { status: existing.status, completedAt: existing.completedAt, assigneeId: existing.assigneeId },
+            after: { status: "open", assigneeId: input.assigneeId, fingerprint: fingerprintOf(input.sourceKind as "alert" | "review", input.sourceRef as string), withinDays: REOPEN_WINDOW_DAYS },
           });
           return { id: existing.id, created: false, reopened: true };
         }
@@ -510,6 +514,8 @@ export interface ProjectCandidatesSummary {
   scanned: number;
   created: number;
   reopened: number;
+  /** 单条投影失败（校验/指派异常）计数：不让一条坏候选拖垮整轮同步 */
+  failed: number;
   matched: number;
   unassigned: number;
 }
@@ -525,27 +531,67 @@ export async function projectCandidates(
   opts?: { now?: Date },
 ): Promise<ProjectCandidatesSummary> {
   const now = opts?.now ?? new Date();
-  const summary: ProjectCandidatesSummary = { scanned: candidates.length, created: 0, reopened: 0, matched: 0, unassigned: 0 };
+  const summary: ProjectCandidatesSummary = { scanned: candidates.length, created: 0, reopened: 0, matched: 0, unassigned: 0, failed: 0 };
   const dueDays: Record<string, number> = { high: 3, normal: 7, low: 14 };
+  const assigneeByRole = new Map<string, Promise<number | null>>(); // 同一责任角色一轮只查一次
   for (const c of candidates) {
-    const assigneeId = await defaultAssigneeForRole(db, c.ownerRole);
+    const roleKey = c.ownerRole ?? "";
+    let pending = assigneeByRole.get(roleKey);
+    if (!pending) { pending = defaultAssigneeForRole(db, c.ownerRole); assigneeByRole.set(roleKey, pending); }
+    const assigneeId = await pending;
     if (!assigneeId) { summary.unassigned++; continue; }
     const due = new Date(now.getTime() + (dueDays[c.priority] ?? 7) * DAY_MS);
-    const r = await createWorkItem({
-      title: c.title,
-      detail: c.detail ? `${c.detail}\n${c.href}` : c.href,
-      assigneeId,
-      ownerRole: c.ownerRole,
-      priority: c.priority,
-      dueDate: dayShanghai(due),
-      sourceKind: c.sourceKind,
-      sourceRef: c.sourceRef,
-    }, actor, db, { now });
-    if (r.created) summary.created++;
-    else if (r.reopened) summary.reopened++;
-    else summary.matched++;
+    try {
+      const r = await createWorkItem({
+        title: c.title.slice(0, 200),
+        detail: (c.detail ? `${c.detail}\n${c.href}` : c.href).slice(0, 2000),
+        assigneeId,
+        ownerRole: c.ownerRole,
+        priority: c.priority,
+        dueDate: dayShanghai(due),
+        sourceKind: c.sourceKind,
+        sourceRef: c.sourceRef,
+      }, actor, db, { now });
+      if (r.created) summary.created++;
+      else if (r.reopened) summary.reopened++;
+      else summary.matched++;
+    } catch (e) {
+      // 审阅修复：单条失败只计数，不中断其余候选与到期提醒
+      summary.failed++;
+      console.warn("[todo] 投影候选失败", c.sourceKind, c.sourceRef, e instanceof Error ? e.message : e);
+    }
   }
   return summary;
+}
+
+/**
+ * 来源已关闭的投影待办自动取消（审阅修复）：告警被引擎迟滞关闭 / 人工裁决项关闭后，
+ * 其投影待办不再计入逾期与完成率；走 setWorkItemStatus（审计 action=cancel，note 说明来源）。
+ */
+export async function closeStaleProjectedItems(db: AnyDb, actor: SessionUser, opts?: { now?: Date }): Promise<{ scanned: number; cancelled: number }> {
+  const now = opts?.now ?? new Date();
+  const stale: { id: number; sourceKind: string | null }[] = await db
+    .select({ id: workItems.id, sourceKind: workItems.sourceKind })
+    .from(workItems)
+    .where(and(
+      inArray(workItems.status, ["open", "in_progress"]),
+      or(
+        and(eq(workItems.sourceKind, "alert"), sql`NOT EXISTS (SELECT 1 FROM system_alerts a WHERE a.id::text = ${workItems.sourceRef} AND a.status = 'open')`),
+        and(eq(workItems.sourceKind, "review"), sql`NOT EXISTS (SELECT 1 FROM review_items r WHERE r.id::text = ${workItems.sourceRef} AND r.status = 'open')`),
+      ),
+    ))
+    .orderBy(workItems.id)
+    .limit(500);
+  let cancelled = 0;
+  for (const s of stale) {
+    try {
+      await setWorkItemStatus(s.id, "cancelled", actor, db, { now, note: s.sourceKind === "alert" ? "来源告警已关闭，自动取消" : "来源裁决项已关闭，自动取消" });
+      cancelled++;
+    } catch (e) {
+      console.warn("[todo] 自动取消失败", s.id, e instanceof Error ? e.message : e);
+    }
+  }
+  return { scanned: stale.length, cancelled };
 }
 
 /** 到期提醒候选：今天到期或已逾期且未完成 */

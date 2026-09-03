@@ -11,13 +11,14 @@ import {
   listGoals,
   readPayloadPath,
   refreshAutoActuals,
+  refreshableDeptKeys,
   resolveAutoActual,
   updateGoal,
 } from "@/server/modules/goals/service";
 import { INVENTORY_SALES_RATIO_CACHE_KEY } from "@/server/modules/report/inventory-sales-ratio";
 import { PURCHASE_ORDER_METRICS_KEY } from "@/server/modules/report/purchase-order-metrics";
 import { SUPPLIER_PAYMENT_TERM_KEY } from "@/server/modules/report/supplier-payment-term";
-import { WAREHOUSE_INVENTORY_CACHE_KEY } from "@/server/modules/report/warehouse-inventory";
+import { warehouseInventoryCacheKey } from "@/server/modules/report/warehouse-inventory";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 describe("goals/service：部门目标 CRUD / auto 实际值（真实读模型键+路径）/ 达成度 / 权限", () => {
@@ -61,7 +62,8 @@ describe("goals/service：部门目标 CRUD / auto 实际值（真实读模型�
   });
 
   it("AUTO_METRIC_SOURCES 只引用真实存在的读模型缓存键（不再前缀猜测）", () => {
-    const real = new Set([INVENTORY_SALES_RATIO_CACHE_KEY, WAREHOUSE_INVENTORY_CACHE_KEY, SUPPLIER_PAYMENT_TERM_KEY, PURCHASE_ORDER_METRICS_KEY]);
+    // 仓库库存读模型实际落库的键带窗口后缀（/w90）：goals 必须读同一把键（审阅修复：原来读裸前缀永远取不到）
+    const real = new Set([INVENTORY_SALES_RATIO_CACHE_KEY, warehouseInventoryCacheKey(90), SUPPLIER_PAYMENT_TERM_KEY, PURCHASE_ORDER_METRICS_KEY]);
     for (const s of AUTO_METRIC_SOURCES) expect(real.has(s.cacheKey), `${s.metricKey} → ${s.cacheKey}`).toBe(true);
     expect(AUTO_METRIC_SOURCES.map((s) => s.metricKey)).toEqual(["inventorySalesRatio", "turns", "dio", "paymentTermAttainment", "creditTermSpendShare", "onTimeRate"]);
   });
@@ -89,7 +91,11 @@ describe("goals/service：部门目标 CRUD / auto 实际值（真实读模型�
     const ratio = { rows: [{ yearMonth: "2026-08", ratioMonthEndPct: 52.1 }], current: { yearMonth: "2026-08", ratioMonthEndPct: 52.1 } };
     expect(extractAutoValue(ratio, "2026-08", src.paths)).toEqual({ value: "52.1", path: "rows[yearMonth=$period].ratioMonthEndPct" });
     expect(extractAutoValue(ratio, "2026-09", src.paths)).toBeNull(); // 月份不在 rows 里不回退到 current
-    expect(extractAutoValue(ratio, "2026-Q3", src.paths)).toEqual({ value: "52.1", path: "current.ratioMonthEndPct" });
+    // 季度 = 季内最新有值月份（审阅修复：不再读 current，避免把最新月填给任意季度）
+    expect(extractAutoValue(ratio, "2026-Q3", src.paths)).toEqual({ value: "52.1", path: "rows[yearMonth=2026-08].ratioMonthEndPct" });
+    expect(extractAutoValue(ratio, "2025-Q4", src.paths)).toBeNull();
+    const twoMonths = { rows: [{ yearMonth: "2026-07", ratioMonthEndPct: 60 }, { yearMonth: "2026-08", ratioMonthEndPct: 52.1 }], current: { yearMonth: "2026-09", ratioMonthEndPct: 1 } };
+    expect(extractAutoValue(twoMonths, "2026-Q3", src.paths)).toEqual({ value: "52.1", path: "rows[yearMonth=2026-08].ratioMonthEndPct" });
     const pay = AUTO_METRIC_SOURCES.find((s) => s.metricKey === "paymentTermAttainment")!;
     expect(extractAutoValue({ year: 2026, summary: { attainmentRate: 0.4 } }, "2026-Q3", pay.paths)).toEqual({ value: "40.0000", path: "summary.attainmentRate" });
     expect(extractAutoValue({ year: 2025, summary: { attainmentRate: 0.4 } }, "2026-Q3", pay.paths)).toBeNull();
@@ -143,7 +149,7 @@ describe("goals/service：部门目标 CRUD / auto 实际值（真实读模型�
     expect(before).toMatchObject({ scanned: 4, updated: 0, unavailable: 3 });
     await db.insert(reportReadModelCache).values([
       { key: PURCHASE_ORDER_METRICS_KEY, sourceBinding: "t", payload: { key: PURCHASE_ORDER_METRICS_KEY, year: 2026, month: "2026-09", summary: { otif: { evaluable: 125, hit: 114, rate: 0.912 } }, byMonth: [] } },
-      { key: WAREHOUSE_INVENTORY_CACHE_KEY, sourceBinding: "t", payload: { key: WAREHOUSE_INVENTORY_CACHE_KEY, asOf: "2026-09-03", windowDays: 90, rows: [], regions: [], summary: { turns: 6.2, dio: 58.9 } } },
+      { key: warehouseInventoryCacheKey(90), sourceBinding: "t", payload: { key: warehouseInventoryCacheKey(90), asOf: "2026-09-03", windowDays: 90, rows: [], regions: [], summary: { turns: 6.2, dio: 58.9 } } },
     ]);
     const s = await refreshAutoActuals(db, { period: "2026-Q4", actorId: admin.id });
     expect(s).toMatchObject({ scanned: 4, updated: 3, unavailable: 0 });
@@ -162,6 +168,26 @@ describe("goals/service：部门目标 CRUD / auto 实际值（真实读模型�
     // 串年：读模型年份 ≠ 期间年份 → unavailable，不编造
     expect((await resolveAutoActual(db, "onTimeRate", "2025-Q4"))).toMatchObject({ value: null, sourceKey: PURCHASE_ORDER_METRICS_KEY, path: null });
     expect(await resolveAutoActual(db, "qcPassRate", "2026-Q4")).toEqual({ value: null, sourceKey: null, path: null, builtAt: null });
+  });
+
+  it("审阅修复：显式 manual 建目标落库为 manual 且不被 refresh 覆盖；refresh 可按部门限定；受限用户写路径也按范围 403", async () => {
+    const g = await createGoal({ deptKey: "warehouse", period: "2026-Q2", metricKey: "turns", targetValue: "9", actualSource: "manual" }, admin, db);
+    expect(g.actualSource).toBe("manual");
+    expect(g.autoStatus).toBe("n/a");
+    const s = await refreshAutoActuals(db, { period: "2026-Q2", actorId: admin.id });
+    expect(s).toMatchObject({ scanned: 0, updated: 0 });
+    const [row] = await db.select().from(departmentGoals).where(eq(departmentGoals.id, g.id));
+    expect(row.actualSource).toBe("manual");
+    // deptKeys=[] → 不扫描任何行；deptKeys=["warehouse"] 只扫仓库
+    expect(await refreshAutoActuals(db, { period: "2026-Q4", actorId: admin.id, deptKeys: [] })).toEqual({ scanned: 0, updated: 0, unavailable: 0 });
+    const onlyWh = await refreshAutoActuals(db, { period: "2026-Q4", actorId: admin.id, deptKeys: ["warehouse"] });
+    expect(onlyWh.scanned).toBe(2);
+    expect(refreshableDeptKeys(admin)).toBeUndefined();
+    expect(refreshableDeptKeys(pmc)).toEqual(["pmc"]);
+    const restricted: SessionUser = { ...pmc, roles: ["pmc", "ops"], deptScope: ["ops"] } as SessionUser;
+    expect(refreshableDeptKeys(restricted)).toEqual(["ops"]);
+    await expect(createGoal({ deptKey: "pmc", period: "2026-Q2", metricKey: "qcPassRate", targetValue: "98" }, restricted, db)).rejects.toMatchObject({ status: 403 });
+    expect(await db.select().from(departmentGoals).where(and(eq(departmentGoals.deptKey, "pmc"), eq(departmentGoals.period, "2026-Q2")))).toHaveLength(0);
   });
 
   it("listGoals：全员可见全部部门，editableDepts 只含本部门；D62 受限用户只见范围内部门", async () => {

@@ -12,12 +12,14 @@ import { and, eq, sql } from "drizzle-orm";
 import { users } from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
 import type { AnyDb } from "@/server/core/svc";
-import { listDueReminderTargets, projectCandidates, type ProjectCandidatesSummary } from "@/server/modules/todo/service";
+import { closeStaleProjectedItems, listDueReminderTargets, projectCandidates, type ProjectCandidatesSummary } from "@/server/modules/todo/service";
 import { collectTodoCandidates, type CollectTriggerOptions } from "@/server/modules/todo/triggers";
 import { enqueueNotification, isFeishuAppConfigured } from "./notify";
 
 export interface TodoSyncSummary {
   projection: ProjectCandidatesSummary | null;
+  /** 来源告警/裁决项已关闭的投影待办自动取消 */
+  autoClosed: { scanned: number; cancelled: number } | null;
   reminders: { scanned: number; enqueued: number };
   actorId: number | null;
 }
@@ -45,9 +47,11 @@ export async function runTodoSync(
   const actor = await systemActor(db);
 
   let projection: ProjectCandidatesSummary | null = null;
+  let autoClosed: { scanned: number; cancelled: number } | null = null;
   if (actor) {
     const candidates = await collectTodoCandidates(db, opts?.triggers);
     projection = await projectCandidates(db, candidates, actor, { now });
+    autoClosed = await closeStaleProjectedItems(db, actor, { now });
   }
 
   const feishu = opts?.feishuConfigured ?? isFeishuAppConfigured();
@@ -71,5 +75,5 @@ export async function runTodoSync(
       })) enqueued++;
     }
   }
-  return { projection, reminders: { scanned: due.length, enqueued }, actorId: actor?.id ?? null };
+  return { projection, autoClosed, reminders: { scanned: due.length, enqueued }, actorId: actor?.id ?? null };
 }

@@ -26,7 +26,7 @@ import { ApiError } from "@/server/modules/master/common";
 import { INVENTORY_SALES_RATIO_CACHE_KEY } from "@/server/modules/report/inventory-sales-ratio";
 import { PURCHASE_ORDER_METRICS_KEY } from "@/server/modules/report/purchase-order-metrics";
 import { SUPPLIER_PAYMENT_TERM_KEY } from "@/server/modules/report/supplier-payment-term";
-import { WAREHOUSE_INVENTORY_CACHE_KEY } from "@/server/modules/report/warehouse-inventory";
+import { warehouseInventoryCacheKey } from "@/server/modules/report/warehouse-inventory";
 
 export const GOAL_DIRECTIONS = ["up", "down"] as const;
 export type GoalDirection = (typeof GOAL_DIRECTIONS)[number];
@@ -45,6 +45,11 @@ export interface AutoMetricPath {
   periodYearField?: string;
   /** 读模型存 0–1 比例时 ×100 折成百分比（与 METRICS unit=pct 对齐） */
   scale?: 100;
+  /**
+   * 季度期间按"季内最新有值的月份"取值：path 里的 `$period` 依次替换为该季 3 个月（从后往前），命中即返回。
+   * 月末口径指标（库存占比）用它，避免把"最新月"当成任意季度的实际值。
+   */
+  quarterMonths?: "latest";
 }
 
 export interface AutoMetricSource {
@@ -65,14 +70,15 @@ export const AUTO_METRIC_SOURCES: readonly AutoMetricSource[] = [
     // InventorySalesRatioReadModel：rows[].{yearMonth, ratioMonthEndPct}（已是百分比）；current = 最新月
     paths: [
       { path: "rows[yearMonth=$period].ratioMonthEndPct", when: "month" },
-      { path: "current.ratioMonthEndPct", when: "quarter" },
+      // 季度 = 该季内最新有值月份的月末占比（审阅修复：原来读 current 会把最新月填给任意季度）
+      { path: "rows[yearMonth=$period].ratioMonthEndPct", when: "quarter", quarterMonths: "latest" },
     ],
     defaultDirection: "down",
   },
   {
     metricKey: "turns",
     label: "库存周转次数",
-    cacheKey: WAREHOUSE_INVENTORY_CACHE_KEY,
+    cacheKey: warehouseInventoryCacheKey(90),
     // WarehouseInventoryModel.summary.turns（滚动窗口、非期间口径：取最新一次构建）
     paths: [{ path: "summary.turns" }],
     defaultDirection: "up",
@@ -80,7 +86,7 @@ export const AUTO_METRIC_SOURCES: readonly AutoMetricSource[] = [
   {
     metricKey: "dio",
     label: "库存周转天数 DIO",
-    cacheKey: WAREHOUSE_INVENTORY_CACHE_KEY,
+    cacheKey: warehouseInventoryCacheKey(90),
     paths: [{ path: "summary.dio" }],
     defaultDirection: "down",
   },
@@ -268,6 +274,14 @@ export function readPayloadPath(payload: unknown, path: string, period: string):
   return pickNumber(cur);
 }
 
+/** 'YYYY-Qn' → 该季 3 个月（升序）；非季度格式 → [] */
+export function quarterMonthsOf(period: string): string[] {
+  const m = /^(\d{4})-Q([1-4])$/.exec(period);
+  if (!m) return [];
+  const start = (Number(m[2]) - 1) * 3 + 1;
+  return [0, 1, 2].map((i) => `${m[1]}-${String(start + i).padStart(2, "0")}`);
+}
+
 /** 按 AutoMetricSource 的路径表取某期间的值：when / periodYearField 不满足即跳过该路径；scale=100 折百分比 */
 export function extractAutoValue(payload: unknown, period: string, paths: readonly AutoMetricPath[]): { value: string; path: string } | null {
   const isMonth = MONTH_RE.test(period);
@@ -279,9 +293,12 @@ export function extractAutoValue(payload: unknown, period: string, paths: readon
       const y = payload && typeof payload === "object" ? (payload as Record<string, unknown>)[p.periodYearField] : undefined;
       if (String(y) !== year) continue;
     }
-    const raw = readPayloadPath(payload, p.path, period);
-    if (raw == null) continue;
-    return { value: p.scale ? dMul(raw, p.scale, 4) : raw, path: p.path };
+    const periods = p.quarterMonths === "latest" && !isMonth ? quarterMonthsOf(period).reverse() : [period];
+    for (const per of periods) {
+      const raw = readPayloadPath(payload, p.path, per);
+      if (raw == null) continue;
+      return { value: p.scale ? dMul(raw, p.scale, 4) : raw, path: per === period ? p.path : p.path.replace("$period", per) };
+    }
   }
   return null;
 }
@@ -292,6 +309,15 @@ export interface AutoActual {
   /** 命中的 payload 路径（审计留痕） */
   path: string | null;
   builtAt: string | null;
+}
+
+/** 触发人可回填的部门：admin 全部（undefined）；其他 = 自己角色 ∩ D62 数据范围 */
+export function refreshableDeptKeys(user: SessionUser): readonly string[] | undefined {
+  if (user.roles.includes("admin")) return undefined;
+  return user.roles.filter((r) => {
+    if (!(ROLES as readonly string[]).includes(r)) return false;
+    try { resolveDeptScope(user, r); return true; } catch { return false; }
+  });
 }
 
 /** 取某指标某期间的 auto 实际值；无缓存/无值 → value null（绝不编造，sourceKey 仍给出以便排查） */
@@ -318,6 +344,7 @@ export async function createGoal(raw: GoalCreateInput, user: SessionUser, dbArg?
   const db = dbArg ?? (await getDbAsync());
   const now = opts?.now ?? new Date();
   if (!canEditDept(user, input.deptKey)) throw new ApiError(403, "只能设置本部门的目标（管理员除外）");
+  resolveDeptScope(user, input.deptKey); // D62 受限用户：写路径与读路径同一范围裁剪（范围外 403，且不落库）
   const src = autoSourceFor(input.metricKey);
   if (!METRICS[input.metricKey] && !src) throw new ApiError(400, `指标 ${input.metricKey} 未在指标注册表登记`);
   const direction = input.direction ?? src?.defaultDirection ?? "up";
@@ -332,7 +359,9 @@ export async function createGoal(raw: GoalCreateInput, user: SessionUser, dbArg?
       targetValue: input.targetValue,
       direction,
       actualValue: auto?.value ?? null,
-      actualSource: auto?.value != null ? "auto" : null,
+      // 显式声明 manual 必须落库为 manual（待附证据登记），否则 refreshAutoActuals 会把它当 auto 行覆盖（审阅修复）；
+      // 未声明时保持原语义：取到 auto 值 → auto，否则 null（待填）
+      actualSource: input.actualSource === "manual" ? "manual" : auto?.value != null ? "auto" : null,
       note: input.note ?? null,
       createdBy: user.id,
       createdAt: now,
@@ -357,6 +386,7 @@ export async function updateGoal(id: number, raw: z.input<typeof goalPatchSchema
   const [existing]: Raw[] = await db.select().from(departmentGoals).where(eq(departmentGoals.id, id));
   if (!existing) throw new ApiError(404, "目标不存在");
   if (!canEditDept(user, existing.deptKey)) throw new ApiError(403, "只能修改本部门的目标（管理员除外）");
+  resolveDeptScope(user, existing.deptKey);
 
   const set: Partial<typeof departmentGoals.$inferInsert> = { updatedAt: now };
   if (patch.targetValue !== undefined) set.targetValue = patch.targetValue;
@@ -397,17 +427,29 @@ export interface RefreshAutoSummary {
  * 回填 auto 实际值（供任务/页面「刷新」调用）：只碰 actual_source ∈ {auto, null} 且指标可 auto 的行；
  * manual 行不覆盖。值未变不写；变了写审计 action=refresh（userId=触发人，缺省行创建人）。
  */
-export async function refreshAutoActuals(dbArg?: AnyDb, opts?: { period?: string; actorId?: number; now?: Date }): Promise<RefreshAutoSummary> {
+export async function refreshAutoActuals(
+  dbArg?: AnyDb,
+  opts?: { period?: string; actorId?: number; now?: Date; /** 只回填这些部门（页面刷新按触发人可编辑部门限定；任务缺省全部） */ deptKeys?: readonly string[] },
+): Promise<RefreshAutoSummary> {
   const db = dbArg ?? (await getDbAsync());
   const now = opts?.now ?? new Date();
   const clauses: SQL[] = [inArray(departmentGoals.metricKey, AUTO_METRIC_SOURCES.map((s) => s.metricKey))];
   if (opts?.period) clauses.push(eq(departmentGoals.period, opts.period));
+  if (opts?.deptKeys) {
+    if (!opts.deptKeys.length) return { scanned: 0, updated: 0, unavailable: 0 };
+    clauses.push(inArray(departmentGoals.deptKey, [...opts.deptKeys]));
+  }
   const rows: Raw[] = await db.select().from(departmentGoals).where(and(...clauses));
   const summary: RefreshAutoSummary = { scanned: 0, updated: 0, unavailable: 0 };
+  // 同一 (metricKey, period) 只解析一次：读模型 payload 可达数百 KB，逐行重读是纯浪费
+  const memo = new Map<string, Promise<AutoActual>>();
   for (const r of rows) {
     if (r.actualSource === "manual") continue;
     summary.scanned++;
-    const auto = await resolveAutoActual(db, r.metricKey, r.period);
+    const memoKey = `${r.metricKey}|${r.period}`;
+    let pending = memo.get(memoKey);
+    if (!pending) { pending = resolveAutoActual(db, r.metricKey, r.period); memo.set(memoKey, pending); }
+    const auto = await pending;
     if (auto.value == null) { summary.unavailable++; continue; }
     if (r.actualValue != null && dCmp(r.actualValue, auto.value) === 0) continue;
     await db.transaction(async (tx: AnyDb) => {

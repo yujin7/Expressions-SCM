@@ -61,6 +61,14 @@ export const SENSITIVE_FIELDS = [
   "estimatedNetProfit", // 平台预估净利
   "salesAmount", // 月度销售金额（D53：默认仅 finance/admin/pmc 可见）
   "unitFee", // 调拨/加工单位费用（D60 成本基线；可反推价格）
+  "avgUnitFee", // 调拨线路均价（D60）
+  "medianUnitFee", // 调拨线路中位单价（D60）
+  "docUnitFee", // 单据单位费用（D60 偏差提示）
+  "baselineAvgUnitFee", // 基线均价（D60 偏差提示）
+  "monthNetAmount", // 采购下单净额（D63）
+  "monthGrossAmount", // 采购下单毛额（D63）
+  "savingYtd", // 年累计降本额（D63）
+  "increaseYtd", // 年累计涨价额（D63）
 ] as const;
 
 /** 可见敏感价格的角色（●）：采购/PMC/财务/管理员 */

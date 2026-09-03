@@ -247,7 +247,26 @@ const SECTION_BUILDERS: [Role, (db: AnyDb) => Promise<FocusSection>][] = [
 const SEVERITY_RANK: Record<ExceptionSeverity, number> = { critical: 0, high: 1, medium: 2 };
 
 /** #6 控制塔：跨域异常聚合（均为廉价聚合查询，登录首屏可承受） */
-export async function computeExceptions(db: AnyDb): Promise<ExceptionItem[]> {
+const exceptionsMemo = new WeakMap<object, { at: number; value: Promise<ExceptionItem[]> }>();
+
+/**
+ * 例外清单；`memoMs` 打开时同一 db 实例在该时长内复用上一次结果（驾驶舱多用户刷新不重复跑全量补货引擎）。
+ * 缺省不记忆（测试与写后读一致性优先）。
+ */
+export async function computeExceptions(db: AnyDb, opts?: { memoMs?: number }): Promise<ExceptionItem[]> {
+  const memoMs = opts?.memoMs ?? 0;
+  if (memoMs > 0) {
+    const hit = exceptionsMemo.get(db as object);
+    if (hit && Date.now() - hit.at < memoMs) return hit.value;
+    const value = computeExceptionsUncached(db);
+    exceptionsMemo.set(db as object, { at: Date.now(), value });
+    value.catch(() => exceptionsMemo.delete(db as object));
+    return value;
+  }
+  return computeExceptionsUncached(db);
+}
+
+async function computeExceptionsUncached(db: AnyDb): Promise<ExceptionItem[]> {
   const today = todayShanghai();
   const out: ExceptionItem[] = [];
 
@@ -274,14 +293,14 @@ export async function computeExceptions(db: AnyDb): Promise<ExceptionItem[]> {
   const docAging = await countWhere(db, schema.systemAlerts, and(eq(schema.systemAlerts.category, "doc_aging"), eq(schema.systemAlerts.status, "open")));
   if (docAging > 0) {
     out.push({ key: "doc_aging", severity: "high", title: "单据超时未流转", impact: `${docAging} 张单据停留超阈值`, count: docAging, href: "/alerts" });
-  // D56/D57：预警引擎投影的两类告警（同源计数，驾驶舱红卡与本处一致）
+  }
+  // D56/D57：预警引擎投影的两类告警（同源计数，驾驶舱红卡与本处一致）——独立于单据超时是否存在
   const [spikeOpen, coverOpen] = await Promise.all([
     countWhere(db, schema.systemAlerts, and(eq(schema.systemAlerts.category, "sales_spike"), eq(schema.systemAlerts.status, "open"))),
     countWhere(db, schema.systemAlerts, and(eq(schema.systemAlerts.category, "inventory_cover"), eq(schema.systemAlerts.status, "open"))),
   ]);
   if (spikeOpen > 0) out.push({ key: "sales_spike", severity: "critical", title: "爆单预警（观察口径）", impact: `${spikeOpen} 个链接/SKU 连续 3 天涨幅超阈值`, count: spikeOpen, href: "/inventory/alerts?tab=spike" });
   if (coverOpen > 0) out.push({ key: "inventory_cover", severity: "high", title: "断货预警 S/A/B", impact: `${coverOpen} 个 SKU 可销天数低于阈值或已断货`, count: coverOpen, href: "/inventory/alerts?tab=cover" });
-  }
 
   // 3) 参考数据过期（新鲜度看门狗）
   const staleData = await countWhere(db, schema.systemAlerts, and(eq(schema.systemAlerts.category, "data_freshness"), eq(schema.systemAlerts.status, "open")));

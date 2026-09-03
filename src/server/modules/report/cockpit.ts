@@ -1,4 +1,5 @@
 import { PRICE_VISIBLE_ROLES } from "@/server/core/constants";
+import { dAdd } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { resolveDb, type AnyDb } from "@/server/core/svc";
 import { getInbox } from "@/server/modules/inbox/service";
@@ -150,13 +151,13 @@ function settled<T>(r: PromiseSettledResult<T>): { ok: true; value: T } | { ok: 
 }
 
 function sum(values: (string | null | undefined)[]): string {
-  // 数量口径直加仅作参考（跨 SKU），用整数/小数字符串安全相加
-  let total = 0;
+  // 数量口径直加仅作参考（跨 SKU）；decimal 字符串相加，不走 float（CLAUDE.md）
+  let total = "0";
   for (const v of values) {
-    const n = Number(v ?? 0);
-    if (Number.isFinite(n)) total += n;
+    if (v == null || v === "" || !/^-?\d+(\.\d+)?$/.test(String(v))) continue;
+    total = dAdd(total, v, 4);
   }
-  return total.toFixed(4).replace(/\.?0+$/, "") || "0";
+  return total.replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1") || "0";
 }
 
 function severityOf(items: ExceptionItem[], key: string): RedlineItem["severity"] {
@@ -176,7 +177,7 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
     loadInventoryPosition(db),
     canSeeMoney ? loadInventorySalesRatio(db) : Promise.resolve(null),
     loadDataSourceReadiness(db),
-    computeExceptions(db),
+    computeExceptions(db, { memoMs: 60_000 }), // 例外块含全量补货引擎；驾驶舱刷新按分钟级足够
     getInbox(user, db),
     countReviewItems(db),
     loadExternalVelocitySafe(db),

@@ -95,6 +95,7 @@ function termAndCapacityColumns(v: {
   };
 }
 
+const TERM_CAPACITY_INPUT_KEYS = ["paymentTermType", "creditDays", "paymentTermEffectiveFrom", "declaredMonthlyCapacity", "capacityUom", "surgeCapacityPct"] as const;
 const PAYMENT_TERM_COLUMNS = ["paymentTermType", "creditDays", "paymentTermEffectiveFrom", "paymentTerm"] as const;
 const CAPACITY_COLUMNS = ["declaredMonthlyCapacity", "capacityUom", "surgeCapacityPct"] as const;
 
@@ -191,13 +192,15 @@ export async function updateSupplier(id: number, input: unknown, actor?: Session
       phone: v.phone ?? null,
       email: v.email ?? null,
       address: v.address ?? null,
-      paymentTerm: v.paymentTerm ?? null,
+      // 结算方式原文：请求未携带该键 = 不改（与账期写路径"原文未传 = 不改"一致）
+      paymentTerm: input != null && typeof input === "object" && "paymentTerm" in input ? (v.paymentTerm ?? null) : existing.paymentTerm,
       bankAccount: v.bankAccount ?? null,
       level: v.level ?? null,
       licenseExpiry: v.licenseExpiry ?? null,
       // 常规档案编辑不能绕过准入/整改闭环改状态。
       status: existing.status,
-      ...termAndCapacityColumns(v),
+      // 审阅修复：档案表单未携带账期/产能字段时保留原值；只有显式提交才按 termAndCapacityColumns 归一化
+      ...(TERM_CAPACITY_INPUT_KEYS.some((k) => input != null && typeof input === "object" && k in (input as object)) ? termAndCapacityColumns(v) : {}),
       updatedAt: new Date(),
     })
     .where(eq(schema.suppliers.id, id))

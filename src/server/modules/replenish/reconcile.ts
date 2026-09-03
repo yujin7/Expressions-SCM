@@ -375,7 +375,7 @@ export async function getReconcile(
     const fc = hasSeries ? forecastDaily(series) : null;
     const baselineQty = fc ? dQty(String(fc.forecastMonthly)) : null;
     const last3 = series.slice(-3);
-    const naiveQty = hasSeries && last3.length ? dQty(String(last3.reduce((a, b) => a + b, 0) / last3.length)) : null;
+    const naiveQty = hasSeries && last3.length ? dDiv(last3.reduce((acc, b) => dAdd(acc, String(b), 6), "0"), String(last3.length), 4) : null;
     let diffPct: number | null = null;
     if (baselineQty != null && dCmp(baselineQty, "0") > 0) {
       diffPct = r1(num(dMul(dDiv(dSub(r.qty, baselineQty, 6), baselineQty, 6), "100", 6)));

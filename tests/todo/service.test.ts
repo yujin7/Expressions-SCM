@@ -80,8 +80,15 @@ describe("todo/service：创建/指派/状态机/指纹去重/reopen/可疑关�
     expect(again.item.id).toBe(a.item.id);
     expect(again.item.status).toBe("open");
     expect(again.item.completedAt).toBeNull();
+    // 审阅修复：reopen 采用本次指派（旧责任人可能已离职）
+    const swapped = await setWorkItemStatus(a.item.id, "done", pmc, db, { now: new Date(t0.getTime() + 4 * DAY + 60_000) });
+    expect(swapped.status).toBe("done");
+    const re2 = await createWorkItem({ title: "复核 R 换人", assigneeId: pmc2.id, ownerRole: "pmc", sourceKind: "review", sourceRef: "77" }, admin, db, { now: new Date(t0.getTime() + 4 * DAY + 120_000) });
+    expect(re2.reopened).toBe(true);
+    expect(re2.item.assigneeId).toBe(pmc2.id);
+    await setWorkItemStatus(a.item.id, "open", pmc2, db, { now: new Date(t0.getTime() + 4 * DAY + 180_000) }).catch(() => undefined);
     const audits = await db.select().from(auditLogs).where(and(eq(auditLogs.entity, "work_item"), eq(auditLogs.entityId, a.item.id)));
-    expect(audits.map((x) => x.action)).toEqual(["create", "complete", "reopen"]);
+    expect(audits.map((x) => x.action).slice(0, 5)).toEqual(["create", "complete", "reopen", "complete", "reopen"]);
     // 关闭后超过 7 天再触发 → 新建
     await setWorkItemStatus(a.item.id, "done", pmc, db, { now: new Date(t0.getTime() + 5 * DAY) });
     const later = await createWorkItem({ title: "复核 R 很久后", assigneeId: pmc.id, sourceKind: "review", sourceRef: "77" }, admin, db, { now: new Date(t0.getTime() + (5 + REOPEN_WINDOW_DAYS + 1) * DAY) });

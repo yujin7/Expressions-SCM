@@ -23,6 +23,10 @@ import { latestFinanceCostBatch, resolveUnitCosts, valueOnHand } from "@/server/
 import { turnover } from "@/server/rules/inventory-metrics";
 
 export const WAREHOUSE_INVENTORY_CACHE_KEY = "warehouse-inventory/v1";
+/** 实际落缓存的键带窗口后缀；任何读方（部门目标 auto 实际值等）必须用它，不能拿裸前缀查 */
+export function warehouseInventoryCacheKey(windowDays = 90): string {
+  return `${WAREHOUSE_INVENTORY_CACHE_KEY}/w${normalizeWindow(windowDays)}`;
+}
 export const WAREHOUSE_WINDOWS = [30, 90, 365] as const;
 /** 覆盖率低于此值时金额标「不完整」（D51） */
 export const VALUATION_COVERAGE_MIN_PCT = 80;
@@ -326,7 +330,7 @@ export async function refreshWarehouseInventory(dbArg?: AnyDb, opts: { windowDay
   const windowDays = normalizeWindow(opts.windowDays ?? 90);
   const asOf = opts.asOf ?? SHANGHAI_DATE.format(new Date());
   const binding = await warehouseInventoryBinding(db, windowDays, asOf);
-  const key = `${WAREHOUSE_INVENTORY_CACHE_KEY}/w${windowDays}`;
+  const key = warehouseInventoryCacheKey(windowDays);
   const model: WarehouseInventoryModel = { key, builtAt: new Date().toISOString(), ...(await computeWarehouseInventory(db, windowDays, asOf)) };
   await db.execute(sql`
     INSERT INTO report_read_model_cache (key, source_binding, payload, built_at)
@@ -345,7 +349,7 @@ export async function loadWarehouseInventory(
   const asOf = opts.asOf ?? SHANGHAI_DATE.format(new Date());
   if (!opts.refresh) {
     const binding = await warehouseInventoryBinding(db, windowDays, asOf);
-    const key = `${WAREHOUSE_INVENTORY_CACHE_KEY}/w${windowDays}`;
+    const key = warehouseInventoryCacheKey(windowDays);
     const [row] = resultRows<{ payload: unknown }>(await db.execute(sql`
       SELECT payload FROM report_read_model_cache WHERE key = ${key} AND source_binding = ${binding} LIMIT 1
     `));

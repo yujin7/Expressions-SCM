@@ -48,10 +48,21 @@ describe("jobs/todo-sync：告警/复核投影为待办 + 到期提醒", () => {
     expect(inApp.map((n) => n.dedupeKey).sort()).toEqual([`task:${spike!.id}:assigned`, `task:${blocked!.id}:assigned`].sort());
   });
 
-  it("再跑一轮：全部命中既有项，不新建", async () => {
+  it("审阅修复：来源告警关闭后其投影待办自动取消（审计 cancel），不再计入逾期", async () => {
+    await db.update(systemAlerts).set({ status: "resolved", autoResolved: true, resolvedAt: NOW }).where(eq(systemAlerts.refKey, "jst"));
+    const s = await runTodoSync(db, { now: new Date(NOW.getTime() + 60_000), feishuConfigured: false });
+    expect(s.autoClosed).toEqual({ scanned: 1, cancelled: 1 });
+    const fresh = (await db.select().from(workItems)).find((i) => i.title === "聚水潭过期");
+    expect(fresh?.status).toBe("cancelled");
+    // 再跑：无新的过期项
+    const s2 = await runTodoSync(db, { now: new Date(NOW.getTime() + 120_000), feishuConfigured: false });
+    expect(s2.autoClosed).toEqual({ scanned: 0, cancelled: 0 });
+  });
+
+  it("再跑一轮：全部命中既有项，不新建（已取消的过期项不再是候选，因为告警已 resolved）", async () => {
     const s = await runTodoSync(db, { now: NOW, feishuConfigured: false });
-    expect(s.projection).toMatchObject({ created: 0, reopened: 0, matched: 3 });
-    expect(await db.select().from(workItems)).toHaveLength(3);
+    expect(s.projection).toMatchObject({ created: 0, reopened: 0, matched: 2, failed: 0 });
+    expect(await db.select().from(workItems)).toHaveLength(3); // 含 1 条已自动取消
   });
 
   it("到期提醒：今天到期/已逾期的未完成待办 → task:{id}:due:{today}，每天一次；配置飞书且绑定 union_id 时另发私聊", async () => {

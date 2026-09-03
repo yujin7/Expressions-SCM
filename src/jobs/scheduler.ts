@@ -54,8 +54,9 @@ export const SCHEDULES: Record<string, string> = {
   "doc-aging": "10 11,17 * * *",
   "job-failure-watchdog": "20 11,17 * * *",
   "data-product-gate-watchdog": "22 11,17 * * *",
-  "system-alert-notify": "25 11,17 * * *",
-  "notify-dispatch": "30 11,17 * * *",
+  // 审阅修复：投递必须排在 :35/:40/:45 的三只引擎看门狗之后，否则本轮新开的断货/爆单/调拨成本告警要等下一轮才送到人手上
+  "system-alert-notify": "50 11,17 * * *",
+  "notify-dispatch": "55 11,17 * * *",
   "exception-notify": "40 11 * * *",
 
   "jst-token-watchdog": "10 9 * * *",
