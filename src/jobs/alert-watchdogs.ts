@@ -96,6 +96,10 @@ export async function runInventoryCoverWatchdog(db: AnyDb, now = new Date()) {
         nextArrival: r.nextArrival, inTransitDated: r.inTransitDated, inTransitUndated: r.inTransitUndated, inTransitOverdue: r.inTransitOverdue,
         learnedLead: r.learnedLead, priorityScore: r.priorityScore, priorityTerms: r.priorityTerms, statusOnHand: r.statusOnHand, statusBasis: r.statusBasis,
         primary: r.primary, tags: r.tags,
+        // 最晚下单日（闭环审计 #9，待办真实截止日）= 今天 + 在库可销天数 − 交期（阈值 − 缓冲）；断货/无日销 → 今天（窗口已过）
+        orderByDate: new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(
+          new Date(now.getTime() + Math.max(0, Math.floor((r.coverDays ?? 0) - (r.alertDays - model.params.bufferDays))) * 86_400_000),
+        ),
       },
       why: coverWhy(r),
     }));

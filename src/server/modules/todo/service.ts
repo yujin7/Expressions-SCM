@@ -522,7 +522,8 @@ export interface ProjectCandidatesSummary {
 
 /**
  * 把触发候选落为待办（供 jobs/todo-sync 调用）。actor = 系统执行者（首个在职 admin）。
- * 默认截止日 = 今天 + dueDays（high 3 天 / normal 7 天 / low 14 天）。
+ * 截止日：候选自带 dueDate（断货告警的最晚下单日，闭环审计 #9）优先——已过去的按今天计（窗口已错过，不给未来假期限）；
+ * 否则缺省 = 今天 + dueDays（high 3 天 / normal 7 天 / low 14 天）。
  */
 export async function projectCandidates(
   db: AnyDb,
@@ -540,7 +541,9 @@ export async function projectCandidates(
     if (!pending) { pending = defaultAssigneeForRole(db, c.ownerRole); assigneeByRole.set(roleKey, pending); }
     const assigneeId = await pending;
     if (!assigneeId) { summary.unassigned++; continue; }
-    const due = new Date(now.getTime() + (dueDays[c.priority] ?? 7) * DAY_MS);
+    const today = dayShanghai(now);
+    const fallbackDue = dayShanghai(new Date(now.getTime() + (dueDays[c.priority] ?? 7) * DAY_MS));
+    const dueDate = c.dueDate ? (c.dueDate < today ? today : c.dueDate) : fallbackDue;
     try {
       const r = await createWorkItem({
         title: c.title.slice(0, 200),
@@ -548,7 +551,7 @@ export async function projectCandidates(
         assigneeId,
         ownerRole: c.ownerRole,
         priority: c.priority,
-        dueDate: dayShanghai(due),
+        dueDate,
         sourceKind: c.sourceKind,
         sourceRef: c.sourceRef,
       }, actor, db, { now });

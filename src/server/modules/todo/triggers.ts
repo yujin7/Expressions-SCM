@@ -43,6 +43,7 @@ export async function collectTodoCandidates(db: AnyDb, opts?: CollectTriggerOpti
       title: systemAlerts.title,
       detail: systemAlerts.detail,
       severity: systemAlerts.severity,
+      paramsSnapshot: systemAlerts.paramsSnapshot,
     })
     .from(systemAlerts)
     .where(alertWhere)
