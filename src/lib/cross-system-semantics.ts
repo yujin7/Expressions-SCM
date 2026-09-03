@@ -673,6 +673,20 @@ export const CROSS_SYSTEM_SEMANTIC_STREAM_CONTRACTS: CrossSystemSemanticStreamCo
       correction_semantics: implemented("每批是主数据全量快照，读模型只取最新批次；不做增量纠错"),
     },
   },
+  {
+    source: "JIANDAOYUN",
+    stream: "bonded-warehouse-order-observation",
+    grain: "系统单号 × 商品编码 × 批次",
+    controls: {
+      grain: implemented("业务键为 systemOrderNumber + productCode + batch；同单同品同批次多行按最新批次去重"),
+      business_time: implemented("statisticalDate 为平台统计业务日；出库日取发货时间（缺失回退统计日）；7 天服务端时间窗"),
+      identifier_namespace: implemented("商品编码为聚水潭/系统编码命名空间，条形码为 EAN；仓库名称为来源作用域标识"),
+      quantity_unit: implemented("发货数量为源系统件数（scale 4）"),
+      currency: implemented("本契约不取金额与税费字段"),
+      amount_scale: implemented("本契约不取金额与税费字段"),
+      correction_semantics: implemented("时间窗滚动快照；读模型跨批次按业务键去重并取最新批次的订单状态，取消/退货状态不计出库"),
+    },
+  },
 ];
 
 const CONTRACT_BY_KEY = new Map(

@@ -9,10 +9,12 @@ export async function GET(req: NextRequest) {
     const { q, page, pageSize, searchParams } = parseListQuery(req.url);
     const bucket = searchParams.get("bucket") ?? undefined;
     const wh = searchParams.get("warehouseId");
+    const brand = searchParams.get("brand")?.trim() || undefined;
     const data = await listExpiryBatches({
       q,
       bucket,
       warehouseId: wh ? Number(wh) : undefined,
+      brand,
       page,
       pageSize,
     });

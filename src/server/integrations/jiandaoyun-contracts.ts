@@ -1127,6 +1127,48 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
       field("enabled", "_widget_1772072243198"),
     ],
   },
+  /*
+   * 保税仓保税订单（2026-09-03 W2-J 加入）：数据中台「CW_A.05_绍兴保税仓_保税订单」。
+   *
+   * 字段以 `/app/entry/widget/list` 实核（2026-09-03）：46 个顶层字段，本契约只取
+   * 统计日期/系统单号/平台名称/订单状态/创建·清关·入库·发货时间/商品编码/效期/批次/条形码/
+   * 发货数量/仓库名称/店铺名称 15 个。**刻意不取**收货人、联系电话、省市区与地址、身份证姓名/号码、
+   * 快递单号、报关单号、金额与税费——保税订单是消费者订单，PII 不得进入本系统任何一层。
+   *
+   * 用途：保税仓（快照仓，无流水）的「日出库」旁证——按 SKU/批次/效期汇总发货数量，
+   * 供驾驶舱第 3 屏各仓库存明细的「出库」列；observation_only，不过账、不改库存。
+   * 7 天服务端时间窗（订单级大表）：每批是窗口内滚动快照，读模型跨批次按业务键去重。
+   * `productCode` / `barcode` / `warehouseName` 走同步期身份解析（`_identity.skuId` / `warehouseId`），
+   * 未命中进认领队列，绝不自动认领。
+   */
+  {
+    key: "bonded-warehouse-order-observation",
+    label: "数据中台/绍兴保税仓保税订单（7 天时间窗，出库观察）",
+    appId: "699ebeac318154b4f6d3dda6",
+    entryId: "69bcf6dbbe2cb5ce06c1b827",
+    targetTable: "jdy_bonded_warehouse_order_observation",
+    businessKey: ["systemOrderNumber", "productCode", "batch"],
+    freshnessMaxAgeDays: 400,
+    window: { field: "statistical_date", days: 7 },
+    fields: [
+      field("statisticalDate", "statistical_date"),
+      field("systemOrderNumber", "system_order_number"),
+      field("platformName", "platform_name"),
+      field("orderStatus", "order_status"),
+      field("createTime", "create_time"),
+      field("customsClearanceTime", "customs_clearance_time"),
+      field("warehousingTime", "warehousing_time"),
+      field("shipmentTime", "shipment_time"),
+      field("productCode", "product_code"),
+      field("validityPeriod", "validity_period"),
+      field("batch", "batch"),
+      field("barcode", "barcode"),
+      field("shipmentQuantity", "shipment_quantity"),
+      field("warehouseName", "warehouse_name"),
+      field("shopName", "shop_name"),
+    ],
+    numericControls: [{ target: "shipmentQuantity", scale: 4 }],
+  },
 ];
 
 export function jiandaoyunContract(key: string): JiandaoyunFormContract | null {

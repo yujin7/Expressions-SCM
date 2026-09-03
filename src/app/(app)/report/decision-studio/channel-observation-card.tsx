@@ -9,7 +9,7 @@ import { Alert, App, Button, Card, Col, Row, Space, Statistic, Table, Tag, Typog
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
-import type { ChannelObservation, ChannelPlatformRow, ProductPnlRow, SkuMarginRow, TrafficProductRow } from "@/server/modules/report/channel-observation";
+import type { BrandPlatformRow, ChannelObservation, ChannelPlatformRow, PddProductRow, PddShopDailyPoint, ProductPnlRow, SkuMarginRow, TrafficProductRow } from "@/server/modules/report/channel-observation";
 
 function yuan(value: string | null | undefined): string {
   if (value == null) return "—";
@@ -42,7 +42,39 @@ export default function ChannelObservationCard({ active }: { active: boolean }) 
     { title: "近30天金额", dataIndex: "amount", width: 120, align: "right", render: (v: string | null) => v == null ? <Typography.Text type="secondary">无金额字段</Typography.Text> : `¥${yuan(v)}` },
     { title: "退款件数", dataIndex: "refundUnits", width: 100, align: "right", render: (v: number | null) => v == null ? "—" : v.toLocaleString("zh-CN") },
     { title: "按品牌", key: "brand", render: (_, r) => r.byBrand.length ? r.byBrand.slice(0, 5).map((b) => `${b.brand} ${b.units.toLocaleString("zh-CN")}`).join(" · ") : "—" },
+    { title: "品牌归属来源", key: "attr", width: 200, render: (_, r) => r.state === "ready" ? `映射 ${r.brandAttribution.mappedSku.toLocaleString("zh-CN")} · 档案 ${r.brandAttribution.shopMaster.toLocaleString("zh-CN")}${r.brandAttribution.nameGuess ? ` · 店名回退 ${r.brandAttribution.nameGuess.toLocaleString("zh-CN")}` : ""}${r.brandAttribution.unattributed ? ` · 未归属 ${r.brandAttribution.unattributed.toLocaleString("zh-CN")}` : ""}` : "—" },
     { title: "口径", dataIndex: "gate", ellipsis: true },
+  ];
+  const cell = (c: { units: number | null; amount: string | null }) => c.units == null
+    ? <Typography.Text type="secondary">缺流</Typography.Text>
+    : <span>{c.units.toLocaleString("zh-CN")}{c.amount != null ? <Typography.Text type="secondary"> / ¥{yuan(c.amount)}</Typography.Text> : null}</span>;
+  const matrixCols: ColumnsType<BrandPlatformRow> = [
+    { title: "品牌", dataIndex: "brand", width: 120, fixed: "left", render: (v: string) => <Typography.Text strong>{v}</Typography.Text> },
+    { title: "天猫（净件数 / 支付金额）", key: "tmall", align: "right", render: (_, r) => cell(r.platforms["天猫"]) },
+    { title: "拼多多（有效订单件数 / 店铺成交额）", key: "pdd", align: "right", render: (_, r) => cell(r.platforms["拼多多"]) },
+    { title: "唯品会（销售量 / 销售额）", key: "vip", align: "right", render: (_, r) => cell(r.platforms["唯品会"]) },
+    { title: "件数合计（仅排序）", dataIndex: "totalUnits", width: 140, align: "right", render: (v: number) => <Typography.Text type="secondary">{v.toLocaleString("zh-CN")}</Typography.Text> },
+  ];
+  const pddShopCols: ColumnsType<ChannelObservation["pddDaily"]["byShop"][number]> = [
+    { title: "店铺", dataIndex: "shopName", ellipsis: true, render: (v: string, r) => <Space size={6}><span>{v}</span><Tag>{r.brand}</Tag></Space> },
+    { title: "成交额", dataIndex: "transactionAmount30", width: 100, align: "right", render: (v: string) => `¥${yuan(v)}` },
+    { title: "退款额", dataIndex: "refundAmount30", width: 100, align: "right", render: (v: string) => `¥${yuan(v)}` },
+    { title: "订单", dataIndex: "orders30", width: 80, align: "right" },
+    { title: "退款单", dataIndex: "refundCount30", width: 80, align: "right" },
+  ];
+  const pddTrendCols: ColumnsType<PddShopDailyPoint> = [
+    { title: "日期", dataIndex: "date", width: 110 },
+    { title: "成交额", dataIndex: "transactionAmount", align: "right", render: (v: string) => `¥${yuan(v)}` },
+    { title: "退款额", dataIndex: "refundAmount", align: "right", render: (v: string) => `¥${yuan(v)}` },
+    { title: "订单", dataIndex: "orders", width: 80, align: "right" },
+    { title: "退款单", dataIndex: "refundCount", width: 80, align: "right" },
+  ];
+  const pddProductCols: ColumnsType<PddProductRow> = [
+    { title: "店铺 / 商品", key: "p", ellipsis: true, render: (_, r) => <Space direction="vertical" size={0}><Typography.Text ellipsis={{ tooltip: r.productName ?? "" }} style={{ maxWidth: 300 }}>{r.productName ?? r.productId}</Typography.Text><Typography.Text type="secondary">{r.shopName} · {r.productId} · {r.brand}</Typography.Text></Space> },
+    { title: "成交额", dataIndex: "transactionAmount30", width: 100, align: "right", render: (v: string) => `¥${yuan(v)}` },
+    { title: "成交件数", dataIndex: "transactionNumber30", width: 90, align: "right" },
+    { title: "访客", dataIndex: "visitors30", width: 90, align: "right", render: (v: number) => v.toLocaleString("zh-CN") },
+    { title: "转化", dataIndex: "conversion30", width: 80, align: "right", render: (v: number | null) => v == null ? "—" : `${v}%` },
   ];
   const pnlCols: ColumnsType<ProductPnlRow> = [
     { title: "店铺 / 商品", key: "p", ellipsis: true, render: (_, r) => <Space direction="vertical" size={0}><Typography.Text ellipsis={{ tooltip: r.productName ?? "" }} style={{ maxWidth: 320 }}>{r.productName ?? r.platformProductId}</Typography.Text><Typography.Text type="secondary">{r.shopName} · {r.platformProductId}</Typography.Text></Space> },
@@ -54,6 +86,8 @@ export default function ChannelObservationCard({ active }: { active: boolean }) 
   const pnl = data?.productPnl;
   const traffic = data?.traffic;
   const margin = data?.skuMargin;
+  const pddDaily = data?.pddDaily;
+  const shopMaster = data?.shopMaster;
   const trafficCols: ColumnsType<TrafficProductRow> = [
     { title: "店铺 / 商品", key: "p", ellipsis: true, render: (_, r) => <Space direction="vertical" size={0}><Typography.Text ellipsis={{ tooltip: r.productName ?? "" }} style={{ maxWidth: 300 }}>{r.productName ?? r.productId}</Typography.Text><Typography.Text type="secondary">{r.shopName} · {r.productId}</Typography.Text></Space> },
     { title: "近7天访客", dataIndex: "visitors7", width: 100, align: "right", render: (v: number) => v.toLocaleString("zh-CN") },
@@ -74,7 +108,37 @@ export default function ChannelObservationCard({ active }: { active: boolean }) 
       extra={<Space><Tag color="warning">观察口径</Tag><Button size="small" onClick={() => void load()} loading={loading}>刷新</Button></Space>}
     >
       <Space direction="vertical" size={12} style={{ width: "100%" }}>
-        <Table<ChannelPlatformRow> rowKey="platform" size="small" loading={loading} pagination={false} columns={platformCols} dataSource={data?.platforms ?? []} scroll={{ x: 1100 }} />
+        <Table<ChannelPlatformRow> rowKey="platform" size="small" loading={loading} pagination={false} columns={platformCols} dataSource={data?.platforms ?? []} scroll={{ x: 1300 }} />
+        {data ? (
+          <Card
+            size="small"
+            title="品牌 × 平台（近 30 天，各列口径不同、不相加）"
+            extra={shopMaster ? <Tag color={shopMaster.state === "ready" ? "success" : "default"}>{shopMaster.state === "ready" ? `店铺档案 ${shopMaster.shopsWithBrand}/${shopMaster.shops} 家有品牌 · 品牌档案 ${shopMaster.brands}` : "店铺档案未同步（按店名回退）"}</Tag> : null}
+          >
+            <Table<BrandPlatformRow> rowKey="brand" size="small" pagination={false} columns={matrixCols} dataSource={data.brandMatrix} scroll={{ x: 900 }} />
+            {shopMaster?.missingShops.length ? (
+              <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
+                不在店铺档案里的店铺（{shopMaster.missingShops.length}）：{shopMaster.missingShops.join("、")}
+              </Typography.Paragraph>
+            ) : null}
+          </Card>
+        ) : null}
+        {pddDaily ? (
+          <Card size="small" title="拼多多商品 / 店铺日级观察（近 30 天）" extra={<Tag color={pddDaily.state === "ready" ? "success" : "default"}>{pddDaily.anchorDate ? `截至 ${pddDaily.anchorDate}` : "缺流"}</Tag>}>
+            <Row gutter={[10, 10]} className="compact-kpi-row">
+              <Col xs={12} lg={6}><Card size="small"><Statistic title="店铺成交额" value={pddDaily.state === "ready" ? `¥${yuan(pddDaily.totals.transactionAmount30)}` : "—"} /><Typography.Text type="secondary">{pddDaily.state === "ready" ? `${pddDaily.totals.shops} 家店铺` : "—"}</Typography.Text></Card></Col>
+              <Col xs={12} lg={6}><Card size="small"><Statistic title="成功退款额" value={pddDaily.state === "ready" ? `¥${yuan(pddDaily.totals.refundAmount30)}` : "—"} /><Typography.Text type="secondary">退款单 {pddDaily.state === "ready" ? pddDaily.totals.refundCount30.toLocaleString("zh-CN") : "—"}</Typography.Text></Card></Col>
+              <Col xs={12} lg={6}><Card size="small"><Statistic title="成交订单 / 买家" value={pddDaily.state === "ready" ? `${pddDaily.totals.orders30.toLocaleString("zh-CN")} / ${pddDaily.totals.buyers30.toLocaleString("zh-CN")}` : "—"} /></Card></Col>
+              <Col xs={12} lg={6}><Card size="small"><Statistic title="成交转化率（订单加权）" value={pddDaily.totals.conversion30 == null ? "—" : pddDaily.totals.conversion30} suffix={pddDaily.totals.conversion30 == null ? undefined : "%"} /><Typography.Text type="secondary">{pddDaily.state === "ready" ? `${pddDaily.totals.products} 个商品有日数据` : "—"}</Typography.Text></Card></Col>
+            </Row>
+            <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
+              <Col xs={24} xl={8}><Typography.Text strong>按店铺</Typography.Text><Table rowKey="shopName" size="small" pagination={false} columns={pddShopCols} dataSource={pddDaily.byShop} /></Col>
+              <Col xs={24} xl={8}><Typography.Text strong>店铺日趋势（最近 14 天）</Typography.Text><Table<PddShopDailyPoint> rowKey="date" size="small" pagination={false} columns={pddTrendCols} dataSource={pddDaily.trend.slice(-14).reverse()} /></Col>
+              <Col xs={24} xl={8}><Typography.Text strong>成交额最高 10 个商品</Typography.Text><Table<PddProductRow> rowKey={(r) => `${r.shopName}|${r.productId}`} size="small" pagination={false} columns={pddProductCols} dataSource={pddDaily.topProducts.slice(0, 10)} /></Col>
+            </Row>
+            <Alert type="info" showIcon style={{ marginTop: 12 }} message={pddDaily.gate} />
+          </Card>
+        ) : null}
         {pnl ? (
           <Card size="small" title="天猫宝贝损益（平台预估，近 30 天）" extra={<Tag color={pnl.state === "ready" ? "success" : "default"}>{pnl.anchorDate ? `截至 ${pnl.anchorDate}` : "缺流"}</Tag>}>
             <Row gutter={[10, 10]} className="compact-kpi-row">
