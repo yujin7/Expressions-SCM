@@ -383,9 +383,9 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
           salesConsistency: dqS.value.salesConsistency, tolerancePct: dqS.value.tolerancePct,
         },
         note: `准确率容差 ${dqS.value.tolerancePct}%；人工链路为代理口径（staging 首次通过率）；外部平台一致性仅覆盖天猫（D65）`,
-        source: { tier: "derived", source: "data-quality/v1", asOf: dqS.value.today },
+        source: { tier: "derived", source: "data-quality/v2", asOf: dqS.value.today },
       }
-    : { state: "error", data: null, note: dqS.error, source: { tier: "derived", source: "data-quality/v1", asOf: null } };
+    : { state: "error", data: null, note: dqS.error, source: { tier: "derived", source: "data-quality/v2", asOf: null } };
 
   /* ── 屏 4 ── */
   const inbox = settled(inboxR);

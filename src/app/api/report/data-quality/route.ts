@@ -9,7 +9,7 @@ import { loadSalesConsistency } from "@/server/modules/report/sales-consistency"
 const VIEW_ROLES = ["pmc", "finance", "warehouse", "purchasing"];
 
 /**
- * D65 数据质量总览（来源 × 维度 + 一致性例外）。读缓存 `data-quality/v1`；`?refresh=1` 强制重算。
+ * D65 数据质量总览（来源 × 维度 + 一致性例外）。读缓存 `data-quality/v2`；`?refresh=1` 强制重算。
  * `?section=consistency` 只返回销量一致性读模型（含例外清单）。
  */
 export async function GET(req: NextRequest) {
