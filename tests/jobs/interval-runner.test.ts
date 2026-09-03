@@ -22,7 +22,7 @@ describe("interval-runner 进程内调度回退", () => {
     expect(g[Symbol.for("supply-chain.interval-runner")]).toBeUndefined();
   });
 
-  it("注册了 24 个任务（含只读权限探测、三方观察、门禁看门狗、rollup 与决策摘要）", () => {
+  it("注册了 26 个任务（含只读权限探测、三方观察、门禁看门狗、rollup 与决策摘要）", () => {
     expect(INTERVAL_JOBS.map((j) => j.name).sort()).toEqual([
       "data-freshness",
       "data-product-gate-watchdog",
@@ -30,6 +30,7 @@ describe("interval-runner 进程内调度回退", () => {
       "doc-aging",
       "exception-notify",
       "housekeeping",
+      "inventory-cover-watchdog",
       "inventory-position-refresh",
       "job-failure-watchdog",
       "jst-token-watchdog",
@@ -39,6 +40,7 @@ describe("interval-runner 进程内调度回退", () => {
       "probe-yonyou-permissions",
       "reconcile-jst",
       "rollup",
+      "sales-spike-watchdog",
       "snapshot-age",
       "sync-jiandaoyun-catalog",
       "sync-jiandaoyun-forms",

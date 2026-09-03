@@ -56,6 +56,7 @@ const LEGACY_MENU: LegacyNode[] = [
     { key: "/report/jiediao", label: "借调对账" },
     // 2026-09-03 总监需求 W2-A 新增（D51/D52），登记在 src/lib/route-access.ts 的 inventory_position
     { key: "/inventory/position", label: "库存日级走向" },
+    { key: "/inventory/alerts", label: "库存预警与爆单" },
   ] },
   { key: "quality", label: "质量与合规", children: [{ key: "/quality", label: "质量与合规" }] },
   { key: "npd", label: "新品开发", children: [
@@ -113,7 +114,7 @@ const LEGACY_MENU_ROLES: Record<string, string[]> = {
 
 const LEGACY_REPORT_GROUPS: Record<string, string> = {
   "/replenish": "planning", "/replenish/versions": "planning", "/replenish/sop": "planning",
-  "/cockpit": "analytics", "/report/dashboard": "analytics", "/report/decision-studio": "analytics", "/report/sales-bridge": "analytics",
+  "/cockpit": "analytics", "/inventory/alerts": "inventory", "/report/dashboard": "analytics", "/report/decision-studio": "analytics", "/report/sales-bridge": "analytics",
   "/report/funnel": "analytics", "/report/inventory-analytics": "analytics", "/report/process-mining": "analytics",
   "/report/demand": "planning", "/report/risk": "planning", "/report/segmentation": "planning",
   "/report/closed-loop": "planning", "/report/auto-replenish": "planning", "/report/material-demand": "planning",
@@ -136,6 +137,7 @@ const LEGACY_PALETTE_HREFS = [
   "/admin/params", "/admin/health",
   // 2026-09-03 总监需求 W2-A 新增（D51/D52）
   "/inventory/position",
+  "/inventory/alerts",
   "/cockpit",
 ];
 

@@ -17,8 +17,9 @@ describe("驾驶舱四屏装配", () => {
       expect(Object.keys(a.screens)).toEqual(["sources", "alerts", "inventory", "ops"]);
       expect(a.screens.sources.position.state).toBe("ready");
       expect(a.screens.sources.dataSources.state).toBe("ready");
-      expect(a.screens.alerts.inventoryAlerts.state).toBe("pending_domain");
-      expect(a.screens.alerts.salesSpike.state).toBe("pending_domain");
+      expect(["ready", "insufficient"]).toContain(a.screens.alerts.inventoryAlerts.state);
+      expect(["ready", "insufficient"]).toContain(a.screens.alerts.salesSpike.state);
+      expect(a.screens.alerts.orders.state).toBe("pending_domain");
       expect(a.screens.inventory.transferLanes.state).toBe("pending_domain");
       expect(a.screens.ops.todo.state).toBe("pending_domain");
       expect(a.screens.ops.conclusions).toHaveLength(4);

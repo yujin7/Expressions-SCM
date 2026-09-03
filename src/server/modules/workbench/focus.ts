@@ -274,6 +274,13 @@ export async function computeExceptions(db: AnyDb): Promise<ExceptionItem[]> {
   const docAging = await countWhere(db, schema.systemAlerts, and(eq(schema.systemAlerts.category, "doc_aging"), eq(schema.systemAlerts.status, "open")));
   if (docAging > 0) {
     out.push({ key: "doc_aging", severity: "high", title: "单据超时未流转", impact: `${docAging} 张单据停留超阈值`, count: docAging, href: "/alerts" });
+  // D56/D57：预警引擎投影的两类告警（同源计数，驾驶舱红卡与本处一致）
+  const [spikeOpen, coverOpen] = await Promise.all([
+    countWhere(db, schema.systemAlerts, and(eq(schema.systemAlerts.category, "sales_spike"), eq(schema.systemAlerts.status, "open"))),
+    countWhere(db, schema.systemAlerts, and(eq(schema.systemAlerts.category, "inventory_cover"), eq(schema.systemAlerts.status, "open"))),
+  ]);
+  if (spikeOpen > 0) out.push({ key: "sales_spike", severity: "critical", title: "爆单预警（观察口径）", impact: `${spikeOpen} 个链接/SKU 连续 3 天涨幅超阈值`, count: spikeOpen, href: "/inventory/alerts?tab=spike" });
+  if (coverOpen > 0) out.push({ key: "inventory_cover", severity: "high", title: "断货预警 S/A/B", impact: `${coverOpen} 个 SKU 可销天数低于阈值或已断货`, count: coverOpen, href: "/inventory/alerts?tab=cover" });
   }
 
   // 3) 参考数据过期（新鲜度看门狗）

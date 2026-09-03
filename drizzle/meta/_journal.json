@@ -337,6 +337,13 @@
       "when": 1788417183712,
       "tag": "0047_director_program",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1788447614331,
+      "tag": "0048_alert_engine",
+      "breakpoints": true
     }
   ]
 }

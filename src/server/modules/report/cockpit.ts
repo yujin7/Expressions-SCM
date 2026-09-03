@@ -15,6 +15,9 @@ import {
 import { loadInventorySalesRatio, type RatioMonthRow, type RatioTargets } from "@/server/modules/report/inventory-sales-ratio";
 import { countReviewItems } from "@/server/modules/review/checklist";
 import { computeExceptions, type ExceptionItem } from "@/server/modules/workbench/focus";
+import { countOpenAlerts } from "@/server/modules/alerts/engine";
+import { loadInventoryAlerts, type InventoryAlertRow, type InventoryAlertsReadModel } from "@/server/modules/report/inventory-alerts";
+import { loadSalesSpike, type SalesSpikeReadModel, type SpikeHit } from "@/server/modules/report/sales-spike";
 
 /**
  * 驾驶舱四屏装配（D50）。只读、只装配：每一块都来自已有的唯一权威读模型/服务，不在这里重算口径。
@@ -93,8 +96,8 @@ export interface CockpitData {
     };
     alerts: {
       redline: RedlineItem[];
-      inventoryAlerts: Block<null>;
-      salesSpike: Block<null>;
+      inventoryAlerts: Block<{ rows: InventoryAlertRow[]; totals: InventoryAlertsReadModel["totals"]; params: InventoryAlertsReadModel["params"]; limitations: string[] }>;
+      salesSpike: Block<{ hits: SpikeHit[]; unmappedHits: SpikeHit[]; anchorDate: string | null; coverage: SalesSpikeReadModel["coverage"]; params: SalesSpikeReadModel["params"]; openAlerts: number; unacked: number }>;
       orders: Block<null>;
     };
     inventory: {
@@ -154,7 +157,7 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
   const canSeeMoney = user.roles.some((r) => (PRICE_VISIBLE_ROLES as readonly string[]).includes(r));
   const isRestrictedOps = Array.isArray(user.channelScope) && user.channelScope.length > 0 && !user.roles.includes("admin");
 
-  const [posR, ratioR, readyR, excR, inboxR, reviewR, velR] = await Promise.allSettled([
+  const [posR, ratioR, readyR, excR, inboxR, reviewR, velR, alertsR, spikeR, spikeCountR, coverCountR] = await Promise.allSettled([
     loadInventoryPosition(db),
     canSeeMoney ? loadInventorySalesRatio(db) : Promise.resolve(null),
     loadDataSourceReadiness(db),
@@ -162,6 +165,10 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
     getInbox(user, db),
     countReviewItems(db),
     loadExternalVelocitySafe(db),
+    loadInventoryAlerts(db),
+    loadSalesSpike(db),
+    countOpenAlerts(db, "sales_spike"),
+    countOpenAlerts(db, "inventory_cover"),
   ]);
 
   /* ── 屏 1 ── */
@@ -239,11 +246,31 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
   /* ── 屏 2 ── */
   const exc = settled(excR);
   const excItems = exc.ok ? exc.value : [];
+  const spikeCount = settled(spikeCountR);
+  const coverCount = settled(coverCountR);
   const redline: RedlineItem[] = [
-    ...excItems.map((i) => ({ key: i.key, label: i.title, count: i.count, severity: i.severity, href: i.href })),
+    { key: "sales_spike", label: `爆单预警${spikeCount.ok && spikeCount.value.unacked ? `（未知悉 ${spikeCount.value.unacked}）` : ""}`, count: spikeCount.ok ? spikeCount.value.open : 0, severity: "critical", href: "/inventory/alerts?tab=spike" },
+    { key: "inventory_cover", label: "断货预警 S/A/B", count: coverCount.ok ? coverCount.value.open : 0, severity: severityOf(excItems, "inventory_cover") === "medium" ? "high" : severityOf(excItems, "inventory_cover"), href: "/inventory/alerts?tab=cover" },
+    ...excItems.filter((i) => i.key !== "sales_spike" && i.key !== "inventory_cover").map((i) => ({ key: i.key, label: i.title, count: i.count, severity: i.severity, href: i.href })),
   ];
-  if (!excItems.some((i) => i.key === "sales_spike")) redline.push({ key: "sales_spike", label: "爆单预警（待接入预警引擎）", count: 0, severity: severityOf(excItems, "sales_spike"), href: "/inventory/alerts?tab=spike" });
-  if (!excItems.some((i) => i.key === "inventory_cover")) redline.push({ key: "inventory_cover", label: "断货预警 S/A/B（待接入预警引擎）", count: 0, severity: "high", href: "/inventory/alerts?tab=cover" });
+  const alertsS = settled(alertsR);
+  const inventoryAlerts: CockpitData["screens"]["alerts"]["inventoryAlerts"] = alertsS.ok
+    ? {
+        state: alertsS.value.rows.length ? "ready" : "insufficient",
+        data: { rows: alertsS.value.rows.filter((r) => r.primary || r.status !== "ok").slice(0, 20), totals: alertsS.value.totals, params: alertsS.value.params, limitations: alertsS.value.limitations },
+        note: `成品 ${alertsS.value.totals.skus} 个：断货 ${alertsS.value.totals.outOfStock}、低于阈值 ${alertsS.value.totals.alert}、关注 ${alertsS.value.totals.watch}；只显示前 20 行`,
+        source: { tier: "observation", source: "inventory-alerts/v1（日销三口径并列；观察序列只预警不定量）", asOf: alertsS.value.builtAt },
+      }
+    : { state: "error", data: null, note: alertsS.error, source: { tier: "observation", source: "inventory-alerts/v1", asOf: null } };
+  const spikeS = settled(spikeR);
+  const salesSpike: CockpitData["screens"]["alerts"]["salesSpike"] = spikeS.ok
+    ? {
+        state: spikeS.value.state === "ready" ? "ready" : "insufficient",
+        data: { hits: spikeS.value.hits.slice(0, 10), unmappedHits: spikeS.value.unmappedHits.slice(0, 10), anchorDate: spikeS.value.anchorDate, coverage: spikeS.value.coverage, params: spikeS.value.params, openAlerts: spikeCount.ok ? spikeCount.value.open : 0, unacked: spikeCount.ok ? spikeCount.value.unacked : 0 },
+        note: spikeS.value.state === "ready" ? `规则：最近 ${spikeS.value.params.consecutiveDays} 天每日 ≥ 前 7 日日均 ×${(1 + spikeS.value.params.risePct / 100).toFixed(2)}，基线 ≥ ${spikeS.value.params.minBaseQty}` : spikeS.value.limitations[0] ?? "缺流",
+        source: { tier: "observation", source: "sales-spike/v1（简道云天猫日销，T+1）", asOf: spikeS.value.sourceAsOf ?? spikeS.value.builtAt },
+      }
+    : { state: "error", data: null, note: spikeS.error, source: { tier: "observation", source: "sales-spike/v1", asOf: null } };
 
   /* ── 屏 3 ── */
   const warehouses: CockpitData["screens"]["inventory"]["warehouses"] = pos.ok
@@ -296,8 +323,8 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
       sources: { position, ratio, salesAmount, dataSources },
       alerts: {
         redline,
-        inventoryAlerts: pending("库存预警表（等级 / 日销 7·15·30 / 可销天数 / 阈值 / 主预警）由预警引擎领域接入（D57）", "inventory-alerts/v1"),
-        salesSpike: pending("爆单预警（最近 3 天每日 ≥ 前 7 日日均 ×1.5）由预警引擎领域接入（D56）", "sales-spike/v1"),
+        inventoryAlerts,
+        salesSpike,
         orders: pending("已下单 / 已下单金额 / 订单至交付 / 成本下降 由采购指标领域接入（D63）", "purchase-order-metrics/v1"),
       },
       inventory: {

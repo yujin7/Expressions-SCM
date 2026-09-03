@@ -1,7 +1,4 @@
-import {
-  pgTable, serial, integer, text, timestamp, jsonb, unique, uniqueIndex, numeric, date, primaryKey, index, boolean, check,
-  type AnyPgColumn,
-} from "drizzle-orm/pg-core";
+import { boolean, check, date, index, integer, jsonb, numeric, pgTable, primaryKey, serial, text, timestamp, type AnyPgColumn, unique, uniqueIndex } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { approvalActionEnum, importStatusEnum, reconStatusEnum } from "./enums";
 import { users, skus } from "./masters";
@@ -382,4 +379,13 @@ export const systemAlerts = pgTable("system_alerts", {
   autoResolved: boolean("auto_resolved").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
-}, (t) => [index("ix_alert_status_cat").on(t.status, t.category)]);
+  // ── 预警引擎扩列（D56/D57，迁移 0048）：责任角色、动作链接、去重键、规则来源、参数快照、最近命中、已知悉 ──
+  ownerRole: text("owner_role"),
+  actionHref: text("action_href"),
+  dedupeKey: text("dedupe_key"),
+  sourceRule: text("source_rule"),
+  paramsSnapshot: jsonb("params_snapshot"),
+  lastHitAt: timestamp("last_hit_at", { withTimezone: true }),
+  ackedBy: integer("acked_by"),
+  ackedAt: timestamp("acked_at", { withTimezone: true }),
+}, (t) => [index("ix_alert_status_cat").on(t.status, t.category), index("ix_alert_dedupe").on(t.dedupeKey, t.status)]);

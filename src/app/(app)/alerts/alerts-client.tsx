@@ -14,6 +14,8 @@ const CAT: Record<string, string> = {
   integration_token: "凭据到期",
   job_failure: "任务失败",
   data_product_gate: "决策门禁降级",
+  inventory_cover: "断货预警",
+  sales_spike: "爆单预警",
 };
 const SEV: Record<string, string> = { high: "orange", medium: "gold" };
 
