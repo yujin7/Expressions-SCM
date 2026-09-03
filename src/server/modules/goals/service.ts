@@ -7,7 +7,8 @@
  *  - actual_source=auto：从**已登记读模型缓存**（report_read_model_cache）按**真实缓存键 + 真实 payload 路径**取值
  *      （键与路径见 AUTO_METRIC_SOURCES；键常量直接引用各读模型模块，口径升版 /vN 时随之变更，不再前缀猜测）：
  *      库存占比 inventorySalesRatio / 周转 turns / DIO dio / 账期达成率 paymentTermAttainment /
- *      账期类采购额占比 creditTermSpendShare / OTIF onTimeRate；
+ *      账期类采购额占比 creditTermSpendShare / OTIF onTimeRate / 销量一致率 salesConsistencyPct /
+ *      平台身份覆盖率 platformIdentityCoverage（分子÷分母）/ 降本额 costSavingYtd；
  *      取不到留 null（绝不编造），并在 DTO 里给出 autoStatus=unavailable 说明。
  *  - 达成度 goalAttainment：up = actual ÷ target；down = target ÷ actual；×100 保留 1 位（core/decimal，不用 float 运算）。
  */
@@ -23,6 +24,8 @@ import { dCmp, dDiv, dMul, dZero } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import type { AnyDb } from "@/server/core/svc";
 import { ApiError } from "@/server/modules/master/common";
+import { DATA_QUALITY_CACHE_KEY } from "@/server/modules/report/data-quality";
+import { EXTERNAL_VELOCITY_CACHE_KEY } from "@/server/modules/report/external-velocity";
 import { INVENTORY_SALES_RATIO_CACHE_KEY } from "@/server/modules/report/inventory-sales-ratio";
 import { PURCHASE_ORDER_METRICS_KEY } from "@/server/modules/report/purchase-order-metrics";
 import { SUPPLIER_PAYMENT_TERM_KEY } from "@/server/modules/report/supplier-payment-term";
@@ -50,6 +53,11 @@ export interface AutoMetricPath {
    * 月末口径指标（库存占比）用它，避免把"最新月"当成任意季度的实际值。
    */
   quarterMonths?: "latest";
+  /**
+   * 比率指标：payload 只有分子/分母而没有现成比例时，用 `path ÷ divideBy`（分母路径同语法）；
+   * 分母取不到或为 0 → 该路径不命中（不编造）。与 scale 叠加时先除后乘。
+   */
+  divideBy?: string;
 }
 
 export interface AutoMetricSource {
@@ -112,6 +120,31 @@ export const AUTO_METRIC_SOURCES: readonly AutoMetricSource[] = [
     cacheKey: PURCHASE_ORDER_METRICS_KEY,
     // PurchaseOrderMetrics.summary.otif.rate 为 0–1 比例（年度累计）；payload.year 必须等于期间年份
     paths: [{ path: "summary.otif.rate", periodYearField: "year", scale: 100 }],
+    defaultDirection: "up",
+  },
+  /* ── BI 深化补入（路径均按读模型 TypeScript 类型核对） ── */
+  {
+    metricKey: "salesConsistencyPct",
+    label: "销量口径一致率",
+    cacheKey: DATA_QUALITY_CACHE_KEY,
+    // DataQualityReport.salesConsistency.consistencyPct 已是百分比（null = 不足）
+    paths: [{ path: "salesConsistency.consistencyPct" }],
+    defaultDirection: "up",
+  },
+  {
+    metricKey: "platformIdentityCoverage",
+    label: "平台身份覆盖率",
+    cacheKey: EXTERNAL_VELOCITY_CACHE_KEY,
+    // ExternalVelocity.coverage.{mappedPlatformSkus, platformSkus} 只有分子/分母：÷ 后 ×100 折百分比
+    paths: [{ path: "coverage.mappedPlatformSkus", divideBy: "coverage.platformSkus", scale: 100 }],
+    defaultDirection: "up",
+  },
+  {
+    metricKey: "costSavingYtd",
+    label: "降本额（YTD）",
+    cacheKey: PURCHASE_ORDER_METRICS_KEY,
+    // PurchaseOrderMetrics.summary.costSaving.savingYtd（scale 2 金额字符串，年度累计）；payload.year 防串年
+    paths: [{ path: "summary.costSaving.savingYtd", periodYearField: "year" }],
     defaultDirection: "up",
   },
 ];
@@ -295,9 +328,16 @@ export function extractAutoValue(payload: unknown, period: string, paths: readon
     }
     const periods = p.quarterMonths === "latest" && !isMonth ? quarterMonthsOf(period).reverse() : [period];
     for (const per of periods) {
-      const raw = readPayloadPath(payload, p.path, per);
+      let raw = readPayloadPath(payload, p.path, per);
       if (raw == null) continue;
-      return { value: p.scale ? dMul(raw, p.scale, 4) : raw, path: per === period ? p.path : p.path.replace("$period", per) };
+      let pathUsed = p.path;
+      if (p.divideBy) {
+        const den = readPayloadPath(payload, p.divideBy, per);
+        if (den == null || dZero(den)) continue;
+        raw = dDiv(raw, den, 6);
+        pathUsed = `${p.path}÷${p.divideBy}`;
+      }
+      return { value: p.scale ? dMul(raw, p.scale, 4) : raw, path: per === period ? pathUsed : pathUsed.replace(/\$period/g, per) };
     }
   }
   return null;

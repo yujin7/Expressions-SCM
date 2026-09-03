@@ -823,6 +823,43 @@ Object.assign(METRICS, {
     unit: "days",
     tier: "derived",
     caveat: "窗口内零出库时为空（不用假数字表达「永远卖不完」）；快照仓不计算",
+  /* ── 驾驶舱趋势与交叉块（BI 深化：告警生命周期 / 渠道观察矩阵） ── */
+  },
+  alertTimeToAck: {
+    id: "alertTimeToAck",
+    label: "告警知悉时长",
+    short: "系统告警从产生到有人点「已知悉」的中位小时数",
+    formula: "median(acked_at − created_at)，只算近 90 天创建且已知悉的告警",
+    unit: "hours",
+    tier: "ledger",
+    caveat: "知悉不改变告警状态（ack ≠ 关闭）；未知悉的告警不进样本，所以样本少时不代表处理快",
+  },
+  alertTimeToResolve: {
+    id: "alertTimeToResolve",
+    label: "告警关闭时长",
+    short: "系统告警从产生到关闭的中位小时数，自动关闭与人工关闭分开计数",
+    formula: "median(resolved_at − created_at)，只算近 90 天创建且已关闭的告警；自动关闭 = 引擎迟滞关闭（auto_resolved）",
+    unit: "hours",
+    tier: "ledger",
+    caveat: "自动关闭只说明命中消失，不说明有人处理过；开放告警按年龄分桶另列，不进中位数",
+  },
+  alertRecurrence: {
+    id: "alertRecurrence",
+    label: "告警复发",
+    short: "同一规则对同一去重键反复开告警的次数",
+    formula: "count(*) GROUP BY source_rule, dedupe_key HAVING count ≥ 2",
+    unit: "count",
+    tier: "ledger",
+    caveat: "高复发更可能是阈值/规则问题而不是真实风险；只提示，不自动改参数",
+  },
+  channelBrandUnits: {
+    id: "channelBrandUnits",
+    label: "品牌 × 平台件数",
+    short: "近 30 天各平台按品牌归属的观察件数，平台之间口径不同、并列不相加",
+    formula: "天猫 = 支付件数 − 成功退款子订单；拼多多 = 有效订单件数；唯品会 = 销售量；品牌归属 = 已映射 SKU > 店铺档案 > 店铺名回退",
+    unit: "qty",
+    tier: "registry",
+    caveat: "跨平台合计只用于排序不作为总量；店铺名回退归属是猜测，猜测占比随行标注；观察数据不进过账、不进补货",
   },
 });
 

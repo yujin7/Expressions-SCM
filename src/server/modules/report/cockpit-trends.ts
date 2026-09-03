@@ -1,0 +1,737 @@
+import { sql } from "drizzle-orm";
+import * as schema from "@/db/schema";
+import { and, inArray, type SQL } from "drizzle-orm";
+import { PRICE_VISIBLE_ROLES, ROLES } from "@/server/core/constants";
+import { resolveChannelScope, resolveDeptScope } from "@/server/core/data-scope";
+import { dAdd, dCmp } from "@/server/core/decimal";
+import type { SessionUser } from "@/server/core/dto";
+import { getNumParam } from "@/server/core/params";
+import { resolveDb, type AnyDb } from "@/server/core/svc";
+import { momPct } from "@/server/rules/period-compare";
+import type { Tier } from "@/server/rules/abc";
+import type { Block, CockpitSource } from "@/server/modules/report/cockpit";
+import { loadChannelObservation, filterShopRowsByChannelScope, loadShopChannelMap, type BrandPlatformRow, type ChannelPlatform } from "@/server/modules/report/channel-observation";
+import { loadJiandaoyunExternalDemandSignal, type RollingDemandBrief, type RollingDemandWindow } from "@/server/modules/report/external-demand-signal";
+import { loadExternalVelocitySafe } from "@/server/modules/report/external-velocity";
+import { loadInventoryAlerts } from "@/server/modules/report/inventory-alerts";
+import { loadInventoryPosition, todayShanghai, type DailyPoint } from "@/server/modules/report/inventory-position";
+import { loadPurchaseOrderMetrics, stripPurchaseOrderMoney, type OtifStats, type PurchaseOrderMetrics } from "@/server/modules/report/purchase-order-metrics";
+import { loadWarehouseInventory, WAREHOUSE_WINDOWS, type WarehouseInventoryModel } from "@/server/modules/report/warehouse-inventory";
+import { getTodoStats, monthShanghai, type TodoStatsRow } from "@/server/modules/todo/stats";
+import { computeAttainment, isAttained, type GoalDirection } from "@/server/modules/goals/service";
+import { METRICS } from "@/components/metrics";
+
+/**
+ * 驾驶舱「趋势与交叉」补充装配（BI 深化，独立于 cockpit.ts 的四屏主装配）。
+ *
+ * 只装配、不重算口径：每块都取自已有的唯一权威读模型 / 服务，块状态沿用 cockpit.ts 的五态；
+ * 金额在本层按 PRICE_VISIBLE_ROLES 剥离（路由出口再经 maskSensitive 兜底）；
+ * 观察类序列（简道云）只给方向与百分比，绝不下发可被误当作数量的件数；
+ * 受限渠道账号（D62）不下发跨店铺聚合的外部观察，只给按渠道映射裁剪后的店铺行。
+ *
+ * 块清单（对应 BI 审计编号）：
+ *  屏1 dailyFlow（#1）；屏2 poTrend（#2）/ externalDemand（#3）/ quadrant（#4）；屏3 turnoverWindows（#7）；
+ *  屏4 todoThroughput（#12）/ alertLifecycle（#6）/ goalHistory（#8 历史）；渠道观察 brandMatrix（#9）。
+ */
+
+export const COCKPIT_TRENDS_CALIBRE = "cockpit-trends/v1";
+
+export type TrendScreen = "s1" | "s2" | "s3" | "s4" | "channels";
+
+/* ───────────────────────── 屏1 · 日级出入库 ───────────────────────── */
+
+export interface DailyFlowPoint {
+  date: string;
+  /** 实时仓（流水口径；null = 该日无账期覆盖） */
+  realtimeIn: string | null;
+  realtimeOut: string | null;
+  /** 快照仓差分（落在后一快照日；null = 无快照可差分）——与实时序列并列，绝不相加 */
+  snapshotIn: string | null;
+  snapshotOut: string | null;
+  snapshotSpanDays: number | null;
+}
+
+export interface WowDelta {
+  state: "ready" | "insufficient";
+  /** 最近 7 个有账日 vs 之前 7 个有账日的出库合计（decimal 字符串） */
+  currentOut: string | null;
+  previousOut: string | null;
+  currentDays: number;
+  previousDays: number;
+  /** (current − previous) ÷ previous × 100；上期为 0 或天数不足 → null */
+  pct: number | null;
+  note: string;
+}
+
+export interface DailyFlowBlock {
+  points: DailyFlowPoint[];
+  windowFrom: string | null;
+  windowTo: string | null;
+  wow: { realtime: WowDelta; snapshot: WowDelta };
+  metricIds: readonly ["dailyInOut"];
+}
+
+function wowOf(days: { date: string; out: string | null }[], label: string): WowDelta {
+  const withData = days.filter((d) => d.out != null);
+  const current = withData.slice(-7);
+  const previous = withData.slice(-14, -7);
+  if (current.length < 7 || previous.length < 7) {
+    return {
+      state: "insufficient", currentOut: null, previousOut: null, currentDays: current.length, previousDays: previous.length, pct: null,
+      note: `${label}当月至今有账 ${withData.length} 天，不足 14 天不做周环比（日级序列只覆盖当月）`,
+    };
+  }
+  const sum = (rows: { out: string | null }[]) => rows.reduce((acc, r) => dAdd(acc, r.out ?? "0", 4), "0.0000");
+  const currentOut = sum(current);
+  const previousOut = sum(previous);
+  return {
+    state: "ready", currentOut, previousOut, currentDays: 7, previousDays: 7,
+    pct: momPct(currentOut, previousOut),
+    note: `${label}最近 7 个有账日出库 vs 之前 7 个有账日（${previous[0]?.date} → ${current[current.length - 1]?.date}）`,
+  };
+}
+
+export function buildDailyFlow(daily: DailyPoint[]): DailyFlowBlock {
+  const points: DailyFlowPoint[] = daily.map((d) => ({
+    date: d.date,
+    realtimeIn: d.realtime?.in ?? null,
+    realtimeOut: d.realtime?.out ?? null,
+    snapshotIn: d.snapshot?.in ?? null,
+    snapshotOut: d.snapshot?.out ?? null,
+    snapshotSpanDays: d.snapshot?.maxSpanDays ?? null,
+  }));
+  return {
+    points,
+    windowFrom: points[0]?.date ?? null,
+    windowTo: points[points.length - 1]?.date ?? null,
+    wow: {
+      realtime: wowOf(points.map((p) => ({ date: p.date, out: p.realtimeOut })), "实时仓"),
+      snapshot: wowOf(points.map((p) => ({ date: p.date, out: p.snapshotOut })), "快照仓"),
+    },
+    metricIds: ["dailyInOut"],
+  };
+}
+
+/* ───────────────────────── 屏2 · 采购订单月趋势 ───────────────────────── */
+
+export interface PoTrendPoint {
+  month: string;
+  poCount: number;
+  lineCount: number;
+  orderedBaseQty: string;
+  /** 未税金额（非价格角色 null） */
+  netAmount: string | null;
+  /** 当月（进行中，结构性偏低）——前端置灰 */
+  isCurrent: boolean;
+  /** 来自历史年份即时计算（非缓存） */
+  fromHistoryYear: boolean;
+}
+
+export interface PoTrendBlock {
+  points: PoTrendPoint[];
+  moneyVisible: boolean;
+  /** OTIF 只有年度累计口径（读模型 byMonth 不含逐月 OTIF）；随值给出可评 n */
+  otifYtd: OtifStats & { year: number };
+  cycle: { p50: number | null; p90: number | null; samples: number; insufficient: boolean };
+  metricIds: readonly ["poOrderedQty", "supplierOtif", "poOrderToDeliveryDays"];
+}
+
+export function buildPoTrend(current: PurchaseOrderMetrics, previousYear: PurchaseOrderMetrics | null, roles: string[]): PoTrendBlock {
+  const cur = stripPurchaseOrderMoney(current, roles);
+  const prev = previousYear ? stripPurchaseOrderMoney(previousYear, roles) : null;
+  const rows: PoTrendPoint[] = [
+    ...(prev?.byMonth ?? []).map((m) => ({ month: m.month, poCount: m.poCount, lineCount: m.lineCount, orderedBaseQty: m.orderedBaseQty, netAmount: m.netAmount, isCurrent: false, fromHistoryYear: true })),
+    ...cur.byMonth.map((m) => ({ month: m.month, poCount: m.poCount, lineCount: m.lineCount, orderedBaseQty: m.orderedBaseQty, netAmount: m.netAmount, isCurrent: m.month === cur.month, fromHistoryYear: false })),
+  ].sort((a, b) => a.month.localeCompare(b.month));
+  const points = rows.slice(-12);
+  return {
+    points,
+    moneyVisible: cur.moneyVisible,
+    otifYtd: { ...cur.summary.otif, year: cur.year },
+    cycle: { p50: cur.summary.cycle.firstP50, p90: cur.summary.cycle.firstP90, samples: cur.summary.cycle.n, insufficient: cur.summary.cycle.insufficient },
+    metricIds: ["poOrderedQty", "supplierOtif", "poOrderToDeliveryDays"],
+  };
+}
+
+/* ───────────────────────── 屏2 · 外部需求 7 日环比简报 ───────────────────────── */
+
+export interface DemandWindowDto {
+  startDate: string | null;
+  endDate: string | null;
+  observedDays: number;
+  requiredDays: number;
+  refundRatePct: number | null;
+  mappedPaidCoveragePct: number | null;
+}
+
+export interface ExternalDemandBriefBlock {
+  authority: "observation_only";
+  platform: "天猫";
+  anchorDate: string | null;
+  gate: string;
+  current: DemandWindowDto;
+  previous: DemandWindowDto;
+  /** 只下发方向与百分比，不下发件数（观察数据只预警不定量，D55） */
+  change: RollingDemandBrief["change"];
+  movement: RollingDemandBrief["movement"];
+  metricIds: readonly ["externalNetDemand", "refundRate"];
+}
+
+const windowDto = (w: RollingDemandWindow): DemandWindowDto => ({
+  startDate: w.startDate, endDate: w.endDate, observedDays: w.observedDays, requiredDays: w.requiredDays,
+  refundRatePct: w.refundRatePct, mappedPaidCoveragePct: w.mappedPaidCoveragePct,
+});
+
+export function buildExternalDemandBrief(brief: RollingDemandBrief): { block: ExternalDemandBriefBlock; sufficient: boolean } {
+  const sufficient = brief.state === "ready"
+    && brief.current.observedDays >= brief.current.requiredDays
+    && brief.previous.observedDays >= brief.previous.requiredDays;
+  return {
+    sufficient,
+    block: {
+      authority: "observation_only", platform: "天猫", anchorDate: brief.anchorDate, gate: brief.gate,
+      current: windowDto(brief.current), previous: windowDto(brief.previous),
+      change: brief.change, movement: brief.movement,
+      metricIds: ["externalNetDemand", "refundRate"],
+    },
+  };
+}
+
+/* ───────────────────────── 屏2 · 可销天数 × 外部销速象限 ───────────────────────── */
+
+export type Quadrant = "stockout_risk" | "writeoff_risk" | "healthy" | "watch";
+
+export interface QuadrantPoint {
+  skuId: number;
+  code: string;
+  brand: string | null;
+  tier: Tier | null;
+  /** 在库可销天数（按主日销；null = 无动销 → 视为无限） */
+  coverDays: number | null;
+  alertDays: number;
+  onHand: string;
+  /** 外部观察净件数（天猫，近 30 天）——观察口径，只用于定位象限 */
+  tmallNet30: number;
+  activeDays90: number;
+  quadrant: Quadrant;
+}
+
+export interface QuadrantBlock {
+  axis: { x: string; y: string };
+  thresholds: { slowDays: number };
+  counts: Record<Quadrant, number>;
+  points: QuadrantPoint[];
+  coverage: { alertRows: number; mappedRows: number; unmappedRows: number };
+  pddIncluded: false;
+  metricIds: readonly ["daysCover", "externalNetDemand"];
+}
+
+export function buildQuadrant(
+  alerts: { rows: { skuId: number; code: string; brand: string | null; tier: Tier | null; coverDays: number | null; alertDays: number; onHand: string; priorityScore: string }[] },
+  velocity: { bySku: Record<string, { tmallNet30: number; activeDays90: number; platformSkus: number }> },
+  slowDays: number,
+): QuadrantBlock {
+  const counts: Record<Quadrant, number> = { stockout_risk: 0, writeoff_risk: 0, healthy: 0, watch: 0 };
+  const points: QuadrantPoint[] = [];
+  let unmapped = 0;
+  for (const r of alerts.rows) {
+    const v = velocity.bySku[String(r.skuId)];
+    if (!v || v.platformSkus <= 0) { unmapped++; continue; } // 未映射 SKU 排除，不按 0 处理
+    const hot = v.tmallNet30 > 0;
+    const thin = r.coverDays != null && r.coverDays <= r.alertDays;
+    const long = r.coverDays == null ? dCmp(r.onHand, 0) > 0 : r.coverDays >= slowDays;
+    const quadrant: Quadrant = thin && hot ? "stockout_risk" : long && !hot ? "writeoff_risk" : hot ? "healthy" : "watch";
+    counts[quadrant]++;
+    points.push({ skuId: r.skuId, code: r.code, brand: r.brand, tier: r.tier, coverDays: r.coverDays, alertDays: r.alertDays, onHand: r.onHand, tmallNet30: v.tmallNet30, activeDays90: v.activeDays90, quadrant });
+  }
+  const order: Record<Quadrant, number> = { stockout_risk: 0, writeoff_risk: 1, healthy: 2, watch: 3 };
+  points.sort((a, b) => order[a.quadrant] - order[b.quadrant] || b.tmallNet30 - a.tmallNet30);
+  return {
+    axis: { x: "在库可销天数", y: "外部观察净件数（天猫）" },
+    thresholds: { slowDays },
+    counts,
+    points: points.slice(0, 200),
+    coverage: { alertRows: alerts.rows.length, mappedRows: points.length, unmappedRows: unmapped },
+    pddIncluded: false,
+    metricIds: ["daysCover", "externalNetDemand"],
+  };
+}
+
+/* ───────────────────────── 屏3 · 三窗口周转 ───────────────────────── */
+
+export interface TurnoverWindowCell {
+  windowDays: number;
+  windowStart: string;
+  outboundQty: string | null;
+  turns: number | null;
+  dio: number | null;
+  /** 窗口数据不足时压制（不显示离谱数字） */
+  suppressed: boolean;
+  reason: string | null;
+}
+
+export interface TurnoverWindowRow {
+  warehouseId: number;
+  code: string;
+  name: string;
+  regionCode: string;
+  onHand: string;
+  windows: TurnoverWindowCell[];
+}
+
+export interface TurnoverWindowsBlock {
+  windows: number[];
+  summary: TurnoverWindowCell[];
+  rows: TurnoverWindowRow[];
+  ledgerFirstDay: string | null;
+  metricIds: readonly ["warehouseTurns", "warehouseDio"];
+}
+
+function cellOf(windowDays: number, windowStart: string, outboundQty: string | null, turns: number | null, dio: number | null, ledgerFirstDay: string | null): TurnoverWindowCell {
+  if (turns == null) return { windowDays, windowStart, outboundQty, turns: null, dio: null, suppressed: true, reason: "窗口内零出库或不可计算" };
+  if (ledgerFirstDay != null && ledgerFirstDay > windowStart) {
+    return { windowDays, windowStart, outboundQty, turns: null, dio: null, suppressed: true, reason: `流水最早日 ${ledgerFirstDay} 晚于窗口起点，窗口覆盖不完整` };
+  }
+  return { windowDays, windowStart, outboundQty, turns, dio, suppressed: false, reason: null };
+}
+
+export function buildTurnoverWindows(models: WarehouseInventoryModel[], ledgerFirstDay: string | null): TurnoverWindowsBlock {
+  const sorted = [...models].sort((a, b) => a.windowDays - b.windowDays);
+  const byWh = new Map<number, TurnoverWindowRow>();
+  for (const m of sorted) {
+    for (const r of m.rows) {
+      if (r.accountingMode !== "realtime" || !r.active) continue; // 快照仓无流水不计算
+      const row = byWh.get(r.warehouseId) ?? { warehouseId: r.warehouseId, code: r.code, name: r.name, regionCode: r.regionCode, onHand: r.onHand, windows: [] };
+      row.windows.push(cellOf(m.windowDays, m.windowStart, r.outboundQty, r.turns, r.dio, ledgerFirstDay));
+      byWh.set(r.warehouseId, row);
+    }
+  }
+  return {
+    windows: sorted.map((m) => m.windowDays),
+    summary: sorted.map((m) => cellOf(m.windowDays, m.windowStart, m.summary.outboundQty, m.summary.turns, m.summary.dio, ledgerFirstDay)),
+    rows: [...byWh.values()].sort((a, b) => a.regionCode.localeCompare(b.regionCode) || a.code.localeCompare(b.code)),
+    ledgerFirstDay,
+    metricIds: ["warehouseTurns", "warehouseDio"],
+  };
+}
+
+/* ───────────────────────── 屏4 · 待办吞吐 ───────────────────────── */
+
+export interface TodoThroughputBlock {
+  months: string[];
+  roles: string[];
+  rows: TodoStatsRow[];
+  caliber: string;
+  metricIds: readonly ["todoCompletionRate"];
+}
+
+/* ───────────────────────── 屏4 · 告警生命周期 ───────────────────────── */
+
+export interface AlertAgeBucket { key: string; label: string; count: number }
+
+export interface AlertLifecycleBlock {
+  total: number;
+  open: { total: number; unacked: number; buckets: AlertAgeBucket[] };
+  /** 中位时长（小时，1 位小数）；样本 0 → null。知悉与关闭分开：ack 不改 status */
+  latency: { windowDays: number; ackP50Hours: number | null; ackSamples: number; resolveP50Hours: number | null; resolveSamples: number };
+  resolution: { auto: number; manual: number };
+  byRule: { sourceRule: string; total: number; open: number; autoResolved: number }[];
+  recurrence: { sourceRule: string; dedupeKey: string; times: number; lastHitAt: string | null; open: boolean }[];
+  metricIds: readonly ["alertTimeToAck", "alertTimeToResolve", "alertRecurrence"];
+}
+
+const AGE_BUCKETS: { key: string; label: string; from: number | null; to: number | null }[] = [
+  { key: "d1", label: "≤1 天", from: null, to: 1 },
+  { key: "d3", label: "1–3 天", from: 1, to: 3 },
+  { key: "d7", label: "3–7 天", from: 3, to: 7 },
+  { key: "d30", label: "7–30 天", from: 7, to: 30 },
+  { key: "d30p", label: ">30 天", from: 30, to: null },
+];
+const LATENCY_WINDOW_DAYS = 90;
+
+function rowsOf<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  const rows = (result as { rows?: unknown } | null)?.rows;
+  return Array.isArray(rows) ? (rows as T[]) : [];
+}
+const n0 = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+const h1 = (v: unknown): number | null => { if (v == null) return null; const n = Number(v); return Number.isFinite(n) ? Math.round(n * 10) / 10 : null; };
+
+export async function loadAlertLifecycle(db: AnyDb): Promise<AlertLifecycleBlock> {
+  const bucketCols = AGE_BUCKETS.map((b) => sql.raw(
+    `count(*) filter (where status = 'open'${b.from == null ? "" : ` and created_at <= now() - interval '${b.from} days'`}${b.to == null ? "" : ` and created_at > now() - interval '${b.to} days'`})::int AS ${b.key}`,
+  ));
+  const [agg] = rowsOf<Record<string, unknown>>(await db.execute(sql`
+    SELECT count(*)::int AS total,
+           count(*) filter (where status = 'open')::int AS open_total,
+           count(*) filter (where status = 'open' and acked_at is null)::int AS open_unacked,
+           ${sql.join(bucketCols, sql`, `)},
+           count(*) filter (where acked_at is not null and created_at >= now() - interval '${sql.raw(String(LATENCY_WINDOW_DAYS))} days')::int AS ack_samples,
+           percentile_cont(0.5) within group (order by extract(epoch from (acked_at - created_at)) / 3600.0)
+             filter (where acked_at is not null and created_at >= now() - interval '${sql.raw(String(LATENCY_WINDOW_DAYS))} days') AS ack_p50_h,
+           count(*) filter (where status = 'resolved' and resolved_at is not null and created_at >= now() - interval '${sql.raw(String(LATENCY_WINDOW_DAYS))} days')::int AS resolve_samples,
+           percentile_cont(0.5) within group (order by extract(epoch from (resolved_at - created_at)) / 3600.0)
+             filter (where status = 'resolved' and resolved_at is not null and created_at >= now() - interval '${sql.raw(String(LATENCY_WINDOW_DAYS))} days') AS resolve_p50_h,
+           count(*) filter (where status = 'resolved' and auto_resolved)::int AS auto_resolved,
+           count(*) filter (where status = 'resolved' and not auto_resolved)::int AS manual_resolved
+    FROM system_alerts
+  `));
+  const byRule = rowsOf<Record<string, unknown>>(await db.execute(sql`
+    SELECT coalesce(source_rule, category) AS source_rule,
+           count(*)::int AS total,
+           count(*) filter (where status = 'open')::int AS open,
+           count(*) filter (where status = 'resolved' and auto_resolved)::int AS auto_resolved
+    FROM system_alerts GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20
+  `));
+  const recurrence = rowsOf<Record<string, unknown>>(await db.execute(sql`
+    SELECT coalesce(source_rule, category) AS source_rule, dedupe_key, count(*)::int AS times,
+           max(coalesce(last_hit_at, created_at))::text AS last_hit_at,
+           bool_or(status = 'open') AS is_open
+    FROM system_alerts WHERE dedupe_key IS NOT NULL
+    GROUP BY 1, 2 HAVING count(*) >= 2 ORDER BY 3 DESC, 4 DESC LIMIT 10
+  `));
+  return {
+    total: n0(agg?.total),
+    open: { total: n0(agg?.open_total), unacked: n0(agg?.open_unacked), buckets: AGE_BUCKETS.map((b) => ({ key: b.key, label: b.label, count: n0(agg?.[b.key]) })) },
+    latency: { windowDays: LATENCY_WINDOW_DAYS, ackP50Hours: h1(agg?.ack_p50_h), ackSamples: n0(agg?.ack_samples), resolveP50Hours: h1(agg?.resolve_p50_h), resolveSamples: n0(agg?.resolve_samples) },
+    resolution: { auto: n0(agg?.auto_resolved), manual: n0(agg?.manual_resolved) },
+    byRule: byRule.map((r) => ({ sourceRule: String(r.source_rule ?? ""), total: n0(r.total), open: n0(r.open), autoResolved: n0(r.auto_resolved) })),
+    recurrence: recurrence.map((r) => ({ sourceRule: String(r.source_rule ?? ""), dedupeKey: String(r.dedupe_key ?? ""), times: n0(r.times), lastHitAt: r.last_hit_at == null ? null : String(r.last_hit_at), open: Boolean(r.is_open) })),
+    metricIds: ["alertTimeToAck", "alertTimeToResolve", "alertRecurrence"],
+  };
+}
+
+/* ───────────────────────── 屏4 · 目标达成历史 ───────────────────────── */
+
+export interface GoalHistoryPoint {
+  period: string;
+  targetValue: string;
+  actualValue: string | null;
+  actualSource: "auto" | "manual" | null;
+  attainment: string | null;
+  attained: boolean | null;
+}
+
+export interface GoalHistorySeries {
+  deptKey: string;
+  metricKey: string;
+  metricLabel: string;
+  unit: string | null;
+  direction: GoalDirection;
+  periodKind: "month" | "quarter";
+  points: GoalHistoryPoint[];
+}
+
+export interface GoalHistoryBlock {
+  periodsPerSeries: 6;
+  series: GoalHistorySeries[];
+  metricIds: readonly ["goalAttainment"];
+}
+
+export async function loadGoalHistory(db: AnyDb, user: SessionUser): Promise<GoalHistoryBlock> {
+  const scope = resolveDeptScope(user, null);
+  const clauses: SQL[] = [];
+  if (scope.deptKeys) clauses.push(inArray(schema.departmentGoals.deptKey, scope.deptKeys));
+  const q = db.select().from(schema.departmentGoals);
+  const raw: (typeof schema.departmentGoals.$inferSelect)[] = await (clauses.length ? q.where(and(...clauses)) : q);
+  const groups = new Map<string, GoalHistorySeries>();
+  for (const r of raw) {
+    const periodKind: "month" | "quarter" = r.period.includes("Q") ? "quarter" : "month";
+    const key = `${r.deptKey}|${r.metricKey}|${periodKind}`;
+    const direction = r.direction as GoalDirection;
+    const s = groups.get(key) ?? {
+      deptKey: r.deptKey, metricKey: r.metricKey, metricLabel: METRICS[r.metricKey]?.label ?? r.metricKey, unit: METRICS[r.metricKey]?.unit ?? null,
+      direction, periodKind, points: [],
+    };
+    s.points.push({
+      period: r.period, targetValue: r.targetValue, actualValue: r.actualValue, actualSource: (r.actualSource as "auto" | "manual" | null) ?? null,
+      attainment: computeAttainment(r.targetValue, r.actualValue, direction), attained: isAttained(r.targetValue, r.actualValue, direction),
+    });
+    groups.set(key, s);
+  }
+  const series = [...groups.values()]
+    .map((s) => ({ ...s, points: s.points.sort((a, b) => a.period.localeCompare(b.period)).slice(-6) }))
+    .filter((s) => s.points.length >= 2) // 单期不成历史
+    .sort((a, b) => a.deptKey.localeCompare(b.deptKey) || a.metricKey.localeCompare(b.metricKey) || a.periodKind.localeCompare(b.periodKind))
+    .slice(0, 24);
+  return { periodsPerSeries: 6, series, metricIds: ["goalAttainment"] };
+}
+
+/* ───────────────────────── 渠道观察 · 品牌 × 平台 ───────────────────────── */
+
+export interface ChannelPlatformSummary {
+  platform: ChannelPlatform;
+  state: "ready" | "insufficient";
+  grain: string;
+  sourceAsOf: string | null;
+  anchorDate: string | null;
+  units: number | null;
+  /** 金额（非价格角色 null；拼多多无金额字段） */
+  amount: string | null;
+  refundUnits: number | null;
+  attribution: { mappedSku: number; shopMaster: number; nameGuess: number; unattributed: number };
+  /** 店铺名回退归属占件数比例（%）——猜测比例越高，品牌行越不可靠 */
+  nameGuessSharePct: number | null;
+  gate: string;
+}
+
+export interface ChannelShopRow {
+  platform: ChannelPlatform;
+  shop: string;
+  units: number;
+  amount: string | null;
+}
+
+export interface ChannelMatrixBlock {
+  authority: "observation_only";
+  windowDays: number;
+  scope: { forced: boolean; channelIds: number[] | null };
+  /** 受限渠道账号不下发跨店铺品牌矩阵（null） */
+  platforms: ChannelPlatformSummary[] | null;
+  brandMatrix: BrandPlatformRow[] | null;
+  /** 店铺行：受限账号按人工登记的店铺→渠道映射裁剪，未映射店铺一律剔除 */
+  shops: ChannelShopRow[];
+  unmappedShops: number;
+  limitations: string[];
+  metricIds: readonly ["channelBrandUnits", "platformIdentityCoverage"];
+}
+
+/* ───────────────────────── 装配 ───────────────────────── */
+
+export interface CockpitTrendsData {
+  generatedAt: string;
+  today: string;
+  calibreVersion: typeof COCKPIT_TRENDS_CALIBRE;
+  screens: {
+    s1: { dailyFlow: Block<DailyFlowBlock> };
+    s2: { poTrend: Block<PoTrendBlock>; externalDemand: Block<ExternalDemandBriefBlock>; quadrant: Block<QuadrantBlock> };
+    s3: { turnoverWindows: Block<TurnoverWindowsBlock> };
+    s4: { todoThroughput: Block<TodoThroughputBlock>; alertLifecycle: Block<AlertLifecycleBlock>; goalHistory: Block<GoalHistoryBlock> };
+    channels: { brandMatrix: Block<ChannelMatrixBlock> };
+  };
+  limitations: string[];
+}
+
+function settled<T>(r: PromiseSettledResult<T>): { ok: true; value: T } | { ok: false; error: string } {
+  return r.status === "fulfilled" ? { ok: true, value: r.value } : { ok: false, error: r.reason instanceof Error ? r.reason.message : String(r.reason) };
+}
+const errorBlock = <T,>(error: string, source: string, tier: CockpitSource["tier"] = "derived"): Block<T> =>
+  ({ state: "error", data: null, note: error, source: { tier, source, asOf: null } });
+const noAccess = <T,>(note: string, source: string): Block<T> =>
+  ({ state: "no_access", data: null, note, source: { tier: "observation", source, asOf: null } });
+
+function shiftMonth(ym: string, delta: number): string {
+  const [y, m] = ym.split("-").map(Number);
+  const idx = y * 12 + (m - 1) + delta;
+  return `${Math.floor(idx / 12)}-${String((idx % 12) + 1).padStart(2, "0")}`;
+}
+
+export async function getCockpitTrends(user: SessionUser, dbArg?: AnyDb, opts: { now?: Date } = {}): Promise<CockpitTrendsData> {
+  const db = await resolveDb(dbArg);
+  const now = opts.now ?? new Date();
+  const today = todayShanghai(now);
+  const roles = user.roles;
+  const canSeeMoney = roles.some((r) => (PRICE_VISIBLE_ROLES as readonly string[]).includes(r));
+  const channelScope = resolveChannelScope(user, null);
+  const thisMonth = monthShanghai(now);
+  const currentYear = Number(today.slice(0, 4));
+
+  const [posR, poR, poPrevR, demandR, alertsR, velR, slowR, wh30R, wh90R, wh365R, todoR, alertLifeR, goalsR, channelR] = await Promise.allSettled([
+    loadInventoryPosition(db),
+    loadPurchaseOrderMetrics({}, db),
+    // 历史年份即时计算不缓存：只为补足 12 个月窗口；失败不影响当年趋势
+    thisMonth.endsWith("-12") ? Promise.resolve(null) : loadPurchaseOrderMetrics({ year: currentYear - 1 }, db),
+    channelScope.forced ? Promise.resolve(null) : loadJiandaoyunExternalDemandSignal(db),
+    channelScope.forced ? Promise.resolve(null) : loadInventoryAlerts(db),
+    channelScope.forced ? Promise.resolve(null) : loadExternalVelocitySafe(db),
+    getNumParam("slow_days_threshold", 180, db),
+    loadWarehouseInventory(db, { windowDays: WAREHOUSE_WINDOWS[0] }),
+    loadWarehouseInventory(db, { windowDays: WAREHOUSE_WINDOWS[1] }),
+    loadWarehouseInventory(db, { windowDays: WAREHOUSE_WINDOWS[2] }),
+    getTodoStats({ groupBy: "role", fromMonth: shiftMonth(thisMonth, -5), toMonth: thisMonth, now }, user, db),
+    loadAlertLifecycle(db),
+    loadGoalHistory(db, user),
+    loadChannelObservation(db),
+  ]);
+
+  /* 屏1 */
+  const pos = settled(posR);
+  const dailyFlow: Block<DailyFlowBlock> = pos.ok
+    ? (() => {
+        const b = buildDailyFlow(pos.value.daily);
+        const hasData = b.points.some((p) => p.realtimeOut != null || p.snapshotOut != null);
+        return {
+          state: hasData ? "ready" : "insufficient",
+          data: b,
+          note: hasData ? "实时仓（流水）与快照仓（相邻快照差分）两条序列并列显示，绝不相加；快照差分跨多日为累计值" : "当月尚无流水或快照差分",
+          source: { tier: "snapshot", source: "inventory-position/v1 · daily", asOf: pos.value.builtAt },
+        };
+      })()
+    : errorBlock("inventory-position/v1 读取失败：" + pos.error, "inventory-position/v1", "snapshot");
+
+  /* 屏2 */
+  const po = settled(poR);
+  const poPrev = settled(poPrevR);
+  const poTrend: Block<PoTrendBlock> = po.ok
+    ? (() => {
+        const b = buildPoTrend(po.value, poPrev.ok ? poPrev.value : null, roles);
+        const hasData = b.points.some((p) => p.poCount > 0);
+        return {
+          state: hasData ? "ready" : "insufficient",
+          data: b,
+          note: `${canSeeMoney ? "" : "金额仅价格可见角色；"}当月进行中置灰；OTIF 仅年度累计口径（可评 n=${b.otifYtd.evaluable}），读模型无逐月 OTIF${poPrev.ok ? "" : `；上一年度即时计算失败（${poPrev.error}）`}`,
+          source: { tier: "fact", source: "purchase-order-metrics/v1 · byMonth", asOf: po.value.builtAt },
+        };
+      })()
+    : errorBlock(po.error, "purchase-order-metrics/v1", "fact");
+
+  const demand = settled(demandR);
+  const externalDemand: Block<ExternalDemandBriefBlock> = channelScope.forced
+    ? noAccess("受限渠道范围不下发跨店铺的外部平台观察（D62）", "jiandaoyun-external-demand/v4")
+    : demand.ok && demand.value
+      ? (() => {
+          const { block, sufficient } = buildExternalDemandBrief(demand.value.decisionBrief);
+          return {
+            state: sufficient ? "ready" : "insufficient",
+            data: block,
+            note: sufficient ? `观察口径：只给方向与百分比，不进补货数量；窗口 ${block.current.startDate} → ${block.current.endDate} vs 前 7 日` : `${block.gate}（当前窗口观察 ${block.current.observedDays}/${block.current.requiredDays} 天，前窗口 ${block.previous.observedDays}/${block.previous.requiredDays} 天）`,
+            source: { tier: "observation", source: "jiandaoyun-external-demand/v4 · decisionBrief（天猫，T+1）", asOf: demand.value.sourceAsOf },
+          };
+        })()
+      : errorBlock(demand.ok ? "无数据" : demand.error, "jiandaoyun-external-demand/v4", "observation");
+
+  const alerts = settled(alertsR);
+  const vel = settled(velR);
+  const slow = settled(slowR);
+  const quadrant: Block<QuadrantBlock> = channelScope.forced
+    ? noAccess("受限渠道范围不下发 SKU 级外部观察（D62）", "inventory-alerts/v1 × jiandaoyun-external-velocity/v3")
+    : alerts.ok && alerts.value && vel.ok && vel.value
+      ? (() => {
+          const b = buildQuadrant(alerts.value, vel.value, slow.ok ? slow.value : 180);
+          const ready = vel.value.state === "ready" && b.points.length > 0;
+          return {
+            state: ready ? "ready" : "insufficient",
+            data: b,
+            note: ready
+              ? `已映射 ${b.coverage.mappedRows} / 预警表 ${b.coverage.alertRows} 个 SKU（未映射 ${b.coverage.unmappedRows} 个排除，不按 0 处理）；纵轴仅天猫（拼多多未接入）；断货 = 可销 ≤ 阈值且外部有动销，呆滞 = 可销 ≥ ${b.thresholds.slowDays} 天且外部 30 天无动销`
+              : vel.value.state !== "ready" ? vel.value.gate : "预警表与外部销速尚无可交叉的已映射 SKU",
+            source: { tier: "observation", source: "inventory-alerts/v1 × jiandaoyun-external-velocity/v3（观察只预警不定量）", asOf: vel.value.sourceAsOf ?? alerts.value.builtAt },
+          };
+        })()
+      : errorBlock(alerts.ok ? (vel.ok ? "无数据" : vel.error) : alerts.error, "inventory-alerts/v1 × external-velocity/v3", "observation");
+
+  /* 屏3 */
+  const whs = [wh30R, wh90R, wh365R].map(settled);
+  const okModels = whs.filter((w): w is { ok: true; value: WarehouseInventoryModel } => w.ok).map((w) => w.value);
+  const whErrors = whs.filter((w): w is { ok: false; error: string } => !w.ok).map((w) => w.error);
+  const turnoverWindows: Block<TurnoverWindowsBlock> = okModels.length
+    ? (() => {
+        const b = buildTurnoverWindows(okModels, pos.ok ? pos.value.ledgerFirstDay : null);
+        const rows = b.rows.map((r) => ({ ...r }));
+        const hasTurns = b.summary.some((c) => !c.suppressed) || rows.some((r) => r.windows.some((c) => !c.suppressed));
+        return {
+          state: hasTurns ? "ready" : "insufficient",
+          data: { ...b, rows },
+          note: `${hasTurns ? "短窗口噪声更大，窗口覆盖不完整或零出库时压制不显示" : "三个窗口均无可计算周转（无实时仓出库或流水覆盖不足）"}${whErrors.length ? `；部分窗口读取失败：${whErrors.join("；")}` : ""}`,
+          source: { tier: "snapshot", source: `warehouse-inventory/v1 · w${b.windows.join("/w")}`, asOf: okModels[0].builtAt },
+        };
+      })()
+    : errorBlock(whErrors.join("；"), "warehouse-inventory/v1", "snapshot");
+
+  /* 屏4 */
+  const todo = settled(todoR);
+  const todoThroughput: Block<TodoThroughputBlock> = todo.ok
+    ? (() => {
+        const months = Array.from({ length: 6 }, (_, i) => shiftMonth(thisMonth, i - 5));
+        const rolesSeen = [...new Set(todo.value.rows.map((r) => r.groupKey))].sort((a, b) => a.localeCompare(b, "zh-CN"));
+        return {
+          state: todo.value.rows.length ? "ready" : "insufficient",
+          data: { months, roles: rolesSeen.length ? rolesSeen : [...ROLES], rows: todo.value.rows, caliber: todo.value.caliber, metricIds: ["todoCompletionRate"] },
+          note: todo.value.rows.length ? "证据不打分：按责任角色 × 创建月，不排名个人（D61）" : "近 6 个月没有系统来源（预警/复核）的待办",
+          source: { tier: "fact", source: "work_items（todo/stats 按月）", asOf: now.toISOString() },
+        };
+      })()
+    : errorBlock(todo.error, "work_items", "fact");
+
+  const alertLife = settled(alertLifeR);
+  const alertLifecycle: Block<AlertLifecycleBlock> = alertLife.ok
+    ? {
+        state: alertLife.value.total > 0 ? "ready" : "insufficient",
+        data: alertLife.value,
+        note: alertLife.value.total > 0 ? `知悉不改变状态（ack ≠ 关闭），知悉时长与关闭时长分开统计（近 ${alertLife.value.latency.windowDays} 天创建的告警）；自动关闭 = 引擎迟滞关闭` : "尚无系统告警",
+        source: { tier: "fact", source: "system_alerts（created/acked/resolved/dedupe_key/source_rule）", asOf: now.toISOString() },
+      }
+    : errorBlock(alertLife.error, "system_alerts", "fact");
+
+  const goals = settled(goalsR);
+  const goalHistory: Block<GoalHistoryBlock> = goals.ok
+    ? {
+        state: goals.value.series.length ? "ready" : "insufficient",
+        data: goals.value,
+        note: goals.value.series.length ? "只读历史期间的登记值，不用当前读模型回填缺失的历史实际值" : "同一部门 × 指标不足 2 个期间，尚不成历史",
+        source: { tier: "manual", source: "department_goals（逐期登记）", asOf: now.toISOString() },
+      }
+    : errorBlock(goals.error, "department_goals", "manual");
+
+  /* 渠道观察 */
+  const channel = settled(channelR);
+  let brandMatrix: Block<ChannelMatrixBlock>;
+  if (!channel.ok) {
+    brandMatrix = errorBlock(channel.error, "jiandaoyun-channel-observation/v4", "observation");
+  } else {
+    const obs = channel.value;
+    const allShops: ChannelShopRow[] = obs.platforms.flatMap((p) => p.byShop.map((s) => ({ platform: p.platform, shop: s.shop, units: s.units, amount: canSeeMoney ? s.amount : null })));
+    let shops = allShops;
+    let unmappedShops = 0;
+    if (channelScope.forced) {
+      const map = await loadShopChannelMap(db, allShops.map((s) => s.shop));
+      shops = filterShopRowsByChannelScope(allShops, (s) => s.shop, map, { channelIds: channelScope.channelIds });
+      unmappedShops = map.unmapped.length;
+    }
+    const platforms: ChannelPlatformSummary[] | null = channelScope.forced ? null : obs.platforms.map((p) => {
+      const a = p.brandAttribution;
+      const total = a.mappedSku + a.shopMaster + a.nameGuess + a.unattributed;
+      return {
+        platform: p.platform, state: p.state, grain: p.grain, sourceAsOf: p.sourceAsOf, anchorDate: p.anchorDate,
+        units: p.units, amount: canSeeMoney ? p.amount : null, refundUnits: p.refundUnits, attribution: a,
+        nameGuessSharePct: total > 0 ? Math.round((a.nameGuess / total) * 1000) / 10 : null, gate: p.gate,
+      };
+    });
+    const matrix: BrandPlatformRow[] | null = channelScope.forced ? null : obs.brandMatrix.map((r) => ({
+      ...r,
+      platforms: Object.fromEntries(Object.entries(r.platforms).map(([k, v]) => [k, { units: v.units, amount: canSeeMoney ? v.amount : null }])) as BrandPlatformRow["platforms"],
+    }));
+    const ready = channelScope.forced ? shops.length > 0 : obs.platforms.some((p) => p.state === "ready");
+    brandMatrix = {
+      state: ready ? "ready" : "insufficient",
+      data: {
+        authority: "observation_only", windowDays: obs.windowDays,
+        scope: { forced: channelScope.forced, channelIds: channelScope.channelIds },
+        platforms, brandMatrix: matrix, shops, unmappedShops, limitations: obs.limitations,
+        metricIds: ["channelBrandUnits", "platformIdentityCoverage"],
+      },
+      note: channelScope.forced
+        ? (ready ? `只显示映射到本渠道范围的店铺行（未映射店铺 ${unmappedShops} 个已剔除）；跨店铺品牌矩阵不下发（D62）` : "本渠道范围内没有已登记映射的店铺（店铺→渠道映射需人工登记）")
+        : (ready ? "件数按各平台口径并列，不跨平台相加；品牌归属含店铺名回退猜测，猜测占比随行标注" : obs.platforms.map((p) => p.gate).filter(Boolean).join("；") || "三平台观察均无可用批次"),
+      source: { tier: "observation", source: "jiandaoyun-channel-observation/v4 · brandMatrix（近 30 天）", asOf: obs.platforms.map((p) => p.sourceAsOf).filter(Boolean).sort().at(-1) ?? null },
+    };
+  }
+
+  return {
+    generatedAt: now.toISOString(),
+    today,
+    calibreVersion: COCKPIT_TRENDS_CALIBRE,
+    screens: {
+      s1: { dailyFlow },
+      s2: { poTrend, externalDemand, quadrant },
+      s3: { turnoverWindows },
+      s4: { todoThroughput, alertLifecycle, goalHistory },
+      channels: { brandMatrix },
+    },
+    limitations: [
+      "趋势块只装配唯一权威读模型的时间维与交叉维，不在本页重算口径；每块自带来源、时点与限制。",
+      "简道云观察序列只给方向与百分比，不下发件数，不进补货数量；受限渠道账号不下发跨店铺聚合。",
+      "金额对非价格角色在服务层剥离，路由出口再经 maskSensitive 兜底。",
+    ],
+  };
+}

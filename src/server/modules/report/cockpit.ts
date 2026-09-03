@@ -321,7 +321,7 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
         return {
           state: b.orderSystem.monthPoCount > 0 || b.orderSystem.cycleSamples > 0 ? "ready" : "insufficient",
           data: gated,
-          note: `${canSeeMoney ? "" : "金额仅价格可见角色；"}已下单 = PO 审批通过；交付 = 审批→首批收货，n=${b.orderSystem.cycleSamples}${b.orderSystem.cycleInsufficient ? "（样本不足）" : ""}；降本基线年 ${b.costDown.baselineYear}`,
+          note: `${canSeeMoney ? "" : "金额仅价格可见角色；"}交付 n=${b.orderSystem.cycleSamples}${b.orderSystem.cycleInsufficient ? "（样本不足）" : ""}；降本基线年 ${b.costDown.baselineYear}`,
           source: { tier: "fact", source: "purchase-order-metrics/v1（SCM PO/SH 事实）", asOf: po.value.builtAt ?? null },
         };
       })()
@@ -360,7 +360,7 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
           rows: whS.value.rows.map((r) => canSeeMoney ? r : { ...r, amount: null }),
           summary: whS.value.summary, windowDays: whS.value.windowDays, asOf: whS.value.asOf,
         },
-        note: `窗口 ${whS.value.windowDays} 天；周转 = 窗口出库 ÷ 平均在库（仅实时仓，出库含调拨/发料）；快照仓不计算`,
+        note: `窗口 ${whS.value.windowDays} 天（口径见指标注册表 warehouseTurns / warehouseDio）`,
         source: { tier: "snapshot", source: "warehouse-inventory/v1", asOf: whS.value.builtAt },
       }
     : { state: "error", data: null, note: whS.error, source: { tier: "snapshot", source: "warehouse-inventory/v1", asOf: null } };

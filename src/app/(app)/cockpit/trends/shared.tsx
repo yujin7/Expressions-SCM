@@ -1,0 +1,164 @@
+"use client";
+
+/**
+ * 驾驶舱趋势块共享层：一次拉取 /api/report/cockpit/trends（模块级缓存，切 Tab 不重拉），
+ * 五态块 → DecisionVisual 图卡契约的映射，主题感知的图表配色（AntD token）。
+ * 指标标题 / 口径 tooltip 一律取自 components/metrics 注册表，不在这里手写口径。
+ */
+import { useCallback, useEffect, useState } from "react";
+import { theme, Typography } from "antd";
+import DecisionVisual, { type DecisionVisualSource } from "@/components/DecisionVisual";
+import type { VisualState } from "@/components/decision-visuals";
+import { fetchJson } from "@/components/fetchJson";
+import { metric } from "@/components/metrics";
+import type { Block, CockpitSource } from "@/server/modules/report/cockpit";
+import type { CockpitTrendsData } from "@/server/modules/report/cockpit-trends";
+
+const URL = "/api/report/cockpit/trends";
+
+let cache: { promise: Promise<CockpitTrendsData>; data: CockpitTrendsData | null } | null = null;
+
+function fetchTrends(force = false): Promise<CockpitTrendsData> {
+  if (!cache || force) {
+    const entry: { promise: Promise<CockpitTrendsData>; data: CockpitTrendsData | null } = { promise: fetchJson<CockpitTrendsData>(URL), data: null };
+    entry.promise.then((d) => { entry.data = d; }, () => { if (cache === entry) cache = null; });
+    cache = entry;
+  }
+  return cache.promise;
+}
+
+export function useTrends(): { data: CockpitTrendsData | null; error: string | null; loading: boolean; reload: () => void } {
+  const [data, setData] = useState<CockpitTrendsData | null>(cache?.data ?? null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(!cache?.data);
+  const run = useCallback((force: boolean) => {
+    setLoading(true);
+    setError(null);
+    fetchTrends(force).then((d) => { setData(d); setLoading(false); }, (e: Error) => { setError(e.message); setLoading(false); });
+  }, []);
+  useEffect(() => { run(false); }, [run]);
+  return { data, error, loading, reload: () => run(true) };
+}
+
+/* ───────────── 格式化 ───────────── */
+
+export function qty(v: string | number | null | undefined): string {
+  if (v == null || v === "") return "—";
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toLocaleString("zh-CN", { maximumFractionDigits: 0 }) : "—";
+}
+export function yuan(v: string | null | undefined): string {
+  if (v == null) return "—";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return Math.abs(n) >= 10_000 ? `¥${(n / 10_000).toFixed(1)}万` : `¥${n.toLocaleString("zh-CN", { maximumFractionDigits: 0 })}`;
+}
+export function pct(v: number | string | null | undefined, digits = 1): string {
+  if (v == null) return "—";
+  const n = Number(v);
+  return Number.isFinite(n) ? `${n.toFixed(digits)}%` : "—";
+}
+export function signed(v: number | null | undefined, suffix = "%"): string {
+  if (v == null) return "—";
+  return `${v > 0 ? "+" : ""}${v}${suffix}`;
+}
+export function num(v: string | number | null | undefined): number | null {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/* ───────────── 主题感知图表配色 ───────────── */
+
+export interface ChartTheme {
+  grid: string;
+  axis: string;
+  text: string;
+  tooltip: { contentStyle: React.CSSProperties; labelStyle: React.CSSProperties; itemStyle: React.CSSProperties };
+}
+
+export function useChartTheme(): ChartTheme {
+  const { token } = theme.useToken();
+  return {
+    grid: token.colorBorderSecondary,
+    axis: token.colorTextSecondary,
+    text: token.colorText,
+    tooltip: {
+      contentStyle: { background: token.colorBgElevated, border: `1px solid ${token.colorBorder}`, borderRadius: token.borderRadius, color: token.colorText, fontSize: 12 },
+      labelStyle: { color: token.colorTextSecondary },
+      itemStyle: { color: token.colorText },
+    },
+  };
+}
+
+/* ───────────── 五态块 → 图卡契约 ───────────── */
+
+const TIER_MAP: Record<CockpitSource["tier"], DecisionVisualSource["tier"]> = {
+  fact: "ledger", snapshot: "snapshot", observation: "reference", manual: "reference", derived: "derived",
+};
+
+export function visualState(block: Block<unknown>): VisualState {
+  switch (block.state) {
+    case "ready": return "ready";
+    case "insufficient": return "insufficient";
+    case "error": return "error";
+    default: return "empty";
+  }
+}
+
+export function stateDetail(block: Block<unknown>): string {
+  if (block.state === "no_access") return `无权限：${block.note}`;
+  if (block.state === "pending_domain") return `待接入：${block.note}`;
+  return block.note;
+}
+
+/** 注册表标题：未登记时回退到给定文案（不编造口径） */
+export function metricLabel(id: string, fallback: string): string {
+  return metric(id)?.label ?? fallback;
+}
+
+export interface TrendCardProps<T> {
+  block: Block<T>;
+  title: string;
+  question: string;
+  metricId: string;
+  grain?: string;
+  unit?: string;
+  summary: string;
+  height?: number;
+  fitContent?: boolean;
+  contentIsTable?: boolean;
+  dataView?: React.ReactNode;
+  extra?: React.ReactNode;
+  children: (data: T) => React.ReactNode;
+}
+
+/** 趋势块图卡：标题来自注册表 label，口径 tooltip 由 DecisionVisual 按 metricId 生成；限制文案 = 服务端 note */
+export function TrendCard<T>({ block, title, question, metricId, grain, unit, summary, height, fitContent, contentIsTable, dataView, extra, children }: TrendCardProps<T>) {
+  const state = visualState(block);
+  return (
+    <DecisionVisual
+      title={title}
+      question={question}
+      metricId={metricId}
+      grain={grain}
+      unit={unit}
+      source={{ tier: TIER_MAP[block.source.tier], source: block.source.source, asOf: block.source.asOf ? String(block.source.asOf).replace("T", " ").slice(0, 16) : null }}
+      summary={summary}
+      state={state}
+      stateDetail={stateDetail(block)}
+      caveat={block.state === "ready" && block.note ? block.note : undefined}
+      height={height}
+      fitContent={fitContent}
+      contentIsTable={contentIsTable}
+      dataView={state === "ready" ? dataView : undefined}
+      extra={extra}
+    >
+      {block.state === "ready" && block.data ? children(block.data) : null}
+    </DecisionVisual>
+  );
+}
+
+export function Muted({ children }: { children: React.ReactNode }) {
+  return <Typography.Text type="secondary" style={{ fontSize: 12 }}>{children}</Typography.Text>;
+}

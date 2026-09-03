@@ -19,7 +19,9 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-external-velocity/v3";
+/** 缓存键（口径升版时随 /vN 变更；部门目标 auto 来源引用它，不得前缀猜测） */
+export const EXTERNAL_VELOCITY_CACHE_KEY = "jiandaoyun-external-velocity/v3";
+const READ_MODEL_CACHE_KEY = EXTERNAL_VELOCITY_CACHE_KEY;
 const PLATFORM_SKU_IDENTIFIER_SCOPE = "JIANDAOYUN:TMALL";
 
 export interface ExternalVelocityBySku {
