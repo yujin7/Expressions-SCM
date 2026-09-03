@@ -42,7 +42,7 @@ export const SOURCE_CLASS_DEFS: Record<SourceClass, SourceClassDef> = {
     targetAccuracyPct: 95,
     stretchAccuracyPct: 98,
     freshnessMaxAgeDays: 3,
-    accuracyBasis: "聚水潭对账 SKU 日级一致率（容差 dq_tolerance_pct）；并列已审批盘点命中率与快照相邻日跳变",
+    accuracyBasis: "自有实时仓出库（stock_ledger sales_out）vs 聚水潭日销 SKU 日级一致率（recon_diffs，容差 dq_tolerance_pct），不是快照仓本身；并列已审批盘点命中率与快照相邻日跳变",
     description: "RPA/电商部导出的仓库库存明细，经 staging 放行为快照仓 stock_snapshots；时点权威、非实时账",
   },
   manual_po_chain: {
@@ -60,7 +60,7 @@ export const SOURCE_CLASS_DEFS: Record<SourceClass, SourceClassDef> = {
     targetAccuracyPct: 90,
     stretchAccuracyPct: 95,
     freshnessMaxAgeDays: 2,
-    accuracyBasis: "sales_monthly 与天猫日销观察按 SKU×月的一致率（三阈值）；并列连接器 staging 放行率",
+    accuracyBasis: "sales_monthly 与天猫日销观察按 SKU×月的一致率（三阈值；只比两侧都有数据的完整月，内部缺月不计）；目前仅覆盖天猫，拼多多/唯品会不度量；并列连接器 staging 放行率",
     description: "简道云同步的平台日销/退款/订单/费用/流量等观察数据；observation_only，不进过账、不定量",
   },
   reference_file: {

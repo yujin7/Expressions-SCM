@@ -243,7 +243,9 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
         <Col xs={12} md={6}>
           <Card size="small" title={<span title={metricTooltip("dataAccuracyRpa")}>RPA 仓库准确率</span>}>
             <Statistic value={report?.sources.find((s) => s.sourceClass === "rpa_warehouse")?.accuracy.rate ?? "—"} suffix="%" />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>盘点命中 {pct(report?.count.rate)}（{report?.count.lines ?? 0} 行）</Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              来源：自有实时仓出库（stock_ledger sales_out）vs 聚水潭日销一致率，非快照仓本身 · 盘点命中 {pct(report?.count.rate)}（{report?.count.lines ?? 0} 行）
+            </Typography.Text>
           </Card>
         </Col>
         <Col xs={12} md={6}>
@@ -255,7 +257,9 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
           <Card size="small" title={<span title={metricTooltip("salesConsistencyPct")}>销量口径一致率</span>}>
             <Statistic value={report?.salesConsistency.consistencyPct ?? "—"} suffix="%" />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              比较 {report?.salesConsistency.comparedRows ?? 0} 行 · 例外 {report?.salesConsistency.exceptionRows ?? 0}
+              比较 {report?.salesConsistency.comparedRows ?? 0} 行 · 例外 {report?.salesConsistency.exceptionRows ?? 0} ·
+              比较月 {report?.salesConsistency.comparedMonths?.length ? report.salesConsistency.comparedMonths.join("、") : "无"}
+              {report?.salesConsistency.skippedMonths?.length ? ` · 内部缺月 ${report.salesConsistency.skippedMonths.join("、")} 跳过` : ""} · 仅天猫
             </Typography.Text>
           </Card>
         </Col>
@@ -323,7 +327,11 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
           <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
             锚点 {consistency.anchorDate ?? "—"} · 阈值 相对 {consistency.thresholds.relPct}% / 绝对 {consistency.thresholds.absFloorQty} 件 / 量下限 {consistency.thresholds.minBaseQty} 件 ·
             一致 {consistency.consistentRows} / 例外 {consistency.exceptionRows} / 低于量下限 {consistency.belowFloorRows} ·
-            仅内部 {consistency.uncovered.internalOnlyRows} 行 / 仅外部 {consistency.uncovered.externalOnlyRows} 行未覆盖
+            仅内部 {consistency.uncovered.internalOnlyRows} 行 / 仅外部 {consistency.uncovered.externalOnlyRows} 行未覆盖 ·
+            外部不完整/未覆盖月内部 {consistency.uncovered.internalOutsideRangeRows ?? 0} 行不比 ·
+            比较月 {consistency.comparedMonths?.length ? consistency.comparedMonths.join("、") : "无"} ·
+            内部缺月 {consistency.skippedMonths?.length ? consistency.skippedMonths.join("、") : "无"} ·
+            外部不完整月 {consistency.partialMonths?.length ? consistency.partialMonths.join("、") : "无"}
             {consistency.gate ? ` · ${consistency.gate}` : ""}
           </Typography.Paragraph>
         ) : null}

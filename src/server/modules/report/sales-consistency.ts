@@ -1,13 +1,18 @@
 /**
- * 销量口径一致性读模型（D65，`sales-consistency/v1`，observation_only）。
+ * 销量口径一致性读模型（D65，`sales-consistency/v2`，observation_only）。
  *
  * 内部 sales_monthly（指定渠道，默认 tmall）vs 简道云天猫日销观察（支付件数 − 成功退款件数）
  * 按 SKU × 自然月对比。三阈值（均可调）：
  * - relPct       相对容差：|内部 − 外部| ≤ max(内部, 外部) × relPct%  视为一致；
  * - absFloorQty  绝对容差下限：差异 ≤ absFloorQty 件恒视为一致（小量噪声不算例外）；
  * - minBaseQty   绝对量下限：两侧均 < minBaseQty 的 SKU 月不进分母（below_floor，避免小样本抬高/拉低一致率）。
- * 只比较两侧都有记录、且早于外部批次锚点月份的「完整月」；单侧缺失记为未覆盖，绝不补 0。
+ * 只比较**两侧都有数据的月份**：内部 sales_monthly 存在该 SKU×月，且外部该月「完整」——
+ * 外部完整月 = 观察首日所在月（首日非 1 号则从下一月起）到锚点（最新观察日）所在月之前的自然月；
+ * 锚点月与观察首日不足整月的头月一律不比（v1 曾把外部只覆盖半个月的头月拿来比，生产首跑一致率 1.35% 即由此而来）。
+ * 输出 comparedMonths（实际比较月）/ skippedMonths（外部完整但 sales_monthly 无任何记录的「内部缺月」）/
+ * partialMonths（外部不完整月）；单侧缺失记为未覆盖，绝不补 0，也不记为不一致。
  * 身份映射沿用外部销速的前两条桥（对照表唯一 skuId ∪ 直接认领）；组合装拆解桥不用（口径保守）。
+ * 目前只覆盖天猫；拼多多/唯品会没有内部月销量对照口径，不度量。
  */
 import { sql, type SQL } from "drizzle-orm";
 
@@ -18,7 +23,7 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-export const SALES_CONSISTENCY_CACHE_KEY = "sales-consistency/v1";
+export const SALES_CONSISTENCY_CACHE_KEY = "sales-consistency/v2";
 const PLATFORM_SKU_IDENTIFIER_SCOPE = "JIANDAOYUN:TMALL";
 const EXCEPTION_LIMIT = 200;
 
@@ -55,14 +60,24 @@ export interface SalesConsistency {
   anchorDate: string | null;
   batches: { sales: number | null; refunds: number | null; crosswalk: number | null };
   thresholds: SalesConsistencyThresholds;
+  /** 与 comparedMonths 相同（页面筛选沿用） */
   months: string[];
+  /** 实际比较的月份（两侧都有数据且外部完整） */
+  comparedMonths: string[];
+  /** 内部缺月：外部完整、但 sales_monthly 该渠道整月无记录，跳过不比、不记为不一致 */
+  skippedMonths: string[];
+  /** 外部不完整月（观察首日非 1 号的头月、锚点月），不比 */
+  partialMonths: string[];
+  /** 外部观察日期范围（最早观察日 ~ 锚点） */
+  externalRange: { from: string; through: string } | null;
   comparedRows: number;
   consistentRows: number;
   exceptionRows: number;
   belowFloorRows: number;
   /** 一致率 = consistent ÷ (consistent + exception) × 100；分母 0 → null */
   consistencyPct: number | null;
-  uncovered: { internalOnlyRows: number; externalOnlyRows: number };
+  /** 未覆盖：完整月内单侧缺失（internalOnly / externalOnly）；internalOutsideRangeRows = 内部记录落在外部不完整/未覆盖月 */
+  uncovered: { internalOnlyRows: number; externalOnlyRows: number; internalOutsideRangeRows: number };
   exceptions: SalesConsistencyRow[];
   gate: string | null;
   limitations: string[];
@@ -84,8 +99,24 @@ function qtyValue(value: unknown): string {
   return /^-?\d+(?:\.\d+)?$/.test(text) ? dQty(text) : "0.0000";
 }
 
+/** [from, to) 之间的自然月键（YYYY-MM），from ≥ to 时为空 */
+export function monthsBetween(from: string, to: string): string[] {
+  if (!/^\d{4}-\d{2}$/.test(from) || !/^\d{4}-\d{2}$/.test(to)) return [];
+  const out: string[] = [];
+  let [y, m] = from.split("-").map(Number);
+  while (out.length < 240) {
+    const key = `${y}-${String(m).padStart(2, "0")}`;
+    if (key >= to) break;
+    out.push(key);
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+  }
+  return out;
+}
+
 const LIMITATIONS = [
-  "只比较两侧都有记录、且早于外部批次锚点月份的完整月；单侧缺失记为未覆盖，不补 0。",
+  "只比较两侧都有数据的月份：内部 sales_monthly 存在该 SKU×月，且外部该月完整（观察首日非 1 号的头月与锚点月不比）；单侧缺失记为未覆盖，不补 0、不记为不一致。",
+  "目前仅覆盖天猫（sales_monthly tmall 渠道 vs 天猫日销观察）；拼多多/唯品会没有内部月销量对照口径，不度量。",
   "外部件数 = 天猫支付件数 − 成功退款件数（同批次身份桥：对照表唯一归属 ∪ 直接认领），组合装拆解不计。",
   "sales_monthly 是内部月粒度事实；一致率只说明两套口径是否吻合，不裁定谁对谁错。",
   "只是观察：不修改 sales_monthly，不进入销速/补货/关账。",
@@ -163,12 +194,16 @@ function emptyResult(
     batches,
     thresholds,
     months: [],
+    comparedMonths: [],
+    skippedMonths: [],
+    partialMonths: [],
+    externalRange: null,
     comparedRows: 0,
     consistentRows: 0,
     exceptionRows: 0,
     belowFloorRows: 0,
     consistencyPct: null,
-    uncovered: { internalOnlyRows: 0, externalOnlyRows: 0 },
+    uncovered: { internalOnlyRows: 0, externalOnlyRows: 0, internalOutsideRangeRows: 0 },
     exceptions: [],
     gate,
     limitations: LIMITATIONS,
@@ -243,6 +278,11 @@ export async function computeSalesConsistency(db: ReadDb, opts: SalesConsistency
       ORDER BY payload->'data'->>'shopName', payload->'data'->>'skuId', left(payload->'data'->>'statisticalDate', 10), row_no DESC
     ),
     anchor AS (SELECT max(d) AS d FROM s),
+    head AS (SELECT min(d) AS d FROM s),
+    complete_from AS (
+      SELECT to_char(CASE WHEN extract(day FROM d) = 1 THEN d ELSE (date_trunc('month', d) + interval '1 month')::date END, 'YYYY-MM') AS m
+      FROM head
+    ),
     ext AS (
       SELECT sku_id, month, sum(paid) - sum(refund) AS qty FROM (
         SELECT m.sku_id, to_char(s.d, 'YYYY-MM') AS month, s.paid, 0::numeric AS refund
@@ -252,6 +292,7 @@ export async function computeSalesConsistency(db: ReadDb, opts: SalesConsistency
         FROM r INNER JOIN map m ON m.shop = r.shop AND m.psku = r.psku AND m.sku_id IS NOT NULL
       ) u
       WHERE month < to_char((SELECT d FROM anchor), 'YYYY-MM')
+        AND month >= (SELECT m FROM complete_from)
       GROUP BY sku_id, month
     ),
     internal AS (
@@ -262,20 +303,39 @@ export async function computeSalesConsistency(db: ReadDb, opts: SalesConsistency
     SELECT coalesce(i.sku_id, e.sku_id) AS sku_id, coalesce(i.month, e.month) AS month,
            i.qty::text AS internal_qty, e.qty::text AS external_qty,
            k.code AS sku_code, k.name AS sku_name,
-           (SELECT to_char(d, 'YYYY-MM-DD') FROM anchor) AS anchor
+           (SELECT to_char(d, 'YYYY-MM-DD') FROM anchor) AS anchor,
+           (SELECT to_char(d, 'YYYY-MM-DD') FROM head) AS head,
+           (SELECT m FROM complete_from) AS complete_from
     FROM internal i FULL JOIN ext e ON e.sku_id = i.sku_id AND e.month = i.month
     LEFT JOIN skus k ON k.id = coalesce(i.sku_id, e.sku_id)
     ORDER BY 2, 1
   `));
 
   const anchorDate = result.length > 0 && result[0].anchor != null ? String(result[0].anchor) : (sales.sourceAsOf ?? null);
+  const headDate = result.length > 0 && result[0].head != null ? String(result[0].head) : null;
+  const completeFrom = result.length > 0 && result[0].complete_from != null ? String(result[0].complete_from) : null;
+  const anchorMonth = anchorDate ? anchorDate.slice(0, 7) : null;
+  const completeMonths = completeFrom && anchorMonth ? monthsBetween(completeFrom, anchorMonth) : [];
+  const completeSet = new Set(completeMonths);
+  const partialMonths = [...new Set([
+    ...(headDate && completeFrom && headDate.slice(0, 7) !== completeFrom ? [headDate.slice(0, 7)] : []),
+    ...(anchorMonth ? [anchorMonth] : []),
+  ])].sort();
   const months = new Set<string>();
+  const internalMonths = new Set<string>();
   const compared: SalesConsistencyRow[] = [];
   let internalOnlyRows = 0;
   let externalOnlyRows = 0;
+  let internalOutsideRangeRows = 0;
   for (const row of result) {
     const month = String(row.month ?? "");
     if (row.internal_qty == null && row.external_qty == null) continue;
+    if (row.internal_qty != null) internalMonths.add(month);
+    if (!completeSet.has(month)) {
+      // 外部不完整月 / 外部未覆盖月：只可能出现内部记录（外部行已在 SQL 中按完整月过滤）
+      if (row.internal_qty != null) internalOutsideRangeRows += 1;
+      continue;
+    }
     if (row.internal_qty == null) { externalOnlyRows += 1; continue; }
     if (row.external_qty == null) { internalOnlyRows += 1; continue; }
     const internalQty = qtyValue(row.internal_qty);
@@ -307,6 +367,14 @@ export async function computeSalesConsistency(db: ReadDb, opts: SalesConsistency
       return dCmp(bb, aa) || a.month.localeCompare(b.month) || a.skuId - b.skuId;
     })
     .slice(0, EXCEPTION_LIMIT);
+  const comparedMonths = [...months].sort();
+  const skippedMonths = completeMonths.filter((m) => !internalMonths.has(m));
+  const externalRange = headDate && anchorDate ? { from: headDate, through: anchorDate } : null;
+  const gate = compared.length > 0
+    ? null
+    : completeMonths.length === 0
+      ? "外部观察尚不足一个完整自然月，无法比较。"
+      : "内部销量与外部观察没有同一 SKU × 完整月的交集，无法比较。";
   return {
     state: compared.length > 0 ? "ready" : "insufficient",
     authority: "observation_only",
@@ -316,16 +384,23 @@ export async function computeSalesConsistency(db: ReadDb, opts: SalesConsistency
     anchorDate,
     batches,
     thresholds,
-    months: [...months].sort(),
+    months: comparedMonths,
+    comparedMonths,
+    skippedMonths,
+    partialMonths,
+    externalRange,
     comparedRows: compared.length,
     consistentRows,
     exceptionRows,
     belowFloorRows,
     consistencyPct,
-    uncovered: { internalOnlyRows, externalOnlyRows },
+    uncovered: { internalOnlyRows, externalOnlyRows, internalOutsideRangeRows },
     exceptions,
-    gate: compared.length > 0 ? null : "内部销量与外部观察没有同一 SKU × 完整月的交集，无法比较。",
-    limitations: LIMITATIONS,
+    gate,
+    limitations: [
+      ...LIMITATIONS,
+      `本次比较月：${comparedMonths.length > 0 ? comparedMonths.join("、") : "无"}；内部缺月（外部完整但 sales_monthly 无记录，跳过不比）：${skippedMonths.length > 0 ? skippedMonths.join("、") : "无"}；外部不完整月（不比）：${partialMonths.length > 0 ? partialMonths.join("、") : "无"}。`,
+    ],
   };
 }
 
