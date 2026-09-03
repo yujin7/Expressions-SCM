@@ -49,6 +49,7 @@ export const PARAM_DEFS: ParamDef[] = [
   { key: "batch_posting_enabled", label: "批次过账与FEFO", fallback: 0, min: 0, max: 1, unit: "", note: "E2-12 迁移闸门（默认关；历史余额迁移、全出库路径UAT后方可开启）" },
   /* ── 总监需求实施计划（2026-09-03，D50–D66）：口径类全部参数化，业务可改 ── */
   { key: "inventory_sales_ratio_target_low", label: "库存占比目标下限", fallback: 45, min: 0, max: 200, unit: "%", note: "D54：月末库存金额÷当月销售金额目标区间下限（基线 50）" },
+  { key: "valuation_coverage_min_pct", label: "估值覆盖率门槛", fallback: 80, min: 0, max: 100, unit: "%", note: "D51：库存金额估值覆盖率低于本值时标「不完整」" },
   { key: "inventory_sales_ratio_target_high", label: "库存占比目标上限", fallback: 47, min: 0, max: 200, unit: "%", note: "D54：库存占比目标区间上限" },
   { key: "default_production_lead_days", label: "默认加工周期", fallback: 30, min: 0, max: 365, unit: "天", note: "D57：sku_params.normal_lead_days 缺省时的加工周期" },
   { key: "default_logistics_lead_days", label: "默认在途周期", fallback: 15, min: 0, max: 365, unit: "天", note: "D57：sku_params.logistics_lead_days 缺省时的在途周期" },

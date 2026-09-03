@@ -15,6 +15,7 @@ import { log } from "@/server/core/logger";
 import { runLicenseAlert } from "./license-alert";
 import { runReconcileJst, shanghaiToday } from "./reconcile-jst";
 import { runSnapshotAgeAlert } from "./snapshot-age";
+import { runInventoryPositionRefresh } from "./inventory-position-refresh";
 import { runHousekeeping } from "./housekeeping";
 import { runFreshnessCheck } from "./freshness";
 import { runDocAging } from "./doc-aging";
@@ -121,6 +122,7 @@ export const INTERVAL_JOBS: IntervalJob[] = [
   { name: "probe-yonyou-permissions", everyMs: 20 * 60 * 1000, atHours: [9, 15], run: () => runYonyouPermissionProbe() },
   // 快照数据龄告警（纯查询）——**必须排在拉数之后**，否则会在同步刷新前报一次假的"数据过期"
   { name: "snapshot-age", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runSnapshotAgeAlert(db) },
+  { name: "inventory-position-refresh", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runInventoryPositionRefresh(db) },
   // 营业执照到期提醒（纯查询）
   { name: "license-alert", everyMs: 6 * HOUR_MS, run: (db) => runLicenseAlert(db) },
   // 聚水潭 T-1 出库全量快照先进入受控 staging；缺配置时显式 skipped

@@ -24,6 +24,7 @@ export const SCHEDULES: Record<string, string> = {
   // 数据龄检查必须排在拉数**之后**：放 9:50 会在 10:00 同步刷新前十分钟
   // 天天报一次"数据过期"，制造每日假警报。改到两批同步之后各查一次。
   "snapshot-age": "5 11,17 * * *",
+  "inventory-position-refresh": "25 11,17 * * *",
 
   // 同步前半小时探测权限，便于把“未授权”与“同步代码失败”分开。
   "probe-jst-permissions": "30 9,15 * * *",
