@@ -89,7 +89,8 @@ export const ROUTE_REGISTRY = {
   outsource_auto_chain: { path: "/outsource/auto-chain", label: "自动链预演", roles: ["pmc"], group: "planning", scopedMode: "public", keywords: "auto chain zidonglian" },
 
   /* ── 委外生产 ── */
-  outsource_bh: { path: "/outsource/bh", label: "备货申请", group: "outsourcing", scopedMode: "public", keywords: "bh beihuo" },
+  // D62（W2-E）：受限 ops 的列表只见本人制单或本渠道制单人的单据（outsource/bh.listBhs）
+  outsource_bh: { path: "/outsource/bh", label: "备货申请", group: "outsourcing", scopedMode: "channel_scoped", keywords: "bh beihuo" },
   outsource_wo: { path: "/outsource/wo", label: "委外工单", group: "outsourcing", scopedMode: "public", keywords: "wo weiwai gongdan" },
   outsource_po: { path: "/outsource/po", label: "采购订单", group: "outsourcing", scopedMode: "public", keywords: "po caigou" },
   outsource_pc: { path: "/outsource/pc", label: "价格变更", group: "outsourcing", scopedMode: "denied" },

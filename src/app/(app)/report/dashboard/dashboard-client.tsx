@@ -134,7 +134,10 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
     paginated: false,
   });
   const trendMode = viewState.filters.trend === "total" ? "总量" : "按品牌";
-  const scopeActive = Boolean(data.scope.brand || data.scope.channel);
+  /** D62：受限用户的渠道范围由服务端强制施加——选择器变只读标签，横幅如实说明 */
+  const scopeForced = data.scope.forced === true;
+  const scopeActive = Boolean(data.scope.brand || data.scope.channel || scopeForced);
+  const channelScopeText = scopeForced ? data.scope.scopeLabel ?? "本渠道" : "全渠道";
   /** 筛选写进 URL：本页服务端取数，链接即口径，复制给别人看到的是同一份结果 */
   const pushScope = (next: { brand?: string; channel?: string }) => {
     const params = new URLSearchParams();
@@ -233,28 +236,41 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
               value={data.scope.brand ?? undefined}
               onChange={(v) => pushScope({ brand: v == null ? undefined : String(v) })}
             />
-            <RemoteSelect
-              api="/api/master/channel"
-              getLabel={(r) => String(r.name ?? r.code)}
-              getValue={(r) => String(r.code)}
-              allowClear
-              placeholder="全部渠道"
-              style={{ width: 160 }}
-              value={data.scope.channel ?? undefined}
-              onChange={(v) => pushScope({ channel: v == null ? undefined : String(v) })}
-            />
+            {scopeForced ? (
+              <AntTooltip title="渠道范围由管理员在「用户管理 → 数据范围」设置，本页不可更改；销售类卡片只含本范围渠道。">
+                <Tag color="blue" style={{ height: 32, lineHeight: "30px", fontSize: 13, marginInlineEnd: 0 }} data-testid="channel-scope-tag">
+                  范围：{data.scope.scopeLabel ?? "本渠道"}
+                </Tag>
+              </AntTooltip>
+            ) : (
+              <RemoteSelect
+                api="/api/master/channel"
+                getLabel={(r) => String(r.name ?? r.code)}
+                getValue={(r) => String(r.code)}
+                allowClear
+                placeholder="全部渠道"
+                style={{ width: 160 }}
+                value={data.scope.channel ?? undefined}
+                onChange={(v) => pushScope({ channel: v == null ? undefined : String(v) })}
+              />
+            )}
           </Space>
           {scopeActive ? (
             <Alert
               type="info"
               showIcon
               style={{ marginBottom: 8 }}
-              message={`已按${data.scope.brand ? ` 品牌=${data.scope.brand}` : ""}${data.scope.channel ? ` 渠道=${data.scope.channel}` : ""} 筛选`}
+              message={
+                scopeForced
+                  ? `已按您的数据范围限定 渠道=${data.scope.scopeLabel ?? "本渠道"}${data.scope.brand ? `，并按 品牌=${data.scope.brand} 筛选` : ""}`
+                  : `已按${data.scope.brand ? ` 品牌=${data.scope.brand}` : ""}${data.scope.channel ? ` 渠道=${data.scope.channel}` : ""} 筛选`
+              }
               description={
                 <>
                   跟随筛选：{data.scope.appliesTo.join("、")}。
                   <b>不随筛选变化</b>：{data.scope.notAppliedTo.join("、")}
                   —— 这些不是按品牌/渠道记账的事实，按销售维度切会得到似是而非的数字。
+                  {scopeForced ? "（库存/临期为公开口径，全公司总量；销售金额对本账号不下发。）" : null}
                 </>
               }
             />
@@ -402,7 +418,7 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
       <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
         <Col xs={24} xl={16}>
           <DecisionVisual
-            title={`销售趋势（${data.salesWindow.months6[0] ?? ""} ~ ${data.salesWindow.months6.at(-1) ?? ""}，全渠道）`}
+            title={`销售趋势（${data.salesWindow.months6[0] ?? ""} ~ ${data.salesWindow.months6.at(-1) ?? ""}，${channelScopeText}）`}
             question="销量规模在加速还是减速，变化来自哪些品牌？"
             metricId="salesQty"
             grain="月 × 品牌"
@@ -471,7 +487,7 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
             unit="销量占比"
             source={salesSource}
             coverage={{ covered: data.salesWindow.months6.length, total: 6, label: "目标窗口月份" }}
-            caveat="当前缺少销售额、毛利与促销信息，结构只代表数量贡献。"
+            caveat={scopeForced ? "只含您的数据范围内的渠道，占比在范围内计算，不代表全公司结构。" : "当前缺少销售额、毛利与促销信息，结构只代表数量贡献。"}
             summary={`共 ${data.channelMix.length} 个渠道；最大渠道占比 ${channelShare[0]?.share ?? 0}%。`}
             dataView={
               <DataTable

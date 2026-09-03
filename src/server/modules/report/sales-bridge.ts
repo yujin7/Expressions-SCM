@@ -8,12 +8,21 @@
  * - byDim：三个维度各自"最大单项贡献绝对值"，用于提示"哪个维度最能解释这次变化"；
  * - attribution：同一变化同时按 brand/channel 分解，各给 top3 正/负贡献，供自动归因文案。
  * 全表无金额字段，免脱敏；只读不写库。
+ * D62：受限用户（登记了 channel 范围的非 admin）两期取数都强制加 channel_id 条件——
+ * 桥的首尾与三维归因都只在本渠道盘子里成立，返回体 channelScope 如实交代。
  */
-import { inArray, sql } from "drizzle-orm";
+import { and, inArray, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
+import type { ScopeUser } from "@/server/core/data-scope";
 import { lastMonths } from "@/server/core/velocity";
 import { ApiError } from "@/server/modules/master/common";
+import {
+  channelScopeCondition,
+  resolveChannelScopeByCode,
+  UNRESTRICTED_SCOPE,
+  type ResolvedChannelScope,
+} from "@/server/modules/report/channel-scope";
 import { buildBridge, type BridgeItem } from "@/server/rules/waterfall";
 import { num } from "@/server/core/svc";
 
@@ -49,6 +58,8 @@ export interface SalesBridgeResult {
   byDim: Record<BridgeDim, number>;
   /** 自动归因素材（品牌 + 渠道，各 top3 正/负） */
   attribution: { brand: AttributionSide; channel: AttributionSide };
+  /** D62：渠道范围裁剪结果；forced=true 时所有数字只在本渠道盘子里成立 */
+  channelScope: { forced: boolean; label: string | null };
 }
 
 /** 一个维度两期的键→数值 + 标签解析 */
@@ -88,21 +99,29 @@ async function resolveWindow(
 }
 
 /** 两期 × 三维度取数（一次查询按 skuId / channelId 聚合，维度映射在内存完成） */
-async function loadDims(db: AnyDb, fromYm: string, toYm: string): Promise<Record<BridgeDim, DimMaps>> {
+async function loadDims(
+  db: AnyDb,
+  fromYm: string,
+  toYm: string,
+  channelScope: ResolvedChannelScope = UNRESTRICTED_SCOPE,
+): Promise<Record<BridgeDim, DimMaps>> {
   const sm = schema.salesMonthly;
   const months = Array.from(new Set([fromYm, toYm].filter(Boolean)));
   const empty = (): DimMaps => ({ prev: new Map(), curr: new Map(), labelOf: (k) => k });
   if (months.length === 0) return { brand: empty(), channel: empty(), sku: empty() };
 
+  // D62：受限用户强制加 channel_id 条件（不限用户 where 不变，逐字等价）
+  const scoped = channelScopeCondition(sm.channelId, channelScope);
+  const where = scoped ? and(inArray(sm.yearMonth, months), scoped) : inArray(sm.yearMonth, months);
   const skuRows: { ym: string; skuId: number; qty: string | null }[] = await db
     .select({ ym: sm.yearMonth, skuId: sm.skuId, qty: sql<string | null>`sum(${sm.qty})` })
     .from(sm)
-    .where(inArray(sm.yearMonth, months))
+    .where(where)
     .groupBy(sm.yearMonth, sm.skuId);
   const chRows: { ym: string; channelId: number; qty: string | null }[] = await db
     .select({ ym: sm.yearMonth, channelId: sm.channelId, qty: sql<string | null>`sum(${sm.qty})` })
     .from(sm)
-    .where(inArray(sm.yearMonth, months))
+    .where(where)
     .groupBy(sm.yearMonth, sm.channelId);
 
   /* ── 主档标签（SKU 只取有销量的；品牌/渠道主档小表全取） ── */
@@ -185,9 +204,13 @@ function maxImpact(d: DimMaps): number {
 export async function getSalesBridge(
   query: { dim?: BridgeDim; fromYm?: string; toYm?: string },
   dbArg?: AnyDb,
+  user?: ScopeUser,
 ): Promise<SalesBridgeResult> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const dim: BridgeDim = DIMS.includes(query.dim as BridgeDim) ? (query.dim as BridgeDim) : "brand";
+  // D62：本报表没有用户自选渠道，只解析受限范围（未登记范围 = 不限）
+  const channelScope = await resolveChannelScopeByCode(db, user);
+  const channelScopeOut = { forced: channelScope.forced, label: channelScope.scopeLabel };
   const { fromYm, toYm, months } = await resolveWindow(db, query.fromYm, query.toYm);
   const emptySide = (): AttributionSide => ({ ups: [], downs: [] });
   if (!fromYm || !toYm) {
@@ -196,9 +219,10 @@ export async function getSalesBridge(
       from: 0, to: 0, total: 0, items: [], othersDelta: 0,
       byDim: { brand: 0, channel: 0, sku: 0 },
       attribution: { brand: emptySide(), channel: emptySide() },
+      channelScope: channelScopeOut,
     };
   }
-  const dims = await loadDims(db, fromYm, toYm);
+  const dims = await loadDims(db, fromYm, toYm, channelScope);
   const cur = dims[dim];
   const bridge = buildBridge(cur.prev, cur.curr, cur.labelOf, 8);
   return {
@@ -213,6 +237,7 @@ export async function getSalesBridge(
     othersDelta: bridge.othersDelta,
     byDim: { brand: maxImpact(dims.brand), channel: maxImpact(dims.channel), sku: maxImpact(dims.sku) },
     attribution: { brand: attributionOf(dims.brand), channel: attributionOf(dims.channel) },
+    channelScope: channelScopeOut,
   };
 }
 

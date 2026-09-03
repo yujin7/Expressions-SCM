@@ -1,5 +1,6 @@
-import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
-import {  bhDocs, bhLines, skus, users } from "@/db/schema";
+import { and, desc, eq, exists, inArray, or, sql } from "drizzle-orm";
+import {  bhDocs, bhLines, skus, userDataScopes, users } from "@/db/schema";
+import type { ScopeUser } from "@/server/core/data-scope";
 import { dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
@@ -162,15 +163,44 @@ export async function getBh(id: number, dbArg?: AnyDb) {
   return { ...doc, lines, approvals: approvalRows };
 }
 
+/** D62：受限用户 = 非 admin 且登记了 channel 范围（与 core/data-scope 同口径；未加载 = 不限） */
+export type BhListUser = ScopeUser & { id: number };
+
+/**
+ * 备货申请列表。
+ * D62 渠道范围：BH 单没有渠道列，受限 ops 的「本渠道」= 制单人与本人共享至少一个 channel 范围
+ * （user_data_scopes 交集），加上本人制单；admin / 未登记范围的用户不裁剪。
+ */
 export async function listBhs(
   q: string,
   opts: { status?: string; page: number; pageSize: number },
   dbArg?: AnyDb,
+  user?: BhListUser,
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
   const conds = [];
   if (q) conds.push(or(sql`${bhDocs.docNo} ILIKE ${"%" + q + "%"}`, skuLineMatch("bh_lines", "bh_id", bhDocs.id, q)));
   if (opts.status) conds.push(eq(bhDocs.status, opts.status as DocStatus));
+  if (user && !user.roles.includes("admin") && user.channelScope != null) {
+    const allowed = [...new Set(user.channelScope)];
+    conds.push(
+      or(
+        eq(bhDocs.createdBy, user.id),
+        exists(
+          db
+            .select({ one: sql`1` })
+            .from(userDataScopes)
+            .where(
+              and(
+                eq(userDataScopes.userId, bhDocs.createdBy),
+                eq(userDataScopes.scopeKind, "channel"),
+                inArray(userDataScopes.targetId, allowed),
+              ),
+            ),
+        ),
+      ),
+    );
+  }
   const where = conds.length ? and(...conds) : undefined;
 
   const lineAgg = db

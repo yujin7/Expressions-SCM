@@ -19,7 +19,8 @@ export default async function Page({
 }) {
   const user = await getFreshSessionUser();
   const sp = await searchParams;
-  const initialData = await getDashboard(user.roles, {
+  // D62：整个身份（含回查 DB 的渠道范围）交给服务层，受限用户由 resolveChannelScope 强制裁剪
+  const initialData = await getDashboard(user, {
     brand: sp.brand?.trim() || undefined,
     channel: sp.channel?.trim() || undefined,
   });

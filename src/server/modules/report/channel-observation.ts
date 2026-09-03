@@ -667,3 +667,78 @@ export async function refreshChannelObservation(db: ReadDb): Promise<ChannelObse
 
 /** 供内部口径对比：天猫净件数 − 拼多多件数不可相加时仍各自保留 */
 export const channelObservationDiff = (a: string, b: string): string => dSub(a, b, 2);
+
+/* ────────────────────────── D62 店铺 → 渠道映射（只映射，不改任何观察口径） ────────────────────────── */
+
+/** 店铺→渠道别名的固定 scope（aliases.alias_type='channel'，scope='JIANDAOYUN'） */
+export const SHOP_CHANNEL_ALIAS_SCOPE = "JIANDAOYUN";
+
+export interface ShopChannelMap {
+  /** 店铺名 → channels.id；未映射 = null（保留键，便于页面标「未映射」） */
+  byShop: Record<string, number | null>;
+  /** 未映射店铺（去重、保序） */
+  unmapped: string[];
+  mappedCount: number;
+}
+
+/**
+ * 读取店铺→渠道映射：只读 aliases(aliasType=channel, scope=JIANDAOYUN)，按 raw_value 精确匹配店铺名。
+ * 不做模糊/品牌推断——受限用户的裁剪只能建立在人工登记的映射上，未映射店铺一律不归属。
+ */
+export async function loadShopChannelMap(db: ReadDb, shopNames: readonly string[]): Promise<ShopChannelMap> {
+  const shops = [...new Set(shopNames.map((s) => String(s ?? "").trim()).filter(Boolean))];
+  const byShop: Record<string, number | null> = {};
+  for (const s of shops) byShop[s] = null;
+  if (shops.length > 0) {
+    const rows = resultRows<Record<string, unknown>>(await db.execute(sql`
+      SELECT raw_value, target_id FROM aliases
+      WHERE alias_type = 'channel' AND scope = ${SHOP_CHANNEL_ALIAS_SCOPE}
+        AND raw_value IN (${sql.join(shops.map((s) => sql`${s}`), sql`, `)})
+    `));
+    for (const r of rows) {
+      const shop = String(r.raw_value ?? "");
+      const id = num(r.target_id);
+      if (shop in byShop && id > 0) byShop[shop] = id;
+    }
+  }
+  const unmapped = shops.filter((s) => byShop[s] == null);
+  return { byShop, unmapped, mappedCount: shops.length - unmapped.length };
+}
+
+/**
+ * 未映射店铺进 alias_exceptions 复核队列（幂等：同 type/scope/值只排一次；与 dimension/resolver.queueException 同语义，
+ * 这里用 ReadDb.execute 以适配读模型的 db 契约）。返回本次新入队条数。
+ * 观察层的复核队列不是业务过账，不写 audit（与既有导入解析路径一致）。
+ */
+export async function queueUnmappedShops(db: ReadDb, shopNames: readonly string[], context: unknown = { source: "channel-observation" }): Promise<number> {
+  const shops = [...new Set(shopNames.map((s) => String(s ?? "").trim()).filter(Boolean))];
+  let inserted = 0;
+  for (const shop of shops) {
+    const rows = resultRows<Record<string, unknown>>(await db.execute(sql`
+      INSERT INTO alias_exceptions (alias_type, scope, raw_value, context, status)
+      VALUES ('channel', ${SHOP_CHANNEL_ALIAS_SCOPE}, ${shop}, ${JSON.stringify(context)}::jsonb, 'open')
+      ON CONFLICT (alias_type, scope, raw_value) DO NOTHING
+      RETURNING id
+    `));
+    inserted += rows.length;
+  }
+  return inserted;
+}
+
+/**
+ * 按渠道范围裁剪「店铺维」行（纯函数）：scope.channelIds 为 null 时原样拷贝；受限时只留映射到范围内渠道的店铺，
+ * 未映射店铺一律剔除（不能归属就不能给受限用户看）。
+ */
+export function filterShopRowsByChannelScope<T>(
+  rows: readonly T[],
+  getShop: (row: T) => string,
+  map: ShopChannelMap,
+  scope: { channelIds: number[] | null },
+): T[] {
+  if (scope.channelIds === null) return [...rows];
+  const allowed = new Set(scope.channelIds);
+  return rows.filter((r) => {
+    const id = map.byShop[getShop(r).trim()];
+    return id != null && allowed.has(id);
+  });
+}
