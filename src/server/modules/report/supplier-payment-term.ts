@@ -2,7 +2,8 @@
  * D64 供应商账期读模型 `supplier-payment-term/v1`（记分卡页「账期候选」Tab + 第 4 屏部门目标 auto 来源）。
  *
  * 口径（D64；参数 payment_term_min_years / payment_term_target_min_days / payment_term_target_max_days）：
- * - 年采购额 = 该年 **审批通过** PO 的行未税金额（同 purchase-order-metrics 口径）+ 该年生效 JS 结算金额（settle_amount，
+ * - 年采购额 = 该年 **审批通过** PO 的行未税金额（同 purchase-order-metrics 口径，去税/补税唯一实现 `rules/price.ts` normalizeLineNetGross）
+ *   + 该年生效 JS 结算金额（settle_amount，
  *   供应商取 jg_docs.supplier_id）；两者并列后相加为 total。
  * - 分池排名：processor（含加工厂 kinds）→ OA 加工厂池；packaging → 包材池；其余 → 原料池。池内按年 total 降序 1-based。
  * - 候选 = 合作 ≥ payment_term_min_years 年 **且** 当年排名较上一年上升（两年均有排名）。
@@ -12,18 +13,18 @@
  * - 达成率 = 候选中已达标 ÷ 候选数（SPT-5：department_goals(purchasing) auto 实际值来源）。
  * - 账期类采购额占比 = 月结类供应商当年采购额 ÷ 全部当年采购额（代理指标，**非应付余额**，血缘 partial）。
  * - 金额只对 PRICE_VISIBLE_ROLES 可见（stripSupplierPaymentTermMoney）；名次保留。
+ * - 缓存：source_binding 绑 po_docs / js_docs / approvals / suppliers 事实 + sys_params 里三项账期参数当前值（改口径即失效重算）。
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { getDbAsync } from "@/db";
-import { dAdd, dCmp, dDiv, dMoney, dMul } from "@/server/core/decimal";
+import { dAdd, dCmp, dDiv, dMul } from "@/server/core/decimal";
 import { canSeePrices } from "@/server/core/dto";
 import { getNumParam } from "@/server/core/params";
+import { type AnyDb } from "@/server/core/svc";
 import { shanghaiDay } from "@/server/rules/po-cycle";
+import { normalizeLineNetGross } from "@/server/rules/price";
 import { ORDERED_PO_STATUSES } from "./purchase-order-metrics";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
-type AnyDb = any;
 
 export const SUPPLIER_PAYMENT_TERM_KEY = "supplier-payment-term/v1";
 const ACTIVE_JS_STATUSES = ["approved", "in_progress", "completed"] as const;
@@ -124,7 +125,24 @@ function attainmentOf(type: PaymentTermType | null, creditDays: number | null, t
   return creditDays >= targetMin ? "attained" : "below_target";
 }
 
-async function sourceBinding(db: AnyDb, year: number): Promise<string> {
+interface PaymentTermParams {
+  minYears: number;
+  targetMinDays: number;
+  targetMaxDays: number;
+}
+
+/** 账期参数（sys_params，PARAM_DEFS 已登记；测试传 db 走实时不走缓存） */
+async function readPaymentTermParams(db: AnyDb): Promise<PaymentTermParams> {
+  const [minYears, targetMinDays, targetMaxDays] = await Promise.all([
+    getNumParam("payment_term_min_years", 2, db),
+    getNumParam("payment_term_target_min_days", 45, db),
+    getNumParam("payment_term_target_max_days", 60, db),
+  ]);
+  return { minYears, targetMinDays, targetMaxDays };
+}
+
+/** 绑定：事实表 max(id)+行数 + 供应商档案更新时点 + 统计年 + 账期口径参数（改参数即失效重算） */
+async function sourceBinding(db: AnyDb, year: number, p: PaymentTermParams): Promise<string> {
   const [po] = await db
     .select({ maxId: sql<number>`coalesce(max(${schema.poDocs.id}), 0)::int`, n: sql<number>`count(*)::int` })
     .from(schema.poDocs);
@@ -138,18 +156,15 @@ async function sourceBinding(db: AnyDb, year: number): Promise<string> {
   const [sup] = await db
     .select({ n: sql<number>`count(*)::int`, updated: sql<string>`coalesce(max(${schema.suppliers.updatedAt})::text, '')` })
     .from(schema.suppliers);
-  return `po:${po.maxId}/${po.n}|js:${js.maxId}/${js.n}|appr:${ap.maxId}|sup:${sup.n}/${sup.updated}|year:${year}`;
+  return `po:${po.maxId}/${po.n}|js:${js.maxId}/${js.n}|appr:${ap.maxId}|sup:${sup.n}/${sup.updated}|year:${year}|pt:${p.minYears}/${p.targetMinDays}/${p.targetMaxDays}`;
 }
 
 export async function computeSupplierPaymentTerm(db: AnyDb, opts: { asOf?: Date; year?: number } = {}): Promise<SupplierPaymentTermModel> {
   const today = shanghaiDay(opts.asOf ?? new Date())!;
   const year = opts.year ?? Number(today.slice(0, 4));
   const years = [year, year - 1, year - 2];
-  const [minYears, targetMinDays, targetMaxDays] = await Promise.all([
-    getNumParam("payment_term_min_years", 2, db),
-    getNumParam("payment_term_target_min_days", 45, db),
-    getNumParam("payment_term_target_max_days", 60, db),
-  ]);
+  const params = await readPaymentTermParams(db);
+  const { minYears, targetMinDays, targetMaxDays } = params;
 
   const suppliers: {
     id: number; code: string; name: string; kinds: string[]; status: string; paymentTerm: string | null;
@@ -224,8 +239,7 @@ export async function computeSupplierPaymentTerm(db: AnyDb, opts: { asOf?: Date;
     if (!day) continue;
     const y = Number(day.slice(0, 4));
     if (!years.includes(y)) continue;
-    const amount = dMul(l.price, l.qty, 6);
-    const net = l.taxIncluded ? dDiv(amount, dAdd("1", dDiv(l.taxRatePct, "100", 6), 6), 2) : dMoney(amount);
+    const { net } = normalizeLineNetGross({ price: l.price, qty: l.qty, taxIncluded: l.taxIncluded, taxRatePct: l.taxRatePct });
     const k = `${l.supplierId}:${y}`;
     poNet.set(k, dAdd(poNet.get(k) ?? "0", net, 2));
   }
@@ -331,12 +345,12 @@ export async function computeSupplierPaymentTerm(db: AnyDb, opts: { asOf?: Date;
   return {
     key: SUPPLIER_PAYMENT_TERM_KEY,
     authority: "ledger",
-    sourceBinding: await sourceBinding(db, year),
+    sourceBinding: await sourceBinding(db, year, params),
     builtAt: new Date().toISOString(),
     asOf: today,
     year,
     moneyVisible: true,
-    params: { minYears, targetMinDays, targetMaxDays },
+    params,
     summary: {
       suppliers: rows.length,
       withSpend: rows.filter((r) => r.spend[0].total != null).length,
@@ -376,7 +390,7 @@ export async function refreshSupplierPaymentTerm(dbArg?: AnyDb): Promise<Supplie
 export async function loadSupplierPaymentTerm(dbArg?: AnyDb): Promise<SupplierPaymentTermModel> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const year = Number(shanghaiDay(new Date())!.slice(0, 4));
-  const binding = await sourceBinding(db, year);
+  const binding = await sourceBinding(db, year, await readPaymentTermParams(db));
   const [row] = await db
     .select({ payload: schema.reportReadModelCache.payload, sourceBinding: schema.reportReadModelCache.sourceBinding })
     .from(schema.reportReadModelCache)

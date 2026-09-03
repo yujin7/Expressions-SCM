@@ -4,16 +4,30 @@ import {
   approvals, brands, poDocs, poLines, reportReadModelCache, shDocs, skus, spus, suppliers, sysParams, users, warehouses,
 } from "@/db/schema";
 import {
-  computePurchaseOrderMetrics, evaluateOtif, loadPurchaseOrderMetrics, purchaseOrderCockpitBlock,
+  computePurchaseOrderMetrics, evaluateOtif, isFullReceipt, loadPurchaseOrderMetrics, purchaseOrderCockpitBlock,
   PURCHASE_ORDER_METRICS_KEY, refreshPurchaseOrderMetrics, stripPurchaseOrderMoney,
 } from "@/server/modules/report/purchase-order-metrics";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 /**
  * D63 采购订单指标读模型：已下单 = 审批通过时点；金额未税为主含税并列；周期 = 审批 → 首批 SH；
- * 降本基线 = 上一年度数量加权未税均价（无则首个）；OTIF 承诺日 + 窗口。
+ * 降本基线 = 上一年度数量加权未税均价（无则首个）；OTIF 承诺日 + 窗口；全收与足量同口径（含容差）；
+ * 月桶只取当年 01 月至当前月；OTIF 参数进 source_binding。
  */
 const ASOF = new Date("2026-09-03T02:00:00.000Z");
+
+describe("isFullReceipt（全收 = Σ已收 ≥ Σ应收 × (1 − 容差%)，decimal 字符串比较）", () => {
+  it("容差 0：须收满；应收 ≤ 0 永不全收", () => {
+    expect(isFullReceipt("100.0000", "100.0000", 0)).toBe(true);
+    expect(isFullReceipt("100.0000", "99.9999", 0)).toBe(false);
+    expect(isFullReceipt("0", "10", 0)).toBe(false);
+  });
+  it("容差 2%：98 算全收、97.99 不算；超收也算", () => {
+    expect(isFullReceipt("100", "98", 2)).toBe(true);
+    expect(isFullReceipt("100", "97.99", 2)).toBe(false);
+    expect(isFullReceipt("100", "120", 2)).toBe(true);
+  });
+});
 
 describe("evaluateOtif（单张 PO 判定）", () => {
   const p = { windowDays: 2, qtyTolerancePct: 0 };
@@ -35,6 +49,7 @@ describe("purchase-order-metrics/v1 读模型（PGlite）", () => {
   let userId = 0;
   let supplierAId = 0;
   let sku1Id = 0;
+  let warehouseId = 0;
 
   beforeAll(async () => {
     ({ db } = await createTestDb());
@@ -54,6 +69,7 @@ describe("purchase-order-metrics/v1 读模型（PGlite）", () => {
     ]).returning();
     sku1Id = sku1.id;
     const [wh] = await db.insert(warehouses).values({ code: "POM-WH", name: "原料仓", kind: "raw" }).returning();
+    warehouseId = wh.id;
 
     const insertPo = async (docNo: string, supplierId: number, status: "approved" | "in_progress" | "completed" | "draft" | "void", createdAt: string, expectedDate: string | null) => {
       const [po] = await db.insert(poDocs).values({ docNo, status, supplierId, createdBy: userId, createdAt: new Date(createdAt), expectedDate }).returning();
@@ -101,8 +117,20 @@ describe("purchase-order-metrics/v1 读模型（PGlite）", () => {
     expect(m.summary.orderedPoAllTime).toBe(3);
     const march = m.byMonth.find((r) => r.month === "2026-03")!;
     expect(march).toMatchObject({ poCount: 1, lineCount: 2, orderedBaseQty: "105.0000", netAmount: "1100.00", grossAmount: "1243.00" });
+    // 月桶只取当年 01 月至当前月：2026-01..2026-09 共 9 桶，不含 2025 年任何月份
+    expect(m.byMonth.map((r) => r.month)).toEqual(["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09"]);
+    expect(m.byMonth.every((r) => r.month.startsWith("2026-"))).toBe(true);
+    expect(m.byMonth.find((r) => r.month === "2026-01")).toMatchObject({ poCount: 0, lineCount: 0, orderedBaseQty: "0.0000" });
+    expect(m.limitations.some((l) => l.includes("2026-01 至 2026-09"))).toBe(true);
+  });
+
+  it("历史年份月桶取 01–12 月；上一年 6 月的基线 PO 落在 2025-06", async () => {
+    const m = await computePurchaseOrderMetrics(db, { asOf: ASOF, year: 2025 });
+    expect(m.month).toBe("2025-12");
     expect(m.byMonth).toHaveLength(12);
-    expect(m.byMonth.at(-1)!.month).toBe("2026-09");
+    expect(m.byMonth[0].month).toBe("2025-01");
+    expect(m.byMonth.at(-1)!.month).toBe("2025-12");
+    expect(m.byMonth.find((r) => r.month === "2025-06")).toMatchObject({ poCount: 1, orderedBaseQty: "200.0000", netAmount: "2200.00" });
   });
 
   it("订单至交付 = 审批 → 首批 SH（样本不足不出分位）；OTIF 承诺日 + 窗口；缺承诺日不可评", async () => {
@@ -145,11 +173,15 @@ describe("purchase-order-metrics/v1 读模型（PGlite）", () => {
     expect(stripPurchaseOrderMoney(m, ["finance"]).summary.ytd.netAmount).toBe("2000.00");
   });
 
-  it("OTIF 参数可改：足量容差与窗口来自 sys_params", async () => {
+  it("OTIF 参数可改：足量容差与窗口来自 sys_params，并进入 source_binding", async () => {
+    const before = await computePurchaseOrderMetrics(db, { asOf: ASOF });
+    expect(before.sourceBinding).toContain("|otif:2/0");
     await db.insert(sysParams).values({ scope: "global", key: "otif_window_days", value: "0" });
     const m = await computePurchaseOrderMetrics(db, { asOf: ASOF });
     expect(m.params.otifWindowDays).toBe(0);
     expect(m.summary.otif.hit).toBe(1); // 3-15 收齐早于承诺 3-20，窗口 0 仍命中
+    expect(m.sourceBinding).toContain("|otif:0/0");
+    expect(m.sourceBinding).not.toBe(before.sourceBinding);
     await db.delete(sysParams).where(eq(sysParams.key, "otif_window_days"));
   });
 
@@ -166,5 +198,31 @@ describe("purchase-order-metrics/v1 读模型（PGlite）", () => {
     const fresh = await loadPurchaseOrderMetrics({}, db);
     expect(fresh.sourceBinding).not.toBe(built.sourceBinding);
     expect(fresh.summary.ytd.poCount).toBe(3);
+  });
+
+  it("全收带足量容差：收 98/100 在容差 0 下未收齐（miss、不计全收周期），容差 2% 下为全收（hit、计全收周期）；改参数使缓存绑定失效重算", async () => {
+    // PO-T：6-01 审批，承诺 6-20，sku1 10 箱×10 = 100 支，6-18 收 98 支（缺 2%）
+    const [poT] = await db.insert(poDocs).values({ docNo: "POM-T", status: "in_progress", supplierId: supplierAId, createdBy: userId, createdAt: new Date("2026-06-01T02:00:00Z"), expectedDate: "2026-06-20" }).returning();
+    await db.insert(approvals).values({ docType: "po", docId: poT.id, approverId: userId, action: "approve", cycle: 1, createdAt: new Date("2026-06-01T06:00:00Z") });
+    await db.insert(poLines).values({ poId: poT.id, skuId: sku1Id, lineType: "raw", purchaseUom: "箱", uomFactor: "10", qty: "10", price: "113.00", taxIncluded: true, taxRatePct: "13", receivedQty: "98" });
+    await db.insert(shDocs).values({ docNo: "SH-POM-T1", status: "approved", sourceType: "po", sourceId: poT.id, warehouseId, createdBy: userId, createdAt: new Date("2026-06-18T02:00:00Z") });
+
+    const strict = await refreshPurchaseOrderMetrics(db);
+    expect(strict.params.otifQtyTolerancePct).toBe(0);
+    // 承诺 6-20 + 2 天窗口早已过、未收齐 → miss；全收周期样本仍只有 PO-A
+    expect(strict.summary.otif).toMatchObject({ hit: 1, miss: 1, pending: 0, unevaluable: 2, evaluable: 2, rate: 0.5 }); // 不可评 2：PO-B + 上一用例的 PO-C（均无承诺日）
+    expect(strict.summary.cycle).toMatchObject({ n: 2, nFull: 1 });
+    expect((await loadPurchaseOrderMetrics({}, db)).builtAt).toBe(strict.builtAt);
+
+    await db.insert(sysParams).values({ scope: "global", key: "otif_qty_tolerance_pct", value: "2" });
+    const tolerant = await loadPurchaseOrderMetrics({}, db);
+    expect(tolerant.sourceBinding).not.toBe(strict.sourceBinding);
+    expect(tolerant.sourceBinding).toContain("|otif:2/2");
+    expect(tolerant.params.otifQtyTolerancePct).toBe(2);
+    // 98 ≥ 100 × 0.98 → 全收；最后一张 SH 6-18 ≤ 6-22 → hit；全收周期多一条 17 天样本
+    expect(tolerant.summary.otif).toMatchObject({ hit: 2, miss: 0, pending: 0, unevaluable: 2, evaluable: 2, rate: 1 });
+    expect(tolerant.summary.cycle).toMatchObject({ n: 2, nFull: 2 });
+    expect(tolerant.limitations.some((l) => l.includes("(1 − 2%)"))).toBe(true);
+    await db.delete(sysParams).where(eq(sysParams.key, "otif_qty_tolerance_pct"));
   });
 });

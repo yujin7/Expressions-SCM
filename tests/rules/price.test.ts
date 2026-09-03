@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeToBaseNet, checkPriceDeviation } from "@/server/rules/price";
+import { normalizeToBaseNet, checkPriceDeviation, normalizeLineNetGross } from "@/server/rules/price";
 
 describe("R1 normalizeToBaseNet（基础单位未税比价口径）", () => {
   it("120元/箱、12个/箱、含税13% → ≈8.85 元/个（未税）", () => {
@@ -95,5 +95,25 @@ describe("R1 checkPriceDeviation（容差与首购免检）", () => {
     });
     expect(r.deviationPct).toBeNull();
     expect(r.requiresPc).toBe(false);
+  });
+});
+
+describe("normalizeLineNetGross（D63/D64 行未税/含税并列，采购订单口径唯一实现）", () => {
+  it("含税报价：113.00 × 10、13% → 未税 1000.00 / 含税 1130.00", () => {
+    expect(normalizeLineNetGross({ price: "113.00", qty: "10", taxIncluded: true, taxRatePct: "13" })).toEqual({ net: "1000.00", gross: "1130.00" });
+  });
+
+  it("未税报价：20.00 × 5、13% → 未税 100.00 / 含税 113.00", () => {
+    expect(normalizeLineNetGross({ price: "20.00", qty: "5", taxIncluded: false, taxRatePct: "13" })).toEqual({ net: "100.00", gross: "113.00" });
+  });
+
+  it("含税去税按 scale 6 中间量半进位落金额 scale 2", () => {
+    expect(normalizeLineNetGross({ price: "124.30", qty: "20", taxIncluded: true, taxRatePct: "13" })).toEqual({ net: "2200.00", gross: "2486.00" });
+    expect(normalizeLineNetGross({ price: "101.70", qty: "10", taxIncluded: true, taxRatePct: "13" })).toEqual({ net: "900.00", gross: "1017.00" });
+  });
+
+  it("零税率：未税 = 含税；小数数量不丢精度", () => {
+    expect(normalizeLineNetGross({ price: "9.99", qty: "3.5", taxIncluded: false, taxRatePct: "0" })).toEqual({ net: "34.97", gross: "34.97" });
+    expect(normalizeLineNetGross({ price: "9.99", qty: "3.5", taxIncluded: true, taxRatePct: "0" })).toEqual({ net: "34.97", gross: "34.97" });
   });
 });
