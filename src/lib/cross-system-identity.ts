@@ -467,6 +467,15 @@ export const CROSS_SYSTEM_IDENTITY_STREAM_CONTRACTS: readonly CrossSystemIdentit
       sku: notImplemented("品牌档案不含 SKU", "仅作品牌维度对照"),
     },
   },
+  {
+    source: "JIANDAOYUN",
+    stream: "bonded-warehouse-order-observation",
+    identities: {
+      sku: implemented("商品编码走 sku_code 别名解析，未命中再按条形码精确唯一命中；仍不中进 JIANDAOYUN 认领队列，不自动认领"),
+      warehouse: implemented("仓库名称走 warehouse 别名解析，未命中进认领队列；保税仓为快照仓，出库只作观察"),
+      shop: notImplemented("店铺名称已保留但尚未进入受控店铺治理", "店铺档案流落地后按来源作用域逐值认领"),
+    },
+  },
 ];
 
 const EXTRACTION_CONTRACT_BY_KEY = new Map(

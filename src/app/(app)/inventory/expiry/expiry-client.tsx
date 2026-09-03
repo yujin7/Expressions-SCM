@@ -4,7 +4,7 @@ import SearchInput from "@/components/SearchInput";
 
 /** 效期批次清单（仓库操作层）：逐批次×仓库的实物处置视图；PMC 决策视图见「风险库存处置」 */
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { App, Select, Table, Tag, Tooltip, Typography } from "antd";
+import { App, Card, Select, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import { exportCsv } from "@/components/exportCsv";
@@ -28,11 +28,21 @@ interface Row {
   bucket: string;
 }
 
+interface BrandMatrixRow {
+  brand: string;
+  buckets: Record<string, { batches: number; qty: number }>;
+  batches: number;
+  qty: number;
+}
+
 interface Data {
   today: string;
   rows: Row[];
   total: number;
   bucketCounts: Record<string, { batches: number; qty: number }>;
+  brandMatrix: BrandMatrixRow[];
+  brands: string[];
+  brand: string | null;
 }
 
 const BUCKETS: { key: string; label: string; color: string }[] = [
@@ -64,13 +74,14 @@ function ExpiryInner() {
   // 列表页状态平台（E6-P1）：筛选/分页进 URL（?q= 风险库存处置点击直达），密度与已保存视图存本地
   const listState = useListState({
     key: "expiry",
-    defaults: { q: "", bucket: "expired", warehouseId: "" },
+    defaults: { q: "", bucket: "expired", warehouseId: "", brand: "" },
     defaultPageSize: 50,
   });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const bucket = filters.bucket === BUCKET_ALL ? "" : filters.bucket;
   const warehouseId = filters.warehouseId ? Number(filters.warehouseId) : null;
+  const brand = filters.brand || "";
   const [warehouses, setWarehouses] = useState<{ id: number; name: string }[]>([]);
   useEffect(() => {
     fetch("/api/master/warehouse?page=1&pageSize=500")
@@ -88,13 +99,14 @@ function ExpiryInner() {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (bucket) params.set("bucket", bucket);
       if (warehouseId) params.set("warehouseId", String(warehouseId));
+      if (brand) params.set("brand", brand);
       setData(await fetchJson<Data>(`/api/inventory/expiry?${params.toString()}`));
     } catch (e) {
       message.error((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [q, bucket, warehouseId, page, pageSize, message]);
+  }, [q, bucket, warehouseId, brand, page, pageSize, message]);
   useEffect(() => { void load(); }, [load]);
 
   const doExport = async () => {
@@ -104,6 +116,7 @@ function ExpiryInner() {
       const params = new URLSearchParams({ q, page: String(p2), pageSize: "500" });
       if (bucket) params.set("bucket", bucket);
       if (warehouseId) params.set("warehouseId", String(warehouseId));
+      if (brand) params.set("brand", brand);
       const d = await fetchJson<Data>(`/api/inventory/expiry?${params.toString()}`);
       serverTotal = d.total;
       all.push(...d.rows);
@@ -143,13 +156,44 @@ function ExpiryInner() {
     { title: "数量", dataIndex: "qty", width: 100, align: "right", render: (v: number) => formatQty(String(v)) },
   ];
 
+  const matrixColumns: ColumnsType<BrandMatrixRow> = [
+    {
+      title: "品牌", dataIndex: "brand", width: 140, fixed: "left",
+      render: (v: string) => (
+        <a onClick={() => listState.setFilter({ brand: brand === v ? "" : v, bucket: BUCKET_ALL })} style={{ fontWeight: brand === v ? 600 : undefined }}>{v}</a>
+      ),
+    },
+    ...BUCKETS.map((b) => ({
+      title: b.label, key: b.key, align: "right" as const, width: 120,
+      render: (_: unknown, r: BrandMatrixRow) => {
+        const c = r.buckets[b.key] ?? { batches: 0, qty: 0 };
+        return c.batches === 0
+          ? <Typography.Text type="secondary">—</Typography.Text>
+          : <a onClick={() => listState.setFilter({ brand: r.brand, bucket: b.key })}>{formatQty(String(c.qty))}<Typography.Text type="secondary">（{c.batches} 批）</Typography.Text></a>;
+      },
+    })),
+    { title: "合计", key: "total", align: "right", width: 130, render: (_, r) => <Typography.Text strong>{formatQty(String(r.qty))}<Typography.Text type="secondary">（{r.batches} 批）</Typography.Text></Typography.Text> },
+  ];
+
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>效期批次</Typography.Title>
       <CaliberNote
         summary={<>批次 × 仓库的实物处置视图；按 SKU 的决策见「风险库存处置」。{data ? <>　口径日 {data.today}，剩余天数升序。</> : null}</>}
-        detail={<div><p>数据源：batch_stocks 参考层（效期盘点载体，非账本）。七段位与经营驾驶舱同源：已过期 / ≤3 月 / 3–6 月 / 6–12 月 / 12–18 月 / 18–24 月 / &gt;24 月。</p></div>}
+        detail={<div><p>数据源：batch_stocks 参考层（效期盘点载体，非账本）。七段位与经营驾驶舱同源：已过期 / ≤3 月 / 3–6 月 / 6–12 月 / 12–18 月 / 18–24 月 / &gt;24 月。</p><p>「段位 × 品牌」矩阵按当前仓库筛选统计（不受段位/品牌/搜索影响）；点击单元格直达该品牌该段位的批次；无品牌 SKU 归「(未设品牌)」。指标 id：expiryByBrand。</p></div>}
       />
+      <Card size="small" title="效期分布 · 段位 × 品牌" style={{ marginBottom: 12 }} extra={brand ? <a onClick={() => listState.setFilter({ brand: "" })}>清除品牌筛选「{brand}」</a> : null}>
+        <Table<BrandMatrixRow>
+          rowKey="brand"
+          size="small"
+          loading={loading && !data}
+          pagination={false}
+          columns={matrixColumns}
+          dataSource={data?.brandMatrix ?? []}
+          scroll={{ x: "max-content" }}
+          rowClassName={(r) => (brand === r.brand ? "ant-table-row-selected" : "")}
+        />
+      </Card>
       <ListToolbar
         state={listState}
         onExport={() => void doExport()}
@@ -173,6 +217,16 @@ function ExpiryInner() {
                 </Tag.CheckableTag>
               </Tooltip>
             ))}
+            <Select
+              allowClear
+              showSearch
+              placeholder="全部品牌"
+              style={{ width: 150 }}
+              optionFilterProp="label"
+              options={(data?.brands ?? []).map((b) => ({ value: b, label: b }))}
+              value={brand || undefined}
+              onChange={(v) => listState.setFilter({ brand: v ?? "" })}
+            />
             <Select
               allowClear
               showSearch

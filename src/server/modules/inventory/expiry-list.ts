@@ -5,6 +5,9 @@
  * 口径：batch_stocks 参考层（非账本），qty>0 且 expiryDate 非空；
  * daysLeft = expiryDate − 今日（Asia/Shanghai，可为负）；段位与驾驶舱七段完全对齐。
  * 无金额字段，免脱敏；只读。
+ *
+ * 2026-09-03 W2-J（BI-R3）：增 brand 筛选与「段位 × 品牌」矩阵（brandMatrix），
+ * 矩阵与 bucketCounts 都在段位/搜索筛选**之前**统计（仓库筛选之后），指标 id expiryByBrand。
  */
 import { and, eq, gt, isNotNull } from "drizzle-orm";
 import { getDbAsync } from "@/db";
@@ -33,12 +36,31 @@ export interface ExpiryBatchRow {
   bucket: ExpiryBucket;
 }
 
+export interface ExpiryBrandMatrixRow {
+  brand: string;
+  buckets: Record<ExpiryBucket, { batches: number; qty: number }>;
+  batches: number;
+  qty: number;
+}
+
 export interface ExpiryListResult {
   today: string;
   rows: ExpiryBatchRow[];
   total: number;
   bucketCounts: Record<ExpiryBucket, { batches: number; qty: number }>;
+  /** 段位 × 品牌矩阵（仓库筛选后、段位/搜索/品牌筛选前），按总数量降序；无品牌归「(未设品牌)」 */
+  brandMatrix: ExpiryBrandMatrixRow[];
+  /** 可选品牌（矩阵行名） */
+  brands: string[];
+  /** 当前品牌筛选（回显） */
+  brand: string | null;
 }
+
+export const EXPIRY_NO_BRAND = "(未设品牌)";
+
+const EXPIRY_BUCKETS: ExpiryBucket[] = ["expired", "m3", "m6", "m12", "m18", "m24", "rest"];
+const emptyBuckets = (): Record<ExpiryBucket, { batches: number; qty: number }> =>
+  Object.fromEntries(EXPIRY_BUCKETS.map((b) => [b, { batches: 0, qty: 0 }])) as Record<ExpiryBucket, { batches: number; qty: number }>;
 
 export function expiryBucketOf(daysLeft: number): ExpiryBucket {
   // 边界走 core/stock-view.EXPIRY_TIER_DAYS（spec/07 N3 七段位口径 92/183），
@@ -53,7 +75,7 @@ export function expiryBucketOf(daysLeft: number): ExpiryBucket {
 }
 
 export async function listExpiryBatches(
-  query: { q?: string; bucket?: string; warehouseId?: number; page?: number; pageSize?: number },
+  query: { q?: string; bucket?: string; warehouseId?: number; brand?: string; page?: number; pageSize?: number },
   dbArg?: AnyDb,
 ): Promise<ExpiryListResult> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
@@ -92,21 +114,24 @@ export async function listExpiryBatches(
     return { ...r, qty: num(r.qty), daysLeft, bucket: expiryBucketOf(daysLeft) };
   });
 
-  const bucketCounts: Record<ExpiryBucket, { batches: number; qty: number }> = {
-    expired: { batches: 0, qty: 0 },
-    m3: { batches: 0, qty: 0 },
-    m6: { batches: 0, qty: 0 },
-    m12: { batches: 0, qty: 0 },
-    m18: { batches: 0, qty: 0 },
-    m24: { batches: 0, qty: 0 },
-    rest: { batches: 0, qty: 0 },
-  };
+  const bucketCounts = emptyBuckets();
+  const matrix = new Map<string, ExpiryBrandMatrixRow>();
   for (const r of all) {
     bucketCounts[r.bucket].batches++;
     bucketCounts[r.bucket].qty += r.qty;
+    const brandKey = r.brand ?? EXPIRY_NO_BRAND;
+    const row = matrix.get(brandKey) ?? { brand: brandKey, buckets: emptyBuckets(), batches: 0, qty: 0 };
+    row.buckets[r.bucket].batches++;
+    row.buckets[r.bucket].qty += r.qty;
+    row.batches++;
+    row.qty += r.qty;
+    matrix.set(brandKey, row);
   }
+  const brandMatrix = [...matrix.values()].sort((a, b) => b.qty - a.qty || a.brand.localeCompare(b.brand, "zh-CN"));
+  const brand = (query.brand ?? "").trim() || null;
 
   let filtered = all;
+  if (brand) filtered = filtered.filter((r) => (r.brand ?? EXPIRY_NO_BRAND) === brand);
   if (query.bucket && query.bucket in bucketCounts) filtered = filtered.filter((r) => r.bucket === query.bucket);
   if (q) {
     filtered = filtered.filter(
@@ -122,5 +147,8 @@ export async function listExpiryBatches(
     rows: filtered.slice((page - 1) * pageSize, page * pageSize),
     total: filtered.length,
     bucketCounts,
+    brandMatrix,
+    brands: brandMatrix.map((r) => r.brand),
+    brand,
   };
 }

@@ -17,6 +17,7 @@ import { refreshJiandaoyunExternalDemandReadModel } from "@/server/modules/repor
 import { refreshPlatformSkuIdentityGap } from "@/server/modules/report/platform-sku-identity-gap";
 import { refreshExternalVelocity } from "@/server/modules/report/external-velocity";
 import { refreshChannelObservation } from "@/server/modules/report/channel-observation";
+import { refreshBondedOutbound } from "@/server/modules/report/bonded-outbound";
 
 type JiandaoyunSkipped = { status: "skipped"; reason: string };
 const EXTERNAL_DEMAND_CONTRACTS = new Set([
@@ -37,7 +38,18 @@ const EXTERNAL_DEMAND_CONTRACTS = new Set([
   "vip-bundle-crosswalk-observation",
   "tmall-product-traffic-observation",
   "tmall-sku-cost-pnl-observation",
+  // 2026-09-03 W2-J：全渠道观察 /v4 用店铺档案/品牌档案归属品牌、接入拼多多日级流；变了同样要重建
+  "shop-master-observation",
+  "brand-master-observation",
+  "pdd-product-daily-observation",
+  "pdd-shop-daily-observation",
 ]);
+/** 保税仓出库观察（bonded-outbound/v1）只绑定保税订单流 */
+const BONDED_OUTBOUND_CONTRACTS = new Set(["bonded-warehouse-order-observation"]);
+
+export function shouldRefreshBondedOutbound(contractKeys: readonly string[]): boolean {
+  return contractKeys.some((key) => BONDED_OUTBOUND_CONTRACTS.has(key));
+}
 
 export function shouldRefreshJiandaoyunDemandModels(contractKeys: readonly string[]): boolean {
   return contractKeys.some((key) => EXTERNAL_DEMAND_CONTRACTS.has(key));
@@ -86,6 +98,20 @@ async function refreshDemandReadModel(db: AnyDb) {
   };
 }
 
+async function refreshBondedOutboundSummary(db: AnyDb) {
+  const model = await refreshBondedOutbound(db);
+  return {
+    state: model.state,
+    sourceAsOf: model.sourceAsOf,
+    anchorDate: model.anchorDate,
+    batches: model.batches,
+    qty30: model.totals.qty30,
+    orders30: model.totals.orders30,
+    skuMappedPct: model.totals.skuMappedPct,
+    warehouses: model.byWarehouse.length,
+  };
+}
+
 function runtime():
   | { client: JiandaoyunClient; actorId: number }
   | JiandaoyunSkipped {
@@ -131,7 +157,10 @@ export async function runJiandaoyunContractSync(
   const readModel = EXTERNAL_DEMAND_CONTRACTS.has(contract.key)
     ? await refreshDemandReadModel(db)
     : null;
-  return { status: "succeeded" as const, ...summary, readModel };
+  const bondedOutbound = BONDED_OUTBOUND_CONTRACTS.has(contract.key)
+    ? await refreshBondedOutboundSummary(db)
+    : null;
+  return { status: "succeeded" as const, ...summary, readModel, bondedOutbound };
 }
 
 export async function runJiandaoyunConfiguredFormSyncs(db: AnyDb) {
@@ -148,13 +177,18 @@ export async function runJiandaoyunConfiguredFormSyncs(db: AnyDb) {
   for (const contract of contracts) {
     results.push(await syncJiandaoyunForm(db, { ...ready, contract }));
   }
-  const readModel = shouldRefreshJiandaoyunDemandModels(contracts.map((contract) => contract.key))
+  const contractKeys = contracts.map((contract) => contract.key);
+  const readModel = shouldRefreshJiandaoyunDemandModels(contractKeys)
     ? await refreshDemandReadModel(db)
+    : null;
+  const bondedOutbound = shouldRefreshBondedOutbound(contractKeys)
+    ? await refreshBondedOutboundSummary(db)
     : null;
   return {
     status: "succeeded" as const,
     contracts: results.length,
     results,
     readModel,
+    bondedOutbound,
   };
 }

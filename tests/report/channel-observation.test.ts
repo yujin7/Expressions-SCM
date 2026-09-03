@@ -289,4 +289,94 @@ describe("平台日快照的 review 批次（业务键重复）不整批丢弃�
       await client.close();
     }
   });
+
+  it("/v4：未映射店铺按店铺档案归属品牌（品牌档案补名），档案缺失才按店名回退；输出品牌×平台矩阵与归属来源计数", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "店铺档案责任人" }).returning();
+      await db.insert(schema.brands).values([{ code: "NING", nameCn: "NING" }, { code: "DEV", nameCn: "DEVIANCE", nameEn: "Deviance" }]);
+      const [sales, shopMaster, brandMaster] = await db.insert(schema.importJobs).values([
+        { template: "jdy_tmall_sku_sales_observation", filename: "s", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+        { template: "jdy_shop_master_observation", filename: "shop", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+        { template: "jdy_brand_master_observation", filename: "brand", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+      ]).returning();
+      const finishedAt = new Date("2026-09-02T03:00:00.000Z");
+      await db.insert(schema.integrationRuns).values([
+        { connector: "jdy", stream: "tmall-sku-sales-observation", idempotencyKey: "s", status: "succeeded", importJobId: sales.id, finishedAt },
+        // 维表：review 批次也可用（只经引用）
+        { connector: "jdy", stream: "shop-master-observation", idempotencyKey: "shop", status: "succeeded", importJobId: shopMaster.id, finishedAt, requestScope: { qualityBlocked: true } },
+        { connector: "jdy", stream: "brand-master-observation", idempotencyKey: "brand", status: "succeeded", importJobId: brandMaster.id, finishedAt },
+      ]);
+      const multiBrandShop = "不含品牌名称的多品牌店";
+      const idOnlyShop = "只有品牌ID的店";
+      const guessShop = "NING海外旗舰店";
+      await db.insert(schema.stagingRows).values([
+        { importJobId: brandMaster.id, rowNo: 1, status: "pending", targetTable: "jdy_brand_master_observation", payload: { data: { brandId: "B-DEV", brandName: "Deviance", enabled: "是" } } },
+        { importJobId: shopMaster.id, rowNo: 1, status: "pending", targetTable: "jdy_shop_master_observation", payload: { data: { shopName: multiBrandShop, platformName: "天猫", brandName: "NING" } } },
+        { importJobId: shopMaster.id, rowNo: 2, status: "pending", targetTable: "jdy_shop_master_observation", payload: { data: { shopName: idOnlyShop, platformName: "天猫", brandId: "B-DEV" } } },
+        { importJobId: sales.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_sales_observation", payload: { data: { statisticalDate: "2026-09-01", shopName: multiBrandShop, skuId: "P1", paidNumber: "5", paidAmount: "50" } } },
+        { importJobId: sales.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_sku_sales_observation", payload: { data: { statisticalDate: "2026-09-01", shopName: idOnlyShop, skuId: "P2", paidNumber: "3", paidAmount: "30" } } },
+        { importJobId: sales.id, rowNo: 3, status: "pending", targetTable: "jdy_tmall_sku_sales_observation", payload: { data: { statisticalDate: "2026-09-01", shopName: guessShop, skuId: "P3", paidNumber: "2", paidAmount: "20" } } },
+      ]);
+      const o = await computeChannelObservation(db);
+      const tmall = o.platforms.find((p) => p.platform === "天猫")!;
+      expect(tmall.byBrand).toEqual([
+        { brand: "NING", units: 7, amount: "70.00" }, // 档案 5 + 店名回退 2
+        { brand: "DEV", units: 3, amount: "30.00" },   // 品牌 ID 经品牌档案补名 → 归一到系统品牌码
+      ]);
+      expect(tmall.brandAttribution).toEqual({ mappedSku: 0, shopMaster: 8, nameGuess: 2, unattributed: 0 });
+      expect(o.shopMaster).toMatchObject({ state: "ready", shops: 2, shopsWithBrand: 2, brands: 1, missingShops: [guessShop] });
+      expect(o.brandMatrix.map((r) => [r.brand, r.platforms["天猫"].units, r.platforms["拼多多"].units, r.totalUnits])).toEqual([
+        ["NING", 7, null, 7],
+        ["DEV", 3, null, 3],
+      ]);
+      expect(o.pddDaily.state).toBe("insufficient");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("/v4：拼多多店铺日级/商品日级流给出金额、退款、转化与日趋势，并补足订单流缺的金额列", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [actor] = await db.insert(schema.users).values({ name: "拼多多日级责任人" }).returning();
+      await db.insert(schema.brands).values({ code: "NING", nameCn: "NING" });
+      const [orders, shopDaily, productDaily] = await db.insert(schema.importJobs).values([
+        { template: "jdy_pdd_order_observation", filename: "o", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+        { template: "jdy_pdd_shop_daily_observation", filename: "sd", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+        { template: "jdy_pdd_product_daily_observation", filename: "pd", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+      ]).returning();
+      const finishedAt = new Date("2026-09-02T03:00:00.000Z");
+      await db.insert(schema.integrationRuns).values([
+        { connector: "jdy", stream: "pdd-order-observation", idempotencyKey: "o", status: "succeeded", importJobId: orders.id, finishedAt },
+        { connector: "jdy", stream: "pdd-shop-daily-observation", idempotencyKey: "sd", status: "succeeded", importJobId: shopDaily.id, finishedAt },
+        { connector: "jdy", stream: "pdd-product-daily-observation", idempotencyKey: "pd", status: "succeeded", importJobId: productDaily.id, finishedAt },
+      ]);
+      const shop = "NING拼多多旗舰店";
+      await db.insert(schema.stagingRows).values([
+        { importJobId: orders.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_order_observation", payload: { data: { statisticalDate: "2026-09-01", shopName: shop, orderNumber: "O1", productId: "PID1", productQuantity: "4", orderStatus: "已发货", afterSalesStatus: "" } } },
+        { importJobId: shopDaily.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_shop_daily_observation", payload: { data: { statisticalDate: "2026-09-01", shopName: shop, transactionAmount: "1000.005", refundAmount: "100", refundCount: "2", transactionOrders: "10", transactionBuyers: "9", conversionRate: "5" } } },
+        { importJobId: shopDaily.id, rowNo: 2, status: "pending", targetTable: "jdy_pdd_shop_daily_observation", payload: { data: { statisticalDate: "2026-08-31", shopName: shop, transactionAmount: "500", refundAmount: "0", refundCount: "0", transactionOrders: "30", transactionBuyers: "28", conversionRate: "3" } } },
+        { importJobId: shopDaily.id, rowNo: 3, status: "pending", targetTable: "jdy_pdd_shop_daily_observation", payload: { data: { statisticalDate: "2026-08-31", shopName: shop, transactionAmount: "500", refundAmount: "0", refundCount: "0", transactionOrders: "30", transactionBuyers: "28", conversionRate: "3" } } }, // 重复上传 → 去重
+        { importJobId: shopDaily.id, rowNo: 4, status: "pending", targetTable: "jdy_pdd_shop_daily_observation", payload: { data: { statisticalDate: "2026-06-01", shopName: shop, transactionAmount: "9999", refundAmount: "0", refundCount: "0", transactionOrders: "1", transactionBuyers: "1", conversionRate: "1" } } }, // 窗口外
+        { importJobId: productDaily.id, rowNo: 1, status: "pending", targetTable: "jdy_pdd_product_daily_observation", payload: { data: { statisticalDate: "2026-09-01", shopName: shop, productId: "PID1", productName: "控油面膜", transactionAmount: "800", transactionNumber: "8", visitors: "200", transactionBuyers: "7" } } },
+      ]);
+      const o = await computeChannelObservation(db);
+      const pdd = o.platforms.find((p) => p.platform === "拼多多")!;
+      expect(pdd.units).toBe(4);
+      expect(pdd.amount).toBe("1500.01"); // 店铺日表补足；十进制半进位
+      expect(pdd.refundUnits).toBe(2);
+      expect(pdd.byBrand).toEqual([{ brand: "NING", units: 4, amount: null }]);
+      expect(o.pddDaily.state).toBe("ready");
+      expect(o.pddDaily.anchorDate).toBe("2026-09-01");
+      expect(o.pddDaily.totals).toMatchObject({ transactionAmount30: "1500.01", refundAmount30: "100.00", refundCount30: 2, orders30: 40, buyers30: 37, shops: 1, products: 1 });
+      expect(o.pddDaily.totals.conversion30).toBe(3.5); // (5×10 + 3×30) / 40
+      expect(o.pddDaily.trend.map((t) => [t.date, t.transactionAmount])).toEqual([["2026-08-31", "500.00"], ["2026-09-01", "1000.01"]]);
+      expect(o.pddDaily.topProducts[0]).toMatchObject({ productId: "PID1", brand: "NING", transactionAmount30: "800.00", transactionNumber30: 8, visitors30: 200, conversion30: 3.5 });
+      // 矩阵里拼多多件数来自订单流、金额来自店铺日表（按店铺档案/店名归属到品牌），并列不混算
+      expect(o.brandMatrix[0]).toMatchObject({ brand: "NING", platforms: expect.objectContaining({ "拼多多": { units: 4, amount: "1500.01" } }) });
+    } finally {
+      await client.close();
+    }
+  });
 });
