@@ -75,6 +75,8 @@
   - **观察读模型的批次选择三档**（2026-09-03 生产实况）：交易流（拼多多订单）review 即不用；对照表/维表只经 `_identity` 引用，review 不影响；
     平台日快照若 review 只因业务键重复/缺失仍可用、读模型按业务键 `DISTINCT ON` 去重。被 supersede 的批次任何情况下不再可用——
     否则一次重同步就把外部销速从 1,703 个平台 SKU 静默打回 681（`tests/report/external-velocity.test.ts`、`channel-observation.test.ts` 钉住）。
+  - **并行分支合并注册表用 union 会吞掉闭合括号**（2026-09-04：metrics.ts 4 处 `};`/`},` 丢失，tsc 才发现）：union 解决后必须 tsc，并检查 `^  \w+: \{$` 开与 `^  \},$` 闭计数相等；`src/lib/route-access.ts` 变更后用注册表重生成 `tests/architecture/route-registry-derivation.test.ts` 的 LEGACY_* 快照（scratchpad/regen 脚本思路：buildMenuTree(["admin"]) / menuRolesFromRegistry() / PALETTE_PAGES），不要手改快照。
+  - **Agent/Workflow 的 worktree 可能基于 main 而非当前分支**：进 worktree 先核对基线文件是否存在，缺则 `git reset --hard <当前 HEAD>`；每个域只在自己分支提交，合并前 `git merge-tree --write-tree HEAD <branch>` 预检冲突。
   - **门禁结论只认汇总行**：`npm run check:pr | tail` 会吞掉失败退出码，必须看 `Test Files … passed` 且无 `failed`；
     加护栏后要验证它对真实违规写法变红。
 - 并行会话（`parallel-sessions`）：提交只 `git add` 自己改过的路径，提交前 `git status` 核对别人在改的文件；

@@ -2,10 +2,15 @@
 
 /** struct#15 系统告警：看门狗产出的数据过期/单据超时，与人工裁决复核清单分家（生命周期不同）。 */
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, List, Tag, Typography } from "antd";
+import { Alert, App, Button, List, Tag, Typography } from "antd";
 import { fetchJson } from "@/components/fetchJson";
 
-interface Row { id: number; category: string; title: string; detail: string | null; severity: string | null; createdAt: string }
+interface Row { id: number; category: string; title: string; detail: string | null; severity: string | null; createdAt: string
+  ackedAt?: string | null;
+  ackedBy?: number | null;
+  actionHref?: string | null;
+  ownerRole?: string | null;
+}
 // 与 systemAlerts 的 category 一一对应；新增告警类别必须同步补标签，
 // 否则页面上会冒出 job_failure 这样的英文 slug（护栏：tests/architecture/alert-category-labels.test.ts）
 const CAT: Record<string, string> = {
@@ -32,6 +37,10 @@ export default function AlertsClient() {
     finally { setLoading(false); }
   }, [message]);
   useEffect(() => { void load(); }, [load]);
+  const handleAck = async (id: number) => {
+    try { await fetchJson(`/api/alerts/${id}/ack`, { method: "POST", body: JSON.stringify({}) }); message.success("已知悉（留审计，事实闭环后自动关闭）"); await load(); }
+    catch (e) { message.error((e as Error).message); }
+  };
 
   return (
     <div>
@@ -43,7 +52,10 @@ export default function AlertsClient() {
         dataSource={rows}
         locale={{ emptyText: "当前无未处理告警" }}
         renderItem={(a) => (
-          <List.Item>
+          <List.Item actions={[
+            a.actionHref ? <a key="go" href={a.actionHref}>去处理</a> : null,
+            a.ackedAt ? <Tag key="ack" color="default">已知悉</Tag> : <Button key="ack" size="small" onClick={() => void handleAck(a.id)}>已知悉</Button>,
+          ].filter(Boolean)}>
             <List.Item.Meta
               avatar={<Tag color={a.severity ? SEV[a.severity] : undefined}>{CAT[a.category] ?? a.category}</Tag>}
               title={a.title}
