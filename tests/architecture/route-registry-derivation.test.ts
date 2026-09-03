@@ -23,7 +23,7 @@ const LEGACY_MENU: LegacyNode[] = [
     { key: "/notifications", label: "通知中心" }, { key: "/alerts", label: "系统告警" },
   ] },
   { key: "analytics", label: "经营分析", children: [
-    { key: "/report/dashboard", label: "经营驾驶舱" }, { key: "/report/decision-studio", label: "决策工作室" },
+    { key: "/cockpit", label: "驾驶舱四屏" }, { key: "/report/dashboard", label: "经营驾驶舱" }, { key: "/report/decision-studio", label: "决策工作室" },
     { key: "/report/sales-bridge", label: "销量变化归因" }, { key: "/report/funnel", label: "全链达成漏斗" },
     { key: "/report/inventory-analytics", label: "库存分析" }, { key: "/report/process-mining", label: "流程效率与瓶颈" },
   ] },
@@ -113,7 +113,7 @@ const LEGACY_MENU_ROLES: Record<string, string[]> = {
 
 const LEGACY_REPORT_GROUPS: Record<string, string> = {
   "/replenish": "planning", "/replenish/versions": "planning", "/replenish/sop": "planning",
-  "/report/dashboard": "analytics", "/report/decision-studio": "analytics", "/report/sales-bridge": "analytics",
+  "/cockpit": "analytics", "/report/dashboard": "analytics", "/report/decision-studio": "analytics", "/report/sales-bridge": "analytics",
   "/report/funnel": "analytics", "/report/inventory-analytics": "analytics", "/report/process-mining": "analytics",
   "/report/demand": "planning", "/report/risk": "planning", "/report/segmentation": "planning",
   "/report/closed-loop": "planning", "/report/auto-replenish": "planning", "/report/material-demand": "planning",
@@ -136,6 +136,7 @@ const LEGACY_PALETTE_HREFS = [
   "/admin/params", "/admin/health",
   // 2026-09-03 总监需求 W2-A 新增（D51/D52）
   "/inventory/position",
+  "/cockpit",
 ];
 
 /** 旧 AppShell.filterMenuByRoles 的逐字语义，用来对 LEGACY 快照做同样过滤 */

@@ -65,6 +65,7 @@ export const ROUTE_REGISTRY = {
   alerts: { path: "/alerts", label: "系统告警", group: "messages", scopedMode: "channel_scoped" },
 
   /* ── 经营分析 ── */
+  cockpit: { path: "/cockpit", label: "驾驶舱四屏", group: "analytics", scopedMode: "channel_scoped", keywords: "cockpit jiashicang siping four screens" },
   report_dashboard: { path: "/report/dashboard", label: "经营驾驶舱", group: "analytics", scopedMode: "channel_scoped", keywords: "dashboard jiashicang bi" },
   report_decision_studio: { path: "/report/decision-studio", label: "决策工作室", group: "analytics", scopedMode: "channel_scoped" },
   report_sales_bridge: { path: "/report/sales-bridge", label: "销量变化归因", group: "analytics", scopedMode: "channel_scoped" },
