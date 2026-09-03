@@ -19,9 +19,11 @@ interface Row {
   isDefault: boolean;
   lastChangedBy: string | null;
   lastChangedAt: string | null;
+  /** D59：pmc 可写的补货键组 = "pmc"，其余 "admin" */
+  writableBy?: "admin" | "pmc";
 }
 
-export default function ParamsClient({ canWrite }: { canWrite: boolean }) {
+export default function ParamsClient({ canWrite, isAdmin = canWrite }: { canWrite: boolean; isAdmin?: boolean }) {
   const { message } = App.useApp();
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
@@ -60,6 +62,9 @@ export default function ParamsClient({ canWrite }: { canWrite: boolean }) {
     }
   };
 
+  /** 逐键可写：admin 全部；pmc 仅 writableBy=pmc 的补货键组 */
+  const writable = (r: Row): boolean => canWrite && r.key !== "batch_posting_enabled" && (isAdmin || r.writableBy === "pmc");
+
   const columns: ColumnsType<Row> = [
     { title: "参数", dataIndex: "label", width: 160 },
     {
@@ -77,12 +82,13 @@ export default function ParamsClient({ canWrite }: { canWrite: boolean }) {
             min={r.min}
             max={r.max}
             value={edits[r.key] ?? r.value}
-            disabled={!canWrite || r.key === "batch_posting_enabled"}
+            disabled={!writable(r)}
             onChange={(v) => setEdits((e) => ({ ...e, [r.key]: Number(v) }))}
             style={{ width: 110 }}
           />
           {r.unit ? <Typography.Text type="secondary">{r.unit}</Typography.Text> : null}
           {r.key === "batch_posting_enabled" ? <Tag color="gold">专项闸门</Tag> : null}
+          {r.writableBy === "pmc" ? <Tag color="geekblue">生产计划可改</Tag> : null}
           {r.isDefault ? <Tag>缺省</Tag> : null}
         </Space>
       ),
@@ -91,7 +97,7 @@ export default function ParamsClient({ canWrite }: { canWrite: boolean }) {
       title: "",
       width: 90,
       render: (_, r) =>
-        canWrite && r.key !== "batch_posting_enabled" ? (
+        writable(r) ? (
           <Button size="small" type="primary" disabled={edits[r.key] == null || edits[r.key] === r.value} onClick={() => void save(r)}>
             保存
           </Button>
@@ -112,7 +118,7 @@ export default function ParamsClient({ canWrite }: { canWrite: boolean }) {
         showIcon
         message="阈值改动影响驾驶舱滞销判定、补货建议与断货预警（0724 会议 D39：滞销警戒阈值可配置）；R1/让步等规则容差同页维护。修改留审计。"
       />
-      <BatchPostingRolloutCard canWrite={canWrite} onActivated={() => void load()} />
+      <BatchPostingRolloutCard canWrite={isAdmin} onActivated={() => void load()} />
       <Table<Row>
         rowKey="key"
         size="middle"
