@@ -9,7 +9,12 @@ export async function GET(req: NextRequest) {
     const { q, page, pageSize, searchParams } = parseListQuery(req.url);
     const horizonRaw = Number(searchParams.get("horizonDays"));
     const horizonDays = Number.isFinite(horizonRaw) && horizonRaw > 0 ? horizonRaw : undefined;
-    const data = await getTransferSuggestions({ q, page, pageSize, horizonDays });
+    // 预警行深链 `?skuIds=1,2,3`（D57 IAL-04）：只算这些 SKU
+    const skuIds = (searchParams.get("skuIds") ?? "")
+      .split(",")
+      .map((x) => Number(x.trim()))
+      .filter((n) => Number.isInteger(n) && n > 0);
+    const data = await getTransferSuggestions({ q, page, pageSize, horizonDays, skuIds: skuIds.length ? skuIds : undefined });
     return NextResponse.json(data);
   } catch (e) {
     return errorResponse(e);

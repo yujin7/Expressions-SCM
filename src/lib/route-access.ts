@@ -117,6 +117,9 @@ export const ROUTE_REGISTRY = {
   report_sku_360: { path: "/report/sku-360", label: "SKU 360 事件轴", group: "inventory", scopedMode: "public", keywords: "sku360 timeline shijianzhou" },
   report_stock_summary: { path: "/report/demand?tab=stock_summary", label: "总库存核对", group: "inventory", scopedMode: "public" },
   report_jiediao: { path: "/report/jiediao", label: "借调对账", group: "inventory", scopedMode: "public" },
+  // D60（W2-C）：各仓明细/周转全员公开；线路费用仅仓管/PMC/财务（ops 受限 denied）
+  inventory_warehouses: { path: "/inventory/warehouses", label: "各仓库存与周转", group: "inventory", scopedMode: "public", keywords: "warehouses gecang zhouzhuan turnover 周转" },
+  inventory_transfer_routes: { path: "/inventory/transfer-routes", label: "调拨线路与费用", roles: ["warehouse", "pmc", "finance"], group: "inventory", scopedMode: "denied", keywords: "transfer routes diaobo xianlu feiyong 调拨 线路 费用" },
 
   /* ── 质量与合规 ── */
   quality: { path: "/quality", label: "质量与合规", roles: ["quality", "purchasing", "warehouse", "pmc", "ops"], group: "quality", scopedMode: "public", keywords: "quality compliance zhiliang hegui" },

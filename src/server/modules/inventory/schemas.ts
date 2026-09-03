@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { dCmp } from "@/server/core/decimal";
+import { TRANSFER_TYPES } from "@/lib/transfer-types";
 
 /**
  * 库存单据（W2 手工四类）输入校验。
@@ -33,6 +34,8 @@ export const createStockDocSchema = z
     toWarehouseId: z.number().int().positive().nullable().optional(),
     /** R16：调拨业务原因（'借调' 触发月末部门间借调对账）；仅调拨填写 */
     reason: z.string().trim().max(50).optional(),
+    /** D60：调拨类型固定清单（src/lib/transfer-types.ts）；subtype=transfer 必填，其余子类型禁止携带 */
+    transferType: z.enum(TRANSFER_TYPES, { errorMap: () => ({ message: "调拨类型不在固定清单内" }) }).optional(),
     remark: z.string().trim().max(500).optional(),
     /** 风险处置登记来源；仅报废出库（issue_out）可绑定。 */
     riskDisposalId: z.number().int().positive().optional(),
@@ -44,6 +47,12 @@ export const createStockDocSchema = z
     }
     if (v.reason && v.subtype !== "transfer") {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reason"], message: "业务原因仅调拨单填写（R16）" });
+    }
+    if (v.transferType && v.subtype !== "transfer") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["transferType"], message: "调拨类型仅调拨单填写（D60）" });
+    }
+    if (v.subtype === "transfer" && !v.transferType) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["transferType"], message: "调拨必须选择调拨类型（D60 固定清单）" });
     }
     if (v.riskDisposalId && v.subtype !== "issue_out") {
       ctx.addIssue({

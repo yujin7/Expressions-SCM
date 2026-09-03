@@ -54,6 +54,8 @@ const LEGACY_MENU: LegacyNode[] = [
     { key: "/inventory/batch-trace", label: "批次追溯" }, { key: "/report/inbound-calendar", label: "到货日历" },
     { key: "/report/sku-360", label: "SKU 360 事件轴" }, { key: "/report/demand?tab=stock_summary", label: "总库存核对" },
     { key: "/report/jiediao", label: "借调对账" },
+    // D60（2026-09-03 W2-C 新增，非旧快照）
+    { key: "/inventory/warehouses", label: "各仓库存与周转" }, { key: "/inventory/transfer-routes", label: "调拨线路与费用" },
   ] },
   { key: "quality", label: "质量与合规", children: [{ key: "/quality", label: "质量与合规" }] },
   { key: "npd", label: "新品开发", children: [
@@ -93,6 +95,7 @@ const LEGACY_MENU_ROLES: Record<string, string[]> = {
   "/master/supplier/lifecycle": ["purchasing", "pmc", "finance"],
   "/master/bin": ["warehouse"],
   "/inventory/locations": ["warehouse"],
+  "/inventory/transfer-routes": ["warehouse", "pmc", "finance"], // D60 W2-C 新增
   "/quality": ["quality", "purchasing", "warehouse", "pmc", "ops"],
   "/replenish": ["pmc", "purchasing"],
   "/replenish/versions": ["pmc", "purchasing"],
@@ -132,6 +135,7 @@ const LEGACY_PALETTE_HREFS = [
   "/master/spu", "/master/sku", "/master/supplier", "/master/supplier/lifecycle", "/master/warehouse",
   "/master/bin", "/master/bom", "/import/upload", "/import/release", "/review/checklist", "/admin/users",
   "/admin/params", "/admin/health",
+  "/inventory/warehouses", "/inventory/transfer-routes", // D60 W2-C 新增
 ];
 
 /** 旧 AppShell.filterMenuByRoles 的逐字语义，用来对 LEGACY 快照做同样过滤 */

@@ -26,12 +26,18 @@
  *
  * 只读：不写库、不开单、不落审计。DB 调拨单仍走 inventory/stock-doc 正常审批流程。
  * 无金额字段，免脱敏。
+ *
+ * D57（2026-09）：缺口线不再读 cover_alert_days，改消费 rules/alert-threshold（唯一阈值权威）：
+ * alertDays(sku) = 加工周期 + 在途周期 + 缓冲，逐 SKU 计算并在行上给出 basis（取值来源），
+ * 任一段落到全局缺省时 usedDefault=true（界面标「按默认周期」）。skuIds 过滤供预警行深链
+ * `/report/transfer-suggest?skuIds=`；结果另按线路 (from,to) 分组只读汇总（TR-11，不合并成单）。
  */
 import { and, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { coverDays } from "@/server/core/stock-view";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { getNumParam } from "@/server/core/params";
+import { alertDays, type LeadBasis } from "@/server/rules/alert-threshold";
 import { planTransfers } from "@/server/rules/transfer";
 import { num, r1 } from "@/server/core/svc";
 
@@ -59,11 +65,28 @@ export interface TransferSuggestRow {
   /** 调入仓收到本 SKU 全部建议量后的可销天数 */
   toCoverAfter: number;
   reason: string;
+  /** D57 该 SKU 的预警阈值（加工+在途+缓冲） */
+  alertDays: number;
+  /** 阈值各段取值与来源；任一段 source==='default' 时行上标「按默认周期」 */
+  basis: LeadBasis[];
+  usedDefault: boolean;
+}
+
+export interface TransferSuggestLane {
+  fromWarehouseId: number;
+  toWarehouseId: number;
+  fromWarehouse: string;
+  toWarehouse: string;
+  lineCount: number;
+  skuCount: number;
+  totalQty: number;
 }
 
 export interface TransferSuggestResult {
   rows: TransferSuggestRow[];
   total: number;
+  /** 全部（未分页）建议按线路 (from,to) 分组的只读汇总（TR-11） */
+  lanes: TransferSuggestLane[];
   summary: {
     skuCount: number;
     lineCount: number;
@@ -71,11 +94,17 @@ export interface TransferSuggestResult {
     horizonDays: number;
     /** 因无实时账被排除的快照仓名称（UI 说明用） */
     excludedSnapshotWarehouses: string[];
+    /** D57 阈值缺省（加工 / 在途 / 缓冲），供界面解释 */
+    thresholdDefaults: { production: number; logistics: number; buffer: number };
+    /** 使用了全局缺省周期的行数 */
+    usedDefaultCount: number;
+    /** 请求方传入的 SKU 过滤（深链） */
+    skuIdsFilter: number[] | null;
   };
 }
 
 export async function getTransferSuggestions(
-  query: { q?: string; page?: number; pageSize?: number; horizonDays?: number },
+  query: { q?: string; page?: number; pageSize?: number; horizonDays?: number; skuIds?: number[] },
   dbArg?: AnyDb,
 ): Promise<TransferSuggestResult> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
@@ -83,17 +112,27 @@ export async function getTransferSuggestions(
   const pageSize = Math.min(500, Math.max(1, query.pageSize ?? 50));
   const q = (query.q ?? "").trim().toLowerCase();
   const horizonDays = Math.min(365, Math.max(7, Math.floor(query.horizonDays ?? 90)));
-  const [targetDays, alertDays] = await Promise.all([
+  const skuIdsFilter = query.skuIds && query.skuIds.length > 0
+    ? [...new Set(query.skuIds.filter((id) => Number.isInteger(id) && id > 0))]
+    : null;
+  const [targetDays, defaultProduction, defaultLogistics, bufferDays] = await Promise.all([
     getNumParam("cover_target_days", 45, dbArg),
-    getNumParam("cover_alert_days", 30, dbArg),
+    getNumParam("default_production_lead_days", 30, dbArg),
+    getNumParam("default_logistics_lead_days", 15, dbArg),
+    getNumParam("alert_buffer_days", 5, dbArg),
   ]);
+  const thresholdDefaults = { production: defaultProduction, logistics: defaultLogistics, buffer: bufferDays };
   /** 盈余线 = 目标覆盖 ×2（压了两个补货周期的货才算「多到该挪」） */
   const surplusDays = targetDays * 2;
 
   const empty: TransferSuggestResult = {
     rows: [],
     total: 0,
-    summary: { skuCount: 0, lineCount: 0, totalQty: 0, horizonDays, excludedSnapshotWarehouses: [] },
+    lanes: [],
+    summary: {
+      skuCount: 0, lineCount: 0, totalQty: 0, horizonDays, excludedSnapshotWarehouses: [],
+      thresholdDefaults, usedDefaultCount: 0, skuIdsFilter,
+    },
   };
 
   /* ── 仓库范围：记账仓（realtime + active，排除委外/在途/快照）── */
@@ -118,19 +157,23 @@ export async function getTransferSuggestions(
 
   /* ── 逐仓在库：Σ stock_balances（含批次汇总）── */
   const sb = schema.stockBalances;
+  const balConds = [inArray(sb.warehouseId, whIds)];
+  if (skuIdsFilter) balConds.push(inArray(sb.skuId, skuIdsFilter));
   const balRows: { skuId: number; warehouseId: number; qty: string | null }[] = await db
     .select({ skuId: sb.skuId, warehouseId: sb.warehouseId, qty: sql<string | null>`sum(${sb.qty})` })
     .from(sb)
-    .where(inArray(sb.warehouseId, whIds))
+    .where(and(...balConds))
     .groupBy(sb.skuId, sb.warehouseId);
 
   /* ── 逐仓出库：近 horizonDays 天 qtyDelta<0 合计（取绝对值）── */
   const sl = schema.stockLedger;
   const since = new Date(Date.now() - horizonDays * 86_400_000);
+  const outConds = [inArray(sl.warehouseId, whIds), lt(sl.qtyDelta, "0"), gte(sl.occurredAt, since)];
+  if (skuIdsFilter) outConds.push(inArray(sl.skuId, skuIdsFilter));
   const outRows: { skuId: number; warehouseId: number; out: string | null }[] = await db
     .select({ skuId: sl.skuId, warehouseId: sl.warehouseId, out: sql<string | null>`sum(-${sl.qtyDelta})` })
     .from(sl)
-    .where(and(inArray(sl.warehouseId, whIds), lt(sl.qtyDelta, "0"), gte(sl.occurredAt, since)))
+    .where(and(...outConds))
     .groupBy(sl.skuId, sl.warehouseId);
 
   /* ── 装配逐 SKU 的逐仓视图 ── */
@@ -147,15 +190,35 @@ export async function getTransferSuggestions(
   for (const r of outRows) touch(r.skuId, r.warehouseId).daily = num(r.out) / horizonDays;
   if (bySku.size === 0) return { ...empty, summary: { ...empty.summary, excludedSnapshotWarehouses } };
 
-  /* ── SKU 主档（active）── */
+  /* ── SKU 主档（active）+ D57 周期参数（sku_params）── */
   const skuRows: { id: number; code: string; name: string; baseUom: string }[] = await db
     .select({ id: schema.skus.id, code: schema.skus.code, name: schema.skus.name, baseUom: schema.skus.baseUom })
     .from(schema.skus)
     .where(and(eq(schema.skus.active, true), inArray(schema.skus.id, [...bySku.keys()])));
+  const paramRows: { skuId: number; normalLeadDays: number | null; logisticsLeadDays: number | null; purchaseLeadDays: number | null }[] =
+    skuRows.length === 0 ? [] : await db
+      .select({
+        skuId: schema.skuParams.skuId,
+        normalLeadDays: schema.skuParams.normalLeadDays,
+        logisticsLeadDays: schema.skuParams.logisticsLeadDays,
+        purchaseLeadDays: schema.skuParams.purchaseLeadDays,
+      })
+      .from(schema.skuParams)
+      .where(inArray(schema.skuParams.skuId, skuRows.map((s) => s.id)));
+  const paramBySku = new Map(paramRows.map((p) => [p.skuId, p]));
 
   /* ── 逐 SKU 识别盈余/缺口 → 贪心分配 ── */
   const all: TransferSuggestRow[] = [];
   for (const sku of skuRows) {
+    const sp = paramBySku.get(sku.id);
+    const threshold = alertDays({
+      normalLeadDays: sp?.normalLeadDays,
+      logisticsLeadDays: sp?.logisticsLeadDays,
+      purchaseLeadDays: sp?.purchaseLeadDays,
+      defaults: { production: defaultProduction, logistics: defaultLogistics },
+      bufferDays,
+    });
+    const alertDaysValue = threshold.days;
     const nodes = [...(bySku.get(sku.id)?.values() ?? [])];
     const surplus: Node[] = [];
     const deficit: Node[] = [];
@@ -165,12 +228,12 @@ export async function getTransferSuggestions(
         if (n.onHand > 0) surplus.push(n); // 无出库但有库存 = 呆滞积压，整仓可让
       } else if (cover > surplusDays) {
         surplus.push(n);
-      } else if (cover < alertDays) {
+      } else if (cover < alertDaysValue) {
         deficit.push(n); // daily>0 即「有出库历史」，证明确实在此仓发货
       }
     }
     if (surplus.length === 0 || deficit.length === 0) continue;
-    const lines = planTransfers({ surplus, deficit, targetDays, alertDays });
+    const lines = planTransfers({ surplus, deficit, targetDays, alertDays: alertDaysValue });
     if (lines.length === 0) continue;
 
     const nodeById = new Map(nodes.map((n) => [n.warehouseId, n]));
@@ -201,7 +264,10 @@ export async function getTransferSuggestions(
         fromCoverBefore: fromCover == null ? null : r1(fromCover),
         toCoverBefore: r1(toCoverBefore),
         toCoverAfter: r1(toCoverAfter),
-        reason: `${fromDesc}；调入仓可销 ${r1(toCoverBefore)} 天（<告警线 ${alertDays} 天），补至约 ${r1(toCoverAfter)} 天`,
+        reason: `${fromDesc}；调入仓可销 ${r1(toCoverBefore)} 天（<预警阈值 ${alertDaysValue} 天${threshold.usedDefault ? "，按默认周期" : ""}），补至约 ${r1(toCoverAfter)} 天`,
+        alertDays: alertDaysValue,
+        basis: threshold.basis,
+        usedDefault: threshold.usedDefault,
       });
     }
   }
@@ -211,15 +277,37 @@ export async function getTransferSuggestions(
   if (q) filtered = filtered.filter((r) => r.code.toLowerCase().includes(q) || r.name.toLowerCase().includes(q));
   filtered.sort((a, b) => a.toCoverBefore - b.toCoverBefore || b.qty - a.qty || a.code.localeCompare(b.code));
 
+  /* ── 按线路 (from,to) 分组只读汇总（TR-11：零散建议合并视角，不成单）── */
+  const laneMap = new Map<string, TransferSuggestLane & { skus: Set<number> }>();
+  for (const r of filtered) {
+    const k = `${r.fromWarehouseId}>${r.toWarehouseId}`;
+    const l = laneMap.get(k) ?? {
+      fromWarehouseId: r.fromWarehouseId, toWarehouseId: r.toWarehouseId,
+      fromWarehouse: r.fromWarehouse, toWarehouse: r.toWarehouse,
+      lineCount: 0, skuCount: 0, totalQty: 0, skus: new Set<number>(),
+    };
+    l.lineCount += 1;
+    l.totalQty = Math.round((l.totalQty + r.qty) * 10000) / 10000;
+    l.skus.add(r.skuId);
+    laneMap.set(k, l);
+  }
+  const lanes: TransferSuggestLane[] = [...laneMap.values()]
+    .map(({ skus, ...l }) => ({ ...l, skuCount: skus.size }))
+    .sort((a, b) => b.lineCount - a.lineCount || b.totalQty - a.totalQty);
+
   return {
     rows: filtered.slice((page - 1) * pageSize, page * pageSize),
     total: filtered.length,
+    lanes,
     summary: {
       skuCount: new Set(filtered.map((r) => r.skuId)).size,
       lineCount: filtered.length,
       totalQty: Math.round(filtered.reduce((s, r) => s + r.qty, 0) * 10000) / 10000,
       horizonDays,
       excludedSnapshotWarehouses,
+      thresholdDefaults,
+      usedDefaultCount: filtered.filter((r) => r.usedDefault).length,
+      skuIdsFilter,
     },
   };
 }

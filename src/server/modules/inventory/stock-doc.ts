@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import {
@@ -118,6 +118,7 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
         docNo,
         subtype: v.subtype,
         reason: v.subtype === "transfer" ? (v.reason ?? null) : null,
+        transferType: v.subtype === "transfer" ? (v.transferType ?? null) : null,
         remark: v.remark ?? null,
         sourceDocType: v.riskDisposalId ? "risk_disposal" : null,
         sourceDocId: v.riskDisposalId ?? null,
@@ -137,7 +138,7 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
     );
     await writeAudit(tx, {
       userId: user.id, entity: "stock_doc", entityId: doc.id, action: "create",
-      after: { docNo: doc.docNo, subtype: doc.subtype, lineCount: lines.length },
+      after: { docNo: doc.docNo, subtype: doc.subtype, transferType: doc.transferType ?? null, lineCount: lines.length },
     });
     return doc;
   });
@@ -465,6 +466,8 @@ export async function getStockDoc(id: number, dbArg?: AnyDb) {
       sourceDocType: stockDocs.sourceDocType,
       sourceDocId: stockDocs.sourceDocId,
       reversalOfId: stockDocs.reversalOfId,
+      reason: stockDocs.reason,
+      transferType: stockDocs.transferType,
       createdBy: stockDocs.createdBy,
       createdAt: stockDocs.createdAt,
       updatedAt: stockDocs.updatedAt,
@@ -524,6 +527,9 @@ export async function getStockDoc(id: number, dbArg?: AnyDb) {
     toWarehouseId,
     toWarehouseName: whName(toWarehouseId),
     reversalOfId: doc.reversalOfId,
+    reason: doc.reason,
+    /** D60：存量调拨单可为 null（兼容读，界面显示「未分类」） */
+    transferType: doc.transferType ?? null,
     lines: lines.map((l) => ({
       id: l.id, skuId: l.skuId, skuCode: l.skuCode, skuName: l.skuName,
       baseUom: l.baseUom, qty: l.qty, price: l.price,
@@ -535,9 +541,22 @@ export async function getStockDoc(id: number, dbArg?: AnyDb) {
   };
 }
 
+export interface ListStockDocsOptions {
+  status?: string;
+  subtype?: string;
+  /** D60 调拨筛选：转出仓 / 转入仓 / 调拨类型（"unclassified" = 存量未分类）/ 创建日期区间（Asia/Shanghai 日界） */
+  fromWarehouseId?: number;
+  toWarehouseId?: number;
+  transferType?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  page: number;
+  pageSize: number;
+}
+
 export async function listStockDocs(
   q: string,
-  opts: { status?: string; subtype?: string; page: number; pageSize: number },
+  opts: ListStockDocsOptions,
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
@@ -545,7 +564,17 @@ export async function listStockDocs(
   if (q) conds.push(sql`${stockDocs.docNo} ILIKE ${"%" + q + "%"}`);
   if (opts.status) conds.push(eq(stockDocs.status, opts.status as DocStatus));
   if (opts.subtype) conds.push(eq(stockDocs.subtype, opts.subtype as ManualSubtype));
-  const where = conds.length ? and(...conds) : undefined;
+  if (opts.transferType === "unclassified") {
+    conds.push(eq(stockDocs.subtype, "transfer"), sql`${stockDocs.transferType} IS NULL`);
+  } else if (opts.transferType) {
+    conds.push(eq(stockDocs.transferType, opts.transferType));
+  }
+  if (opts.dateFrom && /^\d{4}-\d{2}-\d{2}$/.test(opts.dateFrom)) {
+    conds.push(gte(stockDocs.createdAt, new Date(`${opts.dateFrom}T00:00:00+08:00`)));
+  }
+  if (opts.dateTo && /^\d{4}-\d{2}-\d{2}$/.test(opts.dateTo)) {
+    conds.push(lte(stockDocs.createdAt, new Date(`${opts.dateTo}T23:59:59.999+08:00`)));
+  }
 
   const lineAgg = db
     .select({
@@ -553,10 +582,14 @@ export async function listStockDocs(
       warehouseId: sql<number>`min(${stockDocLines.warehouseId})`.as("agg_wh_id"),
       toWarehouseId: sql<number | null>`min(${stockDocLines.toWarehouseId})`.as("agg_to_wh_id"),
       lineCount: sql<number>`count(*)::int`.as("agg_line_count"),
+      totalQty: sql<string>`sum(${stockDocLines.qty})`.as("agg_total_qty"),
     })
     .from(stockDocLines)
     .groupBy(stockDocLines.stockDocId)
     .as("la");
+  if (opts.fromWarehouseId) conds.push(eq(lineAgg.warehouseId, opts.fromWarehouseId));
+  if (opts.toWarehouseId) conds.push(eq(lineAgg.toWarehouseId, opts.toWarehouseId));
+  const where = conds.length ? and(...conds) : undefined;
   const wh = alias(warehouses, "wh_from");
   const toWh = alias(warehouses, "wh_to");
 
@@ -567,11 +600,17 @@ export async function listStockDocs(
         docNo: stockDocs.docNo,
         subtype: stockDocs.subtype,
         status: stockDocs.status,
+        transferType: stockDocs.transferType,
+        reason: stockDocs.reason,
+        warehouseId: lineAgg.warehouseId,
+        toWarehouseId: lineAgg.toWarehouseId,
         warehouseName: wh.name,
         toWarehouseName: toWh.name,
         lineCount: sql<number>`coalesce(${lineAgg.lineCount}, 0)`,
+        totalQty: sql<string>`coalesce(${lineAgg.totalQty}, 0)`,
         createdByName: users.name,
         createdAt: stockDocs.createdAt,
+        updatedAt: stockDocs.updatedAt,
       })
       .from(stockDocs)
       .leftJoin(lineAgg, eq(lineAgg.stockDocId, stockDocs.id))
@@ -582,7 +621,11 @@ export async function listStockDocs(
       .orderBy(desc(stockDocs.createdAt), desc(stockDocs.id))
       .limit(opts.pageSize)
       .offset((opts.page - 1) * opts.pageSize),
-    db.select({ total: sql<number>`count(*)::int` }).from(stockDocs).where(where),
+    db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(stockDocs)
+      .leftJoin(lineAgg, eq(lineAgg.stockDocId, stockDocs.id))
+      .where(where),
   ]);
   return { rows, total };
 }

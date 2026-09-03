@@ -517,6 +517,43 @@ export const METRICS: Record<string, MetricDef> = {
     tier: "derived",
     caveat: "允许正负值；按采购、PMC、财务和管理员角色可见，缺失不按零处理",
   },
+  /* ── D60 调拨线路 / 各仓周转（W2-C 登记） ── */
+  transferLaneAvgFee: {
+    id: "transferLaneAvgFee",
+    label: "线路均价（元/件）",
+    short: "同一调拨线路近 180 天已完成单据的数量加权单位费用，作为成本基线",
+    formula: "Σ线路费用净额 ÷ Σ线路件数（窗口 transfer_cost_window_days，仅登记过费用的单）",
+    unit: "money",
+    tier: "ledger",
+    caveat: "线路 = (转出仓, 转入仓, 调拨类型)；不跨线路轧差、不进库存成本；费用从上线起累计，样本不足时只提醒不告警；仅采购/PMC/财务/管理员可见",
+  },
+  transferLaneSamples: {
+    id: "transferLaneSamples",
+    label: "线路样本数",
+    short: "线路基线里登记过费用的已完成调拨单数",
+    formula: "count(同线路窗口内 有费用登记 的已完成单)",
+    unit: "count",
+    tier: "ledger",
+    caveat: "样本 < 8 时偏差判定最多为提醒并标「样本不足」，≥ 8 才走中位数+MAD 统计判定；未登记费用 ≠ 零费用",
+  },
+  warehouseTurns: {
+    id: "warehouseTurns",
+    label: "逐仓周转次数",
+    short: "某个实时仓在窗口内把平均在库卖空几遍（年化）",
+    formula: "窗口出库 ÷ ((期初+期末)/2) × (365 ÷ 窗口天数)，期初由流水倒推",
+    unit: "ratio",
+    tier: "derived",
+    caveat: "出库含调拨/发料/盘亏等非纯销售出库；快照仓无流水不计算；跨 SKU 数量直加仅作规模参考；总周转只汇总实时仓",
+  },
+  warehouseDio: {
+    id: "warehouseDio",
+    label: "逐仓库存天数",
+    short: "某个实时仓平均一件货在仓里待多久",
+    formula: "365 ÷ 逐仓周转次数",
+    unit: "days",
+    tier: "derived",
+    caveat: "窗口内零出库时为空（不用假数字表达「永远卖不完」）；快照仓不计算",
+  },
 };
 
 /** 取指标定义；未登记返回 undefined（调用方应回退到原文案） */
