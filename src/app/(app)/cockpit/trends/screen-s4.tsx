@@ -5,7 +5,7 @@ import { Col, Row, Segmented, Space, Statistic, Table, Tag, Typography } from "a
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
 import type { Block } from "@/server/modules/report/cockpit";
-import type { AlertLifecycleBlock, GoalHistoryBlock, GoalHistorySeries, TodoThroughputBlock } from "@/server/modules/report/cockpit-trends";
+import type { AlertLifecycleBlock, GoalHistoryBlock, GoalHistorySeries, TodoCompletionStrictBlock, TodoCompletionStrictCell, TodoThroughputBlock } from "@/server/modules/report/cockpit-trends";
 import { metricLabel, Muted, pct, TrendCard, useChartTheme } from "./shared";
 
 /* ───────────── 待办吞吐（6 个月 × 角色，证据不排名） ───────────── */
@@ -193,6 +193,79 @@ export function GoalHistoryCard({ block }: { block: Block<GoalHistoryBlock> }) {
           ) },
           { title: "达成次数", key: "n", width: 90, align: "right", render: (_, r) => `${r.points.filter((p) => p.attained).length} / ${r.points.filter((p) => p.attained != null).length}` },
         ]} />
+      )}
+    </TrendCard>
+  );
+}
+
+/* ───────────── 待办完成率（严格口径）：宽 vs 严 + 取消拆分 ───────────── */
+
+type StrictView = "month" | "role";
+
+export function TodoCompletionStrictCard({ block }: { block: Block<TodoCompletionStrictBlock> }) {
+  const t = useChartTheme();
+  const [view, setView] = useState<StrictView>("month");
+  const d = block.data;
+  const rows: TodoCompletionStrictCell[] = view === "month" ? d?.byMonth ?? [] : d?.byRole ?? [];
+  const gap = (v: number | null) => (v == null ? "—" : `${v} pp`);
+  return (
+    <TrendCard
+      block={block}
+      title={`${metricLabel("todoCompletionRateStrict", "待办完成率（严格口径）")} · 宽 vs 严`}
+      question="待办是被人做完的，还是等看门狗把告警关掉后「顺手」完成的？哪个角色两种口径差距最大？"
+      metricId="todoCompletionRateStrict"
+      grain={view === "month" ? "创建月（近 6 个月）× 全部责任角色" : "责任角色（近 6 个月合计）"}
+      unit="完成率 %"
+      height={320}
+      summary={d
+        ? `近 6 个月合计：宽口径 ${pct(d.overall.completionRate)} vs 严口径 ${pct(d.overall.completionRateStrict)}（差 ${gap(d.overall.gapPp)}）；已取消 ${d.overall.cancelled} = 来源自动关闭 ${d.overall.cancelledBySourceClose} + 人工 ${d.overall.cancelledByHuman}`
+        : "无数据"}
+      extra={<Segmented size="small" options={[{ label: "按月", value: "month" }, { label: "按角色", value: "role" }]} value={view} onChange={(v) => setView(v as StrictView)} />}
+      dataView={d ? (
+        <Table<TodoCompletionStrictCell> rowKey="key" size="small" pagination={false} scroll={{ x: 760 }} dataSource={rows} columns={[
+          { title: view === "month" ? "月份" : "角色", dataIndex: "key", width: 110 },
+          { title: "总数", dataIndex: "total", align: "right" },
+          { title: "已完成", dataIndex: "done", align: "right" },
+          { title: "已取消", dataIndex: "cancelled", align: "right" },
+          { title: "来源自动关闭", dataIndex: "cancelledBySourceClose", align: "right" },
+          { title: "人工取消", dataIndex: "cancelledByHuman", align: "right" },
+          { title: "宽口径", dataIndex: "completionRate", align: "right", render: (v: number | null) => pct(v) },
+          { title: "严口径", dataIndex: "completionRateStrict", align: "right", render: (v: number | null) => pct(v) },
+          { title: "宽 − 严", dataIndex: "gapPp", align: "right", render: (v: number | null) => gap(v) },
+        ]} />
+      ) : undefined}
+    >
+      {(data) => (
+        <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+          <Row gutter={12} style={{ marginBottom: 6 }}>
+            <Col span={8}>
+              <Statistic title="宽口径（近 6 个月合计）" value={pct(data.overall.completionRate)} valueStyle={{ fontSize: 18, color: VISUAL_COLOR.neutral }} />
+              <Muted>已完成 ÷ (总数 − 全部已取消)</Muted>
+            </Col>
+            <Col span={8}>
+              <Statistic title="严口径" value={pct(data.overall.completionRateStrict)} valueStyle={{ fontSize: 18, color: VISUAL_COLOR.primary }} />
+              <Muted>来源自动关闭的取消留在分母 · 宽 − 严 = {gap(data.overall.gapPp)}</Muted>
+            </Col>
+            <Col span={8}>
+              <Statistic title="取消拆分（自动 / 人工）" value={data.overall.cancelledBySourceClose} suffix={`/ ${data.overall.cancelledByHuman}`} valueStyle={{ fontSize: 18 }} />
+              <Muted>自动 = 来源告警被引擎迟滞关闭，条件自己消失</Muted>
+            </Col>
+          </Row>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={rows} margin={{ top: 8, right: 12, left: 0, bottom: 0 }} barCategoryGap="30%">
+                <CartesianGrid stroke={t.grid} strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="key" tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} tickFormatter={(v: string) => (view === "month" ? v.slice(2) : v)} />
+                <YAxis domain={[0, 100]} tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} width={40} />
+                <Tooltip {...t.tooltip} cursor={{ fill: t.grid, opacity: 0.4 }} formatter={(v) => pct(typeof v === "number" ? v : null)} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar dataKey="completionRate" name="宽口径" fill={VISUAL_COLOR.muted} radius={[4, 4, 0, 0]} />
+                <Bar dataKey="completionRateStrict" name="严口径" fill={VISUAL_COLOR.primary} radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <Muted>柱高 = 完成率；宽、严之差越大，越多「完成」其实是告警自行消失。按角色看证据，不排名个人（D61）。</Muted>
+        </div>
       )}
     </TrendCard>
   );

@@ -8,9 +8,9 @@ import { Alert, Button, Skeleton, Space } from "antd";
 import type { TrendScreen } from "@/server/modules/report/cockpit-trends";
 import { Muted, useTrends } from "./shared";
 import { DailyFlowCard } from "./screen-s1";
-import { ExternalDemandCard, PoTrendCard, QuadrantCard } from "./screen-s2";
+import { AlertPrecisionCard, ExternalDemandCard, PoTrendCard, QuadrantCard } from "./screen-s2";
 import { TurnoverWindowsCard } from "./screen-s3";
-import { AlertLifecycleCard, GoalHistoryCard, TodoThroughputCard } from "./screen-s4";
+import { AlertLifecycleCard, GoalHistoryCard, TodoCompletionStrictCard, TodoThroughputCard } from "./screen-s4";
 import { ChannelMatrixCard } from "./screen-channels";
 
 export default function CockpitTrends({ screen }: { screen: TrendScreen }) {
@@ -31,10 +31,12 @@ export default function CockpitTrends({ screen }: { screen: TrendScreen }) {
         <ExternalDemandCard block={s.s2.externalDemand} />
         <PoTrendCard block={s.s2.poTrend} />
         <QuadrantCard block={s.s2.quadrant} />
+        <AlertPrecisionCard block={s.s2.alertPrecision} />
       </>) : null}
       {screen === "s3" ? <TurnoverWindowsCard block={s.s3.turnoverWindows} /> : null}
       {screen === "s4" ? (<>
         <TodoThroughputCard block={s.s4.todoThroughput} />
+        <TodoCompletionStrictCard block={s.s4.todoCompletionStrict} />
         <AlertLifecycleCard block={s.s4.alertLifecycle} />
         <GoalHistoryCard block={s.s4.goalHistory} />
       </>) : null}

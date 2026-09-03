@@ -9,12 +9,15 @@ import * as schema from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
 import { createTestDb } from "../helpers/db";
 import {
+  buildAlertPrecision,
   buildDailyFlow,
   buildExternalDemandBrief,
   buildQuadrant,
+  buildTodoCompletionStrict,
   buildTurnoverWindows,
   getCockpitTrends,
 } from "@/server/modules/report/cockpit-trends";
+import type { TodoStatsRow } from "@/server/modules/todo/stats";
 import { INVENTORY_POSITION_CACHE_KEY, inventoryPositionBinding, type DailyPoint } from "@/server/modules/report/inventory-position";
 import { loadPurchaseOrderMetrics, PURCHASE_ORDER_METRICS_KEY } from "@/server/modules/report/purchase-order-metrics";
 import { loadChannelObservation, type ChannelPlatformRow } from "@/server/modules/report/channel-observation";
@@ -106,6 +109,47 @@ describe("驾驶舱趋势块 · 纯装配函数", () => {
     expect(b.summary[1].reason).toContain("零出库");
   });
 
+  it("预警命中率：真+误 < 5 的分组不下发精确率（服务层算得出也置 null）；弃权不进分母；只有分组与合计计数，没有单一总分", () => {
+    const b = buildAlertPrecision({
+      days: 90, verifiedTotal: 9, caliber: "c",
+      groups: [
+        { category: "inventory_cover", sourceRule: "cover", verified: 7, truePositive: 3, falsePositive: 2, unverifiable: 2, precisionPct: 60 },
+        { category: "sales_spike", sourceRule: "spike", verified: 2, truePositive: 1, falsePositive: 0, unverifiable: 1, precisionPct: 100 },
+        { category: "legacy", sourceRule: null, verified: 0, truePositive: 0, falsePositive: 0, unverifiable: 0, precisionPct: null },
+      ],
+    });
+    expect(b.groups[0]).toMatchObject({ key: "inventory_cover|cover", label: "inventory_cover / cover", scored: 5, insufficient: false, precisionPct: 60 });
+    expect(b.groups[1]).toMatchObject({ key: "sales_spike|spike", scored: 1, insufficient: true, precisionPct: null });
+    expect(b.groups[2]).toMatchObject({ key: "legacy|", label: "legacy", insufficient: true });
+    expect(b.totals).toEqual({ truePositive: 4, falsePositive: 2, unverifiable: 3 });
+    expect(b).toMatchObject({ minSample: 5, scoredGroups: 1, verifiedTotal: 9, metricIds: ["alertPrecision"] });
+    expect(Object.keys(b)).not.toEqual(expect.arrayContaining(["precisionPct", "overallPrecision"]));
+  });
+
+  it("待办完成率严口径：来源自动关闭的取消留在分母；按月 / 按角色 / 合计三层同口径；分母 0 → null", () => {
+    const row = (month: string, groupKey: string, o: Partial<TodoStatsRow>): TodoStatsRow => ({
+      groupKey, groupLabel: groupKey, month, total: 0, done: 0, onTime: 0, overdue: 0, cancelled: 0, cancelledBySourceClose: 0, cancelledByHuman: 0,
+      suspicious: 0, completionRate: null, completionRateStrict: null, onTimeRate: null, ...o,
+    });
+    const rows = [
+      row("2026-08", "pmc", { total: 4, done: 1, cancelled: 2, cancelledBySourceClose: 1, cancelledByHuman: 1 }),
+      row("2026-08", "purchasing", { total: 2, done: 2 }),
+      row("2026-09", "pmc", { total: 3, done: 3 }),
+    ];
+    const b = buildTodoCompletionStrict(rows, ["2026-08", "2026-09"], "c");
+    // 2026-08：宽 3 ÷ (6 − 2) = 75；严 3 ÷ (6 − 1) = 60
+    expect(b.byMonth[0]).toMatchObject({ key: "2026-08", total: 6, done: 3, cancelled: 2, cancelledBySourceClose: 1, cancelledByHuman: 1, completionRate: 75, completionRateStrict: 60, gapPp: 15 });
+    expect(b.byMonth[1]).toMatchObject({ key: "2026-09", completionRate: 100, completionRateStrict: 100, gapPp: 0 });
+    expect(b.byRole.map((r) => r.key)).toEqual(["pmc", "purchasing"]);
+    // pmc：宽 4 ÷ 5 = 80；严 4 ÷ 6 = 66.7
+    expect(b.byRole[0]).toMatchObject({ total: 7, done: 4, completionRate: 80, completionRateStrict: 66.7, gapPp: 13.3 });
+    expect(b.overall).toMatchObject({ key: "all", total: 9, done: 6, completionRate: 85.7, completionRateStrict: 75, gapPp: 10.7 });
+    expect(b.metricIds).toEqual(["todoCompletionRate", "todoCompletionRateStrict"]);
+    const empty = buildTodoCompletionStrict([], ["2026-09"], "c");
+    expect(empty.byMonth[0]).toMatchObject({ total: 0, completionRate: null, completionRateStrict: null, gapPp: null });
+    expect(empty.byRole).toEqual([]);
+  });
+
   it("目标 auto 来源：platformIdentityCoverage 走分子÷分母×100；salesConsistencyPct / costSavingYtd 路径按读模型类型核对", () => {
     const cov = AUTO_METRIC_SOURCES.find((s) => s.metricKey === "platformIdentityCoverage")!;
     expect(extractAutoValue({ coverage: { platformSkus: 200, mappedPlatformSkus: 150 } }, "2026-09", cov.paths)).toEqual({ value: "75.0000", path: "coverage.mappedPlatformSkus÷coverage.platformSkus" });
@@ -126,9 +170,12 @@ describe("驾驶舱趋势块 · PGlite 装配", () => {
       const [admin] = await db.insert(schema.users).values({ name: "管理员", roles: ["admin"] }).returning();
       const t = await getCockpitTrends(su(admin.id, admin.name, ["admin"]), db);
       expect(Object.keys(t.screens)).toEqual(["s1", "s2", "s3", "s4", "channels"]);
-      const blocks = [t.screens.s1.dailyFlow, t.screens.s2.poTrend, t.screens.s2.externalDemand, t.screens.s2.quadrant, t.screens.s3.turnoverWindows, t.screens.s4.todoThroughput, t.screens.s4.alertLifecycle, t.screens.s4.goalHistory, t.screens.channels.brandMatrix];
+      const blocks = [t.screens.s1.dailyFlow, t.screens.s2.poTrend, t.screens.s2.externalDemand, t.screens.s2.quadrant, t.screens.s2.alertPrecision, t.screens.s3.turnoverWindows, t.screens.s4.todoThroughput, t.screens.s4.todoCompletionStrict, t.screens.s4.alertLifecycle, t.screens.s4.goalHistory, t.screens.channels.brandMatrix];
       for (const b of blocks) expect(["ready", "insufficient"], b.note).toContain(b.state);
       expect(t.screens.s2.externalDemand.state).toBe("insufficient"); // 缺批次 → 简报不足，不是 0
+      expect(t.screens.s2.alertPrecision.state).toBe("insufficient"); // 无已核验告警 → 不给数，不是 0%
+      expect(t.screens.s2.alertPrecision.data).toMatchObject({ verifiedTotal: 0, groups: [], minSample: 5 });
+      expect(t.screens.s4.todoCompletionStrict.state).toBe("insufficient");
       expect(t.calibreVersion).toBe("cockpit-trends/v1");
 
       const [ops] = await db.insert(schema.users).values({ name: "天猫运营", roles: ["ops"] }).returning();
@@ -269,6 +316,63 @@ describe("驾驶舱趋势块 · PGlite 装配", () => {
       // 非本部门受限用户（deptScope）只见范围内部门的历史
       const scoped = await getCockpitTrends({ ...su(pmc.id, pmc.name, ["pmc"]), deptScope: ["pmc"] }, db);
       expect(scoped.screens.s4.goalHistory.data!.series.every((s) => s.deptKey === "pmc")).toBe(true);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("闭环审计块：预警命中率从 alert_events(verify) 按 category × sourceRule 计数（90 天窗口、真+误 < 5 不给精确率）；待办严口径把来源自动关闭的取消留在分母", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [admin] = await db.insert(schema.users).values({ name: "管理员", roles: ["admin"] }).returning();
+      const [pmc] = await db.insert(schema.users).values({ name: "计划", roles: ["pmc"] }).returning();
+      const now = Date.now();
+      const ago = (h: number) => new Date(now - h * 3600_000);
+      const resolved = (category: string, sourceRule: string, i: number, autoResolved = false) => ({
+        category, title: `${sourceRule}-${i}`, status: "resolved", autoResolved, createdAt: ago(24 * 20), resolvedAt: ago(24 * 10), dedupeKey: `${category}:${i}`, sourceRule,
+      });
+      // 7 条 inventory_cover/cover：6 条在窗口内核验（3 真 2 误 1 弃权），第 7 条核验在 100 天前（窗口外不计）
+      const cover = await db.insert(schema.systemAlerts).values(Array.from({ length: 7 }, (_, i) => resolved("inventory_cover", "cover", i))).returning({ id: schema.systemAlerts.id });
+      const [spike] = await db.insert(schema.systemAlerts).values([resolved("sales_spike", "spike", 0)]).returning({ id: schema.systemAlerts.id });
+      const results = ["true_positive", "true_positive", "true_positive", "false_positive", "false_positive", "unverifiable", "true_positive"];
+      await db.insert(schema.alertEvents).values([
+        ...cover.map((a, i) => ({ alertId: a.id, event: "verify", at: i === 6 ? ago(24 * 100) : ago(1), evidenceRef: { result: results[i] }, idempotencyKey: `${a.id}:verify` })),
+        { alertId: spike.id, event: "verify", at: ago(1), evidenceRef: { result: "true_positive" }, idempotencyKey: `${spike.id}:verify` },
+      ]);
+      // 待办取消拆分：来源告警 autoResolved（引擎迟滞关闭）vs 人工关闭
+      const [autoA] = await db.insert(schema.systemAlerts).values([resolved("inventory_cover", "cover", 100, true)]).returning({ id: schema.systemAlerts.id });
+      const [manA] = await db.insert(schema.systemAlerts).values([resolved("inventory_cover", "cover", 101, false)]).returning({ id: schema.systemAlerts.id });
+      const wi = (title: string, sourceRef: string, status: string) => ({
+        title, assigneeId: pmc.id, assignerId: admin.id, createdBy: admin.id, ownerRole: "pmc", sourceKind: "alert", sourceRef, status, createdAt: ago(48),
+        completedAt: status === "done" ? ago(1) : null,
+      });
+      await db.insert(schema.workItems).values([
+        wi("auto-cancel", String(autoA.id), "cancelled"),
+        wi("human-cancel", String(manA.id), "cancelled"),
+        wi("done", "a:9", "done"),
+        wi("open", "a:10", "open"),
+      ]);
+
+      const t = await getCockpitTrends(su(admin.id, admin.name, ["admin"]), db);
+      const ap = t.screens.s2.alertPrecision;
+      expect(ap.state).toBe("ready");
+      expect(ap.data!.verifiedTotal).toBe(7);
+      expect(ap.data!.totals).toEqual({ truePositive: 4, falsePositive: 2, unverifiable: 1 });
+      expect(ap.data!.groups.find((g) => g.key === "inventory_cover|cover")).toMatchObject({ verified: 6, truePositive: 3, falsePositive: 2, unverifiable: 1, scored: 5, insufficient: false, precisionPct: 60 });
+      expect(ap.data!.groups.find((g) => g.key === "sales_spike|spike")).toMatchObject({ verified: 1, truePositive: 1, scored: 1, insufficient: true, precisionPct: null });
+      expect(ap.data!.scoredGroups).toBe(1);
+      expect(ap.note).toContain("可评分组 1/2");
+      expect(ap.source.tier).toBe("fact");
+
+      const ts = t.screens.s4.todoCompletionStrict;
+      expect(ts.state).toBe("ready");
+      // 宽 1 ÷ (4 − 2) = 50；严 1 ÷ (4 − 1) = 33.3
+      expect(ts.data!.overall).toMatchObject({ total: 4, done: 1, cancelled: 2, cancelledBySourceClose: 1, cancelledByHuman: 1, completionRate: 50, completionRateStrict: 33.3, gapPp: 16.7 });
+      expect(ts.data!.byRole.map((r) => r.key)).toEqual(["pmc"]);
+      expect(ts.data!.months).toHaveLength(6);
+      expect(ts.note).toContain("不排名");
+      // 宽口径块与严口径块同源同数
+      expect(t.screens.s4.todoThroughput.data!.rows.find((r) => r.groupKey === "pmc")).toMatchObject({ total: 4, cancelledBySourceClose: 1, cancelledByHuman: 1, completionRate: 50, completionRateStrict: 33.3 });
     } finally {
       await client.close();
     }

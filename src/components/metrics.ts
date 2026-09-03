@@ -861,6 +861,42 @@ Object.assign(METRICS, {
     tier: "registry",
     caveat: "跨平台合计只用于排序不作为总量；店铺名回退归属是猜测，猜测占比随行标注；观察数据不进过账、不进补货",
   },
+  alertPrecision: {
+    id: "alertPrecision",
+    label: "预警命中率（已验证）",
+    short: "已关闭并回看过实际流水的告警里，断货确实发生的比例，按类别 × 规则分列，不给单一总分",
+    formula: "已核验为真 ÷ (真 + 误报)；弃权（快照仓 SKU / 窗口内有入库 / 看不到需求）单列不进分母；窗口按核验时间近 90 天；每条告警只核验一次",
+    unit: "pct",
+    tier: "ledger",
+    caveat: "真+误 < 5 的分组只给计数不给百分比；窗口内有入库的告警可能是告警促成了补货，无法与误报区分只能弃权；结果只进台账不回写告警、不自动调阈值",
+  },
+  todoCompletionRateStrict: {
+    id: "todoCompletionRateStrict",
+    label: "待办完成率（严格口径）",
+    short: "把「来源告警被引擎自动关闭而取消」的待办留在分母后的完成率——等看门狗把告警关掉不算完成",
+    formula: "已完成 ÷ (总数 − 人工取消)；宽口径 = 已完成 ÷ (总数 − 全部已取消)；两者差距（pp）= 靠条件自行消失而不是有人处理掉的比例",
+    unit: "pct",
+    tier: "derived",
+    caveat: "手工来源不计入；自动关闭判定依赖 system_alerts.auto_resolved（引擎迟滞关闭），来源被人工关闭导致的取消算人工取消；证据不排名个人（D61）",
+  },
+  suggestionOrderedRatio: {
+    id: "suggestionOrderedRatio",
+    label: "建议 vs 实际下单",
+    short: "已捕获的补货建议在视野期内实际下了多少单，按 实际下单 ÷ 净需求 分桶计数",
+    formula: "视野期内（业务日起 horizonDays 天，缺失按 60）非作废 BH 行 + PO 行（按 uom_factor 折基础单位）÷ decisionEnvelope.outputs.netRequiredBeforeRounding；只对视野期已走完的行分桶",
+    unit: "count",
+    tier: "derived",
+    caveat: "样本只含 planning_version_lines 人工捕获快照（未抑制、净需求 > 0，同 SKU 同业务日取最新版本），日常未捕获的建议不在内；只给分布不给单一准确率——视野期归因有争议",
+  },
+  suggestionRealizedRatio: {
+    id: "suggestionRealizedRatio",
+    label: "建议 vs 实际出库",
+    short: "已捕获的补货建议在视野期内实际消耗了多少，按 实时仓出库 ÷ 净需求 分桶计数",
+    formula: "视野期内实时仓 stock_ledger 出库合计（含调拨/发料，非纯销售）÷ 净需求；快照仓 SKU 无流水 → 不进分布，单列覆盖数",
+    unit: "count",
+    tier: "ledger",
+    caveat: "出库 ≠ 销售（含调拨、发料、借出）；快照仓 SKU 弃权后样本会明显少于「实际下单」分布；分桶边界 50/90/110/150% 是展示约定不是考核线",
+  },
 });
 
 /** 取指标定义；未登记返回 undefined（调用方应回退到原文案） */

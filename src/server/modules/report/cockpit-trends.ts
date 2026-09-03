@@ -6,7 +6,8 @@ import { resolveChannelScope, resolveDeptScope } from "@/server/core/data-scope"
 import { dAdd, dCmp } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { getNumParam } from "@/server/core/params";
-import { resolveDb, type AnyDb } from "@/server/core/svc";
+import { r1n, resolveDb, type AnyDb } from "@/server/core/svc";
+import { alertPrecision, type AlertPrecisionGroup, type AlertPrecisionSummary } from "@/jobs/alert-outcome";
 import { momPct } from "@/server/rules/period-compare";
 import type { Tier } from "@/server/rules/abc";
 import type { Block, CockpitSource } from "@/server/modules/report/cockpit";
@@ -30,8 +31,8 @@ import { METRICS } from "@/components/metrics";
  * 受限渠道账号（D62）不下发跨店铺聚合的外部观察，只给按渠道映射裁剪后的店铺行。
  *
  * 块清单（对应 BI 审计编号）：
- *  屏1 dailyFlow（#1）；屏2 poTrend（#2）/ externalDemand（#3）/ quadrant（#4）；屏3 turnoverWindows（#7）；
- *  屏4 todoThroughput（#12）/ alertLifecycle（#6）/ goalHistory（#8 历史）；渠道观察 brandMatrix（#9）。
+ *  屏1 dailyFlow（#1）；屏2 poTrend（#2）/ externalDemand（#3）/ quadrant（#4）/ alertPrecision（闭环审计 #3）；屏3 turnoverWindows（#7）；
+ *  屏4 todoThroughput（#12）/ todoCompletionStrict（闭环审计 #9）/ alertLifecycle（#6）/ goalHistory（#8 历史）；渠道观察 brandMatrix（#9）。
  */
 
 export const COCKPIT_TRENDS_CALIBRE = "cockpit-trends/v1";
@@ -496,6 +497,121 @@ export interface ChannelMatrixBlock {
   metricIds: readonly ["channelBrandUnits", "platformIdentityCoverage"];
 }
 
+/* ───────────────────────── 屏2 · 预警命中率（已验证） ───────────────────────── */
+
+/** 真+误 低于此数的分组只给计数不给精确率（小样本百分比会被当成结论） */
+export const ALERT_PRECISION_MIN_SAMPLE = 5;
+export const ALERT_PRECISION_WINDOW_DAYS = 90;
+
+export interface AlertPrecisionRow extends AlertPrecisionGroup {
+  key: string;
+  label: string;
+  /** 真 + 误（精确率分母，弃权不计） */
+  scored: number;
+  /** scored < ALERT_PRECISION_MIN_SAMPLE */
+  insufficient: boolean;
+  /** 样本足够才下发；不足时即使服务层算得出也置 null */
+  precisionPct: number | null;
+}
+
+export interface AlertPrecisionBlock {
+  days: number;
+  verifiedTotal: number;
+  minSample: number;
+  totals: { truePositive: number; falsePositive: number; unverifiable: number };
+  groups: AlertPrecisionRow[];
+  scoredGroups: number;
+  caliber: string;
+  metricIds: readonly ["alertPrecision"];
+}
+
+export function buildAlertPrecision(summary: AlertPrecisionSummary): AlertPrecisionBlock {
+  const totals = { truePositive: 0, falsePositive: 0, unverifiable: 0 };
+  const groups: AlertPrecisionRow[] = summary.groups.map((g) => {
+    totals.truePositive += g.truePositive;
+    totals.falsePositive += g.falsePositive;
+    totals.unverifiable += g.unverifiable;
+    const scored = g.truePositive + g.falsePositive;
+    const insufficient = scored < ALERT_PRECISION_MIN_SAMPLE;
+    return {
+      ...g,
+      key: `${g.category}|${g.sourceRule ?? ""}`,
+      label: g.sourceRule ? `${g.category} / ${g.sourceRule}` : g.category,
+      scored,
+      insufficient,
+      precisionPct: insufficient ? null : g.precisionPct,
+    };
+  });
+  return {
+    days: summary.days,
+    verifiedTotal: summary.verifiedTotal,
+    minSample: ALERT_PRECISION_MIN_SAMPLE,
+    totals,
+    groups,
+    scoredGroups: groups.filter((g) => !g.insufficient).length,
+    caliber: summary.caliber,
+    metricIds: ["alertPrecision"],
+  };
+}
+
+/* ───────────────────────── 屏4 · 待办完成率（严格口径） ───────────────────────── */
+
+export interface TodoCompletionStrictCell {
+  /** 月份（byMonth）/ 角色（byRole）/ "all"（overall） */
+  key: string;
+  total: number;
+  done: number;
+  cancelled: number;
+  cancelledBySourceClose: number;
+  cancelledByHuman: number;
+  /** 宽：done ÷ (total − cancelled) */
+  completionRate: number | null;
+  /** 严：done ÷ (total − cancelledByHuman)——来源自动关闭的待办留在分母 */
+  completionRateStrict: number | null;
+  /** 宽 − 严（pp）：差距越大，越多"完成"其实是等看门狗把告警关掉 */
+  gapPp: number | null;
+}
+
+export interface TodoCompletionStrictBlock {
+  months: string[];
+  byMonth: TodoCompletionStrictCell[];
+  /** 按责任角色（证据不排名个人，D61） */
+  byRole: TodoCompletionStrictCell[];
+  overall: TodoCompletionStrictCell;
+  caliber: string;
+  metricIds: readonly ["todoCompletionRate", "todoCompletionRateStrict"];
+}
+
+function strictCell(key: string, rows: TodoStatsRow[]): TodoCompletionStrictCell {
+  const agg = rows.reduce(
+    (a, r) => ({
+      total: a.total + r.total, done: a.done + r.done, cancelled: a.cancelled + r.cancelled,
+      cancelledBySourceClose: a.cancelledBySourceClose + r.cancelledBySourceClose, cancelledByHuman: a.cancelledByHuman + r.cancelledByHuman,
+    }),
+    { total: 0, done: 0, cancelled: 0, cancelledBySourceClose: 0, cancelledByHuman: 0 },
+  );
+  const denom = agg.total - agg.cancelled;
+  const strictDenom = agg.total - agg.cancelledByHuman;
+  const completionRate = denom > 0 ? r1n((agg.done / denom) * 100) : null;
+  const completionRateStrict = strictDenom > 0 ? r1n((agg.done / strictDenom) * 100) : null;
+  return {
+    key, ...agg, completionRate, completionRateStrict,
+    gapPp: completionRate != null && completionRateStrict != null ? r1n(completionRate - completionRateStrict) : null,
+  };
+}
+
+export function buildTodoCompletionStrict(rows: TodoStatsRow[], months: string[], caliber: string): TodoCompletionStrictBlock {
+  const roles = [...new Set(rows.map((r) => r.groupKey))].sort((a, b) => a.localeCompare(b, "zh-CN"));
+  return {
+    months,
+    byMonth: months.map((m) => strictCell(m, rows.filter((r) => r.month === m))),
+    byRole: roles.map((role) => strictCell(role, rows.filter((r) => r.groupKey === role))),
+    overall: strictCell("all", rows),
+    caliber,
+    metricIds: ["todoCompletionRate", "todoCompletionRateStrict"],
+  };
+}
+
 /* ───────────────────────── 装配 ───────────────────────── */
 
 export interface CockpitTrendsData {
@@ -504,9 +620,9 @@ export interface CockpitTrendsData {
   calibreVersion: typeof COCKPIT_TRENDS_CALIBRE;
   screens: {
     s1: { dailyFlow: Block<DailyFlowBlock> };
-    s2: { poTrend: Block<PoTrendBlock>; externalDemand: Block<ExternalDemandBriefBlock>; quadrant: Block<QuadrantBlock> };
+    s2: { poTrend: Block<PoTrendBlock>; externalDemand: Block<ExternalDemandBriefBlock>; quadrant: Block<QuadrantBlock>; alertPrecision: Block<AlertPrecisionBlock> };
     s3: { turnoverWindows: Block<TurnoverWindowsBlock> };
-    s4: { todoThroughput: Block<TodoThroughputBlock>; alertLifecycle: Block<AlertLifecycleBlock>; goalHistory: Block<GoalHistoryBlock> };
+    s4: { todoThroughput: Block<TodoThroughputBlock>; todoCompletionStrict: Block<TodoCompletionStrictBlock>; alertLifecycle: Block<AlertLifecycleBlock>; goalHistory: Block<GoalHistoryBlock> };
     channels: { brandMatrix: Block<ChannelMatrixBlock> };
   };
   limitations: string[];
@@ -536,7 +652,7 @@ export async function getCockpitTrends(user: SessionUser, dbArg?: AnyDb, opts: {
   const thisMonth = monthShanghai(now);
   const currentYear = Number(today.slice(0, 4));
 
-  const [posR, poR, poPrevR, demandR, alertsR, velR, slowR, wh30R, wh90R, wh365R, todoR, alertLifeR, goalsR, channelR] = await Promise.allSettled([
+  const [posR, poR, poPrevR, demandR, alertsR, velR, slowR, wh30R, wh90R, wh365R, todoR, alertLifeR, goalsR, channelR, precisionR] = await Promise.allSettled([
     loadInventoryPosition(db),
     loadPurchaseOrderMetrics({}, db),
     // 历史年份即时计算不缓存：只为补足 12 个月窗口；失败不影响当年趋势
@@ -552,6 +668,7 @@ export async function getCockpitTrends(user: SessionUser, dbArg?: AnyDb, opts: {
     loadAlertLifecycle(db),
     loadGoalHistory(db, user),
     loadChannelObservation(db),
+    alertPrecision(db, { days: ALERT_PRECISION_WINDOW_DAYS, now }),
   ]);
 
   /* 屏1 */
@@ -620,6 +737,22 @@ export async function getCockpitTrends(user: SessionUser, dbArg?: AnyDb, opts: {
         })()
       : errorBlock(alerts.ok ? (vel.ok ? "无数据" : vel.error) : alerts.error, "inventory-alerts/v1 × external-velocity/v3", "observation");
 
+  const precision = settled(precisionR);
+  const alertPrecisionBlock: Block<AlertPrecisionBlock> = precision.ok
+    ? (() => {
+        const b = buildAlertPrecision(precision.value);
+        const ready = b.verifiedTotal > 0;
+        return {
+          state: ready ? "ready" : "insufficient",
+          data: b,
+          note: ready
+            ? `弃权不进分母；真+误 < ${b.minSample} 的分组只给计数不给精确率（可评分组 ${b.scoredGroups}/${b.groups.length}）；每条告警只核验一次，结果只进台账、不回写告警、不自动调阈值`
+            : `近 ${b.days} 天没有已核验的告警：核验任务在告警关闭 ≥ 3 天后回看实时仓流水，快照仓 SKU 无流水只能弃权`,
+          source: { tier: "fact", source: "alert_events(verify) × system_alerts（alert-outcome/v1）", asOf: now.toISOString() },
+        };
+      })()
+    : errorBlock(precision.error, "alert_events(verify)", "fact");
+
   /* 屏3 */
   const whs = [wh30R, wh90R, wh365R].map(settled);
   const okModels = whs.filter((w): w is { ok: true; value: WarehouseInventoryModel } => w.ok).map((w) => w.value);
@@ -640,15 +773,30 @@ export async function getCockpitTrends(user: SessionUser, dbArg?: AnyDb, opts: {
 
   /* 屏4 */
   const todo = settled(todoR);
+  const trendMonths = Array.from({ length: 6 }, (_, i) => shiftMonth(thisMonth, i - 5));
   const todoThroughput: Block<TodoThroughputBlock> = todo.ok
     ? (() => {
-        const months = Array.from({ length: 6 }, (_, i) => shiftMonth(thisMonth, i - 5));
         const rolesSeen = [...new Set(todo.value.rows.map((r) => r.groupKey))].sort((a, b) => a.localeCompare(b, "zh-CN"));
         return {
           state: todo.value.rows.length ? "ready" : "insufficient",
-          data: { months, roles: rolesSeen.length ? rolesSeen : [...ROLES], rows: todo.value.rows, caliber: todo.value.caliber, metricIds: ["todoCompletionRate"] },
+          data: { months: trendMonths, roles: rolesSeen.length ? rolesSeen : [...ROLES], rows: todo.value.rows, caliber: todo.value.caliber, metricIds: ["todoCompletionRate"] },
           note: todo.value.rows.length ? "证据不打分：按责任角色 × 创建月，不排名个人（D61）" : "近 6 个月没有系统来源（预警/复核）的待办",
           source: { tier: "fact", source: "work_items（todo/stats 按月）", asOf: now.toISOString() },
+        };
+      })()
+    : errorBlock(todo.error, "work_items", "fact");
+
+  const todoCompletionStrict: Block<TodoCompletionStrictBlock> = todo.ok
+    ? (() => {
+        const b = buildTodoCompletionStrict(todo.value.rows, trendMonths, todo.value.caliber);
+        const ready = b.overall.total > 0;
+        return {
+          state: ready ? "ready" : "insufficient",
+          data: b,
+          note: ready
+            ? `严口径把「来源告警被引擎自动关闭而取消」的待办留在分母（等看门狗把告警关掉不算完成）；宽 − 严 = ${b.overall.gapPp ?? "—"} pp；按角色 × 月看证据，不排名个人（D61）`
+            : "近 6 个月没有系统来源（预警/复核）的待办",
+          source: { tier: "fact", source: "work_items × system_alerts.auto_resolved（todo/stats 按月）", asOf: now.toISOString() },
         };
       })()
     : errorBlock(todo.error, "work_items", "fact");
@@ -723,9 +871,9 @@ export async function getCockpitTrends(user: SessionUser, dbArg?: AnyDb, opts: {
     calibreVersion: COCKPIT_TRENDS_CALIBRE,
     screens: {
       s1: { dailyFlow },
-      s2: { poTrend, externalDemand, quadrant },
+      s2: { poTrend, externalDemand, quadrant, alertPrecision: alertPrecisionBlock },
       s3: { turnoverWindows },
-      s4: { todoThroughput, alertLifecycle, goalHistory },
+      s4: { todoThroughput, todoCompletionStrict, alertLifecycle, goalHistory },
       channels: { brandMatrix },
     },
     limitations: [

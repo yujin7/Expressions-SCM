@@ -395,13 +395,11 @@ export const systemAlerts = pgTable("system_alerts", {
   uniqueIndex("uq_alert_open_dedupe").on(t.category, t.dedupeKey).where(sql`${t.status} = 'open'`),
 ]);
 
-/** alert_events 允许的事件 / 原因码（与 CHECK 约束、引擎与人工关闭写路径共用同一常量） */
+/** alert_events 允许的事件 / 原因码（与 CHECK 约束、引擎与人工关闭写路径共用同一常量）。
+ *  原因码唯一定义在零依赖模块 `src/lib/alert-close-reasons.ts`（客户端表单可直接导入），这里再导出保持既有路径。 */
 export const ALERT_EVENT_KINDS = ["open", "refresh", "ack", "close", "verify", "reopen"] as const;
 export type AlertEventKind = (typeof ALERT_EVENT_KINDS)[number];
-export const ALERT_CLOSE_REASON_CODES = ["fixed", "false_positive", "wont_fix", "superseded", "auto_hysteresis", "manual"] as const;
-export type AlertCloseReasonCode = (typeof ALERT_CLOSE_REASON_CODES)[number];
-/** 人工关闭可选原因（auto_hysteresis 只允许引擎写） */
-export const MANUAL_CLOSE_REASON_CODES = ["fixed", "false_positive", "wont_fix", "superseded", "manual"] as const;
+export { ALERT_CLOSE_REASON_CODES, MANUAL_CLOSE_REASON_CODES, type AlertCloseReasonCode } from "../../lib/alert-close-reasons";
 
 /**
  * 告警事件台账（智能闭环审计 #2）：system_alerts 是"当前状态白板"，本表是"历史账本"。
