@@ -5,7 +5,7 @@ import { errorResponse, guardRead } from "@/server/modules/master/common";
 import { guardFreshWrite, requireAnyRole } from "@/server/modules/outsource/common";
 import { loadInventoryAlerts, refreshInventoryAlerts } from "@/server/modules/report/inventory-alerts";
 
-/** 库存预警表读模型 `inventory-alerts/v1`（D57）。?refresh=1 需 pmc/admin 回查。数量口径全员可见。 */
+/** 库存预警表读模型 `inventory-alerts/v2`（D57；v2 接未结供给/临期/积压/学习交期观察）。?refresh=1 需 pmc/admin 回查。数量口径全员可见。 */
 export async function GET(req: NextRequest) {
   try {
     const refresh = new URL(req.url).searchParams.get("refresh") === "1";

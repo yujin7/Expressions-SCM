@@ -1,17 +1,20 @@
 import { sql } from "drizzle-orm";
 import { getNumParam } from "@/server/core/params";
 import { resolveDb, type AnyDb } from "@/server/core/svc";
-import { detectSalesSpike } from "@/server/rules/sales-spike";
+import { detectSalesSpike, matchExpectedPromo, type PromoEvent } from "@/server/rules/sales-spike";
 
 /**
- * 爆单预警读模型 `sales-spike/v1`（D56；观察口径，只预警不定量）。
+ * 爆单预警读模型 `sales-spike/v2`（D56；观察口径，只预警不定量）。
  *
  * 序列：天猫 SKU 日销（简道云 tmall-sku-sales-observation 最新可用批次，店铺 × 平台 SKU × 统计日，paidNumber）。
  * 身份：对照表批次 `_identity.skuId`（shop|platformSkuId → 系统 SKU）∪ 直接认领 sku_identifiers(JIANDAOYUN:TMALL, value=shop|platformSkuId)。
  * 已映射按系统 SKU 汇总后判定；未映射平台 SKU 按 shop|platformSkuId 判定并另列（身份缺口，不冒充）。
  * 规则：最近 N 天每日 ≥ 前 7 日日均 ×(1+rise%) 且基线 ≥ 最低基数（rules/sales-spike，参数 spike_*）。
+ * v2（审计 #7/#8）：命中带 reason/gaps（缺天按 0 计会放大涨幅，读者可打折）；已映射 SKU 与 ops_plan_events
+ * kind=promo 重叠判定窗口 → expected:true + planEventRef + expectedUpliftPct（只打标不丢弃，看门狗降严重度）；
+ * coverage 报大促日历覆盖率（锚点 ±90 天内有大促事件的已映射 SKU 占比），日历没人维护时缺口可见而不是被默认。
  */
-export const SALES_SPIKE_CACHE_KEY = "sales-spike/v1";
+export const SALES_SPIKE_CACHE_KEY = "sales-spike/v2";
 
 export interface SpikeHit {
   kind: "sku" | "platform";
@@ -26,6 +29,15 @@ export interface SpikeHit {
   threshold: string;
   risePct: string | null;
   href: string;
+  /** rules/sales-spike 的判定文案（v2） */
+  reason: string;
+  /** 判定 + 基线窗口内缺失天数（按 0 计，会放大涨幅） */
+  gaps: number;
+  /** 判定窗口与大促事件重叠 → 预期内爆单（未映射平台 SKU 恒 false） */
+  expected: boolean;
+  planEventRef: number | null;
+  expectedUpliftPct: number | null;
+  planEventWindow: string | null;
 }
 
 export interface SalesSpikeReadModel {
@@ -36,7 +48,13 @@ export interface SalesSpikeReadModel {
   anchorDate: string | null;
   sourceAsOf: string | null;
   params: { consecutiveDays: number; risePct: number; minBaseQty: number; baselineDays: number };
-  coverage: { platformSeries: number; mappedSeries: number; systemSkus: number };
+  coverage: {
+    platformSeries: number; mappedSeries: number; systemSkus: number;
+    /** 锚点 ±90 天内有 promo 事件的已映射 SKU 数 / 占比（%，整数；无已映射 SKU = null） */
+    calendarSkus: number; calendarPct: number | null;
+    /** 命中中被判为大促预期内的条数 */
+    expectedHits: number;
+  };
   hits: SpikeHit[];
   unmappedHits: SpikeHit[];
   limitations: string[];
@@ -70,7 +88,10 @@ async function binding(db: AnyDb, sales: { importJobId: number } | null, cw: { i
     SELECT count(*)::int AS n, coalesce(max(id),0)::int AS m FROM sku_identifiers WHERE kind='external' AND scope='JIANDAOYUN:TMALL' AND active = true`));
   const [p] = resultRows<{ v: unknown }>(await db.execute(sql`
     SELECT string_agg(key || '=' || value, ',' ORDER BY key) AS v FROM sys_params WHERE key LIKE 'spike_%'`));
-  return `spike:sales=${sales?.importJobId ?? "none"}:cw=${cw?.importJobId ?? "none"}:claims=${c?.n ?? 0}:${c?.m ?? 0}:params=${p?.v ?? ""}`;
+  const [pe] = resultRows<{ v: unknown }>(await db.execute(sql`
+    SELECT md5(coalesce(string_agg(id || ':' || coalesce(sku_id::text,'') || ':' || start_date::text || ':' || coalesce(end_date::text,'') || ':' || coalesce(expected_uplift_pct::text,''), ',' ORDER BY id), '')) AS v
+    FROM ops_plan_events WHERE kind = 'promo'`));
+  return `spike:sales=${sales?.importJobId ?? "none"}:cw=${cw?.importJobId ?? "none"}:claims=${c?.n ?? 0}:${c?.m ?? 0}:params=${p?.v ?? ""}:promo=${pe?.v ?? ""}`;
 }
 
 export async function computeSalesSpike(dbArg: AnyDb): Promise<SalesSpikeReadModel> {
@@ -89,7 +110,7 @@ export async function computeSalesSpike(dbArg: AnyDb): Promise<SalesSpikeReadMod
   const empty = (note: string): SalesSpikeReadModel => ({
     key: SALES_SPIKE_CACHE_KEY, builtAt: new Date().toISOString(), sourceBinding, state: "insufficient", anchorDate: null,
     sourceAsOf: sales?.sourceAsOf ?? null, params: { consecutiveDays, risePct, minBaseQty, baselineDays },
-    coverage: { platformSeries: 0, mappedSeries: 0, systemSkus: 0 }, hits: [], unmappedHits: [], limitations: [note],
+    coverage: { platformSeries: 0, mappedSeries: 0, systemSkus: 0, calendarSkus: 0, calendarPct: null, expectedHits: 0 }, hits: [], unmappedHits: [], limitations: [note],
   });
   if (!sales) return empty("天猫 SKU 日销流尚未同步或无可用批次。");
 
@@ -152,14 +173,38 @@ export async function computeSalesSpike(dbArg: AnyDb): Promise<SalesSpikeReadMod
   }
   const toSeries = (daily: Map<string, number>) => [...daily.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([date, qty]) => ({ date, qty: String(qty) }));
   const opts = { consecutiveDays, risePct, minBaseQty, baselineDays, asOf: anchor };
+
+  // 大促日历（审计 #7）：判定窗口 [anchor − N + 1, anchor] 与 kind=promo 事件重叠 → 预期内；
+  // 覆盖率取锚点 ±90 天内有 promo 事件的已映射 SKU 占比——日历没人维护时缺口可见。
+  const windowStart = new Date(Date.parse(`${anchor}T00:00:00Z`) - (consecutiveDays - 1) * 86_400_000).toISOString().slice(0, 10);
+  const mappedIds = [...bySku.keys()];
+  const promoRows = mappedIds.length
+    ? resultRows<{ id: number; sku_id: number; start_date: string; end_date: string | null; expected_uplift_pct: number | null }>(await db.execute(sql`
+        SELECT id, sku_id, start_date::text AS start_date, end_date::text AS end_date, expected_uplift_pct
+        FROM ops_plan_events
+        WHERE kind = 'promo' AND sku_id IN (${sql.join(mappedIds.map((id) => sql`${id}`), sql`, `)})
+          AND start_date <= (${anchor}::date + 90) AND (end_date IS NULL OR end_date >= (${anchor}::date - 90))`))
+    : [];
+  const promoBySku = new Map<number, PromoEvent[]>();
+  for (const r of promoRows) {
+    const arr = promoBySku.get(Number(r.sku_id)) ?? [];
+    arr.push({ id: Number(r.id), startDate: r.start_date, endDate: r.end_date, expectedUpliftPct: r.expected_uplift_pct == null ? null : Number(r.expected_uplift_pct) });
+    promoBySku.set(Number(r.sku_id), arr);
+  }
+  const calendarSkus = promoBySku.size;
+  const calendarPct = bySku.size ? Math.round((calendarSkus / bySku.size) * 100) : null;
+
   const hits: SpikeHit[] = [];
   for (const [skuId, e] of bySku) {
     const r = detectSalesSpike(toSeries(e.daily), opts);
     if (!r.hit) continue;
     const last = r.days[r.days.length - 1];
+    const promo = matchExpectedPromo({ start: windowStart, end: r.anchorDate ?? anchor }, promoBySku.get(skuId) ?? []);
     hits.push({ kind: "sku", skuId, code: e.code, name: e.name, shopName: [...e.shops].join("、"), platformSkuId: null, anchorDate: r.anchorDate ?? anchor,
       days: r.days.map((d) => ({ date: d.date, qty: d.qty, risePct: d.risePct })), baseline: r.baseline, threshold: r.threshold, risePct: last?.risePct ?? null,
-      href: `/replenish?sku=${encodeURIComponent(e.code ?? "")}` });
+      href: `/replenish?sku=${encodeURIComponent(e.code ?? "")}`,
+      reason: r.reason, gaps: r.gaps,
+      expected: promo.expected, planEventRef: promo.planEventRef, expectedUpliftPct: promo.expectedUpliftPct, planEventWindow: promo.planEventWindow });
   }
   const unmappedHits: SpikeHit[] = [];
   for (const [, e] of byPlatform) {
@@ -168,17 +213,19 @@ export async function computeSalesSpike(dbArg: AnyDb): Promise<SalesSpikeReadMod
     const last = r.days[r.days.length - 1];
     unmappedHits.push({ kind: "platform", skuId: null, code: null, name: null, shopName: e.shop, platformSkuId: e.psku, anchorDate: r.anchorDate ?? anchor,
       days: r.days.map((d) => ({ date: d.date, qty: d.qty, risePct: d.risePct })), baseline: r.baseline, threshold: r.threshold, risePct: last?.risePct ?? null,
-      href: `/report/decision-studio?tab=identity&platformSku=${encodeURIComponent(e.psku)}` });
+      href: `/report/decision-studio?tab=identity&platformSku=${encodeURIComponent(e.psku)}`,
+      reason: r.reason, gaps: r.gaps, expected: false, planEventRef: null, expectedUpliftPct: null, planEventWindow: null });
   }
   const byRise = (a: SpikeHit, b: SpikeHit) => Number(b.risePct ?? 0) - Number(a.risePct ?? 0);
   hits.sort(byRise); unmappedHits.sort(byRise);
   return {
     key: SALES_SPIKE_CACHE_KEY, builtAt: new Date().toISOString(), sourceBinding, state: "ready", anchorDate: anchor,
     sourceAsOf: sales.sourceAsOf, params: { consecutiveDays, risePct, minBaseQty, baselineDays },
-    coverage: { platformSeries, mappedSeries, systemSkus: bySku.size }, hits, unmappedHits,
+    coverage: { platformSeries, mappedSeries, systemSkus: bySku.size, calendarSkus, calendarPct, expectedHits: hits.filter((h) => h.expected).length }, hits, unmappedHits,
     limitations: [
       "来源：简道云天猫 SKU 日销（observation_only，T+1）；拼多多订单流暂未纳入爆单判定；唯品会无 SKU 级日销。",
-      `规则：最近 ${consecutiveDays} 天每日 ≥ 前 ${baselineDays} 日日均 ×${(1 + risePct / 100).toFixed(2)} 且基线 ≥ ${minBaseQty} 件（参数 spike_*，可调）；缺日按 0 计并记 gaps；大促日历未接。`,
+      `规则：最近 ${consecutiveDays} 天每日 ≥ 前 ${baselineDays} 日日均 ×${(1 + risePct / 100).toFixed(2)} 且基线 ≥ ${minBaseQty} 件（参数 spike_*，可调）；缺日按 0 计并记 gaps（命中行带 reason/gaps，缺天多的涨幅要打折）。`,
+      `大促日历（ops_plan_events kind=promo）：判定窗口与事件重叠的命中标 expected（只降严重度不丢弃）；日历覆盖率 ${calendarPct == null ? "—" : `${calendarPct}%`}（${calendarSkus}/${bySku.size} 个已映射 SKU 在锚点 ±90 天内有大促事件）——覆盖率低表示日历没人维护，"非预期"不可当真。`,
       "已映射 SKU 按系统 SKU 汇总多店铺；未映射平台 SKU 另列并附认领入口，不冒充系统 SKU。只预警，不自动开单、不定量（D55/D56）。",
     ],
   };

@@ -120,3 +120,46 @@ export function detectSalesSpike(dailySeries: DailyPoint[], opts: SpikeOptions =
       : `最近 ${consecutiveDays} 天中 ${days.filter((d) => !d.hit).length} 天未达门槛 ${threshold}`,
   };
 }
+
+/** 运营计划事件（ops_plan_events kind=promo）最小投影 */
+export interface PromoEvent {
+  id: number;
+  startDate: string;
+  /** null = 未定结束 */
+  endDate: string | null;
+  expectedUpliftPct: number | null;
+}
+
+export interface ExpectedPromoMatch {
+  /** true = 判定窗口与至少一个大促事件重叠——爆单在预期内 */
+  expected: boolean;
+  planEventRef: number | null;
+  expectedUpliftPct: number | null;
+  /** 重叠事件的窗口文案，如「大促 2026-09-01–2026-09-03」 */
+  planEventWindow: string | null;
+}
+
+/**
+ * 审计 #7：判定窗口 [windowStart, windowEnd]（含）与大促事件区间有交集 → expected:true。
+ * 多个重叠事件取 expectedUpliftPct 最大者（null 视为最小），再按 id 小者稳定。
+ * 只打标不丢弃——大促跑到自己预期 3 倍仍是新闻，由看门狗降级严重度。
+ */
+export function matchExpectedPromo(window: { start: string; end: string }, events: PromoEvent[]): ExpectedPromoMatch {
+  const none: ExpectedPromoMatch = { expected: false, planEventRef: null, expectedUpliftPct: null, planEventWindow: null };
+  const ws = dayStr(window.start), we = dayStr(window.end);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ws) || !/^\d{4}-\d{2}-\d{2}$/.test(we) || ws > we) return none;
+  const overlapping = (events ?? []).filter((e) => {
+    const s = dayStr(e.startDate);
+    const en = e.endDate ? dayStr(e.endDate) : null;
+    return s <= we && (en == null || en >= ws);
+  });
+  if (!overlapping.length) return none;
+  overlapping.sort((a, b) => (b.expectedUpliftPct ?? -Infinity) - (a.expectedUpliftPct ?? -Infinity) || a.id - b.id);
+  const pick = overlapping[0];
+  return {
+    expected: true,
+    planEventRef: pick.id,
+    expectedUpliftPct: pick.expectedUpliftPct ?? null,
+    planEventWindow: `大促 ${dayStr(pick.startDate)}${pick.endDate ? `–${dayStr(pick.endDate)}` : " 起"}`,
+  };
+}
