@@ -8,7 +8,8 @@
  *    overdue = 未完成且已过截止日，或完成晚于截止日（「完成不按时」）；
  *  - suspicious = done 且 completedAt − createdAt < 10 分钟（与 service 同口径）。
  *  - 完成率 = done ÷ (total − cancelled)；按时率 = onTime ÷ done；分母 0 → null。
- * 可见性：admin 全见；其他人只见本人 + 本角色（ownerRole ∈ roles）的行，服务端裁剪。
+ * 可见性：与列表同一谓词（service.resolveTodoVisibility / isWorkItemVisible）：admin 全见；
+ *   其他人只见 我相关（指派给我/我指派/我创建）∪ 本角色责任项（D62 受限用户按 deptScope 裁剪角色），服务端裁剪。
  */
 import { and, eq, gte, inArray, isNotNull, lt, type SQL } from "drizzle-orm";
 import { getDbAsync } from "@/db";
@@ -16,7 +17,7 @@ import { users, workItems } from "@/db/schema";
 import { ROLES } from "@/server/core/constants";
 import type { SessionUser } from "@/server/core/dto";
 import { type AnyDb, r1n } from "@/server/core/svc";
-import { isOverdue, isSuspiciousClose, SUSPICIOUS_CLOSE_MINUTES } from "./service";
+import { isOverdue, isSuspiciousClose, isWorkItemVisible, resolveTodoVisibility, SUSPICIOUS_CLOSE_MINUTES } from "./service";
 
 export type StatsGroupBy = "person" | "role";
 
@@ -80,7 +81,7 @@ export async function getTodoStats(args: TodoStatsArgs, user: SessionUser, dbArg
   const today = dayShanghai(now);
   const toMonth = args.toMonth && /^\d{4}-\d{2}$/.test(args.toMonth) ? args.toMonth : monthShanghai(now);
   const fromMonth = args.fromMonth && /^\d{4}-\d{2}$/.test(args.fromMonth) ? args.fromMonth : shiftMonth(toMonth, -2);
-  const isAdmin = user.roles.includes("admin");
+  const vis = resolveTodoVisibility(user);
 
   const clauses: SQL[] = [
     isNotNull(workItems.sourceKind),
@@ -92,13 +93,15 @@ export async function getTodoStats(args: TodoStatsArgs, user: SessionUser, dbArg
   if (args.assigneeId) clauses.push(eq(workItems.assigneeId, args.assigneeId));
 
   const rows: {
-    id: number; assigneeId: number; assigneeName: string | null; ownerRole: string | null; status: string;
+    id: number; assigneeId: number; assigneeName: string | null; assignerId: number; createdBy: number; ownerRole: string | null; status: string;
     dueDate: string | null; completedAt: Date | null; createdAt: Date;
   }[] = await db
     .select({
       id: workItems.id,
       assigneeId: workItems.assigneeId,
       assigneeName: users.name,
+      assignerId: workItems.assignerId,
+      createdBy: workItems.createdBy,
       ownerRole: workItems.ownerRole,
       status: workItems.status,
       dueDate: workItems.dueDate,
@@ -111,8 +114,8 @@ export async function getTodoStats(args: TodoStatsArgs, user: SessionUser, dbArg
 
   const buckets = new Map<string, TodoStatsRow>();
   for (const r of rows) {
-    // 可见性裁剪（非 admin：本人 或 本角色）
-    if (!isAdmin && r.assigneeId !== user.id && !(r.ownerRole && user.roles.includes(r.ownerRole))) continue;
+    // 可见性裁剪：与列表同一谓词
+    if (!isWorkItemVisible(r, user, vis)) continue;
     const groupKey = args.groupBy === "person" ? String(r.assigneeId) : (r.ownerRole ?? "(未分配角色)");
     const groupLabel = args.groupBy === "person" ? (r.assigneeName ?? `#${r.assigneeId}`) : groupKey;
     const month = monthShanghai(new Date(r.createdAt));
@@ -170,18 +173,18 @@ export interface TodoProgressBlock {
 /**
  * 驾驶舱第 4 屏数据块：即时口径（不走缓存——待办是事务表，量小且要求实时）。
  * 完成率 = 本月创建（alert/review 来源）中已完成占比；open/overdue 按当前状态计（含 manual）。
- * 非 admin 的 byRole 只含本人角色。
+ * 非 admin 的 byRole 只含本人角色（D62 受限用户按 deptScope 裁剪）；范围判定与列表 / stats 同一谓词（isWorkItemVisible）。
  */
 export async function getTodoProgressBlock(user: SessionUser, dbArg?: AnyDb, opts?: { now?: Date }): Promise<TodoProgressBlock> {
   const db = dbArg ?? (await getDbAsync());
   const now = opts?.now ?? new Date();
   const today = dayShanghai(now);
   const month = monthShanghai(now);
-  const isAdmin = user.roles.includes("admin");
-  const visibleRoles = isAdmin ? [...ROLES] : user.roles.filter((r) => (ROLES as readonly string[]).includes(r));
+  const vis = resolveTodoVisibility(user);
+  const visibleRoles = vis.roleKeys;
 
-  const active: { assigneeId: number; ownerRole: string | null; dueDate: string | null }[] = await db
-    .select({ assigneeId: workItems.assigneeId, ownerRole: workItems.ownerRole, dueDate: workItems.dueDate })
+  const active: { assigneeId: number; assignerId: number; createdBy: number; ownerRole: string | null; dueDate: string | null }[] = await db
+    .select({ assigneeId: workItems.assigneeId, assignerId: workItems.assignerId, createdBy: workItems.createdBy, ownerRole: workItems.ownerRole, dueDate: workItems.dueDate })
     .from(workItems)
     .where(inArray(workItems.status, ["open", "in_progress"]));
 
@@ -192,8 +195,7 @@ export async function getTodoProgressBlock(user: SessionUser, dbArg?: AnyDb, opt
   for (const a of active) {
     const overdue = a.dueDate != null && a.dueDate < today;
     if (a.assigneeId === user.id) { mine.open++; if (overdue) mine.overdue++; }
-    const inScope = isAdmin || a.assigneeId === user.id || (a.ownerRole != null && user.roles.includes(a.ownerRole));
-    if (!inScope) continue;
+    if (!isWorkItemVisible(a, user, vis)) continue;
     totals.open++;
     if (overdue) totals.overdue++;
     const b = a.ownerRole ? byRole.get(a.ownerRole) : undefined;
