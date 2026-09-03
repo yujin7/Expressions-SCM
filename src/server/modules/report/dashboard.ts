@@ -8,9 +8,14 @@
  * - 可销天数 = 全网在库 ÷ 近三月日均销（销量文件为全渠道口径，故用全网库存对齐分子分母）；
  * - 金额（结算）仅 admin/finance 可见——在本层按角色裁剪，不出序列化边界。
  * - 展示层聚合允许 Number()（非记账路径；记账运算仍走 decimal 工具）。
+ * - D62 渠道范围：受限用户（登记了 channel 范围的非 admin）的销售类聚合按 `core/data-scope` 解析结果
+ *   强制裁剪（scope.forced=true，scopeLabel 给页面当只读标签）；库存/临期等非渠道维内容仍为公开口径，
+ *   由 scope.notAppliedTo 如实交代。范围外渠道请求 → 403。
  */
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
+import type { ScopeUser } from "@/server/core/data-scope";
+import { channelScopeCondition, resolveChannelScopeByCode, type ResolvedChannelScope } from "@/server/modules/report/channel-scope";
 import { getNumParam } from "@/server/core/params";
 import { getRiskWorklist } from "@/server/modules/report/risk";
 import * as schema from "@/db/schema";
@@ -41,12 +46,19 @@ export interface DashboardScope {
   channel?: string;
 }
 
+/** 取数身份：角色 + D62 渠道范围（SessionUser 的子集；只传 string[] 视为不限，仅限测试/后台路径） */
+export type DashboardUser = ScopeUser & { roles: string[] };
+
 export interface DashboardData {
   generatedAt: string;
   /** 当前筛选与其适用范围；无筛选时 brand/channel 均为 null */
   scope: {
     brand: string | null;
     channel: string | null;
+    /** D62：true = 渠道范围由用户的受限记录强制施加（页面把渠道选择器改为只读标签） */
+    forced: boolean;
+    /** forced 时的范围标签（渠道名顿号连接）；不限 = null */
+    scopeLabel: string | null;
     appliesTo: string[];
     notAppliedTo: string[];
   };
@@ -160,12 +172,12 @@ export function dashboardCacheSizeForTest(): number {
 
 function refreshDashboard(
   key: string,
-  roles: string[],
+  user: DashboardUser,
   scope: DashboardScope,
 ): Promise<DashboardData> {
   const running = dashboardRefreshes.get(key);
   if (running) return running;
-  const refresh = computeDashboard(roles, scope)
+  const refresh = computeDashboard(user, scope)
     .then((value) => {
       rememberDashboard(key, { value, expiresAt: Date.now() + DASHBOARD_TTL_MS });
       return value;
@@ -179,16 +191,19 @@ function refreshDashboard(
 }
 
 export async function getDashboard(
-  roles: string[],
+  rolesOrUser: string[] | DashboardUser,
   scope: DashboardScope = {},
   dbArg?: AnyDb,
 ): Promise<DashboardData> {
+  const user: DashboardUser = Array.isArray(rolesOrUser) ? { roles: rolesOrUser } : rolesOrUser;
   const bypass = dbArg !== undefined || process.env.NODE_ENV === "test";
-  // 缓存键必须含筛选，否则带筛选的结果会污染无筛选的缓存（反之亦然）
+  // 缓存键必须含筛选，否则带筛选的结果会污染无筛选的缓存（反之亦然）；
+  // D62：还必须含用户的渠道范围——两个受限于不同渠道的 ops 报文不同形，不能互相命中。
   const key = [
-    [...roles].sort().join(","),
+    [...user.roles].sort().join(","),
     scope.brand ?? "",
     scope.channel ?? "",
+    user.roles.includes("admin") || user.channelScope == null ? "*" : [...user.channelScope].sort((a, b) => a - b).join(","),
   ].join("|");
   if (!bypass) {
     const hit = dashboardCache.get(key);
@@ -196,13 +211,13 @@ export async function getDashboard(
     if (hit && hit.expiresAt > now) return hit.value;
     if (hit && hit.expiresAt + DASHBOARD_MAX_STALE_MS > now) {
       // 限定陈旧窗口内立即回旧快照，后台更新；用户不承担读模型重建延迟。
-      void refreshDashboard(key, roles, scope).catch(() => undefined);
+      void refreshDashboard(key, user, scope).catch(() => undefined);
       return hit.value;
     }
     // 冷启动/超出最大陈旧窗口：多个并发请求共享一次计算。
-    return refreshDashboard(key, roles, scope);
+    return refreshDashboard(key, user, scope);
   }
-  const value = await computeDashboard(roles, scope, dbArg);
+  const value = await computeDashboard(user, scope, dbArg);
   return value;
 }
 
@@ -213,8 +228,11 @@ const SCOPE_NOT_APPLIED_TO = ["库存总量", "临期风险", "待审批", "复�
  * 销售类聚合的跨维筛选。用 EXISTS 而非加 join：只过滤、不改变行的纳入口径，
  * 保证"不加筛选"时与改动前逐字等价（与决策工作室同一套做法）。
  */
-function salesScopeConds(scope: DashboardScope) {
+function salesScopeConds(scope: DashboardScope, channelScope: ResolvedChannelScope) {
   const conds = [];
+  // D62：受限用户的渠道范围强制下推（不限用户不加此条件，保证无筛选时逐字等价）
+  const forced = channelScopeCondition(schema.salesMonthly.channelId, channelScope);
+  if (forced) conds.push(forced);
   if (scope.brand) {
     conds.push(sql`EXISTS (
       SELECT 1 FROM skus ss LEFT JOIN brands bb ON bb.id = ss.brand_id
@@ -231,13 +249,16 @@ function salesScopeConds(scope: DashboardScope) {
 }
 
 async function computeDashboard(
-  roles: string[],
+  user: DashboardUser,
   scope: DashboardScope = {},
   dbArg?: AnyDb,
 ): Promise<DashboardData> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
+  const roles = user.roles;
   const today = new Date();
   const todayStr = todayShanghai(); // 效期天数的午夜锚点（与效期页/风险页同源）
+  // D62：渠道范围解析（范围外请求在此 403；受限用户未指定渠道 = 全部范围）
+  const channelScope = await resolveChannelScopeByCode(db, user, scope.channel);
 
   /* ── 基础主档计数 ── */
   const [[{ skuActive }], [{ spuCount }]] = await Promise.all([
@@ -247,7 +268,7 @@ async function computeDashboard(
 
   /* ── 销量：月×品牌趋势 / 渠道 / 品牌 / TOP SKU（窗口动态推导） ── */
   const sm = schema.salesMonthly;
-  const scopeConds = salesScopeConds(scope);
+  const scopeConds = salesScopeConds(scope, channelScope);
   const { maxYm } = await salesWindow(db);
   const months6 = maxYm ? lastMonths(maxYm, 6) : [];
   const months3 = maxYm ? lastMonths(maxYm, 3) : [];
@@ -583,10 +604,12 @@ async function computeDashboard(
     const cur = salesLastMonth;
     if (prev > 0) {
       const pct = r1(((cur - prev) / prev) * 100);
-      insights.push(`${lastMonth} 全渠道销量 ${cur.toLocaleString("zh-CN")}，环比${pct >= 0 ? "增长" : "下降"} ${Math.abs(pct)}%`);
+      const scopeName = channelScope.forced ? `${channelScope.scopeLabel ?? "本渠道"}销量` : "全渠道销量";
+      insights.push(`${lastMonth} ${scopeName} ${cur.toLocaleString("zh-CN")}，环比${pct >= 0 ? "增长" : "下降"} ${Math.abs(pct)}%`);
     }
   }
-  if (channelMix.length > 0) {
+  // 受限用户只看到自己的渠道，「集中度/单一渠道依赖」在裁剪后的盘子里没有意义，不输出
+  if (channelMix.length > 0 && !channelScope.forced) {
     const totalCh = channelMix.reduce((a, c) => a + c.qty, 0);
     const share = r1((channelMix[0].qty / Math.max(totalCh, 1)) * 100);
     insights.push(`渠道集中度：「${channelMix[0].name}」占近半年销量 ${share}%${share > 50 ? "，单一渠道依赖偏高" : ""}`);
@@ -638,6 +661,8 @@ async function computeDashboard(
     scope: {
       brand: scope.brand ?? null,
       channel: scope.channel ?? null,
+      forced: channelScope.forced,
+      scopeLabel: channelScope.scopeLabel,
       appliesTo: SCOPE_APPLIES_TO,
       notAppliedTo: SCOPE_NOT_APPLIED_TO,
     },
