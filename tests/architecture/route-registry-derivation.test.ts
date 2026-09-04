@@ -25,13 +25,13 @@ const LEGACY_MENU: LegacyNode[] = [
     {"key": "/notifications", "label": "通知中心"}, {"key": "/alerts", "label": "系统告警"},
   ] },
   { key: "analytics", label: "经营分析", children: [
-    {"key": "/cockpit", "label": "驾驶舱四屏（例外优先）"}, {"key": "/report/dashboard", "label": "经营分析总览"}, {"key": "/report/decision-studio", "label": "决策工作室"}, {"key": "/report/sales-bridge", "label": "销量变化归因"}, {"key": "/report/funnel", "label": "全链达成漏斗"}, {"key": "/report/inventory-analytics", "label": "库存分析"}, {"key": "/report/process-mining", "label": "流程效率与瓶颈"},
+    {"key": "/cockpit", "label": "驾驶舱四屏（例外优先）"}, {"key": "/report/dashboard", "label": "经营分析总览"}, {"key": "/report/digest", "label": "每日经营摘要"}, {"key": "/report/decision-studio", "label": "决策工作室"}, {"key": "/report/sales-bridge", "label": "销量变化归因"}, {"key": "/report/funnel", "label": "全链达成漏斗"}, {"key": "/report/inventory-analytics", "label": "库存分析"}, {"key": "/report/process-mining", "label": "流程效率与瓶颈"},
   ] },
   { key: "planning", label: "计划与补货", children: [
-    {"key": "/replenish", "label": "补货建议"}, {"key": "/replenish/versions", "label": "计划版本与周差异"}, {"key": "/replenish/sop", "label": "S&OP 计划周期"}, {"key": "/replenish/reconcile", "label": "运营提报核对"}, {"key": "/replenish/pilot", "label": "补货试点候选"}, {"key": "/report/demand", "label": "需求达成与货盘"}, {"key": "/report/risk", "label": "风险库存处置"}, {"key": "/report/segmentation", "label": "库存分层 ABC/XYZ"}, {"key": "/report/closed-loop", "label": "建议闭环追踪"}, {"key": "/report/auto-replenish", "label": "自动补货候选"}, {"key": "/report/material-demand", "label": "物料需求展开 MRP"}, {"key": "/report/transfer-suggest", "label": "调拨建议"}, {"key": "/report/leadtime-learning", "label": "交期学习"}, {"key": "/report/forecast-accuracy", "label": "预测复盘"}, {"key": "/report/detectors", "label": "异动侦测"}, {"key": "/outsource/auto-chain", "label": "自动链预演"},
+    {"key": "/replenish", "label": "补货建议"}, {"key": "/replenish/versions", "label": "计划版本与周差异"}, {"key": "/replenish/sop", "label": "S&OP 计划周期"}, {"key": "/replenish/reconcile", "label": "运营提报核对"}, {"key": "/replenish/pilot", "label": "补货试点候选"}, {"key": "/report/demand", "label": "需求达成与货盘"}, {"key": "/report/risk", "label": "风险库存处置"}, {"key": "/report/segmentation", "label": "库存分层 ABC/XYZ"}, {"key": "/report/closed-loop", "label": "建议闭环追踪"}, {"key": "/report/auto-replenish", "label": "自动补货候选"}, {"key": "/report/material-demand", "label": "物料需求展开 MRP"}, {"key": "/report/transfer-suggest", "label": "调拨建议"}, {"key": "/report/forecast-accuracy", "label": "预测复盘"}, {"key": "/report/detectors", "label": "异动侦测"}, {"key": "/outsource/auto-chain", "label": "自动链预演"},
   ] },
   { key: "outsourcing", label: "委外生产", children: [
-    {"key": "/outsource/bh", "label": "备货申请"}, {"key": "/outsource/wo", "label": "委外工单"}, {"key": "/outsource/po", "label": "采购订单"}, {"key": "/outsource/pc", "label": "价格变更"}, {"key": "/outsource/jg", "label": "加工通知单"}, {"key": "/report/wip", "label": "委外在制看板"}, {"key": "/report/transit", "label": "在途参考"}, {"key": "/report/supplier-scorecard", "label": "供应商记分卡"}, {"key": "/report/price-compare", "label": "物料比价"}, {"key": "/report/purchase-orders", "label": "采购订单指标"},
+    {"key": "/outsource/bh", "label": "备货申请"}, {"key": "/outsource/wo", "label": "委外工单"}, {"key": "/outsource/po", "label": "采购订单"}, {"key": "/outsource/pc", "label": "价格变更"}, {"key": "/outsource/jg", "label": "加工通知单"}, {"key": "/report/wip", "label": "委外在制看板"}, {"key": "/report/transit", "label": "在途参考"}, {"key": "/report/supplier-scorecard", "label": "供应商记分卡"}, {"key": "/report/supplier-scorecard?tab=leadtime", "label": "交期学习"}, {"key": "/report/price-compare", "label": "物料比价"}, {"key": "/report/purchase-orders", "label": "采购订单指标"},
   ] },
   { key: "matflow", label: "物料收发", children: [
     {"key": "/matflow/fl", "label": "发料单"}, {"key": "/matflow/tl", "label": "退料单"}, {"key": "/matflow/sh", "label": "收货检验"}, {"key": "/matflow/ct", "label": "采购退货"},
@@ -67,11 +67,12 @@ const LEGACY_MENU_ROLES: Record<string, string[]> = {
   "/replenish/reconcile": ["pmc", "ops", "purchasing", "finance"],
   "/replenish/pilot": ["pmc", "purchasing", "ops", "finance"],
   "/outsource/auto-chain": ["pmc"],
+  "/report/price-compare": ["purchasing", "pmc", "finance"],
   "/inventory/locations": ["warehouse"],
   "/inventory/transfer-routes": ["warehouse", "pmc", "finance"],
   "/quality": ["quality", "purchasing", "warehouse", "pmc", "ops"],
   "/settlement/js": ["finance", "purchasing"],
-  "/report/settlement-summary": ["finance"],
+  "/report/settlement-summary": ["purchasing", "pmc", "finance"],
   "/jobs/recon": ["finance", "pmc"],
   "/settlement/month-close": ["finance", "pmc"],
   "/master/supplier/lifecycle": ["purchasing", "pmc", "finance"],
@@ -91,11 +92,15 @@ const LEGACY_MENU_ROLES: Record<string, string[]> = {
 };
 
 // 2026-09-04 快照重生成：W2 六个领域并行追加菜单后由注册表重生成（此前逐字等价于重构前菜单已在 W1 验证）；之后任何菜单变更都必须同步本快照。
+// 2026-09-04（报表/采购波次）再次由注册表重生成：新增 /report/digest（此前只能从工作台一条链接进入）；
+// 交期学习并入记分卡第六页签（路径变 /report/supplier-scorecard?tab=leadtime，旧路径保留跳转）；
+// /report/price-compare 补角色（逐行返回供应商采购价）；/report/settlement-summary 放宽到 采购/PMC/财务（与 API 和客户端一致）。
 const LEGACY_REPORT_GROUPS: Record<string, string> = {
   "/notifications": "messages",
   "/alerts": "messages",
   "/cockpit": "analytics",
   "/report/dashboard": "analytics",
+  "/report/digest": "analytics",
   "/report/decision-studio": "analytics",
   "/report/sales-bridge": "analytics",
   "/report/funnel": "analytics",
@@ -113,7 +118,6 @@ const LEGACY_REPORT_GROUPS: Record<string, string> = {
   "/report/auto-replenish": "planning",
   "/report/material-demand": "planning",
   "/report/transfer-suggest": "planning",
-  "/report/leadtime-learning": "planning",
   "/report/forecast-accuracy": "planning",
   "/report/detectors": "planning",
   "/outsource/auto-chain": "planning",
@@ -125,6 +129,7 @@ const LEGACY_REPORT_GROUPS: Record<string, string> = {
   "/report/wip": "outsourcing",
   "/report/transit": "outsourcing",
   "/report/supplier-scorecard": "outsourcing",
+  "/report/supplier-scorecard?tab=leadtime": "outsourcing",
   "/report/price-compare": "outsourcing",
   "/report/purchase-orders": "outsourcing",
   "/matflow/fl": "matflow",
@@ -187,6 +192,7 @@ const LEGACY_PALETTE_HREFS = [
   "/goals",
   "/cockpit",
   "/report/dashboard",
+  "/report/digest",
   "/replenish",
   "/replenish/sop",
   "/replenish/reconcile",
@@ -199,6 +205,7 @@ const LEGACY_PALETTE_HREFS = [
   "/outsource/wo",
   "/outsource/po",
   "/outsource/jg",
+  "/report/supplier-scorecard?tab=leadtime",
   "/report/purchase-orders",
   "/inventory/balance",
   "/inventory/ledger",
