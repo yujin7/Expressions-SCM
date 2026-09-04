@@ -157,14 +157,19 @@ describe("scoped-params 作用域继承", () => {
     ).rejects.toThrow(/管理员/);
   });
 
-  it("listScopedOverrides 返回全部覆盖，按优先级排序", async () => {
+  /* 全局层那一行不算「覆盖」：它就是 /admin/params 主表的那一行本身。分域覆盖区只列真正的覆盖，
+     否则页面上会出现「全局值 50」与「覆盖 50」两条同源行，看起来像两处配置。
+     （注意：本注释不能以 `global` 开头——ESLint 会把它当成 /* global *​/ 指令注释。） */
+  it("listScopedOverrides 只返回 global 以外的覆盖，按优先级排序", async () => {
     await put("global", 50);
     await put("segment:AX", 30);
     await put("brand:12", 20);
     await put("sku:401", 10);
     const list = await listScopedOverrides(KEY, db);
-    expect(list.map((r) => r.scope)).toEqual(["sku:401", "brand:12", "segment:AX", "global"]);
-    expect(list.map((r) => r.value)).toEqual([10, 20, 30, 50]);
+    expect(list.map((r) => r.scope)).toEqual(["sku:401", "brand:12", "segment:AX"]);
+    expect(list.map((r) => r.value)).toEqual([10, 20, 30]);
+    expect(list.map((r) => r.kind)).toEqual(["sku", "brand", "segment"]);
+    expect(list.map((r) => r.label)).toEqual(["SKU#401", "品牌#12", "AX 分层"]);
   });
 
   it("scope 编码与中文解释", () => {

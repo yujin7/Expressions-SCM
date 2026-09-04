@@ -17,6 +17,16 @@
 
 export type ParamScopeKind = "global" | "category";
 
+/**
+ * 品类层允许的品类（与 `skus.lossCategory` 同域）。
+ * 放在本零依赖模块是为了**页面也能用**：`"use client"` 组件禁止值导入 `@/server/*` 的有依赖模块，
+ * 而分域覆盖表单需要这两个选项；`core/scoped-params` 再导出本常量供服务端校验，避免第二份字面量。
+ */
+export const PARAM_CATEGORY_OPTIONS: readonly { value: string; label: string }[] = [
+  { value: "raw", label: "原料" },
+  { value: "packaging", label: "包材" },
+];
+
 interface ParamDefBase {
   key: string;
   label: string;

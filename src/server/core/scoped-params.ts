@@ -17,7 +17,7 @@ import * as schema from "@/db/schema";
 import { sysParams } from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { clearParamCache } from "@/server/core/params";
-import { PMC_WRITABLE_PARAM_KEYS, paramDef, type NumParamDef } from "@/server/core/param-defs";
+import { PARAM_CATEGORY_OPTIONS, PMC_WRITABLE_PARAM_KEYS, paramDef, type NumParamDef } from "@/server/core/param-defs";
 import { ApiError, type SessionUser } from "@/server/modules/master/common";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
@@ -50,8 +50,8 @@ export interface ResolvedParam {
 
 export const FALLBACK_SCOPE = "fallback";
 
-/** 品类损耗率允许的品类（与 skus.lossCategory 同域） */
-export const PARAM_CATEGORY_SCOPES: readonly string[] = ["raw", "packaging"];
+/** 品类损耗率允许的品类（与 skus.lossCategory 同域）；唯一权威在 core/param-defs（页面也读同一份） */
+export const PARAM_CATEGORY_SCOPES: readonly string[] = PARAM_CATEGORY_OPTIONS.map((o) => o.value);
 
 /** scope 串 → 层级枚举（唯一推导处；未知前缀按 fallback 处理，绝不猜） */
 export function scopeLayer(scope: string): ParamLayer {

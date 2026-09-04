@@ -12,7 +12,7 @@ import * as schema from "@/db/schema";
 import { sysParams } from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { clearParamCache } from "@/server/core/params";
-import { PARAM_DEFS, PMC_WRITABLE_PARAM_KEYS, paramDef, type EnumParamDef, type NumParamDef, type ParamDef } from "@/server/core/param-defs";
+import { PARAM_CATEGORY_OPTIONS, PARAM_DEFS, PMC_WRITABLE_PARAM_KEYS, paramDef, type EnumParamDef, type NumParamDef, type ParamDef } from "@/server/core/param-defs";
 import { ApiError, type SessionUser } from "@/server/modules/master/common";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
@@ -37,7 +37,20 @@ export type ParamRow = ParamDef & {
   writableBy: "admin" | "pmc";
   /** 该键在 sku/brand/segment/category 层的覆盖行数（页面在全局行上提示「有 N 处覆盖」） */
   overrideCount: number;
+  /**
+   * 该键可维护的作用域层（页面据此渲染「分域覆盖」表单，不在客户端另写一份判定）：
+   * 品类参数只有 category；枚举开关不分域（空数组）；其余数值参数三层可覆盖。
+   */
+  scopeKinds: ("sku" | "brand" | "segment" | "category")[];
+  /** scopeKinds 含 category 时的可选品类（唯一权威 core/param-defs） */
+  categoryOptions: readonly { value: string; label: string }[];
 };
+
+/** 某参数允许的分域层（服务端唯一口径；与 scoped-params 的 assertScopeAllowedForDef 同源） */
+export function scopeKindsFor(def: ParamDef): ParamRow["scopeKinds"] {
+  if (def.kind === "enum") return [];
+  return def.scope === "category" ? ["category"] : ["sku", "brand", "segment"];
+}
 
 function parseValue(def: ParamDef, raw: string | undefined): { value: number | string; isDefault: boolean } {
   if (raw == null) return { value: def.fallback, isDefault: true };
@@ -86,6 +99,8 @@ export async function listParams(dbArg?: AnyDb): Promise<ParamRow[]> {
       lastChangedAt: last?.at ?? null,
       writableBy: PMC_WRITABLE_PARAM_KEYS.includes(d.key) ? "pmc" : "admin",
       overrideCount: overrideByKey.get(d.key) ?? 0,
+      scopeKinds: scopeKindsFor(d),
+      categoryOptions: PARAM_CATEGORY_OPTIONS,
     };
   });
 }
