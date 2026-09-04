@@ -57,9 +57,17 @@ function useAlertIndex(category: string) {
   return { byKey, unacked, ack, reload: load };
 }
 
+/**
+ * 「已知悉」按钮只对持有该告警 ownerRole 的人或 admin 显示（ownerRole 为空的历史行只有 admin）——
+ * 与服务端 ackAlert 的判定同口径（安全审计 S2：ack 与 close 现在是同一条权限）；
+ * 前端隐藏不是权限，服务端仍会回查会话再判一次。
+ */
 function AckCell({ alert, onAck }: { alert: AlertRef | undefined; onAck: (id: number) => void }) {
+  const me = useMe();
   if (!alert) return <Typography.Text type="secondary">未开告警</Typography.Text>;
   if (alert.ackedAt) return <Tooltip title={ackText(alert)}><Tag color="default">已知悉 · {alert.ackedByName ?? (alert.ackedBy != null ? `#${alert.ackedBy}` : "")}</Tag></Tooltip>;
+  const canAck = alert.ownerRole ? hasAnyRole(me, alert.ownerRole) : hasAnyRole(me);
+  if (!canAck) return <Typography.Text type="secondary">未知悉</Typography.Text>;
   return <Button size="small" onClick={() => onAck(alert.id)}>已知悉</Button>;
 }
 

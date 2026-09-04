@@ -19,6 +19,22 @@ import {
 
 export const DQ_LIST_MAX_PAGE_SIZE = 200;
 
+/**
+ * 分页参数归一（安全审计 S6）：`Math.max(1, NaN)` 仍是 NaN，会被原样绑进 LIMIT/OFFSET
+ * → 每个 `?page=x` 请求一次 500 + 一条 error_logs。路由层已改用 parseListQuery，
+ * 这里再守一道：service 也可能被任务/测试直接调用，不能指望调用方都干净。
+ */
+function pageArgs(query: { page?: number; pageSize?: number }): { page: number; pageSize: number } {
+  const int = (v: unknown, fallback: number): number => {
+    const n = Math.trunc(Number(v));
+    return Number.isFinite(n) ? n : fallback;
+  };
+  return {
+    page: Math.max(1, int(query.page ?? 1, 1)),
+    pageSize: Math.min(DQ_LIST_MAX_PAGE_SIZE, Math.max(1, int(query.pageSize ?? 20, 20))),
+  };
+}
+
 function rowsOf<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
   const rows = (result as { rows?: unknown } | null)?.rows;
@@ -64,8 +80,7 @@ export async function listManualOverrides(
   roles: string[],
 ): Promise<ManualOverrideList> {
   const moneyVisible = canSeePrices(roles);
-  const page = Math.max(1, query.page ?? 1);
-  const pageSize = Math.min(DQ_LIST_MAX_PAGE_SIZE, Math.max(1, query.pageSize ?? 20));
+  const { page, pageSize } = pageArgs(query);
   const ym = (query.yearMonth ?? "").trim();
   const ymFilter = /^\d{4}-\d{2}$/.test(ym) ? sql` AND s.year_month = ${ym}` : sql``;
 
@@ -131,8 +146,7 @@ export async function listBelowFloor(
   db: AnyDb,
   query: { page?: number; pageSize?: number; month?: string },
 ): Promise<BelowFloorList> {
-  const page = Math.max(1, query.page ?? 1);
-  const pageSize = Math.min(DQ_LIST_MAX_PAGE_SIZE, Math.max(1, query.pageSize ?? 20));
+  const { page, pageSize } = pageArgs(query);
   const model = await computeSalesConsistency(db, { keepBelowFloor: true });
   const month = (query.month ?? "").trim();
   const all = (model.belowFloor ?? []).filter((r) => !month || r.month === month);

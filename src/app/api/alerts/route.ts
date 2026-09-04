@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { alertEvents, systemAlerts, users } from "@/db/schema";
+import { resolveChannelScope } from "@/server/core/data-scope";
 import { maskSensitive } from "@/server/core/dto";
 import { errorResponse, guardRead, parseListQuery } from "@/server/modules/master/common";
+import { channelScopedAlertCondition, visibleChannelScopedAlertIds } from "@/server/modules/report/shop-channel-scope";
 
 /**
  * struct#15 系统告警（看门狗产出，与人工裁决 review_items 分家）。
@@ -28,6 +30,10 @@ export async function GET(req: NextRequest) {
     if (category) where.push(eq(systemAlerts.category, category));
     if (severity) where.push(eq(systemAlerts.severity, severity));
     if (unackedOnly) where.push(isNull(systemAlerts.ackedAt));
+    // D62（安全审计 S3）：受限渠道账号只看得到能归到自己渠道的店铺维告警（爆单预警的标题/详情/去重键
+    // 里带着店铺名与平台 SKU）。条件下推 SQL，total 与分页跟着一起裁，不是分页后再删行。
+    const scope = resolveChannelScope(user, null);
+    if (scope.forced) where.push(channelScopedAlertCondition(await visibleChannelScopedAlertIds(db, scope)));
     const cond = and(...where);
     const [[{ total }], rows] = await Promise.all([
       db.select({ total: sql<number>`count(*)::int` }).from(systemAlerts).where(cond),

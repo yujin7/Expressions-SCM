@@ -131,7 +131,7 @@ export function AlertLifecycleCard({ block }: { block: Block<AlertLifecycleBlock
                 <div key={`${r.sourceRule}|${r.dedupeKey}`} style={{ fontSize: 12, padding: "2px 0" }}>
                   <Tag color={r.open ? "warning" : "default"}>{r.times} 次</Tag>{r.sourceRule} · <Typography.Text type="secondary">{r.dedupeKey}</Typography.Text>
                 </div>
-              )) : <div style={{ fontSize: 12 }}><Typography.Text type="secondary">无复发对</Typography.Text></div>}
+              )) : <div style={{ fontSize: 12 }}><Typography.Text type="secondary">{data.recurrenceWithheld ? "受限渠道范围不下发复发去重键（D62）" : "无复发对"}</Typography.Text></div>}
               <Typography.Text strong style={{ fontSize: 12, display: "block", marginTop: 6 }}>按规则</Typography.Text>
               <Space wrap size={[4, 4]}>
                 {data.byRule.slice(0, 8).map((r) => <Tag key={r.sourceRule}>{r.sourceRule} {r.total}（开放 {r.open} · 自动关 {r.autoResolved}）</Tag>)}
@@ -187,7 +187,7 @@ export function GoalHistoryCard({ block }: { block: Block<GoalHistoryBlock> }) {
             <Space wrap size={[4, 4]}>
               {r.points.map((p) => (
                 <Tag key={p.period} color={p.attained == null ? "default" : p.attained ? "success" : "warning"}>
-                  {p.period.slice(2)} {p.attainment == null ? (p.actualValue == null ? "未填" : "—") : `${p.attainment}%`}{p.actualSource === "manual" ? "·手" : ""}
+                  {p.period.slice(2)} {p.valueWithheld ? "无权限" : p.attainment == null ? (p.actualValue == null ? "未填" : "—") : `${p.attainment}%`}{p.actualSource === "manual" ? "·手" : ""}
                 </Tag>
               ))}
             </Space>

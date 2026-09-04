@@ -26,7 +26,7 @@ import {
 } from "@/server/modules/report/supplier-payment-term";
 import { loadWarehouseInventory, WAREHOUSE_INVENTORY_CACHE_KEY, WAREHOUSE_WINDOWS, type WarehouseInventoryModel } from "@/server/modules/report/warehouse-inventory";
 import { getTodoStats, monthShanghai, type TodoStatsRow } from "@/server/modules/todo/stats";
-import { computeAttainment, isAttained, type GoalDirection } from "@/server/modules/goals/service";
+import { computeAttainment, isAttained, isValueWithheld, type GoalDirection } from "@/server/modules/goals/service";
 import { METRICS } from "@/components/metrics";
 
 /**
@@ -379,7 +379,10 @@ export interface AlertLifecycleBlock {
   latency: { windowDays: number; ackP50Hours: number | null; ackSamples: number; resolveP50Hours: number | null; resolveSamples: number };
   resolution: { auto: number; manual: number };
   byRule: { sourceRule: string; total: number; open: number; autoResolved: number }[];
+  /** 反复命中的去重键 Top10；受限渠道账号不下发（dedupeKey 编码店铺|平台SKU，见下） */
   recurrence: { sourceRule: string; dedupeKey: string; times: number; lastHitAt: string | null; open: boolean }[];
+  /** true = recurrence 因渠道范围被扣住（不是"没有反复命中"） */
+  recurrenceWithheld: boolean;
   metricIds: readonly ["alertTimeToAck", "alertTimeToResolve", "alertRecurrence"];
 }
 
@@ -400,7 +403,15 @@ function rowsOf<T>(result: unknown): T[] {
 const n0 = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const h1 = (v: unknown): number | null => { if (v == null) return null; const n = Number(v); return Number.isFinite(n) ? Math.round(n * 10) / 10 : null; };
 
-export async function loadAlertLifecycle(db: AnyDb): Promise<AlertLifecycleBlock> {
+/**
+ * 屏4 告警生命周期。
+ *
+ * `opts.channelScopeForced`（安全审计 S3）：受限渠道账号不下发 recurrence——
+ * `dedupe_key` 对爆单类别恰好编码了 `店铺|平台SKU`，这个块的兄弟块（外部需求、四象限）
+ * 早就按 scope.forced 跳过了，只有它一直原样下发。计数类聚合（total/open/latency/byRule）
+ * 不含店铺标识，继续下发。
+ */
+export async function loadAlertLifecycle(db: AnyDb, opts: { channelScopeForced?: boolean } = {}): Promise<AlertLifecycleBlock> {
   const bucketCols = AGE_BUCKETS.map((b) => sql.raw(
     `count(*) filter (where status = 'open'${b.from == null ? "" : ` and created_at <= now() - interval '${b.from} days'`}${b.to == null ? "" : ` and created_at > now() - interval '${b.to} days'`})::int AS ${b.key}`,
   ));
@@ -426,7 +437,8 @@ export async function loadAlertLifecycle(db: AnyDb): Promise<AlertLifecycleBlock
            count(*) filter (where status = 'resolved' and auto_resolved)::int AS auto_resolved
     FROM system_alerts GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20
   `));
-  const recurrence = rowsOf<Record<string, unknown>>(await db.execute(sql`
+  const scopeForced = opts.channelScopeForced === true;
+  const recurrence = scopeForced ? [] : rowsOf<Record<string, unknown>>(await db.execute(sql`
     SELECT coalesce(source_rule, category) AS source_rule, dedupe_key, count(*)::int AS times,
            max(coalesce(last_hit_at, created_at))::text AS last_hit_at,
            bool_or(status = 'open') AS is_open
@@ -440,6 +452,7 @@ export async function loadAlertLifecycle(db: AnyDb): Promise<AlertLifecycleBlock
     resolution: { auto: n0(agg?.auto_resolved), manual: n0(agg?.manual_resolved) },
     byRule: byRule.map((r) => ({ sourceRule: String(r.source_rule ?? ""), total: n0(r.total), open: n0(r.open), autoResolved: n0(r.auto_resolved) })),
     recurrence: recurrence.map((r) => ({ sourceRule: String(r.source_rule ?? ""), dedupeKey: String(r.dedupe_key ?? ""), times: n0(r.times), lastHitAt: r.last_hit_at == null ? null : String(r.last_hit_at), open: Boolean(r.is_open) })),
+    recurrenceWithheld: scopeForced,
     metricIds: ["alertTimeToAck", "alertTimeToResolve", "alertRecurrence"],
   };
 }
@@ -453,6 +466,8 @@ export interface GoalHistoryPoint {
   actualSource: "auto" | "manual" | null;
   attainment: string | null;
   attained: boolean | null;
+  /** S1：金额型指标对非价格角色扣住实际值与达成度（不是 0、不是缺数据） */
+  valueWithheld: boolean;
 }
 
 export interface GoalHistorySeries {
@@ -482,13 +497,17 @@ export async function loadGoalHistory(db: AnyDb, user: SessionUser): Promise<Goa
     const periodKind: "month" | "quarter" = r.period.includes("Q") ? "quarter" : "month";
     const key = `${r.deptKey}|${r.metricKey}|${periodKind}`;
     const direction = r.direction as GoalDirection;
+    // S1：与 goals/service.toRow 同一道闸（金额指标 × 非价格角色 → 扣住），否则第 4 屏成了降本额的旁路
+    const withheld = isValueWithheld(r.metricKey, user.roles);
+    const actualValue = withheld ? null : r.actualValue;
     const s = groups.get(key) ?? {
       deptKey: r.deptKey, metricKey: r.metricKey, metricLabel: METRICS[r.metricKey]?.label ?? r.metricKey, unit: METRICS[r.metricKey]?.unit ?? null,
       direction, periodKind, points: [],
     };
     s.points.push({
-      period: r.period, targetValue: r.targetValue, actualValue: r.actualValue, actualSource: (r.actualSource as "auto" | "manual" | null) ?? null,
-      attainment: computeAttainment(r.targetValue, r.actualValue, direction), attained: isAttained(r.targetValue, r.actualValue, direction),
+      period: r.period, targetValue: r.targetValue, actualValue, actualSource: (r.actualSource as "auto" | "manual" | null) ?? null,
+      attainment: computeAttainment(r.targetValue, actualValue, direction), attained: isAttained(r.targetValue, actualValue, direction),
+      valueWithheld: withheld,
     });
     groups.set(key, s);
   }
@@ -1048,7 +1067,7 @@ export async function getCockpitTrends(user: SessionUser, dbArg?: AnyDb, opts: {
     loadWarehouseInventory(db, { windowDays: WAREHOUSE_WINDOWS[1] }),
     loadWarehouseInventory(db, { windowDays: WAREHOUSE_WINDOWS[2] }),
     getTodoStats({ groupBy: "role", fromMonth: shiftMonth(thisMonth, -5), toMonth: thisMonth, now }, user, db),
-    loadAlertLifecycle(db),
+    loadAlertLifecycle(db, { channelScopeForced: channelScope.forced }),
     loadGoalHistory(db, user),
     loadChannelObservation(db),
     alertPrecision(db, { days: ALERT_PRECISION_WINDOW_DAYS, now }),

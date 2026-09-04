@@ -183,8 +183,11 @@ export const GOAL_SOURCE: Record<string, { label: string; color: string }> = {
   manual: { label: "手工填报", color: "gold" },
   auto_pending: { label: "自动·来源未就绪", color: "default" },
   manual_pending: { label: "手工·待填报", color: "default" },
+  withheld: { label: "金额·无权限", color: "default" },
 };
 export function goalSourceKey(actualSource: string | null | undefined, autoStatus: string | null | undefined): keyof typeof GOAL_SOURCE {
+  // 金额型指标对非价格角色一律先判 withheld：值被服务端扣住（不是没取到、也不是待填）
+  if (autoStatus === "withheld") return "withheld";
   if (actualSource === "auto") return "auto";
   if (actualSource === "manual") return "manual";
   return autoStatus === "unavailable" ? "auto_pending" : "manual_pending";

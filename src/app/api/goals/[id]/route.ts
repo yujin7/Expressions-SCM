@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getFreshSessionUser } from "@/server/core/dto";
+import { getFreshSessionUser, maskSensitive } from "@/server/core/dto";
 import { getGoal, updateGoal } from "@/server/modules/goals/service";
 import { errorResponse, guardRead, parseId, readJson } from "@/server/modules/master/common";
 
 export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
     const user = await guardRead();
-    return NextResponse.json(await getGoal(parseId((await ctx.params).id), user));
+    return NextResponse.json(maskSensitive(await getGoal(parseId((await ctx.params).id), user), user.roles));
   } catch (error) {
     return errorResponse(error, { path: "/api/goals/[id]", method: "GET" });
   }
@@ -16,7 +16,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
     const user = await getFreshSessionUser();
-    return NextResponse.json(await updateGoal(parseId((await ctx.params).id), await readJson(req), user));
+    return NextResponse.json(maskSensitive(await updateGoal(parseId((await ctx.params).id), await readJson(req), user), user.roles));
   } catch (error) {
     return errorResponse(error, { path: "/api/goals/[id]", method: "PATCH" });
   }

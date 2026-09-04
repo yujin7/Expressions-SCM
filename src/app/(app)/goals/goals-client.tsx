@@ -34,7 +34,8 @@ interface GoalRow {
   direction: "up" | "down";
   actualValue: string | null;
   actualSource: "auto" | "manual" | null;
-  autoStatus: "ok" | "unavailable" | "n/a";
+  autoStatus: "ok" | "unavailable" | "withheld" | "n/a";
+  valueWithheld?: boolean;
   attainment: string | null;
   attained: boolean | null;
   note: string | null;
@@ -66,6 +67,7 @@ export function dayjsToPeriod(kind: PeriodKind, v: Dayjs | null): string {
 }
 
 function attainTag(r: GoalRow) {
+  if (r.autoStatus === "withheld") return <Tag>金额·无权限</Tag>;
   if (r.actualValue == null) return <Tag>{r.autoStatus === "unavailable" ? "来源未就绪" : "待填报"}</Tag>;
   return <Tag color={r.attained ? "green" : "red"}>{r.attained ? "已达成" : "未达成"} {r.attainment != null ? `${r.attainment}%` : ""}</Tag>;
 }
@@ -158,7 +160,7 @@ export default function GoalsClient() {
       ),
     },
     { title: "目标", dataIndex: "targetValue", width: 110, align: "right", render: (v: string, r) => `${formatQty(v)}${UNIT_SUFFIX[r.unit ?? ""] ?? ""}` },
-    { title: "实际", dataIndex: "actualValue", width: 110, align: "right", render: (v: string | null, r) => (v == null ? "—" : `${formatQty(v)}${UNIT_SUFFIX[r.unit ?? ""] ?? ""}`) },
+    { title: "实际", dataIndex: "actualValue", width: 110, align: "right", render: (v: string | null, r) => (v == null ? (r.autoStatus === "withheld" ? "无权限" : "—") : `${formatQty(v)}${UNIT_SUFFIX[r.unit ?? ""] ?? ""}`) },
     { title: "达成", key: "attain", width: 150, sorter: (a, b) => Number(a.attainment ?? -1) - Number(b.attainment ?? -1), render: (_, r) => attainTag(r) },
     { title: "方向", dataIndex: "direction", width: 100, render: (v: string) => (v === "up" ? "↑ 越高越好" : "↓ 越低越好") },
     { title: "来源", key: "src", width: 130, render: (_, r) => { const k = goalSourceKey(r.actualSource, r.autoStatus); return <Tag color={GOAL_SOURCE[k].color}>{GOAL_SOURCE[k].label}</Tag>; } },
