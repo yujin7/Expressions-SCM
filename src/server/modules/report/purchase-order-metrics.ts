@@ -1,5 +1,8 @@
 /**
- * D63 采购订单指标读模型 `purchase-order-metrics/v1`（真报表 + 驾驶舱第 2 屏「订单系统 / 成本下降」卡）。
+ * D63 采购订单指标读模型 `purchase-order-metrics/v2`（真报表 + 驾驶舱第 2 屏「订单系统 / 成本下降」卡）。
+ *
+ * v2（B5 口径变更）：byMonth 增加逐月 OTIF（按 PO 下单月归期，与年度累计同一判定），
+ * 驾驶舱 PO 趋势块改用逐月 OTIF 而非年度累计——键随口径升版，旧缓存自然失效。
  *
  * 口径（D63，参数在 PARAM_DEFS）：
  * - 已下单时点 = PO **审批通过**（approvals doc_type=po action=approve 的最后一次），不是制单；
@@ -29,7 +32,7 @@ import { costSaving } from "@/server/rules/cost-saving";
 import { orderToDeliveryDays, shanghaiDay } from "@/server/rules/po-cycle";
 import { normalizeLineNetGross, normalizeToBaseNet } from "@/server/rules/price";
 
-export const PURCHASE_ORDER_METRICS_KEY = "purchase-order-metrics/v1";
+export const PURCHASE_ORDER_METRICS_KEY = "purchase-order-metrics/v2";
 /** 「已下单」的 PO 状态（审批通过后的全部形态；void 不算） */
 export const ORDERED_PO_STATUSES = ["approved", "in_progress", "completed", "closed"] as const;
 /** 生效收货状态（照抄 report/wip.ts ACTIVE_SH_STATUSES） */
@@ -80,6 +83,8 @@ export interface CostSavingStats {
 
 export interface PoMonthRow extends PoVolume {
   month: string;
+  /** 逐月 OTIF（v2）：按 PO 下单月（审批通过月）归期，判定与年度累计完全同口径 */
+  otif: OtifStats;
 }
 
 export interface PoSupplierRow extends PoVolume {
@@ -453,7 +458,7 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
   const lastMonthNo = Number(month.slice(5, 7));
   for (let m = 1; m <= lastMonthNo; m += 1) {
     const key = `${year}-${String(m).padStart(2, "0")}`;
-    byMonth.set(key, { month: key, ...emptyVolume() });
+    byMonth.set(key, { month: key, ...emptyVolume(), otif: emptyOtif() });
   }
 
   for (const po of inYear) {
@@ -469,7 +474,7 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
       fullDays: [],
     };
     bySupplier.set(po.supplierId, sup);
-    const monthRow = byMonth.get(po.month) ?? { month: po.month, ...emptyVolume() };
+    const monthRow = byMonth.get(po.month) ?? { month: po.month, ...emptyVolume(), otif: emptyOtif() };
     byMonth.set(po.month, monthRow);
 
     ytd.poCount += 1;
@@ -538,7 +543,7 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
       lastReceiptDay: full ? shanghaiDay(po.lastReceiptAt) : null,
       today,
     }, otifParams);
-    for (const o of [otifAll, sup.otif]) o[outcome] += 1;
+    for (const o of [otifAll, sup.otif, monthRow.otif]) o[outcome] += 1;
   }
 
   const supplierRows: PoSupplierRow[] = [...bySupplier.values()]
@@ -569,7 +574,7 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
       invalidLines,
       orderedPoAllTime: pos.length,
     },
-    byMonth: [...byMonth.values()].sort((a, b) => a.month.localeCompare(b.month)),
+    byMonth: [...byMonth.values()].map((m) => ({ ...m, otif: finishOtif(m.otif) })).sort((a, b) => a.month.localeCompare(b.month)),
     bySupplier: supplierRows,
     byBrand: [...byBrand.values()].sort((a, b) => dCmp(b.orderedBaseQty, a.orderedBaseQty) || a.brandName.localeCompare(b.brandName)),
     limitations: [
@@ -579,6 +584,7 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
       `降本基线 = ${baselineYear} 年已批数量加权基础单位未税均价（按 SKU 跨供应商），无则取该 SKU 首个已批行价；只计降价，涨价另列不轧差。`,
       `OTIF：承诺日 + ${otifWindowDays} 天窗口内收齐（足量容差 ${otifQtyTolerancePct}%）记准时足量；缺承诺日进「不可评」；未到期未收齐为「待评」。`,
       `按月：只列 ${year}-01 至 ${month} 的月桶，缺月为 0 单（当年确无已批 PO），不含上年月份。`,
+      "逐月 OTIF 按下单月归期：近月的 PO 多半还没到承诺日，evaluable 结构性偏低，读数必须带 n（v2）。",
       "覆盖：仅 SCM 内 PO 事实，不含简道云旧采购单观察。",
     ],
   };

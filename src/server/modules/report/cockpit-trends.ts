@@ -3,7 +3,7 @@ import * as schema from "@/db/schema";
 import { and, inArray, type SQL } from "drizzle-orm";
 import { PRICE_VISIBLE_ROLES, ROLES } from "@/server/core/constants";
 import { resolveChannelScope, resolveDeptScope } from "@/server/core/data-scope";
-import { dAdd, dCmp } from "@/server/core/decimal";
+import { dAdd, dCmp, dDiv } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { getNumParam } from "@/server/core/params";
 import { r1n, resolveDb, type AnyDb } from "@/server/core/svc";
@@ -16,7 +16,14 @@ import { loadJiandaoyunExternalDemandSignal, type RollingDemandBrief, type Rolli
 import { loadExternalVelocitySafe } from "@/server/modules/report/external-velocity";
 import { loadInventoryAlerts } from "@/server/modules/report/inventory-alerts";
 import { loadInventoryPosition, todayShanghai, type DailyPoint } from "@/server/modules/report/inventory-position";
-import { loadPurchaseOrderMetrics, stripPurchaseOrderMoney, type OtifStats, type PurchaseOrderMetrics } from "@/server/modules/report/purchase-order-metrics";
+import { loadPurchaseOrderMetrics, stripPurchaseOrderMoney, type OtifStats, type PoMonthRow, type PurchaseOrderMetrics } from "@/server/modules/report/purchase-order-metrics";
+import { loadReplenishPilot, type PilotReadModel } from "@/server/modules/report/replenish-pilot";
+import { loadRiskExpiryBuckets, type ExpiryBrandRow, type RiskExpiryBucketsModel } from "@/server/modules/report/risk-expiry-buckets";
+import { loadSourceRunHistory, type SourceClassSeries, type SourceRunHistory } from "@/server/modules/report/source-run-history";
+import {
+  loadSupplierPaymentTerm, SUPPLIER_POOL_LABELS,
+  type AttainmentStatus, type RankTrend, type SupplierPaymentTermModel, type SupplierPaymentTermRow, type SupplierPool,
+} from "@/server/modules/report/supplier-payment-term";
 import { loadWarehouseInventory, WAREHOUSE_WINDOWS, type WarehouseInventoryModel } from "@/server/modules/report/warehouse-inventory";
 import { getTodoStats, monthShanghai, type TodoStatsRow } from "@/server/modules/todo/stats";
 import { computeAttainment, isAttained, type GoalDirection } from "@/server/modules/goals/service";
@@ -31,11 +38,14 @@ import { METRICS } from "@/components/metrics";
  * 受限渠道账号（D62）不下发跨店铺聚合的外部观察，只给按渠道映射裁剪后的店铺行。
  *
  * 块清单（对应 BI 审计编号）：
- *  屏1 dailyFlow（#1）；屏2 poTrend（#2）/ externalDemand（#3）/ quadrant（#4）/ alertPrecision（闭环审计 #3）；屏3 turnoverWindows（#7）；
- *  屏4 todoThroughput（#12）/ todoCompletionStrict（闭环审计 #9）/ alertLifecycle（#6）/ goalHistory（#8 历史）；渠道观察 brandMatrix（#9）。
+ *  屏1 dailyFlow（#1）/ freshnessTrend（C6）；
+ *  屏2 poTrend（#2、B5 逐月 OTIF）/ externalDemand（#3）/ quadrant（#4）/ alertPrecision（闭环审计 #3）/ supplierConcentration（C2）；
+ *  屏3 turnoverWindows（#7）/ expiryBuckets（C3）；
+ *  屏4 todoThroughput（#12）/ todoCompletionStrict（闭环审计 #9）/ alertLifecycle（#6）/ goalHistory（#8 历史）/ tierMigration（C5）/ dataQualityTrend（B8）；
+ *  渠道观察 brandMatrix（#9）。
  */
 
-export const COCKPIT_TRENDS_CALIBRE = "cockpit-trends/v1";
+export const COCKPIT_TRENDS_CALIBRE = "cockpit-trends/v2";
 
 export type TrendScreen = "s1" | "s2" | "s3" | "s4" | "channels";
 
@@ -122,27 +132,51 @@ export interface PoTrendPoint {
   orderedBaseQty: string;
   /** 未税金额（非价格角色 null） */
   netAmount: string | null;
+  /** 逐月 OTIF（purchase-order-metrics/v2 byMonth.otif，按下单月归期） */
+  otif: OtifStats;
+  /** 逐月 OTIF %（1dp）；可评 0 → null，绝不写成 0% */
+  otifRatePct: number | null;
   /** 当月（进行中，结构性偏低）——前端置灰 */
   isCurrent: boolean;
   /** 来自历史年份即时计算（非缓存） */
   fromHistoryYear: boolean;
 }
 
+/** C10：每个采购 KPI 数字各自的下钻目标（没有死号码） */
+export interface MetricLink {
+  metricId: string;
+  label: string;
+  href: string;
+}
+
 export interface PoTrendBlock {
   points: PoTrendPoint[];
   moneyVisible: boolean;
-  /** OTIF 只有年度累计口径（读模型 byMonth 不含逐月 OTIF）；随值给出可评 n */
+  /** 年度累计 OTIF 保留作对照（逐月读数在 points[].otif，B5 起为主口径） */
   otifYtd: OtifStats & { year: number };
   cycle: { p50: number | null; p90: number | null; samples: number; insufficient: boolean };
+  /** 逐月 OTIF 有可评样本的月份数（0 → 图上不画 OTIF 线） */
+  monthsWithOtif: number;
+  links: MetricLink[];
   metricIds: readonly ["poOrderedQty", "supplierOtif", "poOrderToDeliveryDays"];
 }
+
+const emptyOtifStats = (): OtifStats => ({ evaluable: 0, hit: 0, miss: 0, pending: 0, unevaluable: 0, rate: null });
 
 export function buildPoTrend(current: PurchaseOrderMetrics, previousYear: PurchaseOrderMetrics | null, roles: string[]): PoTrendBlock {
   const cur = stripPurchaseOrderMoney(current, roles);
   const prev = previousYear ? stripPurchaseOrderMoney(previousYear, roles) : null;
+  // byMonth.otif 是 v2 新增：旧缓存 payload 里可能缺席，缺席按「无可评样本」处理而不是 0%
+  const point = (m: PoMonthRow, isCurrent: boolean, fromHistoryYear: boolean): PoTrendPoint => {
+    const otif = m.otif ?? emptyOtifStats();
+    return {
+      month: m.month, poCount: m.poCount, lineCount: m.lineCount, orderedBaseQty: m.orderedBaseQty, netAmount: m.netAmount,
+      otif, otifRatePct: otif.rate == null ? null : r1n(otif.rate * 100), isCurrent, fromHistoryYear,
+    };
+  };
   const rows: PoTrendPoint[] = [
-    ...(prev?.byMonth ?? []).map((m) => ({ month: m.month, poCount: m.poCount, lineCount: m.lineCount, orderedBaseQty: m.orderedBaseQty, netAmount: m.netAmount, isCurrent: false, fromHistoryYear: true })),
-    ...cur.byMonth.map((m) => ({ month: m.month, poCount: m.poCount, lineCount: m.lineCount, orderedBaseQty: m.orderedBaseQty, netAmount: m.netAmount, isCurrent: m.month === cur.month, fromHistoryYear: false })),
+    ...(prev?.byMonth ?? []).map((m) => point(m, false, true)),
+    ...cur.byMonth.map((m) => point(m, m.month === cur.month, false)),
   ].sort((a, b) => a.month.localeCompare(b.month));
   const points = rows.slice(-12);
   return {
@@ -150,6 +184,14 @@ export function buildPoTrend(current: PurchaseOrderMetrics, previousYear: Purcha
     moneyVisible: cur.moneyVisible,
     otifYtd: { ...cur.summary.otif, year: cur.year },
     cycle: { p50: cur.summary.cycle.firstP50, p90: cur.summary.cycle.firstP90, samples: cur.summary.cycle.n, insufficient: cur.summary.cycle.insufficient },
+    monthsWithOtif: points.filter((p) => p.otif.evaluable > 0).length,
+    links: [
+      { metricId: "poOrderedQty", label: "按月看已下单数量", href: "/report/purchase-orders?dim=month" },
+      { metricId: "poOrderedAmount", label: "按品牌看已下单金额", href: "/report/purchase-orders?dim=brand" },
+      { metricId: "supplierOtif", label: "按供应商看 OTIF", href: "/report/purchase-orders?dim=supplier" },
+      { metricId: "poOrderToDeliveryDays", label: "按供应商看订单至交付", href: "/report/purchase-orders?dim=supplier" },
+      { metricId: "costSavingYtd", label: "按供应商看降本", href: "/report/purchase-orders?dim=supplier" },
+    ],
     metricIds: ["poOrderedQty", "supplierOtif", "poOrderToDeliveryDays"],
   };
 }
@@ -612,6 +654,299 @@ export function buildTodoCompletionStrict(rows: TodoStatsRow[], months: string[]
   };
 }
 
+/* ───────────────────────── 屏2 · 供应商集中度与账期（C2） ───────────────────────── */
+
+export interface SupplierConcentrationRow {
+  supplierId: number;
+  code: string;
+  name: string;
+  pool: SupplierPool;
+  poolLabel: string;
+  /** 当年采购额（PO 未税 + JS 结算）；非价格角色 null */
+  spend: string | null;
+  /** 占当年全部供应商采购额 %（1dp）——**全员可见**：占比不是金额 */
+  sharePct: number | null;
+  rank: number | null;
+  rankTrend: RankTrend;
+  cooperationYears: number | null;
+  cooperationSource: "system_inferred" | null;
+  paymentTermText: string | null;
+  attainment: AttainmentStatus;
+  /** 同一供应商在 SCM 采购订单读模型里的 OTIF；当年无已批 PO → null（不是 0%） */
+  otif: OtifStats | null;
+  otifRatePct: number | null;
+}
+
+export interface SupplierConcentrationBlock {
+  year: number;
+  moneyVisible: boolean;
+  topN: number;
+  /** 前 N 家采购额占比 %（1dp）；总额 0 → null */
+  topSharePct: number | null;
+  /** 账期类采购额占比（百分数字符串，读模型原值） */
+  creditTermSpendSharePct: string | null;
+  attainment: { rate: number | null; candidates: number; attained: number };
+  rows: SupplierConcentrationRow[];
+  suppliersWithSpend: number;
+  /** 前 N 家里能在 SCM PO 读模型找到当年 OTIF 的家数 */
+  otifMatched: number;
+  /** 合作年限为系统推算（非主数据）的家数 */
+  cooperationInferred: number;
+  link: string;
+  metricIds: readonly ["creditTermSpendShare", "paymentTermAttainment", "supplierOtif"];
+}
+
+export const SUPPLIER_CONCENTRATION_TOP_N = 5;
+
+/**
+ * 供应商集中度 × 账期 × OTIF 交叉。
+ * 入参必须是**未剥离金额**的读模型：占比要用真实金额算，算完再按角色决定是否下发金额。
+ */
+export function buildSupplierConcentration(
+  spt: SupplierPaymentTermModel,
+  po: PurchaseOrderMetrics | null,
+  roles: string[],
+): SupplierConcentrationBlock {
+  const canSeeMoney = roles.some((r) => (PRICE_VISIBLE_ROLES as readonly string[]).includes(r));
+  const year = spt.year;
+  const spendOf = (r: SupplierPaymentTermRow): string | null => r.spend.find((s) => s.year === year)?.total ?? null;
+  const rankOf = (r: SupplierPaymentTermRow): number | null => r.spend.find((s) => s.year === year)?.rank ?? null;
+  const withSpend = spt.rows.filter((r) => dCmp(spendOf(r) ?? "0", 0) > 0);
+  // 占比分母取读模型自己的当年总额（与账期占比同分母）；缺失时退回本页可见行合计
+  const total = spt.summary.totalSpend ?? withSpend.reduce((acc, r) => dAdd(acc, spendOf(r) ?? "0", 2), "0.00");
+  const share = (amount: string | null): number | null =>
+    amount == null || dCmp(total, 0) <= 0 ? null : r1n(Number(dDiv(amount, total, 6)) * 100);
+  const otifBySupplier = new Map<number, OtifStats>((po?.bySupplier ?? []).map((s) => [s.supplierId, s.otif]));
+
+  const ranked = [...withSpend].sort((a, b) => dCmp(spendOf(b) ?? "0", spendOf(a) ?? "0") || a.code.localeCompare(b.code));
+  const top = ranked.slice(0, SUPPLIER_CONCENTRATION_TOP_N);
+  const topSpend = top.reduce((acc, r) => dAdd(acc, spendOf(r) ?? "0", 2), "0.00");
+  const rows: SupplierConcentrationRow[] = top.map((r) => {
+    const otif = otifBySupplier.get(r.supplierId) ?? null;
+    return {
+      supplierId: r.supplierId,
+      code: r.code,
+      name: r.name,
+      pool: r.pool,
+      poolLabel: SUPPLIER_POOL_LABELS[r.pool],
+      spend: canSeeMoney ? spendOf(r) : null,
+      sharePct: share(spendOf(r)),
+      rank: rankOf(r),
+      rankTrend: r.rankTrend,
+      cooperationYears: r.cooperationYears,
+      cooperationSource: r.cooperationSource,
+      paymentTermText: r.paymentTermText,
+      attainment: r.attainment,
+      otif,
+      otifRatePct: otif?.rate == null ? null : r1n(otif.rate * 100),
+    };
+  });
+
+  return {
+    year,
+    moneyVisible: canSeeMoney,
+    topN: SUPPLIER_CONCENTRATION_TOP_N,
+    topSharePct: share(topSpend),
+    creditTermSpendSharePct: spt.summary.creditTermSpendSharePct,
+    attainment: {
+      rate: spt.summary.attainmentRate == null ? null : r1n(spt.summary.attainmentRate * 100),
+      candidates: spt.summary.candidates,
+      attained: spt.summary.candidatesAttained,
+    },
+    rows,
+    suppliersWithSpend: withSpend.length,
+    otifMatched: rows.filter((r) => r.otif != null).length,
+    cooperationInferred: rows.filter((r) => r.cooperationSource === "system_inferred").length,
+    link: "/report/supplier-scorecard",
+    metricIds: ["creditTermSpendShare", "paymentTermAttainment", "supplierOtif"],
+  };
+}
+
+/* ───────────────────────── 屏3 · 临期与呆滞（C3） ───────────────────────── */
+
+export interface ExpiryBucketsBlock {
+  today: string;
+  slowThreshold: number;
+  totals: RiskExpiryBucketsModel["totals"];
+  brands: RiskExpiryBucketsModel["brands"];
+  expirySkus: number;
+  slowSkus: number;
+  fallbackSkus: number;
+  /** 兜底占比 %（fallbackSkus ÷ expirySkus）——段位不是统一口径这件事必须能读出来 */
+  fallbackSharePct: number | null;
+  /** 观察注记（不定量）：呆滞但外部近 30 天仍在卖 */
+  externalNote: { stillSelling: number; withSignal: number };
+  link: string;
+  metricIds: readonly ["expiryByBrand", "daysCover"];
+}
+
+export type { ExpiryBrandRow };
+
+export function buildExpiryBuckets(model: RiskExpiryBucketsModel): ExpiryBucketsBlock {
+  return {
+    today: model.today,
+    slowThreshold: model.slowThreshold,
+    totals: model.totals,
+    brands: model.brands,
+    expirySkus: model.expirySkus,
+    slowSkus: model.slowSkus,
+    fallbackSkus: model.fallbackSkus,
+    fallbackSharePct: model.expirySkus > 0 ? r1n((model.fallbackSkus / model.expirySkus) * 100) : null,
+    externalNote: { stillSelling: model.slowStillSellingExternally, withSignal: model.slowWithExternalSignal },
+    link: "/report/risk",
+    metricIds: ["expiryByBrand", "daysCover"],
+  };
+}
+
+/* ───────────────────────── 屏4 · 分层迁移矩阵与试点阻塞漏斗（C5） ───────────────────────── */
+
+export type TierCell = Tier | "未分层";
+export const TIER_CELLS: readonly TierCell[] = ["S", "A", "B", "C", "未分层"];
+
+export interface TierMigrationCell {
+  from: TierCell;
+  to: TierCell;
+  skus: number;
+}
+
+export interface PilotBlockerRow {
+  key: "leadMissing" | "xyzNull" | "xyzNotX" | "detectorHit" | "tierC";
+  label: string;
+  skus: number;
+  hint: string;
+  link: string | null;
+}
+
+export interface TierMigrationBlock {
+  fromPeriod: string | null;
+  toPeriod: string | null;
+  axes: readonly TierCell[];
+  matrix: TierMigrationCell[];
+  fromTotals: Record<TierCell, number>;
+  toTotals: Record<TierCell, number>;
+  scanned: number;
+  moved: number;
+  stayed: number;
+  /** 试点漏斗（replenish-pilot/v1） */
+  pilotPeriod: string | null;
+  pilotScanned: number;
+  candidates: number;
+  candidateSalesSharePct: number;
+  pilotMarked: number;
+  blockers: PilotBlockerRow[];
+  links: { pilot: string; supplyParams: string };
+  metricIds: readonly ["skuTierShare", "pilotEligible", "leadTimeCoverage"];
+}
+
+const emptyTierTotals = (): Record<TierCell, number> => ({ S: 0, A: 0, B: 0, C: 0, "未分层": 0 });
+
+export function buildTierMigration(
+  periods: { from: string | null; to: string | null },
+  tiers: { skuId: number; from: TierCell; to: TierCell }[],
+  pilot: PilotReadModel | null,
+): TierMigrationBlock {
+  const counts = new Map<string, number>();
+  const fromTotals = emptyTierTotals();
+  const toTotals = emptyTierTotals();
+  let moved = 0;
+  for (const t of tiers) {
+    counts.set(`${t.from}|${t.to}`, (counts.get(`${t.from}|${t.to}`) ?? 0) + 1);
+    fromTotals[t.from] += 1;
+    toTotals[t.to] += 1;
+    if (t.from !== t.to) moved += 1;
+  }
+  const matrix: TierMigrationCell[] = [];
+  for (const from of TIER_CELLS) {
+    for (const to of TIER_CELLS) matrix.push({ from, to, skus: counts.get(`${from}|${to}`) ?? 0 });
+  }
+  const b = pilot?.blockers;
+  // xyzNull 单独成桶（样本不足 ≠ 波动大，绝不并进「非 X」）
+  const blockers: PilotBlockerRow[] = [
+    { key: "leadMissing", label: "加工/在途周期未维护", skus: b?.leadMissing ?? 0, hint: "主数据缺口：补录后候选立即生效（读模型绑定含 sku_params 更新时刻）", link: "/master/supply-params" },
+    { key: "xyzNull", label: "波动样本不足 / 无动销（XYZ 未分类）", skus: b?.xyzUnclassified ?? 0, hint: "样本不足不是「波动大」：单列一桶，不并入「非 X」", link: null },
+    { key: "xyzNotX", label: "需求波动非 X", skus: b?.xyzNotX ?? 0, hint: "需求本身不稳，是业务事实不是主数据缺口", link: null },
+    { key: "detectorHit", label: "异动侦测命中", skus: b?.detectorHit ?? 0, hint: "异动期间不自动直出，等异动消解后复判", link: "/replenish/pilot" },
+    { key: "tierC", label: "C 级长尾", skus: b?.tierC ?? 0, hint: "C 级按设计走运营按需，本就不进试点", link: null },
+  ];
+  return {
+    fromPeriod: periods.from,
+    toPeriod: periods.to,
+    axes: TIER_CELLS,
+    matrix,
+    fromTotals,
+    toTotals,
+    scanned: tiers.length,
+    moved,
+    stayed: tiers.length - moved,
+    pilotPeriod: pilot?.period ?? null,
+    pilotScanned: pilot?.scanned ?? 0,
+    candidates: pilot?.candidates ?? 0,
+    candidateSalesSharePct: pilot?.candidateSalesSharePct ?? 0,
+    pilotMarked: pilot?.pilotMarked ?? 0,
+    blockers,
+    links: { pilot: "/replenish/pilot", supplyParams: "/master/supply-params" },
+    metricIds: ["skuTierShare", "pilotEligible", "leadTimeCoverage"],
+  };
+}
+
+/** 两个最新固化期的生效分层（人工覆写优先）；不足两期 → periods.from = null，块置 insufficient */
+export async function loadTierMigration(
+  db: AnyDb,
+): Promise<{ periods: { from: string | null; to: string | null }; tiers: { skuId: number; from: TierCell; to: TierCell }[] }> {
+  const periodRows = rowsOf<Record<string, unknown>>(await db.execute(sql`
+    SELECT period FROM sku_planning_policy GROUP BY period ORDER BY period DESC LIMIT 2`));
+  const to = periodRows[0]?.period == null ? null : String(periodRows[0].period);
+  const from = periodRows[1]?.period == null ? null : String(periodRows[1].period);
+  if (!to || !from) return { periods: { from, to }, tiers: [] };
+  const rows = rowsOf<Record<string, unknown>>(await db.execute(sql`
+    SELECT sku_id, period, coalesce(override_tier, tier) AS tier
+    FROM sku_planning_policy WHERE period IN (${from}, ${to})`));
+  const bySku = new Map<number, { from: TierCell; to: TierCell }>();
+  for (const r of rows) {
+    const skuId = n0(r.sku_id);
+    const raw = String(r.tier ?? "");
+    const cell: TierCell = (TIER_CELLS as readonly string[]).includes(raw) ? (raw as TierCell) : "未分层";
+    const cur = bySku.get(skuId) ?? { from: "未分层" as TierCell, to: "未分层" as TierCell };
+    if (String(r.period ?? "") === from) cur.from = cell;
+    else cur.to = cell;
+    bySku.set(skuId, cur);
+  }
+  return { periods: { from, to }, tiers: [...bySku.entries()].map(([skuId, v]) => ({ skuId, ...v })) };
+}
+
+/* ────────────────── 屏1 · 数据新鲜度趋势（C6）/ 屏4 · 数据质量趋势（B8） ────────────────── */
+
+export interface SourceTrendBlock {
+  weeks: string[];
+  windowWeeks: number;
+  minWeeks: number;
+  series: SourceClassSeries[];
+  /** 周数足够、可出趋势的来源类数 */
+  readySeries: number;
+  link: string;
+  metricIds: readonly string[];
+}
+
+function sourceTrendBlock(history: SourceRunHistory, metricIds: readonly string[]): SourceTrendBlock {
+  return {
+    weeks: history.weeks,
+    windowWeeks: history.windowWeeks,
+    minWeeks: history.minWeeks,
+    series: history.series,
+    readySeries: history.series.filter((s) => s.state === "ready").length,
+    link: "/import/data-quality",
+    metricIds,
+  };
+}
+
+export function buildDataFreshnessTrend(history: SourceRunHistory): SourceTrendBlock {
+  return sourceTrendBlock(history, ["dataFreshnessAgeDays"]);
+}
+
+export function buildDataQualityTrend(history: SourceRunHistory): SourceTrendBlock {
+  return sourceTrendBlock(history, ["dataQualityPassRate"]);
+}
+
 /* ───────────────────────── 装配 ───────────────────────── */
 
 export interface CockpitTrendsData {
@@ -619,10 +954,10 @@ export interface CockpitTrendsData {
   today: string;
   calibreVersion: typeof COCKPIT_TRENDS_CALIBRE;
   screens: {
-    s1: { dailyFlow: Block<DailyFlowBlock> };
-    s2: { poTrend: Block<PoTrendBlock>; externalDemand: Block<ExternalDemandBriefBlock>; quadrant: Block<QuadrantBlock>; alertPrecision: Block<AlertPrecisionBlock> };
-    s3: { turnoverWindows: Block<TurnoverWindowsBlock> };
-    s4: { todoThroughput: Block<TodoThroughputBlock>; todoCompletionStrict: Block<TodoCompletionStrictBlock>; alertLifecycle: Block<AlertLifecycleBlock>; goalHistory: Block<GoalHistoryBlock> };
+    s1: { dailyFlow: Block<DailyFlowBlock>; freshnessTrend: Block<SourceTrendBlock> };
+    s2: { poTrend: Block<PoTrendBlock>; externalDemand: Block<ExternalDemandBriefBlock>; quadrant: Block<QuadrantBlock>; alertPrecision: Block<AlertPrecisionBlock>; supplierConcentration: Block<SupplierConcentrationBlock> };
+    s3: { turnoverWindows: Block<TurnoverWindowsBlock>; expiryBuckets: Block<ExpiryBucketsBlock> };
+    s4: { todoThroughput: Block<TodoThroughputBlock>; todoCompletionStrict: Block<TodoCompletionStrictBlock>; alertLifecycle: Block<AlertLifecycleBlock>; goalHistory: Block<GoalHistoryBlock>; tierMigration: Block<TierMigrationBlock>; dataQualityTrend: Block<SourceTrendBlock> };
     channels: { brandMatrix: Block<ChannelMatrixBlock> };
   };
   limitations: string[];
@@ -652,7 +987,10 @@ export async function getCockpitTrends(user: SessionUser, dbArg?: AnyDb, opts: {
   const thisMonth = monthShanghai(now);
   const currentYear = Number(today.slice(0, 4));
 
-  const [posR, poR, poPrevR, demandR, alertsR, velR, slowR, wh30R, wh90R, wh365R, todoR, alertLifeR, goalsR, channelR, precisionR] = await Promise.allSettled([
+  const [
+    posR, poR, poPrevR, demandR, alertsR, velR, slowR, wh30R, wh90R, wh365R, todoR, alertLifeR, goalsR, channelR, precisionR,
+    sptR, expiryR, tierR, pilotR, runHistoryR,
+  ] = await Promise.allSettled([
     loadInventoryPosition(db),
     loadPurchaseOrderMetrics({}, db),
     // 历史年份即时计算不缓存：只为补足 12 个月窗口；失败不影响当年趋势
@@ -669,6 +1007,12 @@ export async function getCockpitTrends(user: SessionUser, dbArg?: AnyDb, opts: {
     loadGoalHistory(db, user),
     loadChannelObservation(db),
     alertPrecision(db, { days: ALERT_PRECISION_WINDOW_DAYS, now }),
+    // BI wave 2：供应商账期（C2）、临期与呆滞（C3）、分层迁移与试点漏斗（C5）、来源运行史（C6 + B8）
+    loadSupplierPaymentTerm(db),
+    loadRiskExpiryBuckets(db),
+    loadTierMigration(db),
+    loadReplenishPilot(db),
+    loadSourceRunHistory(db, { today }),
   ]);
 
   /* 屏1 */
@@ -696,11 +1040,11 @@ export async function getCockpitTrends(user: SessionUser, dbArg?: AnyDb, opts: {
         return {
           state: hasData ? "ready" : "insufficient",
           data: b,
-          note: `${canSeeMoney ? "" : "金额仅价格可见角色；"}当月进行中置灰；OTIF 仅年度累计口径（可评 n=${b.otifYtd.evaluable}），读模型无逐月 OTIF${poPrev.ok ? "" : `；上一年度即时计算失败（${poPrev.error}）`}`,
-          source: { tier: "fact", source: "purchase-order-metrics/v1 · byMonth", asOf: po.value.builtAt },
+          note: `${canSeeMoney ? "" : "金额仅价格可见角色；"}当月进行中置灰；OTIF 改用逐月口径（有可评样本的月份 ${b.monthsWithOtif}/${b.points.length}，可评 n 随点标注；近月 PO 多半未到承诺日、结构性偏低），年度累计 ${b.otifYtd.year} 年可评 n=${b.otifYtd.evaluable} 并列作对照${poPrev.ok ? "" : `；上一年度即时计算失败（${poPrev.error}）`}`,
+          source: { tier: "fact", source: "purchase-order-metrics/v2 · byMonth.otif", asOf: po.value.builtAt },
         };
       })()
-    : errorBlock(po.error, "purchase-order-metrics/v1", "fact");
+    : errorBlock(po.error, "purchase-order-metrics/v2", "fact");
 
   const demand = settled(demandR);
   const externalDemand: Block<ExternalDemandBriefBlock> = channelScope.forced
@@ -865,15 +1209,98 @@ export async function getCockpitTrends(user: SessionUser, dbArg?: AnyDb, opts: {
     };
   }
 
+  /* BI wave 2 · C2 供应商集中度 × 账期 × OTIF */
+  const spt = settled(sptR);
+  const supplierConcentration: Block<SupplierConcentrationBlock> = spt.ok
+    ? (() => {
+        // 金额未剥离的读模型进 build（占比要用真实金额算），build 内部按角色决定是否下发金额
+        const b = buildSupplierConcentration(spt.value, po.ok ? po.value : null, roles);
+        const ready = b.rows.length > 0;
+        return {
+          state: ready ? "ready" : "insufficient",
+          data: b,
+          note: ready
+            ? `占比全员可见、金额仅价格可见角色；合作年限由最早已批 PO/JG 系统推算（cooperationSource=system_inferred，${b.cooperationInferred}/${b.rows.length} 家），不是主数据；账期类采购额占比是采购/结算口径的代理指标，不是应付余额；前 ${b.topN} 家中 ${b.otifMatched} 家能在 SCM 采购订单读模型找到当年 OTIF，其余当年无已批 PO（留空不写 0%）`
+            : `${b.year} 年尚无供应商采购额（PO 未税 + JS 结算均为 0）`,
+          source: { tier: "fact", source: `supplier-payment-term/v1 × purchase-order-metrics/v2 · bySupplier（${b.year} 年）`, asOf: spt.value.builtAt },
+        };
+      })()
+    : errorBlock(spt.error, "supplier-payment-term/v1", "fact");
+
+  /* BI wave 2 · C3 临期与呆滞 */
+  const expiry = settled(expiryR);
+  const expiryBuckets: Block<ExpiryBucketsBlock> = expiry.ok
+    ? (() => {
+        const b = buildExpiryBuckets(expiry.value);
+        const ready = b.expirySkus > 0 || b.slowSkus > 0;
+        return {
+          state: ready ? "ready" : "insufficient",
+          data: b,
+          note: ready
+            ? `段位按批次剩余天数统一刻度（已过期 / ≤30 / 31–60 / 61–90），> 90 天不入桶；其中 ${b.fallbackSkus} 个 SKU（${b.fallbackSharePct ?? "—"}%）的临期阈值走 90 天兜底，段位并非逐 SKU 统一口径；数量取 batch_stocks（效期盘点载体，不是账本）；外部近 30 天仍在卖 ${b.externalNote.stillSelling}/${b.externalNote.withSignal} 个呆滞 SKU 仅为观察注记，不驱动处置数量`
+            : "没有带效期的在库批次，也没有滞销关注 SKU",
+          source: { tier: "snapshot", source: "risk-expiry-buckets/v1（batch_stocks × skus.near_expiry_days × 风险工作台）", asOf: expiry.value.builtAt },
+        };
+      })()
+    : errorBlock(expiry.error, "risk-expiry-buckets/v1", "snapshot");
+
+  /* BI wave 2 · C5 分层迁移矩阵 + 试点阻塞漏斗 */
+  const tier = settled(tierR);
+  const pilot = settled(pilotR);
+  const tierMigration: Block<TierMigrationBlock> = tier.ok
+    ? (() => {
+        const b = buildTierMigration(tier.value.periods, tier.value.tiers, pilot.ok ? pilot.value : null);
+        const ready = b.fromPeriod != null && b.scanned > 0;
+        return {
+          state: ready ? "ready" : "insufficient",
+          data: b,
+          note: ready
+            ? `${b.fromPeriod} → ${b.toPeriod} 两期固化分层对比（人工覆写优先）：${b.moved} 个 SKU 换档、${b.stayed} 个不变；只在某一期出现的 SKU 落在「未分层」轴，不假装分层。试点阻塞按维度并列，一个 SKU 可同时命中多项——不相加${pilot.ok ? "" : `；试点读模型读取失败（${pilot.error}），漏斗计数为 0`}`
+            : b.toPeriod == null ? "尚未固化任何期间的分层（sku_planning_policy 为空），无法比较" : `只有 ${b.toPeriod} 一期固化分层，迁移需要两期`,
+          source: { tier: "derived", source: "sku_planning_policy（两期固化）× replenish-pilot/v1 · blockers", asOf: pilot.ok ? pilot.value.builtAt : null },
+        };
+      })()
+    : errorBlock(tier.error, "sku_planning_policy", "derived");
+
+  /* BI wave 2 · C6 数据新鲜度趋势 / B8 数据质量趋势（同一份运行史） */
+  const runHistory = settled(runHistoryR);
+  const freshnessTrend: Block<SourceTrendBlock> = runHistory.ok
+    ? (() => {
+        const b = buildDataFreshnessTrend(runHistory.value);
+        return {
+          state: b.readySeries > 0 ? "ready" : "insufficient",
+          data: b,
+          note: b.readySeries > 0
+            ? `每周读数 = 该周最陈旧的一次入库（收到日 − 业务截止日 source_as_of），没有业务截止日的批次不参与、不按 0 处理；${b.readySeries}/${b.series.length} 类来源满足 ${b.minWeeks} 周门槛，其余按不足展示不画线`
+            : `近 ${b.windowWeeks} 周各来源类都不足 ${b.minWeeks} 周有入库或运行，两个点连成的线不叫趋势`,
+          source: { tier: "fact", source: "import_jobs × integration_runs（近 8 周，按 D65 来源类）", asOf: runHistory.value.builtAt },
+        };
+      })()
+    : errorBlock(runHistory.error, "import_jobs × integration_runs", "fact");
+
+  const dataQualityTrend: Block<SourceTrendBlock> = runHistory.ok
+    ? (() => {
+        const b = buildDataQualityTrend(runHistory.value);
+        return {
+          state: b.readySeries > 0 ? "ready" : "insufficient",
+          data: b,
+          note: b.readySeries > 0
+            ? `放行率 = Σok_rows ÷ (Σok_rows + Σfail_rows)，与「人工单据链准确率」同一代理口径（首次通过率，不是单据本身对不对）；分母为 0 的周留空不按 100%；并列该周失败运行数；不新建历史表，全部由既有运行史推导`
+            : `近 ${b.windowWeeks} 周各来源类都不足 ${b.minWeeks} 周有入库或运行`,
+          source: { tier: "fact", source: "import_jobs（ok/fail 行）× integration_runs（失败运行），近 8 周", asOf: runHistory.value.builtAt },
+        };
+      })()
+    : errorBlock(runHistory.error, "import_jobs × integration_runs", "fact");
+
   return {
     generatedAt: now.toISOString(),
     today,
     calibreVersion: COCKPIT_TRENDS_CALIBRE,
     screens: {
-      s1: { dailyFlow },
-      s2: { poTrend, externalDemand, quadrant, alertPrecision: alertPrecisionBlock },
-      s3: { turnoverWindows },
-      s4: { todoThroughput, todoCompletionStrict, alertLifecycle, goalHistory },
+      s1: { dailyFlow, freshnessTrend },
+      s2: { poTrend, externalDemand, quadrant, alertPrecision: alertPrecisionBlock, supplierConcentration },
+      s3: { turnoverWindows, expiryBuckets },
+      s4: { todoThroughput, todoCompletionStrict, alertLifecycle, goalHistory, tierMigration, dataQualityTrend },
       channels: { brandMatrix },
     },
     limitations: [

@@ -1,12 +1,13 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { Col, Row, Segmented, Space, Statistic, Table, Tag, Typography } from "antd";
-import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { VISUAL_COLOR } from "@/components/decision-visuals";
+import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, ResponsiveContainer, Tooltip, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
+import { SERIES_COLORS, VISUAL_COLOR } from "@/components/decision-visuals";
 import type { Block } from "@/server/modules/report/cockpit";
-import type { AlertLifecycleBlock, GoalHistoryBlock, GoalHistorySeries, TodoCompletionStrictBlock, TodoCompletionStrictCell, TodoThroughputBlock } from "@/server/modules/report/cockpit-trends";
-import { metricLabel, Muted, pct, TrendCard, useChartTheme } from "./shared";
+import type { AlertLifecycleBlock, GoalHistoryBlock, GoalHistorySeries, SourceTrendBlock, TierCell, TierMigrationBlock, TodoCompletionStrictBlock, TodoCompletionStrictCell, TodoThroughputBlock } from "@/server/modules/report/cockpit-trends";
+import { metricLabel, Muted, pct, sourceChartRows, TrendCard, useChartTheme } from "./shared";
 
 /* ───────────── 待办吞吐（6 个月 × 角色，证据不排名） ───────────── */
 
@@ -265,6 +266,187 @@ export function TodoCompletionStrictCard({ block }: { block: Block<TodoCompletio
             </ResponsiveContainer>
           </div>
           <Muted>柱高 = 完成率；宽、严之差越大，越多「完成」其实是告警自行消失。按角色看证据，不排名个人（D61）。</Muted>
+        </div>
+      )}
+    </TrendCard>
+  );
+}
+
+/* ───────────── 分层迁移矩阵 + 试点阻塞漏斗（C5） ───────────── */
+
+interface MigrationTableRow {
+  from: TierCell;
+  total: number;
+  cells: Record<string, number>;
+}
+
+const TIER_TAG_COLOR: Record<string, string> = { S: "red", A: "orange", B: "blue", C: "default", "未分层": "default" };
+
+export function TierMigrationCard({ block }: { block: Block<TierMigrationBlock> }) {
+  const t = useChartTheme();
+  const d = block.data;
+  const axes = d?.axes ?? [];
+  const tableRows: MigrationTableRow[] = axes.map((from) => ({
+    from,
+    total: d?.fromTotals[from] ?? 0,
+    cells: Object.fromEntries(axes.map((to) => [to, d?.matrix.find((m) => m.from === from && m.to === to)?.skus ?? 0])),
+  }));
+  const funnel = (d?.blockers ?? []).map((b) => ({ ...b, shortLabel: b.label.length > 12 ? `${b.label.slice(0, 11)}…` : b.label }));
+  return (
+    <TrendCard
+      block={block}
+      title={`${metricLabel("tierMigration", "分层迁移")} × ${metricLabel("pilotBlockerFunnel", "试点阻塞漏斗")}`}
+      question="这个月有多少 SKU 从 S→A→B→C 换了档？没进试点的 SKU，卡在哪一个主数据缺口上？"
+      metricId="tierMigration"
+      grain="SKU × 两期固化分层"
+      unit="SKU 数"
+      contentIsTable
+      fitContent
+      height={260}
+      summary={d
+        ? `${d.fromPeriod ?? "—"} → ${d.toPeriod ?? "—"}：${d.scanned} 个 SKU 中 ${d.moved} 个换档、${d.stayed} 个不变；试点候选 ${d.candidates}（占近 6 月销量 ${pct(d.candidateSalesSharePct)}）、已标记 ${d.pilotMarked}；最大阻塞 ${[...(d.blockers ?? [])].sort((a, b) => b.skus - a.skus)[0]?.label ?? "—"} ${[...(d.blockers ?? [])].sort((a, b) => b.skus - a.skus)[0]?.skus ?? 0} 个`
+        : "无数据"}
+      extra={d ? (
+        <Space size={10}>
+          <Link href={d.links.pilot} prefetch={false}>补货试点 →</Link>
+          <Link href={d.links.supplyParams} prefetch={false}>周期主数据 →</Link>
+        </Space>
+      ) : undefined}
+    >
+      {(data) => (
+        <div>
+          <Table<MigrationTableRow>
+            rowKey="from" size="small" pagination={false} scroll={{ x: 620 }} dataSource={tableRows}
+            columns={[
+              { title: `${data.fromPeriod} ＼ ${data.toPeriod}`, dataIndex: "from", width: 130, fixed: "left", render: (v: TierCell) => <Tag color={TIER_TAG_COLOR[v]}>{v}</Tag> },
+              ...data.axes.map((to) => ({
+                title: <Tag color={TIER_TAG_COLOR[to]}>{to}</Tag>, key: String(to), align: "right" as const, width: 84,
+                render: (_v: unknown, r: MigrationTableRow) => {
+                  const n = r.cells[to] ?? 0;
+                  if (n === 0) return <Typography.Text type="secondary">—</Typography.Text>;
+                  return r.from === to ? <Typography.Text type="secondary">{n}</Typography.Text> : <Typography.Text strong>{n}</Typography.Text>;
+                },
+              })),
+              { title: "本期合计", dataIndex: "total", align: "right", width: 90 },
+            ]}
+          />
+          <Muted>对角线（灰）= 未换档；只在某一期出现的 SKU 落在「未分层」轴，不假装分层；人工覆写计入生效分层。</Muted>
+          <div style={{ height: 200, marginTop: 10 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={funnel} layout="vertical" margin={{ top: 4, right: 16, left: 0, bottom: 0 }} barCategoryGap="28%">
+                <CartesianGrid stroke={t.grid} strokeDasharray="3 3" horizontal={false} />
+                <XAxis type="number" allowDecimals={false} tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} />
+                <YAxis type="category" dataKey="shortLabel" width={150} tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} />
+                <ChartTooltip {...t.tooltip} cursor={{ fill: t.grid, opacity: 0.4 }}
+                  content={({ payload }) => {
+                    const p = payload?.[0]?.payload as { label: string; skus: number; hint: string } | undefined;
+                    if (!p) return null;
+                    return (
+                      <div style={t.tooltip.contentStyle}>
+                        <div><b>{p.label}</b> {p.skus} 个 SKU</div>
+                        <div>{p.hint}</div>
+                      </div>
+                    );
+                  }} />
+                <Bar dataKey="skus" name="阻塞 SKU 数" radius={[0, 4, 4, 0]}>
+                  {funnel.map((b) => <Cell key={b.key} fill={b.key === "leadMissing" ? VISUAL_COLOR.critical : b.key === "tierC" ? VISUAL_COLOR.muted : VISUAL_COLOR.warning} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <Space wrap size={[10, 4]}>
+            {data.blockers.filter((b) => b.link).map((b) => (
+              <Link key={b.key} href={b.link!} prefetch={false}>{b.label}（{b.skus}）→</Link>
+            ))}
+          </Space>
+          <Muted>
+            试点期 {data.pilotPeriod ?? "—"}：扫描 {data.pilotScanned} 个成品，候选 {data.candidates} 个、已标记 {data.pilotMarked} 个。
+            一个 SKU 可同时命中多个阻塞维度，各桶不可相加；「XYZ 未分类」是样本不足，不是波动大，绝不并进「非 X」。
+          </Muted>
+        </div>
+      )}
+    </TrendCard>
+  );
+}
+
+/* ───────────── 数据质量周趋势（B8） ───────────── */
+
+interface DqSeriesRow {
+  sourceClass: string;
+  label: string;
+  weeksWithActivity: number;
+  state: "ready" | "insufficient";
+  gate: string | null;
+  latestPassRatePct: number | null;
+  failedRuns: number;
+  okRows: number;
+  rejectedRows: number;
+}
+
+export function DataQualityTrendCard({ block }: { block: Block<SourceTrendBlock> }) {
+  const t = useChartTheme();
+  const d = block.data;
+  const rows = d ? sourceChartRows(d, "passRatePct") : [];
+  const seriesRows: DqSeriesRow[] = (d?.series ?? []).map((s) => ({
+    sourceClass: s.sourceClass, label: s.label, weeksWithActivity: s.weeksWithActivity, state: s.state, gate: s.gate,
+    latestPassRatePct: [...s.points].reverse().find((p) => p.passRatePct != null)?.passRatePct ?? null,
+    failedRuns: s.points.reduce((a, p) => a + p.failedRuns, 0),
+    okRows: s.points.reduce((a, p) => a + p.okRows, 0),
+    rejectedRows: s.points.reduce((a, p) => a + p.rejectedRows, 0),
+  }));
+  return (
+    <TrendCard
+      block={block}
+      title={`${metricLabel("dataQualityPassRate", "数据放行率（周趋势）")} · 近 ${d?.windowWeeks ?? 8} 周`}
+      question="哪一类来源这周变差了？是格式校验没过，还是连接器根本没跑成？"
+      metricId="dataQualityPassRate"
+      grain="ISO 周 × 来源类（D65）"
+      unit="放行率 % · 失败运行数"
+      height={300}
+      summary={d
+        ? `${d.weeks[0]} → ${d.weeks.at(-1)}；${d.readySeries}/${d.series.length} 类来源满足 ${d.minWeeks} 周门槛；` +
+          seriesRows.filter((s) => s.state === "ready").map((s) => `${s.label} ${pct(s.latestPassRatePct)}（失败运行 ${s.failedRuns}）`).join("，")
+        : "无数据"}
+      extra={d ? <Link href={d.link} prefetch={false}>数据质量页 →</Link> : undefined}
+      dataView={d ? (
+        <Table<DqSeriesRow> rowKey="sourceClass" size="small" pagination={false} scroll={{ x: 720 }} dataSource={seriesRows} columns={[
+          { title: "来源类", dataIndex: "label", width: 150, fixed: "left" },
+          { title: "最近放行率", dataIndex: "latestPassRatePct", width: 110, align: "right", render: (v: number | null) => pct(v) },
+          { title: "8 周放行行数", dataIndex: "okRows", width: 120, align: "right" },
+          { title: "8 周拒收行数", dataIndex: "rejectedRows", width: 120, align: "right" },
+          { title: "8 周失败运行", dataIndex: "failedRuns", width: 110, align: "right" },
+          { title: "状态", dataIndex: "state", render: (v: string, r) => v === "ready" ? <Tag color="processing">可出趋势</Tag> : <Tag>{r.gate ?? "样本不足"}</Tag> },
+        ]} />
+      ) : undefined}
+    >
+      {(data) => (
+        <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+          <Space wrap size={[6, 4]} style={{ marginBottom: 6 }}>
+            {seriesRows.map((s) => (
+              <Tag key={s.sourceClass} color={s.state !== "ready" ? "default" : s.failedRuns > 0 ? "warning" : "success"}>
+                {s.label}：{s.state !== "ready" ? `不足 ${data.minWeeks} 周` : `${pct(s.latestPassRatePct)} · 失败运行 ${s.failedRuns}`}
+              </Tag>
+            ))}
+          </Space>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={rows} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                <CartesianGrid stroke={t.grid} strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} />
+                <YAxis domain={[0, 100]} tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} width={46} tickFormatter={(v) => `${v}%`} />
+                <ChartTooltip {...t.tooltip} formatter={(v, name) => [v == null ? "该周无批次" : pct(typeof v === "number" ? v : null), name]} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                {data.series.map((s, i) => (
+                  <Line key={s.sourceClass} type="monotone" dataKey={s.sourceClass} name={s.label}
+                    stroke={SERIES_COLORS[i % SERIES_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          <Muted>
+            放行率 = Σok_rows ÷ (Σok_rows + Σfail_rows)，与「人工单据链准确率」同为代理口径：只说明格式/校验是否一次过，不说明单据内容对不对。
+            该周无批次的点留空不按 100%；不新建历史表，全部由既有 import_jobs / integration_runs 运行史推导。
+          </Muted>
         </div>
       )}
     </TrendCard>

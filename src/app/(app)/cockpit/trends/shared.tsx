@@ -12,7 +12,7 @@ import type { VisualState } from "@/components/decision-visuals";
 import { fetchJson } from "@/components/fetchJson";
 import { metric } from "@/components/metrics";
 import type { Block, CockpitSource } from "@/server/modules/report/cockpit";
-import type { CockpitTrendsData } from "@/server/modules/report/cockpit-trends";
+import type { CockpitTrendsData, SourceTrendBlock } from "@/server/modules/report/cockpit-trends";
 
 const URL = "/api/report/cockpit/trends";
 
@@ -161,4 +161,21 @@ export function TrendCard<T>({ block, title, question, metricId, grain, unit, su
 
 export function Muted({ children }: { children: React.ReactNode }) {
   return <Typography.Text type="secondary" style={{ fontSize: 12 }}>{children}</Typography.Text>;
+}
+
+/* ───────────── 来源类周序列（C6 新鲜度 / B8 数据质量共用画法） ───────────── */
+
+export type SourceMeasure = "maxAgeDays" | "passRatePct";
+
+/** 把 8 周 × 来源类的序列摊平成 recharts 需要的「一周一行、一来源类一列」 */
+export function sourceChartRows(block: SourceTrendBlock, measure: SourceMeasure): Record<string, string | number | null>[] {
+  return block.weeks.map((week) => {
+    const row: Record<string, string | number | null> = { week, label: week.slice(5) };
+    for (const s of block.series) {
+      const p = s.points.find((x) => x.week === week);
+      // 不足周数的来源类整条不画；单周无读数给 null（断线），绝不补 0
+      row[s.sourceClass] = s.state === "ready" ? (p ? p[measure] : null) : null;
+    }
+    return row;
+  });
 }

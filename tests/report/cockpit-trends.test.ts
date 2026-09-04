@@ -4,7 +4,7 @@
  * 真实形状的读模型缓存 payload（按各读模型 TypeScript 类型）+ PGlite 事实表种子。
  */
 import { describe, expect, it } from "vitest";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
 import { createTestDb } from "../helpers/db";
@@ -13,10 +13,18 @@ import {
   buildDailyFlow,
   buildExternalDemandBrief,
   buildQuadrant,
+  buildSupplierConcentration,
+  buildTierMigration,
   buildTodoCompletionStrict,
   buildTurnoverWindows,
   getCockpitTrends,
+  loadTierMigration,
 } from "@/server/modules/report/cockpit-trends";
+import { buildRiskExpiryBuckets, loadRiskExpiryBuckets } from "@/server/modules/report/risk-expiry-buckets";
+import { loadSourceRunHistory, mondayOf, weekKeys } from "@/server/modules/report/source-run-history";
+import { listBelowFloor, listManualOverrides } from "@/server/modules/dq/lists";
+import type { RiskRow } from "@/server/modules/report/risk";
+import type { SupplierPaymentTermModel, SupplierPaymentTermRow } from "@/server/modules/report/supplier-payment-term";
 import type { TodoStatsRow } from "@/server/modules/todo/stats";
 import { INVENTORY_POSITION_CACHE_KEY, inventoryPositionBinding, type DailyPoint } from "@/server/modules/report/inventory-position";
 import { loadPurchaseOrderMetrics, PURCHASE_ORDER_METRICS_KEY } from "@/server/modules/report/purchase-order-metrics";
@@ -170,13 +178,13 @@ describe("驾驶舱趋势块 · PGlite 装配", () => {
       const [admin] = await db.insert(schema.users).values({ name: "管理员", roles: ["admin"] }).returning();
       const t = await getCockpitTrends(su(admin.id, admin.name, ["admin"]), db);
       expect(Object.keys(t.screens)).toEqual(["s1", "s2", "s3", "s4", "channels"]);
-      const blocks = [t.screens.s1.dailyFlow, t.screens.s2.poTrend, t.screens.s2.externalDemand, t.screens.s2.quadrant, t.screens.s2.alertPrecision, t.screens.s3.turnoverWindows, t.screens.s4.todoThroughput, t.screens.s4.todoCompletionStrict, t.screens.s4.alertLifecycle, t.screens.s4.goalHistory, t.screens.channels.brandMatrix];
+      const blocks = [t.screens.s1.dailyFlow, t.screens.s1.freshnessTrend, t.screens.s2.poTrend, t.screens.s2.externalDemand, t.screens.s2.quadrant, t.screens.s2.alertPrecision, t.screens.s2.supplierConcentration, t.screens.s3.turnoverWindows, t.screens.s3.expiryBuckets, t.screens.s4.todoThroughput, t.screens.s4.todoCompletionStrict, t.screens.s4.alertLifecycle, t.screens.s4.goalHistory, t.screens.s4.tierMigration, t.screens.s4.dataQualityTrend, t.screens.channels.brandMatrix];
       for (const b of blocks) expect(["ready", "insufficient"], b.note).toContain(b.state);
       expect(t.screens.s2.externalDemand.state).toBe("insufficient"); // 缺批次 → 简报不足，不是 0
       expect(t.screens.s2.alertPrecision.state).toBe("insufficient"); // 无已核验告警 → 不给数，不是 0%
       expect(t.screens.s2.alertPrecision.data).toMatchObject({ verifiedTotal: 0, groups: [], minSample: 5 });
       expect(t.screens.s4.todoCompletionStrict.state).toBe("insufficient");
-      expect(t.calibreVersion).toBe("cockpit-trends/v1");
+      expect(t.calibreVersion).toBe("cockpit-trends/v2");
 
       const [ops] = await db.insert(schema.users).values({ name: "天猫运营", roles: ["ops"] }).returning();
       const r = await getCockpitTrends(su(ops.id, ops.name, ["ops"], [1]), db);
@@ -200,8 +208,10 @@ describe("驾驶舱趋势块 · PGlite 装配", () => {
       // purchase-order-metrics/v1：先由读模型自己落缓存（绑定正确），再原位替换 byMonth（真实 PoMonthRow 形状）
       await loadPurchaseOrderMetrics({}, db);
       const byMonth = [
-        { month: prevMonth, poCount: 4, lineCount: 9, orderedBaseQty: "1200.0000", netAmount: "8600.00", grossAmount: "9718.00" },
-        { month: thisMonth, poCount: 1, lineCount: 2, orderedBaseQty: "100.0000", netAmount: "700.00", grossAmount: "791.00" },
+        { month: prevMonth, poCount: 4, lineCount: 9, orderedBaseQty: "1200.0000", netAmount: "8600.00", grossAmount: "9718.00",
+          otif: { evaluable: 4, hit: 3, miss: 1, pending: 0, unevaluable: 0, rate: 0.75 } },
+        { month: thisMonth, poCount: 1, lineCount: 2, orderedBaseQty: "100.0000", netAmount: "700.00", grossAmount: "791.00",
+          otif: { evaluable: 0, hit: 0, miss: 0, pending: 1, unevaluable: 0, rate: null } },
       ];
       await db.execute(sql`UPDATE report_read_model_cache SET payload = jsonb_set(payload, '{byMonth}', ${JSON.stringify(byMonth)}::jsonb) WHERE key = ${PURCHASE_ORDER_METRICS_KEY}`);
 
@@ -233,6 +243,12 @@ describe("驾驶舱趋势块 · PGlite 装配", () => {
       const aPts = a.screens.s2.poTrend.data!.points;
       expect(aPts.find((p) => p.month === prevMonth)).toMatchObject({ poCount: 4, netAmount: "8600.00", isCurrent: false });
       expect(aPts.find((p) => p.month === thisMonth)).toMatchObject({ isCurrent: true });
+      // B5：逐月 OTIF 随点下发；当月可评为 0 → 不写 0%
+      expect(aPts.find((p) => p.month === prevMonth)).toMatchObject({ otifRatePct: 75, otif: { evaluable: 4, hit: 3 } });
+      expect(aPts.find((p) => p.month === thisMonth)).toMatchObject({ otifRatePct: null, otif: { evaluable: 0, pending: 1 } });
+      expect(a.screens.s2.poTrend.data!.monthsWithOtif).toBe(1);
+      expect(a.screens.s2.poTrend.data!.links.map((l) => l.metricId)).toContain("supplierOtif");
+      expect(a.screens.s2.poTrend.source.source).toContain("purchase-order-metrics/v2");
       expect(a.screens.s2.poTrend.data!.moneyVisible).toBe(true);
       expect(a.screens.s1.dailyFlow.state).toBe("ready");
       expect(a.screens.s1.dailyFlow.data!.wow.realtime).toMatchObject({ state: "ready", pct: 100 });
@@ -373,6 +389,304 @@ describe("驾驶舱趋势块 · PGlite 装配", () => {
       expect(ts.note).toContain("不排名");
       // 宽口径块与严口径块同源同数
       expect(t.screens.s4.todoThroughput.data!.rows.find((r) => r.groupKey === "pmc")).toMatchObject({ total: 4, cancelledBySourceClose: 1, cancelledByHuman: 1, completionRate: 50, completionRateStrict: 33.3 });
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+describe("驾驶舱趋势块 · BI wave 2 纯装配函数", () => {
+  const spendRow = (over: Partial<SupplierPaymentTermRow> & { supplierId: number; total: string | null }): SupplierPaymentTermRow => ({
+    supplierId: over.supplierId,
+    code: over.code ?? `S${over.supplierId}`,
+    name: over.name ?? `供应商${over.supplierId}`,
+    kinds: over.kinds ?? ["raw"],
+    status: "active",
+    pool: over.pool ?? "raw",
+    cooperationSince: "2023-01-01",
+    cooperationSource: over.cooperationSource ?? "system_inferred",
+    cooperationYears: over.cooperationYears ?? 3,
+    spend: [{ year: 2026, poNet: over.total, jsSettle: "0.00", total: over.total, rank: over.spend?.[0]?.rank ?? null, rankOf: 5 }],
+    rankTrend: over.rankTrend ?? "unknown",
+    candidate: false,
+    candidateReason: "",
+    paymentTermType: over.paymentTermType ?? null,
+    creditDays: over.creditDays ?? null,
+    paymentTermEffectiveFrom: null,
+    paymentTermText: over.paymentTermText ?? null,
+    attainment: over.attainment ?? "unknown",
+  });
+
+  const sptModel = (rows: SupplierPaymentTermRow[], totalSpend: string | null): SupplierPaymentTermModel => ({
+    key: "supplier-payment-term/v1",
+    authority: "ledger",
+    sourceBinding: "t",
+    builtAt: new Date().toISOString(),
+    asOf: "2026-09-04",
+    year: 2026,
+    moneyVisible: true,
+    params: { minYears: 2, targetMinDays: 45, targetMaxDays: 60 },
+    summary: {
+      suppliers: rows.length, withSpend: rows.length, candidates: 2, candidatesAttained: 1, attainmentRate: 0.5,
+      creditTermSuppliers: 1, totalSpend, creditTermSpend: "300.00", creditTermSpendSharePct: "30.00", byPool: [],
+    },
+    rows,
+    limitations: [],
+  });
+
+  it("供应商集中度：占比对非价格角色照常下发、金额剥离；OTIF 只在该供应商当年有可评 PO 时给值", () => {
+    const rows = [
+      spendRow({ supplierId: 1, total: "500.00", attainment: "attained", paymentTermText: "月结 60 天" }),
+      spendRow({ supplierId: 2, total: "300.00" }),
+      spendRow({ supplierId: 3, total: "200.00" }),
+    ];
+    const po = {
+      bySupplier: [
+        { supplierId: 1, otif: { evaluable: 4, hit: 3, miss: 1, pending: 0, unevaluable: 0, rate: 0.75 } },
+        { supplierId: 2, otif: { evaluable: 0, hit: 0, miss: 0, pending: 2, unevaluable: 1, rate: null } },
+      ],
+      // 只读 bySupplier：其余字段与本函数无关
+    } as unknown as Parameters<typeof buildSupplierConcentration>[1];
+
+    const admin = buildSupplierConcentration(sptModel(rows, "1000.00"), po, ["admin"]);
+    expect(admin.moneyVisible).toBe(true);
+    expect(admin.topSharePct).toBe(100);
+    expect(admin.rows.map((r) => [r.supplierId, r.spend, r.sharePct])).toEqual([[1, "500.00", 50], [2, "300.00", 30], [3, "200.00", 20]]);
+    expect(admin.rows[0].otifRatePct).toBe(75);
+    expect(admin.rows[1].otif).toMatchObject({ evaluable: 0 });
+    expect(admin.rows[1].otifRatePct).toBeNull(); // 可评 0 → 不写 0%
+    expect(admin.rows[2].otif).toBeNull(); // 当年无已批 PO → null，不是 0
+    expect(admin.otifMatched).toBe(2);
+    expect(admin.cooperationInferred).toBe(3);
+    expect(admin.link).toBe("/report/supplier-scorecard");
+
+    const wh = buildSupplierConcentration(sptModel(rows, "1000.00"), po, ["warehouse"]);
+    expect(wh.moneyVisible).toBe(false);
+    expect(wh.rows.every((r) => r.spend === null)).toBe(true);
+    expect(wh.rows.map((r) => r.sharePct)).toEqual([50, 30, 20]); // 占比不是金额，仍全员可见
+    expect(wh.topSharePct).toBe(100);
+  });
+
+  it("临期桶：段位按批次剩余天数统一刻度，> 90 天不入桶；90 天兜底 SKU 计数；外部动销只作注记", () => {
+    const row = (over: Partial<RiskRow> & { skuId: number }): RiskRow => ({
+      skuId: over.skuId, code: `SKU${over.skuId}`, name: "x", brand: over.brand ?? null,
+      action: over.action ?? "促销清库", onHand: over.onHand ?? 100, daily: 1, cover: 100,
+      minDaysLeft: over.minDaysLeft ?? 10, expiredQty: 0, nearExpiryDays: 90, nearQty: 0,
+      expiryBuckets: over.expiryBuckets ?? { expired: 0, d30: 0, d60: 0, d90: 0 },
+      nearExpiryFallback: over.nearExpiryFallback ?? false,
+      palletRemark: null, remarkMonth: null, disposalOpen: false, disposalId: null,
+      externalNet30: over.externalNet30 ?? null, externalLastSold: null,
+    });
+    const b = buildRiskExpiryBuckets([
+      row({ skuId: 1, brand: "宁", expiryBuckets: { expired: 10, d30: 20, d60: 0, d90: 0 }, nearExpiryFallback: true }),
+      row({ skuId: 2, brand: "宁", expiryBuckets: { expired: 0, d30: 0, d60: 5, d90: 7 } }),
+      row({ skuId: 3, brand: null, action: "滞销关注", onHand: 400, externalNet30: 12 }),
+      row({ skuId: 4, brand: "别", action: "滞销关注", onHand: 50, externalNet30: 0 }),
+      row({ skuId: 5, brand: "别", action: "滞销关注", onHand: 60, externalNet30: null }), // 未映射：不进注记分母
+      row({ skuId: 6, brand: "别", action: "优先出库" }), // 既不临期也不呆滞 → 不进块
+    ], { today: "2026-09-04", slowThreshold: 180 });
+
+    expect(b.totals.map((t) => [t.key, t.qty, t.skus])).toEqual([
+      ["expired", 10, 1], ["d30", 20, 1], ["d60", 5, 1], ["d90", 7, 1],
+    ]);
+    expect(b.expirySkus).toBe(2);
+    expect(b.fallbackSkus).toBe(1);
+    expect(b.slowSkus).toBe(3);
+    expect(b.slowStillSellingExternally).toBe(1);
+    expect(b.slowWithExternalSignal).toBe(2); // 未映射的 SKU5 不进分母，不按 0 处理
+    expect(b.brands.map((r) => r.brand)).toContain("（未设品牌）");
+    expect(b.brands.find((r) => r.brand === "宁")).toMatchObject({ expirySkus: 2, slowSkus: 0, totalQty: 42 });
+    expect(b.brands.find((r) => r.brand === "别")).toMatchObject({ slowSkus: 2, slowOnHand: 110 });
+  });
+
+  it("分层迁移：只在一期出现的 SKU 落「未分层」轴；覆写优先；试点阻塞 xyzNull 单列不并入非 X", () => {
+    const b = buildTierMigration(
+      { from: "2026-08", to: "2026-09" },
+      [
+        { skuId: 1, from: "S", to: "S" },
+        { skuId: 2, from: "A", to: "S" },
+        { skuId: 3, from: "B", to: "C" },
+        { skuId: 4, from: "未分层", to: "B" },
+        { skuId: 5, from: "C", to: "未分层" },
+      ],
+      { period: "2026-09", scanned: 120, candidates: 8, candidateSalesSharePct: 32.5, pilotMarked: 3,
+        blockers: { tierC: 40, xyzNotX: 12, xyzUnclassified: 25, leadMissing: 60, detectorHit: 2 },
+      } as unknown as Parameters<typeof buildTierMigration>[2],
+    );
+    expect(b.axes).toEqual(["S", "A", "B", "C", "未分层"]);
+    expect(b.matrix).toHaveLength(25);
+    expect(b.moved).toBe(4);
+    expect(b.stayed).toBe(1);
+    expect(b.fromTotals).toEqual({ S: 1, A: 1, B: 1, C: 1, "未分层": 1 });
+    expect(b.toTotals).toEqual({ S: 2, A: 0, B: 1, C: 1, "未分层": 1 });
+    expect(b.matrix.find((c) => c.from === "A" && c.to === "S")!.skus).toBe(1);
+    const keys = b.blockers.map((x) => x.key);
+    expect(keys).toEqual(["leadMissing", "xyzNull", "xyzNotX", "detectorHit", "tierC"]);
+    expect(b.blockers.find((x) => x.key === "xyzNull")!.skus).toBe(25);
+    expect(b.blockers.find((x) => x.key === "xyzNotX")!.skus).toBe(12); // 两桶分开，不相加
+    expect(b.blockers.find((x) => x.key === "leadMissing")!.link).toBe("/master/supply-params");
+    expect(b.links.pilot).toBe("/replenish/pilot");
+    expect(b.candidates).toBe(8);
+  });
+
+  it("周键：8 周窗口以业务日所属周的周一收尾，升序且相邻 7 天", () => {
+    expect(mondayOf("2026-09-04")).toBe("2026-08-31"); // 周五 → 本周一
+    expect(mondayOf("2026-08-31")).toBe("2026-08-31");
+    const weeks = weekKeys("2026-09-04", 8);
+    expect(weeks).toHaveLength(8);
+    expect(weeks.at(-1)).toBe("2026-08-31");
+    expect(weeks[0]).toBe("2026-07-13");
+    expect(weeks.every((w, i) => i === 0 || Date.parse(`${w}T00:00:00Z`) - Date.parse(`${weeks[i - 1]}T00:00:00Z`) === 7 * 86400000)).toBe(true);
+  });
+});
+
+describe("驾驶舱趋势块 · BI wave 2 PGlite", () => {
+  it("空库：新增五块齐全且只在 ready/insufficient；来源趋势不足 3 周整条不出", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [admin] = await db.insert(schema.users).values({ name: "管理员", roles: ["admin"] }).returning();
+      const t = await getCockpitTrends(su(admin.id, admin.name, ["admin"]), db);
+      expect(t.calibreVersion).toBe("cockpit-trends/v2");
+      const blocks = [t.screens.s1.freshnessTrend, t.screens.s2.supplierConcentration, t.screens.s3.expiryBuckets, t.screens.s4.tierMigration, t.screens.s4.dataQualityTrend];
+      for (const b of blocks) expect(["ready", "insufficient"], b.note).toContain(b.state);
+      expect(t.screens.s1.freshnessTrend.state).toBe("insufficient");
+      expect(t.screens.s1.freshnessTrend.data!.weeks).toHaveLength(8);
+      expect(t.screens.s1.freshnessTrend.data!.series.every((s) => s.state === "insufficient")).toBe(true);
+      expect(t.screens.s4.tierMigration.state).toBe("insufficient");
+      expect(t.screens.s4.tierMigration.data!.fromPeriod).toBeNull();
+      expect(t.screens.s3.expiryBuckets.state).toBe("insufficient");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("临期读模型 risk-expiry-buckets/v1：按绑定落缓存并复用；批次变化即失效重算", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [brand] = await db.insert(schema.brands).values({ code: "NING", nameCn: "宁" }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "P0001", nameCn: "临期" }).returning();
+      const [wh] = await db.insert(schema.warehouses).values({ code: "W1", name: "主仓", kind: "finished", accountingMode: "realtime", active: true }).returning();
+      const [sku] = await db.insert(schema.skus).values({ code: "SKU-A", name: "甲", spuId: spu.id, brandId: brand.id, baseUom: "个", skuType: "finished" }).returning();
+      const day = (n: number) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+      const today = day(0);
+      await db.insert(schema.batchStocks).values([
+        { skuId: sku.id, warehouseId: wh.id, batchNo: "B1", qty: "10.0000", expiryDate: day(-5), stocktakeDate: today },
+        { skuId: sku.id, warehouseId: wh.id, batchNo: "B2", qty: "20.0000", expiryDate: day(20), stocktakeDate: today },
+        { skuId: sku.id, warehouseId: wh.id, batchNo: "B3", qty: "30.0000", expiryDate: day(200), stocktakeDate: today }, // > 90 天：不入桶
+      ]);
+      // 风险工作台以在库 > 0 为前提（batch_stocks 是效期载体，不是在库账）
+      await db.insert(schema.stockBalances).values({ skuId: sku.id, warehouseId: wh.id, qty: "60.0000" });
+
+      const first = await loadRiskExpiryBuckets(db);
+      expect(first.key).toBe("risk-expiry-buckets/v1");
+      expect(first.totals.find((t) => t.key === "expired")!.qty).toBe(10);
+      expect(first.totals.find((t) => t.key === "d30")!.qty).toBe(20);
+      expect(first.totals.find((t) => t.key === "d90")!.qty).toBe(0);
+      expect(first.fallbackSkus).toBe(1); // skus.near_expiry_days 未维护 → 90 天兜底
+
+      const [cached] = await db.select().from(schema.reportReadModelCache).where(eq(schema.reportReadModelCache.key, "risk-expiry-buckets/v1"));
+      expect(cached.sourceBinding).toBe(first.sourceBinding);
+      const second = await loadRiskExpiryBuckets(db);
+      expect(second.builtAt).toBe(first.builtAt); // 绑定一致 → 命中缓存不重建
+
+      await db.insert(schema.batchStocks).values({ skuId: sku.id, warehouseId: wh.id, batchNo: "B4", qty: "7.0000", expiryDate: day(70), stocktakeDate: today });
+      const third = await loadRiskExpiryBuckets(db);
+      expect(third.sourceBinding).not.toBe(first.sourceBinding);
+      expect(third.totals.find((t) => t.key === "d90")!.qty).toBe(7);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("分层迁移取两期固化分层（覆写优先）；来源运行史按 ISO 周 × 来源类给滞后天数与放行率", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [admin] = await db.insert(schema.users).values({ name: "管理员", roles: ["admin"] }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "P0002", nameCn: "分层" }).returning();
+      const skus = await db.insert(schema.skus).values([
+        { code: "S1", name: "1", spuId: spu.id, baseUom: "个", skuType: "finished" },
+        { code: "S2", name: "2", spuId: spu.id, baseUom: "个", skuType: "finished" },
+        { code: "S3", name: "3", spuId: spu.id, baseUom: "个", skuType: "finished" },
+      ]).returning();
+      await db.insert(schema.skuPlanningPolicy).values([
+        { skuId: skus[0].id, period: "2026-08", tier: "A", abc: "A", ownership: "joint_review" },
+        { skuId: skus[0].id, period: "2026-09", tier: "S", abc: "A", ownership: "joint_review" },
+        { skuId: skus[1].id, period: "2026-08", tier: "B", abc: "B", ownership: "joint_review" },
+        { skuId: skus[1].id, period: "2026-09", tier: "B", abc: "B", ownership: "joint_review", overrideTier: "C", overrideBy: admin.id }, // 覆写优先
+        { skuId: skus[2].id, period: "2026-09", tier: "C", abc: "C", ownership: "ops_fallback" }, // 上期缺席 → 未分层
+      ]);
+
+      const mig = await loadTierMigration(db);
+      expect(mig.periods).toEqual({ from: "2026-08", to: "2026-09" });
+      const byId = new Map(mig.tiers.map((t) => [t.skuId, t]));
+      expect(byId.get(skus[0].id)).toMatchObject({ from: "A", to: "S" });
+      expect(byId.get(skus[1].id)).toMatchObject({ from: "B", to: "C" }); // override_tier 生效
+      expect(byId.get(skus[2].id)).toMatchObject({ from: "未分层", to: "C" });
+
+      // 运行史：三周各一个 rpa_warehouse 批次（模板 inventory），滞后天数 = 收到日 − source_as_of
+      const today = new Date();
+      const weeks = weekKeys(today.toISOString().slice(0, 10), 8);
+      for (const [i, w] of [weeks[5], weeks[6], weeks[7]].entries()) {
+        const receivedAt = new Date(`${w}T04:00:00Z`); // 周一，Asia/Shanghai 当日
+        const asOf = new Date(Date.parse(`${w}T00:00:00Z`) - (i + 1) * 86400000).toISOString().slice(0, 10);
+        await db.insert(schema.importJobs).values({
+          template: "inventory", filename: `f${i}.xlsx`, sourceAsOf: asOf, status: "done",
+          okRows: 90 + i, failRows: 10 - i, createdBy: admin.id, createdAt: receivedAt,
+        });
+      }
+      const history = await loadSourceRunHistory(db, { today: today.toISOString().slice(0, 10) });
+      expect(history.weeks).toEqual(weeks);
+      const rpa = history.series.find((s) => s.sourceClass === "rpa_warehouse")!;
+      expect(rpa.state).toBe("ready");
+      expect(rpa.weeksWithActivity).toBe(3);
+      expect(rpa.points.at(-1)!.maxAgeDays).toBe(3);
+      expect(rpa.points.at(-1)!.passRatePct).toBe(92); // 92 / (92 + 8)
+      expect(rpa.points[0].maxAgeDays).toBeNull(); // 无批次的周留空，不按 0
+      expect(rpa.points[0].passRatePct).toBeNull();
+      // 其余来源类无批次 → 不足 3 周，整条不出
+      expect(history.series.filter((s) => s.state === "ready")).toHaveLength(1);
+
+      const t = await getCockpitTrends(su(admin.id, admin.name, ["admin"]), db);
+      expect(t.screens.s4.tierMigration.state).toBe("ready");
+      expect(t.screens.s4.tierMigration.data!.moved).toBe(3);
+      expect(t.screens.s1.freshnessTrend.state).toBe("ready");
+      expect(t.screens.s4.dataQualityTrend.state).toBe("ready");
+      expect(t.screens.s4.dataQualityTrend.data!.readySeries).toBe(1);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("数据质量清单（C10）：手工改写按替代链取值、金额按角色剥离；低于量下限走一致性同一判定", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [admin] = await db.insert(schema.users).values({ name: "管理员", roles: ["admin"] }).returning();
+      const [head] = await db.insert(schema.salesAmountMonthly).values({
+        yearMonth: "2026-07", scopeKind: "company", amount: "1000.00", source: "manual", createdBy: admin.id,
+      }).returning();
+      await db.insert(schema.salesAmountMonthly).values({
+        yearMonth: "2026-07", scopeKind: "company", amount: "1200.00", source: "manual",
+        supersedesId: head.id, note: "对账后修正", createdBy: admin.id,
+      });
+
+      const forAdmin = await listManualOverrides(db, {}, ["admin"]);
+      expect(forAdmin.total).toBe(1);
+      expect(forAdmin.moneyVisible).toBe(true);
+      expect(forAdmin.rows[0]).toMatchObject({ yearMonth: "2026-07", scopeLabel: "全公司", amount: "1200.00", previousAmount: "1000.00", createdByName: "管理员" });
+
+      const forWarehouse = await listManualOverrides(db, {}, ["warehouse"]);
+      expect(forWarehouse.rows[0].amount).toBeNull();
+      expect(forWarehouse.rows[0].previousAmount).toBeNull();
+      expect(forWarehouse.total).toBe(1); // 计数与口径仍可见
+
+      expect((await listManualOverrides(db, { yearMonth: "2026-06" }, ["admin"])).total).toBe(0);
+
+      // 缺天猫批次时一致性关闭：清单必须给 gate 而不是空表假装「没有问题」
+      const bf = await listBelowFloor(db, {});
+      expect(bf.state).toBe("insufficient");
+      expect(bf.rows).toEqual([]);
+      expect(bf.gate).toBeTruthy();
+      expect(bf.caliber).toContain("不进一致率分母");
     } finally {
       await client.close();
     }

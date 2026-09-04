@@ -14,6 +14,7 @@ import { hasAnyRole, useMe } from "@/components/useMe";
 import type { DataQualityReport, DqSourceRow } from "@/server/modules/report/data-quality";
 import type { SalesConsistency, SalesConsistencyRow } from "@/server/modules/report/sales-consistency";
 import type { DqReviewRow } from "@/server/modules/dq/reviews";
+import type { BelowFloorList, ManualOverrideList, ManualOverrideRow } from "@/server/modules/dq/lists";
 
 interface ReviewsResponse {
   data: DqReviewRow[];
@@ -142,6 +143,42 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
   }, [consistency, scState.filters.month]);
   const scPage = scRows.slice((scState.page - 1) * scState.pageSize, scState.page * scState.pageSize);
 
+  /* ── C10 手工改写逐条清单（paramPrefix mo） ── */
+  const moState = useListState({ key: "dq-manual-overrides", defaults: { yearMonth: "" as string | undefined }, defaultPageSize: 20, paramPrefix: "mo" });
+  const [overrides, setOverrides] = useState<ManualOverrideList | null>(null);
+  const [moLoading, setMoLoading] = useState(false);
+  const loadOverrides = useCallback(async () => {
+    setMoLoading(true);
+    try {
+      const qs = new URLSearchParams({ page: String(moState.page), pageSize: String(moState.pageSize) });
+      if (moState.filters.yearMonth) qs.set("yearMonth", moState.filters.yearMonth);
+      setOverrides(await fetchJson<ManualOverrideList>(`/api/report/data-quality/manual-overrides?${qs.toString()}`));
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setMoLoading(false);
+    }
+  }, [moState.page, moState.pageSize, moState.filters.yearMonth, message]);
+  useEffect(() => { void loadOverrides(); }, [loadOverrides]);
+
+  /* ── C10 低于量下限逐条清单（paramPrefix bf） ── */
+  const bfState = useListState({ key: "dq-below-floor", defaults: { month: "" as string | undefined }, defaultPageSize: 20, paramPrefix: "bf" });
+  const [belowFloor, setBelowFloor] = useState<BelowFloorList | null>(null);
+  const [bfLoading, setBfLoading] = useState(false);
+  const loadBelowFloor = useCallback(async () => {
+    setBfLoading(true);
+    try {
+      const qs = new URLSearchParams({ page: String(bfState.page), pageSize: String(bfState.pageSize) });
+      if (bfState.filters.month) qs.set("month", bfState.filters.month);
+      setBelowFloor(await fetchJson<BelowFloorList>(`/api/report/data-quality/below-floor?${qs.toString()}`));
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setBfLoading(false);
+    }
+  }, [bfState.page, bfState.pageSize, bfState.filters.month, message]);
+  useEffect(() => { void loadBelowFloor(); }, [loadBelowFloor]);
+
   const sourceColumns: ColumnsType<DqSourceRow> = [
     { title: "来源", dataIndex: "label", width: 150, fixed: "left", render: (v: string, r) => <Tooltip title={`模板：${r.templates.join("、")}`}><span>{v}</span></Tooltip> },
     {
@@ -230,6 +267,36 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
     { title: "差异 %", dataIndex: "diffPct", width: 90, align: "right", sorter: (a, b) => Math.abs(a.diffPct ?? 0) - Math.abs(b.diffPct ?? 0), render: (v: number | null) => pct(v) },
   ];
 
+  const overrideColumns: ColumnsType<ManualOverrideRow> = [
+    { title: "月份", dataIndex: "yearMonth", width: 90, fixed: "left", sorter: (a, b) => a.yearMonth.localeCompare(b.yearMonth) },
+    { title: "口径", dataIndex: "scopeLabel", width: 140 },
+    { title: "改写前", dataIndex: "previousAmount", width: 140, align: "right", render: (v: string | null) => v == null ? <Typography.Text type="secondary">无权限 / 无原行</Typography.Text> : v },
+    { title: "改写后", dataIndex: "amount", width: 140, align: "right", render: (v: string | null) => v == null ? <Typography.Text type="secondary">无权限</Typography.Text> : <Typography.Text strong>{v}</Typography.Text> },
+    { title: "币种", dataIndex: "currency", width: 70 },
+    { title: "说明", dataIndex: "note", ellipsis: true, render: (v: string | null) => v ?? "—" },
+    { title: "改写人", dataIndex: "createdByName", width: 100, render: (v: string | null) => v ?? "—" },
+    { title: "改写时间", dataIndex: "createdAt", width: 150, render: (v: string) => dayjs(v).format("YYYY-MM-DD HH:mm") },
+  ];
+
+  const exportOverrides = () => {
+    if (!overrides) return;
+    exportCsv(
+      `数据质量-手工改写-${report?.today ?? ""}`,
+      ["月份", "口径", "改写前", "改写后", "币种", "说明", "改写人", "改写时间"],
+      overrides.rows.map((r) => [r.yearMonth, r.scopeLabel, r.previousAmount, r.amount, r.currency, r.note, r.createdByName, r.createdAt]),
+      overrides.total > overrides.rows.length ? `仅导出当前页 ${overrides.rows.length} 行，共 ${overrides.total} 行` : undefined,
+    );
+  };
+  const exportBelowFloor = () => {
+    if (!belowFloor) return;
+    exportCsv(
+      `数据质量-低于量下限-${belowFloor.anchorDate ?? report?.today ?? ""}`,
+      ["月份", "SKU", "名称", "内部 sales_monthly", "天猫观察净件数", "差异", "差异%"],
+      belowFloor.rows.map((r) => [r.month, r.skuCode, r.skuName, r.internalQty, r.externalQty, r.diffQty, r.diffPct]),
+      belowFloor.total > belowFloor.rows.length ? `仅导出当前页 ${belowFloor.rows.length} 行，共 ${belowFloor.total} 行` : undefined,
+    );
+  };
+
   const exportReviews = () => {
     if (!reviews) return;
     exportCsv(
@@ -292,9 +359,14 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
             <Space size="large">
               <a href="#snapshot-quality"><Statistic value={sq?.alerts ?? "—"} suffix="仓" /></a>
               <a onClick={() => reviewState.setFilter({ status: "pending" })} href="#reviews"><Statistic value={report?.reviews.pending ?? "—"} suffix="项" /></a>
-              <Tooltip title="手工改写按期独立计数，暂无逐条清单页"><Statistic value={report?.manualOverrides.count ?? "—"} suffix="项" /></Tooltip>
+              <Tooltip title="点开看逐条改写记录（谁、什么时候、从多少改成多少）">
+                <a href="#manual-overrides" onClick={() => moState.setFilter({ yearMonth: "" })}><Statistic value={report?.manualOverrides.count ?? "—"} suffix="项" /></a>
+              </Tooltip>
             </Space>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>手工改写 {report?.manualOverrides.period ?? ""}，独立计数不进准确率</Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              手工改写 {report?.manualOverrides.period ?? ""}，独立计数不进准确率 ·{" "}
+              <a href="#below-floor">低于量下限 {consistency?.belowFloorRows ?? report?.salesConsistency.belowFloorRows ?? "—"} 行</a>（不进一致率分母）
+            </Typography.Text>
           </Card>
         </Col>
       </Row>
@@ -377,6 +449,40 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
             {consistency.limitations.map((l) => <li key={l}>{l}</li>)}
           </ul>
         ) : null}
+      </Card>
+
+      <Card size="small" style={{ marginTop: 12 }} id="manual-overrides"
+        title={`手工改写（DQ-6）逐条清单${overrides ? `：${overrides.total} 项` : ""}`}>
+        <ListToolbar
+          state={moState}
+          onExport={overrides ? exportOverrides : undefined}
+          extra={
+            <Input allowClear placeholder="月份 YYYY-MM" style={{ width: 160 }} value={moState.filters.yearMonth || undefined}
+              onChange={(e) => moState.setFilter({ yearMonth: e.target.value })} />
+          }
+        />
+        <Table<ManualOverrideRow> rowKey="id" size={moState.tableSize} columns={overrideColumns} dataSource={overrides?.rows ?? []}
+          loading={moLoading} scroll={{ x: 980 }} pagination={moState.paginationProps({ total: overrides?.total ?? 0 })}
+          locale={{ emptyText: "没有手工改写记录（sales_amount_monthly 无 source=manual 的替代行）" }} />
+        {overrides ? <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>{overrides.caliber}</Typography.Paragraph> : null}
+      </Card>
+
+      <Card size="small" style={{ marginTop: 12 }} id="below-floor"
+        title={`低于量下限（不进一致率分母）逐条清单${belowFloor ? `：${belowFloor.total} 行` : ""}`}>
+        <ListToolbar
+          state={bfState}
+          onExport={belowFloor ? exportBelowFloor : undefined}
+          extra={
+            <Select allowClear placeholder="月份" style={{ width: 140 }} value={bfState.filters.month || undefined}
+              onChange={(v) => bfState.setFilter({ month: v ?? "" })}
+              options={(belowFloor?.months ?? []).map((m) => ({ value: m, label: m }))} />
+          }
+        />
+        <Table<SalesConsistencyRow> rowKey={(r) => `bf-${r.skuId}:${r.month}`} size={bfState.tableSize} columns={scColumns}
+          dataSource={belowFloor?.rows ?? []} loading={bfLoading} scroll={{ x: 760 }}
+          pagination={bfState.paginationProps({ total: belowFloor?.total ?? 0 })}
+          locale={{ emptyText: belowFloor?.gate ?? "没有低于量下限的行" }} />
+        {belowFloor ? <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>{belowFloor.caliber}</Typography.Paragraph> : null}
       </Card>
 
       <Modal

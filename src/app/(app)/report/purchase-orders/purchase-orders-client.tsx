@@ -2,7 +2,7 @@
 
 /**
  * D63 采购订单指标（真报表）：采购下了多少、多久到、省了多少、供应商 OTIF。
- * 只消费读模型 purchase-order-metrics/v1；金额由 API 按角色剥离（moneyVisible=false 时显示「—」）。
+ * 只消费读模型 purchase-order-metrics/v2；金额由 API 按角色剥离（moneyVisible=false 时显示「—」）。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, App, Button, Card, Col, Row, Segmented, Select, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
