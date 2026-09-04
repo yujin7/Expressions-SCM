@@ -152,6 +152,7 @@ export const ROUTE_REGISTRY = {
   master_spu: { path: "/master/spu", label: "SPU 产品", group: "master", scopedMode: "public", keywords: "spu chanpin" },
   master_sku: { path: "/master/sku", label: "SKU 货品", group: "master", scopedMode: "public", keywords: "sku huopin" },
   master_category: { path: "/master/category", label: "分类", group: "master", scopedMode: "public" },
+  master_channel: { path: "/master/channel", label: "渠道", group: "master", scopedMode: "public", keywords: "channel qudao 渠道" },
   master_supplier: { path: "/master/supplier", label: "供应商", group: "master", scopedMode: "public", keywords: "supplier gongyingshang" },
   master_supplier_lifecycle: { path: "/master/supplier/lifecycle", label: "供应商准入与整改", roles: ["purchasing", "pmc", "finance"], group: "master", scopedMode: "public", keywords: "supplier onboarding corrective gongyingshang zhunru zhenggai" },
   master_warehouse: { path: "/master/warehouse", label: "仓库", group: "master", scopedMode: "public", keywords: "warehouse cangku" },

@@ -49,7 +49,7 @@ const LEGACY_MENU: LegacyNode[] = [
     {"key":"/settlement/js","label":"结算单"}, {"key":"/report/margin","label":"毛利视角"}, {"key":"/report/settlement-summary","label":"结算汇总表"}, {"key":"/jobs/recon","label":"对账差异"}, {"key":"/settlement/month-close","label":"月结控制台"},
   ] },
   { key: "master", label: "主数据", children: [
-    {"key":"/master/spu","label":"SPU 产品"}, {"key":"/master/sku","label":"SKU 货品"}, {"key":"/master/category","label":"分类"}, {"key":"/master/supplier","label":"供应商"}, {"key":"/master/supplier/lifecycle","label":"供应商准入与整改"}, {"key":"/master/warehouse","label":"仓库"}, {"key":"/master/bin","label":"库位"}, {"key":"/master/bom","label":"BOM"}, {"key":"/master/feeref","label":"加工费参考价"}, {"key":"/report/data-health","label":"主数据健康度"}, {"key":"/master/supply-params","label":"周期主数据补录"}, {"key":"/report/decision-studio?tab=identity","label":"平台身份认领"},
+    {"key":"/master/spu","label":"SPU 产品"}, {"key":"/master/sku","label":"SKU 货品"}, {"key":"/master/category","label":"分类"}, {"key":"/master/channel","label":"渠道"}, {"key":"/master/supplier","label":"供应商"}, {"key":"/master/supplier/lifecycle","label":"供应商准入与整改"}, {"key":"/master/warehouse","label":"仓库"}, {"key":"/master/bin","label":"库位"}, {"key":"/master/bom","label":"BOM"}, {"key":"/master/feeref","label":"加工费参考价"}, {"key":"/report/data-health","label":"主数据健康度"}, {"key":"/master/supply-params","label":"周期主数据补录"}, {"key":"/report/decision-studio?tab=identity","label":"平台身份认领"},
   ] },
   { key: "import", label: "数据中心", children: [
     {"key":"/import/upload","label":"文件上传"}, {"key":"/import/release","label":"导入放行"}, {"key":"/import/jobs","label":"导入任务"}, {"key":"/import/exceptions","label":"编码别名认领"}, {"key":"/import/data-quality","label":"数据质量"}, {"key":"/review/checklist","label":"复核清单与提醒"}, {"key":"/report/exports","label":"导出任务"},
@@ -159,6 +159,7 @@ const LEGACY_REPORT_GROUPS: Record<string, string> = {
   "/master/spu": "master",
   "/master/sku": "master",
   "/master/category": "master",
+  "/master/channel": "master",
   "/master/supplier": "master",
   "/master/supplier/lifecycle": "master",
   "/master/warehouse": "master",
@@ -218,6 +219,7 @@ const LEGACY_PALETTE_HREFS = [
   "/report/npd",
   "/master/spu",
   "/master/sku",
+  "/master/channel",
   "/master/supplier",
   "/master/supplier/lifecycle",
   "/master/warehouse",

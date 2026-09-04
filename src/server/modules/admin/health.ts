@@ -160,6 +160,11 @@ export interface OpsHealth {
   dbOk: boolean;
   migrations: { files: number; applied: number; drift: boolean };
   lastJobRuns: JobRunRow[];
+  /**
+   * 已登记的定时任务名（审计 #10）：页面据此列出**全部**任务并给「立即运行」，
+   * 而不只是「跑过的那些」——从没跑过的任务恰恰最需要能手动触发一次。
+   */
+  registeredJobs: string[];
   recentErrors: ErrorLogRow[];
   errorCount24h: number;
   recentImports: {
@@ -730,6 +735,17 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
     });
   }
 
+  /* 已登记任务目录：动态 import 断开静态模块环——`interval-runner` 会拉进整张任务图，
+     静态引用会让 next build 收集页面数据时炸（CLAUDE.md 记录过同型事故）。
+     取不到时降级为空数组：运维面板宁可少一列按钮，也不能整页 500。 */
+  let registeredJobs: string[] = [];
+  try {
+    const { INTERVAL_JOBS } = await import("@/jobs/interval-runner");
+    registeredJobs = INTERVAL_JOBS.map((j) => j.name);
+  } catch {
+    registeredJobs = [];
+  }
+
   // 最近错误 10 条 + 24h 计数
   const errRows: (typeof errorLogs.$inferSelect)[] = await db
     .select()
@@ -794,6 +810,7 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
     dbOk,
     migrations: { files, applied, drift },
     lastJobRuns,
+    registeredJobs,
     recentErrors: errRows.map(safeErrorLogRow),
     errorCount24h,
     recentImports: importRows.map((r) => ({
