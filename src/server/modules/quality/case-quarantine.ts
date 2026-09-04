@@ -12,17 +12,23 @@
  *
  * 绝不做的事：直接写 `stock_balances` / `bin_balances`。库存只能经库存域自己的写路径动，
  * 质量域只能请求，不能代劳——这也是适配器存在的理由。
+ *
+ * 幂等与失败边界（2026-09-04 安全审计 S5）：围堵行动的幂等键由
+ * 「案件 × 批次 × 仓库」推导（此前是 `randomUUID()`，等于每次都告诉下游「这是新请求」，
+ * 重复发起就重复造行动）；逐批次是独立的原子单元，单行失败不再中断整批，
+ * 且汇总审计**无论成败都写**。
  */
-import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { dCmp, dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
+import { deterministicIdempotencyKey } from "@/server/core/idempotency";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb } from "@/server/modules/outsource/common";
 import {
+  DEFAULT_QUARANTINE_PROVIDER_ID,
   listQuarantineScope, resolveBatchQuarantineProvider, type QuarantineScopeRow,
 } from "./quarantine-adapter";
 import { createQualityAction, transitionQualityAction } from "./service";
@@ -40,12 +46,17 @@ const quarantineSchema = z.object({
 });
 
 export interface CaseQuarantineLine extends QuarantineScopeRow {
-  actionId: number;
+  /** 围堵行动主键；本行整体失败（连行动都没登记成）时为 null */
+  actionId: number | null;
   executed: boolean;
   movementId: number | null;
   provider: string;
   /** 未执行的原因（executed=false 时必填） */
   reason: string | null;
+  /** 本行是**已存在**的围堵行动（重复发起隔离时的幂等命中，不是新建） */
+  replayed: boolean;
+  /** 本行整体失败（行动登记或库存请求抛错），需要人工处理 */
+  failed: boolean;
 }
 
 export interface CaseQuarantineResult {
@@ -56,6 +67,8 @@ export interface CaseQuarantineResult {
   lines: CaseQuarantineLine[];
   executed: number;
   pending: number;
+  /** 本次抛错、需要人工跟进的行数（不再整批中断，见下方注释） */
+  failed: number;
   /** 范围内一件现货都没有：不是失败，是「已经没有可隔离的库存」 */
   emptyScope: boolean;
 }
@@ -98,49 +111,90 @@ export async function quarantineCaseScope(
     .toISOString().slice(0, 10);
   const provider = resolveBatchQuarantineProvider();
 
+  /* ── 逐批次是**独立的原子单元**，不是一个大事务（2026-09-04 安全审计 S5）──
+     每个批次的写入（登记围堵行动、完成行动）各自在 createQualityAction /
+     transitionQualityAction 的事务内连同自己的审计一起落地。此前循环里任何一次抛错
+     （最常见：某个仓没有隔离库位 → 409）会直接把整个调用炸掉：
+     前面几个批次的行动已经提交、后面的一个都没建，**而汇总审计一条都没写**——
+     一次半成品隔离，事后没有任何记录说清「隔到哪一步了」。
+     现在单行失败只标记这一行并继续；汇总审计**无论如何都写**，把每一行的结局讲清楚。 */
   const lines: CaseQuarantineLine[] = [];
   for (const row of scope) {
     if (dCmp(row.onHandQty, "0") <= 0) continue;
     const qty = dQty(row.onHandQty);
-    // 围堵行动先落地：库存能不能马上隔，不影响「有人要负责隔」这件事被记下来
-    const action = await createQualityAction(user, v.caseId, {
-      kind: "containment",
-      title: `隔离 ${row.skuCode} 批次 ${row.batchNo}（${row.warehouseCode}）`,
-      description: `${reason}：在 ${row.warehouseName}（${row.warehouseCode}）冻结批次 ${row.batchNo} 现货 ${qty}。`
-        + "隔离由库存域的隔离作业执行，质量域只提出请求、不直接改库存。",
-      ownerId,
-      dueDate,
-      targetType: QUARANTINE_TARGET_TYPE,
-      targetRef: `batch#${row.batchId}@warehouse#${row.warehouseId}`,
-      quantity: qty,
-      idempotencyKey: randomUUID(),
-    }, db);
-
-    const outcome = await provider(user, {
-      warehouseId: row.warehouseId,
-      skuId: row.skuId,
-      batchId: row.batchId,
-      qty,
-      reason,
-      idempotencyKey: `quality-case:${v.caseId}:batch:${row.batchId}:wh:${row.warehouseId}`,
-    }, db);
-
-    if (outcome.ok) {
-      // 执行成功 → 行动完成（证据 = 库存侧作业主键；完成人与验证人分离的纪律由 service 保证）
-      await transitionQualityAction(user, action.id, {
-        operation: "complete",
-        evidenceRef: `${outcome.provider}#${outcome.movementId}`,
-        outcome: `已在 ${row.warehouseCode} 隔离 ${qty}`,
+    /* 幂等键由「案件 × 批次 × 仓库」推导，与下面库存请求用的键同一组实体（S5）。
+       此前这里传 randomUUID()：createQualityAction 的 advisory-lock 重放守卫仍在跑，
+       但每次都是一个新键，于是永远命中不了——重复点一次「隔离」就再造 N 条围堵行动，
+       每条都带责任人和截止日，直接喂给质量案件逾期看门狗。
+       键里**不含现货量与截止日**：它们会随库存和日期漂移，放进去等于让防重第二天失效。 */
+    const idempotencyKey = deterministicIdempotencyKey(
+      "quality-case-quarantine", v.caseId, row.batchId, row.warehouseId,
+    );
+    try {
+      const [existing] = await db
+        .select({ id: schema.qualityActions.id, status: schema.qualityActions.status })
+        .from(schema.qualityActions)
+        .where(eq(schema.qualityActions.idempotencyKey, idempotencyKey));
+      /* 已经登记过就直接复用：不重建、也不拿今天的现货量去跟当初的比对
+         （createQualityAction 的重放守卫比对整份载荷，库存一变就会 409
+         「幂等键已用于不同请求」——那对用户是个读不懂的错误，实际语义只是「已经登记过了」）。 */
+      const action = existing ?? await createQualityAction(user, v.caseId, {
+        kind: "containment",
+        title: `隔离 ${row.skuCode} 批次 ${row.batchNo}（${row.warehouseCode}）`,
+        description: `${reason}：在 ${row.warehouseName}（${row.warehouseCode}）冻结批次 ${row.batchNo} 现货 ${qty}。`
+          + "隔离由库存域的隔离作业执行，质量域只提出请求、不直接改库存。",
+        ownerId,
+        dueDate,
+        targetType: QUARANTINE_TARGET_TYPE,
+        targetRef: `batch#${row.batchId}@warehouse#${row.warehouseId}`,
+        quantity: qty,
+        idempotencyKey,
       }, db);
+
+      const outcome = await provider(user, {
+        warehouseId: row.warehouseId,
+        skuId: row.skuId,
+        batchId: row.batchId,
+        qty,
+        reason,
+        idempotencyKey: `quality-case:${v.caseId}:batch:${row.batchId}:wh:${row.warehouseId}`,
+      }, db);
+
+      /* 已经 completed 的行动不再走一次完成流转：状态机会 409「该行动已完成」，
+         把一次**幂等重放**变成一次报错。重放的正确结局是「什么都没变」。 */
+      const alreadyCompleted = existing?.status === "completed";
+      if (outcome.ok && !alreadyCompleted) {
+        // 执行成功 → 行动完成（证据 = 库存侧作业主键；完成人与验证人分离的纪律由 service 保证）
+        await transitionQualityAction(user, action.id, {
+          operation: "complete",
+          evidenceRef: `${outcome.provider}#${outcome.movementId}`,
+          outcome: `已在 ${row.warehouseCode} 隔离 ${qty}`,
+        }, db);
+      }
+      lines.push({
+        ...row,
+        actionId: action.id,
+        executed: outcome.ok,
+        movementId: outcome.movementId,
+        provider: outcome.provider,
+        reason: outcome.reason,
+        replayed: Boolean(existing),
+        failed: false,
+      });
+    } catch (error) {
+      /* 这一行没做成，但其余批次仍要继续——隔离是止血动作，
+         因为第三个仓没有隔离库位就把前两个仓也放着不隔，是更坏的结果。 */
+      lines.push({
+        ...row,
+        actionId: null,
+        executed: false,
+        movementId: null,
+        provider: DEFAULT_QUARANTINE_PROVIDER_ID,
+        reason: error instanceof Error ? error.message : String(error),
+        replayed: false,
+        failed: true,
+      });
     }
-    lines.push({
-      ...row,
-      actionId: action.id,
-      executed: outcome.ok,
-      movementId: outcome.movementId,
-      provider: outcome.provider,
-      reason: outcome.reason,
-    });
   }
 
   const result: CaseQuarantineResult = {
@@ -150,9 +204,13 @@ export async function quarantineCaseScope(
     lines,
     executed: lines.filter((l) => l.executed).length,
     pending: lines.filter((l) => !l.executed).length,
+    failed: lines.filter((l) => l.failed).length,
     emptyScope: lines.length === 0,
   };
 
+  /* 汇总审计：无论成功、部分失败还是全失败都必须落库。
+     它回答的是「谁在什么时候对哪个案件发起了隔离、结果如何」，
+     恰恰在部分失败时最需要——此前那正是它唯一不会被写的时候。 */
   await writeAudit(db, {
     userId: user.id,
     entity: "quality_case",
@@ -163,11 +221,12 @@ export async function quarantineCaseScope(
       batchIds,
       executed: result.executed,
       pending: result.pending,
+      failed: result.failed,
       emptyScope: result.emptyScope,
       lines: lines.map((l) => ({
         batchId: l.batchId, warehouseId: l.warehouseId, qty: l.onHandQty,
         actionId: l.actionId, executed: l.executed, movementId: l.movementId,
-        provider: l.provider, reason: l.reason,
+        provider: l.provider, reason: l.reason, replayed: l.replayed, failed: l.failed,
       })),
     },
   });

@@ -213,13 +213,30 @@ function assertScopeAllowedForDef(def: NumParamDef, scope: ParamScope): void {
   }
 }
 
+/**
+ * 写权限按**参数键**判，不按层级判（2026-09-04 安全审计 S3）。
+ *
+ * 此前这里只对 `scope === "category"` 查 `PMC_WRITABLE_PARAM_KEYS`，sku/brand/segment
+ * 三层则「是 pmc 就放行任意键」。于是同一个 pmc 账号对
+ * `PUT /api/admin/params {key:"price_tolerance_pct"}` 得 403，
+ * 对分域路由的同一个 key 得 201——2026-07-26 在 global 层堵过的**同一个提权形状**，
+ * 换一层就又开着。今天没有立即变成越权只是因为分域解析器目前只读两个键、两个都归 pmc；
+ * 而本模块的既定方向就是让更多键走分域解析，那一刻它会自己变成活口子。
+ *
+ * 纪律：每一层都用同一个键级权限表（`canWriteParam` 的口径），不给任何层留例外。
+ */
 function assertScopedWriter(user: SessionUser, def: NumParamDef): void {
   if (!user.roles.includes("admin") && !user.roles.includes("pmc")) {
     throw new ApiError(403, "仅管理员/计划员可维护分域参数");
   }
-  /* 品类参数（损耗率）直接进结算扣款金额——与全局层同样只允许管理员，不因为换了一层就放宽 */
-  if (def.scope === "category" && !user.roles.includes("admin") && !PMC_WRITABLE_PARAM_KEYS.includes(def.key)) {
-    throw new ApiError(403, `「${def.label}」影响结算金额，仅管理员可改`);
+  if (user.roles.includes("admin")) return;
+  if (!PMC_WRITABLE_PARAM_KEYS.includes(def.key)) {
+    throw new ApiError(
+      403,
+      def.scope === "category"
+        ? `「${def.label}」影响结算金额，仅管理员可改`
+        : `「${def.label}」是管理员专属参数，分域覆盖同样只有管理员可写（请走「运行参数」页申请调整）`,
+    );
   }
 }
 

@@ -46,6 +46,8 @@ const actionSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("execute_draft"),
     cycleId: z.number(),
+    /* 幂等键：双击此前会得到两张内容相同的 BH 草稿一起进审批链（S2） */
+    idempotencyKey: z.string(),
     skuIds: z.array(z.number()).optional(),
     includeSuppressed: z.boolean().optional(),
     remark: z.string().optional(),

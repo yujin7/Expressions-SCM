@@ -10,8 +10,8 @@
  *
  * 纪律：任何要数或列通知的地方**必须**用本模块的谓词，禁止再手写 where。
  */
-import { and, eq, inArray, isNull, or } from "drizzle-orm";
-import { notifications } from "@/db/schema";
+import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { notificationReads, notifications } from "@/db/schema";
 
 /** 出现在收件箱里的状态（failed 也要能看见，否则发送失败会静默消失） */
 export const NOTIFY_VISIBLE_STATUS = ["pending", "sent", "skipped", "failed"] as const;
@@ -37,4 +37,31 @@ export function notifyVisibleWhere(user: { id: number; roles: string[] }) {
   const audience = notifyAudienceWhere(user);
   const status = inArray(notifications.status, [...NOTIFY_VISIBLE_STATUS]);
   return audience ? and(status, audience) : status;
+}
+
+/**
+ * 「**我**读过这一行」（S6）——已读是逐收件人的，不是行上的一个列。
+ *
+ * 任何要判断已读/未读的地方都必须用这两个谓词：通知中心的列表筛选、
+ * 通知中心返回的 readAt、工作台「未读通知」徽标，三处此前有两套写法，
+ * 而行级 read_at 让「某个人读过」被当成「所有人都读过」。
+ */
+export function notifyReadByMe(userId: number): SQL {
+  return sql`exists (select 1 from ${notificationReads}
+    where ${notificationReads.notificationId} = ${notifications.id}
+      and ${notificationReads.userId} = ${userId})`;
+}
+
+function notifyUnreadByMe(userId: number): SQL {
+  return sql`not ${notifyReadByMe(userId)}`;
+}
+
+/** 未读且可见（徽标与列表的唯一权威口径） */
+export function notifyUnreadWhere(user: { id: number; roles: string[] }) {
+  return and(notifyUnreadByMe(user.id), notifyVisibleWhere(user));
+}
+
+/** 已读且可见（列表的「已读」筛选） */
+export function notifyReadWhere(user: { id: number; roles: string[] }) {
+  return and(notifyReadByMe(user.id), notifyVisibleWhere(user));
 }

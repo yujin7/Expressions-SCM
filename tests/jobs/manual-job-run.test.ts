@@ -24,7 +24,8 @@ vi.mock("@/server/core/dto", async (importOriginal) => {
 
 const { POST } = await import("@/app/api/admin/jobs/[name]/run/route");
 const { manualRunnableJobNames, runJobManually } = await import("@/server/modules/admin/job-run");
-const { INTERVAL_JOBS } = await import("@/jobs/interval-runner");
+const { INTERVAL_JOBS, runIntervalJobOnce } = await import("@/jobs/interval-runner");
+const { acquireJobLock, releaseJobLock } = await import("@/jobs/job-lock");
 
 /** 无外部依赖、在空库上必然成功的任务——手动触发的冒烟对象 */
 const HARMLESS_JOB = "license-alert";
@@ -97,8 +98,14 @@ describe("POST /api/admin/jobs/[name]/run", () => {
     expect(outcomes.filter((o) => o.status === "fulfilled")).toHaveLength(1);
     const rejected = outcomes.find((o) => o.status === "rejected") as PromiseRejectedResult;
     expect(rejected.reason).toMatchObject({ status: 409 });
-    // 锁在结束后释放：下一次仍可触发
-    await expect(runJobManually(admin, HARMLESS_JOB, db)).resolves.toMatchObject({ ok: true });
+    // 冷却期内不能连点（此前无冷却，端点可被循环调用）；冷却过后仍可触发
+    await expect(runJobManually(admin, HARMLESS_JOB, db)).rejects.toThrow(/冷却中/);
+    process.env.MANUAL_JOB_COOLDOWN_MS = "0";
+    try {
+      await expect(runJobManually(admin, HARMLESS_JOB, db)).resolves.toMatchObject({ ok: true });
+    } finally {
+      delete process.env.MANUAL_JOB_COOLDOWN_MS;
+    }
   });
 
   it("任务失败/跳过不抛 500，而是返回 ok:false 并写明原因", async () => {
@@ -109,6 +116,68 @@ describe("POST /api/admin/jobs/[name]/run", () => {
     expect(res.summary).toBeNull();
     const audits = await db.select().from(auditLogs).where(eq(auditLogs.entity, "job_run"));
     expect(audits[0].after).toMatchObject({ ok: false });
+  });
+});
+
+/**
+ * S4（2026-09-04 安全审计）：互斥必须**跨调度器**。
+ *
+ * 此前手动触发用 `admin/job-run.ts` 的一个模块级 Set，PGlite 回退调度器用它闭包里的另一个 Set，
+ * 生产是 pg-boss 的 `boss.work(...)`——三者互不知道对方存在。于是计划中的
+ * `sync-jiandaoyun-forms`（一轮约 12 分钟、约 850 次三方分页请求）跑到一半时点「立即运行」，
+ * 同一个同步真的会跑两遍：外部配额被打光，两条 checkpoint 互相覆盖。
+ * 唯一互斥点现在是 `job_locks` 表，胜者由数据库的一条原子语句裁决。
+ */
+describe("S4 任务互斥跨调度器（job_locks）", () => {
+  const HARMLESS = INTERVAL_JOBS.find((j) => j.name === HARMLESS_JOB)!;
+
+  it("调度器路径正在跑时，手动「立即运行」被 409 挡住（此前两个 Set 互不可见）", async () => {
+    const lock = await acquireJobLock(db, HARMLESS_JOB, {});
+    expect(lock.acquired, "先由「调度器」拿到锁").toBe(true);
+    try {
+      await expect(runJobManually(admin, HARMLESS_JOB, db)).rejects.toMatchObject({ status: 409 });
+      await expect(runJobManually(admin, HARMLESS_JOB, db)).rejects.toThrow(/正在运行中/);
+      expect(await db.select().from(jobRuns), "被互斥挡下的触发不是一次运行，不得写 job_runs").toHaveLength(0);
+    } finally {
+      if (lock.acquired) await releaseJobLock(db, lock);
+    }
+  });
+
+  it("反向也成立：手动持锁时，调度器路径不执行任务且不记 job_runs", async () => {
+    const lock = await acquireJobLock(db, HARMLESS_JOB, { holder: "manual:test" });
+    expect(lock.acquired).toBe(true);
+    try {
+      const r = await runIntervalJobOnce(HARMLESS, db);
+      expect(r.lock, "调度器得知道自己没抢到").toBe("running");
+      expect(r.recorded).toBe(false);
+      expect(await db.select().from(jobRuns)).toHaveLength(0);
+    } finally {
+      if (lock.acquired) await releaseJobLock(db, lock);
+    }
+    // 释放后调度器照常跑
+    const after = await runIntervalJobOnce(HARMLESS, db);
+    expect(after.lock).toBe("acquired");
+    expect(after.recorded).toBe(true);
+  });
+
+  it("审计在释放锁之前写：拿到锁的人一定留下了「谁按的按钮」", async () => {
+    await runJobManually(admin, HARMLESS_JOB, db);
+    const audits = await db.select().from(auditLogs).where(eq(auditLogs.entity, "job_run"));
+    expect(audits).toHaveLength(1);
+    // 审计已落库，锁也已释放（下一次抢锁只可能被冷却期挡住，不会被「运行中」挡住）
+    const retry = await acquireJobLock(db, HARMLESS_JOB, { cooldownMs: 0 });
+    expect(retry.acquired).toBe(true);
+    if (retry.acquired) await releaseJobLock(db, retry);
+  });
+
+  it("代码里不得再留下自称互斥的进程内 Set（注释说的必须是实情）", async () => {
+    const { readFileSync } = await import("node:fs");
+    const path = await import("node:path");
+    const root = path.resolve(__dirname, "../..");
+    const src = readFileSync(path.join(root, "src/server/modules/admin/job-run.ts"), "utf8");
+    expect(src, "手动触发不得再用模块级 Set 当锁").not.toMatch(/new Set<string>\(\)/);
+    expect(src).toContain("acquireJobLock");
+    expect(src, "冷却期是这次修复的一部分：没有它端点可以被循环调用").toContain("cooldownMs");
   });
 });
 

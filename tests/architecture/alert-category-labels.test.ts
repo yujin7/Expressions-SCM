@@ -118,4 +118,38 @@ describe("护栏：告警类别有中文标签", () => {
         + `告警是给人看的，认不出标签就等于降低了它被处理的概率。`,
     ).toEqual([]);
   });
+
+  /**
+   * 第三个缺口（2026-09-04 安全审计）：**推送标题**用的是另一张表。
+   *
+   * W2 审计 5 新增了 supplier_license / promise_breach / otif_collapse / quality_case_overdue
+   * 四类，`/alerts` 页的 CAT 映射当时补了，`jobs/system-alert-notify` 的 CATEGORY_LABEL 漏了——
+   * 于是同一条告警在页面上叫「交期承诺违约」，推到站内/飞书的标题却是「【promise_breach】…」。
+   * 中文界面里的英文 slug 会被当成系统噪音直接略过。两张表都得跟着写入面走。
+   */
+  it("每个 category 也都在通知标题表 CATEGORY_LABEL 里，且与告警页文案一致", () => {
+    const job = readFileSync(path.join(ROOT, "src/jobs/system-alert-notify.ts"), "utf8");
+    const labelBlock = job.slice(job.indexOf("const CATEGORY_LABEL"), job.indexOf("const CATEGORY_PRIMARY"));
+    const { categories } = scanAlertWriters();
+    expect(categories.length).toBeGreaterThan(0);
+
+    const parse = (block: string) =>
+      new Map([...block.matchAll(/^\s{2}([a-z_]+): "([^"]+)",/gm)].map((m) => [m[1], m[2]]));
+    const notifyLabels = parse(labelBlock);
+    const client = readFileSync(CLIENT, "utf8");
+    const pageLabels = parse(client.slice(client.indexOf("const CAT"), client.indexOf("const SEV")));
+
+    const missing = categories.filter((c) => !notifyLabels.has(c));
+    expect(
+      missing,
+      `以下类别的推送标题会渲染成【英文 slug】：\n${missing.join("\n")}\n`
+        + `告警页有中文名而通知没有，等于只修了两个出口里的一个。`,
+    ).toEqual([]);
+
+    const drifted = categories.filter((c) => pageLabels.has(c) && pageLabels.get(c) !== notifyLabels.get(c));
+    expect(
+      drifted.map((c) => `${c}: 页面「${pageLabels.get(c)}」 vs 通知「${notifyLabels.get(c)}」`),
+      "同一类告警在页面和通知里必须是同一个中文名，否则用户以为是两件事",
+    ).toEqual([]);
+  });
 });

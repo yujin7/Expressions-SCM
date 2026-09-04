@@ -266,3 +266,49 @@ describe("setScopedParam：global 层的权限边界", () => {
     }
   });
 });
+
+/**
+ * S3（2026-09-04 安全审计）：**每一层**都按参数键判权限，不给任何层留例外。
+ *
+ * `assertScopedWriter` 此前只对 `scope === "category"` 查 `PMC_WRITABLE_PARAM_KEYS`；
+ * sku/brand/segment 三层是「是 pmc 就放行任意键」。于是同一个 pmc 账号对
+ * `PUT /api/admin/params {key:"price_tolerance_pct"}` 得 403、对分域路由的同一个 key 得 201——
+ * 2026-07-26 在 global 层堵掉的那个提权形状，换一层又开着。
+ *
+ * 今天它还没有立即变成越权，只因为分域解析器目前只读两个键、两个都归 pmc；
+ * 而「让更多键走分域解析」正是本模块的既定方向，那一刻它自己就变成活口子。
+ * 这三条用例是那件事的守门人。
+ */
+describe("S3 分域写权限：按键判，不按层判", () => {
+  const ADMIN_ONLY_KEY = "price_tolerance_pct";
+
+  it("pmc 在 sku/brand/segment 三层同样写不了 admin-only 的键（此前三层全部放行）", async () => {
+    const { db } = await createTestDb();
+    for (const scope of [
+      { kind: "sku", skuId: 401 },
+      { kind: "brand", brandId: 12 },
+      { kind: "segment", cell: "AX" },
+    ] as const) {
+      await expect(
+        setScopedParam(pmc, { key: ADMIN_ONLY_KEY, scope, value: 3 }, db),
+        `${scope.kind} 层不得成为 admin-only 参数的旁路`,
+      ).rejects.toMatchObject({ status: 403 });
+    }
+    expect(await db.select().from(sysParams).where(eq(sysParams.key, ADMIN_ONLY_KEY))).toHaveLength(0);
+  });
+
+  it("清除覆盖走同一道闸（能删掉覆盖就等于能改口径）", async () => {
+    const { db } = await createTestDb();
+    await setScopedParam(admin, { key: ADMIN_ONLY_KEY, scope: { kind: "sku", skuId: 401 }, value: 3 }, db);
+    await expect(
+      clearScopedParam(pmc, { key: ADMIN_ONLY_KEY, scope: { kind: "sku", skuId: 401 } }, db),
+    ).rejects.toMatchObject({ status: 403 });
+    await clearScopedParam(admin, { key: ADMIN_ONLY_KEY, scope: { kind: "sku", skuId: 401 } }, db);
+  });
+
+  it("pmc 归属的键在三层照常可写（收紧的是权限口径，不是把分域参数关掉）", async () => {
+    const { db } = await createTestDb();
+    await setScopedParam(pmc, { key: KEY, scope: { kind: "brand", brandId: 12 }, value: 33 }, db);
+    expect((await resolveNumParam(KEY, FB, { brandId: 12 }, db)).value).toBe(33);
+  });
+});

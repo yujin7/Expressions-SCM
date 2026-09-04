@@ -39,12 +39,12 @@ const controls: Control[] = [
 const expectedCounts: Record<Category, number> = {
   API_ROUTE: 280,
   AUTH_PAGE: 97,
-  MIGRATION: 57,
+  MIGRATION: 58,
   ARCH_GATE: 71,
   REDTEAM_GATE: 12,
   RELEASE_GATE: 15,
   PROJECT_SKILL: 7,
-  LINT_EXCEPTION: 96,
+  LINT_EXCEPTION: 95,
   DATA_SOURCE: 20,
   CRITICAL_INVARIANT: 34,
 };

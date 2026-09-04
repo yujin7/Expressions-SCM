@@ -8,10 +8,16 @@
  *
  * 每次运行落 job_runs {job, ok, message≤500, startedAt, finishedAt}；首次 tick 延迟
  * 60s（避免拖慢冷启动）；NODE_ENV=test 直接 no-op。
+ *
+ * 并发互斥（2026-09-04 安全审计 S4）：唯一互斥点是 `job_locks` 表，抢锁在
+ * `runIntervalJobOnce` 里——三条触发路径（pg-boss `boss.work`、下面这个回退定时器、
+ * `/admin/health` 的「立即运行」）都经过它，所以它们**彼此**互斥，而不是各自跟自己互斥。
+ * 下面闭包里的 `busy` Set 只是一层本地快速短路（省掉一次数据库往返），不是互斥依据。
  */
 import { getDbAsync } from "@/db";
 import { jobRuns } from "@/db/schema";
 import { log } from "@/server/core/logger";
+import { acquireJobLock, releaseJobLock, type JobLockDenial, type JobLockHandle } from "./job-lock";
 import { runLicenseAlert } from "./license-alert";
 import { runProcurementQualityAlerts } from "./procurement-quality-alerts";
 import { runReconcileJst, shanghaiToday } from "./reconcile-jst";
@@ -76,7 +82,39 @@ export interface IntervalJob {
 type IntervalJobRunOptions = {
   /** 运维恢复必须执行真实工作；缺配置/关闭开关形成的 skipped 不能冒充恢复。 */
   rejectSkipped?: boolean;
+  /**
+   * 调用方已经持有 `job_locks` 里这个任务的锁（手动触发路径：它要在**释放锁之前**写审计）。
+   * 缺省 false = 本函数自己抢锁并释放。
+   */
+  lockHeld?: boolean;
+  /** 距上一轮结束不足此值即拒绝（只有手动触发用；调度器路径不设冷却） */
+  cooldownMs?: number;
 };
+
+export interface IntervalJobRunResult {
+  ok: boolean;
+  message: string;
+  summary?: unknown;
+  recorded: boolean;
+  /** 互斥结果：acquired=真的跑了；running/cooldown=没跑（也没写 job_runs） */
+  lock: "acquired" | JobLockDenial;
+  /** lock !== "acquired" 时还要等多久 */
+  retryAfterMs: number;
+}
+
+/** 「这轮没跑，因为别处正在跑或还在冷却」——与「跑了但失败了」是两件事，不能混成一个 Error */
+export class JobBusyError extends Error {
+  readonly job: string;
+  readonly reason: JobLockDenial;
+  readonly retryAfterMs: number;
+  constructor(job: string, reason: JobLockDenial, retryAfterMs: number, message: string) {
+    super(message);
+    this.name = "JobBusyError";
+    this.job = job;
+    this.reason = reason;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
 
 function skippedSummary(summary: unknown): { skipped: boolean; reason: string } {
   if (!summary || typeof summary !== "object") {
@@ -188,13 +226,47 @@ export const INTERVAL_JOBS: IntervalJob[] = [
   { name: "notify-dispatch", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => dispatchNotifications(db) },
 ];
 
-/** 跑一次并落 job_runs（job_runs 写失败仅打日志——监控不能反噬任务本身） */
+/**
+ * 跑一次并落 job_runs（job_runs 写失败仅打日志——监控不能反噬任务本身）。
+ *
+ * **互斥在这里，不在调用方**（2026-09-04 安全审计 S4）：本函数是三条路径的公共下游
+ * （pg-boss 的 `boss.work`、PGlite 回退定时器、`/admin/health` 的「立即运行」），
+ * 把 `job_locks` 的抢锁放在这里，三条路径才真的互斥。此前三处各持一个进程内 `Set`，
+ * 谁也拦不住谁——计划中的同步跑到一半时手动再点一次，同一个同步会真的跑两遍。
+ *
+ * 没抢到锁时**不执行、也不写 job_runs**：一次被拦下的重复触发不是一次任务运行，
+ * 记进去只会污染失败看门狗的连续失败判定。
+ */
 export async function runIntervalJobOnce(
   job: IntervalJob,
   dbArg?: AnyDb,
   options?: IntervalJobRunOptions,
-): Promise<{ ok: boolean; message: string; summary?: unknown; recorded: boolean }> {
+): Promise<IntervalJobRunResult> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
+  let lock: JobLockHandle | null = null;
+  if (!options?.lockHeld) {
+    const attempt = await acquireJobLock(db, job.name, { cooldownMs: options?.cooldownMs });
+    if (!attempt.acquired) {
+      return {
+        ok: false,
+        message: attempt.reason === "running"
+          ? `任务 ${job.name} 正在运行中（另一处调度或手动触发已持有锁）`
+          : `任务 ${job.name} 刚刚跑过，冷却中`,
+        recorded: false,
+        lock: attempt.reason,
+        retryAfterMs: attempt.retryAfterMs,
+      };
+    }
+    lock = attempt;
+  }
+  try {
+    return await runJobBody(job, db, options);
+  } finally {
+    if (lock) await releaseJobLock(db, lock);
+  }
+}
+
+async function runJobBody(job: IntervalJob, db: AnyDb, options?: IntervalJobRunOptions): Promise<IntervalJobRunResult> {
   const startedAt = new Date();
   let ok = true;
   let message = "";
@@ -224,7 +296,7 @@ export async function runIntervalJobOnce(
   } catch (e) {
     log({ level: "warn", msg: "job_runs 落库失败", job: job.name, error: String(e) });
   }
-  return { ok, message, summary, recorded };
+  return { ok, message, summary, recorded, lock: "acquired", retryAfterMs: 0 };
 }
 
 /**
@@ -233,12 +305,21 @@ export async function runIntervalJobOnce(
  * 直接调用任务函数虽能完成恢复，却不会写 job_runs；失败看门狗因此仍会把任务判作
  * 连续失败。这里复用同一任务目录和同一留痕路径，并把失败重新抛给 CLI，确保退出码非 0。
  */
-export async function runNamedIntervalJobOnce(name: string, dbArg?: AnyDb): Promise<unknown> {
+export async function runNamedIntervalJobOnce(
+  name: string,
+  dbArg?: AnyDb,
+  options?: Pick<IntervalJobRunOptions, "lockHeld" | "cooldownMs">,
+): Promise<unknown> {
   const job = INTERVAL_JOBS.find((candidate) => candidate.name === name);
   if (!job) {
     throw new Error(`未知已登记任务: ${name}`);
   }
-  const result = await runIntervalJobOnce(job, dbArg, { rejectSkipped: true });
+  const result = await runIntervalJobOnce(job, dbArg, { ...options, rejectSkipped: true });
+  if (result.lock !== "acquired") {
+    /* 「没抢到锁」不是一次失败的运行，也不是一次成功的恢复——它是「这轮没跑」。
+       必须与执行失败区分开：CLI/手动路径据此给出 409 与等待时长，而不是把它记成任务故障。 */
+    throw new JobBusyError(name, result.lock, result.retryAfterMs, result.message);
+  }
   if (!result.recorded) {
     throw new Error(`任务 ${name} 已执行，但 job_runs 留痕失败，不能判定恢复`);
   }
@@ -258,6 +339,8 @@ export function ensureIntervalJobsStarted(): void {
   if (g[RUNNER_KEY]) return;
 
   const timers: ReturnType<typeof setInterval>[] = [];
+  /* 本地快速短路：省掉「上一轮还在跑」时的一次数据库往返。
+     真正的互斥在 runIntervalJobOnce 的 job_locks 上——这个 Set 拦不住别的进程/调度器。 */
   const busy = new Set<string>();
   /** atHours 任务上次实际执行的「上海小时」键，防同一小时内重复跑 */
   const lastRunHour = new Map<string, string>();

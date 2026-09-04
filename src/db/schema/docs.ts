@@ -263,14 +263,25 @@ export const qcRecords = pgTable("qc_records", {
    * W2 审计 3：检验不合格的**去向留痕**。此前 `qc_lines.fail_handling` 存了 rework/scrap
    * 却什么都不会发生——没有退货单、没有质量案件、没有扣款依据，不合格量就地蒸发。
    * 这两列是「这次检验最终怎么处理的」的正向链接（反向链接在 quality_cases.qc_record_id）。
-   * quality_case_id 的 FK 由应用层保证（quality_cases 在 schema/quality.ts，
-   * 在此加 drizzle 引用会与 quality.ts → docs.ts 形成 import 环）。
+   *
+   * quality_case_id 的**外键**写在迁移 SQL 里、不写在 drizzle schema：
+   * quality_cases 在 schema/quality.ts，而 quality.ts 已经 import 了本文件的 qcRecords，
+   * 在此加 drizzle 引用会形成 import 环。唯一键则可以在这里声明。
+   *
+   * 两把唯一键是 `qc-outcome.ts` 里那道读-改-写守卫的数据库背书（2026-09-04 安全审计 S5）：
+   * 一次检验只能挂一个质量案件、一张退货单。此前只有应用层「先查后写」，
+   * 并发两次「登记不合格后果」会开出两个 QI 案件（两个单号、记分卡双计）与两张 CT 草稿，
+   * 而只有一个被链回来——另一个成了没有出处的孤儿单。
+   * NULL 在 Postgres 唯一键里互不相等，所以未挂接的检验记录可以有任意多条。
    */
   qualityCaseId: integer("quality_case_id"),
   returnCtId: integer("return_ct_id").references((): AnyPgColumn => ctDocs.id),
   createdBy: integer("created_by").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  unique("uq_qc_record_quality_case").on(t.qualityCaseId),
+  unique("uq_qc_record_return_ct").on(t.returnCtId),
+]);
 export const qcLines = pgTable("qc_lines", {
   id: serial("id").primaryKey(),
   qcId: integer("qc_id").notNull().references(() => qcRecords.id),

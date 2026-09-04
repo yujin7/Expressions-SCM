@@ -24,7 +24,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import CaliberNote from "@/components/CaliberNote";
 import { fetchJson, postJson } from "@/components/fetchJson";
@@ -268,6 +268,8 @@ export default function SopClient() {
   const [execution, setExecution] = useState<FrozenExecution | null>(null);
   const [execLoading, setExecLoading] = useState(false);
   const [pickedSkus, setPickedSkus] = useState<number[]>([]);
+  /** 本次「按冻结计划开单」的幂等键（成功后清空；失败重试沿用同一个键） */
+  const executeKey = useRef<string | null>(null);
   const [includeSuppressed, setIncludeSuppressed] = useState(false);
 
   const loadExecution = useCallback(async (cycleId: number) => {
@@ -292,13 +294,18 @@ export default function SopClient() {
     if (!cycle) return;
     setSaving(true);
     try {
+      /* 幂等键在本次点击内固定：重试/双击落到同一个键 → 服务端返回同一张草稿，
+         不会有两张内容相同的 BH 一起进审批链。成功后清空，下一次开单是新的一笔。 */
+      executeKey.current ??= crypto.randomUUID();
       const res = await postJson<{ draft: { docNo: string; lineCount: number } }>("/api/replenish/sop", {
         action: "execute_draft",
         cycleId: cycle.id,
+        idempotencyKey: executeKey.current,
         skuIds: pickedSkus.length ? pickedSkus : undefined,
         includeSuppressed,
       });
       message.success(`已按冻结计划生成 BH 草稿 ${res.draft.docNo}（${res.draft.lineCount} 项），请走正常审批`);
+      executeKey.current = null;
       setPickedSkus([]);
       await load();
       await loadExecution(cycle.id);

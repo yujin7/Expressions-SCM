@@ -51,6 +51,8 @@ export const transitionSopCycleSchema = z.object({
  */
 export const executeFrozenPlanSchema = z.object({
   cycleId: z.number().int().positive(),
+  /** 幂等键：双击「按冻结计划开单」只应产生一张草稿（与 createSopCycleSchema 同型） */
+  idempotencyKey: z.string().uuid(),
   /** 冻结版本里的行（planning_version_lines.sku_id）；缺省 = 全部有建议量的行 */
   skuIds: z.array(z.number().int().positive()).max(200, "一次最多 200 项").optional(),
   /** 是否连被抑制的行一起开（默认否——抑制的量要人工核实过才放行） */
@@ -174,6 +176,48 @@ const SOP_ROLE_LABELS: Record<SopRole, string> = { ops: "运营", pmc: "生产�
 /** 尚未在本轮以当前摘要签「同意」的角色——待签名单与冻结门是同一个判定，不许各判一次。 */
 function pendingRoles(latest: Partial<Record<SopRole, SopDecision>>, planDigest: string): SopRole[] {
   return SOP_ROLES.filter((role) => latest[role]?.decision !== "agree" || latest[role]?.planDigest !== planDigest);
+}
+
+/**
+ * 三方共识必须是**三个人**（2026-09-04 安全审计 S1）。
+ *
+ * 此前只判「每个角色最新决定是 agree 且摘要 = 当前 planDigest」，全程没有任何
+ * 「签认人互不相同」的要求；而角色是叠加的，一个同时挂 pmc/ops/finance 的账号
+ * （小组织的常见配置）能自己签满三个角色、自己冻结当月——冻结之后全系统实时补货建议
+ * 转只读，所有下单都改走他冻结的那个版本。`decideSopCycle` 早就拒绝「管理员代签」，
+ * 但代签与「一人身兼三角」是同一件事的两面，只堵了一面。
+ *
+ * 判定放在两处（签认时 + 冻结时），因为它们回答的问题不同：
+ *  · 签认时拦住**制造**这种局面的那一步，并当场把话说清楚；
+ *  · 冻结时再查一次，历史数据（护栏上线前签下的）不会因为绕过写路径就通过冻结门。
+ *
+ * 返回本轮同一个人持有的重复「同意」——空数组 = 签认人互不相同。
+ */
+function duplicateSigners(
+  latest: Partial<Record<SopRole, SopDecision>>,
+  planDigest: string,
+): { userId: number; name: string | null; roles: SopRole[] }[] {
+  const byUser = new Map<number, { userId: number; name: string | null; roles: SopRole[] }>();
+  for (const role of SOP_ROLES) {
+    const hit = latest[role];
+    if (hit?.decision !== "agree" || hit.planDigest !== planDigest) continue;
+    const entry = byUser.get(hit.decidedBy)
+      ?? { userId: hit.decidedBy, name: hit.decidedByName, roles: [] };
+    entry.roles.push(role);
+    byUser.set(hit.decidedBy, entry);
+  }
+  return [...byUser.values()].filter((e) => e.roles.length > 1);
+}
+
+/** 三方共识是否达成：三个角色都以当前摘要签了「同意」，且**由三个不同的人**签。 */
+function consensusReached(latest: Partial<Record<SopRole, SopDecision>>, planDigest: string): boolean {
+  return pendingRoles(latest, planDigest).length === 0 && duplicateSigners(latest, planDigest).length === 0;
+}
+
+function describeDuplicateSigners(dups: { name: string | null; roles: SopRole[] }[]): string {
+  return dups
+    .map((d) => `${d.name ?? "该用户"} 同时以 ${d.roles.map((r) => `「${SOP_ROLE_LABELS[r]}」`).join("、")} 签认`)
+    .join("；");
 }
 
 function awaitingItems(cycle: { id: number; name: string; month: string; version: number }, roles: SopRole[]): NotifyItem[] {
@@ -319,8 +363,8 @@ export async function getSopWorkspace(user: SessionUser, dbArg?: AnyDb): Promise
       if (current) latest[role] = value;
       return value;
     });
-    const consensusReady = SOP_ROLES.every((role) =>
-      latest[role]?.decision === "agree" && latest[role]?.planDigest === row.planDigest);
+    /* 与冻结门同一个判定（含「三个人」要求）——界面不得把一个必然 409 的冻结按钮点亮 */
+    const consensusReady = consensusReached(latest, row.planDigest);
     cycles.push({
       ...row,
       status: row.status as SopStatus,
@@ -460,10 +504,45 @@ export async function decideSopCycle(
   }
   const db = await resolveDb(dbArg);
   let notify: NotifyItem[] = [];
-  await db.transaction(async (tx: AnyDb) => {
+  const decided = db.transaction(async (tx: AnyDb) => {
     const cycle = await lockCycle(value.cycleId, tx);
     if (cycle.status !== "consensus") throw new ApiError(409, "当前周期已退出共识阶段，不能再签认");
     if (cycle.version !== value.version) throw new ApiError(409, `共识轮次已变化：当前第 ${cycle.version} 轮`);
+
+    /* 本轮已落的决定（周期行已 FOR UPDATE 锁住，读到的就是最终态） */
+    const { rows: roundRows } = await currentDecisions(cycle.id, cycle.version, tx);
+
+    if (value.decision === "agree") {
+      /* S1 一人一签：同一轮里同一个人不得持有第二份「同意」。
+         角色是叠加的，`user.roles.includes(value.role)` 只保证「你确实有这个角色」，
+         不保证「签这三个角色的是三个人」——不加这道，一人身兼三角即可独自冻结当月。
+         同角色重复签也走这里（本轮没变，重签没有新信息）。 */
+      const mine = roundRows.find((r) => r.decision === "agree" && r.decidedBy === user.id);
+      if (mine) {
+        throw new ApiError(
+          409,
+          mine.role === value.role
+            ? `本轮您已以「${SOP_ROLE_LABELS[value.role]}」身份签认过，无需重复签认。`
+            : `本轮您已以「${SOP_ROLE_LABELS[mine.role as SopRole]}」身份签认过：`
+              + "三方共识必须由三个不同的人完成，一人身兼多角时只能签其中一个角色，"
+              + "其余角色请由实际负责的同事本人签认。",
+        );
+      }
+    } else {
+      /* S7 驳回一轮一次：驳回既不改状态也不推进轮次，此前可以无限次重复，
+         每次都插一条决定 + 一条审计 + 一条 severity=high 的新通知给发起人
+         （配了飞书就是一条飞书消息）——一个谁都能循环触发的通知放大器。
+         同一轮同一角色的第二次驳回没有新信息：意见已经记下了，改计划才推进轮次。 */
+      const already = roundRows.find((r) => r.decision === "reject" && r.role === value.role);
+      if (already) {
+        throw new ApiError(
+          409,
+          `本轮「${SOP_ROLE_LABELS[value.role]}」已驳回过（第 ${cycle.version} 轮），不重复记录。`
+          + "请由发起人更换源计划开启新一轮共识；对齐后本轮仍可直接改签「同意」。",
+        );
+      }
+    }
+
     const [decision] = await tx
       .insert(schema.sopDecisions)
       .values({
@@ -499,7 +578,10 @@ export async function decideSopCycle(
         title: `【S&OP 共识被驳回】${cycle.name}`,
         body: `${SOP_ROLE_LABELS[value.role]}（${user.name}）驳回了 ${cycle.month} 第 ${cycle.version} 轮共识：${note ?? "（无原因）"}。请更换源计划或与该角色对齐后重开一轮。`,
         severity: "high",
-        dedupeKey: `sop:${cycle.id}:v${cycle.version}:reject:${value.role}:${decision.id}`,
+        /* 去重键**不含 decision.id**：那是自增主键，每插一条就变一个新键，
+           等于「去重键保证每次都不去重」。一轮一个角色最多一条驳回通知，
+           上面的驳回幂等闸让它连第二次插入都到不了。 */
+        dedupeKey: `sop:${cycle.id}:v${cycle.version}:reject:${value.role}`,
         userId: cycle.createdBy,
       }];
     } else {
@@ -507,6 +589,22 @@ export async function decideSopCycle(
       notify = awaitingItems(meta, pendingRoles(latest, cycle.planDigest));
     }
   });
+  try {
+    await decided;
+  } catch (error) {
+    /* 数据库背书（uq_sop_agree_one_per_signer / uq_sop_reject_one_per_role_round）兜底命中：
+       应用层闸门本该先拦下，但并发下两笔同时通过读检查时唯一索引才是最终仲裁者。
+       用户看到的必须是中文的 409，而不是 23505 变成的 500。 */
+    if (databaseErrorCode(error) === "23505") {
+      throw new ApiError(
+        409,
+        value.decision === "agree"
+          ? "本轮您已签认过：三方共识必须由三个不同的人完成，一人身兼多角时只能签其中一个角色。"
+          : `本轮「${SOP_ROLE_LABELS[value.role]}」已驳回过，不重复记录；请由发起人更换源计划开启新一轮。`,
+      );
+    }
+    throw error;
+  }
   await notifySop(db, notify);
 }
 
@@ -535,9 +633,18 @@ export async function transitionSopCycle(
       const plan = await getVersion(cycle.planningVersionId, tx);
       if (plan.digest !== cycle.planDigest) throw new ApiError(409, "源计划摘要不一致，禁止冻结");
       const { latest } = await currentDecisions(cycle.id, cycle.version, tx);
-      const missing = SOP_ROLES.filter((role) =>
-        latest[role]?.decision !== "agree" || latest[role]?.planDigest !== cycle.planDigest);
+      const missing = pendingRoles(latest, cycle.planDigest);
       if (missing.length > 0) throw new ApiError(409, `尚未达成三方共识：${missing.join("、")}`);
+      /* S1：三个签名齐了还不够——必须来自三个不同的人。护栏上线前签下的历史数据
+         同样走这道门，不因为「当时能签」就放行冻结。 */
+      const dups = duplicateSigners(latest, cycle.planDigest);
+      if (dups.length > 0) {
+        throw new ApiError(
+          409,
+          `三方共识必须由三个不同的人签认：${describeDuplicateSigners(dups)}。`
+          + "请让实际持有该角色的另一位同事本人签认后再冻结（冻结会让当月实时建议转为只读，全公司下单改走此版本）。",
+        );
+      }
     }
     const lifecycle = value.target === "frozen"
       ? { status: "frozen", frozenBy: user.id, frozenAt: now }
@@ -666,24 +773,30 @@ export async function getFrozenPlanExecution(user: SessionUser, cycleId: number,
     .from(schema.planningVersionLines)
     .where(eq(schema.planningVersionLines.versionId, cycle.planningVersionId));
 
-  const draftRows: { after: unknown; createdAt: Date; by: string | null }[] = await db
-    .select({ after: schema.auditLogs.after, createdAt: schema.auditLogs.createdAt, by: schema.users.name })
-    .from(schema.auditLogs)
-    .leftJoin(schema.users, eq(schema.auditLogs.userId, schema.users.id))
-    .where(and(
-      eq(schema.auditLogs.entity, "sop_cycle"),
-      eq(schema.auditLogs.action, "execute_draft"),
-      eq(schema.auditLogs.entityId, cycle.id),
-    ))
-    .orderBy(desc(schema.auditLogs.id));
+  /* 已开草稿读**业务链接表**，不再从 audit_logs 反推（S2）。
+     此前 `drafted` 是解析 `audit_logs.after.skuIds` 算出来的，而那条审计写在
+     createBh 的事务之外：审计写失败 → 页面显示这些行「未开单」→ 同样的量被再开一张。
+     现在 sop_execution_drafts 与 BH 主单在同一事务里落地，读到的即是真账。 */
+  const draftRows: { docNo: string; bhId: number; skuIds: number[]; createdAt: Date; by: string | null }[] = await db
+    .select({
+      docNo: schema.sopExecutionDrafts.docNo,
+      bhId: schema.sopExecutionDrafts.bhId,
+      skuIds: schema.sopExecutionDrafts.skuIds,
+      createdAt: schema.sopExecutionDrafts.createdAt,
+      by: schema.users.name,
+    })
+    .from(schema.sopExecutionDrafts)
+    .leftJoin(schema.users, eq(schema.sopExecutionDrafts.createdBy, schema.users.id))
+    .where(eq(schema.sopExecutionDrafts.cycleId, cycle.id))
+    .orderBy(desc(schema.sopExecutionDrafts.id));
   const draftedSkus = new Set<number>();
   const drafts = draftRows.map((r) => {
-    const after = (r.after ?? {}) as { docNo?: string; bhId?: number; skuIds?: number[] };
-    for (const id of after.skuIds ?? []) draftedSkus.add(id);
+    const skuIds = r.skuIds ?? [];
+    for (const id of skuIds) draftedSkus.add(id);
     return {
-      docNo: after.docNo ?? "",
-      bhId: after.bhId ?? 0,
-      lineCount: (after.skuIds ?? []).length,
+      docNo: r.docNo,
+      bhId: r.bhId,
+      lineCount: skuIds.length,
       at: (r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt)).toISOString(),
       by: r.by,
     };
@@ -705,8 +818,16 @@ export async function getFrozenPlanExecution(user: SessionUser, cycleId: number,
  * 按冻结计划开单（W2-#4）：把冻结版本的行生成一张 BH 草稿。
  *
  * 与实时路径**同一个人工闸**：pmc 勾选 → createBh → 正常审批链；数量取冻结版本的行，
- * 绝不回算实时建议（那正是冻结要防的事）。审计落在 sop_cycle 上（action=execute_draft），
- * 因此「这张单出自哪个共识版本」可回溯。
+ * 绝不回算实时建议（那正是冻结要防的事）。
+ *
+ * 三处写路径纪律（2026-09-04 安全审计 S2 修复）：
+ *  1. **审计在 createBh 的事务内**（`hooks.inTx`）——与 npd/service.createNpdFirstOrder 同一处方。
+ *     此前 createBh 先提交自己的事务、writeAudit 再单独跑一次：BH 已建成而审计失败，
+ *     就留下一张没人知道从哪来的备货草稿（CLAUDE.md 明令禁止的形状）。
+ *  2. **链接落 `sop_execution_drafts`**，与 BH 同一事务；执行页的「已开单」由它回答。
+ *     从 audit_logs 反推业务状态本身就是缺陷：审计写失败＝页面认为没开过＝重复开单。
+ *  3. **幂等键**：双击「按冻结计划开单」此前会得到两张内容相同的 BH 草稿一起进审批链
+ *     （createSopCycle 早有幂等键，这里漏了）。重放直接返回第一次的单据。
  */
 export async function executeFrozenPlan(
   user: SessionUser,
@@ -716,6 +837,8 @@ export async function executeFrozenPlan(
   requireAnyRole(user, "pmc");
   const value = executeFrozenPlanSchema.parse(input);
   const db = await resolveDb(dbArg);
+  const replay = await findExecutionDraft(db, value.idempotencyKey);
+  if (replay) return replay;
   const [cycle] = await db.select().from(schema.sopCycles).where(eq(schema.sopCycles.id, value.cycleId));
   if (!cycle) throw new ApiError(404, "S&OP 周期不存在");
   if (cycle.status !== "frozen" && cycle.status !== "executing") {
@@ -747,29 +870,73 @@ export async function executeFrozenPlan(
 
   const { createBh } = await import("@/server/modules/outsource/bh");
   const delegate: SessionUser = user.roles.includes("ops") ? user : { ...user, roles: [...user.roles, "ops"] };
-  const doc = await createBh(
-    delegate,
-    {
-      remark: value.remark?.trim() || `按冻结 S&OP 计划开单（${cycle.name}／版本 #${plan.id}，人工确认）`,
-      lines: picked.map((l) => ({ skuId: l.skuId, qty: l.suggestedQty })),
-    },
-    db,
-  );
-  await writeAudit(db, {
-    userId: user.id,
-    entity: "sop_cycle",
-    entityId: cycle.id,
-    action: "execute_draft",
-    after: {
-      docNo: doc.docNo,
-      bhId: doc.id,
-      planningVersionId: plan.id,
-      planDigest: cycle.planDigest,
-      cycleVersion: cycle.version,
-      skuIds: picked.map((l) => l.skuId),
-      includeSuppressed: Boolean(value.includeSuppressed),
-      source: "sop_frozen_plan",
-    },
-  });
+  const skuIds = picked.map((l) => l.skuId);
+  let doc: { id: number; docNo: string };
+  try {
+    doc = await createBh(
+      delegate,
+      {
+        remark: value.remark?.trim() || `按冻结 S&OP 计划开单（${cycle.name}／版本 #${plan.id}，人工确认）`,
+        lines: picked.map((l) => ({ skuId: l.skuId, qty: l.suggestedQty })),
+      },
+      db,
+      {
+        /* 链接与审计都在 createBh 的事务内：任一写失败即整单回滚，
+           不会留下「有单没审计」或「有单没链接（于是会被重复开一次）」的中间态。 */
+        inTx: async (tx, created) => {
+          await tx.insert(schema.sopExecutionDrafts).values({
+            cycleId: cycle.id,
+            cycleVersion: cycle.version,
+            bhId: created.id,
+            docNo: created.docNo,
+            planningVersionId: plan.id,
+            planDigest: cycle.planDigest,
+            skuIds,
+            includeSuppressed: Boolean(value.includeSuppressed),
+            idempotencyKey: value.idempotencyKey,
+            createdBy: user.id,
+          });
+          await writeAudit(tx, {
+            userId: user.id,
+            entity: "sop_cycle",
+            entityId: cycle.id,
+            action: "execute_draft",
+            after: {
+              docNo: created.docNo,
+              bhId: created.id,
+              planningVersionId: plan.id,
+              planDigest: cycle.planDigest,
+              cycleVersion: cycle.version,
+              skuIds,
+              includeSuppressed: Boolean(value.includeSuppressed),
+              source: "sop_frozen_plan",
+            },
+          });
+        },
+      },
+    );
+  } catch (error) {
+    if (databaseErrorCode(error) === "23505") {
+      const replayed = await findExecutionDraft(db, value.idempotencyKey);
+      if (replayed) return replayed;
+    }
+    throw error;
+  }
   return { id: doc.id, docNo: doc.docNo, lineCount: picked.length };
+}
+
+/** 幂等重放：同一个幂等键只对应一张 BH 草稿（并发下唯一键是最终仲裁者） */
+async function findExecutionDraft(
+  db: AnyDb,
+  idempotencyKey: string,
+): Promise<{ id: number; docNo: string; lineCount: number } | null> {
+  const [row]: { bhId: number; docNo: string; skuIds: number[] }[] = await db
+    .select({
+      bhId: schema.sopExecutionDrafts.bhId,
+      docNo: schema.sopExecutionDrafts.docNo,
+      skuIds: schema.sopExecutionDrafts.skuIds,
+    })
+    .from(schema.sopExecutionDrafts)
+    .where(eq(schema.sopExecutionDrafts.idempotencyKey, idempotencyKey));
+  return row ? { id: row.bhId, docNo: row.docNo, lineCount: (row.skuIds ?? []).length } : null;
 }

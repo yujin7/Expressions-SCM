@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ApiError, errorResponse, guardRead, readJson } from "@/server/modules/master/common";
-import { guardFreshWrite } from "@/server/modules/outsource/common";
+import { guardFreshWrite, requireAnyRole } from "@/server/modules/outsource/common";
 import { clearScopedParam, listScopedOverrides, setScopedParam, type ParamScope } from "@/server/core/scoped-params";
 
 /**
@@ -15,10 +15,18 @@ import { clearScopedParam, listScopedOverrides, setScopedParam, type ParamScope 
  * 本路由补上写入口，让分层策略真的能落到参数上。
  */
 
-/** GET ?key=safety_days_fallback —— 列出该参数的全部作用域覆盖 */
+/**
+ * GET ?key=safety_days_fallback —— 列出该参数的全部作用域覆盖。
+ *
+ * 读权限与 `/api/admin/params` 的 GET **同一档**（pmc/purchasing/finance/admin，S3）：
+ * 此前只 `guardRead()`，任何登录用户（含仓管/运营）都能把某个参数在
+ * 每个 SKU / 品牌 / 分层上的覆盖值连同「谁在什么时候改的」一并枚举出来——
+ * 全局值要业务角色才看得到，分层值却对全员敞开，两条路对同一份数据两套口径。
+ */
 export async function GET(req: NextRequest) {
   try {
-    await guardRead();
+    const user = await guardRead();
+    requireAnyRole(user, "pmc", "purchasing", "finance");
     const key = req.nextUrl.searchParams.get("key");
     if (!key) throw new ApiError(400, "缺少 key 参数");
     return NextResponse.json({ rows: await listScopedOverrides(key) });

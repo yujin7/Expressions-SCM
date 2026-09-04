@@ -8,12 +8,12 @@
  * - 展示层聚合允许 Number()（非记账路径）；
  * - 时区 Asia/Shanghai（今日出入库的日界）。
  */
-import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import { getNumParam } from "@/server/core/params";
 import { getReplenishSuggestions } from "@/server/modules/replenish/service";
 import type { SessionUser } from "@/server/core/dto";
 import { getInbox } from "@/server/modules/inbox/service";
-import { notifyVisibleWhere } from "@/server/core/notify-audience";
+import { notifyUnreadWhere } from "@/server/core/notify-audience";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { getRiskWorklist } from "@/server/modules/report/risk";
@@ -560,11 +560,12 @@ export async function getWorkbenchFocus(
          七个角色一律显示 2，而 /api/inbox 实际为 admin=4 / ops01=0 / warehouse01=0。
          仓管点红色「待我审批 2」进去是空列表。
        - 未读通知：完全不带收件人条件，4 类角色恒显 8（实际可见 4），读完仍卡 4 且无法归零。
-     现改为复用两处唯一权威：getInbox（审批域 + SoD）与 notifyVisibleWhere（收件人）。 */
+     现改为复用两处唯一权威：getInbox（审批域 + SoD）与 notifyUnreadWhere（收件人×逐人已读）。 */
   const [pendingDocs, unreadNotify, openAlerts, openReview, myTodo] = await Promise.all([
     user ? getInbox(user, db).then((r) => r.total) : Promise.resolve(0),
     user
-      ? countWhere(db, schema.notifications, and(isNull(schema.notifications.readAt), notifyVisibleWhere(user)))
+      // 已读是逐收件人的（S6）：与 /api/notifications 调同一个 notifyUnreadWhere，不再各写一套
+      ? countWhere(db, schema.notifications, notifyUnreadWhere(user))
       : Promise.resolve(0),
     countWhere(db, schema.systemAlerts, eq(schema.systemAlerts.status, "open")),
     countWhere(db, schema.reviewItems, eq(schema.reviewItems.status, "open")),

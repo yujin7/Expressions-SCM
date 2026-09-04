@@ -210,6 +210,34 @@ export const jobRuns = pgTable("job_runs", {
 }, (t) => [index("ix_job_runs").on(t.job, t.finishedAt)]);
 
 /**
+ * 任务互斥锁（2026-09-04 安全审计 S4）——**跨调度器**的唯一互斥点。
+ *
+ * 事故形态：手动「立即运行」用的是 `admin/job-run.ts` 里的一个模块级 `Set`，
+ * PGlite 回退调度器用自己闭包里的另一个 `Set`，而生产由 pg-boss 的 `boss.work(...)`
+ * 驱动，两个 Set 一个都不碰。于是在计划中的 `sync-jiandaoyun-forms` 跑到一半时点
+ * 「立即运行」，同一个同步会真的跑两遍——正是代码注释声称已经防住的那件事
+ * （「并发跑两遍会把外部接口配额打光，也会让 checkpoint 互相覆盖」：单轮约 12 分钟、
+ * 约 850 次三方分页请求）。进程内的锁在多副本/多调度器下从来就不是锁。
+ *
+ * 语义：
+ *  · 一行一个任务名；`lease_until > now()` 即视为**正在运行**（租约到期自动可被抢占，
+ *    这样进程崩溃不会把任务永久锁死——没有释放动作的锁比没有锁更糟）。
+ *  · `last_finished_at` 供冷却期判定：手动触发不设冷却就能被循环点。
+ *  · 抢锁是一条 `INSERT … ON CONFLICT DO UPDATE … WHERE` 原子语句，
+ *    胜者由数据库裁决，不依赖任何进程内状态。
+ */
+export const jobLocks = pgTable("job_locks", {
+  job: text("job").primaryKey(),
+  /** 持有者标识（用于释放时校验，避免释放掉别人续上的锁） */
+  holder: text("holder").notNull(),
+  lockedAt: timestamp("locked_at", { withTimezone: true }).notNull().defaultNow(),
+  /** 租约到期时刻；<= now() 即可被抢占 */
+  leaseUntil: timestamp("lease_until", { withTimezone: true }).notNull(),
+  /** 上一轮结束时刻（冷却期基准；未结束过为 null） */
+  lastFinishedAt: timestamp("last_finished_at", { withTimezone: true }),
+}, (t) => [index("ix_job_locks_lease").on(t.leaseUntil)]);
+
+/**
  * 外部系统同步运行史。每次 API 拉取先建 running 行，成功/失败后仅补齐结果字段；
  * 供应链事实仍必须进入 import_jobs/staging_rows，不能由连接器直接写正式表。
  *
@@ -379,7 +407,16 @@ export const notifications = pgTable("notifications", {
   // func#12 收件人：userId=定向个人（null=广播）；targetRole=定向角色（null=全员）
   userId: integer("user_id"),
   targetRole: text("target_role"),
-  // 站内已读（null=未读）
+  /**
+   * 站内已读（null=未读）——**只对「唯一收件人」有意义**。
+   *
+   * 一行通知可以被多个人看见（广播 userId=null、角色定向 targetRole，admin 更是全见），
+   * 所以行级的 read_at 表达不了「谁读过」。2026-09-04 安全审计 S6 之后，
+   * 每个人的已读状态落在 `notification_reads`；本列**仅在 `user_id = 读的人**（即这一行
+   * 只有这一个收件人）时同步写一次，保留给 housekeeping 的保留期判定用——
+   * 那段逻辑正是按「userId 非空＝唯一收件人，read_at 语义准确」分档的。
+   * 任何「这个人读了没有」的判断都必须问 notification_reads，不许再读本列。
+   */
   readAt: timestamp("read_at", { withTimezone: true }),
   error: text("error"),
   dispatchStartedAt: timestamp("dispatch_started_at", { withTimezone: true }),
@@ -391,6 +428,33 @@ export const notifications = pgTable("notifications", {
   unique("uq_notify_dedupe").on(t.dedupeKey),
   index("ix_notify_status").on(t.status, t.createdAt),
   check("ck_notify_attempt_count", sql`${t.attemptCount} >= 0`),
+]);
+
+/**
+ * 站内通知的**逐收件人**已读状态（2026-09-04 安全审计 S6）。
+ *
+ * 事故形态：已读是 `notifications.read_at` 这一个列，而 `user_id` / `target_role` 都可空，
+ * 且 `notifyAudienceWhere` 对 admin 返回 undefined（＝不加任何条件）。于是
+ * 管理员点一次「全部已读」执行的是
+ * `UPDATE notifications SET read_at = now() WHERE read_at IS NULL`——
+ * **把所有人的未读队列一次清空**，包括定向给某个人、他还从没看到过的那些；
+ * 传单个 `{id}` 则可以把任意一个人的某条通知标成已读。非管理员也一样：
+ * 广播行是共享的，谁读了就对所有人变成已读。
+ *
+ * 为什么选「逐收件人已读表」而不是「把 UPDATE 收窄到 user_id = 自己」：
+ * 后者能堵住越权，却把广播与角色定向的通知变成**永远无法标已读**——
+ * 未读徽标从此归不了零，正是本仓反复吃过亏的「用户学会无视徽标」那条路
+ * （见 core/notify-audience 的事故说明）。已读天然是「人 × 通知」的关系，
+ * 就该有自己的表；顺带 housekeeping 里那段「广播行的 read_at 归属不明、
+ * 只能按年龄兜底」的将就也终于有了正解。
+ */
+export const notificationReads = pgTable("notification_reads", {
+  notificationId: integer("notification_id").notNull().references(() => notifications.id, { onDelete: "cascade" }),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  readAt: timestamp("read_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  primaryKey({ name: "pk_notification_reads", columns: [t.notificationId, t.userId] }),
+  index("ix_notification_reads_user").on(t.userId, t.notificationId),
 ]);
 
 /** struct#4/#15：系统告警（看门狗产出，与人工裁决 review_items 分家——生命周期不同）。

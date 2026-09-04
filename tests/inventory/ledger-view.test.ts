@@ -170,4 +170,32 @@ describe("W2-2 库存流水：批次 / 窗口累计余额 / 金额 / 来源链�
     expect(rows[0].amount).toBeNull();
     expect(rows[0].balanceAmount).toBeNull();
   });
+
+  /**
+   * 2026-09-04 安全审计：畸形的 from/to 此前会变成 `Invalid Date` 进查询，
+   * drizzle 序列化时抛 RangeError——「用户把日期填错了」于是变成一个 500 并进 error_logs。
+   * 本仓反复出现的缺陷类（同型修复见 core/scoped-params 的 assertScopeShape）。
+   */
+  it("畸形 from/to 是 400 不是 500；空串＝不设边界；起止倒置也明确报错", async () => {
+    const { db } = await createTestDb();
+    const { u, sku, wh } = await seed(db);
+    await openingDoc(db, {
+      docNo: "RK-DATE", userId: u.id, skuId: sku.id, warehouseId: wh.id, batchId: null,
+      qty: "10", occurredAt: new Date("2026-07-01T02:00:00.000Z"),
+    });
+
+    for (const bad of ["昨天", "2026-13-45", "not-a-date", "2026/99/99"]) {
+      await expect(listLedger({ page: 1, pageSize: 20, from: bad }, db), `from=${bad}`)
+        .rejects.toMatchObject({ status: 400 });
+      await expect(listLedger({ page: 1, pageSize: 20, to: bad }, db), `to=${bad}`)
+        .rejects.toMatchObject({ status: 400 });
+    }
+    await expect(
+      listLedger({ page: 1, pageSize: 20, from: "2026-08-01", to: "2026-07-01" }, db),
+    ).rejects.toMatchObject({ status: 400 });
+
+    // 清空筛选（空串）不是错误，就是「不设这一侧边界」
+    expect((await listLedger({ page: 1, pageSize: 20, from: "", to: "  " }, db)).total).toBe(1);
+    expect((await listLedger({ page: 1, pageSize: 20, from: "2026-06-01", to: "2026-08-01" }, db)).total).toBe(1);
+  });
 });

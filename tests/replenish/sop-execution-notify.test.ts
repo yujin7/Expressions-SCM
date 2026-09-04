@@ -111,7 +111,7 @@ describe("冻结计划的执行通道（W2-#4）", () => {
       expect(view.lines.map((l) => l.skuCode)).toEqual(["CP00001", "CP00002"]); // 按最晚下单日排序
       expect(view.drafts).toHaveLength(0);
 
-      const draft = await executeFrozenPlan(pmc, { cycleId: cycle.id }, db);
+      const draft = await executeFrozenPlan(pmc, { cycleId: cycle.id, idempotencyKey: crypto.randomUUID() }, db);
       expect(draft.lineCount, "被抑制的行默认不开——那部分要人工核实过才放行").toBe(1);
       expect(draft.docNo).toMatch(/^BH/);
 
@@ -131,9 +131,9 @@ describe("冻结计划的执行通道（W2-#4）", () => {
       expect(after.lines.find((l) => l.skuCode === "CP00001")!.drafted).toBe(true);
 
       // 显式放行被抑制的行
-      const held = await executeFrozenPlan(pmc, { cycleId: cycle.id, skuIds: [skus[1].id], includeSuppressed: true }, db);
+      const held = await executeFrozenPlan(pmc, { cycleId: cycle.id, idempotencyKey: crypto.randomUUID(), skuIds: [skus[1].id], includeSuppressed: true }, db);
       expect(held.lineCount).toBe(1);
-      await expect(executeFrozenPlan(pmc, { cycleId: cycle.id, skuIds: [skus[1].id] }, db))
+      await expect(executeFrozenPlan(pmc, { cycleId: cycle.id, idempotencyKey: crypto.randomUUID(), skuIds: [skus[1].id] }, db))
         .rejects.toMatchObject({ status: 400 });
     } finally {
       await client.close();
@@ -148,7 +148,7 @@ describe("冻结计划的执行通道（W2-#4）", () => {
         month: MONTH, name: "未冻结周期", planningVersionId: plan.id, idempotencyKey: crypto.randomUUID(),
       }, db);
       await expect(getFrozenPlanExecution(pmc, cycle.id, db)).rejects.toMatchObject({ status: 409 });
-      await expect(executeFrozenPlan(pmc, { cycleId: cycle.id }, db)).rejects.toMatchObject({ status: 409 });
+      await expect(executeFrozenPlan(pmc, { cycleId: cycle.id, idempotencyKey: crypto.randomUUID() }, db)).rejects.toMatchObject({ status: 409 });
     } finally {
       await client.close();
     }

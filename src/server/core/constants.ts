@@ -76,6 +76,16 @@ export const SENSITIVE_FIELDS = [
   "previousAmount", // 手工改写清单里被替代行的金额（DQ-6）
   "balanceAmount", // 库存流水窗口累计余额金额（W2-2；与 amount 同权限，缺它则金额从余额列漏出）
   "atRiskAmount", // 临期/过期风险金额（W2-5 效期清单与风险处置台；与 amount 同权限）
+  /* ── 安全审计（2026-09-04）：两张只读报表的金额键此前一个兜底都没有 ──
+     move-or-buy 的调拨线路费用与 price-compare 的比价价格都直接来自 price_lists /
+     transfer_fees，却既不在黑名单里、也没有各自的置空闸；price-compare 的模块头
+     甚至写着「已脱敏」——一句与代码相反的注释比没有注释更危险（已同步改正）。
+     spreadPct 必须一并收录：它是 (最高−最低)/最低，任一价格已知即可反推另一个。 */
+  "laneMedianUnitFee", // 调拨线路中位单价（move-or-buy 的「挪还是买」成本对比）
+  "laneEstCost", // 调拨估算成本 = 单位费用 × 建议量（同上）
+  "bestPrice", // 物料比价最低价（price-compare）
+  "worstPrice", // 物料比价最高价（同上）
+  "spreadPct", // 比价价差率（可与任一价格互推，随价格同权限）
   // 注：**不收录 `spend`**。它在 supplier-payment-term 读模型里不是金额标量，而是
   // `SupplierYearSpend[]` 容器（year / rank / rankOf + 金额），而名次按产品口径对全员可见
   // （见 /api/report/supplier-payment-term 的路由说明）。把键加进来会整个数组被删，

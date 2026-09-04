@@ -67,3 +67,63 @@ describe("S7 决策守门：`spend` 暂不入黑名单（容器里还装着全�
     expect(SENSITIVE_FIELDS).not.toContain("spend");
   });
 });
+
+/**
+ * 2026-09-04 安全审计（同型第二轮）：两张只读报表的金额键此前一个兜底都没有。
+ *
+ * · `move-or-buy` 的 `laneMedianUnitFee` / `laneEstCost`（「挪还是买」的成本对比）
+ *   只靠 service 里 `stripLaneMoney` 那一道手工闸；
+ * · `price-compare` 的 `bestPrice` / `worstPrice` / `spreadPct` 连手工闸都没有——
+ *   而该模块的文件头当时还写着「此处需接入 maskSensitive……并把 bestPrice / worstPrice
+ *   一并纳入遮蔽字段」，读起来像是已经处理好了。**一句与代码相反的注释比没有注释更危险**，
+ *   现已连同代码一起改正。
+ * `spreadPct` 必须一起收录：(最高−最低)/最低，任一价格已知即可反推另一个。
+ */
+describe("只读报表金额键兜底：move-or-buy 与 price-compare", () => {
+  it("五个键都在黑名单里（含可反推价格的 spreadPct）", () => {
+    for (const k of ["laneMedianUnitFee", "laneEstCost", "bestPrice", "worstPrice", "spreadPct"]) {
+      expect(SENSITIVE_FIELDS, k).toContain(k);
+    }
+  });
+
+  it("非价格角色拿不到这些键，价格角色原样保留", () => {
+    const payload = {
+      rows: [{
+        skuId: 1, code: "CP1", baseUom: "支",
+        quotes: [{ supplierId: 9, supplierName: "甲", price: "10.00", isBest: true }],
+        bestPrice: "10.00", worstPrice: "18.00", spreadPct: 80,
+        transfers: [{ qty: 30, laneMedianUnitFee: "1.2000", laneEstCost: "36.00", laneSamples: 9 }],
+      }],
+      summary: { skuCount: 1, avgSpreadPct: 80, maxSpreadPct: 80 },
+    };
+    for (const role of NON_PRICE) {
+      const text = JSON.stringify(maskSensitive(payload, [role]));
+      for (const k of ["laneMedianUnitFee", "laneEstCost", "bestPrice", "worstPrice", "spreadPct", '"price"']) {
+        expect(text, `${role}/${k}`).not.toContain(k);
+      }
+      // 非金额的同层字段照常保留（黑名单删的是键，不是整块）
+      expect(text).toContain("laneSamples");
+      expect(text).toContain("skuCount");
+    }
+    for (const role of PRICE) {
+      const text = JSON.stringify(maskSensitive(payload, [role]));
+      expect(text).toContain("18.00");
+      expect(text).toContain("1.2000");
+    }
+  });
+
+  it("price-compare 的模块头不得再声称「需要时才接入」——它现在确实脱敏了", async () => {
+    const { readFileSync } = await import("node:fs");
+    const path = await import("node:path");
+    const root = path.resolve(__dirname, "../..");
+    const header = readFileSync(path.join(root, "src/server/modules/report/price-compare.ts"), "utf8").slice(0, 3000);
+    expect(header, "注释必须描述现状，不是待办").toContain("SENSITIVE_FIELDS");
+    expect(header, "三个键必须在注释里点名，改了代码没改注释就是下一次事故")
+      .toMatch(/bestPrice[\s\S]{0,80}worstPrice[\s\S]{0,80}spreadPct/);
+    expect(header, "不得再把「更细的价格权限」说成未来的事——canSeePrices 早就存在")
+      .toContain("更细的价格权限**早就存在**");
+    // move-or-buy 的出口也真的过了唯一收口
+    const route = readFileSync(path.join(root, "src/app/api/replenish/move-or-buy/route.ts"), "utf8");
+    expect(route).toContain("maskSensitive(data, user.roles)");
+  });
+});
