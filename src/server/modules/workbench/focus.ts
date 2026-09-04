@@ -24,6 +24,12 @@ import { getOnHandBySku } from "@/server/core/stock-view";
 import { num } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
 import { getNextActions, type NextActionItem } from "@/server/modules/workbench/next-actions";
+import {
+  isSnoozed,
+  loadExceptionMemory,
+  recordExceptionsShown,
+  shanghaiDay,
+} from "@/server/modules/workbench/exception-dismissals";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -52,6 +58,11 @@ export interface ExceptionItem {
   impact: string;
   count: number;
   href: string;
+  /**
+   * W9：连续出现天数（含今天）。0 = 还没记过（本表刚建 / 首次出现当次尚未落账）。
+   * 用来把"这条已经挂了 40 天没人点"变成看得见的事实——慢性被忽略本身就是要处理的问题。
+   */
+  daysShown?: number;
 }
 
 export interface WorkbenchFocus {
@@ -255,20 +266,51 @@ const exceptionsMemo = new WeakMap<object, { at: number; value: Promise<Exceptio
  * 例外清单；`memoMs` 打开时同一 db 实例在该时长内复用上一次结果（驾驶舱多用户刷新不重复跑全量补货引擎）。
  * 缺省不记忆（测试与写后读一致性优先）。
  */
-export async function computeExceptions(db: AnyDb, opts?: { memoMs?: number }): Promise<ExceptionItem[]> {
+export async function computeExceptions(db: AnyDb, opts?: { memoMs?: number; recordShown?: boolean }): Promise<ExceptionItem[]> {
   const memoMs = opts?.memoMs ?? 0;
+  const recordShown = opts?.recordShown ?? true;
   if (memoMs > 0) {
     const hit = exceptionsMemo.get(db as object);
     if (hit && Date.now() - hit.at < memoMs) return hit.value;
-    const value = computeExceptionsUncached(db);
+    const value = computeExceptionsUncached(db, recordShown);
     exceptionsMemo.set(db as object, { at: Date.now(), value });
     value.catch(() => exceptionsMemo.delete(db as object));
     return value;
   }
-  return computeExceptionsUncached(db);
+  return computeExceptionsUncached(db, recordShown);
 }
 
-async function computeExceptionsUncached(db: AnyDb): Promise<ExceptionItem[]> {
+/**
+ * W9 打盹与出现天数：算完例外后统一过一遍记忆表——
+ * 打盹未到期的整条隐藏（连同它的计数，不留半条），其余标注连续出现天数并推进计数。
+ * 记忆表出问题只降级为"没有 daysShown"，绝不让首屏 500：控制塔的可用性优先于这份增益。
+ */
+async function applyExceptionMemory(db: AnyDb, items: ExceptionItem[], recordShown: boolean): Promise<ExceptionItem[]> {
+  const today = shanghaiDay();
+  try {
+    const memory = await loadExceptionMemory(db);
+    const visible = items.filter((it) => !isSnoozed(memory.get(it.key), today));
+    if (recordShown && visible.length) await recordExceptionsShown(db, visible.map((it) => it.key), today);
+    return visible.map((it) => {
+      const mem = memory.get(it.key);
+      const prior = Number(mem?.consecutiveDays ?? 0);
+      // 本轮已把 today 记进去了（或本来就是今天）：连续天数 = 已记到今天的值
+      const daysShown = !recordShown ? prior
+        : mem?.lastShownOn === today ? prior
+          : prior > 0 && mem?.lastShownOn === yesterdayOf(today) ? prior + 1
+            : 1;
+      return { ...it, daysShown };
+    });
+  } catch {
+    return items; // 记忆表不可用（迁移未跑等）时按无记忆展示，不隐藏也不标注
+  }
+}
+
+function yesterdayOf(day: string): string {
+  return new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+}
+
+async function computeExceptionsUncached(db: AnyDb, recordShown = true): Promise<ExceptionItem[]> {
   const today = todayShanghai();
   const out: ExceptionItem[] = [];
 
@@ -367,7 +409,8 @@ async function computeExceptionsUncached(db: AnyDb): Promise<ExceptionItem[]> {
     out.push({ key: "missing_lead", severity: "medium", title: "成品缺生产周期", impact: `${missingLead} 个成品无法推算下单日`, count: missingLead, href: "/report/data-health?missing=生产周期" });
   }
 
-  return out.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.count - a.count);
+  const sorted = out.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.count - a.count);
+  return applyExceptionMemory(db, sorted, recordShown);
 }
 
 /** 按当前用户角色计算聚焦区块；admin 全量可见；多角色叠加多区块 */

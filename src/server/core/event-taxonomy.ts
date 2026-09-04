@@ -110,6 +110,10 @@ const CATALOG: Record<string, CatalogEntry> = {
   review_overrule: { domain: "data", label: "复核驳回", verb: "reviewOverrule", isStateChange: false },
   review_reopen: { domain: "data", label: "复核重开", verb: "reviewReopen", isStateChange: false },
   feedback: { domain: "system", label: "用户反馈", verb: "feedback", isStateChange: false },
+
+  /* ── 工作台例外（W9：打盹只影响展示，不改任何业务事实，故 isStateChange=false） ── */
+  snooze: { domain: "system", label: "例外打盹", verb: "snooze", isStateChange: false },
+  snooze_clear: { domain: "system", label: "取消例外打盹", verb: "snoozeClear", isStateChange: false },
 };
 
 /** 只读目录（供 UI 列出全部已登记事件） */

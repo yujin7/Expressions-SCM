@@ -5,13 +5,16 @@
  * - 预警表：每 SKU 一个主预警；日销三口径并列不相加；阈值来源逐行标注；C 级默认折叠。
  *   筛选/分页在 URL（useListState，paramPrefix=cover）并由服务端执行（/api/report/inventory-alerts?q/tier/primary/onlyAlert/showC）。
  * - 爆单：已映射 SKU 与未映射平台 SKU 分列（paramPrefix=spike）；
- * - 两张表都接 system_alerts：「已知悉」写审计、显示知悉人/时间，展开行看规则来源 / 参数快照 / 触发原因。
+ * - 两张表都接 system_alerts：「已知悉」写审计、显示知悉人/时间，展开行看规则来源 / 参数快照 / 触发原因，
+ *   并可由责任角色（或 admin）带原因**关闭**告警（AlertCloseModal → POST /api/alerts/[id]/close，
+ *   服务端回查会话与角色再判一次）；关闭后刷新告警索引，行上的「已知悉」随之变回「未开告警」。
  */
 import { useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { App, Button, Col, Row, Select, Space, Statistic, Switch, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
+import AlertCloseModal from "@/components/AlertCloseModal";
 import AlertEvidence, { ackText, type AlertEvidenceFields } from "@/components/AlertEvidence";
 import CaliberNote from "@/components/CaliberNote";
 import { exportCsv } from "@/components/exportCsv";
@@ -30,7 +33,7 @@ const TIER_COLOR: Record<string, string> = { S: "red", A: "orange", B: "gold", C
 const KIND_LABEL: Record<string, string> = { out_of_stock: "断货", spike: "爆单", low_stock: "低于阈值", near_expiry: "临期", overstock: "超储" };
 
 /* ── system_alerts 索引：按去重键找到读模型行对应的告警（已知悉 / 证据） ── */
-interface AlertRef extends AlertEvidenceFields { id: number; dedupeKey: string | null; status: string }
+interface AlertRef extends AlertEvidenceFields { id: number; dedupeKey: string | null; status: string; ownerRole?: string | null }
 
 function useAlertIndex(category: string) {
   const { message } = App.useApp();
@@ -51,13 +54,40 @@ function useAlertIndex(category: string) {
     try { await fetchJson(`/api/alerts/${id}/ack`, { method: "POST", body: JSON.stringify({}) }); message.success("已知悉（留审计，事实闭环后自动关闭）"); await load(); }
     catch (e) { message.error((e as Error).message); }
   }, [load, message]);
-  return { byKey, unacked, ack };
+  return { byKey, unacked, ack, reload: load };
 }
 
 function AckCell({ alert, onAck }: { alert: AlertRef | undefined; onAck: (id: number) => void }) {
   if (!alert) return <Typography.Text type="secondary">未开告警</Typography.Text>;
   if (alert.ackedAt) return <Tooltip title={ackText(alert)}><Tag color="default">已知悉 · {alert.ackedByName ?? (alert.ackedBy != null ? `#${alert.ackedBy}` : "")}</Tag></Tooltip>;
   return <Button size="small" onClick={() => onAck(alert.id)}>已知悉</Button>;
+}
+
+/**
+ * 展开行：证据（规则/参数快照/why）+ 人工关闭。
+ * 关闭按钮只对持有该告警 ownerRole 的人或 admin 显示（ownerRole 为空的历史行只有 admin）——
+ * 与服务端 closeAlert 的判定同口径；前端隐藏不是权限，服务端仍会回查会话再判一次。
+ */
+function AlertRowDetail({ alert, onClosed }: { alert: AlertRef; onClosed: () => void }) {
+  const me = useMe();
+  const [open, setOpen] = useState(false);
+  const canClose = alert.status === "open" && (alert.ownerRole ? hasAnyRole(me, alert.ownerRole) : hasAnyRole(me));
+  return (
+    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+      <AlertEvidence alert={alert} />
+      {canClose ? (
+        <>
+          <Button size="small" danger onClick={() => setOpen(true)}>关闭告警</Button>
+          <AlertCloseModal
+            open={open}
+            alertId={alert.id}
+            onCancel={() => setOpen(false)}
+            onClosed={() => { setOpen(false); onClosed(); }}
+          />
+        </>
+      ) : null}
+    </Space>
+  );
 }
 
 /* ── Tab 1：库存预警表 ── */
@@ -152,7 +182,7 @@ function CoverTab() {
         locale={{ emptyText: error ? "数据未加载" : "当前筛选下没有预警行" }}
         expandable={{
           rowExpandable: (r) => !!alerts.byKey[`inventory_cover:${r.skuId}`],
-          expandedRowRender: (r) => { const a = alerts.byKey[`inventory_cover:${r.skuId}`]; return a ? <AlertEvidence alert={a} /> : null; },
+          expandedRowRender: (r) => { const a = alerts.byKey[`inventory_cover:${r.skuId}`]; return a ? <AlertRowDetail alert={a} onClosed={() => void alerts.reload()} /> : null; },
         }}
       />
       {data ? (
@@ -218,7 +248,7 @@ function SpikeTab() {
       locale={{ emptyText: error ? "数据未加载" : "当前没有命中" }}
       expandable={{
         rowExpandable: (r) => !!alerts.byKey[keyOf(r)],
-        expandedRowRender: (r) => { const a = alerts.byKey[keyOf(r)]; return a ? <AlertEvidence alert={a} /> : null; },
+        expandedRowRender: (r) => { const a = alerts.byKey[keyOf(r)]; return a ? <AlertRowDetail alert={a} onClosed={() => void alerts.reload()} /> : null; },
       }}
     />
   );

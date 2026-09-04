@@ -105,6 +105,50 @@ describe("system_alerts 推进通知发件箱", () => {
     expect(notes.every((row) => row.href?.includes("product=demand-pulse"))).toBe(true);
   });
 
+  it("按告警行自己的 ownerRole 与 actionHref 分派（W1 后不再靠类别硬编码表）", async () => {
+    const { db } = await createTestDb();
+    await db.insert(systemAlerts).values({
+      category: "doc_aging",
+      refKey: "BH:BH-2026-0001",
+      title: "备货申请 BH-2026-0001 停留「待审批」已 5 天",
+      severity: "high",
+      ownerRole: "pmc",
+      actionHref: "/outsource/bh?q=BH-2026-0001",
+    });
+
+    const result = await runSystemAlertNotify(db);
+    expect(result).toMatchObject({ enqueued: 1, scanned: 1 });
+    const [note] = await db.select().from(notifications);
+    // 迁移前：doc_aging 一律 admin + /alerts，责任人根本收不到、点进去也不是单据
+    expect(note.targetRole).toBe("pmc");
+    expect(note.href).toBe("/outsource/bh?q=BH-2026-0001");
+  });
+
+  it("行上没有 ownerRole/actionHref 的历史告警回落类别表，不因缺字段丢通知", async () => {
+    const { db } = await createTestDb();
+    await db.insert(systemAlerts).values({ category: "transfer_cost", refKey: "doc:DB-0001", title: "调拨成本异常", severity: "high" });
+
+    const result = await runSystemAlertNotify(db);
+    expect(result.enqueued).toBe(1);
+    const [note] = await db.select().from(notifications);
+    // 责任角色回落类别表首位（迁移前口径），链接回落类别表
+    expect(note.targetRole).toBe("warehouse");
+    expect(note.href).toBe("/inventory/transfer-routes?tab=anomalies");
+  });
+
+  it("行上的 ownerRole 覆盖类别表回落值（引擎写入的行以行为准）", async () => {
+    const { db } = await createTestDb();
+    await db.insert(systemAlerts).values({
+      category: "inventory_cover", refKey: "SKU-1", title: "S 级 SKU-1 已断货", severity: "high",
+      ownerRole: "pmc", actionHref: "/inventory/alerts?tab=cover&cover_q=SKU-1",
+    });
+    const result = await runSystemAlertNotify(db);
+    expect(result.enqueued).toBe(1);
+    const [note] = await db.select().from(notifications);
+    expect(note.targetRole).toBe("pmc");
+    expect(note.href).toBe("/inventory/alerts?tab=cover&cover_q=SKU-1");
+  });
+
   it("没有未处理告警时什么也不做", async () => {
     const { db } = await createTestDb();
     expect(await runSystemAlertNotify(db)).toMatchObject({ enqueued: 0, scanned: 0 });

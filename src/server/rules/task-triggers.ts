@@ -55,13 +55,21 @@ export function dueDateFromParamsSnapshot(snapshot: unknown): string | null {
   return typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
 }
 
-/** 告警类别 → 责任角色（D56/D57/SSA-7：爆单/断货指向 pmc；运维类指向 admin） */
+/**
+ * 告警类别 → 责任角色（D56/D57/SSA-7：爆单/断货指向 pmc；运维类指向 admin）。
+ *
+ * **本表是责任角色的唯一权威**：看门狗（W1 后全部走 alerts/engine.upsertAlerts）按本表填
+ * system_alerts.owner_role，待办投影、人工关闭权限（engine.closeAlert）与通知分派
+ * （jobs/system-alert-notify）都读同一个值，不再各自硬编码。
+ * data_quality 指向 pmc：与 weekly-dq-pack 飞书摘要的 targetRole=pmc 同向（核对包由 PMC 主责）。
+ */
 export const ALERT_OWNER_ROLE: Readonly<Record<string, Role>> = {
   data_freshness: "admin",
   doc_aging: "pmc",
   integration_token: "admin",
   job_failure: "admin",
   data_product_gate: "pmc",
+  data_quality: "pmc",
   sales_spike: "pmc",
   inventory_cover: "pmc",
   transfer_cost: "warehouse",

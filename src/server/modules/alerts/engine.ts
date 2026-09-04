@@ -12,6 +12,10 @@ import { ackResetOnRehit } from "@/server/rules/alert-ack";
  * - 幂等：同 category + dedupeKey 只保留一条 open 告警；再次命中只更新 last_hit_at / title / detail / severity。
  * - 迟滞关闭：本轮未命中的 open 告警，若 last_hit_at 距今 ≥ autoCloseAfterDays（缺省 3）才自动关闭（autoResolved=true）；
  *   期间仍命中则续命。这样一天的数据缺口不会把告警关掉又打开。
+ *   两个特例（W1 迁移各看门狗时按类别语义选择，不是可调参数）：
+ *     autoCloseAfterDays=0    → 不再命中即刻无条件关闭（单据流转/任务恢复/凭据刷新/门禁恢复等硬事实，不是数据缺口）；
+ *     autoCloseAfterDays=null → 永不自动关闭（某周期的数据质量不达标是已发生的周期事实，
+ *                               下个周期不再命中不代表它被处理了，只能人工带原因关闭）。
  * - 已知悉：人工 ackAlert 只记 acked_by/acked_at，不改 status（事实闭环仍由引擎判定），写审计。
  *   再命中时按 rules/alert-ack 决定是否清知悉（严重度升级 / 知悉 ≥ 7 天仍命中）——审计 A3(2)。
  * - 解释载荷（审计 #4）：候选可带 why[]（label/value/source），引擎原样落进 paramsSnapshot.why——
@@ -87,13 +91,48 @@ export async function appendAlertEvents(db: AnyDb, rows: readonly AlertEventInpu
   return inserted.length;
 }
 
+/**
+ * 一次性回填历史行的 dedupe_key（引擎接入前的手写告警没有去重键）。
+ *
+ * 幂等：只动 dedupe_key IS NULL 的行。
+ * - open 行：同 ref_key 只补 id 最小的一条（uq_alert_open_dedupe 部分唯一索引不允许两条 open 同键；
+ *   多余的 open 行留空键，交给引擎迟滞关闭）；
+ * - 非 open 行：全部补（让人工关闭抑制 suppressManuallyClosedDays 对历史关闭也生效）。
+ *
+ * 各看门狗迁移到 upsertAlerts 时在 run 开头调用一次；键格式与候选一致：`<category>:<refKey>`。
+ * 返回本轮回填行数（open + 已关闭）。
+ */
+export async function backfillAlertDedupeKeys(dbArg: AnyDb, category: string): Promise<number> {
+  const db = await resolveDb(dbArg);
+  const openRes = await db.execute(sql`
+    UPDATE system_alerts a SET dedupe_key = ${category} || ':' || a.ref_key
+    WHERE a.category = ${category} AND a.status = 'open' AND a.dedupe_key IS NULL AND a.ref_key IS NOT NULL
+      AND a.id = (SELECT min(b.id) FROM system_alerts b WHERE b.category = a.category AND b.status = 'open' AND b.ref_key = a.ref_key)
+      AND NOT EXISTS (SELECT 1 FROM system_alerts c WHERE c.category = a.category AND c.status = 'open' AND c.dedupe_key = ${category} || ':' || a.ref_key)`);
+  const closedRes = await db.execute(sql`
+    UPDATE system_alerts SET dedupe_key = ${category} || ':' || ref_key
+    WHERE category = ${category} AND status <> 'open' AND dedupe_key IS NULL AND ref_key IS NOT NULL`);
+  const n = (r: unknown): number => {
+    const v = (r as { rowCount?: unknown; affectedRows?: unknown } | null);
+    const c = Number(v?.rowCount ?? v?.affectedRows ?? 0);
+    return Number.isFinite(c) ? c : 0;
+  };
+  return n(openRes) + n(closedRes);
+}
+
 export async function upsertAlerts(
   dbArg: AnyDb,
   input: {
     category: string;
     candidates: AlertCandidate[];
     now?: Date;
-    autoCloseAfterDays?: number;
+    /**
+     * 迟滞天数：本轮未命中的 open 告警，last_hit_at 距今 ≥ 本值才自动关闭（缺省 3）。
+     * - 0 = 条件一清就关（硬事实类：单据流转、任务恢复、凭据刷新、门禁恢复）；
+     * - null = **永不自动关闭**（周期性事实类：某周期的数据质量不达标是已发生的事实，
+     *   下个周期不再命中不等于它被处理了——只能由人工带原因关闭）。
+     */
+    autoCloseAfterDays?: number | null;
     /** 同 dedupeKey 在 N 天内被人工关闭（autoResolved=false）则不重开；缺省不抑制 */
     suppressManuallyClosedDays?: number;
     /** 已知悉再命中多少天后清知悉（rules/alert-ack，缺省 7） */
@@ -102,6 +141,7 @@ export async function upsertAlerts(
 ): Promise<UpsertAlertsResult> {
   const db = await resolveDb(dbArg);
   const now = input.now ?? new Date();
+  const neverAutoClose = input.autoCloseAfterDays === null;
   const closeAfterMs = (input.autoCloseAfterDays ?? 3) * 24 * 60 * 60 * 1000;
   const open: { id: number; dedupeKey: string | null; lastHitAt: Date | null; createdAt: Date; severity: string | null; ackedAt: Date | null }[] = await db
     .select({
@@ -164,10 +204,13 @@ export async function upsertAlerts(
     }
   }
 
-  // 迟滞自动关闭
-  const toClose = open
+  // 迟滞自动关闭（autoCloseAfterDays=null 的类别不自动关闭，只能人工带原因关闭）
+  const toClose = (neverAutoClose ? [] : open)
     .filter((o) => !o.dedupeKey || !hitKeys.has(o.dedupeKey))
-    .filter((o) => now.getTime() - new Date(o.lastHitAt ?? o.createdAt).getTime() >= closeAfterMs)
+    // closeAfterMs=0 是"不再命中即刻关闭"：无条件关，不比时间——
+    // 否则两次运行的 now 一旦不单调（补跑、时钟回拨、测试注入的历史时刻），
+    // 已消失的条件会被判成"还没到迟滞时间"而永远关不掉。
+    .filter((o) => closeAfterMs <= 0 || now.getTime() - new Date(o.lastHitAt ?? o.createdAt).getTime() >= closeAfterMs)
     .map((o) => o.id);
   if (toClose.length) {
     await db.update(schema.systemAlerts).set({ status: "resolved", autoResolved: true, resolvedAt: now })

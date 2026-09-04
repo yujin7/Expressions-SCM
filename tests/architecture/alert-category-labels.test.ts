@@ -13,13 +13,17 @@ const ROOT = path.resolve(__dirname, "../..");
 const CLIENT = path.join(ROOT, "src/app/(app)/alerts/alerts-client.tsx");
 const JOBS = path.join(ROOT, "src/jobs");
 
-/** 从会写 systemAlerts 的任务源码里收集 category 字面量 */
+/**
+ * 从会写 system_alerts 的任务源码里收集 category 字面量。
+ * W1 后各看门狗不再手写 insert，改走 alerts/engine.upsertAlerts —— 两种写法都要扫，
+ * 否则迁移当天这条护栏会静默扫到 0 个类别（"没发现问题"和"没在找"长得一样）。
+ */
 function alertCategories(): string[] {
   const found = new Set<string>();
   for (const entry of readdirSync(JOBS)) {
     if (!entry.endsWith(".ts")) continue;
     const src = readFileSync(path.join(JOBS, entry), "utf8");
-    if (!src.includes("insert(systemAlerts)")) continue;
+    if (!src.includes("insert(systemAlerts)") && !src.includes("upsertAlerts(")) continue;
     for (const m of src.matchAll(/(?:ALERT_CATEGORY\s*=\s*|category:\s*)"([a-z_]+)"/g)) {
       found.add(m[1]);
     }
