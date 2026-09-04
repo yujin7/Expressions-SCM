@@ -69,6 +69,18 @@ export const SENSITIVE_FIELDS = [
   "monthGrossAmount", // 采购下单毛额（D63）
   "savingYtd", // 年累计降本额（D63）
   "increaseYtd", // 年累计涨价额（D63）
+  // ── 安全审计 S7：原本只靠各读模型手工置空的金额键，补进黑名单当兜底 ──
+  // （手工闸门漏一处就整条链路裸奔；进黑名单后 maskSensitive 在唯一收口再删一次）
+  "netAmount", // PO 未税金额（purchase-order-metrics / 驾驶舱屏2 逐月点）
+  "grossAmount", // PO 含税金额（同上）
+  "previousAmount", // 手工改写清单里被替代行的金额（DQ-6）
+  // 注：**不收录 `spend`**。它在 supplier-payment-term 读模型里不是金额标量，而是
+  // `SupplierYearSpend[]` 容器（year / rank / rankOf + 金额），而名次按产品口径对全员可见
+  // （见 /api/report/supplier-payment-term 的路由说明）。把键加进来会整个数组被删，
+  // 记分卡「账期候选」Tab 的 `r.spend[0].total` 直接 TypeError。要收口须先把容器改名
+  // （并按约定给读模型缓存键升版），本次安全修复不夹带该重构；容器内金额目前由
+  // stripSupplierPaymentTermMoney 置空，驾驶舱屏2 的 `spend` 标量由 canSeeMoney 置空，
+  // 二者都有测试钉住（tests/report/cockpit-trends.test.ts、tests/report/supplier-payment-term.test.ts）。
 ] as const;
 
 /** 可见敏感价格的角色（●）：采购/PMC/财务/管理员 */

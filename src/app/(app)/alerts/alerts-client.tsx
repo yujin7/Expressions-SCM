@@ -99,6 +99,8 @@ export default function AlertsClient() {
   /** 关闭按钮可见性：持有该告警责任角色，或 admin（hasAnyRole 内含 admin 放行）；
       ownerRole 为空的历史行只有 admin 能关——与服务端 closeAlert 的判定同口径。 */
   const canClose = (r: Row) => (r.ownerRole ? hasAnyRole(me, r.ownerRole) : hasAnyRole(me));
+  /** 「已知悉」同口径（安全审计 S2）：服务端 ackAlert 与 closeAlert 现在用同一条判定，前端按钮随之收敛。 */
+  const canAck = canClose;
 
   const columns: ColumnsType<Row> = [
     { title: "类别", dataIndex: "category", width: 120, fixed: "left", render: (v: string) => <Tag>{CAT[v] ?? v}</Tag> },
@@ -136,7 +138,7 @@ export default function AlertsClient() {
       render: (_, r) => (
         <Space size={6}>
           {r.actionHref ? <a href={r.actionHref}>去处理</a> : null}
-          {r.status === "open" && !r.ackedAt ? <Button size="small" onClick={() => void handleAck(r.id)}>已知悉</Button> : null}
+          {r.status === "open" && !r.ackedAt && canAck(r) ? <Button size="small" onClick={() => void handleAck(r.id)}>已知悉</Button> : null}
           {r.status === "open" && canClose(r) ? <Button size="small" danger onClick={() => setClosing(r)}>{ACTION.closeAlert}</Button> : null}
         </Space>
       ),

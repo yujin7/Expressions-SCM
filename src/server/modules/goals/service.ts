@@ -21,7 +21,7 @@ import { writeAudit } from "@/server/core/audit";
 import { ROLES } from "@/server/core/constants";
 import { resolveDeptScope } from "@/server/core/data-scope";
 import { dCmp, dDiv, dMul, dZero } from "@/server/core/decimal";
-import type { SessionUser } from "@/server/core/dto";
+import { canSeePrices, type SessionUser } from "@/server/core/dto";
 import type { AnyDb } from "@/server/core/svc";
 import { ApiError } from "@/server/modules/master/common";
 import { DATA_QUALITY_CACHE_KEY } from "@/server/modules/report/data-quality";
@@ -153,6 +153,26 @@ export function autoSourceFor(metricKey: string): AutoMetricSource | null {
   return AUTO_METRIC_SOURCES.find((s) => s.metricKey === metricKey) ?? null;
 }
 
+/* ────────────────────────── 金额型指标的 R9 收口（安全审计 S1） ────────────────────────── */
+
+/**
+ * 金额型指标 = 指标注册表 `unit: "money"`（`src/components/metrics.ts` 唯一权威）。
+ *
+ * 为什么必须单独判：`department_goals.actual_value` 是**任意指标共用**的一列，键名 `actualValue`
+ * 不在 SENSITIVE_FIELDS 里（也不能进——它同时承载周转次数、达成率这些全员可见的数）。
+ * 于是 `costSavingYtd`（降本额 YTD，正是 stripPurchaseOrderMoney 对非价格角色扣住的那笔钱）
+ * 一旦被 auto 回填进这一列，就绕过了所有金额闸门。这里按**指标单位**判定，
+ * 与页面/驾驶舱共用同一份注册表，加新的金额指标时自动受同一道闸。
+ */
+export function isMoneyMetric(metricKey: string): boolean {
+  return METRICS[metricKey]?.unit === "money";
+}
+
+/** 该角色是否必须被扣住这个指标的数值（金额指标 ∧ 非 PRICE_VISIBLE_ROLES） */
+export function isValueWithheld(metricKey: string, roles: string[]): boolean {
+  return isMoneyMetric(metricKey) && !canSeePrices(roles);
+}
+
 const emptyToUndef = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 const numericStr = z.union([z.number(), z.string()]).transform((v) => String(v).trim()).refine((v) => /^-?\d+(\.\d{1,4})?$/.test(v), "数值格式非法（最多 4 位小数）");
 
@@ -188,8 +208,10 @@ export interface GoalRow {
   direction: GoalDirection;
   actualValue: string | null;
   actualSource: "auto" | "manual" | null;
-  /** auto 指标的取值状态：ok | unavailable（读模型无值）| n/a（manual） */
-  autoStatus: "ok" | "unavailable" | "n/a";
+  /** auto 指标的取值状态：ok | unavailable（读模型无值）| withheld（金额指标对非价格角色扣住）| n/a（manual） */
+  autoStatus: "ok" | "unavailable" | "withheld" | "n/a";
+  /** true = 本行的实际值/达成度因金额权限被扣住（不是 0、不是「无数据」，是「不给看」） */
+  valueWithheld: boolean;
   /** 达成度 %（1 位小数）；缺实际值 → null */
   attainment: string | null;
   attained: boolean | null;
@@ -224,6 +246,10 @@ function toRow(r: Raw, user: SessionUser): GoalRow {
   const def = METRICS[r.metricKey];
   const src = autoSourceFor(r.metricKey);
   const direction = r.direction as GoalDirection;
+  // S1：金额指标对非价格角色扣住实际值**与达成度**——只留 actualValue=null 不够，
+  // 达成度 = 实际÷目标（目标由本部门自己填），保留达成度等于把金额除法送出去。
+  const withheld = isValueWithheld(r.metricKey, user.roles);
+  const actualValue = withheld ? null : (r.actualValue ?? null);
   return {
     id: r.id,
     deptKey: r.deptKey,
@@ -233,11 +259,12 @@ function toRow(r: Raw, user: SessionUser): GoalRow {
     unit: def?.unit ?? null,
     targetValue: r.targetValue,
     direction,
-    actualValue: r.actualValue ?? null,
+    actualValue,
     actualSource: (r.actualSource as "auto" | "manual" | null) ?? null,
-    autoStatus: r.actualSource === "manual" ? "n/a" : (r.actualValue != null ? "ok" : (src ? "unavailable" : "n/a")),
-    attainment: computeAttainment(r.targetValue, r.actualValue ?? null, direction),
-    attained: isAttained(r.targetValue, r.actualValue ?? null, direction),
+    autoStatus: withheld ? "withheld" : r.actualSource === "manual" ? "n/a" : (r.actualValue != null ? "ok" : (src ? "unavailable" : "n/a")),
+    valueWithheld: withheld,
+    attainment: computeAttainment(r.targetValue, actualValue, direction),
+    attained: isAttained(r.targetValue, actualValue, direction),
     note: r.note ?? null,
     editable: canEditDept(user, r.deptKey),
     createdBy: r.createdBy,
@@ -387,6 +414,17 @@ export async function createGoal(raw: GoalCreateInput, user: SessionUser, dbArg?
   resolveDeptScope(user, input.deptKey); // D62 受限用户：写路径与读路径同一范围裁剪（范围外 403，且不落库）
   const src = autoSourceFor(input.metricKey);
   if (!METRICS[input.metricKey] && !src) throw new ApiError(400, `指标 ${input.metricKey} 未在指标注册表登记`);
+  /**
+   * S1 决策：**非价格角色不得建金额型指标的目标**（不是只读时扣住就够）。
+   * 理由：建目标 + POST /api/goals/refresh 是一条自助取数链——运营给自己部门建一条 costSavingYtd，
+   * 引擎就把 stripPurchaseOrderMoney 扣住的那笔钱写进 department_goals.actual_value。
+   * 读闸（toRow / getGoalsBlock / loadGoalHistory）已经把值扣住，但让不可见金额的人去驱动金额落库、
+   * 再靠一道读闸兜底，是"闸门只剩一层"；写侧一并拒绝，纵深两层。
+   * 金额目标由 PRICE_VISIBLE_ROLES（采购/PMC/财务/管理员）代为登记，任何部门都可以被登记。
+   */
+  if (isMoneyMetric(input.metricKey) && !canSeePrices(user.roles)) {
+    throw new ApiError(403, "金额类指标目标只能由可见价格的角色（采购/PMC/财务/管理员）登记");
+  }
   const direction = input.direction ?? src?.defaultDirection ?? "up";
   const actualSource = input.actualSource ?? (src ? "auto" : "manual");
   const auto = actualSource === "auto" ? await resolveAutoActual(db, input.metricKey, input.period) : null;
@@ -427,6 +465,10 @@ export async function updateGoal(id: number, raw: z.input<typeof goalPatchSchema
   if (!existing) throw new ApiError(404, "目标不存在");
   if (!canEditDept(user, existing.deptKey)) throw new ApiError(403, "只能修改本部门的目标（管理员除外）");
   resolveDeptScope(user, existing.deptKey);
+  // S1：与 createGoal 同口径——看不到金额的人也不该改金额目标（改目标即可反推达成度口径）
+  if (isMoneyMetric(existing.metricKey) && !canSeePrices(user.roles)) {
+    throw new ApiError(403, "金额类指标目标只能由可见价格的角色（采购/PMC/财务/管理员）维护");
+  }
 
   const set: Partial<typeof departmentGoals.$inferInsert> = { updatedAt: now };
   if (patch.targetValue !== undefined) set.targetValue = patch.targetValue;

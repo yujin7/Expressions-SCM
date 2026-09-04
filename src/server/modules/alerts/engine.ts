@@ -229,13 +229,24 @@ export async function upsertAlerts(
   return { opened, refreshed, autoClosed: toClose.length, stillOpen: Number(still?.n ?? 0), suppressed, ackReset };
 }
 
-/** 人工「已知悉」：写 acked_by/acked_at + 审计；status 不变（事实闭环归引擎） */
+/**
+ * 人工「已知悉」：写 acked_by/acked_at + 审计；status 不变（事实闭环归引擎）。
+ *
+ * 权限（安全审计 S2）：与 closeAlert **同一口径**——告警 ownerRole 对应角色或 admin；
+ * ownerRole 为空的历史告警只允许 admin。
+ * 之前这里只校验 id/存在/未关闭，任何登录用户都能把全部类别的告警一次性"知悉"掉：
+ * 知悉不改 status，但会清掉「未知悉」这个唯一的人工注意力信号，并让 ackResetAfterDays（缺省 7 天）
+ * 内的再命中都不再刷新提醒——等于替责任角色把警报静音，且审计只留下"某人知悉"看不出越权。
+ */
 export async function ackAlert(actor: SessionUser, alertId: number, dbArg?: AnyDb, note?: string): Promise<{ id: number; ackedAt: string }> {
   const db = await resolveDb(dbArg);
   if (!Number.isInteger(alertId) || alertId <= 0) throw new ApiError(400, "告警 id 非法");
   return db.transaction(async (tx: AnyDb) => {
     const [row] = await tx.select().from(schema.systemAlerts).where(eq(schema.systemAlerts.id, alertId)).limit(1);
     if (!row) throw new ApiError(404, "告警不存在");
+    const isAdmin = actor.roles.includes("admin");
+    const isOwner = row.ownerRole != null && actor.roles.includes(row.ownerRole);
+    if (!isAdmin && !isOwner) throw new ApiError(403, `无权限知悉此告警：需要 ${row.ownerRole ?? "admin"} 角色`);
     if (row.status !== "open") throw new ApiError(409, "告警已关闭，无需知悉");
     const now = new Date();
     await tx.update(schema.systemAlerts).set({ ackedBy: actor.id, ackedAt: now }).where(eq(schema.systemAlerts.id, alertId));

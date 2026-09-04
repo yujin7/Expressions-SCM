@@ -334,7 +334,8 @@ export default function PilotClient({ canManage }: { canManage: boolean }) {
             {canManage ? <Button type="primary" icon={<ThunderboltOutlined />} loading={building} onClick={build}>固化本期分层</Button> : null}
             {canManage ? <Button disabled={selected.length === 0} onClick={() => void setPilot(true)}>纳入试点（{selected.length}）</Button> : null}
             {canManage ? <Button disabled={selected.length === 0} onClick={() => void setPilot(false)}>移出试点</Button> : null}
-            <Button icon={<ReloadOutlined />} onClick={() => void load(true)}>重算</Button>
+            {/* 重算 = 服务端 ?refresh=1（PMC/管理员，安全审计 S4）；其他角色仍可读缓存 */}
+            <Button icon={<ReloadOutlined />} onClick={() => void load(canManage)}>{canManage ? "重算" : "刷新"}</Button>
           </Space>
         }
       />

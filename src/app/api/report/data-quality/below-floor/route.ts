@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDbAsync } from "@/db";
 import { maskSensitive } from "@/server/core/dto";
-import { errorResponse } from "@/server/modules/master/common";
+import { errorResponse, parseListQuery } from "@/server/modules/master/common";
 import { guardFreshWrite, requireAnyRole } from "@/server/modules/outsource/common";
 import { listBelowFloor } from "@/server/modules/dq/lists";
 
@@ -16,10 +16,12 @@ export async function GET(req: NextRequest) {
     const user = await guardFreshWrite();
     requireAnyRole(user, ...VIEW_ROLES);
     const db = await getDbAsync();
-    const params = new URL(req.url).searchParams;
+    // 列表参数统一走仓库既有解析器（安全审计 S6）：`?page=x` 曾经 Number("x") = NaN 一路绑进
+    // LIMIT/OFFSET，每次请求 500 并写一条 error_logs；parseListQuery 的 `Number(...) || 1` 兜住 NaN。
+    const { page, pageSize, searchParams: params } = parseListQuery(req.url);
     const payload = await listBelowFloor(db, {
-      page: Number(params.get("page") ?? 1),
-      pageSize: Number(params.get("pageSize") ?? 20),
+      page,
+      pageSize,
       month: params.get("month") ?? undefined,
     });
     const response = NextResponse.json(maskSensitive(payload, user.roles));

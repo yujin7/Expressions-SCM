@@ -41,7 +41,8 @@ describe("/api/alerts 列表：筛选、分页、总数、知悉人", () => {
     const [a1] = await db.select().from(schema.systemAlerts).where(schema.systemAlerts.refKey === undefined ? undefined : undefined).limit(1);
     void a1;
     const first = (await db.select({ id: schema.systemAlerts.id }).from(schema.systemAlerts).orderBy(schema.systemAlerts.id).limit(1))[0];
-    await ackAlert({ id: userId, name: "计划员", roles: ["pmc"], isApprover: false }, first.id, db);
+    // S2：ack 现在与 close 同权限——该行 ownerRole=ops，故以 ops 身份知悉（列表读仍用 pmc 会话）
+    await ackAlert({ id: userId, name: "计划员", roles: ["ops"], isApprover: false }, first.id, db);
     mocks.guardRead.mockResolvedValue({ id: userId, name: "计划员", roles: ["pmc"], isApprover: false });
   });
   afterAll(async () => { await client.close(); });

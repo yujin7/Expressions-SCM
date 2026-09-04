@@ -176,9 +176,23 @@ export async function setSupplierCapacity(id: number, input: unknown, actor: Ses
   });
 }
 
+/**
+ * 档案通用编辑。
+ *
+ * 可空字段的写入语义（安全审计 S5，全部按**键是否出现在请求里**判定）：
+ *   - 携带该键（含空串——空串经 schema 的 emptyToUndef 变成 undefined）→ 按值写入，空即清空；
+ *   - 未携带该键 → 保留原值。
+ * 起因是 `bankAccount`：它在 SENSITIVE_FIELDS 里，非价格角色从 GET 拿到的 DTO **根本没有这个键**，
+ * 这样的 DTO 原样回传保存，旧写法 `v.bankAccount ?? null` 就把银行账户抹掉了——脱敏本是只读保护，
+ * 反而成了写路径上的擦除器。其余可空档案字段（contact/phone/email/address/level/licenseExpiry）
+ * 逐个复核后取同一口径：编辑表单清空时键仍在（→ 写 null），所以"清空"照常可用；
+ * 而任何不携带该键的局部提交（脱敏 DTO 回传、脚本、集成）不再擦除既有值。
+ * code/name/kinds 是必填键，不适用本规则；status 由生命周期状态机独占。
+ */
 export async function updateSupplier(id: number, input: unknown, actor?: SessionUser, dbArg?: AnyTx) {
   const v = supplierSchema.parse(input);
   const db: AnyTx = dbArg ?? (await getDbAsync());
+  const hasKey = (k: string) => input != null && typeof input === "object" && k in (input as Record<string, unknown>);
   return db.transaction(async (tx: AnyTx) => {
   const [existing] = await tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, id));
   if (!existing) throw new ApiError(404, "供应商不存在");
@@ -188,15 +202,16 @@ export async function updateSupplier(id: number, input: unknown, actor?: Session
       code: v.code,
       name: v.name,
       kinds: v.kinds,
-      contact: v.contact ?? null,
-      phone: v.phone ?? null,
-      email: v.email ?? null,
-      address: v.address ?? null,
+      contact: hasKey("contact") ? (v.contact ?? null) : existing.contact,
+      phone: hasKey("phone") ? (v.phone ?? null) : existing.phone,
+      email: hasKey("email") ? (v.email ?? null) : existing.email,
+      address: hasKey("address") ? (v.address ?? null) : existing.address,
       // 结算方式原文：请求未携带该键 = 不改（与账期写路径"原文未传 = 不改"一致）
-      paymentTerm: input != null && typeof input === "object" && "paymentTerm" in input ? (v.paymentTerm ?? null) : existing.paymentTerm,
-      bankAccount: v.bankAccount ?? null,
-      level: v.level ?? null,
-      licenseExpiry: v.licenseExpiry ?? null,
+      paymentTerm: hasKey("paymentTerm") ? (v.paymentTerm ?? null) : existing.paymentTerm,
+      // 敏感字段：脱敏 DTO 里没有这个键，未携带一律保留（绝不按 null 擦除）
+      bankAccount: hasKey("bankAccount") ? (v.bankAccount ?? null) : existing.bankAccount,
+      level: hasKey("level") ? (v.level ?? null) : existing.level,
+      licenseExpiry: hasKey("licenseExpiry") ? (v.licenseExpiry ?? null) : existing.licenseExpiry,
       // 常规档案编辑不能绕过准入/整改闭环改状态。
       status: existing.status,
       // 审阅修复：档案表单未携带账期/产能字段时保留原值；只有显式提交才按 termAndCapacityColumns 归一化

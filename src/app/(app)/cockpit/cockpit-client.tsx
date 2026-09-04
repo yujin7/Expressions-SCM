@@ -408,7 +408,7 @@ export default function CockpitClient() {
                 { title: "指标", dataIndex: "metricLabel" },
                 { title: "期间", dataIndex: "period", width: 90 },
                 { title: "目标", dataIndex: "targetValue", align: "right", width: 90, render: (v: string, r) => `${formatQty(v)}${r.unit ?? ""}` },
-                { title: "实际", dataIndex: "actualValue", align: "right", width: 90, render: (v: string | null, r) => v == null ? <Typography.Text type="secondary">{r.autoStatus === "unavailable" ? "来源未就绪" : "未填"}</Typography.Text> : `${formatQty(v)}${r.unit ?? ""}` },
+                { title: "实际", dataIndex: "actualValue", align: "right", width: 90, render: (v: string | null, r) => v == null ? <Typography.Text type="secondary">{r.autoStatus === "withheld" ? "无权限" : r.autoStatus === "unavailable" ? "来源未就绪" : "未填"}</Typography.Text> : `${formatQty(v)}${r.unit ?? ""}` },
                 { title: "达成", dataIndex: "attained", width: 100, sorter: (a, b) => Number(a.attainment ?? -1) - Number(b.attainment ?? -1), render: (v: boolean | null, r) => v == null ? "—" : <Tag color={v ? "success" : "warning"}>{v ? "达成" : "未达"}{r.attainment ? ` ${r.attainment}%` : ""}</Tag> },
                 { title: "来源", key: "src", width: 110, render: (_, r) => { const k = goalSourceKey(r.actualSource, r.autoStatus); return <Tag color={GOAL_SOURCE[k].color}>{GOAL_SOURCE[k].label}</Tag>; } },
               ]} />
