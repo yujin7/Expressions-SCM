@@ -72,7 +72,7 @@ interface ImportPreflight {
     metric: string;
     baseline: string;
     current: string;
-    deviationPct: string;
+    driftPct: string;
   }[];
   token: string;
   note: string;
@@ -484,7 +484,7 @@ export default function ReleaseClient({
                 {preflight.reasons.slice(0, 5).map((reason) => (
                   <Typography.Text key={`${reason.bucket}:${reason.metric}`} type="danger">
                     {reason.bucket} · {reason.metric}：{reason.baseline} → {reason.current}
-                    （偏差 {reason.deviationPct}%）
+                    （偏差 {reason.driftPct}%）
                   </Typography.Text>
                 ))}
               </Space>

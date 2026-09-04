@@ -16,7 +16,7 @@ import { createTestDb, type TestDb } from "../helpers/db";
 const NUMERIC_DEVIATION = /\d+(?:\.\d+)?\s*%|σ|×\s*\d/;
 
 const AS_OF = "2026-09-03";
-const PARAMS = { windowDays: 180, deviationPct: 20, qtyDeviationX: 3, batchMaxDocs: 4 };
+const PARAMS = { windowDays: 180, deviationThresholdPct: 20, qtyDeviationX: 3, batchMaxDocs: 4 };
 
 describe("transfer-routes 读模型", () => {
   let db: TestDb;

@@ -192,7 +192,16 @@ export function transferTypeLabel(t: string | null): string {
 
 export interface TransferRouteParams {
   windowDays: number;
-  deviationPct: number;
+  /**
+   * 费用偏差的**提醒阈值**（百分数），不是任何一个价格。
+   *
+   * 原名 `deviationPct` 与 SENSITIVE_FIELDS 里的 PC 价格偏差同名，而本路由整体过
+   * `maskSensitive`——于是 ops/仓管拿到的 params 里这个键**被整个删掉**，页面渲染成
+   * 「偏差 > undefined% 提醒不阻断」。脱敏按字段名深剥，它分不清「价格偏差」与
+   * 「偏差阈值」：同名就等于同权限。阈值本身不含任何价格信息，剥它什么都没保护到，
+   * 只是把说明文字弄坏了（2026-09-05 实测确认）。
+   */
+  deviationThresholdPct: number;
   qtyDeviationX: number;
   batchMaxDocs: number;
 }
@@ -301,13 +310,13 @@ export interface TransferRoutesModel {
 }
 
 async function loadParams(db: AnyDb): Promise<TransferRouteParams> {
-  const [windowDays, deviationPct, qtyDeviationX, batchMaxDocs] = await Promise.all([
+  const [windowDays, deviationThresholdPct, qtyDeviationX, batchMaxDocs] = await Promise.all([
     getNumParam("transfer_cost_window_days", 180, db),
     getNumParam("transfer_cost_deviation_pct", 20, db),
     getNumParam("transfer_qty_deviation_x", 3, db),
     getNumParam("transfer_batch_max_docs", 4, db),
   ]);
-  return { windowDays, deviationPct, qtyDeviationX, batchMaxDocs };
+  return { windowDays, deviationThresholdPct, qtyDeviationX, batchMaxDocs };
 }
 
 function shiftDay(ymd: string, delta: number): string {
@@ -327,7 +336,7 @@ export async function transferRoutesBinding(db: AnyDb, params: TransferRoutePara
   `));
   const [tf] = resultRows<{ max_id: unknown }>(await db.execute(sql`SELECT max(id) AS max_id FROM transfer_fees`));
   const upd = sd?.max_updated ? new Date(sd.max_updated as string).toISOString() : "-";
-  return `sd:${sd?.max_id ?? 0}:${upd}|tf:${tf?.max_id ?? 0}|p:${params.windowDays},${params.deviationPct},${params.qtyDeviationX},${params.batchMaxDocs}|asOf:${asOf}`;
+  return `sd:${sd?.max_id ?? 0}:${upd}|tf:${tf?.max_id ?? 0}|p:${params.windowDays},${params.deviationThresholdPct},${params.qtyDeviationX},${params.batchMaxDocs}|asOf:${asOf}`;
 }
 
 export function computeTransferRoutes(
@@ -386,7 +395,7 @@ export function computeTransferRoutes(
       const others = feeDocs.filter((o) => o.id !== d.id).map((o) => ({ date: o.date, qty: o.qty, feeTotal: o.feeNet }));
       const ownBase = laneBaseline(others, params.windowDays, asOf);
       const uf = d.hasFee ? unitFee({ feeTotal: d.feeNet, qty: d.qty }) : null;
-      const dev = deviation(uf, ownBase, { thresholdPct: params.deviationPct });
+      const dev = deviation(uf, ownBase, { thresholdPct: params.deviationThresholdPct });
       const qa = qtyAnomaly(d.qty, docs.filter((o) => o.id !== d.id).map((o) => ({ qty: o.qty })), params.qtyDeviationX);
       const feeReason = feeReasonText(uf, dev);
       const qtyReason = qtyReasonText(qa);
@@ -485,7 +494,7 @@ export function computeTransferRoutes(
     anomalies,
     limitations: [
       `线路 = (转出仓, 转入仓, 调拨类型)；基线 = 同线路近 ${params.windowDays} 天已完成单据的数量加权均价（只计登记过费用的单）。`,
-      `偏差 > ${params.deviationPct}% 提醒不阻断；样本 < 8 只提醒并标样本不足，≥ 8 走中位数+MAD 统计判定。`,
+      `偏差 > ${params.deviationThresholdPct}% 提醒不阻断；样本 < 8 只提醒并标样本不足，≥ 8 走中位数+MAD 统计判定。`,
       `数量异常 = 本单件数 > 同线路件数中位数 × ${params.qtyDeviationX}（样本 < 8 不判定）；零散 = 近 30 天同线路 > ${params.batchMaxDocs} 单。`,
       "件数为跨 SKU 直加仅作规模参考；费用从上线起累计，不跨线路轧差、不进库存成本。",
       "存量未分类调拨单（transfer_type 为空）归入「未分类」线路，回填后自动归位。",

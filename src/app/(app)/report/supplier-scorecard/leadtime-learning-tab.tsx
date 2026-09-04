@@ -41,7 +41,7 @@ interface LtData {
   rows: LtRow[];
   total: number;
   minSamples: number;
-  deviationPct: number;
+  leadDeviationTolerancePct: number;
   summary: { pairCount: number; withSuggestion: number; avgOnTimeRate: number | null };
 }
 
@@ -149,7 +149,7 @@ export default function LeadTimeLearningTab() {
         description={
           <Typography.Text type="secondary">
             建议值仅供人工采纳——点「采纳」才会写入 SKU 档案的常规交期，系统不会自动改主数据；
-            样本少于 {data?.minSamples ?? 3} 单不作建议，偏差在 ±{data?.deviationPct ?? 20}% 容差内也不作建议。
+            样本少于 {data?.minSamples ?? 3} 单不作建议，偏差在 ±{data?.leadDeviationTolerancePct ?? 20}% 容差内也不作建议。
             交期起算日 = 采购订单制单日，实际收货日 = 该订单该 SKU 首张生效收货单的录单日。
             与「历史交期观察」页签（简道云观察，只看不改）、「记分卡」页签的 OTIF 是三套独立口径，请并排对照后再采纳。
           </Typography.Text>

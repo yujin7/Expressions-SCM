@@ -88,7 +88,7 @@ interface RoutesModel {
   builtAt: string;
   asOf: string;
   windowStart: string;
-  params: { windowDays: number; deviationPct: number; qtyDeviationX: number; batchMaxDocs: number };
+  params: { windowDays: number; deviationThresholdPct: number; qtyDeviationX: number; batchMaxDocs: number };
   summary: {
     laneCount: number; docCount: number; feeDocCount: number; unclassifiedDocCount: number;
     anomalyCount: number; alertCount: number; scatteredLaneCount: number; totalQty: string; amount?: string | null;
@@ -574,7 +574,7 @@ function AnomaliesTab() {
           showIcon
           style={{ marginBottom: 12 }}
           message={`异常 ${data.summary.alertCount} · 提醒 ${data.summary.anomalyCount - data.summary.alertCount} · 零散线路 ${data.summary.scatteredLaneCount}`}
-          description={`偏差 > ${data.params.deviationPct}% 提醒不阻断；样本 < 8 只提醒并标样本不足；数量异常 = 本单 > 同线路中位数 × ${data.params.qtyDeviationX}。看门狗（system_alerts category=transfer_cost）每日两批投递。`}
+          description={`偏差 > ${data.params.deviationThresholdPct}% 提醒不阻断；样本 < 8 只提醒并标样本不足；数量异常 = 本单 > 同线路中位数 × ${data.params.qtyDeviationX}。看门狗（system_alerts category=transfer_cost）每日两批投递。`}
         />
       ) : null}
       <Table<AnomalyRow>

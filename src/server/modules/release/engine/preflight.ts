@@ -65,7 +65,7 @@ export interface ImportPreflightReason {
   metric: "rows" | `qty:${string}`;
   baseline: string;
   current: string;
-  deviationPct: string;
+  driftPct: string;
 }
 
 export interface ImportPreflightResult {
@@ -214,7 +214,7 @@ function compareProfiles(current: InputProfile, baseline: InputProfile): ImportP
         metric: "rows",
         baseline: String(b.rows),
         current: String(c.rows),
-        deviationPct: rowPct,
+        driftPct: rowPct,
       });
     }
 
@@ -229,7 +229,7 @@ function compareProfiles(current: InputProfile, baseline: InputProfile): ImportP
           metric: `qty:${field}`,
           baseline: baselineQty,
           current: currentQty,
-          deviationPct: qtyPct,
+          driftPct: qtyPct,
         });
       }
     }

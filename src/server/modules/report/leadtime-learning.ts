@@ -69,7 +69,7 @@ export interface LeadTimeLearning {
   rows: LeadTimeRow[];
   total: number;
   minSamples: number;
-  deviationPct: number;
+  leadDeviationTolerancePct: number;
   summary: {
     /** 有样本的 供应商-SKU 对数 */
     pairCount: number;
@@ -140,7 +140,7 @@ export async function getLeadTimeLearning(
     byPair.set(key, cur);
   }
   if (byPair.size === 0) {
-    return { rows: [], total: 0, minSamples: MIN_SAMPLES, deviationPct: DEVIATION_PCT, summary: { pairCount: 0, withSuggestion: 0, avgOnTimeRate: null } };
+    return { rows: [], total: 0, minSamples: MIN_SAMPLES, leadDeviationTolerancePct: DEVIATION_PCT, summary: { pairCount: 0, withSuggestion: 0, avgOnTimeRate: null } };
   }
 
   /* ── 主档：供应商名、SKU 编码/名称、档案交期 ── */
@@ -214,7 +214,7 @@ export async function getLeadTimeLearning(
     rows: filtered.slice((page - 1) * pageSize, page * pageSize).map(({ score: _score, ...r }) => r),
     total: filtered.length,
     minSamples: MIN_SAMPLES,
-    deviationPct: DEVIATION_PCT,
+    leadDeviationTolerancePct: DEVIATION_PCT,
     summary,
   };
 }
