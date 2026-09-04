@@ -21,6 +21,7 @@
 import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
+import { shanghaiDayOf } from "@/server/core/business-day";
 import { dAdd, dCmp, dDiv, dMul, dSub } from "@/server/core/decimal";
 import { classifyLedgerCoverage, loadStockUniverseCoverage } from "@/server/core/stockout-evidence";
 import { num, r1 } from "@/server/core/svc";
@@ -151,9 +152,6 @@ function toBucketList(counts: Record<AccuracyBucketKey, number>): AccuracyBucket
 
 const DAY_MS = 86_400_000;
 const DEFAULT_HORIZON_DAYS = 60;
-function shanghaiDay(d: Date): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(d);
-}
 function shanghaiStart(day: string): Date {
   return new Date(`${day}T00:00:00+08:00`);
 }
@@ -164,41 +162,68 @@ type EnvelopeLike = {
   outputs?: { netRequiredBeforeRounding?: unknown };
 };
 
-export async function getSuggestionAccuracy(dbArg?: AnyDb, opts?: { now?: Date; limit?: number }): Promise<SuggestionAccuracy> {
+/** 捕获样本：同 SKU 同业务日取最新版本后的一行；`qty` 的含义由取数方决定（净需求 / 被扣住的量） */
+interface CapturedSample {
+  skuId: number;
+  versionId: number;
+  businessDate: string;
+  horizonDays: number;
+  qty: string;
+}
+
+/**
+ * 建议准确度（#12a）与抑制复核（#12b）的**共同前置**：db 解析、业务日与视野期换算、
+ * 同 SKU 同业务日取最新版本、成熟度过滤。两者只在两处不同：读 suppressed=false 还是 true，
+ * 以及取哪个数量字段。此前是两段逐字复制的 28 行——改一处漏一处，两张图的分母就会静默分叉。
+ */
+async function loadCapturedSamples(
+  dbArg: AnyDb | undefined,
+  opts: { now?: Date; limit?: number } | undefined,
+  suppressed: boolean,
+  qtyOf: (env: EnvelopeLike, suggestedQty: string) => string,
+): Promise<{ db: AnyDb; limit: number; truncated: boolean; samples: CapturedSample[]; matured: CapturedSample[] }> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
-  const now = opts?.now ?? new Date();
-  const today = shanghaiDay(now);
+  const today = shanghaiDayOf(opts?.now ?? new Date());
   const limit = Math.max(1, Math.min(5000, opts?.limit ?? 2000));
   const pl = schema.planningVersionLines;
   const pv = schema.planningVersions;
-  const lines: { versionId: number; skuId: number; suggestedQty: string; suppressed: boolean; envelope: unknown; createdAt: Date }[] = await db
-    .select({ versionId: pl.versionId, skuId: pl.skuId, suggestedQty: pl.suggestedQty, suppressed: pl.suppressed, envelope: pl.decisionEnvelope, createdAt: pv.createdAt })
+  const lines: { versionId: number; skuId: number; suggestedQty: string; envelope: unknown; createdAt: Date }[] = await db
+    .select({ versionId: pl.versionId, skuId: pl.skuId, suggestedQty: pl.suggestedQty, envelope: pl.decisionEnvelope, createdAt: pv.createdAt })
     .from(pl)
     .innerJoin(pv, eq(pv.id, pl.versionId))
-    .where(eq(pl.suppressed, false))
+    .where(eq(pl.suppressed, suppressed))
     .orderBy(desc(pl.versionId), pl.id)
     .limit(limit);
 
-  type Sample = { skuId: number; versionId: number; businessDate: string; horizonDays: number; required: string };
-  const latest = new Map<string, Sample>();
+  const latest = new Map<string, CapturedSample>();
   for (const l of lines) {
     const env = (l.envelope ?? {}) as EnvelopeLike;
-    const businessDate = typeof env.businessDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(env.businessDate) ? env.businessDate : shanghaiDay(new Date(l.createdAt));
+    const businessDate = typeof env.businessDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(env.businessDate)
+      ? env.businessDate
+      : shanghaiDayOf(new Date(l.createdAt));
     const horizonRaw = Number(env.inputs?.policy?.horizonDays);
     const horizonDays = Number.isFinite(horizonRaw) && horizonRaw > 0 ? Math.min(365, Math.floor(horizonRaw)) : DEFAULT_HORIZON_DAYS;
-    const netRaw = env.outputs?.netRequiredBeforeRounding;
-    const required = typeof netRaw === "string" && /^-?\d+(\.\d+)?$/.test(netRaw) ? netRaw : String(l.suggestedQty);
-    if (dCmp(required, "0") <= 0) continue;
+    const qty = qtyOf(env, String(l.suggestedQty));
+    if (dCmp(qty, "0") <= 0) continue;
     const key = `${l.skuId}|${businessDate}`;
     const cur = latest.get(key);
-    if (!cur || l.versionId > cur.versionId) latest.set(key, { skuId: l.skuId, versionId: l.versionId, businessDate, horizonDays, required });
+    if (!cur || l.versionId > cur.versionId) latest.set(key, { skuId: l.skuId, versionId: l.versionId, businessDate, horizonDays, qty });
   }
   const samples = [...latest.values()];
-  const matured = samples.filter((s) => shanghaiDay(new Date(shanghaiStart(s.businessDate).getTime() + s.horizonDays * DAY_MS)) <= today);
+  const matured = samples.filter((s) => shanghaiDayOf(new Date(shanghaiStart(s.businessDate).getTime() + s.horizonDays * DAY_MS)) <= today);
+  return { db, limit, truncated: lines.length >= limit, samples, matured };
+}
+
+export async function getSuggestionAccuracy(dbArg?: AnyDb, opts?: { now?: Date; limit?: number }): Promise<SuggestionAccuracy> {
+  const { db, limit, truncated, samples, matured } = await loadCapturedSamples(dbArg, opts, false, (env, suggestedQty) => {
+    // 净需求优先取决策信封里的未取整值；缺失/非数才回落到建议量
+    const netRaw = env.outputs?.netRequiredBeforeRounding;
+    return typeof netRaw === "string" && /^-?\d+(\.\d+)?$/.test(netRaw) ? netRaw : suggestedQty;
+  });
   const result: SuggestionAccuracy = {
     version: SUGGESTION_ACCURACY_VERSION,
     rowLimit: limit,
-    truncated: lines.length >= limit,
+    truncated,
     sample: samples.length,
     matured: matured.length,
     immature: samples.length - matured.length,
@@ -265,14 +290,14 @@ export async function getSuggestionAccuracy(dbArg?: AnyDb, opts?: { now?: Date; 
     for (const o of ordersBySku.get(s.skuId) ?? []) {
       if (o.t >= from && o.t < to) orderedQty = dAdd(orderedQty, o.qty, 4);
     }
-    ordered[bucketOf(orderedQty, s.required)]++;
+    ordered[bucketOf(orderedQty, s.qty)]++;
     if (!skuWithLedger.has(s.skuId)) { result.ledgerCoverage.snapshotOnly++; continue; }
     result.ledgerCoverage.withRealtimeLedger++;
     let outQty = "0";
     for (const o of outsBySku.get(s.skuId) ?? []) {
       if (o.t >= from && o.t < to) outQty = dSub(outQty, o.qty, 4);
     }
-    outbound[bucketOf(outQty, s.required)]++;
+    outbound[bucketOf(outQty, s.qty)]++;
   }
   result.orderedVsRequired = toBucketList(ordered);
   result.outboundVsRequired = toBucketList(outbound);
@@ -343,46 +368,19 @@ export const SUPPRESSION_REVIEW_CALIBER = [
  * 本函数把每条被扣住的行放到它自己的视野期里，用实时仓流水判定断货是否发生，按分布给出。
  */
 export async function getSuppressionReview(dbArg?: AnyDb, opts?: { now?: Date; limit?: number }): Promise<SuppressionReview> {
-  const db: AnyDb = dbArg ?? (await getDbAsync());
-  const now = opts?.now ?? new Date();
-  const today = shanghaiDay(now);
-  const limit = Math.max(1, Math.min(5000, opts?.limit ?? 2000));
-  const pl = schema.planningVersionLines;
-  const pv = schema.planningVersions;
-  const lines: { versionId: number; skuId: number; suggestedQty: string; envelope: unknown; createdAt: Date }[] = await db
-    .select({ versionId: pl.versionId, skuId: pl.skuId, suggestedQty: pl.suggestedQty, envelope: pl.decisionEnvelope, createdAt: pv.createdAt })
-    .from(pl)
-    .innerJoin(pv, eq(pv.id, pl.versionId))
-    .where(eq(pl.suppressed, true))
-    .orderBy(desc(pl.versionId), pl.id)
-    .limit(limit);
-
-  type Held = { skuId: number; versionId: number; businessDate: string; horizonDays: number; heldQty: string };
-  const latest = new Map<string, Held>();
-  for (const l of lines) {
-    const env = (l.envelope ?? {}) as EnvelopeLike;
-    const businessDate = typeof env.businessDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(env.businessDate) ? env.businessDate : shanghaiDay(new Date(l.createdAt));
-    const horizonRaw = Number(env.inputs?.policy?.horizonDays);
-    const horizonDays = Number.isFinite(horizonRaw) && horizonRaw > 0 ? Math.min(365, Math.floor(horizonRaw)) : DEFAULT_HORIZON_DAYS;
-    const heldQty = String(l.suggestedQty);
-    if (dCmp(heldQty, "0") <= 0) continue;
-    const key = `${l.skuId}|${businessDate}`;
-    const cur = latest.get(key);
-    if (!cur || l.versionId > cur.versionId) latest.set(key, { skuId: l.skuId, versionId: l.versionId, businessDate, horizonDays, heldQty });
-  }
-  const samples = [...latest.values()];
-  const matured = samples.filter((s) => shanghaiDay(new Date(shanghaiStart(s.businessDate).getTime() + s.horizonDays * DAY_MS)) <= today);
+  // 被扣住的量就是建议量本身（抑制行不进净需求换算）
+  const { db, limit, truncated, samples, matured } = await loadCapturedSamples(dbArg, opts, true, (_env, suggestedQty) => suggestedQty);
   const counts: Record<SuppressionOutcomeKey, { count: number; heldQty: string }> = {
     stockout_followed: { count: 0, heldQty: "0" },
     no_stockout: { count: 0, heldQty: "0" },
     unverifiable: { count: 0, heldQty: "0" },
   };
-  const heldQtyTotal = samples.reduce((acc, s) => dAdd(acc, s.heldQty, 4), "0");
-  const heldQtyMatured = matured.reduce((acc, s) => dAdd(acc, s.heldQty, 4), "0");
+  const heldQtyTotal = samples.reduce((acc, s) => dAdd(acc, s.qty, 4), "0");
+  const heldQtyMatured = matured.reduce((acc, s) => dAdd(acc, s.qty, 4), "0");
   const result: SuppressionReview = {
     version: SUPPRESSION_REVIEW_VERSION,
     rowLimit: limit,
-    truncated: lines.length >= limit,
+    truncated,
     sample: samples.length,
     matured: matured.length,
     immature: samples.length - matured.length,
@@ -455,7 +453,7 @@ export async function getSuppressionReview(dbArg?: AnyDb, opts?: { now?: Date; l
       key = dCmp(minLevel, "0") <= 0 && dCmp(outQty, "0") > 0 ? "stockout_followed" : "no_stockout";
     }
     counts[key].count += 1;
-    counts[key].heldQty = dAdd(counts[key].heldQty, s.heldQty, 4);
+    counts[key].heldQty = dAdd(counts[key].heldQty, s.qty, 4);
   }
   result.outcomes = SUPPRESSION_OUTCOME_KEYS.map((k) => ({ key: k, label: SUPPRESSION_OUTCOME_LABELS[k], count: counts[k].count, heldQty: counts[k].heldQty }));
   return result;

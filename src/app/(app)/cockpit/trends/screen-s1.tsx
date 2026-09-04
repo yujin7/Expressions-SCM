@@ -4,16 +4,17 @@ import Link from "next/link";
 import { Space, Table, Tag, Typography } from "antd";
 import { CartesianGrid, ComposedChart, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { SERIES_COLORS, VISUAL_COLOR } from "@/components/decision-visuals";
+import { formatCount } from "@/components/format";
 import type { Block } from "@/server/modules/report/cockpit";
 import type { DailyFlowBlock, DailyFlowPoint, SourceTrendBlock, WowDelta } from "@/server/modules/report/cockpit-trends";
-import { metricLabel, Muted, num, qty, signed, sourceChartRows, TrendCard, useChartTheme } from "./shared";
+import { metricLabel, Muted, num, signed, sourceChartRows, TrendCard, useChartTheme } from "./shared";
 
 function WowTag({ label, w }: { label: string; w: WowDelta }) {
   if (w.state !== "ready") return <Tag>{label}：周环比不足（有账 {w.currentDays + w.previousDays} 天）</Tag>;
   const color = w.pct == null ? "default" : w.pct > 0 ? "success" : w.pct < 0 ? "warning" : "default";
   return (
     <Tag color={color}>
-      {label}出库 周环比 {signed(w.pct)} · {qty(w.currentOut)} vs {qty(w.previousOut)}
+      {label}出库 周环比 {signed(w.pct)} · {formatCount(w.currentOut)} vs {formatCount(w.previousOut)}
     </Tag>
   );
 }
@@ -31,7 +32,7 @@ export function DailyFlowCard({ block }: { block: Block<DailyFlowBlock> }) {
     snapshotOut: num(p.snapshotOut),
     span: p.snapshotSpanDays,
   }));
-  const fmt = (v: unknown) => qty(typeof v === "number" || typeof v === "string" ? v : null);
+  const fmt = (v: unknown) => formatCount(typeof v === "number" || typeof v === "string" ? v : null);
   return (
     <TrendCard
       block={block}
@@ -45,10 +46,10 @@ export function DailyFlowCard({ block }: { block: Block<DailyFlowBlock> }) {
       dataView={d ? (
         <Table<DailyFlowPoint> rowKey="date" size="small" pagination={false} scroll={{ x: 640, y: 240 }} dataSource={d.points} columns={[
           { title: "日期", dataIndex: "date", width: 110 },
-          { title: "实时·入", dataIndex: "realtimeIn", align: "right", render: (v: string | null) => qty(v) },
-          { title: "实时·出", dataIndex: "realtimeOut", align: "right", render: (v: string | null) => qty(v) },
-          { title: "快照·入（差分）", dataIndex: "snapshotIn", align: "right", render: (v: string | null) => qty(v) },
-          { title: "快照·出（差分）", dataIndex: "snapshotOut", align: "right", render: (v: string | null, r) => v == null ? "—" : <span>{qty(v)}{r.snapshotSpanDays && r.snapshotSpanDays > 1 ? <Tag style={{ marginLeft: 4 }}>跨 {r.snapshotSpanDays} 日</Tag> : null}</span> },
+          { title: "实时·入", dataIndex: "realtimeIn", align: "right", render: (v: string | null) => formatCount(v) },
+          { title: "实时·出", dataIndex: "realtimeOut", align: "right", render: (v: string | null) => formatCount(v) },
+          { title: "快照·入（差分）", dataIndex: "snapshotIn", align: "right", render: (v: string | null) => formatCount(v) },
+          { title: "快照·出（差分）", dataIndex: "snapshotOut", align: "right", render: (v: string | null, r) => v == null ? "—" : <span>{formatCount(v)}{r.snapshotSpanDays && r.snapshotSpanDays > 1 ? <Tag style={{ marginLeft: 4 }}>跨 {r.snapshotSpanDays} 日</Tag> : null}</span> },
         ]} />
       ) : undefined}
     >

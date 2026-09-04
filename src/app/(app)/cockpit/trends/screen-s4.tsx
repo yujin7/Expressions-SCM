@@ -5,9 +5,10 @@ import Link from "next/link";
 import { Col, Row, Segmented, Space, Statistic, Table, Tag, Typography } from "antd";
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, ResponsiveContainer, Tooltip, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 import { SERIES_COLORS, VISUAL_COLOR } from "@/components/decision-visuals";
+import { formatPct } from "@/components/format";
 import type { Block } from "@/server/modules/report/cockpit";
 import type { AlertLifecycleBlock, GoalHistoryBlock, GoalHistorySeries, SourceTrendBlock, TierCell, TierMigrationBlock, TodoCompletionStrictBlock, TodoCompletionStrictCell, TodoThroughputBlock } from "@/server/modules/report/cockpit-trends";
-import { metricLabel, Muted, pct, sourceChartRows, TrendCard, useChartTheme } from "./shared";
+import { metricLabel, Muted, sourceChartRows, TrendCard, useChartTheme } from "./shared";
 
 /* ───────────── 待办吞吐（6 个月 × 角色，证据不排名） ───────────── */
 
@@ -41,7 +42,7 @@ export function TodoThroughputCard({ block }: { block: Block<TodoThroughputBlock
       grain="创建月 × 责任角色"
       unit="待办条数"
       height={320}
-      summary={d ? `近 6 个月（${d.months[0]} → ${d.months.at(-1)}）${role === "全部" ? "全部角色" : role}：${rows.map((r) => `${r.month.slice(5)} 完成率 ${pct(r.completionRate)}`).join("，")}` : "无数据"}
+      summary={d ? `近 6 个月（${d.months[0]} → ${d.months.at(-1)}）${role === "全部" ? "全部角色" : role}：${rows.map((r) => `${r.month.slice(5)} 完成率 ${formatPct(r.completionRate, 1)}`).join("，")}` : "无数据"}
       extra={d ? <Segmented size="small" options={["全部", ...d.roles]} value={role} onChange={(v) => setRole(String(v))} /> : undefined}
       dataView={d ? (
         <Table rowKey="month" size="small" pagination={false} dataSource={rows} columns={[
@@ -49,8 +50,8 @@ export function TodoThroughputCard({ block }: { block: Block<TodoThroughputBlock
           { title: "按时完成", dataIndex: "onTime", align: "right" },
           { title: "逾期完成", dataIndex: "lateDone", align: "right" },
           { title: "未完成", dataIndex: "open", align: "right" },
-          { title: "完成率", dataIndex: "completionRate", align: "right", render: (v: number | null) => pct(v) },
-          { title: "按时率", dataIndex: "onTimeRate", align: "right", render: (v: number | null) => pct(v) },
+          { title: "完成率", dataIndex: "completionRate", align: "right", render: (v: number | null) => formatPct(v, 1) },
+          { title: "按时率", dataIndex: "onTimeRate", align: "right", render: (v: number | null) => formatPct(v, 1) },
           { title: "可疑关闭", dataIndex: "suspicious", align: "right" },
         ]} />
       ) : undefined}
@@ -219,7 +220,7 @@ export function TodoCompletionStrictCard({ block }: { block: Block<TodoCompletio
       unit="完成率 %"
       height={320}
       summary={d
-        ? `近 6 个月合计：宽口径 ${pct(d.overall.completionRate)} vs 严口径 ${pct(d.overall.completionRateStrict)}（差 ${gap(d.overall.gapPp)}）；已取消 ${d.overall.cancelled} = 来源自动关闭 ${d.overall.cancelledBySourceClose} + 来源人工关闭 ${d.overall.cancelledBySourceManualClose} + 直接取消待办 ${d.overall.cancelledByHuman}（前两类都留在严口径分母）`
+        ? `近 6 个月合计：宽口径 ${formatPct(d.overall.completionRate, 1)} vs 严口径 ${formatPct(d.overall.completionRateStrict, 1)}（差 ${gap(d.overall.gapPp)}）；已取消 ${d.overall.cancelled} = 来源自动关闭 ${d.overall.cancelledBySourceClose} + 来源人工关闭 ${d.overall.cancelledBySourceManualClose} + 直接取消待办 ${d.overall.cancelledByHuman}（前两类都留在严口径分母）`
         : "无数据"}
       extra={<Segmented size="small" options={[{ label: "按月", value: "month" }, { label: "按角色", value: "role" }]} value={view} onChange={(v) => setView(v as StrictView)} />}
       dataView={d ? (
@@ -231,8 +232,8 @@ export function TodoCompletionStrictCard({ block }: { block: Block<TodoCompletio
           { title: "来源自动关闭", dataIndex: "cancelledBySourceClose", align: "right" },
           { title: "来源人工关闭", dataIndex: "cancelledBySourceManualClose", align: "right" },
           { title: "直接取消待办", dataIndex: "cancelledByHuman", align: "right" },
-          { title: "宽口径", dataIndex: "completionRate", align: "right", render: (v: number | null) => pct(v) },
-          { title: "严口径", dataIndex: "completionRateStrict", align: "right", render: (v: number | null) => pct(v) },
+          { title: "宽口径", dataIndex: "completionRate", align: "right", render: (v: number | null) => formatPct(v, 1) },
+          { title: "严口径", dataIndex: "completionRateStrict", align: "right", render: (v: number | null) => formatPct(v, 1) },
           { title: "宽 − 严", dataIndex: "gapPp", align: "right", render: (v: number | null) => gap(v) },
         ]} />
       ) : undefined}
@@ -241,11 +242,11 @@ export function TodoCompletionStrictCard({ block }: { block: Block<TodoCompletio
         <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
           <Row gutter={12} style={{ marginBottom: 6 }}>
             <Col span={8}>
-              <Statistic title="宽口径（近 6 个月合计）" value={pct(data.overall.completionRate)} valueStyle={{ fontSize: 18, color: VISUAL_COLOR.neutral }} />
+              <Statistic title="宽口径（近 6 个月合计）" value={formatPct(data.overall.completionRate, 1)} valueStyle={{ fontSize: 18, color: VISUAL_COLOR.neutral }} />
               <Muted>已完成 ÷ (总数 − 全部已取消)</Muted>
             </Col>
             <Col span={8}>
-              <Statistic title="严口径" value={pct(data.overall.completionRateStrict)} valueStyle={{ fontSize: 18, color: VISUAL_COLOR.primary }} />
+              <Statistic title="严口径" value={formatPct(data.overall.completionRateStrict, 1)} valueStyle={{ fontSize: 18, color: VISUAL_COLOR.primary }} />
               <Muted>来源被关闭（自动 + 人工）的取消都留在分母 · 宽 − 严 = {gap(data.overall.gapPp)}</Muted>
             </Col>
             <Col span={8}>
@@ -264,7 +265,7 @@ export function TodoCompletionStrictCard({ block }: { block: Block<TodoCompletio
                 <CartesianGrid stroke={t.grid} strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="key" tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} tickFormatter={(v: string) => (view === "month" ? v.slice(2) : v)} />
                 <YAxis domain={[0, 100]} tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} width={40} />
-                <Tooltip {...t.tooltip} cursor={{ fill: t.grid, opacity: 0.4 }} formatter={(v) => pct(typeof v === "number" ? v : null)} />
+                <Tooltip {...t.tooltip} cursor={{ fill: t.grid, opacity: 0.4 }} formatter={(v) => formatPct(typeof v === "number" ? v : null, 1)} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Bar dataKey="completionRate" name="宽口径" fill={VISUAL_COLOR.muted} radius={[4, 4, 0, 0]} />
                 <Bar dataKey="completionRateStrict" name="严口径" fill={VISUAL_COLOR.primary} radius={[4, 4, 0, 0]} />
@@ -310,7 +311,7 @@ export function TierMigrationCard({ block }: { block: Block<TierMigrationBlock> 
       fitContent
       height={260}
       summary={d
-        ? `${d.fromPeriod ?? "—"} → ${d.toPeriod ?? "—"}：${d.scanned} 个 SKU 中 ${d.retiered} 个换档、${d.stayed} 个不变（另有 ${d.entered} 个新进分层、${d.left} 个退出分层，不计入换档）；试点候选 ${d.candidates}（占近 6 月销量 ${pct(d.candidateSalesSharePct)}）、已标记 ${d.pilotMarked}；最大阻塞 ${[...(d.blockers ?? [])].sort((a, b) => b.skus - a.skus)[0]?.label ?? "—"} ${[...(d.blockers ?? [])].sort((a, b) => b.skus - a.skus)[0]?.skus ?? 0} 个`
+        ? `${d.fromPeriod ?? "—"} → ${d.toPeriod ?? "—"}：${d.scanned} 个 SKU 中 ${d.retiered} 个换档、${d.stayed} 个不变（另有 ${d.entered} 个新进分层、${d.left} 个退出分层，不计入换档）；试点候选 ${d.candidates}（占近 6 月销量 ${formatPct(d.candidateSalesSharePct, 1)}）、已标记 ${d.pilotMarked}；最大阻塞 ${[...(d.blockers ?? [])].sort((a, b) => b.skus - a.skus)[0]?.label ?? "—"} ${[...(d.blockers ?? [])].sort((a, b) => b.skus - a.skus)[0]?.skus ?? 0} 个`
         : "无数据"}
       extra={d ? (
         <Space size={10}>
@@ -413,13 +414,13 @@ export function DataQualityTrendCard({ block }: { block: Block<SourceTrendBlock>
       height={300}
       summary={d
         ? `${d.weeks[0]} → ${d.weeks.at(-1)}；${d.readySeries}/${d.series.length} 类来源满足 ${d.minWeeks} 周有放行率读数的门槛；` +
-          seriesRows.filter((s) => s.state === "ready").map((s) => `${s.label} ${pct(s.latestPassRatePct)}（失败运行 ${s.failedRuns}）`).join("，")
+          seriesRows.filter((s) => s.state === "ready").map((s) => `${s.label} ${formatPct(s.latestPassRatePct, 1)}（失败运行 ${s.failedRuns}）`).join("，")
         : "无数据"}
       extra={d ? <Link href={d.link} prefetch={false}>数据质量页 →</Link> : undefined}
       dataView={d ? (
         <Table<DqSeriesRow> rowKey="sourceClass" size="small" pagination={false} scroll={{ x: 720 }} dataSource={seriesRows} columns={[
           { title: "来源类", dataIndex: "label", width: 150, fixed: "left" },
-          { title: "最近放行率", dataIndex: "latestPassRatePct", width: 110, align: "right", render: (v: number | null) => pct(v) },
+          { title: "最近放行率", dataIndex: "latestPassRatePct", width: 110, align: "right", render: (v: number | null) => formatPct(v, 1) },
           { title: "8 周放行行数", dataIndex: "okRows", width: 120, align: "right" },
           { title: "8 周拒收行数", dataIndex: "rejectedRows", width: 120, align: "right" },
           { title: "8 周失败运行", dataIndex: "failedRuns", width: 110, align: "right" },
@@ -433,7 +434,7 @@ export function DataQualityTrendCard({ block }: { block: Block<SourceTrendBlock>
           <Space wrap size={[6, 4]} style={{ marginBottom: 6 }}>
             {seriesRows.map((s) => (
               <Tag key={s.sourceClass} color={s.state !== "ready" ? "default" : s.failedRuns > 0 ? "warning" : "success"}>
-                {s.label}：{s.state !== "ready" ? `不足 ${data.minWeeks} 周` : `${pct(s.latestPassRatePct)} · 失败运行 ${s.failedRuns}`}
+                {s.label}：{s.state !== "ready" ? `不足 ${data.minWeeks} 周` : `${formatPct(s.latestPassRatePct, 1)} · 失败运行 ${s.failedRuns}`}
               </Tag>
             ))}
           </Space>
@@ -443,7 +444,7 @@ export function DataQualityTrendCard({ block }: { block: Block<SourceTrendBlock>
                 <CartesianGrid stroke={t.grid} strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="label" tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} />
                 <YAxis domain={[0, 100]} tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} width={46} tickFormatter={(v) => `${v}%`} />
-                <ChartTooltip {...t.tooltip} formatter={(v, name) => [v == null ? "该周无批次" : pct(typeof v === "number" ? v : null), name]} />
+                <ChartTooltip {...t.tooltip} formatter={(v, name) => [v == null ? "该周无批次" : formatPct(typeof v === "number" ? v : null, 1), name]} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 {data.series.map((s, i) => (
                   <Line key={s.sourceClass} type="monotone" dataKey={s.sourceClass} name={s.label}

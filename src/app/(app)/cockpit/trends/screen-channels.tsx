@@ -3,16 +3,17 @@
 import { Col, Row, Space, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
+import { formatCount, formatPct, formatYuan } from "@/components/format";
 import type { Block } from "@/server/modules/report/cockpit";
 import type { ChannelMatrixBlock, ChannelShopRow } from "@/server/modules/report/cockpit-trends";
 import type { BrandPlatformRow, ChannelPlatform } from "@/server/modules/report/channel-observation";
-import { metricLabel, Muted, pct, qty, TrendCard, yuan } from "./shared";
+import { metricLabel, Muted, TrendCard } from "./shared";
 
 const PLATFORMS: ChannelPlatform[] = ["天猫", "拼多多", "唯品会"];
 
 function GuessTag({ share }: { share: number | null }) {
   if (share == null) return <Tag>归属未知</Tag>;
-  return <Tag color={share >= 20 ? "warning" : share > 0 ? "processing" : "success"}>店铺名猜测 {pct(share)}</Tag>;
+  return <Tag color={share >= 20 ? "warning" : share > 0 ? "processing" : "success"}>店铺名猜测 {formatPct(share, 1)}</Tag>;
 }
 
 /** 渠道观察 · 品牌 × 平台矩阵（并列列，不跨平台相加；受限账号只见本渠道店铺行） */
@@ -25,15 +26,15 @@ export function ChannelMatrixCard({ block }: { block: Block<ChannelMatrixBlock> 
       render: (_: unknown, r: BrandPlatformRow) => {
         const cell = r.platforms[p];
         if (!cell || cell.units == null) return <Typography.Text type="secondary">缺流</Typography.Text>;
-        return <span>{qty(cell.units)} 件{cell.amount != null ? <Typography.Text type="secondary"> · {yuan(cell.amount)}</Typography.Text> : null}</span>;
+        return <span>{formatCount(cell.units)} 件{cell.amount != null ? <Typography.Text type="secondary"> · {formatYuan(cell.amount)}</Typography.Text> : null}</span>;
       },
     })),
   ];
   const shopCols: ColumnsType<ChannelShopRow> = [
     { title: "平台", dataIndex: "platform", width: 80 },
     { title: "店铺", dataIndex: "shop", ellipsis: true },
-    { title: "近 30 天件数", dataIndex: "units", align: "right", width: 120, render: (v: number) => qty(v) },
-    { title: "金额", dataIndex: "amount", align: "right", width: 120, render: (v: string | null) => v == null ? <Typography.Text type="secondary">—</Typography.Text> : yuan(v) },
+    { title: "近 30 天件数", dataIndex: "units", align: "right", width: 120, render: (v: number) => formatCount(v) },
+    { title: "金额", dataIndex: "amount", align: "right", width: 120, render: (v: string | null) => v == null ? <Typography.Text type="secondary">—</Typography.Text> : formatYuan(v) },
   ];
   return (
     <TrendCard
@@ -46,7 +47,7 @@ export function ChannelMatrixCard({ block }: { block: Block<ChannelMatrixBlock> 
       contentIsTable
       fitContent
       height={260}
-      summary={d ? (d.platforms ? `${d.platforms.map((p) => `${p.platform} ${p.state === "ready" ? `${qty(p.units)} 件（猜测 ${pct(p.nameGuessSharePct)}）` : "缺流"}`).join("；")}；矩阵 ${d.brandMatrix?.length ?? 0} 个品牌` : `本渠道范围店铺 ${d.shops.length} 家（未映射店铺 ${d.unmappedShops} 家已剔除）`) : "无数据"}
+      summary={d ? (d.platforms ? `${d.platforms.map((p) => `${p.platform} ${p.state === "ready" ? `${formatCount(p.units)} 件（猜测 ${formatPct(p.nameGuessSharePct, 1)}）` : "缺流"}`).join("；")}；矩阵 ${d.brandMatrix?.length ?? 0} 个品牌` : `本渠道范围店铺 ${d.shops.length} 家（未映射店铺 ${d.unmappedShops} 家已剔除）`) : "无数据"}
     >
       {(data) => (
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
@@ -58,11 +59,11 @@ export function ChannelMatrixCard({ block }: { block: Block<ChannelMatrixBlock> 
             <Row gutter={[12, 12]}>
               {data.platforms.map((p) => (
                 <Col xs={24} md={8} key={p.platform}>
-                  <Statistic title={`${p.platform}（${p.grain}）`} value={p.state === "ready" ? qty(p.units) : "缺流"} suffix={p.state === "ready" ? "件" : ""} valueStyle={{ fontSize: 20, color: p.state === "ready" ? undefined : VISUAL_COLOR.neutral }} />
+                  <Statistic title={`${p.platform}（${p.grain}）`} value={p.state === "ready" ? formatCount(p.units) : "缺流"} suffix={p.state === "ready" ? "件" : ""} valueStyle={{ fontSize: 20, color: p.state === "ready" ? undefined : VISUAL_COLOR.neutral }} />
                   <Space wrap size={[4, 4]}>
                     <GuessTag share={p.nameGuessSharePct} />
-                    {p.refundUnits != null ? <Tag>退款 {qty(p.refundUnits)}</Tag> : null}
-                    {p.amount != null ? <Tag>{yuan(p.amount)}</Tag> : null}
+                    {p.refundUnits != null ? <Tag>退款 {formatCount(p.refundUnits)}</Tag> : null}
+                    {p.amount != null ? <Tag>{formatYuan(p.amount)}</Tag> : null}
                     {p.sourceAsOf ? <Tag>截至 {p.sourceAsOf}</Tag> : null}
                   </Space>
                   <Muted>{p.state === "ready" ? `归属：映射 SKU ${p.attribution.mappedSku} · 店铺档案 ${p.attribution.shopMaster} · 店铺名猜测 ${p.attribution.nameGuess} · 未归属 ${p.attribution.unattributed}` : p.gate}</Muted>

@@ -5,9 +5,10 @@ import Link from "next/link";
 import { Col, Progress, Row, Segmented, Space, Statistic, Table, Tag, Tooltip as AntTooltip, Typography } from "antd";
 import { Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from "recharts";
 import { SERIES_COLORS, VISUAL_COLOR } from "@/components/decision-visuals";
+import { formatCount, formatPct, formatYuan } from "@/components/format";
 import type { Block } from "@/server/modules/report/cockpit";
 import type { AlertPrecisionBlock, AlertPrecisionRow, ExternalDemandBriefBlock, PoTrendBlock, PoTrendPoint, Quadrant, QuadrantBlock, QuadrantPoint, SupplierConcentrationBlock, SupplierConcentrationRow } from "@/server/modules/report/cockpit-trends";
-import { metricLabel, Muted, num, pct, qty, signed, TrendCard, useChartTheme, yuan } from "./shared";
+import { metricLabel, Muted, num, signed, TrendCard, useChartTheme } from "./shared";
 
 /* ───────────── 采购订单月趋势 ───────────── */
 
@@ -35,7 +36,7 @@ export function PoTrendCard({ block }: { block: Block<PoTrendBlock> }) {
   }));
   const fmt = (v: unknown) => {
     const x = typeof v === "number" || typeof v === "string" ? v : null;
-    return measure === "amount" ? yuan(x == null ? null : String(x)) : measure === "count" ? `${qty(x)} 单` : `${qty(x)} 件`;
+    return measure === "amount" ? formatYuan(x == null ? null : String(x)) : measure === "count" ? `${formatCount(x)} 单` : `${formatCount(x)} 件`;
   };
   const otifRatePct = d?.otifYtd.rate == null ? null : Math.round(d.otifYtd.rate * 1000) / 10;
   return (
@@ -47,18 +48,18 @@ export function PoTrendCard({ block }: { block: Block<PoTrendBlock> }) {
       grain="月（按审批通过日归期）"
       unit={measure === "amount" ? "未税金额" : measure === "count" ? "订单数" : "基础单位数量"}
       height={320}
-      summary={d ? `${d.points[0]?.month ?? ""} → ${d.points.at(-1)?.month ?? ""} 共 ${d.points.length} 个月；逐月 OTIF 有可评样本 ${d.monthsWithOtif}/${d.points.length} 个月（年度累计 ${pct(otifRatePct)}，可评 n=${d.otifYtd.evaluable}）；订单→首批 P50 ${d.cycle.p50 ?? "—"} 天（n=${d.cycle.samples}）` : "无数据"}
+      summary={d ? `${d.points[0]?.month ?? ""} → ${d.points.at(-1)?.month ?? ""} 共 ${d.points.length} 个月；逐月 OTIF 有可评样本 ${d.monthsWithOtif}/${d.points.length} 个月（年度累计 ${formatPct(otifRatePct, 1)}，可评 n=${d.otifYtd.evaluable}）；订单→首批 P50 ${d.cycle.p50 ?? "—"} 天（n=${d.cycle.samples}）` : "无数据"}
       extra={<Segmented size="small" options={options} value={measure} onChange={(v) => setMeasure(v as PoMeasure)} />}
       dataView={d ? (
         <Table<PoTrendPoint> rowKey="month" size="small" pagination={false} scroll={{ y: 240 }} dataSource={d.points} columns={[
           { title: "月份", dataIndex: "month", width: 90, render: (v: string, r) => <span>{v}{r.isCurrent ? <Tag style={{ marginLeft: 4 }}>当月</Tag> : null}</span> },
           { title: "单数", dataIndex: "poCount", align: "right" },
           { title: "行数", dataIndex: "lineCount", align: "right" },
-          { title: "件数", dataIndex: "orderedBaseQty", align: "right", render: (v: string) => qty(v) },
-          { title: "未税金额", dataIndex: "netAmount", align: "right", render: (v: string | null) => v == null ? <Typography.Text type="secondary">无权限 / 无数据</Typography.Text> : yuan(v) },
+          { title: "件数", dataIndex: "orderedBaseQty", align: "right", render: (v: string) => formatCount(v) },
+          { title: "未税金额", dataIndex: "netAmount", align: "right", render: (v: string | null) => v == null ? <Typography.Text type="secondary">无权限 / 无数据</Typography.Text> : formatYuan(v) },
           { title: "逐月 OTIF", key: "otif", align: "right", width: 170, render: (_v, r) => r.otif.evaluable === 0
             ? <Typography.Text type="secondary">不可评（待评 {r.otif.pending} · 缺承诺日 {r.otif.unevaluable}）</Typography.Text>
-            : <span>{pct(r.otifRatePct)} <Typography.Text type="secondary">n={r.otif.evaluable}</Typography.Text></span> },
+            : <span>{formatPct(r.otifRatePct, 1)} <Typography.Text type="secondary">n={r.otif.evaluable}</Typography.Text></span> },
         ]} />
       ) : undefined}
     >
@@ -66,7 +67,7 @@ export function PoTrendCard({ block }: { block: Block<PoTrendBlock> }) {
         <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
           <Row gutter={12} style={{ marginBottom: 6 }}>
             <Col span={8}>
-              <Statistic title={<span>{metricLabel("poMonthlyOtif", "逐月 OTIF")}（{data.otifYtd.year} 年累计对照）</span>} value={pct(otifRatePct)} valueStyle={{ fontSize: 18 }} />
+              <Statistic title={<span>{metricLabel("poMonthlyOtif", "逐月 OTIF")}（{data.otifYtd.year} 年累计对照）</span>} value={formatPct(otifRatePct, 1)} valueStyle={{ fontSize: 18 }} />
               <Muted>逐月可评 {data.monthsWithOtif}/{data.points.length} 月 · 年度累计可评 n={data.otifYtd.evaluable} · 命中 {data.otifYtd.hit} · 未中 {data.otifYtd.miss} · 待评 {data.otifYtd.pending} · 不可评 {data.otifYtd.unevaluable}</Muted>
             </Col>
             <Col span={8}>
@@ -87,7 +88,7 @@ export function PoTrendCard({ block }: { block: Block<PoTrendBlock> }) {
                 <YAxis yAxisId="otif" orientation="right" domain={[0, 100]} width={44} tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} tickFormatter={(v) => `${v}%`} />
                 <Tooltip {...t.tooltip} cursor={{ fill: t.grid, opacity: 0.4 }}
                   formatter={(v, name, item) => name === OTIF_SERIES
-                    ? [`${pct(typeof v === "number" ? v : null)}（n=${(item?.payload as { otifEvaluable?: number } | undefined)?.otifEvaluable ?? 0}）`, name]
+                    ? [`${formatPct(typeof v === "number" ? v : null, 1)}（n=${(item?.payload as { otifEvaluable?: number } | undefined)?.otifEvaluable ?? 0}）`, name]
                     : [fmt(v), name]} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Bar yAxisId="v" dataKey="value" name={options.find((o) => o.value === measure)?.label ?? ""} radius={[4, 4, 0, 0]}>
@@ -133,7 +134,7 @@ export function SupplierConcentrationCard({ block }: { block: Block<SupplierConc
       unit="占比 % · OTIF %"
       height={330}
       summary={d
-        ? `前 ${d.topN} 家占 ${pct(d.topSharePct)}（有采购额供应商 ${d.suppliersWithSpend} 家）；账期类采购额占比 ${pct(d.creditTermSpendSharePct)}；账期达成率 ${pct(d.attainment.rate)}（候选 ${d.attainment.candidates} 家、达标 ${d.attainment.attained} 家）`
+        ? `前 ${d.topN} 家占 ${formatPct(d.topSharePct, 1)}（有采购额供应商 ${d.suppliersWithSpend} 家）；账期类采购额占比 ${formatPct(d.creditTermSpendSharePct, 1)}；账期达成率 ${formatPct(d.attainment.rate, 1)}（候选 ${d.attainment.candidates} 家、达标 ${d.attainment.attained} 家）`
         : "无数据"}
       extra={d ? <Link href={d.link} prefetch={false}>供应商记分卡 →</Link> : undefined}
       dataView={d ? (
@@ -141,13 +142,13 @@ export function SupplierConcentrationCard({ block }: { block: Block<SupplierConc
           { title: "名次", dataIndex: "rank", width: 70, align: "right", render: (v: number | null, r) => <AntTooltip title={RANK_TREND_META[r.rankTrend] ?? ""}><span>{v ?? "—"}</span></AntTooltip> },
           { title: "供应商", dataIndex: "name", width: 180, ellipsis: true, render: (v: string, r) => `${r.code} ${v}` },
           { title: "分池", dataIndex: "poolLabel", width: 100 },
-          { title: "采购额", dataIndex: "spend", width: 120, align: "right", render: (v: string | null) => v == null ? <Typography.Text type="secondary">无权限</Typography.Text> : yuan(v) },
-          { title: "占比", dataIndex: "sharePct", width: 90, align: "right", render: (v: number | null) => pct(v) },
+          { title: "采购额", dataIndex: "spend", width: 120, align: "right", render: (v: string | null) => v == null ? <Typography.Text type="secondary">无权限</Typography.Text> : formatYuan(v) },
+          { title: "占比", dataIndex: "sharePct", width: 90, align: "right", render: (v: number | null) => formatPct(v, 1) },
           { title: "合作年限", dataIndex: "cooperationYears", width: 110, align: "right", render: (v: number | null, r) => v == null ? "—" : <AntTooltip title={r.cooperationSource === "system_inferred" ? "由最早已批 PO/JG 建单日系统推算，不是供应商主数据" : ""}><span>{v} 年{r.cooperationSource === "system_inferred" ? " *" : ""}</span></AntTooltip> },
           { title: "账期", dataIndex: "paymentTermText", width: 150, render: (v: string | null, r) => <Space size={4}><Tag color={ATTAINMENT_META[r.attainment]?.color}>{ATTAINMENT_META[r.attainment]?.text ?? r.attainment}</Tag>{v ?? "—"}</Space> },
           { title: "OTIF", key: "otif", width: 180, align: "right", render: (_v, r) => r.otif == null || r.otif.evaluable === 0
             ? <Typography.Text type="secondary">当年无可评 PO</Typography.Text>
-            : <span>{pct(r.otifRatePct)} <Typography.Text type="secondary">n={r.otif.evaluable}</Typography.Text></span> },
+            : <span>{formatPct(r.otifRatePct, 1)} <Typography.Text type="secondary">n={r.otif.evaluable}</Typography.Text></span> },
         ]} />
       ) : undefined}
     >
@@ -155,15 +156,15 @@ export function SupplierConcentrationCard({ block }: { block: Block<SupplierConc
         <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
           <Row gutter={12} style={{ marginBottom: 6 }}>
             <Col xs={12} md={8}>
-              <Statistic title={`前 ${data.topN} 家采购额占比`} value={pct(data.topSharePct)} valueStyle={{ fontSize: 18 }} />
+              <Statistic title={`前 ${data.topN} 家采购额占比`} value={formatPct(data.topSharePct, 1)} valueStyle={{ fontSize: 18 }} />
               <Muted>有采购额供应商 {data.suppliersWithSpend} 家{data.moneyVisible ? "" : "（金额无权限，占比仍全员可见）"}</Muted>
             </Col>
             <Col xs={12} md={8}>
-              <Statistic title={metricLabel("creditTermSpendShare", "账期类采购额占比")} value={pct(data.creditTermSpendSharePct)} valueStyle={{ fontSize: 18 }} />
+              <Statistic title={metricLabel("creditTermSpendShare", "账期类采购额占比")} value={formatPct(data.creditTermSpendSharePct, 1)} valueStyle={{ fontSize: 18 }} />
               <Muted>采购/结算口径的代理指标，不是应付余额占比</Muted>
             </Col>
             <Col xs={24} md={8}>
-              <Statistic title={metricLabel("paymentTermAttainment", "账期达成率")} value={pct(data.attainment.rate)} valueStyle={{ fontSize: 18 }} />
+              <Statistic title={metricLabel("paymentTermAttainment", "账期达成率")} value={formatPct(data.attainment.rate, 1)} valueStyle={{ fontSize: 18 }} />
               <Progress percent={data.attainment.rate ?? 0} size="small" showInfo={false} status={data.attainment.rate == null ? "normal" : data.attainment.rate >= 100 ? "success" : "active"} />
               <Muted>候选 {data.attainment.candidates} 家 · 达标 {data.attainment.attained} 家；候选为 0 时无值而不是 100%</Muted>
             </Col>
@@ -174,7 +175,7 @@ export function SupplierConcentrationCard({ block }: { block: Block<SupplierConc
                 <CartesianGrid stroke={t.grid} strokeDasharray="3 3" horizontal={false} />
                 <XAxis type="number" domain={[0, 100]} tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} tickFormatter={(v) => `${v}%`} />
                 <YAxis type="category" dataKey="shortName" width={110} tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} />
-                <Tooltip {...t.tooltip} cursor={{ fill: t.grid, opacity: 0.4 }} formatter={(v, name) => [pct(typeof v === "number" ? v : null), name]} />
+                <Tooltip {...t.tooltip} cursor={{ fill: t.grid, opacity: 0.4 }} formatter={(v, name) => [formatPct(typeof v === "number" ? v : null, 1), name]} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Bar dataKey="sharePct" name="采购额占比" fill={VISUAL_COLOR.primary} radius={[0, 4, 4, 0]} />
                 <Bar dataKey="otifRatePct" name="OTIF（当年可评）" fill={VISUAL_COLOR.warning} radius={[0, 4, 4, 0]} />
@@ -234,8 +235,8 @@ export function ExternalDemandCard({ block }: { block: Block<ExternalDemandBrief
           <Row gutter={[12, 12]}>
             <Movement label="净需求" dir={data.movement.netDemand} delta={data.change.netQtyPct} unit="%" />
             <Movement label="支付件数" dir={data.change.paidQtyPct == null ? "unknown" : data.change.paidQtyPct > 0 ? "up" : data.change.paidQtyPct < 0 ? "down" : "flat"} delta={data.change.paidQtyPct} unit="%" />
-            <Movement label={`${metricLabel("refundRate", "退款率")} ${pct(data.current.refundRatePct)}`} dir={data.movement.refundRate} delta={data.change.refundRateDeltaPp} unit="pp" />
-            <Movement label={`映射覆盖 ${pct(data.current.mappedPaidCoveragePct)}`} dir={data.movement.mappedPaidCoverage} delta={data.change.mappedPaidCoverageDeltaPp} unit="pp" />
+            <Movement label={`${metricLabel("refundRate", "退款率")} ${formatPct(data.current.refundRatePct, 1)}`} dir={data.movement.refundRate} delta={data.change.refundRateDeltaPp} unit="pp" />
+            <Movement label={`映射覆盖 ${formatPct(data.current.mappedPaidCoveragePct, 1)}`} dir={data.movement.mappedPaidCoverage} delta={data.change.mappedPaidCoverageDeltaPp} unit="pp" />
           </Row>
         </div>
       )}
@@ -280,7 +281,7 @@ export function QuadrantCard({ block }: { block: Block<QuadrantBlock> }) {
           { title: "等级", dataIndex: "tier", width: 60, render: (v: string | null) => v ?? "—" },
           { title: "SKU", dataIndex: "code", width: 130 },
           { title: "品牌", dataIndex: "brand", width: 100, render: (v: string | null) => v ?? "—" },
-          { title: "在库", dataIndex: "onHand", align: "right", render: (v: string) => qty(v) },
+          { title: "在库", dataIndex: "onHand", align: "right", render: (v: string) => formatCount(v) },
           { title: "可销天数", dataIndex: "coverDays", align: "right", render: (v: number | null) => v == null ? "∞（无动销）" : `${v}d` },
           { title: "阈值", dataIndex: "alertDays", align: "right", render: (v: number) => `${v}d` },
           { title: "外部净件数（天猫 30d）", dataIndex: "tmallNet30", align: "right" },
@@ -312,7 +313,7 @@ export function QuadrantCard({ block }: { block: Block<QuadrantBlock> }) {
                     return (
                       <div style={t.tooltip.contentStyle}>
                         <div><b>{p.code}</b> {p.brand ?? ""} {p.tier ? <Tag>{p.tier}</Tag> : null}</div>
-                        <div>可销 {p.coverDays == null ? "∞" : `${p.coverDays}d`}（阈值 {p.alertDays}d）· 在库 {qty(p.onHand)}</div>
+                        <div>可销 {p.coverDays == null ? "∞" : `${p.coverDays}d`}（阈值 {p.alertDays}d）· 在库 {formatCount(p.onHand)}</div>
                         <div>外部净件数（天猫 30d）{p.tmallNet30} · 90 日有售 {p.activeDays90} 天</div>
                         <div style={{ color: QUADRANT_META[p.quadrant].color }}>{QUADRANT_META[p.quadrant].label}</div>
                       </div>
@@ -341,7 +342,7 @@ export function AlertPrecisionCard({ block }: { block: Block<AlertPrecisionBlock
   const d = block.data;
   const groups = d?.groups ?? [];
   const precisionText = (g: AlertPrecisionRow, minSample: number) =>
-    g.insufficient ? `样本不足（真+误 ${g.scored} < ${minSample}）` : `${pct(g.precisionPct)} · n=${g.scored}`;
+    g.insufficient ? `样本不足（真+误 ${g.scored} < ${minSample}）` : `${formatPct(g.precisionPct, 1)} · n=${g.scored}`;
   return (
     <TrendCard
       block={block}

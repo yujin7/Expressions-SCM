@@ -40,6 +40,7 @@
  */
 import { sql, type SQL } from "drizzle-orm";
 
+import { dayDiff as daysBetween } from "@/server/core/business-day";
 import { getNumParam } from "@/server/core/params";
 import { resolveDb, type AnyDb } from "@/server/core/svc";
 import {
@@ -245,9 +246,6 @@ function toStats(samples: LeadTimeSample[]): LeadHistoryStats {
   };
 }
 
-function daysBetween(from: string, to: string): number {
-  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
-}
 
 export async function computeSupplierLeadHistory(dbArg?: AnyDb): Promise<SupplierLeadHistory> {
   const db = await resolveDb(dbArg);
@@ -629,19 +627,14 @@ export async function loadSupplierLeadHistory(dbArg?: AnyDb, opts: { refresh?: b
   return model;
 }
 
-/** 页面/读模型用：外部观察缺席不能把内部报表拖垮 */
-export async function loadSupplierLeadHistorySafe(dbArg?: AnyDb): Promise<SupplierLeadHistory> {
-  try {
-    return await loadSupplierLeadHistory(dbArg);
-  } catch (error) {
-    return empty(`历史交期观察读模型不可用：${(error as Error).message}`, { orders: 0, receipts: 0 });
-  }
-}
-
 /**
  * 供未来接入库存预警行的取数入口（B4 第 3 条）：按 SKU 取样本最多的一条历史观察，
  * 直接喂给 `rules/alert-threshold.alertDays({ observedHistory })`。
  * **只观察**：调用方拿到的是 basis 里的解释段，阈值 days 不会因此改变。
+ *
+ * **刻意的预置件，当前只有测试调用——审计请勿按「死代码」删**：接进 inventory-alerts
+ * 的阈值依据需同批把读模型键升到 `/v3` 并改 cockpit.ts 的两处口径文案
+ * （见 docs/engineering/路线图-工作流-驾驶舱-BI-2026-09-04.md），那一批还没做。
  */
 export function observedLeadForSku(model: SupplierLeadHistory, skuId: number): ObservedLeadHistory | null {
   let best: SupplierSkuLeadHistoryRow | null = null;

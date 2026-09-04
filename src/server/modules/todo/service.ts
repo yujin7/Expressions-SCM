@@ -18,6 +18,7 @@ import { writeAudit } from "@/server/core/audit";
 import { ROLES, type Role } from "@/server/core/constants";
 import { resolveDeptScope } from "@/server/core/data-scope";
 import type { SessionUser } from "@/server/core/dto";
+import { log } from "@/server/core/logger";
 import { enqueueNotification, isFeishuAppConfigured } from "@/jobs/notify";
 import { ApiError } from "@/server/modules/master/common";
 import type { AnyDb } from "@/server/core/svc";
@@ -566,7 +567,11 @@ export async function projectCandidates(
     } catch (e) {
       // 审阅修复：单条失败只计数，不中断其余候选与到期提醒
       summary.failed++;
-      console.warn("[todo] 投影候选失败", c.sourceKind, c.sourceRef, e instanceof Error ? e.message : e);
+      log({
+        level: "warn", msg: "todo.project_candidate_failed",
+        sourceKind: c.sourceKind, sourceRef: c.sourceRef,
+        error: e instanceof Error ? e.message : String(e),
+      });
     }
   }
   return summary;
@@ -596,7 +601,12 @@ export async function closeStaleProjectedItems(db: AnyDb, actor: SessionUser, op
       await setWorkItemStatus(s.id, "cancelled", actor, db, { now, note: s.sourceKind === "alert" ? "来源告警已关闭，自动取消" : "来源裁决项已关闭，自动取消" });
       cancelled++;
     } catch (e) {
-      console.warn("[todo] 自动取消失败", s.id, e instanceof Error ? e.message : e);
+      // 逐条隔离：一条取消失败不影响其余（与投影候选同纪律）
+      log({
+        level: "warn", msg: "todo.auto_cancel_failed",
+        workItemId: s.id, sourceKind: s.sourceKind,
+        error: e instanceof Error ? e.message : String(e),
+      });
     }
   }
   return { scanned: stale.length, cancelled };

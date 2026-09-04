@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
+import { todayShanghai as businessToday } from "@/server/core/business-day";
 import { log, persistErrorLog } from "@/server/core/logger";
 
 /** 业务错误：service 层抛出，route 层统一转 JSON */
@@ -97,9 +98,13 @@ export function parseId(raw: string): number {
   return id;
 }
 
-/** 业务日期统一 Asia/Shanghai（CLAUDE.md 约定） */
+/**
+ * 业务日期统一 Asia/Shanghai（CLAUDE.md 约定）；换算走 `core/business-day` 唯一权威。
+ * 保留本层的具名函数而不是直接 re-export：`tests/quality/service.test.ts` 用
+ * `vi.spyOn(masterCommon, "todayShanghai")` 冻结业务日，re-export 的只读绑定 spy 不上。
+ */
 export function todayShanghai(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date());
+  return businessToday();
 }
 
 // ---------- 权限守卫（集成层：《01》§6 功能矩阵） ----------

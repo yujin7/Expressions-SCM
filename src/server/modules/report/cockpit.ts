@@ -174,7 +174,15 @@ function severityOf(items: ExceptionItem[], key: string): RedlineItem["severity"
   return hit?.severity ?? "medium";
 }
 
-/** OTIF 0–1 比例 → 百分数字符串（1 位小数），decimal 字符串运算不走 float；null 保持 null（不可评 ≠ 0%） */
+/**
+ * 0–1 比例 → 百分数字符串（1 位小数）的**唯一权威**，decimal 字符串运算不走 float；
+ * null 保持 null（不可评 ≠ 0%）。
+ *
+ * 换算一律在服务端做、下发已是百分数的值：驾驶舱 OTIF 曾把 0.83 直接拼 "%" 显示成 0.83%（审计 #1），
+ * 修复就落在这里。`components/format.ts` 一度另留一对 `ratioToPct`/`pctFromRatio` 自称唯一权威、
+ * 却零生产调用（2026-09-04 清理审计 #2 已删除）——客户端只负责拼后缀（`formatPct`），不做换算。
+ * 回归钉在 `tests/report/cockpit.test.ts`（0.83 → "83.0%"）。
+ */
 export function otifRatePctOf(rate: number | string | null | undefined): string | null {
   if (rate == null || rate === "") return null;
   if (!/^-?\d+(\.\d+)?$/.test(String(rate))) return null;

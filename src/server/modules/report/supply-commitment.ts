@@ -13,6 +13,7 @@ import { and, eq, inArray } from "drizzle-orm";
 
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
+import { dayDiff as daysBetween } from "@/server/core/business-day";
 import { dAdd, dCmp, dMul, dQty, dSub } from "@/server/core/decimal";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 
@@ -144,9 +145,6 @@ function addDays(date: string, days: number): string {
   return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
 }
 
-function daysBetween(from: string, to: string): number {
-  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
-}
 
 function cumulativeNet(
   receipts: PromiseReceiptFact[],
