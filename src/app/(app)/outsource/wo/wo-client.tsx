@@ -16,6 +16,8 @@ import dayjs, { type Dayjs } from "dayjs";
 import RemoteSelect from "@/components/RemoteSelect";
 import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
+import DocTransitionActions from "@/components/DocTransitionActions";
+import DocWindowFilterTag from "@/components/DocWindowFilterTag";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
@@ -106,6 +108,9 @@ const STATUS_TABS = [
   { key: "draft", label: "草稿" },
   { key: "pending", label: "待审批" },
   { key: "approved", label: "已审批" },
+  // 手工收口后单据落到 completed/closed，没有页签就等于「短关完就找不到了」
+  { key: "completed", label: "已完成" },
+  { key: "closed", label: "已短关" },
 ];
 
 function WoActions({
@@ -147,6 +152,21 @@ function WoActions({
           提交
         </Button>
       </Popconfirm>
+    );
+  }
+
+  // 已审批之后没有任何「收口」动作时，工单永远停在半路（在办量只增不减）——补手工完成/短关
+  if (doc.status === "approved" || doc.status === "in_progress") {
+    return (
+      <DocTransitionActions
+        docType="wo"
+        doc={doc}
+        onChanged={onChanged}
+        labels={{
+          completeHint: "标记本工单已完工：加工通知单与收货已按实际收口，后续不再产生新的收货。",
+          shortCloseHint: "短关＝加工厂不再继续做这张工单的剩余数量（少做/终止/换厂）。已发生的加工与收货保持不变，仅停止后续执行。",
+        }}
+      />
     );
   }
 
@@ -222,10 +242,13 @@ function WoInner() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "wo", defaults: { q: "", status: "" }, defaultPageSize: 20 });
+  // from/to = 制单时间窗（上海业务日，含首尾）：全链漏斗「下单」级点数字回链到本页时带过来
+  const listState = useListState({ key: "wo", defaults: { q: "", status: "", from: "", to: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
+  const from = filters.from;
+  const to = filters.to;
 
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -245,6 +268,8 @@ function WoInner() {
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (status) params.set("status", status);
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
       const res = await fetchJson<{ rows: WoRow[]; total: number }>(
         `/api/outsource/wo?${params.toString()}`,
       );
@@ -255,7 +280,7 @@ function WoInner() {
     } finally {
       setLoading(false);
     }
-  }, [q, status, page, pageSize, message]);
+  }, [q, status, from, to, page, pageSize, message]);
 
   useEffect(() => {
     void load();
@@ -492,14 +517,17 @@ function WoInner() {
           </>
         }
         extra={
-          <SearchInput
-            key={q}
-            allowClear
-            defaultValue={q}
-            placeholder="搜索单号 / SKU 编码 / 货品名称"
-            style={{ width: 240 }}
-            onSearch={(value) => listState.setFilter({ q: value.trim() })}
-          />
+          <>
+            <SearchInput
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索单号 / SKU 编码 / 货品名称"
+              style={{ width: 240 }}
+              onSearch={(value) => listState.setFilter({ q: value.trim() })}
+            />
+            <DocWindowFilterTag from={from} to={to} onClear={() => listState.setFilter({ from: "", to: "" })} />
+          </>
         }
       />
       <Table<WoRow>

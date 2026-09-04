@@ -9,7 +9,7 @@ import { useRouter, useSearchParams } from "next/navigation";
  * 达成率=达成/需求 前端现算（源文件公式未缓存——不落假数）；月度重导整类替换。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, App, Col, Progress, Row, Select, Space, Statistic, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Col, Progress, Row, Space, Statistic, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import CaliberNote from "@/components/CaliberNote";
