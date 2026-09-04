@@ -43,7 +43,11 @@ interface Data {
   total: number;
   canSeeValue?: boolean;
   costCoverage: { covered: number; total: number } | null;
-  bucketCounts: Record<string, { batches: number; qty: number; amount?: string }>;
+  /** 服务端实际生效的排序键（金额序在服务端全集上排完再分页） */
+  sort?: "daysLeft" | "amount";
+  moneyCalibreKey?: string | null;
+  /** covered = 该段位内有单位成本的批次数；段位金额小计只覆盖这一部分 */
+  bucketCounts: Record<string, { batches: number; qty: number; amount?: string; covered?: number }>;
   brandMatrix: BrandMatrixRow[];
   brands: string[];
   brand: string | null;
@@ -78,11 +82,13 @@ function ExpiryInner() {
   // 列表页状态平台（E6-P1）：筛选/分页进 URL（?q= 风险库存处置点击直达），密度与已保存视图存本地
   const listState = useListState({
     key: "expiry",
-    defaults: { q: "", bucket: "expired", warehouseId: "", brand: "" },
+    // sort 进 URL：金额排序必须由**服务端**在全集上做，客户端比较器只能排当前一页
+    defaults: { q: "", bucket: "expired", warehouseId: "", brand: "", sort: "daysLeft" },
     defaultPageSize: 50,
   });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
+  const sort = filters.sort || "daysLeft";
   const bucket = filters.bucket === BUCKET_ALL ? "" : filters.bucket;
   const warehouseId = filters.warehouseId ? Number(filters.warehouseId) : null;
   const brand = filters.brand || "";
@@ -100,7 +106,7 @@ function ExpiryInner() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
+      const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize), sort });
       if (bucket) params.set("bucket", bucket);
       if (warehouseId) params.set("warehouseId", String(warehouseId));
       if (brand) params.set("brand", brand);
@@ -110,14 +116,14 @@ function ExpiryInner() {
     } finally {
       setLoading(false);
     }
-  }, [q, bucket, warehouseId, brand, page, pageSize, message]);
+  }, [q, bucket, warehouseId, brand, sort, page, pageSize, message]);
   useEffect(() => { void load(); }, [load]);
 
   const doExport = async () => {
     const all: Row[] = [];
     let serverTotal = 0;
     for (let p2 = 1; p2 <= 40; p2++) { // struct#17: 提高上限至 2 万行
-      const params = new URLSearchParams({ q, page: String(p2), pageSize: "500" });
+      const params = new URLSearchParams({ q, page: String(p2), pageSize: "500", sort });
       if (bucket) params.set("bucket", bucket);
       if (warehouseId) params.set("warehouseId", String(warehouseId));
       if (brand) params.set("brand", brand);
@@ -166,7 +172,9 @@ function ExpiryInner() {
           dataIndex: "amount",
           width: 130,
           align: "right" as const,
-          sorter: (a: Row, b: Row) => Number(a.amount ?? 0) - Number(b.amount ?? 0),
+          /* 服务端序：本地比较器只排当前一页，最贵的那批落在第 8 页就永远浮不上来 */
+          sorter: true,
+          sortOrder: (sort === "amount" ? "descend" : null) as "descend" | null,
           render: (v: string | null | undefined) =>
             v == null
               ? <Tooltip title="该 SKU 无单位成本（sku_costs / 财务运营成本观察均无）"><Typography.Text type="secondary">无成本</Typography.Text></Tooltip>
@@ -199,7 +207,7 @@ function ExpiryInner() {
       <Typography.Title level={4} style={{ marginTop: 0 }}>效期批次</Typography.Title>
       <CaliberNote
         summary={<>批次 × 仓库的实物处置视图；按 SKU 的决策见「风险库存处置」。{data ? <>　口径日 {data.today}，剩余天数升序。</> : null}</>}
-        detail={<div><p>数据源：batch_stocks 参考层（效期盘点载体，非账本）。七段位与经营驾驶舱同源：已过期 / ≤3 月 / 3–6 月 / 6–12 月 / 12–18 月 / 18–24 月 / &gt;24 月。</p><p>「段位 × 品牌」矩阵按当前仓库筛选统计（不受段位/品牌/搜索影响）；点击单元格直达该品牌该段位的批次；无品牌 SKU 归「(未设品牌)」。指标 id：expiryByBrand。</p>{data?.canSeeValue ? <p>金额 = 数量 × 单位成本（唯一权威 core/valuation：sku_costs 优先，其次财务运营成本观察）。{data.costCoverage ? `本次口径内 ${data.costCoverage.covered}/${data.costCoverage.total} 个批次有单位成本，其余显示「无成本」且不计入段位金额。` : null}金额按 PRICE_VISIBLE_ROLES 服务端剥离。</p> : null}</div>}
+        detail={<div><p>数据源：batch_stocks 参考层（效期盘点载体，非账本）。七段位与经营驾驶舱同源：已过期 / ≤3 月 / 3–6 月 / 6–12 月 / 12–18 月 / 18–24 月 / &gt;24 月。</p><p>「段位 × 品牌」矩阵按当前仓库筛选统计（不受段位/品牌/搜索影响）；点击单元格直达该品牌该段位的批次；无品牌 SKU 归「(未设品牌)」。指标 id：expiryByBrand。</p>{data?.canSeeValue ? <><p>金额 = 数量 × 单位成本（唯一权威 core/valuation：sku_costs 优先，其次财务运营成本观察）。{data.costCoverage ? `本次口径内 ${data.costCoverage.covered}/${data.costCoverage.total} 个批次有单位成本，其余显示「无成本」且不计入段位金额。` : null}金额按 PRICE_VISIBLE_ROLES 服务端剥离。金额口径 {data.moneyCalibreKey ?? "—"}。</p><p><b>段位金额小计的覆盖率逐段位给</b>（段位标签括号内）：一个只有 5% 批次有成本的段位，其金额小计只是这 5%，不能用全局覆盖率去读它。</p><p>按金额排序由<b>服务端</b>在全部结果上排完再分页；无成本的批次排在最后，不按 ¥0 参与比较。</p></> : null}</div>}
       />
       <Card size="small" title="效期分布 · 段位 × 品牌" style={{ marginBottom: 12 }} extra={brand ? <a onClick={() => listState.setFilter({ brand: "" })}>清除品牌筛选「{brand}」</a> : null}>
         <Table<BrandMatrixRow>
@@ -221,7 +229,11 @@ function ExpiryInner() {
             {BUCKETS.map((b) => (
               <Tooltip
                 key={b.key}
-                title={`${b.label}：${data?.bucketCounts[b.key]?.batches ?? 0} 批 / ${formatQty(String(data?.bucketCounts[b.key]?.qty ?? 0))}`}
+                title={`${b.label}：${data?.bucketCounts[b.key]?.batches ?? 0} 批 / ${formatQty(String(data?.bucketCounts[b.key]?.qty ?? 0))}${
+                  data?.canSeeValue
+                    ? `；本段位有单位成本 ${data.bucketCounts[b.key]?.covered ?? 0}/${data.bucketCounts[b.key]?.batches ?? 0} 批，金额小计只覆盖这一部分`
+                    : ""
+                }`}
               >
                 <Tag.CheckableTag
                   className="expiry-bucket-filter"
@@ -232,8 +244,9 @@ function ExpiryInner() {
                   {b.label}
                   <span className="expiry-bucket-filter__count">
                     （{data?.bucketCounts[b.key]?.batches ?? 0} 批 / {formatQty(String(data?.bucketCounts[b.key]?.qty ?? 0))}
+                    {/* 段位金额旁必须是**该段位自己**的覆盖率：全局覆盖率对一个 5% 覆盖的段位是误导 */}
                     {data?.canSeeValue && data.bucketCounts[b.key]?.amount
-                      ? ` / ${formatYuan(data.bucketCounts[b.key]!.amount!)}`
+                      ? ` / ${formatYuan(data.bucketCounts[b.key]!.amount!)}（成本覆盖 ${data.bucketCounts[b.key]?.covered ?? 0}/${data.bucketCounts[b.key]?.batches ?? 0} 批）`
                       : ""}）
                   </span>
                 </Tag.CheckableTag>
@@ -278,6 +291,11 @@ function ExpiryInner() {
         loading={loading}
         scroll={{ x: "max-content" }}
         pagination={listState.paginationProps({ total: data?.total ?? 0 })}
+        onChange={(_pagination, _filters, sorter) => {
+          const sr = Array.isArray(sorter) ? sorter[0] : sorter;
+          const next = sr?.order && sr.field === "amount" ? "amount" : "daysLeft";
+          if (next !== sort) listState.setFilter({ sort: next });
+        }}
       />
     </div>
   );

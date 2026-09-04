@@ -19,16 +19,31 @@ import DecisionVisual from "@/components/DecisionVisual";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
 
 interface Point { date: string; onHand: number; arrival: number }
-interface Projection {
+interface ProjectionBase {
   skuId: number; code: string; name: string;
-  startOnHand: number; bookOnHand: number; expiringUnsellable: number;
-  daily: number; leadDays: number | null; safetyQty: number; undatedInbound: number; today: string;
+  undatedInbound: number; today: string;
   points: Point[];
+}
+/**
+ * 补货引擎未覆盖本 SKU（停用 / 非成品 / 未入选）：引擎口径的数**一个都没有**。
+ * 用一个联合类型而不是「全 0」来表达这件事——0 会被读成「算过，结果是 0」，
+ * 于是抽屉给一个从未被计算的 SKU 画出平线并宣布「视野内不会跌破安全库存」。
+ */
+interface ProjectionUncovered extends ProjectionBase {
+  engineCovered: false;
+  engineCoverageNote: string | null;
+}
+interface ProjectionCovered extends ProjectionBase {
+  engineCovered?: true;
+  engineCoverageNote?: null;
+  startOnHand: number; bookOnHand: number; expiringUnsellable: number;
+  daily: number; leadDays: number | null; safetyQty: number;
   stockoutDate: string | null; daysToStockout: number | null;
   /** 首次跌破安全库存（唯一权威 rules/timephased，与补货行同源同值） */
   shortageDate: string | null; daysToShortage: number | null;
   orderByDate: string | null; orderWindowMissed: boolean;
 }
+type Projection = ProjectionCovered | ProjectionUncovered;
 
 interface ScenarioInputs {
   extraInboundQty?: number;
@@ -40,8 +55,10 @@ interface SavedScenario {
   id: number;
   name: string;
   inputs: ScenarioInputs;
-  baseline: Projection;
-  scenario: Projection;
+  /* 已保存的情景快照只可能来自**引擎覆盖**的 SKU（沙盘入口本身在覆盖分支里），
+     故按 ProjectionCovered 读取——未覆盖的 SKU 根本走不到保存情景那一步。 */
+  baseline: ProjectionCovered;
+  scenario: ProjectionCovered;
   sourceDate: string;
   createdByName: string | null;
   createdAt: string;
@@ -196,6 +213,26 @@ export default function ProjectionDrawer({
         <div style={{ textAlign: "center", padding: 60 }}><Spin /></div>
       ) : !data ? (
         <Empty description="无数据" />
+      ) : data.engineCovered === false ? (
+        /* 引擎没算过这个 SKU：不画曲线、不给结论。此前这里落到 0/0/0 并显示绿色的
+           「视野内水位始终不低于安全库存」——对一个从未被计算的 SKU，那是编出来的安心。 */
+        <Space direction="vertical" style={{ width: "100%" }} size="middle">
+          <Alert
+            type="info"
+            showIcon
+            message="本 SKU 不在补货引擎覆盖范围内，没有可展示的库存曲线"
+            description={
+              <>
+                <div>{data.engineCoverageNote ?? "补货引擎当前没有该 SKU 的行。"}</div>
+                <div style={{ marginTop: 6 }}>
+                  因此这里<b>不显示</b>在库/日均/安全库存/跌破日：这些数字系统从未为该 SKU 算过，
+                  显示 0 会被读成「有算过，结果是 0」。
+                  {data.undatedInbound > 0 ? `（另有 ${data.undatedInbound.toLocaleString("zh-CN")} 无确认到货日的在途量。）` : ""}
+                </div>
+              </>
+            }
+          />
+        </Space>
       ) : (
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
           <Space size="large" wrap>

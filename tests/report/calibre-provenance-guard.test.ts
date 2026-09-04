@@ -14,6 +14,16 @@
  *   - 名字不在注册表里 → 也红（新读模型必须把键常量导出并登记，否则守卫覆盖不到它）。
  *
  * 因此正确的修法只有一种：文案由键常量派生（模板串），而不是再抄一遍。
+ *
+ * ── W2 扩面 ──
+ * 本守卫此前只走驾驶舱与趋势层这两份装配载荷，于是本波新增的四个口径面
+ * （先挪后买装配、流水金额、风险金额、效期金额）**一个版本记号都不发**，守卫看不见它们：
+ * 既谈不上"版本漂了"，也谈不上"没登记"——它们根本不在检查范围里。
+ * 现在这四个面各自导出一个口径常量并把它下发到载荷里，守卫扫它们的**全部字符串**
+ * （不是只扫 `Block.source.source`——这些面不是 Block），逐个记号比对注册表：
+ *   - 记号版本 ≠ 当前常量 → 红；
+ *   - 记号的模型名没登记 → 红；
+ *   - 某个面**一个记号都不发** → 红（这正是它们此前的状态：没有信号 = 守卫失效）。
  */
 import { describe, expect, it } from "vitest";
 import * as schema from "@/db/schema";
@@ -37,6 +47,11 @@ import { SALES_SPIKE_CACHE_KEY } from "@/server/modules/report/sales-spike";
 import { SUPPLIER_PAYMENT_TERM_KEY } from "@/server/modules/report/supplier-payment-term";
 import { TRANSFER_ROUTES_CACHE_KEY } from "@/server/modules/report/transfer-routes";
 import { WAREHOUSE_INVENTORY_CACHE_KEY } from "@/server/modules/report/warehouse-inventory";
+/* W2 新增的四个口径面（不是 Block，各自把口径记号下发在载荷里） */
+import { MOVE_OR_BUY_CALIBRE_KEY, getMoveOrBuyDecisions } from "@/server/modules/report/move-or-buy";
+import { RISK_MONEY_CALIBRE_KEY, getRiskWorklist } from "@/server/modules/report/risk";
+import { EXPIRY_MONEY_CALIBRE_KEY, listExpiryBatches } from "@/server/modules/inventory/expiry-list";
+import { LEDGER_MONEY_CALIBRE_KEY, listLedger } from "@/server/modules/inventory/queries";
 
 /**
  * 出处文案里**允许出现**的所有 `<名>/v<N>` 记号，全部取自各模块导出的键常量。
@@ -58,6 +73,10 @@ const CALIBRE_KEYS: readonly string[] = [
   SUPPLIER_PAYMENT_TERM_KEY,
   TRANSFER_ROUTES_CACHE_KEY,
   WAREHOUSE_INVENTORY_CACHE_KEY,
+  MOVE_OR_BUY_CALIBRE_KEY,
+  RISK_MONEY_CALIBRE_KEY,
+  EXPIRY_MONEY_CALIBRE_KEY,
+  LEDGER_MONEY_CALIBRE_KEY,
 ];
 
 /** 模型名 → 当前版本键（"inventory-alerts" → "inventory-alerts/v4"） */
@@ -90,6 +109,41 @@ function collectSourceStrings(node: unknown, path: string, out: { path: string; 
   }
 }
 
+/** 递归收集载荷里**每一个**字符串（新口径面不是 Block，没有统一的 source 字段） */
+function collectAllStrings(node: unknown, path: string, out: { path: string; text: string }[]): void {
+  if (typeof node === "string") {
+    out.push({ path, text: node });
+    return;
+  }
+  if (node == null || typeof node !== "object") return;
+  if (Array.isArray(node)) {
+    node.forEach((v, i) => collectAllStrings(v, `${path}[${i}]`, out));
+    return;
+  }
+  for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+    collectAllStrings(v, path ? `${path}.${k}` : k, out);
+  }
+}
+
+/** 逐记号比对注册表；返回漂移与未登记两张清单 */
+function checkTokens(found: { path: string; text: string }[]): {
+  checked: number; drifted: string[]; unregistered: string[];
+} {
+  const drifted: string[] = [];
+  const unregistered: string[] = [];
+  let checked = 0;
+  for (const { path, text } of found) {
+    for (const token of text.match(CALIBRE_TOKEN) ?? []) {
+      checked += 1;
+      const name = token.slice(0, token.lastIndexOf("/"));
+      const current = CURRENT_BY_NAME.get(name);
+      if (current == null) unregistered.push(`${path}: ${token}`);
+      else if (current !== token) drifted.push(`${path}: 文案写 ${token}，当前常量是 ${current}`);
+    }
+  }
+  return { checked, drifted, unregistered };
+}
+
 describe("驾驶舱出处文案不得指向已不存在的口径版本（C6 守卫）", () => {
   it("cockpit 与 cockpit-trends 的每个 Block.source.source 里的 /vN 都必须等于当前导出的键常量", async () => {
     const { db, client } = await createTestDb();
@@ -104,18 +158,7 @@ describe("驾驶舱出处文案不得指向已不存在的口径版本（C6 守�
       // 装配确实产出了一批块（守卫不能因为什么都没收集到而"通过"）
       expect(found.length).toBeGreaterThan(20);
 
-      const drifted: string[] = [];
-      const unregistered: string[] = [];
-      let checked = 0;
-      for (const { path, text } of found) {
-        for (const token of text.match(CALIBRE_TOKEN) ?? []) {
-          checked += 1;
-          const name = token.slice(0, token.lastIndexOf("/"));
-          const current = CURRENT_BY_NAME.get(name);
-          if (current == null) unregistered.push(`${path}: ${token}`);
-          else if (current !== token) drifted.push(`${path}: 文案写 ${token}，当前常量是 ${current}`);
-        }
-      }
+      const { checked, drifted, unregistered } = checkTokens(found);
 
       // 出处文案里必须真的出现过版本号——否则本守卫形同虚设
       expect(checked).toBeGreaterThan(10);
@@ -129,5 +172,50 @@ describe("驾驶舱出处文案不得指向已不存在的口径版本（C6 守�
   it("注册表本身是自洽的：每个键都形如 <名>/v<N> 且模型名不重复", () => {
     for (const key of CALIBRE_KEYS) expect(key).toMatch(/^[a-z][a-z0-9-]*\/v\d+$/);
     expect(CURRENT_BY_NAME.size).toBe(CALIBRE_KEYS.length);
+  });
+
+  /* ── W2：本波新增的四个口径面也必须在守卫视野内 ──
+     此前它们一个版本记号都不发，守卫扫不到 = 守卫对它们完全失效。 */
+  it("先挪后买 / 流水金额 / 风险金额 / 效期金额：各自发出口径记号，且记号已登记、版本不漂", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const surfaces: { name: string; expectKey: string; payload: unknown }[] = [
+        {
+          name: "move-or-buy",
+          expectKey: MOVE_OR_BUY_CALIBRE_KEY,
+          payload: await getMoveOrBuyDecisions({ roles: ["pmc"] }, db),
+        },
+        {
+          name: "risk-money",
+          expectKey: RISK_MONEY_CALIBRE_KEY,
+          payload: await getRiskWorklist({ withValue: true }, db),
+        },
+        {
+          name: "expiry-money",
+          expectKey: EXPIRY_MONEY_CALIBRE_KEY,
+          payload: await listExpiryBatches({ withValue: true }, db),
+        },
+        {
+          name: "ledger-money",
+          expectKey: LEDGER_MONEY_CALIBRE_KEY,
+          payload: await listLedger({ page: 1, pageSize: 20, withValue: true }, db),
+        },
+      ];
+
+      for (const s of surfaces) {
+        const found: { path: string; text: string }[] = [];
+        collectAllStrings(s.payload, s.name, found);
+        const tokens = found.flatMap((f) => f.text.match(CALIBRE_TOKEN) ?? []);
+        expect(
+          tokens,
+          `${s.name} 的载荷里必须带口径记号——一个不发版本号的面，本守卫对它等于不存在`,
+        ).toContain(s.expectKey);
+        const { drifted, unregistered } = checkTokens(found);
+        expect(drifted, `${s.name} 的口径记号指向了已不存在的版本`).toEqual([]);
+        expect(unregistered, `${s.name} 的口径记号没有登记进 CALIBRE_KEYS`).toEqual([]);
+      }
+    } finally {
+      await client.close();
+    }
   });
 });

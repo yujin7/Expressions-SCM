@@ -17,7 +17,7 @@ import { loadExternalVelocitySafe } from "@/server/modules/report/external-veloc
 import { loadSalesSpike } from "@/server/modules/report/sales-spike";
 
 /**
- * 库存预警表读模型 `inventory-alerts/v4`（D57；四屏第 2 屏 B-左）。
+ * 库存预警表读模型（键见 `INVENTORY_ALERTS_CACHE_KEY`；D57，四屏第 2 屏 B-左）。
  *
  * 逐启用成品 SKU 一行：等级（sku_planning_policy 最新期，缺则按近 6 月内部销量现算四档）、
  * 日销三口径并列（外部平台净件数 ÷30 / 内部月表近 6 月折日 / 实时仓出库近 30 天折日）、
@@ -40,7 +40,16 @@ import { loadSalesSpike } from "@/server/modules/report/sales-spike";
  * - 临期口径（replenish/expiry）改为逐仓只取最新盘点期：batch_stocks 唯一键含 stocktake_date，
  *   两期并存时 nearQty/expiredQty 直接翻倍。
  */
-export const INVENTORY_ALERTS_CACHE_KEY = "inventory-alerts/v4";
+/**
+ * v5 口径升版（绑定补完，缓存键升版，旧缓存不再命中）：
+ * - `batch_stocks` 此前只绑 `max(id)`：**原地改数量**（同一行 qty 从 500 改成 5）与**删行**都不改变 max(id)，
+ *   临期量因此可以整夜不重算。改为绑数量指纹（max(id) / 行数 / Σqty / 最新盘点期），
+ *   与兄弟读模型 `risk-expiry-buckets` 同法。
+ * - `skus` 此前**一列都没绑**，而行集就是「启用成品」、临期判定又逐 SKU 读 `near_expiry_days`：
+ *   停用一个 SKU、新建一个成品、把某 SKU 的 near_expiry_days 从 90 改成 30，绑定全都看不见。
+ *   改为绑启用成品的行数/最大 id/已维护 near_expiry_days 的个数与其合计/最大 updated_at。
+ */
+export const INVENTORY_ALERTS_CACHE_KEY = "inventory-alerts/v5";
 
 export type DailySource = "external" | "internal" | "ledger";
 
@@ -154,6 +163,20 @@ async function binding(db: AnyDb): Promise<string> {
     WHERE scope = 'global' AND key IN (${sql.join(INVENTORY_ALERTS_BINDING_PARAM_KEYS.map((k) => sql`${k}`), sql`, `)})`));
   const paramValues = new Map(paramRows.map((r) => [String(r.key), String(r.value)]));
   const params = INVENTORY_ALERTS_BINDING_PARAM_KEYS.map((k) => `${k}=${paramValues.get(k) ?? "default"}`).join(",");
+  /* 临期量的分子在 batch_stocks 里：原地改数量与删行都不动 max(id)，必须绑数量指纹。 */
+  const [bsf] = resultRows<Record<string, unknown>>(await db.execute(sql`
+    SELECT coalesce(max(id), 0)::int AS max_id, count(*)::int AS n,
+           coalesce(sum(qty), 0)::text AS qty_sum,
+           coalesce(max(stocktake_date)::text, '') AS max_period
+    FROM batch_stocks WHERE expiry_date IS NOT NULL AND qty > 0`));
+  /* 行集 = 启用成品；临期阈值逐 SKU 读 skus.near_expiry_days。停用/新建/改阈值都必须换出新绑定。 */
+  const [skf] = resultRows<Record<string, unknown>>(await db.execute(sql`
+    SELECT count(*)::int AS n,
+           coalesce(max(id), 0)::int AS max_id,
+           count(near_expiry_days)::int AS maintained,
+           coalesce(sum(near_expiry_days), 0)::int AS sum_days,
+           coalesce(max(updated_at)::text, '') AS updated
+    FROM skus WHERE active = true AND sku_type = 'finished'`));
   const [b] = resultRows<Record<string, unknown>>(await db.execute(sql`
     SELECT (SELECT coalesce(max(id),0) FROM stock_ledger) AS l,
            (SELECT coalesce(max(id),0) FROM stock_snapshots) AS s,
@@ -166,11 +189,12 @@ async function binding(db: AnyDb): Promise<string> {
            (SELECT count(*) FILTER (WHERE status IN ('approved','in_progress'))::text || ':' || coalesce(max(id),0)::text || ':' || coalesce(string_agg(DISTINCT expected_date::text, ','), '') FROM po_docs) AS po_d,
            (SELECT count(*) FILTER (WHERE status IN ('approved','in_progress') AND is_paused = false)::text || ':' || coalesce(max(id),0)::text || ':' || coalesce(string_agg(DISTINCT due_date::text, ','), '') FROM wo_docs) AS wo,
            (SELECT coalesce(max(id),0)::text || ':' || coalesce(sum(inbound_qty),0)::text || ':' || coalesce(sum(closed_qty),0)::text FROM transit_refs WHERE kind = 'fg_order') AS tr,
-           (SELECT coalesce(max(id),0) FROM batch_stocks) AS bs,
            (SELECT coalesce(max(built_at)::text,'') FROM rollup_supplier_lead) AS rl,
            (SELECT coalesce(max(built_at)::text,'') FROM report_read_model_cache WHERE key LIKE 'sales-spike/%') AS sp
   `));
-  return `alerts:${b?.l}:${b?.s}:${b?.m}:${b?.p}:${b?.pu}:${b?.pol}|ev:${b?.ev}|supply:${b?.pol_l}|${b?.po_d}|${b?.wo}|${b?.tr}|bs:${b?.bs}|rl:${b?.rl}|sp:${b?.sp}|params:${params}|day:${todayShanghai()}`;
+  const bs = `${Number(bsf?.max_id ?? 0)}/${Number(bsf?.n ?? 0)}/${String(bsf?.qty_sum ?? "0")}/${String(bsf?.max_period ?? "")}`;
+  const sk = `${Number(skf?.n ?? 0)}/${Number(skf?.max_id ?? 0)}/${Number(skf?.maintained ?? 0)}/${Number(skf?.sum_days ?? 0)}/${String(skf?.updated ?? "")}`;
+  return `alerts:${b?.l}:${b?.s}:${b?.m}:${b?.p}:${b?.pu}:${b?.pol}|ev:${b?.ev}|supply:${b?.pol_l}|${b?.po_d}|${b?.wo}|${b?.tr}|bs:${bs}|sku:${sk}|rl:${b?.rl}|sp:${b?.sp}|params:${params}|day:${todayShanghai()}`;
 }
 
 /** 逐 SKU 汇总未结供给：有日期未逾期 / 无日期 / 逾期 / 下一笔到货 */

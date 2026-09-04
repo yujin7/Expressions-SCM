@@ -83,7 +83,7 @@ describe("report/closed-loop 建议准确度 + 放弃留痕", () => {
 
   it("分布：样本 3（抑制行不计、同日旧版本去重）、成熟 2；下单 90–110% ×1 + 0 ×1；出库 50–90% ×1；快照仓 SKU 覆盖弃权", async () => {
     const a = await getSuggestionAccuracy(db, { now: NOW });
-    expect(a).toMatchObject({ version: "closed-loop-accuracy/v1", sample: 3, matured: 2, immature: 1, ledgerCoverage: { withRealtimeLedger: 1, snapshotOnly: 1 } });
+    expect(a).toMatchObject({ version: "closed-loop-accuracy/v2", sample: 3, matured: 2, immature: 1, ledgerCoverage: { withRealtimeLedger: 1, snapshotOnly: 1 } });
     const count = (list: { key: string; count: number }[], key: string) => list.find((b) => b.key === key)?.count;
     expect(count(a.orderedVsRequired, "90_110")).toBe(1);
     expect(count(a.orderedVsRequired, "none")).toBe(1);

@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 
 import {
   batches, ctDocs, flDocs, jsDocs, shDocs, skus, spus, stockBalances, stockDocs, stockLedger,
@@ -9,6 +9,7 @@ import { dMul, dQty } from "@/server/core/decimal";
 import { resolveDb } from "@/server/core/svc";
 import { resolveUnitCosts } from "@/server/core/valuation";
 import { LEDGER_SOURCE_TARGETS, ledgerSourceHref, type LedgerSourceTable } from "@/lib/ledger-source-docs";
+import { createdWithinShanghaiDays } from "@/server/core/doc-search";
 
 
 /** SKU×仓库×批次 余额（实时仓口径；快照仓 1.1 并入）。nonzero 默认 true=隐藏零余额行 */
@@ -145,9 +146,30 @@ export interface LedgerRow {
   action: string;
   /** 本行金额 = 数量 × 单位成本（core/valuation）；无成本 → null。SENSITIVE_FIELDS 收录 amount */
   amount?: string | null;
-  /** 窗口内累计余额金额；无成本 → null。SENSITIVE_FIELDS 收录 balanceAmount */
+  /**
+   * 窗口内累计余额金额 = `balanceQty` x **今日**单位成本（见 `LEDGER_MONEY_CALIBRE.balanceBasis`）。
+   * 三件事必须和这个数一起出现，否则它会被当成「当时的库存价值」：
+   *  1. `balanceQty` 只在**当前筛选窗口内**累计，不是该 (SKU,仓) 的历史全量余额——窗口起点之前的
+   *     出入库不参与，因此这个数可以是负的；
+   *  2. 单位成本是**取数当刻**的成本，不是每一行发生当时的成本（系统没有逐行历史成本）；
+   *  3. 无成本 -> null（不是 0）。SENSITIVE_FIELDS 收录 balanceAmount。
+   */
   balanceAmount?: string | null;
 }
+
+/**
+ * 流水金额口径（唯一文案权威；出处守卫 `tests/report/calibre-provenance-guard.test.ts` 认 `key`）。
+ * 前端不得另写一份——一个可以为负、又没有成本基准日的金额列，没有这段话就是错的。
+ */
+export const LEDGER_MONEY_CALIBRE_KEY = "ledger-money/v1";
+export const LEDGER_MONEY_CALIBRE = {
+  key: LEDGER_MONEY_CALIBRE_KEY,
+  costSource: "单位成本：core/valuation.resolveUnitCosts（sku_costs 优先，缺则财务运营成本观察）；两者皆无则金额为空，不是 0 元",
+  amountBasis: "本行金额 = 本行数量变动 x 单位成本（入库为正、出库为负）",
+  balanceBasis: "累计余额金额 = 窗口内累计余额 x 单位成本",
+  windowNote: "累计余额只在**当前筛选窗口内**累加（窗口起点之前的出入库不参与），因此它不是该 SKU/仓的历史全量余额，**可以为负**——负值表示这段窗口里出多于进，不表示库存为负。",
+  costAsOfNote: "单位成本是**取数当刻**的成本，不是每一行发生当时的历史成本（系统不保存逐行历史成本）；因此该列是「按今天的成本重估这段窗口的净流量」，不是当时的库存价值。",
+} as const;
 
 const LEDGER_SOURCE_TABLES = {
   stock_docs: stockDocs,
@@ -209,13 +231,17 @@ export async function listLedger(
     withValue?: boolean;
   },
   dbArg?: AnyDb,
-): Promise<{ rows: LedgerRow[]; total: number }> {
+): Promise<{ rows: LedgerRow[]; total: number; moneyCalibre: typeof LEDGER_MONEY_CALIBRE | null }> {
   const db = await resolveDb(dbArg);
   const conds = [];
   if (opts.skuId) conds.push(eq(stockLedger.skuId, opts.skuId));
   if (opts.warehouseId) conds.push(eq(stockLedger.warehouseId, opts.warehouseId));
-  if (opts.from) conds.push(gte(stockLedger.occurredAt, new Date(opts.from)));
-  if (opts.to) conds.push(lte(stockLedger.occurredAt, new Date(opts.to)));
+  /* 上海业务日边界（唯一权威 core/doc-search.createdWithinShanghaiDays）。
+     此前写的是 `new Date(opts.to)`：`"2026-09-04"` 被 JS 解析成 **UTC 午夜**，于是
+     `occurred_at <= 2026-09-04T00:00:00Z` = 上海时间 09-04 08:00，把当天 08:00 之后的
+     16 小时流水整段切掉——用户选到 09-04，看不到 09-04 下午过账的单。起点同理会多带上
+     09-03 的 08:00–24:00。日界一律走同一个 helper，不再各写一份时区换算。 */
+  conds.push(...createdWithinShanghaiDays(stockLedger.occurredAt, opts.from, opts.to));
   const where = conds.length ? and(...conds) : undefined;
 
   /* 累计余额必须在**筛选后的整个窗口**上按升序算，因此先做带窗口函数的子查询，
@@ -310,6 +336,8 @@ export async function listLedger(
       };
     }),
     total,
+    // 金额口径随金额一起下发：页面必须原样展示（成本来源 + 成本基准 + 窗口口径 + 可为负）
+    moneyCalibre: opts.withValue ? LEDGER_MONEY_CALIBRE : null,
   };
 }
 

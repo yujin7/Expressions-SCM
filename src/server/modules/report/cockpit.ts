@@ -360,7 +360,9 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
           state: b.orderSystem.monthPoCount > 0 || b.orderSystem.cycleSamples > 0 ? "ready" : "insufficient",
           data: { ...gated, otifRatePct: otifRatePctOf(b.orderSystem.otifRate) },
           note: `${canSeeMoney ? "" : "金额仅价格可见角色；"}交付 n=${b.orderSystem.cycleSamples}${b.orderSystem.cycleInsufficient ? "（样本不足）" : ""}；降本基线年 ${b.costDown.baselineYear}`,
-          source: { tier: "fact", source: `${PURCHASE_ORDER_METRICS_KEY}（SCM PO/SH 事实）`, asOf: po.value.builtAt ?? null },
+          /* OTIF 有两套承诺口径（原始承诺 / 当前承诺），趋势层一直在出处里写明是哪一套，
+             驾驶舱这块此前没写——同一个 OTIF 数字在两屏之间无法核对是不是同一口径。 */
+          source: { tier: "fact", source: `${PURCHASE_ORDER_METRICS_KEY}（SCM PO/SH 事实；OTIF ${po.value.otifBasisLabel}口径）`, asOf: po.value.builtAt ?? null },
         };
       })()
     : { state: "error", data: null, note: po.error, source: { tier: "fact", source: PURCHASE_ORDER_METRICS_KEY, asOf: null } };

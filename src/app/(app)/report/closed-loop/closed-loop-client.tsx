@@ -89,12 +89,17 @@ function AccuracyCard({ metricId, fallbackTitle, question, buckets, n, accuracy,
       metricId={metricId}
       grain="已捕获的建议行（同 SKU 同业务日取最新版本，视野期已走完）"
       unit="行数"
-      source={{ tier: "derived", source: `${accuracy.version} · planning_version_lines × bh/po 行 × stock_ledger` }}
+      /* 引擎口径必须写进出处：样本横跨 time-phased-v2/v3 时，"准确度改善"可能只是净需求分母换了算法 */
+      source={{ tier: "derived", source: `${accuracy.version} · planning_version_lines × bh/po 行 × stock_ledger · 引擎 ${(accuracy.engineMix ?? []).map((m) => m.engineVersion).join(" + ") || "—"}` }}
       summary={summary}
       state={state}
       stateDetail={accuracy.sample === 0
         ? "尚无人工捕获的建议快照——在补货建议页固化版本（planning_versions）后才有样本"
-        : `已捕获 ${accuracy.sample} 行，视野期已走完 ${accuracy.matured} 行、未走完 ${accuracy.immature} 行；本分布可评 ${n} 行${accuracy.truncated ? `（取数已达上限 ${accuracy.rowLimit} 行，只覆盖最近若干版本）` : ""}`}
+        : `已捕获 ${accuracy.sample} 行，视野期已走完 ${accuracy.matured} 行、未走完 ${accuracy.immature} 行；本分布可评 ${n} 行${accuracy.truncated ? `（取数已达上限 ${accuracy.rowLimit} 行，只覆盖最近若干版本）` : ""}${
+          (accuracy.engineMix ?? []).length > 1
+            ? `；样本横跨 ${accuracy.engineMix.length} 套引擎口径（${accuracy.engineMix.map((m) => `${m.engineVersion} ${m.matured} 行`).join("、")}），总分布不是同一把尺子`
+            : ""
+        }`}
       caveat={caveat}
       height={220}
       dataView={(

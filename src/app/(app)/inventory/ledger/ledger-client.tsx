@@ -12,7 +12,18 @@ import { useListState } from "@/components/useListState";
 import { fetchJson } from "@/components/fetchJson";
 import { formatYuan } from "@/components/format";
 
+import CaliberNote from "@/components/CaliberNote";
 import { LEDGER_SOURCE_LABELS } from "@/components/labels";
+
+/** 服务端 LEDGER_MONEY_CALIBRE 的形状（文案权威在服务端，这里只是类型） */
+interface MoneyCalibre {
+  key: string;
+  costSource: string;
+  amountBasis: string;
+  balanceBasis: string;
+  windowNote: string;
+  costAsOfNote: string;
+}
 
 interface LedgerRow {
   id: number;
@@ -48,6 +59,7 @@ function LedgerInner() {
   const [rows, setRows] = useState<LedgerRow[]>([]);
   const [total, setTotal] = useState(0);
   const [canSeeValue, setCanSeeValue] = useState(false);
+  const [moneyCalibre, setMoneyCalibre] = useState<MoneyCalibre | null>(null);
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   const listState = useListState({
@@ -69,12 +81,13 @@ function LedgerInner() {
       if (warehouseId != null) params.set("warehouseId", String(warehouseId));
       if (from) params.set("from", from);
       if (to) params.set("to", to);
-      const res = await fetchJson<{ rows: LedgerRow[]; total: number; canSeeValue?: boolean }>(
+      const res = await fetchJson<{ rows: LedgerRow[]; total: number; canSeeValue?: boolean; moneyCalibre?: MoneyCalibre | null }>(
         `/api/inventory/ledger?${params.toString()}`,
       );
       setRows(res.rows);
       setTotal(res.total);
       setCanSeeValue(Boolean(res.canSeeValue));
+      setMoneyCalibre(res.moneyCalibre ?? null);
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -140,12 +153,20 @@ function LedgerInner() {
               v == null ? <Typography.Text type="secondary">无成本</Typography.Text> : formatYuan(v),
           },
           {
-            title: "累计余额金额",
+            /* 这一列可以是负数、成本是「今天的」、余额只在窗口内累计——三件事都必须挂在列上，
+               否则它会被读成「当时的库存价值」。 */
+            title: (
+              <Tooltip title={moneyCalibre ? `${moneyCalibre.balanceBasis}。${moneyCalibre.windowNote} ${moneyCalibre.costAsOfNote}` : ""}>
+                <span>累计余额金额 ⓘ</span>
+              </Tooltip>
+            ),
             dataIndex: "balanceAmount",
-            width: 150,
+            width: 160,
             align: "right",
             render: (v: string | null | undefined) =>
-              v == null ? <Typography.Text type="secondary">无成本</Typography.Text> : formatYuan(v),
+              v == null
+                ? <Typography.Text type="secondary">无成本</Typography.Text>
+                : <Typography.Text type={Number(v) < 0 ? "danger" : undefined}>{formatYuan(v)}</Typography.Text>,
           },
         ] as ColumnsType<LedgerRow>)
       : []),
@@ -171,6 +192,25 @@ function LedgerInner() {
       <Typography.Title level={4} style={{ marginTop: 0 }}>
         库存流水
       </Typography.Title>
+      <CaliberNote
+        summary={<>仅追加事实表 stock_ledger；时间窗按**上海业务日**含首尾（选到某天即包含当天全天）。{moneyCalibre ? <>　金额口径 {moneyCalibre.key}。</> : null}</>}
+        detail={
+          <div>
+            <p>累计余额 = 该 (SKU × 仓库) 在**当前筛选窗口内**、截至本行的累计（服务端窗口函数计算，翻页仍正确）。</p>
+            {/* 金额口径文案唯一权威在服务端（inventory/queries.ts 的 LEDGER_MONEY_CALIBRE） */}
+            {moneyCalibre ? (
+              <>
+                <p><b>金额口径（{moneyCalibre.key}）</b></p>
+                <p>· {moneyCalibre.costSource}</p>
+                <p>· {moneyCalibre.amountBasis}</p>
+                <p>· {moneyCalibre.balanceBasis}</p>
+                <p>· {moneyCalibre.windowNote}</p>
+                <p>· {moneyCalibre.costAsOfNote}</p>
+              </>
+            ) : null}
+          </div>
+        }
+      />
       <ListToolbar
         state={listState}
         primaryActions={

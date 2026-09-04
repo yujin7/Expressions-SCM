@@ -66,7 +66,7 @@ interface Row {
   transfers: TransferOption[];
   transferQty: number;
   residualBuyQty: string | null;
-  action: "transfer_only" | "transfer_then_buy" | "buy_only";
+  action: "transfer_only" | "transfer_then_buy" | "buy_only" | "none";
 }
 
 interface Data {
@@ -77,7 +77,12 @@ interface Data {
     coveredByTransfer: number;
     stillNeedBuy: number;
     buyOnly: number;
+    noAction: number;
     horizonDays: number;
+    transferLineTotal: number;
+    transferLinesLoaded: number;
+    transferTruncated: boolean;
+    calibreKey: string;
     moneyVisible: boolean;
     laneCostAvailable: boolean;
     calibres: {
@@ -94,6 +99,7 @@ const ACTION_TAG: Record<Row["action"], { color: string; label: string }> = {
   transfer_only: { color: "green", label: "先挪即可" },
   transfer_then_buy: { color: "orange", label: "先挪再买" },
   buy_only: { color: "red", label: "只能买" },
+  none: { color: "default", label: "无需动作" },
 };
 
 const dash = <Typography.Text type="secondary">—</Typography.Text>;
@@ -376,6 +382,11 @@ export default function MoveOrBuyClient() {
               本页唯一做加减的量是<b>件数</b>：「挪完仍需买」= 建议补货量 − 可挪合计（不为负）。
               两个动作都只生成<b>草稿</b>，提交/审批/过账仍走原流程与原权限。
             </p>
+            <p>
+              装配口径 {data?.summary.calibreKey ?? "—"}；调拨侧读入{" "}
+              {data ? `${data.summary.transferLinesLoaded}/${data.summary.transferLineTotal}` : "—"} 条建议
+              {data?.summary.transferTruncated ? "（未取全，见上方红条）" : ""}。
+            </p>
           </div>
         }
       />
@@ -387,12 +398,23 @@ export default function MoveOrBuyClient() {
           message="线路费用读模型不可用——费用列为空，挪货与采购的结论不受影响"
         />
       ) : null}
+      {/* 调拨侧被截断时结论会**反向出错**（有货可挪的行会显示「只能买」），必须显式告警而不是静默 */}
+      {data?.summary.transferTruncated ? (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={`调拨建议未取全：服务端 ${data.summary.transferLineTotal} 条，本页只读入 ${data.summary.transferLinesLoaded} 条`}
+          description="未读入的调拨建议在本页会表现为「只能买」——请先缩小范围或到调拨建议页核对，再据此下单。"
+        />
+      ) : null}
       <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="先挪后买决策表" retrying={loading} />
       <Space size={24} wrap style={{ marginBottom: 12 }}>
         <Statistic title="需要动作的 SKU" value={data ? data.summary.skuCount : "—"} />
         <Statistic title="先挪即可（无需采购）" value={data ? data.summary.coveredByTransfer : "—"} />
         <Statistic title="先挪再买" value={data ? data.summary.stillNeedBuy : "—"} />
         <Statistic title="只能买（无货可挪）" value={data ? data.summary.buyOnly : "—"} />
+        <Statistic title="无需动作" value={data ? data.summary.noAction : "—"} />
       </Space>
       <ListToolbar
         state={listState}

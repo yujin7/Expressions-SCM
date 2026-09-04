@@ -39,12 +39,27 @@ interface RiskRow {
   atRiskAmount?: string | null;
 }
 
+interface MoneyCalibre {
+  key: string;
+  costSource: string;
+  amountBasis: string;
+  atRiskBasis: string;
+  asOfNote: string;
+  precisionNote: string;
+  sortNote: string;
+}
+
 interface RiskData {
   today: string;
   slowThreshold: number;
   rows: RiskRow[];
   total: number;
   byAction: Record<string, number>;
+  /** 服务端实际生效的排序键（金额序在服务端全集上排完再分页） */
+  sort?: "action" | "atRiskAmount" | "amount";
+  /** 金额口径（服务端唯一文案权威；无金额权限 = null） */
+  moneyCalibre?: MoneyCalibre | null;
+  costCoverage?: { covered: number; total: number } | null;
   canSeeValue?: boolean;
 }
 
@@ -82,10 +97,12 @@ export default function RiskClient() {
   const [data, setData] = useState<RiskData | null>(null);
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "risk", defaults: { q: "", action: "" }, defaultPageSize: 50 });
+  // sort 进 URL：金额排序必须由**服务端**在全集上做，客户端比较器只能排当前一页
+  const listState = useListState({ key: "risk", defaults: { q: "", action: "", sort: "atRiskAmount" }, defaultPageSize: 50 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const action = filters.action;
+  const sort = filters.sort || "atRiskAmount";
   const [selected, setSelected] = useState<RiskRow[]>([]);
   const [registering, setRegistering] = useState(false);
 
@@ -110,7 +127,7 @@ export default function RiskClient() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
+      const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize), sort });
       if (action) params.set("action", action);
       setData(await fetchJson<RiskData>(`/api/report/risk?${params.toString()}`));
     } catch (e) {
@@ -118,14 +135,14 @@ export default function RiskClient() {
     } finally {
       setLoading(false);
     }
-  }, [q, action, page, pageSize, message]);
+  }, [q, action, sort, page, pageSize, message]);
   useEffect(() => { void load(); }, [load]);
 
   const doExport = async () => {
     const all: RiskRow[] = [];
     let serverTotal = 0;
     for (let p2 = 1; p2 <= 40; p2++) { // struct#17: 提高上限至 2 万行
-      const params = new URLSearchParams({ q, page: String(p2), pageSize: "500", precise: "1" });
+      const params = new URLSearchParams({ q, page: String(p2), pageSize: "500", precise: "1", sort });
       if (action) params.set("action", action);
       const d = await fetchJson<RiskData>(`/api/report/risk?${params.toString()}`);
       serverTotal = d.total;
@@ -166,11 +183,14 @@ export default function RiskClient() {
     ...(data?.canSeeValue
       ? ([
           {
+            /* 排序一律 `sorter: true`（服务端序）：AntD 的本地比较器只排当前一页，
+               而分页总数来自服务端——第 8 页那笔最贵的永远浮不上来。 */
             title: "在库金额",
             dataIndex: "amount",
             width: 120,
             align: "right" as const,
-            sorter: (a: RiskRow, b: RiskRow) => Number(a.amount ?? 0) - Number(b.amount ?? 0),
+            sorter: true,
+            sortOrder: (sort === "amount" ? "descend" : null) as "descend" | null,
             render: (v: string | null | undefined) =>
               v == null ? <Typography.Text type="secondary">无成本</Typography.Text> : formatYuan(v),
           },
@@ -179,13 +199,13 @@ export default function RiskClient() {
             dataIndex: "atRiskAmount",
             width: 120,
             align: "right" as const,
-            defaultSortOrder: "descend" as const,
-            sorter: (a: RiskRow, b: RiskRow) => Number(a.atRiskAmount ?? 0) - Number(b.atRiskAmount ?? 0),
+            sorter: true,
+            sortOrder: (sort === "atRiskAmount" ? "descend" : null) as "descend" | null,
             render: (v: string | null | undefined) =>
               v == null
                 ? <Typography.Text type="secondary">无成本</Typography.Text>
                 : (
-                  <Tooltip title="阈值内到期量（含已过期）× 单位成本——按它排序即「先处置钱最多的」">
+                  <Tooltip title="阈值内到期量（含已过期）× 单位成本；按它排序时由服务端在全部结果上排完再分页——第 1 页就是全局最贵的那些，无成本的行排在最后（不按 ¥0 参与比较）">
                     <Typography.Text strong={Number(v) > 0}>{formatYuan(v)}</Typography.Text>
                   </Tooltip>
                 ),
@@ -292,8 +312,28 @@ export default function RiskClient() {
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>风险库存处置</Typography.Title>
       <CaliberNote
-        summary={<>效期 × 货盘注记 × 销速三源融合的处置建议；只读不开单，登记处置后到各单据执行。{data ? <>　口径日 {data.today}，滞销阈值 {data.slowThreshold} 天。</> : null}</>}
-        detail={<div><p>三源：批次效期（batch_stocks）× 货盘处置注记（PMC 货盘表备注原文）× 近 3 月销速。动作优先级：报废评审 → 禁售隔离 → 商务处置 → 促销清库 → 优先出库 → 滞销关注。</p><p>报废登记可直接创建绑定的报废出库单；审批过账后登记自动完成，红字冲销后自动重开。其他处置仍走对应业务页并人工收口。</p></div>}
+        summary={<>效期 × 货盘注记 × 销速三源融合的处置建议；只读不开单，登记处置后到各单据执行。{data ? <>　口径日 {data.today}，滞销阈值 {data.slowThreshold} 天。</> : null}{data?.moneyCalibre ? <>　金额口径 {data.moneyCalibre.key}{data.costCoverage ? <>，成本覆盖 {data.costCoverage.covered}/{data.costCoverage.total} 行</> : null}。</> : null}</>}
+        detail={
+          <div>
+            <p>三源：批次效期（batch_stocks）× 货盘处置注记（PMC 货盘表备注原文）× 近 3 月销速。动作优先级：报废评审 → 禁售隔离 → 商务处置 → 促销清库 → 优先出库 → 滞销关注。</p>
+            <p>报废登记可直接创建绑定的报废出库单；审批过账后登记自动完成，红字冲销后自动重开。其他处置仍走对应业务页并人工收口。</p>
+            {/* 金额口径文案唯一权威在服务端（report/risk.ts 的 RISK_MONEY_CALIBRE），前端不得另写一份 */}
+            {data?.moneyCalibre ? (
+              <>
+                <p><b>金额口径（{data.moneyCalibre.key}）</b></p>
+                <p>· {data.moneyCalibre.costSource}</p>
+                <p>· {data.moneyCalibre.amountBasis}</p>
+                <p>· {data.moneyCalibre.atRiskBasis}</p>
+                <p>· {data.moneyCalibre.asOfNote}</p>
+                <p>· {data.moneyCalibre.precisionNote}</p>
+                <p>· {data.moneyCalibre.sortNote}</p>
+                {data.costCoverage ? (
+                  <p>· 本次筛选下有单位成本的行：{data.costCoverage.covered}/{data.costCoverage.total}；其余行金额为空（不是 ¥0）。</p>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+        }
       />
       <ListToolbar
         state={listState}
@@ -350,6 +390,13 @@ export default function RiskClient() {
           getCheckboxProps: (r) => ({ disabled: r.disposalOpen }),
         }}
         pagination={listState.paginationProps({ total: data?.total ?? 0 })}
+        onChange={(_pagination, _filters, sorter) => {
+          /* 排序键写回 URL，由服务端在全集上排序；取消排序回落动作优先级序 */
+          const s = Array.isArray(sorter) ? sorter[0] : sorter;
+          const field = typeof s?.field === "string" ? s.field : "";
+          const next = s?.order && (field === "amount" || field === "atRiskAmount") ? field : "action";
+          if (next !== sort) listState.setFilter({ sort: next });
+        }}
       />
     </div>
   );

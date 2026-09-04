@@ -1,5 +1,5 @@
 /**
- * 库存预警表 v4（inventory-alerts/v4）+ 爆单 v2（sales-spike/v2）+ 看门狗 why 载荷。
+ * 库存预警表 v5（inventory-alerts/v5）+ 爆单 v2（sales-spike/v2）+ 看门狗 why 载荷。
  *
  * 覆盖审计 #1（未结供给降级，在库 0 不降）、#4（why）、#5（优先级拆项）、#6（学习交期只观察）、
  * #7（大促预期内爆单降严重度 + 日历覆盖率）、#8（reason/gaps 透传）、#11b（临期/积压两种预警开始产出）、
@@ -11,6 +11,7 @@ import { and, eq } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { createTestDb } from "../helpers/db";
 import { todayShanghai } from "@/server/modules/master/common";
+import { shanghaiDayOf } from "@/server/core/business-day";
 import { computeInventoryAlerts, INVENTORY_ALERTS_CACHE_KEY, summarizeSupplyForAlerts } from "@/server/modules/report/inventory-alerts";
 import { computeSalesSpike, SALES_SPIKE_CACHE_KEY } from "@/server/modules/report/sales-spike";
 import { coverWhy, runInventoryCoverWatchdog, runSalesSpikeWatchdog, spikeWhy } from "@/jobs/alert-watchdogs";
@@ -110,7 +111,7 @@ describe("库存预警表 v2 + 爆单 v2 + 看门狗 why", () => {
     const { db, client } = await createTestDb();
     try {
       const { hot, cold, aging, slow, today, promo } = await seed(db);
-      expect(INVENTORY_ALERTS_CACHE_KEY).toBe("inventory-alerts/v4");
+      expect(INVENTORY_ALERTS_CACHE_KEY).toBe("inventory-alerts/v5");
       expect(SALES_SPIKE_CACHE_KEY).toBe("sales-spike/v2");
 
       /* ── 爆单 v2 ── */
@@ -207,7 +208,10 @@ describe("库存预警表 v2 + 爆单 v2 + 看门狗 why", () => {
       expect(snap.why.length).toBeGreaterThanOrEqual(6);
       // W6：cold 没有维护生产周期，补货引擎倒推不出最晚下单日 → 回退近似值并如实标注来源
       expect(snap.orderByDateSource).toBe("fallback");
-      expect(snap.orderByDate).toBe(today); // 在库 0 → 窗口已过，按今天
+      /* 回退近似值取的是**注入的** now（这里固定为 2026-09-04T03:00Z = 上海 09-04 11:00），
+         不是墙上时钟。此前这里断言的是 `todayShanghai()`——两者只在"今天恰好也是 09-04"时相等，
+         日历一翻页整条用例就红（上海 09-05 00:00 起复现）。断言必须跟注入的时钟走。 */
+      expect(snap.orderByDate).toBe(shanghaiDayOf(now)); // 在库 0 → 窗口已过，按注入时钟的当天
       expect(snap.why.find((w) => w.label === "最晚下单日")?.value).toContain("近似");
       expect(snap.why.every((w) => typeof w.label === "string" && typeof w.value === "string" && typeof w.source === "string")).toBe(true);
       expect(snap.nextArrival.qty).toBe(80);
