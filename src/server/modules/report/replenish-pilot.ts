@@ -1,5 +1,10 @@
 /**
- * 补货试点读模型 `replenish-pilot/v1`（D59 R5：试点从稳定 SKU 起）。
+ * 补货试点读模型 `replenish-pilot/v2`（D59 R5：试点从稳定 SKU 起）。
+ *
+ * v2 口径升级（W12，缓存键升版，旧缓存不再命中）：并列出**金额口径分层** valueTier
+ * （近 6 月销量 × 单位成本，来自 report/segmentation 的 W12 列）与「数量 × 金额」迁移矩阵。
+ * **只对照，不改行为**：候选判定、权责、固化仍只读数量口径 tier；成本覆盖率不足时
+ * 金额列为 insufficient（null），绝不降级成某个等级。
  *
  * 候选口径（纯消费既有信号，不新算）：生效分层 tier ∈ S/A/B（sku_planning_policy 最近期，含人工覆写；
  * 未固化则取分层页实时 tier）∧ 规则层 XYZ = X（rules/volatility，null 不算 X）∧ 周期主数据已维护
@@ -7,7 +12,7 @@
  * 这与 rules/replenish-ownership 的 supply_chain_direct 条件相同；本读模型额外给出每个阻塞维度的人数与销量占比，
  * 让「名单为什么短」可见（研究结论：交期主数据覆盖率是最常见瓶颈）。
  *
- * 缓存：report_read_model_cache key=`replenish-pilot/v1`，source_binding = 期间|销量最新月|策略最近固化时刻|覆写数|试点数|
+ * 缓存：report_read_model_cache key=`replenish-pilot/v2`，source_binding = 期间|销量最新月|策略最近固化时刻|覆写数|试点数|
  * sku_params 最近更新+行数|运行参数（grade_* / default_*_lead_days / alert_buffer_days / detector_*）当前值|业务日；
  * 任一变化即重算，绝不以旧值冒充当前值。授权层级 derived（内部销量 + 主数据），无金额。
  */
@@ -17,12 +22,13 @@ import { salesWindow } from "@/server/core/sales-window";
 import { type AnyDb, r1, resolveDb } from "@/server/core/svc";
 import { todayShanghai } from "@/server/modules/master/common";
 import { latestPolicyPeriod, loadPolicyMap } from "@/server/modules/planning/policy";
-import { getSegmentation } from "@/server/modules/report/segmentation";
-import type { Tier } from "@/server/rules/abc";
+import { FINANCE_COST_STREAM } from "@/server/core/valuation";
+import { getSegmentation, type SegmentationResult } from "@/server/modules/report/segmentation";
+import { tierMigrationMatrix, type Tier, type TierMigrationMatrix } from "@/server/rules/abc";
 import { OWNERSHIP_LABELS, type Ownership } from "@/server/rules/replenish-ownership";
 import type { XyzClass } from "@/server/rules/volatility";
 
-export const PILOT_CACHE_KEY = "replenish-pilot/v1";
+export const PILOT_CACHE_KEY = "replenish-pilot/v2";
 
 export interface PilotRow {
   skuId: number;
@@ -45,6 +51,13 @@ export interface PilotRow {
   eligible: boolean;
   /** 未入候选的阻塞原因（候选为空数组） */
   blockers: string[];
+  /**
+   * W12 金额口径并列分层（近 6 月销量 × 单位成本）；null = insufficient（覆盖率不足或无成本）。
+   * **纯对照列**：候选判定、权责与固化都不读它。
+   */
+  valueTier: Tier | null;
+  /** 单位成本来源：sku_costs / finance_observation / null */
+  unitCostSource: "sku_costs" | "finance_observation" | null;
 }
 
 export interface PilotReadModel {
@@ -68,6 +81,16 @@ export interface PilotReadModel {
   blockers: { tierC: number; xyzNotX: number; xyzUnclassified: number; leadMissing: number; detectorHit: number };
   rows: PilotRow[];
   notes: string[];
+  /** W12 声明的分层口径开关（sys_params tier_basis）；缺省 qty */
+  tierBasis: "qty" | "value";
+  /** 实际驱动候选/权责/固化的口径恒为 qty——开关只切换页面的「主口径」标注 */
+  tierBasisApplied: "qty";
+  /** 金额口径成本覆盖（按近 6 月销量加权） */
+  costCoverage: SegmentationResult["costCoverage"];
+  /** 数量口径 tier × 金额口径 valueTier 迁移矩阵（全量） */
+  tierMigration: TierMigrationMatrix;
+  /** 金额口径已知局限（页面原样展示） */
+  valueTierLimitations: string[];
 }
 
 export async function computeReplenishPilot(dbArg?: AnyDb): Promise<PilotReadModel> {
@@ -113,6 +136,8 @@ export async function computeReplenishPilot(dbArg?: AnyDb): Promise<PilotReadMod
       pilot,
       eligible,
       blockers: reasons,
+      valueTier: r.valueTier,
+      unitCostSource: r.unitCostSource,
     };
   });
   const totalSales = seg.rows.reduce((s, r) => s + r.sales6m, 0);
@@ -121,6 +146,9 @@ export async function computeReplenishPilot(dbArg?: AnyDb): Promise<PilotReadMod
   const candidates = rows.filter((r) => r.eligible).length;
   const notes = [
     "候选 = 生效分层 S/A/B ∧ XYZ=X ∧ 加工/在途周期已维护 ∧ 无异动命中（与 rules/replenish-ownership 的「供应链直出」同条件）。",
+    seg.costCoverage.state === "ready"
+      ? `W12 金额口径分层为并列对照列（成本覆盖率按销量加权 ${seg.costCoverage.salesWeightedPct}% ≥ ${seg.costCoverage.minPct}%）：候选、权责与固化仍只读数量口径。`
+      : `W12 金额口径分层不可用：${seg.costCoverage.reason}`,
     period ? `分层取 ${period} 期固化值（含人工覆写）；XYZ/周期/异动为实时判定。` : "尚未固化任何期间的分层（sku_planning_policy 为空），分层按分层页实时值；请先执行本期固化。",
     "试点成功指标与首批范围待业务确定（计划 §7）；本读模型只给候选与销量占比，不代表已纳入。",
   ];
@@ -142,6 +170,15 @@ export async function computeReplenishPilot(dbArg?: AnyDb): Promise<PilotReadMod
     blockers,
     rows,
     notes,
+    tierBasis: seg.tierBasis,
+    tierBasisApplied: "qty",
+    costCoverage: seg.costCoverage,
+    /*
+     * 迁移矩阵按**生效分层**（含固化期与人工覆写）重算：seg.tierMigration 用的是分层页实时 tier，
+     * 而试点页展示的是生效 tier，两者在固化后可能不同——矩阵必须与同页表格的分层列一致。
+     */
+    tierMigration: tierMigrationMatrix(rows.map((r) => ({ qtyTier: r.tier, valueTier: r.valueTier }))),
+    valueTierLimitations: seg.valueTierLimitations,
   };
 }
 
@@ -153,11 +190,14 @@ export const PILOT_BINDING_PARAM_KEYS = [
   "grade_s_pct", "grade_a_pct", "grade_b_pct",
   "default_production_lead_days", "default_logistics_lead_days", "alert_buffer_days",
   "detector_sales_drop_pct", "detector_channel_shift_pct", "detector_velocity_dev_pct",
+  // W12：分层口径开关与估值覆盖率门槛会改变金额并列列与迁移矩阵
+  "tier_basis", "valuation_coverage_min_pct",
 ] as const;
 
 /**
  * 来源绑定：任一输入变化即失效。
- * 组成 = 策略期 | 销量最新月 | 策略最近固化时刻 | 覆写数 | 试点数 | sku_params 最近更新时刻+行数 | 运行参数当前值 | 业务日。
+ * 组成 = 策略期 | 销量最新月 | 策略最近固化时刻 | 覆写数 | 试点数 | sku_params 最近更新时刻+行数 |
+ *        单位成本输入（sku_costs 最近更新+行数、财务成本观察最新批次，W12） | 运行参数当前值 | 业务日。
  * 周期主数据（sku_params）是最常见的阻塞维度：补录后读模型必须立即反映，不能等到次日。
  */
 export async function pilotSourceBinding(db: AnyDb): Promise<string> {
@@ -176,6 +216,17 @@ export async function pilotSourceBinding(db: AnyDb): Promise<string> {
       rows: sql<number>`count(*)::int`,
     })
     .from(schema.skuParams);
+  // W12：金额口径分层的输入——手工成本表与财务成本观察批次，任一变化都会改变金额列与迁移矩阵
+  const [cost]: { updatedAt: string | null; rows: number }[] = await db
+    .select({
+      updatedAt: sql<string | null>`max(${schema.skuCosts.updatedAt})::text`,
+      rows: sql<number>`count(*)::int`,
+    })
+    .from(schema.skuCosts);
+  const [finance]: { jobId: number | null }[] = await db
+    .select({ jobId: sql<number | null>`max(${schema.integrationRuns.importJobId})` })
+    .from(schema.integrationRuns)
+    .where(and(eq(schema.integrationRuns.connector, "jdy"), eq(schema.integrationRuns.stream, FINANCE_COST_STREAM), eq(schema.integrationRuns.status, "succeeded")));
   const paramRows: { key: string; value: string }[] = await db
     .select({ key: schema.sysParams.key, value: schema.sysParams.value })
     .from(schema.sysParams)
@@ -184,7 +235,9 @@ export async function pilotSourceBinding(db: AnyDb): Promise<string> {
   const params = PILOT_BINDING_PARAM_KEYS.map((k) => `${k}=${paramValues.get(k) ?? "default"}`).join(",");
   return [
     period ?? "none", maxYm ?? "none", pol?.builtAt ?? "none", pol?.overrides ?? 0, pol?.pilots ?? 0,
-    `sp:${sp?.updatedAt ?? "none"}/${sp?.rows ?? 0}`, params, todayShanghai(),
+    `sp:${sp?.updatedAt ?? "none"}/${sp?.rows ?? 0}`,
+    `cost:${cost?.updatedAt ?? "none"}/${cost?.rows ?? 0}/${finance?.jobId ?? "none"}`,
+    params, todayShanghai(),
   ].join("|");
 }
 

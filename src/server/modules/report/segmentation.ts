@@ -11,17 +11,26 @@
  *   同一 6 月窗口、同一 value（销量件数）；abc 三档保持既有输出不变（不变量 tierToAbc(tier)===abc）。
  * - D59 权责 ownership：rules/replenish-ownership.decideOwnership（tier × 规则层 xyz（null 不假装 Z）×
  *   异动命中（planning/detector-hits）× 交期主数据已知（sku_params 加工+在途周期均已维护））。
- * 全表无金额字段，免脱敏；只读不写库。
+ * - W12 金额口径并列列 valueTier：同一窗口、同一切点，但 value = 近 6 月销量 × 单位成本
+ *   （core/valuation.resolveUnitCosts 唯一权威：sku_costs → 财务运营成本观察 → 无）。
+ *   **纯对照，不改任何行为**：`tier` 仍是数量口径，权责/目标/预警筛选/固化策略全部继续读 `tier`；
+ *   开关 sys_params `tier_basis`（qty|value，缺省 qty）只决定页面把哪一列标为「主口径」，
+ *   不改变 `tier` 的取值，也不 repoint 任何消费者（要切换须另立 D 号并逐个消费者复核）。
+ *   成本覆盖率（按销量加权）低于 sys_params `valuation_coverage_min_pct`（缺省 80）时，
+ *   金额列一律 `insufficient`（valueTier=null），**绝不降级成某个等级**。
+ * 全表无金额字段（金额只在内部用于排名，输出只有等级/覆盖率/占比），免脱敏；只读不写库。
  */
 import { inArray, eq, sql } from "drizzle-orm";
 import { loadExternalVelocitySafe } from "@/server/modules/report/external-velocity";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";
-import { classifyAbc, classifyTier, tierDistribution, type Tier, type TierCuts, DEFAULT_TIER_CUTS } from "@/server/rules/abc";
+import { classifyAbc, classifyTier, tierDistribution, tierMigrationMatrix, type Tier, type TierCuts, type TierMigrationMatrix, DEFAULT_TIER_CUTS } from "@/server/rules/abc";
 import { classifyXyz, type XyzClass } from "@/server/rules/volatility";
 import { decideOwnership, type Ownership } from "@/server/rules/replenish-ownership";
-import { getNumParam } from "@/server/core/params";
+import { getNumParam, getTextParam } from "@/server/core/params";
+import { resolveUnitCosts } from "@/server/core/valuation";
+import { dMul } from "@/server/core/decimal";
 import { loadDetectorHitSkuIds } from "@/server/modules/planning/detector-hits";
 import { num, r1 } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
@@ -72,6 +81,14 @@ export interface SegRow {
   detectorHit: boolean;
   /** sku_params 加工周期 >0 且在途周期已维护 */
   leadDaysKnown: boolean;
+  /**
+   * W12 金额口径并列分层（近 6 月销量 × 单位成本）。
+   * null = `insufficient`：成本覆盖率不足门槛，或本 SKU 无单位成本——**不得当作 C 级读**。
+   * 只用于对照，任何消费者（权责/目标/预警筛选/固化策略）都必须继续读 `tier`。
+   */
+  valueTier: Tier | null;
+  /** 单位成本来源：sku_costs / finance_observation / null（无成本） */
+  unitCostSource: "sku_costs" | "finance_observation" | null;
 }
 
 export interface SegMatrixCell {
@@ -94,6 +111,34 @@ export interface SegmentationResult {
   tierDistribution: Record<Tier, { count: number; value: number; valueSharePct: number }>;
   /** 权责分布（全量） */
   ownershipMix: Record<Ownership, number>;
+  /** W12 声明的分层口径开关（sys_params tier_basis）；缺省/非法 = qty */
+  tierBasis: TierBasis;
+  /**
+   * **实际驱动 `tier` 的口径恒为 qty**：本次只并列对照，不 repoint 任何消费者。
+   * tierBasis=value 时页面把金额列标为「主口径（对照）」，但 `tier` 字段不变。
+   */
+  tierBasisApplied: "qty";
+  /** 金额口径成本覆盖（按近 6 月销量加权，与 D51 估值覆盖率同族口径） */
+  costCoverage: {
+    skus: number;
+    skusWithCost: number;
+    /** 有成本 SKU 数占比 %（1dp） */
+    skuPct: number | null;
+    /** 有成本 SKU 的近 6 月销量占总销量 %（1dp）——门槛判定用的就是它 */
+    salesWeightedPct: number | null;
+    /** sys_params valuation_coverage_min_pct（缺省 80） */
+    minPct: number;
+    /** ready = 金额列可用；insufficient = 覆盖率不足，全表金额列为 null */
+    state: "ready" | "insufficient";
+    /** 覆盖不足时的说明（ready 时为 null） */
+    reason: string | null;
+  };
+  /** 金额口径四档分布（仅计数与占比，不含金额；insufficient 时全 0） */
+  valueTierDistribution: Record<Tier, { count: number }>;
+  /** W12 迁移矩阵：数量口径 tier × 金额口径 valueTier（全量，不受筛选影响） */
+  tierMigration: TierMigrationMatrix;
+  /** 本次口径的已知局限（页面必须原样展示） */
+  valueTierLimitations: string[];
 }
 
 /**
@@ -112,6 +157,30 @@ const emptyTierDist = (): SegmentationResult["tierDistribution"] => ({
   C: { count: 0, value: 0, valueSharePct: 0 },
 });
 const emptyOwnershipMix = (): Record<Ownership, number> => ({ supply_chain_direct: 0, joint_review: 0, ops_fallback: 0 });
+
+/** W12 分层口径开关取值 */
+export type TierBasis = "qty" | "value";
+export const DEFAULT_TIER_BASIS: TierBasis = "qty";
+
+const emptyValueTierDist = (): Record<Tier, { count: number }> => ({ S: { count: 0 }, A: { count: 0 }, B: { count: 0 }, C: { count: 0 } });
+
+/**
+ * W12 局限（页面与读模型都必须带着走）：金额列不是「更好的分层」，只是另一把尺；
+ * 在业务确认并另立 D 号之前，任何规则都不许改读它。
+ */
+export const VALUE_TIER_LIMITATIONS: readonly string[] = Object.freeze([
+  "金额口径 = 近 6 月销量 × 单位成本（core/valuation：sku_costs 优先，其次财务运营成本观察），是**成本口径**而非售价/毛利口径——它回答「占用多少采购金额」，不回答「赚多少钱」。",
+  "本次只并列对照，**不 repoint 任何消费者**：权责（rules/replenish-ownership）、目标覆盖天数、预警筛选、月度分层固化（sku_planning_policy）全部继续读数量口径 tier。切换须另立 D 号并逐个消费者复核。",
+  "成本覆盖率按近 6 月销量加权；低于门槛时金额列一律 insufficient，绝不降级成某个等级（把「不知道」写成 C 会直接误导长尾判定）。",
+  "财务运营成本观察是 observation_only 的月度成本，随批次变动；同一 SKU 在不同月份可能有不同成本，本口径取最新可用月，不做加权平均。",
+  "无销量（sales6m=0）的 SKU 在两套口径下都恒为 C，不因成本高低上移。",
+]);
+
+/** W12 开关：sys_params tier_basis（qty|value）；非法值回落 qty，绝不让脏值改变口径 */
+export async function loadTierBasis(db: AnyDb): Promise<TierBasis> {
+  const raw = (await getTextParam("tier_basis", DEFAULT_TIER_BASIS, db)).trim().toLowerCase();
+  return raw === "value" ? "value" : DEFAULT_TIER_BASIS;
+}
 
 /** D58 切点：sys_params grade_s/a/b_pct；非法（非递增）时回落缺省并由 rules/abc 断言兜底 */
 export async function loadTierCuts(db: AnyDb): Promise<TierCuts> {
@@ -141,6 +210,8 @@ export async function getSegmentation(
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const externalVelocity = await loadExternalVelocitySafe(db);
   const tierCuts = await loadTierCuts(db);
+  const tierBasis = await loadTierBasis(db);
+  const coverageMinPct = await getNumParam("valuation_coverage_min_pct", 80, db);
   const page = Math.max(1, query.page ?? 1);
   // allRows：内部消费者（自动补货候选等）取全量，防静默截断；HTTP 层永不传 true
   const pageSize = query.allRows ? Number.MAX_SAFE_INTEGER : Math.min(500, Math.max(1, query.pageSize ?? 50));
@@ -173,6 +244,11 @@ export async function getSegmentation(
     return {
       months, rows: [], total: 0, matrix: emptyMatrix(), policy: SEG_POLICY, xyzUnclassified: 0,
       tierCuts, tierDistribution: emptyTierDist(), ownershipMix: emptyOwnershipMix(),
+      tierBasis, tierBasisApplied: "qty",
+      costCoverage: { skus: 0, skusWithCost: 0, skuPct: null, salesWeightedPct: null, minPct: coverageMinPct, state: "insufficient", reason: "没有参与分层的成品 SKU" },
+      valueTierDistribution: emptyValueTierDist(),
+      tierMigration: tierMigrationMatrix([]),
+      valueTierLimitations: [...VALUE_TIER_LIMITATIONS],
     };
   }
   const skuIds = skuRows.map((s) => s.id);
@@ -232,6 +308,8 @@ export async function getSegmentation(
       ownershipReason: "",
       detectorHit: detectorHits.has(sku.id),
       leadDaysKnown: leadKnown.has(sku.id),
+      valueTier: null,
+      unitCostSource: null,
     });
   }
 
@@ -251,6 +329,53 @@ export async function getSegmentation(
     ownershipMix[own.ownership] += 1;
   }
   const tierDist = tierDistribution(interims.map((it, i) => ({ id: i, value: it.sales6m })), tierCuts);
+
+  /* ────────────────────────────────────────────────────────────────────────
+   * W12 金额口径并列列：value = 近 6 月销量 × 单位成本。
+   * 金额一律走 decimal 字符串（禁 float 运算）；classifyTier 只需要一个用于**排名**的数，
+   * 故最后一步才把 decimal 转成 number 排序，金额本身不进读模型输出。
+   * ──────────────────────────────────────────────────────────────────────── */
+  const costs = await resolveUnitCosts(db, skuIds);
+  let costedSales = 0;
+  let skusWithCost = 0;
+  const valueByKey: { id: number; value: number }[] = [];
+  for (const [i, it] of interims.entries()) {
+    const cost = costs.get(it.skuId) ?? null;
+    it.unitCostSource = cost?.source ?? null;
+    const unitCost = cost?.unitCost ?? null;
+    if (unitCost != null) {
+      skusWithCost += 1;
+      costedSales += it.sales6m;
+      valueByKey.push({ id: i, value: Number(dMul(String(it.sales6m), unitCost, 2)) });
+    } else {
+      // 无成本 → 金额值为 0：排名上恒 C，但下面覆盖率不足时整列会被置为 insufficient
+      valueByKey.push({ id: i, value: 0 });
+    }
+  }
+  const salesWeightedPct = totalSales > 0 ? r1((costedSales / totalSales) * 100) : null;
+  const skuPct = interims.length > 0 ? r1((skusWithCost / interims.length) * 100) : null;
+  const coverageOk = salesWeightedPct != null && salesWeightedPct >= coverageMinPct;
+  const valueTierDist = emptyValueTierDist();
+  if (coverageOk) {
+    const valueTierByKey = classifyTier(valueByKey, tierCuts);
+    for (const [i, it] of interims.entries()) {
+      // 无成本的行即使覆盖率达标也不能编一个等级出来——它自己就是「不知道」
+      it.valueTier = it.unitCostSource == null ? null : valueTierByKey.get(i) ?? "C";
+      if (it.valueTier) valueTierDist[it.valueTier].count += 1;
+    }
+  }
+  const costCoverage: SegmentationResult["costCoverage"] = {
+    skus: interims.length,
+    skusWithCost,
+    skuPct,
+    salesWeightedPct,
+    minPct: coverageMinPct,
+    state: coverageOk ? "ready" : "insufficient",
+    reason: coverageOk
+      ? null
+      : `成本覆盖率（按销量加权）${salesWeightedPct ?? 0}% < 门槛 ${coverageMinPct}%（valuation_coverage_min_pct）：金额口径分层不可用，整列显示 insufficient，不降级为等级。`,
+  };
+  const tierMigration = tierMigrationMatrix(interims.map((it) => ({ qtyTier: it.tier, valueTier: it.valueTier })));
 
   /* ── 矩阵汇总（全量，不受筛选影响） ── */
   const matrix = emptyMatrix();
@@ -280,5 +405,12 @@ export async function getSegmentation(
     tierCuts,
     tierDistribution: tierDist,
     ownershipMix,
+    tierBasis,
+    // 恒 qty：W12 只并列对照，开关不改变 tier 的取值，也不 repoint 任何消费者
+    tierBasisApplied: "qty",
+    costCoverage,
+    valueTierDistribution: valueTierDist,
+    tierMigration,
+    valueTierLimitations: [...VALUE_TIER_LIMITATIONS],
   };
 }

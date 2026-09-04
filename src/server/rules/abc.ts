@@ -129,3 +129,66 @@ export function tierDistribution(items: TierInput[], cuts: TierCuts = DEFAULT_TI
   }
   return out;
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * W12 数量口径 × 金额口径的分层迁移矩阵（纯函数）。
+ *
+ * 背景：现行分层按**件数**排名，一个便宜的大流量品会压过一个贵的战略品。
+ * 金额口径 = 近 6 月销量 × 单位成本（core/valuation 解析），作为**并列对照列**先跑一个周期。
+ * 本函数只做「两套分层各自判完之后」的交叉计数，不做任何分层判定——判定仍只有 classifyTier 一处。
+ *
+ * `valueTier` 允许为 null：成本覆盖率不足时金额列必须是 `insufficient` 而不是某个等级，
+ * 这类行计入 `insufficient` 桶，绝不并进 C（把「不知道」写成「长尾」是最容易骗过评审的错误）。
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+export const TIERS: readonly Tier[] = Object.freeze(["S", "A", "B", "C"] as const);
+
+export interface TierMigrationCell {
+  qtyTier: Tier;
+  /** null = 金额口径不可用（覆盖率不足/无成本） */
+  valueTier: Tier | null;
+  count: number;
+}
+
+export interface TierMigrationMatrix {
+  /** 4 × 5 全格（含 valueTier=null 一列），零格也出行，便于页面直接渲染矩阵 */
+  cells: TierMigrationCell[];
+  /** 两套口径判定一致的项数（valueTier=null 不算一致） */
+  agree: number;
+  /** 两套口径都判出等级、但等级不同的项数 */
+  disagree: number;
+  /** 金额口径不可用的项数 */
+  insufficient: number;
+  total: number;
+  /** 一致率 %（1dp）= agree ÷ (agree + disagree)；无可比项 → null */
+  agreePct: number | null;
+}
+
+export function tierMigrationMatrix(items: { qtyTier: Tier; valueTier: Tier | null }[]): TierMigrationMatrix {
+  const counts = new Map<string, number>();
+  let agree = 0;
+  let disagree = 0;
+  let insufficient = 0;
+  for (const it of items) {
+    const key = `${it.qtyTier}|${it.valueTier ?? ""}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    if (it.valueTier == null) insufficient += 1;
+    else if (it.valueTier === it.qtyTier) agree += 1;
+    else disagree += 1;
+  }
+  const cells: TierMigrationCell[] = [];
+  for (const qtyTier of TIERS) {
+    for (const valueTier of [...TIERS, null] as (Tier | null)[]) {
+      cells.push({ qtyTier, valueTier, count: counts.get(`${qtyTier}|${valueTier ?? ""}`) ?? 0 });
+    }
+  }
+  const comparable = agree + disagree;
+  return {
+    cells,
+    agree,
+    disagree,
+    insufficient,
+    total: items.length,
+    agreePct: comparable > 0 ? Math.round((agree / comparable) * 1000) / 10 : null,
+  };
+}
