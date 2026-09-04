@@ -8,6 +8,7 @@ import {
   syncJiandaoyunForm,
 } from "@/server/integrations/jiandaoyun-sync";
 import { createTestDb } from "../helpers/db";
+import { ackRecordDeletion } from "@/server/integrations/deletion-ack";
 
 function response(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -661,6 +662,70 @@ describe("简道云受控同步", () => {
       { id: "3".repeat(24), code: "SKU-3", updatedAt: "2026-07-30T03:00:00.000Z" },
       { id: "4".repeat(24), code: "SKU-4", updatedAt: "2026-07-30T03:00:00.000Z" },
     ], "9");
+  });
+
+  it("签了墓碑的记录被放行：同步恢复，旧批次被新批次替代", async () => {
+    const { db } = await createTestDb();
+    const [admin] = await db.insert(schema.users).values({ name: "墓碑管理员", roles: ["admin"] }).returning();
+    const original = [
+      { id: "1".repeat(24), code: "SKU-1", updatedAt: "2026-07-30T02:00:00.000Z" },
+      { id: "2".repeat(24), code: "SKU-2", updatedAt: "2026-07-30T02:00:00.000Z" },
+      { id: "3".repeat(24), code: "SKU-3", updatedAt: "2026-07-30T02:00:00.000Z" },
+    ];
+    let rows: readonly TestObservationRow[] = original;
+    const client = observationClient(() => rows);
+    const first = await syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("a1"),
+    });
+
+    /* 中间那条被上游删掉 → 零散缺失，不是尾部截断 */
+    rows = [original[0], original[2]];
+    await expect(syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("a2"),
+    })).rejects.toThrow(/缺少旧记录 1 条/);
+
+    await ackRecordDeletion({ ...admin, isApprover: false }, {
+      connector: "jdy", stream: contract.key, sourceRecordId: original[1].id,
+      reason: "已与业务确认该条上游删除",
+    }, db);
+
+    const second = await syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("a3"),
+    });
+    expect(second.importJobId, "签字后应产出新批次").not.toBe(first.importJobId);
+    const jobs = await db.select().from(schema.importJobs);
+    expect(jobs.find((j) => j.id === second.importJobId)).toMatchObject({ status: "done", controlRows: 2 });
+  });
+
+  it("**尾部整段消失即使逐条签了墓碑也拒绝**——那不是删除，是截断", async () => {
+    const { db } = await createTestDb();
+    const [admin] = await db.insert(schema.users).values({ name: "截断管理员", roles: ["admin"] }).returning();
+    const original = [
+      { id: "1".repeat(24), code: "SKU-1", updatedAt: "2026-07-30T02:00:00.000Z" },
+      { id: "2".repeat(24), code: "SKU-2", updatedAt: "2026-07-30T02:00:00.000Z" },
+      { id: "3".repeat(24), code: "SKU-3", updatedAt: "2026-07-30T02:00:00.000Z" },
+    ];
+    let rows: readonly TestObservationRow[] = original;
+    const client = observationClient(() => rows);
+    const first = await syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("b1"),
+    });
+
+    /* 只剩第一条 = 后两条整段消失（分页/权限截断的形状） */
+    rows = [original[0]];
+    for (const gone of [original[1], original[2]]) {
+      await ackRecordDeletion({ ...admin, isApprover: false }, {
+        connector: "jdy", stream: contract.key, sourceRecordId: gone.id,
+        reason: "误以为是删除，逐条签字",
+      }, db);
+    }
+    await expect(syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("b2"),
+    })).rejects.toThrow(/尾部/);
+
+    const jobs = await db.select().from(schema.importJobs);
+    expect(jobs, "旧批次必须原封不动").toHaveLength(1);
+    expect(jobs[0]).toMatchObject({ id: first.importJobId, status: "done", controlRows: 3 });
   });
 
   it("不同信封并发时每个 stream 只保留一个可复核全量批次", async () => {

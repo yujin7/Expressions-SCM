@@ -421,6 +421,13 @@
       "when": 1788537640827,
       "tag": "0059_security_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1788547641190,
+      "tag": "0060_integration_record_deletions",
+      "breakpoints": true
     }
   ]
 }

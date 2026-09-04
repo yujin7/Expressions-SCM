@@ -33,6 +33,7 @@ import {
 } from "./jiandaoyun-audit";
 import { writeIntegrationEvidence, type IntegrationEvidence } from "./evidence";
 import { resolveSourceAsOf } from "./source-time";
+import { loadAckedDeletions } from "@/server/integrations/deletion-ack";
 
 const CONNECTOR = "jdy";
 const CATALOG_STREAM = "catalog";
@@ -494,7 +495,10 @@ function sourceUpdatedThrough(records: JiandaoyunRecord[]): string | null {
  */
 interface PriorRecordDiagnosis {
   priorCount: number;
+  /** 尚未签字的缺失记录（已签字的墓碑已减掉） */
   missing: string[];
+  /** 本轮被墓碑放行的条数（留痕用：放行了几条要说得出来） */
+  ackedCount: number;
   /** true = 缺失集中在旧清单的尾部（分页截断的形状）；false = 零散缺失（更像真删除） */
   looksTruncated: boolean;
 }
@@ -535,22 +539,33 @@ async function diagnosePriorSourceRecords(
       `简道云 ${input.stream} 旧观察批次 #${input.priorJobId} 的 sourceRecordId 清单不完整，需人工复核后再替代`,
     );
   }
-  const missing = ordered.filter((id) => !input.currentSourceRecordIds.has(id));
+  const vanished = ordered.filter((id) => !input.currentSourceRecordIds.has(id));
+  /* 已签字的墓碑从缺失集里减掉——但**只减「是不是缺失」，不减「像不像截断」**：
+     形状判定仍按全部消失的记录算，否则逐条签字就能把一次真正的分页截断洗成「删除」。 */
+  const acked = await loadAckedDeletions(tx, CONNECTOR, input.stream);
+  const missing = vanished.filter((id) => !acked.has(id));
   /* 截断的形状是「旧清单最后 N 条整段消失」；零散缺失更像上游真的删了几条。
      两者的处置完全不同（前者要修分页/权限，后者要人来确认删除），所以必须分开说。 */
-  const tail = ordered.slice(ordered.length - missing.length);
-  const looksTruncated = missing.length > 0 && tail.every((id) => !input.currentSourceRecordIds.has(id));
-  return { priorCount: priorSourceRecordIds.size, missing, looksTruncated };
+  const tail = ordered.slice(ordered.length - vanished.length);
+  const looksTruncated = vanished.length > 0 && tail.every((id) => !input.currentSourceRecordIds.has(id));
+  return { priorCount: priorSourceRecordIds.size, missing, ackedCount: vanished.length - missing.length, looksTruncated };
 }
 
 /** 诊断 → 中文说明（给运维看的那一句必须能直接指导下一步） */
 function describeMissing(stream: string, priorJobId: number, d: PriorRecordDiagnosis): string {
   const sample = d.missing.slice(0, 5).join("、");
   const more = d.missing.length > 5 ? ` 等 ${d.missing.length} 条` : "";
-  const shape = d.looksTruncated
-    ? "缺失是旧清单**尾部整段**消失——这是分页/权限截断的形状，先查分页与授权，不要当删除放行"
-    : "缺失是**零散**的——更像上游真的删除了这几条；但当前没有受支持的删除墓碑，系统无法自证，需人工确认";
-  return `简道云 ${stream} 新观察缺少旧记录 ${d.missing.length} 条（${sample}${more}）；${shape}。拒绝替代批次 #${priorJobId}`;
+  const ackNote = d.ackedCount > 0 ? `（另有 ${d.ackedCount} 条已签墓碑）` : "";
+  if (d.looksTruncated) {
+    /* 截断分支同样要报出具体 ID：运维要拿它去和分页游标/权限范围对照，
+       只说「像截断」而不说少了哪几条，等于把人推回原点。 */
+    return `简道云 ${stream} 新观察缺少旧记录 ${d.missing.length} 条（${sample}${more}）${ackNote}；`
+      + `缺失呈**尾部整段**消失的形状——这是分页/权限截断，不是删除；即使逐条签了墓碑也不放行。`
+      + `先查分页与授权。拒绝替代批次 #${priorJobId}`;
+  }
+  return `简道云 ${stream} 新观察缺少旧记录 ${d.missing.length} 条（${sample}${more}）${ackNote}；`
+    + `缺失是**零散**的——更像上游真的删除了这几条。确认属实后可在运维页为这些 sourceRecordId 登记删除墓碑放行。`
+    + `拒绝替代批次 #${priorJobId}`;
 }
 
 function formReplay(
@@ -845,14 +860,21 @@ export async function syncJiandaoyunForm(
             expectedRows: priorFull.controlRows!,
             currentSourceRecordIds: sourceRecordIds,
           });
+          if (diagnosis.looksTruncated) {
+            /* 截断的形状即使逐条签了字也拒绝：墓碑证明的是「这条被删了」，
+               不是「少了一整段是正常的」。放行截断＝把观察基线悄悄削掉一截。 */
+            throw new Error(describeMissing(stream, priorFull.id, diagnosis));
+          }
           if (diagnosis.missing.length > 0) {
             throw new Error(describeMissing(stream, priorFull.id, diagnosis));
           }
-          if (minimized.length < priorFull.controlRows!) {
-            /* 旧记录一条不缺、总数却少了：新批次里出现了重复 sourceRecordId 之类的异常，
-               和截断/删除都不是一回事，单独报。 */
+          /* 墓碑放行的条数是**允许**减少的量：签了 N 条就该少 N 行。
+             低于这个下限才是异常（新批次出现重复 sourceRecordId 之类），与截断/删除都不是一回事。 */
+          const allowedRows = priorFull.controlRows! - diagnosis.ackedCount;
+          if (minimized.length < allowedRows) {
             throw new Error(
-              `简道云 ${stream} 全量行数下降（${minimized.length} < ${priorFull.controlRows}）`
+              `简道云 ${stream} 全量行数下降到 ${minimized.length}，低于允许下限 ${allowedRows}`
+              + `（上批 ${priorFull.controlRows} 行，已签墓碑 ${diagnosis.ackedCount} 条）`
               + `，但旧记录一条不缺——新批次可能有重复 sourceRecordId；需人工复核`,
             );
           }

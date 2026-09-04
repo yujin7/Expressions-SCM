@@ -598,3 +598,41 @@ export const workbenchVisits = pgTable("workbench_visits", {
 }, (t) => [
   index("ix_workbench_visit_user").on(t.userId),
 ]);
+
+/**
+ * 上游删除墓碑（2026-09-05）。
+ *
+ * 事故实况：`jst-item-master-mirror-observation` 从 6448 掉到 6447，同步自 2026-09-04 起
+ * 每轮都拒绝替代批次。拒绝是**对的**——没有墓碑就分不清「上游删了一条」和
+ * 「我们的权限/分页缩了，只看得到一部分」，后者当成前者接受，观察基线就被悄悄削掉一截。
+ * 但系统当时**没有任何让人确认的路径**：唯一在跑通的连接器就此永久停摆，
+ * 只能改代码才能恢复。本表就是那条缺失的路径。
+ *
+ * 语义：一行 = 一个人对**一条具体记录**签字确认「上游确实删除了它」。
+ *  - 按 (connector, stream, source_record_id) 唯一：一次确认只放行这一条，
+ *    不存在「以后丢的都算数」这种口子；
+ *  - `observed_in_job_id` 必须是这条记录**真的出现过**的那个批次——
+ *    不能为一条系统从未见过的记录预先签字；
+ *  - `reason` 必填：签字要留下依据，否则一年后没人说得清当时凭什么放行；
+ *  - 墓碑**不改变截断判定**：若缺失呈「尾部整段消失」的形状，即使每条都签了字也照样拒绝
+ *    （那不是删除，是截断——见 integrations/jiandaoyun-sync.ts）。
+ *
+ * 纪律：这是业务写路径（放行的是数据基线），因此仅管理员可写、须回查新鲜会话、同事务写审计。
+ */
+export const integrationRecordDeletions = pgTable("integration_record_deletions", {
+  id: serial("id").primaryKey(),
+  connector: text("connector").notNull(),
+  stream: text("stream").notNull(),
+  /** 上游记录 ID（与 staging_rows.payload->>'sourceRecordId' 同源） */
+  sourceRecordId: text("source_record_id").notNull(),
+  /** 这条记录最后出现过的批次——防止为从未见过的记录预先签字 */
+  observedInJobId: integer("observed_in_job_id").notNull().references(() => importJobs.id),
+  /** 签字依据（必填） */
+  reason: text("reason").notNull(),
+  ackedBy: integer("acked_by").notNull().references(() => users.id),
+  ackedAt: timestamp("acked_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("uq_integration_record_deletion").on(t.connector, t.stream, t.sourceRecordId),
+  index("ix_integration_record_deletion_stream").on(t.connector, t.stream),
+  check("ck_integration_record_deletion_reason", sql`length(btrim(${t.reason})) >= 4`),
+]);
