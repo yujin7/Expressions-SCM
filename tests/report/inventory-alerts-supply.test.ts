@@ -69,10 +69,10 @@ async function seed(db: Awaited<ReturnType<typeof createTestDb>>["db"]) {
   await db.insert(schema.batchStocks).values({ skuId: aging.id, warehouseId: wh.id, batchNo: "B1", expiryDate: shift(today, 40), qty: "800", stocktakeDate: today });
   // 天猫日销批次 + 对照表身份（hot 爆单）
   const [salesJob, cwJob] = await db.insert(schema.importJobs).values([
-    { template: "jdy_tmall_sku_sales_observation", filename: "s", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
-    { template: "jdy_tmall_sku_crosswalk_observation", filename: "c", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+    { template: "jdy_tmall_sku_sales_observation", filename: "s", sourceAsOf: shift(today, -2), createdBy: actor.id, status: "done" },
+    { template: "jdy_tmall_sku_crosswalk_observation", filename: "c", sourceAsOf: shift(today, -2), createdBy: actor.id, status: "done" },
   ]).returning();
-  const finishedAt = new Date("2026-09-03T03:00:00.000Z");
+  const finishedAt = new Date(`${shift(today, -1)}T03:00:00.000Z`);
   await db.insert(schema.integrationRuns).values([
     { connector: "jdy", stream: "tmall-sku-sales-observation", idempotencyKey: "s", status: "succeeded", importJobId: salesJob.id, finishedAt },
     { connector: "jdy", stream: "tmall-sku-crosswalk-observation", idempotencyKey: "c", status: "succeeded", importJobId: cwJob.id, finishedAt },
@@ -194,7 +194,8 @@ describe("库存预警表 v2 + 爆单 v2 + 看门狗 why", () => {
       expect(coverWhy(h).find((w) => w.label === "学习交期（只观察）")?.value).toContain("本周期阈值未变");
       expect(coverWhy(h).find((w) => w.label === "供给降级")?.value).toContain("PO-ALERT-1");
 
-      const now = new Date("2026-09-04T03:00:00.000Z");
+      // 看门狗的 now 必须跟着 todayShanghai 走：写死日期会让断言在真实日历翻页那天开始红（本文件曾因此炸）
+      const now = new Date(`${today}T03:00:00.000Z`);
       const w1 = await runInventoryCoverWatchdog(db, now);
       expect(w1.opened).toBe(1); // 只有 cold（A 级断货）；hot 已降级为 watch，不开
       expect(w1.downgradedBySupply).toBe(1);
