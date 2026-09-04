@@ -1,7 +1,13 @@
+import { Suspense } from "react";
 import NpdClientOnly from "./npd-client-only";
 
-export const metadata = { title: "NPD 项目跟踪" };
+export const metadata = { title: "新品开发（NPD）" };
 
+/** 页签写进 URL（`?tab=templates`）→ useSearchParams，必须包 Suspense 边界 */
 export default function Page() {
-  return <NpdClientOnly />;
+  return (
+    <Suspense>
+      <NpdClientOnly />
+    </Suspense>
+  );
 }

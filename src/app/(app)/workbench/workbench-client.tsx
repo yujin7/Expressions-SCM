@@ -1,13 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Button, Card, Col, DatePicker, Input, List, Modal, Row, Space, Statistic, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Card, Col, DatePicker, Input, List, Modal, Row, Segmented, Space, Statistic, Tag, Tooltip, Typography } from "antd";
 import type { Dayjs } from "dayjs";
 import { BulbOutlined, ReloadOutlined, RightOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import { ACTION } from "@/components/dictionary";
+import DigestView from "./digest-view";
 
 interface ExceptionItem {
   key: string;
@@ -18,6 +20,15 @@ interface ExceptionItem {
   href: string;
   /** W9：连续出现天数（含今天）；≥ 长期阈值即"慢性被忽略" */
   daysShown?: number;
+  /** W2：上次访问时这条还不在清单里（纯事实比对，不改排序、不评分） */
+  newSinceLastVisit?: boolean;
+}
+
+/** W2：自上次访问以来的变化摘要（无登录人视角 = null） */
+interface SinceLastVisit {
+  since: string | null;
+  newCount: number;
+  firstVisit: boolean;
 }
 
 /** 连续出现多少天就该被当成"慢性被忽略"高亮出来（只是展示口径，不改任何判定） */
@@ -98,16 +109,26 @@ function SnoozeModal({ item, onCancel, onDone }: { item: ExceptionItem | null; o
   );
 }
 
+/** 「上次访问 …」的人话时间（服务端下发 ISO；无基线=首次访问） */
+function visitTimeText(since: string | null): string {
+  if (!since) return "首次访问";
+  return new Date(since).toLocaleString("zh-CN", { hour12: false });
+}
+
 /**
  * #6 控制塔：登录第一屏「今天最需要处理的事」，按严重度+影响排序，一键直达。
  * W9：每条带「已连续 N 天」——一条挂了 40 天没人点的例外，本身就是要处理的问题；
  * 计划/采购/运营/仓管（及 admin）可带日期与原因打盹（全局生效、写审计、到期自动恢复）。
+ * W2：每条带「上次访问后新增」——回访的人要看的是"有什么变了"，不是把整屏再读一遍。
+ *   只是标记：不改排序、不过滤、不评分（严重度仍然压倒新鲜度——一条挂了三天的 critical
+ *   不会因为"不新"就该被往后放）。
  */
-function ControlTower({ items, loading, onSnooze, canSnooze }: {
+function ControlTower({ items, loading, onSnooze, canSnooze, sinceLastVisit }: {
   items: ExceptionItem[];
   loading: boolean;
   onSnooze: (item: ExceptionItem) => void;
   canSnooze: boolean;
+  sinceLastVisit: SinceLastVisit | null;
 }) {
   if (loading) return <Card loading style={{ marginBottom: 16 }} />;
   if (items.length === 0) {
@@ -120,6 +141,15 @@ function ControlTower({ items, loading, onSnooze, canSnooze }: {
       size="small"
       style={{ marginBottom: 16, borderColor: "#ffccc7" }}
       title={<span><ThunderboltOutlined style={{ color: "#cf1322" }} /> 控制塔 · 今天最需要处理的事（{items.length}）</span>}
+      extra={sinceLastVisit ? (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {sinceLastVisit.firstVisit
+            ? "首次访问：本次不标新增"
+            : sinceLastVisit.newCount > 0
+              ? `上次访问（${visitTimeText(sinceLastVisit.since)}）后新增 ${sinceLastVisit.newCount} 条`
+              : `上次访问（${visitTimeText(sinceLastVisit.since)}）后无新增`}
+        </Typography.Text>
+      ) : null}
     >
       <List
         dataSource={items}
@@ -135,6 +165,11 @@ function ControlTower({ items, loading, onSnooze, canSnooze }: {
               title={(
                 <Space size={6}>
                   <Link href={it.href}>{it.title}</Link>
+                  {it.newSinceLastVisit ? (
+                    <Tooltip title="你上次访问工作台时这条还不在清单里">
+                      <Tag color="blue">上次访问后新增</Tag>
+                    </Tooltip>
+                  ) : null}
                   {it.daysShown && it.daysShown > 1 ? (
                     <Tooltip title={it.daysShown >= CHRONIC_DAYS ? "长期挂着没被处理——要么解决，要么带原因打盹" : "连续出现天数"}>
                       <Tag color={it.daysShown >= CHRONIC_DAYS ? "red" : "default"}>已连续 {it.daysShown} 天</Tag>
@@ -282,6 +317,18 @@ function FocusSections({ sections, loading }: { sections: FocusSection[]; loadin
 export default function WorkbenchClient() {
   const { message } = App.useApp();
   const me = useMe();
+  /* 视图写进 URL（`?view=digest`）：旧 /report/digest 的收藏与外链跳到这里仍然落在简报上 */
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const viewParam = searchParams.get("view");
+  const setView = (next: string) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "digest") params.set("view", "digest");
+    else params.delete("view");
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  };
   const canSnooze = hasAnyRole(me, "pmc", "purchasing", "ops", "warehouse"); // 与路由 requireAnyRole 同口径
   const [snoozing, setSnoozing] = useState<ExceptionItem | null>(null);
   const [openAliasCount, setOpenAliasCount] = useState<number | null>(null);
@@ -290,6 +337,7 @@ export default function WorkbenchClient() {
   const [exceptions, setExceptions] = useState<ExceptionItem[]>([]);
   const [nextActions, setNextActions] = useState<NextActionItem[]>([]);
   const [queues, setQueues] = useState<QueueItem[]>([]);
+  const [sinceLastVisit, setSinceLastVisit] = useState<SinceLastVisit | null>(null);
   const [focusLoading, setFocusLoading] = useState(false);
   const [focusError, setFocusError] = useState<string | null>(null);
 
@@ -304,12 +352,14 @@ export default function WorkbenchClient() {
       nextActions: NextActionItem[];
       myOpenDocs: number | null;
       queues: QueueItem[];
+      sinceLastVisit: SinceLastVisit | null;
     }>("/api/workbench")
       .then((r) => {
         setSections(r.sections);
         setExceptions(r.exceptions ?? []);
         setNextActions(r.nextActions ?? []);
         setQueues(r.queues ?? []);
+        setSinceLastVisit(r.sinceLastVisit ?? null);
       })
       .catch((e) => {
         const error = (e as Error).message;
@@ -318,6 +368,7 @@ export default function WorkbenchClient() {
         setExceptions([]);
         setNextActions([]);
         setQueues([]);
+        setSinceLastVisit(null);
         message.error(error);
       })
       .finally(() => setFocusLoading(false));
@@ -335,15 +386,31 @@ export default function WorkbenchClient() {
     void load();
   }, [load]);
 
+  /* W2 简报视图：`/report/digest` 与本页渲染的是同一份 workbench/focus 例外，
+     并成本页的一个视图（?view=digest）。视图切换写进 URL——链接仍可分享、后退可用。 */
+  const view = viewParam === "digest" ? "digest" : "board";
+
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <Typography.Title level={4} style={{ marginTop: 0 }}>工作台</Typography.Title>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <Space size={12} wrap>
+          <Typography.Title level={4} style={{ marginTop: 0, marginBottom: 0 }}>工作台</Typography.Title>
+          <Segmented
+            size="small"
+            value={view}
+            onChange={(v) => setView(String(v))}
+            options={[
+              { label: "控制塔", value: "board" },
+              { label: "简报视图", value: "digest" },
+            ]}
+          />
+        </Space>
         <Space size={16}>
           <Link href="/cockpit">驾驶舱四屏 →</Link>
-          <Link href="/report/digest">每日经营摘要（简报视图）→</Link>
         </Space>
       </div>
+      {view === "digest" ? <DigestView /> : (
+      <>
       {focusError ? (
         <Alert
           type="error"
@@ -360,6 +427,7 @@ export default function WorkbenchClient() {
             loading={focusLoading && exceptions.length === 0}
             canSnooze={canSnooze}
             onSnooze={setSnoozing}
+            sinceLastVisit={sinceLastVisit}
           />
           <SnoozeModal item={snoozing} onCancel={() => setSnoozing(null)} onDone={() => { setSnoozing(null); void load(); }} />
           <NextActions items={nextActions} loading={focusLoading && nextActions.length === 0} />
@@ -398,6 +466,8 @@ export default function WorkbenchClient() {
           </Link>
         </Col>
       </Row>
+      </>
+      )}
     </div>
   );
 }

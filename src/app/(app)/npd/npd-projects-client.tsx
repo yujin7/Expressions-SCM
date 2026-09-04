@@ -355,12 +355,11 @@ export default function NpdProjectsClient() {
 
   return (
     <div>
-      <Typography.Title level={4} style={{ marginTop: 0 }}>NPD 项目跟踪</Typography.Title>
       <Alert
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="D19 · 1.x：新建项目按「各节点核心说明」69 节点标准实例化，计划沿上一节点链推算（自然日）。节点标准/角色分配见「NPD 节点参考」页。"
+        message="D19 · 1.x：新建项目按「各节点核心说明」节点标准实例化，计划沿上一节点链推算（自然日）。节点标准/角色分配见本页「节点模板」页签。"
       />
       <Space style={{ marginBottom: 12 }}>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>

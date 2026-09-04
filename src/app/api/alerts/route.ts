@@ -26,7 +26,12 @@ export async function GET(req: NextRequest) {
     const category = searchParams.get("category")?.trim() || "";
     const severity = searchParams.get("severity")?.trim() || "";
     const unackedOnly = searchParams.get("acked") === "0";
-    const where: SQL[] = [eq(systemAlerts.status, status)];
+    /* W2 单条深链 `?id=`：通知中心的系统告警通知按 dedupeKey 反查到具体告警行
+       （lib/notify-links）。**命中 id 时忽略 status**——通知常常是在告警被关闭之后才被点开，
+       若还按缺省 status=open 过滤，用户点进来只会看到空列表，然后以为"这条告警不存在"。 */
+    const idRaw = Number(searchParams.get("id"));
+    const focusId = Number.isInteger(idRaw) && idRaw > 0 ? idRaw : null;
+    const where: SQL[] = focusId ? [eq(systemAlerts.id, focusId)] : [eq(systemAlerts.status, status)];
     if (category) where.push(eq(systemAlerts.category, category));
     if (severity) where.push(eq(systemAlerts.severity, severity));
     if (unackedOnly) where.push(isNull(systemAlerts.ackedAt));
@@ -68,7 +73,8 @@ export async function GET(req: NextRequest) {
     ]);
     /* 已关闭视图：补最近一条 close 事件（台账 alert_events 只追加，取 id 最大的一条即最新） */
     let withClose = rows;
-    if (status !== "open" && rows.length > 0) {
+    // 单条深链不带 status，行本身可能已关闭——同样要补关闭原因，否则"为什么关的"又只剩台账里有
+    if ((focusId != null || status !== "open") && rows.length > 0) {
       const events: {
         alertId: number; reasonCode: string | null; note: string | null; at: Date | null; actorName: string | null;
       }[] = await db

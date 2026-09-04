@@ -60,7 +60,7 @@ const LEGACY_MENU: LegacyNode[] = [
         "label": "经营分析总览"
       },
       {
-        "key": "/report/digest",
+        "key": "/workbench?view=digest",
         "label": "每日经营摘要"
       },
       {
@@ -92,6 +92,10 @@ const LEGACY_MENU: LegacyNode[] = [
       {
         "key": "/replenish",
         "label": "补货建议"
+      },
+      {
+        "key": "/replenish/move-or-buy",
+        "label": "先挪后买（统一决策表）"
       },
       {
         "key": "/replenish/versions",
@@ -308,8 +312,8 @@ const LEGACY_MENU: LegacyNode[] = [
         "label": "NPD 项目跟踪"
       },
       {
-        "key": "/report/npd",
-        "label": "NPD 节点参考"
+        "key": "/npd?tab=templates",
+        "label": "NPD 节点模板"
       }
     ]
   },
@@ -468,6 +472,10 @@ const LEGACY_MENU_ROLES: Record<string, string[]> = {
     "pmc",
     "purchasing"
   ],
+  "/replenish/move-or-buy": [
+    "pmc",
+    "purchasing"
+  ],
   "/replenish/versions": [
     "pmc",
     "purchasing"
@@ -597,6 +605,11 @@ const LEGACY_MENU_ROLES: Record<string, string[]> = {
 };
 
 // 2026-09-04 快照重生成：W2 六个领域并行追加菜单后由注册表重生成（此前逐字等价于重构前菜单已在 W1 验证）；之后任何菜单变更都必须同步本快照。
+/* 本表由 `routeGroupForPath(entry.path)` 逐条重生成，因此**只收录能解析出分组的路径**：
+   指向顶层项的深链（W2 的 `/workbench?view=digest`——每日经营摘要并入工作台简报视图）
+   解析到 group="top" → 返回 null，正确地不在表内；已退役为 redirect 的旧路径
+   （/report/digest、/report/npd、/report/leadtime-learning）本就不再是注册表条目。
+   把这些行硬塞回来会把「已迁移」误判成「派生漏了」。 */
 const LEGACY_REPORT_GROUPS: Record<string, string> = {
   "/notifications": "messages",
   "/alerts": "messages",
@@ -608,6 +621,7 @@ const LEGACY_REPORT_GROUPS: Record<string, string> = {
   "/report/inventory-analytics": "analytics",
   "/report/process-mining": "analytics",
   "/replenish": "planning",
+  "/replenish/move-or-buy": "planning",
   "/replenish/versions": "planning",
   "/replenish/sop": "planning",
   "/replenish/reconcile": "planning",
@@ -619,9 +633,6 @@ const LEGACY_REPORT_GROUPS: Record<string, string> = {
   "/report/auto-replenish": "planning",
   "/report/material-demand": "planning",
   "/report/transfer-suggest": "planning",
-  /* /report/leadtime-learning 于 2026-09-04 并入 /report/supplier-scorecard?tab=leadtime
-     （三种交期口径并排，各自带表头），旧路径保留为 redirect。redirect 不是注册表页面，
-     routeGroupForPath 返回 null 是正确结果——保留本行会把「已迁移」误判成「派生漏了」。 */
   "/report/forecast-accuracy": "planning",
   "/report/detectors": "planning",
   "/outsource/auto-chain": "planning",
@@ -633,6 +644,7 @@ const LEGACY_REPORT_GROUPS: Record<string, string> = {
   "/report/wip": "outsourcing",
   "/report/transit": "outsourcing",
   "/report/supplier-scorecard": "outsourcing",
+  "/report/supplier-scorecard?tab=leadtime": "outsourcing",
   "/report/price-compare": "outsourcing",
   "/report/purchase-orders": "outsourcing",
   "/matflow/fl": "matflow",
@@ -656,7 +668,7 @@ const LEGACY_REPORT_GROUPS: Record<string, string> = {
   "/inventory/transfer-routes": "inventory",
   "/quality": "quality",
   "/npd": "npd",
-  "/report/npd": "npd",
+  "/npd?tab=templates": "npd",
   "/settlement/js": "finance",
   "/report/margin": "finance",
   "/report/settlement-summary": "finance",
@@ -686,7 +698,7 @@ const LEGACY_REPORT_GROUPS: Record<string, string> = {
   "/admin/audit": "admin",
   "/admin/params": "admin",
   "/admin/approval-config": "admin",
-  "/admin/health": "admin",
+  "/admin/health": "admin"
 };
 
 /** 旧 CommandPalette.PAGES 的 href 集合（顺序不做断言：面板改为菜单顺序） */
@@ -697,8 +709,9 @@ const LEGACY_PALETTE_HREFS = [
   "/goals",
   "/cockpit",
   "/report/dashboard",
-  "/report/digest",
+  "/workbench?view=digest",
   "/replenish",
+  "/replenish/move-or-buy",
   "/replenish/sop",
   "/replenish/reconcile",
   "/replenish/pilot",
@@ -724,7 +737,7 @@ const LEGACY_PALETTE_HREFS = [
   "/inventory/transfer-routes",
   "/quality",
   "/npd",
-  "/report/npd",
+  "/npd?tab=templates",
   "/master/spu",
   "/master/sku",
   "/master/channel",

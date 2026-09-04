@@ -15,7 +15,6 @@ import { Tabs } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import CaliberNote from "@/components/CaliberNote";
-import DecisionReadinessPanel from "@/components/DecisionReadinessPanel";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
 import SkuHoverCard from "@/components/SkuHoverCard";
@@ -437,6 +436,33 @@ function DuplicatesTab() {
   );
 }
 
+/**
+ * W2「决策能力解锁」页签改为**指路**，不再第二次渲染那块能力解锁面板。
+ *
+ * 此前这里渲染的是同一块面板的**空参版**（一个 props 都不传：
+ * 没有数据源就绪度、没有数据产品发布/结果、没有外部佐证观察，也没有 onReleaseChanged），
+ * 于是同一块「能力解锁」在两页给出不同的画面，而**所有深链**
+ * （告警 actionHref、注册表的平台身份认领入口、数据产品门禁通知）都指向决策工作室那一份。
+ * 保留页签键是为了让既有 `?tab=readiness` 收藏仍然落到有意义的位置。
+ */
+function ReadinessPointer() {
+  return (
+    <Alert
+      type="info"
+      showIcon
+      message="决策能力解锁已收口到「决策工作室 · 能力解锁」"
+      description={
+        <span>
+          那一份带着数据源就绪度、数据产品发布与结果台账、外部佐证观察，并且可以直接操作发布；
+          本页只负责主数据的「缺什么 / 多了什么」。
+          <br />
+          <a href="/report/decision-studio?tab=readiness">前往决策工作室 · 能力解锁 →</a>
+        </span>
+      }
+    />
+  );
+}
+
 export default function DataHealthClient() {
   // ?tab=* 深链：告警、复核项与能力门禁可直接分享。
   const pathname = usePathname();
@@ -462,7 +488,7 @@ export default function DataHealthClient() {
         items={[
           { key: "missing", label: "缺失清单", children: <MissingTab /> },
           { key: "duplicates", label: "疑似重复", children: <DuplicatesTab /> },
-          { key: "readiness", label: "决策能力解锁", children: <DecisionReadinessPanel /> },
+          { key: "readiness", label: "决策能力解锁", children: <ReadinessPointer /> },
         ]}
       />
     </div>

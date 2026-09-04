@@ -30,6 +30,7 @@ import {
   recordExceptionsShown,
   shanghaiDay,
 } from "@/server/modules/workbench/exception-dismissals";
+import { markWorkbenchVisit } from "@/server/modules/workbench/visit-marker";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -63,6 +64,11 @@ export interface ExceptionItem {
    * 用来把"这条已经挂了 40 天没人点"变成看得见的事实——慢性被忽略本身就是要处理的问题。
    */
   daysShown?: number;
+  /**
+   * W2：本条在**当前登录人**上次访问时还不在清单里（纯事实比对，不评分、不改排序）。
+   * 无登录人视角（每日摘要/推送）与首次访问一律 false——第一次见到就整屏飘红等于没有信息。
+   */
+  newSinceLastVisit?: boolean;
 }
 
 export interface WorkbenchFocus {
@@ -76,6 +82,11 @@ export interface WorkbenchFocus {
   exceptions: ExceptionItem[];
   /** C153：审计事件触发、当前状态复核后的有限下一步建议；只建议，不自动写单。 */
   nextActions: NextActionItem[];
+  /**
+   * W2「自上次访问以来」：比对基线对应的上次访问时刻与新增条数。
+   * 无登录人视角（每日摘要）= null；首次访问 = since:null / newCount:0。
+   */
+  sinceLastVisit: { since: string | null; newCount: number; firstVisit: boolean } | null;
 }
 
 async function countWhere(db: AnyDb, table: AnyDb, where: unknown): Promise<number> {
@@ -571,5 +582,25 @@ export async function getWorkbenchFocus(
     { key: "review", label: "待复核事项", count: openReview, href: "/review/checklist" },
     { key: "mine", label: "我发起的未完结", count: myOpenDocs ?? 0, href: "/inbox" },
   ];
-  return { generatedAt: new Date().toISOString(), sections, exceptions, nextActions, myOpenDocs, queues };
+
+  /* W2「自上次访问以来」：只标记，不排序、不评分、不过滤。
+     无登录人视角（每日摘要 getWorkbenchFocus(roles, db)）跳过——那不是"某个人的上一次访问"。 */
+  let sinceLastVisit: WorkbenchFocus["sinceLastVisit"] = null;
+  let markedExceptions = exceptions;
+  if (userId != null) {
+    const delta = await markWorkbenchVisit(db, userId, exceptions.map((e) => e.key));
+    const fresh = new Set(delta.newKeys);
+    markedExceptions = exceptions.map((e) => ({ ...e, newSinceLastVisit: fresh.has(e.key) }));
+    sinceLastVisit = { since: delta.since, newCount: delta.newKeys.length, firstVisit: delta.firstVisit };
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    sections,
+    exceptions: markedExceptions,
+    nextActions,
+    myOpenDocs,
+    queues,
+    sinceLastVisit,
+  };
 }
