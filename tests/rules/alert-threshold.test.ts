@@ -1,6 +1,6 @@
 /** D57 库存预警阈值（rules/alert-threshold.ts） */
 import { describe, expect, it } from "vitest";
-import { alertDays, coverStatus, coverStatusWithSupply } from "@/server/rules/alert-threshold";
+import { alertDays, coverStatus, coverStatusWithSupply, leadBasisText, leadCompareText } from "@/server/rules/alert-threshold";
 
 const defaults = { production: 30, logistics: 15 };
 
@@ -68,6 +68,53 @@ describe("alertDays：学习交期只观察不生效（审计 #6）", () => {
     expect(r.days).toBe(50);
     expect(r.learned).toMatchObject({ archiveDays: 30, delta: 10.5, toleranceDays: 0 });
     expect(alertDays({ normalLeadDays: 20, defaults, bufferDays: 5, learned: { p50: 10, p90: 15, samples: 30, onTimeRate: 1 } }).learned).toBeNull();
+  });
+});
+
+describe("alertDays：历史观察交期是第二条只观察来源（B4）", () => {
+  const learned = { p50: 22, p90: 30, samples: 12, onTimeRate: 0.6 };
+  const observedHistory = { p50: 24, p90: 26, samples: 41, onTimeRate: 0.72, firstReceiptDate: "2023-05-02", lastReceiptDate: "2024-11-18" };
+
+  it("两条观察线并列而不合并：days 仍只由 加工+在途+缓冲 决定", () => {
+    const r = alertDays({ normalLeadDays: 20, logisticsLeadDays: 7, defaults, bufferDays: 5, learned, observedHistory, learnedToleranceDays: 3 });
+    expect(r.days).toBe(32);
+    expect(r.basis.filter((b) => !b.observeOnly).reduce((a, b) => a + b.value, 0)).toBe(r.days);
+    expect(r.learned?.p90).toBe(30);
+    expect(r.observed).toMatchObject({ archiveDays: 20, p50: 24, p90: 26, samples: 41, onTimeRate: 0.72, delta: 6, toleranceDays: 3, authority: "observation_only", observeOnly: true, applied: false });
+    expect(r.observed?.firstReceiptDate).toBe("2023-05-02");
+    expect(r.basis.at(-1)).toEqual({ part: "observed", value: 6, source: "observed", field: null, observeOnly: true });
+    expect(r.usedDefault).toBe(false);
+  });
+
+  it("只有历史观察也照样出观察项，且阈值一模一样", () => {
+    const base = alertDays({ normalLeadDays: 20, logisticsLeadDays: 7, defaults, bufferDays: 5 });
+    const withObserved = alertDays({ normalLeadDays: 20, logisticsLeadDays: 7, defaults, bufferDays: 5, observedHistory });
+    expect(withObserved.days).toBe(base.days);
+    expect(withObserved.learned).toBeNull();
+    expect(withObserved.observed?.samples).toBe(41);
+  });
+
+  it("样本不足 / 不过容差 / 无 P90 / 未传 → 不记观察项", () => {
+    const few = { ...observedHistory, samples: 2 };
+    expect(alertDays({ normalLeadDays: 20, defaults, bufferDays: 5, observedHistory: few }).observed).toBeNull();
+    expect(alertDays({ normalLeadDays: 20, defaults, bufferDays: 5, observedHistory: { ...observedHistory, p90: 22 } }).observed).toBeNull();
+    expect(alertDays({ normalLeadDays: 20, defaults, bufferDays: 5, observedHistory: { ...observedHistory, p90: null } }).observed).toBeNull();
+    expect(alertDays({ normalLeadDays: 20, defaults, bufferDays: 5, observedHistory: null }).observed).toBeNull();
+    expect(alertDays({ normalLeadDays: 20, defaults, bufferDays: 5 }).observed).toBeNull();
+    // 独立的最小样本门槛：放宽后同一批样本就能出观察项
+    expect(alertDays({ normalLeadDays: 20, defaults, bufferDays: 5, observedHistory: few, observedMinSamples: 2 }).observed?.samples).toBe(2);
+  });
+
+  it("leadBasisText / leadCompareText 给出三来源并列文案", () => {
+    const r = alertDays({ normalLeadDays: 20, logisticsLeadDays: 7, defaults, bufferDays: 5, learned, observedHistory });
+    expect(leadCompareText(r)).toBe("档案 20 / 系统学习 30(n=12) / 历史观察 26(n=41，只观察)");
+    expect(leadBasisText(r)).toBe("加工 20 + 在途 7 + 缓冲 5；档案 20 / 系统学习 30(n=12) / 历史观察 26(n=41，只观察)");
+    // 无观察项命中时只剩阈值分段
+    const plain = alertDays({ normalLeadDays: 20, logisticsLeadDays: 7, defaults, bufferDays: 5 });
+    expect(leadCompareText(plain)).toBeNull();
+    expect(leadBasisText(plain)).toBe("加工 20 + 在途 7 + 缓冲 5");
+    // 缺省周期仍要标注
+    expect(leadBasisText(alertDays({ defaults, bufferDays: 5 }))).toBe("加工 30(缺省) + 在途 15(缺省) + 缓冲 5");
   });
 });
 

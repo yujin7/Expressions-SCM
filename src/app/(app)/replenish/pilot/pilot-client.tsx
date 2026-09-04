@@ -2,7 +2,10 @@
 
 /**
  * 补货试点候选（D59 R5）：候选 = 生效分层 S/A/B ∧ XYZ=X ∧ 加工/在途周期已维护 ∧ 无异动命中。
- * 同页提供「固化本期分层」（pmc）与「纳入/移出试点」（pmc）。读模型 replenish-pilot/v1。
+ * 同页提供「固化本期分层」（pmc）与「纳入/移出试点」（pmc）。读模型 replenish-pilot/v2。
+ *
+ * W12：同页并列「金额口径分层」（近 6 月销量 × 单位成本）与「数量 × 金额」迁移矩阵。
+ * 纯对照——候选判定、权责与固化仍只读数量口径分层；成本覆盖率不足时金额列显示「不可用」而非等级。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -36,6 +39,29 @@ interface PilotRow {
   pilot: boolean;
   eligible: boolean;
   blockers: string[];
+  /** W12 金额口径分层；null = 成本覆盖不足或无成本（不可用，非 C 级） */
+  valueTier: Tier | null;
+  unitCostSource: "sku_costs" | "finance_observation" | null;
+}
+
+/** W12 迁移矩阵（rules/abc.tierMigrationMatrix） */
+interface TierMigration {
+  cells: { qtyTier: Tier; valueTier: Tier | null; count: number }[];
+  agree: number;
+  disagree: number;
+  insufficient: number;
+  total: number;
+  agreePct: number | null;
+}
+
+interface CostCoverage {
+  skus: number;
+  skusWithCost: number;
+  skuPct: number | null;
+  salesWeightedPct: number | null;
+  minPct: number;
+  state: "ready" | "insufficient";
+  reason: string | null;
 }
 
 interface PilotModel {
@@ -53,6 +79,11 @@ interface PilotModel {
   blockers: { tierC: number; xyzNotX: number; xyzUnclassified: number; leadMissing: number; detectorHit: number };
   rows: PilotRow[];
   notes: string[];
+  tierBasis: "qty" | "value";
+  tierBasisApplied: "qty";
+  costCoverage: CostCoverage;
+  tierMigration: TierMigration;
+  valueTierLimitations: string[];
 }
 
 /** 固化接口返回的阻塞分布（planning/policy.PolicyBlockers） */
@@ -91,6 +122,70 @@ function WhyDirectZero({ model }: { model: PilotModel }) {
           <span>C 级长尾（不参与直出）<b>{b.tierC}</b></span>
           <Link href="/master/supply-params?blockedOnly=1">去补录周期主数据（只看阻塞）→</Link>
         </Space>
+      }
+    />
+  );
+}
+
+const TIER_ORDER: Tier[] = ["S", "A", "B", "C"];
+
+/**
+ * W12 分层迁移矩阵：行 = 现行数量口径分层，列 = 金额口径分层（销量 × 单位成本）。
+ * 对角线 = 两把尺一致；对角线之外 = 换尺后会移动的 SKU；最后一列「不可用」= 成本覆盖不足，
+ * **不是 C 级**——把「不知道」画进 C 会直接误导长尾判定，所以它单列且不参与一致率分母。
+ */
+function TierMigrationCard({ model }: { model: PilotModel }) {
+  const m = model.tierMigration;
+  const cc = model.costCoverage;
+  const cell = (qtyTier: Tier, valueTier: Tier | null): number =>
+    m.cells.find((c) => c.qtyTier === qtyTier && c.valueTier === valueTier)?.count ?? 0;
+  const insufficient = cc.state !== "ready";
+  return (
+    <Alert
+      type={insufficient ? "warning" : "info"}
+      showIcon
+      style={{ marginBottom: 12 }}
+      message={
+        <Space wrap size={[16, 4]}>
+          <span>分层口径对照（W12，<b>只对照不生效</b>：候选/权责/固化仍按数量口径）</span>
+          <span>声明口径 <Tag>{model.tierBasis === "value" ? "金额（对照）" : "数量"}</Tag>实际生效 <Tag color="blue">数量</Tag></span>
+          <span>成本覆盖（按销量加权）<b>{cc.salesWeightedPct ?? "—"}%</b> / 门槛 {cc.minPct}%（有成本 SKU {cc.skusWithCost}/{cc.skus}）</span>
+          {insufficient ? null : <span>两把尺一致率 <b>{m.agreePct ?? "—"}%</b>（一致 {m.agree} · 会移动 {m.disagree}）</span>}
+        </Space>
+      }
+      description={
+        insufficient ? (
+          <div>
+            <p style={{ margin: "4px 0" }}>{cc.reason}</p>
+            <p style={{ margin: 0 }}>金额口径列全部显示「不可用」，不降级为等级；补齐 SKU 成本（/master 成本上传或财务运营成本观察）后本矩阵自动出现。</p>
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", fontSize: 12, marginTop: 4 }}>
+              <thead>
+                <tr>
+                  <th style={{ padding: "2px 10px", textAlign: "left" }}>数量 ＼ 金额</th>
+                  {TIER_ORDER.map((t) => <th key={t} style={{ padding: "2px 10px" }}>{t}</th>)}
+                  <th style={{ padding: "2px 10px" }}>不可用</th>
+                </tr>
+              </thead>
+              <tbody>
+                {TIER_ORDER.map((qt) => (
+                  <tr key={qt}>
+                    <th style={{ padding: "2px 10px", textAlign: "left" }}><Tag color={TIER_COLORS[qt]}>{qt}</Tag></th>
+                    {TIER_ORDER.map((vt) => (
+                      <td key={vt} style={{ padding: "2px 10px", textAlign: "right", fontWeight: qt === vt ? 600 : 400, color: qt !== vt && cell(qt, vt) > 0 ? "#fa8c16" : undefined }}>
+                        {cell(qt, vt)}
+                      </td>
+                    ))}
+                    <td style={{ padding: "2px 10px", textAlign: "right", color: "#8c8c8c" }}>{cell(qt, null)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {model.valueTierLimitations.map((n, i) => <p key={i} style={{ margin: "4px 0 0", color: "#8c8c8c" }}>{n}</p>)}
+          </div>
+        )
       }
     />
   );
@@ -181,6 +276,14 @@ export default function PilotClient({ canManage }: { canManage: boolean }) {
       title: "分层", dataIndex: "tier", width: 90,
       render: (v: Tier, r) => <Tooltip title={r.tierSource === "live" ? "未固化，取分层页实时值" : r.tierSource === "policy_override" ? "本期固化值（人工覆写）" : "本期固化值"}><Tag color={TIER_COLORS[v]}>{v}{r.tierSource === "policy_override" ? "*" : ""}</Tag></Tooltip>,
     },
+    {
+      title: "金额口径分层", dataIndex: "valueTier", width: 130,
+      render: (v: Tier | null, r) => (v
+        ? <Tooltip title={`近 6 月销量 × 单位成本（来源 ${r.unitCostSource === "sku_costs" ? "手工成本表" : "财务运营成本观察"}）；只作对照，不驱动候选/权责/固化`}>
+          <Tag color={TIER_COLORS[v]}>{v}{v === r.tier ? "" : " ↕"}</Tag>
+        </Tooltip>
+        : <Tooltip title="成本覆盖率不足门槛，或本 SKU 没有可解析的单位成本——不可用，不是 C 级"><Tag>不可用</Tag></Tooltip>),
+    },
     { title: "XYZ", dataIndex: "xyz", width: 80, render: (v: string | null, r) => v ? <Tooltip title={`CV ${r.cv}`}><Tag color={XYZ_COLORS[v]}>{v}</Tag></Tooltip> : <Typography.Text type="secondary">样本不足</Typography.Text> },
     { title: "权责", dataIndex: "ownershipLabel", width: 100 },
     { title: "近6月销量", dataIndex: "sales6m", width: 110, align: "right", render: (v: number) => v.toLocaleString("zh-CN") },
@@ -200,6 +303,7 @@ export default function PilotClient({ canManage }: { canManage: boolean }) {
         <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="尚未固化任何期间的分层（sku_planning_policy 为空）——分层暂按实时值显示；点击「固化本期分层」后才能标记试点。" />
       ) : null}
       {model ? <WhyDirectZero model={model} /> : null}
+      {model ? <TierMigrationCard model={model} /> : null}
       <Row gutter={16} style={{ marginBottom: 12 }}>
         <Col span={4}><Statistic title="候选 SKU" value={model?.candidates ?? "—"} suffix={model ? `/ ${model.scanned}` : undefined} /></Col>
         <Col span={4}><Statistic title="候选销量占比" value={model?.candidateSalesSharePct ?? "—"} suffix="%" /></Col>

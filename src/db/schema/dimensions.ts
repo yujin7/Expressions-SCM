@@ -104,7 +104,22 @@ export const salesMonthly = pgTable("sales_monthly", {
   qty: numeric("qty", { precision: 14, scale: 4 }).notNull(),
 }, (t) => [unique("uq_sales_monthly").on(t.skuId, t.channelId, t.yearMonth)]);
 
-/** 销速快照（智能层输入）：channelId NULL = 全渠道汇总 */
+/**
+ * 销速快照（智能层输入）：channelId NULL = 全渠道汇总。
+ *
+ * ⚠️ **DEPRECATED — 休眠表，零读取方、零写入方（B9，2026-09-04 裁决）**。
+ * 事实：全仓库唯一引用是 `tests/dimensions/resolver.test.ts` 在测它的 UNIQUE NULLS NOT DISTINCT 约束；
+ * 日均销速一直由 `core/velocity.ts` 现算，没有任何代码写过这张表。
+ * 处置选择「保留 + 标注废弃 + 加护栏」而不是「迁移删表」，理由（证据在 docs/NOW.md）：
+ *   1. 生产 PostgreSQL 是**在跑的实例**（升级前备份 + 47/47 迁移 + 镜像切换），而 NOW.md
+ *      从未取过本表的只读行数——没有「生产为空」的证据就删表，是拿不可逆迁移赌一个未核实的假设；
+ *   2. 备份现状是**同主机可恢复性证据，不是异地灾备**（远端备份目标仍未配置），删错的代价不对称；
+ *   3. 仓库既有裁决（docs/engineering/总监需求-现状映射与实施计划-2026-09-03.md 第 18 项）明确写
+ *      「保持休眠、不写入，标记『废弃候选』待 D 号」——D 号未出，静默删表等于替业务裁决（CLAUDE.md 禁止）。
+ * 因此：**任何新代码都不得读写本表**（销速唯一权威是 `core/velocity.ts`）；
+ * 护栏 `tests/release/dead-table-sales-velocity.test.ts` 会在有人接线时变红。
+ * 真要删表：先在生产做一次只读行数核验，出 D 号，再走迁移 + 同步删除本定义与约束测试。
+ */
 export const salesVelocity = pgTable("sales_velocity", {
   id: serial("id").primaryKey(),
   skuId: integer("sku_id").notNull().references(() => skus.id),

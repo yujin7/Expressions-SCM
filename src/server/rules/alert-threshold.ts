@@ -17,14 +17,23 @@
  * basis 追加一条 {part:'learned', source:'learned', value:delta, observeOnly:true}——**不计入 days**，
  * 行上显示为「学习修正 +6(P90, n=12, 观察)」，一个周期后再决定是否生效。
  *
+ * 历史观察交期（B4，**第二条只观察来源，同样不生效**）：alertDays 再可选传入
+ * `supplier-lead-history/v1`（简道云历史采购订单 → 入库观察）的 {p50,p90,samples,onTimeRate}。
+ * 它与「系统学习」是两条互相独立的证据线，**绝不合并**：
+ *   - 系统学习 = rollup_supplier_lead，来自本系统 po_docs → sh_docs 的真实履约（今年只有 1 张 PO）；
+ *   - 历史观察 = 简道云历史单据，authority=observation_only，只能提示、不能定量（D55）。
+ * 命中条件与学习交期同构（样本 ≥ minSamples 且 P90 − 档案 > 容差），basis 追加
+ * {part:'observed', source:'observed', value:delta, observeOnly:true}，**同样不计入 days**。
+ * `leadBasisText()` 把三段渲染成「档案 X / 系统学习 Y(n=..) / 历史观察 Z(n=..)」。
+ *
  * coverStatusWithSupply（审计 #1）：在库口径 alert 但在库 > 0 且有**确认到货日**落在阈值天数内的记账层/参考层供给，
  * 降为 watch 并给出 basis 文案；在库 = 0 是物理事实，不因在途降级（out_of_stock 由调用方单独判定）。
  */
 
 import { dSub } from "@/server/core/decimal";
 
-export type LeadPart = "production" | "logistics" | "buffer" | "learned";
-export type LeadSource = "sku_params" | "default" | "param" | "learned";
+export type LeadPart = "production" | "logistics" | "buffer" | "learned" | "observed";
+export type LeadSource = "sku_params" | "default" | "param" | "learned" | "observed";
 
 /** rollup_supplier_lead 物化的学习交期（供应商 × SKU）；调用方挑样本最多的一行 */
 export interface LearnedLead {
@@ -32,6 +41,20 @@ export interface LearnedLead {
   p90: number | null;
   samples: number;
   onTimeRate: number | null;
+}
+
+/**
+ * 历史观察交期（B4）：`supplier-lead-history/v1` 的（供应商 × SKU）分布；调用方挑样本最多的一行。
+ * 与 LearnedLead 结构相同但**语义不同**——来源是外部只读观察，永远不进阈值、不进补货定量。
+ */
+export interface ObservedLeadHistory {
+  p50: number | null;
+  p90: number | null;
+  samples: number;
+  onTimeRate: number | null;
+  /** 观察窗口的最早/最晚收货日（YYYY-MM-DD），用于说明「这是多久以前的历史」 */
+  firstReceiptDate?: string | null;
+  lastReceiptDate?: string | null;
 }
 
 export interface AlertDaysInput {
@@ -46,6 +69,10 @@ export interface AlertDaysInput {
   learnedToleranceDays?: number;
   /** 观察项最少样本数（缺省 3） */
   learnedMinSamples?: number;
+  /** 历史观察交期（可选，B4）；null/缺省 = 无观察数据。只观察，永不改 days */
+  observedHistory?: ObservedLeadHistory | null;
+  /** 历史观察项最少样本数（缺省同 learnedMinSamples） */
+  observedMinSamples?: number;
 }
 
 export interface LeadBasis {
@@ -73,6 +100,25 @@ export interface LearnedLeadObservation {
   applied: false;
 }
 
+/** 历史观察交期的观察项（B4）；结构与学习交期同构，来源字段区分两条证据线 */
+export interface ObservedLeadObservation {
+  /** 档案加工周期（比较基准） */
+  archiveDays: number;
+  p50: number | null;
+  p90: number;
+  samples: number;
+  onTimeRate: number | null;
+  /** P90 − 档案值（正数才记录） */
+  delta: number;
+  toleranceDays: number;
+  firstReceiptDate: string | null;
+  lastReceiptDate: string | null;
+  /** 恒 observation_only：外部观察永不生效 */
+  authority: "observation_only";
+  observeOnly: true;
+  applied: false;
+}
+
 export interface AlertDaysResult {
   days: number;
   basis: LeadBasis[];
@@ -80,6 +126,8 @@ export interface AlertDaysResult {
   usedDefault: boolean;
   /** 学习交期观察项；未触发/无数据 = null */
   learned: LearnedLeadObservation | null;
+  /** 历史观察交期观察项（B4）；未触发/无数据 = null */
+  observed: ObservedLeadObservation | null;
 }
 
 function present(v: number | null | undefined): v is number {
@@ -120,7 +168,66 @@ export function alertDays(input: AlertDaysInput): AlertDaysResult {
       basis.push({ part: "learned", value: delta, source: "learned", field: null, observeOnly: true });
     }
   }
-  return { days, basis, usedDefault: basis.some((b) => b.source === "default"), learned };
+  /*
+   * 历史观察交期（B4）：第二条只观察来源，与系统学习并列而**不合并**。
+   * 两者都不进 days——阈值只由 加工 + 在途 + 缓冲 三段决定，这里只往 basis 追加解释段。
+   */
+  let observed: ObservedLeadObservation | null = null;
+  const o = input.observedHistory;
+  const observedMin = Math.max(1, Math.trunc(input.observedMinSamples ?? minSamples));
+  if (o && o.samples >= observedMin && present(o.p90)) {
+    const archiveDays = basis[0].value;
+    const delta = Number(dSub(o.p90, archiveDays, 2));
+    if (delta > tolerance) {
+      observed = {
+        archiveDays,
+        p50: present(o.p50) ? o.p50 : null,
+        p90: o.p90,
+        samples: o.samples,
+        onTimeRate: o.onTimeRate ?? null,
+        delta,
+        toleranceDays: tolerance,
+        firstReceiptDate: o.firstReceiptDate ?? null,
+        lastReceiptDate: o.lastReceiptDate ?? null,
+        authority: "observation_only",
+        observeOnly: true,
+        applied: false,
+      };
+      basis.push({ part: "observed", value: delta, source: "observed", field: null, observeOnly: true });
+    }
+  }
+  return { days, basis, usedDefault: basis.some((b) => b.source === "default"), learned, observed };
+}
+
+/**
+ * 阈值依据文案（唯一渲染口径，避免各页各写一遍）。
+ * 形如：`加工 20 + 在途 7 + 缓冲 5`，命中观察项时追加
+ * `档案 20 / 系统学习 30(n=12) / 历史观察 26(n=41)` —— 三个数并列，读的人一眼看出
+ * 哪个是主数据、哪个是本系统履约学出来的、哪个是外部历史单据观察到的，且**三者都没改阈值**。
+ */
+export function leadBasisText(result: AlertDaysResult): string {
+  const segments = result.basis
+    .filter((b) => !b.observeOnly)
+    .map((b) => {
+      const label = b.part === "production" ? "加工" : b.part === "logistics" ? "在途" : "缓冲";
+      return `${label} ${b.value}${b.source === "default" ? "(缺省)" : ""}`;
+    })
+    .join(" + ");
+  const compare = leadCompareText(result);
+  return compare ? `${segments}；${compare}` : segments;
+}
+
+/**
+ * 三来源并列文案：`档案 X / 系统学习 Y(n=..) / 历史观察 Z(n=..)`。
+ * 没有任何观察来源命中时返回 null（不制造「只有档案」这种废话）。
+ */
+export function leadCompareText(result: AlertDaysResult): string | null {
+  if (!result.learned && !result.observed) return null;
+  const archive = result.basis[0]?.value ?? 0;
+  const parts = [`档案 ${archive}`];
+  if (result.learned) parts.push(`系统学习 ${result.learned.p90}(n=${result.learned.samples})`);
+  if (result.observed) parts.push(`历史观察 ${result.observed.p90}(n=${result.observed.samples}，只观察)`);
+  return parts.join(" / ");
 }
 
 export type CoverStatus = "alert" | "watch" | "ok";
