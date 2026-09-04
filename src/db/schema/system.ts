@@ -122,6 +122,33 @@ export const monthCloseChecks = pgTable("month_close_checks", {
   check("ck_month_close_waiver_note", sql`${t.status} <> 'waived' OR length(trim(coalesce(${t.note}, ''))) > 0`),
 ]);
 
+/**
+ * 会计期间锁（W2-1）：月结签认之后，把「这个月已关账」变成**可执行的事实**，
+ * 而不是 `month < 当前月` 这样的日历推断——日历推断挡不住任何一笔过账。
+ *
+ * 语义：本表存在一行且 `reopened_at IS NULL` ⇒ 该期间已锁定，
+ * `posting/post.ts` 拒绝业务时间落在该期间的任何过账（含红字冲销）。
+ * 重开只允许管理员，且必须留原因；重开写回同一行（reopened_by/at），
+ * 再次关账时行被复用（closed_by/at 更新、reopened_* 清空）——审计流水在 audit_logs，
+ * 本表只回答「此刻这个期间锁没锁」。
+ */
+export const periodLocks = pgTable("period_locks", {
+  id: serial("id").primaryKey(),
+  period: text("period").notNull().unique(), // YYYY-MM，Asia/Shanghai
+  closedBy: integer("closed_by").notNull().references(() => users.id),
+  closedAt: timestamp("closed_at", { withTimezone: true }).notNull().defaultNow(),
+  closeNote: text("close_note"),
+  reopenedBy: integer("reopened_by").references(() => users.id),
+  reopenedAt: timestamp("reopened_at", { withTimezone: true }),
+  reopenReason: text("reopen_reason"),
+}, (t) => [
+  check("ck_period_lock_period", sql`${t.period} ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`),
+  check(
+    "ck_period_lock_reopen",
+    sql`(${t.reopenedAt} IS NULL AND ${t.reopenedBy} IS NULL AND ${t.reopenReason} IS NULL) OR (${t.reopenedAt} IS NOT NULL AND ${t.reopenedBy} IS NOT NULL AND length(trim(coalesce(${t.reopenReason}, ''))) > 0)`,
+  ),
+]);
+
 /** 取号器（R8/B5）：行锁 UPDATE…RETURNING；doc_no UNIQUE 兜底 */
 export const docCounters = pgTable("doc_counters", {
   prefix: text("prefix").notNull(),

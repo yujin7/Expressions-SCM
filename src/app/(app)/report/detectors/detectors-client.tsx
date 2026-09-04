@@ -13,6 +13,7 @@ import { fetchJson } from "@/components/fetchJson";
 import { exportCsv } from "@/components/exportCsv";
 import { formatQty } from "@/components/format";
 import ListToolbar from "@/components/ListToolbar";
+import { AsyncExportButton } from "@/components/ExportButton";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
 import { useListState } from "@/components/useListState";
 import CaliberNote from "@/components/CaliberNote";
@@ -229,6 +230,10 @@ export default function DetectorsClient() {
       <ListToolbar
         state={listState}
         onExport={() => void doExport()}
+        primaryActions={
+          /* W2-4：页脚一直在推销的「导出任务」现在真的有入口（EXPORT_KINDS.detectors） */
+          <AsyncExportButton kind="detectors" params={{ q, ...(kind ? { kind } : {}) }} />
+        }
         extra={
           <>
             {KIND_ORDER.map((k) => (

@@ -74,6 +74,8 @@ export const SENSITIVE_FIELDS = [
   "netAmount", // PO 未税金额（purchase-order-metrics / 驾驶舱屏2 逐月点）
   "grossAmount", // PO 含税金额（同上）
   "previousAmount", // 手工改写清单里被替代行的金额（DQ-6）
+  "balanceAmount", // 库存流水窗口累计余额金额（W2-2；与 amount 同权限，缺它则金额从余额列漏出）
+  "atRiskAmount", // 临期/过期风险金额（W2-5 效期清单与风险处置台；与 amount 同权限）
   // 注：**不收录 `spend`**。它在 supplier-payment-term 读模型里不是金额标量，而是
   // `SupplierYearSpend[]` 容器（year / rank / rankOf + 金额），而名次按产品口径对全员可见
   // （见 /api/report/supplier-payment-term 的路由说明）。把键加进来会整个数组被删，

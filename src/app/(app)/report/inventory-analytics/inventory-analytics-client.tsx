@@ -37,6 +37,7 @@ import ProductExternalDecisionEvidenceCard from "@/components/ProductExternalDec
 import { VISUAL_COLOR } from "@/components/decision-visuals";
 import { exportCsv } from "@/components/exportCsv";
 import ListToolbar from "@/components/ListToolbar";
+import { AsyncExportButton } from "@/components/ExportButton";
 import { buildInventoryExternalEvidenceBriefs } from "@/components/inventory-external-evidence";
 import type { ProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
 import { useListState } from "@/components/useListState";
@@ -472,6 +473,10 @@ export default function InventoryAnalyticsClient() {
       <ListToolbar
         state={listState}
         onExport={() => void doExport()}
+        primaryActions={
+          /* W2-4：页脚一直在推销的「导出任务」现在真的有入口（EXPORT_KINDS["inventory-analytics"]） */
+          <AsyncExportButton kind="inventory-analytics" params={{ q, windowDays }} />
+        }
         extra={
           <>
             <Space size={4}>

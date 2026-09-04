@@ -9,6 +9,7 @@ import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import CaliberNote from "@/components/CaliberNote";
 import ListToolbar from "@/components/ListToolbar";
+import { AsyncExportButton } from "@/components/ExportButton";
 import { useListState } from "@/components/useListState";
 import SkuHoverCard from "@/components/SkuHoverCard";
 
@@ -211,6 +212,13 @@ export default function SegmentationClient() {
       ) : null}
       <ListToolbar
         state={listState}
+        primaryActions={
+          /* W2-4：重报表异步导出（EXPORT_KINDS.segmentation） */
+          <AsyncExportButton
+            kind="segmentation"
+            params={{ q, ...(cell ? { cell } : {}), ...(tier ? { tier } : {}), ...(ownership ? { ownership } : {}) }}
+          />
+        }
         extra={
           <>
             <Select

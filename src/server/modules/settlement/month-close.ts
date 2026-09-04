@@ -18,6 +18,7 @@ import type { SessionUser } from "@/server/core/dto";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb } from "@/server/modules/outsource/common";
 import { getJiediaoReport } from "@/server/modules/report/jiediao";
+import { getPeriodLock, isPeriodClosed } from "@/server/modules/settlement/period-lock";
 
 export const MONTH_CLOSE_DEFINITIONS = [
   { key: "data_release", title: "数据导入与放行收口", owner: "PMC / 财务", href: "/import/jobs" },
@@ -55,7 +56,22 @@ export interface MonthCloseCheck extends AutomatedCheck {
 export interface MonthCloseChecklist {
   month: string;
   generatedAt: string;
+  /**
+   * 该期间是否**真的**关账了——`period_locks` 是唯一权威（W2-1）。
+   * 此前这里是 `month < 当前月` 的日历推断：它既不阻止任何过账，也不代表任何人签过字。
+   */
   periodClosed: boolean;
+  /** 关账人/时间/说明（未关账时为 null） */
+  closedByName: string | null;
+  closedAt: Date | null;
+  closeNote: string | null;
+  /** 最近一次重开（管理员）的时间与原因；从未重开为 null */
+  reopenedAt: Date | null;
+  reopenReason: string | null;
+  /** 六项检查是否全部收口——关账的前置条件 */
+  closable: boolean;
+  /** 日历上是否已翻篇（旧 periodClosed 的含义，仅供文案用） */
+  pastMonth: boolean;
   checks: MonthCloseCheck[];
   progress: { current: number; total: 6; percent: number };
   limitations: string[];
@@ -304,16 +320,25 @@ export async function getMonthCloseChecklist(
     };
   });
   const current = checks.filter((check) => check.current).length;
+  const lock = await getPeriodLock(month, db);
   return {
     month,
     generatedAt: now.toISOString(),
-    periodClosed: month < currentShanghaiMonth(now),
+    periodClosed: lock.closed,
+    closedByName: lock.closedByName,
+    closedAt: lock.closedAt,
+    closeNote: lock.closeNote,
+    reopenedAt: lock.reopenedAt,
+    reopenReason: lock.reopenReason,
+    closable: current === 6 && !lock.closed && month < currentShanghaiMonth(now),
+    pastMonth: month < currentShanghaiMonth(now),
     checks,
     progress: { current, total: 6, percent: Math.round((current / 6) * 100) },
     limitations: [
       "本页是系统预关账与运营签认，不替代法定会计关账或 ERP 总账关账。",
       "系统证据实时重算；完成后证据变化会自动标为需复核。",
       "自动控制异常时只能填写原因后例外关闭，不能伪装为正常完成。",
+      "「关账」写入期间锁：此后业务时间落在该月的过账（含红字冲销）一律被过账引擎拒绝，重开须管理员并留原因。",
     ],
   };
 }
@@ -331,6 +356,9 @@ export async function updateMonthCloseCheck(
 ): Promise<MonthCloseChecklist> {
   requireAnyRole(user, "finance");
   const db = await resolveDb(dbArg);
+  if (await isPeriodClosed(db, input.month)) {
+    throw new ApiError(409, `期间 ${input.month} 已关账，请先由管理员重开后再修改签认`);
+  }
   if (!MONTH_CLOSE_DEFINITIONS.some((item) => item.key === input.checkKey)) {
     throw new ApiError(400, "未知月结检查项");
   }

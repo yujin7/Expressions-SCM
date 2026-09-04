@@ -87,3 +87,23 @@ export const reverseStockDocSchema = z.object({
   reason: z.string().trim().min(1, "冲销原因必填").max(500),
 });
 export type ReverseStockDocInput = z.infer<typeof reverseStockDocSchema>;
+
+/** 撤回（待审批 → 草稿）：制单人或管理员；无需原因（单据回到可编辑态） */
+export const withdrawStockDocSchema = z.object({
+  version: z.number().int().positive(),
+});
+export type WithdrawStockDocInput = z.infer<typeof withdrawStockDocSchema>;
+
+/** 作废草稿（草稿 → 已作废）：制单人或管理员，必须留原因（草稿也是留痕对象） */
+export const voidStockDocSchema = z.object({
+  version: z.number().int().positive(),
+  reason: z.string().trim().min(2, "作废原因必填").max(500),
+});
+export type VoidStockDocInput = z.infer<typeof voidStockDocSchema>;
+
+/** 短关（已审批/执行中 → 已关闭）：必须留原因；只关剩余部分，绝不回滚已过账数量 */
+export const shortCloseStockDocSchema = z.object({
+  version: z.number().int().positive(),
+  reason: z.string().trim().min(2, "短关原因必填").max(500),
+});
+export type ShortCloseStockDocInput = z.infer<typeof shortCloseStockDocSchema>;

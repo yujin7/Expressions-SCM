@@ -1,7 +1,8 @@
 "use client";
 
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { App, DatePicker, Table, Typography } from "antd";
+import Link from "next/link";
+import { App, DatePicker, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import ExportButton from "@/components/ExportButton";
@@ -9,6 +10,7 @@ import RemoteSelect from "@/components/RemoteSelect";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
 import { fetchJson } from "@/components/fetchJson";
+import { formatYuan } from "@/components/format";
 
 import { LEDGER_SOURCE_LABELS } from "@/components/labels";
 
@@ -18,10 +20,18 @@ interface LedgerRow {
   skuCode: string;
   skuName: string;
   warehouseName: string;
+  batchId: number | null;
+  batchNo: string | null;
   qtyDelta: string;
+  balanceQty: string;
   sourceDocType: string;
   sourceDocId: number;
+  sourceDocNo: string | null;
+  sourceHref: string | null;
   action: string;
+  /** 非价格可见角色：服务端 maskSensitive 已删键 → undefined */
+  amount?: string | null;
+  balanceAmount?: string | null;
 }
 
 export default function LedgerClient() {
@@ -37,6 +47,7 @@ function LedgerInner() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<LedgerRow[]>([]);
   const [total, setTotal] = useState(0);
+  const [canSeeValue, setCanSeeValue] = useState(false);
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   const listState = useListState({
@@ -58,11 +69,12 @@ function LedgerInner() {
       if (warehouseId != null) params.set("warehouseId", String(warehouseId));
       if (from) params.set("from", from);
       if (to) params.set("to", to);
-      const res = await fetchJson<{ rows: LedgerRow[]; total: number }>(
+      const res = await fetchJson<{ rows: LedgerRow[]; total: number; canSeeValue?: boolean }>(
         `/api/inventory/ledger?${params.toString()}`,
       );
       setRows(res.rows);
       setTotal(res.total);
+      setCanSeeValue(Boolean(res.canSeeValue));
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -84,6 +96,15 @@ function LedgerInner() {
     { title: "SKU", dataIndex: "skuCode", render: (_, r) => `${r.skuCode} ${r.skuName}` },
     { title: "仓库", dataIndex: "warehouseName", width: 140 },
     {
+      title: "批次",
+      dataIndex: "batchNo",
+      width: 130,
+      render: (v: string | null, r) =>
+        v ? <Tag color="blue">{v}</Tag>
+          : r.batchId != null ? <Tag>#{r.batchId}</Tag>
+            : <Typography.Text type="secondary">无批次</Typography.Text>,
+    },
+    {
       title: "数量±",
       dataIndex: "qtyDelta",
       width: 120,
@@ -98,10 +119,49 @@ function LedgerInner() {
       },
     },
     {
+      title: "累计余额",
+      dataIndex: "balanceQty",
+      width: 140,
+      align: "right",
+      render: (v: string) => (
+        <Tooltip title="该 SKU×仓库在当前筛选窗口内、截至本行的累计余额（服务端按时间顺序计算，翻页仍正确）">
+          <span>{v}</span>
+        </Tooltip>
+      ),
+    },
+    ...(canSeeValue
+      ? ([
+          {
+            title: "金额",
+            dataIndex: "amount",
+            width: 130,
+            align: "right",
+            render: (v: string | null | undefined) =>
+              v == null ? <Typography.Text type="secondary">无成本</Typography.Text> : formatYuan(v),
+          },
+          {
+            title: "累计余额金额",
+            dataIndex: "balanceAmount",
+            width: 150,
+            align: "right",
+            render: (v: string | null | undefined) =>
+              v == null ? <Typography.Text type="secondary">无成本</Typography.Text> : formatYuan(v),
+          },
+        ] as ColumnsType<LedgerRow>)
+      : []),
+    {
       title: "来源",
       dataIndex: "sourceDocType",
-      width: 160,
-      render: (v: string, r) => `${LEDGER_SOURCE_LABELS[v] ?? v} #${r.sourceDocId}`,
+      width: 210,
+      render: (v: string, r) => {
+        const label = LEDGER_SOURCE_LABELS[v] ?? v;
+        const text = r.sourceDocNo ?? `#${r.sourceDocId}`;
+        return r.sourceHref ? (
+          <Link href={r.sourceHref}>{label} {text}</Link>
+        ) : (
+          <span>{label} {text}</span>
+        );
+      },
     },
     { title: "动作", dataIndex: "action", width: 120 },
   ];

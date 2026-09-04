@@ -226,28 +226,38 @@ export const EXPORT_KINDS: Record<string, ExportKindDef> = {
       from: sp.get("from") ?? undefined,
       to: sp.get("to") ?? undefined,
     }),
-    async produce(_user, params, cap, db) {
+    async produce(user, params, cap, db) {
       const { listLedger } = await import("@/server/modules/inventory/queries");
       const { rows, total } = await listLedger(
-        { skuId: num(params.skuId), warehouseId: num(params.warehouseId), from: str(params.from), to: str(params.to), page: 1, pageSize: cap },
+        {
+          skuId: num(params.skuId), warehouseId: num(params.warehouseId),
+          from: str(params.from), to: str(params.to), page: 1, pageSize: cap,
+          withValue: canSeePrices(user.roles),
+        },
         db,
       );
-      const data = (rows as Record<string, unknown>[]).map((r) => ({
+      const data = (rows as unknown as Record<string, unknown>[]).map((r) => ({
         ...r,
         occurredAt: fmtShanghai(r.occurredAt as Date),
         sourceDocType: LEDGER_SOURCE_LABELS[String(r.sourceDocType)] ?? r.sourceDocType,
+        sourceDocNo: r.sourceDocNo ?? `#${String(r.sourceDocId)}`,
       }));
       return {
         rows: data,
         total,
+        /* amount/balanceAmount ∈ SENSITIVE_FIELDS → stripMoneyColumns 对非价格角色整列剔除（R9 含导出） */
         columns: [
           { key: "occurredAt", title: "时间" },
           { key: "skuCode", title: "SKU编码" },
           { key: "skuName", title: "SKU名称" },
           { key: "warehouseName", title: "仓库" },
+          { key: "batchNo", title: "批次" },
           { key: "qtyDelta", title: "数量±" },
+          { key: "balanceQty", title: "窗口累计余额" },
+          { key: "amount", title: "金额" },
+          { key: "balanceAmount", title: "累计余额金额" },
           { key: "sourceDocType", title: "来源类型" },
-          { key: "sourceDocId", title: "来源单ID" },
+          { key: "sourceDocNo", title: "来源单号" },
           { key: "action", title: "动作" },
         ],
       };
@@ -286,6 +296,209 @@ export const EXPORT_KINDS: Record<string, ExportKindDef> = {
           { key: "lineCount", title: "行数" },
           { key: "createdByName", title: "制单人" },
           { key: "createdAt", title: "创建时间" },
+        ],
+      };
+    },
+  },
+
+  /* ── W2-4：重报表异步导出种类 ─────────────────────────────────────────────
+     此前 EXPORT_KINDS 只登记了 5 个种类，一个报表页都没有；而风险处置 / 异动侦测 /
+     库存分析三个页面的 CSV 页脚却写着「请缩小筛选范围，或改用「导出任务」」——
+     指向一个根本创建不出来的任务。这四个种类就是那句话的兑现。 */
+
+  risk: {
+    nameCn: "风险库存处置",
+    paramsFromSearch: (sp) => ({
+      q: (sp.get("q") ?? "").trim(),
+      action: sp.get("action") ?? undefined,
+    }),
+    async produce(user, params, cap, db) {
+      const { getRiskWorklist } = await import("@/server/modules/report/risk");
+      const { rows, total } = await getRiskWorklist(
+        {
+          q: str(params.q) ?? "",
+          action: str(params.action),
+          page: 1,
+          pageSize: cap,
+          precise: true, // 导出走全精度（E1-06）
+          withValue: canSeePrices(user.roles),
+        },
+        db,
+      );
+      return {
+        rows: rows as unknown as Record<string, unknown>[],
+        total,
+        columns: [
+          { key: "action", title: "建议动作" },
+          { key: "code", title: "SKU编码" },
+          { key: "name", title: "名称" },
+          { key: "brand", title: "品牌" },
+          { key: "onHand", title: "在库" },
+          { key: "amount", title: "在库金额" },
+          { key: "atRiskAmount", title: "风险金额" },
+          { key: "minDaysLeft", title: "最短剩余效期(天)" },
+          { key: "nearExpiryDays", title: "临期阈值(天)" },
+          { key: "expiredQty", title: "过期量" },
+          { key: "nearQty", title: "阈值内到期量" },
+          { key: "daily", title: "日均销" },
+          { key: "cover", title: "可销天数" },
+          { key: "palletRemark", title: "货盘注记" },
+        ],
+      };
+    },
+  },
+
+  detectors: {
+    nameCn: "异动侦测",
+    paramsFromSearch: (sp) => ({
+      q: (sp.get("q") ?? "").trim(),
+      kind: sp.get("kind") ?? undefined,
+    }),
+    async produce(_user, params, cap, db) {
+      const { getDetectorAlerts, DETECTOR_KINDS } = await import("@/server/modules/report/detectors");
+      const rawKind = str(params.kind);
+      const { rows, total } = await getDetectorAlerts(
+        {
+          q: str(params.q) ?? "",
+          kind: DETECTOR_KINDS.includes(rawKind as never) ? (rawKind as never) : undefined,
+          page: 1,
+          pageSize: cap,
+        },
+        db,
+      );
+      const data = rows.map((r) => ({
+        code: r.code,
+        name: r.name,
+        brand: r.brand,
+        severity: r.severity,
+        hitCount: r.hitCount,
+        hits: r.hits.map((h) => h.title).join(" / "),
+        detail: r.hits.map((h) => h.detail).join(" / "),
+        onHand: r.onHand,
+        lastQty: r.lastQty,
+      }));
+      return {
+        rows: data,
+        total,
+        columns: [
+          { key: "code", title: "SKU编码" },
+          { key: "name", title: "名称" },
+          { key: "brand", title: "品牌" },
+          { key: "severity", title: "严重度" },
+          { key: "hitCount", title: "命中条数" },
+          { key: "hits", title: "命中侦测器" },
+          { key: "detail", title: "命中说明" },
+          { key: "onHand", title: "全网在库" },
+          { key: "lastQty", title: "最近一期月销" },
+        ],
+      };
+    },
+  },
+
+  "inventory-analytics": {
+    nameCn: "库存分析",
+    paramsFromSearch: (sp) => ({
+      q: (sp.get("q") ?? "").trim(),
+      windowDays: Number(sp.get("windowDays")) || undefined,
+    }),
+    async produce(_user, params, cap, db) {
+      const { getInventoryAnalytics } = await import("@/server/modules/report/inventory-analytics");
+      const { rows, total } = await getInventoryAnalytics(
+        { q: str(params.q) ?? "", windowDays: num(params.windowDays), page: 1, pageSize: cap },
+        db,
+      );
+      const data = rows.map((r) => ({
+        code: r.code,
+        name: r.name,
+        brand: r.brand,
+        onHand: r.onHand,
+        daily: r.daily,
+        daysCover: r.daysCover,
+        outQty: r.outQty,
+        turns: r.turns,
+        dio: r.dio,
+        avgAgeDays: r.avgAgeDays,
+        unknownOriginQty: r.unknownOriginQty,
+        cell: r.cell,
+        abc: r.abc,
+      }));
+      return {
+        rows: data,
+        total,
+        columns: [
+          { key: "code", title: "SKU编码" },
+          { key: "name", title: "名称" },
+          { key: "brand", title: "品牌" },
+          { key: "onHand", title: "全网在库" },
+          { key: "daily", title: "日均销" },
+          { key: "daysCover", title: "可销天数" },
+          { key: "outQty", title: "窗口出库量" },
+          { key: "turns", title: "年化周转次数" },
+          { key: "dio", title: "周转天数DIO" },
+          { key: "avgAgeDays", title: "加权平均库龄" },
+          { key: "unknownOriginQty", title: "来源不明量" },
+          { key: "cell", title: "ABC/XYZ" },
+          { key: "abc", title: "ABC" },
+        ],
+      };
+    },
+  },
+
+  segmentation: {
+    nameCn: "库存分层 ABC/XYZ",
+    paramsFromSearch: (sp) => ({
+      q: (sp.get("q") ?? "").trim(),
+      cell: sp.get("cell") ?? undefined,
+      tier: sp.get("tier") ?? undefined,
+      ownership: sp.get("ownership") ?? undefined,
+    }),
+    async produce(_user, params, cap, db) {
+      const { getSegmentation } = await import("@/server/modules/report/segmentation");
+      const { rows, total } = await getSegmentation(
+        {
+          q: str(params.q) ?? "",
+          cell: str(params.cell),
+          tier: str(params.tier),
+          ownership: str(params.ownership),
+          page: 1,
+          pageSize: cap,
+        },
+        db,
+      );
+      const data = rows.map((r) => ({
+        code: r.code,
+        name: r.name,
+        brand: r.brand,
+        sales6m: r.sales6m,
+        avgMonthly: r.avgMonthly,
+        cv: r.cv,
+        abc: r.abc,
+        xyz: r.xyz,
+        cell: r.cell,
+        tier: r.tier,
+        valueTier: r.valueTier ?? "insufficient",
+        ownership: r.ownership,
+        ownershipReason: r.ownershipReason,
+        externalNet90: r.externalNet90,
+      }));
+      return {
+        rows: data,
+        total,
+        columns: [
+          { key: "code", title: "SKU编码" },
+          { key: "name", title: "名称" },
+          { key: "brand", title: "品牌" },
+          { key: "sales6m", title: "近6月销量" },
+          { key: "avgMonthly", title: "月均销量" },
+          { key: "cv", title: "变异系数CV" },
+          { key: "abc", title: "ABC" },
+          { key: "xyz", title: "XYZ" },
+          { key: "cell", title: "格" },
+          { key: "tier", title: "四档分层" },
+          { key: "valueTier", title: "金额口径分层(对照)" },
+          { key: "ownership", title: "补货权责" },
+          { key: "ownershipReason", title: "权责理由" },
+          { key: "externalNet90", title: "外部近90天净需求" },
         ],
       };
     },

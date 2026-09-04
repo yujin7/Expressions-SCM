@@ -4,7 +4,10 @@
  *
  * 口径：batch_stocks 参考层（非账本），qty>0 且 expiryDate 非空；
  * daysLeft = expiryDate − 今日（Asia/Shanghai，可为负）；段位与驾驶舱七段完全对齐。
- * 无金额字段，免脱敏；只读。
+ * 金额（W2-5）：单位成本走 `core/valuation.resolveUnitCosts` 唯一权威，
+ * 逐行 `amount = 数量 × 单位成本`、段位小计 `amount`；`amount` ∈ SENSITIVE_FIELDS，
+ * 由调用方按 canSeePrices 请求、出口再经 maskSensitive 兜底。
+ * 没有金额的处置队列只能按数量排序——一箱赠品和一箱主推品在页面上一样重，这正是此前的状态。
  *
  * 2026-09-03 W2-J（BI-R3）：增 brand 筛选与「段位 × 品牌」矩阵（brandMatrix），
  * 矩阵与 bucketCounts 都在段位/搜索筛选**之前**统计（仓库筛选之后），指标 id expiryByBrand。
@@ -15,6 +18,8 @@ import * as schema from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
 import { num } from "@/server/core/svc";
 import { EXPIRY_TIER_DAYS, daysLeftOf, latestStocktakeRows, loadLatestStocktakeDates } from "@/server/core/stock-view";
+import { dAdd, dMul } from "@/server/core/decimal";
+import { resolveUnitCosts } from "@/server/core/valuation";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -34,6 +39,15 @@ export interface ExpiryBatchRow {
   daysLeft: number;
   qty: number;
   bucket: ExpiryBucket;
+  /** 该批次金额 = 数量 × 单位成本；无成本或非价格角色 → null/缺键 */
+  amount?: string | null;
+}
+
+export interface ExpiryBucketStat {
+  batches: number;
+  qty: number;
+  /** 段位金额小计（仅 withValue 时下发） */
+  amount?: string;
 }
 
 export interface ExpiryBrandMatrixRow {
@@ -47,7 +61,9 @@ export interface ExpiryListResult {
   today: string;
   rows: ExpiryBatchRow[];
   total: number;
-  bucketCounts: Record<ExpiryBucket, { batches: number; qty: number }>;
+  bucketCounts: Record<ExpiryBucket, ExpiryBucketStat>;
+  /** 成本覆盖率提示：有单位成本的批次数 / 总批次数（金额不完整时页面须标注） */
+  costCoverage: { covered: number; total: number } | null;
   /** 段位 × 品牌矩阵（仓库筛选后、段位/搜索/品牌筛选前），按总数量降序；无品牌归「(未设品牌)」 */
   brandMatrix: ExpiryBrandMatrixRow[];
   /** 可选品牌（矩阵行名） */
@@ -59,8 +75,8 @@ export interface ExpiryListResult {
 export const EXPIRY_NO_BRAND = "(未设品牌)";
 
 const EXPIRY_BUCKETS: ExpiryBucket[] = ["expired", "m3", "m6", "m12", "m18", "m24", "rest"];
-const emptyBuckets = (): Record<ExpiryBucket, { batches: number; qty: number }> =>
-  Object.fromEntries(EXPIRY_BUCKETS.map((b) => [b, { batches: 0, qty: 0 }])) as Record<ExpiryBucket, { batches: number; qty: number }>;
+const emptyBuckets = (): Record<ExpiryBucket, ExpiryBucketStat> =>
+  Object.fromEntries(EXPIRY_BUCKETS.map((b) => [b, { batches: 0, qty: 0 }])) as Record<ExpiryBucket, ExpiryBucketStat>;
 
 export function expiryBucketOf(daysLeft: number): ExpiryBucket {
   // 边界走 core/stock-view.EXPIRY_TIER_DAYS（spec/07 N3 七段位口径 92/183），
@@ -75,7 +91,12 @@ export function expiryBucketOf(daysLeft: number): ExpiryBucket {
 }
 
 export async function listExpiryBatches(
-  query: { q?: string; bucket?: string; warehouseId?: number; brand?: string; page?: number; pageSize?: number },
+  query: {
+    q?: string; bucket?: string; warehouseId?: number; brand?: string;
+    page?: number; pageSize?: number;
+    /** 是否附带金额（调用方按 canSeePrices 决定）；false 时一次成本查询都不发生 */
+    withValue?: boolean;
+  },
   dbArg?: AnyDb,
 ): Promise<ExpiryListResult> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
@@ -116,12 +137,19 @@ export async function listExpiryBatches(
   // 但与 replenish/expiry 同一写法，避免第二种收口）。
   const raw = latestStocktakeRows(rawAllPeriods, await loadLatestStocktakeDates(db));
 
+  const unitCosts = query.withValue
+    ? await resolveUnitCosts(db, raw.map((r) => r.skuId))
+    : null;
+  let covered = 0;
   const all: ExpiryBatchRow[] = raw.map((r) => {
     const daysLeft = daysLeftOf(today, r.expiryDate);
+    const unitCost = unitCosts?.get(r.skuId)?.unitCost ?? null;
+    if (unitCost != null) covered += 1;
     return {
       id: r.id, skuId: r.skuId, skuCode: r.skuCode, skuName: r.skuName, brand: r.brand, warehouse: r.warehouse,
       batchNo: r.batchNo, productionDate: r.productionDate, expiryDate: r.expiryDate,
       qty: num(r.qty), daysLeft, bucket: expiryBucketOf(daysLeft),
+      ...(query.withValue ? { amount: unitCost == null ? null : dMul(r.qty, unitCost, 2) } : {}),
     };
   });
 
@@ -130,6 +158,9 @@ export async function listExpiryBatches(
   for (const r of all) {
     bucketCounts[r.bucket].batches++;
     bucketCounts[r.bucket].qty += r.qty;
+    if (query.withValue && r.amount != null) {
+      bucketCounts[r.bucket].amount = dAdd(bucketCounts[r.bucket].amount ?? "0.00", r.amount, 2);
+    }
     const brandKey = r.brand ?? EXPIRY_NO_BRAND;
     const row = matrix.get(brandKey) ?? { brand: brandKey, buckets: emptyBuckets(), batches: 0, qty: 0 };
     row.buckets[r.bucket].batches++;
@@ -158,6 +189,7 @@ export async function listExpiryBatches(
     rows: filtered.slice((page - 1) * pageSize, page * pageSize),
     total: filtered.length,
     bucketCounts,
+    costCoverage: query.withValue ? { covered, total: all.length } : null,
     brandMatrix,
     brands: brandMatrix.map((r) => r.brand),
     brand,

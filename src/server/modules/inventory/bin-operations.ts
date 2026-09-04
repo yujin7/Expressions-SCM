@@ -293,6 +293,202 @@ export async function postBinMovement(
   });
 }
 
+/* ── W2-6：隔离 / 放行的批次级入口 ───────────────────────────────────────────
+   `bin.kind='quarantine'` 与 `bin_movements.operation='quarantine'|'release'` 连同完整
+   不变量守卫早就建好了，但只有「库位作业」页按仓库逐行能用；召回或检验不合格时，
+   人手上拿到的是**批次号**，不是某个仓的某个库位。下面两个函数把批次作为入口：
+   给定 (SKU, 批次)，列出它此刻散落在哪些仓/库位，并按同一套守卫执行隔离/放行。
+   写入仍然只经 postBinMovement——不另开第二条写路径，审计与幂等都在那里。 */
+
+export interface BatchPlacementRow {
+  key: string;
+  warehouseId: number;
+  warehouseCode: string;
+  warehouseName: string;
+  binId: number | null;
+  binCode: string | null;
+  binName: string | null;
+  binKind: string | null;
+  qty: string;
+  locationState: "located" | "unlocated";
+}
+
+export interface BatchPlacementBin {
+  id: number;
+  warehouseId: number;
+  code: string;
+  name: string | null;
+  kind: string;
+}
+
+/**
+ * 某 (SKU, 批次) 当前的物理分布：逐仓的已定位库位行 + 未定位余量，
+ * 外加各仓可选的隔离/放行目标库位（供页面直接下拉，不必再跳去库位主档翻）。
+ * batchId=null 表示无批次维度的余额行。
+ */
+export async function listBatchPlacements(
+  args: { skuId: number; batchId: number | null },
+  dbArg?: AnyDb,
+): Promise<{ rows: BatchPlacementRow[]; bins: BatchPlacementBin[] }> {
+  const db = dbArg ?? (await getDbAsync());
+  const batchId = args.batchId ?? null;
+
+  const located: {
+    binId: number; binCode: string; binName: string | null; binKind: string;
+    warehouseId: number; warehouseCode: string; warehouseName: string; qty: string;
+  }[] = await db
+    .select({
+      binId: schema.bins.id,
+      binCode: schema.bins.code,
+      binName: schema.bins.name,
+      binKind: schema.bins.kind,
+      warehouseId: schema.bins.warehouseId,
+      warehouseCode: schema.warehouses.code,
+      warehouseName: schema.warehouses.name,
+      qty: schema.binBalances.qty,
+    })
+    .from(schema.binBalances)
+    .innerJoin(schema.bins, eq(schema.binBalances.binId, schema.bins.id))
+    .innerJoin(schema.warehouses, eq(schema.bins.warehouseId, schema.warehouses.id))
+    .where(and(
+      eq(schema.binBalances.skuId, args.skuId),
+      batchWhere(batchId),
+      gt(schema.binBalances.qty, "0"),
+    ))
+    .orderBy(schema.warehouses.code, schema.bins.code);
+
+  const ledger: { warehouseId: number; warehouseCode: string; warehouseName: string; qty: string }[] = await db
+    .select({
+      warehouseId: schema.stockBalances.warehouseId,
+      warehouseCode: schema.warehouses.code,
+      warehouseName: schema.warehouses.name,
+      qty: schema.stockBalances.qty,
+    })
+    .from(schema.stockBalances)
+    .innerJoin(schema.warehouses, eq(schema.stockBalances.warehouseId, schema.warehouses.id))
+    .where(and(
+      eq(schema.stockBalances.skuId, args.skuId),
+      stockBatchWhere(batchId),
+      gt(schema.stockBalances.qty, "0"),
+      eq(schema.warehouses.accountingMode, "realtime"),
+    ))
+    .orderBy(schema.warehouses.code);
+
+  const locatedByWarehouse = new Map<number, string>();
+  for (const row of located) {
+    locatedByWarehouse.set(row.warehouseId, dAdd(locatedByWarehouse.get(row.warehouseId) ?? "0", row.qty));
+  }
+  const rows: BatchPlacementRow[] = located.map((row) => ({
+    key: `bin:${row.binId}`,
+    warehouseId: row.warehouseId,
+    warehouseCode: row.warehouseCode,
+    warehouseName: row.warehouseName,
+    binId: row.binId,
+    binCode: row.binCode,
+    binName: row.binName,
+    binKind: row.binKind,
+    qty: dQty(row.qty),
+    locationState: "located",
+  }));
+  for (const row of ledger) {
+    const unlocated = dSub(row.qty, locatedByWarehouse.get(row.warehouseId) ?? "0");
+    if (dCmp(unlocated, "0") <= 0) continue;
+    rows.push({
+      key: `unlocated:${row.warehouseId}`,
+      warehouseId: row.warehouseId,
+      warehouseCode: row.warehouseCode,
+      warehouseName: row.warehouseName,
+      binId: null,
+      binCode: null,
+      binName: null,
+      binKind: null,
+      qty: dQty(unlocated),
+      locationState: "unlocated",
+    });
+  }
+
+  const warehouseIds = [...new Set(rows.map((row) => row.warehouseId))];
+  const bins: BatchPlacementBin[] = warehouseIds.length
+    ? await db
+      .select({
+        id: schema.bins.id,
+        warehouseId: schema.bins.warehouseId,
+        code: schema.bins.code,
+        name: schema.bins.name,
+        kind: schema.bins.kind,
+      })
+      .from(schema.bins)
+      .where(and(inArray(schema.bins.warehouseId, warehouseIds), eq(schema.bins.active, true)))
+      .orderBy(schema.bins.code)
+    : [];
+  return { rows, bins };
+}
+
+const quarantineSchema = z.object({
+  idempotencyKey: z.string().trim().min(8).max(100),
+  intent: z.enum(["quarantine", "release"]),
+  warehouseId: z.number().int().positive(),
+  skuId: z.number().int().positive(),
+  batchId: z.number().int().positive().nullable().optional(),
+  /** 来源库位；隔离时可为空（= 从未定位量隔离），放行时必须是隔离库位 */
+  fromBinId: z.number().int().positive().nullable().optional(),
+  /** 目标库位；省略时按仓内唯一的候选库位自动解析，多于一个即要求显式指定 */
+  toBinId: z.number().int().positive().nullable().optional(),
+  qty: z.union([z.string(), z.number()]),
+  reason: z.string().trim().min(1, "作业原因必填").max(300),
+});
+
+/**
+ * 批次隔离 / 放行。目标库位可省略：仓内只有一个启用的隔离库位（放行则只有一个普通/暂存库位）时
+ * 自动解析；有多个就要求显式指定——**不猜**。真正的写入与全部不变量守卫都在 postBinMovement。
+ */
+export async function quarantineOrReleaseBatch(
+  actor: SessionUser,
+  raw: unknown,
+  dbArg?: AnyDb,
+): Promise<{ id: number; idempotent: boolean }> {
+  const input = quarantineSchema.parse(raw);
+  const db = dbArg ?? (await getDbAsync());
+  let toBinId = input.toBinId ?? null;
+  if (toBinId == null) {
+    const wanted = input.intent === "quarantine" ? ["quarantine"] : ["normal", "staging"];
+    const candidates: { id: number; code: string }[] = await db
+      .select({ id: schema.bins.id, code: schema.bins.code })
+      .from(schema.bins)
+      .where(and(
+        eq(schema.bins.warehouseId, input.warehouseId),
+        eq(schema.bins.active, true),
+        inArray(schema.bins.kind, wanted),
+      ))
+      .orderBy(schema.bins.code);
+    if (candidates.length === 0) {
+      throw new ApiError(
+        409,
+        input.intent === "quarantine"
+          ? "该仓没有启用的隔离库位，请先在库位主数据维护一个 kind=隔离 的库位"
+          : "该仓没有启用的普通/暂存库位可放行",
+      );
+    }
+    if (candidates.length > 1) throw new ApiError(400, "该仓有多个候选库位，请显式选择目标库位");
+    toBinId = candidates[0].id;
+  }
+  return postBinMovement(
+    actor,
+    {
+      idempotencyKey: input.idempotencyKey,
+      warehouseId: input.warehouseId,
+      skuId: input.skuId,
+      batchId: input.batchId ?? null,
+      fromBinId: input.fromBinId ?? null,
+      toBinId,
+      qty: input.qty,
+      operation: input.intent,
+      reason: input.reason,
+    },
+    db,
+  );
+}
+
 export interface BinInventoryRow {
   key: string;
   warehouseId: number;

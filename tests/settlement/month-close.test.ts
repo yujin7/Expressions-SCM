@@ -28,7 +28,10 @@ describe("month-end six-control workflow", () => {
       new Date("2026-08-02T04:00:00.000Z"),
     );
     expect(result.checks).toHaveLength(6);
-    expect(result.periodClosed).toBe(true);
+    /* W2-1：periodClosed 现在是 period_locks 的事实，不再是「月份小于当前月」的日历推断。
+       日历意义上翻篇了，但没人关过账——所以 periodClosed=false、pastMonth=true。 */
+    expect(result.periodClosed).toBe(false);
+    expect(result.pastMonth).toBe(true);
     expect(result.checks.find((item) => item.key === "data_release")).toMatchObject({
       autoState: "pass",
       status: "pending",
