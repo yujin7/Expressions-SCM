@@ -53,6 +53,13 @@
     派单、关闭权限、通知受众三处读同一个值，写死过一次就出现「通知给 ops、待办给 pmc」的分裂）
   - 断货事实核验（流水回放判断是否真断货）→ 只能有一处实现；`jobs/alert-outcome.ts` 与
     `report/closed-loop.ts` 各写一套曾对同一 SKU 给出相反结论
+  - 业务日/月/调度小时 → `core/business-day.ts`（`shanghaiDayOf` / `todayShanghai` / `shanghaiMonthOf` /
+    `shanghaiHourKeyOf` / `shanghaiTimestampOf` / `dayDiff`）。本模块**必须保持零 import**（它被
+    rules/、server/modules、src/jobs 和客户端组件同时引用）。2026-09-05：收口时没留守卫，
+    `new Intl.DateTimeFormat("en-CA"|"sv-SE", { timeZone: "Asia/Shanghai" })` 又长回 39 份，
+    其中两个模块的注释还互相写着「同准」——注释维持不了口径。现由
+    `tests/architecture/business-day-single-authority.test.ts` 守。给人看的
+    `toLocaleString("zh-CN", …)` 不在此列（那是展示串，不是业务键）。
   - 展示格式化 → `components/format.ts`（`formatCount`/`formatYuan`/`formatPct`；驾驶舱趋势层不得再自写一套）；
     比例→百分数只在**服务端**换算后下发，唯一权威 `report/cockpit.ts` 的 `otifRatePctOf`/`ratePctNumOf`
     （驾驶舱 OTIF 曾把 0.83 显示成 0.83%；客户端那对自称权威的 `ratioToPct`/`pctFromRatio` 零调用，已删）
@@ -91,6 +98,14 @@
     （2026-09-04：todo/service → jobs/notify → workbench/focus → todo/stats）。用
     `npx madge --circular --extensions ts,tsx --ts-config tsconfig.json <route>` 定位，动态 import 断环。
     跑完记得 `git checkout -- next-env.d.ts tsconfig.json && rm -rf .next-buildcheck`——构建会改写这两个文件。
+  - **迁移撞号重出后必须逐条比对手写约束**：`drizzle-kit generate` 从 schema 反推 SQL，
+    只写在迁移里的东西会被**静默丢弃**。2026-09-05：`fk_qc_record_quality_case` 因此消失过一次
+    （它只能写在迁移里——在 `db/schema/docs.ts` 里声明会形成 `docs.ts ↔ quality.ts` 模块环，
+    正是上面那条 `next build` 失败形态）。重出后 grep 一遍旧 SQL 里的
+    `ADD CONSTRAINT` / `CREATE .* INDEX`，确认一条不少。
+  - **并行分支上「干净合并」不等于「正确合并」**：2026-09-05 `projection.ts` 无冲突自动合并，
+    结果同时留下新旧两套机制、返回对象出现重复键——文本合并看不出来，只有 `tsc` 报。
+    合并后 `tsc`（app + test）必须跑，且对两边都改过语义的模块要人工读一遍返回结构。
   - **`autoCloseAfterDays` 三态语义**（`upsertAlerts`）：`0`＝条件消失即刻关闭（单据流转/凭据刷新这类硬事实）；
     `null`＝永不自动关闭（某周期数据质量不达标属于**已发生的周期事实**，下周没命中不代表上周的问题没了）；
     缺省 `3`＝迟滞关闭，容忍一天的数据缺口。
