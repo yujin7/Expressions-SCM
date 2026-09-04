@@ -13,7 +13,7 @@ import { users } from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
 import type { AnyDb } from "@/server/core/svc";
 import { closeStaleProjectedItems, listDueReminderTargets, projectCandidates, type ProjectCandidatesSummary } from "@/server/modules/todo/service";
-import { collectTodoCandidates, type CollectTriggerOptions } from "@/server/modules/todo/triggers";
+import { collectTodoCandidatesDetailed, type CollectTriggerOptions } from "@/server/modules/todo/triggers";
 import { enqueueNotification, isFeishuAppConfigured } from "./notify";
 
 export interface TodoSyncSummary {
@@ -49,8 +49,9 @@ export async function runTodoSync(
   let projection: ProjectCandidatesSummary | null = null;
   let autoClosed: { scanned: number; cancelled: number } | null = null;
   if (actor) {
-    const candidates = await collectTodoCandidates(db, opts?.triggers);
-    projection = await projectCandidates(db, candidates, actor, { now });
+    // 预算截断（红队 A1）随投影汇总一起上报：告警风暴把窗口占满时必须看得见，不能只报 scanned/matched
+    const collected = await collectTodoCandidatesDetailed(db, opts?.triggers);
+    projection = await projectCandidates(db, collected.candidates, actor, { now, truncated: collected.truncated });
     autoClosed = await closeStaleProjectedItems(db, actor, { now });
   }
 

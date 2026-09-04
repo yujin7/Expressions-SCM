@@ -219,7 +219,7 @@ export function TodoCompletionStrictCard({ block }: { block: Block<TodoCompletio
       unit="完成率 %"
       height={320}
       summary={d
-        ? `近 6 个月合计：宽口径 ${pct(d.overall.completionRate)} vs 严口径 ${pct(d.overall.completionRateStrict)}（差 ${gap(d.overall.gapPp)}）；已取消 ${d.overall.cancelled} = 来源自动关闭 ${d.overall.cancelledBySourceClose} + 人工 ${d.overall.cancelledByHuman}`
+        ? `近 6 个月合计：宽口径 ${pct(d.overall.completionRate)} vs 严口径 ${pct(d.overall.completionRateStrict)}（差 ${gap(d.overall.gapPp)}）；已取消 ${d.overall.cancelled} = 来源自动关闭 ${d.overall.cancelledBySourceClose} + 来源人工关闭 ${d.overall.cancelledBySourceManualClose} + 直接取消待办 ${d.overall.cancelledByHuman}（前两类都留在严口径分母）`
         : "无数据"}
       extra={<Segmented size="small" options={[{ label: "按月", value: "month" }, { label: "按角色", value: "role" }]} value={view} onChange={(v) => setView(v as StrictView)} />}
       dataView={d ? (
@@ -229,7 +229,8 @@ export function TodoCompletionStrictCard({ block }: { block: Block<TodoCompletio
           { title: "已完成", dataIndex: "done", align: "right" },
           { title: "已取消", dataIndex: "cancelled", align: "right" },
           { title: "来源自动关闭", dataIndex: "cancelledBySourceClose", align: "right" },
-          { title: "人工取消", dataIndex: "cancelledByHuman", align: "right" },
+          { title: "来源人工关闭", dataIndex: "cancelledBySourceManualClose", align: "right" },
+          { title: "直接取消待办", dataIndex: "cancelledByHuman", align: "right" },
           { title: "宽口径", dataIndex: "completionRate", align: "right", render: (v: number | null) => pct(v) },
           { title: "严口径", dataIndex: "completionRateStrict", align: "right", render: (v: number | null) => pct(v) },
           { title: "宽 − 严", dataIndex: "gapPp", align: "right", render: (v: number | null) => gap(v) },
@@ -245,11 +246,16 @@ export function TodoCompletionStrictCard({ block }: { block: Block<TodoCompletio
             </Col>
             <Col span={8}>
               <Statistic title="严口径" value={pct(data.overall.completionRateStrict)} valueStyle={{ fontSize: 18, color: VISUAL_COLOR.primary }} />
-              <Muted>来源自动关闭的取消留在分母 · 宽 − 严 = {gap(data.overall.gapPp)}</Muted>
+              <Muted>来源被关闭（自动 + 人工）的取消都留在分母 · 宽 − 严 = {gap(data.overall.gapPp)}</Muted>
             </Col>
             <Col span={8}>
-              <Statistic title="取消拆分（自动 / 人工）" value={data.overall.cancelledBySourceClose} suffix={`/ ${data.overall.cancelledByHuman}`} valueStyle={{ fontSize: 18 }} />
-              <Muted>自动 = 来源告警被引擎迟滞关闭，条件自己消失</Muted>
+              <Statistic
+                title="取消拆分（来源自动 / 来源人工 / 直接取消）"
+                value={data.overall.cancelledBySourceClose}
+                suffix={`/ ${data.overall.cancelledBySourceManualClose} / ${data.overall.cancelledByHuman}`}
+                valueStyle={{ fontSize: 18 }}
+              />
+              <Muted>来源自动 = 引擎迟滞关闭，条件自己消失；来源人工 = 有人把告警关掉（不减分母）</Muted>
             </Col>
           </Row>
           <div style={{ flex: 1, minHeight: 0 }}>

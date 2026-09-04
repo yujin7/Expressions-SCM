@@ -23,6 +23,7 @@
 import type { AnyDb } from "@/server/core/svc";
 import { backfillAlertDedupeKeys, upsertAlerts, type AlertCandidate, type AlertWhy } from "@/server/modules/alerts/engine";
 import { refreshTransferRoutes, type TransferRoutesModel } from "@/server/modules/report/transfer-routes";
+import { ALERT_OWNER_ROLE } from "@/server/rules/task-triggers";
 
 export const ALERT_CATEGORY = "transfer_cost";
 export const TRANSFER_COST_SOURCE_RULE = "rules/transfer-cost";
@@ -119,7 +120,7 @@ export async function run(db: AnyDb, opts?: { now?: Date; asOf?: string }): Prom
     title: s.title,
     detail: s.detail,
     severity: s.severity,
-    ownerRole: "warehouse",
+    ownerRole: ALERT_OWNER_ROLE[ALERT_CATEGORY], // = warehouse（责任角色唯一权威 rules/task-triggers）
     actionHref: TRANSFER_COST_ACTION_HREF,
     sourceRule: TRANSFER_COST_SOURCE_RULE,
     paramsSnapshot: { ...s.paramsSnapshot, asOf: model.asOf },

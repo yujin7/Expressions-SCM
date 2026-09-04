@@ -4,6 +4,7 @@ import { refreshInventoryAlerts, type InventoryAlertRow } from "@/server/modules
 import { refreshSalesSpike, type SpikeHit } from "@/server/modules/report/sales-spike";
 import { getOrderByDates } from "@/server/modules/replenish/order-by";
 import { ALERT_KIND_LABELS } from "@/server/rules/alert-priority";
+import { ALERT_OWNER_ROLE } from "@/server/rules/task-triggers";
 
 /**
  * 预警看门狗（D56/D57）：重建读模型 → 投影为 system_alerts（去重键幂等、迟滞 3 天自动关闭）。
@@ -15,6 +16,12 @@ import { ALERT_KIND_LABELS } from "@/server/rules/alert-priority";
  * 审计 #7：大促预期内的爆单降为 medium 而不是丢弃——跑到自己预期 3 倍仍是新闻。
  * W6：paramsSnapshot.orderByDate 取补货引擎（rules/timephased）的最晚下单日，看门狗自己不再倒推；
  * 引擎无答案时才回退「今天 + 在库可销 − 交期」近似，并以 orderByDateSource 标明是哪一种。
+ *
+ * 责任角色（红队审计 A4）：一律取 `rules/task-triggers.ALERT_OWNER_ROLE`——**该表自称并且确实是唯一权威**
+ * （待办派单、engine.closeAlert 的关闭权限、system-alert-notify 的通知受众三处都读它）。
+ * 本文件此前把 sales_spike 写死成 `ops`，而表里是 `pmc`：结果待办派给 PMC、通知与关闭权限却在运营手上，
+ * 谁都不完全负责。inventory_cover 当时恰好一致（pmc），但同样改为读表，免得下次改表时又漏一处。
+ * 护栏：tests/architecture/alert-owner-role-authority.test.ts。
  */
 const DAILY_SOURCE_LABEL: Record<NonNullable<InventoryAlertRow["primaryDailySource"]>, string> = {
   external: "外部平台净件数（支付−退款）近 30 天 ÷ 30",
@@ -127,7 +134,7 @@ export async function runInventoryCoverWatchdog(db: AnyDb, now = new Date()) {
         title: r.primary === "out_of_stock" ? `${r.tier} 级 ${r.code} 已断货（有需求无在库）` : `${r.tier} 级 ${r.code} 可销 ${r.coverDays ?? "—"} 天 < 阈值 ${r.alertDays} 天`,
         detail: `在库 ${r.onHand}；主日销 ${r.primaryDaily ?? "—"}（${r.primaryDailySource ?? "无"}）；阈值 = ${r.alertBasis}${r.usedDefault ? "（含缺省周期）" : ""}${r.nextArrival ? `；下一笔到货 ${r.nextArrival.date} ${r.nextArrival.qty} 件` : ""}`,
         severity: r.primary === "out_of_stock" || r.tier === "S" ? "high" : "medium",
-        ownerRole: "pmc",
+        ownerRole: ALERT_OWNER_ROLE["inventory_cover"], // = pmc（ALERT_OWNER_ROLE 是责任角色唯一权威）
         actionHref: `/inventory/alerts?tab=cover&cover_q=${encodeURIComponent(r.code)}`,
         sourceRule: "rules/alert-threshold + rules/alert-priority",
         paramsSnapshot: {
@@ -156,7 +163,7 @@ export async function runSalesSpikeWatchdog(db: AnyDb, now = new Date()) {
       title: `${h.expected ? "爆单（大促预期内）" : "爆单"} ${h.code}：近 ${h.days.length} 天 ${h.days.map((d) => d.qty).join("/")} 件，较前 7 日日均 +${h.risePct ?? "—"}%`,
       detail: `店铺 ${h.shopName}；基线 ${h.baseline} 件/日；阈值 ${h.threshold}；截止 ${h.anchorDate}${h.gaps > 0 ? `；窗口缺 ${h.gaps} 天按 0 计` : ""}${h.expected ? `；${h.planEventWindow ?? "大促"}预期内` : ""}`,
       severity: (h.expected ? "medium" : "high") as AlertCandidate["severity"],
-      ownerRole: "ops",
+      ownerRole: ALERT_OWNER_ROLE["sales_spike"], // = pmc（原写死 ops 与权威表冲突：待办给 pmc、通知/关闭权限给 ops）
       actionHref: `/inventory/alerts?tab=spike`,
       sourceRule: "rules/sales-spike",
       paramsSnapshot: { ...model.params, anchorDate: h.anchorDate, reason: h.reason, gaps: h.gaps, expected: h.expected, planEventRef: h.planEventRef, expectedUpliftPct: h.expectedUpliftPct, calendarPct: model.coverage.calendarPct },
@@ -168,7 +175,7 @@ export async function runSalesSpikeWatchdog(db: AnyDb, now = new Date()) {
       title: `爆单（未映射平台 SKU ${h.platformSkuId}）：近 ${h.days.length} 天 ${h.days.map((d) => d.qty).join("/")} 件，+${h.risePct ?? "—"}%`,
       detail: `店铺 ${h.shopName}；先认领身份再评估备货；基线 ${h.baseline}；截止 ${h.anchorDate}${h.gaps > 0 ? `；窗口缺 ${h.gaps} 天按 0 计` : ""}`,
       severity: "medium" as const,
-      ownerRole: "ops",
+      ownerRole: ALERT_OWNER_ROLE["sales_spike"], // = pmc（同上：未映射平台 SKU 的爆单也归 PMC）
       actionHref: h.href,
       sourceRule: "rules/sales-spike",
       paramsSnapshot: { ...model.params, anchorDate: h.anchorDate, reason: h.reason, gaps: h.gaps, expected: false },

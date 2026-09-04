@@ -1,6 +1,7 @@
 /**
- * 待办统计取消细分（闭环审计 #9）：来源告警被引擎自动关闭（autoResolved）而取消 vs 人工取消；
- * 宽/严两种完成率并列——等看门狗关掉告警不再算完成。
+ * 待办统计取消细分（闭环审计 #9 + 红队审计 A7）：来源告警被引擎自动关闭（autoResolved）而取消
+ * vs 来源告警被**人工**关闭而取消 vs 直接取消待办；宽/严两种完成率并列——
+ * 等看门狗关掉告警不算完成，把来源告警按「不处理/误报」关掉也不算完成。
  */
 import { beforeAll, describe, expect, it } from "vitest";
 import { systemAlerts, users } from "@/db/schema";
@@ -40,14 +41,24 @@ describe("todo/stats：cancelled 拆分 + 严口径完成率", () => {
     await createWorkItem({ title: "未完成", assigneeId: pmc.id, ownerRole: "pmc", sourceKind: "alert", sourceRef: "998" }, admin, db, { now: T0 });
   });
 
-  it("cancelledBySourceClose=1（autoResolved）、cancelledByHuman=2；宽口径 1/2=50%，严口径 1/3=33.3%", async () => {
+  it("取消拆三桶：来源自动关闭 1 / 来源人工关闭 1 / 直接取消待办 1；宽口径 1/2=50%", async () => {
     const s = await getTodoStats({ groupBy: "person", fromMonth: "2026-09", toMonth: "2026-09", now: NOW }, admin, db);
     const row = s.rows.find((r) => r.groupKey === String(pmc.id));
-    expect(row).toMatchObject({ total: 5, done: 1, cancelled: 3, cancelledBySourceClose: 1, cancelledByHuman: 2 });
+    expect(row).toMatchObject({
+      total: 5, done: 1, cancelled: 3,
+      cancelledBySourceClose: 1, cancelledBySourceManualClose: 1, cancelledByHuman: 1,
+    });
     expect(row?.completionRate).toBe(50);
-    expect(row?.completionRateStrict).toBe(33.3);
     expect(s.caliber).toBe(TODO_STATS_CALIBER);
     expect(s.caliber).toContain("完成率（严）");
-    expect(s.caliber).toContain("等看门狗关掉不算完成");
+  });
+
+  it("红队 A7：把来源告警人工关掉不再是完成率的逃生口——严口径分母 = 5 − 1（只减直接取消），1/4 = 25%", async () => {
+    const s = await getTodoStats({ groupBy: "person", fromMonth: "2026-09", toMonth: "2026-09", now: NOW }, admin, db);
+    const row = s.rows.find((r) => r.groupKey === String(pmc.id));
+    // 修复前：来源人工关闭并进 cancelledByHuman → 严口径分母 5 − 2 = 3 → 33.3%（关一条告警就把完成率抬 8 个点）
+    expect(row?.completionRateStrict).toBe(25);
+    expect(TODO_STATS_CALIBER).toContain("或人工关闭");
+    expect(TODO_STATS_CALIBER).toContain("逃生口");
   });
 });

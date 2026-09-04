@@ -112,8 +112,14 @@ describe("alert_events 台账", () => {
       const ackEv = await db.select().from(schema.alertEvents).where(eq(schema.alertEvents.event, "ack"));
       expect(ackEv).toHaveLength(1);
       expect(ackEv[0]).toMatchObject({ alertId: b.id, actorId: pmc.id, note: "看到了" });
-      // 引擎下一轮不会因人工关闭而"复活"：A 已 resolved，同键再命中是新开告警（新 open 事件）
-      await upsertAlerts(db, { category: "test_cat", candidates: [cand("A")], now: new Date("2026-09-04T03:00:00.000Z") });
+      /* 引擎下一轮不会因人工关闭而"复活"，而且（红队 A2）默认抑制窗口内**根本不重开**：
+         A 是 false_positive 关闭的，30 天内再命中只计 suppressed。 */
+      const again = await upsertAlerts(db, { category: "test_cat", candidates: [cand("A")], now: new Date("2026-09-04T03:00:00.000Z") });
+      expect(again).toMatchObject({ opened: 0, suppressed: 1 });
+      expect(await db.select().from(schema.alertEvents).where(eq(schema.alertEvents.event, "open"))).toHaveLength(3);
+      // 显式关掉抑制时才重开，且是**新开一条**（不复用已关闭的行）
+      const reopened = await upsertAlerts(db, { category: "test_cat", candidates: [cand("A")], now: new Date("2026-09-05T03:00:00.000Z"), suppressManuallyClosedDays: 0 });
+      expect(reopened).toMatchObject({ opened: 1 });
       const opens = await db.select().from(schema.alertEvents).where(eq(schema.alertEvents.event, "open"));
       expect(opens).toHaveLength(4);
     } finally {

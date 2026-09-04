@@ -182,3 +182,59 @@ describe("report/closed-loop 建议准确度 + 放弃留痕", () => {
     }
   });
 });
+
+
+/**
+ * 红队审计 A3(b) + A8：抑制复核的覆盖判定与"有界窗口"等价性。
+ *
+ * A3(b)：原实现 level 从 0 起算、只累计**实时仓**流水，于是一个「收货进快照仓、只从实时仓发货」的 SKU
+ *        水位天生为负 → 恒判「随后断货（抑制可能是错的）」。现在这类 SKU 一律弃权。
+ * A8   ：把无界的全量流水回放改成「窗口前一个聚合期初 + 窗口内逐笔」。本用例用一条**远早于窗口**的
+ *        期初流水钉住等价性：期初若被优化掉，SUPP-OLD 会从「未断货」翻成「随后断货」。
+ */
+describe("report/closed-loop 抑制复核：覆盖判定与有界窗口（红队 A3(b) / A8）", () => {
+  it("快照仓在库的 SKU 弃权，不再恒判「随后断货」；窗口前的期初仍计入水位", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [p] = await db.insert(schema.users).values({ name: "计划", roles: ["pmc"] }).returning();
+      const [rt] = await db.insert(schema.warehouses).values({ code: "SR-RT", name: "实时仓", kind: "finished" }).returning();
+      const [snapWh] = await db.insert(schema.warehouses).values({ code: "SR-SNAP", name: "快照仓", kind: "snapshot", accountingMode: "snapshot" }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "SR-SPU", nameCn: "抑制品" }).returning();
+      const ids: Record<string, number> = {};
+      for (const k of ["MIXED", "OLD"]) {
+        const [s] = await db.insert(schema.skus).values({ code: `SR-${k}`, name: k, spuId: spu.id, baseUom: "件", skuType: "finished" }).returning();
+        ids[k] = s.id;
+      }
+      const [v] = await db.insert(schema.planningVersions).values({
+        name: "v1", weekStart: "2026-06-01", engineVersion: "test", parameters: {}, sourceMeta: {}, lineCount: 2, suggestedCount: 0, suppressedCount: 2,
+        digest: "sr1", idempotencyKey: "sr-v1", createdBy: p.id, createdAt: new Date("2026-06-01T02:00:00Z"),
+      }).returning();
+      const env = (businessDate: string, horizonDays: number, net: string) =>
+        ({ schemaVersion: "decision-envelope/v1", businessDate, inputs: { policy: { horizonDays } }, outputs: { netRequiredBeforeRounding: net } });
+      await db.insert(schema.planningVersionLines).values(["MIXED", "OLD"].map((k) => ({
+        versionId: v.id, skuId: ids[k], skuCode: `SR-${k}`, skuName: k, baseUom: "件", suggestedQty: "30", suppressed: true,
+        onHand: "0", inTransit: "0", daily: "1", safetyQty: "0", explanation: [], decisionEnvelope: env("2026-06-01", 30, "30"),
+      })));
+
+      await db.insert(schema.stockLedger).values([
+        // MIXED：货收进快照仓（实时仓看不到入库），只从实时仓发了 20 件 → 修复前水位 0 → −20 → 恒判「随后断货」
+        { skuId: ids.MIXED, warehouseId: rt.id, qtyDelta: "-20", sourceDocType: "test", sourceDocId: 1, action: "post", occurredAt: new Date("2026-06-10T02:00:00Z") },
+        // OLD：期初 100 落在**窗口之前很久**，窗口内只出 10 → 未断货（期初若被有界窗口丢掉就会翻成断货）
+        { skuId: ids.OLD, warehouseId: rt.id, qtyDelta: "100", sourceDocType: "test", sourceDocId: 2, action: "post", occurredAt: new Date("2025-01-05T02:00:00Z") },
+        { skuId: ids.OLD, warehouseId: rt.id, qtyDelta: "-10", sourceDocType: "test", sourceDocId: 3, action: "post", occurredAt: new Date("2026-06-10T02:00:00Z") },
+      ]);
+      await db.insert(schema.stockSnapshots).values({ warehouseId: snapWh.id, skuId: ids.MIXED, bizDate: "2026-06-05", qty: "500" });
+
+      const r = await getSuppressionReview(db, { now: NOW });
+      expect(r).toMatchObject({ sample: 2, matured: 2 });
+      const bucket = (key: string) => r.outcomes.find((b) => b.key === key)!;
+      expect(bucket("stockout_followed").count).toBe(0); // 修复前：MIXED 落在这里
+      expect(bucket("unverifiable").count).toBe(1);
+      expect(Number(bucket("unverifiable").heldQty)).toBe(30);
+      expect(bucket("no_stockout").count).toBe(1); // OLD：窗口前的期初仍算数（A8 有界窗口等价）
+      expect(r.caliber.some((c) => c.includes("仍有快照仓在库"))).toBe(true);
+    } finally {
+      await client.close();
+    }
+  });
+});

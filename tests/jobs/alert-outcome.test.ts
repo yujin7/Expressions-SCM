@@ -107,3 +107,64 @@ describe("jobs/alert-outcome", () => {
     expect(hour(SCHEDULES["alert-outcome"])).toBeGreaterThan(hour(SCHEDULES.rollup));
   });
 });
+
+
+/**
+ * 红队审计 A3：告警来自 getOnHandBySku＝**实时仓余额 + 快照仓最新快照**，
+ * 而核验只能看实时仓流水。修复前只要该 SKU 在实时仓动过一笔就标 coverage=realtime 并打真/误的分——
+ * 一个货主要压在快照仓、实时仓只有零星调拨的 SKU 会被算进精确率，而那正是人用来调阈值的数。
+ */
+describe("jobs/alert-outcome：快照仓 SKU 不得用实时仓流水打分（红队 A3）", () => {
+  it("有实时流水但窗口内仍有快照仓在库 → unverifiable(snapshot_stock_outside_ledger)，不进精确率分母", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [rt] = await db.insert(schema.warehouses).values({ code: "MX-RT", name: "实时仓", kind: "finished" }).returning();
+      const [snapWh] = await db.insert(schema.warehouses).values({ code: "MX-SNAP", name: "快照仓", kind: "snapshot", accountingMode: "snapshot" }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "MX-SPU", nameCn: "混合品" }).returning();
+      const [mixed] = await db.insert(schema.skus).values({ code: "MX-MIXED", name: "混合", spuId: spu.id, baseUom: "件", skuType: "finished" }).returning();
+      const [pure] = await db.insert(schema.skus).values({ code: "MX-PURE", name: "纯实时", spuId: spu.id, baseUom: "件", skuType: "finished" }).returning();
+      const mk = async (sku: { id: number }, code: string) => {
+        const [a] = await db.insert(schema.systemAlerts).values({
+          category: "inventory_cover", refKey: code, dedupeKey: `inventory_cover:${sku.id}`, title: `${code} 断货`, severity: "high",
+          status: "resolved", autoResolved: true, createdAt: OPENED, resolvedAt: RESOLVED,
+          sourceRule: "rules/alert-threshold + rules/alert-priority",
+        }).returning();
+        return a.id;
+      };
+      const mixedAlert = await mk(mixed, "MX-MIXED");
+      const pureAlert = await mk(pure, "MX-PURE");
+      let seq = 0;
+      const ledgerRow = async (skuId: number, qtyDelta: string, day: string) => {
+        seq += 1;
+        await db.insert(schema.stockLedger).values({
+          skuId, warehouseId: rt.id, qtyDelta, sourceDocType: "test", sourceDocId: seq, sourceLineId: 0, action: "post",
+          occurredAt: new Date(`${day}T10:00:00+08:00`),
+        });
+      };
+      // 两个 SKU 的实时仓流水一模一样：期初 10、窗口内出 12 → 实时仓口径都"归零且有需求"
+      for (const id of [mixed.id, pure.id]) {
+        await ledgerRow(id, "10", "2026-08-01");
+        await ledgerRow(id, "-12", "2026-08-22");
+      }
+      // 唯一差别：MIXED 的货主要在快照仓（500 件，窗口内的最新一期）
+      await db.insert(schema.stockSnapshots).values({ warehouseId: snapWh.id, skuId: mixed.id, bizDate: "2026-08-15", qty: "500" });
+
+      const s = await runAlertOutcome(db, { now: NOW });
+      expect(s).toMatchObject({ scanned: 2, verified: 2, truePositive: 1, falsePositive: 0, unverifiable: 1 });
+      const evs = await db.select().from(schema.alertEvents).where(eq(schema.alertEvents.event, "verify"));
+      const byAlert = new Map(evs.map((e) => [e.alertId, e.evidenceRef as Record<string, unknown>]));
+      // 修复前：MIXED 也被判 true_positive（coverage: "realtime"），证据里那批 500 件根本没被看见
+      expect(byAlert.get(mixedAlert)).toMatchObject({
+        result: "unverifiable", reason: "snapshot_stock_outside_ledger", coverage: "snapshot_mixed",
+      });
+      expect(String(byAlert.get(mixedAlert)?.note)).toContain("快照仓在库");
+      expect(byAlert.get(pureAlert)).toMatchObject({ result: "true_positive", coverage: "realtime" });
+
+      // 精确率分母里只剩纯实时仓那条
+      const p = await alertPrecision(db, { days: 30, now: NOW });
+      expect(p.groups[0]).toMatchObject({ verified: 2, truePositive: 1, falsePositive: 0, unverifiable: 1, precisionPct: 100 });
+    } finally {
+      await client.close();
+    }
+  });
+});

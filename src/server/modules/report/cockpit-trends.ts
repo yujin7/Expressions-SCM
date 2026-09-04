@@ -624,10 +624,12 @@ export interface TodoCompletionStrictCell {
   done: number;
   cancelled: number;
   cancelledBySourceClose: number;
+  /** 来源告警被**人工**关闭而连带取消（红队 A7：不是逃生口，留在严口径分母且单列） */
+  cancelledBySourceManualClose: number;
   cancelledByHuman: number;
   /** 宽：done ÷ (total − cancelled) */
   completionRate: number | null;
-  /** 严：done ÷ (total − cancelledByHuman)——来源自动关闭的待办留在分母 */
+  /** 严：done ÷ (total − cancelledByHuman)——来源关闭（自动/人工）造成的取消都留在分母 */
   completionRateStrict: number | null;
   /** 宽 − 严（pp）：差距越大，越多"完成"其实是等看门狗把告警关掉 */
   gapPp: number | null;
@@ -647,9 +649,11 @@ function strictCell(key: string, rows: TodoStatsRow[]): TodoCompletionStrictCell
   const agg = rows.reduce(
     (a, r) => ({
       total: a.total + r.total, done: a.done + r.done, cancelled: a.cancelled + r.cancelled,
-      cancelledBySourceClose: a.cancelledBySourceClose + r.cancelledBySourceClose, cancelledByHuman: a.cancelledByHuman + r.cancelledByHuman,
+      cancelledBySourceClose: a.cancelledBySourceClose + r.cancelledBySourceClose,
+      cancelledBySourceManualClose: a.cancelledBySourceManualClose + r.cancelledBySourceManualClose,
+      cancelledByHuman: a.cancelledByHuman + r.cancelledByHuman,
     }),
-    { total: 0, done: 0, cancelled: 0, cancelledBySourceClose: 0, cancelledByHuman: 0 },
+    { total: 0, done: 0, cancelled: 0, cancelledBySourceClose: 0, cancelledBySourceManualClose: 0, cancelledByHuman: 0 },
   );
   const denom = agg.total - agg.cancelled;
   const strictDenom = agg.total - agg.cancelledByHuman;
@@ -1202,7 +1206,9 @@ export async function getCockpitTrends(user: SessionUser, dbArg?: AnyDb, opts: {
           state: ready ? "ready" : "insufficient",
           data: b,
           note: ready
-            ? `严口径把「来源告警被引擎自动关闭而取消」的待办留在分母（等看门狗把告警关掉不算完成）；宽 − 严 = ${b.overall.gapPp ?? "—"} pp；按角色 × 月看证据，不排名个人（D61）`
+            ? `严口径把「来源告警被关闭而取消」的待办留在分母——引擎自动关闭 ${b.overall.cancelledBySourceClose} 条、`
+              + `**人工关闭来源告警** ${b.overall.cancelledBySourceManualClose} 条（红队 A7：把告警按「不处理/误报」关掉不算完成，否则关闭原因就是完成率的逃生口）；`
+              + `真正出分母的只有「直接取消待办」${b.overall.cancelledByHuman} 条；宽 − 严 = ${b.overall.gapPp ?? "—"} pp；按角色 × 月看证据，不排名个人（D61）`
             : "近 6 个月没有系统来源（预警/复核）的待办",
           source: { tier: "fact", source: "work_items × system_alerts.auto_resolved（todo/stats 按月）", asOf: now.toISOString() },
         };
