@@ -197,10 +197,13 @@ export async function createSku(input: unknown, actor?: SessionUser, dbArg?: Any
         active: v.active,
       })
       .returning();
-    if (v.logisticsLeadDays !== undefined) {
+    /* 加工周期与在途周期落在同一行 sku_params，且与 /master/supply-params 是同一行
+       （审计 #12：此前主档表单只有在途，加工只能去补录页填，一行数据两张半张表单）。 */
+    if (v.normalLeadDays !== undefined || v.logisticsLeadDays !== undefined) {
       await tx.insert(schema.skuParams).values({
         skuId: created.id,
-        logisticsLeadDays: v.logisticsLeadDays ?? null,
+        ...(v.normalLeadDays !== undefined ? { normalLeadDays: v.normalLeadDays ?? null } : {}),
+        ...(v.logisticsLeadDays !== undefined ? { logisticsLeadDays: v.logisticsLeadDays ?? null } : {}),
         updatedBy: actor?.id ?? null,
       });
     }
@@ -212,6 +215,7 @@ export async function createSku(input: unknown, actor?: SessionUser, dbArg?: Any
         action: "create",
         after: {
           ...created,
+          normalLeadDays: v.normalLeadDays ?? null,
           logisticsLeadDays: v.logisticsLeadDays ?? null,
           creationMode: v.creationMode,
           ...(isHistoricalMigration
@@ -293,7 +297,7 @@ export async function updateSku(id: number, input: unknown, actor?: SessionUser,
     const [existing] = await tx.select().from(schema.skus).where(eq(schema.skus.id, id));
     if (!existing) throw new ApiError(404, "SKU 不存在");
     const [existingParams] = await tx
-      .select({ logisticsLeadDays: schema.skuParams.logisticsLeadDays })
+      .select({ normalLeadDays: schema.skuParams.normalLeadDays, logisticsLeadDays: schema.skuParams.logisticsLeadDays })
       .from(schema.skuParams)
       .where(eq(schema.skuParams.skuId, id));
     if (v.code !== undefined && v.code !== existing.code) {
@@ -333,18 +337,18 @@ export async function updateSku(id: number, input: unknown, actor?: SessionUser,
       })
       .where(eq(schema.skus.id, id))
       .returning();
-    if (v.logisticsLeadDays !== undefined) {
+    if (v.normalLeadDays !== undefined || v.logisticsLeadDays !== undefined) {
+      const leadSet = {
+        ...(v.normalLeadDays !== undefined ? { normalLeadDays: v.normalLeadDays ?? null } : {}),
+        ...(v.logisticsLeadDays !== undefined ? { logisticsLeadDays: v.logisticsLeadDays ?? null } : {}),
+      };
       await tx.insert(schema.skuParams).values({
         skuId: id,
-        logisticsLeadDays: v.logisticsLeadDays ?? null,
+        ...leadSet,
         updatedBy: actor?.id ?? null,
       }).onConflictDoUpdate({
         target: schema.skuParams.skuId,
-        set: {
-          logisticsLeadDays: v.logisticsLeadDays ?? null,
-          updatedBy: actor?.id ?? null,
-          updatedAt: new Date(),
-        },
+        set: { ...leadSet, updatedBy: actor?.id ?? null, updatedAt: new Date() },
       });
     }
     if (actor) {
@@ -353,8 +357,12 @@ export async function updateSku(id: number, input: unknown, actor?: SessionUser,
         entity: "sku",
         entityId: id,
         action: "update",
-        before: { ...existing, logisticsLeadDays: existingParams?.logisticsLeadDays ?? null },
-        after: { ...updated, ...(v.logisticsLeadDays !== undefined ? { logisticsLeadDays: v.logisticsLeadDays ?? null } : {}) },
+        before: { ...existing, normalLeadDays: existingParams?.normalLeadDays ?? null, logisticsLeadDays: existingParams?.logisticsLeadDays ?? null },
+        after: {
+          ...updated,
+          ...(v.normalLeadDays !== undefined ? { normalLeadDays: v.normalLeadDays ?? null } : {}),
+          ...(v.logisticsLeadDays !== undefined ? { logisticsLeadDays: v.logisticsLeadDays ?? null } : {}),
+        },
       });
     }
     return updated;

@@ -160,6 +160,10 @@ export const ROUTE_REGISTRY = {
   master_feeref: { path: "/master/feeref", label: "加工费参考价", roles: ["purchasing", "pmc", "finance"], group: "master", scopedMode: "denied" },
   report_data_health: { path: "/report/data-health", label: "主数据健康度", group: "master", scopedMode: "public", keywords: "health jiankang zhiliang quality" },
   master_supply_params: { path: "/master/supply-params", label: "周期主数据补录", roles: ["pmc", "purchasing"], group: "master", scopedMode: "denied", keywords: "supply params lead time zhouqi bulu 周期 补录" },
+  /* 平台身份认领（审计 #7）：决策工作室里的身份缺口卡是全系统最好的回填界面
+     （按销售额排队、系统给候选、批量提交带预览），却只能从 /report/decision-studio 深处点进去，
+     主数据菜单与 /import/exceptions 都到不了。这里登记一个深链入口，页面本体不复制。 */
+  master_platform_identity: { path: "/report/decision-studio?tab=identity", label: "平台身份认领", roles: ["pmc", "purchasing", "ops"], group: "master", scopedMode: "denied", keywords: "platform identity claim shenfen renling 身份 认领" },
 
   /* ── 数据中心 ── */
   import_upload: { path: "/import/upload", label: "文件上传", roles: ["pmc", "finance"], group: "import", scopedMode: "denied", keywords: "upload import shangchuan" },
@@ -176,7 +180,9 @@ export const ROUTE_REGISTRY = {
   admin_params: { path: "/admin/params", label: "运行参数", roles: ["pmc", "purchasing", "finance"], group: "admin", scopedMode: "denied", keywords: "params canshu" },
   // 空数组=仅管理员（同 /admin/users）：这是 maker-checker 闸本身的配置
   admin_approval_config: { path: "/admin/approval-config", label: "审批节点配置", roles: [], group: "admin", scopedMode: "denied" },
-  admin_health: { path: "/admin/health", label: "运维面板", group: "admin", scopedMode: "denied", keywords: "health yunwei ops" },
+  /* roles:["admin"] 而不是省略：页面与 /api/admin/health 都是 admin-only，
+     省略 roles = 全员可见，非管理员点进去只会撞 NoAccess（2026-09-04 审计 #9）。 */
+  admin_health: { path: "/admin/health", label: "运维面板", roles: ["admin"], group: "admin", scopedMode: "denied", keywords: "health yunwei ops" },
 } satisfies Record<string, RouteEntry>;
 
 export type RouteKey = keyof typeof ROUTE_REGISTRY;
