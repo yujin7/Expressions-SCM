@@ -497,6 +497,25 @@ export async function listWorkItems(args: ListWorkItemsArgs, user: SessionUser, 
 }
 
 /** 责任角色 → 默认指派人：该角色最早创建的在职用户；无则回落 admin；再无则 null */
+/**
+ * 责任角色 → 默认负责人。
+ *
+ * ⚠ **这是占位实现，不是派工策略**：`ORDER BY users.id LIMIT 1` = 永远取该角色里
+ * **id 最小的那个在职账号**。没有轮转、没有按负载分配、没有指定负责人的概念。
+ *
+ * 2026-09-05 生产实况：3 个 pmc 账号，136 条投影待办**全部**落在同一个人身上
+ * （生产计划01），另外两个 pmc 的「我的待办」是空的——他们没有任何理由打开这一页。
+ * 到期提醒也按 assigneeId 推送，于是通知同样全砸给一个人。
+ *
+ * **为什么没有直接改成轮转/最少负载**：那是派工决定，取决于「另外两个 pmc 账号是不是
+ * 真的在做计划工作」——工程侧不知道，也不该猜。若他们其实不看系统，摊派只会把 136 条
+ * 拆成三份、其中两份没人看，反而**藏起**了工作量。业务确认谁真的负责补货待办之后，
+ * 这里再改成对应策略（轮转 / 最少负载 / 每角色指定负责人）。
+ * 现状与待裁决项记在 docs/NOW.md。
+ *
+ * 行为由 `tests/todo/default-assignee-placeholder.test.ts` 钉住：
+ * 钉的不是「这样最好」，而是「这是当前口径」——将来改动必须是有意的。
+ */
 export async function defaultAssigneeForRole(db: AnyDb, role: Role): Promise<number | null> {
   const pick = async (r: string): Promise<number | null> => {
     const [u]: { id: number }[] = await db
