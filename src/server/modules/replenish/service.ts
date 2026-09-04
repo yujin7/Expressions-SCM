@@ -691,7 +691,10 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
   const legacyBySku = new Map<number, number>();
   for (const r of fgRows) {
     if (r.skuId == null || r.qty == null) continue;
-    const remain = num(r.qty) - num(r.inboundQty) - num(r.closedQty);
+    /* 数量走 core/decimal 再落回 number：float 直减会留下 ~1e-16 的残渣
+       （8.7 − 8.6 − 0.1 = 5.3e-16 > 0），于是一张**已经收完的**存量单被算作还有在途。
+       量上可以忽略，但「已入库/已关单的存量单不再计在途」这条判断本身就失效了。 */
+    const remain = Number(dSub(dSub(r.qty, r.inboundQty ?? "0"), r.closedQty ?? "0"));
     if (remain <= 0) continue; // 已入库/已关单的存量单不再计在途
     legacyBySku.set(r.skuId, (legacyBySku.get(r.skuId) ?? 0) + remain);
   }

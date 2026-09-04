@@ -8,10 +8,8 @@ import type { AnyDb } from "@/server/posting/post";
 import { dMul, dQty } from "@/server/core/decimal";
 import { resolveDb } from "@/server/core/svc";
 import { resolveUnitCosts } from "@/server/core/valuation";
-import { ApiError } from "@/server/modules/master/common";
 import { LEDGER_SOURCE_TARGETS, ledgerSourceHref, type LedgerSourceTable } from "@/lib/ledger-source-docs";
 import { createdWithinShanghaiDays } from "@/server/core/doc-search";
-import { shanghaiDay } from "@/server/core/business-day";
 
 
 /** SKU×仓库×批次 余额（实时仓口径；快照仓 1.1 并入）。nonzero 默认 true=隐藏零余额行 */
@@ -209,19 +207,6 @@ async function resolveSourceDocNos(
   return out;
 }
 
-/**
- * 流水窗口边界的解析：归一成上海业务日（YYYY-MM-DD），解析不了一律 400。
- * 空串/undefined = 不设这一侧边界（页面清空筛选就是这个形状，不是错误）。
- */
-function parseLedgerBoundary(raw: string | undefined, label: string): string | undefined {
-  const text = raw?.trim();
-  if (!text) return undefined;
-  const day = shanghaiDay(text);
-  if (!day) {
-    throw new ApiError(400, `${label}格式无效：「${text}」——请用 YYYY-MM-DD 或完整时间戳`);
-  }
-  return day;
-}
 
 /**
  * 库存流水清单（D-W2-2）。
@@ -252,19 +237,11 @@ export async function listLedger(
   const conds = [];
   if (opts.skuId) conds.push(eq(stockLedger.skuId, opts.skuId));
   if (opts.warehouseId) conds.push(eq(stockLedger.warehouseId, opts.warehouseId));
-  /* 两个修复必须同时在，缺一个都留着一半的洞：
-     1. 先校验（2026-09-04 安全审计）：`new Date("昨天")` 得到 Invalid Date，drizzle 序列化时抛
-        RangeError——「用户把日期填错了」变成 500 并进 error_logs。本仓反复出现的缺陷类。
-     2. 日界按上海算（W2 口径）：此前 `occurred_at <= new Date("2026-09-04")` 是 UTC 午夜 =
-        上海 09-04 08:00，把当天 08:00 之后的 16 小时流水整段切掉；起点同理多带 09-03 下午。
-     合并时的坑：`createdWithinShanghaiDays` 对非 YYYY-MM-DD 的入参**静默不加条件**，
-     单独用它会把「日期填错」变成「悄悄返回全量」——比 500 更糟。所以这里先把两侧
-     规整成业务日（`shanghaiDay` 同时接受日期串与完整时间戳，解析不了就 null），
-     解析失败一律 400，再交给唯一的时区边界 helper。 */
-  const from = parseLedgerBoundary(opts.from, "起始日期");
-  const to = parseLedgerBoundary(opts.to, "结束日期");
-  if (from && to && from > to) throw new ApiError(400, "起始日期不能晚于结束日期");
-  conds.push(...createdWithinShanghaiDays(stockLedger.occurredAt, from, to));
+  /* 日期窗口的校验与时区边界都在 createdWithinShanghaiDays 里（唯一权威）：
+     两侧过 shanghaiDay（吃日期串也吃时间戳、真验日历），解析不了 400，起止倒置 400，
+     再按上海业务日绑定 timestamptz。此前这里各写一半——校验在本模块、时区边界在 helper，
+     而 helper 对非法串静默不加条件，两边合起来才补全。 */
+  conds.push(...createdWithinShanghaiDays(stockLedger.occurredAt, opts.from, opts.to));
   const where = conds.length ? and(...conds) : undefined;
 
   /* 累计余额必须在**筛选后的整个窗口**上按升序算，因此先做带窗口函数的子查询，

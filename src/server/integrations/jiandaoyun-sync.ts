@@ -483,7 +483,23 @@ function sourceUpdatedThrough(records: JiandaoyunRecord[]): string | null {
   ).sourceAsOf;
 }
 
-async function assertPriorSourceRecordContinuity(
+/**
+ * 旧批次记录连续性诊断。
+ *
+ * 为什么要**返回诊断而不是只抛一个数字**：2026-09-04 生产上
+ * `jst-item-master-mirror-observation` 从 6448 掉到 6447，报文只有「6447 < 6448，
+ * 可能是权限或分页缩减；需人工复核」——**少了哪一条、像删除还是像截断，一个字都没有**。
+ * 于是「人工复核」无从下手，唯一在跑通的连接器就此停摆。拒绝本身是对的
+ * （没有删除墓碑就分不清删除与截断，见下方 message），但拒绝必须说清楚拒绝了什么。
+ */
+interface PriorRecordDiagnosis {
+  priorCount: number;
+  missing: string[];
+  /** true = 缺失集中在旧清单的尾部（分页截断的形状）；false = 零散缺失（更像真删除） */
+  looksTruncated: boolean;
+}
+
+async function diagnosePriorSourceRecords(
   tx: AnyDb,
   input: {
     stream: string;
@@ -491,13 +507,14 @@ async function assertPriorSourceRecordContinuity(
     expectedRows: number;
     currentSourceRecordIds: ReadonlySet<string>;
   },
-): Promise<number> {
+): Promise<PriorRecordDiagnosis> {
   const priorRows: { sourceRecordId: string | null }[] = await tx
     .select({
       sourceRecordId: sql<string | null>`${stagingRows.payload} ->> 'sourceRecordId'`,
     })
     .from(stagingRows)
     .where(eq(stagingRows.importJobId, input.priorJobId));
+  const ordered: string[] = [];
   const priorSourceRecordIds = new Set<string>();
   let rowsWithoutIdentity = 0;
   for (const row of priorRows) {
@@ -506,6 +523,7 @@ async function assertPriorSourceRecordContinuity(
       rowsWithoutIdentity++;
       continue;
     }
+    ordered.push(sourceRecordId);
     priorSourceRecordIds.add(sourceRecordId);
   }
   if (
@@ -517,16 +535,22 @@ async function assertPriorSourceRecordContinuity(
       `简道云 ${input.stream} 旧观察批次 #${input.priorJobId} 的 sourceRecordId 清单不完整，需人工复核后再替代`,
     );
   }
-  let missingPriorRecords = 0;
-  for (const sourceRecordId of priorSourceRecordIds) {
-    if (!input.currentSourceRecordIds.has(sourceRecordId)) missingPriorRecords++;
-  }
-  if (missingPriorRecords > 0) {
-    throw new Error(
-      `简道云 ${input.stream} 新观察缺少旧记录 ${missingPriorRecords} 条；当前没有受支持的删除墓碑，拒绝替代批次 #${input.priorJobId}`,
-    );
-  }
-  return priorSourceRecordIds.size;
+  const missing = ordered.filter((id) => !input.currentSourceRecordIds.has(id));
+  /* 截断的形状是「旧清单最后 N 条整段消失」；零散缺失更像上游真的删了几条。
+     两者的处置完全不同（前者要修分页/权限，后者要人来确认删除），所以必须分开说。 */
+  const tail = ordered.slice(ordered.length - missing.length);
+  const looksTruncated = missing.length > 0 && tail.every((id) => !input.currentSourceRecordIds.has(id));
+  return { priorCount: priorSourceRecordIds.size, missing, looksTruncated };
+}
+
+/** 诊断 → 中文说明（给运维看的那一句必须能直接指导下一步） */
+function describeMissing(stream: string, priorJobId: number, d: PriorRecordDiagnosis): string {
+  const sample = d.missing.slice(0, 5).join("、");
+  const more = d.missing.length > 5 ? ` 等 ${d.missing.length} 条` : "";
+  const shape = d.looksTruncated
+    ? "缺失是旧清单**尾部整段**消失——这是分页/权限截断的形状，先查分页与授权，不要当删除放行"
+    : "缺失是**零散**的——更像上游真的删除了这几条；但当前没有受支持的删除墓碑，系统无法自证，需人工确认";
+  return `简道云 ${stream} 新观察缺少旧记录 ${d.missing.length} 条（${sample}${more}）；${shape}。拒绝替代批次 #${priorJobId}`;
 }
 
 function formReplay(
@@ -811,17 +835,28 @@ export async function syncJiandaoyunForm(
         // 窗口外的记录本来就不再出现，"全量行数不得下降 / 旧记录必须仍在"这两条只适用于全量快照。
         // 2026-09-02 实测：拼多多订单 14 天批 42,256 行 → 3 天批 7,141 行被误判为"分页缩减"。
         if (!input.contract.window) {
-          if (minimized.length < priorFull.controlRows!) {
-            throw new Error(
-              `简道云 ${stream} 全量行数下降（${minimized.length} < ${priorFull.controlRows}），可能是权限或分页缩减；需人工复核`,
-            );
-          }
-          priorSourceRecordIdsVerified = await assertPriorSourceRecordContinuity(tx, {
+          /* 先诊断再判定：行数下降和缺少旧记录几乎总是同一件事，
+             但只有诊断说得出「少了哪几条、像删除还是像截断」。
+             此前是行数检查先硬抛，更有信息量的连续性检查根本轮不到跑。
+             **拒绝口径一条没放松**：缺任何一条旧记录仍然拒绝替代。 */
+          const diagnosis = await diagnosePriorSourceRecords(tx, {
             stream,
             priorJobId: priorFull.id,
             expectedRows: priorFull.controlRows!,
             currentSourceRecordIds: sourceRecordIds,
           });
+          if (diagnosis.missing.length > 0) {
+            throw new Error(describeMissing(stream, priorFull.id, diagnosis));
+          }
+          if (minimized.length < priorFull.controlRows!) {
+            /* 旧记录一条不缺、总数却少了：新批次里出现了重复 sourceRecordId 之类的异常，
+               和截断/删除都不是一回事，单独报。 */
+            throw new Error(
+              `简道云 ${stream} 全量行数下降（${minimized.length} < ${priorFull.controlRows}）`
+              + `，但旧记录一条不缺——新批次可能有重复 sourceRecordId；需人工复核`,
+            );
+          }
+          priorSourceRecordIdsVerified = diagnosis.priorCount;
         }
       }
 

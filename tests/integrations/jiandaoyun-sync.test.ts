@@ -621,12 +621,17 @@ describe("简道云受控同步", () => {
       writeEvidence: evidence("3"),
     });
     sourceRows = 1;
+    /* 拒绝口径不变（旧批次原封不动保留），但报文必须说清楚**少了哪一条、像什么形状**：
+       2026-09-04 生产上只报了「6447 < 6448，需人工复核」，运维无从下手，
+       唯一在跑通的连接器就此停摆。 */
     await expect(syncJiandaoyunForm(db, {
       client,
       actorId: actor.id,
       contract,
       writeEvidence: evidence("4"),
-    })).rejects.toThrow("全量行数下降");
+      /* 一次调用同时验三件事：仍然拒绝、说得出少了哪一条、说得出形状。
+         「尾部整段消失」= 分页/权限截断，指向查分页与授权，而不是当成删除放行。 */
+    })).rejects.toThrow(/缺少旧记录 1 条[\s\S]*ccc[\s\S]*尾部/u);
 
     const jobs = await db.select().from(schema.importJobs);
     expect(jobs).toHaveLength(1);

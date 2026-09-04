@@ -1,4 +1,6 @@
 import { sql, type SQL } from "drizzle-orm";
+import { shanghaiDay } from "@/server/core/business-day";
+import { ApiError } from "@/server/modules/master/common";
 
 /**
  * 单据列表搜索：让搜索框除单号外也能命中 SKU 编码/名称。
@@ -44,14 +46,35 @@ export const DOC_SEARCH_PLACEHOLDER = "搜索单号 / SKU 编码 / 货品名称"
 
 /**
  * 制单时间窗（上海业务日 YYYY-MM-DD，含首尾）→ timestamptz 条件。
- * 全链漏斗把「计划/下单/到货」三级按单据创建时间窗回链到 BH/WO/SH 列表，三处列表共用这一条口径，
+ * 全链漏斗把「计划/下单/到货」三级按单据创建时间窗回链到 BH/WO/SH 列表，四处列表共用这一条口径，
  * 不得再各写一份时区换算（上海业务日唯一权威 core/business-day，此处只做 SQL 绑定）。
- * 非法日期串直接忽略（不猜、不 500）。
+ *
+ * 非法日期串**必须报 400**，不能忽略（2026-09-05 修正）。原注释写的是「非法日期串直接忽略
+ * （不猜、不 500）」，但忽略的后果比 500 更糟：用户筛了一个日期区间、串写错了，
+ * 拿回来的是**整张未筛选的列表**，而界面看起来就像筛选生效了——一个安静的错误答案。
+ * 而且旧写法连「不 500」都没做到：`YMD` 只验形状，`"2026-13-45"` 照样进 SQL，
+ * `('2026-13-45')::date` 在 Postgres 里炸成 500。现在两侧都过 `shanghaiDay`
+ * （它同时吃日期串与完整时间戳，并真的验一次日历），解析不了就明确告诉用户。
  */
-const YMD = /^\d{4}-\d{2}-\d{2}$/;
-export function createdWithinShanghaiDays(column: SQL | unknown, from: string | undefined, to: string | undefined): SQL[] {
+export function createdWithinShanghaiDays(
+  column: SQL | unknown,
+  from: string | undefined,
+  to: string | undefined,
+): SQL[] {
+  const start = boundaryDay(from, "起始日期");
+  const end = boundaryDay(to, "结束日期");
+  if (start && end && start > end) throw new ApiError(400, "起始日期不能晚于结束日期");
   const conds: SQL[] = [];
-  if (from && YMD.test(from)) conds.push(sql`${column} >= ((${from})::date)::timestamp AT TIME ZONE 'Asia/Shanghai'`);
-  if (to && YMD.test(to)) conds.push(sql`${column} < (((${to})::date + 1))::timestamp AT TIME ZONE 'Asia/Shanghai'`);
+  if (start) conds.push(sql`${column} >= ((${start})::date)::timestamp AT TIME ZONE 'Asia/Shanghai'`);
+  if (end) conds.push(sql`${column} < (((${end})::date + 1))::timestamp AT TIME ZONE 'Asia/Shanghai'`);
   return conds;
+}
+
+/** 空/未传 = 不设这一侧边界（页面清空筛选就是这个形状，不是错误）；有值但解析不了 = 400 */
+function boundaryDay(raw: string | undefined, label: string): string | undefined {
+  const text = raw?.trim();
+  if (!text) return undefined;
+  const day = shanghaiDay(text);
+  if (!day) throw new ApiError(400, `${label}格式无效：「${text}」——请用 YYYY-MM-DD 或完整时间戳`);
+  return day;
 }
