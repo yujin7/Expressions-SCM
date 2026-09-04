@@ -701,6 +701,13 @@
   - 闭环 UI（agent/closed-loop-ui）：预警命中率块、严格完成率块、闭环报表「建议准确度」段、补货页「不采纳」动作、AlertCloseModal/AlertWhyList 组件。
   - 门禁：合并后 tsc/lint/全量测试通过（数字见提交）。本地实测驾驶舱 API 热态约 1 秒、趋势 API <1 秒；首次冷构建 v2 读模型在 PGlite 上会慢（生产 Postgres 未见问题）。
   - 口径变化要告知业务：断货预警数量会下降（阈值内有日期到货不再开）并小幅上升（临期/积压新增）；待办完成率出现「严格口径」；已知悉会在升级/7 天后重置。
+- **Wave A（2026-09-04 下午，路线图「无需业务输入」那批全部完成）**：
+  - **告警收口（W1/W2/W9）**：doc-aging / data-freshness / job-failure / data-product-gate / jst-token / weekly-dq 六只看门狗全部改走 `upsertAlerts`——`engine.ts` 现在是 `src/` 里唯一一处 `insert(systemAlerts)`；老行的 dedupe_key 一次性回填（生产实测回填 9 行、无重复开）。各类关闭语义保留：五类 `autoCloseAfterDays:0`（条件消失即关），`data_quality` 用新增的 `null`＝永不自动关（周期事实，不能被下周没命中就悄悄清掉）。`/alerts` 与 `/inventory/alerts` 加「关闭」（按责任角色/管理员），已关闭视图显示关闭原因与关闭人；告警投递改按行上的 ownerRole/actionHref 路由。例外清单可「暂缓」（必填理由+日期，写审计，迁移 0051）并显示「已连续 N 天」。
+  - **驾驶舱 BI（C2/C3/C5/C6/C10/B5/B8）**：屏2 供应商集中度×账期×OTIF；屏3 临期呆滞按品牌分桶（新读模型 `risk-expiry-buckets/v1`）；屏4 分层迁移矩阵 + 试点阻塞漏斗（xyzNull 独立成桶）；屏1 数据新鲜度 8 周趋势、屏4 数据质量 8 周趋势（共用 `source-run-history`，不建新表）；采购读模型升 `purchase-order-metrics/v2` 带按月 OTIF；数据质量「手工改写 / 低于量下限」两张清单可点开。
+  - **补货可解释（W3/W5/W6/B7 + W4）**：每行给出目标天数来自哪一层（sku/品牌/段位/全局/ABC，顺带修好「作用域参数写得进读不到」）、安全天数依据、以及没建议时的结构化原因；待办截止日改用补货引擎的时相最晚下单日（回退口径保留并标注）；「不采纳」状态由服务端按上海营业日回传；抑制回顾（held 之后是否真断货）按分布呈现；调拨建议接效期（FEFO 选捐出仓、过期量单列不搬）；预测精度 WAPE/bias 直接显示在补货行。
+  - **数据利用（B4/B9/W12）**：新读模型 `supplier-lead-history/v1` 首次读取一直没人用的历史采购单/收货观察，按供应商（及 SKU）给出交期 P50/P90 与准时率，和系统学习值并列显示（只观察、不改阈值、不写主数据），落在 /report/supplier-scorecard 新标签页；`sales_velocity` 判定为死表但**不删**（生产未取过行数、异地备份未配），改为 schema 弃用声明 + 发布门禁钉住无人读取；金额口径分层（sales6m × 单位成本）作为**并列列**上线，成本覆盖低于门槛时显示「不可用」，不repoint任何下游消费者。
+  - **保洁**：`report_read_model_cache` 按 60 天保留期清理（口径升版后的僵尸键）。
+  - 门禁 418 文件 / 2864 用例通过、生产构建通过；镜像 01b6e8cdc53b，52/52 迁移零漂移，回滚标签 supply-chain-app:rollback-2e96a87。生产实测：升版后首次重建 `inventory-alerts/v2` 约 10 秒、预热后 1 秒；六只看门狗跑通、全部 65 条 open 告警现在都带 dedupeKey/责任角色/动作链接。
   - 已上线（2026-09-04 上午）：镜像 55135b31dd0b，51/51 迁移零漂移，alert_events 在库，34 条调度（新增 alert-outcome 05:30），公网健康 200；回滚标签 supply-chain-app:rollback-c5132ab。合并后曾因模块环（todo/service → jobs/notify → workbench/focus → todo/stats）导致 next build 失败，已用动态 import 断环——合并多分支后先本地 `next build` 再构建镜像（教训已记）。
 
 ## 维护规则
