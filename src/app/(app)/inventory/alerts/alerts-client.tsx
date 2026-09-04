@@ -146,7 +146,21 @@ function CoverTab() {
     { title: "阈值", key: "ad", width: 150, render: (_, r) => <span>{r.alertDays}d {r.usedDefault ? <Tag>缺省周期</Tag> : null}<br /><Typography.Text type="secondary" style={{ fontSize: 11 }}>{r.alertBasis}</Typography.Text></span> },
     { title: "主预警", key: "p", width: 120, render: (_, r) => r.primary ? <Space size={4} wrap><Tag color={r.primary === "out_of_stock" ? "error" : r.primary === "spike" ? "magenta" : "warning"}>{KIND_LABEL[r.primary]}</Tag>{r.tags.map((t) => <Tag key={t}>{KIND_LABEL[t]}</Tag>)}</Space> : <Typography.Text type="secondary">—</Typography.Text> },
     { title: "已知悉", key: "ack", width: 150, render: (_, r) => <AckCell alert={alerts.byKey[`inventory_cover:${r.skuId}`]} onAck={(id) => void alerts.ack(id)} /> },
-    { title: "动作", key: "a", width: 120, fixed: "right", render: (_, r) => <Space size={8}><a href={r.actions.transfer}>调拨</a><a href={r.actions.replenish}>补货</a></Space> },
+    {
+      title: "动作", key: "a", width: 150, fixed: "right",
+      // 每个主预警种类都有落地页：临期 → 效期批次清单（该 SKU 全部段位），积压 → 风险处置；标签命中也给入口
+      render: (_, r) => {
+        const kinds = new Set<string>([...(r.primary ? [r.primary] : []), ...r.tags]);
+        return (
+          <Space size={8} wrap>
+            <a href={r.actions.transfer}>调拨</a>
+            <a href={r.actions.replenish}>补货</a>
+            {kinds.has("near_expiry") ? <a href={r.actions.nearExpiry}>效期</a> : null}
+            {kinds.has("overstock") ? <a href={r.actions.overstock}>处置</a> : null}
+          </Space>
+        );
+      },
+    },
   ];
 
   return (

@@ -17,7 +17,7 @@ import * as schema from "@/db/schema";
 import { ApiError, todayShanghai } from "./common";
 import { getSkuFactsFor } from "@/server/core/sku-facts";
 import {  r1 } from "@/server/core/svc";
-import { daysLeftOf } from "@/server/core/stock-view";
+import { daysLeftOf, latestStocktakeRows, loadLatestStocktakeDates } from "@/server/core/stock-view";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -114,10 +114,12 @@ export async function getSkuBrief(skuCodeOrId: string | number, dbArg?: AnyDb): 
 
   /* ── 效期：batch_stocks 参考层最短剩余天数（qty>0 且有效期） ── */
   const bs = schema.batchStocks;
-  const batchRows: { expiryDate: string }[] = await db
-    .select({ expiryDate: bs.expiryDate })
+  const batchRowsAllPeriods: { warehouseId: number; stocktakeDate: string; expiryDate: string }[] = await db
+    .select({ warehouseId: bs.warehouseId, stocktakeDate: bs.stocktakeDate, expiryDate: bs.expiryDate })
     .from(bs)
     .where(and(eq(bs.skuId, skuId), isNotNull(bs.expiryDate), gt(bs.qty, "0")));
+  // 盘点期间收口（core/stock-view 唯一权威）：旧期已处置的过期批次不能再把「最短剩余」拉成负数
+  const batchRows = latestStocktakeRows(batchRowsAllPeriods, await loadLatestStocktakeDates(db));
   let minDaysLeft: number | null = null;
   for (const r of batchRows) {
     const d = daysLeftOf(today, r.expiryDate);

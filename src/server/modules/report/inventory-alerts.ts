@@ -90,7 +90,8 @@ export interface InventoryAlertRow {
   spikeExpected: boolean;
   nearExpiry: { minDaysLeft: number | null; nearQty: number; expiredQty: number; thresholdDays: number } | null;
   overstock: boolean;
-  actions: { transfer: string; replenish: string };
+  /** 动作深链：每个主预警种类都有落地页（断货/低库存 → 补货；调拨常备；临期 → 效期批次清单；积压 → 风险处置） */
+  actions: { transfer: string; replenish: string; nearExpiry: string; overstock: string };
 }
 
 export interface InventoryAlertsReadModel {
@@ -128,7 +129,29 @@ const r1 = (v: number): number => Math.round(v * 10) / 10;
  * 这件事对绑定不可见，缓存永远命中旧结论——兄弟读模型 risk-expiry-buckets 与
  * replenish-pilot 的绑定都带 `todayShanghai()`，本模型此前漏了。
  */
+/**
+ * 本读模型读到的**全部**运行参数键——绑定必须逐键带上当前值。
+ * 此前 binding() 一个都没带：PMC 在 /admin/params 把 alert_buffer_days 从 5 改成 10，
+ * 预警结论要等到某张事实表恰好变动才会重算（tests/architecture/report-param-binding 护栏钉住）。
+ */
+export const INVENTORY_ALERTS_BINDING_PARAM_KEYS = [
+  "default_production_lead_days",
+  "default_logistics_lead_days",
+  "alert_buffer_days",
+  "cover_target_days",
+  "grade_s_pct",
+  "grade_a_pct",
+  "grade_b_pct",
+  "slow_days_threshold",
+  "alert_learned_lead_tolerance_days",
+] as const;
+
 async function binding(db: AnyDb): Promise<string> {
+  const paramRows = resultRows<{ key: string; value: string }>(await db.execute(sql`
+    SELECT key, value FROM sys_params
+    WHERE scope = 'global' AND key IN (${sql.join(INVENTORY_ALERTS_BINDING_PARAM_KEYS.map((k) => sql`${k}`), sql`, `)})`));
+  const paramValues = new Map(paramRows.map((r) => [String(r.key), String(r.value)]));
+  const params = INVENTORY_ALERTS_BINDING_PARAM_KEYS.map((k) => `${k}=${paramValues.get(k) ?? "default"}`).join(",");
   const [b] = resultRows<Record<string, unknown>>(await db.execute(sql`
     SELECT (SELECT coalesce(max(id),0) FROM stock_ledger) AS l,
            (SELECT coalesce(max(id),0) FROM stock_snapshots) AS s,
@@ -145,7 +168,7 @@ async function binding(db: AnyDb): Promise<string> {
            (SELECT coalesce(max(built_at)::text,'') FROM rollup_supplier_lead) AS rl,
            (SELECT coalesce(max(built_at)::text,'') FROM report_read_model_cache WHERE key LIKE 'sales-spike/%') AS sp
   `));
-  return `alerts:${b?.l}:${b?.s}:${b?.m}:${b?.p}:${b?.pu}:${b?.pol}|ev:${b?.ev}|supply:${b?.pol_l}|${b?.po_d}|${b?.wo}|${b?.tr}|bs:${b?.bs}|rl:${b?.rl}|sp:${b?.sp}|day:${todayShanghai()}`;
+  return `alerts:${b?.l}:${b?.s}:${b?.m}:${b?.p}:${b?.pu}:${b?.pol}|ev:${b?.ev}|supply:${b?.pol_l}|${b?.po_d}|${b?.wo}|${b?.tr}|bs:${b?.bs}|rl:${b?.rl}|sp:${b?.sp}|params:${params}|day:${todayShanghai()}`;
 }
 
 /** 逐 SKU 汇总未结供给：有日期未逾期 / 无日期 / 逾期 / 下一笔到货 */
@@ -297,7 +320,13 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
       spike: spikeHit != null, spikeExpected: spikeHit?.expected === true,
       nearExpiry: exp ? { minDaysLeft: exp.minDaysLeft, nearQty: exp.nearQty, expiredQty: exp.expiredQty, thresholdDays: exp.thresholdDays } : null,
       overstock,
-      actions: { transfer: `/report/transfer-suggest?skuIds=${s.id}`, replenish: `/replenish?q=${encodeURIComponent(s.code)}` },
+      actions: {
+        transfer: `/report/transfer-suggest?skuIds=${s.id}`,
+        replenish: `/replenish?q=${encodeURIComponent(s.code)}`,
+        // 效期页默认只看「已到期」段位，临期批次落在 3/6 月段——深链必须显式 bucket=all 才看得到该 SKU 全部批次
+        nearExpiry: `/inventory/expiry?q=${encodeURIComponent(s.code)}&bucket=all`,
+        overstock: `/report/risk?q=${encodeURIComponent(s.code)}`,
+      },
     };
   });
 

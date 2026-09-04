@@ -20,7 +20,7 @@
  * 全表无金额字段，免脱敏；只读不写库。
  */
 import { and, eq, gt, gte, inArray, lt, sql } from "drizzle-orm";
-import { coverDays } from "@/server/core/stock-view";
+import { coverDays, getOnHandBySku } from "@/server/core/stock-view";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
@@ -86,6 +86,8 @@ export interface InvAnalyticsResult {
     windowDays: number;
   };
   today: string;
+  /** 参与在库口径的快照仓最新快照日期（core/stock-view）；无快照仓数据 = null。页面据此标注「快照口径时点」 */
+  snapDate: string | null;
   /** 可销天数告警阈值（运行参数 cover_alert_days，散点参考线用） */
   coverAlertDays: number;
   /** 滞销阈值（运行参数 slow_days_threshold，散点参考线用） */
@@ -121,6 +123,7 @@ export async function getInventoryAnalytics(
     total: 0,
     summary: { skuCount: 0, agingTotals: emptyAging(), avgTurns: null, avgDio: null, unknownOriginQty: 0, windowDays },
     today,
+    snapDate: null,
     coverAlertDays,
     slowDaysThreshold,
     avgOnHandNote: AVG_ONHAND_NOTE,
@@ -140,23 +143,12 @@ export async function getInventoryAnalytics(
   if (skuRows.length === 0) return emptyResult();
   const skuIds = skuRows.map((s) => s.id);
 
-  /* ── 在库：实时账 + 快照仓最新快照（口径同 report/risk.ts） ── */
-  const balRows: { skuId: number; qty: string | null }[] = await db
-    .select({ skuId: schema.stockBalances.skuId, qty: sql<string | null>`sum(${schema.stockBalances.qty})` })
-    .from(schema.stockBalances)
-    .groupBy(schema.stockBalances.skuId);
-  const onHandBySku = new Map<number, number>(balRows.map((r) => [r.skuId, num(r.qty)]));
-  const s = schema.stockSnapshots;
-  const latest = db
-    .select({ warehouseId: s.warehouseId, skuId: s.skuId, maxDate: sql<string>`max(${s.bizDate})`.as("max_date") })
-    .from(s)
-    .groupBy(s.warehouseId, s.skuId)
-    .as("latest");
-  const snapRows: { skuId: number; qty: string }[] = await db
-    .select({ skuId: s.skuId, qty: s.qty })
-    .from(s)
-    .innerJoin(latest, and(eq(latest.warehouseId, s.warehouseId), eq(latest.skuId, s.skuId), eq(latest.maxDate, s.bizDate)));
-  for (const r of snapRows) onHandBySku.set(r.skuId, (onHandBySku.get(r.skuId) ?? 0) + num(r.qty));
+  /* ── 在库：core/stock-view.getOnHandBySku 唯一权威（实时账 + 快照仓最新快照，decimal 累加，带快照时点）——
+        此前本地逐字复制了一份「Σ余额 + 最新快照子查询」并用 float 累加，且不出 snapDate，页面无法标注数据时点。 ── */
+  const onHandView = await getOnHandBySku(db, { skuIds });
+  const onHandBySku = new Map<number, number>();
+  for (const [skuId, qty] of onHandView.bySku) onHandBySku.set(skuId, num(qty));
+  const snapDate = onHandView.snapDate;
 
   /* ── 销速：近3月窗口 ÷ 91（core/velocity 唯一口径） ── */
   const sm = schema.salesMonthly;
@@ -268,6 +260,7 @@ export async function getInventoryAnalytics(
       windowDays,
     },
     today,
+    snapDate,
     coverAlertDays,
     slowDaysThreshold,
     avgOnHandNote: AVG_ONHAND_NOTE,

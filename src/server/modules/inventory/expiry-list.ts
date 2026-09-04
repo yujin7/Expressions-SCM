@@ -14,7 +14,7 @@ import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
 import { num } from "@/server/core/svc";
-import { EXPIRY_TIER_DAYS, daysLeftOf } from "@/server/core/stock-view";
+import { EXPIRY_TIER_DAYS, daysLeftOf, latestStocktakeRows, loadLatestStocktakeDates } from "@/server/core/stock-view";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -87,9 +87,10 @@ export async function listExpiryBatches(
   const bs = schema.batchStocks;
   const conds = [isNotNull(bs.expiryDate), gt(bs.qty, "0")];
   if (query.warehouseId) conds.push(eq(bs.warehouseId, query.warehouseId));
-  const raw: {
+  const rawAllPeriods: {
     id: number; skuId: number; skuCode: string; skuName: string; brand: string | null;
-    warehouse: string; batchNo: string | null; productionDate: string | null; expiryDate: string; qty: string;
+    warehouse: string; warehouseId: number; stocktakeDate: string;
+    batchNo: string | null; productionDate: string | null; expiryDate: string; qty: string;
   }[] = await db
     .select({
       id: bs.id,
@@ -98,6 +99,8 @@ export async function listExpiryBatches(
       skuName: schema.skus.name,
       brand: schema.brands.nameCn,
       warehouse: schema.warehouses.name,
+      warehouseId: bs.warehouseId,
+      stocktakeDate: bs.stocktakeDate,
       batchNo: bs.batchNo,
       productionDate: bs.prodDate,
       expiryDate: bs.expiryDate,
@@ -108,10 +111,18 @@ export async function listExpiryBatches(
     .leftJoin(schema.brands, eq(schema.skus.brandId, schema.brands.id))
     .innerJoin(schema.warehouses, eq(bs.warehouseId, schema.warehouses.id))
     .where(and(...conds));
+  // 盘点期间收口（core/stock-view 唯一权威）：batch_stocks 唯一键含 stocktake_date，两期并存时
+  // 每个段位的批次数与数量都按期数翻倍。逐仓取该仓最新一期，且用整表权威期（仓库筛选后本批 rows 仍是整仓，
+  // 但与 replenish/expiry 同一写法，避免第二种收口）。
+  const raw = latestStocktakeRows(rawAllPeriods, await loadLatestStocktakeDates(db));
 
   const all: ExpiryBatchRow[] = raw.map((r) => {
     const daysLeft = daysLeftOf(today, r.expiryDate);
-    return { ...r, qty: num(r.qty), daysLeft, bucket: expiryBucketOf(daysLeft) };
+    return {
+      id: r.id, skuId: r.skuId, skuCode: r.skuCode, skuName: r.skuName, brand: r.brand, warehouse: r.warehouse,
+      batchNo: r.batchNo, productionDate: r.productionDate, expiryDate: r.expiryDate,
+      qty: num(r.qty), daysLeft, bucket: expiryBucketOf(daysLeft),
+    };
   });
 
   const bucketCounts = emptyBuckets();
