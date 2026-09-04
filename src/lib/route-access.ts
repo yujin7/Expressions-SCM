@@ -71,6 +71,8 @@ export const ROUTE_REGISTRY = {
   // 审计 #7：三个「驾驶舱」并列不可分辨——四屏（例外优先）与经营分析总览（BI 趋势）明确分工
   cockpit: { path: "/cockpit", label: "驾驶舱四屏（例外优先）", group: "analytics", scopedMode: "channel_scoped", keywords: "cockpit jiashicang siping four screens 驾驶舱" },
   report_dashboard: { path: "/report/dashboard", label: "经营分析总览", group: "analytics", scopedMode: "channel_scoped", keywords: "dashboard jiashicang bi 经营驾驶舱 经营分析总览" },
+  // 2026-09-04：每日经营摘要此前未登记（只能从工作台一条链接进入）；装配自工作台聚焦，含销售类指标故按渠道裁剪
+  report_digest: { path: "/report/digest", label: "每日经营摘要", group: "analytics", scopedMode: "channel_scoped", keywords: "digest zhaiyao jianbao morning brief 简报 每日经营摘要 晨间简报" },
   report_decision_studio: { path: "/report/decision-studio", label: "决策工作室", group: "analytics", scopedMode: "channel_scoped" },
   report_sales_bridge: { path: "/report/sales-bridge", label: "销量变化归因", group: "analytics", scopedMode: "channel_scoped" },
   report_funnel: { path: "/report/funnel", label: "全链达成漏斗", group: "analytics", scopedMode: "channel_scoped" },
@@ -90,7 +92,6 @@ export const ROUTE_REGISTRY = {
   report_auto_replenish: { path: "/report/auto-replenish", label: "自动补货候选", group: "planning", scopedMode: "public" },
   report_material_demand: { path: "/report/material-demand", label: "物料需求展开 MRP", group: "planning", scopedMode: "public" },
   report_transfer_suggest: { path: "/report/transfer-suggest", label: "调拨建议", group: "planning", scopedMode: "public" },
-  report_leadtime_learning: { path: "/report/leadtime-learning", label: "交期学习", group: "planning", scopedMode: "public" },
   report_forecast_accuracy: { path: "/report/forecast-accuracy", label: "预测复盘", group: "planning", scopedMode: "channel_scoped" },
   report_detectors: { path: "/report/detectors", label: "异动侦测", group: "planning", scopedMode: "channel_scoped" },
   outsource_auto_chain: { path: "/outsource/auto-chain", label: "自动链预演", roles: ["pmc"], group: "planning", scopedMode: "public", keywords: "auto chain zidonglian" },
@@ -105,7 +106,10 @@ export const ROUTE_REGISTRY = {
   report_wip: { path: "/report/wip", label: "委外在制看板", group: "outsourcing", scopedMode: "public" },
   report_transit: { path: "/report/transit", label: "在途参考", group: "outsourcing", scopedMode: "public" },
   report_supplier_scorecard: { path: "/report/supplier-scorecard", label: "供应商记分卡", group: "outsourcing", scopedMode: "public" },
-  report_price_compare: { path: "/report/price-compare", label: "物料比价", group: "outsourcing", scopedMode: "denied" },
+  // 2026-09-04：交期学习从「计划与补货」并入记分卡第六页签，与「历史交期观察」并排（旧路径 /report/leadtime-learning 保留为跳转）
+  report_leadtime_learning: { path: "/report/supplier-scorecard?tab=leadtime", label: "交期学习", group: "outsourcing", scopedMode: "public", keywords: "leadtime learning jiaoqi xuexi 交期学习 准时率" },
+  // 2026-09-04：比价页逐行返回供应商采购价（R9 敏感金额），可见角色与 /master/feeref、API 门禁（PRICE_VISIBLE_ROLES）对齐
+  report_price_compare: { path: "/report/price-compare", label: "物料比价", roles: ["purchasing", "pmc", "finance"], group: "outsourcing", scopedMode: "denied" },
   // W2-G（D63）：采购订单指标真报表——单数/数量全员，金额按 PRICE_VISIBLE_ROLES 在 API 剥离
   report_purchase_orders: { path: "/report/purchase-orders", label: "采购订单指标", group: "outsourcing", scopedMode: "public", keywords: "purchase order po metrics caigou dingdan zhibiao" },
 
@@ -144,7 +148,8 @@ export const ROUTE_REGISTRY = {
   /* ── 财务结算 ── */
   settlement_js: { path: "/settlement/js", label: "结算单", roles: ["finance", "purchasing"], group: "finance", scopedMode: "denied" },
   report_margin: { path: "/report/margin", label: "毛利视角", group: "finance", scopedMode: "denied" },
-  report_settlement_summary: { path: "/report/settlement-summary", label: "结算汇总表", roles: ["finance"], group: "finance", scopedMode: "denied" },
+  // 2026-09-04：API（service 内 requireAnyRole）与客户端 hasAnyRole 都放行 采购/PMC/财务，注册表只写 finance 会让采购/PMC 在菜单里找不到这页
+  report_settlement_summary: { path: "/report/settlement-summary", label: "结算汇总表", roles: ["purchasing", "pmc", "finance"], group: "finance", scopedMode: "denied" },
   jobs_recon: { path: "/jobs/recon", label: "对账差异", roles: ["finance", "pmc"], group: "finance", scopedMode: "denied" },
   settlement_month_close: { path: "/settlement/month-close", label: "月结控制台", roles: ["finance", "pmc"], group: "finance", scopedMode: "denied" },
 

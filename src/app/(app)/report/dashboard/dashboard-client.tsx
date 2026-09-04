@@ -219,7 +219,7 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
       <header className="dashboard-header">
         <div className="dashboard-header__copy">
           <Typography.Title level={4} className="dashboard-header__title">
-            经营驾驶舱
+            经营分析总览
           </Typography.Title>
           {/*
             跨维筛选：只作用于销售类聚合。哪些跟随、哪些不跟随必须写在明面上——
@@ -451,7 +451,7 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
             }
             onExport={() =>
               exportCsv(
-                "经营驾驶舱-销售趋势",
+                "经营分析总览-销售趋势",
                 ["月份", ...data.trendBrands, "合计"],
                 data.salesTrend.map((row) => [
                   row.month,
@@ -501,7 +501,7 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
             }
             onExport={() =>
               exportCsv(
-                "经营驾驶舱-渠道结构",
+                "经营分析总览-渠道结构",
                 ["渠道", "销量", "占比"],
                 channelShare.map((row) => [row.name, row.qty, `${row.share}%`]),
               )

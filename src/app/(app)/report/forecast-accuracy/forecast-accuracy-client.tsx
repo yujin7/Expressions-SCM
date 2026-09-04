@@ -11,6 +11,7 @@ import { fetchJson } from "@/components/fetchJson";
 import DecisionVisual from "@/components/DecisionVisual";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
 import ListToolbar from "@/components/ListToolbar";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 import { useListState } from "@/components/useListState";
 import SkuHoverCard from "@/components/SkuHoverCard";
 
@@ -38,6 +39,7 @@ export default function ForecastAccuracyClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   const listState = useListState({ key: "forecast-accuracy", defaults: { q: "", onlyReliable: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
@@ -46,11 +48,13 @@ export default function ForecastAccuracyClient() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const p = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (onlyReliable) p.set("onlyReliable", "1");
       setData(await fetchJson<Data>(`/api/report/forecast-accuracy?${p.toString()}`));
     } catch (e) {
+      setLoadError((e as Error).message);
       message.error((e as Error).message);
     } finally {
       setLoading(false);
@@ -117,6 +121,8 @@ export default function ForecastAccuracyClient() {
         message="滚动回测：对每个月只用「该月之前」的数据跑一次线上 Holt 预测，再与实际比较——复现了当时的信息集，比事后看更严格。"
         description={s ? <Typography.Text type="secondary">窗口 {s.months[0]} ~ {s.months[s.months.length - 1]}；可回测 {s.evaluated} 个成品；整体判定：{s.overallBiasText}</Typography.Text> : null}
       />
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="预测复盘" retrying={loading} />
+      {/* 未加载 = 「—」而不是 0：接口失败时「0 个负功 SKU」会被读成「预测都很好」 */}
       <Row gutter={[10, 10]} className="compact-kpi-row">
         <Col><Card size="small"><Statistic title="整体 WAPE" value={s?.overallWape != null ? (s.overallWape * 100).toFixed(1) : "—"} suffix="%" /></Card></Col>
         <Col>
@@ -131,10 +137,10 @@ export default function ForecastAccuracyClient() {
             </Tooltip>
           </Card>
         </Col>
-        <Col><Card size="small"><Statistic title="预测做负功 SKU" value={s?.worseThanNaiveCount ?? 0} valueStyle={{ color: (s?.worseThanNaiveCount ?? 0) > 0 ? "#cf1322" : "#999" }} /></Card></Col>
+        <Col><Card size="small"><Statistic title="预测做负功 SKU" value={s ? s.worseThanNaiveCount : "—"} valueStyle={{ color: (s?.worseThanNaiveCount ?? 0) > 0 ? "#cf1322" : "#999" }} /></Card></Col>
         <Col><Card size="small"><Statistic title="整体偏差" value={s?.overallBias != null ? (s.overallBias * 100).toFixed(1) : "—"} suffix="%" valueStyle={{ color: (s?.overallBias ?? 0) > 0.1 ? "#fa8c16" : (s?.overallBias ?? 0) < -0.1 ? "#cf1322" : "#3f8600" }} /></Card></Col>
-        <Col><Card size="small"><Statistic title="系统性高估 SKU" value={s?.overCount ?? 0} valueStyle={{ color: "#fa8c16" }} /></Card></Col>
-        <Col><Card size="small"><Statistic title="系统性低估 SKU" value={s?.underCount ?? 0} valueStyle={{ color: "#cf1322" }} /></Card></Col>
+        <Col><Card size="small"><Statistic title="系统性高估 SKU" value={s ? s.overCount : "—"} valueStyle={{ color: "#fa8c16" }} /></Card></Col>
+        <Col><Card size="small"><Statistic title="系统性低估 SKU" value={s ? s.underCount : "—"} valueStyle={{ color: "#cf1322" }} /></Card></Col>
       </Row>
       <ListToolbar
         state={listState}

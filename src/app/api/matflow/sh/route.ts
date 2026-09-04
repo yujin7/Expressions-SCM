@@ -14,6 +14,9 @@ export async function GET(req: NextRequest) {
         status: searchParams.get("status") ?? undefined,
         sourceType: searchParams.get("sourceType") ?? undefined,
         sourceId,
+        // 制单时间窗（全链漏斗回链）
+        from: searchParams.get("from") ?? undefined,
+        to: searchParams.get("to") ?? undefined,
         page,
         pageSize,
       }),
