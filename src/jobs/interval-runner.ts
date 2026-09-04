@@ -140,6 +140,8 @@ export const INTERVAL_JOBS: IntervalJob[] = [
   { name: "purchase-order-metrics", everyMs: 6 * HOUR_MS, atHours: [2], run: (db) => refreshPurchaseOrderMetrics(db) },
   { name: "supplier-payment-term", everyMs: 6 * HOUR_MS, atHours: [2], run: (db) => refreshSupplierPaymentTerm(db) },
   { name: "weekly-dq-pack", everyMs: 6 * HOUR_MS, atHours: [7], run: (db) => runWeeklyDqPack(db) },
+  // 每天 03:00 跑，但 runPolicyBuild 是幂等的：本期已固化即跳过——「冻结」才真的是冻结，
+  // 不会因为每天重算而让同一期的四档天天漂（重算须由人工在分层页显式重建）。
   { name: "planning-policy-build", everyMs: 6 * HOUR_MS, atHours: [3], run: (db) => runPolicyBuild(db) },
   // 营业执照到期提醒（纯查询）
   { name: "license-alert", everyMs: 6 * HOUR_MS, run: (db) => runLicenseAlert(db) },

@@ -22,6 +22,7 @@ import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { ApiError } from "@/server/modules/master/common";
 import { num } from "@/server/core/svc";
+import { latestStocktakeRows, loadLatestStocktakeDates } from "@/server/core/stock-view";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -144,11 +145,13 @@ export async function traceBatch(skuCode: string, batchNo: string, dbArg?: AnyDb
     .where(and(eq(schema.batches.skuId, sku.id), eq(schema.batches.batchNo, bn)));
   if (!b) throw new ApiError(404, `未找到批次登记：${code} / ${bn}（该批次可能在批次登记功能上线前入库）`);
 
-  const stockRows: { warehouse: string; qty: string; stocktakeDate: string }[] = await db
-    .select({ warehouse: schema.warehouses.name, qty: schema.batchStocks.qty, stocktakeDate: schema.batchStocks.stocktakeDate })
+  const stockRowsAllPeriods: { warehouse: string; warehouseId: number; qty: string; stocktakeDate: string }[] = await db
+    .select({ warehouse: schema.warehouses.name, warehouseId: schema.batchStocks.warehouseId, qty: schema.batchStocks.qty, stocktakeDate: schema.batchStocks.stocktakeDate })
     .from(schema.batchStocks)
     .innerJoin(schema.warehouses, eq(schema.batchStocks.warehouseId, schema.warehouses.id))
     .where(and(eq(schema.batchStocks.skuId, sku.id), eq(schema.batchStocks.batchNo, bn)));
+  // 盘点期间收口（core/stock-view 唯一权威）：召回时「这批货现在在哪」只认该仓最新一期，旧期行不再重复出现
+  const stockRows = latestStocktakeRows(stockRowsAllPeriods, await loadLatestStocktakeDates(db));
 
   const ledgerRows: { occurredAt: Date; warehouse: string; qtyDelta: string; sourceDocType: string; sourceDocId: number }[] = await db
     .select({

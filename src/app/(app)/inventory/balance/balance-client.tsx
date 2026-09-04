@@ -291,6 +291,8 @@ interface SnapshotRow {
   skuCode: string;
   skuName: string;
   baseUom: string;
+  /** 业务用途（0727：小样单独查库存）——由 listSnapshotBalances 下发；此前列有渲染、服务端从未 select，永远空白 */
+  commercialRole: string;
   spuCode: string;
   spuNameCn: string;
   warehouseId: number;

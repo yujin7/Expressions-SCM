@@ -533,10 +533,12 @@ function DocsInner() {
               placeholder="期初/领料出/销售出/调拨（红字冲销不可手工创建）"
             />
           </Form.Item>
-          <Form.Item name="warehouseId" label="仓库" rules={[{ required: true, message: "必须选择仓库" }]}>
+          <Form.Item name="warehouseId" label="仓库（仅实时记账仓）" rules={[{ required: true, message: "必须选择仓库" }]}>
             <RemoteSelect
               api="/api/master/warehouse"
               getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
+              // 与盘点页同一过滤：四类手工单的源仓必须是实时记账仓，快照仓选了也只会在提交时被拒（createStockDoc）
+              filterRow={(r) => r.accountingMode === "realtime" && r.active !== false}
               placeholder="选择仓库"
             />
           </Form.Item>
@@ -549,6 +551,8 @@ function DocsInner() {
               <RemoteSelect
                 api="/api/master/warehouse"
                 getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
+                // 转入仓不能是快照仓（服务端「快照仓 1.1 启用」拒绝），选项里就不给
+                filterRow={(r) => r.active !== false && r.accountingMode !== "snapshot" && r.kind !== "snapshot"}
                 placeholder="选择目标仓库"
               />
             </Form.Item>

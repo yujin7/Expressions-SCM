@@ -351,7 +351,7 @@ describe("C2 · inventory-alerts 跨日不得沿用旧结论", () => {
   });
 
   it("缓存键已随口径升版（口径变了就必须换键，否则旧缓存把新线索藏起来）", () => {
-    expect(INVENTORY_ALERTS_CACHE_KEY).toBe("inventory-alerts/v3");
+    expect(INVENTORY_ALERTS_CACHE_KEY).toBe("inventory-alerts/v4");
     expect(RISK_EXPIRY_BUCKETS_KEY).toBe("risk-expiry-buckets/v2");
   });
 });
@@ -408,7 +408,7 @@ describe("C7(b) · risk-expiry-buckets 的 source_binding 必须覆盖读到的�
 /* ─────────────────────────── 升版后仍能落缓存并复用 ─────────────────────────── */
 
 describe("升版后的读模型仍按绑定落缓存并复用", () => {
-  it("inventory-alerts/v3：同一天两次读取只落一行缓存", async () => {
+  it("inventory-alerts/v4：同一天两次读取只落一行缓存", async () => {
     const { db, client } = await createTestDb();
     try {
       const s = await seedBase(db);

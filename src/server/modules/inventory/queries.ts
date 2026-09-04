@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, ilike, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 
 import { batches, skus, spus, stockBalances, stockLedger, warehouses } from "@/db/schema";
 import type { AnyDb } from "@/server/posting/post";
@@ -163,61 +163,57 @@ export async function listSnapshotBalances(
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
-  const { stockSnapshots } = await import("@/db/schema");
-  const latest = db
-    .select({
-      warehouseId: stockSnapshots.warehouseId,
-      skuId: stockSnapshots.skuId,
-      maxDate: sql<string>`max(${stockSnapshots.bizDate})`.as("max_date"),
-    })
-    .from(stockSnapshots)
-    .groupBy(stockSnapshots.warehouseId, stockSnapshots.skuId)
-    .as("latest");
-  const conds = [sql`${stockSnapshots.qty} <> 0`];
-  if (opts.warehouseId) conds.push(eq(stockSnapshots.warehouseId, opts.warehouseId));
-  if (opts.q) conds.push(or(ilike(skus.code, `%${opts.q}%`), ilike(skus.name, `%${opts.q}%`))!);
-  const where = and(...conds);
-  const base = db
-    .select({
-      skuId: stockSnapshots.skuId,
-      skuCode: skus.code,
-      skuName: skus.name,
-      baseUom: skus.baseUom,
-      spuCode: spus.code,
-      spuNameCn: spus.nameCn,
-      warehouseId: stockSnapshots.warehouseId,
-      warehouseName: warehouses.name,
-      warehouseKind: warehouses.kind,
-      qty: stockSnapshots.qty,
-      bizDate: stockSnapshots.bizDate,
-    })
-    .from(stockSnapshots)
-    .innerJoin(
-      latest,
-      and(
-        eq(latest.warehouseId, stockSnapshots.warehouseId),
-        eq(latest.skuId, stockSnapshots.skuId),
-        eq(latest.maxDate, stockSnapshots.bizDate),
-      ),
-    )
-    .innerJoin(skus, eq(stockSnapshots.skuId, skus.id))
-    .innerJoin(spus, eq(skus.spuId, spus.id))
-    .innerJoin(warehouses, eq(stockSnapshots.warehouseId, warehouses.id));
-  const [rows, [{ total }]] = await Promise.all([
-    base.where(where).orderBy(skus.code, warehouses.name).limit(opts.pageSize).offset((opts.page - 1) * opts.pageSize),
-    db
-      .select({ total: sql<number>`count(*)::int` })
-      .from(stockSnapshots)
-      .innerJoin(
-        latest,
-        and(
-          eq(latest.warehouseId, stockSnapshots.warehouseId),
-          eq(latest.skuId, stockSnapshots.skuId),
-          eq(latest.maxDate, stockSnapshots.bizDate),
-        ),
-      )
-      .innerJoin(skus, eq(stockSnapshots.skuId, skus.id))
-      .where(where),
+  /* 「取最新快照」只有 core/stock-view.getLatestSnapshotRows 一个实现（此前本函数逐字复制了一份子查询）。
+     快照仓 × SKU 的最新行规模在千级，维表补齐与搜索/分页在内存完成；行带 commercialRole（0727：小样要能单独查库存）。 */
+  const { getLatestSnapshotRows } = await import("@/server/core/stock-view");
+  const latestRows = (await getLatestSnapshotRows(db))
+    .filter((r) => Number(r.qty) !== 0 && (!opts.warehouseId || r.warehouseId === opts.warehouseId));
+  const skuIds = [...new Set(latestRows.map((r) => r.skuId))];
+  const whIds = [...new Set(latestRows.map((r) => r.warehouseId))];
+  const [skuRows, whRows]: [
+    { id: number; code: string; name: string; baseUom: string; commercialRole: string; spuCode: string; spuNameCn: string }[],
+    { id: number; name: string; kind: string }[],
+  ] = await Promise.all([
+    skuIds.length
+      ? db
+        .select({
+          id: skus.id, code: skus.code, name: skus.name, baseUom: skus.baseUom, commercialRole: skus.commercialRole,
+          spuCode: spus.code, spuNameCn: spus.nameCn,
+        })
+        .from(skus)
+        .innerJoin(spus, eq(skus.spuId, spus.id))
+        .where(inArray(skus.id, skuIds))
+      : Promise.resolve([]),
+    whIds.length
+      ? db.select({ id: warehouses.id, name: warehouses.name, kind: warehouses.kind }).from(warehouses).where(inArray(warehouses.id, whIds))
+      : Promise.resolve([]),
   ]);
-  return { rows, total };
+  const skuById = new Map(skuRows.map((s) => [s.id, s]));
+  const whById = new Map(whRows.map((w) => [w.id, w]));
+  const q = (opts.q ?? "").trim().toLowerCase();
+  const collator = new Intl.Collator("zh-CN");
+  const all = latestRows
+    .flatMap((r) => {
+      const s = skuById.get(r.skuId);
+      const w = whById.get(r.warehouseId);
+      if (!s || !w) return [];
+      if (q && !s.code.toLowerCase().includes(q) && !s.name.toLowerCase().includes(q)) return [];
+      return [{
+        skuId: r.skuId,
+        skuCode: s.code,
+        skuName: s.name,
+        baseUom: s.baseUom,
+        commercialRole: s.commercialRole,
+        spuCode: s.spuCode,
+        spuNameCn: s.spuNameCn,
+        warehouseId: r.warehouseId,
+        warehouseName: w.name,
+        warehouseKind: w.kind,
+        qty: r.qty,
+        bizDate: r.bizDate,
+      }];
+    })
+    .sort((a, b) => collator.compare(a.skuCode, b.skuCode) || collator.compare(a.warehouseName, b.warehouseName));
+  const start = (opts.page - 1) * opts.pageSize;
+  return { rows: all.slice(start, start + opts.pageSize), total: all.length };
 }

@@ -36,6 +36,12 @@ export const PARAM_DEFS: ParamDef[] = [
   { key: "cover_target_days_a", label: "A类目标覆盖", fallback: 60, min: 7, max: 365, unit: "天", note: "func#14 分层策略：A类(销量前80%)目标覆盖——高价值多备缓冲" },
   { key: "cover_target_days_b", label: "B类目标覆盖", fallback: 45, min: 7, max: 365, unit: "天", note: "func#14：B类(次15%)目标覆盖" },
   { key: "cover_target_days_c", label: "C类目标覆盖", fallback: 25, min: 7, max: 365, unit: "天", note: "func#14：C类(长尾5%)目标覆盖——少备减压库" },
+  /* R11 单次订货上限（rules/netreq 的 maxOrder）：此前服务端从不传，
+     规则里的「超买 N 天库存」与「超上限已下调」两条警告结构上永远不可能触发。
+     以「日均 × 本天数」作上限——产能/资金约束在本系统没有逐 SKU 主数据，
+     而「一次不要买超过 N 天的量」是采购能直接理解、也能直接调的口径。0 = 不设上限（默认，保持既有行为）。 */
+  { key: "replenish_max_order_cover_days", label: "单次订货上限天数", fallback: 0, min: 0, max: 720, unit: "天", note: "R11：单次建议量不超过「日均×本天数」；0=不限（默认）。触发时行上标「已按上限下调」" },
+  { key: "replenish_overshoot_warn_days", label: "超买提示阈值", fallback: 90, min: 7, max: 720, unit: "天", note: "R11：MOQ/箱规导致多买超过本天数的库存即在行上提示呆滞风险" },
   { key: "safety_days_fallback", label: "安全库存兜底天数", fallback: 7, min: 0, max: 90, unit: "天", note: "E2-01：统计法不可用（样本<3月或缺生产周期）时按此天数×日均兜底" },
   { key: "service_level_pct", label: "目标服务水平", fallback: 95, min: 90, max: 99, unit: "%", note: "E2-01：安全库存 z 值档位（90/95/97.5→98取95、99）" },
   /* 异动侦测三阈值（2026-07-25 审计收编）：此前硬编码在 report/detectors.ts:34-43，
@@ -87,6 +93,8 @@ export const PARAM_DEFS: ParamDef[] = [
  * 只在这里登记，updateParam 据此判定；页面通过 listParams 的 writableBy 展示。
  */
 export const PMC_WRITABLE_PARAM_KEYS: readonly string[] = [
+  "replenish_max_order_cover_days",
+  "replenish_overshoot_warn_days",
   "slow_days_threshold",
   "cover_alert_days",
   "cover_target_days",

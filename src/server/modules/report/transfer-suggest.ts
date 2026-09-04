@@ -44,7 +44,7 @@
  * `/report/transfer-suggest?skuIds=`；结果另按线路 (from,to) 分组只读汇总（TR-11，不合并成单）。
  */
 import { and, eq, gt, gte, inArray, isNotNull, lt, sql } from "drizzle-orm";
-import { coverDays, daysLeftOf, latestStocktakeRows } from "@/server/core/stock-view";
+import { coverDays, daysLeftOf, latestStocktakeRows, loadLatestStocktakeDates } from "@/server/core/stock-view";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { getNumParam } from "@/server/core/params";
@@ -222,7 +222,8 @@ export async function getTransferSuggestions(
     .select({ skuId: bs.skuId, warehouseId: bs.warehouseId, stocktakeDate: bs.stocktakeDate, batchNo: bs.batchNo, expiryDate: bs.expiryDate, qty: bs.qty })
     .from(bs)
     .where(and(...lotConds));
-  const lotRows = latestStocktakeRows(lotRowsAllPeriods);
+  // 本查询可以是 SKU 子集（`?skuIds=` 深链）：最新盘点期必须整表取，否则该仓最新期里没有这批 SKU 时会退到旧期
+  const lotRows = latestStocktakeRows(lotRowsAllPeriods, await loadLatestStocktakeDates(db));
   /** (skuId|warehouseId) → 批次（含已过期，allocateFefo 会按 today 排除并计数） */
   const lotsByKey = new Map<string, BatchLot[]>();
   const expiredByKey = new Map<string, number>();

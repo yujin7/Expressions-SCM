@@ -20,7 +20,7 @@ import { getRiskWorklist } from "@/server/modules/report/risk";
 import { ROLE_LABELS, type Role } from "@/server/core/constants";
 import { todayShanghai } from "@/server/modules/master/common";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
-import { getOnHandBySku } from "@/server/core/stock-view";
+import { getOnHandBySku, latestStocktakeRows, loadLatestStocktakeDates } from "@/server/core/stock-view";
 import { num } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
 import { getNextActions, type NextActionItem } from "@/server/modules/workbench/next-actions";
@@ -232,11 +232,12 @@ async function financeSection(db: AnyDb): Promise<FocusSection> {
 /* ── 运营：近效期批次 / 驾驶舱入口 ── */
 async function opsSection(db: AnyDb): Promise<FocusSection> {
   const limit = plusDays(todayShanghai(), 90);
-  const nearExpiry = await countWhere(
-    db,
-    schema.batchStocks,
-    and(isNotNull(schema.batchStocks.expiryDate), sql`${schema.batchStocks.qty} > 0`, lte(schema.batchStocks.expiryDate, limit)),
-  );
+  // 盘点期间收口（core/stock-view 唯一权威）：batch_stocks 每期一行，直接 count 会按期数翻倍
+  const nearExpiryAllPeriods: { warehouseId: number; stocktakeDate: string }[] = await db
+    .select({ warehouseId: schema.batchStocks.warehouseId, stocktakeDate: schema.batchStocks.stocktakeDate })
+    .from(schema.batchStocks)
+    .where(and(isNotNull(schema.batchStocks.expiryDate), sql`${schema.batchStocks.qty} > 0`, lte(schema.batchStocks.expiryDate, limit)));
+  const nearExpiry = latestStocktakeRows(nearExpiryAllPeriods, await loadLatestStocktakeDates(db)).length;
   return {
     role: "ops",
     roleLabel: ROLE_LABELS.ops,
@@ -327,20 +328,26 @@ async function computeExceptionsUncached(db: AnyDb, recordShown = true, applySno
   const out: ExceptionItem[] = [];
 
   // 1) 已过期库存待处置（金额未定，用数量+SKU数量化）
-  const [expired] = await db
+  //    盘点期间收口（core/stock-view 唯一权威）：两期并存时 SQL 直接 sum 会把同一批过期货算两遍
+  const expiredAllPeriods: { skuId: number; warehouseId: number; stocktakeDate: string; qty: string }[] = await db
     .select({
-      skus: sql<number>`count(distinct ${schema.batchStocks.skuId})::int`,
-      qty: sql<string>`coalesce(sum(${schema.batchStocks.qty}),0)`,
+      skuId: schema.batchStocks.skuId,
+      warehouseId: schema.batchStocks.warehouseId,
+      stocktakeDate: schema.batchStocks.stocktakeDate,
+      qty: schema.batchStocks.qty,
     })
     .from(schema.batchStocks)
     .where(and(isNotNull(schema.batchStocks.expiryDate), sql`${schema.batchStocks.qty} > 0`, lte(schema.batchStocks.expiryDate, today)));
-  if ((expired?.skus ?? 0) > 0) {
+  const expiredRows = latestStocktakeRows(expiredAllPeriods, await loadLatestStocktakeDates(db));
+  const expiredSkus = new Set(expiredRows.map((r) => r.skuId)).size;
+  const expiredQty = expiredRows.reduce((s, r) => s + num(r.qty), 0);
+  if (expiredSkus > 0) {
     out.push({
       key: "expired_stock",
       severity: "critical",
       title: "已过期库存待处置",
-      impact: `${expired.skus} 个 SKU · ${num(expired.qty).toLocaleString("zh-CN")} 件`,
-      count: expired.skus,
+      impact: `${expiredSkus} 个 SKU · ${expiredQty.toLocaleString("zh-CN")} 件`,
+      count: expiredSkus,
       href: "/report/risk?action=报废评审",
     });
   }

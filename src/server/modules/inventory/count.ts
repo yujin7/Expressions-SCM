@@ -35,6 +35,19 @@ import { participatesInNormalSalesMovement } from "@/server/rules/sku-standardiz
 const PD_PREFIX = "PD";
 const ADJUST_PREFIX = "CA";
 
+/**
+ * 盘盈亏调整流水的业务时点：按盘点期 `pd_docs.biz_date`（上海日界）落账，而不是审批那一刻。
+ * 8/31 的盘点在 9/4 审批通过，差异属于 8 月期末，不能落进 9 月流水（库存水位/月末归属都按 occurred_at 分月）。
+ * 取该业务日的**日末**（23:59:59.999+08:00）：盘点数是期末数，同日其它流水都在它之前；
+ * 盘点期是今天（或未来日期）时退回当前时刻，避免流水时点跑到"现在"之后。
+ * 纯函数，可直测；bizDate 为空时返回 undefined（沿用过账缺省 now()）。
+ */
+export function countAdjustOccurredAt(bizDate: string | null | undefined, now: Date = new Date()): Date | undefined {
+  if (!bizDate || !/^\d{4}-\d{2}-\d{2}$/.test(bizDate)) return undefined;
+  const endOfBizDay = new Date(`${bizDate}T23:59:59.999+08:00`);
+  return endOfBizDay.getTime() < now.getTime() ? endOfBizDay : now;
+}
+
 // ---------- 输入校验（schemas.ts 归属他人，本模块 zod 就地定义） ----------
 
 const decStr = z
@@ -354,7 +367,11 @@ export async function approveCountTask(
           batchId: d.line.batchId,
           qtyDelta: d.delta, // 带符号 ±
         }));
-        await post(tx, { sourceDocType: "count_adjust", sourceDocId: adj.id, action: "post", lines: postingLines });
+        // 业务时点按盘点期 biz_date 落账（见 countAdjustOccurredAt）：8/31 的盘点 9/4 审批也归 8 月
+        await post(tx, {
+          sourceDocType: "count_adjust", sourceDocId: adj.id, action: "post", lines: postingLines,
+          occurredAt: countAdjustOccurredAt(doc.bizDate),
+        });
 
         // 5) 差异行回填调整单引用
         await tx

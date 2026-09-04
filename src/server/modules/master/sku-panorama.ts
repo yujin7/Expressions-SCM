@@ -14,7 +14,7 @@ import * as schema from "@/db/schema";
 import { ApiError, todayShanghai } from "./common";
 import { lastMonths } from "@/server/core/velocity";
 import { num } from "@/server/core/svc";
-import { daysLeftOf } from "@/server/core/stock-view";
+import { daysLeftOf, getLatestSnapshotRows, latestStocktakeRows, loadLatestStocktakeDates } from "@/server/core/stock-view";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -123,26 +123,14 @@ export async function getSkuPanorama(id: number, dbArg?: AnyDb): Promise<SkuPano
     .where(eq(schema.skus.id, id));
   if (!skuRow) throw new ApiError(404, "SKU 不存在");
 
-  const s = schema.stockSnapshots;
-  const latest = db
-    .select({
-      warehouseId: s.warehouseId,
-      skuId: s.skuId,
-      maxDate: sql<string>`max(${s.bizDate})`.as("max_date"),
-    })
-    .from(s)
-    .where(eq(s.skuId, id))
-    .groupBy(s.warehouseId, s.skuId)
-    .as("latest");
-
   const sm = schema.salesMonthly;
   const today = todayShanghai();
   const todayMs = new Date(`${today}T00:00:00+08:00`).getTime();
 
-  const [balances, snapRows, batchRows, salesRows, poLineRows, woRows, ledgerRows, bomRow]: [
+  const [balances, snapRaw, batchRowsAllPeriods, salesRows, poLineRows, woRows, ledgerRows, bomRow]: [
     { warehouseId: number; warehouseName: string; warehouseKind: string; qty: string }[],
-    { warehouseId: number; warehouseName: string; bizDate: string; qty: string }[],
-    { warehouseName: string; batchNo: string | null; prodDate: string | null; expiryDate: string; qty: string }[],
+    { warehouseId: number; skuId: number; qty: string; bizDate: string }[],
+    { warehouseId: number; stocktakeDate: string; warehouseName: string; batchNo: string | null; prodDate: string | null; expiryDate: string; qty: string }[],
     { month: string; channelName: string; qty: string }[],
     { poId: number; docNo: string; status: string; supplierName: string; expectedDate: string | null; openQty: string }[],
     { woId: number; docNo: string; status: string; supplierName: string; qty: string; dueDate: string | null }[],
@@ -163,16 +151,13 @@ export async function getSkuPanorama(id: number, dbArg?: AnyDb): Promise<SkuPano
       .groupBy(schema.stockBalances.warehouseId, schema.warehouses.name, schema.warehouses.kind)
       .having(sql`sum(${schema.stockBalances.qty}) <> 0`)
       .orderBy(schema.warehouses.name),
-    /* 快照仓最新快照 */
-    db
-      .select({ warehouseId: s.warehouseId, warehouseName: schema.warehouses.name, bizDate: s.bizDate, qty: s.qty })
-      .from(s)
-      .innerJoin(latest, and(eq(latest.warehouseId, s.warehouseId), eq(latest.skuId, s.skuId), eq(latest.maxDate, s.bizDate)))
-      .innerJoin(schema.warehouses, eq(s.warehouseId, schema.warehouses.id))
-      .where(eq(s.skuId, id)),
-    /* 效期批次：最近到期前 10 */
+    /* 快照仓最新快照：core/stock-view.getLatestSnapshotRows 唯一实现（此前本地复制「取最新快照」子查询） */
+    getLatestSnapshotRows(db, { skuIds: [id] }),
+    /* 效期批次：全期取回，盘点期间收口后再取最近到期前 10（收口前 limit 会让旧期批次挤掉本期） */
     db
       .select({
+        warehouseId: schema.batchStocks.warehouseId,
+        stocktakeDate: schema.batchStocks.stocktakeDate,
         warehouseName: schema.warehouses.name,
         batchNo: schema.batchStocks.batchNo,
         prodDate: schema.batchStocks.prodDate,
@@ -182,8 +167,7 @@ export async function getSkuPanorama(id: number, dbArg?: AnyDb): Promise<SkuPano
       .from(schema.batchStocks)
       .innerJoin(schema.warehouses, eq(schema.batchStocks.warehouseId, schema.warehouses.id))
       .where(and(eq(schema.batchStocks.skuId, id), isNotNull(schema.batchStocks.expiryDate), sql`${schema.batchStocks.qty} > 0`))
-      .orderBy(asc(schema.batchStocks.expiryDate))
-      .limit(10),
+      .orderBy(asc(schema.batchStocks.expiryDate)),
     /* 月销量（按月×渠道，窗口在 JS 侧截近 6 月） */
     db
       .select({ month: sm.yearMonth, channelName: schema.channels.name, qty: sql<string>`sum(${sm.qty})` })
@@ -254,6 +238,17 @@ export async function getSkuPanorama(id: number, dbArg?: AnyDb): Promise<SkuPano
       .where(and(eq(schema.boms.productSkuId, id), eq(schema.boms.status, "active")))
       .groupBy(schema.boms.id, schema.boms.versionNo),
   ]);
+
+  /* 快照仓名称补齐（getLatestSnapshotRows 只回原始行） */
+  const snapWhIds = [...new Set(snapRaw.map((r) => r.warehouseId))];
+  const snapWhRows: { id: number; name: string }[] = snapWhIds.length
+    ? await db.select({ id: schema.warehouses.id, name: schema.warehouses.name }).from(schema.warehouses).where(inArray(schema.warehouses.id, snapWhIds))
+    : [];
+  const snapWhName = new Map(snapWhRows.map((w) => [w.id, w.name]));
+  const snapRows = snapRaw.map((r) => ({ warehouseId: r.warehouseId, warehouseName: snapWhName.get(r.warehouseId) ?? `#${r.warehouseId}`, bizDate: r.bizDate, qty: r.qty }));
+
+  /* 盘点期间收口（core/stock-view 唯一权威）：逐仓只取最新一期，再取最近到期前 10 */
+  const batchRows = latestStocktakeRows(batchRowsAllPeriods, await loadLatestStocktakeDates(db)).slice(0, 10);
 
   /* 销量窗口：以该 SKU 最新有数月份回推 6 月，缺月补 0 */
   const monthTotals = new Map<string, number>();

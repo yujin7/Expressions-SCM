@@ -9,7 +9,11 @@
  *   （重建不能抹掉人工决定）；writeAudit 同事务一行（entity=sku_planning_policy, action=build）。
  * - 人工覆写只写 override_tier/by/note（tier 原值保留），pmc（admin 兜底）；写审计 before/after。
  * - 试点标记 pilot：pmc 一键纳入/移出（审计）。
- * - runPolicyBuild 供调度（建议每月 1 日 02:30 Asia/Shanghai），本模块不注册任务。
+ * - runPolicyBuild 供调度，本模块不注册任务。**调度器实际是每天 03:00 跑一次**
+ *   （`jobs/interval-runner.ts` 的 planning-policy-build），因此 runPolicyBuild **必须幂等**：
+ *   本期已有策略行即整次跳过，不重算、不写审计。否则「本期已固化」的分层会随销量数据每天变一次，
+ *   页面标着 2026-09 期固化的四档昨天 A、今天 B，谁也说不清生效的是哪一版。
+ *   要重算由人工在分层页显式重建（force=true），重建时每个分层变化的 SKU 单落一行 retier 审计。
  */
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -164,6 +168,10 @@ export interface BuildResult {
   overridesKept: number;
   /** 直出为 0 的原因分布（S/A/B 各阻塞维度；见 PolicyBlockers） */
   blockers: PolicyBlockers;
+  /** 本期已固化且未 force，整次跳过（未写任何行、未写审计） */
+  skipped: boolean;
+  /** 重新固化时规则分层与上一版不同的 SKU 数（每一个都单独落一行 retier 审计） */
+  tierChanged: number;
 }
 
 /** 从分层行统计阻塞分布（与 rules/replenish-ownership 同维度；C 级不计） */
@@ -182,27 +190,53 @@ export function countBlockers(rows: readonly Pick<SegRow, "tier" | "xyzRaw" | "l
 
 /**
  * 固化某期分层与权责。actor 为 null 时表示调度任务（审计 userId 取系统用户 = 最小 id 的 admin；无则 1）。
+ *
+ * **幂等（本模块开头写的是「月度固化」，调度器却是每天 03:00 跑一次）**：
+ * 本期只要已有策略行，默认整次跳过——否则「已冻结」的分层会随销量数据每天悄悄变一次，
+ * 页面上标着「2026-09 期固化」的四档，昨天是 A 今天是 B，谁也说不清生效的是哪一版。
+ * `force: true`（人工在分层页点重建）才真正重算；重算时**每个规则分层发生变化的 SKU 单写一行审计**
+ * （entity=sku_planning_policy, action=retier, before/after 带 tier），
+ * 「冻结期内改过分层」这件事必须留下逐条痕迹，不能只有一行汇总。
  */
 export async function buildSkuPlanningPolicy(
   period: string,
-  opts: { db?: AnyDb; actor?: SessionUser | null } = {},
+  opts: { db?: AnyDb; actor?: SessionUser | null; force?: boolean } = {},
 ): Promise<BuildResult> {
   assertPeriod(period);
   const db = await resolveDb(opts.db);
   if (opts.actor) requireAnyRole(opts.actor, "pmc");
-  const seg = await getSegmentation({ allRows: true }, db);
   const t = schema.skuPlanningPolicy;
+
+  /* 幂等闸：本期已固化且非 force —— 一行都不写，也不落审计（跳过不是事件） */
+  if (!opts.force) {
+    const [existingCount]: { n: number }[] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(t)
+      .where(eq(t.period, period));
+    if ((existingCount?.n ?? 0) > 0) {
+      return {
+        period, total: 0, inserted: 0, updated: 0,
+        byTier: emptyByTier(), byOwnership: emptyByOwnership(),
+        overridesKept: 0, blockers: countBlockers([]),
+        skipped: true, tierChanged: 0,
+      };
+    }
+  }
+
+  const seg = await getSegmentation({ allRows: true }, db);
   const byTier = emptyByTier();
   const byOwnership = emptyByOwnership();
-  const result: BuildResult = { period, total: seg.rows.length, inserted: 0, updated: 0, byTier, byOwnership, overridesKept: 0, blockers: countBlockers(seg.rows) };
+  const result: BuildResult = { period, total: seg.rows.length, inserted: 0, updated: 0, byTier, byOwnership, overridesKept: 0, blockers: countBlockers(seg.rows), skipped: false, tierChanged: 0 };
   const actorId = opts.actor?.id ?? (await systemActorId(db));
 
   await db.transaction(async (tx: AnyDb) => {
-    const existing: { skuId: number; overrideTier: string | null }[] = await tx
-      .select({ skuId: t.skuId, overrideTier: t.overrideTier })
+    const existing: { skuId: number; tier: string; overrideTier: string | null }[] = await tx
+      .select({ skuId: t.skuId, tier: t.tier, overrideTier: t.overrideTier })
       .from(t)
       .where(eq(t.period, period));
     const existingBySku = new Map(existing.map((e) => [e.skuId, e]));
+    /** 重新固化时规则分层被改掉的 SKU（逐条审计，同事务） */
+    const retiered: { skuId: number; from: string; to: Tier }[] = [];
     // 按 skuId 升序写入（确定性顺序，同 CLAUDE.md 余额更新纪律）
     const rows = [...seg.rows].sort((a, b) => a.skuId - b.skuId);
     for (const r of rows) {
@@ -210,6 +244,7 @@ export async function buildSkuPlanningPolicy(
       byOwnership[r.ownership] += 1;
       const prev = existingBySku.get(r.skuId);
       if (prev?.overrideTier && prev.overrideTier !== r.tier) result.overridesKept += 1;
+      if (prev && prev.tier !== r.tier) retiered.push({ skuId: r.skuId, from: prev.tier, to: r.tier });
       if (prev) result.updated += 1; else result.inserted += 1;
       await tx
         .insert(t)
@@ -227,6 +262,18 @@ export async function buildSkuPlanningPolicy(
           set: { tier: r.tier, abc: tierToAbc(r.tier), xyz: r.xyzRaw, ownership: r.ownership, builtAt: sql`now()` },
         });
     }
+    /* 冻结期内分层被改：逐条留痕（同事务），否则只剩一行「build，updated=1026」的汇总，
+       事后无法回答「9 月里 CP00007 是什么时候从 A 掉到 B 的」。 */
+    result.tierChanged = retiered.length;
+    for (const c of retiered) {
+      await writeAudit(tx, {
+        userId: actorId,
+        entity: "sku_planning_policy",
+        action: "retier",
+        before: { period, skuId: c.skuId, tier: c.from },
+        after: { period, skuId: c.skuId, tier: c.to, source: opts.actor ? "manual_rebuild" : "scheduler_rebuild" },
+      });
+    }
     await writeAudit(tx, {
       userId: actorId,
       entity: "sku_planning_policy",
@@ -239,6 +286,8 @@ export async function buildSkuPlanningPolicy(
         byTier,
         byOwnership,
         overridesKept: result.overridesKept,
+        tierChanged: result.tierChanged,
+        forced: opts.force === true,
         blockers: result.blockers,
         tierCuts: seg.tierCuts,
         months: seg.months,
@@ -259,9 +308,13 @@ async function systemActorId(db: AnyDb): Promise<number> {
   return row?.id ?? 1;
 }
 
-/** 调度入口（不在本模块注册）：固化当月；建议 cron `30 2 1 * *`（Asia/Shanghai） */
+/**
+ * 调度入口（不在本模块注册）：固化**当期**，幂等——本期已有策略行即跳过。
+ * 调度器实际是每天 03:00 跑（`jobs/interval-runner.ts`），靠这里的幂等闸把「每天重算」
+ * 变成「本期第一次跑时固化一次」；需要重算由人工在分层页显式重建（force）。
+ */
 export async function runPolicyBuild(db?: AnyDb): Promise<BuildResult> {
-  return buildSkuPlanningPolicy(currentPeriod(), { db, actor: null });
+  return buildSkuPlanningPolicy(currentPeriod(), { db, actor: null, force: false });
 }
 
 /* ────────────────────────── 人工覆写 / 试点 ────────────────────────── */

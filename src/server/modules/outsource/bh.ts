@@ -17,7 +17,18 @@ import { transitionDoc } from "@/server/docflow/transition";
 
 type BhRow = typeof bhDocs.$inferSelect;
 
-export async function createBh(user: SessionUser, input: unknown, dbArg?: AnyDb): Promise<BhRow> {
+/**
+ * 建单事务内的追加写钩子：调用方要在**同一事务边界**补自己的审计/关联时用
+ * （CLAUDE.md：所有业务 service 写路径必须在同一事务边界 writeAudit）。
+ * 例：NPD 首单（`npd/service.createNpdFirstOrder`）的 first_order_draft 审计——
+ * 此前写在 createBh 之后、事务之外，BH 建成而审计失败就会留下一张没有出处的草稿。
+ * 钩子在 create 审计之后执行，抛错即整单回滚。
+ */
+export interface CreateBhHooks {
+  inTx?: (tx: AnyDb, doc: BhRow) => Promise<void>;
+}
+
+export async function createBh(user: SessionUser, input: unknown, dbArg?: AnyDb, hooks?: CreateBhHooks): Promise<BhRow> {
   requireAnyRole(user, "ops");
   const v = createBhSchema.parse(input);
   const db = await resolveDb(dbArg);
@@ -56,6 +67,7 @@ export async function createBh(user: SessionUser, input: unknown, dbArg?: AnyDb)
       userId: user.id, entity: "bh", entityId: doc.id, action: "create",
       after: { docNo: doc.docNo, lineCount: v.lines.length, orderType: v.orderType ?? null },
     });
+    await hooks?.inTx?.(tx, doc);
     return doc;
   });
 }

@@ -74,7 +74,10 @@ describe("replenish/service：分层/权责消费（固化策略 + 折叠 + 筛�
     // 未重新固化：建议行仍按已固化值（不在读路径重算）
     expect((await getReplenishSuggestions({ ownership: "supply_chain_direct" }, db)).rows.map((x) => x.code)).toEqual(["TIER-S"]);
 
-    const build = await buildSkuPlanningPolicy("2026-09", { db, actor: w.pmc });
+    // 本期已固化 → 必须显式 force 才重算（默认幂等跳过，见 planning/policy 幂等闸）
+    expect((await buildSkuPlanningPolicy("2026-09", { db, actor: w.pmc })).skipped).toBe(true);
+    const build = await buildSkuPlanningPolicy("2026-09", { db, actor: w.pmc, force: true });
+    expect(build.skipped).toBe(false);
     expect(build.byOwnership).toEqual({ supply_chain_direct: 0, joint_review: 3, ops_fallback: 2 });
     expect(build.blockers).toEqual({ leadDaysUnknown: 2, xyzNull: 0, xyzNotX: 0, detectorHit: 1, candidates: 3 });
 

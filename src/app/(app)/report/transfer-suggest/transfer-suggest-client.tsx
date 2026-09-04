@@ -3,14 +3,16 @@
 import SearchInput from "@/components/SearchInput";
 
 /** E3-04 仓间调拨建议：逐仓出库流水代理逐仓需求，盈余仓 → 缺口仓贪心分配（只读，不自动开单） */
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Alert, App, Button, Input, Modal, Select, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { fetchJson } from "@/components/fetchJson";
+import { fetchJson, postJson } from "@/components/fetchJson";
 import SkuHoverCard from "@/components/SkuHoverCard";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
+import { TRANSFER_TYPES, TRANSFER_TYPE_LABELS, type TransferType } from "@/lib/transfer-types";
+import { groupTransferDraftLanes, transferDraftPayload } from "@/lib/transfer-draft";
 
 interface TransferSuggestRow {
   skuId: number;
@@ -39,9 +41,22 @@ interface TransferSuggestRow {
   fefoLots: { batchNo: string | null; expiryDate: string | null; qty: string }[];
 }
 
+/** TR-11 线路汇总：零散建议按 (调出仓, 调入仓) 分组，看「这条线路总共要走多少」；只读，不合并成单 */
+interface TransferSuggestLane {
+  fromWarehouseId: number;
+  toWarehouseId: number;
+  fromWarehouse: string;
+  toWarehouse: string;
+  lineCount: number;
+  skuCount: number;
+  totalQty: number;
+}
+
 interface TransferSuggestData {
   rows: TransferSuggestRow[];
   total: number;
+  /** 全部（未分页）建议的线路汇总——服务端早已下发，此前界面从不消费 */
+  lanes: TransferSuggestLane[];
   summary: {
     skuCount: number;
     lineCount: number;
@@ -57,6 +72,7 @@ interface TransferSuggestData {
 const nz = (v: number): string => v.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
 
 export default function TransferSuggestClient() {
+  const { message } = App.useApp();
   const [data, setData] = useState<TransferSuggestData | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -91,6 +107,55 @@ export default function TransferSuggestClient() {
   }, [q, skuIds, page, pageSize]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => () => requestRef.current?.abort(), []);
+
+  /* ── 交接：选中的建议 → DB 调拨单**草稿**（只建草稿，提交/审批/过账一律走原流程） ── */
+  const [selected, setSelected] = useState<TransferSuggestRow[]>([]);
+  const [draftOpen, setDraftOpen] = useState(false);
+  const [draftLaneKey, setDraftLaneKey] = useState<string | null>(null);
+  const [draftType, setDraftType] = useState<TransferType>("inter_warehouse");
+  const [draftReason, setDraftReason] = useState("");
+  const [draftRemark, setDraftRemark] = useState("");
+  const [drafting, setDrafting] = useState(false);
+  const [draftedDocNo, setDraftedDocNo] = useState<string | null>(null);
+
+  // 一张 DB 单只能有一个 (源仓, 转入仓)：跨线路的选择必须逐线路建单，绝不合并
+  const draftLanes = useMemo(() => groupTransferDraftLanes(selected), [selected]);
+  const activeLane = draftLanes.find((l) => l.key === draftLaneKey) ?? draftLanes[0] ?? null;
+
+  // 数据刷新后同步勾选：仍在结果里的行取最新建议量，消失的行剔除
+  useEffect(() => {
+    if (!data) return;
+    const byKey = new Map(data.rows.map((r) => [`${r.skuId}-${r.fromWarehouseId}-${r.toWarehouseId}`, r]));
+    setSelected((prev) => prev.flatMap((r) => {
+      const k = `${r.skuId}-${r.fromWarehouseId}-${r.toWarehouseId}`;
+      return byKey.has(k) ? [byKey.get(k)!] : [r];
+    }));
+  }, [data]);
+
+  const openDraft = () => {
+    if (selected.length === 0) return;
+    setDraftLaneKey(draftLanes[0]?.key ?? null);
+    setDraftedDocNo(null);
+    setDraftOpen(true);
+  };
+
+  const submitDraft = async () => {
+    if (!activeLane) return;
+    setDrafting(true);
+    try {
+      const res = await postJson<{ docNo: string }>(
+        "/api/inventory/stock-doc",
+        transferDraftPayload(activeLane, { transferType: draftType, reason: draftReason, remark: draftRemark }),
+      );
+      setDraftedDocNo(res.docNo);
+      setSelected((prev) => prev.filter((r) => `${r.fromWarehouseId}>${r.toWarehouseId}` !== activeLane.key));
+      message.success(`调拨草稿已生成：${res.docNo}（草稿态，请到「库存单据」提交审批）`);
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setDrafting(false);
+    }
+  };
 
   const columns: ColumnsType<TransferSuggestRow> = [
     {
@@ -207,7 +272,8 @@ export default function TransferSuggestClient() {
               每条建议给出按先到期先出实际会动到的批次；<b>已过期数量绝不参与调拨</b>，已从可调拨在库中扣除并在行上单列
               （效期判定基准日 {data.summary.expiryToday}；批次效期取自盘点参考层，与账面在库可能不同源，故只用于排序与解释）。
               <br />
-              <b>只读建议，不自动开单</b>：采纳后请按 DB 调拨单正常流程开单审批过账。
+              <b>只读建议，不自动开单</b>：勾选建议行后可「生成调拨草稿」——只落 DB 调拨单**草稿**（一条线路一张），
+              提交/审批/过账仍走原流程与原权限，本页永不过账。
             </Typography.Text>
           ) : null
         }
@@ -220,10 +286,40 @@ export default function TransferSuggestClient() {
         <Statistic title="临期驱动条数" value={data ? data.summary.expiryDrivenCount : "—"} />
         <Statistic title="已过期（不可调拨）" value={data ? data.summary.expiredHeldTotal : "—"} />
       </Space>
+      {/* TR-11 线路汇总：服务端按 (调出仓, 调入仓) 分组的只读视角——一条线路一次车，
+          让「12 条零散建议」变成「3 条线路」。不合并成单：建单仍逐线路人工确认。 */}
+      {data && data.lanes.length > 0 ? (
+        <Table<TransferSuggestLane>
+          rowKey={(l) => `${l.fromWarehouseId}>${l.toWarehouseId}`}
+          size="small"
+          style={{ marginBottom: 12 }}
+          pagination={false}
+          scroll={{ x: "max-content", y: 220 }}
+          title={() => (
+            <Space size={8}>
+              <Typography.Text strong>线路汇总</Typography.Text>
+              <Typography.Text type="secondary">
+                共 {data.lanes.length} 条线路（覆盖全部 {data.summary.lineCount} 条建议，不受分页影响）；一条线路一次车，只读视角，不合并成单
+              </Typography.Text>
+            </Space>
+          )}
+          dataSource={data.lanes}
+          columns={[
+            { title: "调出仓", dataIndex: "fromWarehouse", width: 150 },
+            { title: "调入仓", dataIndex: "toWarehouse", width: 150 },
+            { title: "建议条数", dataIndex: "lineCount", width: 100, align: "right" },
+            { title: "涉及 SKU", dataIndex: "skuCount", width: 100, align: "right" },
+            { title: "合计量（基础单位）", dataIndex: "totalQty", width: 160, align: "right", render: (v: number) => nz(v) },
+          ]}
+        />
+      ) : null}
       <ListToolbar
         state={listState}
         extra={
           <Space wrap>
+            <Button type="primary" disabled={selected.length === 0} onClick={openDraft}>
+              生成调拨草稿{selected.length > 0 ? `（已选 ${selected.length} 条 / ${draftLanes.length} 条线路）` : ""}
+            </Button>
             <SearchInput
               key={q}
               allowClear
@@ -248,8 +344,91 @@ export default function TransferSuggestClient() {
         loading={loading}
         locale={{ emptyText: loadError ? "数据未加载" : "当前条件下无调拨建议" }}
         scroll={{ x: "max-content" }}
+        rowSelection={{
+          preserveSelectedRowKeys: true,
+          selectedRowKeys: selected.map((r) => `${r.skuId}-${r.fromWarehouseId}-${r.toWarehouseId}`),
+          // preserveSelectedRowKeys 下，跨页保留的 key 在缓存缺失时会给出 undefined —— 过滤掉，别让它进载荷
+          onChange: (_keys, rows) => setSelected(rows.filter(Boolean)),
+        }}
         pagination={listState.paginationProps({ total: data?.total ?? 0 })}
       />
+      <Modal
+        open={draftOpen}
+        title="生成调拨草稿"
+        okText={draftedDocNo ? "关闭" : "生成草稿"}
+        cancelButtonProps={{ style: draftedDocNo ? { display: "none" } : undefined }}
+        confirmLoading={drafting}
+        onCancel={() => setDraftOpen(false)}
+        onOk={draftedDocNo ? () => setDraftOpen(false) : () => void submitDraft()}
+        okButtonProps={{ disabled: !draftedDocNo && (activeLane == null || drafting) }}
+        width={720}
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="只生成草稿，不提交、不审批、不过账"
+          description={
+            <Typography.Text type="secondary">
+              草稿落在「库存单据」列表（DB 调拨单），提交/审批/过账仍走原流程与原权限；
+              一张 DB 单只能有一个（调出仓 → 调入仓），因此**逐线路建单**，跨线路的选择请分次生成。
+              建议量按建议原值带入，可在单据页调整后再提交。
+            </Typography.Text>
+          }
+        />
+        {draftedDocNo ? (
+          <Alert type="success" showIcon message={`草稿已生成：${draftedDocNo}`} description="请到「库存 → 库存单据」核对后提交审批。" />
+        ) : activeLane == null ? (
+          <Alert type="warning" showIcon message="所选建议没有可成单的数量" />
+        ) : (
+          <>
+            <Space wrap style={{ marginBottom: 12 }}>
+              <Select
+                style={{ width: 320 }}
+                value={activeLane.key}
+                onChange={(v) => setDraftLaneKey(v)}
+                options={draftLanes.map((l) => ({
+                  value: l.key,
+                  label: `${l.fromWarehouse} → ${l.toWarehouse}（${l.lines.length} 个 SKU / ${nz(l.totalQty)}）`,
+                }))}
+              />
+              <Select<TransferType>
+                style={{ width: 180 }}
+                value={draftType}
+                onChange={setDraftType}
+                options={TRANSFER_TYPES.map((t) => ({ value: t, label: TRANSFER_TYPE_LABELS[t] }))}
+              />
+              <Input
+                style={{ width: 180 }}
+                maxLength={50}
+                placeholder="业务原因（可选，如「借调」）"
+                value={draftReason}
+                onChange={(e) => setDraftReason(e.target.value)}
+              />
+            </Space>
+            <Table<{ skuId: number; code: string; name: string; baseUom: string; qty: string }>
+              rowKey="skuId"
+              size="small"
+              pagination={false}
+              scroll={{ y: 260 }}
+              dataSource={activeLane.lines}
+              columns={[
+                { title: "SKU 编码", dataIndex: "code", width: 130 },
+                { title: "名称", dataIndex: "name", ellipsis: true },
+                { title: "数量", dataIndex: "qty", width: 130, align: "right", render: (v: string, r) => `${nz(Number(v))} ${r.baseUom}` },
+              ]}
+              style={{ marginBottom: 12 }}
+            />
+            <Input.TextArea
+              rows={2}
+              maxLength={150}
+              placeholder="备注（可选；系统会自动注明来源为调拨建议页）"
+              value={draftRemark}
+              onChange={(e) => setDraftRemark(e.target.value)}
+            />
+          </>
+        )}
+      </Modal>
     </div>
   );
 }

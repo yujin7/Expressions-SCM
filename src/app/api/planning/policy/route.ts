@@ -36,7 +36,8 @@ export async function POST(req: NextRequest) {
     const action = body?.action ?? "override";
     if (action === "build") {
       const period = body.period?.trim() || currentPeriod();
-      return NextResponse.json(await buildSkuPlanningPolicy(period, { actor: user }), { status: 201 });
+      // 人工点「重新固化」= 显式意图 → force（调度器那条路径是幂等的，本期已固化即跳过）
+      return NextResponse.json(await buildSkuPlanningPolicy(period, { actor: user, force: true }), { status: 201 });
     }
     if (action === "override") return NextResponse.json(await overrideTier(user, body));
     if (action === "pilot") return NextResponse.json(await setPilotFlags(user, body));
