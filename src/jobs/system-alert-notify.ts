@@ -37,6 +37,15 @@ const CATEGORY_LABEL: Record<string, string> = {
   sales_spike: "爆单预警",
   transfer_cost: "调拨成本异常",
   data_quality: "数据质量核对",
+  /* W2 审计 5 新增的四类（procurement-quality-alerts）。补登记于 2026-09-04：
+     /alerts 页的 CAT 映射当时补了，本表漏了——于是同一条告警在页面上叫「交期承诺违约」，
+     推到站内/飞书的标题却是「【promise_breach】…」。中文界面里的英文 slug
+     会被当成系统噪音直接略过，等于把这条通知的处置概率打了折。
+     `tests/architecture/alert-category-labels.test.ts` 现在同时钉住这两张表。 */
+  supplier_license: "供应商证照到期",
+  promise_breach: "交期承诺违约",
+  otif_collapse: "供应商 OTIF 崩塌",
+  quality_case_overdue: "质量案件逾期",
 };
 
 /** 回落责任角色：只用于 owner_role 为空的历史行（引擎接入前手写的告警），口径与迁移前首位角色一致 */

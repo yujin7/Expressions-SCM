@@ -90,7 +90,9 @@ describe("采购价目表 CRUD（W2 审计 2）", () => {
   });
 
   it("改价只改价格/币种并写审计；身份字段不可改（schema 不接受）", async () => {
-    const row = await createPriceList(buyer, { skuId, supplierId, price: "10.00", effectiveDate: todayShanghai() }, db);
+    /* 生效日取未来：已生效行的改价自 S8 起与删除同权限（仅管理员），见下一个用例。
+       这里要测的是「改价这件事本身的机制」，用一条还没影响任何判定的行。 */
+    const row = await createPriceList(buyer, { skuId, supplierId, price: "10.00", effectiveDate: dayOffset(10) }, db);
     await updatePriceList(buyer, row.id, { price: "9.50" }, db);
     const [after] = await db.select().from(priceLists).where(eq(priceLists.id, row.id));
     expect(after.price).toBe("9.50");
@@ -115,6 +117,30 @@ describe("采购价目表 CRUD（W2 审计 2）", () => {
       and(eq(auditLogs.entity, "price_list"), eq(auditLogs.action, "delete")),
     );
     expect(audits).toHaveLength(2);
+  });
+
+  /**
+   * S8（2026-09-04 安全审计）：删除与改价必须同权限。
+   * `deletePriceList` 早就拒绝非管理员删已生效行，理由写得很清楚——「删掉它会静默改写
+   * R1 比价基准与结算扣款代理价，且 price_lists 没有版本链」。而**改价达成的是完全相同的改写**，
+   * 却对任意 purchasing 用户开放：同一个后果，两条路两套权限，那道闸只是个摆设。
+   */
+  it("已生效行采购改不了价（与删除同一道闸），管理员可改；未来行采购可改", async () => {
+    const effective = await createPriceList(buyer, { skuId, supplierId, price: "10.00", effectiveDate: dayOffset(-1) }, db);
+    const future = await createPriceList(buyer, { skuId, supplierId, price: "12.00", effectiveDate: dayOffset(10) }, db);
+
+    await expect(updatePriceList(buyer, effective.id, { price: "1.00" }, db)).rejects.toMatchObject({ status: 409 });
+    const [unchanged] = await db.select().from(priceLists).where(eq(priceLists.id, effective.id));
+    expect(unchanged.price, "被拒的改价不得落库").toBe("10.00");
+
+    // 币种等非价格字段不触发这道闸（它改不了 R1 基准的数值）
+    await updatePriceList(buyer, effective.id, { currency: "USD" }, db);
+    // 未来生效行还没影响过任何判定，采购照常可改
+    await updatePriceList(buyer, future.id, { price: "11.00" }, db);
+    // 管理员可改已生效行
+    await updatePriceList(admin, effective.id, { price: "9.00" }, db);
+    const [after] = await db.select().from(priceLists).where(eq(priceLists.id, effective.id));
+    expect(after.price).toBe("9.00");
   });
 
   it("引用校验：不存在的 SKU / 供应商不落库", async () => {

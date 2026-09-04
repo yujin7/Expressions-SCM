@@ -161,6 +161,8 @@ describe("interval-runner 进程内调度回退", () => {
       run: async () => ({ status: "succeeded" }),
     };
     const brokenLedgerDb = {
+      // job_locks 的抢锁/释放走 execute（S4 跨调度器互斥）；这里只模拟 job_runs 写失败
+      execute: async () => [{ job: job.name }],
       insert: () => ({ values: async () => { throw new Error("ledger unavailable"); } }),
     };
     INTERVAL_JOBS.push(job);

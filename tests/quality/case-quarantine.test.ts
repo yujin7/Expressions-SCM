@@ -130,4 +130,60 @@ describe("质量案件冻结范围内批次（W2 审计 4a）", () => {
     expect(res.lines[0].provider).toBe("inventory/bin-operations#quarantine");
     expect(res.lines[0].reason).toContain("未配置启用的隔离库位");
   });
+
+  /**
+   * S5（2026-09-04 安全审计）：围堵行动的幂等键此前是 `randomUUID()`。
+   * `createQualityAction` 里那套「advisory lock + 按幂等键查重放」的防重机制一直在跑，
+   * 只是**每次都拿到一个全新的键**，于是永远命中不了：重复点一次「隔离」就多出
+   * 批次×仓库那么多条质量行动，每条都带责任人和截止日，直接喂给案件逾期看门狗。
+   */
+  it("重复发起隔离不再造第二条围堵行动（幂等键由 案件×批次×仓库 推导）", async () => {
+    setBatchQuarantineProvider(async () => ({ ok: true, movementId: 7, provider: "test-stub", reason: null }));
+
+    const first = await quarantineCaseScope(quality, { caseId }, db);
+    expect(first.lines[0].replayed).toBe(false);
+    const second = await quarantineCaseScope(quality, { caseId }, db);
+    const third = await quarantineCaseScope(quality, { caseId }, db);
+
+    const actions = await db.select().from(qualityActions).where(eq(qualityActions.caseId, caseId));
+    expect(actions, "同一案件同批次同仓永远只有一条围堵行动").toHaveLength(1);
+    expect(second.lines[0].actionId).toBe(first.lines[0].actionId);
+    expect(second.lines[0].replayed, "重复发起要明说这是命中了已有行动").toBe(true);
+    expect(third.lines[0].actionId).toBe(first.lines[0].actionId);
+    // 三次发起，三条汇总审计（谁在什么时候按的隔离，每次都要留痕）
+    const audits = await db.select().from(auditLogs).where(eq(auditLogs.action, "quarantine_scope"));
+    expect(audits).toHaveLength(3);
+  });
+
+  it("现货量变了也不会把重放变成 409（幂等键不含会漂移的量与日期）", async () => {
+    setBatchQuarantineProvider(async () => ({ ok: true, movementId: 8, provider: "test-stub", reason: null }));
+    await quarantineCaseScope(quality, { caseId }, db);
+    // 期间又入了一批货：数量变化不该让「同一次隔离」变成一次新请求，也不该报「幂等键已用于不同请求」
+    await post(db, {
+      sourceDocType: "opening", sourceDocId: 2, action: "post",
+      lines: [{ sourceLineId: 1, skuId, warehouseId: whId, batchId, qtyDelta: "120" }],
+    });
+    const again = await quarantineCaseScope(quality, { caseId }, db);
+    expect(again.lines[0].failed).toBe(false);
+    expect(again.lines[0].replayed).toBe(true);
+    expect(await db.select().from(qualityActions).where(eq(qualityActions.caseId, caseId))).toHaveLength(1);
+  });
+
+  /**
+   * S5 的另一半：审计边界。此前汇总审计写在整个循环之后，循环里任何一次抛错
+   * （最常见：某个仓没有隔离库位 → 409）都会把整个调用炸掉——
+   * 前面几个批次的行动已经提交、后面的一条都没建，**而汇总审计一条都没写**：
+   * 一次半成品隔离，事后没有任何记录说清隔到哪一步。
+   */
+  it("库存请求抛错时：本行标失败、其余批次继续、汇总审计照写", async () => {
+    setBatchQuarantineProvider(async () => { throw new Error("库存域连接中断"); });
+    const res = await quarantineCaseScope(quality, { caseId }, db);
+    expect(res.failed).toBe(1);
+    expect(res.executed).toBe(0);
+    expect(res.lines[0].reason).toContain("库存域连接中断");
+
+    const audits = await db.select().from(auditLogs).where(eq(auditLogs.action, "quarantine_scope"));
+    expect(audits, "部分失败恰恰是最需要审计的时候，而此前正是它唯一不会被写的时候").toHaveLength(1);
+    expect((audits[0].after as { failed: number }).failed).toBe(1);
+  });
 });

@@ -414,6 +414,13 @@
       "when": 1788536458280,
       "tag": "0058_po_promise_establishment_row",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1788537640827,
+      "tag": "0059_security_hardening",
+      "breakpoints": true
     }
   ]
 }

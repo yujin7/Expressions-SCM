@@ -27,13 +27,13 @@
  * 案件正文固化了这次检验的三桶量与不合格去向（`summary`），审计 after 里带同一份结构化快照。
  * 结算侧的扣款单价仍走 `settlement/js.ts getDeductPrice`（D23 代理口径），本模块不重复计价。
  */
-import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { dAdd, dCmp, dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
+import { deterministicIdempotencyKey } from "@/server/core/idempotency";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { createCt } from "@/server/modules/matflow/ct";
 import { type AnyDb, requireAnyRole, resolveDb } from "@/server/modules/outsource/common";
@@ -278,7 +278,12 @@ export async function raiseQcFailureOutcome(
       warehouseId: summary.warehouseId,
       ownerId: v.caseOwnerId ?? user.id,
       receivedDate: todayShanghai(),
-      idempotencyKey: randomUUID(),
+      /* 幂等键由「这次检验」推导，不是 randomUUID()（2026-09-04 安全审计 S5）：
+         createQualityCase 内部有 `pg_advisory_xact_lock(hashtext(key)) + 按键查重放`，
+         而每次都换一个新键等于让那道守卫永远命中不了。并发两次点「登记不合格后果」
+         此前会开出**两个 QI 案件**，吃掉两个单号，在供应商记分卡的「质量案件」维度双计，
+         而 qc_records 只链得回其中一个。现在两笔并发被序列化，第二笔拿回第一笔的案件。 */
+      idempotencyKey: deterministicIdempotencyKey("qc-failure-case", summary.qcId),
     }, db);
     qualityCaseId = created.id;
     qualityCaseNo = created.caseNo;
@@ -312,13 +317,33 @@ export async function raiseQcFailureOutcome(
   }
 
   await db.transaction(async (tx: AnyDb) => {
-    await tx
+    /* 读-改-写守卫（本函数开头的 `summary.qualityCaseId != null` 判断）在并发下不成立：
+       两笔请求都会读到 null。这里把 qc 行锁住并把更新写成**条件更新**——
+       只有仍未挂接的那一笔能写进去，另一笔在下面被明确告知它输了这场竞争。
+       数据库侧还有 uq_qc_record_quality_case / uq_qc_record_return_ct 两把唯一键兜底
+       （migration 0057）：即使这段逻辑将来被改坏，一次检验也挂不上两个案件/两张退货单。 */
+    await tx.execute(sql`SELECT id FROM qc_records WHERE id = ${summary.qcId} FOR UPDATE`);
+    const linked: { id: number }[] = await tx
       .update(schema.qcRecords)
       .set({
         ...(qualityCaseId != null ? { qualityCaseId } : {}),
         ...(returnCtId != null ? { returnCtId } : {}),
       })
-      .where(eq(schema.qcRecords.id, summary.qcId));
+      .where(and(
+        eq(schema.qcRecords.id, summary.qcId),
+        qualityCaseId != null ? isNull(schema.qcRecords.qualityCaseId) : undefined,
+        returnCtId != null ? isNull(schema.qcRecords.returnCtId) : undefined,
+      ))
+      .returning({ id: schema.qcRecords.id });
+    if (linked.length === 0) {
+      throw new ApiError(
+        409,
+        `该检验的后果已由另一次提交登记（qc#${summary.qcId}）。`
+        + (returnCtDocNo
+          ? `本次已生成的退货草稿 ${returnCtDocNo} 未挂接，请作废后按已登记的那张处理。`
+          : "本次未产生新的挂接。"),
+      );
+    }
     if (qualityCaseId != null) {
       // 反向链接：案件也要能说出「我是哪一次检验来的」
       await tx

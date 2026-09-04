@@ -8,6 +8,7 @@ import type { AnyDb } from "@/server/posting/post";
 import { dMul, dQty } from "@/server/core/decimal";
 import { resolveDb } from "@/server/core/svc";
 import { resolveUnitCosts } from "@/server/core/valuation";
+import { ApiError } from "@/server/modules/master/common";
 import { LEDGER_SOURCE_TARGETS, ledgerSourceHref, type LedgerSourceTable } from "@/lib/ledger-source-docs";
 
 
@@ -186,6 +187,20 @@ async function resolveSourceDocNos(
 }
 
 /**
+ * 流水窗口边界的解析：只接受能被 `Date` 解析出有效时刻的串，其余一律 400。
+ * 空串/undefined = 不设这一侧边界（页面清空筛选就是这个形状，不是错误）。
+ */
+function parseLedgerBoundary(raw: string | undefined, label: string): Date | undefined {
+  const text = raw?.trim();
+  if (!text) return undefined;
+  const at = new Date(text);
+  if (Number.isNaN(at.getTime())) {
+    throw new ApiError(400, `${label}格式无效：「${text}」——请用 YYYY-MM-DD 或完整时间戳`);
+  }
+  return at;
+}
+
+/**
  * 库存流水清单（D-W2-2）。
  *
  * 三个此前缺失、但流水页离了就没法用的东西：
@@ -214,8 +229,14 @@ export async function listLedger(
   const conds = [];
   if (opts.skuId) conds.push(eq(stockLedger.skuId, opts.skuId));
   if (opts.warehouseId) conds.push(eq(stockLedger.warehouseId, opts.warehouseId));
-  if (opts.from) conds.push(gte(stockLedger.occurredAt, new Date(opts.from)));
-  if (opts.to) conds.push(lte(stockLedger.occurredAt, new Date(opts.to)));
+  /* 日期必须先校验再进查询（2026-09-04 安全审计）：`new Date("昨天")` 得到 Invalid Date，
+     drizzle 序列化它时抛 RangeError，于是「用户把日期填错了」变成一个 500 并进 error_logs。
+     本仓反复出现的缺陷类（同型修复见 core/scoped-params 的 assertScopeShape）。 */
+  const from = parseLedgerBoundary(opts.from, "起始日期");
+  const to = parseLedgerBoundary(opts.to, "结束日期");
+  if (from && to && from > to) throw new ApiError(400, "起始日期不能晚于结束日期");
+  if (from) conds.push(gte(stockLedger.occurredAt, from));
+  if (to) conds.push(lte(stockLedger.occurredAt, to));
   const where = conds.length ? and(...conds) : undefined;
 
   /* 累计余额必须在**筛选后的整个窗口**上按升序算，因此先做带窗口函数的子查询，

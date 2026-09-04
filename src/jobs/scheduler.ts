@@ -87,6 +87,10 @@ export async function start(): Promise<{ stop: () => Promise<void> } | null> {
     await boss.schedule(job.name, cron, {}, { tz: TZ });
     await boss.work(job.name, async () => {
       const result = await runIntervalJobOnce(job);
+      /* 「另一处已经在跑」不是失败：抛出去会被 pg-boss 记成任务故障，
+         连续几次就把失败看门狗叫醒，而实际上任务好好的、只是被互斥挡了一次
+         （互斥点是 job_locks，见 interval-runner；手动触发与本 worker 共用同一把锁）。 */
+      if (result.lock !== "acquired") return;
       if (!result.ok) throw new Error(result.message);
     });
   }

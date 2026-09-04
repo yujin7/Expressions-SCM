@@ -79,4 +79,24 @@ describe("#3 /admin/params 的分域覆盖入口", () => {
     ]);
     expect(list.every((r) => r.lastChangedAt != null), "每条覆盖都要能说出谁在何时改的").toBe(true);
   });
+
+  /**
+   * S3（2026-09-04 安全审计）：读权限也要与 `/api/admin/params` 同一档。
+   * 分域 GET 此前只有 `guardRead()`——任何登录用户（仓管、运营）都能把某个参数在
+   * 每个 SKU / 品牌 / 分层上的覆盖值连同「谁在何时改的」枚举出来；
+   * 而同一份数据的全局值要 pmc/purchasing/finance/admin 才看得到。同一份数据两条路两套口径。
+   */
+  it("分域 GET 与 /api/admin/params 的 GET 同一档角色门（不再只 guardRead）", () => {
+    const scopedRoute = read("src/app/api/admin/params/scoped/route.ts");
+    const globalRoute = read("src/app/api/admin/params/route.ts");
+    const roles = ['"pmc", "purchasing", "finance"'];
+    for (const r of roles) {
+      expect(globalRoute, "基准：全局参数 GET 的角色门").toContain(r);
+      expect(scopedRoute, "分域 GET 必须要求同一组业务角色").toContain(r);
+    }
+    // 页面本身也是这组角色（/admin/params 的 route-access 登记），两侧不得再分叉
+    expect(read("src/lib/route-access.ts")).toContain(
+      'admin_params: { path: "/admin/params", label: "运行参数", roles: ["pmc", "purchasing", "finance"]',
+    );
+  });
 });

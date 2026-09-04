@@ -79,7 +79,16 @@ describe("通知中心：列表状态平台", () => {
     expect(client).toContain("查看告警");
   });
 
-  it("未读数与工作台徽标同源（isNull(readAt) + notifyVisibleWhere），不再各数各的", () => {
-    expect(api).toMatch(/and\(isNull\(notifications\.readAt\), notifyVisibleWhere\(user\)\)/);
+  /**
+   * 2026-09-04 安全审计 S6：已读从行级 `notifications.read_at` 改成逐收件人的
+   * `notification_reads`（一行通知能被多个人看见，行级已读的真实语义是「某个能看见它的人读过」）。
+   * 「同源」这条纪律不变，但同源的对象变成了 `notifyUnreadWhere` 这一个谓词——
+   * 钉住两处**都调它**，比钉住一段具体的 SQL 文本更抗腐化。
+   */
+  it("未读数与工作台徽标同源：两处都调 notifyUnreadWhere，不再各数各的", () => {
+    const focus = read("src/server/modules/workbench/focus.ts");
+    expect(api).toContain("notifyUnreadWhere(user)");
+    expect(focus).toContain("notifyUnreadWhere(user)");
+    expect(api, "已读判定不得再读行级 read_at").not.toMatch(/isNull\(notifications\.readAt\)\s*,\s*notifyVisibleWhere/);
   });
 });

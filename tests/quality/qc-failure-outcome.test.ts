@@ -151,4 +151,36 @@ describe("检验不合格的去向（W2 审计 3）", () => {
     const finance: SessionUser = { id: admin.id, name: "财务", roles: ["finance"], isApprover: false, channelScope: null };
     await expect(raiseQcFailureOutcome(finance, { shId, createCase: true }, db)).rejects.toMatchObject({ status: 403 });
   });
+
+  /**
+   * S5（2026-09-04 安全审计）：案件的幂等键此前是 `randomUUID()`。
+   * `createQualityCase` 内部有 `pg_advisory_xact_lock(hashtext(key)) + 按键查重放`，
+   * 而每次都换一个新键等于让那道守卫永远命中不了：并发两次「登记不合格后果」
+   * 会开出**两个 QI 案件**——吃掉两个单号、在供应商记分卡的「质量案件」维度双计，
+   * 而 qc_records 只链得回其中一个，另一个成了没有出处的孤儿案件。
+   */
+  it("并发登记后果只产生一个 QI 案件（幂等键由这次检验推导，不是 randomUUID）", async () => {
+    const shId = await receiveAndInspect("100", { passQty: "80", failQty: "20", concessionQty: "0", failHandling: "scrap" });
+    const results = await Promise.allSettled([
+      raiseQcFailureOutcome(wh, { shId, createCase: true }, db),
+      raiseQcFailureOutcome(wh, { shId, createCase: true }, db),
+    ]);
+    const cases = await db.select().from(qualityCases);
+    expect(cases, "一次检验只该有一个质量案件；两个 = 两个单号、记分卡双计").toHaveLength(1);
+    const ok = results.filter((r) => r.status === "fulfilled");
+    expect(ok.length, "至少有一笔成功").toBeGreaterThanOrEqual(1);
+    const [qc] = await db.select().from(qcRecords).where(eq(qcRecords.shId, shId));
+    expect(qc.qualityCaseId).toBe(cases[0].id);
+  });
+
+  it("数据库背书：一个案件/一张退货单只能挂到一次检验上（读-改-写守卫的兜底）", async () => {
+    const shId = await receiveAndInspect("100", { passQty: "80", failQty: "20", concessionQty: "0", failHandling: "scrap" });
+    const other = await receiveAndInspect("100", { passQty: "80", failQty: "20", concessionQty: "0", failHandling: "scrap" });
+    const res = await raiseQcFailureOutcome(wh, { shId, createCase: true }, db);
+    const [otherQc] = await db.select().from(qcRecords).where(eq(qcRecords.shId, other));
+    await expect(
+      db.update(qcRecords).set({ qualityCaseId: res.qualityCaseId }).where(eq(qcRecords.id, otherQc.id)),
+      "uq_qc_record_quality_case 必须拦住同一个案件挂两次检验",
+    ).rejects.toThrow();
+  });
 });

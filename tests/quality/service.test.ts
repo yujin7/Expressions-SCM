@@ -1194,7 +1194,11 @@ describe("immutable regulatory and public electronic-label versions", () => {
     await expect(f.db.execute(sql.raw("TRUNCATE quality_actions"))).rejects.toMatchObject({
       cause: { message: expect.stringContaining("retained evidence") },
     });
-    await expect(f.db.execute(sql.raw("TRUNCATE quality_actions, quality_cases"))).rejects.toMatchObject({
+    /* qc_records / qc_lines 必须一并列出：S5 之后 qc_records.quality_case_id 有了外键
+       （一次检验只能挂一个案件的数据库背书），否则 PostgreSQL 先拒 FK 形状、根本走不到留存触发器。 */
+    await expect(f.db.execute(sql.raw(
+      "TRUNCATE quality_actions, quality_cases, qc_lines, qc_records",
+    ))).rejects.toMatchObject({
       cause: { message: expect.stringContaining("retained evidence") },
     });
   });

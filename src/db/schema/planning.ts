@@ -15,6 +15,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
+import { bhDocs } from "./docs";
 import { skus, users } from "./masters";
 
 /**
@@ -110,7 +111,24 @@ export const sopCycles = pgTable("sop_cycles", {
   ),
 ]);
 
-/** 共识签认是只增事件，不更新、不删除；同一角色可用后一条决定纠正前一条。 */
+/**
+ * 共识签认是只增事件，不更新、不删除；同一角色可用后一条决定纠正前一条。
+ *
+ * 两个数据库背书（2026-09-04 安全审计 S1/S7）——应用层已各自拦一道，这里再钉一次，
+ * 避免下一次改动把闸门挪走后无人察觉：
+ *  · `uq_sop_agree_one_per_signer`：**一轮里一个人只能持有一份「同意」**。
+ *    此前只校验「每个角色的最新决定是 agree 且摘要一致」，没有任何「三个人」的要求；
+ *    而角色是叠加的，一个同时持有 pmc/ops/finance 的人（小组织里很常见）
+ *    可以一个人签完三方共识并冻结当月——冻结会让全系统实时建议转只读、
+ *    所有下单改走他冻结的那个版本。三方共识必须是三个人。
+ *    代价：同一轮「同意→驳回→再同意」被一并挡住（同一人的第二条 agree 落不进来）。
+ *    这是刻意的：本轮计划没变而本人反复改主意，应当走「更换源计划开新一轮」，
+ *    应用层会给出这句中文提示，不会让用户吃 23505。
+ *  · `uq_sop_reject_one_per_role_round`：**一轮里一个角色只能驳回一次**。
+ *    驳回不改状态也不改轮次，此前可以无限次重复，每次都插一条决定、一条审计
+ *    和一条 severity=high 的新通知给发起人（配置了飞书就是一条飞书消息）——
+ *    一个未计量的通知放大器。
+ */
 export const sopDecisions = pgTable("sop_decisions", {
   id: serial("id").primaryKey(),
   cycleId: integer("cycle_id").notNull().references(() => sopCycles.id),
@@ -123,10 +141,50 @@ export const sopDecisions = pgTable("sop_decisions", {
   decidedAt: timestamp("decided_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("ix_sop_decision_cycle_round").on(t.cycleId, t.cycleVersion, t.role, t.id),
+  uniqueIndex("uq_sop_agree_one_per_signer")
+    .on(t.cycleId, t.cycleVersion, t.decidedBy)
+    .where(sql`${t.decision} = 'agree'`),
+  uniqueIndex("uq_sop_reject_one_per_role_round")
+    .on(t.cycleId, t.cycleVersion, t.role)
+    .where(sql`${t.decision} = 'reject'`),
   check("ck_sop_decision_round", sql`${t.cycleVersion} > 0`),
   check("ck_sop_decision_role", sql`${t.role} IN ('ops', 'pmc', 'finance')`),
   check("ck_sop_decision_value", sql`${t.decision} IN ('agree', 'reject')`),
   check("ck_sop_reject_note", sql`${t.decision} <> 'reject' OR length(trim(coalesce(${t.note}, ''))) >= 5`),
+]);
+
+/**
+ * 「按冻结计划开单」的单据链接（2026-09-04 安全审计 S2）。
+ *
+ * 为什么不能继续从 `audit_logs` 反推：执行页的「本行已开过单」原本是读
+ * `audit_logs(entity=sop_cycle, action=execute_draft).after.skuIds` 算出来的，
+ * 于是审计写失败＝页面认为这些行没开过＝同样的量被再开一张 BH 草稿进审批链。
+ * audit_logs 是「谁做了什么」的只增账本，不是业务索引：它的 payload 形状可以变、
+ * 有保留期、也不该被业务读路径依赖。链接关系是业务事实，给它自己的表。
+ *
+ * 幂等键让「双击开单」只产生一张草稿（与 createSopCycle 同型）；本表与 BH 主单
+ * 在**同一个事务**里写（createBh 的 inTx 钩子），要么都在，要么都不在。
+ */
+export const sopExecutionDrafts = pgTable("sop_execution_drafts", {
+  id: serial("id").primaryKey(),
+  cycleId: integer("cycle_id").notNull().references(() => sopCycles.id),
+  /** 开单时的共识轮次（换源计划后重开的单与旧轮次分得开） */
+  cycleVersion: integer("cycle_version").notNull(),
+  bhId: integer("bh_id").notNull().references(() => bhDocs.id),
+  docNo: text("doc_no").notNull(),
+  planningVersionId: integer("planning_version_id").notNull().references(() => planningVersions.id),
+  planDigest: text("plan_digest").notNull(),
+  /** 本次开单覆盖的冻结计划行（planning_version_lines.sku_id） */
+  skuIds: jsonb("sku_ids").$type<number[]>().notNull(),
+  includeSuppressed: boolean("include_suppressed").notNull().default(false),
+  idempotencyKey: text("idempotency_key").notNull(),
+  createdBy: integer("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique("uq_sop_execution_draft_idempotency").on(t.idempotencyKey),
+  unique("uq_sop_execution_draft_bh").on(t.bhId),
+  index("ix_sop_execution_draft_cycle").on(t.cycleId, t.id),
+  check("ck_sop_execution_draft_round", sql`${t.cycleVersion} > 0`),
 ]);
 
 /**

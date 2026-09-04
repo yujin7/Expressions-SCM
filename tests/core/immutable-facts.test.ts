@@ -155,7 +155,7 @@ describe("immutable fact tables", () => {
     // Include the dependent pegging and S&OP evidence tables so PostgreSQL reaches the
     // append-only trigger instead of rejecting the FK truncate shape first.
     await expectAppendOnlyRejection(
-      client.exec("TRUNCATE TABLE sop_decisions, sop_cycles, supply_demand_links, planning_version_lines, planning_versions"),
+      client.exec("TRUNCATE TABLE sop_execution_drafts, sop_decisions, sop_cycles, supply_demand_links, planning_version_lines, planning_versions"),
     );
 
     const [persistedVersion] = await db.select().from(planningVersions).where(eq(planningVersions.id, version.id));

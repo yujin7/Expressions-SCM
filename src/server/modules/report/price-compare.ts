@@ -4,11 +4,13 @@
  * 与 R1 价格硬门的分工：R1 防的是「买贵了」（本次 PO 价 vs 基准价异动，逐单拦截）；
  * 本页挣的是「买对家」（同一物料多家供应商横向比，找出议价空间最大的物料）。
  *
- * ⚠️ 脱敏注意：价格属敏感字段。本服务**只在服务端聚合**，不经任何客户端计算；
- * 路由用 guardRead 拦截未登录。当前实现下「有读权限 = 可见价格」——
- * 若后续引入更细的价格权限（例如仓管/生产角色不可见采购价），**此处需接入 maskSensitive**
- * （脱敏唯一收口：各模块自己的 dto.ts，CLAUDE.md），并把 quotes[].price / bestPrice /
- * worstPrice 一并纳入遮蔽字段——注意 spreadPct 也会侧漏价差，需同时处理。
+ * ⚠️ 脱敏：价格属敏感字段。本服务**只在服务端聚合**，不经任何客户端计算。
+ * 2026-09-04 安全审计前，这段注释写的是「若后续引入更细的价格权限，此处需接入 maskSensitive」，
+ * 读起来像是「已经处理好了」——实际上 `bestPrice` / `worstPrice` / `spreadPct` 三个键
+ * 连 `SENSITIVE_FIELDS` 兜底都没有（`quotes[].price` 因为键名叫 price 才碰巧在里面），
+ * 而更细的价格权限**早就存在**：`canSeePrices` 只放行采购/PMC/财务/管理员。
+ * 现在三个键都已登记进 `core/constants.SENSITIVE_FIELDS`，由唯一收口 `maskSensitive`
+ * 按角色整键删除（`spreadPct` 必须一起删：它能反推价格）。本模块不再自己置空。
  *
  * 取价口径（与 R1 现价查询 outsource/po.ts 完全一致，避免比价页与开单页两套价）：
  * - price_lists 是**采购基准价**（基础单位未税价），不是售价；
