@@ -50,6 +50,9 @@ interface ReplenishRow {
   daily: number;
   daysCover: number | null;
   suggestQty: string | null;
+  /** C10：另一页（先挪后买 / 调拨建议）已经为这个 SKU 起草的量——只提示，不参与本页净额 */
+  inFlightDrafts: { buyQty: number; buyDocs: number; transferQty: number; transferDocs: number };
+  inFlightWarning: string | null;
   refQty: number | null;
   onOrder: number | null;
   legacyTransit: number;
@@ -750,6 +753,13 @@ export default function ReplenishClient() {
                     </Tag>
                   </Tooltip>
                 ))}
+                {/* C10：先挪后买页可能已经为同一个缺口起草了调拨——本页仍按**全额**建议，
+                    两页各下一次就多订一个调拨量。只提示不自动扣减（草稿随时会被驳回或改量）。 */}
+                {r.inFlightWarning ? (
+                  <Tooltip title={r.inFlightWarning}>
+                    <Tag color="gold" style={{ marginInlineEnd: 0 }}>另一页已起草</Tag>
+                  </Tooltip>
+                ) : null}
               </Space>
             </Popover>
           ) : r.suppressReason ? (

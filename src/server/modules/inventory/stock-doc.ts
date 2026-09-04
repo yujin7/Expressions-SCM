@@ -271,7 +271,12 @@ function buildPostingEvent(doc: StockDocRow, lines: StockDocLineRow[]): PostingE
       if (!l.toWarehouseId) throw new ApiError(500, `调拨行缺转入仓: line#${l.id}`);
       pls.push({ sourceLineId: l.id, skuId: l.skuId, warehouseId: l.warehouseId, batchId: l.batchId, qtyDelta: dNeg(l.qty) });
       pls.push({ sourceLineId: -l.id, skuId: l.skuId, warehouseId: l.toWarehouseId, batchId: l.batchId, qtyDelta: dQty(l.qty) });
-    } else if (doc.subtype === "opening") {
+    } else if (doc.subtype === "opening" || doc.subtype === "count_adjust") {
+      /* 期初：行 qty 即入账量（+）。
+         盘盈亏调整（CA）：行 qty **本身带符号**（+盘盈 / −盘亏，见 inventory/count.ts 建行处），
+         过账量就是它，**不取负**。C3 事故：CA 此前落进下面的 issue_out/sales_out 分支被 dNeg 取负一次，
+         reverse() 再取负一次 = 负负得正，红字冲销把原始过账**又做了一遍**
+         （账面 100 盘成 90：CA −10 → 余额 90；冲销后余额 80，正确应回到 100）。 */
       pls.push({ sourceLineId: l.id, skuId: l.skuId, warehouseId: l.warehouseId, batchId: l.batchId, qtyDelta: dQty(l.qty) });
     } else {
       // issue_out / sales_out：自有仓 −
@@ -523,7 +528,9 @@ export async function reverseStockDoc(user: SessionUser, id: number, input: unkn
         warehouseId: l.warehouseId,
         toWarehouseId: l.toWarehouseId,
         batchId: l.batchId,
-        qty: dQty(l.qty), // 存正数；取负发生在过账 reverse()
+        // 原样复制（出入库单为正数，盘盈亏调整 CA 带符号）；取负一律发生在过账 reverse()，
+        // 且 reverse 读的是**原单**行、不是这里的副本，本副本只供展示
+        qty: dQty(l.qty),
         price: l.price,
       })),
     );

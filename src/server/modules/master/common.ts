@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { todayShanghai as businessToday } from "@/server/core/business-day";
 import { log, persistErrorLog } from "@/server/core/logger";
+import { isUserFacingPostingError } from "@/server/posting/error-codes";
 
 /** 业务错误：service 层抛出，route 层统一转 JSON */
 export class ApiError extends Error {
@@ -40,12 +41,13 @@ export function errorResponse(e: unknown, ctx?: ErrorCtx): NextResponse {
     const msg = e.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("；");
     return NextResponse.json({ error: `参数校验失败：${msg}` }, { status: 400 });
   }
+  /* 过账错误的放行名单**由 posting/error-codes.ts 派生**，禁止在这里重抄字面量。
+     C1 事故：手抄的三条名单漏了 CLOSED_PERIOD，于是每一次期间锁拒绝都变成带 errorId 的 500、
+     进 error_logs 当「未预期错误」，而 post.ts 里写好的「按当前开放期间做红字冲销」被丢掉。 */
   if (
     e instanceof Error
     && e.name === "PostingError"
-    && ["NEGATIVE_STOCK", "SNAPSHOT_WAREHOUSE", "LOCATED_STOCK"].includes(
-      String((e as Error & { code?: string }).code ?? ""),
-    )
+    && isUserFacingPostingError(String((e as Error & { code?: string }).code ?? ""))
   ) {
     return NextResponse.json({ error: e.message }, { status: 409 });
   }

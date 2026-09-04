@@ -15,8 +15,8 @@
  *     收齐 / 短关 / 作废后条件即消失，是硬事实 → `autoCloseAfterDays: 0`。
  *  3. `otif_collapse` 供应商 OTIF 崩塌：按 `report/purchase-order-metrics` 的**原始承诺**口径
  *     （v3 起主口径，供应商改期洗不白），逐供应商年度累计准时率低于 `OTIF_COLLAPSE_RATE`
- *     且可评样本 ≥ `OTIF_COLLAPSE_MIN_EVALUABLE`。这是**已发生的周期事实**：
- *     某一年的 OTIF 塌了，下一轮不再命中不代表它被处理过 → `autoCloseAfterDays: null`（只能人工带原因关闭）。
+ *     且可评样本 ≥ `OTIF_COLLAPSE_MIN_EVALUABLE` → 迟滞关闭
+ *     `autoCloseAfterDays: OTIF_COLLAPSE_AUTO_CLOSE_DAYS`（详见该类别处的裁决注释）。
  *  4. `quality_case_overdue` 质量案件逾期：`quality_cases.report_due_date` 已过、尚未上报且案件未关闭
  *     （判定复用 `rules/quality-compliance.classifyDueState`）。上报或关闭案件即消失 → `autoCloseAfterDays: 0`。
  *     这同时是审计 4c 要求的「案件逾期要能通过引擎起告警」。
@@ -41,6 +41,24 @@ export const PROMISE_BREACH_MIN_DAYS = 3;
 export const OTIF_COLLAPSE_RATE = 0.7;
 /** 低于此可评样本数不出 OTIF 告警（3 单里迟到 1 单不是「崩塌」） */
 export const OTIF_COLLAPSE_MIN_EVALUABLE = 5;
+/**
+ * OTIF 崩塌告警的迟滞关闭窗口（天）——**不是** `null`（C7 裁决）。
+ *
+ * 裁决与理由：`autoCloseAfterDays: null`（永不自动关闭）的语义是为**已收口周期的事实**
+ * 准备的（「某周 data_quality 不达标」——那一周过去了，不会再变）。可本类别读的是
+ * `loadPurchaseOrderMetrics({})` 的**年度累计（year-to-date）**准时率：它是一个
+ * 仍在滚动的当期状态，而不是一条已经封存的周期事实。二月掉到 0.62、年底回到 0.92 的供应商，
+ * 在 `null` 语义下会一直挂着一条谁也关不掉的 high 告警（每供应商每年一条），
+ * 直到有人手工带原因逐条关闭——告警墙上于是长期挂着一批**已经不成立**的行。
+ *
+ * 两条路（红队给的选项）：把口径收窄到已完成的期间，或者用迟滞。
+ * 选**迟滞**：年度口径本身是总监要看的那一个数（改成「上一完整年度」会让告警滞后到无法干预，
+ * 而按月分期又与 `purchase-order-metrics` 的年度主口径分叉，等于多一套 OTIF 口径）。
+ * 30 天迟滞对一个 YTD 指标已经足够：YTD 分母只增不减，越到年底越迟钝，
+ * 连续 30 天（看门狗按 interval-runner 的节奏跑）不再命中意味着累计率**真的**回到门槛之上，
+ * 不是在阈值上下抖动。仍需人处理的历史事实由 `alert_events` 台账保留，关闭不等于遗忘。
+ */
+export const OTIF_COLLAPSE_AUTO_CLOSE_DAYS = 30;
 
 /** 未收齐的 PO 状态（收齐/短关/作废后条件即消失） */
 const OPEN_PO_STATUSES = ["approved", "in_progress"] as const;
@@ -93,6 +111,9 @@ export async function runSupplierLicenseWatchdog(db: AnyDb, now = new Date()): P
       paramsSnapshot: {
         supplierId: a.supplierId, code: a.code, licenseExpiry: a.licenseExpiry,
         daysLeft: a.daysLeft, windowDays: summary.windowDays, today: summary.today,
+        // C6 体量边界一并留痕：读者要能看出这一批是被哪三道闸筛过、有没有被截断
+        statuses: [...summary.statuses], expiredFloorDays: summary.expiredFloorDays,
+        maxRows: summary.maxRows, totalCandidates: summary.totalCandidates, truncated: summary.truncated,
       },
       why,
     } satisfies AlertCandidate;
@@ -252,6 +273,7 @@ export async function runOtifCollapseWatchdog(db: AnyDb, now = new Date()): Prom
         hit: s.otif.hit, miss: s.otif.miss, pending: s.otif.pending, unevaluable: s.otif.unevaluable,
         currentBasisRate: s.otifCurrent.rate, currentBasisEvaluable: s.otifCurrent.evaluable,
         threshold: OTIF_COLLAPSE_RATE, minEvaluable: OTIF_COLLAPSE_MIN_EVALUABLE,
+        autoCloseAfterDays: OTIF_COLLAPSE_AUTO_CLOSE_DAYS,
         params: model.params, promiseHistory: model.promiseHistory,
       },
       why: [
@@ -264,9 +286,11 @@ export async function runOtifCollapseWatchdog(db: AnyDb, now = new Date()): Prom
         },
       ],
     } satisfies AlertCandidate));
-  /* 周期事实：某一年的 OTIF 塌了就是塌了。下一轮不再命中，不代表这一年的问题被处理过——
-     只能由人带原因关闭（与 data_quality 同一条纪律）。 */
-  const res = await upsertAlerts(db, { category: CATEGORY_OTIF_COLLAPSE, candidates, now, autoCloseAfterDays: null });
+  /* C7：年度累计（YTD）是**滚动的当期状态**，不是已收口的周期事实，故用迟滞而不是 null。
+     理由与被否掉的另一条路（收窄到已完成期间）都写在 OTIF_COLLAPSE_AUTO_CLOSE_DAYS 的注释里。 */
+  const res = await upsertAlerts(db, {
+    category: CATEGORY_OTIF_COLLAPSE, candidates, now, autoCloseAfterDays: OTIF_COLLAPSE_AUTO_CLOSE_DAYS,
+  });
   return { category, candidates: candidates.length, ...res };
 }
 

@@ -23,6 +23,8 @@ interface Projection {
   skuId: number; code: string; name: string;
   startOnHand: number; bookOnHand: number; expiringUnsellable: number;
   daily: number; leadDays: number | null; safetyQty: number; undatedInbound: number; today: string;
+  /** 小项 b：该 SKU 是否在补货引擎范围内。false 时曲线的零线是「没算过」，不是「一直没货」 */
+  engineCovered: boolean; engineGap: string | null;
   points: Point[];
   stockoutDate: string | null; daysToStockout: number | null;
   /** 首次跌破安全库存（唯一权威 rules/timephased，与补货行同源同值） */
@@ -218,6 +220,11 @@ export default function ProjectionDrawer({
               valueStyle={{ color: data.orderWindowMissed ? "#cf1322" : undefined, fontSize: 18 }}
             />
           </Space>
+          {/* 小项 b：未被引擎覆盖时，下面所有引擎口径的判定都是回落值，必须先把这件事说清楚，
+              否则读者会把一条平的零线读成「这个 SKU 一直没货也没需求」。 */}
+          {!data.engineCovered && data.engineGap ? (
+            <Alert type="warning" showIcon message="本 SKU 未被补货引擎覆盖" description={data.engineGap} />
+          ) : null}
           {data.expiringUnsellable > 0 ? (
             <Alert
               type="warning"
@@ -231,9 +238,9 @@ export default function ProjectionDrawer({
             <Alert type="warning" showIcon message={`须在 ${data.orderByDate} 前下单（跌破安全库存日 ${data.shortageDate} 倒推总供应周期 ${data.leadDays} 天）。与补货建议行同源同值。`} />
           ) : data.shortageDate ? (
             <Alert type="warning" showIcon message={`预计 ${data.shortageDate} 跌破安全库存${data.daysToShortage != null ? `（${data.daysToShortage} 天后）` : ""}；该 SKU 无生产周期记录，无法倒推下单日——建议补录供应参数。`} />
-          ) : (
+          ) : data.engineCovered ? (
             <Alert type="success" showIcon message="视野内水位始终不低于安全库存。" />
-          )}
+          ) : null}
           {data.undatedInbound > 0 ? (
             <Alert
               type="info"

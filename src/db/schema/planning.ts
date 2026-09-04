@@ -202,8 +202,9 @@ export const projectionScenarios = pgTable("projection_scenarios", {
  * 事故形状：`replenish/decline.ts` 只写一条审计，**下一次运行照旧建议同一个 SKU**——
  * 计划员每天对同一条建议重复做同一个判断，「已复核并放弃」等于一张当天有效的便签。
  * 抑制窗口按放弃原因取不同长度（`rules/replenish-suppression.ts` 纯函数定义）：
- *  - supply_already_arranged：等**那批供应真的落库**或 N 天到期，两者先到先解除
- *    （放弃当时的管道量存进 pipeline_baseline，管道量超过它即视为供应已到）；
+ *  - supply_already_arranged：N 天到期，或**供应事实一变**即提前解除（C8，先到先算）——
+ *    到货入库（on_hand_baseline ↑）、被登记为未结供给（pipeline_baseline ↑）、
+ *    安排告吹（pipeline_baseline ↓）。故两条基线都要存：到货在全管道量上是不可见的；
  *  - demand_overstated：窗口最短——需求判断比供应事实更容易错，压得久了就成了漏补。
  * 纪律：抑制**绝不静默**——被抑制的行仍然出现在列表里，标着「已抑制」、原因与到期日，任何人可一键解除。
  * 同一 SKU 同时最多一条有效抑制（部分唯一索引保证）；解除 = 写 cleared_at，不删行（留痕）。
@@ -218,10 +219,21 @@ export const replenishSuppressions = pgTable("replenish_suppressions", {
   businessDate: date("business_date").notNull(),
   /** 抑制到期日（含当天）；过期即自动失效，不需要任何任务去清 */
   untilDate: date("until_date").notNull(),
-  /** true = 管道量回升（供应落库）即提前解除 */
+  /** true = 供应事实一变即提前解除（到货入库 / 被登记为未结供给 / 安排被取消，见 rules/replenish-suppression） */
   releaseOnArrival: boolean("release_on_arrival").notNull().default(false),
   /** 放弃当时的全管道量（在库 + PO 在途 + 在制 + 存量在途），releaseOnArrival 的比较基线 */
   pipelineBaseline: numeric("pipeline_baseline", { precision: 14, scale: 4 }).notNull().default("0"),
+  /**
+   * 放弃当时的**账面在库**（C8）。
+   *
+   * 只有管道基线是不够的：货**到货**时在库上升、未结供给同额下降，全管道量**纹丝不动**，
+   * 于是 `pipelineNow > pipelineBaseline` 这个解除条件永远不成立——界面上写着
+   * 「该批供应落库后自动解除」，实现上却只会等 30 天到期。到货看在库、
+   * 「安排被取消」看管道下降，两个信号各需一个基线。
+   * 存量行迁移时回填为 pipeline_baseline（保守：在库 ≤ 全管道，回填成上界只会让到货解除更难触发，
+   * 不会凭空解除一条正在生效的抑制）。
+   */
+  onHandBaseline: numeric("on_hand_baseline", { precision: 14, scale: 4 }).notNull().default("0"),
   createdBy: integer("created_by").notNull().references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   clearedBy: integer("cleared_by").references(() => users.id),

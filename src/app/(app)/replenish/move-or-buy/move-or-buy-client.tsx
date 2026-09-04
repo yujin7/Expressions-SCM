@@ -66,7 +66,16 @@ interface Row {
   transfers: TransferOption[];
   transferQty: number;
   residualBuyQty: string | null;
-  action: "transfer_only" | "transfer_then_buy" | "buy_only";
+  action: "transfer_only" | "transfer_then_buy" | "buy_only" | "buy_suppressed";
+  /** C9：采购建议被「已复核并放弃」的抑制窗口扣着——不是「不用买」 */
+  suppression: {
+    id: number; reasonLabel: string; reason: string; by: string;
+    since: string; untilDate: string; daysLeft: number; withheldQty: string | null; label: string;
+  } | null;
+  withheldBuyQty: string | null;
+  /** C10：另一页已经为这个 SKU 起草的量（只提示，不参与净额） */
+  inFlightDrafts: { buyQty: number; buyDocs: number; transferQty: number; transferDocs: number };
+  inFlightWarning: string | null;
 }
 
 interface Data {
@@ -77,6 +86,7 @@ interface Data {
     coveredByTransfer: number;
     stillNeedBuy: number;
     buyOnly: number;
+    declineSuppressed: number;
     horizonDays: number;
     moneyVisible: boolean;
     laneCostAvailable: boolean;
@@ -94,6 +104,7 @@ const ACTION_TAG: Record<Row["action"], { color: string; label: string }> = {
   transfer_only: { color: "green", label: "先挪即可" },
   transfer_then_buy: { color: "orange", label: "先挪再买" },
   buy_only: { color: "red", label: "只能买" },
+  buy_suppressed: { color: "volcano", label: "采购被抑制" },
 };
 
 const dash = <Typography.Text type="secondary">—</Typography.Text>;
@@ -212,8 +223,19 @@ export default function MoveOrBuyClient() {
     {
       title: "结论",
       dataIndex: "action",
-      width: 105,
-      render: (v: Row["action"]) => <Tag color={ACTION_TAG[v].color}>{ACTION_TAG[v].label}</Tag>,
+      width: 135,
+      /* C10：另一页已经为同一个缺口起草过的量必须**在结论旁边**显示。
+         本页起草的是净额后的采购量、/replenish 起草的是全额，两页各下一次就多订一个调拨量。 */
+      render: (v: Row["action"], r) => (
+        <Space size={2} direction="vertical" style={{ lineHeight: 1.4 }}>
+          <Tag color={ACTION_TAG[v].color} style={{ marginInlineEnd: 0 }}>{ACTION_TAG[v].label}</Tag>
+          {r.inFlightWarning ? (
+            <Tooltip title={r.inFlightWarning}>
+              <Tag color="gold" style={{ marginInlineEnd: 0 }}>另一页已起草</Tag>
+            </Tooltip>
+          ) : null}
+        </Space>
+      ),
     },
     {
       title: "最晚下单日",
@@ -250,9 +272,22 @@ export default function MoveOrBuyClient() {
     {
       title: "建议补货量",
       dataIndex: "suggestQty",
-      width: 125,
+      width: 145,
       align: "right",
-      render: (v: string | null, r) => (v == null ? dash : `${formatCount(Number(v))} ${r.baseUom}`),
+      /* C9 抑制绝不静默：被扣下的采购量必须**在这一格里**说出来，
+         否则读者只看到一个「—」，分不清「不用买」与「系统扣着一笔没让你看」。 */
+      render: (v: string | null, r) =>
+        v != null
+          ? `${formatCount(Number(v))} ${r.baseUom}`
+          : r.suppression
+            ? (
+              <Tooltip title={r.suppression.label}>
+                <Tag color="volcano" style={{ marginInlineEnd: 0 }}>
+                  已抑制 · 扣下 {r.withheldBuyQty ? formatCount(Number(r.withheldBuyQty)) : "—"} {r.baseUom}
+                </Tag>
+              </Tooltip>
+            )
+            : dash,
     },
     {
       title: "挪完仍需买",
@@ -393,6 +428,7 @@ export default function MoveOrBuyClient() {
         <Statistic title="先挪即可（无需采购）" value={data ? data.summary.coveredByTransfer : "—"} />
         <Statistic title="先挪再买" value={data ? data.summary.stillNeedBuy : "—"} />
         <Statistic title="只能买（无货可挪）" value={data ? data.summary.buyOnly : "—"} />
+        <Statistic title="采购被抑制（已复核并放弃）" value={data ? data.summary.declineSuppressed : "—"} />
       </Space>
       <ListToolbar
         state={listState}

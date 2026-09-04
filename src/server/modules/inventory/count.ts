@@ -401,6 +401,17 @@ export async function approveCountTask(
     if (e instanceof PostingError && e.code === "NEGATIVE_STOCK") {
       throw new ApiError(409, `盘亏调整导致负库存被拒（账面已变动）——请红字/复盘后重建盘点任务：${e.message}`);
     }
+    /* C2：盘点按 biz_date 落账（countAdjustOccurredAt），补录到已关账月份的盘点审批必然撞期间锁。
+       不映射就退回 errorResponse 的通用 409/500，审批人看不出「是月份关了、不是盘点错了」，
+       也不知道 occurredAt 改不了、只能重开期间。月结清单已按业务日纳入待处理盘点（month-close），
+       正常路径不该走到这里；走到了就必须说清楚下一步。 */
+    if (e instanceof PostingError && e.code === "CLOSED_PERIOD") {
+      throw new ApiError(
+        409,
+        `盘点差异调整按盘点期（业务日期）落账，该期间已关账：${e.message}`
+          + "——盘点单的业务日期不可改，请由管理员重开该期间后再审批（月结清单已按业务日期把待处理盘点计入所属月份）。",
+      );
+    }
     if (e instanceof ApprovalError) throw mapApprovalError(e);
     throw e;
   }

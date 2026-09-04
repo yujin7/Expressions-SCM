@@ -171,11 +171,16 @@ export const METRICS: Record<string, MetricDef> = {
   onTimeRate: {
     id: "onTimeRate",
     label: "供应商准时率",
-    short: "供应商按承诺交期到货的比例",
-    formula: "实际收货日 ≤ 承诺交期 的样本数 ÷ 有承诺交期的样本数",
+    short: "供应商按**原始承诺**交期到货的比例（改期洗不白）",
+    /* 口径在 W2「OTIF on original promise（v3）」之后就变了，这三行却停留在改版前：
+       主口径已经是**原始承诺**（rules/promise-basis 的第一条可信修订），
+       「当前承诺」降为只展示不计分的并列副列。字典写着旧口径，读者以为看的是另一个数。 */
+    formula: "实际收货日 ≤ 原始承诺交期 的样本数 ÷ 有承诺交期的样本数"
+      + "（原始承诺 = po_promise_revisions 里第一条可信修订的承诺日；无版本链回落当前承诺并标注）",
     unit: "pct",
     tier: "derived",
-    caveat: "实际收货以收货单建单时刻为准，仓库补录会使其偏晚",
+    caveat: "按原始承诺判——供应商改期只影响并列的「当前承诺」口径，不计分，故改期越勤分数越高的洗白路径已封死；"
+      + "实际收货以收货单建单时刻为准，仓库补录会使其偏晚",
   },
   expiryRiskQty: {
     id: "expiryRiskQty",

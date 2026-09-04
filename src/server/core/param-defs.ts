@@ -73,6 +73,11 @@ export const PARAM_DEFS: readonly ParamDef[] = [
      0 = 不设上限（默认，保持既有行为）。 */
   { kind: "number", key: "replenish_max_order_cover_days", label: "单次订货上限天数", fallback: 0, min: 0, max: 720, unit: "天", note: "R11：单次建议量不超过「日均×本天数」；0=不限（默认）。触发时行上标「已按上限下调」" },
   { kind: "number", key: "replenish_overshoot_warn_days", label: "超买提示阈值", fallback: 90, min: 7, max: 720, unit: "天", note: "R11：MOQ/箱规导致多买超过本天数的库存即在行上提示呆滞风险" },
+  /* C4 临期净额的观测鲜度门：batch_stocks 是**盘点快照**，`loadExpiryBatches` 逐仓只取最新盘点期，
+     但「最新」可能已是两个月前。过旧的批次层被当成今天的在库去抵扣账面在库时，
+     可以把一个库存充足的 SKU 净额到可用在库 0，凭空开出整轮补货（红队实证场景）。
+     超过本天数的批次层只在行上如实提示，不参与扣减。0 = 不设鲜度门（回到旧行为）。 */
+  { kind: "number", key: "expiry_netting_max_stocktake_age_days", label: "临期净额观测鲜度上限", fallback: 45, min: 0, max: 365, unit: "天", note: "W2-#2/C4：批次盘点期比今天早过本天数即不参与临期净额（只提示不扣减）；0=不设限" },
   { kind: "number", key: "safety_days_fallback", label: "安全库存兜底天数", fallback: 7, min: 0, max: 90, unit: "天", note: "E2-01：统计法不可用（样本<3月或缺生产周期）时按此天数×日均兜底" },
   { kind: "number", key: "service_level_pct", label: "目标服务水平", fallback: 95, min: 90, max: 99, unit: "%", note: "E2-01：安全库存 z 值档位（90/95/97.5→98取95、99）" },
   /* 异动侦测三阈值（2026-07-25 审计收编）：此前硬编码在 report/detectors.ts:34-43，
@@ -144,6 +149,7 @@ export const PMC_WRITABLE_PARAM_KEYS: readonly string[] = [
   "replenish_max_order_cover_days",
   "replenish_overshoot_warn_days",
   "safety_days_fallback",
+  "expiry_netting_max_stocktake_age_days",
   "service_level_pct",
   "detector_sales_drop_pct",
   "detector_channel_shift_pct",

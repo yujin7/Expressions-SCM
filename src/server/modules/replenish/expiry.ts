@@ -56,6 +56,18 @@ export interface ExpiryBatchRow {
   qty: number;
   /** 距到期天数（可为负 = 已过期） */
   daysLeft: number;
+  /** 该行所属的盘点期（batch_stocks.stocktake_date）——批次参考层的**观测时点** */
+  stocktakeDate: string;
+  /**
+   * 观测时点距今天数（0 = 今天盘的）。
+   *
+   * C4 事故：本函数逐仓只取「最新盘点期」，但**多久之前的最新**不作数——
+   * 6/30 盘出的 6,000 件（8/15 到期）会被当成今天还在库上，
+   * 与今天账面的 800 件（另一批新货）净额相减后 availableOnHand=0，
+   * 于是给一个库存充足的 SKU 开出整轮补货。参考层的鲜度必须跟着数量一起给出来，
+   * 由消费方（replenish/service）按 `expiry_netting_max_stocktake_age_days` 判断还能不能用。
+   */
+  stocktakeAgeDays: number;
 }
 
 export async function loadExpiryBatches(
@@ -88,7 +100,14 @@ export async function loadExpiryBatches(
     if (!r.expiryDate) continue;
     const qty = Number(r.qty);
     if (!(qty > 0)) continue;
-    out.push({ skuId: r.skuId, expiryDate: r.expiryDate, qty, daysLeft: daysLeftOf(today, r.expiryDate) });
+    out.push({
+      skuId: r.skuId,
+      expiryDate: r.expiryDate,
+      qty,
+      daysLeft: daysLeftOf(today, r.expiryDate),
+      stocktakeDate: r.stocktakeDate,
+      stocktakeAgeDays: Math.max(0, -daysLeftOf(today, r.stocktakeDate)),
+    });
   }
   return out;
 }

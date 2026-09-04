@@ -32,7 +32,11 @@ import { resolveDb, type AnyDb } from "@/server/core/svc";
 import {
   getReplenishSuggestions,
   type ReplenishRow,
+  type ReplenishSuppression,
 } from "@/server/modules/replenish/service";
+import {
+  EMPTY_IN_FLIGHT, inFlightWarning, loadInFlightDrafts, type InFlightDrafts,
+} from "@/server/modules/replenish/in-flight-drafts";
 import {
   getTransferSuggestions,
   type TransferSuggestRow,
@@ -77,7 +81,13 @@ export interface MoveOrBuyTransferOption {
   laneSamples: number;
 }
 
-export type MoveOrBuyAction = "transfer_only" | "transfer_then_buy" | "buy_only";
+/**
+ * `buy_suppressed`（C9）：采购建议存在但**被放弃抑制扣着**。
+ * 不能并进 `transfer_only`——「先挪即可」是一个结论（不用买），而这里的事实是
+ * 「系统本来要建议买，被一条抑制窗口扣下了」。两者的处置完全不同：前者不用管，
+ * 后者要么确认抑制仍然成立，要么一键解除放行。
+ */
+export type MoveOrBuyAction = "transfer_only" | "transfer_then_buy" | "buy_only" | "buy_suppressed";
 
 export interface MoveOrBuyRow {
   skuId: number;
@@ -105,6 +115,19 @@ export interface MoveOrBuyRow {
   /** 先挪之后仍需采购的量；无补货建议 = null */
   residualBuyQty: string | null;
   action: MoveOrBuyAction;
+  /**
+   * C9：这个 SKU 的采购建议**被「已复核并放弃」抑制着**（`/replenish` 的抑制窗口）。
+   *
+   * 事故形状：本表此前只收 `suggestQty != null` 的行，被抑制的行 `suggestQty` 恰恰是 null，
+   * 于是它要么整行消失、要么以「只能挪」的面目出现——两种都在**隐瞒**「有一笔采购正被扣着」。
+   * 抑制绝不静默是全系统的纪律（rules/replenish-suppression），这张表也不例外。
+   */
+  suppression: ReplenishSuppression | null;
+  /** 被抑制而扣下的采购量（`suppression.withheldQty` 的直读；无抑制 = null） */
+  withheldBuyQty: string | null;
+  /** C10 跨页在途草稿：另一页已经为这个 SKU 起草了多少（只提示，不参与净额） */
+  inFlightDrafts: InFlightDrafts;
+  inFlightWarning: string | null;
 }
 
 export interface MoveOrBuyResult {
@@ -119,6 +142,8 @@ export interface MoveOrBuyResult {
     stillNeedBuy: number;
     /** 无调拨可挪、只能买的 SKU 数 */
     buyOnly: number;
+    /** C9：采购建议被放弃抑制扣着的 SKU 数（这些行的 suggestQty 是 null，但不是「不用买」） */
+    declineSuppressed: number;
     /** 调拨建议的横向扫描窗口（天）——即调入仓可销天数的分母窗口 */
     horizonDays: number;
     /** 线路费用是否可见（非 PRICE_VISIBLE_ROLES 一律 false，费用列整列为 —） */
@@ -178,7 +203,14 @@ export function residualAfterTransfer(suggestQty: string | null, transferQty: nu
   return dMax(dSub(suggestQty, String(transferQty)), "0");
 }
 
-export function actionOf(suggestQty: string | null, residual: string | null, transferQty: number): MoveOrBuyAction {
+export function actionOf(
+  suggestQty: string | null,
+  residual: string | null,
+  transferQty: number,
+  /** C9：采购建议被放弃抑制扣着（`ReplenishRow.suppression` 非空）——优先于其余判定 */
+  buySuppressed = false,
+): MoveOrBuyAction {
+  if (buySuppressed && (suggestQty == null || dCmp(suggestQty, "0") <= 0)) return "buy_suppressed";
   if (suggestQty == null || dCmp(suggestQty, "0") <= 0) return "transfer_only";
   if (transferQty <= 0) return "buy_only";
   return residual != null && dCmp(residual, "0") > 0 ? "transfer_then_buy" : "transfer_only";
@@ -222,9 +254,19 @@ export async function getMoveOrBuyDecisions(
 
   const replenishBySku = new Map<number, ReplenishRow>(replenish.rows.map((r) => [r.skuId, r]));
 
-  /* 需要动作的 SKU：有补货建议，或有调拨建议（两边并集，任一边有话说就该出现在这张表上） */
+  /* C10：本页起草的是**净额后**的采购量，`/replenish` 起草的是全额——两页对同一个缺口
+     各下一次单，多订的正好是调拨量。把另一页已经在飞的草稿摆到行上（只提示，不自动扣减）。 */
+  const inFlightBySku = await loadInFlightDrafts(
+    db,
+    [...new Set([...replenish.rows.map((r) => r.skuId), ...transfersBySku.keys()])],
+  );
+
+  /* 需要动作的 SKU：有补货建议、**采购建议被放弃抑制扣着**（C9），或有调拨建议
+     （三边并集，任一边有话说就该出现在这张表上）。
+     只收 suggestQty != null 会把被抑制的行整行吞掉——而那正是最需要被看见的一类：
+     系统扣下了一笔采购，读者却在决策表上看不出任何痕迹。 */
   const skuIds = new Set<number>();
-  for (const r of replenish.rows) if (r.suggestQty != null) skuIds.add(r.skuId);
+  for (const r of replenish.rows) if (r.suggestQty != null || r.suppression != null) skuIds.add(r.skuId);
   for (const id of transfersBySku.keys()) skuIds.add(id);
 
   const all: MoveOrBuyRow[] = [];
@@ -259,6 +301,8 @@ export async function getMoveOrBuyDecisions(
     const transferQty = transfers.reduce((sum, t) => sum + t.qty, 0);
     const suggestQty = r?.suggestQty ?? null;
     const residualBuyQty = residualAfterTransfer(suggestQty, transferQty);
+    const suppression = r?.suppression ?? null;
+    const inFlight = inFlightBySku.get(skuId) ?? EMPTY_IN_FLIGHT;
 
     all.push({
       skuId,
@@ -277,7 +321,14 @@ export async function getMoveOrBuyDecisions(
       transfers,
       transferQty,
       residualBuyQty,
-      action: actionOf(suggestQty, residualBuyQty, transferQty),
+      action: actionOf(suggestQty, residualBuyQty, transferQty, suppression != null),
+      suppression,
+      withheldBuyQty: suppression?.withheldQty ?? null,
+      inFlightDrafts: inFlight,
+      /* 本页两侧都做（挪 + 买），提示的是**调拨**侧的在途草稿：
+         本页起草的是净额后的 residualBuyQty，而 /replenish 起草的是全额 suggestQty，
+         两页对同一个缺口各下一次就是 C10 的多订形态。 */
+      inFlightWarning: inFlightWarning(inFlight, "transfer"),
     });
   }
 
@@ -292,6 +343,7 @@ export async function getMoveOrBuyDecisions(
       coveredByTransfer: all.filter((r) => r.action === "transfer_only").length,
       stillNeedBuy: all.filter((r) => r.action === "transfer_then_buy").length,
       buyOnly: all.filter((r) => r.action === "buy_only").length,
+      declineSuppressed: all.filter((r) => r.suppression != null).length,
       horizonDays: transfer.summary.horizonDays,
       moneyVisible,
       laneCostAvailable,
