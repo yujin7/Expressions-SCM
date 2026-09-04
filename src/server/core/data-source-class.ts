@@ -93,6 +93,7 @@ export const IMPORT_TEMPLATE_SOURCE_CLASS: Record<string, SourceClass> = {
   bom: "reference_file",
   sales: "manual_po_chain",
   leadtime: "reference_file",
+  sku_leadtime_simple: "reference_file", // 周期补录：业务从本系统导出、线下填完再导回的参考数据
   transit: "manual_po_chain",
   demand: "manual_po_chain",
   pallet: "manual_po_chain",
