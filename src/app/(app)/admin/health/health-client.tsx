@@ -21,6 +21,8 @@ interface JobCatalogRow {
   last: OpsHealth["lastJobRuns"][number] | null;
 }
 
+const CONNECTOR_LABELS: Record<string, string> = { jdy: "简道云", yy: "用友", jst: "聚水潭", feishu: "飞书" };
+
 const SNAPSHOT_RED_DAYS = 3;
 const BACKUP_RED_HOURS = 25;
 
@@ -654,6 +656,62 @@ export default function HealthClient() {
             );
           })}
         </Row>
+      </Card>
+
+      <Card size="small" title="契约就绪：同步了 ≠ 有人读">
+        <Table
+          rowKey={(row) => `${row.connector}:${row.key}`}
+          size="small"
+          pagination={false}
+          scroll={{ x: 1_000 }}
+          dataSource={data.contractConsumers ?? []}
+          locale={{ emptyText: "尚未登记契约消费者" }}
+          columns={[
+            {
+              title: "系统",
+              dataIndex: "connector",
+              width: 100,
+              render: (v: string) => CONNECTOR_LABELS[v] ?? v.toUpperCase(),
+            },
+            {
+              title: "契约 / 数据流",
+              width: 260,
+              render: (_, row) => (
+                <Space direction="vertical" size={0}>
+                  <Typography.Text type={row.consumers.length === 0 ? "secondary" : undefined}>{row.label}</Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }} code>{row.key}</Typography.Text>
+                </Space>
+              ),
+            },
+            {
+              title: "下游读模型",
+              render: (_, row) =>
+                row.consumers.length === 0 ? (
+                  <Tooltip title="同步照常跑、staging 照常长，但没有任何读模型消费它：占三方配额、占存储，对业务零产出。要么接上消费者，要么停掉这条契约。">
+                    <Tag>无消费者</Tag>
+                  </Tooltip>
+                ) : (
+                  <Space wrap size={[4, 4]}>
+                    {row.consumers.map((c) => <Tag key={c} color="blue">{c}</Tag>)}
+                  </Space>
+                ),
+            },
+            {
+              title: "读模型数",
+              width: 100,
+              align: "right",
+              render: (_, row) =>
+                row.consumers.length === 0
+                  ? <Typography.Text type="secondary">0</Typography.Text>
+                  : row.consumers.length,
+            },
+          ]}
+        />
+        <Typography.Paragraph type="secondary" style={{ margin: "8px 0 0", fontSize: 12 }}>
+          「已选 N 条契约」只说明拉数配置齐了，不说明数据有人读。灰行 = 同步得好好的、下游没有任何读模型消费
+          （当前 {(data.contractConsumers ?? []).filter((c) => c.consumers.length === 0).length} 条）。
+          本列由 `integrations/contract-consumers.ts` 静态登记，架构门用 grep 逐条比对真实引用，登记漂移即红。
+        </Typography.Paragraph>
       </Card>
 
       <Card size="small" title="连接器只读权限探测（实时 API，不写业务数据）">
