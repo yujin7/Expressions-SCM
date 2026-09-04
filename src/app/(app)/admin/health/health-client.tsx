@@ -6,7 +6,7 @@
  * 30s 自动刷新；红色高亮：任务失败 / 24h 错误>0 / 快照龄>3天 / 备份>25h 或缺失说明。
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { App, Card, Col, Popconfirm, Row, Space, Spin, Table, Tag, Tooltip, Typography } from "antd";
+import { App, Card, Col, Input, Popconfirm, Row, Space, Spin, Table, Tag, Tooltip, Typography } from "antd";
 import { DownloadOutlined, ExportOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { Button } from "antd";
@@ -789,6 +789,8 @@ export default function HealthClient() {
         />
       </Card>
 
+      <DeletionAckCard />
+
       <Card size="small" title={`最近错误（${data.recentErrors.length} 条 / 24h 共 ${data.errorCount24h} 条）`}>
         <Table
           rowKey="id"
@@ -830,5 +832,144 @@ export default function HealthClient() {
         </Col>
       </Row>
     </Space>
+  );
+}
+
+interface DeletionAckRow {
+  id: number;
+  connector: string;
+  stream: string;
+  sourceRecordId: string;
+  observedInJobId: number;
+  reason: string;
+  ackedAt: string;
+}
+
+/**
+ * 上游删除墓碑（2026-09-05）。
+ *
+ * 为什么这块必须有界面：同步因为「上一批 6448 行、这批 6447 行」而停摆了两天，
+ * 拒绝是对的（没有墓碑就分不清删除与截断），但当时**没有任何让人确认的路径**——
+ * 除了改代码没有别的恢复方式。只有 API 而没有界面等于这条路径仍然不存在。
+ *
+ * 签字前请先读同步报错里那句形状判定：写着「尾部整段消失」的**不要签**，
+ * 那是分页/权限截断，签满了也不会放行；只有「零散缺失」才值得逐条核实。
+ */
+function DeletionAckCard() {
+  const { message } = App.useApp();
+  const [rows, setRows] = useState<DeletionAckRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [stream, setStream] = useState("jst-item-master-mirror-observation");
+  const [recordId, setRecordId] = useState("");
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetchJson<{ rows: DeletionAckRow[] }>("/api/admin/integrations/deletion-ack?connector=jdy");
+      setRows(res.rows);
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [message]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const submit = async () => {
+    setSaving(true);
+    try {
+      await postJson("/api/admin/integrations/deletion-ack", {
+        connector: "jdy", stream: stream.trim(), sourceRecordId: recordId.trim(), reason: reason.trim(),
+      });
+      message.success("已登记删除墓碑；下一轮同步会放行这一条");
+      setRecordId(""); setReason("");
+      await load();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const columns: ColumnsType<DeletionAckRow> = [
+    { title: "数据流", dataIndex: "stream", width: 260, ellipsis: true },
+    { title: "上游记录 ID", dataIndex: "sourceRecordId", width: 230, ellipsis: true },
+    { title: "出现于批次", dataIndex: "observedInJobId", width: 100 },
+    { title: "确认依据", dataIndex: "reason", ellipsis: true },
+    {
+      title: "确认时间", dataIndex: "ackedAt", width: 170,
+      render: (v: string) => new Date(v).toLocaleString("zh-CN"),
+    },
+    {
+      title: "操作", width: 90,
+      render: (_: unknown, row: DeletionAckRow) => (
+        <Popconfirm
+          title="撤销这条确认？"
+          description="撤销后同步会重新拒绝这一条，直到再次确认。"
+          onConfirm={async () => {
+            try {
+              await fetch(`/api/admin/integrations/deletion-ack?id=${row.id}`, { method: "DELETE" });
+              message.success("已撤销");
+              await load();
+            } catch (e) {
+              message.error((e as Error).message);
+            }
+          }}
+        >
+          <Button size="small" danger type="link">撤销</Button>
+        </Popconfirm>
+      ),
+    },
+  ];
+
+  return (
+    <Card size="small" title="上游删除墓碑（同步因少了记录而停摆时，在这里逐条确认）">
+      <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+        同步报出「新观察缺少旧记录 N 条」时，先看那句形状判定：写着
+        <b>「尾部整段消失」</b>的是分页/权限截断，<b>不要签</b>——签满了也不会放行，
+        该去查授权与分页；只有<b>「零散缺失」</b>才可能是上游真的删了，核实后在这里逐条确认。
+        一次确认只放行这一条记录，不影响以后任何一次缺失；确认会写审计，签错了可以撤销。
+      </Typography.Paragraph>
+      <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
+        <Input
+          style={{ width: 300 }}
+          value={stream}
+          onChange={(e) => setStream(e.target.value)}
+          placeholder="数据流（contractKey）"
+        />
+        <Input
+          style={{ width: 260 }}
+          value={recordId}
+          onChange={(e) => setRecordId(e.target.value)}
+          placeholder="上游记录 ID（sourceRecordId）"
+        />
+        <Input
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="确认依据（至少 4 个字，一年后要有人看得懂）"
+        />
+        <Button
+          type="primary"
+          loading={saving}
+          disabled={!stream.trim() || !recordId.trim() || reason.trim().length < 4}
+          onClick={submit}
+        >
+          确认删除
+        </Button>
+      </Space.Compact>
+      <Table
+        rowKey="id"
+        size="small"
+        loading={loading}
+        columns={columns}
+        dataSource={rows}
+        pagination={false}
+        scroll={{ x: "max-content" }}
+        locale={{ emptyText: "尚无删除墓碑" }}
+      />
+    </Card>
   );
 }
