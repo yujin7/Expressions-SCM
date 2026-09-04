@@ -41,6 +41,11 @@ interface ReplenishRow {
   brand: string | null;
   baseUom: string;
   onHand: number;
+  availableOnHand: number;
+  expiryRisk: {
+    unsellableQty: number; expiredQty: number; atRiskQty: number; batches: number;
+    minDaysLeft: number | null; bindingDaysLeft: number | null; horizonDays: number; label: string;
+  } | null;
   inTransit: number;
   daily: number;
   daysCover: number | null;
@@ -88,6 +93,12 @@ interface ReplenishRow {
   forecastAccuracy: { samples: number; wape: number | null; bias: number | null; fva: number | null; reliable: boolean };
   /** W5：当日已复核并放弃（服务端权威，全员可见） */
   declinedToday: { by: string; at: string; reason: string; reasonCode: DeclineReasonCode; businessDate: string } | null;
+  /** W2-#6：生效中的放弃抑制窗口（下一次运行不再重复建议；行上必须可见、可解除） */
+  suppression: {
+    id: number; reasonCode: DeclineReasonCode; reasonLabel: string; reason: string; by: string;
+    since: string; untilDate: string; daysLeft: number; releaseOnArrival: boolean;
+    withheldQty: string | null; label: string;
+  } | null;
   safetyQty: number;
   safetyMethod: string;
   shortageDate: string | null;
@@ -115,6 +126,7 @@ interface ReplenishResult {
     suggestCount: number;
     refDate: string | null;
     suppressedCount: number;
+    declineSuppressedCount: number;
     engine: string;
     serviceLevel: number;
     policyPeriod: string | null;
@@ -432,6 +444,21 @@ export default function ReplenishClient() {
     void load();
   }, [load]);
 
+  /* W2-#6 解除抑制：抑制既不静默，也不是单向门——任何计划员随手就能撤回。 */
+  const clearSuppression = useCallback(async (id: number, code: string) => {
+    try {
+      await fetchJson("/api/replenish/decline", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      message.success(`已解除 ${code} 的建议抑制，下次运行即恢复建议`);
+      void load();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "解除失败");
+    }
+  }, [load, message]);
+
   // 数据刷新后同步勾选：当前页内的行以最新建议量为准，建议消失则剔除；不在当前页的保留（跨页勾选）
   useEffect(() => {
     if (!data) return;
@@ -533,7 +560,24 @@ export default function ReplenishClient() {
       {
         title: "系统口径",
         children: [
-          { title: "在库", dataIndex: "onHand", width: 105, align: "right" as const, ...sortable("onHand"), render: (v: number) => v.toLocaleString("zh-CN") },
+          { title: "在库（账面）", dataIndex: "onHand", width: 110, align: "right" as const, ...sortable("onHand"), render: (v: number) => v.toLocaleString("zh-CN") },
+          {
+            /* W2-#2：临期与已过期批次此前一并算作可用，引擎判「够」→ 批次过期报废 = 结构性缺货。
+               账面在库照旧显示，可用在库单列，扣了多少、为什么，都在 tooltip 里。 */
+            title: "可用在库", dataIndex: "availableOnHand", width: 120, align: "right" as const,
+            render: (v: number, r: ReplenishRow) => r.expiryRisk && r.expiryRisk.unsellableQty > 0
+              ? (
+                <Tooltip title={r.expiryRisk.label}>
+                  <Space size={2}>
+                    <Typography.Text type="danger">{v.toLocaleString("zh-CN")}</Typography.Text>
+                    <Tag color="orange" style={{ marginInlineEnd: 0 }}>临期 −{r.expiryRisk.unsellableQty.toLocaleString("zh-CN")}</Tag>
+                  </Space>
+                </Tooltip>
+              )
+              : r.expiryRisk
+                ? <Tooltip title={r.expiryRisk.label}><span>{v.toLocaleString("zh-CN")}</span></Tooltip>
+                : v.toLocaleString("zh-CN"),
+          },
           { title: "PO 在途", dataIndex: "inTransit", width: 105, align: "right" as const, ...sortable("inTransit"), render: (v: number) => v.toLocaleString("zh-CN") },
         ],
       },
@@ -807,6 +851,22 @@ export default function ReplenishClient() {
         width: 120,
         align: "center" as const,
         render: (_: unknown, r: ReplenishRow) => {
+          /* W2-#6：抑制窗口优先展示——被抑制的行必须**在行上**说出「谁、为什么、压到哪天」，
+             并且随手就能解除。抑制静默地改变建议，比不抑制更糟。 */
+          if (r.suppression) {
+            const s = r.suppression;
+            return (
+              <Space size={2} direction="vertical" style={{ lineHeight: 1.4 }}>
+                <Tooltip title={s.label}>
+                  <Tag color="volcano" style={{ marginInlineEnd: 0 }}>已抑制 · {s.reasonLabel}</Tag>
+                </Tooltip>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  至 {s.untilDate}（{s.daysLeft} 天）
+                </Typography.Text>
+                {canDecline ? <a onClick={() => void clearSuppression(s.id, r.code)}>解除抑制</a> : null}
+              </Space>
+            );
+          }
           // 服务端（审计台账）优先；本地乐观提示只在服务端尚未刷新到时兜底
           const server = r.declinedToday;
           const local = declined[r.skuId];
@@ -833,7 +893,7 @@ export default function ReplenishClient() {
       },
     ];
     },
-    [sortBy, sortOrder, policyPeriod, canDecline, declined, pageDupHits],
+    [sortBy, sortOrder, policyPeriod, canDecline, declined, pageDupHits, clearSuppression],
   );
 
   const handleTableChange: TableProps<ReplenishRow>["onChange"] = (
@@ -860,7 +920,7 @@ export default function ReplenishClient() {
       <CaliberNote
         summary={
           <>逐日推演引擎：断货日落在生产周期内才建议下单，建议量补至「安全库存＋目标覆盖」；生成草稿走审批。
-          {data?.meta ? <>　触发 <b>{data.meta.suggestCount}</b> 个建议{data.meta.suppressedCount > 0 ? <>，另 {data.meta.suppressedCount} 个因全口径参考充足被抑制（防重复下单）</> : null}。</> : null}
+          {data?.meta ? <>　触发 <b>{data.meta.suggestCount}</b> 个建议{data.meta.suppressedCount > 0 ? <>，另 {data.meta.suppressedCount} 个因全口径参考充足被抑制（防重复下单）</> : null}{data.meta.declineSuppressedCount > 0 ? <>，另 {data.meta.declineSuppressedCount} 个在「已复核并放弃」的抑制窗口内（行上标出原因与到期日，可随时解除）</> : null}。</> : null}
           {data?.meta ? (data.meta.policyPeriod
             ? <>　分层取 {data.meta.policyPeriod} 期固化{data.meta.hiddenTierC > 0 ? <>，已折叠 <b>{data.meta.hiddenTierC}</b> 个 C 级（运营兜底）</> : null}。</>
             : <>　<Typography.Text type="warning">分层尚未固化</Typography.Text>（四档/权责列为空；请在「补货试点候选」页固化本期）。</>) : null}</>

@@ -20,6 +20,8 @@ export interface TodoSyncSummary {
   projection: ProjectCandidatesSummary | null;
   /** 来源告警/裁决项已关闭的投影待办自动取消 */
   autoClosed: { scanned: number; cancelled: number } | null;
+  /** W2-#7：运营提报「标红未处置」→ review_items 的投影结果；不可用时 null */
+  reconcileProjection: { scanned: number; opened: number; closed: number; period: string | null } | null;
   reminders: { scanned: number; enqueued: number };
   actorId: number | null;
 }
@@ -45,6 +47,17 @@ export async function runTodoSync(
   const now = opts?.now ?? new Date();
   const today = dayShanghai(now);
   const actor = await systemActor(db);
+
+  /* W2-#7：先把「运营提报标红且未处置」投影成 review_items（有责任角色），再收集候选——
+     否则这些行只停在核对看板上，永远不会走到任何人面前。失败不反噬本轮同步。
+     动态 import 断环：replenish/reconcile → … 与 jobs/notify 同处一张模块图上。 */
+  let reconcileProjection: { scanned: number; opened: number; closed: number; period: string | null } | null = null;
+  try {
+    const { projectReconcileReviewItems } = await import("@/server/modules/replenish/reconcile");
+    reconcileProjection = await projectReconcileReviewItems(null, db);
+  } catch {
+    reconcileProjection = null;
+  }
 
   let projection: ProjectCandidatesSummary | null = null;
   let autoClosed: { scanned: number; cancelled: number } | null = null;
@@ -76,5 +89,5 @@ export async function runTodoSync(
       })) enqueued++;
     }
   }
-  return { projection, autoClosed, reminders: { scanned: due.length, enqueued }, actorId: actor?.id ?? null };
+  return { projection, autoClosed, reconcileProjection, reminders: { scanned: due.length, enqueued }, actorId: actor?.id ?? null };
 }

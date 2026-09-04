@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getFreshSessionUser } from "@/server/core/dto";
 import { ApiError, errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
-import { getReconcile, OPS_DEMAND_CSV_HEADERS, parseOpsDemandCsv, submitOpsDemand } from "@/server/modules/replenish/reconcile";
+import { disposeOpsDemand, getReconcile, OPS_DEMAND_CSV_HEADERS, parseOpsDemandCsv, projectReconcileReviewItems, submitOpsDemand } from "@/server/modules/replenish/reconcile";
 
 /** 运营提报核对（D55/R3）：GET 某月提报 vs 系统基线并排；受限用户按渠道范围裁剪 */
 export async function GET(req: NextRequest) {
@@ -40,6 +40,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ...result, parsedRows: parsed.rows.length }, { status: 201 });
     }
     return NextResponse.json(await submitOpsDemand(user, body), { status: 201 });
+  } catch (e) {
+    return errorResponse(e);
+  }
+}
+
+/**
+ * W2-#7 处置一条提报：PATCH { submissionId, decision: "accepted"|"rejected", reason? }。
+ * 接受 = 记为该期已达成一致的需求（**仍不自动驱动建议量**）；驳回必须写原因。
+ * 处置后重投影复核项，使「标红未处置」的待办与实际状态保持一致。
+ */
+export async function PATCH(req: NextRequest) {
+  try {
+    const user = await getFreshSessionUser();
+    const result = await disposeOpsDemand(user, await readJson(req));
+    const projection = await projectReconcileReviewItems(null);
+    return NextResponse.json({ ...result, projection });
   } catch (e) {
     return errorResponse(e);
   }

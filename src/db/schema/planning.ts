@@ -11,6 +11,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -193,4 +194,72 @@ export const projectionScenarios = pgTable("projection_scenarios", {
   unique("uq_projection_scenario_idempotency").on(t.idempotencyKey),
   index("ix_projection_scenario_sku_created").on(t.skuId, t.createdAt),
   index("ix_projection_scenario_creator_created").on(t.createdBy, t.createdAt),
+]);
+
+/**
+ * W2-#6 建议放弃后的抑制窗口（replenish_suppressions）。
+ *
+ * 事故形状：`replenish/decline.ts` 只写一条审计，**下一次运行照旧建议同一个 SKU**——
+ * 计划员每天对同一条建议重复做同一个判断，「已复核并放弃」等于一张当天有效的便签。
+ * 抑制窗口按放弃原因取不同长度（`rules/replenish-suppression.ts` 纯函数定义）：
+ *  - supply_already_arranged：等**那批供应真的落库**或 N 天到期，两者先到先解除
+ *    （放弃当时的管道量存进 pipeline_baseline，管道量超过它即视为供应已到）；
+ *  - demand_overstated：窗口最短——需求判断比供应事实更容易错，压得久了就成了漏补。
+ * 纪律：抑制**绝不静默**——被抑制的行仍然出现在列表里，标着「已抑制」、原因与到期日，任何人可一键解除。
+ * 同一 SKU 同时最多一条有效抑制（部分唯一索引保证）；解除 = 写 cleared_at，不删行（留痕）。
+ */
+export const replenishSuppressions = pgTable("replenish_suppressions", {
+  id: serial("id").primaryKey(),
+  skuId: integer("sku_id").notNull().references(() => skus.id),
+  /** 与 lib/replenish-decline-reasons.ts 的原因码同集合 */
+  reasonCode: text("reason_code").notNull(),
+  reason: text("reason").notNull(),
+  /** 放弃当天的业务日（Asia/Shanghai） */
+  businessDate: date("business_date").notNull(),
+  /** 抑制到期日（含当天）；过期即自动失效，不需要任何任务去清 */
+  untilDate: date("until_date").notNull(),
+  /** true = 管道量回升（供应落库）即提前解除 */
+  releaseOnArrival: boolean("release_on_arrival").notNull().default(false),
+  /** 放弃当时的全管道量（在库 + PO 在途 + 在制 + 存量在途），releaseOnArrival 的比较基线 */
+  pipelineBaseline: numeric("pipeline_baseline", { precision: 14, scale: 4 }).notNull().default("0"),
+  createdBy: integer("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  clearedBy: integer("cleared_by").references(() => users.id),
+  clearedAt: timestamp("cleared_at", { withTimezone: true }),
+  clearNote: text("clear_note"),
+}, (t) => [
+  uniqueIndex("uq_replenish_suppression_active").on(t.skuId).where(sql`${t.clearedAt} IS NULL`),
+  index("ix_replenish_suppression_until").on(t.untilDate),
+  check("ck_replenish_suppression_window", sql`${t.untilDate} >= ${t.businessDate}`),
+]);
+
+/**
+ * W2-#7 运营提报的处置（ops_demand_dispositions）。
+ *
+ * 事故形状：`replenish/reconcile.ts` 把提报与基线并排、标出「需核对」，然后**什么也不发生**——
+ * 没有接受/驳回、没有责任人、对下游没有任何影响，一块只读看板。
+ * 处置口径（D55 不变）：
+ *  - accepted 记录运营数字为该 SKU×渠道×月的**已达成一致的需求**，仍**不自动驱动建议量**，
+ *    只是从此成为计划员看得见、可据以行动的输入；
+ *  - rejected 必须写原因（否则驳回等于沉默）。
+ * 每条提报（supersedes 链尾）最多一条处置；提报被新行 supersede 后，新行是新的待处置对象。
+ */
+export const opsDemandDispositions = pgTable("ops_demand_dispositions", {
+  id: serial("id").primaryKey(),
+  submissionId: integer("submission_id").notNull(),
+  skuId: integer("sku_id").notNull().references(() => skus.id),
+  channelId: integer("channel_id"),
+  period: text("period").notNull(),
+  decision: text("decision").notNull(), // accepted | rejected
+  /** accepted：记为该期已达成一致的需求量（不自动驱动数量） */
+  agreedQty: numeric("agreed_qty", { precision: 14, scale: 4 }),
+  reason: text("reason"),
+  decidedBy: integer("decided_by").notNull().references(() => users.id),
+  decidedAt: timestamp("decided_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique("uq_ops_demand_disposition_submission").on(t.submissionId),
+  index("ix_ops_demand_disposition_period").on(t.period),
+  check("ck_ops_demand_disposition_decision", sql`${t.decision} IN ('accepted', 'rejected')`),
+  check("ck_ops_demand_disposition_accepted_qty", sql`${t.decision} <> 'accepted' OR ${t.agreedQty} IS NOT NULL`),
+  check("ck_ops_demand_disposition_rejected_reason", sql`${t.decision} <> 'rejected' OR (${t.reason} IS NOT NULL AND length(btrim(${t.reason})) >= 5)`),
 ]);

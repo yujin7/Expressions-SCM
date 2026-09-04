@@ -83,6 +83,23 @@ async function latestBatch(db: AnyDb, stream: string, snapshot: boolean): Promis
   return id > 0 ? { importJobId: id, sourceAsOf: row?.source_as_of == null ? null : String(row.source_as_of) } : null;
 }
 
+/**
+ * 判定锚点 = 该批次内最大统计日（YYYY-MM-DD）。
+ *
+ * 过滤条件必须与下面 `s` 的 WHERE **逐字相同**（同批次、同状态集合、同日期格式、同 skuId 非空），
+ * 否则锚点会落在一个判定集合里不存在的日子上，判定窗口整体错位。
+ * 定长日期串的字典序即时间序，故 `max(text)` 与 `max(::date)` 等价。
+ */
+async function anchorOf(db: AnyDb, importJobId: number): Promise<string | null> {
+  const [row] = resultRows<{ d: unknown }>(await db.execute(sql`
+    SELECT max(left(payload->'data'->>'statisticalDate',10)) AS d
+    FROM staging_rows
+    WHERE import_job_id = ${importJobId} AND target_table = 'jdy_tmall_sku_sales_observation'
+      AND status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate',10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+      AND nullif(trim(payload->'data'->>'skuId'),'') IS NOT NULL`));
+  return row?.d == null ? null : String(row.d);
+}
+
 async function binding(db: AnyDb, sales: { importJobId: number } | null, cw: { importJobId: number } | null): Promise<string> {
   const [c] = resultRows<{ n: unknown; m: unknown }>(await db.execute(sql`
     SELECT count(*)::int AS n, coalesce(max(id),0)::int AS m FROM sku_identifiers WHERE kind='external' AND scope='JIANDAOYUN:TMALL' AND active = true`));
@@ -115,6 +132,13 @@ export async function computeSalesSpike(dbArg: AnyDb): Promise<SalesSpikeReadMod
   if (!sales) return empty("天猫 SKU 日销流尚未同步或无可用批次。");
 
   const windowDays = consecutiveDays + baselineDays + 2;
+  /* 锚点先用一次独立的 max(...) 求出，再把日期谓词推进下面 `s` 的 WHERE（DISTINCT ON 之前）。
+     此前锚点由 `s` 自己派生（一个从 s 取最大日期的 CTE），于是 DISTINCT ON 必须先对
+     **整批**（生产 68k 行、三个 jsonb 表达式排序）跑完，才轮到 `WHERE s.d > a.d − N` 裁到 ~12 天——
+     2026-09-04 实测重建 490s。谓词的过滤集合与判定集合完全相同（同一批次、同样的状态/格式/skuId 过滤，
+     max 只是取该集合的最大日期），因此输出逐字不变，只是排序集合从整批缩到窗口。 */
+  const anchorDate = await anchorOf(db, sales.importJobId);
+  if (!anchorDate) return empty("最新批次在判定窗口内没有日销行。");
   const rows = resultRows<{ shop: string; psku: string; d: string; qty: string; sku_id: unknown; code: string | null; name: string | null }>(await db.execute(sql`
     WITH s AS (
       SELECT DISTINCT ON (payload->'data'->>'shopName', payload->'data'->>'skuId', left(payload->'data'->>'statisticalDate',10))
@@ -124,9 +148,9 @@ export async function computeSalesSpike(dbArg: AnyDb): Promise<SalesSpikeReadMod
       WHERE import_job_id = ${sales.importJobId} AND target_table = 'jdy_tmall_sku_sales_observation'
         AND status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate',10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
         AND nullif(trim(payload->'data'->>'skuId'),'') IS NOT NULL
+        AND left(payload->'data'->>'statisticalDate',10)::date > ${anchorDate}::date - ${windowDays}::int
       ORDER BY payload->'data'->>'shopName', payload->'data'->>'skuId', left(payload->'data'->>'statisticalDate',10), row_no DESC
     ),
-    a AS (SELECT max(d::date) AS d FROM s),
     cw AS (
       SELECT DISTINCT ON (payload->'data'->>'shopName', payload->'data'->>'platformSkuId')
              payload->'data'->>'shopName' AS shop, payload->'data'->>'platformSkuId' AS psku, (payload->'_identity'->>'skuId')::int AS sku_id
@@ -144,10 +168,9 @@ export async function computeSalesSpike(dbArg: AnyDb): Promise<SalesSpikeReadMod
       SELECT cw.shop, cw.psku, cw.sku_id FROM cw WHERE NOT EXISTS (SELECT 1 FROM direct dd WHERE dd.shop = cw.shop AND dd.psku = cw.psku)
     )
     SELECT s.shop, s.psku, s.d, s.qty::text AS qty, m.sku_id, k.code, k.name
-    FROM s CROSS JOIN a
+    FROM s
     LEFT JOIN map m ON m.shop = s.shop AND m.psku = s.psku
     LEFT JOIN skus k ON k.id = m.sku_id
-    WHERE s.d::date > a.d - ${windowDays}::int
     ORDER BY s.shop, s.psku, s.d
   `));
   if (!rows.length) return empty("最新批次在判定窗口内没有日销行。");

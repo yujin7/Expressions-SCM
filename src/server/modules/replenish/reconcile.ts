@@ -236,6 +236,36 @@ async function currentHead(db: AnyDb, skuId: number, channelId: number | null, p
 
 /* ────────────────────────── 核对读模型 ────────────────────────── */
 
+/* ────────────────────────── W2-#7 提报处置（接受 / 驳回） ────────────────────────── */
+
+/**
+ * 事故形状：本模块把提报与基线并排、标出「需核对」，然后**什么也不发生**——
+ * 没有接受/驳回、没有责任人、对下游没有任何影响。一块只读看板，标红的行可以标红一整年。
+ *
+ * 处置（D55 口径不变，仍**不自动驱动建议量**）：
+ *  - accept：把运营那个数记为该 SKU×渠道×月**已达成一致的需求**——它从此是计划员看得见、
+ *    可据以行动的输入（补货页仍按引擎口径出建议，人工据此决定是否覆盖目标覆盖天数或直接开单）；
+ *  - reject：必须写原因（≥5 字），否则驳回等于沉默。
+ * 未处置的 flagged 行由 `projectReconcileReviewItems` 投影成 review_items（有责任角色），
+ * 于是它们会真的走到某个人面前，而不是停在看板上。
+ */
+export const DISPOSE_DECISIONS = ["accepted", "rejected"] as const;
+export type OpsDemandDecision = (typeof DISPOSE_DECISIONS)[number];
+
+export const disposeOpsDemandSchema = z.object({
+  submissionId: z.number().int().positive({ message: "必须指定提报行" }),
+  decision: z.enum(DISPOSE_DECISIONS),
+  reason: z.string().trim().max(500).nullable().optional(),
+});
+
+export interface OpsDemandDispositionDto {
+  decision: OpsDemandDecision;
+  agreedQty: string | null;
+  reason: string | null;
+  by: string | null;
+  at: string;
+}
+
 export interface ReconcileRow {
   submissionId: number;
   skuId: number;
@@ -262,6 +292,10 @@ export interface ReconcileRow {
   /** |diffPct| ≥ 阈值，或基线缺失而提报 >0 */
   flagged: boolean;
   flagReason: string | null;
+  /** W2-#7 处置结果；未处置 = null */
+  disposition: OpsDemandDispositionDto | null;
+  /** flagged 且未处置 —— 这些行会被投影成 review_items（有责任角色）送到人面前 */
+  needsDisposition: boolean;
 }
 
 export interface ReconcileResult {
@@ -269,7 +303,13 @@ export interface ReconcileResult {
   periods: string[];
   rows: ReconcileRow[];
   total: number;
-  summary: { submissions: number; flagged: number; noBaseline: number; submittedQty: string; baselineQty: string };
+  summary: {
+    submissions: number; flagged: number; noBaseline: number; submittedQty: string; baselineQty: string;
+    /** W2-#7：标红且尚无处置——真正的待办量 */
+    needsDisposition: number; accepted: number; rejected: number;
+    /** 已接受为「一致需求」的合计（不驱动数量，只是可见输入） */
+    agreedQty: string;
+  };
   meta: { thresholdPct: number; months6: string[]; months3: string[]; maxYm: string | null; scopeForced: boolean };
 }
 
@@ -306,7 +346,7 @@ export async function getReconcile(
     periods,
     rows: [],
     total: 0,
-    summary: { submissions: 0, flagged: 0, noBaseline: 0, submittedQty: "0.0000", baselineQty: "0.0000" },
+    summary: { submissions: 0, flagged: 0, noBaseline: 0, submittedQty: "0.0000", baselineQty: "0.0000", needsDisposition: 0, accepted: 0, rejected: 0, agreedQty: "0.0000" },
     meta: { thresholdPct, months6, months3, maxYm, scopeForced: scope.forced },
   };
   if (!period) return empty;
@@ -369,6 +409,26 @@ export async function getReconcile(
     }
   }
 
+  /* W2-#7 处置：按提报行（链尾）取回，未处置 = null */
+  const dispositionBySubmission = new Map<number, OpsDemandDispositionDto>();
+  if (heads.length) {
+    const d = schema.opsDemandDispositions;
+    const rows: { submissionId: number; decision: string; agreedQty: string | null; reason: string | null; by: string | null; at: Date }[] = await db
+      .select({ submissionId: d.submissionId, decision: d.decision, agreedQty: d.agreedQty, reason: d.reason, by: schema.users.name, at: d.decidedAt })
+      .from(d)
+      .leftJoin(schema.users, eq(d.decidedBy, schema.users.id))
+      .where(inArray(d.submissionId, heads.map((r) => r.id)));
+    for (const r of rows) {
+      dispositionBySubmission.set(r.submissionId, {
+        decision: r.decision as OpsDemandDecision,
+        agreedQty: r.agreedQty,
+        reason: r.reason,
+        by: r.by,
+        at: (r.at instanceof Date ? r.at : new Date(r.at)).toISOString(),
+      });
+    }
+  }
+
   const all: ReconcileRow[] = heads.map((r) => {
     const series = seriesByKey.get(`${r.skuId}|${r.channelId ?? "all"}`) ?? [];
     const hasSeries = series.some((v) => v > 0);
@@ -408,6 +468,8 @@ export async function getReconcile(
       diffPct,
       flagged,
       flagReason,
+      disposition: dispositionBySubmission.get(r.id) ?? null,
+      needsDisposition: flagged && !dispositionBySubmission.has(r.id),
     };
   });
 
@@ -417,6 +479,10 @@ export async function getReconcile(
     noBaseline: all.filter((r) => r.baselineQty == null).length,
     submittedQty: all.reduce((s, r) => dAdd(s, r.submittedQty, 4), "0.0000"),
     baselineQty: all.reduce((s, r) => dAdd(s, r.baselineQty ?? "0", 4), "0.0000"),
+    needsDisposition: all.filter((r) => r.needsDisposition).length,
+    accepted: all.filter((r) => r.disposition?.decision === "accepted").length,
+    rejected: all.filter((r) => r.disposition?.decision === "rejected").length,
+    agreedQty: all.reduce((s, r) => dAdd(s, r.disposition?.decision === "accepted" ? r.disposition.agreedQty ?? "0" : "0", 4), "0.0000"),
   };
   let filtered = all;
   if (query.flaggedOnly) filtered = filtered.filter((r) => r.flagged);
@@ -429,4 +495,137 @@ export async function getReconcile(
     total: filtered.length,
     summary,
   };
+}
+
+/* ────────────────────── W2-#7 处置写路径 + 未处置项投影到复核清单 ────────────────────── */
+
+/**
+ * 接受 / 驳回一条提报（ops/pmc，admin 兜底；同事务 writeAudit）。
+ *
+ * - accepted：把提报量记为该 SKU×渠道×月的**已达成一致的需求**（agreed_qty）。
+ *   仍**不自动驱动建议量**（D55/D43）——它成为计划员看得见的输入，动不动量由人决定。
+ * - rejected：必须写 ≥5 字原因；没有原因的驳回等于沉默，运营下个月还会提同一个数。
+ * 只能处置**当前有效行**（supersedes 链尾）：被 supersede 的旧行已经不是待办对象。
+ * 处置一旦落下即关掉对应的复核项（review_items）——待办不能在事情办完后还挂着。
+ */
+export async function disposeOpsDemand(
+  user: SessionUser,
+  input: unknown,
+  dbArg?: AnyDb,
+): Promise<{ submissionId: number; decision: OpsDemandDecision; agreedQty: string | null }> {
+  requireAnyRole(user, "ops", "pmc");
+  const v = disposeOpsDemandSchema.parse(input);
+  const reason = v.reason?.trim() || null;
+  if (v.decision === "rejected" && (reason?.length ?? 0) < 5) {
+    throw new ApiError(400, "驳回必须写清原因（至少 5 个字）——没有原因的驳回等于沉默，运营下个月还会提同一个数");
+  }
+  const db = await resolveDb(dbArg);
+  const t = schema.opsDemandSubmissions;
+  return db.transaction(async (tx: AnyDb) => {
+    const [sub] = await tx.select().from(t).where(eq(t.id, v.submissionId)).limit(1);
+    if (!sub) throw new ApiError(404, "提报行不存在");
+    const [superseder] = await tx.select({ id: t.id }).from(t).where(eq(t.supersedesId, sub.id)).limit(1);
+    if (superseder) throw new ApiError(409, `该提报已被 #${superseder.id} 修正，请处置最新一行`);
+    if (sub.channelId != null) resolveChannelScope(user, sub.channelId); // 范围外渠道 → 403
+
+    const d = schema.opsDemandDispositions;
+    const [existing] = await tx.select().from(d).where(eq(d.submissionId, sub.id)).limit(1);
+    const agreedQty = v.decision === "accepted" ? dQty(sub.qty) : null;
+    const values = {
+      submissionId: sub.id,
+      skuId: sub.skuId,
+      channelId: sub.channelId,
+      period: sub.period,
+      decision: v.decision,
+      agreedQty,
+      reason,
+      decidedBy: user.id,
+      decidedAt: new Date(),
+    };
+    if (existing) {
+      await tx.update(d).set(values).where(eq(d.id, existing.id));
+    } else {
+      await tx.insert(d).values(values);
+    }
+    await writeAudit(tx, {
+      userId: user.id,
+      entity: "ops_demand_disposition",
+      entityId: sub.id,
+      action: v.decision,
+      before: existing ? { decision: existing.decision, agreedQty: existing.agreedQty, reason: existing.reason } : undefined,
+      after: { skuId: sub.skuId, channelId: sub.channelId, period: sub.period, decision: v.decision, agreedQty, reason },
+    });
+
+    // 事情办完，复核项跟着关掉（open → done），否则待办会在处置之后继续挂着
+    await tx
+      .update(schema.reviewItems)
+      .set({ status: "done", decidedBy: user.id, decidedAt: new Date(), note: `提报已${v.decision === "accepted" ? "接受为一致需求" : "驳回"}${reason ? `：${reason}` : ""}` })
+      .where(and(
+        eq(schema.reviewItems.category, OPS_DEMAND_REVIEW_CATEGORY),
+        eq(schema.reviewItems.refType, "ops_demand_submission"),
+        eq(schema.reviewItems.refKey, String(sub.id)),
+        eq(schema.reviewItems.status, "open"),
+      ));
+    return { submissionId: sub.id, decision: v.decision, agreedQty };
+  });
+}
+
+/** 复核清单里的类别键——与 rules/task-triggers.REVIEW_OWNER_ROLE 的前缀表同源（责任角色 pmc）。 */
+export const OPS_DEMAND_REVIEW_CATEGORY = "ops_demand";
+
+export interface ReconcileProjectionResult {
+  scanned: number;
+  opened: number;
+  closed: number;
+  period: string | null;
+}
+
+/**
+ * 把「标红且未处置」的提报行投影成 review_items（幂等，指纹 = refType+refKey）。
+ *
+ * 为什么必须投影：核对页是一块看板，标红的行可以标红一整年——没有责任人，就没有人处置。
+ * review_items 有责任角色（`rules/task-triggers.reviewOwnerRole`，ops_demand → pmc）并被
+ * 待办投影消费，于是这些行会真的走到某个人面前。
+ * 反向也成立：已处置 / 已不再标红 / 已被新行 supersede 的复核项立刻关掉，
+ * 否则清单会攒下一堆早就不成立的待办。
+ */
+export async function projectReconcileReviewItems(
+  period?: string | null,
+  dbArg?: AnyDb,
+): Promise<ReconcileProjectionResult> {
+  const db = await resolveDb(dbArg);
+  // 投影是系统行为，取全渠道口径（不按某个人的范围裁剪）
+  const model = await getReconcile({ roles: ["admin"] }, { period: period ?? null, pageSize: 500 }, db);
+  if (!model.period) return { scanned: 0, opened: 0, closed: 0, period: null };
+
+  const need = model.rows.filter((r) => r.needsDisposition);
+  const needKeys = new Set(need.map((r) => String(r.submissionId)));
+  const ri = schema.reviewItems;
+  const open: { id: number; refKey: string | null }[] = await db
+    .select({ id: ri.id, refKey: ri.refKey })
+    .from(ri)
+    .where(and(eq(ri.category, OPS_DEMAND_REVIEW_CATEGORY), eq(ri.refType, "ops_demand_submission"), eq(ri.status, "open")));
+  const openByKey = new Map(open.map((r) => [r.refKey ?? "", r.id]));
+
+  let opened = 0;
+  let closed = 0;
+  for (const row of need) {
+    const key = String(row.submissionId);
+    if (openByKey.has(key)) continue;
+    await db.insert(ri).values({
+      category: OPS_DEMAND_REVIEW_CATEGORY,
+      refType: "ops_demand_submission",
+      refKey: key,
+      title: `运营提报待处置：${row.code} ${row.period}${row.channelName ? `／${row.channelName}` : "／不分渠道"}`,
+      detail: `${row.flagReason ?? "与系统基线差异显著"}；提报 ${row.submittedQty}，系统基线 ${row.baselineQty ?? "无序列"}。请在「运营提报核对」页接受为一致需求或驳回并写明原因（接受不自动驱动建议量）。`,
+      status: "open",
+    });
+    opened += 1;
+  }
+  for (const [key, id] of openByKey) {
+    if (needKeys.has(key)) continue;
+    await db.update(ri).set({ status: "done", note: "提报已处置或已不再需要核对（自动关闭）" }).where(eq(ri.id, id));
+    closed += 1;
+  }
+  return { scanned: model.rows.length, opened, closed, period: model.period };
 }

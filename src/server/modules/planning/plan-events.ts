@@ -188,6 +188,8 @@ export async function deletePlanEvent(user: SessionUser, id: number, dbArg?: Any
 }
 
 export interface PlanEventQuery {
+  /** 文本搜索：SKU 编码/名称、SPU 编码、说明（ILIKE）——分页前在库里过滤，不在页内二次筛 */
+  q?: string;
   skuId?: number;
   spuId?: number;
   channelId?: number | null;
@@ -213,6 +215,16 @@ export async function listPlanEvents(
   const pageSize = Math.min(500, Math.max(1, query.pageSize ?? 50));
   const scope = resolveChannelScope(user, query.channelId ?? null);
   const conds = [];
+  const q = (query.q ?? "").trim();
+  if (q) {
+    // 用 EXISTS 而不是 join：计数查询与行查询共用同一 where，join 只在行查询里有（否则两者口径不同）
+    const like = `%${q}%`;
+    conds.push(sql`(
+      ${t.note} ILIKE ${like}
+      OR EXISTS (SELECT 1 FROM skus k WHERE k.id = ${t.skuId} AND (k.code ILIKE ${like} OR k.name ILIKE ${like}))
+      OR EXISTS (SELECT 1 FROM spus p WHERE p.id = ${t.spuId} AND p.code ILIKE ${like})
+    )`);
+  }
   if (query.skuId != null) conds.push(eq(t.skuId, query.skuId));
   if (query.spuId != null) conds.push(eq(t.spuId, query.spuId));
   if (query.kind && (PLAN_EVENT_KINDS as readonly string[]).includes(query.kind)) conds.push(eq(t.kind, query.kind));

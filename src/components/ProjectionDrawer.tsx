@@ -21,9 +21,12 @@ import { VISUAL_COLOR } from "@/components/decision-visuals";
 interface Point { date: string; onHand: number; arrival: number }
 interface Projection {
   skuId: number; code: string; name: string;
-  startOnHand: number; daily: number; leadDays: number | null; undatedInbound: number; today: string;
+  startOnHand: number; bookOnHand: number; expiringUnsellable: number;
+  daily: number; leadDays: number | null; safetyQty: number; undatedInbound: number; today: string;
   points: Point[];
   stockoutDate: string | null; daysToStockout: number | null;
+  /** 首次跌破安全库存（唯一权威 rules/timephased，与补货行同源同值） */
+  shortageDate: string | null; daysToShortage: number | null;
   orderByDate: string | null; orderWindowMissed: boolean;
 }
 
@@ -196,13 +199,18 @@ export default function ProjectionDrawer({
       ) : (
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
           <Space size="large" wrap>
-            <Statistic title="当前在库（全网）" value={data.startOnHand} />
-            <Statistic title="日均消耗" value={data.daily} />
             <Statistic
-              title="预计断货"
-              value={data.stockoutDate ?? "120天内不断货"}
-              valueStyle={{ color: data.stockoutDate ? "#cf1322" : "#3f8600", fontSize: 18 }}
-              suffix={data.daysToStockout != null ? `（${data.daysToStockout}天后）` : ""}
+              title="可用在库（曲线起点）"
+              value={data.startOnHand}
+              suffix={data.expiringUnsellable > 0 ? `／账面 ${data.bookOnHand.toLocaleString("zh-CN")}` : ""}
+            />
+            <Statistic title="日均消耗" value={data.daily} />
+            <Statistic title="安全库存" value={data.safetyQty} />
+            <Statistic
+              title="跌破安全库存"
+              value={data.shortageDate ?? "视野内不跌破"}
+              valueStyle={{ color: data.shortageDate ? "#cf1322" : "#3f8600", fontSize: 18 }}
+              suffix={data.daysToShortage != null ? `（${data.daysToShortage}天后）` : ""}
             />
             <Statistic
               title="最晚下单日"
@@ -210,14 +218,21 @@ export default function ProjectionDrawer({
               valueStyle={{ color: data.orderWindowMissed ? "#cf1322" : undefined, fontSize: 18 }}
             />
           </Space>
+          {data.expiringUnsellable > 0 ? (
+            <Alert
+              type="warning"
+              showIcon
+              message={`账面在库 ${data.bookOnHand.toLocaleString("zh-CN")} 中有 ${data.expiringUnsellable.toLocaleString("zh-CN")} 在效期内卖不掉（临期净额），曲线起点按可用在库 ${data.startOnHand.toLocaleString("zh-CN")} 计——把临期货算成可用，就是"账上有货、货架断货"。`}
+            />
+          ) : null}
           {data.orderWindowMissed ? (
-            <Alert type="error" showIcon message={`已错过下单窗口：生产周期 ${data.leadDays} 天，现在下单也赶不上断货日 ${data.stockoutDate}——建议紧急插单或调货。`} />
-          ) : data.stockoutDate && data.orderByDate ? (
-            <Alert type="warning" showIcon message={`须在 ${data.orderByDate} 前下单（断货日 ${data.stockoutDate} 倒推生产周期 ${data.leadDays} 天）。`} />
-          ) : data.stockoutDate ? (
-            <Alert type="warning" showIcon message={`预计 ${data.stockoutDate} 断货${data.daysToStockout != null ? `（${data.daysToStockout} 天后）` : ""}；该 SKU 无生产周期记录，无法倒推下单日——建议补录生产周期。`} />
+            <Alert type="error" showIcon message={`已错过下单窗口：总供应周期（生产+物流）${data.leadDays} 天，现在下单也赶不上 ${data.shortageDate} 跌破安全库存——建议紧急插单或调货。`} />
+          ) : data.shortageDate && data.orderByDate ? (
+            <Alert type="warning" showIcon message={`须在 ${data.orderByDate} 前下单（跌破安全库存日 ${data.shortageDate} 倒推总供应周期 ${data.leadDays} 天）。与补货建议行同源同值。`} />
+          ) : data.shortageDate ? (
+            <Alert type="warning" showIcon message={`预计 ${data.shortageDate} 跌破安全库存${data.daysToShortage != null ? `（${data.daysToShortage} 天后）` : ""}；该 SKU 无生产周期记录，无法倒推下单日——建议补录供应参数。`} />
           ) : (
-            <Alert type="success" showIcon message="120 天视野内不断货。" />
+            <Alert type="success" showIcon message="视野内水位始终不低于安全库存。" />
           )}
           {data.undatedInbound > 0 ? (
             <Alert
@@ -239,8 +254,8 @@ export default function ProjectionDrawer({
             }}
             coverage={{ covered: data.points.length, total: 120, label: "投影视野天数" }}
             activeFilters={[data.scenarioApplied ? "What-if 沙盘" : "基准情景"]}
-            summary={`${data.code} 当前在库 ${data.startOnHand.toLocaleString("zh-CN")}，日均消耗 ${data.daily.toLocaleString("zh-CN")}；${data.stockoutDate ? `预计 ${data.stockoutDate} 断货` : "120 天内不断货"}；${data.orderByDate ? `最晚下单日 ${data.orderByDate}` : "暂无可计算下单日"}。`}
-            caveat={`无日期在途 ${data.undatedInbound.toLocaleString("zh-CN")} 未计入；沙盘只推演、不落库、不自动下单。`}
+            summary={`${data.code} 可用在库 ${data.startOnHand.toLocaleString("zh-CN")}${data.expiringUnsellable > 0 ? `（账面 ${data.bookOnHand.toLocaleString("zh-CN")}，临期净额 ${data.expiringUnsellable.toLocaleString("zh-CN")}）` : ""}，日均消耗 ${data.daily.toLocaleString("zh-CN")}；${data.shortageDate ? `预计 ${data.shortageDate} 跌破安全库存` : "视野内不跌破安全库存"}；${data.orderByDate ? `最晚下单日 ${data.orderByDate}` : "暂无可计算下单日"}。`}
+            caveat={`无日期在途 ${data.undatedInbound.toLocaleString("zh-CN")} 未计入；下单日与补货建议行同源（rules/timephased）；沙盘只推演、不落库、不自动下单。`}
             height={320}
             dataView={
               <Table<Point>
@@ -273,7 +288,8 @@ export default function ProjectionDrawer({
                   labelFormatter={(l) => `日期 ${l}`}
                 />
                 <ReferenceLine y={0} stroke={VISUAL_COLOR.critical} strokeDasharray="4 2" />
-                {data.stockoutDate ? <ReferenceLine x={data.stockoutDate} stroke={VISUAL_COLOR.critical} label={{ value: "断货", fontSize: 11, fill: VISUAL_COLOR.critical }} /> : null}
+                {data.safetyQty > 0 ? <ReferenceLine y={data.safetyQty} stroke={VISUAL_COLOR.warning} strokeDasharray="4 2" label={{ value: "安全库存", fontSize: 11, fill: VISUAL_COLOR.warning }} /> : null}
+                {data.shortageDate ? <ReferenceLine x={data.shortageDate} stroke={VISUAL_COLOR.critical} label={{ value: "跌破安全线", fontSize: 11, fill: VISUAL_COLOR.critical }} /> : null}
                 {data.orderByDate && !data.orderWindowMissed ? <ReferenceLine x={data.orderByDate} stroke={VISUAL_COLOR.warning} label={{ value: "下单", fontSize: 11, fill: VISUAL_COLOR.warning }} /> : null}
                 <Area type="monotone" dataKey="onHand" stroke={VISUAL_COLOR.primary} fill="url(#ohFill)" strokeWidth={2} />
               </AreaChart>
