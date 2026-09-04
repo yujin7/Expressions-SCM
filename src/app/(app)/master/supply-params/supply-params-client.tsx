@@ -7,17 +7,21 @@
  * 成品/半成品 = 加工 + 在途；原料/包材 = 采购），前端不另行按类型判定。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { App, Button, Col, InputNumber, Row, Select, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Col, InputNumber, Progress, Row, Select, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { ReloadOutlined } from "@ant-design/icons";
+import { DownloadOutlined, ReloadOutlined } from "@ant-design/icons";
 import CaliberNote from "@/components/CaliberNote";
+import { exportCsv } from "@/components/exportCsv";
 import { fetchJson, patchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import ListToolbar from "@/components/ListToolbar";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
+import RemoteSelect from "@/components/RemoteSelect";
 import SearchInput from "@/components/SearchInput";
 import SkuHoverCard from "@/components/SkuHoverCard";
 import { useListState } from "@/components/useListState";
+import { SUPPLY_PARAMS_CSV_HEADERS } from "@/lib/supply-params-csv";
+import BulkFillModal, { type BulkScope } from "./bulk-fill-modal";
 
 type Tier = "S" | "A" | "B" | "C";
 type Dim = "production" | "logistics" | "purchase" | "moq" | "cost";
@@ -29,6 +33,7 @@ interface Row {
   name: string;
   skuType: string;
   brand: string | null;
+  brandId: number | null;
   tier: Tier | null;
   normalLeadDays: number | null;
   logisticsLeadDays: number | null;
@@ -45,6 +50,8 @@ interface Data {
   rows: Row[];
   total: number;
   policyPeriod: string | null;
+  /** 运行参数里的缺省周期（D57）——「套用默认」预填它，页面不另写字面量 */
+  defaults: { production: number; logistics: number };
   summary: {
     scanned: number;
     complete: number;
@@ -62,7 +69,7 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
   const { message } = App.useApp();
   const listState = useListState({
     key: "master-supply-params",
-    defaults: { q: "", skuType: "", missing: "any", tier: "", blockedOnly: "" },
+    defaults: { q: "", skuType: "", missing: "any", tier: "", brandId: "", blockedOnly: "" },
     defaultPageSize: 50,
   });
   const { filters, page, pageSize } = listState;
@@ -71,6 +78,10 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
   const [loadError, setLoadError] = useState<string | null>(null);
   const [edits, setEdits] = useState<Record<string, number | null>>({});
   const [saving, setSaving] = useState<number | null>(null);
+  /* 批量补录（#1）：勾选行 → 批量填写；当前筛选 → 按分层/品牌套用默认 */
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [bulk, setBulk] = useState<{ scope: BulkScope; label: string } | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -80,16 +91,18 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
       if (filters.skuType) params.set("skuType", filters.skuType);
       if (filters.missing) params.set("missing", filters.missing);
       if (filters.tier) params.set("tier", filters.tier);
+      if (filters.brandId) params.set("brandId", filters.brandId);
       if (filters.blockedOnly === "1") params.set("blockedOnly", "1");
       setData(await fetchJson<Data>(`/api/master/supply-params?${params.toString()}`));
       setEdits({});
+      setSelectedIds([]);
     } catch (e) {
       setData(null);
       setLoadError(e instanceof Error ? e.message : "加载失败");
     } finally {
       setLoading(false);
     }
-  }, [filters.q, filters.skuType, filters.missing, filters.tier, filters.blockedOnly, page, pageSize]);
+  }, [filters.q, filters.skuType, filters.missing, filters.tier, filters.brandId, filters.blockedOnly, page, pageSize]);
   useEffect(() => { void load(); }, [load]);
 
   const editKey = (skuId: number, f: LeadField) => `${skuId}:${f}`;
@@ -135,6 +148,61 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
     );
   };
 
+
+  /**
+   * 导出当前筛选（#2 的上半段）：业务要线下补一批周期，先得拿到一张按现有口径填好的表。
+   * 列与 `@/lib/supply-params-csv` 的导入表头**同一份常量**——导出的表原样填完就能导回来。
+   * 服务端单页上限 500，这里按页取完整个筛选集；超过 EXPORT_MAX_ROWS 的部分显式写明截断，
+   * 绝不给出一份「看起来完整」的残缺 CSV。
+   */
+  const EXPORT_MAX_ROWS = 5000;
+  const blockedReason = (r: Row): string => {
+    if (!r.blocked) return "";
+    const miss = r.missing.filter((d) => d === "production" || d === "logistics").map((d) => data?.dimLabels[d] ?? d);
+    return `S/A/B 缺${miss.join("、")}`;
+  };
+  const doExport = async () => {
+    setExporting(true);
+    try {
+      const collected: Row[] = [];
+      let total = 0;
+      for (let p = 1; ; p++) {
+        const params = new URLSearchParams({ q: filters.q, page: String(p), pageSize: "500" });
+        if (filters.skuType) params.set("skuType", filters.skuType);
+        if (filters.missing) params.set("missing", filters.missing);
+        if (filters.tier) params.set("tier", filters.tier);
+        if (filters.brandId) params.set("brandId", filters.brandId);
+        if (filters.blockedOnly === "1") params.set("blockedOnly", "1");
+        const chunk = await fetchJson<Data>(`/api/master/supply-params?${params.toString()}`);
+        total = chunk.total;
+        collected.push(...chunk.rows);
+        if (collected.length >= chunk.total || chunk.rows.length === 0 || collected.length >= EXPORT_MAX_ROWS) break;
+      }
+      exportCsv(
+        `周期主数据-${new Date().toISOString().slice(0, 10)}.csv`,
+        [...SUPPLY_PARAMS_CSV_HEADERS],
+        collected.map((r) => [
+          r.code, r.name, r.tier ?? "", r.brand ?? "",
+          r.normalLeadDays ?? "", r.logisticsLeadDays ?? "", r.purchaseLeadDays ?? "",
+          blockedReason(r),
+        ]),
+        collected.length < total ? `仅导出前 ${collected.length} 行（共 ${total} 行）——请收窄筛选后分批导出` : undefined,
+      );
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const filterScope = (): BulkScope => ({
+    kind: "filter",
+    tier: filters.tier || undefined,
+    brandId: filters.brandId ? Number(filters.brandId) : undefined,
+    skuType: filters.skuType || undefined,
+    blockedOnly: filters.blockedOnly === "1",
+  });
+
   const dirty = (r: Row) => r.leadFields.some((f) => {
     const k = editKey(r.skuId, f);
     return k in edits && edits[k] !== r[f];
@@ -177,6 +245,34 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
         summary={<>成品/半成品：加工周期 + 在途周期；原料/包材：采购周期（可编辑列由服务端按类型下发）。S/A/B 缺任一周期即阻塞直出/试点，预警阈值只能按默认周期（D57）。{data?.policyPeriod ? <>　分层取 {data.policyPeriod} 期固化值。</> : "　分层尚未固化。"}</>}
         detail={<div><p>只允许填空；覆盖已有值须生产计划或管理员（采购只能补空值），每次保存留审计（sku_params）。MOQ 走 uom_convs（基础单位换算），成本走 sku_costs，本页只显示有无，不给金额。</p><p>缺省周期：加工 default_production_lead_days、在途 default_logistics_lead_days（运行参数）。</p></div>}
       />
+      {s ? (
+        <Alert
+          type={s.blocked > 0 ? "warning" : "success"}
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={
+            <Space wrap size={16}>
+              <span>
+                周期覆盖 <b>{s.complete}</b> / {s.scanned}
+              </span>
+              <Progress
+                percent={s.scanned > 0 ? Math.round((s.complete / s.scanned) * 1000) / 10 : 0}
+                size="small"
+                style={{ width: 200 }}
+                status={s.blocked > 0 ? "active" : "success"}
+              />
+              <span>
+                仍阻塞试点候选 <b style={{ color: s.blocked > 0 ? "#cf1322" : undefined }}>{s.blocked}</b> 个
+              </span>
+              {s.blocked > 0 ? (
+                <Button size="small" onClick={() => listState.setFilter({ blockedOnly: "1", missing: "any" })}>
+                  只看阻塞试点的
+                </Button>
+              ) : null}
+            </Space>
+          }
+        />
+      ) : null}
       <Row gutter={16} style={{ marginBottom: 12 }}>
         <Col span={4}><Statistic title="扫描 SKU" value={s?.scanned ?? "—"} /></Col>
         <Col span={4}><Statistic title="周期齐全" value={s?.complete ?? "—"} /></Col>
@@ -199,22 +295,67 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
             <Select placeholder="分层" allowClear style={{ width: 100 }} value={filters.tier || undefined}
               options={[{ value: "S", label: "S 级" }, { value: "A", label: "A 级" }, { value: "B", label: "B 级" }, { value: "C", label: "C 级" }, { value: "NONE", label: "未固化" }]}
               onChange={(v) => listState.setFilter({ tier: v ?? "" })} />
+            <RemoteSelect
+              api="/api/master/brand"
+              getLabel={(r) => `${String(r.code)} ${String(r.nameCn ?? "")}`}
+              placeholder="品牌"
+              allowClear
+              showSearch
+              style={{ width: 160 }}
+              value={filters.brandId ? Number(filters.brandId) : undefined}
+              onChange={(v) => listState.setFilter({ brandId: v == null ? "" : String(v) })}
+            />
             <span>只看阻塞 <Switch size="small" checked={filters.blockedOnly === "1"} onChange={(v) => listState.setFilter({ blockedOnly: v ? "1" : "" })} /></span>
             <SearchInput allowClear placeholder="搜索 SKU 编码/名称" style={{ width: 200 }} onSearch={(v) => listState.setFilter({ q: v.trim() })} />
           </>
         }
-        primaryActions={<Space><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button></Space>}
+        onExport={data ? () => void doExport() : undefined}
+        exportText={exporting ? "导出中…" : "导出 CSV（当前筛选）"}
+        primaryActions={(
+          <Space wrap>
+            <Button
+              type="primary"
+              disabled={selectedIds.length === 0}
+              onClick={() => setBulk({ scope: { kind: "ids", ids: selectedIds }, label: `已选 ${selectedIds.length} 个 SKU` })}
+            >
+              批量填写{selectedIds.length > 0 ? `（${selectedIds.length}）` : ""}
+            </Button>
+            <Button
+              icon={<DownloadOutlined rotate={180} />}
+              disabled={!data}
+              onClick={() => setBulk({ scope: filterScope(), label: `当前筛选${filters.tier ? ` · ${filters.tier} 级` : ""}${filters.blockedOnly === "1" ? " · 只看阻塞" : ""}` })}
+            >
+              按分层/品牌套用默认
+            </Button>
+            <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
+          </Space>
+        )}
       />
       <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="周期主数据" />
       <Table<Row>
         rowKey="skuId"
         size={listState.tableSize}
+        rowSelection={{
+          selectedRowKeys: selectedIds,
+          onChange: (keys) => setSelectedIds(keys.map(Number)),
+          // 无可编辑周期字段的类型（如服务类）不进批量：勾了也写不进去
+          getCheckboxProps: (r) => ({ disabled: r.leadFields.length === 0 }),
+        }}
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
         scroll={{ x: "max-content" }}
         pagination={listState.paginationProps({ total: data?.total ?? 0 })}
         locale={{ emptyText: loadError ? "数据未加载" : "当前条件下没有 SKU" }}
+      />
+      <BulkFillModal
+        open={bulk != null}
+        scope={bulk?.scope ?? null}
+        scopeLabel={bulk?.label ?? ""}
+        defaults={data?.defaults ?? null}
+        canOverride={canOverride}
+        onClose={() => setBulk(null)}
+        onDone={() => void load()}
       />
     </div>
   );

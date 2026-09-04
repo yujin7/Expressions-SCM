@@ -16,13 +16,16 @@ import { stageInventoryLong } from "@/server/import/adapters/inventory-long";
 import { stageExpiry } from "@/server/import/adapters/expiry";
 import { stageSalesMonthly } from "@/server/import/adapters/sales-monthly";
 import { stageLeadtime } from "@/server/import/adapters/leadtime";
+import { stageSkuLeadtimeSimple } from "@/server/import/adapters/sku-leadtime-simple";
 import { stageTransit } from "@/server/import/adapters/transit";
 import { stageDemand } from "@/server/import/adapters/demand";
 import { stagePallet } from "@/server/import/adapters/pallet";
 import { stageStockSummary } from "@/server/import/adapters/stock-summary";
 import { stageSkuCost } from "@/server/import/adapters/sku-cost";
 import { SKU_IMPORT_IDENTITY_MODES } from "@/server/import/sku-identity-mode";
+import { readCsvWorkbook } from "@/server/import/parse/csv";
 import { readWorkbook } from "@/server/import/parse/xlsx";
+import { SKU_LEADTIME_SIMPLE_SHEET } from "@/lib/supply-params-csv";
 import {
   assertWorkbookMatchesTemplate,
   IMPORT_TEMPLATES,
@@ -42,18 +45,26 @@ export async function POST(req: NextRequest) {
     const form = await req.formData();
     const file = form.get("file");
     if (!(file instanceof File)) throw new ApiError(400, "缺少文件");
-    if (!/\.xlsx$/i.test(file.name)) throw new ApiError(400, "仅支持 .xlsx 文件");
+    const isCsv = /\.csv$/i.test(file.name);
+    if (!/\.xlsx$/i.test(file.name) && !isCsv) throw new ApiError(400, "仅支持 .xlsx 文件");
     if (file.size > MAX_SIZE) throw new ApiError(400, "文件超过 30MB 限制");
     const v = fields.parse({
       template: form.get("template"),
       brand: form.get("brand") || undefined,
       identityMode: form.get("identityMode") || undefined,
     });
+    /* CSV 只对「周期补录」模板开放：那条回路的源头就是本系统导出的 CSV，
+       业务在 Excel 里填完最自然的另存也是 CSV。其余模板仍只收 .xlsx——
+       不给其它管道多开一种没有指纹保障的输入格式。 */
+    if (isCsv && v.template !== "sku_leadtime_simple") {
+      throw new ApiError(400, "只有「周期补录」模板接受 .csv；其余模板请上传 .xlsx");
+    }
     if (v.template === "bom" && !v.brand) throw new ApiError(400, "BOM 导入必须选择品牌");
     if (v.template === "bom" && !v.identityMode) {
       throw new ApiError(400, "BOM 导入必须明确选择历史编码保留或新主档取号模式");
     }
     if (v.template === "sku_cost") requireAnyRole(user, "finance");
+    else if (v.template === "sku_leadtime_simple") requireAnyRole(user, "pmc", "purchasing");
     else requireAnyRole(user, "pmc");
 
     // 落盘：uploads/<时间戳>/<原名>——保留原始文件名（部分适配器按文件名推导语义，
@@ -69,7 +80,7 @@ export async function POST(req: NextRequest) {
     await writeFile(filePath, Buffer.from(await file.arrayBuffer()));
 
     // 先验内容指纹：错误模板在创建 import_job / staging 行之前即被拒绝。
-    const workbook = await readWorkbook(filePath);
+    const workbook = isCsv ? readCsvWorkbook(filePath, SKU_LEADTIME_SIMPLE_SHEET) : await readWorkbook(filePath);
     assertWorkbookMatchesTemplate(workbook, v.template);
 
     const db = await getDbAsync();
@@ -84,6 +95,8 @@ export async function POST(req: NextRequest) {
               ? await stageSalesMonthly(db, filePath, user.id)
               : v.template === "leadtime"
                 ? await stageLeadtime(db, filePath, user.id)
+                : v.template === "sku_leadtime_simple"
+                ? await stageSkuLeadtimeSimple(db, filePath, user.id)
                 : v.template === "transit"
                   ? await stageTransit(db, filePath, user.id)
                   : v.template === "demand"

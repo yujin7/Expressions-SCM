@@ -12,6 +12,7 @@ export async function GET(req: NextRequest) {
       skuType: searchParams.get("skuType") ?? undefined,
       missing: searchParams.get("missing") ?? undefined,
       tier: searchParams.get("tier") ?? undefined,
+      brandId: Number(searchParams.get("brandId")) || undefined,
       blockedOnly: searchParams.get("blockedOnly") === "1",
       page,
       pageSize,
