@@ -304,7 +304,7 @@ export function TierMigrationCard({ block }: { block: Block<TierMigrationBlock> 
       fitContent
       height={260}
       summary={d
-        ? `${d.fromPeriod ?? "—"} → ${d.toPeriod ?? "—"}：${d.scanned} 个 SKU 中 ${d.moved} 个换档、${d.stayed} 个不变；试点候选 ${d.candidates}（占近 6 月销量 ${pct(d.candidateSalesSharePct)}）、已标记 ${d.pilotMarked}；最大阻塞 ${[...(d.blockers ?? [])].sort((a, b) => b.skus - a.skus)[0]?.label ?? "—"} ${[...(d.blockers ?? [])].sort((a, b) => b.skus - a.skus)[0]?.skus ?? 0} 个`
+        ? `${d.fromPeriod ?? "—"} → ${d.toPeriod ?? "—"}：${d.scanned} 个 SKU 中 ${d.retiered} 个换档、${d.stayed} 个不变（另有 ${d.entered} 个新进分层、${d.left} 个退出分层，不计入换档）；试点候选 ${d.candidates}（占近 6 月销量 ${pct(d.candidateSalesSharePct)}）、已标记 ${d.pilotMarked}；最大阻塞 ${[...(d.blockers ?? [])].sort((a, b) => b.skus - a.skus)[0]?.label ?? "—"} ${[...(d.blockers ?? [])].sort((a, b) => b.skus - a.skus)[0]?.skus ?? 0} 个`
         : "无数据"}
       extra={d ? (
         <Space size={10}>
@@ -375,6 +375,7 @@ interface DqSeriesRow {
   sourceClass: string;
   label: string;
   weeksWithActivity: number;
+  weeksWithPassRate: number;
   state: "ready" | "insufficient";
   gate: string | null;
   latestPassRatePct: number | null;
@@ -388,7 +389,8 @@ export function DataQualityTrendCard({ block }: { block: Block<SourceTrendBlock>
   const d = block.data;
   const rows = d ? sourceChartRows(d, "passRatePct") : [];
   const seriesRows: DqSeriesRow[] = (d?.series ?? []).map((s) => ({
-    sourceClass: s.sourceClass, label: s.label, weeksWithActivity: s.weeksWithActivity, state: s.state, gate: s.gate,
+    sourceClass: s.sourceClass, label: s.label, weeksWithActivity: s.weeksWithActivity, weeksWithPassRate: s.weeksWithPassRate,
+    state: s.passRateState, gate: s.passRateGate,
     latestPassRatePct: [...s.points].reverse().find((p) => p.passRatePct != null)?.passRatePct ?? null,
     failedRuns: s.points.reduce((a, p) => a + p.failedRuns, 0),
     okRows: s.points.reduce((a, p) => a + p.okRows, 0),
@@ -404,7 +406,7 @@ export function DataQualityTrendCard({ block }: { block: Block<SourceTrendBlock>
       unit="放行率 % · 失败运行数"
       height={300}
       summary={d
-        ? `${d.weeks[0]} → ${d.weeks.at(-1)}；${d.readySeries}/${d.series.length} 类来源满足 ${d.minWeeks} 周门槛；` +
+        ? `${d.weeks[0]} → ${d.weeks.at(-1)}；${d.readySeries}/${d.series.length} 类来源满足 ${d.minWeeks} 周有放行率读数的门槛；` +
           seriesRows.filter((s) => s.state === "ready").map((s) => `${s.label} ${pct(s.latestPassRatePct)}（失败运行 ${s.failedRuns}）`).join("，")
         : "无数据"}
       extra={d ? <Link href={d.link} prefetch={false}>数据质量页 →</Link> : undefined}
@@ -415,6 +417,7 @@ export function DataQualityTrendCard({ block }: { block: Block<SourceTrendBlock>
           { title: "8 周放行行数", dataIndex: "okRows", width: 120, align: "right" },
           { title: "8 周拒收行数", dataIndex: "rejectedRows", width: 120, align: "right" },
           { title: "8 周失败运行", dataIndex: "failedRuns", width: 110, align: "right" },
+          { title: "有放行率读数的周", dataIndex: "weeksWithPassRate", width: 140, align: "right" },
           { title: "状态", dataIndex: "state", render: (v: string, r) => v === "ready" ? <Tag color="processing">可出趋势</Tag> : <Tag>{r.gate ?? "样本不足"}</Tag> },
         ]} />
       ) : undefined}

@@ -17,7 +17,7 @@ import { loadExternalVelocitySafe } from "@/server/modules/report/external-veloc
 import { loadSalesSpike } from "@/server/modules/report/sales-spike";
 
 /**
- * 库存预警表读模型 `inventory-alerts/v2`（D57；四屏第 2 屏 B-左）。
+ * 库存预警表读模型 `inventory-alerts/v3`（D57；四屏第 2 屏 B-左）。
  *
  * 逐启用成品 SKU 一行：等级（sku_planning_policy 最新期，缺则按近 6 月内部销量现算四档）、
  * 日销三口径并列（外部平台净件数 ÷30 / 内部月表近 6 月折日 / 实时仓出库近 30 天折日）、
@@ -32,8 +32,15 @@ import { loadSalesSpike } from "@/server/modules/report/sales-spike";
  * - 学习交期只观察（rollup_supplier_lead，样本 ≥ 3 且 P90 超档案 > 容差）：basis 多一段 learned，阈值不变。
  * - 优先级分带 terms/formula；临期（replenish/expiry）与积压（rules/risk-action.isSlowMover，C 级不判）
  *   两个此前从未产出的预警种类开始产出，仍一 SKU 一主预警。
+ *
+ * v3 口径升版（缓存键升版，旧缓存不再命中）：
+ * - source_binding 补上**业务日**：today 参与在途 dated/overdue/undated 归类、阈值内到货的
+ *   alert→watch 降级与临期段位。此前底层行不动就跨日不重算，一笔已经逾期的到货能无限期
+ *   压住真实断货预警，依据文案还在说「到货在途」。
+ * - 临期口径（replenish/expiry）改为逐仓只取最新盘点期：batch_stocks 唯一键含 stocktake_date，
+ *   两期并存时 nearQty/expiredQty 直接翻倍。
  */
-export const INVENTORY_ALERTS_CACHE_KEY = "inventory-alerts/v2";
+export const INVENTORY_ALERTS_CACHE_KEY = "inventory-alerts/v3";
 
 export type DailySource = "external" | "internal" | "ledger";
 
@@ -113,6 +120,14 @@ const num = (v: unknown): number => { const n = Number(v); return Number.isFinit
 const numOrNull = (v: unknown): number | null => { if (v == null) return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
 const r1 = (v: number): number => Math.round(v * 10) / 10;
 
+/**
+ * 来源绑定：**读到的每一样输入都要在里面**，包括业务日。
+ *
+ * `todayShanghai()` 不是装饰：它决定在途算 dated / overdue / undated、决定阈值内到货能不能
+ * 把 alert 降成 watch、决定临期段位。少了日期分量，一夜之间「明天到货」变成「已经逾期」
+ * 这件事对绑定不可见，缓存永远命中旧结论——兄弟读模型 risk-expiry-buckets 与
+ * replenish-pilot 的绑定都带 `todayShanghai()`，本模型此前漏了。
+ */
 async function binding(db: AnyDb): Promise<string> {
   const [b] = resultRows<Record<string, unknown>>(await db.execute(sql`
     SELECT (SELECT coalesce(max(id),0) FROM stock_ledger) AS l,
@@ -130,7 +145,7 @@ async function binding(db: AnyDb): Promise<string> {
            (SELECT coalesce(max(built_at)::text,'') FROM rollup_supplier_lead) AS rl,
            (SELECT coalesce(max(built_at)::text,'') FROM report_read_model_cache WHERE key LIKE 'sales-spike/%') AS sp
   `));
-  return `alerts:${b?.l}:${b?.s}:${b?.m}:${b?.p}:${b?.pu}:${b?.pol}|ev:${b?.ev}|supply:${b?.pol_l}|${b?.po_d}|${b?.wo}|${b?.tr}|bs:${b?.bs}|rl:${b?.rl}|sp:${b?.sp}`;
+  return `alerts:${b?.l}:${b?.s}:${b?.m}:${b?.p}:${b?.pu}:${b?.pol}|ev:${b?.ev}|supply:${b?.pol_l}|${b?.po_d}|${b?.wo}|${b?.tr}|bs:${b?.bs}|rl:${b?.rl}|sp:${b?.sp}|day:${todayShanghai()}`;
 }
 
 /** 逐 SKU 汇总未结供给：有日期未逾期 / 无日期 / 逾期 / 下一笔到货 */

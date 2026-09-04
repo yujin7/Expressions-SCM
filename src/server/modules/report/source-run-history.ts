@@ -12,6 +12,10 @@
  *   staging 首次通过率同一口径，仍是代理指标），并列该周失败运行数。
  *
  * 判定：某来源类在 8 周窗口内有运行的周数 < 3 时整条序列 insufficient（三个点以下不叫趋势）。
+ * **逐指标判定**（审计 C8b）：这份序列同时喂两张图，而「有运行」不等于「这张图画得出线」——
+ * 有运行但批次全都没有 source_as_of，及时性图一个点都没有；ok/fail 全为 0（连接器只跑不落行），
+ * 放行率图同样是空的。此前两张图共用 `state`，于是「ready 的 chip + 空白的图」同时出现。
+ * 故按各自实际绘制的读数单独给 `ageState` / `passRateState`，`state`（有运行）只作总体活跃度参考。
  * 周起点按 Asia/Shanghai 的周一（date_trunc('week')）。
  */
 import { sql } from "drizzle-orm";
@@ -54,10 +58,21 @@ export interface SourceClassSeries {
   points: SourceWeekPoint[];
   /** 8 周里有运行（批次或连接器运行）的周数 */
   weeksWithActivity: number;
-  /** 有 maxAgeDays 读数的周数 */
+  /** 有 maxAgeDays 读数的周数（C6 及时性图实际画得出点的周数） */
   weeksWithAge: number;
+  /** 有 passRatePct 读数的周数（B8 数据质量图实际画得出点的周数） */
+  weeksWithPassRate: number;
+  /** 有运行的周数是否够（总体活跃度；**不代表任一张图画得出来**，图请看 ageState / passRateState） */
   state: "ready" | "insufficient";
+  /** C6 及时性趋势能否成线（按 weeksWithAge 判） */
+  ageState: "ready" | "insufficient";
+  /** B8 放行率趋势能否成线（按 weeksWithPassRate 判） */
+  passRateState: "ready" | "insufficient";
   gate: string | null;
+  /** 及时性图不足时的原因（ready 时 null） */
+  ageGate: string | null;
+  /** 放行率图不足时的原因（ready 时 null） */
+  passRateGate: string | null;
 }
 
 export interface SourceRunHistory {
@@ -198,7 +213,10 @@ export async function loadSourceRunHistory(db: AnyDb, opts: { today: string }): 
     });
     const weeksWithActivity = points.filter((p) => p.jobs > 0 || p.runs > 0).length;
     const weeksWithAge = points.filter((p) => p.maxAgeDays != null).length;
+    const weeksWithPassRate = points.filter((p) => p.passRatePct != null).length;
     const ready = weeksWithActivity >= SOURCE_RUN_HISTORY_MIN_WEEKS;
+    const ageReady = weeksWithAge >= SOURCE_RUN_HISTORY_MIN_WEEKS;
+    const passRateReady = weeksWithPassRate >= SOURCE_RUN_HISTORY_MIN_WEEKS;
     return {
       sourceClass: cls,
       label: def.label,
@@ -206,8 +224,17 @@ export async function loadSourceRunHistory(db: AnyDb, opts: { today: string }): 
       points,
       weeksWithActivity,
       weeksWithAge,
+      weeksWithPassRate,
       state: ready ? "ready" : "insufficient",
+      ageState: ageReady ? "ready" : "insufficient",
+      passRateState: passRateReady ? "ready" : "insufficient",
       gate: ready ? null : `近 ${SOURCE_RUN_HISTORY_WEEKS} 周只有 ${weeksWithActivity} 周有入库或运行，少于 ${SOURCE_RUN_HISTORY_MIN_WEEKS} 周不出趋势`,
+      ageGate: ageReady
+        ? null
+        : `近 ${SOURCE_RUN_HISTORY_WEEKS} 周只有 ${weeksWithAge} 周有「收到日 − 业务截止日」读数（其余批次没有 source_as_of，不按 0 处理），少于 ${SOURCE_RUN_HISTORY_MIN_WEEKS} 周不出及时性趋势`,
+      passRateGate: passRateReady
+        ? null
+        : `近 ${SOURCE_RUN_HISTORY_WEEKS} 周只有 ${weeksWithPassRate} 周有放行率读数（ok+fail 行为 0 的周留空，不按 100% 处理），少于 ${SOURCE_RUN_HISTORY_MIN_WEEKS} 周不出质量趋势`,
     };
   });
 

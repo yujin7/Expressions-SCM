@@ -25,7 +25,7 @@ import { loadExternalVelocitySafe } from "@/server/modules/report/external-veloc
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";
-import { classifyAbc, classifyTier, tierDistribution, tierMigrationMatrix, type Tier, type TierCuts, type TierMigrationMatrix, DEFAULT_TIER_CUTS } from "@/server/rules/abc";
+import { classifyAbc, classifyTier, tierBasisAgreementMatrix, tierDistribution, type Tier, type TierBasisAgreementMatrix, type TierCuts, DEFAULT_TIER_CUTS } from "@/server/rules/abc";
 import { classifyXyz, type XyzClass } from "@/server/rules/volatility";
 import { decideOwnership, type Ownership } from "@/server/rules/replenish-ownership";
 import { getNumParam, getTextParam } from "@/server/core/params";
@@ -136,7 +136,7 @@ export interface SegmentationResult {
   /** 金额口径四档分布（仅计数与占比，不含金额；insufficient 时全 0） */
   valueTierDistribution: Record<Tier, { count: number }>;
   /** W12 迁移矩阵：数量口径 tier × 金额口径 valueTier（全量，不受筛选影响） */
-  tierMigration: TierMigrationMatrix;
+  tierMigration: TierBasisAgreementMatrix;
   /** 本次口径的已知局限（页面必须原样展示） */
   valueTierLimitations: string[];
 }
@@ -247,7 +247,7 @@ export async function getSegmentation(
       tierBasis, tierBasisApplied: "qty",
       costCoverage: { skus: 0, skusWithCost: 0, skuPct: null, salesWeightedPct: null, minPct: coverageMinPct, state: "insufficient", reason: "没有参与分层的成品 SKU" },
       valueTierDistribution: emptyValueTierDist(),
-      tierMigration: tierMigrationMatrix([]),
+      tierMigration: tierBasisAgreementMatrix([]),
       valueTierLimitations: [...VALUE_TIER_LIMITATIONS],
     };
   }
@@ -375,7 +375,7 @@ export async function getSegmentation(
       ? null
       : `成本覆盖率（按销量加权）${salesWeightedPct ?? 0}% < 门槛 ${coverageMinPct}%（valuation_coverage_min_pct）：金额口径分层不可用，整列显示 insufficient，不降级为等级。`,
   };
-  const tierMigration = tierMigrationMatrix(interims.map((it) => ({ qtyTier: it.tier, valueTier: it.valueTier })));
+  const tierMigration = tierBasisAgreementMatrix(interims.map((it) => ({ qtyTier: it.tier, valueTier: it.valueTier })));
 
   /* ── 矩阵汇总（全量，不受筛选影响） ── */
   const matrix = emptyMatrix();

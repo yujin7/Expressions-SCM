@@ -6,6 +6,7 @@ import { getInbox } from "@/server/modules/inbox/service";
 import { loadDataSourceReadiness } from "@/server/modules/report/data-source-readiness";
 import { loadExternalVelocitySafe } from "@/server/modules/report/external-velocity";
 import {
+  INVENTORY_POSITION_CACHE_KEY,
   loadInventoryPosition,
   todayShanghai,
   type DailyPoint,
@@ -13,18 +14,18 @@ import {
   type QtyBlock,
   type WarehouseBlock,
 } from "@/server/modules/report/inventory-position";
-import { loadInventorySalesRatio, type RatioMonthRow, type RatioTargets } from "@/server/modules/report/inventory-sales-ratio";
+import { INVENTORY_SALES_RATIO_CACHE_KEY, loadInventorySalesRatio, type RatioMonthRow, type RatioTargets } from "@/server/modules/report/inventory-sales-ratio";
 import { countReviewItems } from "@/server/modules/review/checklist";
 import { computeExceptions, type ExceptionItem } from "@/server/modules/workbench/focus";
 import { countOpenAlerts } from "@/server/modules/alerts/engine";
-import { loadInventoryAlerts, type InventoryAlertRow, type InventoryAlertsReadModel } from "@/server/modules/report/inventory-alerts";
-import { loadSalesSpike, type SalesSpikeReadModel, type SpikeHit } from "@/server/modules/report/sales-spike";
-import { loadPurchaseOrderMetrics, purchaseOrderCockpitBlock, type PurchaseOrderCockpitBlock } from "@/server/modules/report/purchase-order-metrics";
-import { loadTransferRoutes, topLanes, type TransferAnomalyRow, type TransferLaneRow, type TransferRoutesModel } from "@/server/modules/report/transfer-routes";
-import { loadWarehouseInventory, type WarehouseInventoryModel, type WarehouseInventoryRow } from "@/server/modules/report/warehouse-inventory";
+import { INVENTORY_ALERTS_CACHE_KEY, loadInventoryAlerts, type InventoryAlertRow, type InventoryAlertsReadModel } from "@/server/modules/report/inventory-alerts";
+import { loadSalesSpike, SALES_SPIKE_CACHE_KEY, type SalesSpikeReadModel, type SpikeHit } from "@/server/modules/report/sales-spike";
+import { loadPurchaseOrderMetrics, purchaseOrderCockpitBlock, PURCHASE_ORDER_METRICS_KEY, type PurchaseOrderCockpitBlock } from "@/server/modules/report/purchase-order-metrics";
+import { loadTransferRoutes, topLanes, TRANSFER_ROUTES_CACHE_KEY, type TransferAnomalyRow, type TransferLaneRow, type TransferRoutesModel } from "@/server/modules/report/transfer-routes";
+import { loadWarehouseInventory, WAREHOUSE_INVENTORY_CACHE_KEY, type WarehouseInventoryModel, type WarehouseInventoryRow } from "@/server/modules/report/warehouse-inventory";
 import { getTodoProgressBlock, type TodoProgressBlock } from "@/server/modules/todo/stats";
 import { getGoalsBlock, type GoalsBlock } from "@/server/modules/goals/service";
-import { loadDataQuality, type DataQualityReport } from "@/server/modules/report/data-quality";
+import { DATA_QUALITY_CACHE_KEY, loadDataQuality, type DataQualityReport } from "@/server/modules/report/data-quality";
 
 /**
  * 驾驶舱四屏装配（D50）。只读、只装配：每一块都来自已有的唯一权威读模型/服务，不在这里重算口径。
@@ -180,6 +181,16 @@ export function otifRatePctOf(rate: number | string | null | undefined): string 
   return dMul(String(rate), 100, 1);
 }
 
+/**
+ * 同 `otifRatePctOf` 的口径，只是折回 number——Recharts 的 dataKey 必须是数值，
+ * 字符串会被当成分类轴。换算本身仍走 decimal（`rate * 100` 的 float 乘法不再出现），
+ * 这里只是把已经定好 1 位小数的十进制字符串解析回来。
+ */
+export function ratePctNumOf(rate: number | string | null | undefined): number | null {
+  const pct = otifRatePctOf(rate);
+  return pct == null ? null : Number(pct);
+}
+
 void pending;
 
 export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<CockpitData> {
@@ -229,13 +240,13 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
         note: pos.value.current.total.value.incomplete ? `估值覆盖率 ${pos.value.current.total.value.coveragePct ?? "—"}%，金额不完整（D51 门槛 ${pos.value.valuationCoverageMinPct}%）` : "",
         source: { tier: "snapshot", source: "SCM 实时账 + 快照仓最新快照；估值 core/valuation", asOf: pos.value.builtAt },
       }
-    : { state: "error", data: null, note: pos.error, source: { tier: "snapshot", source: "inventory-position/v1", asOf: null } };
+    : { state: "error", data: null, note: pos.error, source: { tier: "snapshot", source: INVENTORY_POSITION_CACHE_KEY, asOf: null } };
 
   const ratioS = settled(ratioR);
   let ratio: CockpitData["screens"]["sources"]["ratio"];
   let salesAmount: CockpitData["screens"]["sources"]["salesAmount"];
   if (!canSeeMoney) {
-    ratio = { state: "no_access", data: null, note: "库存占比与销售金额仅采购/计划/财务/管理员可见", source: { tier: "manual", source: "inventory-sales-ratio/v1", asOf: null } };
+    ratio = { state: "no_access", data: null, note: "库存占比与销售金额仅采购/计划/财务/管理员可见", source: { tier: "manual", source: INVENTORY_SALES_RATIO_CACHE_KEY, asOf: null } };
     salesAmount = { state: "no_access", data: null, note: "销售金额仅财务/计划/管理员可见", source: { tier: "manual", source: "sales_amount_monthly", asOf: null } };
   } else if (ratioS.ok && ratioS.value) {
     const m = ratioS.value;
@@ -253,7 +264,7 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
     };
   } else {
     const err = ratioS.ok ? "无数据" : ratioS.error;
-    ratio = { state: "error", data: null, note: err, source: { tier: "derived", source: "inventory-sales-ratio/v1", asOf: null } };
+    ratio = { state: "error", data: null, note: err, source: { tier: "derived", source: INVENTORY_SALES_RATIO_CACHE_KEY, asOf: null } };
     salesAmount = { state: "error", data: null, note: err, source: { tier: "manual", source: "sales_amount_monthly", asOf: null } };
   }
 
@@ -299,18 +310,18 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
           return { rows: alertRows.slice(0, 20), alertRowCount: alertRows.length, totals: alertsS.value.totals, params: alertsS.value.params, limitations: alertsS.value.limitations };
         })(),
         note: `成品 ${alertsS.value.totals.skus} 个：断货 ${alertsS.value.totals.outOfStock}、低于阈值 ${alertsS.value.totals.alert}、关注 ${alertsS.value.totals.watch}；只显示前 20 行`,
-        source: { tier: "observation", source: "inventory-alerts/v2（日销三口径并列；观察序列只预警不定量）", asOf: alertsS.value.builtAt },
+        source: { tier: "observation", source: `${INVENTORY_ALERTS_CACHE_KEY}（日销三口径并列；观察序列只预警不定量）`, asOf: alertsS.value.builtAt },
       }
-    : { state: "error", data: null, note: alertsS.error, source: { tier: "observation", source: "inventory-alerts/v2", asOf: null } };
+    : { state: "error", data: null, note: alertsS.error, source: { tier: "observation", source: INVENTORY_ALERTS_CACHE_KEY, asOf: null } };
   const spikeS = settled(spikeR);
   const salesSpike: CockpitData["screens"]["alerts"]["salesSpike"] = spikeS.ok
     ? {
         state: spikeS.value.state === "ready" ? "ready" : "insufficient",
         data: { hits: spikeS.value.hits.slice(0, 10), unmappedHits: spikeS.value.unmappedHits.slice(0, 10), hitCount: spikeS.value.hits.length, unmappedCount: spikeS.value.unmappedHits.length, anchorDate: spikeS.value.anchorDate, coverage: spikeS.value.coverage, params: spikeS.value.params, openAlerts: spikeCount.ok ? spikeCount.value.open : 0, unacked: spikeCount.ok ? spikeCount.value.unacked : 0 },
         note: spikeS.value.state === "ready" ? `规则：最近 ${spikeS.value.params.consecutiveDays} 天每日 ≥ 前 7 日日均 ×${(1 + spikeS.value.params.risePct / 100).toFixed(2)}，基线 ≥ ${spikeS.value.params.minBaseQty}` : spikeS.value.limitations[0] ?? "缺流",
-        source: { tier: "observation", source: "sales-spike/v2（简道云天猫日销，T+1）", asOf: spikeS.value.sourceAsOf ?? spikeS.value.builtAt },
+        source: { tier: "observation", source: `${SALES_SPIKE_CACHE_KEY}（简道云天猫日销，T+1）`, asOf: spikeS.value.sourceAsOf ?? spikeS.value.builtAt },
       }
-    : { state: "error", data: null, note: spikeS.error, source: { tier: "observation", source: "sales-spike/v2", asOf: null } };
+    : { state: "error", data: null, note: spikeS.error, source: { tier: "observation", source: SALES_SPIKE_CACHE_KEY, asOf: null } };
 
   /* ── 屏 3 ── */
   const warehouses: CockpitData["screens"]["inventory"]["warehouses"] = pos.ok
@@ -324,9 +335,9 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
           snapshotCount: pos.value.warehouses.filter((w) => w.mode === "snapshot").length,
         },
         note: "快照仓无逐日流水：周转与出库列由调拨/周转领域接入后显示；数量跨 SKU 直加仅作参考",
-        source: { tier: "snapshot", source: "inventory-position/v1 · warehouses", asOf: pos.value.builtAt },
+        source: { tier: "snapshot", source: `${INVENTORY_POSITION_CACHE_KEY} · warehouses`, asOf: pos.value.builtAt },
       }
-    : { state: "error", data: null, note: pos.error, source: { tier: "snapshot", source: "inventory-position/v1", asOf: null } };
+    : { state: "error", data: null, note: pos.error, source: { tier: "snapshot", source: INVENTORY_POSITION_CACHE_KEY, asOf: null } };
 
   /* ── 屏 2 · 订单系统（D63） ── */
   const po = settled(poR);
@@ -341,10 +352,10 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
           state: b.orderSystem.monthPoCount > 0 || b.orderSystem.cycleSamples > 0 ? "ready" : "insufficient",
           data: { ...gated, otifRatePct: otifRatePctOf(b.orderSystem.otifRate) },
           note: `${canSeeMoney ? "" : "金额仅价格可见角色；"}交付 n=${b.orderSystem.cycleSamples}${b.orderSystem.cycleInsufficient ? "（样本不足）" : ""}；降本基线年 ${b.costDown.baselineYear}`,
-          source: { tier: "fact", source: "purchase-order-metrics/v1（SCM PO/SH 事实）", asOf: po.value.builtAt ?? null },
+          source: { tier: "fact", source: `${PURCHASE_ORDER_METRICS_KEY}（SCM PO/SH 事实）`, asOf: po.value.builtAt ?? null },
         };
       })()
-    : { state: "error", data: null, note: po.error, source: { tier: "fact", source: "purchase-order-metrics/v1", asOf: null } };
+    : { state: "error", data: null, note: po.error, source: { tier: "fact", source: PURCHASE_ORDER_METRICS_KEY, asOf: null } };
 
   /* ── 屏 3 · 调拨线路 / 异常 / 各仓周转（D60） ── */
   const lanesS = settled(lanesR);
@@ -357,9 +368,9 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
           asOf: (lanesS.value as { asOf?: string | null }).asOf ?? null,
         },
         note: lanesS.value.summary.docCount > 0 ? `线路 ${lanesS.value.summary.laneCount} · 单据 ${lanesS.value.summary.docCount}（登记费用 ${lanesS.value.summary.feeDocCount}）· 未分类存量 ${lanesS.value.summary.unclassifiedDocCount}` : "尚无已完成调拨单",
-        source: { tier: "fact", source: "transfer-routes/v2（已完成调拨单 + 人工登记费用）", asOf: (lanesS.value as { builtAt?: string }).builtAt ?? null },
+        source: { tier: "fact", source: `${TRANSFER_ROUTES_CACHE_KEY}（已完成调拨单 + 人工登记费用）`, asOf: (lanesS.value as { builtAt?: string }).builtAt ?? null },
       }
-    : { state: "error", data: null, note: lanesS.error, source: { tier: "fact", source: "transfer-routes/v2", asOf: null } };
+    : { state: "error", data: null, note: lanesS.error, source: { tier: "fact", source: TRANSFER_ROUTES_CACHE_KEY, asOf: null } };
   const transferAnomalies: CockpitData["screens"]["inventory"]["transferAnomalies"] = lanesS.ok
     ? {
         state: lanesS.value.anomalies.length ? "ready" : "insufficient",
@@ -370,7 +381,7 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
         note: lanesS.value.anomalies.length ? "偏差 >20% 或数量 > 中位数×3 只提醒不阻断；样本 <8 不判定（D60）" : "当前没有数量/费用异常（或样本不足不判定）",
         source: { tier: "derived", source: "rules/transfer-cost（线路基线 + spc）", asOf: (lanesS.value as { builtAt?: string }).builtAt ?? null },
       }
-    : { state: "error", data: null, note: lanesS.error, source: { tier: "derived", source: "transfer-routes/v2", asOf: null } };
+    : { state: "error", data: null, note: lanesS.error, source: { tier: "derived", source: TRANSFER_ROUTES_CACHE_KEY, asOf: null } };
   const whS = settled(whR);
   const turnover: CockpitData["screens"]["inventory"]["turnover"] = whS.ok
     ? {
@@ -385,9 +396,9 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
           };
         })(),
         note: `窗口 ${whS.value.windowDays} 天（仅实时仓，快照仓无流水不计算；口径见指标注册表 warehouseTurns / warehouseDio）`,
-        source: { tier: "snapshot", source: "warehouse-inventory/v1", asOf: whS.value.builtAt },
+        source: { tier: "snapshot", source: WAREHOUSE_INVENTORY_CACHE_KEY, asOf: whS.value.builtAt },
       }
-    : { state: "error", data: null, note: whS.error, source: { tier: "snapshot", source: "warehouse-inventory/v1", asOf: null } };
+    : { state: "error", data: null, note: whS.error, source: { tier: "snapshot", source: WAREHOUSE_INVENTORY_CACHE_KEY, asOf: null } };
 
   /* ── 屏 4 · 待办 / 目标 / 数据质量（D61/D65） ── */
   const todoS = settled(todoR);
@@ -408,9 +419,9 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
           salesConsistency: dqS.value.salesConsistency, tolerancePct: dqS.value.tolerancePct,
         },
         note: `准确率容差 ${dqS.value.tolerancePct}%；人工链路为代理口径（staging 首次通过率）；外部平台一致性仅覆盖天猫（D65）`,
-        source: { tier: "derived", source: "data-quality/v2", asOf: dqS.value.today },
+        source: { tier: "derived", source: DATA_QUALITY_CACHE_KEY, asOf: dqS.value.today },
       }
-    : { state: "error", data: null, note: dqS.error, source: { tier: "derived", source: "data-quality/v2", asOf: null } };
+    : { state: "error", data: null, note: dqS.error, source: { tier: "derived", source: DATA_QUALITY_CACHE_KEY, asOf: null } };
 
   /* ── 屏 4 ── */
   const inbox = settled(inboxR);

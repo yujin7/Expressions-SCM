@@ -143,16 +143,24 @@ export function tierDistribution(items: TierInput[], cuts: TierCuts = DEFAULT_TI
 
 export const TIERS: readonly Tier[] = Object.freeze(["S", "A", "B", "C"] as const);
 
-export interface TierMigrationCell {
+/**
+ * 「数量口径 × 金额口径」一致性矩阵——**不是**期间迁移。
+ *
+ * 命名刻意与 `report/cockpit-trends` 的 `TierMigrationCell`/`TierMigrationBlock` 区分：
+ * 那一对是**同一把尺子的两个时点**（上期分层 → 本期分层，轴含「未分层」）；
+ * 这一对是**同一时点的两把尺子**（销量分层 vs 金额分层），问的是两套口径读数一致吗。
+ * 两个 `TierMigrationCell` 曾同时导出、语义完全不同——改名以免调用方 import 错一个还能编译过。
+ */
+export interface TierBasisAgreementCell {
   qtyTier: Tier;
   /** null = 金额口径不可用（覆盖率不足/无成本） */
   valueTier: Tier | null;
   count: number;
 }
 
-export interface TierMigrationMatrix {
+export interface TierBasisAgreementMatrix {
   /** 4 × 5 全格（含 valueTier=null 一列），零格也出行，便于页面直接渲染矩阵 */
-  cells: TierMigrationCell[];
+  cells: TierBasisAgreementCell[];
   /** 两套口径判定一致的项数（valueTier=null 不算一致） */
   agree: number;
   /** 两套口径都判出等级、但等级不同的项数 */
@@ -164,7 +172,7 @@ export interface TierMigrationMatrix {
   agreePct: number | null;
 }
 
-export function tierMigrationMatrix(items: { qtyTier: Tier; valueTier: Tier | null }[]): TierMigrationMatrix {
+export function tierBasisAgreementMatrix(items: { qtyTier: Tier; valueTier: Tier | null }[]): TierBasisAgreementMatrix {
   const counts = new Map<string, number>();
   let agree = 0;
   let disagree = 0;
@@ -176,7 +184,7 @@ export function tierMigrationMatrix(items: { qtyTier: Tier; valueTier: Tier | nu
     else if (it.valueTier === it.qtyTier) agree += 1;
     else disagree += 1;
   }
-  const cells: TierMigrationCell[] = [];
+  const cells: TierBasisAgreementCell[] = [];
   for (const qtyTier of TIERS) {
     for (const valueTier of [...TIERS, null] as (Tier | null)[]) {
       cells.push({ qtyTier, valueTier, count: counts.get(`${qtyTier}|${valueTier ?? ""}`) ?? 0 });

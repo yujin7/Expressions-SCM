@@ -4,7 +4,7 @@
  * B4 历史交期观察（记分卡页第五页签）：把简道云历史采购订单 → 入库观察算出来的
  * 「下单 → 收货」交期分布，与本系统自己学出来的 rollup_supplier_lead **并排**摆出来。
  *
- * 只消费读模型 supplier-lead-history/v1（authority=observation_only）。
+ * 只消费读模型 supplier-lead-history（键见 SUPPLIER_LEAD_HISTORY_CACHE_KEY，authority=observation_only）。
  * 页面不提供任何「采纳」按钮——这条线只观察、不改主数据、不改预警阈值（对照见「阈值依据」列）。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";

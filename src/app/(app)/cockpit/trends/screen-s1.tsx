@@ -102,7 +102,7 @@ export function DataFreshnessTrendCard({ block }: { block: Block<SourceTrendBloc
   const rows = d ? sourceChartRows(d, "maxAgeDays") : [];
   const seriesRows: SeriesRow[] = (d?.series ?? []).map((s) => ({
     sourceClass: s.sourceClass, label: s.label, freshnessMaxAgeDays: s.freshnessMaxAgeDays,
-    weeksWithActivity: s.weeksWithActivity, weeksWithAge: s.weeksWithAge, state: s.state, gate: s.gate,
+    weeksWithActivity: s.weeksWithActivity, weeksWithAge: s.weeksWithAge, state: s.ageState, gate: s.ageGate,
     latestMaxAgeDays: [...s.points].reverse().find((p) => p.maxAgeDays != null)?.maxAgeDays ?? null,
   }));
   return (
@@ -115,7 +115,7 @@ export function DataFreshnessTrendCard({ block }: { block: Block<SourceTrendBloc
       unit="天（收到日 − 业务截止日）"
       height={300}
       summary={d
-        ? `${d.weeks[0]} → ${d.weeks.at(-1)}；${d.readySeries}/${d.series.length} 类来源满足 ${d.minWeeks} 周门槛；` +
+        ? `${d.weeks[0]} → ${d.weeks.at(-1)}；${d.readySeries}/${d.series.length} 类来源满足 ${d.minWeeks} 周有滞后读数的门槛；` +
           seriesRows.filter((s) => s.state === "ready").map((s) => `${s.label} 最近 ${s.latestMaxAgeDays ?? "—"} 天（阈 ${s.freshnessMaxAgeDays}）`).join("，")
         : "无数据"}
       extra={d ? <Link href={d.link} prefetch={false}>数据质量页 →</Link> : undefined}

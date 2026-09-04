@@ -3,7 +3,7 @@ import { errorResponse, guardRead } from "@/server/modules/master/common";
 import { loadSupplierLeadHistory } from "@/server/modules/report/supplier-lead-history";
 
 /**
- * 历史采购交期观察 `supplier-lead-history/v1`（B4；只读，无金额字段故免脱敏）。
+ * 历史采购交期观察 `supplier-lead-history`（B4，键见 SUPPLIER_LEAD_HISTORY_CACHE_KEY；只读，无金额字段故免脱敏）。
  * `?refresh=1` 强制重算——观察读模型没有写路径，重算只重建缓存。
  */
 export async function GET(req: NextRequest) {

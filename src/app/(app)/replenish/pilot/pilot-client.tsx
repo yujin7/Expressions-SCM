@@ -44,7 +44,7 @@ interface PilotRow {
   unitCostSource: "sku_costs" | "finance_observation" | null;
 }
 
-/** W12 迁移矩阵（rules/abc.tierMigrationMatrix） */
+/** W12 数量口径 × 金额口径一致性矩阵（rules/abc.tierBasisAgreementMatrix；与驾驶舱的期间迁移矩阵不是一回事） */
 interface TierMigration {
   cells: { qtyTier: Tier; valueTier: Tier | null; count: number }[];
   agree: number;

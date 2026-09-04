@@ -1,5 +1,5 @@
 /**
- * 历史采购交期观察 `supplier-lead-history/v1`（B4）。
+ * 历史采购交期观察 `supplier-lead-history/v2`（B4）。
  *
  * 为什么需要它：本系统今年只有 1 张 PO，`rollup_supplier_lead`（「系统学习交期」）几乎无样本，
  * 于是安全库存与预警阈值只能信人工档案值。而简道云的两条历史流
@@ -48,7 +48,13 @@ import {
 } from "@/server/rules/alert-threshold";
 import { leadTimeStats, type LeadTimeSample } from "@/server/rules/leadtime-stats";
 
-export const SUPPLIER_LEAD_HISTORY_CACHE_KEY = "supplier-lead-history/v1";
+/**
+ * v2（口径升版，旧缓存不再命中）：
+ * - 供应商行的样本加权准时率改用**可评样本**作分母（`rollup_supplier_lead.on_time_rate` 可空，
+ *   此前未测量的对子照样进分母，把「1 对已测 100%、1 对未测」渲染成 50%）；
+ * - source_binding 补上 sys_params 运行参数与 skus 指纹（见 `binding()`）。
+ */
+export const SUPPLIER_LEAD_HISTORY_CACHE_KEY = "supplier-lead-history/v2";
 
 const ORDER_STREAM = "purchase-order-observation";
 const RECEIPT_STREAM = "purchase-receipt-observation";
@@ -98,8 +104,10 @@ export interface SupplierLeadHistoryRow {
   /**
    * 系统侧对照：rollup_supplier_lead 是 (供应商 × SKU) 粒度，**分布无法向上聚合**，
    * 故供应商行只给对数与样本合计，以及样本加权准时率（比率可加权，分位数不可）。
+   * `on_time_rate` 可空（该对子没测出准时率）：这些样本计入 `samples`，但**不进加权分母**——
+   * 分母只用 `ratedSamples`，否则未测量的对子会被当成 0% 把准时率系统性拉低。
    */
-  system: { pairs: number; samples: number; onTimeRate: number | null } | null;
+  system: { pairs: number; samples: number; ratedSamples: number; onTimeRate: number | null } | null;
 }
 
 export interface SupplierSkuLeadHistoryRow {
@@ -399,7 +407,7 @@ export async function computeSupplierLeadHistory(dbArg?: AnyDb): Promise<Supplie
     SELECT supplier_id, sku_id, samples, lead_p50_days AS p50, lead_p90_days AS p90, lead_stdev_days AS stdev, on_time_rate AS otr
     FROM rollup_supplier_lead`));
   const rollupByPair = new Map<string, SystemLeadSide>();
-  const rollupBySupplier = new Map<number, { pairs: number; samples: number; weighted: number }>();
+  const rollupBySupplier = new Map<number, { pairs: number; samples: number; ratedSamples: number; weighted: number }>();
   for (const r of rollupRows) {
     const supplierId = num(r.supplier_id);
     const skuId = num(r.sku_id);
@@ -407,11 +415,15 @@ export async function computeSupplierLeadHistory(dbArg?: AnyDb): Promise<Supplie
     rollupByPair.set(`${supplierId}|${skuId}`, {
       samples, p50: numOrNull(r.p50), p90: numOrNull(r.p90), stdev: numOrNull(r.stdev), onTimeRate: numOrNull(r.otr),
     });
-    const acc = rollupBySupplier.get(supplierId) ?? { pairs: 0, samples: 0, weighted: 0 };
+    const acc = rollupBySupplier.get(supplierId) ?? { pairs: 0, samples: 0, ratedSamples: 0, weighted: 0 };
     acc.pairs += 1;
     acc.samples += samples;
     const otr = numOrNull(r.otr);
-    if (otr != null) acc.weighted += otr * samples;
+    // 加权分子与分母必须同进同出：未测出准时率的对子既不进 weighted 也不进 ratedSamples
+    if (otr != null) {
+      acc.ratedSamples += samples;
+      acc.weighted += otr * samples;
+    }
     rollupBySupplier.set(supplierId, acc);
   }
 
@@ -444,7 +456,14 @@ export async function computeSupplierLeadHistory(dbArg?: AnyDb): Promise<Supplie
       observed: toStats(s.agg.samples),
       firstReceiptDate: s.agg.first,
       lastReceiptDate: s.agg.last,
-      system: sys ? { pairs: sys.pairs, samples: sys.samples, onTimeRate: sys.samples > 0 ? Math.round((sys.weighted / sys.samples) * 10000) / 10000 : null } : null,
+      system: sys
+        ? {
+          pairs: sys.pairs,
+          samples: sys.samples,
+          ratedSamples: sys.ratedSamples,
+          onTimeRate: sys.ratedSamples > 0 ? Math.round((sys.weighted / sys.ratedSamples) * 10000) / 10000 : null,
+        }
+        : null,
     };
   }).sort((a, b) => b.observed.samples - a.observed.samples || a.supplierName.localeCompare(b.supplierName));
 
@@ -537,13 +556,29 @@ export async function computeSupplierLeadHistory(dbArg?: AnyDb): Promise<Supplie
       "起算日 = 采购订单签订日期（缺则审批通过日），实际收货日 = 采购入库的入库日期（缺则验货日期），同单号多次入库取最早一次；负交期（收货早于下单）丢弃。",
       "承诺交期 = 订单交货日期；缺失的单只进交期分布，不进准时率与平均延误分母（准时率样本数单列）。",
       "SKU 粒度依赖订单/入库子表商品编码相等，且商品编码与 skus.code 精确相等才映射；未映射行按源编码单列，绝不按名称猜、不自动认领（外部身份治理）。",
-      "供应商粒度的系统侧只给对数、样本合计与样本加权准时率——rollup_supplier_lead 是 (供应商 × SKU) 粒度，分位数无法向上聚合。",
+      "供应商粒度的系统侧只给对数、样本合计与样本加权准时率——rollup_supplier_lead 是 (供应商 × SKU) 粒度，分位数无法向上聚合；加权分母只算已测出准时率的样本（ratedSamples），未测量的对子不按 0% 计。",
       "源数据实核为 2023–2024 历史归档（生产实测两条流落后约 777 天），是历史参照而非当前交期；页面必须显示最早/最晚收货日。",
       "本读模型不取任何金额字段，故不因源单据「表头/明细金额不一致」拦批；金额缺陷仍由数据质量页与放行门负责。",
     ],
   };
 }
 
+/**
+ * 进入 `alertDays()` 的运行参数键（sys_params global）——与 replenish-pilot 的
+ * `PILOT_BINDING_PARAM_KEYS` 同一手法。本读模型把 `alertDays` / `alertBasis` / `leadCompare`
+ * 直接publish 到页面上：任一参数改了而绑定不变，页面就会继续引用旧阈值。
+ */
+export const LEAD_HISTORY_BINDING_PARAM_KEYS = [
+  "default_production_lead_days", "default_logistics_lead_days",
+  "alert_buffer_days", "alert_learned_lead_tolerance_days",
+] as const;
+
+/**
+ * 来源绑定：**读到的每一样输入都要在里面**。
+ * 组成 = 订单批次 | 入库批次 | rollup_supplier_lead | sku_params | skus 指纹 | 运行参数当前值。
+ * skus 指纹：商品编码 → 系统 SKU 的映射（`skus.code` 精确相等）与档案交期的挂接都依赖它，
+ * 新增/改码/停用都会改变 bySupplierSku 的映射结果。
+ */
 async function binding(db: AnyDb): Promise<string> {
   const [orderBatches, receiptBatches] = await Promise.all([
     eligibleBatches(db, ORDER_STREAM),
@@ -553,11 +588,20 @@ async function binding(db: AnyDb): Promise<string> {
     SELECT coalesce(max(built_at)::text, '') AS built, count(*)::int AS rows FROM rollup_supplier_lead`));
   const [sp] = resultRows<{ updated: string | null; rows: number }>(await db.execute(sql`
     SELECT coalesce(max(updated_at)::text, '') AS updated, count(*)::int AS rows FROM sku_params`));
+  const [sk] = resultRows<{ updated: string | null; rows: number; maxid: number }>(await db.execute(sql`
+    SELECT coalesce(max(updated_at)::text, '') AS updated, count(*)::int AS rows, coalesce(max(id), 0)::int AS maxid FROM skus`));
+  const paramRows = resultRows<{ key: string; value: string }>(await db.execute(sql`
+    SELECT key, value FROM sys_params
+    WHERE scope = 'global' AND key IN (${sql.join(LEAD_HISTORY_BINDING_PARAM_KEYS.map((k) => sql`${k}`), sql`, `)})`));
+  const paramValues = new Map(paramRows.map((r) => [String(r.key), String(r.value)]));
+  const params = LEAD_HISTORY_BINDING_PARAM_KEYS.map((k) => `${k}=${paramValues.get(k) ?? "default"}`).join(",");
   return [
     `po:${orderBatches.map((b) => b.importJobId).join(",") || "none"}`,
     `sh:${receiptBatches.map((b) => b.importJobId).join(",") || "none"}`,
     `rl:${rl?.built ?? ""}/${rl?.rows ?? 0}`,
     `sp:${sp?.updated ?? ""}/${sp?.rows ?? 0}`,
+    `sk:${sk?.updated ?? ""}/${sk?.rows ?? 0}/${sk?.maxid ?? 0}`,
+    `params:${params}`,
   ].join("|");
 }
 
