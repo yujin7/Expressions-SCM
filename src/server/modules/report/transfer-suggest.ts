@@ -24,6 +24,15 @@
  *   既算不出该仓日均也无法做实物调拨承接，故整体排除并在 summary/UI 列名说明；
  * - 委外仓（加工厂垫料，允许负余额）与在途虚拟仓不是可自由调配的自有库位，一并排除。
  *
+ * W4 效期意识（2026-09）：此前本文件对批次/效期**零感知**——会把新鲜货从 A 挪到 B，而 A 仓那批 90 天到期的
+ * 原地等报废。现按 (warehouseId, skuId) 关联 batch_stocks（效期参考层，与临期风险页同源）：
+ * - **已过期数量绝不参与调拨**：先从该仓在库中扣除（expiredHeld 单列在行上），过期货是安全边界不是库存；
+ * - 盈余仓按**最近效期优先**让出（rules/transfer 的 minDaysLeft 通道），同档再按可让出量降序；
+ * - 每条建议用 rules/fefo.allocateFefo 推出这批调拨量**实际会动到哪些批次**，取其最近到期日作为
+ *   行上的 minDaysLeft 与理由，expiryDriven 标记「这是一次避免报废的调拨」。
+ * 口径诚实：batch_stocks 是盘点参考层（非账本），与 stock_balances 可能不同源；因此扣减已过期时以在库为上限，
+ * 且行上的效期结论只作解释与排序，不改变调拨量的计算方式。
+ *
  * 只读：不写库、不开单、不落审计。DB 调拨单仍走 inventory/stock-doc 正常审批流程。
  * 无金额字段，免脱敏。
  *
@@ -32,12 +41,14 @@
  * 任一段落到全局缺省时 usedDefault=true（界面标「按默认周期」）。skuIds 过滤供预警行深链
  * `/report/transfer-suggest?skuIds=`；结果另按线路 (from,to) 分组只读汇总（TR-11，不合并成单）。
  */
-import { and, eq, gte, inArray, lt, sql } from "drizzle-orm";
-import { coverDays } from "@/server/core/stock-view";
+import { and, eq, gt, gte, inArray, isNotNull, lt, sql } from "drizzle-orm";
+import { coverDays, daysLeftOf } from "@/server/core/stock-view";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { getNumParam } from "@/server/core/params";
+import { todayShanghai } from "@/server/modules/master/common";
 import { alertDays, type LeadBasis } from "@/server/rules/alert-threshold";
+import { allocateFefo, type BatchLot } from "@/server/rules/fefo";
 import { planTransfers } from "@/server/rules/transfer";
 import { num, r1 } from "@/server/core/svc";
 
@@ -46,6 +57,9 @@ type AnyDb = any;
 
 /** 排除出建议范围的仓库类型（非自有可调配库位） */
 const EXCLUDED_KINDS = ["outsource", "transit", "snapshot"] as const;
+
+/** 临期阈值缺省（天）——与 replenish/expiry.ts 同值，逐 SKU 可由 skus.near_expiry_days 覆盖 */
+const DEFAULT_NEAR_EXPIRY_DAYS = 90;
 
 export interface TransferSuggestRow {
   skuId: number;
@@ -70,6 +84,15 @@ export interface TransferSuggestRow {
   /** 阈值各段取值与来源；任一段 source==='default' 时行上标「按默认周期」 */
   basis: LeadBasis[];
   usedDefault: boolean;
+  /* ── W4 效期 ── */
+  /** 本次调拨按 FEFO 会动到的批次里最近的剩余天数；无效期数据 = null */
+  minDaysLeft: number | null;
+  /** 调出仓压着临期批次（minDaysLeft ≤ 该 SKU 临期阈值）——挪走即避免报废 */
+  expiryDriven: boolean;
+  /** 调出仓该 SKU 的已过期数量（已从可调拨量中扣除，绝不建议调拨） */
+  expiredHeld: number;
+  /** 本次调拨按 FEFO 命中的批次（到期日 → 数量），供界面解释 */
+  fefoLots: { batchNo: string | null; expiryDate: string | null; qty: string }[];
 }
 
 export interface TransferSuggestLane {
@@ -100,6 +123,13 @@ export interface TransferSuggestResult {
     usedDefaultCount: number;
     /** 请求方传入的 SKU 过滤（深链） */
     skuIdsFilter: number[] | null;
+    /* ── W4 效期 ── */
+    /** 临期驱动的建议条数 */
+    expiryDrivenCount: number;
+    /** 被排除在调拨之外的已过期数量合计（基础单位） */
+    expiredHeldTotal: number;
+    /** 效期判定基准日（Asia/Shanghai） */
+    expiryToday: string;
   };
 }
 
@@ -122,6 +152,7 @@ export async function getTransferSuggestions(
     getNumParam("alert_buffer_days", 5, dbArg),
   ]);
   const thresholdDefaults = { production: defaultProduction, logistics: defaultLogistics, buffer: bufferDays };
+  const today = todayShanghai();
   /** 盈余线 = 目标覆盖 ×2（压了两个补货周期的货才算「多到该挪」） */
   const surplusDays = targetDays * 2;
 
@@ -132,6 +163,7 @@ export async function getTransferSuggestions(
     summary: {
       skuCount: 0, lineCount: 0, totalQty: 0, horizonDays, excludedSnapshotWarehouses: [],
       thresholdDefaults, usedDefaultCount: 0, skuIdsFilter,
+      expiryDrivenCount: 0, expiredHeldTotal: 0, expiryToday: today,
     },
   };
 
@@ -176,23 +208,60 @@ export async function getTransferSuggestions(
     .where(and(...outConds))
     .groupBy(sl.skuId, sl.warehouseId);
 
+  /* ── W4 批次效期（batch_stocks，效期参考层；与临期风险页同源，含全部盘点期间行——本仓既有口径）── */
+  const bs = schema.batchStocks;
+  const lotConds = [inArray(bs.warehouseId, whIds), gt(bs.qty, "0"), isNotNull(bs.expiryDate)];
+  if (skuIdsFilter) lotConds.push(inArray(bs.skuId, skuIdsFilter));
+  const lotRows: { skuId: number; warehouseId: number; batchNo: string | null; expiryDate: string; qty: string }[] = await db
+    .select({ skuId: bs.skuId, warehouseId: bs.warehouseId, batchNo: bs.batchNo, expiryDate: bs.expiryDate, qty: bs.qty })
+    .from(bs)
+    .where(and(...lotConds));
+  /** (skuId|warehouseId) → 批次（含已过期，allocateFefo 会按 today 排除并计数） */
+  const lotsByKey = new Map<string, BatchLot[]>();
+  const expiredByKey = new Map<string, number>();
+  const minDaysLeftByKey = new Map<string, number>();
+  let lotSeq = 0;
+  for (const r of lotRows) {
+    const key = `${r.skuId}|${r.warehouseId}`;
+    lotSeq += 1;
+    // batch_stocks 无稳定批次主键语义（同 SKU 同仓可有多期盘点行）；用行序号作 FEFO 稳定排序键
+    (lotsByKey.get(key) ?? lotsByKey.set(key, []).get(key)!).push({ batchId: lotSeq, batchNo: r.batchNo ?? "", expiryDate: r.expiryDate, qty: r.qty });
+    const daysLeft = daysLeftOf(today, r.expiryDate);
+    if (daysLeft <= 0) expiredByKey.set(key, (expiredByKey.get(key) ?? 0) + num(r.qty));
+    else minDaysLeftByKey.set(key, Math.min(minDaysLeftByKey.get(key) ?? daysLeft, daysLeft));
+  }
+
   /* ── 装配逐 SKU 的逐仓视图 ── */
-  type Node = { warehouseId: number; onHand: number; daily: number };
+  type Node = { warehouseId: number; onHand: number; daily: number; minDaysLeft: number | null; expired: number };
   const bySku = new Map<number, Map<number, Node>>();
   const touch = (skuId: number, warehouseId: number): Node => {
     let m = bySku.get(skuId);
     if (!m) { m = new Map(); bySku.set(skuId, m); }
     let n = m.get(warehouseId);
-    if (!n) { n = { warehouseId, onHand: 0, daily: 0 }; m.set(warehouseId, n); }
+    if (!n) { n = { warehouseId, onHand: 0, daily: 0, minDaysLeft: null, expired: 0 }; m.set(warehouseId, n); }
     return n;
   };
   for (const r of balRows) touch(r.skuId, r.warehouseId).onHand = num(r.qty);
   for (const r of outRows) touch(r.skuId, r.warehouseId).daily = num(r.out) / horizonDays;
+  /* 已过期数量从可调拨在库中扣除（以在库为上限——批次参考层与账本可能不同源，宁可少扣不可扣成负数）；
+     未过期批次的最短剩余天数进节点，供 rules/transfer 做「最近效期先让出」排序。 */
+  for (const [key, expired] of expiredByKey) {
+    const [skuIdStr, whIdStr] = key.split("|");
+    const n = bySku.get(Number(skuIdStr))?.get(Number(whIdStr));
+    if (!n) continue; // 该仓无账面余额（参考层有行）——不凭批次参考层凭空造在库
+    n.expired = Math.min(expired, n.onHand);
+    n.onHand = Math.max(0, n.onHand - n.expired);
+  }
+  for (const [key, days] of minDaysLeftByKey) {
+    const [skuIdStr, whIdStr] = key.split("|");
+    const n = bySku.get(Number(skuIdStr))?.get(Number(whIdStr));
+    if (n) n.minDaysLeft = days;
+  }
   if (bySku.size === 0) return { ...empty, summary: { ...empty.summary, excludedSnapshotWarehouses } };
 
   /* ── SKU 主档（active）+ D57 周期参数（sku_params）── */
-  const skuRows: { id: number; code: string; name: string; baseUom: string }[] = await db
-    .select({ id: schema.skus.id, code: schema.skus.code, name: schema.skus.name, baseUom: schema.skus.baseUom })
+  const skuRows: { id: number; code: string; name: string; baseUom: string; nearExpiryDays: number | null }[] = await db
+    .select({ id: schema.skus.id, code: schema.skus.code, name: schema.skus.name, baseUom: schema.skus.baseUom, nearExpiryDays: schema.skus.nearExpiryDays })
     .from(schema.skus)
     .where(and(eq(schema.skus.active, true), inArray(schema.skus.id, [...bySku.keys()])));
   const paramRows: { skuId: number; normalLeadDays: number | null; logisticsLeadDays: number | null; purchaseLeadDays: number | null }[] =
@@ -233,7 +302,12 @@ export async function getTransferSuggestions(
       }
     }
     if (surplus.length === 0 || deficit.length === 0) continue;
-    const lines = planTransfers({ surplus, deficit, targetDays, alertDays: alertDaysValue });
+    const lines = planTransfers({
+      surplus: surplus.map((n) => ({ warehouseId: n.warehouseId, onHand: n.onHand, daily: n.daily, minDaysLeft: n.minDaysLeft })),
+      deficit: deficit.map((n) => ({ warehouseId: n.warehouseId, onHand: n.onHand, daily: n.daily })),
+      targetDays,
+      alertDays: alertDaysValue,
+    });
     if (lines.length === 0) continue;
 
     const nodeById = new Map(nodes.map((n) => [n.warehouseId, n]));
@@ -241,6 +315,7 @@ export async function getTransferSuggestions(
     const inQtyByWh = new Map<number, number>();
     for (const l of lines) inQtyByWh.set(l.toWarehouseId, (inQtyByWh.get(l.toWarehouseId) ?? 0) + l.qty);
 
+    const nearExpiryDays = sku.nearExpiryDays ?? DEFAULT_NEAR_EXPIRY_DAYS;
     for (const l of lines) {
       const from = nodeById.get(l.fromWarehouseId)!;
       const to = nodeById.get(l.toWarehouseId)!;
@@ -251,6 +326,22 @@ export async function getTransferSuggestions(
         fromCover == null
           ? `调出仓近 ${horizonDays} 天无出库、在库 ${r1(from.onHand)}（呆滞积压）`
           : `调出仓可销 ${r1(fromCover)} 天（>盈余线 ${surplusDays} 天）`;
+      /* W4：这批量按先到期先出会动到哪些批次——已过期批次由 allocateFefo 按 today 排除，绝不进建议。
+         批次参考层可能覆盖不全（allocated < qty），此时只解释已覆盖的部分，不假装知道其余批次的效期。 */
+      const lots = lotsByKey.get(`${sku.id}|${l.fromWarehouseId}`) ?? [];
+      const fefo = lots.length ? allocateFefo(lots, String(l.qty), today) : null;
+      const fefoLots = (fefo?.allocations ?? []).map((a) => ({ batchNo: a.batchNo || null, expiryDate: a.expiryDate, qty: a.qty }));
+      const allocatedDaysLeft = fefoLots.length && fefoLots[0].expiryDate ? daysLeftOf(today, fefoLots[0].expiryDate) : null;
+      const minDaysLeft = allocatedDaysLeft ?? from.minDaysLeft;
+      const expiryDriven = minDaysLeft != null && minDaysLeft <= nearExpiryDays;
+      const expiryDesc = expiryDriven
+        ? `；调出仓压着临期批次（最近 ${minDaysLeft} 天到期 ≤ 临期阈值 ${nearExpiryDays} 天），先挪先卖以免报废`
+        : minDaysLeft != null
+          ? `；调出仓最近效期剩 ${minDaysLeft} 天`
+          : "";
+      const expiredDesc = from.expired > 0
+        ? `；调出仓另有 ${r1(from.expired)} 已过期，不计入可调拨量`
+        : "";
       all.push({
         skuId: sku.id,
         code: sku.code,
@@ -264,10 +355,14 @@ export async function getTransferSuggestions(
         fromCoverBefore: fromCover == null ? null : r1(fromCover),
         toCoverBefore: r1(toCoverBefore),
         toCoverAfter: r1(toCoverAfter),
-        reason: `${fromDesc}；调入仓可销 ${r1(toCoverBefore)} 天（<预警阈值 ${alertDaysValue} 天${threshold.usedDefault ? "，按默认周期" : ""}），补至约 ${r1(toCoverAfter)} 天`,
+        reason: `${fromDesc}；调入仓可销 ${r1(toCoverBefore)} 天（<预警阈值 ${alertDaysValue} 天${threshold.usedDefault ? "，按默认周期" : ""}），补至约 ${r1(toCoverAfter)} 天${expiryDesc}${expiredDesc}`,
         alertDays: alertDaysValue,
         basis: threshold.basis,
         usedDefault: threshold.usedDefault,
+        minDaysLeft,
+        expiryDriven,
+        expiredHeld: r1(from.expired),
+        fefoLots,
       });
     }
   }
@@ -308,6 +403,9 @@ export async function getTransferSuggestions(
       thresholdDefaults,
       usedDefaultCount: filtered.filter((r) => r.usedDefault).length,
       skuIdsFilter,
+      expiryDrivenCount: filtered.filter((r) => r.expiryDriven).length,
+      expiredHeldTotal: r1(filtered.reduce((acc, r) => acc + r.expiredHeld, 0)),
+      expiryToday: today,
     },
   };
 }

@@ -14,6 +14,10 @@
  *   未固化任何期间时三列为 null 并在 meta.policyPeriod=null 提示；C 级默认折叠（hideTierC）并标「运营兜底」；
  *   计划事件（ops_plan_events）只作行上下文标签，不进公式。
  * - 全表无金额字段，免脱敏。
+ * - W3 逐行可解释：targetBasis（目标覆盖天数来自页面/分域/ABC/全局哪一层）、safetyDaysBasis（安全库存兜底命中层）、
+ *   noSuggestReason（没有建议时的结构化原因）——空单元格不再模棱两可。
+ * - W5 declinedToday：当日「已复核并放弃」由审计台账下发（服务端权威），不再只存在点击者的浏览器里。
+ * - B7 forecastAccuracy：引擎本就为门控算了滚动回测，把 WAPE/偏差/FVA 一并下发，供计划员判断该信几分。
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { loadExternalVelocitySafe } from "@/server/modules/report/external-velocity";
@@ -37,7 +41,9 @@ import { getOnHandBySku } from "@/server/core/stock-view";
 import { safetyStock } from "@/server/rules/safety-stock";
 import { timePhasedNetReq } from "@/server/rules/timephased";
 import { getOpenSupplyLines, type OpenSupplyLine } from "@/server/core/supply";
-import { makeResolver } from "@/server/core/scoped-params";
+import { describeScope, FALLBACK_SCOPE, makeResolver, type ParamLayer } from "@/server/core/scoped-params";
+import { loadDeclinedToday } from "./decline";
+import type { DeclineReasonCode } from "@/lib/replenish-decline-reasons";
 import { type AnyDb, num, r1, resolveDb } from "@/server/core/svc";
 import { getSkuSupplyParams } from "@/server/modules/master/sku-supply-params";
 import { salesWindow } from "@/server/core/sales-window";
@@ -45,6 +51,86 @@ import { loadPolicyMap } from "@/server/modules/planning/policy";
 import { loadOpenPlanEventsBySku, planEventTag } from "@/server/modules/planning/plan-events";
 import type { Tier } from "@/server/rules/abc";
 import { OWNERSHIP_LABELS, type Ownership } from "@/server/rules/replenish-ownership";
+
+/* ────────────── W3 逐行可解释：目标覆盖天数 / 安全库存兜底 / 为什么没有建议 ────────────── */
+
+/** 目标覆盖天数的来源层：页面指定 > 分域参数（sku/brand/segment）> ABC 分层参数 > 全局/系统缺省 */
+export type TargetBasisSource = "user" | "sku" | "brand" | "segment" | "global" | "abc_a" | "abc_b" | "abc_c";
+
+export interface ReplenishTargetBasis {
+  /** 生效值（天） */
+  value: number;
+  source: TargetBasisSource;
+  /** 分域解析器实际命中的 scope 串（`sku:401`/`brand:12`/`segment:A`/`global`/`fallback`）；非分域来源为 null */
+  scope: string | null;
+  abcClass: "A" | "B" | "C" | null;
+  /** 中文解释（界面 tooltip 直接用） */
+  label: string;
+}
+
+/** 分域参数命中说明（safety_days_fallback 等）——层级来自 core/scoped-params 的解析结果，不在此重判 */
+export interface ScopedParamBasis {
+  value: number;
+  layer: ParamLayer;
+  scope: string;
+  label: string;
+}
+
+/**
+ * 「没有建议」的结构化原因（W3）——空单元格此前无法区分「不需要补」与「引擎算不出来」。
+ * cover_ok=视野内水位够 / ref_gap_suppressed=覆盖缺口抑制 / insufficient_history=无销量历史 /
+ * lead_unknown=无生产周期（行动窗口只能近似、无法倒推下单日）/ no_demand=无动销 / not_triggered=短缺尚在行动窗口外。
+ */
+export const NO_SUGGEST_REASON_CODES = [
+  "cover_ok",
+  "ref_gap_suppressed",
+  "insufficient_history",
+  "lead_unknown",
+  "no_demand",
+  "not_triggered",
+] as const;
+export type NoSuggestReasonCode = (typeof NO_SUGGEST_REASON_CODES)[number];
+
+export const NO_SUGGEST_REASON_LABELS: Record<NoSuggestReasonCode, string> = {
+  cover_ok: "库存充足",
+  ref_gap_suppressed: "已抑制",
+  insufficient_history: "无销量历史",
+  lead_unknown: "缺生产周期",
+  no_demand: "无动销",
+  not_triggered: "未到下单窗口",
+};
+
+export interface NoSuggestReason {
+  code: NoSuggestReasonCode;
+  /** 短标签（列内 Tag 文案） */
+  label: string;
+  /** 完整中文说明（tooltip） */
+  text: string;
+}
+
+/** B7 预测准确度（该 SKU 的滚动回测结果，已在引擎内算出，此前只用于 gate、不下发） */
+export interface ReplenishForecastAccuracy {
+  /** 参与回测的期数；0 = 无法回测 */
+  samples: number;
+  /** WAPE = Σ|预测−实际| ÷ Σ实际；无法计算 = null */
+  wape: number | null;
+  /** 偏差 = Σ(预测−实际) ÷ Σ实际；>0 高估 */
+  bias: number | null;
+  /** FVA = 朴素 WAPE − 模型 WAPE；>0 才说明模型有增量 */
+  fva: number | null;
+  /** 样本 ≥3 期才算可靠 */
+  reliable: boolean;
+}
+
+/** W5 当日「已复核并放弃」（服务端权威，来自审计台账） */
+export interface ReplenishDeclinedToday {
+  by: string;
+  /** ISO 时间戳 */
+  at: string;
+  reason: string;
+  reasonCode: DeclineReasonCode;
+  businessDate: string;
+}
 
 export interface ReplenishRow {
   skuId: number;
@@ -79,6 +165,12 @@ export interface ReplenishRow {
   /** func#14 ABC 分层与生效目标覆盖天数 */
   abcClass: "A" | "B" | "C" | null;
   effectiveTarget: number;
+  /** W3：effectiveTarget 由哪一层给出（页面 / 分域参数 / ABC 分层 / 全局） */
+  targetBasis: ReplenishTargetBasis;
+  /** W3：安全库存兜底天数命中的分域层级 */
+  safetyDaysBasis: ScopedParamBasis;
+  /** W3：suggestQty=null 时的结构化原因；有建议 = null */
+  noSuggestReason: NoSuggestReason | null;
   /** D58 四档（最近固化期生效值，含覆写）；未固化 = null */
   tier: Tier | null;
   /** 是否人工覆写 */
@@ -113,6 +205,10 @@ export interface ReplenishRow {
   forecastDivergent: boolean;
   /** 该 SKU 的预测是否经回测证明优于朴素预测（否则预测列仅供参考，不发偏离告警） */
   forecastTrusted: boolean;
+  /** B7：该 SKU 的预测误差（WAPE/偏差/FVA）——计划员据此判断这条建议该信几分 */
+  forecastAccuracy: ReplenishForecastAccuracy;
+  /** W5：当日已复核并放弃（服务端从审计台账下发，全员可见）；未放弃 = null */
+  declinedToday: ReplenishDeclinedToday | null;
   /* ── E2-01/05 计划引擎 v2 ── */
   /** 安全库存（件） */
   safetyQty: number;
@@ -412,8 +508,46 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       .groupBy(sm.skuId);
     for (const [id, cls] of classifyAbc(popRows.map((r) => ({ id: r.skuId, qty: num(r.qty) })))) abcBySku.set(id, cls);
   }
-  const targetForClass = (c: "A" | "B" | "C" | undefined): number =>
-    userTarget ? coverDaysTarget : Math.min(365, Math.max(1, Math.floor(c === "A" ? targetA : c === "B" ? targetB : c === "C" ? targetC : coverDaysTarget)));
+  /* ── W3 目标覆盖天数的**来源**：此前 effectiveTarget 是个裸数字，行上无从判断它是页面输入、
+        分域覆盖、还是 ABC 分层参数——正是「写得进、读不到」那类问题的另一半（写进去了也看不出有没有生效）。
+        优先级：页面指定 > 分域覆盖（sku > brand > segment）> ABC 分层参数 > 全局/系统缺省。
+        分域层放在 ABC 之前：给某个 SKU/品牌单独设的目标必须压过分层默认值，否则那次设置等于没设。 ── */
+  const resolveTargetDays = await makeResolver("cover_target_days", 45, dbArg);
+  const clampDays = (v: number): number => Math.min(365, Math.max(1, Math.floor(v)));
+  const scopeLabelOf = (scope: string, brandName: string | null, abcClass: "A" | "B" | "C" | null): string => {
+    if (scope === FALLBACK_SCOPE) return "系统缺省";
+    if (scope === "global") return "全局";
+    if (scope.startsWith("brand:")) return `品牌${brandName ? `「${brandName}」` : `#${scope.slice(6)}`}`;
+    if (scope.startsWith("segment:")) return `${abcClass ?? scope.slice(8)} 类分层`;
+    if (scope.startsWith("sku:")) return "本 SKU";
+    return describeScope(scope);
+  };
+  const targetBasisFor = (
+    s: { id: number; brand: string | null; brandId: number | null },
+    abcClass: "A" | "B" | "C" | null,
+  ): ReplenishTargetBasis => {
+    if (userTarget) {
+      return { value: coverDaysTarget, source: "user", scope: null, abcClass, label: `页面指定目标覆盖 ${coverDaysTarget} 天（本次查询覆盖分层与分域参数）` };
+    }
+    const hit = resolveTargetDays({ skuId: s.id, brandId: s.brandId ?? undefined, segment: abcClass ?? undefined });
+    if (hit.layer === "sku" || hit.layer === "brand" || hit.layer === "segment") {
+      const value = clampDays(hit.value);
+      return {
+        value,
+        source: hit.layer,
+        scope: hit.scope,
+        abcClass,
+        label: `${scopeLabelOf(hit.scope, s.brand, abcClass)}覆盖 ${value} 天（分域参数 cover_target_days）`,
+      };
+    }
+    if (abcClass) {
+      const value = clampDays(abcClass === "A" ? targetA : abcClass === "B" ? targetB : targetC);
+      const source = (abcClass === "A" ? "abc_a" : abcClass === "B" ? "abc_b" : "abc_c") as TargetBasisSource;
+      return { value, source, scope: null, abcClass, label: `ABC ${abcClass} 类目标覆盖 ${value} 天（运行参数 cover_target_days_${abcClass.toLowerCase()}）` };
+    }
+    const value = clampDays(hit.value);
+    return { value, source: "global", scope: hit.scope, abcClass: null, label: `${scopeLabelOf(hit.scope, s.brand, null)}目标覆盖 ${value} 天（运行参数 cover_target_days，本 SKU 未分层）` };
+  };
 
   /* ── 全口径参考：transit_refs kind=stock_summary（总库存明细，只参考不入账） ── */
   const tr = schema.transitRefs;
@@ -548,7 +682,8 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     });
 
     const abcClass = abcBySku.get(s.id) ?? null;
-    const effectiveTarget = targetForClass(abcClass ?? undefined);
+    const targetBasis = targetBasisFor(s, abcClass);
+    const effectiveTarget = targetBasis.value;
     const pol = policy.bySku.get(s.id) ?? null;
 
     /* ── E2-01 安全库存：统计法（需求σ×交期），样本/交期不足降级兜底天数并注明 ── */
@@ -563,6 +698,12 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       brandId: s.brandId ?? undefined,
       segment: abcClass ?? undefined,
     });
+    const safetyDaysBasis: ScopedParamBasis = {
+      value: safetyDays.value,
+      layer: safetyDays.layer,
+      scope: safetyDays.scope,
+      label: `${scopeLabelOf(safetyDays.scope, s.brand, abcClass)}兜底 ${safetyDays.value} 天（分域参数 safety_days_fallback；仅统计法不可用时生效）`,
+    };
     const ss = safetyStock({
       monthly: seriesBySku.get(s.id) ?? [],
       daily: dailyNum,
@@ -620,6 +761,30 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     } else if (tp.shortageDate != null) {
       planExplain.push(`短缺在 ${tp.daysToShortage} 天后、超出行动窗口 ${actionWindow} 天（生产周期内可补），暂不建议下单`);
     }
+
+    /* ── W3「为什么没有建议」：空单元格无法区分「不需要补」与「引擎算不出来」，
+          两者的处置完全不同（前者不用管，后者要去补主数据）。判定顺序即解释力顺序。 ── */
+    let noSuggestReason: NoSuggestReason | null = null;
+    if (suggest == null) {
+      const reason = (code: NoSuggestReasonCode, text: string): NoSuggestReason => ({ code, label: NO_SUGGEST_REASON_LABELS[code], text });
+      if (suppressReason != null) {
+        noSuggestReason = reason("ref_gap_suppressed", `${suppressReason}${heldQty ? `；原始建议 ${heldQty}（核实后可放行）` : ""}`);
+      } else if (months6.length === 0 || !seriesBySku.has(s.id)) {
+        noSuggestReason = reason("insufficient_history", "近 6 个月无销量记录，日均与预测都无从推导——补齐销量数据或按人工判断处理");
+      } else if (dailyNum <= 0) {
+        noSuggestReason = reason("no_demand", `近 3 月（${months3.join("、")}）无动销，日均 0，不产生补货需求`);
+      } else if (tp.shortageDate == null) {
+        noSuggestReason = reason("cover_ok", `${horizonDays} 天视野内水位始终不低于安全库存 ${ss.safetyQty}，无需补货`);
+      } else if (leadDays == null) {
+        noSuggestReason = reason("lead_unknown", `未维护生产周期：行动窗口只能按预警阈值 ${actionWindow} 天近似，也无法倒推最晚下单日——请在「供应参数」补齐加工/物流周期`);
+      } else if (!triggered) {
+        noSuggestReason = reason("not_triggered", `短缺在 ${tp.daysToShortage} 天后，尚在行动窗口 ${actionWindow} 天之外（生产周期内来得及补），现在下单过早`);
+      } else {
+        noSuggestReason = reason("cover_ok", "已触发但测算净需求为 0（施加 MOQ/订货倍数后不足 1 个基础单位）");
+      }
+      planExplain.push(`未给出建议：${noSuggestReason.text}`);
+    }
+
     const targetLevel = dAdd(
       String(ss.safetyQty),
       dMul(dailyDec, String(effectiveTarget), 6),
@@ -665,6 +830,9 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       borrowOut: r1(borrowOut),
       abcClass,
       effectiveTarget,
+      targetBasis,
+      safetyDaysBasis,
+      noSuggestReason,
       tier: pol?.effectiveTier ?? null,
       tierOverridden: pol?.overrideTier != null,
       ownership: pol?.ownership ?? null,
@@ -683,6 +851,14 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       forecastTrend: fc.trend,
       forecastDivergent,
       forecastTrusted,
+      forecastAccuracy: {
+        samples: fcBt.n,
+        wape: fcBt.wape,
+        bias: fcBt.bias,
+        fva: fcBt.fva,
+        reliable: fcBt.reliable,
+      },
+      declinedToday: null, // 分页后统一回填（只查当前页 SKU 的当日放弃状态）
       safetyQty: ss.safetyQty,
       safetyMethod: ss.method,
       shortageDate: tp.shortageDate,
@@ -732,7 +908,13 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
   visible.sort((a, b) => compareReplenishRows(a, b, sortBy, sortOrder));
   const suggestCount = visible.filter((r) => r.suggestQty != null).length;
   const suppressedCount = visible.filter((r) => r.suppressReason != null).length;
-  const rows: ReplenishRow[] = visible.slice((page - 1) * pageSize, page * pageSize).map((r) => ({
+  const paged = visible.slice((page - 1) * pageSize, page * pageSize);
+  /* W5：当日「已复核并放弃」由服务端下发（审计台账是唯一权威）。
+     此前只存在点击者自己的 sessionStorage 里，同事、另一台设备一律看不到，
+     于是同一条建议被不同的人重复复核。当日放弃条数极少，一次全量读回内存按 SKU 命中即可。 */
+  const declinedRows = await loadDeclinedToday(db, todayStr);
+  const declinedBySku = new Map(declinedRows.map((d) => [d.skuId, d]));
+  const rows: ReplenishRow[] = paged.map((r) => ({
     skuId: r.skuId,
     code: r.code,
     name: r.name,
@@ -753,6 +935,9 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     borrowOut: r.borrowOut,
     abcClass: r.abcClass,
     effectiveTarget: r.effectiveTarget,
+    targetBasis: r.targetBasis,
+    safetyDaysBasis: r.safetyDaysBasis,
+    noSuggestReason: r.noSuggestReason,
     tier: r.tier,
     tierOverridden: r.tierOverridden,
     ownership: r.ownership,
@@ -778,6 +963,16 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     planExplain: r.planExplain,
     forecastDivergent: r.forecastDivergent,
     forecastTrusted: r.forecastTrusted,
+    forecastAccuracy: r.forecastAccuracy,
+    declinedToday: declinedBySku.get(r.skuId)
+      ? {
+          by: declinedBySku.get(r.skuId)!.by,
+          at: declinedBySku.get(r.skuId)!.at,
+          reason: declinedBySku.get(r.skuId)!.reason,
+          reasonCode: declinedBySku.get(r.skuId)!.reasonCode,
+          businessDate: declinedBySku.get(r.skuId)!.businessDate,
+        }
+      : null,
     decisionEvidence: r.decisionEvidence,
   }));
   return {

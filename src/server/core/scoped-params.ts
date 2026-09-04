@@ -34,13 +34,26 @@ export interface ResolveCtx {
   segment?: string | null;
 }
 
+/** 命中层级（机器可读）——UI/读模型据此解释「这个数来自哪一层」，不必再解析 scope 串 */
+export type ParamLayer = "sku" | "brand" | "segment" | "global" | "fallback";
+
 export interface ResolvedParam {
   value: number;
   /** 命中层级的 scope 字符串；未命中任何行时为 "fallback" */
   scope: string;
+  /** 命中层级枚举（由 scope 串推导，供调用方直接落到行上而不再各自 split） */
+  layer: ParamLayer;
 }
 
 export const FALLBACK_SCOPE = "fallback";
+
+/** scope 串 → 层级枚举（唯一推导处；未知前缀按 fallback 处理，绝不猜） */
+export function scopeLayer(scope: string): ParamLayer {
+  if (scope === "global") return "global";
+  const kind = scope.split(":")[0];
+  if (kind === "sku" || kind === "brand" || kind === "segment") return kind;
+  return "fallback";
+}
 
 /** scope 对象 → 字符串（写库用） */
 export function encodeScope(s: ParamScope): string {
@@ -119,9 +132,9 @@ async function loadScopeMap(key: string, dbArg?: AnyDb): Promise<Map<string, num
 function pick(map: Map<string, number>, fallback: number, ctx: ResolveCtx): ResolvedParam {
   for (const s of candidateScopes(ctx)) {
     const v = map.get(s);
-    if (v != null) return { value: v, scope: s };
+    if (v != null) return { value: v, scope: s, layer: scopeLayer(s) };
   }
-  return { value: fallback, scope: FALLBACK_SCOPE };
+  return { value: fallback, scope: FALLBACK_SCOPE, layer: "fallback" };
 }
 
 /**

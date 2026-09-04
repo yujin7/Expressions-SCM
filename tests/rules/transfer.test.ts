@@ -77,6 +77,43 @@ describe("planTransfers", () => {
     ]);
   });
 
+  it("W4 效期优先：临期批次的盈余仓先被掏空；无效期信息的仓排最后", () => {
+    // 两个呆滞盈余仓：wh4 可让出 300（无效期信息）、wh1 可让出 100（最近 20 天到期）
+    // 旧规则按可让出量降序会先掏 wh4；效期优先后 wh1（临期）先出，剩余再由 wh4 补齐
+    const lines = planTransfers({
+      surplus: [
+        { warehouseId: 1, onHand: 100, daily: 0, minDaysLeft: 20 },
+        { warehouseId: 4, onHand: 300, daily: 0 },
+      ],
+      deficit: [{ warehouseId: 2, onHand: 0, daily: 10 }], // 需 450
+      ...P,
+    });
+    expect(lines).toEqual([
+      { fromWarehouseId: 1, toWarehouseId: 2, qty: 100 },
+      { fromWarehouseId: 4, toWarehouseId: 2, qty: 300 },
+    ]);
+    // 同为临期时仍按可让出量降序（少开单据）
+    const both = planTransfers({
+      surplus: [
+        { warehouseId: 1, onHand: 100, daily: 0, minDaysLeft: 20 },
+        { warehouseId: 4, onHand: 300, daily: 0, minDaysLeft: 10 },
+      ],
+      deficit: [{ warehouseId: 2, onHand: 0, daily: 10 }],
+      ...P,
+    });
+    expect(both.map((l) => l.fromWarehouseId)).toEqual([4, 1]); // 10 天 < 20 天
+    // minDaysLeft 全缺省 → 与旧行为完全一致（可让出量降序）
+    const legacy = planTransfers({
+      surplus: [
+        { warehouseId: 1, onHand: 100, daily: 0, minDaysLeft: null },
+        { warehouseId: 4, onHand: 300, daily: 0 },
+      ],
+      deficit: [{ warehouseId: 2, onHand: 0, daily: 10 }],
+      ...P,
+    });
+    expect(legacy.map((l) => l.fromWarehouseId)).toEqual([4, 1]);
+  });
+
   it("无盈余 / 无缺口 → 空结果", () => {
     expect(planTransfers({ surplus: [], deficit: [{ warehouseId: 2, onHand: 0, daily: 10 }], ...P })).toEqual([]);
     expect(planTransfers({ surplus: [{ warehouseId: 1, onHand: 999, daily: 0 }], deficit: [], ...P })).toEqual([]);

@@ -2,7 +2,8 @@
  * 库存预警表 v2（inventory-alerts/v2）+ 爆单 v2（sales-spike/v2）+ 看门狗 why 载荷。
  *
  * 覆盖审计 #1（未结供给降级，在库 0 不降）、#4（why）、#5（优先级拆项）、#6（学习交期只观察）、
- * #7（大促预期内爆单降严重度 + 日历覆盖率）、#8（reason/gaps 透传）、#11b（临期/积压两种预警开始产出）。
+ * #7（大促预期内爆单降严重度 + 日历覆盖率）、#8（reason/gaps 透传）、#11b（临期/积压两种预警开始产出）、
+ * W6（最晚下单日取补货引擎的时间分段结果，引擎无答案才回退近似并标注来源）。
  * 日期相对 todayShanghai 取，避免测试随日历失效。
  */
 import { describe, expect, it } from "vitest";
@@ -199,8 +200,15 @@ describe("库存预警表 v2 + 爆单 v2 + 看门狗 why", () => {
       expect(w1.downgradedBySupply).toBe(1);
       const [coldAlert] = await db.select().from(schema.systemAlerts).where(and(eq(schema.systemAlerts.category, "inventory_cover"), eq(schema.systemAlerts.status, "open")));
       expect(coldAlert.refKey).toBe(cold.code);
-      const snap = coldAlert.paramsSnapshot as { why: { label: string; value: string; source: string }[]; nextArrival: { qty: number }; priorityTerms: { alertDays: number } };
+      const snap = coldAlert.paramsSnapshot as {
+        why: { label: string; value: string; source: string }[]; nextArrival: { qty: number }; priorityTerms: { alertDays: number };
+        orderByDate: string; orderByDateSource: string;
+      };
       expect(snap.why.length).toBeGreaterThanOrEqual(6);
+      // W6：cold 没有维护生产周期，补货引擎倒推不出最晚下单日 → 回退近似值并如实标注来源
+      expect(snap.orderByDateSource).toBe("fallback");
+      expect(snap.orderByDate).toBe(today); // 在库 0 → 窗口已过，按今天
+      expect(snap.why.find((w) => w.label === "最晚下单日")?.value).toContain("近似");
       expect(snap.why.every((w) => typeof w.label === "string" && typeof w.value === "string" && typeof w.source === "string")).toBe(true);
       expect(snap.nextArrival.qty).toBe(80);
       expect(snap.priorityTerms.alertDays).toBe(50);
@@ -214,6 +222,67 @@ describe("库存预警表 v2 + 爆单 v2 + 看门狗 why", () => {
       expect(ss).toMatchObject({ expected: true, gaps: 1, planEventRef: promo.id });
       expect(ss.reason).toContain("连续 3 天");
       expect(ss.why.map((w) => w.label)).toContain("大促预期内");
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+/**
+ * W6：待办截止日 = 补货引擎（rules/timephased）的最晚下单日。
+ * 看门狗不再自己用「今天 + 在库可销 − 交期」倒推——那个近似值忽略有确认到货日的在途与安全库存水位，
+ * 与计划员在补货页看到的日子对不上。引擎无答案时才回退，并在快照与 why 里标明来源。
+ */
+describe("看门狗最晚下单日：取补货引擎结果，无答案才回退", () => {
+  it("有生产周期 → engine（短缺日倒推总供应周期）；缺生产周期 → fallback 近似", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const today = todayShanghai();
+      const [actor] = await db.insert(schema.users).values({ name: "计划", roles: ["pmc"] }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "W6", nameCn: "W6品" }).returning();
+      const [withLead] = await db.insert(schema.skus).values({ code: "W6-001", name: "有周期", spuId: spu.id, skuType: "finished", baseUom: "支" }).returning();
+      const [noLead] = await db.insert(schema.skus).values({ code: "W6-002", name: "无周期", spuId: spu.id, skuType: "finished", baseUom: "支" }).returning();
+      const [ch] = await db.insert(schema.channels).values({ code: "tmall", name: "天猫", kind: "platform" }).returning();
+      for (const ym of ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"]) {
+        await db.insert(schema.salesMonthly).values([
+          { skuId: withLead.id, channelId: ch.id, yearMonth: ym, qty: "300" },
+          { skuId: noLead.id, channelId: ch.id, yearMonth: ym, qty: "300" },
+        ]);
+      }
+      // 总供应周期 = 加工 20 + 物流 10 = 30 天；另一个 SKU 完全不维护周期
+      await db.insert(schema.skuParams).values({ skuId: withLead.id, normalLeadDays: 20, logisticsLeadDays: 10 });
+      // 两者都固化为 A 级（C 级与未固化不开告警）；在库 0 + 有需求 → 断货告警
+      await db.insert(schema.skuPlanningPolicy).values([
+        { skuId: withLead.id, period: "2026-08", tier: "A", abc: "A", ownership: "joint_review" },
+        { skuId: noLead.id, period: "2026-08", tier: "A", abc: "A", ownership: "joint_review" },
+      ]);
+      await db.insert(schema.warehouses).values({ code: "W6-WH", name: "成品仓", kind: "finished", accountingMode: "realtime" });
+      expect(actor.id).toBeGreaterThan(0);
+
+      const res = await runInventoryCoverWatchdog(db, new Date());
+      expect(res.opened).toBe(2);
+      const alerts = await db.select().from(schema.systemAlerts).where(eq(schema.systemAlerts.category, "inventory_cover"));
+      const snapOf = (code: string) => alerts.find((a) => a.refKey === code)!.paramsSnapshot as {
+        orderByDate: string; orderByDateSource: string; engineShortageDate: string | null;
+        why: { label: string; value: string; source: string }[];
+      };
+
+      // 有周期：在库 0、日均 > 0 → 引擎当天即跌破安全库存，最晚下单日 = 今天 − 30 天（窗口已过）
+      const withLeadSnap = snapOf("W6-001");
+      expect(withLeadSnap.orderByDateSource).toBe("engine");
+      expect(withLeadSnap.orderByDate).toBe(shift(today, -30));
+      expect(withLeadSnap.engineShortageDate).toBe(today);
+      const engineWhy = withLeadSnap.why.find((w) => w.label === "最晚下单日")!;
+      expect(engineWhy.value).toContain("补货引擎");
+      expect(engineWhy.value).toContain("窗口已过");
+      expect(engineWhy.source).toContain("rules/timephased");
+
+      // 无周期：引擎倒推不出下单日 → 回退近似值（在库 0 → 今天），且如实标注来源
+      const noLeadSnap = snapOf("W6-002");
+      expect(noLeadSnap.orderByDateSource).toBe("fallback");
+      expect(noLeadSnap.orderByDate).toBe(today);
+      expect(noLeadSnap.engineShortageDate).toBe(today); // 引擎知道短缺，只是无法倒推下单日
+      expect(noLeadSnap.why.find((w) => w.label === "最晚下单日")!.value).toContain("近似");
     } finally {
       await client.close();
     }

@@ -29,7 +29,8 @@ import ProjectionDrawer from "@/components/ProjectionDrawer";
 import CaliberNote from "@/components/CaliberNote";
 import { useListState } from "@/components/useListState";
 import { hasAnyRole, useMe } from "@/components/useMe";
-import { DECLINE_REASON_LABELS } from "@/lib/replenish-decline-reasons";
+import { DECLINE_REASON_LABELS, type DeclineReasonCode } from "@/lib/replenish-decline-reasons";
+import { metricTooltip } from "@/components/metrics";
 import DeclineSuggestionModal, { type DeclineResult, type DeclineTarget } from "./decline-modal";
 
 interface ReplenishRow {
@@ -50,6 +51,18 @@ interface ReplenishRow {
   borrowOut: number;
   abcClass: "A" | "B" | "C" | null;
   effectiveTarget: number;
+  /** W3：目标覆盖天数来自哪一层（页面/分域参数/ABC 分层/全局） */
+  targetBasis: {
+    value: number;
+    source: "user" | "sku" | "brand" | "segment" | "global" | "abc_a" | "abc_b" | "abc_c";
+    scope: string | null;
+    abcClass: "A" | "B" | "C" | null;
+    label: string;
+  };
+  /** W3：安全库存兜底天数命中的分域层 */
+  safetyDaysBasis: { value: number; layer: "sku" | "brand" | "segment" | "global" | "fallback"; scope: string; label: string };
+  /** W3：没有建议时的结构化原因 */
+  noSuggestReason: { code: string; label: string; text: string } | null;
   /** D58 四档（最近固化期，含覆写）；null = 未固化 */
   tier: "S" | "A" | "B" | "C" | null;
   tierOverridden: boolean;
@@ -70,6 +83,10 @@ interface ReplenishRow {
   forecastTrend: "up" | "down" | "flat";
   forecastDivergent: boolean;
   forecastTrusted: boolean;
+  /** B7：该 SKU 的预测误差（滚动回测） */
+  forecastAccuracy: { samples: number; wape: number | null; bias: number | null; fva: number | null; reliable: boolean };
+  /** W5：当日已复核并放弃（服务端权威，全员可见） */
+  declinedToday: { by: string; at: string; reason: string; reasonCode: DeclineReasonCode; businessDate: string } | null;
   safetyQty: number;
   safetyMethod: string;
   shortageDate: string | null;
@@ -114,6 +131,17 @@ interface PlanEventRow {
 }
 
 const TIER_COLORS: Record<string, string> = { S: "magenta", A: "red", B: "orange", C: "default" };
+/** W3 目标覆盖天数来源的短标签（完整解释在 tooltip 的 targetBasis.label 里） */
+const TARGET_SOURCE_TAG: Record<string, string> = {
+  user: "页面",
+  sku: "SKU 覆盖",
+  brand: "品牌覆盖",
+  segment: "分层覆盖",
+  global: "全局",
+  abc_a: "A 类",
+  abc_b: "B 类",
+  abc_c: "C 类",
+};
 const OWNERSHIP_COLORS: Record<string, string> = { supply_chain_direct: "green", joint_review: "gold", ops_fallback: "default" };
 const TIER_OPTIONS = [
   { value: "S", label: "S 级" }, { value: "A", label: "A 级" }, { value: "B", label: "B 级" }, { value: "C", label: "C 级" }, { value: "none", label: "未固化" },
@@ -146,7 +174,8 @@ type ReplenishSortBy =
 
 type ReplenishSortOrder = "ascend" | "descend";
 
-/* 闭环审计 #12：「不采纳」留痕后当天在行上打标（服务端按人×SKU×业务日幂等；这里只是当日的会话内提示，不是权威） */
+/* 闭环审计 #12 / W5：「不采纳」的权威状态由服务端下发（row.declinedToday，取自审计台账，全员可见）。
+   sessionStorage 只留作**乐观提示**：点完到下一次拉取之间先把标打上，拉取回来即以服务端为准。 */
 const DECLINED_STORE = "replenish:declined";
 function shanghaiToday(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date());
@@ -401,6 +430,29 @@ export default function ReplenishClient() {
         render: (v: string | null, r: ReplenishRow) => v ? <Tooltip title={`ABC ${v} 类——目标覆盖 ${r.effectiveTarget} 天（分层策略，可在运行参数调）`}><Tag color={v === "A" ? "red" : v === "B" ? "orange" : "default"}>{v}</Tag></Tooltip> : "—",
       },
       {
+        // W3：目标覆盖天数此前只是「分层」列 tooltip 里的一句话，看不出到底是页面输入、分域覆盖还是分层参数在起作用
+        title: "目标天数", dataIndex: "effectiveTarget", width: 96, align: "right" as const,
+        render: (v: number, r: ReplenishRow) => (
+          <Tooltip
+            title={
+              <span style={{ whiteSpace: "pre-line" }}>
+                {`目标覆盖：${r.targetBasis.label}\n安全库存兜底：${r.safetyDaysBasis.label}\n（优先级：页面指定 > 分域覆盖 sku/品牌/分层 > ABC 分层参数 > 全局缺省）`}
+              </span>
+            }
+          >
+            <Space size={2}>
+              <span>{v} 天</span>
+              <Tag
+                color={r.targetBasis.source === "user" ? "blue" : r.targetBasis.source.startsWith("abc_") ? "default" : r.targetBasis.source === "global" ? "default" : "purple"}
+                style={{ marginInlineEnd: 0 }}
+              >
+                {TARGET_SOURCE_TAG[r.targetBasis.source]}
+              </Tag>
+            </Space>
+          </Tooltip>
+        ),
+      },
+      {
         title: "四档", dataIndex: "tier", width: 82, align: "center" as const, ...sortable("tier"),
         render: (v: ReplenishRow["tier"], r: ReplenishRow) => v
           ? (
@@ -500,6 +552,41 @@ export default function ReplenishClient() {
             },
           },
           {
+            // B7：回测本就在引擎里算好（用于门控预测），此前只在内部当开关用，计划员看不到「这条建议该信几分」
+            title: <Tooltip title={metricTooltip("wape")}>预测误差</Tooltip>,
+            key: "forecastAccuracy",
+            width: 120,
+            align: "right" as const,
+            render: (_: unknown, r: ReplenishRow) => {
+              const a = r.forecastAccuracy;
+              if (a.wape == null) {
+                return (
+                  <Tooltip title={`无法回测：${a.samples === 0 ? "历史不足 4 个月，滚动回测起不了测" : "该 SKU 回测期实际销量合计为 0"}——预测列仅供参考`}>
+                    <Typography.Text type="secondary">—</Typography.Text>
+                  </Tooltip>
+                );
+              }
+              const pct = Math.round(a.wape * 1000) / 10;
+              const color = !a.reliable ? "default" : pct <= 30 ? "green" : pct <= 60 ? "gold" : "red";
+              return (
+                <Tooltip
+                  title={
+                    <span style={{ whiteSpace: "pre-line" }}>
+                      {[
+                        metricTooltip("wape"),
+                        `本 SKU：WAPE ${pct}%，偏差 ${a.bias == null ? "—" : `${a.bias > 0 ? "+" : ""}${Math.round(a.bias * 1000) / 10}%`}（${a.bias == null ? "无法判定" : a.bias > 0.1 ? "系统性高估，会备多" : a.bias < -0.1 ? "系统性低估，有断货风险" : "无明显系统性偏差"}），回测 ${a.samples} 期`,
+                        a.fva == null ? "" : a.fva > 0 ? `优于「下月＝上月」朴素预测 ${Math.round(a.fva * 1000) / 10} 个点` : "不优于「下月＝上月」朴素预测——该 SKU 的预测不宜作为判断依据",
+                        a.reliable ? "" : "样本 < 3 期，结论参考价值有限",
+                      ].filter(Boolean).join("\n")}
+                    </span>
+                  }
+                >
+                  <Tag color={color} style={{ marginInlineEnd: 0 }}>{pct}%{a.reliable ? "" : "?"}</Tag>
+                </Tooltip>
+              );
+            },
+          },
+          {
             title: "可销（系统）", dataIndex: "daysCover", width: 135, align: "right" as const, ...sortable("daysCover"),
             render: (v: number | null, r: ReplenishRow) => {
               const body = v == null ? <Typography.Text type="secondary">无动销</Typography.Text>
@@ -565,6 +652,10 @@ export default function ReplenishClient() {
                 {r.heldQty ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>({Number(r.heldQty).toLocaleString("zh-CN")})</Typography.Text> : null}
               </Space>
             </Tooltip>
+          ) : r.noSuggestReason ? (
+            <Tooltip title={r.noSuggestReason.text}>
+              <Tag style={{ marginInlineEnd: 0, color: "#8c8c8c", borderStyle: "dashed" }}>{r.noSuggestReason.label}</Tag>
+            </Tooltip>
           ) : (
             "—"
           ),
@@ -576,20 +667,29 @@ export default function ReplenishClient() {
         align: "center",
         render: (_: unknown, r: ReplenishRow) => <a onClick={() => setProjSku(r.code)}>查看</a>,
       },
-      ...(canDecline ? [{
+      {
+        /* W5：放弃状态对**所有人**可见（服务端下发），只有计划员看得到「不采纳」入口 */
         title: "复核",
         key: "decline",
-        width: 100,
+        width: 120,
         align: "center" as const,
         render: (_: unknown, r: ReplenishRow) => {
-          const d = declined[r.skuId];
-          if (d) {
+          // 服务端（审计台账）优先；本地乐观提示只在服务端尚未刷新到时兜底
+          const server = r.declinedToday;
+          const local = declined[r.skuId];
+          if (server || local) {
+            const reasonCode = server?.reasonCode ?? local!.reasonCode;
+            const label = DECLINE_REASON_LABELS[reasonCode]?.label ?? reasonCode;
+            const title = server
+              ? `${server.by} 于 ${new Date(server.at).toLocaleString("zh-CN", { hour12: false })} 复核并放弃（${label}）${server.reason ? `：${server.reason}` : ""}；已留痕审计，不进采纳率分母`
+              : `本次已提交放弃（${label}），刷新后以服务端记录为准`;
             return (
-              <Tooltip title={`今日已复核并放弃（${DECLINE_REASON_LABELS[d.reasonCode]?.label ?? d.reasonCode}）；已留痕审计，不进采纳率分母`}>
-                <Tag style={{ marginInlineEnd: 0 }}>今日已放弃</Tag>
+              <Tooltip title={title}>
+                <Tag style={{ marginInlineEnd: 0 }}>{server ? `${server.by} 已放弃` : "今日已放弃（待刷新）"}</Tag>
               </Tooltip>
             );
           }
+          if (!canDecline) return "—";
           if (r.suggestQty == null && r.heldQty == null) return "—";
           return (
             <a onClick={() => setDeclineTarget({ skuId: r.skuId, code: r.code, name: r.name, baseUom: r.baseUom, suggestQty: r.suggestQty, heldQty: r.heldQty })}>
@@ -597,7 +697,7 @@ export default function ReplenishClient() {
             </a>
           );
         },
-      }] : []),
+      },
     ];
     },
     [sortBy, sortOrder, policyPeriod, canDecline, declined],
@@ -636,7 +736,8 @@ export default function ReplenishClient() {
           <div>
             <p>建议引擎 v2：按安全库存与逐日到货推演首次短缺；只有短缺日落在生产周期内才触发建议（更早下单是浪费，更晚来不及）。</p>
             <p>融合参考层做标注与抑制（只提示不入账）：全口径参考（总库存明细）、存量在途（旧流程成品跟进表）、在制委外（WO 计划产出）、在订未出、借出未还、生产周期。覆盖缺口 SKU（参考显著高于系统）触发的建议会被抑制并逐行给出原因，人工核实后可放行。</p>
-            <p>看过建议、判断不需要下单时点行上「不采纳」留痕（计划/管理员）：只写审计、不改建议、不开单据；「已复核并放弃」在建议闭环追踪单列，不进采纳率分母。</p>
+            <p>看过建议、判断不需要下单时点行上「不采纳」留痕（计划/管理员）：只写审计、不改建议、不开单据；「已复核并放弃」在建议闭环追踪单列，不进采纳率分母。放弃状态由服务端按业务日下发（谁、何时、什么原因），换人换设备都看得到——不再只存在点击者自己的浏览器里。</p>
+            <p>每行都能追到「为什么」：目标天数列标出该值来自页面输入、分域覆盖（SKU/品牌/分层）、ABC 分层参数还是全局缺省；没有建议时给出结构化原因（库存充足 / 已抑制 / 无销量历史 / 缺生产周期 / 无动销 / 未到下单窗口），空单元格不再模棱两可；预测误差列给出该 SKU 的滚动回测 WAPE 与偏差，作为「这条建议该信几分」的依据。</p>
             {data?.meta ? (
               <p>
                 销速窗口：{data.meta.months3.length ? data.meta.months3.join("、") : "无销量数据"}

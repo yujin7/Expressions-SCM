@@ -30,6 +30,13 @@ interface TransferSuggestRow {
   alertDays: number;
   basis: { part: string; value: number; source: string; field: string | null }[];
   usedDefault: boolean;
+  /** W4 效期：本次调拨按 FEFO 会动到的最近到期批次剩余天数；无效期数据 = null */
+  minDaysLeft: number | null;
+  /** 调出仓压着临期批次——挪走即避免报废 */
+  expiryDriven: boolean;
+  /** 调出仓已过期数量（已从可调拨量中扣除） */
+  expiredHeld: number;
+  fefoLots: { batchNo: string | null; expiryDate: string | null; qty: string }[];
 }
 
 interface TransferSuggestData {
@@ -41,6 +48,9 @@ interface TransferSuggestData {
     totalQty: number;
     horizonDays: number;
     excludedSnapshotWarehouses: string[];
+    expiryDrivenCount: number;
+    expiredHeldTotal: number;
+    expiryToday: string;
   };
 }
 
@@ -139,6 +149,27 @@ export default function TransferSuggestClient() {
       ),
     },
     {
+      title: "效期",
+      dataIndex: "minDaysLeft",
+      width: 130,
+      align: "right",
+      render: (v: number | null, r) => {
+        const lots = r.fefoLots.length
+          ? `按先到期先出会动到：${r.fefoLots.slice(0, 3).map((l) => `${l.expiryDate ?? "无效期"}${l.batchNo ? `（${l.batchNo}）` : ""} ${Number(l.qty).toLocaleString("zh-CN")}`).join("；")}${r.fefoLots.length > 3 ? " …" : ""}`
+          : "调出仓无批次效期数据（批次参考层未覆盖该仓该 SKU）";
+        const expired = r.expiredHeld > 0 ? `\n调出仓另有 ${nz(r.expiredHeld)} 已过期，已从可调拨量中扣除——过期货绝不建议调拨` : "";
+        return (
+          <Tooltip title={<span style={{ whiteSpace: "pre-line" }}>{`${lots}${expired}`}</span>}>
+            <Space size={4}>
+              {v == null ? <Typography.Text type="secondary">—</Typography.Text> : <span>{v} 天</span>}
+              {r.expiryDriven ? <Tag color="volcano" style={{ marginInlineEnd: 0 }}>临期先挪</Tag> : null}
+              {r.expiredHeld > 0 ? <Tag style={{ marginInlineEnd: 0 }}>过期 {nz(r.expiredHeld)}</Tag> : null}
+            </Space>
+          </Tooltip>
+        );
+      },
+    },
+    {
       title: "理由",
       dataIndex: "reason",
       ellipsis: true,
@@ -172,6 +203,10 @@ export default function TransferSuggestClient() {
                 : ""}
               ；委外仓（加工厂垫料）与在途虚拟仓非自有可调配库位，一并排除。
               <br />
+              <b>效期意识</b>：盈余仓按<b>最近效期优先</b>让出（先挪先卖，把调拨变成避免报废的手段），
+              每条建议给出按先到期先出实际会动到的批次；<b>已过期数量绝不参与调拨</b>，已从可调拨在库中扣除并在行上单列
+              （效期判定基准日 {data.summary.expiryToday}；批次效期取自盘点参考层，与账面在库可能不同源，故只用于排序与解释）。
+              <br />
               <b>只读建议，不自动开单</b>：采纳后请按 DB 调拨单正常流程开单审批过账。
             </Typography.Text>
           ) : null
@@ -182,6 +217,8 @@ export default function TransferSuggestClient() {
         <Statistic title="涉及 SKU 数" value={data ? data.summary.skuCount : "—"} />
         <Statistic title="建议条数" value={data ? data.summary.lineCount : "—"} />
         <Statistic title="建议总量（基础单位）" value={data ? data.summary.totalQty : "—"} />
+        <Statistic title="临期驱动条数" value={data ? data.summary.expiryDrivenCount : "—"} />
+        <Statistic title="已过期（不可调拨）" value={data ? data.summary.expiredHeldTotal : "—"} />
       </Space>
       <ListToolbar
         state={listState}

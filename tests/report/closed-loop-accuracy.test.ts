@@ -1,12 +1,13 @@
 /**
  * 建议闭环 #12(a)：建议准确度分布（净需求 vs 实际下单 vs 实际出库，只给分布不给分数）
- * + 「已复核并放弃」写路径留痕且不进采纳率分母。
+ * + 「已复核并放弃」写路径留痕且不进采纳率分母
+ * + #12(b) 抑制复核：ref-gap 闸门扣住的建议后来是否断货（同样只给分布，快照仓 SKU 弃权）。
  */
 import { beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
-import { getClosedLoop, getSuggestionAccuracy } from "@/server/modules/report/closed-loop";
+import { getClosedLoop, getSuggestionAccuracy, getSuppressionReview } from "@/server/modules/report/closed-loop";
 import { declineReplenishSuggestion } from "@/server/modules/replenish/decline";
 import { createTestDb, type TestDb } from "../helpers/db";
 
@@ -32,7 +33,7 @@ describe("report/closed-loop 建议准确度 + 放弃留痕", () => {
     const [rt] = await db.insert(schema.warehouses).values({ code: "CL-RT", name: "实时仓", kind: "finished" }).returning();
     realtimeWh = rt.id;
     const [spu] = await db.insert(schema.spus).values({ code: "CL-SPU", nameCn: "闭环品" }).returning();
-    for (const k of ["A", "SNAP", "NEW", "SUPP"]) {
+    for (const k of ["A", "SNAP", "NEW", "SUPP", "SUPP-OK", "SUPP-SNAP", "SUPP-LATE"]) {
       const [s] = await db.insert(schema.skus).values({ code: `CL-${k}`, name: k, spuId: spu.id, baseUom: "件", skuType: "finished" }).returning();
       sku[k] = s.id;
     }
@@ -54,7 +55,10 @@ describe("report/closed-loop 建议准确度 + 放弃留痕", () => {
       line(sku.A, "CL-A", "100", envelope("2026-06-01", 30, "100")),
       line(sku.SNAP, "CL-SNAP", "50", envelope("2026-06-01", 30, "50")),
       line(sku.NEW, "CL-NEW", "20", envelope("2026-09-01", 30, "20")), // 视野期未走完
-      line(sku.SUPP, "CL-SUPP", "30", envelope("2026-06-01", 30, "30"), true), // 抑制行不进样本
+      line(sku.SUPP, "CL-SUPP", "30", envelope("2026-06-01", 30, "30"), true), // 抑制行不进准确度样本，进抑制复核
+      line(sku["SUPP-OK"], "CL-SUPP-OK", "40", envelope("2026-06-01", 30, "40"), true),
+      line(sku["SUPP-SNAP"], "CL-SUPP-SNAP", "50", envelope("2026-06-01", 30, "50"), true),
+      line(sku["SUPP-LATE"], "CL-SUPP-LATE", "60", envelope("2026-09-01", 30, "60"), true), // 视野期未走完
     ]);
 
     // 实际下单：A 在视野期内 BH 95 件（90–110%）；作废单不计；视野期外不计
@@ -69,6 +73,11 @@ describe("report/closed-loop 建议准确度 + 放弃留痕", () => {
       { skuId: sku.A, warehouseId: realtimeWh, qtyDelta: "200", sourceDocType: "test", sourceDocId: 1, action: "post", occurredAt: new Date("2026-05-01T02:00:00Z") },
       { skuId: sku.A, warehouseId: realtimeWh, qtyDelta: "-60", sourceDocType: "test", sourceDocId: 2, action: "post", occurredAt: new Date("2026-06-15T02:00:00Z") },
       { skuId: sku.A, warehouseId: realtimeWh, qtyDelta: "-70", sourceDocType: "test", sourceDocId: 3, action: "post", occurredAt: new Date("2026-08-15T02:00:00Z") },
+      // 抑制复核：SUPP 窗口内余额归零且有出库（断货确实发生）；SUPP-OK 余额从未归零；SUPP-SNAP 无流水 → 弃权
+      { skuId: sku.SUPP, warehouseId: realtimeWh, qtyDelta: "10", sourceDocType: "test", sourceDocId: 4, action: "post", occurredAt: new Date("2026-05-01T02:00:00Z") },
+      { skuId: sku.SUPP, warehouseId: realtimeWh, qtyDelta: "-10", sourceDocType: "test", sourceDocId: 5, action: "post", occurredAt: new Date("2026-06-10T02:00:00Z") },
+      { skuId: sku["SUPP-OK"], warehouseId: realtimeWh, qtyDelta: "100", sourceDocType: "test", sourceDocId: 6, action: "post", occurredAt: new Date("2026-05-01T02:00:00Z") },
+      { skuId: sku["SUPP-OK"], warehouseId: realtimeWh, qtyDelta: "-10", sourceDocType: "test", sourceDocId: 7, action: "post", occurredAt: new Date("2026-06-10T02:00:00Z") },
     ]);
   });
 
@@ -83,6 +92,27 @@ describe("report/closed-loop 建议准确度 + 放弃留痕", () => {
     expect(a.outboundVsRequired.reduce((s, b) => s + b.count, 0)).toBe(1);
     expect(a.caliber.some((c) => c.includes("不给单一准确率"))).toBe(true);
     expect((a as unknown as Record<string, unknown>).accuracyPct).toBeUndefined();
+  });
+
+  it("抑制复核：被扣住的建议后来是否断货——随后断货 / 未断货 / 无流水弃权，各带样本数与扣住量", async () => {
+    const r = await getSuppressionReview(db, { now: NOW });
+    expect(r.version).toBe("closed-loop-suppression/v1");
+    // 4 条抑制行：3 条视野期已走完，SUPP-LATE 的视野期还没走完 → 不判定
+    expect(r).toMatchObject({ sample: 4, matured: 3, immature: 1 });
+    expect(Number(r.heldQtyTotal)).toBe(180);
+    const bucket = (key: string) => r.outcomes.find((b) => b.key === key)!;
+    expect(bucket("stockout_followed").count).toBe(1); // SUPP：窗口内余额归零且有出库
+    expect(Number(bucket("stockout_followed").heldQty)).toBe(30);
+    expect(bucket("no_stockout").count).toBe(1); // SUPP-OK：余额从未归零
+    expect(Number(bucket("no_stockout").heldQty)).toBe(40);
+    expect(bucket("unverifiable").count).toBe(1); // SUPP-SNAP：实时仓无流水，弃权而不是判「抑制正确」
+    expect(Number(bucket("unverifiable").heldQty)).toBe(50);
+    expect(r.caliber.some((c) => c.includes("不给单一"))).toBe(true);
+    // 不给单一「抑制正确率」
+    expect((r as unknown as Record<string, unknown>).correctPct).toBeUndefined();
+    // 闭环页一并下发
+    const loop = await getClosedLoop({ page: 1, pageSize: 20 }, db);
+    expect(loop.suppression.matured).toBe(3);
   });
 
   it("放弃留痕：pmc 写审计 decline_suggestion；同人同 SKU 同日重复只留一条；ops 403；不进采纳率分母", async () => {

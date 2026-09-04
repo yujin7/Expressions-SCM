@@ -2,7 +2,8 @@
 
 /**
  * 建议闭环追踪：补货建议 / NPD 首单 生成的 BH 草稿 → 审批执行状态（只读）。
- * 闭环审计 #12：追加「建议准确度」（净需求 vs 实际下单 vs 实际出库，只给分布不给分数）与「已复核并放弃」计数。
+ * 闭环审计 #12：追加「建议准确度」（净需求 vs 实际下单 vs 实际出库，只给分布不给分数）、「已复核并放弃」计数
+ * 与「抑制复核」（覆盖缺口闸门扣住的建议后来是否断货，同样只给分布）。
  */
 import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Card, Col, Row, Statistic, Table, Tag, theme, Tooltip, Typography } from "antd";
@@ -15,7 +16,7 @@ import { fetchJson } from "@/components/fetchJson";
 import ListToolbar from "@/components/ListToolbar";
 import { metric } from "@/components/metrics";
 import { useListState } from "@/components/useListState";
-import type { AccuracyBucket, AccuracyBucketKey, SuggestionAccuracy } from "@/server/modules/report/closed-loop";
+import type { AccuracyBucket, AccuracyBucketKey, SuggestionAccuracy, SuppressionOutcomeBucket, SuppressionReview } from "@/server/modules/report/closed-loop";
 
 interface ClosedLoopRow {
   id: number;
@@ -50,6 +51,8 @@ interface ClosedLoopData {
   total: number;
   summary: ClosedLoopSummary;
   accuracy: SuggestionAccuracy;
+  /** 闭环审计 #12(b)：抑制闸门回看 */
+  suppression: SuppressionReview;
 }
 
 /* ────────────── 建议准确度分布（只给分布与样本数） ────────────── */
@@ -158,6 +161,7 @@ export default function ClosedLoopClient() {
 
   const s = data?.summary;
   const a = data?.accuracy;
+  const sup = data?.suppression;
 
   const columns: ColumnsType<ClosedLoopRow> = [
     { title: "生成时间", dataIndex: "createdAt", width: 160, render: (v: string) => fmtTime(v) },
@@ -242,6 +246,44 @@ export default function ClosedLoopClient() {
               />
             </Col>
           </Row>
+        </div>
+      ) : null}
+      {sup ? (
+        <div style={{ marginTop: 16 }}>
+          <Typography.Title level={5} style={{ marginTop: 0 }}>抑制复核（被扣住的建议，后来断货了吗）</Typography.Title>
+          <CaliberNote
+            summary={
+              <>覆盖缺口闸门扣住的量此前从无回看。已捕获抑制行 <b>{sup.sample}</b> 条、合计扣住 <b>{Number(sup.heldQtyTotal).toLocaleString("zh-CN")}</b>（基础单位），
+              其中视野期已走完 <b>{sup.matured}</b> 条（未走完 {sup.immature} 条不判定）。
+              只给分布与样本数，不给「抑制正确率」。</>
+            }
+            detail={<ul style={{ paddingLeft: 16, margin: 0 }}>{sup.caliber.map((c, i) => <li key={i}>{c}</li>)}</ul>}
+          />
+          <Table<SuppressionOutcomeBucket>
+            rowKey="key"
+            size="small"
+            pagination={false}
+            dataSource={sup.outcomes}
+            locale={{ emptyText: "尚无已成熟的抑制样本" }}
+            columns={[
+              {
+                title: "视野期内结果",
+                dataIndex: "label",
+                render: (v: string, r) => (
+                  <Tag color={r.key === "stockout_followed" ? "red" : r.key === "no_stockout" ? "green" : "default"}>{v}</Tag>
+                ),
+              },
+              { title: "条数", dataIndex: "count", width: 100, align: "right" },
+              {
+                title: "占已成熟",
+                key: "share",
+                width: 110,
+                align: "right",
+                render: (_: unknown, r) => (sup.matured > 0 ? `${Math.round((r.count / sup.matured) * 1000) / 10}%` : "—"),
+              },
+              { title: "被扣住的量", dataIndex: "heldQty", width: 140, align: "right", render: (v: string) => Number(v).toLocaleString("zh-CN") },
+            ]}
+          />
         </div>
       ) : null}
       <Typography.Title level={5} style={{ marginTop: 16 }}>建议草稿明细</Typography.Title>

@@ -13,6 +13,10 @@
  * 逐行对比 净需求 vs 视野期内实际下单（bh_lines + po_lines）vs 视野期内实际出库（stock_ledger 实时仓），
  * 只给分布与样本数，不给单一准确率分数——视野期归因本身有争议，一个数字会把争议藏起来。
  * 「已复核并放弃」（audit_logs action=decline_suggestion，replenish/decline.ts）单独计数，不进采纳率分母。
+ *
+ * 闭环审计 #12(b) 抑制复核（getSuppressionReview）：覆盖缺口闸门扣住的量（代码注释里那 115,391 件）此前从无回看。
+ * 以 planning_version_lines 中 suppressed=true 的行为样本，在各自视野期内用实时仓流水判断「随后是否真的断货」，
+ * 同样只给分布与样本数；快照仓 SKU 无流水一律弃权，不当作「抑制正确」。
  */
 import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
@@ -71,6 +75,8 @@ export interface ClosedLoopResult {
   total: number;
   summary: ClosedLoopSummary;
   accuracy: SuggestionAccuracy;
+  /** 闭环审计 #12(b)：ref-gap 抑制闸门的回看（被扣住的建议后来断货了没有） */
+  suppression: SuppressionReview;
 }
 
 /* ────────────── 闭环审计 #12(a)：建议准确度分布 ────────────── */
@@ -244,6 +250,144 @@ export async function getSuggestionAccuracy(dbArg?: AnyDb, opts?: { now?: Date; 
   return result;
 }
 
+/* ────────────── W5 / 闭环审计 #12(b)：抑制复核（被抑制的建议后来断货了吗） ────────────── */
+
+export const SUPPRESSION_REVIEW_VERSION = "closed-loop-suppression/v1";
+export const SUPPRESSION_OUTCOME_KEYS = ["stockout_followed", "no_stockout", "unverifiable"] as const;
+export type SuppressionOutcomeKey = (typeof SUPPRESSION_OUTCOME_KEYS)[number];
+export const SUPPRESSION_OUTCOME_LABELS: Record<SuppressionOutcomeKey, string> = {
+  stockout_followed: "随后断货（抑制可能是错的）",
+  no_stockout: "未断货（抑制看起来是对的）",
+  unverifiable: "无法核验（快照仓无流水）",
+};
+
+export interface SuppressionOutcomeBucket {
+  key: SuppressionOutcomeKey;
+  label: string;
+  /** 样本行数 */
+  count: number;
+  /** 该桶内被扣住的量合计（基础单位，decimal 字符串） */
+  heldQty: string;
+}
+
+export interface SuppressionReview {
+  version: typeof SUPPRESSION_REVIEW_VERSION;
+  /** 样本 = 已捕获的抑制行（同 SKU 同业务日取最新版本） */
+  sample: number;
+  matured: number;
+  immature: number;
+  /** 被扣住的量合计（全部样本） */
+  heldQtyTotal: string;
+  /** 已成熟样本的结果分布 */
+  outcomes: SuppressionOutcomeBucket[];
+  caliber: string[];
+}
+
+export const SUPPRESSION_REVIEW_CALIBER = [
+  "样本来自 planning_version_lines 中 suppressed=true 的人工捕获快照（其 suggested_qty 即被扣住的 heldQty），同 SKU 同业务日取最新版本；未捕获的日常抑制不在样本内",
+  "视野期 = 业务日起 decisionEnvelope.inputs.policy.horizonDays 天（缺失按 60）；只对视野期已走完的行判定",
+  "断货判定与告警核验同源（jobs/alert-outcome 口径）：视野期内实时仓合计余额曾 ≤ 0 且窗口内有出库 = 随后断货；余额从未归零 = 未断货",
+  "快照仓 SKU 在实时仓无流水，一律弃权计入「无法核验」，不当作「未断货」——把弃权算成成功正是抑制闸门最容易自我背书的地方",
+  "只给分布与样本数，不给单一「抑制正确率」：断货可能另有原因（外部渠道需求、后续补货已到），一个分数会把这些歧义藏起来",
+];
+
+/**
+ * 抑制复核：覆盖缺口（ref-gap）闸门扣住的建议，后来到底断货了没有。
+ *
+ * 代码注释里那句「实测 18 条、合计 115,391 件被抑制」一直没有下文——闸门是否正确从未被回看。
+ * 本函数把每条被扣住的行放到它自己的视野期里，用实时仓流水判定断货是否发生，按分布给出。
+ */
+export async function getSuppressionReview(dbArg?: AnyDb, opts?: { now?: Date; limit?: number }): Promise<SuppressionReview> {
+  const db: AnyDb = dbArg ?? (await getDbAsync());
+  const now = opts?.now ?? new Date();
+  const today = shanghaiDay(now);
+  const limit = Math.max(1, Math.min(5000, opts?.limit ?? 2000));
+  const pl = schema.planningVersionLines;
+  const pv = schema.planningVersions;
+  const lines: { versionId: number; skuId: number; suggestedQty: string; envelope: unknown; createdAt: Date }[] = await db
+    .select({ versionId: pl.versionId, skuId: pl.skuId, suggestedQty: pl.suggestedQty, envelope: pl.decisionEnvelope, createdAt: pv.createdAt })
+    .from(pl)
+    .innerJoin(pv, eq(pv.id, pl.versionId))
+    .where(eq(pl.suppressed, true))
+    .orderBy(desc(pl.versionId), pl.id)
+    .limit(limit);
+
+  type Held = { skuId: number; versionId: number; businessDate: string; horizonDays: number; heldQty: string };
+  const latest = new Map<string, Held>();
+  for (const l of lines) {
+    const env = (l.envelope ?? {}) as EnvelopeLike;
+    const businessDate = typeof env.businessDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(env.businessDate) ? env.businessDate : shanghaiDay(new Date(l.createdAt));
+    const horizonRaw = Number(env.inputs?.policy?.horizonDays);
+    const horizonDays = Number.isFinite(horizonRaw) && horizonRaw > 0 ? Math.min(365, Math.floor(horizonRaw)) : DEFAULT_HORIZON_DAYS;
+    const heldQty = String(l.suggestedQty);
+    if (dCmp(heldQty, "0") <= 0) continue;
+    const key = `${l.skuId}|${businessDate}`;
+    const cur = latest.get(key);
+    if (!cur || l.versionId > cur.versionId) latest.set(key, { skuId: l.skuId, versionId: l.versionId, businessDate, horizonDays, heldQty });
+  }
+  const samples = [...latest.values()];
+  const matured = samples.filter((s) => shanghaiDay(new Date(shanghaiStart(s.businessDate).getTime() + s.horizonDays * DAY_MS)) <= today);
+  const counts: Record<SuppressionOutcomeKey, { count: number; heldQty: string }> = {
+    stockout_followed: { count: 0, heldQty: "0" },
+    no_stockout: { count: 0, heldQty: "0" },
+    unverifiable: { count: 0, heldQty: "0" },
+  };
+  const result: SuppressionReview = {
+    version: SUPPRESSION_REVIEW_VERSION,
+    sample: samples.length,
+    matured: matured.length,
+    immature: samples.length - matured.length,
+    heldQtyTotal: samples.reduce((acc, s) => dAdd(acc, s.heldQty, 4), "0"),
+    outcomes: SUPPRESSION_OUTCOME_KEYS.map((key) => ({ key, label: SUPPRESSION_OUTCOME_LABELS[key], count: 0, heldQty: "0" })),
+    caliber: [...SUPPRESSION_REVIEW_CALIBER],
+  };
+  if (!matured.length) return result;
+
+  const skuIds = [...new Set(matured.map((s) => s.skuId))];
+  const realtime: { id: number }[] = await db.select({ id: schema.warehouses.id }).from(schema.warehouses).where(eq(schema.warehouses.accountingMode, "realtime"));
+  const realtimeIds = realtime.map((w) => w.id);
+  const l = schema.stockLedger;
+  const moves: { skuId: number; qtyDelta: string; at: Date }[] = realtimeIds.length
+    ? await db
+        .select({ skuId: l.skuId, qtyDelta: l.qtyDelta, at: l.occurredAt })
+        .from(l)
+        .where(and(inArray(l.skuId, skuIds), inArray(l.warehouseId, realtimeIds)))
+        .orderBy(l.occurredAt, l.id)
+    : [];
+  const bySku = new Map<number, { qtyDelta: string; t: number }[]>();
+  for (const m of moves) {
+    const arr = bySku.get(m.skuId) ?? [];
+    arr.push({ qtyDelta: m.qtyDelta, t: new Date(m.at).getTime() });
+    bySku.set(m.skuId, arr);
+  }
+
+  for (const s of matured) {
+    const rows = bySku.get(s.skuId);
+    const from = shanghaiStart(s.businessDate).getTime();
+    const to = from + s.horizonDays * DAY_MS;
+    let key: SuppressionOutcomeKey;
+    if (!rows || rows.length === 0) {
+      key = "unverifiable"; // 快照仓 SKU：没有流水就没有证据，弃权而不是判「没断货」
+    } else {
+      let level = "0";
+      for (const m of rows) if (m.t < from) level = dAdd(level, m.qtyDelta, 4);
+      let minLevel = level;
+      let outQty = "0";
+      for (const m of rows) {
+        if (m.t < from || m.t >= to) continue;
+        level = dAdd(level, m.qtyDelta, 4);
+        if (dCmp(level, minLevel) < 0) minLevel = level;
+        if (dCmp(m.qtyDelta, "0") < 0) outQty = dSub(outQty, m.qtyDelta, 4);
+      }
+      key = dCmp(minLevel, "0") <= 0 && dCmp(outQty, "0") > 0 ? "stockout_followed" : "no_stockout";
+    }
+    counts[key].count += 1;
+    counts[key].heldQty = dAdd(counts[key].heldQty, s.heldQty, 4);
+  }
+  result.outcomes = SUPPRESSION_OUTCOME_KEYS.map((k) => ({ key: k, label: SUPPRESSION_OUTCOME_LABELS[k], count: counts[k].count, heldQty: counts[k].heldQty }));
+  return result;
+}
+
 /** 已复核并放弃的建议条数（audit_logs entity=replenish action=decline_suggestion） */
 export async function countDeclinedSuggestions(dbArg?: AnyDb): Promise<number> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
@@ -408,12 +552,13 @@ export async function getClosedLoop(
   const deliveredCount = all.filter((r) => r.receivedQty > 0).length;
   const deliveredRate = total > 0 ? r1((deliveredCount / total) * 100) : 0;
   // 已复核并放弃：单列，不进 total/adoptRate 分母（放弃是"看过并判断不需要"，与"草稿被否决"不是一回事）
-  const [declined, accuracy] = await Promise.all([countDeclinedSuggestions(db), getSuggestionAccuracy(db)]);
+  const [declined, accuracy, suppression] = await Promise.all([countDeclinedSuggestions(db), getSuggestionAccuracy(db), getSuppressionReview(db)]);
 
   return {
     rows: all.slice((page - 1) * pageSize, page * pageSize),
     total,
     summary: { total, adopted, pending, rejected, deleted, adoptRate, deliveredRate, deliveredCount, declined },
     accuracy,
+    suppression,
   };
 }

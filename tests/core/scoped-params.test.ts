@@ -69,7 +69,7 @@ describe("scoped-params 作用域继承", () => {
     expect(r.scope).toBe("brand:12");
     // 别的品牌仍走 segment
     const other = await resolveNumParam(KEY, FB, { brandId: 99, segment: "AX" }, db);
-    expect(other).toEqual({ value: 30, scope: "segment:AX" });
+    expect(other).toEqual({ value: 30, scope: "segment:AX", layer: "segment" });
   });
 
   it("sku 胜全部", async () => {
@@ -85,9 +85,9 @@ describe("scoped-params 作用域继承", () => {
   it("缺项自动跳级：只有 segment 行、ctx 无 sku/brand", async () => {
     await put("segment:BY", 33);
     const r = await resolveNumParam(KEY, FB, { segment: "BY" }, db);
-    expect(r).toEqual({ value: 33, scope: "segment:BY" });
+    expect(r).toEqual({ value: 33, scope: "segment:BY", layer: "segment" });
     // 空 ctx → fallback（无 global 行）
-    expect(await resolveNumParam(KEY, FB, {}, db)).toEqual({ value: FB, scope: FALLBACK_SCOPE });
+    expect(await resolveNumParam(KEY, FB, {}, db)).toEqual({ value: FB, scope: FALLBACK_SCOPE, layer: "fallback" });
   });
 
   it("makeResolver 批量解析与逐个 resolveNumParam 结果一致", async () => {
@@ -123,7 +123,7 @@ describe("scoped-params 作用域继承", () => {
     expect(rows.map((r) => r.scope).sort()).toEqual(["segment:AX", "sku:401"]);
 
     const r = await resolveNumParam(KEY, FB, CTX, db);
-    expect(r).toEqual({ value: 12, scope: "sku:401" });
+    expect(r).toEqual({ value: 12, scope: "sku:401", layer: "sku" });
 
     const audits = await db.select().from(auditLogs).where(eq(auditLogs.entity, "sys_param_scoped"));
     expect(audits.length).toBe(2);
@@ -189,12 +189,18 @@ describe("clearScopedParam：覆盖可撤销并回落上一级", () => {
 
     await setScopedParam(admin, { key: "safety_days_fallback", scope: { kind: "global" }, value: 7 }, db);
     await setScopedParam(admin, { key: "safety_days_fallback", scope: { kind: "brand", brandId: 12 }, value: 21 }, db);
-    expect((await resolveNumParam("safety_days_fallback", 0, { brandId: 12 }, db)).value).toBe(21);
+    const brandHit = await resolveNumParam("safety_days_fallback", 0, { brandId: 12 }, db);
+    expect(brandHit.value).toBe(21);
+    // W3：解析结果自带命中层级枚举，消费方（补货行 targetBasis/safetyDaysBasis）不必再各自解析 scope 串
+    expect(brandHit.layer).toBe("brand");
+    expect((await resolveNumParam("safety_days_fallback", 0, {}, db)).layer).toBe("global");
+    expect((await resolveNumParam("no_such_key_for_layer", 3, { skuId: 1 }, db)).layer).toBe("fallback");
 
     await clearScopedParam(admin, { key: "safety_days_fallback", scope: { kind: "brand", brandId: 12 } }, db);
     const back = await resolveNumParam("safety_days_fallback", 0, { brandId: 12 }, db);
     expect(back.value).toBe(7);
     expect(back.scope).toBe("global"); // 确实回落到上一级，而不是落到 fallback
+    expect(back.layer).toBe("global");
   });
 
   it("global 层拒绝删除（它是兜底底座）；不存在的覆盖报 404", async () => {
