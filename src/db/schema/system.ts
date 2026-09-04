@@ -469,3 +469,41 @@ export const exceptionDismissals = pgTable("exception_dismissals", {
   index("ix_exception_dismissal_snooze").on(t.snoozedUntil),
   check("ck_exception_consecutive_days_nonneg", sql`${t.consecutiveDays} >= 0`),
 ]);
+
+/**
+ * 工作台「上次访问」标记（W2）——每个用户一行。
+ *
+ * 控制塔每次进页面现算例外，此前**对访问者没有任何记忆**：一个每天早上打开工作台的总监，
+ * 看到的永远是完整的一整屏，分不出哪几条是昨天已经看过的、哪一条是今早新冒出来的。
+ * W9 补的 `exception_dismissals` 是**全局**记忆（这条例外挂了几天、被谁打盹了），
+ * 回答不了「**对我而言**有什么变化」——两者自然键不同（例外键 vs 用户），故分表。
+ *
+ * 为什么是**四**个字段而不是一对：一次「访问」是一段工作会话，不是一次页面刷新。
+ * 若只存一份「上次看到的键」并每次请求都覆盖，用户按一下刷新，刚才那条「新增」就永远消失了——
+ * 而那正是本功能要解决的问题本身。所以拆成两层：
+ *  - `baseline_*`：**上一段会话**结束时的快照与时刻，整段会话内固定不动，就是「上次访问」；
+ *  - `last_seen_*`：最近一次请求的滚动快照与时刻。距上次请求超过 `WORKBENCH_VISIT_GAP_MS`
+ *    即视为新会话：把 `last_seen_*` 顺移成新的 `baseline_*`，再开始新一段。
+ *
+ * 口径纪律：
+ *  - 「新增」= 本次可见键中不在 `baseline_keys` 里的那些。纯事实比对，不评分、不排序、不改判定；
+ *  - 首次访问不标任何一条为新增（第一次见到就整屏飘红等于没有信息）；
+ *  - 只影响展示：不改告警状态、不动待办、不参与任何记账，因此不写审计
+ *    （与 W9 的「连续出现天数」同性质；打盹是**全局**业务动作才写审计）。
+ */
+export const workbenchVisits = pgTable("workbench_visits", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().unique().references(() => users.id),
+  /** 上一段会话的结束时刻——界面上的「上次访问」 */
+  baselineAt: timestamp("baseline_at", { withTimezone: true }).notNull().defaultNow(),
+  /** 上一段会话结束时可见的例外键（string[]）——本段会话内固定的比对基线 */
+  baselineKeys: jsonb("baseline_keys").notNull().default(sql`'[]'::jsonb`),
+  /** 最近一次请求的时刻（用于判定会话是否已断开） */
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  /** 最近一次请求时可见的例外键（下一段会话的基线来源） */
+  lastSeenKeys: jsonb("last_seen_keys").notNull().default(sql`'[]'::jsonb`),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("ix_workbench_visit_user").on(t.userId),
+]);

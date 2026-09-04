@@ -36,7 +36,7 @@ describe("manual operations KPI layouts", () => {
   });
 
   it("leaves the daily digest bounded because its three-column KPIs are not oversized", () => {
-    const source = read("src/app/(app)/report/digest/digest-client.tsx");
+    const source = read("src/app/(app)/workbench/digest-view.tsx");
 
     expect(source).toContain("maxWidth: 960");
     expect(source).toContain(

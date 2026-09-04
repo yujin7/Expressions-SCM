@@ -5,11 +5,11 @@ import SearchInput from "@/components/SearchInput";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  App, Badge, Button, Empty, Input, Modal, Popconfirm, Progress, Select, Space, Table, Tabs, Tag, Tooltip, Typography,
+  Alert, App, Badge, Button, Empty, Input, Modal, Popconfirm, Progress, Select, Space, Table, Tabs, Tag, Tooltip, Typography, Upload,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { ReloadOutlined } from "@ant-design/icons";
-import { fetchJson, patchJson } from "@/components/fetchJson";
+import { ReloadOutlined, UploadOutlined } from "@ant-design/icons";
+import { fetchJson, patchJson, postJson } from "@/components/fetchJson";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import { useListState } from "@/components/useListState";
 
@@ -57,9 +57,121 @@ function refLink(r: ReviewItem): React.ReactNode {
   return r.refKey;
 }
 
+interface ImportResult {
+  parsed: number;
+  inserted: number;
+  skipped: number;
+  byCategory: { category: string; count: number }[];
+}
+
+/**
+ * W2 代决清单导入（仅管理员）。
+ *
+ * 此前空态写的是「请管理员运行那个 seed 脚本」——那个脚本要 SSH 进机器、
+ * 停掉 dev server、还得先把那份 md 放上去，等于在应用里**没有任何**填充队列的办法，
+ * 「复核清单」对所有实际使用者都是一张只读空页。现在同一个解析器、同一条按 title 的幂等规则
+ * 搬进应用，并且比脚本多一条：同事务写审计（谁导的、导了多少、来源是什么）。
+ */
+function ImportChecklistModal({ open, onCancel, onDone }: {
+  open: boolean;
+  onCancel: () => void;
+  onDone: () => void;
+}) {
+  const { message } = App.useApp();
+  const [markdown, setMarkdown] = useState("");
+  const [source, setSource] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<ImportResult | null>(null);
+
+  useEffect(() => {
+    if (!open) { setMarkdown(""); setSource(""); setResult(null); }
+  }, [open]);
+
+  const pickFile = async (file: File) => {
+    setSource(file.name);
+    setMarkdown(await file.text());
+    return false as const; // 只读取内容，不上传
+  };
+
+  const submit = async () => {
+    setSubmitting(true);
+    try {
+      const res = await postJson<ImportResult>("/api/review/checklist/import", {
+        markdown,
+        source: source.trim() || undefined,
+      });
+      setResult(res);
+      message.success(`已导入：新增 ${res.inserted} 条，跳过已存在 ${res.skipped} 条`);
+      onDone();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="导入代决清单"
+      open={open}
+      okText={result ? "关闭" : "导入"}
+      cancelButtonProps={{ style: result ? { display: "none" } : undefined }}
+      cancelText="取消"
+      confirmLoading={submitting}
+      onCancel={onCancel}
+      onOk={result ? onCancel : () => void submit()}
+      okButtonProps={{ disabled: !result && markdown.trim().length === 0 }}
+      width={720}
+    >
+      {result ? (
+        <Alert
+          type="success"
+          showIcon
+          message={`解析 ${result.parsed} 条：新增 ${result.inserted}，跳过已存在 ${result.skipped}`}
+          description={
+            result.byCategory.length > 0
+              ? <Space wrap>{result.byCategory.map((c) => <Tag key={c.category}>{CATEGORY_LABELS[c.category] ?? c.category} {c.count}</Tag>)}</Space>
+              : "本次没有新增条目（全部已存在）——本导入按事项标题幂等，可以反复执行。"
+          }
+        />
+      ) : (
+        <Space direction="vertical" size={10} style={{ width: "100%" }}>
+          <Alert
+            type="info"
+            showIcon
+            message="按事项标题幂等，可反复导入；本操作只导入，不生成、不推断任何复核项"
+            description="识别以「- 」开头的条目行（代决清单 md 格式）；前缀决定类别（SPU 簇代决 / BOM 歧义代决 / 物料代决分类 / 壳档 / 放行受阻 / BOM 生效抽检 / 无编码物料），其余归「其他」。"
+          />
+          <Space>
+            <Upload accept=".md,.txt,.markdown" maxCount={1} showUploadList={false} beforeUpload={pickFile}>
+              <Button icon={<UploadOutlined />}>选择 md 文件</Button>
+            </Upload>
+            <Input
+              style={{ width: 300 }}
+              maxLength={200}
+              placeholder="来源标签（进审计，如文件名）"
+              value={source}
+              onChange={(e) => setSource(e.target.value)}
+            />
+          </Space>
+          <Input.TextArea
+            rows={10}
+            value={markdown}
+            onChange={(e) => setMarkdown(e.target.value)}
+            placeholder={"或直接粘贴内容，例如：\n- SPU 簇代决：N006-001（同名两簇合并）——待业务确认"}
+          />
+        </Space>
+      )}
+    </Modal>
+  );
+}
+
 export default function ChecklistClient() {
   const me = useMe();
   const canDecide = hasAnyRole(me, "pmc", "purchasing", "warehouse", "finance");
+  // 导入是跨域主数据裁决的入口，与服务端 REVIEW_IMPORT_ROLES 同口径：仅管理员
+  const canImport = me?.roles?.includes("admin") === true;
+  const [importOpen, setImportOpen] = useState(false);
   const { message } = App.useApp();
 
   const [counts, setCounts] = useState<CountRow[]>([]);
@@ -326,6 +438,11 @@ export default function ChecklistClient() {
             <Button icon={<ReloadOutlined />} onClick={reload}>
               刷新
             </Button>
+            {canImport ? (
+              <Button icon={<UploadOutlined />} onClick={() => setImportOpen(true)}>
+                导入代决清单
+              </Button>
+            ) : null}
             {canDecide ? (
               <Popconfirm
                 title={`批量通过选中的 ${selected.length} 条？`}
@@ -349,8 +466,23 @@ export default function ChecklistClient() {
         loading={loading}
         scroll={{ x: "max-content" }}
         locale={{
+          /* 空态此前写着「请管理员运行那个 seed 脚本」——一个用户在应用里
+             永远做不到的动作。现在导入就在本页上（管理员可见），非管理员看到的是
+             「找谁」而不是「跑什么命令」。 */
           emptyText: (
-            <Empty description="暂无复核项——如需导入代决清单，请管理员运行 seed-review-items 脚本" />
+            <Empty
+              description={
+                canImport
+                  ? "暂无复核项——可用右上角「导入代决清单」把代决记录导进来（按标题幂等，可反复导入）"
+                  : "暂无复核项——代决清单由管理员在本页「导入代决清单」导入；业务流程（风险处置、委外余料、页面反馈）产生的复核项会自动出现在这里"
+              }
+            >
+              {canImport ? (
+                <Button type="primary" icon={<UploadOutlined />} onClick={() => setImportOpen(true)}>
+                  导入代决清单
+                </Button>
+              ) : null}
+            </Empty>
           ),
         }}
         rowSelection={
@@ -372,6 +504,11 @@ export default function ChecklistClient() {
             listState.setPage(p, ps);
           },
         }}
+      />
+      <ImportChecklistModal
+        open={importOpen}
+        onCancel={() => setImportOpen(false)}
+        onDone={reload}
       />
       <Modal
         title={overruling ? `改判：${overruling.title}` : "改判"}

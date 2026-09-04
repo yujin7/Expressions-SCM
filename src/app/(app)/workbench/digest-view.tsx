@@ -1,6 +1,12 @@
 "use client";
 
-/** 每日经营摘要——in-app 晨间简报（只读）：异常 × 关键指标 × 角色速览。装配自工作台聚焦。 */
+/**
+ * 每日经营摘要——in-app 晨间简报（只读）：异常 × 关键指标 × 角色速览。装配自工作台聚焦。
+ *
+ * W2：本视图曾是独立路由 `/report/digest`，渲染的是**同一份** `workbench/focus.ts` 例外
+ * （服务端 `report/digest.ts` 明写"纯装配 getWorkbenchFocus 输出"）——两个菜单项、两个首页，
+ * 同一批事实换个排版。现并入 `/workbench?view=digest`，旧路径保留跳转。
+ */
 import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Card, Col, Divider, Empty, List, Row, Spin, Statistic, Tag, Typography } from "antd";
 import { fetchJson } from "@/components/fetchJson";
@@ -45,7 +51,7 @@ const SEVERITY_META: Record<Severity, { color: string; label: string }> = {
   medium: { color: "gold", label: "中" },
 };
 
-export default function DigestClient() {
+export default function DigestView() {
   const { message } = App.useApp();
   const [data, setData] = useState<Digest | null>(null);
   const [loading, setLoading] = useState(true);

@@ -83,12 +83,59 @@ install_backup_schedule
 echo "==> 健康检查"
 # 先取值再匹配，不要写成 `curl | grep -q`：本脚本开了 pipefail，而 grep -q 命中即退出会让
 # curl 收到 SIGPIPE，整条管道退出码变 141——健康的部署会被判成失败。
+healthy=0
 for i in $(seq 1 30); do
   health="$(curl -fsS http://127.0.0.1:3000/api/health 2>/dev/null || true)"
   case "$health" in
-    *'"ok":true'*) echo "部署完成 ✓"; exit 0 ;;
+    *'"ok":true'*) healthy=1; break ;;
   esac
   sleep 2
 done
-echo "健康检查失败——检查 docker compose logs app" >&2
-exit 1
+if [ "$healthy" -ne 1 ]; then
+  echo "健康检查失败——检查 docker compose logs app" >&2
+  exit 1
+fi
+
+# ==> 读模型预热（部署后第一个用户不该替全公司付一次全量重算的钱）
+#
+# 背景：读模型缓存键随口径升版（`report_read_model_cache` 的 key 带 /vN）。一次升版之后旧键
+# 再没有读者，于是**部署后第一个打开页面的人**触发同步重算——爆单模型实测要几分钟，
+# 期间他只看到页面转圈。缓存冷不是坏，只是慢，所以这里预热、并且**预热失败绝不让部署失败**。
+#
+# 为什么在容器里跑而不是宿主机：
+#   - runner 镜像是 standalone 精简产物，**没有 tsx、也没有 src/**，跑不了 jobs/cli.ts；
+#   - 宿主机**连不到库**：docker-compose.prod.yml 的 db 服务没有 `ports:`，
+#     只在 compose 网络内以主机名 `db` 可达，宿主机上 `postgres://…@db:5432` 无法解析；
+#     宿主仓库也不保证装了 node_modules。
+#   - migrate 服务（migrator 阶段 = build 阶段）**同时具备三样东西**：完整 node_modules（含 tsx）、
+#     源码，以及指向 db:5432 的 DATABASE_URL（迁移门禁用的就是它）。所以预热复用它。
+# 任务名走 `run-job`，与调度器同一份白名单（INTERVAL_JOBS），并落 job_runs——
+# 预热失败不会被伪装成"没跑过"，失败看门狗照常看得见。
+# 护栏：tests/architecture/deploy-read-model-warm.test.ts
+WARM_JOBS=${SCM_WARM_JOBS:-"inventory-position-refresh inventory-cover-watchdog sales-spike-watchdog transfer-cost-watchdog purchase-order-metrics supplier-payment-term"}
+warm_read_models() {
+  local job rc warmed=0 failed=0
+  if [ "${SCM_SKIP_WARM:-0}" = "1" ]; then
+    echo "    SCM_SKIP_WARM=1——跳过预热（缓存冷只是慢，不是坏）"
+    return 0
+  fi
+  for job in $WARM_JOBS; do
+    rc=0
+    compose --profile tools run --rm -T migrate npx tsx src/jobs/cli.ts run-job "$job" >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      echo "    预热完成 $job"
+      warmed=$((warmed + 1))
+    else
+      # 预热失败只记录：冷缓存会在第一个请求时自行重算，部署本身是成功的
+      echo "    预热失败 $job（退出码 $rc）——已跳过，首个访问者会自行触发重算" >&2
+      failed=$((failed + 1))
+    fi
+  done
+  echo "    预热汇总：成功 $warmed，失败 $failed（失败不影响部署结论）"
+  return 0
+}
+echo "==> 读模型预热"
+warm_read_models
+
+echo "部署完成 ✓"
+exit 0

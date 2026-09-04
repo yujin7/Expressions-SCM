@@ -71,8 +71,11 @@ export const ROUTE_REGISTRY = {
   // 审计 #7：三个「驾驶舱」并列不可分辨——四屏（例外优先）与经营分析总览（BI 趋势）明确分工
   cockpit: { path: "/cockpit", label: "驾驶舱四屏（例外优先）", group: "analytics", scopedMode: "channel_scoped", keywords: "cockpit jiashicang siping four screens 驾驶舱" },
   report_dashboard: { path: "/report/dashboard", label: "经营分析总览", group: "analytics", scopedMode: "channel_scoped", keywords: "dashboard jiashicang bi 经营驾驶舱 经营分析总览" },
-  // 2026-09-04：每日经营摘要此前未登记（只能从工作台一条链接进入）；装配自工作台聚焦，含销售类指标故按渠道裁剪
-  report_digest: { path: "/report/digest", label: "每日经营摘要", group: "analytics", scopedMode: "channel_scoped", keywords: "digest zhaiyao jianbao morning brief 简报 每日经营摘要 晨间简报" },
+  /* 2026-09-04：每日经营摘要此前未登记（只能从工作台一条链接进入）；装配自工作台聚焦，含销售类指标故按渠道裁剪。
+     W2：它与工作台控制塔渲染的是**同一份** workbench/focus 例外（report/digest.ts 自称"纯装配"），
+     两个"登录第一屏"要人先挑今天看哪个——已并为工作台的简报视图，这里保留深链入口
+     （与 /report/leadtime-learning 并入记分卡页签的处理一致；旧路径 /report/digest 保留跳转）。 */
+  report_digest: { path: "/workbench?view=digest", label: "每日经营摘要", group: "analytics", scopedMode: "channel_scoped", keywords: "digest zhaiyao jianbao morning brief 简报 每日经营摘要 晨间简报" },
   report_decision_studio: { path: "/report/decision-studio", label: "决策工作室", group: "analytics", scopedMode: "channel_scoped" },
   report_sales_bridge: { path: "/report/sales-bridge", label: "销量变化归因", group: "analytics", scopedMode: "channel_scoped" },
   report_funnel: { path: "/report/funnel", label: "全链达成漏斗", group: "analytics", scopedMode: "channel_scoped" },
@@ -81,6 +84,11 @@ export const ROUTE_REGISTRY = {
 
   /* ── 计划与补货 ── */
   replenish: { path: "/replenish", label: "补货建议", roles: ["pmc", "purchasing"], group: "planning", scopedMode: "public", keywords: "replenish buhuo" },
+  /* W2 先挪后买：调拨建议与补货建议此前分居两页、两套不可比的可销天数，
+     而计划员每个 SKU 只有一个问题——在必须下单之前能不能先挪。这页按 SKU 并排两边结论
+     （两套口径各自带名字，不合并），按最晚下单日排序；动作仍走既有草稿端点。
+     可见角色与 /replenish 一致（它是补货建议的另一种读法，不是新权限面）。 */
+  replenish_move_or_buy: { path: "/replenish/move-or-buy", label: "先挪后买（统一决策表）", roles: ["pmc", "purchasing"], group: "planning", scopedMode: "public", keywords: "move or buy diaobo buhuo xiannuohoumai 先挪后买 统一决策 调拨 补货" },
   replenish_versions: { path: "/replenish/versions", label: "计划版本与周差异", roles: ["pmc", "purchasing"], group: "planning", scopedMode: "public" },
   replenish_sop: { path: "/replenish/sop", label: "S&OP 计划周期", roles: ["pmc", "purchasing", "ops", "finance"], group: "planning", scopedMode: "channel_scoped", keywords: "sop consensus freeze execute 共识 冻结 执行" },
   replenish_reconcile: { path: "/replenish/reconcile", label: "运营提报核对", roles: ["pmc", "ops", "purchasing", "finance"], group: "planning", scopedMode: "channel_scoped", keywords: "reconcile ops demand tibao hedui 提报 核对" },
@@ -143,7 +151,8 @@ export const ROUTE_REGISTRY = {
 
   /* ── 新品开发 ── */
   npd: { path: "/npd", label: "NPD 项目跟踪", group: "npd", scopedMode: "public", keywords: "npd xinpin project" },
-  report_npd: { path: "/report/npd", label: "NPD 节点参考", group: "npd", scopedMode: "public", keywords: "npd jiedian node" },
+  // W2：节点参考就是建项目时实例化用的那套模板，却与 /npd 并排成两个菜单项；已并入 /npd 的「节点模板」页签
+  report_npd: { path: "/npd?tab=templates", label: "NPD 节点模板", group: "npd", scopedMode: "public", keywords: "npd jiedian node template 节点模板" },
 
   /* ── 财务结算 ── */
   settlement_js: { path: "/settlement/js", label: "结算单", roles: ["finance", "purchasing"], group: "finance", scopedMode: "denied" },

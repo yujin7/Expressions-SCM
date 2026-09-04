@@ -53,7 +53,7 @@ describe("KPI 未加载态：— 而不是 0", () => {
   });
 
   it("每日经营摘要：加载失败不再整页 return null（空白页分不清「今天没简报」和「接口挂了」）", () => {
-    const src = read("src/app/(app)/report/digest/digest-client.tsx");
+    const src = read("src/app/(app)/workbench/digest-view.tsx");
     expect(src).not.toMatch(/if\s*\(!data\)\s*return null;/);
     expect(src).toContain("LoadErrorAlert");
     expect(src).toContain("Empty");

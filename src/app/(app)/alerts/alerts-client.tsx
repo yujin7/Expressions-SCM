@@ -61,7 +61,8 @@ const CAT: Record<string, string> = {
 const SEV: Record<string, string> = { critical: "red", high: "orange", medium: "gold" };
 const STATUS_OPTIONS = [{ value: "open", label: "待处理" }, { value: "resolved", label: "已关闭" }];
 
-type Filters = { status?: string; category?: string; severity?: string; acked?: string };
+/** `id` 是 W2 新增的单条深链筛选（通知中心 → 具体告警行）；命中时服务端忽略 status */
+type Filters = { status?: string; category?: string; severity?: string; acked?: string; id?: string };
 
 const ts = (v: string | null | undefined): string => (v ? new Date(v).toLocaleString("zh-CN") : "—");
 
@@ -74,13 +75,17 @@ function closeReasonLabel(code: string | null | undefined): string {
 export default function AlertsClient() {
   const { message } = App.useApp();
   const me = useMe();
-  const listState = useListState<Filters>({ key: "system-alerts", defaults: { status: "open", category: "", severity: "", acked: "" }, defaultPageSize: 50 });
+  const listState = useListState<Filters>({ key: "system-alerts", defaults: { status: "open", category: "", severity: "", acked: "", id: "" }, defaultPageSize: 50 });
   const { filters } = listState;
   const [data, setData] = useState<ListData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [closing, setClosing] = useState<Row | null>(null);
-  const resolvedView = (filters.status || "open") !== "open";
+  /* 单条深链（?id=）不带状态筛选：这一条本身是不是已关闭，只能看行上的 status——
+     否则从通知点进一条已关闭告警，列显示的仍是「已知悉」而不是「为什么关的」。 */
+  const resolvedView = filters.id
+    ? data?.rows.some((r) => r.status === "resolved") === true
+    : (filters.status || "open") !== "open";
   const query = listState.queryString();
   const load = useCallback(async () => {
     setLoading(true);
@@ -157,7 +162,13 @@ export default function AlertsClient() {
         state={listState}
         extra={(
           <Space wrap>
-            <Select style={{ width: 110 }} value={filters.status || "open"} options={STATUS_OPTIONS} onChange={(v) => listState.setFilter({ status: v })} />
+            {/* 通知中心深链：只看那一条（含已关闭的）；一键清除回到常规视图 */}
+            {filters.id ? (
+              <Tag color="processing" closable onClose={() => listState.setFilter({ id: "" })}>
+                仅看告警 #{filters.id}（忽略状态筛选）
+              </Tag>
+            ) : null}
+            <Select style={{ width: 110 }} disabled={!!filters.id} value={filters.status || "open"} options={STATUS_OPTIONS} onChange={(v) => listState.setFilter({ status: v })} />
             <Select allowClear placeholder="类别" style={{ width: 150 }} value={filters.category || undefined} options={Object.entries(CAT).map(([value, label]) => ({ value, label }))} onChange={(v) => listState.setFilter({ category: v ?? "" })} />
             <Select allowClear placeholder="严重度" style={{ width: 110 }} value={filters.severity || undefined} options={["critical", "high", "medium"].map((v) => ({ value: v, label: severityLabel(v) }))} onChange={(v) => listState.setFilter({ severity: v ?? "" })} />
             <span>隐藏已知悉 <Switch size="small" checked={filters.acked === "0"} onChange={(on) => listState.setFilter({ acked: on ? "0" : "" })} /></span>

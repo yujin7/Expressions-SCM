@@ -1,13 +1,13 @@
 import { Suspense } from "react";
-import NotificationsClient from "./notifications-client";
+import MoveOrBuyClient from "./move-or-buy-client";
 
-export const metadata = { title: "通知中心" };
+export const metadata = { title: "先挪后买 · 统一决策表" };
 
 /** useListState（useSearchParams）必须有 Suspense 边界，否则整页水合失败 */
 export default function Page() {
   return (
     <Suspense>
-      <NotificationsClient />
+      <MoveOrBuyClient />
     </Suspense>
   );
 }

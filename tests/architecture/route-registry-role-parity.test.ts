@@ -36,12 +36,46 @@ describe("注册表 roles 与真实门禁一致", () => {
     expect(read("src/app/api/report/price-compare/route.ts")).toContain("PRICE_VISIBLE_ROLES");
   });
 
-  it("每日经营摘要已登记（可从菜单与 ⌘K 进入），且失败态不是一片空白", () => {
-    expect(ROUTE_REGISTRY.report_digest.path).toBe("/report/digest");
+  /* W2：简报与工作台控制塔渲染的是同一份 workbench/focus 例外（report/digest.ts 自称"纯装配"），
+     两个"登录第一屏"已并为一个——摘要成为 /workbench?view=digest 的一个视图，
+     /report/digest 保留 302。注册表条目保留为深链，⌘K 搜「简报」仍然能到。 */
+  it("每日经营摘要已并入工作台简报视图（深链仍登记，旧路径保留跳转），且失败态不是一片空白", () => {
+    expect(ROUTE_REGISTRY.report_digest.path).toBe("/workbench?view=digest");
     expect(ROUTE_REGISTRY.report_digest.group).toBe("analytics");
     expect((ROUTE_REGISTRY.report_digest as { keywords?: string }).keywords ?? "").toContain("digest");
-    const client = read("src/app/(app)/report/digest/digest-client.tsx");
+    expect(read("src/app/(app)/report/digest/page.tsx")).toContain('redirect("/workbench?view=digest")');
+    const client = read("src/app/(app)/workbench/digest-view.tsx");
     expect(client).toContain("LoadErrorAlert");
     expect(client).not.toMatch(/if\s*\(!data\)\s*return null;/);
+  });
+
+  /* W2：NPD 节点参考就是 /npd 建项目时实例化用的那套模板，却与它并排成两个菜单项；
+     已并入 /npd 的「节点模板」页签，页签标签的硬编码计数（69/19）改为按实际行数渲染。 */
+  it("NPD 节点模板已并入 /npd 页签（旧路径保留跳转），标签不再写死条数", () => {
+    expect(ROUTE_REGISTRY.report_npd.path).toBe("/npd?tab=templates");
+    expect(read("src/app/(app)/report/npd/page.tsx")).toContain('redirect("/npd?tab=templates")');
+    const tab = read("src/app/(app)/npd/node-template-tab.tsx");
+    expect(tab).not.toContain("节点标准（69）");
+    expect(tab).not.toContain("角色分配（19）");
+    expect(tab).toContain("countLabel");
+  });
+
+  /* W2：能力解锁面板此前在 data-health 与 decision-studio 各渲染一次，
+     而 data-health 那份是**空参版**（不传数据源/发布/结果/外部佐证），全部深链又都指向决策工作室。 */
+  it("决策能力解锁只在决策工作室渲染一次，主数据健康度只留指路", () => {
+    const dataHealth = read("src/app/(app)/report/data-health/data-health-client.tsx");
+    expect(dataHealth, "不得再 import 该面板").not.toMatch(/import DecisionReadinessPanel/);
+    expect(dataHealth, "不得再渲染该面板").not.toMatch(/<DecisionReadinessPanel\b/);
+    expect(dataHealth).toContain("/report/decision-studio?tab=readiness");
+    expect(read("src/app/(app)/report/decision-studio/decision-studio-client.tsx")).toContain("DecisionReadinessPanel");
+  });
+
+  /* W2 先挪后买：新页面必须登记（否则又是一个"只能从别处点链接进来"的孤儿页），
+     可见角色与 /replenish 一致——它是补货建议的另一种读法，不是新权限面。 */
+  it("先挪后买决策表已登记，且角色与补货建议一致", () => {
+    expect(ROUTE_REGISTRY.replenish_move_or_buy.path).toBe("/replenish/move-or-buy");
+    expect(ROUTE_REGISTRY.replenish_move_or_buy.group).toBe("planning");
+    expect(ROUTE_REGISTRY.replenish_move_or_buy.roles).toEqual([...ROUTE_REGISTRY.replenish.roles]);
+    expect((ROUTE_REGISTRY.replenish_move_or_buy as { keywords?: string }).keywords ?? "").toContain("先挪后买");
   });
 });
