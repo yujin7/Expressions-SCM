@@ -1,5 +1,6 @@
 import {
-  pgTable, serial, text, integer, numeric, date, timestamp, boolean, unique, jsonb, index, check } from "drizzle-orm/pg-core";
+  pgTable, serial, text, integer, numeric, date, timestamp, boolean, unique, jsonb, index, check,
+  type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import {
   docStatusEnum, poLineTypeEnum, shLineTypeEnum, qcHandlingEnum,
@@ -258,6 +259,15 @@ export const qcRecords = pgTable("qc_records", {
   id: serial("id").primaryKey(),
   shId: integer("sh_id").notNull().references(() => shDocs.id),
   conclusion: text("conclusion"),
+  /**
+   * W2 审计 3：检验不合格的**去向留痕**。此前 `qc_lines.fail_handling` 存了 rework/scrap
+   * 却什么都不会发生——没有退货单、没有质量案件、没有扣款依据，不合格量就地蒸发。
+   * 这两列是「这次检验最终怎么处理的」的正向链接（反向链接在 quality_cases.qc_record_id）。
+   * quality_case_id 的 FK 由应用层保证（quality_cases 在 schema/quality.ts，
+   * 在此加 drizzle 引用会与 quality.ts → docs.ts 形成 import 环）。
+   */
+  qualityCaseId: integer("quality_case_id"),
+  returnCtId: integer("return_ct_id").references((): AnyPgColumn => ctDocs.id),
   createdBy: integer("created_by").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

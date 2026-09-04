@@ -1,7 +1,7 @@
-import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
    flDocs, flLines, jgDocs, jgFeeSegments, jsDocs, jsLines,
-  priceLists, shDocs, shLines, qcLines, skus, suppliers, sysParams,
+  shDocs, shLines, qcLines, skus, suppliers, sysParams,
   tlDocs, tlLines, users, warehouses, woDocs, woLines,
 } from "@/db/schema";
 import { PARAM_KEYS } from "@/server/core/constants";
@@ -11,10 +11,11 @@ import { writeAudit } from "@/server/core/audit";
 import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
-import { ApiError, todayShanghai } from "@/server/modules/master/common";
+import { ApiError } from "@/server/modules/master/common";
 import {
   type AnyDb, requireAnyRole, resolveDb, rethrowApproval,
 } from "@/server/modules/outsource/common";
+import { currentPriceListRow } from "@/server/modules/outsource/price-list";
 import { post } from "@/server/posting";
 import { settle, type SettleResult } from "@/server/rules/settlement";
 import { approveJsSchema, closeJgSchema, createJsSchema, submitJsSchema } from "./schemas";
@@ -46,12 +47,9 @@ const POSTED_DOC_STATUSES: DocStatus[] = ["approved", "completed"];
  * P1 成本台账上线后，仅需替换本函数实现。
  */
 export async function getDeductPrice(db: AnyDb, skuId: number): Promise<string | null> {
-  const [row]: { price: string }[] = await db
-    .select({ price: priceLists.price })
-    .from(priceLists)
-    .where(and(eq(priceLists.skuId, skuId), lte(priceLists.effectiveDate, todayShanghai())))
-    .orderBy(desc(priceLists.effectiveDate), desc(priceLists.id))
-    .limit(1);
+  // 生效日口径唯一权威 = outsource/price-list.currentPriceListRow（价目表维护页写、这里读，同一取行规则）；
+  // supplierId 省略 = 跨供应商取最新，是本代理口径的既有定义（D23 已披露），不是遗漏。
+  const row = await currentPriceListRow(db, { skuId });
   return row?.price ?? null;
 }
 
@@ -266,7 +264,7 @@ export async function previewJs(jgId: number, manualAdj = "0", dbArg?: AnyDb): P
     }
     const price = await getDeductPrice(db, m.materialSkuId);
     if (price == null) {
-      warnings.push(`物料 ${m.skuCode} 无价格表记录，扣款单价按 0 计算——请先维护 price_lists`);
+      warnings.push(`物料 ${m.skuCode} 无价格表记录，扣款单价按 0 计算——请先到「采购价目表」（/outsource/price-list）维护基准价`);
     }
     const issuedQty = issuedBySku.get(m.materialSkuId) ?? "0";
     const returnedQty = returnedBySku.get(m.materialSkuId) ?? "0";

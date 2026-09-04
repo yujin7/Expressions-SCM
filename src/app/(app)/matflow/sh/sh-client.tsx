@@ -20,6 +20,7 @@ import { hasAnyRole, useMe } from "@/components/useMe";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
 import ScannerEntry from "@/components/ScannerEntry";
 import { addScanQty, findUniqueScanMatch } from "@/components/scanner";
+import QcOutcomePanel from "./qc-outcome-panel";
 
 // ---------- 客户端十进制工具（仅 UI 过滤/汇总提示用；非负字符串，禁 float） ----------
 
@@ -1099,6 +1100,8 @@ export default function ShClient() {
                   检验时间：{dayjs(detail.qc.createdAt).format("YYYY-MM-DD HH:mm")}
                   {detail.qc.conclusion ? `｜结论：${detail.qc.conclusion}` : ""}
                 </Typography.Text>
+                {/* W2 审计 3：不合格量必须有去向（质量案件 / 退货草稿），否则它只是报表里的一个比率 */}
+                <QcOutcomePanel shId={detail.id} canWrite={canWrite} onDone={() => void loadDetail(detail.id)} />
               </div>
             ) : detail.status === "approved" && canWrite ? (
               <div style={{ marginBottom: 24 }}>

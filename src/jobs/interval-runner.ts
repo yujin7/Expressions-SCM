@@ -13,6 +13,7 @@ import { getDbAsync } from "@/db";
 import { jobRuns } from "@/db/schema";
 import { log } from "@/server/core/logger";
 import { runLicenseAlert } from "./license-alert";
+import { runProcurementQualityAlerts } from "./procurement-quality-alerts";
 import { runReconcileJst, shanghaiToday } from "./reconcile-jst";
 import { runSnapshotAgeAlert } from "./snapshot-age";
 import { runInventoryPositionRefresh } from "./inventory-position-refresh";
@@ -135,6 +136,8 @@ export const INTERVAL_JOBS: IntervalJob[] = [
   { name: "inventory-cover-watchdog", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runInventoryCoverWatchdog(db) },
   { name: "sales-spike-watchdog", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runSalesSpikeWatchdog(db) },
   { name: "transfer-cost-watchdog", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runTransferCostWatchdog(db) },
+  // W2 审计 5：证照到期 / 交期承诺违约 / OTIF 崩塌 / 质量案件逾期（四类别一次跑完）
+  { name: "procurement-quality-alerts", everyMs: 20 * 60 * 1000, atHours: [11, 17], run: (db) => runProcurementQualityAlerts(db) },
   { name: "todo-sync", everyMs: 30 * 60 * 1000, run: (db) => runTodoSync(db) },
   { name: "goals-auto-actuals", everyMs: 6 * HOUR_MS, atHours: [6], run: (db) => refreshAutoActuals(db) },
   { name: "purchase-order-metrics", everyMs: 6 * HOUR_MS, atHours: [2], run: (db) => refreshPurchaseOrderMetrics(db) },

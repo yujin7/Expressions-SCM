@@ -14,6 +14,7 @@ import {
 } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import RemoteSelect from "@/components/RemoteSelect";
+import SourcingAidPanel from "./sourcing-aid-panel";
 import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
 import DocTransitionActions from "@/components/DocTransitionActions";
@@ -711,6 +712,11 @@ function WoInner() {
           showIcon
           style={{ marginBottom: 16 }}
           message="按需求快照预填：可按供应商分组拆分 PO（0..n 张），数量/单价逐行可改；同时生成 1 张加工通知单。"
+        />
+        {/* W2 审计 6：这里是全系统唯一一个真的在选供应商的地方，此前只有一个光秃秃的下拉框。
+            面板只读——摆事实，不排名次、不自动改表单。 */}
+        <SourcingAidPanel
+          skuOptions={(detail?.lines ?? []).map((l) => ({ value: l.materialSkuId, label: `${l.skuCode} ${l.skuName}` }))}
         />
         <Form form={genForm} layout="vertical">
           <Form.List name="poGroups">

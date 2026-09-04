@@ -502,8 +502,17 @@ async function inboundFromJg(
 }
 
 /**
- * po 源入库：sh_purchase_in 仓库 +合格数；po_line.receivedQty += 合格数（基础单位，
- * SH 实收即基础单位——让步件另行处置不自动入库，MVP 与任务口径一致）。
+ * po 源入库：sh_purchase_in 仓库 +（合格 + 让步接收）；po_line.receivedQty 同额累加（基础单位）。
+ *
+ * **W2 审计 3（让步量不再静默蒸发）**：此前这里只入合格数，让步接收量既不入库也不退货——
+ * 它在 `qc_lines.concession_qty` 里留着，然后凭空消失：仓库账少了这批货，PO 的已收数也不含它，
+ * 而 `report/supply-commitment` 早已按「合格 + 让步接收」当有效接收量算承诺兑现
+ * （于是那边一路判 controlMismatch 把整行踢出分母）。jg 源入库本来就按「合格 + 让步」入，
+ * 两条收货路径的口径在此对齐——让步接收的定义就是**接收**，不是丢弃。
+ *
+ * 不合格量（fail_qty，去向 rework/scrap）仍然不入库，但也不再无声无息：
+ * 由 `modules/quality/qc-outcome.ts` 显式登记质量案件 / 退货（CT）草稿并双向留痕。
+ *
  * 全部行 receivedQty ≥ qty×uomFactor 且 PO 执行中 → 状态机完成 PO。
  */
 async function inboundFromPo(
@@ -526,22 +535,23 @@ async function inboundFromPo(
   const passBySku = new Map<number, string>();
   for (const l of lines) {
     const qc = qcByShLine.get(l.id);
-    const pass = qc ? qc.passQty : "0";
-    if (dCmp(pass, "0") <= 0) continue;
+    // 有效接收量 = 合格 + 让步接收（与 jg 源入库、supply-commitment 的接收口径同一定义）
+    const accepted = qc ? dAdd(qc.passQty, qc.concessionQty) : "0";
+    if (dCmp(accepted, "0") <= 0) continue;
     eventLines.push({
       sourceLineId: l.id,
       skuId: l.skuId,
       warehouseId: sh.warehouseId,
       batchId: batchByShLine.get(l.id) ?? null,
-      qtyDelta: dQty(pass),
+      qtyDelta: dQty(accepted),
     });
-    passBySku.set(l.skuId, dAdd(passBySku.get(l.skuId) ?? "0", pass));
+    passBySku.set(l.skuId, dAdd(passBySku.get(l.skuId) ?? "0", accepted));
   }
   if (eventLines.length > 0) {
     await post(tx, { sourceDocType: "sh_purchase_in", sourceDocId: sh.id, action: "post", lines: eventLines });
   }
 
-  // 已收数累加（同 SKU 多 PO 行时计入首行——PoC 口径）
+  // 已收数累加（合格 + 让步接收；同 SKU 多 PO 行时计入首行——PoC 口径）
   for (const [skuId, pass] of passBySku) {
     const pl = plRows.find((r) => r.skuId === skuId);
     if (!pl) throw new ApiError(500, `PO 行缺失: po#${po.id} sku#${skuId}`);

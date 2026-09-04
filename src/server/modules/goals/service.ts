@@ -116,9 +116,11 @@ export const AUTO_METRIC_SOURCES: readonly AutoMetricSource[] = [
   },
   {
     metricKey: "onTimeRate",
-    label: "OTIF 准时交付率",
+    label: "OTIF 准时交付率（原始承诺）",
     cacheKey: PURCHASE_ORDER_METRICS_KEY,
-    // PurchaseOrderMetrics.summary.otif.rate 为 0–1 比例（年度累计）；payload.year 必须等于期间年份
+    // PurchaseOrderMetrics.summary.otif.rate 为 0–1 比例（年度累计）；payload.year 必须等于期间年份。
+    // v3 起 summary.otif 是**原始承诺**口径：目标只认这一版，供应商改期后的 summary.otifCurrent 不作数
+    // （否则改期越勤越容易达标——OTIF 目标可以被供应商自己洗白）。
     paths: [{ path: "summary.otif.rate", periodYearField: "year", scale: 100 }],
     defaultDirection: "up",
   },
