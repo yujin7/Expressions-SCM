@@ -10,7 +10,7 @@
 import { unlink } from "node:fs/promises";
 import path from "node:path";
 import { and, eq, inArray, lt, isNotNull, or, isNull } from "drizzle-orm";
-import { errorLogs, exportJobs, importJobs, jobRuns, stagingRows, notifications } from "@/db/schema";
+import { errorLogs, exportJobs, importJobs, jobRuns, reportReadModelCache, stagingRows, notifications } from "@/db/schema";
 import { EXPORT_FILE_DIR } from "./export-worker";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
@@ -24,6 +24,11 @@ export const JOB_RUN_RETENTION_DAYS = 30;
 const NOTIFY_READ_RETENTION_DAYS = 30;
 /** 广播/角色定向通知的绝对保留天数（readAt 归属不明，只能按年龄兜底） */
 const NOTIFY_BROADCAST_RETENTION_DAYS = 180;
+/**
+ * 读模型缓存保留期：口径升版（key 带 /vN）后旧键再无人读，但行会一直留着。
+ * 缓存丢了只会重算，所以按绝对年龄兜底即可；窗口远大于任何一个读模型的重建周期。
+ */
+export const READ_MODEL_CACHE_RETENTION_DAYS = 60;
 
 export interface HousekeepingSummary {
   stagingRowsDeleted: number;
@@ -33,6 +38,8 @@ export interface HousekeepingSummary {
   jobRunsDeleted: number;
   /** 已读且超保留期的通知清理数 */
   notificationsDeleted: number;
+  /** 超保留期的读模型缓存行（含口径升版后无人读的旧键） */
+  readModelCacheDeleted: number;
 }
 
 const DAY_MS = 24 * 3600 * 1000;
@@ -116,7 +123,14 @@ export async function runHousekeeping(
     )
     .returning({ id: notifications.id });
 
+  // 口径升版后的僵尸缓存行（如 inventory-alerts/v1 在 /v2 上线后再无人读）
+  const delCache: { key: string }[] = await db
+    .delete(reportReadModelCache)
+    .where(lt(reportReadModelCache.builtAt, cutoff(READ_MODEL_CACHE_RETENTION_DAYS)))
+    .returning({ key: reportReadModelCache.key });
+
   return {
+    readModelCacheDeleted: delCache.length,
     stagingRowsDeleted: delStaging.length,
     exportJobsDeleted: staleExports.length,
     exportFilesUnlinked: filesUnlinked,
