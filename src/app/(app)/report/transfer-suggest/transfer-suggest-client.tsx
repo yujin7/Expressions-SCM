@@ -347,7 +347,8 @@ export default function TransferSuggestClient() {
         rowSelection={{
           preserveSelectedRowKeys: true,
           selectedRowKeys: selected.map((r) => `${r.skuId}-${r.fromWarehouseId}-${r.toWarehouseId}`),
-          onChange: (_keys, rows) => setSelected(rows),
+          // preserveSelectedRowKeys 下，跨页保留的 key 在缓存缺失时会给出 undefined —— 过滤掉，别让它进载荷
+          onChange: (_keys, rows) => setSelected(rows.filter(Boolean)),
         }}
         pagination={listState.paginationProps({ total: data?.total ?? 0 })}
       />
