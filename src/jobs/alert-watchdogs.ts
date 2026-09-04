@@ -2,6 +2,7 @@ import type { AnyDb } from "@/server/core/svc";
 import { upsertAlerts, type AlertCandidate, type AlertWhy } from "@/server/modules/alerts/engine";
 import { refreshInventoryAlerts, type InventoryAlertRow } from "@/server/modules/report/inventory-alerts";
 import { refreshSalesSpike, type SpikeHit } from "@/server/modules/report/sales-spike";
+import { getOrderByDates } from "@/server/modules/replenish/order-by";
 import { ALERT_KIND_LABELS } from "@/server/rules/alert-priority";
 
 /**
@@ -12,6 +13,8 @@ import { ALERT_KIND_LABELS } from "@/server/rules/alert-priority";
  * 下一笔到货、爆单 reason/gaps/大促事件——全部来自读模型已算好的字段，看门狗不重算任何事实。
  * 审计 #1：在库 alert 但阈值内有确认到货的行已由读模型降为 watch，因此不再开告警（自然迟滞关闭）。
  * 审计 #7：大促预期内的爆单降为 medium 而不是丢弃——跑到自己预期 3 倍仍是新闻。
+ * W6：paramsSnapshot.orderByDate 取补货引擎（rules/timephased）的最晚下单日，看门狗自己不再倒推；
+ * 引擎无答案时才回退「今天 + 在库可销 − 交期」近似，并以 orderByDateSource 标明是哪一种。
  */
 const DAILY_SOURCE_LABEL: Record<NonNullable<InventoryAlertRow["primaryDailySource"]>, string> = {
   external: "外部平台净件数（支付−退款）近 30 天 ÷ 30",
@@ -19,7 +22,15 @@ const DAILY_SOURCE_LABEL: Record<NonNullable<InventoryAlertRow["primaryDailySour
   ledger: "实时仓流水近 30 天出库 ÷ 30（含调拨/发料）",
 };
 
-export function coverWhy(r: InventoryAlertRow): AlertWhy[] {
+/** W6：最晚下单日的取值与来源（engine=补货引擎逐日推演；fallback=在库可销 − 交期近似） */
+export interface OrderByExplain {
+  date: string;
+  source: "engine" | "fallback";
+  shortageDate?: string | null;
+  orderWindowMissed?: boolean;
+}
+
+export function coverWhy(r: InventoryAlertRow, orderBy?: OrderByExplain): AlertWhy[] {
   const why: AlertWhy[] = [];
   why.push({
     label: "在库可销",
@@ -62,6 +73,15 @@ export function coverWhy(r: InventoryAlertRow): AlertWhy[] {
     source: "rules/alert-priority",
   });
   why.push({ label: "主预警", value: `${r.primary ? ALERT_KIND_LABELS[r.primary] : "—"}${r.tags.length ? `；标签：${r.tags.map((t) => ALERT_KIND_LABELS[t]).join("、")}` : ""}`, source: "rules/alert-priority" });
+  if (orderBy) {
+    why.push({
+      label: "最晚下单日",
+      value: orderBy.source === "engine"
+        ? `${orderBy.date}（补货引擎逐日推演：首次跌破安全库存 ${orderBy.shortageDate ?? "—"} 倒推总供应周期${orderBy.orderWindowMissed ? "；窗口已过" : ""}）——与补货建议页同一个数`
+        : `${orderBy.date}（近似：今天 + 在库可销 − 交期；补货引擎对该 SKU 无答案——多为缺生产周期或无动销）`,
+      source: orderBy.source === "engine" ? "replenish/order-by（rules/timephased）" : "report/inventory-alerts 近似",
+    });
+  }
   return why;
 }
 
@@ -80,29 +100,49 @@ export function spikeWhy(h: SpikeHit): AlertWhy[] {
 
 export async function runInventoryCoverWatchdog(db: AnyDb, now = new Date()) {
   const model = await refreshInventoryAlerts(db);
-  const candidates: AlertCandidate[] = model.rows
-    .filter((r) => (r.primary === "out_of_stock" || r.status === "alert") && r.tier !== "C" && r.tier != null)
-    .map((r) => ({
-      refKey: r.code,
-      dedupeKey: `inventory_cover:${r.skuId}`,
-      title: r.primary === "out_of_stock" ? `${r.tier} 级 ${r.code} 已断货（有需求无在库）` : `${r.tier} 级 ${r.code} 可销 ${r.coverDays ?? "—"} 天 < 阈值 ${r.alertDays} 天`,
-      detail: `在库 ${r.onHand}；主日销 ${r.primaryDaily ?? "—"}（${r.primaryDailySource ?? "无"}）；阈值 = ${r.alertBasis}${r.usedDefault ? "（含缺省周期）" : ""}${r.nextArrival ? `；下一笔到货 ${r.nextArrival.date} ${r.nextArrival.qty} 件` : ""}`,
-      severity: r.primary === "out_of_stock" || r.tier === "S" ? "high" : "medium",
-      ownerRole: "pmc",
-      actionHref: `/inventory/alerts?tab=cover&cover_q=${encodeURIComponent(r.code)}`,
-      sourceRule: "rules/alert-threshold + rules/alert-priority",
-      paramsSnapshot: {
-        ...model.params, coverDays: r.coverDays, coverDaysWithSupply: r.coverDaysWithSupply, alertDays: r.alertDays, primaryDailySource: r.primaryDailySource,
-        nextArrival: r.nextArrival, inTransitDated: r.inTransitDated, inTransitUndated: r.inTransitUndated, inTransitOverdue: r.inTransitOverdue,
-        learnedLead: r.learnedLead, priorityScore: r.priorityScore, priorityTerms: r.priorityTerms, statusOnHand: r.statusOnHand, statusBasis: r.statusBasis,
-        primary: r.primary, tags: r.tags,
-        // 最晚下单日（闭环审计 #9，待办真实截止日）= 今天 + 在库可销天数 − 交期（阈值 − 缓冲）；断货/无日销 → 今天（窗口已过）
-        orderByDate: new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(
-          new Date(now.getTime() + Math.max(0, Math.floor((r.coverDays ?? 0) - (r.alertDays - model.params.bufferDays))) * 86_400_000),
-        ),
-      },
-      why: coverWhy(r),
-    }));
+  const hits = model.rows.filter((r) => (r.primary === "out_of_stock" || r.status === "alert") && r.tier !== "C" && r.tier != null);
+  /* W6 待办截止日 = 补货引擎的最晚下单日（时间分段推演），不再用「今天 + 在库可销 − 交期」自行倒推：
+     后者忽略有确认到货日的在途与安全库存水位，与补货页给计划员看的日期对不上。
+     引擎无答案（缺生产周期/无动销/视野内不短缺）时才回退近似值，并在 paramsSnapshot 与 why 里标明来源。 */
+  const orderByBySku = new Map<number, { orderByDate: string | null; shortageDate: string | null; orderWindowMissed: boolean }>();
+  if (hits.length > 0) {
+    for (const o of await getOrderByDates(db, hits.map((r) => r.skuId))) {
+      orderByBySku.set(o.skuId, { orderByDate: o.orderByDate, shortageDate: o.shortageDate, orderWindowMissed: o.orderWindowMissed });
+    }
+  }
+  const shanghaiDay = (d: Date): string => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(d);
+  const candidates: AlertCandidate[] = hits
+    .map((r) => {
+      const engine = orderByBySku.get(r.skuId);
+      const orderBy: OrderByExplain = engine?.orderByDate
+        ? { date: engine.orderByDate, source: "engine", shortageDate: engine.shortageDate, orderWindowMissed: engine.orderWindowMissed }
+        : {
+            // 回退：今天 + 在库可销 − 交期（阈值 − 缓冲）；断货/无日销 → 今天（窗口已过）
+            date: shanghaiDay(new Date(now.getTime() + Math.max(0, Math.floor((r.coverDays ?? 0) - (r.alertDays - model.params.bufferDays))) * 86_400_000)),
+            source: "fallback",
+          };
+      return {
+        refKey: r.code,
+        dedupeKey: `inventory_cover:${r.skuId}`,
+        title: r.primary === "out_of_stock" ? `${r.tier} 级 ${r.code} 已断货（有需求无在库）` : `${r.tier} 级 ${r.code} 可销 ${r.coverDays ?? "—"} 天 < 阈值 ${r.alertDays} 天`,
+        detail: `在库 ${r.onHand}；主日销 ${r.primaryDaily ?? "—"}（${r.primaryDailySource ?? "无"}）；阈值 = ${r.alertBasis}${r.usedDefault ? "（含缺省周期）" : ""}${r.nextArrival ? `；下一笔到货 ${r.nextArrival.date} ${r.nextArrival.qty} 件` : ""}`,
+        severity: r.primary === "out_of_stock" || r.tier === "S" ? "high" : "medium",
+        ownerRole: "pmc",
+        actionHref: `/inventory/alerts?tab=cover&cover_q=${encodeURIComponent(r.code)}`,
+        sourceRule: "rules/alert-threshold + rules/alert-priority",
+        paramsSnapshot: {
+          ...model.params, coverDays: r.coverDays, coverDaysWithSupply: r.coverDaysWithSupply, alertDays: r.alertDays, primaryDailySource: r.primaryDailySource,
+          nextArrival: r.nextArrival, inTransitDated: r.inTransitDated, inTransitUndated: r.inTransitUndated, inTransitOverdue: r.inTransitOverdue,
+          learnedLead: r.learnedLead, priorityScore: r.priorityScore, priorityTerms: r.priorityTerms, statusOnHand: r.statusOnHand, statusBasis: r.statusBasis,
+          primary: r.primary, tags: r.tags,
+          // 最晚下单日（闭环审计 #9 / W6，待办真实截止日）：优先取补货引擎逐日推演结果，无答案才回退近似
+          orderByDate: orderBy.date,
+          orderByDateSource: orderBy.source,
+          engineShortageDate: engine?.shortageDate ?? null,
+        },
+        why: coverWhy(r, orderBy),
+      } satisfies AlertCandidate;
+    });
   const res = await upsertAlerts(db, { category: "inventory_cover", candidates, now });
   return { category: "inventory_cover", rows: model.rows.length, candidates: candidates.length, downgradedBySupply: model.totals.downgradedBySupply, ...res };
 }

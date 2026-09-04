@@ -12,16 +12,22 @@
  * - 盈余仓可让出量 = onHand − daily×alertDays（保留自身 alertDays 的缓冲），下限 0；
  *   daily=0 的呆滞仓保留量为 0，可整仓让出。
  * - 缺口仓所需量 = daily×targetDays − onHand，下限 0。
- * - 缺口仓按可销天数升序（最急先补）、盈余仓按可让出量降序（先掏大仓，少开单据）；
+ * - 缺口仓按可销天数升序（最急先补）、盈余仓按**最近效期升序**优先、同档再按可让出量降序（先掏大仓，少开单据）；
  *   逐对分配至缺口满足或盈余耗尽；qty 向下取整（不拆最小包装）且 >0 才产出。
+ *
+ * W4 效期优先（minDaysLeft）：同样是"多出来的货"，压着 60 天到期批次的仓应当**先**被掏空——
+ * 挪到真正在发货的仓才有机会在到期前卖掉。不传 minDaysLeft 的调用方行为完全不变（按可让出量降序）。
+ * 已过期数量不是"可让出量"，调用方须在 onHand 里先扣掉（本函数不认识批次，只认净可让量）。
  */
 
 export interface TransferNode {
   warehouseId: number;
-  /** 该仓在库（基础单位） */
+  /** 该仓在库（基础单位；W4 调用方须已扣除已过期数量——过期货不可调拨） */
   onHand: number;
   /** 该仓日均出库（近 N 天出库合计 ÷ N） */
   daily: number;
+  /** W4 该仓该 SKU 未过期批次的最短剩余天数；null/缺省 = 无效期信息（排在有效期批次之后） */
+  minDaysLeft?: number | null;
 }
 
 export interface PlanTransfersInput {
@@ -39,6 +45,14 @@ export interface TransferLine {
   qty: number;
 }
 
+/** 效期紧迫度比较：剩余天数少的在前；无效期信息（null）一律排最后，绝不因"没录效期"被优先掏空（与 rules/fefo 同一纪律） */
+function compareExpiry(a: number | null, b: number | null): number {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  return a - b;
+}
+
 /** 可销天数：daily=0 视为无穷（呆滞，不参与紧迫度排序的有限比较） */
 function coverOf(n: TransferNode): number {
   return n.daily > 0 ? n.onHand / n.daily : Number.POSITIVE_INFINITY;
@@ -50,9 +64,9 @@ export function planTransfers(input: PlanTransfersInput): TransferLine[] {
 
   // 盈余侧：可让出量 = 在库 − 自留缓冲（daily×alertDays），下限 0
   const pool = (input.surplus ?? [])
-    .map((s) => ({ warehouseId: s.warehouseId, avail: Math.max(0, s.onHand - s.daily * alertDays) }))
+    .map((s) => ({ warehouseId: s.warehouseId, avail: Math.max(0, s.onHand - s.daily * alertDays), minDaysLeft: s.minDaysLeft ?? null }))
     .filter((s) => s.avail > 0)
-    .sort((a, b) => b.avail - a.avail || a.warehouseId - b.warehouseId);
+    .sort((a, b) => compareExpiry(a.minDaysLeft, b.minDaysLeft) || b.avail - a.avail || a.warehouseId - b.warehouseId);
 
   // 缺口侧：补到目标覆盖所需量；按可销天数升序（最急先补）
   const needs = (input.deficit ?? [])
