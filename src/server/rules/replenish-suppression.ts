@@ -20,6 +20,7 @@
  * 任何人可一键解除。这里只定义"压多久、什么条件下提前解除"，落库与展示在 service 层。
  */
 import type { DeclineReasonCode } from "@/lib/replenish-decline-reasons";
+import { dayDiff } from "@/server/core/business-day";
 
 export interface SuppressionPolicy {
   /** 抑制天数（业务日 + days = 到期日，含当天） */
@@ -139,9 +140,15 @@ export function suppressionState(input: SuppressionStateInput): SuppressionState
       return { active: false, releasedBy: "supply_cancelled", daysLeft: 0 };
     }
   }
-  const daysLeft = Math.max(
-    0,
-    Math.round((Date.parse(`${input.untilDate}T00:00:00Z`) - Date.parse(`${input.today}T00:00:00Z`)) / DAY_MS),
-  );
+  /* 「含今天」不是措辞问题：解除条件是 `today > untilDate`，所以 today == untilDate 那天
+     抑制**仍然生效**，而不含今天的算法在那天给出 0。于是窗口最后一天界面写着「剩 0 天」，
+     采购建议却还被扣着——读者会以为窗口已过、系统坏了，实际是还差一天。
+     +1 让读数与解除条件对齐：最后一天显示「剩 1 天」，过了才是 0。
+
+     ⚠ 只改读数，**不动实际压制时长**：`untilDate = businessDate + days` 配上 `>` 解除，
+     意味着 `days: 7` 的策略实际压 8 个自然日（建立当天 + 7 天）。「7 天」到底该压 7 天
+     还是 8 天是业务口径，不由工程决定；在业务确认之前，压制行为保持现状不变，
+     这里只保证界面说的和系统做的是同一件事。已登记待业务确认。 */
+  const daysLeft = Math.max(0, dayDiff(input.today, input.untilDate) + 1);
   return { active: true, releasedBy: null, daysLeft };
 }

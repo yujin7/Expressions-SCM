@@ -20,10 +20,11 @@ import {
   CATEGORY_OTIF_COLLAPSE, CATEGORY_PROMISE_BREACH, CATEGORY_QUALITY_CASE_OVERDUE,
   CATEGORY_SUPPLIER_LICENSE, OTIF_COLLAPSE_AUTO_CLOSE_DAYS, OTIF_COLLAPSE_MIN_EVALUABLE,
   PROMISE_BREACH_MIN_DAYS,
-  runOtifCollapseWatchdog, runPromiseBreachWatchdog, runQualityCaseOverdueWatchdog,
+  collectPromiseBreaches, runOtifCollapseWatchdog, runPromiseBreachWatchdog, runQualityCaseOverdueWatchdog,
   runSupplierLicenseWatchdog,
 } from "@/jobs/procurement-quality-alerts";
 import { createTestDb, type TestDb } from "../helpers/db";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 const NOW = new Date("2026-09-03T02:00:00.000Z");
 const TODAY = "2026-09-03";
@@ -113,6 +114,36 @@ describe("采购与质量看门狗（W2 审计 5）", () => {
     await db.update(poLines).set({ receivedQty: "100" }).where(eq(poLines.id, line.id));
     const after = await runPromiseBreachWatchdog(db, NOW);
     expect(after.autoClosed).toBe(1);
+  });
+
+  it("2b) 未收量走 decimal：0.1×3 收 0.3 就是收齐，不能因浮点残渣开出一条收货也关不掉的告警", async () => {
+    /* `Number("0.1") * Number("3") - Number("0.3")` = 5.55e-17 > 0。
+       用 float 判「还有没有未收」时，这条已经收齐的行会被判成未收齐并开告警；
+       更糟的是它的**关闭条件永远差那一点**——再怎么收货，残渣都还在，
+       告警只能靠人手动消。数量禁用 float（CLAUDE.md：core/decimal 唯一权威）。 */
+    const [po] = await db.insert(poDocs).values({
+      docNo: "PO-PQA-FLOAT", status: "in_progress", supplierId, createdBy: buyer.id,
+      createdAt: new Date("2026-06-01T02:00:00Z"), expectedDate: day(20),
+    }).returning();
+    const [line] = await db.insert(poLines).values({
+      poId: po.id, skuId, lineType: "raw", purchaseUom: "箱", uomFactor: "3",
+      qty: "0.1", price: "10.00", receivedQty: "0.3", expectedDate: day(20),
+    }).returning();
+    await db.insert(poPromiseRevisions).values([
+      {
+        poId: po.id, poLineId: line.id, sequence: 1, previousDate: day(-30), promisedDate: day(-10),
+        source: "supplier_confirm", actorType: "supplier_token",
+        idempotencyKey: `po:${po.id}:line:${line.id}:promise-seq:1`, occurredAt: new Date("2026-06-02T02:00:00Z"),
+      },
+      {
+        poId: po.id, poLineId: line.id, sequence: 2, previousDate: day(-10), promisedDate: day(20),
+        source: "supplier_confirm", actorType: "supplier_token",
+        idempotencyKey: `po:${po.id}:line:${line.id}:promise-seq:2`, occurredAt: new Date("2026-08-20T02:00:00Z"),
+      },
+    ]);
+
+    const rows = await collectPromiseBreaches(db, shanghaiDayOf(NOW));
+    expect(rows.filter((r) => r.docNo === "PO-PQA-FLOAT"), "0.1×3 = 0.3，已收齐，不该出现").toEqual([]);
   });
 
   it("3) OTIF 崩塌：按原始承诺口径判、样本不足不报；YTD 口径用迟滞关闭而不是永不关闭（C7）", async () => {

@@ -34,6 +34,7 @@ import { classifyDueState } from "@/server/rules/quality-compliance";
 import { resolvePromiseBasis } from "@/server/rules/promise-basis";
 import { ALERT_OWNER_ROLE } from "@/server/rules/task-triggers";
 import { runLicenseAlert, LICENSE_ALERT_WINDOW_DAYS } from "./license-alert";
+import { dCmp, dMul, dSub } from "@/server/core/decimal";
 
 /** 承诺推迟多少天才算「违约」（少于此值多半是排产微调，叫醒人只会制造噪声） */
 export const PROMISE_BREACH_MIN_DAYS = 3;
@@ -193,9 +194,12 @@ export async function collectPromiseBreaches(db: AnyDb, today: string): Promise<
     if (!original || !current || current <= original) continue; // 没有版本链、或没有往后推 → 不是违约
     const delayDays = Math.round((Date.parse(`${current}T00:00:00Z`) - Date.parse(`${original}T00:00:00Z`)) / 86_400_000);
     if (delayDays < PROMISE_BREACH_MIN_DAYS) continue;
-    const ordered = Number(l.qty) * Number(l.uomFactor);
-    const outstanding = ordered - Number(l.receivedQty);
-    if (!(outstanding > 0)) continue; // 已收齐：条件消失，交给引擎自动关闭
+    /* 数量禁用 float（CLAUDE.md：core/decimal 唯一权威）。
+       `Number("0.1") * Number("3") - Number("0.3")` = 5.5e-17 > 0，于是一条已经收齐的行
+       被判成「未收齐」，开出一条**收货也关不掉**的告警——它的关闭条件永远差那一点。 */
+    const ordered = dMul(l.qty, l.uomFactor);
+    const outstanding = dSub(ordered, l.receivedQty);
+    if (dCmp(outstanding, "0") <= 0) continue; // 已收齐：条件消失，交给引擎自动关闭
     out.push({
       poId: l.poId,
       docNo: l.docNo,
@@ -208,7 +212,7 @@ export async function collectPromiseBreaches(db: AnyDb, today: string): Promise<
       currentPromisedDate: current,
       delayDays,
       revisionCount: fact.revisionCount,
-      outstandingQty: outstanding.toFixed(4),
+      outstandingQty: outstanding,
     });
   }
   return out.sort((a, b) => b.delayDays - a.delayDays || a.poLineId - b.poLineId).map((r) => ({ ...r, today } as PromiseBreachRow));

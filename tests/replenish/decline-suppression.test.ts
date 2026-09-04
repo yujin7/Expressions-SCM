@@ -32,8 +32,13 @@ describe("抑制窗口纯规则（rules/replenish-suppression）", () => {
       untilDate: "2026-09-11", releaseOnArrival: true,
       pipelineBaseline: 100, onHandBaseline: 40, today: "2026-09-05",
     };
+    /* daysLeft 含今天（与解除条件 `today > untilDate` 同口径）：09-05 起到 09-11 止 = 7 天 */
     expect(suppressionState({ ...base, pipelineNow: 100, onHandNow: 40 }))
-      .toMatchObject({ active: true, daysLeft: 6 });
+      .toMatchObject({ active: true, daysLeft: 7 });
+    /* 窗口最后一天：仍在压制，读数必须是 1 而不是 0。
+       此前这里给 0——界面写着「剩 0 天」，采购建议却还扣着，读者只会以为系统坏了。 */
+    expect(suppressionState({ ...base, pipelineNow: 100, onHandNow: 40, today: "2026-09-11" }))
+      .toMatchObject({ active: true, daysLeft: 1 });
     // ① 真到货：在库 40→100，未结供给同额消失 → **全管道量纹丝不动**。旧实现在这里永远不解除。
     expect(suppressionState({ ...base, pipelineNow: 100, onHandNow: 100 }))
       .toMatchObject({ active: false, releasedBy: "supply_arrived" });
