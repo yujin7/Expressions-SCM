@@ -79,6 +79,11 @@ export interface SalesConsistency {
   /** 未覆盖：完整月内单侧缺失（internalOnly / externalOnly）；internalOutsideRangeRows = 内部记录落在外部不完整/未覆盖月 */
   uncovered: { internalOnlyRows: number; externalOnlyRows: number; internalOutsideRangeRows: number };
   exceptions: SalesConsistencyRow[];
+  /**
+   * 低于量下限的逐行明细（C10 清单页）。**只在 keepBelowFloor 时填充**，
+   * 缓存 payload 不含本字段——计算口径没变，缓存键因此不升版。
+   */
+  belowFloor?: SalesConsistencyRow[];
   gate: string | null;
   limitations: string[];
 }
@@ -205,6 +210,7 @@ function emptyResult(
     consistencyPct: null,
     uncovered: { internalOnlyRows: 0, externalOnlyRows: 0, internalOutsideRangeRows: 0 },
     exceptions: [],
+    belowFloor: [],
     gate,
     limitations: LIMITATIONS,
   };
@@ -213,6 +219,8 @@ function emptyResult(
 export interface SalesConsistencyOptions {
   channelCode?: string;
   thresholds?: SalesConsistencyThresholds;
+  /** 额外带回 below_floor 逐行明细（清单页专用；不进缓存 payload） */
+  keepBelowFloor?: boolean;
 }
 
 export async function computeSalesConsistency(db: ReadDb, opts: SalesConsistencyOptions = {}): Promise<SalesConsistency> {
@@ -396,6 +404,9 @@ export async function computeSalesConsistency(db: ReadDb, opts: SalesConsistency
     consistencyPct,
     uncovered: { internalOnlyRows, externalOnlyRows, internalOutsideRangeRows },
     exceptions,
+    ...(opts.keepBelowFloor
+      ? { belowFloor: compared.filter((r) => r.status === "below_floor").sort((a, b) => a.month.localeCompare(b.month) || a.skuCode.localeCompare(b.skuCode)) }
+      : {}),
     gate,
     limitations: [
       ...LIMITATIONS,

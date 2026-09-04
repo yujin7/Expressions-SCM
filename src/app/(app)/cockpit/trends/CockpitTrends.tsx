@@ -7,10 +7,10 @@
 import { Alert, Button, Skeleton, Space } from "antd";
 import type { TrendScreen } from "@/server/modules/report/cockpit-trends";
 import { Muted, useTrends } from "./shared";
-import { DailyFlowCard } from "./screen-s1";
-import { AlertPrecisionCard, ExternalDemandCard, PoTrendCard, QuadrantCard } from "./screen-s2";
-import { TurnoverWindowsCard } from "./screen-s3";
-import { AlertLifecycleCard, GoalHistoryCard, TodoCompletionStrictCard, TodoThroughputCard } from "./screen-s4";
+import { DailyFlowCard, DataFreshnessTrendCard } from "./screen-s1";
+import { AlertPrecisionCard, ExternalDemandCard, PoTrendCard, QuadrantCard, SupplierConcentrationCard } from "./screen-s2";
+import { ExpiryBucketsCard, TurnoverWindowsCard } from "./screen-s3";
+import { AlertLifecycleCard, DataQualityTrendCard, GoalHistoryCard, TierMigrationCard, TodoCompletionStrictCard, TodoThroughputCard } from "./screen-s4";
 import { ChannelMatrixCard } from "./screen-channels";
 
 export default function CockpitTrends({ screen }: { screen: TrendScreen }) {
@@ -26,19 +26,28 @@ export default function CockpitTrends({ screen }: { screen: TrendScreen }) {
         <Muted>趋势与交叉 · 口径 {data.calibreVersion} · 生成 {data.generatedAt.replace("T", " ").slice(0, 16)}</Muted>
         <Button size="small" type="link" onClick={reload} loading={loading}>刷新趋势</Button>
       </Space>
-      {screen === "s1" ? <DailyFlowCard block={s.s1.dailyFlow} /> : null}
+      {screen === "s1" ? (<>
+        <DailyFlowCard block={s.s1.dailyFlow} />
+        <DataFreshnessTrendCard block={s.s1.freshnessTrend} />
+      </>) : null}
       {screen === "s2" ? (<>
         <ExternalDemandCard block={s.s2.externalDemand} />
         <PoTrendCard block={s.s2.poTrend} />
+        <SupplierConcentrationCard block={s.s2.supplierConcentration} />
         <QuadrantCard block={s.s2.quadrant} />
         <AlertPrecisionCard block={s.s2.alertPrecision} />
       </>) : null}
-      {screen === "s3" ? <TurnoverWindowsCard block={s.s3.turnoverWindows} /> : null}
+      {screen === "s3" ? (<>
+        <TurnoverWindowsCard block={s.s3.turnoverWindows} />
+        <ExpiryBucketsCard block={s.s3.expiryBuckets} />
+      </>) : null}
       {screen === "s4" ? (<>
         <TodoThroughputCard block={s.s4.todoThroughput} />
         <TodoCompletionStrictCard block={s.s4.todoCompletionStrict} />
         <AlertLifecycleCard block={s.s4.alertLifecycle} />
         <GoalHistoryCard block={s.s4.goalHistory} />
+        <TierMigrationCard block={s.s4.tierMigration} />
+        <DataQualityTrendCard block={s.s4.dataQualityTrend} />
       </>) : null}
       {screen === "channels" ? <ChannelMatrixCard block={s.channels.brandMatrix} /> : null}
     </Space>

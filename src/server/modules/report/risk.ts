@@ -29,6 +29,21 @@ import { participatesInNormalSalesMovement } from "@/server/rules/sku-standardiz
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
+/** 效期段位（C3 驾驶舱临期桶；按批次剩余天数分档，与逐 SKU 临期阈值无关——段位是统一刻度） */
+export type ExpiryBucketKey = "expired" | "d30" | "d60" | "d90";
+export const EXPIRY_BUCKET_KEYS = ["expired", "d30", "d60", "d90"] as const;
+export const EXPIRY_BUCKET_LABELS: Record<ExpiryBucketKey, string> = {
+  expired: "已过期", d30: "≤30 天", d60: "31–60 天", d90: "61–90 天",
+};
+/** 批次剩余天数 → 段位；> 90 天不入桶（返回 null） */
+export function expiryBucketOf(daysLeft: number): ExpiryBucketKey | null {
+  if (daysLeft <= 0) return "expired";
+  if (daysLeft <= 30) return "d30";
+  if (daysLeft <= 60) return "d60";
+  if (daysLeft <= 90) return "d90";
+  return null;
+}
+
 export interface RiskRow {
   skuId: number;
   code: string;
@@ -46,6 +61,10 @@ export interface RiskRow {
   nearExpiryDays: number;
   /** 临期阈值内到期数量小计（含已过期） */
   nearQty: number;
+  /** 逐 SKU 的效期段位数量（统一 0/30/60/90 刻度，与逐 SKU 临期阈值无关；> 90 天不入桶） */
+  expiryBuckets: Record<ExpiryBucketKey, number>;
+  /** 该 SKU 的临期阈值来自 90 天兜底（skus.near_expiry_days 未维护） */
+  nearExpiryFallback: boolean;
   /** 货盘处置注记原文（最新一条；无 = null） */
   palletRemark: string | null;
   /** 注记所属月份（progress） */
@@ -68,7 +87,7 @@ export interface RiskWorklist {
 }
 
 export async function getRiskWorklist(
-  query: { q?: string; action?: string; page?: number; pageSize?: number; precise?: boolean },
+  query: { q?: string; action?: string; page?: number; pageSize?: number; precise?: boolean; all?: boolean },
   dbArg?: AnyDb,
   externalVelocityArg?: ExternalVelocity,
 ): Promise<RiskWorklist> {
@@ -79,8 +98,9 @@ export async function getRiskWorklist(
   const rq = (v: number): number => (query.precise ? v : r1(v));
   const today = todayShanghai();
   const slowThreshold = await getNumParam("slow_days_threshold", 180, dbArg);
-  const page = Math.max(1, query.page ?? 1);
-  const pageSize = Math.min(500, Math.max(1, query.pageSize ?? 50));
+  const page = query.all ? 1 : Math.max(1, query.page ?? 1);
+  // all = 读模型口径（不分页）；页面/导出仍受 500 行上限约束
+  const pageSize = query.all ? Number.MAX_SAFE_INTEGER : Math.min(500, Math.max(1, query.pageSize ?? 50));
   const q = (query.q ?? "").trim().toLowerCase();
 
   /* ── SKU 主档（active 全类型——包材也可能滞销/有注记） ── */
@@ -105,6 +125,7 @@ export async function getRiskWorklist(
     .where(eq(schema.skus.active, true));
   const skuIds = skuRows.map((s) => s.id);
   const nearThreshBySku = new Map(skuRows.map((s) => [s.id, s.nearExpiryDays ?? 90])); // func#8 逐 SKU 临期阈值
+  const nearFallbackBySku = new Map(skuRows.map((s) => [s.id, s.nearExpiryDays == null])); // 90 天兜底计数（C3 必须标注）
   if (skuIds.length === 0) return { today, slowThreshold, rows: [], total: 0, byAction: {} };
 
   /* ── 在库：全网口径（core/stock-view 唯一实现） ── */
@@ -133,13 +154,15 @@ export async function getRiskWorklist(
     .select({ skuId: bs.skuId, qty: bs.qty, expiryDate: bs.expiryDate })
     .from(bs)
     .where(and(isNotNull(bs.expiryDate), gt(bs.qty, "0")));
-  const expiryBySku = new Map<number, { minDaysLeft: number; expiredQty: number; nearQty: number }>();
+  const expiryBySku = new Map<number, { minDaysLeft: number; expiredQty: number; nearQty: number; buckets: Record<ExpiryBucketKey, number> }>();
   for (const r of batchRows) {
     const daysLeft = daysLeftOf(today, r.expiryDate);
-    const cur = expiryBySku.get(r.skuId) ?? { minDaysLeft: Number.POSITIVE_INFINITY, expiredQty: 0, nearQty: 0 };
+    const cur = expiryBySku.get(r.skuId) ?? { minDaysLeft: Number.POSITIVE_INFINITY, expiredQty: 0, nearQty: 0, buckets: { expired: 0, d30: 0, d60: 0, d90: 0 } };
     cur.minDaysLeft = Math.min(cur.minDaysLeft, daysLeft);
     if (daysLeft <= 0) cur.expiredQty += num(r.qty);
     if (daysLeft <= (nearThreshBySku.get(r.skuId) ?? 90)) cur.nearQty += num(r.qty);
+    const bucket = expiryBucketOf(daysLeft);
+    if (bucket) cur.buckets[bucket] += num(r.qty);
     expiryBySku.set(r.skuId, cur);
   }
 
@@ -199,6 +222,11 @@ export async function getRiskWorklist(
       expiredQty: rq(exp?.expiredQty ?? 0),
       nearExpiryDays: nearThreshBySku.get(sku.id) ?? 90,
       nearQty: rq(exp?.nearQty ?? 0),
+      expiryBuckets: {
+        expired: rq(exp?.buckets.expired ?? 0), d30: rq(exp?.buckets.d30 ?? 0),
+        d60: rq(exp?.buckets.d60 ?? 0), d90: rq(exp?.buckets.d90 ?? 0),
+      },
+      nearExpiryFallback: nearFallbackBySku.get(sku.id) ?? true,
       palletRemark: remark?.text ?? null,
       remarkMonth: remark?.month ?? null,
       disposalOpen: dispBySku.has(sku.code),

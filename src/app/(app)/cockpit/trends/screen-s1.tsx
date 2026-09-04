@@ -1,11 +1,12 @@
 "use client";
 
+import Link from "next/link";
 import { Space, Table, Tag, Typography } from "antd";
-import { CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { VISUAL_COLOR } from "@/components/decision-visuals";
+import { CartesianGrid, ComposedChart, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { SERIES_COLORS, VISUAL_COLOR } from "@/components/decision-visuals";
 import type { Block } from "@/server/modules/report/cockpit";
-import type { DailyFlowBlock, DailyFlowPoint, WowDelta } from "@/server/modules/report/cockpit-trends";
-import { metricLabel, Muted, num, qty, signed, TrendCard, useChartTheme } from "./shared";
+import type { DailyFlowBlock, DailyFlowPoint, SourceTrendBlock, WowDelta } from "@/server/modules/report/cockpit-trends";
+import { metricLabel, Muted, num, qty, signed, sourceChartRows, TrendCard, useChartTheme } from "./shared";
 
 function WowTag({ label, w }: { label: string; w: WowDelta }) {
   if (w.state !== "ready") return <Tag>{label}：周环比不足（有账 {w.currentDays + w.previousDays} 天）</Tag>;
@@ -74,6 +75,88 @@ export function DailyFlowCard({ block }: { block: Block<DailyFlowBlock> }) {
           </div>
           <Muted>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>虚线为快照仓相邻快照差分（落在后一快照日，跨多日为累计），与实线流水口径不同，图上并列不相加。</Typography.Text>
+          </Muted>
+        </div>
+      )}
+    </TrendCard>
+  );
+}
+
+/* ───────────── 数据新鲜度趋势（C6） ───────────── */
+
+interface SeriesRow {
+  sourceClass: string;
+  label: string;
+  freshnessMaxAgeDays: number;
+  weeksWithActivity: number;
+  weeksWithAge: number;
+  state: "ready" | "insufficient";
+  gate: string | null;
+  latestMaxAgeDays: number | null;
+}
+
+/** 屏1 · 每周「最陈旧的一次入库」滞后天数，按 D65 来源类 */
+export function DataFreshnessTrendCard({ block }: { block: Block<SourceTrendBlock> }) {
+  const t = useChartTheme();
+  const d = block.data;
+  const rows = d ? sourceChartRows(d, "maxAgeDays") : [];
+  const seriesRows: SeriesRow[] = (d?.series ?? []).map((s) => ({
+    sourceClass: s.sourceClass, label: s.label, freshnessMaxAgeDays: s.freshnessMaxAgeDays,
+    weeksWithActivity: s.weeksWithActivity, weeksWithAge: s.weeksWithAge, state: s.state, gate: s.gate,
+    latestMaxAgeDays: [...s.points].reverse().find((p) => p.maxAgeDays != null)?.maxAgeDays ?? null,
+  }));
+  return (
+    <TrendCard
+      block={block}
+      title={`${metricLabel("dataFreshnessAgeDays", "数据滞后天数（周趋势）")} · 近 ${d?.windowWeeks ?? 8} 周`}
+      question="我们的数据在变陈旧吗？这周是哪一类来源掉队了？"
+      metricId="dataFreshnessAgeDays"
+      grain="ISO 周 × 来源类（D65）"
+      unit="天（收到日 − 业务截止日）"
+      height={300}
+      summary={d
+        ? `${d.weeks[0]} → ${d.weeks.at(-1)}；${d.readySeries}/${d.series.length} 类来源满足 ${d.minWeeks} 周门槛；` +
+          seriesRows.filter((s) => s.state === "ready").map((s) => `${s.label} 最近 ${s.latestMaxAgeDays ?? "—"} 天（阈 ${s.freshnessMaxAgeDays}）`).join("，")
+        : "无数据"}
+      extra={d ? <Link href={d.link} prefetch={false}>数据质量页 →</Link> : undefined}
+      dataView={d ? (
+        <Table<SeriesRow> rowKey="sourceClass" size="small" pagination={false} scroll={{ x: 720 }} dataSource={seriesRows} columns={[
+          { title: "来源类", dataIndex: "label", width: 150, fixed: "left" },
+          { title: "阈值", dataIndex: "freshnessMaxAgeDays", width: 80, align: "right", render: (v: number) => `${v} 天` },
+          { title: "最近读数", dataIndex: "latestMaxAgeDays", width: 110, align: "right", render: (v: number | null, r) => v == null ? "—" : <Typography.Text type={v > r.freshnessMaxAgeDays ? "danger" : undefined}>{v} 天</Typography.Text> },
+          { title: "有入库/运行的周", dataIndex: "weeksWithActivity", width: 130, align: "right" },
+          { title: "有滞后读数的周", dataIndex: "weeksWithAge", width: 130, align: "right" },
+          { title: "状态", dataIndex: "state", render: (v: string, r) => v === "ready" ? <Tag color="processing">可出趋势</Tag> : <Tag>{r.gate ?? "样本不足"}</Tag> },
+        ]} />
+      ) : undefined}
+    >
+      {(data) => (
+        <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+          <Space wrap size={[6, 4]} style={{ marginBottom: 6 }}>
+            {seriesRows.map((s) => (
+              <Tag key={s.sourceClass} color={s.state !== "ready" ? "default" : s.latestMaxAgeDays != null && s.latestMaxAgeDays > s.freshnessMaxAgeDays ? "error" : "success"}>
+                {s.label}：{s.state !== "ready" ? `不足 ${data.minWeeks} 周` : `${s.latestMaxAgeDays ?? "—"} 天 / 阈 ${s.freshnessMaxAgeDays}`}
+              </Tag>
+            ))}
+          </Space>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={rows} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                <CartesianGrid stroke={t.grid} strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} />
+                <YAxis tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} width={44} tickFormatter={(v) => `${v}d`} />
+                <Tooltip {...t.tooltip} formatter={(v, name) => [v == null ? "无读数" : `${v} 天`, name]} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                {data.series.map((s, i) => (
+                  <Line key={s.sourceClass} type="monotone" dataKey={s.sourceClass} name={s.label}
+                    stroke={SERIES_COLORS[i % SERIES_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          <Muted>
+            每周读数 = 该周最陈旧的一次入库（收到日 − 业务截止日 source_as_of）；没有业务截止日的批次不参与、不按 0 处理。
+            少于 {data.minWeeks} 周有入库或运行的来源类整条不画（两个点连成的线不叫趋势）。这是「入库时的滞后」，不是「此刻的数据龄」。
           </Muted>
         </div>
       )}
