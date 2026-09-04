@@ -323,6 +323,29 @@ function yesterdayOf(day: string): string {
   return new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
 }
 
+/**
+ * 平台身份缺口（与 /report/decision-studio 的身份卡**同源**：同一个读模型、同一份缓存）。
+ * 该读模型依赖外部观察数据，未就绪时返回 null——首屏宁可不显示这张卡，也不显示一个算不准的数。
+ * 读模型不可用（迁移未跑、观察数据缺失）只降级为「没有这张卡」，绝不让工作台首屏 500。
+ */
+async function platformIdentityGap(
+  db: AnyDb,
+): Promise<{ unmapped: number; withCandidates: number; mappedAmountPct: number | null } | null> {
+  try {
+    const { loadPlatformSkuIdentityGap } = await import("@/server/modules/report/platform-sku-identity-gap");
+    const gap = await loadPlatformSkuIdentityGap(db);
+    if (gap.state !== "ready") return null;
+    const unmapped = gap.totals.platformSkus - gap.totals.mappedSkus;
+    return {
+      unmapped: unmapped > 0 ? unmapped : 0,
+      withCandidates: gap.totals.unmappedWithCandidates,
+      mappedAmountPct: gap.totals.mappedAmountPct,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function computeExceptionsUncached(db: AnyDb, recordShown = true, applySnooze = true): Promise<ExceptionItem[]> {
   const today = todayShanghai();
   const out: ExceptionItem[] = [];
@@ -414,7 +437,15 @@ async function computeExceptionsUncached(db: AnyDb, recordShown = true, applySno
     }
   }
 
-  // 5) 成品缺生产周期（阻断投影/补货判定）
+  /* 5) 上线就绪三件事（2026-09-04 审计 #8）
+     
+     此前这里只有「成品缺生产周期」一条，还链到只读的 /report/data-health——
+     看得见、改不了。新来的计划员看到的是一屏告警数，看不到「系统还没就绪、
+     先把这三件事补上」。三条卡片都链到**能改的那个页面**：
+       缺生产周期 → /master/supply-params?blockedOnly=1（与 replenish/pilot 的链接同一个）
+       平台身份缺口 → 决策工作室身份页签（系统给候选、批量提交）
+       缺单位成本 → 文件上传（sku_cost 模板，财务放行）
+     口径都取自各自的权威读模型，不在这里另算一套。 */
   const missingLead = await countWhere(
     db,
     schema.skus,
@@ -425,7 +456,44 @@ async function computeExceptionsUncached(db: AnyDb, recordShown = true, applySno
     ),
   );
   if (missingLead > 0) {
-    out.push({ key: "missing_lead", severity: "medium", title: "成品缺生产周期", impact: `${missingLead} 个成品无法推算下单日`, count: missingLead, href: "/report/data-health?missing=生产周期" });
+    out.push({ key: "missing_lead", severity: "medium", title: "成品缺生产周期", impact: `${missingLead} 个成品无法推算下单日；补录页可批量按分层/品牌套用`, count: missingLead, href: "/master/supply-params?blockedOnly=1" });
+  }
+
+  // 5b) 缺单位成本：没有成本就没有库存金额、没有毛利、没有金额口径分层
+  const missingCost = await countWhere(
+    db,
+    schema.skus,
+    and(
+      eq(schema.skus.skuType, "finished"),
+      eq(schema.skus.active, true),
+      sql`not exists (select 1 from sku_costs sc where sc.sku_id = ${schema.skus.id})`,
+    ),
+  );
+  if (missingCost > 0) {
+    out.push({
+      key: "missing_cost",
+      severity: "medium",
+      title: "成品缺单位成本",
+      impact: `${missingCost} 个成品没有 sku_costs：库存金额、毛利与金额口径分层都算不出`,
+      count: missingCost,
+      href: "/import/upload",
+    });
+  }
+
+  // 5c) 平台身份缺口：外部销速/退款驱动都要先落到系统 SKU 才能用
+  const identityGap = await platformIdentityGap(db);
+  if (identityGap && identityGap.unmapped > 0) {
+    out.push({
+      key: "identity_gap",
+      severity: "medium",
+      title: "平台商品缺 SCM 身份",
+      impact:
+        `${identityGap.unmapped} 个平台 SKU 未认领`
+        + (identityGap.mappedAmountPct != null ? `，销售额覆盖仅 ${identityGap.mappedAmountPct.toFixed(1)}%` : "")
+        + (identityGap.withCandidates > 0 ? `；其中 ${identityGap.withCandidates} 个系统已给出候选，可一键确认` : ""),
+      count: identityGap.unmapped,
+      href: "/report/decision-studio?tab=identity",
+    });
   }
 
   const sorted = out.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.count - a.count);

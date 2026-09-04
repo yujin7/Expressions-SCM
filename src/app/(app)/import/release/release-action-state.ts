@@ -7,6 +7,7 @@ export type ReleaseActionKey =
   | "sku"
   | "bom"
   | "bom_activate"
+  | "sku_leadtime_simple"
   | "fee";
 
 export interface ReleaseActionScope {

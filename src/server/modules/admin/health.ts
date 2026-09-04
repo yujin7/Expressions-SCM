@@ -32,6 +32,7 @@ import {
 } from "@/server/integrations/connector";
 import { ApiError } from "@/server/modules/master/common";
 import { YONYOU_READ_CONTRACTS } from "@/server/integrations/yonyou-contracts";
+import { CONTRACT_CONSUMERS, READ_MODEL_LABELS } from "@/server/integrations/contract-consumers";
 import {
   CONNECTOR_PROBE_JOB_NAMES,
   CONNECTOR_PROBE_MAX_AGE_HOURS,
@@ -160,6 +161,19 @@ export interface OpsHealth {
   dbOk: boolean;
   migrations: { files: number; applied: number; drift: boolean };
   lastJobRuns: JobRunRow[];
+  /**
+   * 已登记的定时任务名（审计 #10）：页面据此列出**全部**任务并给「立即运行」，
+   * 而不只是「跑过的那些」——从没跑过的任务恰恰最需要能手动触发一次。
+   */
+  registeredJobs: string[];
+  /** 契约就绪（审计 #13）：同步了 ≠ 有人读；无下游读模型的契约在页面上变灰 */
+  contractConsumers: {
+    connector: string;
+    key: string;
+    label: string;
+    /** 下游读模型中文名（空 = 无消费者） */
+    consumers: string[];
+  }[];
   recentErrors: ErrorLogRow[];
   errorCount24h: number;
   recentImports: {
@@ -730,6 +744,26 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
     });
   }
 
+  /* 已登记任务目录：动态 import 断开静态模块环——`interval-runner` 会拉进整张任务图，
+     静态引用会让 next build 收集页面数据时炸（CLAUDE.md 记录过同型事故）。
+     取不到时降级为空数组：运维面板宁可少一列按钮，也不能整页 500。 */
+  let registeredJobs: string[] = [];
+  try {
+    const { INTERVAL_JOBS } = await import("@/jobs/interval-runner");
+    registeredJobs = INTERVAL_JOBS.map((j) => j.name);
+  } catch {
+    registeredJobs = [];
+  }
+
+  /* 契约 → 下游读模型（审计 #13）：静态登记表 + 中文名，唯一权威
+     `integrations/contract-consumers.ts`（架构门用 grep 比对真实引用）。 */
+  const contractConsumers = CONTRACT_CONSUMERS.map((c) => ({
+    connector: c.connector,
+    key: c.key,
+    label: c.label,
+    consumers: c.consumers.map((m) => READ_MODEL_LABELS[m] ?? m),
+  }));
+
   // 最近错误 10 条 + 24h 计数
   const errRows: (typeof errorLogs.$inferSelect)[] = await db
     .select()
@@ -794,6 +828,8 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
     dbOk,
     migrations: { files, applied, drift },
     lastJobRuns,
+    registeredJobs,
+    contractConsumers,
     recentErrors: errRows.map(safeErrorLogRow),
     errorCount24h,
     recentImports: importRows.map((r) => ({

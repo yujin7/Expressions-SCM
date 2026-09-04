@@ -382,7 +382,29 @@ export async function computeDataQuality(db: ReadDb, opts: { today?: string } = 
   };
 }
 
-async function binding(db: ReadDb, today: string): Promise<string> {
+/** 本读模型读取的全部运行参数（绑定串按当前值失效缓存；新增读取的参数必须同步登记） */
+export const DQ_BINDING_PARAM_KEYS = [
+  "dq_tolerance_pct",
+  "dq_snapshot_qty_jump_pct",
+  "dq_snapshot_vanished_pct",
+  "dq_sales_consistency_rel_pct",
+  "dq_sales_consistency_abs_floor_qty",
+  "dq_sales_consistency_min_base_qty",
+] as const;
+const DQ_BINDING_PARAM_SHORT: Record<(typeof DQ_BINDING_PARAM_KEYS)[number], string> = {
+  dq_tolerance_pct: "tol",
+  dq_snapshot_qty_jump_pct: "jump",
+  dq_snapshot_vanished_pct: "van",
+  dq_sales_consistency_rel_pct: "rel",
+  dq_sales_consistency_abs_floor_qty: "abs",
+  dq_sales_consistency_min_base_qty: "base",
+};
+
+/**
+ * 读模型缓存的来源绑定串（导出供测试直证：改一个阈值 → 绑定必须变）。
+ * 只绑 `max(id)` 是无效的——`updateParam` 走 onConflictDoUpdate，改值不产生新 id。
+ */
+export async function dataQualityBinding(db: ReadDb, today: string): Promise<string> {
   const [row] = rows<Record<string, unknown>>(await db.execute(sql`
     SELECT (SELECT coalesce(max(id), 0) FROM import_jobs) AS ij,
            (SELECT coalesce(max(id), 0) FROM integration_runs) AS ir,
@@ -397,13 +419,17 @@ async function binding(db: ReadDb, today: string): Promise<string> {
            (SELECT coalesce(max(id), 0) FROM sys_params) AS sp,
            (SELECT count(*) FROM po_docs) AS po
   `));
-  const tol = await getNumParam("dq_tolerance_pct", 1, db);
-  return `d:${today}|ij:${intValue(row?.ij)}|ir:${intValue(row?.ir)}|rd:${intValue(row?.rd)}:${intValue(row?.rdn)}|pd:${intValue(row?.pd)}|ss:${intValue(row?.ss)}|sam:${intValue(row?.sam)}|sm:${intValue(row?.sm)}|dq:${intValue(row?.dqp)}:${intValue(row?.dqm)}|sp:${intValue(row?.sp)}|po:${intValue(row?.po)}|tol:${tol}`;
+  /* 参数绑定必须绑**当前值**而不是 sys_params 的 max(id)：updateParam 走 onConflictDoUpdate，
+     改值不会产生新 id，只绑 id 的话调阈值后缓存永远命中旧结果（tol 此前是唯一显式绑定的键）。
+     这里把本读模型实际读取的每一个参数值都写进绑定串（DQ_BINDING_PARAM_KEYS 唯一清单）。 */
+  const paramValues = await Promise.all(DQ_BINDING_PARAM_KEYS.map((key) => getNumParam(key, undefined, db)));
+  const params = DQ_BINDING_PARAM_KEYS.map((key, i) => `${DQ_BINDING_PARAM_SHORT[key]}:${paramValues[i]}`).join("|");
+  return `d:${today}|ij:${intValue(row?.ij)}|ir:${intValue(row?.ir)}|rd:${intValue(row?.rd)}:${intValue(row?.rdn)}|pd:${intValue(row?.pd)}|ss:${intValue(row?.ss)}|sam:${intValue(row?.sam)}|sm:${intValue(row?.sm)}|dq:${intValue(row?.dqp)}:${intValue(row?.dqm)}|sp:${intValue(row?.sp)}|po:${intValue(row?.po)}|${params}`;
 }
 
 export async function loadDataQuality(db: ReadDb, opts: { today?: string } = {}): Promise<DataQualityReport> {
   const today = opts.today ?? todayShanghai();
-  const key = await binding(db, today);
+  const key = await dataQualityBinding(db, today);
   const [cached] = rows<Record<string, unknown>>(await db.execute(sql`
     SELECT payload FROM report_read_model_cache WHERE key = ${DATA_QUALITY_CACHE_KEY} AND source_binding = ${key} LIMIT 1`));
   const payload = cached?.payload;
@@ -417,7 +443,7 @@ export async function loadDataQuality(db: ReadDb, opts: { today?: string } = {})
 
 export async function refreshDataQuality(db: ReadDb, opts: { today?: string } = {}): Promise<DataQualityReport> {
   const today = opts.today ?? todayShanghai();
-  const key = await binding(db, today);
+  const key = await dataQualityBinding(db, today);
   const result = await computeDataQuality(db, { today });
   await db.execute(sql`
     INSERT INTO report_read_model_cache (key, source_binding, payload, built_at)

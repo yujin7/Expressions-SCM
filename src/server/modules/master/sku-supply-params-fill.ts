@@ -17,6 +17,7 @@ import { writeAudit } from "@/server/core/audit";
 import type { SessionUser } from "@/server/core/dto";
 import { type AnyDb, resolveDb } from "@/server/core/svc";
 import { ApiError } from "@/server/modules/master/common";
+import { getNumParam } from "@/server/core/params";
 import { getSkuSupplyParams } from "@/server/modules/master/sku-supply-params";
 import { latestPolicyPeriod, loadPolicyMap } from "@/server/modules/planning/policy";
 import { requireAnyRole } from "@/server/modules/outsource/common";
@@ -38,6 +39,7 @@ export interface SupplyParamRow {
   name: string;
   skuType: string;
   brand: string | null;
+  brandId: number | null;
   /** 最近固化期生效分层；未固化/非成品 = null */
   tier: Tier | null;
   normalLeadDays: number | null;
@@ -57,6 +59,11 @@ export interface SupplyParamListResult {
   rows: SupplyParamRow[];
   total: number;
   policyPeriod: string | null;
+  /**
+   * 运行参数里的缺省周期（D57）——「按分层/品牌套用默认」预填这两个数。
+   * 由服务端下发，页面不另写一份字面量（缺省值唯一权威 core/param-defs）。
+   */
+  defaults: { production: number; logistics: number };
   summary: {
     scanned: number;
     complete: number;
@@ -72,6 +79,8 @@ export interface SupplyParamQuery {
   skuType?: string;
   missing?: string;
   tier?: string;
+  /** 品牌筛选（批量「按品牌套用默认」的目标集合与页面筛选同一口径） */
+  brandId?: number;
   blockedOnly?: boolean;
   page?: number;
   pageSize?: number;
@@ -102,19 +111,24 @@ export async function listSupplyParams(query: SupplyParamQuery, dbArg?: AnyDb): 
   const missingFilter = (query.missing ?? "").trim() as SupplyParamMissingDim | "";
   const tierFilter = (query.tier ?? "").trim().toUpperCase();
 
-  const skuRows: { id: number; code: string; name: string; skuType: string; brand: string | null }[] = await db
-    .select({ id: schema.skus.id, code: schema.skus.code, name: schema.skus.name, skuType: schema.skus.skuType, brand: schema.brands.nameCn })
+  const skuRows: { id: number; code: string; name: string; skuType: string; brand: string | null; brandId: number | null }[] = await db
+    .select({ id: schema.skus.id, code: schema.skus.code, name: schema.skus.name, skuType: schema.skus.skuType, brand: schema.brands.nameCn, brandId: schema.skus.brandId })
     .from(schema.skus)
     .leftJoin(schema.brands, eq(schema.skus.brandId, schema.brands.id))
     .where(and(eq(schema.skus.active, true), inArray(schema.skus.skuType, [...APPLICABLE_TYPES])));
   const policyPeriod = await latestPolicyPeriod(db);
+  const [defaultProduction, defaultLogistics] = await Promise.all([
+    getNumParam("default_production_lead_days", undefined, db),
+    getNumParam("default_logistics_lead_days", undefined, db),
+  ]);
+  const defaults = { production: defaultProduction, logistics: defaultLogistics };
   const byDimension: SupplyParamListResult["summary"]["byDimension"] = { production: 0, logistics: 0, purchase: 0, moq: 0, cost: 0 };
   const byTier: SupplyParamListResult["summary"]["byTier"] = {
     S: { total: 0, complete: 0, blocked: 0 }, A: { total: 0, complete: 0, blocked: 0 }, B: { total: 0, complete: 0, blocked: 0 },
     C: { total: 0, complete: 0, blocked: 0 }, unclassified: { total: 0, complete: 0, blocked: 0 },
   };
   if (skuRows.length === 0) {
-    return { rows: [], total: 0, policyPeriod, summary: { scanned: 0, complete: 0, byDimension, blocked: 0, byTier } };
+    return { rows: [], total: 0, policyPeriod, defaults, summary: { scanned: 0, complete: 0, byDimension, blocked: 0, byTier } };
   }
   const skuIds = skuRows.map((s) => s.id);
   const [params, purchaseRows, policy] = await Promise.all([
@@ -141,7 +155,7 @@ export async function listSupplyParams(query: SupplyParamQuery, dbArg?: AnyDb): 
     if (p?.moq == null) missing.push("moq");
     if (p?.unitCost == null) missing.push("cost");
     const blocked = isFinished && tier != null && tier !== "C" && (missing.includes("production") || missing.includes("logistics"));
-    return { skuId: s.id, code: s.code, name: s.name, skuType: s.skuType, brand: s.brand, tier, normalLeadDays, logisticsLeadDays, purchaseLeadDays, leadFields: [...fields], moq: p?.moq ?? null, hasCost: p?.unitCost != null, missing, blocked };
+    return { skuId: s.id, code: s.code, name: s.name, skuType: s.skuType, brand: s.brand, brandId: s.brandId, tier, normalLeadDays, logisticsLeadDays, purchaseLeadDays, leadFields: [...fields], moq: p?.moq ?? null, hasCost: p?.unitCost != null, missing, blocked };
   });
 
   let complete = 0;
@@ -164,6 +178,7 @@ export async function listSupplyParams(query: SupplyParamQuery, dbArg?: AnyDb): 
   else if (missingFilter) filtered = filtered.filter((r) => r.missing.includes(missingFilter));
   if (tierFilter === "NONE") filtered = filtered.filter((r) => r.skuType === "finished" && r.tier == null);
   else if (tierFilter) filtered = filtered.filter((r) => r.tier === tierFilter);
+  if (query.brandId != null) filtered = filtered.filter((r) => r.brandId === query.brandId);
   if (query.blockedOnly) filtered = filtered.filter((r) => r.blocked);
   if (q) filtered = filtered.filter((r) => r.code.toLowerCase().includes(q) || r.name.toLowerCase().includes(q));
   const order: Record<string, number> = { S: 0, A: 1, B: 2, C: 3 };
@@ -172,6 +187,7 @@ export async function listSupplyParams(query: SupplyParamQuery, dbArg?: AnyDb): 
     rows: filtered.slice((page - 1) * pageSize, page * pageSize),
     total: filtered.length,
     policyPeriod,
+    defaults,
     summary: { scanned: all.length, complete, byDimension, blocked, byTier },
   };
 }

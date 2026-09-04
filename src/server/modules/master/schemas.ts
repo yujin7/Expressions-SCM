@@ -45,6 +45,8 @@ export const skuSchema = z.object({
   ),
   channelId: z.number().int().positive().nullable().optional(),
   commercialRole: z.enum(COMMERCIAL_ROLES).optional(),
+  /** 加工周期（sku_params.normal_lead_days，与周期主数据补录页同一行）；空=尚未维护，预警/补货走 default_production_lead_days。 */
+  normalLeadDays: z.number().int().min(0).max(365).nullable().optional(),
   /** 生产周期之外的运输/调拨周期；空=尚未维护，补货暂按 0 天兼容旧口径。 */
   logisticsLeadDays: z.number().int().min(0).max(365).nullable().optional(),
   lossCategory: z.preprocess(emptyToUndef, z.enum(["raw", "packaging"]).optional()),
@@ -83,6 +85,27 @@ export const categorySchema = z.object({
   parentId: z.number().int().positive().nullable().optional(),
 });
 export type CategoryInput = z.infer<typeof categorySchema>;
+
+// ---------- 渠道 ----------
+/**
+ * 渠道主数据（审计 #11）：此前只有 seed 能写，六个页面却拿它当选择器——
+ * 新开一个店/一个部门就得改 seed 重播，业务侧等于没有这条主数据。
+ * `code` 是别名解析与外部映射的稳定业务键：建后不可改（改码=改身份，历史关系会静默错位）。
+ */
+export const CHANNEL_KINDS = ["platform", "dept"] as const;
+export const channelSchema = z.object({
+  code: z.string().trim().min(1, "渠道编码必填").max(30).regex(/^[a-z0-9_-]+$/, "渠道编码只允许小写字母、数字、下划线与连字符"),
+  name: z.string().trim().min(1, "渠道名称必填").max(50),
+  kind: z.enum(CHANNEL_KINDS, { errorMap: () => ({ message: "渠道类型只能是 platform（平台）或 dept（部门）" }) }),
+  active: z.boolean().optional(),
+});
+export type ChannelInput = z.infer<typeof channelSchema>;
+
+/** 改名 / 启停（不含 code：主码稳定） */
+export const channelUpdateSchema = channelSchema.omit({ code: true }).partial().refine(
+  (v) => v.name !== undefined || v.kind !== undefined || v.active !== undefined,
+  "至少提供一个要修改的字段",
+);
 
 // ---------- 供应商 ----------
 export const SUPPLIER_KINDS = ["raw", "packaging", "processor", "service"] as const; // +服务（04 §3）

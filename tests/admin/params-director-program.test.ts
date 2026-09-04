@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { PARAM_DEFS, listParams } from "@/server/modules/admin/params";
+import { numParamFallback } from "@/server/core/param-defs";
 import { createTestDb } from "../helpers/db";
 
 /** 决议缺省值（program-decisions D50–D66） */
@@ -35,23 +36,28 @@ describe("PARAM_DEFS：总监计划参数登记", () => {
     for (const [key, fallback] of Object.entries(DIRECTOR_PARAM_DEFAULTS)) {
       const def = PARAM_DEFS.find((d) => d.key === key);
       expect(def, `${key} 未登记进 PARAM_DEFS`).toBeDefined();
-      expect(def!.fallback, `${key} 缺省值与决议不符`).toBe(fallback);
+      expect(numParamFallback(key), `${key} 缺省值与决议不符`).toBe(fallback);
       expect(def!.label.length, `${key} 缺中文标签`).toBeGreaterThan(0);
       expect(def!.note, `${key} 说明须标 D 号出处`).toMatch(/D\d+/);
     }
   });
 
-  it("键唯一；min ≤ fallback ≤ max", () => {
+  it("键唯一；数值参数 min ≤ fallback ≤ max；枚举参数缺省在选项内", () => {
     const keys = PARAM_DEFS.map((d) => d.key);
     expect(new Set(keys).size).toBe(keys.length);
     for (const d of PARAM_DEFS) {
-      expect(d.min, `${d.key} min > fallback`).toBeLessThanOrEqual(d.fallback);
-      expect(d.max, `${d.key} max < fallback`).toBeGreaterThanOrEqual(d.fallback);
+      if (d.kind === "number") {
+        expect(d.min, `${d.key} min > fallback`).toBeLessThanOrEqual(d.fallback);
+        expect(d.max, `${d.key} max < fallback`).toBeGreaterThanOrEqual(d.fallback);
+      } else {
+        expect(d.options.map((o) => o.value), `${d.key} 缺省不在选项内`).toContain(d.fallback);
+        expect(d.options.length, `${d.key} 至少两个选项`).toBeGreaterThan(1);
+      }
     }
   });
 
   it("成对参数缺省自洽：占比下限<上限、分层 S<A<B、账期下限≤上限", () => {
-    const f = (k: string) => PARAM_DEFS.find((d) => d.key === k)!.fallback;
+    const f = (k: string) => numParamFallback(k);
     expect(f("inventory_sales_ratio_target_low")).toBeLessThan(f("inventory_sales_ratio_target_high"));
     expect(f("grade_s_pct")).toBeLessThan(f("grade_a_pct"));
     expect(f("grade_a_pct")).toBeLessThan(f("grade_b_pct"));

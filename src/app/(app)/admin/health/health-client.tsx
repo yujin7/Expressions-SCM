@@ -6,12 +6,22 @@
  * 30s 自动刷新；红色高亮：任务失败 / 24h 错误>0 / 快照龄>3天 / 备份>25h 或缺失说明。
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { App, Card, Col, Row, Space, Spin, Table, Tag, Typography } from "antd";
+import { App, Card, Col, Popconfirm, Row, Space, Spin, Table, Tag, Tooltip, Typography } from "antd";
 import { DownloadOutlined, ExportOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { Button } from "antd";
-import { fetchJson } from "@/components/fetchJson";
+import { fetchJson, postJson } from "@/components/fetchJson";
 import type { OpsHealth } from "@/server/modules/admin/health";
+
+/** 任务目录行：已登记任务 ∪ 跑过的任务（后者可能是已下线的历史记录） */
+interface JobCatalogRow {
+  job: string;
+  /** 在当前 INTERVAL_JOBS 目录里 → 可手动触发 */
+  registered: boolean;
+  last: OpsHealth["lastJobRuns"][number] | null;
+}
+
+const CONNECTOR_LABELS: Record<string, string> = { jdy: "简道云", yy: "用友", jst: "聚水潭", feishu: "飞书" };
 
 const SNAPSHOT_RED_DAYS = 3;
 const BACKUP_RED_HOURS = 25;
@@ -176,6 +186,7 @@ export default function HealthClient() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   const requestSeq = useRef(0);
+  const [runningJob, setRunningJob] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     requestRef.current?.abort();
@@ -243,20 +254,67 @@ export default function HealthClient() {
     </Card>
   );
 
-  const jobColumns: ColumnsType<OpsHealth["lastJobRuns"][number]> = [
+  /* 任务目录 = 已登记任务 ∪ 跑过的任务（审计 #10）。
+     只列「跑过的」会漏掉最需要手动触发的那批——从没跑成过的任务。 */
+  const jobRows: JobCatalogRow[] = (() => {
+    const lastByJob = new Map(data.lastJobRuns.map((r) => [r.job, r]));
+    const names = [...new Set([...(data.registeredJobs ?? []), ...data.lastJobRuns.map((r) => r.job)])];
+    return names.map((job) => ({ job, registered: (data.registeredJobs ?? []).includes(job), last: lastByJob.get(job) ?? null }));
+  })();
+
+  const runJob = async (job: string) => {
+    setRunningJob(job);
+    try {
+      const res = await postJson<{ job: string; ok: boolean; message: string; durationMs: number }>(
+        `/api/admin/jobs/${encodeURIComponent(job)}/run`,
+        {},
+      );
+      if (res.ok) message.success(`${job} 执行成功（${(res.durationMs / 1000).toFixed(1)}s）`);
+      else message.warning(`${job} 未成功：${res.message}`);
+      await load();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setRunningJob(null);
+    }
+  };
+
+  const jobColumns: ColumnsType<JobCatalogRow> = [
     { title: "任务", dataIndex: "job" },
     {
       title: "结果",
-      dataIndex: "ok",
-      width: 80,
-      render: (ok: boolean) => (ok ? <Tag color="green">成功</Tag> : <Tag color="red">失败</Tag>),
+      width: 110,
+      render: (_, row) =>
+        row.last == null
+          ? <Tag>未运行过</Tag>
+          : row.last.ok
+            ? <Tag color="green">成功</Tag>
+            : <Tag color="red">失败</Tag>,
     },
-    { title: "完成时间", dataIndex: "finishedAt", width: 170, render: fmtTime },
+    { title: "完成时间", width: 170, render: (_, row) => (row.last ? fmtTime(row.last.finishedAt) : "—") },
     {
       title: "摘要",
-      dataIndex: "message",
       ellipsis: true,
-      render: (v: string | null) => <Typography.Text style={{ fontSize: 12 }}>{v ?? "—"}</Typography.Text>,
+      render: (_, row) => <Typography.Text style={{ fontSize: 12 }}>{row.last?.message ?? "—"}</Typography.Text>,
+    },
+    {
+      title: "操作",
+      width: 120,
+      render: (_, row) =>
+        row.registered ? (
+          <Popconfirm
+            title={`立即运行「${row.job}」？同步类任务可能耗时数分钟，期间不会重复触发。`}
+            onConfirm={() => void runJob(row.job)}
+          >
+            <Button size="small" loading={runningJob === row.job} disabled={runningJob != null}>
+              立即运行
+            </Button>
+          </Popconfirm>
+        ) : (
+          <Tooltip title="该任务不在当前调度目录里（历史遗留记录），不能手动触发">
+            <Typography.Text type="secondary">—</Typography.Text>
+          </Tooltip>
+        ),
     },
   ];
 
@@ -452,16 +510,20 @@ export default function HealthClient() {
         </Col>
       </Row>
 
-      <Card size="small" title="任务运行史（各任务最近一次）">
+      <Card size="small" title={`已登记任务与运行史（${jobRows.length} 个；各任务最近一次）`}>
         <Table
           rowKey="job"
           size="small"
           columns={jobColumns}
-          dataSource={data.lastJobRuns}
+          dataSource={jobRows}
           pagination={false}
           scroll={{ x: 1_270 }}
           locale={{ emptyText: "尚无任务运行记录（进程内调度首轮在启动 60 秒后）" }}
         />
+        <Typography.Paragraph type="secondary" style={{ margin: "8px 0 0", fontSize: 12 }}>
+          手动运行与调度走同一条留痕路径（job_runs），另留一条审计记「是谁按的按钮」；
+          同名任务不会并发跑两遍。缺配置/未开开关的任务会返回「未成功」并写明原因——那不是故障，是没配。
+        </Typography.Paragraph>
       </Card>
 
       <Card size="small" title="外部系统连接器（代码、凭据、启用、契约与真实 UAT 分开判定）">
@@ -596,6 +658,62 @@ export default function HealthClient() {
         </Row>
       </Card>
 
+      <Card size="small" title="契约就绪：同步了 ≠ 有人读">
+        <Table
+          rowKey={(row) => `${row.connector}:${row.key}`}
+          size="small"
+          pagination={false}
+          scroll={{ x: 1_000 }}
+          dataSource={data.contractConsumers ?? []}
+          locale={{ emptyText: "尚未登记契约消费者" }}
+          columns={[
+            {
+              title: "系统",
+              dataIndex: "connector",
+              width: 100,
+              render: (v: string) => CONNECTOR_LABELS[v] ?? v.toUpperCase(),
+            },
+            {
+              title: "契约 / 数据流",
+              width: 260,
+              render: (_, row) => (
+                <Space direction="vertical" size={0}>
+                  <Typography.Text type={row.consumers.length === 0 ? "secondary" : undefined}>{row.label}</Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }} code>{row.key}</Typography.Text>
+                </Space>
+              ),
+            },
+            {
+              title: "下游读模型",
+              render: (_, row) =>
+                row.consumers.length === 0 ? (
+                  <Tooltip title="同步照常跑、staging 照常长，但没有任何读模型消费它：占三方配额、占存储，对业务零产出。要么接上消费者，要么停掉这条契约。">
+                    <Tag>无消费者</Tag>
+                  </Tooltip>
+                ) : (
+                  <Space wrap size={[4, 4]}>
+                    {row.consumers.map((c) => <Tag key={c} color="blue">{c}</Tag>)}
+                  </Space>
+                ),
+            },
+            {
+              title: "读模型数",
+              width: 100,
+              align: "right",
+              render: (_, row) =>
+                row.consumers.length === 0
+                  ? <Typography.Text type="secondary">0</Typography.Text>
+                  : row.consumers.length,
+            },
+          ]}
+        />
+        <Typography.Paragraph type="secondary" style={{ margin: "8px 0 0", fontSize: 12 }}>
+          「已选 N 条契约」只说明拉数配置齐了，不说明数据有人读。灰行 = 同步得好好的、下游没有任何读模型消费
+          （当前 {(data.contractConsumers ?? []).filter((c) => c.consumers.length === 0).length} 条）。
+          本列由 `integrations/contract-consumers.ts` 静态登记，架构门用 grep 逐条比对真实引用，登记漂移即红。
+        </Typography.Paragraph>
+      </Card>
+
       <Card size="small" title="连接器只读权限探测（实时 API，不写业务数据）">
         <Table
           rowKey="connector"
@@ -604,7 +722,7 @@ export default function HealthClient() {
           pagination={false}
           dataSource={data.connectorProbes}
           scroll={{ x: 1_100 }}
-          locale={{ emptyText: "尚无已留痕的权限探测；可手动运行已登记任务" }}
+          locale={{ emptyText: "尚无已留痕的权限探测；可在上方「已登记任务」里手动运行 probe-jst-permissions / probe-yonyou-permissions" }}
           columns={[
             {
               title: "系统",

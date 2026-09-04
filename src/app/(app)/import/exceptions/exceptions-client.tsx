@@ -26,6 +26,7 @@ import { toOptions } from "@/components/labels";
 import ListToolbar from "@/components/ListToolbar";
 import SearchInput from "@/components/SearchInput";
 import { useListState } from "@/components/useListState";
+import PlatformSkuGapCard from "@/app/(app)/report/decision-studio/platform-sku-gap-card";
 
 interface ExceptionRow {
   id: number;
@@ -68,6 +69,12 @@ const STATUS_COLORS: Record<string, string> = {
   resolved: "success",
   ignored: "default",
 };
+
+/** 外层页签：别名认领（本页原有能力）/ 平台身份认领（复用决策工作室的缺口卡） */
+const VIEW_TABS = [
+  { key: "alias", label: "编码别名认领" },
+  { key: "identity", label: "平台身份认领" },
+];
 
 const STATUS_TABS = [
   { key: "open", label: "待认领" },
@@ -139,10 +146,13 @@ export default function ExceptionsClient() {
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   const listState = useListState({
     key: "import-exceptions",
-    defaults: { status: "open", aliasType: "", scope: "", rawValue: "" },
+    /* view：别名认领 / 平台身份认领（审计 #7）。同一个 useListState 实例带这个参数，
+       深链 `?view=identity` 直达，且不与状态页签的 URL 参数打架。 */
+    defaults: { view: "alias", status: "open", aliasType: "", scope: "", rawValue: "" },
     defaultPageSize: 20,
   });
   const { filters, page, pageSize } = listState;
+  const view = filters.view === "identity" ? "identity" : "alias";
   const status = filters.status;
   const aliasType = filters.aliasType;
   const scope = filters.scope;
@@ -347,7 +357,18 @@ export default function ExceptionsClient() {
         导入时无法解析的仓库/渠道/编码等原始值在此排队；认领按来源系统隔离，
         避免简道云、聚水潭或用友的同名短码互相串用。外部系统作用域的待认领项必须清零，
         连接器才会被运维面板判定为身份就绪。
+        「平台身份认领」页签是同一件事的另一半：外部平台商品还没有 SCM 身份，按销售额排队回填。
       </Typography.Paragraph>
+      <Tabs
+        activeKey={view}
+        items={VIEW_TABS}
+        onChange={(key) => listState.setFilter({ view: key })}
+      />
+      {view === "identity" ? (
+        /* 复用决策工作室那张卡，不复制一份：候选、批量提交与写路径都只有一处实现 */
+        <PlatformSkuGapCard active />
+      ) : (
+      <>
       <Tabs
         activeKey={status}
         items={STATUS_TABS}
@@ -398,6 +419,8 @@ export default function ExceptionsClient() {
         scroll={{ x: "max-content" }}
         pagination={listState.paginationProps({ total: total })}
       />
+      </>
+      )}
 
       <Modal
         title="认领别名"
