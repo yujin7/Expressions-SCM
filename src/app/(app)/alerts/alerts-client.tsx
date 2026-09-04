@@ -3,18 +3,26 @@
 /**
  * struct#15 系统告警：看门狗产出的数据过期/单据超时/预警引擎告警，与人工裁决复核清单分家（生命周期不同）。
  * 筛选（状态/类别/严重度/隐藏已知悉）与分页写进 URL（useListState）；总数由服务端返回；
- * 每行可展开看规则来源 / 参数快照 / 触发原因（AlertEvidence）。
+ * 每行可展开看规则来源 / 参数快照 / 触发原因（AlertEvidence，why 由引擎写进 paramsSnapshot.why）。
+ *
+ * W2 人工关闭：持有该告警 ownerRole 的人（或 admin）才看得到「关闭」，弹窗必选原因码 + 备注
+ * （AlertCloseModal → POST /api/alerts/[id]/close，服务端仍会回查会话与角色再判一次——前端隐藏不算权限）。
+ * 已关闭视图直接显示关闭原因/备注/关闭人（服务端从 alert_events 台账取最近一条 close），
+ * 否则"为什么关的"只存在台账里，误报复盘与调阈值都只能靠猜。
  */
 import { useCallback, useEffect, useState } from "react";
 import { App, Button, Select, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
+import AlertCloseModal from "@/components/AlertCloseModal";
 import AlertEvidence, { ackText, type AlertEvidenceFields } from "@/components/AlertEvidence";
 import CaliberNote from "@/components/CaliberNote";
 import ListToolbar from "@/components/ListToolbar";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
 import { useListState } from "@/components/useListState";
-import { roleLabel, severityLabel } from "@/components/dictionary";
+import { hasAnyRole, useMe } from "@/components/useMe";
+import { ACTION, roleLabel, severityLabel } from "@/components/dictionary";
+import { ALERT_CLOSE_REASON_LABELS, type AlertCloseReasonCode } from "@/lib/alert-close-reasons";
 
 interface Row extends AlertEvidenceFields {
   id: number;
@@ -23,11 +31,17 @@ interface Row extends AlertEvidenceFields {
   detail: string | null;
   severity: string | null;
   status: string;
+  autoResolved?: boolean;
   createdAt: string;
   lastHitAt?: string | null;
   actionHref?: string | null;
   ownerRole?: string | null;
   refKey?: string | null;
+  /** 已关闭视图：最近一条 close 事件（服务端从 alert_events 取） */
+  closeReasonCode?: string | null;
+  closeNote?: string | null;
+  closedAt?: string | null;
+  closedByName?: string | null;
 }
 interface ListData { rows: Row[]; total: number; page: number; pageSize: number }
 
@@ -51,13 +65,22 @@ type Filters = { status?: string; category?: string; severity?: string; acked?: 
 
 const ts = (v: string | null | undefined): string => (v ? new Date(v).toLocaleString("zh-CN") : "—");
 
+/** 关闭原因中文标签；未知码原样显示（不吞掉台账里的事实） */
+function closeReasonLabel(code: string | null | undefined): string {
+  if (!code) return "—";
+  return ALERT_CLOSE_REASON_LABELS[code as AlertCloseReasonCode]?.label ?? code;
+}
+
 export default function AlertsClient() {
   const { message } = App.useApp();
+  const me = useMe();
   const listState = useListState<Filters>({ key: "system-alerts", defaults: { status: "open", category: "", severity: "", acked: "" }, defaultPageSize: 50 });
   const { filters } = listState;
   const [data, setData] = useState<ListData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [closing, setClosing] = useState<Row | null>(null);
+  const resolvedView = (filters.status || "open") !== "open";
   const query = listState.queryString();
   const load = useCallback(async () => {
     setLoading(true);
@@ -72,6 +95,10 @@ export default function AlertsClient() {
     try { await fetchJson(`/api/alerts/${id}/ack`, { method: "POST", body: JSON.stringify({}) }); message.success("已知悉（留审计，事实闭环后自动关闭）"); await load(); }
     catch (e) { message.error((e as Error).message); }
   };
+
+  /** 关闭按钮可见性：持有该告警责任角色，或 admin（hasAnyRole 内含 admin 放行）；
+      ownerRole 为空的历史行只有 admin 能关——与服务端 closeAlert 的判定同口径。 */
+  const canClose = (r: Row) => (r.ownerRole ? hasAnyRole(me, r.ownerRole) : hasAnyRole(me));
 
   const columns: ColumnsType<Row> = [
     { title: "类别", dataIndex: "category", width: 120, fixed: "left", render: (v: string) => <Tag>{CAT[v] ?? v}</Tag> },
@@ -88,13 +115,29 @@ export default function AlertsClient() {
     { title: "责任角色", dataIndex: "ownerRole", width: 100, render: (v: string | null | undefined) => (v ? roleLabel(v) : "—") },
     { title: "首次", dataIndex: "createdAt", width: 150, sorter: (a, b) => a.createdAt.localeCompare(b.createdAt), render: (v: string) => ts(v) },
     { title: "最近命中", dataIndex: "lastHitAt", width: 150, render: (v: string | null | undefined) => ts(v) },
-    { title: "已知悉", key: "ack", width: 200, render: (_, r) => (r.ackedAt ? <Tooltip title={ackText(r)}><Tag color="default">已知悉 · {r.ackedByName ?? (r.ackedBy != null ? `#${r.ackedBy}` : "")}</Tag></Tooltip> : <Typography.Text type="secondary">未知悉</Typography.Text>) },
+    resolvedView
+      ? {
+        title: "关闭原因", key: "close", width: 220,
+        render: (_, r) => (r.autoResolved
+          ? <Tag color="default">引擎自动关闭</Tag>
+          : (
+            <Space direction="vertical" size={0}>
+              <Tag color="blue" style={{ marginInlineEnd: 0 }}>{closeReasonLabel(r.closeReasonCode)}</Tag>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {r.closedByName ?? "—"}{r.closedAt ? ` · ${ts(r.closedAt)}` : ""}
+              </Typography.Text>
+              {r.closeNote ? <Typography.Text style={{ fontSize: 12 }} ellipsis={{ tooltip: r.closeNote }}>{r.closeNote}</Typography.Text> : null}
+            </Space>
+          )),
+      }
+      : { title: "已知悉", key: "ack", width: 200, render: (_, r) => (r.ackedAt ? <Tooltip title={ackText(r)}><Tag color="default">已知悉 · {r.ackedByName ?? (r.ackedBy != null ? `#${r.ackedBy}` : "")}</Tag></Tooltip> : <Typography.Text type="secondary">未知悉</Typography.Text>) },
     {
-      title: "操作", key: "ops", width: 160, fixed: "right",
+      title: "操作", key: "ops", width: 200, fixed: "right",
       render: (_, r) => (
         <Space size={6}>
           {r.actionHref ? <a href={r.actionHref}>去处理</a> : null}
           {r.status === "open" && !r.ackedAt ? <Button size="small" onClick={() => void handleAck(r.id)}>已知悉</Button> : null}
+          {r.status === "open" && canClose(r) ? <Button size="small" danger onClick={() => setClosing(r)}>{ACTION.closeAlert}</Button> : null}
         </Space>
       ),
     },
@@ -105,7 +148,7 @@ export default function AlertsClient() {
       <Typography.Title level={4} style={{ marginTop: 0 }}>系统告警</Typography.Title>
       <CaliberNote
         summary="看门狗自动产出的数据、单据与决策门禁告警；来源恢复、数据重传或单据流转后自动关闭，「已知悉」只留审计不改状态。"
-        detail={<div>失效的 A2/A3 仍须责任人撤回或重新验收。人工裁决事项见「复核清单与提醒」。同类别同去重键只保留一条待处理告警；连续 3 天未再命中才自动关闭（迟滞），一天的数据缺口不会关掉又打开。</div>}
+        detail={<div>失效的 A2/A3 仍须责任人撤回或重新验收。人工裁决事项见「复核清单与提醒」。同类别同去重键只保留一条待处理告警；迟滞天数按类别定（数据缺口型 3 天、单据/任务/凭据等硬事实不再命中即关、周期性事实不自动关闭）。「关闭」需要该告警的责任角色或 admin，必须选原因并进台账；关闭不删除告警，条件仍成立时引擎下一轮会另开一条新告警。</div>}
       />
       <LoadErrorAlert error={error} onRetry={() => void load()} subject="系统告警" retrying={loading} />
       <ListToolbar
@@ -130,6 +173,13 @@ export default function AlertsClient() {
         locale={{ emptyText: error ? "数据未加载" : "当前条件下没有告警" }}
         pagination={listState.paginationProps({ total: data?.total ?? 0, showTotal: (t) => `共 ${t} 条告警` })}
         expandable={{ expandedRowRender: (r) => <AlertEvidence alert={r} /> }}
+      />
+      <AlertCloseModal
+        open={closing != null}
+        alertId={closing?.id ?? null}
+        alertTitle={closing?.title ?? null}
+        onCancel={() => setClosing(null)}
+        onClosed={() => { setClosing(null); void load(); }}
       />
     </div>
   );

@@ -430,3 +430,41 @@ export const alertEvents = pgTable("alert_events", {
   check("ck_alert_events_close_reason_required", sql`${t.event} <> 'close' OR ${t.reasonCode} IS NOT NULL`),
   check("ck_alert_events_verify_evidence_required", sql`${t.event} <> 'verify' OR ${t.evidenceRef} IS NOT NULL`),
 ]);
+
+
+/**
+ * 例外「打盹 / 忽略」与出现天数记忆（路线图 W9）。
+ *
+ * 工作台控制塔的例外（workbench/focus.computeExceptions）每次进页面现算，**没有任何记忆**：
+ * 既不能把一条已知会的例外按日期压下去，也答不出"这条已经连续出现 40 天、没人点过"。
+ * 本表就是那份记忆——**一个例外键一行**，同时承担两件事（同一自然键，一次 upsert 就都写了，
+ * 拆两张表只会多一次写和一次 join）：
+ *  - 打盹：snoozed_until（上海日）+ 原因备注 + 谁按的；到期自动恢复显示，不需要人再点一次；
+ *  - 出现天数：last_shown_on / consecutive_days —— 每次算出例外时按上海日推进，
+ *    中断一天即从 1 重新计数（"连续"就是字面意思；被打盹期间不算展示，因此打盹会中断连续段）。
+ *
+ * 打盹是**全局**的（控制塔是全员同一块板，不是个人收件箱），因此写路径必须写审计
+ * （workbench/exception-dismissals.ts，与业务写路径同口径：同事务 writeAudit + getFreshSessionUser）。
+ * 本表只影响展示：不改任何告警状态、不动待办、不参与任何记账。
+ */
+export const exceptionDismissals = pgTable("exception_dismissals", {
+  id: serial("id").primaryKey(),
+  /** 例外键（workbench/focus 的 ExceptionItem.key，如 below_lead / expired_stock） */
+  exceptionKey: text("exception_key").notNull().unique(),
+  /** 打盹到期日（含当日仍隐藏；null = 未打盹） */
+  snoozedUntil: date("snoozed_until"),
+  snoozeNote: text("snooze_note"),
+  snoozedBy: integer("snoozed_by").references(() => users.id),
+  snoozedAt: timestamp("snoozed_at", { withTimezone: true }),
+  /** 当前连续段的起始上海日 */
+  firstShownOn: date("first_shown_on"),
+  /** 最近一次被展示的上海日 */
+  lastShownOn: date("last_shown_on"),
+  /** 连续出现天数（含今天） */
+  consecutiveDays: integer("consecutive_days").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("ix_exception_dismissal_snooze").on(t.snoozedUntil),
+  check("ck_exception_consecutive_days_nonneg", sql`${t.consecutiveDays} >= 0`),
+]);

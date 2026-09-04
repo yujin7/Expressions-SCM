@@ -50,6 +50,14 @@ describe("runWeeklyDqPack", () => {
 
       const silent = await runWeeklyDqPack(db, { today: "2026-09-14", notify: false });
       expect(silent).toMatchObject({ periodKey: "2026-W37", created: 3, notified: false });
+      /* W1：data_quality 是**周期事实**，下个周期的候选里当然不会再出现上周期的键——
+         若按"不再命中即自动关闭"处理，下周一一跑就把上周未处理的不达标自动清账了。
+         引擎对本类传 autoCloseAfterDays=null（永不自动关闭），只能人工带原因关闭。 */
+      const dqAlerts = await db.select().from(schema.systemAlerts)
+        .where(eq(schema.systemAlerts.category, DQ_ALERT_CATEGORY));
+      expect(dqAlerts.map((a) => `${a.refKey}/${a.status}`).sort())
+        .toEqual(["rpa_warehouse:2026-W36/open", "rpa_warehouse:2026-W37/open"]);
+      expect(dqAlerts[0]).toMatchObject({ ownerRole: "pmc", dedupeKey: "data_quality:rpa_warehouse:2026-W36", actionHref: "/import/data-quality" });
     } finally {
       await client.close();
     }

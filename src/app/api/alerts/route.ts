@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { and, desc, eq, isNull, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { getDbAsync } from "@/db";
-import { systemAlerts, users } from "@/db/schema";
+import { alertEvents, systemAlerts, users } from "@/db/schema";
 import { maskSensitive } from "@/server/core/dto";
 import { errorResponse, guardRead, parseListQuery } from "@/server/modules/master/common";
 
@@ -9,6 +9,10 @@ import { errorResponse, guardRead, parseListQuery } from "@/server/modules/maste
  * struct#15 系统告警（看门狗产出，与人工裁决 review_items 分家）。
  * 查询参数：status（缺省 open）、category、severity、acked=0（只看未知悉）、page/pageSize（缺省 1/50，上限 500）。
  * 返回 { rows, total, page, pageSize }；rows 带 ackedByName；params_snapshot 可能带金额键，统一经 maskSensitive。
+ *
+ * W2：status=resolved 时每行再带**最近一条 close 事件**的 reason_code / note / 时间 / 关闭人
+ * （closeReasonCode / closeNote / closedAt / closedByName）——已关闭视图不写明"为什么关的"，
+ * 误报复盘与阈值调参就只能靠猜。台账在 alert_events（只追加），这里只读最新一条，不改任何状态。
  */
 export async function GET(req: NextRequest) {
   try {
@@ -56,7 +60,34 @@ export async function GET(req: NextRequest) {
         .limit(pageSize)
         .offset((page - 1) * pageSize),
     ]);
-    return NextResponse.json({ rows: maskSensitive(rows, user.roles), total: Number(total ?? 0), page, pageSize });
+    /* 已关闭视图：补最近一条 close 事件（台账 alert_events 只追加，取 id 最大的一条即最新） */
+    let withClose = rows;
+    if (status !== "open" && rows.length > 0) {
+      const events: {
+        alertId: number; reasonCode: string | null; note: string | null; at: Date | null; actorName: string | null;
+      }[] = await db
+        .select({
+          alertId: alertEvents.alertId, reasonCode: alertEvents.reasonCode, note: alertEvents.note,
+          at: alertEvents.at, actorName: users.name,
+        })
+        .from(alertEvents)
+        .leftJoin(users, eq(alertEvents.actorId, users.id))
+        .where(and(eq(alertEvents.event, "close"), inArray(alertEvents.alertId, rows.map((r) => r.id))))
+        .orderBy(desc(alertEvents.id));
+      const latest = new Map<number, (typeof events)[number]>();
+      for (const e of events) if (!latest.has(e.alertId)) latest.set(e.alertId, e);
+      withClose = rows.map((r) => {
+        const e = latest.get(r.id);
+        return {
+          ...r,
+          closeReasonCode: e?.reasonCode ?? null,
+          closeNote: e?.note ?? null,
+          closedAt: e?.at ?? null,
+          closedByName: e?.actorName ?? null,
+        };
+      });
+    }
+    return NextResponse.json({ rows: maskSensitive(withClose, user.roles), total: Number(total ?? 0), page, pageSize });
   } catch (e) {
     return errorResponse(e);
   }

@@ -15,10 +15,16 @@
  * 在仍处于可刷新窗口时把事情喊出来，让 token 不会走到"过期了只能重新授权"那一步。
  *
  * 密钥姿态不变：token **不入库**，只读 env。
+ *
+ * W1（路线图）：告警写入统一走 alerts/engine.upsertAlerts——去重键幂等
+ * （dedupeKey = integration_token:jst_access_token）、责任角色取 rules/task-triggers.ALERT_OWNER_ROLE（唯一权威）、
+ * 动作链接直达集成健康页、sourceRule/paramsSnapshot/why 同行落库、事件进 alert_events 台账。
+ * autoCloseAfterDays=0：刷新后剩余天数回到窗口外是硬事实，不再命中即刻关闭——与迁移前一致。
+ * why/detail 只写"还剩几天"，**绝不写 token 本身或取得时刻以外的任何凭据片段**。
  */
-import { and, eq } from "drizzle-orm";
-import { systemAlerts } from "@/db/schema";
 import type { AnyDb } from "@/server/import/staging";
+import { backfillAlertDedupeKeys, upsertAlerts, type AlertCandidate } from "@/server/modules/alerts/engine";
+import { ALERT_OWNER_ROLE } from "@/server/rules/task-triggers";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 /** 官方对新商家为一年；不同租户可能不同，故可用 JST_TOKEN_TTL_DAYS 覆盖 */
@@ -34,8 +40,10 @@ export function jstTokenTtlDays(env: NodeJS.ProcessEnv = process.env): number {
   }
   return JST_TOKEN_TTL_DAYS_DEFAULT;
 }
-const ALERT_CATEGORY = "integration_token";
-const ALERT_REF = "jst_access_token";
+export const ALERT_CATEGORY = "integration_token";
+export const ALERT_REF = "jst_access_token";
+export const JST_TOKEN_SOURCE_RULE = "jobs/jst-token-watchdog（官方可刷新窗口 7 天）";
+export const JST_TOKEN_ACTION_HREF = "/admin/health";
 
 export interface JstTokenWatchdogSummary {
   status: "skipped" | "checked";
@@ -43,6 +51,10 @@ export interface JstTokenWatchdogSummary {
   daysRemaining?: number;
   opened: number;
   autoClosed: number;
+  /** 已开告警本轮再次命中（剩余天数刷新） */
+  refreshed?: number;
+  /** 本轮回填 dedupe_key 的历史行数 */
+  backfilled?: number;
 }
 
 /**
@@ -74,69 +86,77 @@ export async function runJstTokenWatchdog(
   const env = opts?.env ?? process.env;
 
   if (!env.JST_ACCESS_TOKEN?.trim()) {
-    // 还没授权，不是"快过期"，不扰民
+    // 还没授权，不是"快过期"，不扰民（也不动既有告警：没配置≠已解决）
     return { status: "skipped", reason: "尚未配置 JST_ACCESS_TOKEN", opened: 0, autoClosed: 0 };
   }
 
-  const open: { id: number }[] = await db
-    .select({ id: systemAlerts.id })
-    .from(systemAlerts)
-    .where(and(
-      eq(systemAlerts.category, ALERT_CATEGORY),
-      eq(systemAlerts.refKey, ALERT_REF),
-      eq(systemAlerts.status, "open"),
-    ));
-
   const daysRemaining = jstTokenDaysRemaining(env, now);
+  const candidate = (
+    title: string,
+    detail: string,
+    params: Record<string, unknown>,
+    why: { label: string; value: string; source: string }[],
+  ): AlertCandidate => ({
+    refKey: ALERT_REF,
+    dedupeKey: `${ALERT_CATEGORY}:${ALERT_REF}`,
+    title,
+    detail,
+    severity: "high",
+    ownerRole: ALERT_OWNER_ROLE[ALERT_CATEGORY],
+    actionHref: JST_TOKEN_ACTION_HREF,
+    sourceRule: JST_TOKEN_SOURCE_RULE,
+    paramsSnapshot: params,
+    why,
+  });
 
+  const candidates: AlertCandidate[] = [];
   // 不知道什么时候取的 token，等于不知道还剩几天——这本身要告警，不能当没事
   if (daysRemaining === null) {
-    if (open.length === 0) {
-      await db.insert(systemAlerts).values({
-        category: ALERT_CATEGORY,
-        refKey: ALERT_REF,
-        title: "聚水潭 token 到期时间未知",
-        detail: "缺少 JST_TOKEN_OBTAINED_AT，无法评估有效期。"
-          + "请在刷新或重新授权后记录取得时刻，否则 token 会在无人察觉时失效，"
-          + "届时无法用刷新接口，必须让商家重走一遍授权。",
-        severity: "high",
-      });
-      return { status: "checked", opened: 1, autoClosed: 0 };
-    }
-    return { status: "checked", opened: 0, autoClosed: 0 };
+    candidates.push(candidate(
+      "聚水潭 token 到期时间未知",
+      "缺少 JST_TOKEN_OBTAINED_AT，无法评估有效期。"
+        + "请在刷新或重新授权后记录取得时刻，否则 token 会在无人察觉时失效，"
+        + "届时无法用刷新接口，必须让商家重走一遍授权。",
+      { ref: ALERT_REF, daysRemaining: null, ttlDays: jstTokenTtlDays(env), warnDays: JST_TOKEN_WARN_DAYS },
+      [
+        { label: "剩余有效期", value: "未知（缺 JST_TOKEN_OBTAINED_AT）", source: "env" },
+        { label: "有效期设定", value: `${jstTokenTtlDays(env)} 天`, source: "JST_TOKEN_TTL_DAYS / 官方新商家一年" },
+        { label: "可刷新窗口", value: `到期前 ${JST_TOKEN_WARN_DAYS} 天内`, source: "聚水潭开放平台文档 2135" },
+      ],
+    ));
+  } else if (daysRemaining <= JST_TOKEN_WARN_DAYS) {
+    const expired = daysRemaining < 0;
+    candidates.push(candidate(
+      expired ? "聚水潭 token 已过期" : `聚水潭 token 还有 ${daysRemaining} 天过期`,
+      expired
+        ? "已超过有效期。刷新接口对已过期 token 无效，只能让商家重新授权："
+          + "`npm run jst:auth-url` 生成链接 → 商家同意 → `npx tsx scripts/jst-exchange-code.ts <code>`。"
+        : "处于官方「到期前一周可刷新」窗口内：请在聚水潭开放平台完成 token 刷新"
+          + "（刷新后 token 值不变、仅延长有效期），随后更新 JST_TOKEN_OBTAINED_AT。"
+          + "务必在窗口内处理——一旦过期就**不能再刷新**，只能让商家重走授权："
+          + "`npm run jst:auth-url`。",
+      { ref: ALERT_REF, daysRemaining, expired, ttlDays: jstTokenTtlDays(env), warnDays: JST_TOKEN_WARN_DAYS },
+      [
+        { label: "剩余有效期", value: expired ? `已过期 ${-daysRemaining} 天` : `${daysRemaining} 天`, source: "JST_TOKEN_OBTAINED_AT + TTL" },
+        { label: "可刷新窗口", value: expired ? "已错过（只能重新授权）" : `到期前 ${JST_TOKEN_WARN_DAYS} 天内`, source: "聚水潭开放平台文档 2135" },
+        { label: "有效期设定", value: `${jstTokenTtlDays(env)} 天`, source: "JST_TOKEN_TTL_DAYS / 官方新商家一年" },
+      ],
+    ));
   }
 
-  const needsAttention = daysRemaining <= JST_TOKEN_WARN_DAYS;
-  if (needsAttention) {
-    if (open.length === 0) {
-      const expired = daysRemaining < 0;
-      await db.insert(systemAlerts).values({
-        category: ALERT_CATEGORY,
-        refKey: ALERT_REF,
-        title: expired ? "聚水潭 token 已过期" : `聚水潭 token 还有 ${daysRemaining} 天过期`,
-        detail: expired
-          ? "已超过有效期。刷新接口对已过期 token 无效，只能让商家重新授权："
-            + "`npm run jst:auth-url` 生成链接 → 商家同意 → `npx tsx scripts/jst-exchange-code.ts <code>`。"
-          : "处于官方「到期前一周可刷新」窗口内：请在聚水潭开放平台完成 token 刷新"
-            + "（刷新后 token 值不变、仅延长有效期），随后更新 JST_TOKEN_OBTAINED_AT。"
-            + "务必在窗口内处理——一旦过期就**不能再刷新**，只能让商家重走授权："
-            + "`npm run jst:auth-url`。",
-        severity: "high",
-      });
-      return { status: "checked", daysRemaining, opened: 1, autoClosed: 0 };
-    }
-    return { status: "checked", daysRemaining, opened: 0, autoClosed: 0 };
-  }
-
-  // 已刷新 → 自动关闭（系统自动，非人工裁决）
-  let autoClosed = 0;
-  for (const alert of open) {
-    await db.update(systemAlerts).set({
-      status: "resolved",
-      autoResolved: true,
-      resolvedAt: now,
-    }).where(eq(systemAlerts.id, alert.id));
-    autoClosed++;
-  }
-  return { status: "checked", daysRemaining, opened: 0, autoClosed };
+  const backfilled = await backfillAlertDedupeKeys(db, ALERT_CATEGORY);
+  const res = await upsertAlerts(db, {
+    category: ALERT_CATEGORY,
+    candidates,
+    now,
+    autoCloseAfterDays: 0, // 刷新后即关：剩余天数回到窗口外是硬事实，不需要数据缺口迟滞
+  });
+  return {
+    status: "checked",
+    ...(daysRemaining === null ? {} : { daysRemaining }),
+    opened: res.opened,
+    autoClosed: res.autoClosed,
+    refreshed: res.refreshed,
+    backfilled,
+  };
 }

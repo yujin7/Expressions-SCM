@@ -1,10 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Button, Card, Col, List, Row, Space, Statistic, Tag, Typography } from "antd";
+import { Alert, App, Button, Card, Col, DatePicker, Input, List, Modal, Row, Space, Statistic, Tag, Tooltip, Typography } from "antd";
+import type { Dayjs } from "dayjs";
 import { BulbOutlined, ReloadOutlined, RightOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import Link from "next/link";
-import { fetchJson } from "@/components/fetchJson";
+import { fetchJson, postJson } from "@/components/fetchJson";
+import { hasAnyRole, useMe } from "@/components/useMe";
+import { ACTION } from "@/components/dictionary";
 
 interface ExceptionItem {
   key: string;
@@ -13,7 +16,12 @@ interface ExceptionItem {
   impact: string;
   count: number;
   href: string;
+  /** W9：连续出现天数（含今天）；≥ 长期阈值即"慢性被忽略" */
+  daysShown?: number;
 }
+
+/** 连续出现多少天就该被当成"慢性被忽略"高亮出来（只是展示口径，不改任何判定） */
+const CHRONIC_DAYS = 7;
 
 const SEV_META: Record<string, { color: string; label: string }> = {
   critical: { color: "#cf1322", label: "紧急" },
@@ -21,12 +29,90 @@ const SEV_META: Record<string, { color: string; label: string }> = {
   medium: { color: "#faad14", label: "中" },
 };
 
-/** #6 控制塔：登录第一屏「今天最需要处理的事」，按严重度+影响排序，一键直达 */
-function ControlTower({ items, loading }: { items: ExceptionItem[]; loading: boolean }) {
+/**
+ * W9 打盹弹窗：日期 + 必填原因 → POST /api/workbench/exceptions/snooze。
+ * 打盹是**全局**的（控制塔是全员同一块板），文案里必须说清楚，别让人以为只是自己眼前清净。
+ */
+function SnoozeModal({ item, onCancel, onDone }: { item: ExceptionItem | null; onCancel: () => void; onDone: () => void }) {
+  const { message } = App.useApp();
+  const [until, setUntil] = useState<Dayjs | null>(null);
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  useEffect(() => { setUntil(null); setNote(""); }, [item?.key]);
+
+  const submit = async () => {
+    if (!item) return;
+    if (!until) { message.warning("请选择打盹到期日"); return; }
+    if (!note.trim()) { message.warning("请填写打盹原因（到期恢复时要能看懂当初的判断）"); return; }
+    setSubmitting(true);
+    try {
+      await postJson("/api/workbench/exceptions/snooze", {
+        exceptionKey: item.key, until: until.format("YYYY-MM-DD"), note: note.trim(),
+      });
+      message.success(`已打盹到 ${until.format("YYYY-MM-DD")}（到期自动恢复显示）`);
+      onDone();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={item ? `${ACTION.snoozeException}：${item.title}` : ACTION.snoozeException}
+      open={item != null}
+      onOk={() => void submit()}
+      onCancel={onCancel}
+      confirmLoading={submitting}
+      okText={ACTION.snoozeException}
+      cancelText="取消"
+      width="min(480px, 100vw)"
+    >
+      <Alert
+        type="warning"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message={ACTION.snoozeExceptionHint}
+      />
+      <Space direction="vertical" size={8} style={{ width: "100%" }}>
+        <div>
+          <Typography.Text strong>{ACTION.snoozeException}到（含当日）</Typography.Text>
+          <DatePicker aria-label="打盹到期日" value={until} onChange={setUntil} style={{ width: "100%", marginTop: 4 }} />
+        </div>
+        <div>
+          <Typography.Text strong>原因（必填）</Typography.Text>
+          <Input.TextArea
+            aria-label="打盹原因"
+            rows={3}
+            maxLength={500}
+            showCount
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="例如：已排产，8 月 20 日到货后自然消解"
+            style={{ marginTop: 4 }}
+          />
+        </div>
+      </Space>
+    </Modal>
+  );
+}
+
+/**
+ * #6 控制塔：登录第一屏「今天最需要处理的事」，按严重度+影响排序，一键直达。
+ * W9：每条带「已连续 N 天」——一条挂了 40 天没人点的例外，本身就是要处理的问题；
+ * 计划/采购/运营/仓管（及 admin）可带日期与原因打盹（全局生效、写审计、到期自动恢复）。
+ */
+function ControlTower({ items, loading, onSnooze, canSnooze }: {
+  items: ExceptionItem[];
+  loading: boolean;
+  onSnooze: (item: ExceptionItem) => void;
+  canSnooze: boolean;
+}) {
   if (loading) return <Card loading style={{ marginBottom: 16 }} />;
   if (items.length === 0) {
     return (
-      <Alert type="success" showIcon style={{ marginBottom: 16 }} message="控制塔：当前无跨域异常——各项监控均在阈值内。" />
+      <Alert type="success" showIcon style={{ marginBottom: 16 }} message="控制塔：当前无跨域异常（或已被打盹）——各项监控均在阈值内。" />
     );
   }
   return (
@@ -39,11 +125,23 @@ function ControlTower({ items, loading }: { items: ExceptionItem[]; loading: boo
         dataSource={items}
         renderItem={(it) => (
           <List.Item
-            actions={[<Link key="go" href={it.href}>处理 <RightOutlined /></Link>]}
+            actions={[
+              <Link key="go" href={it.href}>处理 <RightOutlined /></Link>,
+              ...(canSnooze ? [<a key="snooze" onClick={() => onSnooze(it)}>{ACTION.snoozeException}</a>] : []),
+            ]}
           >
             <List.Item.Meta
               avatar={<Tag color={SEV_META[it.severity].color}>{SEV_META[it.severity].label}</Tag>}
-              title={<Link href={it.href}>{it.title}</Link>}
+              title={(
+                <Space size={6}>
+                  <Link href={it.href}>{it.title}</Link>
+                  {it.daysShown && it.daysShown > 1 ? (
+                    <Tooltip title={it.daysShown >= CHRONIC_DAYS ? "长期挂着没被处理——要么解决，要么带原因打盹" : "连续出现天数"}>
+                      <Tag color={it.daysShown >= CHRONIC_DAYS ? "red" : "default"}>已连续 {it.daysShown} 天</Tag>
+                    </Tooltip>
+                  ) : null}
+                </Space>
+              )}
               description={it.impact}
             />
           </List.Item>
@@ -183,6 +281,9 @@ function FocusSections({ sections, loading }: { sections: FocusSection[]; loadin
 
 export default function WorkbenchClient() {
   const { message } = App.useApp();
+  const me = useMe();
+  const canSnooze = hasAnyRole(me, "pmc", "purchasing", "ops", "warehouse"); // 与路由 requireAnyRole 同口径
+  const [snoozing, setSnoozing] = useState<ExceptionItem | null>(null);
   const [openAliasCount, setOpenAliasCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [sections, setSections] = useState<FocusSection[]>([]);
@@ -254,7 +355,13 @@ export default function WorkbenchClient() {
         />
       ) : (
         <>
-          <ControlTower items={exceptions} loading={focusLoading && exceptions.length === 0} />
+          <ControlTower
+            items={exceptions}
+            loading={focusLoading && exceptions.length === 0}
+            canSnooze={canSnooze}
+            onSnooze={setSnoozing}
+          />
+          <SnoozeModal item={snoozing} onCancel={() => setSnoozing(null)} onDone={() => { setSnoozing(null); void load(); }} />
           <NextActions items={nextActions} loading={focusLoading && nextActions.length === 0} />
           <FocusSections sections={sections} loading={focusLoading} />
         </>

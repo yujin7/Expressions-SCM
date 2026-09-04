@@ -20,9 +20,8 @@
  * （feeReason/qtyReason/档位），绝不拼 feePctDev/feeZ/unitFee/amount——偏差百分比与 σ 反推得出单位费用
  * （tests/jobs/transfer-cost-watchdog.test.ts 钉住 detail 与 why 不含 %/σ）。
  */
-import { sql } from "drizzle-orm";
 import type { AnyDb } from "@/server/core/svc";
-import { upsertAlerts, type AlertCandidate, type AlertWhy } from "@/server/modules/alerts/engine";
+import { backfillAlertDedupeKeys, upsertAlerts, type AlertCandidate, type AlertWhy } from "@/server/modules/alerts/engine";
 import { refreshTransferRoutes, type TransferRoutesModel } from "@/server/modules/report/transfer-routes";
 
 export const ALERT_CATEGORY = "transfer_cost";
@@ -102,24 +101,11 @@ export function buildSignals(model: TransferRoutesModel): Signal[] {
 }
 
 /**
- * 一次性回填历史行的 dedupe_key（幂等：只动 dedupe_key IS NULL 的行）。
- * open 行：同 ref_key 只补 id 最小的一条（部分唯一索引）；resolved 行：全部补。
+ * 一次性回填历史行的 dedupe_key —— 实现已上收到 alerts/engine.backfillAlertDedupeKeys（各看门狗共用）。
+ * 保留本导出名：既有调用方与测试按本名引用。
  */
-export async function backfillDedupeKeys(db: AnyDb): Promise<number> {
-  const openRes = await db.execute(sql`
-    UPDATE system_alerts a SET dedupe_key = ${ALERT_CATEGORY} || ':' || a.ref_key
-    WHERE a.category = ${ALERT_CATEGORY} AND a.status = 'open' AND a.dedupe_key IS NULL AND a.ref_key IS NOT NULL
-      AND a.id = (SELECT min(b.id) FROM system_alerts b WHERE b.category = a.category AND b.status = 'open' AND b.ref_key = a.ref_key)
-      AND NOT EXISTS (SELECT 1 FROM system_alerts c WHERE c.category = a.category AND c.status = 'open' AND c.dedupe_key = ${ALERT_CATEGORY} || ':' || a.ref_key)`);
-  const closedRes = await db.execute(sql`
-    UPDATE system_alerts SET dedupe_key = ${ALERT_CATEGORY} || ':' || ref_key
-    WHERE category = ${ALERT_CATEGORY} AND status <> 'open' AND dedupe_key IS NULL AND ref_key IS NOT NULL`);
-  const n = (r: unknown): number => {
-    const v = (r as { rowCount?: unknown; affectedRows?: unknown } | null);
-    const c = Number(v?.rowCount ?? v?.affectedRows ?? 0);
-    return Number.isFinite(c) ? c : 0;
-  };
-  return n(openRes) + n(closedRes);
+export function backfillDedupeKeys(db: AnyDb): Promise<number> {
+  return backfillAlertDedupeKeys(db, ALERT_CATEGORY);
 }
 
 export async function run(db: AnyDb, opts?: { now?: Date; asOf?: string }): Promise<TransferCostWatchdogSummary> {
