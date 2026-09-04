@@ -1,8 +1,15 @@
 /**
- * D63 采购订单指标读模型 `purchase-order-metrics/v2`（真报表 + 驾驶舱第 2 屏「订单系统 / 成本下降」卡）。
+ * D63 采购订单指标读模型 `purchase-order-metrics/v3`（真报表 + 驾驶舱第 2 屏「订单系统 / 成本下降」卡）。
  *
  * v2（B5 口径变更）：byMonth 增加逐月 OTIF（按 PO 下单月归期，与年度累计同一判定），
  * 驾驶舱 PO 趋势块改用逐月 OTIF 而非年度累计——键随口径升版，旧缓存自然失效。
+ *
+ * v3（W2 审计 1，OTIF 反洗白）：准时判定的**主口径改为原始承诺**（po_promise_revisions 里
+ * 第一条可信修订的承诺日；口径唯一权威 `rules/promise-basis.ts`），当前承诺降为**并列副口径**
+ * （`otifCurrent`）。此前两个口径合一，供应商经确认门户把交期往后改一次，自己的 OTIF 就变好看——
+ * 改期越勤分数越高。两个口径都必须带标签展示（`otifBasisLabel` / `otifSecondaryBasisLabel`），
+ * 并带版本链覆盖 `promiseHistory`：没有可信版本链的行，「原始承诺」其实是回落的当前承诺，
+ * 不能让读者以为全量都按原始承诺判过。
  *
  * 口径（D63，参数在 PARAM_DEFS）：
  * - 已下单时点 = PO **审批通过**（approvals doc_type=po action=approve 的最后一次），不是制单；
@@ -13,7 +20,8 @@
  *   与 OTIF 足量判定同一口径）；P50/P90 样本 < 3 标样本不足。
  * - 降本：`rules/cost-saving.ts`；基线 = **上一年度**已批数量加权基础单位未税均价（按 SKU，跨供应商），
  *   上一年度无则取该 SKU 首个已批行价；只计降价，涨价另列不轧差。
- * - 供应商 OTIF：承诺日 = min(coalesce(行交期, 表头交期))；准时 = 全收完成日 ≤ 承诺日 + otif_window_days；
+ * - 供应商 OTIF：**主口径承诺日 = 原始承诺**（min(该行第一条可信修订承诺日；无版本链回落当前承诺））；
+ *   并列副口径 otifCurrent 用当前承诺 min(coalesce(行交期, 表头交期))；准时 = 全收完成日 ≤ 承诺日 + otif_window_days；
  *   足量 = Σ已收 ≥ Σ应收 × (1 − otif_qty_tolerance_pct%)；缺承诺日进「不可评」桶；未到期且未收齐进「待评」桶。
  * - 月桶：只取统计年 `${year}-01` 至当前月（历史年份到 12 月），缺月为 0 单（「没下单」是事实，不是缺数据）。
  * - 缓存：report_read_model_cache，source_binding 绑 po_docs / sh_docs / approvals max(id)+行数 + sys_params 里
@@ -31,14 +39,24 @@ import { type AnyDb } from "@/server/core/svc";
 import { costSaving } from "@/server/rules/cost-saving";
 import { orderToDeliveryDays, shanghaiDay } from "@/server/rules/po-cycle";
 import { normalizeLineNetGross, normalizeToBaseNet } from "@/server/rules/price";
+import {
+  countPromiseHistory, emptyPromiseHistoryCoverage, PROMISE_BASIS_LABELS,
+  promiseDateForBasis, resolvePromiseBasis,
+  type PromiseBasis, type PromiseBasisFact, type PromiseHistoryCoverage,
+} from "@/server/rules/promise-basis";
 
-export const PURCHASE_ORDER_METRICS_KEY = "purchase-order-metrics/v2";
+export const PURCHASE_ORDER_METRICS_KEY = "purchase-order-metrics/v3";
 /** 「已下单」的 PO 状态（审批通过后的全部形态；void 不算） */
 export const ORDERED_PO_STATUSES = ["approved", "in_progress", "completed", "closed"] as const;
 /** 生效收货状态（照抄 report/wip.ts ACTIVE_SH_STATUSES） */
 const ACTIVE_SH_STATUSES = ["approved", "in_progress", "completed"] as const;
 /** P50/P90 最小样本数（计划 PO-R7） */
 export const MIN_CYCLE_SAMPLES = 3;
+/** OTIF 主口径（v3 起）：原始承诺；当前承诺降为并列副口径 */
+export const OTIF_PRIMARY_BASIS: PromiseBasis = "original";
+export const OTIF_SECONDARY_BASIS: PromiseBasis = "current";
+export const OTIF_PRIMARY_BASIS_LABEL = PROMISE_BASIS_LABELS[OTIF_PRIMARY_BASIS];
+export const OTIF_SECONDARY_BASIS_LABEL = PROMISE_BASIS_LABELS[OTIF_SECONDARY_BASIS];
 
 export interface PoVolume {
   poCount: number;
@@ -83,8 +101,10 @@ export interface CostSavingStats {
 
 export interface PoMonthRow extends PoVolume {
   month: string;
-  /** 逐月 OTIF（v2）：按 PO 下单月（审批通过月）归期，判定与年度累计完全同口径 */
+  /** 逐月 OTIF（v2）：按 PO 下单月（审批通过月）归期，判定与年度累计完全同口径；v3 起为**原始承诺**口径 */
   otif: OtifStats;
+  /** 并列副口径：当前承诺（供应商改期后的值）——与 otif 一起看才知道改期吃掉了多少迟到 */
+  otifCurrent: OtifStats;
 }
 
 export interface PoSupplierRow extends PoVolume {
@@ -92,7 +112,10 @@ export interface PoSupplierRow extends PoVolume {
   code: string;
   name: string;
   cycle: CycleStats;
+  /** 原始承诺口径（主） */
   otif: OtifStats;
+  /** 当前承诺口径（副） */
+  otifCurrent: OtifStats;
   costSaving: CostSavingStats;
 }
 
@@ -113,11 +136,19 @@ export interface PurchaseOrderMetrics {
   baselineYear: number;
   moneyVisible: boolean;
   params: { otifWindowDays: number; otifQtyTolerancePct: number; minCycleSamples: number };
+  /** OTIF 主口径标识与标签（v3：原始承诺为主、当前承诺为辅，两者必须同时展示） */
+  otifBasis: PromiseBasis;
+  otifBasisLabel: string;
+  otifSecondaryBasis: PromiseBasis;
+  otifSecondaryBasisLabel: string;
+  /** 承诺版本链覆盖（按 PO 行计）：missing/backfilled 行的「原始承诺」其实是回落的当前承诺 */
+  promiseHistory: PromiseHistoryCoverage;
   summary: {
     thisMonth: PoVolume;
     ytd: PoVolume;
     cycle: CycleStats;
     otif: OtifStats;
+    otifCurrent: OtifStats;
     costSaving: CostSavingStats;
     /** 因换算系数非法等被剔除的行数 */
     invalidLines: number;
@@ -143,7 +174,10 @@ interface LineFact {
   unitBaseNet: string;
   netAmount: string;
   grossAmount: string;
+  /** 当前承诺（行交期；空则由 PoFact 表头兜底） */
   expectedDate: string | null;
+  /** 该行承诺版本链事实（原始承诺 / 可信度 / 改期次数） */
+  promise: PromiseBasisFact;
 }
 
 interface PoFact {
@@ -214,11 +248,16 @@ function addDays(day: string, days: number): string {
   return new Date(t).toISOString().slice(0, 10);
 }
 
-/** 承诺日：min(coalesce(行交期, 表头交期))；全缺 → null */
-function promisedDate(po: PoFact): string | null {
+/**
+ * 承诺日（按口径）：min(逐行承诺日)；全缺 → 表头承诺日。
+ * - current  = coalesce(行交期, 表头交期)（供应商改期后的当前值）
+ * - original = 该行第一条可信修订的承诺日；无可信版本链回落 current（回落量由 promiseHistory 披露）
+ */
+function promisedDate(po: PoFact, basis: PromiseBasis): string | null {
   let min: string | null = null;
   for (const line of po.lines) {
-    const d = line.expectedDate ?? po.expectedDate;
+    const current = line.expectedDate ?? po.expectedDate;
+    const d = promiseDateForBasis(basis, line.promise, current);
     if (d && (min == null || d < min)) min = d;
   }
   return min ?? po.expectedDate;
@@ -274,7 +313,11 @@ async function readOtifParams(db: AnyDb): Promise<OtifParams> {
 
 /* ───────────────────────── 取数 ───────────────────────── */
 
-/** 绑定：三张事实表 max(id)+行数 + 统计年 + OTIF 口径参数（改参数即失效重算） */
+/**
+ * 绑定：三张事实表 max(id)+行数 + **承诺版本链** max(id)+行数 + 统计年 + OTIF 口径参数。
+ * v3 起承诺版本链参与判定：供应商改期只写 po_promise_revisions（不改 po_docs.id），
+ * 不把它绑进来，改期后缓存不会失效、原始承诺口径就永远读旧值。
+ */
 async function sourceBinding(db: AnyDb, year: number, otif: OtifParams): Promise<string> {
   const [po] = await db
     .select({ maxId: sql<number>`coalesce(max(${schema.poDocs.id}), 0)::int`, n: sql<number>`count(*)::int` })
@@ -286,7 +329,11 @@ async function sourceBinding(db: AnyDb, year: number, otif: OtifParams): Promise
     .select({ maxId: sql<number>`coalesce(max(${schema.approvals.id}), 0)::int` })
     .from(schema.approvals)
     .where(eq(schema.approvals.docType, "po"));
-  return `po:${po.maxId}/${po.n}|sh:${sh.maxId}/${sh.n}|appr:${ap.maxId}|year:${year}|otif:${otif.windowDays}/${otif.qtyTolerancePct}`;
+  const [pr] = await db
+    .select({ maxId: sql<number>`coalesce(max(${schema.poPromiseRevisions.id}), 0)::int`, n: sql<number>`count(*)::int` })
+    .from(schema.poPromiseRevisions);
+  return `po:${po.maxId}/${po.n}|sh:${sh.maxId}/${sh.n}|appr:${ap.maxId}|promise:${pr.maxId}/${pr.n}`
+    + `|year:${year}|otif:${otif.windowDays}/${otif.qtyTolerancePct}`;
 }
 
 async function loadFacts(db: AnyDb): Promise<{ pos: PoFact[]; invalidLines: number }> {
@@ -325,10 +372,11 @@ async function loadFacts(db: AnyDb): Promise<{ pos: PoFact[]; invalidLines: numb
   const receiptByPo = new Map(receipts.map((r) => [r.poId, r]));
 
   const lines: {
-    poId: number; skuId: number; qty: string; uomFactor: string; price: string; taxIncluded: boolean; taxRatePct: string;
+    lineId: number; poId: number; skuId: number; qty: string; uomFactor: string; price: string; taxIncluded: boolean; taxRatePct: string;
     receivedQty: string; expectedDate: string | null; brandId: number | null; brandCode: string | null; brandName: string | null;
   }[] = await db
     .select({
+      lineId: schema.poLines.id,
       poId: schema.poLines.poId,
       skuId: schema.poLines.skuId,
       qty: schema.poLines.qty,
@@ -346,6 +394,23 @@ async function loadFacts(db: AnyDb): Promise<{ pos: PoFact[]; invalidLines: numb
     .innerJoin(schema.skus, eq(schema.poLines.skuId, schema.skus.id))
     .leftJoin(schema.brands, eq(schema.skus.brandId, schema.brands.id))
     .orderBy(schema.poLines.poId, schema.poLines.id);
+
+  /* 承诺版本链（v3）：逐行取原始承诺；口径实现只有 rules/promise-basis.ts 一处 */
+  const revisionRows: { poLineId: number; sequence: number; promisedDate: string | null; source: string }[] = await db
+    .select({
+      poLineId: schema.poPromiseRevisions.poLineId,
+      sequence: schema.poPromiseRevisions.sequence,
+      promisedDate: schema.poPromiseRevisions.promisedDate,
+      source: schema.poPromiseRevisions.source,
+    })
+    .from(schema.poPromiseRevisions)
+    .orderBy(schema.poPromiseRevisions.poLineId, schema.poPromiseRevisions.sequence);
+  const revisionsByLine = new Map<number, typeof revisionRows>();
+  for (const r of revisionRows) {
+    const list = revisionsByLine.get(r.poLineId) ?? [];
+    list.push(r);
+    revisionsByLine.set(r.poLineId, list);
+  }
 
   const pos = new Map<number, PoFact>();
   for (const d of docs) {
@@ -395,6 +460,7 @@ async function loadFacts(db: AnyDb): Promise<{ pos: PoFact[]; invalidLines: numb
       netAmount,
       grossAmount,
       expectedDate: l.expectedDate,
+      promise: resolvePromiseBasis(revisionsByLine.get(l.lineId) ?? []),
     });
   }
   return { pos: [...pos.values()].sort((a, b) => a.poId - b.poId), invalidLines };
@@ -451,6 +517,8 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
   const firstDaysAll: number[] = [];
   const fullDaysAll: number[] = [];
   const otifAll = emptyOtif();
+  const otifCurrentAll = emptyOtif();
+  const promiseHistory = emptyPromiseHistoryCoverage();
   const savingAll = emptySaving();
 
   // 统计年 01 月至当前月（历史年份至 12 月）的月桶固定存在，缺月显示 0 单（这是「没下单」而非「缺数据」，两者不同：PO 是系统事实）；
@@ -458,7 +526,7 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
   const lastMonthNo = Number(month.slice(5, 7));
   for (let m = 1; m <= lastMonthNo; m += 1) {
     const key = `${year}-${String(m).padStart(2, "0")}`;
-    byMonth.set(key, { month: key, ...emptyVolume(), otif: emptyOtif() });
+    byMonth.set(key, { month: key, ...emptyVolume(), otif: emptyOtif(), otifCurrent: emptyOtif() });
   }
 
   for (const po of inYear) {
@@ -469,12 +537,14 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
       ...emptyVolume(),
       cycle: cycleStats([], []),
       otif: emptyOtif(),
+      otifCurrent: emptyOtif(),
       costSaving: emptySaving(),
       firstDays: [],
       fullDays: [],
     };
     bySupplier.set(po.supplierId, sup);
-    const monthRow = byMonth.get(po.month) ?? { month: po.month, ...emptyVolume(), otif: emptyOtif() };
+    const monthRow = byMonth.get(po.month)
+      ?? { month: po.month, ...emptyVolume(), otif: emptyOtif(), otifCurrent: emptyOtif() };
     byMonth.set(po.month, monthRow);
 
     ytd.poCount += 1;
@@ -505,6 +575,7 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
       }
       orderedBase = dAdd(orderedBase, line.baseQty, 4);
       receivedBase = dAdd(receivedBase, line.receivedQty, 4);
+      countPromiseHistory(promiseHistory, line.promise);
 
       const cs = costSaving({ baselineUnitPrice: baseline.get(line.skuId) ?? null, currentUnitPrice: line.unitBaseNet, qty: line.baseQty });
       for (const acc of [savingAll, sup.costSaving]) {
@@ -535,15 +606,24 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
       sup.fullDays.push(cyc.fullDays);
     }
 
-    // OTIF
+    /* OTIF：主口径 = 原始承诺（反洗白），副口径 = 当前承诺（改期后的值），两个都算、都下发 */
+    const lastReceiptDay = full ? shanghaiDay(po.lastReceiptAt) : null;
     const outcome = evaluateOtif({
-      promised: promisedDate(po),
+      promised: promisedDate(po, OTIF_PRIMARY_BASIS),
       orderedBaseQty: orderedBase,
       receivedBaseQty: receivedBase,
-      lastReceiptDay: full ? shanghaiDay(po.lastReceiptAt) : null,
+      lastReceiptDay,
       today,
     }, otifParams);
     for (const o of [otifAll, sup.otif, monthRow.otif]) o[outcome] += 1;
+    const currentOutcome = evaluateOtif({
+      promised: promisedDate(po, OTIF_SECONDARY_BASIS),
+      orderedBaseQty: orderedBase,
+      receivedBaseQty: receivedBase,
+      lastReceiptDay,
+      today,
+    }, otifParams);
+    for (const o of [otifCurrentAll, sup.otifCurrent, monthRow.otifCurrent]) o[currentOutcome] += 1;
   }
 
   const supplierRows: PoSupplierRow[] = [...bySupplier.values()]
@@ -551,6 +631,7 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
       ...row,
       cycle: cycleStats(firstDays, fullDays),
       otif: finishOtif(row.otif),
+      otifCurrent: finishOtif(row.otifCurrent),
     }))
     .sort((a, b) => dCmp(b.netAmount ?? "0", a.netAmount ?? "0") || a.code.localeCompare(b.code));
 
@@ -565,16 +646,24 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
     baselineYear,
     moneyVisible: true,
     params: { otifWindowDays, otifQtyTolerancePct, minCycleSamples: MIN_CYCLE_SAMPLES },
+    otifBasis: OTIF_PRIMARY_BASIS,
+    otifBasisLabel: OTIF_PRIMARY_BASIS_LABEL,
+    otifSecondaryBasis: OTIF_SECONDARY_BASIS,
+    otifSecondaryBasisLabel: OTIF_SECONDARY_BASIS_LABEL,
+    promiseHistory,
     summary: {
       thisMonth,
       ytd,
       cycle: cycleStats(firstDaysAll, fullDaysAll),
       otif: finishOtif(otifAll),
+      otifCurrent: finishOtif(otifCurrentAll),
       costSaving: savingAll,
       invalidLines,
       orderedPoAllTime: pos.length,
     },
-    byMonth: [...byMonth.values()].map((m) => ({ ...m, otif: finishOtif(m.otif) })).sort((a, b) => a.month.localeCompare(b.month)),
+    byMonth: [...byMonth.values()]
+      .map((m) => ({ ...m, otif: finishOtif(m.otif), otifCurrent: finishOtif(m.otifCurrent) }))
+      .sort((a, b) => a.month.localeCompare(b.month)),
     bySupplier: supplierRows,
     byBrand: [...byBrand.values()].sort((a, b) => dCmp(b.orderedBaseQty, a.orderedBaseQty) || a.brandName.localeCompare(b.brandName)),
     limitations: [
@@ -583,6 +672,10 @@ export async function computePurchaseOrderMetrics(db: AnyDb, opts: ComputeOption
       `订单至交付 = 审批 → 首批生效收货（SH 建单日）；全收 = 累计已收 ≥ 应收 × (1 − ${otifQtyTolerancePct}%) 时的最后一张 SH（与 OTIF 足量同口径）；样本 < 3 不出 P50/P90。`,
       `降本基线 = ${baselineYear} 年已批数量加权基础单位未税均价（按 SKU 跨供应商），无则取该 SKU 首个已批行价；只计降价，涨价另列不轧差。`,
       `OTIF：承诺日 + ${otifWindowDays} 天窗口内收齐（足量容差 ${otifQtyTolerancePct}%）记准时足量；缺承诺日进「不可评」；未到期未收齐为「待评」。`,
+      `OTIF 主口径 = ${OTIF_PRIMARY_BASIS_LABEL}（po_promise_revisions 第一条可信修订），并列副口径 otifCurrent = ${OTIF_SECONDARY_BASIS_LABEL}；`
+      + "供应商经确认门户改期只影响副口径，不再抬高主口径（v3 反洗白）。",
+      `承诺版本链覆盖：可信 ${promiseHistory.trusted} 行 / 迁移快照 ${promiseHistory.backfilled} 行 / 无版本链 ${promiseHistory.missing} 行；`
+      + "后两类的「原始承诺」是回落的当前承诺，不冒充真实原始承诺。",
       `按月：只列 ${year}-01 至 ${month} 的月桶，缺月为 0 单（当年确无已批 PO），不含上年月份。`,
       "逐月 OTIF 按下单月归期：近月的 PO 多半还没到承诺日，evaluable 结构性偏低，读数必须带 n（v2）。",
       "覆盖：仅 SCM 内 PO 事实，不含简道云旧采购单观察。",
@@ -689,8 +782,14 @@ export interface PurchaseOrderCockpitBlock {
     cycleFirstP90: number | null;
     cycleSamples: number;
     cycleInsufficient: boolean;
+    /** 主口径（原始承诺）准时率 */
     otifRate: number | null;
     otifEvaluable: number;
+    /** 副口径（当前承诺）准时率——与主口径并列，供驾驶舱标注改期影响 */
+    otifCurrentRate: number | null;
+    otifCurrentEvaluable: number;
+    otifBasisLabel: string;
+    otifSecondaryBasisLabel: string;
   };
   costDown: {
     savingYtd: string | null;
@@ -718,6 +817,10 @@ export function purchaseOrderCockpitBlock(model: PurchaseOrderMetrics): Purchase
       cycleInsufficient: s.cycle.insufficient,
       otifRate: s.otif.rate,
       otifEvaluable: s.otif.evaluable,
+      otifCurrentRate: s.otifCurrent.rate,
+      otifCurrentEvaluable: s.otifCurrent.evaluable,
+      otifBasisLabel: model.otifBasisLabel,
+      otifSecondaryBasisLabel: model.otifSecondaryBasisLabel,
     },
     costDown: {
       savingYtd: s.costSaving.savingYtd,

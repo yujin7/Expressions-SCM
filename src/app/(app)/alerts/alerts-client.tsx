@@ -57,6 +57,11 @@ const CAT: Record<string, string> = {
   sales_spike: "爆单预警",
   transfer_cost: "调拨成本异常",
   data_quality: "数据质量核对",
+  snapshot_quality: "快照质量",
+  supplier_license: "供应商证照到期",
+  promise_breach: "交期承诺违约",
+  otif_collapse: "供应商 OTIF 崩塌",
+  quality_case_overdue: "质量案件逾期",
 };
 const SEV: Record<string, string> = { critical: "red", high: "orange", medium: "gold" };
 const STATUS_OPTIONS = [{ value: "open", label: "待处理" }, { value: "resolved", label: "已关闭" }];

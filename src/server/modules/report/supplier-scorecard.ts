@@ -9,7 +9,11 @@
  * 1) 准时率：完全复用 rules/leadtime-stats.ts 的 leadTimeStats，样本取法与
  *    report/leadtime-learning.ts 一致——
  *      起算日 = po_docs.created_at（Asia/Shanghai 日界）；
- *      承诺到货日 = coalesce(po_lines.expected_date, po_docs.expected_date)（两者皆空 → 不进准时率分母）；
+ *      承诺到货日（W2 起**主口径 = 原始承诺**，口径唯一权威 rules/promise-basis.ts）：
+ *        原始承诺 = 该 PO 行第一条可信 po_promise_revisions 的承诺日；无可信版本链回落当前承诺；
+ *        当前承诺 = coalesce(po_lines.expected_date, po_docs.expected_date)（两者皆空 → 不进准时率分母）。
+ *      为什么换：当前承诺是供应商自己能改的——经确认门户把交期往后挪一次，准时率立刻变好看，
+ *      「改期越勤分数越高」。原始承诺进综合分，当前承诺作为并列副列（onTimeRateCurrent）只展示不计分。
  *      实际收货日 = 该 (PO, SKU) 最早一张生效 SH 的 created_at（生效 = approved/in_progress/completed，
  *      与 report/wip.ts 的 ACTIVE_SH_STATUSES 同集合）；
  *      负交期（收货早于制单，多为历史补录）丢弃。
@@ -28,6 +32,11 @@
  *    选「收货单张数」而非「交期样本对数」：后者按 SKU 展开会高估样本量，
  *    且加工厂没有 PO 交期样本却有真实收货批次，用单张数才不会把它们一律打成低置信。
  *
+ * 5) 质量案件（W2 审计 4b）：`quality_cases` 挂 supplier_id 的**未关闭**案件数与其中的**逾期**数
+ *    （逾期 = reportDueDate < 今日 且未上报，判定复用 rules/quality-compliance.classifyDueState）。
+ *    仅对**有案件**的供应商加进评分维度；无案件者维度不适用、分数与本次改动前逐位相同。
+ *    窗口口径：案件按 created_at ≥ cutoff 或**至今仍未关闭**（久拖不决的旧案件正是最该扣分的那种）。
+ *
  * 窗口：默认近 180 天（半年）——太短样本不够，太长会把早已改进的历史问题算进当期。
  * 只列窗口内**有信号**（有收货 / 有质检 / 有调价）的供应商；全无往来的供应商不占版面。
  */
@@ -36,10 +45,15 @@ import { z } from "zod";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
-import { ApiError, type SessionUser } from "@/server/modules/master/common";
+import { ApiError, todayShanghai, type SessionUser } from "@/server/modules/master/common";
 import { SUPPLIER_LEVELS } from "@/server/modules/master/schemas";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import { leadTimeStats, type LeadTimeSample } from "@/server/rules/leadtime-stats";
+import { classifyDueState } from "@/server/rules/quality-compliance";
+import {
+  countPromiseHistory, emptyPromiseHistoryCoverage, PROMISE_BASIS_LABELS,
+  promiseDateForBasis, resolvePromiseBasis, type PromiseHistoryCoverage,
+} from "@/server/rules/promise-basis";
 import { scoreSupplier, type ScoreBreakdownItem, type SupplierGrade } from "@/server/rules/scorecard";
 import { num } from "@/server/core/svc";
 
@@ -78,7 +92,13 @@ export interface ScorecardRow {
   score: number | null;
   grade: SupplierGrade | null;
   confidence: "high" | "medium" | "low";
+  /** 主口径准时率（原始承诺）——进综合分 */
   onTimeRate: number | null;
+  /** 副口径准时率（当前承诺，供应商改期后的值）——只展示不计分 */
+  onTimeRateCurrent: number | null;
+  /** 该供应商窗口内未关闭质量案件数 / 其中逾期数；无案件 → null（维度不适用） */
+  openQualityCases: number | null;
+  overdueQualityCases: number | null;
   qcPassRate: number | null;
   concessionRate: number | null;
   scrapRate: number | null;
@@ -103,10 +123,17 @@ export interface SupplierScorecard {
     rated: number;
     /** 建议调整等级的数量 */
     suggestChanges: number;
-    /** 平均准时率 0~1（仅有准时率的供应商参与）；无 → null */
+    /** 平均准时率 0~1（主口径=原始承诺；仅有准时率的供应商参与）；无 → null */
     avgOnTimeRate: number | null;
+    /** 平均准时率（副口径=当前承诺）——与主口径的差就是改期吃掉的迟到 */
+    avgOnTimeRateCurrent: number | null;
     windowDays: number;
   };
+  /** 准时率主/副口径标签（中文界面必须两个都标，只标一个读者就不知道自己看的是哪一版） */
+  onTimeBasisLabel: string;
+  onTimeSecondaryBasisLabel: string;
+  /** 承诺版本链覆盖（按交期样本计）：missing/backfilled 的「原始承诺」是回落的当前承诺 */
+  promiseHistory: PromiseHistoryCoverage;
 }
 
 /** 窗口内 (供应商 → 生效收货单张数)；PO/JG 两种来源各查一次后合并 */
@@ -245,8 +272,19 @@ async function priceChangesBySupplier(db: AnyDb, cutoff: Date): Promise<Map<numb
   return out;
 }
 
-/** 窗口内 (供应商 → 交期样本)；口径见文件头注释 1) */
-async function leadSamplesBySupplier(db: AnyDb, cutoff: Date): Promise<Map<number, LeadTimeSample[]>> {
+/** 一个供应商的双口径交期样本 */
+interface LeadSamplePair {
+  /** 主口径：原始承诺 */
+  original: LeadTimeSample[];
+  /** 副口径：当前承诺 */
+  current: LeadTimeSample[];
+}
+
+/** 窗口内 (供应商 → 双口径交期样本)；口径见文件头注释 1) */
+async function leadSamplesBySupplier(
+  db: AnyDb,
+  cutoff: Date,
+): Promise<{ samples: Map<number, LeadSamplePair>; promiseHistory: PromiseHistoryCoverage }> {
   const receipts = db
     .select({
       poId: schema.shDocs.sourceId,
@@ -259,9 +297,10 @@ async function leadSamplesBySupplier(db: AnyDb, cutoff: Date): Promise<Map<numbe
     .groupBy(schema.shDocs.sourceId, schema.shLines.skuId)
     .as("receipts");
 
-  const rows: { supplierId: number; orderedAt: Date; promisedDate: string | null; receivedAt: Date }[] = await db
+  const rows: { supplierId: number; poLineId: number; orderedAt: Date; promisedDate: string | null; receivedAt: Date }[] = await db
     .select({
       supplierId: schema.poDocs.supplierId,
+      poLineId: schema.poLines.id,
       orderedAt: schema.poDocs.createdAt,
       promisedDate: sql<string | null>`coalesce(${schema.poLines.expectedDate}, ${schema.poDocs.expectedDate})`,
       receivedAt: receipts.receivedAt,
@@ -270,17 +309,80 @@ async function leadSamplesBySupplier(db: AnyDb, cutoff: Date): Promise<Map<numbe
     .innerJoin(schema.poDocs, eq(schema.poLines.poId, schema.poDocs.id))
     .innerJoin(receipts, and(eq(receipts.poId, schema.poLines.poId), eq(receipts.skuId, schema.poLines.skuId)));
 
-  const out = new Map<number, LeadTimeSample[]>();
+  /* 承诺版本链：逐 PO 行取原始承诺（口径唯一权威 rules/promise-basis.ts） */
+  const revisionRows: { poLineId: number; sequence: number; promisedDate: string | null; source: string }[] = rows.length > 0
+    ? await db
+      .select({
+        poLineId: schema.poPromiseRevisions.poLineId,
+        sequence: schema.poPromiseRevisions.sequence,
+        promisedDate: schema.poPromiseRevisions.promisedDate,
+        source: schema.poPromiseRevisions.source,
+      })
+      .from(schema.poPromiseRevisions)
+      .where(inArray(schema.poPromiseRevisions.poLineId, [...new Set(rows.map((r) => r.poLineId))]))
+      .orderBy(schema.poPromiseRevisions.poLineId, schema.poPromiseRevisions.sequence)
+    : [];
+  const revisionsByLine = new Map<number, typeof revisionRows>();
+  for (const rev of revisionRows) {
+    const list = revisionsByLine.get(rev.poLineId) ?? [];
+    list.push(rev);
+    revisionsByLine.set(rev.poLineId, list);
+  }
+
+  const samples = new Map<number, LeadSamplePair>();
+  const promiseHistory = emptyPromiseHistoryCoverage();
   for (const r of rows) {
     const received = new Date(r.receivedAt);
     if (received < cutoff) continue; // 窗口外的历史履约不参与本期评分
     const orderedStr = shanghaiDate(new Date(r.orderedAt));
     const actualDays = daysBetween(orderedStr, shanghaiDate(received));
     if (!Number.isFinite(actualDays) || actualDays < 0) continue; // 收货早于制单 = 补录脏数据
-    const promisedDays = r.promisedDate ? daysBetween(orderedStr, r.promisedDate) : null;
-    const list = out.get(r.supplierId) ?? [];
-    list.push({ promisedDays: promisedDays != null && promisedDays >= 0 ? promisedDays : null, actualDays });
-    out.set(r.supplierId, list);
+    const fact = resolvePromiseBasis(revisionsByLine.get(r.poLineId) ?? []);
+    countPromiseHistory(promiseHistory, fact);
+    const pair = samples.get(r.supplierId) ?? { original: [], current: [] };
+    for (const [basis, list] of [["original", pair.original], ["current", pair.current]] as const) {
+      const date = promiseDateForBasis(basis, fact, r.promisedDate);
+      const promisedDays = date ? daysBetween(orderedStr, date) : null;
+      list.push({ promisedDays: promisedDays != null && promisedDays >= 0 ? promisedDays : null, actualDays });
+    }
+    samples.set(r.supplierId, pair);
+  }
+  return { samples, promiseHistory };
+}
+
+/**
+ * 窗口内 (供应商 → 质量案件桶)。
+ * 口径：quality_cases.supplier_id 非空、status <> 'closed'，且（created_at ≥ cutoff 或至今仍未关闭）；
+ * 逾期 = 有 report_due_date 且 classifyDueState 判 overdue（未上报）。
+ */
+interface QualityCaseBuckets { open: number; overdue: number }
+async function qualityCasesBySupplier(db: AnyDb, today: string): Promise<Map<number, QualityCaseBuckets>> {
+  const rows: { supplierId: number | null; reportDueDate: string | null; reportedAt: Date | null }[] = await db
+    .select({
+      supplierId: schema.qualityCases.supplierId,
+      reportDueDate: schema.qualityCases.reportDueDate,
+      reportedAt: schema.qualityCases.reportedAt,
+    })
+    .from(schema.qualityCases)
+    .where(and(
+      sql`${schema.qualityCases.supplierId} is not null`,
+      sql`${schema.qualityCases.status} <> 'closed'`,
+    ));
+  const out = new Map<number, QualityCaseBuckets>();
+  for (const r of rows) {
+    if (r.supplierId == null) continue;
+    const b = out.get(r.supplierId) ?? { open: 0, overdue: 0 };
+    b.open += 1;
+    if (r.reportDueDate) {
+      const state = classifyDueState({
+        dueDate: r.reportDueDate,
+        asOfDate: today,
+        dueSoonThroughDate: today,
+        completedDate: r.reportedAt ? today : null,
+      });
+      if (state === "overdue") b.overdue += 1;
+    }
+    out.set(r.supplierId, b);
   }
   return out;
 }
@@ -296,21 +398,29 @@ export async function getSupplierScorecard(
   const q = (query.q ?? "").trim().toLowerCase();
   const cutoff = new Date(Date.now() - windowDays * 86_400_000);
 
-  const [receipts, qc, priceChanges, leadSamples] = await Promise.all([
+  const today = todayShanghai();
+  const [receipts, qc, priceChanges, lead, qualityCases] = await Promise.all([
     receiptCountsBySupplier(db, cutoff),
     qcBySupplier(db, cutoff),
     priceChangesBySupplier(db, cutoff),
     leadSamplesBySupplier(db, cutoff),
+    qualityCasesBySupplier(db, today),
   ]);
+  const leadSamples = lead.samples;
 
-  /** 窗口内有任一信号的供应商 */
-  const active = new Set<number>([...receipts.keys(), ...qc.keys(), ...priceChanges.keys(), ...leadSamples.keys()]);
+  /** 窗口内有任一信号的供应商（W2：未关闭质量案件也是信号——案件不该因为没收货就消失在版面外） */
+  const active = new Set<number>([
+    ...receipts.keys(), ...qc.keys(), ...priceChanges.keys(), ...leadSamples.keys(), ...qualityCases.keys(),
+  ]);
   if (active.size === 0) {
     return {
       rows: [],
       total: 0,
       minSamples: MIN_SAMPLES,
-      summary: { suppliers: 0, rated: 0, suggestChanges: 0, avgOnTimeRate: null, windowDays },
+      summary: { suppliers: 0, rated: 0, suggestChanges: 0, avgOnTimeRate: null, avgOnTimeRateCurrent: null, windowDays },
+      onTimeBasisLabel: PROMISE_BASIS_LABELS.original,
+      onTimeSecondaryBasisLabel: PROMISE_BASIS_LABELS.current,
+      promiseHistory: lead.promiseHistory,
     };
   }
 
@@ -326,12 +436,23 @@ export async function getSupplierScorecard(
     const qcPassRate = graded > 0 ? r4((b as QcBuckets).pass / graded) : null;
     const concessionRate = graded > 0 ? r4((b as QcBuckets).concession / graded) : null;
     const scrapRate = graded > 0 ? r4((b as QcBuckets).scrap / graded) : null;
-    const stats = leadTimeStats(leadSamples.get(sup.id) ?? []);
+    const pair = leadSamples.get(sup.id) ?? { original: [], current: [] };
+    const stats = leadTimeStats(pair.original);
+    const statsCurrent = leadTimeStats(pair.current);
     const priceChangeCount = priceChanges.get(sup.id) ?? 0;
     const sampleN = receipts.get(sup.id)?.size ?? 0;
+    const cases = qualityCases.get(sup.id) ?? null;
 
     const res = scoreSupplier(
-      { onTimeRate: stats.onTimeRate, qcPassRate, concessionRate, scrapRate, priceChangeCount, sampleN },
+      {
+        onTimeRate: stats.onTimeRate,
+        qcPassRate,
+        concessionRate,
+        scrapRate,
+        priceChangeCount,
+        sampleN,
+        qualityCase: cases ? { openCases: cases.open, overdueCases: cases.overdue } : null,
+      },
       MIN_SAMPLES,
     );
     all.push({
@@ -343,6 +464,9 @@ export async function getSupplierScorecard(
       grade: res.grade,
       confidence: res.confidence,
       onTimeRate: stats.onTimeRate,
+      onTimeRateCurrent: statsCurrent.onTimeRate,
+      openQualityCases: cases ? cases.open : null,
+      overdueQualityCases: cases ? cases.overdue : null,
       qcPassRate,
       concessionRate,
       scrapRate,
@@ -358,6 +482,7 @@ export async function getSupplierScorecard(
   let filtered = all;
   if (q) filtered = filtered.filter((r) => r.code.toLowerCase().includes(q) || r.name.toLowerCase().includes(q));
   const withOnTime = filtered.filter((r) => r.onTimeRate != null);
+  const withOnTimeCurrent = filtered.filter((r) => r.onTimeRateCurrent != null);
   const summary = {
     suppliers: filtered.length,
     rated: filtered.filter((r) => r.score != null).length,
@@ -365,6 +490,10 @@ export async function getSupplierScorecard(
     avgOnTimeRate:
       withOnTime.length > 0
         ? r4(withOnTime.reduce((a, r) => a + (r.onTimeRate as number), 0) / withOnTime.length)
+        : null,
+    avgOnTimeRateCurrent:
+      withOnTimeCurrent.length > 0
+        ? r4(withOnTimeCurrent.reduce((a, r) => a + (r.onTimeRateCurrent as number), 0) / withOnTimeCurrent.length)
         : null,
     windowDays,
   };
@@ -378,6 +507,9 @@ export async function getSupplierScorecard(
     total: filtered.length,
     minSamples: MIN_SAMPLES,
     summary,
+    onTimeBasisLabel: PROMISE_BASIS_LABELS.original,
+    onTimeSecondaryBasisLabel: PROMISE_BASIS_LABELS.current,
+    promiseHistory: lead.promiseHistory,
   };
 }
 

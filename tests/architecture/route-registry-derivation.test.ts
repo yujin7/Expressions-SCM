@@ -172,6 +172,10 @@ const LEGACY_MENU: LegacyNode[] = [
         "label": "价格变更"
       },
       {
+        "key": "/outsource/price-list",
+        "label": "采购价目表"
+      },
+      {
         "key": "/outsource/jg",
         "label": "加工通知单"
       },
@@ -460,6 +464,11 @@ const LEGACY_MENU: LegacyNode[] = [
 ];
 
 const LEGACY_MENU_ROLES: Record<string, string[]> = {
+  "/outsource/price-list": [
+    "purchasing",
+    "pmc",
+    "finance"
+  ],
   "/report/process-mining": [
     "pmc",
     "finance"
@@ -629,6 +638,7 @@ const LEGACY_REPORT_GROUPS: Record<string, string> = {
   "/outsource/wo": "outsourcing",
   "/outsource/po": "outsourcing",
   "/outsource/pc": "outsourcing",
+  "/outsource/price-list": "outsourcing",
   "/outsource/jg": "outsourcing",
   "/report/wip": "outsourcing",
   "/report/transit": "outsourcing",
@@ -737,6 +747,7 @@ const LEGACY_PALETTE_HREFS = [
   "/master/supply-params",
   "/report/decision-studio?tab=identity",
   "/import/upload",
+  "/outsource/price-list",
   "/import/release",
   "/import/data-quality",
   "/review/checklist",

@@ -6,12 +6,14 @@
  *   npx tsx src/jobs/cli.ts sync-jst-item-master [day]   # 商品身份/生命周期观察
  *   npx tsx src/jobs/cli.ts sync-jst-inbound [day]       # 采购入库观察（不入账）
  *   npx tsx src/jobs/cli.ts license-alert [YYYY-MM-DD]   # 缺省=今日
+ *   npx tsx src/jobs/cli.ts procurement-quality-alerts  # 采购与质量四类告警
  *   npx tsx src/jobs/cli.ts stage-jst <file.xlsx|csv> <userId>
  * 输出 JSON summary；失败退出码非 0。
  */
 import { getDbAsync } from "@/db";
 import { runReconcileJst, shanghaiToday } from "./reconcile-jst";
 import { runLicenseAlert } from "./license-alert";
+import { runProcurementQualityAlerts } from "./procurement-quality-alerts";
 import { runSnapshotAgeAlert } from "./snapshot-age";
 import { runExportWorkerOnce } from "./export-worker";
 import { runHousekeeping } from "./housekeeping";
@@ -64,6 +66,7 @@ const USAGE = `用法:
   npx tsx src/jobs/cli.ts probe-yonyou                       只读验证用友 token 与 8 条代码白名单权限
   npx tsx src/jobs/cli.ts run-job <已登记任务名>          运维手跑定时任务并写 job_runs（失败退出非 0）
   npx tsx src/jobs/cli.ts license-alert [YYYY-MM-DD]     缺省=今日
+  npx tsx src/jobs/cli.ts procurement-quality-alerts    证照/交期违约/OTIF 崩塌/质量案件逾期
   npx tsx src/jobs/cli.ts snapshot-age [YYYY-MM-DD] [阈值天数=3]
   npx tsx src/jobs/cli.ts export-worker                  处理一批待办导出任务
   npx tsx src/jobs/cli.ts housekeeping                   过期数据保洁（staging/导出/错误/任务史）
@@ -152,6 +155,9 @@ async function main(): Promise<void> {
       break;
     case "license-alert":
       out = await runLicenseAlert(db, args[0]);
+      break;
+    case "procurement-quality-alerts":
+      out = await runProcurementQualityAlerts(db);
       break;
     case "snapshot-age":
       out = await runSnapshotAgeAlert(db, {

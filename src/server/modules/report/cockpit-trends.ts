@@ -1109,7 +1109,7 @@ export async function getCockpitTrends(user: SessionUser, dbArg?: AnyDb, opts: {
           state: hasData ? "ready" : "insufficient",
           data: b,
           note: `${canSeeMoney ? "" : "金额仅价格可见角色；"}当月进行中置灰；OTIF 改用逐月口径（有可评样本的月份 ${b.monthsWithOtif}/${b.points.length}，可评 n 随点标注；近月 PO 多半未到承诺日、结构性偏低），年度累计 ${b.otifYtd.year} 年可评 n=${b.otifYtd.evaluable} 并列作对照${poPrev.ok ? "" : `；上一年度即时计算失败（${poPrev.error}）`}`,
-          source: { tier: "fact", source: `${PURCHASE_ORDER_METRICS_KEY} · byMonth.otif`, asOf: po.value.builtAt },
+          source: { tier: "fact", source: `${PURCHASE_ORDER_METRICS_KEY} · byMonth.otif（${po.value.otifBasisLabel}口径）`, asOf: po.value.builtAt },
         };
       })()
     : errorBlock(po.error, PURCHASE_ORDER_METRICS_KEY, "fact");

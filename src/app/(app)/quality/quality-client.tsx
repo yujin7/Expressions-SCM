@@ -14,6 +14,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Popconfirm,
   Row,
   Select,
   Space,
@@ -723,6 +724,7 @@ function CasesTab() {
     operation: "complete" | "verify";
   } | null>(null);
   const [actions, setActions] = useState<Record<number, QualityAction[]>>({});
+  const [quarantiningId, setQuarantiningId] = useState<number | null>(null);
   const [actionLoading, setActionLoading] = useState<Record<number, boolean>>({});
   const [actionErrors, setActionErrors] = useState<Record<number, string | null>>({});
   const [searchText, setSearchText] = useState("");
@@ -910,6 +912,30 @@ function CasesTab() {
       if (submitError instanceof Error) message.error(submitError.message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  /**
+   * W2 审计 4a：冻结案件范围内的批次。
+   * 服务端会先登记围堵行动，再请求库存侧执行隔离；执行不了时返回明确原因（不静默跳过），
+   * 这里如实转达——「以为隔离了其实没隔」比「知道没隔」危险得多。
+   */
+  const quarantineCase = async (row: QualityCase) => {
+    setQuarantiningId(row.id);
+    try {
+      const res = await postJson<{ executed: number; pending: number; emptyScope: boolean; lines: { reason: string | null }[] }>(
+        `/api/quality/cases/${row.id}/quarantine`,
+        {},
+      );
+      if (res.emptyScope) message.warning("范围内已无正库存可隔离（围堵行动未产生）");
+      else if (res.pending > 0) {
+        message.warning(`已登记围堵行动 ${res.executed + res.pending} 项，其中 ${res.pending} 项库存侧未执行：${res.lines.find((l) => l.reason)?.reason ?? ""}`);
+      } else message.success(`已隔离 ${res.executed} 项批次库存`);
+      await load();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "冻结失败");
+    } finally {
+      setQuarantiningId(null);
     }
   };
 
@@ -1163,6 +1189,18 @@ function CasesTab() {
             ) : null}
             {canQuality && row.kind === "self_inspection" && !row.inspectionReportRef ? (
               <Button type="link" size="small" onClick={() => openCaseOperation(row, "document_inspection")}>登记报告</Button>
+            ) : null}
+            {/* W2 审计 4a：案件必须能冻结自己范围内的批次——此前 quality_cases 对库存零约束力 */}
+            {canQuality && row.status !== "closed" && row.batchId != null ? (
+              <Popconfirm
+                title="冻结该案件范围内的批次？"
+                description="会按案件范围登记围堵行动，并请求库存侧执行隔离；执行不了会明确告诉你原因（不会假装隔离过了）。"
+                okText="冻结"
+                cancelText="取消"
+                onConfirm={() => void quarantineCase(row)}
+              >
+                <Button type="link" size="small" danger loading={quarantiningId === row.id}>冻结批次</Button>
+              </Popconfirm>
             ) : null}
             {canQuality && row.status !== "closed" ? (
               <Button type="link" size="small" onClick={() => openCaseOperation(row, "close")}>关闭</Button>

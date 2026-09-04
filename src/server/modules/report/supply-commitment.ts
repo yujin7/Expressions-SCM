@@ -16,6 +16,7 @@ import * as schema from "@/db/schema";
 import { dayDiff as daysBetween } from "@/server/core/business-day";
 import { dAdd, dCmp, dMul, dQty, dSub } from "@/server/core/decimal";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
+import { resolvePromiseBasis, type PromiseHistoryState } from "@/server/rules/promise-basis";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -43,7 +44,7 @@ export interface PromiseLineFact {
   currentReceivedQty: string;
   promisedDate: string | null;
   originalPromisedDate: string | null;
-  promiseHistoryState: "trusted" | "backfilled" | "missing";
+  promiseHistoryState: PromiseHistoryState;
   revisionCount: number;
 }
 
@@ -450,18 +451,15 @@ export async function loadPromiseReliability(
     revisionsByLine.set(revision.poLineId, list);
   }
   const lines: PromiseLineFact[] = rawLines.map(({ docPromisedDate, ...line }) => {
-    const revisions = revisionsByLine.get(line.lineId) ?? [];
-    const startsWithLegacy = revisions[0]?.source === "legacy_backfill";
-    const firstTrusted = startsWithLegacy
-      ? undefined
-      : revisions.find((revision) => revision.source !== "legacy_backfill" && revision.promisedDate != null);
-    const nonLegacyCount = revisions.filter((revision) => revision.source !== "legacy_backfill").length;
+    // 原始承诺口径唯一权威 = rules/promise-basis.ts（记分卡与 PO 指标读同一份实现，
+    // 否则「原始承诺」会在三处各写一遍、各漂一次）
+    const fact = resolvePromiseBasis(revisionsByLine.get(line.lineId) ?? []);
     return {
       ...line,
       promisedDate: line.promisedDate ?? docPromisedDate ?? null,
-      originalPromisedDate: firstTrusted?.promisedDate ?? null,
-      promiseHistoryState: startsWithLegacy ? "backfilled" : firstTrusted ? "trusted" : "missing",
-      revisionCount: startsWithLegacy ? nonLegacyCount : Math.max(0, nonLegacyCount - 1),
+      originalPromisedDate: fact.originalPromisedDate,
+      promiseHistoryState: fact.historyState,
+      revisionCount: fact.revisionCount,
     };
   });
 

@@ -37,9 +37,9 @@ const controls: Control[] = [
 }));
 
 const expectedCounts: Record<Category, number> = {
-  API_ROUTE: 268,
-  AUTH_PAGE: 94,
-  MIGRATION: 53,
+  API_ROUTE: 273,
+  AUTH_PAGE: 95,
+  MIGRATION: 54,
   ARCH_GATE: 70,
   REDTEAM_GATE: 12,
   RELEASE_GATE: 15,
@@ -177,13 +177,13 @@ function verify(control: Control): void {
   assertTestModule(testPath);
 }
 
-describe("669 项系统执行审计台账", () => {
-  it("ID 恰好 A001–A669、对象唯一、分类数量固定", () => {
-    expect(controls).toHaveLength(669);
+describe("676 项系统执行审计台账", () => {
+  it("ID 恰好 A001–A676、对象唯一、分类数量固定", () => {
+    expect(controls).toHaveLength(676);
     expect(controls.map((control) => control.id)).toEqual(
-      Array.from({ length: 669 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
+      Array.from({ length: 676 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
     );
-    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(669);
+    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(676);
     for (const [category, count] of Object.entries(expectedCounts)) {
       expect(
         controls.filter((control) => control.category === category).length,

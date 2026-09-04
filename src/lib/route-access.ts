@@ -102,6 +102,8 @@ export const ROUTE_REGISTRY = {
   outsource_wo: { path: "/outsource/wo", label: "委外工单", group: "outsourcing", scopedMode: "public", keywords: "wo weiwai gongdan" },
   outsource_po: { path: "/outsource/po", label: "采购订单", group: "outsourcing", scopedMode: "public", keywords: "po caigou" },
   outsource_pc: { path: "/outsource/pc", label: "价格变更", group: "outsourcing", scopedMode: "denied" },
+  // W2 审计 2：price_lists 此前只有 seed 写过，却是 R1 比价基准 / 物料比价 / 结算扣款代理三处的输入
+  outsource_price_list: { path: "/outsource/price-list", label: "采购价目表", roles: ["purchasing", "pmc", "finance"], group: "outsourcing", scopedMode: "denied", keywords: "price list jizhunjia jiamubiao 价目表 基准价 采购价" },
   outsource_jg: { path: "/outsource/jg", label: "加工通知单", group: "outsourcing", scopedMode: "public", keywords: "jg jiagong" },
   report_wip: { path: "/report/wip", label: "委外在制看板", group: "outsourcing", scopedMode: "public" },
   report_transit: { path: "/report/transit", label: "在途参考", group: "outsourcing", scopedMode: "public" },

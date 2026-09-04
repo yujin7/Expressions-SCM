@@ -767,7 +767,7 @@ Object.assign(METRICS, {
     formula: "准时 = 全收完成日 ≤ 承诺日 + otif_window_days；足量 = 累计已收 ≥ 应收 × (1 − 容差)；OTIF = 命中 ÷ 可评",
     unit: "pct",
     tier: "derived",
-    caveat: "缺承诺交期进「不可评」，未到期未收齐进「待评」，两者都不进分母；承诺日 = 行交期优先、表头兜底",
+    caveat: "主口径承诺日 = 原始承诺（po_promise_revisions 第一条可信修订；无版本链回落当前承诺）——供应商经确认门户改期不再抬高本指标；当前承诺口径并列展示但不进目标。缺承诺交期进「不可评」，未到期未收齐进「待评」，两者都不进分母",
   },
   paymentTermAttainment: {
     id: "paymentTermAttainment",

@@ -212,7 +212,7 @@ describe("驾驶舱趋势块 · PGlite 装配", () => {
       const thisMonth = monthShanghai(new Date());
       const prevMonth = (() => { const [y, m] = thisMonth.split("-").map(Number); const idx = y * 12 + (m - 1) - 1; return `${Math.floor(idx / 12)}-${String((idx % 12) + 1).padStart(2, "0")}`; })();
 
-      // purchase-order-metrics/v1：先由读模型自己落缓存（绑定正确），再原位替换 byMonth（真实 PoMonthRow 形状）
+      // purchase-order-metrics：先由读模型自己落缓存（绑定正确），再原位替换 byMonth（真实 PoMonthRow 形状）
       await loadPurchaseOrderMetrics({}, db);
       const byMonth = [
         { month: prevMonth, poCount: 4, lineCount: 9, orderedBaseQty: "1200.0000", netAmount: "8600.00", grossAmount: "9718.00",
@@ -255,7 +255,7 @@ describe("驾驶舱趋势块 · PGlite 装配", () => {
       expect(aPts.find((p) => p.month === thisMonth)).toMatchObject({ otifRatePct: null, otif: { evaluable: 0, pending: 1 } });
       expect(a.screens.s2.poTrend.data!.monthsWithOtif).toBe(1);
       expect(a.screens.s2.poTrend.data!.links.map((l) => l.metricId)).toContain("supplierOtif");
-      expect(a.screens.s2.poTrend.source.source).toContain("purchase-order-metrics/v2");
+      expect(a.screens.s2.poTrend.source.source).toContain("purchase-order-metrics/v3");
       expect(a.screens.s2.poTrend.data!.moneyVisible).toBe(true);
       expect(a.screens.s1.dailyFlow.state).toBe("ready");
       expect(a.screens.s1.dailyFlow.data!.wow.realtime).toMatchObject({ state: "ready", pct: 100 });

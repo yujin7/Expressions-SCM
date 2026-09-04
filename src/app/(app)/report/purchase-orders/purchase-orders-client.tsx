@@ -2,7 +2,8 @@
 
 /**
  * D63 采购订单指标（真报表）：采购下了多少、多久到、省了多少、供应商 OTIF。
- * 只消费读模型 purchase-order-metrics/v2；金额由 API 按角色剥离（moneyVisible=false 时显示「—」）。
+ * W2：OTIF 主口径改为**原始承诺**，当前承诺并列为副列——供应商改期不再抬高主口径。
+ * 只消费读模型 purchase-order-metrics/v3；金额由 API 按角色剥离（moneyVisible=false 时显示「—」）。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, App, Button, Card, Col, Row, Segmented, Select, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
@@ -138,7 +139,13 @@ export default function PurchaseOrdersClient() {
     },
     ...volumeColumns<PoSupplierRow>(),
     { title: <Tooltip title={metricTooltip("poOrderToDeliveryDays")}>订单→交付 P50/P90</Tooltip>, dataIndex: "cycle", width: 200, sorter: (a, b) => (a.cycle.firstP50 ?? Number.MAX_SAFE_INTEGER) - (b.cycle.firstP50 ?? Number.MAX_SAFE_INTEGER), render: (c: CycleStats) => <CycleCell c={c} /> },
-    { title: <Tooltip title={metricTooltip("supplierOtif")}>OTIF</Tooltip>, dataIndex: "otif", width: 100, align: "right", sorter: (a, b) => (a.otif.rate ?? -1) - (b.otif.rate ?? -1), render: (o: OtifStats) => <OtifCell o={o} /> },
+    { title: <Tooltip title={metricTooltip("supplierOtif")}>{`OTIF（${data?.otifBasisLabel ?? "原始承诺"}）`}</Tooltip>, dataIndex: "otif", width: 130, align: "right", sorter: (a, b) => (a.otif.rate ?? -1) - (b.otif.rate ?? -1), render: (o: OtifStats) => <OtifCell o={o} /> },
+    {
+      title: <Tooltip title="并列副口径：按供应商改期后的当前承诺判定，只展示不进目标/评分——两列出现差额即说明改期吃掉了迟到">{`OTIF（${data?.otifSecondaryBasisLabel ?? "当前承诺"}）`}</Tooltip>,
+      dataIndex: "otifCurrent", width: 130, align: "right",
+      sorter: (a, b) => (a.otifCurrent.rate ?? -1) - (b.otifCurrent.rate ?? -1),
+      render: (o: OtifStats) => <OtifCell o={o} />,
+    },
     { title: <Tooltip title={metricTooltip("costSavingYtd")}>降本额</Tooltip>, dataIndex: ["costSaving", "savingYtd"], width: 120, align: "right", sorter: (a, b) => Number(a.costSaving.savingYtd ?? 0) - Number(b.costSaving.savingYtd ?? 0), render: (v: string | null) => money(v) },
     { title: "涨本额（另列）", dataIndex: ["costSaving", "increaseYtd"], width: 120, align: "right", render: (v: string | null) => money(v) },
     {
@@ -161,10 +168,11 @@ export default function PurchaseOrdersClient() {
         data.byMonth.map((r) => [r.month, r.poCount, r.lineCount, r.orderedBaseQty, r.netAmount, r.grossAmount]));
     } else if (dim === "supplier") {
       exportCsv(`采购订单指标-按供应商-${data.year}`,
-        ["供应商编码", "供应商", "已下单PO", "行数", "数量", "未税金额", "含税金额", "首批P50", "首批P90", "周期样本", "OTIF", "可评", "待评", "不可评", "降本额", "涨本额", "可比行", "不可比行"],
+        ["供应商编码", "供应商", "已下单PO", "行数", "数量", "未税金额", "含税金额", "首批P50", "首批P90", "周期样本", "OTIF(原始承诺)", "可评", "待评", "不可评", "OTIF(当前承诺)", "可评(当前承诺)", "降本额", "涨本额", "可比行", "不可比行"],
         supplierRows.map((r) => [
           r.code, r.name, r.poCount, r.lineCount, r.orderedBaseQty, r.netAmount, r.grossAmount,
           r.cycle.firstP50, r.cycle.firstP90, r.cycle.n, r.otif.rate == null ? null : (r.otif.rate * 100).toFixed(1), r.otif.evaluable, r.otif.pending, r.otif.unevaluable,
+          r.otifCurrent.rate == null ? null : (r.otifCurrent.rate * 100).toFixed(1), r.otifCurrent.evaluable,
           r.costSaving.savingYtd, r.costSaving.increaseYtd, r.costSaving.comparableLines, r.costSaving.nonComparableLines,
         ]));
     } else {
@@ -244,12 +252,17 @@ export default function PurchaseOrdersClient() {
         <Col xs={24} sm={12} xl={6}>
           <Card size="small">
             <Statistic
-              title={<Tooltip title={metricTooltip("supplierOtif")}>供应商 OTIF（年累计）</Tooltip>}
+              title={<Tooltip title={metricTooltip("supplierOtif")}>{`供应商 OTIF（年累计 · ${data?.otifBasisLabel ?? "原始承诺"}）`}</Tooltip>}
               value={s?.otif.rate == null ? "不可评" : pct(s.otif.rate)}
               valueStyle={{ color: s?.otif.rate == null ? "#8c8c8c" : s.otif.rate < 0.8 ? "#cf1322" : "#52c41a" }}
             />
             <Typography.Text type="secondary">
               可评 {s?.otif.evaluable ?? "—"} · 待评 {s?.otif.pending ?? "—"} · 缺承诺日 {s?.otif.unevaluable ?? "—"}（窗口 {data?.params.otifWindowDays ?? "—"} 天）
+              <br />
+              {data?.otifSecondaryBasisLabel ?? "当前承诺"}口径 {s?.otifCurrent.rate == null ? "不可评" : pct(s.otifCurrent.rate)}（可评 {s?.otifCurrent.evaluable ?? "—"}）——
+              两者的差额来自供应商在确认门户里的改期，只展示不计入目标
+              <br />
+              承诺版本链：可信 {data?.promiseHistory.trusted ?? 0} / 迁移快照 {data?.promiseHistory.backfilled ?? 0} / 无版本链 {data?.promiseHistory.missing ?? 0} 行
             </Typography.Text>
           </Card>
         </Col>

@@ -138,7 +138,8 @@ export default function Supplier360Drawer({
               <>
                 <Row gutter={[10, 10]} className="compact-kpi-row">
                   <Col><Card size="small"><Statistic title="综合分" value={sc.score ?? "—"} suffix={sc.grade ? ` / ${sc.grade}` : ""} /></Card></Col>
-                  <Col><Card size="small"><Statistic title="准时率 OTIF" value={ratePct(sc.onTimeRate)} /></Card></Col>
+                  <Col><Card size="small"><Statistic title="准时率 OTIF（原始承诺）" value={ratePct(sc.onTimeRate)} /></Card></Col>
+                  <Col><Card size="small"><Statistic title="准时率 OTIF（当前承诺）" value={ratePct(sc.onTimeRateCurrent)} /></Card></Col>
                   <Col><Card size="small"><Statistic title="质检合格率" value={ratePct(sc.qcPassRate)} /></Card></Col>
                   <Col><Card size="small"><Statistic title="让步接收率" value={ratePct(sc.concessionRate)} /></Card></Col>
                   <Col><Card size="small"><Statistic title="报废率" value={ratePct(sc.scrapRate)} /></Card></Col>
@@ -183,7 +184,7 @@ export default function Supplier360Drawer({
                 <Col>
                   <Card size="small">
                     <Statistic
-                      title={<Tooltip title={`可判 ${po.otif.evaluable} 单：命中 ${po.otif.hit} / 未达 ${po.otif.miss}；未到期 ${po.otif.pending}、缺承诺交期 ${po.otif.unevaluable} 不进分母`}><span>OTIF</span></Tooltip>}
+                      title={<Tooltip title={`原始承诺口径。可判 ${po.otif.evaluable} 单：命中 ${po.otif.hit} / 未达 ${po.otif.miss}；未到期 ${po.otif.pending}、缺承诺交期 ${po.otif.unevaluable} 不进分母。当前承诺口径 ${po.otifCurrent.rate == null ? "不可评" : `${(po.otifCurrent.rate * 100).toFixed(1)}%`}（改期后的值，只展示不计分）`}><span>OTIF（原始承诺）</span></Tooltip>}
                       value={ratePct(po.otif.rate)}
                     />
                   </Card>

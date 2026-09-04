@@ -56,6 +56,9 @@ interface ScoreRow {
   grade: string | null;
   confidence: "high" | "medium" | "low";
   onTimeRate: number | null;
+  onTimeRateCurrent: number | null;
+  openQualityCases: number | null;
+  overdueQualityCases: number | null;
   qcPassRate: number | null;
   concessionRate: number | null;
   scrapRate: number | null;
@@ -75,8 +78,12 @@ interface ScoreData {
     rated: number;
     suggestChanges: number;
     avgOnTimeRate: number | null;
+    avgOnTimeRateCurrent: number | null;
     windowDays: number;
   };
+  onTimeBasisLabel: string;
+  onTimeSecondaryBasisLabel: string;
+  promiseHistory: { trusted: number; backfilled: number; missing: number };
   supportingObservations: JiandaoyunSupportingObservation[];
   externalDecisionEvidence: ProductExternalDecisionEvidenceBrief;
 }
@@ -355,7 +362,30 @@ function ScorecardTab() {
           <Tag color={v === "high" ? "green" : "gold"}>{CONFIDENCE_LABELS[v]}</Tag>
         ),
     },
-    { title: "准时率", dataIndex: "onTimeRate", width: 95, align: "right", render: (v: number | null) => <RateCell v={v} warnBelow={0.8} /> },
+    {
+      title: `准时率（${data?.onTimeBasisLabel ?? "原始承诺"}）`, dataIndex: "onTimeRate", width: 130, align: "right",
+      render: (v: number | null) => <RateCell v={v} warnBelow={0.8} />,
+    },
+    {
+      title: `准时率（${data?.onTimeSecondaryBasisLabel ?? "当前承诺"}）`, dataIndex: "onTimeRateCurrent", width: 130, align: "right",
+      render: (v: number | null, r) => (
+        <Tooltip title={
+          v != null && r.onTimeRate != null && v > r.onTimeRate
+            ? "当前承诺口径高于原始承诺口径：差额来自供应商自己的改期，不计入综合分"
+            : "并列副口径，只展示不计分"
+        }>
+          <span><RateCell v={v} /></span>
+        </Tooltip>
+      ),
+    },
+    {
+      title: "在办质量案件", dataIndex: "openQualityCases", width: 120, align: "right",
+      render: (v: number | null, r) => (v == null
+        ? <Typography.Text type="secondary">—</Typography.Text>
+        : <Typography.Text style={{ color: (r.overdueQualityCases ?? 0) > 0 ? "#cf1322" : "#fa8c16" }}>
+          {v} 件{(r.overdueQualityCases ?? 0) > 0 ? `（逾期 ${r.overdueQualityCases}）` : ""}
+        </Typography.Text>),
+    },
     { title: "合格率", dataIndex: "qcPassRate", width: 95, align: "right", render: (v: number | null) => <RateCell v={v} warnBelow={0.95} /> },
     { title: "让步率", dataIndex: "concessionRate", width: 95, align: "right", render: (v: number | null) => <RateCell v={v} warnAbove={0.05} /> },
     { title: "报废率", dataIndex: "scrapRate", width: 95, align: "right", render: (v: number | null) => <RateCell v={v} warnAbove={0.02} /> },
@@ -413,10 +443,17 @@ function ScorecardTab() {
             <details className="supplier-scorecard-methodology__details">
               <summary>查看完整评分口径与数据限制</summary>
               <Typography.Paragraph type="secondary">
-                综合分 = 准时交付 40 分（复用交期学习的准时率：实际收货 ≤ 承诺到货）+ 质量 40 分（合格率 − 让步率×0.5 − 报废率×1.0）+ 价格稳定 20 分（窗口内生效调价次数，满 5 次归零）。
+                综合分 = 准时交付 40 分（准时率：实际收货 ≤ 承诺到货）+ 质量 40 分（合格率 − 让步率×0.5 − 报废率×1.0）+ 价格稳定 20 分（窗口内生效调价次数，满 5 次归零）；
+                该供应商<strong>有未关闭质量案件时</strong>再并入「质量案件 20 分」维度（逾期全罚、其余在办半罚，满 4 件加权归零），按 120 分权重归一——无案件的供应商不进这一维。
                 某维度无数据时该维度不计分、按剩余权重归一（展开行有逐维度说明）；
                 窗口内收货不足 {data?.minSamples ?? 3} 单的供应商<strong>不予评级</strong>，而不是给一个低分——单笔波动不足以定性。
                 准时率目前只覆盖采购 PO（委外 JG 无「承诺 vs 收货」等价链路），纯加工厂该维度按归一处理。
+                <br />
+                <strong>准时率主口径 = {data?.onTimeBasisLabel ?? "原始承诺"}</strong>（po_promise_revisions 第一条可信修订）；
+                「{data?.onTimeSecondaryBasisLabel ?? "当前承诺"}」列是供应商改期后的值，<strong>只展示不计分</strong>——
+                否则供应商在确认门户里把交期往后改一次就能把自己的准时率洗白。
+                承诺版本链覆盖：可信 {data?.promiseHistory?.trusted ?? 0} / 迁移快照 {data?.promiseHistory?.backfilled ?? 0} / 无版本链 {data?.promiseHistory?.missing ?? 0} 个样本，
+                后两类的「原始承诺」是回落的当前承诺。
               </Typography.Paragraph>
             </details>
           </div>
@@ -445,11 +482,19 @@ function ScorecardTab() {
         </Card>
         <Card size="small">
           <Statistic
-            title="平均准时率"
+            title={`平均准时率（${data?.onTimeBasisLabel ?? "原始承诺"}）`}
             value={s?.avgOnTimeRate == null ? "—" : s.avgOnTimeRate * 100}
             precision={s?.avgOnTimeRate == null ? undefined : 1}
             suffix={s?.avgOnTimeRate == null ? undefined : "%"}
             valueStyle={{ color: s?.avgOnTimeRate == null ? undefined : s.avgOnTimeRate < 0.8 ? "#cf1322" : "#52c41a" }}
+          />
+        </Card>
+        <Card size="small">
+          <Statistic
+            title={`平均准时率（${data?.onTimeSecondaryBasisLabel ?? "当前承诺"}）`}
+            value={s?.avgOnTimeRateCurrent == null ? "—" : s.avgOnTimeRateCurrent * 100}
+            precision={s?.avgOnTimeRateCurrent == null ? undefined : 1}
+            suffix={s?.avgOnTimeRateCurrent == null ? undefined : "%"}
           />
         </Card>
       </div>

@@ -74,6 +74,12 @@ export const ALERT_OWNER_ROLE: Readonly<Record<string, Role>> = {
   inventory_cover: "pmc",
   transfer_cost: "warehouse",
   snapshot_quality: "admin",
+  // W2 审计 5：采购侧三类信号归采购（下单、跟单、供应商准入都在采购手里）
+  supplier_license: "purchasing",
+  promise_breach: "purchasing",
+  otif_collapse: "purchasing",
+  // 质量案件逾期归质量（上报义务与关闭权限都在质量合规）
+  quality_case_overdue: "quality",
 };
 
 /** 复核类别 → 责任角色（按前缀匹配，先长后短） */

@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
-   jgDocs, jgFeeSegments, pcDocs, poDocs, poLines, poPromiseRevisions, priceLists,
+   jgDocs, jgFeeSegments, pcDocs, poDocs, poLines, poPromiseRevisions,
   skus, suppliers, sysParams, users,
 } from "@/db/schema";
 import { dayDiff } from "@/server/core/business-day";
@@ -17,6 +17,7 @@ import { type AnyDb, requireAnyRole, resolveDb, rethrowApproval } from "./common
 import { approveDocSchema, confirmDocSchema, transitionDocSchema, withdrawDocSchema } from "./schemas";
 import { skuLineMatch } from "@/server/core/doc-search";
 import { transitionDoc } from "@/server/docflow/transition";
+import { currentPriceListRow } from "./price-list";
 
 /** 采购订单 PO + 价格变更 PC（R1：基础单位未税比价；异动自动生成 PC，PO 留在草稿） */
 
@@ -38,7 +39,7 @@ async function getTolerancePct(db: AnyDb): Promise<string> {
 /**
  * 基准价（基础单位未税，《00》A5）：
  *   1) 最近一张已审批 PO 同 (供应商,SKU) 行价（approved/in_progress/completed，按单 id 倒序）
- *   2) 兜底 price_lists 生效日≤今日的最新行（表内已是基础单位未税价）
+ *   2) 兜底 price_lists 生效日≤今日的最新行（表内已是基础单位未税价；取行口径唯一权威 price-list.currentPriceListRow）
  *   3) 都无 → null（首购免检）
  */
 async function findBaseline(db: AnyDb, supplierId: number, skuId: number, excludePoId: number): Promise<string | null> {
@@ -69,18 +70,8 @@ async function findBaseline(db: AnyDb, supplierId: number, skuId: number, exclud
       uomFactor: prev.uomFactor,
     });
   }
-  const [pl] = await db
-    .select({ price: priceLists.price })
-    .from(priceLists)
-    .where(
-      and(
-        eq(priceLists.skuId, skuId),
-        eq(priceLists.supplierId, supplierId),
-        sql`${priceLists.effectiveDate} <= ${todayShanghai()}`,
-      ),
-    )
-    .orderBy(desc(priceLists.effectiveDate), desc(priceLists.id))
-    .limit(1);
+  // 生效日口径唯一权威 = price-list.currentPriceListRow（价目表维护页与本兜底判定必须取到同一行）
+  const pl = await currentPriceListRow(db, { skuId, supplierId });
   return pl?.price ?? null;
 }
 

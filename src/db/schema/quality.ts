@@ -15,6 +15,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { batches, skus, suppliers, users, warehouses } from "./masters";
+import { qcRecords } from "./docs";
 
 /**
  * 质量与合规案件。
@@ -64,6 +65,12 @@ export const qualityCases = pgTable("quality_cases", {
   inspectionSiteKey: text("inspection_site_key"),
   inspectionReportRef: text("inspection_report_ref"),
   inspectionReportDate: date("inspection_report_date"),
+  /**
+   * W2 审计 3/4：由哪一次收货检验引发（反向链接；正向在 qc_records.quality_case_id）。
+   * 两头都记，是因为只记一头的链接在实务里总有一头查不到：
+   * 质量看案件问「这批货是哪次检验出的问题」，仓库看检验问「这次不合格最后怎么处理的」。
+   */
+  qcRecordId: integer("qc_record_id").references(() => qcRecords.id),
   idempotencyKey: text("idempotency_key").notNull().unique(),
   version: integer("version").notNull().default(1),
   createdBy: integer("created_by").notNull().references(() => users.id),

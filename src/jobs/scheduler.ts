@@ -28,6 +28,9 @@ export const SCHEDULES: Record<string, string> = {
   "inventory-cover-watchdog": "35 11,17 * * *",
   "sales-spike-watchdog": "40 11,17 * * *",
   "transfer-cost-watchdog": "45 11,17 * * *",
+  // W2 审计 5：证照到期 / 交期承诺违约 / OTIF 崩塌 / 质量案件逾期——必须排在
+  // purchase-order-metrics 之后（OTIF 崩塌读的是那个读模型），故放在 11/17 点批次末尾
+  "procurement-quality-alerts": "50 11,17 * * *",
   "todo-sync": "5,35 * * * *",
   "goals-auto-actuals": "15 6 * * *",
   "purchase-order-metrics": "10 2 * * *",
