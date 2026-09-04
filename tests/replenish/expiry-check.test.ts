@@ -100,3 +100,40 @@ describe("R15 临期/过期批次检查", () => {
     expect(res.items).toEqual([]);
   });
 });
+
+/**
+ * 分批调用时的盘点期收口：expiryCheck 被 inventory-alerts 每 200 个 SKU 调一次，
+ * 若"各仓最新盘点期"只从本批 rows 推断，该仓最新期里没有本批 SKU 时就会退到旧期——
+ * 旧期的批次被当成在库临期量报出来。最新期必须整表取。
+ */
+describe("R15 临期检查：最新盘点期按整表取，不受本批 SKU 影响", () => {
+  it("同仓两期并存、且最新期只有别的 SKU 时，被查 SKU 不得回落到旧期", async () => {
+    const { db } = await createTestDb();
+    const today = todayShanghai();
+    const day = (n: number): string => {
+      const d = new Date(`${today}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + n);
+      return d.toISOString().slice(0, 10);
+    };
+    const [spu] = await db.insert(spus).values({ code: "P-ST", nameCn: "盘点期" }).returning();
+    const [target] = await db.insert(skus).values({ code: "ST-TARGET", name: "被查", spuId: spu.id, baseUom: "盒", skuType: "finished" }).returning();
+    const [other] = await db.insert(skus).values({ code: "ST-OTHER", name: "同仓另一个", spuId: spu.id, baseUom: "盒", skuType: "finished" }).returning();
+    const [wh] = await db.insert(warehouses).values({ code: "W-ST", name: "盘点仓", kind: "snapshot", accountingMode: "snapshot" }).returning();
+
+    const oldPeriod = day(-30);
+    const newPeriod = day(-1);
+    await db.insert(batchStocks).values([
+      // 旧期：被查 SKU 有一批临期货
+      { skuId: target.id, warehouseId: wh.id, batchNo: "OLD", expiryDate: day(10), qty: "50", stocktakeDate: oldPeriod },
+      // 最新期：只盘到了另一个 SKU（被查 SKU 这期已清零/未盘到）
+      { skuId: other.id, warehouseId: wh.id, batchNo: "NEW", expiryDate: day(10), qty: "7", stocktakeDate: newPeriod },
+    ]);
+
+    // 只查 target（模拟分批：这一批里没有 other）
+    const res = await expiryCheck({ skuIds: [target.id] }, db);
+    const item = res.items.find((i) => i.skuId === target.id);
+    // 该仓最新期是 newPeriod，target 在该期没有批次 → 不应报出旧期的 50
+    expect(item?.nearQty ?? 0).toBe(0);
+    expect(item?.nearBatches ?? 0).toBe(0);
+  });
+});

@@ -16,7 +16,7 @@ import { and, eq, gt, inArray, isNotNull } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { batchStocks, skus } from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
-import { daysLeftOf, latestStocktakeRows } from "@/server/core/stock-view";
+import { daysLeftOf, latestStocktakeRows, loadLatestStocktakeDates } from "@/server/core/stock-view";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -72,7 +72,9 @@ export async function expiryCheck(
     .from(batchStocks)
     .where(and(...conds));
   // 多个盘点期间并存是 batch_stocks 的正常状态（唯一键含 stocktake_date）：不收口就按期数翻倍
-  const rows = latestStocktakeRows(allPeriodRows);
+  // 本函数按 SKU 分批被调用（inventory-alerts 每 200 个一批），所以最新盘点期必须整表取，
+  // 不能从本批 rows 推断——否则该仓最新期里没有本批 SKU 时会退到旧期，各批次还会各认一个期。
+  const rows = latestStocktakeRows(allPeriodRows, await loadLatestStocktakeDates(db));
 
   const agg = new Map<number, { nearQty: number; nearBatches: number; expiredQty: number; minDaysLeft: number | null }>();
   for (const r of rows) {

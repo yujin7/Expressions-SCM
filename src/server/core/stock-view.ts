@@ -154,11 +154,34 @@ export const EXPIRY_TIER_DAYS = {
  * 逐仓而不是全局——各仓盘点节奏不同，用全局最新期会把慢盘的仓整仓抹掉。
  * （原实现在 `modules/quality/service.ts` 的召回范围里，本函数即从那里提炼，两处同源。）
  */
-export function latestStocktakeRows<T extends { warehouseId: number; stocktakeDate: string }>(rows: T[]): T[] {
+export function latestStocktakeRows<T extends { warehouseId: number; stocktakeDate: string }>(
+  rows: T[],
+  /**
+   * 各仓权威最新盘点期。**按 SKU 分批查询的调用方必须传**：只用本批 rows 推断，
+   * 会把"这批 SKU 在该仓出现过的最新期"当成"该仓最新期"——该仓最新期里没有本批 SKU 时就退到旧期，
+   * 不同批次还会各自认定不同的期。整表一次查完的调用方可以省略。
+   */
+  authoritative?: ReadonlyMap<number, string>,
+): T[] {
   const latestByWarehouse = new Map<number, string>();
-  for (const r of rows) {
-    const cur = latestByWarehouse.get(r.warehouseId);
-    if (cur == null || r.stocktakeDate > cur) latestByWarehouse.set(r.warehouseId, r.stocktakeDate);
+  if (authoritative) {
+    for (const [w, d] of authoritative) latestByWarehouse.set(w, d);
+  } else {
+    for (const r of rows) {
+      const cur = latestByWarehouse.get(r.warehouseId);
+      if (cur == null || r.stocktakeDate > cur) latestByWarehouse.set(r.warehouseId, r.stocktakeDate);
+    }
   }
   return rows.filter((r) => latestByWarehouse.get(r.warehouseId) === r.stocktakeDate);
+}
+
+/** 各仓最新盘点期（整表口径，与 SKU 子集无关）——分批调用 latestStocktakeRows 前先取这个 */
+export async function loadLatestStocktakeDates(db: AnyDb): Promise<Map<number, string>> {
+  const rows: { warehouseId: number; latest: string | null }[] = await db
+    .select({ warehouseId: schema.batchStocks.warehouseId, latest: sql<string | null>`max(${schema.batchStocks.stocktakeDate})` })
+    .from(schema.batchStocks)
+    .groupBy(schema.batchStocks.warehouseId);
+  const out = new Map<number, string>();
+  for (const r of rows) if (r.latest != null) out.set(r.warehouseId, r.latest);
+  return out;
 }
