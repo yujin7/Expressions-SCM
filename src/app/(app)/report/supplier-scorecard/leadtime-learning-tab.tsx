@@ -1,13 +1,23 @@
 "use client";
 
-import SearchInput from "@/components/SearchInput";
-
-/** E2-04 交期学习与供应商准时率——历史 PO 承诺交期 vs 实际收货，算分布并提议档案交期（人工采纳） */
+/**
+ * E2-04 交期学习与供应商准时率（记分卡页第六页签）——历史 PO 承诺交期 vs 实际收货，
+ * 算分布并提议档案交期（人工采纳）。
+ *
+ * 2026-09-04：从「计划与补货」分组的独立页 `/report/leadtime-learning` 并入本页。
+ * 理由：同一个「交期」有三套算法口径——记分卡的 OTIF（准时率）、本页的系统学习值、
+ * 「历史交期观察」的简道云观察值。三者并排才看得出彼此是否打架；分散在两个菜单分组里，
+ * 计划员只会看见其中一个，然后拿它当唯一事实。旧路径保留为跳转（page.tsx → ?tab=leadtime）。
+ *
+ * URL 参数命名空间 lt_*（与 sc_/qc_/pv_/pt_/lh_ 互不干扰）。
+ */
 import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Button, Card, Col, Popconfirm, Row, Space, Statistic, Table, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import ListToolbar from "@/components/ListToolbar";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
+import SearchInput from "@/components/SearchInput";
 import { useListState } from "@/components/useListState";
 
 interface LtRow {
@@ -35,22 +45,26 @@ interface LtData {
   summary: { pairCount: number; withSuggestion: number; avgOnTimeRate: number | null };
 }
 
-export default function LeadTimeLearningClient() {
+export default function LeadTimeLearningTab() {
   const { message } = App.useApp();
   const [data, setData] = useState<LtData | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [applying, setApplying] = useState<number | null>(null);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "leadtime-learning", defaults: { q: "" }, defaultPageSize: 20 });
+  const listState = useListState({ key: "leadtime-learning", paramPrefix: "lt", defaults: { q: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       setData(await fetchJson<LtData>(`/api/report/leadtime-learning?${params.toString()}`));
     } catch (e) {
+      setData(null);
+      setLoadError((e as Error).message);
       message.error((e as Error).message);
     } finally {
       setLoading(false);
@@ -125,7 +139,8 @@ export default function LeadTimeLearningClient() {
 
   return (
     <div>
-      <Typography.Title level={4} style={{ marginTop: 0 }}>交期学习与供应商准时率</Typography.Title>
+      {/* 每套交期口径在本页各挂自己的表头：三个页签同名不同算法，不写清楚就会被当成同一个数 */}
+      <Typography.Title level={5} style={{ marginTop: 0 }}>交期学习与供应商准时率（系统学习值）</Typography.Title>
       <Alert
         type="info"
         showIcon
@@ -136,21 +151,25 @@ export default function LeadTimeLearningClient() {
             建议值仅供人工采纳——点「采纳」才会写入 SKU 档案的常规交期，系统不会自动改主数据；
             样本少于 {data?.minSamples ?? 3} 单不作建议，偏差在 ±{data?.deviationPct ?? 20}% 容差内也不作建议。
             交期起算日 = 采购订单制单日，实际收货日 = 该订单该 SKU 首张生效收货单的录单日。
+            与「历史交期观察」页签（简道云观察，只看不改）、「记分卡」页签的 OTIF 是三套独立口径，请并排对照后再采纳。
           </Typography.Text>
         }
       />
 
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="交期学习" retrying={loading} />
+
+      {/* 未加载 / 无样本 = 「—」而不是 0：0.0% 平均准时率会被读成「供应商全都不准时」 */}
       <Row gutter={[10, 10]} className="compact-kpi-row">
-        <Col><Card size="small"><Statistic title="有样本的供应商-SKU 对" value={s?.pairCount ?? 0} /></Card></Col>
-        <Col><Card size="small"><Statistic title="有建议数" value={s?.withSuggestion ?? 0} valueStyle={{ color: (s?.withSuggestion ?? 0) > 0 ? "#fa8c16" : undefined }} /></Card></Col>
+        <Col><Card size="small"><Statistic title="有样本的供应商-SKU 对" value={s ? s.pairCount : "—"} /></Card></Col>
+        <Col><Card size="small"><Statistic title="有建议数" value={s ? s.withSuggestion : "—"} valueStyle={{ color: (s?.withSuggestion ?? 0) > 0 ? "#fa8c16" : undefined }} /></Card></Col>
         <Col>
           <Card size="small">
             <Statistic
-              title="平均准时率"
-              value={s?.avgOnTimeRate == null ? 0 : s.avgOnTimeRate * 100}
-              precision={1}
-              suffix="%"
-              valueStyle={{ color: s?.avgOnTimeRate != null && s.avgOnTimeRate < 0.8 ? "#cf1322" : "#52c41a" }}
+              title={<Tooltip title="只统计有承诺交期的样本；一条承诺都没有时显示「—」，不是 0.0%"><span>平均准时率</span></Tooltip>}
+              value={s?.avgOnTimeRate == null ? "—" : s.avgOnTimeRate * 100}
+              precision={s?.avgOnTimeRate == null ? undefined : 1}
+              suffix={s?.avgOnTimeRate == null ? "" : "%"}
+              valueStyle={{ color: s?.avgOnTimeRate == null ? undefined : s.avgOnTimeRate < 0.8 ? "#cf1322" : "#52c41a" }}
             />
           </Card>
         </Col>
@@ -178,6 +197,7 @@ export default function LeadTimeLearningClient() {
         loading={loading}
         scroll={{ x: "max-content" }}
         pagination={listState.paginationProps({ total: data?.total ?? 0 })}
+        locale={{ emptyText: loadError ? "数据未加载" : "暂无可学习的交期样本" }}
       />
     </div>
   );

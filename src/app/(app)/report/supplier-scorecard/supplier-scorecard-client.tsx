@@ -11,6 +11,8 @@ import SearchInput from "@/components/SearchInput";
  * - 价格偏差：同 SKU 的已生效采购价统一到基础单位未税后，哪些供应商值得复核？
  * - 账期候选（D64）：谁该谈账期、谈到了没有、账期类采购额占多少？（payment-term-tab.tsx）
  * - 历史交期观察（B4）：简道云历史采购订单→入库的交期分布，与系统学习交期并列（lead-history-tab.tsx，observation_only）
+ * - 交期学习（2026-09-04 并入）：系统自己学出来的 P50/P90/准时率与建议档案交期（leadtime-learning-tab.tsx）。
+ *   三套交期口径（记分卡 OTIF / 系统学习 / 简道云观察）此前分散在两个菜单分组，只看得见其中一个就会拿它当唯一事实。
  * 评分只是**数据建议**：采纳与否由采购判断，点「采纳」才写档案等级；样本不足者不评级而非给低分。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -31,6 +33,7 @@ import type { ProductExternalDecisionEvidenceBrief } from "@/components/product-
 import { useListState } from "@/components/useListState";
 import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 import LeadHistoryTab from "./lead-history-tab";
+import LeadTimeLearningTab from "./leadtime-learning-tab";
 import PaymentTermTab from "./payment-term-tab";
 
 /* ───────────────── 类型（与服务端 DTO 对齐） ───────────────── */
@@ -974,7 +977,8 @@ export default function SupplierScorecardClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedTab = searchParams.get("tab");
-  const activeTab = requestedTab === "qc" || requestedTab === "price" || requestedTab === "term" || requestedTab === "lead-history" ? requestedTab : "scorecard";
+  const activeTab = requestedTab === "qc" || requestedTab === "price" || requestedTab === "term"
+    || requestedTab === "lead-history" || requestedTab === "leadtime" ? requestedTab : "scorecard";
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>供应商记分卡</Typography.Title>
@@ -994,6 +998,9 @@ export default function SupplierScorecardClient() {
           { key: "term", label: "账期候选", children: <PaymentTermTab /> },
           // B4：历史交期观察（简道云历史采购订单→入库，observation_only）——命名空间 lh_*
           { key: "lead-history", label: "历史交期观察", children: <LeadHistoryTab /> },
+          // 2026-09-04：交期学习（系统学习值，可人工采纳进档案）——命名空间 lt_*；
+          // 与「历史交期观察」并排，三套交期口径同页可比（旧路径 /report/leadtime-learning 跳转到这里）
+          { key: "leadtime", label: "交期学习", children: <LeadTimeLearningTab /> },
         ]}
       />
     </div>

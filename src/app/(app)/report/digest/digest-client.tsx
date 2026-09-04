@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Card, Col, Divider, Empty, List, Row, Spin, Statistic, Tag, Typography } from "antd";
 import { fetchJson } from "@/components/fetchJson";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 
 type Severity = "critical" | "high" | "medium";
 
@@ -47,13 +48,16 @@ const SEVERITY_META: Record<Severity, { color: string; label: string }> = {
 export default function DigestClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<Digest | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       setData(await fetchJson<Digest>("/api/report/digest"));
     } catch (e) {
+      setLoadError((e as Error).message);
       message.error((e as Error).message);
     } finally {
       setLoading(false);
@@ -68,7 +72,16 @@ export default function DigestClient() {
       </div>
     );
   }
-  if (!data) return null;
+  // 加载失败 / 无数据：此前 return null 整页空白，用户分不清「今天没简报」和「接口挂了」
+  if (!data) {
+    return (
+      <div style={{ maxWidth: 960, margin: "0 auto", paddingBottom: 40 }}>
+        <Typography.Title level={2} style={{ marginTop: 4, marginBottom: 8 }}>今日晨间简报</Typography.Title>
+        <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="每日经营摘要" retrying={loading} />
+        {!loadError ? <Empty description="数据未加载：今日简报尚未生成，请稍后刷新" /> : null}
+      </div>
+    );
+  }
 
   const hasExceptions = data.exceptions.length > 0;
 

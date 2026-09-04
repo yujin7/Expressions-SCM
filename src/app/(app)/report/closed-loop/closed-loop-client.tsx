@@ -14,6 +14,7 @@ import DecisionVisual from "@/components/DecisionVisual";
 import { VISUAL_COLOR, type VisualState } from "@/components/decision-visuals";
 import { fetchJson } from "@/components/fetchJson";
 import ListToolbar from "@/components/ListToolbar";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 import { metric } from "@/components/metrics";
 import { useListState } from "@/components/useListState";
 import type { AccuracyBucket, AccuracyBucketKey, SuggestionAccuracy, SuppressionOutcomeBucket, SuppressionReview } from "@/server/modules/report/closed-loop";
@@ -143,16 +144,19 @@ export default function ClosedLoopClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<ClosedLoopData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   // 列表页状态平台（E6-P1）：分页进 URL，密度与已保存视图存本地
   const listState = useListState({ key: "closed-loop", defaults: {}, defaultPageSize: 20 });
   const { page, pageSize } = listState;
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
       setData(await fetchJson<ClosedLoopData>(`/api/report/closed-loop?${params.toString()}`));
     } catch (e) {
+      setLoadError((e as Error).message);
       message.error((e as Error).message);
     } finally {
       setLoading(false);
@@ -193,19 +197,21 @@ export default function ClosedLoopClient() {
         message="追踪补货建议 / NPD 首单生成的 BH 草稿，直至审批执行的全过程，据此看清建议是否被采纳。"
         description="采纳率 = 进入审批通过及以后状态（已审批/执行中/已完成）的草稿占比。单号对应 BH 单据不存在时记为「已删除」。「已复核并放弃」= 计划员在补货建议页点「不采纳」留痕的条数，单列不进采纳率分母。只读，不产生任何写入。"
       />
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="建议闭环追踪" retrying={loading} />
+      {/* 未加载 = 「—」而不是 0：接口失败时把 0 当成「没有建议草稿」是假结论 */}
       <Row gutter={[10, 10]} className="compact-kpi-row">
-        <Col><Card size="small"><Statistic title="建议草稿总数" value={s?.total ?? 0} /></Card></Col>
+        <Col><Card size="small"><Statistic title="建议草稿总数" value={s ? s.total : "—"} /></Card></Col>
         <Col><Card size="small"><Statistic title="采纳率（到审批）" value={s?.adoptRate ?? "—"} precision={s?.adoptRate == null ? undefined : 1} suffix={s?.adoptRate == null ? "" : "%"} valueStyle={{ color: "#52c41a" }} /></Card></Col>
         <Col><Card size="small"><Statistic title="实际到货率" value={s?.deliveredRate ?? "—"} precision={s?.deliveredRate == null ? undefined : 1} suffix={s?.deliveredRate == null ? "" : "%"} valueStyle={{ color: "#3f8600" }} /></Card></Col>
-        <Col><Card size="small"><Statistic title="采纳中/已完成" value={s?.adopted ?? 0} valueStyle={{ color: "#52c41a" }} /></Card></Col>
-        <Col><Card size="small"><Statistic title="待审批" value={s?.pending ?? 0} valueStyle={{ color: "#1677ff" }} /></Card></Col>
-        <Col><Card size="small"><Statistic title="已否决/关闭" value={s?.rejected ?? 0} valueStyle={{ color: "#8c8c8c" }} /></Card></Col>
+        <Col><Card size="small"><Statistic title="采纳中/已完成" value={s ? s.adopted : "—"} valueStyle={{ color: "#52c41a" }} /></Card></Col>
+        <Col><Card size="small"><Statistic title="待审批" value={s ? s.pending : "—"} valueStyle={{ color: "#1677ff" }} /></Card></Col>
+        <Col><Card size="small"><Statistic title="已否决/关闭" value={s ? s.rejected : "—"} valueStyle={{ color: "#8c8c8c" }} /></Card></Col>
         {s?.deleted ? <Col><Card size="small"><Statistic title="已删除" value={s.deleted} valueStyle={{ color: "#8c8c8c" }} /></Card></Col> : null}
         <Col>
           <Card size="small">
             <Statistic
               title={<Tooltip title="计划员看过建议、判断不需要下单时在补货建议页点「不采纳」留痕（审计 decline_suggestion）；与「草稿被否决」不是一回事，不进采纳率分母"><span>已复核并放弃</span></Tooltip>}
-              value={s?.declined ?? 0}
+              value={s ? s.declined : "—"}
               valueStyle={{ color: "#8c8c8c" }}
             />
           </Card>

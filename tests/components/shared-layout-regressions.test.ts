@@ -107,7 +107,7 @@ describe("shared layout regressions", () => {
       "src/app/(app)/inventory/locations/locations-client.tsx",
       "src/app/(app)/report/closed-loop/closed-loop-client.tsx",
       "src/app/(app)/report/forecast-accuracy/forecast-accuracy-client.tsx",
-      "src/app/(app)/report/leadtime-learning/leadtime-learning-client.tsx",
+      "src/app/(app)/report/supplier-scorecard/leadtime-learning-tab.tsx",
       "src/app/(app)/report/margin/margin-client.tsx",
       "src/app/(app)/report/wip/wip-client.tsx",
     ];

@@ -21,6 +21,8 @@ const PRICE_REPORT_ROUTES = [
   "report/settlement-summary/route.ts",
   "report/supplier-price-variance/route.ts",
   "report/channel-observation/route.ts",
+  // 2026-09-04 补：物料比价逐行返回供应商采购基准价，此前只有 guardRead（全员可读）
+  "report/price-compare/route.ts",
 ];
 
 /** 这些路由在 route 层直接判 PRICE_VISIBLE_ROLES；settlement-summary 在 service 内判采购/PMC/财务。 */
@@ -28,6 +30,7 @@ const DIRECT_PRICE_ROLE_ROUTES = [
   "report/margin/route.ts",
   "report/supplier-price-variance/route.ts",
   "report/channel-observation/route.ts",
+  "report/price-compare/route.ts",
 ];
 
 describe("架构护栏：金额报表的角色门", () => {
@@ -54,9 +57,11 @@ describe("架构护栏：金额报表的角色门", () => {
     }
   });
 
-  it("渠道观察的成本/利润还必须经过统一脱敏边界", () => {
-    const src = readFileSync(path.join(API, "report/channel-observation/route.ts"), "utf8");
-    expect(src).toContain("maskSensitive");
-    expect(src).toMatch(/maskSensitive\s*\([^;]+user\.roles/);
+  it("渠道观察与物料比价的成本/价格还必须经过统一脱敏边界", () => {
+    for (const rel of ["report/channel-observation/route.ts", "report/price-compare/route.ts"]) {
+      const src = readFileSync(path.join(API, rel), "utf8");
+      expect(src, rel).toContain("maskSensitive");
+      expect(src, rel).toMatch(/maskSensitive\s*\([^;]+user\.roles/);
+    }
   });
 });

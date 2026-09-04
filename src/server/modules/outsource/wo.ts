@@ -12,13 +12,14 @@ import {
   explode,
   type BomLineLike,
 } from "@/server/rules/bom-explode";
+import { supplierNewOrderBlock } from "@/server/rules/supplier-status";
 import { approveDoc, loadApprovalHistory, withdrawDoc } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import type { DocStatus } from "@/server/docflow/state";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb, rethrowApproval } from "./common";
 import { approveDocSchema, createWoSchema, generateDocsSchema, transitionDocSchema, withdrawDocSchema } from "./schemas";
-import { skuHeaderMatch } from "@/server/core/doc-search";
+import { createdWithinShanghaiDays, skuHeaderMatch } from "@/server/core/doc-search";
 import { transitionDoc } from "@/server/docflow/transition";
 import {
   capacityAuditSnapshot,
@@ -50,10 +51,11 @@ export async function createWo(user: SessionUser, input: unknown, dbArg?: AnyDb)
     .where(and(eq(boms.productSkuId, v.productSkuId), eq(boms.status, "active")));
   if (!activeBom) throw new ApiError(404, "该成品无生效 BOM");
 
-  // 加工厂：存在且非黑名单（黑名单=禁新单，存量收尾）
+  // 加工厂：存在且可接新单（黑名单 / 整改暂停 = 禁新单，存量收尾；规则见 rules/supplier-status）
   const [supplier] = await db.select().from(suppliers).where(eq(suppliers.id, v.supplierId));
   if (!supplier) throw new ApiError(400, `供应商不存在: #${v.supplierId}`);
-  if (supplier.status === "blacklisted") throw new ApiError(400, `供应商已列入黑名单，禁止新单: ${supplier.name}`);
+  const block = supplierNewOrderBlock(supplier.status);
+  if (block.blocked) throw new ApiError(400, `供应商${block.label}，禁止新单: ${supplier.name}（${block.reason}）`);
 
   if (v.bhId != null) {
     const [bh] = await db.select({ id: bhDocs.id }).from(bhDocs).where(eq(bhDocs.id, v.bhId));
@@ -346,7 +348,7 @@ export async function generateDocs(
     .where(eq(jgDocs.woId, woId));
   if (existingJg) throw new ApiError(409, `该工单已生成加工通知单 ${existingJg.docNo}，不可重复生成`);
 
-  // 供应商：存在且非黑名单
+  // 供应商：存在且可接新单（黑名单 / 整改暂停皆拒，规则见 rules/supplier-status）
   const supplierIds = [...new Set(v.poGroups.map((g) => g.supplierId))];
   if (supplierIds.length > 0) {
     const supRows = await db.select().from(suppliers).where(inArray(suppliers.id, supplierIds));
@@ -354,7 +356,8 @@ export async function generateDocs(
     for (const sid of supplierIds) {
       const s = bySup.get(sid);
       if (!s) throw new ApiError(400, `供应商不存在: #${sid}`);
-      if (s.status === "blacklisted") throw new ApiError(400, `供应商已列入黑名单，禁止新单: ${s.name}`);
+      const block = supplierNewOrderBlock(s.status);
+      if (block.blocked) throw new ApiError(400, `供应商${block.label}，禁止新单: ${s.name}（${block.reason}）`);
     }
   }
 
@@ -505,13 +508,15 @@ export async function getWo(id: number, dbArg?: AnyDb) {
 
 export async function listWos(
   q: string,
-  opts: { status?: string; page: number; pageSize: number },
+  opts: { status?: string; from?: string; to?: string; page: number; pageSize: number },
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
   const conds = [];
   if (q) conds.push(or(sql`${woDocs.docNo} ILIKE ${"%" + q + "%"}`, skuHeaderMatch(woDocs.productSkuId, q)));
   if (opts.status) conds.push(eq(woDocs.status, opts.status as DocStatus));
+  // 制单时间窗（上海业务日，含首尾）：全链漏斗「下单」级按同一口径回链到本列表
+  conds.push(...createdWithinShanghaiDays(woDocs.createdAt, opts.from, opts.to));
   const where = conds.length ? and(...conds) : undefined;
 
   const [rows, [{ total }]] = await Promise.all([

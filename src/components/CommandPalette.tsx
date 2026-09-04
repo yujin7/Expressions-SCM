@@ -2,12 +2,18 @@
 
 /**
  * #7 ⌘K 命令面板：任意页面 ⌘K/Ctrl+K 唤起，键盘直达页面 + 搜索 SKU/供应商/单据/NPD。
- * 页面清单与角色可见性来自 `@/lib/route-access` 注册表（与侧栏同源），实体搜索复用 /api/inbox/search。
+ * 页面清单与角色可见性来自 `@/lib/route-access` 注册表（与侧栏同源），实体搜索复用全局搜索 /api/search（?q=）。
+ *
+ * 2026-09-04：此前指向已不存在的 /api/inbox/search 且吞掉错误——⌘K 的实体搜索在所有页面静默返回空，
+ * 用户以为「没有这个 SKU」。现在指向真实路由，且请求失败在面板内显式提示，不再假装无结果。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AutoComplete, Modal } from "antd";
+import { AutoComplete, Modal, Typography } from "antd";
 import { isRouteVisible, PALETTE_PAGES, type PalettePage } from "@/lib/route-access";
+
+/** 全局搜索路由（GET ?q=，<2 字符返回空组）；与 src/app/api/search/route.ts 契约一致 */
+export const ENTITY_SEARCH_API = "/api/search";
 
 /** 页面清单派生自 `@/lib/route-access`（D62 单一注册表）：登记了 keywords 的条目按菜单顺序进入面板 */
 const PAGES: readonly PalettePage[] = PALETTE_PAGES;
@@ -19,6 +25,8 @@ export default function CommandPalette({ roles = [] }: { roles?: string[] }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [entityOpts, setEntityOpts] = useState<{ value: string; label: React.ReactNode }[]>([]);
+  /** 实体搜索失败态：显式提示而不是把「请求失败」伪装成「无结果」 */
+  const [entityError, setEntityError] = useState<string | null>(null);
   const hrefByKey = useRef(new Map<string, string>());
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -35,17 +43,22 @@ export default function CommandPalette({ roles = [] }: { roles?: string[] }) {
   }, []);
 
   useEffect(() => {
-    if (!open) { setQ(""); setEntityOpts([]); }
+    if (!open) { setQ(""); setEntityOpts([]); setEntityError(null); }
   }, [open]);
 
   // 实体搜索（≥2 字，300ms 防抖）
   useEffect(() => {
     if (debounce.current) clearTimeout(debounce.current);
-    if (q.trim().length < 2) { setEntityOpts([]); return; }
+    if (q.trim().length < 2) { setEntityOpts([]); setEntityError(null); return; }
     debounce.current = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/inbox/search?q=${encodeURIComponent(q.trim())}`);
+        const res = await fetch(`${ENTITY_SEARCH_API}?q=${encodeURIComponent(q.trim())}`);
+        if (!res.ok) {
+          const body = (await res.json().catch(() => null)) as { error?: string } | null;
+          throw new Error(body?.error ?? `搜索接口返回 ${res.status}`);
+        }
         const d = (await res.json()) as { groups: Group[] };
+        setEntityError(null);
         hrefByKey.current.clear();
         const opts: { value: string; label: React.ReactNode }[] = [];
         for (const g of d.groups ?? []) {
@@ -56,7 +69,11 @@ export default function CommandPalette({ roles = [] }: { roles?: string[] }) {
           }
         }
         setEntityOpts(opts);
-      } catch { /* ignore */ }
+      } catch (e) {
+        // 失败不吞：面板内显式提示（曾因路由改名后静默吞错，实体搜索在全站「看起来没有数据」）
+        setEntityOpts([]);
+        setEntityError(e instanceof Error ? e.message : "搜索失败");
+      }
     }, 300);
   }, [q]);
 
@@ -104,6 +121,11 @@ export default function CommandPalette({ roles = [] }: { roles?: string[] }) {
         popupMatchSelectWidth
         defaultActiveFirstOption
       />
+      {entityError ? (
+        <div role="alert" style={{ marginTop: 8, fontSize: 12 }}>
+          <Typography.Text type="danger">数据搜索失败：{entityError}（页面跳转仍可用；请稍后重试或检查登录状态）</Typography.Text>
+        </div>
+      ) : null}
       <div style={{ marginTop: 8, fontSize: 12, color: "#999" }}>提示：任意页面按 ⌘K / Ctrl+K 唤起</div>
     </Modal>
   );

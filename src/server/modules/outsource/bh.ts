@@ -10,7 +10,7 @@ import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/st
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb, rethrowApproval } from "./common";
 import { approveDocSchema, createBhSchema, transitionDocSchema, withdrawDocSchema } from "./schemas";
-import { skuLineMatch } from "@/server/core/doc-search";
+import { createdWithinShanghaiDays, skuLineMatch } from "@/server/core/doc-search";
 import { transitionDoc } from "@/server/docflow/transition";
 
 /** 备货申请单 BH（《02》§3：运营发起，PMC 审批） */
@@ -173,7 +173,7 @@ export type BhListUser = ScopeUser & { id: number };
  */
 export async function listBhs(
   q: string,
-  opts: { status?: string; page: number; pageSize: number },
+  opts: { status?: string; from?: string; to?: string; page: number; pageSize: number },
   dbArg?: AnyDb,
   user?: BhListUser,
 ): Promise<{ rows: unknown[]; total: number }> {
@@ -181,6 +181,8 @@ export async function listBhs(
   const conds = [];
   if (q) conds.push(or(sql`${bhDocs.docNo} ILIKE ${"%" + q + "%"}`, skuLineMatch("bh_lines", "bh_id", bhDocs.id, q)));
   if (opts.status) conds.push(eq(bhDocs.status, opts.status as DocStatus));
+  // 制单时间窗（上海业务日，含首尾）：全链漏斗「计划」级按同一口径回链到本列表
+  conds.push(...createdWithinShanghaiDays(bhDocs.createdAt, opts.from, opts.to));
   if (user && !user.roles.includes("admin") && user.channelScope != null) {
     const allowed = [...new Set(user.channelScope)];
     conds.push(

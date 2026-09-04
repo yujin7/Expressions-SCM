@@ -93,8 +93,15 @@ export default function WipClient() {
   }, [rows]);
 
   const columns: ColumnsType<WipRow> = [
-    { title: "JG 单号", dataIndex: "jgNo", width: 150 },
-    { title: "工单", dataIndex: "woNo", width: 150 },
+    // 单号回链到各自列表页（?q=单号 精确命中，列表页打开详情抽屉）——此前是纯文本死胡同
+    {
+      title: "JG 单号", dataIndex: "jgNo", width: 150,
+      render: (v: string) => <a href={`/outsource/jg?q=${encodeURIComponent(v)}`}>{v}</a>,
+    },
+    {
+      title: "工单", dataIndex: "woNo", width: 150,
+      render: (v: string) => <a href={`/outsource/wo?q=${encodeURIComponent(v)}`}>{v}</a>,
+    },
     { title: "加工厂", dataIndex: "supplierName", width: 140 },
     { title: "成品", key: "product", render: (_, r) => `${r.productSkuCode} ${r.productName}` },
     { title: "订单数量", dataIndex: "orderQty", width: 100, align: "right", render: (v: string) => formatQty(v) },

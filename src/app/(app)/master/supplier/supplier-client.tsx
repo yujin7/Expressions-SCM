@@ -5,6 +5,7 @@ import { Button, DatePicker, Drawer, Form, Input, InputNumber, Select, Tag, Typo
 import dayjs, { type Dayjs } from "dayjs";
 import AttachmentPanel from "@/components/AttachmentPanel";
 import CrudTable from "@/components/CrudTable";
+import Supplier360Drawer from "./supplier-360-drawer";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import {
   SUPPLIER_KIND_LABELS,
@@ -27,6 +28,8 @@ export default function SupplierClient() {
   const me = useMe();
   const canWrite = hasAnyRole(me, "purchasing");
   const [attachSupplier, setAttachSupplier] = useState<SupplierRow | null>(null);
+  // 供应商 360：主数据页原本是纯 CRUD，采购在这里维护档案却看不到 OTIF/交期/质检/账期任何一项
+  const [view360, setView360] = useState<number | null>(null);
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
@@ -36,6 +39,9 @@ export default function SupplierClient() {
         loadDetailOnEdit
         rowActions={(r) => (
           <>
+            <Button type="link" size="small" onClick={() => setView360(r.id)}>
+              供应商 360
+            </Button>
             <Button type="link" size="small" href={`/master/supplier/lifecycle?supplierId=${r.id}`}>
               生命周期
             </Button>
@@ -181,6 +187,7 @@ export default function SupplierClient() {
           <AttachmentPanel entity="supplier" entityId={attachSupplier.id} canWrite={canWrite} title="资质证照" />
         ) : null}
       </Drawer>
+      <Supplier360Drawer supplierId={view360} onClose={() => setView360(null)} />
     </div>
   );
 }

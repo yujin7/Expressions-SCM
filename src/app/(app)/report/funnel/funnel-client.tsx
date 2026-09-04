@@ -51,6 +51,32 @@ const qty = (v: number): string =>
 
 const pct = (r: number | null): string => (r == null ? "—" : `${Math.round(r * 1000) / 10}%`);
 
+/** YYYY-MM → 该月首日 / 末日（纯字符串算术，不引入本地时区） */
+const monthStart = (ym: string): string => `${ym}-01`;
+const monthEnd = (ym: string): string => {
+  const [y, m] = ym.split("-").map(Number);
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return `${ym}-${String(last).padStart(2, "0")}`;
+};
+
+/**
+ * 每一级数字回链到它的取数来源（口径见各级 note）：
+ * 计划/下单/到货 = BH/WO/SH 列表按单据创建时间窗（from/to，上海业务日）筛选；
+ * 需求 = 需求登记页；动销 = 经营分析总览。列表页不支持的筛选不假装带上。
+ */
+function stageHref(key: StageKey, data: FunnelData): string {
+  const from = monthStart(data.docWindow.from);
+  const to = monthEnd(data.docWindow.to);
+  const window = `from=${from}&to=${to}`;
+  switch (key) {
+    case "demand": return "/report/demand";
+    case "plan": return `/outsource/bh?${window}`;
+    case "order": return `/outsource/wo?${window}`;
+    case "receipt": return `/matflow/sh?${window}`;
+    case "sales": return "/report/dashboard";
+  }
+}
+
 export default function FunnelClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<FunnelData | null>(null);
@@ -230,13 +256,16 @@ export default function FunnelClient() {
         </DecisionVisual>
       </div>
 
+      {/* 每级数字可点：回链到取数来源列表（BH/WO/SH 带单据创建时间窗 from/to），不再是死胡同 */}
       <Space className="compact-stat-strip" wrap>
-        {(data?.stages ?? []).map((s) => (
+        {data ? data.stages.map((s) => (
           <Card key={s.key} size="small">
-            <Statistic title={s.label} value={s.qty} formatter={() => qty(s.qty)} valueStyle={{ color: STAGE_COLOR[s.key] }} />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>{s.docCount.toLocaleString("zh-CN")} 单/条</Typography.Text>
+            <a href={stageHref(s.key, data)} title={`查看「${s.label}」级来源明细`} style={{ display: "block" }}>
+              <Statistic title={s.label} value={s.qty} formatter={() => qty(s.qty)} valueStyle={{ color: STAGE_COLOR[s.key] }} />
+            </a>
+            <Typography.Link href={stageHref(s.key, data)} style={{ fontSize: 12 }}>{s.docCount.toLocaleString("zh-CN")} 单/条 →</Typography.Link>
           </Card>
-        ))}
+        )) : null}
       </Space>
 
     </div>

@@ -11,6 +11,7 @@ import RemoteSelect from "@/components/RemoteSelect";
 import ChainStrip from "@/components/ChainStrip";
 import ApprovalBrief from "@/components/ApprovalBrief";
 import DocStatusTag from "@/components/DocStatusTag";
+import DocWindowFilterTag from "@/components/DocWindowFilterTag";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
@@ -250,10 +251,13 @@ function BhInner() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "bh", defaults: { q: "", status: "" }, defaultPageSize: 20 });
+  // from/to = 制单时间窗（上海业务日，含首尾）：全链漏斗「计划」级点数字回链到本页时带过来
+  const listState = useListState({ key: "bh", defaults: { q: "", status: "", from: "", to: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
+  const from = filters.from;
+  const to = filters.to;
 
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -267,6 +271,8 @@ function BhInner() {
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (status) params.set("status", status);
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
       const res = await fetchJson<{ rows: BhRow[]; total: number }>(
         `/api/outsource/bh?${params.toString()}`,
       );
@@ -277,7 +283,7 @@ function BhInner() {
     } finally {
       setLoading(false);
     }
-  }, [q, status, page, pageSize, message]);
+  }, [q, status, from, to, page, pageSize, message]);
 
   useEffect(() => {
     void load();
@@ -411,14 +417,17 @@ function BhInner() {
           </>
         }
         extra={
-          <SearchInput
-            key={q}
-            allowClear
-            defaultValue={q}
-            placeholder="搜索单号 / SKU 编码 / 货品名称"
-            style={{ width: 240 }}
-            onSearch={(value) => listState.setFilter({ q: value.trim() })}
-          />
+          <>
+            <SearchInput
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索单号 / SKU 编码 / 货品名称"
+              style={{ width: 240 }}
+              onSearch={(value) => listState.setFilter({ q: value.trim() })}
+            />
+            <DocWindowFilterTag from={from} to={to} onClear={() => listState.setFilter({ from: "", to: "" })} />
+          </>
         }
       />
       <Table<BhRow>

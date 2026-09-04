@@ -10,6 +10,7 @@ import dayjs from "dayjs";
 import AttachmentPanel from "@/components/AttachmentPanel";
 import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
+import DocWindowFilterTag from "@/components/DocWindowFilterTag";
 import ListToolbar from "@/components/ListToolbar";
 import RemoteSelect from "@/components/RemoteSelect";
 import { fetchJson, postJson } from "@/components/fetchJson";
@@ -213,10 +214,13 @@ export default function ShClient() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "sh", defaults: { q: "", status: "" }, defaultPageSize: 20 });
+  // from/to = 制单时间窗（上海业务日，含首尾）：全链漏斗「到货」级点数字回链到本页时带过来
+  const listState = useListState({ key: "sh", defaults: { q: "", status: "", from: "", to: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
+  const from = filters.from;
+  const to = filters.to;
 
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detail, setDetail] = useState<ShDetail | null>(null);
@@ -259,6 +263,8 @@ export default function ShClient() {
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (status) params.set("status", status);
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
       const res = await fetchJson<{ rows: ShRow[]; total: number }>(`/api/matflow/sh?${params.toString()}`);
       setRows(res.rows);
       setTotal(res.total);
@@ -267,7 +273,7 @@ export default function ShClient() {
     } finally {
       setLoading(false);
     }
-  }, [q, status, page, pageSize, message]);
+  }, [q, status, from, to, page, pageSize, message]);
 
   useEffect(() => {
     void load();
@@ -996,14 +1002,17 @@ export default function ShClient() {
           </>
         }
         extra={
-          <SearchInput
-            key={q}
-            allowClear
-            defaultValue={q}
-            placeholder="搜索单号 / SKU 编码 / 货品名称"
-            style={{ width: 240 }}
-            onSearch={(value) => listState.setFilter({ q: value.trim() })}
-          />
+          <>
+            <SearchInput
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索单号 / SKU 编码 / 货品名称"
+              style={{ width: 240 }}
+              onSearch={(value) => listState.setFilter({ q: value.trim() })}
+            />
+            <DocWindowFilterTag from={from} to={to} onClear={() => listState.setFilter({ from: "", to: "" })} />
+          </>
         }
       />
       <Table<ShRow>

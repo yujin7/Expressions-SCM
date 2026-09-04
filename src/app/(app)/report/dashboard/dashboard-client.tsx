@@ -1,7 +1,9 @@
 "use client";
 
 /**
- * 经营驾驶舱：销量 / 库存 / 效期 / 可销天数 / 委外执行 / 数据健康 一屏总览。
+ * 经营分析总览（菜单同名）：销量 / 库存 / 效期 / 可销天数 / 委外执行 / 数据健康 一屏总览。
+ * 与「驾驶舱四屏（例外优先）」`/cockpit` 分工不同——此前页面自称「经营驾驶舱」，与菜单标签、
+ * 与四屏页三者同名不同物，用户以为进错了页。
  * 口径提示常驻：数量跨 SKU 直加仅参考；快照仓带数据日期；金额仅限授权角色。
  */
 import Link from "next/link";
@@ -219,7 +221,7 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
       <header className="dashboard-header">
         <div className="dashboard-header__copy">
           <Typography.Title level={4} className="dashboard-header__title">
-            经营驾驶舱
+            经营分析总览
           </Typography.Title>
           {/*
             跨维筛选：只作用于销售类聚合。哪些跟随、哪些不跟随必须写在明面上——
@@ -451,7 +453,7 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
             }
             onExport={() =>
               exportCsv(
-                "经营驾驶舱-销售趋势",
+                "经营分析总览-销售趋势",
                 ["月份", ...data.trendBrands, "合计"],
                 data.salesTrend.map((row) => [
                   row.month,
@@ -501,7 +503,7 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
             }
             onExport={() =>
               exportCsv(
-                "经营驾驶舱-渠道结构",
+                "经营分析总览-渠道结构",
                 ["渠道", "销量", "占比"],
                 channelShare.map((row) => [row.name, row.qty, `${row.share}%`]),
               )

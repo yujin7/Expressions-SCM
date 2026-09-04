@@ -4,7 +4,8 @@ import DashboardClient from "./dashboard-client";
 import { getFreshSessionUser } from "@/server/core/dto";
 import { getDashboard } from "@/server/modules/report/dashboard";
 
-export const metadata = { title: "经营驾驶舱" };
+// 标题与菜单标签（route-access: report_dashboard「经营分析总览」）对齐——三个「驾驶舱」并列时页面自称与菜单不同名会让人以为进错页
+export const metadata = { title: "经营分析总览" };
 
 /**
  * 跨维筛选从 URL 读：本页是服务端取数后整体下发的，筛选走 searchParams
