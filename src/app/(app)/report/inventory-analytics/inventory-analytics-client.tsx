@@ -93,6 +93,8 @@ interface Data {
     windowDays: number;
   };
   today: string;
+  /** 参与在库口径的快照仓最新快照日期（core/stock-view）；无快照仓数据 = null */
+  snapDate: string | null;
   coverAlertDays: number;
   slowDaysThreshold: number;
   avgOnHandNote: string;
@@ -407,10 +409,16 @@ export default function InventoryAnalyticsClient() {
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>库存分析</Typography.Title>
       <CaliberNote
-        summary={`口径日 ${data?.today ?? "—"}；先用健康矩阵找异常，再用账龄和周转验证原因。`}
+        summary={`口径日 ${data?.today ?? "—"}${data ? `；快照仓数据时点 ${data.snapDate ?? "无快照仓数据"}` : ""}；先用健康矩阵找异常，再用账龄和周转验证原因。`}
         detail={
           <>
-            在库 = 实时账 + 快照仓最新快照；日均销 = 近 3 月销量 ÷ 91；
+            在库 = 实时账 + 快照仓最新快照（core/stock-view 唯一口径）；
+            {data?.snapDate
+              ? `快照部分的数据时点是 ${data.snapDate}，不是口径日 ${data.today}——两者相差几天时，本页在库偏保守/偏陈旧，请对照「数据日期」判断新鲜度。`
+              : data
+                ? "本次结果不含任何快照仓数据（快照仓无该口径记录），在库全部来自实时账。"
+                : ""}
+            日均销 = 近 3 月销量 ÷ 91；
             出入库取自 stock_ledger 带符号流水。仅统计在用成品。
             {truncated ? ` 图表仅绘制在库量 TOP ${CHART_LIMIT}（共 ${chart?.total ?? 0} 个 SKU），明细表分页完整。` : ""}
           </>

@@ -60,7 +60,7 @@ const CALIBRE_KEYS: readonly string[] = [
   WAREHOUSE_INVENTORY_CACHE_KEY,
 ];
 
-/** 模型名 → 当前版本键（"inventory-alerts" → "inventory-alerts/v3"） */
+/** 模型名 → 当前版本键（"inventory-alerts" → "inventory-alerts/v4"） */
 const CURRENT_BY_NAME = new Map(CALIBRE_KEYS.map((k) => [k.slice(0, k.lastIndexOf("/")), k]));
 
 /** 形如 `foo-bar/v2` 的记号；只认小写字母、数字与连字符构成的模型名 */

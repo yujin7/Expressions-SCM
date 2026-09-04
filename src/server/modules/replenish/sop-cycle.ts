@@ -85,9 +85,24 @@ export interface SopCycle {
   consensusReady: boolean;
 }
 
+/**
+ * 「当月实时建议是否已被冻结锁死」——与 `assertLiveSuggestionsWritable` 同源判定。
+ * 界面必须**提前**知道：此前补货页不问，用户勾满 200 行、点提交才吃 409，
+ * 一次白干（还容易被误读成系统故障）。
+ */
+export interface LiveSuggestionsFreeze {
+  frozen: boolean;
+  /** 冻结当月建议的周期（frozen/executing）；未冻结 = null */
+  cycle: { id: number; month: string; name: string; status: SopStatus } | null;
+  /** 判定所用的上海当月（YYYY-MM） */
+  month: string;
+}
+
 export interface SopWorkspace {
   cycles: SopCycle[];
   versions: VersionSummary[];
+  /** 当月实时建议冻结状态（补货页开屏横幅据此渲染） */
+  liveSuggestionsFreeze: LiveSuggestionsFreeze;
   limitations: string[];
 }
 
@@ -238,6 +253,7 @@ export async function getSopWorkspace(user: SessionUser, dbArg?: AnyDb): Promise
   return {
     cycles,
     versions,
+    liveSuggestionsFreeze: await getLiveSuggestionsFreeze(db),
     limitations: [
       "当前周期治理数量计划与跨职能共识；尚无已裁决成本/资金事实，因此不冒充财务 IBP。",
       "冻结引用不可变计划版本；历史不会按今天的库存、销量或参数回算。",
@@ -441,17 +457,33 @@ export async function transitionSopCycle(
   });
 }
 
-/** 冻结/执行中的当月周期只能读取冻结版本；禁止从实时重算建议绕过共识生成草稿。 */
-export async function assertLiveSuggestionsWritable(dbArg?: AnyDb, now = new Date()): Promise<void> {
+/** 冻结当月实时建议的周期（frozen/executing）——闸门与界面横幅**同一个查询**，不许各判一次 */
+export async function getLiveSuggestionsFreeze(dbArg?: AnyDb, now = new Date()): Promise<LiveSuggestionsFreeze> {
   const db = await resolveDb(dbArg);
+  const month = currentShanghaiMonth(now);
   const [active] = await db
-    .select({ id: schema.sopCycles.id, status: schema.sopCycles.status })
+    .select({
+      id: schema.sopCycles.id,
+      month: schema.sopCycles.month,
+      name: schema.sopCycles.name,
+      status: schema.sopCycles.status,
+    })
     .from(schema.sopCycles)
     .where(and(
-      eq(schema.sopCycles.month, currentShanghaiMonth(now)),
+      eq(schema.sopCycles.month, month),
       inArray(schema.sopCycles.status, ["frozen", "executing"]),
     ));
-  if (active) {
+  return {
+    frozen: Boolean(active),
+    cycle: active ? { ...active, status: active.status as SopStatus } : null,
+    month,
+  };
+}
+
+/** 冻结/执行中的当月周期只能读取冻结版本；禁止从实时重算建议绕过共识生成草稿。 */
+export async function assertLiveSuggestionsWritable(dbArg?: AnyDb, now = new Date()): Promise<void> {
+  const freeze = await getLiveSuggestionsFreeze(dbArg, now);
+  if (freeze.frozen) {
     throw new ApiError(409, "当月 S&OP 计划已冻结；实时建议只读，请按冻结计划版本执行");
   }
 }

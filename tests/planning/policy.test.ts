@@ -90,7 +90,9 @@ describe("planning/policy：分层固化、覆写、试点", () => {
 
   it("重建同期：覆写与试点保留（overridesKept），审计再记一行", async () => {
     await setPilotFlags(w.pmc, { period: PERIOD, skuIds: [w.sku.B], pilot: true }, db);
-    const r = await buildSkuPlanningPolicy(PERIOD, { db, actor: w.pmc });
+    // 本期已固化：不带 force 的重建是幂等空操作（见「幂等固化」用例），人工重建必须显式 force
+    const r = await buildSkuPlanningPolicy(PERIOD, { db, actor: w.pmc, force: true });
+    expect(r.skipped).toBe(false);
     expect(r.inserted).toBe(0);
     expect(r.updated).toBe(5);
     expect(r.overridesKept).toBe(1);
@@ -131,13 +133,55 @@ describe("planning/policy：分层固化、覆写、试点", () => {
     expect(tierShare(all.summary.byTier)).toEqual({ S: { count: 1, pct: 20 }, A: { count: 1, pct: 20 }, B: { count: 1, pct: 20 }, C: { count: 2, pct: 40 } });
   });
 
-  it("runPolicyBuild（调度入口）：固化当月，审计 source=scheduler、userId 取系统 admin", async () => {
-    const r = await runPolicyBuild(db);
-    expect(r.period).toBe(currentPeriod());
-    const audits = await db.select().from(auditLogs).where(and(eq(auditLogs.entity, "sku_planning_policy"), eq(auditLogs.action, "build")));
-    const sched = audits.find((a) => (a.after as { source?: string }).source === "scheduler");
+  /**
+   * D58 说「月度固化」，而 `jobs/interval-runner.ts` 的 planning-policy-build 是**每天 03:00** 跑一次。
+   * 不幂等的话，标着「2026-09 期固化」的四档会随销量数据天天变——「冻结」名存实亡。
+   * 本组钉住：调度路径本期第二次跑起即空操作；人工 force 重建才重算，且每个分层变化的 SKU 单落一行 retier 审计。
+   */
+  it("幂等固化：本期已有策略行时，调度重跑整次跳过（不写行、不写审计）", async () => {
+    const { db: fresh } = await createTestDb();
+    const world = await seedTierWorld(fresh);
+    const first = await runPolicyBuild(fresh);
+    expect(first.skipped).toBe(false);
+    expect(first.period).toBe(currentPeriod());
+    expect(first.total).toBe(5);
+    const sched = (await fresh.select().from(auditLogs).where(and(eq(auditLogs.entity, "sku_planning_policy"), eq(auditLogs.action, "build"))))
+      .find((a) => (a.after as { source?: string }).source === "scheduler");
     expect(sched).toBeDefined();
-    expect(sched!.userId).toBe(w.admin.id);
+    expect(sched!.userId).toBe(world.admin.id);
+
+    const rowsBefore = await fresh.select().from(skuPlanningPolicy).where(eq(skuPlanningPolicy.period, currentPeriod()));
+    const builtAtBefore = rowsBefore.map((r) => r.builtAt?.toISOString?.() ?? String(r.builtAt)).sort();
+
+    // 第二天 03:00 又跑一次：一行都不能动，也不能多一条审计
+    const second = await runPolicyBuild(fresh);
+    expect(second.skipped).toBe(true);
+    expect(second.inserted).toBe(0);
+    expect(second.updated).toBe(0);
+    expect(second.tierChanged).toBe(0);
+    const buildAudits = await fresh.select().from(auditLogs).where(and(eq(auditLogs.entity, "sku_planning_policy"), eq(auditLogs.action, "build")));
+    expect(buildAudits.length).toBe(1);
+    const rowsAfter = await fresh.select().from(skuPlanningPolicy).where(eq(skuPlanningPolicy.period, currentPeriod()));
+    expect(rowsAfter.map((r) => r.builtAt?.toISOString?.() ?? String(r.builtAt)).sort()).toEqual(builtAtBefore);
+  });
+
+  it("force 重建：分层变化的 SKU 逐条写 retier 审计（before/after 带 tier）", async () => {
+    const { db: fresh } = await createTestDb();
+    const world = await seedTierWorld(fresh);
+    const period = currentPeriod();
+    await runPolicyBuild(fresh);
+    // 人工把某个 SKU 的固化分层改成别的值，模拟「上一版分层与规则不一致」
+    await fresh.update(skuPlanningPolicy)
+      .set({ tier: "C" })
+      .where(and(eq(skuPlanningPolicy.period, period), eq(skuPlanningPolicy.skuId, world.sku.S)));
+
+    const forced = await buildSkuPlanningPolicy(period, { db: fresh, actor: world.pmc, force: true });
+    expect(forced.skipped).toBe(false);
+    expect(forced.tierChanged).toBe(1);
+    const retier = await fresh.select().from(auditLogs).where(and(eq(auditLogs.entity, "sku_planning_policy"), eq(auditLogs.action, "retier")));
+    expect(retier.length).toBe(1);
+    expect(retier[0].before).toMatchObject({ period, skuId: world.sku.S, tier: "C" });
+    expect(retier[0].after).toMatchObject({ period, skuId: world.sku.S, tier: "S", source: "manual_rebuild" });
   });
 
   it("写守卫：purchasing 不能固化", async () => {

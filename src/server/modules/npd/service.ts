@@ -342,17 +342,24 @@ export async function createNpdFirstOrder(user: SessionUser, input: unknown, dbA
   const sku = await resolveSkuByCodeOrAlias(db, proj.skuCode);
   if (!sku) throw new ApiError(400, `目标 SKU「${proj.skuCode}」未建档或无此别名`);
   const delegate: SessionUser = user.roles.includes("ops") ? user : { ...user, roles: [...user.roles, "ops"] };
+  /* 审计必须在 createBh 的**事务内**（CLAUDE.md 写路径纪律）：
+     此前 writeAudit 写在 createBh 之后、事务之外——BH 已提交而审计失败，
+     就留下一张没人知道从哪来的 NPD 首单草稿。走 inTx 钩子，抛错即整单回滚。 */
   const doc = await createBh(
     delegate,
     { remark: `NPD 首单：项目《${proj.name}》#${proj.id}（新品首单，人工确认后提交审批）`, lines: [{ skuId: sku.id, qty: v.qty }] },
     db,
+    {
+      inTx: async (tx, created) => {
+        await writeAudit(tx, {
+          userId: user.id,
+          entity: "npd_project",
+          entityId: proj.id,
+          action: "first_order_draft",
+          after: { docNo: created.docNo, skuCode: proj.skuCode, qty: v.qty },
+        });
+      },
+    },
   );
-  await writeAudit(db, {
-    userId: user.id,
-    entity: "npd_project",
-    entityId: proj.id,
-    action: "first_order_draft",
-    after: { docNo: doc.docNo, skuCode: proj.skuCode, qty: v.qty },
-  });
   return { id: doc.id, docNo: doc.docNo };
 }

@@ -74,6 +74,8 @@ function row(p: Partial<InventoryAlertRow> & { skuId: number; code: string }): I
     actions: {
       transfer: `/report/transfer-suggest?skuIds=${p.skuId}`,
       replenish: `/replenish?q=${encodeURIComponent(p.code)}`,
+      nearExpiry: `/inventory/expiry?q=${encodeURIComponent(p.code)}&bucket=all`,
+      overstock: `/report/risk?q=${encodeURIComponent(p.code)}`,
     },
   };
   return { ...base, ...p };
@@ -196,6 +198,23 @@ describe("预警行深链落到已筛选页面", () => {
     expect(r.actions.replenish).toBe("/replenish?q=N001-000");
     const parsed = parseQuery(r.actions.replenish.slice(r.actions.replenish.indexOf("?")), { q: "", coverDays: "45" });
     expect(parsed.filters.q).toBe("N001-000");
+  });
+
+  /**
+   * 每个**主预警种类**都要有落地页。此前 actions 只有 transfer/replenish：
+   * near_expiry 与 overstock 两类主预警在行上亮着标签，却没有任何可点的下一步——
+   * 用户只能自己去猜该开哪个页面、再手工搜一遍编码。
+   */
+  it("临期/积压主预警各有落地页深链，且深链参数是目标页真正消费的筛选", () => {
+    const r = row({ skuId: 9, code: "N002-000" });
+    // 效期页默认只看「已到期」段位，临期批次落在 3/6 月段——必须显式 bucket=all 才看得到该 SKU 全部批次
+    expect(r.actions.nearExpiry).toBe("/inventory/expiry?q=N002-000&bucket=all");
+    const exp = parseQuery(r.actions.nearExpiry.slice(r.actions.nearExpiry.indexOf("?")), { q: "", bucket: "expired", brand: "" });
+    expect(exp.filters).toMatchObject({ q: "N002-000", bucket: "all" });
+
+    expect(r.actions.overstock).toBe("/report/risk?q=N002-000");
+    const risk = parseQuery(r.actions.overstock.slice(r.actions.overstock.indexOf("?")), { q: "", action: "" });
+    expect(risk.filters.q).toBe("N002-000");
   });
 });
 

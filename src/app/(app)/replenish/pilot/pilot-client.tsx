@@ -229,18 +229,18 @@ export default function PilotClient({ canManage }: { canManage: boolean }) {
 
   const build = () => {
     modal.confirm({
-      title: "固化本期分层与权责",
-      content: "按当前分层页口径（近 6 月销量、S/A/B/C 切点、XYZ、异动、周期主数据）写入本月 sku_planning_policy；已有的人工覆写与试点标记保留。",
+      title: "重新固化本期分层与权责",
+      content: "本期分层是**月度冻结**的：定时任务只在本期第一次跑时固化，之后不会自己重算。这里是人工重建——按当前分层页口径（近 6 月销量、S/A/B/C 切点、XYZ、异动、周期主数据）覆盖本月 sku_planning_policy；人工覆写与试点标记保留，规则分层发生变化的 SKU 会逐条写入审计。",
       okText: "固化",
       cancelText: "取消",
       onOk: async () => {
         setBuilding(true);
         try {
-          const res = await postJson<{ period: string; total: number; inserted: number; updated: number; overridesKept: number; byOwnership: Record<string, number>; blockers: BuildBlockers }>("/api/planning/policy", { action: "build" });
+          const res = await postJson<{ period: string; total: number; inserted: number; updated: number; overridesKept: number; tierChanged: number; byOwnership: Record<string, number>; blockers: BuildBlockers }>("/api/planning/policy", { action: "build" });
           const direct = res.byOwnership?.supply_chain_direct ?? 0;
           const b = res.blockers;
           message.success(
-            `已固化 ${res.period}：${res.total} 个 SKU（新增 ${res.inserted} / 更新 ${res.updated}，保留覆写 ${res.overridesKept}）；供应链直出 ${direct}`
+            `已固化 ${res.period}：${res.total} 个 SKU（新增 ${res.inserted} / 更新 ${res.updated}，保留覆写 ${res.overridesKept}，分层变动 ${res.tierChanged ?? 0} 已逐条留痕）；供应链直出 ${direct}`
             + (b ? `，S/A/B ${b.candidates} 中阻塞：周期未维护 ${b.leadDaysUnknown} / 样本不足 ${b.xyzNull} / 波动 Y-Z ${b.xyzNotX} / 异动 ${b.detectorHit}` : ""),
             6,
           );
@@ -300,7 +300,7 @@ export default function PilotClient({ canManage }: { canManage: boolean }) {
         detail={<div>{(model?.notes ?? []).map((n, i) => <p key={i}>{n}</p>)}{model ? <p>分层期：{model.period ?? "未固化"}；销量窗口 {model.months[0]} ~ {model.months[model.months.length - 1]}；读模型生成于 {model.builtAt.slice(0, 16).replace("T", " ")}。</p> : null}</div>}
       />
       {model && !model.period ? (
-        <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="尚未固化任何期间的分层（sku_planning_policy 为空）——分层暂按实时值显示；点击「固化本期分层」后才能标记试点。" />
+        <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="尚未固化任何期间的分层（sku_planning_policy 为空）——分层暂按实时值显示；点击「重新固化本期分层」后才能标记试点。" />
       ) : null}
       {model ? <WhyDirectZero model={model} /> : null}
       {model ? <TierMigrationCard model={model} /> : null}
@@ -331,7 +331,7 @@ export default function PilotClient({ canManage }: { canManage: boolean }) {
         }
         primaryActions={
           <Space>
-            {canManage ? <Button type="primary" icon={<ThunderboltOutlined />} loading={building} onClick={build}>固化本期分层</Button> : null}
+            {canManage ? <Tooltip title="本期分层月度冻结：定时任务只在本期第一次跑时固化，之后不再自动重算；这里是人工重建"><Button type="primary" icon={<ThunderboltOutlined />} loading={building} onClick={build}>重新固化本期分层</Button></Tooltip> : null}
             {canManage ? <Button disabled={selected.length === 0} onClick={() => void setPilot(true)}>纳入试点（{selected.length}）</Button> : null}
             {canManage ? <Button disabled={selected.length === 0} onClick={() => void setPilot(false)}>移出试点</Button> : null}
             {/* 重算 = 服务端 ?refresh=1（PMC/管理员，安全审计 S4）；其他角色仍可读缓存 */}

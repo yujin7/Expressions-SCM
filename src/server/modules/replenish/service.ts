@@ -26,7 +26,7 @@ import { z } from "zod";
 import { getNumParam } from "@/server/core/params";
 import * as schema from "@/db/schema";
 import { dAdd, dCmp, dDiv, dMul, dQty, dSub } from "@/server/core/decimal";
-import { suggestQty } from "@/server/rules/netreq";
+import { suggestQtyDetailed } from "@/server/rules/netreq";
 import { belowLeadtime, detectRefGap, fuseCover, shouldSuppressSuggest } from "@/server/rules/fusion";
 import { forecastDaily } from "@/server/rules/forecast";
 import { backtest } from "@/server/rules/backtest";
@@ -224,6 +224,14 @@ export interface ReplenishRow {
   orderWindowMissed: boolean;
   /** 建议量的逐步解释（可解释链） */
   planExplain: string[];
+  /**
+   * R11 规整警告（`rules/netreq.suggestQtyDetailed` 的 warnings）——超买、单次上限下调、
+   * MOQ 与上限自相矛盾。此前服务端从不传 maxOrder/dailyDemand，规则里那条
+   * 「MOQ 导致多买 N 天库存」的警告**结构上永远不可能触发**，等于规则写了没接。
+   */
+  lotWarnings: { level: "info" | "warn" | "blocking"; message: string }[];
+  /** 超买折算天数（相对日均；无日均 = null）——超买天数是呆滞库存的先行指标 */
+  overshootDays: number | null;
   /** E8-10：版本捕获专用的精确输入/输出；页面可忽略，保存时不得从展示舍入值反推。 */
   decisionEvidence: ReplenishDecisionEvidence;
 }
@@ -297,10 +305,22 @@ export const REPLENISH_SORT_FIELDS = [
   "coverFull",
   "leadDays",
   "suggestQty",
+  /* E2-05 决策字段：引擎早就算出「最晚什么时候必须下单」与「还有几天断货」，
+     此前既不下发到列上也不可排序，计划员只能靠可销天数近似——而可销天数不含生产周期。 */
+  "orderByDate",
+  "daysToShortage",
 ] as const;
 
 export type ReplenishSortBy = (typeof REPLENISH_SORT_FIELDS)[number];
 export type ReplenishSortOrder = "ascend" | "descend";
+
+/**
+ * 未指定排序时的缺省列：**最晚下单日升序**。
+ * 补货页的唯一问题是「今天该下哪几张单」，而不是「谁的可销最低」——
+ * 可销最低的 SKU 若生产周期短，反而不急；最晚下单日最早的才是今天必须动的。
+ * 空值（未触发/无法倒推）按 compareReplenishRows 的规则一律置底。
+ */
+export const REPLENISH_DEFAULT_SORT_BY: ReplenishSortBy = "orderByDate";
 
 export function normalizeReplenishSort(
   sortBy: string | null | undefined,
@@ -309,7 +329,7 @@ export function normalizeReplenishSort(
   return {
     sortBy: REPLENISH_SORT_FIELDS.includes(sortBy as ReplenishSortBy)
       ? (sortBy as ReplenishSortBy)
-      : "coverFull",
+      : REPLENISH_DEFAULT_SORT_BY,
     sortOrder: sortOrder === "descend" ? "descend" : "ascend",
   };
 }
@@ -354,6 +374,9 @@ function replenishSortValue(
       return row[sortBy];
     case "suggestQty":
       return row.suggestQty ?? row.heldQty;
+    case "orderByDate":
+      // YYYY-MM-DD 定长日期串，字典序即时间序；null（未触发/无生产周期）交给下方置底规则
+      return row.orderByDate;
     default:
       return row[sortBy];
   }
@@ -392,6 +415,12 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     getNumParam("cover_target_days_c", 25, dbArg),
   ]);
   const minCoverAlert = Math.min(365, Math.max(1, Math.floor(query.minCoverAlert ?? (await getNumParam("cover_alert_days", 30, dbArg)))));
+  /* R11 单次订货上限与超买提示（rules/netreq 的 maxOrder / overshootWarnDays）。
+     上限 0 = 不设（默认，行为与此前一致）；>0 时上限量 = 日均 × 天数，逐 SKU 各算各的。 */
+  const [maxOrderCoverDays, overshootWarnDays] = await Promise.all([
+    getNumParam("replenish_max_order_cover_days", 0, dbArg),
+    getNumParam("replenish_overshoot_warn_days", 90, dbArg),
+  ]);
   const page = Math.max(1, query.page ?? 1);
   const pageSize = query.allRows ? Number.MAX_SAFE_INTEGER : Math.min(999, Math.max(1, query.pageSize ?? 50));
   const q = (query.q ?? "").trim();
@@ -731,19 +760,29 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     let suggest: string | null = null;
     let heldQty: string | null = null;
     let suppressReason: string | null = null;
+    let lotWarnings: ReplenishRow["lotWarnings"] = [];
+    let overshootDays: number | null = null;
     const planExplain: string[] = [`安全库存 ${ss.safetyQty}（${ss.reason}）`, ...tp.explain];
     const triggered = tp.shortageDate != null && tp.daysToShortage != null && tp.daysToShortage <= actionWindow;
     if (triggered && tp.requiredQty > 0) {
       const uom = uomBySku.get(s.id);
-      // 净需求已由逐日推演得出；此处仅施加 MOQ/订货倍数（onHand/inTransit 已在推演中扣除，故传 0）
-      const suggested = suggestQty({
+      /* 净需求已由逐日推演得出；此处施加 MOQ/订货倍数/单次上限（onHand/inTransit 已在推演中扣除，故传 0）。
+         maxOrder 与 dailyDemand 此前不传，规则里的超买/上限两条警告因此永远不触发（等于规则写了没接）。 */
+      const detail = suggestQtyDetailed({
         grossReq: String(tp.requiredQty),
         onHand: "0",
         inTransit: "0",
         moq: uom?.moq ?? null,
         orderMultiple: uom?.orderMultiple ?? null,
+        maxOrder: maxOrderCoverDays > 0 && dailyNum > 0 ? dMul(dailyDec, String(maxOrderCoverDays), 4) : null,
+        dailyDemand: dailyNum > 0 ? dailyDec : null,
+        overshootWarnDays,
       });
-      planExplain.push(`施加 MOQ/订货倍数后 → ${suggested}`);
+      const suggested = detail.qty;
+      lotWarnings = detail.warnings;
+      overshootDays = detail.overshootDays == null ? null : r1(num(detail.overshootDays));
+      planExplain.push(`施加 MOQ/订货倍数${maxOrderCoverDays > 0 ? "/单次上限" : ""}后 → ${suggested}`);
+      for (const w of detail.warnings) planExplain.push(`规整提示（${w.level}）：${w.message}`);
       /* 抑制基准必须与**触发**基准同源（2026-07-26 红队实证）。
          触发用 actionWindow（=生产周期，本仓 40–68 天，见 :405/:421），
          而抑制此前仍用 minCoverAlert(=cover_alert_days 缺省 30)。
@@ -866,6 +905,8 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       orderByDate: tp.orderByDate,
       orderWindowMissed: tp.orderWindowMissed,
       planExplain,
+      lotWarnings,
+      overshootDays,
       decisionEvidence: {
         businessDate: todayStr,
         onHand,
@@ -961,6 +1002,8 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     orderByDate: r.orderByDate,
     orderWindowMissed: r.orderWindowMissed,
     planExplain: r.planExplain,
+    lotWarnings: r.lotWarnings,
+    overshootDays: r.overshootDays,
     forecastDivergent: r.forecastDivergent,
     forecastTrusted: r.forecastTrusted,
     forecastAccuracy: r.forecastAccuracy,
