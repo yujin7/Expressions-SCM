@@ -86,6 +86,7 @@ export async function listSkus(
       channel: schema.channels.name,
       shortName: schema.skus.shortName,
       commercialRole: schema.skus.commercialRole,
+      normalLeadDays: schema.skuParams.normalLeadDays,
       logisticsLeadDays: schema.skuParams.logisticsLeadDays,
       lifecycle: schema.skus.lifecycle,
       active: schema.skus.active,

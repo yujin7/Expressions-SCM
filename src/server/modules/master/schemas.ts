@@ -45,6 +45,8 @@ export const skuSchema = z.object({
   ),
   channelId: z.number().int().positive().nullable().optional(),
   commercialRole: z.enum(COMMERCIAL_ROLES).optional(),
+  /** 加工周期（sku_params.normal_lead_days，与周期主数据补录页同一行）；空=尚未维护，预警/补货走 default_production_lead_days。 */
+  normalLeadDays: z.number().int().min(0).max(365).nullable().optional(),
   /** 生产周期之外的运输/调拨周期；空=尚未维护，补货暂按 0 天兼容旧口径。 */
   logisticsLeadDays: z.number().int().min(0).max(365).nullable().optional(),
   lossCategory: z.preprocess(emptyToUndef, z.enum(["raw", "packaging"]).optional()),

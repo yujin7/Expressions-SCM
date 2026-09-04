@@ -118,6 +118,7 @@ const WRITE_ROLES: Record<string, string[]> = {
   supplier: ["purchasing"],
   warehouse: [],
   bom: ["pmc"],
+  channel: ["pmc"],
 };
 
 export type SessionUser = { id: number; name: string; roles: string[]; isApprover: boolean };

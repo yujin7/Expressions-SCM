@@ -18,6 +18,7 @@ import { sql, type SQL } from "drizzle-orm";
 
 import { dCmp, dDiv, dMax, dMul, dQty, dSub } from "@/server/core/decimal";
 import { getNumParam } from "@/server/core/params";
+import { numParamFallback } from "@/server/core/param-defs";
 
 interface ReadDb {
   execute(query: SQL): Promise<unknown>;
@@ -33,7 +34,15 @@ export interface SalesConsistencyThresholds {
   minBaseQty: number;
 }
 
-export const DEFAULT_SALES_CONSISTENCY_THRESHOLDS: SalesConsistencyThresholds = { relPct: 10, absFloorQty: 5, minBaseQty: 10 };
+/**
+ * 缺省阈值 = 运行参数白名单（core/param-defs）的缺省，**不再另写一份字面量**：
+ * 此前这里写 10/5/10、运行参数页显示 15/20/50（D65），页面上写的和引擎跑的不是同一个数。
+ */
+export const DEFAULT_SALES_CONSISTENCY_THRESHOLDS: SalesConsistencyThresholds = {
+  relPct: numParamFallback("dq_sales_consistency_rel_pct"),
+  absFloorQty: numParamFallback("dq_sales_consistency_abs_floor_qty"),
+  minBaseQty: numParamFallback("dq_sales_consistency_min_base_qty"),
+};
 
 export type SalesConsistencyStatus = "consistent" | "exception" | "below_floor";
 
