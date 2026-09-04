@@ -518,6 +518,11 @@ export interface ProjectCandidatesSummary {
   failed: number;
   matched: number;
   unassigned: number;
+  /**
+   * 触发窗口被预算截断（红队 A1）：告警或复核任一来源取满了本轮预算，
+   * 说明还有 open 行本轮根本没被看到——`scanned/matched` 再好看也不代表投影是全的。
+   */
+  truncated: boolean;
 }
 
 /**
@@ -529,10 +534,10 @@ export async function projectCandidates(
   db: AnyDb,
   candidates: readonly TodoCandidate[],
   actor: SessionUser,
-  opts?: { now?: Date },
+  opts?: { now?: Date; truncated?: boolean },
 ): Promise<ProjectCandidatesSummary> {
   const now = opts?.now ?? new Date();
-  const summary: ProjectCandidatesSummary = { scanned: candidates.length, created: 0, reopened: 0, matched: 0, unassigned: 0, failed: 0 };
+  const summary: ProjectCandidatesSummary = { scanned: candidates.length, created: 0, reopened: 0, matched: 0, unassigned: 0, failed: 0, truncated: opts?.truncated ?? false };
   const dueDays: Record<string, number> = { high: 3, normal: 7, low: 14 };
   const assigneeByRole = new Map<string, Promise<number | null>>(); // 同一责任角色一轮只查一次
   for (const c of candidates) {

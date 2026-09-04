@@ -22,6 +22,7 @@ import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { dAdd, dCmp, dDiv, dMul, dSub } from "@/server/core/decimal";
+import { classifyLedgerCoverage, loadStockUniverseCoverage } from "@/server/core/stockout-evidence";
 import { num, r1 } from "@/server/core/svc";
 import { DOC_STATUS_LABELS } from "@/components/labels";
 
@@ -196,19 +197,28 @@ export async function getSuggestionAccuracy(dbArg?: AnyDb, opts?: { now?: Date; 
   const skuIds = [...new Set(matured.map((s) => s.skuId))];
   const minStart = matured.reduce((m, s) => (s.businessDate < m ? s.businessDate : m), matured[0].businessDate);
   const windowFrom = shanghaiStart(minStart);
+  /* 红队审计 A8：上界也要有——只取真正落在**任何一条样本视野期**内的行；
+     再按 SKU 建索引，避免"样本 × 全部行"的嵌套扫（本函数与抑制复核在每次页面加载时都跑）。
+     窗口与索引都不改判定：逐条仍按各自 [from, to) 过滤，桶分布逐字不变。 */
+  const windowTo = new Date(matured.reduce((m, s) => Math.max(m, shanghaiStart(s.businessDate).getTime() + s.horizonDays * DAY_MS), 0));
 
   // 实际下单：BH 行（非作废）+ PO 行（非作废，按 uom_factor 折基础单位），按单据创建时间落入视野期
   const bh: { skuId: number; qty: string; createdAt: Date }[] = await db
     .select({ skuId: schema.bhLines.skuId, qty: schema.bhLines.qty, createdAt: schema.bhDocs.createdAt })
     .from(schema.bhLines)
     .innerJoin(schema.bhDocs, eq(schema.bhDocs.id, schema.bhLines.bhId))
-    .where(and(inArray(schema.bhLines.skuId, skuIds), gte(schema.bhDocs.createdAt, windowFrom), sql`${schema.bhDocs.status} <> 'void'`));
+    .where(and(inArray(schema.bhLines.skuId, skuIds), gte(schema.bhDocs.createdAt, windowFrom), lt(schema.bhDocs.createdAt, windowTo), sql`${schema.bhDocs.status} <> 'void'`));
   const po: { skuId: number; qty: string; createdAt: Date }[] = await db
     .select({ skuId: schema.poLines.skuId, qty: sql<string>`(${schema.poLines.qty} * ${schema.poLines.uomFactor})::text`, createdAt: schema.poDocs.createdAt })
     .from(schema.poLines)
     .innerJoin(schema.poDocs, eq(schema.poDocs.id, schema.poLines.poId))
-    .where(and(inArray(schema.poLines.skuId, skuIds), gte(schema.poDocs.createdAt, windowFrom), sql`${schema.poDocs.status} <> 'void'`));
-  const orders = [...bh, ...po];
+    .where(and(inArray(schema.poLines.skuId, skuIds), gte(schema.poDocs.createdAt, windowFrom), lt(schema.poDocs.createdAt, windowTo), sql`${schema.poDocs.status} <> 'void'`));
+  const ordersBySku = new Map<number, { qty: string; t: number }[]>();
+  for (const o of [...bh, ...po]) {
+    const arr = ordersBySku.get(o.skuId) ?? [];
+    arr.push({ qty: o.qty, t: new Date(o.createdAt).getTime() });
+    ordersBySku.set(o.skuId, arr);
+  }
 
   // 实际出库：实时仓流水（快照仓无流水 → 覆盖弃权）
   const realtime: { id: number }[] = await db.select({ id: schema.warehouses.id }).from(schema.warehouses).where(eq(schema.warehouses.accountingMode, "realtime"));
@@ -218,8 +228,14 @@ export async function getSuggestionAccuracy(dbArg?: AnyDb, opts?: { now?: Date; 
     ? await db
         .select({ skuId: l.skuId, qty: l.qtyDelta, at: l.occurredAt })
         .from(l)
-        .where(and(inArray(l.skuId, skuIds), inArray(l.warehouseId, realtimeIds), gte(l.occurredAt, windowFrom), lt(l.qtyDelta, "0")))
+        .where(and(inArray(l.skuId, skuIds), inArray(l.warehouseId, realtimeIds), gte(l.occurredAt, windowFrom), lt(l.occurredAt, windowTo), lt(l.qtyDelta, "0")))
     : [];
+  const outsBySku = new Map<number, { qty: string; t: number }[]>();
+  for (const o of outs) {
+    const arr = outsBySku.get(o.skuId) ?? [];
+    arr.push({ qty: o.qty, t: new Date(o.at).getTime() });
+    outsBySku.set(o.skuId, arr);
+  }
   const ledgerEver: { skuId: number }[] = realtimeIds.length
     ? await db.selectDistinct({ skuId: l.skuId }).from(l).where(and(inArray(l.skuId, skuIds), inArray(l.warehouseId, realtimeIds)))
     : [];
@@ -231,17 +247,15 @@ export async function getSuggestionAccuracy(dbArg?: AnyDb, opts?: { now?: Date; 
     const from = shanghaiStart(s.businessDate).getTime();
     const to = from + s.horizonDays * DAY_MS;
     let orderedQty = "0";
-    for (const o of orders) {
-      const t = new Date(o.createdAt).getTime();
-      if (o.skuId === s.skuId && t >= from && t < to) orderedQty = dAdd(orderedQty, o.qty, 4);
+    for (const o of ordersBySku.get(s.skuId) ?? []) {
+      if (o.t >= from && o.t < to) orderedQty = dAdd(orderedQty, o.qty, 4);
     }
     ordered[bucketOf(orderedQty, s.required)]++;
     if (!skuWithLedger.has(s.skuId)) { result.ledgerCoverage.snapshotOnly++; continue; }
     result.ledgerCoverage.withRealtimeLedger++;
     let outQty = "0";
-    for (const o of outs) {
-      const t = new Date(o.at).getTime();
-      if (o.skuId === s.skuId && t >= from && t < to) outQty = dSub(outQty, o.qty, 4);
+    for (const o of outsBySku.get(s.skuId) ?? []) {
+      if (o.t >= from && o.t < to) outQty = dSub(outQty, o.qty, 4);
     }
     outbound[bucketOf(outQty, s.required)]++;
   }
@@ -258,7 +272,7 @@ export type SuppressionOutcomeKey = (typeof SUPPRESSION_OUTCOME_KEYS)[number];
 export const SUPPRESSION_OUTCOME_LABELS: Record<SuppressionOutcomeKey, string> = {
   stockout_followed: "随后断货（抑制可能是错的）",
   no_stockout: "未断货（抑制看起来是对的）",
-  unverifiable: "无法核验（快照仓无流水）",
+  unverifiable: "无法核验（快照仓无流水 / 货仍在快照仓）",
 };
 
 export interface SuppressionOutcomeBucket {
@@ -288,6 +302,7 @@ export const SUPPRESSION_REVIEW_CALIBER = [
   "视野期 = 业务日起 decisionEnvelope.inputs.policy.horizonDays 天（缺失按 60）；只对视野期已走完的行判定",
   "断货判定与告警核验同源（jobs/alert-outcome 口径）：视野期内实时仓合计余额曾 ≤ 0 且窗口内有出库 = 随后断货；余额从未归零 = 未断货",
   "快照仓 SKU 在实时仓无流水，一律弃权计入「无法核验」，不当作「未断货」——把弃权算成成功正是抑制闸门最容易自我背书的地方",
+  "覆盖判定与告警结果核验同源（core/stockout-evidence）：该 SKU 在视野期内**仍有快照仓在库**时也弃权——实时仓流水覆盖不了那批货，水位会天然为负而误判「随后断货」",
   "只给分布与样本数，不给单一「抑制正确率」：断货可能另有原因（外部渠道需求、后续补货已到），一个分数会把这些歧义藏起来",
 ];
 
@@ -344,14 +359,35 @@ export async function getSuppressionReview(dbArg?: AnyDb, opts?: { now?: Date; l
   if (!matured.length) return result;
 
   const skuIds = [...new Set(matured.map((s) => s.skuId))];
-  const realtime: { id: number }[] = await db.select({ id: schema.warehouses.id }).from(schema.warehouses).where(eq(schema.warehouses.accountingMode, "realtime"));
-  const realtimeIds = realtime.map((w) => w.id);
+  /* 视野期窗口：本轮所有样本的 [最早业务日, 最晚视野期末)。
+     红队审计 A8：原实现把这批 SKU 的**全部 stock_ledger 历史**读进内存（无任何时间界），
+     每次页面加载都来一遍。现在窗口内的流水逐笔读、窗口之前的只读一个聚合期初，
+     判定结果逐字不变（期初 = 窗口前累计，本来就只被当成一个起始水位）。 */
+  const windowFromMs = matured.reduce((m, s) => Math.min(m, shanghaiStart(s.businessDate).getTime()), Number.POSITIVE_INFINITY);
+  const windowToMs = matured.reduce((m, s) => Math.max(m, shanghaiStart(s.businessDate).getTime() + s.horizonDays * DAY_MS), 0);
+  const windowFrom = new Date(windowFromMs);
+  const windowTo = new Date(windowToMs);
+
+  /* 覆盖判定与告警结果核验同一份实现（core/stockout-evidence）：
+     红队审计 A3——原实现 level 从 0 起算、只累计实时仓流水，
+     于是一个**收货进快照仓、只在实时仓发货**的 SKU 水位天生为负，恒判「随后断货」，
+     抑制闸门被系统性判成"错了"。现在该 SKU 一律弃权。 */
+  const coverage = await loadStockUniverseCoverage(db, { skuIds, asOf: windowTo });
+  const realtimeIds = coverage.realtimeWarehouseIds;
   const l = schema.stockLedger;
+  const opening: { skuId: number; qty: string | null }[] = realtimeIds.length
+    ? await db
+        .select({ skuId: l.skuId, qty: sql<string | null>`sum(${l.qtyDelta})` })
+        .from(l)
+        .where(and(inArray(l.skuId, skuIds), inArray(l.warehouseId, realtimeIds), lt(l.occurredAt, windowFrom)))
+        .groupBy(l.skuId)
+    : [];
+  const openingBySku = new Map<number, string>(opening.map((r) => [r.skuId, r.qty ?? "0"]));
   const moves: { skuId: number; qtyDelta: string; at: Date }[] = realtimeIds.length
     ? await db
         .select({ skuId: l.skuId, qtyDelta: l.qtyDelta, at: l.occurredAt })
         .from(l)
-        .where(and(inArray(l.skuId, skuIds), inArray(l.warehouseId, realtimeIds)))
+        .where(and(inArray(l.skuId, skuIds), inArray(l.warehouseId, realtimeIds), gte(l.occurredAt, windowFrom), lt(l.occurredAt, windowTo)))
         .orderBy(l.occurredAt, l.id)
     : [];
   const bySku = new Map<number, { qtyDelta: string; t: number }[]>();
@@ -362,14 +398,15 @@ export async function getSuppressionReview(dbArg?: AnyDb, opts?: { now?: Date; l
   }
 
   for (const s of matured) {
-    const rows = bySku.get(s.skuId);
     const from = shanghaiStart(s.businessDate).getTime();
     const to = from + s.horizonDays * DAY_MS;
     let key: SuppressionOutcomeKey;
-    if (!rows || rows.length === 0) {
-      key = "unverifiable"; // 快照仓 SKU：没有流水就没有证据，弃权而不是判「没断货」
+    const cov = classifyLedgerCoverage(s.skuId, coverage);
+    if (!cov.covered) {
+      key = "unverifiable"; // 无实时流水 / 货还在快照仓：没有能覆盖这批货的证据，弃权而不是判「没断货」
     } else {
-      let level = "0";
+      const rows = bySku.get(s.skuId) ?? [];
+      let level = openingBySku.get(s.skuId) ?? "0";
       for (const m of rows) if (m.t < from) level = dAdd(level, m.qtyDelta, 4);
       let minLevel = level;
       let outQty = "0";
@@ -396,13 +433,42 @@ export async function countDeclinedSuggestions(dbArg?: AnyDb): Promise<number> {
   return Number(row?.n ?? 0);
 }
 
+/**
+ * 闭环页读模型的**请求级记忆**（红队审计 A8）。
+ *
+ * getClosedLoop 每次调用都要跑：全量 draft_bh/first_order_draft 审计 + BH/WO/JG/SH 追溯
+ * + getSuggestionAccuracy + getSuppressionReview（两者各自还要读一段流水），
+ * 而这些数据一天之内不会变几次。缺省**不记忆**（测试与写后读一致性优先，与 workbench/focus 同纪律），
+ * 由路由显式传 `memoMs: CLOSED_LOOP_MEMO_MS` 打开——记忆是进程内的，不落 report_read_model_cache，
+ * 因此不需要 /vN 缓存键（口径改了随进程重启自然失效，不会把新线索藏在旧行里）。
+ */
+export const CLOSED_LOOP_MEMO_MS = 60_000;
+const closedLoopMemo = new WeakMap<object, Map<string, { at: number; value: Promise<ClosedLoopResult> }>>();
+
 export async function getClosedLoop(
   query: { page?: number; pageSize?: number },
   dbArg?: AnyDb,
+  opts?: { memoMs?: number },
 ): Promise<ClosedLoopResult> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const page = Math.max(1, query.page ?? 1);
   const pageSize = Math.min(500, Math.max(1, query.pageSize ?? 20));
+  const memoMs = opts?.memoMs ?? 0;
+  if (memoMs > 0) {
+    const memoKey = `${page}|${pageSize}`;
+    const perDb = closedLoopMemo.get(db as object) ?? new Map<string, { at: number; value: Promise<ClosedLoopResult> }>();
+    closedLoopMemo.set(db as object, perDb);
+    const hit = perDb.get(memoKey);
+    if (hit && Date.now() - hit.at < memoMs) return hit.value;
+    const value = computeClosedLoop(db, page, pageSize);
+    perDb.set(memoKey, { at: Date.now(), value });
+    value.catch(() => perDb.delete(memoKey));
+    return value;
+  }
+  return computeClosedLoop(db, page, pageSize);
+}
+
+async function computeClosedLoop(db: AnyDb, page: number, pageSize: number): Promise<ClosedLoopResult> {
 
   const al = schema.auditLogs;
   const logs: { id: number; userId: number; action: string; after: unknown; createdAt: Date }[] = await db

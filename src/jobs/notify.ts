@@ -7,7 +7,8 @@
  *    应用发送一旦发起就不跨渠道自动回退，避免超时已送达后 webhook 再发一遍；
  *    仅应用未配置时使用 webhook，两者均未配置则标记 skipped；
  *  - channel=in_app：站内通知，直接标记 sent（前端从 notifications 表读）。
- * runExceptionNotify：把控制塔 critical/high 异常按天去重入队（每日一次推送到飞书/站内）。
+ * runExceptionNotify：把控制塔 critical/high 异常按天去重入队（每日一次推送到飞书/站内）；
+ *   打盹（例外"稍后处理"）只影响展示，不影响推送，也不推进"连续出现天数"（红队审计 A6）。
  *
  * 网络失败标记 failed（保留 error），下轮重试。全部 best-effort，绝不反噬业务。
  */
@@ -286,7 +287,13 @@ export async function runExceptionNotify(db: AnyDb): Promise<{ enqueued: number 
   const today = todayShanghai();
   const channel: NotifyInput["channel"] = isFeishuDeliveryConfigured() ? "feishu" : "in_app";
   let enqueued = 0;
-  const exceptions = await computeExceptions(db); // 与工作台控制塔/驾驶舱同源同口径
+  /* 红队审计 A6：**打盹不静音推送**（applySnooze:false），**推送也不推进"连续出现天数"**（recordShown:false）。
+     打盹在 workbench/exception-dismissals、打盹路由文案与页面上都定义为"只影响展示"，
+     而这里此前走的是同一条过滤：任一有权角色打盹 90 天，一条 critical 例外就 90 天不再推送——
+     那是静音，不是稍后处理，且没有任何一处文档这么承诺过。
+     recordShown 同理：定时任务每天跑一次，会把"连续出现天数"推成"这条例外存在了几天"，
+     而那个数字在页面上被当作"连续 N 天摆在人面前没人处理"来读。 */
+  const exceptions = await computeExceptions(db, { applySnooze: false, recordShown: false }); // 与工作台控制塔/驾驶舱同源同口径
   for (const ex of exceptions) {
     // 内容指纹：同一异常、同一措辞（含计数）→ 同一 key → 不重复入队
     const fingerprint = fnv1a(`${ex.title}|${ex.impact}`);

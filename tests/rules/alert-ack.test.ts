@@ -12,8 +12,15 @@ describe("ackResetOnRehit", () => {
     const justNow = new Date(NOW.getTime() - 60_000);
     expect(ackResetOnRehit({ ackedAt: justNow, prevSeverity: "medium", nextSeverity: "high", now: NOW })).toEqual({ reset: true, reason: "severity_up" });
     expect(ackResetOnRehit({ ackedAt: justNow, prevSeverity: "high", nextSeverity: "critical", now: NOW })).toEqual({ reset: true, reason: "severity_up" });
-    // 未知严重度视为最低档：从空升到 medium 也算升级
-    expect(ackResetOnRehit({ ackedAt: justNow, prevSeverity: null, nextSeverity: "medium", now: NOW }).reset).toBe(true);
+  });
+  it("红队 (b)：旧严重度为空 / 无法识别时按「未变化」处理，不得伪造一次升级把合法的知悉打回", () => {
+    const justNow = new Date(NOW.getTime() - 60_000);
+    // 历史行 severity 为空：第一次刷新不该清知悉（原实现 severityRank(null)=0，medium>0 判成升级）
+    expect(ackResetOnRehit({ ackedAt: justNow, prevSeverity: null, nextSeverity: "medium", now: NOW })).toEqual({ reset: false, reason: null });
+    expect(ackResetOnRehit({ ackedAt: justNow, prevSeverity: "weird", nextSeverity: "critical", now: NOW })).toEqual({ reset: false, reason: null });
+    // 但 stale_ack 仍照常兜底：知悉满 7 天还在命中，照样清
+    const sevenDays = new Date(NOW.getTime() - 7 * 86_400_000);
+    expect(ackResetOnRehit({ ackedAt: sevenDays, prevSeverity: null, nextSeverity: "medium", now: NOW })).toEqual({ reset: true, reason: "stale_ack" });
   });
   it("同级或降级：知悉 < 7 天保留；≥ 7 天清知悉（stale_ack）", () => {
     const sixDays = new Date(NOW.getTime() - 6 * 86_400_000);

@@ -11,7 +11,8 @@ import { clearExceptionSnooze, snoozeException } from "@/server/modules/workbenc
  *
  * POST body { exceptionKey, until: "YYYY-MM-DD", note }  → 打盹到 until（含当日）
  * DELETE ?key=<exceptionKey>                              → 提前恢复显示
- * 只影响展示：不改任何告警状态、不动待办、不参与记账。
+ * 只影响展示：不改任何告警状态、不动待办、不参与记账，**也不会静音推送**——
+ * 定时推送（jobs/notify.runExceptionNotify）拿的是未过滤清单（红队审计 A6）。
  */
 const SNOOZE_ROLES = ["pmc", "purchasing", "ops", "warehouse"] as const;
 

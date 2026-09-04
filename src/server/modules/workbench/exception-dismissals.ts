@@ -5,13 +5,15 @@
  * 也没人答得出"这条连续出现 40 天、从来没人点过"。本模块补上这份记忆（表 exception_dismissals）：
  *  - `snoozeException`：按上海日打盹到某天（含当天仍隐藏）+ 必填原因备注 → 同事务写审计；
  *  - `clearExceptionSnooze`：提前恢复显示 → 同事务写审计；
- *  - `recordExceptionsShown`：算出例外时推进"连续出现天数"（一次批量 upsert，按上海日幂等）；
+ *  - `recordExceptionsShown`：**人真的看到例外时**推进"连续出现天数"（一次批量 upsert，按上海日幂等）；
+ *    定时任务不推进（recordShown:false），否则这个数量的是"例外存在了几天"而不是"有人看了几天"；
  *  - `loadExceptionMemory`：读打盹状态与连续天数，供 computeExceptions 过滤与标注。
  *
  * 纪律：
  *  - **打盹是全局的**（控制塔是全员同一块板，不是个人收件箱）：因此它是业务写路径，
  *    必须回查会话（路由用 getFreshSessionUser）并在同一事务写 audit_logs；
- *  - 只影响展示：不改告警状态、不动待办、不参与任何记账；
+ *  - 只影响展示：不改告警状态、不动待办、不参与任何记账，**也不静音飞书/站内推送**——
+ *    推送路径 computeExceptions(applySnooze:false)（红队审计 A6：打盹不是静音，90 天不推才是掩埋）；
  *  - 例外键只接受 `EXCEPTION_KEYS` 白名单——computeExceptions 之外的键写进来只会变成
  *    永远不会被消费的垃圾行（"能存进去"不等于"有意义"）；
  *  - 打盹上限 `MAX_SNOOZE_DAYS` 天：无限期打盹等于删除，那不是打盹是掩埋。

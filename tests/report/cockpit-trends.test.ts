@@ -134,9 +134,10 @@ describe("驾驶舱趋势块 · 纯装配函数", () => {
     expect(Object.keys(b)).not.toEqual(expect.arrayContaining(["precisionPct", "overallPrecision"]));
   });
 
-  it("待办完成率严口径：来源自动关闭的取消留在分母；按月 / 按角色 / 合计三层同口径；分母 0 → null", () => {
+  it("待办完成率严口径：来源关闭（自动/人工）的取消都留在分母；按月 / 按角色 / 合计三层同口径；分母 0 → null", () => {
     const row = (month: string, groupKey: string, o: Partial<TodoStatsRow>): TodoStatsRow => ({
-      groupKey, groupLabel: groupKey, month, total: 0, done: 0, onTime: 0, overdue: 0, cancelled: 0, cancelledBySourceClose: 0, cancelledByHuman: 0,
+      groupKey, groupLabel: groupKey, month, total: 0, done: 0, onTime: 0, overdue: 0, cancelled: 0,
+      cancelledBySourceClose: 0, cancelledBySourceManualClose: 0, cancelledByHuman: 0,
       suspicious: 0, completionRate: null, completionRateStrict: null, onTimeRate: null, ...o,
     });
     const rows = [
@@ -147,6 +148,12 @@ describe("驾驶舱趋势块 · 纯装配函数", () => {
     const b = buildTodoCompletionStrict(rows, ["2026-08", "2026-09"], "c");
     // 2026-08：宽 3 ÷ (6 − 2) = 75；严 3 ÷ (6 − 1) = 60
     expect(b.byMonth[0]).toMatchObject({ key: "2026-08", total: 6, done: 3, cancelled: 2, cancelledBySourceClose: 1, cancelledByHuman: 1, completionRate: 75, completionRateStrict: 60, gapPp: 15 });
+    // 红队 A7：同样一条取消，若来自"人工关闭来源告警"，严口径分母不再被减掉（3 ÷ 6 = 50）
+    const viaManualSourceClose = buildTodoCompletionStrict(
+      [row("2026-08", "pmc", { total: 4, done: 1, cancelled: 2, cancelledBySourceClose: 1, cancelledBySourceManualClose: 1 }), row("2026-08", "purchasing", { total: 2, done: 2 })],
+      ["2026-08"], "c",
+    );
+    expect(viaManualSourceClose.byMonth[0]).toMatchObject({ cancelledBySourceManualClose: 1, cancelledByHuman: 0, completionRate: 75, completionRateStrict: 50 });
     expect(b.byMonth[1]).toMatchObject({ key: "2026-09", completionRate: 100, completionRateStrict: 100, gapPp: 0 });
     expect(b.byRole.map((r) => r.key)).toEqual(["pmc", "purchasing"]);
     // pmc：宽 4 ÷ 5 = 80；严 4 ÷ 6 = 66.7
@@ -382,13 +389,18 @@ describe("驾驶舱趋势块 · PGlite 装配", () => {
 
       const ts = t.screens.s4.todoCompletionStrict;
       expect(ts.state).toBe("ready");
-      // 宽 1 ÷ (4 − 2) = 50；严 1 ÷ (4 − 1) = 33.3
-      expect(ts.data!.overall).toMatchObject({ total: 4, done: 1, cancelled: 2, cancelledBySourceClose: 1, cancelledByHuman: 1, completionRate: 50, completionRateStrict: 33.3, gapPp: 16.7 });
+      /* 红队 A7：来源被**人工**关闭而取消的待办自成一桶，且留在严口径分母——
+         宽 1 ÷ (4 − 2) = 50；严 1 ÷ (4 − 0) = 25（原来它并进 cancelledByHuman，严口径能被抬到 33.3）。 */
+      expect(ts.data!.overall).toMatchObject({
+        total: 4, done: 1, cancelled: 2, cancelledBySourceClose: 1, cancelledBySourceManualClose: 1, cancelledByHuman: 0,
+        completionRate: 50, completionRateStrict: 25, gapPp: 25,
+      });
       expect(ts.data!.byRole.map((r) => r.key)).toEqual(["pmc"]);
       expect(ts.data!.months).toHaveLength(6);
       expect(ts.note).toContain("不排名");
+      expect(ts.note).toContain("人工关闭来源告警");
       // 宽口径块与严口径块同源同数
-      expect(t.screens.s4.todoThroughput.data!.rows.find((r) => r.groupKey === "pmc")).toMatchObject({ total: 4, cancelledBySourceClose: 1, cancelledByHuman: 1, completionRate: 50, completionRateStrict: 33.3 });
+      expect(t.screens.s4.todoThroughput.data!.rows.find((r) => r.groupKey === "pmc")).toMatchObject({ total: 4, cancelledBySourceClose: 1, cancelledBySourceManualClose: 1, cancelledByHuman: 0, completionRate: 50, completionRateStrict: 25 });
     } finally {
       await client.close();
     }

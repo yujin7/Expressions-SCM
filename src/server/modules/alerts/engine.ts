@@ -18,12 +18,23 @@ import { ackResetOnRehit } from "@/server/rules/alert-ack";
  *                               下个周期不再命中不代表它被处理了，只能人工带原因关闭）。
  * - 已知悉：人工 ackAlert 只记 acked_by/acked_at，不改 status（事实闭环仍由引擎判定），写审计。
  *   再命中时按 rules/alert-ack 决定是否清知悉（严重度升级 / 知悉 ≥ 7 天仍命中）——审计 A3(2)。
+ *   清知悉本身也是历史事实，必须落 alert_events(ack_reset, note=原因)，否则台账重建不出"谁的知悉被系统撤了"。
  * - 解释载荷（审计 #4）：候选可带 why[]（label/value/source），引擎原样落进 paramsSnapshot.why——
  *   与 sourceRule/paramsSnapshot 同行持久化，页面按自身授权展示；通知正文不带。
- * - 人工关闭抑制（审计 #10）：suppressManuallyClosedDays 指定时，同 dedupeKey 在 N 天内被人工关闭
- *   （autoResolved=false）的不重开（条件在窗口内恒成立的告警类别用，如 transfer_cost）。
+ * - **人工关闭抑制是引擎默认策略**（红队审计 A2 起从「按需 opt-in」改为「默认生效」）：
+ *   同 dedupeKey 在 `suppressManuallyClosedDays`（缺省 DEFAULT_MANUAL_CLOSE_SUPPRESS_DAYS = 30）天内
+ *   被人工关闭（autoResolved=false）的候选不重开，计入 suppressed。
+ *   为什么改默认：此前只有 transfer_cost 一个看门狗传了这个参数，其余 8 个类别的人工关闭
+ *   下一次 cron 就被推翻——用户点「误报 / 不处理」并写了原因，第二天原样复活；
+ *   data_quality 这类「永不自动关闭、只能人工关」的类别整个设计都建立在人工关闭能生效上。
+ *   关闭原因决定是否抑制（原因取该告警最后一条 alert_events(close) 的 reason_code）：
+ *     false_positive / wont_fix / manual → **抑制**：人已经看过并作了「不必再报」的判断；
+ *     fixed                              → **不抑制**：修好的条件如果重现，那是**新事实**，必须再报；
+ *     superseded                         → 不抑制：说是被更新的告警接管，可同键仍在命中就说明没被接管，宁可再报；
+ *     无 close 事件（历史行、直接改库）    → 抑制：保守按"人处理过"对待，与本参数引入时的行为一致。
+ *   调用方可覆盖窗口（如 transfer_cost 用 180 天），传 0 或 null 则彻底关闭抑制。
  * - 系统告警属系统写入（沿用既有看门狗先例不写审计）；ackAlert 是业务写路径，必须 writeAudit。
- * - 事件台账（闭环审计 #2）：open / refresh(每上海日一条) / close(auto_hysteresis) 由引擎追加到 alert_events；
+ * - 事件台账（闭环审计 #2）：open / refresh(每上海日一条) / ack_reset / close(auto_hysteresis) 由引擎追加到 alert_events；
  *   ack / close(人工原因) 与审计同事务追加。台账只追加（触发器），幂等键防重复落账；引擎不因台账失败回滚告警状态以外的任何事。
  */
 export interface AlertWhy {
@@ -92,32 +103,89 @@ export async function appendAlertEvents(db: AnyDb, rows: readonly AlertEventInpu
 }
 
 /**
+ * 去重键形状与 refKey 一致（`<category>:<refKey>`）的类别白名单——**回填的唯一准入名单**。
+ *
+ * 红队审计 (d)：回填此前**无条件**按 `category:refKey` 拼键，而 inventory_cover 的真实键是
+ * `inventory_cover:<skuId>`、sales_spike 的是 `sales_spike:sku:<skuId>` / `sales_spike:platform:<shop>|<psku>`。
+ * 对这两个类别跑一次回填，会把历史行批量打上**永远不会被候选命中**的错键：
+ * 既骗过 uq_alert_open_dedupe、又让人工关闭抑制按错键查找。因此白名单外的类别一律拒绝执行，
+ * 除非调用方显式传入自己的 `buildKey`（形状由调用方负责，与其候选构造同源）。
+ */
+export const REF_KEY_DEDUPE_CATEGORIES: readonly string[] = [
+  "data_freshness", "doc_aging", "integration_token", "job_failure",
+  "data_product_gate", "data_quality", "transfer_cost", "snapshot_quality",
+];
+
+/**
  * 一次性回填历史行的 dedupe_key（引擎接入前的手写告警没有去重键）。
  *
- * 幂等：只动 dedupe_key IS NULL 的行。
+ * 幂等：只动 dedupe_key IS NULL 且 ref_key 非空的行。
  * - open 行：同 ref_key 只补 id 最小的一条（uq_alert_open_dedupe 部分唯一索引不允许两条 open 同键；
- *   多余的 open 行留空键，交给引擎迟滞关闭）；
+ *   多余的 open 行留空键，交给引擎迟滞关闭），且目标键未被别的 open 行占用；
  * - 非 open 行：全部补（让人工关闭抑制 suppressManuallyClosedDays 对历史关闭也生效）。
  *
- * 各看门狗迁移到 upsertAlerts 时在 run 开头调用一次；键格式与候选一致：`<category>:<refKey>`。
+ * 键构造：缺省 `<category>:<refKey>`，且**只对 REF_KEY_DEDUPE_CATEGORIES 内的类别生效**；
+ * 其他类别必须传 `opts.buildKey`（与该看门狗候选的 dedupeKey 同一份构造），否则抛错拒绝执行。
  * 返回本轮回填行数（open + 已关闭）。
  */
-export async function backfillAlertDedupeKeys(dbArg: AnyDb, category: string): Promise<number> {
+export async function backfillAlertDedupeKeys(
+  dbArg: AnyDb,
+  category: string,
+  opts?: { buildKey?: (refKey: string) => string },
+): Promise<number> {
+  if (!opts?.buildKey && !REF_KEY_DEDUPE_CATEGORIES.includes(category)) {
+    throw new Error(
+      `拒绝回填 dedupe_key：类别 ${category} 的去重键形状不是 <category>:<refKey>，`
+      + "请传入 opts.buildKey（与该看门狗候选同一份键构造），否则会把历史行批量打上错键",
+    );
+  }
+  const buildKey = opts?.buildKey ?? ((refKey: string) => `${category}:${refKey}`);
   const db = await resolveDb(dbArg);
-  const openRes = await db.execute(sql`
-    UPDATE system_alerts a SET dedupe_key = ${category} || ':' || a.ref_key
-    WHERE a.category = ${category} AND a.status = 'open' AND a.dedupe_key IS NULL AND a.ref_key IS NOT NULL
-      AND a.id = (SELECT min(b.id) FROM system_alerts b WHERE b.category = a.category AND b.status = 'open' AND b.ref_key = a.ref_key)
-      AND NOT EXISTS (SELECT 1 FROM system_alerts c WHERE c.category = a.category AND c.status = 'open' AND c.dedupe_key = ${category} || ':' || a.ref_key)`);
-  const closedRes = await db.execute(sql`
-    UPDATE system_alerts SET dedupe_key = ${category} || ':' || ref_key
-    WHERE category = ${category} AND status <> 'open' AND dedupe_key IS NULL AND ref_key IS NOT NULL`);
-  const n = (r: unknown): number => {
-    const v = (r as { rowCount?: unknown; affectedRows?: unknown } | null);
-    const c = Number(v?.rowCount ?? v?.affectedRows ?? 0);
-    return Number.isFinite(c) ? c : 0;
-  };
-  return n(openRes) + n(closedRes);
+  const rows: { id: number; refKey: string | null; dedupeKey: string | null; status: string }[] = await db
+    .select({
+      id: schema.systemAlerts.id, refKey: schema.systemAlerts.refKey,
+      dedupeKey: schema.systemAlerts.dedupeKey, status: schema.systemAlerts.status,
+    })
+    .from(schema.systemAlerts)
+    .where(eq(schema.systemAlerts.category, category))
+    .orderBy(schema.systemAlerts.id);
+
+  // open 行同 ref_key 只补最早一条；已被别的 open 行占用的键不再抢（部分唯一索引不允许同键两条 open）
+  const firstOpenIdByRefKey = new Map<string, number>();
+  const takenOpenKeys = new Set<string>();
+  for (const r of rows) {
+    if (r.status !== "open") continue;
+    if (r.dedupeKey) takenOpenKeys.add(r.dedupeKey);
+    if (r.refKey && !firstOpenIdByRefKey.has(r.refKey)) firstOpenIdByRefKey.set(r.refKey, r.id);
+  }
+
+  let n = 0;
+  for (const r of rows) {
+    if (r.dedupeKey != null || !r.refKey) continue;
+    const key = buildKey(r.refKey);
+    if (r.status === "open") {
+      if (firstOpenIdByRefKey.get(r.refKey) !== r.id) continue;
+      if (takenOpenKeys.has(key)) continue;
+      takenOpenKeys.add(key);
+    }
+    await db.update(schema.systemAlerts).set({ dedupeKey: key }).where(eq(schema.systemAlerts.id, r.id));
+    n++;
+  }
+  return n;
+}
+
+/** 人工关闭抑制的缺省窗口（天）——引擎默认策略，调用方可覆盖或传 0/null 关闭 */
+export const DEFAULT_MANUAL_CLOSE_SUPPRESS_DAYS = 30;
+
+/** 这些关闭原因**不**抑制重开：条件重现是新事实（fixed）/ 声称被接管但同键仍在命中（superseded） */
+export const NON_SUPPRESSING_CLOSE_REASONS: ReadonlySet<string> = new Set(["fixed", "superseded"]);
+
+/** 迟滞自动关闭的台账说明——按本类别的实际策略写，不再对 autoCloseAfterDays=0 谎称"连续 0 天未命中" */
+export function autoCloseNote(autoCloseAfterDays: number | null | undefined): string {
+  const days = autoCloseAfterDays ?? 3;
+  return days <= 0
+    ? "本轮不再命中，引擎即刻关闭（该类别为硬事实，无迟滞）"
+    : `连续 ${days} 天未命中，引擎迟滞关闭`;
 }
 
 export async function upsertAlerts(
@@ -133,8 +201,12 @@ export async function upsertAlerts(
      *   下个周期不再命中不等于它被处理了——只能由人工带原因关闭）。
      */
     autoCloseAfterDays?: number | null;
-    /** 同 dedupeKey 在 N 天内被人工关闭（autoResolved=false）则不重开；缺省不抑制 */
-    suppressManuallyClosedDays?: number;
+    /**
+     * 同 dedupeKey 在 N 天内被人工关闭（autoResolved=false，且关闭原因不是 fixed）则不重开。
+     * **缺省 DEFAULT_MANUAL_CLOSE_SUPPRESS_DAYS（30 天）——抑制是引擎默认行为**；
+     * 传 0 或 null 显式关闭抑制（只有"人工关闭本就不该黏住"的类别才这么做）。
+     */
+    suppressManuallyClosedDays?: number | null;
     /** 已知悉再命中多少天后清知悉（rules/alert-ack，缺省 7） */
     ackResetAfterDays?: number;
   },
@@ -152,19 +224,32 @@ export async function upsertAlerts(
     .where(and(eq(schema.systemAlerts.category, input.category), eq(schema.systemAlerts.status, "open")));
   const openByKey = new Map(open.filter((o) => o.dedupeKey).map((o) => [o.dedupeKey as string, o]));
 
-  // 人工关闭抑制：窗口内被人关掉的同键不重开（条件恒成立的类别否则每次 cron 都重开）
-  const suppressDays = input.suppressManuallyClosedDays;
+  // 人工关闭抑制（默认生效）：窗口内被人关掉的同键不重开，除非关闭原因是 fixed（修好的条件重现是新事实）
+  const suppressDays = input.suppressManuallyClosedDays ?? DEFAULT_MANUAL_CLOSE_SUPPRESS_DAYS;
   const manuallyClosed = new Set<string>();
-  if (suppressDays != null && suppressDays > 0) {
+  if (suppressDays > 0) {
     const since = new Date(now.getTime() - suppressDays * 24 * 60 * 60 * 1000);
-    const rows: { dedupeKey: string | null }[] = await db
-      .select({ dedupeKey: schema.systemAlerts.dedupeKey })
+    const rows: { id: number; dedupeKey: string | null }[] = await db
+      .select({ id: schema.systemAlerts.id, dedupeKey: schema.systemAlerts.dedupeKey })
       .from(schema.systemAlerts)
       .where(and(
         eq(schema.systemAlerts.category, input.category), eq(schema.systemAlerts.status, "resolved"),
         eq(schema.systemAlerts.autoResolved, false), sql`${schema.systemAlerts.resolvedAt} >= ${since.toISOString()}::timestamptz`,
       ));
-    for (const r of rows) if (r.dedupeKey) manuallyClosed.add(r.dedupeKey);
+    const keyed = rows.filter((r) => r.dedupeKey);
+    if (keyed.length) {
+      // 关闭原因取该告警最后一条 close 事件；查不到（历史行/直接改库）按"抑制"保守处理
+      const reasons = new Map<number, string | null>();
+      const closes: { alertId: number; reasonCode: string | null }[] = await db
+        .select({ alertId: schema.alertEvents.alertId, reasonCode: schema.alertEvents.reasonCode })
+        .from(schema.alertEvents)
+        .where(and(eq(schema.alertEvents.event, "close"), inArray(schema.alertEvents.alertId, keyed.map((r) => r.id))))
+        .orderBy(schema.alertEvents.id);
+      for (const c of closes) reasons.set(c.alertId, c.reasonCode);
+      for (const r of keyed) {
+        if (!NON_SUPPRESSING_CLOSE_REASONS.has(reasons.get(r.id) ?? "")) manuallyClosed.add(r.dedupeKey as string);
+      }
+    }
   }
 
   let opened = 0, refreshed = 0, suppressed = 0, ackReset = 0;
@@ -177,14 +262,30 @@ export async function upsertAlerts(
     const existing = openByKey.get(c.dedupeKey);
     if (existing) {
       const ack = ackResetOnRehit({ ackedAt: existing.ackedAt, prevSeverity: existing.severity, nextSeverity: c.severity, now, resetAfterDays: input.ackResetAfterDays });
-      await db.update(schema.systemAlerts).set({
+      // status='open' 守卫（红队 A5）：与自动关闭同一条纪律——本轮开跑后落地的人工关闭不得被刷新覆盖
+      const [touched]: { id: number }[] = await db.update(schema.systemAlerts).set({
         title: c.title, detail: c.detail ?? null, severity: c.severity, ownerRole: c.ownerRole ?? null,
         actionHref: c.actionHref ?? null, sourceRule: c.sourceRule ?? null, paramsSnapshot: snapshotWith(c), lastHitAt: now,
         ...(ack.reset ? { ackedAt: null, ackedBy: null } : {}),
-      }).where(eq(schema.systemAlerts.id, existing.id));
+      }).where(and(eq(schema.systemAlerts.id, existing.id), eq(schema.systemAlerts.status, "open")))
+        .returning({ id: schema.systemAlerts.id });
+      if (!touched) continue; // 中途被人工关闭：不计刷新、不落刷新事件（下一轮按新事实重开或被抑制）
       refreshed++;
-      if (ack.reset) ackReset++;
       events.push({ alertId: existing.id, event: "refresh", at: now, idempotencyKey: `${existing.id}:refresh:${day}` });
+      if (ack.reset) {
+        ackReset++;
+        events.push({
+          alertId: existing.id, event: "ack_reset", at: now, actorId: null,
+          note: ack.reason === "severity_up"
+            ? `严重度升级（${existing.severity ?? "—"} → ${c.severity}），系统清除已知悉`
+            : `已知悉后仍持续命中 ≥ ${input.ackResetAfterDays ?? 7} 天，系统清除已知悉`,
+          evidenceRef: {
+            reason: ack.reason, prevSeverity: existing.severity, nextSeverity: c.severity,
+            ackedAt: existing.ackedAt ? new Date(existing.ackedAt).toISOString() : null,
+          },
+          idempotencyKey: `${existing.id}:ack_reset:${day}`,
+        });
+      }
     } else {
       if (manuallyClosed.has(c.dedupeKey)) { suppressed++; continue; } // 人工已处理，窗口内不重开
       // 部分唯一索引 uq_alert_open_dedupe(category, dedupe_key) WHERE status='open'：
@@ -212,21 +313,28 @@ export async function upsertAlerts(
     // 已消失的条件会被判成"还没到迟滞时间"而永远关不掉。
     .filter((o) => closeAfterMs <= 0 || now.getTime() - new Date(o.lastHitAt ?? o.createdAt).getTime() >= closeAfterMs)
     .map((o) => o.id);
+  /* status='open' 守卫 + RETURNING（红队 A5）：本轮开跑后落地的**人工关闭**不得被自动关闭覆盖——
+     覆盖会把 autoResolved 翻成 true，于是人工关闭抑制失效、待办从严口径分母里溜走、
+     台账再多写一条 close。只对真正被本次 UPDATE 改到的行落 close 事件。 */
+  let autoClosed = 0;
   if (toClose.length) {
-    await db.update(schema.systemAlerts).set({ status: "resolved", autoResolved: true, resolvedAt: now })
-      .where(inArray(schema.systemAlerts.id, toClose));
-    for (const id of toClose) {
+    const closed: { id: number }[] = await db.update(schema.systemAlerts)
+      .set({ status: "resolved", autoResolved: true, resolvedAt: now })
+      .where(and(inArray(schema.systemAlerts.id, toClose), eq(schema.systemAlerts.status, "open")))
+      .returning({ id: schema.systemAlerts.id });
+    autoClosed = closed.length;
+    for (const r of closed) {
       events.push({
-        alertId: id, event: "close", at: now, reasonCode: "auto_hysteresis",
-        note: `连续 ${input.autoCloseAfterDays ?? 3} 天未命中，引擎迟滞关闭`,
-        idempotencyKey: `${id}:close:${now.toISOString()}`,
+        alertId: r.id, event: "close", at: now, reasonCode: "auto_hysteresis",
+        note: autoCloseNote(input.autoCloseAfterDays),
+        idempotencyKey: `${r.id}:close`,
       });
     }
   }
   await appendAlertEvents(db, events);
   const [still] = await db.select({ n: sql<number>`count(*)::int` }).from(schema.systemAlerts)
     .where(and(eq(schema.systemAlerts.category, input.category), eq(schema.systemAlerts.status, "open")));
-  return { opened, refreshed, autoClosed: toClose.length, stillOpen: Number(still?.n ?? 0), suppressed, ackReset };
+  return { opened, refreshed, autoClosed, stillOpen: Number(still?.n ?? 0), suppressed, ackReset };
 }
 
 /** 人工「已知悉」：写 acked_by/acked_at + 审计；status 不变（事实闭环归引擎） */
@@ -243,8 +351,11 @@ export async function ackAlert(actor: SessionUser, alertId: number, dbArg?: AnyD
       userId: actor.id, entity: "system_alert", entityId: alertId, action: "ack",
       before: { ackedBy: row.ackedBy, ackedAt: row.ackedAt }, after: { ackedBy: actor.id, ackedAt: now.toISOString(), note: note ?? null },
     });
+    /* 幂等键必须稳定（红队 e）：原来嵌 now.toISOString()，每次调用都是新键——
+       "幂等键"反而保证了重复落账。同一告警同一上海日的重复知悉只记一条；
+       跨日再次知悉（清知悉后重新 ack）仍是新事实，落新的一条。 */
     await appendAlertEvents(tx, [{
-      alertId, event: "ack", at: now, actorId: actor.id, note: note ?? null, idempotencyKey: `${alertId}:ack:${now.toISOString()}`,
+      alertId, event: "ack", at: now, actorId: actor.id, note: note ?? null, idempotencyKey: `${alertId}:ack:${alertEventDay(now)}`,
     }]);
     return { id: alertId, ackedAt: now.toISOString() };
   });
@@ -289,9 +400,11 @@ export async function closeAlert(
       before: { status: row.status, autoResolved: row.autoResolved, resolvedAt: row.resolvedAt },
       after: { status: "resolved", autoResolved: false, resolvedAt: now.toISOString(), reasonCode: reason, note: trimmedNote },
     });
+    /* 幂等键稳定（红队 e）：一条告警只会被关闭一次（上面的 status='open' 守卫保证），
+       所以 `${alertId}:close` 就是它的自然键——重放同一次关闭不会再落一条。 */
     await appendAlertEvents(tx, [{
       alertId, event: "close", at: now, actorId: actor.id, reasonCode: reason, note: trimmedNote,
-      idempotencyKey: `${alertId}:close:${now.toISOString()}`,
+      idempotencyKey: `${alertId}:close`,
     }]);
     return { id: alertId, resolvedAt: now.toISOString(), reasonCode: reason };
   });

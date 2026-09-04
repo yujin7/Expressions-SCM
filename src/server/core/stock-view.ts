@@ -10,7 +10,7 @@
  * 返回 decimal 字符串（不丢精度）；展示层自行 Number()。
  * 注意：本模块只读，不参与过账；过账仍只经 posting/registry。
  */
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, lte, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { dAdd } from "@/server/core/decimal";
 
@@ -32,16 +32,22 @@ export interface OnHandView {
 }
 
 /** 快照仓「每 (仓,SKU) 最新一期」原始行——唯一实现。
- *  消费方按需自行聚合：按 SKU 汇总（getOnHandBySku）、按仓分布（驾驶舱）、单 SKU 明细（全景）。 */
+ *  消费方按需自行聚合：按 SKU 汇总（getOnHandBySku）、按仓分布（驾驶舱）、单 SKU 明细（全景）。
+ *  `asOf`（YYYY-MM-DD）限定"截至某日的最新一期"——回看类任务（告警结果核验、抑制复核）
+ *  要的是**当时**那个在库口径，不是今天的。 */
 export async function getLatestSnapshotRows(
   db: AnyDb,
-  opts: { skuIds?: number[]; finishedOnly?: boolean } = {},
+  opts: { skuIds?: number[]; finishedOnly?: boolean; asOf?: string } = {},
 ): Promise<{ warehouseId: number; skuId: number; qty: string; bizDate: string }[]> {
   const s = schema.stockSnapshots;
   let latestQ = db
     .select({ warehouseId: s.warehouseId, skuId: s.skuId, maxDate: sql<string>`max(${s.bizDate})`.as("max_date") })
     .from(s);
-  if (opts.skuIds) latestQ = latestQ.where(inArray(s.skuId, opts.skuIds));
+  const latestConds = [
+    ...(opts.skuIds ? [inArray(s.skuId, opts.skuIds)] : []),
+    ...(opts.asOf ? [lte(s.bizDate, opts.asOf)] : []),
+  ];
+  if (latestConds.length) latestQ = latestQ.where(and(...latestConds));
   const latest = latestQ.groupBy(s.warehouseId, s.skuId).as("latest");
 
   let q = db

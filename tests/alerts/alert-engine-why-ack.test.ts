@@ -2,7 +2,8 @@
  * 预警引擎增量（审计 #4 / #10 / A3(2)）：
  * - why[] 落 paramsSnapshot.why（开新与刷新都写）；
  * - 已知悉再命中：严重度升级立即清知悉；同级 ≥ 7 天清知悉；< 7 天保留；
- * - suppressManuallyClosedDays：窗口内人工关闭的同键不重开（自动关闭的照常重开）。
+ * - suppressManuallyClosedDays：窗口内人工关闭的同键不重开（自动关闭的照常重开）；
+ *   红队审计 A2 起**抑制是引擎默认行为**（缺省 30 天），传 0 才关掉；关闭原因 fixed 不抑制。
  */
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
@@ -77,9 +78,67 @@ describe("预警引擎：人工关闭抑制", () => {
       expect(r).toMatchObject({ opened: 3, suppressed: 1, refreshed: 0 });
       const open = await db.select({ refKey: schema.systemAlerts.refKey }).from(schema.systemAlerts).where(eq(schema.systemAlerts.status, "open"));
       expect(open.map((o) => o.refKey).sort()).toEqual(["N", "O", "S"]);
-      // 未启用抑制：M 也会开
-      const r2 = await upsertAlerts(db, { category: "sup_cat", candidates: [cand("M")], now: new Date(now.getTime() + 3600_000), autoCloseAfterDays: 99 });
+      // 显式传 0 才是"不抑制"：M 会重开（红队 A2 之前，不传参数就等于不抑制）
+      const r2 = await upsertAlerts(db, { category: "sup_cat", candidates: [cand("M")], now: new Date(now.getTime() + 3600_000), autoCloseAfterDays: 99, suppressManuallyClosedDays: 0 });
       expect(r2).toMatchObject({ opened: 1, suppressed: 0 });
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+describe("预警引擎：人工关闭抑制是默认策略（红队审计 A2）", () => {
+  it("不传 suppressManuallyClosedDays 也抑制（缺省 30 天）：wont_fix 不重开、fixed 重开、超窗口重开", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const now = new Date("2026-09-04T03:00:00.000Z");
+      const day = 24 * 3600 * 1000;
+      const seed = async (refKey: string, reason: string | null, closedDaysAgo: number) => {
+        const [row] = await db.insert(schema.systemAlerts).values({
+          category: "def_cat", refKey, dedupeKey: `t:${refKey}`, title: `人工关 ${refKey}`, severity: "high",
+          status: "resolved", autoResolved: false, resolvedAt: new Date(now.getTime() - closedDaysAgo * day),
+        }).returning({ id: schema.systemAlerts.id });
+        if (reason) {
+          await db.insert(schema.alertEvents).values({
+            alertId: row.id, event: "close", at: new Date(now.getTime() - closedDaysAgo * day),
+            reasonCode: reason, idempotencyKey: `${row.id}:close`,
+          });
+        }
+        return row.id;
+      };
+      await seed("W", "wont_fix", 3);        // 不处理 → 抑制
+      await seed("F", "false_positive", 3);  // 误报 → 抑制
+      await seed("X", "fixed", 3);           // 已处理 → 条件重现是新事实，重开
+      await seed("L", "wont_fix", 40);       // 超出 30 天缺省窗口 → 重开
+      await seed("H", null, 3);              // 历史行（没有 close 事件）→ 保守抑制
+
+      // **不传 suppressManuallyClosedDays**：修复前这一整轮会把 5 条全部重开
+      const r = await upsertAlerts(db, { category: "def_cat", candidates: [cand("W"), cand("F"), cand("X"), cand("L"), cand("H")], now });
+      expect(r).toMatchObject({ opened: 2, suppressed: 3 });
+      const open = await db.select({ refKey: schema.systemAlerts.refKey }).from(schema.systemAlerts)
+        .where(eq(schema.systemAlerts.status, "open"));
+      expect(open.map((o) => o.refKey).sort()).toEqual(["L", "X"]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("抑制窗口到期后重开（wont_fix 关闭 30 天内不重开、31 天后重开）", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const now = new Date("2026-09-04T03:00:00.000Z");
+      const day = 24 * 3600 * 1000;
+      const [row] = await db.insert(schema.systemAlerts).values({
+        category: "exp_cat", refKey: "E", dedupeKey: "t:E", title: "人工关 E", severity: "high",
+        status: "resolved", autoResolved: false, resolvedAt: now,
+      }).returning({ id: schema.systemAlerts.id });
+      await db.insert(schema.alertEvents).values({
+        alertId: row.id, event: "close", at: now, reasonCode: "wont_fix", idempotencyKey: `${row.id}:close`,
+      });
+      const inWindow = await upsertAlerts(db, { category: "exp_cat", candidates: [cand("E")], now: new Date(now.getTime() + 29 * day) });
+      expect(inWindow).toMatchObject({ opened: 0, suppressed: 1 });
+      const afterWindow = await upsertAlerts(db, { category: "exp_cat", candidates: [cand("E")], now: new Date(now.getTime() + 31 * day) });
+      expect(afterWindow).toMatchObject({ opened: 1, suppressed: 0 });
     } finally {
       await client.close();
     }

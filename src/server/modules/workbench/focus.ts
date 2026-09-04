@@ -265,19 +265,30 @@ const exceptionsMemo = new WeakMap<object, { at: number; value: Promise<Exceptio
 /**
  * 例外清单；`memoMs` 打开时同一 db 实例在该时长内复用上一次结果（驾驶舱多用户刷新不重复跑全量补货引擎）。
  * 缺省不记忆（测试与写后读一致性优先）。
+ *
+ * `applySnooze`（红队审计 A6）：**打盹是展示层策略，不是静音开关**——
+ * exception-dismissals 的模块头、打盹路由文案与页面都写明「只影响展示」，
+ * 可推送任务此前也走同一条过滤，于是四种角色里任何一人都能把一条 critical 例外的推送压 90 天。
+ * 推送路径（jobs/notify.runExceptionNotify）传 `applySnooze: false` 拿到未过滤清单；
+ * 展示路径保持缺省 true。`recordShown` 同理：只有**人真的看到了**才推进"连续出现天数"，
+ * 定时任务传 false，否则那个计数量的是"例外存在了几天"，不是"有人看了几天"。
  */
-export async function computeExceptions(db: AnyDb, opts?: { memoMs?: number; recordShown?: boolean }): Promise<ExceptionItem[]> {
+export async function computeExceptions(
+  db: AnyDb,
+  opts?: { memoMs?: number; recordShown?: boolean; applySnooze?: boolean },
+): Promise<ExceptionItem[]> {
   const memoMs = opts?.memoMs ?? 0;
   const recordShown = opts?.recordShown ?? true;
+  const applySnooze = opts?.applySnooze ?? true;
   if (memoMs > 0) {
     const hit = exceptionsMemo.get(db as object);
     if (hit && Date.now() - hit.at < memoMs) return hit.value;
-    const value = computeExceptionsUncached(db, recordShown);
+    const value = computeExceptionsUncached(db, recordShown, applySnooze);
     exceptionsMemo.set(db as object, { at: Date.now(), value });
     value.catch(() => exceptionsMemo.delete(db as object));
     return value;
   }
-  return computeExceptionsUncached(db, recordShown);
+  return computeExceptionsUncached(db, recordShown, applySnooze);
 }
 
 /**
@@ -285,11 +296,12 @@ export async function computeExceptions(db: AnyDb, opts?: { memoMs?: number; rec
  * 打盹未到期的整条隐藏（连同它的计数，不留半条），其余标注连续出现天数并推进计数。
  * 记忆表出问题只降级为"没有 daysShown"，绝不让首屏 500：控制塔的可用性优先于这份增益。
  */
-async function applyExceptionMemory(db: AnyDb, items: ExceptionItem[], recordShown: boolean): Promise<ExceptionItem[]> {
+async function applyExceptionMemory(db: AnyDb, items: ExceptionItem[], recordShown: boolean, applySnooze = true): Promise<ExceptionItem[]> {
   const today = shanghaiDay();
   try {
     const memory = await loadExceptionMemory(db);
-    const visible = items.filter((it) => !isSnoozed(memory.get(it.key), today));
+    // applySnooze=false（推送路径）：打盹只隐藏页面，不静音推送
+    const visible = applySnooze ? items.filter((it) => !isSnoozed(memory.get(it.key), today)) : items;
     if (recordShown && visible.length) await recordExceptionsShown(db, visible.map((it) => it.key), today);
     return visible.map((it) => {
       const mem = memory.get(it.key);
@@ -310,7 +322,7 @@ function yesterdayOf(day: string): string {
   return new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
 }
 
-async function computeExceptionsUncached(db: AnyDb, recordShown = true): Promise<ExceptionItem[]> {
+async function computeExceptionsUncached(db: AnyDb, recordShown = true, applySnooze = true): Promise<ExceptionItem[]> {
   const today = todayShanghai();
   const out: ExceptionItem[] = [];
 
@@ -410,7 +422,7 @@ async function computeExceptionsUncached(db: AnyDb, recordShown = true): Promise
   }
 
   const sorted = out.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.count - a.count);
-  return applyExceptionMemory(db, sorted, recordShown);
+  return applyExceptionMemory(db, sorted, recordShown, applySnooze);
 }
 
 /** 按当前用户角色计算聚焦区块；admin 全量可见；多角色叠加多区块 */

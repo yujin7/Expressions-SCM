@@ -7,10 +7,18 @@
  *  - done = status done；onTime = done 且（无截止日 或 完成日 ≤ 截止日）；
  *    overdue = 未完成且已过截止日，或完成晚于截止日（「完成不按时」）；
  *  - suspicious = done 且 completedAt − createdAt < 10 分钟（与 service 同口径）。
- *  - cancelled 拆两类（闭环审计 #9）：cancelledBySourceClose = 来源告警被引擎迟滞自动关闭（system_alerts.autoResolved）
- *    后由 closeStaleProjectedItems 取消——条件自己消失、无人动手；cancelledByHuman = 其余（人工取消 / 来源被人工关闭）。
+ *  - cancelled 拆**三**类（闭环审计 #9 + 红队审计 A7）：
+ *      cancelledBySourceClose      = 来源告警被引擎迟滞自动关闭（system_alerts.autoResolved=true）后由
+ *                                    closeStaleProjectedItems 取消——条件自己消失、无人动手；
+ *      cancelledBySourceManualClose= 来源告警被**人工**关闭（autoResolved=false）后连带取消；
+ *      cancelledByHuman            = 其余（直接把待办本身取消）。
  *  - 完成率（宽）= done ÷ (total − cancelled)；完成率（严）= done ÷ (total − cancelledByHuman)——
- *    等看门狗把告警关掉不再算"完成"；按时率 = onTime ÷ done；分母 0 → null。
+ *    **两种"来源关闭"造成的取消都留在严口径分母里**；按时率 = onTime ÷ done；分母 0 → null。
+ *
+ *  为什么要单拆"来源人工关闭"（红队 A7）：原实现把它并进 cancelledByHuman，于是
+ *  「做不完的待办 → 把来源告警按 wont_fix 关掉 → closeStaleProjectedItems 取消待办」
+ *  这条路径能把一条待办**同时**从宽口径和严口径的分母里摘掉——完成率不降反升，
+ *  而这恰恰是最该被看见的一种"没做完"。现在它有自己的桶、留在严口径分母里，页面也把它列出来。
  * 可见性：与列表同一谓词（service.resolveTodoVisibility / isWorkItemVisible）：admin 全见；
  *   其他人只见 我相关（指派给我/我指派/我创建）∪ 本角色责任项（D62 受限用户按 deptScope 裁剪角色），服务端裁剪。
  */
@@ -45,12 +53,15 @@ export interface TodoStatsRow {
   onTime: number;
   overdue: number;
   cancelled: number;
-  /** 取消细分：来源告警被引擎自动关闭（autoResolved）而取消 vs 人工取消 / 来源被人工关闭 */
+  /** 取消细分：来源告警被引擎自动关闭（autoResolved=true）而取消 */
   cancelledBySourceClose: number;
+  /** 取消细分：来源告警被**人工**关闭（autoResolved=false）而取消——留在严口径分母，不当逃生口 */
+  cancelledBySourceManualClose: number;
+  /** 取消细分：直接取消待办本身（唯一从严口径分母里出去的一类） */
   cancelledByHuman: number;
   suspicious: number;
   completionRate: number | null; // %（宽口径：done ÷ (total − cancelled)）
-  /** %（严口径：done ÷ (total − cancelledByHuman)，来源自动关闭的待办留在分母） */
+  /** %（严口径：done ÷ (total − cancelledByHuman)，来源关闭（自动/人工）造成的取消都留在分母） */
   completionRateStrict: number | null;
   onTimeRate: number | null; // %
 }
@@ -81,7 +92,10 @@ function monthStartUtc(ym: string): Date {
 }
 
 export const TODO_STATS_CALIBER =
-  `完成率（宽）= 已完成 ÷ (总数 − 已取消)；完成率（严）= 已完成 ÷ (总数 − 人工取消)，来源告警被引擎自动关闭而取消的待办留在分母（等看门狗关掉不算完成）；按时率 = 按时完成 ÷ 已完成；手工来源不计入；创建后不足 ${SUSPICIOUS_CLOSE_MINUTES} 分钟即关闭计「可疑」仅标注不扣分；月份按创建时间（Asia/Shanghai）`;
+  `完成率（宽）= 已完成 ÷ (总数 − 已取消)；完成率（严）= 已完成 ÷ (总数 − 人工取消待办)，`
+  + `来源告警被关闭（引擎自动关闭 **或人工关闭**）而连带取消的待办都留在严口径分母——`
+  + `等看门狗关掉不算完成，把来源告警按「不处理/误报」关掉也不算完成（否则关闭原因就成了完成率的逃生口）；`
+  + `按时率 = 按时完成 ÷ 已完成；手工来源不计入；创建后不足 ${SUSPICIOUS_CLOSE_MINUTES} 分钟即关闭计「可疑」仅标注不扣分；月份按创建时间（Asia/Shanghai）`;
 
 export async function getTodoStats(args: TodoStatsArgs, user: SessionUser, dbArg?: AnyDb): Promise<TodoStatsResult> {
   const db = dbArg ?? (await getDbAsync());
@@ -122,15 +136,17 @@ export async function getTodoStats(args: TodoStatsArgs, user: SessionUser, dbArg
     .leftJoin(users, eq(users.id, workItems.assigneeId))
     .where(and(...clauses));
 
-  // 取消细分：告警来源的已取消待办 → 回查 system_alerts.autoResolved（引擎迟滞关闭 = 条件消失，非人工处理）
+  // 取消细分：告警来源的已取消待办 → 回查 system_alerts（引擎迟滞关闭 = 条件消失；人工关闭 = 有人做了判断）
   const cancelledAlertIds = [...new Set(rows
     .filter((r) => r.status === "cancelled" && r.sourceKind === "alert" && r.sourceRef && /^\d+$/.test(r.sourceRef))
     .map((r) => Number(r.sourceRef)))];
   const autoResolvedAlerts = new Set<number>();
+  const manuallyClosedAlerts = new Set<number>();
   if (cancelledAlertIds.length) {
-    const ar: { id: number }[] = await db.select({ id: systemAlerts.id }).from(systemAlerts)
-      .where(and(inArray(systemAlerts.id, cancelledAlertIds), eq(systemAlerts.autoResolved, true)));
-    for (const a of ar) autoResolvedAlerts.add(a.id);
+    const ar: { id: number; autoResolved: boolean }[] = await db
+      .select({ id: systemAlerts.id, autoResolved: systemAlerts.autoResolved }).from(systemAlerts)
+      .where(and(inArray(systemAlerts.id, cancelledAlertIds), eq(systemAlerts.status, "resolved")));
+    for (const a of ar) (a.autoResolved ? autoResolvedAlerts : manuallyClosedAlerts).add(a.id);
   }
 
   const buckets = new Map<string, TodoStatsRow>();
@@ -144,7 +160,8 @@ export async function getTodoStats(args: TodoStatsArgs, user: SessionUser, dbArg
     let b = buckets.get(key);
     if (!b) {
       b = {
-        groupKey, groupLabel, month, total: 0, done: 0, onTime: 0, overdue: 0, cancelled: 0, cancelledBySourceClose: 0, cancelledByHuman: 0,
+        groupKey, groupLabel, month, total: 0, done: 0, onTime: 0, overdue: 0, cancelled: 0,
+        cancelledBySourceClose: 0, cancelledBySourceManualClose: 0, cancelledByHuman: 0,
         suspicious: 0, completionRate: null, completionRateStrict: null, onTimeRate: null,
       };
       buckets.set(key, b);
@@ -155,7 +172,9 @@ export async function getTodoStats(args: TodoStatsArgs, user: SessionUser, dbArg
     if (overdue) b.overdue++;
     if (r.status === "cancelled") {
       b.cancelled++;
-      if (r.sourceKind === "alert" && r.sourceRef && autoResolvedAlerts.has(Number(r.sourceRef))) b.cancelledBySourceClose++;
+      const sourceAlertId = r.sourceKind === "alert" && r.sourceRef ? Number(r.sourceRef) : null;
+      if (sourceAlertId != null && autoResolvedAlerts.has(sourceAlertId)) b.cancelledBySourceClose++;
+      else if (sourceAlertId != null && manuallyClosedAlerts.has(sourceAlertId)) b.cancelledBySourceManualClose++;
       else b.cancelledByHuman++;
     }
     if (r.status === "done") {
