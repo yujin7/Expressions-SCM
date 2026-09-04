@@ -20,7 +20,7 @@ import {
   getCockpitTrends,
   loadTierMigration,
 } from "@/server/modules/report/cockpit-trends";
-import { buildRiskExpiryBuckets, loadRiskExpiryBuckets } from "@/server/modules/report/risk-expiry-buckets";
+import { buildRiskExpiryBuckets, loadRiskExpiryBuckets, RISK_EXPIRY_BUCKETS_KEY } from "@/server/modules/report/risk-expiry-buckets";
 import { loadSourceRunHistory, mondayOf, weekKeys } from "@/server/modules/report/source-run-history";
 import { listBelowFloor, listManualOverrides } from "@/server/modules/dq/lists";
 import type { RiskRow } from "@/server/modules/report/risk";
@@ -560,7 +560,7 @@ describe("驾驶舱趋势块 · BI wave 2 PGlite", () => {
     }
   });
 
-  it("临期读模型 risk-expiry-buckets/v1：按绑定落缓存并复用；批次变化即失效重算", async () => {
+  it("临期读模型 risk-expiry-buckets：按绑定落缓存并复用；批次变化即失效重算", async () => {
     const { db, client } = await createTestDb();
     try {
       const [brand] = await db.insert(schema.brands).values({ code: "NING", nameCn: "宁" }).returning();
@@ -578,13 +578,13 @@ describe("驾驶舱趋势块 · BI wave 2 PGlite", () => {
       await db.insert(schema.stockBalances).values({ skuId: sku.id, warehouseId: wh.id, qty: "60.0000" });
 
       const first = await loadRiskExpiryBuckets(db);
-      expect(first.key).toBe("risk-expiry-buckets/v1");
+      expect(first.key).toBe(RISK_EXPIRY_BUCKETS_KEY);
       expect(first.totals.find((t) => t.key === "expired")!.qty).toBe(10);
       expect(first.totals.find((t) => t.key === "d30")!.qty).toBe(20);
       expect(first.totals.find((t) => t.key === "d90")!.qty).toBe(0);
       expect(first.fallbackSkus).toBe(1); // skus.near_expiry_days 未维护 → 90 天兜底
 
-      const [cached] = await db.select().from(schema.reportReadModelCache).where(eq(schema.reportReadModelCache.key, "risk-expiry-buckets/v1"));
+      const [cached] = await db.select().from(schema.reportReadModelCache).where(eq(schema.reportReadModelCache.key, RISK_EXPIRY_BUCKETS_KEY));
       expect(cached.sourceBinding).toBe(first.sourceBinding);
       const second = await loadRiskExpiryBuckets(db);
       expect(second.builtAt).toBe(first.builtAt); // 绑定一致 → 命中缓存不重建

@@ -2,7 +2,7 @@
  * F 项：风险库存处置工作台（只读报表层，spec/13 §三）。
  *
  * 三源融合（全部既有数据，不新增口径）：
- * - 效期：batch_stocks（qty>0 且 expiryDate 非空）→ 逐 SKU minDaysLeft/expiredQty/nearQty(≤逐 SKU 阈值)；
+ * - 效期：batch_stocks（qty>0 且 expiryDate 非空，**逐仓只取最新盘点期**）→ 逐 SKU minDaysLeft/expiredQty/nearQty(≤逐 SKU 阈值)；
  * - 注记：transit_refs kind=pallet exception 非空 → 逐 SKU 取最新（progress desc, id desc）；
  * - 销速：sales_monthly 近3月 ÷ 91（窗口动态回推，与驾驶舱/R11 同法）；
  * - 在库：Σ stock_balances + 快照仓最新快照（全网口径 D20，与 R11 同法本地重实现）。
@@ -21,7 +21,7 @@ import { ApiError } from "@/server/modules/master/common";
 import { todayShanghai } from "@/server/modules/master/common";
 import { RISK_ACTION_ORDER, suggestRiskAction, type RiskAction } from "@/server/rules/risk-action";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
-import { coverDays, daysLeftOf, getOnHandBySku } from "@/server/core/stock-view";
+import { coverDays, daysLeftOf, getOnHandBySku, latestStocktakeRows } from "@/server/core/stock-view";
 import { num, r1 } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
 import { participatesInNormalSalesMovement } from "@/server/rules/sku-standardization";
@@ -148,12 +148,13 @@ export async function getRiskWorklist(
   // 但第二实现意味着窗口口径一旦调整这里不会跟着变
   const dailyBySku = new Map<number, number>(salesRows.map((r) => [r.skuId, dailyFromWindow(num(r.qty))]));
 
-  /* ── 效期：batch_stocks 逐 SKU 聚合 ── */
+  /* ── 效期：batch_stocks 逐 SKU 聚合（**只取每仓最新盘点期**——多期并存会把效期量按盘点次数翻倍）── */
   const bs = schema.batchStocks;
-  const batchRows: { skuId: number; qty: string; expiryDate: string }[] = await db
-    .select({ skuId: bs.skuId, qty: bs.qty, expiryDate: bs.expiryDate })
+  const batchRowsAllPeriods: { skuId: number; warehouseId: number; stocktakeDate: string; qty: string; expiryDate: string }[] = await db
+    .select({ skuId: bs.skuId, warehouseId: bs.warehouseId, stocktakeDate: bs.stocktakeDate, qty: bs.qty, expiryDate: bs.expiryDate })
     .from(bs)
     .where(and(isNotNull(bs.expiryDate), gt(bs.qty, "0")));
+  const batchRows = latestStocktakeRows(batchRowsAllPeriods);
   const expiryBySku = new Map<number, { minDaysLeft: number; expiredQty: number; nearQty: number; buckets: Record<ExpiryBucketKey, number> }>();
   for (const r of batchRows) {
     const daysLeft = daysLeftOf(today, r.expiryDate);

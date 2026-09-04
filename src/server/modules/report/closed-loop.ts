@@ -62,9 +62,14 @@ export interface ClosedLoopSummary {
   pending: number; // 待审批
   rejected: number; // 已否决/关闭
   deleted: number; // 已删除
-  adoptRate: number; // 采纳率（百分比，1 位小数）——口径=进入审批通过及以后
-  /** E3-01：实际到货口径——建议最终有货落地的占比（比采纳率更硬） */
-  deliveredRate: number;
+  /**
+   * 采纳率（百分比，1 位小数）——口径=进入审批通过及以后。
+   * **无建议草稿时为 null，不是 0**：0% 读作「建议全被无视」，与「还没有建议」是两回事，
+   * 本轮其余新指标（otifRatePct / completionRate / passRatePct…）一律如此。
+   */
+  adoptRate: number | null;
+  /** E3-01：实际到货口径——建议最终有货落地的占比（比采纳率更硬）；空总体 = null */
+  deliveredRate: number | null;
   deliveredCount: number;
   /** 闭环审计 #12：已复核并放弃的建议条数（audit decline_suggestion）；不进采纳率分母，单列 */
   declined: number;
@@ -97,6 +102,13 @@ export interface AccuracyBucket { key: AccuracyBucketKey; label: string; count: 
 
 export interface SuggestionAccuracy {
   version: typeof SUGGESTION_ACCURACY_VERSION;
+  /** 取数上限（planning_version_lines 按 versionId 倒序取的行数上限） */
+  rowLimit: number;
+  /**
+   * 取数已被上限截断：样本只覆盖**最近的** rowLimit 行捕获记录，更早的版本没进分布。
+   * 不暴露这个标志，一张「全部样本」的分布图其实只画了最新 2000 行——读者无从判断。
+   */
+  truncated: boolean;
   /** 样本 = 已捕获的建议行（未抑制、净需求 > 0；同 SKU 同业务日只取最新版本） */
   sample: number;
   /** 视野期已走完（业务日 + horizonDays ≤ 今天）——只有这些行进入分布 */
@@ -115,6 +127,7 @@ export const SUGGESTION_ACCURACY_CALIBER = [
   "视野期 = 业务日起 decisionEnvelope.inputs.policy.horizonDays 天（缺失按 60）；只对视野期已走完的行做对比",
   "实际下单 = 视野期内创建、非作废的 BH 行 + PO 行（PO 按 uom_factor 折基础单位）；实际出库 = 视野期内实时仓流水出库合计（含调拨/发料，非纯销售）",
   "只给分布与样本数，不给单一准确率——视野期归因有争议；快照仓 SKU 无流水，出库分布弃权并单列覆盖数",
+  "取数按版本倒序设有行上限（rowLimit）：命中上限时 truncated=true，样本只覆盖最近若干版本，更早的捕获记录不在分布内",
 ];
 
 function bucketOf(actual: string, required: string): AccuracyBucketKey {
@@ -183,6 +196,8 @@ export async function getSuggestionAccuracy(dbArg?: AnyDb, opts?: { now?: Date; 
   const matured = samples.filter((s) => shanghaiDay(new Date(shanghaiStart(s.businessDate).getTime() + s.horizonDays * DAY_MS)) <= today);
   const result: SuggestionAccuracy = {
     version: SUGGESTION_ACCURACY_VERSION,
+    rowLimit: limit,
+    truncated: lines.length >= limit,
     sample: samples.length,
     matured: matured.length,
     immature: samples.length - matured.length,
@@ -272,12 +287,25 @@ export interface SuppressionOutcomeBucket {
 
 export interface SuppressionReview {
   version: typeof SUPPRESSION_REVIEW_VERSION;
+  /** 取数上限（planning_version_lines 按 versionId 倒序取的行数上限） */
+  rowLimit: number;
+  /** 取数已被上限截断：样本只覆盖最近 rowLimit 行捕获记录 */
+  truncated: boolean;
   /** 样本 = 已捕获的抑制行（同 SKU 同业务日取最新版本） */
   sample: number;
   matured: number;
   immature: number;
-  /** 被扣住的量合计（全部样本） */
+  /**
+   * 被扣住的量合计——**全部样本**（含视野期未走完的行）。
+   * 下面 `outcomes` 只覆盖已成熟样本，两者分母不同却并排显示过：
+   * 「扣住 115,391 件」与三个结果桶之和对不上，读者会以为漏了。
+   * 故并列给出 `heldQtyMatured`（= Σ outcomes.heldQty）与 `heldQtyImmature`，关系写死在读模型里。
+   */
   heldQtyTotal: string;
+  /** 其中视野期已走完的量（= 结果分布三个桶之和，与 outcomes 同分母） */
+  heldQtyMatured: string;
+  /** 其中视野期未走完、尚不判定的量（heldQtyTotal − heldQtyMatured） */
+  heldQtyImmature: string;
   /** 已成熟样本的结果分布 */
   outcomes: SuppressionOutcomeBucket[];
   caliber: string[];
@@ -289,6 +317,8 @@ export const SUPPRESSION_REVIEW_CALIBER = [
   "断货判定与告警核验同源（jobs/alert-outcome 口径）：视野期内实时仓合计余额曾 ≤ 0 且窗口内有出库 = 随后断货；余额从未归零 = 未断货",
   "快照仓 SKU 在实时仓无流水，一律弃权计入「无法核验」，不当作「未断货」——把弃权算成成功正是抑制闸门最容易自我背书的地方",
   "只给分布与样本数，不给单一「抑制正确率」：断货可能另有原因（外部渠道需求、后续补货已到），一个分数会把这些歧义藏起来",
+  "heldQtyTotal 覆盖全部样本，结果分布只覆盖已成熟样本：两者分母不同，故并列 heldQtyMatured（= 三个结果桶之和）与 heldQtyImmature",
+  "取数按版本倒序设有行上限（rowLimit）：命中上限时 truncated=true，更早的抑制记录不在样本内",
 ];
 
 /**
@@ -332,12 +362,18 @@ export async function getSuppressionReview(dbArg?: AnyDb, opts?: { now?: Date; l
     no_stockout: { count: 0, heldQty: "0" },
     unverifiable: { count: 0, heldQty: "0" },
   };
+  const heldQtyTotal = samples.reduce((acc, s) => dAdd(acc, s.heldQty, 4), "0");
+  const heldQtyMatured = matured.reduce((acc, s) => dAdd(acc, s.heldQty, 4), "0");
   const result: SuppressionReview = {
     version: SUPPRESSION_REVIEW_VERSION,
+    rowLimit: limit,
+    truncated: lines.length >= limit,
     sample: samples.length,
     matured: matured.length,
     immature: samples.length - matured.length,
-    heldQtyTotal: samples.reduce((acc, s) => dAdd(acc, s.heldQty, 4), "0"),
+    heldQtyTotal,
+    heldQtyMatured,
+    heldQtyImmature: dSub(heldQtyTotal, heldQtyMatured, 4),
     outcomes: SUPPRESSION_OUTCOME_KEYS.map((key) => ({ key, label: SUPPRESSION_OUTCOME_LABELS[key], count: 0, heldQty: "0" })),
     caliber: [...SUPPRESSION_REVIEW_CALIBER],
   };
@@ -547,10 +583,11 @@ export async function getClosedLoop(
     else rejected++; // rejected/closed/void
   }
   const total = all.length;
-  const adoptRate = total > 0 ? r1((adopted / total) * 100) : 0;
+  // 百分比换算走 decimal（禁 float）；空总体给 null，不给 0%
+  const adoptRate = total > 0 ? Number(dMul(dDiv(adopted, total, 6), 100, 1)) : null;
   // E3-01：实际到货 = 下游已有正常行实收（>0）
   const deliveredCount = all.filter((r) => r.receivedQty > 0).length;
-  const deliveredRate = total > 0 ? r1((deliveredCount / total) * 100) : 0;
+  const deliveredRate = total > 0 ? Number(dMul(dDiv(deliveredCount, total, 6), 100, 1)) : null;
   // 已复核并放弃：单列，不进 total/adoptRate 分母（放弃是"看过并判断不需要"，与"草稿被否决"不是一回事）
   const [declined, accuracy, suppression] = await Promise.all([countDeclinedSuggestions(db), getSuggestionAccuracy(db), getSuppressionReview(db)]);
 

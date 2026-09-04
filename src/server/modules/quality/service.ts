@@ -5,6 +5,7 @@ import { getDbAsync, schema } from "@/db";
 import { writeAudit } from "@/server/core/audit";
 import { dAdd, dCmp, dNeg } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
+import { latestStocktakeRows } from "@/server/core/stock-view";
 import type { AnyDb } from "@/server/core/svc";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
@@ -755,14 +756,10 @@ async function buildRecallScope(tx: AnyDb, batchId: number, limitationNote?: str
       )),
   ]);
 
-  const latestReferenceDate = new Map<number, string>();
-  for (const row of referenceRows) {
-    if (!latestReferenceDate.has(row.warehouseId)) {
-      latestReferenceDate.set(row.warehouseId, row.stocktakeDate);
-    }
-  }
-  const latestReferenceRows = referenceRows.filter((row: typeof referenceRows[number]) =>
-    latestReferenceDate.get(row.warehouseId) === row.stocktakeDate);
+  /* 盘点期间收口走 core/stock-view 唯一实现（风险工作台 / R15 临期 / 调拨建议同源）。
+     tx 是 AnyDb，查询结果推不出行类型，故在此显式标注行形状供泛型推断。 */
+  type ReferenceRow = { warehouseId: number; warehouseCode: string; warehouseName: string; qty: string; stocktakeDate: string; source: string | null };
+  const latestReferenceRows = latestStocktakeRows<ReferenceRow>(referenceRows as ReferenceRow[]);
   const latestSnapshots = new Map<number, typeof snapshotRows[number]>();
   for (const row of snapshotRows) if (!latestSnapshots.has(row.warehouseId)) latestSnapshots.set(row.warehouseId, row);
   const addQty = (rows: Array<{ qty: string }>) => rows.reduce((sum, row) => dAdd(sum, row.qty, 4), "0.0000");

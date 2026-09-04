@@ -1,5 +1,5 @@
 /**
- * B4 历史采购交期观察（supplier-lead-history/v1）。
+ * B4 历史采购交期观察（supplier-lead-history/v2）。
  *
  * 钉住的口径：
  *   - 字段名全部来自 integrations/jiandaoyun-contracts.ts 的两条契约（不自造字段）；
@@ -275,6 +275,90 @@ describe("历史采购交期观察", () => {
       const after = await computeSupplierLeadHistory(db);
       expect(after.state).toBe("insufficient");
       expect(after.totals.samples).toBe(0);
+    } finally {
+      await client.close();
+    }
+  });
+  /* ── C1：可空的 on_time_rate 不得当成 0% 进加权分母 ── */
+  it("系统侧样本加权准时率只用可评样本作分母：一对已测 100%、一对未测，读数是 100% 而不是 50%", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const s = await seed(db);
+      const [spu2] = await db.insert(schema.spus).values({ code: "SPU-LH2", nameCn: "第二品" }).returning();
+      const [sku2] = await db.insert(schema.skus).values({ code: "N100-002", name: "精华 30ml", spuId: spu2.id, skuType: "finished", baseUom: "支" }).returning();
+      // 一单可配对，供应商行才会出现
+      await db.insert(schema.stagingRows).values([
+        orderRow(s.orderJob, 1, "O1", { orderNo: "PO-1", signedAt: "2024-03-01T00:00:00.000Z", deliveryAt: "2024-03-21T00:00:00.000Z", lines: [{ productCode: "N100-001", purchaseQty: "10" }] }, { supplierId: s.supplierId }),
+        receiptRow(s.receiptJob, 1, "R1", { purchaseOrderNo: "PO-1", receiptNo: "SH-1", receivedAt: "2024-03-25T00:00:00.000Z", lines: [{ productCode: "N100-001", receivedQty: "10" }] }, { supplierId: s.supplierId }),
+      ]);
+      // 同一供应商两个 (供应商 × SKU) 对子，样本数相同：一个测出 100%，另一个 on_time_rate 为 NULL（没测出来）
+      await db.insert(schema.rollupSupplierLead).values([
+        { supplierId: s.supplierId, skuId: s.skuId, samples: 10, leadP50Days: "20.00", leadP90Days: "25.00", leadStdevDays: "2.00", onTimeRate: "1.0000" },
+        { supplierId: s.supplierId, skuId: sku2.id, samples: 10, leadP50Days: "20.00", leadP90Days: "25.00", leadStdevDays: "2.00", onTimeRate: null },
+      ]);
+
+      const model = await computeSupplierLeadHistory(db);
+      const row = model.bySupplier.find((r) => r.supplierId === s.supplierId)!;
+      expect(row.system).not.toBeNull();
+      expect(row.system!.pairs).toBe(2);
+      expect(row.system!.samples).toBe(20);      // 样本合计仍是 20（如实呈现规模）
+      expect(row.system!.ratedSamples).toBe(10); // 但只有 10 个样本可评准时率
+      // 未测量的对子若进分母，会渲染成 50% —— 把「没测」说成「一半没准时」
+      expect(row.system!.onTimeRate).toBe(1);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("全部对子都没测出准时率 → onTimeRate 为 null（不是 0%）", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const s = await seed(db);
+      await db.insert(schema.stagingRows).values([
+        orderRow(s.orderJob, 1, "O1", { orderNo: "PO-1", signedAt: "2024-03-01T00:00:00.000Z", lines: [{ productCode: "N100-001", purchaseQty: "10" }] }, { supplierId: s.supplierId }),
+        receiptRow(s.receiptJob, 1, "R1", { purchaseOrderNo: "PO-1", receiptNo: "SH-1", receivedAt: "2024-03-25T00:00:00.000Z", lines: [{ productCode: "N100-001", receivedQty: "10" }] }, { supplierId: s.supplierId }),
+      ]);
+      await db.insert(schema.rollupSupplierLead).values({
+        supplierId: s.supplierId, skuId: s.skuId, samples: 8, leadP50Days: "20.00", leadP90Days: "25.00", leadStdevDays: "2.00", onTimeRate: null,
+      });
+      const row = (await computeSupplierLeadHistory(db)).bySupplier.find((r) => r.supplierId === s.supplierId)!;
+      expect(row.system).toMatchObject({ pairs: 1, samples: 8, ratedSamples: 0, onTimeRate: null });
+    } finally {
+      await client.close();
+    }
+  });
+
+  /* ── C7(a)：绑定必须覆盖 alertDays 用到的运行参数与 skus ── */
+  it("source_binding 覆盖运行参数与 skus：改一个参数，页面不得继续引用旧阈值", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const s = await seed(db);
+      await db.insert(schema.stagingRows).values([
+        orderRow(s.orderJob, 1, "O1", { orderNo: "PO-1", signedAt: "2024-03-01T00:00:00.000Z", deliveryAt: "2024-03-21T00:00:00.000Z", lines: [{ productCode: "N100-001", purchaseQty: "10" }] }, { supplierId: s.supplierId }),
+        receiptRow(s.receiptJob, 1, "R1", { purchaseOrderNo: "PO-1", receiptNo: "SH-1", receivedAt: "2024-03-25T00:00:00.000Z", lines: [{ productCode: "N100-001", receivedQty: "10" }] }, { supplierId: s.supplierId }),
+      ]);
+      const before = await loadSupplierLeadHistory(db);
+      const skuRowBefore = before.bySupplierSku.find((r) => r.skuId === s.skuId)!;
+      expect(skuRowBefore.alertDays).toBe(32); // 加工 20 + 在途 7 + 缓冲 5
+      const bindingBefore = before.sourceBinding;
+      expect(bindingBefore).toContain("params:");
+      expect(bindingBefore).toContain("alert_buffer_days=");
+      expect(bindingBefore).toContain("sk:");
+
+      // 缓冲天数从缺省 5 改成 9：阈值应立刻变成 36，绝不能继续供旧缓存
+      await db.insert(schema.sysParams).values({ scope: "global", key: "alert_buffer_days", value: "9" });
+      const after = await loadSupplierLeadHistory(db);
+      expect(after.sourceBinding).not.toBe(bindingBefore);
+      const skuRowAfter = after.bySupplierSku.find((r) => r.skuId === s.skuId)!;
+      expect(skuRowAfter.alertDays).toBe(36);
+      expect(skuRowAfter.alertBasis).toContain("缓冲 9");
+
+      // skus 指纹：新增一个 SKU（可能让此前未映射的商品编码挂上系统 SKU）也要让绑定失效
+      const bindingAfterParam = after.sourceBinding;
+      const [spu3] = await db.insert(schema.spus).values({ code: "SPU-LH3", nameCn: "第三品" }).returning();
+      await db.insert(schema.skus).values({ code: "N100-003", name: "水乳", spuId: spu3.id, skuType: "finished", baseUom: "支" });
+      const afterSku = await loadSupplierLeadHistory(db);
+      expect(afterSku.sourceBinding).not.toBe(bindingAfterParam);
     } finally {
       await client.close();
     }

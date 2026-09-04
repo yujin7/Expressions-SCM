@@ -24,7 +24,7 @@ import { todayShanghai } from "@/server/modules/master/common";
 import { latestPolicyPeriod, loadPolicyMap } from "@/server/modules/planning/policy";
 import { FINANCE_COST_STREAM } from "@/server/core/valuation";
 import { getSegmentation, type SegmentationResult } from "@/server/modules/report/segmentation";
-import { tierMigrationMatrix, type Tier, type TierMigrationMatrix } from "@/server/rules/abc";
+import { tierBasisAgreementMatrix, type Tier, type TierBasisAgreementMatrix } from "@/server/rules/abc";
 import { OWNERSHIP_LABELS, type Ownership } from "@/server/rules/replenish-ownership";
 import type { XyzClass } from "@/server/rules/volatility";
 
@@ -87,8 +87,8 @@ export interface PilotReadModel {
   tierBasisApplied: "qty";
   /** 金额口径成本覆盖（按近 6 月销量加权） */
   costCoverage: SegmentationResult["costCoverage"];
-  /** 数量口径 tier × 金额口径 valueTier 迁移矩阵（全量） */
-  tierMigration: TierMigrationMatrix;
+  /** 数量口径 tier × 金额口径 valueTier 一致性矩阵（全量；同一时点两把尺子，不是期间迁移） */
+  tierMigration: TierBasisAgreementMatrix;
   /** 金额口径已知局限（页面原样展示） */
   valueTierLimitations: string[];
 }
@@ -177,7 +177,7 @@ export async function computeReplenishPilot(dbArg?: AnyDb): Promise<PilotReadMod
      * 迁移矩阵按**生效分层**（含固化期与人工覆写）重算：seg.tierMigration 用的是分层页实时 tier，
      * 而试点页展示的是生效 tier，两者在固化后可能不同——矩阵必须与同页表格的分层列一致。
      */
-    tierMigration: tierMigrationMatrix(rows.map((r) => ({ qtyTier: r.tier, valueTier: r.valueTier }))),
+    tierMigration: tierBasisAgreementMatrix(rows.map((r) => ({ qtyTier: r.tier, valueTier: r.valueTier }))),
     valueTierLimitations: seg.valueTierLimitations,
   };
 }

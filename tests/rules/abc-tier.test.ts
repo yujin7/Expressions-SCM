@@ -1,6 +1,6 @@
 /** D58 四级分层 S/A/B/C（rules/abc.ts classifyTier / tierToAbc）——既有 classifyAbc 口径不变 */
 import { describe, expect, it } from "vitest";
-import { DEFAULT_TIER_CUTS, classifyAbc, classifyTier, tierDistribution, tierMigrationMatrix, tierToAbc, type Tier } from "@/server/rules/abc";
+import { DEFAULT_TIER_CUTS, classifyAbc, classifyTier, tierBasisAgreementMatrix, tierDistribution, tierToAbc, type Tier } from "@/server/rules/abc";
 
 describe("classifyTier", () => {
   it("缺省切点 50/80/95：按加入本项前累计占比切分", () => {
@@ -94,9 +94,9 @@ describe("W12 金额口径并列分层（classifyTier 的 value = 销量 × 单�
   });
 });
 
-describe("tierMigrationMatrix：数量口径 × 金额口径", () => {
+describe("tierBasisAgreementMatrix：数量口径 × 金额口径（同一时点两把尺子，不是期间迁移）", () => {
   it("对角线记一致、异格记迁移，4×5 全格都出（零格也出）", () => {
-    const m = tierMigrationMatrix([
+    const m = tierBasisAgreementMatrix([
       { qtyTier: "S", valueTier: "S" },
       { qtyTier: "S", valueTier: "B" },
       { qtyTier: "A", valueTier: "A" },
@@ -116,7 +116,7 @@ describe("tierMigrationMatrix：数量口径 × 金额口径", () => {
   });
 
   it("valueTier=null 单列为「不可用」，既不算一致也不并进 C", () => {
-    const m = tierMigrationMatrix([
+    const m = tierBasisAgreementMatrix([
       { qtyTier: "C", valueTier: null },
       { qtyTier: "C", valueTier: null },
       { qtyTier: "A", valueTier: "A" },
@@ -130,13 +130,13 @@ describe("tierMigrationMatrix：数量口径 × 金额口径", () => {
   });
 
   it("全部不可用 → 一致率 null（不冒充 0%）", () => {
-    const m = tierMigrationMatrix([{ qtyTier: "S", valueTier: null }]);
+    const m = tierBasisAgreementMatrix([{ qtyTier: "S", valueTier: null }]);
     expect(m.agreePct).toBeNull();
     expect(m.insufficient).toBe(1);
   });
 
   it("空输入 → 全零矩阵", () => {
-    const m = tierMigrationMatrix([]);
+    const m = tierBasisAgreementMatrix([]);
     expect(m.total).toBe(0);
     expect(m.agreePct).toBeNull();
     expect(m.cells.every((c) => c.count === 0)).toBe(true);

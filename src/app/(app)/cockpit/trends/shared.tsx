@@ -173,8 +173,10 @@ export function sourceChartRows(block: SourceTrendBlock, measure: SourceMeasure)
     const row: Record<string, string | number | null> = { week, label: week.slice(5) };
     for (const s of block.series) {
       const p = s.points.find((x) => x.week === week);
+      // 门槛按**这张图画的那条读数**判（审计 C8b）：有运行 ≠ 这条读数有值
+      const ready = measure === "maxAgeDays" ? s.ageState === "ready" : s.passRateState === "ready";
       // 不足周数的来源类整条不画；单周无读数给 null（断线），绝不补 0
-      row[s.sourceClass] = s.state === "ready" ? (p ? p[measure] : null) : null;
+      row[s.sourceClass] = ready ? (p ? p[measure] : null) : null;
     }
     return row;
   });

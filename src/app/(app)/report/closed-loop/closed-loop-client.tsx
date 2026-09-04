@@ -39,8 +39,9 @@ interface ClosedLoopSummary {
   pending: number;
   rejected: number;
   deleted: number;
-  adoptRate: number;
-  deliveredRate: number;
+  /** 空总体 = null（不是 0%） */
+  adoptRate: number | null;
+  deliveredRate: number | null;
   deliveredCount: number;
   /** 已复核并放弃（审计 decline_suggestion）；单列，不进采纳率分母 */
   declined: number;
@@ -92,7 +93,7 @@ function AccuracyCard({ metricId, fallbackTitle, question, buckets, n, accuracy,
       state={state}
       stateDetail={accuracy.sample === 0
         ? "尚无人工捕获的建议快照——在补货建议页固化版本（planning_versions）后才有样本"
-        : `已捕获 ${accuracy.sample} 行，视野期已走完 ${accuracy.matured} 行、未走完 ${accuracy.immature} 行；本分布可评 ${n} 行`}
+        : `已捕获 ${accuracy.sample} 行，视野期已走完 ${accuracy.matured} 行、未走完 ${accuracy.immature} 行；本分布可评 ${n} 行${accuracy.truncated ? `（取数已达上限 ${accuracy.rowLimit} 行，只覆盖最近若干版本）` : ""}`}
       caveat={caveat}
       height={220}
       dataView={(
@@ -194,8 +195,8 @@ export default function ClosedLoopClient() {
       />
       <Row gutter={[10, 10]} className="compact-kpi-row">
         <Col><Card size="small"><Statistic title="建议草稿总数" value={s?.total ?? 0} /></Card></Col>
-        <Col><Card size="small"><Statistic title="采纳率（到审批）" value={s?.adoptRate ?? 0} precision={1} suffix="%" valueStyle={{ color: "#52c41a" }} /></Card></Col>
-        <Col><Card size="small"><Statistic title="实际到货率" value={s?.deliveredRate ?? 0} precision={1} suffix="%" valueStyle={{ color: "#3f8600" }} /></Card></Col>
+        <Col><Card size="small"><Statistic title="采纳率（到审批）" value={s?.adoptRate ?? "—"} precision={s?.adoptRate == null ? undefined : 1} suffix={s?.adoptRate == null ? "" : "%"} valueStyle={{ color: "#52c41a" }} /></Card></Col>
+        <Col><Card size="small"><Statistic title="实际到货率" value={s?.deliveredRate ?? "—"} precision={s?.deliveredRate == null ? undefined : 1} suffix={s?.deliveredRate == null ? "" : "%"} valueStyle={{ color: "#3f8600" }} /></Card></Col>
         <Col><Card size="small"><Statistic title="采纳中/已完成" value={s?.adopted ?? 0} valueStyle={{ color: "#52c41a" }} /></Card></Col>
         <Col><Card size="small"><Statistic title="待审批" value={s?.pending ?? 0} valueStyle={{ color: "#1677ff" }} /></Card></Col>
         <Col><Card size="small"><Statistic title="已否决/关闭" value={s?.rejected ?? 0} valueStyle={{ color: "#8c8c8c" }} /></Card></Col>
@@ -254,7 +255,9 @@ export default function ClosedLoopClient() {
           <CaliberNote
             summary={
               <>覆盖缺口闸门扣住的量此前从无回看。已捕获抑制行 <b>{sup.sample}</b> 条、合计扣住 <b>{Number(sup.heldQtyTotal).toLocaleString("zh-CN")}</b>（基础单位），
-              其中视野期已走完 <b>{sup.matured}</b> 条（未走完 {sup.immature} 条不判定）。
+              其中视野期已走完 <b>{sup.matured}</b> 条 / <b>{Number(sup.heldQtyMatured).toLocaleString("zh-CN")}</b>——
+              下表三个结果桶合计即这一部分；未走完 {sup.immature} 条 / {Number(sup.heldQtyImmature).toLocaleString("zh-CN")} 不判定，不进结果分布。
+              {sup.truncated ? <> 取数已达上限 {sup.rowLimit} 行，样本只覆盖最近若干版本。</> : null}
               只给分布与样本数，不给「抑制正确率」。</>
             }
             detail={<ul style={{ paddingLeft: 16, margin: 0 }}>{sup.caliber.map((c, i) => <li key={i}>{c}</li>)}</ul>}

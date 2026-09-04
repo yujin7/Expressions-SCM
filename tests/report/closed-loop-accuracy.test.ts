@@ -134,4 +134,51 @@ describe("report/closed-loop 建议准确度 + 放弃留痕", () => {
     expect(loop.summary).toMatchObject({ total: 1, adopted: 1, adoptRate: 100, declined: 1 });
     expect(loop.accuracy.sample).toBe(3);
   });
+
+  /* ── C8(c)：扣住的量与结果分布分母不同，关系必须写在读模型里 ── */
+  it("heldQtyTotal 覆盖全部样本、结果分布只覆盖已成熟样本：并列 heldQtyMatured / heldQtyImmature 且三者自洽", async () => {
+    const r = await getSuppressionReview(db, { now: NOW });
+    // 全部 4 条 = 30 + 40 + 50 + 60；其中 SUPP-LATE(60) 视野期未走完
+    expect(Number(r.heldQtyTotal)).toBe(180);
+    expect(Number(r.heldQtyMatured)).toBe(120);
+    expect(Number(r.heldQtyImmature)).toBe(60);
+    // 已成熟量必须正好等于三个结果桶之和——否则页面上「扣住 180」与桶合计 120 对不上又无从解释
+    const bucketSum = r.outcomes.reduce((acc, b) => acc + Number(b.heldQty), 0);
+    expect(bucketSum).toBe(Number(r.heldQtyMatured));
+    expect(Number(r.heldQtyMatured) + Number(r.heldQtyImmature)).toBe(Number(r.heldQtyTotal));
+    expect(r.caliber.some((c) => c.includes("两者分母不同"))).toBe(true);
+  });
+
+  /* ── C8(d)：2000 行上限此前无声截断 ── */
+  it("取数上限暴露为 truncated / rowLimit：命中上限时必须自己说出来", async () => {
+    const full = await getSuggestionAccuracy(db, { now: NOW });
+    expect(full.rowLimit).toBe(2000);
+    expect(full.truncated).toBe(false);
+
+    // 把上限压到 1 行：样本被截断，读模型必须承认
+    const cut = await getSuggestionAccuracy(db, { now: NOW, limit: 1 });
+    expect(cut.rowLimit).toBe(1);
+    expect(cut.truncated).toBe(true);
+    expect(cut.sample).toBeLessThan(full.sample);
+    expect(cut.caliber.some((c) => c.includes("truncated"))).toBe(true);
+
+    const supFull = await getSuppressionReview(db, { now: NOW });
+    expect(supFull).toMatchObject({ rowLimit: 2000, truncated: false });
+    const supCut = await getSuppressionReview(db, { now: NOW, limit: 2 });
+    expect(supCut).toMatchObject({ rowLimit: 2, truncated: true });
+    expect(supCut.sample).toBeLessThan(supFull.sample);
+  });
+
+  /* ── C9：空总体给 null，不给 0% ── */
+  it("采纳率/到货率在没有任何建议草稿时是 null，不是 0%（0% 读作「建议全被无视」）", async () => {
+    const { db: fresh, client } = await createTestDb();
+    try {
+      const loop = await getClosedLoop({ page: 1, pageSize: 20 }, fresh);
+      expect(loop.summary.total).toBe(0);
+      expect(loop.summary.adoptRate).toBeNull();
+      expect(loop.summary.deliveredRate).toBeNull();
+    } finally {
+      await client.close();
+    }
+  });
 });

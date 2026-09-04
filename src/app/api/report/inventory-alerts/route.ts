@@ -7,7 +7,7 @@ import { loadInventoryAlerts, refreshInventoryAlerts } from "@/server/modules/re
 import { pageInventoryAlerts } from "@/server/modules/report/inventory-alerts-query";
 
 /**
- * 库存预警表读模型 `inventory-alerts/v2`（D57；v2 接未结供给/临期/积压/学习交期观察）。?refresh=1 需 pmc/admin 回查。数量口径全员可见。
+ * 库存预警表读模型 `inventory-alerts`（D57，键见 INVENTORY_ALERTS_CACHE_KEY；v2 接未结供给/临期/积压/学习交期观察，v3 绑定补业务日、临期收口盘点期）。?refresh=1 需 pmc/admin 回查。数量口径全员可见。
  * 筛选/分页在服务端（审计 #8）：q / tier / primary / onlyAlert / showC / page / pageSize；totals 始终是读模型全量。
  */
 export async function GET(req: NextRequest) {

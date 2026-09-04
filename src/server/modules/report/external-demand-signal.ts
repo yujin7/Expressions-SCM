@@ -18,7 +18,9 @@ const STREAM = {
   sales: "tmall-sku-sales-observation",
   refunds: "tmall-sku-refund-observation",
 } as const;
-const READ_MODEL_CACHE_KEY = "jiandaoyun-external-demand/v4";
+/** 读模型缓存键（导出：驾驶舱来源文案必须由它派生，改口径升版时文案跟着走——审计 C6） */
+export const EXTERNAL_DEMAND_SIGNAL_CACHE_KEY = "jiandaoyun-external-demand/v4";
+const READ_MODEL_CACHE_KEY = EXTERNAL_DEMAND_SIGNAL_CACHE_KEY;
 
 export interface ExternalDemandDailyRow {
   date: string;

@@ -22,7 +22,9 @@ interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "jiandaoyun-channel-observation/v4";
+/** 读模型缓存键（导出：驾驶舱来源文案必须由它派生，改口径升版时文案跟着走——审计 C6） */
+export const CHANNEL_OBSERVATION_CACHE_KEY = "jiandaoyun-channel-observation/v4";
+const READ_MODEL_CACHE_KEY = CHANNEL_OBSERVATION_CACHE_KEY;
 const WINDOW_DAYS = 30;
 
 export interface ChannelPlatformRow {

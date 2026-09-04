@@ -32,6 +32,8 @@
  *   行上的 minDaysLeft 与理由，expiryDriven 标记「这是一次避免报废的调拨」。
  * 口径诚实：batch_stocks 是盘点参考层（非账本），与 stock_balances 可能不同源；因此扣减已过期时以在库为上限，
  * 且行上的效期结论只作解释与排序，不改变调拨量的计算方式。
+ * 盘点期间收口：batch_stocks 唯一键含 stocktake_date，逐仓只取该仓最新一期
+ * （core/stock-view.latestStocktakeRows，与 quality 召回范围、风险工作台、R15 临期检查同源）。
  *
  * 只读：不写库、不开单、不落审计。DB 调拨单仍走 inventory/stock-doc 正常审批流程。
  * 无金额字段，免脱敏。
@@ -42,7 +44,7 @@
  * `/report/transfer-suggest?skuIds=`；结果另按线路 (from,to) 分组只读汇总（TR-11，不合并成单）。
  */
 import { and, eq, gt, gte, inArray, isNotNull, lt, sql } from "drizzle-orm";
-import { coverDays, daysLeftOf } from "@/server/core/stock-view";
+import { coverDays, daysLeftOf, latestStocktakeRows } from "@/server/core/stock-view";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { getNumParam } from "@/server/core/params";
@@ -50,6 +52,7 @@ import { todayShanghai } from "@/server/modules/master/common";
 import { alertDays, type LeadBasis } from "@/server/rules/alert-threshold";
 import { allocateFefo, type BatchLot } from "@/server/rules/fefo";
 import { planTransfers } from "@/server/rules/transfer";
+import { dAdd } from "@/server/core/decimal";
 import { num, r1 } from "@/server/core/svc";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
@@ -208,14 +211,18 @@ export async function getTransferSuggestions(
     .where(and(...outConds))
     .groupBy(sl.skuId, sl.warehouseId);
 
-  /* ── W4 批次效期（batch_stocks，效期参考层；与临期风险页同源，含全部盘点期间行——本仓既有口径）── */
+  /* ── W4 批次效期（batch_stocks，效期参考层；与临期风险页同源）──
+     **逐仓只取最新盘点期**（core/stock-view.latestStocktakeRows）：batch_stocks 唯一键含 stocktake_date，
+     同一批实物在每期盘点各有一行。此前把多期直加，已过期量按期数翻倍后 ≥ 该仓在库，
+     `n.expired = min(expired, onHand)` 就把整仓可调拨量清成 0——一个仓的富余凭空消失。 */
   const bs = schema.batchStocks;
   const lotConds = [inArray(bs.warehouseId, whIds), gt(bs.qty, "0"), isNotNull(bs.expiryDate)];
   if (skuIdsFilter) lotConds.push(inArray(bs.skuId, skuIdsFilter));
-  const lotRows: { skuId: number; warehouseId: number; batchNo: string | null; expiryDate: string; qty: string }[] = await db
-    .select({ skuId: bs.skuId, warehouseId: bs.warehouseId, batchNo: bs.batchNo, expiryDate: bs.expiryDate, qty: bs.qty })
+  const lotRowsAllPeriods: { skuId: number; warehouseId: number; stocktakeDate: string; batchNo: string | null; expiryDate: string; qty: string }[] = await db
+    .select({ skuId: bs.skuId, warehouseId: bs.warehouseId, stocktakeDate: bs.stocktakeDate, batchNo: bs.batchNo, expiryDate: bs.expiryDate, qty: bs.qty })
     .from(bs)
     .where(and(...lotConds));
+  const lotRows = latestStocktakeRows(lotRowsAllPeriods);
   /** (skuId|warehouseId) → 批次（含已过期，allocateFefo 会按 today 排除并计数） */
   const lotsByKey = new Map<string, BatchLot[]>();
   const expiredByKey = new Map<string, number>();
@@ -224,7 +231,7 @@ export async function getTransferSuggestions(
   for (const r of lotRows) {
     const key = `${r.skuId}|${r.warehouseId}`;
     lotSeq += 1;
-    // batch_stocks 无稳定批次主键语义（同 SKU 同仓可有多期盘点行）；用行序号作 FEFO 稳定排序键
+    // batch_stocks 无稳定批次主键语义（同 SKU 同仓同期仍可多行）；用行序号作 FEFO 稳定排序键
     (lotsByKey.get(key) ?? lotsByKey.set(key, []).get(key)!).push({ batchId: lotSeq, batchNo: r.batchNo ?? "", expiryDate: r.expiryDate, qty: r.qty });
     const daysLeft = daysLeftOf(today, r.expiryDate);
     if (daysLeft <= 0) expiredByKey.set(key, (expiredByKey.get(key) ?? 0) + num(r.qty));
@@ -404,7 +411,12 @@ export async function getTransferSuggestions(
       usedDefaultCount: filtered.filter((r) => r.usedDefault).length,
       skuIdsFilter,
       expiryDrivenCount: filtered.filter((r) => r.expiryDriven).length,
-      expiredHeldTotal: r1(filtered.reduce((acc, r) => acc + r.expiredHeld, 0)),
+      /* expiredHeld 是 (SKU, 调出仓) 的一个事实，却复制在该仓的**每一条**建议行上：
+         一个调出仓供三个缺口仓，直接求和就把同一批过期货算三遍。先按 (skuId, fromWarehouseId) 去重再合计。 */
+      expiredHeldTotal: Number(
+        [...new Map(filtered.map((r) => [`${r.skuId}|${r.fromWarehouseId}`, r.expiredHeld])).values()]
+          .reduce((acc, v) => dAdd(acc, String(v), 4), "0"),
+      ),
       expiryToday: today,
     },
   };

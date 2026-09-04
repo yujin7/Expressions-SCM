@@ -1,5 +1,5 @@
 /**
- * 库存预警表 v2（inventory-alerts/v2）+ 爆单 v2（sales-spike/v2）+ 看门狗 why 载荷。
+ * 库存预警表 v3（inventory-alerts/v3）+ 爆单 v2（sales-spike/v2）+ 看门狗 why 载荷。
  *
  * 覆盖审计 #1（未结供给降级，在库 0 不降）、#4（why）、#5（优先级拆项）、#6（学习交期只观察）、
  * #7（大促预期内爆单降严重度 + 日历覆盖率）、#8（reason/gaps 透传）、#11b（临期/积压两种预警开始产出）、
@@ -110,7 +110,7 @@ describe("库存预警表 v2 + 爆单 v2 + 看门狗 why", () => {
     const { db, client } = await createTestDb();
     try {
       const { hot, cold, aging, slow, today, promo } = await seed(db);
-      expect(INVENTORY_ALERTS_CACHE_KEY).toBe("inventory-alerts/v2");
+      expect(INVENTORY_ALERTS_CACHE_KEY).toBe("inventory-alerts/v3");
       expect(SALES_SPIKE_CACHE_KEY).toBe("sales-spike/v2");
 
       /* ── 爆单 v2 ── */

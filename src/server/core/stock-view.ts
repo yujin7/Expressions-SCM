@@ -135,3 +135,24 @@ export const EXPIRY_TIER_DAYS = {
   m18: 548,
   m24: 730,
 } as const;
+
+/**
+ * 批次参考层（`batch_stocks`）**盘点期间收口**——唯一权威。
+ *
+ * `batch_stocks` 的唯一键是 (sku, warehouse, stocktake_date, prod_date, expiry_date, batch_no)：
+ * 同一批实物货在**每个盘点期间**都有独立一行，多期并存是正常状态，不是脏数据。
+ * 直接把全表相加，效期量会随盘点次数成倍虚增（两期 ≈ ×2）；在调拨建议里更会因为
+ * 「已过期量按多期累加后 ≥ 在库」把整仓可调拨量清零。
+ *
+ * 口径：**逐仓**取该仓最大的 `stocktake_date`，只保留该期的行。
+ * 逐仓而不是全局——各仓盘点节奏不同，用全局最新期会把慢盘的仓整仓抹掉。
+ * （原实现在 `modules/quality/service.ts` 的召回范围里，本函数即从那里提炼，两处同源。）
+ */
+export function latestStocktakeRows<T extends { warehouseId: number; stocktakeDate: string }>(rows: T[]): T[] {
+  const latestByWarehouse = new Map<number, string>();
+  for (const r of rows) {
+    const cur = latestByWarehouse.get(r.warehouseId);
+    if (cur == null || r.stocktakeDate > cur) latestByWarehouse.set(r.warehouseId, r.stocktakeDate);
+  }
+  return rows.filter((r) => latestByWarehouse.get(r.warehouseId) === r.stocktakeDate);
+}
