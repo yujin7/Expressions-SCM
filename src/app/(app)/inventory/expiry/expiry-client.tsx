@@ -8,7 +8,7 @@ import { App, Card, Select, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import { exportCsv } from "@/components/exportCsv";
-import { formatQty } from "@/components/format";
+import { formatQty, formatYuan } from "@/components/format";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
 import SkuHoverCard from "@/components/SkuHoverCard";
@@ -26,6 +26,8 @@ interface Row {
   daysLeft: number;
   qty: number;
   bucket: string;
+  /** 非价格可见角色：服务端 maskSensitive 已删键 → undefined */
+  amount?: string | null;
 }
 
 interface BrandMatrixRow {
@@ -39,7 +41,9 @@ interface Data {
   today: string;
   rows: Row[];
   total: number;
-  bucketCounts: Record<string, { batches: number; qty: number }>;
+  canSeeValue?: boolean;
+  costCoverage: { covered: number; total: number } | null;
+  bucketCounts: Record<string, { batches: number; qty: number; amount?: string }>;
   brandMatrix: BrandMatrixRow[];
   brands: string[];
   brand: string | null;
@@ -122,9 +126,10 @@ function ExpiryInner() {
       all.push(...d.rows);
       if (all.length >= d.total) break;
     }
+    const withValue = Boolean(data?.canSeeValue);
     exportCsv(`效期批次-${data?.today ?? ""}`,
-      ["SKU编码","名称","品牌","仓库","批次","生产日期","到期日","剩余天数","数量"],
-      all.map((r) => [r.skuCode, r.skuName, r.brand, r.warehouse, r.batchNo, r.productionDate, r.expiryDate, r.daysLeft, r.qty]),
+      ["SKU编码","名称","品牌","仓库","批次","生产日期","到期日","剩余天数","数量", ...(withValue ? ["金额"] : [])],
+      all.map((r) => [r.skuCode, r.skuName, r.brand, r.warehouse, r.batchNo, r.productionDate, r.expiryDate, r.daysLeft, r.qty, ...(withValue ? [r.amount ?? ""] : [])]),
       all.length < serverTotal
         ? `……仅导出前 ${all.length} 行，服务端共 ${serverTotal} 行（浏览器分页取数已达上限）；请缩小筛选范围，或改用「导出任务」`
         : undefined,
@@ -154,6 +159,20 @@ function ExpiryInner() {
         ),
     },
     { title: "数量", dataIndex: "qty", width: 100, align: "right", render: (v: number) => formatQty(String(v)) },
+    // W2-5：金额（数量 × 单位成本，core/valuation）——没有它，处置队列只能按数量排序
+    ...(data?.canSeeValue
+      ? ([{
+          title: "金额",
+          dataIndex: "amount",
+          width: 130,
+          align: "right" as const,
+          sorter: (a: Row, b: Row) => Number(a.amount ?? 0) - Number(b.amount ?? 0),
+          render: (v: string | null | undefined) =>
+            v == null
+              ? <Tooltip title="该 SKU 无单位成本（sku_costs / 财务运营成本观察均无）"><Typography.Text type="secondary">无成本</Typography.Text></Tooltip>
+              : formatYuan(v),
+        }] as ColumnsType<Row>)
+      : []),
   ];
 
   const matrixColumns: ColumnsType<BrandMatrixRow> = [
@@ -180,7 +199,7 @@ function ExpiryInner() {
       <Typography.Title level={4} style={{ marginTop: 0 }}>效期批次</Typography.Title>
       <CaliberNote
         summary={<>批次 × 仓库的实物处置视图；按 SKU 的决策见「风险库存处置」。{data ? <>　口径日 {data.today}，剩余天数升序。</> : null}</>}
-        detail={<div><p>数据源：batch_stocks 参考层（效期盘点载体，非账本）。七段位与经营驾驶舱同源：已过期 / ≤3 月 / 3–6 月 / 6–12 月 / 12–18 月 / 18–24 月 / &gt;24 月。</p><p>「段位 × 品牌」矩阵按当前仓库筛选统计（不受段位/品牌/搜索影响）；点击单元格直达该品牌该段位的批次；无品牌 SKU 归「(未设品牌)」。指标 id：expiryByBrand。</p></div>}
+        detail={<div><p>数据源：batch_stocks 参考层（效期盘点载体，非账本）。七段位与经营驾驶舱同源：已过期 / ≤3 月 / 3–6 月 / 6–12 月 / 12–18 月 / 18–24 月 / &gt;24 月。</p><p>「段位 × 品牌」矩阵按当前仓库筛选统计（不受段位/品牌/搜索影响）；点击单元格直达该品牌该段位的批次；无品牌 SKU 归「(未设品牌)」。指标 id：expiryByBrand。</p>{data?.canSeeValue ? <p>金额 = 数量 × 单位成本（唯一权威 core/valuation：sku_costs 优先，其次财务运营成本观察）。{data.costCoverage ? `本次口径内 ${data.costCoverage.covered}/${data.costCoverage.total} 个批次有单位成本，其余显示「无成本」且不计入段位金额。` : null}金额按 PRICE_VISIBLE_ROLES 服务端剥离。</p> : null}</div>}
       />
       <Card size="small" title="效期分布 · 段位 × 品牌" style={{ marginBottom: 12 }} extra={brand ? <a onClick={() => listState.setFilter({ brand: "" })}>清除品牌筛选「{brand}」</a> : null}>
         <Table<BrandMatrixRow>
@@ -212,7 +231,10 @@ function ExpiryInner() {
                 >
                   {b.label}
                   <span className="expiry-bucket-filter__count">
-                    （{data?.bucketCounts[b.key]?.batches ?? 0} 批 / {formatQty(String(data?.bucketCounts[b.key]?.qty ?? 0))}）
+                    （{data?.bucketCounts[b.key]?.batches ?? 0} 批 / {formatQty(String(data?.bucketCounts[b.key]?.qty ?? 0))}
+                    {data?.canSeeValue && data.bucketCounts[b.key]?.amount
+                      ? ` / ${formatYuan(data.bucketCounts[b.key]!.amount!)}`
+                      : ""}）
                   </span>
                 </Tag.CheckableTag>
               </Tooltip>

@@ -132,7 +132,9 @@ const STATUS_TABS = [
   { key: "draft", label: "草稿" },
   { key: "pending", label: "待审批" },
   { key: "completed", label: "已完成" },
+  // W2-3：短关（已审批/执行中 → 已关闭）与作废（草稿 → 已作废）落地后，这两个页签才有数据来源
   { key: "closed", label: "已关闭" },
+  { key: "void", label: "已作废" },
 ];
 
 function SubtypeTag({ subtype }: { subtype: string }) {

@@ -7,7 +7,12 @@
  * - 销速：sales_monthly 近3月 ÷ 91（窗口动态回推，与驾驶舱/R11 同法）；
  * - 在库：Σ stock_balances + 快照仓最新快照（全网口径 D20，与 R11 同法本地重实现）。
  * 动作判定 = rules/risk-action.ts 纯函数；「正常」不进列表。
- * 全表无金额字段，免脱敏；只读不写库。
+ *
+ * 金额（W2-5）：单位成本走 `core/valuation.resolveUnitCosts` 唯一权威——
+ * `amount` = 在库 × 单位成本，`atRiskAmount` = 临期(含过期)量 × 单位成本。
+ * 两键都在 SENSITIVE_FIELDS，调用方按 canSeePrices 请求、出口经 maskSensitive 兜底。
+ * 没有金额，处置队列只能按数量排，5 万元的临期和 50 元的临期在页面上一样重。
+ * 只读不写库。
  */
 import { and, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
 import { loadExternalVelocitySafe, type ExternalVelocity } from "@/server/modules/report/external-velocity";
@@ -21,6 +26,8 @@ import { ApiError } from "@/server/modules/master/common";
 import { todayShanghai } from "@/server/modules/master/common";
 import { RISK_ACTION_ORDER, suggestRiskAction, type RiskAction } from "@/server/rules/risk-action";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
+import { dMul } from "@/server/core/decimal";
+import { resolveUnitCosts } from "@/server/core/valuation";
 import { coverDays, daysLeftOf, getOnHandBySku, latestStocktakeRows } from "@/server/core/stock-view";
 import { num, r1 } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
@@ -76,6 +83,10 @@ export interface RiskRow {
   /** 外部观察（简道云天猫）近 30 天净需求与最近售出日；未映射/缺席 = null，不是 0 */
   externalNet30: number | null;
   externalLastSold: string | null;
+  /** 在库金额 = 在库 × 单位成本；无成本 → null，非价格角色 → 缺键 */
+  amount?: string | null;
+  /** 风险金额 = 临期(含已过期)量 × 单位成本；处置队列按它排序 */
+  atRiskAmount?: string | null;
 }
 
 export interface RiskWorklist {
@@ -87,7 +98,11 @@ export interface RiskWorklist {
 }
 
 export async function getRiskWorklist(
-  query: { q?: string; action?: string; page?: number; pageSize?: number; precise?: boolean; all?: boolean },
+  query: {
+    q?: string; action?: string; page?: number; pageSize?: number; precise?: boolean; all?: boolean;
+    /** 是否附带金额列（调用方按 canSeePrices 决定） */
+    withValue?: boolean;
+  },
   dbArg?: AnyDb,
   externalVelocityArg?: ExternalVelocity,
 ): Promise<RiskWorklist> {
@@ -235,6 +250,16 @@ export async function getRiskWorklist(
       externalNet30: externalVelocity.bySku[String(sku.id)]?.net30 ?? null,
       externalLastSold: externalVelocity.bySku[String(sku.id)]?.lastSoldDate ?? null,
     });
+  }
+
+  /* ── 金额（可选；单位成本唯一权威 core/valuation） ── */
+  if (query.withValue) {
+    const unitCosts = await resolveUnitCosts(db, all.map((r) => r.skuId));
+    for (const row of all) {
+      const unitCost = unitCosts.get(row.skuId)?.unitCost ?? null;
+      row.amount = unitCost == null ? null : dMul(String(row.onHand), unitCost, 2);
+      row.atRiskAmount = unitCost == null ? null : dMul(String(row.nearQty), unitCost, 2);
+    }
   }
 
   /* ── 汇总/筛选/排序/分页 ── */

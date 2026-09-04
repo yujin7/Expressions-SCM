@@ -9,8 +9,10 @@ import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { exportCsv } from "@/components/exportCsv";
 import ListToolbar from "@/components/ListToolbar";
+import { AsyncExportButton } from "@/components/ExportButton";
 import { useListState } from "@/components/useListState";
 import CaliberNote from "@/components/CaliberNote";
+import { formatYuan } from "@/components/format";
 import SkuHoverCard from "@/components/SkuHoverCard";
 
 interface RiskRow {
@@ -32,6 +34,9 @@ interface RiskRow {
   disposalId: number | null;
   externalNet30: number | null;
   externalLastSold: string | null;
+  /** 非价格可见角色：服务端 maskSensitive 已删键 → undefined */
+  amount?: string | null;
+  atRiskAmount?: string | null;
 }
 
 interface RiskData {
@@ -40,6 +45,7 @@ interface RiskData {
   rows: RiskRow[];
   total: number;
   byAction: Record<string, number>;
+  canSeeValue?: boolean;
 }
 
 const ACTION_COLORS: Record<string, string> = {
@@ -126,9 +132,10 @@ export default function RiskClient() {
       all.push(...d.rows);
       if (all.length >= d.total) break;
     }
+    const withValue = Boolean(data?.canSeeValue);
     exportCsv(`风险库存处置-${data?.today ?? ""}`,
-      ["建议动作","SKU编码","名称","品牌","在库","最短剩余效期(天)","临期阈值(天)","过期量","阈值内到期量","日均销","可销天数","货盘注记","已登记"],
-      all.map((r) => [r.action, r.code, r.name, r.brand, r.onHand, r.minDaysLeft, r.nearExpiryDays, r.expiredQty, r.nearQty, r.daily, r.cover, r.palletRemark, r.disposalOpen ? "是" : ""]),
+      ["建议动作","SKU编码","名称","品牌","在库", ...(withValue ? ["在库金额","风险金额"] : []), "最短剩余效期(天)","临期阈值(天)","过期量","阈值内到期量","日均销","可销天数","货盘注记","已登记"],
+      all.map((r) => [r.action, r.code, r.name, r.brand, r.onHand, ...(withValue ? [r.amount ?? "", r.atRiskAmount ?? ""] : []), r.minDaysLeft, r.nearExpiryDays, r.expiredQty, r.nearQty, r.daily, r.cover, r.palletRemark, r.disposalOpen ? "是" : ""]),
       all.length < serverTotal
         ? `……仅导出前 ${all.length} 行，服务端共 ${serverTotal} 行（浏览器分页取数已达上限）；请缩小筛选范围，或改用「导出任务」`
         : undefined,
@@ -155,6 +162,36 @@ export default function RiskClient() {
     { title: "名称", dataIndex: "name", ellipsis: true, width: 220 },
     { title: "品牌", dataIndex: "brand", width: 100, render: (v: string | null) => v ?? "—" },
     { title: "在库", dataIndex: "onHand", width: 95, align: "right", render: (v: number) => v.toLocaleString("zh-CN") },
+    // W2-5：处置排序需要「钱」——单位成本唯一权威 core/valuation，金额键按 PRICE_VISIBLE_ROLES 服务端剥离
+    ...(data?.canSeeValue
+      ? ([
+          {
+            title: "在库金额",
+            dataIndex: "amount",
+            width: 120,
+            align: "right" as const,
+            sorter: (a: RiskRow, b: RiskRow) => Number(a.amount ?? 0) - Number(b.amount ?? 0),
+            render: (v: string | null | undefined) =>
+              v == null ? <Typography.Text type="secondary">无成本</Typography.Text> : formatYuan(v),
+          },
+          {
+            title: "风险金额",
+            dataIndex: "atRiskAmount",
+            width: 120,
+            align: "right" as const,
+            defaultSortOrder: "descend" as const,
+            sorter: (a: RiskRow, b: RiskRow) => Number(a.atRiskAmount ?? 0) - Number(b.atRiskAmount ?? 0),
+            render: (v: string | null | undefined) =>
+              v == null
+                ? <Typography.Text type="secondary">无成本</Typography.Text>
+                : (
+                  <Tooltip title="阈值内到期量（含已过期）× 单位成本——按它排序即「先处置钱最多的」">
+                    <Typography.Text strong={Number(v) > 0}>{formatYuan(v)}</Typography.Text>
+                  </Tooltip>
+                ),
+          },
+        ] as ColumnsType<RiskRow>)
+      : []),
     {
       title: "最短剩余效期",
       dataIndex: "minDaysLeft",
@@ -261,6 +298,10 @@ export default function RiskClient() {
       <ListToolbar
         state={listState}
         onExport={() => void doExport()}
+        primaryActions={
+          /* W2-4：页脚一直在推销的「导出任务」现在真的有入口（EXPORT_KINDS.risk） */
+          <AsyncExportButton kind="risk" params={{ q, ...(action ? { action } : {}) }} />
+        }
         extra={
           <>
             {ACTION_ORDER.map((a) => (

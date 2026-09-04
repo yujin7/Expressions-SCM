@@ -1,8 +1,14 @@
 import { and, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 
-import { batches, skus, spus, stockBalances, stockLedger, warehouses } from "@/db/schema";
+import {
+  batches, ctDocs, flDocs, jsDocs, shDocs, skus, spus, stockBalances, stockDocs, stockLedger,
+  tlDocs, warehouses,
+} from "@/db/schema";
 import type { AnyDb } from "@/server/posting/post";
+import { dMul, dQty } from "@/server/core/decimal";
 import { resolveDb } from "@/server/core/svc";
+import { resolveUnitCosts } from "@/server/core/valuation";
+import { LEDGER_SOURCE_TARGETS, ledgerSourceHref, type LedgerSourceTable } from "@/lib/ledger-source-docs";
 
 
 /** SKU×仓库×批次 余额（实时仓口径；快照仓 1.1 并入）。nonzero 默认 true=隐藏零余额行 */
@@ -117,10 +123,93 @@ export async function listBalancesBySpu(
 }
 
 /** 库存流水（唯一事实源，仅追加）分页查询 */
+export interface LedgerRow {
+  id: number;
+  occurredAt: Date;
+  skuId: number;
+  skuCode: string;
+  skuName: string;
+  warehouseId: number;
+  warehouseName: string;
+  batchId: number | null;
+  batchNo: string | null;
+  qtyDelta: string;
+  /** 该 (SKU, 仓库) 在**筛选窗口内**截至本行的累计余额（SQL 窗口函数算，非浏览器端累加） */
+  balanceQty: string;
+  sourceDocType: string;
+  sourceDocId: number;
+  /** 来源单号（解析失败为 null——不编造） */
+  sourceDocNo: string | null;
+  /** 来源单据页链接；无单号即 null */
+  sourceHref: string | null;
+  action: string;
+  /** 本行金额 = 数量 × 单位成本（core/valuation）；无成本 → null。SENSITIVE_FIELDS 收录 amount */
+  amount?: string | null;
+  /** 窗口内累计余额金额；无成本 → null。SENSITIVE_FIELDS 收录 balanceAmount */
+  balanceAmount?: string | null;
+}
+
+const LEDGER_SOURCE_TABLES = {
+  stock_docs: stockDocs,
+  fl_docs: flDocs,
+  tl_docs: tlDocs,
+  sh_docs: shDocs,
+  ct_docs: ctDocs,
+  js_docs: jsDocs,
+} as const;
+
+/** 逐来源表批量解析单号（每页最多 6 次查询；解析不到的行 docNo=null） */
+async function resolveSourceDocNos(
+  db: AnyDb,
+  rows: { sourceDocType: string; sourceDocId: number }[],
+): Promise<Map<string, string>> {
+  const byTable = new Map<LedgerSourceTable, Set<number>>();
+  for (const r of rows) {
+    const target = LEDGER_SOURCE_TARGETS[r.sourceDocType];
+    if (!target) continue;
+    const set = byTable.get(target.table) ?? new Set<number>();
+    set.add(r.sourceDocId);
+    byTable.set(target.table, set);
+  }
+  const out = new Map<string, string>();
+  await Promise.all(
+    [...byTable.entries()].map(async ([tableKey, ids]) => {
+      const table = LEDGER_SOURCE_TABLES[tableKey];
+      const found: { id: number; docNo: string }[] = await db
+        .select({ id: table.id, docNo: table.docNo })
+        .from(table)
+        .where(inArray(table.id, [...ids]));
+      for (const row of found) out.set(`${tableKey}:${row.id}`, row.docNo);
+    }),
+  );
+  return out;
+}
+
+/**
+ * 库存流水清单（D-W2-2）。
+ *
+ * 三个此前缺失、但流水页离了就没法用的东西：
+ * 1. **批次**：`stock_ledger.batch_id` 一直有，页面从不显示——召回时最要紧的一列；
+ * 2. **窗口内累计余额**：`sum(qty_delta) over (partition by sku,仓 order by 时间,id)`，
+ *    在 **SQL 里**按排序窗口算，再对结果分页。浏览器端累加只能对当前这一页，翻页即错；
+ * 3. **金额**：`core/valuation` 唯一权威解析单位成本（数量 × 单位成本），
+ *    `amount`/`balanceAmount` 进 SENSITIVE_FIELDS，非价格角色由 maskSensitive 剥离。
+ *
+ * `withValue=false`（默认）完全不查成本，非价格角色连一次成本查询都不会发生。
+ */
 export async function listLedger(
-  opts: { skuId?: number; warehouseId?: number; from?: string; to?: string; page: number; pageSize: number },
+  opts: {
+    skuId?: number;
+    warehouseId?: number;
+    from?: string;
+    to?: string;
+    page: number;
+    pageSize: number;
+    /** 是否附带金额列（调用方按 canSeePrices 决定；DTO 出口仍走 maskSensitive 兜底） */
+    withValue?: boolean;
+  },
   dbArg?: AnyDb,
-): Promise<{ rows: unknown[]; total: number }> {
+): Promise<{ rows: LedgerRow[]; total: number }> {
   const db = await resolveDb(dbArg);
   const conds = [];
   if (opts.skuId) conds.push(eq(stockLedger.skuId, opts.skuId));
@@ -129,29 +218,99 @@ export async function listLedger(
   if (opts.to) conds.push(lte(stockLedger.occurredAt, new Date(opts.to)));
   const where = conds.length ? and(...conds) : undefined;
 
-  const [rows, [{ total }]] = await Promise.all([
+  /* 累计余额必须在**筛选后的整个窗口**上按升序算，因此先做带窗口函数的子查询，
+     再在外层按时间倒序分页——把累加放到前端就只能对当前页正确，翻到第 2 页立刻错。 */
+  const windowed = db
+    .select({
+      id: stockLedger.id,
+      occurredAt: stockLedger.occurredAt,
+      skuId: stockLedger.skuId,
+      warehouseId: stockLedger.warehouseId,
+      batchId: stockLedger.batchId,
+      qtyDelta: stockLedger.qtyDelta,
+      sourceDocType: stockLedger.sourceDocType,
+      sourceDocId: stockLedger.sourceDocId,
+      action: stockLedger.action,
+      balanceQty: sql<string>`sum(${stockLedger.qtyDelta}) over (
+        partition by ${stockLedger.skuId}, ${stockLedger.warehouseId}
+        order by ${stockLedger.occurredAt} asc, ${stockLedger.id} asc
+        rows between unbounded preceding and current row
+      )`.as("balance_qty"),
+    })
+    .from(stockLedger)
+    .where(where)
+    .as("w");
+
+  type RawLedgerRow = {
+    id: number; occurredAt: Date; skuId: number; skuCode: string; skuName: string;
+    warehouseId: number; warehouseName: string; batchId: number | null; batchNo: string | null;
+    qtyDelta: string; balanceQty: string; sourceDocType: string; sourceDocId: number; action: string;
+  };
+  const [rows, [{ total }]]: [RawLedgerRow[], { total: number }[]] = await Promise.all([
     db
       .select({
-        id: stockLedger.id,
-        occurredAt: stockLedger.occurredAt,
+        id: windowed.id,
+        occurredAt: windowed.occurredAt,
+        skuId: windowed.skuId,
         skuCode: skus.code,
         skuName: skus.name,
+        warehouseId: windowed.warehouseId,
         warehouseName: warehouses.name,
-        qtyDelta: stockLedger.qtyDelta,
-        sourceDocType: stockLedger.sourceDocType,
-        sourceDocId: stockLedger.sourceDocId,
-        action: stockLedger.action,
+        batchId: windowed.batchId,
+        batchNo: batches.batchNo,
+        qtyDelta: windowed.qtyDelta,
+        balanceQty: windowed.balanceQty,
+        sourceDocType: windowed.sourceDocType,
+        sourceDocId: windowed.sourceDocId,
+        action: windowed.action,
       })
-      .from(stockLedger)
-      .innerJoin(skus, eq(stockLedger.skuId, skus.id))
-      .innerJoin(warehouses, eq(stockLedger.warehouseId, warehouses.id))
-      .where(where)
-      .orderBy(desc(stockLedger.occurredAt), desc(stockLedger.id))
+      .from(windowed)
+      .innerJoin(skus, eq(windowed.skuId, skus.id))
+      .innerJoin(warehouses, eq(windowed.warehouseId, warehouses.id))
+      .leftJoin(batches, eq(windowed.batchId, batches.id))
+      .orderBy(desc(windowed.occurredAt), desc(windowed.id))
       .limit(opts.pageSize)
       .offset((opts.page - 1) * opts.pageSize),
     db.select({ total: sql<number>`count(*)::int` }).from(stockLedger).where(where),
   ]);
-  return { rows, total };
+
+  const docNos = await resolveSourceDocNos(db, rows);
+  const unitCosts = opts.withValue
+    ? await resolveUnitCosts(db, rows.map((r) => r.skuId))
+    : null;
+
+  return {
+    rows: rows.map((r) => {
+      const target = LEDGER_SOURCE_TARGETS[r.sourceDocType];
+      const sourceDocNo = target ? docNos.get(`${target.table}:${r.sourceDocId}`) ?? null : null;
+      const unitCost = unitCosts?.get(r.skuId)?.unitCost ?? null;
+      return {
+        id: r.id,
+        occurredAt: r.occurredAt,
+        skuId: r.skuId,
+        skuCode: r.skuCode,
+        skuName: r.skuName,
+        warehouseId: r.warehouseId,
+        warehouseName: r.warehouseName,
+        batchId: r.batchId,
+        batchNo: r.batchNo,
+        qtyDelta: dQty(r.qtyDelta),
+        balanceQty: dQty(r.balanceQty),
+        sourceDocType: r.sourceDocType,
+        sourceDocId: r.sourceDocId,
+        sourceDocNo,
+        sourceHref: ledgerSourceHref(r.sourceDocType, sourceDocNo),
+        action: r.action,
+        ...(opts.withValue
+          ? {
+              amount: unitCost == null ? null : dMul(r.qtyDelta, unitCost, 2),
+              balanceAmount: unitCost == null ? null : dMul(r.balanceQty, unitCost, 2),
+            }
+          : {}),
+      };
+    }),
+    total,
+  };
 }
 
 /**

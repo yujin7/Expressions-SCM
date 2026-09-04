@@ -15,6 +15,7 @@ import { ApiError } from "@/server/modules/master/common";
 import { resolveDb } from "@/server/core/svc";
 import {
   approveStockDocSchema, createStockDocSchema, type ManualSubtype, reverseStockDocSchema,
+  shortCloseStockDocSchema, voidStockDocSchema, withdrawStockDocSchema,
 } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "./batch-allocation";
 
@@ -168,6 +169,93 @@ export async function submitStockDoc(user: SessionUser, id: number, version: num
   if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
   await writeAudit(db, { userId: user.id, entity: "stock_doc", entityId: id, action: "submit" });
   return updated[0];
+}
+
+// ---------- 撤回 / 作废 / 短关（W2-3：此前只有提交/审批/红字，草稿无法放弃，「已关闭」页签永远为空） ----------
+
+/**
+ * 三个动作共用的落库骨架：状态机算目标态 → 乐观锁更新 → 同事务写审计。
+ * 不碰 stock_doc_lines，不碰任何流水：短关只关剩余，已过账数量的纠错唯一路径仍是红字冲销（R12）。
+ */
+async function transitionStockDoc(
+  user: SessionUser,
+  id: number,
+  version: number,
+  action: "withdraw" | "void" | "short_close",
+  opts: { reason?: string | null; requireOwner: boolean; badStatusMessage: (status: string) => string },
+  dbArg?: AnyDb,
+): Promise<StockDocRow> {
+  const db = await resolveDb(dbArg);
+  return db.transaction(async (tx: AnyDb) => {
+    const [doc]: StockDocRow[] = await tx.select().from(stockDocs).where(eq(stockDocs.id, id));
+    if (!doc) throw new ApiError(404, "单据不存在");
+    if (opts.requireOwner && doc.createdBy !== user.id && !user.roles.includes("admin")) {
+      throw new ApiError(403, "仅制单人或管理员可执行此操作");
+    }
+    let target: DocStatus;
+    try {
+      target = nextStatus(doc.status as DocStatus, action);
+    } catch (e) {
+      if (e instanceof TransitionError) throw new ApiError(409, opts.badStatusMessage(doc.status));
+      throw e;
+    }
+    const reason = opts.reason?.trim() || null;
+    const updated: StockDocRow[] = await tx
+      .update(stockDocs)
+      .set({
+        status: target,
+        ...(reason ? { closedReason: reason } : {}),
+        version: sql`${stockDocs.version} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(stockDocs.id, id), eq(stockDocs.version, version)))
+      .returning();
+    if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
+    await writeAudit(tx, {
+      userId: user.id,
+      entity: "stock_doc",
+      entityId: id,
+      action,
+      before: { status: doc.status, version: doc.version },
+      after: { status: target, reason },
+    });
+    return updated[0];
+  });
+}
+
+/** 撤回：待审批 → 草稿（制单人或管理员）。审批人已通过的单不在此列——纠错走红字。 */
+export async function withdrawStockDoc(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<StockDocRow> {
+  const v = withdrawStockDocSchema.parse(input);
+  return transitionStockDoc(user, id, v.version, "withdraw", {
+    requireOwner: true,
+    badStatusMessage: (status) => `仅待审批单据可撤回，当前状态: ${status}`,
+  }, dbArg);
+}
+
+/** 作废草稿：草稿 → 已作废（制单人或管理员，必须留原因）。草稿从此可以被放弃，而不是永远挂着。 */
+export async function voidStockDoc(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<StockDocRow> {
+  const v = voidStockDocSchema.parse(input);
+  return transitionStockDoc(user, id, v.version, "void", {
+    reason: v.reason,
+    requireOwner: true,
+    badStatusMessage: (status) => `仅草稿可作废，当前状态: ${status}`,
+  }, dbArg);
+}
+
+/**
+ * 短关：已审批/执行中 → 已关闭（仓管或管理员，必须留原因）。
+ * **不触任何库存**：已过账的部分保持原样，本动作只声明「剩余不再执行」。
+ */
+export async function shortCloseStockDoc(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<StockDocRow> {
+  const v = shortCloseStockDocSchema.parse(input);
+  if (!user.roles.includes("warehouse") && !user.roles.includes("admin")) {
+    throw new ApiError(403, "仅仓管或管理员可短关库存单据");
+  }
+  return transitionStockDoc(user, id, v.version, "short_close", {
+    reason: v.reason,
+    requireOwner: false,
+    badStatusMessage: (status) => `仅已审批或执行中的单据可短关，当前状态: ${status}`,
+  }, dbArg);
 }
 
 // ---------- 过账事件构造（方向由子类型决定；行数据源=stock_doc_lines） ----------

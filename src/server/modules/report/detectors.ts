@@ -23,7 +23,8 @@ import { type AnyDb, resolveDb } from "@/server/modules/outsource/common";
 import { num, r1 } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
 
-export type DetectorKind = "sales_stop" | "channel_shift" | "velocity";
+export const DETECTOR_KINDS = ["sales_stop", "channel_shift", "velocity"] as const;
+export type DetectorKind = (typeof DETECTOR_KINDS)[number];
 export type DetectorSeverity = "high" | "medium";
 
 export const DETECTOR_KIND_LABELS: Record<DetectorKind, string> = {

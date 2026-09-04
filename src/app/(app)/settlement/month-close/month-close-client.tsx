@@ -51,7 +51,15 @@ interface CloseCheck {
 interface Checklist {
   month: string;
   generatedAt: string;
+  /** W2-1：真实期间锁（period_locks），不再是「月份小于当前月」的日历推断 */
   periodClosed: boolean;
+  closedByName: string | null;
+  closedAt: string | null;
+  closeNote: string | null;
+  reopenedAt: string | null;
+  reopenReason: string | null;
+  closable: boolean;
+  pastMonth: boolean;
   checks: CloseCheck[];
   progress: { current: number; total: 6; percent: number };
   limitations: string[];
@@ -79,6 +87,10 @@ export default function MonthCloseClient() {
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [waiver, setWaiver] = useState<CloseCheck | null>(null);
   const [waiverNote, setWaiverNote] = useState("");
+  const isAdmin = !!me && me.roles.includes("admin");
+  const [lockAction, setLockAction] = useState<"close" | "reopen" | null>(null);
+  const [lockText, setLockText] = useState("");
+  const [lockSaving, setLockSaving] = useState(false);
 
   const monthKey = month.format("YYYY-MM");
   const load = useCallback(async () => {
@@ -117,6 +129,24 @@ export default function MonthCloseClient() {
     }
   };
 
+  const submitLock = async () => {
+    if (!lockAction) return;
+    setLockSaving(true);
+    try {
+      await postJson("/api/settlement/period-lock", lockAction === "close"
+        ? { intent: "close", period: monthKey, note: lockText.trim() || null }
+        : { intent: "reopen", period: monthKey, reason: lockText.trim() });
+      message.success(lockAction === "close" ? "已关账：该月过账入口已锁死" : "已重开期间（已留痕）");
+      setLockAction(null);
+      setLockText("");
+      await load();
+    } catch (error) {
+      message.error((error as Error).message);
+    } finally {
+      setLockSaving(false);
+    }
+  };
+
   const progressStatus = data?.checks.some((check) => check.autoState === "blocked")
     ? "exception"
     : "normal";
@@ -138,6 +168,21 @@ export default function MonthCloseClient() {
             onChange={(value) => value && setMonth(value)}
           />
           <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>刷新证据</Button>
+          {canWrite && data && !data.periodClosed ? (
+            <Button
+              type="primary"
+              disabled={!data.closable}
+              title={data.closable ? undefined : "六项检查全部收口、且该月已过完，才可关账"}
+              onClick={() => { setLockText(""); setLockAction("close"); }}
+            >
+              关账并锁定期间
+            </Button>
+          ) : null}
+          {isAdmin && data?.periodClosed ? (
+            <Button danger onClick={() => { setLockText(""); setLockAction("reopen"); }}>
+              重开期间
+            </Button>
+          ) : null}
         </Space>
       </Flex>
 
@@ -159,8 +204,8 @@ export default function MonthCloseClient() {
               <div>
                 <Typography.Title level={4} style={{ margin: 0 }}>{monthKey} 月结进度</Typography.Title>
                 <Space style={{ marginTop: 8 }}>
-                  <Tag color={data?.periodClosed ? "blue" : "gold"}>
-                    {data?.periodClosed ? "历史月份" : "预关账中"}
+                  <Tag color={data?.periodClosed ? "red" : data?.pastMonth ? "blue" : "gold"}>
+                    {data?.periodClosed ? "已关账（锁定）" : data?.pastMonth ? "历史月份·未关账" : "预关账中"}
                   </Tag>
                   <Typography.Text type="secondary">
                     {data ? dayjs(data.generatedAt).format("MM-DD HH:mm") : "—"} 更新
@@ -178,7 +223,11 @@ export default function MonthCloseClient() {
                   ? "已签认项目的底层证据发生变化，必须重新复核"
                   : "正常完成仅在自动控制通过时开放；其他情况须说明原因后例外关闭"
               }
-              description="本页是供应链预关账与运营签认，不替代法定会计或 ERP 总账关账。"
+              description={
+                data?.periodClosed
+                  ? `已由 ${data.closedByName ?? "—"} 于 ${data.closedAt ? dayjs(data.closedAt).format("YYYY-MM-DD HH:mm") : "—"} 关账；该月的任何过账（含红字冲销）都会被过账引擎拒绝，纠错请按当前开放期间冲销，或由管理员重开期间。`
+                  : "本页是供应链预关账与运营签认，不替代法定会计或 ERP 总账关账。关账后该月过账入口即被锁死。"
+              }
             />
           </Col>
         </Row>
@@ -327,6 +376,40 @@ export default function MonthCloseClient() {
           value={waiverNote}
           onChange={(event) => setWaiverNote(event.target.value)}
           placeholder="填写未处理原因、责任人和后续动作（至少 5 个字符）"
+        />
+      </Modal>
+
+      <Modal
+        title={lockAction === "close" ? `关账并锁定期间 ${monthKey}` : `重开期间 ${monthKey}`}
+        open={lockAction != null}
+        okText={lockAction === "close" ? "确认关账" : "确认重开"}
+        cancelText="取消"
+        okButtonProps={{
+          danger: true,
+          disabled: lockAction === "reopen" && lockText.trim().length < 5,
+        }}
+        confirmLoading={lockSaving}
+        onCancel={() => setLockAction(null)}
+        onOk={() => void submitLock()}
+      >
+        <Alert
+          type="warning"
+          showIcon
+          message={lockAction === "close"
+            ? "关账后，业务时间落在该月的任何过账都会被过账引擎拒绝——包括红字冲销。"
+            : "重开会解除该月的过账封锁，仅管理员可执行，原因写入审计日志。"}
+          description={lockAction === "close"
+            ? "纠错的正确做法是按当前开放期间做红字冲销；确需回到该月，请由管理员重开期间。"
+            : undefined}
+          style={{ marginBottom: 16 }}
+        />
+        <Input.TextArea
+          rows={3}
+          maxLength={500}
+          showCount
+          value={lockText}
+          onChange={(event) => setLockText(event.target.value)}
+          placeholder={lockAction === "close" ? "关账说明（可选）" : "重开原因（必填，至少 5 个字符）"}
         />
       </Modal>
     </div>
