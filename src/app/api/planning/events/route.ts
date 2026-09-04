@@ -7,12 +7,13 @@ import { createPlanEvent, listPlanEvents, PLAN_EVENT_KIND_LABELS } from "@/serve
 export async function GET(req: NextRequest) {
   try {
     const user = await guardRead();
-    const { page, pageSize, searchParams } = parseListQuery(req.url);
+    const { q, page, pageSize, searchParams } = parseListQuery(req.url);
     const num = (k: string): number | undefined => {
       const v = Number(searchParams.get(k));
       return Number.isInteger(v) && v > 0 ? v : undefined;
     };
     const data = await listPlanEvents(user as { roles: string[]; channelScope?: number[] | null }, {
+      q,
       skuId: num("skuId"),
       spuId: num("spuId"),
       channelId: num("channelId") ?? null,

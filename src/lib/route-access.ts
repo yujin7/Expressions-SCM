@@ -93,6 +93,9 @@ export const ROUTE_REGISTRY = {
   replenish_sop: { path: "/replenish/sop", label: "S&OP 计划周期", roles: ["pmc", "purchasing", "ops", "finance"], group: "planning", scopedMode: "channel_scoped", keywords: "sop consensus freeze execute 共识 冻结 执行" },
   replenish_reconcile: { path: "/replenish/reconcile", label: "运营提报核对", roles: ["pmc", "ops", "purchasing", "finance"], group: "planning", scopedMode: "channel_scoped", keywords: "reconcile ops demand tibao hedui 提报 核对" },
   replenish_pilot: { path: "/replenish/pilot", label: "补货试点候选", roles: ["pmc", "purchasing", "ops", "finance"], group: "planning", scopedMode: "public", keywords: "pilot shidian tier ownership 试点 分层 权责" },
+  // W2-#1：ops_plan_events 早有完整 CRUD 与两个消费者（补货行标签、爆单降级），却没有任何写入界面，
+  // 生产 0 行 → 整条「大促预期」路径是死的。本页是该表的唯一人工入口。
+  planning_events: { path: "/planning/events", label: "大促与计划事件", roles: ["pmc", "ops", "purchasing", "finance"], group: "planning", scopedMode: "channel_scoped", keywords: "promo calendar plan events dacu shangxin xiajia 大促 日历 计划事件 上新 下架 调价" },
   report_demand: { path: "/report/demand", label: "需求达成与货盘", group: "planning", scopedMode: "channel_scoped", keywords: "demand xuqiu huopan" },
   report_risk: { path: "/report/risk", label: "风险库存处置", group: "planning", scopedMode: "public", keywords: "risk fengxian chuzhi" },
   report_segmentation: { path: "/report/segmentation", label: "库存分层 ABC/XYZ", group: "planning", scopedMode: "public", keywords: "abc xyz fenceng segmentation" },

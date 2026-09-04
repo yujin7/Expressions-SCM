@@ -80,6 +80,26 @@ interface Workspace {
   limitations: string[];
 }
 
+/** W2-#4 冻结版本的执行通道：冻结让实时建议只读，执行必须从这里走，而不是挪到系统外。 */
+interface FrozenLine {
+  skuId: number;
+  skuCode: string;
+  skuName: string;
+  baseUom: string;
+  suggestedQty: string;
+  suppressed: boolean;
+  shortageDate: string | null;
+  orderByDate: string | null;
+  orderWindowMissed: boolean;
+  drafted: boolean;
+}
+
+interface FrozenExecution {
+  cycle: { id: number; month: string; name: string; status: SopStatus; planningVersionId: number; planDigest: string };
+  lines: FrozenLine[];
+  drafts: { docNo: string; bhId: number; lineCount: number; at: string; by: string | null }[];
+}
+
 const ROLE_META: Record<SopRole, { label: string; color: string }> = {
   ops: { label: "运营", color: "cyan" },
   pmc: { label: "PMC", color: "blue" },
@@ -241,6 +261,75 @@ export default function SopClient() {
       }, `${labels[target]}成功`),
     });
   };
+
+  /* ── W2-#4 按冻结计划开单 ──
+     此前冻结只有闸门没有出口：实时建议 409，冻结的那批需求却没有任何地方能提出来，
+     于是执行整体挪到系统外。这里是唯一的执行通道，数量取冻结版本的行，绝不回算实时建议。 */
+  const [execution, setExecution] = useState<FrozenExecution | null>(null);
+  const [execLoading, setExecLoading] = useState(false);
+  const [pickedSkus, setPickedSkus] = useState<number[]>([]);
+  const [includeSuppressed, setIncludeSuppressed] = useState(false);
+
+  const loadExecution = useCallback(async (cycleId: number) => {
+    setExecLoading(true);
+    try {
+      setExecution(await fetchJson<FrozenExecution>(`/api/replenish/sop?cycleId=${cycleId}`));
+    } catch {
+      setExecution(null);
+    } finally {
+      setExecLoading(false);
+    }
+  }, []);
+
+  const executable = cycle?.status === "frozen" || cycle?.status === "executing";
+  useEffect(() => {
+    if (cycle && executable) void loadExecution(cycle.id);
+    else setExecution(null);
+    setPickedSkus([]);
+  }, [cycle, executable, loadExecution]);
+
+  const draftFromFrozen = async () => {
+    if (!cycle) return;
+    setSaving(true);
+    try {
+      const res = await postJson<{ draft: { docNo: string; lineCount: number } }>("/api/replenish/sop", {
+        action: "execute_draft",
+        cycleId: cycle.id,
+        skuIds: pickedSkus.length ? pickedSkus : undefined,
+        includeSuppressed,
+      });
+      message.success(`已按冻结计划生成 BH 草稿 ${res.draft.docNo}（${res.draft.lineCount} 项），请走正常审批`);
+      setPickedSkus([]);
+      await load();
+      await loadExecution(cycle.id);
+    } catch (error) {
+      message.error((error as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const frozenColumns = useMemo<ColumnsType<FrozenLine>>(() => [
+    { title: "SKU", dataIndex: "skuCode", width: 140 },
+    { title: "名称", dataIndex: "skuName", width: 200, ellipsis: true },
+    {
+      title: "冻结建议量", dataIndex: "suggestedQty", width: 130, align: "right",
+      render: (v: string, r) => (
+        <Space size={4}>
+          <span>{Number(v).toLocaleString("zh-CN")} {r.baseUom}</span>
+          {r.suppressed ? <Tag color="orange">抑制</Tag> : null}
+        </Space>
+      ),
+    },
+    {
+      title: "最晚下单日", dataIndex: "orderByDate", width: 130,
+      render: (v: string | null, r) => v
+        ? <Typography.Text type={r.orderWindowMissed ? "danger" : undefined}>{v}{r.orderWindowMissed ? "（已过）" : ""}</Typography.Text>
+        : "—",
+    },
+    { title: "短缺日", dataIndex: "shortageDate", width: 120, render: (v: string | null) => v ?? "—" },
+    { title: "已开单", dataIndex: "drafted", width: 90, render: (v: boolean) => (v ? <Tag color="blue">已开</Tag> : "—") },
+  ], []);
 
   const decisionColumns = useMemo<ColumnsType<Decision>>(() => [
     {
@@ -417,6 +506,59 @@ export default function SopClient() {
               </Card>
             </Col>
           </Row>
+
+          {executable ? (
+            <Card
+              title="按冻结计划开单（唯一执行通道）"
+              extra={<Button size="small" icon={<ReloadOutlined />} onClick={() => void loadExecution(cycle.id)}>刷新</Button>}
+              style={{ marginBottom: 16 }}
+            >
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message="冻结后当月实时补货建议只读——需要下单就从这里走。数量取自冻结版本的行（不回算实时建议），仍是人工勾选生成 BH 草稿并走正常审批链。"
+              />
+              <Table<FrozenLine>
+                rowKey="skuId"
+                size="small"
+                loading={execLoading}
+                columns={frozenColumns}
+                dataSource={(execution?.lines ?? []).filter((l) => includeSuppressed || !l.suppressed)}
+                pagination={{ pageSize: 10, hideOnSinglePage: true }}
+                scroll={{ x: 820 }}
+                rowSelection={canManage ? {
+                  selectedRowKeys: pickedSkus,
+                  onChange: (keys) => setPickedSkus(keys as number[]),
+                } : undefined}
+                locale={{ emptyText: "冻结版本里没有可开单的行" }}
+              />
+              <Flex wrap gap={12} align="center" style={{ marginTop: 12 }}>
+                {canManage ? (
+                  <>
+                    <Button
+                      type="primary"
+                      loading={saving}
+                      disabled={(execution?.lines.length ?? 0) === 0}
+                      onClick={() => void draftFromFrozen()}
+                    >
+                      {pickedSkus.length ? `按冻结计划开单（${pickedSkus.length} 项）` : "按冻结计划开单（全部未抑制行）"}
+                    </Button>
+                    <Button size="small" onClick={() => setIncludeSuppressed((v) => !v)}>
+                      {includeSuppressed ? "隐藏被抑制行" : "显示并允许放行被抑制行"}
+                    </Button>
+                  </>
+                ) : (
+                  <Typography.Text type="secondary">仅 PMC/管理员可据此开单。</Typography.Text>
+                )}
+                <Typography.Text type="secondary">
+                  已开草稿：{execution?.drafts.length
+                    ? execution.drafts.map((d) => `${d.docNo}（${d.lineCount} 项，${d.by ?? "未知"}）`).join("；")
+                    : "无"}
+                </Typography.Text>
+              </Flex>
+            </Card>
+          ) : null}
 
           <Card title="签认历史">
             <Table<Decision>

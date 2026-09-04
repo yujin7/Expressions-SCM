@@ -43,7 +43,9 @@ export interface CollectTriggerOptions {
   reviewLimit?: number;
 }
 
-export const DEFAULT_REVIEW_PREFIXES = ["blocked", "doc_aging"] as const;
+/* W2-#7 起加入 ops_demand：运营提报「标红且未处置」必须走到人面前，否则它就停在核对看板上
+   （那正是本轮修的问题）。量级极小（只有超阈值且未接受/未驳回的行），不会挤占预算。 */
+export const DEFAULT_REVIEW_PREFIXES = ["blocked", "doc_aging", "ops_demand"] as const;
 export const DEFAULT_TRIGGER_LIMIT = 500;
 
 export interface CollectTriggerResult {

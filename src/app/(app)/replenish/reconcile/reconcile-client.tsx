@@ -37,6 +37,10 @@ interface ReconcileRow {
   diffPct: number | null;
   flagged: boolean;
   flagReason: string | null;
+  /** W2-#7 处置结果；未处置 = null */
+  disposition: { decision: "accepted" | "rejected"; agreedQty: string | null; reason: string | null; by: string | null; at: string } | null;
+  /** 标红且未处置 —— 会被投影成复核项（责任角色 pmc）送到人面前 */
+  needsDisposition: boolean;
 }
 
 interface ReconcileData {
@@ -44,7 +48,10 @@ interface ReconcileData {
   periods: string[];
   rows: ReconcileRow[];
   total: number;
-  summary: { submissions: number; flagged: number; noBaseline: number; submittedQty: string; baselineQty: string };
+  summary: {
+    submissions: number; flagged: number; noBaseline: number; submittedQty: string; baselineQty: string;
+    needsDisposition: number; accepted: number; rejected: number; agreedQty: string;
+  };
   meta: { thresholdPct: number; months6: string[]; months3: string[]; maxYm: string | null; scopeForced: boolean };
   csvHeaders: string[];
 }
@@ -93,6 +100,34 @@ export default function ReconcileClient({ canSubmit }: { canSubmit: boolean }) {
       .catch(() => setChannels([]));
   }, []);
 
+  /* W2-#7 处置：接受 / 驳回。写权限与提报同口径（ops/pmc，admin 兜底；服务端仍是权威）。 */
+  const canDispose = canSubmit;
+  const [rejectTarget, setRejectTarget] = useState<ReconcileRow | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+  const [disposing, setDisposing] = useState(false);
+
+  const dispose = useCallback(async (row: ReconcileRow, decision: "accepted" | "rejected", reason?: string) => {
+    setDisposing(true);
+    try {
+      await fetchJson("/api/replenish/reconcile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ submissionId: row.submissionId, decision, reason: reason ?? null }),
+      });
+      message.success(decision === "accepted"
+        ? `已把 ${row.code} ${row.period} 的运营提报记为一致需求（不自动驱动建议量）`
+        : `已驳回 ${row.code} ${row.period} 的运营提报`);
+      setRejectTarget(null);
+      setRejectReason("");
+      void load();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setDisposing(false);
+    }
+  }, [load, message]);
+  const accept = useCallback((row: ReconcileRow) => dispose(row, "accepted"), [dispose]);
+
   const submitCsv = async () => {
     if (!csvText.trim()) return;
     setSubmitting(true);
@@ -111,10 +146,36 @@ export default function ReconcileClient({ canSubmit }: { canSubmit: boolean }) {
 
   const columns: ColumnsType<ReconcileRow> = useMemo(() => [
     {
-      title: "状态", dataIndex: "flagged", width: 90, fixed: "left",
+      title: "状态", dataIndex: "flagged", width: 100, fixed: "left",
       render: (v: boolean, r) => v
-        ? <Tooltip title={r.flagReason}><Tag color="red">需核对</Tag></Tooltip>
+        ? <Tooltip title={r.flagReason}><Tag color={r.disposition ? "orange" : "red"}>需核对</Tag></Tooltip>
         : <Tag color="green">一致</Tag>,
+    },
+    {
+      /* W2-#7：标红之后必须有下一步。接受 = 记为该期已达成一致的需求（仍不自动驱动建议量）；
+         驳回必须写原因。未处置的标红行会投影成复核项（责任角色 PMC），不会停在看板上。 */
+      title: "处置", key: "disposition", width: 190, fixed: "left",
+      render: (_: unknown, r) => {
+        if (r.disposition) {
+          const d = r.disposition;
+          const title = `${d.by ?? "未知用户"} 于 ${new Date(d.at).toLocaleString("zh-CN", { hour12: false })}${d.decision === "accepted" ? `接受为一致需求 ${d.agreedQty ?? ""}（不自动驱动建议量）` : `驳回：${d.reason ?? ""}`}`;
+          return (
+            <Tooltip title={title}>
+              <Tag color={d.decision === "accepted" ? "blue" : "default"}>
+                {d.decision === "accepted" ? "已接受为一致需求" : "已驳回"}
+              </Tag>
+            </Tooltip>
+          );
+        }
+        if (!r.flagged) return <Typography.Text type="secondary">无需处置</Typography.Text>;
+        if (!canDispose) return <Tooltip title="未处置的标红行已投影为复核项（责任角色 PMC）"><Tag color="red">待处置</Tag></Tooltip>;
+        return (
+          <Space size={4}>
+            <a onClick={() => void accept(r)}>接受</a>
+            <a onClick={() => setRejectTarget(r)}>驳回</a>
+          </Space>
+        );
+      },
     },
     { title: "SKU 编码", dataIndex: "code", width: 140, render: (v: string) => <SkuHoverCard code={v} /> },
     { title: "名称", dataIndex: "name", width: 220, ellipsis: true },
@@ -135,7 +196,7 @@ export default function ReconcileClient({ canSubmit }: { canSubmit: boolean }) {
     { title: "提报依据", dataIndex: "basis", width: 200, ellipsis: true, render: (v: string | null) => v ?? "—" },
     { title: "提报人", dataIndex: "submittedBy", width: 100, render: (v: string | null) => v ?? "—" },
     { title: "提报时间", dataIndex: "submittedAt", width: 150, render: (v: string) => v.slice(0, 16).replace("T", " ") },
-  ], [data?.meta.thresholdPct]);
+  ], [data?.meta.thresholdPct, canDispose, accept]);
 
   const s = data?.summary;
   return (
@@ -154,10 +215,19 @@ export default function ReconcileClient({ canSubmit }: { canSubmit: boolean }) {
       <Row gutter={16} style={{ marginBottom: 12 }}>
         <Col span={4}><Statistic title="提报行" value={s?.submissions ?? "—"} /></Col>
         <Col span={4}><Statistic title="需核对" value={s?.flagged ?? "—"} valueStyle={{ color: s && s.flagged > 0 ? "#cf1322" : undefined }} /></Col>
-        <Col span={4}><Statistic title="无基线" value={s?.noBaseline ?? "—"} /></Col>
-        <Col span={6}><Statistic title="提报合计" value={s ? formatQty(s.submittedQty) : "—"} /></Col>
-        <Col span={6}><Statistic title="基线合计" value={s ? formatQty(s.baselineQty) : "—"} /></Col>
+        <Col span={4}><Statistic title="待处置" value={s?.needsDisposition ?? "—"} valueStyle={{ color: s && s.needsDisposition > 0 ? "#cf1322" : undefined }} /></Col>
+        <Col span={4}><Statistic title="已接受／已驳回" value={s ? `${s.accepted}／${s.rejected}` : "—"} /></Col>
+        <Col span={4}><Statistic title="提报合计" value={s ? formatQty(s.submittedQty) : "—"} /></Col>
+        <Col span={4}><Statistic title="已一致需求" value={s ? formatQty(s.agreedQty) : "—"} /></Col>
       </Row>
+      {s && s.needsDisposition > 0 ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={`${s.needsDisposition} 行标红且尚未处置——这些行已投影为复核项（责任角色 PMC），会出现在待办里，不会停在本页。`}
+        />
+      ) : null}
       <ListToolbar
         state={listState}
         extra={
@@ -233,6 +303,31 @@ export default function ReconcileClient({ canSubmit }: { canSubmit: boolean }) {
           <Button onClick={() => setCsvText(TEMPLATE)}>填入示例模板</Button>
         </Space>
         <Input.TextArea rows={10} value={csvText} onChange={(e) => setCsvText(e.target.value)} placeholder={TEMPLATE} style={{ fontFamily: "monospace" }} />
+      </Modal>
+      <Modal
+        title={rejectTarget ? `驳回运营提报：${rejectTarget.code} ${rejectTarget.period}` : "驳回运营提报"}
+        open={rejectTarget != null}
+        onOk={() => rejectTarget && void dispose(rejectTarget, "rejected", rejectReason)}
+        onCancel={() => { setRejectTarget(null); setRejectReason(""); }}
+        confirmLoading={disposing}
+        okText="驳回"
+        cancelText="取消"
+        okButtonProps={{ danger: true, disabled: rejectReason.trim().length < 5 }}
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="驳回必须写清原因（至少 5 个字）：没有原因的驳回等于沉默，运营下个月还会提同一个数。原因会留在审计里并回到提报人视野。"
+        />
+        <Input.TextArea
+          rows={4}
+          maxLength={500}
+          showCount
+          value={rejectReason}
+          onChange={(e) => setRejectReason(e.target.value)}
+          placeholder="例如：该活动已取消，按 8 月实际动销执行"
+        />
       </Modal>
     </div>
   );

@@ -114,6 +114,10 @@ const LEGACY_MENU: LegacyNode[] = [
         "label": "补货试点候选"
       },
       {
+        "key": "/planning/events",
+        "label": "大促与计划事件"
+      },
+      {
         "key": "/report/demand",
         "label": "需求达成与货盘"
       },
@@ -507,6 +511,12 @@ const LEGACY_MENU_ROLES: Record<string, string[]> = {
     "ops",
     "finance"
   ],
+  "/planning/events": [
+    "pmc",
+    "ops",
+    "purchasing",
+    "finance"
+  ],
   "/outsource/auto-chain": [
     "pmc"
   ],
@@ -635,6 +645,7 @@ const LEGACY_REPORT_GROUPS: Record<string, string> = {
   "/replenish/sop": "planning",
   "/replenish/reconcile": "planning",
   "/replenish/pilot": "planning",
+  "/planning/events": "planning",
   "/report/demand": "planning",
   "/report/risk": "planning",
   "/report/segmentation": "planning",
@@ -725,6 +736,7 @@ const LEGACY_PALETTE_HREFS = [
   "/replenish/sop",
   "/replenish/reconcile",
   "/replenish/pilot",
+  "/planning/events",
   "/report/demand",
   "/report/risk",
   "/report/segmentation",

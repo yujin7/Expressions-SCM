@@ -42,8 +42,11 @@ import { safetyStock } from "@/server/rules/safety-stock";
 import { timePhasedNetReq } from "@/server/rules/timephased";
 import { getOpenSupplyLines, type OpenSupplyLine } from "@/server/core/supply";
 import { describeScope, FALLBACK_SCOPE, makeResolver, type ParamLayer } from "@/server/core/scoped-params";
-import { loadDeclinedToday } from "./decline";
-import type { DeclineReasonCode } from "@/lib/replenish-decline-reasons";
+import { netExpiringStock, type ExpiryBatch } from "@/server/rules/expiry-netting";
+import { loadExpiryBatches } from "./expiry";
+import { loadActiveSuppressions, loadDeclinedToday } from "./decline";
+import { suppressionState } from "@/server/rules/replenish-suppression";
+import { DECLINE_REASON_LABELS, type DeclineReasonCode } from "@/lib/replenish-decline-reasons";
 import { type AnyDb, num, r1, resolveDb } from "@/server/core/svc";
 import { getSkuSupplyParams } from "@/server/modules/master/sku-supply-params";
 import { salesWindow } from "@/server/core/sales-window";
@@ -88,6 +91,8 @@ export const NO_SUGGEST_REASON_CODES = [
   "lead_unknown",
   "no_demand",
   "not_triggered",
+  /** W2-#6：本 SKU 处在「已复核并放弃」的抑制窗口内（原因与到期日在 suppression 上） */
+  "decline_suppressed",
 ] as const;
 export type NoSuggestReasonCode = (typeof NO_SUGGEST_REASON_CODES)[number];
 
@@ -98,6 +103,7 @@ export const NO_SUGGEST_REASON_LABELS: Record<NoSuggestReasonCode, string> = {
   lead_unknown: "缺生产周期",
   no_demand: "无动销",
   not_triggered: "未到下单窗口",
+  decline_suppressed: "已抑制（放弃）",
 };
 
 export interface NoSuggestReason {
@@ -122,6 +128,28 @@ export interface ReplenishForecastAccuracy {
   reliable: boolean;
 }
 
+/**
+ * W2-#6 生效中的抑制窗口（放弃后下一次运行不再重复建议）。
+ * **绝不静默**：本对象一旦非空，行上必须显示"已抑制 + 原因 + 到期日 + 解除入口"。
+ */
+export interface ReplenishSuppression {
+  id: number;
+  reasonCode: DeclineReasonCode;
+  reasonLabel: string;
+  reason: string;
+  by: string;
+  /** 放弃的业务日 */
+  since: string;
+  /** 抑制到期日（含当天） */
+  untilDate: string;
+  daysLeft: number;
+  /** true = 那批「已安排」的供应一旦落库即自动解除 */
+  releaseOnArrival: boolean;
+  /** 被抑制而未下发的建议量（人工解除后即恢复；也可在本页勾选放行） */
+  withheldQty: string | null;
+  label: string;
+}
+
 /** W5 当日「已复核并放弃」（服务端权威，来自审计台账） */
 export interface ReplenishDeclinedToday {
   by: string;
@@ -132,14 +160,43 @@ export interface ReplenishDeclinedToday {
   businessDate: string;
 }
 
+/**
+ * W2-#2 临期净额（逐行可解释）。
+ *
+ * 结构性缺货的来源：`getOnHandBySku` 把临期与已过期批次一并当作在库，引擎因此判「够，不用补」，
+ * 那批货随后过期报废——库存表上一直有数，货架上却断了。这里把「在效期内卖不掉的量」netting 掉，
+ * 但**不动账面在库**：两个数并排给出，谁扣的、扣多少、为什么，逐行说明。
+ */
+export interface ReplenishExpiryRisk {
+  /** 视野内卖不掉的量（已按账面在库上限夹取） */
+  unsellableQty: number;
+  /** 其中已过期小计 */
+  expiredQty: number;
+  /** 参与判定的临期+已过期批次合计（批次参考层） */
+  atRiskQty: number;
+  batches: number;
+  /** 最短剩余效期（可为负 = 已过期） */
+  minDaysLeft: number | null;
+  /** 决定净额的那一批剩余天数 */
+  bindingDaysLeft: number | null;
+  /** 判定视野（天）——与逐日推演同一视野 */
+  horizonDays: number;
+  /** 中文解释（界面 tooltip 直接用） */
+  label: string;
+}
+
 export interface ReplenishRow {
   skuId: number;
   code: string;
   name: string;
   brand: string | null;
   baseUom: string;
-  /** 全网在库（展示口径，1dp） */
+  /** 全网在库（展示口径，1dp）——**账面口径，不因临期扣减**（口径由 core/stock-view 唯一给出） */
   onHand: number;
+  /** W2-#2 进入建议判定的可用在库 = onHand − expiryRisk.unsellableQty（1dp）；两个数并排展示，不许只留一个 */
+  availableOnHand: number;
+  /** W2-#2 临期净额：在效期内卖不掉、因此不能算作可用库存的量；无风险 = null */
+  expiryRisk: ReplenishExpiryRisk | null;
   /** PO 在途（展示口径，1dp） */
   inTransit: number;
   /** 近3月日均销（1dp） */
@@ -209,6 +266,8 @@ export interface ReplenishRow {
   forecastAccuracy: ReplenishForecastAccuracy;
   /** W5：当日已复核并放弃（服务端从审计台账下发，全员可见）；未放弃 = null */
   declinedToday: ReplenishDeclinedToday | null;
+  /** W2-#6：生效中的放弃抑制窗口；未抑制 = null */
+  suppression: ReplenishSuppression | null;
   /* ── E2-01/05 计划引擎 v2 ── */
   /** 安全库存（件） */
   safetyQty: number;
@@ -238,7 +297,12 @@ export interface ReplenishRow {
 
 export interface ReplenishDecisionEvidence {
   businessDate: string;
+  /** 账面在库（core/stock-view 口径，未扣临期） */
   onHand: string;
+  /** 进入推演的可用在库 = onHand − expiringUnsellable */
+  availableOnHand: string;
+  /** 临期净额（W2-#2） */
+  expiringUnsellable: string;
   poInTransit: string;
   daily: string;
   safetyQty: string;
@@ -271,6 +335,8 @@ export interface ReplenishResult {
     refDate: string | null;
     /** 因覆盖缺口+全管道充足而被抑制的建议数 */
     suppressedCount: number;
+    /** W2-#6：处在「已复核并放弃」抑制窗口内的行数（抑制不静默，横幅据此提示） */
+    declineSuppressedCount: number;
     /** E2：建议引擎口径（time_phased=逐日推演触发；legacy=单桶覆盖天数） */
     engine: string;
     /** 目标服务水平（%） */
@@ -344,6 +410,12 @@ export interface ReplenishQuery {
   sortOrder?: ReplenishSortOrder;
   /** 内部消费者（如 MRP 相关需求展开）取全量，绕过 API 分页夹取——防静默截断。HTTP 层永不传 true。 */
   allRows?: boolean;
+  /**
+   * 只算这几个 SKU（内部消费者用；HTTP 层不下发）。
+   * 逐行口径与全量跑完全相同——ABC 分层、销量锚点、分域参数都各有独立的全量查询，
+   * 不随本过滤变化；这里只是不去装配用不到的行（单 SKU 曲线抽屉不必为 441 个成品算一遍）。
+   */
+  skuIds?: number[];
   /** D58 四档筛选（S/A/B/C；"none" = 未固化） */
   tier?: string;
   /** D59 权责筛选 */
@@ -428,6 +500,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
 
   /* ── 成品 SKU（active） ── */
   const conds = [eq(schema.skus.skuType, "finished" as const), eq(schema.skus.active, true)];
+  if (query.skuIds?.length) conds.push(inArray(schema.skus.id, [...new Set(query.skuIds)]));
   if (q) {
     conds.push(sql`(${schema.skus.code} ILIKE ${"%" + q + "%"} OR ${schema.skus.name} ILIKE ${"%" + q + "%"})`);
   }
@@ -445,7 +518,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     .where(and(...conds));
   const emptyMix = (): Record<Ownership, number> => ({ supply_chain_direct: 0, joint_review: 0, ops_fallback: 0 });
   if (skuRows.length === 0) {
-    return { rows: [], total: 0, meta: { coverDaysTarget, minCoverAlert, months3: [], snapDate: null, suggestCount: 0, refDate: null, suppressedCount: 0, engine: "time_phased", serviceLevel: 95, policyPeriod: null, hiddenTierC: 0, ownershipMix: emptyMix() } };
+    return { rows: [], total: 0, meta: { coverDaysTarget, minCoverAlert, months3: [], snapDate: null, suggestCount: 0, refDate: null, suppressedCount: 0, declineSuppressedCount: 0, engine: "time_phased", serviceLevel: 95, policyPeriod: null, hiddenTierC: 0, ownershipMix: emptyMix() } };
   }
   const skuIds = skuRows.map((s) => s.id);
 
@@ -664,6 +737,20 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
   const resolveSafetyDays = await makeResolver("safety_days_fallback", 7, dbArg);
   const todayStr = todayShanghai();
 
+  /* ── W2-#2 临期批次（batch_stocks 参考层，盘点期收口由 replenish/expiry 唯一实现）──
+        引擎此前只看 getOnHandBySku 的总量，把临期与已过期一并当作可用；
+        「够，不用补」→ 批次过期报废 → 结构性缺货。这里按 FEFO 算出卖不掉的量并从**判定**里扣除，
+        账面在库照旧下发（onHand），扣减量与理由逐行给出。 ── */
+  /* ── W2-#6 生效中的放弃抑制窗口（未清除、未到期）；是否真的还在压由 suppressionState 逐行判 ── */
+  const suppressions = await loadActiveSuppressions(db, todayStr, skuIds);
+
+  const expiryBatchesBySku = new Map<number, ExpiryBatch[]>();
+  for (const b of await loadExpiryBatches(db, skuIds, { today: todayStr })) {
+    const arr = expiryBatchesBySku.get(b.skuId) ?? [];
+    arr.push({ daysLeft: b.daysLeft, qty: b.qty });
+    expiryBatchesBySku.set(b.skuId, arr);
+  }
+
   /* ── 逐 SKU 计算（decimal 计算、展示层 Number） ── */
   const all: ReplenishRow[] = skuRows.map((s) => {
     const onHand = dQty(onHandBySku.get(s.id) ?? "0");
@@ -746,9 +833,32 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
           触发＝再订货点逻辑：短缺发生在生产周期内（来不及补）才建议下单。 ── */
     const actionWindow = leadDays != null && leadDays > 0 ? leadDays : minCoverAlert;
     const horizonDays = Math.min(365, actionWindow + effectiveTarget + 30);
+
+    /* W2-#2 临期净额：批次参考层与账面在库不同源，故净额按账面在库夹取上限（不得扣出负库存）。 */
+    const net = netExpiringStock({ batches: expiryBatchesBySku.get(s.id) ?? [], daily: dailyNum, horizonDays });
+    const unsellableQty = Math.min(net.unsellableQty, num(onHand));
+    const availableOnHand = unsellableQty > 0 ? dSub(onHand, String(unsellableQty), 6) : onHand;
+    const expiryRisk: ReplenishExpiryRisk | null = net.atRiskQty > 0
+      ? {
+          unsellableQty: r1(unsellableQty),
+          expiredQty: r1(net.expiredQty),
+          atRiskQty: r1(net.atRiskQty),
+          batches: net.batchesConsidered,
+          minDaysLeft: net.minDaysLeft,
+          bindingDaysLeft: net.bindingDaysLeft,
+          horizonDays,
+          label: unsellableQty > 0
+            ? `临期净额 ${r1(unsellableQty)}：${horizonDays} 天视野内命中 ${net.batchesConsidered} 个临期/已过期批次共 ${r1(net.atRiskQty)}（其中已过期 ${r1(net.expiredQty)}），按日均 ${r1(dailyNum)} 计，最紧的一批只剩 ${net.bindingDaysLeft} 天效期、卖不完的部分已从**可用在库**扣除；账面在库仍为 ${r1(num(onHand))}（批次参考层来自盘点，与记账在库不同源，故扣减以账面在库为上限）`
+            : `命中 ${net.batchesConsidered} 个临期批次共 ${r1(net.atRiskQty)}（最短剩余 ${net.minDaysLeft} 天），按日均 ${r1(dailyNum)} 可在效期内售出，未扣减可用在库`,
+        }
+      : null;
+    const expiryExplain = unsellableQty > 0
+      ? [`临期净额：账面在库 ${r1(num(onHand))} 中 ${r1(unsellableQty)} 在效期内卖不掉，判定按可用在库 ${r1(num(availableOnHand))} 起算`]
+      : [];
+
     const tp = timePhasedNetReq({
       today: todayStr,
-      onHand: num(onHand),
+      onHand: num(availableOnHand),
       daily: dailyNum,
       arrivals: arrivalsBySku.get(s.id) ?? [],
       safetyQty: ss.safetyQty,
@@ -762,7 +872,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     let suppressReason: string | null = null;
     let lotWarnings: ReplenishRow["lotWarnings"] = [];
     let overshootDays: number | null = null;
-    const planExplain: string[] = [`安全库存 ${ss.safetyQty}（${ss.reason}）`, ...tp.explain];
+    const planExplain: string[] = [`安全库存 ${ss.safetyQty}（${ss.reason}）`, ...expiryExplain, ...tp.explain];
     const triggered = tp.shortageDate != null && tp.daysToShortage != null && tp.daysToShortage <= actionWindow;
     if (triggered && tp.requiredQty > 0) {
       const uom = uomBySku.get(s.id);
@@ -801,12 +911,51 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       planExplain.push(`短缺在 ${tp.daysToShortage} 天后、超出行动窗口 ${actionWindow} 天（生产周期内可补），暂不建议下单`);
     }
 
+    /* ── W2-#6 放弃抑制窗口：上一次「已复核并放弃」在窗口内的，不再重复建议同一个 SKU。
+          **绝不静默**：建议量转入 heldQty（人工勾选即可放行），行上给出原因、到期日与解除入口。
+          「等到货即解除」用当前全管道量与放弃当时的基线比较——那批系统看不见的供应一旦落库就恢复建议。 ── */
+    let suppression: ReplenishSuppression | null = null;
+    const supRow = suppressions.get(s.id);
+    if (supRow) {
+      let pipelineNow = num(onHand);
+      for (const line of supplyLinesBySku.get(s.id) ?? []) if (line.qty > 0) pipelineNow += line.qty;
+      const state = suppressionState({
+        untilDate: supRow.untilDate,
+        releaseOnArrival: supRow.releaseOnArrival,
+        pipelineBaseline: supRow.pipelineBaseline,
+        pipelineNow,
+        today: todayStr,
+      });
+      if (state.active) {
+        const withheld = suggest ?? heldQty;
+        if (suggest != null) { heldQty = suggest; suggest = null; }
+        suppression = {
+          id: supRow.id,
+          reasonCode: supRow.reasonCode,
+          reasonLabel: DECLINE_REASON_LABELS[supRow.reasonCode].label,
+          reason: supRow.reason,
+          by: supRow.by,
+          since: supRow.businessDate,
+          untilDate: supRow.untilDate,
+          daysLeft: state.daysLeft,
+          releaseOnArrival: supRow.releaseOnArrival,
+          withheldQty: withheld,
+          label: `${supRow.businessDate} 由 ${supRow.by} 以「${DECLINE_REASON_LABELS[supRow.reasonCode].label}」放弃：${supRow.reason}；抑制至 ${supRow.untilDate}（还剩 ${state.daysLeft} 天）${supRow.releaseOnArrival ? "，或该批供应落库后自动解除" : ""}${withheld ? `。被扣下的建议量 ${withheld}，勾选即可放行` : ""}`,
+        };
+        planExplain.push(`已抑制：${suppression.label}`);
+      } else if (state.releasedBy === "supply_arrived") {
+        planExplain.push(`放弃抑制已自动解除：全管道量由 ${r1(supRow.pipelineBaseline)} 回升到 ${r1(pipelineNow)}，「供应已安排」已兑现`);
+      }
+    }
+
     /* ── W3「为什么没有建议」：空单元格无法区分「不需要补」与「引擎算不出来」，
           两者的处置完全不同（前者不用管，后者要去补主数据）。判定顺序即解释力顺序。 ── */
     let noSuggestReason: NoSuggestReason | null = null;
     if (suggest == null) {
       const reason = (code: NoSuggestReasonCode, text: string): NoSuggestReason => ({ code, label: NO_SUGGEST_REASON_LABELS[code], text });
-      if (suppressReason != null) {
+      if (suppression != null) {
+        noSuggestReason = reason("decline_suppressed", suppression.label);
+      } else if (suppressReason != null) {
         noSuggestReason = reason("ref_gap_suppressed", `${suppressReason}${heldQty ? `；原始建议 ${heldQty}（核实后可放行）` : ""}`);
       } else if (months6.length === 0 || !seriesBySku.has(s.id)) {
         noSuggestReason = reason("insufficient_history", "近 6 个月无销量记录，日均与预测都无从推导——补齐销量数据或按人工判断处理");
@@ -853,6 +1002,8 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       brand: s.brand,
       baseUom: s.baseUom,
       onHand: r1(num(onHand)),
+      availableOnHand: r1(num(availableOnHand)),
+      expiryRisk,
       inTransit: r1(num(inTransit)),
       daily: r1(dailyNum),
       daysCover: cover == null ? null : r1(cover),
@@ -898,6 +1049,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
         reliable: fcBt.reliable,
       },
       declinedToday: null, // 分页后统一回填（只查当前页 SKU 的当日放弃状态）
+      suppression,
       safetyQty: ss.safetyQty,
       safetyMethod: ss.method,
       shortageDate: tp.shortageDate,
@@ -910,6 +1062,8 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       decisionEvidence: {
         businessDate: todayStr,
         onHand,
+        availableOnHand,
+        expiringUnsellable: dQty(String(unsellableQty)),
         poInTransit: inTransit,
         daily: dailyDec,
         safetyQty: String(ss.safetyQty),
@@ -949,6 +1103,7 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
   visible.sort((a, b) => compareReplenishRows(a, b, sortBy, sortOrder));
   const suggestCount = visible.filter((r) => r.suggestQty != null).length;
   const suppressedCount = visible.filter((r) => r.suppressReason != null).length;
+  const declineSuppressedCount = visible.filter((r) => r.suppression != null).length;
   const paged = visible.slice((page - 1) * pageSize, page * pageSize);
   /* W5：当日「已复核并放弃」由服务端下发（审计台账是唯一权威）。
      此前只存在点击者自己的 sessionStorage 里，同事、另一台设备一律看不到，
@@ -962,6 +1117,8 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     brand: r.brand,
     baseUom: r.baseUom,
     onHand: r.onHand,
+    availableOnHand: r.availableOnHand,
+    expiryRisk: r.expiryRisk,
     inTransit: r.inTransit,
     daily: r.daily,
     daysCover: r.daysCover,
@@ -1016,12 +1173,13 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
           businessDate: declinedBySku.get(r.skuId)!.businessDate,
         }
       : null,
+    suppression: r.suppression,
     decisionEvidence: r.decisionEvidence,
   }));
   return {
     rows,
     total: visible.length,
-    meta: { coverDaysTarget, minCoverAlert, months3, snapDate, suggestCount, refDate, suppressedCount, engine: "time_phased", serviceLevel, policyPeriod: policy.period, hiddenTierC, ownershipMix },
+    meta: { coverDaysTarget, minCoverAlert, months3, snapDate, suggestCount, refDate, suppressedCount, declineSuppressedCount, engine: "time_phased", serviceLevel, policyPeriod: policy.period, hiddenTierC, ownershipMix },
   };
 }
 

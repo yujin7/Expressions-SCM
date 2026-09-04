@@ -121,7 +121,7 @@ describe("C122 planning version write/read loop", () => {
     expect(lines[0].decisionEnvelope).toMatchObject({
       schemaVersion: "decision-envelope/v1",
       decisionKind: "replenishment_recommendation",
-      engine: { key: "time_phased_replenishment", version: "time-phased-v2" },
+      engine: { key: "time_phased_replenishment", version: "time-phased-v3" },
       inputs: { sku: { id: skuId, code: "PLAN-001" } },
       outputs: { suggestedQty: expect.any(String), suppressed: false },
     });

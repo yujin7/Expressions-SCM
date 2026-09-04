@@ -89,6 +89,8 @@ export const REVIEW_OWNER_ROLE: ReadonlyArray<readonly [prefix: string, role: Ro
   ["segment", "pmc"],
   ["shell_brand", "pmc"],
   ["blocked", "pmc"],
+  // W2-#7：运营提报待处置（标红且未接受/未驳回）由计划主责——接受与否是计划口径的判断
+  ["ops_demand", "pmc"],
   ["supplier", "purchasing"],
   ["platform", "ops"],
   ["identity", "ops"],

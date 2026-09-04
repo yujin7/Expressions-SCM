@@ -25,14 +25,14 @@ export interface OrderByDateRow {
 /**
  * 取一批 SKU 的最晚下单日。
  *
- * 实现上跑一次全量引擎（allRows）再按 skuIds 过滤：引擎的口径由它自己的输入装配定义，
- * 逐 SKU 单独调用既不会更快（同样要装配在库/在途/销速/参数），也会立刻产生第二套口径。
- * 调用方是看门狗这类**批量、低频**任务，一次全量正是最省的形状。
+ * 实现上跑一次引擎（allRows，按 skuIds 收窄行集合）：引擎的口径由它自己的输入装配定义，
+ * 在这里逐 SKU 另写一套既不会更快（同样要装配在库/在途/销速/参数），也会立刻产生第二套口径。
+ * 调用方是看门狗这类**批量、低频**任务，一次跑完正是最省的形状。
  * @param skuIds 缺省 = 全部成品
  */
 export async function getOrderByDates(db: AnyDb, skuIds?: number[]): Promise<OrderByDateRow[]> {
   const want = skuIds && skuIds.length > 0 ? new Set(skuIds) : null;
-  const res = await getReplenishSuggestions({ allRows: true }, db);
+  const res = await getReplenishSuggestions({ allRows: true, skuIds: want ? [...want] : undefined }, db);
   const out: OrderByDateRow[] = [];
   for (const r of res.rows) {
     if (want && !want.has(r.skuId)) continue;

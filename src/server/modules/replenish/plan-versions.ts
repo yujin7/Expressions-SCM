@@ -21,7 +21,10 @@ import {
 
 import { getReplenishSuggestions } from "./service";
 
-const PLAN_ENGINE_VERSION = "time-phased-v2";
+/* v3（W2-#2）：判定起点从「账面在库」改为「可用在库 = 账面在库 − 临期净额」。
+   口径变了就必须换版本号——否则新旧版本的 digest 会在同一个名字下被当成可比，
+   周差异会把「口径升版」显示成「计划变了」。账面在库仍原样留在证据里。 */
+const PLAN_ENGINE_VERSION = "time-phased-v3";
 const MAX_VERSIONS = 52;
 
 export interface PlanningVersionDto {
@@ -85,6 +88,7 @@ const DECISION_LIMITATIONS = [
   "WO 在制按计划产出量记录，部分收货尚未净额化时可能高估。",
   "存量在途来自外部登记层，只作为参考证据，不等同系统记账承诺。",
   "需求基于历史动销与安全库存，不包含尚未接入的客户订单承诺，因此不是 ATP。",
+  "临期净额取 batch_stocks 批次参考层（盘点载体），与记账在库不同源，故扣减以账面在库为上限。",
 ] as const;
 
 function snapshotLine(
@@ -112,6 +116,8 @@ function snapshotLine(
       },
       stock: {
         onHand: row.decisionEvidence.onHand,
+        availableOnHand: row.decisionEvidence.availableOnHand,
+        expiringUnsellable: row.decisionEvidence.expiringUnsellable,
         poInTransit: row.decisionEvidence.poInTransit,
         referenceOnHand: row.refQty,
         referenceOnOrder: row.onOrder,
@@ -177,7 +183,8 @@ function snapshotLine(
     pegging: {
       demandDate: row.shortageDate,
       demandQty: row.decisionEvidence.demandQty,
-      onHand: row.decisionEvidence.onHand,
+      // 覆盖需求的只能是**卖得出去的**在库：临期净额那部分到不了需求日（W2-#2）
+      onHand: row.decisionEvidence.availableOnHand,
       supplyLines: row.decisionEvidence.supplyLines,
       recommendationQty: quantity,
       suppressed: row.suggestQty == null,
@@ -250,7 +257,7 @@ function buildSupplyDemandLinks(
       sourceType: "on_hand",
       availableQty: line.pegging.onHand,
       confidence: "booked",
-      explanation: "捕获时点全网记账在库，优先覆盖该需求桶。",
+      explanation: "捕获时点全网记账在库（已扣除效期内卖不掉的临期净额），优先覆盖该需求桶。",
     });
   }
 
