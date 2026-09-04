@@ -1,6 +1,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
+import { shanghaiDayOf } from "@/server/core/business-day";
 import type { SessionUser } from "@/server/core/dto";
 import { ApiError } from "@/server/modules/master/common";
 import { resolveDb, type AnyDb } from "@/server/core/svc";
@@ -87,9 +88,9 @@ export interface AlertEventInput {
   idempotencyKey: string;
 }
 
-const SH_DAY = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" });
+/** 告警事件的幂等日键（上海日）；换算走 core/business-day 唯一权威 */
 export function alertEventDay(d: Date): string {
-  return SH_DAY.format(d);
+  return shanghaiDayOf(d);
 }
 
 /** 追加告警事件（只追加表；ON CONFLICT (idempotency_key) DO NOTHING）。返回实际落账条数。 */

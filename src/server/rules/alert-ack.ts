@@ -13,8 +13,6 @@
  * 现在只有**双方严重度都可识别**时才比较；一侧未知按"没变化"处理，交给 stale_ack 那条线兜底。
  */
 
-export type AlertSeverity = "medium" | "high" | "critical";
-
 const RANK: Record<string, number> = { medium: 1, high: 2, critical: 3 };
 
 export function severityRank(s: string | null | undefined): number {

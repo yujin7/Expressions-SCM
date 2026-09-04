@@ -53,7 +53,12 @@
     派单、关闭权限、通知受众三处读同一个值，写死过一次就出现「通知给 ops、待办给 pmc」的分裂）
   - 断货事实核验（流水回放判断是否真断货）→ 只能有一处实现；`jobs/alert-outcome.ts` 与
     `report/closed-loop.ts` 各写一套曾对同一 SKU 给出相反结论
-  - 展示格式化 → `components/format.ts`；比例→百分数在**服务端**换算后下发（驾驶舱 OTIF 曾把 0.83 显示成 0.83%）
+  - 展示格式化 → `components/format.ts`（`formatCount`/`formatYuan`/`formatPct`；驾驶舱趋势层不得再自写一套）；
+    比例→百分数只在**服务端**换算后下发，唯一权威 `report/cockpit.ts` 的 `otifRatePctOf`/`ratePctNumOf`
+    （驾驶舱 OTIF 曾把 0.83 显示成 0.83%；客户端那对自称权威的 `ratioToPct`/`pctFromRatio` 零调用，已删）
+  - 上海业务日与日差 → `core/business-day.ts`（`shanghaiDay`/`shanghaiDayOf`/`todayShanghai`/`dayDiff`，零依赖纯模块）；
+    禁止再写 `new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" })`——曾在告警引擎、例外打盹、
+    闭环报表、看门狗四处各一份，`daysBetween` 又各写一份
 - 列表页状态平台（`components/useListState` + `ListToolbar`）：新列表页一律采用；
   **必须**在该页 `page.tsx` 包 `<Suspense>`（hook 内用 useSearchParams，缺边界会导致
   useId 序列 SSR/CSR 不一致 → 整页水合失败、退化为无交互静态 HTML）。

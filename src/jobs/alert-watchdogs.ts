@@ -1,3 +1,4 @@
+import { shanghaiDayOf } from "@/server/core/business-day";
 import type { AnyDb } from "@/server/core/svc";
 import { upsertAlerts, type AlertCandidate, type AlertWhy } from "@/server/modules/alerts/engine";
 import { refreshInventoryAlerts, type InventoryAlertRow } from "@/server/modules/report/inventory-alerts";
@@ -117,7 +118,6 @@ export async function runInventoryCoverWatchdog(db: AnyDb, now = new Date()) {
       orderByBySku.set(o.skuId, { orderByDate: o.orderByDate, shortageDate: o.shortageDate, orderWindowMissed: o.orderWindowMissed });
     }
   }
-  const shanghaiDay = (d: Date): string => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(d);
   const candidates: AlertCandidate[] = hits
     .map((r) => {
       const engine = orderByBySku.get(r.skuId);
@@ -125,7 +125,7 @@ export async function runInventoryCoverWatchdog(db: AnyDb, now = new Date()) {
         ? { date: engine.orderByDate, source: "engine", shortageDate: engine.shortageDate, orderWindowMissed: engine.orderWindowMissed }
         : {
             // 回退：今天 + 在库可销 − 交期（阈值 − 缓冲）；断货/无日销 → 今天（窗口已过）
-            date: shanghaiDay(new Date(now.getTime() + Math.max(0, Math.floor((r.coverDays ?? 0) - (r.alertDays - model.params.bufferDays))) * 86_400_000)),
+            date: shanghaiDayOf(new Date(now.getTime() + Math.max(0, Math.floor((r.coverDays ?? 0) - (r.alertDays - model.params.bufferDays))) * 86_400_000)),
             source: "fallback",
           };
       return {

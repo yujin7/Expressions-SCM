@@ -18,9 +18,10 @@
  *    永远不会被消费的垃圾行（"能存进去"不等于"有意义"）；
  *  - 打盹上限 `MAX_SNOOZE_DAYS` 天：无限期打盹等于删除，那不是打盹是掩埋。
  */
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
+import { dayDiff, shanghaiDayOf } from "@/server/core/business-day";
 import type { SessionUser } from "@/server/core/dto";
 import { resolveDb, type AnyDb } from "@/server/core/svc";
 import { ApiError } from "@/server/modules/master/common";
@@ -39,21 +40,16 @@ export const EXCEPTION_KEYS = [
   "below_lead",
   "missing_lead",
 ] as const;
-export type ExceptionKey = (typeof EXCEPTION_KEYS)[number];
 
 /** 打盹最长天数：再长就不是"稍后处理"而是"永久掩埋" */
 export const MAX_SNOOZE_DAYS = 90;
 
-const SH_DAY = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" });
-/** 上海日（YYYY-MM-DD） */
+/** 上海日（YYYY-MM-DD）；换算走 core/business-day 唯一权威 */
 export function shanghaiDay(d: Date = new Date()): string {
-  return SH_DAY.format(d);
+  return shanghaiDayOf(d);
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-function dayDiff(from: string, to: string): number {
-  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
-}
 
 export interface ExceptionMemoryRow {
   exceptionKey: string;
@@ -204,17 +200,4 @@ export async function clearExceptionSnooze(
     });
     return { exceptionKey: key, cleared: true };
   });
-}
-
-/** 当前仍在打盹的键（供健康面板/测试直接问，不必自己算日期比较） */
-export async function snoozedKeys(dbArg: AnyDb, today: string): Promise<string[]> {
-  const db = await resolveDb(dbArg);
-  const rows: { exceptionKey: string }[] = await db
-    .select({ exceptionKey: schema.exceptionDismissals.exceptionKey })
-    .from(schema.exceptionDismissals)
-    .where(and(
-      inArray(schema.exceptionDismissals.exceptionKey, [...EXCEPTION_KEYS]),
-      sql`${schema.exceptionDismissals.snoozedUntil} >= ${today}::date`,
-    ));
-  return rows.map((r) => r.exceptionKey).sort();
 }

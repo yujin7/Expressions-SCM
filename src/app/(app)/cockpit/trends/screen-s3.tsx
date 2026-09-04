@@ -5,9 +5,10 @@ import { Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
+import { formatCount, formatPct } from "@/components/format";
 import type { Block } from "@/server/modules/report/cockpit";
 import type { ExpiryBrandRow, ExpiryBucketsBlock, TurnoverWindowCell, TurnoverWindowRow, TurnoverWindowsBlock } from "@/server/modules/report/cockpit-trends";
-import { metricLabel, Muted, pct, qty, TrendCard, useChartTheme } from "./shared";
+import { metricLabel, Muted, TrendCard, useChartTheme } from "./shared";
 
 function CellValue({ c }: { c: TurnoverWindowCell }) {
   if (c.suppressed) {
@@ -23,7 +24,7 @@ export function TurnoverWindowsCard({ block }: { block: Block<TurnoverWindowsBlo
   const columns: ColumnsType<TurnoverWindowRow> = [
     { title: "地区", dataIndex: "regionCode", width: 70 },
     { title: "仓库", dataIndex: "name", ellipsis: true },
-    { title: "在库", dataIndex: "onHand", align: "right", width: 100, render: (v: string) => qty(v) },
+    { title: "在库", dataIndex: "onHand", align: "right", width: 100, render: (v: string) => formatCount(v) },
     ...windows.map((w, i) => ({
       title: `${w} 天 周转 / DIO`, key: `w${w}`, align: "right" as const, width: 130,
       render: (_: unknown, r: TurnoverWindowRow) => r.windows[i] ? <CellValue c={r.windows[i]} /> : "—",
@@ -47,7 +48,7 @@ export function TurnoverWindowsCard({ block }: { block: Block<TurnoverWindowsBlo
           <Space wrap size={[8, 4]} style={{ marginBottom: 8 }}>
             {data.summary.map((c) => (
               <Tag key={c.windowDays} color={c.suppressed ? "default" : "processing"}>
-                {c.windowDays} 天：{c.suppressed ? `— （${c.reason}）` : `周转 ${c.turns} · ${metricLabel("warehouseDio", "DIO")} ${c.dio ?? "—"} 天 · 出库 ${qty(c.outboundQty)}`}
+                {c.windowDays} 天：{c.suppressed ? `— （${c.reason}）` : `周转 ${c.turns} · ${metricLabel("warehouseDio", "DIO")} ${c.dio ?? "—"} 天 · 出库 ${formatCount(c.outboundQty)}`}
               </Tag>
             ))}
           </Space>
@@ -87,7 +88,7 @@ export function ExpiryBucketsCard({ block }: { block: Block<ExpiryBucketsBlock> 
       unit="基础单位数量 · SKU 数"
       height={330}
       summary={d
-        ? `${d.totals.map((b) => `${b.label} ${qty(b.qty)}（${b.skus} 个 SKU）`).join("；")}；呆滞（可销 ≥ ${d.slowThreshold} 天）${d.slowSkus} 个 SKU`
+        ? `${d.totals.map((b) => `${b.label} ${formatCount(b.qty)}（${b.skus} 个 SKU）`).join("；")}；呆滞（可销 ≥ ${d.slowThreshold} 天）${d.slowSkus} 个 SKU`
         : "无数据"}
       extra={d ? <Link href={d.link} prefetch={false}>风险处置工作台 →</Link> : undefined}
       dataView={d ? (
@@ -95,11 +96,11 @@ export function ExpiryBucketsCard({ block }: { block: Block<ExpiryBucketsBlock> 
           { title: "品牌", dataIndex: "brand", width: 140, fixed: "left" },
           ...(d.totals.map((b) => ({
             title: b.label, key: b.key, align: "right" as const, width: 110,
-            render: (_v: unknown, r: ExpiryBrandRow) => qty(r.buckets[b.key]),
+            render: (_v: unknown, r: ExpiryBrandRow) => formatCount(r.buckets[b.key]),
           }))),
           { title: "临期 SKU", dataIndex: "expirySkus", align: "right", width: 100 },
           { title: `呆滞 SKU（≥${d.slowThreshold}d）`, dataIndex: "slowSkus", align: "right", width: 150 },
-          { title: "呆滞在库", dataIndex: "slowOnHand", align: "right", width: 110, render: (v: number) => qty(v) },
+          { title: "呆滞在库", dataIndex: "slowOnHand", align: "right", width: 110, render: (v: number) => formatCount(v) },
           { title: "外部仍在卖", dataIndex: "slowStillSellingExternally", align: "right", width: 110 },
         ]} />
       ) : undefined}
@@ -109,7 +110,7 @@ export function ExpiryBucketsCard({ block }: { block: Block<ExpiryBucketsBlock> 
           <Space wrap size={[6, 4]} style={{ marginBottom: 6 }}>
             {data.totals.map((b) => (
               <Tag key={b.key} color={b.key === "expired" ? "error" : b.key === "d30" ? "warning" : "processing"}>
-                {b.label} {qty(b.qty)} · {b.skus} 个 SKU
+                {b.label} {formatCount(b.qty)} · {b.skus} 个 SKU
               </Tag>
             ))}
             <Tag>{metricLabel("expirySlowMoverOnHand", "呆滞在库")} {data.slowSkus} 个 SKU（可销 ≥ {data.slowThreshold} 天）</Tag>
@@ -123,7 +124,7 @@ export function ExpiryBucketsCard({ block }: { block: Block<ExpiryBucketsBlock> 
                 <CartesianGrid stroke={t.grid} strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="brand" tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} interval={0} />
                 <YAxis tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} width={52} tickFormatter={(v) => (v >= 10000 ? `${Math.round(v / 1000)}k` : String(v))} />
-                <ChartTooltip {...t.tooltip} cursor={{ fill: t.grid, opacity: 0.4 }} formatter={(v, name) => [qty(typeof v === "number" ? v : null), name]} />
+                <ChartTooltip {...t.tooltip} cursor={{ fill: t.grid, opacity: 0.4 }} formatter={(v, name) => [formatCount(typeof v === "number" ? v : null), name]} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 {keys.map((k, i) => (
                   <Bar key={k} dataKey={k} stackId="e" name={data.totals[i]?.label ?? k} fill={BUCKET_COLOR[k] ?? VISUAL_COLOR.muted}
@@ -133,7 +134,7 @@ export function ExpiryBucketsCard({ block }: { block: Block<ExpiryBucketsBlock> 
             </ResponsiveContainer>
           </div>
           <Muted>
-            段位按批次剩余天数统一刻度，&gt; 90 天不入桶；其中 {data.fallbackSkus} 个 SKU（{pct(data.fallbackSharePct)}）的临期阈值走 90 天兜底，段位并非逐 SKU 统一口径。
+            段位按批次剩余天数统一刻度，&gt; 90 天不入桶；其中 {data.fallbackSkus} 个 SKU（{formatPct(data.fallbackSharePct, 1)}）的临期阈值走 90 天兜底，段位并非逐 SKU 统一口径。
             数量取 batch_stocks（效期盘点载体，不是账本）；外部动销为观察注记，不驱动处置数量。
           </Muted>
         </div>

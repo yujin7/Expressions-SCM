@@ -18,11 +18,11 @@ import {
   EXCEPTION_KEYS,
   MAX_SNOOZE_DAYS,
   clearExceptionSnooze,
+  isSnoozed,
   loadExceptionMemory,
   recordExceptionsShown,
   shanghaiDay,
   snoozeException,
-  snoozedKeys,
 } from "@/server/modules/workbench/exception-dismissals";
 
 type Db = Awaited<ReturnType<typeof createTestDb>>["db"];
@@ -58,7 +58,9 @@ describe("W9 例外打盹与连续出现天数", () => {
       expect(before.map((i) => i.key)).toContain("expired_stock");
 
       await snoozeException(me, { exceptionKey: "expired_stock", until: dayOffset(2), note: "已排报废评审，本周处理" }, db);
-      expect(await snoozedKeys(db, shanghaiDay())).toEqual(["expired_stock"]);
+      // 打盹生效走生产路径判定（loadExceptionMemory + isSnoozed）——这正是 computeExceptions 用的那两个函数
+      const memory = await loadExceptionMemory(db);
+      expect([...memory.keys()].filter((k) => isSnoozed(memory.get(k), shanghaiDay())).sort()).toEqual(["expired_stock"]);
       const hidden = await computeExceptions(db);
       expect(hidden.map((i) => i.key), "打盹未到期应整条隐藏").not.toContain("expired_stock");
 

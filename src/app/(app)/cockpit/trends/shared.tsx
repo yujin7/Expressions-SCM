@@ -40,24 +40,11 @@ export function useTrends(): { data: CockpitTrendsData | null; error: string | n
   return { data, error, loading, reload: () => run(true) };
 }
 
-/* ───────────── 格式化 ───────────── */
+/* ───────────── 格式化 ─────────────
+ * 数量 / 金额 / 百分数一律用 `@/components/format` 的 formatCount / formatYuan / formatPct
+ * （驾驶舱唯一显示格式化权威）。本层曾另写一套 qty()/yuan()/pct()，与共享层逐字重复
+ * 却又各自演化——2026-09-04 清理审计 #3 已删除；这里只留趋势层特有的两个小工具。 */
 
-export function qty(v: string | number | null | undefined): string {
-  if (v == null || v === "") return "—";
-  const n = Number(v);
-  return Number.isFinite(n) ? n.toLocaleString("zh-CN", { maximumFractionDigits: 0 }) : "—";
-}
-export function yuan(v: string | null | undefined): string {
-  if (v == null) return "—";
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "—";
-  return Math.abs(n) >= 10_000 ? `¥${(n / 10_000).toFixed(1)}万` : `¥${n.toLocaleString("zh-CN", { maximumFractionDigits: 0 })}`;
-}
-export function pct(v: number | string | null | undefined, digits = 1): string {
-  if (v == null) return "—";
-  const n = Number(v);
-  return Number.isFinite(n) ? `${n.toFixed(digits)}%` : "—";
-}
 export function signed(v: number | null | undefined, suffix = "%"): string {
   if (v == null) return "—";
   return `${v > 0 ? "+" : ""}${v}${suffix}`;

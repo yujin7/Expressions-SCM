@@ -8,32 +8,17 @@
  * 缺项一律 null，不猜。
  */
 
-const SHANGHAI_FMT = new Intl.DateTimeFormat("en-CA", {
-  timeZone: "Asia/Shanghai",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
+import { dayDiff as businessDayDiff, shanghaiDay, type DateLike } from "@/server/core/business-day";
 
-type DateLike = Date | string | null | undefined;
-
-/** 任意时间 → Asia/Shanghai 业务日 YYYY-MM-DD；纯日期串（YYYY-MM-DD）原样视为业务日 */
-export function shanghaiDay(v: DateLike): string | null {
-  if (v == null) return null;
-  if (typeof v === "string") {
-    const s = v.trim();
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-    const t = Date.parse(s);
-    if (!Number.isFinite(t)) return null;
-    return SHANGHAI_FMT.format(new Date(t));
-  }
-  if (!(v instanceof Date) || !Number.isFinite(v.getTime())) return null;
-  return SHANGHAI_FMT.format(v);
-}
+/**
+ * 日界换算的实现在 `core/business-day`（零依赖纯模块，唯一权威）；这里按既有导入路径转出，
+ * 调用方（purchase-order-metrics / supplier-payment-term / tests）不必改。
+ */
+export { shanghaiDay, type DateLike };
 
 function dayDiff(from: string | null, to: string | null): number | null {
   if (!from || !to) return null;
-  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
+  return businessDayDiff(from, to);
 }
 
 export interface PoCycleInput {

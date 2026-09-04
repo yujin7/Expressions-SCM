@@ -32,25 +32,21 @@ export function formatCount(v: string | number | null | undefined): string {
   return Number.isFinite(n) ? n.toLocaleString("zh-CN", { maximumFractionDigits: 0 }) : "—";
 }
 
-/** 已是百分数的值（12.3 → "12.3%"）；null → "—" */
-export function formatPct(v: string | number | null | undefined, suffix = "%"): string {
-  if (v == null || v === "") return "—";
-  return `${v}${suffix}`;
-}
-
 /**
- * 0–1 比例折成百分数字符串（0.8333 → "83.3"）。
- * 驾驶舱 OTIF 曾把 0.83 直接拼 "%" 显示成 0.83%（审计 #1）——所有比例→百分数只能走这里。
+ * 已是百分数的值 → "12.3%"；null/空 → "—"。
+ *
+ * **入参必须已经是百分数**：0–1 的比例换算成百分数只能在**服务端**做
+ * （`report/cockpit.ts` 的 `otifRatePctOf` / `ratePctNumOf`，decimal 字符串运算不走 float），
+ * 客户端不再有第二套换算——驾驶舱 OTIF 曾把 0.83 直接拼 "%" 显示成 0.83%（审计 #1），
+ * 而那次修复正是在服务端做的；此处曾另留一对 `ratioToPct`/`pctFromRatio` 自称唯一权威却零调用，
+ * 于是仓库同时有三套换算、自称权威的那套是死的（2026-09-04 清理审计 #2）。
+ *
+ * `digits` 缺省 = 原样拼后缀（服务端已定好小数位）；给了则按固定小数位补齐
+ * （趋势层图表统一 1 位：`ratePctNumOf` 折回 number 后 "83.0" 会变成 83）。
  */
-export function ratioToPct(v: string | number | null | undefined, digits = 1): string | null {
-  if (v == null || v === "") return null;
+export function formatPct(v: string | number | null | undefined, digits?: number): string {
+  if (v == null || v === "") return "—";
+  if (digits == null) return `${v}%`;
   const n = Number(v);
-  if (!Number.isFinite(n)) return null;
-  return (n * 100).toFixed(digits);
-}
-
-/** ratio → "83.3%"；null → "—" */
-export function pctFromRatio(v: string | number | null | undefined, digits = 1): string {
-  const p = ratioToPct(v, digits);
-  return p == null ? "—" : `${p}%`;
+  return Number.isFinite(n) ? `${n.toFixed(digits)}%` : "—";
 }

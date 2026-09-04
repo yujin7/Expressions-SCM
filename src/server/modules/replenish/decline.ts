@@ -24,7 +24,6 @@ export const declineSuggestionSchema = z.object({
   reason: z.string().trim().min(1, "必须填写放弃原因").max(500),
   reasonCode: z.enum(DECLINE_REASON_CODES).optional().default("other"),
 });
-export type DeclineSuggestionInput = z.infer<typeof declineSuggestionSchema>;
 
 export interface DeclineSuggestionResult {
   skuId: number;

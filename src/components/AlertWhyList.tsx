@@ -15,11 +15,8 @@ export interface AlertWhyItem {
 
 export interface AlertWhyListProps {
   why: AlertWhyItem[] | null | undefined;
-  /** 最多显示几项，其余折叠为「+N」（默认 6） */
-  max?: number;
-  /** 单行内联（用 · 分隔）而不是逐行列表 */
-  inline?: boolean;
-  emptyText?: string;
+  /** 最多显示几项，其余折叠为「+N」（调用方显式给，不设缺省——不同面板的容量不一样） */
+  max: number;
 }
 
 function formatValue(v: AlertWhyItem["value"]): string {
@@ -29,8 +26,8 @@ function formatValue(v: AlertWhyItem["value"]): string {
   return /^-?\d+(\.\d+)?$/.test(v) && Number.isFinite(n) ? n.toLocaleString("zh-CN", { maximumFractionDigits: 4 }) : v;
 }
 
-export default function AlertWhyList({ why, max = 6, inline = false, emptyText = "无依据明细" }: AlertWhyListProps) {
-  if (!why?.length) return <Typography.Text type="secondary" style={{ fontSize: 12 }}>{emptyText}</Typography.Text>;
+export default function AlertWhyList({ why, max }: AlertWhyListProps) {
+  if (!why?.length) return <Typography.Text type="secondary" style={{ fontSize: 12 }}>无依据明细</Typography.Text>;
   const items = why.slice(0, Math.max(1, max));
   const rest = why.length - items.length;
   const restTip = rest > 0 ? why.slice(items.length).map((w) => `${w.label}：${formatValue(w.value)}`).join("；") : "";
@@ -52,14 +49,6 @@ export default function AlertWhyList({ why, max = 6, inline = false, emptyText =
     </Tooltip>
   ) : null;
 
-  if (inline) {
-    return (
-      <span aria-label="告警依据" style={{ display: "inline-flex", flexWrap: "wrap", gap: "2px 10px", alignItems: "baseline" }}>
-        {items.map(item)}
-        {more}
-      </span>
-    );
-  }
   return (
     <ul aria-label="告警依据" style={{ margin: 0, paddingLeft: 16, fontSize: 12, lineHeight: 1.7 }}>
       {items.map((w, i) => <li key={`${w.label}-${i}`}>{item(w, i)}</li>)}
