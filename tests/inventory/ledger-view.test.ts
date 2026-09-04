@@ -14,7 +14,7 @@ import {
   batches, skuCosts, skus, spus, stockDocLines, stockDocs, users, warehouses,
 } from "@/db/schema";
 import { maskSensitive } from "@/server/core/dto";
-import { listLedger } from "@/server/modules/inventory/queries";
+import { LEDGER_MONEY_CALIBRE_KEY, listLedger } from "@/server/modules/inventory/queries";
 import { post } from "@/server/posting";
 import { createTestDb, type TestDb } from "../helpers/db";
 
@@ -197,5 +197,92 @@ describe("W2-2 库存流水：批次 / 窗口累计余额 / 金额 / 来源链�
     // 清空筛选（空串）不是错误，就是「不设这一侧边界」
     expect((await listLedger({ page: 1, pageSize: 20, from: "", to: "  " }, db)).total).toBe(1);
     expect((await listLedger({ page: 1, pageSize: 20, from: "2026-06-01", to: "2026-08-01" }, db)).total).toBe(1);
+  });
+});
+
+/**
+ * W2 修复（T8）：
+ *  (a) `balanceAmount` 是「窗口内累计余额 × **今日**单位成本」，可以为负、也不是当时的库存价值。
+ *      这三件事此前**一句都没有**，列头连个 tooltip 都没有。口径文案随金额一起下发。
+ *  (b) 日期窗口曾用 `new Date(opts.to)`，`"2026-09-04"` 被 JS 解析成 **UTC 午夜**，
+ *      于是 `occurred_at <= 2026-09-04T00:00:00Z` = 上海时间当天 08:00，
+ *      把当天 08:00 之后的 16 小时流水整段切掉。本波已把上海业务日边界抽成
+ *      `core/doc-search.createdWithinShanghaiDays`，这里改用同一个 helper。
+ */
+describe("W2 流水：上海业务日边界与金额口径", () => {
+  it("(b) to=当天 必须包含**当天全天**：上海 23:00 过账的行不得被切掉", async () => {
+    const { db } = await createTestDb();
+    const { u, sku, wh } = await seed(db);
+    // 上海 2026-09-04 23:00 = UTC 2026-09-04T15:00Z（旧写法 `<= 2026-09-04T00:00:00Z` 会漏掉它）
+    await openingDoc(db, {
+      docNo: "RK-LATE", userId: u.id, skuId: sku.id, warehouseId: wh.id, batchId: null,
+      qty: "7", occurredAt: new Date("2026-09-04T15:00:00.000Z"),
+    });
+    const r = await listLedger({ from: "2026-09-04", to: "2026-09-04", page: 1, pageSize: 20 }, db);
+    expect(
+      r.total,
+      "用户选到 09-04，就必须看得到 09-04 下午/晚上过账的单——UTC 午夜会砍掉当天 16 小时",
+    ).toBe(1);
+    expect(r.rows[0].qtyDelta).toBe("7.0000");
+  });
+
+  it("(b) 起点同理按上海日界：上海 09-03 23:00 的行不属于 from=09-04 的窗口", async () => {
+    const { db } = await createTestDb();
+    const { u, sku, wh } = await seed(db);
+    // 上海 09-03 23:00 = UTC 09-03T15:00Z；旧写法 `>= 2026-09-04T00:00:00Z`（= 上海 09-04 08:00）
+    // 反而会把 09-04 00:00–08:00 的行排除、却也排除这条——两端都错，方向不同
+    await openingDoc(db, {
+      docNo: "RK-PREV", userId: u.id, skuId: sku.id, warehouseId: wh.id, batchId: null,
+      qty: "3", occurredAt: new Date("2026-09-03T15:00:00.000Z"),
+    });
+    // 上海 09-04 02:00 = UTC 09-03T18:00Z —— 属于 09-04，必须**在**窗口内
+    await openingDoc(db, {
+      docNo: "RK-EARLY", userId: u.id, skuId: sku.id, warehouseId: wh.id, batchId: null,
+      qty: "4", occurredAt: new Date("2026-09-03T18:00:00.000Z"),
+    });
+    const r = await listLedger({ from: "2026-09-04", page: 1, pageSize: 20 }, db);
+    expect(r.total, "只有上海 09-04 那一条进窗口").toBe(1);
+    expect(r.rows[0].qtyDelta).toBe("4.0000");
+  });
+
+  it("(a) 金额口径随金额一起下发：成本来源 / 成本基准日 / 窗口口径 / 可为负，一句都不能少", async () => {
+    const { db } = await createTestDb();
+    const { u, sku, wh } = await seed(db);
+    await db.insert(skuCosts).values({ skuId: sku.id, unitCost: "3.5" });
+    await openingDoc(db, {
+      docNo: "RK-CAL", userId: u.id, skuId: sku.id, warehouseId: wh.id, batchId: null,
+      qty: "10", occurredAt: new Date("2026-07-01T02:00:00.000Z"),
+    });
+    const valued = await listLedger({ page: 1, pageSize: 20, withValue: true }, db);
+    expect(valued.moneyCalibre?.key).toBe(LEDGER_MONEY_CALIBRE_KEY);
+    expect(valued.moneyCalibre?.costSource).toContain("core/valuation");
+    expect(valued.moneyCalibre?.balanceBasis).toContain("窗口内累计余额");
+    expect(valued.moneyCalibre?.windowNote, "必须说明这个数可以为负、且只在筛选窗口内累计").toContain("可以为负");
+    expect(valued.moneyCalibre?.costAsOfNote, "必须说明用的是**取数当刻**的成本，不是当时的历史成本").toContain("取数当刻");
+
+    // 无金额权限时不下发口径（也不查成本）
+    const plain = await listLedger({ page: 1, pageSize: 20 }, db);
+    expect(plain.moneyCalibre).toBeNull();
+  });
+
+  it("(a) 窗口内净流出时 balanceAmount 为负——这正是必须挂口径说明的那一列", async () => {
+    const { db } = await createTestDb();
+    const { u, sku, wh } = await seed(db);
+    await db.insert(skuCosts).values({ skuId: sku.id, unitCost: "3.5" });
+    // 窗口之前入库 100（不进窗口），窗口内只出 20 → 窗口累计余额 = −20
+    await openingDoc(db, {
+      docNo: "RK-BEFORE", userId: u.id, skuId: sku.id, warehouseId: wh.id, batchId: null,
+      qty: "100", occurredAt: new Date("2026-06-01T02:00:00.000Z"),
+    });
+    await openingDoc(db, {
+      docNo: "RK-OUT", userId: u.id, skuId: sku.id, warehouseId: wh.id, batchId: null,
+      qty: "-20", occurredAt: new Date("2026-07-10T02:00:00.000Z"),
+    });
+    const r = await listLedger({ from: "2026-07-01", page: 1, pageSize: 20, withValue: true }, db);
+    expect(r.rows[0].balanceQty).toBe("-20.0000");
+    expect(
+      r.rows[0].balanceAmount,
+      "负金额不是错账：窗口内出多于进。没有口径说明时它看起来像一个「库存价值为负」的 bug",
+    ).toBe("-70.00");
   });
 });

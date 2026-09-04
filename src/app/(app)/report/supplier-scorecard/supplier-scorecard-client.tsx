@@ -77,8 +77,21 @@ interface ScoreData {
     suppliers: number;
     rated: number;
     suggestChanges: number;
+    /** 整体准时率（pooled，样本加权）——不是各供应商比率的算术平均 */
     avgOnTimeRate: number | null;
     avgOnTimeRateCurrent: number | null;
+    onTimeSamples: number;
+    onTimeHits: number;
+    onTimeSamplesCurrent: number;
+    onTimeHitsCurrent: number;
+    onTimeSuppliers: number;
+    /** 无承诺交期样本、被排除在准时率之外的供应商数（缺数据 ≠ 差） */
+    onTimeExcludedSuppliers: number;
+    onTimeAggregationLabel: string;
+    /** 未关闭质量案件里立案早于窗口起点的件数 */
+    legacyQualityCases: number;
+    /** 质量案件维度的口径标签（说明它不受 windowDays 限制） */
+    qualityCaseScope: string;
     windowDays: number;
   };
   onTimeBasisLabel: string;
@@ -481,23 +494,53 @@ function ScorecardTab() {
           <Statistic title="建议调整等级" value={s ? s.suggestChanges : "—"} valueStyle={{ color: s && s.suggestChanges > 0 ? "#fa8c16" : undefined }} />
         </Card>
         <Card size="small">
+          {/* 「平均」是错的词：这是**整体**准时率（pooled）。叫「平均」会让人以为
+              9 家各 1 单 100% 和 1 家 200 单 50% 一人一票——那个数是 95%，真实整体 ~50%。 */}
           <Statistic
-            title={`平均准时率（${data?.onTimeBasisLabel ?? "原始承诺"}）`}
+            title={(
+              <Tooltip title={`${s?.onTimeAggregationLabel ?? ""}${s ? `　本次：${s.onTimeHits}/${s.onTimeSamples} 批（${s.onTimeSuppliers} 家有样本，${s.onTimeExcludedSuppliers} 家无承诺交期样本已排除）` : ""}`}>
+                <span>{`整体准时率（${data?.onTimeBasisLabel ?? "原始承诺"}）ⓘ`}</span>
+              </Tooltip>
+            )}
             value={s?.avgOnTimeRate == null ? "—" : s.avgOnTimeRate * 100}
             precision={s?.avgOnTimeRate == null ? undefined : 1}
             suffix={s?.avgOnTimeRate == null ? undefined : "%"}
             valueStyle={{ color: s?.avgOnTimeRate == null ? undefined : s.avgOnTimeRate < 0.8 ? "#cf1322" : "#52c41a" }}
           />
+          {s ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {s.onTimeHits}/{s.onTimeSamples} 批
+              {s.onTimeExcludedSuppliers > 0 ? `　${s.onTimeExcludedSuppliers} 家无样本已排除` : ""}
+            </Typography.Text>
+          ) : null}
         </Card>
         <Card size="small">
           <Statistic
-            title={`平均准时率（${data?.onTimeSecondaryBasisLabel ?? "当前承诺"}）`}
+            title={(
+              <Tooltip title={s?.onTimeAggregationLabel ?? ""}>
+                <span>{`整体准时率（${data?.onTimeSecondaryBasisLabel ?? "当前承诺"}）ⓘ`}</span>
+              </Tooltip>
+            )}
             value={s?.avgOnTimeRateCurrent == null ? "—" : s.avgOnTimeRateCurrent * 100}
             precision={s?.avgOnTimeRateCurrent == null ? undefined : 1}
             suffix={s?.avgOnTimeRateCurrent == null ? undefined : "%"}
           />
+          {s ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {s.onTimeHitsCurrent}/{s.onTimeSamplesCurrent} 批
+            </Typography.Text>
+          ) : null}
         </Card>
       </div>
+      {/* 质量案件维度不按窗口裁：页面标着「近 N 天」，就必须在同一屏说清这一维不受它限制 */}
+      {s && s.legacyQualityCases > 0 ? (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={s.qualityCaseScope}
+        />
+      ) : null}
 
       <ListToolbar
         state={listState}

@@ -30,12 +30,22 @@ export function todayShanghai(): string {
   return shanghaiDayOf(new Date());
 }
 
-/** 任意时间 → Asia/Shanghai 业务日；纯日期串（YYYY-MM-DD）原样视为业务日；无法解析 → null（不猜） */
+/**
+ * 任意时间 → Asia/Shanghai 业务日；纯日期串（YYYY-MM-DD）原样视为业务日；无法解析 → null（不猜）。
+ *
+ * 形状对≠日子存在：`"2026-13-45"` 能通过正则，此前就被原样放行，一路当成合法业务日
+ * 传进 SQL，`('2026-13-45')::date` 在 Postgres 里炸成 500——「用户把日期填错了」
+ * 于是变成一条服务端错误。这里必须真的验一次日历。
+ */
 export function shanghaiDay(v: DateLike): string | null {
   if (v == null) return null;
   if (typeof v === "string") {
     const s = v.trim();
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      /* 回程比对挡住「月/日越界」与「2 月 30 日」这类形状合法但不存在的日期 */
+      const t = Date.parse(`${s}T00:00:00Z`);
+      return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === s ? s : null;
+    }
     const t = Date.parse(s);
     if (!Number.isFinite(t)) return null;
     return shanghaiDayOf(new Date(t));

@@ -3,7 +3,8 @@
 /**
  * D63 采购订单指标（真报表）：采购下了多少、多久到、省了多少、供应商 OTIF。
  * W2：OTIF 主口径改为**原始承诺**，当前承诺并列为副列——供应商改期不再抬高主口径。
- * 只消费读模型 purchase-order-metrics/v3；金额由 API 按角色剥离（moneyVisible=false 时显示「—」）。
+ * 只消费读模型 purchase-order-metrics（版本号唯一权威是服务端的 PURCHASE_ORDER_METRICS_KEY 常量——
+ * 这里不再抄一份 /vN，抄下来的那份只会随升版静默过期）；金额由 API 按角色剥离（moneyVisible=false 时显示「—」）。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, App, Button, Card, Col, Row, Segmented, Select, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
@@ -48,6 +49,32 @@ function OtifCell({ o }: { o: OtifStats }) {
       <Typography.Text style={{ color: o.rate < 0.8 ? "#cf1322" : "#52c41a" }}>{pct(o.rate)}</Typography.Text>
     </Tooltip>
   );
+}
+
+/**
+ * 「没数据 ≠ 差」（`rules/scorecard.ts` 的既定规则，本页此前违反）。
+ *
+ * 此前 OTIF 用 `?? -1`、周期用 `?? MAX_SAFE_INTEGER` 参与比较：一个**没有可评 PO** 的供应商
+ * 于是被排成「−100% 准时率」「周期最长」——升序时它顶在最差的位置，被当成最该处理的对象。
+ * 缺数据是我们没记录，不是供应商的表现（记分卡也因此对缺数据的维度不计分而不是给 0 分）。
+ *
+ * 规则：有值的按值比；**没有值的一律沉底，升序降序都沉底**。
+ * AntD 对 `descend` 会把比较结果整体取反，所以这里必须消费第三个参数 `sortOrder` 预先反号，
+ * 否则「沉底」在降序时会变成「置顶」——把「没数据」排成「最好」，同样是假结论。
+ */
+export function compareNullLast(
+  a: number | null | undefined,
+  b: number | null | undefined,
+  sortOrder?: "ascend" | "descend" | null,
+): number {
+  const av = a ?? null;
+  const bv = b ?? null;
+  if (av == null && bv == null) return 0;
+  if (av == null || bv == null) {
+    const last = av == null ? 1 : -1;
+    return sortOrder === "descend" ? -last : last;
+  }
+  return av - bv;
 }
 
 export default function PurchaseOrdersClient() {
@@ -138,12 +165,12 @@ export default function PurchaseOrdersClient() {
       ),
     },
     ...volumeColumns<PoSupplierRow>(),
-    { title: <Tooltip title={metricTooltip("poOrderToDeliveryDays")}>订单→交付 P50/P90</Tooltip>, dataIndex: "cycle", width: 200, sorter: (a, b) => (a.cycle.firstP50 ?? Number.MAX_SAFE_INTEGER) - (b.cycle.firstP50 ?? Number.MAX_SAFE_INTEGER), render: (c: CycleStats) => <CycleCell c={c} /> },
-    { title: <Tooltip title={metricTooltip("supplierOtif")}>{`OTIF（${data?.otifBasisLabel ?? "原始承诺"}）`}</Tooltip>, dataIndex: "otif", width: 130, align: "right", sorter: (a, b) => (a.otif.rate ?? -1) - (b.otif.rate ?? -1), render: (o: OtifStats) => <OtifCell o={o} /> },
+    { title: <Tooltip title={metricTooltip("poOrderToDeliveryDays")}>订单→交付 P50/P90</Tooltip>, dataIndex: "cycle", width: 200, sorter: (a, b, order) => compareNullLast(a.cycle.firstP50, b.cycle.firstP50, order), render: (c: CycleStats) => <CycleCell c={c} /> },
+    { title: <Tooltip title={metricTooltip("supplierOtif")}>{`OTIF（${data?.otifBasisLabel ?? "原始承诺"}）`}</Tooltip>, dataIndex: "otif", width: 130, align: "right", sorter: (a, b, order) => compareNullLast(a.otif.rate, b.otif.rate, order), render: (o: OtifStats) => <OtifCell o={o} /> },
     {
       title: <Tooltip title="并列副口径：按供应商改期后的当前承诺判定，只展示不进目标/评分——两列出现差额即说明改期吃掉了迟到">{`OTIF（${data?.otifSecondaryBasisLabel ?? "当前承诺"}）`}</Tooltip>,
       dataIndex: "otifCurrent", width: 130, align: "right",
-      sorter: (a, b) => (a.otifCurrent.rate ?? -1) - (b.otifCurrent.rate ?? -1),
+      sorter: (a, b, order) => compareNullLast(a.otifCurrent.rate, b.otifCurrent.rate, order),
       render: (o: OtifStats) => <OtifCell o={o} />,
     },
     { title: <Tooltip title={metricTooltip("costSavingYtd")}>降本额</Tooltip>, dataIndex: ["costSaving", "savingYtd"], width: 120, align: "right", sorter: (a, b) => Number(a.costSaving.savingYtd ?? 0) - Number(b.costSaving.savingYtd ?? 0), render: (v: string | null) => money(v) },

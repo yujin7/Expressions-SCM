@@ -25,6 +25,13 @@
  * 金额：线路单位费用/估算成本走 `report/transfer-routes` 读模型，非 PRICE_VISIBLE_ROLES
  * 由 `stripLaneMoney`（唯一权威）置空；本模块不自己判角色。线路读模型不可用时降级为「无费用线索」，
  * 绝不让整页失败——挪货的决定不依赖费用估算。
+ * 行内金额键 `laneMedianUnitFee`/`laneEstCost` 另在 `SENSITIVE_FIELDS`，路由出口再经 `maskSensitive` 兜底。
+ *
+ * 调拨侧必须取全（W2 修复）：`getTransferSuggestions` 的 pageSize 上限是 500，此前本模块只请求
+ * **第一页 500 行**并把 `transfer.total` 读出来又丢掉。生产 620 条调拨建议时，排在第 540 位的那条
+ * 对本页不存在——该 SKU 显示 `transferQty = 0`、结论 `buy_only`，计划员在一张专门用来"先挪"的页面上
+ * 去买了 400 件本来就躺在另一个仓的货。现按页取满 `total`（`TRANSFER_PAGE_MAX` 页封顶），
+ * 仍取不完则在 `summary.transferTruncated` 上**显式说出来**，绝不静默截断。
  */
 import { dCmp, dMax, dMoney, dMul, dSub } from "@/server/core/decimal";
 import { canSeePrices } from "@/server/core/dto";
@@ -39,9 +46,20 @@ import {
 } from "@/server/modules/replenish/in-flight-drafts";
 import {
   getTransferSuggestions,
+  type TransferSuggestResult,
   type TransferSuggestRow,
 } from "@/server/modules/report/transfer-suggest";
 import { loadTransferRoutes, stripLaneMoney, type TransferLaneRow } from "@/server/modules/report/transfer-routes";
+
+/**
+ * 本装配层的口径记号（出处守卫 `tests/report/calibre-provenance-guard.test.ts` 认它）。
+ * 装配口径变化（取数范围、合并规则）时升版，页面出处文案由此常量派生，不得手抄。
+ */
+export const MOVE_OR_BUY_CALIBRE_KEY = "move-or-buy/v2";
+
+/** 调拨建议取数的分页上限（每页 500 行；超过即在 summary 上显式标注截断） */
+export const TRANSFER_PAGE_MAX = 40;
+const TRANSFER_PAGE_SIZE = 500;
 
 /** 两套可销天数的口径标签——页面逐列显示，禁止只写「可销天数」 */
 export const COVER_CALIBRES = {
@@ -82,12 +100,24 @@ export interface MoveOrBuyTransferOption {
 }
 
 /**
- * `buy_suppressed`（C9）：采购建议存在但**被放弃抑制扣着**。
- * 不能并进 `transfer_only`——「先挪即可」是一个结论（不用买），而这里的事实是
- * 「系统本来要建议买，被一条抑制窗口扣下了」。两者的处置完全不同：前者不用管，
- * 后者要么确认抑制仍然成立，要么一键解除放行。
+ * 「不用买」这一侧此前是一个笼统的 `transfer_only`，两次审计各从里面拆出一档：
+ *
+ * `buy_suppressed`（C9）：采购建议存在但**被放弃抑制扣着**。不能并进 `transfer_only`——
+ * 「先挪即可」是一个结论（不用买），而这里的事实是「系统本来要建议买，被一条抑制窗口扣下了」。
+ * 两者的处置完全不同：前者不用管，后者要么确认抑制仍然成立，要么一键解除放行。
+ *
+ * `none`：既不用买也没货可挪（`suggestQty = "0"` 且无调拨建议）。此前也判成 `transfer_only`
+ * 并计入「先挪即可（无需采购）」——一条**一件都挪不了**的行在汇总里冒充「已被调拨覆盖」，
+ * `coveredByTransfer` 因此虚高。
+ *
+ * 剩下的 `transfer_only` 才是它字面的意思：确实有货可挪，且挪完就不用买。
  */
-export type MoveOrBuyAction = "transfer_only" | "transfer_then_buy" | "buy_only" | "buy_suppressed";
+export type MoveOrBuyAction =
+  | "transfer_only"
+  | "transfer_then_buy"
+  | "buy_only"
+  | "buy_suppressed"
+  | "none";
 
 export interface MoveOrBuyRow {
   skuId: number;
@@ -144,8 +174,19 @@ export interface MoveOrBuyResult {
     buyOnly: number;
     /** C9：采购建议被放弃抑制扣着的 SKU 数（这些行的 suggestQty 是 null，但不是「不用买」） */
     declineSuppressed: number;
+    /** 既不用买、也没货可挪的 SKU 数（不计入 coveredByTransfer） */
+    noAction: number;
     /** 调拨建议的横向扫描窗口（天）——即调入仓可销天数的分母窗口 */
     horizonDays: number;
+    /* ── 调拨侧取数完整性（静默截断会让「先挪」结论反向出错，必须可见）── */
+    /** 服务端调拨建议总条数（`getTransferSuggestions` 的 total，不是本页装配后的行数） */
+    transferLineTotal: number;
+    /** 本次实际读入的调拨建议条数 */
+    transferLinesLoaded: number;
+    /** true = 调拨建议未取全（超过 TRANSFER_PAGE_MAX × 500 行）；页面必须显式告警 */
+    transferTruncated: boolean;
+    /** 装配层口径记号（出处守卫用；页面出处文案由它派生） */
+    calibreKey: typeof MOVE_OR_BUY_CALIBRE_KEY;
     /** 线路费用是否可见（非 PRICE_VISIBLE_ROLES 一律 false，费用列整列为 —） */
     moneyVisible: boolean;
     /** 线路读模型是否可用（不可用只丢费用线索，不影响调拨/采购结论） */
@@ -162,6 +203,36 @@ export interface MoveOrBuyQuery {
   horizonDays?: number;
   /** 当前用户角色（金额可见性；服务端判定，前端隐藏不算） */
   roles?: string[];
+}
+
+/**
+ * 把分页的调拨建议**取满**：`getTransferSuggestions` 的 pageSize 上限是 500，
+ * 只读第一页会让第 501 条之后的建议对本页彻底不存在（该 SKU 显示"无货可挪、只能买"）。
+ *
+ * 抽成独立函数是为了能被直接钉住：造 620 条的假分页器，就能验证"只读第一页"这个缺陷会变红，
+ * 而不需要在 PGlite 里真的种出 620 条调拨建议。
+ *
+ * @param fetchPage 取第 page 页（1 起）；返回该页的行与**服务端总条数**
+ * @param maxPages 分页上限；超出即 `truncated: true`（绝不静默截断）
+ */
+export async function collectTransferSuggestions(
+  fetchPage: (page: number) => Promise<{ rows: TransferSuggestRow[]; total: number }>,
+  maxPages: number = TRANSFER_PAGE_MAX,
+  pageSize: number = TRANSFER_PAGE_SIZE,
+): Promise<{ rows: TransferSuggestRow[]; total: number; truncated: boolean }> {
+  const first = await fetchPage(1);
+  const rows = [...first.rows];
+  let truncated = false;
+  if (first.total > rows.length) {
+    const pages = Math.ceil(first.total / pageSize);
+    for (let p = 2; p <= pages; p++) {
+      if (p > maxPages) { truncated = true; break; }
+      const next = await fetchPage(p);
+      if (next.rows.length === 0) break;
+      rows.push(...next.rows);
+    }
+  }
+  return { rows, total: first.total, truncated };
 }
 
 /** 最晚下单日升序、空值置底；同日按编码 */
@@ -210,8 +281,12 @@ export function actionOf(
   /** C9：采购建议被放弃抑制扣着（`ReplenishRow.suppression` 非空）——优先于其余判定 */
   buySuppressed = false,
 ): MoveOrBuyAction {
-  if (buySuppressed && (suggestQty == null || dCmp(suggestQty, "0") <= 0)) return "buy_suppressed";
-  if (suggestQty == null || dCmp(suggestQty, "0") <= 0) return "transfer_only";
+  if (suggestQty == null || dCmp(suggestQty, "0") <= 0) {
+    // 抑制优先：它说明「本来要建议买」，和「不用买」是两回事
+    if (buySuppressed) return "buy_suppressed";
+    // 不用买：有货可挪才是「先挪即可」，一件都挪不了就是「无需动作」，不许冒充被调拨覆盖
+    return transferQty > 0 ? "transfer_only" : "none";
+  }
   if (transferQty <= 0) return "buy_only";
   return residual != null && dCmp(residual, "0") > 0 ? "transfer_then_buy" : "transfer_only";
 }
@@ -227,11 +302,23 @@ export async function getMoveOrBuyDecisions(
   const roles = query.roles ?? [];
   const moneyVisible = canSeePrices(roles);
 
-  /* 两个既有服务各自取全量（都已内建各自的过滤与口径），本模块只做并表 */
+  /* 两个既有服务各自取全量（都已内建各自的过滤与口径），本模块只做并表。
+     调拨侧的 pageSize 上限是 500，所以按页取满 total——只读第一页会让 #501 之后的
+     调拨建议对本页完全不存在，而那正是这页要回答的问题。 */
+  let transferSummary: TransferSuggestResult["summary"] | null = null;
   const [replenish, transfer] = await Promise.all([
     getReplenishSuggestions({ allRows: true }, db),
-    getTransferSuggestions({ pageSize: 500, horizonDays: query.horizonDays }, db),
+    collectTransferSuggestions(async (page) => {
+      const r = await getTransferSuggestions(
+        { page, pageSize: TRANSFER_PAGE_SIZE, horizonDays: query.horizonDays },
+        db,
+      );
+      transferSummary = r.summary;
+      return { rows: r.rows, total: r.total };
+    }),
   ]);
+  const transferRows: TransferSuggestRow[] = transfer.rows;
+  const transferTruncated = transfer.truncated;
 
   /* 线路费用（可选线索）：读模型不可用只丢费用列 */
   let lanes: TransferLaneRow[] = [];
@@ -246,7 +333,7 @@ export async function getMoveOrBuyDecisions(
   }
 
   const transfersBySku = new Map<number, TransferSuggestRow[]>();
-  for (const t of transfer.rows) {
+  for (const t of transferRows) {
     const list = transfersBySku.get(t.skuId) ?? [];
     list.push(t);
     transfersBySku.set(t.skuId, list);
@@ -344,7 +431,12 @@ export async function getMoveOrBuyDecisions(
       stillNeedBuy: all.filter((r) => r.action === "transfer_then_buy").length,
       buyOnly: all.filter((r) => r.action === "buy_only").length,
       declineSuppressed: all.filter((r) => r.suppression != null).length,
-      horizonDays: transfer.summary.horizonDays,
+      noAction: all.filter((r) => r.action === "none").length,
+      horizonDays: (transferSummary as TransferSuggestResult["summary"] | null)?.horizonDays ?? 0,
+      transferLineTotal: transfer.total,
+      transferLinesLoaded: transferRows.length,
+      transferTruncated,
+      calibreKey: MOVE_OR_BUY_CALIBRE_KEY,
       moneyVisible,
       laneCostAvailable,
       calibres: COVER_CALIBRES,

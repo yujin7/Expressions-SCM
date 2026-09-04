@@ -69,18 +69,21 @@ describe("(b) 引擎没覆盖的 SKU 不得画成一条「一直是 0」的平�
 
       const proj = await getSkuProjection(raw.id, 120, db);
       expect(proj.engineCovered).toBe(false);
-      expect(proj.engineGap, "零线必须自带解释，否则读者会读成「一直没货也没需求」").toContain("未被引擎覆盖");
-      expect(proj.engineGap).toContain(raw.code);
-      // 降级值仍然如实为 0/null——本项修的是「说不说得清」，不是编数字
-      expect(proj.startOnHand).toBe(0);
-      expect(proj.safetyQty).toBe(0);
+      expect(proj.engineCoverageReason, "必须说得出「为什么没覆盖」，而不只是一个 false").toBe("not_finished");
+      expect(proj.engineCoverageNote, "零线必须自带解释，否则读者会读成「一直没货也没需求」").toBeTruthy();
+      /* 引擎口径的数一律 null，**不是 0**：0 会被读成「算过，结果是 0」，
+         于是抽屉给一个从未被计算的 SKU 画平线并宣布「视野内不会跌破安全库存」。 */
+      expect(proj.startOnHand).toBeNull();
+      expect(proj.safetyQty).toBeNull();
+      expect(proj.daily).toBeNull();
       expect(proj.leadDays).toBeNull();
+      expect(proj.points, "未覆盖不得画曲线").toEqual([]);
     } finally {
       await client.close();
     }
   });
 
-  it("引擎覆盖的成品 → engineCovered=true 且不带 gap 说明", async () => {
+  it("引擎覆盖的成品 → engineCovered=true 且不带未覆盖说明", async () => {
     const { db, client } = await createTestDb();
     try {
       const [spu] = await db.insert(schema.spus).values({ code: "P1", nameCn: "测试" }).returning();
@@ -99,7 +102,7 @@ describe("(b) 引擎没覆盖的 SKU 不得画成一条「一直是 0」的平�
 
       const proj = await getSkuProjection(sku.id, 120, db);
       expect(proj.engineCovered).toBe(true);
-      expect(proj.engineGap).toBeNull();
+      expect(proj.engineCoverageNote).toBeNull();
       expect(proj.startOnHand).toBe(100);
     } finally {
       await client.close();

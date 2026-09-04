@@ -30,7 +30,7 @@ import {
   recordExceptionsShown,
   shanghaiDay,
 } from "@/server/modules/workbench/exception-dismissals";
-import { markWorkbenchVisit } from "@/server/modules/workbench/visit-marker";
+import { markWorkbenchVisit, type VisitMarkerState } from "@/server/modules/workbench/visit-marker";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -65,10 +65,16 @@ export interface ExceptionItem {
    */
   daysShown?: number;
   /**
-   * W2：本条在**当前登录人**上次访问时还不在清单里（纯事实比对，不评分、不改排序）。
-   * 无登录人视角（每日摘要/推送）与首次访问一律 false——第一次见到就整屏飘红等于没有信息。
+   * W2：本条自**当前登录人**上次访问以来有变化——键是新出现的，**或**同一条例外下的
+   * 条目数变多了（`inventory_cover` 从 2 个 SKU 涨到 200 个 SKU，键一个字没变，
+   * 只比键就会写出「上次访问后无新增」，而那正是最该被看见的一晚）。
+   * 无登录人视角（每日摘要/推送）与首次访问一律 false。
    */
   newSinceLastVisit?: boolean;
+  /** 上次访问时本条的条目数（未知/新出现 = null）——行上可显示「2 → 200」 */
+  previousCount?: number | null;
+  /** 本条相对上次访问的条目增量（无可比基线 = null；只增不减地标，减少不算新增） */
+  countDelta?: number | null;
 }
 
 export interface WorkbenchFocus {
@@ -83,10 +89,22 @@ export interface WorkbenchFocus {
   /** C153：审计事件触发、当前状态复核后的有限下一步建议；只建议，不自动写单。 */
   nextActions: NextActionItem[];
   /**
-   * W2「自上次访问以来」：比对基线对应的上次访问时刻与新增条数。
+   * W2「自上次访问以来」：比对基线对应的上次访问时刻与变化条数。
    * 无登录人视角（每日摘要）= null；首次访问 = since:null / newCount:0。
+   *
+   * `state` 三态（`firstVisit` 一个布尔量说不清「记忆表不可用」——迁移没跑时界面
+   * 曾**永远**显示「首次访问」，一个坏掉的功能长期伪装成正常状态）：
+   * `first_visit` 真首次 / `compared` 已比对 / `unavailable` 记忆表不可用。
    */
-  sinceLastVisit: { since: string | null; newCount: number; firstVisit: boolean } | null;
+  sinceLastVisit: {
+    since: string | null;
+    /** 新出现的例外条数 */
+    newCount: number;
+    /** 键已存在、但条目数变多的例外条数（分类不变、里面的东西变多也是变化） */
+    grownCount: number;
+    firstVisit: boolean;
+    state: VisitMarkerState;
+  } | null;
 }
 
 async function countWhere(db: AnyDb, table: AnyDb, where: unknown): Promise<number> {
@@ -272,7 +290,10 @@ const SECTION_BUILDERS: [Role, (db: AnyDb) => Promise<FocusSection>][] = [
 const SEVERITY_RANK: Record<ExceptionSeverity, number> = { critical: 0, high: 1, medium: 2 };
 
 /** #6 控制塔：跨域异常聚合（均为廉价聚合查询，登录首屏可承受） */
-const exceptionsMemo = new WeakMap<object, { at: number; value: Promise<ExceptionItem[]> }>();
+/** 例外计算结果：`visible` 已过打盹过滤，`all` 是过滤前的全量（访问标记必须用 `all`） */
+export interface ExceptionSet { visible: ExceptionItem[]; all: ExceptionItem[] }
+
+const exceptionsMemo = new WeakMap<object, { at: number; value: Promise<ExceptionSet> }>();
 
 /**
  * 例外清单；`memoMs` 打开时同一 db 实例在该时长内复用上一次结果（驾驶舱多用户刷新不重复跑全量补货引擎）。
@@ -285,10 +306,10 @@ const exceptionsMemo = new WeakMap<object, { at: number; value: Promise<Exceptio
  * 展示路径保持缺省 true。`recordShown` 同理：只有**人真的看到了**才推进"连续出现天数"，
  * 定时任务传 false，否则那个计数量的是"例外存在了几天"，不是"有人看了几天"。
  */
-export async function computeExceptions(
+export async function computeExceptionSet(
   db: AnyDb,
   opts?: { memoMs?: number; recordShown?: boolean; applySnooze?: boolean },
-): Promise<ExceptionItem[]> {
+): Promise<ExceptionSet> {
   const memoMs = opts?.memoMs ?? 0;
   const recordShown = opts?.recordShown ?? true;
   const applySnooze = opts?.applySnooze ?? true;
@@ -303,19 +324,32 @@ export async function computeExceptions(
   return computeExceptionsUncached(db, recordShown, applySnooze);
 }
 
+/** 兼容既有调用方：只要可见清单（已过打盹过滤） */
+export async function computeExceptions(
+  db: AnyDb,
+  opts?: { memoMs?: number; recordShown?: boolean; applySnooze?: boolean },
+): Promise<ExceptionItem[]> {
+  return (await computeExceptionSet(db, opts)).visible;
+}
+
 /**
  * W9 打盹与出现天数：算完例外后统一过一遍记忆表——
  * 打盹未到期的整条隐藏（连同它的计数，不留半条），其余标注连续出现天数并推进计数。
  * 记忆表出问题只降级为"没有 daysShown"，绝不让首屏 500：控制塔的可用性优先于这份增益。
  */
-async function applyExceptionMemory(db: AnyDb, items: ExceptionItem[], recordShown: boolean, applySnooze = true): Promise<ExceptionItem[]> {
+async function applyExceptionMemory(
+  db: AnyDb,
+  items: ExceptionItem[],
+  recordShown: boolean,
+  applySnooze = true,
+): Promise<{ visible: ExceptionItem[]; all: ExceptionItem[] }> {
   const today = shanghaiDay();
   try {
     const memory = await loadExceptionMemory(db);
     // applySnooze=false（推送路径）：打盹只隐藏页面，不静音推送
     const visible = applySnooze ? items.filter((it) => !isSnoozed(memory.get(it.key), today)) : items;
     if (recordShown && visible.length) await recordExceptionsShown(db, visible.map((it) => it.key), today);
-    return visible.map((it) => {
+    const withDays = (it: ExceptionItem): ExceptionItem => {
       const mem = memory.get(it.key);
       const prior = Number(mem?.consecutiveDays ?? 0);
       // 本轮已把 today 记进去了（或本来就是今天）：连续天数 = 已记到今天的值
@@ -324,9 +358,12 @@ async function applyExceptionMemory(db: AnyDb, items: ExceptionItem[], recordSho
           : prior > 0 && mem?.lastShownOn === yesterdayOf(today) ? prior + 1
             : 1;
       return { ...it, daysShown };
-    });
+    };
+    /* `all` = **打盹过滤之前**的全量清单：访问标记必须以它为快照，
+       否则一条被打盹 90 天的例外会在打盹到期那天冒充「上次访问后新增」。 */
+    return { visible: visible.map(withDays), all: items.map(withDays) };
   } catch {
-    return items; // 记忆表不可用（迁移未跑等）时按无记忆展示，不隐藏也不标注
+    return { visible: items, all: items }; // 记忆表不可用（迁移未跑等）时按无记忆展示，不隐藏也不标注
   }
 }
 
@@ -357,7 +394,7 @@ async function platformIdentityGap(
   }
 }
 
-async function computeExceptionsUncached(db: AnyDb, recordShown = true, applySnooze = true): Promise<ExceptionItem[]> {
+async function computeExceptionsUncached(db: AnyDb, recordShown = true, applySnooze = true): Promise<ExceptionSet> {
   const today = todayShanghai();
   const out: ExceptionItem[] = [];
 
@@ -545,9 +582,9 @@ export async function getWorkbenchFocus(
     builders.sort((a, b) => priority(a[0]) - priority(b[0]));
   }
   const planningRole = isAdmin || roles.some((r) => ["pmc", "purchasing", "ops", "warehouse"].includes(r));
-  const [sections, exceptions, nextActions] = await Promise.all([
+  const [sections, exceptionSet, nextActions] = await Promise.all([
     Promise.all(builders.map(([, build]) => build(db))),
-    planningRole ? computeExceptions(db) : Promise.resolve<ExceptionItem[]>([]),
+    planningRole ? computeExceptionSet(db) : Promise.resolve<ExceptionSet>({ visible: [], all: [] }),
     getNextActions(roles, db),
   ]);
   const myOpenDocs = userId != null ? await countMyOpenDocs(db, userId) : null;
@@ -573,6 +610,7 @@ export async function getWorkbenchFocus(
     // 动态导入：todo/service → jobs/notify → workbench/focus → todo/stats 会成环（next build 收集页面数据时 TDZ 报错）
     user ? import("@/server/modules/todo/stats").then(({ getTodoProgressBlock }) => getTodoProgressBlock(user, db)).then((b) => b.mine) : Promise.resolve(null),
   ]);
+  const exceptions = exceptionSet.visible;
   const queues = [
     { key: "inbox", label: "待我审批", count: pendingDocs, href: "/inbox" },
     ...(myTodo
@@ -589,10 +627,31 @@ export async function getWorkbenchFocus(
   let sinceLastVisit: WorkbenchFocus["sinceLastVisit"] = null;
   let markedExceptions = exceptions;
   if (userId != null) {
-    const delta = await markWorkbenchVisit(db, userId, exceptions.map((e) => e.key));
-    const fresh = new Set(delta.newKeys);
-    markedExceptions = exceptions.map((e) => ({ ...e, newSinceLastVisit: fresh.has(e.key) }));
-    sinceLastVisit = { since: delta.since, newCount: delta.newKeys.length, firstVisit: delta.firstVisit };
+    /* 快照用 `exceptionSet.all`（**打盹过滤之前**）+ 条目数：
+       - 用过滤后的清单，一条打盹到期的老例外会冒充「新增」（它从没消失，只是被藏起来）；
+       - 只用分类键，`inventory_cover` 从 2 个 SKU 涨到 200 个 SKU 会被判成「无新增」。 */
+    const delta = await markWorkbenchVisit(
+      db,
+      userId,
+      exceptionSet.all.map((e) => ({ k: e.key, c: e.count })),
+    );
+    const changed = new Set([...delta.newKeys, ...delta.grownKeys]);
+    markedExceptions = exceptions.map((e) => {
+      const before = delta.previousCounts[e.key] ?? null;
+      return {
+        ...e,
+        newSinceLastVisit: changed.has(e.key),
+        previousCount: before,
+        countDelta: before == null ? null : e.count - before,
+      };
+    });
+    sinceLastVisit = {
+      since: delta.since,
+      newCount: delta.newKeys.length,
+      grownCount: delta.grownKeys.length,
+      firstVisit: delta.firstVisit,
+      state: delta.state,
+    };
   }
 
   return {

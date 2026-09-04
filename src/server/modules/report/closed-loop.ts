@@ -88,7 +88,19 @@ export interface ClosedLoopResult {
 
 /* ────────────── 闭环审计 #12(a)：建议准确度分布 ────────────── */
 
-export const SUGGESTION_ACCURACY_VERSION = "closed-loop-accuracy/v1";
+/**
+ * v2（W2 修复）：样本按**引擎版本**分组披露。
+ *
+ * `planning_version_lines` 横跨所有历史版本，而 `planning_versions.engine_version` 在本波从
+ * `time-phased-v2`（账面在库）换成了 `time-phased-v3`（可用在库＝账面在库扣临期净额）。
+ * 一个不分版本的准确度数字于是横跨两套引擎口径：v3 把净需求量抬高之后，同样的实际下单量
+ * 会落进更靠近 100% 的桶——**准确度看起来变好了，其实只是分母换了个算法**。而这个数字
+ * 自己的版本串 `/v1` 一动不动，读者无从发现。
+ *
+ * 现在：总分布仍给（读者要的是"我们整体准不准"），但同时给 `byEngineVersion` 逐版本分布与
+ * `engineMix`（各版本样本数），caliber 里明说混了几套引擎。键随口径升版。
+ */
+export const SUGGESTION_ACCURACY_VERSION = "closed-loop-accuracy/v2";
 export const ACCURACY_BUCKET_KEYS = ["none", "lt50", "50_90", "90_110", "110_150", "gt150"] as const;
 export type AccuracyBucketKey = (typeof ACCURACY_BUCKET_KEYS)[number];
 export const ACCURACY_BUCKET_LABELS: Record<AccuracyBucketKey, string> = {
@@ -101,6 +113,19 @@ export const ACCURACY_BUCKET_LABELS: Record<AccuracyBucketKey, string> = {
 };
 
 export interface AccuracyBucket { key: AccuracyBucketKey; label: string; count: number }
+
+/** 逐引擎版本的样本与分布——总分布横跨多套引擎时，这里才看得出哪一套贡献了什么 */
+export interface AccuracyByEngineVersion {
+  /** planning_versions.engine_version 原值；捕获行缺该值时为 "(未记录)" */
+  engineVersion: string;
+  sample: number;
+  matured: number;
+  orderedVsRequired: AccuracyBucket[];
+  outboundVsRequired: AccuracyBucket[];
+}
+
+/** 引擎版本未记录时的占位（旧快照可能没有该列值） */
+export const UNKNOWN_ENGINE_VERSION = "(未记录)";
 
 export interface SuggestionAccuracy {
   version: typeof SUGGESTION_ACCURACY_VERSION;
@@ -121,6 +146,13 @@ export interface SuggestionAccuracy {
   /** 视野期内实时仓实际出库 ÷ 净需求（快照仓 SKU 无流水 → 不进此分布，见 ledgerCoverage） */
   outboundVsRequired: AccuracyBucket[];
   ledgerCoverage: { withRealtimeLedger: number; snapshotOnly: number };
+  /**
+   * 样本里出现的引擎版本及其成熟样本数（按样本数降序）。
+   * `engineMix.length > 1` = 上面的总分布**横跨多套引擎口径**，不能当成同一把尺子上的改善。
+   */
+  engineMix: { engineVersion: string; sample: number; matured: number }[];
+  /** 逐引擎版本的分布（与总分布同法，只是样本被限定在该版本内） */
+  byEngineVersion: AccuracyByEngineVersion[];
   caliber: string[];
 }
 
@@ -169,6 +201,8 @@ interface CapturedSample {
   businessDate: string;
   horizonDays: number;
   qty: string;
+  /** planning_versions.engine_version（准确度必须能按引擎口径分组，否则跨口径的改善不可见） */
+  engineVersion: string;
 }
 
 /**
@@ -187,8 +221,8 @@ async function loadCapturedSamples(
   const limit = Math.max(1, Math.min(5000, opts?.limit ?? 2000));
   const pl = schema.planningVersionLines;
   const pv = schema.planningVersions;
-  const lines: { versionId: number; skuId: number; suggestedQty: string; envelope: unknown; createdAt: Date }[] = await db
-    .select({ versionId: pl.versionId, skuId: pl.skuId, suggestedQty: pl.suggestedQty, envelope: pl.decisionEnvelope, createdAt: pv.createdAt })
+  const lines: { versionId: number; skuId: number; suggestedQty: string; envelope: unknown; createdAt: Date; engineVersion: string | null }[] = await db
+    .select({ versionId: pl.versionId, skuId: pl.skuId, suggestedQty: pl.suggestedQty, envelope: pl.decisionEnvelope, createdAt: pv.createdAt, engineVersion: pv.engineVersion })
     .from(pl)
     .innerJoin(pv, eq(pv.id, pl.versionId))
     .where(eq(pl.suppressed, suppressed))
@@ -207,7 +241,12 @@ async function loadCapturedSamples(
     if (dCmp(qty, "0") <= 0) continue;
     const key = `${l.skuId}|${businessDate}`;
     const cur = latest.get(key);
-    if (!cur || l.versionId > cur.versionId) latest.set(key, { skuId: l.skuId, versionId: l.versionId, businessDate, horizonDays, qty });
+    if (!cur || l.versionId > cur.versionId) {
+      latest.set(key, {
+        skuId: l.skuId, versionId: l.versionId, businessDate, horizonDays, qty,
+        engineVersion: (l.engineVersion ?? "").trim() || UNKNOWN_ENGINE_VERSION,
+      });
+    }
   }
   const samples = [...latest.values()];
   const matured = samples.filter((s) => shanghaiDayOf(new Date(shanghaiStart(s.businessDate).getTime() + s.horizonDays * DAY_MS)) <= today);
@@ -230,7 +269,9 @@ export async function getSuggestionAccuracy(dbArg?: AnyDb, opts?: { now?: Date; 
     orderedVsRequired: toBucketList(emptyBuckets()),
     outboundVsRequired: toBucketList(emptyBuckets()),
     ledgerCoverage: { withRealtimeLedger: 0, snapshotOnly: 0 },
-    caliber: [...SUGGESTION_ACCURACY_CALIBER],
+    engineMix: engineMixOf(samples, matured),
+    byEngineVersion: [],
+    caliber: [...SUGGESTION_ACCURACY_CALIBER, engineMixCaliber(engineMixOf(samples, matured))],
   };
   if (!matured.length) return result;
 
@@ -283,25 +324,74 @@ export async function getSuggestionAccuracy(dbArg?: AnyDb, opts?: { now?: Date; 
 
   const ordered = emptyBuckets();
   const outbound = emptyBuckets();
+  /* 逐引擎版本同步累计：总分布回答"整体准不准"，逐版本分布回答"这次改善是同一把尺子上的吗"。 */
+  const perEngine = new Map<string, { ordered: ReturnType<typeof emptyBuckets>; outbound: ReturnType<typeof emptyBuckets> }>();
+  const bucketsFor = (v: string) => {
+    const cur = perEngine.get(v) ?? { ordered: emptyBuckets(), outbound: emptyBuckets() };
+    perEngine.set(v, cur);
+    return cur;
+  };
   for (const s of matured) {
+    const per = bucketsFor(s.engineVersion);
     const from = shanghaiStart(s.businessDate).getTime();
     const to = from + s.horizonDays * DAY_MS;
     let orderedQty = "0";
     for (const o of ordersBySku.get(s.skuId) ?? []) {
       if (o.t >= from && o.t < to) orderedQty = dAdd(orderedQty, o.qty, 4);
     }
-    ordered[bucketOf(orderedQty, s.qty)]++;
+    const ob = bucketOf(orderedQty, s.qty);
+    ordered[ob]++;
+    per.ordered[ob]++;
     if (!skuWithLedger.has(s.skuId)) { result.ledgerCoverage.snapshotOnly++; continue; }
     result.ledgerCoverage.withRealtimeLedger++;
     let outQty = "0";
     for (const o of outsBySku.get(s.skuId) ?? []) {
       if (o.t >= from && o.t < to) outQty = dSub(outQty, o.qty, 4);
     }
-    outbound[bucketOf(outQty, s.qty)]++;
+    const xb = bucketOf(outQty, s.qty);
+    outbound[xb]++;
+    per.outbound[xb]++;
   }
   result.orderedVsRequired = toBucketList(ordered);
   result.outboundVsRequired = toBucketList(outbound);
+  result.byEngineVersion = result.engineMix.map((m) => {
+    const per = perEngine.get(m.engineVersion) ?? { ordered: emptyBuckets(), outbound: emptyBuckets() };
+    return {
+      engineVersion: m.engineVersion,
+      sample: m.sample,
+      matured: m.matured,
+      orderedVsRequired: toBucketList(per.ordered),
+      outboundVsRequired: toBucketList(per.outbound),
+    };
+  });
   return result;
+}
+
+/** 样本里出现过的引擎版本及其样本数（按成熟样本数、再按总样本数降序，版本名兜底稳定） */
+function engineMixOf(samples: CapturedSample[], matured: CapturedSample[]): { engineVersion: string; sample: number; matured: number }[] {
+  const mix = new Map<string, { sample: number; matured: number }>();
+  for (const s of samples) {
+    const e = mix.get(s.engineVersion) ?? { sample: 0, matured: 0 };
+    e.sample += 1;
+    mix.set(s.engineVersion, e);
+  }
+  for (const s of matured) {
+    const e = mix.get(s.engineVersion) ?? { sample: 0, matured: 0 };
+    e.matured += 1;
+    mix.set(s.engineVersion, e);
+  }
+  return [...mix.entries()]
+    .map(([engineVersion, v]) => ({ engineVersion, ...v }))
+    .sort((a, b) => b.matured - a.matured || b.sample - a.sample || a.engineVersion.localeCompare(b.engineVersion));
+}
+
+/** 口径行：混了几套引擎必须写在脸上，否则"准确度改善"可能只是分母换了算法 */
+function engineMixCaliber(mix: { engineVersion: string; sample: number; matured: number }[]): string {
+  if (mix.length === 0) return "引擎版本：暂无捕获样本。";
+  const detail = mix.map((m) => `${m.engineVersion}（成熟 ${m.matured}/${m.sample}）`).join("、");
+  return mix.length === 1
+    ? `引擎版本：全部样本来自 ${detail}，总分布是同一套引擎口径。`
+    : `引擎版本：样本横跨 ${mix.length} 套引擎口径——${detail}。**总分布不是同一把尺子**（如 time-phased-v3 用可用在库、v2 用账面在库，净需求分母算法不同），跨版本的"改善"须逐版本对比 byEngineVersion 后才成立。`;
 }
 
 /* ────────────── W5 / 闭环审计 #12(b)：抑制复核（被抑制的建议后来断货了吗） ────────────── */

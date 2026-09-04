@@ -11,6 +11,13 @@
  *
  * 2026-09-03 W2-J（BI-R3）：增 brand 筛选与「段位 × 品牌」矩阵（brandMatrix），
  * 矩阵与 bucketCounts 都在段位/搜索筛选**之前**统计（仓库筛选之后），指标 id expiryByBrand。
+ *
+ * W2 修复：
+ *  - **成本覆盖率逐段位给**（`bucketCounts[b].covered/.batches`）。此前只有一个全局
+ *    `costCoverage`（如「90.5% 已覆盖」），而一个只有 5% 批次有成本的段位照样显示一个金额小计——
+ *    读者拿全局覆盖率去信一个局部小计，方向可以完全反过来。段位小计旁边必须是**该段位自己**的覆盖率。
+ *  - **金额排序在服务端做**（`sort=amount`）。客户端比较器只排当前一页，而分页总数来自服务端，
+ *    最贵的那批如果落在第 8 页就永远浮不上来；无成本的行显式置后，不按 ¥0 参与比较。
  */
 import { and, eq, gt, isNotNull } from "drizzle-orm";
 import { getDbAsync } from "@/db";
@@ -18,7 +25,7 @@ import * as schema from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
 import { num } from "@/server/core/svc";
 import { EXPIRY_TIER_DAYS, daysLeftOf, latestStocktakeRows, loadLatestStocktakeDates } from "@/server/core/stock-view";
-import { dAdd, dMul } from "@/server/core/decimal";
+import { dAdd, dCmp, dMul } from "@/server/core/decimal";
 import { resolveUnitCosts } from "@/server/core/valuation";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
@@ -48,6 +55,12 @@ export interface ExpiryBucketStat {
   qty: number;
   /** 段位金额小计（仅 withValue 时下发） */
   amount?: string;
+  /**
+   * 该段位内**有单位成本**的批次数（仅 withValue 时下发）。
+   * `covered < batches` 时 `amount` 只是该段位的一部分——页面必须逐段位标注，
+   * 不得拿全局覆盖率替代（一个 5% 覆盖的段位配一句「全局 90.5% 已覆盖」是误导）。
+   */
+  covered?: number;
 }
 
 export interface ExpiryBrandMatrixRow {
@@ -57,6 +70,19 @@ export interface ExpiryBrandMatrixRow {
   qty: number;
 }
 
+/** 排序键：剩余天数升序（缺省，最急的在前）/ 金额降序（服务端全集排序，需 withValue） */
+export type ExpirySortKey = "daysLeft" | "amount";
+export const EXPIRY_SORT_KEYS: readonly ExpirySortKey[] = ["daysLeft", "amount"];
+export function parseExpirySort(v: string | null | undefined): ExpirySortKey {
+  return (EXPIRY_SORT_KEYS as readonly string[]).includes(String(v)) ? (v as ExpirySortKey) : "daysLeft";
+}
+
+/**
+ * 金额口径记号（出处守卫 `tests/report/calibre-provenance-guard.test.ts` 认它）。
+ * 金额算法/覆盖率口径变化时升版。
+ */
+export const EXPIRY_MONEY_CALIBRE_KEY = "expiry-money/v1";
+
 export interface ExpiryListResult {
   today: string;
   rows: ExpiryBatchRow[];
@@ -64,6 +90,10 @@ export interface ExpiryListResult {
   bucketCounts: Record<ExpiryBucket, ExpiryBucketStat>;
   /** 成本覆盖率提示：有单位成本的批次数 / 总批次数（金额不完整时页面须标注） */
   costCoverage: { covered: number; total: number } | null;
+  /** 本次实际生效的排序键（金额序在服务端全集上排完再分页；withValue=false 时回落 daysLeft） */
+  sort: ExpirySortKey;
+  /** 金额口径记号（withValue=false 时 null） */
+  moneyCalibreKey: typeof EXPIRY_MONEY_CALIBRE_KEY | null;
   /** 段位 × 品牌矩阵（仓库筛选后、段位/搜索/品牌筛选前），按总数量降序；无品牌归「(未设品牌)」 */
   brandMatrix: ExpiryBrandMatrixRow[];
   /** 可选品牌（矩阵行名） */
@@ -96,6 +126,8 @@ export async function listExpiryBatches(
     page?: number; pageSize?: number;
     /** 是否附带金额（调用方按 canSeePrices 决定）；false 时一次成本查询都不发生 */
     withValue?: boolean;
+    /** 排序键；金额序必须服务端做（客户端比较器只排当前一页） */
+    sort?: ExpirySortKey;
   },
   dbArg?: AnyDb,
 ): Promise<ExpiryListResult> {
@@ -104,6 +136,7 @@ export async function listExpiryBatches(
   const page = Math.max(1, query.page ?? 1);
   const pageSize = Math.min(500, Math.max(1, query.pageSize ?? 50));
   const q = (query.q ?? "").trim().toLowerCase();
+  const sort: ExpirySortKey = query.withValue ? parseExpirySort(query.sort) : "daysLeft";
 
   const bs = schema.batchStocks;
   const conds = [isNotNull(bs.expiryDate), gt(bs.qty, "0")];
@@ -158,8 +191,13 @@ export async function listExpiryBatches(
   for (const r of all) {
     bucketCounts[r.bucket].batches++;
     bucketCounts[r.bucket].qty += r.qty;
-    if (query.withValue && r.amount != null) {
-      bucketCounts[r.bucket].amount = dAdd(bucketCounts[r.bucket].amount ?? "0.00", r.amount, 2);
+    if (query.withValue) {
+      // 逐段位覆盖率：先把分母铺出来（段位有批次就有覆盖率，哪怕是 0/12）
+      bucketCounts[r.bucket].covered = bucketCounts[r.bucket].covered ?? 0;
+      if (r.amount != null) {
+        bucketCounts[r.bucket].amount = dAdd(bucketCounts[r.bucket].amount ?? "0.00", r.amount, 2);
+        bucketCounts[r.bucket].covered = (bucketCounts[r.bucket].covered ?? 0) + 1;
+      }
     }
     const brandKey = r.brand ?? EXPIRY_NO_BRAND;
     const row = matrix.get(brandKey) ?? { brand: brandKey, buckets: emptyBuckets(), batches: 0, qty: 0 };
@@ -183,13 +221,27 @@ export async function listExpiryBatches(
         (r.batchNo ?? "").toLowerCase().includes(q),
     );
   }
-  filtered.sort((a, b) => a.daysLeft - b.daysLeft || b.qty - a.qty);
+  const byDaysLeft = (a: ExpiryBatchRow, b: ExpiryBatchRow) => a.daysLeft - b.daysLeft || b.qty - a.qty;
+  /* 金额降序：有金额的在前，无成本的整体置后（`Number(x ?? 0)` 会把「没成本」排成「零元」，
+     那是数据缺口不是估值）。同额再按最急的效期排。 */
+  const byAmountDesc = (a: ExpiryBatchRow, b: ExpiryBatchRow) => {
+    const av = a.amount ?? null;
+    const bv = b.amount ?? null;
+    if (av == null && bv == null) return byDaysLeft(a, b);
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    const c = dCmp(bv, av);
+    return c !== 0 ? c : byDaysLeft(a, b);
+  };
+  filtered.sort(sort === "amount" ? byAmountDesc : byDaysLeft);
   return {
     today,
     rows: filtered.slice((page - 1) * pageSize, page * pageSize),
     total: filtered.length,
     bucketCounts,
     costCoverage: query.withValue ? { covered, total: all.length } : null,
+    sort,
+    moneyCalibreKey: query.withValue ? EXPIRY_MONEY_CALIBRE_KEY : null,
     brandMatrix,
     brands: brandMatrix.map((r) => r.brand),
     brand,
