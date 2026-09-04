@@ -23,7 +23,7 @@
   业务数量通常 decimal(14,4)，导入控制总量等聚合字段可更宽。不得凭本摘要改 schema；
   禁 float 运算（用字符串/decimal 工具 `src/server/core/decimal.ts`）；时区 Asia/Shanghai
 - 库存只能经 `src/server/posting/registry.ts` 过账；禁止直接写 stock_balances/stock_ledger
-- stock_ledger 与 audit_logs 由数据库触发器强制仅追加；纠错一律红字冲销，无反审批
+- 仅追加事实表（stock_ledger、audit_logs、alert_events 等，以 `reject_immutable_fact_mutation` 触发器为准）由数据库强制仅追加；纠错一律红字冲销，无反审批
 - 业务规则在 `src/server/rules/*.ts` 纯函数+单测；R5 逐物料计算，禁止跨物料轧差
 - 脱敏唯一收口 `src/server/core/dto.ts` 的 `maskSensitive`（含导出/RSC）；前端隐藏不算数
 - 余额更新事务内按 (skuId, warehouseId, batchId) 排序；过账/审批靠 UNIQUE 约束幂等
@@ -48,6 +48,12 @@
   - 销速窗口/日均 → `core/velocity.ts`（lastMonths / dailyFromWindow）
   - ABC 分层 → `rules/abc.ts`（classifyAbc，标准帕累托；窗口统一近 6 月）
   - 服务脚手架 → `core/svc.ts`（AnyDb / num / r1 / r2 / resolveDb）
+  - 告警写入 → `modules/alerts/engine.ts` 的 `upsertAlerts`（2026-09-04 起 `src/` 里不得有第二处 `insert(systemAlerts)`）
+  - 告警责任角色 → `rules/task-triggers.ts` 的 `ALERT_OWNER_ROLE`（看门狗禁止硬编码 `ownerRole:` 字面量；
+    派单、关闭权限、通知受众三处读同一个值，写死过一次就出现「通知给 ops、待办给 pmc」的分裂）
+  - 断货事实核验（流水回放判断是否真断货）→ 只能有一处实现；`jobs/alert-outcome.ts` 与
+    `report/closed-loop.ts` 各写一套曾对同一 SKU 给出相反结论
+  - 展示格式化 → `components/format.ts`；比例→百分数在**服务端**换算后下发（驾驶舱 OTIF 曾把 0.83 显示成 0.83%）
 - 列表页状态平台（`components/useListState` + `ListToolbar`）：新列表页一律采用；
   **必须**在该页 `page.tsx` 包 `<Suspense>`（hook 内用 useSearchParams，缺边界会导致
   useId 序列 SSR/CSR 不一致 → 整页水合失败、退化为无交互静态 HTML）。
@@ -75,6 +81,18 @@
   - **观察读模型的批次选择三档**（2026-09-03 生产实况）：交易流（拼多多订单）review 即不用；对照表/维表只经 `_identity` 引用，review 不影响；
     平台日快照若 review 只因业务键重复/缺失仍可用、读模型按业务键 `DISTINCT ON` 去重。被 supersede 的批次任何情况下不再可用——
     否则一次重同步就把外部销速从 1,703 个平台 SKU 静默打回 681（`tests/report/external-velocity.test.ts`、`channel-observation.test.ts` 钉住）。
+  - **合并多个 agent 分支后、构建镜像前必须本地跑一次 `NEXT_DIST_DIR=.next-buildcheck npx next build`**：
+    模块环只在 `next build` 收集页面数据时炸（`Cannot access 'X' before initialization`），`tsc`/`lint`/`vitest` 全绿也照样失败
+    （2026-09-04：todo/service → jobs/notify → workbench/focus → todo/stats）。用
+    `npx madge --circular --extensions ts,tsx --ts-config tsconfig.json <route>` 定位，动态 import 断环。
+    跑完记得 `git checkout -- next-env.d.ts tsconfig.json && rm -rf .next-buildcheck`——构建会改写这两个文件。
+  - **`autoCloseAfterDays` 三态语义**（`upsertAlerts`）：`0`＝条件消失即刻关闭（单据流转/凭据刷新这类硬事实）；
+    `null`＝永不自动关闭（某周期数据质量不达标属于**已发生的周期事实**，下周没命中不代表上周的问题没了）；
+    缺省 `3`＝迟滞关闭，容忍一天的数据缺口。
+  - **读模型缓存按 60 天保留期清理**（`housekeeping`，`READ_MODEL_CACHE_RETENTION_DAYS`）：口径升版后旧 `/vN` 键再没有读者，
+    缓存丢了只会重算。**升版时同步改 `source` 展示文案**——曾出现驾驶舱标着 `/v1`、趋势层标着 `/v2` 读同一份 payload。
+  - **台账正文（标题/范围段/汇总表）与行数据必须一致**：行一直对是因为被测试钉住，正文错是因为没被钉住
+    （2026-09-04 漂到「标题 582、单元格 260、合计 653、各行相加 650」）；`system-audit-500` 现已钉住正文。
   - **并行分支合并注册表用 union 会吞掉闭合括号**（2026-09-04：metrics.ts 4 处 `};`/`},` 丢失，tsc 才发现）：union 解决后必须 tsc，并检查 `^  \w+: \{$` 开与 `^  \},$` 闭计数相等；`src/lib/route-access.ts` 变更后用注册表重生成 `tests/architecture/route-registry-derivation.test.ts` 的 LEGACY_* 快照（scratchpad/regen 脚本思路：buildMenuTree(["admin"]) / menuRolesFromRegistry() / PALETTE_PAGES），不要手改快照。
   - **Agent/Workflow 的 worktree 可能基于 main 而非当前分支**：进 worktree 先核对基线文件是否存在，缺则 `git reset --hard <当前 HEAD>`；每个域只在自己分支提交，合并前 `git merge-tree --write-tree HEAD <branch>` 预检冲突。
   - **门禁结论只认汇总行**：`npm run check:pr | tail` 会吞掉失败退出码，必须看 `Test Files … passed` 且无 `failed`；

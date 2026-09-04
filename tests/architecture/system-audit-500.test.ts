@@ -211,6 +211,37 @@ describe("653 项系统执行审计台账", () => {
     expect(subjects("PROJECT_SKILL")).toEqual(walkFiles(".claude/skills", "SKILL.md"));
   });
 
+  /**
+   * 台账正文（标题 / 范围段 / 分类汇总表）此前不受任何断言约束：合并两次冲突后逐次漂移，
+   * 到 2026-09-04 已变成「标题 582、API_ROUTE 单元格 260、合计 653、各行相加 650」四者互相矛盾。
+   * 行级数据一直是对的，因为行被钉住了；正文错了，因为没被钉住。这里把正文也钉上。
+   */
+  it("台账正文的标题、范围段与分类汇总表必须与行数据一致（正文漂移是历史真实事故）", () => {
+    const doc = readFileSync(ledgerPath, "utf8");
+    const total = controls.length;
+    const countOf = (category: Category) => controls.filter((c) => c.category === category).length;
+
+    expect(doc, "标题条数").toMatch(new RegExp(`^# ${total} 项系统执行审计台账`, "m"));
+    expect(doc, "范围段条数").toContain(`**${total} 个互不重复`);
+    expect(doc, "合计单元格").toMatch(new RegExp(`^> \\| \\*\\*合计\\*\\* \\| \\*\\*${total}\\*\\* \\|`, "m"));
+
+    for (const category of Object.keys(expectedCounts) as Category[]) {
+      expect(doc, `${category} 汇总单元格`).toMatch(new RegExp(`^> \\| ${category} \\| ${countOf(category)} \\|`, "m"));
+    }
+
+    // 汇总表各行之和必须等于合计，否则表格自相矛盾
+    const cells = [...doc.matchAll(/^> \| ([A-Z_]+) \| (\d+) \|/gm)].map((m) => Number(m[2]));
+    expect(cells.reduce((a, b) => a + b, 0), "汇总各行之和 = 合计").toBe(total);
+
+    // 范围段里逐个分类的数字也必须对（曾长期停留在 218 路由 / 81 页面 / 47 迁移）
+    const scope = doc.match(/> 范围由 [\s\S]*?组成。/)?.[0] ?? "";
+    for (const [category, label] of [["API_ROUTE", "个 API 路由"], ["AUTH_PAGE", "个认证页面"], ["MIGRATION", "个迁移"],
+      ["ARCH_GATE", "个架构门"], ["REDTEAM_GATE", "个红队门"], ["RELEASE_GATE", "个放行门"],
+      ["PROJECT_SKILL", "个项目技能"], ["LINT_EXCEPTION", "个代码规则例外"]] as [Category, string][]) {
+      expect(scope, `范围段 ${category}`).toContain(`${countOf(category)} ${label}`);
+    }
+  });
+
   it("规则抑制与当前代码逐项一致，新增或删除都不得漏审", () => {
     const subjects = controls
       .filter((control) => control.category === "LINT_EXCEPTION")
