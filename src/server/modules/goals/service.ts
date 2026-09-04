@@ -30,6 +30,7 @@ import { INVENTORY_SALES_RATIO_CACHE_KEY } from "@/server/modules/report/invento
 import { PURCHASE_ORDER_METRICS_KEY } from "@/server/modules/report/purchase-order-metrics";
 import { SUPPLIER_PAYMENT_TERM_KEY } from "@/server/modules/report/supplier-payment-term";
 import { warehouseInventoryCacheKey } from "@/server/modules/report/warehouse-inventory";
+import { shanghaiDayOf} from "@/server/core/business-day";
 
 export const GOAL_DIRECTIONS = ["up", "down"] as const;
 export type GoalDirection = (typeof GOAL_DIRECTIONS)[number];
@@ -483,7 +484,7 @@ export async function updateGoal(id: number, raw: z.input<typeof goalPatchSchema
     } else {
       set.actualValue = patch.actualValue;
       set.actualSource = "manual";
-      const evidenceLine = `[证据 ${new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(now)}] ${patch.evidence}`;
+      const evidenceLine = `[证据 ${shanghaiDayOf(now)}] ${patch.evidence}`;
       set.note = `${(patch.note !== undefined ? patch.note : existing.note) ?? ""}\n${evidenceLine}`.trim();
     }
   }
@@ -555,7 +556,7 @@ export async function refreshAutoActuals(
 /* ────────────────────────── 第 4 屏「供应链目标」数据块 ────────────────────────── */
 
 export function currentPeriods(now: Date): { month: string; quarter: string } {
-  const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(now);
+  const day = shanghaiDayOf(now);
   const y = day.slice(0, 4);
   const m = Number(day.slice(5, 7));
   return { month: day.slice(0, 7), quarter: `${y}-Q${Math.floor((m - 1) / 3) + 1}` };

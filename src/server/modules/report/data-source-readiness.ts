@@ -42,6 +42,7 @@ import {
   type CrossSystemIdentityCoverage,
   type CrossSystemIdentityDomain,
 } from "@/lib/cross-system-identity";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 interface ReadDb {
   execute(query: SQL): Promise<unknown>;
@@ -220,14 +221,7 @@ function calendarDayTimestamp(value: string): number | null {
   return parsed;
 }
 
-function shanghaiDate(value: Date): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(value);
-}
+const shanghaiDate = shanghaiDayOf;
 
 function dateValue(value: unknown): string | null {
   if (value == null) return null;

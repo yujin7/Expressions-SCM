@@ -8,21 +8,15 @@ import {
   type CapacityStats,
 } from "@/server/rules/supplier-capacity";
 import { type AnyDb, resolveDb } from "@/server/modules/outsource/common";
+import { shanghaiMonthOf } from "@/server/core/business-day";
 
 const EFFECTIVE_SH_STATUSES = ["approved", "in_progress", "completed"] as const;
 const OPEN_JG_STATUSES = ["draft", "pending", "approved", "in_progress"] as const;
 const HISTORY_MONTHS = 12;
 
 function shanghaiParts(date: Date): { year: number; month: number } {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-  }).formatToParts(date);
-  return {
-    year: Number(parts.find((p) => p.type === "year")?.value),
-    month: Number(parts.find((p) => p.type === "month")?.value),
-  };
+  const [y, m] = shanghaiMonthOf(date).split("-");
+  return { year: Number(y), month: Number(m) };
 }
 
 function monthKey(date: Date): string {

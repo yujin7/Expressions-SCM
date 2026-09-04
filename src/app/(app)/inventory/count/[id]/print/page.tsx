@@ -9,6 +9,7 @@ import { Alert, Button, Space, Spin } from "antd";
 import { PrinterOutlined } from "@ant-design/icons";
 import { fetchJson } from "@/components/fetchJson";
 import { DOC_STATUS_LABELS } from "@/components/labels";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 interface CountLine {
   id: number;
@@ -37,7 +38,7 @@ const MODE_LABELS: Record<string, string> = { full: "定期全盘", partial: "�
 /** 上海时区日期（与 PO 打印页同口径） */
 const shDate = (v: string | null | undefined): string =>
   v
-    ? new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(v))
+    ? shanghaiDayOf(new Date(v))
     : "—";
 
 export default function CountPrintPage({ params }: { params: Promise<{ id: string }> }) {

@@ -33,6 +33,7 @@ import { writeAudit } from "@/server/core/audit";
 import { ApiError, type SessionUser } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import { leadTimeStats, suggestLeadDays, type LeadTimeSample } from "@/server/rules/leadtime-stats";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -79,10 +80,7 @@ export interface LeadTimeLearning {
   };
 }
 
-/** 时间戳 → Asia/Shanghai 日期串（与 report/risk.ts 同准） */
-function shanghaiDate(d: Date): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(d);
-}
+const shanghaiDate = shanghaiDayOf;
 /** 日界差（日期串直减） */
 function daysBetween(from: string, to: string): number {
   return Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000);

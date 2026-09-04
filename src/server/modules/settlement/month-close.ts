@@ -19,6 +19,7 @@ import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb } from "@/server/modules/outsource/common";
 import { getJiediaoReport } from "@/server/modules/report/jiediao";
 import { getPeriodLock, isPeriodClosed } from "@/server/modules/settlement/period-lock";
+import { shanghaiMonthOf } from "@/server/core/business-day";
 
 export const MONTH_CLOSE_DEFINITIONS = [
   { key: "data_release", title: "数据导入与放行收口", owner: "PMC / 财务", href: "/import/jobs" },
@@ -98,11 +99,7 @@ async function countRows(db: AnyDb, table: PgTable, condition: SQL): Promise<num
 }
 
 function currentShanghaiMonth(now: Date): string {
-  return new Intl.DateTimeFormat("sv-SE", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-  }).format(now).slice(0, 7);
+  return shanghaiMonthOf(now);
 }
 
 async function buildAutomatedChecks(month: string, db: AnyDb): Promise<AutomatedCheck[]> {

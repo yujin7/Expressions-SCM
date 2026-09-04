@@ -15,6 +15,7 @@
 import { and, gte, inArray, isNotNull, lte } from "drizzle-orm";
 import { suppliers } from "@/db/schema";
 import type { AnyDb } from "@/server/import/staging";
+import { todayShanghai } from "@/server/core/business-day";
 
 export const LICENSE_ALERT_WINDOW_DAYS = 30;
 
@@ -69,11 +70,6 @@ export interface LicenseAlertSummary {
   expiredFloorDays: number;
   maxRows: number;
   statuses: readonly string[];
-}
-
-/** Asia/Shanghai 今日（YYYY-MM-DD） */
-function todayShanghai(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date());
 }
 
 function addDaysISO(iso: string, days: number): string {

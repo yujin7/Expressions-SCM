@@ -31,6 +31,7 @@ import {
   type ValuationResult,
 } from "@/server/core/valuation";
 import { momPct } from "@/server/rules/period-compare";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 export const INVENTORY_POSITION_CACHE_KEY = "inventory-position/v1";
 /** D51：覆盖率门槛参数键（未登记时按 80） */
@@ -162,9 +163,9 @@ function resultRows<T>(result: unknown): T[] {
   return Array.isArray(rows) ? (rows as T[]) : [];
 }
 
-/** Asia/Shanghai 今日 YYYY-MM-DD */
+/** Asia/Shanghai 今日 YYYY-MM-DD（日界走 core/business-day 唯一权威） */
 export function todayShanghai(now = new Date()): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(now);
+  return shanghaiDayOf(now);
 }
 
 function assertDay(d: string): void {

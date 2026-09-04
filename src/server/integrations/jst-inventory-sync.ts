@@ -20,6 +20,7 @@ import {
   inventoryStreamBlockReason,
   jstWarehouseTrustFromEnv,
 } from "./jst-warehouse-trust";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 const CONNECTOR = "jst";
 const STREAM = "inventory-total-delta";
@@ -50,14 +51,7 @@ interface PriorRun {
   cursorEnd: string | null;
 }
 
-function shanghaiDate(instant: Date): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(instant);
-}
+const shanghaiDate = shanghaiDayOf;
 
 function cursorMax(rows: JstInventoryRow[], start: string): string {
   return rows.reduce(

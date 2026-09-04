@@ -6,6 +6,7 @@ import { writeAudit } from "@/server/core/audit";
 import type { SessionUser } from "@/server/core/dto";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb } from "@/server/modules/outsource/common";
+import { shanghaiMonthOf } from "@/server/core/business-day";
 
 export const SOP_ROLES = ["ops", "pmc", "finance"] as const;
 export type SopRole = (typeof SOP_ROLES)[number];
@@ -231,11 +232,7 @@ function awaitingItems(cycle: { id: number; name: string; month: string; version
 }
 
 function currentShanghaiMonth(now = new Date()): string {
-  return new Intl.DateTimeFormat("sv-SE", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-  }).format(now).slice(0, 7);
+  return shanghaiMonthOf(now);
 }
 
 function databaseErrorCode(error: unknown): string | undefined {

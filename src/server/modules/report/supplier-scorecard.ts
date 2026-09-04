@@ -56,6 +56,7 @@ import {
 } from "@/server/rules/promise-basis";
 import { scoreSupplier, type ScoreBreakdownItem, type SupplierGrade } from "@/server/rules/scorecard";
 import { num } from "@/server/core/svc";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -74,10 +75,7 @@ export const MIN_SAMPLES = 3;
 
 const r4 = (v: number): number => Math.round(v * 10000) / 10000;
 
-/** 时间戳 → Asia/Shanghai 日期串（与 report/leadtime-learning.ts 同准） */
-function shanghaiDate(d: Date): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(d);
-}
+const shanghaiDate = shanghaiDayOf;
 /** 日界差（日期串直减） */
 function daysBetween(from: string, to: string): number {
   return Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000);

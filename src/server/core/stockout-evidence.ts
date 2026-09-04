@@ -19,6 +19,7 @@ import * as schema from "@/db/schema";
 import { dAdd, dCmp } from "@/server/core/decimal";
 import { getLatestSnapshotRows } from "@/server/core/stock-view";
 import type { AnyDb } from "@/server/core/svc";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 /** 覆盖档位：realtime=可打分；none=无实时流水；snapshot_mixed=有实时流水但货还在快照仓 */
 export type LedgerCoverage = "realtime" | "none" | "snapshot_mixed";
@@ -42,9 +43,7 @@ export interface CoverageVerdict {
   note: string;
 }
 
-function shanghaiDay(d: Date): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(d);
-}
+const shanghaiDay = shanghaiDayOf;
 
 /**
  * 一次性载入一批 SKU 的覆盖事实（每轮任务一次查询，不在逐条循环里查）。

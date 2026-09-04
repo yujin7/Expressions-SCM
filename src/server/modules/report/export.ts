@@ -72,12 +72,7 @@ export function csvDisposition(nameCn: string): string {
   return `attachment; filename="export.csv"; filename*=UTF-8''${encodeURIComponent(nameCn)}.csv`;
 }
 
-const SH_TZ_FMT = new Intl.DateTimeFormat("sv-SE", {
-  timeZone: "Asia/Shanghai",
-  year: "numeric", month: "2-digit", day: "2-digit",
-  hour: "2-digit", minute: "2-digit", second: "2-digit",
-  hour12: false,
-});
+const SH_TZ_FMT = { format: shanghaiTimestampOf };
 
 /** 业务时间列：Asia/Shanghai "YYYY-MM-DD HH:mm:ss"（sv-SE locale 恰为该格式） */
 export function fmtShanghai(v: Date | string | null | undefined): string {
@@ -94,6 +89,7 @@ import {
   DOC_STATUS_LABELS, LEDGER_SOURCE_LABELS, STOCK_SUBTYPE_LABELS, WAREHOUSE_KIND_LABELS,
 } from "@/components/labels";
 import type { SessionUser } from "@/server/core/dto";
+import { shanghaiTimestampOf } from "@/server/core/business-day";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;

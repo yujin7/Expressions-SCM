@@ -23,6 +23,7 @@ import { enqueueNotification, isFeishuAppConfigured } from "@/jobs/notify";
 import { ApiError } from "@/server/modules/master/common";
 import type { AnyDb } from "@/server/core/svc";
 import { fingerprintOf, type TodoCandidate } from "@/server/rules/task-triggers";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 export const WORK_ITEM_STATUSES = ["open", "in_progress", "done", "cancelled"] as const;
 export type WorkItemStatus = (typeof WORK_ITEM_STATUSES)[number];
@@ -95,9 +96,7 @@ const TRANSITIONS: Readonly<Record<WorkItemStatus, readonly WorkItemStatus[]>> =
   cancelled: ["open"],
 };
 
-function dayShanghai(d: Date): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(d);
-}
+const dayShanghai = shanghaiDayOf;
 
 export function isSuspiciousClose(createdAt: Date, completedAt: Date): boolean {
   return completedAt.getTime() - createdAt.getTime() < SUSPICIOUS_CLOSE_MINUTES * 60_000;

@@ -15,6 +15,7 @@ import type { AnyDb } from "@/server/core/svc";
 import { closeStaleProjectedItems, listDueReminderTargets, projectCandidates, type ProjectCandidatesSummary } from "@/server/modules/todo/service";
 import { collectTodoCandidatesDetailed, type CollectTriggerOptions } from "@/server/modules/todo/triggers";
 import { enqueueNotification, isFeishuAppConfigured } from "./notify";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 export interface TodoSyncSummary {
   projection: ProjectCandidatesSummary | null;
@@ -26,9 +27,7 @@ export interface TodoSyncSummary {
   actorId: number | null;
 }
 
-function dayShanghai(d: Date): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(d);
-}
+const dayShanghai = shanghaiDayOf;
 
 async function systemActor(db: AnyDb): Promise<SessionUser | null> {
   const [u]: { id: number; name: string; roles: string[]; isApprover: boolean }[] = await db

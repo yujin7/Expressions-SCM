@@ -7,16 +7,13 @@ import { hash } from "@node-rs/argon2";
 import { getDbAsync, schema } from "./index";
 import { seedDimensions } from "./seed-dimensions";
 import type { Role } from "@/server/core/constants";
+import { todayShanghai } from "@/server/core/business-day";
 
 // tsx 不自动加载 .env
 try {
   process.loadEnvFile?.();
 } catch {
   /* .env 不存在时忽略 */
-}
-
-function todayShanghai(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date());
 }
 
 const counts: Record<string, { inserted: number; skipped: number }> = {};

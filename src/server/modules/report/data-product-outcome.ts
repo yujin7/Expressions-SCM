@@ -17,6 +17,7 @@ import {
   loadDataSourceReadiness,
   type DataSourceReadiness,
 } from "@/server/modules/report/data-source-readiness";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 export type DataProductOutcomeDecision = "accepted" | "modified" | "rejected" | "deferred";
 export type DataProductOutcomeResult = "pending" | "positive" | "neutral" | "negative" | "false_positive";
@@ -301,8 +302,7 @@ export async function recordDataProductOutcome(
       ) {
         throw new ApiError(409, "产品放行已变化，请刷新后重试");
       }
-      const releaseBusinessDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" })
-        .format(new Date(lockedRelease.decidedAt));
+      const releaseBusinessDate = shanghaiDayOf(new Date(lockedRelease.decidedAt));
       if (value.businessDate < releaseBusinessDate) {
         throw new ApiError(409, `真实结果业务日不能早于产品放行日 ${releaseBusinessDate}`);
       }

@@ -21,6 +21,7 @@ import { getLatestSnapshotRows } from "@/server/core/stock-view";
 import { type AnyDb, resolveDb } from "@/server/core/svc";
 import { latestFinanceCostBatch, resolveUnitCosts, valueOnHand } from "@/server/core/valuation";
 import { turnover } from "@/server/rules/inventory-metrics";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 export const WAREHOUSE_INVENTORY_CACHE_KEY = "warehouse-inventory/v1";
 /** 实际落缓存的键带窗口后缀；任何读方（部门目标 auto 实际值等）必须用它，不能拿裸前缀查 */
@@ -33,7 +34,7 @@ export const VALUATION_COVERAGE_MIN_PCT = 80;
 /** 实体仓（D60 上限口径） */
 export const PHYSICAL_WAREHOUSE_KINDS = ["finished", "raw", "packaging"] as const;
 
-const SHANGHAI_DATE = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" });
+const SHANGHAI_DATE = { format: shanghaiDayOf };
 
 export interface WarehouseInventoryRow {
   warehouseId: number;

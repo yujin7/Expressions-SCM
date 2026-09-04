@@ -40,6 +40,7 @@ import {
   parseConnectorProbeEvidence,
   type ConnectorProbeKey,
 } from "@/server/integrations/connector-probe-evidence";
+import { todayShanghai } from "@/server/core/business-day";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -658,10 +659,6 @@ async function getConnectorRunHealth(db: AnyDb, now: Date): Promise<ConnectorHea
     };
   });
   return { rows, identityEvidenceByScope };
-}
-
-function todayShanghai(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date());
 }
 
 function diffDays(fromISO: string, toISO: string): number {

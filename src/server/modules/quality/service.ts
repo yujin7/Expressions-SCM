@@ -20,6 +20,7 @@ import {
   isRealIsoDate,
   type CanonicalJsonValue,
 } from "@/server/rules/quality-compliance";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 const dateString = z.string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "日期格式应为 YYYY-MM-DD")
@@ -277,16 +278,7 @@ function normalizeQuantity4(value: string): string {
   return `${whole}.${fraction.padEnd(4, "0")}`;
 }
 
-const SHANGHAI_DATE = new Intl.DateTimeFormat("en-CA", {
-  timeZone: "Asia/Shanghai",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
-
-function dateInShanghai(value: Date): string {
-  return SHANGHAI_DATE.format(value);
-}
+const dateInShanghai = shanghaiDayOf;
 
 async function assertActiveUser(db: AnyDb, id: number): Promise<void> {
   const [row] = await db

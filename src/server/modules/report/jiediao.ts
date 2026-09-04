@@ -7,6 +7,7 @@ import { and, eq, gte, lt, or, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { ApiError } from "@/server/modules/master/common";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -87,7 +88,7 @@ export async function getJiediaoReport(month: string, dbArg?: AnyDb): Promise<Ji
     )
     .orderBy(schema.stockDocs.docNo, sql`${schema.skus.code}`);
 
-  const shDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" });
+  const shDate = { format: shanghaiDayOf };
   const lines = rows.map((r) => ({
     docNo: r.docNo,
     postedAt: shDate.format(r.postedAt), // RT4：上海口径显示（跨月凌晨单不再显示出报表月之外的日期）

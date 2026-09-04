@@ -51,3 +51,43 @@ export function shanghaiDay(v: DateLike): string | null {
 export function dayDiff(from: string, to: string): number {
   return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 }
+
+/** 业务月（Asia/Shanghai，YYYY-MM）——月度口径也只有这一处日界 */
+export function shanghaiMonthOf(d: Date): string {
+  return shanghaiDayOf(d).slice(0, 7);
+}
+
+/**
+ * 业务日 + 上海小时（调度用）。
+ *
+ * 只有进程内调度器需要「小时」这一档：它要判断到点没有、以及同一小时内不重跑。
+ * 放在本模块是因为它和业务日共用同一个时区锚点——分开写就又是一份会各自漂移的实现。
+ * key 形如 `2026-09-05T14`（业务日 + 两位时），可直接当去重键。
+ */
+export function shanghaiHourKeyOf(d: Date): { hour: number; key: string } {
+  const day = shanghaiDayOf(d);
+  const hour = Number(
+    new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", hour: "2-digit", hour12: false })
+      .formatToParts(d)
+      .find((p) => p.type === "hour")?.value,
+  );
+  return { hour, key: `${day}T${String(hour).padStart(2, "0")}` };
+}
+
+const SHANGHAI_TS_FMT = new Intl.DateTimeFormat("sv-SE", {
+  timeZone: "Asia/Shanghai",
+  year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", second: "2-digit",
+  hour12: false,
+});
+
+/**
+ * 展示用业务时刻（Asia/Shanghai，`YYYY-MM-DD HH:mm:ss`；sv-SE locale 恰为该格式）。
+ *
+ * 审计台、导出中心和 CSV 导出各写过一份一模一样的 formatter。它虽然只用于显示，
+ * 但「上海」这件事必须只有一个定义——否则改时区锚点时会漏掉其中两份，
+ * 屏幕上的时间和导出文件里的时间就会各说各话。
+ */
+export function shanghaiTimestampOf(d: Date): string {
+  return SHANGHAI_TS_FMT.format(d);
+}

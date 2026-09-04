@@ -54,6 +54,7 @@ import {
   runJiandaoyunCatalogSync,
   runJiandaoyunConfiguredFormSyncs,
 } from "./sync-jiandaoyun";
+import { shanghaiHourKeyOf } from "@/server/core/business-day";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -154,15 +155,7 @@ export function shouldRunAt(
 }
 
 /** 上海时区的「年-月-日 时」，用于判断是否到点、以及同一小时内不重复跑 */
-export function shanghaiHourKey(now: Date): { hour: number; key: string } {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hour12: false,
-  }).formatToParts(now);
-  const get = (type: string): string => parts.find((p) => p.type === type)?.value ?? "";
-  const hour = Number(get("hour"));
-  return { hour, key: `${get("year")}-${get("month")}-${get("day")}T${get("hour")}` };
-}
+export const shanghaiHourKey = shanghaiHourKeyOf;
 
 export const INTERVAL_JOBS: IntervalJob[] = [
   // 同步前先做最小只读权限探测；结果是无业务值的版本化证据，不代替 UAT。

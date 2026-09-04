@@ -13,7 +13,7 @@ import { and, eq, inArray } from "drizzle-orm";
 
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
-import { dayDiff as daysBetween } from "@/server/core/business-day";
+import { dayDiff as daysBetween, shanghaiDayOf} from "@/server/core/business-day";
 import { dAdd, dCmp, dMul, dQty, dSub } from "@/server/core/decimal";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { resolvePromiseBasis, type PromiseHistoryState } from "@/server/rules/promise-basis";
@@ -145,7 +145,6 @@ const pct = (part: number, total: number): number | null =>
 function addDays(date: string, days: number): string {
   return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
 }
-
 
 function cumulativeNet(
   receipts: PromiseReceiptFact[],
@@ -392,9 +391,7 @@ export function buildPromiseReliability(
   };
 }
 
-function shanghaiDate(value: Date): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(value);
-}
+const shanghaiDate = shanghaiDayOf;
 
 export async function loadPromiseReliability(
   query: { asOf?: string; windowDays?: number; limit?: number } = {},

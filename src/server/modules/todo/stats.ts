@@ -29,6 +29,7 @@ import { ROLES } from "@/server/core/constants";
 import type { SessionUser } from "@/server/core/dto";
 import { type AnyDb, r1n } from "@/server/core/svc";
 import { isOverdue, isSuspiciousClose, isWorkItemVisible, resolveTodoVisibility, SUSPICIOUS_CLOSE_MINUTES } from "./service";
+import { shanghaiDayOf, shanghaiMonthOf } from "@/server/core/business-day";
 
 export type StatsGroupBy = "person" | "role";
 
@@ -74,13 +75,8 @@ export interface TodoStatsResult {
   caliber: string;
 }
 
-const SH = "Asia/Shanghai";
-function dayShanghai(d: Date): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: SH }).format(d);
-}
-export function monthShanghai(d: Date): string {
-  return dayShanghai(d).slice(0, 7);
-}
+const dayShanghai = shanghaiDayOf;
+export const monthShanghai = shanghaiMonthOf;
 function shiftMonth(ym: string, delta: number): string {
   const [y, m] = ym.split("-").map(Number);
   const idx = y * 12 + (m - 1) + delta;

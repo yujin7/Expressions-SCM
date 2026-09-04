@@ -10,6 +10,7 @@ import { Alert, Button, Space, Spin } from "antd";
 import { PrinterOutlined } from "@ant-design/icons";
 import { fetchJson } from "@/components/fetchJson";
 import { DOC_STATUS_LABELS } from "@/components/labels";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 interface JgDetail {
   id: number;
@@ -32,7 +33,7 @@ interface JgDetail {
 }
 
 const shDate = (v: string | null | undefined): string =>
-  v ? new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(v)) : "—";
+  v ? shanghaiDayOf(new Date(v)) : "—";
 
 /** 条款占位（0724 待办：业务定稿后替换本数组即可） */
 const TERMS_PLACEHOLDER = [

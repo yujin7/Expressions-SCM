@@ -33,6 +33,7 @@ import { DECLINE_REASON_LABELS, type DeclineReasonCode } from "@/lib/replenish-d
 import { HELD_QTY_LABEL, replenishDraftItems, type ReplenishDraftItem } from "@/lib/replenish-draft";
 import { metricTooltip } from "@/components/metrics";
 import DeclineSuggestionModal, { type DeclineResult, type DeclineTarget } from "./decline-modal";
+import { todayShanghai } from "@/server/core/business-day";
 
 interface ReplenishRow {
   skuId: number;
@@ -215,9 +216,7 @@ type ReplenishSortOrder = "ascend" | "descend";
 /* 闭环审计 #12 / W5：「不采纳」的权威状态由服务端下发（row.declinedToday，取自审计台账，全员可见）。
    sessionStorage 只留作**乐观提示**：点完到下一次拉取之间先把标打上，拉取回来即以服务端为准。 */
 const DECLINED_STORE = "replenish:declined";
-function shanghaiToday(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date());
-}
+const shanghaiToday = todayShanghai; // 日界只有 core/business-day 一处实现
 function loadDeclinedToday(): Record<number, DeclineResult> {
   try {
     const raw = sessionStorage.getItem(DECLINED_STORE);
@@ -239,7 +238,6 @@ function saveDeclined(map: Record<number, DeclineResult>): void {
     // 存储不可用（隐私模式等）时只保留内存态
   }
 }
-
 
 function SharedPackagingPanel({ skuId }: { skuId: number }) {
   const [items, setItems] = useState<{ materialCode: string; materialName: string; baseUom: string; onHand: string; sharedCount: number; sharedWith: { code: string }[] }[] | null>(null);

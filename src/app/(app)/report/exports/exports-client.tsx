@@ -10,6 +10,7 @@ import { DownloadOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import type { ExportJobRow } from "@/jobs/export-worker";
+import { shanghaiTimestampOf } from "@/server/core/business-day";
 
 type Row = ExportJobRow & { requestedByName: string | null; kindLabel?: string };
 
@@ -27,12 +28,7 @@ const STATUS_COLORS: Record<string, string> = {
   failed: "error",
 };
 
-const SH_FMT = new Intl.DateTimeFormat("sv-SE", {
-  timeZone: "Asia/Shanghai",
-  year: "numeric", month: "2-digit", day: "2-digit",
-  hour: "2-digit", minute: "2-digit", second: "2-digit",
-  hour12: false,
-});
+const SH_FMT = { format: shanghaiTimestampOf };
 
 function fmtTime(iso: string | null): string {
   if (!iso) return "—";

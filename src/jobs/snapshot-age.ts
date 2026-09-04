@@ -9,6 +9,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { stockSnapshots, warehouses } from "@/db/schema";
 import type { AnyDb } from "@/server/import/staging";
+import { todayShanghai } from "@/server/core/business-day";
 
 export const SNAPSHOT_AGE_THRESHOLD_DAYS = 3;
 
@@ -27,11 +28,6 @@ export interface SnapshotAgeSummary {
   thresholdDays: number;
   alertCount: number;
   alerts: SnapshotAgeAlertRow[];
-}
-
-/** Asia/Shanghai 今日（YYYY-MM-DD） */
-function todayShanghai(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date());
 }
 
 function diffDays(fromISO: string, toISO: string): number {

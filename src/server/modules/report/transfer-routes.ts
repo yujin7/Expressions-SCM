@@ -40,6 +40,7 @@ import {
   unitFee,
 } from "@/server/rules/transfer-cost";
 import { TRANSFER_TYPE_LABELS, isTransferType } from "@/lib/transfer-types";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 export const TRANSFER_ROUTES_CACHE_KEY = "transfer-routes/v2";
 export const UNCLASSIFIED_TRANSFER_TYPE = "unclassified";
@@ -73,9 +74,8 @@ export function qtyReasonText(qa: Pick<QtyAnomalyResult, "level">): string {
   return "件数在中位数倍数范围内";
 }
 
-const SHANGHAI_DATE = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" });
 export function shanghaiDate(d: Date | string): string {
-  return SHANGHAI_DATE.format(typeof d === "string" ? new Date(d) : d);
+  return shanghaiDayOf(typeof d === "string" ? new Date(d) : d);
 }
 
 export interface TransferDocFact {

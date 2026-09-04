@@ -1,3 +1,4 @@
+import { shanghaiDayOf } from "@/server/core/business-day";
 /**
  * D65 核对周期键（纯函数，Asia/Shanghai）：week = ISO 周 'YYYY-Www'，month = 'YYYY-MM'。
  * 与 data_quality_reviews 的 CHECK 约束同形（`ck_data_quality_reviews_key`）。
@@ -8,9 +9,9 @@ export type ReviewPeriodKind = "week" | "month";
 export const WEEK_KEY_RE = /^\d{4}-W(0[1-9]|[1-4]\d|5[0-3])$/;
 export const MONTH_KEY_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
-/** Asia/Shanghai 今日（YYYY-MM-DD） */
+/** Asia/Shanghai 今日（YYYY-MM-DD），日界走 core/business-day 唯一权威 */
 export function todayShanghai(now: Date = new Date()): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(now);
+  return shanghaiDayOf(now);
 }
 
 function utcDate(iso: string): Date {
