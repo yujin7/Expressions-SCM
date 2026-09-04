@@ -48,6 +48,36 @@ describe("临期净额纯函数（rules/expiry-netting）", () => {
     const r = netExpiringStock({ batches: [{ daysLeft: 30, qty: 80 }], daily: 0, horizonDays: 120 });
     expect(r.unsellableQty).toBe(80);
   });
+
+  /* C4：观测鲜度门。批次层是**盘点快照**，不是账本；快照越旧，「那批货今天还在库上」越站不住。 */
+  it("盘点期过旧的批次层只统计不扣减，且必须如实上报（staleQty），不是静默丢弃", () => {
+    const stale = netExpiringStock({
+      batches: [{ daysLeft: 10, qty: 6000, stocktakeAgeDays: 66 }],
+      daily: 10, horizonDays: 120, maxStocktakeAgeDays: 45,
+    });
+    expect(stale.unsellableQty, "66 天前盘的量不能当作今天的在库去抵扣").toBe(0);
+    expect(stale).toMatchObject({
+      atRiskQty: 0, batchesConsidered: 0, staleQty: 6000, staleBatches: 1, staleAgeDays: 66, maxStocktakeAgeDays: 45,
+    });
+  });
+
+  it("鲜度门只挡过旧的那一层，同 SKU 的新鲜层照常参与净额", () => {
+    const r = netExpiringStock({
+      batches: [{ daysLeft: 10, qty: 6000, stocktakeAgeDays: 66 }, { daysLeft: 5, qty: 300, stocktakeAgeDays: 2 }],
+      daily: 10, horizonDays: 120, maxStocktakeAgeDays: 45,
+    });
+    expect(r.unsellableQty).toBe(250); // 300 − 10×5
+    expect(r).toMatchObject({ atRiskQty: 300, staleQty: 6000 });
+  });
+
+  it("不传鲜度上限 = 不设限（既有调用方行为不变）", () => {
+    const r = netExpiringStock({
+      batches: [{ daysLeft: 10, qty: 6000, stocktakeAgeDays: 999 }],
+      daily: 10, horizonDays: 120,
+    });
+    expect(r.unsellableQty).toBe(5900);
+    expect(r).toMatchObject({ staleQty: 0, staleAgeDays: null, maxStocktakeAgeDays: null });
+  });
 });
 
 describe("临期进入补货判定（W2-#2）", () => {
@@ -96,6 +126,54 @@ describe("临期进入补货判定（W2-#2）", () => {
       expect(row.decisionEvidence.onHand).toBe("6000.0000");
       expect(Number(row.decisionEvidence.availableOnHand)).toBeLessThan(500);
       expect(Number(row.decisionEvidence.expiringUnsellable)).toBeGreaterThan(5000);
+    } finally {
+      await client.close();
+    }
+  });
+
+  /**
+   * C4 红队实证场景：**过期的盘点快照 × 今天的账面在库**。
+   *
+   * 6/30 盘出 6,000 件（8/15 到期）；今天账面只剩 800 件、还是另一批没盘过的新货。
+   * 旧实现把那 6,000 件当作今天的在库去抵扣，被 `Math.min(净额, 账面在库)` 夹到 800 →
+   * 可用在库 0 → 一个库存充足的 SKU 被开出整轮补货。两条既有用例都用「今天」当盘点期，
+   * 从来测不到这一格。
+   */
+  it("盘点期过旧时不做净额扣减，但必须在行上说清为什么没扣（C4）", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [spu] = await db.insert(schema.spus).values({ code: "P1", nameCn: "测试" }).returning();
+      const [sku] = await db.insert(schema.skus).values({ code: "CP00003", name: "精华", spuId: spu.id, skuType: "finished", baseUom: "支", nearExpiryDays: 90 }).returning();
+      const [ch] = await db.insert(schema.channels).values({ code: "tmall", name: "天猫", kind: "platform" }).returning();
+      const [wh] = await db.insert(schema.warehouses).values({ code: "WH-CP", name: "成品仓", kind: "finished", accountingMode: "realtime" }).returning();
+      // 日均 ≈ 300/91 ≈ 3.3/天 → 800 支 ≈ 240 天可销，水位完全够
+      for (const ym of ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"]) {
+        await db.insert(schema.salesMonthly).values({ skuId: sku.id, channelId: ch.id, yearMonth: ym, qty: "100" });
+      }
+      await db.insert(schema.skuParams).values({ skuId: sku.id, normalLeadDays: 30, logisticsLeadDays: 10 });
+      await db.insert(schema.stockBalances).values({ skuId: sku.id, warehouseId: wh.id, qty: "800" });
+      // 66 天前的那一次盘点：6,000 支、10 天后到期。今天的 800 支是另一批新货，没被盘过。
+      await db.insert(schema.batchStocks).values({
+        skuId: sku.id, warehouseId: wh.id, stocktakeDate: dayAfter(-66), batchNo: "B-OLD",
+        expiryDate: dayAfter(10), qty: "6000",
+      });
+
+      const res = await getReplenishSuggestions({ allRows: true }, db);
+      const row = res.rows.find((r) => r.skuId === sku.id)!;
+
+      expect(row.onHand).toBe(800);
+      expect(row.availableOnHand, "旧实现在这里是 0——被一份 66 天前的快照抵扣光了").toBe(800);
+      expect(row.suggestQty, "库存充足的 SKU 不该因为一份过期快照被开出整轮补货").toBeNull();
+
+      // 但**不许静默**：命中的量、有多旧、鲜度上限是多少，都要出现在行上
+      expect(row.expiryRisk, "鲜度门挡下的量仍要在行上出现，否则读者以为系统没看见").not.toBeNull();
+      expect(row.expiryRisk!.unsellableQty).toBe(0);
+      expect(row.expiryRisk!.staleQty).toBe(6000);
+      expect(row.expiryRisk!.staleAgeDays).toBe(66);
+      expect(row.expiryRisk!.maxStocktakeAgeDays).toBe(45);
+      expect(row.expiryRisk!.label).toContain("未参与扣减");
+      expect(row.planExplain.some((line) => line.includes("鲜度门"))).toBe(true);
+      expect(row.decisionEvidence.expiringUnsellable).toBe("0.0000");
     } finally {
       await client.close();
     }

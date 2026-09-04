@@ -144,7 +144,20 @@ export const poPromiseRevisions = pgTable("po_promise_revisions", {
     "ck_po_promise_actor_type",
     sql`${t.actorType} IN ('supplier_token', 'internal_user', 'system_backfill', 'external_system')`,
   ),
-  check("ck_po_promise_date_changed", sql`${t.previousDate} IS DISTINCT FROM ${t.promisedDate}`),
+  /**
+   * 「一条修订 = 日期真的变了」——**除了承诺建立行**（C5）。
+   *
+   * 供应商第一次确认时，即使确认的日期与买手下单时预填的一模一样，也必须留一条行：
+   * 不留就出现一个洗白缺口——确认 03-01（无行）→ 重发 token → 改到 03-30（成了第一条行）→
+   * `rules/promise-basis` 把 03-30 当作「原始承诺」且标 trusted，03-28 到货算 OTIF 命中。
+   * 承诺建立（sequence=1 且来源是供应商本人）因此是本约束的唯一例外；
+   * 其余任何一条行仍必须代表一次**真实的改期**。
+   */
+  check(
+    "ck_po_promise_date_changed",
+    sql`${t.previousDate} IS DISTINCT FROM ${t.promisedDate}
+      OR (${t.sequence} = 1 AND ${t.source} = 'supplier_confirm')`,
+  ),
 ]);
 
 /* ── 价格变更申请单 PC ──────────────────────── */

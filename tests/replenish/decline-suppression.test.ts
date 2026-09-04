@@ -25,13 +25,31 @@ describe("抑制窗口纯规则（rules/replenish-suppression）", () => {
     expect(suppressionWindowFor("supply_already_arranged", "2026-09-04").untilDate).toBe("2026-10-04");
   });
 
-  it("到期即失效；管道量回升（供应落库）提前解除", () => {
-    const base = { untilDate: "2026-09-11", releaseOnArrival: true, pipelineBaseline: 100, today: "2026-09-05" };
-    expect(suppressionState({ ...base, pipelineNow: 100 })).toMatchObject({ active: true, daysLeft: 6 });
-    expect(suppressionState({ ...base, pipelineNow: 400 })).toMatchObject({ active: false, releasedBy: "supply_arrived" });
-    expect(suppressionState({ ...base, pipelineNow: 100, today: "2026-09-12" })).toMatchObject({ active: false, releasedBy: "expired" });
-    // 不随到货解除的原因，管道量涨了也照压
-    expect(suppressionState({ ...base, releaseOnArrival: false, pipelineNow: 400 })).toMatchObject({ active: true });
+  /* C8：解除条件从「只看全管道量上升」改成三条独立的供应事实。
+     `base` 里在库 40 / 全管道 100 = 有 60 件已登记的未结供给。 */
+  it("到期即失效；供应事实一变即提前解除（到货 / 被登记 / 被取消）", () => {
+    const base = {
+      untilDate: "2026-09-11", releaseOnArrival: true,
+      pipelineBaseline: 100, onHandBaseline: 40, today: "2026-09-05",
+    };
+    expect(suppressionState({ ...base, pipelineNow: 100, onHandNow: 40 }))
+      .toMatchObject({ active: true, daysLeft: 6 });
+    // ① 真到货：在库 40→100，未结供给同额消失 → **全管道量纹丝不动**。旧实现在这里永远不解除。
+    expect(suppressionState({ ...base, pipelineNow: 100, onHandNow: 100 }))
+      .toMatchObject({ active: false, releasedBy: "supply_arrived" });
+    // ② 被登记为未结供给：全管道量上升，在库不变
+    expect(suppressionState({ ...base, pipelineNow: 400, onHandNow: 40 }))
+      .toMatchObject({ active: false, releasedBy: "supply_registered" });
+    // ③ 安排告吹：全管道量掉到基线以下 → 抑制的前提没了，必须立刻恢复建议
+    expect(suppressionState({ ...base, pipelineNow: 40, onHandNow: 40 }))
+      .toMatchObject({ active: false, releasedBy: "supply_cancelled" });
+    expect(suppressionState({ ...base, pipelineNow: 100, onHandNow: 40, today: "2026-09-12" }))
+      .toMatchObject({ active: false, releasedBy: "expired" });
+    // 不随供应事实解除的原因，管道量怎么动都照压
+    expect(suppressionState({ ...base, releaseOnArrival: false, pipelineNow: 400, onHandNow: 400 }))
+      .toMatchObject({ active: true });
+    expect(suppressionState({ ...base, releaseOnArrival: false, pipelineNow: 0, onHandNow: 0 }))
+      .toMatchObject({ active: true });
   });
 });
 
@@ -97,6 +115,69 @@ describe("放弃 → 抑制窗口（W2-#6）", () => {
       expect(row.suppression, "供应兑现了，抑制就该自己解除").toBeNull();
       expect(row.planExplain.some((l) => l.includes("自动解除"))).toBe(true);
       expect(wh.id).toBeGreaterThan(0);
+    } finally {
+      await client.close();
+    }
+  });
+
+  /**
+   * C8：到货是「在库 ↑、未结供给 ↓、**全管道量不变**」。
+   * 旧实现只比全管道量，这一格永远不会解除——界面上却写着「该批供应落库后自动解除」。
+   */
+  it("到货（在库上升、未结供给同额消失、全管道量不变）也必须解除——旧实现在这里永远等到期", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const { sku, wh, user } = await seedShortage(db);
+      // 放弃当时：已有一张 500 支的在途 PO（管道 = 100 在库 + 500 在途 = 600）
+      const [sup] = await db.insert(schema.suppliers).values({ code: "C8-SUP", name: "供应商", kinds: ["raw"], status: "qualified" }).returning();
+      const [po] = await db.insert(schema.poDocs).values({
+        docNo: "PO-C8-1", status: "approved", supplierId: sup.id, createdBy: user.id,
+      }).returning();
+      const [line] = await db.insert(schema.poLines).values({
+        poId: po.id, skuId: sku.id, lineType: "raw", purchaseUom: "支", uomFactor: "1",
+        qty: "500", price: "1.00", receivedQty: "0",
+      }).returning();
+
+      await declineReplenishSuggestion(user, { skuId: sku.id, reason: "这批 PO 马上到", reasonCode: "supply_already_arranged" }, db);
+      expect((await getReplenishSuggestions({ allRows: true }, db)).rows.find((r) => r.skuId === sku.id)!.suppression).not.toBeNull();
+
+      // 到货：PO 收满（未结供给 500 → 0），在库 100 → 600。全管道量仍是 600，一分不多。
+      await db.update(schema.poLines).set({ receivedQty: "500" }).where(eq(schema.poLines.id, line.id));
+      await db.update(schema.stockBalances).set({ qty: "600" })
+        .where(eq(schema.stockBalances.skuId, sku.id));
+
+      const row = (await getReplenishSuggestions({ allRows: true }, db)).rows.find((r) => r.skuId === sku.id)!;
+      expect(row.suppression, "货真的到了，抑制必须解除").toBeNull();
+      expect(row.planExplain.some((l) => l.includes("已到货入库"))).toBe(true);
+      expect(wh.id).toBeGreaterThan(0);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("安排告吹（已安排的 PO 被作废，全管道量掉到基线以下）立刻解除，不再静音满 30 天", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const { sku, user } = await seedShortage(db);
+      const [sup] = await db.insert(schema.suppliers).values({ code: "C8-SUP2", name: "供应商", kinds: ["raw"], status: "qualified" }).returning();
+      const [po] = await db.insert(schema.poDocs).values({
+        docNo: "PO-C8-2", status: "approved", supplierId: sup.id, createdBy: user.id,
+      }).returning();
+      await db.insert(schema.poLines).values({
+        poId: po.id, skuId: sku.id, lineType: "raw", purchaseUom: "支", uomFactor: "1",
+        qty: "500", price: "1.00", receivedQty: "0",
+      });
+
+      await declineReplenishSuggestion(user, { skuId: sku.id, reason: "这批 PO 顶着", reasonCode: "supply_already_arranged" }, db);
+      expect((await getReplenishSuggestions({ allRows: true }, db)).rows.find((r) => r.skuId === sku.id)!.suppression).not.toBeNull();
+
+      // 那张 PO 被作废：管道量 600 → 100，抑制的前提（有一批货在路上）没了
+      await db.update(schema.poDocs).set({ status: "void" }).where(eq(schema.poDocs.id, po.id));
+
+      const row = (await getReplenishSuggestions({ allRows: true }, db)).rows.find((r) => r.skuId === sku.id)!;
+      expect(row.suppression, "供应没了还压满 30 天 = 把一次真实缺货静音").toBeNull();
+      expect(row.suggestQty, "建议必须恢复下发").not.toBeNull();
+      expect(row.planExplain.some((l) => l.includes("前提已不成立"))).toBe(true);
     } finally {
       await client.close();
     }

@@ -50,6 +50,18 @@ export interface SkuProjection extends ProjectionResult {
   /** 无到货日的在途量（不进曲线，单独提示） */
   undatedInbound: number;
   today: string;
+  /**
+   * 小项 b：该 SKU **在不在补货引擎的范围内**。
+   *
+   * 事故形状：引擎只跑 active 成品，取不到行时此处所有引擎口径的字段
+   * （起点在库、日均、安全库存、总供应周期）一律回落 0/null，曲线于是画出一条
+   * **平的零线**——看起来像「这个 SKU 一直没货也没需求」，实际是「引擎根本没算过它」。
+   * 两者的处置完全不同（前者不用管，后者要去看它为什么不在引擎范围里），
+   * 界面必须能分辨，故显式给出这个状态而不是让 0 自己去解释自己。
+   */
+  engineCovered: boolean;
+  /** 未被引擎覆盖时的中文说明；已覆盖 = null */
+  engineGap: string | null;
 }
 
 /** #4 沙盘覆盖：假设一批到货 / 覆盖日均，看曲线如何变化（不落库，纯推演） */
@@ -98,6 +110,13 @@ export async function getSkuProjection(
     else undated += l.qty;
   }
 
+  /* 小项 b：诚实降级要**说出来**。回落 0 而不声明，等于把「没算过」画成「一直是 0」。 */
+  const engineCovered = row != null;
+  const engineGap = engineCovered
+    ? null
+    : `SKU ${sku.code} 不在补货引擎的计算范围内（引擎只跑启用中的成品），`
+      + "因此起点在库、日均、安全库存与总供应周期都取不到：本曲线不是「水位一直为 0」，而是**未被引擎覆盖**。"
+      + "请先确认该 SKU 是否应为启用成品，再回来看曲线。";
   const bookOnHand = row ? num(row.decisionEvidence.onHand) : 0;
   const startOnHand = row ? num(row.decisionEvidence.availableOnHand) : 0;
   const expiringUnsellable = row ? num(row.decisionEvidence.expiringUnsellable) : 0;
@@ -147,6 +166,8 @@ export async function getSkuProjection(
     orderWindowMissed: tp.orderWindowMissed,
     undatedInbound: Math.round(undated * 100) / 100,
     today,
+    engineCovered,
+    engineGap,
     scenarioApplied,
   };
 }

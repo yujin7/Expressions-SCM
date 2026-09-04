@@ -18,7 +18,8 @@ import { createQualityCase } from "@/server/modules/quality/service";
 import { ALERT_OWNER_ROLE } from "@/server/rules/task-triggers";
 import {
   CATEGORY_OTIF_COLLAPSE, CATEGORY_PROMISE_BREACH, CATEGORY_QUALITY_CASE_OVERDUE,
-  CATEGORY_SUPPLIER_LICENSE, OTIF_COLLAPSE_MIN_EVALUABLE, PROMISE_BREACH_MIN_DAYS,
+  CATEGORY_SUPPLIER_LICENSE, OTIF_COLLAPSE_AUTO_CLOSE_DAYS, OTIF_COLLAPSE_MIN_EVALUABLE,
+  PROMISE_BREACH_MIN_DAYS,
   runOtifCollapseWatchdog, runPromiseBreachWatchdog, runQualityCaseOverdueWatchdog,
   runSupplierLicenseWatchdog,
 } from "@/jobs/procurement-quality-alerts";
@@ -114,7 +115,7 @@ describe("采购与质量看门狗（W2 审计 5）", () => {
     expect(after.autoClosed).toBe(1);
   });
 
-  it("3) OTIF 崩塌：按原始承诺口径判、样本不足不报；周期事实不自动关闭", async () => {
+  it("3) OTIF 崩塌：按原始承诺口径判、样本不足不报；YTD 口径用迟滞关闭而不是永不关闭（C7）", async () => {
     const [approver] = await db.insert(users).values({ name: "审批", roles: ["purchasing"], isApprover: true }).returning();
     // 造 OTIF_COLLAPSE_MIN_EVALUABLE 张全部迟到的 PO（原始承诺早、当前承诺被推到收货之后）
     for (let i = 0; i < OTIF_COLLAPSE_MIN_EVALUABLE; i += 1) {
@@ -156,8 +157,9 @@ describe("采购与质量看门狗（W2 审计 5）", () => {
     // 去重键带年份：某一年的崩塌是那一年的事实
     expect(alert.dedupeKey).toBe(`${CATEGORY_OTIF_COLLAPSE}:${supplierId}:2026`);
 
-    /* 周期事实（autoCloseAfterDays: null）：候选清空也不自动关闭——
-       下一轮不再命中不代表这一年的 OTIF 被处理过。
+    /* C7 迟滞关闭：年度累计 OTIF 是**滚动的当期状态**，不是已收口的周期事实。
+       候选归零后不当轮就关（容忍数据缺口/阈值抖动），但连续 OTIF_COLLAPSE_AUTO_CLOSE_DAYS
+       天不再命中就必须关掉——否则二月掉一次、年底回到 0.92 的供应商会永远挂着一条谁也关不掉的告警。
        作废这批 PO 让候选真的归零（承诺版本链是仅追加事实表，删不得）；
        再插一张草稿 PO 改变 source_binding，逼读模型重算而不是吃旧缓存。 */
     await db.update(poDocs).set({ status: "void" });
@@ -167,8 +169,14 @@ describe("采购与质量看门狗（W2 审计 5）", () => {
     });
     const after = await runOtifCollapseWatchdog(db, NOW);
     expect(after.candidates).toBe(0);
-    expect(after.autoClosed).toBe(0);
+    expect(after.autoClosed).toBe(0); // 迟滞窗口内不关
     expect(await alertsOf(db, CATEGORY_OTIF_COLLAPSE)).toHaveLength(1);
+
+    // 迟滞窗口之外：条件已经连续这么多天不成立 → 自动关闭（null 语义下这一步永远等不到）
+    const later = new Date(NOW.getTime() + (OTIF_COLLAPSE_AUTO_CLOSE_DAYS + 1) * 86_400_000);
+    const healed = await runOtifCollapseWatchdog(db, later);
+    expect(healed.autoClosed).toBe(1);
+    expect(await alertsOf(db, CATEGORY_OTIF_COLLAPSE)).toHaveLength(0);
   });
 
   it("4) 质量案件逾期：classifyDueState 判 overdue 才报；上报后即刻关闭", async () => {

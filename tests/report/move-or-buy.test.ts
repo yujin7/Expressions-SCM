@@ -29,7 +29,9 @@ import { createTestDb, type TestDb } from "../helpers/db";
 const row = (p: Partial<MoveOrBuyRow> & { code: string }): MoveOrBuyRow => ({
   skuId: 1, name: "", brand: null, baseUom: "支", onHand: 0, daily: 0, daysCover: null, leadDays: null,
   orderByDate: null, daysToShortage: null, orderWindowMissed: false, suggestQty: null,
-  transfers: [], transferQty: 0, residualBuyQty: null, action: "buy_only", ...p,
+  transfers: [], transferQty: 0, residualBuyQty: null, action: "buy_only",
+  suppression: null, withheldBuyQty: null,
+  inFlightDrafts: { buyQty: 0, buyDocs: 0, transferQty: 0, transferDocs: 0 }, inFlightWarning: null, ...p,
 });
 
 const lane = (p: Partial<TransferLaneRow> & { fromWarehouseId: number; toWarehouseId: number }): TransferLaneRow => ({

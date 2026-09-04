@@ -44,6 +44,7 @@ import { getOpenSupplyLines, type OpenSupplyLine } from "@/server/core/supply";
 import { describeScope, FALLBACK_SCOPE, makeResolver, type ParamLayer } from "@/server/core/scoped-params";
 import { netExpiringStock, type ExpiryBatch } from "@/server/rules/expiry-netting";
 import { loadExpiryBatches } from "./expiry";
+import { EMPTY_IN_FLIGHT, inFlightWarning, loadInFlightDrafts, type InFlightDrafts } from "./in-flight-drafts";
 import { loadActiveSuppressions, loadDeclinedToday } from "./decline";
 import { suppressionState } from "@/server/rules/replenish-suppression";
 import { DECLINE_REASON_LABELS, type DeclineReasonCode } from "@/lib/replenish-decline-reasons";
@@ -143,7 +144,7 @@ export interface ReplenishSuppression {
   /** 抑制到期日（含当天） */
   untilDate: string;
   daysLeft: number;
-  /** true = 那批「已安排」的供应一旦落库即自动解除 */
+  /** true = 供应事实一变即自动解除：到货入库 / 被登记为未结供给 / 安排被取消（C8） */
   releaseOnArrival: boolean;
   /** 被抑制而未下发的建议量（人工解除后即恢复；也可在本页勾选放行） */
   withheldQty: string | null;
@@ -181,6 +182,13 @@ export interface ReplenishExpiryRisk {
   bindingDaysLeft: number | null;
   /** 判定视野（天）——与逐日推演同一视野 */
   horizonDays: number;
+  /** C4：因盘点观测过旧而**未参与扣减**的批次量（只提示，不进 unsellableQty） */
+  staleQty: number;
+  staleBatches: number;
+  /** 被排除批次里最旧的盘点期距今天数；无排除 = null */
+  staleAgeDays: number | null;
+  /** 生效的观测鲜度上限（天）；未设限 = null */
+  maxStocktakeAgeDays: number | null;
   /** 中文解释（界面 tooltip 直接用） */
   label: string;
 }
@@ -291,6 +299,13 @@ export interface ReplenishRow {
   lotWarnings: { level: "info" | "warn" | "blocking"; message: string }[];
   /** 超买折算天数（相对日均；无日均 = null）——超买天数是呆滞库存的先行指标 */
   overshootDays: number | null;
+  /**
+   * C10 跨页在途草稿：**另一页**（先挪后买 / 调拨建议）已经为这个 SKU 起草了多少。
+   * 只提示不净额——草稿随时可能被驳回或改量，拿它自动扣减建议量等于让一张临时单据改写判定口径。
+   */
+  inFlightDrafts: InFlightDrafts;
+  /** 上面这件事的中文提示；无在途草稿 = null（行上不显示任何东西） */
+  inFlightWarning: string | null;
   /** E8-10：版本捕获专用的精确输入/输出；页面可忽略，保存时不得从展示舍入值反推。 */
   decisionEvidence: ReplenishDecisionEvidence;
 }
@@ -489,9 +504,12 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
   const minCoverAlert = Math.min(365, Math.max(1, Math.floor(query.minCoverAlert ?? (await getNumParam("cover_alert_days", 30, dbArg)))));
   /* R11 单次订货上限与超买提示（rules/netreq 的 maxOrder / overshootWarnDays）。
      上限 0 = 不设（默认，行为与此前一致）；>0 时上限量 = 日均 × 天数，逐 SKU 各算各的。 */
-  const [maxOrderCoverDays, overshootWarnDays] = await Promise.all([
+  const [maxOrderCoverDays, overshootWarnDays, expiryMaxStocktakeAgeDays] = await Promise.all([
     getNumParam("replenish_max_order_cover_days", 0, dbArg),
     getNumParam("replenish_overshoot_warn_days", 90, dbArg),
+    /* C4 临期净额的观测鲜度门：batch_stocks 是盘点快照，「逐仓最新盘点期」可能已是两个月前。
+       0 = 不设限（回到旧行为）。 */
+    getNumParam("expiry_netting_max_stocktake_age_days", 45, dbArg),
   ]);
   const page = Math.max(1, query.page ?? 1);
   const pageSize = query.allRows ? Number.MAX_SAFE_INTEGER : Math.min(999, Math.max(1, query.pageSize ?? 50));
@@ -744,10 +762,14 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
   /* ── W2-#6 生效中的放弃抑制窗口（未清除、未到期）；是否真的还在压由 suppressionState 逐行判 ── */
   const suppressions = await loadActiveSuppressions(db, todayStr, skuIds);
 
+  /* C10：另一页（先挪后买 / 调拨建议）已经为同一个 SKU 起草的调拨，本页必须看得见——
+     否则计划员在那边起草调拨、在这边按**全额** suggestQty 起草采购，两页各自正确、合起来多订。 */
+  const inFlightBySku = await loadInFlightDrafts(db, skuIds);
+
   const expiryBatchesBySku = new Map<number, ExpiryBatch[]>();
   for (const b of await loadExpiryBatches(db, skuIds, { today: todayStr })) {
     const arr = expiryBatchesBySku.get(b.skuId) ?? [];
-    arr.push({ daysLeft: b.daysLeft, qty: b.qty });
+    arr.push({ daysLeft: b.daysLeft, qty: b.qty, stocktakeAgeDays: b.stocktakeAgeDays });
     expiryBatchesBySku.set(b.skuId, arr);
   }
 
@@ -835,10 +857,24 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     const horizonDays = Math.min(365, actionWindow + effectiveTarget + 30);
 
     /* W2-#2 临期净额：批次参考层与账面在库不同源，故净额按账面在库夹取上限（不得扣出负库存）。 */
-    const net = netExpiringStock({ batches: expiryBatchesBySku.get(s.id) ?? [], daily: dailyNum, horizonDays });
-    const unsellableQty = Math.min(net.unsellableQty, num(onHand));
+    const net = netExpiringStock({
+      batches: expiryBatchesBySku.get(s.id) ?? [],
+      daily: dailyNum,
+      horizonDays,
+      maxStocktakeAgeDays: expiryMaxStocktakeAgeDays > 0 ? expiryMaxStocktakeAgeDays : undefined,
+    });
+    /* 上限夹取必须**同时夹下限 0**（小项 a）：账面在库为负（委外仓垫料等合法负值经全网汇总后可为负）时，
+       Math.min(净额, 负数) 会给出一个负的 unsellableQty，随后 dSub(onHand, 负数) 把可用在库**调高**，
+       DTO 里还会出现负的 expiringUnsellable/unsellableQty。净额永远是「扣掉多少」，不可能是负数。 */
+    const unsellableQty = Math.max(0, Math.min(net.unsellableQty, num(onHand)));
     const availableOnHand = unsellableQty > 0 ? dSub(onHand, String(unsellableQty), 6) : onHand;
-    const expiryRisk: ReplenishExpiryRisk | null = net.atRiskQty > 0
+    /* 鲜度门排除的量必须**照样出现在行上**：静默丢弃就等于「系统看过但没告诉你」，
+       计划员无从判断这个 SKU 到底有没有临期风险、也不知道该去补一次盘点。 */
+    const staleLabel = net.staleQty > 0
+      ? `另有 ${r1(net.staleQty)} 件命中批次来自 ${net.staleAgeDays} 天前的盘点期（鲜度上限 ${net.maxStocktakeAgeDays} 天），`
+        + "已过旧、不能当作今天的在库，故**未参与扣减**；如需按它净额请先补一次批次盘点"
+      : "";
+    const expiryRisk: ReplenishExpiryRisk | null = net.atRiskQty > 0 || net.staleQty > 0
       ? {
           unsellableQty: r1(unsellableQty),
           expiredQty: r1(net.expiredQty),
@@ -847,14 +883,23 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
           minDaysLeft: net.minDaysLeft,
           bindingDaysLeft: net.bindingDaysLeft,
           horizonDays,
-          label: unsellableQty > 0
-            ? `临期净额 ${r1(unsellableQty)}：${horizonDays} 天视野内命中 ${net.batchesConsidered} 个临期/已过期批次共 ${r1(net.atRiskQty)}（其中已过期 ${r1(net.expiredQty)}），按日均 ${r1(dailyNum)} 计，最紧的一批只剩 ${net.bindingDaysLeft} 天效期、卖不完的部分已从**可用在库**扣除；账面在库仍为 ${r1(num(onHand))}（批次参考层来自盘点，与记账在库不同源，故扣减以账面在库为上限）`
-            : `命中 ${net.batchesConsidered} 个临期批次共 ${r1(net.atRiskQty)}（最短剩余 ${net.minDaysLeft} 天），按日均 ${r1(dailyNum)} 可在效期内售出，未扣减可用在库`,
+          staleQty: r1(net.staleQty),
+          staleBatches: net.staleBatches,
+          staleAgeDays: net.staleAgeDays,
+          maxStocktakeAgeDays: net.maxStocktakeAgeDays,
+          label: net.atRiskQty === 0
+            ? `临期净额未生效：${staleLabel || "视野内无临期批次"}`
+            : unsellableQty > 0
+              ? `临期净额 ${r1(unsellableQty)}：${horizonDays} 天视野内命中 ${net.batchesConsidered} 个临期/已过期批次共 ${r1(net.atRiskQty)}（其中已过期 ${r1(net.expiredQty)}），按日均 ${r1(dailyNum)} 计，最紧的一批只剩 ${net.bindingDaysLeft} 天效期、卖不完的部分已从**可用在库**扣除；账面在库仍为 ${r1(num(onHand))}（批次参考层来自盘点，与记账在库不同源，故扣减以账面在库为上限）${staleLabel ? `。${staleLabel}` : ""}`
+              : `命中 ${net.batchesConsidered} 个临期批次共 ${r1(net.atRiskQty)}（最短剩余 ${net.minDaysLeft} 天），按日均 ${r1(dailyNum)} 可在效期内售出，未扣减可用在库${staleLabel ? `。${staleLabel}` : ""}`,
         }
       : null;
-    const expiryExplain = unsellableQty > 0
-      ? [`临期净额：账面在库 ${r1(num(onHand))} 中 ${r1(unsellableQty)} 在效期内卖不掉，判定按可用在库 ${r1(num(availableOnHand))} 起算`]
-      : [];
+    const expiryExplain = [
+      ...(unsellableQty > 0
+        ? [`临期净额：账面在库 ${r1(num(onHand))} 中 ${r1(unsellableQty)} 在效期内卖不掉，判定按可用在库 ${r1(num(availableOnHand))} 起算`]
+        : []),
+      ...(net.staleQty > 0 ? [`临期净额鲜度门：${staleLabel}`] : []),
+    ];
 
     const tp = timePhasedNetReq({
       today: todayStr,
@@ -913,17 +958,22 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
 
     /* ── W2-#6 放弃抑制窗口：上一次「已复核并放弃」在窗口内的，不再重复建议同一个 SKU。
           **绝不静默**：建议量转入 heldQty（人工勾选即可放行），行上给出原因、到期日与解除入口。
-          「等到货即解除」用当前全管道量与放弃当时的基线比较——那批系统看不见的供应一旦落库就恢复建议。 ── */
+          提前解除按两条基线判（C8，判定在 rules/replenish-suppression）：
+          账面在库比基线高＝那批货真到了；全管道量比基线高＝它被登记进系统了；
+          全管道量比基线低＝安排告吹，抑制的前提没了，必须立刻恢复建议而不是压满 30 天。 ── */
     let suppression: ReplenishSuppression | null = null;
     const supRow = suppressions.get(s.id);
     if (supRow) {
-      let pipelineNow = num(onHand);
+      const onHandNow = num(onHand);
+      let pipelineNow = onHandNow;
       for (const line of supplyLinesBySku.get(s.id) ?? []) if (line.qty > 0) pipelineNow += line.qty;
       const state = suppressionState({
         untilDate: supRow.untilDate,
         releaseOnArrival: supRow.releaseOnArrival,
         pipelineBaseline: supRow.pipelineBaseline,
         pipelineNow,
+        onHandBaseline: supRow.onHandBaseline,
+        onHandNow,
         today: todayStr,
       });
       if (state.active) {
@@ -940,11 +990,19 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
           daysLeft: state.daysLeft,
           releaseOnArrival: supRow.releaseOnArrival,
           withheldQty: withheld,
-          label: `${supRow.businessDate} 由 ${supRow.by} 以「${DECLINE_REASON_LABELS[supRow.reasonCode].label}」放弃：${supRow.reason}；抑制至 ${supRow.untilDate}（还剩 ${state.daysLeft} 天）${supRow.releaseOnArrival ? "，或该批供应落库后自动解除" : ""}${withheld ? `。被扣下的建议量 ${withheld}，勾选即可放行` : ""}`,
+          // 文案必须与实现一致（C8）：旧文案只承诺「落库后自动解除」，而实现根本检测不到落库，也没说取消会解除
+          label: `${supRow.businessDate} 由 ${supRow.by} 以「${DECLINE_REASON_LABELS[supRow.reasonCode].label}」放弃：${supRow.reason}；抑制至 ${supRow.untilDate}（还剩 ${state.daysLeft} 天）${supRow.releaseOnArrival ? "，或该批供应到货入库、被登记为未结供给、安排被取消（三者任一）后自动解除" : ""}${withheld ? `。被扣下的建议量 ${withheld}，勾选即可放行` : ""}`,
         };
         planExplain.push(`已抑制：${suppression.label}`);
       } else if (state.releasedBy === "supply_arrived") {
-        planExplain.push(`放弃抑制已自动解除：全管道量由 ${r1(supRow.pipelineBaseline)} 回升到 ${r1(pipelineNow)}，「供应已安排」已兑现`);
+        planExplain.push(`放弃抑制已自动解除：账面在库由 ${r1(supRow.onHandBaseline)} 升到 ${r1(onHandNow)}，「供应已安排」那批货已到货入库`);
+      } else if (state.releasedBy === "supply_registered") {
+        planExplain.push(`放弃抑制已自动解除：全管道量由 ${r1(supRow.pipelineBaseline)} 回升到 ${r1(pipelineNow)}，「供应已安排」已在系统内登记为未结供给`);
+      } else if (state.releasedBy === "supply_cancelled") {
+        planExplain.push(
+          `放弃抑制已自动解除：全管道量由 ${r1(supRow.pipelineBaseline)} 降到 ${r1(pipelineNow)}，`
+          + "「供应已安排」这个前提已不成立（相关供给被作废/短关），建议恢复下发——继续静音等于把一次真实缺货压掉",
+        );
       }
     }
 
@@ -990,6 +1048,11 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       && dCmp(String(externalRow.pddNet30), "0") !== 0
       && !externalVelocity.coverage.pddWindowComplete30,
     );
+    /* C10：本页负责「买」，所以提示的是另一侧——调拨侧已经起草了多少。 */
+    const inFlight = inFlightBySku.get(s.id) ?? EMPTY_IN_FLIGHT;
+    const inFlightNote = inFlightWarning(inFlight, "buy");
+    if (inFlightNote) planExplain.push(`跨页在途草稿：${inFlightNote}`);
+
     const externalDaily30Gate = !externalRow
       ? "该 SKU 尚无已映射的外部需求"
       : pddWindowIncomplete
@@ -1059,6 +1122,8 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       planExplain,
       lotWarnings,
       overshootDays,
+      inFlightDrafts: inFlight,
+      inFlightWarning: inFlightNote,
       decisionEvidence: {
         businessDate: todayStr,
         onHand,
@@ -1160,6 +1225,8 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
     orderWindowMissed: r.orderWindowMissed,
     planExplain: r.planExplain,
     lotWarnings: r.lotWarnings,
+    inFlightDrafts: r.inFlightDrafts,
+    inFlightWarning: r.inFlightWarning,
     overshootDays: r.overshootDays,
     forecastDivergent: r.forecastDivergent,
     forecastTrusted: r.forecastTrusted,

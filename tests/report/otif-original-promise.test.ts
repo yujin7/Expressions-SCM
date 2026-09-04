@@ -18,6 +18,7 @@ import {
 import { computePurchaseOrderMetrics } from "@/server/modules/report/purchase-order-metrics";
 import { getSupplierScorecard } from "@/server/modules/report/supplier-scorecard";
 import { PROMISE_BASIS_LABELS, resolvePromiseBasis } from "@/server/rules/promise-basis";
+import { METRICS } from "@/components/metrics";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 const ASOF = new Date("2026-09-03T02:00:00.000Z");
@@ -29,6 +30,18 @@ describe("rules/promise-basis（原始承诺口径唯一权威）", () => {
       { sequence: 2, promisedDate: "2026-04-30", source: "supplier_confirm" },
     ]);
     expect(fact).toEqual({ originalPromisedDate: "2026-03-10", historyState: "trusted", revisionCount: 1 });
+  });
+
+  /* 小项 (c)：口径改了、指标字典没改，等于让读者以为自己看的是另一个数。
+     字典是给人读的**权威说明**，不是注释，必须跟着口径一起动。 */
+  it("指标字典的「供应商准时率」必须描述**原始承诺**口径，不是改版前的当前承诺", () => {
+    const m = METRICS.onTimeRate;
+    expect(m.formula, "公式停留在改版前 = 字典在说谎").toContain("原始承诺");
+    expect(m.formula).toContain("第一条可信修订");
+    expect(m.caveat).toContain("原始承诺");
+    expect(m.caveat, "「当前承诺」是并列副列、不计分，这一点必须写出来").toContain("不计分");
+    // 保留原有告诫：收货时点仍以收货单建单时刻为准
+    expect(m.caveat).toContain("收货单建单时刻");
   });
 
   it("迁移快照打头 → backfilled，绝不冒充原始承诺；无版本链 → missing", () => {

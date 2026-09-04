@@ -15,6 +15,7 @@ import { stockBalances, stockLedger, warehouses } from "@/db/schema";
 import { dCmp, dNeg, dQty } from "@/server/core/decimal";
 import { getLocatedQty } from "@/server/modules/inventory/location-balance";
 import { isPeriodClosed, periodOf } from "@/server/modules/settlement/period-lock";
+import type { PostingErrorCode } from "./error-codes";
 import { isRegisteredSource } from "./registry";
 
 /**
@@ -41,13 +42,11 @@ export type PostingEvent = {
   occurredAt?: Date;
 };
 
-export type PostingErrorCode =
-  | "NEGATIVE_STOCK"
-  | "EMPTY_EVENT"
-  | "UNREGISTERED_SOURCE"
-  | "SNAPSHOT_WAREHOUSE"
-  | "LOCATED_STOCK"
-  | "CLOSED_PERIOD";
+/**
+ * 错误码全集与 HTTP 路由表都在 `posting/error-codes.ts`（零依赖纯常量模块）——
+ * 放行名单必须由类型派生，不得在 route 层再抄一份字面量（C1 事故：CLOSED_PERIOD 漏抄成 500）。
+ */
+export type { PostingErrorCode } from "./error-codes";
 
 export class PostingError extends Error {
   readonly code: PostingErrorCode;

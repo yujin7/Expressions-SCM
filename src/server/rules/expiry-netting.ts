@@ -14,6 +14,9 @@
  * - 只算「卖不掉」，不算报废损失、不改在库口径——在库数字仍由 core/stock-view 唯一给出；
  * - 剩余效期超出推演视野的批次不参与：它们的容量 `日均 × daysLeft` 必然大于视野内的总消耗，
  *   在上式里永远不是最紧的那一项，纳不纳入结果相同（少读一批行）；
+ * - **观测鲜度门（C4）**：批次层来自盘点快照而非账本，`maxStocktakeAgeDays` 之外的层只统计不扣减。
+ *   过旧的快照被当成今天的在库时，可以把一个库存充足的 SKU 一路净额到 0（6/30 盘的 6,000 件
+ *   对上今天账面的 800 件新货 → 可用在库 0 → 整轮补货）。被排除的量走 `staleQty` 如实上报；
  * - 日均 = 0 时任何批次都卖不掉，但此时引擎本就不产生需求，故整体量仍如实给出、由调用方决定用途；
  * - 展示层 number 运算（与 cover / safetyQty 同准），不产出记账数字。
  */
@@ -22,6 +25,11 @@ export interface ExpiryBatch {
   /** 距到期天数（可为负 = 已过期） */
   daysLeft: number;
   qty: number;
+  /**
+   * 该批次行的观测时点距今天数（batch_stocks.stocktake_date，0 = 今天盘的）。
+   * 缺省 0 = 视为今天观测（既有调用方行为不变）。
+   */
+  stocktakeAgeDays?: number;
 }
 
 export interface ExpiryNettingInput {
@@ -30,6 +38,11 @@ export interface ExpiryNettingInput {
   daily: number;
   /** 推演视野（天）；剩余效期超过它的批次不参与判定 */
   horizonDays: number;
+  /**
+   * 观测鲜度上限（天）：盘点期比今天早过这个天数的批次层**不参与净额**。
+   * 缺省 `Infinity` = 不设限（既有调用方行为不变）。
+   */
+  maxStocktakeAgeDays?: number;
 }
 
 export interface ExpiryNettingResult {
@@ -44,13 +57,29 @@ export interface ExpiryNettingResult {
   bindingDaysLeft: number | null;
   /** 命中批次的最短剩余天数；无命中 = null */
   minDaysLeft: number | null;
+  /** 因观测过旧被排除在净额之外的批次合计 */
+  staleQty: number;
+  staleBatches: number;
+  /** 被排除批次里最旧的观测时点距今天数；无排除 = null */
+  staleAgeDays: number | null;
+  /** 生效的鲜度上限（天）；未设限 = null */
+  maxStocktakeAgeDays: number | null;
 }
 
 export function netExpiringStock(input: ExpiryNettingInput): ExpiryNettingResult {
   const daily = Math.max(0, input.daily);
   const horizon = Math.max(0, Math.floor(input.horizonDays));
-  const considered = input.batches
-    .filter((b) => b.qty > 0 && b.daysLeft <= horizon)
+  const maxAge = input.maxStocktakeAgeDays == null || !Number.isFinite(input.maxStocktakeAgeDays)
+    ? Infinity
+    : Math.max(0, Math.floor(input.maxStocktakeAgeDays));
+  const inHorizon = input.batches.filter((b) => b.qty > 0 && b.daysLeft <= horizon);
+  /* 鲜度门（C4）：批次参考层是**盘点快照**，不是账本。上一次盘点越久远，
+     「那批货今天还在库上」这个前提就越站不住——6 月底盘出的 6,000 件被当作今天的在库，
+     与今天账面上另一批新货的 800 件相减，可以把一个库存充足的 SKU 一路净额到 0。
+     过旧的层如实计入 staleQty 并在行上说明，但**不参与扣减**。 */
+  const stale = inHorizon.filter((b) => (b.stocktakeAgeDays ?? 0) > maxAge);
+  const considered = inHorizon
+    .filter((b) => (b.stocktakeAgeDays ?? 0) <= maxAge)
     .sort((a, b) => a.daysLeft - b.daysLeft);
 
   let cumulative = 0;
@@ -75,5 +104,9 @@ export function netExpiringStock(input: ExpiryNettingInput): ExpiryNettingResult
     batchesConsidered: considered.length,
     bindingDaysLeft: unsellableQty > 0 ? bindingDaysLeft : null,
     minDaysLeft: considered.length ? considered[0].daysLeft : null,
+    staleQty: Math.round(stale.reduce((sum, b) => sum + b.qty, 0) * 10000) / 10000,
+    staleBatches: stale.length,
+    staleAgeDays: stale.length ? Math.max(...stale.map((b) => b.stocktakeAgeDays ?? 0)) : null,
+    maxStocktakeAgeDays: Number.isFinite(maxAge) ? maxAge : null,
   };
 }

@@ -112,6 +112,17 @@ async function buildAutomatedChecks(month: string, db: AnyDb): Promise<Automated
   const updatedInMonth = (column: AnyColumn) =>
     and(gte(column, range.start), lt(column, range.end))!;
 
+  /* C2 盘点归期必须按**业务日期**（pd_docs.biz_date），不能按录入时间。
+     盘点差异调整是按 biz_date 落账的（inventory/count.countAdjustOccurredAt），
+     所以 7/31 盘的、8/2 才录进来的那张单，它的流水属于 7 月。按 created_at 筛的话
+     7 月清单看不见它 → 7 月照常关账 → 再去审批这张盘点必然撞期间锁 CLOSED_PERIOD 并整笔回滚，
+     而 occurredAt 改不了 = 这张盘点单**永久无法审批**。
+     biz_date 可空（存量单据没有这个事实，见 schema 注释），缺失时才回落 created_at。 */
+  const countedInMonth = or(
+    and(gte(schema.pdDocs.bizDate, range.startDate), lt(schema.pdDocs.bizDate, range.endDate)),
+    and(isNull(schema.pdDocs.bizDate), gte(schema.pdDocs.createdAt, range.start), lt(schema.pdDocs.createdAt, range.end)),
+  )!;
+
   const importScope = or(
     and(
       gte(schema.importJobs.sourceAsOf, range.startDate),
@@ -157,13 +168,13 @@ async function buildAutomatedChecks(month: string, db: AnyDb): Promise<Automated
     countRows(db, schema.shDocs, and(createdInMonth(schema.shDocs.createdAt), inArray(schema.shDocs.status, ["draft", "pending", "approved", "in_progress"]))!),
     countRows(db, schema.ctDocs, and(createdInMonth(schema.ctDocs.createdAt), inArray(schema.ctDocs.status, ["draft", "pending", "approved", "in_progress"]))!),
     countRows(db, schema.stockDocs, and(createdInMonth(schema.stockDocs.createdAt), inArray(schema.stockDocs.status, ["draft", "pending", "approved", "in_progress"]))!),
-    countRows(db, schema.pdDocs, createdInMonth(schema.pdDocs.createdAt)),
-    countRows(db, schema.pdDocs, and(createdInMonth(schema.pdDocs.createdAt), inArray(schema.pdDocs.status, ["draft", "pending", "approved", "in_progress"]))!),
+    countRows(db, schema.pdDocs, countedInMonth),
+    countRows(db, schema.pdDocs, and(countedInMonth, inArray(schema.pdDocs.status, ["draft", "pending", "approved", "in_progress"]))!),
     countRows(
       db,
       schema.pdLines,
       and(
-        sql`${schema.pdLines.pdId} IN (SELECT id FROM pd_docs WHERE created_at >= ${range.start} AND created_at < ${range.end})`,
+        sql`${schema.pdLines.pdId} IN (SELECT id FROM pd_docs WHERE (biz_date >= ${range.startDate} AND biz_date < ${range.endDate}) OR (biz_date IS NULL AND created_at >= ${range.start} AND created_at < ${range.end}))`,
         ne(schema.pdLines.bookQty, schema.pdLines.countedQty),
         isNull(schema.pdLines.adjustDocId),
       )!,
@@ -223,7 +234,11 @@ async function buildAutomatedChecks(month: string, db: AnyDb): Promise<Automated
         : countTotal === 0
           ? "本月未发现盘点任务，需确认是否适用"
           : `${countTotal} 张盘点任务已收口且差异均有调整单`,
-      evidence: { countTotal, countOpen, countUnadjusted },
+      evidence: {
+        countTotal, countOpen, countUnadjusted,
+        // C2：按盘点期（pd_docs.biz_date）归月，缺失才回落 created_at——补录的跨月盘点必须挡住它所属的那个月
+        scope: "bizDate 自然月，缺失时回落 createdAt",
+      },
     },
     {
       key: "jst_reconciliation",

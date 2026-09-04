@@ -7,7 +7,8 @@
  * 3 月 28 日到货，两处读数都记「准时」。于是**改期越勤、分数越高**——OTIF 可以被自己洗白。
  *
  * 口径（沿用 `report/supply-commitment.ts` 已经建立、且已在到货日历上出数的那一套，不新造）：
- * - **原始承诺** = 该 PO 行不可变版本链里第一条**可信**（source ≠ legacy_backfill）修订的 `promised_date`。
+ * - **原始承诺** = 该 PO 行不可变版本链里第一条**可信**（source ∈ `TRUSTED_PROMISE_SOURCES` 白名单）
+ *   修订的 `promised_date`。
  *   为什么不取第一条修订的 `previous_date`：那是买手下单时自己填的预计到货日，不是供应商的承诺；
  *   供应商第一次确认才是第一个真承诺。第一条可信修订因此算「承诺建立」而不算「改期」（revisionCount 减 1）。
  * - **当前承诺** = `coalesce(行交期, 表头交期)`（供应商改过几次就是第几次的值）。
@@ -38,6 +39,21 @@ export interface PromiseBasisFact {
 
 export const LEGACY_PROMISE_SOURCE = "legacy_backfill";
 
+/**
+ * **白名单**：哪些来源算得上「供应商自己的承诺」。
+ *
+ * 此前这里是黑名单（`source !== legacy_backfill`），方向反了：`po_promise_revisions`
+ * 的来源集合里还有 `buyer_revision`（买手自己改期）与 `external_observation`（外部系统观察）。
+ * 一旦哪天有人接上 `buyer_revision` 写入，**买手自己改的那一笔**就会被当成
+ * 「供应商的原始承诺」并标 `trusted`——OTIF 的分母基准由被评价方的对手方随手写定。
+ * 新来源要进这个口径必须显式登记在这里（改这一行会被代码评审看见），默认一律不认。
+ */
+export const TRUSTED_PROMISE_SOURCES: readonly string[] = ["supplier_confirm"];
+
+export function isTrustedPromiseSource(source: string): boolean {
+  return TRUSTED_PROMISE_SOURCES.includes(source);
+}
+
 /** 判定口径标签（中文界面按此展示；两个口径必须同时出现，不得只标一个） */
 export const PROMISE_BASIS_LABELS = {
   original: "原始承诺",
@@ -49,14 +65,14 @@ export type PromiseBasis = keyof typeof PROMISE_BASIS_LABELS;
 /** 版本链 → 原始承诺事实。`revisions` 必须按 sequence 升序传入（调用方按主键排序即可）。 */
 export function resolvePromiseBasis(revisions: readonly PromiseRevisionFact[]): PromiseBasisFact {
   const startsWithLegacy = revisions[0]?.source === LEGACY_PROMISE_SOURCE;
-  const nonLegacy = revisions.filter((r) => r.source !== LEGACY_PROMISE_SOURCE);
+  const trusted = revisions.filter((r) => isTrustedPromiseSource(r.source));
   const firstTrusted = startsWithLegacy
     ? undefined
-    : nonLegacy.find((r) => r.promisedDate != null);
+    : trusted.find((r) => r.promisedDate != null);
   return {
     originalPromisedDate: firstTrusted?.promisedDate ?? null,
     historyState: startsWithLegacy ? "backfilled" : firstTrusted ? "trusted" : "missing",
-    revisionCount: startsWithLegacy ? nonLegacy.length : Math.max(0, nonLegacy.length - 1),
+    revisionCount: startsWithLegacy ? trusted.length : Math.max(0, trusted.length - 1),
   };
 }
 

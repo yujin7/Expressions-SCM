@@ -9,7 +9,9 @@
  * ── W2-#6：放弃现在会改变下一次运行 ──
  * 此前放弃只写审计，**下一轮照旧建议同一个 SKU**——计划员每天对同一条建议重复做同一个判断。
  * 现在同事务再落一条抑制窗口（replenish_suppressions），窗口长度按原因取
- * （`rules/replenish-suppression.ts`），到期或"那批已安排的供应真的落库"即自动解除。
+ * （`rules/replenish-suppression.ts`），到期即解除；`supply_already_arranged` 还会在
+ * 供应事实一变时提前解除——到货入库（在库 ↑）、被登记为未结供给（全管道 ↑）、安排告吹（全管道 ↓），
+ * 三者任一（C8）。
  * 抑制**绝不静默**：被抑制的行照常出现在补货列表里，标着原因与到期日，任何人可一键解除。
  */
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
@@ -47,15 +49,18 @@ export interface DeclineSuggestionResult {
 }
 
 /**
- * 该 SKU 的全管道量（在库 + 全部未结供给）——抑制"等到货即解除"的比较基线。
+ * 该 SKU 的**在库**与**全管道量**（在库 + 全部未结供给）——抑制提前解除的两条基线。
  * 两个数都取共享层唯一权威（core/stock-view / core/supply），不在这里另算一套。
+ *
+ * 为什么要两条（C8）：到货是「在库 ↑、未结供给 ↓、全管道量不变」，只存管道基线时
+ * 「到货即解除」在数据上根本不可观测；而安排被取消是「管道量下降」，也只有对着基线才看得出来。
  */
-export async function pipelineQtyOf(db: AnyDb, skuId: number): Promise<number> {
+export async function pipelineQtyOf(db: AnyDb, skuId: number): Promise<{ onHand: number; pipeline: number }> {
   const view = await getOnHandBySku(db, { skuIds: [skuId] });
   const onHand = Number(view.bySku.get(skuId) ?? "0");
   let supply = 0;
   for (const line of await getOpenSupplyLines(db, [skuId])) if (line.qty > 0) supply += line.qty;
-  return onHand + supply;
+  return { onHand, pipeline: onHand + supply };
 }
 
 export async function declineReplenishSuggestion(user: SessionUser, input: unknown, dbArg?: AnyDb): Promise<DeclineSuggestionResult> {
@@ -63,8 +68,8 @@ export async function declineReplenishSuggestion(user: SessionUser, input: unkno
   const v = declineSuggestionSchema.parse(input);
   const db = await resolveDb(dbArg);
   const businessDate = todayShanghai();
-  // 管道基线必须在事务外先算好：getOnHandBySku / getOpenSupplyLines 是只读装配，放事务里只会拉长锁
-  const pipelineBaseline = await pipelineQtyOf(db, v.skuId);
+  // 两条基线必须在事务外先算好：getOnHandBySku / getOpenSupplyLines 是只读装配，放事务里只会拉长锁
+  const baseline = await pipelineQtyOf(db, v.skuId);
   const window = suppressionWindowFor(v.reasonCode, businessDate);
   return db.transaction(async (tx: AnyDb) => {
     const [sku] = await tx.select({ id: schema.skus.id, code: schema.skus.code }).from(schema.skus).where(eq(schema.skus.id, v.skuId)).limit(1);
@@ -101,7 +106,8 @@ export async function declineReplenishSuggestion(user: SessionUser, input: unkno
         businessDate,
         untilDate: window.untilDate,
         releaseOnArrival: window.releaseOnArrival,
-        pipelineBaseline: dQty(String(pipelineBaseline)),
+        pipelineBaseline: dQty(String(baseline.pipeline)),
+        onHandBaseline: dQty(String(baseline.onHand)),
         createdBy: user.id,
       })
       .returning({ id: t.id });
@@ -112,7 +118,8 @@ export async function declineReplenishSuggestion(user: SessionUser, input: unkno
       action: "create",
       after: {
         skuId: sku.id, skuCode: sku.code, reasonCode: v.reasonCode, businessDate,
-        untilDate: window.untilDate, releaseOnArrival: window.releaseOnArrival, pipelineBaseline,
+        untilDate: window.untilDate, releaseOnArrival: window.releaseOnArrival,
+        pipelineBaseline: baseline.pipeline, onHandBaseline: baseline.onHand,
       },
     });
     return {
@@ -137,6 +144,8 @@ export interface ActiveSuppressionRow {
   untilDate: string;
   releaseOnArrival: boolean;
   pipelineBaseline: number;
+  /** 放弃当时的账面在库（C8：到货判定的基线，管道量看不出到货） */
+  onHandBaseline: number;
   by: string;
   createdAt: string;
 }
@@ -152,11 +161,12 @@ export async function loadActiveSuppressions(dbArg?: AnyDb, todayArg?: string, s
   const t = schema.replenishSuppressions;
   const conds = [isNull(t.clearedAt), sql`${t.untilDate} >= ${today}`];
   if (skuIds?.length) conds.push(inArray(t.skuId, [...new Set(skuIds)]));
-  const rows: { id: number; skuId: number; reasonCode: string; reason: string; businessDate: string; untilDate: string; releaseOnArrival: boolean; pipelineBaseline: string; by: string | null; createdAt: Date }[] =
+  const rows: { id: number; skuId: number; reasonCode: string; reason: string; businessDate: string; untilDate: string; releaseOnArrival: boolean; pipelineBaseline: string; onHandBaseline: string; by: string | null; createdAt: Date }[] =
     await db
       .select({
         id: t.id, skuId: t.skuId, reasonCode: t.reasonCode, reason: t.reason, businessDate: t.businessDate,
         untilDate: t.untilDate, releaseOnArrival: t.releaseOnArrival, pipelineBaseline: t.pipelineBaseline,
+        onHandBaseline: t.onHandBaseline,
         by: schema.users.name, createdAt: t.createdAt,
       })
       .from(t)
@@ -175,6 +185,7 @@ export async function loadActiveSuppressions(dbArg?: AnyDb, todayArg?: string, s
       untilDate: r.untilDate,
       releaseOnArrival: r.releaseOnArrival,
       pipelineBaseline: Number(r.pipelineBaseline),
+      onHandBaseline: Number(r.onHandBaseline),
       by: r.by ?? "未知用户",
       createdAt: (r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt)).toISOString(),
     });

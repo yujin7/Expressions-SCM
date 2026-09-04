@@ -100,6 +100,28 @@ function snapshotLine(
 ) {
   const quantity = row.suggestQty ?? row.heldQty;
   if (quantity == null) return null;
+  /* C9：`suppressed: true` 此前把两件完全不同的事压成一个布尔——
+     「全口径参考充足」（ref_gap，系统外仓可能已有货）与
+     「计划员已复核并放弃」（decline，人做过判断、还带原因/责任人/到期日）。
+     快照是留档给日后复盘的，分不出是哪一种就复盘不出任何东西。 */
+  const suppressedBy: "decline" | "ref_gap" | null = row.suggestQty != null
+    ? null
+    : row.suppression != null
+      ? "decline"
+      : row.suppressReason != null
+        ? "ref_gap"
+        : null;
+  const suppressionDetail = row.suppression == null ? null : {
+    id: row.suppression.id,
+    reasonCode: row.suppression.reasonCode,
+    reasonLabel: row.suppression.reasonLabel,
+    reason: row.suppression.reason,
+    by: row.suppression.by,
+    since: row.suppression.since,
+    untilDate: row.suppression.untilDate,
+    releaseOnArrival: row.suppression.releaseOnArrival,
+    withheldQty: row.suppression.withheldQty,
+  };
   const { envelope, digest } = buildDecisionEnvelope({
     decisionKind: "replenishment_recommendation",
     engine: { key: "time_phased_replenishment", version: PLAN_ENGINE_VERSION },
@@ -154,7 +176,10 @@ function snapshotLine(
       netRequiredBeforeRounding: row.decisionEvidence.netRequiredQty,
       suggestedQty: quantity,
       suppressed: row.suggestQty == null,
+      /** C9：抑制的**种类**，不只是有无——decline（人已复核放弃）/ ref_gap（全口径参考充足） */
+      suppressedBy,
       suppressReason: row.suppressReason,
+      declineSuppression: suppressionDetail,
     },
     explanations: row.planExplain,
     limitations: [...DECISION_LIMITATIONS],
@@ -167,6 +192,9 @@ function snapshotLine(
     baseUom: row.baseUom,
     suggestedQty: quantity,
     suppressed: row.suggestQty == null,
+    suppressedBy,
+    suppressReason: row.suppressReason,
+    declineSuppression: suppressionDetail,
     shortageDate: row.shortageDate,
     orderByDate: row.orderByDate,
     orderWindowMissed: row.orderWindowMissed,
@@ -188,6 +216,7 @@ function snapshotLine(
       supplyLines: row.decisionEvidence.supplyLines,
       recommendationQty: quantity,
       suppressed: row.suggestQty == null,
+      suppressedBy,
     },
   };
 }

@@ -44,7 +44,7 @@ describe("evaluateOtif（单张 PO 判定）", () => {
   });
 });
 
-describe("purchase-order-metrics/v1 读模型（PGlite）", () => {
+describe("purchase-order-metrics/v3 读模型（PGlite）", () => {
   let db: TestDb;
   let userId = 0;
   let supplierAId = 0;
