@@ -57,6 +57,7 @@
 - 三项专题审计：[驾驶舱 UX](engineering/审计-驾驶舱UX-2026-09-04.md) ·
   [BI 数据利用](engineering/审计-BI数据利用-2026-09-04.md) ·
   [智能与闭环](engineering/审计-智能与闭环-2026-09-04.md)
+- 09-05 三分支合并 → 系统性排查 → 连接器恢复 → 知识巡检的完整纪要：[`engineering/审计与修复纪要-2026-09-05.md`](engineering/审计与修复纪要-2026-09-05.md)
 - 敏捷基线（构建/测试耗时口径）：[`engineering/AGILITY-BASELINE.md`](engineering/AGILITY-BASELINE.md)
 - 精简 SKU 方案（2026-07-30，历史）：[`engineering/LEAN-SKU-PLAN-2026-07-30.md`](engineering/LEAN-SKU-PLAN-2026-07-30.md)
 

@@ -26,7 +26,7 @@ const CONNECTOR_LABELS: Record<string, string> = { jdy: "简道云", yy: "用友
 const SNAPSHOT_RED_DAYS = 3;
 const BACKUP_RED_HOURS = 25;
 
-const fmtTime = (iso: string): string => new Date(iso).toLocaleString("zh-CN", { hour12: false });
+const fmtTime = (iso: string): string => new Date(iso).toLocaleString("zh-CN", { hourCycle: "h23" });
 
 function fmtAgeHours(hours: number): string {
   if (hours < 0) return "时间异常";
@@ -884,7 +884,7 @@ function DeletionAckCard() {
       await postJson("/api/admin/integrations/deletion-ack", {
         connector: "jdy", stream: stream.trim(), sourceRecordId: recordId.trim(), reason: reason.trim(),
       });
-      message.success("已登记删除墓碑；下一轮同步会放行这一条");
+      message.success("已登记删除墓碑。不必等下一轮：在上方「任务运行史」里手动触发 sync-jiandaoyun-forms 即可立刻放行");
       setRecordId(""); setReason("");
       await load();
     } catch (e) {
@@ -911,7 +911,9 @@ function DeletionAckCard() {
           description="撤销后同步会重新拒绝这一条，直到再次确认。"
           onConfirm={async () => {
             try {
-              await fetch(`/api/admin/integrations/deletion-ack?id=${row.id}`, { method: "DELETE" });
+              /* 走 fetchJson 而不是裸 fetch：403/404 必须抛出来。
+                 裸 fetch 不看 res.ok，会在服务端拒绝之后照样弹「已撤销」，而行还在。 */
+              await fetchJson(`/api/admin/integrations/deletion-ack?id=${row.id}`, { method: "DELETE" });
               message.success("已撤销");
               await load();
             } catch (e) {

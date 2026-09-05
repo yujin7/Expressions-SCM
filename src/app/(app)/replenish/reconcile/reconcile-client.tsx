@@ -158,7 +158,7 @@ export default function ReconcileClient({ canSubmit }: { canSubmit: boolean }) {
       render: (_: unknown, r) => {
         if (r.disposition) {
           const d = r.disposition;
-          const title = `${d.by ?? "未知用户"} 于 ${new Date(d.at).toLocaleString("zh-CN", { hour12: false })}${d.decision === "accepted" ? `接受为一致需求 ${d.agreedQty ?? ""}（不自动驱动建议量）` : `驳回：${d.reason ?? ""}`}`;
+          const title = `${d.by ?? "未知用户"} 于 ${new Date(d.at).toLocaleString("zh-CN", { hourCycle: "h23" })}${d.decision === "accepted" ? `接受为一致需求 ${d.agreedQty ?? ""}（不自动驱动建议量）` : `驳回：${d.reason ?? ""}`}`;
           return (
             <Tooltip title={title}>
               <Tag color={d.decision === "accepted" ? "blue" : "default"}>

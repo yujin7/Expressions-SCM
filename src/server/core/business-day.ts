@@ -77,7 +77,7 @@ export function shanghaiMonthOf(d: Date): string {
 export function shanghaiHourKeyOf(d: Date): { hour: number; key: string } {
   const day = shanghaiDayOf(d);
   const hour = Number(
-    new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", hour: "2-digit", hour12: false })
+    new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", hour: "2-digit", hourCycle: "h23" })
       .formatToParts(d)
       .find((p) => p.type === "hour")?.value,
   );
@@ -88,7 +88,9 @@ const SHANGHAI_TS_FMT = new Intl.DateTimeFormat("sv-SE", {
   timeZone: "Asia/Shanghai",
   year: "numeric", month: "2-digit", day: "2-digit",
   hour: "2-digit", minute: "2-digit", second: "2-digit",
-  hour12: false,
+  /* 必须是 hourCycle:"h23" 而不是 hour12:false：V8 对后者在午夜输出 "24:00:00"
+     （Chromium 长期已知行为），导出的 CSV 里会出现 "2026-09-06 24:00:00" 这种不存在的时刻。 */
+  hourCycle: "h23",
 });
 
 /**

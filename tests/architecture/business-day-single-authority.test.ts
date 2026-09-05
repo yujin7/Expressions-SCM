@@ -57,6 +57,14 @@ describe("业务日唯一权威", () => {
     expect(shanghaiHourKeyOf(d)).toEqual({ hour: 0, key: "2026-09-05T00" });
   });
 
+  it("午夜整点必须是 00 不是 24（V8 的 hour12:false 会给 24:00:00，CSV 里出现不存在的时刻）", async () => {
+    const { shanghaiHourKeyOf, shanghaiTimestampOf } = await import("@/server/core/business-day");
+    const midnight = new Date("2026-09-05T16:00:00.000Z"); // 上海 2026-09-06 00:00:00 整
+    expect(shanghaiHourKeyOf(midnight)).toEqual({ hour: 0, key: "2026-09-06T00" });
+    expect(shanghaiTimestampOf(midnight)).toBe("2026-09-06 00:00:00");
+    expect(shanghaiTimestampOf(new Date("2026-09-05T15:59:59.000Z"))).toBe("2026-09-05 23:59:59");
+  });
+
   it("形状合法但日历上不存在的日期一律 null——不能原样放行进 SQL", async () => {
     const { shanghaiDay } = await import("@/server/core/business-day");
     /* 这三个都能通过 /^\d{4}-\d{2}-\d{2}$/。原样放行时 ('2026-13-45')::date 在 Postgres

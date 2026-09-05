@@ -882,7 +882,7 @@ export default function ReplenishClient() {
             const reasonCode = server?.reasonCode ?? local!.reasonCode;
             const label = DECLINE_REASON_LABELS[reasonCode]?.label ?? reasonCode;
             const title = server
-              ? `${server.by} 于 ${new Date(server.at).toLocaleString("zh-CN", { hour12: false })} 复核并放弃（${label}）${server.reason ? `：${server.reason}` : ""}；已留痕审计，不进采纳率分母`
+              ? `${server.by} 于 ${new Date(server.at).toLocaleString("zh-CN", { hourCycle: "h23" })} 复核并放弃（${label}）${server.reason ? `：${server.reason}` : ""}；已留痕审计，不进采纳率分母`
               : `本次已提交放弃（${label}），刷新后以服务端记录为准`;
             return (
               <Tooltip title={title}>

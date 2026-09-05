@@ -258,7 +258,7 @@ export default function SkuPanoramaDrawer({ skuId, onClose }: { skuId: number | 
                 title: "时间",
                 dataIndex: "occurredAt",
                 width: 150,
-                render: (v: string) => new Date(v).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }),
+                render: (v: string) => new Date(v).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hourCycle: "h23" }),
               },
               { title: "来源", dataIndex: "sourceDocType", width: 100, render: (v: string) => LEDGER_SOURCE_LABELS[v] ?? v },
               { title: "单号", dataIndex: "docNo", render: (v: string | null) => v ?? "—" },

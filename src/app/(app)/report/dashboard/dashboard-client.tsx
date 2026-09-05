@@ -157,7 +157,7 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
     ...row,
     share: channelTotal > 0 ? Math.round((row.qty / channelTotal) * 1000) / 10 : 0,
   }));
-  const generatedDate = new Date(data.generatedAt).toLocaleString("zh-CN", { hour12: false });
+  const generatedDate = new Date(data.generatedAt).toLocaleString("zh-CN", { hourCycle: "h23" });
   const salesSource: DecisionVisualSource = {
     tier: "snapshot",
     source: "sales_monthly 销售月事实",

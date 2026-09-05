@@ -59,6 +59,12 @@ describe("部署后读模型预热", () => {
     expect(deploy).toMatch(/if \[ "\$healthy" -ne 1 \]; then\n\s+echo "健康检查失败[^\n]*\n\s+exit 1/);
   });
 
+  it("deploy.sh 必须同时 build app 与 migrate——预热跑在 migrate 里，工具镜像过期＝每次部署静默预热失败", () => {
+    const buildLine = deploy.split("\n").find((l) => /^\s*compose build /.test(l));
+    expect(buildLine, "找不到 compose build 行").toBeDefined();
+    expect(buildLine, "只 build app 会让 migrate 工具镜像停在旧代码").toMatch(/\bmigrate\b/);
+  });
+
   it("预热跑在 compose 网络内的 migrate 服务里（宿主机连不到 db，runner 里没有 tsx）", () => {
     // db 只在 compose 网络内可达：一旦有人给 db 加了 ports 映射，本断言会提醒重新评估宿主机方案
     const dbBlock = compose.slice(compose.indexOf("  db:"), compose.indexOf("  migrate:"));

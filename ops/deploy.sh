@@ -26,7 +26,10 @@ compose() {
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
 }
 echo "==> 构建镜像"
-compose build app
+# app 与 migrate 必须一起构建：预热（warm_read_models）跑在 migrate 服务里，只 build app 会让工具镜像
+# 停在旧代码——run-job 一旦改过，预热就整批在 1 秒内"失败"，而预热失败按设计不阻断部署，
+# 于是每次部署都静默预热失败（2026-09-05 手动部署时实测踩过）。
+compose build app migrate
 echo "==> 启动/确认数据库"
 compose up -d db
 if [ "${SCM_INITIAL_DEPLOY:-0}" = "1" ]; then

@@ -112,7 +112,7 @@ function SnoozeModal({ item, onCancel, onDone }: { item: ExceptionItem | null; o
 /** 「上次访问 …」的人话时间（服务端下发 ISO；无基线=首次访问） */
 function visitTimeText(since: string | null): string {
   if (!since) return "首次访问";
-  return new Date(since).toLocaleString("zh-CN", { hour12: false });
+  return new Date(since).toLocaleString("zh-CN", { hourCycle: "h23" });
 }
 
 /**
@@ -256,7 +256,7 @@ function NextActions({ items, loading }: { items: NextActionItem[]; loading: boo
               }
               description={
                 <Space wrap split={<span>·</span>}>
-                  <span>触发：{item.triggerLabel}（{new Date(item.triggerAt).toLocaleString("zh-CN", { hour12: false })}）</span>
+                  <span>触发：{item.triggerLabel}（{new Date(item.triggerAt).toLocaleString("zh-CN", { hourCycle: "h23" })}）</span>
                   <span>责任：{item.ownerLabel}</span>
                   <span>证据：{item.evidence}</span>
                 </Space>
