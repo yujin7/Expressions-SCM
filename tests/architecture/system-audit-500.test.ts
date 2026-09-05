@@ -40,7 +40,7 @@ const expectedCounts: Record<Category, number> = {
   API_ROUTE: 281,
   AUTH_PAGE: 97,
   MIGRATION: 61,
-  ARCH_GATE: 74,
+  ARCH_GATE: 75,
   REDTEAM_GATE: 12,
   RELEASE_GATE: 15,
   PROJECT_SKILL: 7,
@@ -177,13 +177,13 @@ function verify(control: Control): void {
   assertTestModule(testPath);
 }
 
-describe("696 项系统执行审计台账", () => {
+describe("697 项系统执行审计台账", () => {
   it("ID 恰好 A001–A689、对象唯一、分类数量固定", () => {
-    expect(controls).toHaveLength(696);
+    expect(controls).toHaveLength(697);
     expect(controls.map((control) => control.id)).toEqual(
-      Array.from({ length: 696 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
+      Array.from({ length: 697 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
     );
-    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(696);
+    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(697);
     for (const [category, count] of Object.entries(expectedCounts)) {
       expect(
         controls.filter((control) => control.category === category).length,
@@ -216,6 +216,23 @@ describe("696 项系统执行审计台账", () => {
    * 到 2026-09-04 已变成「标题 582、API_ROUTE 单元格 260、合计 653、各行相加 650」四者互相矛盾。
    * 行级数据一直是对的，因为行被钉住了；正文错了，因为没被钉住。这里把正文也钉上。
    */
+  /**
+   * 索引也会漂：`docs/spec/CURRENT.md` 是 SSOT 的入口页，它引用本台账的条数。
+   * 2026-09-05 实测——台账真实 696 条，CURRENT.md 里写着 580，差了 116 条。
+   * 台账正文自己已经被上面那条门钉住，但**引用它的索引没有门**，于是同一种漂移
+   * 换了一层继续发生：读者从入口页拿到的是一个三周前的数字。
+   */
+  it("CURRENT.md 引用的台账条数必须与真实行数一致（索引漂移＝入口页说谎）", () => {
+    const current = readFileSync(path.resolve(__dirname, "../../docs/spec/CURRENT.md"), "utf8");
+    const total = controls.length;
+    const cited = [...current.matchAll(/16-500项系统执行审计台账[^|\n]*\|[^|\n]*?(\d{3,4})\s*个可定位/g)]
+      .map((m) => Number(m[1]));
+    expect(cited.length, "CURRENT.md 的文档角色表里必须仍然引用本台账的条数").toBeGreaterThan(0);
+    for (const n of cited) {
+      expect(n, `CURRENT.md 写着 ${n} 条，台账实际 ${total} 条`).toBe(total);
+    }
+  });
+
   it("台账正文的标题、范围段与分类汇总表必须与行数据一致（正文漂移是历史真实事故）", () => {
     const doc = readFileSync(ledgerPath, "utf8");
     const total = controls.length;

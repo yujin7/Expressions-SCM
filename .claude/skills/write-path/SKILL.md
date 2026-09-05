@@ -25,8 +25,18 @@ Before code, state:
 ## Enforce the boundaries
 
 - Stock moves only through `src/server/posting/registry.ts`; ledgers and audit logs are append-only.
+  Enforced by `tests/architecture/posting-single-writer.test.ts` — write statements against
+  `stock_ledger`/`stock_balances` are allowed only under `src/server/posting/`. Need a new stock
+  action? Register a source in `registry.ts`; do not open a second write path.
 - Allocate document numbers through `src/server/docflow/doc-no.ts`; never use `MAX+1`.
 - Use decimal strings and `src/server/core/decimal.ts`, never floating-point business arithmetic.
+  Float damages the *predicate*, not just the digits: `0.1*3 - 0.3 = 5.5e-17 > 0` made a
+  fully-received PO line read as "not received", opening an alert whose close condition could
+  never be met (2026-09-05). Same shape in `8.7 - 8.6 - 0.1 > 0`. Any `> 0` / `<= 0` test on a
+  quantity or amount must go through `dCmp`.
+- Business dates come from `src/server/core/business-day.ts` only; validate user-supplied dates
+  against the calendar, not just the shape — `"2026-13-45"` passes `/^\d{4}-\d{2}-\d{2}$/` and
+  then explodes inside Postgres as a 500.
 - Recheck identity and permissions inside the write; UI visibility is not authorization.
 - Lock/update balances in deterministic `(skuId, warehouseId, batchId)` order.
 - Write the business mutation and audit event in one transaction.

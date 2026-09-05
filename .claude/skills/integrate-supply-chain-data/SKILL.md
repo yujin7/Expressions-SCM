@@ -27,6 +27,25 @@ then to `release-sweep` only after an exact candidate exists.
 - Generate migrations from the project workflow; restart local PGlite after schema changes and verify `/api/health`.
 - Never edit production-like data or run a backfill without an exact target, dry run, control totals, and recovery path.
 
+## Refusing a batch
+
+A guard that refuses without saying what it refused takes the connector down permanently.
+On 2026-09-04 a full-snapshot stream went 6448 → 6447 rows; the refusal said only
+"row count dropped, needs human review", named no record, and offered no way to accept —
+the one working connector stayed dead until code changed.
+
+- Distinguish **deletion** from **truncation** before refusing: scattered missing ids look like a
+  real upstream delete; a missing contiguous tail is pagination/permission truncation. Say which,
+  and name the ids — operators need them to check the paging cursor.
+- Accepting a shrunken baseline needs a per-record signature, never a blanket switch:
+  `integration_record_deletions` + `src/server/integrations/deletion-ack.ts` (admin, mandatory
+  reason, audited, revocable, and impossible to pre-sign for a record the system never saw).
+- **A tombstone must never launder a truncation.** Judge the shape over *everything* that vanished,
+  not just the unsigned remainder — otherwise signing each missing row turns a truncated batch into
+  an accepted one. `tests/integrations/jiandaoyun-sync.test.ts` pins both directions.
+- Row-count floors must subtract acknowledged deletions, or the first successful release trips a
+  bogus "duplicate source id" error.
+
 Use [file-release.md](references/file-release.md) for file ingestion,
 [single-claim.md](../supply-chain/reference/single-claim.md) to test one factual claim, and
 [reachability.md](../supply-chain/reference/reachability.md) to trace a fact from writer to caller.

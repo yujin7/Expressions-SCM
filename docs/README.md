@@ -41,6 +41,25 @@
 - 三方数据融合计划与事实（身份桥、时间窗契约、全渠道观察）：[`engineering/外部数据融合-决策增强计划-2026-09-02.md`](engineering/外部数据融合-决策增强计划-2026-09-02.md)
 - 简道云 297 张表单时效普查（选表前先看）：[`integrations/简道云表单时效普查-2026-08-04.md`](integrations/简道云表单时效普查-2026-08-04.md)
 
+### 一次性审计与完备性普查（时点证据，**不是**当前操作指引）
+
+这些是 2026-09-04/05 那一轮做的一次性普查，只作为**当时**的证据留存。
+现状与下一步一律以 [`NOW.md`](NOW.md) 为准；本组文档与 NOW.md 冲突时，NOW.md 赢。
+（登记在此是因为它们此前散在 `engineering/` 里、任何导航都进不去——
+文档一旦不可达就会被重写一份，正是本页开头要避免的事。）
+
+- 总体框架（观察→真相→决策→行动→学习五层）：[`engineering/总体框架-工作流-驾驶舱-BI-2026-09-04.md`](engineering/总体框架-工作流-驾驶舱-BI-2026-09-04.md)
+- 五域完备性普查：[planning](engineering/完备性审计-planning-2026-09-04.md) ·
+  [inventory](engineering/完备性审计-inventory-2026-09-04.md) ·
+  [procurement](engineering/完备性审计-procurement-2026-09-04.md) ·
+  [reports](engineering/完备性审计-reports-2026-09-04.md) ·
+  [data-admin](engineering/完备性审计-data-admin-2026-09-04.md)
+- 三项专题审计：[驾驶舱 UX](engineering/审计-驾驶舱UX-2026-09-04.md) ·
+  [BI 数据利用](engineering/审计-BI数据利用-2026-09-04.md) ·
+  [智能与闭环](engineering/审计-智能与闭环-2026-09-04.md)
+- 敏捷基线（构建/测试耗时口径）：[`engineering/AGILITY-BASELINE.md`](engineering/AGILITY-BASELINE.md)
+- 精简 SKU 方案（2026-07-30，历史）：[`engineering/LEAN-SKU-PLAN-2026-07-30.md`](engineering/LEAN-SKU-PLAN-2026-07-30.md)
+
 ### 操作、部署与恢复
 
 - 日常命令和开发启动：项目根目录 [`../README.md`](../README.md)

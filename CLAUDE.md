@@ -23,6 +23,8 @@
   业务数量通常 decimal(14,4)，导入控制总量等聚合字段可更宽。不得凭本摘要改 schema；
   禁 float 运算（用字符串/decimal 工具 `src/server/core/decimal.ts`）；时区 Asia/Shanghai
 - 库存只能经 `src/server/posting/registry.ts` 过账；禁止直接写 stock_balances/stock_ledger
+  （2026-09-05 起由 `tests/architecture/posting-single-writer.test.ts` 钉住：写语句只允许出现在
+  `src/server/posting/` 下。此前这条全仓风险最高的纪律**只写在本文件里、没有门**）
 - 仅追加事实表（stock_ledger、audit_logs、alert_events 等，以 `reject_immutable_fact_mutation` 触发器为准）由数据库强制仅追加；纠错一律红字冲销，无反审批
 - 业务规则在 `src/server/rules/*.ts` 纯函数+单测；R5 逐物料计算，禁止跨物料轧差
 - 脱敏唯一收口 `src/server/core/dto.ts` 的 `maskSensitive`（含导出/RSC）；前端隐藏不算数
@@ -53,19 +55,23 @@
     派单、关闭权限、通知受众三处读同一个值，写死过一次就出现「通知给 ops、待办给 pmc」的分裂）
   - 断货事实核验（流水回放判断是否真断货）→ 只能有一处实现；`jobs/alert-outcome.ts` 与
     `report/closed-loop.ts` 各写一套曾对同一 SKU 给出相反结论
-  - 业务日/月/调度小时 → `core/business-day.ts`（`shanghaiDayOf` / `todayShanghai` / `shanghaiMonthOf` /
-    `shanghaiHourKeyOf` / `shanghaiTimestampOf` / `dayDiff`）。本模块**必须保持零 import**（它被
-    rules/、server/modules、src/jobs 和客户端组件同时引用）。2026-09-05：收口时没留守卫，
+  - 业务日/月/调度小时 → `core/business-day.ts`（`shanghaiDay` / `shanghaiDayOf` / `todayShanghai` /
+    `shanghaiMonthOf` / `shanghaiHourKeyOf` / `shanghaiTimestampOf` / `dayDiff`）。
+    本模块**必须保持零 import**（它被 rules/、server/modules、src/jobs 和客户端组件同时引用）。
+    第一次收口是因为日界在告警引擎、例外打盹、闭环报表、看门狗四处各写一份，`daysBetween` 又各写一份；
+    2026-09-05 发现收口时没留守卫，
     `new Intl.DateTimeFormat("en-CA"|"sv-SE", { timeZone: "Asia/Shanghai" })` 又长回 39 份，
     其中两个模块的注释还互相写着「同准」——注释维持不了口径。现由
     `tests/architecture/business-day-single-authority.test.ts` 守。给人看的
     `toLocaleString("zh-CN", …)` 不在此列（那是展示串，不是业务键）。
+  - 敏感字段名只能指一件事 → `SENSITIVE_FIELDS`（`core/constants.ts`）里的名字**不得**被非金额字段借用。
+    `maskSensitive` 按字段名深剥，分不清「价格偏差」与「偏差阈值」：同名即同权限。
+    2026-09-05 实测事故：`report/transfer-routes` 的 `params.deviationPct` 是配置阈值却被整键删掉，
+    仓管看到「偏差 > undefined%」，而剥掉它什么都没保护到。门是**行为**门不是文本扫描
+    （同一模块里既有真金额又有阈值，静态扫名字分不出来）：`tests/architecture/sensitive-name-collision.test.ts`。
   - 展示格式化 → `components/format.ts`（`formatCount`/`formatYuan`/`formatPct`；驾驶舱趋势层不得再自写一套）；
     比例→百分数只在**服务端**换算后下发，唯一权威 `report/cockpit.ts` 的 `otifRatePctOf`/`ratePctNumOf`
     （驾驶舱 OTIF 曾把 0.83 显示成 0.83%；客户端那对自称权威的 `ratioToPct`/`pctFromRatio` 零调用，已删）
-  - 上海业务日与日差 → `core/business-day.ts`（`shanghaiDay`/`shanghaiDayOf`/`todayShanghai`/`dayDiff`，零依赖纯模块）；
-    禁止再写 `new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" })`——曾在告警引擎、例外打盹、
-    闭环报表、看门狗四处各一份，`daysBetween` 又各写一份
 - 列表页状态平台（`components/useListState` + `ListToolbar`）：新列表页一律采用；
   **必须**在该页 `page.tsx` 包 `<Suspense>`（hook 内用 useSearchParams，缺边界会导致
   useId 序列 SSR/CSR 不一致 → 整页水合失败、退化为无交互静态 HTML）。
@@ -106,6 +112,17 @@
   - **并行分支上「干净合并」不等于「正确合并」**：2026-09-05 `projection.ts` 无冲突自动合并，
     结果同时留下新旧两套机制、返回对象出现重复键——文本合并看不出来，只有 `tsc` 报。
     合并后 `tsc`（app + test）必须跑，且对两边都改过语义的模块要人工读一遍返回结构。
+  - **静默丢筛选条件比 500 更糟**：`createdWithinShanghaiDays` 原本对非法日期串「直接忽略」，
+    于是用户筛了区间、串写错了，拿回来的是**整张未筛选的列表**，界面看起来却像筛选生效——
+    一个没有任何迹象的错误答案。非法入参一律 400（`tests/architecture/doc-date-window-rejects.test.ts`）。
+    同理：只验形状不验日历也不算校验（`"2026-13-45"` 能过正则，进 SQL 就是 500）。
+  - **拒绝必须说清楚拒了什么**：守卫不说明就等于把系统永久卡死。2026-09-04 简道云同步因
+    「行数下降 6447 < 6448」停摆两天，报文没说少了哪条、也没有任何人工确认路径。
+    拒绝要给出：少了哪几条（id 样例）、形状是「尾部整段消失」（分页/权限截断）还是「零散缺失」
+    （更像真删除）、以及**下一步能做什么**。放行路径见 `integrations/deletion-ack.ts`（D69）。
+  - **文档里的「唯一权威」若没有门，等于没有**：本仓已三次演示——业务日收口后长回 39 份、
+    分域参数权限表只在一层生效、过账唯一写入方从来没有门。收口的同一个提交里就要加门，
+    并**植入违规验证它会红**（只验证绿的门可能什么都没测）。
   - **`autoCloseAfterDays` 三态语义**（`upsertAlerts`）：`0`＝条件消失即刻关闭（单据流转/凭据刷新这类硬事实）；
     `null`＝永不自动关闭（某周期数据质量不达标属于**已发生的周期事实**，下周没命中不代表上周的问题没了）；
     缺省 `3`＝迟滞关闭，容忍一天的数据缺口。
