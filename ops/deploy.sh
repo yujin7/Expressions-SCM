@@ -41,6 +41,15 @@ else
 fi
 echo "==> 迁移门禁（drizzle-kit migrate，对 prod 库）"
 compose --profile tools run --rm migrate
+echo "==> 给当前在跑的镜像打回滚标签"
+# 回滚点必须在滚动**之前**打：新镜像接管 latest 后，旧镜像会变成无标签悬空层，
+# 之后想回滚只剩「找 sha」（2026-09-05 实测：前一次在跑的镜像已被回收，回滚点只能退到 4 小时前）。
+# 标签不阻断部署：首次部署没有在跑的容器时跳过。
+running_image="$(docker inspect --format '{{.Image}}' "$(compose ps -q app 2>/dev/null)" 2>/dev/null || true)"
+if [ -n "$running_image" ]; then
+  rollback_label="rollback-$(git -C "$(dirname "$0")/.." rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M)"
+  docker tag "$running_image" "supply-chain-app:${rollback_label}" && echo "    ${rollback_label} → ${running_image:7:12}" || true
+fi
 echo "==> 滚动重启"
 compose up -d
 

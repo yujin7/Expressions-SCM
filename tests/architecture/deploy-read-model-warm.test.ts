@@ -59,6 +59,14 @@ describe("部署后读模型预热", () => {
     expect(deploy).toMatch(/if \[ "\$healthy" -ne 1 \]; then\n\s+echo "健康检查失败[^\n]*\n\s+exit 1/);
   });
 
+  it("滚动之前必须给在跑的镜像打 rollback- 标签（新镜像接管 latest 后旧镜像会被回收，回滚点就没了）", () => {
+    const tagAt = deploy.indexOf("supply-chain-app:${rollback_label}");
+    const rollAt = deploy.indexOf("compose up -d\n");
+    expect(tagAt, "deploy.sh 没有打回滚标签").toBeGreaterThan(-1);
+    expect(tagAt, "回滚标签必须打在 `compose up -d` 之前").toBeLessThan(rollAt);
+    expect(deploy, "打标签失败不得阻断部署（首次部署没有在跑的容器）").toMatch(/docker tag [^\n]*\|\| true/);
+  });
+
   it("deploy.sh 必须同时 build app 与 migrate——预热跑在 migrate 里，工具镜像过期＝每次部署静默预热失败", () => {
     const buildLine = deploy.split("\n").find((l) => /^\s*compose build /.test(l));
     expect(buildLine, "找不到 compose build 行").toBeDefined();
