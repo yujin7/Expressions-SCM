@@ -61,9 +61,11 @@ describe("部署后读模型预热", () => {
 
   it("滚动之前必须给在跑的镜像打 rollback- 标签（新镜像接管 latest 后旧镜像会被回收，回滚点就没了）", () => {
     const tagAt = deploy.indexOf("supply-chain-app:${rollback_label}");
-    const rollAt = deploy.indexOf("compose up -d\n");
+    const buildAt = deploy.indexOf("compose build ");
     expect(tagAt, "deploy.sh 没有打回滚标签").toBeGreaterThan(-1);
-    expect(tagAt, "回滚标签必须打在 `compose up -d` 之前").toBeLessThan(rollAt);
+    /* 必须在 build 之前而不是 up -d 之前：build 接管 latest 的瞬间旧镜像就成了悬空层，
+       Docker Desktop 的构建 GC 会回收它。2026-09-06 实测：块放在 build 之后 → No such image，回滚点当场丢失。 */
+    expect(tagAt, "回滚标签必须打在 `compose build` 之前，否则旧镜像已被回收").toBeLessThan(buildAt);
     expect(deploy, "打标签失败不得阻断部署（首次部署没有在跑的容器）").toMatch(/docker tag [^\n]*\|\| true/);
   });
 

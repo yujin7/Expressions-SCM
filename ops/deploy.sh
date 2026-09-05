@@ -25,6 +25,16 @@ export SCM_ENV_FILE="$ENV_FILE"
 compose() {
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
 }
+echo "==> 给当前在跑的镜像打回滚标签"
+# 回滚点必须在 **build 之前** 打，不是 up -d 之前：`compose build` 一接管 latest，旧镜像就变成悬空层，
+# Docker Desktop 的构建 GC 会直接回收它——2026-09-06 实测：标签块放在 build 之后，执行时报 No such image，
+# 回滚点当场丢失。先打标签再 build，标签会把旧镜像钉住不被回收。
+# 标签不阻断部署：首次部署没有在跑的容器时跳过。
+running_image="$(docker inspect --format '{{.Image}}' "$(compose ps -q app 2>/dev/null)" 2>/dev/null || true)"
+if [ -n "$running_image" ]; then
+  rollback_label="rollback-$(git -C "$(dirname "$0")/.." rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M)"
+  docker tag "$running_image" "supply-chain-app:${rollback_label}" && echo "    ${rollback_label} → ${running_image:7:12}" || true
+fi
 echo "==> 构建镜像"
 # app 与 migrate 必须一起构建：预热（warm_read_models）跑在 migrate 服务里，只 build app 会让工具镜像
 # 停在旧代码——run-job 一旦改过，预热就整批在 1 秒内"失败"，而预热失败按设计不阻断部署，
@@ -41,15 +51,6 @@ else
 fi
 echo "==> 迁移门禁（drizzle-kit migrate，对 prod 库）"
 compose --profile tools run --rm migrate
-echo "==> 给当前在跑的镜像打回滚标签"
-# 回滚点必须在滚动**之前**打：新镜像接管 latest 后，旧镜像会变成无标签悬空层，
-# 之后想回滚只剩「找 sha」（2026-09-05 实测：前一次在跑的镜像已被回收，回滚点只能退到 4 小时前）。
-# 标签不阻断部署：首次部署没有在跑的容器时跳过。
-running_image="$(docker inspect --format '{{.Image}}' "$(compose ps -q app 2>/dev/null)" 2>/dev/null || true)"
-if [ -n "$running_image" ]; then
-  rollback_label="rollback-$(git -C "$(dirname "$0")/.." rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M)"
-  docker tag "$running_image" "supply-chain-app:${rollback_label}" && echo "    ${rollback_label} → ${running_image:7:12}" || true
-fi
 echo "==> 滚动重启"
 compose up -d
 
