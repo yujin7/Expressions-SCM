@@ -2,6 +2,8 @@ import React, { isValidElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import DecisionStudioClient from "@/app/(app)/report/decision-studio/decision-studio-client";
 import { buildDecisionStudio, type DecisionStudioResult, type StudioDimension } from "@/server/modules/report/decision-studio";
+import { loadChannelObservation, type ChannelObservation } from "@/server/modules/report/channel-observation";
+import { createTestDb } from "../helpers/db";
 
 // Real component callbacks + pure production model builder; this is lifecycle
 // and rendered-prop evidence, not a browser/React scheduler or visual assertion.
@@ -74,6 +76,7 @@ vi.mock("recharts", () => Object.fromEntries([
 ].map((name) => [name, name])));
 vi.mock("@ant-design/icons", () => ({ CopyOutlined: "copy-icon", DownloadOutlined: "download-icon", ReloadOutlined: "reload-icon" }));
 vi.mock("@/components/DecisionVisual", () => ({ default: "decision-visual" }));
+vi.mock("@/components/AnalysisSection", () => ({ default: "analysis-section" }));
 vi.mock("@/components/RemoteSelect", () => ({ default: "remote-select" }));
 vi.mock("@/app/(app)/report/decision-studio/platform-sku-gap-card", () => ({ default: "sku-gap-card" }));
 vi.mock("@/app/(app)/report/decision-studio/channel-observation-card", () => ({ default: "observation-card" }));
@@ -99,6 +102,8 @@ type Props = {
   state?: string;
   summary?: string;
   coverage?: { covered: number; total: number; label: string };
+  available?: boolean;
+  dataSource?: unknown[];
 };
 function elements(node: ReactNode): React.ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
@@ -111,11 +116,11 @@ function text(node: ReactNode): string {
   if (isValidElement<Props>(node)) return text(node.props.children);
   return typeof node === "string" || typeof node === "number" ? String(node) : "";
 }
-function render(runEffects = true): React.ReactElement {
+function render(runEffects = true, component = DecisionStudioClient): React.ReactElement {
   for (let pass = 0; pass < 6; pass += 1) {
     hooks.cursor = 0;
     hooks.changed = false;
-    const element = DecisionStudioClient();
+    const element = component();
     if (!runEffects) return element;
     for (const effect of hooks.effects.splice(0)) effect();
     if (!hooks.changed) return element;
@@ -399,5 +404,88 @@ describe("Decision Studio query-bound loading and response cache", () => {
     const tree = render();
     expect(error(tree)).toBe("响应体中断");
     expect(elements(tree).find((node) => node.type === "button" && text(node) === "刷新")?.props.loading).toBe(false);
+  });
+});
+
+describe("Studio compact evidence presentation", () => {
+  it("keeps independent sources visible when the Tmall demand analysis has no evidence", async () => {
+    state.filters.tab = "external";
+    state.fetch.mockResolvedValueOnce(buildDecisionStudio([], []));
+    render(); await flush();
+    const tree = render();
+    expect(quantity(tree), "monthly internal KPI must not precede an unrelated external analysis").toBeUndefined();
+    const tab = elements(tree).find((n) => n.type === "tabs")!.props.items!.find((t) => t.key === "external")!;
+    const nodes = elements(tab.children);
+    expect(nodes.some((n) => n.type === "observation-card")).toBe(true);
+    expect(nodes.some((n) => n.type === "external-ranking-card")).toBe(true);
+    expect(nodes.find((n) => n.type === "analysis-section")?.props.available).toBe(false);
+  });
+
+  it("does not collapse a ready zero result or partial evidence", async () => {
+    state.filters.tab = "external";
+    const empty = buildDecisionStudio([], []);
+    empty.externalDemand.state = "ready";
+    state.fetch.mockResolvedValueOnce(empty);
+    render(); await flush();
+    expect(elements(render()).find((n) => n.type === "analysis-section")?.props.available).toBe(true);
+    const partial = buildDecisionStudio([], []);
+    partial.externalDemand.decisionBrief.anchorDate = "2026-08-31";
+    state.fetch.mockResolvedValueOnce(partial);
+    refresh(render()); await flush();
+    expect(elements(render()).find((n) => n.type === "analysis-section")?.props.available).toBe(true);
+  });
+});
+
+describe("Channel observation refresh lifecycle", () => {
+  async function setup() {
+    const { default: ActualChannelCard } = await vi.importActual<typeof import("@/app/(app)/report/decision-studio/channel-observation-card")>("@/app/(app)/report/decision-studio/channel-observation-card");
+    const { db } = await createTestDb();
+    const result = await loadChannelObservation(db);
+    return { result, draw: (active = true) => render(true, () => ActualChannelCard({ active })) };
+  }
+
+  it("withdraws old results on refresh and keeps a failure visible until explicit retry", async () => {
+    const { result, draw } = await setup();
+    state.fetch.mockResolvedValueOnce(result);
+    draw(); await flush(); draw();
+    const next = Promise.withResolvers<ChannelObservation>();
+    state.fetch.mockReturnValueOnce(next.promise);
+    refresh(draw());
+    expect(elements(draw()).filter((n) => n.type === "table").every((n) => !n.props.dataSource?.length)).toBe(true);
+    next.reject(new Error("权限已失效，请重新登录")); await flush();
+    const tree = draw();
+    expect(elements(tree).find((n) => n.type === "alert" && n.props.message === "全渠道观察加载失败")?.props.description).toContain("权限已失效");
+    expect(elements(tree).some((n) => n.type === "table")).toBe(false);
+    expect(state.fetch).toHaveBeenCalledTimes(2);
+    state.fetch.mockResolvedValueOnce(result);
+    refresh(tree); await flush();
+    expect(elements(draw()).some((n) => n.props.message === "全渠道观察加载失败")).toBe(false);
+  });
+
+  it("aborts inactive reads and ignores an older response after a fresh request succeeds", async () => {
+    const { result, draw } = await setup();
+    const old = Promise.withResolvers<ChannelObservation>();
+    state.fetch.mockReturnValueOnce(old.promise);
+    draw();
+    const signal = state.fetch.mock.calls[0][1]?.signal as AbortSignal | undefined;
+    draw(false);
+    expect(signal?.aborted).toBe(true);
+    state.fetch.mockResolvedValueOnce(result);
+    draw(); await flush(); draw();
+    const writes = hooks.writes;
+    old.resolve(result); await flush();
+    expect(hooks.writes).toBe(writes);
+    unmount();
+  });
+
+  it("folds unavailable analyses but preserves a ready sibling", async () => {
+    const { result, draw } = await setup();
+    result.traffic.state = "ready";
+    state.fetch.mockResolvedValueOnce(result);
+    draw(); await flush();
+    const sections = elements(draw()).filter((n) => n.type === "analysis-section");
+    expect(sections).toHaveLength(5);
+    expect(sections.filter((n) => n.props.available)).toHaveLength(1);
+    expect(sections.find((n) => n.props.title?.includes("流量"))?.props.available).toBe(true);
   });
 });

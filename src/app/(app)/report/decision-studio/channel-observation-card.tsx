@@ -4,10 +4,11 @@
  * 全渠道外部观察（近 30 天）：天猫 / 拼多多 / 唯品会 同一张表，加天猫宝贝损益 Top/Bottom。
  * 观察口径，只做"盘子有多大、谁在赚谁在亏"的旁证，不进入任何自动决策。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, App, Button, Card, Col, Row, Space, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
+import AnalysisSection from "@/components/AnalysisSection";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
 import type { BrandPlatformRow, ChannelObservation, ChannelPlatformRow, PddProductRow, PddShopDailyPoint, ProductPnlRow, SkuMarginRow, TrafficProductRow } from "@/server/modules/report/channel-observation";
 
@@ -30,22 +31,38 @@ function quantity(value: string | null | undefined): string {
 
 export default function ChannelObservationCard({ active }: { active: boolean }) {
   const { message } = App.useApp();
-  const [data, setData] = useState<ChannelObservation | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ data: ChannelObservation | null; loading: boolean; error: string | null } | null>(null);
+  const request = useRef<AbortController | null>(null);
+  const data = active ? result?.data ?? null : null;
+  const loading = active && (!result || result.loading);
+  const loadError = active ? result?.error : null;
   const load = useCallback(async () => {
-    setLoading(true);
+    if (!active) return;
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
+    setResult({ data: null, loading: true, error: null });
     try {
-      setData(await fetchJson<ChannelObservation>("/api/report/channel-observation"));
+      const next = await fetchJson<ChannelObservation>("/api/report/channel-observation", { signal: controller.signal });
+      if (controller.signal.aborted || request.current !== controller) return;
+      if (!next || !Array.isArray(next.platforms) || !Array.isArray(next.brandMatrix) || !Array.isArray(next.limitations)) {
+        throw new Error("全渠道观察数据结构异常，请重试");
+      }
+      setResult({ data: next, loading: false, error: null });
     } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setLoading(false);
+      if (controller.signal.aborted || request.current !== controller) return;
+      const error = e instanceof Error ? e.message : "全渠道观察加载失败";
+      setResult({ data: null, loading: false, error });
+      message.error(error);
     }
-  }, [message]);
-  useEffect(() => { if (active && !data) void load(); }, [active, data, load]);
+  }, [active, message]);
+  useEffect(() => {
+    void load();
+    return () => { request.current?.abort(); request.current = null; };
+  }, [load]);
 
   const platformCols: ColumnsType<ChannelPlatformRow> = [
-    { title: "平台", dataIndex: "platform", width: 90, render: (v: string, r) => <Space size={6}><Typography.Text strong>{v}</Typography.Text><Tag color={r.state === "ready" ? "success" : "default"}>{r.state === "ready" ? "有数" : "缺流"}</Tag></Space> },
+    { title: "平台", dataIndex: "platform", width: 140, fixed: "left", render: (v: string, r) => <Space size={6} className="channel-platform-name"><Typography.Text strong>{v}</Typography.Text><Tag color={r.state === "ready" ? "success" : "default"}>{r.state === "ready" ? "有数" : "缺流"}</Tag></Space> },
     { title: "窗口", key: "window", width: 200, render: (_, r) => r.anchorDate ? `${r.windowFrom} ～ ${r.anchorDate}` : <Typography.Text type="secondary">—</Typography.Text> },
     { title: "近30天件数", dataIndex: "units", width: 120, align: "right", render: (v: string | null) => quantity(v) },
     { title: "近30天金额", dataIndex: "amount", width: 120, align: "right", render: (v: string | null) => v == null ? <Typography.Text type="secondary">无金额字段</Typography.Text> : `¥${yuan(v)}` },
@@ -113,12 +130,16 @@ export default function ChannelObservationCard({ active }: { active: boolean }) 
   return (
     <Card
       size="small"
+      loading={loading}
       title={`全渠道外部观察 · 近 ${data?.windowDays ?? 30} 天`}
       extra={<Space><Tag color="warning">观察口径</Tag><Button size="small" onClick={() => void load()} loading={loading}>刷新</Button></Space>}
     >
+      {loadError ? <Alert type="error" showIcon message="全渠道观察加载失败" description={loadError}
+        action={<Button size="small" onClick={() => void load()}>重试</Button>} /> :
       <Space direction="vertical" size={12} style={{ width: "100%" }}>
-        <Table<ChannelPlatformRow> rowKey="platform" size="small" loading={loading} pagination={false} columns={platformCols} dataSource={data?.platforms ?? []} scroll={{ x: 1300 }} />
+        <Table<ChannelPlatformRow> rowKey="platform" size="small" loading={loading} pagination={false} columns={platformCols} dataSource={data?.platforms ?? []} scroll={{ x: 1500 }} />
         {data ? (
+          <AnalysisSection available={data.brandMatrix.length > 0} title="品牌 × 平台矩阵" reason="暂无可归属品牌的平台观察；各平台口径独立，不补零、不相加。">
           <Card
             size="small"
             title="品牌 × 平台（近 30 天，各列口径不同、不相加）"
@@ -131,8 +152,10 @@ export default function ChannelObservationCard({ active }: { active: boolean }) 
               </Typography.Paragraph>
             ) : null}
           </Card>
+          </AnalysisSection>
         ) : null}
         {pddDaily ? (
+          <AnalysisSection available={pddDaily.state === "ready" || pddDaily.byShop.length > 0 || pddDaily.trend.length > 0 || pddDaily.topProducts.length > 0} title="拼多多商品 / 店铺日级观察" reason={pddDaily.gate}>
           <Card size="small" title="拼多多商品 / 店铺日级观察（近 30 天）" extra={<Tag color={pddDaily.state === "ready" ? "success" : "default"}>{pddDaily.anchorDate ? `截至 ${pddDaily.anchorDate}` : "缺流"}</Tag>}>
             <Row gutter={[10, 10]} className="compact-kpi-row">
               <Col xs={12} lg={6}><Card size="small"><Statistic title="店铺成交额" value={pddDaily.state === "ready" ? `¥${yuan(pddDaily.totals.transactionAmount30)}` : "—"} /><Typography.Text type="secondary">{pddDaily.state === "ready" ? `${pddDaily.totals.shops} 家店铺` : "—"}</Typography.Text></Card></Col>
@@ -147,14 +170,16 @@ export default function ChannelObservationCard({ active }: { active: boolean }) 
             </Row>
             <Alert type="info" showIcon style={{ marginTop: 12 }} message={pddDaily.gate} />
           </Card>
+          </AnalysisSection>
         ) : null}
         {pnl ? (
+          <AnalysisSection available={pnl.state === "ready" || pnl.topNetProfit.length > 0 || pnl.bottomNetProfit.length > 0} title="天猫宝贝损益" reason={pnl.gate}>
           <Card size="small" title="天猫宝贝损益（平台预估，近 30 天）" extra={<Tag color={pnl.state === "ready" ? "success" : "default"}>{pnl.anchorDate ? `截至 ${pnl.anchorDate}` : "缺流"}</Tag>}>
             <Row gutter={[10, 10]} className="compact-kpi-row">
-              <Col xs={12} lg={6}><Card size="small"><Statistic title="真实成交" value={`¥${yuan(pnl.totals.actualTransactionAmount)}`} /></Card></Col>
-              <Col xs={12} lg={6}><Card size="small"><Statistic title="销售费用" value={`¥${yuan(pnl.totals.totalSalesCost)}`} /></Card></Col>
-              <Col xs={12} lg={6}><Card size="small"><Statistic title="预估毛利" value={`¥${yuan(pnl.totals.estimatedGrossProfit)}`} /></Card></Col>
-              <Col xs={12} lg={6}><Card size="small"><Statistic title="预估净利" value={`¥${yuan(pnl.totals.estimatedNetProfit)}`} valueStyle={{ color: Number(pnl.totals.estimatedNetProfit) < 0 ? VISUAL_COLOR.warning : VISUAL_COLOR.positive }} /></Card></Col>
+              <Col xs={12} lg={6}><Card size="small"><Statistic title="真实成交" value={pnl.state === "ready" ? `¥${yuan(pnl.totals.actualTransactionAmount)}` : "—"} /></Card></Col>
+              <Col xs={12} lg={6}><Card size="small"><Statistic title="销售费用" value={pnl.state === "ready" ? `¥${yuan(pnl.totals.totalSalesCost)}` : "—"} /></Card></Col>
+              <Col xs={12} lg={6}><Card size="small"><Statistic title="预估毛利" value={pnl.state === "ready" ? `¥${yuan(pnl.totals.estimatedGrossProfit)}` : "—"} /></Card></Col>
+              <Col xs={12} lg={6}><Card size="small"><Statistic title="预估净利" value={pnl.state === "ready" ? `¥${yuan(pnl.totals.estimatedNetProfit)}` : "—"} valueStyle={{ color: pnl.state !== "ready" ? undefined : Number(pnl.totals.estimatedNetProfit) < 0 ? VISUAL_COLOR.warning : VISUAL_COLOR.positive }} /></Card></Col>
             </Row>
             <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
               <Col xs={24} xl={12}><Typography.Text strong>净利最高 10 个商品</Typography.Text><Table<ProductPnlRow> rowKey={(r) => `${r.shopName}|${r.platformProductId}`} size="small" pagination={false} columns={pnlCols} dataSource={pnl.topNetProfit} /></Col>
@@ -162,8 +187,10 @@ export default function ChannelObservationCard({ active }: { active: boolean }) 
             </Row>
             <Alert type="info" showIcon style={{ marginTop: 12 }} message={pnl.gate} />
           </Card>
+          </AnalysisSection>
         ) : null}
         {traffic ? (
+          <AnalysisSection available={traffic.state === "ready" || traffic.rising.length > 0 || traffic.falling.length > 0} title="天猫商品流量先行指标" reason={traffic.gate}>
           <Card size="small" title="天猫商品流量先行指标（近 7 天 vs 前 7 天）" extra={<Tag color={traffic.state === "ready" ? "success" : "default"}>{traffic.anchorDate ? `截至 ${traffic.anchorDate}` : "缺流"}</Tag>}>
             <Row gutter={[10, 10]} className="compact-kpi-row">
               <Col xs={12} lg={6}><Card size="small"><Statistic title="近 7 天访客" value={traffic.state === "ready" ? traffic.totals.visitors7 : "—"} /><Typography.Text type="secondary">前 7 天 {traffic.state === "ready" ? traffic.totals.visitorsPrev7.toLocaleString("zh-CN") : "—"}</Typography.Text></Card></Col>
@@ -177,8 +204,10 @@ export default function ChannelObservationCard({ active }: { active: boolean }) 
             </Row>
             <Alert type="info" showIcon style={{ marginTop: 12 }} message={traffic.gate} />
           </Card>
+          </AnalysisSection>
         ) : null}
         {margin ? (
+          <AnalysisSection available={margin.state === "ready" || margin.top.length > 0 || margin.bottom.length > 0 || margin.byBrand.length > 0} title="天猫 SKU 级毛利观察" reason={margin.gate}>
           <Card size="small" title="天猫 SKU 级毛利观察（近 30 天）" extra={<Tag color={margin.state === "ready" ? "success" : "default"}>{margin.anchorDate ? `截至 ${margin.anchorDate}` : "缺流"}</Tag>}>
             <Row gutter={[10, 10]} className="compact-kpi-row">
               <Col xs={12} lg={6}><Card size="small"><Statistic title="支付金额" value={margin.state === "ready" ? `¥${yuan(margin.totals.paidAmount)}` : "—"} /><Typography.Text type="secondary">退款 ¥{margin.state === "ready" ? yuan(margin.totals.refundAmount) : "—"}</Typography.Text></Card></Col>
@@ -192,11 +221,12 @@ export default function ChannelObservationCard({ active }: { active: boolean }) 
             </Row>
             <Alert type="info" showIcon style={{ marginTop: 12 }} message={margin.gate} />
           </Card>
+          </AnalysisSection>
         ) : null}
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
           {(data?.limitations ?? []).map((l) => <div key={l}>· {l}</div>)}
         </Typography.Paragraph>
-      </Space>
+      </Space>}
     </Card>
   );
 }

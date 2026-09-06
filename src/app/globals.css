@@ -481,6 +481,31 @@ body {
   max-width: 100%;
 }
 
+.decision-studio-help {
+  margin: 0 0 12px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.decision-studio-help summary {
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.decision-studio-help p { margin: 6px 0; }
+
+.analysis-section-hint {
+  color: #64748b;
+  font-size: 12px;
+  margin-left: 10px;
+  display: inline-block;
+}
+
+.analysis-section .ant-collapse-header-text { min-width: 0; }
+
+.channel-platform-name { white-space: nowrap; }
+
 .compact-stat-strip.ant-space {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 220px));
@@ -1359,11 +1384,33 @@ body {
   }
 
   .decision-studio-scope-filters {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .decision-studio-scope-filters > :last-child {
     grid-column: auto;
+  }
+
+  /* Keep alert actions below the explanation, rather than squeezing Chinese text. */
+  .decision-studio .ant-alert:has(> .ant-alert-action) {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr);
+    align-items: start;
+    gap: 8px;
+  }
+
+  .decision-studio .ant-alert:has(> .ant-alert-action) > .ant-alert-icon {
+    margin: 0;
+  }
+
+  .decision-studio .ant-alert:has(> .ant-alert-action) > .ant-alert-content {
+    grid-column: 2;
+    min-width: 0;
+  }
+
+  .decision-studio .ant-alert > .ant-alert-action {
+    grid-column: 2;
+    margin: 0;
   }
 
   .compact-stat-strip.ant-space {

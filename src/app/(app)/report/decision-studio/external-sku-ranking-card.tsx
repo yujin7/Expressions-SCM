@@ -13,6 +13,7 @@ import { exportCsv } from "@/components/exportCsv";
 import { formatQty } from "@/components/format";
 import { compareDecimalValues } from "@/lib/decimal-sort";
 import SkuHoverCard from "@/components/SkuHoverCard";
+import AnalysisSection from "@/components/AnalysisSection";
 import type { ExternalSkuRanking, ExternalSkuRankRow } from "@/server/modules/report/external-sku-ranking";
 
 type Data = ExternalSkuRanking & { totalRows: number };
@@ -118,9 +119,13 @@ export default function ExternalSkuRankingCard({ active }: { active: boolean }) 
   return (
     <Card
       size="small"
+      loading={loading}
       title="SKU 外部销量排名 · 天猫+拼多多（观察口径）"
       extra={<Space><Tag color="warning">observation_only</Tag><Button size="small" onClick={() => void doExport()} loading={exporting} disabled={loading || !data || data.state !== "ready"}>导出 CSV</Button><Button size="small" onClick={() => void load()} loading={loading}>刷新</Button></Space>}
     >
+      {loadError ? <Alert type="error" showIcon message="外部销量排名加载失败" description={loadError}
+        action={<Button size="small" onClick={() => void load()}>重试</Button>} /> :
+      <AnalysisSection available={data?.state === "ready" || Boolean(data?.rows.length)} title="SKU 外部销量排名" reason={data?.gate}>
       <Space direction="vertical" size={12} style={{ width: "100%" }}>
         <Row gutter={[10, 10]} className="compact-kpi-row">
           <Col xs={12} lg={6}><Card size="small"><Statistic title="观察到的系统 SKU" value={data?.state === "ready" ? data.totalRows : "—"} /><Typography.Text type="secondary">锚点 {data?.anchorDate ?? "—"}；未知净件不排名</Typography.Text></Card></Col>
@@ -155,19 +160,18 @@ export default function ExternalSkuRankingCard({ active }: { active: boolean }) 
           dataSource={data?.rows ?? []}
           pagination={{ pageSize: 50, showSizeChanger: false }}
           scroll={{ x: 1500 }}
-          locale={{ emptyText: loadError ? "数据未加载，请重试" : loading ? "正在加载当前筛选" : "当前筛选下没有可排名的 SKU" }}
+          locale={{ emptyText: loading ? "正在加载当前筛选" : "当前筛选下没有可排名的 SKU" }}
         />
         <Alert
-          type={loadError ? "error" : data?.state === "ready" ? "info" : "warning"}
+          type={data?.state === "ready" ? "info" : "warning"}
           showIcon
-          message={loadError ? "外部销量排名加载失败" : data?.gate ?? (active ? "正在读取外部销速读模型。" : "切换到此标签后加载。")}
-          description={loadError}
-          action={loadError ? <Button size="small" onClick={() => void load()}>重试</Button> : undefined}
+          message={data?.gate ?? (active ? "正在读取外部销速读模型。" : "切换到此标签后加载。")}
         />
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
           {(data?.limitations ?? []).map((l) => <div key={l}>· {l}</div>)}
         </Typography.Paragraph>
       </Space>
+      </AnalysisSection>}
     </Card>
   );
 }

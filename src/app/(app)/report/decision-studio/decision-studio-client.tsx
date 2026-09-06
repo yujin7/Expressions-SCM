@@ -37,6 +37,7 @@ import {
 import { CopyOutlined, DownloadOutlined, ReloadOutlined } from "@ant-design/icons";
 
 import DecisionVisual from "@/components/DecisionVisual";
+import AnalysisSection from "@/components/AnalysisSection";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
@@ -264,6 +265,12 @@ export default function DecisionStudioClient() {
   const heatMax = Math.max(0, ...(data?.daily.dates ?? []).map((item) => item.qty));
   const external = data?.externalDemand;
   const externalReady = external?.state === "ready";
+  // Fold only genuinely unavailable analysis, never a ready zero or partial evidence.
+  const externalHasEvidence = externalReady || Boolean(external && (
+    external.daily.length || external.topUnmapped.length || external.decisionBrief.anchorDate
+    || external.refundDrivers.byShop.length || external.refundDrivers.topContributors.length
+    || external.fulfillment.daily.length || external.fulfillment.topGaps.length
+  ));
   const refundDrivers = external?.refundDrivers;
   const refundShopChartRows = (refundDrivers?.byShop ?? []).slice(0, 10);
   const identity = data?.commerceIdentity;
@@ -379,7 +386,7 @@ export default function DecisionStudioClient() {
   };
 
   return (
-    <div>
+    <div className="decision-studio">
       <div className="decision-studio-heading">
         <Typography.Title level={3} style={{ margin: 0 }}>决策工作室</Typography.Title>
         <Typography.Text type="secondary">
@@ -436,9 +443,10 @@ export default function DecisionStudioClient() {
             allowClear
             showSearch
             optionFilterProp="label"
-            aria-label={`筛选${DIMENSION_LABEL[dimension]}`}
+            aria-label={`下钻${DIMENSION_LABEL[dimension]}`}
             style={{ width: "100%" }}
-            placeholder={`筛选${DIMENSION_LABEL[dimension]}（全部）`}
+            placeholder={`下钻${DIMENSION_LABEL[dimension]}（可选）`}
+            disabled={loading || (groupOptions.length === 0 && !selectedKey)}
             value={selectedKey || undefined}
             options={groupOptions}
             onChange={(key) => view.setFilter({ key: key ?? "" })}
@@ -453,13 +461,11 @@ export default function DecisionStudioClient() {
         </div>
       </div>
 
-      <Alert
-        showIcon
-        type="info"
-        style={{ marginBottom: 12 }}
-        message="联动筛选已进入 URL：刷新、分享、前进后退都保留现场。点击帕累托柱或透视表成员可继续下钻。"
-        description={data?.limitations[0]}
-      />
+      <details className="decision-studio-help">
+        <summary>跨 SKU 数量仅作结构参考 · 筛选与口径说明</summary>
+        <p>联动筛选保留在链接中，刷新、分享、前进后退均可恢复。品牌与渠道可组合筛选；“下钻”只选当前分组成员，也可点击图表或透视表进入。</p>
+        <p>{data?.limitations[0] ?? "月度数量可能包含件、箱、kg 等不同单位，不应直接作为统一经营总量。"}</p>
+      </details>
 
       {loadError ? (
         <Alert
@@ -472,7 +478,7 @@ export default function DecisionStudioClient() {
         />
       ) : null}
 
-      <Row gutter={[10, 10]} className="compact-kpi-row">
+      {!["external", "identity", "readiness"].includes(activeTab) ? <Row gutter={[10, 10]} className="compact-kpi-row">
         <Col xs={12} md={6}>
           <Card size="small" loading={loading && !data}>
             <Statistic
@@ -511,7 +517,7 @@ export default function DecisionStudioClient() {
             />
           </Card>
         </Col>
-      </Row>
+      </Row> : null}
 
       <Tabs
         destroyOnHidden
@@ -859,6 +865,8 @@ export default function DecisionStudioClient() {
                 />
                 <ChannelObservationCard active={activeTab === "external"} />
                 <ExternalSkuRankingCard active={activeTab === "external"} />
+                <AnalysisSection available={externalHasEvidence} title="天猫净需求、退款与履约分析" reason={external?.gate}>
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
                 <Row gutter={[10, 10]} className="compact-kpi-row">
                   <Col xs={12} lg={6}>
                     <Card size="small">
@@ -1313,6 +1321,8 @@ export default function DecisionStudioClient() {
                     ]}
                   />
                 </Card>
+                </Space>
+                </AnalysisSection>
               </Space>
             ),
           },
