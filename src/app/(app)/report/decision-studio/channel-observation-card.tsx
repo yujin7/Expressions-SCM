@@ -19,6 +19,15 @@ function yuan(value: string | null | undefined): string {
   return n.toLocaleString("zh-CN", { maximumFractionDigits: 0 });
 }
 
+function quantity(value: string | null | undefined): string {
+  if (value == null || !/^-?\d+(\.\d+)?$/.test(value)) return "—";
+  const negative = value.startsWith("-");
+  const [whole, fraction = ""] = (negative ? value.slice(1) : value).split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const trimmed = fraction.replace(/0+$/, "");
+  return `${negative ? "-" : ""}${grouped}${trimmed ? `.${trimmed}` : ""}`;
+}
+
 export default function ChannelObservationCard({ active }: { active: boolean }) {
   const { message } = App.useApp();
   const [data, setData] = useState<ChannelObservation | null>(null);
@@ -38,22 +47,22 @@ export default function ChannelObservationCard({ active }: { active: boolean }) 
   const platformCols: ColumnsType<ChannelPlatformRow> = [
     { title: "平台", dataIndex: "platform", width: 90, render: (v: string, r) => <Space size={6}><Typography.Text strong>{v}</Typography.Text><Tag color={r.state === "ready" ? "success" : "default"}>{r.state === "ready" ? "有数" : "缺流"}</Tag></Space> },
     { title: "窗口", key: "window", width: 200, render: (_, r) => r.anchorDate ? `${r.windowFrom} ～ ${r.anchorDate}` : <Typography.Text type="secondary">—</Typography.Text> },
-    { title: "近30天件数", dataIndex: "units", width: 120, align: "right", render: (v: number | null) => v == null ? "—" : v.toLocaleString("zh-CN") },
+    { title: "近30天件数", dataIndex: "units", width: 120, align: "right", render: (v: string | null) => quantity(v) },
     { title: "近30天金额", dataIndex: "amount", width: 120, align: "right", render: (v: string | null) => v == null ? <Typography.Text type="secondary">无金额字段</Typography.Text> : `¥${yuan(v)}` },
-    { title: "退款件数", dataIndex: "refundUnits", width: 100, align: "right", render: (v: number | null) => v == null ? "—" : v.toLocaleString("zh-CN") },
-    { title: "按品牌", key: "brand", render: (_, r) => r.byBrand.length ? r.byBrand.slice(0, 5).map((b) => `${b.brand} ${b.units.toLocaleString("zh-CN")}`).join(" · ") : "—" },
-    { title: "品牌归属来源", key: "attr", width: 200, render: (_, r) => r.state === "ready" ? `映射 ${r.brandAttribution.mappedSku.toLocaleString("zh-CN")} · 档案 ${r.brandAttribution.shopMaster.toLocaleString("zh-CN")}${r.brandAttribution.nameGuess ? ` · 店名回退 ${r.brandAttribution.nameGuess.toLocaleString("zh-CN")}` : ""}${r.brandAttribution.unattributed ? ` · 未归属 ${r.brandAttribution.unattributed.toLocaleString("zh-CN")}` : ""}` : "—" },
+    { title: "退款件数", dataIndex: "refundUnits", width: 100, align: "right", render: (v: string | null) => quantity(v) },
+    { title: "按品牌", key: "brand", render: (_, r) => r.byBrand.length ? r.byBrand.slice(0, 5).map((b) => `${b.brand} ${quantity(b.units)}`).join(" · ") : "—" },
+    { title: "品牌归属来源", key: "attr", width: 200, render: (_, r) => r.state === "ready" ? `映射 ${quantity(r.brandAttribution.mappedSku)} · 档案 ${quantity(r.brandAttribution.shopMaster)}${Number(r.brandAttribution.nameGuess) !== 0 ? ` · 店名回退 ${quantity(r.brandAttribution.nameGuess)}` : ""}${Number(r.brandAttribution.unattributed) !== 0 ? ` · 未归属 ${quantity(r.brandAttribution.unattributed)}` : ""}` : "—" },
     { title: "口径", dataIndex: "gate", ellipsis: true },
   ];
-  const cell = (c: { units: number | null; amount: string | null }) => c.units == null
+  const cell = (c: { units: string | null; amount: string | null }) => c.units == null
     ? <Typography.Text type="secondary">缺流</Typography.Text>
-    : <span>{c.units.toLocaleString("zh-CN")}{c.amount != null ? <Typography.Text type="secondary"> / ¥{yuan(c.amount)}</Typography.Text> : null}</span>;
+    : <span>{quantity(c.units)}{c.amount != null ? <Typography.Text type="secondary"> / ¥{yuan(c.amount)}</Typography.Text> : null}</span>;
   const matrixCols: ColumnsType<BrandPlatformRow> = [
     { title: "品牌", dataIndex: "brand", width: 120, fixed: "left", render: (v: string) => <Typography.Text strong>{v}</Typography.Text> },
     { title: "天猫（净件数 / 支付金额）", key: "tmall", align: "right", render: (_, r) => cell(r.platforms["天猫"]) },
     { title: "拼多多（有效订单件数 / 店铺成交额）", key: "pdd", align: "right", render: (_, r) => cell(r.platforms["拼多多"]) },
     { title: "唯品会（销售量 / 销售额）", key: "vip", align: "right", render: (_, r) => cell(r.platforms["唯品会"]) },
-    { title: "件数合计（仅排序）", dataIndex: "totalUnits", width: 140, align: "right", render: (v: number) => <Typography.Text type="secondary">{v.toLocaleString("zh-CN")}</Typography.Text> },
+    { title: "件数合计（仅排序）", dataIndex: "totalUnits", width: 140, align: "right", render: (v: string) => <Typography.Text type="secondary">{quantity(v)}</Typography.Text> },
   ];
   const pddShopCols: ColumnsType<ChannelObservation["pddDaily"]["byShop"][number]> = [
     { title: "店铺", dataIndex: "shopName", ellipsis: true, render: (v: string, r) => <Space size={6}><span>{v}</span><Tag>{r.brand}</Tag></Space> },
@@ -81,7 +90,7 @@ export default function ChannelObservationCard({ active }: { active: boolean }) 
     { title: "真实成交", dataIndex: "actualTransactionAmount", width: 110, align: "right", render: (v: string) => `¥${yuan(v)}` },
     { title: "销售费用", dataIndex: "totalSalesCost", width: 110, align: "right", render: (v: string) => `¥${yuan(v)}` },
     { title: "预估净利", dataIndex: "estimatedNetProfit", width: 110, align: "right", render: (v: string) => <Typography.Text type={Number(v) < 0 ? "danger" : undefined} strong>¥{yuan(v)}</Typography.Text> },
-    { title: "支付件数", dataIndex: "paidNumber", width: 90, align: "right" },
+    { title: "支付件数", dataIndex: "paidNumber", width: 90, align: "right", render: (v: string) => quantity(v) },
   ];
   const pnl = data?.productPnl;
   const traffic = data?.traffic;

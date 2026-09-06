@@ -24,17 +24,20 @@ async function seed(db: Awaited<ReturnType<typeof createTestDb>>["db"]) {
   // 在库：hot 100（主日销取外部 145/30≈4.8 → 可销 ~21 天 < 35 阈值），cold 0（有需求无在库 → 断货）
   const [wh] = await db.insert(schema.warehouses).values({ code: "WH-CP", name: "成品仓", kind: "finished", accountingMode: "realtime" }).returning();
   await db.insert(schema.stockBalances).values({ skuId: hot.id, warehouseId: wh.id, qty: "100" });
-  // 天猫日销批次 + 对照表身份
-  const [salesJob, cwJob] = await db.insert(schema.importJobs).values([
+  // 天猫日销、同截止日零退款证据 + 对照表身份；缺退款不能当作零退款。
+  const [salesJob, cwJob, refundJob] = await db.insert(schema.importJobs).values([
     { template: "jdy_tmall_sku_sales_observation", filename: "s", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
     { template: "jdy_tmall_sku_crosswalk_observation", filename: "c", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
+    { template: "jdy_tmall_sku_refund_observation", filename: "r", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" },
   ]).returning();
   const finishedAt = new Date("2026-09-03T03:00:00.000Z");
   await db.insert(schema.integrationRuns).values([
     { connector: "jdy", stream: "tmall-sku-sales-observation", idempotencyKey: "s", status: "succeeded", importJobId: salesJob.id, finishedAt },
     { connector: "jdy", stream: "tmall-sku-crosswalk-observation", idempotencyKey: "c", status: "succeeded", importJobId: cwJob.id, finishedAt },
+    { connector: "jdy", stream: "tmall-sku-refund-observation", idempotencyKey: "r", status: "succeeded", importJobId: refundJob.id, finishedAt },
   ]);
   const shop = "(天猫国际)NING海外旗舰店";
+  await db.insert(schema.stagingRows).values({ importJobId: refundJob.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_refund_observation", payload: { data: { statisticalDate: "2026-09-02", shopName: shop, skuId: "P-HOT", successRefundSuborderNumber: "0" } } });
   await db.insert(schema.stagingRows).values({ importJobId: cwJob.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation", payload: { data: { shopName: shop, platformSkuId: "P-HOT" }, _identity: { skuId: hot.id } } });
   const rows: { importJobId: number; rowNo: number; status: "pending"; targetTable: string; payload: unknown }[] = [];
   let n = 1;

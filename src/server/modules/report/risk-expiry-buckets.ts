@@ -15,7 +15,7 @@
  *   batch_stocks 身份+数量指纹 + skus 指纹 + 在库/销速/注记/处置/外部观察 + slow_days_threshold + 业务日（跨日必须重算）。
  */
 import { sql } from "drizzle-orm";
-import { dAdd } from "@/server/core/decimal";
+import { dAdd, dCmp } from "@/server/core/decimal";
 import { getNumParam } from "@/server/core/params";
 import { resolveDb, type AnyDb } from "@/server/core/svc";
 import { todayShanghai } from "@/server/modules/master/common";
@@ -144,7 +144,7 @@ export function buildRiskExpiryBuckets(
       acc.slowOnHand = dAdd(acc.slowOnHand, r.onHand, QTY_SCALE);
       if (r.externalNet30 != null) {
         slowWithSignal += 1;
-        if (r.externalNet30 > 0) {
+        if (dCmp(r.externalNet30, "0") > 0) {
           slowStillSelling += 1;
           row.slowStillSellingExternally += 1;
         }

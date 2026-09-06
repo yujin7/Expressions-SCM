@@ -14,6 +14,7 @@
 
 /** 消费者模块（相对 `src/server/modules/`）→ 中文名 */
 export const READ_MODEL_LABELS: Readonly<Record<string, string>> = {
+  "master/platform-sku-claim.ts": "平台身份认领校验",
   "master/sales-amount.ts": "销售金额",
   "report/bonded-outbound.ts": "保税出库",
   "report/channel-observation.ts": "渠道观察",
@@ -45,9 +46,9 @@ export interface ContractConsumerEntry {
  */
 export const CONTRACT_CONSUMERS: readonly ContractConsumerEntry[] = [
   /* ── 简道云表单契约 ── */
-  { connector: "jdy", key: "tmall-sku-crosswalk-observation", label: "天猫 SKU 对照表", consumers: ["report/channel-observation.ts", "report/commerce-identity-coverage.ts", "report/external-demand-signal.ts", "report/external-velocity.ts", "report/platform-sku-identity-gap.ts", "report/sales-consistency.ts", "report/sales-spike.ts"] },
+  { connector: "jdy", key: "tmall-sku-crosswalk-observation", label: "天猫 SKU 对照表", consumers: ["master/platform-sku-claim.ts", "report/channel-observation.ts", "report/commerce-identity-coverage.ts", "report/external-demand-signal.ts", "report/external-velocity.ts", "report/platform-sku-identity-gap.ts", "report/sales-consistency.ts", "report/sales-spike.ts"] },
   { connector: "jdy", key: "vip-product-crosswalk-observation", label: "唯品会商品对照表", consumers: ["report/commerce-identity-coverage.ts"] },
-  { connector: "jdy", key: "pdd-sku-crosswalk-observation", label: "拼多多 SKU 对照表", consumers: ["report/channel-observation.ts", "report/commerce-identity-coverage.ts", "report/external-velocity.ts", "report/platform-sku-identity-gap.ts"] },
+  { connector: "jdy", key: "pdd-sku-crosswalk-observation", label: "拼多多 SKU 对照表", consumers: ["master/platform-sku-claim.ts", "report/channel-observation.ts", "report/commerce-identity-coverage.ts", "report/external-velocity.ts", "report/platform-sku-identity-gap.ts"] },
   { connector: "jdy", key: "tmall-sku-sales-observation", label: "天猫 SKU 销量", consumers: ["master/sales-amount.ts", "report/channel-observation.ts", "report/external-demand-signal.ts", "report/external-velocity.ts", "report/platform-sku-identity-gap.ts", "report/sales-consistency.ts", "report/sales-spike.ts", "report/tmall-channel-contribution.ts"] },
   { connector: "jdy", key: "tmall-sku-refund-observation", label: "天猫 SKU 退款", consumers: ["master/sales-amount.ts", "report/channel-observation.ts", "report/external-demand-signal.ts", "report/external-velocity.ts", "report/platform-sku-identity-gap.ts", "report/sales-consistency.ts", "report/tmall-channel-contribution.ts"] },
   { connector: "jdy", key: "platform-fee-observation", label: "平台费用", consumers: ["report/platform-fee-observation.ts", "report/tmall-channel-contribution.ts"] },

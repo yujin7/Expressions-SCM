@@ -11,6 +11,7 @@ import { fetchJson } from "@/components/fetchJson";
 import SearchInput from "@/components/SearchInput";
 import { exportCsv } from "@/components/exportCsv";
 import { formatQty } from "@/components/format";
+import { compareDecimalValues } from "@/lib/decimal-sort";
 import SkuHoverCard from "@/components/SkuHoverCard";
 import type { ExternalSkuRanking, ExternalSkuRankRow } from "@/server/modules/report/external-sku-ranking";
 
@@ -95,14 +96,14 @@ export default function ExternalSkuRankingCard({ active }: { active: boolean }) 
   };
 
   const cols: ColumnsType<ExternalSkuRankRow> = [
-    { title: "#", dataIndex: "rank", width: 56, align: "right", fixed: "left" },
+    { title: "#", dataIndex: "rank", width: 56, align: "right", fixed: "left", render: (v: number | null) => v ?? "—" },
     { title: "SKU", dataIndex: "code", width: 130, fixed: "left", render: (v: string) => <SkuHoverCard code={v} /> },
     { title: "名称", dataIndex: "name", ellipsis: true, width: 220 },
     { title: "品牌", dataIndex: "brand", width: 90, render: (v: string | null) => v ?? <Typography.Text type="secondary">—</Typography.Text> },
-    { title: "近30天净件数", dataIndex: "net30", width: 120, align: "right", sorter: (a, b) => a.net30 - b.net30, render: (v: number) => <Typography.Text strong>{formatQty(v)}</Typography.Text> },
-    { title: "近90天", dataIndex: "net90", width: 100, align: "right", sorter: (a, b) => a.net90 - b.net90, render: (v: number) => formatQty(v) },
-    { title: "天猫30天", dataIndex: "tmallNet30", width: 100, align: "right", render: (v: number) => formatQty(v) },
-    { title: "拼多多30天", dataIndex: "pddNet30", width: 110, align: "right", render: (v: number) => formatQty(v) },
+    { title: "近30天净件数", dataIndex: "net30", width: 120, align: "right", sorter: (a, b, order) => compareDecimalValues(a.net30, b.net30, order === "descend" ? "first" : "last"), render: (v: string | null) => <Typography.Text strong>{formatQty(v)}</Typography.Text> },
+    { title: "近90天", dataIndex: "net90", width: 100, align: "right", sorter: (a, b, order) => compareDecimalValues(a.net90, b.net90, order === "descend" ? "first" : "last"), render: (v: string | null) => formatQty(v) },
+    { title: "天猫30天", dataIndex: "tmallNet30", width: 100, align: "right", render: (v: string) => formatQty(v) },
+    { title: "拼多多30天", dataIndex: "pddNet30", width: 110, align: "right", render: (v: string) => formatQty(v) },
     { title: "最近售出", dataIndex: "lastSoldDate", width: 110, render: (v: string | null) => v ?? "—" },
     { title: "90天动销天数", dataIndex: "activeDays90", width: 110, align: "right" },
     { title: "平台SKU数", dataIndex: "platformSkus", width: 100, align: "right" },
@@ -122,10 +123,10 @@ export default function ExternalSkuRankingCard({ active }: { active: boolean }) 
     >
       <Space direction="vertical" size={12} style={{ width: "100%" }}>
         <Row gutter={[10, 10]} className="compact-kpi-row">
-          <Col xs={12} lg={6}><Card size="small"><Statistic title="进入排名的系统 SKU" value={data?.state === "ready" ? data.totalRows : "—"} /><Typography.Text type="secondary">锚点 {data?.anchorDate ?? "—"}</Typography.Text></Card></Col>
+          <Col xs={12} lg={6}><Card size="small"><Statistic title="观察到的系统 SKU" value={data?.state === "ready" ? data.totalRows : "—"} /><Typography.Text type="secondary">锚点 {data?.anchorDate ?? "—"}；未知净件不排名</Typography.Text></Card></Col>
           <Col xs={12} lg={6}><Card size="small"><Statistic title="平台 SKU 身份覆盖" value={covPct == null ? "—" : covPct} suffix={covPct == null ? undefined : "%"} /><Typography.Text type="secondary">{cov ? `${cov.mappedPlatformSkus}/${cov.platformSkus}，组合装拆解 ${cov.bundlePlatformSkus}` : "—"}</Typography.Text></Card></Col>
           <Col xs={12} lg={6}><Card size="small"><Statistic title="天猫日销截止" value={data?.sourceAsOf ?? "—"} /><Typography.Text type="secondary">拼多多 {data ? data.pddSourceAsOf ?? "未同步" : "—"}</Typography.Text></Card></Col>
-          <Col xs={12} lg={6}><Card size="small"><Statistic title="拼多多 30 天观测日" value={cov ? cov.pddObservedDays30 : "—"} suffix={cov ? "/ 30" : undefined} /><Typography.Text type="secondary">{cov ? cov.pddWindowComplete30 ? "窗口完整" : "窗口不完整（件数偏低）" : "窗口完整性未知"}</Typography.Text></Card></Col>
+          <Col xs={12} lg={6}><Card size="small"><Statistic title="拼多多 30 天观测日" value={cov ? cov.pddObservedDays30 : "—"} suffix={cov ? "/ 30" : undefined} /><Typography.Text type="secondary">{cov ? cov.pddWindowComplete30 ? "窗口完整" : "窗口不完整，完整净件未知" : "窗口完整性未知"}</Typography.Text></Card></Col>
         </Row>
         <Space wrap>
           <Select

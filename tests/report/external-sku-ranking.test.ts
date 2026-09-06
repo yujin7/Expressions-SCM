@@ -70,16 +70,25 @@ describe("SKU 外部销量排名", () => {
         { importJobId: refunds.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_refund_observation", payload: { data: { statisticalDate: "2026-08-31", shopName: shop, skuId: "P-A", successRefundSuborderNumber: "2" } } },
       ]);
 
+      // 截止 8/31 的退款不能与 9/1 的销量计算净件数。
+      expect(await computeExternalSkuRanking(db)).toMatchObject({ state: "insufficient", rows: [] });
+      // 新证据作为新批次进入，不能原地修改已缓存的不可变来源批次。
+      const [freshRefunds] = await db.insert(schema.importJobs).values({ template: "jdy_tmall_sku_refund_observation", filename: "r-fresh", sourceAsOf: "2026-09-02", createdBy: actor.id, status: "done" }).returning();
+      await db.insert(schema.integrationRuns).values({ connector: "jdy", stream: "tmall-sku-refund-observation", idempotencyKey: "r-fresh", status: "succeeded", importJobId: freshRefunds.id, finishedAt: new Date("2026-09-02T04:00:00.000Z") });
+      await db.insert(schema.stagingRows).values([
+        { importJobId: freshRefunds.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_refund_observation", payload: { data: { statisticalDate: "2026-08-31", shopName: shop, skuId: "P-A", successRefundSuborderNumber: "2" } } },
+        { importJobId: freshRefunds.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_sku_refund_observation", payload: { data: { statisticalDate: "2026-09-01", shopName: shop, skuId: "P-A", successRefundSuborderNumber: "0" } } },
+      ]);
       const model = await computeExternalSkuRanking(db);
       expect(model.state).toBe("ready");
       expect(model.anchorDate).toBe("2026-09-01");
       expect(model.internalMonths).toEqual(["2026-04", "2026-05", "2026-06"]);
       expect(model.rows.map((r) => [r.rank, r.code, r.net30, r.net90, r.internal3m])).toEqual([
-        [1, "RK-A", 8, 58, 40],
-        [2, "RK-B", 6, 6, 5.5],
-        [3, "RK-C", 3, 3, 0],
+        [1, "RK-A", "8.0000", "58.0000", 40],
+        [2, "RK-B", "6.0000", "6.0000", 5.5],
+        [3, "RK-C", "3.0000", "3.0000", 0],
       ]);
-      expect(model.rows[0]).toMatchObject({ brand: "NING", tmallNet30: 8, pddNet30: 0, lastSoldDate: "2026-09-01", activeDays90: 2 });
+      expect(model.rows[0]).toMatchObject({ brand: "NING", tmallNet30: "8.0000", pddNet30: "0.0000", lastSoldDate: "2026-09-01", activeDays90: 2 });
       expect(model.rows.find((r) => r.code === "RK-NONE")).toBeUndefined();
       expect(model.brands).toEqual(["DEV", "NING"]);
       expect(model.coverage.bundlePlatformSkus).toBe(1);
@@ -94,7 +103,7 @@ describe("SKU 外部销量排名", () => {
 
       // 缓存：第二次读取一致；内部事实新增一个月后绑定变化、内部对照随之更新
       const cached = await loadExternalSkuRanking(db);
-      expect(cached.rows[0]?.net30).toBe(8);
+      expect(cached.rows[0]?.net30).toBe("8.0000");
       await db.insert(schema.salesMonthly).values({ skuId: a.id, channelId: channel.id, yearMonth: "2026-07", qty: "7.0000" });
       const refreshed = await loadExternalSkuRanking(db);
       expect(refreshed.internalMonths).toEqual(["2026-05", "2026-06", "2026-07"]);

@@ -25,6 +25,7 @@ import {
 import {
   JiandaoyunClient,
   jiandaoyunSchemaHash,
+  resolveJiandaoyunWindow,
   type JiandaoyunRecord,
 } from "./jiandaoyun";
 import {
@@ -38,7 +39,7 @@ import { loadAckedDeletions } from "@/server/integrations/deletion-ack";
 const CONNECTOR = "jdy";
 const CATALOG_STREAM = "catalog";
 const CATALOG_SCHEMA_VERSION = "jiandaoyun-catalog-v1";
-const RECORD_SCHEMA_VERSION = "jiandaoyun-observation-v4";
+const RECORD_SCHEMA_VERSION = "jiandaoyun-observation-v5";
 /** rowNo 保存的是规范化 ID 顺序，不是上游分页顺序；尾部形状只能用作疑似截断线索。 */
 const SOURCE_SEQUENCE = "source-record-id-asc/v1";
 const DELETION_POLICY = "per-record-tombstone-suspected-tail-fail-closed/v1";
@@ -710,6 +711,8 @@ export async function syncJiandaoyunForm(
       stream: string,
       envelope: unknown,
     ) => Promise<IntegrationEvidence>;
+    /** Testable clock; production resolves the window once from wall time. */
+    now?: () => Date;
   },
 ): Promise<JiandaoyunFormSummary> {
   await assertActor(db, input.actorId);
@@ -719,11 +722,31 @@ export async function syncJiandaoyunForm(
   );
   await assertStableContractSchema(db, input.contract.key, schemaHash);
   const projection = jiandaoyunContractProjection(input.contract);
+  const includeUpdatedSince = input.contract.window?.includeUpdatedSince === true;
+  const extractionCutoff = input.now?.() ?? new Date();
+  const resolvedWindow = input.contract.window
+    ? resolveJiandaoyunWindow(input.contract.window.days, extractionCutoff)
+    : null;
+  const evidenceWindow = input.contract.window ? {
+    field: input.contract.window.field,
+    days: input.contract.window.days,
+    includeUpdatedSince,
+    ...resolvedWindow!,
+    // The source has no snapshot token. This is the conservative upper bound:
+    // changes committed before extraction started are expected to be queryable.
+    extractionCutoff: extractionCutoff.toISOString(),
+  } : null;
   const records = await input.client.listRecords(
     input.contract.appId,
     input.contract.entryId,
     projection,
-    input.contract.window ? { field: input.contract.window.field, sinceDays: input.contract.window.days } : undefined,
+    input.contract.window ? {
+      field: input.contract.window.field,
+      sinceDays: input.contract.window.days,
+      // 拼多多订单会在下单数日后才取消/退款；同步近期更新可撤销旧的付款观察。
+      includeUpdatedSince,
+      bounds: resolvedWindow!,
+    } : undefined,
   );
   const control = inspectJiandaoyunContractControl(input.contract, widgets, records);
   const controlSummary = summarizeJiandaoyunContractControl(control);
@@ -763,7 +786,7 @@ export async function syncJiandaoyunForm(
       authority: "observation-only",
       fieldMinimized: true,
       sourceProjection: projection,
-      window: input.contract.window ?? null,
+      window: evidenceWindow,
       controlSummary,
     },
     records: minimized,
@@ -795,7 +818,7 @@ export async function syncJiandaoyunForm(
       authority: "observation-only",
       controlSummary,
       qualityBlocked: controlSummary.status === "review",
-      window: input.contract.window ?? null,
+      window: evidenceWindow,
     },
     evidencePath: evidence.relativePath,
     evidenceHash: evidence.hash,
@@ -842,7 +865,8 @@ export async function syncJiandaoyunForm(
           && scope.stream === stream
           && scope.mode === "full"
           && scope.authority === "observation-only"
-          && scope.releaseBlocked === true;
+          && scope.releaseBlocked === true
+          && scope.qualityBlocked !== true;
       });
       let priorSourceRecordIdsVerified = 0;
       if (minimized.length > 0 && priorFull) {
@@ -916,7 +940,7 @@ export async function syncJiandaoyunForm(
           appId: input.contract.appId,
           entryId: input.contract.entryId,
           // 时间窗快照：读模型必须按业务键跨批次去重累加，不能把单批当全量
-          ...(input.contract.window ? { window: { field: input.contract.window.field, days: input.contract.window.days } } : {}),
+          ...(evidenceWindow ? { window: evidenceWindow } : {}),
           schemaHash,
           sourceUpdatedThrough: updatedThrough,
           priorSourceRecordIdsVerified,
@@ -931,11 +955,13 @@ export async function syncJiandaoyunForm(
           evidenceHash: evidence.hash,
         },
       });
-      // Only a successful, non-empty full observation may retire prior review batches. An empty
+      // Only a successful, non-empty, quality-passing full observation may retire prior review batches. An empty
       // response is retained as evidence but cannot imply that previously observed facts vanished.
       // 滚动窗口每批只覆盖最近 N 天，旧批次是 30/90 天累计历史的一部分，不能退役。
       // 只有非窗口的完整快照才能用新批次替换旧批次。
-      const supersededImportJobs = minimized.length > 0 && !input.contract.window
+      const supersededImportJobs = minimized.length > 0
+        && !input.contract.window
+        && controlSummary.status !== "review"
         ? await supersedeSourceObservationJobsInTransaction(tx, {
           keepJobId: job.id,
           template: input.contract.targetTable,
@@ -995,7 +1021,7 @@ export async function syncJiandaoyunForm(
         unresolvedAliases,
         controlSummary,
         qualityBlocked: controlSummary.status === "review",
-        window: input.contract.window ?? null,
+        window: evidenceWindow,
       };
       await finishRunInTransaction(tx, {
         runId: run.id,

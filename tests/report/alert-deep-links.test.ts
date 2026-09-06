@@ -45,7 +45,7 @@ function row(p: Partial<InventoryAlertRow> & { skuId: number; code: string }): I
     onHand: "10",
     daily: { external: 1, internal: null, ledger: null },
     net7External: null,
-    net30External: 30,
+    net30External: "30.0000",
     primaryDaily: 1,
     primaryDailySource: "external",
     coverDays: 10,

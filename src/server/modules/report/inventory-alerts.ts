@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import { dCmp, dDiv } from "@/server/core/decimal";
 import { getNumParam } from "@/server/core/params";
 import { resolveDb, type AnyDb } from "@/server/core/svc";
 import { getOnHandBySku } from "@/server/core/stock-view";
@@ -49,7 +50,7 @@ import { loadSalesSpike } from "@/server/modules/report/sales-spike";
  *   停用一个 SKU、新建一个成品、把某 SKU 的 near_expiry_days 从 90 改成 30，绑定全都看不见。
  *   改为绑启用成品的行数/最大 id/已维护 near_expiry_days 的个数与其合计/最大 updated_at。
  */
-export const INVENTORY_ALERTS_CACHE_KEY = "inventory-alerts/v5";
+export const INVENTORY_ALERTS_CACHE_KEY = "inventory-alerts/v6";
 
 export type DailySource = "external" | "internal" | "ledger";
 
@@ -63,7 +64,7 @@ export interface InventoryAlertRow {
   onHand: string;
   daily: { external: number | null; internal: number | null; ledger: number | null };
   net7External: number | null;
-  net30External: number | null;
+  net30External: string | null;
   primaryDaily: number | null;
   primaryDailySource: DailySource | null;
   /** 在库可销天数（不含在途，原口径） */
@@ -291,7 +292,7 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
   const rows: InventoryAlertRow[] = skus.map((s) => {
     const oh = num(onHand.bySku.get(s.id) ?? "0");
     const evs = ev.bySku[String(s.id)];
-    const external = evs && evs.net30 > 0 ? Math.round((evs.net30 / 30) * 100) / 100 : evs ? 0 : null;
+    const external = evs?.net30 == null ? null : dCmp(evs.net30, "0") > 0 ? Number(dDiv(evs.net30, "30", 2)) : 0;
     const internalWindow = internal6m.get(s.id);
     const internal = internalWindow != null && months.length ? Math.round(dailyFromWindow(internalWindow) * 100) / 100 : null;
     const ledgerOut = ledgerOut30.get(s.id);

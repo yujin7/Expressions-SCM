@@ -16,6 +16,7 @@ import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import type { ScopeUser } from "@/server/core/data-scope";
 import { channelScopeCondition, resolveChannelScopeByCode, type ResolvedChannelScope } from "@/server/modules/report/channel-scope";
+import { dCmp } from "@/server/core/decimal";
 import { getNumParam } from "@/server/core/params";
 import { getRiskWorklist } from "@/server/modules/report/risk";
 import * as schema from "@/db/schema";
@@ -96,7 +97,7 @@ export interface DashboardData {
   slowTop: {
     code: string; name: string; onHand: number; sales3m: number; daysCover: number | null; lifecycle: string;
     /** 外部观察（简道云天猫）近 30 / 90 天净需求；未映射或读模型缺席 = null，不是 0 */
-    externalNet30: number | null; externalNet90: number | null; externalLastSold: string | null;
+    externalNet30: string | null; externalNet90: string | null; externalLastSold: string | null;
   }[];
   /**
    * 外部观察与内部事实的时点差。内部 sales_monthly 停在哪个月、外部观察到哪一天、
@@ -445,7 +446,7 @@ async function computeDashboard(
   // 外部观察销速：影子列 + 「内部无动销但外部在售」计数。读模型缺席时全部 null，不影响内部口径。
   const externalVelocity = await loadExternalVelocitySafe(db);
   const externalOf = (skuId: number) => externalVelocity.bySku[String(skuId)] ?? null;
-  const internalNoMoveButExternalSelling = slowCandidates.filter((c) => c.s3m <= 0 && (externalOf(c.skuId)?.net30 ?? 0) > 0).length;
+  const internalNoMoveButExternalSelling = slowCandidates.filter((c) => c.s3m <= 0 && dCmp(externalOf(c.skuId)?.net30 ?? "0", "0") > 0).length;
   const slowSorted = slowCandidates.sort((a, b) => b.onHand - a.onHand).slice(0, 10);
   const slowSkuInfo: { id: number; code: string; name: string; lifecycle: string }[] = slowSorted.length
     ? await db

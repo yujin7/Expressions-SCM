@@ -18,12 +18,13 @@ import AlertCloseModal from "@/components/AlertCloseModal";
 import AlertEvidence, { ackText, type AlertEvidenceFields } from "@/components/AlertEvidence";
 import CaliberNote from "@/components/CaliberNote";
 import { exportCsv } from "@/components/exportCsv";
-import { formatCount, formatQty } from "@/components/format";
+import { formatQty } from "@/components/format";
 import ListToolbar from "@/components/ListToolbar";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
 import SearchInput from "@/components/SearchInput";
 import { useListState } from "@/components/useListState";
 import { hasAnyRole, useMe } from "@/components/useMe";
+import { compareDecimalValues } from "@/lib/decimal-sort";
 import type { InventoryAlertRow } from "@/server/modules/report/inventory-alerts";
 import type { InventoryAlertsPage } from "@/server/modules/report/inventory-alerts-query";
 import type { SpikeHit } from "@/server/modules/report/sales-spike";
@@ -140,8 +141,8 @@ function CoverTab() {
     { title: "日销 外部", key: "de", align: "right", width: 90, render: (_, r) => r.daily.external == null ? "—" : r.daily.external },
     { title: "内部", key: "di", align: "right", width: 80, render: (_, r) => r.daily.internal == null ? "—" : r.daily.internal },
     { title: "实时仓", key: "dl", align: "right", width: 80, render: (_, r) => r.daily.ledger == null ? "—" : r.daily.ledger },
-    { title: "近30天净件", dataIndex: "net30External", align: "right", width: 100, sorter: (a, b) => (a.net30External ?? -1) - (b.net30External ?? -1), render: (v: number | null) => v == null ? "—" : formatCount(v) },
-    { title: "在库", dataIndex: "onHand", align: "right", width: 90, sorter: (a, b) => Number(a.onHand) - Number(b.onHand), render: (v: string) => formatCount(v) },
+    { title: "近30天净件", dataIndex: "net30External", align: "right", width: 100, sorter: (a, b, order) => compareDecimalValues(a.net30External, b.net30External, order === "descend" ? "first" : "last"), render: (v: string | null) => v == null ? "—" : formatQty(v) },
+    { title: "在库", dataIndex: "onHand", align: "right", width: 90, sorter: (a, b) => compareDecimalValues(a.onHand, b.onHand), render: (v: string) => formatQty(v) },
     { title: "可销天数", dataIndex: "coverDays", align: "right", width: 100, sorter: (a, b) => (a.coverDays ?? Number.MAX_SAFE_INTEGER) - (b.coverDays ?? Number.MAX_SAFE_INTEGER), render: (v: number | null, r) => v == null ? <Typography.Text type="secondary">无日销</Typography.Text> : <Typography.Text type={r.status === "alert" ? "danger" : r.status === "watch" ? "warning" : undefined} strong>{v}d</Typography.Text> },
     { title: "阈值", key: "ad", width: 150, render: (_, r) => <span>{r.alertDays}d {r.usedDefault ? <Tag>缺省周期</Tag> : null}<br /><Typography.Text type="secondary" style={{ fontSize: 11 }}>{r.alertBasis}</Typography.Text></span> },
     { title: "主预警", key: "p", width: 120, render: (_, r) => r.primary ? <Space size={4} wrap><Tag color={r.primary === "out_of_stock" ? "error" : r.primary === "spike" ? "magenta" : "warning"}>{KIND_LABEL[r.primary]}</Tag>{r.tags.map((t) => <Tag key={t}>{KIND_LABEL[t]}</Tag>)}</Space> : <Typography.Text type="secondary">—</Typography.Text> },

@@ -4,7 +4,9 @@ import {
   jiandaoyunConfigFromEnv,
   jiandaoyunSchemaHash,
   normalizeJiandaoyunBaseUrl,
+  resolveJiandaoyunWindow,
 } from "@/server/integrations/jiandaoyun";
+import { jiandaoyunContract } from "@/server/integrations/jiandaoyun-contracts";
 
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -14,6 +16,35 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe("简道云 OpenAPI 客户端", () => {
+  it("滚动窗口按中国业务日解析为稳定且可审计的显式边界", () => {
+    expect(resolveJiandaoyunWindow(3, new Date("2026-09-02T06:30:00.000Z"))).toEqual({
+      from: "2026-08-30T16:00:00.000Z",
+      to: "2026-09-02T16:00:00.000Z",
+      fromBusinessDate: "2026-08-31",
+      throughBusinessDate: "2026-09-02",
+    });
+    expect(() => resolveJiandaoyunWindow(0)).toThrow("正整数");
+  });
+
+  it("进入需求、渠道和损益决策的数量金额字段都有数值质量门禁", () => {
+    const controls = (key: string) => new Map(
+      (jiandaoyunContract(key)?.numericControls ?? []).map((rule) => [rule.target, rule.scale]),
+    );
+    expect([...controls("pdd-order-observation")]).toEqual(expect.arrayContaining([
+      ["productQuantity", 4],
+    ]));
+    expect([...controls("vip-shop-trading-observation")]).toEqual(expect.arrayContaining([
+      ["salesAmount", 2],
+      ["salesQuantity", 4],
+    ]));
+    expect([...controls("tmall-product-pnl-observation")]).toEqual(expect.arrayContaining([
+      ["actualTransactionAmount", 2],
+      ["totalSalesCost", 2],
+      ["estimatedGrossProfit", 2],
+      ["estimatedNetProfit", 2],
+      ["paidNumber", 4],
+    ]));
+  });
   it("分页目录和数据，使用 app+entry 身份且不把凭据写入错误", async () => {
     const appId = "a".repeat(24);
     const entryId = "b".repeat(24);
@@ -99,6 +130,38 @@ describe("简道云 OpenAPI 客户端", () => {
     expect(normalizeJiandaoyunBaseUrl(
       "https://api.jiandaoyun.com/api/v5?redirect=1",
     )).toBeNull();
+  });
+
+  it("窗口订单同时回采近期业务日和近期更新，捕获迟到取消/退款", async () => {
+    const appId = "a".repeat(24);
+    const entryId = "b".repeat(24);
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      response({ data: [] }));
+    const client = new JiandaoyunClient({
+      apiKey: "secret-key",
+      baseUrl: "https://example.invalid/api/v5",
+    }, { fetchImpl: fetchImpl as unknown as typeof fetch, retries: 0 });
+
+    await client.listRecords(appId, entryId, ["updateTime", "_widget_date"], {
+      field: "_widget_date",
+      sinceDays: 3,
+      includeUpdatedSince: true,
+      bounds: resolveJiandaoyunWindow(3, new Date("2026-09-02T06:30:00.000Z")),
+    });
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as {
+      filter: { rel: string; cond: Array<{ field: string; value: string[] }> };
+    };
+    expect(body.filter.rel).toBe("or");
+    expect(body.filter.cond.map((condition) => condition.field)).toEqual([
+      "_widget_date",
+      "updateTime",
+    ]);
+    expect(body.filter.cond[0]?.value).toEqual(body.filter.cond[1]?.value);
+    expect(body.filter.cond[0]?.value).toEqual([
+      "2026-08-30T16:00:00.000Z",
+      "2026-09-02T16:00:00.000Z",
+    ]);
   });
 
   it("显式 fields 为空时拒绝退化为全字段下载", async () => {

@@ -19,7 +19,7 @@ const STREAM = {
   refunds: "tmall-sku-refund-observation",
 } as const;
 /** 读模型缓存键（导出：驾驶舱来源文案必须由它派生，改口径升版时文案跟着走——审计 C6） */
-export const EXTERNAL_DEMAND_SIGNAL_CACHE_KEY = "jiandaoyun-external-demand/v4";
+export const EXTERNAL_DEMAND_SIGNAL_CACHE_KEY = "jiandaoyun-external-demand/v7";
 const READ_MODEL_CACHE_KEY = EXTERNAL_DEMAND_SIGNAL_CACHE_KEY;
 
 export interface ExternalDemandDailyRow {
@@ -734,6 +734,9 @@ async function latestBatch(
     INNER JOIN import_jobs ij ON ij.id = ir.import_job_id
     WHERE ir.connector = ${connector} AND ir.stream = ${stream}
       AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
+      AND ij.status <> 'superseded'
+      AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+      AND (${connector} <> 'jdy' OR coalesce(ir.request_scope->>'emptySource', 'false') = 'false')
     ORDER BY ir.id DESC
     LIMIT 1
   `);
@@ -868,15 +871,18 @@ async function computeJiandaoyunExternalDemandSignal(
     db.execute(sql`SELECT payload FROM staging_rows
       WHERE import_job_id = ${crosswalkBatch.importJobId}
         AND target_table = 'jdy_tmall_sku_crosswalk_observation'
-        AND status IN ('pending', 'validated', 'committed')`),
+        AND status IN ('pending', 'validated', 'committed')
+        AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL`),
     db.execute(sql`SELECT payload FROM staging_rows
       WHERE import_job_id = ${salesBatch.importJobId}
         AND target_table = 'jdy_tmall_sku_sales_observation'
-        AND status IN ('pending', 'validated', 'committed')`),
+        AND status IN ('pending', 'validated', 'committed')
+        AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL`),
     db.execute(sql`SELECT payload FROM staging_rows
       WHERE import_job_id = ${refundBatch.importJobId}
         AND target_table = 'jdy_tmall_sku_refund_observation'
-        AND status IN ('pending', 'validated', 'committed')`),
+        AND status IN ('pending', 'validated', 'committed')
+        AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL`),
     db.execute(sql`SELECT id, raw_value, status FROM alias_exceptions
       WHERE alias_type = 'sku_barcode' AND scope = 'JIANDAOYUN'`),
     // 第二条身份桥（2026-09-02）：业务直接把「店铺|平台SKU」认领到系统 SKU 的外部标识。

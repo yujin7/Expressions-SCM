@@ -15,15 +15,16 @@
  */
 import { sql, type SQL } from "drizzle-orm";
 
-import { dAdd, dCmp, dMoney, dSub } from "@/server/core/decimal";
+import { dAdd, dCmp, dMoney, dQty, dSub } from "@/server/core/decimal";
 import { pddDemandEligibilitySql } from "@/server/rules/pdd-demand";
+import { tmallStreamsCoverSameHorizon } from "./tmall-observation-horizon";
 
 interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
 /** 读模型缓存键（导出：驾驶舱来源文案必须由它派生，改口径升版时文案跟着走——审计 C6） */
-export const CHANNEL_OBSERVATION_CACHE_KEY = "jiandaoyun-channel-observation/v4";
+export const CHANNEL_OBSERVATION_CACHE_KEY = "jiandaoyun-channel-observation/v9";
 const READ_MODEL_CACHE_KEY = CHANNEL_OBSERVATION_CACHE_KEY;
 const WINDOW_DAYS = 30;
 
@@ -35,14 +36,14 @@ export interface ChannelPlatformRow {
   anchorDate: string | null;
   windowFrom: string | null;
   /** 近 30 天件数（天猫=支付件数−成功退款子订单；拼多多=有效订单件数；唯品会=销售量） */
-  units: number | null;
+  units: string | null;
   /** 近 30 天金额（天猫=支付金额；拼多多=无金额字段 → null；唯品会=销售额） */
   amount: string | null;
-  refundUnits: number | null;
-  byBrand: { brand: string; units: number; amount: string | null }[];
-  byShop: { shop: string; units: number; amount: string | null }[];
+  refundUnits: string | null;
+  byBrand: { brand: string; units: string; amount: string | null }[];
+  byShop: { shop: string; units: string; amount: string | null }[];
   /** 品牌归属来源计数（件数口径）：已映射系统 SKU / 店铺档案 / 店铺名回退 / 未归属 */
-  brandAttribution: { mappedSku: number; shopMaster: number; nameGuess: number; unattributed: number };
+  brandAttribution: { mappedSku: string; shopMaster: string; nameGuess: string; unattributed: string };
   gate: string;
 }
 
@@ -51,8 +52,8 @@ export type ChannelPlatform = ChannelPlatformRow["platform"];
 export interface BrandPlatformRow {
   brand: string;
   /** 各平台近 30 天件数/金额；平台缺流为 null（不补零） */
-  platforms: Record<ChannelPlatform, { units: number | null; amount: string | null }>;
-  totalUnits: number;
+  platforms: Record<ChannelPlatform, { units: string | null; amount: string | null }>;
+  totalUnits: string;
 }
 
 export interface PddShopDailyPoint {
@@ -83,7 +84,7 @@ export interface ProductPnlRow {
   totalSalesCost: string;
   estimatedGrossProfit: string;
   estimatedNetProfit: string;
-  paidNumber: number;
+  paidNumber: string;
 }
 
 export interface TrafficProductRow {
@@ -199,6 +200,10 @@ const money = (v: unknown): string => {
   const t = v == null ? "" : String(v).trim();
   return /^-?\d+(\.\d+)?$/.test(t) ? dMoney(t) : "0.00";
 };
+const qty = (v: unknown): string => {
+  const t = v == null ? "" : String(v).trim();
+  return /^-?\d+(\.\d+)?$/.test(t) ? dQty(t) : "0.0000";
+};
 const text = (v: unknown): string | null => { const t = v == null ? "" : String(v).trim(); return t ? t : null; };
 
 /**
@@ -228,6 +233,7 @@ async function latestBatch(
     WHERE ir.connector = 'jdy' AND ir.stream = ${stream} AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
       AND ij.status <> 'superseded'
       AND ${qualityFilter}
+      AND coalesce(ir.request_scope->>'emptySource', 'false') = 'false'
     ORDER BY ir.id DESC LIMIT 1
   `);
   const [row] = resultRows<Record<string, unknown>>(result);
@@ -235,7 +241,8 @@ async function latestBatch(
   return importJobId > 0 ? { importJobId, sourceAsOf: row?.source_as_of == null ? null : String(row.source_as_of) } : null;
 }
 
-const emptyAttribution = () => ({ mappedSku: 0, shopMaster: 0, nameGuess: 0, unattributed: 0 });
+const emptyAttribution = () => ({ mappedSku: "0.0000", shopMaster: "0.0000", nameGuess: "0.0000", unattributed: "0.0000" });
+
 function insufficient(platform: ChannelPlatformRow["platform"], grain: string, gate: string): ChannelPlatformRow {
   return { platform, state: "insufficient", grain, sourceAsOf: null, anchorDate: null, windowFrom: null, units: null, amount: null, refundUnits: null, byBrand: [], byShop: [], brandAttribution: emptyAttribution(), gate };
 }
@@ -263,7 +270,7 @@ function normalizeBrandName(name: string, brands: BrandDim[]): string {
  * → 店铺名回退（仅档案无此店铺时）→ 未归属。每次归属记录来源，供页面显示「靠猜」的占比。
  */
 interface BrandAttributor {
-  attribute(shop: string, mappedBrand: string | null, units: number, tally: ChannelPlatformRow["brandAttribution"]): string;
+  attribute(shop: string, mappedBrand: string | null, units: string | number, tally: ChannelPlatformRow["brandAttribution"]): string;
   hasShop(shop: string): boolean;
   shops: number;
   shopsWithBrand: number;
@@ -307,15 +314,16 @@ async function loadBrandAttributor(db: ReadDb, brands: BrandDim[]): Promise<Bran
     brands: brandById.size,
     hasShop: (shop) => shopBrand.has(shop.trim()),
     attribute(shop, mappedBrand, units, tally) {
-      if (mappedBrand) { tally.mappedSku += units; return mappedBrand; }
+      if (mappedBrand) { tally.mappedSku = dAdd(tally.mappedSku, units, 4); return mappedBrand; }
       const key = shop.trim();
       if (shopBrand.has(key)) {
         const b = shopBrand.get(key);
-        if (b) { tally.shopMaster += units; return b; }
-        tally.unattributed += units; return UNATTRIBUTED;
+        if (b) { tally.shopMaster = dAdd(tally.shopMaster, units, 4); return b; }
+        tally.unattributed = dAdd(tally.unattributed, units, 4); return UNATTRIBUTED;
       }
       const guess = brandOfShop(shop, brands);
-      if (guess !== UNATTRIBUTED) tally.nameGuess += units; else tally.unattributed += units;
+      if (guess !== UNATTRIBUTED) tally.nameGuess = dAdd(tally.nameGuess, units, 4);
+      else tally.unattributed = dAdd(tally.unattributed, units, 4);
       return guess;
     },
   };
@@ -340,30 +348,56 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
   }));
   const attributor = await loadBrandAttributor(db, brands);
   const observedShops = new Set<string>();
+  const tmallHorizonReady = tmallSales && tmallRefunds
+    ? await tmallStreamsCoverSameHorizon(db, tmallSales.importJobId, tmallRefunds.importJobId)
+    : false;
 
   /* ── 天猫 ── */
-  let tmall = insufficient("天猫", "统计日 × 店铺 × 平台 SKU", "缺少天猫日销量成功批次。");
-  if (tmallSales) {
+  let tmall = insufficient(
+    "天猫",
+    "统计日 × 店铺 × 平台 SKU",
+    tmallSales && tmallRefunds
+      ? "天猫退款观察时点落后于销量观察，净销量保持不可用。"
+      : tmallSales
+        ? "缺少天猫成功退款成功批次，净销量保持不可用。"
+      : "缺少天猫日销量成功批次。",
+  );
+  // 净销量是“支付件数 − 成功退款子订单数”。两条流必须同时可用且退款观察至少覆盖销量时点；
+  // 否则旧退款快照会把新日期的未知退款误当成 0。
+  if (tmallSales && tmallRefunds && tmallHorizonReady) {
     const rows = resultRows<Record<string, unknown>>(await db.execute(sql`
-      WITH s AS (
-        SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'skuId' AS psku, left(payload->'data'->>'statisticalDate', 10)::date AS d,
+      WITH s_versions AS (
+        SELECT DISTINCT ON (payload->'data'->>'shopName', payload->'data'->>'skuId', left(payload->'data'->>'statisticalDate', 10))
+               nullif(trim(payload->>'sourceDeletedAt'), '') AS deleted_at,
+               payload->'data'->>'shopName' AS shop, payload->'data'->>'skuId' AS psku, left(payload->'data'->>'statisticalDate', 10)::date AS d,
                CASE WHEN trim(coalesce(payload->'data'->>'paidNumber','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'paidNumber')::numeric ELSE 0 END AS paid,
                CASE WHEN trim(coalesce(payload->'data'->>'paidAmount','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'paidAmount')::numeric ELSE 0 END AS amt
         FROM staging_rows WHERE import_job_id = ${tmallSales.importJobId} AND target_table = 'jdy_tmall_sku_sales_observation'
-          AND status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          AND status IN ('pending','validated','committed')
+          AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+        ORDER BY payload->'data'->>'shopName', payload->'data'->>'skuId', left(payload->'data'->>'statisticalDate', 10), row_no DESC
       ),
-      r AS (
-        SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'skuId' AS psku, left(payload->'data'->>'statisticalDate', 10)::date AS d,
+      s AS (SELECT * FROM s_versions WHERE deleted_at IS NULL),
+      r_versions AS (
+        SELECT DISTINCT ON (payload->'data'->>'shopName', payload->'data'->>'skuId', left(payload->'data'->>'statisticalDate', 10))
+               nullif(trim(payload->>'sourceDeletedAt'), '') AS deleted_at,
+               payload->'data'->>'shopName' AS shop, payload->'data'->>'skuId' AS psku, left(payload->'data'->>'statisticalDate', 10)::date AS d,
                CASE WHEN trim(coalesce(payload->'data'->>'successRefundSuborderNumber','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'successRefundSuborderNumber')::numeric ELSE 0 END AS refund
-        FROM staging_rows WHERE import_job_id = ${tmallRefunds?.importJobId ?? -1} AND target_table = 'jdy_tmall_sku_refund_observation'
-          AND status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+        FROM staging_rows WHERE import_job_id = ${tmallRefunds.importJobId} AND target_table = 'jdy_tmall_sku_refund_observation'
+          AND status IN ('pending','validated','committed')
+          AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+        ORDER BY payload->'data'->>'shopName', payload->'data'->>'skuId', left(payload->'data'->>'statisticalDate', 10), row_no DESC
       ),
+      r AS (SELECT * FROM r_versions WHERE deleted_at IS NULL),
       a AS (SELECT max(d) AS d FROM s),
       cw AS (
         SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'platformSkuId' AS psku,
-               max((payload->'_identity'->>'skuId')::int) AS sku_id, count(DISTINCT payload->'_identity'->>'skuId') AS n
+               max((payload->'_identity'->>'skuId')::int) AS sku_id,
+               count(DISTINCT payload->'_identity'->>'skuId') AS n
         FROM staging_rows WHERE import_job_id = ${crosswalkBatch?.importJobId ?? -1} AND target_table = 'jdy_tmall_sku_crosswalk_observation'
-          AND status IN ('pending','validated','committed') AND payload->'_identity'->>'skuId' IS NOT NULL
+          AND status IN ('pending','validated','committed')
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
+          AND payload->'_identity'->>'skuId' IS NOT NULL
         GROUP BY 1, 2
       ),
       direct AS (
@@ -395,36 +429,36 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
       WHERE r.d > a.d - ${WINDOW_DAYS}::int AND r.d <= a.d GROUP BY r.shop, coalesce(b.code, '')
     `));
     const anchor = rows.find((x) => x.kind === "anchor")?.shop ? String(rows.find((x) => x.kind === "anchor")!.shop) : null;
-    const byShop = new Map<string, { units: number; amount: string; refund: number }>();
-    const byBrand = new Map<string, { units: number; amount: string }>();
+    const byShop = new Map<string, { units: string; amount: string; refund: string }>();
+    const byBrand = new Map<string, { units: string; amount: string }>();
     const tally = emptyAttribution();
-    let units = 0, refund = 0, amount = "0.00";
+    let units = "0.0000", refund = "0.0000", amount = "0.00";
     for (const x of rows) {
       if (x.kind === "anchor") continue;
       const shop = String(x.shop ?? "");
       observedShops.add(shop);
-      const cur = byShop.get(shop) ?? { units: 0, amount: "0.00", refund: 0 };
-      cur.units += num(x.paid); cur.amount = dAdd(cur.amount, money(x.amt), 2); cur.refund += num(x.refund);
+      const cur = byShop.get(shop) ?? { units: "0.0000", amount: "0.00", refund: "0.0000" };
+      cur.units = dAdd(cur.units, qty(x.paid), 4); cur.amount = dAdd(cur.amount, money(x.amt), 2); cur.refund = dAdd(cur.refund, qty(x.refund), 4);
       byShop.set(shop, cur);
       if (x.kind === "shop") {
-        // 已映射的平台 SKU 用系统 SKU 的品牌；未映射的按店铺档案归属（店铺名猜只作档案缺失时的回退）
-        const brand = attributor.attribute(shop, text(x.brand), num(x.paid), tally);
-        const b = byBrand.get(brand) ?? { units: 0, amount: "0.00" };
-        b.units += num(x.paid); b.amount = dAdd(b.amount, money(x.amt), 2); byBrand.set(brand, b);
-        units += num(x.paid); amount = dAdd(amount, money(x.amt), 2);
+        // 已映射的平台 SKU 用系统 SKU 的品牌；未映射按店铺档案归属，档案缺失才回退店名
+        const brand = attributor.attribute(shop, text(x.brand), qty(x.paid), tally);
+        const b = byBrand.get(brand) ?? { units: "0.0000", amount: "0.00" };
+        b.units = dAdd(b.units, qty(x.paid), 4); b.amount = dAdd(b.amount, money(x.amt), 2); byBrand.set(brand, b);
+        units = dAdd(units, qty(x.paid), 4); amount = dAdd(amount, money(x.amt), 2);
       } else if (x.kind === "refund") {
-        refund += num(x.refund); units -= num(x.refund);
-        const brand = attributor.attribute(shop, text(x.brand), -num(x.refund), tally);
-        const b = byBrand.get(brand) ?? { units: 0, amount: "0.00" };
-        b.units -= num(x.refund); byBrand.set(brand, b);
+        refund = dAdd(refund, qty(x.refund), 4); units = dSub(units, qty(x.refund), 4);
+        const brand = attributor.attribute(shop, text(x.brand), dSub("0", qty(x.refund), 4), tally);
+        const b = byBrand.get(brand) ?? { units: "0.0000", amount: "0.00" };
+        b.units = dSub(b.units, qty(x.refund), 4); byBrand.set(brand, b);
       }
     }
     tmall = {
       platform: "天猫", state: anchor ? "ready" : "insufficient", grain: "统计日 × 店铺 × 平台 SKU",
       sourceAsOf: tmallSales.sourceAsOf, anchorDate: anchor, windowFrom: anchor ? shiftDate(anchor, -(WINDOW_DAYS - 1)) : null,
       units, amount, refundUnits: refund,
-      byBrand: [...byBrand.entries()].map(([brand, v]) => ({ brand, ...v })).sort((a, b) => b.units - a.units),
-      byShop: [...byShop.entries()].map(([shop, v]) => ({ shop, units: v.units - v.refund, amount: v.amount })).sort((a, b) => b.units - a.units),
+      byBrand: [...byBrand.entries()].map(([brand, v]) => ({ brand, ...v })).sort((a, b) => dCmp(b.units, a.units)),
+      byShop: [...byShop.entries()].map(([shop, v]) => ({ shop, units: dSub(v.units, v.refund, 4), amount: v.amount })).sort((a, b) => dCmp(b.units, a.units)),
       brandAttribution: tally,
       gate: "支付件数 − 成功退款子订单数；金额为支付金额（未扣退款与费用）。品牌按已映射系统 SKU 归属，未映射按店铺档案归属（档案缺失才按店铺名回退）。",
     };
@@ -435,12 +469,20 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
   {
     const rows = resultRows<Record<string, unknown>>(await db.execute(sql`
       WITH b AS (
-        SELECT ir.import_job_id FROM integration_runs ir
+        SELECT ir.import_job_id,
+               CASE
+                 WHEN nullif(ir.request_scope->'window'->>'extractionCutoff', '') IS NULL THEN NULL
+                 ELSE least(
+                   nullif(ir.request_scope->'window'->>'to', '')::timestamptz,
+                   nullif(ir.request_scope->'window'->>'extractionCutoff', '')::timestamptz
+                 )
+               END AS observed_through_at
+        FROM integration_runs ir
         WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation' AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
           AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
           AND ir.finished_at > now() - interval '90 days'
       ),
-      o AS (
+      o_latest AS (
         SELECT DISTINCT ON (payload->'data'->>'orderNumber', payload->'data'->>'productId', coalesce(payload->'data'->>'merchantSkuCode',''))
                payload->'data'->>'shopName' AS shop,
                payload->'data'->>'productId' AS pid,
@@ -450,11 +492,18 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
                coalesce(payload->'data'->>'orderStatus','') AS status,
                coalesce(payload->'data'->>'afterSalesStatus','') AS after_sales_status,
                coalesce(payload->'data'->>'paymentTime','') AS payment_time,
-               ij.source_as_of
+               ij.source_as_of,
+               payload->>'sourceDeletedAt' AS source_deleted_at
         FROM staging_rows sr INNER JOIN import_jobs ij ON ij.id = sr.import_job_id
         WHERE sr.import_job_id IN (SELECT import_job_id FROM b) AND sr.target_table = 'jdy_pdd_order_observation'
           AND sr.status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
         ORDER BY payload->'data'->>'orderNumber', payload->'data'->>'productId', coalesce(payload->'data'->>'merchantSkuCode',''), sr.import_job_id DESC
+      ),
+      -- tombstone 先压过旧版本，再被排除，防止已删除订单继续贡献销量。
+      o AS (
+        SELECT shop, pid, mcode, d, qty, status, after_sales_status, payment_time, source_as_of
+        FROM o_latest
+        WHERE nullif(trim(source_deleted_at), '') IS NULL
       ),
       cw AS (
         SELECT payload->'data'->>'shopName' AS shop,
@@ -466,6 +515,7 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
         WHERE import_job_id = ${pddCrosswalkBatch?.importJobId ?? -1}
           AND target_table = 'jdy_pdd_sku_crosswalk_observation'
           AND status IN ('pending','validated','committed')
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
           AND payload->'_identity'->>'skuId' IS NOT NULL
         GROUP BY 1, 2, 3
       ),
@@ -498,35 +548,47 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
         LEFT JOIN skus sku ON sku.id = i.sku_id
         LEFT JOIN brands br ON br.id = sku.brand_id
       ),
-      a AS (SELECT max(d) AS d, max(source_as_of)::text AS as_of FROM attributed)
+      -- 有效的空窗口也代表“已观察到这里”：锚点优先取实际抽取截止的中国业务日，
+      -- 旧批次没有窗口元数据时才退回订单最大业务日。
+      a AS (
+        SELECT coalesce(
+                 (SELECT max((observed_through_at + interval '8 hours')::date) FROM b),
+                 max(d)
+               ) AS d,
+               coalesce(
+                 (SELECT max(observed_through_at)::text FROM b),
+                 max(source_as_of)::text
+               ) AS as_of
+        FROM attributed
+      )
       SELECT 'anchor' AS kind, a.d::text AS shop, NULL::text AS brand, NULL::numeric AS qty, a.as_of FROM a
       UNION ALL
       SELECT 'shop', attributed.shop, attributed.brand, sum(attributed.qty), NULL
       FROM attributed CROSS JOIN a
-      WHERE attributed.d > a.d - ${WINDOW_DAYS}::int
+      WHERE attributed.d > a.d - ${WINDOW_DAYS}::int AND attributed.d <= a.d
       GROUP BY attributed.shop, attributed.brand
     `));
     const anchorRow = rows.find((x) => x.kind === "anchor");
     const anchor = anchorRow?.shop ? String(anchorRow.shop) : null;
     if (anchor) {
-      const byBrand = new Map<string, number>();
-      let units = 0;
-      const byShop = new Map<string, number>();
+      const byBrand = new Map<string, string>();
+      let units = "0.0000";
+      const byShop = new Map<string, string>();
       const tally = emptyAttribution();
       for (const x of rows) {
         if (x.kind !== "shop") continue;
-        const shop = String(x.shop ?? ""); const q = num(x.qty);
+        const shop = String(x.shop ?? ""); const q = qty(x.qty);
         observedShops.add(shop);
-        units += q; byShop.set(shop, (byShop.get(shop) ?? 0) + q);
+        units = dAdd(units, q, 4); byShop.set(shop, dAdd(byShop.get(shop) ?? "0.0000", q, 4));
         const b = attributor.attribute(shop, text(x.brand), q, tally);
-        byBrand.set(b, (byBrand.get(b) ?? 0) + q);
+        byBrand.set(b, dAdd(byBrand.get(b) ?? "0.0000", q, 4));
       }
       pdd = {
         platform: "拼多多", state: "ready", grain: "订单 × 商品 × 商家编码（3 天滚动快照去重累加）",
         sourceAsOf: anchorRow?.as_of ? String(anchorRow.as_of).slice(0, 10) : null, anchorDate: anchor, windowFrom: shiftDate(anchor, -(WINDOW_DAYS - 1)),
         units, amount: null, refundUnits: null,
-        byBrand: [...byBrand.entries()].map(([brand, u]) => ({ brand, units: u, amount: null })).sort((a, b) => b.units - a.units),
-        byShop: [...byShop.entries()].map(([shop, u]) => ({ shop, units: u, amount: null })).sort((a, b) => b.units - a.units),
+        byBrand: [...byBrand.entries()].map(([brand, u]) => ({ brand, units: u, amount: null })).sort((a, b) => dCmp(b.units, a.units)),
+        byShop: [...byShop.entries()].map(([shop, u]) => ({ shop, units: u, amount: null })).sort((a, b) => dCmp(b.units, a.units)),
         brandAttribution: tally,
         gate: "已付款有效订单件数（剔除待付款、已取消/退款成功）；订单流无金额字段。品牌优先按已映射系统 SKU 归属，未映射按店铺档案归属。窗口内批次不足 30 天时件数偏低。",
       };
@@ -616,7 +678,7 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
       // 订单流无金额：平台行的金额/退款件数改由店铺日表补足，并在 gate 里注明来源
       if (pdd.state === "ready" && pddShopDailyBatch) {
         pdd = {
-          ...pdd, amount: totals.transactionAmount30, refundUnits: totals.refundCount30,
+          ...pdd, amount: totals.transactionAmount30, refundUnits: dQty(totals.refundCount30),
           byShop: pdd.byShop.map((s) => ({ ...s, amount: byShop.find((x) => x.shopName === s.shop)?.transactionAmount30 ?? null })),
           gate: `${pdd.gate} 金额与退款件数来自店铺交易日表（店铺日级，锚点 ${anchor}），与订单件数不是同一张表。`,
         };
@@ -633,7 +695,9 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
                CASE WHEN trim(coalesce(payload->'data'->>'salesQuantity','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'salesQuantity')::numeric ELSE 0 END AS qty,
                CASE WHEN trim(coalesce(payload->'data'->>'salesAmount','')) ~ '^-?[0-9]+([.][0-9]+)?$' THEN (payload->'data'->>'salesAmount')::numeric ELSE 0 END AS amt
         FROM staging_rows WHERE import_job_id = ${vip.importJobId} AND target_table = 'jdy_vip_shop_trading_observation'
-          AND status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          AND status IN ('pending','validated','committed')
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
+          AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
       ),
       a AS (SELECT max(d) AS d FROM v)
       SELECT 'anchor' AS kind, a.d::text AS shop, NULL::text AS brand, NULL::numeric AS qty, NULL::numeric AS amt FROM a
@@ -642,26 +706,26 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
     `));
     const anchor = rows.find((x) => x.kind === "anchor")?.shop ? String(rows.find((x) => x.kind === "anchor")!.shop) : null;
     if (anchor) {
-      const byBrand = new Map<string, { units: number; amount: string }>();
-      const byShop = new Map<string, { units: number; amount: string }>();
+      const byBrand = new Map<string, { units: string; amount: string }>();
+      const byShop = new Map<string, { units: string; amount: string }>();
       const vipTally = emptyAttribution();
-      let units = 0, amount = "0.00";
+      let units = "0.0000", amount = "0.00";
       for (const x of rows) {
         if (x.kind !== "row") continue;
-        const q = num(x.qty); const m = money(x.amt);
-        units += q; amount = dAdd(amount, m, 2);
+        const q = qty(x.qty); const m = money(x.amt);
+        units = dAdd(units, q, 4); amount = dAdd(amount, m, 2);
         observedShops.add(String(x.shop ?? ""));
+        vipTally.shopMaster = dAdd(vipTally.shopMaster, q, 4);
         const brandKey = normalizeBrandName(String(x.brand ?? ""), brands);
-        vipTally.shopMaster += q;
-        const b = byBrand.get(brandKey) ?? { units: 0, amount: "0.00" }; b.units += q; b.amount = dAdd(b.amount, m, 2); byBrand.set(brandKey, b);
-        const s = byShop.get(String(x.shop ?? "")) ?? { units: 0, amount: "0.00" }; s.units += q; s.amount = dAdd(s.amount, m, 2); byShop.set(String(x.shop ?? ""), s);
+        const b = byBrand.get(brandKey) ?? { units: "0.0000", amount: "0.00" }; b.units = dAdd(b.units, q, 4); b.amount = dAdd(b.amount, m, 2); byBrand.set(brandKey, b);
+        const s = byShop.get(String(x.shop ?? "")) ?? { units: "0.0000", amount: "0.00" }; s.units = dAdd(s.units, q, 4); s.amount = dAdd(s.amount, m, 2); byShop.set(String(x.shop ?? ""), s);
       }
       vipRow = {
         platform: "唯品会", state: "ready", grain: "统计日 × 店铺 × 品牌",
         sourceAsOf: vip.sourceAsOf, anchorDate: anchor, windowFrom: shiftDate(anchor, -(WINDOW_DAYS - 1)),
         units, amount, refundUnits: null,
-        byBrand: [...byBrand.entries()].map(([brand, v]) => ({ brand, ...v })).sort((a, b) => b.units - a.units),
-        byShop: [...byShop.entries()].map(([shop, v]) => ({ shop, ...v })).sort((a, b) => b.units - a.units),
+        byBrand: [...byBrand.entries()].map(([brand, v]) => ({ brand, ...v })).sort((a, b) => dCmp(b.units, a.units)),
+        byShop: [...byShop.entries()].map(([shop, v]) => ({ shop, ...v })).sort((a, b) => dCmp(b.units, a.units)),
         brandAttribution: vipTally,
         gate: "平台报表的销售额/销售量（品牌级，不到 SKU）；品牌为源表品牌名按系统品牌码归一。",
       };
@@ -685,6 +749,7 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
                ${sql.raw(`${numExpr("paidNumber")} AS paid`)}
         FROM staging_rows WHERE import_job_id = ${pnl.importJobId} AND target_table = 'jdy_tmall_product_pnl_observation'
           AND status IN ('pending','validated','committed') AND left(payload->'data'->>'statisticalDate', 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
           AND nullif(trim(payload->'data'->>'platformProductId'), '') IS NOT NULL AND nullif(trim(payload->'data'->>'shopName'), '') IS NOT NULL
         ORDER BY payload->'data'->>'shopName', payload->'data'->>'platformProductId', left(payload->'data'->>'statisticalDate', 10), row_no DESC
       ),
@@ -697,7 +762,7 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
     const anchor = rows.find((x) => x.kind === "anchor")?.shop ? String(rows.find((x) => x.kind === "anchor")!.shop) : null;
     const products: ProductPnlRow[] = rows.filter((x) => x.kind === "product").map((x) => ({
       shopName: String(x.shop ?? ""), platformProductId: String(x.pid ?? ""), productName: text(x.pname),
-      actualTransactionAmount: money(x.amt), totalSalesCost: money(x.cost), estimatedGrossProfit: money(x.gross), estimatedNetProfit: money(x.net), paidNumber: num(x.paid),
+      actualTransactionAmount: money(x.amt), totalSalesCost: money(x.cost), estimatedGrossProfit: money(x.gross), estimatedNetProfit: money(x.net), paidNumber: qty(x.paid),
     }));
     const totals = products.reduce((acc, p) => ({
       actualTransactionAmount: dAdd(acc.actualTransactionAmount, p.actualTransactionAmount, 2),
@@ -846,7 +911,7 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
   for (const s of pddDaily.byShop) pddBrandAmount.set(s.brand, dAdd(pddBrandAmount.get(s.brand) ?? "0.00", s.transactionAmount30, 2));
   const brandMatrix = buildBrandMatrix(platforms, { "拼多多": pddDaily.state === "ready" ? pddBrandAmount : null });
   const missingShops = [...observedShops].filter((s) => s && !attributor.hasShop(s)).sort().slice(0, 20);
-  const guessed = platforms.reduce((acc, p) => acc + Math.abs(p.brandAttribution.nameGuess), 0);
+  const guessed = platforms.reduce((acc, p) => dAdd(acc, p.brandAttribution.nameGuess.replace(/^-/, ""), 4), "0.0000");
   return {
     state: platforms.some((p) => p.state === "ready") ? "ready" : "insufficient",
     authority: "observation_only",
@@ -867,7 +932,7 @@ export async function computeChannelObservation(db: ReadDb): Promise<ChannelObse
       "只是观察：不与内部 sales_monthly 相加、不进入销速/补货/关账。",
       "拼多多订单流只保留最近 90 天内的滚动快照，早于首次同步的日期没有数据。",
       attributor.state === "ready"
-        ? `品牌归属：已映射系统 SKU 优先，其余按数据中台店铺档案（${attributor.shopsWithBrand}/${attributor.shops} 家店铺有品牌）${guessed > 0 ? `；仍有 ${guessed} 件靠店铺名回退` : ""}${missingShops.length ? `；${missingShops.length} 家观察到的店铺不在档案里` : ""}。`
+        ? `品牌归属：已映射系统 SKU 优先，其余按数据中台店铺档案（${attributor.shopsWithBrand}/${attributor.shops} 家店铺有品牌）${dCmp(guessed, "0") > 0 ? `；仍有 ${guessed} 件靠店铺名回退` : ""}${missingShops.length ? `；${missingShops.length} 家观察到的店铺不在档案里` : ""}。`
         : "店铺档案流未同步：未映射平台 SKU 的品牌只能按店铺名回退推断。",
       "品牌 × 平台矩阵各列口径不同，总件数只用于排序，不代表全渠道合计。",
     ],
@@ -879,24 +944,24 @@ function buildBrandMatrix(
   brandAmountOverride: Partial<Record<ChannelPlatform, Map<string, string> | null>> = {},
 ): BrandPlatformRow[] {
   const map = new Map<string, BrandPlatformRow>();
-  const cell = (p: ChannelPlatformRow): { units: number | null; amount: string | null } => (p.state === "ready" ? { units: 0, amount: null } : { units: null, amount: null });
+  const cell = (p: ChannelPlatformRow): { units: string | null; amount: string | null } => (p.state === "ready" ? { units: "0.0000", amount: null } : { units: null, amount: null });
   const blank = (): BrandPlatformRow["platforms"] => ({ "天猫": cell(platforms[0]), "拼多多": cell(platforms[1]), "唯品会": cell(platforms[2]) });
-  const rowOf = (brand: string) => { const row = map.get(brand) ?? { brand, platforms: blank(), totalUnits: 0 }; map.set(brand, row); return row; };
+  const rowOf = (brand: string) => { const row = map.get(brand) ?? { brand, platforms: blank(), totalUnits: "0.0000" }; map.set(brand, row); return row; };
   for (const p of platforms) {
     if (p.state !== "ready") continue;
     for (const b of p.byBrand) {
       const row = rowOf(b.brand);
       const c = row.platforms[p.platform];
-      c.units = (c.units ?? 0) + b.units;
+      c.units = dAdd(c.units ?? "0.0000", b.units, 4);
       if (b.amount != null) c.amount = dAdd(c.amount ?? "0.00", b.amount, 2);
-      row.totalUnits += b.units;
+      row.totalUnits = dAdd(row.totalUnits, b.units, 4);
     }
   }
   for (const [platform, amounts] of Object.entries(brandAmountOverride) as [ChannelPlatform, Map<string, string> | null][]) {
     if (!amounts) continue;
     for (const [brand, amount] of amounts) rowOf(brand).platforms[platform].amount = amount;
   }
-  return [...map.values()].sort((a, b) => b.totalUnits - a.totalUnits || a.brand.localeCompare(b.brand, "zh-CN"));
+  return [...map.values()].sort((a, b) => dCmp(b.totalUnits, a.totalUnits) || a.brand.localeCompare(b.brand, "zh-CN"));
 }
 
 function shiftDate(iso: string, days: number): string {
@@ -915,9 +980,13 @@ async function binding(db: ReadDb): Promise<string> {
     latestBatch(db, "pdd-shop-daily-observation", { allowQualityBlocked: "snapshot" }), latestBatch(db, "pdd-product-daily-observation", { allowQualityBlocked: "snapshot" }),
   ]);
   const pdd = resultRows<Record<string, unknown>>(await db.execute(sql`
-    SELECT coalesce(max(ir.import_job_id), 0)::int AS j FROM integration_runs ir
+    SELECT coalesce(string_agg(
+      ir.id::text || ':' || ir.import_job_id::text || ':' || ir.finished_at::text || ':' || coalesce(ir.request_scope::text, '{}'),
+      ',' ORDER BY ir.id
+    ), 'none') AS retained FROM integration_runs ir
     WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-order-observation' AND ir.status = 'succeeded'
-      AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'`))[0];
+      AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+      AND ir.finished_at > now() - interval '90 days'`))[0];
   const cw = await latestBatch(db, "tmall-sku-crosswalk-observation", { allowQualityBlocked: true });
   const claims = resultRows<Record<string, unknown>>(await db.execute(sql`
     SELECT count(*)::int AS n,
@@ -927,7 +996,7 @@ async function binding(db: ReadDb): Promise<string> {
     FROM sku_identifiers
     WHERE kind = 'external' AND scope IN ('JIANDAOYUN:TMALL', 'JIANDAOYUN:PDD')
   `))[0];
-  return `tmall:${a?.importJobId ?? "none"}:${b?.importJobId ?? "none"}:${cw?.importJobId ?? "none"}:${num(claims?.n)}:${num(claims?.m)}:${num(claims?.active_n)}:${String(claims?.updated ?? "")}|vip:${c?.importJobId ?? "none"}|pnl:${d?.importJobId ?? "none"}|pdd:${num(pdd?.j)}:${pddCw?.importJobId ?? "none"}|traffic:${traffic?.importJobId ?? "none"}|cost:${cost?.importJobId ?? "none"}|shop:${shopMaster?.importJobId ?? "none"}:${brandMaster?.importJobId ?? "none"}|pddDaily:${pddShopDaily?.importJobId ?? "none"}:${pddProductDaily?.importJobId ?? "none"}`;
+  return `tmall:${a?.importJobId ?? "none"}:${b?.importJobId ?? "none"}:${cw?.importJobId ?? "none"}:${num(claims?.n)}:${num(claims?.m)}:${num(claims?.active_n)}:${String(claims?.updated ?? "")}|vip:${c?.importJobId ?? "none"}|pnl:${d?.importJobId ?? "none"}|pdd:${String(pdd?.retained ?? "none")}:${pddCw?.importJobId ?? "none"}|traffic:${traffic?.importJobId ?? "none"}|cost:${cost?.importJobId ?? "none"}|shop:${shopMaster?.importJobId ?? "none"}:${brandMaster?.importJobId ?? "none"}|pddDaily:${pddShopDaily?.importJobId ?? "none"}:${pddProductDaily?.importJobId ?? "none"}`;
 }
 
 export async function loadChannelObservation(db: ReadDb): Promise<ChannelObservation> {

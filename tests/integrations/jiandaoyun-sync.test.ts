@@ -328,7 +328,7 @@ describe("简道云受控同步", () => {
     expect(JSON.stringify(staged[0].payload)).not.toContain("sensitive-phone");
     expect(JSON.stringify(staged[0].payload)).not.toContain("sensitive-image");
     expect(formEvidence.mock.calls[0]?.[2]).toMatchObject({
-      contract: "jiandaoyun-observation-v4",
+      contract: "jiandaoyun-observation-v5",
       scope: {
         sourceSequence: "source-record-id-asc/v1",
         deletionPolicy: "per-record-tombstone-suspected-tail-fail-closed/v1",
@@ -398,11 +398,30 @@ describe("简道云受控同步", () => {
     const { db } = await createTestDb();
     const [actor] = await db.insert(schema.users).values({ name: "简道云质量责任人" }).returning();
     const controlled = { ...contract, businessKey: ["productCode"] } satisfies JiandaoyunFormContract;
-    const client = observationClient(() => [
+    let rows: readonly TestObservationRow[] = [
+      { id: "0".repeat(24), code: "TRUSTED-SKU", updatedAt: "2026-07-29T02:00:00.000Z" },
+    ];
+    const client = observationClient(() => rows);
+    let evidenceNo = 0;
+    const writeEvidence = vi.fn(async (_connector: string, _stream: string, envelope: unknown) => {
+      const hashPart = ["c", "d", "e"][evidenceNo++] ?? "f";
+      return {
+        relativePath: `integration-evidence/jdy/test-observation/${hashPart}.json`,
+        hash: hashPart.repeat(64),
+        bytes: `${JSON.stringify(envelope)}\n`,
+      };
+    });
+    const trusted = await syncJiandaoyunForm(db, {
+      client,
+      actorId: actor.id,
+      contract: controlled,
+      writeEvidence,
+    });
+    rows = [
+      { id: "0".repeat(24), code: "TRUSTED-SKU", updatedAt: "2026-07-29T02:00:00.000Z" },
       { id: "1".repeat(24), code: "DUPLICATE-SKU", updatedAt: "2026-07-30T02:00:00.000Z" },
       { id: "2".repeat(24), code: "duplicate-sku", updatedAt: "2026-07-30T02:00:00.000Z" },
-    ]);
-    const writeEvidence = vi.fn(observationEvidence("d"));
+    ];
 
     const result = await syncJiandaoyunForm(db, {
       client,
@@ -425,8 +444,34 @@ describe("简道云受控同步", () => {
       },
     });
     expect(JSON.stringify(run.requestScope)).not.toContain("DUPLICATE-SKU");
-    expect(writeEvidence.mock.calls[0]?.[2]).toMatchObject({
+    expect(writeEvidence.mock.calls[1]?.[2]).toMatchObject({
       scope: { controlSummary: { status: "review", duplicateRows: 2 } },
+    });
+    const jobs = await db.select().from(schema.importJobs);
+    expect(jobs.map((job) => job.status)).toEqual(["done", "done"]);
+    const trustedRows = await db.select().from(schema.stagingRows)
+      .where(eq(schema.stagingRows.importJobId, trusted.importJobId));
+    expect(trustedRows).toHaveLength(1);
+    expect(trustedRows[0]?.status).toBe("pending");
+
+    // 源端修复重复键后应以最后可信批次（而非被阻断批次）做连续性基线并恢复。
+    rows = [
+      { id: "0".repeat(24), code: "TRUSTED-SKU", updatedAt: "2026-07-31T02:00:00.000Z" },
+    ];
+    const recovered = await syncJiandaoyunForm(db, {
+      client,
+      actorId: actor.id,
+      contract: controlled,
+      writeEvidence,
+    });
+    expect(recovered.replayed).toBe(false);
+    const recoveredJobs = await db.select().from(schema.importJobs).orderBy(schema.importJobs.id);
+    expect(recoveredJobs.map((job) => job.status)).toEqual(["superseded", "superseded", "done"]);
+    const [recoveredRun] = await db.select().from(schema.integrationRuns)
+      .where(eq(schema.integrationRuns.id, recovered.runId));
+    expect(recoveredRun.requestScope).toMatchObject({
+      qualityBlocked: false,
+      priorSourceRecordIdsVerified: 1,
     });
   });
 
@@ -523,10 +568,11 @@ describe("简道云受控同步", () => {
     }];
     const windowedContract: JiandaoyunFormContract = {
       ...contract,
-      key: "windowed-test-observation",
-      window: { field: "statistical_date", days: 3 },
+      key: "pdd-order-observation",
+      window: { field: "statistical_date", days: 3, includeUpdatedSince: true },
     };
     const client = observationClient(() => rows);
+    const listRecords = vi.spyOn(client, "listRecords");
     const envelopes: unknown[] = [];
     const captureEvidence = (hashPart: string) => async (
       _connector: string,
@@ -545,6 +591,7 @@ describe("简道云受控同步", () => {
       actorId: actor.id,
       contract: windowedContract,
       writeEvidence: captureEvidence("3"),
+      now: () => new Date("2026-09-01T06:00:00.000Z"),
     });
     rows = [{ id: "2".repeat(24), code: "NEWER-SKU", updatedAt: "2026-09-02T02:00:00.000Z" }];
     const second = await syncJiandaoyunForm(db, {
@@ -552,6 +599,7 @@ describe("简道云受控同步", () => {
       actorId: actor.id,
       contract: windowedContract,
       writeEvidence: captureEvidence("4"),
+      now: () => new Date("2026-09-02T06:00:00.000Z"),
     });
 
     const jobs = await db.select().from(schema.importJobs);
@@ -566,16 +614,43 @@ describe("简道云受控同步", () => {
       .toEqual(["NEWER-SKU", "OLDER-SKU"]);
     expect(envelopes).toHaveLength(2);
     expect(envelopes[0]).toMatchObject({
-      scope: {
-        window: { field: "statistical_date", days: 3 },
-        sourceSequence: "source-record-id-asc/v1",
-        deletionPolicy: "rolling-window-retain-history/v1",
-      },
+      scope: { window: {
+        field: "statistical_date",
+        days: 3,
+        includeUpdatedSince: true,
+        from: "2026-08-29T16:00:00.000Z",
+        to: "2026-09-01T16:00:00.000Z",
+        fromBusinessDate: "2026-08-30",
+        throughBusinessDate: "2026-09-01",
+        extractionCutoff: "2026-09-01T06:00:00.000Z",
+      }, sourceSequence: "source-record-id-asc/v1", deletionPolicy: "rolling-window-retain-history/v1" },
     });
+    expect(listRecords).toHaveBeenCalledWith(
+      windowedContract.appId,
+      windowedContract.entryId,
+      expect.any(Array),
+      {
+        field: "statistical_date",
+        sinceDays: 3,
+        includeUpdatedSince: true,
+        bounds: {
+          from: "2026-08-29T16:00:00.000Z",
+          to: "2026-09-01T16:00:00.000Z",
+          fromBusinessDate: "2026-08-30",
+          throughBusinessDate: "2026-09-01",
+        },
+      },
+    );
     const runs = await db.select().from(schema.integrationRuns);
     expect(runs.map((run) => run.requestScope)).toEqual([
-      expect.objectContaining({ window: { field: "statistical_date", days: 3 }, deletionPolicy: "rolling-window-retain-history/v1" }),
-      expect.objectContaining({ window: { field: "statistical_date", days: 3 }, deletionPolicy: "rolling-window-retain-history/v1" }),
+      expect.objectContaining({ window: expect.objectContaining({
+        field: "statistical_date", days: 3, includeUpdatedSince: true,
+        fromBusinessDate: "2026-08-30", throughBusinessDate: "2026-09-01",
+      }), deletionPolicy: "rolling-window-retain-history/v1" }),
+      expect.objectContaining({ window: expect.objectContaining({
+        field: "statistical_date", days: 3, includeUpdatedSince: true,
+        fromBusinessDate: "2026-08-31", throughBusinessDate: "2026-09-02",
+      }), deletionPolicy: "rolling-window-retain-history/v1" }),
     ]);
   });
 

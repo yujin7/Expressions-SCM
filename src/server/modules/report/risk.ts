@@ -123,7 +123,7 @@ export interface RiskRow {
   /** 未关闭处置登记 ID；用于把报废出库单精确绑定到本登记。 */
   disposalId: number | null;
   /** 外部观察（简道云天猫）近 30 天净需求与最近售出日；未映射/缺席 = null，不是 0 */
-  externalNet30: number | null;
+  externalNet30: string | null;
   externalLastSold: string | null;
   /** 在库金额 = 在库 × 单位成本；无成本 → null，非价格角色 → 缺键 */
   amount?: string | null;

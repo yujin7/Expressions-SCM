@@ -11,28 +11,29 @@
 import { sql, type SQL } from "drizzle-orm";
 
 import { lastMonths } from "@/server/core/velocity";
-import { loadExternalVelocity, type ExternalVelocity } from "@/server/modules/report/external-velocity";
+import { compareDecimalValues } from "@/lib/decimal-sort";
+import { loadExternalVelocity, EXTERNAL_VELOCITY_CACHE_KEY, type ExternalVelocity } from "@/server/modules/report/external-velocity";
 
 interface ReadDb {
   execute(query: SQL): Promise<unknown>;
 }
 
-const READ_MODEL_CACHE_KEY = "external-sku-ranking/v1";
-const VELOCITY_CACHE_KEY = "jiandaoyun-external-velocity/v3";
+const READ_MODEL_CACHE_KEY = "external-sku-ranking/v2";
+const VELOCITY_CACHE_KEY = EXTERNAL_VELOCITY_CACHE_KEY;
 
 export interface ExternalSkuRankRow {
-  rank: number;
+  rank: number | null;
   skuId: number;
   code: string;
   name: string;
   brand: string | null;
   skuType: string | null;
-  net30: number;
-  net90: number;
-  tmallNet30: number;
-  pddNet30: number;
-  tmallNet90: number;
-  pddNet90: number;
+  net30: string | null;
+  net90: string | null;
+  tmallNet30: string;
+  pddNet30: string;
+  tmallNet90: string;
+  pddNet90: string;
   lastSoldDate: string | null;
   activeDays90: number;
   platformSkus: number;
@@ -93,7 +94,7 @@ export async function computeExternalSkuRanking(db: ReadDb): Promise<ExternalSku
     internalMonths: months, coverage: velocity.coverage,
     limitations: [
       ...velocity.limitations,
-      "排名按近 30 天净件数，其次近 90 天；件数口径为观察值，不代表正式销量。",
+      "排名按近 30 天净件数，其次近 90 天；覆盖不足的未知行列在末尾、不授予名次。件数为观察值，不代表正式销量。",
       months.length ? `内部对照 = sales_monthly ${months[0]} ～ ${months[months.length - 1]}（数据最新月回推 3 月，全渠道合计），与外部窗口时点不同，只作并列参考。` : "内部 sales_monthly 无数据，内部对照列为空。",
     ],
   };
@@ -116,8 +117,8 @@ export async function computeExternalSkuRanking(db: ReadDb): Promise<ExternalSku
       lastSoldDate: v.lastSoldDate, activeDays90: v.activeDays90, platformSkus: v.platformSkus,
       internal3m: months.length === 0 ? null : r.internal3m == null ? 0 : num(r.internal3m),
     };
-  }).sort((a, b) => b.net30 - a.net30 || b.net90 - a.net90 || a.code.localeCompare(b.code));
-  ranked.forEach((r, i) => { r.rank = i + 1; });
+  }).sort((a, b) => compareDecimalValues(b.net30, a.net30, "first") || compareDecimalValues(b.net90, a.net90, "first") || a.code.localeCompare(b.code));
+  ranked.forEach((r, i) => { r.rank = r.net30 == null ? null : i + 1; });
   const brands = [...new Set(ranked.map((r) => r.brand).filter((b): b is string => !!b))].sort();
   return {
     ...base,
@@ -163,8 +164,8 @@ export function filterExternalSkuRanking(
   const q = (filter.q ?? "").trim().toLowerCase();
   let rows = model.rows;
   if (filter.brand) rows = rows.filter((r) => r.brand === filter.brand);
-  if (filter.platform === "tmall") rows = rows.filter((r) => r.tmallNet90 !== 0 || r.tmallNet30 !== 0);
-  if (filter.platform === "pdd") rows = rows.filter((r) => r.pddNet90 !== 0 || r.pddNet30 !== 0);
+  if (filter.platform === "tmall") rows = rows.filter((r) => compareDecimalValues(r.tmallNet90, "0") !== 0 || compareDecimalValues(r.tmallNet30, "0") !== 0);
+  if (filter.platform === "pdd") rows = rows.filter((r) => compareDecimalValues(r.pddNet90, "0") !== 0 || compareDecimalValues(r.pddNet30, "0") !== 0);
   if (q) rows = rows.filter((r) => r.code.toLowerCase().includes(q) || r.name.toLowerCase().includes(q));
   const totalRows = rows.length;
   const limit = filter.limit && filter.limit > 0 ? Math.min(filter.limit, 5000) : 200;

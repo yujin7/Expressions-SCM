@@ -41,7 +41,7 @@ const bindingOf = async (db: TestDb) => (await computeInventoryAlerts(db)).sourc
 
 describe("inventory-alerts：批次数量指纹与 skus 指纹", () => {
   it("键已随口径升版（绑定口径变了就必须换键，否则旧缓存把新线索藏起来）", () => {
-    expect(INVENTORY_ALERTS_CACHE_KEY).toBe("inventory-alerts/v5");
+    expect(INVENTORY_ALERTS_CACHE_KEY).toBe("inventory-alerts/v6");
   });
 
   it("批次**原地改数量**必须换出新绑定（max(id) 不动，此前完全看不见）", async () => {

@@ -271,7 +271,7 @@ export interface QuadrantBlock {
 
 export function buildQuadrant(
   alerts: { rows: { skuId: number; code: string; brand: string | null; tier: Tier | null; coverDays: number | null; alertDays: number; onHand: string; priorityScore: string }[] },
-  velocity: { bySku: Record<string, { tmallNet30: number; activeDays90: number; platformSkus: number }> },
+  velocity: { bySku: Record<string, { tmallNet30: string | number; activeDays90: number; platformSkus: number }> },
   slowDays: number,
 ): QuadrantBlock {
   const counts: Record<Quadrant, number> = { stockout_risk: 0, writeoff_risk: 0, healthy: 0, watch: 0 };
@@ -280,12 +280,12 @@ export function buildQuadrant(
   for (const r of alerts.rows) {
     const v = velocity.bySku[String(r.skuId)];
     if (!v || v.platformSkus <= 0) { unmapped++; continue; } // 未映射 SKU 排除，不按 0 处理
-    const hot = v.tmallNet30 > 0;
+    const hot = dCmp(v.tmallNet30, "0") > 0;
     const thin = r.coverDays != null && r.coverDays <= r.alertDays;
     const long = r.coverDays == null ? dCmp(r.onHand, 0) > 0 : r.coverDays >= slowDays;
     const quadrant: Quadrant = thin && hot ? "stockout_risk" : long && !hot ? "writeoff_risk" : hot ? "healthy" : "watch";
     counts[quadrant]++;
-    points.push({ skuId: r.skuId, code: r.code, brand: r.brand, tier: r.tier, coverDays: r.coverDays, alertDays: r.alertDays, onHand: r.onHand, tmallNet30: v.tmallNet30, activeDays90: v.activeDays90, quadrant });
+    points.push({ skuId: r.skuId, code: r.code, brand: r.brand, tier: r.tier, coverDays: r.coverDays, alertDays: r.alertDays, onHand: r.onHand, tmallNet30: Number(v.tmallNet30), activeDays90: v.activeDays90, quadrant });
   }
   const order: Record<Quadrant, number> = { stockout_risk: 0, writeoff_risk: 1, healthy: 2, watch: 3 };
   points.sort((a, b) => order[a.quadrant] - order[b.quadrant] || b.tmallNet30 - a.tmallNet30);
@@ -527,11 +527,11 @@ export interface ChannelPlatformSummary {
   grain: string;
   sourceAsOf: string | null;
   anchorDate: string | null;
-  units: number | null;
+  units: string | null;
   /** 金额（非价格角色 null；拼多多无金额字段） */
   amount: string | null;
-  refundUnits: number | null;
-  attribution: { mappedSku: number; shopMaster: number; nameGuess: number; unattributed: number };
+  refundUnits: string | null;
+  attribution: { mappedSku: string; shopMaster: string; nameGuess: string; unattributed: string };
   /** 店铺名回退归属占件数比例（%）——猜测比例越高，品牌行越不可靠 */
   nameGuessSharePct: number | null;
   gate: string;
@@ -540,7 +540,7 @@ export interface ChannelPlatformSummary {
 export interface ChannelShopRow {
   platform: ChannelPlatform;
   shop: string;
-  units: number;
+  units: string;
   amount: string | null;
 }
 
@@ -1255,11 +1255,11 @@ export async function getCockpitTrends(user: SessionUser, dbArg?: AnyDb, opts: {
     }
     const platforms: ChannelPlatformSummary[] | null = channelScope.forced ? null : obs.platforms.map((p) => {
       const a = p.brandAttribution;
-      const total = a.mappedSku + a.shopMaster + a.nameGuess + a.unattributed;
+      const total = dAdd(dAdd(a.mappedSku, a.shopMaster, 4), dAdd(a.nameGuess, a.unattributed, 4), 4);
       return {
         platform: p.platform, state: p.state, grain: p.grain, sourceAsOf: p.sourceAsOf, anchorDate: p.anchorDate,
         units: p.units, amount: canSeeMoney ? p.amount : null, refundUnits: p.refundUnits, attribution: a,
-        nameGuessSharePct: total > 0 ? Math.round((a.nameGuess / total) * 1000) / 10 : null, gate: p.gate,
+        nameGuessSharePct: dCmp(total, "0") > 0 ? ratePctNumOf(dDiv(a.nameGuess, total, 6)) : null, gate: p.gate,
       };
     });
     const matrix: BrandPlatformRow[] | null = channelScope.forced ? null : obs.brandMatrix.map((r) => ({

@@ -28,7 +28,7 @@ interface ReadDb {
 
 export const PLATFORM_SKU_IDENTIFIER_SCOPE = "JIANDAOYUN:TMALL";
 // v3（2026-09-02）：冲突优先于直接认领，候选覆盖率按全部缺口计算；升版避免复用旧口径缓存
-const READ_MODEL_CACHE_KEY = "jiandaoyun-platform-sku-identity-gap/v4";
+const READ_MODEL_CACHE_KEY = "jiandaoyun-platform-sku-identity-gap/v6";
 const TOP_ROWS = 60;
 const MAX_CANDIDATES = 3;
 const MIN_CANDIDATE_SCORE = 60;
@@ -155,6 +155,9 @@ async function latestBatch(db: ReadDb, stream: string): Promise<LatestBatch | nu
     INNER JOIN import_jobs ij ON ij.id = ir.import_job_id
     WHERE ir.connector = 'jdy' AND ir.stream = ${stream}
       AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
+      AND ij.status <> 'superseded'
+      AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+      AND coalesce(ir.request_scope->>'emptySource', 'false') = 'false'
     ORDER BY ir.started_at DESC, ir.id DESC
     LIMIT 1
   `);
@@ -287,6 +290,7 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
       WHERE import_job_id = ${salesBatch?.importJobId ?? -1}
         AND target_table = 'jdy_tmall_sku_sales_observation'
         AND status IN ('pending', 'validated', 'committed')
+        AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
         AND nullif(trim(payload->'data'->>'shopName'), '') IS NOT NULL
         AND nullif(trim(payload->'data'->>'skuId'), '') IS NOT NULL
       GROUP BY 1, 2
@@ -301,6 +305,7 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
         WHERE import_job_id = ${refundBatch.importJobId}
           AND target_table = 'jdy_tmall_sku_refund_observation'
           AND status IN ('pending', 'validated', 'committed')
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
         GROUP BY 1, 2
       `)
       : Promise.resolve([]),
@@ -319,6 +324,7 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
         WHERE import_job_id = ${crosswalkBatch.importJobId}
           AND target_table = 'jdy_tmall_sku_crosswalk_observation'
           AND status IN ('pending', 'validated', 'committed')
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
         GROUP BY 1, 2
       `)
       : Promise.resolve([]),
@@ -339,16 +345,16 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
     db.execute(sql`SELECT code, name_cn, name_en FROM brands`),
     // 拼多多对照表（最新批次）：商家编码精确命中系统编码的三元组
     db.execute(sql`
-      WITH b AS (
-        SELECT ir.import_job_id FROM integration_runs ir
-        WHERE ir.connector = 'jdy' AND ir.stream = 'pdd-sku-crosswalk-observation' AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
-        ORDER BY ir.id DESC LIMIT 1
-      ),
-      rows AS (
-        SELECT payload->'data'->>'shopName' AS shop, payload->'data'->>'platformProductId' AS pid,
-               nullif(trim(payload->'data'->>'merchantSkuCode'), '') AS mcode, max(payload->'data'->>'productName') AS pname
-        FROM staging_rows WHERE import_job_id = (SELECT import_job_id FROM b)
-          AND target_table = 'jdy_pdd_sku_crosswalk_observation' AND status IN ('pending', 'validated', 'committed')
+      WITH rows AS (
+        SELECT payload->'data'->>'shopName' AS shop,
+               payload->'data'->>'platformProductId' AS pid,
+               nullif(trim(payload->'data'->>'merchantSkuCode'), '') AS mcode,
+               max(payload->'data'->>'productName') AS pname
+        FROM staging_rows
+        WHERE import_job_id = ${pddBatch?.importJobId ?? -1}
+          AND target_table = 'jdy_pdd_sku_crosswalk_observation'
+          AND status IN ('pending', 'validated', 'committed')
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
         GROUP BY 1, 2, 3
       ),
       -- 第二条拼多多线索（2026-09-03）：数据中台「拼多多商品成本标准」把商家编码翻译成聚水潭编码/匹配编码，
@@ -381,6 +387,7 @@ export async function computePlatformSkuIdentityGap(db: ReadDb): Promise<Platfor
         WHERE import_job_id = ${unitBatch.importJobId}
           AND target_table = 'jdy_tmall_unit_daily_observation'
           AND status IN ('pending', 'validated', 'committed')
+          AND nullif(trim(payload->>'sourceDeletedAt'), '') IS NULL
           AND nullif(trim(payload->'data'->>'platformSkuId'), '') IS NOT NULL
         GROUP BY 1, 2
       `)

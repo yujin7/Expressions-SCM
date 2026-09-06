@@ -24,7 +24,7 @@ interface SegRow {
   abc: "A" | "B" | "C";
   xyz: "X" | "Y" | "Z";
   cell: string;
-  externalNet90: number | null;
+  externalNet90: string | null;
   /** D58 四档 */
   tier: "S" | "A" | "B" | "C";
   xyzRaw: "X" | "Y" | "Z" | null;
@@ -106,7 +106,7 @@ export default function SegmentationClient() {
       dataIndex: "externalNet90",
       width: 105,
       align: "right",
-      render: (v: number | null) => v == null ? <Typography.Text type="secondary">未映射</Typography.Text> : v.toLocaleString("zh-CN"),
+      render: (v: string | null) => v == null ? <Typography.Text type="secondary">未映射</Typography.Text> : Number(v).toLocaleString("zh-CN"),
     },
     { title: "月均", dataIndex: "avgMonthly", width: 100, align: "right", render: (v: number) => v.toLocaleString("zh-CN") },
     { title: "变异系数", dataIndex: "cv", width: 90, align: "right" },

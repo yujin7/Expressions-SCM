@@ -111,7 +111,7 @@ describe("库存预警表 v2 + 爆单 v2 + 看门狗 why", () => {
     const { db, client } = await createTestDb();
     try {
       const { hot, cold, aging, slow, today, promo } = await seed(db);
-      expect(INVENTORY_ALERTS_CACHE_KEY).toBe("inventory-alerts/v5");
+      expect(INVENTORY_ALERTS_CACHE_KEY).toBe("inventory-alerts/v6");
       expect(SALES_SPIKE_CACHE_KEY).toBe("sales-spike/v2");
 
       /* ── 爆单 v2 ── */

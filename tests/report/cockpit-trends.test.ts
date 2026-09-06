@@ -29,7 +29,7 @@ import type { SupplierPaymentTermModel, SupplierPaymentTermRow } from "@/server/
 import type { TodoStatsRow } from "@/server/modules/todo/stats";
 import { INVENTORY_POSITION_CACHE_KEY, inventoryPositionBinding, type DailyPoint } from "@/server/modules/report/inventory-position";
 import { loadPurchaseOrderMetrics, PURCHASE_ORDER_METRICS_KEY } from "@/server/modules/report/purchase-order-metrics";
-import { loadChannelObservation, type ChannelPlatformRow } from "@/server/modules/report/channel-observation";
+import { CHANNEL_OBSERVATION_CACHE_KEY, loadChannelObservation, type ChannelPlatformRow } from "@/server/modules/report/channel-observation";
 import type { RollingDemandBrief } from "@/server/modules/report/external-demand-signal";
 import { extractAutoValue, AUTO_METRIC_SOURCES } from "@/server/modules/goals/service";
 import type { WarehouseInventoryModel } from "@/server/modules/report/warehouse-inventory";
@@ -234,15 +234,15 @@ describe("驾驶舱趋势块 · PGlite 装配", () => {
       await loadChannelObservation(db);
       const tmall: ChannelPlatformRow = {
         platform: "天猫", state: "ready", grain: "店铺 × 天猫平台 SKU × 日", sourceAsOf: "2026-09-03", anchorDate: "2026-09-03", windowFrom: "2026-08-05",
-        units: 300, amount: "9000.00", refundUnits: 12,
-        byBrand: [{ brand: "NING", units: 300, amount: "9000.00" }],
-        byShop: [{ shop: "店A", units: 200, amount: "6000.00" }, { shop: "店B", units: 100, amount: "3000.00" }],
-        brandAttribution: { mappedSku: 240, shopMaster: 0, nameGuess: 60, unattributed: 0 }, gate: "",
+        units: "300.0000", amount: "9000.00", refundUnits: "12.0000",
+        byBrand: [{ brand: "NING", units: "300.0000", amount: "9000.00" }],
+        byShop: [{ shop: "店A", units: "200.0000", amount: "6000.00" }, { shop: "店B", units: "100.0000", amount: "3000.00" }],
+        brandAttribution: { mappedSku: "240.0000", shopMaster: "0.0000", nameGuess: "60.0000", unattributed: "0.0000" }, gate: "",
       };
-      const pdd: ChannelPlatformRow = { ...tmall, platform: "拼多多", state: "insufficient", units: null, amount: null, refundUnits: null, byBrand: [], byShop: [], brandAttribution: { mappedSku: 0, shopMaster: 0, nameGuess: 0, unattributed: 0 }, gate: "缺批次" };
+      const pdd: ChannelPlatformRow = { ...tmall, platform: "拼多多", state: "insufficient", units: null, amount: null, refundUnits: null, byBrand: [], byShop: [], brandAttribution: { mappedSku: "0.0000", shopMaster: "0.0000", nameGuess: "0.0000", unattributed: "0.0000" }, gate: "缺批次" };
       const vip: ChannelPlatformRow = { ...pdd, platform: "唯品会" };
-      const brandMatrix = [{ brand: "NING", platforms: { "天猫": { units: 300, amount: "9000.00" }, "拼多多": { units: null, amount: null }, "唯品会": { units: null, amount: null } }, totalUnits: 300 }];
-      await db.execute(sql`UPDATE report_read_model_cache SET payload = jsonb_set(jsonb_set(payload, '{platforms}', ${JSON.stringify([tmall, pdd, vip])}::jsonb), '{brandMatrix}', ${JSON.stringify(brandMatrix)}::jsonb) WHERE key = 'jiandaoyun-channel-observation/v4'`);
+      const brandMatrix = [{ brand: "NING", platforms: { "天猫": { units: "300.0000", amount: "9000.00" }, "拼多多": { units: null, amount: null }, "唯品会": { units: null, amount: null } }, totalUnits: "300.0000" }];
+      await db.execute(sql`UPDATE report_read_model_cache SET payload = jsonb_set(jsonb_set(payload, '{platforms}', ${JSON.stringify([tmall, pdd, vip])}::jsonb), '{brandMatrix}', ${JSON.stringify(brandMatrix)}::jsonb) WHERE key = ${CHANNEL_OBSERVATION_CACHE_KEY}`);
       const [ch] = await db.insert(schema.channels).values({ code: "tmall", name: "天猫", kind: "tmall" as never }).returning();
       await db.insert(schema.aliases).values({ aliasType: "channel" as never, scope: "JIANDAOYUN", rawValue: "店A", targetId: ch.id, createdBy: admin.id });
 
@@ -270,7 +270,7 @@ describe("驾驶舱趋势块 · PGlite 装配", () => {
       expect(w.screens.s2.poTrend.data!.points.every((p) => p.netAmount === null)).toBe(true);
       expect(w.screens.s2.poTrend.data!.points.find((p) => p.month === prevMonth)?.poCount).toBe(4); // 单数/件数全员可见
       expect(w.screens.channels.brandMatrix.data!.platforms![0].amount).toBeNull();
-      expect(w.screens.channels.brandMatrix.data!.brandMatrix![0].platforms["天猫"]).toEqual({ units: 300, amount: null });
+      expect(w.screens.channels.brandMatrix.data!.brandMatrix![0].platforms["天猫"]).toEqual({ units: "300.0000", amount: null });
       expect(w.screens.channels.brandMatrix.data!.shops.every((s) => s.amount === null)).toBe(true);
 
       const r = await getCockpitTrends(su(ops.id, ops.name, ["ops"], [ch.id]), db);
@@ -498,8 +498,8 @@ describe("驾驶舱趋势块 · BI wave 2 纯装配函数", () => {
     const b = buildRiskExpiryBuckets([
       row({ skuId: 1, brand: "宁", expiryBuckets: { expired: 10, d30: 20, d60: 0, d90: 0 }, nearExpiryFallback: true }),
       row({ skuId: 2, brand: "宁", expiryBuckets: { expired: 0, d30: 0, d60: 5, d90: 7 } }),
-      row({ skuId: 3, brand: null, action: "滞销关注", onHand: 400, externalNet30: 12 }),
-      row({ skuId: 4, brand: "别", action: "滞销关注", onHand: 50, externalNet30: 0 }),
+      row({ skuId: 3, brand: null, action: "滞销关注", onHand: 400, externalNet30: "12.0000" }),
+      row({ skuId: 4, brand: "别", action: "滞销关注", onHand: 50, externalNet30: "0.0000" }),
       row({ skuId: 5, brand: "别", action: "滞销关注", onHand: 60, externalNet30: null }), // 未映射：不进注记分母
       row({ skuId: 6, brand: "别", action: "优先出库" }), // 既不临期也不呆滞 → 不进块
     ], { today: "2026-09-04", slowThreshold: 180 });

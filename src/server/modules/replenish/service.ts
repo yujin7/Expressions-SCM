@@ -415,6 +415,13 @@ export function normalizeReplenishSort(
   };
 }
 
+export function isPddWindowIncomplete(
+  externalRow: { pddIdentityCovered: boolean } | null,
+  pddWindowComplete30: boolean,
+): boolean {
+  return externalRow?.pddIdentityCovered === true && !pddWindowComplete30;
+}
+
 export interface ReplenishQuery {
   coverDaysTarget?: number;
   minCoverAlert?: number;
@@ -1046,10 +1053,9 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
           targetLevel,
           6,
         );
-    const pddWindowIncomplete = Boolean(
-      externalRow
-      && dCmp(String(externalRow.pddNet30), "0") !== 0
-      && !externalVelocity.coverage.pddWindowComplete30,
+    const pddWindowIncomplete = isPddWindowIncomplete(
+      externalRow,
+      externalVelocity.coverage.pddWindowComplete30,
     );
     /* C10：本页负责「买」，所以提示的是另一侧——调拨侧已经起草了多少。 */
     const inFlight = inFlightBySku.get(s.id) ?? EMPTY_IN_FLIGHT;
