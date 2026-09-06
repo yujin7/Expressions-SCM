@@ -12,8 +12,9 @@
  *      告警来源的待办不再飞书私聊（告警已由 system-alert-notify 群发，避免双发），只发站内定向。
  */
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, getTableColumns, ilike, inArray, lt, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, ilike, inArray, lt, or, sql, type SQL } from "drizzle-orm";
 import { todoItemHref } from "@/lib/todo-navigation";
+import { isTodoSortField, type TodoSortField } from "@/lib/todo-sort";
 import { z } from "zod";
 import { getDbAsync } from "@/db";
 import { users, workItems } from "@/db/schema";
@@ -454,6 +455,8 @@ export interface ListWorkItemsArgs {
   assigneeId?: number;
   sourceKind?: string;
   overdueOnly?: boolean;
+  sortBy?: string;
+  sortOrder?: string;
   page: number;
   pageSize: number;
 }
@@ -464,6 +467,18 @@ export interface ListWorkItemsArgs {
  *  - all：按 workItemVisibilitySql（与 stats / 第 4 屏同一谓词 resolveTodoVisibility）。
  */
 export async function listWorkItems(args: ListWorkItemsArgs, user: SessionUser, dbArg?: AnyDb) {
+  if ((args.sortBy && !isTodoSortField(args.sortBy))
+    || (args.sortOrder && !["asc", "desc"].includes(args.sortOrder))
+    || (args.sortOrder && !args.sortBy)) throw new ApiError(400, "待办排序无效，请选择优先级、状态、截止或创建时间及升降序");
+  const statusRank = sql`CASE ${workItems.status} WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'done' THEN 2 ELSE 3 END`;
+  const priorityRank = sql`CASE ${workItems.priority} WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END`;
+  const defaultOrder = [statusRank, priorityRank, sql`${workItems.dueDate} NULLS LAST`, desc(workItems.id)];
+  const sortColumns: Record<TodoSortField, SQL> = {
+    status: statusRank, priority: priorityRank, dueDate: sql`${workItems.dueDate}`, createdAt: sql`${workItems.createdAt}`,
+  };
+  const primaryOrder = isTodoSortField(args.sortBy)
+    ? sql`${args.sortOrder === "desc" ? desc(sortColumns[args.sortBy]) : asc(sortColumns[args.sortBy])} NULLS LAST`
+    : null;
   const db = dbArg ?? (await getDbAsync());
   const today = dayShanghai(new Date());
   const clauses: SQL[] = [];
@@ -502,12 +517,7 @@ export async function listWorkItems(args: ListWorkItemsArgs, user: SessionUser, 
       .from(workItems)
       .leftJoin(users, eq(users.id, workItems.assigneeId))
       .where(where)
-      .orderBy(
-        sql`CASE ${workItems.status} WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'done' THEN 2 ELSE 3 END`,
-        sql`CASE ${workItems.priority} WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END`,
-        sql`${workItems.dueDate} NULLS LAST`,
-        desc(workItems.id),
-      )
+      .orderBy(...(primaryOrder ? [primaryOrder, ...defaultOrder] : defaultOrder))
       .limit(args.pageSize)
       .offset((args.page - 1) * args.pageSize),
     db.select({ total: sql<number>`count(*)::int` }).from(workItems).where(where),

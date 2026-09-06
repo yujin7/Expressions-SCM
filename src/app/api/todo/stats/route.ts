@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getFreshSessionUser } from "@/server/core/dto";
 import { getTodoProgressBlock, getTodoStats, type StatsGroupBy } from "@/server/modules/todo/stats";
-import { errorResponse, guardRead } from "@/server/modules/master/common";
+import { errorResponse } from "@/server/modules/master/common";
 
 /**
  * D61 完成率/按时率（只读）。
@@ -10,7 +11,7 @@ import { errorResponse, guardRead } from "@/server/modules/master/common";
  */
 export async function GET(req: NextRequest) {
   try {
-    const user = await guardRead();
+    const user = await getFreshSessionUser();
     const sp = new URL(req.url).searchParams;
     if (sp.get("scope") === "summary") return NextResponse.json(await getTodoProgressBlock(user));
     const groupBy: StatsGroupBy = sp.get("groupBy") === "role" ? "role" : "person";

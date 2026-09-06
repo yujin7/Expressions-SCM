@@ -22,6 +22,7 @@ import { useListState } from "@/components/useListState";
 import { useMe } from "@/components/useMe";
 import { workItemSourceAction } from "@/lib/work-item-source";
 import { todoTabFromQuery, todoTabHref } from "@/lib/todo-navigation";
+import { todoSortPatch, type TodoSortField } from "@/lib/todo-sort";
 import TodoProgressCard from "./TodoProgressCard";
 import TodoCreateDrawer from "./TodoCreateDrawer";
 
@@ -64,7 +65,7 @@ function fmt(iso: string | null): string {
   return iso ? dayjs(iso).format("YYYY-MM-DD HH:mm") : "—";
 }
 
-type Filters = { q?: string; status?: string; ownerRole?: string; overdue?: string };
+type Filters = { q?: string; status?: string; ownerRole?: string; overdue?: string; sortBy?: string; sortOrder?: string };
 
 function useAssignees(): Assignee[] {
   const [list, setList] = useState<Assignee[]>([]);
@@ -85,7 +86,7 @@ function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(new Set());
   const listState = useListState<Filters>({
     key: `todo-${view}`,
-    defaults: { q: "", status: view === "mine" ? "active" : "", ownerRole: "", overdue: "" },
+    defaults: { q: "", status: view === "mine" ? "active" : "", ownerRole: "", overdue: "", sortBy: "", sortOrder: "" },
     defaultPageSize: 20,
     paramPrefix: prefix,
   });
@@ -97,12 +98,15 @@ function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "
     loadRequest.current = request;
     setLoading(true);
     setLoadError(null);
+    setData(null); // New filters/sorting must never display the previous query's rows as current facts.
     try {
       const params = new URLSearchParams({ view, page: String(page), pageSize: String(pageSize) });
       if (filters.q) params.set("q", filters.q);
       if (filters.status) params.set("status", filters.status);
       if (filters.ownerRole) params.set("ownerRole", filters.ownerRole);
       if (filters.overdue) params.set("overdue", "1");
+      if (filters.sortBy) params.set("sortBy", filters.sortBy);
+      if (filters.sortOrder) params.set("sortOrder", filters.sortOrder);
       const result = await fetchJson<ListData>(`/api/todo?${params.toString()}`, { signal: request.signal });
       if (!request.signal.aborted) setData(result);
     } catch (e) {
@@ -110,7 +114,7 @@ function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "
     } finally {
       if (!request.signal.aborted) setLoading(false);
     }
-  }, [view, page, pageSize, filters.q, filters.status, filters.ownerRole, filters.overdue]);
+  }, [view, page, pageSize, filters.q, filters.status, filters.ownerRole, filters.overdue, filters.sortBy, filters.sortOrder]);
   useEffect(() => {
     void load();
     return () => { loadRequest.current?.abort(); };
@@ -139,6 +143,11 @@ function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "
   const canManage = (r: WorkItemRow) =>
     !!me && (me.roles.includes("admin") || [r.assigneeId, r.assignerId, r.createdBy].includes(me.id) || (!!r.ownerRole && me.roles.includes(r.ownerRole)));
 
+  const sortProps = (key: TodoSortField) => ({
+    key, sorter: true,
+    sortOrder: filters.sortBy === key ? (filters.sortOrder === "desc" ? "descend" as const : "ascend" as const) : null,
+  });
+
   const columns: ColumnsType<WorkItemRow> = [
     { title: "#", dataIndex: "id", width: 70, fixed: "left" },
     {
@@ -150,9 +159,9 @@ function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "
         </Space>
       ),
     },
-    { title: "优先级", dataIndex: "priority", width: 80, sorter: (a, b) => ({ high: 0, normal: 1, low: 2 }[a.priority] ?? 9) - ({ high: 0, normal: 1, low: 2 }[b.priority] ?? 9), render: (v: string) => <Tag color={PRIORITY_COLOR[v]}>{PRIORITY_LABEL[v] ?? v}</Tag> },
+    { title: "优先级", dataIndex: "priority", width: 100, ...sortProps("priority"), render: (v: string) => <Tag color={PRIORITY_COLOR[v]}>{PRIORITY_LABEL[v] ?? v}</Tag> },
     {
-      title: "状态", dataIndex: "status", width: 110, sorter: (a, b) => Number(b.overdue) - Number(a.overdue),
+      title: "状态", dataIndex: "status", width: 110, ...sortProps("status"),
       render: (v: string, r) => (
         <Space size={4}>
           <Tag color={STATUS_COLOR[v]}>{STATUS_LABEL[v] ?? v}</Tag>
@@ -163,14 +172,14 @@ function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "
     },
     { title: "责任人", dataIndex: "assigneeName", width: 100, render: (v: string | null, r) => v ?? `#${r.assigneeId}` },
     { title: "责任角色", dataIndex: "ownerRole", width: 100, render: (v: string | null) => (v ? ROLE_LABEL[v] ?? v : "—") },
-    { title: "截止", dataIndex: "dueDate", width: 110, sorter: (a, b) => (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999"), render: (v: string | null) => v ?? "—" },
+    { title: "截止", dataIndex: "dueDate", width: 110, ...sortProps("dueDate"), render: (v: string | null) => v ?? "—" },
     { title: "来源", dataIndex: "sourceKind", width: 135, render: (v: string | null, r) => {
       const source = workItemSourceAction(r);
       return source ? <Tooltip title={source.label}><a href={source.href}>{SOURCE_LABEL[v ?? ""]} #{r.sourceRef}</a></Tooltip>
         : v ? <Tag>{SOURCE_LABEL[v] ?? v}{r.sourceRef ? ` #${r.sourceRef}` : ""}</Tag> : "—";
     } },
     { title: "指派人", dataIndex: "assignerName", width: 100, render: (v: string | null) => v ?? "—" },
-    { title: "创建", dataIndex: "createdAt", width: 140, render: (v: string) => fmt(v) },
+    { title: "创建", dataIndex: "createdAt", width: 140, ...sortProps("createdAt"), render: (v: string) => fmt(v) },
     {
       title: "操作", key: "ops", width: 180, fixed: "right",
       render: (_, r) => {
@@ -243,6 +252,9 @@ function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "
         )}
       />
       <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="待办列表" retrying={loading} />
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
+        列头排序作用于当前筛选下的全部可见待办；未设截止日期排最后。清除排序后恢复状态 → 优先级 → 截止日期顺序。
+      </Typography.Paragraph>
       <Table<WorkItemRow>
         rowKey="id"
         size={listState.tableSize}
@@ -252,6 +264,11 @@ function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "
         scroll={{ x: "max-content" }}
         locale={{ emptyText: loadError ? "数据未加载" : "当前条件下没有待办" }}
         pagination={listState.paginationProps({ total: data?.total ?? 0 })}
+        onChange={(_pagination, _filters, sorter, extra) => {
+          if (extra.action !== "sort") return;
+          const patch = todoSortPatch(Array.isArray(sorter) ? sorter[0] ?? {} : sorter);
+          if (patch) listState.setFilter(patch); // Shared list state resets to page 1 and preserves sibling tab parameters.
+        }}
       />
     </>
   );

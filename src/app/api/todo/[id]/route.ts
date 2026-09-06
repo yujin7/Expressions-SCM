@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getFreshSessionUser } from "@/server/core/dto";
 import { getWorkItem, isWorkItemVisible, patchWorkItem, resolveTodoVisibility, workItemPatchSchema } from "@/server/modules/todo/service";
-import { ApiError, errorResponse, guardRead, parseId, readJson } from "@/server/modules/master/common";
+import { ApiError, errorResponse, parseId, readJson } from "@/server/modules/master/common";
 
 
 export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
-    const user = await guardRead();
+    const user = await getFreshSessionUser();
     const item = await getWorkItem(parseId((await ctx.params).id));
     if (!isWorkItemVisible(item as never, user, resolveTodoVisibility(user))) throw new ApiError(404, "待办不存在");
     return NextResponse.json(item);

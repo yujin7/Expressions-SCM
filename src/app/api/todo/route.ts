@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getFreshSessionUser } from "@/server/core/dto";
 import { createWorkItem, listWorkItems, type WorkItemView } from "@/server/modules/todo/service";
-import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
+import { errorResponse, parseListQuery, readJson } from "@/server/modules/master/common";
 
 /** D61 待办列表：view=mine|all；status=active|open,in_progress,done,cancelled；ownerRole；assigneeId；overdue=1 */
 export async function GET(req: NextRequest) {
   try {
-    const user = await guardRead();
+    const user = await getFreshSessionUser();
     const { q, page, pageSize, searchParams } = parseListQuery(req.url);
     const view: WorkItemView = searchParams.get("view") === "all" ? "all" : "mine";
     const assigneeId = Number(searchParams.get("assigneeId"));
@@ -18,6 +18,8 @@ export async function GET(req: NextRequest) {
       assigneeId: Number.isInteger(assigneeId) && assigneeId > 0 ? assigneeId : undefined,
       sourceKind: searchParams.get("sourceKind") || undefined,
       overdueOnly: searchParams.get("overdue") === "1",
+      sortBy: searchParams.get("sortBy") || undefined,
+      sortOrder: searchParams.get("sortOrder") || undefined,
       page,
       pageSize,
     }, user));
