@@ -40,6 +40,9 @@ import DecisionVisual from "@/components/DecisionVisual";
 import AnalysisSection from "@/components/AnalysisSection";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
 import { fetchJson } from "@/components/fetchJson";
+import { hasAnyRole, useMe } from "@/components/useMe";
+import { PRICE_VISIBLE_ROLES, ROLE_LABELS } from "@/server/core/constants";
+import { isRouteVisible, ROUTE_REGISTRY } from "@/lib/route-access";
 import { formatQty } from "@/components/format";
 import { exportCsv } from "@/components/exportCsv";
 import {
@@ -157,6 +160,10 @@ function hasReportEnvelope(value: unknown, dimension: StudioDimension): boolean 
 
 export default function DecisionStudioClient() {
   const { message } = App.useApp();
+  const me = useMe();
+  // Presentation only: the APIs still recheck current roles in the database.
+  const canObserveChannels = hasAnyRole(me, ...PRICE_VISIBLE_ROLES);
+  const canClaimIdentity = isRouteVisible(ROUTE_REGISTRY.import_exceptions, me?.roles ?? []);
   const [snapshot, setSnapshot] = useState<{
     query: string;
     data: DecisionStudioResult | null;
@@ -857,14 +864,19 @@ export default function DecisionStudioClient() {
                   type={external?.state === "ready" ? "warning" : "error"}
                   message="观察口径：可用于发现趋势与身份缺口，不可直接驱动正式销量、库存、财务或补货"
                   description={external?.gate}
-                  action={(
+                  action={canClaimIdentity ? (
                     <Button href="/import/exceptions?status=open&scope=JIANDAOYUN">
                       处理简道云身份认领
                     </Button>
-                  )}
+                  ) : undefined}
                 />
-                <ChannelObservationCard active={activeTab === "external"} />
-                <ExternalSkuRankingCard active={activeTab === "external"} />
+                {canObserveChannels ? <>
+                  <ChannelObservationCard active={activeTab === "external"} />
+                  <ExternalSkuRankingCard active={activeTab === "external"} />
+                </> : <Alert type="info" showIcon
+                  message={me ? "当前角色不开放全渠道观察及外部销量排名" : "正在确认分析访问权限"}
+                  description={me ? `这两项分析仅向${PRICE_VISIBLE_ROLES.map((role) => ROLE_LABELS[role]).join("/")}开放。其他已授权分析仍可使用；如需协作，请联系相应负责人。` : undefined}
+                />}
                 <AnalysisSection available={externalHasEvidence} title="天猫净需求、退款与履约分析" reason={external?.gate}>
                 <Space direction="vertical" size={12} style={{ width: "100%" }}>
                 <Row gutter={[10, 10]} className="compact-kpi-row">
@@ -1345,9 +1357,9 @@ export default function DecisionStudioClient() {
                   >
                     导出修复队列
                   </Button>
-                  <Button href="/import/exceptions?status=open&scope=JIANDAOYUN">
+                  {canClaimIdentity ? <Button href="/import/exceptions?status=open&scope=JIANDAOYUN">
                     处理身份认领
-                  </Button>
+                  </Button> : null}
                 </Space>
                 <Row gutter={[10, 10]} className="compact-kpi-row">
                   <Col xs={12} lg={6}>

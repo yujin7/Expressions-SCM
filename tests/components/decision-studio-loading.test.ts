@@ -16,6 +16,7 @@ const hooks = vi.hoisted(() => ({
   writes: 0,
 }));
 const state = vi.hoisted(() => ({
+  me: { id: 1, name: "QA", roles: ["admin"], isApprover: false } as { id: number; name: string; roles: string[]; isApprover: boolean } | null,
   fetch: vi.fn(),
   message: { error: vi.fn(), success: vi.fn(), warning: vi.fn() },
   filters: { dimension: "brand", key: "", tab: "focus", brand: "", channel: "", product: "" },
@@ -82,6 +83,10 @@ vi.mock("@/app/(app)/report/decision-studio/platform-sku-gap-card", () => ({ def
 vi.mock("@/app/(app)/report/decision-studio/channel-observation-card", () => ({ default: "observation-card" }));
 vi.mock("@/app/(app)/report/decision-studio/external-sku-ranking-card", () => ({ default: "external-ranking-card" }));
 vi.mock("@/components/fetchJson", () => ({ fetchJson: state.fetch }));
+vi.mock("@/components/useMe", async (original) => ({
+  ...await original<typeof import("@/components/useMe")>(),
+  useMe: () => state.me,
+}));
 vi.mock("@/components/useListState", () => ({
   useListState: () => ({ filters: state.filters, setFilter: (next: Partial<typeof state.filters>) => Object.assign(state.filters, next) }),
 }));
@@ -104,6 +109,7 @@ type Props = {
   coverage?: { covered: number; total: number; label: string };
   available?: boolean;
   dataSource?: unknown[];
+  href?: string;
 };
 function elements(node: ReactNode): React.ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
@@ -173,6 +179,7 @@ beforeEach(() => {
   hooks.changed = false;
   hooks.writes = 0;
   state.fetch.mockReset();
+  state.me = { id: 1, name: "QA", roles: ["admin"], isApprover: false };
   for (const message of Object.values(state.message)) message.mockReset();
   state.filters = { dimension: "brand", key: "", tab: "focus", brand: "", channel: "", product: "" };
 });
@@ -408,6 +415,31 @@ describe("Decision Studio query-bound loading and response cache", () => {
 });
 
 describe("Studio compact evidence presentation", () => {
+  it.each([
+    ["ops", false, false], ["quality", false, false], ["warehouse", false, true],
+    ["finance", true, false], ["purchasing", true, true], ["pmc", true, true], ["admin", true, true],
+  ] as const)("uses existing permissions for %s without mounting inaccessible data panels", async (role, canObserve, canClaim) => {
+    state.me!.roles = [role];
+    state.filters.tab = "external";
+    state.fetch.mockResolvedValue(fixture(0));
+    render(); await flush();
+    const nodes = elements(render());
+    expect(nodes.some((node) => node.type === "observation-card")).toBe(canObserve);
+    expect(nodes.some((node) => node.type === "external-ranking-card")).toBe(canObserve);
+    expect(nodes.some((node) => node.props.href === "/import/exceptions?status=open&scope=JIANDAOYUN")).toBe(canClaim);
+    expect(nodes.some((node) => node.type === "alert" && node.props.message === "当前角色不开放全渠道观察及外部销量排名")).toBe(!canObserve);
+    expect(state.fetch.mock.calls.every(([url]) => String(url).startsWith("/api/report/decision-studio?"))).toBe(true);
+  });
+
+  it("does not mount restricted panels while the user is unknown", () => {
+    state.me = null;
+    state.filters.tab = "external";
+    state.fetch.mockReturnValue(new Promise(() => undefined));
+    const nodes = elements(render());
+    expect(nodes.some((node) => node.type === "observation-card" || node.type === "external-ranking-card")).toBe(false);
+    expect(nodes.some((node) => node.type === "alert" && node.props.message === "正在确认分析访问权限")).toBe(true);
+  });
+
   it("keeps independent sources visible when the Tmall demand analysis has no evidence", async () => {
     state.filters.tab = "external";
     state.fetch.mockResolvedValueOnce(buildDecisionStudio([], []));

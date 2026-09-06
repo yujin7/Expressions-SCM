@@ -12,7 +12,7 @@ import {
 
 /**
  * SKU 外部销量排名（天猫+拼多多观察口径，件数为主）——只读；
- * 守卫回查 DB 新鲜身份（与全渠道观察路由一致），件数全员可见，出口仍经 maskSensitive。
+ * 守卫回查 DB 新鲜身份，角色权限与全渠道观察路由一致；出口仍经 maskSensitive。
  */
 export async function GET(request: NextRequest) {
   try {

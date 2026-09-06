@@ -123,8 +123,11 @@ export default function ExternalSkuRankingCard({ active }: { active: boolean }) 
       title="SKU 外部销量排名 · 天猫+拼多多（观察口径）"
       extra={<Space><Tag color="warning">observation_only</Tag><Button size="small" onClick={() => void doExport()} loading={exporting} disabled={loading || !data || data.state !== "ready"}>导出 CSV</Button><Button size="small" onClick={() => void load()} loading={loading}>刷新</Button></Space>}
     >
-      {loadError ? <Alert type="error" showIcon message="外部销量排名加载失败" description={loadError}
-        action={<Button size="small" onClick={() => void load()}>重试</Button>} /> :
+      {loadError ? <Space direction="vertical" size={8} style={{ width: "100%" }}>
+        <Alert type="error" showIcon message="外部销量排名加载失败" description={loadError}
+          action={<Button size="small" onClick={() => void load()}>重试</Button>} />
+        <Typography.Text type="secondary">窗口完整性未知；本次未取得可验证结果，不沿用旧排名。</Typography.Text>
+      </Space> :
       <AnalysisSection available={data?.state === "ready" || Boolean(data?.rows.length)} title="SKU 外部销量排名" reason={data?.gate}>
       <Space direction="vertical" size={12} style={{ width: "100%" }}>
         <Row gutter={[10, 10]} className="compact-kpi-row">
