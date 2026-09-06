@@ -2,10 +2,10 @@
  * 契约 → 下游读模型 的**唯一登记处**（2026-09-04 审计 #13）。
  *
  * 事故形态：运维面板的连接器卡只说「已选 N 条契约」，不说这些契约拉回来的数据**有没有人读**。
- * 实测：8 条用友契约、2 条聚水潭观察流、4 份简道云表单同步得好好的，
- * 下游没有任何读模型消费——每天占着三方接口配额、占着 staging 体积、
- * 还在「已选 N 条」里被当成能力展示，而它们对业务是零产出。
- * 这一列把「同步了」和「有人读」分开，让没有消费者的契约显式变灰。
+ * 本表只证明代码登记了哪些下游读模型；它不读取运行配置、批次或 UAT，
+ * 不能据此声称某条契约已启用、成功同步、消耗了配额或产生了业务成效。
+ * 没有读模型的契约可能仍用于受控证据/字段画像，不能与「没有任何用途」混为一谈。
+ * 这一列把「有契约定义」和「有下游读模型」分开，让没有消费者的契约显式变灰。
  *
  * 维护约定：本表是**人工登记的静态映射**，`tests/architecture/contract-consumers.test.ts`
  * 用 grep 逐条比对 `src/server/modules/**` 的真实引用——加了消费者不登记、
@@ -36,7 +36,7 @@ export interface ContractConsumerEntry {
   /** 契约/数据流标识：简道云=表单契约 key，聚水潭=stream，用友=API path */
   key: string;
   label: string;
-  /** 引用该 key 的读模型模块（相对 src/server/modules/）；空数组 = 同步了但没人读 */
+  /** 引用该 key 的读模型模块（相对 src/server/modules/）；空数组不代表同步成功或失败 */
   consumers: readonly string[];
 }
 
@@ -97,7 +97,7 @@ export const CONTRACT_CONSUMERS: readonly ContractConsumerEntry[] = [
   { connector: "yy", key: "/yonbip/fi/ficloud/openapi/voucher/queryVouchers", label: "凭证查询", consumers: [] },
 ];
 
-/** 同步了但没有任何读模型消费的契约（页面据此把行变灰并标「无消费者」） */
+/** 未登记下游读模型的契约（页面据此把行变灰并标「无消费者」，不推断运行状态） */
 export function contractsWithoutConsumer(): ContractConsumerEntry[] {
   return CONTRACT_CONSUMERS.filter((c) => c.consumers.length === 0);
 }

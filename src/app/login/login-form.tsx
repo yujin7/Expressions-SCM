@@ -5,6 +5,7 @@ import { App, Button, Card, Divider, Form, Input, Tooltip, Typography } from "an
 import { LockOutlined, UserOutlined } from "@ant-design/icons";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
+import { loginReturnPath } from "@/lib/login-return-path";
 
 const ERROR_MESSAGES: Record<string, string> = {
   invalid: "用户名或密码错误",
@@ -15,9 +16,7 @@ const ERROR_MESSAGES: Record<string, string> = {
 function getCallbackUrl(): string {
   if (typeof window === "undefined") return "/";
   const raw = new URLSearchParams(window.location.search).get("callbackUrl");
-  // 仅允许站内相对路径，防开放重定向
-  if (raw && raw.startsWith("/") && !raw.startsWith("//")) return raw;
-  return "/";
+  return loginReturnPath(raw);
 }
 
 function LoginFormInner({ feishuEnabled }: { feishuEnabled: boolean }) {
@@ -115,6 +114,10 @@ function LoginFormInner({ feishuEnabled }: { feishuEnabled: boolean }) {
         ) : (
           <Tooltip title="未配置飞书应用">{feishuButton}</Tooltip>
         )}
+        <Typography.Paragraph type="secondary" style={{ textAlign: "center", fontSize: 12, margin: "16px 0 0" }}>
+          登录状态异常？<Typography.Link href="/signout" style={{ fontSize: 12 }}>清除当前登录状态</Typography.Link>
+          <br />仅清理此入口的会话，不会重置密码。
+        </Typography.Paragraph>
       </Card>
     </div>
   );

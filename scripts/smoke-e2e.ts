@@ -110,11 +110,12 @@ async function main(): Promise<void> {
   }
   console.log(`冒烟目标: ${BASE}\n`);
 
-  // 1) 健康检查：ok 且迁移文件数===已应用数（PGlite 模式）
+  // 1) 两种数据库均须已确认就绪；未知/旧模式哨兵值不能当绿灯。
   {
     const { status, body } = await getJson(null, "/api/health");
-    const h = body as { ok?: boolean; migrationFiles?: number; applied?: number } | null;
-    if (status === 200 && h?.ok === true && (h.applied === -2 || h.migrationFiles === h.applied)) {
+    const h = body as { ok?: boolean; migrationState?: string; migrationFiles?: number; applied?: number } | null;
+    if (status === 200 && h?.ok === true && h.migrationState === "current"
+      && Number.isSafeInteger(h.migrationFiles) && (h.migrationFiles ?? 0) > 0 && h.migrationFiles === h.applied) {
       record("健康检查 /api/health", "PASS", `migrations ${h.applied}/${h.migrationFiles}`);
     } else {
       record("健康检查 /api/health", "FAIL", `status=${status} body=${JSON.stringify(body)}`);

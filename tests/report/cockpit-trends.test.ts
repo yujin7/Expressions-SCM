@@ -8,6 +8,7 @@ import { eq, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
 import { createTestDb } from "../helpers/db";
+import { ALERT_OUTCOME_VERSION } from "@/jobs/alert-outcome";
 import {
   buildAlertPrecision,
   buildDailyFlow,
@@ -119,7 +120,7 @@ describe("驾驶舱趋势块 · 纯装配函数", () => {
 
   it("预警命中率：真+误 < 5 的分组不下发精确率（服务层算得出也置 null）；弃权不进分母；只有分组与合计计数，没有单一总分", () => {
     const b = buildAlertPrecision({
-      days: 90, verifiedTotal: 9, caliber: "c",
+      days: 90, verifiedTotal: 9, legacyVerifiedTotal: 3, caliber: "c",
       groups: [
         { category: "inventory_cover", sourceRule: "cover", verified: 7, truePositive: 3, falsePositive: 2, unverifiable: 2, precisionPct: 60 },
         { category: "sales_spike", sourceRule: "spike", verified: 2, truePositive: 1, falsePositive: 0, unverifiable: 1, precisionPct: 100 },
@@ -130,7 +131,7 @@ describe("驾驶舱趋势块 · 纯装配函数", () => {
     expect(b.groups[1]).toMatchObject({ key: "sales_spike|spike", scored: 1, insufficient: true, precisionPct: null });
     expect(b.groups[2]).toMatchObject({ key: "legacy|", label: "legacy", insufficient: true });
     expect(b.totals).toEqual({ truePositive: 4, falsePositive: 2, unverifiable: 3 });
-    expect(b).toMatchObject({ minSample: 5, scoredGroups: 1, verifiedTotal: 9, metricIds: ["alertPrecision"] });
+    expect(b).toMatchObject({ minSample: 5, scoredGroups: 1, verifiedTotal: 9, legacyVerifiedTotal: 3, metricIds: ["alertPrecision"] });
     expect(Object.keys(b)).not.toEqual(expect.arrayContaining(["precisionPct", "overallPrecision"]));
   });
 
@@ -359,12 +360,15 @@ describe("驾驶舱趋势块 · PGlite 装配", () => {
       const [spike] = await db.insert(schema.systemAlerts).values([resolved("sales_spike", "spike", 0)]).returning({ id: schema.systemAlerts.id });
       const results = ["true_positive", "true_positive", "true_positive", "false_positive", "false_positive", "unverifiable", "true_positive"];
       await db.insert(schema.alertEvents).values([
-        ...cover.map((a, i) => ({ alertId: a.id, event: "verify", at: i === 6 ? ago(24 * 100) : ago(1), evidenceRef: { result: results[i] }, idempotencyKey: `${a.id}:verify` })),
-        { alertId: spike.id, event: "verify", at: ago(1), evidenceRef: { result: "true_positive" }, idempotencyKey: `${spike.id}:verify` },
+        ...cover.map((a, i) => ({ alertId: a.id, event: "verify", at: i === 6 ? ago(24 * 100) : ago(1), evidenceRef: { result: results[i], version: ALERT_OUTCOME_VERSION }, idempotencyKey: `${a.id}:verify` })),
+        { alertId: spike.id, event: "verify", at: ago(1), evidenceRef: { result: "true_positive", version: ALERT_OUTCOME_VERSION }, idempotencyKey: `${spike.id}:verify` },
       ]);
       // 待办取消拆分：来源告警 autoResolved（引擎迟滞关闭）vs 人工关闭
       const [autoA] = await db.insert(schema.systemAlerts).values([resolved("inventory_cover", "cover", 100, true)]).returning({ id: schema.systemAlerts.id });
       const [manA] = await db.insert(schema.systemAlerts).values([resolved("inventory_cover", "cover", 101, false)]).returning({ id: schema.systemAlerts.id });
+      await db.insert(schema.alertEvents).values({
+        alertId: manA.id, event: "verify", at: ago(1), evidenceRef: { result: "true_positive", version: "alert-outcome/v1" }, idempotencyKey: `${manA.id}:verify`,
+      });
       const wi = (title: string, sourceRef: string, status: string) => ({
         title, assigneeId: pmc.id, assignerId: admin.id, createdBy: admin.id, ownerRole: "pmc", sourceKind: "alert", sourceRef, status, createdAt: ago(48),
         completedAt: status === "done" ? ago(1) : null,
@@ -380,11 +384,13 @@ describe("驾驶舱趋势块 · PGlite 装配", () => {
       const ap = t.screens.s2.alertPrecision;
       expect(ap.state).toBe("ready");
       expect(ap.data!.verifiedTotal).toBe(7);
+      expect(ap.data!.legacyVerifiedTotal).toBe(1);
       expect(ap.data!.totals).toEqual({ truePositive: 4, falsePositive: 2, unverifiable: 1 });
       expect(ap.data!.groups.find((g) => g.key === "inventory_cover|cover")).toMatchObject({ verified: 6, truePositive: 3, falsePositive: 2, unverifiable: 1, scored: 5, insufficient: false, precisionPct: 60 });
       expect(ap.data!.groups.find((g) => g.key === "sales_spike|spike")).toMatchObject({ verified: 1, truePositive: 1, scored: 1, insufficient: true, precisionPct: null });
       expect(ap.data!.scoredGroups).toBe(1);
       expect(ap.note).toContain("可评分组 1/2");
+      expect(ap.note).toContain("旧口径 1 条");
       expect(ap.source.tier).toBe("fact");
 
       const ts = t.screens.s4.todoCompletionStrict;

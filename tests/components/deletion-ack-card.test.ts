@@ -14,14 +14,20 @@ const src = readFileSync("src/app/(app)/admin/health/health-client.tsx", "utf8")
 const card = src.slice(src.indexOf("function DeletionAckCard"));
 
 describe("删除墓碑卡片", () => {
-  it("界面上写明「尾部整段消失不要签」——这是最容易被做坏的一步", () => {
+  it("形状只提示风险，所有缺失回源核实且签认不能绕过守卫", () => {
     expect(card).toContain("尾部整段消失");
-    expect(card).toContain("不要签");
-    expect(card, "也要说清楚什么情况才值得签").toContain("零散缺失");
+    expect(card).toContain("零散缺失");
+    expect(card).toContain("不能据此判定真实删除或分页/权限故障");
+    expect(card).toContain("所有缺失均须回源核实");
+    expect(card).toContain("签认不绕过截断守卫");
+    expect(card).toContain("不可借签满记录绕过");
   });
 
-  it("说明「一次只放行这一条」，不给人「以后丢的都算数」的错觉", () => {
-    expect(card).toMatch(/一次确认只放行这一条/);
+  it("逐条签认不保证批次放行，不能暗示一签就解锁", () => {
+    expect(card).toContain("确认真实删除后再逐条签认");
+    expect(card).toContain("不保证本批次放行");
+    expect(card).toContain("仍须升级人工核对");
+    expect(card).not.toMatch(/一次确认只放行这一条/);
   });
 
   it("依据不足 4 字时提交按钮禁用（DB 也有 check 约束，两层都要有）", () => {

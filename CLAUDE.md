@@ -94,8 +94,11 @@
   - **公网隧道必须 `--protocol http2`**（QUIC 出境实测慢一倍，`tests/architecture/public-tunnel-transport.test.ts`）；
     守护脚本运行在 `~/Library/Application Support/exp-scm/`，仓库在 `~/Downloads` 下 launchd 读不到（TCC）。
   - **mac 上 `npm install` 会剪掉 lock 里 Linux/wasm 专属嵌套条目**（`@unrs/resolver-binding-wasm32-wasi/node_modules/@emnapi/*`），
-    CI 镜像随即装不齐；改依赖后 `git diff package-lock.json` 只允许出现你要的条目，多删的先 `git checkout` 再手改根块
-    （`tests/architecture/agility-loop.test.ts` 钉住）。
+    CI 镜像随即装不齐；改依赖前记录 `package.json` / `package-lock.json` 基线与已有改动归属，
+    改完逐差异核对 `git diff package-lock.json`。若出现非预期删除，保留当前工作区，在明确指定已核对
+    commit 的全新干净临时 worktree 重建并验证候选，再逐差异修复本次误删，保留用户和并行会话修改；
+    不得整文件还原或只手拼根块猜测依赖树。差异混合且无法确定归属时先停止覆盖并协调确认
+    （平台条目由 `tests/architecture/agility-loop.test.ts` 钉住，恢复指导由 skill-governance-contract 测试守护）。
   - **观察读模型的批次选择三档**（2026-09-03 生产实况）：交易流（拼多多订单）review 即不用；对照表/维表只经 `_identity` 引用，review 不影响；
     平台日快照若 review 只因业务键重复/缺失仍可用、读模型按业务键 `DISTINCT ON` 去重。被 supersede 的批次任何情况下不再可用——
     否则一次重同步就把外部销速从 1,703 个平台 SKU 静默打回 681（`tests/report/external-velocity.test.ts`、`channel-observation.test.ts` 钉住）。
@@ -103,7 +106,8 @@
     模块环只在 `next build` 收集页面数据时炸（`Cannot access 'X' before initialization`），`tsc`/`lint`/`vitest` 全绿也照样失败
     （2026-09-04：todo/service → jobs/notify → workbench/focus → todo/stats）。用
     `npx madge --circular --extensions ts,tsx --ts-config tsconfig.json <route>` 定位，动态 import 断环。
-    跑完记得 `git checkout -- next-env.d.ts tsconfig.json && rm -rf .next-buildcheck`——构建会改写这两个文件。
+    构建可能改写 `next-env.d.ts` / `tsconfig.json`；先记录基线，结束后只撤回本次构建生成的差异，
+    不得用整文件 checkout 覆盖并行会话或用户修改。缓存清理由 `npm run clean:cache` 的受控流程处理。
   - **迁移撞号重出后必须逐条比对手写约束**：`drizzle-kit generate` 从 schema 反推 SQL，
     只写在迁移里的东西会被**静默丢弃**。2026-09-05：`fk_qc_record_quality_case` 因此消失过一次
     （它只能写在迁移里——在 `db/schema/docs.ts` 里声明会形成 `docs.ts ↔ quality.ts` 模块环，
@@ -116,10 +120,11 @@
     于是用户筛了区间、串写错了，拿回来的是**整张未筛选的列表**，界面看起来却像筛选生效——
     一个没有任何迹象的错误答案。非法入参一律 400（`tests/architecture/doc-date-window-rejects.test.ts`）。
     同理：只验形状不验日历也不算校验（`"2026-13-45"` 能过正则，进 SQL 就是 500）。
-  - **拒绝必须说清楚拒了什么**：守卫不说明就等于把系统永久卡死。2026-09-04 简道云同步因
-    「行数下降 6447 < 6448」停摆两天，报文没说少了哪条、也没有任何人工确认路径。
-    拒绝要给出：少了哪几条（id 样例）、形状是「尾部整段消失」（分页/权限截断）还是「零散缺失」
-    （更像真删除）、以及**下一步能做什么**。放行路径见 `integrations/deletion-ack.ts`（D69）。
+  - **拒绝必须说清楚拒了什么**：2026-09-04 一条简道云全量镜像流因
+    「行数下降 6447 < 6448」受阻，旧报文没有缺失 ID 或人工确认路径；父任务失败不代表所有流停摆。
+    拒绝要给出缺失 ID、流/批次、完整性风险与下一步。历史 `rowNo` 是规范化 ID 顺序，
+    不是 API 分页顺序；「尾部整段消失」只提示疑似截断，「零散缺失」也不能证明真实删除。
+    必须回源核实，签墓碑不绕过完整性守卫。放行路径见 `integrations/deletion-ack.ts`（D69）。
   - **文档里的「唯一权威」若没有门，等于没有**：本仓已四次演示——业务日收口后长回 39 份、
     分域参数权限表只在一层生效、过账唯一写入方从来没有门、SSOT 入口页引用的台账条数漂了 116 条。收口的同一个提交里就要加门，
     并**植入违规验证它会红**（只验证绿的门可能什么都没测）。
@@ -131,7 +136,11 @@
   - **台账正文（标题/范围段/汇总表）与行数据必须一致**：行一直对是因为被测试钉住，正文错是因为没被钉住
     （2026-09-04 漂到「标题 582、单元格 260、合计 653、各行相加 650」）；`system-audit-500` 现已钉住正文。
   - **并行分支合并注册表用 union 会吞掉闭合括号**（2026-09-04：metrics.ts 4 处 `};`/`},` 丢失，tsc 才发现）：union 解决后必须 tsc，并检查 `^  \w+: \{$` 开与 `^  \},$` 闭计数相等；`src/lib/route-access.ts` 变更后用注册表重生成 `tests/architecture/route-registry-derivation.test.ts` 的 LEGACY_* 快照（scratchpad/regen 脚本思路：buildMenuTree(["admin"]) / menuRolesFromRegistry() / PALETTE_PAGES），不要手改快照。
-  - **Agent/Workflow 的 worktree 可能基于 main 而非当前分支**：进 worktree 先核对基线文件是否存在，缺则 `git reset --hard <当前 HEAD>`；每个域只在自己分支提交，合并前 `git merge-tree --write-tree HEAD <branch>` 预检冲突。
+  - **Agent/Workflow 的 worktree 可能基于 main 而非当前分支**：进入后先核对当前 commit、状态与所需基线。
+    基线不符时停止在该 worktree 继续，保留其中已提交、暂存、未暂存及未跟踪工作；确认任务需要的
+    commit 后在全新路径创建干净临时 worktree，不原地重置或覆盖。确需迁移已有工作时先核对归属，
+    逐差异迁入并复核；无法区分用户或并行修改时协调确认。每个域只在自己分支提交，合并前
+    `git merge-tree --write-tree HEAD <branch>` 预检冲突。
   - **门禁结论只认汇总行**：`npm run check:pr | tail` 会吞掉失败退出码，必须看 `Test Files … passed` 且无 `failed`；
     加护栏后要验证它对真实违规写法变红。
 - 并行会话（`parallel-sessions`）：提交只 `git add` 自己改过的路径，提交前 `git status` 核对别人在改的文件；

@@ -16,6 +16,7 @@ import {
   isGovernedSkuCode,
 } from "@/server/rules/sku-code";
 import { allocateGovernedSkuCode } from "./sku-code-allocation";
+import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 
 type SkuType = (typeof SKU_TYPES)[number];
 
@@ -38,6 +39,7 @@ export async function listSkus(
   pageSize: number,
   typeParam: string | null,
   roleParam?: string | null,
+  selectedValues?: SelectedOptionValue[],
 ) {
   const db = await getDbAsync();
   const conds = [];
@@ -62,6 +64,8 @@ export async function listSkus(
   if (types) conds.push(inArray(schema.skus.skuType, types));
   const commercialRole = parseCommercialRole(roleParam ?? null);
   if (commercialRole) conds.push(eq(schema.skus.commercialRole, commercialRole));
+  const selectedWhere = selectedOptionsPredicate(selectedValues, { id: schema.skus.id, text: [schema.skus.code, schema.skus.name] });
+  if (selectedWhere) conds.push(selectedWhere);
   const where = conds.length ? and(...conds) : undefined;
 
   const base = db
@@ -98,7 +102,9 @@ export async function listSkus(
     .leftJoin(schema.skuParams, eq(schema.skus.id, schema.skuParams.skuId));
 
   const [rawRows, [{ total }]] = await Promise.all([
-    base.where(where).orderBy(schema.skus.code).limit(pageSize).offset((page - 1) * pageSize),
+    base.where(where).orderBy(schema.skus.code)
+      .limit(selectedValues === undefined ? pageSize : SELECTED_OPTIONS_LIMIT)
+      .offset(selectedValues === undefined ? (page - 1) * pageSize : 0),
     db
       .select({ total: sql<number>`count(*)::int` })
       .from(schema.skus)

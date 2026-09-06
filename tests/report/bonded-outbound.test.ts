@@ -19,6 +19,8 @@ describe("保税仓日出库观察", () => {
     const contract = jiandaoyunContract("bonded-warehouse-order-observation")!;
     expect(contract.entryId).toBe("69bcf6dbbe2cb5ce06c1b827");
     expect(contract.window).toBeUndefined(); // 探针实核：源表 507 行统计日期全为 2026-03-01，时间窗永远 0 行
+    expect(contract.label).toContain("全量归档");
+    expect(contract.label).not.toContain("7天时间窗");
     const sources = contract.fields.map((f) => f.source);
     for (const pii of ["recipient_name", "contact_phone", "recipient_full_address", "id_card_name", "id_card_number", "province", "city", "district", "courier_tracking_number"]) {
       expect(sources, pii).not.toContain(pii);

@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
 import {
   importJobs,
   integrationCheckpoints,
@@ -39,6 +39,9 @@ const CONNECTOR = "jdy";
 const CATALOG_STREAM = "catalog";
 const CATALOG_SCHEMA_VERSION = "jiandaoyun-catalog-v1";
 const RECORD_SCHEMA_VERSION = "jiandaoyun-observation-v4";
+/** rowNo 保存的是规范化 ID 顺序，不是上游分页顺序；尾部形状只能用作疑似截断线索。 */
+const SOURCE_SEQUENCE = "source-record-id-asc/v1";
+const DELETION_POLICY = "per-record-tombstone-suspected-tail-fail-closed/v1";
 /** Running claims older than this can be fenced off and recovered by a retry. */
 const RUN_STALE_AFTER_MS = 2 * 60 * 60 * 1_000;
 
@@ -490,16 +493,18 @@ function sourceUpdatedThrough(records: JiandaoyunRecord[]): string | null {
  * 为什么要**返回诊断而不是只抛一个数字**：2026-09-04 生产上
  * `jst-item-master-mirror-observation` 从 6448 掉到 6447，报文只有「6447 < 6448，
  * 可能是权限或分页缩减；需人工复核」——**少了哪一条、像删除还是像截断，一个字都没有**。
- * 于是「人工复核」无从下手，唯一在跑通的连接器就此停摆。拒绝本身是对的
+ * 于是「人工复核」无从下手，该流及同轮后续流受阻。拒绝本身是对的
  * （没有删除墓碑就分不清删除与截断，见下方 message），但拒绝必须说清楚拒绝了什么。
  */
 interface PriorRecordDiagnosis {
   priorCount: number;
+  /** 所有消失的记录，包括已签墓碑的记录；诊断形状与报错样例不能因签字而丢失。 */
+  vanished: string[];
   /** 尚未签字的缺失记录（已签字的墓碑已减掉） */
   missing: string[];
   /** 本轮被墓碑放行的条数（留痕用：放行了几条要说得出来） */
   ackedCount: number;
-  /** true = 缺失集中在旧清单的尾部（分页截断的形状）；false = 零散缺失（更像真删除） */
+  /** true = 缺失集中在已保存规范序列的尾部；仅为疑似截断，不证明删除或分页根因。 */
   looksTruncated: boolean;
 }
 
@@ -512,12 +517,19 @@ async function diagnosePriorSourceRecords(
     currentSourceRecordIds: ReadonlySet<string>;
   },
 ): Promise<PriorRecordDiagnosis> {
-  const priorRows: { sourceRecordId: string | null }[] = await tx
+  const priorRows: { sourceRecordId: string | null; rowNo: number }[] = await tx
     .select({
       sourceRecordId: sql<string | null>`${stagingRows.payload} ->> 'sourceRecordId'`,
+      rowNo: stagingRows.rowNo,
     })
     .from(stagingRows)
-    .where(eq(stagingRows.importJobId, input.priorJobId));
+    .where(eq(stagingRows.importJobId, input.priorJobId))
+    .orderBy(asc(stagingRows.rowNo), asc(stagingRows.id));
+  // 读取必须恢复摄取时保存的序列；无 ORDER BY 的数据库行序不是事实。
+  // 缺号/重号时无法可靠判定尾部，禁止用墓碑修饰一份不完整的旧清单。
+  if (priorRows.some((row, index) => row.rowNo !== index + 1)) {
+    throw new Error(`简道云 ${input.stream} 旧观察批次 #${input.priorJobId} 的 rowNo 序列不连续或重复，需人工复核后再替代`);
+  }
   const ordered: string[] = [];
   const priorSourceRecordIds = new Set<string>();
   let rowsWithoutIdentity = 0;
@@ -544,27 +556,27 @@ async function diagnosePriorSourceRecords(
      形状判定仍按全部消失的记录算，否则逐条签字就能把一次真正的分页截断洗成「删除」。 */
   const acked = await loadAckedDeletions(tx, CONNECTOR, input.stream);
   const missing = vanished.filter((id) => !acked.has(id));
-  /* 截断的形状是「旧清单最后 N 条整段消失」；零散缺失更像上游真的删了几条。
-     两者的处置完全不同（前者要修分页/权限，后者要人来确认删除），所以必须分开说。 */
+  /* 摄取先按 sourceRecordId 规范排序，再按 index + 1 保存 rowNo，未保存真实分页顺序。
+     因而「旧清单最后 N 条消失」只提示疑似截断，不能证明分页/权限变化，也不能证明删除。 */
   const tail = ordered.slice(ordered.length - vanished.length);
   const looksTruncated = vanished.length > 0 && tail.every((id) => !input.currentSourceRecordIds.has(id));
-  return { priorCount: priorSourceRecordIds.size, missing, ackedCount: vanished.length - missing.length, looksTruncated };
+  return { priorCount: priorSourceRecordIds.size, vanished, missing, ackedCount: vanished.length - missing.length, looksTruncated };
 }
 
 /** 诊断 → 中文说明（给运维看的那一句必须能直接指导下一步） */
 function describeMissing(stream: string, priorJobId: number, d: PriorRecordDiagnosis): string {
-  const sample = d.missing.slice(0, 5).join("、");
-  const more = d.missing.length > 5 ? ` 等 ${d.missing.length} 条` : "";
-  const ackNote = d.ackedCount > 0 ? `（另有 ${d.ackedCount} 条已签墓碑）` : "";
+  const sample = d.vanished.slice(0, 5).join("、");
+  const more = d.vanished.length > 5 ? ` 等 ${d.vanished.length} 条` : "";
+  const ackNote = d.ackedCount > 0 ? `（其中 ${d.ackedCount} 条已签墓碑，未签 ${d.missing.length} 条）` : "";
   if (d.looksTruncated) {
     /* 截断分支同样要报出具体 ID：运维要拿它去和分页游标/权限范围对照，
        只说「像截断」而不说少了哪几条，等于把人推回原点。 */
-    return `简道云 ${stream} 新观察缺少旧记录 ${d.missing.length} 条（${sample}${more}）${ackNote}；`
-      + `缺失呈**尾部整段**消失的形状——这是分页/权限截断，不是删除；即使逐条签了墓碑也不放行。`
-      + `先查分页与授权。拒绝替代批次 #${priorJobId}`;
+    return `简道云 ${stream} 新观察缺少旧记录 ${d.vanished.length} 条（${sample}${more}）${ackNote}；`
+      + `按已保存的规范记录顺序，缺失集中在**尾部整段**，疑似分页/权限截断，但形状不能证明根因；即使逐条签了墓碑也不自动放行。`
+      + `请回源核验分页、授权范围及删除依据。拒绝替代批次 #${priorJobId}`;
   }
-  return `简道云 ${stream} 新观察缺少旧记录 ${d.missing.length} 条（${sample}${more}）${ackNote}；`
-    + `缺失是**零散**的——更像上游真的删除了这几条。确认属实后可在运维页为这些 sourceRecordId 登记删除墓碑放行。`
+  return `简道云 ${stream} 新观察缺少旧记录 ${d.vanished.length} 条（${sample}${more}）${ackNote}；`
+    + `缺失是**零散**的，但不证明上游删除。请核验授权与源记录，确认删除属实后可在运维页为这些 sourceRecordId 登记删除墓碑放行。`
     + `拒绝替代批次 #${priorJobId}`;
 }
 
@@ -715,6 +727,7 @@ export async function syncJiandaoyunForm(
   );
   const control = inspectJiandaoyunContractControl(input.contract, widgets, records);
   const controlSummary = summarizeJiandaoyunContractControl(control);
+  // 此规范排序稳定信封摘要；staging.rowNo 必须保存同一序列，不能被当成上游分页顺序。
   const minimized = records
     .map((record) => minimizeRecord(record, input.contract))
     .sort((left, right) =>
@@ -731,6 +744,7 @@ export async function syncJiandaoyunForm(
   const updatedThrough = sourceUpdatedThrough(records);
   const asOf = updatedThrough?.slice(0, 10) ?? null;
   const stream = input.contract.key;
+  const deletionPolicy = input.contract.window ? "rolling-window-retain-history/v1" : DELETION_POLICY;
   const envelope = {
     contract: RECORD_SCHEMA_VERSION,
     connector: CONNECTOR,
@@ -742,6 +756,8 @@ export async function syncJiandaoyunForm(
       sourceUpdatedThrough: updatedThrough,
       completeness: "paginated-authorized-observation",
       consistency: "source-has-no-snapshot-token",
+      sourceSequence: SOURCE_SEQUENCE,
+      deletionPolicy,
       controlRows: minimized.length,
       uniqueSourceRecordIds: sourceRecordIds.size,
       authority: "observation-only",
@@ -774,6 +790,8 @@ export async function syncJiandaoyunForm(
       schemaHash,
       sourceAsOf: asOf,
       sourceUpdatedThrough: updatedThrough,
+      sourceSequence: SOURCE_SEQUENCE,
+      deletionPolicy,
       authority: "observation-only",
       controlSummary,
       qualityBlocked: controlSummary.status === "review",
@@ -861,8 +879,8 @@ export async function syncJiandaoyunForm(
             currentSourceRecordIds: sourceRecordIds,
           });
           if (diagnosis.looksTruncated) {
-            /* 截断的形状即使逐条签了字也拒绝：墓碑证明的是「这条被删了」，
-               不是「少了一整段是正常的」。放行截断＝把观察基线悄悄削掉一截。 */
+            /* 疑似截断即使逐条签了字也拒绝；形状本身不是根因证明，
+               但逐条删除确认不足以排除批次完整性风险。 */
             throw new Error(describeMissing(stream, priorFull.id, diagnosis));
           }
           if (diagnosis.missing.length > 0) {
@@ -902,7 +920,8 @@ export async function syncJiandaoyunForm(
           schemaHash,
           sourceUpdatedThrough: updatedThrough,
           priorSourceRecordIdsVerified,
-          deletionPolicy: "no-tombstone-fail-closed",
+          sourceSequence: SOURCE_SEQUENCE,
+          deletionPolicy,
           mode: "full",
           authority: "observation-only",
           releaseBlocked: true,
@@ -970,7 +989,8 @@ export async function syncJiandaoyunForm(
         releaseBlocked: true,
         emptySource: minimized.length === 0,
         priorSourceRecordIdsVerified,
-        deletionPolicy: "no-tombstone-fail-closed",
+        sourceSequence: SOURCE_SEQUENCE,
+        deletionPolicy,
         supersededImportJobs,
         unresolvedAliases,
         controlSummary,

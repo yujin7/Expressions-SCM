@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
 import { bulkDecideReviewItems, guardReviewWrite, listReviewItems } from "@/server/modules/review/checklist";
 
@@ -6,8 +7,11 @@ export async function GET(req: NextRequest) {
   try {
     await guardRead();
     const { q, page, pageSize, searchParams } = parseListQuery(req.url);
+    const idRaw = searchParams.get("id");
+    const id = idRaw !== null ? z.string().regex(/^[1-9]\d*$/).transform(Number).pipe(z.number().int().max(2_147_483_647)).parse(idRaw) : undefined;
     return NextResponse.json(
       await listReviewItems({
+        id,
         q,
         page,
         pageSize,

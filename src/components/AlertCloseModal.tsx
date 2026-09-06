@@ -8,7 +8,7 @@
  * 本组件只值导入零依赖常量模块 `@/lib/alert-close-reasons`，不 import `@/server` / `@/db`
  * （tests/architecture/client-server-boundary.test.ts）。
  */
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Alert, App, Input, Modal, Select, Space, Typography } from "antd";
 import { postJson } from "@/components/fetchJson";
 import { ALERT_CLOSE_REASON_LABELS, MANUAL_CLOSE_REASON_CODES, type ManualCloseReasonCode } from "@/lib/alert-close-reasons";
@@ -42,34 +42,48 @@ export default function AlertCloseModal({ open, alertId, alertTitle, onCancel, o
   const [reasonCode, setReasonCode] = useState<ManualCloseReasonCode>(defaultReasonCode);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const sessionVersion = useRef(0);
 
-  // 每次打开（或换目标）重置表单，避免上一条的原因带到下一条
-  useEffect(() => {
+  // 在提交的界面切换时立即失效旧回调；同一告警关闭后再打开也属于新会话。
+  // 不取消已发出的业务写请求：取消网络请求不等于服务端已回滚。
+  useLayoutEffect(() => {
+    sessionVersion.current += 1;
+    submittingRef.current = false;
+    setSubmitting(false);
     if (open) {
       setReasonCode(defaultReasonCode);
       setNote("");
     }
+    return () => { sessionVersion.current += 1; };
   }, [open, alertId, defaultReasonCode]);
 
   const noteRequired = reasonCode === "manual";
   const submit = async () => {
-    if (alertId == null) return;
+    if (!open || alertId == null || submittingRef.current) return;
     if (noteRequired && !note.trim()) {
       message.warning("选择「其他（人工）」时请在备注说明原因");
       return;
     }
+    const submittedSession = sessionVersion.current;
+    submittingRef.current = true;
     setSubmitting(true);
     try {
       const r = await postJson<AlertCloseResult>(`/api/alerts/${alertId}/close`, {
         reasonCode,
         note: note.trim() || undefined,
       });
-      message.success(`告警 #${r.id} 已关闭（${ALERT_CLOSE_REASON_LABELS[r.reasonCode]?.label ?? r.reasonCode}）`);
-      onClosed?.(r);
+      if (sessionVersion.current === submittedSession) {
+        message.success(`告警 #${r.id} 已关闭（${ALERT_CLOSE_REASON_LABELS[r.reasonCode]?.label ?? r.reasonCode}）`);
+        onClosed?.(r);
+      }
     } catch (e) {
-      message.error((e as Error).message);
+      if (sessionVersion.current === submittedSession) message.error((e as Error).message);
     } finally {
-      setSubmitting(false);
+      if (sessionVersion.current === submittedSession) {
+        submittingRef.current = false;
+        setSubmitting(false);
+      }
     }
   };
 
@@ -78,11 +92,15 @@ export default function AlertCloseModal({ open, alertId, alertTitle, onCancel, o
       title={alertId == null ? "关闭告警" : `关闭告警 #${alertId}`}
       open={open && alertId != null}
       onOk={() => void submit()}
-      onCancel={onCancel}
+      onCancel={() => { if (!submittingRef.current) onCancel(); }}
       confirmLoading={submitting}
+      closable={!submitting}
+      maskClosable={!submitting}
+      keyboard={!submitting}
       okText="关闭告警"
-      okButtonProps={{ danger: true }}
+      okButtonProps={{ danger: true, disabled: submitting }}
       cancelText="取消"
+      cancelButtonProps={{ disabled: submitting }}
       width="min(520px, 100vw)"
     >
       {alertTitle ? (
@@ -101,6 +119,7 @@ export default function AlertCloseModal({ open, alertId, alertTitle, onCancel, o
           <Typography.Text strong>关闭原因</Typography.Text>
           <Select<ManualCloseReasonCode>
             aria-label="关闭原因"
+            disabled={submitting}
             value={reasonCode}
             onChange={(v) => setReasonCode(v)}
             options={MANUAL_CLOSE_REASON_OPTIONS}
@@ -112,6 +131,7 @@ export default function AlertCloseModal({ open, alertId, alertTitle, onCancel, o
           <Typography.Text strong>备注{noteRequired ? "（必填）" : "（可选）"}</Typography.Text>
           <Input.TextArea
             aria-label="关闭备注"
+            disabled={submitting}
             rows={3}
             maxLength={500}
             showCount

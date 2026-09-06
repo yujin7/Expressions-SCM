@@ -2,6 +2,11 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // Next 15 otherwise rewrites loopback redirect origins (127.0.0.1 / [::1])
+  // to localhost, moving the browser to a different host-only cookie jar.
+  // This is a build-time flag; middleware still validates the actual Host and
+  // emits absolute Locations. See tests/auth/login-origin-adapter.test.ts.
+  skipMiddlewareUrlNormalize: true,
   // Development sessions use .next-dev/.next-webpack so a production build
   // cannot invalidate the active HMR cache. CI and `npm run build` keep .next.
   distDir: process.env.NEXT_DIST_DIR?.trim() || ".next",

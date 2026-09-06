@@ -25,9 +25,12 @@ Before code, state:
 ## Enforce the boundaries
 
 - Stock moves only through `src/server/posting/registry.ts`; ledgers and audit logs are append-only.
-  Enforced by `tests/architecture/posting-single-writer.test.ts` — write statements against
-  `stock_ledger`/`stock_balances` are allowed only under `src/server/posting/`. Need a new stock
+  Checked by `tests/architecture/posting-single-writer.test.ts` — application writes against
+  `stock_ledger`/`stock_balances` are allowed only under `src/server/posting/`. The guard resolves
+  local aliases and SQL write targets and has injected positive/negative fixtures; it is not proof
+  against arbitrary dynamic or interprocedural SQL. Trace those paths manually. Need a new stock
   action? Register a source in `registry.ts`; do not open a second write path.
+  Being inside the posting directory is not enough: the write must be reachable through a registered source.
 - Allocate document numbers through `src/server/docflow/doc-no.ts`; never use `MAX+1`.
 - Use decimal strings and `src/server/core/decimal.ts`, never floating-point business arithmetic.
   Float damages the *predicate*, not just the digits: `0.1*3 - 0.3 = 5.5e-17 > 0` made a

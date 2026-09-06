@@ -29,22 +29,28 @@ then to `release-sweep` only after an exact candidate exists.
 
 ## Refusing a batch
 
-A guard that refuses without saying what it refused takes the connector down permanently.
-On 2026-09-04 a full-snapshot stream went 6448 → 6447 rows; the refusal said only
-"row count dropped, needs human review", named no record, and offered no way to accept —
-the one working connector stayed dead until code changed.
+A refusal needs a diagnosable scope and a recovery path. On 2026-09-04 one full-snapshot
+stream went 6448 → 6447 rows without identifying the missing record. That stream's failure
+could stop later streams in the same sequential job; it did not prove that every stream or
+the whole connector had stopped. Check per-stream runs, not only the parent job status.
 
-- Distinguish **deletion** from **truncation** before refusing: scattered missing ids look like a
-  real upstream delete; a missing contiguous tail is pagination/permission truncation. Say which,
-  and name the ids — operators need them to check the paging cursor.
+- Report missing IDs and the observed shape, but distinguish **evidence** from **hypothesis**:
+  historical rows are ordered by saved `rowNo` (normalized source-record-ID order), not API page
+  arrival order. Validate that sequence before using a tail heuristic. A missing tail suggests an
+  integrity risk; neither tail nor scattered gaps prove deletion, pagination failure, or permissions.
+  Check the upstream record and extraction scope before accepting a smaller baseline.
 - Accepting a shrunken baseline needs a per-record signature, never a blanket switch:
   `integration_record_deletions` + `src/server/integrations/deletion-ack.ts` (admin, mandatory
   reason, audited, revocable, and impossible to pre-sign for a record the system never saw).
 - **A tombstone must never launder a truncation.** Judge the shape over *everything* that vanished,
   not just the unsigned remainder — otherwise signing each missing row turns a truncated batch into
-  an accepted one. `tests/integrations/jiandaoyun-sync.test.ts` pins both directions.
+  an accepted one. Even a source-confirmed deletion that matches the guarded tail shape stays
+  blocked under the current rule; escalate recovery for explicit review, never bypass the guard.
+  `tests/integrations/jiandaoyun-sync.test.ts` pins both directions.
 - Row-count floors must subtract acknowledged deletions, or the first successful release trips a
   bogus "duplicate source id" error.
+- Apply full-snapshot guards only to full snapshots. Rolling-window contracts and empty observations
+  keep their own existing evidence/retention rules; never silently reinterpret them as replacements.
 
 Use [file-release.md](references/file-release.md) for file ingestion,
 [single-claim.md](../supply-chain/reference/single-claim.md) to test one factual claim, and

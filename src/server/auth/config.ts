@@ -3,12 +3,15 @@ import { CredentialsSignin, type DefaultSession, type NextAuthConfig } from "nex
 import type {} from "next-auth/jwt";
 import Credentials from "next-auth/providers/credentials";
 import type { OAuth2Config } from "next-auth/providers";
+import type { NextRequest } from "next/server";
 import { verify } from "@node-rs/argon2";
 import { eq } from "drizzle-orm";
 import { getDbAsync, schema } from "@/db";
 import type { Role } from "@/server/core/constants";
 import { loadUserScopes } from "@/server/core/data-scope";
+import { authCookieConfig } from "./cookies";
 import { refreshSessionIdentity } from "./session-version";
+import { AUTH_SESSION_MAX_AGE, withinSessionLifetime } from "./session-policy";
 
 /* ---------- 类型扩展：session/jwt 携带 userId/roles/isApprover + D62 数据范围 ---------- */
 
@@ -294,7 +297,7 @@ export const authConfig: NextAuthConfig = {
   trustHost: true,
   secret: process.env.AUTH_SECRET,
   // 8 小时 JWT 会话；所有业务写操作通过 getFreshSessionUser 回查 active/session_version/角色，变更即时生效。
-  session: { strategy: "jwt", maxAge: 8 * 60 * 60, updateAge: 60 * 60 },
+  session: { strategy: "jwt", maxAge: AUTH_SESSION_MAX_AGE, updateAge: 60 * 60 },
   pages: { signIn: "/login" },
   providers: [
     localProvider,
@@ -335,6 +338,8 @@ export const authConfig: NextAuthConfig = {
         token.deptScope = user.deptScope ?? null;
         token.scopeVersion = user.scopeVersion ?? user.sessionVersion;
       } else if (token.userId != null) {
+        // /api/auth/session bypasses middleware; do not let a legacy 30-day token renew here.
+        if (!withinSessionLifetime(token)) return null;
         return refreshSessionIdentity(token);
       }
       return token;
@@ -352,3 +357,8 @@ export const authConfig: NextAuthConfig = {
     },
   },
 };
+
+/** Preserve the full authorization policy while resolving cookie security per request. */
+export function authConfigForRequest(request?: NextRequest): NextAuthConfig {
+  return { ...authConfig, ...authCookieConfig(request) };
+}

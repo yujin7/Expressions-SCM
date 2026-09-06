@@ -15,7 +15,8 @@ describe("rules/task-triggers：告警/复核 → 待办候选（纯函数）", 
     expect(c.fingerprint).toBe(fingerprintOf("alert", "12"));
     expect(c.ownerRole).toBe("pmc");
     expect(c.priority).toBe("high");
-    expect(c.href).toContain("/alerts?category=sales_spike");
+    expect(c.href).toBe("/alerts?id=12");
+    expect(c.sourceRef).toBe("12");
   });
 
   it("严重度映射：critical/high→high，medium→normal，其余 low；未知告警类别落 admin", () => {
@@ -33,6 +34,20 @@ describe("rules/task-triggers：告警/复核 → 待办候选（纯函数）", 
     const c = reviewToCandidate({ id: 7, category: "blocked_bom", refType: "bom", refKey: "B1", title: "BOM 阻断", detail: "d", severity: null } as never);
     expect(c.fingerprint).toBe("review:7");
     expect(c.priority).toBe("high");
+    expect(c.href).toBe("/review/checklist?id=7");
+    expect(c.sourceRef).toBe("7");
+  });
+
+  it("链接不拼接类别/refKey/detail 中的任意路径或陈旧筛选", () => {
+    const alert = alertToCandidate({
+      id: 8, category: "sales_spike&status=resolved", refKey: "https://example.com",
+      title: "t", detail: "javascript:alert(1)", severity: "high",
+    });
+    expect(alert.href).toBe("/alerts?id=8");
+    const review = reviewToCandidate({
+      id: 9, category: "other&page=99", refType: "url", refKey: "//example.com", title: "t", detail: "/admin",
+    });
+    expect(review.href).toBe("/review/checklist?id=9");
   });
 
   it("批量投影：同指纹去重、告警在前、同类按 id 升序（多轮稳定）", () => {

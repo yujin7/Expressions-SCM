@@ -35,6 +35,7 @@ import type { SessionUser } from "@/server/core/dto";
 import type { AnyDb } from "@/server/core/svc";
 import { ApiError } from "@/server/modules/master/common";
 import { INTERVAL_JOBS, runNamedIntervalJobOnce } from "@/jobs/interval-runner";
+import { yonyouJobSummary, yonyouJobSummaryText, type YonyouJobSummary } from "@/lib/yonyou-job-summary";
 import {
   acquireJobLock,
   DEFAULT_MANUAL_COOLDOWN_MS,
@@ -64,6 +65,8 @@ export interface ManualJobRunResult {
   ok: boolean;
   /** 任务自身返回的摘要（失败时为 null） */
   summary: unknown;
+  /** Bounded operational outcome; ok continues to mean execution health. */
+  outcome?: YonyouJobSummary;
   message: string;
   startedAt: string;
   finishedAt: string;
@@ -110,6 +113,8 @@ export async function runJobManually(
     message = e instanceof Error ? e.message : String(e);
   }
   const finishedAt = new Date();
+  const outcome = name === "sync-yonyou" ? yonyouJobSummary(summary, ok) : undefined;
+  const auditMessage = outcome ? JSON.stringify(outcome) : message.slice(0, 500);
 
   /* 审计与 job_runs 是两件事：job_runs 记「任务跑了、结果如何」（看门狗读它），
      审计记「是谁按的按钮」。手动触发必须两边都有，且审计要在**释放锁之前**落库。 */
@@ -118,7 +123,7 @@ export async function runJobManually(
       userId: user.id,
       entity: "job_run",
       action: "manual_run",
-      after: { job: name, ok, message: message.slice(0, 500), durationMs: finishedAt.getTime() - startedAt.getTime() },
+      after: { job: name, ok, message: auditMessage, durationMs: finishedAt.getTime() - startedAt.getTime() },
     });
   } finally {
     await releaseJobLock(db, lock);
@@ -127,8 +132,9 @@ export async function runJobManually(
   return {
     job: name,
     ok,
-    summary: ok ? summary : null,
-    message: message.slice(0, 500),
+    summary: ok ? outcome ?? summary : null,
+    ...(outcome ? { outcome } : {}),
+    message: outcome ? yonyouJobSummaryText(outcome) : message.slice(0, 500),
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
     durationMs: finishedAt.getTime() - startedAt.getTime(),

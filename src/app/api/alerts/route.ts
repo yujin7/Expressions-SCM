@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { alertEvents, systemAlerts, users } from "@/db/schema";
@@ -20,7 +21,7 @@ export async function GET(req: NextRequest) {
   try {
     const user = await guardRead();
     const db = await getDbAsync();
-    const { page, pageSize: rawPageSize, searchParams } = parseListQuery(req.url);
+    const { page: requestedPage, pageSize: rawPageSize, searchParams } = parseListQuery(req.url);
     const pageSize = Math.min(500, searchParams.get("pageSize") ? rawPageSize : 50);
     const status = searchParams.get("status")?.trim() || "open";
     const category = searchParams.get("category")?.trim() || "";
@@ -29,12 +30,15 @@ export async function GET(req: NextRequest) {
     /* W2 单条深链 `?id=`：通知中心的系统告警通知按 dedupeKey 反查到具体告警行
        （lib/notify-links）。**命中 id 时忽略 status**——通知常常是在告警被关闭之后才被点开，
        若还按缺省 status=open 过滤，用户点进来只会看到空列表，然后以为"这条告警不存在"。 */
-    const idRaw = Number(searchParams.get("id"));
-    const focusId = Number.isInteger(idRaw) && idRaw > 0 ? idRaw : null;
+    const idRaw = searchParams.get("id");
+    const focusId = idRaw !== null ? z.string().regex(/^[1-9]\d*$/).transform(Number).pipe(z.number().int().max(2_147_483_647)).parse(idRaw) : null;
+    const page = focusId ? 1 : requestedPage;
     const where: SQL[] = focusId ? [eq(systemAlerts.id, focusId)] : [eq(systemAlerts.status, status)];
-    if (category) where.push(eq(systemAlerts.category, category));
-    if (severity) where.push(eq(systemAlerts.severity, severity));
-    if (unackedOnly) where.push(isNull(systemAlerts.ackedAt));
+    if (!focusId) {
+      if (category) where.push(eq(systemAlerts.category, category));
+      if (severity) where.push(eq(systemAlerts.severity, severity));
+      if (unackedOnly) where.push(isNull(systemAlerts.ackedAt));
+    }
     // D62（安全审计 S3）：受限渠道账号只看得到能归到自己渠道的店铺维告警（爆单预警的标题/详情/去重键
     // 里带着店铺名与平台 SKU）。条件下推 SQL，total 与分页跟着一起裁，不是分页后再删行。
     const scope = resolveChannelScope(user, null);

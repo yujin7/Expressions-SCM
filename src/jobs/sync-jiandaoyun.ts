@@ -12,6 +12,7 @@ import {
 import {
   syncJiandaoyunCatalog,
   syncJiandaoyunForm,
+  type JiandaoyunFormSummary,
 } from "@/server/integrations/jiandaoyun-sync";
 import { refreshJiandaoyunExternalDemandReadModel } from "@/server/modules/report/external-demand-signal";
 import { refreshPlatformSkuIdentityGap } from "@/server/modules/report/platform-sku-identity-gap";
@@ -56,11 +57,29 @@ export function shouldRefreshJiandaoyunDemandModels(contractKeys: readonly strin
 }
 
 async function refreshDemandReadModel(db: AnyDb) {
-  const signal = await refreshJiandaoyunExternalDemandReadModel(db);
-  await refreshExternalVelocity(db);
-  await refreshChannelObservation(db);
-  // 身份缺口读模型与需求信号绑定同一批次，随同步一起重建，页面不再现算
-  const identityGap = await refreshPlatformSkuIdentityGap(db);
+  const models: {
+    signal?: Awaited<ReturnType<typeof refreshJiandaoyunExternalDemandReadModel>>;
+    identityGap?: Awaited<ReturnType<typeof refreshPlatformSkuIdentityGap>>;
+  } = {};
+  const failures: Error[] = [];
+  // 四个缓存仍顺序刷新，不放大数据库负载；其中一个失败不能让其他已接收事实一直留在旧缓存。
+  for (const step of [
+    { key: "demand-signal", run: async () => { models.signal = await refreshJiandaoyunExternalDemandReadModel(db); } },
+    { key: "external-velocity", run: async () => { await refreshExternalVelocity(db); } },
+    { key: "channel-observation", run: async () => { await refreshChannelObservation(db); } },
+    { key: "identity-gap", run: async () => { models.identityGap = await refreshPlatformSkuIdentityGap(db); } },
+  ]) {
+    try {
+      await step.run();
+    } catch (cause) {
+      failures.push(new Error(step.key, { cause }));
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `需求读模型刷新失败 ${failures.length}/4：${failures.map((error) => error.message).join("、")}`);
+  }
+  const { signal, identityGap } = models;
+  if (!signal || !identityGap) throw new Error("需求读模型未返回完整摘要");
   return {
     state: signal.state,
     sourceAsOf: signal.sourceAsOf,
@@ -173,17 +192,44 @@ export async function runJiandaoyunConfiguredFormSyncs(db: AnyDb) {
       reason: "JIANDAOYUN_SYNC_CONTRACTS 未显式选择任何观察契约",
     };
   }
-  const results = [];
+  const results: JiandaoyunFormSummary[] = [];
+  const streamFailures: Error[] = [];
   for (const contract of contracts) {
-    results.push(await syncJiandaoyunForm(db, { ...ready, contract }));
+    try {
+      // 单流事务、幂等回放及失败留痕由 syncJiandaoyunForm 原样负责。
+      // 一条流拒绝替代不阻断其他显式选中的流，也不并行放大外部配额。
+      results.push(await syncJiandaoyunForm(db, { ...ready, contract }));
+    } catch (cause) {
+      streamFailures.push(new Error(contract.key, { cause }));
+    }
   }
-  const contractKeys = contracts.map((contract) => contract.key);
-  const readModel = shouldRefreshJiandaoyunDemandModels(contractKeys)
-    ? await refreshDemandReadModel(db)
-    : null;
-  const bondedOutbound = shouldRefreshBondedOutbound(contractKeys)
-    ? await refreshBondedOutboundSummary(db)
-    : null;
+  const succeededKeys = results.map((result) => result.contractKey);
+  const refreshFailures: Error[] = [];
+  let readModel: Awaited<ReturnType<typeof refreshDemandReadModel>> | null = null;
+  let bondedOutbound: Awaited<ReturnType<typeof refreshBondedOutboundSummary>> | null = null;
+  if (shouldRefreshJiandaoyunDemandModels(succeededKeys)) {
+    try {
+      readModel = await refreshDemandReadModel(db);
+    } catch (cause) {
+      refreshFailures.push(new Error("demand-models", { cause }));
+    }
+  }
+  if (shouldRefreshBondedOutbound(succeededKeys)) {
+    try {
+      bondedOutbound = await refreshBondedOutboundSummary(db);
+    } catch (cause) {
+      refreshFailures.push(new Error("bonded-outbound", { cause }));
+    }
+  }
+  if (streamFailures.length > 0 || refreshFailures.length > 0) {
+    // 调度/手跑仅把抛错记为 job_runs.ok=false；返回 partial 对象会被误报为恢复成功。
+    // 数量放在最前面，失败键给有界样例；原因留在 cause，不把上游原始响应塞入500字运维摘要。
+    const sample = (failures: Error[]) => failures.slice(0, 5).map((error) => error.message).join("、")
+      + (failures.length > 5 ? "等" : "");
+    throw new AggregateError([...streamFailures, ...refreshFailures],
+      `简道云同步未全部完成：成功 ${results.length}/${contracts.length} 流，失败 ${streamFailures.length} 流，刷新失败 ${refreshFailures.length} 组；`
+      + `失败流：${sample(streamFailures) || "无"}；刷新失败：${sample(refreshFailures) || "无"}`);
+  }
   return {
     status: "succeeded" as const,
     contracts: results.length,

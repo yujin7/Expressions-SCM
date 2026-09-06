@@ -40,6 +40,8 @@ const bulkSchema = decideSchema.extend({
 });
 
 export interface ReviewListFilter {
+  /** 精确来源深链；忽略展示筛选和页码，不改变访问权限 */
+  id?: number;
   category?: string;
   status?: string;
   q?: string;
@@ -47,7 +49,8 @@ export interface ReviewListFilter {
   pageSize: number;
 }
 
-function buildWhere(f: { category?: string; status?: string; q?: string }) {
+function buildWhere(f: { id?: number; category?: string; status?: string; q?: string }) {
+  if (f.id !== undefined) return eq(schema.reviewItems.id, z.number().int().positive().max(2_147_483_647).parse(f.id));
   const conds = [];
   if (f.category && (REVIEW_CATEGORIES as readonly string[]).includes(f.category)) {
     conds.push(eq(schema.reviewItems.category, f.category));
@@ -77,7 +80,7 @@ export async function listReviewItems(f: ReviewListFilter, dbOverride?: DB) {
       .where(where)
       .orderBy(sql`case when ${schema.reviewItems.status} = 'open' then 0 else 1 end`, schema.reviewItems.id)
       .limit(f.pageSize)
-      .offset((f.page - 1) * f.pageSize),
+      .offset(f.id !== undefined ? 0 : (f.page - 1) * f.pageSize),
     db.select({ total: sql<number>`count(*)::int` }).from(schema.reviewItems).where(where),
   ]);
   return { data: rows, total };
@@ -112,28 +115,30 @@ export async function decideReviewItem(user: Decider, id: number, input: unknown
   assertDecider(user);
   const v = decideSchema.parse(input);
   const db = dbOverride ?? (await getDbAsync());
-  const [before] = await db.select().from(schema.reviewItems).where(eq(schema.reviewItems.id, id));
-  if (!before) throw new ApiError(404, "复核项不存在");
-  const reopened = v.status === "open";
-  const [after] = await db
-    .update(schema.reviewItems)
-    .set({
-      status: v.status,
-      note: v.note ?? (reopened ? null : before.note),
-      decidedBy: reopened ? null : user.id,
-      decidedAt: reopened ? null : new Date(),
-    })
-    .where(eq(schema.reviewItems.id, id))
-    .returning();
-  await writeAudit(db, {
-    userId: user.id,
-    entity: "review_item",
-    entityId: id,
-    action: v.status === "done" ? "review_done" : v.status === "overruled" ? "review_overrule" : "review_reopen",
-    before: { status: before.status, note: before.note },
-    after: { status: after.status, note: after.note },
+  return db.transaction(async (tx) => {
+    const [before] = await tx.select().from(schema.reviewItems).where(eq(schema.reviewItems.id, id)).for("update");
+    if (!before) throw new ApiError(404, "复核项不存在");
+    const reopened = v.status === "open";
+    const [after] = await tx
+      .update(schema.reviewItems)
+      .set({
+        status: v.status,
+        note: v.note ?? (reopened ? null : before.note),
+        decidedBy: reopened ? null : user.id,
+        decidedAt: reopened ? null : new Date(),
+      })
+      .where(eq(schema.reviewItems.id, id))
+      .returning();
+    await writeAudit(tx, {
+      userId: user.id,
+      entity: "review_item",
+      entityId: id,
+      action: v.status === "done" ? "review_done" : v.status === "overruled" ? "review_overrule" : "review_reopen",
+      before: { status: before.status, note: before.note },
+      after: { status: after.status, note: after.note },
+    });
+    return after;
   });
-  return after;
 }
 
 /** 批量改判（勾选后一键通过等）；审计按批记 1 行（ids+状态） */
@@ -141,25 +146,27 @@ export async function bulkDecideReviewItems(user: Decider, input: unknown, dbOve
   assertDecider(user);
   const v = bulkSchema.parse(input);
   const db = dbOverride ?? (await getDbAsync());
-  const reopened = v.status === "open";
-  const rows = await db
-    .update(schema.reviewItems)
-    .set({
-      status: v.status,
-      ...(v.note !== undefined ? { note: v.note } : {}),
-      decidedBy: reopened ? null : user.id,
-      decidedAt: reopened ? null : new Date(),
-    })
-    .where(inArray(schema.reviewItems.id, v.ids))
-    .returning({ id: schema.reviewItems.id });
-  await writeAudit(db, {
-    userId: user.id,
-    entity: "review_item",
-    entityId: null,
-    action: "review_bulk",
-    after: { status: v.status, note: v.note ?? null, ids: rows.map((r) => r.id) },
+  return db.transaction(async (tx) => {
+    const reopened = v.status === "open";
+    const rows = await tx
+      .update(schema.reviewItems)
+      .set({
+        status: v.status,
+        ...(v.note !== undefined ? { note: v.note } : {}),
+        decidedBy: reopened ? null : user.id,
+        decidedAt: reopened ? null : new Date(),
+      })
+      .where(inArray(schema.reviewItems.id, v.ids))
+      .returning({ id: schema.reviewItems.id });
+    await writeAudit(tx, {
+      userId: user.id,
+      entity: "review_item",
+      entityId: null,
+      action: "review_bulk",
+      after: { status: v.status, note: v.note ?? null, ids: rows.map((r) => r.id) },
+    });
+    return { updated: rows.length };
   });
-  return { updated: rows.length };
 }
 
 /** 路由写守卫：回查 DB 新鲜身份（体检 #5）+ 决策角色校验 */

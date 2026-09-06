@@ -16,6 +16,7 @@ vi.mock("@/server/modules/master/common", async (importOriginal) => {
 });
 
 import { GET } from "@/app/api/alerts/route";
+import { ApiError } from "@/server/modules/master/common";
 
 interface Row {
   id: number; category: string; severity: string | null; ackedAt: string | null; ackedByName: string | null;
@@ -116,5 +117,82 @@ describe("/api/alerts 列表：筛选、分页、总数、知悉人", () => {
   it("open 列表不做 close 台账查询，行上不带关闭字段（避免误读为已关闭）", async () => {
     const body = await call("?status=open");
     expect(body.rows.every((r) => r.closeReasonCode === undefined)).toBe(true);
+  });
+
+  it("精确 ID 忽略陈旧状态/类别/严重度/知悉/搜索/页码，保留关闭原因和脱敏", async () => {
+    const [target] = await db.insert(schema.systemAlerts).values({
+      category: "inventory_cover", title: "精确来源告警", severity: "high", ownerRole: "pmc",
+      paramsSnapshot: { amount: "123.00", safeCount: 7 },
+    }).returning();
+    const actor = { id: userId, name: "计划员", roles: ["pmc"], isApprover: false };
+    await ackAlert(actor, target.id, db);
+    await closeAlert(actor, target.id, "false_positive", "已核对来源", db);
+    const query = `?id=${target.id}&status=open&category=other&severity=low&acked=0&q=not-found&page=99&pageSize=1`;
+    const body = await call(query);
+    expect(body.total).toBe(1);
+    expect(body.page).toBe(1);
+    expect(body.rows.map((r) => r.id)).toEqual([target.id]);
+    expect(body.rows[0]).toMatchObject({
+      ackedByName: "计划员", closeReasonCode: "false_positive", closeNote: "已核对来源", closedByName: "计划员",
+      paramsSnapshot: { safeCount: 7 },
+    });
+    // R9 explicitly allows PMC to see prices; use the same focused record under an ops
+    // session to test masking, rather than accidentally requiring a stricter product policy.
+    expect(body.rows[0].paramsSnapshot?.amount).toBe("123.00");
+    mocks.guardRead.mockResolvedValueOnce({ id: userId, name: "运营", roles: ["ops"], isApprover: false });
+    const masked = await call(query);
+    expect(masked.total).toBe(1);
+    expect(masked.page).toBe(1);
+    expect(masked.rows[0]).toMatchObject({ id: target.id, closeReasonCode: "false_positive", paramsSnapshot: { safeCount: 7 } });
+    expect(masked.rows[0].paramsSnapshot).not.toHaveProperty("amount");
+  });
+
+  it("不存在的精确 ID 返回空结果，不回落到其他告警", async () => {
+    const body = await call("?id=2147483647&page=99");
+    expect(body).toMatchObject({ total: 0, rows: [], page: 1 });
+  });
+
+  it.each(["", " ", "0", "-1", "+1", "01", "1.0", "1e2", "0x10", "NaN", "2147483648", "https://example.com"])("非法精确 ID %j 返回安全 400", async (id) => {
+    const response = await GET(new NextRequest(`http://localhost/api/alerts?${new URLSearchParams({ id })}`));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toHaveProperty("error");
+  });
+
+  it("精确 ID 不绕过认证", async () => {
+    mocks.guardRead.mockRejectedValueOnce(new ApiError(401, "未登录"));
+    const response = await GET(new NextRequest("http://localhost/api/alerts?id=1"));
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "未登录" });
+  });
+
+  it("精确 ID 仍按店铺渠道裁剪；范围外/未知/混合归属不能泄露行或 total", async () => {
+    await db.insert(schema.aliases).values([
+      { aliasType: "channel", scope: "JIANDAOYUN", rawValue: "范围内店", targetId: 11 },
+      { aliasType: "channel", scope: "JIANDAOYUN", rawValue: "范围外店", targetId: 22 },
+    ]);
+    const targets = await db.insert(schema.systemAlerts).values([
+      { category: "sales_spike", title: "本渠道", dedupeKey: "sales_spike:platform:范围内店|SKU1" },
+      { category: "sales_spike", title: "其他渠道", dedupeKey: "sales_spike:platform:范围外店|SKU2" },
+      { category: "sales_spike", title: "未映射", dedupeKey: "sales_spike:platform:未知店|SKU3" },
+      { category: "sales_spike", title: "跨渠道汇总", detail: "店铺 范围内店、范围外店；聚合数量", dedupeKey: "sales_spike:sku:88" },
+    ]).returning();
+    const restricted = { id: userId, name: "运营", roles: ["ops"], isApprover: false, channelScope: [11], deptScope: ["ops"] };
+    mocks.guardRead.mockResolvedValue(restricted);
+    try {
+      const own = await call(`?id=${targets[0].id}&category=other&severity=high&page=99`);
+      expect(own.total).toBe(1);
+      expect(own.rows.map((r) => r.id)).toEqual([targets[0].id]);
+      for (const target of targets.slice(1)) {
+        const body = await call(`?id=${target.id}&page=99`);
+        expect(body.total).toBe(0);
+        expect(body.rows).toEqual([]);
+      }
+      mocks.guardRead.mockResolvedValue({ ...restricted, channelScope: [] });
+      expect((await call(`?id=${targets[0].id}`)).rows).toEqual([]);
+      mocks.guardRead.mockResolvedValue({ ...restricted, roles: ["admin"] });
+      expect((await call(`?id=${targets[1].id}`)).rows.map((r) => r.id)).toEqual([targets[1].id]);
+    } finally {
+      mocks.guardRead.mockResolvedValue({ id: userId, name: "计划员", roles: ["pmc"], isApprover: false });
+    }
   });
 });

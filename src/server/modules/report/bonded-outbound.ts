@@ -7,8 +7,9 @@
  *
  * 纪律：
  *   - observation_only：不过账、不改 stock_balances/batch_stocks、不进销速与补货定量（D43/D55）；
- *   - 契约为全量观察（2026-09-04 起；源表为归档）：读模型跨最近 120 天的全部成功批次按
- *     源记录 id（sourceRecordId）去重、取最新批次的状态；
+ *   - 契约为全量观察（2026-09-04 起；源表为归档）：读模型从最近 120 天内成功、未被
+ *     supersede 且符合质量条件的批次按源记录 id（sourceRecordId）去重、取最新批次的状态；
+ *     7/30 天发货统计以最新有效发货日而非今天为锚点，不代表数据已更新到当前日期；
  *   - 身份：`_identity.skuId` 由同步期解析（sku_code 别名 → 条码精确唯一命中），未映射行
  *     保留原始商品编码单列，绝不按名称猜；
  *   - 出库判定：有发货时间（YYYY-MM-DD 前缀可解析）且订单状态不含「取消」；状态分布随数值输出供业务复核；
@@ -25,7 +26,7 @@ interface ReadDb {
 const READ_MODEL_CACHE_KEY = "bonded-outbound/v1";
 const STREAM = "bonded-warehouse-order-observation";
 const TARGET_TABLE = "jdy_bonded_warehouse_order_observation";
-/** 跨批次累计的批次回看天数（契约窗口 7 天，滚动快照需要拼接历史批次） */
+/** 可用同步批次的完成时间回看范围；不是契约拉取时间窗，也不是源数据新鲜度证明。 */
 const BATCH_LOOKBACK_DAYS = 120;
 export const BONDED_OUTBOUND_WINDOW_DAYS = 30;
 const MAX_SKU_BATCH_ROWS = 500;

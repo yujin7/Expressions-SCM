@@ -7,14 +7,17 @@ type AnyTx = any;
 import { getDbAsync, schema } from "@/db";
 import { ApiError } from "./common";
 import { warehouseSchema } from "./schemas";
+import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 
 function buildWhere(q: string) {
   return q ? or(ilike(schema.warehouses.code, `%${q}%`), ilike(schema.warehouses.name, `%${q}%`)) : undefined;
 }
 
-export async function listWarehouses(q: string, page: number, pageSize: number) {
+export async function listWarehouses(q: string, page: number, pageSize: number, selectedValues?: SelectedOptionValue[]) {
   const db = await getDbAsync();
-  const where = buildWhere(q);
+  const where = and(buildWhere(q), selectedOptionsPredicate(selectedValues, {
+    id: schema.warehouses.id, text: [schema.warehouses.code, schema.warehouses.name],
+  }));
   const [rows, [{ total }]] = await Promise.all([
     db
       .select({
@@ -33,8 +36,8 @@ export async function listWarehouses(q: string, page: number, pageSize: number) 
       .leftJoin(schema.suppliers, eq(schema.warehouses.supplierId, schema.suppliers.id))
       .where(where)
       .orderBy(schema.warehouses.code)
-      .limit(pageSize)
-      .offset((page - 1) * pageSize),
+      .limit(selectedValues === undefined ? pageSize : SELECTED_OPTIONS_LIMIT)
+      .offset(selectedValues === undefined ? (page - 1) * pageSize : 0),
     db.select({ total: sql<number>`count(*)::int` }).from(schema.warehouses).where(where),
   ]);
   return { data: rows, total };

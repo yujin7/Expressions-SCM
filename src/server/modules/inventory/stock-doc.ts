@@ -18,6 +18,7 @@ import {
   shortCloseStockDocSchema, voidStockDocSchema, withdrawStockDocSchema,
 } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "./batch-allocation";
+import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 
 /** 单号前缀（CLAUDE.md）：入库 RK / 出库 CK / 调拨 DB；红字沿用原单前缀 */
 const DOC_PREFIX: Record<ManualSubtype, string> = {
@@ -647,6 +648,7 @@ export interface ListStockDocsOptions {
   dateTo?: string;
   page: number;
   pageSize: number;
+  selectedValues?: SelectedOptionValue[];
 }
 
 export async function listStockDocs(
@@ -657,6 +659,8 @@ export async function listStockDocs(
   const db = await resolveDb(dbArg);
   const conds = [];
   if (q) conds.push(sql`${stockDocs.docNo} ILIKE ${"%" + q + "%"}`);
+  const selectedWhere = selectedOptionsPredicate(opts.selectedValues, { id: stockDocs.id, text: [stockDocs.docNo] });
+  if (selectedWhere) conds.push(selectedWhere);
   if (opts.status) conds.push(eq(stockDocs.status, opts.status as DocStatus));
   if (opts.subtype) conds.push(eq(stockDocs.subtype, opts.subtype as ManualSubtype));
   if (opts.transferType === "unclassified") {
@@ -714,8 +718,8 @@ export async function listStockDocs(
       .leftJoin(users, eq(stockDocs.createdBy, users.id))
       .where(where)
       .orderBy(desc(stockDocs.createdAt), desc(stockDocs.id))
-      .limit(opts.pageSize)
-      .offset((opts.page - 1) * opts.pageSize),
+      .limit(opts.selectedValues === undefined ? opts.pageSize : SELECTED_OPTIONS_LIMIT)
+      .offset(opts.selectedValues === undefined ? (opts.page - 1) * opts.pageSize : 0),
     db
       .select({ total: sql<number>`count(*)::int` })
       .from(stockDocs)

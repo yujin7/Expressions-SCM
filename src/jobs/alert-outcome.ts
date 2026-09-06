@@ -4,9 +4,10 @@
  *
  * 口径（只读 stock_ledger，不写库存）：
  *  - 窗口 = [告警开启, 告警关闭 + 宽限 3 天]；只看 accounting_mode='realtime' 的仓（快照仓无流水，不能打分）。
- *  - **覆盖前置（红队审计 A3，core/stockout-evidence 唯一判定）**：告警本身来自 getOnHandBySku＝
+ *  - **覆盖前置（core/stockout-evidence 唯一判定）**：告警本身来自 getOnHandBySku＝
  *    实时仓余额 + 快照仓最新快照。所以只有当该 SKU 在窗口内**没有快照仓在库**时，
- *    实时仓流水才真的覆盖了告警所指的那批货，才允许打真/误的分；否则一律 unverifiable 并给出覆盖原因。
+ *    每条告警按自己的窗口检查实时账起点证据、逐仓快照基线与期间变化；未知不补零，
+ *    才允许按已登记仓证据打真/误的分；不证明未接入仓或日内快照间的轨迹。
  *    （此前只要历史上在实时仓动过一笔就标 coverage=realtime 并打分，
  *    于是"货在快照仓、偶尔有一笔实时仓调拨"的 SKU 被拿去算精确率，而那个数是人调阈值的依据。）
  *  - 期初 = 窗口前全部流水累计；逐笔推演窗口内余额取最小值。
@@ -15,16 +16,17 @@
  *  - unverifiable   = 覆盖不足（无实时仓 / 该 SKU 无实时流水 / 窗口内仍有快照仓在库）；
  *                     或余额归零但流水看不到需求；
  *                     或窗口内有入库（可能是告警促成了补货、断货被规避——无法与误报区分，只能弃权）。
- * 每条告警只核验一次（幂等键 `${alertId}:verify`）；结果只进台账，不回写 system_alerts，不调参数。
+ * 每条告警只核验一次（幂等键 `${alertId}:verify`）；旧版本记录不覆盖、不自动重算，
+ * 非当前版本不进入当前精确率，另披露历史记录数。结果不回写 system_alerts，不调参数。
  */
 import { and, eq, gte, inArray, lt, lte, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { dAdd, dCmp, dSub } from "@/server/core/decimal";
 import type { AnyDb } from "@/server/core/svc";
-import { classifyLedgerCoverage, loadStockUniverseCoverage, type LedgerCoverage, type StockUniverseCoverage } from "@/server/core/stockout-evidence";
+import { classifyLedgerCoverage, loadStockUniverseCoverage, type CoverageReason, type LedgerCoverage, type StockUniverseCoverage } from "@/server/core/stockout-evidence";
 import { appendAlertEvents, type AlertEventInput } from "@/server/modules/alerts/engine";
 
-export const ALERT_OUTCOME_VERSION = "alert-outcome/v1";
+export const ALERT_OUTCOME_VERSION = "alert-outcome/v2";
 export const VERIFY_AFTER_DAYS = 3;
 export const VERIFY_GRACE_DAYS = 3;
 export const DEMAND_LOOKBACK_DAYS = 30;
@@ -32,12 +34,9 @@ export const VERIFIED_CATEGORIES = ["inventory_cover"] as const;
 const DAY_MS = 86_400_000;
 
 export type AlertOutcomeResult = "true_positive" | "false_positive" | "unverifiable";
-export type AlertOutcomeReason =
+export type AlertOutcomeReason = CoverageReason
   | "zero_stock_with_demand"
   | "stock_never_zero"
-  | "snapshot_only_no_realtime_ledger"
-  /** 有实时流水，但窗口内该 SKU 仍有快照仓在库 → 流水覆盖不了告警的在库口径，弃权 */
-  | "snapshot_stock_outside_ledger"
   | "zero_stock_no_ledger_demand"
   | "averted_by_inbound"
   | "sku_unresolved";
@@ -80,19 +79,23 @@ type CandidateRow = {
 
 function skuIdFromAlert(row: CandidateRow, codeToId: Map<string, number>): number | null {
   const m = /^inventory_cover:(\d+)$/.exec(row.dedupeKey ?? "");
-  if (m) return Number(m[1]);
+  if (m) {
+    const id = Number(m[1]);
+    // 历史异常键不能把非法整数送入覆盖查询，导致同批正常告警一起失败。
+    if (Number.isInteger(id) && id > 0 && id <= 2_147_483_647) return id;
+  }
   if (row.refKey && codeToId.has(row.refKey)) return codeToId.get(row.refKey)!;
   return null;
 }
 
 async function verifyOne(
   db: AnyDb,
-  input: { skuId: number; windowStart: Date; windowEnd: Date; realtimeIds: number[]; coverage: StockUniverseCoverage },
+  input: { coverageKey: string; skuId: number; windowStart: Date; windowEnd: Date; realtimeIds: number[]; coverage: StockUniverseCoverage },
 ): Promise<Omit<AlertOutcomeEvidence, "version" | "skuId" | "windowStart" | "windowEnd" | "realtimeWarehouses">> {
   const l = schema.stockLedger;
   const inRealtime = inArray(l.warehouseId, input.realtimeIds);
   // 覆盖前置：唯一判定在 core/stockout-evidence（与 report/closed-loop 抑制复核同一份）
-  const cov = classifyLedgerCoverage(input.skuId, input.coverage);
+  const cov = classifyLedgerCoverage(input.coverageKey, input.coverage);
   if (!cov.covered) {
     return {
       coverage: cov.coverage, openingBalance: null, minBalance: null, demandOutQty: "0", lookbackOutQty: "0", inboundQty: "0",
@@ -109,18 +112,23 @@ async function verifyOne(
     .orderBy(l.occurredAt, l.id);
 
   let running = opening?.qty ?? "0";
-  const openingBalance = running;
-  let minBalance = running;
+  // 无窗前流水时，覆盖前置只允许首笔恰在起点。那笔之前的未知零不是窗口内的观测最低值。
+  // 首笔正向仍计入 inbound，不能借此把真实补货伪装成已验收期初。
+  const openingBalance = opening?.qty ?? null;
+  let minBalance = openingBalance;
   let demandOut = "0";
   let inbound = "0";
   for (const m of moves) {
     running = dAdd(running, m.qtyDelta, 4);
-    if (dCmp(running, minBalance) < 0) minBalance = running;
+    if (minBalance == null || dCmp(running, minBalance) < 0) minBalance = running;
     if (dCmp(m.qtyDelta, "0") < 0) demandOut = dSub(demandOut, m.qtyDelta, 4); // 出库为负，减负即累加出库量
     else inbound = dAdd(inbound, m.qtyDelta, 4);
   }
   const lookbackOut = lookback?.qty ?? "0";
   const base = { coverage: "realtime" as const, openingBalance, minBalance, demandOutQty: demandOut, lookbackOutQty: lookbackOut, inboundQty: inbound };
+  if (minBalance == null) {
+    return { ...base, result: "unverifiable", reason: "snapshot_only_no_realtime_ledger", note: "窗口内未取得可回放的余额证据，弃权不打分" };
+  }
   const hasDemand = dCmp(demandOut, "0") > 0 || dCmp(lookbackOut, "0") > 0;
   if (dCmp(minBalance, "0") <= 0) {
     return hasDemand
@@ -166,12 +174,12 @@ export async function runAlertOutcome(db: AnyDb, opts?: { now?: Date; limit?: nu
     : [];
   const codeToId = new Map(skuRows.map((s) => [s.code, s.id]));
 
-  /* 覆盖事实一次性载入（本轮全部 SKU × 最晚窗口末）：判定偏保守——
-     "窗口内还有快照仓在库"就弃权，不去逐条精算快照日，多弃权好过多打错分。 */
+  // 查询合批，覆盖判定仍按每条告警自己的闭区间；同一 SKU 的不同告警不能互借证据。
   const windowEndOf = (r: CandidateRow) => new Date(new Date(r.resolvedAt ?? now).getTime() + VERIFY_GRACE_DAYS * DAY_MS);
-  const skuIdsInRun = rows.map((r) => skuIdFromAlert(r, codeToId)).filter((v): v is number => v != null);
-  const latestWindowEnd = rows.reduce((m, r) => Math.max(m, windowEndOf(r).getTime()), 0);
-  const coverage = await loadStockUniverseCoverage(db, { skuIds: skuIdsInRun, asOf: new Date(latestWindowEnd || now.getTime()) });
+  const coverage = await loadStockUniverseCoverage(db, { windows: rows.flatMap((r) => {
+    const skuId = skuIdFromAlert(r, codeToId);
+    return skuId == null ? [] : [{ key: `alert:${r.id}`, skuId, from: new Date(r.createdAt), to: windowEndOf(r) }];
+  }) });
 
   const events: AlertEventInput[] = [];
   for (const r of rows) {
@@ -184,7 +192,7 @@ export async function runAlertOutcome(db: AnyDb, opts?: { now?: Date; limit?: nu
           openingBalance: null, minBalance: null, demandOutQty: "0", lookbackOutQty: "0", inboundQty: "0",
           note: "无法从 dedupeKey/refKey 解析 SKU",
         }
-      : await verifyOne(db, { skuId, windowStart, windowEnd, realtimeIds, coverage });
+      : await verifyOne(db, { coverageKey: `alert:${r.id}`, skuId, windowStart, windowEnd, realtimeIds, coverage });
     const evidence: AlertOutcomeEvidence = {
       version: ALERT_OUTCOME_VERSION, skuId, windowStart: windowStart.toISOString(), windowEnd: windowEnd.toISOString(),
       realtimeWarehouses: realtimeIds.length, ...verdict,
@@ -214,14 +222,18 @@ export interface AlertPrecisionGroup {
 
 export interface AlertPrecisionSummary {
   days: number;
+  /** 当前口径的核验事件数（包含弃权）；旧/缺版本不混入当前结果。 */
   verifiedTotal: number;
+  /** 同一时间窗内保留但未按当前口径重验的旧版/缺版本事件数。 */
+  legacyVerifiedTotal: number;
   groups: AlertPrecisionGroup[];
   caliber: string;
 }
 
 export const ALERT_PRECISION_CALIBER =
   "精确率 = 已核验为真 ÷ (真 + 误报)；弃权（快照仓 SKU / 窗口内仍有快照仓在库 / 窗口内有入库 / 看不到需求）单列不进分母；"
-  + "只有实时仓流水覆盖了告警所指的那批货才打分（在库口径含快照仓，流水只有实时仓）；窗口按核验时间；每条告警只核验一次";
+  + "仅按每条告警独立窗口的已登记仓证据打分：实时账起点已存在，逐仓快照期初和期间明确为零；缺失、非零或无效快照弃权；"
+  + `只纳入 ${ALERT_OUTCOME_VERSION}，非当前/缺版本历史核验另列，不改写、不自动重算；窗口按核验时间；每条告警只核验一次`;
 
 /** 近 N 天已核验告警按 category × sourceRule 的真/误/弃权计数（供后续 UI 块；不给单一总分） */
 export async function alertPrecision(db: AnyDb, opts: { days: number; now?: Date }): Promise<AlertPrecisionSummary> {
@@ -230,13 +242,14 @@ export async function alertPrecision(db: AnyDb, opts: { days: number; now?: Date
   const since = new Date(now.getTime() - days * DAY_MS);
   const e = schema.alertEvents;
   const a = schema.systemAlerts;
-  const rows: { category: string; sourceRule: string | null; result: string | null }[] = await db
-    .select({ category: a.category, sourceRule: a.sourceRule, result: sql<string | null>`${e.evidenceRef}->>'result'` })
+  const rows: { category: string; sourceRule: string | null; result: string | null; version: string | null }[] = await db
+    .select({ category: a.category, sourceRule: a.sourceRule, result: sql<string | null>`${e.evidenceRef}->>'result'`, version: sql<string | null>`${e.evidenceRef}->>'version'` })
     .from(e)
     .innerJoin(a, eq(a.id, e.alertId))
     .where(and(eq(e.event, "verify"), gte(e.at, since)));
   const groups = new Map<string, AlertPrecisionGroup>();
-  for (const r of rows) {
+  const currentRows = rows.filter((row) => row.version === ALERT_OUTCOME_VERSION);
+  for (const r of currentRows) {
     const key = `${r.category}|${r.sourceRule ?? ""}`;
     let g = groups.get(key);
     if (!g) {
@@ -252,5 +265,5 @@ export async function alertPrecision(db: AnyDb, opts: { days: number; now?: Date
     const denom = g.truePositive + g.falsePositive;
     return { ...g, precisionPct: denom > 0 ? Math.round((g.truePositive / denom) * 1000) / 10 : null };
   }).sort((x, y) => x.category.localeCompare(y.category) || (x.sourceRule ?? "").localeCompare(y.sourceRule ?? ""));
-  return { days, verifiedTotal: rows.length, groups: out, caliber: ALERT_PRECISION_CALIBER };
+  return { days, verifiedTotal: currentRows.length, legacyVerifiedTotal: rows.length - currentRows.length, groups: out, caliber: ALERT_PRECISION_CALIBER };
 }

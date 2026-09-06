@@ -1,4 +1,4 @@
-import { eq, ilike, or, sql } from "drizzle-orm";
+import { and, eq, ilike, or, sql } from "drizzle-orm";
 import { writeAudit } from "@/server/core/audit";
 import type { SessionUser } from "@/server/core/dto";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
@@ -6,14 +6,17 @@ type AnyTx = any;
 import { getDbAsync, schema } from "@/db";
 import { ApiError } from "./common";
 import { supplierCapacitySchema, supplierPaymentTermSchema, supplierSchema } from "./schemas";
+import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 
 function buildWhere(q: string) {
   return q ? or(ilike(schema.suppliers.code, `%${q}%`), ilike(schema.suppliers.name, `%${q}%`)) : undefined;
 }
 
-export async function listSuppliers(q: string, page: number, pageSize: number) {
+export async function listSuppliers(q: string, page: number, pageSize: number, selectedValues?: SelectedOptionValue[]) {
   const db = await getDbAsync();
-  const where = buildWhere(q);
+  const where = and(buildWhere(q), selectedOptionsPredicate(selectedValues, {
+    id: schema.suppliers.id, text: [schema.suppliers.code, schema.suppliers.name],
+  }));
   const [rows, [{ total }]] = await Promise.all([
     db
       .select({
@@ -28,8 +31,8 @@ export async function listSuppliers(q: string, page: number, pageSize: number) {
       .from(schema.suppliers)
       .where(where)
       .orderBy(schema.suppliers.code)
-      .limit(pageSize)
-      .offset((page - 1) * pageSize),
+      .limit(selectedValues === undefined ? pageSize : SELECTED_OPTIONS_LIMIT)
+      .offset(selectedValues === undefined ? (page - 1) * pageSize : 0),
     db.select({ total: sql<number>`count(*)::int` }).from(schema.suppliers).where(where),
   ]);
   return { data: rows, total };

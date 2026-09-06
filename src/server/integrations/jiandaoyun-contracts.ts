@@ -41,7 +41,9 @@ export interface JiandaoyunFormContract {
   /**
    * 服务端时间窗：只拉最近 N 天（按该日期字段，简道云 data/list filter）。
    * 用于订单级大表——拼多多订单全量超过 1,000 页安全上限；30/90 天需求窗口只需要最近几个月。
-   * 每批是窗口内的完整快照（不是增量），读模型只取最新批次，与其它观察流口径一致。
+   * 每批只观察窗口内数据（不是全量替代，也不是增量）；同步保留历史窗口批次，
+   * 不套用全量快照的旧记录连续性/替代规则。读模型按各自契约筛选可用批次并去重，
+   * 不能统一理解为「只取最新批次」或将空窗口视为历史事实归零。
    */
   window?: { field: string; days: number };
 }
@@ -1137,13 +1139,15 @@ export const JIANDAOYUN_FORM_CONTRACTS: JiandaoyunFormContract[] = [
    *
    * 用途：保税仓（快照仓，无流水）的「日出库」旁证——按 SKU/批次/效期汇总发货数量，
    * 供驾驶舱第 3 屏各仓库存明细的「出库」列；observation_only，不过账、不改库存。
-   * 7 天服务端时间窗（订单级大表）：每批是窗口内滚动快照，读模型跨批次按业务键去重。
+   * 当前契约为全量归档观察：2026-09-04 已移除服务端时间窗，本对象没有 window。
+   * 读模型从可用、未被 supersede 的批次按 sourceRecordId 去重取最新状态；
+   * 报表的 7/30 天发货统计窗口不是此处的拉取时间窗。
    * `productCode` / `barcode` / `warehouseName` 走同步期身份解析（`_identity.skuId` / `warehouseId`），
    * 未命中进认领队列，绝不自动认领。
    */
   {
     key: "bonded-warehouse-order-observation",
-    label: "数据中台/绍兴保税仓保税订单（7 天时间窗，出库观察）",
+    label: "数据中台/绍兴保税仓保税订单（全量归档，出库观察）",
     appId: "699ebeac318154b4f6d3dda6",
     entryId: "69bcf6dbbe2cb5ce06c1b827",
     targetTable: "jdy_bonded_warehouse_order_observation",

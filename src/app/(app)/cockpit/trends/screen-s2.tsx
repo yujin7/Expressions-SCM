@@ -353,7 +353,7 @@ export function AlertPrecisionCard({ block }: { block: Block<AlertPrecisionBlock
       unit="条 · 精确率 %"
       height={300}
       summary={d
-        ? `已核验 ${d.verifiedTotal} 条：真 ${d.totals.truePositive}、误报 ${d.totals.falsePositive}、弃权 ${d.totals.unverifiable}；${groups.map((g) => `${g.label} ${precisionText(g, d.minSample)}`).join("，")}`
+        ? `当前口径已核验 ${d.verifiedTotal} 条：真 ${d.totals.truePositive}、误报 ${d.totals.falsePositive}、弃权 ${d.totals.unverifiable}；旧口径 ${d.legacyVerifiedTotal} 条单列不计分；${groups.map((g) => `${g.label} ${precisionText(g, d.minSample)}`).join("，")}`
         : "无数据"}
       dataView={d ? (
         <Table<AlertPrecisionRow> rowKey="key" size="small" pagination={false} scroll={{ x: 640 }} dataSource={d.groups} columns={[

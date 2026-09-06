@@ -36,6 +36,7 @@ import {
   yonyouMissingEnv,
   yonyouSyncEnabled,
 } from "./yonyou";
+import { YONYOU_READ_CONTRACTS } from "./yonyou-contracts";
 
 export type ConnectorImplementation = "ready" | "contract_only";
 export type ConnectorAuth = "signed_token" | "api_key" | "oauth_app" | "webhook_or_app";
@@ -394,7 +395,7 @@ export const CONNECTORS: Connector[] = [
       "https://hc.jiandaoyun.com/open/14216",
       "https://hc.jiandaoyun.com/open/14220",
     ],
-    blocker: "目录与 15 条显式观察契约（14 条现行已选 + 1 条天猫费用候选）已就绪；数据只进入 evidence/staging。天猫费用仍需财务控制总量/UAT 后才能显式启用；其余仍需轮换已在聊天暴露的密钥、完成高价值身份认领与源端条码补齐、重复视图/UAT，再记录时间与非秘密证据编号",
+    blocker: "目录与显式观察契约读取已实现，数据只进入 evidence/staging；已选数量仅反映当前配置，不代表同步成功或 UAT 通过。实际结果须核对逐流运行记录，并完成身份认领、字段语义、控制总量与业务验收，再绑定当前契约集的时间和非秘密证据编号",
     isConfigured(env = process.env) {
       try {
         return jiandaoyunConfigFromEnv(env) !== null && jiandaoyunSyncActorId(env) !== null;
@@ -414,13 +415,18 @@ export const CONNECTORS: Connector[] = [
   },
   {
     key: "yy",
-    label: "用友（财务/成本）",
+    label: "用友（财务/成本，只读观察）",
     // 2026-08-03：yonyou-client.ts 补齐 token 客户端与契约白名单调用层（tests/integrations/
     // yonyou-client.test.ts 用假 transport 跑完整路径），此前只有配置校验故为 contract_only。
     implementation: "ready",
     auth: "oauth_app",
-    systemOfRecord: "财务凭证、成本、结算与组织核算口径",
-    capabilities: ["cost-authority", "settlement-posting", "financial-reconciliation"],
+    systemOfRecord: "用友持有财务凭证、成本与组织核算口径；本连接器只读观察，不回写凭证或结算",
+    capabilities: [
+      "read-only-contract-observations",
+      "immutable-evidence-and-staging",
+      "field-profile-without-values",
+      "schema-drift-guard",
+    ],
     requiredEnv: [...YONYOU_REQUIRED_ENV],
     optionalEnv: [
       "YY_CLIENT_ID",
@@ -432,7 +438,7 @@ export const CONNECTORS: Connector[] = [
     liveVerificationEnv: "YY_LIVE_VERIFIED_AT",
     liveVerificationRefEnv: "YY_LIVE_VERIFIED_REF",
     sourceDocs: ["https://developer.yonyou.com/openAPI"],
-    blocker: "网关与鉴权已实测打通（c4/iuap-api-gateway，token 正常）；八条只读契约当前均返回 HTTP 403（早先同范围为 310037 未授权），仍缺企业 API 授权与租户/目标组织（授权后组织架构接口可直接读出）",
+    blocker: "只读客户端与受控 staging 已实现，不创建或回写凭证、结算及库存账。当前授权和读取结果以带时间和范围的探针及运行记录为准；仍须核对企业 API 授权、租户/组织、字段映射、控制总量和业务 UAT，配置齐备或 token 获取成功不等于接通",
     isConfigured(env = process.env) {
       return yonyouConfigFromEnv(env) !== null;
     },
@@ -488,6 +494,7 @@ export interface ConnectorReadiness {
   configured: boolean;
   enablementState: ConnectorEnablementState;
   contractSelectionState: ConnectorContractSelectionState;
+  /** Current configuration only; not the defined-contract count, a successful-run count or UAT proof. */
   selectedContractCount: number;
   /** Code/configuration/enablement/contract/UAT gates only; it is not live runtime health. */
   configurationReady: boolean;
@@ -543,37 +550,41 @@ function remediationSteps(
   if (!readiness.configured) {
     steps.push("先补齐系统列出的缺失配置，再做任何外部读取；不得把网页可登录当成 API 已接通。");
   }
+  if (readiness.activation.contractSelectionState === "missing") {
+    steps.push("当前尚未选择同步契约；先由业务负责人批准所需的最小集合，并完成字段和权限评审。");
+  } else if (readiness.activation.contractSelectionState === "invalid") {
+    steps.push("当前契约选择无效；先修正为代码支持且业务已批准的最小集合，不自动扩大读取范围。");
+  }
   if (connector.key === "jst") {
     steps.push(
-      "在聚水潭开放平台把 SCM 运行机器的固定出口 IP 加入白名单，并确认应用、商家与 token 属于同一授权范围。",
-      "只授予店铺、仓库、销售出库、库存、普通商品、采购入库六类只读接口；淘系/拼多多订单与售后须另走平台专用授权，不能用标准接口冒充全渠道。",
-      "用单日最小窗口重跑 6 项只读探针；每项都成功后再进入 staging，不写库存账、不推进正式销售事实。",
+      "核对固定出口 IP 白名单，以及应用、商家与 token 的授权范围。",
+      "按业务批准范围核对店铺、仓库、销售出库、库存、普通商品、采购入库的只读权限；淘系/拼多多订单与售后需平台专用授权，不代表标准接口已覆盖全渠道。",
+      "先做有界只读探针，再按已批准契约核对 staging；逐接口成功不等于全渠道接通，不直接写库存账或正式销售事实。",
       "完成 SKU/仓库精确映射、逐 SKU 控制总量、失败重放与连续 7 天恢复 UAT，最后绑定当前应用和启用能力的非秘密证据编号。",
     );
   } else if (connector.key === "yy") {
     steps.push(
-      "在用友开放平台给当前应用逐条授权代码白名单中的 8 项只读 API；精确名称只在管理员运维页展示，不进入可外发审计摘要。",
-      "授权后先读取当前租户与组织 ID；组织、供应商、物料必须按外部 ID 精确映射，禁止只按名称猜测。",
-      "依次跑主档 → PO/入库 → 现存量 → 成本/凭证的有界无值字段画像；结构漂移或字段语义未评审时持续阻止放行。",
-      "采购与库存由业务 owner 核对控制总量，成本与凭证由财务审批；完成后绑定当前应用、租户、组织、产品和契约范围的 UAT 证据。",
+      `代码白名单中的 ${YONYOU_READ_CONTRACTS.length} 项只读 API 仅代表实现范围；按当前产品、租户和组织逐项核对业务批准的 API 权限，不要求全选或全部授权。`,
+      "先核对租户与组织，再按已选契约有界读取、评审无值字段画像；组织、供应商、物料按外部 ID 精确映射，禁止只按名称猜测。",
+      "采购/库存控制总量由业务负责人核对，成本/凭证由财务复核；结构漂移或字段语义未评审时不放行，不回写凭证或结算。",
+      "完成业务 UAT，再绑定当前应用、租户、组织、产品和已验收契约范围的非秘密证据编号；配置或 token 成功不代替验收。",
     );
   } else if (connector.key === "jdy") {
     steps.push(
-      "先处理高销量平台 SKU、仓库和供应商身份队列；唯一条码可人工认领，缺桥接字段必须回源补齐。",
-      "用同截止日平台导出核对销售、退款、SKU 对照和费用流的行数、数量、币种、负数冲销与净额。",
-      "只有控制总量、身份覆盖、业务 UAT 和责任人会签完成后才启用对应契约；历史批次继续保留但不冒充正式事实。",
+      "核对应用/表单读取权限与已选契约范围，区分全量和滚动窗口；逐流查看运行结果，父任务失败不代表所有流停摆。",
+      "处理平台 SKU、仓库和供应商身份队列，线索只供人工认领；缺失记录须回源核实，删除签认不绕过完整性守卫。",
+      "按同截止日、同范围导出核对行数、数量、币种、冲销与净额；身份覆盖、控制总量、业务 UAT 和负责人会签齐备后才走受控放行，历史观察不冒充正式事实。",
     );
   } else {
     steps.push(
-      "确认当前应用/机器人只具备 SCM 通知所需最小权限，并绑定唯一目标群。",
-      "完成真实消息投递与回读 UAT；不得用网页登录或一次 token 获取代替目标群验证。",
+      "按当前应用或 webhook 路径核对 SCM 通知最小权限和目标群；不为验证通知扩大通讯录或业务数据权限。",
+      "经负责人同意后做目标群投递与回读 UAT，并绑定当前路径的非秘密证据；网页登录或 token 获取不代替验收，送达不等于已读或业务处置完成。",
     );
   }
   if (readiness.activation.enablementState === "disabled") {
     steps.push("当前同步保持关闭；完成前述授权、核对和 UAT 后再显式启用，避免未验收数据进入持续任务。");
-  }
-  if (readiness.activation.contractSelectionState === "missing") {
-    steps.push("当前尚未选择同步契约；只选择业务已批准且已完成字段/权限评审的最小集合。");
+  } else if (readiness.activation.enablementState === "invalid") {
+    steps.push("当前同步启用标记无效；由负责人核对配置，不自动改为开启。");
   }
   if (readiness.verification === "valid" && readiness.identity === "clear") {
     steps.push("持续监控时效、拒收、结构漂移和身份异常；任一门禁失效会自动降级。");

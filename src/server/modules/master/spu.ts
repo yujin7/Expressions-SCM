@@ -1,7 +1,8 @@
-import { eq, ilike, or, sql } from "drizzle-orm";
+import { and, eq, ilike, or, sql } from "drizzle-orm";
 import { getDbAsync, schema } from "@/db";
 import { ApiError } from "./common";
 import { spuSchema } from "./schemas";
+import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 
 function buildWhere(q: string) {
   return q
@@ -13,9 +14,11 @@ function buildWhere(q: string) {
     : undefined;
 }
 
-export async function listSpus(q: string, page: number, pageSize: number) {
+export async function listSpus(q: string, page: number, pageSize: number, selectedValues?: SelectedOptionValue[]) {
   const db = await getDbAsync();
-  const where = buildWhere(q);
+  const where = and(buildWhere(q), selectedOptionsPredicate(selectedValues, {
+    id: schema.spus.id, text: [schema.spus.code, schema.spus.nameCn, schema.spus.nameEn],
+  }));
   const [rows, [{ total }]] = await Promise.all([
     db
       .select({
@@ -30,8 +33,8 @@ export async function listSpus(q: string, page: number, pageSize: number) {
       .leftJoin(schema.categories, eq(schema.spus.categoryId, schema.categories.id))
       .where(where)
       .orderBy(schema.spus.code)
-      .limit(pageSize)
-      .offset((page - 1) * pageSize),
+      .limit(selectedValues === undefined ? pageSize : SELECTED_OPTIONS_LIMIT)
+      .offset(selectedValues === undefined ? (page - 1) * pageSize : 0),
     db.select({ total: sql<number>`count(*)::int` }).from(schema.spus).where(where),
   ]);
   return { data: rows, total };

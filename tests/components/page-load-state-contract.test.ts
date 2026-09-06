@@ -94,7 +94,9 @@ describe("page load-state contract", () => {
 
     expect(studio).toContain("responseCache");
     expect(studio).toContain("responseCache.current.size > 12");
-    expect(studio).toContain("Date.now() - cached.cachedAt < 30_000");
+    // TTL, rollback, forced refresh and 12-entry eviction are exercised with
+    // actual component callbacks in decision-studio-loading.test.ts.
+    expect(studio).toContain("cacheAge >= 0 && cacheAge < 30_000");
     expect(studio).toContain("onClick={() => void load(true)}");
   });
 

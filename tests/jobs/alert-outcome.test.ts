@@ -2,12 +2,12 @@
  * 告警结果核验（闭环审计 #3）：关闭 ≥3 天的断货告警回看实时仓流水 → alert_events(verify)；
  * 快照仓 SKU 弃权并说明覆盖；每条只核验一次；精确率汇总按 category × sourceRule。
  */
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { INTERVAL_JOBS } from "@/jobs/interval-runner";
 import { SCHEDULES } from "@/jobs/scheduler";
-import { alertPrecision, runAlertOutcome } from "@/jobs/alert-outcome";
+import { ALERT_OUTCOME_VERSION, alertPrecision, runAlertOutcome } from "@/jobs/alert-outcome";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 const NOW = new Date("2026-09-03T03:00:00.000Z");
@@ -16,6 +16,7 @@ const RESOLVED = new Date("2026-08-28T03:00:00.000Z");
 
 describe("jobs/alert-outcome", () => {
   let db: TestDb;
+  let client: Awaited<ReturnType<typeof createTestDb>>["client"] | undefined;
   let realtimeWh = 0;
   const skuIds: Record<string, number> = {};
   const alertIds: Record<string, number> = {};
@@ -30,9 +31,9 @@ describe("jobs/alert-outcome", () => {
   }
 
   beforeAll(async () => {
-    ({ db } = await createTestDb());
+    ({ db, client } = await createTestDb());
     const [rt] = await db.insert(schema.warehouses).values({ code: "AO-RT", name: "实时仓", kind: "finished" }).returning();
-    await db.insert(schema.warehouses).values({ code: "AO-SNAP", name: "快照仓", kind: "snapshot", accountingMode: "snapshot" });
+    const [snapshot] = await db.insert(schema.warehouses).values({ code: "AO-SNAP", name: "快照仓", kind: "snapshot", accountingMode: "snapshot" }).returning();
     realtimeWh = rt.id;
     const [spu] = await db.insert(schema.spus).values({ code: "AO-SPU", nameCn: "核验品" }).returning();
     for (const k of ["TP", "FP", "SNAP", "AVERT", "FRESH"]) {
@@ -45,6 +46,10 @@ describe("jobs/alert-outcome", () => {
       }).returning();
       alertIds[k] = a.id;
     }
+    // 已登记快照仓明确覆盖为零；缺少记录不再充当零库存证据。
+    await db.insert(schema.stockSnapshots).values(Object.values(skuIds).map((skuId) => ({
+      warehouseId: snapshot.id, skuId, bizDate: "2026-08-01", qty: "0",
+    })));
     // TP：期初 10，窗口内出 6 + 4 → 归零且有需求
     await ledger(skuIds.TP, realtimeWh, "10", "2026-08-01");
     await ledger(skuIds.TP, realtimeWh, "-6", "2026-08-22");
@@ -59,12 +64,15 @@ describe("jobs/alert-outcome", () => {
     await ledger(skuIds.AVERT, realtimeWh, "50", "2026-08-26");
   });
 
+  afterAll(async () => { await client?.close(); });
+
   it("关闭 ≥3 天的 inventory_cover 告警逐条核验：真 / 误 / 弃权（快照仓、规避）；未满 3 天不扫", async () => {
     const s = await runAlertOutcome(db, { now: NOW });
     expect(s).toMatchObject({ scanned: 4, verified: 4, truePositive: 1, falsePositive: 1, unverifiable: 2, realtimeWarehouses: 1 });
     const evs = await db.select().from(schema.alertEvents).where(eq(schema.alertEvents.event, "verify"));
     expect(evs).toHaveLength(4);
     const byAlert = new Map(evs.map((e) => [e.alertId, e.evidenceRef as Record<string, unknown>]));
+    expect(evs.every((e) => (e.evidenceRef as Record<string, unknown>).version === "alert-outcome/v2")).toBe(true);
     expect(byAlert.get(alertIds.TP)).toMatchObject({ result: "true_positive", reason: "zero_stock_with_demand", coverage: "realtime", minBalance: "0.0000", demandOutQty: "10.0000" });
     expect(byAlert.get(alertIds.FP)).toMatchObject({ result: "false_positive", reason: "stock_never_zero", minBalance: "95.0000", inboundQty: "0" });
     expect(byAlert.get(alertIds.SNAP)).toMatchObject({ result: "unverifiable", reason: "snapshot_only_no_realtime_ledger", coverage: "none" });
@@ -87,7 +95,7 @@ describe("jobs/alert-outcome", () => {
 
   it("alertPrecision：按 category × sourceRule 计数，弃权不进分母，不给单一总分", async () => {
     const p = await alertPrecision(db, { days: 30, now: new Date("2026-09-06T04:00:00.000Z") });
-    expect(p.verifiedTotal).toBe(5);
+    expect(p).toMatchObject({ verifiedTotal: 5, legacyVerifiedTotal: 0 });
     expect(p.groups).toHaveLength(1);
     expect(p.groups[0]).toMatchObject({
       category: "inventory_cover", sourceRule: "rules/alert-threshold + rules/alert-priority",
@@ -148,6 +156,7 @@ describe("jobs/alert-outcome：快照仓 SKU 不得用实时仓流水打分（�
       }
       // 唯一差别：MIXED 的货主要在快照仓（500 件，窗口内的最新一期）
       await db.insert(schema.stockSnapshots).values({ warehouseId: snapWh.id, skuId: mixed.id, bizDate: "2026-08-15", qty: "500" });
+      await db.insert(schema.stockSnapshots).values({ warehouseId: snapWh.id, skuId: pure.id, bizDate: "2026-08-15", qty: "0" });
 
       const s = await runAlertOutcome(db, { now: NOW });
       expect(s).toMatchObject({ scanned: 2, verified: 2, truePositive: 1, falsePositive: 0, unverifiable: 1 });
@@ -163,6 +172,89 @@ describe("jobs/alert-outcome：快照仓 SKU 不得用实时仓流水打分（�
       // 精确率分母里只剩纯实时仓那条
       const p = await alertPrecision(db, { days: 30, now: NOW });
       expect(p.groups[0]).toMatchObject({ verified: 2, truePositive: 1, falsePositive: 0, unverifiable: 1, precisionPct: 100 });
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+describe("jobs/alert-outcome：旧核验留存但不冒充新口径", () => {
+  it("v1、缺版本与未知版本单列，不进入 v2 分母，重跑不覆写或自动补写 verify", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const cases = [
+        { version: ALERT_OUTCOME_VERSION, result: "true_positive" },
+        { version: ALERT_OUTCOME_VERSION, result: "false_positive" },
+        { version: "alert-outcome/v1", result: "true_positive" },
+        { version: undefined, result: "true_positive" },
+        { version: "alert-outcome/v999", result: "true_positive" },
+      ];
+      for (const [index, evidence] of cases.entries()) {
+        const [alert] = await db.insert(schema.systemAlerts).values({
+          category: "inventory_cover", dedupeKey: `inventory_cover:legacy-${index}`, title: "合成历史核验",
+          severity: "high", status: "resolved", sourceRule: "fixture-rule", createdAt: OPENED, resolvedAt: RESOLVED,
+        }).returning();
+        await db.insert(schema.alertEvents).values({
+          alertId: alert.id, event: "verify", at: NOW, idempotencyKey: `${alert.id}:verify`,
+          evidenceRef: evidence.version == null ? { result: evidence.result } : evidence,
+        });
+      }
+      const before = await db.select().from(schema.alertEvents).orderBy(schema.alertEvents.id);
+      const precision = await alertPrecision(db, { days: 30, now: NOW });
+      expect(precision).toMatchObject({ verifiedTotal: 2, legacyVerifiedTotal: 3 });
+      expect(precision.groups).toEqual([{
+        category: "inventory_cover", sourceRule: "fixture-rule", verified: 2,
+        truePositive: 1, falsePositive: 1, unverifiable: 0, precisionPct: 50,
+      }]);
+      expect(precision.caliber).toContain(ALERT_OUTCOME_VERSION);
+      expect(precision.caliber).toContain("不自动重算");
+      expect(await runAlertOutcome(db, { now: NOW })).toMatchObject({ scanned: 0, verified: 0 });
+      expect(await db.select().from(schema.alertEvents).orderBy(schema.alertEvents.id)).toEqual(before);
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+describe("jobs/alert-outcome：异常 SKU 键不拖垮同批核验", () => {
+  it("0、int32 溢出、极长数值分别弃权；有效 refKey 可兜底，正常告警仍完成", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [warehouse] = await db.insert(schema.warehouses).values({ code: "ID-RT", name: "合成实时仓", kind: "finished" }).returning();
+      const [spu] = await db.insert(schema.spus).values({ code: "ID-SPU", nameCn: "合成编号核验" }).returning();
+      const [sku] = await db.insert(schema.skus).values({
+        code: "ID-SKU", name: "合成品", spuId: spu.id, baseUom: "件", skuType: "finished",
+      }).returning();
+      await db.insert(schema.stockLedger).values([
+        { skuId: sku.id, warehouseId: warehouse.id, qtyDelta: "10", sourceDocType: "id-test", sourceDocId: 1, action: "post", occurredAt: new Date("2026-08-01T00:00:00Z") },
+        { skuId: sku.id, warehouseId: warehouse.id, qtyDelta: "-10", sourceDocType: "id-test", sourceDocId: 2, action: "post", occurredAt: new Date("2026-08-22T00:00:00Z") },
+      ]);
+      const addAlert = async (suffix: string, refKey: string | null) => {
+        const [alert] = await db.insert(schema.systemAlerts).values({
+          category: "inventory_cover", dedupeKey: `inventory_cover:${suffix}`, refKey, title: "合成编号告警",
+          severity: "high", status: "resolved", createdAt: OPENED, resolvedAt: RESOLVED,
+        }).returning();
+        return alert.id;
+      };
+      const unresolved: number[] = [];
+      const resolved = [await addAlert(String(sku.id), null)];
+      for (const suffix of ["0", "2147483648", "9".repeat(400)]) {
+        unresolved.push(await addAlert(suffix, "unknown-code"));
+        resolved.push(await addAlert(suffix, sku.code));
+      }
+      expect(await runAlertOutcome(db, { now: NOW })).toMatchObject({
+        scanned: 7, verified: 7, truePositive: 4, falsePositive: 0, unverifiable: 3,
+      });
+      const events = await db.select().from(schema.alertEvents).where(eq(schema.alertEvents.event, "verify"));
+      expect(events).toHaveLength(7);
+      const byAlert = new Map(events.map((event) => [event.alertId, event.evidenceRef]));
+      for (const id of unresolved) {
+        expect(byAlert.get(id)).toMatchObject({ skuId: null, result: "unverifiable", reason: "sku_unresolved", coverage: "none" });
+      }
+      for (const id of resolved) {
+        expect(byAlert.get(id)).toMatchObject({ skuId: sku.id, result: "true_positive", coverage: "realtime", version: ALERT_OUTCOME_VERSION });
+      }
+      expect(await runAlertOutcome(db, { now: NOW })).toMatchObject({ scanned: 0, verified: 0 });
     } finally {
       await client.close();
     }

@@ -72,6 +72,7 @@ export const SCHEDULES: Record<string, string> = {
 };
 
 export async function start(): Promise<{ stop: () => Promise<void> } | null> {
+  if (process.env.NODE_ENV === "test" || process.env.SCM_RUN_JOBS === "0") return null;
   const url = process.env.DATABASE_URL ?? "";
   if (!url.startsWith("postgres")) return null; // PGlite 开发模式：无调度器
 
@@ -105,7 +106,7 @@ const SCHEDULER_KEY = Symbol.for("supply-chain.pg-boss-scheduler");
 
 /** 进程内单例；多进程/多副本由 pg-boss 在数据库层协调。 */
 export function ensureSchedulerStarted(): Promise<{ stop: () => Promise<void> } | null> {
-  if (process.env.NODE_ENV === "test") return Promise.resolve(null);
+  if (process.env.NODE_ENV === "test" || process.env.SCM_RUN_JOBS === "0") return Promise.resolve(null);
   const g = globalThis as unknown as Record<
     symbol,
     Promise<{ stop: () => Promise<void> } | null> | undefined

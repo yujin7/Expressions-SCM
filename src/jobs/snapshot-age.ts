@@ -1,27 +1,17 @@
 /**
- * snapshot-age（UAT 缺口 #3）：快照仓数据龄告警——快照仓（accountingMode='snapshot'）
- * 的最新 stock_snapshots.bizDate 距今超过阈值（默认 3 天）即告警；从未导入过快照的
- * 快照仓恒告警（latestBizDate=null）。
+ * snapshot-age：活跃快照仓最新日期健康，复用运维面板同一底层读服务。
+ * 超过阈值（默认严格 >3 天）、缺失、未来日期及日期异常都保留明确原因。
  *
  * 与 license-alert 同一形态：纯查询、无副作用、不写 audit_logs（系统无 id=0 伪用户，
- * 见 license-alert.ts 头注决策 W4）；结果由 API/工作台实时出数，pg_boss 每日跑一次仅留日志。
+ * 见 license-alert.ts 头注决策 W4）；CLI 返回完整结果，已登记调度/手动运行由
+ * interval-runner 留运行日志（通用日志摘要有长度上限，不等于完整仓清单）。
  */
-import { and, eq, sql } from "drizzle-orm";
-import { stockSnapshots, warehouses } from "@/db/schema";
-import type { AnyDb } from "@/server/import/staging";
-import { todayShanghai } from "@/server/core/business-day";
+import { readSnapshotAges, type SnapshotAgeOptions, type SnapshotAgeRow } from "@/server/core/snapshot-age";
+import type { AnyDb } from "@/server/core/svc";
 
-export const SNAPSHOT_AGE_THRESHOLD_DAYS = 3;
+export { SNAPSHOT_AGE_THRESHOLD_DAYS } from "@/server/core/snapshot-age";
 
-export interface SnapshotAgeAlertRow {
-  warehouseId: number;
-  code: string;
-  name: string;
-  /** 最新快照业务日期；null=该快照仓从未导入过快照 */
-  latestBizDate: string | null;
-  /** 数据龄（今日-最新快照，天）；null=从未导入 */
-  ageDays: number | null;
-}
+export type SnapshotAgeAlertRow = SnapshotAgeRow;
 
 export interface SnapshotAgeSummary {
   today: string;
@@ -30,51 +20,18 @@ export interface SnapshotAgeSummary {
   alerts: SnapshotAgeAlertRow[];
 }
 
-function diffDays(fromISO: string, toISO: string): number {
-  return Math.round((Date.parse(`${toISO}T00:00:00Z`) - Date.parse(`${fromISO}T00:00:00Z`)) / 86400000);
-}
-
-/** 数据龄 > thresholdDays（或从未导入）的快照仓，按 ageDays 降序（never 置顶） */
+/** 缺失/异常/未来置前；陈旧按龄降序，同类同龄按仓编码、ID 稳定排序。 */
 export async function runSnapshotAgeAlert(
   db: AnyDb,
-  opts?: { today?: string; thresholdDays?: number },
+  opts?: SnapshotAgeOptions,
 ): Promise<SnapshotAgeSummary> {
-  const t = opts?.today ?? todayShanghai();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) throw new Error(`today 格式须为 YYYY-MM-DD: ${t}`);
-  const threshold = opts?.thresholdDays ?? SNAPSHOT_AGE_THRESHOLD_DAYS;
-  if (!Number.isInteger(threshold) || threshold < 0) throw new Error(`thresholdDays 须为非负整数: ${threshold}`);
-
-  // 每仓最新快照日期（groupBy 子查询 + leftJoin——与 queries.ts listSnapshotBalances 同型）
-  const latestSq = db
-    .select({
-      warehouseId: stockSnapshots.warehouseId,
-      maxDate: sql<string>`max(${stockSnapshots.bizDate})`.as("max_date"),
-    })
-    .from(stockSnapshots)
-    .groupBy(stockSnapshots.warehouseId)
-    .as("latest");
-
-  const rows: { id: number; code: string; name: string; latest: string | null }[] = await db
-    .select({
-      id: warehouses.id,
-      code: warehouses.code,
-      name: warehouses.name,
-      latest: latestSq.maxDate,
-    })
-    .from(warehouses)
-    .leftJoin(latestSq, eq(latestSq.warehouseId, warehouses.id))
-    .where(and(eq(warehouses.accountingMode, "snapshot"), eq(warehouses.active, true)));
-
-  const alerts: SnapshotAgeAlertRow[] = rows
-    .map((r) => ({
-      warehouseId: r.id,
-      code: r.code,
-      name: r.name,
-      latestBizDate: r.latest,
-      ageDays: r.latest ? diffDays(r.latest, t) : null,
-    }))
-    .filter((r) => r.ageDays === null || r.ageDays > threshold)
-    .sort((a, b) => (b.ageDays ?? Number.MAX_SAFE_INTEGER) - (a.ageDays ?? Number.MAX_SAFE_INTEGER));
-
-  return { today: t, thresholdDays: threshold, alertCount: alerts.length, alerts };
+  const { today, thresholdDays, rows } = await readSnapshotAges(db, opts);
+  const rank = { missing: 0, invalid: 1, future: 2, stale: 3, fresh: 4 };
+  const alerts = rows.filter((row) => row.ageState !== "fresh").sort((a, b) =>
+    rank[a.ageState] - rank[b.ageState]
+    || (b.ageDays ?? 0) - (a.ageDays ?? 0)
+    || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0)
+    || a.warehouseId - b.warehouseId,
+  );
+  return { today, thresholdDays, alertCount: alerts.length, alerts };
 }

@@ -10,7 +10,7 @@
  * 已关闭视图直接显示关闭原因/备注/关闭人（服务端从 alert_events 台账取最近一条 close），
  * 否则"为什么关的"只存在台账里，误报复盘与调阈值都只能靠猜。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { App, Button, Select, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
@@ -66,7 +66,7 @@ const CAT: Record<string, string> = {
 const SEV: Record<string, string> = { critical: "red", high: "orange", medium: "gold" };
 const STATUS_OPTIONS = [{ value: "open", label: "待处理" }, { value: "resolved", label: "已关闭" }];
 
-/** `id` 是 W2 新增的单条深链筛选（通知中心 → 具体告警行）；命中时服务端忽略 status */
+/** `id` 单条深链忽略展示筛选与页码，仍受服务端渠道权限约束。 */
 type Filters = { status?: string; category?: string; severity?: string; acked?: string; id?: string };
 
 const ts = (v: string | null | undefined): string => (v ? new Date(v).toLocaleString("zh-CN") : "—");
@@ -86,6 +86,10 @@ export default function AlertsClient() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [closing, setClosing] = useState<Row | null>(null);
+  const loadRequest = useRef<AbortController | null>(null);
+  const latestLoad = useRef<() => Promise<void>>(async () => {});
+  const pendingAcks = useRef(new Set<number>());
+  const [acking, setAcking] = useState<number[]>([]);
   /* 单条深链（?id=）不带状态筛选：这一条本身是不是已关闭，只能看行上的 status——
      否则从通知点进一条已关闭告警，列显示的仍是「已知悉」而不是「为什么关的」。 */
   const resolvedView = filters.id
@@ -93,17 +97,31 @@ export default function AlertsClient() {
     : (filters.status || "open") !== "open";
   const query = listState.queryString();
   const load = useCallback(async () => {
+    loadRequest.current?.abort();
+    const request = new AbortController();
+    loadRequest.current = request;
     setLoading(true);
     setError(null);
-    try { setData(await fetchJson<ListData>(`/api/alerts?${query}`)); }
-    catch (e) { setError((e as Error).message); }
-    finally { setLoading(false); }
+    try {
+      const next = await fetchJson<ListData>(`/api/alerts?${query}`, { signal: request.signal });
+      if (!request.signal.aborted) setData(next);
+    }
+    catch (e) { if (!request.signal.aborted) setError((e as Error).message); }
+    finally { if (!request.signal.aborted) setLoading(false); }
   }, [query]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    latestLoad.current = load;
+    void load();
+    return () => { loadRequest.current?.abort(); latestLoad.current = async () => {}; };
+  }, [load]);
 
   const handleAck = async (id: number) => {
-    try { await fetchJson(`/api/alerts/${id}/ack`, { method: "POST", body: JSON.stringify({}) }); message.success("已知悉（留审计，事实闭环后自动关闭）"); await load(); }
+    if (pendingAcks.current.has(id) || loading || error) return;
+    pendingAcks.current.add(id);
+    setAcking([...pendingAcks.current]);
+    try { await fetchJson(`/api/alerts/${id}/ack`, { method: "POST", body: JSON.stringify({}) }); message.success("已知悉（仅记录确认，不会关闭告警）"); await latestLoad.current(); }
     catch (e) { message.error((e as Error).message); }
+    finally { pendingAcks.current.delete(id); setAcking([...pendingAcks.current]); }
   };
 
   /** 关闭按钮可见性：持有该告警责任角色，或 admin（hasAnyRole 内含 admin 放行）；
@@ -148,8 +166,8 @@ export default function AlertsClient() {
       render: (_, r) => (
         <Space size={6}>
           {r.actionHref ? <a href={r.actionHref}>去处理</a> : null}
-          {r.status === "open" && !r.ackedAt && canAck(r) ? <Button size="small" onClick={() => void handleAck(r.id)}>已知悉</Button> : null}
-          {r.status === "open" && canClose(r) ? <Button size="small" danger onClick={() => setClosing(r)}>{ACTION.closeAlert}</Button> : null}
+          {r.status === "open" && !r.ackedAt && canAck(r) ? <Button size="small" disabled={loading || !!error} loading={acking.includes(r.id)} onClick={() => void handleAck(r.id)}>已知悉</Button> : null}
+          {r.status === "open" && canClose(r) ? <Button size="small" danger disabled={loading || !!error || acking.includes(r.id)} onClick={() => setClosing(r)}>{ACTION.closeAlert}</Button> : null}
         </Space>
       ),
     },
@@ -170,13 +188,13 @@ export default function AlertsClient() {
             {/* 通知中心深链：只看那一条（含已关闭的）；一键清除回到常规视图 */}
             {filters.id ? (
               <Tag color="processing" closable onClose={() => listState.setFilter({ id: "" })}>
-                仅看告警 #{filters.id}（忽略状态筛选）
+                仅看告警 #{filters.id}（忽略其他筛选）
               </Tag>
             ) : null}
             <Select style={{ width: 110 }} disabled={!!filters.id} value={filters.status || "open"} options={STATUS_OPTIONS} onChange={(v) => listState.setFilter({ status: v })} />
-            <Select allowClear placeholder="类别" style={{ width: 150 }} value={filters.category || undefined} options={Object.entries(CAT).map(([value, label]) => ({ value, label }))} onChange={(v) => listState.setFilter({ category: v ?? "" })} />
-            <Select allowClear placeholder="严重度" style={{ width: 110 }} value={filters.severity || undefined} options={["critical", "high", "medium"].map((v) => ({ value: v, label: severityLabel(v) }))} onChange={(v) => listState.setFilter({ severity: v ?? "" })} />
-            <span>隐藏已知悉 <Switch size="small" checked={filters.acked === "0"} onChange={(on) => listState.setFilter({ acked: on ? "0" : "" })} /></span>
+            <Select allowClear disabled={!!filters.id} placeholder="类别" style={{ width: 150 }} value={filters.category || undefined} options={Object.entries(CAT).map(([value, label]) => ({ value, label }))} onChange={(v) => listState.setFilter({ category: v ?? "" })} />
+            <Select allowClear disabled={!!filters.id} placeholder="严重度" style={{ width: 110 }} value={filters.severity || undefined} options={["critical", "high", "medium"].map((v) => ({ value: v, label: severityLabel(v) }))} onChange={(v) => listState.setFilter({ severity: v ?? "" })} />
+            <span>隐藏已知悉 <Switch size="small" disabled={!!filters.id} checked={filters.acked === "0"} onChange={(on) => listState.setFilter({ acked: on ? "0" : "" })} /></span>
           </Space>
         )}
         primaryActions={<Button size="small" onClick={() => void load()} loading={loading}>刷新</Button>}
@@ -188,8 +206,8 @@ export default function AlertsClient() {
         columns={columns}
         dataSource={data?.rows ?? []}
         scroll={{ x: 1100 }}
-        locale={{ emptyText: error ? "数据未加载" : "当前条件下没有告警" }}
-        pagination={listState.paginationProps({ total: data?.total ?? 0, showTotal: (t) => `共 ${t} 条告警` })}
+        locale={{ emptyText: error ? "数据未加载" : filters.id ? "未找到该来源告警，或你无权查看。" : "当前条件下没有告警" }}
+        pagination={filters.id ? false : listState.paginationProps({ total: data?.total ?? 0, showTotal: (t) => `共 ${t} 条告警` })}
         expandable={{ expandedRowRender: (r) => <AlertEvidence alert={r} /> }}
       />
       <AlertCloseModal
@@ -197,7 +215,7 @@ export default function AlertsClient() {
         alertId={closing?.id ?? null}
         alertTitle={closing?.title ?? null}
         onCancel={() => setClosing(null)}
-        onClosed={() => { setClosing(null); void load(); }}
+        onClosed={() => { setClosing(null); void latestLoad.current(); }}
       />
     </div>
   );

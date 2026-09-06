@@ -7,10 +7,13 @@
  *      · 已有 open/in_progress 同指纹 → 直接返回既有项（不新建）；
  *      · 7 天内 done/cancelled 的同指纹再触发 → reopen（审计 action=reopen）而不是再建一条；
  *  - 结构性防刷：创建后 <10 分钟即关闭 → 审计 after.suspicious=true，stats 侧按 completedAt−createdAt 派生同一口径；
- *  - 通知：定向站内 + 飞书私聊（dedupeKey task:{id}:{event}[:feishu]）；
+ *  - 通知：定向站内 + 飞书私聊的 outbox 与待办/审计同事务入队，网络分发由后台重试；
+ *      改派/指纹重开按同事务审计中的事件 ID 去重，不按待办终身去重；
  *      告警来源的待办不再飞书私聊（告警已由 system-alert-notify 群发，避免双发），只发站内定向。
  */
+import { randomUUID } from "node:crypto";
 import { and, desc, eq, getTableColumns, ilike, inArray, lt, or, sql, type SQL } from "drizzle-orm";
+import { todoItemHref } from "@/lib/todo-navigation";
 import { z } from "zod";
 import { getDbAsync } from "@/db";
 import { users, workItems } from "@/db/schema";
@@ -23,7 +26,7 @@ import { enqueueNotification, isFeishuAppConfigured } from "@/jobs/notify";
 import { ApiError } from "@/server/modules/master/common";
 import type { AnyDb } from "@/server/core/svc";
 import { fingerprintOf, type TodoCandidate } from "@/server/rules/task-triggers";
-import { shanghaiDayOf } from "@/server/core/business-day";
+import { shanghaiDay, shanghaiDayOf } from "@/server/core/business-day";
 
 export const WORK_ITEM_STATUSES = ["open", "in_progress", "done", "cancelled"] as const;
 export type WorkItemStatus = (typeof WORK_ITEM_STATUSES)[number];
@@ -45,7 +48,10 @@ export const workItemCreateSchema = z.object({
   assigneeId: z.number().int().positive({ message: "必须指定责任人" }),
   ownerRole: z.preprocess(emptyToUndef, z.enum(ROLES).nullable().optional()),
   priority: z.enum(WORK_ITEM_PRIORITIES).optional().default("normal"),
-  dueDate: z.preprocess(emptyToUndef, z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "截止日期格式 YYYY-MM-DD").nullable().optional()),
+  dueDate: z.preprocess(emptyToUndef, z.string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "截止日期格式 YYYY-MM-DD")
+    .refine((value) => !value.startsWith("0000-") && shanghaiDay(value) === value, "截止日期必须是有效日期")
+    .nullable().optional()),
   sourceKind: z.enum(WORK_ITEM_SOURCE_KINDS).optional().default("manual"),
   sourceRef: z.preprocess(emptyToUndef, z.string().trim().max(200).nullable().optional()),
 });
@@ -169,45 +175,42 @@ async function requireActiveUser(db: AnyDb, id: number): Promise<{ id: number; n
 }
 
 /**
- * 通知（尽力而为，失败不影响写入）：
- *  - 站内定向 assignee：dedupeKey task:{id}:{event}
- *  - 飞书私聊（配置了飞书且 assignee 绑定 union_id，且来源不是 alert）：task:{id}:{event}:feishu
+ * 仅写持久 outbox，不发网络请求。调用方必须传业务事务，入队失败向上传递以整笔回滚：
+ *  - 首次创建保留 task:{id}:assigned；重复发生的事件必须带已提交审计中的事件 ID。
+ *  - 飞书私聊在同一事件键后加 :feishu（来源不是 alert 且配置/身份齐备时）。
  * 本人给自己建/改的待办不通知。
  */
-async function notifyAssignee(
-  db: AnyDb,
+async function enqueueAssigneeNotification(
+  tx: AnyDb,
   item: WorkItemRow,
-  event: "assigned" | "reassigned" | "reopened",
+  event: { kind: "assigned" } | { kind: "reassigned" | "reopened"; id: string },
   actor: { id: number; name: string },
   assignee: { feishuUnionId: string | null },
 ): Promise<void> {
   if (item.assigneeId === actor.id) return;
   const titleMap = { assigned: "新待办", reassigned: "待办改派给你", reopened: "待办重新打开" } as const;
   const body = `${item.title}${item.dueDate ? `（截止 ${item.dueDate}）` : ""}｜指派人：${actor.name}`;
-  const href = `/todo?mine_q=${encodeURIComponent(`#${item.id}`)}`;
-  try {
-    await enqueueNotification(db, {
-      channel: "in_app",
-      title: `【${titleMap[event]}】${item.title}`,
+  const href = todoItemHref(item.id);
+  const dedupeKey = `task:${item.id}:${event.kind}${event.kind === "assigned" ? "" : `:${event.id}`}`;
+  await enqueueNotification(tx, {
+    channel: "in_app",
+    title: `【${titleMap[event.kind]}】${item.title}`,
+    body,
+    href,
+    severity: item.priority === "high" ? "high" : "info",
+    dedupeKey,
+    userId: item.assigneeId,
+  });
+  if (item.sourceKind !== "alert" && assignee.feishuUnionId && isFeishuAppConfigured()) {
+    await enqueueNotification(tx, {
+      channel: "feishu",
+      title: `【${titleMap[event.kind]}】${item.title}`,
       body,
       href,
       severity: item.priority === "high" ? "high" : "info",
-      dedupeKey: `task:${item.id}:${event}`,
+      dedupeKey: `${dedupeKey}:feishu`,
       userId: item.assigneeId,
     });
-    if (item.sourceKind !== "alert" && assignee.feishuUnionId && isFeishuAppConfigured()) {
-      await enqueueNotification(db, {
-        channel: "feishu",
-        title: `【${titleMap[event]}】${item.title}`,
-        body,
-        href,
-        severity: item.priority === "high" ? "high" : "info",
-        dedupeKey: `task:${item.id}:${event}:feishu`,
-        userId: item.assigneeId,
-      });
-    }
-  } catch {
-    // 通知失败不反噬业务
   }
 }
 
@@ -224,23 +227,24 @@ export async function createWorkItem(
   const db = dbArg ?? (await getDbAsync());
   const now = opts?.now ?? new Date();
   const today = dayShanghai(now);
-  const assignee = await requireActiveUser(db, input.assigneeId);
-
   const fingerprinted = input.sourceKind !== "manual" && !!input.sourceRef;
-  const result = await db.transaction(async (tx: AnyDb) => {
+  return db.transaction(async (tx: AnyDb) => {
+    const assignee = await requireActiveUser(tx, input.assigneeId);
     if (fingerprinted) {
       const [existing]: (typeof workItems.$inferSelect)[] = await tx
         .select()
         .from(workItems)
         .where(and(eq(workItems.sourceKind, input.sourceKind), eq(workItems.sourceRef, input.sourceRef as string)))
         .orderBy(desc(workItems.id))
-        .limit(1);
+        .limit(1)
+        .for("update");
       if (existing) {
         if (existing.status === "open" || existing.status === "in_progress") {
-          return { id: existing.id, created: false, reopened: false };
+          return { id: existing.id, created: false, reopened: false, item: toRow((await loadRow(tx, existing.id)) as RawRow, today) };
         }
         const closedAt = new Date(existing.updatedAt).getTime();
         if (now.getTime() - closedAt <= REOPEN_WINDOW_DAYS * DAY_MS) {
+          const notificationEventId = randomUUID();
           await tx.update(workItems).set({
             status: "open",
             completedAt: null,
@@ -260,9 +264,11 @@ export async function createWorkItem(
             entityId: existing.id,
             action: "reopen",
             before: { status: existing.status, completedAt: existing.completedAt, assigneeId: existing.assigneeId },
-            after: { status: "open", assigneeId: input.assigneeId, fingerprint: fingerprintOf(input.sourceKind as "alert" | "review", input.sourceRef as string), withinDays: REOPEN_WINDOW_DAYS },
+            after: { status: "open", assigneeId: input.assigneeId, fingerprint: fingerprintOf(input.sourceKind as "alert" | "review", input.sourceRef as string), withinDays: REOPEN_WINDOW_DAYS, notificationEventId },
           });
-          return { id: existing.id, created: false, reopened: true };
+          const item = toRow((await loadRow(tx, existing.id)) as RawRow, today);
+          await enqueueAssigneeNotification(tx, item, { kind: "reopened", id: notificationEventId }, actor, assignee);
+          return { id: existing.id, created: false, reopened: true, item };
         }
       }
     }
@@ -296,88 +302,101 @@ export async function createWorkItem(
         sourceRef: input.sourceRef ?? null,
       },
     });
-    return { id: ins.id, created: true, reopened: false };
+    const item = toRow((await loadRow(tx, ins.id)) as RawRow, today);
+    await enqueueAssigneeNotification(tx, item, { kind: "assigned" }, actor, assignee);
+    return { id: ins.id, created: true, reopened: false, item };
   });
-
-  const item = toRow((await loadRow(db, result.id)) as RawRow, today);
-  if (result.created) await notifyAssignee(db, item, "assigned", actor, assignee);
-  else if (result.reopened) await notifyAssignee(db, item, "reopened", actor, assignee);
-  return { item, ...result };
 }
 
-function canManage(item: { assigneeId: number; assignerId: number; createdBy: number; ownerRole: string | null }, user: SessionUser): boolean {
-  if (user.roles.includes("admin")) return true;
-  if ([item.assigneeId, item.assignerId, item.createdBy].includes(user.id)) return true;
-  return item.ownerRole != null && user.roles.includes(item.ownerRole);
+/**
+ * 待办修改唯一入口：锁定当前行后，按读取的同一范围校验权限与状态。
+ * 一次请求的改派、状态、审计及通知 outbox 全部成功或全部回滚；后台提交后才网络分发。
+ */
+export async function patchWorkItem(
+  id: number,
+  raw: z.input<typeof workItemPatchSchema>,
+  actor: SessionUser,
+  dbArg?: AnyDb,
+  opts?: { now?: Date },
+): Promise<WorkItemRow> {
+  const patch = workItemPatchSchema.parse(raw);
+  const db = dbArg ?? (await getDbAsync());
+  const now = opts?.now ?? new Date();
+  return db.transaction(async (tx: AnyDb) => {
+    // Lock the base row, not loadRow's nullable user join (PostgreSQL forbids that lock).
+    const [existing]: RawRow[] = await tx.select().from(workItems).where(eq(workItems.id, id)).for("update");
+    if (!existing) throw new ApiError(404, "待办不存在");
+    // Authorize even no-op requests; ownerRole alone must not bypass deptScope.
+    if (!isWorkItemVisible(existing, actor)) throw new ApiError(403, "无权修改该待办");
+
+    let assignee: Awaited<ReturnType<typeof requireActiveUser>> | null = null;
+    if (patch.assigneeId !== undefined) {
+      if (existing.status === "done" || existing.status === "cancelled") throw new ApiError(409, "已完成/已取消的待办不能改派");
+      assignee = await requireActiveUser(tx, patch.assigneeId);
+    }
+    const assignmentChanged = patch.assigneeId !== undefined && patch.assigneeId !== existing.assigneeId;
+    const notificationEventId = assignmentChanged ? randomUUID() : null;
+    const from = existing.status as WorkItemStatus;
+    const statusChanged = patch.status !== undefined && patch.status !== from;
+    if (statusChanged && !TRANSITIONS[from]?.includes(patch.status!)) {
+      throw new ApiError(409, `状态不能从 ${from} 流转到 ${patch.status}`);
+    }
+
+    const completedAt = patch.status === "done" ? now : null;
+    if (assignmentChanged || statusChanged) {
+      await tx.update(workItems).set({
+        ...(assignmentChanged ? { assigneeId: patch.assigneeId, assignerId: actor.id } : {}),
+        ...(statusChanged ? { status: patch.status, completedAt } : {}),
+        updatedAt: now,
+      }).where(eq(workItems.id, id));
+    }
+    if (assignmentChanged) {
+      await writeAudit(tx, {
+        userId: actor.id, entity: "work_item", entityId: id, action: "assign",
+        before: { assigneeId: existing.assigneeId },
+        after: { assigneeId: patch.assigneeId, note: patch.note ?? null, notificationEventId },
+      });
+    }
+    if (statusChanged) {
+      const status = patch.status!;
+      const action = status === "done" ? "complete" : status === "cancelled" ? "cancel" : status === "open" && (from === "done" || from === "cancelled") ? "reopen" : "update";
+      await writeAudit(tx, {
+        userId: actor.id, entity: "work_item", entityId: id, action,
+        before: { status: from, completedAt: existing.completedAt },
+        after: { status, completedAt, suspicious: status === "done" && isSuspiciousClose(new Date(existing.createdAt), now), note: patch.note ?? null },
+      });
+    }
+    const item = toRow((await loadRow(tx, id)) as RawRow, dayShanghai(now));
+    if (assignmentChanged && assignee && notificationEventId) {
+      await enqueueAssigneeNotification(tx, item, { kind: "reassigned", id: notificationEventId }, actor, assignee);
+    }
+    return item;
+  });
 }
 
-/** 改派：assigner/creator/admin/同责任角色可改派；写审计 action=assign */
-export async function assignWorkItem(
+/** 改派：与列表/详情相同权限；写审计 action=assign。 */
+export function assignWorkItem(
   id: number,
   assigneeId: number,
   actor: SessionUser,
   dbArg?: AnyDb,
   opts?: { now?: Date; note?: string | null },
 ): Promise<WorkItemRow> {
-  const db = dbArg ?? (await getDbAsync());
-  const now = opts?.now ?? new Date();
-  const existing = await loadRow(db, id);
-  if (!existing) throw new ApiError(404, "待办不存在");
-  if (!canManage(existing, actor)) throw new ApiError(403, "无权改派该待办");
-  if (existing.status === "done" || existing.status === "cancelled") throw new ApiError(409, "已完成/已取消的待办不能改派");
-  const assignee = await requireActiveUser(db, assigneeId);
-  if (existing.assigneeId === assigneeId) return toRow(existing, dayShanghai(now));
-  await db.transaction(async (tx: AnyDb) => {
-    await tx.update(workItems).set({ assigneeId, assignerId: actor.id, updatedAt: now }).where(eq(workItems.id, id));
-    await writeAudit(tx, {
-      userId: actor.id,
-      entity: "work_item",
-      entityId: id,
-      action: "assign",
-      before: { assigneeId: existing.assigneeId },
-      after: { assigneeId, note: opts?.note ?? null },
-    });
-  });
-  const item = toRow((await loadRow(db, id)) as RawRow, dayShanghai(now));
-  await notifyAssignee(db, item, "reassigned", actor, assignee);
-  return item;
+  return patchWorkItem(id, { assigneeId, note: opts?.note }, actor, dbArg, opts);
 }
 
 /**
  * 状态流转：open ⇄ in_progress → done/cancelled；done/cancelled → open（reopen）。
  * done 写 completedAt；<10 分钟即关闭 → 审计 after.suspicious=true（不阻断）。
  */
-export async function setWorkItemStatus(
+export function setWorkItemStatus(
   id: number,
   status: WorkItemStatus,
   actor: SessionUser,
   dbArg?: AnyDb,
   opts?: { now?: Date; note?: string | null },
 ): Promise<WorkItemRow & { suspicious: boolean }> {
-  const db = dbArg ?? (await getDbAsync());
-  const now = opts?.now ?? new Date();
-  const existing = await loadRow(db, id);
-  if (!existing) throw new ApiError(404, "待办不存在");
-  if (!canManage(existing, actor)) throw new ApiError(403, "无权变更该待办状态");
-  const from = existing.status as WorkItemStatus;
-  if (from === status) return toRow(existing, dayShanghai(now));
-  if (!TRANSITIONS[from].includes(status)) throw new ApiError(409, `状态不能从 ${from} 流转到 ${status}`);
-
-  const completedAt = status === "done" ? now : null;
-  const suspicious = status === "done" && isSuspiciousClose(new Date(existing.createdAt), now);
-  await db.transaction(async (tx: AnyDb) => {
-    await tx.update(workItems).set({ status, completedAt, updatedAt: now }).where(eq(workItems.id, id));
-    const action = status === "done" ? "complete" : status === "cancelled" ? "cancel" : status === "open" && (from === "done" || from === "cancelled") ? "reopen" : "update";
-    await writeAudit(tx, {
-      userId: actor.id,
-      entity: "work_item",
-      entityId: id,
-      action,
-      before: { status: from, completedAt: existing.completedAt },
-      after: { status, completedAt, suspicious, note: opts?.note ?? null },
-    });
-  });
-  return toRow((await loadRow(db, id)) as RawRow, dayShanghai(now));
+  return patchWorkItem(id, { status, note: opts?.note }, actor, dbArg, opts);
 }
 
 export function completeWorkItem(id: number, actor: SessionUser, dbArg?: AnyDb, opts?: { now?: Date; note?: string | null }) {
@@ -388,7 +407,7 @@ export function cancelWorkItem(id: number, actor: SessionUser, dbArg?: AnyDb, op
   return setWorkItemStatus(id, "cancelled", actor, dbArg, opts);
 }
 
-/* ────────────────────────── 可见性谓词（唯一权威：list / stats / 第 4 屏三处共用） ────────────────────────── */
+/* ────────────────────────── 权限谓词（唯一权威：list / detail / stats / 第 4 屏 / 修改共用） ────────────────────────── */
 
 /** 待办可见范围：admin 全量；其他人 = 我相关（指派给我 / 我指派 / 我创建）∪ 我角色的责任项（ownerRole ∈ roleKeys） */
 export interface TodoVisibility {

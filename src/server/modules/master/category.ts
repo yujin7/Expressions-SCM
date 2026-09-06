@@ -1,4 +1,4 @@
-import { eq, ilike, sql } from "drizzle-orm";
+import { and, eq, ilike, sql } from "drizzle-orm";
 import { writeAudit } from "@/server/core/audit";
 import type { SessionUser } from "@/server/core/dto";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
@@ -7,13 +7,16 @@ import { alias } from "drizzle-orm/pg-core";
 import { getDbAsync, schema } from "@/db";
 import { ApiError } from "./common";
 import { categorySchema } from "./schemas";
+import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 
 const MAX_LEVEL = 3;
 
-export async function listCategories(q: string, page: number, pageSize: number) {
+export async function listCategories(q: string, page: number, pageSize: number, selectedValues?: SelectedOptionValue[]) {
   const db = await getDbAsync();
   const parent = alias(schema.categories, "parent");
-  const where = q ? ilike(schema.categories.name, `%${q}%`) : undefined;
+  const where = and(q ? ilike(schema.categories.name, `%${q}%`) : undefined, selectedOptionsPredicate(selectedValues, {
+    id: schema.categories.id, text: [schema.categories.name],
+  }));
   const [rows, [{ total }]] = await Promise.all([
     db
       .select({
@@ -27,8 +30,8 @@ export async function listCategories(q: string, page: number, pageSize: number) 
       .leftJoin(parent, eq(schema.categories.parentId, parent.id))
       .where(where)
       .orderBy(schema.categories.level, schema.categories.id)
-      .limit(pageSize)
-      .offset((page - 1) * pageSize),
+      .limit(selectedValues === undefined ? pageSize : SELECTED_OPTIONS_LIMIT)
+      .offset(selectedValues === undefined ? (page - 1) * pageSize : 0),
     db.select({ total: sql<number>`count(*)::int` }).from(schema.categories).where(where),
   ]);
   return { data: rows, total };

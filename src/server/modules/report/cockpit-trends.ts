@@ -578,6 +578,8 @@ export interface AlertPrecisionRow extends AlertPrecisionGroup {
 export interface AlertPrecisionBlock {
   days: number;
   verifiedTotal: number;
+  /** 旧口径结果保留审计，但不混入当前版本的精确率。 */
+  legacyVerifiedTotal: number;
   minSample: number;
   totals: { truePositive: number; falsePositive: number; unverifiable: number };
   groups: AlertPrecisionRow[];
@@ -606,6 +608,7 @@ export function buildAlertPrecision(summary: AlertPrecisionSummary): AlertPrecis
   return {
     days: summary.days,
     verifiedTotal: summary.verifiedTotal,
+    legacyVerifiedTotal: summary.legacyVerifiedTotal,
     minSample: ALERT_PRECISION_MIN_SAMPLE,
     totals,
     groups,
@@ -1158,8 +1161,8 @@ export async function getCockpitTrends(user: SessionUser, dbArg?: AnyDb, opts: {
           state: ready ? "ready" : "insufficient",
           data: b,
           note: ready
-            ? `弃权不进分母；真+误 < ${b.minSample} 的分组只给计数不给精确率（可评分组 ${b.scoredGroups}/${b.groups.length}）；每条告警只核验一次，结果只进台账、不回写告警、不自动调阈值`
-            : `近 ${b.days} 天没有已核验的告警：核验任务在告警关闭 ≥ 3 天后回看实时仓流水，快照仓 SKU 无流水只能弃权`,
+            ? `当前口径 ${ALERT_OUTCOME_VERSION}；旧口径 ${b.legacyVerifiedTotal} 条保留台账但不计分。弃权不进分母；真+误 < ${b.minSample} 的分组只给计数不给精确率（可评分组 ${b.scoredGroups}/${b.groups.length}）；不自动调阈值`
+            : `近 ${b.days} 天没有当前口径的核验结果；旧口径 ${b.legacyVerifiedTotal} 条保留台账但不计分、不自动重算。核验任务在告警关闭 ≥ 3 天后回看各自窗口；库存覆盖不足时弃权`,
           source: { tier: "fact", source: `alert_events(verify) × system_alerts（${ALERT_OUTCOME_VERSION}）`, asOf: now.toISOString() },
         };
       })()

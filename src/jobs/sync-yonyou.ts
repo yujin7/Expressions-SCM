@@ -4,8 +4,7 @@
  * 与 sync-jst 同一纪律：**配置缺失一律 skipped，绝不伪造成功**。
  * 另加一条用友特有的：8 条契约在控制台逐条授权前会返回 310037，
  * 这属于"等授权"而非故障——汇总里单列 blockedByConsoleGrant，
- * 让运维一眼看出"代码没问题，是还没在开放平台勾接口"，
- * 而不是被一串红色报错淹没后去查代码。
+ * 如实区分全部等待、部分读取与全部读取；一次授权拒绝不能证明其余链路没有问题。
  */
 import type { AnyDb } from "@/server/import/staging";
 import {
@@ -20,10 +19,10 @@ import { shanghaiToday } from "./reconcile-jst";
 export type YonyouSyncJobResult =
   | { status: "skipped"; reason: string; scopeKey: string }
   | {
-    status: "succeeded";
+    status: "succeeded" | "partial" | "awaiting_authorization";
     scopeKey: string;
     results: YonyouSyncSummary[];
-    /** 仍在等控制台授权的契约名；非空即代表本轮没真正取到数。 */
+    /** 仍在等控制台授权的契约名；其他契约可能已成功读取。 */
     awaitingConsoleGrant: string[];
   };
 
@@ -75,5 +74,7 @@ export async function runYonyouSync(
     if (summary.blockedByConsoleGrant) awaitingConsoleGrant.push(contract);
   }
 
-  return { status: "succeeded", scopeKey, results, awaitingConsoleGrant };
+  const status = awaitingConsoleGrant.length === 0 ? "succeeded"
+    : awaitingConsoleGrant.length === results.length ? "awaiting_authorization" : "partial";
+  return { status, scopeKey, results, awaitingConsoleGrant };
 }

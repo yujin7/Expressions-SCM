@@ -127,7 +127,8 @@ export interface DecisionStudioResult {
     sharePct: number;
     cumulativePct: number;
   }[];
-  pareto80Count: number;
+  /** Null when the latest month has no positive total to use as a denominator. */
+  pareto80Count: number | null;
   medianQty: number | null;
   pivot: { key: string; label: string; total: number; byMonth: Record<string, number> }[];
   spc: SpcResult;
@@ -257,7 +258,9 @@ export function buildDecisionStudio(
       cumulativePct: latestTotal > 0 ? round((cumulative / latestTotal) * 100, 1) : 0,
     };
   });
-  const pareto80Count = pareto.findIndex((item) => item.cumulativePct >= 80) + 1 || pareto.length;
+  const pareto80Count = latestTotal > 0 && pareto.length > 0
+    ? pareto.findIndex((item) => item.cumulativePct >= 80) + 1 || pareto.length
+    : null;
   const medianQty = median(latestRows.map((item) => item.qty));
 
   const topKeys = new Set(groups.slice(0, PIVOT_GROUP_LIMIT).map((item) => item.key));
@@ -311,9 +314,11 @@ export function buildDecisionStudio(
     momPct == null
       ? "环比：缺少可比较的上一期或上一期为零，暂不计算。"
       : `环比：${momPct >= 0 ? "增长" : "下降"} ${Math.abs(momPct).toFixed(1)}%。`,
-    top
+    top && pareto80Count !== null
       ? `${pareto80Count} 个${DIMENSION_LABELS[dimension]}贡献最新月约 80% 销量；第一位 ${top.label} 占 ${top.sharePct.toFixed(1)}%。`
-      : "结构：当前期间没有可排名事实。",
+      : top
+        ? "结构：最新月销量合计不为正数，缺少可用的正数分母，不计算 80% 贡献成员数。"
+        : "结构：当前期间没有可排名事实，缺少可用的正数分母，不计算 80% 贡献成员数。",
     yoyPct == null
       ? `同比：缺少 ${yearAgoMonth ?? "去年同期"} 一致口径数据，保持留白。`
       : `同比：${yoyPct >= 0 ? "增长" : "下降"} ${Math.abs(yoyPct).toFixed(1)}%。`,

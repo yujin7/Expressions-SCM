@@ -21,8 +21,6 @@ import {
   integrationRuns,
   jobRuns,
   skuIdentifiers,
-  stockSnapshots,
-  warehouses,
 } from "@/db/schema";
 import {
   getConnectorReadiness,
@@ -40,17 +38,22 @@ import {
   parseConnectorProbeEvidence,
   type ConnectorProbeKey,
 } from "@/server/integrations/connector-probe-evidence";
-import { todayShanghai } from "@/server/core/business-day";
+import { readSnapshotAges, SNAPSHOT_AGE_THRESHOLD_DAYS as SNAPSHOT_AGE_RED_DAYS, type SnapshotAgeRow } from "@/server/core/snapshot-age";
+import { readMigrationReadiness, type MigrationReadiness } from "@/server/core/migration-readiness";
+import { parseYonyouJobSummary, yonyouJobSummaryText, yonyouRunAwaitsAuthorization, yonyouRunResultInconsistent, type YonyouJobSummary } from "@/lib/yonyou-job-summary";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
-export const SNAPSHOT_AGE_RED_DAYS = 3;
+export { SNAPSHOT_AGE_RED_DAYS };
+export { snapshotAgeEvidence } from "@/server/core/snapshot-age";
+export type { SnapshotAgeRow } from "@/server/core/snapshot-age";
 export const BACKUP_STALE_HOURS = 25; // 与 ops/check-backup.sh 同口径（02:30 调度留 1h 余量）
 
 export interface JobRunRow {
   job: string;
   ok: boolean;
+  outcome?: YonyouJobSummary;
   message: string | null;
   startedAt: string;
   finishedAt: string;
@@ -108,6 +111,9 @@ export interface ConnectorRunHealthRow {
   emptySource: boolean;
   releaseBlocked: boolean;
   schemaDrift: boolean;
+  /** Expected authorization wait, not a completed observation or an execution fault. */
+  authorizationBlocked?: boolean;
+  resultInconsistent?: boolean;
   /** Safe structural summary only; field paths and source values remain in protected evidence. */
   fieldProfile: {
     version: "yonyou-field-profile/v1";
@@ -160,7 +166,7 @@ export interface YonyouFieldProfileReview {
 export interface OpsHealth {
   generatedAt: string;
   dbOk: boolean;
-  migrations: { files: number; applied: number; drift: boolean };
+  migrations: MigrationReadiness;
   lastJobRuns: JobRunRow[];
   /**
    * 已登记的定时任务名（审计 #10）：页面据此列出**全部**任务并给「立即运行」，
@@ -187,25 +193,27 @@ export interface OpsHealth {
     createdAt: string;
   }[];
   exportQueue: { pending: number; running: number };
-  snapshotAges: { warehouseId: number; code: string; name: string; latestBizDate: string | null; ageDays: number | null }[];
+  snapshotAges: SnapshotAgeRow[];
+  /** 超过而非达到此天数才陈旧；仅衡量每个活跃快照仓的最新日期。 */
+  snapshotAgeThresholdDays: number;
   /** null=备份目录不存在（开发环境正常） */
   backupFreshness: { dir: string; file: string; mtime: string; ageHours: number } | null;
-  connectors: ConnectorReadiness[];
+  connectors: (ConnectorReadiness & {
+    /** Admin-only code catalog, not the selected or externally granted permission set. */
+    readOnlyApiCatalog?: string[];
+  })[];
   connectorProbes: ConnectorProbeHealthRow[];
   connectorRuns: ConnectorRunHealthRow[];
 }
 
-function adminConnectorReadiness(
+export function adminConnectorReadiness(
   connectors: ConnectorReadiness[],
-): ConnectorReadiness[] {
-  const yonyouNames = YONYOU_READ_CONTRACTS.map((contract) => contract.name).join("、");
+): OpsHealth["connectors"] {
   return connectors.map((connector) => connector.key !== "yy"
     ? connector
     : {
         ...connector,
-        remediationSteps: connector.remediationSteps.map((step, index) => index === 0
-          ? `在用友开放平台给当前应用逐条授权 8 项只读 API：${yonyouNames}。`
-          : step),
+        readOnlyApiCatalog: YONYOU_READ_CONTRACTS.map((contract) => contract.name),
       });
 }
 
@@ -534,11 +542,14 @@ async function getConnectorRunHealth(db: AnyDb, now: Date): Promise<ConnectorHea
         connector: integrationRuns.connector,
         stream: integrationRuns.stream,
         status: integrationRuns.status,
+        importJobId: integrationRuns.importJobId,
         requestScope: integrationRuns.requestScope,
         sourceRows: integrationRuns.sourceRows,
         stagedRows: integrationRuns.stagedRows,
         rejectedRows: integrationRuns.rejectedRows,
         error: integrationRuns.error,
+        evidenceHash: integrationRuns.evidenceHash,
+        evidencePath: integrationRuns.evidencePath,
         startedAt: integrationRuns.startedAt,
         finishedAt: integrationRuns.finishedAt,
       })
@@ -581,11 +592,14 @@ async function getConnectorRunHealth(db: AnyDb, now: Date): Promise<ConnectorHea
       connector: string;
       stream: string;
       status: string;
+      importJobId: number | null;
       requestScope: unknown;
       sourceRows: number;
       stagedRows: number;
       rejectedRows: number;
       error: string | null;
+      evidenceHash: string | null;
+      evidencePath: string | null;
       startedAt: Date;
       finishedAt: Date | null;
     }[],
@@ -627,6 +641,8 @@ async function getConnectorRunHealth(db: AnyDb, now: Date): Promise<ConnectorHea
   const rows = latestRuns.map((run) => {
     const scope = scopeObject(run.requestScope);
     const checkpoint = checkpointsByStream.get(streamKey(run.connector, run.stream));
+    const authorizationBlocked = yonyouRunAwaitsAuthorization(run);
+    const resultInconsistent = yonyouRunResultInconsistent(run);
     const aliasScope = ALIAS_SCOPE_BY_CONNECTOR[run.connector];
     const checkpointAgeHours = checkpoint
       ? Math.round(((now.getTime() - checkpoint.lastSuccessAt.getTime()) / 3_600_000) * 10) / 10
@@ -650,19 +666,24 @@ async function getConnectorRunHealth(db: AnyDb, now: Date): Promise<ConnectorHea
       checkpointVersion: checkpoint?.version ?? null,
       checkpointLastSuccessAt: checkpoint?.lastSuccessAt.toISOString() ?? null,
       checkpointAgeHours,
-      checkpointOnLatestRun: checkpoint?.lastRunId === run.id,
+      checkpointOnLatestRun: !authorizationBlocked && !resultInconsistent && checkpoint?.lastRunId === run.id,
       emptySource: scope.emptySource === true,
       releaseBlocked: scope.releaseBlocked === true,
       schemaDrift: scope.schemaDrift === true,
+      authorizationBlocked,
+      resultInconsistent,
       fieldProfile: fieldProfileSummary(scope.fieldProfile),
-      errorSummary: run.status === "failed" ? connectorErrorSummary(run.error) : null,
+      errorSummary: authorizationBlocked ? "等待用友控制台授权；本次未读取，既有检查点保持不变"
+        : resultInconsistent ? "用友结果待核对：成功标记与观察批次或错误状态不一致（详情仅限受控日志）"
+        : run.status === "failed" ? connectorErrorSummary(run.error) : null,
     };
   });
   return { rows, identityEvidenceByScope };
 }
 
-function diffDays(fromISO: string, toISO: string): number {
-  return Math.round((Date.parse(`${toISO}T00:00:00Z`) - Date.parse(`${fromISO}T00:00:00Z`)) / 86400000);
+/** Latest-date health only: not proof of SKU coverage or a complete warehouse snapshot. */
+export async function getSnapshotAges(db: AnyDb, today?: string): Promise<SnapshotAgeRow[]> {
+  return (await readSnapshotAges(db, { today })).rows;
 }
 
 /** 备份新鲜度：目录内最新文件 mtime；目录缺失/为空 → null */
@@ -695,27 +716,8 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const generatedAt = new Date();
 
-  // db + 迁移（与 /api/health 同口径：文件数 vs _migrations 已应用数；PG 模式 applied=-2）
-  let dbOk = true;
-  let applied = -1;
-  let files = 0;
-  try {
-    files = readdirSync(path.resolve(process.cwd(), "drizzle")).filter((f) => f.endsWith(".sql")).length;
-  } catch {
-    files = -1;
-  }
-  try {
-    await db.execute(sql`SELECT 1`);
-    try {
-      const r = await db.execute(sql`SELECT count(*)::int AS c FROM _migrations`);
-      applied = Number((r.rows?.[0] as { c?: number })?.c ?? -1);
-    } catch {
-      applied = -2; // 非 PGlite（PG 走 drizzle-kit migrate，无 _migrations 表）
-    }
-  } catch {
-    dbOk = false;
-  }
-  const drift = applied >= 0 && files >= 0 && applied < files;
+  // 与公开健康接口共用判定；DB 可连接不代表迁移账本已确认或候选可发布。
+  const { dbOk, migrations } = await readMigrationReadiness(() => Promise.resolve(db));
 
   // job_runs：近 200 条内每任务最新一条
   const runRows: (typeof jobRuns.$inferSelect)[] = await db
@@ -728,10 +730,12 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
   for (const r of runRows) {
     if (seen.has(r.job)) continue;
     seen.add(r.job);
+    const outcome = r.job === "sync-yonyou" ? parseYonyouJobSummary(r.message, r.ok) : undefined;
     lastJobRuns.push({
       job: r.job,
       ok: r.ok,
-      message: r.message === null
+      ...(outcome ? { outcome } : {}),
+      message: outcome ? yonyouJobSummaryText(outcome) : r.message === null
         ? null
         : r.ok
           ? "任务成功（详情仅限受控日志）"
@@ -789,28 +793,7 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
     running: exportCounts.find((r) => r.status === "running")?.c ?? 0,
   };
 
-  // 快照仓数据龄（全部快照仓，不设阈值过滤——阈值高亮由前端做）
-  const latestSq = db
-    .select({
-      warehouseId: stockSnapshots.warehouseId,
-      maxDate: sql<string>`max(${stockSnapshots.bizDate})`.as("max_date"),
-    })
-    .from(stockSnapshots)
-    .groupBy(stockSnapshots.warehouseId)
-    .as("latest");
-  const snapRows: { id: number; code: string; name: string; latest: string | null }[] = await db
-    .select({ id: warehouses.id, code: warehouses.code, name: warehouses.name, latest: latestSq.maxDate })
-    .from(warehouses)
-    .leftJoin(latestSq, eq(latestSq.warehouseId, warehouses.id))
-    .where(sql`${warehouses.accountingMode} = 'snapshot' AND ${warehouses.active} = true`);
-  const today = todayShanghai();
-  const snapshotAges = snapRows.map((r) => ({
-    warehouseId: r.id,
-    code: r.code,
-    name: r.name,
-    latestBizDate: r.latest,
-    ageDays: r.latest ? diffDays(r.latest, today) : null,
-  }));
+  const snapshotAges = await getSnapshotAges(db);
   const connectorHealth = await getConnectorRunHealth(db, generatedAt);
   const identityEvidence = Object.fromEntries(
     [...connectorHealth.identityEvidenceByScope.entries()]
@@ -823,7 +806,7 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
   return {
     generatedAt: generatedAt.toISOString(),
     dbOk,
-    migrations: { files, applied, drift },
+    migrations,
     lastJobRuns,
     registeredJobs,
     contractConsumers,
@@ -840,6 +823,7 @@ export async function getOpsHealth(dbArg?: AnyDb): Promise<OpsHealth> {
     })),
     exportQueue,
     snapshotAges,
+    snapshotAgeThresholdDays: SNAPSHOT_AGE_RED_DAYS,
     backupFreshness: readBackupFreshness(),
     connectors,
     connectorProbes: connectorProbeHealth(runRows, connectors, generatedAt),

@@ -1,5 +1,6 @@
-import { beforeAll, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { and, eq, like } from "drizzle-orm";
+import { todoTabFromQuery } from "@/lib/todo-navigation";
 import { auditLogs, notifications, users, workItems } from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
 import {
@@ -12,16 +13,22 @@ import {
 import { createTestDb, type TestDb } from "../helpers/db";
 
 const DAY = 86_400_000;
+const delivery = vi.hoisted(() => ({ feishu: false }));
+vi.mock("@/jobs/notify", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/jobs/notify")>(),
+  isFeishuAppConfigured: () => delivery.feishu,
+}));
 
 describe("todo/service：创建/指派/状态机/指纹去重/reopen/可疑关闭/审计/通知", () => {
   let db: TestDb;
+  let client: Awaited<ReturnType<typeof createTestDb>>["client"];
   let admin: SessionUser;
   let pmc: SessionUser;
   let pmc2: SessionUser;
   let ops: SessionUser;
 
   beforeAll(async () => {
-    ({ db } = await createTestDb());
+    ({ db, client } = await createTestDb());
     const mk = async (name: string, roles: string[], unionId?: string): Promise<SessionUser> => {
       const [u] = await db.insert(users).values({ name, roles, isApprover: false, feishuUnionId: unionId ?? null }).returning();
       return { id: u.id, name: u.name, roles, isApprover: false };
@@ -30,6 +37,93 @@ describe("todo/service：创建/指派/状态机/指纹去重/reopen/可疑关�
     pmc = await mk("计划A", ["pmc"], "on_pmc_a");
     pmc2 = await mk("计划B", ["pmc"]);
     ops = await mk("运营", ["ops"]);
+  });
+  afterAll(async () => { await client?.close(); });
+
+  async function itemNotifications(id: number) {
+    return db.select().from(notifications).where(like(notifications.dedupeKey, `task:${id}:%`)).orderBy(notifications.id);
+  }
+
+  async function itemAudits(id: number) {
+    return db.select().from(auditLogs).where(and(eq(auditLogs.entity, "work_item"), eq(auditLogs.entityId, id))).orderBy(auditLogs.id);
+  }
+
+  it("同一毫秒多次真实改派（A→B→A→B）逐次通知，重复提交当前责任人不产生新事件", async () => {
+    const now = new Date("2026-09-06T00:00:00Z");
+    const { item } = await createWorkItem({ title: "循环改派", assigneeId: pmc.id }, admin, db, { now });
+    for (const assigneeId of [pmc2.id, pmc.id, pmc2.id]) await assignWorkItem(item.id, assigneeId, admin, db, { now });
+    const before = { notifications: await itemNotifications(item.id), audits: await itemAudits(item.id) };
+    await assignWorkItem(item.id, pmc2.id, admin, db, { now });
+    expect(await itemNotifications(item.id)).toEqual(before.notifications);
+    expect(await itemAudits(item.id)).toEqual(before.audits);
+    expect(before.notifications.map((n) => n.userId)).toEqual([pmc.id, pmc2.id, pmc.id, pmc2.id]);
+    const assignments = before.audits.filter((a) => a.action === "assign");
+    const eventIds = assignments.map((a) => (a.after as { notificationEventId: string }).notificationEventId);
+    expect(new Set(eventIds).size).toBe(3);
+    eventIds.forEach((id, index) => {
+      expect(id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(before.notifications[index + 1].dedupeKey).toBe(`task:${item.id}:reassigned:${id}`);
+    });
+  });
+
+  it("历史固定去重键存在时，新改派仍发送，不改写旧通知", async () => {
+    const { item } = await createWorkItem({ title: "历史通知兼容", assigneeId: pmc.id }, admin, db);
+    const [legacy] = await db.insert(notifications).values({ channel: "in_app", title: "旧通知", body: "旧内容", userId: pmc2.id, dedupeKey: `task:${item.id}:reassigned` }).returning();
+    await assignWorkItem(item.id, pmc2.id, admin, db);
+    const rows = await itemNotifications(item.id);
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toEqual(legacy);
+    expect(rows[2].userId).toBe(pmc2.id);
+  });
+
+  it("同指纹连续完成再触发，每个 reopen 有独立审计绑定通知；active 重放不重发", async () => {
+    const now = new Date("2026-09-06T00:00:00Z");
+    const input = { title: "重复核验", assigneeId: pmc.id, sourceKind: "review" as const, sourceRef: "notify-cycle" };
+    const { item } = await createWorkItem(input, admin, db, { now });
+    for (let i = 0; i < 2; i++) {
+      await setWorkItemStatus(item.id, "done", admin, db, { now });
+      const reopened = await createWorkItem(input, admin, db, { now });
+      expect(reopened.reopened).toBe(true);
+      expect((await createWorkItem(input, admin, db, { now })).reopened).toBe(false);
+    }
+    const rows = await itemNotifications(item.id);
+    expect(rows).toHaveLength(3);
+    const events = (await itemAudits(item.id)).filter((a) => a.action === "reopen");
+    expect(events).toHaveLength(2);
+    events.forEach((event, index) => {
+      const id = (event.after as { notificationEventId: string }).notificationEventId;
+      expect(id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(rows[index + 1].dedupeKey).toBe(`task:${item.id}:reopened:${id}`);
+    });
+  });
+
+  it("站内和飞书共享同次改派事件标识，自我改派不通知", async () => {
+    const { item } = await createWorkItem({ title: "双渠道事件", assigneeId: pmc2.id }, admin, db);
+    delivery.feishu = true;
+    try {
+      await assignWorkItem(item.id, pmc.id, admin, db);
+      const assignments = (await itemAudits(item.id)).filter((a) => a.action === "assign");
+      const id = (assignments[0].after as { notificationEventId: string }).notificationEventId;
+      expect(id).toMatch(/^[0-9a-f-]{36}$/);
+      const rows = (await itemNotifications(item.id)).slice(1);
+      expect(rows.map((n) => [n.channel, n.dedupeKey])).toEqual([
+        ["in_app", `task:${item.id}:reassigned:${id}`], ["feishu", `task:${item.id}:reassigned:${id}:feishu`],
+      ]);
+      await assignWorkItem(item.id, admin.id, admin, db);
+      expect(await itemNotifications(item.id)).toHaveLength(3);
+    } finally { delivery.feishu = false; }
+  });
+
+  it.each(["done", "cancelled"] as const)("通知精确打开 %s 事项，而非被默认 active 筛选隐藏；不扩大读取权限", async (status) => {
+    const { item } = await createWorkItem({ title: "终态通知", assigneeId: pmc.id }, admin, db);
+    await setWorkItemStatus(item.id, status, admin, db);
+    const [notification] = await itemNotifications(item.id);
+    const url = new URL(notification.href!, "https://scm.example");
+    expect(todoTabFromQuery(url.search)).toBe("all");
+    expect([...url.searchParams]).toEqual([["tab", "all"], ["all_q", `#${item.id}`]]);
+    const query = { view: "all" as const, q: url.searchParams.get("all_q")!, page: 1, pageSize: 20 };
+    expect((await listWorkItems(query, pmc, db)).rows.map((r) => r.id)).toEqual([item.id]);
+    expect((await listWorkItems(query, ops, db)).rows).toEqual([]);
   });
 
   it("手工创建：写 work_items + 审计 create + 站内定向通知（dedupeKey task:{id}:assigned）", async () => {
@@ -116,11 +210,14 @@ describe("todo/service：创建/指派/状态机/指纹去重/reopen/可疑关�
     expect(reopened.status).toBe("open");
   });
 
-  it("改派：审计 assign、通知新责任人（task:{id}:reassigned）；已完成不可改派", async () => {
+  it("改派：审计 assign、按审计事件通知新责任人；已完成不可改派", async () => {
     const r = await createWorkItem({ title: "改派", assigneeId: pmc.id }, admin, db);
     const moved = await assignWorkItem(r.item.id, pmc2.id, admin, db);
     expect(moved.assigneeId).toBe(pmc2.id);
-    const [n] = await db.select().from(notifications).where(eq(notifications.dedupeKey, `task:${r.item.id}:reassigned`));
+    const [event] = (await itemAudits(r.item.id)).filter((a) => a.action === "assign");
+    const eventId = (event.after as { notificationEventId: string }).notificationEventId;
+    expect(eventId).toMatch(/^[0-9a-f-]{36}$/);
+    const [n] = await db.select().from(notifications).where(eq(notifications.dedupeKey, `task:${r.item.id}:reassigned:${eventId}`));
     expect(n.userId).toBe(pmc2.id);
     await setWorkItemStatus(r.item.id, "done", pmc2, db);
     await expect(assignWorkItem(r.item.id, pmc.id, admin, db)).rejects.toMatchObject({ status: 409 });

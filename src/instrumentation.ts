@@ -17,9 +17,11 @@ export async function register(): Promise<void> {
       nodeVersion: process.version,
     });
     // 只启动一个调度权威：PostgreSQL=pg-boss；PGlite=进程内 interval 回退。
-    const runJobs =
-      process.env.NODE_ENV !== "development" ||
-      process.env.SCM_RUN_JOBS === "1";
+    // An explicit opt-out must also work in a production build used for staging/QA.
+    // Preserve production's enabled-by-default behavior and development's opt-in.
+    const runJobs = process.env.NODE_ENV !== "test"
+      && process.env.SCM_RUN_JOBS !== "0"
+      && (process.env.NODE_ENV !== "development" || process.env.SCM_RUN_JOBS === "1");
     if (runJobs) {
       if ((process.env.DATABASE_URL ?? "").startsWith("postgres")) {
         const { ensureSchedulerStarted } = await import("@/jobs/scheduler");

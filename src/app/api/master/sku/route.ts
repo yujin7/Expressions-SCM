@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { errorResponse, parseListQuery, readJson } from "@/server/modules/master/common";
 import { guardRead, guardWrite } from "@/server/modules/master/common";
 import { createSku, listSkus } from "@/server/modules/master/sku";
+import { parseSelectedValues } from "@/server/core/selected-options";
 
 export async function GET(req: NextRequest) {
   try {
@@ -13,6 +14,7 @@ export async function GET(req: NextRequest) {
       pageSize,
       searchParams.get("type"),
       searchParams.get("commercialRole"),
+      parseSelectedValues(searchParams),
     ));
   } catch (e) {
     return errorResponse(e);

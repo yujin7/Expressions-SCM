@@ -5,6 +5,7 @@ import { csvDisposition, toCsv } from "@/server/modules/report/export";
 import { getSupplierPriceVariance } from "@/server/modules/report/supplier-price-variance";
 import { errorResponse } from "@/server/modules/master/common";
 import { guardFreshWrite, requireAnyRole } from "@/server/modules/outsource/common";
+import { optionalIntegerQuery } from "@/server/core/query-number";
 
 const EXPORT_LIMIT = 5000;
 
@@ -15,7 +16,9 @@ export async function GET(req: NextRequest) {
     requireAnyRole(user, ...PRICE_VISIBLE_ROLES);
     const searchParams = new URL(req.url).searchParams;
     const q = (searchParams.get("q") ?? "").trim();
-    const windowDays = Number(searchParams.get("windowDays")) || undefined;
+    const windowDays = optionalIntegerQuery(searchParams, "windowDays", { label: "统计天数", min: 30, max: 1095 });
+    const page = optionalIntegerQuery(searchParams, "page", { label: "页码" }) ?? 1;
+    const pageSize = optionalIntegerQuery(searchParams, "pageSize", { label: "每页条数", max: 500 }) ?? 20;
     const format = searchParams.get("format");
 
     if (format === "csv") {
@@ -47,8 +50,6 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const page = Math.max(1, Number(searchParams.get("page")) || 1);
-    const pageSize = Math.min(500, Math.max(1, Number(searchParams.get("pageSize")) || 20));
     return NextResponse.json(await getSupplierPriceVariance({ q, page, pageSize, windowDays }));
   } catch (error) {
     return errorResponse(error);

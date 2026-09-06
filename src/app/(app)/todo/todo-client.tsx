@@ -4,14 +4,15 @@
  * D61 待办任务：我的待办 / 全部 / 完成率 三 Tab（每 Tab 独立 paramPrefix：mine_ / all_ / st_）。
  * 完成率只读统计不打分；绩效 = 证据导出（CSV）。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
-  App, Button, Card, Col, DatePicker, Drawer, Form, Input, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography,
+  App, Button, Col, DatePicker, Dropdown, Row, Select, Space, Table, Tabs, Tag, Tooltip, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
-import { fetchJson, patchJson, postJson } from "@/components/fetchJson";
+import { fetchJson, patchJson } from "@/components/fetchJson";
 import CaliberNote from "@/components/CaliberNote";
 import { exportCsv } from "@/components/exportCsv";
 import ListToolbar from "@/components/ListToolbar";
@@ -19,7 +20,10 @@ import LoadErrorAlert from "@/components/LoadErrorAlert";
 import SearchInput from "@/components/SearchInput";
 import { useListState } from "@/components/useListState";
 import { useMe } from "@/components/useMe";
+import { workItemSourceAction } from "@/lib/work-item-source";
+import { todoTabFromQuery, todoTabHref } from "@/lib/todo-navigation";
 import TodoProgressCard from "./TodoProgressCard";
+import TodoCreateDrawer from "./TodoCreateDrawer";
 
 interface WorkItemRow {
   id: number;
@@ -70,12 +74,15 @@ function useAssignees(): Assignee[] {
   return list;
 }
 
-function ItemTable({ view, prefix, assignees, onChanged }: { view: "mine" | "all"; prefix: string; assignees: Assignee[]; onChanged: () => void }) {
+function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "mine" | "all"; prefix: string; assignees: Assignee[]; refreshKey: number; onChanged: () => void }) {
   const { message } = App.useApp();
   const me = useMe();
   const [data, setData] = useState<ListData | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const loadRequest = useRef<AbortController | null>(null);
+  const pendingIds = useRef(new Set<number>());
+  const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(new Set());
   const listState = useListState<Filters>({
     key: `todo-${view}`,
     defaults: { q: "", status: view === "mine" ? "active" : "", ownerRole: "", overdue: "" },
@@ -85,6 +92,9 @@ function ItemTable({ view, prefix, assignees, onChanged }: { view: "mine" | "all
   const { page, pageSize, filters } = listState;
 
   const load = useCallback(async () => {
+    loadRequest.current?.abort();
+    const request = new AbortController();
+    loadRequest.current = request;
     setLoading(true);
     setLoadError(null);
     try {
@@ -93,24 +103,36 @@ function ItemTable({ view, prefix, assignees, onChanged }: { view: "mine" | "all
       if (filters.status) params.set("status", filters.status);
       if (filters.ownerRole) params.set("ownerRole", filters.ownerRole);
       if (filters.overdue) params.set("overdue", "1");
-      setData(await fetchJson<ListData>(`/api/todo?${params.toString()}`));
+      const result = await fetchJson<ListData>(`/api/todo?${params.toString()}`, { signal: request.signal });
+      if (!request.signal.aborted) setData(result);
     } catch (e) {
-      setLoadError((e as Error).message);
+      if (!request.signal.aborted) setLoadError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (!request.signal.aborted) setLoading(false);
     }
   }, [view, page, pageSize, filters.q, filters.status, filters.ownerRole, filters.overdue]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => { loadRequest.current?.abort(); };
+  }, [load, refreshKey]);
 
   const act = async (row: WorkItemRow, patch: { status?: string; assigneeId?: number }) => {
+    if (pendingIds.current.has(row.id) || loading || loadError) return;
+    pendingIds.current.add(row.id);
+    setBusyIds(new Set(pendingIds.current));
     try {
       const r = await patchJson<WorkItemRow>(`/api/todo/${row.id}`, patch);
       if (r.suspicious && patch.status === "done") message.warning("创建后不足 10 分钟即关闭，已标记为「可疑」（仅提示，不影响状态）");
+      else if (patch.status === "done") message.success("待办已完成");
       else message.success("已更新");
-      await load();
+      const source = workItemSourceAction(row);
+      if (patch.status === "done" && source) message.info(<span>{source.completionHint} <a href={source.href}>{source.label}</a></span>, 8);
       onChanged();
     } catch (e) {
       message.error((e as Error).message);
+    } finally {
+      pendingIds.current.delete(row.id);
+      setBusyIds(new Set(pendingIds.current));
     }
   };
 
@@ -124,7 +146,7 @@ function ItemTable({ view, prefix, assignees, onChanged }: { view: "mine" | "all
       render: (v: string, r) => (
         <Space direction="vertical" size={0}>
           <Typography.Text strong={r.priority === "high"}>{v}</Typography.Text>
-          {r.detail ? <Typography.Text type="secondary" style={{ fontSize: 12 }} ellipsis>{r.detail}</Typography.Text> : null}
+          {r.detail ? <Typography.Text type="secondary" style={{ fontSize: 12 }} ellipsis={{ tooltip: r.detail }}>{r.detail}</Typography.Text> : null}
         </Space>
       ),
     },
@@ -142,31 +164,36 @@ function ItemTable({ view, prefix, assignees, onChanged }: { view: "mine" | "all
     { title: "责任人", dataIndex: "assigneeName", width: 100, render: (v: string | null, r) => v ?? `#${r.assigneeId}` },
     { title: "责任角色", dataIndex: "ownerRole", width: 100, render: (v: string | null) => (v ? ROLE_LABEL[v] ?? v : "—") },
     { title: "截止", dataIndex: "dueDate", width: 110, sorter: (a, b) => (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999"), render: (v: string | null) => v ?? "—" },
-    { title: "来源", dataIndex: "sourceKind", width: 100, render: (v: string | null, r) => (v ? <Tag>{SOURCE_LABEL[v] ?? v}{r.sourceRef ? ` #${r.sourceRef}` : ""}</Tag> : "—") },
+    { title: "来源", dataIndex: "sourceKind", width: 135, render: (v: string | null, r) => {
+      const source = workItemSourceAction(r);
+      return source ? <Tooltip title={source.label}><a href={source.href}>{SOURCE_LABEL[v ?? ""]} #{r.sourceRef}</a></Tooltip>
+        : v ? <Tag>{SOURCE_LABEL[v] ?? v}{r.sourceRef ? ` #${r.sourceRef}` : ""}</Tag> : "—";
+    } },
     { title: "指派人", dataIndex: "assignerName", width: 100, render: (v: string | null) => v ?? "—" },
     { title: "创建", dataIndex: "createdAt", width: 140, render: (v: string) => fmt(v) },
     {
-      title: "操作", key: "ops", width: 260, fixed: "right",
+      title: "操作", key: "ops", width: 180, fixed: "right",
       render: (_, r) => {
         if (!canManage(r)) return <Typography.Text type="secondary">—</Typography.Text>;
         const active = r.status === "open" || r.status === "in_progress";
+        const busy = busyIds.has(r.id);
+        const disabled = busy || loading || !!loadError;
+        const source = workItemSourceAction(r);
         return (
           <Space size={4} wrap>
-            {r.status === "open" ? <Button size="small" onClick={() => act(r, { status: "in_progress" })}>开始</Button> : null}
-            {active ? <Button size="small" type="primary" onClick={() => act(r, { status: "done" })}>完成</Button> : null}
-            {active ? <Button size="small" danger onClick={() => act(r, { status: "cancelled" })}>取消</Button> : null}
-            {!active ? <Button size="small" onClick={() => act(r, { status: "open" })}>重新打开</Button> : null}
+            {r.status === "open" ? <Button size="small" disabled={disabled} onClick={() => act(r, { status: "in_progress" })}>开始</Button> : null}
+            {active ? <Tooltip title={source?.completionHint}><Button size="small" type="primary" disabled={disabled} loading={busy} onClick={() => act(r, { status: "done" })}>完成待办</Button></Tooltip> : null}
+            {!active ? <Button size="small" disabled={disabled} onClick={() => act(r, { status: "open" })}>重新打开</Button> : null}
             {active ? (
-              <Select
-                size="small"
-                placeholder="改派"
-                style={{ width: 96 }}
-                showSearch
-                optionFilterProp="label"
-                value={undefined}
-                options={assignees.filter((a) => a.id !== r.assigneeId).map((a) => ({ value: a.id, label: a.name }))}
-                onChange={(v: number) => act(r, { assigneeId: v })}
-              />
+              <Dropdown
+                trigger={["click"]}
+                disabled={disabled}
+                menu={{ items: [
+                  { key: "assign", label: "改派给", disabled: assignees.every((a) => a.id === r.assigneeId), children: assignees.filter((a) => a.id !== r.assigneeId).map((a) => ({ key: `assign-${a.id}`, label: a.name, onClick: () => void act(r, { assigneeId: a.id }) })) },
+                  { type: "divider" },
+                  { key: "cancel", label: "取消待办", danger: true, onClick: () => void act(r, { status: "cancelled" }) },
+                ] }}
+              ><Button size="small" disabled={disabled} aria-label={`待办 ${r.id} 的更多操作`}>更多</Button></Dropdown>
             ) : null}
           </Space>
         );
@@ -181,6 +208,7 @@ function ItemTable({ view, prefix, assignees, onChanged }: { view: "mine" | "all
         extra={(
           <Space wrap>
             <SearchInput
+              key={filters.q ?? ""}
               allowClear
               placeholder="标题 / 明细 / #id"
               style={{ width: 220 }}
@@ -237,10 +265,11 @@ interface StatsData { groupBy: "person" | "role"; fromMonth: string; toMonth: st
 
 type StatsFilters = { groupBy?: string; from?: string; to?: string; ownerRole?: string };
 
-function StatsTab() {
-  const { message } = App.useApp();
+function StatsTab({ refreshKey }: { refreshKey: number }) {
   const [data, setData] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const loadRequest = useRef<AbortController | null>(null);
   const listState = useListState<StatsFilters>({
     key: "todo-stats",
     defaults: { groupBy: "person", from: "", to: "", ownerRole: "" },
@@ -250,20 +279,28 @@ function StatsTab() {
   const { filters } = listState;
 
   const load = useCallback(async () => {
+    loadRequest.current?.abort();
+    const request = new AbortController();
+    loadRequest.current = request;
     setLoading(true);
+    setLoadError(null);
     try {
       const params = new URLSearchParams({ groupBy: filters.groupBy || "person" });
       if (filters.from) params.set("from", filters.from);
       if (filters.to) params.set("to", filters.to);
       if (filters.ownerRole) params.set("ownerRole", filters.ownerRole);
-      setData(await fetchJson<StatsData>(`/api/todo/stats?${params.toString()}`));
+      const next = await fetchJson<StatsData>(`/api/todo/stats?${params.toString()}`, { signal: request.signal });
+      if (!request.signal.aborted) setData(next);
     } catch (e) {
-      message.error((e as Error).message);
+      if (!request.signal.aborted) setLoadError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (!request.signal.aborted) setLoading(false);
     }
-  }, [filters.groupBy, filters.from, filters.to, filters.ownerRole, message]);
-  useEffect(() => { void load(); }, [load]);
+  }, [filters.groupBy, filters.from, filters.to, filters.ownerRole]);
+  useEffect(() => {
+    void load();
+    return () => { loadRequest.current?.abort(); };
+  }, [load, refreshKey]);
 
   const columns: ColumnsType<StatsRow> = [
     { title: "月份", dataIndex: "month", width: 90 },
@@ -279,7 +316,7 @@ function StatsTab() {
   ];
 
   const onExport = () => {
-    if (!data) return;
+    if (!data || loading || loadError) return;
     exportCsv(
       `待办完成率-${data.groupBy}-${data.fromMonth}_${data.toMonth}.csv`,
       ["月份", "分组", "总数", "已完成", "按时", "逾期/不按时", "已取消", "可疑", "完成率%", "按时率%"],
@@ -292,7 +329,7 @@ function StatsTab() {
       <CaliberNote summary="只读统计，不打分；绩效 = 证据导出（D61）。" detail={data?.caliber} />
       <ListToolbar
         state={listState}
-        onExport={onExport}
+        onExport={data && !loading && !loadError ? onExport : undefined}
         exportText="导出证据 CSV"
         extra={(
           <Space wrap>
@@ -318,6 +355,7 @@ function StatsTab() {
           </Space>
         )}
       />
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="待办完成率" retrying={loading} />
       <Table<StatsRow>
         rowKey={(r) => `${r.groupKey}|${r.month}`}
         size={listState.tableSize}
@@ -325,6 +363,7 @@ function StatsTab() {
         dataSource={data?.rows ?? []}
         loading={loading}
         scroll={{ x: "max-content" }}
+        locale={{ emptyText: loadError ? "数据未加载" : "当前条件下没有待办统计" }}
         pagination={false}
       />
     </>
@@ -332,35 +371,20 @@ function StatsTab() {
 }
 
 export default function TodoClient() {
-  const { message } = App.useApp();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const activeTab = todoTabFromQuery(searchParams.toString());
   const me = useMe();
   const assignees = useAssignees();
   const [drawer, setDrawer] = useState(false);
-  const [form] = Form.useForm();
   const [tick, setTick] = useState(0);
-  const bump = () => setTick((t) => t + 1);
-
-  const submit = async () => {
-    const v = await form.validateFields();
-    try {
-      const r = await postJson<{ created: boolean; reopened: boolean }>("/api/todo", {
-        ...v,
-        dueDate: v.dueDate ? dayjs(v.dueDate).format("YYYY-MM-DD") : undefined,
-      });
-      message.success(r.created ? "已创建" : r.reopened ? "同来源待办已重新打开" : "已存在同来源的未完成待办");
-      setDrawer(false);
-      form.resetFields();
-      bump();
-    } catch (e) {
-      message.error((e as Error).message);
-    }
-  };
+  const bump = useCallback(() => setTick((t) => t + 1), []);
 
   const items = useMemo(() => [
-    { key: "mine", label: "我的待办", children: <ItemTable key={`mine-${tick}`} view="mine" prefix="mine" assignees={assignees} onChanged={bump} /> },
-    { key: "all", label: "全部待办", children: <ItemTable key={`all-${tick}`} view="all" prefix="all" assignees={assignees} onChanged={bump} /> },
-    { key: "stats", label: "完成率", children: <StatsTab key={`st-${tick}`} /> },
-  ], [assignees, tick]);
+    { key: "mine", label: "我的待办", children: <ItemTable view="mine" prefix="mine" assignees={assignees} refreshKey={tick} onChanged={bump} /> },
+    { key: "all", label: "全部待办", children: <ItemTable view="all" prefix="all" assignees={assignees} refreshKey={tick} onChanged={bump} /> },
+    { key: "stats", label: "完成率", children: <StatsTab refreshKey={tick} /> },
+  ], [assignees, tick, bump]);
 
   return (
     <div>
@@ -370,33 +394,25 @@ export default function TodoClient() {
       </Row>
       <CaliberNote
         summary="系统告警 / 复核项自动生成待办（同来源只建一条）；手工待办不计入完成率。单据审批在「待我审批」。"
-        detail={<div>同来源 7 天内再触发则重新打开而不是新建。完成率 = 已完成 ÷ (总数 − 已取消)；按时率 = 按时完成 ÷ 已完成；创建后不足 10 分钟即关闭标「可疑」。审批类事项不在这里，见顶部菜单「待我审批」。</div>}
+        detail={<div>部门按责任角色划分（D61）。同来源 7 天内再触发则重新打开而不是新建。完成率 = 已完成 ÷ (总数 − 已取消)；按时率 = 按时完成 ÷ 已完成；创建后不足 10 分钟即关闭标「可疑」。审批类事项不在这里，见顶部菜单「待我审批」。</div>}
       />
-      <Row gutter={[10, 10]} style={{ marginBottom: 12 }}>
-        <Col xs={24} lg={14}><TodoProgressCard refreshKey={tick} /></Col>
-        <Col xs={24} lg={10}>
-          <Card size="small" title="口径">
-            <Space direction="vertical" size={0}>
-              <Statistic title="部门" value="= 角色（D61）" valueStyle={{ fontSize: 14 }} />
-              <Typography.Text type="secondary">完成率 = 已完成 ÷ (总数 − 已取消)；按时率 = 按时完成 ÷ 已完成；创建后不足 10 分钟即关闭标「可疑」。</Typography.Text>
-            </Space>
-          </Card>
-        </Col>
-      </Row>
-      <Tabs destroyOnHidden={false} items={items} />
-      <Drawer title="新建待办" open={drawer} onClose={() => setDrawer(false)} width={480} extra={<Button type="primary" onClick={submit}>保存</Button>}>
-        <Form form={form} layout="vertical" initialValues={{ priority: "normal", assigneeId: me?.id }}>
-          <Form.Item name="title" label="标题" rules={[{ required: true, message: "标题必填" }]}><Input maxLength={200} /></Form.Item>
-          <Form.Item name="detail" label="明细"><Input.TextArea rows={3} maxLength={2000} /></Form.Item>
-          <Form.Item name="assigneeId" label="责任人" rules={[{ required: true, message: "必须指定责任人" }]}>
-            <Select showSearch optionFilterProp="label" options={assignees.map((a) => ({ value: a.id, label: `${a.name}（${a.roles.map((r) => ROLE_LABEL[r] ?? r).join("/")}）` }))} />
-          </Form.Item>
-          <Form.Item name="ownerRole" label="责任角色（部门）"><Select allowClear options={ROLE_OPTIONS} /></Form.Item>
-          <Form.Item name="priority" label="优先级"><Select options={Object.entries(PRIORITY_LABEL).map(([value, label]) => ({ value, label }))} /></Form.Item>
-          <Form.Item name="dueDate" label="截止日期"><DatePicker style={{ width: "100%" }} /></Form.Item>
-          <Form.Item name="sourceRef" label="关联单据 / 引用"><Input placeholder="如 PO20260901-001" maxLength={200} /></Form.Item>
-        </Form>
-      </Drawer>
+      <div style={{ marginBottom: 12 }}><TodoProgressCard refreshKey={tick} /></div>
+      <Tabs
+        activeKey={activeTab}
+        onChange={(tab) => router.push(todoTabHref(searchParams.toString(), tab), { scroll: false })}
+        destroyOnHidden={false}
+        items={items}
+      />
+      {drawer && (
+        <TodoCreateDrawer
+          defaultAssigneeId={me?.id}
+          assigneeOptions={assignees.map((a) => ({ value: a.id, label: `${a.name}（${a.roles.map((r) => ROLE_LABEL[r] ?? r).join("/")}）` }))}
+          roleOptions={ROLE_OPTIONS}
+          priorityOptions={Object.entries(PRIORITY_LABEL).map(([value, label]) => ({ value, label }))}
+          onCancel={() => setDrawer(false)}
+          onCreated={() => { setDrawer(false); bump(); }}
+        />
+      )}
     </div>
   );
 }

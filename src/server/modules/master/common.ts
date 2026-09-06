@@ -3,6 +3,7 @@ import { ZodError } from "zod";
 import { todayShanghai as businessToday } from "@/server/core/business-day";
 import { log, persistErrorLog } from "@/server/core/logger";
 import { isUserFacingPostingError } from "@/server/posting/error-codes";
+import type { SelectedOptionValue } from "@/server/core/selected-options";
 
 /** 业务错误：service 层抛出，route 层统一转 JSON */
 export class ApiError extends Error {
@@ -85,6 +86,7 @@ export interface ListQuery {
   page: number;
   pageSize: number;
   searchParams: URLSearchParams;
+  selectedValues?: SelectedOptionValue[];
 }
 
 export function parseListQuery(url: string): ListQuery {

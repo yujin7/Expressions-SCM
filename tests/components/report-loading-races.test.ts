@@ -1,0 +1,547 @@
+import React, { isValidElement, type ReactNode } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import ExternalSkuRankingCard from "@/app/(app)/report/decision-studio/external-sku-ranking-card";
+import SupplierScorecardClient from "@/app/(app)/report/supplier-scorecard/supplier-scorecard-client";
+import ClosedLoopClient from "@/app/(app)/report/closed-loop/closed-loop-client";
+
+// Real components and callbacks, deferred network responses, no DOM or visual claims.
+const hooks = vi.hoisted(() => ({
+  cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[],
+  cleanups: new Map<number, () => void>(), changed: false, writes: 0,
+}));
+const network = vi.hoisted(() => ({ fetch: vi.fn(), post: vi.fn(), csv: vi.fn() }));
+const message = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
+const lists = vi.hoisted(() => ({
+  filters: {} as Record<string, Record<string, string>>,
+  pages: {} as Record<string, number>,
+}));
+
+vi.mock("react", async (original) => ({
+  ...await original<typeof import("react")>(),
+  useState: <T,>(initial: T) => {
+    const index = hooks.cursor++;
+    if (!(index in hooks.slots)) hooks.slots[index] = initial;
+    return [hooks.slots[index], (next: T | ((previous: T) => T)) => {
+      const value = typeof next === "function" ? (next as (previous: T) => T)(hooks.slots[index] as T) : next;
+      hooks.writes += 1;
+      if (!Object.is(hooks.slots[index], value)) hooks.changed = true;
+      hooks.slots[index] = value;
+    }];
+  },
+  useRef: <T,>(initial: T) => {
+    const index = hooks.cursor++;
+    if (!(index in hooks.slots)) hooks.slots[index] = { current: initial };
+    return hooks.slots[index];
+  },
+  useCallback: (callback: unknown, deps: readonly unknown[]) => {
+    const index = hooks.cursor++;
+    const previous = hooks.slots[index] as { value: unknown; deps: readonly unknown[] } | undefined;
+    if (!previous || previous.deps.length !== deps.length || deps.some((value, i) => !Object.is(value, previous.deps[i]))) hooks.slots[index] = { value: callback, deps };
+    return (hooks.slots[index] as { value: unknown }).value;
+  },
+  useMemo: (create: () => unknown, deps: readonly unknown[]) => {
+    const index = hooks.cursor++;
+    const previous = hooks.slots[index] as { value: unknown; deps: readonly unknown[] } | undefined;
+    if (!previous || previous.deps.length !== deps.length || deps.some((value, i) => !Object.is(value, previous.deps[i]))) hooks.slots[index] = { value: create(), deps };
+    return (hooks.slots[index] as { value: unknown }).value;
+  },
+  useEffect: (effect: () => void | (() => void), deps: readonly unknown[]) => {
+    const index = hooks.cursor++;
+    const previous = hooks.slots[index] as readonly unknown[] | undefined;
+    if (previous && previous.length === deps.length && previous.every((value, i) => Object.is(value, deps[i]))) return;
+    hooks.slots[index] = deps;
+    hooks.effects.push(() => {
+      hooks.cleanups.get(index)?.();
+      hooks.cleanups.delete(index);
+      const cleanup = effect();
+      if (cleanup) hooks.cleanups.set(index, cleanup);
+    });
+  },
+  useLayoutEffect: (effect: () => void | (() => void), deps: readonly unknown[]) => {
+    const index = hooks.cursor++;
+    const previous = hooks.slots[index] as readonly unknown[] | undefined;
+    if (previous && previous.length === deps.length && previous.every((value, i) => Object.is(value, deps[i]))) return;
+    hooks.slots[index] = deps;
+    hooks.effects.push(() => {
+      hooks.cleanups.get(index)?.();
+      hooks.cleanups.delete(index);
+      const cleanup = effect();
+      if (cleanup) hooks.cleanups.set(index, cleanup);
+    });
+  },
+}));
+vi.mock("antd", () => ({
+  App: { useApp: () => ({ message }) },
+  Alert: "alert", Button: "button", Card: "card", Col: "col", Row: "row", Select: "select",
+  Space: "space", Statistic: "statistic", Table: "table", Tag: "tag", Popconfirm: "popconfirm",
+  Progress: "progress", Segmented: "segmented", Tabs: "tabs", Tooltip: "tooltip",
+  Typography: { Text: "text", Paragraph: "paragraph", Title: "title" },
+}));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn() }), useSearchParams: () => new URLSearchParams() }));
+vi.mock("@ant-design/icons", () => ({ ReloadOutlined: "reload-icon" }));
+vi.mock("recharts", () => ({
+  Bar: "bar", BarChart: "bar-chart", CartesianGrid: "grid", Legend: "legend", Cell: "cell",
+  ResponsiveContainer: "chart-container", Tooltip: "chart-tooltip", XAxis: "x-axis", YAxis: "y-axis",
+}));
+vi.mock("@/components/fetchJson", () => ({ fetchJson: network.fetch, postJson: network.post }));
+vi.mock("@/components/exportCsv", () => ({ exportCsv: network.csv }));
+vi.mock("@/components/format", () => ({ formatQty: String }));
+vi.mock("@/components/SearchInput", () => ({ default: "search" }));
+vi.mock("@/components/SkuHoverCard", () => ({ default: "sku-hover" }));
+vi.mock("@/components/DecisionVisual", () => ({ default: "decision-visual" }));
+vi.mock("@/components/ProductExternalDecisionEvidenceCard", () => ({ default: "external-evidence" }));
+vi.mock("@/components/ListToolbar", () => ({ default: "list-toolbar" }));
+vi.mock("@/components/LoadErrorAlert", () => ({ default: "load-error" }));
+vi.mock("@/components/RemoteSelect", () => ({ default: "remote-select" }));
+vi.mock("@/components/supplier-external-evidence", () => ({ buildSupplierExternalEvidenceBriefs: () => [] }));
+vi.mock("@/app/(app)/report/supplier-scorecard/lead-history-tab", () => ({ default: "lead-history" }));
+vi.mock("@/app/(app)/report/supplier-scorecard/leadtime-learning-tab", () => ({ default: "lead-learning" }));
+vi.mock("@/app/(app)/report/supplier-scorecard/payment-term-tab", () => ({ default: "payment-term" }));
+vi.mock("@/components/useListState", () => ({
+  useListState: ({ paramPrefix: prefix, key, defaults }: { paramPrefix?: string; key?: string; defaults: Record<string, string> }) => {
+    const paramPrefix = prefix ?? key ?? "";
+    lists.filters[paramPrefix] ??= defaults;
+    const setPage = (page: number) => { lists.pages[paramPrefix] = page; };
+    return {
+      filters: lists.filters[paramPrefix], page: lists.pages[paramPrefix] ?? 1, pageSize: 20, tableSize: "small",
+      setFilter: (next: Record<string, string>) => { lists.filters[paramPrefix] = { ...lists.filters[paramPrefix], ...next }; setPage(1); },
+      setPage, paginationProps: (props: object) => ({ ...props, onChange: setPage }),
+    };
+  },
+}));
+
+type Props = Record<string, unknown> & { children?: ReactNode; extra?: ReactNode; description?: ReactNode; action?: ReactNode; dataView?: ReactNode };
+type Element = React.ReactElement<Props>;
+function elements(node: ReactNode): Element[] {
+  if (Array.isArray(node)) return node.flatMap(elements);
+  if (!isValidElement<Props>(node)) return [];
+  return [node, ...[node.props.children, node.props.extra, node.props.description, node.props.action, node.props.dataView].flatMap(elements)];
+}
+function text(node: ReactNode): string {
+  if (Array.isArray(node)) return node.map(text).join("");
+  if (isValidElement<Props>(node)) return text(node.props.children);
+  return typeof node === "string" || typeof node === "number" ? String(node) : "";
+}
+function render(component: () => React.ReactElement): React.ReactElement {
+  for (let pass = 0; pass < 5; pass += 1) {
+    hooks.cursor = 0;
+    hooks.changed = false;
+    const tree = component();
+    for (const effect of hooks.effects.splice(0)) effect();
+    if (!hooks.changed) return tree;
+  }
+  throw new Error("Component did not settle");
+}
+function unmount() {
+  for (const cleanup of hooks.cleanups.values()) cleanup();
+  hooks.cleanups.clear();
+}
+function deferred() {
+  let resolve!: (value: unknown) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<unknown>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+const flush = async () => { for (let i = 0; i < 4; i += 1) await Promise.resolve(); };
+const table = (tree: ReactNode) => elements(tree).filter((node) => node.type === "table").at(-1)!;
+const button = (tree: ReactNode, label: string) => elements(tree).find((node) => node.type === "button" && text(node) === label)!;
+const click = (element: Element) => (element.props.onClick as () => void)();
+const signal = (index: number) => network.fetch.mock.calls[index][1].signal as AbortSignal;
+const rows = (tree: ReactNode) => table(tree).props.dataSource;
+const external = () => ExternalSkuRankingCard({ active: true });
+const platformSelect = (tree: ReactNode) => elements(tree).find((node) => node.type === "select" && ["all", "tmall", "pdd"].includes(String(node.props.value)))!;
+const selectPlatform = (tree: ReactNode, platform: string) => (platformSelect(tree).props.onChange as (value: string) => void)(platform);
+function supplierTab(key: string): () => React.ReactElement {
+  const tabs = elements(SupplierScorecardClient()).find((node) => node.type === "tabs")!;
+  const items = tabs.props.items as { key: string; children: React.ReactElement }[];
+  return items.find((item) => item.key === key)!.children.type as () => React.ReactElement;
+}
+function ranking(name: string) {
+  return {
+    state: "ready", totalRows: 1, anchorDate: "2026-09-05", sourceAsOf: "2026-09-05", pddSourceAsOf: null,
+    internalMonths: ["2026-08"], brands: ["EXP"], gate: "仅供观察", limitations: ["不可自动定量"],
+    coverage: { platformSkus: 2, mappedPlatformSkus: 1, bundlePlatformSkus: 0, pddObservedDays30: 0, pddWindowComplete30: false },
+    rows: [{ skuId: 1, name, code: "EXP-1", rank: 1, brand: "EXP", net30: 30, net90: 90, tmallNet30: 30, pddNet30: 0, tmallNet90: 90, pddNet90: 0, lastSoldDate: null, activeDays90: 2, platformSkus: 1, internal3m: null }],
+  };
+}
+function scoreData(name: string) {
+  return {
+    rows: [{ supplierId: 1, code: "S1", name, grade: "A", currentLevel: "B", suggestLevelChange: true, breakdown: [], confidence: "high" }],
+    total: 1, minSamples: 3, promiseHistory: { trusted: 1, backfilled: 0, missing: 0 }, supportingObservations: [],
+    summary: { suppliers: 1, rated: 1, suggestChanges: 1, avgOnTimeRate: null, avgOnTimeRateCurrent: null, windowDays: 180, legacyQualityCases: 0 },
+  };
+}
+function qcData(name: string) {
+  return { rows: [{ supplierId: 1, code: "S1", name, month: "2026-08", passQty: 10, reworkQty: 0, concessionQty: 0, scrapQty: 0, pendingQty: 0 }], months: ["2026-08"], totals: { batches: 1, passRate: 1, concessionRate: 0, scrapRate: 0 } };
+}
+function priceData(name: string) {
+  return { rows: [{ key: "1:1", supplierId: 1, supplierName: name }], total: 1, supplierSummary: [], summary: { asOf: "2026-09-05", comparableSkuCount: 1, comparableSupplierCount: 1, comparableLineCount: 2, inputLineCount: 2, coveragePct: "100", excludedInvalidLineCount: 0, singleSupplierLineCount: 0 } };
+}
+
+beforeEach(() => {
+  vi.stubGlobal("React", React); // Scoped classic JSX transform, no inherited globals.
+  hooks.cursor = 0; hooks.slots = []; hooks.effects = []; hooks.cleanups.clear(); hooks.changed = false; hooks.writes = 0;
+  lists.filters = {}; lists.pages = {};
+  for (const mock of [network.fetch, network.post, network.csv, message.error, message.success]) mock.mockReset();
+  network.fetch.mockReturnValue(new Promise(() => {}));
+});
+afterEach(() => { unmount(); vi.unstubAllGlobals(); });
+
+function closedLoopData(name: string) {
+  return {
+    rows: [{ id: 1, docNo: name, createdAt: "2026-09-01T00:00:00Z", lineCount: 1, source: "replenish" }],
+    total: 21, accuracy: null, suppression: null,
+    summary: { total: 21, adopted: 0, pending: 21, rejected: 0, deleted: 0, declined: 0, adoptRate: 0, deliveredRate: null },
+  };
+}
+
+describe("closed-loop current-page facts", () => {
+  it("ignores an old page success even if transport resolves after cancellation", async () => {
+    const old = deferred(), latest = deferred();
+    network.fetch.mockReturnValueOnce(old.promise).mockReturnValueOnce(latest.promise);
+    render(ClosedLoopClient);
+    lists.pages["closed-loop"] = 2;
+    render(ClosedLoopClient);
+    expect(network.fetch.mock.calls[1][0]).toContain("page=2&");
+    latest.resolve(closedLoopData("new")); await flush();
+    old.resolve(closedLoopData("old")); await flush();
+    expect(rows(render(ClosedLoopClient))).toEqual(closedLoopData("new").rows);
+    expect(signal(0).aborted).toBe(true);
+  });
+
+  it("old errors neither end the new loading state nor replace the current error", async () => {
+    const old = deferred(), latest = deferred();
+    network.fetch.mockReturnValueOnce(old.promise).mockReturnValueOnce(latest.promise);
+    render(ClosedLoopClient);
+    lists.pages["closed-loop"] = 2;
+    render(ClosedLoopClient);
+    old.reject(new Error("old failure")); await flush();
+    const pending = render(ClosedLoopClient);
+    expect(table(pending).props.loading).toBe(true);
+    expect(message.error).not.toHaveBeenCalled();
+    latest.reject(new Error("current failure")); await flush();
+    const failed = render(ClosedLoopClient);
+    expect(elements(failed).find((n) => n.type === "load-error")?.props.error).toBe("current failure");
+    expect(message.error).toHaveBeenCalledExactlyOnceWith("current failure");
+  });
+
+  it("clears old page facts and KPIs while loading; explicit retry preserves real zero and unknown ratios", async () => {
+    const next = deferred();
+    network.fetch.mockResolvedValueOnce(closedLoopData("old")).mockReturnValueOnce(next.promise).mockResolvedValueOnce(closedLoopData("retry"));
+    render(ClosedLoopClient); await flush();
+    expect(rows(render(ClosedLoopClient))).toEqual(closedLoopData("old").rows);
+    lists.pages["closed-loop"] = 2;
+    const pending = render(ClosedLoopClient);
+    expect(rows(pending)).toEqual([]);
+    expect(elements(pending).filter((n) => n.type === "statistic").map((n) => n.props.value)).toEqual(Array(7).fill("—"));
+    next.reject(new Error("unavailable")); await flush();
+    const failed = render(ClosedLoopClient);
+    const alert = elements(failed).find((n) => n.type === "load-error")!;
+    (alert.props.onRetry as () => void)(); await flush();
+    const ready = render(ClosedLoopClient);
+    expect(rows(ready)).toEqual(closedLoopData("retry").rows);
+    expect(elements(ready).filter((n) => n.type === "statistic").map((n) => n.props.value)).toEqual([21, 0, "—", 0, 21, 0, 0]);
+    expect(network.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["success", "failure"] as const)("ignores a detached %s without state writes or messages", async (outcome) => {
+    const pending = deferred();
+    network.fetch.mockReturnValueOnce(pending.promise);
+    render(ClosedLoopClient);
+    unmount();
+    const writes = hooks.writes;
+    if (outcome === "success") pending.resolve(closedLoopData("detached"));
+    else pending.reject(new Error("detached"));
+    await flush();
+    expect(hooks.writes).toBe(writes);
+    expect(message.error).not.toHaveBeenCalled();
+  });
+});
+
+describe("external SKU ranking current-filter facts", () => {
+  it("aborts the previous platform read and ignores an out-of-order success", async () => {
+    const old = deferred(), latest = deferred();
+    network.fetch.mockReturnValueOnce(old.promise).mockReturnValueOnce(latest.promise);
+    selectPlatform(render(external), "pdd");
+    render(external);
+    expect(signal(0).aborted).toBe(true);
+    expect(network.fetch.mock.calls[1][0]).toContain("platform=pdd");
+    latest.resolve(ranking("new")); await flush();
+    old.resolve(ranking("old")); await flush();
+    expect(rows(render(external))).toEqual(ranking("new").rows);
+  });
+
+  it("ignores a superseded failure without clearing new loading or showing a stale error", async () => {
+    const old = deferred(), latest = deferred();
+    network.fetch.mockReturnValueOnce(old.promise).mockReturnValueOnce(latest.promise);
+    selectPlatform(render(external), "tmall"); render(external);
+    old.reject(new Error("old failure")); await flush();
+    const pending = render(external);
+    expect(table(pending).props.loading).toBe(true);
+    expect(message.error).not.toHaveBeenCalled();
+    latest.resolve(ranking("new")); await flush();
+    expect(table(render(external)).props.loading).toBe(false);
+  });
+
+  it("clears previous facts on a new query, keeps brand options, and labels current failure explicitly", async () => {
+    const next = deferred();
+    network.fetch.mockResolvedValueOnce(ranking("old")).mockReturnValueOnce(next.promise).mockResolvedValueOnce(ranking("retry"));
+    render(external); await flush();
+    selectPlatform(render(external), "pdd");
+    const pending = render(external);
+    expect(rows(pending)).toEqual([]);
+    expect(button(pending, "导出 CSV").props.disabled).toBe(true);
+    expect(elements(pending).find((node) => node.props.placeholder === "全部品牌")?.props.options).toEqual([{ value: "EXP", label: "EXP" }]);
+    next.reject(new Error("network unavailable")); await flush();
+    const failed = render(external);
+    expect(elements(failed).find((node) => node.type === "alert")?.props.message).toBe("外部销量排名加载失败");
+    expect(elements(failed).filter((node) => node.type === "statistic").every((node) => node.props.value === "—")).toBe(true);
+    expect(text(failed)).toContain("窗口完整性未知");
+    expect(text(failed)).not.toContain("未同步");
+    click(button(failed, "重试")); await flush();
+    expect(rows(render(external))).toEqual(ranking("retry").rows);
+  });
+
+  it("does not fetch inactive tabs and ignores detached results on deactivation or unmount", async () => {
+    const old = deferred(); network.fetch.mockReturnValueOnce(old.promise);
+    render(() => ExternalSkuRankingCard({ active: false }));
+    expect(network.fetch).not.toHaveBeenCalled();
+    render(external);
+    render(() => ExternalSkuRankingCard({ active: false }));
+    expect(signal(0).aborted).toBe(true);
+    const writes = hooks.writes;
+    old.resolve(ranking("detached")); await flush();
+    expect(hooks.writes).toBe(writes);
+    unmount();
+  });
+
+  it("cancels a pending export after filter changes and never downloads stale rows", async () => {
+    const exported = deferred();
+    network.fetch.mockResolvedValueOnce(ranking("old")).mockReturnValueOnce(exported.promise);
+    render(external); await flush();
+    const ready = render(external);
+    click(button(ready, "导出 CSV"));
+    click(button(ready, "导出 CSV"));
+    expect(network.fetch).toHaveBeenCalledTimes(2);
+    expect(network.fetch.mock.calls[1][0]).toContain("limit=5000");
+    selectPlatform(ready, "pdd"); render(external);
+    expect(signal(1).aborted).toBe(true);
+    exported.resolve(ranking("stale export")); await flush();
+    expect(network.csv).not.toHaveBeenCalled();
+  });
+
+  it("exports current ready facts but refuses an insufficient export response", async () => {
+    network.fetch.mockResolvedValueOnce(ranking("current")).mockResolvedValueOnce(ranking("export"));
+    render(external); await flush();
+    click(button(render(external), "导出 CSV")); await flush();
+    expect(network.csv).toHaveBeenCalledOnce();
+    network.fetch.mockResolvedValueOnce({ ...ranking("none"), state: "insufficient", gate: "coverage unknown", rows: [] });
+    click(button(render(external), "导出 CSV")); await flush();
+    expect(network.csv).toHaveBeenCalledOnce();
+    expect(message.error).toHaveBeenCalledWith("coverage unknown");
+  });
+});
+
+const supplierCases = [
+  { tab: "scorecard", prefix: "sc", filter: "windowDays", value: 90, query: "windowDays=90", data: scoreData },
+  { tab: "qc", prefix: "qc", filter: "months", value: 3, query: "months=3", data: qcData },
+  { tab: "price", prefix: "pv", filter: "windowDays", value: 90, query: "windowDays=90", data: priceData },
+];
+describe.each(supplierCases)("supplier $tab current-query loading", ({ tab, prefix, value, query, data }) => {
+  const component = () => supplierTab(tab)();
+  function changeWindow(tree: ReactNode) {
+    const segmented = elements(tree).find((node) => node.type === "segmented")!;
+    (segmented.props.onChange as (value: number) => void)(value);
+  }
+  it("aborts old window reads and only accepts the latest response", async () => {
+    const old = deferred(), latest = deferred();
+    network.fetch.mockReturnValueOnce(old.promise).mockReturnValueOnce(latest.promise);
+    changeWindow(render(component)); render(component);
+    expect(signal(0).aborted).toBe(true);
+    expect(network.fetch.mock.calls[1][0]).toContain(query);
+    latest.resolve(data("new")); await flush();
+    old.resolve(data("old")); await flush();
+    expect(rows(render(component))).toEqual(data("new").rows);
+  });
+  it("old rejection cannot hide a current pending read or raise its error", async () => {
+    const old = deferred(), latest = deferred();
+    network.fetch.mockReturnValueOnce(old.promise).mockReturnValueOnce(latest.promise);
+    changeWindow(render(component)); render(component);
+    old.reject(new Error("old failure")); await flush();
+    expect(table(render(component)).props.loading).toBe(true);
+    expect(message.error).not.toHaveBeenCalled();
+    latest.resolve(data("new")); await flush();
+    expect(rows(render(component))).toEqual(data("new").rows);
+  });
+  it("clears changed-query facts, shows unknown on failure, and retries the current query", async () => {
+    const latest = deferred();
+    network.fetch.mockResolvedValueOnce(data("old")).mockReturnValueOnce(latest.promise).mockResolvedValueOnce(data("retry"));
+    render(component); await flush();
+    changeWindow(render(component));
+    expect(rows(render(component))).toEqual([]);
+    latest.reject(new Error("current unavailable")); await flush();
+    const failed = render(component);
+    expect(table(failed).props.loading).toBe(false);
+    expect(elements(failed).filter((node) => node.type === "statistic").every((node) => node.props.value === "—")).toBe(true);
+    const visual = elements(failed).find((node) => node.type === "decision-visual");
+    if (visual) {
+      expect(visual.props.coverage).toBeUndefined();
+      expect(visual.props.state).toBe("error");
+      expect(visual.props.onExport).toBeUndefined();
+    }
+    const error = elements(failed).find((node) => node.type === "alert" && node.props.type === "error");
+    expect(error?.props.description).toBe("current unavailable");
+    click(button(failed, "重试")); await flush();
+    expect(network.fetch.mock.calls[2][0]).toContain(query);
+    expect(rows(render(component))).toEqual(data("retry").rows);
+  });
+  it("does not update component state or emit errors after unmount", async () => {
+    const pending = deferred(); network.fetch.mockReturnValueOnce(pending.promise);
+    render(component); unmount();
+    expect(signal(0).aborted).toBe(true);
+    const writes = hooks.writes;
+    pending.reject(new Error("detached")); await flush();
+    expect(hooks.writes).toBe(writes);
+    expect(message.error).not.toHaveBeenCalled();
+  });
+  if (tab !== "qc") it("server-side pagination cancels the prior page request", async () => {
+    const old = deferred(), next = deferred();
+    network.fetch.mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
+    const pagination = table(render(component)).props.pagination as { onChange: (page: number) => void };
+    pagination.onChange(2); render(component);
+    expect(lists.pages[prefix]).toBe(2);
+    expect(network.fetch.mock.calls[1][0]).toContain("page=2");
+    expect(signal(0).aborted).toBe(true);
+    next.resolve(data("page 2")); await flush();
+    old.resolve(data("page 1")); await flush();
+    expect(rows(render(component))).toEqual(data("page 2").rows);
+  });
+});
+
+it("a completed grade adoption refreshes the current page, not its captured old filters", async () => {
+  const mutation = deferred();
+  network.fetch.mockResolvedValueOnce(scoreData("initial")).mockResolvedValueOnce(scoreData("page 2")).mockResolvedValueOnce(scoreData("refreshed"));
+  network.post.mockReturnValueOnce(mutation.promise);
+  const component = () => supplierTab("scorecard")();
+  render(component); await flush();
+  const ready = render(component);
+  const columns = table(ready).props.columns as { dataIndex: string; render: (value: string, row: unknown) => ReactNode }[];
+  const grade = columns.find((column) => column.dataIndex === "grade")!.render("A", scoreData("initial").rows[0]);
+  const confirm = elements(grade).find((node) => node.type === "popconfirm")!;
+  (confirm.props.onConfirm as () => void)();
+  lists.pages.sc = 2;
+  render(component); await flush();
+  mutation.resolve({ ok: true }); await flush();
+  expect(network.post).toHaveBeenCalledWith("/api/report/supplier-scorecard", { supplierId: 1, level: "A" });
+  expect(network.fetch.mock.calls[2][0]).toContain("page=2");
+  expect(rows(render(component))).toEqual(scoreData("refreshed").rows);
+});
+
+describe("QC supplier filter uses authoritative server totals", () => {
+  const component = () => supplierTab("qc")();
+  const supplierSelect = (tree: ReactNode) => elements(tree).find((node) => node.type === "remote-select")!;
+  const chooseSupplier = (tree: ReactNode, value: number | undefined) => (supplierSelect(tree).props.onChange as (value: number | undefined) => void)(value);
+  const valueOf = (tree: ReactNode, title: string) => elements(tree).find((node) => node.type === "statistic" && node.props.title === title)?.props.value;
+
+  it("loads a URL-preset supplier and uses service totals, never a sum or average of monthly rows", async () => {
+    lists.filters.qc = { months: "6", supplierId: "1001" };
+    const source = qcData("selected supplier");
+    const data = {
+      ...source,
+      rows: [{ ...source.rows[0], supplierId: 1001, batches: 1, passQty: 1.23, passRate: 0.1111 }, { ...source.rows[0], supplierId: 1001, month: "2026-09", batches: 1, passQty: 4.56, passRate: 0.9999 }],
+      months: ["2026-08", "2026-09"],
+      // Same receipt in both months: global distinct count is not 1 + 1.
+      totals: { batches: 1, passRate: 0.8765, concessionRate: 0.1235, scrapRate: 0 },
+    };
+    network.fetch.mockResolvedValueOnce(data);
+    const pending = render(component);
+    expect(network.fetch.mock.calls[0][0]).toBe("/api/report/qc-summary?months=6&supplierId=1001");
+    const selected = supplierSelect(pending);
+    expect(selected.props.api).toBe("/api/master/supplier");
+    expect(selected.props.placeholder).toBe("全部供应商（主档）");
+    expect(selected.props.value).toBe(1001);
+    expect((selected.props.labelRender as (props: object) => string)({ value: 1001 })).toBe("供应商 #1001");
+    await flush();
+    const ready = render(component);
+    expect(valueOf(ready, "收货批次")).toBe(1);
+    expect(valueOf(ready, "合格率")).toBeCloseTo(87.65);
+    expect(rows(ready)).toEqual(data.rows);
+    expect((supplierSelect(ready).props.labelRender as (props: object) => string)({ value: 1001 })).toBe("selected supplier（S1）");
+    expect(elements(ready).find((node) => node.type === "decision-visual")?.props.summary).toContain("selected supplier（S1）：收货批次 1");
+  });
+
+  it("rapid supplier switches abort old totals and clearing the selection restores the full-window query", async () => {
+    const first = deferred(), second = deferred();
+    network.fetch.mockResolvedValueOnce(qcData("all")).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise).mockResolvedValueOnce(qcData("restored all"));
+    render(component); await flush();
+    chooseSupplier(render(component), 1); render(component);
+    chooseSupplier(render(component), 2); const pending = render(component);
+    expect(rows(pending)).toEqual([]);
+    expect(valueOf(pending, "收货批次")).toBe("—");
+    expect(signal(1).aborted).toBe(true);
+    expect(network.fetch.mock.calls[2][0]).toBe("/api/report/qc-summary?months=6&supplierId=2");
+    const current = { ...qcData("supplier 2"), totals: { batches: 7, passRate: null, concessionRate: null, scrapRate: null } };
+    second.resolve(current); await flush();
+    first.resolve(qcData("supplier 1")); await flush();
+    expect(valueOf(render(component), "收货批次")).toBe(7);
+    expect(valueOf(render(component), "合格率")).toBe("—");
+    chooseSupplier(render(component), undefined); render(component); await flush();
+    expect(network.fetch.mock.calls[3][0]).toBe("/api/report/qc-summary?months=6");
+    expect(rows(render(component))).toEqual(qcData("restored all").rows);
+  });
+
+  it("no inspection records is a real zero count but an unknown rate, with a readable selected ID", async () => {
+    lists.filters.qc = { months: "6", supplierId: "2222" };
+    network.fetch.mockResolvedValueOnce({ rows: [], months: ["2026-08"], totals: { batches: 0, passRate: null, concessionRate: null, scrapRate: null } });
+    render(component); await flush();
+    const tree = render(component);
+    expect(valueOf(tree, "收货批次")).toBe(0);
+    expect(valueOf(tree, "合格率")).toBe("—");
+    expect((supplierSelect(tree).props.labelRender as (props: object) => string)({ value: 2222 })).toBe("供应商 #2222");
+    expect(elements(tree).find((node) => node.type === "decision-visual")?.props.state).toBe("empty");
+  });
+
+  it("a six-month calendar without inspection records has zero observed-month coverage", async () => {
+    network.fetch.mockResolvedValueOnce({
+      ...qcData("empty"),
+      months: ["2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09"],
+      rows: [],
+      totals: { batches: 0, passRate: null, concessionRate: null, scrapRate: null },
+    });
+    const pending = render(component);
+    expect(elements(pending).find((node) => node.type === "decision-visual")?.props.coverage).toBeUndefined();
+    await flush();
+    expect(elements(render(component)).find((node) => node.type === "decision-visual")?.props.coverage).toEqual({
+      covered: 0, total: 6, label: "有检验记录月份",
+    });
+  });
+
+  it("counts distinct observed months rather than supplier rows or all requested calendar months", async () => {
+    const source = qcData("supplier 1");
+    network.fetch.mockResolvedValueOnce({
+      ...source,
+      months: ["2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09"],
+      rows: [source.rows[0], { ...source.rows[0], supplierId: 2, name: "supplier 2" }, { ...source.rows[0], month: "2026-09" }],
+    });
+    render(component); await flush();
+    expect(elements(render(component)).find((node) => node.type === "decision-visual")?.props.coverage).toEqual({
+      covered: 2, total: 6, label: "有检验记录月份",
+    });
+  });
+
+  it.each(["0", "-1", " ", "abc", "1.5", "1e2", "2147483648"])("rejects malformed supplier %j without silently fetching all suppliers", (supplierId) => {
+    lists.filters.qc = { months: "6", supplierId };
+    const tree = render(component);
+    expect(network.fetch).not.toHaveBeenCalled();
+    expect(valueOf(tree, "收货批次")).toBe("—");
+    expect(elements(tree).find((node) => node.type === "alert" && node.props.type === "error")?.props.description).toBe("供应商筛选无效，请重新选择供应商。");
+  });
+
+  it.each(["0", "37", "-1", "6.5", "bad"])("rejects invalid month window %j without falling back to another window", (months) => {
+    lists.filters.qc = { months, supplierId: "" };
+    const tree = render(component);
+    expect(network.fetch).not.toHaveBeenCalled();
+    expect(valueOf(tree, "收货批次")).toBe("—");
+    expect(elements(tree).find((node) => node.type === "alert" && node.props.type === "error")?.props.description).toBe("月份筛选无效，请选择 1 至 36 个月。");
+  });
+});

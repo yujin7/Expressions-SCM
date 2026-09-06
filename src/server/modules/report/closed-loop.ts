@@ -23,7 +23,7 @@ import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { shanghaiDayOf } from "@/server/core/business-day";
 import { dAdd, dCmp, dDiv, dMul, dSub } from "@/server/core/decimal";
-import { classifyLedgerCoverage, loadStockUniverseCoverage } from "@/server/core/stockout-evidence";
+import { classifyLedgerCoverage, loadStockUniverseCoverage, type CoverageReason } from "@/server/core/stockout-evidence";
 import { num, r1 } from "@/server/core/svc";
 import { DOC_STATUS_LABELS } from "@/components/labels";
 
@@ -89,7 +89,8 @@ export interface ClosedLoopResult {
 /* ────────────── 闭环审计 #12(a)：建议准确度分布 ────────────── */
 
 /**
- * v2（W2 修复）：样本按**引擎版本**分组披露。
+ * v3：保留 v2 的引擎版本分组，出库统计资格改为逐样本 [from,to) 覆盖。
+ * 不再以“未来某天曾有实时流水”证明历史可见；快照混合、起点缺失等单列原因，不算零出库。
  *
  * `planning_version_lines` 横跨所有历史版本，而 `planning_versions.engine_version` 在本波从
  * `time-phased-v2`（账面在库）换成了 `time-phased-v3`（可用在库＝账面在库扣临期净额）。
@@ -100,7 +101,7 @@ export interface ClosedLoopResult {
  * 现在：总分布仍给（读者要的是"我们整体准不准"），但同时给 `byEngineVersion` 逐版本分布与
  * `engineMix`（各版本样本数），caliber 里明说混了几套引擎。键随口径升版。
  */
-export const SUGGESTION_ACCURACY_VERSION = "closed-loop-accuracy/v2";
+export const SUGGESTION_ACCURACY_VERSION = "closed-loop-accuracy/v3";
 export const ACCURACY_BUCKET_KEYS = ["none", "lt50", "50_90", "90_110", "110_150", "gt150"] as const;
 export type AccuracyBucketKey = (typeof ACCURACY_BUCKET_KEYS)[number];
 export const ACCURACY_BUCKET_LABELS: Record<AccuracyBucketKey, string> = {
@@ -143,9 +144,14 @@ export interface SuggestionAccuracy {
   immature: number;
   /** 视野期内实际下单量（bh_lines + po_lines 基础单位）÷ 净需求 */
   orderedVsRequired: AccuracyBucket[];
-  /** 视野期内实时仓实际出库 ÷ 净需求（快照仓 SKU 无流水 → 不进此分布，见 ledgerCoverage） */
+  /** 视野期内实时仓实际出库 ÷ 净需求；仅逐样本覆盖合格者进入，未知不当作零 */
   outboundVsRequired: AccuracyBucket[];
-  ledgerCoverage: { withRealtimeLedger: number; snapshotOnly: number };
+  /** 仅计成熟样本：qualified + excluded = matured；原因计数之和 = excluded */
+  ledgerCoverage: {
+    qualified: number;
+    excluded: number;
+    reasons: { reason: CoverageReason; note: string; count: number }[];
+  };
   /**
    * 样本里出现的引擎版本及其成熟样本数（按样本数降序）。
    * `engineMix.length > 1` = 上面的总分布**横跨多套引擎口径**，不能当成同一把尺子上的改善。
@@ -160,7 +166,9 @@ export const SUGGESTION_ACCURACY_CALIBER = [
   "样本来自 planning_version_lines 的人工捕获快照（未抑制、净需求 > 0），同 SKU 同业务日取最新版本；未捕获的日常建议不在样本内",
   "视野期 = 业务日起 decisionEnvelope.inputs.policy.horizonDays 天（缺失按 60）；只对视野期已走完的行做对比",
   "实际下单 = 视野期内创建、非作废的 BH 行 + PO 行（PO 按 uom_factor 折基础单位）；实际出库 = 视野期内实时仓流水出库合计（含调拨/发料，非纯销售）",
-  "只给分布与样本数，不给单一准确率——视野期归因有争议；快照仓 SKU 无流水，出库分布弃权并单列覆盖数",
+  "只给分布与样本数，不给单一准确率——视野期归因有争议；出库仅统计逐样本覆盖合格者，覆盖不足按原因单列，不进出库分母；实际下单分布仍计全部成熟样本",
+  "覆盖按每条成熟样本自己的上海业务日 [起点, 截止) 判断：起点已有实时流水，已登记快照仓期初及期间均明确为零；缺失、非零、无效快照或晚起点流水均弃权，不推断为零出库",
+  "已覆盖且窗口内无出库才计 0 桶；覆盖仅证明当前已登记仓和已记录日快照，不代表未接入仓、日内快照之间轨迹或期初盘点已验收",
   "取数按版本倒序设有行上限（rowLimit）：命中上限时 truncated=true，样本只覆盖最近若干版本，更早的捕获记录不在分布内",
 ];
 
@@ -268,7 +276,7 @@ export async function getSuggestionAccuracy(dbArg?: AnyDb, opts?: { now?: Date; 
     immature: samples.length - matured.length,
     orderedVsRequired: toBucketList(emptyBuckets()),
     outboundVsRequired: toBucketList(emptyBuckets()),
-    ledgerCoverage: { withRealtimeLedger: 0, snapshotOnly: 0 },
+    ledgerCoverage: { qualified: 0, excluded: 0, reasons: [] },
     engineMix: engineMixOf(samples, matured),
     byEngineVersion: [],
     caliber: [...SUGGESTION_ACCURACY_CALIBER, engineMixCaliber(engineMixOf(samples, matured))],
@@ -301,9 +309,13 @@ export async function getSuggestionAccuracy(dbArg?: AnyDb, opts?: { now?: Date; 
     ordersBySku.set(o.skuId, arr);
   }
 
-  // 实际出库：实时仓流水（快照仓无流水 → 覆盖弃权）
-  const realtime: { id: number }[] = await db.select({ id: schema.warehouses.id }).from(schema.warehouses).where(eq(schema.warehouses.accountingMode, "realtime"));
-  const realtimeIds = realtime.map((w) => w.id);
+  // 与告警/抑制复核共用覆盖权威；查询合批但窗口与样本身份独立，不借用其他样本证据。
+  const coverageKey = (s: CapturedSample) => `accuracy:${s.versionId}:${s.skuId}:${s.businessDate}`;
+  const coverage = await loadStockUniverseCoverage(db, { windows: matured.map((s) => ({
+    key: coverageKey(s), skuId: s.skuId, from: shanghaiStart(s.businessDate),
+    to: new Date(shanghaiStart(s.businessDate).getTime() + s.horizonDays * DAY_MS), endExclusive: true,
+  })) });
+  const realtimeIds = coverage.realtimeWarehouseIds;
   const l = schema.stockLedger;
   const outs: { skuId: number; qty: string; at: Date }[] = realtimeIds.length
     ? await db
@@ -317,13 +329,9 @@ export async function getSuggestionAccuracy(dbArg?: AnyDb, opts?: { now?: Date; 
     arr.push({ qty: o.qty, t: new Date(o.at).getTime() });
     outsBySku.set(o.skuId, arr);
   }
-  const ledgerEver: { skuId: number }[] = realtimeIds.length
-    ? await db.selectDistinct({ skuId: l.skuId }).from(l).where(and(inArray(l.skuId, skuIds), inArray(l.warehouseId, realtimeIds)))
-    : [];
-  const skuWithLedger = new Set(ledgerEver.map((r) => r.skuId));
-
   const ordered = emptyBuckets();
   const outbound = emptyBuckets();
+  const coverageReasons = new Map<CoverageReason, { reason: CoverageReason; note: string; count: number }>();
   /* 逐引擎版本同步累计：总分布回答"整体准不准"，逐版本分布回答"这次改善是同一把尺子上的吗"。 */
   const perEngine = new Map<string, { ordered: ReturnType<typeof emptyBuckets>; outbound: ReturnType<typeof emptyBuckets> }>();
   const bucketsFor = (v: string) => {
@@ -342,8 +350,16 @@ export async function getSuggestionAccuracy(dbArg?: AnyDb, opts?: { now?: Date; 
     const ob = bucketOf(orderedQty, s.qty);
     ordered[ob]++;
     per.ordered[ob]++;
-    if (!skuWithLedger.has(s.skuId)) { result.ledgerCoverage.snapshotOnly++; continue; }
-    result.ledgerCoverage.withRealtimeLedger++;
+    const verdict = classifyLedgerCoverage(coverageKey(s), coverage);
+    if (!verdict.covered) {
+      if (verdict.reason == null) throw new Error("Suggestion coverage exclusion must have a reason");
+      result.ledgerCoverage.excluded++;
+      const reason = coverageReasons.get(verdict.reason) ?? { reason: verdict.reason, note: verdict.note, count: 0 };
+      reason.count++;
+      coverageReasons.set(verdict.reason, reason);
+      continue;
+    }
+    result.ledgerCoverage.qualified++;
     let outQty = "0";
     for (const o of outsBySku.get(s.skuId) ?? []) {
       if (o.t >= from && o.t < to) outQty = dSub(outQty, o.qty, 4);
@@ -354,6 +370,7 @@ export async function getSuggestionAccuracy(dbArg?: AnyDb, opts?: { now?: Date; 
   }
   result.orderedVsRequired = toBucketList(ordered);
   result.outboundVsRequired = toBucketList(outbound);
+  result.ledgerCoverage.reasons = [...coverageReasons.values()].sort((a, b) => a.reason < b.reason ? -1 : a.reason > b.reason ? 1 : 0);
   result.byEngineVersion = result.engineMix.map((m) => {
     const per = perEngine.get(m.engineVersion) ?? { ordered: emptyBuckets(), outbound: emptyBuckets() };
     return {
@@ -396,7 +413,7 @@ function engineMixCaliber(mix: { engineVersion: string; sample: number; matured:
 
 /* ────────────── W5 / 闭环审计 #12(b)：抑制复核（被抑制的建议后来断货了吗） ────────────── */
 
-export const SUPPRESSION_REVIEW_VERSION = "closed-loop-suppression/v1";
+export const SUPPRESSION_REVIEW_VERSION = "closed-loop-suppression/v2";
 export const SUPPRESSION_OUTCOME_KEYS = ["stockout_followed", "no_stockout", "unverifiable"] as const;
 export type SuppressionOutcomeKey = (typeof SUPPRESSION_OUTCOME_KEYS)[number];
 export const SUPPRESSION_OUTCOME_LABELS: Record<SuppressionOutcomeKey, string> = {
@@ -443,9 +460,10 @@ export interface SuppressionReview {
 export const SUPPRESSION_REVIEW_CALIBER = [
   "样本来自 planning_version_lines 中 suppressed=true 的人工捕获快照（其 suggested_qty 即被扣住的 heldQty），同 SKU 同业务日取最新版本；未捕获的日常抑制不在样本内",
   "视野期 = 业务日起 decisionEnvelope.inputs.policy.horizonDays 天（缺失按 60）；只对视野期已走完的行判定",
-  "断货判定与告警核验同源（jobs/alert-outcome 口径）：视野期内实时仓合计余额曾 ≤ 0 且窗口内有出库 = 随后断货；余额从未归零 = 未断货",
+  "视野期内实时仓合计余额曾 ≤ 0 且窗口内有出库 = 随后断货；结果分布不等同于告警命中率或抑制的因果正确率",
   "快照仓 SKU 在实时仓无流水，一律弃权计入「无法核验」，不当作「未断货」——把弃权算成成功正是抑制闸门最容易自我背书的地方",
-  "覆盖判定与告警结果核验同源（core/stockout-evidence）：该 SKU 在视野期内**仍有快照仓在库**时也弃权——实时仓流水覆盖不了那批货，水位会天然为负而误判「随后断货」",
+  "覆盖判定与告警结果核验同源（core/stockout-evidence）：逐样本按自己的 [起点, 终点) 核验，起点或之前已有实时流水；逐仓检查期初及期间快照，仍有快照仓在库或缺明确零库存基线时弃权，不以窗口末清零或跨仓轧差冒充全窗覆盖",
+  "覆盖只针对已登记仓与上海业务日快照，不证明未接入仓、日内快照间轨迹或实时账期初盘点完整性；不回写库存或抑制参数",
   "只给分布与样本数，不给单一「抑制正确率」：断货可能另有原因（外部渠道需求、后续补货已到），一个分数会把这些歧义藏起来",
   "heldQtyTotal 覆盖全部样本，结果分布只覆盖已成熟样本：两者分母不同，故并列 heldQtyMatured（= 三个结果桶之和）与 heldQtyImmature",
   "取数按版本倒序设有行上限（rowLimit）：命中上限时 truncated=true，更早的抑制记录不在样本内",
@@ -496,7 +514,11 @@ export async function getSuppressionReview(dbArg?: AnyDb, opts?: { now?: Date; l
      红队审计 A3——原实现 level 从 0 起算、只累计实时仓流水，
      于是一个**收货进快照仓、只在实时仓发货**的 SKU 水位天生为负，恒判「随后断货」，
      抑制闸门被系统性判成"错了"。现在该 SKU 一律弃权。 */
-  const coverage = await loadStockUniverseCoverage(db, { skuIds, asOf: windowTo });
+  const coverageKey = (s: (typeof matured)[number]) => `suppression:${s.versionId}:${s.skuId}:${s.businessDate}`;
+  const coverage = await loadStockUniverseCoverage(db, { windows: matured.map((s) => {
+    const from = shanghaiStart(s.businessDate);
+    return { key: coverageKey(s), skuId: s.skuId, from, to: new Date(from.getTime() + s.horizonDays * DAY_MS), endExclusive: true };
+  }) });
   const realtimeIds = coverage.realtimeWarehouseIds;
   const l = schema.stockLedger;
   const opening: { skuId: number; qty: string | null }[] = realtimeIds.length
@@ -525,22 +547,28 @@ export async function getSuppressionReview(dbArg?: AnyDb, opts?: { now?: Date; l
     const from = shanghaiStart(s.businessDate).getTime();
     const to = from + s.horizonDays * DAY_MS;
     let key: SuppressionOutcomeKey;
-    const cov = classifyLedgerCoverage(s.skuId, coverage);
+    const cov = classifyLedgerCoverage(coverageKey(s), coverage);
     if (!cov.covered) {
       key = "unverifiable"; // 无实时流水 / 货还在快照仓：没有能覆盖这批货的证据，弃权而不是判「没断货」
     } else {
       const rows = bySku.get(s.skuId) ?? [];
       let level = openingBySku.get(s.skuId) ?? "0";
-      for (const m of rows) if (m.t < from) level = dAdd(level, m.qtyDelta, 4);
-      let minLevel = level;
+      let hasOpening = openingBySku.has(s.skuId);
+      for (const m of rows) if (m.t < from) {
+        level = dAdd(level, m.qtyDelta, 4);
+        hasOpening = true;
+      }
+      // 首笔恰在窗口起点时，无窗前记录不是观测到的 0；从首笔之后的余额开始取最低值。
+      let minLevel: string | null = hasOpening ? level : null;
       let outQty = "0";
       for (const m of rows) {
         if (m.t < from || m.t >= to) continue;
         level = dAdd(level, m.qtyDelta, 4);
-        if (dCmp(level, minLevel) < 0) minLevel = level;
+        if (minLevel == null || dCmp(level, minLevel) < 0) minLevel = level;
         if (dCmp(m.qtyDelta, "0") < 0) outQty = dSub(outQty, m.qtyDelta, 4);
       }
-      key = dCmp(minLevel, "0") <= 0 && dCmp(outQty, "0") > 0 ? "stockout_followed" : "no_stockout";
+      key = minLevel == null ? "unverifiable"
+        : dCmp(minLevel, "0") <= 0 && dCmp(outQty, "0") > 0 ? "stockout_followed" : "no_stockout";
     }
     counts[key].count += 1;
     counts[key].heldQty = dAdd(counts[key].heldQty, s.qty, 4);

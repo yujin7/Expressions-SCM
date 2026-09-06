@@ -7,12 +7,12 @@
  *   - 未授权是正常中间态，不抛错、不推进 checkpoint、如实标记；
  *   - 认不出分页结构时**整包原样落库**，绝不丢数据；
  *   - 原始字段一字不改地保留（将来写映射的依据）；
- *   - 幂等重放不重复外呼。
+ *   - 真实成功幂等重放不重复外呼；授权等待保留状态且允许安全重试。
  */
 import { eq } from "drizzle-orm";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/db/schema";
-import { YonyouClient } from "@/server/integrations/yonyou-client";
+import { YonyouApiError, YonyouClient } from "@/server/integrations/yonyou-client";
 import type { YonyouOpenApiConfig } from "@/server/integrations/yonyou";
 import {
   extractRecordArray,
@@ -39,6 +39,20 @@ function json(body: unknown): Response {
 }
 
 const TOKEN_OK = { code: "00000", data: { expire: 7200, access_token: "tok" } };
+const testClients: Awaited<ReturnType<typeof createTestDb>>["client"][] = [];
+
+afterEach(async () => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  await Promise.all(testClients.splice(0).map((client) => client.close()));
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
 
 function clientReturning(bizBody: unknown) {
   const fetchMock = vi.fn(async (input: string | URL | Request) => {
@@ -58,7 +72,8 @@ function clientReturning(bizBody: unknown) {
 }
 
 async function seedActor() {
-  const { db } = await createTestDb();
+  const { db, client } = await createTestDb();
+  testClients.push(client);
   const [user] = await db.insert(schema.users).values({
     username: "yy_sync", name: "用友同步", passwordHash: "x", active: true,
   }).returning();
@@ -147,6 +162,220 @@ describe("用友只读观测同步", () => {
     const checkpoints = await db.select().from(schema.integrationCheckpoints)
       .where(eq(schema.integrationCheckpoints.connector, "yy"));
     expect(checkpoints, "未取到数据不得推进 checkpoint").toHaveLength(0);
+  });
+
+  it("同 scope 仍未授权时再次检查，不能把旧等待记录重放成已接通", async () => {
+    const { db, actorId } = await seedActor();
+    const { client } = clientReturning({ code: "310037", message: "API未被授权" });
+    const call = vi.spyOn(client, "callContract");
+    const options = { client, contract: "存货成本查询" as const, actorId, scopeKey: "grant-repeat" };
+    const first = await syncYonyouContract(db, options);
+    const second = await syncYonyouContract(db, options);
+    expect(second).toMatchObject({ runId: first.runId, replayed: false, blockedByConsoleGrant: true, importJobId: null });
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(await db.select().from(schema.integrationRuns)).toHaveLength(1);
+    expect(await db.select().from(schema.importJobs)).toHaveLength(0);
+    expect(await db.select().from(schema.stagingRows)).toHaveLength(0);
+    expect(await db.select().from(schema.integrationCheckpoints)).toHaveLength(0);
+  });
+
+  it("授权恢复后同 scope 可取数，之后真实成功仍幂等重放", async () => {
+    const { db, actorId } = await seedActor();
+    const denied = clientReturning({ code: "310005", message: "API未被授权" });
+    const options = { contract: "存货成本查询" as const, actorId, scopeKey: "grant-recover" };
+    const blocked = await syncYonyouContract(db, { ...options, client: denied.client });
+    const { client } = clientReturning({ code: "00000", data: { rows: [{ code: "M001" }] } });
+    const call = vi.spyOn(client, "callContract");
+    const recovered = await syncYonyouContract(db, { ...options, client });
+    expect(recovered).toMatchObject({ runId: blocked.runId, replayed: false, blockedByConsoleGrant: false, sourceRows: 1, stagedRows: 1 });
+    expect(recovered.importJobId).not.toBeNull();
+    const replay = await syncYonyouContract(db, { ...options, client });
+    expect(replay).toMatchObject({ runId: recovered.runId, importJobId: recovered.importJobId, replayed: true, blockedByConsoleGrant: false });
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(schema.importJobs)).toHaveLength(1);
+    expect(await db.select().from(schema.stagingRows)).toHaveLength(1);
+    const [run] = await db.select().from(schema.integrationRuns);
+    expect(run).toMatchObject({ status: "succeeded", error: null, importJobId: recovered.importJobId });
+    const [checkpoint] = await db.select().from(schema.integrationCheckpoints);
+    expect(checkpoint).toMatchObject({ lastRunId: recovered.runId, cursor: options.scopeKey, version: 1 });
+  });
+
+  it.each(["yy", "yonyou"])("较新 scope 仅等待授权，不得阻止旧 scope 恢复；较新 %s 真实成功仍阻止旧覆盖", async (connector) => {
+    const { db, actorId } = await seedActor();
+    const denied = clientReturning({ code: "310037", message: "API未被授权" });
+    const base = { client: denied.client, contract: "存货成本查询" as const, actorId };
+    const old = await syncYonyouContract(db, { ...base, scopeKey: "old-grant" });
+    await syncYonyouContract(db, { ...base, scopeKey: "new-grant" });
+    const { client } = clientReturning({ code: "00000", data: { rows: [{ code: "M001" }] } });
+    const recovered = await syncYonyouContract(db, { ...base, client, scopeKey: "old-grant" });
+    expect(recovered).toMatchObject({ runId: old.runId, replayed: false, sourceRows: 1 });
+    const next = await syncYonyouContract(db, { ...base, scopeKey: "another-old-grant" });
+    const latest = await syncYonyouContract(db, { ...base, client, scopeKey: "newest-real-success" });
+    await db.update(schema.integrationRuns).set({ connector }).where(eq(schema.integrationRuns.id, latest.runId));
+    await expect(syncYonyouContract(db, { ...base, client, scopeKey: "another-old-grant" }))
+      .rejects.toThrow("已有更新成功运行");
+    const [rejected] = await db.select().from(schema.integrationRuns).where(eq(schema.integrationRuns.id, next.runId));
+    expect(rejected.status).toBe("failed");
+    const [checkpoint] = await db.select().from(schema.integrationCheckpoints);
+    expect(checkpoint.lastRunId).toBe(latest.runId);
+    expect(await db.select().from(schema.importJobs)).toHaveLength(2);
+  });
+
+  it("授权恢复的并发重试只能由一个租约外呼，不能重复 staging", async () => {
+    const { db, actorId } = await seedActor();
+    const { client } = clientReturning({ code: "310037", message: "API未被授权" });
+    const options = { client, contract: "存货成本查询" as const, actorId, scopeKey: "grant-concurrent" };
+    await syncYonyouContract(db, options);
+    const started = deferred<void>();
+    const response = deferred<Record<string, unknown>>();
+    const call = vi.spyOn(client, "callContract").mockImplementation(() => { started.resolve(); return response.promise; });
+    const winner = syncYonyouContract(db, options);
+    // Race a completion too, so the pre-fix false replay fails immediately instead of timing out.
+    await Promise.race([started.promise, winner]);
+    try {
+      expect(call).toHaveBeenCalledTimes(1);
+      await expect(syncYonyouContract(db, options)).rejects.toThrow("同步已被其他运行占用");
+    } finally {
+      response.resolve({ rows: [{ code: "M001" }] });
+      await winner;
+    }
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(schema.importJobs)).toHaveLength(1);
+    expect(await db.select().from(schema.stagingRows)).toHaveLength(1);
+  });
+
+  it.each(["授权拒绝", "成功"] as const)("相同毫秒重试也换租约；失去租约的%s不能覆盖新的成功结果", async (lateResult) => {
+    const { db, actorId } = await seedActor();
+    const { client } = clientReturning({ code: "310037", message: "API未被授权" });
+    const options = { client, contract: "存货成本查询" as const, actorId, scopeKey: "grant-fencing" };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-06T01:00:00.000Z"));
+    const blocked = await syncYonyouContract(db, options);
+    const [before] = await db.select().from(schema.integrationRuns);
+    const started = deferred<void>();
+    const response = deferred<Record<string, unknown>>();
+    vi.spyOn(client, "callContract").mockImplementation(() => { started.resolve(); return response.promise; });
+    const pending = syncYonyouContract(db, options);
+    const pendingOutcome = pending.then(() => null, (error: unknown) => error);
+    await Promise.race([started.promise, pendingOutcome]);
+    try {
+      const [running] = await db.select().from(schema.integrationRuns);
+      expect(running.status).toBe("running");
+      expect(running.startedAt.getTime()).toBeGreaterThan(before.startedAt.getTime());
+      vi.setSystemTime(new Date("2026-09-06T04:00:00.000Z"));
+      const recovery = clientReturning({ code: "00000", data: { rows: [{ code: "M001" }] } });
+      const recovered = await syncYonyouContract(db, { ...options, client: recovery.client });
+      expect(recovered.runId).toBe(blocked.runId);
+      if (lateResult === "授权拒绝") response.reject(new YonyouApiError("310037", "API未被授权", options.contract));
+      else response.resolve({ rows: [{ code: "LATE-MUST-NOT-REPLACE" }] });
+      expect(await pendingOutcome).toBeInstanceOf(Error);
+      expect(String(await pendingOutcome)).toContain("租约已被其他重试接管");
+      const [final] = await db.select().from(schema.integrationRuns);
+      expect(final).toMatchObject({ status: "succeeded", error: null, importJobId: recovered.importJobId, sourceRows: 1 });
+      expect(await db.select().from(schema.importJobs)).toHaveLength(1);
+      const rows = await db.select().from(schema.stagingRows);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].payload).toMatchObject({ raw: { code: "M001" } });
+      const [checkpoint] = await db.select().from(schema.integrationCheckpoints);
+      expect(checkpoint).toMatchObject({ lastRunId: recovered.runId, version: 1 });
+    } finally {
+      response.reject(new Error("test cleanup"));
+      await response.promise.catch(() => undefined);
+      await pendingOutcome;
+    }
+  });
+
+  it.each(["failed", "running"] as const)("%s 失败或过期租约重领时清除旧结果，之后授权等待仍可恢复", async (status) => {
+    const { db, actorId } = await seedActor();
+    const { client } = clientReturning({ code: "310037", message: "API未被授权" });
+    const options = { client, contract: "存货成本查询" as const, actorId, scopeKey: `residual-${status}` };
+    const first = await syncYonyouContract(db, options);
+    await db.update(schema.integrationRuns).set({
+      status, startedAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
+      finishedAt: status === "running" ? null : new Date(),
+      evidenceHash: "old-hash", evidencePath: "old-path", requestScope: { schemaDrift: true },
+      sourceRows: 7, stagedRows: 5, rejectedRows: 2, cursorStart: "old-start", cursorEnd: "old-end",
+    }).where(eq(schema.integrationRuns.id, first.runId));
+    const blocked = await syncYonyouContract(db, options);
+    expect(blocked).toMatchObject({ runId: first.runId, replayed: false, blockedByConsoleGrant: true });
+    const [run] = await db.select().from(schema.integrationRuns);
+    expect(run).toMatchObject({
+      evidenceHash: null, evidencePath: null, requestScope: null, sourceRows: 0, stagedRows: 0,
+      rejectedRows: 0, cursorStart: null, cursorEnd: null, importJobId: null,
+    });
+    const recovery = clientReturning({ code: "00000", data: { rows: [{ code: "M001" }] } });
+    const recovered = await syncYonyouContract(db, { ...options, client: recovery.client });
+    expect(recovered).toMatchObject({ runId: first.runId, blockedByConsoleGrant: false, sourceRows: 1 });
+    expect(await db.select().from(schema.importJobs)).toHaveLength(1);
+  });
+
+  it.each([
+    { error: null },
+    { error: "无法确认的旧错误" },
+    { error: "待控制台授权：other" },
+    { sourceRows: 1 },
+    { stagedRows: 1 },
+    { rejectedRows: 1 },
+    { evidenceHash: "existing-evidence" },
+    { evidencePath: "existing-evidence-path" },
+  ])("成功标记但无观察 job 的矛盾结果保留待核对，不自动重拉：%j", async (patch) => {
+    const { db, actorId } = await seedActor();
+    const { client } = clientReturning({ code: "310037", message: "API未被授权" });
+    const options = { client, contract: "存货成本查询" as const, actorId, scopeKey: "inconsistent-run" };
+    const first = await syncYonyouContract(db, options);
+    await db.update(schema.integrationRuns).set(patch).where(eq(schema.integrationRuns.id, first.runId));
+    const [before] = await db.select().from(schema.integrationRuns);
+    const call = vi.spyOn(client, "callContract");
+    await expect(syncYonyouContract(db, options)).rejects.toThrow("成功状态与观察证据不一致");
+    expect(call).not.toHaveBeenCalled();
+    expect(await db.select().from(schema.integrationRuns)).toEqual([before]);
+    expect(await db.select().from(schema.importJobs)).toHaveLength(0);
+    expect(await db.select().from(schema.integrationCheckpoints)).toHaveLength(0);
+  });
+
+  it("已有真实 job 却带错误的成功记录不伪装健康、不清除观察数据", async () => {
+    const { db, actorId } = await seedActor();
+    const { client } = clientReturning({ code: "00000", data: { rows: [{ code: "M001" }] } });
+    const options = { client, contract: "存货成本查询" as const, actorId, scopeKey: "inconsistent-job" };
+    const first = await syncYonyouContract(db, options);
+    await db.update(schema.integrationRuns).set({ error: "待控制台授权：310037" }).where(eq(schema.integrationRuns.id, first.runId));
+    const beforeRows = await db.select().from(schema.stagingRows);
+    const call = vi.spyOn(client, "callContract");
+    await expect(syncYonyouContract(db, options)).rejects.toThrow("成功状态与观察证据不一致");
+    expect(call).not.toHaveBeenCalled();
+    expect(await db.select().from(schema.stagingRows)).toEqual(beforeRows);
+    expect(await db.select().from(schema.importJobs)).toHaveLength(1);
+  });
+
+  it("矛盾的成功记录不得成为结构基线，仍使用最后一个可信基线", async () => {
+    const { db, actorId } = await seedActor();
+    const { client } = clientReturning({ code: "00000", data: { rows: [{ code: "M001" }] } });
+    const base = { client, contract: "存货成本查询" as const, actorId };
+    const trusted = await syncYonyouContract(db, { ...base, scopeKey: "trusted-baseline" });
+    const inconsistent = await syncYonyouContract(db, { ...base, scopeKey: "inconsistent-baseline" });
+    const [row] = await db.select().from(schema.integrationRuns).where(eq(schema.integrationRuns.id, inconsistent.runId));
+    await db.update(schema.integrationRuns).set({
+      error: "待控制台授权：310037",
+      requestScope: { ...(row.requestScope as Record<string, unknown>), shapeFingerprint: "untrusted-shape" },
+    }).where(eq(schema.integrationRuns.id, inconsistent.runId));
+    const next = await syncYonyouContract(db, { ...base, scopeKey: "after-inconsistent-baseline" });
+    expect(next.schemaDrift).toBe(false);
+    const [nextRun] = await db.select().from(schema.integrationRuns).where(eq(schema.integrationRuns.id, next.runId));
+    expect(nextRun.requestScope).toMatchObject({ schemaBaselineRunId: trusted.runId });
+  });
+
+  it("真实空响应已有观察 job，不能误作等待授权反复取数", async () => {
+    const { db, actorId } = await seedActor();
+    const { client } = clientReturning({ code: "00000", data: { rows: [] } });
+    const call = vi.spyOn(client, "callContract");
+    const options = { client, contract: "存货成本查询" as const, actorId, scopeKey: "real-empty" };
+    const first = await syncYonyouContract(db, options);
+    const second = await syncYonyouContract(db, options);
+    expect(first).toMatchObject({ sourceRows: 0, stagedRows: 0, blockedByConsoleGrant: false });
+    expect(first.importJobId).not.toBeNull();
+    expect(second).toMatchObject({ importJobId: first.importJobId, replayed: true, blockedByConsoleGrant: false });
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(schema.importJobs)).toHaveLength(1);
   });
 
   it("认不出分页结构时整包原样落一行，绝不丢数据", async () => {

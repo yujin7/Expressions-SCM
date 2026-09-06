@@ -117,11 +117,51 @@ function heatColor(value: number, max: number): string {
   return "#dbeafe";
 }
 
+// Check the containers actually consumed by the charts before cache admission.
+// This is not a second business schema: do not coerce values or invent missing
+// coverage. An incomplete response belongs in the retry state, not an empty chart.
+function hasReportEnvelope(value: unknown, dimension: StudioDimension): boolean {
+  const isObject = (item: unknown): item is Record<string, unknown> =>
+    item !== null && typeof item === "object" && !Array.isArray(item);
+  const at = (path: string): unknown => path.split(".").reduce<unknown>(
+    (item, key) => isObject(item) ? item[key] : undefined, value,
+  );
+  const objects = [
+    "channelScope", "comparison", "spc", "daily", "review", "externalDemand",
+    "externalDemand.coverage", "externalDemand.totals", "externalDemand.decisionBrief",
+    "externalDemand.decisionBrief.current", "externalDemand.decisionBrief.previous",
+    "externalDemand.decisionBrief.change", "externalDemand.decisionBrief.movement",
+    "externalDemand.refundDrivers", "externalDemand.refundDrivers.identityCoverage",
+    "externalDemand.refundDrivers.totals", "externalDemand.fulfillment",
+    "externalDemand.fulfillment.coverage", "externalDemand.fulfillment.totals",
+    "commerceIdentity", "commerceIdentity.summary",
+  ];
+  const arrays = [
+    "loadedSections", "months", "groups", "monthly", "pareto", "pivot", "daily.dates",
+    "review.bullets", "limitations", "externalDemand.daily", "externalDemand.limitations",
+    "externalDemand.topUnmapped", "externalDemand.refundDrivers.byShop",
+    "externalDemand.refundDrivers.topContributors", "externalDemand.fulfillment.daily",
+    "externalDemand.fulfillment.topGaps", "commerceIdentity.platforms",
+    "commerceIdentity.repairQueue", "commerceIdentity.limitations", "dataSources",
+    "dataProductReleases", "dataProductOutcomes", "supportingObservations",
+  ];
+  return at("dimension") === dimension && objects.every((path) => isObject(at(path)))
+    && arrays.every((path) => Array.isArray(at(path)))
+    && ["current", "previous", "momPct", "yearAgo", "yoyPct"].every((key) => {
+      const number = at(`comparison.${key}`);
+      return number === null || (typeof number === "number" && Number.isFinite(number));
+    })
+    && typeof at("commerceIdentity.summary.repairBacklog") === "number";
+}
+
 export default function DecisionStudioClient() {
   const { message } = App.useApp();
-  const [data, setData] = useState<DecisionStudioResult | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<{
+    query: string;
+    data: DecisionStudioResult | null;
+    loading: boolean;
+    error: string | null;
+  } | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const responseCache = useRef(new Map<string, { data: DecisionStudioResult; cachedAt: number }>());
   const view = useListState({
@@ -139,55 +179,71 @@ export default function DecisionStudioClient() {
   const activeTab = view.filters.tab || "focus";
   const focusProductId = view.filters.product;
 
-  const load = useCallback(async (force = false) => {
+  const queryKey = useMemo(() => {
     const query = new URLSearchParams({ dimension });
     query.set("tab", activeTab);
     if (selectedKey) query.set("key", selectedKey);
     if (scopeBrand) query.set("brand", scopeBrand);
     if (scopeChannel) query.set("channel", scopeChannel);
-    const cacheKey = query.toString();
+    return query.toString();
+  }, [activeTab, dimension, selectedKey, scopeBrand, scopeChannel]);
+  // Bind all visible values to the current URL, including the render before its
+  // effect runs. Never show old-brand results beneath a newly selected brand.
+  const currentSnapshot = snapshot?.query === queryKey ? snapshot : null;
+  const data = currentSnapshot?.data ?? null;
+  const loading = currentSnapshot?.loading ?? true;
+  const loadError = currentSnapshot?.error ?? null;
+
+  const load = useCallback(async (force = false) => {
+    const cacheKey = queryKey;
+    // An explicit refresh withdraws the previous result. A failed refresh must
+    // not be hidden by leaving and returning to the same cached view.
+    if (force) responseCache.current.delete(cacheKey);
     const cached = responseCache.current.get(cacheKey);
-    if (!force && cached && Date.now() - cached.cachedAt < 30_000) {
+    const cacheAge = cached ? Date.now() - cached.cachedAt : -1;
+    if (!force && cached && cacheAge >= 0 && cacheAge < 30_000) {
       activeRequest.current?.abort();
       activeRequest.current = null;
-      setLoadError(null);
-      setData(cached.data);
-      setLoading(false);
+      setSnapshot({ query: cacheKey, data: cached.data, loading: false, error: null });
       return;
     }
     activeRequest.current?.abort();
     const controller = new AbortController();
     activeRequest.current = controller;
-    setLoading(true);
-    setLoadError(null);
-    setData(null);
+    setSnapshot({ query: cacheKey, data: null, loading: true, error: null });
     try {
       const nextData = await fetchJson<DecisionStudioResult>(
-        `/api/report/decision-studio?${query.toString()}`,
+        `/api/report/decision-studio?${cacheKey}`,
         { signal: controller.signal },
       );
+      if (controller.signal.aborted || activeRequest.current !== controller) return;
+      if (!hasReportEnvelope(nextData, dimension)) {
+        throw new Error("决策数据结构异常，请重新加载；若持续出现，请联系管理员。");
+      }
       responseCache.current.set(cacheKey, { data: nextData, cachedAt: Date.now() });
       if (responseCache.current.size > 12) {
         const oldestKey = responseCache.current.keys().next().value as string | undefined;
         if (oldestKey) responseCache.current.delete(oldestKey);
       }
-      setData(nextData);
+      setSnapshot({ query: cacheKey, data: nextData, loading: false, error: null });
     } catch (error) {
-      if ((error as Error).name === "AbortError") return;
-      const detail = (error as Error).message;
-      setLoadError(detail);
+      if (controller.signal.aborted || activeRequest.current !== controller) return;
+      const detail = error instanceof Error ? error.message : "决策数据加载失败，请重新加载。";
+      setSnapshot({ query: cacheKey, data: null, loading: false, error: detail });
       message.error(detail);
     } finally {
       if (activeRequest.current === controller) {
-        setLoading(false);
         activeRequest.current = null;
       }
     }
-  }, [activeTab, dimension, selectedKey, scopeBrand, scopeChannel, message]);
+  }, [queryKey, dimension, message]);
 
   useEffect(() => {
     void load();
-    return () => activeRequest.current?.abort();
+    return () => {
+      activeRequest.current?.abort();
+      activeRequest.current = null;
+    };
   }, [load]);
 
   const groupOptions = useMemo(
@@ -450,8 +506,8 @@ export default function DecisionStudioClient() {
           <Card size="small" loading={loading && !data}>
             <Statistic
               title={`贡献 80% 的${DIMENSION_LABEL[dimension]}数`}
-              value={data ? data.pareto80Count : "—"}
-              suffix={data ? `/ ${data.pareto.length}` : undefined}
+              value={data ? data.pareto80Count ?? "不适用" : "—"}
+              suffix={data?.pareto80Count != null ? `/ ${data.pareto.length}` : undefined}
             />
           </Card>
         </Col>
@@ -477,16 +533,19 @@ export default function DecisionStudioClient() {
                   source: "sales_monthly 销售月事实",
                   asOf: data?.latestMonth,
                 }}
-                coverage={{
+                coverage={data ? {
                   covered: paretoRows.length,
-                  total: data?.pareto.length ?? 0,
+                  total: data.pareto.length,
                   label: "图中成员",
-                }}
+                } : undefined}
                 activeFilters={filters}
                 summary={
-                  data?.pareto[0]
+                  data?.pareto[0] && data.pareto80Count != null
                     ? `${data.pareto80Count} 个成员贡献约 80%；第一位 ${data.pareto[0].label} 占 ${data.pareto[0].sharePct.toFixed(1)}%。`
-                    : "当前范围没有可排名的销量事实。"
+                    : data ? data.pareto.length
+                      ? "当前月总销量不为正，80% 贡献占比不适用；数量事实仍保留。"
+                      : "当前范围没有可排名的销量事实。"
+                      : "正在读取当前筛选的销量事实。"
                 }
                 caveat="柱形为销量，折线为累计占比；基准线是当前成员销量中位数，不是经营目标。图中仅画 TOP 30，数据表保留当前透视 TOP 20。"
                 state={loading && !data ? "loading" : paretoRows.length ? "ready" : "empty"}
@@ -596,11 +655,11 @@ export default function DecisionStudioClient() {
                     source: "sales_monthly 销售月事实",
                     asOf: data?.latestMonth,
                   }}
-                  coverage={{
-                    covered: data?.months.length ?? 0,
-                    total: Math.max(12, data?.months.length ?? 0),
+                  coverage={data ? {
+                    covered: data.months.length,
+                    total: Math.max(12, data.months.length),
                     label: "可用月份（统计门槛 12）",
-                  }}
+                  } : undefined}
                   activeFilters={filters}
                   summary={data
                     ? `${data.review.bullets[0]} ${data.review.bullets[3]}`
@@ -683,13 +742,13 @@ export default function DecisionStudioClient() {
                   source: "sales_monthly 销售月事实",
                   asOf: data?.latestMonth,
                 }}
-                coverage={{
-                  covered: data?.pivot.length ?? 0,
-                  total: data?.groups.length ?? 0,
+                coverage={data ? {
+                  covered: data.pivot.length,
+                  total: data.groups.length,
                   label: "透视成员（按全期销量 TOP 20）",
-                }}
+                } : undefined}
                 activeFilters={[`维度：${DIMENSION_LABEL[dimension]}`]}
-                summary={`展示全期销量最高的 ${data?.pivot.length ?? 0} 个成员；点击成员可联动结构与趋势。`}
+                summary={data ? `展示全期销量最高的 ${data.pivot.length} 个成员；点击成员可联动结构与趋势。` : "正在读取当前筛选的透视成员。"}
                 caveat="为保持交互轻量，透视表展示全期销量 TOP 20；服务端先基于全量事实聚合，再排序，不使用当前表格页冒充全量。"
                 state={loading && !data ? "loading" : data?.pivot.length ? "ready" : "empty"}
                 height={380}
@@ -722,15 +781,15 @@ export default function DecisionStudioClient() {
                   source: "JST 日销量受控 staging（每个日期取最新导入批次）",
                   asOf: data?.daily.latestDate,
                 }}
-                coverage={{
-                  covered: data?.daily.coveredRows ?? 0,
-                  total: data?.daily.totalRows ?? 0,
+                coverage={data ? {
+                  covered: data.daily.coveredRows,
+                  total: data.daily.totalRows,
                   label: "已解析 SKU 行",
-                }}
+                } : undefined}
                 activeFilters={selectedKey ? filters : ["范围：全部 JST 导入"]}
                 summary={data?.daily.state === "ready"
                   ? `已覆盖 ${data.daily.dates.length} 个日期；颜色越深表示当日出库量越高。`
-                  : data?.daily.gate ?? "等待 JST 日销量。"}
+                  : data ? data.daily.gate ?? "等待 JST 日销量。" : "正在读取日级数据覆盖。"}
                 caveat="该来源没有渠道、促销、退款和可售状态。热力只显示日级节奏，不能据此计算促销提升或断货损失。"
                 state={loading && !data ? "loading" : data?.daily.state ?? "insufficient"}
                 stateDetail={data?.daily.gate}
@@ -1583,7 +1642,18 @@ export default function DecisionStudioClient() {
               />
             ),
           },
-        ]}
+        ].map((item) => ({
+          ...item,
+          // A transport/report failure is not an empty dataset or a missing
+          // business capability. Keep navigation, but withdraw failed analysis.
+          children: loadError ? (
+            <Card size="small">
+              <Typography.Text type="secondary" role="status">
+                本次分析尚未加载，请使用上方“重新加载”核对数据。
+              </Typography.Text>
+            </Card>
+          ) : item.children,
+        }))}
       />
     </div>
   );

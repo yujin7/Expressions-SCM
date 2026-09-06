@@ -133,7 +133,7 @@ export function alertToCandidate(row: AlertTriggerRow): TodoCandidate {
     detail: row.detail,
     ownerRole: alertOwnerRole(row.category),
     priority: priorityFromSeverity(row.severity),
-    href: `/alerts?category=${encodeURIComponent(row.category)}`,
+    href: `/alerts?id=${row.id}`,
     dueDate: dueDateFromParamsSnapshot(row.paramsSnapshot),
   };
 }
@@ -149,7 +149,7 @@ export function reviewToCandidate(row: ReviewTriggerRow): TodoCandidate {
     detail: row.detail,
     ownerRole: reviewOwnerRole(row.category),
     priority: row.category.startsWith("blocked") ? "high" : "normal",
-    href: `/review/checklist?category=${encodeURIComponent(row.category)}`,
+    href: `/review/checklist?id=${row.id}`,
     dueDate: null,
   };
 }

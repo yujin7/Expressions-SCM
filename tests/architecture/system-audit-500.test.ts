@@ -40,13 +40,13 @@ const expectedCounts: Record<Category, number> = {
   API_ROUTE: 281,
   AUTH_PAGE: 97,
   MIGRATION: 61,
-  ARCH_GATE: 75,
+  ARCH_GATE: 78,
   REDTEAM_GATE: 12,
   RELEASE_GATE: 15,
   PROJECT_SKILL: 7,
-  LINT_EXCEPTION: 95,
+  LINT_EXCEPTION: 94,
   DATA_SOURCE: 20,
-  CRITICAL_INVARIANT: 34,
+  CRITICAL_INVARIANT: 35,
 };
 
 function walkFiles(relative: string, matcher: string | RegExp): string[] {
@@ -177,13 +177,21 @@ function verify(control: Control): void {
   assertTestModule(testPath);
 }
 
-describe("697 项系统执行审计台账", () => {
-  it("ID 恰好 A001–A689、对象唯一、分类数量固定", () => {
-    expect(controls).toHaveLength(697);
+describe("700 项系统执行审计台账", () => {
+  it("ID 恰好 A001–A700、对象唯一、分类数量固定", () => {
+    expect(controls).toHaveLength(700);
     expect(controls.map((control) => control.id)).toEqual(
-      Array.from({ length: 697 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
+      Array.from({ length: 700 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
     );
-    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(697);
+    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(700);
+    // Keep the same component's control ID when retiring its hook suppression;
+    // do not restore a lint exception or substitute an unrelated object to fill the slot.
+    expect(controls.find((control) => control.id === "A373")).toEqual({
+      id: "A373",
+      category: "CRITICAL_INVARIANT",
+      subject: "src/components/RemoteSelect.tsx",
+      evidence: "有界搜索、精确回显与已选值主动移除；tests/components/remote-select.test.ts",
+    });
     for (const [category, count] of Object.entries(expectedCounts)) {
       expect(
         controls.filter((control) => control.category === category).length,

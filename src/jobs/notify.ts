@@ -10,7 +10,8 @@
  * runExceptionNotify：把控制塔 critical/high 异常按天去重入队（每日一次推送到飞书/站内）；
  *   打盹（例外"稍后处理"）只影响展示，不影响推送，也不推进"连续出现天数"（红队审计 A6）。
  *
- * 网络失败标记 failed（保留 error），下轮重试。全部 best-effort，绝不反噬业务。
+ * 网络失败标记 failed（保留 error），下轮重试，不撤销已提交业务。
+ * 入队仅写库，失败交调用方处理；需要原子保证的业务把 outbox 与业务/审计放在同一事务。
  */
 import { createHmac } from "node:crypto";
 import { and, eq, inArray, lt, or, sql } from "drizzle-orm";

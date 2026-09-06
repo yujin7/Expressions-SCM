@@ -22,6 +22,20 @@ describe("抑制窗口纯规则（rules/replenish-suppression）", () => {
     expect(SUPPRESSION_POLICY.supply_already_arranged.releaseOnArrival).toBe(true);
     expect(SUPPRESSION_POLICY.demand_overstated.releaseOnArrival).toBe(false);
     expect(suppressionWindowFor("demand_overstated", "2026-09-04").untilDate).toBe("2026-09-11");
+    // D71 未决：这里只防止文案再次把含创建日的 8 天说成 7 天，不改变抑制行为。
+    for (const reason of ["demand_overstated", "other"] as const) {
+      expect(SUPPRESSION_POLICY[reason].rationale).toContain("含创建日抑制 8 个自然日");
+      expect(SUPPRESSION_POLICY[reason].days).toBe(7);
+    }
+    for (const reason of ["supply_already_arranged", "reference_stock_sufficient", "delisting"] as const) {
+      const policy = SUPPRESSION_POLICY[reason];
+      expect(policy.rationale).toContain(`${policy.days + 1} 个自然日`);
+      const window = suppressionWindowFor(reason, "2026-09-04");
+      expect(suppressionState({
+        ...window, today: "2026-09-04", pipelineBaseline: 100, pipelineNow: 100,
+        onHandBaseline: 40, onHandNow: 40,
+      })).toMatchObject({ active: true, daysLeft: policy.days + 1 });
+    }
     expect(suppressionWindowFor("supply_already_arranged", "2026-09-04").untilDate).toBe("2026-10-04");
   });
 
@@ -32,6 +46,8 @@ describe("抑制窗口纯规则（rules/replenish-suppression）", () => {
       untilDate: "2026-09-11", releaseOnArrival: true,
       pipelineBaseline: 100, onHandBaseline: 40, today: "2026-09-05",
     };
+    expect(suppressionState({ ...base, pipelineNow: 100, onHandNow: 40, today: "2026-09-04" }))
+      .toMatchObject({ active: true, daysLeft: 8 });
     /* daysLeft 含今天（与解除条件 `today > untilDate` 同口径）：09-05 起到 09-11 止 = 7 天 */
     expect(suppressionState({ ...base, pipelineNow: 100, onHandNow: 40 }))
       .toMatchObject({ active: true, daysLeft: 7 });

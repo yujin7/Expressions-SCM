@@ -8,7 +8,7 @@
  * 而这个数字自己的版本串 `/v1` 一动不动，读者无从发现。
  *
  * 现在：总分布仍给，但同时给 `engineMix`（各引擎版本的样本数）与 `byEngineVersion`
- * （逐版本分布），caliber 里明说混了几套；键升到 `/v2`。
+ * （逐版本分布），caliber 里明说混了几套；v3 再独立收紧出库覆盖资格。
  */
 import { beforeAll, describe, expect, it } from "vitest";
 import * as schema from "@/db/schema";
@@ -78,15 +78,17 @@ describe("闭环准确度：引擎口径混用必须披露", () => {
       }).returning();
       await db.insert(schema.bhLines).values({ bhId: bh.id, skuId: sku[k], qty: "100" });
     }
-    // 给一条实时仓流水，免得全部落进"快照仓弃权"
-    await db.insert(schema.stockLedger).values({
-      skuId: sku.OLD1, warehouseId: rt.id, qtyDelta: "-10", sourceDocType: "test", sourceDocId: 1,
-      action: "post", occurredAt: new Date("2026-06-15T02:00:00Z"),
-    });
+    // 明确的窗前实时账起点 + 窗内出库；仅有窗内首次流水不能证明期初覆盖。
+    await db.insert(schema.stockLedger).values([
+      { skuId: sku.OLD1, warehouseId: rt.id, qtyDelta: "100", sourceDocType: "test", sourceDocId: 1,
+        action: "post", occurredAt: new Date("2026-05-31T02:00:00Z") },
+      { skuId: sku.OLD1, warehouseId: rt.id, qtyDelta: "-10", sourceDocType: "test", sourceDocId: 2,
+        action: "post", occurredAt: new Date("2026-06-15T02:00:00Z") },
+    ]);
   });
 
   it("键随口径升版（数字含义变了就必须换版本串）", () => {
-    expect(SUGGESTION_ACCURACY_VERSION).toBe("closed-loop-accuracy/v2");
+    expect(SUGGESTION_ACCURACY_VERSION).toBe("closed-loop-accuracy/v3");
   });
 
   it("engineMix 列出每个引擎版本的样本数，逐版本分布与总分布并存", async () => {

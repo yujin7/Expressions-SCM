@@ -1,10 +1,11 @@
-import { eq, ilike, or, sql } from "drizzle-orm";
+import { and, eq, ilike, or, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import type { SessionUser } from "@/server/core/dto";
 import { resolveDb, type AnyDb } from "@/server/core/svc";
 import { ApiError } from "@/server/modules/master/common";
 import { channelSchema, channelUpdateSchema } from "@/server/modules/master/schemas";
+import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 
 function buildWhere(q: string) {
   return q
@@ -21,9 +22,11 @@ function buildWhere(q: string) {
  * 停用渠道仍返回：存量 SKU 可能仍引用它，编辑时隐藏会把真实关系变成不可见 ID。
  * 调用方如只允许新建时选活跃渠道，应使用 RemoteSelect.filterRow 显式筛选。
  */
-export async function listChannels(q: string, page: number, pageSize: number, dbArg?: AnyDb) {
+export async function listChannels(q: string, page: number, pageSize: number, dbArg?: AnyDb, selectedValues?: SelectedOptionValue[]) {
   const db = await resolveDb(dbArg);
-  const where = buildWhere(q);
+  const where = and(buildWhere(q), selectedOptionsPredicate(selectedValues, {
+    id: schema.channels.id, text: [schema.channels.code, schema.channels.name],
+  }));
   const [data, [{ total }]] = await Promise.all([
     db
       .select({
@@ -36,8 +39,8 @@ export async function listChannels(q: string, page: number, pageSize: number, db
       .from(schema.channels)
       .where(where)
       .orderBy(schema.channels.code, schema.channels.id)
-      .limit(pageSize)
-      .offset((page - 1) * pageSize),
+      .limit(selectedValues === undefined ? pageSize : SELECTED_OPTIONS_LIMIT)
+      .offset(selectedValues === undefined ? (page - 1) * pageSize : 0),
     db.select({ total: sql<number>`count(*)::int` }).from(schema.channels).where(where),
   ]);
   return { data, total };

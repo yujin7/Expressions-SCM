@@ -117,6 +117,35 @@ describe("POST /api/admin/jobs/[name]/run", () => {
     const audits = await db.select().from(auditLogs).where(eq(auditLogs.entity, "job_run"));
     expect(audits[0].after).toMatchObject({ ok: false });
   });
+
+  it.each([
+    { status: "awaiting_authorization", flags: [true, true], waiting: ["甲", "乙"], label: "等待授权" },
+    { status: "partial", flags: [false, true], waiting: ["乙"], label: "部分完成" },
+    { status: "succeeded", flags: [false, false], waiting: [], label: "已读取" },
+  ])("用友 $status 的手动结果、job 留痕和审计保持同一安全口径", async ({ status, flags, waiting, label }) => {
+    const job = INTERVAL_JOBS.find((entry) => entry.name === "sync-yonyou")!;
+    const stub = vi.spyOn(job, "run").mockResolvedValue({
+      status, results: flags.map((blockedByConsoleGrant, i) => ({
+        runId: i + 1, importJobId: blockedByConsoleGrant ? null : i + 1,
+        sourceRows: blockedByConsoleGrant ? 0 : 501, stagedRows: blockedByConsoleGrant ? 0 : 501,
+        replayed: false, blockedByConsoleGrant, raw: "DO_NOT_EXPOSE".repeat(100),
+      })),
+      awaitingConsoleGrant: waiting, scopeKey: "DO_NOT_EXPOSE_SCOPE",
+    });
+    try {
+      const response = await call(job.name);
+      expect(response.status).toBe(200);
+      const result = await response.json();
+      expect(result).toMatchObject({ ok: true, outcome: { status, total: 2, waiting: waiting.length } });
+      expect(result.message).toContain(label);
+      expect(JSON.stringify(result)).not.toContain("DO_NOT_EXPOSE");
+      const [run] = await db.select().from(jobRuns).where(eq(jobRuns.job, job.name));
+      expect(run.ok).toBe(true);
+      expect(JSON.parse(run.message!)).toEqual(result.outcome);
+      const [audit] = await db.select().from(auditLogs).where(eq(auditLogs.entity, "job_run"));
+      expect(audit.after).toMatchObject({ job: job.name, ok: true, message: run.message });
+    } finally { stub.mockRestore(); }
+  });
 });
 
 /**

@@ -2,8 +2,9 @@
 
 import ListToolbar from "@/components/ListToolbar";
 import SearchInput from "@/components/SearchInput";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert, App, Badge, Button, Empty, Input, Modal, Popconfirm, Progress, Select, Space, Table, Tabs, Tag, Tooltip, Typography, Upload,
 } from "antd";
@@ -174,57 +175,75 @@ export default function ChecklistClient() {
   const [importOpen, setImportOpen] = useState(false);
   const { message } = App.useApp();
 
-  const [counts, setCounts] = useState<CountRow[]>([]);
-  const listState = useListState({ key: "checklist", defaults: { q: "", category: "all", status: "open" }, defaultPageSize: 20 });
+  const [counts, setCounts] = useState<CountRow[] | null>(null);
+  const [countError, setCountError] = useState<string | null>(null);
+  const countRequest = useRef<AbortController | null>(null);
+  const listState = useListState({ key: "checklist", defaults: { q: "", category: "all", status: "open", id: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const category = filters.category;
   const status = filters.status;
+  const focusId = filters.id;
   const [rows, setRows] = useState<ReviewItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const loadRequest = useRef<AbortController | null>(null);
+  const latestLoad = useRef<() => Promise<void>>(async () => {});
   const [selected, setSelected] = useState<number[]>([]);
   const [overruling, setOverruling] = useState<ReviewItem | null>(null);
   const [overruleNote, setOverruleNote] = useState("");
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
 
   const loadCounts = useCallback(async () => {
+    countRequest.current?.abort();
+    const request = new AbortController();
+    countRequest.current = request;
+    setCountError(null);
     try {
-      const res = await fetchJson<{ counts: CountRow[] }>("/api/review/checklist/counts");
-      setCounts(res.counts);
+      const res = await fetchJson<{ counts: CountRow[] }>("/api/review/checklist/counts", { signal: request.signal });
+      if (!request.signal.aborted) setCounts(res.counts);
     } catch (e) {
-      message.error((e as Error).message);
+      if (!request.signal.aborted) setCountError((e as Error).message);
     }
-  }, [message]);
+  }, []);
 
   const load = useCallback(async () => {
+    loadRequest.current?.abort();
+    const request = new AbortController();
+    loadRequest.current = request;
     setLoading(true);
+    setLoadError(null);
+    setSelected([]);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
+      if (focusId) params.set("id", focusId);
       if (category !== "all") params.set("category", category);
       if (status !== "all") params.set("status", status);
-      const res = await fetchJson<{ data: ReviewItem[]; total: number }>(`/api/review/checklist?${params}`);
-      setRows(res.data);
-      setTotal(res.total);
-      setSelected([]);
+      const res = await fetchJson<{ data: ReviewItem[]; total: number }>(`/api/review/checklist?${params}`, { signal: request.signal });
+      if (!request.signal.aborted) { setRows(res.data); setTotal(res.total); }
     } catch (e) {
-      message.error((e as Error).message);
+      if (!request.signal.aborted) setLoadError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (!request.signal.aborted) setLoading(false);
     }
-  }, [q, page, pageSize, category, status, message]);
+  }, [q, page, pageSize, category, status, focusId]);
 
   useEffect(() => {
     void loadCounts();
+    return () => { countRequest.current?.abort(); };
   }, [loadCounts]);
   useEffect(() => {
+    latestLoad.current = load;
     void load();
+    return () => { loadRequest.current?.abort(); latestLoad.current = async () => {}; };
   }, [load]);
 
   const reload = useCallback(() => {
-    void load();
+    void latestLoad.current();
     void loadCounts();
-  }, [load, loadCounts]);
+  }, [loadCounts]);
 
   /** 类别聚合：{cat: {open, done, overruled, total}} */
   const catAgg = useMemo(() => {
@@ -237,7 +256,7 @@ export default function ChecklistClient() {
       cur.total += n;
       agg.set(cat, cur);
     };
-    for (const c of counts) {
+    for (const c of counts ?? []) {
       bump(c.category, c.status, c.count);
       bump("all", c.status, c.count);
     }
@@ -249,6 +268,8 @@ export default function ChecklistClient() {
   const pct = current.total ? Math.round((processed / current.total) * 100) : 0;
 
   const decide = async (id: number, st: string, note?: string) => {
+    if (savingRef.current || loading || loadError) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       await patchJson(`/api/review/checklist/${id}`, { status: st, note });
@@ -259,11 +280,14 @@ export default function ChecklistClient() {
     } catch (e) {
       message.error((e as Error).message);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
 
   const bulkPass = async () => {
+    if (savingRef.current || loading || loadError || !selected.length) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       const res = await patchJson<{ updated: number }>("/api/review/checklist", {
@@ -275,6 +299,7 @@ export default function ChecklistClient() {
     } catch (e) {
       message.error((e as Error).message);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -338,16 +363,17 @@ export default function ChecklistClient() {
       key: "_actions",
       width: 170,
       render: (_, r) =>
-        canDecide ? (
+        canDecide && !loadError && !loading ? (
           <Space size={0}>
             {r.status === "open" && (
               <>
-                <Button type="link" size="small" onClick={() => void decide(r.id, "done")}>
+                <Button type="link" size="small" disabled={saving} onClick={() => void decide(r.id, "done")}>
                   通过
                 </Button>
                 <Button
                   type="link"
                   size="small"
+                  disabled={saving}
                   onClick={() => {
                     setOverruling(r);
                     setOverruleNote(r.note ?? "");
@@ -359,7 +385,7 @@ export default function ChecklistClient() {
             )}
             {r.status !== "open" && (
               <Popconfirm title="重开该复核项？" okText="重开" cancelText="取消" onConfirm={() => void decide(r.id, "open")}>
-                <Button type="link" size="small">
+                <Button type="link" size="small" disabled={saving}>
                   重开
                 </Button>
               </Popconfirm>
@@ -373,6 +399,7 @@ export default function ChecklistClient() {
 
   const tabItems = ["all", ...CATEGORY_ORDER.filter((c) => catAgg.has(c))].map((c) => ({
     key: c,
+    disabled: !!focusId,
     label: (
       <Badge count={catAgg.get(c)?.open ?? 0} size="small" offset={[6, -2]} overflowCount={9999}>
         <span style={{ paddingRight: 4 }}>{c === "all" ? "全部" : CATEGORY_LABELS[c] ?? c}</span>
@@ -388,7 +415,8 @@ export default function ChecklistClient() {
       <Typography.Paragraph type="secondary">
         数据填充期自动代决记录（SPU 归簇 / BOM 版本裁决 / 物料分类 / 壳档品牌等）在案复核；改判后请经红字或重导修正业务数据。
       </Typography.Paragraph>
-      <Space style={{ marginBottom: 12 }} size="large" wrap>
+      <LoadErrorAlert error={countError} onRetry={() => void loadCounts()} subject="复核统计" />
+      {!focusId && counts !== null && !countError ? <Space style={{ marginBottom: 12 }} size="large" wrap>
         <Progress type="circle" size={56} percent={pct} />
         <div>
           <div>
@@ -398,7 +426,7 @@ export default function ChecklistClient() {
             待复核 {current.open} · 已通过 {current.done} · 已改判 {current.overruled}
           </Typography.Text>
         </div>
-      </Space>
+      </Space> : null}
       <Tabs
         activeKey={category}
         items={tabItems}
@@ -410,7 +438,11 @@ export default function ChecklistClient() {
         state={listState}
         extra={
           <>
+            {focusId ? <Tag color="processing" closable onClose={() => listState.setFilter({ id: "" })}>仅看复核 #{focusId}（忽略其他筛选）</Tag> : null}
             <SearchInput
+              key={q}
+              defaultValue={q}
+              disabled={!!focusId}
               allowClear
               placeholder="搜索事项/详情/编码"
               style={{ width: 280 }}
@@ -419,6 +451,7 @@ export default function ChecklistClient() {
               }}
             />
             <Select
+              disabled={!!focusId}
               value={status}
               style={{ width: 120 }}
               onChange={(v) => {
@@ -450,7 +483,7 @@ export default function ChecklistClient() {
                 cancelText="取消"
                 onConfirm={() => void bulkPass()}
               >
-                <Button type="primary" disabled={!selected.length} loading={saving}>
+                <Button type="primary" disabled={!selected.length || loading || !!loadError} loading={saving}>
                   批量通过（{selected.length}）
                 </Button>
               </Popconfirm>
@@ -458,6 +491,7 @@ export default function ChecklistClient() {
           </>
         }
       />
+      <LoadErrorAlert error={loadError} onRetry={reload} subject="复核清单" retrying={loading} />
       <Table<ReviewItem>
         rowKey="id"
         size={listState.tableSize}
@@ -469,7 +503,7 @@ export default function ChecklistClient() {
           /* 空态此前写着「请管理员运行那个 seed 脚本」——一个用户在应用里
              永远做不到的动作。现在导入就在本页上（管理员可见），非管理员看到的是
              「找谁」而不是「跑什么命令」。 */
-          emptyText: (
+          emptyText: loadError ? "数据未加载" : focusId ? "未找到该来源复核项，请核对链接或联系负责人。" : (
             <Empty
               description={
                 canImport
@@ -490,20 +524,11 @@ export default function ChecklistClient() {
             ? {
                 selectedRowKeys: selected,
                 onChange: (keys) => setSelected(keys as number[]),
-                getCheckboxProps: (r) => ({ disabled: r.status !== "open" }),
+                getCheckboxProps: (r) => ({ disabled: r.status !== "open" || loading || !!loadError || saving }),
               }
             : undefined
         }
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => {
-            listState.setPage(p, ps);
-          },
-        }}
+        pagination={focusId ? false : listState.paginationProps({ total, showTotal: (t) => `共 ${t} 条` })}
       />
       <ImportChecklistModal
         open={importOpen}

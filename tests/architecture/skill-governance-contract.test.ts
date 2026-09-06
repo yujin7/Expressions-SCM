@@ -92,6 +92,16 @@ function markdownTargets(source: string): string[] {
   return targets;
 }
 
+/**
+ * Active instructions must describe preservation/recovery in prose, not prescribe these
+ * copy-pastable working-tree mutations. This is a documentation guard, not a shell sandbox.
+ * Quarantined historical examples are intentionally outside its executable-guidance scope.
+ */
+function unsafeGitRecoveryCommands(source: string): string[] {
+  const command = /\bgit\s+(?:(?:-C|-c|--git-dir|--work-tree)\s+(?:"[^"]*"|'[^']*'|[^\s`]+)\s+)*(?:reset|checkout|restore|clean|stash)\b/g;
+  return [...source.matchAll(command)].map((match) => match[0]);
+}
+
 const activeMarkdown = walkMarkdown(skillRoot);
 const historyMarkdown = walkMarkdown(historyRoot);
 const governedMarkdown = [...activeMarkdown, ...historyMarkdown];
@@ -105,6 +115,40 @@ const activeGovernance = [
 ];
 
 describe("skill package governance", () => {
+  it("keeps AGENTS.md linked to the single canonical operating contract", () => {
+    const agents = path.join(root, "AGENTS.md");
+    const canonical = path.join(root, "CLAUDE.md");
+    expect(lstatSync(agents).isSymbolicLink()).toBe(true);
+    expect(realpathSync(agents)).toBe(realpathSync(canonical));
+  });
+
+  it.each([
+    "基线缺失则 `git reset --hard <当前 HEAD>`。",
+    "lock 多删的先 `git checkout` 再手改根块。",
+    "git -C 'temporary worktree' reset HEAD --hard",
+    "git\nreset --hard HEAD",
+    "git restore --source=HEAD -- package-lock.json",
+    "git clean -fd",
+    "git stash push -u",
+  ])("rejects unsafe recovery instruction: %s", (source) => {
+    expect(unsafeGitRecoveryCommands(source).length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    "先核对 `git status --short` 和 `git diff package-lock.json`，保留并行工作后逐差异修复。",
+    "git worktree add --detach <全新临时路径> <已核对commit>",
+    "禁止原地重置、整文件还原或清理未知文件；差异归属不明时停止并协调。",
+  ])("allows preservation-oriented guidance: %s", (source) => {
+    expect(unsafeGitRecoveryCommands(source)).toEqual([]);
+  });
+
+  it("keeps active operating and skill guidance free of destructive Git recovery recipes", () => {
+    const offenders = [path.join(root, "CLAUDE.md"), ...activeMarkdown].flatMap((file) =>
+      unsafeGitRecoveryCommands(read(file)).map((command) => `${path.relative(root, file)} -> ${command}`),
+    );
+    expect(offenders, `unsafe active recovery guidance:\n${offenders.join("\n")}`).toEqual([]);
+  });
+
   it("has exactly seven canonical, well-formed skill packages", () => {
     const directories = readdirSync(skillRoot)
       .filter((name) => statSync(path.join(skillRoot, name)).isDirectory())

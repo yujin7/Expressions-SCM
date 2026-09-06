@@ -55,6 +55,7 @@ import {
   runJiandaoyunConfiguredFormSyncs,
 } from "./sync-jiandaoyun";
 import { shanghaiHourKeyOf } from "@/server/core/business-day";
+import { yonyouJobSummary } from "@/lib/yonyou-job-summary";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -281,7 +282,11 @@ async function runJobBody(job: IntervalJob, db: AnyDb, options?: IntervalJobRunO
     message = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
     log({ level: "error", msg: "interval job 失败", job: job.name, error: message });
   }
-  message = message.slice(0, 500);
+  // Preserve execution health for expected authorization waits. Persist a complete,
+  // versioned allowlist instead of truncating results before the waiting evidence.
+  message = job.name === "sync-yonyou"
+    ? JSON.stringify(yonyouJobSummary(summary, ok))
+    : message.slice(0, 500);
   let recorded = false;
   try {
     await db.insert(jobRuns).values({ job: job.name, ok, message, startedAt, finishedAt: new Date() });
@@ -326,7 +331,7 @@ const RUNNER_KEY = Symbol.for("supply-chain.interval-runner");
 
 /** 进程内单例启动（hot-reload 安全）；test 环境 no-op */
 export function ensureIntervalJobsStarted(): void {
-  if (process.env.NODE_ENV === "test") return;
+  if (process.env.NODE_ENV === "test" || process.env.SCM_RUN_JOBS === "0") return;
   if ((process.env.DATABASE_URL ?? "").startsWith("postgres")) return;
   const g = globalThis as unknown as Record<symbol, { stop: () => void } | undefined>;
   if (g[RUNNER_KEY]) return;

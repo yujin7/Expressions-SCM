@@ -31,6 +31,8 @@
     "check:postgres": "node --import tsx scripts/verify-postgres.ts",
     "check:postgres:jdy-concurrency": "node --import tsx scripts/verify-postgres-jdy-concurrency.ts",
     "check:postgres:sku-identity-concurrency": "node --import tsx scripts/verify-postgres-sku-identity-concurrency.ts",
+    "check:postgres:review-atomicity": "node --import tsx scripts/verify-postgres-review-atomicity.ts",
+    "check:postgres:yonyou-concurrency": "node --import tsx scripts/verify-postgres-yonyou-concurrency.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
