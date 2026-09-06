@@ -16,6 +16,7 @@ import { VISUAL_COLOR } from "@/components/decision-visuals";
 import type { PlatformSkuGapStatus } from "@/server/modules/report/platform-sku-identity-gap";
 import type { PlatformSkuIdentityView, PlatformSkuIdentityRowView as PlatformSkuGapRow } from "@/server/modules/report/platform-sku-identity-view";
 import { identityBulkKey, identityBulkPayload, identityBulkReport, mergeIdentityBulk, unconfirmedIdentityBulk, type IdentityBulkItem, type IdentityBulkKind, type IdentityBulkReport } from "./identity-bulk-result";
+import { identityBulkReview, type IdentityReviewItem } from "./identity-bulk-review";
 
 const STATUS_LABEL: Record<PlatformSkuGapStatus, { text: string; color: string }> = {
   mapped: { text: "已映射", color: "success" },
@@ -115,15 +116,12 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
     }
   };
 
-  const [bulkOpen, setBulkOpen] = useState(false);
-  const [pddBulkOpen, setPddBulkOpen] = useState(false);
-  const [barcodeOpen, setBarcodeOpen] = useState(false);
-  const openReview = (kind: "tmall" | "pdd" | "barcode") => {
+  const [reviewKind, setReviewKind] = useState<IdentityBulkKind | null>(null);
+  const bulkReview = identityBulkReview(reviewKind ?? "tmall", reviewData);
+  const openReview = (kind: IdentityBulkKind) => {
     if (!canClaim || !data || loading || loadError || savingRef.current) return;
     setReviewData(data); // Immutable fetch result: preview and submitted items share this snapshot.
-    setBulkOpen(kind === "tmall");
-    setPddBulkOpen(kind === "pdd");
-    setBarcodeOpen(kind === "barcode");
+    setReviewKind(kind);
   };
   const submitBatch = async (kind: IdentityBulkKind, items: IdentityBulkItem[], previous?: IdentityBulkReport) => {
     if (!canClaim || savingRef.current || !items.length) return;
@@ -147,15 +145,12 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
     setBulkReport(mergeIdentityBulk(previous, next));
     setRetryReview(false);
     setResultOpen(true);
-    setBarcodeOpen(false); setPddBulkOpen(false); setBulkOpen(false);
+    setReviewKind(null);
     savingRef.current = false;
     setSaving(false);
     // The write is settled (or explicitly uncertain); a slow read refresh must not trap the result modal.
     void load();
   };
-  const submitBarcodeFill = () => submitBatch("barcode", (reviewData?.barcodeFillHits ?? []).slice(0, 500));
-  const submitPddBulk = () => submitBatch("pdd", (reviewData?.pddExactHits ?? []).slice(0, 300));
-  const submitBulk = () => submitBatch("tmall", (reviewData?.exactHits ?? []).slice(0, 300));
   const rejectedRows = bulkReport?.rows.filter(row => row.status === "rejected") ?? [];
   const unconfirmedCount = bulkReport?.rows.filter(row => row.status === "unconfirmed").length ?? 0;
   const completedCount = bulkReport?.rows.filter(row => row.status === "saved" || row.status === "unchanged").length ?? 0;
@@ -362,113 +357,60 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
         </Typography.Paragraph>
       </Space>
       <Modal
-        title="补齐 SKU 条码：财务货品档案 / 聚水潭商品资料镜像"
-        open={barcodeOpen}
-        onOk={submitBarcodeFill}
-        onCancel={() => { if (!savingRef.current) setBarcodeOpen(false); }}
+        title={reviewKind === "barcode" ? "补齐 SKU 条码 · 核对来源" : `批量认领 · ${reviewKind === "pdd" ? "拼多多" : "天猫"}身份核对`}
+        open={reviewKind != null}
+        width={820}
+        styles={{ body: { maxHeight: "60vh", overflowY: "auto" } }}
+        onOk={() => { if (reviewKind) return submitBatch(bulkReview.kind, bulkReview.items); }}
+        onCancel={() => { if (!savingRef.current) setReviewKind(null); }}
         confirmLoading={saving}
         closable={!saving}
         keyboard={!saving}
         cancelButtonProps={{ disabled: saving }}
-        okButtonProps={{ disabled: !canClaim }}
+        okButtonProps={{ disabled: !canClaim || !bulkReview.items.length }}
         maskClosable={false}
-        okText={`确认写入 ${Math.min(500, reviewData?.barcodeFillHits?.length ?? 0)} 个条码`}
+        destroyOnHidden
+        okText={`确认${reviewKind === "barcode" ? "写入" : "认领"} ${bulkReview.items.length} 项`}
         cancelText="取消"
       >
-        <Space direction="vertical" size={8} style={{ width: "100%" }}>
+        <Space direction="vertical" size={12} style={{ width: "100%" }}>
           <Typography.Paragraph style={{ marginBottom: 0 }}>
-            系统 {reviewData?.barcodeFillSummary?.activeSkus ?? 0} 个启用 SKU 里只有 {reviewData?.barcodeFillSummary?.skusWithBarcode ?? 0} 个有条码。
-            这些候选来自简道云里财务「货品档案」与聚水潭「商品资料」镜像，两来源一致、系统字段空白、条码未被其它 SKU 占用；
-            另有 {reviewData?.barcodeFillSummary?.conflicts ?? 0} 个冲突项不在此列，需人工裁决。
-            条码是天猫/唯品会对照表与同步身份解析的通用键，补齐后后续同步会自动解析更多外部行。
+            {reviewKind === "barcode"
+              ? `候选来自简道云里的财务货品档案或聚水潭商品资料镜像；单来源与双来源一致逐行标明。仅补系统空白条码，不覆盖现有值。另有 ${reviewData?.barcodeFillSummary?.conflicts ?? 0} 个冲突项不在本批，需人工裁决。`
+              : reviewKind === "pdd"
+                ? "按店铺 + 商品ID + 商家编码核对归属；候选可能来自商家编码同码或商品成本标准翻译。确认后登记拼多多外部身份。"
+                : "请核对店铺、平台 SKU 与系统 SKU。候选来自对照表、单品日报或单组件组合装，依据逐行标明；外部身份不会自动认领。"}
           </Typography.Paragraph>
-          <Table
+          <div>
+            <Typography.Text strong>本批 {bulkReview.items.length} 项 / 候选共 {bulkReview.total} 项</Typography.Text>
+            <div><Typography.Text type="secondary">其余 {bulkReview.omitted} 项本批不提交。分页仅切换显示，确认将提交本批全部 {bulkReview.items.length} 项。</Typography.Text></div>
+          </div>
+          <Table<IdentityReviewItem>
+            data-testid="identity-bulk-review"
+            key={reviewKind}
             size="small"
-            rowKey="skuId"
-            dataSource={(reviewData?.barcodeFillHits ?? []).slice(0, 8)}
-            pagination={false}
+            rowKey={row => identityBulkKey(bulkReview.kind, row)}
+            dataSource={bulkReview.items}
+            pagination={{ pageSize: 8, showSizeChanger: false, hideOnSinglePage: true, simple: true }}
+            tableLayout="fixed"
             columns={[
-              { title: "系统 SKU", dataIndex: "skuCode", width: 130 },
-              { title: "名称", dataIndex: "skuName", ellipsis: true },
-              { title: "条码", dataIndex: "barcode", width: 150 },
-              { title: "来源", dataIndex: "source", width: 90, render: (v: string) => (v === "both" ? "财务+聚水潭" : v === "jst_mirror" ? "聚水潭" : "财务") },
+              { title: "身份 / 目标 / 依据", responsive: ["xs"], render: (_, row) => <div style={{ overflowWrap: "anywhere" }}>
+                <strong>{row.skuCode}</strong>
+                {row.name ? <div>{row.name}</div> : null}
+                <div style={{ marginTop: 4 }}>{row.barcode ?? `${row.shopName} · ${row.platformSkuId}`}</div>
+                <div style={{ marginTop: 6 }}><Typography.Text type="secondary">{row.sourceLabel}</Typography.Text></div>
+                {canSeeAmounts && reviewKind === "tmall" ? <div>支付金额 ¥{yuan(row.paidAmount)}</div> : null}
+              </div> },
+              { title: reviewKind === "barcode" ? "条码" : "店铺 / 外部身份", responsive: ["sm"], width: "34%", render: (_, row) => <div style={{ overflowWrap: "anywhere" }}>
+                {row.barcode ?? <><div>{row.shopName}</div><div>{row.platformSkuId}</div></>}
+              </div> },
+              { title: "目标系统 SKU", responsive: ["sm"], width: "26%", render: (_, row) => <div style={{ overflowWrap: "anywhere" }}>
+                <strong>{row.skuCode}</strong>{row.name ? <div>{row.name}</div> : null}
+              </div> },
+              { title: "匹配依据", responsive: ["sm"], render: (_, row) => <span style={{ overflowWrap: "anywhere" }}>{row.sourceLabel}</span> },
+              ...(canSeeAmounts && reviewKind === "tmall" ? [{ title: "支付金额", responsive: ["sm" as const], width: 100, dataIndex: "paidAmount", align: "right" as const, render: (v: string | undefined) => `¥${yuan(v)}` }] : []),
             ]}
           />
-          {(reviewData?.barcodeFillHits?.length ?? 0) > 8 ? <Typography.Text type="secondary">…仅预览前 8 行，每次最多写入 500 个</Typography.Text> : null}
-        </Space>
-      </Modal>
-      <Modal
-        title="批量认领：拼多多对照表商家编码 = 系统编码"
-        open={pddBulkOpen}
-        onOk={submitPddBulk}
-        onCancel={() => { if (!savingRef.current) setPddBulkOpen(false); }}
-        confirmLoading={saving}
-        closable={!saving}
-        keyboard={!saving}
-        cancelButtonProps={{ disabled: saving }}
-        okButtonProps={{ disabled: !canClaim }}
-        maskClosable={false}
-        okText={`确认认领 ${Math.min(300, reviewData?.pddExactHits?.length ?? 0)} 行`}
-        cancelText="取消"
-      >
-        <Space direction="vertical" size={8} style={{ width: "100%" }}>
-          <Typography.Paragraph style={{ marginBottom: 0 }}>
-            拼多多没有 SKU 级销量表，订单按「店铺 + 商品ID + 商家编码」归属。对照表里这些商家编码与系统编码逐字相等；
-            确认后登记为 JIANDAOYUN:PDD 外部身份，拼多多订单件数才会进入外部销速。
-          </Typography.Paragraph>
-          <Typography.Text>
-            对照表 {reviewData?.pddSummary?.crosswalkRows ?? 0} 行，含商家编码 {reviewData?.pddSummary?.merchantCodes ?? 0}，精确命中 {reviewData?.pddSummary?.exactCodes ?? 0}，
-            经「商品成本标准」翻译命中 {reviewData?.pddSummary?.bridgedCodes ?? 0}，已认领 {reviewData?.pddSummary?.claimed ?? 0}。
-          </Typography.Text>
-          <Table
-            size="small"
-            rowKey={(h) => `${h.shopName}|${h.platformSkuId}`}
-            dataSource={(reviewData?.pddExactHits ?? []).slice(0, 8)}
-            pagination={false}
-            columns={[
-              { title: "商品ID|商家编码", dataIndex: "platformSkuId", width: 200 },
-              { title: "→ 系统 SKU", dataIndex: "skuCode", width: 120 },
-              { title: "线索", dataIndex: "source", width: 96, render: (v: string) => (v === "cost_standard" ? <Tag color="purple">成本标准</Tag> : <Tag>同码</Tag>) },
-              { title: "商品", dataIndex: "productName", ellipsis: true },
-            ]}
-          />
-        </Space>
-      </Modal>
-      <Modal
-        title="批量认领：对照表商家编码 = 系统编码"
-        open={bulkOpen}
-        onOk={submitBulk}
-        onCancel={() => { if (!savingRef.current) setBulkOpen(false); }}
-        confirmLoading={saving}
-        closable={!saving}
-        keyboard={!saving}
-        cancelButtonProps={{ disabled: saving }}
-        okButtonProps={{ disabled: !canClaim }}
-        maskClosable={false}
-        okText={`确认认领 ${Math.min(300, reviewData?.exactHits.length ?? 0)} 行`}
-        cancelText="取消"
-      >
-        <Space direction="vertical" size={8} style={{ width: "100%" }}>
-          <Typography.Paragraph style={{ marginBottom: 0 }}>
-            这些平台 SKU 在简道云对照表里的「商家编码」与系统 SKU 编码逐字相等，但按治理规则外部码不会自动认领。
-            确认后逐行登记外部身份并写审计（每次最多 300 行，超出请再点一次）。
-          </Typography.Paragraph>
-          <Typography.Text>
-            共 <Typography.Text strong>{reviewData?.exactHits.length ?? 0}</Typography.Text> 行，
-            {canSeeAmounts ? <>涉及支付金额占比 <Typography.Text strong>{reviewData?.exactHitAmountPct == null ? "未知" : `${reviewData.exactHitAmountPct}%`}</Typography.Text>。</> : "请核对外部编码与系统 SKU 的归属。"}
-          </Typography.Text>
-          <Table
-            size="small"
-            rowKey={(h) => `${h.shopName}|${h.platformSkuId}`}
-            dataSource={(reviewData?.exactHits ?? []).slice(0, 8)}
-            pagination={false}
-            columns={[
-              { title: "平台 SKU", dataIndex: "platformSkuId", width: 150 },
-              { title: "→ 系统 SKU", dataIndex: "skuCode", width: 140 },
-              ...(canSeeAmounts ? [{ title: "支付金额", dataIndex: "paidAmount", align: "right" as const, render: (v: string) => `¥${yuan(v)}` }] : []),
-            ]}
-          />
-          {(reviewData?.exactHits.length ?? 0) > 8 ? <Typography.Text type="secondary">…仅预览前 8 行</Typography.Text> : null}
         </Space>
       </Modal>
       <Modal

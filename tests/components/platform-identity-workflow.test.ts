@@ -109,6 +109,43 @@ beforeEach(() => {
 afterEach(() => { for (const cleanup of hooks.cleanups.values()) cleanup(); vi.unstubAllGlobals(); });
 
 describe("platform identity UI contract (real callbacks, mocked hook scheduler; not browser proof)", () => {
+  it.each([
+    { kind: "tmall", label: "一键认领", limit: 300 },
+    { kind: "pdd", label: "拼多多精确", limit: 300 },
+    { kind: "barcode", label: "补齐条码", limit: 500 },
+  ])("$kind previews every submitted item, including later pages, but never the next batch", async ({ label, limit }) => {
+    const fixture = data("pmc");
+    const items = Array.from({ length: limit + 1 }, (_, index) => ({ skuId: index + 1, skuCode: `QA-${index + 1}`, shopName: "QA店", platformSkuId: `external-${index + 1}` }));
+    fixture.exactHits = items.map(item => ({ ...item, paidAmount: "1", source: "crosswalk" }));
+    fixture.pddExactHits = items.map(item => ({ ...item, productName: "QA商品", source: "cost_standard" }));
+    fixture.barcodeFillHits = items.map(item => ({ ...item, skuName: "QA商品", barcode: `barcode-${item.skuId}`, source: "finance_master" }));
+    network.fetch.mockResolvedValue(fixture); render(); await flush(); let tree = render();
+    click(button(tree, label)!); tree = render();
+    const preview = elements(modal(tree)).find(e => e.type === "table")!;
+    expect((preview.props.dataSource as unknown[]).length).toBe(limit);
+    expect(preview.props.pagination).toMatchObject({ pageSize: 8 });
+    expect(preview.props.scroll).toBeUndefined();
+    expect(text(modal(tree))).toContain("本批不提交");
+    network.post.mockReturnValue(new Promise(() => {}));
+    (modal(tree).props.onOk as () => void)();
+    const submitted = network.post.mock.calls[0][1].items as { skuId: number }[];
+    expect(submitted.map(item => item.skuId)).toEqual((preview.props.dataSource as { skuId: number }[]).map(item => item.skuId));
+    expect(submitted.at(-1)?.skuId).toBe(limit);
+  });
+  it.each(["pmc", "warehouse"])("%s can read complete mobile confirmation evidence without leaking amounts", async role => {
+    let tree = await loaded(role);
+    click(button(tree, "一键认领")!); tree = render();
+    const preview = elements(modal(tree)).find(e => e.props["data-testid"] === "identity-bulk-review")!;
+    const columns = preview.props.columns as { title: string; responsive?: string[]; render: (value: unknown, row: unknown) => ReactNode }[];
+    const mobile = columns.filter(column => !column.responsive || column.responsive.includes("xs"));
+    expect(mobile).toHaveLength(1);
+    const row = (preview.props.dataSource as unknown[])[0];
+    const content = text(mobile[0].render(null, row));
+    for (const detail of ["SKU-42", "QA", "platform-42", "对照表商家编码"]) expect(content).toContain(detail);
+    expect(content.includes("支付金额")).toBe(role === "pmc");
+    expect(columns.some(column => column.title === "支付金额")).toBe(role === "pmc");
+    expect(modal(tree).props.styles).toMatchObject({ body: { maxHeight: "60vh", overflowY: "auto" } });
+  });
   it("keeps the outcome and next action visible on mobile without a horizontal results table", async () => {
     const tree = await loaded("pmc");
     const table = elements(tree).find(e => e.props["data-testid"] === "identity-bulk-results")!;
