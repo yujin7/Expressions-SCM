@@ -14,4 +14,4 @@ if ! finished_revision="$(git rev-parse HEAD 2>/dev/null)" || [ "$finished_revis
   echo "构建期间源码发生变化，CI构建不可验收。" >&2
   exit 1
 fi
-echo "CI构建源码版本：$source_revision（未部署）"
+echo "CI构建源码版本：${source_revision}（未部署）"

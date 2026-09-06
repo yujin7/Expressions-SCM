@@ -44,7 +44,7 @@ if ! tunnel_capture_app; then
   echo "✗ 既有应用版本/迁移/HSTS未就绪；请先按发布清单部署 PUBLIC_HTTPS=1 的已验收镜像。未构建或重启应用。" >&2
   exit 1
 fi
-echo "    已核对版本 $TUNNEL_APP_REVISION；仅安装访问入口，不发布源码"
+echo "    已核对版本 ${TUNNEL_APP_REVISION}；仅安装访问入口，不发布源码"
 
 echo "==> 3/7 复制运行期配置出 TCC 保护目录"
 # 仓库在 ~/Downloads 下，launchd 派生的进程读不到（实测 Operation not permitted）。

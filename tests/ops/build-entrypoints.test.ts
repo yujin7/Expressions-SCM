@@ -34,6 +34,21 @@ printf 'CHECK %s\\n' "$2"
     expect(installer).toContain("tunnel_capture_app");
     expect(installer).toContain("tunnel-app-guard.sh");
   });
+  it.each([0, 1])("installer propagates application admission %i before installing anything (UTF-8 shell)", status => {
+    const installer = readFileSync("scripts/install-public-tunnel.sh", "utf8");
+    const start = installer.indexOf('echo "==> 2/7');
+    const end = installer.indexOf('echo "==> 3/7', start);
+    expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+    const r = spawnSync("/bin/bash", ["-c", `set -euo pipefail
+      REPO=/synthetic-only
+      source() { TUNNEL_APP_REVISION=${"a".repeat(40)}; }
+      tunnel_capture_app() { return ${status}; }
+      ${installer.slice(start, end)}
+      echo INSTALL_ALLOWED
+    `], { encoding: "utf8", timeout: 2000, env: { NODE_ENV: "test", PATH: "/usr/bin:/bin", LC_ALL: "en_US.UTF-8" } });
+    expect(r.status).toBe(status);
+    expect(r.stdout.includes("INSTALL_ALLOWED")).toBe(status === 0);
+  });
 
   function build(scenario: string) {
     const dir = mkdtempSync(path.join(tmpdir(), "scm-ci-build-"));
@@ -57,7 +72,7 @@ esac
     if (scenario === "dirty") writeFileSync(path.join(dir, "untracked"), "uncommitted source");
     const r = spawnSync("/bin/bash", ["scripts/build-ci-container.sh"], {
       cwd: dir, encoding: "utf8", timeout: 5000,
-      env: { NODE_ENV: "test", PATH: `${dir}/bin:/usr/bin:/bin`, QA_SCENARIO: scenario, SCM_BUILD_REVISION: "f".repeat(40) },
+      env: { NODE_ENV: "test", PATH: `${dir}/bin:/usr/bin:/bin`, LC_ALL: "en_US.UTF-8", QA_SCENARIO: scenario, SCM_BUILD_REVISION: "f".repeat(40) },
     });
     return { ...r, revision };
   }
