@@ -15,6 +15,7 @@ import RemoteSelect from "@/components/RemoteSelect";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
 import type { PlatformSkuGapStatus } from "@/server/modules/report/platform-sku-identity-gap";
 import type { PlatformSkuIdentityView, PlatformSkuIdentityRowView as PlatformSkuGapRow } from "@/server/modules/report/platform-sku-identity-view";
+import { identityBulkKey, identityBulkPayload, identityBulkReport, mergeIdentityBulk, unconfirmedIdentityBulk, type IdentityBulkItem, type IdentityBulkKind, type IdentityBulkReport } from "./identity-bulk-result";
 
 const STATUS_LABEL: Record<PlatformSkuGapStatus, { text: string; color: string }> = {
   mapped: { text: "已映射", color: "success" },
@@ -44,6 +45,9 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const [reviewData, setReviewData] = useState<PlatformSkuIdentityView | null>(null);
+  const [bulkReport, setBulkReport] = useState<IdentityBulkReport | null>(null);
+  const [resultOpen, setResultOpen] = useState(false);
+  const [retryReview, setRetryReview] = useState(false);
   const requestRef = useRef<AbortController | null>(null);
   const canClaim = data?.permissions.canClaim === true;
   const canSeeAmounts = data?.permissions.canSeeAmounts === true;
@@ -99,7 +103,7 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
       if (result.readModels === "refreshed") {
         message.success("已认领；覆盖率与外部需求信号已按新身份重建");
       } else {
-        message.warning("认领已保存，但统计刷新未完成；页面将立即重试");
+        message.warning("认领已保存，派生统计待重建；请勿为了刷新统计重复认领");
       }
       setClaiming(null);
       await load();
@@ -121,69 +125,41 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
     setPddBulkOpen(kind === "pdd");
     setBarcodeOpen(kind === "barcode");
   };
-  const submitBarcodeFill = async () => {
-    if (!canClaim || savingRef.current || !reviewData?.barcodeFillHits?.length) return;
+  const submitBatch = async (kind: IdentityBulkKind, items: IdentityBulkItem[], previous?: IdentityBulkReport) => {
+    if (!canClaim || savingRef.current || !items.length) return;
+    items = items.map(({ skuId, skuCode, shopName, platformSkuId, barcode }) => ({ skuId, skuCode, shopName, platformSkuId, barcode }));
     savingRef.current = true;
     setSaving(true);
+    let next: IdentityBulkReport;
     try {
-      const r = await postJson<{ filled: number; unchanged: number; conflicts: number; readModels: "refreshed" | "deferred" }>(
-        "/api/master/sku/barcode-fill/bulk",
-        { items: reviewData.barcodeFillHits.slice(0, 500).map((h) => ({ skuId: h.skuId, barcode: h.barcode })), source: "jiandaoyun-master-mirror" },
+      const response = await postJson<unknown>(
+        kind === "barcode" ? "/api/master/sku/barcode-fill/bulk" : "/api/master/sku/platform-claim/bulk",
+        identityBulkPayload(kind, items),
       );
-      const summary = `本批补齐条码 ${r.filled} 个，已一致 ${r.unchanged}，冲突 ${r.conflicts}`;
-      if (r.readModels === "refreshed") message.success(summary);
-      else message.warning(`${summary}；统计刷新未完成，页面将立即重试`);
-      setBarcodeOpen(false);
-      await load();
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
+      next = identityBulkReport(kind, items, response);
+      if (next.rows.some(row => row.status === "rejected" || row.status === "unconfirmed") || next.readModels === "deferred") {
+        message.warning("批次有待处理事项，请查看逐行结果");
+      } else message.success("本批已完成，逐行结果已保留");
+    } catch {
+      next = unconfirmedIdentityBulk(kind, items);
+      message.error("结果未确认；请先核对当前归属，勿重复提交");
     }
+    setBulkReport(mergeIdentityBulk(previous, next));
+    setRetryReview(false);
+    setResultOpen(true);
+    setBarcodeOpen(false); setPddBulkOpen(false); setBulkOpen(false);
+    savingRef.current = false;
+    setSaving(false);
+    // The write is settled (or explicitly uncertain); a slow read refresh must not trap the result modal.
+    void load();
   };
-  const submitPddBulk = async () => {
-    if (!canClaim || savingRef.current || !reviewData?.pddExactHits?.length) return;
-    savingRef.current = true;
-    setSaving(true);
-    try {
-      const r = await postJson<{ total: number; claimed: number; alreadyClaimed: number; failed: number; readModels: "refreshed" | "deferred" }>(
-        "/api/master/sku/platform-claim/bulk",
-        { items: reviewData.pddExactHits.slice(0, 300).map((h) => ({ shopName: h.shopName, platformSkuId: h.platformSkuId, skuId: h.skuId, platform: "pdd" })) },
-      );
-      const summary = `拼多多本批 ${r.total} 行：新认领 ${r.claimed}，此前已认领 ${r.alreadyClaimed}，失败 ${r.failed}`;
-      if (r.readModels === "refreshed") message.success(summary);
-      else message.warning(`${summary}；统计刷新未完成，页面将立即重试`);
-      setPddBulkOpen(false);
-      await load();
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
-    }
-  };
-  const submitBulk = async () => {
-    if (!canClaim || savingRef.current || !reviewData?.exactHits.length) return;
-    savingRef.current = true;
-    setSaving(true);
-    try {
-      const r = await postJson<{ total: number; claimed: number; alreadyClaimed: number; failed: number; readModels: "refreshed" | "deferred" }>(
-        "/api/master/sku/platform-claim/bulk",
-        { items: reviewData.exactHits.slice(0, 300).map((h) => ({ shopName: h.shopName, platformSkuId: h.platformSkuId, skuId: h.skuId })) },
-      );
-      const summary = `本批 ${r.total} 行：新认领 ${r.claimed}，此前已认领 ${r.alreadyClaimed}，失败 ${r.failed}`;
-      if (r.readModels === "refreshed") message.success(summary);
-      else message.warning(`${summary}；统计刷新未完成，页面将立即重试`);
-      setBulkOpen(false);
-      await load();
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
-    }
-  };
+  const submitBarcodeFill = () => submitBatch("barcode", (reviewData?.barcodeFillHits ?? []).slice(0, 500));
+  const submitPddBulk = () => submitBatch("pdd", (reviewData?.pddExactHits ?? []).slice(0, 300));
+  const submitBulk = () => submitBatch("tmall", (reviewData?.exactHits ?? []).slice(0, 300));
+  const rejectedRows = bulkReport?.rows.filter(row => row.status === "rejected") ?? [];
+  const unconfirmedCount = bulkReport?.rows.filter(row => row.status === "unconfirmed").length ?? 0;
+  const completedCount = bulkReport?.rows.filter(row => row.status === "saved" || row.status === "unchanged").length ?? 0;
+  const resultSummary = `本批 ${bulkReport?.rows.length ?? 0} 项：已完成 ${completedCount} · 被拒绝 ${rejectedRows.length} · 结果未确认 ${unconfirmedCount}`;
 
   const columns: ColumnsType<PlatformSkuGapRow> = [
     {
@@ -305,6 +281,9 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
       }
     >
       <Space direction="vertical" size={12} style={{ width: "100%" }}>
+        {bulkReport ? <Alert type={rejectedRows.length || unconfirmedCount || bulkReport.readModels !== "refreshed" ? "warning" : "success"}
+          showIcon message={resultSummary}
+          action={<Button size="small" onClick={() => { setRetryReview(false); setResultOpen(true); }}>查看处理结果</Button>} /> : null}
         {loadError ? (
           <Alert
             type="error"
@@ -385,7 +364,7 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
       <Modal
         title="补齐 SKU 条码：财务货品档案 / 聚水潭商品资料镜像"
         open={barcodeOpen}
-        onOk={() => void submitBarcodeFill()}
+        onOk={submitBarcodeFill}
         onCancel={() => { if (!savingRef.current) setBarcodeOpen(false); }}
         confirmLoading={saving}
         closable={!saving}
@@ -421,7 +400,7 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
       <Modal
         title="批量认领：拼多多对照表商家编码 = 系统编码"
         open={pddBulkOpen}
-        onOk={() => void submitPddBulk()}
+        onOk={submitPddBulk}
         onCancel={() => { if (!savingRef.current) setPddBulkOpen(false); }}
         confirmLoading={saving}
         closable={!saving}
@@ -458,7 +437,7 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
       <Modal
         title="批量认领：对照表商家编码 = 系统编码"
         open={bulkOpen}
-        onOk={() => void submitBulk()}
+        onOk={submitBulk}
         onCancel={() => { if (!savingRef.current) setBulkOpen(false); }}
         confirmLoading={saving}
         closable={!saving}
@@ -476,7 +455,7 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
           </Typography.Paragraph>
           <Typography.Text>
             共 <Typography.Text strong>{reviewData?.exactHits.length ?? 0}</Typography.Text> 行，
-            {canSeeAmounts ? <>涉及支付金额占比 <Typography.Text strong>{reviewData?.exactHitAmountPct ?? "—"}%</Typography.Text>。</> : "请核对外部编码与系统 SKU 的归属。"}
+            {canSeeAmounts ? <>涉及支付金额占比 <Typography.Text strong>{reviewData?.exactHitAmountPct == null ? "未知" : `${reviewData.exactHitAmountPct}%`}</Typography.Text>。</> : "请核对外部编码与系统 SKU 的归属。"}
           </Typography.Text>
           <Table
             size="small"
@@ -490,6 +469,51 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
             ]}
           />
           {(reviewData?.exactHits.length ?? 0) > 8 ? <Typography.Text type="secondary">…仅预览前 8 行</Typography.Text> : null}
+        </Space>
+      </Modal>
+      <Modal
+        title={retryReview ? "复核未完成项 · 确认后才重试" : "批量处理结果"}
+        open={resultOpen}
+        width={820}
+        onCancel={() => { if (!savingRef.current) { setResultOpen(false); setRetryReview(false); } }}
+        closable={!saving}
+        keyboard={!saving}
+        maskClosable={false}
+        footer={<Space wrap>
+          <Button disabled={saving} onClick={() => { setResultOpen(false); setRetryReview(false); }}>关闭</Button>
+          {rejectedRows.length > 0 && !retryReview ? <Button disabled={saving || loading || !!loadError || !canClaim}
+            onClick={() => { if (!savingRef.current && !loading && !loadError && canClaim) setRetryReview(true); }}>复核未完成项</Button> : null}
+          {retryReview ? <Button type="primary" loading={saving} disabled={!canClaim || loading || !!loadError || !rejectedRows.length}
+            onClick={() => { if (!loading && !loadError && bulkReport) void submitBatch(bulkReport.kind, rejectedRows.map(row => row.item), bulkReport); }}>
+            确认重试 {rejectedRows.length} 项
+          </Button> : null}
+        </Space>}
+      >
+        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          <Alert showIcon type={rejectedRows.length || unconfirmedCount ? "warning" : "success"} message={resultSummary}
+            description={retryReview ? "请先处理下列拒绝原因，并再次核对目标 SKU。只重试本表项目；已完成及结果未确认项不会重发。"
+              : "结果保留在本页面，关闭窗口后仍可查看；刷新或离开页面后请到身份主档与审计记录核对。"} />
+          {unconfirmedCount ? <Alert type="warning" showIcon message="结果未确认不等于失败"
+            description="网络中断或服务器异常可能发生在保存之后。这些项目不提供批量重试，请先核对当前归属与审计记录。" /> : null}
+          {bulkReport?.readModels !== "refreshed" ? <Alert type="info" showIcon message="派生统计尚未确认更新"
+            description="已保存项不需要重复提交；覆盖率与外部需求统计需要后续成功重建，页面刷新不保证完成重建。" /> : null}
+          <Table data-testid="identity-bulk-results" size="small"
+            rowKey={row => identityBulkKey(bulkReport?.kind ?? "tmall", row.item)}
+            dataSource={retryReview ? rejectedRows : bulkReport?.rows ?? []}
+            pagination={{ pageSize: 8, showSizeChanger: false, hideOnSinglePage: true }} tableLayout="fixed"
+            columns={[
+              { title: "项目 / 下一步", responsive: ["xs"], render: (_, row) => <div style={{ overflowWrap: "anywhere" }}>
+                <strong>{row.item.skuCode}</strong>
+                <div style={{ marginTop: 4 }}>{row.item.barcode ?? `${row.item.shopName} · ${row.item.platformSkuId}`}</div>
+                <div style={{ marginTop: 6 }}>{row.detail}</div>
+              </div> },
+              { title: "目标 SKU", responsive: ["sm"], width: 150, render: (_, row) => <span style={{ overflowWrap: "anywhere" }}>{row.item.skuCode}</span> },
+              { title: "外部身份 / 条码", responsive: ["sm"], width: 220, render: (_, row) => <span style={{ overflowWrap: "anywhere" }}>{row.item.barcode ?? `${row.item.shopName} · ${row.item.platformSkuId}`}</span> },
+              { title: "结果", width: 96, render: (_, row) => <Tag color={row.status === "rejected" ? "error" : row.status === "unconfirmed" ? "warning" : "success"}>
+                {{ saved: "已保存", unchanged: "已一致", rejected: "被拒绝", unconfirmed: "未确认" }[row.status]}
+              </Tag> },
+              { title: "说明 / 下一步", responsive: ["sm"], render: (_, row) => <span style={{ overflowWrap: "anywhere" }}>{row.detail}</span> },
+            ]} />
         </Space>
       </Modal>
       <Modal

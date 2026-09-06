@@ -70,7 +70,7 @@ type Element = React.ReactElement<Props>;
 function elements(node: ReactNode): Element[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!isValidElement<Props>(node)) return [];
-  return [node, ...elements(node.props.children), ...elements(node.props.extra as ReactNode)];
+  return [node, ...elements(node.props.children), ...elements(node.props.extra as ReactNode), ...elements(node.props.footer as ReactNode), ...elements(node.props.action as ReactNode)];
 }
 function text(node: ReactNode): string {
   if (Array.isArray(node)) return node.map(text).join("");
@@ -109,6 +109,20 @@ beforeEach(() => {
 afterEach(() => { for (const cleanup of hooks.cleanups.values()) cleanup(); vi.unstubAllGlobals(); });
 
 describe("platform identity UI contract (real callbacks, mocked hook scheduler; not browser proof)", () => {
+  it("keeps the outcome and next action visible on mobile without a horizontal results table", async () => {
+    const tree = await loaded("pmc");
+    const table = elements(tree).find(e => e.props["data-testid"] === "identity-bulk-results")!;
+    expect(table.props.scroll).toBeUndefined();
+    const columns = table.props.columns as { title: string; responsive?: string[]; render?: (value: unknown, row: unknown) => ReactNode }[];
+    const mobile = columns.filter(column => !column.responsive || column.responsive.includes("xs"));
+    expect(mobile.map(column => column.title)).toEqual(["项目 / 下一步", "结果"]);
+    const item = { item: { skuId: 42, skuCode: "QA-42", shopName: "QA店", platformSkuId: "外部42" }, status: "rejected", detail: "归属冲突，请核对" };
+    const detail = text(mobile[0].render!(null, item));
+    expect(detail).toContain("QA-42");
+    expect(detail).toContain("外部42");
+    expect(detail).toContain("归属冲突，请核对");
+    expect(text(mobile[1].render!(null, item))).toContain("被拒绝");
+  });
   it.each(["ops", "quality", "finance", "unknown"])("%s cannot see or submit claim controls", async role => {
     const tree = await loaded(role);
     expect(button(tree, "一键认领")).toBeUndefined();
@@ -148,5 +162,38 @@ describe("platform identity UI contract (real callbacks, mocked hook scheduler; 
     expect(button(tree, "一键认领")!.props.disabled).toBe(true);
     click(button(tree, "一键认领")!);
     expect(modal(render())).toBeUndefined();
+  });
+  it("keeps partial failures visible and retries only reviewed unsuccessful rows", async () => {
+    const fixture = data("pmc");
+    fixture.exactHits.push(data("pmc", 99).exactHits[0]);
+    network.fetch.mockResolvedValue(fixture);
+    render(); await flush(); let tree = render();
+    click(button(tree, "一键认领")!); tree = render();
+    network.post.mockResolvedValueOnce({ total: 2, claimed: 1, alreadyClaimed: 0, failed: 1, readModels: "refreshed", results: [
+      { shopName: "QA", platformSkuId: "platform-42", skuId: 42, ok: true, created: true },
+      { shopName: "QA", platformSkuId: "platform-99", skuId: 99, ok: false, errorKind: "business", error: "归属冲突，请先人工裁决" },
+    ] });
+    await (modal(tree).props.onOk as () => Promise<void>)(); await flush(); tree = render();
+    expect(messages.success).not.toHaveBeenCalled();
+    expect(messages.warning).toHaveBeenCalled();
+    expect(modal(tree).props.title).toContain("处理结果");
+    const resultTable = elements(modal(tree)).find(e => e.props["data-testid"] === "identity-bulk-results")!;
+    expect((resultTable.props.dataSource as { detail: string }[]).some(row => row.detail.includes("归属冲突"))).toBe(true);
+    click(button(tree, "复核未完成项")!); tree = render();
+    expect(network.post).toHaveBeenCalledTimes(1);
+    network.post.mockReturnValue(new Promise(() => {}));
+    click(button(tree, "确认重试 1 项")!);
+    expect(network.post.mock.calls[1][1].items).toEqual([{ shopName: "QA", platformSkuId: "platform-99", skuId: 99 }]);
+  });
+  it("keeps uncertain network outcomes distinct and offers no blind retry", async () => {
+    let tree = await loaded("pmc");
+    network.fetch.mockResolvedValue(data("pmc"));
+    click(button(tree, "一键认领")!); tree = render();
+    network.post.mockRejectedValueOnce(new Error("网络断开；操作可能已完成"));
+    await (modal(tree).props.onOk as () => Promise<void>)(); await flush(); tree = render();
+    expect(modal(tree).props.title).toContain("处理结果");
+    expect(elements(modal(tree)).some(e => String(e.props.message).includes("结果未确认"))).toBe(true);
+    expect(button(tree, "复核未完成项")).toBeUndefined();
+    expect(network.post).toHaveBeenCalledTimes(1);
   });
 });

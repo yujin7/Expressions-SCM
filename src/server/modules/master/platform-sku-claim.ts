@@ -22,6 +22,7 @@ import { refreshJiandaoyunExternalDemandReadModel } from "@/server/modules/repor
 import { refreshExternalVelocity } from "@/server/modules/report/external-velocity";
 import type { AnyDb } from "@/server/core/svc";
 import { assertPlatformIdentityWriter } from "./platform-identity-access";
+import { identityBulkError } from "./identity-bulk-error";
 
 export const PLATFORM_SCOPES = {
   tmall: "JIANDAOYUN:TMALL",
@@ -187,7 +188,7 @@ export async function claimPlatformSkusBulk(actor: SessionUser, input: unknown, 
   assertPlatformIdentityWriter(actor);
   const v = platformSkuBulkClaimSchema.parse(input);
   const db = dbArg ?? (await getDbAsync());
-  const results: { shopName: string; platformSkuId: string; skuId: number; ok: boolean; created?: boolean; error?: string }[] = [];
+  const results: { shopName: string; platformSkuId: string; skuId: number; ok: boolean; created?: boolean; error?: string; errorKind?: "business" | "unconfirmed"; errorId?: string }[] = [];
   for (const item of v.items) {
     try {
       const r = await db.transaction(async (tx: AnyDb) =>
@@ -198,7 +199,7 @@ export async function claimPlatformSkusBulk(actor: SessionUser, input: unknown, 
       );
       results.push({ ...item, ok: true, created: r.created });
     } catch (error) {
-      results.push({ ...item, ok: false, error: (error as Error).message });
+      results.push({ ...item, ok: false, ...identityBulkError(error, { operation: "claim", userId: actor.id, skuId: item.skuId }) });
     }
   }
   let readModels: "refreshed" | "deferred" = "refreshed";

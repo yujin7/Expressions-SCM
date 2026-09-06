@@ -19,6 +19,7 @@ import type { AnyDb } from "@/server/core/svc";
 import { ApiError } from "@/server/modules/master/common";
 import { refreshPlatformSkuIdentityGap } from "@/server/modules/report/platform-sku-identity-gap";
 import { assertPlatformIdentityWriter } from "./platform-identity-access";
+import { identityBulkError } from "./identity-bulk-error";
 import { assertSkuBarcodeOwnershipInTransaction, lockSkuIdentifierClaim } from "./sku-identifier";
 
 export const skuBarcodeFillSchema = z.object({
@@ -64,13 +65,13 @@ export async function fillSkuBarcodesBulk(actor: SessionUser, input: unknown, db
   assertPlatformIdentityWriter(actor);
   const v = skuBarcodeFillSchema.parse(input);
   const db = dbArg ?? (await getDbAsync());
-  const results: { skuId: number; status: "filled" | "unchanged" | "conflict"; error?: string }[] = [];
+  const results: { skuId: number; status: "filled" | "unchanged" | "conflict"; error?: string; errorKind?: "business" | "unconfirmed"; errorId?: string }[] = [];
   for (const item of v.items) {
     try {
       const r = await db.transaction(async (tx: AnyDb) => fillOne(tx, actor, item, v.source));
       results.push(r);
     } catch (error) {
-      results.push({ skuId: item.skuId, status: "conflict", error: error instanceof Error ? error.message : "未知错误" });
+      results.push({ skuId: item.skuId, status: "conflict", ...identityBulkError(error, { operation: "barcode", userId: actor.id, skuId: item.skuId }) });
     }
   }
   let readModels: "refreshed" | "deferred" = "refreshed";

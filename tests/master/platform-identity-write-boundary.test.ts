@@ -66,6 +66,8 @@ describe("identity writes enforce roles/scopes and shared barcode ownership", ()
         FOR EACH ROW EXECUTE FUNCTION qa_identity_audit_fault()`);
       const result = await fillSkuBarcodesBulk(actor, { items: [{ skuId: sku.id, barcode: "4006381333931" }] }, db);
       expect(result.filled).toBe(0);
+      expect(result.results[0]).toMatchObject({ errorKind: "unconfirmed" });
+      expect(result.results[0].error).not.toMatch(/insert into|audit_logs|QA identity audit deliberately rejected/i);
       const [row] = await db.select().from(schema.skus).where(eq(schema.skus.id, sku.id));
       expect(row.barcode).toBeNull();
       expect(await db.select().from(schema.auditLogs)).toHaveLength(0);
