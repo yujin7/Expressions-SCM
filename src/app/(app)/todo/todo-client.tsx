@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  App, Button, Col, DatePicker, Dropdown, Row, Select, Space, Table, Tabs, Tag, Tooltip, Typography,
+  Alert, App, Button, Col, DatePicker, Dropdown, Empty, Pagination, Row, Select, Space, Spin, Table, Tabs, Tag, Tooltip, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined } from "@ant-design/icons";
@@ -21,12 +21,13 @@ import SearchInput from "@/components/SearchInput";
 import { useListState } from "@/components/useListState";
 import { useMe } from "@/components/useMe";
 import { workItemSourceAction } from "@/lib/work-item-source";
-import { todoTabFromQuery, todoTabHref } from "@/lib/todo-navigation";
+import { todoItemHref, todoTabFromQuery, todoTabHref } from "@/lib/todo-navigation";
 import { todoSortPatch, type TodoSortField } from "@/lib/todo-sort";
 import TodoProgressCard from "./TodoProgressCard";
 import TodoCreateDrawer from "./TodoCreateDrawer";
+import styles from "./todo-client.module.css";
 
-interface WorkItemRow {
+export interface WorkItemRow {
   id: number;
   title: string;
   detail: string | null;
@@ -65,6 +66,35 @@ function fmt(iso: string | null): string {
   return iso ? dayjs(iso).format("YYYY-MM-DD HH:mm") : "—";
 }
 
+export function TodoItemSummary({ row }: { row: WorkItemRow }) {
+  const source = workItemSourceAction(row);
+  return <div className={styles.summary}>
+    <div className={styles.title}><span className={styles.id}>#{row.id}</span> <strong>{row.title}</strong></div>
+    <div className={styles.meta}>
+      <span>责任人：{row.assigneeName ?? `#${row.assigneeId}`}</span>
+      {row.ownerRole ? <span>{ROLE_LABEL[row.ownerRole] ?? row.ownerRole}</span> : null}
+      {source ? <a href={source.href}>{SOURCE_LABEL[row.sourceKind ?? ""] ?? "来源"} #{row.sourceRef}</a>
+        : <span>{SOURCE_LABEL[row.sourceKind ?? ""] ?? row.sourceKind ?? "来源未登记"}{row.sourceRef ? ` #${row.sourceRef}` : ""}</span>}
+    </div>
+    <details className={styles.details}>
+      <summary>明细与记录</summary>
+      <p>{row.detail || "未填写明细"}</p>
+      <dl><dt>指派人</dt><dd>{row.assignerName ?? `#${row.assignerId}`}</dd>
+        <dt>创建时间</dt><dd>{fmt(row.createdAt)}</dd>
+        <dt>完成时间</dt><dd>{fmt(row.completedAt)}</dd></dl>
+      {source ? <p>{source.completionHint} <a href={source.href}>{source.label}</a></p> : null}
+    </details>
+  </div>;
+}
+
+function ItemStatus({ row }: { row: WorkItemRow }) {
+  return <Space size={4} wrap>
+    <Tag color={STATUS_COLOR[row.status]}>{STATUS_LABEL[row.status] ?? row.status}</Tag>
+    {row.overdue ? <Tag color="volcano">{row.status === "done" ? "完成不按时" : "逾期"}</Tag> : null}
+    {row.suspicious ? <Tag color="orange">可疑</Tag> : null}
+  </Space>;
+}
+
 type Filters = { q?: string; status?: string; ownerRole?: string; overdue?: string; sortBy?: string; sortOrder?: string };
 
 function useAssignees(): Assignee[] {
@@ -75,7 +105,7 @@ function useAssignees(): Assignee[] {
   return list;
 }
 
-function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "mine" | "all"; prefix: string; assignees: Assignee[]; refreshKey: number; onChanged: () => void }) {
+export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "mine" | "all"; prefix: string; assignees: Assignee[]; refreshKey: number; onChanged: () => void }) {
   const { message } = App.useApp();
   const me = useMe();
   const [data, setData] = useState<ListData | null>(null);
@@ -84,6 +114,7 @@ function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "
   const loadRequest = useRef<AbortController | null>(null);
   const pendingIds = useRef(new Set<number>());
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(new Set());
+  const [feedback, setFeedback] = useState<{ row: WorkItemRow; text: string; type: "success" | "warning" | "error" } | null>(null);
   const listState = useListState<Filters>({
     key: `todo-${view}`,
     defaults: { q: "", status: view === "mine" ? "active" : "", ownerRole: "", overdue: "", sortBy: "", sortOrder: "" },
@@ -129,11 +160,12 @@ function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "
       if (r.suspicious && patch.status === "done") message.warning("创建后不足 10 分钟即关闭，已标记为「可疑」（仅提示，不影响状态）");
       else if (patch.status === "done") message.success("待办已完成");
       else message.success("已更新");
-      const source = workItemSourceAction(row);
-      if (patch.status === "done" && source) message.info(<span>{source.completionHint} <a href={source.href}>{source.label}</a></span>, 8);
+      setFeedback({ row, text: r.suspicious && patch.status === "done" ? "完成操作已保存；创建不足10分钟即关闭，已标记可疑（仅提示）" : patch.status === "done" ? "完成待办的操作已保存" : "更新操作已保存", type: r.suspicious && patch.status === "done" ? "warning" : "success" });
       onChanged();
     } catch (e) {
-      message.error((e as Error).message);
+      const text = e instanceof Error ? e.message : "更新结果未确认，请先核对待办，勿重复提交";
+      message.error(text);
+      setFeedback({ row, text, type: "error" });
     } finally {
       pendingIds.current.delete(row.id);
       setBusyIds(new Set(pendingIds.current));
@@ -149,40 +181,24 @@ function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "
   });
 
   const columns: ColumnsType<WorkItemRow> = [
-    { title: "#", dataIndex: "id", width: 70, fixed: "left" },
     {
-      title: "标题", dataIndex: "title", ellipsis: true,
-      render: (v: string, r) => (
-        <Space direction="vertical" size={0}>
-          <Typography.Text strong={r.priority === "high"}>{v}</Typography.Text>
-          {r.detail ? <Typography.Text type="secondary" style={{ fontSize: 12 }} ellipsis={{ tooltip: r.detail }}>{r.detail}</Typography.Text> : null}
-        </Space>
-      ),
+      title: "待办 / 责任人 / 来源", dataIndex: "title", width: 340,
+      render: (_: string, r) => <TodoItemSummary row={r} />,
     },
     { title: "优先级", dataIndex: "priority", width: 100, ...sortProps("priority"), render: (v: string) => <Tag color={PRIORITY_COLOR[v]}>{PRIORITY_LABEL[v] ?? v}</Tag> },
     {
-      title: "状态", dataIndex: "status", width: 110, ...sortProps("status"),
-      render: (v: string, r) => (
-        <Space size={4}>
-          <Tag color={STATUS_COLOR[v]}>{STATUS_LABEL[v] ?? v}</Tag>
-          {r.overdue ? <Tag color="volcano">{r.status === "done" ? "完成不按时" : "逾期"}</Tag> : null}
-          {r.suspicious ? <Tag color="orange">可疑</Tag> : null}
-        </Space>
-      ),
+      title: "状态", dataIndex: "status", width: 140, ...sortProps("status"),
+      render: (_: string, r) => <ItemStatus row={r} />,
     },
-    { title: "责任人", dataIndex: "assigneeName", width: 100, render: (v: string | null, r) => v ?? `#${r.assigneeId}` },
-    { title: "责任角色", dataIndex: "ownerRole", width: 100, render: (v: string | null) => (v ? ROLE_LABEL[v] ?? v : "—") },
     { title: "截止", dataIndex: "dueDate", width: 110, ...sortProps("dueDate"), render: (v: string | null) => v ?? "—" },
-    { title: "来源", dataIndex: "sourceKind", width: 135, render: (v: string | null, r) => {
-      const source = workItemSourceAction(r);
-      return source ? <Tooltip title={source.label}><a href={source.href}>{SOURCE_LABEL[v ?? ""]} #{r.sourceRef}</a></Tooltip>
-        : v ? <Tag>{SOURCE_LABEL[v] ?? v}{r.sourceRef ? ` #${r.sourceRef}` : ""}</Tag> : "—";
-    } },
-    { title: "指派人", dataIndex: "assignerName", width: 100, render: (v: string | null) => v ?? "—" },
-    { title: "创建", dataIndex: "createdAt", width: 140, ...sortProps("createdAt"), render: (v: string) => fmt(v) },
     {
-      title: "操作", key: "ops", width: 180, fixed: "right",
-      render: (_, r) => {
+      title: "操作", key: "ops", width: 180,
+      render: (_, r) => renderActions(r),
+    },
+  ];
+
+  // Both layouts use the same permission decision, pending lock and mutation callback.
+  function renderActions(r: WorkItemRow) {
         if (!canManage(r)) return <Typography.Text type="secondary">—</Typography.Text>;
         const active = r.status === "open" || r.status === "in_progress";
         const busy = busyIds.has(r.id);
@@ -206,28 +222,28 @@ function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "
             ) : null}
           </Space>
         );
-      },
-    },
-  ];
+  }
+
+  const feedbackSource = feedback ? workItemSourceAction(feedback.row) : null;
 
   return (
-    <>
+    <section className={styles.list} aria-label={view === "mine" ? "我的待办列表" : "全部待办列表"}>
       <ListToolbar
         state={listState}
         extra={(
-          <Space wrap>
+          <div className={styles.filters}>
             <SearchInput
               key={filters.q ?? ""}
               allowClear
               placeholder="标题 / 明细 / #id"
-              style={{ width: 220 }}
+              className={styles.search}
               defaultValue={filters.q}
               onSearch={(v) => listState.setFilter({ q: v })}
             />
             <Select
               allowClear
               placeholder="状态"
-              style={{ width: 130 }}
+              aria-label="待办状态"
               value={filters.status || undefined}
               onChange={(v) => listState.setFilter({ status: v ?? "" })}
               options={[{ value: "active", label: "未完成" }, ...Object.entries(STATUS_LABEL).map(([value, label]) => ({ value, label }))]}
@@ -235,7 +251,7 @@ function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "
             <Select
               allowClear
               placeholder="责任角色"
-              style={{ width: 130 }}
+              aria-label="待办责任角色"
               value={filters.ownerRole || undefined}
               onChange={(v) => listState.setFilter({ ownerRole: v ?? "" })}
               options={ROLE_OPTIONS}
@@ -243,34 +259,53 @@ function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "
             <Select
               allowClear
               placeholder="逾期"
-              style={{ width: 110 }}
+              aria-label="待办逾期筛选"
               value={filters.overdue || undefined}
               onChange={(v) => listState.setFilter({ overdue: v ?? "" })}
               options={[{ value: "1", label: "仅逾期" }]}
             />
-          </Space>
+            <Select aria-label="待办排序字段" allowClear placeholder="默认排序"
+              value={filters.sortBy || undefined}
+              onChange={(value) => listState.setFilter(value ? { sortBy: value, sortOrder: filters.sortOrder || "asc" } : { sortBy: "", sortOrder: "" })}
+              options={[{ value: "priority", label: "按优先级" }, { value: "status", label: "按状态" }, { value: "dueDate", label: "按截止日期" }, { value: "createdAt", label: "按创建时间" }]} />
+            {filters.sortBy ? <Button aria-label="切换待办排序方向" onClick={() => listState.setFilter({ sortOrder: filters.sortOrder === "desc" ? "asc" : "desc" })}>{filters.sortOrder === "desc" ? "降序 ↓" : "升序 ↑"}</Button> : null}
+          </div>
         )}
       />
       <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="待办列表" retrying={loading} />
+      {feedback ? <Alert className={styles.feedback} type={feedback.type} showIcon closable onClose={() => setFeedback(null)}
+        message={`#${feedback.row.id} ${feedback.row.title}：${feedback.text}`}
+        description={<span><a href={todoItemHref(feedback.row.id)}>核对该待办</a>{feedbackSource ? <> · {feedbackSource.completionHint} <a href={feedbackSource.href}>{feedbackSource.label}</a></> : null}</span>} /> : null}
       <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
-        列头排序作用于当前筛选下的全部可见待办；未设截止日期排最后。清除排序后恢复状态 → 优先级 → 截止日期顺序。
+        排序作用于当前筛选下的全部可见待办；未设截止日期排最后。清除排序后恢复状态 → 优先级 → 截止日期顺序。
       </Typography.Paragraph>
       <Table<WorkItemRow>
+        className={styles.desktop}
         rowKey="id"
         size={listState.tableSize}
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
-        scroll={{ x: "max-content" }}
+        tableLayout="fixed"
         locale={{ emptyText: loadError ? "数据未加载" : "当前条件下没有待办" }}
-        pagination={listState.paginationProps({ total: data?.total ?? 0 })}
+        pagination={false}
         onChange={(_pagination, _filters, sorter, extra) => {
           if (extra.action !== "sort") return;
           const patch = todoSortPatch(Array.isArray(sorter) ? sorter[0] ?? {} : sorter);
           if (patch) listState.setFilter(patch); // Shared list state resets to page 1 and preserves sibling tab parameters.
         }}
       />
-    </>
+      <div className={styles.mobile} data-density={listState.density} aria-busy={loading}>
+        {loading ? <div className={styles.empty}><Spin /> 正在加载待办…</div> : data?.rows.length ? (
+          <ul className={styles.cards}>{data.rows.map((row) => <li key={row.id} className={styles.card}>
+            <div className={styles.meta}><Tag color={PRIORITY_COLOR[row.priority]}>优先级：{PRIORITY_LABEL[row.priority] ?? row.priority}</Tag><ItemStatus row={row} /></div>
+            <TodoItemSummary row={row} />
+            <div className={styles.cardFooter}><span>截止：{row.dueDate ?? "未设置"}</span><div>{renderActions(row)}</div></div>
+          </li>)}</ul>
+        ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={loadError ? "数据未加载" : "当前条件下没有待办"} />}
+      </div>
+      <div className={styles.pagination}><Pagination {...listState.paginationProps({ total: data?.total ?? 0 })} size="small" responsive /></div>
+    </section>
   );
 }
 
@@ -282,7 +317,7 @@ interface StatsData { groupBy: "person" | "role"; fromMonth: string; toMonth: st
 
 type StatsFilters = { groupBy?: string; from?: string; to?: string; ownerRole?: string };
 
-function StatsTab({ refreshKey }: { refreshKey: number }) {
+export function StatsTab({ refreshKey }: { refreshKey: number }) {
   const [data, setData] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -301,6 +336,7 @@ function StatsTab({ refreshKey }: { refreshKey: number }) {
     loadRequest.current = request;
     setLoading(true);
     setLoadError(null);
+    setData(null); // Old group/month facts and caliber must disappear before the next request settles.
     try {
       const params = new URLSearchParams({ groupBy: filters.groupBy || "person" });
       if (filters.from) params.set("from", filters.from);
@@ -342,21 +378,22 @@ function StatsTab({ refreshKey }: { refreshKey: number }) {
   };
 
   return (
-    <>
+    <section className={styles.list} aria-label="待办完成率统计">
       <CaliberNote summary="只读统计，不打分；绩效 = 证据导出（D61）。" detail={data?.caliber} />
       <ListToolbar
         state={listState}
         onExport={data && !loading && !loadError ? onExport : undefined}
         exportText="导出证据 CSV"
         extra={(
-          <Space wrap>
+          <div className={styles.filters}>
             <Select
-              style={{ width: 120 }}
+              aria-label="完成率分组"
               value={filters.groupBy || "person"}
               onChange={(v) => listState.setFilter({ groupBy: v })}
               options={[{ value: "person", label: "按人×月" }, { value: "role", label: "按角色×月" }]}
             />
             <DatePicker.RangePicker
+              className={styles.monthRange}
               picker="month"
               value={[filters.from ? dayjs(filters.from) : null, filters.to ? dayjs(filters.to) : null]}
               onChange={(v) => listState.setFilter({ from: v?.[0]?.format("YYYY-MM") ?? "", to: v?.[1]?.format("YYYY-MM") ?? "" })}
@@ -364,26 +401,48 @@ function StatsTab({ refreshKey }: { refreshKey: number }) {
             <Select
               allowClear
               placeholder="责任角色"
-              style={{ width: 130 }}
+              aria-label="完成率责任角色"
               value={filters.ownerRole || undefined}
               onChange={(v) => listState.setFilter({ ownerRole: v ?? "" })}
               options={ROLE_OPTIONS}
             />
-          </Space>
+          </div>
         )}
       />
       <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="待办完成率" retrying={loading} />
       <Table<StatsRow>
+        className={styles.desktop}
         rowKey={(r) => `${r.groupKey}|${r.month}`}
         size={listState.tableSize}
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
-        scroll={{ x: "max-content" }}
+        tableLayout="fixed"
         locale={{ emptyText: loadError ? "数据未加载" : "当前条件下没有待办统计" }}
         pagination={false}
       />
-    </>
+      <div className={styles.mobile} data-density={listState.density} aria-busy={loading}>
+        {loading ? <div className={styles.empty}><Spin /> 正在加载统计…</div> : data?.rows.length ? (
+          <ul className={styles.cards} aria-label="待办完成率明细">{data.rows.map((r) => (
+            <li key={`${r.groupKey}|${r.month}`} className={styles.card}>
+              <div className={styles.statsHeading}><strong>{ROLE_LABEL[r.groupLabel] ?? r.groupLabel}</strong><span>{r.month}</span></div>
+              <dl className={styles.rates}>
+                <div><dt>完成率</dt><dd>{r.completionRate == null ? "—" : `${r.completionRate}%`}</dd></div>
+                <div><dt>按时率</dt><dd>{r.onTimeRate == null ? "—" : `${r.onTimeRate}%`}</dd></div>
+              </dl>
+              <dl className={styles.counts}>
+                <div><dt>总数</dt><dd>{r.total}</dd></div>
+                <div><dt>已完成</dt><dd>{r.done}</dd></div>
+                <div><dt>按时</dt><dd>{r.onTime}</dd></div>
+                <div><dt>逾期/不按时</dt><dd>{r.overdue}</dd></div>
+                <div><dt>已取消</dt><dd>{r.cancelled}</dd></div>
+                <div><dt>可疑</dt><dd>{r.suspicious ? <Tag color="orange">{r.suspicious}</Tag> : 0}</dd></div>
+              </dl>
+            </li>
+          ))}</ul>
+        ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={loadError ? "数据未加载" : "当前条件下没有待办统计"} />}
+      </div>
+    </section>
   );
 }
 
