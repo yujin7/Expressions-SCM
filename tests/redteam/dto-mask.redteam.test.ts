@@ -10,6 +10,14 @@ const NO_ROLE: string[] = ["warehouse"]; // 不可见价格
 const PURCH = ["purchasing"]; // 可见价格
 
 describe("redteam/dto maskSensitive", () => {
+  it("domain-sensitive keys extend masking without changing unrelated DTO policy", () => {
+    const source = { price: "9.99", mappedAmountPct: 22, nested: [{ paidAmount: "15.20", score: 90 }] };
+    const view = maskSensitive(source, NO_ROLE, ["paidAmount", "mappedAmountPct"]);
+    expect(view).toEqual({ nested: [{ score: 90 }] });
+    expect(maskSensitive(source, NO_ROLE)).toEqual({ mappedAmountPct: 22, nested: [{ paidAmount: "15.20", score: 90 }] });
+    expect(maskSensitive(source, PURCH, ["paidAmount", "mappedAmountPct"])).toEqual(source);
+    expect(source.price).toBe("9.99");
+  });
   it("数组套数组里的敏感键要被剥离", () => {
     const data = { rows: [[{ price: "9.99", name: "x" }], [{ price: "1", deductAmount: "2" }]] };
     const masked = maskSensitive(data, NO_ROLE) as any;

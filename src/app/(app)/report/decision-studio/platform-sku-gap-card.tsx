@@ -13,11 +13,8 @@ import type { ColumnsType } from "antd/es/table";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import RemoteSelect from "@/components/RemoteSelect";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
-import type {
-  PlatformSkuGapRow,
-  PlatformSkuGapStatus,
-  PlatformSkuIdentityGap,
-} from "@/server/modules/report/platform-sku-identity-gap";
+import type { PlatformSkuGapStatus } from "@/server/modules/report/platform-sku-identity-gap";
+import type { PlatformSkuIdentityView, PlatformSkuIdentityRowView as PlatformSkuGapRow } from "@/server/modules/report/platform-sku-identity-view";
 
 const STATUS_LABEL: Record<PlatformSkuGapStatus, { text: string; color: string }> = {
   mapped: { text: "已映射", color: "success" },
@@ -29,7 +26,8 @@ const STATUS_LABEL: Record<PlatformSkuGapStatus, { text: string; color: string }
   bundle_resolved: { text: "组合装（已拆到组件）", color: "geekblue" },
 };
 
-function yuan(value: string | number): string {
+function yuan(value: string | number | null | undefined): string {
+  if (value == null) return "—";
   const n = Number(value);
   if (!Number.isFinite(n)) return "—";
   if (Math.abs(n) >= 10_000) return `${(n / 10_000).toFixed(1)}万`;
@@ -38,13 +36,17 @@ function yuan(value: string | number): string {
 
 export default function PlatformSkuGapCard({ active }: { active: boolean }) {
   const { message } = App.useApp();
-  const [data, setData] = useState<PlatformSkuIdentityGap | null>(null);
+  const [data, setData] = useState<PlatformSkuIdentityView | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [claiming, setClaiming] = useState<PlatformSkuGapRow | null>(null);
   const [targetSkuId, setTargetSkuId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const [reviewData, setReviewData] = useState<PlatformSkuIdentityView | null>(null);
   const requestRef = useRef<AbortController | null>(null);
+  const canClaim = data?.permissions.canClaim === true;
+  const canSeeAmounts = data?.permissions.canSeeAmounts === true;
 
   const load = useCallback(async () => {
     requestRef.current?.abort();
@@ -53,7 +55,7 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
     setLoading(true);
     setLoadError(null);
     try {
-      const next = await fetchJson<PlatformSkuIdentityGap>("/api/report/platform-sku-identity-gap", {
+      const next = await fetchJson<PlatformSkuIdentityView>("/api/report/platform-sku-identity-gap", {
         signal: controller.signal,
       });
       if (!controller.signal.aborted) setData(next);
@@ -74,15 +76,19 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
   useEffect(() => () => requestRef.current?.abort(), []);
 
   const openClaim = (row: PlatformSkuGapRow, presetSkuId?: number) => {
+    if (!canClaim || loading || loadError || savingRef.current) return;
+    setReviewData(data);
     setClaiming(row);
     setTargetSkuId(presetSkuId ?? null);
   };
 
   const submitClaim = async () => {
+    if (!canClaim || savingRef.current) return;
     if (!claiming || !targetSkuId) {
       message.warning("请先选择目标 SKU");
       return;
     }
+    savingRef.current = true;
     setSaving(true);
     try {
       const result = await postJson<{ readModels: "refreshed" | "deferred" }>("/api/master/sku/platform-claim", {
@@ -100,6 +106,7 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
     } catch (e) {
       message.error((e as Error).message);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -107,13 +114,21 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [pddBulkOpen, setPddBulkOpen] = useState(false);
   const [barcodeOpen, setBarcodeOpen] = useState(false);
+  const openReview = (kind: "tmall" | "pdd" | "barcode") => {
+    if (!canClaim || !data || loading || loadError || savingRef.current) return;
+    setReviewData(data); // Immutable fetch result: preview and submitted items share this snapshot.
+    setBulkOpen(kind === "tmall");
+    setPddBulkOpen(kind === "pdd");
+    setBarcodeOpen(kind === "barcode");
+  };
   const submitBarcodeFill = async () => {
-    if (!data?.barcodeFillHits?.length) return;
+    if (!canClaim || savingRef.current || !reviewData?.barcodeFillHits?.length) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       const r = await postJson<{ filled: number; unchanged: number; conflicts: number; readModels: "refreshed" | "deferred" }>(
         "/api/master/sku/barcode-fill/bulk",
-        { items: data.barcodeFillHits.slice(0, 500).map((h) => ({ skuId: h.skuId, barcode: h.barcode })), source: "jiandaoyun-master-mirror" },
+        { items: reviewData.barcodeFillHits.slice(0, 500).map((h) => ({ skuId: h.skuId, barcode: h.barcode })), source: "jiandaoyun-master-mirror" },
       );
       const summary = `本批补齐条码 ${r.filled} 个，已一致 ${r.unchanged}，冲突 ${r.conflicts}`;
       if (r.readModels === "refreshed") message.success(summary);
@@ -123,16 +138,18 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
     } catch (e) {
       message.error((e as Error).message);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
   const submitPddBulk = async () => {
-    if (!data?.pddExactHits?.length) return;
+    if (!canClaim || savingRef.current || !reviewData?.pddExactHits?.length) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       const r = await postJson<{ total: number; claimed: number; alreadyClaimed: number; failed: number; readModels: "refreshed" | "deferred" }>(
         "/api/master/sku/platform-claim/bulk",
-        { items: data.pddExactHits.slice(0, 300).map((h) => ({ shopName: h.shopName, platformSkuId: h.platformSkuId, skuId: h.skuId, platform: "pdd" })) },
+        { items: reviewData.pddExactHits.slice(0, 300).map((h) => ({ shopName: h.shopName, platformSkuId: h.platformSkuId, skuId: h.skuId, platform: "pdd" })) },
       );
       const summary = `拼多多本批 ${r.total} 行：新认领 ${r.claimed}，此前已认领 ${r.alreadyClaimed}，失败 ${r.failed}`;
       if (r.readModels === "refreshed") message.success(summary);
@@ -142,16 +159,18 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
     } catch (e) {
       message.error((e as Error).message);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
   const submitBulk = async () => {
-    if (!data?.exactHits.length) return;
+    if (!canClaim || savingRef.current || !reviewData?.exactHits.length) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       const r = await postJson<{ total: number; claimed: number; alreadyClaimed: number; failed: number; readModels: "refreshed" | "deferred" }>(
         "/api/master/sku/platform-claim/bulk",
-        { items: data.exactHits.slice(0, 300).map((h) => ({ shopName: h.shopName, platformSkuId: h.platformSkuId, skuId: h.skuId })) },
+        { items: reviewData.exactHits.slice(0, 300).map((h) => ({ shopName: h.shopName, platformSkuId: h.platformSkuId, skuId: h.skuId })) },
       );
       const summary = `本批 ${r.total} 行：新认领 ${r.claimed}，此前已认领 ${r.alreadyClaimed}，失败 ${r.failed}`;
       if (r.readModels === "refreshed") message.success(summary);
@@ -161,6 +180,7 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
     } catch (e) {
       message.error((e as Error).message);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -190,6 +210,7 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
     },
     {
       title: "支付金额",
+      key: "paidAmount",
       dataIndex: "paidAmount",
       width: 110,
       align: "right",
@@ -240,7 +261,7 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
               <Typography.Text type="secondary" ellipsis={{ tooltip: `${c.name} — ${c.reasons.join("；")}` }} style={{ maxWidth: 160 }}>
                 {c.name}
               </Typography.Text>
-              <Button size="small" type="link" onClick={() => openClaim(r, c.skuId)}>认领为此</Button>
+              {canClaim ? <Button size="small" type="link" disabled={loading || !!loadError || saving} onClick={() => openClaim(r, c.skuId)}>认领为此</Button> : null}
             </Space>
           ))}
         </Space>
@@ -261,25 +282,25 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
   return (
     <Card
       size="small"
-      title="平台 SKU 身份缺口 · 按价值排序"
+      title={canSeeAmounts ? "平台 SKU 身份缺口 · 按价值排序" : "平台 SKU 身份缺口 · 核对队列"}
       extra={
-        <Space>
+        <Space wrap>
           <Tag color="warning">观察口径</Tag>
-          <Button
+          {canClaim ? <Button
             size="small"
             type="primary"
-            disabled={!data?.exactHits.length}
-            onClick={() => setBulkOpen(true)}
+            disabled={!data?.exactHits.length || loading || !!loadError || saving}
+            onClick={() => openReview("tmall")}
           >
             一键认领精确命中 ({data ? data.exactHits.length : "—"})
-          </Button>
-          <Button size="small" disabled={!data?.pddExactHits?.length} onClick={() => setPddBulkOpen(true)}>
+          </Button> : null}
+          {canClaim ? <Button size="small" disabled={!data?.pddExactHits?.length || loading || !!loadError || saving} onClick={() => openReview("pdd")}>
             拼多多精确命中 ({data ? data.pddExactHits?.length ?? 0 : "—"})
-          </Button>
-          <Button size="small" disabled={!data?.barcodeFillHits?.length} onClick={() => setBarcodeOpen(true)}>
+          </Button> : null}
+          {canClaim ? <Button size="small" disabled={!data?.barcodeFillHits?.length || loading || !!loadError || saving} onClick={() => openReview("barcode")}>
             补齐条码 ({data ? data.barcodeFillHits?.length ?? 0 : "—"})
-          </Button>
-          <Button size="small" onClick={() => void load()} loading={loading}>刷新</Button>
+          </Button> : null}
+          <Button size="small" onClick={() => void load()} loading={loading} disabled={saving}>刷新</Button>
         </Space>
       }
     >
@@ -299,7 +320,9 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
           message={loadError ? "本区块数据未加载" : data?.gate ?? "加载中…"}
           description={data ? `批次截至 ${data.sourceAsOf?.slice(0, 10) ?? "—"}，销售日 ${data.window.from ?? "—"} ～ ${data.window.to ?? "—"}；对照表截至 ${data.crosswalkAsOf?.slice(0, 10) ?? "—"}。` : undefined}
         />
-        <Row gutter={[10, 10]} className="compact-kpi-row">
+        {!canSeeAmounts && data ? <Alert type="info" showIcon message="当前角色可核对身份与数量；销售金额及金额覆盖比例受权限保护。" /> : null}
+        {!canClaim && data ? <Typography.Text type="secondary">认领与条码补齐需计划、采购或仓库负责人操作。</Typography.Text> : null}
+        {canSeeAmounts ? <Row gutter={[10, 10]} className="compact-kpi-row">
           <Col xs={12} lg={6}>
             <Card size="small">
               <Statistic
@@ -342,12 +365,15 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
               <Typography.Text type="secondary">{totals ? `${totals.unmappedWithCandidates} 个缺口有候选` : "—"}</Typography.Text>
             </Card>
           </Col>
-        </Row>
+        </Row> : <Row gutter={[10, 10]} className="compact-kpi-row">
+          <Col xs={12}><Statistic title="已映射 / 平台 SKU" value={totals ? `${totals.mappedSkus} / ${totals.platformSkus}` : "—"} /></Col>
+          <Col xs={12}><Statistic title="有候选的身份缺口" value={totals?.unmappedWithCandidates ?? "—"} /></Col>
+        </Row>}
         <Table<PlatformSkuGapRow>
           rowKey={(r) => `${r.shopName}|${r.platformSkuId}`}
           size="small"
           loading={loading}
-          columns={columns}
+          columns={columns.filter((column) => (canSeeAmounts || column.key !== "paidAmount") && (canClaim || column.key !== "action"))}
           dataSource={data?.top ?? []}
           pagination={{ pageSize: 20, showSizeChanger: false }}
           scroll={{ x: 1400 }}
@@ -360,23 +386,27 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
         title="补齐 SKU 条码：财务货品档案 / 聚水潭商品资料镜像"
         open={barcodeOpen}
         onOk={() => void submitBarcodeFill()}
-        onCancel={() => setBarcodeOpen(false)}
+        onCancel={() => { if (!savingRef.current) setBarcodeOpen(false); }}
         confirmLoading={saving}
+        closable={!saving}
+        keyboard={!saving}
+        cancelButtonProps={{ disabled: saving }}
+        okButtonProps={{ disabled: !canClaim }}
         maskClosable={false}
-        okText={`确认写入 ${Math.min(500, data?.barcodeFillHits?.length ?? 0)} 个条码`}
+        okText={`确认写入 ${Math.min(500, reviewData?.barcodeFillHits?.length ?? 0)} 个条码`}
         cancelText="取消"
       >
         <Space direction="vertical" size={8} style={{ width: "100%" }}>
           <Typography.Paragraph style={{ marginBottom: 0 }}>
-            系统 {data?.barcodeFillSummary?.activeSkus ?? 0} 个启用 SKU 里只有 {data?.barcodeFillSummary?.skusWithBarcode ?? 0} 个有条码。
+            系统 {reviewData?.barcodeFillSummary?.activeSkus ?? 0} 个启用 SKU 里只有 {reviewData?.barcodeFillSummary?.skusWithBarcode ?? 0} 个有条码。
             这些候选来自简道云里财务「货品档案」与聚水潭「商品资料」镜像，两来源一致、系统字段空白、条码未被其它 SKU 占用；
-            另有 {data?.barcodeFillSummary?.conflicts ?? 0} 个冲突项不在此列，需人工裁决。
+            另有 {reviewData?.barcodeFillSummary?.conflicts ?? 0} 个冲突项不在此列，需人工裁决。
             条码是天猫/唯品会对照表与同步身份解析的通用键，补齐后后续同步会自动解析更多外部行。
           </Typography.Paragraph>
           <Table
             size="small"
             rowKey="skuId"
-            dataSource={(data?.barcodeFillHits ?? []).slice(0, 8)}
+            dataSource={(reviewData?.barcodeFillHits ?? []).slice(0, 8)}
             pagination={false}
             columns={[
               { title: "系统 SKU", dataIndex: "skuCode", width: 130 },
@@ -385,17 +415,21 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
               { title: "来源", dataIndex: "source", width: 90, render: (v: string) => (v === "both" ? "财务+聚水潭" : v === "jst_mirror" ? "聚水潭" : "财务") },
             ]}
           />
-          {(data?.barcodeFillHits?.length ?? 0) > 8 ? <Typography.Text type="secondary">…仅预览前 8 行，每次最多写入 500 个</Typography.Text> : null}
+          {(reviewData?.barcodeFillHits?.length ?? 0) > 8 ? <Typography.Text type="secondary">…仅预览前 8 行，每次最多写入 500 个</Typography.Text> : null}
         </Space>
       </Modal>
       <Modal
         title="批量认领：拼多多对照表商家编码 = 系统编码"
         open={pddBulkOpen}
         onOk={() => void submitPddBulk()}
-        onCancel={() => setPddBulkOpen(false)}
+        onCancel={() => { if (!savingRef.current) setPddBulkOpen(false); }}
         confirmLoading={saving}
+        closable={!saving}
+        keyboard={!saving}
+        cancelButtonProps={{ disabled: saving }}
+        okButtonProps={{ disabled: !canClaim }}
         maskClosable={false}
-        okText={`确认认领 ${Math.min(300, data?.pddExactHits?.length ?? 0)} 行`}
+        okText={`确认认领 ${Math.min(300, reviewData?.pddExactHits?.length ?? 0)} 行`}
         cancelText="取消"
       >
         <Space direction="vertical" size={8} style={{ width: "100%" }}>
@@ -404,13 +438,13 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
             确认后登记为 JIANDAOYUN:PDD 外部身份，拼多多订单件数才会进入外部销速。
           </Typography.Paragraph>
           <Typography.Text>
-            对照表 {data?.pddSummary?.crosswalkRows ?? 0} 行，含商家编码 {data?.pddSummary?.merchantCodes ?? 0}，精确命中 {data?.pddSummary?.exactCodes ?? 0}，
-            经「商品成本标准」翻译命中 {data?.pddSummary?.bridgedCodes ?? 0}，已认领 {data?.pddSummary?.claimed ?? 0}。
+            对照表 {reviewData?.pddSummary?.crosswalkRows ?? 0} 行，含商家编码 {reviewData?.pddSummary?.merchantCodes ?? 0}，精确命中 {reviewData?.pddSummary?.exactCodes ?? 0}，
+            经「商品成本标准」翻译命中 {reviewData?.pddSummary?.bridgedCodes ?? 0}，已认领 {reviewData?.pddSummary?.claimed ?? 0}。
           </Typography.Text>
           <Table
             size="small"
             rowKey={(h) => `${h.shopName}|${h.platformSkuId}`}
-            dataSource={(data?.pddExactHits ?? []).slice(0, 8)}
+            dataSource={(reviewData?.pddExactHits ?? []).slice(0, 8)}
             pagination={false}
             columns={[
               { title: "商品ID|商家编码", dataIndex: "platformSkuId", width: 200 },
@@ -425,10 +459,14 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
         title="批量认领：对照表商家编码 = 系统编码"
         open={bulkOpen}
         onOk={() => void submitBulk()}
-        onCancel={() => setBulkOpen(false)}
+        onCancel={() => { if (!savingRef.current) setBulkOpen(false); }}
         confirmLoading={saving}
+        closable={!saving}
+        keyboard={!saving}
+        cancelButtonProps={{ disabled: saving }}
+        okButtonProps={{ disabled: !canClaim }}
         maskClosable={false}
-        okText={`确认认领 ${Math.min(300, data?.exactHits.length ?? 0)} 行`}
+        okText={`确认认领 ${Math.min(300, reviewData?.exactHits.length ?? 0)} 行`}
         cancelText="取消"
       >
         <Space direction="vertical" size={8} style={{ width: "100%" }}>
@@ -437,29 +475,33 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
             确认后逐行登记外部身份并写审计（每次最多 300 行，超出请再点一次）。
           </Typography.Paragraph>
           <Typography.Text>
-            共 <Typography.Text strong>{data?.exactHits.length ?? 0}</Typography.Text> 行，
-            涉及支付金额占比 <Typography.Text strong>{data?.exactHitAmountPct ?? "—"}%</Typography.Text>。
+            共 <Typography.Text strong>{reviewData?.exactHits.length ?? 0}</Typography.Text> 行，
+            {canSeeAmounts ? <>涉及支付金额占比 <Typography.Text strong>{reviewData?.exactHitAmountPct ?? "—"}%</Typography.Text>。</> : "请核对外部编码与系统 SKU 的归属。"}
           </Typography.Text>
           <Table
             size="small"
             rowKey={(h) => `${h.shopName}|${h.platformSkuId}`}
-            dataSource={(data?.exactHits ?? []).slice(0, 8)}
+            dataSource={(reviewData?.exactHits ?? []).slice(0, 8)}
             pagination={false}
             columns={[
               { title: "平台 SKU", dataIndex: "platformSkuId", width: 150 },
               { title: "→ 系统 SKU", dataIndex: "skuCode", width: 140 },
-              { title: "支付金额", dataIndex: "paidAmount", align: "right", render: (v: string) => `¥${yuan(v)}` },
+              ...(canSeeAmounts ? [{ title: "支付金额", dataIndex: "paidAmount", align: "right" as const, render: (v: string) => `¥${yuan(v)}` }] : []),
             ]}
           />
-          {(data?.exactHits.length ?? 0) > 8 ? <Typography.Text type="secondary">…仅预览前 8 行</Typography.Text> : null}
+          {(reviewData?.exactHits.length ?? 0) > 8 ? <Typography.Text type="secondary">…仅预览前 8 行</Typography.Text> : null}
         </Space>
       </Modal>
       <Modal
         title="认领平台 SKU 到系统 SKU"
         open={claiming != null}
         onOk={() => void submitClaim()}
-        onCancel={() => setClaiming(null)}
+        onCancel={() => { if (!savingRef.current) setClaiming(null); }}
         confirmLoading={saving}
+        closable={!saving}
+        keyboard={!saving}
+        cancelButtonProps={{ disabled: saving }}
+        okButtonProps={{ disabled: !canClaim }}
         maskClosable={false}
         okText="确认认领"
         cancelText="取消"
@@ -472,13 +514,14 @@ export default function PlatformSkuGapCard({ active }: { active: boolean }) {
               <br />
               {claiming.productName ?? "（未提供）"} {claiming.skuName ? `· ${claiming.skuName}` : ""}
               <br />
-              <Typography.Text type="secondary">4 个月支付金额 ¥{yuan(claiming.paidAmount)}，{claiming.paidQty} 件</Typography.Text>
+              <Typography.Text type="secondary">销售窗口 {reviewData?.window.from ?? "—"} ～ {reviewData?.window.to ?? "—"}；{canSeeAmounts ? `支付金额 ¥${yuan(claiming.paidAmount)}，` : ""}{claiming.paidQty} 件</Typography.Text>
             </Typography.Paragraph>
             <RemoteSelect
               api="/api/master/sku?type=finished"
               getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
               placeholder="选择目标系统 SKU（成品）"
               value={targetSkuId ?? undefined}
+              disabled={saving}
               onChange={(v) => setTargetSkuId(typeof v === "number" ? v : Number(v) || null)}
               style={{ width: "100%" }}
             />

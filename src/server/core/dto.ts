@@ -13,9 +13,9 @@ export function canSeePrices(roles: string[]): boolean {
   return roles.some((r) => VISIBLE_SET.has(r));
 }
 
-function deepStrip(value: unknown, strip: boolean): unknown {
+function deepStrip(value: unknown, hidden: ReadonlySet<string>): unknown {
   if (Array.isArray(value)) {
-    return value.map((v) => deepStrip(v, strip));
+    return value.map((v) => deepStrip(v, hidden));
   }
   if (value !== null && typeof value === "object") {
     const proto = Object.getPrototypeOf(value);
@@ -23,8 +23,8 @@ function deepStrip(value: unknown, strip: boolean): unknown {
     if (proto === Object.prototype || proto === null) {
       const out: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        if (strip && SENSITIVE_SET.has(k)) continue; // 直接删除敏感键
-        out[k] = deepStrip(v, strip);
+        if (hidden.has(k)) continue; // 直接删除敏感键
+        out[k] = deepStrip(v, hidden);
       }
       return out;
     }
@@ -36,8 +36,11 @@ function deepStrip(value: unknown, strip: boolean): unknown {
  * 深拷贝并按角色剥离 SENSITIVE_FIELDS 中的所有键（递归对象/数组）。
  * 不可变：绝不修改入参。
  */
-export function maskSensitive<T>(data: T, roles: string[]): T {
-  return deepStrip(data, !canSeePrices(roles)) as T;
+export function maskSensitive<T>(data: T, roles: string[], additionalFields: readonly string[] = []): T {
+  // Domain-specific monetary keys stay scoped to their DTO, not a global
+  // same-name rule that can accidentally erase unrelated configuration fields.
+  const hidden = canSeePrices(roles) ? new Set<string>() : new Set([...SENSITIVE_SET, ...additionalFields]);
+  return deepStrip(data, hidden) as T;
 }
 
 export interface SessionUser {
