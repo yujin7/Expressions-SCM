@@ -57,7 +57,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - run: docker build --tag supply-chain:ci .
+      - run: bash scripts/build-ci-container.sh
 
   postgres:
     name: PostgreSQL migration contract

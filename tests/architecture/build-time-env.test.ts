@@ -76,10 +76,14 @@ describe("构建期 env 必须有对应的 build ARG", () => {
     ).toBeNull();
   });
 
-  it("一键公网安装会实际重建 HTTPS 镜像，守护重启不会偷偷回退旧构建", () => {
+  it("公网安装核对已构建的 HTTPS 镜像，更新地址不能隐式发布另一镜像", () => {
     const installer = readFileSync("scripts/install-public-tunnel.sh", "utf8");
     const daemon = readFileSync("scripts/public-tunnel-daemon.sh", "utf8");
-    expect(installer).toMatch(/PUBLIC_HTTPS=1[\s\S]*docker compose[\s\S]*build app/);
-    expect(daemon).toMatch(/up -d --no-build app/);
+    const guard = readFileSync("scripts/tunnel-app-guard.sh", "utf8");
+    expect(installer).toContain("tunnel_capture_app");
+    expect(installer).not.toMatch(/build app/);
+    expect(daemon).toContain('tunnel_sync_url "$url"');
+    expect(guard).toContain("strict-transport-security");
+    expect(guard).toContain("up -d --no-build --no-deps --pull never app");
   });
 });

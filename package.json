@@ -27,7 +27,7 @@
     "check:fast": "node --import tsx scripts/verify-fast.ts",
     "check:pr": "npm run lint:full && npm run typecheck:all && npm test",
     "check:release": "node --import tsx scripts/verify-release.ts",
-    "check:ops": "bash -n ops/backup.sh ops/check-backup.sh ops/restore-drill.sh ops/deploy.sh && node --import tsx scripts/verify-ops.ts",
+    "check:ops": "for script in ops/backup.sh ops/check-backup.sh ops/restore-drill.sh ops/deploy.sh scripts/build-ci-container.sh scripts/tunnel-app-guard.sh scripts/install-public-tunnel.sh scripts/public-tunnel-daemon.sh; do bash -n \"$script\" || exit 1; done && node --import tsx scripts/verify-ops.ts",
     "check:postgres": "node --import tsx scripts/verify-postgres.ts",
     "check:postgres:jdy-concurrency": "node --import tsx scripts/verify-postgres-jdy-concurrency.ts",
     "check:postgres:sku-identity-concurrency": "node --import tsx scripts/verify-postgres-sku-identity-concurrency.ts",

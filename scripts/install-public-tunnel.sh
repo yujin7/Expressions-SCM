@@ -23,7 +23,7 @@ LOCAL_PORT=3100
 command -v cloudflared >/dev/null 2>&1 || {
   echo "✗ 未安装 cloudflared：brew install cloudflared" >&2; exit 1; }
 [[ -f "$REPO/.env.prod" ]] || {
-  echo "✗ 缺少 $REPO/.env.prod，不能安全重建生产镜像" >&2; exit 1; }
+  echo "✗ 缺少 $REPO/.env.prod，不能核对既有应用配置" >&2; exit 1; }
 
 echo "==> 1/7 确认应用本机可达"
 if [[ "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "http://localhost:${LOCAL_PORT}/api/health")" != "200" ]]; then
@@ -32,11 +32,19 @@ if [[ "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "http://localhost:${LOCAL_P
 fi
 echo "    http://localhost:${LOCAL_PORT} ✓"
 
-echo "==> 2/7 构建 HTTPS 安全头镜像"
-# HSTS 在 next build 时烘焙进 routes-manifest；只给运行期环境变量不会生效。
-# 这里先构建，守护拿到 URL 后再用同一镜像重建 app 并同步 AUTH_URL。
-PUBLIC_HTTPS=1 docker compose -p supply-chain --env-file "$REPO/.env.prod" \
-  -f "$REPO/docker-compose.prod.yml" -f "$REPO/docker-compose.local.yml" build app
+echo "==> 2/7 核对已部署应用的版本、迁移与 HTTPS 安全头"
+# 开公网不是部署：缺 HSTS/版本时先走受控发布（PUBLIC_HTTPS=1），不在此处绕过备份和迁移。
+PROJECT="supply-chain"
+ENV_FILE="$REPO/.env.prod"
+COMPOSE_PROD="$REPO/docker-compose.prod.yml"
+COMPOSE_LOCAL="$REPO/docker-compose.local.yml"
+# shellcheck source=scripts/tunnel-app-guard.sh
+source "$REPO/scripts/tunnel-app-guard.sh"
+if ! tunnel_capture_app; then
+  echo "✗ 既有应用版本/迁移/HSTS未就绪；请先按发布清单部署 PUBLIC_HTTPS=1 的已验收镜像。未构建或重启应用。" >&2
+  exit 1
+fi
+echo "    已核对版本 $TUNNEL_APP_REVISION；仅安装访问入口，不发布源码"
 
 echo "==> 3/7 复制运行期配置出 TCC 保护目录"
 # 仓库在 ~/Downloads 下，launchd 派生的进程读不到（实测 Operation not permitted）。
@@ -51,6 +59,7 @@ echo "    ${RUNTIME_DIR}（.env.prod 权限 600）"
 
 echo "==> 4/7 安装守护脚本"
 cp "$REPO/scripts/public-tunnel-daemon.sh" "$TARGET"
+cp "$REPO/scripts/tunnel-app-guard.sh" "$STATE_DIR/tunnel-app-guard.sh"
 chmod +x "$TARGET"
 
 echo "==> 5/7 收掉手工起的隧道，避免同时开两条"

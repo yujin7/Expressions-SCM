@@ -120,6 +120,11 @@
 该字段证明版本声明与候选一致，不是密码学镜像签名，也不证明配置、数据库、外部入口或业务UAT一致。
 无Git源码导出默认仍可构建但版本unknown；不能随手传旧SHA把未核对的目录当作已验收版本。
 
+CI容器构建使用`bash scripts/build-ci-container.sh`：从实际检出的干净Git根目录取完整HEAD，
+构建前后复核，传入版本并测试`PUBLIC_HTTPS=1`构建。PR事件的检出可能是合并提交，不能用源分支SHA冒充。
+CI成功不是部署。公网安装器不再build应用：先核对已部署版本、迁移及HSTS；更新AUTH_URL时固定既有镜像摘要，
+禁止构建/拉取/启动依赖服务，之后再核对版本与公网行为。入口配置操作与正式发布应串行，不能在发布窗口并发安装。
+
 ```bash
 SMOKE_BASE=https://staging.example \
 SCM_EXPECTED_REVISION='<完整40位已验收提交>' \

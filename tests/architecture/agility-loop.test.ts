@@ -27,7 +27,9 @@ describe("agile delivery loop", () => {
     expect(pkg.scripts["check:ops"]).toContain("verify-ops.ts");
     expect(workflow).toContain("cancel-in-progress: true");
     expect(workflow).toContain("PostgreSQL migration contract");
-    expect(workflow).toContain("docker build --tag supply-chain:ci .");
+    expect(workflow).toContain("bash scripts/build-ci-container.sh");
+    expect(read("scripts/build-ci-container.sh")).toContain("--tag supply-chain:ci .");
+    expect(read("scripts/build-ci-container.sh")).toContain('--build-arg "SCM_BUILD_REVISION=$source_revision"');
     expect(workflow).toContain("npm run check:ops");
     expect(workflow).toContain("actions/checkout@v7");
     expect(workflow).toContain("actions/setup-node@v7");

@@ -44,6 +44,9 @@ LOCAL_PORT=3100
 TUNNEL_CHECK_SECONDS=30
 TUNNEL_FAILURE_LIMIT=5
 
+# shellcheck source=scripts/tunnel-app-guard.sh
+source "$(dirname "$0")/tunnel-app-guard.sh" || exit 1
+
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
 env_get() {
@@ -140,9 +143,8 @@ apply_url() {
   prev="$(cat "$URL_FILE" 2>/dev/null || true)"
   log "落地 AUTH_URL → ${url}"
 
-  if ! AUTH_URL="$url" PUBLIC_HTTPS=1 docker compose -p "$PROJECT" \
-      --env-file "$ENV_FILE" -f "$COMPOSE_PROD" -f "$COMPOSE_LOCAL" up -d --no-build app 2>&1 | tail -3; then
-    log "✗ 重启应用失败"
+  if ! tunnel_sync_url "$url"; then
+    log "✗ 同步访问地址失败：既有应用须通过版本/迁移/HSTS核对；不构建、不拉镜像、不迁移"
     return 1
   fi
 
@@ -154,7 +156,7 @@ apply_url() {
     # 健康 200 还不够：AUTH_URL 没生效时页面照样能开，但登录回跳会指向旧地址。
     public_probe "$url"
     probe_status=$?
-    if [[ "$probe_status" == "0" ]]; then
+    if [[ "$probe_status" == "0" ]] && tunnel_verify_same_app; then
       printf '%s\n' "$url" > "$URL_FILE"
       log "✓ 已生效：${url}（公网健康与登录回跳均通过）"
       # 只有换了新地址才打扰群里；修复漂移不播报（地址没变，同事无需知道）
