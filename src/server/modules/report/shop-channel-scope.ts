@@ -19,6 +19,7 @@ import type { ChannelScope } from "@/server/core/data-scope";
 import { loadShopChannelMap, type ShopChannelMap } from "@/server/modules/report/channel-observation";
 import type { AnyDb } from "@/server/core/svc";
 import type { SalesSpikeReadModel, SpikeHit } from "@/server/modules/report/sales-spike";
+import { spikeCoverage } from "@/server/modules/report/sales-spike";
 
 /** 内容按店铺归属的告警类别：受限渠道账号只看得到能归到自己渠道的行 */
 export const CHANNEL_SCOPED_ALERT_CATEGORIES = ["sales_spike"] as const;
@@ -114,12 +115,17 @@ export async function scopeSalesSpikeModel(
 ): Promise<SalesSpikeReadModel> {
   if (scope.channelIds === null) return model;
   const hits = [...model.hits, ...model.unmappedHits];
-  const map = await loadShopChannelMap(db, [...new Set(hits.flatMap((h) => spikeHitShops(h)))]);
+  const map = await loadShopChannelMap(db, [...new Set([...hits.flatMap((h) => spikeHitShops(h)), ...model.evaluations.flatMap((e) => e.shopNames)])]);
   const allowed = new Set(scope.channelIds);
   const keep = (h: SpikeHit) => allShopsInScope(spikeHitShops(h), map, allowed);
+  const scopedHits = model.hits.filter(keep);
+  const evaluations = model.evaluations.filter((e) => allShopsInScope(e.shopNames, map, allowed));
+  const coverage = spikeCoverage(evaluations, scopedHits);
   return {
     ...model,
-    hits: model.hits.filter(keep),
+    evaluations, coverage,
+    state: coverage.evaluatedItems === 0 ? "insufficient" : coverage.incompleteItems > 0 ? "partial" : "ready",
+    hits: scopedHits,
     unmappedHits: model.unmappedHits.filter(keep),
     limitations: [...model.limitations, "已按你的渠道范围裁剪（D62）：跨店铺汇总或店铺未映射到渠道的命中行不下发"],
   };

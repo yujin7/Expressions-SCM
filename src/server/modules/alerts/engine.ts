@@ -202,6 +202,8 @@ export async function upsertAlerts(
      *   下个周期不再命中不等于它被处理了——只能由人工带原因关闭）。
      */
     autoCloseAfterDays?: number | null;
+    /** 提供时仅这些对象有本轮否定证据；空数组不自动关任何项。缺省保留其他类别的既有行为。 */
+    autoCloseEligibleKeys?: readonly string[];
     /**
      * 同 dedupeKey 在 N 天内被人工关闭（autoResolved=false，且关闭原因不是 fixed）则不重开。
      * **缺省 DEFAULT_MANUAL_CLOSE_SUPPRESS_DAYS（30 天）——抑制是引擎默认行为**；
@@ -307,7 +309,9 @@ export async function upsertAlerts(
   }
 
   // 迟滞自动关闭（autoCloseAfterDays=null 的类别不自动关闭，只能人工带原因关闭）
+  const closeEligible = input.autoCloseEligibleKeys === undefined ? null : new Set(input.autoCloseEligibleKeys);
   const toClose = (neverAutoClose ? [] : open)
+    .filter((o) => closeEligible === null || (o.dedupeKey != null && closeEligible.has(o.dedupeKey)))
     .filter((o) => !o.dedupeKey || !hitKeys.has(o.dedupeKey))
     // closeAfterMs=0 是"不再命中即刻关闭"：无条件关，不比时间——
     // 否则两次运行的 now 一旦不单调（补跑、时钟回拨、测试注入的历史时刻），

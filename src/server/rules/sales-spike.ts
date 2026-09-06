@@ -2,13 +2,21 @@
  * D56 爆单规则（纯函数，唯一权威）。
  *
  * 命中：最近 consecutiveDays（默认 3）天每日销量都 ≥ 基线 × (1 + risePct/100)（默认 50%）；
- * 基线 = 判定窗口**之前** baselineDays（默认 7）天的日均（窗口内缺天按 0 计并记 gaps）；
+ * 基线 = 判定窗口**之前** baselineDays（默认 7）天的日均；任一缺日返回未知，不补零。
  * 基线 < minBaseQty（默认 10）不命中（防小基数放大）。
  * 锚点 anchorDate = asOf 或序列最大日期；序列以日期升序 {date:'YYYY-MM-DD', qty} 给入（本函数会防御性排序）。
  * 数量走 decimal 字符串（禁 float）；risePct 逐日 = (qty − 基线)/基线 × 100（基线 0 → null）。
  * 本模块只判定，不落库、不推送、不改任何补货参数（观察数据只能预警，D55）。
  */
 import { type Dec, dAdd, dCmp, dDeviationPct, dDiv, dMul, dQty } from "@/server/core/decimal";
+import { dayDiff, shanghaiDay, shanghaiDayOf } from "@/server/core/business-day";
+
+/** 天猫日销 T+1：历史/未来业务窗口仍可回看，但不能证明当前命中或恢复。 */
+export function salesSpikeEvidenceCurrent(anchor: string | null, now = new Date()): boolean {
+  if (!anchor || shanghaiDay(anchor) !== anchor) return false;
+  const age = dayDiff(anchor, shanghaiDayOf(now));
+  return age >= 0 && age <= 1;
+}
 
 export interface DailyPoint {
   /** YYYY-MM-DD（或可截取前 10 位的 ISO 串） */
@@ -33,18 +41,23 @@ export interface SpikeDay {
   hit: boolean;
 }
 
-export interface SpikeResult {
-  hit: boolean;
+interface SpikeEvidence {
   anchorDate: string | null;
-  /** 基线日均（scale 4） */
-  baseline: string;
-  /** 命中门槛 = 基线 × (1+risePct/100)（scale 4） */
-  threshold: string;
-  days: SpikeDay[];
-  /** 判定窗口 + 基线窗口内缺失的天数（按 0 计） */
+  /** 判定窗口 + 基线窗口内未观测日期数；不是零销量日数。 */
   gaps: number;
   reason: string;
 }
+export type SpikeResult = SpikeEvidence & ({
+  hit: boolean;
+  baseline: string;
+  threshold: string;
+  days: SpikeDay[];
+} | {
+  hit: null;
+  baseline: null;
+  threshold: null;
+  days: { date: string; qty: string | null; risePct: null; hit: null }[];
+});
 
 function dayStr(d: string): string {
   return d.slice(0, 10);
@@ -65,24 +78,30 @@ export function detectSalesSpike(dailySeries: DailyPoint[], opts: SpikeOptions =
   for (const p of dailySeries ?? []) {
     if (!p || !p.date) continue;
     const d = dayStr(p.date);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+    if (shanghaiDay(d) !== d) continue;
     byDate.set(d, dAdd(byDate.get(d) ?? "0", p.qty, 4));
   }
   const dates = [...byDate.keys()].sort();
-  const anchorDate = opts.asOf ? dayStr(opts.asOf) : dates.length ? dates[dates.length - 1] : null;
+  const anchorDate = opts.asOf ? shanghaiDay(dayStr(opts.asOf)) : dates.length ? dates[dates.length - 1] : null;
   if (!anchorDate) {
-    return { hit: false, anchorDate: null, baseline: "0.0000", threshold: "0.0000", days: [], gaps: 0, reason: "无日销序列" };
+    return { hit: null, anchorDate: null, baseline: null, threshold: null, days: [], gaps: 0, reason: "无有效日销窗口，无法判定" };
   }
 
   let gaps = 0;
-  const read = (d: string): string => {
-    const v = byDate.get(d);
-    if (v == null) {
-      gaps += 1;
-      return "0.0000";
-    }
-    return v;
-  };
+  for (let i = consecutiveDays + baselineDays - 1; i >= 0; i--) {
+    if (!byDate.has(shiftDay(anchorDate, -i))) gaps++;
+  }
+  if (gaps > 0) {
+    return {
+      hit: null, anchorDate, baseline: null, threshold: null, gaps,
+      days: Array.from({ length: consecutiveDays }, (_, i) => {
+        const date = shiftDay(anchorDate, i - consecutiveDays + 1);
+        return { date, qty: byDate.get(date) ?? null, risePct: null, hit: null };
+      }),
+      reason: `窗口缺 ${gaps} 天销量证据，无法判定；不视为零销量或告警恢复`,
+    };
+  }
+  const read = (d: string): string => byDate.get(d)!;
 
   // 基线窗口：[anchor − consecutiveDays − baselineDays + 1, anchor − consecutiveDays]
   let baseSum = "0.0000";

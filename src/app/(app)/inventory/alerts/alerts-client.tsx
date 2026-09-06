@@ -9,9 +9,9 @@
  *   并可由责任角色（或 admin）带原因**关闭**告警（AlertCloseModal → POST /api/alerts/[id]/close，
  *   服务端回查会话与角色再判一次）；关闭后刷新告警索引，行上的「已知悉」随之变回「未开告警」。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { App, Button, Col, Row, Select, Space, Statistic, Switch, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Col, Row, Select, Space, Statistic, Switch, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import AlertCloseModal from "@/components/AlertCloseModal";
@@ -52,7 +52,7 @@ function useAlertIndex(category: string) {
   }, [category]);
   useEffect(() => { void load(); }, [load]);
   const ack = useCallback(async (id: number) => {
-    try { await fetchJson(`/api/alerts/${id}/ack`, { method: "POST", body: JSON.stringify({}) }); message.success("已知悉（留审计，事实闭环后自动关闭）"); await load(); }
+    try { await fetchJson(`/api/alerts/${id}/ack`, { method: "POST", body: JSON.stringify({}) }); message.success("已知悉（已留审计，告警状态不变）"); await load(); }
     catch (e) { message.error((e as Error).message); }
   }, [load, message]);
   return { byKey, unacked, ack, reload: load };
@@ -219,7 +219,7 @@ function CoverTab() {
 }
 
 /* ── Tab 2：爆单预警 ── */
-function SpikeTab() {
+export function SpikeTab() {
   const me = useMe();
   const canRefresh = hasAnyRole(me, "pmc", "ops"); // 与 /api/report/sales-spike?refresh=1 的 requireAnyRole(pmc, ops, admin) 一致
   const listState = useListState<{ q?: string }>({ key: "inventory-alerts-spike", paramPrefix: "spike", defaults: { q: "" }, paginated: false });
@@ -228,17 +228,23 @@ function SpikeTab() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const alerts = useAlertIndex("sales_spike");
+  const request = useRef<AbortController | null>(null);
   const q = (filters.q ?? "").trim();
   const load = useCallback(async (refresh = false) => {
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
+    setData(null);
     setLoading(true);
     setError(null);
     try {
       const sp = new URLSearchParams(); if (q) sp.set("q", q); if (refresh) sp.set("refresh", "1");
-      setData(await fetchJson<SalesSpikePage>(`/api/report/sales-spike?${sp.toString()}`));
-    } catch (e) { setError((e as Error).message); }
-    finally { setLoading(false); }
+      const next = await fetchJson<SalesSpikePage>(`/api/report/sales-spike?${sp.toString()}`, { signal: controller.signal });
+      if (!controller.signal.aborted) setData(next);
+    } catch (e) { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "爆单预警加载失败，请重试"); }
+    finally { if (!controller.signal.aborted) setLoading(false); }
   }, [q]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); return () => request.current?.abort(); }, [load]);
 
   const keyOf = (r: SpikeHit) => r.kind === "sku" ? `sales_spike:sku:${r.skuId}` : `sales_spike:platform:${r.shopName}|${r.platformSkuId}`;
   const columns: ColumnsType<SpikeHit> = [
@@ -268,7 +274,7 @@ function SpikeTab() {
       dataSource={rows}
       scroll={{ x: 1200 }}
       pagination={{ showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
-      locale={{ emptyText: error ? "数据未加载" : "当前没有命中" }}
+      locale={{ emptyText: loading ? "正在加载当前窗口…" : error || !data ? "数据未加载" : data.state === "insufficient" ? "证据不足，无法判定；不代表没有爆单" : "完整观测窗口内没有命中" }}
       expandable={{
         rowExpandable: (r) => !!alerts.byKey[keyOf(r)],
         expandedRowRender: (r) => { const a = alerts.byKey[keyOf(r)]; return a ? <AlertRowDetail alert={a} onClosed={() => void alerts.reload()} /> : null; },
@@ -280,8 +286,8 @@ function SpikeTab() {
     <div>
       {data ? (
         <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
-          <Col xs={12} md={6}><Statistic title="已映射 SKU 爆单" value={data.hitCount} valueStyle={{ color: data.hitCount ? "#B23A2E" : undefined }} /></Col>
-          <Col xs={12} md={6}><Statistic title="未映射平台 SKU 爆单" value={data.unmappedCount} /></Col>
+          <Col xs={12} md={6}><Statistic title="窗口命中 · 系统 SKU" value={data.state === "insufficient" ? "—" : data.hitCount} valueStyle={{ color: data.hitCount ? "#B23A2E" : undefined }} /></Col>
+          <Col xs={12} md={6}><Statistic title="窗口命中 · 未映射 SKU" value={data.state === "insufficient" ? "—" : data.unmappedCount} /></Col>
           <Col xs={12} md={6}><Statistic title="未知悉告警" value={alerts.unacked == null ? "—" : alerts.unacked} valueStyle={{ color: alerts.unacked ? "#B23A2E" : undefined }} /></Col>
           <Col xs={12} md={6}><Statistic title="数据截止" value={data.anchorDate ?? "缺流"} valueStyle={{ fontSize: 18 }} /></Col>
         </Row>
@@ -298,6 +304,17 @@ function SpikeTab() {
         )}
       />
       <LoadErrorAlert error={error} onRetry={() => void load()} subject="爆单预警" retrying={loading} />
+      {data ? <Alert
+        showIcon
+        type={data.state !== "ready" || !data.currentEvidence ? "warning" : "info"}
+        style={{ marginBottom: 12 }}
+        message={`完整窗口可判定 ${data.coverage.evaluatedItems} 项；证据不足 ${data.coverage.incompleteItems} 项`}
+        description={<>
+          缺日或非法销量不当作零，多店铺须逐序列覆盖。无法判定或已消失的序列不会自动关闭旧告警。
+          {!data.currentEvidence ? " 当前为历史、未来或缺失窗口，不用于当前告警更新；请核对来源业务日期。" : " 来源截止符合 T+1；不代表未接入平台已有覆盖。"}
+          {" "}<a href="/alerts?category=sales_spike">核对已有爆单告警</a>
+        </>}
+      /> : null}
       <Typography.Title level={5} style={{ marginTop: 4 }}>已映射 SKU {data ? `（${data.q ? `筛选 ${data.hits.length} / ` : ""}共 ${data.hitCount}）` : ""}</Typography.Title>
       {table(data?.hits ?? [])}
       <Typography.Title level={5} style={{ marginTop: 12 }}>未映射平台 SKU {data ? `（${data.q ? `筛选 ${data.unmappedHits.length} / ` : ""}共 ${data.unmappedCount}）` : ""}</Typography.Title>
@@ -322,7 +339,7 @@ export default function AlertsClient() {
       <Typography.Title level={4} style={{ marginTop: 0 }}>库存预警与爆单</Typography.Title>
       <CaliberNote
         summary="每个 SKU 只有一个主预警；日销三口径（外部 / 内部 / 实时仓）并列不相加；C 级默认折叠；观察序列只预警不定量。"
-        detail={<div>主预警优先级：断货 &gt; 爆单 &gt; 低于阈值（rules/alert-priority）。阈值 = 加工周期 + 在途周期 + 缓冲，逐 SKU 主数据优先、缺则用运行参数缺省并标「缺省周期」。已知悉只留审计不改状态，事实闭环（连续 3 天不再命中）由看门狗自动关闭。</div>}
+        detail={<div>主预警优先级：断货 &gt; 爆单 &gt; 低于阈值（rules/alert-priority）。阈值 = 加工周期 + 在途周期 + 缓冲，逐 SKU 主数据优先、缺则用运行参数缺省并标「缺省周期」。已知悉只留审计不改状态。自动关闭按各类规则判断；爆单须有完整且符合 T+1 时效的新窗口确认不命中，并距最后命中满 3 天。缺失或过期证据保留旧告警待复核，不能视为问题已解决。</div>}
       />
       <Tabs activeKey={tab} onChange={setTab} destroyOnHidden items={[
         { key: "cover", label: "库存预警表", children: <CoverTab /> },

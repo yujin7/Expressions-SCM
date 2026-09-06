@@ -1,7 +1,7 @@
 /**
  * 库存预警表（D57）与爆单预警（D56）读模型 + 看门狗投影。
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/db/schema";
 import { createTestDb } from "../helpers/db";
 import { computeInventoryAlerts } from "@/server/modules/report/inventory-alerts";
@@ -53,7 +53,11 @@ async function seed(db: Awaited<ReturnType<typeof createTestDb>>["db"]) {
 }
 
 describe("库存预警表 + 爆单预警 + 看门狗", () => {
+  afterEach(() => vi.useRealTimers());
   it("阈值逐 SKU（缺省标注）、主预警互斥、爆单命中已映射 SKU、小基数不命中；看门狗投影为去重告警", async () => {
+    // 这份固定日历夹具验证 T+1 正例；过期/未来反例在 supply/window 套件独立验证。
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-03T03:00:00.000Z"));
     const { db, client } = await createTestDb();
     try {
       const { hot, cold } = await seed(db);

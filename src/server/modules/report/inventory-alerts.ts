@@ -15,7 +15,8 @@ import { isSlowMover } from "@/server/rules/risk-action";
 import { todayShanghai } from "@/server/modules/master/common";
 import { expiryCheck, type ExpiryCheckItem } from "@/server/modules/replenish/expiry";
 import { loadExternalVelocitySafe } from "@/server/modules/report/external-velocity";
-import { loadSalesSpike } from "@/server/modules/report/sales-spike";
+import { loadSalesSpike, SALES_SPIKE_CACHE_KEY } from "@/server/modules/report/sales-spike";
+import { salesSpikeEvidenceCurrent } from "@/server/rules/sales-spike";
 
 /**
  * 库存预警表读模型（键见 `INVENTORY_ALERTS_CACHE_KEY`；D57，四屏第 2 屏 B-左）。
@@ -96,7 +97,7 @@ export interface InventoryAlertRow {
   priorityTerms: PriorityScoreTerms;
   priorityFormula: string;
   spike: boolean;
-  /** 爆单在大促预期内（sales-spike/v2 expected） */
+  /** 爆单在大促预期内（当前合格窗口 expected） */
   spikeExpected: boolean;
   nearExpiry: { minDaysLeft: number | null; nearQty: number; expiredQty: number; thresholdDays: number } | null;
   overstock: boolean;
@@ -195,7 +196,7 @@ async function binding(db: AnyDb): Promise<string> {
   `));
   const bs = `${Number(bsf?.max_id ?? 0)}/${Number(bsf?.n ?? 0)}/${String(bsf?.qty_sum ?? "0")}/${String(bsf?.max_period ?? "")}`;
   const sk = `${Number(skf?.n ?? 0)}/${Number(skf?.max_id ?? 0)}/${Number(skf?.maintained ?? 0)}/${Number(skf?.sum_days ?? 0)}/${String(skf?.updated ?? "")}`;
-  return `alerts:${b?.l}:${b?.s}:${b?.m}:${b?.p}:${b?.pu}:${b?.pol}|ev:${b?.ev}|supply:${b?.pol_l}|${b?.po_d}|${b?.wo}|${b?.tr}|bs:${bs}|sku:${sk}|rl:${b?.rl}|sp:${b?.sp}|params:${params}|day:${todayShanghai()}`;
+  return `alerts:${b?.l}:${b?.s}:${b?.m}:${b?.p}:${b?.pu}:${b?.pol}|ev:${b?.ev}|supply:${b?.pol_l}|${b?.po_d}|${b?.wo}|${b?.tr}|bs:${bs}|sku:${sk}|rl:${b?.rl}|sp:${SALES_SPIKE_CACHE_KEY}:${b?.sp}|params:${params}|day:${todayShanghai()}`;
 }
 
 /** 逐 SKU 汇总未结供给：有日期未逾期 / 无日期 / 逾期 / 下一笔到货 */
@@ -286,7 +287,9 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
     expiryBySku(db, skuIds),
   ]);
   const spikeHits = new Map<number, { expected: boolean }>();
-  for (const h of spike?.hits ?? []) if (typeof h.skuId === "number") spikeHits.set(h.skuId, { expected: h.expected === true });
+  if (salesSpikeEvidenceCurrent(spike?.anchorDate ?? null)) {
+    for (const h of spike?.hits ?? []) if (typeof h.skuId === "number") spikeHits.set(h.skuId, { expected: h.expected === true });
+  }
   const supplyBySku = summarizeSupplyForAlerts(supplyLines, today);
 
   const rows: InventoryAlertRow[] = skus.map((s) => {
@@ -391,6 +394,7 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
     },
     rows,
     limitations: [
+      "爆单标记仅采纳完整且符合 T+1 时效的观测窗口；过期/缺失证据不作为当前命中，也不证明没有需求。历史爆单与已有告警请在爆单页复核。",
       "日销三口径不相加：外部 = 平台支付−退款近 30 天折日（observation_only，T+1）；内部 = 销量月表近 6 月折日（止于最新月）；实时仓 = 流水近 30 天出库折日（含调拨/发料，非纯销售）。主日销取外部 > 内部 > 实时仓。",
       "可销天数按「在库可销」（不含在途）；阈值 = 加工周期 + 在途周期 + 缓冲，逐 SKU 主数据优先，缺失用参数缺省并标注（D57）。",
       "未结供给（core/supply：PO 未收、WO 在制、存量单在途）只用于降级：在库 alert 且在库 > 0、下一笔确认到货日落在阈值天数内 → watch 并写明依据；在库 = 0 不降级（物理事实）；逾期/无日期在途不算可信供给。含在途可销 = (在库 + 有日期未逾期在途) ÷ 主日销，粗口径，逐日推演以补货页为准。",

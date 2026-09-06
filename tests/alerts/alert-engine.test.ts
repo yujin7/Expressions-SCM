@@ -8,6 +8,22 @@ import { createTestDb } from "../helpers/db";
 import { ackAlert, countOpenAlerts, upsertAlerts } from "@/server/modules/alerts/engine";
 
 describe("预警引擎", () => {
+  it("显式空资格名单不关旧项；指定对象仍遵守迟滞，空历史键不猜测认领", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const t0 = new Date("2026-09-01T03:00:00Z");
+      await upsertAlerts(db, { category: "coverage_test", now: t0, candidates: ["A", "B"].map((key) => ({
+        dedupeKey: key, refKey: key, title: key, severity: "high", ownerRole: "pmc", actionHref: "/alerts",
+      })) });
+      await db.insert(schema.systemAlerts).values({ category: "coverage_test", title: "legacy", severity: "high", status: "open", lastHitAt: t0 });
+      expect(await upsertAlerts(db, { category: "coverage_test", candidates: [], autoCloseEligibleKeys: ["A"], now: new Date("2026-09-02T03:00:00Z") })).toMatchObject({ autoClosed: 0 });
+      expect(await upsertAlerts(db, { category: "coverage_test", candidates: [], autoCloseEligibleKeys: [], now: new Date("2026-09-10T03:00:00Z") })).toMatchObject({ autoClosed: 0, stillOpen: 3 });
+      expect(await upsertAlerts(db, { category: "coverage_test", candidates: [], autoCloseEligibleKeys: ["A"], now: new Date("2026-09-10T03:00:00Z") })).toMatchObject({ autoClosed: 1, stillOpen: 2 });
+      const rows = await db.select().from(schema.systemAlerts);
+      expect(rows.find((r) => r.dedupeKey === "B")?.status).toBe("open");
+      expect(rows.find((r) => r.dedupeKey === null)?.status).toBe("open");
+    } finally { await client.close(); }
+  });
   it("同 dedupeKey 只保留一条 open；再次命中只续命；3 天不命中才自动关闭；已知悉写审计不改 status", async () => {
     const { db, client } = await createTestDb();
     try {

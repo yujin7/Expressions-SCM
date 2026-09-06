@@ -20,7 +20,7 @@ function shift(ymd: string, days: number): string {
   return new Date(Date.parse(`${ymd}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
 }
 
-async function seed(db: Awaited<ReturnType<typeof createTestDb>>["db"]) {
+async function seed(db: Awaited<ReturnType<typeof createTestDb>>["db"], spikeAge = 1) {
   const today = todayShanghai();
   const [actor] = await db.insert(schema.users).values({ name: "责任人", roles: ["pmc"] }).returning();
   const [brand] = await db.insert(schema.brands).values({ code: "NING", nameCn: "NING", nameEn: "NING" }).returning();
@@ -82,15 +82,15 @@ async function seed(db: Awaited<ReturnType<typeof createTestDb>>["db"]) {
   await db.insert(schema.stagingRows).values({ importJobId: cwJob.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation", payload: { data: { shopName: shop, platformSkuId: "P-HOT" }, _identity: { skuId: hot.id } } });
   const rows: { importJobId: number; rowNo: number; status: "pending"; targetTable: string; payload: unknown }[] = [];
   let n = 1;
-  // hot：前 7 天中缺 1 天（8/26，按 0 计），其余 12（基线 72/7≈10.29 ≥ 10）；最近 3 天 20/25/30 → 命中且 gaps=1
-  const days = ["2026-08-24", "2026-08-25", "2026-08-27", "2026-08-28", "2026-08-29", "2026-08-30", "2026-08-31", "2026-09-01", "2026-09-02"];
+  // 完整 T+1 窗口才有判定资格；缺日保留/弃权另由 sales-spike-window 行为测试覆盖。
+  const days = Array.from({ length: 10 }, (_, i) => shift(today, i - 9 - spikeAge));
   days.forEach((d, i) => {
-    const hotQty = i < 6 ? 12 : [20, 25, 30][i - 6];
+    const hotQty = i < 7 ? 12 : [20, 25, 30][i - 7];
     rows.push({ importJobId: salesJob.id, rowNo: n++, status: "pending", targetTable: "jdy_tmall_sku_sales_observation", payload: { data: { statisticalDate: d, shopName: shop, skuId: "P-HOT", paidNumber: String(hotQty), paidAmount: String(hotQty * 100) } } });
   });
   await db.insert(schema.stagingRows).values(rows);
   // 大促日历：hot 9/1–9/5 大促，预期 +80%（判定窗口 8/31–9/2 与之重叠）
-  const [promo] = await db.insert(schema.opsPlanEvents).values({ skuId: hot.id, kind: "promo", startDate: "2026-09-01", endDate: "2026-09-05", expectedUpliftPct: 80, createdBy: actor.id }).returning();
+  const [promo] = await db.insert(schema.opsPlanEvents).values({ skuId: hot.id, kind: "promo", startDate: shift(today, -2), endDate: shift(today, 2), expectedUpliftPct: 80, createdBy: actor.id }).returning();
   return { hot, cold, aging, slow, actor, today, promo };
 }
 
@@ -107,28 +107,39 @@ describe("summarizeSupplyForAlerts", () => {
 });
 
 describe("库存预警表 v2 + 爆单 v2 + 看门狗 why", () => {
+  it("历史完整爆单可以回看，但不驱动当前库存预警优先级", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const { hot } = await seed(db, 2);
+      expect((await computeSalesSpike(db)).hits.map((h) => h.skuId)).toEqual([hot.id]);
+      const model = await computeInventoryAlerts(db);
+      expect(model.rows.find((r) => r.skuId === hot.id)?.spike).toBe(false);
+      expect(model.rows.find((r) => r.skuId === hot.id)?.primary).not.toBe("spike");
+      expect(model.limitations.join(" ")).toContain("T+1");
+    } finally { await client.close(); }
+  });
   it("阈值内到货降级但在库 0 不降；临期/积压产出；学习交期只观察；优先级拆项；爆单 reason/gaps/大促预期", async () => {
     const { db, client } = await createTestDb();
     try {
       const { hot, cold, aging, slow, today, promo } = await seed(db);
       expect(INVENTORY_ALERTS_CACHE_KEY).toBe("inventory-alerts/v6");
-      expect(SALES_SPIKE_CACHE_KEY).toBe("sales-spike/v2");
+      expect(SALES_SPIKE_CACHE_KEY).toBe("sales-spike/v3");
 
       /* ── 爆单 v2 ── */
       const spike = await computeSalesSpike(db);
       expect(spike.state).toBe("ready");
       expect(spike.hits.map((h) => h.skuId)).toEqual([hot.id]);
       const sh = spike.hits[0];
-      expect(sh.gaps).toBe(1);
+      expect(sh.gaps).toBe(0);
       expect(sh.reason).toContain("连续 3 天");
       expect(sh.expected).toBe(true);
       expect(sh.planEventRef).toBe(promo.id);
       expect(sh.expectedUpliftPct).toBe(80);
-      expect(sh.planEventWindow).toBe("大促 2026-09-01–2026-09-05");
+      expect(sh.planEventWindow).toBe(`大促 ${shift(today, -2)}–${shift(today, 2)}`);
       expect(spike.coverage).toMatchObject({ mappedSeries: 1, systemSkus: 1, calendarSkus: 1, calendarPct: 100, expectedHits: 1 });
-      expect(spike.limitations.some((l) => l.includes("日历覆盖率 100%"))).toBe(true);
+      expect(spike.limitations.some((l) => l.includes("日历覆盖率"))).toBe(true);
       const sw = spikeWhy(sh);
-      expect(sw.map((w) => w.label)).toEqual(["判定", "窗口", "基线", "缺天", "大促预期内"]);
+      expect(sw.map((w) => w.label)).toEqual(["判定", "窗口", "基线", "大促预期内"]);
       expect(sw.find((w) => w.label === "大促预期内")?.value).toContain("预期涨幅 80%");
 
       /* ── 库存预警表 v2 ── */
@@ -224,7 +235,7 @@ describe("库存预警表 v2 + 爆单 v2 + 看门狗 why", () => {
       expect(spikeAlert.severity).toBe("medium"); // 大促预期内降级
       expect(spikeAlert.title).toContain("大促预期内");
       const ss = spikeAlert.paramsSnapshot as { why: { label: string }[]; expected: boolean; gaps: number; reason: string; planEventRef: number };
-      expect(ss).toMatchObject({ expected: true, gaps: 1, planEventRef: promo.id });
+      expect(ss).toMatchObject({ expected: true, gaps: 0, planEventRef: promo.id });
       expect(ss.reason).toContain("连续 3 天");
       expect(ss.why.map((w) => w.label)).toContain("大促预期内");
     } finally {

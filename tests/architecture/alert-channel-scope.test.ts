@@ -38,8 +38,8 @@ vi.mock("@/server/modules/master/common", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/server/modules/master/common")>();
   return { ...original, guardRead: mocks.guardRead };
 });
-vi.mock("@/server/modules/report/sales-spike", () => ({
-  SALES_SPIKE_CACHE_KEY: "sales-spike/v2",
+vi.mock("@/server/modules/report/sales-spike", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/server/modules/report/sales-spike")>(),
   loadSalesSpike: mocks.loadSalesSpike,
   refreshSalesSpike: mocks.refreshSalesSpike,
 }));
@@ -145,10 +145,14 @@ describe("S3 /api/report/sales-spike：命中行按渠道范围裁剪", () => {
   beforeEach(async () => { ctx = await seed(); });
 
   const model = (): SalesSpikeReadModel => ({
-    key: "sales-spike/v2", builtAt: "2026-09-03T00:00:00.000Z", sourceBinding: "t", state: "ready",
+    key: "sales-spike/v3", builtAt: "2026-09-03T00:00:00.000Z", sourceBinding: "t", state: "ready",
+    evaluations: [
+      { dedupeKey: "sales_spike:sku:1", shopNames: [TMALL_SHOP], kind: "sku", platformSeries: 1, complete: true, calendar: false },
+      { dedupeKey: "sales_spike:sku:2", shopNames: [TMALL_SHOP, JD_SHOP], kind: "sku", platformSeries: 2, complete: false, calendar: true },
+    ],
     anchorDate: "2026-09-03", sourceAsOf: "2026-09-03",
     params: { consecutiveDays: 3, risePct: 50, minBaseQty: 5, baselineDays: 7 },
-    coverage: { platformSeries: 3, mappedSeries: 2, systemSkus: 2, calendarSkus: 0, calendarPct: null, expectedHits: 0 },
+    coverage: { platformSeries: 3, mappedSeries: 2, systemSkus: 2, calendarSkus: 0, calendarPct: null, expectedHits: 0, evaluatedItems: 1, incompleteItems: 1 },
     hits: [hit(TMALL_SHOP, null), hit(`${TMALL_SHOP}、${JD_SHOP}`, null)],
     unmappedHits: [hit(TMALL_SHOP, "A1"), hit(JD_SHOP, "B2")],
     limitations: [],
@@ -169,6 +173,9 @@ describe("S3 /api/report/sales-spike：命中行按渠道范围裁剪", () => {
     expect(body.hitCount).toBe(1);
     expect(body.unmappedCount).toBe(1);
     expect(JSON.stringify(body)).not.toContain(JD_SHOP);
+    expect(body).not.toHaveProperty("evaluations");
+    expect(body).toHaveProperty("coverage.incompleteItems", 0);
+    expect(body).toHaveProperty("coverage.platformSeries", 1);
   });
 
   it("admin 不裁剪", async () => {

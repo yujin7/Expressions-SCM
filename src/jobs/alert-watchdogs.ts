@@ -1,4 +1,5 @@
 import { shanghaiDayOf } from "@/server/core/business-day";
+import { salesSpikeEvidenceCurrent } from "@/server/rules/sales-spike";
 import type { AnyDb } from "@/server/core/svc";
 import { upsertAlerts, type AlertCandidate, type AlertWhy } from "@/server/modules/alerts/engine";
 import { refreshInventoryAlerts, type InventoryAlertRow } from "@/server/modules/report/inventory-alerts";
@@ -99,7 +100,7 @@ export function spikeWhy(h: SpikeHit): AlertWhy[] {
     { label: "窗口", value: `最近 ${h.days.length} 天 ${h.days.map((d) => `${d.date.slice(5)}:${d.qty}`).join(" / ")}，截止 ${h.anchorDate}`, source: "jdy tmall-sku-sales-observation" },
     { label: "基线", value: `${h.baseline} 件/日（前 7 日日均），门槛 ${h.threshold}`, source: "rules/sales-spike" },
   ];
-  if (h.gaps > 0) why.push({ label: "缺天", value: `判定 + 基线窗口缺 ${h.gaps} 天（按 0 计，涨幅被放大，证据打折）`, source: "rules/sales-spike" });
+  if (h.gaps > 0) why.push({ label: "证据不足", value: `窗口缺 ${h.gaps} 天，应回源核对，不作为爆单判断`, source: "rules/sales-spike" });
   if (h.expected) {
     why.push({ label: "大促预期内", value: `${h.planEventWindow ?? "大促"}（事件 #${h.planEventRef}${h.expectedUpliftPct != null ? `，预期涨幅 ${h.expectedUpliftPct}%` : "，未填预期涨幅"}）——严重度降为 medium，不丢弃`, source: "ops_plan_events" });
   }
@@ -156,12 +157,13 @@ export async function runInventoryCoverWatchdog(db: AnyDb, now = new Date()) {
 
 export async function runSalesSpikeWatchdog(db: AnyDb, now = new Date()) {
   const model = await refreshSalesSpike(db);
+  const current = salesSpikeEvidenceCurrent(model.anchorDate, now);
   const candidates: AlertCandidate[] = [
     ...model.hits.map((h) => ({
       refKey: h.code ?? String(h.skuId),
       dedupeKey: `sales_spike:sku:${h.skuId}`,
       title: `${h.expected ? "爆单（大促预期内）" : "爆单"} ${h.code}：近 ${h.days.length} 天 ${h.days.map((d) => d.qty).join("/")} 件，较前 7 日日均 +${h.risePct ?? "—"}%`,
-      detail: `店铺 ${h.shopName}；基线 ${h.baseline} 件/日；阈值 ${h.threshold}；截止 ${h.anchorDate}${h.gaps > 0 ? `；窗口缺 ${h.gaps} 天按 0 计` : ""}${h.expected ? `；${h.planEventWindow ?? "大促"}预期内` : ""}`,
+      detail: `店铺 ${h.shopName}；基线 ${h.baseline} 件/日；阈值 ${h.threshold}；截止 ${h.anchorDate}${h.expected ? `；${h.planEventWindow ?? "大促"}预期内` : ""}`,
       severity: (h.expected ? "medium" : "high") as AlertCandidate["severity"],
       ownerRole: ALERT_OWNER_ROLE["sales_spike"], // = pmc（原写死 ops 与权威表冲突：待办给 pmc、通知/关闭权限给 ops）
       actionHref: `/inventory/alerts?tab=spike`,
@@ -173,7 +175,7 @@ export async function runSalesSpikeWatchdog(db: AnyDb, now = new Date()) {
       refKey: `${h.shopName}|${h.platformSkuId}`,
       dedupeKey: `sales_spike:platform:${h.shopName}|${h.platformSkuId}`,
       title: `爆单（未映射平台 SKU ${h.platformSkuId}）：近 ${h.days.length} 天 ${h.days.map((d) => d.qty).join("/")} 件，+${h.risePct ?? "—"}%`,
-      detail: `店铺 ${h.shopName}；先认领身份再评估备货；基线 ${h.baseline}；截止 ${h.anchorDate}${h.gaps > 0 ? `；窗口缺 ${h.gaps} 天按 0 计` : ""}`,
+      detail: `店铺 ${h.shopName}；先认领身份再评估备货；基线 ${h.baseline}；截止 ${h.anchorDate}`,
       severity: "medium" as const,
       ownerRole: ALERT_OWNER_ROLE["sales_spike"], // = pmc（同上：未映射平台 SKU 的爆单也归 PMC）
       actionHref: h.href,
@@ -182,6 +184,10 @@ export async function runSalesSpikeWatchdog(db: AnyDb, now = new Date()) {
       why: spikeWhy(h),
     })),
   ];
-  const res = await upsertAlerts(db, { category: "sales_spike", candidates, now });
-  return { category: "sales_spike", state: model.state, hits: model.hits.length, unmapped: model.unmappedHits.length, expected: model.coverage.expectedHits, calendarPct: model.coverage.calendarPct, ...res };
+  const eligible = new Set(current ? model.evaluations.filter((e) => e.complete).map((e) => e.dedupeKey) : []);
+  const res = await upsertAlerts(db, {
+    category: "sales_spike", candidates: candidates.filter((c) => eligible.has(c.dedupeKey)), now,
+    autoCloseEligibleKeys: [...eligible],
+  });
+  return { category: "sales_spike", state: model.state, current, evaluated: eligible.size, incomplete: model.coverage.incompleteItems, hits: model.hits.length, unmapped: model.unmappedHits.length, expected: model.coverage.expectedHits, calendarPct: model.coverage.calendarPct, ...res };
 }

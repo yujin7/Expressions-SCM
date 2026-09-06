@@ -1,6 +1,6 @@
 /** D56 爆单规则（rules/sales-spike.ts）：正常爆单 / 基线不足 / 缺天 / 断货恢复 / 第 3 天回落 / 自动关闭窗口 */
 import { describe, expect, it } from "vitest";
-import { detectSalesSpike, matchExpectedPromo } from "@/server/rules/sales-spike";
+import { detectSalesSpike, matchExpectedPromo, salesSpikeEvidenceCurrent } from "@/server/rules/sales-spike";
 
 function series(start: string, qtys: (number | string)[]) {
   const t0 = Date.parse(`${start}T00:00:00Z`);
@@ -8,6 +8,29 @@ function series(start: string, qtys: (number | string)[]) {
 }
 
 describe("detectSalesSpike", () => {
+  it("T+1 资格按上海日界；未来、非法日期及两日前不更新当前告警", () => {
+    const before = new Date("2026-09-02T15:59:59Z");
+    const midnight = new Date("2026-09-02T16:00:00Z");
+    expect(salesSpikeEvidenceCurrent("2026-09-01", before)).toBe(true);
+    expect(salesSpikeEvidenceCurrent("2026-09-01", midnight)).toBe(false);
+    expect(salesSpikeEvidenceCurrent("2026-09-02", midnight)).toBe(true);
+    expect(salesSpikeEvidenceCurrent("2026-09-03", midnight)).toBe(true);
+    expect(salesSpikeEvidenceCurrent("2026-09-04", midnight)).toBe(false);
+    expect(salesSpikeEvidenceCurrent("2026-02-30", midnight)).toBe(false);
+    expect(salesSpikeEvidenceCurrent(null, midnight)).toBe(false);
+  });
+  it("删掉平稳销量的三天基线不能制造爆单；缺日是未知而非零", () => {
+    const full = series("2026-08-20", Array(10).fill(20));
+    expect(detectSalesSpike(full).hit).toBe(false);
+    const incomplete = detectSalesSpike(full.filter((_, i) => i < 4 || i >= 7));
+    expect(incomplete).toMatchObject({ hit: null, baseline: null, threshold: null, gaps: 3 });
+  });
+  it("真实零有观测资格，缺失判定日无资格；不存在的日历日不算观测", () => {
+    const full = series("2026-08-20", [20, 20, 20, 20, 20, 20, 20, 0, 0, 0]);
+    expect(detectSalesSpike(full)).toMatchObject({ hit: false, gaps: 0 });
+    expect(detectSalesSpike(full.slice(0, 7), { asOf: "2026-08-29" }).hit).toBeNull();
+    expect(detectSalesSpike([{ date: "2026-02-30", qty: "100" }]).hit).toBeNull();
+  });
   it("正常爆单：前 7 日日均 10，最近 3 天 16/20/30 全部 ≥ 15 → 命中", () => {
     const r = detectSalesSpike(series("2026-08-20", [10, 10, 10, 10, 10, 10, 10, 16, 20, 30]));
     expect(r.hit).toBe(true);
@@ -34,7 +57,7 @@ describe("detectSalesSpike", () => {
     // 调低最小基数则命中：说明是护栏而非算式问题
     expect(detectSalesSpike(series("2026-08-20", [3, 3, 3, 3, 3, 3, 3, 5, 5, 5]), { minBaseQty: 1 }).hit).toBe(true);
   });
-  it("缺天按 0 计并记 gaps（基线被稀释）", () => {
+  it("基线缺天返回未知，不能用已知天数稀释基线", () => {
     // 基线窗口只有 4 天有数（各 20 → 80/7≈11.43），3 天缺失
     const pts = [
       ...series("2026-08-20", [20, 20, 20, 20]),
@@ -42,15 +65,15 @@ describe("detectSalesSpike", () => {
     ];
     const r = detectSalesSpike(pts);
     expect(r.gaps).toBe(3);
-    expect(r.baseline).toBe("11.4286");
-    expect(r.hit).toBe(true);
+    expect(r.baseline).toBeNull();
+    expect(r.hit).toBeNull();
   });
-  it("asOf 锚定：连续 3 天不再命中（锚点后无数据）→ 不命中，可作自动关闭依据", () => {
+  it("asOf 锚点后无数据不能作自动关闭依据", () => {
     const pts = series("2026-08-20", [10, 10, 10, 10, 10, 10, 10, 16, 20, 30]);
     expect(detectSalesSpike(pts, { asOf: "2026-08-29" }).hit).toBe(true);
     const later = detectSalesSpike(pts, { asOf: "2026-09-01" });
-    expect(later.hit).toBe(false);
-    expect(later.days.map((d) => d.qty)).toEqual(["0.0000", "0.0000", "0.0000"]);
+    expect(later.hit).toBeNull();
+    expect(later.days.map((d) => d.qty)).toEqual([null, null, null]);
   });
   it("同日多条累加；ISO 时间串取前 10 位；参数化连续天数与涨幅", () => {
     const pts = [
@@ -65,8 +88,8 @@ describe("detectSalesSpike", () => {
     expect(r3.hit).toBe(true);
     expect(detectSalesSpike(pts, { consecutiveDays: 3, risePct: 80 }).hit).toBe(false);
   });
-  it("空序列 → 不命中、anchorDate null", () => {
-    expect(detectSalesSpike([])).toMatchObject({ hit: false, anchorDate: null, days: [], gaps: 0 });
+  it("空序列 → 未知、anchorDate null", () => {
+    expect(detectSalesSpike([])).toMatchObject({ hit: null, anchorDate: null, days: [], gaps: 0 });
   });
 });
 

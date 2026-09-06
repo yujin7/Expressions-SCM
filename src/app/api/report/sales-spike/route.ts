@@ -8,7 +8,7 @@ import { loadSalesSpike, refreshSalesSpike } from "@/server/modules/report/sales
 import { pageSalesSpike } from "@/server/modules/report/sales-spike-query";
 import { scopeSalesSpikeModel } from "@/server/modules/report/shop-channel-scope";
 
-/** 爆单预警读模型 `sales-spike/v2`（D56，观察口径；v2 带 reason/gaps/大促预期）。?refresh=1 需 pmc/ops/admin 回查；?q= 服务端筛选（审计 #8）。 */
+/** 爆单预警读模型 v3：缺日弃权、逐对象覆盖、T+1 时效；重算需 pmc/ops/admin，渠道裁剪后输出。 */
 export async function GET(req: NextRequest) {
   try {
     const sp = new URL(req.url).searchParams;

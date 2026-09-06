@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ExternalSkuRankingCard from "@/app/(app)/report/decision-studio/external-sku-ranking-card";
 import SupplierScorecardClient from "@/app/(app)/report/supplier-scorecard/supplier-scorecard-client";
 import ClosedLoopClient from "@/app/(app)/report/closed-loop/closed-loop-client";
+import AlertsClient, { SpikeTab } from "@/app/(app)/inventory/alerts/alerts-client";
 
 // Real components and callbacks, deferred network responses, no DOM or visual claims.
 const hooks = vi.hoisted(() => ({
@@ -92,6 +93,10 @@ vi.mock("@/components/DecisionVisual", () => ({ default: "decision-visual" }));
 vi.mock("@/components/ProductExternalDecisionEvidenceCard", () => ({ default: "external-evidence" }));
 vi.mock("@/components/ListToolbar", () => ({ default: "list-toolbar" }));
 vi.mock("@/components/LoadErrorAlert", () => ({ default: "load-error" }));
+vi.mock("@/components/AlertCloseModal", () => ({ default: "alert-close" }));
+vi.mock("@/components/AlertEvidence", () => ({ default: "alert-evidence", ackText: () => "未确认" }));
+vi.mock("@/components/CaliberNote", () => ({ default: "caliber-note" }));
+vi.mock("@/components/useMe", () => ({ useMe: () => ({ id: 1, roles: ["admin"] }), hasAnyRole: () => true }));
 vi.mock("@/components/RemoteSelect", () => ({ default: "remote-select" }));
 vi.mock("@/components/supplier-external-evidence", () => ({ buildSupplierExternalEvidenceBriefs: () => [] }));
 vi.mock("@/app/(app)/report/supplier-scorecard/lead-history-tab", () => ({ default: "lead-history" }));
@@ -110,12 +115,12 @@ vi.mock("@/components/useListState", () => ({
   },
 }));
 
-type Props = Record<string, unknown> & { children?: ReactNode; extra?: ReactNode; description?: ReactNode; action?: ReactNode; dataView?: ReactNode };
+type Props = Record<string, unknown> & { children?: ReactNode; extra?: ReactNode; description?: ReactNode; action?: ReactNode; dataView?: ReactNode; primaryActions?: ReactNode };
 type Element = React.ReactElement<Props>;
 function elements(node: ReactNode): Element[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!isValidElement<Props>(node)) return [];
-  return [node, ...[node.props.children, node.props.extra, node.props.description, node.props.action, node.props.dataView].flatMap(elements)];
+  return [node, ...[node.props.children, node.props.extra, node.props.description, node.props.action, node.props.dataView, node.props.primaryActions].flatMap(elements)];
 }
 function text(node: ReactNode): string {
   if (Array.isArray(node)) return node.map(text).join("");
@@ -194,6 +199,86 @@ function closedLoopData(name: string) {
     summary: { total: 21, adopted: 0, pending: 21, rejected: 0, deleted: 0, declined: 0, adoptRate: 0, deliveredRate: null },
   };
 }
+
+function spikeData(code: string) {
+  return {
+    state: "ready", q: "", currentEvidence: true, anchorDate: "2026-09-06", hitCount: 1, unmappedCount: 0,
+    params: { consecutiveDays: 3, baselineDays: 7, risePct: 50, minBaseQty: 10 },
+    coverage: { evaluatedItems: 1, incompleteItems: 0, platformSeries: 1, mappedSeries: 1, systemSkus: 1 }, limitations: [],
+    hits: [{ kind: "sku", skuId: 1, code, name: code, shopName: "店铺", days: [], baseline: "10", threshold: "15", risePct: "100" }],
+    unmappedHits: [],
+  };
+}
+const spikeRows = (tree: ReactNode) => elements(tree).find((n) => n.type === "table")!.props.dataSource;
+
+describe("爆单当前查询与证据状态", () => {
+  it("说明区不把已知悉或缺失证据承诺为自动关闭", () => {
+    const note = elements(render(AlertsClient)).find((n) => n.type === "caliber-note")!;
+    const detail = text(note.props.detail as ReactNode);
+    expect(detail).toContain("已知悉只留审计不改状态");
+    expect(detail).toContain("完整且符合 T+1 时效");
+    expect(detail).toContain("距最后命中满 3 天");
+    expect(detail).not.toContain("连续 3 天不再命中");
+  });
+
+  it("缺证据显示破折号与无法判定，不伪装为零爆单", async () => {
+    network.fetch.mockImplementation((url: string) => Promise.resolve(url.startsWith("/api/alerts?") ? { rows: [] } : {
+      ...spikeData("unknown"), state: "insufficient", currentEvidence: false, hits: [], hitCount: 0,
+      coverage: { ...spikeData("").coverage, evaluatedItems: 0, incompleteItems: 1 },
+    }));
+    const loading = render(SpikeTab);
+    expect((elements(loading).find((n) => n.type === "table")!.props.locale as { emptyText: string }).emptyText).toContain("正在加载");
+    await flush();
+    const tree = render(SpikeTab);
+    expect(elements(tree).filter((n) => n.type === "statistic").slice(0, 2).map((n) => n.props.value)).toEqual(["—", "—"]);
+    expect((elements(tree).find((n) => n.type === "table")!.props.locale as { emptyText: string }).emptyText).toContain("无法判定");
+    expect(elements(tree).find((n) => n.type === "alert")?.props.type).toBe("warning");
+    expect(text(elements(tree).find((n) => n.type === "alert")?.props.description as ReactNode)).toContain("不会自动关闭旧告警");
+  });
+
+  it("切换查询取消旧请求，迟到成功不能覆盖新结果", async () => {
+    const old = deferred(), latest = deferred();
+    network.fetch.mockImplementation((url: string) => url.startsWith("/api/alerts?") ? Promise.resolve({ rows: [] }) : url.includes("q=new") ? latest.promise : old.promise);
+    render(SpikeTab); await flush();
+    lists.filters.spike = { q: "new" };
+    render(SpikeTab);
+    const oldCall = network.fetch.mock.calls.find(([url]) => String(url).startsWith("/api/report/sales-spike?") && !String(url).includes("q=new"))!;
+    expect((oldCall[1].signal as AbortSignal).aborted).toBe(true);
+    latest.resolve(spikeData("new")); await flush();
+    old.resolve(spikeData("old")); await flush();
+    expect(spikeRows(render(SpikeTab))).toEqual(spikeData("new").hits);
+  });
+
+  it("迟到错误不结束新查询加载，也不覆盖当前失败", async () => {
+    const old = deferred(), latest = deferred();
+    network.fetch.mockImplementation((url: string) => url.startsWith("/api/alerts?") ? Promise.resolve({ rows: [] }) : url.includes("q=new") ? latest.promise : old.promise);
+    render(SpikeTab); await flush();
+    lists.filters.spike = { q: "new" }; render(SpikeTab);
+    old.reject(new Error("过期查询失败")); await flush();
+    const pending = render(SpikeTab);
+    expect(elements(pending).find((n) => n.type === "table")!.props.loading).toBe(true);
+    expect(elements(pending).find((n) => n.type === "load-error")?.props.error).toBeNull();
+    latest.reject(new Error("当前查询失败")); await flush();
+    expect(elements(render(SpikeTab)).find((n) => n.type === "load-error")?.props.error).toBe("当前查询失败");
+  });
+
+  it("刷新撤下旧数据和导出；失败持续可见，显式重试恢复", async () => {
+    const pending = deferred();
+    let n = 0;
+    network.fetch.mockImplementation((url: string) => url.startsWith("/api/alerts?") ? Promise.resolve({ rows: [] }) : ++n === 1 ? Promise.resolve(spikeData("old")) : n === 2 ? pending.promise : Promise.resolve(spikeData("retry")));
+    render(SpikeTab); await flush();
+    click(button(render(SpikeTab), "刷新"));
+    const loading = render(SpikeTab);
+    expect(spikeRows(loading)).toEqual([]);
+    expect(elements(loading).find((e) => e.type === "list-toolbar")?.props.onExport).toBeUndefined();
+    pending.reject(new Error("当前窗口读取失败")); await flush();
+    const failed = render(SpikeTab);
+    const error = elements(failed).find((e) => e.type === "load-error")!;
+    expect(error.props.error).toBe("当前窗口读取失败");
+    (error.props.onRetry as () => void)(); await flush();
+    expect(spikeRows(render(SpikeTab))).toEqual(spikeData("retry").hits);
+  });
+});
 
 describe("closed-loop current-page facts", () => {
   it("ignores an old page success even if transport resolves after cancellation", async () => {

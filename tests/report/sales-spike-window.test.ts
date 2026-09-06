@@ -35,9 +35,12 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { createTestDb } from "../helpers/db";
-import { computeSalesSpike } from "@/server/modules/report/sales-spike";
+import { computeSalesSpike, loadSalesSpike } from "@/server/modules/report/sales-spike";
+import { runSalesSpikeWatchdog } from "@/jobs/alert-watchdogs";
+import { upsertAlerts } from "@/server/modules/alerts/engine";
 
 const source = readFileSync(
   path.resolve(__dirname, "../../src/server/modules/report/sales-spike.ts"),
@@ -89,7 +92,7 @@ function expectedBaselineAndThreshold(baselineQties: number[]): { baseline: stri
 
 type Db = Awaited<ReturnType<typeof createTestDb>>["db"];
 
-async function seed(db: Db) {
+async function seed(db: Db, options: { omitDate?: string; secondShopGap?: boolean; invalidQty?: string; invalidDate?: string } = {}) {
   const [actor] = await db.insert(schema.users).values({ name: "责任人", roles: ["pmc"] }).returning();
   const [spu] = await db.insert(schema.spus).values({ code: "P1", nameCn: "测试" }).returning();
   const [hot] = await db.insert(schema.skus).values({ code: "N001-000", name: "爆款", spuId: spu.id, skuType: "finished", baseUom: "支" }).returning();
@@ -118,6 +121,7 @@ async function seed(db: Db) {
     d: string, psku: string, qty: number,
     opts: { jobId?: number; status?: "pending" | "error" } = {},
   ) => {
+    if (psku === "P-HOT" && d === options.omitDate) return;
     rows.push({
       importJobId: opts.jobId ?? salesJob.id,
       rowNo: n++,
@@ -134,6 +138,22 @@ async function seed(db: Db) {
   push(JUST_OUTSIDE_DATE, "P-HOT", JUST_OUTSIDE_QTY);
   // 同键重复（DISTINCT ON 去重；row_no 大者胜出 → 取 30）
   push(ANCHOR, "P-HOT", 30);
+  if (options.invalidDate) push(options.invalidDate, "P-HOT", 999);
+  if (options.invalidQty !== undefined) {
+    rows.push({ importJobId: salesJob.id, rowNo: n++, status: "pending", targetTable: "jdy_tmall_sku_sales_observation",
+      payload: { data: { statisticalDate: BASELINE_DATES[1], shopName: shop, skuId: "P-HOT", paidNumber: options.invalidQty } } });
+  }
+  if (options.secondShopGap) {
+    const otherShop = "第二店铺";
+    await db.insert(schema.stagingRows).values({
+      importJobId: cwJob.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation",
+      payload: { data: { shopName: otherShop, platformSkuId: "P-SECOND" }, _identity: { skuId: hot.id } },
+    });
+    [...BASELINE_DATES, ...JUDGE_DATES].filter((d) => d !== BASELINE_DATES[1]).forEach((d) => {
+      rows.push({ importJobId: salesJob.id, rowNo: n++, status: "pending", targetTable: "jdy_tmall_sku_sales_observation",
+        payload: { data: { statisticalDate: d, shopName: otherShop, skuId: "P-SECOND", paidNumber: "1" } } });
+    });
+  }
 
   // 第二个平台序列：涨幅不足，不命中，但要出现在 coverage 里
   [...BASELINE_DATES, ...JUDGE_DATES].forEach((d, i) => push(d, "P-COLD", i < BASELINE_DAYS ? 40 : 41));
@@ -152,14 +172,103 @@ async function seed(db: Db) {
   push("2026-09-23", "P-HOT", 1, { jobId: otherJob.id });               // ④ import_job_id
 
   await db.insert(schema.stagingRows).values(rows);
-  return { hot };
+  return { hot, shop };
 }
 
 describe("爆单预警：判定窗口与锚点（行为回归）", () => {
+  it("v2 旧缓存不能绕过新的证据资格，重建不删除旧缓存证据", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      await seed(db, { omitDate: BASELINE_DATES[1] });
+      const model = await computeSalesSpike(db);
+      const legacy = { ...model, key: "sales-spike/v2", hits: [{ code: "旧缓存伪命中" }] };
+      await db.execute(sql`INSERT INTO report_read_model_cache (key, source_binding, payload, built_at) VALUES ('sales-spike/v2', ${model.sourceBinding}, ${JSON.stringify(legacy)}::jsonb, now())`);
+      const read = await loadSalesSpike(db);
+      expect(read.key).toBe("sales-spike/v3");
+      expect(read.hits).toEqual([]);
+      expect(read.coverage.incompleteItems).toBe(1);
+      const cached = await db.select().from(schema.reportReadModelCache);
+      expect(cached.map((r) => r.key).sort()).toEqual(["sales-spike/v2", "sales-spike/v3"]);
+    } finally { await client.close(); }
+  });
+  it.each(["2026-09-31", "2026-08-32"])("非法日历日 %s 不进入 SQL 日期强转或制造有效窗口", async (invalidDate) => {
+    const { db, client } = await createTestDb();
+    try {
+      await seed(db, { invalidDate });
+      const model = await computeSalesSpike(db);
+      expect(model.anchorDate).toBe(invalidDate > ANCHOR ? null : ANCHOR);
+      expect(model.hits).toHaveLength(invalidDate > ANCHOR ? 0 : 1);
+    } finally { await client.close(); }
+  });
+  it.each([BASELINE_DATES[1], JUDGE_DATES[1]])("缺日 %s 不生成命中，仍暴露不可判定覆盖", async (omitDate) => {
+    const { db, client } = await createTestDb();
+    try {
+      const { hot } = await seed(db, { omitDate });
+      const model = await computeSalesSpike(db);
+      expect(model.hits).toEqual([]);
+      expect(model.state).toBe("partial");
+      expect(model.coverage).toMatchObject({ evaluatedItems: 1, incompleteItems: 1 });
+      expect(model.evaluations.find((e) => e.dedupeKey === `sales_spike:sku:${hot.id}`)?.complete).toBe(false);
+    } finally { await client.close(); }
+  });
+
+  it("完整店铺不能掩盖同一 SKU 的另一店铺缺日", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      await seed(db, { secondShopGap: true });
+      const model = await computeSalesSpike(db);
+      expect(model.hits).toEqual([]);
+      expect(model.coverage).toMatchObject({ platformSeries: 3, mappedSeries: 2, evaluatedItems: 1, incompleteItems: 1 });
+    } finally { await client.close(); }
+  });
+
+  it.each(["", "not-a-number"])("最新业务键销量非法（%s）不补零，也不复活旧有效版本", async (invalidQty) => {
+    const { db, client } = await createTestDb();
+    try {
+      await seed(db, { invalidQty });
+      const model = await computeSalesSpike(db);
+      expect(model.hits).toEqual([]);
+      expect(model.coverage).toMatchObject({ evaluatedItems: 1, incompleteItems: 1 });
+    } finally { await client.close(); }
+  });
+
+  it("当前完整非命中可迟滞关闭；缺日、消失对象不关闭也不续命", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const { hot, shop } = await seed(db, { omitDate: BASELINE_DATES[1] });
+      const keys = [`sales_spike:sku:${hot.id}`, `sales_spike:platform:${shop}|P-COLD`, "sales_spike:sku:disappeared"];
+      const previous = new Date(`${shift(ANCHOR, -10)}T03:00:00Z`);
+      await upsertAlerts(db, { category: "sales_spike", now: previous, candidates: keys.map((key) => ({
+        dedupeKey: key, refKey: key, title: key, severity: "high", ownerRole: "pmc", actionHref: "/inventory/alerts?tab=spike",
+      })) });
+      const result = await runSalesSpikeWatchdog(db, new Date(`${shift(ANCHOR, 1)}T03:00:00Z`));
+      expect(result).toMatchObject({ current: true, opened: 0, refreshed: 0, autoClosed: 1 });
+      const alerts = await db.select().from(schema.systemAlerts);
+      expect(alerts.find((a) => a.dedupeKey === keys[1])?.status).toBe("resolved");
+      for (const key of [keys[0], keys[2]]) {
+        expect(alerts.find((a) => a.dedupeKey === key)).toMatchObject({ status: "open", lastHitAt: previous });
+      }
+      expect((await db.select().from(schema.alertEvents)).filter((e) => e.event === "refresh")).toEqual([]);
+    } finally { await client.close(); }
+  });
+
+  it.each([-1, 2])("未来/过期窗口（相差 %s 日）不新增、不续命、不关闭", async (delta) => {
+    const { db, client } = await createTestDb();
+    try {
+      const { shop } = await seed(db);
+      const previous = new Date(`${shift(ANCHOR, -10)}T03:00:00Z`);
+      await upsertAlerts(db, { category: "sales_spike", now: previous, candidates: [{
+        dedupeKey: `sales_spike:platform:${shop}|P-COLD`, refKey: "P-COLD", title: "既有", severity: "high", ownerRole: "pmc", actionHref: "/inventory/alerts",
+      }] });
+      const result = await runSalesSpikeWatchdog(db, new Date(`${shift(ANCHOR, delta)}T03:00:00Z`));
+      expect(result).toMatchObject({ current: false, opened: 0, refreshed: 0, autoClosed: 0, stillOpen: 1 });
+      expect((await db.select().from(schema.systemAlerts))[0]).toMatchObject({ status: "open", lastHitAt: previous });
+    } finally { await client.close(); }
+  });
   it("锚点由独立 max(...) 查询给出，日期谓词写在 DISTINCT ON 之前的 s.WHERE 里（取数形状守卫）", () => {
     const cte = source.slice(source.indexOf("WITH s AS ("), source.indexOf("ORDER BY payload->'data'->>'shopName'"));
     expect(cte, "判定窗口谓词必须进入 s 的 WHERE（DISTINCT ON 之前），否则整批 68k 行都要先排序去重")
-      .toMatch(/left\(payload->'data'->>'statisticalDate',10\)::date\s*>/);
+      .toMatch(/left\(payload->'data'->>'statisticalDate',10\)\s*>\s*to_char/);
     expect(source, "锚点不得再从 s 自身派生——那正是 DISTINCT ON 无法被裁剪的原因")
       .not.toMatch(/a AS \(SELECT max\(d::date\)/);
     expect(source, "锚点必须来自一次独立的 max(...) 查询").toMatch(/anchorOf\s*\(/);
