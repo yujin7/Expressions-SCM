@@ -287,6 +287,7 @@ export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { 
         dataSource={data?.rows ?? []}
         loading={loading}
         tableLayout="fixed"
+        scroll={{ x: 870 }}
         locale={{ emptyText: loadError ? "数据未加载" : "当前条件下没有待办" }}
         pagination={false}
         onChange={(_pagination, _filters, sorter, extra) => {
@@ -418,6 +419,7 @@ export function StatsTab({ refreshKey }: { refreshKey: number }) {
         dataSource={data?.rows ?? []}
         loading={loading}
         tableLayout="fixed"
+        scroll={{ x: 860 }}
         locale={{ emptyText: loadError ? "数据未加载" : "当前条件下没有待办统计" }}
         pagination={false}
       />
