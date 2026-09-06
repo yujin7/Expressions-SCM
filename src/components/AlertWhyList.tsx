@@ -33,7 +33,7 @@ export default function AlertWhyList({ why, max }: AlertWhyListProps) {
   const restTip = rest > 0 ? why.slice(items.length).map((w) => `${w.label}：${formatValue(w.value)}`).join("；") : "";
 
   const item = (w: AlertWhyItem, i: number) => (
-    <span key={`${w.label}-${i}`} style={{ whiteSpace: "nowrap" }}>
+    <span key={`${w.label}-${i}`} style={{ whiteSpace: "normal", overflowWrap: "anywhere" }}>
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>{w.label}</Typography.Text>
       <Typography.Text strong style={{ fontSize: 12, marginLeft: 4 }}>{formatValue(w.value)}</Typography.Text>
       {w.source ? (

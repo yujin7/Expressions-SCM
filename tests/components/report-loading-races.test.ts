@@ -4,6 +4,7 @@ import ExternalSkuRankingCard from "@/app/(app)/report/decision-studio/external-
 import SupplierScorecardClient from "@/app/(app)/report/supplier-scorecard/supplier-scorecard-client";
 import ClosedLoopClient from "@/app/(app)/report/closed-loop/closed-loop-client";
 import AlertsClient, { SpikeTab } from "@/app/(app)/inventory/alerts/alerts-client";
+import SystemAlertsClient from "@/app/(app)/alerts/alerts-client";
 
 // Real components and callbacks, deferred network responses, no DOM or visual claims.
 const hooks = vi.hoisted(() => ({
@@ -74,8 +75,8 @@ vi.mock("react", async (original) => ({
 vi.mock("antd", () => ({
   App: { useApp: () => ({ message }) },
   Alert: "alert", Button: "button", Card: "card", Col: "col", Row: "row", Select: "select",
-  Space: "space", Statistic: "statistic", Table: "table", Tag: "tag", Popconfirm: "popconfirm",
-  Progress: "progress", Segmented: "segmented", Tabs: "tabs", Tooltip: "tooltip",
+  Space: "space", Switch: "switch", Statistic: "statistic", Table: "table", Tag: "tag", Popconfirm: "popconfirm",
+  Progress: "progress", Segmented: "segmented", Tabs: "tabs", Tooltip: "tooltip", Pagination: "pagination", Empty: "empty", Spin: "spin",
   Typography: { Text: "text", Paragraph: "paragraph", Title: "title" },
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn() }), useSearchParams: () => new URLSearchParams() }));
@@ -111,6 +112,7 @@ vi.mock("@/components/useListState", () => ({
       filters: lists.filters[paramPrefix], page: lists.pages[paramPrefix] ?? 1, pageSize: 20, tableSize: "small",
       setFilter: (next: Record<string, string>) => { lists.filters[paramPrefix] = { ...lists.filters[paramPrefix], ...next }; setPage(1); },
       setPage, paginationProps: (props: object) => ({ ...props, onChange: setPage }),
+      queryString: () => new URLSearchParams({ ...lists.filters[paramPrefix], page: String(lists.pages[paramPrefix] ?? 1) }).toString(),
     };
   },
 }));
@@ -153,6 +155,72 @@ const button = (tree: ReactNode, label: string) => elements(tree).find((node) =>
 const click = (element: Element) => (element.props.onClick as () => void)();
 const signal = (index: number) => network.fetch.mock.calls[index][1].signal as AbortSignal;
 const rows = (tree: ReactNode) => table(tree).props.dataSource;
+
+describe("system alert list loading evidence", () => {
+  const data = { rows: [{ id: 1, category: "sales_spike", title: "old alert", status: "open", detail: null, createdAt: "2026-09-01" }], total: 21, page: 1, pageSize: 20 };
+  it("removes old rows during refresh and keeps failure visible until explicit retry", async () => {
+    const pending = deferred();
+    network.fetch.mockResolvedValueOnce(data).mockReturnValueOnce(pending.promise).mockResolvedValueOnce({ ...data, rows: [] });
+    render(SystemAlertsClient); await flush();
+    expect(rows(render(SystemAlertsClient))).toEqual(data.rows);
+    click(button(render(SystemAlertsClient), "刷新"));
+    expect(rows(render(SystemAlertsClient))).toEqual([]);
+    pending.reject(new Error("网络失败")); await flush();
+    const failed = render(SystemAlertsClient);
+    expect(rows(failed)).toEqual([]);
+    const error = elements(failed).find(n => n.type === "load-error")!;
+    expect(error.props.error).toBe("网络失败");
+    (error.props.onRetry as () => void)(); render(SystemAlertsClient); await flush();
+    expect(rows(render(SystemAlertsClient))).toEqual([]);
+    expect(elements(render(SystemAlertsClient)).find(n => n.type === "load-error")?.props.error).toBeNull();
+  });
+  it("drops stale responses after a filter change and aborts on unmount", async () => {
+    const old = deferred(), next = deferred();
+    network.fetch.mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
+    render(SystemAlertsClient);
+    lists.filters["system-alerts"].category = "doc_aging";
+    render(SystemAlertsClient);
+    expect(signal(0).aborted).toBe(true);
+    next.resolve({ ...data, rows: [{ ...data.rows[0], id: 2, category: "doc_aging" }] }); await flush();
+    old.resolve(data); await flush();
+    expect(rows(render(SystemAlertsClient))).toEqual([{ ...data.rows[0], id: 2, category: "doc_aging" }]);
+    unmount(); expect(signal(1).aborted).toBe(true);
+  });
+  it("hides old-query facts before the replacement effect runs", async () => {
+    network.fetch.mockResolvedValueOnce(data).mockReturnValueOnce(deferred().promise);
+    render(SystemAlertsClient); await flush(); render(SystemAlertsClient);
+    lists.filters["system-alerts"] = { ...lists.filters["system-alerts"], severity: "critical" };
+    hooks.cursor = 0;
+    const beforeEffect = SystemAlertsClient();
+    expect(rows(beforeEffect)).toEqual([]);
+    expect(table(beforeEffect).props.loading).toBe(true);
+    expect(elements(beforeEffect).some(n => n.type === "pagination")).toBe(false);
+    render(SystemAlertsClient);
+  });
+  it("does not let a superseded failure end the new read or hide its failure", async () => {
+    const old = deferred(), current = deferred();
+    network.fetch.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+    render(SystemAlertsClient);
+    lists.filters["system-alerts"].category = "doc_aging";
+    render(SystemAlertsClient);
+    old.reject(new Error("旧错误")); await flush();
+    expect(table(render(SystemAlertsClient)).props.loading).toBe(true);
+    current.reject(new Error("当前错误")); await flush();
+    expect(elements(render(SystemAlertsClient)).find(n => n.type === "load-error")?.props.error).toBe("当前错误");
+  });
+  it("sends desktop sorting to the server and resets pagination rather than sorting a page locally", async () => {
+    network.fetch.mockResolvedValue(data);
+    render(SystemAlertsClient); await flush();
+    lists.pages["system-alerts"] = 4;
+    const tree = render(SystemAlertsClient);
+    const columns = table(tree).props.columns as { dataIndex?: string; sorter?: unknown }[];
+    expect(columns.find(c => c.dataIndex === "createdAt")?.sorter).toBe(true);
+    (table(tree).props.onChange as (...args: unknown[]) => void)({}, {}, { field: "createdAt", order: "ascend" }, { action: "sort" });
+    render(SystemAlertsClient);
+    expect(lists.pages["system-alerts"]).toBe(1);
+    expect(network.fetch.mock.lastCall?.[0]).toContain("sort=createdAt&order=asc");
+  });
+});
 const external = () => ExternalSkuRankingCard({ active: true });
 const platformSelect = (tree: ReactNode) => elements(tree).find((node) => node.type === "select" && ["all", "tmall", "pdd"].includes(String(node.props.value)))!;
 const selectPlatform = (tree: ReactNode, platform: string) => (platformSelect(tree).props.onChange as (value: string) => void)(platform);

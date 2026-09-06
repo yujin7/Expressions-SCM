@@ -33,6 +33,14 @@ export async function GET(req: NextRequest) {
     const idRaw = searchParams.get("id");
     const focusId = idRaw !== null ? z.string().regex(/^[1-9]\d*$/).transform(Number).pipe(z.number().int().max(2_147_483_647)).parse(idRaw) : null;
     const page = focusId ? 1 : requestedPage;
+    // Allowlisted expressions only; apply ordering before LIMIT/OFFSET, never to one client page.
+    // Exact notification links ignore display sorting just as they ignore other display filters.
+    const sort = focusId ? "id" : z.enum(["id", "createdAt", "lastHitAt", "severity"]).parse(searchParams.get("sort") || "id");
+    const order = focusId ? "desc" : z.enum(["asc", "desc"]).parse(searchParams.get("order") || "desc");
+    const sortColumn = sort === "severity"
+      ? sql`case ${systemAlerts.severity} when 'critical' then 3 when 'high' then 2 when 'medium' then 1 else null end`
+      : systemAlerts[sort];
+    const ordering = order === "asc" ? sql`${sortColumn} asc nulls last` : sql`${sortColumn} desc nulls last`;
     const where: SQL[] = focusId ? [eq(systemAlerts.id, focusId)] : [eq(systemAlerts.status, status)];
     if (!focusId) {
       if (category) where.push(eq(systemAlerts.category, category));
@@ -71,7 +79,7 @@ export async function GET(req: NextRequest) {
         .from(systemAlerts)
         .leftJoin(users, eq(systemAlerts.ackedBy, users.id))
         .where(cond)
-        .orderBy(desc(systemAlerts.id))
+        .orderBy(ordering, desc(systemAlerts.id))
         .limit(pageSize)
         .offset((page - 1) * pageSize),
     ]);
