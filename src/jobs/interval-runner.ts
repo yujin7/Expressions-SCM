@@ -17,6 +17,7 @@
 import { getDbAsync } from "@/db";
 import { jobRuns } from "@/db/schema";
 import { log } from "@/server/core/logger";
+import { taskFailureMessage } from "./task-diagnostic";
 import { acquireJobLock, releaseJobLock, type JobLockDenial, type JobLockHandle } from "./job-lock";
 import { runLicenseAlert } from "./license-alert";
 import { runProcurementQualityAlerts } from "./procurement-quality-alerts";
@@ -279,8 +280,10 @@ async function runJobBody(job: IntervalJob, db: AnyDb, options?: IntervalJobRunO
     }
   } catch (e) {
     ok = false;
-    message = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-    log({ level: "error", msg: "interval job 失败", job: job.name, error: message });
+    const errorId = globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+    // Provider prose may contain credentials with no label; never try to recover it via regex.
+    message = taskFailureMessage(job.name, e, errorId);
+    log({ level: "error", msg: "interval job 失败", job: job.name, errorId, error: message });
   }
   // Preserve execution health for expected authorization waits. Persist a complete,
   // versioned allowlist instead of truncating results before the waiting evidence.

@@ -8,14 +8,14 @@
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { createTestDb } from "../helpers/db";
 import * as schema from "@/db/schema";
 import {
   claimNextExportJob, createExportJob, listExportJobs, runExportWorkerOnce, syncExportGate,
 } from "@/jobs/export-worker";
-import { SYNC_EXPORT_MAX } from "@/server/modules/report/export";
+import { EXPORT_KINDS, SYNC_EXPORT_MAX } from "@/server/modules/report/export";
 
 async function seedBase(db: Awaited<ReturnType<typeof createTestDb>>["db"]) {
   const [user] = await db
@@ -56,6 +56,31 @@ describe("createExportJob / claim", () => {
 });
 
 describe("runExportWorkerOnce", () => {
+  it("未知生产器异常：任务及用户列表只显示错误码，console 不含 SQL 或绑定值", async () => {
+    const { db } = await createTestDb();
+    const { user } = await seedBase(db);
+    const job = await createExportJob(user, "balance", {}, db);
+    const producer = vi.spyOn(EXPORT_KINDS.balance, "produce").mockRejectedValueOnce(
+      new Error("Failed query: insert into suppliers values ($1)\nparams: SYNTH_PRIVATE_BANK"),
+    );
+    const output = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const result = await runExportWorkerOnce(db);
+      expect(result).toMatchObject({ id: job.id, status: "failed" });
+      expect(result?.error).toContain("错误码");
+      const [row] = await db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, job.id));
+      const list = await listExportJobs({ id: user.id, roles: ["warehouse"] }, db);
+      expect(row.error).toBe(result?.error);
+      expect(list[0].error).toBe(result?.error);
+      expect(JSON.stringify([result, row, list, output.mock.calls])).not.toContain("SYNTH_PRIVATE_BANK");
+      expect(JSON.stringify(output.mock.calls)).not.toContain("insert into");
+      const logged = JSON.parse(String(output.mock.calls[0][0]));
+      expect(result?.error).toContain(logged.errorId);
+      expect(logged.exportJobId).toBe(job.id);
+      expect(await claimNextExportJob(db)).toBeNull();
+    } finally { producer.mockRestore(); output.mockRestore(); }
+  });
+
   it("快乐路径：balance 导出 → done + rowCount + CSV 文件（BOM/标题/数据行）", async () => {
     const { db } = await createTestDb();
     const { user } = await seedBase(db);

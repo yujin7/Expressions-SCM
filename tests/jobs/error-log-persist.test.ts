@@ -62,6 +62,24 @@ describe("errorResponse → error_logs 留档", () => {
     expect(row?.message).toContain("boom-no-ctx");
   });
 
+  it("500 控制台、响应、持久日志同一错误码，SQL 参数与查询凭据均不外泄", async () => {
+    const output = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const res = errorResponse(new Error("Failed query: select * from users where email=$1\nparams: SYNTH_EMAIL"),
+        { path: "/api/test?access_token=SYNTH_TOKEN", method: "GET", userId: 7 });
+      const body = await res.json() as { errorId: string; error: string };
+      expect(res.status).toBe(500);
+      const rows = await pollRows(db, (r) => r.some((x) => x.errorId === body.errorId));
+      const stored = rows.find((x) => x.errorId === body.errorId);
+      expect(stored).toBeDefined();
+      expect(JSON.stringify([body, stored, output.mock.calls])).not.toContain("SYNTH_");
+      expect(JSON.stringify([stored, output.mock.calls])).not.toContain("select *");
+      expect(stored?.stack).toContain("error-log-persist.test.ts");
+      expect(JSON.parse(String(output.mock.calls[0][0])).errorId).toBe(body.errorId);
+      expect(stored?.path).toBe("/api/test?[REDACTED]");
+    } finally { output.mockRestore(); }
+  });
+
   it("业务错误（ApiError/Zod/唯一键冲突）不落 error_logs", async () => {
     const before = (await db.select().from(errorLogs)).length;
     const res = errorResponse(new ApiError(404, "找不到"));

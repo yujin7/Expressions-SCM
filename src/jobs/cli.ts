@@ -11,6 +11,7 @@
  * 输出 JSON summary；失败退出码非 0。
  */
 import { getDbAsync } from "@/db";
+import { log } from "@/server/core/logger";
 import { runReconcileJst, shanghaiToday } from "./reconcile-jst";
 import { runLicenseAlert } from "./license-alert";
 import { runProcurementQualityAlerts } from "./procurement-quality-alerts";
@@ -41,6 +42,7 @@ import { probeJstReadiness } from "./probe-jst";
 import { runYonyouPermissionProbe } from "./probe-yonyou";
 import { loadJobEnvironment } from "./load-env";
 import { runNamedIntervalJobOnce } from "./interval-runner";
+import { taskFailureMessage } from "./task-diagnostic";
 
 loadJobEnvironment();
 
@@ -192,6 +194,8 @@ async function main(): Promise<void> {
 main()
   .then(() => process.exit(0)) // PGlite 持句柄，显式退出
   .catch((e: unknown) => {
-    console.error(e instanceof Error ? e.message : e);
+    const errorId = globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+    log({ level: "error", msg: "后台任务 CLI 失败", errorId,
+      error: taskFailureMessage(process.argv[2] ?? "", e, errorId) });
     process.exit(1);
   });

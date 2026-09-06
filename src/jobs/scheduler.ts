@@ -8,6 +8,7 @@
  */
 import { INTERVAL_JOBS, runIntervalJobOnce } from "./interval-runner";
 import { ensureExportWorkerStarted } from "./export-worker";
+import { log } from "@/server/core/logger";
 
 const TZ = "Asia/Shanghai";
 export const SCHEDULES: Record<string, string> = {
@@ -78,7 +79,7 @@ export async function start(): Promise<{ stop: () => Promise<void> } | null> {
 
   const { default: PgBoss } = await import("pg-boss");
   const boss = new PgBoss(url);
-  boss.on("error", (err) => console.error("[pg_boss]", err));
+  boss.on("error", (err) => log({ level: "error", msg: "pg-boss error", error: err }));
   await boss.start();
 
   for (const job of INTERVAL_JOBS) {

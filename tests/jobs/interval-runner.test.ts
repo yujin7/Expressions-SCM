@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import { createTestDb, type TestDb } from "../helpers/db";
 import { jobRuns } from "@/db/schema";
 import { parseYonyouJobSummary, yonyouJobSummary, YONYOU_JOB_SUMMARY_VERSION } from "@/lib/yonyou-job-summary";
 import { runJobFailureWatchdog } from "@/jobs/job-failure-watchdog";
+import { TaskDiagnosticError, taskFailureMessage } from "@/jobs/task-diagnostic";
 import {
   ensureIntervalJobsStarted,
   INTERVAL_JOBS,
@@ -16,6 +17,22 @@ const observation = (blocked: boolean, id = 1) => ({
 });
 
 describe("interval-runner 进程内调度回退", () => {
+  it("保留应用生成的分流控制总量与失败键，不记录 AggregateError 的原始上游 cause", async () => {
+    const output = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const summary = "简道云同步未全部完成：成功 2/3 流，失败 1 流；失败流：product-master";
+    try {
+      const error = new TaskDiagnosticError([new Error("SYNTH_CAUSE_SECRET")], summary);
+      expect(taskFailureMessage("sync-jiandaoyun-forms", error, "testid")).toContain(summary);
+      const result = await runIntervalJobOnce({ name: "sync-jiandaoyun-forms", everyMs: 1,
+        run: async () => { throw error; } }, db);
+      expect(result.ok).toBe(false);
+      expect(result.message).toContain(summary);
+      expect(JSON.stringify([result, output.mock.calls])).not.toContain("SYNTH_CAUSE_SECRET");
+      // A plain AggregateError is not a trusted application diagnostic.
+      expect(taskFailureMessage("probe-feishu-chats", new AggregateError([], "SYNTH_RAW"), "testid")).not.toContain("SYNTH_RAW");
+    } finally { output.mockRestore(); }
+  });
+
   let db: TestDb;
 
   beforeAll(async () => {
@@ -107,6 +124,8 @@ describe("interval-runner 进程内调度回退", () => {
   });
 
   it("用友真正执行失败仍 ok=false，日志摘要不保存原始外部错误", async () => {
+    const output = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
     const result = await runIntervalJobOnce({
       name: "sync-yonyou", everyMs: 1, run: async () => { throw new Error("token=DO_NOT_PERSIST"); },
     }, db);
@@ -115,6 +134,24 @@ describe("interval-runner 进程内调度回退", () => {
       version: YONYOU_JOB_SUMMARY_VERSION, status: "failed", total: null, readable: null, waiting: null,
     });
     expect(result.message).not.toContain("DO_NOT_PERSIST");
+    expect(JSON.stringify(output.mock.calls)).not.toContain("DO_NOT_PERSIST");
+    expect(JSON.stringify(output.mock.calls)).toContain("sync-yonyou");
+    } finally { output.mockRestore(); }
+  });
+
+  it("外部任务的无标签原始错误不进入控制台或 job_runs；保持失败和关联编号", async () => {
+    const output = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const result = await runIntervalJobOnce({ name: "sync-jst-sales", everyMs: 1,
+        run: async () => { throw new Error("SYNTH_UNLABELLED_PROVIDER_SECRET"); } }, db);
+      expect(result.ok).toBe(false);
+      expect(result.recorded).toBe(true);
+      const rows = await db.select().from(jobRuns);
+      const stored = rows.find((row) => row.job === "sync-jst-sales");
+      expect(JSON.stringify([result, stored, output.mock.calls])).not.toContain("SYNTH_UNLABELLED");
+      expect(result.message).toContain("错误码");
+      expect(output.mock.calls[0][0]).toContain("errorId");
+    } finally { output.mockRestore(); }
   });
 
   it("runIntervalJobOnce 失败路径：job_runs 落 ok=false + 错误信息（截断 500）", async () => {

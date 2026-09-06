@@ -13,6 +13,7 @@ import { writeAudit } from "@/server/core/audit";
 import { loadUserScopes } from "@/server/core/data-scope";
 import type { SessionUser } from "@/server/core/dto";
 import { ApiError } from "@/server/modules/master/common";
+import { log } from "@/server/core/logger";
 import {
   buildCsv, EXPORT_KINDS, EXPORT_ROW_CAP, type ExportParams, stripMoneyColumns, SYNC_EXPORT_MAX,
 } from "@/server/modules/report/export";
@@ -154,9 +155,9 @@ export async function runExportWorkerOnce(dbArg?: AnyDb, dirOverride?: string): 
   if (!job) return null;
   try {
     const def = EXPORT_KINDS[job.kind];
-    if (!def) throw new Error(`未知导出类型：${job.kind}`);
+    if (!def) throw new ApiError(400, "未知导出类型，请重新创建导出任务");
     const [u]: (typeof users.$inferSelect)[] = await db.select().from(users).where(eq(users.id, job.requestedBy));
-    if (!u || !u.active) throw new Error("申请人账号已停用或不存在");
+    if (!u || !u.active) throw new ApiError(403, "申请人账号已停用或不存在");
     // D62：runAs 携带申请人**当前**的数据范围（与 HTTP 路径 getFreshSessionUser 同源），行生产器按同一口径裁剪
     const scopes = await loadUserScopes(db, u.id);
     const runAs: SessionUser = {
@@ -185,7 +186,10 @@ export async function runExportWorkerOnce(dbArg?: AnyDb, dirOverride?: string): 
       .where(eq(exportJobs.id, job.id));
     return { id: job.id, kind: job.kind, status: "done", rowCount: rows.length };
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const errorId = globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+    const businessError = e instanceof ApiError && e.status >= 400 && e.status < 500;
+    const msg = businessError ? e.message : `导出失败，请联系管理员（错误码 ${errorId}）`;
+    if (!businessError) log({ level: "error", msg: "导出任务失败", errorId, exportJobId: job.id, error: e });
     await db
       .update(exportJobs)
       .set({ status: "failed", error: msg.slice(0, 500), finishedAt: new Date() })
@@ -207,7 +211,7 @@ export function startExportWorker(intervalMs = 5000): { stop: () => void } {
           /* drain */
         }
       } catch (e) {
-        console.error("[export-worker]", e);
+        log({ level: "error", msg: "export worker error", error: e });
       } finally {
         busy = false;
       }

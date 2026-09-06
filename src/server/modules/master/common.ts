@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { todayShanghai as businessToday } from "@/server/core/business-day";
-import { log, persistErrorLog } from "@/server/core/logger";
+import { log, persistErrorLog, sanitizeErrorDiagnostic } from "@/server/core/logger";
 import { isUserFacingPostingError } from "@/server/posting/error-codes";
 import type { SelectedOptionValue } from "@/server/core/selected-options";
 
@@ -57,20 +57,22 @@ export function errorResponse(e: unknown, ctx?: ErrorCtx): NextResponse {
   }
   // 未预期 500：生成 errorId 落结构化日志，报文回显错误码供用户转述——业务错误（ApiError）不在此收口，防日志噪音
   const errorId = globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+  const diagnosticMessage = sanitizeErrorDiagnostic(e, e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+  const diagnosticStack = e instanceof Error && e.stack ? sanitizeErrorDiagnostic(e, e.stack) : null;
   log({
     level: "error",
     msg: "api 未预期错误",
     errorId,
-    error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
-    stack: e instanceof Error ? e.stack : undefined,
+    error: e,
+    stack: diagnosticStack,
     path: ctx?.path,
     method: ctx?.method,
   });
   // 落库留档（fire-and-forget：绝不阻塞/破坏响应；失败在 persistErrorLog 内吞掉）
   void persistErrorLog({
     errorId,
-    message: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
-    stack: e instanceof Error ? (e.stack ?? null) : null,
+    message: diagnosticMessage,
+    stack: diagnosticStack,
     path: ctx?.path ?? null,
     method: ctx?.method ?? null,
     userId: ctx?.userId ?? null,

@@ -1,4 +1,5 @@
 import type { AnyDb } from "@/server/import/staging";
+import { TaskDiagnosticError } from "./task-diagnostic";
 import {
   configuredJiandaoyunContracts,
   jiandaoyunContract,
@@ -76,7 +77,7 @@ async function refreshDemandReadModel(db: AnyDb) {
     }
   }
   if (failures.length > 0) {
-    throw new AggregateError(failures, `需求读模型刷新失败 ${failures.length}/4：${failures.map((error) => error.message).join("、")}`);
+    throw new TaskDiagnosticError(failures, `需求读模型刷新失败 ${failures.length}/4：${failures.map((error) => error.message).join("、")}`);
   }
   const { signal, identityGap } = models;
   if (!signal || !identityGap) throw new Error("需求读模型未返回完整摘要");
@@ -226,7 +227,7 @@ export async function runJiandaoyunConfiguredFormSyncs(db: AnyDb) {
     // 数量放在最前面，失败键给有界样例；原因留在 cause，不把上游原始响应塞入500字运维摘要。
     const sample = (failures: Error[]) => failures.slice(0, 5).map((error) => error.message).join("、")
       + (failures.length > 5 ? "等" : "");
-    throw new AggregateError([...streamFailures, ...refreshFailures],
+    throw new TaskDiagnosticError([...streamFailures, ...refreshFailures],
       `简道云同步未全部完成：成功 ${results.length}/${contracts.length} 流，失败 ${streamFailures.length} 流，刷新失败 ${refreshFailures.length} 组；`
       + `失败流：${sample(streamFailures) || "无"}；刷新失败：${sample(refreshFailures) || "无"}`);
   }
