@@ -18,6 +18,8 @@ import { writeAudit } from "@/server/core/audit";
 import type { AnyDb } from "@/server/core/svc";
 import { ApiError } from "@/server/modules/master/common";
 import { refreshPlatformSkuIdentityGap } from "@/server/modules/report/platform-sku-identity-gap";
+import { assertPlatformIdentityWriter } from "./platform-identity-access";
+import { assertSkuBarcodeOwnershipInTransaction, lockSkuIdentifierClaim } from "./sku-identifier";
 
 export const skuBarcodeFillSchema = z.object({
   items: z.array(z.object({
@@ -35,16 +37,17 @@ function resultRows<T>(result: unknown): T[] {
 }
 
 async function fillOne(tx: AnyDb, actor: SessionUser, item: { skuId: number; barcode: string }, source: string) {
+  // Same physical-code namespace as GTIN/legacy identifier claims; SKU row
+  // locks alone cannot prevent two different SKUs taking one barcode.
+  await lockSkuIdentifierClaim(tx, "legacy", item.barcode);
   const skuResult = await tx.execute(sql`SELECT id, code, barcode, active FROM skus WHERE id = ${item.skuId} FOR UPDATE` as SQL);
   const [sku] = resultRows<Record<string, unknown>>(skuResult);
   if (!sku) throw new ApiError(404, "SKU 不存在");
   if (sku.active !== true) throw new ApiError(409, "只能给启用中的 SKU 补条码");
   const current = String(sku.barcode ?? "").trim();
+  await assertSkuBarcodeOwnershipInTransaction(tx, item.skuId, "legacy", item.barcode);
   if (current === item.barcode) return { skuId: item.skuId, status: "unchanged" as const };
   if (current) throw new ApiError(409, `SKU ${String(sku.code)} 已有条码 ${current}，不覆盖`);
-  const takenResult = await tx.execute(sql`SELECT id, code FROM skus WHERE barcode = ${item.barcode} AND id <> ${item.skuId} LIMIT 1` as SQL);
-  const [taken] = resultRows<Record<string, unknown>>(takenResult);
-  if (taken) throw new ApiError(409, `条码 ${item.barcode} 已被 SKU ${String(taken.code)} 占用`);
   await tx.execute(sql`UPDATE skus SET barcode = ${item.barcode}, updated_at = now() WHERE id = ${item.skuId}` as SQL);
   await writeAudit(tx, {
     userId: actor.id,
@@ -58,6 +61,7 @@ async function fillOne(tx: AnyDb, actor: SessionUser, item: { skuId: number; bar
 }
 
 export async function fillSkuBarcodesBulk(actor: SessionUser, input: unknown, dbArg?: AnyDb) {
+  assertPlatformIdentityWriter(actor);
   const v = skuBarcodeFillSchema.parse(input);
   const db = dbArg ?? (await getDbAsync());
   const results: { skuId: number; status: "filled" | "unchanged" | "conflict"; error?: string }[] = [];

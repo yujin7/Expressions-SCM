@@ -1,18 +1,15 @@
 /**
- * Real-PostgreSQL proof for SKU identifier ownership serialization.
+ * Real-PostgreSQL proof for GTIN/GTIN, barcode/barcode and barcode/GTIN ownership serialization.
  *
  * Two sessions attempt to claim one GTIN for different SKUs while a controller holds the same
  * advisory lock. After release, exactly one claim may commit and the other must fail with the
- * governed ownership conflict; the database must never contain two owners.
+ * governed ownership conflict. Only opt-in, loopback scm_contract_* disposable databases are
+ * admitted; synthetic fixtures and immutable audits are retained, never deleted by this script.
  */
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import pg from "pg";
-import { drizzle } from "drizzle-orm/node-postgres";
-
-import * as schema from "@/db/schema";
-import { createSkuIdentifier } from "@/server/modules/master/sku-identifier";
-
-const GTIN = "4006381333931";
+import { reviewContractConnectionString } from "./verify-postgres-review-atomicity";
 
 async function waitUntil(
   label: string,
@@ -27,33 +24,45 @@ async function waitUntil(
   throw new Error(`Timed out waiting for ${label}`);
 }
 
-async function main(): Promise<void> {
-  const url = process.env.DATABASE_URL?.trim();
-  if (!url?.startsWith("postgres")) {
-    throw new Error("check:postgres:sku-identity-concurrency requires DATABASE_URL=postgres://...");
-  }
-  if (process.env.SCM_ALLOW_MUTATING_PG_CONTRACT !== "1") {
-    throw new Error("Refusing mutating PostgreSQL proof without SCM_ALLOW_MUTATING_PG_CONTRACT=1");
-  }
+export async function verifySkuIdentityConcurrency(mode: "gtin/gtin" | "fill/fill" | "fill/gtin"): Promise<void> {
+  // Reuse the strict disposable-target gate; never load local .env or business data.
+  const url = reviewContractConnectionString(process.env);
+  const [{ drizzle }, schema, { createSkuIdentifier }, { fillSkuBarcodesBulk }, { ApiError }] = await Promise.all([
+    import("drizzle-orm/node-postgres"), import("@/db/schema"),
+    import("@/server/modules/master/sku-identifier"), import("@/server/modules/master/sku-barcode-fill"),
+    import("@/server/modules/master/common"),
+  ]);
+  const body = String(Date.now()).slice(-12);
+  const sum = [...body].reverse().reduce((n, d, i) => n + Number(d) * (i % 2 === 0 ? 3 : 1), 0);
+  const GTIN = body + String((10 - sum % 10) % 10);
 
   const suffix = `${Date.now()}-${process.pid}`;
   const appA = `scm-sku-identity-a-${suffix}`;
   const appB = `scm-sku-identity-b-${suffix}`;
-  const controller = new pg.Client({
+  const timeouts = { connectionTimeoutMillis: 5_000, query_timeout: 20_000,
+    options: "-c statement_timeout=15000 -c lock_timeout=12000 -c idle_in_transaction_session_timeout=20000 -c search_path=public" };
+  const controller = new pg.Client({ ...timeouts,
     connectionString: url,
     application_name: `scm-sku-identity-control-${suffix}`,
   });
-  const connectionA = new pg.Client({ connectionString: url, application_name: appA });
-  const connectionB = new pg.Client({ connectionString: url, application_name: appB });
+  // One physical connection per competitor; pools safely queue parallel read-model refresh queries.
+  const connectionA = new pg.Pool({ ...timeouts, max: 1, connectionString: url, application_name: appA });
+  const connectionB = new pg.Pool({ ...timeouts, max: 1, connectionString: url, application_name: appB });
   const dbA = drizzle(connectionA, { schema });
   const dbB = drizzle(connectionB, { schema });
   let controllerTransactionOpen = false;
   let spuId: number | null = null;
   let skuIds: number[] = [];
   let userIds: number[] = [];
+  const pending: Promise<unknown>[] = [];
 
-  await Promise.all([controller.connect(), connectionA.connect(), connectionB.connect()]);
   try {
+    await Promise.all([controller.connect(), connectionA.query("select 1"), connectionB.query("select 1")]);
+    const guards = await controller.query<{ name: string }>(
+      `select p.proname as name from pg_trigger t join pg_proc p on p.oid=t.tgfoid
+       where t.tgrelid='public.audit_logs'::regclass and not t.tgisinternal and t.tgenabled in ('O','A')`,
+    );
+    assert.ok(guards.rows.some(row => row.name === "reject_immutable_fact_mutation"));
     const users = await controller.query<{ id: number; name: string }>(
       `insert into users(username, name, roles)
        values ($1, $2, array['admin']::text[]), ($3, $4, array['admin']::text[])
@@ -70,7 +79,7 @@ async function main(): Promise<void> {
 
     const spu = await controller.query<{ id: number }>(
       "insert into spus(code, name_cn) values ($1, $2) returning id",
-      [`C${String(Date.now()).slice(-5)}`, `SKU identity concurrency ${suffix}`],
+      [`QA-${suffix}`, `SKU identity concurrency ${suffix}`],
     );
     spuId = spu.rows[0]?.id ?? null;
     assert.ok(spuId);
@@ -87,18 +96,20 @@ async function main(): Promise<void> {
     controllerTransactionOpen = true;
     await controller.query("select pg_advisory_xact_lock(hashtext($1))", [`sku-barcode:${GTIN}`]);
 
-    const promiseA = createSkuIdentifier(
-      skuIds[0],
-      { kind: "gtin", value: GTIN, packagingLevel: "each", isPrimary: true },
-      { id: userIds[0], name: users.rows[0].name, roles: ["admin"], isApprover: true },
-      dbA,
-    );
-    const promiseB = createSkuIdentifier(
-      skuIds[1],
-      { kind: "gtin", value: GTIN, packagingLevel: "each", isPrimary: true },
-      { id: userIds[1], name: users.rows[1].name, roles: ["admin"], isApprover: true },
-      dbB,
-    );
+    const invoke = async (kind: string, index: number, db: typeof dbA) => {
+      const actor = { id: userIds[index], name: users.rows[index].name, roles: ["admin"], isApprover: true };
+      if (kind === "gtin") return createSkuIdentifier(skuIds[index],
+        { kind: "gtin", value: GTIN, packagingLevel: "each", isPrimary: true }, actor, db);
+      const result = await fillSkuBarcodesBulk(actor, { items: [{ skuId: skuIds[index], barcode: GTIN }] }, db);
+      assert.equal(result.unchanged, 0);
+      assert.equal(result.filled + result.conflicts, 1);
+      if (result.conflicts) throw new ApiError(409, result.results[0].error ?? "Missing conflict explanation");
+      return result;
+    };
+    const [left, right] = mode.split("/");
+    // Attach handlers before observing waiters so early failures are never unhandled.
+    const both = Promise.allSettled([invoke(left, 0, dbA), invoke(right, 1, dbB)]);
+    pending.push(both);
 
     await waitUntil("both SKU claims waiting on the identifier advisory lock", async () => {
       const result = await controller.query<{ count: number }>(
@@ -114,41 +125,40 @@ async function main(): Promise<void> {
 
     await controller.query("commit");
     controllerTransactionOpen = false;
-    const settled = await Promise.allSettled([promiseA, promiseB]);
+    const settled = await both;
     assert.equal(settled.filter((result) => result.status === "fulfilled").length, 1);
     assert.equal(settled.filter((result) => result.status === "rejected").length, 1);
     const rejected = settled.find((result) => result.status === "rejected");
-    assert.match(String(rejected?.reason), /已关联 SKU/);
+    assert.equal((rejected?.reason as { status?: number }).status, 409);
+    assert.match(String(rejected?.reason), /已关联 SKU|已在旧条码字段关联 SKU/);
 
-    const ownership = await controller.query<{ rows: number; owners: number }>(
-      `select count(*)::int as rows, count(distinct sku_id)::int as owners
-         from sku_identifiers
-        where kind = 'gtin' and scope = 'GS1' and value = $1`,
+    const ownership = await controller.query<{ owners: number }>(
+      `select count(distinct sku_id)::int as owners from (
+         select id as sku_id from skus where barcode=$1
+         union all select sku_id from sku_identifiers where kind in ('gtin','legacy') and value=$1
+       ) owners`,
       [GTIN],
     );
-    assert.deepEqual(ownership.rows[0], { rows: 1, owners: 1 });
-    console.log("PostgreSQL SKU identity concurrency contract: OK");
+    assert.deepEqual(ownership.rows[0], { owners: 1 });
+    const audits = await controller.query<{ n: number }>(
+      `select count(*)::int as n from audit_logs where user_id=any($1::int[]) and
+       ((entity='sku' and action='barcode_fill' and entity_id=any($2::int[])) or
+        (entity='sku_identifier' and action='create' and "after"->>'value'=$3))`, [userIds, skuIds, GTIN],
+    );
+    assert.equal(audits.rows[0].n, 1);
+    console.log(`PostgreSQL identity ${mode}: PASS (2 observed lock waiters, 1 owner, 1 audit)`);
   } finally {
     if (controllerTransactionOpen) {
-      await controller.query("rollback").catch(() => undefined);
+      await controller.query("rollback");
     }
-    if (userIds.length > 0) {
-      await controller.query("delete from audit_logs where user_id = any($1::int[])", [userIds])
-        .catch(() => undefined);
-    }
-    if (skuIds.length > 0) {
-      await controller.query("delete from skus where id = any($1::int[])", [skuIds])
-        .catch(() => undefined);
-    }
-    if (spuId != null) {
-      await controller.query("delete from spus where id = $1", [spuId]).catch(() => undefined);
-    }
-    if (userIds.length > 0) {
-      await controller.query("delete from users where id = any($1::int[])", [userIds])
-        .catch(() => undefined);
-    }
+    await Promise.allSettled(pending);
+    // Preserve synthetic evidence and append-only audits. Drop the disposable DB separately if desired.
     await Promise.allSettled([controller.end(), connectionA.end(), connectionB.end()]);
   }
 }
 
-void main();
+if (process.argv[1] && resolve(process.argv[1]) === resolve(process.cwd(), "scripts/verify-postgres-sku-identity-concurrency.ts")) {
+  (async () => {
+    for (const mode of ["gtin/gtin", "fill/fill", "fill/gtin"] as const) await verifySkuIdentityConcurrency(mode);
+  })().catch((error: unknown) => { console.error(error); process.exitCode = 1; });
+}

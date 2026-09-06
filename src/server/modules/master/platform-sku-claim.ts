@@ -21,6 +21,7 @@ import { refreshPlatformSkuIdentityGap } from "@/server/modules/report/platform-
 import { refreshJiandaoyunExternalDemandReadModel } from "@/server/modules/report/external-demand-signal";
 import { refreshExternalVelocity } from "@/server/modules/report/external-velocity";
 import type { AnyDb } from "@/server/core/svc";
+import { assertPlatformIdentityWriter } from "./platform-identity-access";
 
 export const PLATFORM_SCOPES = {
   tmall: "JIANDAOYUN:TMALL",
@@ -143,6 +144,7 @@ async function claimOne(
 }
 
 export async function claimPlatformSku(actor: SessionUser, input: unknown, dbArg?: AnyDb) {
+  assertPlatformIdentityWriter(actor);
   const v = platformSkuClaimSchema.parse(input);
   const db = dbArg ?? (await getDbAsync());
   const value = platformSkuIdentifierValue(v.shopName, v.platformSkuId);
@@ -182,6 +184,7 @@ export const platformSkuBulkClaimSchema = z.object({
  * 读模型在整批结束后刷新一次。上限 300 行——超过就分批，避免一次锁太久。
  */
 export async function claimPlatformSkusBulk(actor: SessionUser, input: unknown, dbArg?: AnyDb) {
+  assertPlatformIdentityWriter(actor);
   const v = platformSkuBulkClaimSchema.parse(input);
   const db = dbArg ?? (await getDbAsync());
   const results: { shopName: string; platformSkuId: string; skuId: number; ok: boolean; created?: boolean; error?: string }[] = [];

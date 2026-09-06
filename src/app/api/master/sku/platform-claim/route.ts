@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ApiError, errorResponse, readJson } from "@/server/modules/master/common";
-import { getFreshSessionUser, requireRole } from "@/server/core/dto";
+import { errorResponse, readJson } from "@/server/modules/master/common";
+import { guardPlatformIdentityWriter } from "@/server/modules/master/platform-identity-access";
 import { claimPlatformSku } from "@/server/modules/master/platform-sku-claim";
 
 /**
@@ -9,17 +9,7 @@ import { claimPlatformSku } from "@/server/modules/master/platform-sku-claim";
  */
 export async function POST(req: NextRequest) {
   try {
-    let user;
-    try {
-      user = await getFreshSessionUser();
-    } catch {
-      throw new ApiError(401, "未登录或账号已停用");
-    }
-    try {
-      requireRole(user, "pmc", "purchasing", "warehouse");
-    } catch {
-      throw new ApiError(403, "无权限认领平台 SKU");
-    }
+    const user = await guardPlatformIdentityWriter();
     const result = await claimPlatformSku(user, await readJson(req));
     return NextResponse.json(result);
   } catch (error) {

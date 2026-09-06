@@ -1,5 +1,6 @@
 import { canSeePrices, maskSensitive } from "@/server/core/dto";
 import type { PlatformSkuIdentityGap } from "./platform-sku-identity-gap";
+import { canWritePlatformIdentity } from "@/server/modules/master/platform-identity-access";
 
 // D53/D62: operational identity facts remain readable; amounts and ratios of
 // amounts follow the price-visible roles. Never mutate the shared cached model.
@@ -21,7 +22,7 @@ export function platformSkuIdentityView(data: PlatformSkuIdentityGap, roles: str
     ...maskSensitive(data, roles, FINANCIAL_KEYS),
     permissions: {
       canSeeAmounts: canSeePrices(roles),
-      canClaim: roles.some((role) => ["admin", "pmc", "purchasing", "warehouse"].includes(role)),
+      canClaim: canWritePlatformIdentity(roles),
     },
   };
 }
