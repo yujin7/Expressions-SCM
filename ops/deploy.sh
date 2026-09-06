@@ -29,11 +29,43 @@ echo "==> 给当前在跑的镜像打回滚标签"
 # 回滚点必须在 **build 之前** 打，不是 up -d 之前：`compose build` 一接管 latest，旧镜像就变成悬空层，
 # Docker Desktop 的构建 GC 会直接回收它——2026-09-06 实测：标签块放在 build 之后，执行时报 No such image，
 # 回滚点当场丢失。先打标签再 build，标签会把旧镜像钉住不被回收。
-# 标签不阻断部署：首次部署没有在跑的容器时跳过。
-running_image="$(docker inspect --format '{{.Image}}' "$(compose ps -q app 2>/dev/null)" 2>/dev/null || true)"
-if [ -n "$running_image" ]; then
-  rollback_label="rollback-$(git -C "$(dirname "$0")/.." rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M)"
-  docker tag "$running_image" "supply-chain-app:${rollback_label}" && echo "    ${rollback_label} → ${running_image:7:12}" || true
+# 停止的容器也有应保留的上一镜像。查询失败不等于首次部署，不能吞错后继续。
+if ! app_container="$(compose ps -a -q app 2>/dev/null)"; then
+  echo "无法确认原应用容器，回滚保护未建立；停止构建。" >&2
+  exit 1
+fi
+if [ -z "$app_container" ]; then
+  if [ "${SCM_INITIAL_DEPLOY:-0}" != "1" ]; then
+    echo "未找到原应用容器，无法建立回滚点；只有确认全新空环境后才可使用 SCM_INITIAL_DEPLOY=1。" >&2
+    exit 1
+  fi
+  echo "    已显式确认首次空环境部署，无原应用镜像"
+else
+  if [ "${SCM_INITIAL_DEPLOY:-0}" = "1" ]; then
+    echo "已有应用容器，不能使用首次部署标记跳过备份与回滚保护。" >&2
+    exit 1
+  fi
+  if [[ "$app_container" == *$'\n'* ]]; then
+    echo "找到多个应用容器，回滚目标不唯一；请先核对部署范围。" >&2
+    exit 1
+  fi
+  if ! running_image="$(docker inspect --format '{{.Image}}' "$app_container" 2>/dev/null)" ||
+    [[ ! "$running_image" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "无法确认原应用镜像摘要，回滚保护未建立；停止构建。" >&2
+    exit 1
+  fi
+  # 用旧镜像的完整内容摘要命名，不用新源码HEAD：同一源码重复部署不能覆盖不同旧镜像的回滚点。
+  rollback_label="rollback-image-${running_image#sha256:}"
+  if ! docker tag "$running_image" "supply-chain-app:${rollback_label}"; then
+    echo "回滚镜像保存失败；停止构建，不执行迁移或重启。" >&2
+    exit 1
+  fi
+  if ! rollback_image="$(docker image inspect --format '{{.Id}}' "supply-chain-app:${rollback_label}" 2>/dev/null)" ||
+    [ "$rollback_image" != "$running_image" ]; then
+    echo "回滚标签与原镜像摘要不一致或不可读取；停止构建。" >&2
+    exit 1
+  fi
+  echo "    已验证 ${rollback_label} → ${running_image}"
 fi
 echo "==> 构建镜像"
 # app 与 migrate 必须一起构建：预热（warm_read_models）跑在 migrate 服务里，只 build app 会让工具镜像
@@ -94,14 +126,20 @@ install_backup_schedule() {
 install_backup_schedule
 
 echo "==> 健康检查"
-# 先取值再匹配，不要写成 `curl | grep -q`：本脚本开了 pipefail，而 grep -q 命中即退出会让
-# curl 收到 SIGPIPE，整条管道退出码变 141——健康的部署会被判成失败。
+# 在同一Compose目标的app容器内检查，不误读宿主机3000上另一实例。
+# 不跟随跳转、不复述响应/异常；旧版仅ok=true不够，数据库与迁移必须明确就绪。
+APP_HEALTH_CHECK='fetch("http://127.0.0.1:3000/api/health", { signal: AbortSignal.timeout(5000), redirect: "error", cache: "no-store" })
+  .then(async r => {
+    const b = await r.json();
+    if (!r.ok || b?.ok !== true || b.dbOk !== true || b.drift !== false || b.migrationState !== "current" ||
+      !Number.isSafeInteger(b.migrationFiles) || b.migrationFiles <= 0 || b.applied !== b.migrationFiles) process.exit(1);
+  }).catch(() => process.exit(1));'
 healthy=0
 for i in $(seq 1 30); do
-  health="$(curl -fsS http://127.0.0.1:3000/api/health 2>/dev/null || true)"
-  case "$health" in
-    *'"ok":true'*) healthy=1; break ;;
-  esac
+  if compose exec -T app node -e "$APP_HEALTH_CHECK" >/dev/null 2>&1; then
+    healthy=1
+    break
+  fi
   sleep 2
 done
 if [ "$healthy" -ne 1 ]; then

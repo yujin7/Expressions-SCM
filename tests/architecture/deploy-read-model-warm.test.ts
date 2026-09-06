@@ -66,7 +66,8 @@ describe("部署后读模型预热", () => {
     /* 必须在 build 之前而不是 up -d 之前：build 接管 latest 的瞬间旧镜像就成了悬空层，
        Docker Desktop 的构建 GC 会回收它。2026-09-06 实测：块放在 build 之后 → No such image，回滚点当场丢失。 */
     expect(tagAt, "回滚标签必须打在 `compose build` 之前，否则旧镜像已被回收").toBeLessThan(buildAt);
-    expect(deploy, "打标签失败不得阻断部署（首次部署没有在跑的容器）").toMatch(/docker tag [^\n]*\|\| true/);
+    expect(deploy, "已有应用的回滚标签失败必须阻断构建，首次空环境另作显式判定").toMatch(/if ! docker tag [^\n]*; then[\s\S]*?exit 1/);
+    expect(deploy).toContain('"$rollback_image" != "$running_image"');
   });
 
   it("deploy.sh 必须同时 build app 与 migrate——预热跑在 migrate 里，工具镜像过期＝每次部署静默预热失败", () => {
