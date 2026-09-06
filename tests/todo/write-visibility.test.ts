@@ -8,12 +8,12 @@ import { GET } from "@/app/api/todo/[id]/route";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 // Authentication is synthetic; route visibility, services, audit and notification enqueue remain real.
-const dependencies = vi.hoisted(() => ({ guardRead: vi.fn(), getDbAsync: vi.fn() }));
+const dependencies = vi.hoisted(() => ({ getFreshSessionUser: vi.fn(), getDbAsync: vi.fn() }));
 vi.mock("@/db", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/db")>(), getDbAsync: dependencies.getDbAsync,
 }));
-vi.mock("@/server/modules/master/common", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/server/modules/master/common")>(), guardRead: dependencies.guardRead,
+vi.mock("@/server/core/dto", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/server/core/dto")>(), getFreshSessionUser: dependencies.getFreshSessionUser,
 }));
 
 const NOW = new Date("2026-09-06T05:00:00Z");
@@ -62,7 +62,7 @@ describe("todo 写权限必须服从实际读可见性（D62）", () => {
     const list = await listWorkItems({ view: "all", q: `#${id}`, page: 1, pageSize: 20 }, actor, db);
     expect(list.rows.map((row) => row.id)).toEqual(visible ? [id] : []);
     expect(list.total).toBe(visible ? 1 : 0);
-    dependencies.guardRead.mockResolvedValue(actor);
+    dependencies.getFreshSessionUser.mockResolvedValue(actor);
     const response = await GET(new NextRequest(`http://localhost/api/todo/${id}`), { params: Promise.resolve({ id: String(id) }) });
     expect(response.status).toBe(visible ? 200 : 404);
     if (visible) expect((await response.json()).id).toBe(id);
