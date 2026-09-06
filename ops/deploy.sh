@@ -68,10 +68,23 @@ else
   echo "    已验证 ${rollback_label} → ${running_image}"
 fi
 echo "==> 构建镜像"
+# Only a clean repository-root checkout can claim a deployed source revision.
+# Ignore any supplied revision variable: derive it from this actual build context.
+if ! release_root="$(git rev-parse --show-toplevel 2>/dev/null)" || [ "$release_root" != "$(pwd -P)" ] ||
+  ! release_revision="$(git rev-parse HEAD 2>/dev/null)" || [[ ! "$release_revision" =~ ^[0-9a-f]{40}$ ]] ||
+  ! release_dirty="$(git status --porcelain=v1 -uall 2>/dev/null)" || [ -n "$release_dirty" ]; then
+  echo "源码版本无法锚定或工作区有未提交内容；停止构建，不执行迁移或重启。" >&2
+  exit 1
+fi
 # app 与 migrate 必须一起构建：预热（warm_read_models）跑在 migrate 服务里，只 build app 会让工具镜像
 # 停在旧代码——run-job 一旦改过，预热就整批在 1 秒内"失败"，而预热失败按设计不阻断部署，
 # 于是每次部署都静默预热失败（2026-09-05 手动部署时实测踩过）。
-compose build app migrate
+compose build --build-arg "SCM_BUILD_REVISION=$release_revision" app migrate
+if ! finished_revision="$(git rev-parse HEAD 2>/dev/null)" || [ "$finished_revision" != "$release_revision" ] ||
+  ! finished_dirty="$(git status --porcelain=v1 -uall 2>/dev/null)" || [ -n "$finished_dirty" ]; then
+  echo "构建期间源码发生变化或无法复核；停止部署，不执行迁移或重启。" >&2
+  exit 1
+fi
 echo "==> 启动/确认数据库"
 compose up -d db
 if [ "${SCM_INITIAL_DEPLOY:-0}" = "1" ]; then
@@ -132,11 +145,13 @@ APP_HEALTH_CHECK='fetch("http://127.0.0.1:3000/api/health", { signal: AbortSigna
   .then(async r => {
     const b = await r.json();
     if (!r.ok || b?.ok !== true || b.dbOk !== true || b.drift !== false || b.migrationState !== "current" ||
-      !Number.isSafeInteger(b.migrationFiles) || b.migrationFiles <= 0 || b.applied !== b.migrationFiles) process.exit(1);
+      !Number.isSafeInteger(b.migrationFiles) || b.migrationFiles <= 0 || b.applied !== b.migrationFiles ||
+      !/^[0-9a-f]{40}$/.test(process.argv[1] || "") || b.build?.revision !== process.argv[1] ||
+      !["git-clean", "build-arg"].includes(b.build?.source)) process.exit(1);
   }).catch(() => process.exit(1));'
 healthy=0
 for i in $(seq 1 30); do
-  if compose exec -T app node -e "$APP_HEALTH_CHECK" >/dev/null 2>&1; then
+  if compose exec -T app node -e "$APP_HEALTH_CHECK" "$release_revision" >/dev/null 2>&1; then
     healthy=1
     break
   fi

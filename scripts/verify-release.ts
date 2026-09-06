@@ -46,14 +46,15 @@ function run(name: string, command: string, args: string[]): Result {
   };
 }
 
-function runLiveSmoke(): Result {
+function runLiveSmoke(expectedRevision: string): Result {
   const name = "live smoke sweep";
   const command = "node --import tsx scripts/smoke-e2e.ts";
   const started = performance.now();
   console.log(`\n▶ ${name}`);
   const result = spawnSync("node", ["--import", "tsx", "scripts/smoke-e2e.ts"], {
     encoding: "utf8",
-    env: process.env,
+    // The caller's environment must not override the anchored candidate identity.
+    env: { ...process.env, SCM_EXPECTED_REVISION: expectedRevision },
   });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
@@ -137,7 +138,7 @@ if (anchorErrors.length === 0) {
 }
 
 if (checks.every((check) => check.status === "passed") && process.env.SCM_VERIFY_LIVE === "1") {
-  checks.push(runLiveSmoke());
+  checks.push(runLiveSmoke(startedHead.value));
 } else {
   checks.push(
     skipped(

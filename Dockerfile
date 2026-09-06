@@ -13,7 +13,9 @@ COPY . .
 # 烘焙进 routes-manifest.json，运行期再设这个变量对已构建的镜像无效（2026-08-07 实测）。
 # 走稳定 HTTPS 域名时：docker compose build --build-arg PUBLIC_HTTPS=1 app
 ARG PUBLIC_HTTPS=""
+ARG SCM_BUILD_REVISION=""
 ENV PUBLIC_HTTPS=${PUBLIC_HTTPS}
+ENV SCM_BUILD_REVISION=${SCM_BUILD_REVISION}
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

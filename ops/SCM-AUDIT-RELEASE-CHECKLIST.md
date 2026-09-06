@@ -112,8 +112,17 @@
 `ops/deploy.sh`的就绪门在选定Compose配置的`app`容器内检查HTTP、数据库与迁移状态，避免误查宿主机另一实例。
 它只证明容器内部就绪，不能代替以下真实外部入口、代理、TLS、账号、权限和业务路径验证。
 
+2026-09-07起，`/api/health.build`报告构建时固化的完整提交与来源状态；仅`git-clean`或受控Docker
+`build-arg`可匹配发布候选，`git-dirty`/`unknown`不可代替精确版本。公开字段不含路径、分支或凭据。
+`ops/deploy.sh`从干净仓库根目录取HEAD，构建前后复核，并给app/migrate传同一构建参数；健康门核对该HEAD。
+`check:release`强制将自己的锚定HEAD传给冒烟，不接受调用环境把期望版本换成旧提交。
+单独执行冒烟时也应显式提供`SCM_EXPECTED_REVISION`（完整40位提交）；不匹配时在账号请求前停止。
+该字段证明版本声明与候选一致，不是密码学镜像签名，也不证明配置、数据库、外部入口或业务UAT一致。
+无Git源码导出默认仍可构建但版本unknown；不能随手传旧SHA把未核对的目录当作已验收版本。
+
 ```bash
 SMOKE_BASE=https://staging.example \
+SCM_EXPECTED_REVISION='<完整40位已验收提交>' \
 SMOKE_ADMIN_PASSWORD='<admin-staging-password>' \
 SMOKE_ROLE_PASSWORD='<role-staging-password>' \
 SMOKE_QUALITY_PASSWORD='<quality-staging-password>' \

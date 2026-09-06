@@ -24,6 +24,7 @@ function runRelease(options: {
   mutateWorktree?: boolean;
   mutateHead?: boolean;
   liveSkip?: boolean;
+  wrongExpectedRevision?: boolean;
 } = {}): { status: number | null; report: Report; log: string } {
   const root = mkdtempSync(path.join(tmpdir(), "scm-release-verdict-"));
   roots.push(root);
@@ -58,7 +59,7 @@ exit 0
   const fakeNode = path.join(bin, "node");
   writeFileSync(
     fakeNode,
-    '#!/bin/sh\nprintf \'node %s\\n\' "$*" >> "$SCM_TEST_LOG"\n[ "${SCM_TEST_LIVE_SKIP:-}" = "1" ] && echo "→ [SKIP] missing live evidence"\nexit 0\n',
+    '#!/bin/sh\nprintf \'node %s\\n\' "$*" >> "$SCM_TEST_LOG"\nif [ "$SCM_EXPECTED_REVISION" != "$(/usr/bin/git rev-parse HEAD)" ]; then exit 33; fi\n[ "${SCM_TEST_LIVE_SKIP:-}" = "1" ] && echo "→ [SKIP] missing live evidence"\nexit 0\n',
   );
   chmodSync(fakeNode, 0o755);
 
@@ -79,6 +80,7 @@ exit 0
       ...(options.mutateWorktree ? { SCM_TEST_MUTATE_WORKTREE: "run check:postgres" } : {}),
       ...(options.mutateHead ? { SCM_TEST_MUTATE_HEAD: "run check:postgres" } : {}),
       ...(options.liveSkip ? { SCM_TEST_LIVE_SKIP: "1" } : {}),
+      ...(options.wrongExpectedRevision ? { SCM_EXPECTED_REVISION: "b".repeat(40) } : {}),
     },
   });
   const artifacts = path.join(repo, ".artifacts", "verification");
@@ -123,6 +125,12 @@ describe("release verdict integrity", () => {
       status: "failed",
       detail: expect.stringContaining("skipped coverage"),
     });
+  });
+
+  it("binds the live check to its anchored HEAD even if inherited env points elsewhere", () => {
+    const result = runRelease({ live: true, wrongExpectedRevision: true });
+    expect(result.status).toBe(0);
+    expect(result.report.verdict).toBe("READY");
   });
 
   it.each([

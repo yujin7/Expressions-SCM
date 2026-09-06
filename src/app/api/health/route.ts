@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { getDbAsync } from "@/db";
 import { readMigrationReadiness } from "@/server/core/migration-readiness";
+import { parseBuildIdentity } from "@/lib/build-identity";
+
+const build = parseBuildIdentity({ revision: process.env.SCM_COMPILED_REVISION, source: process.env.SCM_COMPILED_SOURCE });
 
 /** Public readiness: database connectivity and known migration counts must both pass. */
 export async function GET() {
@@ -8,6 +11,7 @@ export async function GET() {
   return NextResponse.json(
     {
       ok: dbOk && migrations.ready,
+      build,
       dbOk,
       migrationFiles: migrations.files,
       applied: migrations.applied,

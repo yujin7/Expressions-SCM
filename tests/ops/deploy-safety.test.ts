@@ -97,7 +97,9 @@ describe("deployment rollback admission", () => {
 });
 
 describe("deployment target readiness", () => {
-  const good = { ok: true, dbOk: true, drift: false, migrationState: "current", migrationFiles: 61, applied: 61 };
+  const revision = "a".repeat(40);
+  const good = { ok: true, dbOk: true, drift: false, migrationState: "current", migrationFiles: 61, applied: 61,
+    build: { revision, source: "git-clean" } };
   function probe(body: unknown, httpOk = true, failJson = false, failNetwork = false) {
     const match = /APP_HEALTH_CHECK='([^']+)'/.exec(deploy);
     expect(match, "health gate must execute the candidate readiness contract inside the target app").not.toBeNull();
@@ -108,7 +110,7 @@ describe("deployment target readiness", () => {
         return { ok: ${httpOk}, json: async () => { ${failJson ? 'throw new Error("synthetic invalid JSON");' : `return ${JSON.stringify(body)};`} } };
       };
       ${match![1]}
-    `], { encoding: "utf8", timeout: 3000 });
+    `, revision], { encoding: "utf8", timeout: 3000 });
   }
 
   it("selects the same Compose app, never a possibly unrelated host listener", () => {
@@ -116,6 +118,15 @@ describe("deployment target readiness", () => {
     expect(deploy).not.toMatch(/curl[^\n]*127\.0\.0\.1/);
   });
   it("accepts explicit database and migration readiness", () => expect(probe(good).status).toBe(0));
+  it.each([
+    undefined, null, {}, { revision: "b".repeat(40), source: "git-clean" },
+    { revision, source: "git-dirty" }, { revision, source: "unknown" },
+  ])("rejects a healthy app with missing, stale or dirty source identity: %j", (build) => {
+    expect(probe({ ...good, build }).status).toBe(1);
+  });
+  it("accepts a matching build-argument identity from the controlled Docker build", () => {
+    expect(probe({ ...good, build: { revision, source: "build-arg" } }).status).toBe(0);
+  });
   it.each([
     null, {}, { ok: true }, { ...good, dbOk: false }, { ...good, drift: true },
     { ...good, migrationState: "unknown" }, { ...good, applied: 60 },
@@ -142,6 +153,7 @@ describe("deployment target readiness", () => {
     const commandLog = path.join(dir, "commands");
     const result = spawnSync("/bin/bash", ["-c", `
       set -euo pipefail
+      release_revision=${revision}
       compose() { printf '%s\\n' "$1 $2 $3 $4 $5" >> "$QA_COMMAND_LOG"; return ${status}; }
       seq() { printf '1\\n'; }
       sleep() { :; }
@@ -151,5 +163,64 @@ describe("deployment target readiness", () => {
     expect(readFileSync(commandLog, "utf8")).toBe("exec -T app node -e\n");
     expect(result.status).toBe(status);
     expect(result.stdout.includes("WARMUP_ALLOWED")).toBe(status === 0);
+  });
+});
+
+describe("deployment build source anchoring", () => {
+  const revision = "c".repeat(40);
+  function buildProbe(scenario: string) {
+    const start = deploy.indexOf('echo "==> 构建镜像"');
+    const end = deploy.indexOf('echo "==> 启动/确认数据库"', start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const dir = mkdtempSync(path.join(tmpdir(), "scm-build-admission-"));
+    workspaces.push(dir);
+    const result = spawnSync("/bin/bash", ["-c", `
+      set -euo pipefail
+      git() {
+        [ "$QA_SCENARIO" != git-fails ] || return 90
+        case "$*" in
+          "rev-parse --show-toplevel")
+            if [ "$QA_SCENARIO" = parent-root ]; then printf '/different-parent\\n'; else pwd -P; fi ;;
+          "rev-parse HEAD")
+            if [ "$QA_SCENARIO" = bad-revision ]; then printf 'short\\n'
+            elif [ -f "$QA_DIR/built" ] && [ "$QA_SCENARIO" = head-changed ]; then printf '%s\\n' '${"d".repeat(40)}'
+            else printf '%s\\n' '${revision}'; fi ;;
+          "status --porcelain=v1 -uall")
+            [ "$QA_SCENARIO" != status-fails ] || return 91
+            if [ "$QA_SCENARIO" = dirty ] || { [ -f "$QA_DIR/built" ] && [ "$QA_SCENARIO" = changed-during-build ]; }; then printf ' M changed-source\\n'; fi ;;
+          *) return 92 ;;
+        esac
+      }
+      compose() {
+        printf 'BUILD_COMMAND %s\\n' "$*"
+        touch "$QA_DIR/built"
+        [ "$QA_SCENARIO" != build-fails ]
+      }
+      ${deploy.slice(start, end)}
+      printf 'DATABASE_ALLOWED\\n'
+    `], { encoding: "utf8", timeout: 3000, env: { NODE_ENV: "test", PATH: "/usr/bin:/bin", QA_DIR: dir, QA_SCENARIO: scenario,
+      SCM_BUILD_REVISION: "f".repeat(40) } });
+    return result;
+  }
+
+  it.each(["git-fails", "parent-root", "bad-revision", "status-fails", "dirty"])("rejects %s before build or database work", (scenario) => {
+    const r = buildProbe(scenario);
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).not.toContain("BUILD_COMMAND");
+    expect(r.stdout).not.toContain("DATABASE_ALLOWED");
+  });
+  it.each(["head-changed", "changed-during-build", "build-fails"])("rejects %s before touching the database", (scenario) => {
+    const r = buildProbe(scenario);
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).toContain("BUILD_COMMAND");
+    expect(r.stdout).not.toContain("DATABASE_ALLOWED");
+  });
+  it("builds both images with the actual revision, never a supplied override", () => {
+    const r = buildProbe("clean");
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain(`BUILD_COMMAND build --build-arg SCM_BUILD_REVISION=${revision} app migrate`);
+    expect(r.stdout).not.toContain("f".repeat(40));
+    expect(r.stdout).toContain("DATABASE_ALLOWED");
   });
 });

@@ -1,6 +1,15 @@
 import type { NextConfig } from "next";
+import { readBuildIdentity } from "./scripts/build-identity";
+
+const buildIdentity = readBuildIdentity(process.cwd(), process.env.SCM_BUILD_REVISION);
 
 const nextConfig: NextConfig = {
+  // Non-secret literals baked by Next into the compiled health route; changing
+  // runtime env cannot make an old artifact claim a newer source revision.
+  env: {
+    SCM_COMPILED_REVISION: buildIdentity.revision ?? "",
+    SCM_COMPILED_SOURCE: buildIdentity.source,
+  },
   reactStrictMode: true,
   // Next 15 otherwise rewrites loopback redirect origins (127.0.0.1 / [::1])
   // to localhost, moving the browser to a different host-only cookie jar.

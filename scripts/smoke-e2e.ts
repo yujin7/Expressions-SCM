@@ -1,5 +1,5 @@
 /**
- * HTTP 冒烟（只读——任何时候可安全运行，不写库）：对一台【已运行】的服务器逐项探测。
+ * HTTP 冒烟：对一台【已确认、获授权】的服务器逐项探测；不写业务单据，登录可能产生会话/认证留痕。
  *   npx tsx scripts/smoke-e2e.ts            # 默认 http://localhost:3000
  *   SMOKE_BASE=https://host npx tsx scripts/smoke-e2e.ts
  * 覆盖：健康检查（迁移无漂移）、全角色登录、关键只读端点形状、越权/匿名负样例、
@@ -8,6 +8,8 @@
  * SMOKE_ADMIN_PASSWORD 与 SMOKE_ROLE_PASSWORD；质量账号若另设口令，可再提供
  * SMOKE_QUALITY_PASSWORD。脚本不保留任何公开默认密码。
  */
+
+import { matchesBuildRevision } from "../src/lib/build-identity";
 
 const BASE = process.env.SMOKE_BASE ?? "http://localhost:3000";
 const SHARED_PASSWORD = process.env.SMOKE_PASSWORD?.trim() ?? "";
@@ -109,6 +111,25 @@ async function main(): Promise<void> {
     );
   }
   console.log(`冒烟目标: ${BASE}\n`);
+
+  // Release verification always supplies its anchored HEAD. Reject another app
+  // before sending any credentials, even if its database is healthy.
+  if (process.env.SCM_EXPECTED_REVISION !== undefined) {
+    let matches = false;
+    try {
+      const response = await fetch(`${BASE}/api/health`, {
+        redirect: "error", cache: "no-store", signal: AbortSignal.timeout(5000),
+      });
+      const health = await response.json() as { build?: unknown } | null;
+      matches = response.ok && matchesBuildRevision(health?.build, process.env.SCM_EXPECTED_REVISION);
+    } catch { /* Report a safe version failure; never echo response bodies or transport secrets. */ }
+    record("运行源码版本", matches ? "PASS" : "FAIL", matches ? "与精确候选一致" : "缺失、未锚定或不匹配；停止账号验证");
+    if (!matches) {
+      printSummary();
+      process.exitCode = 1;
+      return;
+    }
+  }
 
   // 1) 两种数据库均须已确认就绪；未知/旧模式哨兵值不能当绿灯。
   {

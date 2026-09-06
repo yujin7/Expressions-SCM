@@ -51,10 +51,14 @@ async function expectUnknown(extra: Record<string, unknown> = {}) {
 }
 
 describe("migration readiness is known and fail-closed", () => {
+  it("reports unavailable build identity explicitly without inventing a revision", async () => {
+    const { body } = await response();
+    expect(body.build).toEqual({ revision: null, source: "unknown" });
+  });
   it("PGlite 的唯一账本与文件数一致才就绪，并保留兼容字段", async () => {
     const { result, body } = await response();
     expect(result.status).toBe(200);
-    expect(body).toEqual({ ok: true, dbOk: true, migrationFiles: 2, applied: 2, drift: false, migrationState: "current" });
+    expect(body).toEqual({ ok: true, dbOk: true, migrationFiles: 2, applied: 2, drift: false, migrationState: "current", build: { revision: null, source: "unknown" } });
     expect(mocks.execute.mock.calls.map(([query]) => queryText(query))).toEqual(["SELECT 1", pgliteLedger, postgresLedger]);
   });
 
