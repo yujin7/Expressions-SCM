@@ -81,6 +81,19 @@ async function seedActor() {
 }
 
 describe("用友只读观测同步", () => {
+  it("vendor failure persists only code and recovery context; no checkpoint/job is invented", async () => {
+    const { db, actorId } = await seedActor();
+    const { client } = clientReturning({ code: "999998", message: "SYNTH_VENDOR_PRIVATE_UNLABELLED" });
+    await expect(syncYonyouContract(db, { client, actorId, contract: "存货成本查询", scopeKey: "privacy" }))
+      .rejects.toThrow("999998");
+    const [run] = await db.select().from(schema.integrationRuns);
+    expect(run).toMatchObject({ status: "failed", importJobId: null });
+    expect(run.error).toContain("999998");
+    expect(JSON.stringify(run)).not.toContain("SYNTH_VENDOR_PRIVATE");
+    expect(await db.select().from(schema.integrationCheckpoints)).toHaveLength(0);
+    expect(await db.select().from(schema.importJobs)).toHaveLength(0);
+  });
+
   it("正常响应：原样落 staging，写 run/checkpoint 与证据哈希", async () => {
     const { db, actorId } = await seedActor();
     const { client } = clientReturning({
@@ -266,7 +279,7 @@ describe("用友只读观测同步", () => {
       const recovery = clientReturning({ code: "00000", data: { rows: [{ code: "M001" }] } });
       const recovered = await syncYonyouContract(db, { ...options, client: recovery.client });
       expect(recovered.runId).toBe(blocked.runId);
-      if (lateResult === "授权拒绝") response.reject(new YonyouApiError("310037", "API未被授权", options.contract));
+      if (lateResult === "授权拒绝") response.reject(new YonyouApiError("310037", options.contract));
       else response.resolve({ rows: [{ code: "LATE-MUST-NOT-REPLACE" }] });
       expect(await pendingOutcome).toBeInstanceOf(Error);
       expect(String(await pendingOutcome)).toContain("租约已被其他重试接管");

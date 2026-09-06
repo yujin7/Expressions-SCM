@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { and, eq, inArray } from "drizzle-orm";
 import { importJobs, stagingRows } from "@/db/schema";
+import { storedErrorDiagnostic } from "@/server/core/logger";
 import { createImportRejectionArtifact } from "@/server/import/rejection-artifact";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
@@ -276,7 +277,7 @@ export async function failImportJob(
   targetTable: string,
   error: unknown,
 ): Promise<void> {
-  const message = (error instanceof Error ? error.message : String(error)).slice(0, 2000);
+  const message = storedErrorDiagnostic(error).slice(0, 2000);
   await db.transaction(async (tx: AnyDb) => {
     const existing: { id: number; status: string }[] = await tx
       .select({ id: stagingRows.id, status: stagingRows.status })

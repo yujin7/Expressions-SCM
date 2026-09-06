@@ -29,6 +29,7 @@ import {
   type ConnectorReadiness,
 } from "@/server/integrations/connector";
 import { ApiError } from "@/server/modules/master/common";
+import { diagnosticPath } from "@/server/core/logger";
 import { YONYOU_READ_CONTRACTS } from "@/server/integrations/yonyou-contracts";
 import { CONTRACT_CONSUMERS, READ_MODEL_LABELS } from "@/server/integrations/contract-consumers";
 import {
@@ -492,8 +493,8 @@ export function connectorErrorSummary(value: string | null): string | null {
 }
 
 /**
- * error_logs and job_runs intentionally keep the original diagnostic text for protected
- * server-side investigation. The browser receives only a bounded category: upstream SDKs and
+ * Historical error_logs and job_runs may contain original diagnostic text.
+ * New writers sanitize diagnostics; the browser still receives only a bounded category: SDKs and
  * database drivers can embed tokens, URLs, source identifiers or SQL values in Error.message.
  */
 export function operationalErrorSummary(value: string | null): string {
@@ -517,7 +518,7 @@ function safeErrorLogRow(row: typeof errorLogs.$inferSelect): ErrorLogRow {
   return {
     id: row.id,
     errorId: row.errorId,
-    path: row.path,
+    path: row.path ? diagnosticPath(row.path) : null,
     method: row.method,
     userId: row.userId,
     message: operationalErrorSummary(row.message),

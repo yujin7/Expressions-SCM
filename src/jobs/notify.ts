@@ -21,10 +21,12 @@ import { computeExceptions } from "@/server/modules/workbench/focus";
 import { getDecisionStudio } from "@/server/modules/report/decision-studio";
 import {
   FeishuAppClient,
+  FeishuApiError,
   feishuAppConfigFromEnv,
   feishuWebhookUrlFromEnv,
 } from "@/server/integrations/feishu";
-import { fetchJson } from "@/server/integrations/http";
+import { fetchJson, IntegrationHttpError } from "@/server/integrations/http";
+import { sanitizeErrorDiagnostic } from "@/server/core/logger";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -106,7 +108,7 @@ async function pushFeishu(url: string, title: string, body: string, href?: strin
   const rawCode = envelope.code ?? envelope.StatusCode;
   const code = Number(rawCode);
   if (!Number.isFinite(code) || code !== 0) {
-    throw new Error(`飞书 webhook 业务失败 (${Number.isFinite(code) ? code : "unknown"})`);
+    throw new FeishuApiError("飞书 webhook 业务失败", code);
   }
 }
 
@@ -145,6 +147,17 @@ export function isFeishuAppConfigured(env: NodeJS.ProcessEnv = process.env): boo
 
 export function isFeishuDeliveryConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
   return feishuWebhookUrlFromEnv(env) !== null || feishuAppConfigFromEnv(env) !== null;
+}
+
+function notificationFailureMessage(error: unknown, notificationId: number): string {
+  // Unknown errors can contain unlabelled provider prose, or not be Error objects at all.
+  // Keep the durable notification ID for correlation; don't misstate a timeout as non-delivery.
+  let detail = "投递失败或结果未确认；请核对飞书授权、目标和服务状态";
+  if (error instanceof FeishuApiError) detail = error.message;
+  else if (error instanceof IntegrationHttpError) {
+    detail = error.status ? `飞书 HTTP ${error.status}，请核对授权和服务状态` : "飞书网络或响应异常，投递结果未确认";
+  }
+  return `通知 #${notificationId}：${sanitizeErrorDiagnostic(error, detail)}`.slice(0, 300);
 }
 
 /** 分发 pending 通知；应用机器人优先，但发送尝试后不做无法幂等的跨渠道回退。 */
@@ -253,7 +266,7 @@ export async function dispatchNotifications(
       } catch (e) {
         await db.update(notifications).set({
           status: "failed",
-          error: (e as Error).message.slice(0, 300),
+          error: notificationFailureMessage(e, p.id),
           dispatchStartedAt: null,
         }).where(eq(notifications.id, p.id));
         failed++;

@@ -23,7 +23,7 @@ describe("用友只读权限探针", () => {
       callContract: vi.fn(async (name: string) => {
         const index = YONYOU_READ_CONTRACTS.findIndex((contract) => contract.name === name);
         if (index >= 3) {
-          throw new YonyouApiError("310037", "raw authorization detail", name);
+          throw new YonyouApiError("310037", name);
         }
         return {};
       }),
@@ -70,7 +70,7 @@ describe("用友只读权限探针", () => {
     const client = {
       getAccessToken: vi.fn(async () => "safe-token"),
       callContract: vi.fn(async (name: string) => {
-        throw new YonyouApiError("310037", "raw authorization detail", name);
+        throw new YonyouApiError("310037", name);
       }),
     };
     const { YY_TENANT_ID: _tenant, YY_ORG_ID: _org, ...withoutScope } = env;

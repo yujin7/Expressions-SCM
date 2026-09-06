@@ -285,8 +285,18 @@ function inspectBotDefault(app: Record<string, unknown> | null): FeishuBotDefaul
   return "unknown";
 }
 
-function feishuBusinessError(label: string, code: number): Error {
-  return new Error(`${label} ${Number.isFinite(code) ? code : "unknown"}: 调用失败`);
+type FeishuErrorPhase = "飞书鉴权" | "飞书消息" | "飞书群目录" | "飞书应用信息" | "飞书 webhook 业务失败";
+
+/** Only application-owned phase + numeric code, never provider message or request content. */
+export class FeishuApiError extends Error {
+  constructor(phase: FeishuErrorPhase, code: number) {
+    super(`${phase} ${Number.isFinite(code) ? code : "unknown"}: 调用失败`);
+    this.name = "FeishuApiError";
+  }
+}
+
+function feishuBusinessError(label: FeishuErrorPhase, code: number): Error {
+  return new FeishuApiError(label, code);
 }
 
 export class FeishuAppClient {

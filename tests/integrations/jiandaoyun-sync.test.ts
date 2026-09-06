@@ -1175,6 +1175,9 @@ describe("简道云受控同步", () => {
 
     const [failed] = await db.select().from(schema.integrationRuns);
     expect(failed).toMatchObject({ status: "failed", importJobId: null });
+    expect(failed.error).toContain("SQLSTATE P0001");
+    expect(failed.error).not.toContain("injected checkpoint failure");
+    expect(failed.error).not.toContain("RECOVERY-SKU");
     expect(await db.select().from(schema.importJobs)).toHaveLength(0);
     expect(await db.select().from(schema.stagingRows)).toHaveLength(0);
     expect(await db.select().from(schema.aliasExceptions)).toHaveLength(0);

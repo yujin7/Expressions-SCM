@@ -7,6 +7,7 @@
  * receive stock, post ledgers, or turn an external observation into an operational fact.
  */
 import { desc, eq, like, sql } from "drizzle-orm";
+import { storedErrorDiagnostic } from "@/server/core/logger";
 import {
   integrationCheckpoints,
   integrationRuns,
@@ -420,7 +421,7 @@ export async function syncJstGovernedObservation(
   } catch (error) {
     await db.update(integrationRuns).set({
       status: "failed",
-      error: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+      error: storedErrorDiagnostic(error).slice(0, 500),
       finishedAt: new Date(),
     }).where(eq(integrationRuns.id, run.id));
     throw error;

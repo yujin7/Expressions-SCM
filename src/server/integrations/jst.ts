@@ -160,8 +160,12 @@ export class JstApiError extends Error {
   readonly code: number;
   readonly retryable: boolean;
 
-  constructor(code: number, message: string) {
-    super(`聚水潭 API ${code}: ${message || "未知错误"}`);
+  constructor(code: number) {
+    // Vendor msg can echo credentials or business values without labels. Never retain it.
+    const guidance = code === 110 ? "请核对出口 IP 白名单"
+      : code === 190 ? "请核对接口授权"
+      : RATE_LIMIT_CODES.has(code) ? "触发接口限流，请稍后重试" : "调用失败，请按错误码核对开放平台配置";
+    super(`聚水潭 API ${Number.isFinite(code) ? code : "unknown"}: ${guidance}`);
     this.name = "JstApiError";
     this.code = code;
     this.retryable = RATE_LIMIT_CODES.has(code);
@@ -357,7 +361,7 @@ export class JstClient {
       const code = Number(envelope.code);
       if (!Number.isFinite(code)) throw new Error("聚水潭响应缺少数值 code");
       if (code === 0) return asObject(envelope.data, "data");
-      const apiError = new JstApiError(code, nonEmpty(envelope.msg ?? envelope.message) ?? "");
+      const apiError = new JstApiError(code);
       if (!apiError.retryable || attempt === 2) throw apiError;
       const sleep = this.transport.sleep ?? ((ms: number) =>
         new Promise<void>((resolve) => setTimeout(resolve, ms)));

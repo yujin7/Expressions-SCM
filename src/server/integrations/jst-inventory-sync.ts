@@ -1,4 +1,5 @@
 import { and, desc, eq, like, sql } from "drizzle-orm";
+import { storedErrorDiagnostic } from "@/server/core/logger";
 import {
   importJobs,
   integrationCheckpoints,
@@ -343,7 +344,7 @@ export async function syncJstInventoryObservations(
         await failImportJob(db, importJobId, TARGET_TABLE, error).catch(() => undefined);
       }
     }
-    const message = error instanceof Error ? error.message : String(error);
+    const message = storedErrorDiagnostic(error);
     await db.update(integrationRuns).set({
       status: "failed",
       importJobId,

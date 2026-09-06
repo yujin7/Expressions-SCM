@@ -192,7 +192,7 @@ describe("admin connector run health", () => {
     ]);
     await db.insert(schema.errorLogs).values({
       errorId: "deadbeef",
-      path: "/api/integrations/run",
+      path: "/api/integrations/run?auth_code=SYNTH_HISTORY_PRIVATE#private",
       method: "POST",
       message: "upstream 401 token=DEMO_SECRET_VALUE https://example.invalid?key=secret",
       stack: "Error: DEMO_SECRET_VALUE",
@@ -319,6 +319,7 @@ describe("admin connector run health", () => {
 
     expect(result.recentErrors).toMatchObject([{
       errorId: "deadbeef",
+      path: "/api/integrations/run?[REDACTED]",
       message: "认证或授权异常（详情仅限受控日志）",
     }]);
     expect(result.lastJobRuns.find((row) => row.job === "connector-probe")).toMatchObject({
@@ -334,6 +335,9 @@ describe("admin connector run health", () => {
     const errorListPayload = JSON.stringify(await listErrorLogs(50, db));
     expect(errorListPayload).not.toContain("DEMO_SECRET_VALUE");
     expect(errorListPayload).not.toContain("example.invalid");
+    expect(errorListPayload).not.toContain("SYNTH_HISTORY_PRIVATE");
+    const [historical] = await db.select().from(schema.errorLogs);
+    expect(historical.path).toContain("SYNTH_HISTORY_PRIVATE"); // Read projection never rewrites evidence.
   });
 
   it("reduces arbitrary stored errors to bounded safe categories", () => {

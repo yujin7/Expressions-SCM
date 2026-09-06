@@ -23,6 +23,7 @@ import {
 } from "@/server/import/staging";
 import { writeIntegrationEvidence } from "./evidence";
 import { YonyouApiError, YonyouClient } from "./yonyou-client";
+import { storedErrorDiagnostic } from "@/server/core/logger";
 import {
   yonyouContractStreamKey,
   yonyouReadContractByName,
@@ -413,7 +414,7 @@ async function failRun(
   attemptStartedAt: Date,
   error: unknown,
 ): Promise<void> {
-  const message = (error instanceof Error ? error.message : String(error)).slice(0, 500);
+  const message = storedErrorDiagnostic(error).slice(0, 500);
   await db.update(integrationRuns).set({
     status: "failed",
     importJobId: null,

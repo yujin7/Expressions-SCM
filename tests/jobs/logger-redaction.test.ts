@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { log, persistErrorLog, sanitizeDiagnosticText } from "@/server/core/logger";
+import { log, persistErrorLog, sanitizeDiagnosticText, storedErrorDiagnostic } from "@/server/core/logger";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -10,6 +10,17 @@ function capture(entry: Parameters<typeof log>[0]) {
 }
 
 describe("structured logging privacy boundary", () => {
+  it("stored diagnostics retain local integrity IDs but never invoke thrown accessors", () => {
+    const diagnostic = "全量记录缺失：DEV019-X-000；请回源核对，墓碑不绕过完整性守卫";
+    expect(storedErrorDiagnostic(new Error(diagnostic))).toBe(diagnostic);
+    expect(storedErrorDiagnostic(new Error(`${diagnostic}; access_token=SYNTH_SECRET`))).not.toContain("SYNTH");
+    const accessor = vi.fn(() => { throw new Error("must not run"); });
+    const error = new Error();
+    Object.defineProperty(error, "message", { get: accessor });
+    expect(storedErrorDiagnostic(error)).toContain("异常详情未提供");
+    expect(storedErrorDiagnostic({ toString: accessor })).toContain("异常详情未提供");
+    expect(accessor).not.toHaveBeenCalled();
+  });
   it("repeated sanitization is stable and retains SQLSTATE without query properties", () => {
     const message = sanitizeDiagnosticText("Error: token=SYNTH_TOKEN");
     expect(sanitizeDiagnosticText(message)).toBe(message);

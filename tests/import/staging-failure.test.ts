@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -12,6 +12,33 @@ import {
 import { createTestDb } from "../helpers/db";
 
 describe("导入失败收口", () => {
+  it("SQL values stay out of failed staging and downloadable rejection artifact", async () => {
+    const { db, client } = await createTestDb();
+    const dir = mkdtempSync(path.join(tmpdir(), "staging-privacy-"));
+    const previousStorage = process.env.FILE_STORAGE_DIR;
+    process.env.FILE_STORAGE_DIR = dir;
+    try {
+      const [user] = await db.insert(schema.users).values({ name: "QA" }).returning();
+      const file = path.join(dir, "qa.xlsx");
+      writeFileSync(file, "synthetic");
+      const job = await createImportJob(db, { template: "inventory", filePath: file, createdBy: user.id });
+      const error = new Error("Failed query: insert into private values ('SYNTH_PRIVATE_BIND')", {
+        cause: Object.assign(new Error('invalid input: "SYNTH_PRIVATE_BIND"'), { code: "22P02" }),
+      });
+      await failImportJob(db, job.id, "stock_opening_candidate", error);
+      const [saved] = await db.select().from(schema.importJobs).where(eq(schema.importJobs.id, job.id));
+      const rows = await db.select().from(schema.stagingRows).where(eq(schema.stagingRows.importJobId, job.id));
+      expect(saved).toMatchObject({ status: "failed", okRows: 0, failRows: 1 });
+      expect(rows).toMatchObject([{ status: "error", errorMsg: expect.stringContaining("SQLSTATE 22P02") }]);
+      expect(JSON.stringify(rows)).not.toContain("SYNTH_PRIVATE_BIND");
+      expect(readFileSync(path.join(dir, saved.errorFile!), "utf8")).not.toContain("SYNTH_PRIVATE_BIND");
+    } finally {
+      if (previousStorage === undefined) delete process.env.FILE_STORAGE_DIR;
+      else process.env.FILE_STORAGE_DIR = previousStorage;
+      await client.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it("部分 staging 已写入后失败时全部封成 error，不能被 release 误选", async () => {
     const { db } = await createTestDb();
     const [user] = await db.insert(schema.users).values({ name: "导入员" }).returning();

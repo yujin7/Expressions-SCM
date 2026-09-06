@@ -84,13 +84,13 @@ describe("用友运行时客户端", () => {
   });
 
   it("310037 判为需控制台授权且不可重试（重试只会掩盖真实原因）", () => {
-    const error = new YonyouApiError("310037", "APPKEY 未获得要调用的 API 的授权", "存货成本查询");
+    const error = new YonyouApiError("310037", "存货成本查询");
     expect(error.needsConsoleGrant).toBe(true);
     expect(error.retryable).toBe(false);
   });
 
   it("310005 应用不存在同样判为需控制台处理（多为网关/集群不符）", () => {
-    const error = new YonyouApiError("310005", "应用不存在", "存货成本查询");
+    const error = new YonyouApiError("310005", "存货成本查询");
     expect(error.needsConsoleGrant).toBe(true);
     expect(error.retryable).toBe(false);
   });

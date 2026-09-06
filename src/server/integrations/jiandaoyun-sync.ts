@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
+import { storedErrorDiagnostic } from "@/server/core/logger";
 import {
   importJobs,
   integrationCheckpoints,
@@ -262,7 +263,7 @@ async function failRun(
   attemptStartedAt: Date,
   error: unknown,
 ): Promise<void> {
-  const message = (error instanceof Error ? error.message : String(error)).slice(0, 500);
+  const message = storedErrorDiagnostic(error).slice(0, 500);
   await db
     .update(integrationRuns)
     .set({

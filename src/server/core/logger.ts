@@ -54,7 +54,7 @@ export function sanitizeDiagnosticText(text: string): string {
 }
 
 /** Paths are diagnostic labels, not a place to retain search terms, auth codes or tokens. */
-function diagnosticPath(path: string): string {
+export function diagnosticPath(path: string): string {
   return sanitizeDiagnosticText(path).replace(/[?#][\s\S]*$/, "?[REDACTED]");
 }
 
@@ -76,6 +76,22 @@ function sqlStateOf(error: unknown): string | undefined {
 export function sanitizeErrorDiagnostic(error: unknown, text: string): string {
   const code = sqlStateOf(error);
   return code ? `SQLSTATE ${code}: ${sanitizeDiagnosticText(`Failed query:\n${text}`)}` : sanitizeDiagnosticText(text);
+}
+
+/** Storage boundary for application diagnostics. Provider clients must first discard raw
+ * vendor prose; regex sanitization cannot identify unlabelled personal/business values.
+ * Do not invoke arbitrary thrown objects' accessors or toString while recording a failure.
+ */
+export function storedErrorDiagnostic(error: unknown): string {
+  let message = "运行失败（异常详情未提供）";
+  try {
+    if (typeof error === "string") message = error;
+    else if (error instanceof Error) {
+      const field = Object.getOwnPropertyDescriptor(error, "message");
+      if (field && "value" in field && typeof field.value === "string") message = field.value;
+    }
+  } catch { /* An uninspectable error must not prevent failed-state persistence. */ }
+  return sanitizeErrorDiagnostic(error, message);
 }
 
 function diagnosticValue(value: unknown, seen: WeakSet<object>, depth = 0): unknown {

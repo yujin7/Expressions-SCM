@@ -27,13 +27,18 @@ import { yonyouReadContractByName, type YonyouReadContractName } from "./yonyou-
 
 /** 网关业务错误。code 是用友的字符串错误码，保留原文便于运维按码检索。 */
 export class YonyouApiError extends Error {
-  constructor(
-    readonly code: string,
-    readonly detail: string,
-    readonly contract: string,
-  ) {
-    super(`用友 ${contract} 返回 ${code}：${detail}`);
+  readonly code: string;
+  readonly contract: string;
+
+  constructor(code: string, contract: string) {
+    const safeCode = /^\d{1,10}$/.test(code) ? code : "unknown";
+    const safeContract = contract === "取 access_token" || yonyouReadContractByName(contract) ? contract : "未识别契约";
+    const guidance = ["310005", "310037"].includes(safeCode) ? "请核对控制台应用与接口授权"
+      : "调用失败，请按错误码核对配置与服务状态";
+    super(`用友 ${safeContract} 返回 ${safeCode}：${guidance}`);
     this.name = "YonyouApiError";
+    this.code = safeCode;
+    this.contract = safeContract;
   }
 
   /** 授权类错误不该重试——重试只会刷日志，且掩盖"没在控制台授权"这个真实原因。 */
@@ -93,7 +98,7 @@ export class YonyouClient {
   /** 发送前的出站校验：白名单 + 公网 DNS。两者任一不过就不发凭据。 */
   private async assertEndpointSafe(url: string): Promise<void> {
     if (!isSafeYonyouEndpoint(url, this.config.allowedHosts)) {
-      throw new Error(`用友端点未通过白名单校验，拒绝发送凭据：${url}`);
+      throw new Error("用友端点未通过白名单校验，拒绝发送凭据；请核对 token/base URL 配置");
     }
     await assertYonyouDnsResolutionSafe(url, this.dnsLookup);
   }
@@ -115,7 +120,7 @@ export class YonyouClient {
     const envelope = asObject(payload, "token envelope");
     const code = String(envelope.code ?? "");
     if (code !== "00000") {
-      throw new YonyouApiError(code, String(envelope.message ?? ""), "取 access_token");
+      throw new YonyouApiError(code, "取 access_token");
     }
     const data = asObject(envelope.data, "token data");
     const token = typeof data.access_token === "string" ? data.access_token : "";
@@ -162,7 +167,7 @@ export class YonyouClient {
     const code = String(envelope.code ?? "");
     // 用友成功码是 "00000"；部分接口成功时省略 code，故 code 为空且带 data 也视为成功
     if (code && code !== "00000") {
-      throw new YonyouApiError(code, String(envelope.message ?? ""), name);
+      throw new YonyouApiError(code, name);
     }
     return asObject(envelope.data ?? envelope, "data");
   }

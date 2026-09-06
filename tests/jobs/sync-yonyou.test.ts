@@ -56,7 +56,7 @@ describe("用友同步调度入口", () => {
   it("全部等待授权及同范围重试均保持等待；不把执行完成冒充读取成功", async () => {
     const db = await enabledFixture();
     const call = vi.spyOn(YonyouClient.prototype, "callContract").mockRejectedValue(
-      new YonyouApiError("310037", "合成授权拒绝", "存货成本查询"),
+      new YonyouApiError("310037", "存货成本查询"),
     );
     for (let i = 0; i < 2; i++) {
       expect(await runYonyouSync(db, "2026-08-04")).toMatchObject({
@@ -74,7 +74,7 @@ describe("用友同步调度入口", () => {
     const db = await enabledFixture("物料档案分页查询 V2,存货成本查询");
     let authorized = false;
     const call = vi.spyOn(YonyouClient.prototype, "callContract").mockImplementation(async (contract) => {
-      if (contract === "存货成本查询" && !authorized) throw new YonyouApiError("310005", "合成授权拒绝", contract);
+      if (contract === "存货成本查询" && !authorized) throw new YonyouApiError("310005", contract);
       return { rows: [{ code: "M001" }] };
     });
     const first = await runYonyouSync(db, "2026-08-04");
