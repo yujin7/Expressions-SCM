@@ -31,6 +31,8 @@ import {
   shanghaiDay,
 } from "@/server/modules/workbench/exception-dismissals";
 import { markWorkbenchVisit, type VisitMarkerState } from "@/server/modules/workbench/visit-marker";
+import { resolveChannelScope, type ScopeUser } from "@/server/core/data-scope";
+import { channelScopedAlertCondition, visibleChannelScopedAlertIds } from "@/server/modules/report/shop-channel-scope";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -295,6 +297,27 @@ export interface ExceptionSet { visible: ExceptionItem[]; all: ExceptionItem[] }
 
 const exceptionsMemo = new WeakMap<object, { at: number; value: Promise<ExceptionSet> }>();
 
+interface ExceptionOptions {
+  memoMs?: number;
+  recordShown?: boolean;
+  applySnooze?: boolean;
+  /** Counts must use the same channel visibility as the destination alert list. */
+  user?: ScopeUser;
+}
+
+/** Pending rows, not a new risk evaluation. SQL visibility matches /api/alerts before aggregation. */
+async function openAlertCounts(db: AnyDb, user?: ScopeUser): Promise<Map<string, number>> {
+  const scope = user ? resolveChannelScope(user, null) : null;
+  const visibility = scope?.forced
+    ? channelScopedAlertCondition(await visibleChannelScopedAlertIds(db, scope)) : undefined;
+  const rows: { category: string; count: number }[] = await db
+    .select({ category: schema.systemAlerts.category, count: sql<number>`count(*)::int` })
+    .from(schema.systemAlerts)
+    .where(and(eq(schema.systemAlerts.status, "open"), visibility))
+    .groupBy(schema.systemAlerts.category);
+  return new Map(rows.map((r) => [r.category, r.count]));
+}
+
 /**
  * 例外清单；`memoMs` 打开时同一 db 实例在该时长内复用上一次结果（驾驶舱多用户刷新不重复跑全量补货引擎）。
  * 缺省不记忆（测试与写后读一致性优先）。
@@ -308,12 +331,14 @@ const exceptionsMemo = new WeakMap<object, { at: number; value: Promise<Exceptio
  */
 export async function computeExceptionSet(
   db: AnyDb,
-  opts?: { memoMs?: number; recordShown?: boolean; applySnooze?: boolean },
+  opts?: ExceptionOptions,
 ): Promise<ExceptionSet> {
   const memoMs = opts?.memoMs ?? 0;
   const recordShown = opts?.recordShown ?? true;
   const applySnooze = opts?.applySnooze ?? true;
-  if (memoMs > 0) {
+  // Only the default global display may share this memo. User scopes and notification/display
+  // policies must never reuse a different audience or a snooze-filtered result.
+  if (memoMs > 0 && !opts?.user && recordShown && applySnooze) {
     const hit = exceptionsMemo.get(db as object);
     if (hit && Date.now() - hit.at < memoMs) return hit.value;
     const value = computeExceptionsUncached(db, recordShown, applySnooze);
@@ -321,13 +346,13 @@ export async function computeExceptionSet(
     value.catch(() => exceptionsMemo.delete(db as object));
     return value;
   }
-  return computeExceptionsUncached(db, recordShown, applySnooze);
+  return computeExceptionsUncached(db, recordShown, applySnooze, opts?.user);
 }
 
 /** 兼容既有调用方：只要可见清单（已过打盹过滤） */
 export async function computeExceptions(
   db: AnyDb,
-  opts?: { memoMs?: number; recordShown?: boolean; applySnooze?: boolean },
+  opts?: ExceptionOptions,
 ): Promise<ExceptionItem[]> {
   return (await computeExceptionSet(db, opts)).visible;
 }
@@ -394,7 +419,7 @@ async function platformIdentityGap(
   }
 }
 
-async function computeExceptionsUncached(db: AnyDb, recordShown = true, applySnooze = true): Promise<ExceptionSet> {
+async function computeExceptionsUncached(db: AnyDb, recordShown = true, applySnooze = true, user?: ScopeUser): Promise<ExceptionSet> {
   const today = todayShanghai();
   const out: ExceptionItem[] = [];
 
@@ -423,23 +448,23 @@ async function computeExceptionsUncached(db: AnyDb, recordShown = true, applySno
     });
   }
 
-  // 2) 单据超时（时效看门狗）
-  const docAging = await countWhere(db, schema.systemAlerts, and(eq(schema.systemAlerts.category, "doc_aging"), eq(schema.systemAlerts.status, "open")));
-  if (docAging > 0) {
-    out.push({ key: "doc_aging", severity: "high", title: "单据超时未流转", impact: `${docAging} 张单据停留超阈值`, count: docAging, href: "/alerts" });
-  }
-  // D56/D57：预警引擎投影的两类告警（同源计数，驾驶舱红卡与本处一致）——独立于单据超时是否存在
-  const [spikeOpen, coverOpen] = await Promise.all([
-    countWhere(db, schema.systemAlerts, and(eq(schema.systemAlerts.category, "sales_spike"), eq(schema.systemAlerts.status, "open"))),
-    countWhere(db, schema.systemAlerts, and(eq(schema.systemAlerts.category, "inventory_cover"), eq(schema.systemAlerts.status, "open"))),
-  ]);
-  if (spikeOpen > 0) out.push({ key: "sales_spike", severity: "critical", title: "爆单预警（观察口径）", impact: `${spikeOpen} 个链接/SKU 连续 3 天涨幅超阈值`, count: spikeOpen, href: "/inventory/alerts?tab=spike" });
-  if (coverOpen > 0) out.push({ key: "inventory_cover", severity: "high", title: "断货预警 S/A/B", impact: `${coverOpen} 个 SKU 可销天数低于阈值或已断货`, count: coverOpen, href: "/inventory/alerts?tab=cover" });
-
-  // 3) 参考数据过期（新鲜度看门狗）
-  const staleData = await countWhere(db, schema.systemAlerts, and(eq(schema.systemAlerts.category, "data_freshness"), eq(schema.systemAlerts.status, "open")));
-  if (staleData > 0) {
-    out.push({ key: "stale_data", severity: "high", title: "关键参考数据过期", impact: `${staleData} 类数据待重传（口径将失真）`, count: staleData, href: "/alerts" });
+  // 2/3) The engine may intentionally retain old alerts when evidence is missing. An open row
+  // proves a pending review, not a current threshold breach, distinct SKU, or fixed three-day rule.
+  // Keep it actionable without hiding/closing history: each count links to precisely that queue.
+  const alertCounts = await openAlertCounts(db, user);
+  const pendingQueues: { key: string; category: string; severity: ExceptionSeverity; title: string; guidance: string }[] = [
+    { key: "doc_aging", category: "doc_aging", severity: "high", title: "单据时效告警待核对", guidance: "请核对单据当前状态，未关闭不代表当前仍超时" },
+    { key: "sales_spike", category: "sales_spike", severity: "critical", title: "爆单告警待复核", guidance: "请核对最新日销证据，未关闭不代表当前仍在爆单" },
+    { key: "inventory_cover", category: "inventory_cover", severity: "high", title: "断货告警待复核", guidance: "请核对最新库存与供给，未关闭不代表当前仍断货" },
+    { key: "stale_data", category: "data_freshness", severity: "high", title: "数据新鲜度告警待核对", guidance: "请核对来源与批次截止日，未关闭不代表当前仍过期" },
+  ];
+  for (const queue of pendingQueues) {
+    const count = alertCounts.get(queue.category) ?? 0;
+    if (count > 0) out.push({
+      key: queue.key, severity: queue.severity, title: queue.title,
+      impact: `${user ? "" : "全局 "}${count} 条未关闭告警；${queue.guidance}${user ? "" : "；列表按查看者权限展示"}`, count,
+      href: `/alerts?category=${queue.category}&status=open`,
+    });
   }
 
   /* 4) 断货且已错过下单窗口（可销 < 生产周期）
@@ -584,7 +609,7 @@ export async function getWorkbenchFocus(
   const planningRole = isAdmin || roles.some((r) => ["pmc", "purchasing", "ops", "warehouse"].includes(r));
   const [sections, exceptionSet, nextActions] = await Promise.all([
     Promise.all(builders.map(([, build]) => build(db))),
-    planningRole ? computeExceptionSet(db) : Promise.resolve<ExceptionSet>({ visible: [], all: [] }),
+    planningRole ? computeExceptionSet(db, { user }) : Promise.resolve<ExceptionSet>({ visible: [], all: [] }),
     getNextActions(roles, db),
   ]);
   const myOpenDocs = userId != null ? await countMyOpenDocs(db, userId) : null;
@@ -604,7 +629,7 @@ export async function getWorkbenchFocus(
       // 已读是逐收件人的（S6）：与 /api/notifications 调同一个 notifyUnreadWhere，不再各写一套
       ? countWhere(db, schema.notifications, notifyUnreadWhere(user))
       : Promise.resolve(0),
-    countWhere(db, schema.systemAlerts, eq(schema.systemAlerts.status, "open")),
+    openAlertCounts(db, user).then((counts) => [...counts.values()].reduce((total, count) => total + count, 0)),
     countWhere(db, schema.reviewItems, eq(schema.reviewItems.status, "open")),
     // D61 待办任务（work_items）：与 /todo「我的待办」同源（getTodoProgressBlock.mine）；无登录人视角时不出卡
     // 动态导入：todo/service → jobs/notify → workbench/focus → todo/stats 会成环（next build 收集页面数据时 TDZ 报错）

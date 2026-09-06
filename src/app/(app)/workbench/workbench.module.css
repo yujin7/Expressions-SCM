@@ -1,0 +1,54 @@
+.controlTower :global(.ant-card-head-title) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.controlTower :global(.ant-list-item-meta) {
+  min-width: 0;
+}
+
+.controlTower :global(.ant-list-item-meta-description) {
+  overflow-wrap: anywhere;
+}
+
+.controlTower :global(.ant-list-item-action) a,
+.controlTower :global(.ant-list-item-action) button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+}
+
+/* The same facts and actions remain in DOM order; narrow screens stop reserving
+   a side column that squeezes the evidence into a strip of short lines. */
+@media (max-width: 640px) {
+  .controlTower :global(.ant-card-head-wrapper) {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 4px;
+    padding-block: 8px;
+  }
+
+  .controlTower :global(.ant-card-extra) {
+    margin-inline-start: 0;
+    white-space: normal;
+  }
+
+  .controlTower :global(.ant-list-item) {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .controlTower :global(.ant-list-item-meta) {
+    width: 100%;
+  }
+
+  .controlTower :global(.ant-list-item-meta-avatar) {
+    margin-inline-end: 8px;
+  }
+
+  .controlTower :global(.ant-list-item-action) {
+    align-self: flex-end;
+    margin: 0;
+  }
+}

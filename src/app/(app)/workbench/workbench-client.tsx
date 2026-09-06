@@ -10,6 +10,7 @@ import { fetchJson, postJson } from "@/components/fetchJson";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import { ACTION } from "@/components/dictionary";
 import DigestView from "./digest-view";
+import styles from "./workbench.module.css";
 
 interface ExceptionItem {
   key: string;
@@ -123,7 +124,7 @@ function visitTimeText(since: string | null): string {
  *   只是标记：不改排序、不过滤、不评分（严重度仍然压倒新鲜度——一条挂了三天的 critical
  *   不会因为"不新"就该被往后放）。
  */
-function ControlTower({ items, loading, onSnooze, canSnooze, sinceLastVisit }: {
+export function ControlTower({ items, loading, onSnooze, canSnooze, sinceLastVisit }: {
   items: ExceptionItem[];
   loading: boolean;
   onSnooze: (item: ExceptionItem) => void;
@@ -133,12 +134,13 @@ function ControlTower({ items, loading, onSnooze, canSnooze, sinceLastVisit }: {
   if (loading) return <Card loading style={{ marginBottom: 16 }} />;
   if (items.length === 0) {
     return (
-      <Alert type="success" showIcon style={{ marginBottom: 16 }} message="控制塔：当前无跨域异常（或已被打盹）——各项监控均在阈值内。" />
+      <Alert type="info" showIcon style={{ marginBottom: 16 }} message="控制塔：当前没有可显示的例外。已打盹或证据不足的事项可能不在此列，请结合来源数据核对。" />
     );
   }
   return (
     <Card
       size="small"
+      className={styles.controlTower}
       style={{ marginBottom: 16, borderColor: "#ffccc7" }}
       title={<span><ThunderboltOutlined style={{ color: "#cf1322" }} /> 控制塔 · 今天最需要处理的事（{items.length}）</span>}
       extra={sinceLastVisit ? (
@@ -156,14 +158,14 @@ function ControlTower({ items, loading, onSnooze, canSnooze, sinceLastVisit }: {
         renderItem={(it) => (
           <List.Item
             actions={[
-              <Link key="go" href={it.href}>处理 <RightOutlined /></Link>,
-              ...(canSnooze ? [<a key="snooze" onClick={() => onSnooze(it)}>{ACTION.snoozeException}</a>] : []),
+              <Link key="go" href={it.href} aria-label={`处理：${it.title}`}>处理 <RightOutlined /></Link>,
+              ...(canSnooze ? [<Button key="snooze" type="link" size="small" aria-label={`打盹：${it.title}`} onClick={() => onSnooze(it)}>{ACTION.snoozeException}</Button>] : []),
             ]}
           >
             <List.Item.Meta
               avatar={<Tag color={SEV_META[it.severity].color}>{SEV_META[it.severity].label}</Tag>}
               title={(
-                <Space size={6}>
+                <Space size={6} wrap>
                   <Link href={it.href}>{it.title}</Link>
                   {it.newSinceLastVisit ? (
                     <Tooltip title="你上次访问工作台时这条还不在清单里">
