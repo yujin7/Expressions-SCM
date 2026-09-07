@@ -99,7 +99,7 @@ export interface CockpitData {
         limitations: string[];
       }>;
       ratio: Block<{ current: RatioMonthRow; rows: RatioMonthRow[]; target: RatioTargets; formula: string }>;
-      salesAmount: Block<{ yearMonth: string; salesAmount: string | null; salesSource: RatioMonthRow["salesSource"] }>;
+      monthlySalesBlock: Block<{ yearMonth: string; salesAmount: string | null; salesSource: RatioMonthRow["salesSource"] }>;
       dataSources: Block<SourceStatusRow[]>;
     };
     alerts: {
@@ -252,7 +252,7 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
 
   const ratioS = settled(ratioR);
   let ratio: CockpitData["screens"]["sources"]["ratio"];
-  let salesAmount: CockpitData["screens"]["sources"]["salesAmount"];
+  let salesAmount: CockpitData["screens"]["sources"]["monthlySalesBlock"];
   if (!canSeeMoney) {
     ratio = { state: "no_access", data: null, note: "库存占比与销售金额仅采购/计划/财务/管理员可见", source: { tier: "manual", source: INVENTORY_SALES_RATIO_CACHE_KEY, asOf: null } };
     salesAmount = { state: "no_access", data: null, note: "销售金额仅财务/计划/管理员可见", source: { tier: "manual", source: "sales_amount_monthly", asOf: null } };
@@ -471,7 +471,8 @@ export async function getCockpit(user: SessionUser, dbArg?: AnyDb): Promise<Cock
       calibreVersion: "cockpit/v1",
     },
     screens: {
-      sources: { position, ratio, salesAmount, dataSources },
+      // The block's state must survive masking; only its numeric salesAmount is sensitive.
+      sources: { position, ratio, monthlySalesBlock: salesAmount, dataSources },
       alerts: {
         redline,
         inventoryAlerts,

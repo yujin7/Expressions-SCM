@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import * as schema from "@/db/schema";
 import { createTestDb } from "../helpers/db";
 import { getCockpit, otifRatePctOf } from "@/server/modules/report/cockpit";
+import { maskSensitive } from "@/server/core/dto";
 
 describe("驾驶舱四屏装配", () => {
   it("空库：四屏齐全、待接入块明确、金额块对仓库角色 no_access、对管理员可读", async () => {
@@ -48,12 +49,14 @@ describe("驾驶舱四屏装配", () => {
       expect(a.screens.alerts.redline.map((r) => r.key)).toEqual(expect.arrayContaining(["sales_spike", "inventory_cover"]));
       // 管理员：占比块存在（无销售金额 → insufficient 而不是报错）
       expect(["ready", "insufficient"]).toContain(a.screens.sources.ratio.state);
-      expect(a.screens.sources.salesAmount.state).toBe("insufficient");
+      expect(a.screens.sources.monthlySalesBlock.state).toBe("insufficient");
       expect(a.topbar.scopeLabel).toBe("范围：全渠道");
 
       const w = await getCockpit({ id: wh.id, name: wh.name, roles: ["warehouse"], isApprover: false, channelScope: null }, db);
       expect(w.screens.sources.ratio.state).toBe("no_access");
-      expect(w.screens.sources.salesAmount.state).toBe("no_access");
+      expect(w.screens.sources.monthlySalesBlock.state).toBe("no_access");
+      const masked = maskSensitive(w, ["warehouse"]);
+      expect(masked.screens.sources.monthlySalesBlock).toMatchObject({ state: "no_access", data: null });
       expect(w.screens.sources.position.state).toBe("ready");
     } finally {
       await client.close();

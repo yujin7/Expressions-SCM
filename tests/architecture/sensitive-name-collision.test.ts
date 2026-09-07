@@ -26,9 +26,15 @@ const MUST_SURVIVE_MASKING: Record<string, string> = {
   qtyDeviationX: "数量异常的中位数倍数阈值",
   minSamples: "样本下限",
   windowDays: "统计窗口天数",
+  monthlySalesBlock: "驾驶舱月销售卡片容器：权限状态必须保留，内部金额仍脱敏",
 };
 
 describe("敏感名碰撞", () => {
+  it("monthly-sales block survives while its sensitive amount is still stripped", () => {
+    const input = { monthlySalesBlock: { state: "ready", data: { salesAmount: "12345.00", yearMonth: "2026-09" } } };
+    expect(maskSensitive(input, ["warehouse"])).toEqual({ monthlySalesBlock: { state: "ready", data: { yearMonth: "2026-09" } } });
+    expect(maskSensitive(input, ["admin"])).toEqual(input);
+  });
   it("配置阈值类字段不在 SENSITIVE_FIELDS 里（在里面就等于被判成金额）", () => {
     const collided = Object.keys(MUST_SURVIVE_MASKING).filter((f) => (SENSITIVE_FIELDS as readonly string[]).includes(f));
     expect(collided, "这些是配置阈值，不是金额").toEqual([]);

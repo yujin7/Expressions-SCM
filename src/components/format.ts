@@ -1,3 +1,18 @@
+import { shanghaiTimestampOf } from "@/server/core/business-day";
+
+/** 日期保留业务日；有时区的时刻按上海展示，未知/无时区时刻不猜测。 */
+export function formatAsOf(v: string | null | undefined): string {
+  if (!v) return "—";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+    const date = new Date(`${v}T00:00:00Z`);
+    return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === v ? v : "—";
+  }
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(v) || formatAsOf(v.slice(0, 10)) === "—"
+    || !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(v)) return "—";
+  const date = new Date(v);
+  return Number.isFinite(date.getTime()) ? shanghaiTimestampOf(date).slice(0, 16) : "—";
+}
+
 /** 数量显示（UX 走查：200.0000 对"个"类单位是噪音）——去尾零，保留真实小数 */
 export function formatQty(v: string | number | null | undefined): string {
   if (v == null || v === "") return "—";

@@ -15,6 +15,7 @@
 import { describe, expect, it } from "vitest";
 import { parseQuery } from "@/components/useListState";
 import { filterInventoryAlertRows, pageInventoryAlerts } from "@/server/modules/report/inventory-alerts-query";
+import { inventoryCoverMetricFilters, inventoryCoverMetricHref, todoCohortHref } from "@/lib/cockpit-navigation";
 import { filterSpikeHits, pageSalesSpike } from "@/server/modules/report/sales-spike-query";
 import {
   INVENTORY_ALERTS_CACHE_KEY,
@@ -227,6 +228,19 @@ describe("inventory-alerts-query：服务端筛选与分页", () => {
     row({ skuId: 4, code: "C-LOW", tier: "C", primary: "low_stock", status: "alert", statusOnHand: "alert" }),
     row({ skuId: 5, code: "X-NONE", tier: null, tierSource: null, primary: null, status: "watch", statusOnHand: "alert", downgradedBySupply: true }),
   ];
+  it("KPI drills use the counted status and all tiers, not an unrelated primary/whole-list predicate", () => {
+    expect(filterInventoryAlertRows(rows, inventoryCoverMetricFilters("watch")).map(r => r.code)).toEqual(["X-NONE"]);
+    expect(filterInventoryAlertRows(rows, inventoryCoverMetricFilters("alert")).map(r => r.code)).toEqual(["S-OUT", "A-LOW", "C-LOW"]);
+    expect(filterInventoryAlertRows(rows, inventoryCoverMetricFilters("outOfStock")).map(r => r.code)).toEqual(["S-OUT"]);
+    const url = new URL(inventoryCoverMetricHref("watch"), "http://localhost");
+    expect(Object.fromEntries(url.searchParams)).toMatchObject({ tab: "cover", cover_status: "watch", cover_onlyAlert: "0", cover_showC: "1" });
+    expect(() => filterInventoryAlertRows(rows, { status: "watc" })).toThrow("库存覆盖状态无效");
+  });
+  it("completed KPI drills to the same created month cohort, not all historic completed items", () => {
+    const url = new URL(todoCohortHref("2026-09"), "http://localhost");
+    expect(Object.fromEntries(url.searchParams)).toEqual({ tab: "stats", st_groupBy: "role", st_from: "2026-09", st_to: "2026-09" });
+    expect(todoCohortHref("2026-13")).toBe("/todo?tab=stats");
+  });
   it("缺省只看预警且折叠 C 级；onlyAlert=0 / showC=1 放开；tier=none 取未分层；q 匹配编码/名称/品牌", () => {
     expect(filterInventoryAlertRows(rows, {}).map((r) => r.code)).toEqual(["S-OUT", "A-LOW", "X-NONE"]);
     expect(filterInventoryAlertRows(rows, { showC: "1" }).map((r) => r.code)).toEqual(["S-OUT", "A-LOW", "C-LOW", "X-NONE"]);

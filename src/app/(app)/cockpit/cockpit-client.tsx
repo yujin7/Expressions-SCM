@@ -10,13 +10,15 @@
  * - 截断的表一律「显示前 N / 共 M，查看全部 →」；计数一律是链接，落到预筛选的行清单；
  * - 队列子查询失败显示「—」+ 错误 chip，不显示 0。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import { Alert, Button, Card, Col, Collapse, Empty, Row, Skeleton, Space, Statistic, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import { useMemo } from "react";
+import { useSearchParams } from "next/navigation";
+import Link from "next/link";
+import { Alert, Button, Card, Col, Collapse, Row, Skeleton, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { fetchJson } from "@/components/fetchJson";
+import { useDocumentRead } from "@/components/useDocumentRead";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
-import { formatCount, formatPct, formatQty, formatYuan } from "@/components/format";
+import { formatAsOf, formatCount, formatPct, formatQty, formatYuan } from "@/components/format";
+import { inventoryCoverMetricHref, todoCohortHref } from "@/lib/cockpit-navigation";
 import { GOAL_SOURCE, goalSourceKey, roleLabel, sourceStateColor, sourceStateLabel } from "@/components/dictionary";
 import type { Block, CockpitData, RedlineItem, SourceStatusRow } from "@/server/modules/report/cockpit";
 import type { MonthEndPoint, WarehouseBlock } from "@/server/modules/report/inventory-position";
@@ -27,6 +29,7 @@ import type { TransferAnomalyRow, TransferLaneRow } from "@/server/modules/repor
 import type { WarehouseInventoryRow } from "@/server/modules/report/warehouse-inventory";
 import type { GoalRow } from "@/server/modules/goals/service";
 import CockpitTrends from "./trends/CockpitTrends";
+import styles from "./cockpit.module.css";
 
 const TABS = [
   { key: "sources", label: "数据来源与总量" },
@@ -37,7 +40,7 @@ const TABS = [
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
 
-const asOfText = (v: string | null | undefined): string => (v ? String(v).replace("T", " ").slice(0, 16) : "—");
+const asOfText = formatAsOf;
 
 /** 块壳：统一处理五态 + 来源/时点/限制文案 */
 function BlockCard({ title, block, children, extra }: { title: string; block: Block<unknown>; children?: React.ReactNode; extra?: React.ReactNode }) {
@@ -49,12 +52,14 @@ function BlockCard({ title, block, children, extra }: { title: string; block: Bl
   return (
     <Card size="small" title={<Space size={6}><span>{title}</span>{stateTag}</Space>} extra={extra}>
       {block.state === "ready" ? children : (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={
+        <Typography.Paragraph className={styles.blockMessage} role="status" type={block.state === "error" ? "danger" : "secondary"}>
+          {
           block.state === "pending_domain" ? `待接入：${block.note}`
             : block.state === "no_access" ? block.note
             : block.state === "insufficient" ? `暂无可用数据：${block.note}`
             : `读取失败：${block.note}`
-        } />
+          }
+        </Typography.Paragraph>
       )}
       <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
         来源：{block.source.source}{block.source.asOf ? ` · 时点 ${asOfText(block.source.asOf)}` : ""}{block.state === "ready" && block.note ? ` · ${block.note}` : ""}
@@ -89,24 +94,14 @@ function QueueStat({ title, value, error, href }: { title: string; value: number
 }
 
 export default function CockpitClient() {
-  const router = useRouter();
   const sp = useSearchParams();
   const tab = (TABS.some((t) => t.key === sp.get("tab")) ? sp.get("tab") : "sources") as TabKey;
-  const [data, setData] = useState<CockpitData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try { setData(await fetchJson<CockpitData>("/api/report/cockpit")); }
-    catch (e) { setError((e as Error).message); }
-    finally { setLoading(false); }
-  }, []);
-  useEffect(() => { if (!data) void load(); }, [data, load]);
+  const { data, error, phase, retry: load } = useDocumentRead<CockpitData>("/api/report/cockpit");
+  const loading = phase === "loading";
 
-  const setTab = (key: string) => {
+  const viewHref = (key: string) => {
     const q = new URLSearchParams(sp.toString()); q.set("tab", key);
-    router.replace(`/cockpit?${q.toString()}`, { scroll: false });
+    return `/cockpit?${q.toString()}`;
   };
 
   const monthEndCols: ColumnsType<MonthEndPoint> = useMemo(() => [
@@ -160,10 +155,10 @@ export default function CockpitClient() {
           <Typography.Text strong>驾驶舱四屏</Typography.Text>
           <Typography.Text type="secondary">角色：{topbar?.roleLabel ?? "—"}</Typography.Text>
           <Typography.Text type="secondary">{topbar?.scopeLabel ?? ""}</Typography.Text>
-          <Typography.Text type="secondary">数据截止 {asOfText(topbar?.dataAsOf)}</Typography.Text>
+          <Typography.Text type="secondary">读数生成 {asOfText(data?.generatedAt)}（北京时间）· 业务截止见各卡片</Typography.Text>
           <Typography.Text type="secondary">覆盖 成本 {formatPct(topbar?.valuationCoveragePct)} / 身份 {formatPct(topbar?.identityCoveragePct)}</Typography.Text>
           <Typography.Text type="secondary">口径 {topbar?.calibreVersion ?? "—"}</Typography.Text>
-          <Button size="small" onClick={() => void load()} loading={loading}>刷新</Button>
+          <Button size="small" aria-label="刷新概览" aria-busy={loading} onClick={load} loading={loading}>刷新</Button>
           <a href="/admin/params">参数页 ↗</a>
           <a href="/report/dashboard">经营分析总览 →</a>
         </Space>
@@ -171,9 +166,11 @@ export default function CockpitClient() {
 
       <LoadErrorAlert error={error} onRetry={() => void load()} subject="驾驶舱" retrying={loading} />
 
-      <Tabs activeKey={tab} onChange={setTab} items={TABS.map((t) => ({ key: t.key, label: t.label }))} />
+      <nav className={styles.views} aria-label="驾驶舱视图">
+        {TABS.map(t => <Link key={t.key} replace scroll={false} href={viewHref(t.key)} aria-current={tab === t.key ? "page" : undefined}>{t.label}</Link>)}
+      </nav>
 
-      {!s && !error ? <Skeleton active paragraph={{ rows: 10 }} /> : null}
+      {!s && !error && tab !== "channels" ? <div role="status" aria-label="正在加载驾驶舱概览"><Skeleton active paragraph={{ rows: 4 }} /></div> : null}
 
       {tab === "sources" && s ? (
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
@@ -198,10 +195,10 @@ export default function CockpitClient() {
               </BlockCard>
             </Col>
             <Col xs={24} md={12} xl={6}>
-              <BlockCard title="当月销售金额" block={s.sources.salesAmount} extra={s.sources.salesAmount.state !== "no_access" ? <a href="/inventory/position?tab=monthly">录入/修正 →</a> : null}>
-                {s.sources.salesAmount.data ? (<>
-                  <Statistic value={formatYuan(s.sources.salesAmount.data.salesAmount)} />
-                  <Typography.Text type="secondary">{s.sources.salesAmount.data.yearMonth} · {s.sources.salesAmount.data.salesSource === "prefill_observation" ? "观察预填，待财务确认" : "财务手工值"}</Typography.Text>
+              <BlockCard title="当月销售金额" block={s.sources.monthlySalesBlock} extra={s.sources.monthlySalesBlock.state !== "no_access" ? <a href="/inventory/position?tab=monthly">录入/修正 →</a> : null}>
+                {s.sources.monthlySalesBlock.data ? (<>
+                  <Statistic value={formatYuan(s.sources.monthlySalesBlock.data.salesAmount)} />
+                  <Typography.Text type="secondary">{s.sources.monthlySalesBlock.data.yearMonth} · {s.sources.monthlySalesBlock.data.salesSource === "prefill_observation" ? "观察预填，待财务确认" : "财务手工值"}</Typography.Text>
                 </>) : null}
               </BlockCard>
             </Col>
@@ -215,17 +212,16 @@ export default function CockpitClient() {
             </Col>
           </Row>
           <BlockCard title="历史按月与环比" block={s.sources.position} extra={<a href="/inventory/position?tab=monthly">全部月份 →</a>}>
-            {s.sources.position.data ? <Table<MonthEndPoint> rowKey="yearMonth" size="small" pagination={false} columns={monthEndCols} dataSource={s.sources.position.data.monthEnd} scroll={{ x: 800 }} /> : null}
+            {s.sources.position.data ? <Table<MonthEndPoint> rowKey="yearMonth" size="small" pagination={{ pageSize: 6, showSizeChanger: false, hideOnSinglePage: true, showTotal: total => `共 ${total} 个月，按新到旧` }} columns={monthEndCols} dataSource={[...s.sources.position.data.monthEnd].reverse()} scroll={{ x: 800 }} /> : null}
           </BlockCard>
           {s.sources.ratio.state === "ready" || s.sources.ratio.state === "insufficient" ? (
             <BlockCard title="库存占比按月" block={s.sources.ratio}>
-              {s.sources.ratio.data ? <Table<RatioMonthRow> rowKey="yearMonth" size="small" pagination={false} columns={ratioCols} dataSource={s.sources.ratio.data.rows} scroll={{ x: 900 }} /> : null}
+              {s.sources.ratio.data ? <Table<RatioMonthRow> rowKey="yearMonth" size="small" pagination={{ pageSize: 6, showSizeChanger: false, hideOnSinglePage: true, showTotal: total => `共 ${total} 个月，按新到旧` }} columns={ratioCols} dataSource={[...s.sources.ratio.data.rows].sort((a, b) => b.yearMonth.localeCompare(a.yearMonth))} scroll={{ x: 900 }} /> : null}
             </BlockCard>
           ) : null}
           <BlockCard title="数据来源状态" block={s.sources.dataSources} extra={<a href="/admin/health">运维面板 →</a>}>
             {s.sources.dataSources.data ? <Table<SourceStatusRow> rowKey="key" size="small" pagination={false} columns={srcCols} dataSource={s.sources.dataSources.data} scroll={{ x: 900 }} /> : null}
           </BlockCard>
-          <CockpitTrends screen="s1" />
         </Space>
       ) : null}
 
@@ -251,9 +247,9 @@ export default function CockpitClient() {
               <BlockCard title="库存预警表（按主预警优先级）" block={s.alerts.inventoryAlerts} extra={<a href="/inventory/alerts?tab=cover">全部 →</a>}>
                 {s.alerts.inventoryAlerts.data ? (<>
                   <Space size={12} wrap style={{ marginBottom: 6 }}>
-                    <CountLink label="断货" value={s.alerts.inventoryAlerts.data.totals.outOfStock} href="/inventory/alerts?tab=cover&cover_primary=out_of_stock" />
-                    <CountLink label="低于阈值" value={s.alerts.inventoryAlerts.data.totals.alert} href="/inventory/alerts?tab=cover&cover_primary=low_stock" />
-                    <CountLink label="关注" value={s.alerts.inventoryAlerts.data.totals.watch} href="/inventory/alerts?tab=cover&cover_onlyAlert=0" />
+                    <CountLink label="断货" value={s.alerts.inventoryAlerts.data.totals.outOfStock} href={inventoryCoverMetricHref("outOfStock")} />
+                    <CountLink label="低于阈值" value={s.alerts.inventoryAlerts.data.totals.alert} href={inventoryCoverMetricHref("alert")} />
+                    <CountLink label="关注" value={s.alerts.inventoryAlerts.data.totals.watch} href={inventoryCoverMetricHref("watch")} />
                   </Space>
                   <Table<InventoryAlertRow> rowKey="skuId" size="small" pagination={false} scroll={{ x: 900 }} dataSource={s.alerts.inventoryAlerts.data.rows} columns={[
                     { title: "SKU", dataIndex: "code", width: 130, fixed: "left" },
@@ -295,7 +291,6 @@ export default function CockpitClient() {
               </Row>
             ) : null}
           </BlockCard>
-          <CockpitTrends screen="s2" />
         </Space>
       ) : null}
 
@@ -355,7 +350,7 @@ export default function CockpitClient() {
                 <CountLink label="零散线路" value={s.inventory.transferAnomalies.data.scatteredLaneCount} href="/inventory/transfer-routes?ln_scattered=1" />
               </Space>
               <Table<TransferAnomalyRow> rowKey="docId" size="small" pagination={false} dataSource={s.inventory.transferAnomalies.data.rows} columns={[
-                { title: "单号", dataIndex: "docNo", width: 130, fixed: "left", render: (v: string) => <a href={`/inventory/docs?q=${encodeURIComponent(v)}`}>{v}</a> },
+                { title: "单号", dataIndex: "docNo", width: 160, fixed: "left", render: (v: string, r) => <a href={`/inventory/docs?docId=${r.docId}`}>{v}</a> },
                 { title: "线路", key: "l", render: (_, r) => `${r.fromWarehouse} → ${r.toWarehouse}（${r.transferTypeLabel}）` },
                 { title: "日期", dataIndex: "date", width: 100 },
                 { title: "数量", dataIndex: "qty", align: "right", width: 90, render: (v: string) => formatCount(v) },
@@ -364,7 +359,6 @@ export default function CockpitClient() {
               <TruncNote shown={s.inventory.transferAnomalies.data.rows.length} total={s.inventory.transferAnomalies.data.anomalyCount} href="/inventory/transfer-routes?tr_tab=anomalies" unit="条异常" />
             </>) : null}
           </BlockCard>
-          <CockpitTrends screen="s3" />
         </Space>
       ) : null}
 
@@ -377,7 +371,7 @@ export default function CockpitClient() {
                   <Row gutter={[12, 12]}>
                     <Col xs={12} md={6}><a href="/todo?mine_status=active"><Statistic title="我的未完成" value={s.ops.todo.data.mine.open} /></a></Col>
                     <Col xs={12} md={6}><a href="/todo?mine_status=active&mine_overdue=1"><Statistic title="我的逾期" value={s.ops.todo.data.mine.overdue} valueStyle={{ color: s.ops.todo.data.mine.overdue ? "#B23A2E" : undefined }} /></a></Col>
-                    <Col xs={12} md={6}><a href="/todo?all_status=done"><Statistic title="本月完成" value={s.ops.todo.data.totals.doneThisMonth} /></a></Col>
+                    <Col xs={12} md={6}><a href={todoCohortHref(s.ops.todo.data.month)}><Statistic title="本月创建·已完成" value={s.ops.todo.data.totals.doneThisMonth} /></a></Col>
                     <Col xs={12} md={6}><Statistic title="完成率" value={formatPct(s.ops.todo.data.totals.completionRate)} /></Col>
                   </Row>
                   <div style={{ marginTop: 8 }}>
@@ -454,11 +448,11 @@ export default function CockpitClient() {
               </BlockCard>
             </Col>
           </Row>
-          <CockpitTrends screen="s4" />
         </Space>
       ) : null}
 
-      {tab === "channels" && s ? <CockpitTrends screen="channels" /> : null}
+      {/* One mounted reader: parallel to the overview, retained across tabs, cleared on leave. */}
+      <CockpitTrends screen={tab === "sources" ? "s1" : tab === "alerts" ? "s2" : tab === "inventory" ? "s3" : tab === "ops" ? "s4" : "channels"} />
 
       {data ? <Alert type="info" showIcon message={<div>{data.limitations.map((l) => <div key={l}>· {l}</div>)}</div>} /> : null}
     </Space>

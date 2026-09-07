@@ -8,9 +8,15 @@
  * 这里只钉展示层：null 保持 "—"（不可评 ≠ 0%），以及 formatPct 的两种小数位契约。
  */
 import { describe, expect, it } from "vitest";
-import { formatCount, formatPct, formatYuan } from "@/components/format";
+import { formatAsOf, formatCount, formatPct, formatYuan } from "@/components/format";
 
 describe("format：百分数与金额显示", () => {
+  it("source instants use Shanghai while business dates remain dates, without guessing missing timezones", () => {
+    expect(formatAsOf("2026-09-07T18:23:00Z")).toBe("2026-09-08 02:23");
+    expect(formatAsOf("2026-09-08T00:00:00+08:00")).toBe("2026-09-08 00:00");
+    expect(formatAsOf("2026-09-07")).toBe("2026-09-07");
+    for (const value of [undefined, null, "", "2026-02-30", "2026-02-30T12:00:00Z", "bad", "2026-09-07 18:23"]) expect(formatAsOf(value)).toBe("—");
+  });
   it("formatPct：缺省原样拼后缀；给 digits 则补齐固定小数位（趋势层图表统一 1 位）", () => {
     expect(formatPct(12.3)).toBe("12.3%");
     expect(formatPct("83.3")).toBe("83.3%");

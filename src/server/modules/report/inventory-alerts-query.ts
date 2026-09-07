@@ -1,4 +1,5 @@
 import type { InventoryAlertRow, InventoryAlertsReadModel } from "@/server/modules/report/inventory-alerts";
+import { ApiError } from "@/server/modules/master/common";
 
 /**
  * 库存预警表的服务端筛选/分页（审计 #8：筛选曾在浏览器里跑，链接不可分享、整模型下发客户端）。
@@ -9,6 +10,8 @@ export interface InventoryAlertsQuery {
   /** S/A/B/C；"none" = 未分层 */
   tier?: string;
   primary?: string;
+  /** Same final coverage state used by summary totals; not the primary alert kind. */
+  status?: string;
   /** "1"（缺省）= 只看有主预警或非 ok 的行；"0" = 全部 */
   onlyAlert?: string;
   /** "1" = 含 C 级；缺省折叠 C 级（D58） */
@@ -17,7 +20,12 @@ export interface InventoryAlertsQuery {
   pageSize?: number;
 }
 
+export function validateInventoryAlertsQuery(query: InventoryAlertsQuery): void {
+  if (query.status && !["alert", "watch", "ok"].includes(query.status)) throw new ApiError(400, "库存覆盖状态无效");
+}
+
 export function filterInventoryAlertRows(rows: InventoryAlertRow[], query: InventoryAlertsQuery): InventoryAlertRow[] {
+  validateInventoryAlertsQuery(query);
   const needle = (query.q ?? "").trim().toLowerCase();
   const onlyAlert = (query.onlyAlert ?? "1") !== "0";
   const showC = query.showC === "1";
@@ -28,6 +36,7 @@ export function filterInventoryAlertRows(rows: InventoryAlertRow[], query: Inven
     && (!onlyAlert || r.primary || r.status !== "ok")
     && (!tier || (tier === "none" ? r.tier == null : r.tier === tier))
     && (!primary || r.primary === primary)
+    && (!query.status || r.status === query.status)
     && (!needle || r.code.toLowerCase().includes(needle) || r.name.toLowerCase().includes(needle) || (r.brand ?? "").toLowerCase().includes(needle)),
   );
 }

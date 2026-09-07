@@ -26,7 +26,8 @@ sequentially to `write-path` once implementation reaches an application-owned mu
   [experience-verification.md](references/experience-verification.md) before choosing the repair.
 - Prefer server-rendered initial facts and small client islands.
 - Use the shared list-state and toolbar components; wrap search-parameter clients in `Suspense`.
-- Keep client modules free of value imports from `@/server/*` except an architecture-test allowlist
-  of zero-import pure constants, currently `@/server/core/constants`.
+- Keep client modules free of value imports from `@/server/*` except the zero-import pure modules
+  explicitly allowed by `tests/architecture/client-server-boundary.test.ts`; inspect that list rather
+  than maintaining a second list here. Shared business-day formatting must use the existing authority.
 - Make defaults useful, exceptions visible, empty states explanatory, and destructive actions explicit.
 - Verify the workflow with observable scenarios, not page existence.

@@ -25,6 +25,7 @@ import SearchInput from "@/components/SearchInput";
 import { useListState } from "@/components/useListState";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import { compareDecimalValues } from "@/lib/decimal-sort";
+import { inventoryCoverMetricHref } from "@/lib/cockpit-navigation";
 import type { InventoryAlertRow } from "@/server/modules/report/inventory-alerts";
 import type { InventoryAlertsPage } from "@/server/modules/report/inventory-alerts-query";
 import type { SpikeHit } from "@/server/modules/report/sales-spike";
@@ -100,27 +101,39 @@ function AlertRowDetail({ alert, onClosed }: { alert: AlertRef; onClosed: () => 
 }
 
 /* ── Tab 1：库存预警表 ── */
-type CoverFilters = { q?: string; tier?: string; primary?: string; onlyAlert?: string; showC?: string };
+type CoverFilters = { q?: string; tier?: string; primary?: string; status?: string; onlyAlert?: string; showC?: string };
 
 function CoverTab() {
   const { message } = App.useApp();
   const me = useMe();
   const canRefresh = hasAnyRole(me, "pmc"); // 与 /api/report/inventory-alerts?refresh=1 的 requireAnyRole(pmc, admin) 一致
-  const listState = useListState<CoverFilters>({ key: "inventory-alerts-cover", paramPrefix: "cover", defaults: { q: "", tier: "", primary: "", onlyAlert: "1", showC: "" }, defaultPageSize: 50 });
+  const listState = useListState<CoverFilters>({ key: "inventory-alerts-cover", paramPrefix: "cover", defaults: { q: "", tier: "", primary: "", status: "", onlyAlert: "1", showC: "" }, defaultPageSize: 50 });
   const { filters } = listState;
-  const [data, setData] = useState<InventoryAlertsPage | null>(null);
+  const [snapshot, setSnapshot] = useState<{ query: string; value: InventoryAlertsPage } | null>(null);
+  const readRequest = useRef<AbortController | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const alerts = useAlertIndex("inventory_cover");
   const query = listState.queryString();
+  const data = snapshot?.query === query ? snapshot.value : null;
   const load = useCallback(async (refresh = false) => {
+    readRequest.current?.abort();
+    const request = new AbortController(); readRequest.current = request;
     setLoading(true);
     setError(null);
-    try { setData(await fetchJson<InventoryAlertsPage>(`/api/report/inventory-alerts?${query}${refresh ? "&refresh=1" : ""}`)); }
-    catch (e) { setError((e as Error).message); }
-    finally { setLoading(false); }
+    setSnapshot(null);
+    const timeout = setTimeout(() => {
+      if (readRequest.current !== request || request.signal.aborted) return;
+      request.abort(); setError("库存预警读取超时，请重试"); setLoading(false);
+    }, 15000);
+    try {
+      const value = await fetchJson<InventoryAlertsPage>(`/api/report/inventory-alerts?${query}${refresh ? "&refresh=1" : ""}`, { signal: request.signal });
+      if (!request.signal.aborted) setSnapshot({ query, value });
+    }
+    catch (e) { if (!request.signal.aborted) setError((e as Error).message); }
+    finally { clearTimeout(timeout); if (!request.signal.aborted) setLoading(false); }
   }, [query]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); return () => readRequest.current?.abort(); }, [load]);
 
   const onExport = async () => {
     try {
@@ -168,9 +181,9 @@ function CoverTab() {
     <div>
       {data ? (
         <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
-          <Col xs={12} md={6}><a onClick={() => listState.setFilter({ primary: "out_of_stock", onlyAlert: "1" })}><Statistic title="断货（有需求无在库）" value={data.totals.outOfStock} valueStyle={{ color: data.totals.outOfStock ? "#B23A2E" : undefined }} /></a></Col>
-          <Col xs={12} md={6}><a onClick={() => listState.setFilter({ primary: "low_stock", onlyAlert: "1" })}><Statistic title="低于阈值" value={data.totals.alert} valueStyle={{ color: data.totals.alert ? "#B7791F" : undefined }} /></a></Col>
-          <Col xs={12} md={6}><a onClick={() => listState.setFilter({ primary: "", onlyAlert: "0" })}><Statistic title="关注" value={data.totals.watch} /></a></Col>
+          <Col xs={12} md={6}><a href={inventoryCoverMetricHref("outOfStock")}><Statistic title="断货（有需求无在库）" value={data.totals.outOfStock} valueStyle={{ color: data.totals.outOfStock ? "#B23A2E" : undefined }} /></a></Col>
+          <Col xs={12} md={6}><a href={inventoryCoverMetricHref("alert")}><Statistic title="低于阈值" value={data.totals.alert} valueStyle={{ color: data.totals.alert ? "#B7791F" : undefined }} /></a></Col>
+          <Col xs={12} md={6}><a href={inventoryCoverMetricHref("watch")}><Statistic title="关注" value={data.totals.watch} /></a></Col>
           <Col xs={12} md={6}><Statistic title="未知悉告警" value={alerts.unacked == null ? "—" : alerts.unacked} valueStyle={{ color: alerts.unacked ? "#B23A2E" : undefined }} /></Col>
         </Row>
       ) : null}
@@ -182,6 +195,7 @@ function CoverTab() {
             <SearchInput key={filters.q} allowClear size="small" placeholder="编码 / 名称 / 品牌" defaultValue={filters.q} onSearch={(v) => listState.setFilter({ q: v.trim() })} style={{ width: 200 }} />
             <Select allowClear size="small" placeholder="等级" style={{ width: 100 }} value={filters.tier || undefined} onChange={(v) => listState.setFilter({ tier: v ?? "" })} options={[{ value: "S", label: "S" }, { value: "A", label: "A" }, { value: "B", label: "B" }, { value: "C", label: "C" }, { value: "none", label: "未分层" }]} />
             <Select allowClear size="small" placeholder="主预警" style={{ width: 120 }} value={filters.primary || undefined} onChange={(v) => listState.setFilter({ primary: v ?? "" })} options={Object.entries(KIND_LABEL).map(([value, label]) => ({ value, label }))} />
+            <Select aria-label="覆盖状态" allowClear size="small" placeholder="覆盖状态" style={{ width: 130 }} value={filters.status || undefined} onChange={(v) => listState.setFilter({ status: v ?? "" })} options={[{ value: "alert", label: "低于阈值" }, { value: "watch", label: "关注" }, { value: "ok", label: "正常" }]} />
             <span>只看预警 <Switch size="small" checked={filters.onlyAlert !== "0"} onChange={(on) => listState.setFilter({ onlyAlert: on ? "1" : "0" })} /></span>
             <span>含 C 级 <Switch size="small" checked={filters.showC === "1"} onChange={(on) => listState.setFilter({ showC: on ? "1" : "" })} /></span>
           </Space>

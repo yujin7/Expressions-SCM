@@ -4,7 +4,9 @@
  * 驾驶舱趋势块挂载点：按屏 id 渲染 /api/report/cockpit/trends 里对应屏的块。
  * 与 cockpit-client.tsx 解耦——主装配四屏不动，这里只追加时间维 / 交叉维图卡。
  */
-import { Alert, Button, Skeleton, Space } from "antd";
+import { Button, Skeleton, Space } from "antd";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
+import { formatAsOf } from "@/components/format";
 import type { TrendScreen } from "@/server/modules/report/cockpit-trends";
 import { Muted, useTrends } from "./shared";
 import { DailyFlowCard, DataFreshnessTrendCard } from "./screen-s1";
@@ -15,16 +17,16 @@ import { ChannelMatrixCard } from "./screen-channels";
 
 export default function CockpitTrends({ screen }: { screen: TrendScreen }) {
   const { data, error, loading, reload } = useTrends();
-  if (error && !data) {
-    return <Alert type="warning" showIcon message={`趋势块读取失败：${error}`} action={<Button size="small" onClick={reload}>重试</Button>} />;
+  if (error) {
+    return <LoadErrorAlert error={error} onRetry={reload} subject="驾驶舱趋势" retrying={loading} />;
   }
-  if (!data) return <Skeleton active paragraph={{ rows: 4 }} />;
+  if (!data) return <div role="status" aria-label="正在加载驾驶舱趋势"><Skeleton active paragraph={{ rows: 3 }} /></div>;
   const s = data.screens;
   return (
     <Space direction="vertical" size={12} style={{ width: "100%" }}>
       <Space wrap size={[12, 4]} style={{ justifyContent: "space-between", width: "100%" }}>
-        <Muted>趋势与交叉 · 口径 {data.calibreVersion} · 生成 {data.generatedAt.replace("T", " ").slice(0, 16)}</Muted>
-        <Button size="small" type="link" onClick={reload} loading={loading}>刷新趋势</Button>
+        <Muted>趋势与交叉 · 口径 {data.calibreVersion} · 生成 {formatAsOf(data.generatedAt)}（北京时间）</Muted>
+        <Button size="small" type="link" aria-label="刷新趋势" aria-busy={loading} onClick={reload} loading={loading}>刷新趋势</Button>
       </Space>
       {screen === "s1" ? (<>
         <DailyFlowCard block={s.s1.dailyFlow} />

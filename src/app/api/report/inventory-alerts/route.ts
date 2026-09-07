@@ -4,7 +4,7 @@ import { maskSensitive } from "@/server/core/dto";
 import { errorResponse, guardRead } from "@/server/modules/master/common";
 import { guardFreshWrite, requireAnyRole } from "@/server/modules/outsource/common";
 import { loadInventoryAlerts, refreshInventoryAlerts } from "@/server/modules/report/inventory-alerts";
-import { pageInventoryAlerts } from "@/server/modules/report/inventory-alerts-query";
+import { pageInventoryAlerts, validateInventoryAlertsQuery } from "@/server/modules/report/inventory-alerts-query";
 
 /**
  * 库存预警表读模型 `inventory-alerts`（D57）。**当前版本号只有一处权威：`INVENTORY_ALERTS_CACHE_KEY`**——
@@ -18,17 +18,20 @@ export async function GET(req: NextRequest) {
     const refresh = sp.get("refresh") === "1";
     const user = refresh ? await guardFreshWrite() : await guardRead();
     if (refresh) requireAnyRole(user, "pmc", "admin");
-    const db = await getDbAsync();
-    const model = refresh ? await refreshInventoryAlerts(db) : await loadInventoryAlerts(db);
-    const data = pageInventoryAlerts(model, {
+    const query = {
       q: sp.get("q") ?? undefined,
       tier: sp.get("tier") ?? undefined,
       primary: sp.get("primary") ?? undefined,
+      status: sp.get("status") ?? undefined,
       onlyAlert: sp.get("onlyAlert") ?? undefined,
       showC: sp.get("showC") ?? undefined,
       page: Number(sp.get("page")) || undefined,
       pageSize: Number(sp.get("pageSize")) || undefined,
-    });
+    };
+    validateInventoryAlertsQuery(query);
+    const db = await getDbAsync();
+    const model = refresh ? await refreshInventoryAlerts(db) : await loadInventoryAlerts(db);
+    const data = pageInventoryAlerts(model, query);
     const res = NextResponse.json(maskSensitive(data, user.roles));
     res.headers.set("Cache-Control", "private, no-store");
     return res;

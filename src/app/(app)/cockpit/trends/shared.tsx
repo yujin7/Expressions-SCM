@@ -1,43 +1,24 @@
 "use client";
 
 /**
- * 驾驶舱趋势块共享层：一次拉取 /api/report/cockpit/trends（模块级缓存，切 Tab 不重拉），
+ * 驾驶舱趋势块共享层：页面实例持有读取，切 Tab 不重拉；离开后不保留模块级业务缓存，
  * 五态块 → DecisionVisual 图卡契约的映射，主题感知的图表配色（AntD token）。
  * 指标标题 / 口径 tooltip 一律取自 components/metrics 注册表，不在这里手写口径。
  */
-import { useCallback, useEffect, useState } from "react";
 import { theme, Typography } from "antd";
 import DecisionVisual, { type DecisionVisualSource } from "@/components/DecisionVisual";
 import type { VisualState } from "@/components/decision-visuals";
-import { fetchJson } from "@/components/fetchJson";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import { formatAsOf } from "@/components/format";
 import { metric } from "@/components/metrics";
 import type { Block, CockpitSource } from "@/server/modules/report/cockpit";
 import type { CockpitTrendsData, SourceTrendBlock } from "@/server/modules/report/cockpit-trends";
 
 const URL = "/api/report/cockpit/trends";
 
-let cache: { promise: Promise<CockpitTrendsData>; data: CockpitTrendsData | null } | null = null;
-
-function fetchTrends(force = false): Promise<CockpitTrendsData> {
-  if (!cache || force) {
-    const entry: { promise: Promise<CockpitTrendsData>; data: CockpitTrendsData | null } = { promise: fetchJson<CockpitTrendsData>(URL), data: null };
-    entry.promise.then((d) => { entry.data = d; }, () => { if (cache === entry) cache = null; });
-    cache = entry;
-  }
-  return cache.promise;
-}
-
 export function useTrends(): { data: CockpitTrendsData | null; error: string | null; loading: boolean; reload: () => void } {
-  const [data, setData] = useState<CockpitTrendsData | null>(cache?.data ?? null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(!cache?.data);
-  const run = useCallback((force: boolean) => {
-    setLoading(true);
-    setError(null);
-    fetchTrends(force).then((d) => { setData(d); setLoading(false); }, (e: Error) => { setError(e.message); setLoading(false); });
-  }, []);
-  useEffect(() => { run(false); }, [run]);
-  return { data, error, loading, reload: () => run(true) };
+  const { data, error, phase, retry } = useDocumentRead<CockpitTrendsData>(URL);
+  return { data, error, loading: phase === "loading", reload: retry };
 }
 
 /* ───────────── 格式化 ─────────────
@@ -130,7 +111,7 @@ export function TrendCard<T>({ block, title, question, metricId, grain, unit, su
       metricId={metricId}
       grain={grain}
       unit={unit}
-      source={{ tier: TIER_MAP[block.source.tier], source: block.source.source, asOf: block.source.asOf ? String(block.source.asOf).replace("T", " ").slice(0, 16) : null }}
+      source={{ tier: TIER_MAP[block.source.tier], source: block.source.source, asOf: block.source.asOf ? formatAsOf(block.source.asOf) : null }}
       summary={summary}
       state={state}
       stateDetail={stateDetail(block)}
