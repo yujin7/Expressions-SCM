@@ -40,13 +40,13 @@ const expectedCounts: Record<Category, number> = {
   API_ROUTE: 281,
   AUTH_PAGE: 97,
   MIGRATION: 62,
-  ARCH_GATE: 79,
+  ARCH_GATE: 80,
   REDTEAM_GATE: 12,
   RELEASE_GATE: 15,
   PROJECT_SKILL: 7,
-  LINT_EXCEPTION: 94,
+  LINT_EXCEPTION: 93,
   DATA_SOURCE: 20,
-  CRITICAL_INVARIANT: 35,
+  CRITICAL_INVARIANT: 36,
 };
 
 function walkFiles(relative: string, matcher: string | RegExp): string[] {
@@ -177,13 +177,13 @@ function verify(control: Control): void {
   assertTestModule(testPath);
 }
 
-describe("702 项系统执行审计台账", () => {
-  it("ID 恰好 A001–A702、对象唯一、分类数量固定", () => {
-    expect(controls).toHaveLength(702);
+describe("703 项系统执行审计台账", () => {
+  it("ID 恰好 A001–A703、对象唯一、分类数量固定", () => {
+    expect(controls).toHaveLength(703);
     expect(controls.map((control) => control.id)).toEqual(
-      Array.from({ length: 702 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
+      Array.from({ length: 703 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
     );
-    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(702);
+    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(703);
     // Keep the same component's control ID when retiring its hook suppression;
     // do not restore a lint exception or substitute an unrelated object to fill the slot.
     expect(controls.find((control) => control.id === "A373")).toEqual({
@@ -191,6 +191,12 @@ describe("702 项系统执行审计台账", () => {
       category: "CRITICAL_INVARIANT",
       subject: "src/components/RemoteSelect.tsx",
       evidence: "有界搜索、精确回显与已选值主动移除；tests/components/remote-select.test.ts",
+    });
+    expect(controls.find((control) => control.id === "A643")).toEqual({
+      id: "A643",
+      category: "CRITICAL_INVARIANT",
+      subject: "src/app/(app)/master/supply-params/supply-params-client.tsx",
+      evidence: "草稿原值、保存回执与跨刷新恢复；tests/components/supply-param-drafts.test.ts",
     });
     for (const [category, count] of Object.entries(expectedCounts)) {
       expect(
