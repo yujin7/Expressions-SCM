@@ -47,6 +47,7 @@ describe("busy application operations do not churn public access", () => {
       attempts=0 CF_PID=123 URL=https://synthetic-only-qa.trycloudflare.com TUNNEL_CHECK_SECONDS=30
       apply_url() { attempts=$((attempts+1)); echo "ATTEMPT $attempts $1"; [ "$attempts" = 3 ] || return 75; }
       kill() { [ "$1" = -0 ] || { echo KILLED; return 1; }; }
+      tunnel_process() { echo 123; }
       sleep() { :; }
       ${daemon.slice(from, to)}
       echo "FINAL $APPLY_STATUS"

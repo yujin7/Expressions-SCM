@@ -8,22 +8,24 @@ const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe("build entrypoint ownership", () => {
-  it.each(["", "scripts/public-tunnel-daemon.sh", "scripts/app-operation-lock.sh"])("syntax gate checks every named script and propagates failure at %s", failAt => {
+  it.each(["", "scripts/public-tunnel-daemon.sh", "scripts/app-operation-lock.sh", "scripts/remove-public-tunnel.sh"])("syntax gate checks every named script and propagates failure at %s", failAt => {
     const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> };
     // Test loop/exit propagation in one shell, not nine OS startup latencies.
     // check:ops itself still runs the real bash syntax checks in the release gate.
     const r = spawnSync("/bin/sh", ["-c", `
       bash() { printf 'CHECK %s\\n' "$2"; [ "$2" != "$QA_FAIL_AT" ]; }
       node() { echo SEMANTIC_CHECK; }
+      python3() { echo PYTHON_CHECK; }
       ${pkg.scripts["check:ops"]}
     `], { encoding: "utf8", timeout: 2000,
       env: { NODE_ENV: "test", PATH: "/usr/bin:/bin", QA_FAIL_AT: failAt } });
     expect(r.error).toBeUndefined();
-    expect(r.stdout.match(/^CHECK /gm)).toHaveLength(failAt === "scripts/public-tunnel-daemon.sh" ? 8 : 9);
+    expect(r.stdout.match(/^CHECK /gm)).toHaveLength(failAt === "scripts/public-tunnel-daemon.sh" ? 8 : failAt === "scripts/app-operation-lock.sh" ? 9 : 10);
     if (failAt !== "scripts/public-tunnel-daemon.sh") expect(r.stdout).toContain("CHECK scripts/app-operation-lock.sh");
     expect(r.stdout).toContain("CHECK scripts/public-tunnel-daemon.sh");
     expect(r.status).toBe(failAt ? 1 : 0);
     expect(r.stdout.includes("SEMANTIC_CHECK")).toBe(!failAt);
+    expect(r.stdout.includes("PYTHON_CHECK")).toBe(!failAt);
   });
   it("CI uses a checked source build, not an anonymous Docker build", () => {
     const ci = readFileSync(".github/workflows/ci.yml", "utf8");

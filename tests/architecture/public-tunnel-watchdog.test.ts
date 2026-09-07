@@ -18,7 +18,8 @@ describe("公网快速隧道 watchdog", () => {
     expect(daemon).toContain("TUNNEL_FAILURE_LIMIT=5");
     expect(daemon).toContain("PUBLIC_FAILURES=$((PUBLIC_FAILURES + 1))");
     expect(daemon).toContain('rm -f "$URL_FILE"');
-    expect(daemon).toContain('kill "$CF_PID"');
+    expect(daemon).toContain('stop_tunnel || exit 1');
+    expect(daemon).toContain('tunnel_process stop || return 1');
     expect(daemon).toContain('wait "$CF_PID"');
   });
 

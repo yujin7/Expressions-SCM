@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 describe("公网隧道传输协议", () => {
   it("守护脚本启动 cloudflared 时必须带 --protocol http2", () => {
     const src = readFileSync("scripts/public-tunnel-daemon.sh", "utf8");
-    const launch = src.split("\n").find((l) => /^\s*cloudflared tunnel .*--url/.test(l));
+    const launch = src.split("\n").find((l) => /^\s*"\$CLOUDFLARED_BIN" tunnel .*--url/.test(l));
     expect(launch, "找不到 cloudflared 启动行").toBeDefined();
     expect(launch).toContain("--protocol http2");
   });
