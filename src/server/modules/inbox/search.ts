@@ -1,4 +1,4 @@
-import { ilike, or } from "drizzle-orm";
+import { and, ilike, or } from "drizzle-orm";
 import type { AnyPgColumn, AnyPgTable } from "drizzle-orm/pg-core";
 import { match } from "pinyin-pro";
 import {
@@ -9,6 +9,8 @@ import {
 import { getDbAsync } from "@/db";
 import type { AnyDb } from "@/server/docflow/doc-no";
 import { INBOX_DOC_TYPE_LABELS, INBOX_PAGE_HREFS } from "./service";
+import { bhReadScope, type BhReadUser } from "@/server/core/bh-read-scope";
+import { canReadInboxDestination } from "./read-access";
 
 /**
  * 全局搜索（只读聚合）：SKU（编码/名称/拼音）、单据号（前缀匹配）、
@@ -124,12 +126,14 @@ function appendRomanized<T extends { name: string }>(
   return [...direct, ...appended].slice(0, cap);
 }
 
-export async function searchAll(qRaw: string, dbArg?: AnyDb): Promise<SearchResult> {
+export async function searchAll(qRaw: string, dbArg?: AnyDb, user?: BhReadUser): Promise<SearchResult> {
   const q = qRaw.trim();
   if (q.length < 2) return { groups: [] };
   const db = dbArg ?? (await getDbAsync());
   const contains = `%${escapeLike(q)}%`;
   const prefix = `${escapeLike(q)}%`;
+  // Internal tests/background callers may omit actor; HTTP always supplies the session.
+  const mayNavigate = (path: string) => !user || canReadInboxDestination(path, user);
 
   const [directSkuRows, directSupplierRows, directNpdRows, ...docRows] = await Promise.all([
     db
@@ -150,11 +154,11 @@ export async function searchAll(qRaw: string, dbArg?: AnyDb): Promise<SearchResu
       .where(or(ilike(npdProjects.name, contains), ilike(npdProjects.skuCode, contains)))
       .orderBy(npdProjects.id)
       .limit(3),
-    ...DOC_TABLES.map(({ table }) =>
-      db
+    ...DOC_TABLES.map(({ table, docType }) =>
+      !mayNavigate(INBOX_PAGE_HREFS[docType]) ? Promise.resolve([]) : db
         .select({ id: table.id, docNo: table.docNo })
         .from(table as AnyPgTable)
-        .where(ilike(table.docNo, prefix))
+        .where(and(ilike(table.docNo, prefix), docType === "bh" ? bhReadScope(db, user) : undefined))
         .orderBy(table.docNo)
         .limit(3),
     ),

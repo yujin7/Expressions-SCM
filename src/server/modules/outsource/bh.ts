@@ -1,6 +1,6 @@
-import { and, desc, eq, exists, inArray, or, sql } from "drizzle-orm";
-import {  bhDocs, bhLines, skus, userDataScopes, users } from "@/db/schema";
-import type { ScopeUser } from "@/server/core/data-scope";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import {  bhDocs, bhLines, skus, users } from "@/db/schema";
+import { bhReadScope, type BhReadUser } from "@/server/core/bh-read-scope";
 import { dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
@@ -136,7 +136,7 @@ export async function approveBh(
 
 // ---------- 查询 ----------
 
-export async function getBh(id: number, dbArg?: AnyDb) {
+export async function getBh(id: number, dbArg?: AnyDb, user?: BhReadUser) {
   const db = await resolveDb(dbArg);
   const [doc] = await db
     .select({
@@ -152,7 +152,7 @@ export async function getBh(id: number, dbArg?: AnyDb) {
     })
     .from(bhDocs)
     .leftJoin(users, eq(bhDocs.createdBy, users.id))
-    .where(eq(bhDocs.id, id));
+    .where(and(eq(bhDocs.id, id), bhReadScope(db, user)));
   if (!doc) throw new ApiError(404, "单据不存在");
 
   const lines = await db
@@ -176,7 +176,7 @@ export async function getBh(id: number, dbArg?: AnyDb) {
 }
 
 /** D62：受限用户 = 非 admin 且登记了 channel 范围（与 core/data-scope 同口径；未加载 = 不限） */
-export type BhListUser = ScopeUser & { id: number };
+export type BhListUser = BhReadUser;
 
 /**
  * 备货申请列表。
@@ -195,26 +195,8 @@ export async function listBhs(
   if (opts.status) conds.push(eq(bhDocs.status, opts.status as DocStatus));
   // 制单时间窗（上海业务日，含首尾）：全链漏斗「计划」级按同一口径回链到本列表
   conds.push(...createdWithinShanghaiDays(bhDocs.createdAt, opts.from, opts.to));
-  if (user && !user.roles.includes("admin") && user.channelScope != null) {
-    const allowed = [...new Set(user.channelScope)];
-    conds.push(
-      or(
-        eq(bhDocs.createdBy, user.id),
-        exists(
-          db
-            .select({ one: sql`1` })
-            .from(userDataScopes)
-            .where(
-              and(
-                eq(userDataScopes.userId, bhDocs.createdBy),
-                eq(userDataScopes.scopeKind, "channel"),
-                inArray(userDataScopes.targetId, allowed),
-              ),
-            ),
-        ),
-      ),
-    );
-  }
+  const scope = bhReadScope(db, user);
+  if (scope) conds.push(scope);
   const where = conds.length ? and(...conds) : undefined;
 
   const lineAgg = db

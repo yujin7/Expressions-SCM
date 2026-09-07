@@ -7,7 +7,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   try {
     const user = await guardRead();
     const { id } = await ctx.params;
-    return NextResponse.json(maskSensitive(await getBh(parseId(id)), user.roles));
+    return NextResponse.json(maskSensitive(await getBh(parseId(id), undefined, user), user.roles));
   } catch (e) {
     return errorResponse(e);
   }

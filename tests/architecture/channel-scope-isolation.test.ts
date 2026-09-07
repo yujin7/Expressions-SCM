@@ -214,7 +214,8 @@ describe("D62 静态护栏：渠道维路由必须把身份交给 service，注�
       expect(read(f), f).toContain("resolveChannelScopeByCode(");
       expect(read(f), f).toContain("channelScopeCondition(");
     }
-    expect(read("src/server/modules/outsource/bh.ts")).toContain("userDataScopes");
+    expect(read("src/server/modules/outsource/bh.ts")).toContain("bhReadScope(db, user)");
+    expect(read("src/server/core/bh-read-scope.ts")).toContain("userDataScopes");
   });
 
   it("注册表：已落地裁剪的渠道维页面标 channel_scoped，公开内容（库存总量/临期/到货日历）标 public", () => {

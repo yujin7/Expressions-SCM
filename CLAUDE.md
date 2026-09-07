@@ -29,6 +29,9 @@
 - 仅追加事实表（stock_ledger、audit_logs、alert_events 等，以 `reject_immutable_fact_mutation` 触发器为准）由数据库强制仅追加；纠错一律红字冲销，无反审批
 - 业务规则在 `src/server/rules/*.ts` 纯函数+单测；R5 逐物料计算，禁止跨物料轧差
 - 脱敏唯一收口 `src/server/core/dto.ts` 的 `maskSensitive`（含导出/RSC）；前端隐藏不算数
+- 读取范围必须贯穿列表、搜索、详情、收件箱与导出；登录/菜单可见/金额脱敏不能替代行级授权。
+  BH 的本人/共享渠道规则复用 `core/bh-read-scope.ts`，查询先裁剪后 LIMIT；HTTP 必须传会话范围。
+  跨渠道拒绝、结果上限、管理员例外由 `tests/inbox/search-scope.test.ts` 行为测试守，不只检查函数名。
 - 余额更新事务内按 (skuId, warehouseId, batchId) 排序；过账/审批靠 UNIQUE 约束幂等
 - UI: AntD5 + 中文界面；列表可导出（>5000 行走异步任务）
 - 测试: 纯规则用 vitest 直测；涉库测试用 PGlite（`tests/helpers/db.ts`），不依赖 Docker
