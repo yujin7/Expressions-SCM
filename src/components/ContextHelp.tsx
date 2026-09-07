@@ -53,6 +53,8 @@ export default function ContextHelp({ label, title, content, children, className
   return (
     <Dropdown open={open} onOpenChange={setOpen} trigger={["click"]} placement="bottomLeft"
       autoAdjustOverflow destroyOnHidden overlayClassName="scm-context-help-layer"
+      // Flipping alone can overflow both sides on mobile; let rc-trigger shift the same popup into view.
+      align={{ overflow: { adjustX: true, adjustY: true, shiftX: true, shiftY: true } }}
       popupRender={() => (
         <section ref={panel} id={id} role="dialog" aria-labelledby={`${id}-title`} tabIndex={-1}
           className="context-help-panel" onBlur={onBlur} onKeyDown={event => onKey(event, true)}>
