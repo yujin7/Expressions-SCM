@@ -9,14 +9,15 @@
  *   并可由责任角色（或 admin）带原因**关闭**告警（AlertCloseModal → POST /api/alerts/[id]/close，
  *   服务端回查会话与角色再判一次）；关闭后刷新告警索引，行上的「已知悉」随之变回「未开告警」。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Alert, App, Button, Col, Row, Select, Space, Statistic, Switch, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Col, Empty, Pagination, Row, Select, Space, Spin, Statistic, Switch, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import AlertCloseModal from "@/components/AlertCloseModal";
 import AlertEvidence, { ackText, type AlertEvidenceFields } from "@/components/AlertEvidence";
 import CaliberNote from "@/components/CaliberNote";
+import ContextHelp from "@/components/ContextHelp";
 import { exportCsv } from "@/components/exportCsv";
 import { formatQty } from "@/components/format";
 import ListToolbar from "@/components/ListToolbar";
@@ -30,9 +31,67 @@ import type { InventoryAlertRow } from "@/server/modules/report/inventory-alerts
 import type { InventoryAlertsPage } from "@/server/modules/report/inventory-alerts-query";
 import type { SpikeHit } from "@/server/modules/report/sales-spike";
 import type { SalesSpikePage } from "@/server/modules/report/sales-spike-query";
+import styles from "./inventory-cover.module.css";
 
 const TIER_COLOR: Record<string, string> = { S: "red", A: "orange", B: "gold", C: "default" };
 const KIND_LABEL: Record<string, string> = { out_of_stock: "断货", spike: "爆单", low_stock: "低于阈值", near_expiry: "临期", overstock: "超储" };
+
+const dailyText = (value: number | null) => value == null ? "—" : formatQty(value.toFixed(6));
+const DAILY_BASIS: Record<string, string> = { external: "外部观察", internal: "内部月销", ledger: "系统销售净出库" };
+
+/** Same figures and explanation in the wide table and narrow cards; no demand recomputation. */
+export function LedgerDemandCell({ row }: { row: Pick<InventoryAlertRow, "code" | "daily" | "ledgerDemand"> }) {
+  const evidence = row.ledgerDemand;
+  return <div className={styles.ledger}>
+    <span className={styles.ledgerValue}>{dailyText(row.daily.ledger)} /日 <ContextHelp
+      label={`${row.code}销售与作业口径`} title="销售与作业口径"
+      content={<>
+        <p>上海业务日：{evidence.startDay}（含）至{evidence.endDayExclusive}（不含），共{evidence.days}天。</p>
+        <p>销售净出库 {formatQty(evidence.salesNetQty)} ÷ {evidence.days} 天。销售红字按纠正日净减。</p>
+        <p>作业量是窗口内非销售负向流量合计，未扣正向冲销，不参与需求判断。</p>
+        <p>— 表示无对应事件；不证明零需求或全渠道覆盖。零或负销售净量也不作正需求。</p>
+      </>} /></span>
+    <span className={styles.secondary}>作业 {formatQty(evidence.operationsOutQty)}（窗口合计）</span>
+  </div>;
+}
+
+type CoverCardRow = Pick<InventoryAlertRow, "code" | "name" | "brand" | "tier" | "tierSource" | "primary" | "tags" | "onHand" | "primaryDaily" | "primaryDailySource" | "coverDays" | "alertDays" | "alertBasis" | "usedDefault" | "daily" | "ledgerDemand" | "net30External" | "statusBasis">;
+
+export function InventoryCoverCard({ row, ack, actions, detail }: { row: CoverCardRow; ack: ReactNode; actions: ReactNode; detail?: ReactNode }) {
+  return <article className={styles.card} aria-label={`${row.code} 库存预警`}>
+    <header className={styles.cardHeader}>
+      <strong>{row.code}</strong>
+      <span>{row.tier ? <Tag color={TIER_COLOR[row.tier]}>{row.tier}{row.tierSource === "computed" ? "*" : ""}</Tag> : <Tag>未分层</Tag>}
+        {row.primary ? <Tag color={row.primary === "out_of_stock" ? "error" : "warning"}>{KIND_LABEL[row.primary]}</Tag> : <span className={styles.secondary}>未形成主预警</span>}
+        {row.tags.map(tag => <Tag key={tag}>{KIND_LABEL[tag]}</Tag>)}
+      </span>
+    </header>
+    <p className={styles.name}>{row.name}{row.brand ? ` · ${row.brand}` : ""}</p>
+    <dl className={styles.facts}>
+      <div><dt>在库</dt><dd>{formatQty(row.onHand)}</dd></div>
+      <div><dt>主日销 /日</dt><dd>{dailyText(row.primaryDaily)}</dd></div>
+      <div><dt>可销天数</dt><dd>{row.coverDays == null ? "无正日销" : `${row.coverDays}天`}</dd></div>
+      <div><dt>阈值</dt><dd>{row.alertDays}天{row.usedDefault ? <small> · 含缺省周期</small> : null}</dd></div>
+    </dl>
+    <div className={styles.sales}><span className={styles.secondary}>系统销售 / 作业</span><LedgerDemandCell row={row} /></div>
+    <p className={styles.basis}>主日销来源：{row.primaryDailySource ? DAILY_BASIS[row.primaryDailySource] : "未取得正日销"}；三口径不相加，作业量不作需求。</p>
+    <details className={styles.details}><summary>其他口径与阈值依据</summary>
+      <dl><dt>外部日销</dt><dd>{dailyText(row.daily.external)}</dd><dt>内部日销</dt><dd>{dailyText(row.daily.internal)}</dd><dt>外部30天净件</dt><dd>{formatQty(row.net30External)}</dd></dl>
+      <p>{row.alertBasis}</p>{row.statusBasis ? <p>{row.statusBasis}</p> : null}
+    </details>
+    <footer className={styles.footer}>{ack}<div>{actions}</div></footer>
+    {detail ? <details className={styles.details}><summary>告警证据与处置</summary>{detail}</details> : null}
+  </article>;
+}
+
+function CoverActions({ row }: { row: Pick<InventoryAlertRow, "actions" | "primary" | "tags"> }) {
+  const kinds = new Set([...(row.primary ? [row.primary] : []), ...row.tags]);
+  return <Space size={8} wrap>
+    <a href={row.actions.transfer}>调拨</a><a href={row.actions.replenish}>补货</a>
+    {kinds.has("near_expiry") ? <a href={row.actions.nearExpiry}>效期</a> : null}
+    {kinds.has("overstock") ? <a href={row.actions.overstock}>处置</a> : null}
+  </Space>;
+}
 
 /* ── system_alerts 索引：按去重键找到读模型行对应的告警（已知悉 / 证据） ── */
 interface AlertRef extends AlertEvidenceFields { id: number; dedupeKey: string | null; status: string; ownerRole?: string | null }
@@ -153,14 +212,7 @@ function CoverTab() {
     { title: "等级", dataIndex: "tier", width: 64, render: (v: string | null, r) => v ? <Tag color={TIER_COLOR[v]}>{v}{r.tierSource === "computed" ? "*" : ""}</Tag> : <Tag>未分层</Tag> },
     { title: "日销 外部", key: "de", align: "right", width: 90, render: (_, r) => r.daily.external == null ? "—" : r.daily.external },
     { title: "内部", key: "di", align: "right", width: 80, render: (_, r) => r.daily.internal == null ? "—" : r.daily.internal },
-    { title: "系统销售 / 作业", key: "dl", align: "right", width: 150, render: (_, r) => (
-      <Tooltip title={`上海 [${r.ledgerDemand.startDay}, ${r.ledgerDemand.endDayExclusive})：销售净出库 ${formatQty(r.ledgerDemand.salesNetQty)} ÷ ${r.ledgerDemand.days} 天，销售红字按纠正日净减。作业量是非销售负向流量（未扣正向冲销），不参与需求判断；— 表示无对应事件，不证明零需求或全渠道覆盖。`}>
-        <span>
-          <span>{r.daily.ledger == null ? "—" : formatQty(r.daily.ledger.toFixed(6))} /日</span><br />
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>作业 {formatQty(r.ledgerDemand.operationsOutQty)}</Typography.Text>
-        </span>
-      </Tooltip>
-    ) },
+    { title: "系统销售 / 作业", key: "dl", align: "right", width: 185, render: (_, r) => <LedgerDemandCell row={r} /> },
     { title: "外部30天净件", dataIndex: "net30External", align: "right", width: 110, sorter: (a, b, order) => compareDecimalValues(a.net30External, b.net30External, order === "descend" ? "first" : "last"), render: (v: string | null) => v == null ? "—" : formatQty(v) },
     { title: "在库", dataIndex: "onHand", align: "right", width: 90, sorter: (a, b) => compareDecimalValues(a.onHand, b.onHand), render: (v: string) => formatQty(v) },
     { title: "可销天数", dataIndex: "coverDays", align: "right", width: 100, sorter: (a, b) => (a.coverDays ?? Number.MAX_SAFE_INTEGER) - (b.coverDays ?? Number.MAX_SAFE_INTEGER), render: (v: number | null, r) => v == null ? <Typography.Text type="secondary">无日销</Typography.Text> : <Typography.Text type={r.status === "alert" ? "danger" : r.status === "watch" ? "warning" : undefined} strong>{v}d</Typography.Text> },
@@ -170,22 +222,12 @@ function CoverTab() {
     {
       title: "动作", key: "a", width: 150, fixed: "right",
       // 每个主预警种类都有落地页：临期 → 效期批次清单（该 SKU 全部段位），积压 → 风险处置；标签命中也给入口
-      render: (_, r) => {
-        const kinds = new Set<string>([...(r.primary ? [r.primary] : []), ...r.tags]);
-        return (
-          <Space size={8} wrap>
-            <a href={r.actions.transfer}>调拨</a>
-            <a href={r.actions.replenish}>补货</a>
-            {kinds.has("near_expiry") ? <a href={r.actions.nearExpiry}>效期</a> : null}
-            {kinds.has("overstock") ? <a href={r.actions.overstock}>处置</a> : null}
-          </Space>
-        );
-      },
+      render: (_, r) => <CoverActions row={r} />,
     },
   ];
 
   return (
-    <div>
+    <div className={styles.list}>
       {data ? (
         <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
           <Col xs={12} md={6}><a href={inventoryCoverMetricHref("outOfStock")}><Statistic title="断货（有需求无在库）" value={data.totals.outOfStock} valueStyle={{ color: data.totals.outOfStock ? "#B23A2E" : undefined }} /></a></Col>
@@ -216,19 +258,32 @@ function CoverTab() {
       />
       <LoadErrorAlert error={error} onRetry={() => void load()} subject="库存预警表" retrying={loading} />
       <Table<InventoryAlertRow>
+        className={styles.desktop}
         rowKey="skuId"
         size={listState.tableSize}
         loading={loading}
         columns={columns}
         dataSource={data?.rows ?? []}
-        pagination={listState.paginationProps({ total: data?.filtered.total ?? 0, showTotal: (t) => `筛选命中 ${t} 个 SKU（成品共 ${data?.totals.skus ?? "—"}）` })}
+        pagination={false}
         scroll={{ x: 1500 }}
-        locale={{ emptyText: error ? "数据未加载" : "当前筛选下没有预警行" }}
+        locale={{ emptyText: loading ? "正在加载库存预警…" : error ? "数据未加载" : "当前筛选下没有预警行" }}
         expandable={{
           rowExpandable: (r) => !!alerts.byKey[`inventory_cover:${r.skuId}`],
           expandedRowRender: (r) => { const a = alerts.byKey[`inventory_cover:${r.skuId}`]; return a ? <AlertRowDetail alert={a} onClosed={() => void alerts.reload()} /> : null; },
         }}
       />
+      <div className={styles.mobile} data-density={listState.density} aria-busy={loading}>
+        {loading ? <div className={styles.empty}><Spin /> 正在加载库存预警…</div> : data?.rows.length ? <ul className={styles.cards}>
+          {data.rows.map(row => {
+            const alert = alerts.byKey[`inventory_cover:${row.skuId}`];
+            return <li key={row.skuId}><InventoryCoverCard row={row}
+              ack={<AckCell alert={alert} onAck={id => void alerts.ack(id)} />}
+              actions={<CoverActions row={row} />}
+              detail={alert ? <AlertRowDetail alert={alert} onClosed={() => void alerts.reload()} /> : null} /></li>;
+          })}
+        </ul> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={error ? "数据未加载" : "当前筛选下没有预警行"} />}
+      </div>
+      <div className={styles.pagination}><Pagination {...listState.paginationProps({ total: data?.filtered.total ?? 0, showTotal: (t) => `筛选命中 ${t} 个 SKU（成品共 ${data?.totals.skus ?? "—"}）` })} size="small" responsive /></div>
       {data ? (
         <CaliberNote
           summary={`参数：加工缺省 ${data.params.productionDefault} 天 · 在途缺省 ${data.params.logisticsDefault} 天 · 缓冲 ${data.params.bufferDays} 天 · 分层切点 ${data.params.tierCuts.sPct}/${data.params.tierCuts.aPct}/${data.params.tierCuts.bPct}%（* 为现算等级）`}

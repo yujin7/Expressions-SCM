@@ -1,0 +1,35 @@
+.list { container-type: inline-size; min-width: 0; }
+.mobile { display: none; }
+.cards { display: grid; gap: 10px; list-style: none; padding: 0; margin: 0; }
+.cards > li { min-width: 0; }
+.card { border: 1px solid #e4e7ec; border-radius: 10px; padding: 12px; background: #fff; min-width: 0; overflow-wrap: anywhere; }
+.cardHeader { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
+.cardHeader > span { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.name { color: #475467; font-size: 12px; line-height: 1.5; margin: 4px 0 10px; }
+.facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin: 0; }
+.facts dt, .secondary { color: #667085; font-size: 12px; }
+.facts dd { margin: 2px 0 0; font-size: 17px; color: #172033; font-variant-numeric: tabular-nums; }
+.facts small { font-size: 11px; color: #667085; }
+.sales { margin-top: 10px; padding-top: 8px; border-top: 1px solid #edf0f5; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.ledger { min-width: 0; font-variant-numeric: tabular-nums; }
+.ledger > span { display: block; }
+.ledgerValue { white-space: nowrap; }
+.basis { margin: 6px 0; font-size: 12px; color: #667085; line-height: 1.5; }
+.details { margin-top: 8px; font-size: 12px; color: #475467; }
+.details summary { color: #3158d8; cursor: pointer; padding: 5px 0; }
+.details summary:focus-visible { outline: 2px solid #3158d8; outline-offset: 2px; border-radius: 3px; }
+.details dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px 8px; }
+.details dd { margin: 0; }
+.details p { margin: 6px 0; }
+.footer { margin-top: 8px; padding-top: 8px; border-top: 1px solid #edf0f5; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+.footer a { display: inline-flex; align-items: center; min-height: 32px; }
+.footer button { min-height: 32px; }
+.mobile[data-density="small"] .card { padding: 8px; }
+.mobile[data-density="middle"] .card { padding: 10px; }
+.pagination { display: flex; justify-content: flex-end; margin-top: 12px; }
+.empty { display: flex; justify-content: center; align-items: center; gap: 8px; padding: 24px 0; color: #667085; }
+@container (max-width: 900px) {
+  .desktop { display: none; }
+  .mobile { display: block; }
+  .pagination { justify-content: center; }
+}
