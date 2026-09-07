@@ -1,8 +1,22 @@
 /** core/velocity.ts 新增窗口汇总（windowSums / dailyAvgFromWindow）——既有导出不变 */
 import { describe, expect, it } from "vitest";
-import { DEFAULT_VELOCITY_WINDOWS, dailyAvgFromWindow, dailyFromWindow, lastMonths, windowSums } from "@/server/core/velocity";
+import { DEFAULT_VELOCITY_WINDOWS, calendarMonthWindow, dailyAvgFromWindow, dailyFromWindow, lastMonths, windowSums } from "@/server/core/velocity";
 
 const day = (i: number) => new Date(Date.parse("2026-08-01T00:00:00Z") + i * 86_400_000).toISOString().slice(0, 10);
+
+describe("calendarMonthWindow", () => {
+  it("六个自然月按实际日历计数，包含闰日与跨年，不改历史三月91天函数", () => {
+    expect(calendarMonthWindow("2026-06", 6)).toMatchObject({ startDay: "2026-01-01", endDayExclusive: "2026-07-01", days: 181 });
+    expect(calendarMonthWindow("2024-06", 6).days).toBe(182);
+    expect(calendarMonthWindow("2026-09", 6).days).toBe(183);
+    expect(calendarMonthWindow("2026-12", 2)).toEqual({ months: ["2026-11", "2026-12"], startDay: "2026-11-01", endDayExclusive: "2027-01-01", days: 61 });
+    expect(dailyFromWindow(910)).toBe(10);
+  });
+  it("无效月份与窗口拒绝，不静默返回错误分母", () => {
+    for (const ym of ["2026-00", "2026-13", "2026-6", "", "2026-06-01"]) expect(() => calendarMonthWindow(ym, 6)).toThrow("月销窗口无效");
+    for (const n of [0, -1, 1.5, 121, Number.NaN]) expect(() => calendarMonthWindow("2026-06", n)).toThrow("月销窗口无效");
+  });
+});
 
 describe("windowSums", () => {
   it("窗口 w 覆盖 (asOf − w, asOf] 含锚点日；缺省锚点 = 序列最大日", () => {

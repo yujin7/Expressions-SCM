@@ -5,6 +5,7 @@ import { createTestDb, type TestDb } from "../helpers/db";
 import { computeInventoryAlerts, loadInventoryAlerts } from "@/server/modules/report/inventory-alerts";
 import { coverWhy, runInventoryCoverWatchdog } from "@/jobs/alert-watchdogs";
 import { completedShanghaiDays } from "@/server/core/business-day";
+import * as externalVelocity from "@/server/modules/report/external-velocity";
 
 const NOW = new Date("2026-09-08T04:00:00+08:00");
 const INSIDE = new Date("2026-09-07T12:00:00+08:00");
@@ -21,7 +22,7 @@ async function fixture(db: TestDb) {
 }
 
 describe("库存预警：销售净出库与非销售作业分离（G02）", () => {
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
   it("窗口按上海整日跨月/闰日，拒绝无效日历和非整数天数", () => {
     expect(completedShanghaiDays(1, "2024-03-01")).toMatchObject({ startDay: "2024-02-29", endDayExclusive: "2024-03-01", days: 1 });
     expect(completedShanghaiDays(30, "2026-09-08").start.toISOString()).toBe("2026-08-08T16:00:00.000Z");
@@ -100,10 +101,66 @@ describe("库存预警：销售净出库与非销售作业分离（G02）", () =
     try {
       const f = await fixture(db); const sku = await f.sku("TINY");
       await f.move(sku.id, "-0.0001");
-      const row = (await computeInventoryAlerts(db)).rows[0];
+      const more = await f.sku("TINY-MORE");
+      await f.move(more.id, "-0.0002");
+      const model = await computeInventoryAlerts(db);
+      const row = model.rows.find((item) => item.skuId === sku.id)!;
       expect(row.daily.ledger).toBeGreaterThan(0);
       expect(row.primary).toBe("out_of_stock");
       expect(row.ledgerDemand.salesNetQty).toBe("0.0001");
+      expect(row.priorityScore).toBe("0.0002");
+      expect(row.priorityTerms.dailyAvg).toBe("0.000003");
+      expect(coverWhy(row).find((why) => why.label === "优先级分")?.value).toContain("0.000003 × 50.0000");
+      expect(model.rows.map((item) => item.code)).toEqual(["TINY-MORE", "TINY"]);
+      expect(model.rows[0].priorityScore).toBe("0.0004");
+      await db.insert(schema.reportReadModelCache).values({ key: "inventory-alerts/v7", sourceBinding: model.sourceBinding, payload: { ...model, key: "inventory-alerts/v7", rows: model.rows.map((r) => ({ ...r, priorityScore: "0.0000" })) } });
+      expect((await loadInventoryAlerts(db)).rows[0].priorityScore).toBe("0.0004");
+    } finally { await client.close(); }
+  });
+
+  it("外部日均同样保留六位精度及负净额；只在正日销中选择主来源", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(NOW);
+    const { db, client } = await createTestDb();
+    try {
+      const f = await fixture(db);
+      const sku = await f.sku("EXTERNAL-TINY");
+      const fact: externalVelocity.ExternalVelocityBySku = {
+        paid30: "0.0001", refund30: "0.0000", net30: "0.0001", paid90: "0.0001", refund90: "0.0000", net90: "0.0001",
+        lastSoldDate: "2026-09-07", activeDays90: 1, platformSkus: 1, tmallNet30: "0.0001", pddNet30: "0.0000",
+        tmallNet90: "0.0001", pddNet90: "0.0000", pddIdentityCovered: false,
+      };
+      const mock = vi.spyOn(externalVelocity, "loadExternalVelocitySafe").mockResolvedValue({
+        ...externalVelocity.emptyExternalVelocity("测试已接受观察值的下游精度，不证明上游窗口完整"), bySku: { [sku.id]: fact },
+      });
+      expect((await computeInventoryAlerts(db)).rows[0]).toMatchObject({ daily: { external: 0.000003 }, primaryDailySource: "external", priorityScore: "0.0002" });
+      mock.mockResolvedValue({ ...externalVelocity.emptyExternalVelocity("负净额"), bySku: { [sku.id]: { ...fact, net30: "-0.0001" } } });
+      expect((await computeInventoryAlerts(db)).rows[0]).toMatchObject({ daily: { external: -0.000003 }, primaryDailySource: null, primary: null });
+    } finally { await client.close(); }
+  });
+
+  it("内部六个自然月销量用同一六个月天数折日，不误除三个月91天；微量和未知保留", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(NOW);
+    const { db, client } = await createTestDb();
+    try {
+      const f = await fixture(db);
+      const normal = await f.sku("MONTHS");
+      const tiny = await f.sku("MONTHS-TINY");
+      const unknown = await f.sku("MONTHS-UNKNOWN");
+      const [channel] = await db.insert(schema.channels).values({ code: "MONTHS", name: "正式月销", kind: "platform" }).returning();
+      for (const [yearMonth, qty] of [["2026-01", "31"], ["2026-02", "28"], ["2026-03", "31"], ["2026-04", "30"], ["2026-05", "31"], ["2026-06", "30"]]) {
+        await db.insert(schema.salesMonthly).values([
+          { skuId: normal.id, channelId: channel.id, yearMonth, qty },
+          { skuId: tiny.id, channelId: channel.id, yearMonth, qty: "0.0001" },
+        ]);
+      }
+      const model = await computeInventoryAlerts(db);
+      const row = model.rows.find((item) => item.skuId === normal.id)!;
+      expect(row.daily.internal).toBe(1);
+      expect(row.primaryDaily).toBe(1);
+      expect(row.internalDemand).toMatchObject({ startDay: "2026-01-01", endDayExclusive: "2026-07-01", days: 181, salesQty: "181.0000", observedMonths: 6 });
+      expect(model.rows.find((item) => item.skuId === tiny.id)).toMatchObject({ daily: { internal: 0.000003 }, priorityScore: "0.0002" });
+      expect(model.rows.find((item) => item.skuId === unknown.id)).toMatchObject({ daily: { internal: null }, internalDemand: { salesQty: null, observedMonths: 0 } });
+      expect(coverWhy(row).find((why) => why.label === "主日销口径")?.value).toContain("181 天");
     } finally { await client.close(); }
   });
 

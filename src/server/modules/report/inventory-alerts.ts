@@ -4,7 +4,7 @@ import { getNumParam } from "@/server/core/params";
 import { resolveDb, type AnyDb } from "@/server/core/svc";
 import { getOnHandBySku } from "@/server/core/stock-view";
 import { getOpenSupplyLines, type OpenSupplyLine } from "@/server/core/supply";
-import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
+import { calendarMonthWindow } from "@/server/core/velocity";
 import { completedShanghaiDays } from "@/server/core/business-day";
 import { getLedgerMovementSummary } from "@/server/core/sales-ledger";
 import { classifyTier, DEFAULT_TIER_CUTS, type Tier } from "@/server/rules/abc";
@@ -53,8 +53,8 @@ import { salesSpikeEvidenceCurrent } from "@/server/rules/sales-spike";
  *   停用一个 SKU、新建一个成品、把某 SKU 的 near_expiry_days 从 90 改成 30，绑定全都看不见。
  *   改为绑启用成品的行数/最大 id/已维护 near_expiry_days 的个数与其合计/最大 updated_at。
  */
-// v7：销售与非销售作业分离、销售红字净额、完整业务日、仓模式绑定。旧 v6 缓存不得复用。
-export const INVENTORY_ALERTS_CACHE_KEY = "inventory-alerts/v7";
+// v8：六个月分子/自然日分母一致、日均与优先级保留六位中间精度；旧 v7 分数不得复用。
+export const INVENTORY_ALERTS_CACHE_KEY = "inventory-alerts/v8";
 
 export type DailySource = "external" | "internal" | "ledger";
 
@@ -71,6 +71,8 @@ export interface InventoryAlertRow {
     startDay: string; endDayExclusive: string; days: number;
     salesNetQty: string | null; operationsOutQty: string | null;
   };
+  /** 仅已登记月销量；有行月份数不证明全部渠道或每月完整。 */
+  internalDemand: { startDay: string | null; endDayExclusive: string | null; days: number | null; salesQty: string | null; observedMonths: number };
   net7External: number | null;
   net30External: string | null;
   primaryDaily: number | null;
@@ -265,12 +267,15 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
 
   // 内部月销（近 6 月）→ 分层现算 + 内部日均
   const [maxYm] = resultRows<{ ym: string | null }>(await db.execute(sql`SELECT max(year_month) AS ym FROM sales_monthly`));
-  const months = maxYm?.ym ? lastMonths(maxYm.ym, 6) : [];
+  const internalDemandWindow = maxYm?.ym ? calendarMonthWindow(maxYm.ym, 6) : null;
+  const months = internalDemandWindow?.months ?? [];
   const salesRows = months.length
-    ? resultRows<{ sku_id: number; qty: string }>(await db.execute(sql`
-        SELECT sku_id, sum(qty)::text AS qty FROM sales_monthly WHERE year_month IN (${sql.join(months.map((m) => sql`${m}`), sql`, `)}) GROUP BY sku_id`))
+    ? resultRows<{ sku_id: number; qty: string; observed_months: number }>(await db.execute(sql`
+        SELECT sku_id, sum(qty)::text AS qty, count(DISTINCT year_month)::int AS observed_months
+        FROM sales_monthly WHERE year_month IN (${sql.join(months.map((m) => sql`${m}`), sql`, `)}) GROUP BY sku_id`))
     : [];
   const internal6m = new Map(salesRows.map((r) => [Number(r.sku_id), num(r.qty)]));
+  const internalFacts = new Map(salesRows.map((r) => [Number(r.sku_id), r]));
   const computedTier = classifyTier(skus.map((s) => ({ id: s.id, value: internal6m.get(s.id) ?? 0 })), { sPct, aPct, bPct });
 
   const ledgerWindow = completedShanghaiDays(30, today);
@@ -301,9 +306,9 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
   const rows: InventoryAlertRow[] = skus.map((s) => {
     const oh = num(onHand.bySku.get(s.id) ?? "0");
     const evs = ev.bySku[String(s.id)];
-    const external = evs?.net30 == null ? null : dCmp(evs.net30, "0") > 0 ? Number(dDiv(evs.net30, "30", 2)) : 0;
-    const internalWindow = internal6m.get(s.id);
-    const internal = internalWindow != null && months.length ? Math.round(dailyFromWindow(internalWindow) * 100) / 100 : null;
+    const external = evs?.net30 == null ? null : Number(dDiv(evs.net30, "30", 6));
+    const internalFact = internalFacts.get(s.id);
+    const internal = internalFact && internalDemandWindow ? Number(dDiv(internalFact.qty, internalDemandWindow.days, 6)) : null;
     const ledgerFacts = ledgerBySku.get(s.id);
     const ledgerNet = ledgerFacts?.salesNetQty ?? null;
     // 数量四位的小额销售也要保留需求信号；只在展示时压缩，不用两位舍入参与判定。
@@ -348,6 +353,10 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
         startDay: ledgerWindow.startDay, endDayExclusive: ledgerWindow.endDayExclusive, days: ledgerWindow.days,
         salesNetQty: ledgerNet, operationsOutQty: ledgerFacts?.operationsOutQty ?? null,
       },
+      internalDemand: {
+        startDay: internalDemandWindow?.startDay ?? null, endDayExclusive: internalDemandWindow?.endDayExclusive ?? null,
+        days: internalDemandWindow?.days ?? null, salesQty: internalFact?.qty ?? null, observedMonths: internalFact?.observed_months ?? 0,
+      },
       net7External: null, net30External: evs ? evs.net30 : null,
       primaryDaily, primaryDailySource, coverDays: cover,
       coverDaysWithSupply: coverWithSupply,
@@ -376,8 +385,8 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
   rows.sort((a, b) => {
     const pa = a.primary ? 0 : 1, pb = b.primary ? 0 : 1;
     if (pa !== pb) return pa - pb;
-    const sa = Number(a.priorityScore), sb = Number(b.priorityScore);
-    if (sb !== sa) return sb - sa;
+    const scoreOrder = dCmp(b.priorityScore, a.priorityScore);
+    if (scoreOrder !== 0) return scoreOrder;
     return (order[a.tier ?? "C"] ?? 9) - (order[b.tier ?? "C"] ?? 9);
   });
   const byTier: Record<string, { skus: number; alert: number }> = {};
@@ -409,6 +418,9 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
       "爆单标记仅采纳完整且符合 T+1 时效的观测窗口；过期/缺失证据不作为当前命中，也不证明没有需求。历史爆单与已有告警请在爆单页复核。",
       "日销三口径不相加：外部 = 平台支付−退款近 30 天折日（observation_only，T+1）；内部 = 销量月表近 6 月折日（止于最新月）；实时仓 = 正式销售净出库 ÷ 30（已扣同窗销售红字）。主日销在正值中取外部 > 内部 > 实时仓销售；不代表三者来源/截止相同或全渠道覆盖完整。",
       `实时仓窗口 [${ledgerWindow.startDay}, ${ledgerWindow.endDayExclusive}) 为上海近 30 个已结束业务日，不含今天与未来记录。销售红字按纠正业务日净减，负净量保留展示；无销售事件显示未知，不当作零销售。非销售作业量单列（负向流量，未扣正向冲销），不进主日销、可销天数或补货需求。`,
+      internalDemandWindow
+        ? `内部月销窗口 [${internalDemandWindow.startDay}, ${internalDemandWindow.endDayExclusive}) 共 ${internalDemandWindow.days} 个自然日；已登记销量除以同一窗口天数，不使用三个月91天分母。有记录月份数单列，不证明各月/各渠道完整；缺失数据需回源补齐。`
+        : "尚无已登记内部月销窗口，内部日均保持未知。",
       "可销天数按「在库可销」（不含在途）；阈值 = 加工周期 + 在途周期 + 缓冲，逐 SKU 主数据优先，缺失用参数缺省并标注（D57）。",
       "未结供给（core/supply：PO 未收、WO 在制、存量单在途）只用于降级：在库 alert 且在库 > 0、下一笔确认到货日落在阈值天数内 → watch 并写明依据；在库 = 0 不降级（物理事实）；逾期/无日期在途不算可信供给。含在途可销 = (在库 + 有日期未逾期在途) ÷ 主日销，粗口径，逐日推演以补货页为准。",
       `学习交期只观察不生效：rollup_supplier_lead 样本 ≥ 3 且 P90 超档案加工周期 > ${learnedToleranceDays} 天（alert_learned_lead_tolerance_days）时在阈值依据里单列，阈值本周期不变。`,

@@ -17,10 +17,26 @@ describe("pickPrimaryAlert", () => {
 });
 
 describe("priorityScore（W2：score + terms + formula）", () => {
+  it("六位中间日均不得先舍为零；分数仍按四位数量精度输出", () => {
+    for (const dailyAvg of ["0.000003", 0.000003]) {
+      const r = priorityScore({ dailyAvg, alertDays: 50, coverDays: "0" });
+      expect(r.score).toBe("0.0002");
+      expect(r.terms.dailyAvg).toBe("0.000003");
+      expect(r.terms.gapDays).toBe("50.0000");
+    }
+    expect(priorityScore({ dailyAvg: "0.000049", alertDays: 50, coverDays: "0" }).score).toBe("0.0025");
+    expect(priorityScore({ dailyAvg: "0.000051", alertDays: 50, coverDays: "0" }).score).toBe("0.0026");
+  });
+  it("可销未知时分数弃权，但解释仍保留已知的六位微量日均", () => {
+    const r = priorityScore({ dailyAvg: "0.000003", alertDays: 50, coverDays: null });
+    expect(r.score).toBe("0.0000");
+    expect(r.terms.dailyAvg).toBe("0.000003");
+    expect(r.terms.coverDays).toBeNull();
+  });
   it("= 日均销 × max(0, alertDays − coverDays)，decimal 字符串 scale 4；terms 逐项可解释", () => {
     const r = priorityScore({ dailyAvg: "2.5", alertDays: 50, coverDays: "10" });
     expect(r.score).toBe("100.0000");
-    expect(r.terms).toEqual({ dailyAvg: "2.5000", alertDays: 50, coverDays: "10.0000", gapDays: "40.0000" });
+    expect(r.terms).toEqual({ dailyAvg: "2.500000", alertDays: 50, coverDays: "10.0000", gapDays: "40.0000" });
     expect(r.formula).toBe(PRIORITY_SCORE_FORMULA);
     expect(r.formula).toContain("日均销");
     expect(priorityScore({ dailyAvg: 3, alertDays: 50, coverDays: 49.5 }).score).toBe("1.5000");

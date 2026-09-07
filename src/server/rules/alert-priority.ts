@@ -57,7 +57,7 @@ export interface PriorityScoreInput {
 
 /** 优先级分的可解释拆项（W2）：分数 = dailyAvg × gapDays，gapDays = max(0, alertDays − coverDays) */
 export interface PriorityScoreTerms {
-  /** 日均销（scale 4）；无销速 = null */
+  /** 中间日均销（scale 6，与decimal中间精度一致）；无销速 = null */
   dailyAvg: string | null;
   alertDays: number;
   /** 可销天数（scale 4）；无销速 = null */
@@ -91,7 +91,7 @@ export function priorityScore(input: PriorityScoreInput): PriorityScoreResult {
     return {
       score: ZERO,
       terms: {
-        dailyAvg: finiteDec(input.dailyAvg) ? dMax(0, input.dailyAvg as Dec, 4) : null,
+        dailyAvg: finiteDec(input.dailyAvg) ? dMax(0, input.dailyAvg as Dec, 6) : null,
         alertDays: input.alertDays,
         coverDays: finiteDec(input.coverDays) ? dMax(0, input.coverDays as Dec, 4) : null,
         gapDays: ZERO,
@@ -101,7 +101,8 @@ export function priorityScore(input: PriorityScoreInput): PriorityScoreResult {
   }
   const cover = input.coverDays as Dec;
   const gap = dMax(0, dSub(input.alertDays, cover, 4), 4);
-  const daily = dMax(0, input.dailyAvg as Dec, 4);
+  // 日均不是落库数量：先舍到四位会把真实微量需求变成零，再乘缺口也无法恢复。
+  const daily = dMax(0, input.dailyAvg as Dec, 6);
   return {
     score: dMul(daily, gap, 4),
     terms: { dailyAvg: daily, alertDays: input.alertDays, coverDays: dMax(0, cover, 4), gapDays: gap },

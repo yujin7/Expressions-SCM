@@ -9,6 +9,7 @@
  */
 
 import { type Dec, dAdd } from "@/server/core/decimal";
+import { dayDiff, shanghaiDay } from "@/server/core/business-day";
 
 /** 3 月窗口日均的天数基准（历史约定 91；勿改，多处报表依赖同值可比） */
 export const DAILY_WINDOW_DAYS = 91;
@@ -24,6 +25,17 @@ export function lastMonths(maxYm: string, n: number): string[] {
     out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
   }
   return out.reverse();
+}
+
+/** 已登记月销的自然月窗口；只给出分母，不证明每月/每渠道覆盖完整。 */
+export function calendarMonthWindow(maxYm: string, n: number) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(maxYm) || shanghaiDay(`${maxYm}-01`) !== `${maxYm}-01`
+    || !Number.isSafeInteger(n) || n < 1 || n > 120) throw new Error("月销窗口无效");
+  const months = lastMonths(maxYm, n);
+  const [year, month] = maxYm.split("-").map(Number);
+  const startDay = `${months[0]}-01`;
+  const endDayExclusive = `${month === 12 ? year + 1 : year}-${String(month === 12 ? 1 : month + 1).padStart(2, "0")}-01`;
+  return { months, startDay, endDayExclusive, days: dayDiff(startDay, endDayExclusive) };
 }
 
 /** 近 3 月窗口销量 → 日均销（唯一口径，除以 91） */

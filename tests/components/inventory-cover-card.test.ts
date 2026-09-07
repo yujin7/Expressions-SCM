@@ -1,7 +1,7 @@
 import React, { createElement, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { InventoryCoverCard, LedgerDemandCell } from "@/app/(app)/inventory/alerts/alerts-client";
+import { InternalDemandCell, InventoryCoverCard, LedgerDemandCell } from "@/app/(app)/inventory/alerts/alerts-client";
 import ContextHelp from "@/components/ContextHelp";
 
 beforeAll(() => vi.stubGlobal("React", React));
@@ -14,6 +14,7 @@ const row: CardRow = {
   usedDefault: true, alertBasis: "加工30（缺省）+物流15（缺省）+缓冲5", statusBasis: "在途供给须独立复核",
   daily: { external: null, internal: null, ledger: 9 }, net30External: null,
   ledgerDemand: { startDay: "2026-08-09", endDayExclusive: "2026-09-08", days: 30, salesNetQty: "270.0000", operationsOutQty: "600.0000" },
+  internalDemand: { startDay: "2026-01-01", endDayExclusive: "2026-07-01", days: 181, salesQty: null, observedMonths: 0 },
 };
 const render = (patch: Partial<CardRow> = {}, actions: ReactNode = null, detail: ReactNode = null) => renderToStaticMarkup(createElement(InventoryCoverCard, {
   row: { ...row, ...patch }, ack: "未开告警", actions, detail,
@@ -26,6 +27,16 @@ function helpContent(node: ReactNode): ReactNode {
 }
 
 describe("库存预警紧凑卡片与同源口径", () => {
+  it("内部月销帮助展示同一分母与起止；缺月份提示不藏在帮助后", () => {
+    const r = { ...row, daily: { ...row.daily, internal: 0.000003 }, internalDemand: { ...row.internalDemand, salesQty: "0.0006", observedMonths: 1 } };
+    const html = renderToStaticMarkup(createElement(InternalDemandCell, { row: r }));
+    expect(html).toContain("0.000003"); expect(html).toContain("仅1/6月有记录");
+    expect(html).toMatch(/<button[^>]*aria-label="G02-SALE内部月销口径"/);
+    const help = renderToStaticMarkup(createElement(React.Fragment, null, helpContent(InternalDemandCell({ row: r }))));
+    for (const text of ["2026-01-01", "2026-07-01", "181", "0.0006", "不证明每月", "三个月91天"]) expect(help).toContain(text);
+    const card = render({ ...r, primaryDailySource: "internal", primaryDaily: 0.000003 });
+    expect(card.slice(0, card.indexOf("<details"))).toContain("月销仅1/6月有记录，需核对缺失数据。");
+  });
   it("keeps identity, sales, stock, threshold and operations visible before disclosure", () => {
     const html = render(); const visible = html.slice(0, html.indexOf("<details"));
     for (const value of [row.name, row.code, "EXPRESSIONS", "断货", "在库", "主日销 /日", "9", "0天", "50", "含缺省周期", "作业 600", "窗口合计", "作业量不作需求"]) expect(visible).toContain(value);

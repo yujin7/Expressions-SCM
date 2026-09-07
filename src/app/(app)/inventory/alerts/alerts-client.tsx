@@ -39,6 +39,19 @@ const KIND_LABEL: Record<string, string> = { out_of_stock: "断货", spike: "爆
 const dailyText = (value: number | null) => value == null ? "—" : formatQty(value.toFixed(6));
 const DAILY_BASIS: Record<string, string> = { external: "外部观察", internal: "内部月销", ledger: "系统销售净出库" };
 
+export function InternalDemandCell({ row }: { row: Pick<InventoryAlertRow, "code" | "daily" | "internalDemand"> }) {
+  const evidence = row.internalDemand;
+  return <div className={styles.ledger}>
+    <span className={styles.ledgerValue}>{dailyText(row.daily.internal)} <ContextHelp label={`${row.code}内部月销口径`} title="内部月销折日口径"
+      content={<>
+        <p>上海自然月窗口：{evidence.startDay ?? "未知"}（含）至{evidence.endDayExclusive ?? "未知"}（不含），共{evidence.days ?? "未知"}天。</p>
+        <p>已登记销量 {formatQty(evidence.salesQty)} ÷ {evidence.days ?? "未知"} 天 = {dailyText(row.daily.internal)} /日。六个月销量不使用三个月91天分母。</p>
+        <p>有记录 {evidence.observedMonths}/6 月；不证明每月、各渠道完整，也不证明已更新到当前月份。缺数须补齐，— 不表示零销售。</p>
+      </>} /></span>
+    {evidence.observedMonths < 6 && evidence.salesQty != null ? <span className={styles.secondary}>仅{evidence.observedMonths}/6月有记录</span> : null}
+  </div>;
+}
+
 /** Same figures and explanation in the wide table and narrow cards; no demand recomputation. */
 export function LedgerDemandCell({ row }: { row: Pick<InventoryAlertRow, "code" | "daily" | "ledgerDemand"> }) {
   const evidence = row.ledgerDemand;
@@ -55,7 +68,7 @@ export function LedgerDemandCell({ row }: { row: Pick<InventoryAlertRow, "code" 
   </div>;
 }
 
-type CoverCardRow = Pick<InventoryAlertRow, "code" | "name" | "brand" | "tier" | "tierSource" | "primary" | "tags" | "onHand" | "primaryDaily" | "primaryDailySource" | "coverDays" | "alertDays" | "alertBasis" | "usedDefault" | "daily" | "ledgerDemand" | "net30External" | "statusBasis">;
+type CoverCardRow = Pick<InventoryAlertRow, "code" | "name" | "brand" | "tier" | "tierSource" | "primary" | "tags" | "onHand" | "primaryDaily" | "primaryDailySource" | "coverDays" | "alertDays" | "alertBasis" | "usedDefault" | "daily" | "ledgerDemand" | "internalDemand" | "net30External" | "statusBasis">;
 
 export function InventoryCoverCard({ row, ack, actions, detail }: { row: CoverCardRow; ack: ReactNode; actions: ReactNode; detail?: ReactNode }) {
   return <article className={styles.card} aria-label={`${row.code} 库存预警`}>
@@ -75,8 +88,9 @@ export function InventoryCoverCard({ row, ack, actions, detail }: { row: CoverCa
     </dl>
     <div className={styles.sales}><span className={styles.secondary}>系统销售 / 作业</span><LedgerDemandCell row={row} /></div>
     <p className={styles.basis}>主日销来源：{row.primaryDailySource ? DAILY_BASIS[row.primaryDailySource] : "未取得正日销"}；三口径不相加，作业量不作需求。</p>
+    {row.primaryDailySource === "internal" && row.internalDemand.observedMonths < 6 ? <p className={styles.basis}>月销仅{row.internalDemand.observedMonths}/6月有记录，需核对缺失数据。</p> : null}
     <details className={styles.details}><summary>其他口径与阈值依据</summary>
-      <dl><dt>外部日销</dt><dd>{dailyText(row.daily.external)}</dd><dt>内部日销</dt><dd>{dailyText(row.daily.internal)}</dd><dt>外部30天净件</dt><dd>{formatQty(row.net30External)}</dd></dl>
+      <dl><dt>外部日销</dt><dd>{dailyText(row.daily.external)}</dd><dt>内部日销</dt><dd><InternalDemandCell row={row} /></dd><dt>外部30天净件</dt><dd>{formatQty(row.net30External)}</dd></dl>
       <p>{row.alertBasis}</p>{row.statusBasis ? <p>{row.statusBasis}</p> : null}
     </details>
     <footer className={styles.footer}>{ack}<div>{actions}</div></footer>
@@ -200,8 +214,8 @@ function CoverTab() {
       const all = await fetchJson<InventoryAlertsPage>(`/api/report/inventory-alerts?${sp.toString()}`);
       exportCsv(
         `库存预警表-${all.builtAt.slice(0, 10)}`,
-        ["等级", "等级来源", "SKU", "名称", "品牌", "日销外部", "日销内部", "实时仓销售净出库日均", "主日销", "主日销来源", "外部近30天净件", "在库", "可销天数", "阈值天", "阈值依据", "状态", "主预警", "标签", "优先级分", "实时仓窗口开始(含)", "实时仓窗口结束(不含)", "实时仓销售净出库(含销售红字)", "非销售作业出库(未扣正向冲销,不作需求)"],
-        all.rows.map((r) => [r.tier, r.tierSource, r.code, r.name, r.brand, r.daily.external, r.daily.internal, r.daily.ledger, r.primaryDaily, r.primaryDailySource, r.net30External, r.onHand, r.coverDays, r.alertDays, r.alertBasis, r.status, r.primary, r.tags.join("|"), r.priorityScore, r.ledgerDemand.startDay, r.ledgerDemand.endDayExclusive, r.ledgerDemand.salesNetQty, r.ledgerDemand.operationsOutQty]),
+        ["等级", "等级来源", "SKU", "名称", "品牌", "日销外部", "日销内部", "实时仓销售净出库日均", "主日销", "主日销来源", "外部近30天净件", "在库", "可销天数", "阈值天", "阈值依据", "状态", "主预警", "标签", "优先级分", "实时仓窗口开始(含)", "实时仓窗口结束(不含)", "实时仓销售净出库(含销售红字)", "非销售作业出库(未扣正向冲销,不作需求)", "内部月销窗口开始(含)", "内部月销窗口结束(不含)", "内部月销窗口自然日", "内部已登记销量", "内部有记录月份数(不证明完整覆盖)"],
+        all.rows.map((r) => [r.tier, r.tierSource, r.code, r.name, r.brand, r.daily.external, r.daily.internal, r.daily.ledger, r.primaryDaily, r.primaryDailySource, r.net30External, r.onHand, r.coverDays, r.alertDays, r.alertBasis, r.status, r.primary, r.tags.join("|"), r.priorityScore, r.ledgerDemand.startDay, r.ledgerDemand.endDayExclusive, r.ledgerDemand.salesNetQty, r.ledgerDemand.operationsOutQty, r.internalDemand.startDay, r.internalDemand.endDayExclusive, r.internalDemand.days, r.internalDemand.salesQty, r.internalDemand.observedMonths]),
         all.filtered.total > all.rows.length ? `仅导出前 ${all.rows.length} 行，共 ${all.filtered.total} 行` : undefined,
       );
     } catch (e) { message.error((e as Error).message); }
@@ -210,8 +224,8 @@ function CoverTab() {
   const columns: ColumnsType<InventoryAlertRow> = [
     { title: "SKU", key: "sku", width: 220, fixed: "left", render: (_, r) => <Space direction="vertical" size={0}><Typography.Text strong>{r.code}</Typography.Text><Typography.Text type="secondary" ellipsis style={{ maxWidth: 200 }}>{r.name}{r.brand ? ` · ${r.brand}` : ""}</Typography.Text></Space> },
     { title: "等级", dataIndex: "tier", width: 64, render: (v: string | null, r) => v ? <Tag color={TIER_COLOR[v]}>{v}{r.tierSource === "computed" ? "*" : ""}</Tag> : <Tag>未分层</Tag> },
-    { title: "日销 外部", key: "de", align: "right", width: 90, render: (_, r) => r.daily.external == null ? "—" : r.daily.external },
-    { title: "内部", key: "di", align: "right", width: 80, render: (_, r) => r.daily.internal == null ? "—" : r.daily.internal },
+    { title: "日销 外部", key: "de", align: "right", width: 110, render: (_, r) => dailyText(r.daily.external) },
+    { title: "内部", key: "di", align: "right", width: 140, render: (_, r) => <InternalDemandCell row={r} /> },
     { title: "系统销售 / 作业", key: "dl", align: "right", width: 185, render: (_, r) => <LedgerDemandCell row={r} /> },
     { title: "外部30天净件", dataIndex: "net30External", align: "right", width: 110, sorter: (a, b, order) => compareDecimalValues(a.net30External, b.net30External, order === "descend" ? "first" : "last"), render: (v: string | null) => v == null ? "—" : formatQty(v) },
     { title: "在库", dataIndex: "onHand", align: "right", width: 90, sorter: (a, b) => compareDecimalValues(a.onHand, b.onHand), render: (v: string) => formatQty(v) },

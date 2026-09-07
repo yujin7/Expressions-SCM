@@ -47,7 +47,9 @@ export function coverWhy(r: InventoryAlertRow, orderBy?: OrderByExplain): AlertW
     source: "core/stock-view + core/velocity",
   });
   if (r.primaryDailySource) {
-    const win = r.primaryDailySource === "external" ? `净件数 ${r.net30External ?? "—"}` : r.primaryDailySource === "internal" ? `内部 ${r.daily.internal ?? "—"}/日` : `实时仓 ${r.daily.ledger ?? "—"}/日`;
+    const win = r.primaryDailySource === "external" ? `净件数 ${r.net30External ?? "—"}` : r.primaryDailySource === "internal"
+      ? `已登记 ${r.internalDemand.salesQty ?? "—"} 件 ÷ ${r.internalDemand.days ?? "—"} 天 = ${r.daily.internal ?? "—"}/日；[${r.internalDemand.startDay ?? "—"}, ${r.internalDemand.endDayExclusive ?? "—"})，有记录 ${r.internalDemand.observedMonths}/6 月，不证明渠道完整`
+      : `实时仓 ${r.daily.ledger ?? "—"}/日`;
     why.push({ label: "主日销口径", value: `${DAILY_SOURCE_LABEL[r.primaryDailySource]}（${win}；正值优先：外部 > 内部 > 实时仓销售，不相加）`, source: "report/inventory-alerts" });
   }
   why.push({ label: "实时仓销售/作业", value: `[${r.ledgerDemand.startDay}, ${r.ledgerDemand.endDayExclusive}) 上海 ${r.ledgerDemand.days} 个完整业务日：销售净出库 ${r.ledgerDemand.salesNetQty ?? "未知"}；非销售作业出库 ${r.ledgerDemand.operationsOutQty ?? "未知"}（负向流量，未扣正向冲销，不作为需求）`, source: "core/sales-ledger" });
