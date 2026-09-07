@@ -3,7 +3,7 @@ export const DOCUMENT_PAGES: Record<string, string> = {
   bh: "/outsource/bh", wo: "/outsource/wo", po: "/outsource/po", pc: "/outsource/pc",
   jg: "/outsource/jg", fl: "/matflow/fl", tl: "/matflow/tl", sh: "/matflow/sh",
   ct: "/matflow/ct", js: "/settlement/js", stock_doc: "/inventory/docs", pd: "/inventory/count",
-  npd: "/npd",
+  npd: "/npd", quality_case: "/quality",
 };
 
 function validId(id: number): boolean { return Number.isInteger(id) && id > 0 && id <= 2_147_483_647; }

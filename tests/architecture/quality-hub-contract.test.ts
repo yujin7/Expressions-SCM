@@ -31,7 +31,7 @@ describe("quality and compliance hub UI contract", () => {
   });
 
   it("exposes authorized write paths instead of read-only placeholder tables", () => {
-    expect(client).toContain('postJson("/api/quality/cases"');
+    expect(client).toMatch(/postJson(?:<[^>]+>)?\("\/api\/quality\/cases"/);
     expect(client).toContain("postJson(`/api/quality/cases/${actionCase.id}/actions`");
     expect(client).toContain("patchJson(`/api/quality/cases/${caseOperation.row.id}`");
     expect(client).toContain("patchJson(`/api/quality/actions/${actionOperation.row.id}`");

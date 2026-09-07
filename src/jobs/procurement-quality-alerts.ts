@@ -33,6 +33,7 @@ import type { AnyDb } from "@/server/core/svc";
 import { classifyDueState } from "@/server/rules/quality-compliance";
 import { resolvePromiseBasis } from "@/server/rules/promise-basis";
 import { ALERT_OWNER_ROLE } from "@/server/rules/task-triggers";
+import { documentHref } from "@/lib/document-links";
 import { runLicenseAlert, LICENSE_ALERT_WINDOW_DAYS } from "./license-alert";
 import { dCmp, dMul, dSub } from "@/server/core/decimal";
 
@@ -344,7 +345,7 @@ export async function runQualityCaseOverdueWatchdog(db: AnyDb, now = new Date())
         + `责任人 ${r.ownerName ?? "—"}${r.supplierCode ? `；涉及供应商 ${r.supplierCode}` : ""}。逾期案件同时会扣该供应商的记分卡「质量案件」维度。`,
       severity: r.severity === "critical" || overdueDays >= 7 ? "critical" : "high",
       ownerRole: ALERT_OWNER_ROLE[category],
-      actionHref: `/quality?tab=cases&q=${encodeURIComponent(r.caseNo)}`,
+      actionHref: documentHref("quality_case", r.id)!,
       sourceRule: "rules/quality-compliance.classifyDueState",
       paramsSnapshot: {
         caseId: r.id, caseNo: r.caseNo, kind: r.kind, status: r.status, severity: r.severity,
@@ -374,4 +375,3 @@ export async function runProcurementQualityAlerts(db: AnyDb, now = new Date()): 
     await runQualityCaseOverdueWatchdog(db, now),
   ];
 }
-import { documentHref } from "@/lib/document-links";

@@ -225,7 +225,7 @@ describe("采购与质量看门狗（W2 审计 5）", () => {
     expect(alert.title).toContain("逾期 4 天");
     expect(alert.severity).toBe("critical");
     expect(alert.ownerRole).toBe(ALERT_OWNER_ROLE[CATEGORY_QUALITY_CASE_OVERDUE]);
-    expect(alert.actionHref).toContain("/quality");
+    expect(alert.actionHref).toBe(`/quality?docId=${kase.id}`);
     expect(alert.sourceRule).toBe("rules/quality-compliance.classifyDueState");
     const snap = alert.paramsSnapshot as { overdueDays: number; orderByDate: string };
     expect(snap.overdueDays).toBe(4);

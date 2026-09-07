@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Alert,
   App,
@@ -9,6 +10,7 @@ import {
   Col,
   DatePicker,
   Descriptions,
+  Drawer,
   Empty,
   Form,
   Input,
@@ -41,6 +43,11 @@ import RemoteSelect, { type RemoteRow } from "@/components/RemoteSelect";
 import SearchInput from "@/components/SearchInput";
 import { useListState } from "@/components/useListState";
 import { hasAnyRole, useMe } from "@/components/useMe";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { qualityLegacyPath, qualityTab, qualityTabPath, type QualityTab } from "@/lib/quality-navigation";
+import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+import styles from "./quality-workspace.module.css";
 
 type CaseKind = "complaint" | "adverse_event" | "recall" | "self_inspection";
 type CaseStatus = "open" | "triaged" | "scoped" | "active" | "closed";
@@ -671,6 +678,21 @@ function RegulatoryRecordSelect({
 }
 
 export default function QualityClient() {
+  const search = useSearchParams();
+  const query = search.toString();
+  const tab = qualityTab(query);
+  const target = useDocumentTarget();
+  const me = useMe();
+  const legacy = qualityLegacyPath("/quality", query);
+  useEffect(() => {
+    const { pathname, search, hash } = window.location;
+    const path = qualityLegacyPath(pathname, search, hash);
+    if (path) window.history.replaceState(null, "", path);
+  }, [query]);
+  const changeTab = (next: string) => {
+    const { pathname, search, hash } = window.location;
+    window.history.pushState(null, "", qualityTabPath(pathname, search, next as QualityTab, hash));
+  };
   return (
     <div className="quality-page">
       <Typography.Title level={4} style={{ marginTop: 0, marginBottom: 4 }}>
@@ -687,9 +709,11 @@ export default function QualityClient() {
         message="系统保留事实、时限和版本；严重性、监管提交、召回范围与关闭决定仍由有权限的人承担。"
       />
       <Tabs
-        destroyOnHidden={false}
+        activeKey={tab}
+        onChange={changeTab}
+        destroyOnHidden
         items={[
-          { key: "cases", label: "案件与行动", children: <CasesTab /> },
+          { key: "cases", label: "案件与行动", children: tab === "cases" && !legacy ? <CasesTab key={`${me?.id}:${me?.roles.join(",")}:${target.id}:${target.error}`} target={target} /> : null },
           { key: "regulatory", label: "监管证据", children: <RegulatoryTab /> },
           { key: "labels", label: "电子标签", children: <ElectronicLabelsTab /> },
         ]}
@@ -698,7 +722,7 @@ export default function QualityClient() {
   );
 }
 
-function CasesTab() {
+function CasesTab({ target }: { target: ReturnType<typeof useDocumentTarget> }) {
   const { message, modal } = App.useApp();
   const me = useMe();
   const currentUserId = me?.id;
@@ -709,9 +733,6 @@ function CasesTab() {
   const [actionForm] = Form.useForm<CreateActionForm>();
   const [caseOperationForm] = Form.useForm<CaseOperationForm>();
   const [actionOperationForm] = Form.useForm<ActionOperationForm>();
-  const [data, setData] = useState<CasesResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [actionCase, setActionCase] = useState<QualityCase | null>(null);
@@ -723,12 +744,11 @@ function CasesTab() {
     row: QualityAction;
     operation: "complete" | "verify";
   } | null>(null);
-  const [actions, setActions] = useState<Record<number, QualityAction[]>>({});
   const [quarantiningId, setQuarantiningId] = useState<number | null>(null);
-  const [actionLoading, setActionLoading] = useState<Record<number, boolean>>({});
-  const [actionErrors, setActionErrors] = useState<Record<number, string | null>>({});
   const [searchText, setSearchText] = useState("");
-  const loadSequence = useRef(0);
+  const mounted = useRef(true);
+  const recallDialog = useRef<ReturnType<typeof modal.confirm> | null>(null);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; recallDialog.current?.destroy(); }; }, []);
   const createCaseKey = useRef("");
   const createActionKey = useRef("");
   const watchedCaseKind = Form.useWatch("kind", createForm) ?? "complaint";
@@ -738,30 +758,20 @@ function CasesTab() {
 
   const listState = useListState({
     key: "quality-cases",
-    defaults: { q: "", kind: "", status: "" },
+    defaults: { q: "", kind: "", status: "", sort: "", direction: "" },
     defaultPageSize: 20,
     paramPrefix: "qc",
+    transientParams: DOCUMENT_TRANSIENT_PARAMS,
   });
   const { filters } = listState;
   const apiQuery = listState.queryString();
-
-  const load = useCallback(async () => {
-    const sequence = ++loadSequence.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const next = await fetchJson<CasesResponse>(`/api/quality/cases?${apiQuery}`);
-      if (sequence === loadSequence.current) setData(next);
-    } catch (loadError) {
-      if (sequence === loadSequence.current) setError((loadError as Error).message);
-    } finally {
-      if (sequence === loadSequence.current) setLoading(false);
-    }
-  }, [apiQuery]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const listRead = useDocumentRead<CasesResponse>(`/api/quality/cases?${apiQuery}`);
+  const detailRead = useDocumentRead<QualityCase>(target.id ? `/api/quality/cases/${target.id}` : null);
+  const actionsRead = useDocumentRead<QualityAction[]>(target.id ? `/api/quality/cases/${target.id}/actions` : null);
+  const data = listRead.data;
+  const loading = listRead.phase === "loading";
+  const error = listRead.error;
+  const load = () => { listRead.retry(); detailRead.retry(); actionsRead.retry(); };
   useEffect(() => {
     setSearchText(filters.q);
   }, [filters.q]);
@@ -804,18 +814,7 @@ function CasesTab() {
     }
   }, [actionOperation, actionOperationForm]);
 
-  const loadActions = useCallback(async (caseId: number) => {
-    setActionLoading((current) => ({ ...current, [caseId]: true }));
-    setActionErrors((current) => ({ ...current, [caseId]: null }));
-    try {
-      const rows = await fetchJson<QualityAction[]>(`/api/quality/cases/${caseId}/actions`);
-      setActions((current) => ({ ...current, [caseId]: rows }));
-    } catch (loadError) {
-      setActionErrors((current) => ({ ...current, [caseId]: (loadError as Error).message }));
-    } finally {
-      setActionLoading((current) => ({ ...current, [caseId]: false }));
-    }
-  }, []);
+  const loadActions = (_caseId: number) => { actionsRead.retry(); };
 
   const openCreateCase = () => {
     createCaseKey.current = globalThis.crypto.randomUUID();
@@ -825,19 +824,21 @@ function CasesTab() {
   const submitCreateCase = async () => {
     try {
       const value = await createForm.validateFields();
+      if (!mounted.current) return;
       setSaving(true);
-      await postJson("/api/quality/cases", {
+      const created = await postJson<{ id: number }>("/api/quality/cases", {
         ...value,
         marketCode: value.marketCode.trim().toUpperCase(),
         receivedDate: value.receivedDate.format("YYYY-MM-DD"),
         occurredDate: value.occurredDate?.format("YYYY-MM-DD"),
         idempotencyKey: createCaseKey.current,
       });
+      if (!mounted.current) return;
       message.success("质量案件已登记");
       setCreateOpen(false);
-      await load();
+      target.setId(created.id);
     } catch (submitError) {
-      if (submitError instanceof Error) message.error(submitError.message);
+      if (mounted.current && submitError instanceof Error) message.error(submitError.message);
     } finally {
       setSaving(false);
     }
@@ -852,17 +853,19 @@ function CasesTab() {
     if (!actionCase) return;
     try {
       const value = await actionForm.validateFields();
+      if (!mounted.current) return;
       setSaving(true);
       await postJson(`/api/quality/cases/${actionCase.id}/actions`, {
         ...value,
         dueDate: value.dueDate.format("YYYY-MM-DD"),
         idempotencyKey: createActionKey.current,
       });
+      if (!mounted.current) return;
       message.success("质量行动已建立");
       setActionCase(null);
       await loadActions(actionCase.id);
     } catch (submitError) {
-      if (submitError instanceof Error) message.error(submitError.message);
+      if (mounted.current && submitError instanceof Error) message.error(submitError.message);
     } finally {
       setSaving(false);
     }
@@ -879,6 +882,7 @@ function CasesTab() {
     if (!caseOperation) return;
     try {
       const value = await caseOperationForm.validateFields();
+      if (!mounted.current) return;
       setSaving(true);
       const body: Record<string, unknown> = {
         operation: caseOperation.operation,
@@ -905,11 +909,12 @@ function CasesTab() {
         body.closureNote = value.closureNote;
       }
       await patchJson(`/api/quality/cases/${caseOperation.row.id}`, body);
+      if (!mounted.current) return;
       message.success("案件状态已更新");
       setCaseOperation(null);
       await load();
     } catch (submitError) {
-      if (submitError instanceof Error) message.error(submitError.message);
+      if (mounted.current && submitError instanceof Error) message.error(submitError.message);
     } finally {
       setSaving(false);
     }
@@ -927,34 +932,37 @@ function CasesTab() {
         `/api/quality/cases/${row.id}/quarantine`,
         {},
       );
+      if (!mounted.current) return;
       if (res.emptyScope) message.warning("范围内已无正库存可隔离（围堵行动未产生）");
       else if (res.pending > 0) {
         message.warning(`已登记围堵行动 ${res.executed + res.pending} 项，其中 ${res.pending} 项库存侧未执行：${res.lines.find((l) => l.reason)?.reason ?? ""}`);
       } else message.success(`已隔离 ${res.executed} 项批次库存`);
       await load();
     } catch (e) {
-      message.error(e instanceof Error ? e.message : "冻结失败");
+      if (mounted.current) message.error(e instanceof Error ? e.message : "冻结失败");
     } finally {
       setQuarantiningId(null);
     }
   };
 
   const activateRecall = (row: QualityCase) => {
-    modal.confirm({
+    recallDialog.current = modal.confirm({
       title: `启动召回 · ${row.caseNo}`,
       content: "启动前系统会核验遏制、通知、有效性和数量核对四类行动均已建立。",
       okText: "确认启动",
       cancelText: "取消",
       onOk: async () => {
+        if (!mounted.current) return;
         try {
           await patchJson(`/api/quality/cases/${row.id}`, {
             operation: "activate",
             expectedVersion: row.version,
           });
+          if (!mounted.current) return;
           message.success("召回已启动");
           await load();
         } catch (operationError) {
-          message.error(operationError instanceof Error ? operationError.message : "召回启动失败");
+          if (mounted.current) message.error(operationError instanceof Error ? operationError.message : "召回启动失败");
         }
       },
     });
@@ -968,6 +976,7 @@ function CasesTab() {
     if (!actionOperation) return;
     try {
       const value = await actionOperationForm.validateFields();
+      if (!mounted.current) return;
       setSaving(true);
       const body = actionOperation.operation === "complete"
         ? {
@@ -981,17 +990,27 @@ function CasesTab() {
             verificationNote: value.verificationNote,
           };
       await patchJson(`/api/quality/actions/${actionOperation.row.id}`, body);
+      if (!mounted.current) return;
       message.success(actionOperation.operation === "complete" ? "行动已提交验证" : "验证结论已登记");
       const caseId = actionOperation.row.caseId;
       setActionOperation(null);
       await loadActions(caseId);
     } catch (submitError) {
-      if (submitError instanceof Error) message.error(submitError.message);
+      if (mounted.current && submitError instanceof Error) message.error(submitError.message);
     } finally {
       setSaving(false);
     }
   };
 
+  const actionControl = (row: QualityAction) => {
+    if (row.status === "open" && (canQuality || row.ownerId === me?.id)) {
+      return <Button type="link" size="small" onClick={() => openActionOperation(row, "complete")}>完成</Button>;
+    }
+    if (row.status === "completed" && canQuality) {
+      return <Button type="link" size="small" onClick={() => openActionOperation(row, "verify")}>验证</Button>;
+    }
+    return <Typography.Text type="secondary">—</Typography.Text>;
+  };
   const actionColumns: ColumnsType<QualityAction> = [
       {
         title: "行动",
@@ -1059,15 +1078,7 @@ function CasesTab() {
         key: "operation",
         fixed: "right",
         width: 105,
-        render: (_value, row) => {
-          if (row.status === "open" && (canQuality || row.ownerId === me?.id)) {
-            return <Button type="link" size="small" onClick={() => openActionOperation(row, "complete")}>完成</Button>;
-          }
-          if (row.status === "completed" && canQuality) {
-            return <Button type="link" size="small" onClick={() => openActionOperation(row, "verify")}>验证</Button>;
-          }
-          return <Typography.Text type="secondary">—</Typography.Text>;
-        },
+        render: (_value, row) => actionControl(row),
       },
     ];
 
@@ -1075,13 +1086,15 @@ function CasesTab() {
       {
         title: "案件",
         dataIndex: "caseNo",
+        key: "caseNo",
         fixed: "left",
         width: 260,
-        sorter: (a, b) => a.caseNo.localeCompare(b.caseNo),
+        sorter: true,
+        sortOrder: filters.sort === "caseNo" ? filters.direction === "desc" ? "descend" : "ascend" : null,
         render: (caseNo: string, row) => (
           <Space direction="vertical" size={0}>
             <Space size={5} wrap>
-              <Typography.Text code>{caseNo}</Typography.Text>
+              <Button type="link" size="small" onClick={() => target.setId(row.id)}>{caseNo}</Button>
               <Tag color={SEVERITY_COLORS[row.severity]}>{SEVERITY_LABELS[row.severity]}</Tag>
             </Space>
             <Typography.Text strong ellipsis={{ tooltip: row.title }} style={{ maxWidth: 230 }}>
@@ -1094,8 +1107,6 @@ function CasesTab() {
         title: "类型/市场",
         key: "kind",
         width: 135,
-        filters: Object.entries(CASE_KIND_LABELS).map(([value, text]) => ({ value, text })),
-        onFilter: (value, row) => row.kind === value,
         render: (_value, row) => (
           <Space direction="vertical" size={0}>
             <Tag color={row.kind === "recall" ? "red" : row.kind === "adverse_event" ? "orange" : "blue"}>
@@ -1122,7 +1133,8 @@ function CasesTab() {
         title: "报告/范围",
         key: "report",
         width: 200,
-        sorter: (a, b) => (a.reportDueDate ?? "9999").localeCompare(b.reportDueDate ?? "9999"),
+        sorter: true,
+        sortOrder: filters.sort === "reportDueDate" ? filters.direction === "desc" ? "descend" : "ascend" : null,
         render: (_value, row) => (
           <Space direction="vertical" size={0}>
             {row.reportDueDate ? (
@@ -1149,7 +1161,8 @@ function CasesTab() {
         title: "责任/状态",
         key: "owner",
         width: 165,
-        sorter: (a, b) => a.ownerName.localeCompare(b.ownerName),
+        sorter: true,
+        sortOrder: filters.sort === "ownerName" ? filters.direction === "desc" ? "descend" : "ascend" : null,
         render: (_value, row) => (
           <Space direction="vertical" size={0}>
             <Typography.Text>{row.ownerName}</Typography.Text>
@@ -1162,16 +1175,21 @@ function CasesTab() {
       {
         title: "接收日",
         dataIndex: "receivedDate",
+        key: "receivedDate",
         width: 115,
-        sorter: (a, b) => a.receivedDate.localeCompare(b.receivedDate),
+        sorter: true,
+        sortOrder: filters.sort === "receivedDate" ? filters.direction === "desc" ? "descend" : "ascend" : null,
       },
       {
         title: "操作",
         key: "actions",
         fixed: "right",
-        width: 230,
-        render: (_value, row) => (
-          <Space size={0} wrap>
+        width: 120,
+        render: (_value, row) => <Button type="link" size="small" onClick={() => target.setId(row.id)}>查看与处理</Button>,
+      },
+    ];
+
+  const renderCaseActions = (row: QualityCase) => (<Space size={0} wrap>
             {canCreateAction && row.status !== "closed" ? (
               <Button type="link" size="small" onClick={() => openCreateAction(row)}>建行动</Button>
             ) : null}
@@ -1205,10 +1223,46 @@ function CasesTab() {
             {canQuality && row.status !== "closed" ? (
               <Button type="link" size="small" onClick={() => openCaseOperation(row, "close")}>关闭</Button>
             ) : null}
-          </Space>
-        ),
-      },
-    ];
+          </Space>);
+  const renderCaseDetails = (row: QualityCase) => (<div style={{ padding: "2px 0 8px" }}>
+              <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 3 }} style={{ marginBottom: 8 }}>
+                <Descriptions.Item label="事实摘要">{row.summary}</Descriptions.Item>
+                <Descriptions.Item label="来源">{row.sourceChannel}{row.externalRef ? ` · ${row.externalRef}` : ""}</Descriptions.Item>
+                <Descriptions.Item label="评估">{row.assessmentBasis ?? "尚未评估"}</Descriptions.Item>
+                {row.inspectionSite ? <Descriptions.Item label="自查场所">{row.inspectionSite}</Descriptions.Item> : null}
+                {row.inspectionReportDate ? <Descriptions.Item label="自查报告日">{row.inspectionReportDate}</Descriptions.Item> : null}
+                {row.rootCause ? <Descriptions.Item label="根因">{row.rootCause}</Descriptions.Item> : null}
+                {row.closureNote ? <Descriptions.Item label="关闭结论">{row.closureNote}</Descriptions.Item> : null}
+              </Descriptions>
+              <ErrorAlert error={actionsRead.error} retry={() => void loadActions(row.id)} />
+              <div className={styles.actionCards}>
+                {actionsRead.data?.map(action => <article className={styles.actionCard} key={action.id} aria-label={`质量行动：${action.title}`}>
+                  <div className={styles.actionTitle}>{action.title}</div>
+                  <div className={styles.actionMeta}>
+                    <Tag>{ACTION_KIND_LABELS[action.kind]}</Tag>
+                    <Tag color={ACTION_STATUS_COLORS[action.status]}>{ACTION_STATUS_LABELS[action.status]}</Tag>
+                    <span>责任人：{action.ownerName}</span>
+                    <span>截止：{action.dueDate}</span>
+                  </div>
+                  <p>{action.description}</p>
+                  {[action.targetType, action.targetRef, action.quantity].some(Boolean) ? <p>目标 / 数量：{[action.targetType, action.targetRef, action.quantity].filter(Boolean).join(" · ")}</p> : null}
+                  {action.evidenceRef ? <p>完成证据：{action.evidenceRef} · {action.outcome}</p> : null}
+                  {action.verificationNote ? <p>核验：{action.verificationNote}</p> : null}
+                  {actionControl(action)}
+                </article>)}
+              </div>
+              <Table<QualityAction>
+                className={`${styles.actionTable} ${actionsRead.data?.length ? styles.actionTablePopulated : ""}`}
+                rowKey="id"
+                size="small"
+                loading={actionsRead.phase === "loading"}
+                columns={actionColumns}
+                dataSource={actionsRead.data ?? []}
+                pagination={false}
+                scroll={{ x: 1050 }}
+                locale={{ emptyText: <Empty style={{ margin: "12px 0" }} styles={{ image: { height: 28 } }} image={Empty.PRESENTED_IMAGE_SIMPLE} description={actionsRead.error ? "行动读取失败，请重试" : actionsRead.phase === "loading" ? "正在读取行动" : "该案件尚未建立质量行动"} /> }}
+              />
+            </div>);
 
   const caseOperationTitle = caseOperation ? {
     assess: "人工严重性评估",
@@ -1285,47 +1339,45 @@ function CasesTab() {
         size={listState.tableSize}
         columns={columns}
         dataSource={data?.rows ?? []}
+        onChange={(_page, _filters, sort, extra) => {
+          if (extra.action !== "sort" || Array.isArray(sort)) return;
+          const fields: Record<string, string> = { caseNo: "caseNo", report: "reportDueDate", owner: "ownerName", receivedDate: "receivedDate" };
+          listState.setFilter({ sort: sort.order ? fields[String(sort.columnKey)] ?? "" : "", direction: sort.order === "descend" ? "desc" : sort.order ? "asc" : "" });
+        }}
         pagination={listState.paginationProps({ total: data?.total, showTotal: (total) => `共 ${total} 个案件` })}
         scroll={{ x: 1320 }}
         locale={{
           emptyText: (
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={filters.q || filters.kind || filters.status ? "当前筛选没有匹配案件" : "暂无质量案件；发生投诉、事件、自查或召回时从这里登记"}
+              description={error ? "案件读取失败，请重试" : loading ? "正在读取案件" : filters.q || filters.kind || filters.status ? "当前筛选没有匹配案件" : "暂无质量案件；发生投诉、事件、自查或召回时从这里登记"}
             />
           ),
         }}
-        expandable={{
-          onExpand: (expanded, row) => {
-            if (expanded && !actions[row.id] && !actionLoading[row.id]) void loadActions(row.id);
-          },
-          expandedRowRender: (row) => (
-            <div style={{ padding: "2px 0 8px" }}>
-              <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 3 }} style={{ marginBottom: 8 }}>
-                <Descriptions.Item label="事实摘要">{row.summary}</Descriptions.Item>
-                <Descriptions.Item label="来源">{row.sourceChannel}{row.externalRef ? ` · ${row.externalRef}` : ""}</Descriptions.Item>
-                <Descriptions.Item label="评估">{row.assessmentBasis ?? "尚未评估"}</Descriptions.Item>
-                {row.inspectionSite ? <Descriptions.Item label="自查场所">{row.inspectionSite}</Descriptions.Item> : null}
-                {row.inspectionReportDate ? <Descriptions.Item label="自查报告日">{row.inspectionReportDate}</Descriptions.Item> : null}
-                {row.rootCause ? <Descriptions.Item label="根因">{row.rootCause}</Descriptions.Item> : null}
-                {row.closureNote ? <Descriptions.Item label="关闭结论">{row.closureNote}</Descriptions.Item> : null}
-              </Descriptions>
-              <ErrorAlert error={actionErrors[row.id] ?? null} retry={() => void loadActions(row.id)} />
-              <Table<QualityAction>
-                rowKey="id"
-                size="small"
-                loading={Boolean(actionLoading[row.id])}
-                columns={actionColumns}
-                dataSource={actions[row.id] ?? []}
-                pagination={false}
-                scroll={{ x: 1050 }}
-                locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该案件尚未建立质量行动" /> }}
-              />
-            </div>
-          ),
-        }}
+
       />
 
+
+      <Drawer title={detailRead.data ? `案件详情 · ${detailRead.data.caseNo}` : "案件详情"}
+        open={target.present} onClose={() => target.setId(null)} width={1040} destroyOnHidden
+        styles={{ wrapper: { maxWidth: "100vw" }, body: { padding: 16, minWidth: 0 } }}>
+        {target.error ? <Alert type="error" showIcon message={target.error} /> : null}
+        <ErrorAlert error={detailRead.error} retry={detailRead.retry} />
+        {detailRead.phase === "loading" ? <Typography.Paragraph role="status">正在读取案件，请稍候…</Typography.Paragraph> : null}
+        {detailRead.data ? <>
+          <Typography.Title level={5} style={{ marginTop: 0, overflowWrap: "anywhere" }}>{detailRead.data.title}</Typography.Title>
+          <Space wrap style={{ marginBottom: 12 }}>
+            <Tag>{CASE_KIND_LABELS[detailRead.data.kind]}</Tag><Tag>{CASE_STATUS_LABELS[detailRead.data.status]}</Tag>
+            <Tag color={SEVERITY_COLORS[detailRead.data.severity]}>{SEVERITY_LABELS[detailRead.data.severity]}</Tag>
+            <span>负责人：{detailRead.data.ownerName}</span><span>接收：{detailRead.data.receivedDate}</span>
+          </Space>
+          <Typography.Paragraph>{[detailRead.data.skuCode, detailRead.data.skuName, detailRead.data.batchNo, detailRead.data.supplierName].filter(Boolean).join(" · ") || "未绑定 SKU / 批次 / 供应商"}</Typography.Paragraph>
+          {detailRead.data.reportDueDate ? <Alert style={{ marginBottom: 12 }} type={detailRead.data.reportDueState === "overdue" ? "warning" : "info"} showIcon
+            message={<>报告截止：{detailRead.data.reportDueDate} {dueStateTag(detailRead.data.reportDueState)}{detailRead.data.reportedAt ? ` · 已提交 ${dateTime(detailRead.data.reportedAt)}` : " · 尚未登记提交证据"}</>} /> : null}
+          <div style={{ marginBottom: 12 }}>{renderCaseActions(detailRead.data)}</div>
+          {renderCaseDetails(detailRead.data)}
+        </> : null}
+      </Drawer>
       <Modal
         title="登记质量案件"
         open={createOpen}

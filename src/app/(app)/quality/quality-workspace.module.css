@@ -1,0 +1,10 @@
+.actionCards { display: none; }
+.actionTable { min-width: 0; }
+.actionCard { border: 1px solid #e8edf3; border-radius: 10px; padding: 12px; overflow-wrap: anywhere; background: #fff; }
+.actionCard p { margin: 6px 0; }
+.actionTitle { font-weight: 600; }
+.actionMeta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 8px 0; }
+@media (max-width: 600px) {
+  .actionTablePopulated { display: none; }
+  .actionCards { display: grid; gap: 10px; }
+}
