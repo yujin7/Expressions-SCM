@@ -1,5 +1,9 @@
 "use client";
 
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+import { useDocumentRead } from "@/components/useDocumentRead";
+
 import SearchInput from "@/components/SearchInput";
 
 import { Suspense, useCallback, useEffect, useState } from "react";
@@ -130,14 +134,18 @@ function PoInner() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "po", defaults: { q: "", status: "" }, defaultPageSize: 20 });
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "po", defaults: { q: "", status: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
 
-  const [detailId, setDetailId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<PoDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const documentSelection = useDocumentTarget();
+  const { id: detailId, setId: setDetailId } = documentSelection;
+  useEffect(() => { setRejectOpen(false); setConfirmOpen(false); }, [detailId]);
+  const detailRead = useDocumentRead<PoDetail>(detailId == null ? null : `/api/outsource/po/${detailId}`);
+  const detail = detailRead.data;
+  const detailLoading = detailRead.phase === "loading";
+  const loadDetail = detailRead.retry;
   const [actionLoading, setActionLoading] = useState(false);
 
   /** R1：提交遇价格异动时的警示（含 PC 单号） */
@@ -169,29 +177,10 @@ function PoInner() {
     void load();
   }, [load]);
 
-  const loadDetail = useCallback(
-    async (id: number) => {
-      setDetailLoading(true);
-      try {
-        const res = await fetchJson<PoDetail>(`/api/outsource/po/${id}`);
-        setDetail(res);
-      } catch (e) {
-        message.error((e as Error).message);
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [message],
-  );
-
-  useEffect(() => {
-    setPriceAlert(null);
-    if (detailId != null) void loadDetail(detailId);
-    else setDetail(null);
-  }, [detailId, loadDetail]);
+  useEffect(() => { setPriceAlert(null); }, [detailId]);
 
   const refresh = () => {
-    if (detail) void loadDetail(detail.id);
+    if (detail) void loadDetail();
     void load();
   };
 
@@ -225,7 +214,7 @@ function PoInner() {
       if (msg.includes("价格异动")) {
         const pcNos = msg.match(/PC[0-9A-Za-z-]+/g) ?? [];
         setPriceAlert({ text: msg, pcNos });
-        void loadDetail(detail.id);
+        void loadDetail();
       } else {
         message.error(msg);
       }
@@ -513,6 +502,7 @@ function PoInner() {
       />
 
       <DocumentDrawer
+        key={detailId ?? "invalid-document"}
         title={
           detail ? (
             <Space>
@@ -523,7 +513,9 @@ function PoInner() {
             "采购订单详情"
           )
         }
-        open={detailId != null}
+        open={documentSelection.present}
+        readError={documentSelection.error ?? detailRead.error}
+        onRetry={detailId != null ? detailRead.retry : undefined}
         onClose={() => setDetailId(null)}
         width={860}
         loading={detailLoading}

@@ -1,9 +1,15 @@
 "use client";
 
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import { formatQty } from "@/components/format";
+import DocumentDrawer from "@/components/DocumentDrawer";
+
 import SearchInput from "@/components/SearchInput";
 
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { App, Alert, Button, DatePicker, Descriptions, Divider, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import { App, Alert, Button, DatePicker, Descriptions, Divider, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
   DeleteOutlined,
@@ -244,7 +250,7 @@ function WoInner() {
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   // from/to = 制单时间窗（上海业务日，含首尾）：全链漏斗「下单」级点数字回链到本页时带过来
-  const listState = useListState({ key: "wo", defaults: { q: "", status: "", from: "", to: "" }, defaultPageSize: 20 });
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "wo", defaults: { q: "", status: "", from: "", to: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
@@ -255,11 +261,18 @@ function WoInner() {
   const [saving, setSaving] = useState(false);
   const [bhOptions, setBhOptions] = useState<{ value: number; label: string }[]>([]);
 
-  const [detailId, setDetailId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<WoDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  /** 该 WO 已生成的 JG 单号（null=未生成） */
-  const [existingJgNo, setExistingJgNo] = useState<string | null>(null);
+  const documentSelection = useDocumentTarget();
+  const { id: detailId, setId: setDetailId } = documentSelection;
+  useEffect(() => { setGenOpen(false); }, [detailId]);
+  const detailRead = useDocumentRead<WoDetail>(detailId == null ? null : `/api/outsource/wo/${detailId}`);
+  const detail = detailRead.data;
+  const detailLoading = detailRead.phase === "loading";
+  const generatedJg = useDocumentRead<{ rows: { docNo: string }[] }>(
+    detail?.status === "approved" ? `/api/outsource/jg?woId=${detail.id}&page=1&pageSize=1` : null,
+  );
+  const generatedKnown = generatedJg.phase === "success" && Array.isArray(generatedJg.data?.rows);
+  const existingJgNo = generatedKnown ? generatedJg.data?.rows[0]?.docNo ?? null : null;
+  const loadDetail = () => { detailRead.retry(); generatedJg.retry(); };
 
   const [genOpen, setGenOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -287,37 +300,7 @@ function WoInner() {
     void load();
   }, [load]);
 
-  const loadDetail = useCallback(
-    async (id: number) => {
-      setDetailLoading(true);
-      try {
-        const res = await fetchJson<WoDetail>(`/api/outsource/wo/${id}`);
-        setDetail(res);
-        if (res.status === "approved") {
-          // 委外链列表统一返回 {rows,total}
-          const jgs = await fetchJson<{ rows: { docNo: string }[]; total: number }>(
-            `/api/outsource/jg?woId=${id}&page=1&pageSize=1`,
-          );
-          setExistingJgNo(jgs.rows[0]?.docNo ?? null);
-        } else {
-          setExistingJgNo(null);
-        }
-      } catch (e) {
-        message.error((e as Error).message);
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [message],
-  );
 
-  useEffect(() => {
-    if (detailId != null) void loadDetail(detailId);
-    else {
-      setDetail(null);
-      setExistingJgNo(null);
-    }
-  }, [detailId, loadDetail]);
 
   // 创建弹窗打开时拉取已审批 BH 供关联（委外链列表返回 {rows,total}，RemoteSelect 不适用）
   useEffect(() => {
@@ -424,7 +407,7 @@ function WoInner() {
           </div>
         ),
       });
-      void loadDetail(detail.id);
+      void loadDetail();
       void load();
     } catch (e) {
       if (e instanceof Error && e.message) message.error(e.message);
@@ -602,7 +585,8 @@ function WoInner() {
         </Form>
       </Modal>
 
-      <Drawer
+      <DocumentDrawer
+        key={detailId ?? "invalid-document"}
         title={
           detail ? (
             <Space>
@@ -613,14 +597,16 @@ function WoInner() {
             "委外工单详情"
           )
         }
-        open={detailId != null}
+        open={documentSelection.present}
+        readError={documentSelection.error ?? detailRead.error}
+        onRetry={detailId != null ? detailRead.retry : undefined}
         onClose={() => setDetailId(null)}
         width={860}
         loading={detailLoading}
         extra={
           detail ? (
             <Space>
-              {detail.status === "approved" && existingJgNo == null ? (
+              {detail.status === "approved" && generatedKnown && existingJgNo == null ? (
                 <Button type="primary" icon={<ThunderboltOutlined />} onClick={openGenerate}>
                   生成单据
                 </Button>
@@ -628,7 +614,7 @@ function WoInner() {
               <WoActions
                 doc={{ id: detail.id, status: detail.status, version: detail.version }}
                 onChanged={() => {
-                  void loadDetail(detail.id);
+                  void loadDetail();
                   void load();
                 }}
               />
@@ -639,6 +625,12 @@ function WoInner() {
         {detail ? (
           <div>
             <ChainStrip docType="wo" id={detail.id} />
+            {detail.status === "approved" && !generatedKnown ? (
+              <Alert type={generatedJg.phase === "loading" ? "info" : "warning"} showIcon
+                message={generatedJg.phase === "loading" ? "正在核对已生成单据…" : "暂不能核实是否已生成加工通知单"}
+                description={generatedJg.error ?? "核对成功后才可生成单据，避免重复操作。"}
+                action={generatedJg.phase !== "loading" ? <Button onClick={generatedJg.retry}>重试核对</Button> : undefined} />
+            ) : null}
             {detail.status === "approved" && existingJgNo != null ? (
               <Alert
                 type="info"
@@ -647,11 +639,11 @@ function WoInner() {
                 message={`该工单已生成加工通知单 ${existingJgNo}，不可重复生成。`}
               />
             ) : null}
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="成品">
                 {detail.productSkuCode} {detail.productSkuName}
               </Descriptions.Item>
-              <Descriptions.Item label="数量">{detail.qty}</Descriptions.Item>
+              <Descriptions.Item label="数量">{formatQty(detail.qty)}</Descriptions.Item>
               <Descriptions.Item label="加工厂">{detail.supplierName}</Descriptions.Item>
               <Descriptions.Item label="加工费计划单价">
                 {detail.feeRatePlan != null ? detail.feeRatePlan : "—"}
@@ -666,7 +658,7 @@ function WoInner() {
               <Descriptions.Item label="制单时间">
                 {dayjs(detail.createdAt).format("YYYY-MM-DD HH:mm")}
               </Descriptions.Item>
-              <Descriptions.Item label="备注" span={2}>
+              <Descriptions.Item label="备注" span={{ xs: 1, sm: 2 }}>
                 {detail.remark ?? "—"}
               </Descriptions.Item>
             </Descriptions>
@@ -693,7 +685,7 @@ function WoInner() {
             ) : null}
           </div>
         ) : null}
-      </Drawer>
+      </DocumentDrawer>
 
       <Modal
         title={`生成采购订单 / 加工通知单${detail ? ` — ${detail.docNo}` : ""}`}

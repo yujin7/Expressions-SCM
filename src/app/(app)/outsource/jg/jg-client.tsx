@@ -1,5 +1,11 @@
 "use client";
 
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import { formatQty } from "@/components/format";
+import DocumentDrawer from "@/components/DocumentDrawer";
+
 import SearchInput from "@/components/SearchInput";
 
 import { Suspense, useCallback, useEffect, useState } from "react";
@@ -10,7 +16,7 @@ import {
   Button,
   DatePicker,
   Descriptions,
-  Drawer,
+
   Form,
   Input,
   Modal,
@@ -137,7 +143,7 @@ function JgInner() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "jg", defaults: { q: "", status: "" }, defaultPageSize: 20 });
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "jg", defaults: { q: "", status: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
@@ -149,10 +155,14 @@ function JgInner() {
   const [planSaving, setPlanSaving] = useState(false);
   const [reviseOpen, setReviseOpen] = useState(false);
   const [reviseForm] = Form.useForm();
-  const [detailId, setDetailId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<JgDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [detailLoadError, setDetailLoadError] = useState<string | null>(null);
+  const documentSelection = useDocumentTarget();
+  const { id: detailId, setId: setDetailId } = documentSelection;
+  useEffect(() => { setRejectOpen(false); setConfirmOpen(false); setReviseOpen(false); }, [detailId]);
+  const detailRead = useDocumentRead<JgDetail>(detailId == null ? null : `/api/outsource/jg/${detailId}`);
+  const detail = detailRead.data;
+  const detailLoading = detailRead.phase === "loading";
+  const loadDetail = detailRead.retry;
+  const detailLoadError = detailRead.error;
   const [actionLoading, setActionLoading] = useState(false);
 
   const [rejectOpen, setRejectOpen] = useState(false);
@@ -186,35 +196,10 @@ function JgInner() {
     void load();
   }, [load]);
 
-  const loadDetail = useCallback(
-    async (id: number) => {
-      setDetailLoading(true);
-      setDetailLoadError(null);
-      try {
-        const res = await fetchJson<JgDetail>(`/api/outsource/jg/${id}`);
-        setDetail(res);
-      } catch (e) {
-        const text = e instanceof Error ? e.message : "加工通知单详情加载失败";
-        setDetail(null);
-        setDetailLoadError(text);
-        message.error(text);
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [message],
-  );
 
-  useEffect(() => {
-    if (detailId != null) void loadDetail(detailId);
-    else {
-      setDetail(null);
-      setDetailLoadError(null);
-    }
-  }, [detailId, loadDetail]);
 
   const refresh = () => {
-    if (detail) void loadDetail(detail.id);
+    if (detail) void loadDetail();
     void load();
   };
 
@@ -400,7 +385,8 @@ function JgInner() {
         locale={{ emptyText: loadError ? "数据未加载" : "当前筛选下没有加工通知单" }}
       />
 
-      <Drawer
+      <DocumentDrawer
+        key={detailId ?? "invalid-document"}
         title={
           detail ? (
             <Space>
@@ -412,7 +398,9 @@ function JgInner() {
             "加工通知单详情"
           )
         }
-        open={detailId != null}
+        open={documentSelection.present}
+        readError={documentSelection.error ?? detailRead.error}
+        onRetry={detailId != null ? detailRead.retry : undefined}
         onClose={() => setDetailId(null)}
         width={760}
         loading={detailLoading}
@@ -424,18 +412,18 @@ function JgInner() {
             showIcon
             message="加工通知单详情加载失败"
             description={detailLoadError}
-            action={detailId != null ? <Button size="small" onClick={() => void loadDetail(detailId)}>重试</Button> : undefined}
+            action={detailId != null ? <Button size="small" onClick={() => void loadDetail()}>重试</Button> : undefined}
           />
         ) : detail ? (
           <div>
             <ChainStrip docType="jg" id={detail.id} />
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="关联工单">{detail.woDocNo}</Descriptions.Item>
               <Descriptions.Item label="加工厂">{detail.supplierName}</Descriptions.Item>
               <Descriptions.Item label="成品">
                 {detail.productSkuCode} {detail.productSkuName}
               </Descriptions.Item>
-              <Descriptions.Item label="数量">{detail.qty}</Descriptions.Item>
+              <Descriptions.Item label="数量">{formatQty(detail.qty)}</Descriptions.Item>
               <Descriptions.Item label="交期">{detail.dueDate ?? "—"}</Descriptions.Item>
               <Descriptions.Item label="加工费现价">
                 {detail.feeRateCurrent != null ? detail.feeRateCurrent : "—"}
@@ -555,7 +543,7 @@ function JgInner() {
                         isPaused: !!v.isPaused,
                       });
                       message.success("计划属性已保存");
-                      void loadDetail(detail.id);
+                      void loadDetail();
                       void load();
                     } catch (e) {
                       message.error((e as Error).message);
@@ -596,7 +584,7 @@ function JgInner() {
                 message.success("交期已修改并留痕");
                 setReviseOpen(false);
                 reviseForm.resetFields();
-                void loadDetail(detail.id);
+                void loadDetail();
                 void load();
               }}
               okText="确认修改"
@@ -619,7 +607,7 @@ function JgInner() {
             ) : null}
           </div>
         ) : null}
-      </Drawer>
+      </DocumentDrawer>
 
       <Modal
         title="驳回单据"

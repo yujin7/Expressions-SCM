@@ -1,9 +1,14 @@
 "use client";
 
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import DocumentDrawer from "@/components/DocumentDrawer";
+
 import SearchInput from "@/components/SearchInput";
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { App, Button, Descriptions, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Table, Tabs, Tag, Typography } from "antd";
+import { App, Button, Descriptions, Form, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, PrinterOutlined, ReloadOutlined, SaveOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
@@ -138,7 +143,7 @@ function CountInner() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS,
     key: "count",
     defaults: { q: "", status: "", mode: "", period: "" },
     defaultPageSize: 20,
@@ -153,9 +158,14 @@ function CountInner() {
   const [saving, setSaving] = useState(false);
   const createMode = Form.useWatch("mode", form);
 
-  const [detailId, setDetailId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<TaskDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const documentSelection = useDocumentTarget();
+  const { id: detailId, setId: setDetailId } = documentSelection;
+  useEffect(() => { setRejectOpen(false); }, [detailId]);
+  const detailRead = useDocumentRead<TaskDetail>(detailId == null ? null : `/api/inventory/count/${detailId}`);
+  const detail = detailRead.data;
+  const detailLoading = detailRead.phase === "loading";
+  const loadDetail = detailRead.retry;
+  useEffect(() => { setEdited({}); }, [detail]);
   const [actionLoading, setActionLoading] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
@@ -183,29 +193,7 @@ function CountInner() {
     void load();
   }, [load]);
 
-  const loadDetail = useCallback(
-    async (id: number) => {
-      setDetailLoading(true);
-      try {
-        const res = await fetchJson<TaskDetail>(`/api/inventory/count/${id}`);
-        setDetail(res);
-        setEdited({});
-      } catch (e) {
-        message.error((e as Error).message);
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [message],
-  );
 
-  useEffect(() => {
-    if (detailId != null) void loadDetail(detailId);
-    else {
-      setDetail(null);
-      setEdited({});
-    }
-  }, [detailId, loadDetail]);
 
   const handleCreate = async () => {
     try {
@@ -241,7 +229,7 @@ function CountInner() {
     try {
       await postJson(`/api/inventory/count/${detail.id}/${path}`, body);
       message.success(successText);
-      void loadDetail(detail.id);
+      void loadDetail();
       void load();
       return true;
     } catch (e) {
@@ -514,7 +502,8 @@ function CountInner() {
         </Typography.Text>
       </Modal>
 
-      <Drawer
+      <DocumentDrawer
+        key={detailId ?? "invalid-document"}
         title={
           detail ? (
             <Space>
@@ -526,7 +515,9 @@ function CountInner() {
             "盘点单详情"
           )
         }
-        open={detailId != null}
+        open={documentSelection.present}
+        readError={documentSelection.error ?? detailRead.error}
+        onRetry={detailId != null ? detailRead.retry : undefined}
         onClose={() => setDetailId(null)}
         width="min(860px, 100vw)"
         loading={detailLoading}
@@ -586,7 +577,7 @@ function CountInner() {
       >
         {detail ? (
           <div>
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="仓库">{detail.warehouseName ?? "—"}</Descriptions.Item>
               <Descriptions.Item label="盘点期">{detail.bizDate ?? "—"}</Descriptions.Item>
               <Descriptions.Item label="模式">{MODE_LABELS[detail.mode] ?? detail.mode}</Descriptions.Item>
@@ -669,7 +660,7 @@ function CountInner() {
             ) : null}
           </div>
         ) : null}
-      </Drawer>
+      </DocumentDrawer>
 
       <Modal
         title="驳回盘点单"

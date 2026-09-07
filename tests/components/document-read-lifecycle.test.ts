@@ -7,6 +7,7 @@ import { useDocumentRead } from "@/components/useDocumentRead";
 // Real hook/callback lifecycle; browser tests separately verify AntD rendering and layout.
 const hooks = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false }));
 vi.mock("antd", () => ({ Alert: "alert", Card: "card", Space: "space", Table: "table", Tag: "tag", Tooltip: "tooltip", Button: "button", Typography: { Text: "text" } }));
+vi.mock("next/link", () => ({ default: "a" }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
   useState: <T,>(initial: T | (() => T)) => {
@@ -103,6 +104,15 @@ it("a failed chain is visible and retryable rather than indistinguishable from n
 });
 
 const resource = (effects = true) => nodes(render(effects)).find(n => n.type === "read")!.props;
+it("chain links open an exact related identity, even when document labels repeat", async () => {
+  surface = "chain";
+  fetchMock.mockResolvedValueOnce(Response.json({ nodes: [
+    { docType: "bh", id: 1, label: "备货", docNo: "SAME", status: "approved", statusLabel: "已审批", current: true },
+    { docType: "po", id: 23, label: "采购", docNo: "SAME", status: "approved", statusLabel: "已审批", current: false },
+  ] }));
+  render(); await flush();
+  expect(nodes(render()).filter(n => n.type === "a").map(n => n.props.href)).toEqual(["/outsource/po?docId=23"]);
+});
 it.each(["brief", "chain"] as const)("%s rejects malformed successful payloads without crashing or claiming no issues", async target => {
   surface = target; fetchMock.mockResolvedValueOnce(Response.json({})); render(); await flush();
   expect(nodes(render()).find(n => n.type === "alert")?.props.description).toContain("响应格式异常");

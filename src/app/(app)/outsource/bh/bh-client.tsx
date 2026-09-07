@@ -1,5 +1,8 @@
 "use client";
 
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+
 import SearchInput from "@/components/SearchInput";
 
 import { Suspense, useRef, useState } from "react";
@@ -268,7 +271,7 @@ function BhInner() {
   const [form] = Form.useForm<CreateFormValues>();
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   // from/to = 制单时间窗（上海业务日，含首尾）：全链漏斗「计划」级点数字回链到本页时带过来
-  const listState = useListState({ key: "bh", defaults: { q: "", status: "", from: "", to: "" }, defaultPageSize: 20 });
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "bh", defaults: { q: "", status: "", from: "", to: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
@@ -282,7 +285,8 @@ function BhInner() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<{ id: number; message: string | null } | null>(null);
 
-  const [detailId, setDetailId] = useState<number | null>(null);
+  const documentSelection = useDocumentTarget();
+  const { id: detailId, setId: setDetailId } = documentSelection;
   const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
   if (status) params.set("status", status);
   if (from) params.set("from", from);
@@ -535,6 +539,7 @@ function BhInner() {
       </Modal>
 
       <DocumentDrawer
+        key={detailId ?? "invalid-document"}
         title={
           detail ? (
             <Space>
@@ -545,7 +550,9 @@ function BhInner() {
             "备货申请详情"
           )
         }
-        open={detailId != null}
+        open={documentSelection.present}
+        readError={documentSelection.error ?? detailRead.error}
+        onRetry={detailId != null ? detailRead.retry : undefined}
         onClose={() => setDetailId(null)}
         width={720}
         loading={detailLoading}

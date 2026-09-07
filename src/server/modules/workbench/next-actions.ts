@@ -133,7 +133,7 @@ async function approvedWoWithoutExecutionDocs(
       docTypeLabel: "委外工单",
       actionLabel: "生成采购单与加工通知",
       reason: "工单已经审批并固化需求快照，但尚未生成执行单据。",
-      href: `/outsource/wo?q=${encodeURIComponent(row.docNo)}`,
+      href: documentHref("wo", row.id)!,
       evidence: "当前状态=已审批；关联 JG=0",
     }),
   );
@@ -163,7 +163,7 @@ async function approvedPoAwaitingConfirmation(
       reason: row.hasToken
         ? "确认链接已经生成，但供应商尚未回传逐行交期。"
         : "订单已经审批，但尚未生成供应商确认入口。",
-      href: `/outsource/po?q=${encodeURIComponent(row.docNo)}`,
+      href: documentHref("po", row.id)!,
       evidence: `当前状态=已审批；确认时间=空；确认链接=${row.hasToken ? "已生成" : "未生成"}`,
     }),
   );
@@ -186,7 +186,7 @@ async function approvedJgAwaitingProduction(
       docTypeLabel: "加工通知",
       actionLabel: "确认投产与交期",
       reason: "加工通知已经审批，但尚未确认进入生产。",
-      href: `/outsource/jg?q=${encodeURIComponent(row.docNo)}`,
+      href: documentHref("jg", row.id)!,
       evidence: "当前状态=已审批；投产确认时间=空",
     }),
   );
@@ -218,7 +218,7 @@ async function approvedShAwaitingCompletion(
       reason: row.hasQc
         ? "检验记录已经完成，等待仓管确认入库。"
         : "收货单已经审批，必须完成全行质检后才能入库。",
-      href: `/matflow/sh?q=${encodeURIComponent(row.docNo)}`,
+      href: documentHref("sh", row.id)!,
       evidence: `当前状态=已审批；质检记录=${row.hasQc ? "已存在" : "不存在"}`,
     }),
   );
@@ -285,3 +285,4 @@ export async function getNextActions(roles: readonly string[], dbArg?: AnyDb): P
 
 /** Exported for contract tests and admin explainability; not a mutation surface. */
 export { NEXT_ACTION_DEFINITIONS };
+import { documentHref } from "@/lib/document-links";

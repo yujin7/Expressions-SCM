@@ -50,6 +50,8 @@ export interface ListStateConfig<F extends Record<string, string | undefined>> {
    * 有前缀时，写 URL 只增删本实例自己的参数，不动兄弟实例的（否则 Tab 间互相清空）。
    */
   paramPrefix?: string;
+  /** Selection belongs in shared links, not in saved/default list views. */
+  transientParams?: readonly string[];
 }
 
 export interface ListState<F> {
@@ -230,6 +232,12 @@ export function joinPath(pathname: string, query: string): string {
   return query ? `${pathname}?${query}` : pathname;
 }
 
+export function persistentListQuery(query: string, transientParams: readonly string[] = []): string {
+  const params = new URLSearchParams(query);
+  for (const key of transientParams) params.delete(key);
+  return params.toString();
+}
+
 /* ------------------------------------------------------------------ *
  * Hook
  * ------------------------------------------------------------------ */
@@ -253,6 +261,7 @@ export function useListState<F extends Record<string, string | undefined>>(
   const baseRef = useRef("");
 
   const currentQuery = searchParams.toString();
+  const persistedQuery = persistentListQuery(currentQuery, cfg.transientParams);
   baseRef.current = currentQuery;
   const parsed = useMemo(
     () => parseQuery(currentQuery, defaultsRef.current, optsRef.current),
@@ -282,10 +291,13 @@ export function useListState<F extends Record<string, string | undefined>>(
     if (cfg.paramPrefix) return; // 多列表页：整串恢复会抹掉兄弟实例，禁用自动恢复
     const last = window.localStorage.getItem(keys.last);
     if (last) {
-      pendingRestoreRef.current = last;
-      router.replace(joinPath(pathname, last), { scroll: false });
+      const restored = persistentListQuery(last, cfg.transientParams);
+      if (restored) {
+        pendingRestoreRef.current = restored;
+        router.replace(joinPath(pathname, restored), { scroll: false });
+      }
     }
-  }, [cfg.paramPrefix, currentQuery, keys.last, pathname, router]);
+  }, [cfg.paramPrefix, cfg.transientParams, currentQuery, keys.last, pathname, router]);
 
   /* --- 每次状态变更把当前 query 写回 localStorage --- */
   useEffect(() => {
@@ -294,9 +306,9 @@ export function useListState<F extends Record<string, string | undefined>>(
       if (!currentQuery) return; // 恢复尚未落地，别把空串覆写回去
       pendingRestoreRef.current = null;
     }
-    if (currentQuery) window.localStorage.setItem(keys.last, currentQuery);
+    if (persistedQuery) window.localStorage.setItem(keys.last, persistedQuery);
     else window.localStorage.removeItem(keys.last);
-  }, [currentQuery, keys.last]);
+  }, [currentQuery, persistedQuery, keys.last]);
 
   /* --- 密度（纯本地偏好） --- */
   const [density, setDensityState] = useState<Density>("default");
@@ -322,16 +334,16 @@ export function useListState<F extends Record<string, string | undefined>>(
   const saveView = useCallback(
     (name: string) => {
       setSavedViews((prev) => {
-        const next = mergeSavedViews(prev, name, currentQuery);
+        const next = mergeSavedViews(prev, name, persistedQuery);
         if (typeof window !== "undefined") {
           window.localStorage.setItem(keys.views, JSON.stringify(next));
         }
         return next;
       });
     },
-    [currentQuery, keys.views],
+    [persistedQuery, keys.views],
   );
-  const applyView = useCallback((query: string) => push(query), [push]);
+  const applyView = useCallback((query: string) => push(persistentListQuery(query, cfg.transientParams)), [push, cfg.transientParams]);
   const deleteView = useCallback(
     (name: string) => {
       setSavedViews((prev) => {

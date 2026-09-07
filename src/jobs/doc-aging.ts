@@ -12,12 +12,13 @@
  *
  * W1（路线图）：本任务不再手写 insert/update system_alerts，统一走 alerts/engine.upsertAlerts——
  * 去重键幂等（dedupeKey = doc_aging:<refKey>，数据库部分唯一索引兜底）、责任角色取
- * rules/task-triggers.ALERT_OWNER_ROLE（唯一权威）、动作链接直达单据列表、
+ * rules/task-triggers.ALERT_OWNER_ROLE（唯一权威）、动作链接精确打开单据、
  * sourceRule/paramsSnapshot/why 同行落库、open/refresh/close 进 alert_events 台账。
  * autoCloseAfterDays=0：单据流出等待态是硬事实（不是数据缺口），不再命中即刻关闭——与迁移前一致。
  * system_alerts 属系统写入（无 id=0 伪用户），不写 audit_logs（与 freshness / transfer_cost 同口径）。
  */
 import { and, eq, lt } from "drizzle-orm";
+import { documentHref } from "@/lib/document-links";
 import { bhDocs, jgDocs, poDocs, woDocs } from "@/db/schema";
 import { backfillAlertDedupeKeys, upsertAlerts, type AlertCandidate } from "@/server/modules/alerts/engine";
 import { ALERT_OWNER_ROLE } from "@/server/rules/task-triggers";
@@ -32,7 +33,7 @@ export const DOC_AGING_SOURCE_RULE = "jobs/doc-aging（等待态停留阈值）"
 interface DocSource {
   docType: string;
   label: string;
-  /** 告警动作链接：单据列表按单号检索（列表页 useListState 的 q 参数） */
+  /** 单据页兜底；正常记录通过documentHref绑定精确ID。 */
   href: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
   table: any;
@@ -65,8 +66,8 @@ export async function runDocAging(db: AnyDb, opts?: { now?: Date }): Promise<Doc
   for (const src of SOURCES) {
     for (const [status, days] of Object.entries(THRESHOLD_DAYS)) {
       const cutoff = new Date(now.getTime() - days * DAY_MS);
-      const rows: { docNo: string; updatedAt: Date }[] = await db
-        .select({ docNo: src.table.docNo, updatedAt: src.table.updatedAt })
+      const rows: { id: number; docNo: string; updatedAt: Date }[] = await db
+        .select({ id: src.table.id, docNo: src.table.docNo, updatedAt: src.table.updatedAt })
         .from(src.table)
         .where(and(eq(src.table.status, status), lt(src.table.updatedAt, cutoff)));
       for (const r of rows) {
@@ -80,7 +81,7 @@ export async function runDocAging(db: AnyDb, opts?: { now?: Date }): Promise<Doc
           detail: `阈值 ${days} 天；请跟进审批或供应商确认`,
           severity: "high",
           ownerRole: ALERT_OWNER_ROLE[ALERT_CATEGORY],
-          actionHref: `${src.href}?q=${encodeURIComponent(r.docNo)}`,
+          actionHref: documentHref(src.docType.toLowerCase(), r.id) ?? src.href,
           sourceRule: DOC_AGING_SOURCE_RULE,
           paramsSnapshot: { docType: src.docType, docNo: r.docNo, status, dwellDays: dwell, thresholdDays: days },
           why: [

@@ -1,10 +1,15 @@
 "use client";
 
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import DocumentDrawer from "@/components/DocumentDrawer";
+
 import SearchInput from "@/components/SearchInput";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Alert, App, Button, Checkbox, Descriptions, Drawer, Input, Modal, Popconfirm, Space, Spin, Table, Tabs, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Checkbox, Descriptions, Input, Modal, Popconfirm, Space, Spin, Table, Tabs, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
@@ -253,15 +258,19 @@ export default function JsClient() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "js", defaults: { q: "", status: "" }, defaultPageSize: 20 });
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "js", defaults: { q: "", status: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
 
   // ---- 详情 Drawer ----
-  const [detailId, setDetailId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<JsDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const documentSelection = useDocumentTarget();
+  const { id: detailId, setId: setDetailId } = documentSelection;
+  useEffect(() => { setRejectOpen(false); setSurplusOpen(false); }, [detailId]);
+  const detailRead = useDocumentRead<JsDetail>(detailId == null ? null : `/api/settlement/js/${detailId}`);
+  const detail = detailRead.data;
+  const detailLoading = detailRead.phase === "loading";
+  const loadDetail = detailRead.retry;
   const [actionLoading, setActionLoading] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
@@ -304,27 +313,10 @@ export default function JsClient() {
     void load();
   }, [load]);
 
-  const loadDetail = useCallback(
-    async (id: number) => {
-      setDetailLoading(true);
-      try {
-        setDetail(await fetchJson<JsDetail>(`/api/settlement/js/${id}`));
-      } catch (e) {
-        message.error((e as Error).message);
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [message],
-  );
 
-  useEffect(() => {
-    if (detailId != null) void loadDetail(detailId);
-    else setDetail(null);
-  }, [detailId, loadDetail]);
 
   const refresh = () => {
-    if (detail) void loadDetail(detail.id);
+    if (detail) void loadDetail();
     void load();
   };
 
@@ -700,7 +692,7 @@ export default function JsClient() {
               pagination={false}
               style={{ marginBottom: 8 }}
             />
-            <Descriptions column={3} size="small" style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 3 }} size="small" style={{ marginBottom: 16 }}>
               <Descriptions.Item label="让步单价">{fmtMoney(preview.concessionPrice)}</Descriptions.Item>
               <Descriptions.Item label="应付加工费">{fmtMoney(preview.feePayable)}</Descriptions.Item>
               <Descriptions.Item label="扣款合计">{fmtMoney(preview.deductionTotal)}</Descriptions.Item>
@@ -773,7 +765,8 @@ export default function JsClient() {
       </Modal>
 
       {/* ---- 详情 Drawer ---- */}
-      <Drawer
+      <DocumentDrawer
+        key={detailId ?? "invalid-document"}
         title={
           detail ? (
             <Space>
@@ -784,7 +777,9 @@ export default function JsClient() {
             "结算单详情"
           )
         }
-        open={detailId != null}
+        open={documentSelection.present}
+        readError={documentSelection.error ?? detailRead.error}
+        onRetry={detailId != null ? detailRead.retry : undefined}
         onClose={() => setDetailId(null)}
         width={960}
         loading={detailLoading}
@@ -793,11 +788,11 @@ export default function JsClient() {
         {detail ? (
           <div>
             <ChainStrip docType="js" id={detail.id} />
-            <Descriptions column={3} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 3 }} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="JG 单号">{detail.jgDocNo}</Descriptions.Item>
               <Descriptions.Item label="关联工单">{detail.woDocNo}</Descriptions.Item>
               <Descriptions.Item label="加工厂">{detail.supplierName}</Descriptions.Item>
-              <Descriptions.Item label="成品" span={3}>
+              <Descriptions.Item label="成品" span={{ xs: 1, sm: 3 }}>
                 {detail.productSkuCode} {detail.productSkuName}
               </Descriptions.Item>
               <Descriptions.Item label="合格数">{formatQty(detail.goodQty)}</Descriptions.Item>
@@ -811,7 +806,7 @@ export default function JsClient() {
                 <Typography.Text strong>{fmtMoney(detail.settleAmount)}</Typography.Text>
               </Descriptions.Item>
               <Descriptions.Item label="制单人">{detail.createdByName ?? "—"}</Descriptions.Item>
-              <Descriptions.Item label="制单时间" span={2}>
+              <Descriptions.Item label="制单时间" span={{ xs: 1, sm: 2 }}>
                 {dayjs(detail.createdAt).format("YYYY-MM-DD HH:mm")}
               </Descriptions.Item>
               <Descriptions.Item label="备注">{detail.remark ?? "—"}</Descriptions.Item>
@@ -843,7 +838,7 @@ export default function JsClient() {
             ) : null}
           </div>
         ) : null}
-      </Drawer>
+      </DocumentDrawer>
 
       {/* ---- 驳回 Modal ---- */}
       <Modal

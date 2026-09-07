@@ -10,6 +10,7 @@ import { createTestDb, type TestDb } from "../helpers/db";
  */
 describe("search：全局搜索（SKU/单据/供应商）", () => {
   let db: TestDb;
+  let bhId: number;
 
   beforeAll(async () => {
     ({ db } = await createTestDb());
@@ -20,7 +21,8 @@ describe("search：全局搜索（SKU/单据/供应商）", () => {
       { code: "YL00001", name: "胶原蛋白肽粉", spuId: spu.id, skuType: "raw", baseUom: "kg" },
     ]);
     await db.insert(suppliers).values({ code: "SUP001", name: "原料供应商A", kinds: ["raw"], status: "qualified" });
-    await db.insert(bhDocs).values({ docNo: "BH20260701-001", status: "pending", createdBy: u.id });
+    const [bh] = await db.insert(bhDocs).values({ docNo: "BH20260701-001", status: "pending", createdBy: u.id }).returning();
+    bhId = bh.id;
   });
 
   it("q<2 字符：返回空组", async () => {
@@ -62,11 +64,11 @@ describe("search：全局搜索（SKU/单据/供应商）", () => {
     expect(matchesRomanizedName("胶原蛋白肽饮品", "jypd")).toBe(false);
   });
 
-  it("单据号前缀命中：单据组带类型 tag 与列表页 href", async () => {
+  it("单据号前缀命中：单据组带类型 tag 与精确详情 href", async () => {
     const r = await searchAll("BH2026", db);
     const g = r.groups.find((x) => x.title === "单据");
     expect(g).toBeDefined();
-    expect(g!.items).toEqual([{ label: "BH20260701-001", href: "/outsource/bh", tag: "备货申请" }]);
+    expect(g!.items).toEqual([{ label: "BH20260701-001", href: `/outsource/bh?docId=${bhId}`, tag: "备货申请" }]);
   });
 
   it("供应商命中：供应商组 href 直达主数据", async () => {

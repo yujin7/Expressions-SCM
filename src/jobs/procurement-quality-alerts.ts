@@ -230,7 +230,7 @@ export async function runPromiseBreachWatchdog(db: AnyDb, now = new Date()): Pro
       + `改期 ${r.revisionCount} 次。改期只影响「当前承诺」口径，OTIF 主口径仍按原始承诺判——但缺料风险是真的，需要跟单。`,
     severity: r.delayDays >= 14 ? "high" : "medium",
     ownerRole: ALERT_OWNER_ROLE[category],
-    actionHref: `/outsource/po?q=${encodeURIComponent(r.docNo)}`,
+    actionHref: documentHref("po", r.poId)!,
     sourceRule: "rules/promise-basis + po_promise_revisions",
     paramsSnapshot: {
       poId: r.poId, poLineId: r.poLineId, supplierId: r.supplierId, docNo: r.docNo,
@@ -374,3 +374,4 @@ export async function runProcurementQualityAlerts(db: AnyDb, now = new Date()): 
     await runQualityCaseOverdueWatchdog(db, now),
   ];
 }
+import { documentHref } from "@/lib/document-links";

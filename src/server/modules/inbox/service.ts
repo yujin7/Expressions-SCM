@@ -1,4 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
+import { DOCUMENT_PAGES, documentHref } from "@/lib/document-links";
 import {
   approvalConfigs, bhDocs, bhLines, ctDocs, flDocs, jgDocs, jsDocs, pcDocs, pdDocs,
   poDocs, shDocs, skus, stockDocs, suppliers, tlDocs, users, warehouses, woDocs,
@@ -33,21 +34,8 @@ export const INBOX_DOC_TYPE_LABELS: Record<string, string> = {
   pd: "盘点单",
 };
 
-/** 列表页跳转（现有列表客户端均不支持 open-by-id/?q 查询参数直达，故用纯页面路径） */
-export const INBOX_PAGE_HREFS: Record<string, string> = {
-  bh: "/outsource/bh",
-  wo: "/outsource/wo",
-  po: "/outsource/po",
-  pc: "/outsource/pc",
-  jg: "/outsource/jg",
-  fl: "/matflow/fl",
-  tl: "/matflow/tl",
-  sh: "/matflow/sh",
-  ct: "/matflow/ct",
-  js: "/settlement/js",
-  stock_doc: "/inventory/docs",
-  pd: "/inventory/count",
-};
+/** Page identities remain available for permission checks; items link to an exact document. */
+export const INBOX_PAGE_HREFS = DOCUMENT_PAGES;
 
 export interface InboxItem {
   docType: string;
@@ -91,7 +79,7 @@ function mk(
     title,
     createdByName: r.createdByName,
     createdAt: r.createdAt,
-    href: INBOX_PAGE_HREFS[docType] ?? "/",
+    href: documentHref(docType, r.id) ?? "/",
     version: r.version,
     domain,
     createdBy: r.createdBy,

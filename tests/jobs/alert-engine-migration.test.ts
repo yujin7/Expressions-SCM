@@ -36,14 +36,14 @@ describe("W1 看门狗告警契约（引擎统一写入）", () => {
   it("单据超时：dedupeKey / ownerRole / actionHref / sourceRule / why 全部落库，并进 alert_events", async () => {
     const { db, client } = await createTestDb();
     try {
-      await db.insert(schema.bhDocs).values({ docNo: "BH-OLD", status: "pending", createdBy: 1, updatedAt: daysAgo(5) });
+      const [bh] = await db.insert(schema.bhDocs).values({ docNo: "BH-OLD", status: "pending", createdBy: 1, updatedAt: daysAgo(5) }).returning();
       const s = await runDocAging(db, { now: NOW });
       expect(s.opened).toBe(1);
 
       const [alert] = await alertsOf(db, "doc_aging");
       expect(alert.dedupeKey).toBe("doc_aging:BH:BH-OLD");
       expect(alert.ownerRole, "责任角色取 ALERT_OWNER_ROLE，不再落 admin 缺省").toBe(ALERT_OWNER_ROLE.doc_aging);
-      expect(alert.actionHref, "页面「去处理」要能点回单据").toContain("/outsource/bh");
+      expect(alert.actionHref, "页面「去处理」要能精确打开单据").toBe(`/outsource/bh?docId=${bh.id}`);
       expect(alert.sourceRule).toBeTruthy();
       const snap = alert.paramsSnapshot as { docNo?: string; dwellDays?: number; thresholdDays?: number; why?: unknown[] };
       expect(snap).toMatchObject({ docNo: "BH-OLD", thresholdDays: 3 });

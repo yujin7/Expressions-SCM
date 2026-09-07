@@ -193,7 +193,7 @@ export async function searchAll(qRaw: string, dbArg?: AnyDb, user?: BhReadUser):
   const docItems: SearchItem[] = DOC_TABLES.flatMap(({ docType }, idx) =>
     (docRows[idx] as { id: number; docNo: string }[]).map((r) => ({
       label: r.docNo,
-      href: INBOX_PAGE_HREFS[docType] ?? "/",
+      href: documentHref(docType, r.id) ?? "/",
       tag: INBOX_DOC_TYPE_LABELS[docType] ?? docType,
     })),
   );
@@ -213,3 +213,4 @@ export async function searchAll(qRaw: string, dbArg?: AnyDb, user?: BhReadUser):
 
   return { groups };
 }
+import { documentHref } from "@/lib/document-links";

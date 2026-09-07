@@ -1,9 +1,14 @@
 "use client";
 
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import DocumentDrawer from "@/components/DocumentDrawer";
+
 import SearchInput from "@/components/SearchInput";
 
 import { useCallback, useEffect, useState } from "react";
-import { App, Alert, Badge, Button, DatePicker, Descriptions, Drawer, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Table, Tabs, Tag, Typography } from "antd";
+import { App, Alert, Badge, Button, DatePicker, Descriptions, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
@@ -216,16 +221,20 @@ export default function ShClient() {
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   // from/to = 制单时间窗（上海业务日，含首尾）：全链漏斗「到货」级点数字回链到本页时带过来
-  const listState = useListState({ key: "sh", defaults: { q: "", status: "", from: "", to: "" }, defaultPageSize: 20 });
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "sh", defaults: { q: "", status: "", from: "", to: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
   const from = filters.from;
   const to = filters.to;
 
-  const [detailId, setDetailId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<ShDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const documentSelection = useDocumentTarget();
+  const { id: detailId, setId: setDetailId } = documentSelection;
+  useEffect(() => { setRejectOpen(false); }, [detailId]);
+  const detailRead = useDocumentRead<ShDetail>(detailId == null ? null : `/api/matflow/sh/${detailId}`);
+  const detail = detailRead.data;
+  const detailLoading = detailRead.phase === "loading";
+  const loadDetail = detailRead.retry;
   const [actionLoading, setActionLoading] = useState(false);
   const [overCapAlert, setOverCapAlert] = useState<string | null>(null);
   const [rejectOpen, setRejectOpen] = useState(false);
@@ -280,25 +289,7 @@ export default function ShClient() {
     void load();
   }, [load]);
 
-  const loadDetail = useCallback(
-    async (id: number) => {
-      setDetailLoading(true);
-      try {
-        setDetail(await fetchJson<ShDetail>(`/api/matflow/sh/${id}`));
-      } catch (e) {
-        message.error((e as Error).message);
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [message],
-  );
-
-  useEffect(() => {
-    setOverCapAlert(null);
-    if (detailId != null) void loadDetail(detailId);
-    else setDetail(null);
-  }, [detailId, loadDetail]);
+  useEffect(() => { setOverCapAlert(null); }, [detailId]);
 
   /** 检验区编辑态初始化：已审批且未检验时，按收货行预填（合格=实收） */
   useEffect(() => {
@@ -322,7 +313,7 @@ export default function ShClient() {
   }, [detail]);
 
   const refresh = () => {
-    if (detail) void loadDetail(detail.id);
+    if (detail) void loadDetail();
     void load();
   };
 
@@ -529,7 +520,7 @@ export default function ShClient() {
       const msg = (e as Error).message;
       if (msg.includes("累计收货超限")) {
         setOverCapAlert(msg);
-        void loadDetail(detail.id);
+        void loadDetail();
       } else {
         message.error(msg);
       }
@@ -1026,7 +1017,8 @@ export default function ShClient() {
         pagination={listState.paginationProps({ total: total })}
       />
 
-      <Drawer
+      <DocumentDrawer
+        key={detailId ?? "invalid-document"}
         title={
           detail ? (
             <Space>
@@ -1038,7 +1030,9 @@ export default function ShClient() {
             "收货单详情"
           )
         }
-        open={detailId != null}
+        open={documentSelection.present}
+        readError={documentSelection.error ?? detailRead.error}
+        onRetry={detailId != null ? detailRead.retry : undefined}
         onClose={() => setDetailId(null)}
         width={980}
         loading={detailLoading}
@@ -1058,7 +1052,7 @@ export default function ShClient() {
                 description={overCapAlert}
               />
             ) : null}
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="来源">
                 <Space size={4}>
                   {detail.sourceType === "jg" ? <Tag color="blue">委外</Tag> : <Tag color="green">采购</Tag>}
@@ -1070,7 +1064,7 @@ export default function ShClient() {
               <Descriptions.Item label="制单时间">
                 {dayjs(detail.createdAt).format("YYYY-MM-DD HH:mm")}
               </Descriptions.Item>
-              <Descriptions.Item label="备注" span={2}>
+              <Descriptions.Item label="备注" span={{ xs: 1, sm: 2 }}>
                 {detail.remark ?? "—"}
               </Descriptions.Item>
             </Descriptions>
@@ -1101,7 +1095,7 @@ export default function ShClient() {
                   {detail.qc.conclusion ? `｜结论：${detail.qc.conclusion}` : ""}
                 </Typography.Text>
                 {/* W2 审计 3：不合格量必须有去向（质量案件 / 退货草稿），否则它只是报表里的一个比率 */}
-                <QcOutcomePanel shId={detail.id} canWrite={canWrite} onDone={() => void loadDetail(detail.id)} />
+                <QcOutcomePanel shId={detail.id} canWrite={canWrite} onDone={() => void loadDetail()} />
               </div>
             ) : detail.status === "approved" && canWrite ? (
               <div style={{ marginBottom: 24 }}>
@@ -1196,7 +1190,7 @@ export default function ShClient() {
             ) : null}
           </div>
         ) : null}
-      </Drawer>
+      </DocumentDrawer>
 
       <Modal
         title="新建收货单"

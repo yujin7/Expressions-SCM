@@ -1,12 +1,14 @@
 "use client";
 
 import { Alert, Button, Tag, Typography } from "antd";
+import Link from "next/link";
 import { RightOutlined } from "@ant-design/icons";
 import { useDocumentRead } from "@/components/useDocumentRead";
+import { documentHref } from "@/lib/document-links";
 
 /**
  * 链路视图条：委外全链 BH→WO→PO→JG→FL/TL→SH→CT→JS 的紧凑横向节点条。
- * 当前单据高亮；其余节点点击跳转对应列表页（?q=单号 作兜底导航参数）。
+ * 当前单据高亮；其余节点精确打开对应单据，不依赖列表筛选或分页。
  * 无其他可见节点时不展示；读取失败与无关联不同，显式提供重试。
  */
 
@@ -29,18 +31,6 @@ const STATUS_COLORS: Record<string, string> = {
   completed: "success",
   closed: "warning",
   void: "default",
-};
-
-const PAGE_HREFS: Record<string, string> = {
-  bh: "/outsource/bh",
-  wo: "/outsource/wo",
-  po: "/outsource/po",
-  jg: "/outsource/jg",
-  fl: "/matflow/fl",
-  tl: "/matflow/tl",
-  sh: "/matflow/sh",
-  ct: "/matflow/ct",
-  js: "/settlement/js",
 };
 
 export default function ChainStrip({ docType, id }: { docType: string; id: number }) {
@@ -90,13 +80,13 @@ export default function ChainStrip({ docType, id }: { docType: string; id: numbe
             {n.label} {n.docNo}
           </Tag>
         );
-        const href = PAGE_HREFS[n.docType];
+        const href = documentHref(n.docType, n.id);
         return (
           <span key={`${n.docType}-${n.id}`} style={{ display: "inline-flex", alignItems: "center" }}>
             {idx > 0 ? (
               <RightOutlined style={{ fontSize: 10, color: "rgba(0,0,0,0.35)", margin: "0 6px" }} />
             ) : null}
-            {n.current || !href ? tag : <a href={`${href}?q=${encodeURIComponent(n.docNo)}`}>{tag}</a>}
+            {n.current || !href ? tag : <Link href={href}>{tag}</Link>}
           </span>
         );
       })}

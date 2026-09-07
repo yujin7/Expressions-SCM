@@ -1,10 +1,15 @@
 "use client";
 
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import DocumentDrawer from "@/components/DocumentDrawer";
+
 import SearchInput from "@/components/SearchInput";
 import { TRANSFER_TYPE_LABELS, TRANSFER_TYPES } from "@/lib/transfer-types";
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { Alert, App, Button, Descriptions, Drawer, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Typography } from "antd";
+import { Alert, App, Button, Descriptions, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { DeleteOutlined, ExperimentOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
@@ -158,7 +163,7 @@ function DocsInner() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL（?status=pending 工作台直达），密度与已保存视图存本地
-  const listState = useListState({
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS,
     key: "inv-docs",
     defaults: { q: "", status: "", subtype: "" },
     defaultPageSize: 20,
@@ -243,9 +248,12 @@ function DocsInner() {
     return () => clearTimeout(timer);
   }, [createOpen, createSubtype, createWarehouseId, createLines]);
 
-  const [detailId, setDetailId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<DocDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const documentSelection = useDocumentTarget();
+  const { id: detailId, setId: setDetailId } = documentSelection;
+  const detailRead = useDocumentRead<DocDetail>(detailId == null ? null : `/api/inventory/stock-doc/${detailId}`);
+  const detail = detailRead.data;
+  const detailLoading = detailRead.phase === "loading";
+  const loadDetail = detailRead.retry;
 
   const loadFefoPreview = async (): Promise<boolean> => {
     try {
@@ -304,25 +312,7 @@ function DocsInner() {
     void load();
   }, [load]);
 
-  const loadDetail = useCallback(
-    async (id: number) => {
-      setDetailLoading(true);
-      try {
-        const res = await fetchJson<DocDetail>(`/api/inventory/stock-doc/${id}`);
-        setDetail(res);
-      } catch (e) {
-        message.error((e as Error).message);
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [message],
-  );
 
-  useEffect(() => {
-    if (detailId != null) void loadDetail(detailId);
-    else setDetail(null);
-  }, [detailId, loadDetail]);
 
   const handleCreate = async () => {
     try {
@@ -699,7 +689,8 @@ function DocsInner() {
         }}
       />
 
-      <Drawer
+      <DocumentDrawer
+        key={detailId ?? "invalid-document"}
         title={
           detail ? (
             <Space>
@@ -710,7 +701,9 @@ function DocsInner() {
             "单据详情"
           )
         }
-        open={detailId != null}
+        open={documentSelection.present}
+        readError={documentSelection.error ?? detailRead.error}
+        onRetry={detailId != null ? detailRead.retry : undefined}
         onClose={() => setDetailId(null)}
         width="min(720px, 100vw)"
         loading={detailLoading}
@@ -727,7 +720,7 @@ function DocsInner() {
                 reversalOfId: detail.reversalOfId,
               }}
               onChanged={() => {
-                void loadDetail(detail.id);
+                void loadDetail();
                 void load();
               }}
             />
@@ -736,7 +729,7 @@ function DocsInner() {
       >
         {detail ? (
           <div>
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="类型">
                 <SubtypeTag subtype={detail.subtype} />
               </Descriptions.Item>
@@ -771,7 +764,7 @@ function DocsInner() {
             ) : null}
           </div>
         ) : null}
-      </Drawer>
+      </DocumentDrawer>
     </div>
   );
 }
