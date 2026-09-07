@@ -151,6 +151,12 @@ body {
   width: 100%;
 }
 
+/* Search results must retain full Chinese names and identifiers at narrow widths. */
+.scm-search-popup.ant-select-dropdown .ant-select-item-option-content {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 /* 顶栏三件套（搜索框 / 反馈按钮 / 头像）统一高度与圆角。
    AntD 的 size="small" 对 Input 与 Button 给的是同一档，但搜索框外面套了
    AutoComplete，其包裹层不会把高度透传下去，于是搜索框比按钮高出几个像素、

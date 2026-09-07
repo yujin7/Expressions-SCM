@@ -1,7 +1,7 @@
 /**
  * D62 路由注册表派生等价：AppShell 侧栏与 CommandPalette 页面表改为从 `src/lib/route-access.ts` 派生后，
  * 菜单外观（顺序/键/标签/分组）与角色可见性必须与 2026-09-03 之前的硬编码表完全一致。
- * 下面的 LEGACY_* 是重构前 AppShell.menuItems / MENU_ROLES / REPORT_GROUPS 与 CommandPalette.PAGES 的逐字快照。
+ * LEGACY_* 保留菜单/权限基线；命令面板的 COMPLETE_PALETTE_HREFS 为 2026-09-07 全注册表发现基线。
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -723,16 +723,25 @@ const LEGACY_REPORT_GROUPS: Record<string, string> = {
 };
 
 /** 旧 CommandPalette.PAGES 的 href 集合（顺序不做断言：面板改为菜单顺序） */
-const LEGACY_PALETTE_HREFS = [
+// 2026-09-07 discovery baseline, regenerated from the full registry (including query deep links).
+const COMPLETE_PALETTE_HREFS = [
   "/workbench",
   "/inbox",
   "/todo",
   "/goals",
+  "/notifications",
+  "/alerts",
   "/cockpit",
   "/report/dashboard",
   "/workbench?view=digest",
+  "/report/decision-studio",
+  "/report/sales-bridge",
+  "/report/funnel",
+  "/report/inventory-analytics",
+  "/report/process-mining",
   "/replenish",
   "/replenish/move-or-buy",
+  "/replenish/versions",
   "/replenish/sop",
   "/replenish/reconcile",
   "/replenish/pilot",
@@ -740,19 +749,40 @@ const LEGACY_PALETTE_HREFS = [
   "/report/demand",
   "/report/risk",
   "/report/segmentation",
+  "/report/closed-loop",
+  "/report/auto-replenish",
+  "/report/material-demand",
+  "/report/transfer-suggest",
+  "/report/forecast-accuracy",
+  "/report/detectors",
   "/outsource/auto-chain",
   "/outsource/bh",
   "/outsource/wo",
   "/outsource/po",
+  "/outsource/pc",
+  "/outsource/price-list",
   "/outsource/jg",
+  "/report/wip",
+  "/report/transit",
+  "/report/supplier-scorecard",
   "/report/supplier-scorecard?tab=leadtime",
+  "/report/price-compare",
   "/report/purchase-orders",
+  "/matflow/fl",
+  "/matflow/tl",
+  "/matflow/sh",
+  "/matflow/ct",
   "/inventory/balance",
   "/inventory/ledger",
+  "/inventory/docs",
   "/inventory/locations",
   "/inventory/count",
   "/inventory/expiry",
+  "/inventory/batch-trace",
+  "/report/inbound-calendar",
   "/report/sku-360",
+  "/report/demand?tab=stock_summary",
+  "/report/jiediao",
   "/inventory/position",
   "/inventory/alerts",
   "/inventory/warehouses",
@@ -760,24 +790,35 @@ const LEGACY_PALETTE_HREFS = [
   "/quality",
   "/npd",
   "/npd?tab=templates",
+  "/settlement/js",
+  "/report/margin",
+  "/report/settlement-summary",
+  "/jobs/recon",
+  "/settlement/month-close",
   "/master/spu",
   "/master/sku",
+  "/master/category",
   "/master/channel",
   "/master/supplier",
   "/master/supplier/lifecycle",
   "/master/warehouse",
   "/master/bin",
   "/master/bom",
+  "/master/feeref",
   "/report/data-health",
   "/master/supply-params",
   "/report/decision-studio?tab=identity",
   "/import/upload",
-  "/outsource/price-list",
   "/import/release",
+  "/import/jobs",
+  "/import/exceptions",
   "/import/data-quality",
   "/review/checklist",
+  "/report/exports",
   "/admin/users",
+  "/admin/audit",
   "/admin/params",
+  "/admin/approval-config",
   "/admin/health"
 ];
 
@@ -862,9 +903,10 @@ describe("D62 路由注册表：菜单派生等价", () => {
     expect(scopedModeForPath("/nowhere")).toBeNull();
   });
 
-  it("命令面板：页面集合与旧 PAGES 一致，角色可见性与侧栏同源", () => {
-    expect(new Set(PALETTE_PAGES.map((p) => p.href))).toEqual(new Set(LEGACY_PALETTE_HREFS));
-    expect(PALETTE_PAGES).toHaveLength(LEGACY_PALETTE_HREFS.length);
+  it("命令面板：完整页面发现基线，角色可见性与侧栏同源", () => {
+    expect(new Set(PALETTE_PAGES.map((p) => p.href))).toEqual(new Set(COMPLETE_PALETTE_HREFS));
+    expect(PALETTE_PAGES).toHaveLength(COMPLETE_PALETTE_HREFS.length);
+    expect(PALETTE_PAGES.map(p => p.href)).toEqual(ROUTE_ENTRIES.map(p => p.path));
     for (const p of PALETTE_PAGES) {
       expect(p.keywords.length).toBeGreaterThan(0);
       expect(p.roles).toEqual(LEGACY_MENU_ROLES[p.href]);

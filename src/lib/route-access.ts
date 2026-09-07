@@ -290,11 +290,11 @@ export interface PalettePage {
   roles?: readonly string[];
 }
 
-/** 命令面板页面表：登记了 keywords 的条目，按登记顺序 */
-export const PALETTE_PAGES: readonly PalettePage[] = ROUTE_ENTRIES.filter((e) => e.keywords !== undefined).map((e) => ({
+/** All registered destinations are discoverable; keywords enrich search, never gate inclusion. */
+export const PALETTE_PAGES: readonly PalettePage[] = ROUTE_ENTRIES.map((e) => ({
   label: e.label,
   href: e.path,
-  keywords: e.keywords as string,
+  keywords: `${e.keywords ?? ""} ${e.label} ${e.path}`.trim(),
   roles: e.roles,
 }));
 

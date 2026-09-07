@@ -24,6 +24,11 @@ Own the business outcome, system boundaries, and sequencing. Do not load every s
    `release-sweep` only after an exact candidate exists.
 6. Keep recommendations explainable, reversible, and proportional to present scale.
 
+For a broad improvement goal, keep an explicit task-to-evidence map and select the next slice by
+user impact and dependencies. Log incidental findings without letting low-impact cleanup replace
+the requested experience. Inspect existing skills/components/tools before adding another layer;
+compare a credible alternative and the cost of keeping it, not just the cost of building it.
+
 ## Non-negotiable judgment
 
 - Separate observed fact, approved decision, assumption, proposal, and open question.

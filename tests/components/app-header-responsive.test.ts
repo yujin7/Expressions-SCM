@@ -6,6 +6,11 @@ const root = process.cwd();
 const read = (relative: string): string => readFileSync(path.join(root, relative), "utf8");
 
 describe("responsive application header", () => {
+  it("keeps page and entity search reachable by pointer on mobile", () => {
+    const shell = read("src/components/AppShell.tsx");
+    expect(shell).toContain('<CommandPalette roles={roles} compact={isMobile || isCompactHeader} />');
+    expect(shell).toMatch(/className="app-header__actions">\s*<CommandPalette/);
+  });
   it("uses a compact, accessible account menu only at intermediate desktop widths", () => {
     const shell = read("src/components/AppShell.tsx");
 

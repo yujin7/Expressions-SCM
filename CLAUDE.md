@@ -1,8 +1,9 @@
 # 供应链系统 — 项目约定
 
 - **本项目只有 7 个 active skill，canonical 正文只在 `.claude/skills/`**；`.agents/skills/`
-  是同一批目录的发现层。只有从仓库根目录启动的会话才把这些仓库 skill 视为可发现；
-  `description` 命中只表示可被隐式激活，不保证一定激活。Codex 显式调用写 `$skill-name`，
+  是同一批目录的发现层。建议从仓库根目录启动；Codex 也会沿仓库内当前目录向上至 Git 根目录
+  扫描 `.agents/skills`，支持目录符号链接。仓库外启动不保证发现，应核对当前会话技能目录；
+  `description` 命中只表示可被隐式激活，不保证全部或每次激活。Codex 显式调用写 `$skill-name`，
   Claude Code 写 `/skill-name`。
 - 每个任务确定一个主责 skill，再按实施阶段加载完成任务所需的**最少安全门**；数据/迁移、
   写路径、并行会话与发布检查可以组合，不预加载无关整套：

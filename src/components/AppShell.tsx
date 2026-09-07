@@ -177,7 +177,6 @@ export default function AppShell({
   return (
     <MeProvider initialMe={currentUser}>
       <AntApp>
-      <CommandPalette roles={roles} />
       <Modal
         open={mustChangePassword && !onPasswordPage}
         closable={false}
@@ -273,6 +272,7 @@ export default function AppShell({
               </Typography.Title>
             </Space>
             <div className="app-header__actions">
+              <CommandPalette roles={roles} compact={isMobile || isCompactHeader} />
               {!isMobile ? (
                 <div className="app-header__search">
                   <GlobalSearch />

@@ -32,6 +32,8 @@ export interface CrudTableProps<T extends { id: number }> {
   /** 提交前：表单值 → 请求体 */
   transformSubmit?: (values: Record<string, unknown>, editing: T | null) => Record<string, unknown>;
   searchPlaceholder?: string;
+  /** Initial deep-link search. Caller keys the table by this value when navigation changes it. */
+  initialQuery?: string;
   /** 业务筛选器，展示在搜索框后、操作按钮前。 */
   toolbarFilters?: React.ReactNode;
   /** 除 q/page/pageSize 外传给列表 API 的筛选参数。 */
@@ -59,6 +61,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
     loadDetailOnEdit = false,
     transformSubmit,
     searchPlaceholder,
+    initialQuery = "",
     toolbarFilters,
     queryParams,
     modalWidth,
@@ -76,7 +79,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(initialQuery);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<T | null>(null);
   const [openingEditId, setOpeningEditId] = useState<number | null>(null);
@@ -200,6 +203,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
     <div>
       <Space className="crud-table__toolbar" wrap>
         <SearchInput
+          defaultValue={initialQuery}
           allowClear
           placeholder={searchPlaceholder ?? "搜索编码/名称"}
           style={{ width: 280 }}

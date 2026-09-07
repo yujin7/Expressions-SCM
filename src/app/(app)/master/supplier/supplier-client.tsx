@@ -24,7 +24,7 @@ interface SupplierRow {
   status: string;
 }
 
-export default function SupplierClient() {
+export default function SupplierClient({ initialQuery = "" }: { initialQuery?: string }) {
   const me = useMe();
   const canWrite = hasAnyRole(me, "purchasing");
   const [attachSupplier, setAttachSupplier] = useState<SupplierRow | null>(null);
@@ -36,6 +36,8 @@ export default function SupplierClient() {
         供应商
       </Typography.Title>
       <CrudTable<SupplierRow>
+        key={initialQuery}
+        initialQuery={initialQuery}
         loadDetailOnEdit
         rowActions={(r) => (
           <>

@@ -1,5 +1,9 @@
 import SupplierClient from "./supplier-client";
 
-export default function SupplierPage() {
-  return <SupplierClient />;
+export default async function SupplierPage({ searchParams }: {
+  searchParams: Promise<{ q?: string | string[] }>;
+}) {
+  const { q } = await searchParams;
+  const initialQuery = (Array.isArray(q) ? q[0] ?? "" : q ?? "").trim();
+  return <SupplierClient initialQuery={initialQuery} />;
 }

@@ -1,6 +1,6 @@
 ---
 name: design-supply-chain-flows
-description: Design or implement an end-to-end supply-chain workflow, page, planning recommendation, quality control, alert, PRD, state machine, domain contract, or acceptance criteria. Use when the central question is what users should decide and how the workflow should behave. Do not use for data ingestion, raw schema work, or release approval.
+description: Design or improve supply-chain workflows, navigation, compact UI, contextual help, BI decisions, planning, quality, and alerts. Use when the central question is what users should understand or do next and how to verify that experience. Do not use for data ingestion, raw schema work, or release approval.
 ---
 
 # Design Supply Chain Flows
@@ -22,6 +22,8 @@ sequentially to `write-path` once implementation reaches an application-owned mu
 
 ## UI rules
 
+- For navigation, layout, help, search, or BI changes, read
+  [experience-verification.md](references/experience-verification.md) before choosing the repair.
 - Prefer server-rendered initial facts and small client islands.
 - Use the shared list-state and toolbar components; wrap search-parameter clients in `Suspense`.
 - Keep client modules free of value imports from `@/server/*` except an architecture-test allowlist

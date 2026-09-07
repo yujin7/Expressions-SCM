@@ -76,7 +76,9 @@ describe("架构护栏：客户端请求的 API 路径必须存在", () => {
   it("⌘K 命令面板指向真实的全局搜索路由，且失败不再被吞", () => {
     const palette = readFileSync(path.join(root, "src/components/CommandPalette.tsx"), "utf8");
     // 契约：GET /api/search?q= → { groups: [{ title, items:[{label, href, tag}] }] }
-    expect(palette).toContain('"/api/search"');
+    const lifecycle = readFileSync(path.join(root, "src/components/useEntitySearch.ts"), "utf8");
+    expect(palette).toContain('from "@/components/useEntitySearch"');
+    expect(lifecycle).toContain('"/api/search"');
     // 注释里保留事故记载，代码里不得再有这条死路由
     const code = palette.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     expect(code).not.toContain("/api/inbox/search");
@@ -87,8 +89,8 @@ describe("架构护栏：客户端请求的 API 路径必须存在", () => {
 
     // 失败态：不得再出现「catch 里什么都不做」，且面板要有可见的失败提示
     expect(palette).not.toMatch(/catch\s*\{\s*\/\*\s*ignore\s*\*\/\s*\}/);
-    expect(palette).toContain("setEntityError");
+    expect(palette).toContain("search.error");
     expect(palette).toContain('role="alert"');
-    expect(palette).toMatch(/if\s*\(\s*!res\.ok\s*\)/);
+    expect(lifecycle).toMatch(/if\s*\(\s*!res\.ok\s*\)/);
   });
 });
