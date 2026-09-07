@@ -4,9 +4,10 @@ import * as schema from "@/db/schema";
 import { createTestDb, type TestDb } from "../helpers/db";
 import { computeInventoryAlerts, loadInventoryAlerts } from "@/server/modules/report/inventory-alerts";
 import { coverWhy, runInventoryCoverWatchdog } from "@/jobs/alert-watchdogs";
-import { completedShanghaiDays } from "@/server/core/business-day";
+import { completedShanghaiDays, isCurrentObservationDay } from "@/server/core/business-day";
 import * as externalVelocity from "@/server/modules/report/external-velocity";
 import { upsertAlerts } from "@/server/modules/alerts/engine";
+import { externalWindowFixture } from "../helpers/external-window";
 
 const NOW = new Date("2026-09-08T04:00:00+08:00");
 const INSIDE = new Date("2026-09-07T12:00:00+08:00");
@@ -24,6 +25,36 @@ async function fixture(db: TestDb) {
 
 describe("库存预警：销售净出库与非销售作业分离（G02）", () => {
   afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+  it("current observation admission uses Shanghai T+1 and rejects stale, future or invalid anchors", () => {
+    for (const anchor of ["2026-09-08", "2026-09-07"]) expect(isCurrentObservationDay(anchor, NOW)).toBe(true);
+    for (const anchor of [null, "2026-09-06", "2026-09-09", "2026-02-30", "2026-09-07T00:00:00Z"]) expect(isCurrentObservationDay(anchor, NOW)).toBe(false);
+  });
+
+  it("historical windows remain readable but neither stale/future observations nor a changed source prove recovery", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(NOW);
+    const { db, client } = await createTestDb();
+    try {
+      const f = await fixture(db); const s = await f.sku("SOURCE-CONTINUITY");
+      await f.move(s.id, "-30");
+      await db.insert(schema.stockBalances).values({ skuId: s.id, warehouseId: f.wh.id, qty: "1000" });
+      await db.insert(schema.skuPlanningPolicy).values({ skuId: s.id, period: "2026-09", tier: "S", abc: "A", ownership: "joint_review" });
+      const fact: externalVelocity.ExternalVelocityBySku = { paid30: "300", refund30: "0", net30: "300", paid90: "300", refund90: "0", net90: "300", lastSoldDate: "2026-09-07", activeDays90: 30, platformSkus: 1, tmallNet30: "300", pddNet30: "0", tmallNet90: "300", pddNet90: "0", pddIdentityCovered: false, windows: externalWindowFixture("300") };
+      const mock = vi.spyOn(externalVelocity, "loadExternalVelocitySafe");
+      const current = (anchorDate: string | null) => ({ ...externalVelocity.emptyExternalVelocity("Synthetic upstream evidence"), anchorDate, bySku: { [s.id]: { ...fact, windows: externalWindowFixture("300", anchorDate ?? "2026-09-07") } } });
+      await upsertAlerts(db, { category: "inventory_cover", now: new Date("2026-09-01T04:00:00+08:00"), candidates: [{ refKey: s.code, dedupeKey: `inventory_cover:${s.id}`, title: "旧外部风险", severity: "high", paramsSnapshot: { primaryDailySource: "external" } }] });
+      for (const anchor of ["2026-09-06", "2026-09-09", null]) {
+        mock.mockResolvedValue(current(anchor));
+        const row = (await computeInventoryAlerts(db)).rows[0];
+        expect(row).toMatchObject({ net7External: "300", daily: { external: 10 }, primaryDailySource: "ledger", externalDemand: { current: false } });
+        expect(coverWhy(row).find(w => w.label === "外部窗口资格")?.value).toContain("不作当前外部主需求");
+        expect(await runInventoryCoverWatchdog(db, NOW)).toMatchObject({ autoClosed: 0, stillOpen: 1 });
+      }
+      mock.mockResolvedValue(externalVelocity.emptyExternalVelocity("Upstream unavailable"));
+      expect(await runInventoryCoverWatchdog(db, NOW)).toMatchObject({ autoClosed: 0, stillOpen: 1 });
+      mock.mockResolvedValue(current("2026-09-07"));
+      expect(await runInventoryCoverWatchdog(db, NOW)).toMatchObject({ autoClosed: 1, stillOpen: 0 });
+    } finally { await client.close(); }
+  });
   it("需求缺失/净零/负净量/纯作业/对象停用/降为C均不证明恢复；有效正需求回到阈值外才迟滞关闭", async () => {
     vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(NOW);
     const { db, client } = await createTestDb();
@@ -40,7 +71,7 @@ describe("库存预警：销售净出库与非销售作业分离（G02）", () =
         if (code === "INACTIVE") await db.update(schema.skus).set({ active: false }).where(eq(schema.skus.id, sku.id));
         if (code !== "STILL-HIT") await db.insert(schema.stockBalances).values({ skuId: sku.id, warehouseId: f.wh.id, qty: "1000" });
       }
-      await upsertAlerts(db, { category: "inventory_cover", now: new Date("2026-09-03T04:00:00+08:00"), candidates: seeded.map(s => ({ refKey: s.code, dedupeKey: `inventory_cover:${s.id}`, title: "历史风险", severity: "high", ownerRole: "pmc" })) });
+      await upsertAlerts(db, { category: "inventory_cover", now: new Date("2026-09-03T04:00:00+08:00"), candidates: seeded.map(s => ({ refKey: s.code, dedupeKey: `inventory_cover:${s.id}`, title: "历史风险", severity: "high", ownerRole: "pmc", paramsSnapshot: { primaryDailySource: "ledger" } })) });
       const res = await runInventoryCoverWatchdog(db, NOW);
       expect(res).toMatchObject({ opened: 0, refreshed: 1, autoClosed: 1, stillOpen: 7 });
       const alerts = await db.select().from(schema.systemAlerts);
@@ -159,12 +190,13 @@ describe("库存预警：销售净出库与非销售作业分离（G02）", () =
         paid30: "0.0001", refund30: "0.0000", net30: "0.0001", paid90: "0.0001", refund90: "0.0000", net90: "0.0001",
         lastSoldDate: "2026-09-07", activeDays90: 1, platformSkus: 1, tmallNet30: "0.0001", pddNet30: "0.0000",
         tmallNet90: "0.0001", pddNet90: "0.0000", pddIdentityCovered: false,
+        windows: externalWindowFixture("0.0001"),
       };
       const mock = vi.spyOn(externalVelocity, "loadExternalVelocitySafe").mockResolvedValue({
-        ...externalVelocity.emptyExternalVelocity("测试已接受观察值的下游精度，不证明上游窗口完整"), bySku: { [sku.id]: fact },
+        ...externalVelocity.emptyExternalVelocity("测试已接受观察值的下游精度，不证明上游窗口完整"), anchorDate: "2026-09-07", bySku: { [sku.id]: fact },
       });
       expect((await computeInventoryAlerts(db)).rows[0]).toMatchObject({ daily: { external: 0.000003 }, primaryDailySource: "external", priorityScore: "0.0002" });
-      mock.mockResolvedValue({ ...externalVelocity.emptyExternalVelocity("负净额"), bySku: { [sku.id]: { ...fact, net30: "-0.0001" } } });
+      mock.mockResolvedValue({ ...externalVelocity.emptyExternalVelocity("负净额"), anchorDate: "2026-09-07", bySku: { [sku.id]: { ...fact, net30: "-0.0001", windows: externalWindowFixture("-0.0001") } } });
       expect((await computeInventoryAlerts(db)).rows[0]).toMatchObject({ daily: { external: -0.000003 }, primaryDailySource: null, primary: null });
     } finally { await client.close(); }
   });

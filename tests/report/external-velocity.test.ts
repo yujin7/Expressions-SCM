@@ -72,6 +72,20 @@ async function seed() {
     { importJobId: refunds.id, rowNo: 3, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
       payload: { data: { statisticalDate: "2026-09-01", shopName: shop, skuId: "P-CW", successRefundSuborderNumber: "0" } } },
   ]);
+  // This fixture asserts complete-window consumer behavior, so supply explicit daily zero evidence.
+  // Sparse/missing-day semantics are tested separately in external-demand-windows.test.ts.
+  const zeros = [];
+  let zeroRow = 100;
+  for (let back = 0; back < 90; back++) {
+    const date = new Date(Date.UTC(2026, 8, 1 - back)).toISOString().slice(0, 10);
+    for (const psku of ["P-CW", "P-DIRECT"]) {
+      const paidDates = psku === "P-CW" ? ["2026-09-01", "2026-08-15", "2026-07-01"] : ["2026-08-20"];
+      const refundDates = psku === "P-CW" ? ["2026-08-20", "2026-09-01"] : ["2026-08-20"];
+      if (!paidDates.includes(date)) zeros.push(sale(++zeroRow, psku, date, "0"));
+      if (!refundDates.includes(date)) zeros.push({ importJobId: refunds.id, rowNo: ++zeroRow, status: "pending" as const, targetTable: "jdy_tmall_sku_refund_observation", payload: { data: { statisticalDate: date, shopName: shop, skuId: psku, successRefundSuborderNumber: "0" } } });
+    }
+  }
+  await db.insert(schema.stagingRows).values(zeros);
   return { db, client, actor, viaCrosswalk, viaDirect, unmapped, crosswalk };
 }
 

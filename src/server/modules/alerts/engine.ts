@@ -204,6 +204,8 @@ export async function upsertAlerts(
     autoCloseAfterDays?: number | null;
     /** 提供时仅这些对象有本轮否定证据；空数组不自动关任何项。缺省保留其他类别的既有行为。 */
     autoCloseEligibleKeys?: readonly string[];
+    /** Pure comparison with the same open snapshot used by the timestamp CAS; no extra write/read race. */
+    autoClosePredicate?: (previous: { dedupeKey: string | null; paramsSnapshot: Record<string, unknown> | null }) => boolean;
     /**
      * 同 dedupeKey 在 N 天内被人工关闭（autoResolved=false，且关闭原因不是 fixed）则不重开。
      * **缺省 DEFAULT_MANUAL_CLOSE_SUPPRESS_DAYS（30 天）——抑制是引擎默认行为**；
@@ -218,12 +220,13 @@ export async function upsertAlerts(
   const now = input.now ?? new Date();
   const neverAutoClose = input.autoCloseAfterDays === null;
   const closeAfterMs = (input.autoCloseAfterDays ?? 3) * 24 * 60 * 60 * 1000;
-  const open: { id: number; dedupeKey: string | null; lastHitAt: Date | null; lastHitAtVersion: string | null; createdAt: Date; severity: string | null; ackedAt: Date | null }[] = await db
+  const open: { id: number; dedupeKey: string | null; lastHitAt: Date | null; lastHitAtVersion: string | null; createdAt: Date; severity: string | null; ackedAt: Date | null; paramsSnapshot: Record<string, unknown> | null }[] = await db
     .select({
       id: schema.systemAlerts.id, dedupeKey: schema.systemAlerts.dedupeKey, lastHitAt: schema.systemAlerts.lastHitAt,
       // Date只保留毫秒；历史SQL写入可能有微秒，CAS保留数据库原始精度。
       lastHitAtVersion: sql<string | null>`${schema.systemAlerts.lastHitAt}::text`,
       createdAt: schema.systemAlerts.createdAt, severity: schema.systemAlerts.severity, ackedAt: schema.systemAlerts.ackedAt,
+      paramsSnapshot: schema.systemAlerts.paramsSnapshot,
     })
     .from(schema.systemAlerts)
     .where(and(eq(schema.systemAlerts.category, input.category), eq(schema.systemAlerts.status, "open")));
@@ -314,6 +317,7 @@ export async function upsertAlerts(
   const closeEligible = input.autoCloseEligibleKeys === undefined ? null : new Set(input.autoCloseEligibleKeys);
   const toClose = (neverAutoClose ? [] : open)
     .filter((o) => closeEligible === null || (o.dedupeKey != null && closeEligible.has(o.dedupeKey)))
+    .filter((o) => input.autoClosePredicate?.(o) ?? true)
     .filter((o) => !o.dedupeKey || !hitKeys.has(o.dedupeKey))
     // closeAfterMs=0 是"不再命中即刻关闭"：无条件关，不比时间——
     // 否则两次运行的 now 一旦不单调（补跑、时钟回拨、测试注入的历史时刻），

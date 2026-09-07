@@ -48,6 +48,13 @@ async function seed(db: Awaited<ReturnType<typeof createTestDb>>["db"]) {
     rows.push({ importJobId: salesJob.id, rowNo: n++, status: "pending", targetTable: "jdy_tmall_sku_sales_observation", payload: { data: { statisticalDate: d, shopName: shop, skuId: "P-HOT", paidNumber: String(hotQty), paidAmount: String(hotQty * 100) } } });
     rows.push({ importJobId: salesJob.id, rowNo: n++, status: "pending", targetTable: "jdy_tmall_sku_sales_observation", payload: { data: { statisticalDate: d, shopName: shop, skuId: "P-X", paidNumber: String(i < 7 ? 2 : 30), paidAmount: "1" } } });
   });
+  // Complete the 30-day inventory-demand window with explicit observations. The ten-day
+  // spike pattern stays unchanged; missing days must not silently become observed zeros.
+  for (let back = 0; back < 30; back++) {
+    const d = new Date(Date.UTC(2026, 8, 2 - back)).toISOString().slice(0, 10);
+    if (!days.includes(d)) rows.push({ importJobId: salesJob.id, rowNo: n++, status: "pending", targetTable: "jdy_tmall_sku_sales_observation", payload: { data: { statisticalDate: d, shopName: shop, skuId: "P-HOT", paidNumber: "0" } } });
+    if (d !== "2026-09-02") rows.push({ importJobId: refundJob.id, rowNo: n++, status: "pending", targetTable: "jdy_tmall_sku_refund_observation", payload: { data: { statisticalDate: d, shopName: shop, skuId: "P-HOT", successRefundSuborderNumber: "0" } } });
+  }
   await db.insert(schema.stagingRows).values(rows);
   return { hot, cold, actor };
 }

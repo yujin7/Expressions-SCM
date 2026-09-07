@@ -4,6 +4,7 @@ import { createTestDb } from "../helpers/db";
 import { emptyExternalVelocity, loadExternalVelocity, loadExternalVelocitySafe, type ExternalVelocityBySku } from "@/server/modules/report/external-velocity";
 import { computeExternalSkuRanking, filterExternalSkuRanking } from "@/server/modules/report/external-sku-ranking";
 import { computeInventoryAlerts } from "@/server/modules/report/inventory-alerts";
+import { externalWindowFixture } from "../helpers/external-window";
 
 // Mock only the upstream DTO. Consumer queries, sorting, fallback and masking inputs remain real.
 vi.mock("@/server/modules/report/external-velocity", async (original) => {
@@ -17,6 +18,7 @@ function quantity(net30: string | null): ExternalVelocityBySku {
     net30, net90: net30, tmallNet30: net30 ?? "1.0000", tmallNet90: net30 ?? "1.0000",
     pddNet30: "0.0000", pddNet90: "0.0000", pddIdentityCovered: net30 == null,
     lastSoldDate: null, activeDays90: 0, platformSkus: 1,
+    windows: externalWindowFixture(net30),
   };
 }
 

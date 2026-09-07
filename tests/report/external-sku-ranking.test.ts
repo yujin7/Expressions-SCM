@@ -4,6 +4,8 @@
  * 缓存绑定随外部销速绑定与 sales_monthly 变化。
  */
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { EXTERNAL_VELOCITY_CACHE_KEY, refreshExternalVelocity } from "@/server/modules/report/external-velocity";
 import * as schema from "@/db/schema";
 import { createTestDb } from "../helpers/db";
 import { computeExternalSkuRanking, filterExternalSkuRanking, loadExternalSkuRanking } from "@/server/modules/report/external-sku-ranking";
@@ -79,6 +81,21 @@ describe("SKU 外部销量排名", () => {
         { importJobId: freshRefunds.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_refund_observation", payload: { data: { statisticalDate: "2026-08-31", shopName: shop, skuId: "P-A", successRefundSuborderNumber: "2" } } },
         { importJobId: freshRefunds.id, rowNo: 2, status: "pending", targetTable: "jdy_tmall_sku_refund_observation", payload: { data: { statisticalDate: "2026-09-01", shopName: shop, skuId: "P-A", successRefundSuborderNumber: "0" } } },
       ]);
+      // Matching maximum dates alone does not qualify the sparse input for a 30/90-day rank.
+      expect((await computeExternalSkuRanking(db)).rows.every(row => row.rank == null && row.net30 == null)).toBe(true);
+      // Explicit observed zeros complete this positive case, not the production calculation.
+      const dailyZeros = [];
+      let seq = 100;
+      for (let back = 0; back < 90; back++) {
+        const date = new Date(Date.UTC(2026, 8, 1 - back)).toISOString().slice(0, 10);
+        for (const psku of ["P-A", "P-BUNDLE"]) {
+          if (!(psku === "P-A" && ["2026-09-01", "2026-07-01"].includes(date)) && !(psku === "P-BUNDLE" && date === "2026-08-30")) dailyZeros.push(sale(seq++, psku, date, "0"));
+          if (!(psku === "P-A" && ["2026-08-31", "2026-09-01"].includes(date))) dailyZeros.push({ importJobId: freshRefunds.id, rowNo: seq++, status: "pending" as const, targetTable: "jdy_tmall_sku_refund_observation", payload: { data: { statisticalDate: date, shopName: shop, skuId: psku, successRefundSuborderNumber: "0" } } });
+        }
+      }
+      await db.insert(schema.stagingRows).values(dailyZeros);
+      // Finish constructing the synthetic source before rebuilding its derived cache.
+      await refreshExternalVelocity(db);
       const model = await computeExternalSkuRanking(db);
       expect(model.state).toBe("ready");
       expect(model.anchorDate).toBe("2026-09-01");
@@ -104,6 +121,11 @@ describe("SKU 外部销量排名", () => {
       // 缓存：第二次读取一致；内部事实新增一个月后绑定变化、内部对照随之更新
       const cached = await loadExternalSkuRanking(db);
       expect(cached.rows[0]?.net30).toBe("8.0000");
+      const [entry] = await db.select().from(schema.reportReadModelCache).where(eq(schema.reportReadModelCache.key, "external-sku-ranking/v2"));
+      expect(entry.sourceBinding).toContain(`velocity:${EXTERNAL_VELOCITY_CACHE_KEY}:`);
+      // Same source batch IDs under an older demand formula must not reuse a ranking cache.
+      await db.update(schema.reportReadModelCache).set({ sourceBinding: entry.sourceBinding.replace(`${EXTERNAL_VELOCITY_CACHE_KEY}:`, ""), payload: { ...cached, rows: [] } }).where(eq(schema.reportReadModelCache.key, entry.key));
+      expect((await loadExternalSkuRanking(db)).rows[0]?.net30).toBe("8.0000");
       await db.insert(schema.salesMonthly).values({ skuId: a.id, channelId: channel.id, yearMonth: "2026-07", qty: "7.0000" });
       const refreshed = await loadExternalSkuRanking(db);
       expect(refreshed.internalMonths).toEqual(["2026-05", "2026-06", "2026-07"]);

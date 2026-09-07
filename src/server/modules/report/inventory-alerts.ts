@@ -5,7 +5,7 @@ import { resolveDb, type AnyDb } from "@/server/core/svc";
 import { getOnHandBySku } from "@/server/core/stock-view";
 import { getOpenSupplyLines, type OpenSupplyLine } from "@/server/core/supply";
 import { calendarMonthWindow } from "@/server/core/velocity";
-import { completedShanghaiDays } from "@/server/core/business-day";
+import { completedShanghaiDays, isCurrentObservationDay } from "@/server/core/business-day";
 import { getLedgerMovementSummary } from "@/server/core/sales-ledger";
 import { classifyTier, DEFAULT_TIER_CUTS, type Tier } from "@/server/rules/abc";
 import {
@@ -16,7 +16,7 @@ import { pickPrimaryAlert, priorityScore, type AlertKind, type PriorityScoreTerm
 import { isSlowMover } from "@/server/rules/risk-action";
 import { todayShanghai } from "@/server/modules/master/common";
 import { expiryCheck, type ExpiryCheckItem } from "@/server/modules/replenish/expiry";
-import { loadExternalVelocitySafe } from "@/server/modules/report/external-velocity";
+import { loadExternalVelocitySafe, type ExternalVelocityBySku } from "@/server/modules/report/external-velocity";
 import { loadSalesSpike, SALES_SPIKE_CACHE_KEY } from "@/server/modules/report/sales-spike";
 import { salesSpikeEvidenceCurrent } from "@/server/rules/sales-spike";
 
@@ -53,8 +53,8 @@ import { salesSpikeEvidenceCurrent } from "@/server/rules/sales-spike";
  *   停用一个 SKU、新建一个成品、把某 SKU 的 near_expiry_days 从 90 改成 30，绑定全都看不见。
  *   改为绑启用成品的行数/最大 id/已维护 near_expiry_days 的个数与其合计/最大 updated_at。
  */
-// v8：六个月分子/自然日分母一致、日均与优先级保留六位中间精度；旧 v7 分数不得复用。
-export const INVENTORY_ALERTS_CACHE_KEY = "inventory-alerts/v8";
+// v9：外部逐序列7/15/30日覆盖与T+1准入；历史完整数可看，不作当前主需求。
+export const INVENTORY_ALERTS_CACHE_KEY = "inventory-alerts/v9";
 
 export type DailySource = "external" | "internal" | "ledger";
 
@@ -73,8 +73,10 @@ export interface InventoryAlertRow {
   };
   /** 仅已登记月销量；有行月份数不证明全部渠道或每月完整。 */
   internalDemand: { startDay: string | null; endDayExclusive: string | null; days: number | null; salesQty: string | null; observedMonths: number };
-  net7External: number | null;
+  net7External: string | null;
+  net15External: string | null;
   net30External: string | null;
+  externalDemand: { anchorDate: string | null; current: boolean; windows: ExternalVelocityBySku["windows"] | null };
   primaryDaily: number | null;
   primaryDailySource: DailySource | null;
   /** 在库可销天数（不含在途，原口径） */
@@ -302,6 +304,7 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
     for (const h of spike?.hits ?? []) if (typeof h.skuId === "number") spikeHits.set(h.skuId, { expected: h.expected === true });
   }
   const supplyBySku = summarizeSupplyForAlerts(supplyLines, today);
+  const externalCurrent = isCurrentObservationDay(ev.anchorDate);
 
   const rows: InventoryAlertRow[] = skus.map((s) => {
     const oh = num(onHand.bySku.get(s.id) ?? "0");
@@ -313,7 +316,7 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
     const ledgerNet = ledgerFacts?.salesNetQty ?? null;
     // 数量四位的小额销售也要保留需求信号；只在展示时压缩，不用两位舍入参与判定。
     const ledger = ledgerNet != null ? Number(dDiv(ledgerNet, "30", 6)) : null;
-    const primaryDailySource: DailySource | null = external != null && external > 0 ? "external" : internal != null && internal > 0 ? "internal" : ledger != null && ledger > 0 ? "ledger" : null;
+    const primaryDailySource: DailySource | null = externalCurrent && evs?.windows?.[30]?.complete === true && external != null && external > 0 ? "external" : internal != null && internal > 0 ? "internal" : ledger != null && ledger > 0 ? "ledger" : null;
     const primaryDaily = primaryDailySource === "external" ? external : primaryDailySource === "internal" ? internal : primaryDailySource === "ledger" ? ledger : null;
     const cover = primaryDaily && primaryDaily > 0 ? r1(oh / primaryDaily) : null;
     const sup = supplyBySku.get(s.id) ?? { dated: 0, undated: 0, overdue: 0, next: null };
@@ -357,7 +360,8 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
         startDay: internalDemandWindow?.startDay ?? null, endDayExclusive: internalDemandWindow?.endDayExclusive ?? null,
         days: internalDemandWindow?.days ?? null, salesQty: internalFact?.qty ?? null, observedMonths: internalFact?.observed_months ?? 0,
       },
-      net7External: null, net30External: evs ? evs.net30 : null,
+      net7External: evs?.windows?.[7]?.net ?? null, net15External: evs?.windows?.[15]?.net ?? null, net30External: evs?.net30 ?? null,
+      externalDemand: { anchorDate: ev.anchorDate, current: externalCurrent, windows: evs?.windows ?? null },
       primaryDaily, primaryDailySource, coverDays: cover,
       coverDaysWithSupply: coverWithSupply,
       inTransitDated: sup.dated, inTransitUndated: sup.undated, inTransitOverdue: sup.overdue, nextArrival: sup.next,

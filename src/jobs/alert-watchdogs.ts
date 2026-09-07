@@ -54,6 +54,10 @@ export function coverWhy(r: InventoryAlertRow, orderBy?: OrderByExplain): AlertW
     why.push({ label: "主日销口径", value: `${DAILY_SOURCE_LABEL[r.primaryDailySource]}（${win}；正值优先：外部 > 内部 > 实时仓销售，不相加）`, source: "report/inventory-alerts" });
   }
   why.push({ label: "实时仓销售/作业", value: `[${r.ledgerDemand.startDay}, ${r.ledgerDemand.endDayExclusive}) 上海 ${r.ledgerDemand.days} 个完整业务日：销售净出库 ${r.ledgerDemand.salesNetQty ?? "未知"}；非销售作业出库 ${r.ledgerDemand.operationsOutQty ?? "未知"}（负向流量，未扣正向冲销，不作为需求）`, source: "core/sales-ledger" });
+  why.push({ label: "外部窗口资格", value: `截至 ${r.externalDemand.anchorDate ?? "未知"}，${r.externalDemand.current ? "T+1内" : "历史/未知，不作当前外部主需求"}；${([7, 15, 30] as const).map(days => {
+    const w = r.externalDemand.windows?.[days];
+    return `${days}日 ${w?.net ?? "未知"} 件 [${w?.startDay ?? "未知"}, ${w?.endDay ?? "未知"}]（含），完整序列 ${w?.completeSequences ?? 0}/${w?.requiredSequences ?? 0}`;
+  }).join("；")}。完整仅指受控身份序列，不代表全渠道；观察不用于补货定量。`, source: "report/external-velocity" });
   why.push({ label: "阈值", value: `${r.alertDays} 天 = ${r.alertBasis}${r.usedDefault ? "（含缺省周期）" : ""}`, source: "rules/alert-threshold" });
   if (r.learnedLead) {
     const l = r.learnedLead;
@@ -147,6 +151,7 @@ export async function runInventoryCoverWatchdog(db: AnyDb, now = new Date()) {
           nextArrival: r.nextArrival, inTransitDated: r.inTransitDated, inTransitUndated: r.inTransitUndated, inTransitOverdue: r.inTransitOverdue,
           learnedLead: r.learnedLead, priorityScore: r.priorityScore, priorityTerms: r.priorityTerms, statusOnHand: r.statusOnHand, statusBasis: r.statusBasis,
           primary: r.primary, tags: r.tags,
+          externalDemand: r.externalDemand,
           // 最晚下单日（闭环审计 #9 / W6，待办真实截止日）：优先取补货引擎逐日推演结果，无答案才回退近似
           orderByDate: orderBy.date,
           orderByDateSource: orderBy.source,
@@ -157,13 +162,20 @@ export async function runInventoryCoverWatchdog(db: AnyDb, now = new Date()) {
     });
   // “本轮没命中”不等于“风险恢复”：无正需求时 coverStatus(null) 为 ok，
   // 但那只是没有可计算的覆盖天数，不能拿来关闭历史告警。停用/消失/C级同理。
-  // 这是必要而非充分的数据资格；外部完整窗口与来源切换资格仍由读模型后续收口。
+  // 已知外部窗口缺失/过期时，内部兜底也不能证明旧外部风险恢复。
   const autoCloseEligibleKeys = model.rows.filter((r) =>
     r.tier != null && r.tier !== "C" && r.primaryDailySource != null
     && r.primaryDaily != null && Number.isFinite(r.primaryDaily) && dCmp(String(r.primaryDaily), "0") > 0
     && r.coverDays != null && Number.isFinite(r.coverDays),
-  ).map((r) => `inventory_cover:${r.skuId}`);
-  const res = await upsertAlerts(db, { category: "inventory_cover", candidates, now, autoCloseEligibleKeys });
+  ).filter(r => r.externalDemand.windows == null || (r.externalDemand.current && r.externalDemand.windows[30].complete))
+    .map((r) => `inventory_cover:${r.skuId}`);
+  const currentSources = new Map(model.rows.map(r => [`inventory_cover:${r.skuId}`, r.primaryDailySource]));
+  const res = await upsertAlerts(db, {
+    category: "inventory_cover", candidates, now, autoCloseEligibleKeys,
+    // 无历史来源或来源改变只保留待复核；不能因外部→内部等切换而学到“恢复”。
+    autoClosePredicate: previous => previous.dedupeKey != null && previous.paramsSnapshot?.primaryDailySource != null
+      && previous.paramsSnapshot.primaryDailySource === currentSources.get(previous.dedupeKey),
+  });
   return { category: "inventory_cover", rows: model.rows.length, candidates: candidates.length, downgradedBySupply: model.totals.downgradedBySupply, ...res };
 }
 

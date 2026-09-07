@@ -52,6 +52,20 @@ function dbWithInterleavedWrite<T extends object>(db: T, interleave: () => Promi
 }
 
 describe("预警引擎护栏", () => {
+  it("auto-close evidence predicate sees the stored source and cannot promote missing or changed provenance", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const old = new Date("2026-09-01T03:00:00Z");
+      await upsertAlerts(db, { category: "source_guard", now: old, candidates: [
+        { ...cand("same"), paramsSnapshot: { primaryDailySource: "ledger" } },
+        { ...cand("changed"), paramsSnapshot: { primaryDailySource: "external" } },
+        cand("unknown"),
+      ] });
+      const result = await upsertAlerts(db, { category: "source_guard", candidates: [], now: new Date("2026-09-08T03:00:00Z"), autoClosePredicate: previous => previous.paramsSnapshot?.primaryDailySource === "ledger" });
+      expect(result).toMatchObject({ autoClosed: 1, stillOpen: 2 });
+      expect((await db.select().from(schema.systemAlerts)).filter(row => row.status === "resolved").map(row => row.refKey)).toEqual(["same"]);
+    } finally { await client.close(); }
+  });
   it("历史NULL与数据库微秒时间戳未变化时仍可正常关闭，不被JS毫秒精度卡住", async () => {
     const { db, client } = await createTestDb();
     try {

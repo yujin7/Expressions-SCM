@@ -1,7 +1,8 @@
 import React, { createElement, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { InternalDemandCell, InventoryCoverCard, LedgerDemandCell } from "@/app/(app)/inventory/alerts/alerts-client";
+import { ExternalDemandCell, InternalDemandCell, InventoryCoverCard, LedgerDemandCell } from "@/app/(app)/inventory/alerts/alerts-client";
+import { externalWindowFixture } from "../helpers/external-window";
 import ContextHelp from "@/components/ContextHelp";
 
 beforeAll(() => vi.stubGlobal("React", React));
@@ -13,6 +14,7 @@ const row: CardRow = {
   primaryDaily: 9, primaryDailySource: "ledger", coverDays: 0, alertDays: 50,
   usedDefault: true, alertBasis: "加工30（缺省）+物流15（缺省）+缓冲5", statusBasis: "在途供给须独立复核",
   daily: { external: null, internal: null, ledger: 9 }, net30External: null,
+  net7External: null, net15External: null, externalDemand: { anchorDate: null, current: false, windows: null },
   ledgerDemand: { startDay: "2026-08-09", endDayExclusive: "2026-09-08", days: 30, salesNetQty: "270.0000", operationsOutQty: "600.0000" },
   internalDemand: { startDay: "2026-01-01", endDayExclusive: "2026-07-01", days: 181, salesQty: null, observedMonths: 0 },
 };
@@ -27,6 +29,13 @@ function helpContent(node: ReactNode): ReactNode {
 }
 
 describe("库存预警紧凑卡片与同源口径", () => {
+  it("external 7/15/30 totals, historical warning and per-window evidence remain readable without inventing zeros", () => {
+    const r = { ...row, net7External: "0.0000", net15External: "-1.0000", net30External: null, externalDemand: { anchorDate: "2026-09-07", current: false, windows: externalWindowFixture(null) } };
+    const html = render(r); const visible = html.slice(0, html.indexOf("<details"));
+    for (const value of ["7日", "15日", "30日", "-1", "—", "截至 2026-09-07", "历史"]) expect(visible).toContain(value);
+    const help = renderToStaticMarkup(createElement(React.Fragment, null, helpContent(ExternalDemandCell({ row: r }))));
+    for (const value of ["2026-09-01", "2026-08-24", "完整序列 0/1", "覆盖不足", "不能用别家店补缺日", "不作为当前外部主需求"]) expect(help).toContain(value);
+  });
   it("内部月销帮助展示同一分母与起止；缺月份提示不藏在帮助后", () => {
     const r = { ...row, daily: { ...row.daily, internal: 0.000003 }, internalDemand: { ...row.internalDemand, salesQty: "0.0006", observedMonths: 1 } };
     const html = renderToStaticMarkup(createElement(InternalDemandCell, { row: r }));

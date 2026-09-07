@@ -33,3 +33,8 @@
   .mobile { display: block; }
   .pagination { justify-content: center; }
 }
+.externalDemand { min-width: 0; text-align: left; }
+.externalWindows { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.externalWindows > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.externalWindows span { color: var(--ant-color-text-secondary, #667085); font-size: 11px; }
+.externalWindows strong { font-variant-numeric: tabular-nums; font-weight: 500; overflow-wrap: anywhere; }

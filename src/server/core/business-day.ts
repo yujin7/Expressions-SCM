@@ -30,6 +30,13 @@ export function todayShanghai(): string {
   return shanghaiDayOf(new Date());
 }
 
+/** T+1 observation recency: historical/future windows remain readable, not current evidence. */
+export function isCurrentObservationDay(anchor: string | null, now = new Date()): boolean {
+  if (!anchor || shanghaiDay(anchor) !== anchor) return false;
+  const age = dayDiff(anchor, shanghaiDayOf(now));
+  return age >= 0 && age <= 1;
+}
+
 /** 最近 N 个已结束的上海业务日：[start, end)，不混入今天的部分日或未来记录。 */
 export function completedShanghaiDays(days: number, today = todayShanghai()): {
   start: Date; end: Date; startDay: string; endDayExclusive: string; days: number;

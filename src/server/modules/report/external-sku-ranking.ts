@@ -81,7 +81,7 @@ async function binding(db: ReadDb): Promise<string> {
   ]);
   const v = resultRows<Record<string, unknown>>(velocity)[0];
   const k = resultRows<Record<string, unknown>>(skus)[0];
-  return `velocity:${text(v?.source_binding) ?? "none"}|sales:${sales.maxYm ?? "none"}:${sales.rowCount}|skus:${num(k?.n)}:${num(k?.m)}`;
+  return `velocity:${VELOCITY_CACHE_KEY}:${text(v?.source_binding) ?? "none"}|sales:${sales.maxYm ?? "none"}:${sales.rowCount}|skus:${num(k?.n)}:${num(k?.m)}`;
 }
 
 export async function computeExternalSkuRanking(db: ReadDb): Promise<ExternalSkuRanking> {

@@ -9,13 +9,11 @@
  * 本模块只判定，不落库、不推送、不改任何补货参数（观察数据只能预警，D55）。
  */
 import { type Dec, dAdd, dCmp, dDeviationPct, dDiv, dMul, dQty } from "@/server/core/decimal";
-import { dayDiff, shanghaiDay, shanghaiDayOf } from "@/server/core/business-day";
+import { isCurrentObservationDay, shanghaiDay } from "@/server/core/business-day";
 
 /** 天猫日销 T+1：历史/未来业务窗口仍可回看，但不能证明当前命中或恢复。 */
 export function salesSpikeEvidenceCurrent(anchor: string | null, now = new Date()): boolean {
-  if (!anchor || shanghaiDay(anchor) !== anchor) return false;
-  const age = dayDiff(anchor, shanghaiDayOf(now));
-  return age >= 0 && age <= 1;
+  return isCurrentObservationDay(anchor, now);
 }
 
 export interface DailyPoint {

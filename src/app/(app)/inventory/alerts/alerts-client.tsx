@@ -39,6 +39,24 @@ const KIND_LABEL: Record<string, string> = { out_of_stock: "断货", spike: "爆
 const dailyText = (value: number | null) => value == null ? "—" : formatQty(value.toFixed(6));
 const DAILY_BASIS: Record<string, string> = { external: "外部观察", internal: "内部月销", ledger: "系统销售净出库" };
 
+/** One evidence cell shared by the desktop table and narrow cards. Never recompute demand here. */
+export function ExternalDemandCell({ row }: { row: Pick<InventoryAlertRow, "code" | "net7External" | "net15External" | "net30External" | "externalDemand"> }) {
+  const evidence = row.externalDemand;
+  return <div className={styles.externalDemand}>
+    <div className={styles.externalWindows}>{([7, 15, 30] as const).map((days) => <div key={days}>
+      <span>{days}日</span><strong>{formatQty(days === 7 ? row.net7External : days === 15 ? row.net15External : row.net30External)}</strong>
+    </div>)}</div>
+    <span className={styles.secondary}>{evidence?.anchorDate ? `截至 ${evidence.anchorDate}` : "未取得外部窗口"}
+      {evidence?.anchorDate && !evidence.current ? " · 历史" : ""} <ContextHelp label={`${row.code}外部窗口依据`} title="外部净件与覆盖"
+        content={<>
+          <p>天猫支付件数减成功退款子订单数，加拼多多已付款有效订单件数；保留观察口径，不等同全部渠道销量，不用于补货定量。</p>
+          {([7, 15, 30] as const).map(days => { const w = evidence?.windows?.[days]; return <p key={days}>{days}日：{w ? `${w.startDay ?? "未知"}至${w.endDay ?? "未知"}（含）；完整序列 ${w.completeSequences}/${w.requiredSequences}` : "无受控身份窗口证据"}。{w?.complete ? "该窗口可读" : "覆盖不足，—不是零"}。</p>; })}
+          <p>天猫每家店/平台SKU须有逐日支付和退款记录，不能用别家店补缺日；拼多多覆盖来自连续抽取窗口。完整只指已认领序列，不证明全平台覆盖。</p>
+          <p>{evidence?.current ? "时点在T+1内；只有完整30日且净日销为正才可作为当前外部主需求。" : "历史/未知时点只供核对，不作为当前外部主需求；内部与实时仓来源另行披露。"}</p>
+        </>} /></span>
+  </div>;
+}
+
 export function InternalDemandCell({ row }: { row: Pick<InventoryAlertRow, "code" | "daily" | "internalDemand"> }) {
   const evidence = row.internalDemand;
   return <div className={styles.ledger}>
@@ -68,7 +86,7 @@ export function LedgerDemandCell({ row }: { row: Pick<InventoryAlertRow, "code" 
   </div>;
 }
 
-type CoverCardRow = Pick<InventoryAlertRow, "code" | "name" | "brand" | "tier" | "tierSource" | "primary" | "tags" | "onHand" | "primaryDaily" | "primaryDailySource" | "coverDays" | "alertDays" | "alertBasis" | "usedDefault" | "daily" | "ledgerDemand" | "internalDemand" | "net30External" | "statusBasis">;
+type CoverCardRow = Pick<InventoryAlertRow, "code" | "name" | "brand" | "tier" | "tierSource" | "primary" | "tags" | "onHand" | "primaryDaily" | "primaryDailySource" | "coverDays" | "alertDays" | "alertBasis" | "usedDefault" | "daily" | "ledgerDemand" | "internalDemand" | "net7External" | "net15External" | "net30External" | "externalDemand" | "statusBasis">;
 
 export function InventoryCoverCard({ row, ack, actions, detail }: { row: CoverCardRow; ack: ReactNode; actions: ReactNode; detail?: ReactNode }) {
   return <article className={styles.card} aria-label={`${row.code} 库存预警`}>
@@ -87,6 +105,7 @@ export function InventoryCoverCard({ row, ack, actions, detail }: { row: CoverCa
       <div><dt>阈值</dt><dd>{row.alertDays}天{row.usedDefault ? <small> · 含缺省周期</small> : null}</dd></div>
     </dl>
     <div className={styles.sales}><span className={styles.secondary}>系统销售 / 作业</span><LedgerDemandCell row={row} /></div>
+    <div className={styles.sales}><span className={styles.secondary}>外部净件</span><ExternalDemandCell row={row} /></div>
     <p className={styles.basis}>主日销来源：{row.primaryDailySource ? DAILY_BASIS[row.primaryDailySource] : "未取得正日销"}；三口径不相加，作业量不作需求。</p>
     {row.primaryDailySource === "internal" && row.internalDemand.observedMonths < 6 ? <p className={styles.basis}>月销仅{row.internalDemand.observedMonths}/6月有记录，需核对缺失数据。</p> : null}
     <details className={styles.details}><summary>其他口径与阈值依据</summary>
@@ -214,8 +233,8 @@ function CoverTab() {
       const all = await fetchJson<InventoryAlertsPage>(`/api/report/inventory-alerts?${sp.toString()}`);
       exportCsv(
         `库存预警表-${all.builtAt.slice(0, 10)}`,
-        ["等级", "等级来源", "SKU", "名称", "品牌", "日销外部", "日销内部", "实时仓销售净出库日均", "主日销", "主日销来源", "外部近30天净件", "在库", "可销天数", "阈值天", "阈值依据", "状态", "主预警", "标签", "优先级分", "实时仓窗口开始(含)", "实时仓窗口结束(不含)", "实时仓销售净出库(含销售红字)", "非销售作业出库(未扣正向冲销,不作需求)", "内部月销窗口开始(含)", "内部月销窗口结束(不含)", "内部月销窗口自然日", "内部已登记销量", "内部有记录月份数(不证明完整覆盖)"],
-        all.rows.map((r) => [r.tier, r.tierSource, r.code, r.name, r.brand, r.daily.external, r.daily.internal, r.daily.ledger, r.primaryDaily, r.primaryDailySource, r.net30External, r.onHand, r.coverDays, r.alertDays, r.alertBasis, r.status, r.primary, r.tags.join("|"), r.priorityScore, r.ledgerDemand.startDay, r.ledgerDemand.endDayExclusive, r.ledgerDemand.salesNetQty, r.ledgerDemand.operationsOutQty, r.internalDemand.startDay, r.internalDemand.endDayExclusive, r.internalDemand.days, r.internalDemand.salesQty, r.internalDemand.observedMonths]),
+        ["等级", "等级来源", "SKU", "名称", "品牌", "日销外部", "日销内部", "实时仓销售净出库日均", "主日销", "主日销来源", "外部近30天净件", "在库", "可销天数", "阈值天", "阈值依据", "状态", "主预警", "标签", "优先级分", "实时仓窗口开始(含)", "实时仓窗口结束(不含)", "实时仓销售净出库(含销售红字)", "非销售作业出库(未扣正向冲销,不作需求)", "内部月销窗口开始(含)", "内部月销窗口结束(不含)", "内部月销窗口自然日", "内部已登记销量", "内部有记录月份数(不证明完整覆盖)", "外部近7天净件", "外部近15天净件", "外部窗口截止(含)", "外部时点T+1内", ...([7, 15, 30] as const).flatMap(days => [`外部${days}日开始(含)`, `外部${days}日完整序列数`, `外部${days}日应有序列数`, `外部${days}日窗口完整`])],
+        all.rows.map((r) => [r.tier, r.tierSource, r.code, r.name, r.brand, r.daily.external, r.daily.internal, r.daily.ledger, r.primaryDaily, r.primaryDailySource, r.net30External, r.onHand, r.coverDays, r.alertDays, r.alertBasis, r.status, r.primary, r.tags.join("|"), r.priorityScore, r.ledgerDemand.startDay, r.ledgerDemand.endDayExclusive, r.ledgerDemand.salesNetQty, r.ledgerDemand.operationsOutQty, r.internalDemand.startDay, r.internalDemand.endDayExclusive, r.internalDemand.days, r.internalDemand.salesQty, r.internalDemand.observedMonths, r.net7External, r.net15External, r.externalDemand.anchorDate, r.externalDemand.current ? "是" : "否", ...([7, 15, 30] as const).flatMap(days => { const w = r.externalDemand.windows?.[days]; return [w?.startDay ?? null, w?.completeSequences ?? null, w?.requiredSequences ?? null, w?.complete ? "是" : "否"]; })]),
         all.filtered.total > all.rows.length ? `仅导出前 ${all.rows.length} 行，共 ${all.filtered.total} 行` : undefined,
       );
     } catch (e) { message.error((e as Error).message); }
@@ -227,7 +246,7 @@ function CoverTab() {
     { title: "日销 外部", key: "de", align: "right", width: 110, render: (_, r) => dailyText(r.daily.external) },
     { title: "内部", key: "di", align: "right", width: 140, render: (_, r) => <InternalDemandCell row={r} /> },
     { title: "系统销售 / 作业", key: "dl", align: "right", width: 185, render: (_, r) => <LedgerDemandCell row={r} /> },
-    { title: "外部30天净件", dataIndex: "net30External", align: "right", width: 110, sorter: (a, b, order) => compareDecimalValues(a.net30External, b.net30External, order === "descend" ? "first" : "last"), render: (v: string | null) => v == null ? "—" : formatQty(v) },
+    { title: "外部净件（按30日排序）", dataIndex: "net30External", align: "right", width: 230, sorter: (a, b, order) => compareDecimalValues(a.net30External, b.net30External, order === "descend" ? "first" : "last"), render: (_, r) => <ExternalDemandCell row={r} /> },
     { title: "在库", dataIndex: "onHand", align: "right", width: 90, sorter: (a, b) => compareDecimalValues(a.onHand, b.onHand), render: (v: string) => formatQty(v) },
     { title: "可销天数", dataIndex: "coverDays", align: "right", width: 100, sorter: (a, b) => (a.coverDays ?? Number.MAX_SAFE_INTEGER) - (b.coverDays ?? Number.MAX_SAFE_INTEGER), render: (v: number | null, r) => v == null ? <Typography.Text type="secondary">无日销</Typography.Text> : <Typography.Text type={r.status === "alert" ? "danger" : r.status === "watch" ? "warning" : undefined} strong>{v}d</Typography.Text> },
     { title: "阈值", key: "ad", width: 150, render: (_, r) => <span>{r.alertDays}d {r.usedDefault ? <Tag>缺省周期</Tag> : null}<br /><Typography.Text type="secondary" style={{ fontSize: 11 }}>{r.alertBasis}</Typography.Text></span> },

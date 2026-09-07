@@ -30,6 +30,7 @@ import {
 import { skuParams, skus, spus, stockBalances, stockLedger, users, warehouses } from "@/db/schema";
 import { getTransferSuggestions } from "@/server/modules/report/transfer-suggest";
 import { createTestDb } from "../helpers/db";
+import { externalWindowFixture } from "../helpers/external-window";
 
 /**
  * 完整的 InventoryAlertRow 夹具——**每个字段都显式给值**，不使用类型断言。
@@ -48,7 +49,9 @@ function row(p: Partial<InventoryAlertRow> & { skuId: number; code: string }): I
     ledgerDemand: { startDay: "2026-08-09", endDayExclusive: "2026-09-08", days: 30, salesNetQty: null, operationsOutQty: null },
     internalDemand: { startDay: null, endDayExclusive: null, days: null, salesQty: null, observedMonths: 0 },
     net7External: null,
+    net15External: null,
     net30External: "30.0000",
+    externalDemand: { anchorDate: "2026-09-07", current: true, windows: externalWindowFixture("30.0000") },
     primaryDaily: 1,
     primaryDailySource: "external",
     coverDays: 10,
