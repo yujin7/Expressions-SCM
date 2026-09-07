@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse, readJson } from "@/server/modules/master/common";
+import { ApiError, errorResponse, readJson } from "@/server/modules/master/common";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { bulkFillSupplyParams } from "@/server/modules/master/sku-supply-params-bulk";
 
@@ -13,7 +13,9 @@ import { bulkFillSupplyParams } from "@/server/modules/master/sku-supply-params-
 export async function POST(req: NextRequest) {
   try {
     const user = await guardFreshWrite();
-    return NextResponse.json(await bulkFillSupplyParams(user, await readJson(req)));
+    const input = await readJson(req) as Record<string, unknown> | null;
+    if (input?.dryRun !== true && typeof input?.expectedPreview !== "string") throw new ApiError(400, "请先预演当前目标，再确认写入");
+    return NextResponse.json(await bulkFillSupplyParams(user, input));
   } catch (e) {
     return errorResponse(e, { path: "/api/master/supply-params/bulk", method: "POST" });
   }

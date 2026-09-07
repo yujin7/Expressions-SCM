@@ -13,7 +13,7 @@ export default async function SupplyParamsPage() {
   // useSearchParams（列表页状态平台）需要 Suspense 边界
   return (
     <Suspense>
-      <SupplyParamsClient canOverride={roles.includes("admin") || roles.includes("pmc")} />
+      <SupplyParamsClient key={session?.user?.id} userId={Number(session?.user?.id)} canOverride={roles.includes("admin") || roles.includes("pmc")} />
     </Suspense>
   );
 }

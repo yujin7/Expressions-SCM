@@ -94,6 +94,8 @@ jobs:
       - run: npm run check:postgres:review-atomicity
       - name: NPD versions, replay and audit atomicity (isolated PostgreSQL)
         run: node --import tsx scripts/verify-postgres-npd-write.ts
+      - name: Supply parameter edits and preview row locks (isolated PostgreSQL)
+        run: node --import tsx scripts/verify-postgres-supply-params.ts
       - name: Yonyou retries and concurrency (isolated PostgreSQL)
         env:
           NODE_ENV: test

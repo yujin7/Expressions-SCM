@@ -103,6 +103,16 @@ export function leadFieldsFor(skuType: string): readonly LeadField[] {
 }
 
 export async function listSupplyParams(query: SupplyParamQuery, dbArg?: AnyDb): Promise<SupplyParamListResult> {
+  query = z.object({
+    q: z.string().trim().max(200).optional(),
+    skuType: z.enum(["", ...APPLICABLE_TYPES]).optional(),
+    missing: z.enum(["", ...SUPPLY_PARAM_MISSING_DIMS]).optional(),
+    tier: z.string().trim().toUpperCase().pipe(z.enum(["", "S", "A", "B", "C", "NONE"])).optional(),
+    brandId: z.number().int().positive().optional(),
+    blockedOnly: z.boolean().optional(),
+    page: z.number().int().positive().optional(),
+    pageSize: z.number().int().positive().optional(),
+  }).parse(query);
   const db = await resolveDb(dbArg);
   const page = Math.max(1, query.page ?? 1);
   const pageSize = Math.min(500, Math.max(1, query.pageSize ?? 50));
@@ -199,6 +209,7 @@ const patchSchema = z.object({
   normalLeadDays: days.optional(),
   logisticsLeadDays: days.optional(),
   purchaseLeadDays: days.optional(),
+  expected: z.object({ normalLeadDays: days.optional(), logisticsLeadDays: days.optional(), purchaseLeadDays: days.optional() }).optional(),
   note: z.string().trim().max(200).optional(),
 }).refine((v) => v.normalLeadDays !== undefined || v.logisticsLeadDays !== undefined || v.purchaseLeadDays !== undefined, "至少提供一个周期字段");
 export type PatchSupplyParamsInput = z.infer<typeof patchSchema>;
@@ -218,7 +229,8 @@ export async function patchSupplyParams(
   const canOverride = user.roles.includes("admin") || user.roles.includes("pmc");
   const db = await resolveDb(dbArg);
   return db.transaction(async (tx: AnyDb) => {
-    const [sku] = await tx.select({ id: schema.skus.id, code: schema.skus.code, skuType: schema.skus.skuType }).from(schema.skus).where(eq(schema.skus.id, skuId));
+    // Lock the parent too: sku_params may not exist yet on the first fill.
+    const [sku] = await tx.select({ id: schema.skus.id, code: schema.skus.code, skuType: schema.skus.skuType }).from(schema.skus).where(eq(schema.skus.id, skuId)).for("update");
     if (!sku) throw new ApiError(404, "SKU 不存在");
     // 前后端同一口径：只接受该类型适用的周期字段（半成品=加工+在途；原料/包材=采购）
     const applicable = leadFieldsFor(sku.skuType);
@@ -227,7 +239,7 @@ export async function patchSupplyParams(
         throw new ApiError(400, `「${FIELD_LABELS[f]}」不适用于 ${SKU_TYPE_LABELS[sku.skuType] ?? sku.skuType}（成品/半成品维护加工+在途周期，原料/包材维护采购周期）`);
       }
     }
-    const [existing] = await tx.select().from(schema.skuParams).where(eq(schema.skuParams.skuId, skuId));
+    const [existing] = await tx.select().from(schema.skuParams).where(eq(schema.skuParams.skuId, skuId)).for("update");
     const before = {
       normalLeadDays: existing?.normalLeadDays ?? null,
       logisticsLeadDays: existing?.logisticsLeadDays ?? null,
@@ -240,6 +252,9 @@ export async function patchSupplyParams(
       if (next === undefined) continue;
       const prev = before[f];
       if (prev === next) continue;
+      if (v.expected && (!(f in v.expected) || v.expected[f] !== prev)) {
+        throw new ApiError(409, `「${FIELD_LABELS[f]}」已变化，请刷新核对；本次未写入，保留你的编辑后再决定`);
+      }
       if (prev != null) {
         if (!canOverride) throw new ApiError(403, `「${FIELD_LABELS[f]}」已有值 ${prev}，只有生产计划（pmc）或管理员可覆盖；采购只能补录空值`);
         isOverride = true;

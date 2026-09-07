@@ -6,13 +6,13 @@
  * 可编辑列以服务端下发的 row.leadFields 为准（master/sku-supply-params-fill.leadFieldsFor 唯一口径：
  * 成品/半成品 = 加工 + 在途；原料/包材 = 采购），前端不另行按类型判定。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, App, Button, Col, InputNumber, Progress, Row, Select, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from "antd";
+import { useEffect, useRef, useState } from "react";
+import { Alert, App, Button, Checkbox, Drawer, InputNumber, Progress, Select, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { DownloadOutlined, ReloadOutlined } from "@ant-design/icons";
 import CaliberNote from "@/components/CaliberNote";
 import { exportCsv } from "@/components/exportCsv";
-import { fetchJson, patchJson } from "@/components/fetchJson";
+import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import ListToolbar from "@/components/ListToolbar";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
@@ -20,8 +20,11 @@ import RemoteSelect from "@/components/RemoteSelect";
 import SearchInput from "@/components/SearchInput";
 import SkuHoverCard from "@/components/SkuHoverCard";
 import { useListState } from "@/components/useListState";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import { clearSavedSupplyDraft, editSupplyDraft, restoreSupplyDrafts, serializeSupplyDrafts, supplyDraftConflicts, type SupplyDrafts } from "@/lib/supply-param-drafts";
 import { SUPPLY_PARAMS_CSV_HEADERS } from "@/lib/supply-params-csv";
 import BulkFillModal, { type BulkScope } from "./bulk-fill-modal";
+import styles from "./supply-params.module.css";
 
 type Tier = "S" | "A" | "B" | "C";
 type Dim = "production" | "logistics" | "purchase" | "moq" | "cost";
@@ -64,8 +67,9 @@ interface Data {
 
 const TYPE_LABELS: Record<string, string> = { finished: "成品", semi: "半成品", raw: "原料", packaging: "包材" };
 const TIER_COLORS: Record<Tier, string> = { S: "magenta", A: "red", B: "orange", C: "default" };
+const FIELD_LABELS: Record<LeadField, string> = { normalLeadDays: "加工周期", logisticsLeadDays: "在途周期", purchaseLeadDays: "采购周期" };
 
-export default function SupplyParamsClient({ canOverride }: { canOverride: boolean }) {
+export default function SupplyParamsClient({ canOverride, userId }: { canOverride: boolean; userId: number }) {
   const { message } = App.useApp();
   const listState = useListState({
     key: "master-supply-params",
@@ -75,62 +79,84 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
   const { filters, page, pageSize } = listState;
   const [searchText, setSearchText] = useState(filters.q);
   useEffect(() => setSearchText(filters.q), [filters.q]);
-  const [data, setData] = useState<Data | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [edits, setEdits] = useState<Record<string, number | null>>({});
+  const [edits, setEdits] = useState<SupplyDrafts>({});
+  const [draftsReady, setDraftsReady] = useState(false);
+  const [storageWarning, setStorageWarning] = useState(false);
+  const [draftOpen, setDraftOpen] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState<number | null>(null);
+  const writeBusy = useRef(false);
+  const mounted = useRef(false);
   /* 批量补录（#1）：勾选行 → 批量填写；当前筛选 → 按分层/品牌套用默认 */
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [bulk, setBulk] = useState<{ scope: BulkScope; label: string } | null>(null);
   const [exporting, setExporting] = useState(false);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
+  const exportRequest = useRef<AbortController | null>(null);
+  const params = new URLSearchParams({ q: filters.q, page: String(page), pageSize: String(pageSize) });
+  for (const key of ["skuType", "missing", "tier", "brandId", "blockedOnly"] as const) {
+    if (filters[key] && !(key === "missing" && filters[key] === "all")) params.set(key, filters[key]);
+  }
+  const query = params.toString();
+  useEffect(() => () => { exportRequest.current?.abort(); }, [query]);
+  const read = useDocumentRead<Data>(`/api/master/supply-params?${query}`);
+  const { data, error: loadError, retry: load } = read;
+  const loading = read.phase === "loading";
+  const storageKey = `scm:supply-drafts:v1:${userId}`;
+  useEffect(() => {
+    mounted.current = true;
+    try { setEdits(restoreSupplyDrafts(sessionStorage.getItem(storageKey))); }
+    catch { setStorageWarning(true); }
+    setDraftsReady(true);
+    return () => { mounted.current = false; };
+  }, [storageKey]);
+  useEffect(() => {
+    if (!draftsReady) return;
     try {
-      const params = new URLSearchParams({ q: filters.q, page: String(page), pageSize: String(pageSize) });
-      if (filters.skuType) params.set("skuType", filters.skuType);
-      if (filters.missing) params.set("missing", filters.missing);
-      if (filters.tier) params.set("tier", filters.tier);
-      if (filters.brandId) params.set("brandId", filters.brandId);
-      if (filters.blockedOnly === "1") params.set("blockedOnly", "1");
-      setData(await fetchJson<Data>(`/api/master/supply-params?${params.toString()}`));
-      setEdits({});
-      setSelectedIds([]);
-    } catch (e) {
-      setData(null);
-      setLoadError(e instanceof Error ? e.message : "加载失败");
-    } finally {
-      setLoading(false);
-    }
-  }, [filters.q, filters.skuType, filters.missing, filters.tier, filters.brandId, filters.blockedOnly, page, pageSize]);
-  useEffect(() => { void load(); }, [load]);
+      if (Object.keys(edits).length) sessionStorage.setItem(storageKey, serializeSupplyDrafts(edits));
+      else sessionStorage.removeItem(storageKey);
+    } catch { setStorageWarning(true); }
+  }, [edits, draftsReady, storageKey]);
+  useEffect(() => { setSelectedIds([]); }, [query]);
+  useEffect(() => {
+    if (!Object.keys(edits).length && saving == null) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [edits, saving]);
 
-  const editKey = (skuId: number, f: LeadField) => `${skuId}:${f}`;
+  const discard = (skuId: number) => setEdits(old => { const next = { ...old }; delete next[skuId]; return next; });
 
   const save = async (r: Row) => {
-    const body: Partial<Record<LeadField, number | null>> = {};
-    for (const f of r.leadFields) {
-      const k = editKey(r.skuId, f);
-      if (k in edits && edits[k] !== r[f]) body[f] = edits[k];
-    }
-    if (Object.keys(body).length === 0) return;
+    const draft = edits[r.skuId];
+    if (!draft || writeBusy.current || !data || supplyDraftConflicts(draft, r).length) return;
+    if (Object.keys(draft.values).some(f => !r.leadFields.includes(f as LeadField))) return void message.warning("SKU类型已变化，请放弃该草稿后重新编辑");
+    writeBusy.current = true;
     setSaving(r.skuId);
+    setSaveError(null);
+    const request = new AbortController();
+    const timeout = setTimeout(() => request.abort(), 20_000);
     try {
-      const res = await patchJson<{ action: "fill" | "override" }>(`/api/master/sku/${r.skuId}/supply-params`, body);
+      const res = await fetchJson<{ skuId: number; action: "fill" | "override" }>(`/api/master/sku/${r.skuId}/supply-params`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...draft.values, expected: draft.base }), signal: request.signal,
+      });
+      if (!mounted.current) return;
+      if (res?.skuId !== r.skuId || !["fill", "override"].includes(res.action)) throw new Error("保存回执与当前SKU不一致，请先核对服务器结果");
+      setEdits(old => clearSavedSupplyDraft(old, draft));
       message.success(`${r.code} 已${res.action === "override" ? "覆盖" : "补录"}`);
-      await load();
+      load();
     } catch (e) {
-      message.error((e as Error).message);
+      if (mounted.current) setSaveError(`${r.code}：${request.signal.aborted ? "等待保存回执超时，操作可能已完成。草稿已保留，请刷新核对，不要直接重复提交" : (e as Error).message}`);
     } finally {
-      setSaving(null);
+      clearTimeout(timeout);
+      writeBusy.current = false;
+      if (mounted.current) setSaving(null);
     }
   };
 
   const cell = (r: Row, f: LeadField, applicable: boolean) => {
     if (!applicable) return <Typography.Text type="secondary">不适用</Typography.Text>;
-    const k = editKey(r.skuId, f);
+    const draft = edits[r.skuId];
     const current = r[f];
     const locked = current != null && !canOverride;
     return (
@@ -140,10 +166,11 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
           min={0}
           max={365}
           precision={0}
-          value={k in edits ? edits[k] : current}
-          disabled={locked}
-          status={current == null && !(k in edits) ? "warning" : undefined}
-          onChange={(v) => setEdits((e) => ({ ...e, [k]: v == null ? null : Number(v) }))}
+          aria-label={`${r.code} ${FIELD_LABELS[f]}（天）`}
+          value={draft && f in draft.values ? draft.values[f] : current}
+          disabled={locked || saving === r.skuId || !draftsReady || bulk != null}
+          status={draft && supplyDraftConflicts(draft, r).includes(f) ? "error" : current == null && !(draft && f in draft.values) ? "warning" : undefined}
+          onChange={(v) => setEdits(e => Object.keys(e).length >= 500 && !e[r.skuId] ? e : editSupplyDraft(e, r, f, v == null ? null : Number(v)))}
           style={{ width: 90 }}
         />
       </Tooltip>
@@ -164,6 +191,10 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
     return `S/A/B 缺${miss.join("、")}`;
   };
   const doExport = async () => {
+    if (exportRequest.current) return;
+    const request = new AbortController();
+    exportRequest.current = request;
+    const timeout = setTimeout(() => request.abort(), 20_000);
     setExporting(true);
     try {
       const collected: Row[] = [];
@@ -171,11 +202,12 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
       for (let p = 1; ; p++) {
         const params = new URLSearchParams({ q: filters.q, page: String(p), pageSize: "500" });
         if (filters.skuType) params.set("skuType", filters.skuType);
-        if (filters.missing) params.set("missing", filters.missing);
+        if (filters.missing && filters.missing !== "all") params.set("missing", filters.missing);
         if (filters.tier) params.set("tier", filters.tier);
         if (filters.brandId) params.set("brandId", filters.brandId);
         if (filters.blockedOnly === "1") params.set("blockedOnly", "1");
-        const chunk = await fetchJson<Data>(`/api/master/supply-params?${params.toString()}`);
+        const chunk = await fetchJson<Data>(`/api/master/supply-params?${params.toString()}`, { signal: request.signal });
+        if (request.signal.aborted || !mounted.current) return;
         total = chunk.total;
         collected.push(...chunk.rows);
         if (collected.length >= chunk.total || chunk.rows.length === 0 || collected.length >= EXPORT_MAX_ROWS) break;
@@ -191,9 +223,10 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
         collected.length < total ? `仅导出前 ${collected.length} 行（共 ${total} 行）——请收窄筛选后分批导出` : undefined,
       );
     } catch (e) {
-      message.error((e as Error).message);
+      if (mounted.current) message.error(request.signal.aborted ? "导出已取消或超时，请在当前筛选下重新导出" : (e as Error).message);
     } finally {
-      setExporting(false);
+      clearTimeout(timeout); exportRequest.current = null;
+      if (mounted.current) setExporting(false);
     }
   };
 
@@ -203,35 +236,41 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
     brandId: filters.brandId ? Number(filters.brandId) : undefined,
     skuType: filters.skuType || undefined,
     blockedOnly: filters.blockedOnly === "1",
+    q: filters.q,
+    missing: (filters.missing === "all" ? "" : filters.missing) as "" | "any" | Dim,
+    onlyMissing: false,
   });
 
-  const dirty = (r: Row) => r.leadFields.some((f) => {
-    const k = editKey(r.skuId, f);
-    return k in edits && edits[k] !== r[f];
-  });
+  const dirty = (r: Row) => Boolean(edits[r.skuId]);
+  const rowActions = (r: Row) => {
+    const draft = edits[r.skuId];
+    const conflicts = draft ? supplyDraftConflicts(draft, r) : [];
+    return <Space direction="vertical" size={4}>
+      <Space size={4}>
+        <Button size="small" type="primary" disabled={!draft || saving != null || conflicts.length > 0} loading={saving === r.skuId} onClick={() => void save(r)}>保存</Button>
+        {draft && <Button size="small" disabled={saving === r.skuId} onClick={() => discard(r.skuId)}>放弃</Button>}
+      </Space>
+      {conflicts.length > 0 && <div className={styles.conflict}>
+        {conflicts.map(f => <div key={f}>{FIELD_LABELS[f]}：原{draft.base[f] ?? "空"} → 现{r[f] ?? "空"}；拟填{draft.values[f] ?? "空"}</div>)}
+        {canOverride && <Button type="link" size="small" disabled={saving != null} onClick={() => setEdits(old => ({ ...old, [r.skuId]: { ...old[r.skuId], base: { ...old[r.skuId].base, ...Object.fromEntries(Object.keys(old[r.skuId].values).map(f => [f, r[f as LeadField]])) } } }))}>核对后以现值为基准</Button>}
+      </div>}
+    </Space>;
+  };
 
-  const columns: ColumnsType<Row> = useMemo(() => [
-    { title: "SKU 编码", dataIndex: "code", width: 140, fixed: "left", render: (v: string) => <SkuHoverCard code={v} /> },
-    { title: "名称", dataIndex: "name", width: 220, ellipsis: true },
-    { title: "类型", dataIndex: "skuType", width: 80, render: (v: string) => TYPE_LABELS[v] ?? v },
-    {
-      title: "分层", dataIndex: "tier", width: 80,
-      render: (v: Tier | null, r) => v ? <Tag color={TIER_COLORS[v]}>{v}</Tag> : r.skuType === "finished" ? <Typography.Text type="secondary">未固化</Typography.Text> : "—",
-    },
-    { title: "阻塞", dataIndex: "blocked", width: 80, render: (v: boolean) => (v ? <Tooltip title="S/A/B 缺加工或在途周期：直出/试点/预警阈值都建立在默认周期上"><Tag color="red">阻塞</Tag></Tooltip> : "—") },
-    // 可编辑列 = 服务端 leadFields（成品/半成品：加工+在途；原料/包材：采购）
-    { title: "加工周期(天)", key: "normalLeadDays", width: 120, render: (_, r) => cell(r, "normalLeadDays", r.leadFields.includes("normalLeadDays")) },
-    { title: "在途周期(天)", key: "logisticsLeadDays", width: 120, render: (_, r) => cell(r, "logisticsLeadDays", r.leadFields.includes("logisticsLeadDays")) },
-    { title: "采购周期(天)", key: "purchaseLeadDays", width: 120, render: (_, r) => cell(r, "purchaseLeadDays", r.leadFields.includes("purchaseLeadDays")) },
-    { title: "MOQ", dataIndex: "moq", width: 100, align: "right", render: (v: string | null) => (v == null ? <Typography.Text type="warning">缺</Typography.Text> : formatQty(v)) },
-    { title: "成本", dataIndex: "hasCost", width: 70, render: (v: boolean) => (v ? <Tag color="green">有</Tag> : <Tag color="orange">无</Tag>) },
-    { title: "缺失", dataIndex: "missing", width: 200, render: (v: Dim[]) => (v.length ? v.map((d) => <Tag key={d}>{data?.dimLabels[d] ?? d}</Tag>) : <Tag color="green">齐全</Tag>) },
-    {
-      title: "", key: "save", width: 80, fixed: "right",
-      render: (_, r) => <Button size="small" type="primary" disabled={!dirty(r)} loading={saving === r.skuId} onClick={() => void save(r)}>保存</Button>,
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- cell/dirty/save 读取最新 edits/saving 闭包，列定义随其变化重建即可
-  ], [edits, saving, data?.dimLabels, canOverride]);
+  const columns: ColumnsType<Row> = [
+    { title: "SKU / 名称", key: "identity", width: 240, render: (_, r) => <div className={styles.identity}><SkuHoverCard code={r.code} /><div>{r.name}</div></div> },
+    { title: "类型 / 分层", key: "type", width: 100, render: (_, r) => <Space direction="vertical" size={4}>
+      <span>{TYPE_LABELS[r.skuType]}</span>{r.tier ? <Tag color={TIER_COLORS[r.tier]}>{r.tier}</Tag> : r.skuType === "finished" ? <Typography.Text type="secondary">未固化</Typography.Text> : null}
+      {r.blocked && <Tag color="red">阻塞试点</Tag>}
+    </Space> },
+    // Only applicable inputs: no empty type-specific columns between the fact and save action.
+    { title: "周期（天）", key: "leads", width: 220, render: (_, r) => <div className={styles.mobileFields}>{r.leadFields.map(f => <label key={f}>{FIELD_LABELS[f]}{cell(r, f, true)}</label>)}</div> },
+    { title: "缺失 / 基础约束", key: "missing", width: 180, render: (_, r) => <div>
+      <div className={styles.tiers}>{r.missing.length ? r.missing.map(d => <Tag key={d}>{data?.dimLabels[d] ?? d}</Tag>) : <Tag color="green">齐全</Tag>}</div>
+      <Typography.Text type="secondary">MOQ：{r.moq == null ? "缺失" : formatQty(r.moq)} · 成本：{r.hasCost ? "已填" : "缺失"}</Typography.Text>
+    </div> },
+    { title: "编辑", key: "save", width: 180, render: (_, r) => rowActions(r) },
+  ];
 
   const s = data?.summary;
   const tierCell = (k: Tier | "unclassified") => {
@@ -249,19 +288,19 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
       />
       {s ? (
         <Alert
-          type={s.blocked > 0 ? "warning" : "success"}
+          type={s.blocked > 0 ? "warning" : s.scanned > 0 && s.complete === s.scanned ? "success" : "info"}
           showIcon
           style={{ marginBottom: 12 }}
           message={
             <Space wrap size={16}>
               <span>
-                周期覆盖 <b>{s.complete}</b> / {s.scanned}
+                全库周期 / MOQ / 成本齐全 <b>{s.complete}</b> / {s.scanned}
               </span>
               <Progress
                 percent={s.scanned > 0 ? Math.round((s.complete / s.scanned) * 1000) / 10 : 0}
                 size="small"
                 style={{ width: 200 }}
-                status={s.blocked > 0 ? "active" : "success"}
+                status={s.scanned > 0 && s.complete === s.scanned ? "success" : "normal"}
               />
               <span>
                 仍阻塞试点候选 <b style={{ color: s.blocked > 0 ? "#cf1322" : undefined }}>{s.blocked}</b> 个
@@ -275,15 +314,16 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
           }
         />
       ) : null}
-      <Row gutter={16} style={{ marginBottom: 12 }}>
-        <Col span={4}><Statistic title="扫描 SKU" value={s?.scanned ?? "—"} /></Col>
-        <Col span={4}><Statistic title="周期齐全" value={s?.complete ?? "—"} /></Col>
-        <Col span={4}><Statistic title="S/A/B 阻塞" value={s?.blocked ?? "—"} valueStyle={{ color: s && s.blocked > 0 ? "#cf1322" : undefined }} /></Col>
-        <Col span={3}><Statistic title="S 级齐全" value={tierCell("S")} /></Col>
-        <Col span={3}><Statistic title="A 级齐全" value={tierCell("A")} /></Col>
-        <Col span={3}><Statistic title="B 级齐全" value={tierCell("B")} /></Col>
-        <Col span={3}><Statistic title="C/未分层" value={`${tierCell("C")} / ${tierCell("unclassified")}`} /></Col>
-      </Row>
+      <div className={styles.summary}>
+        <Statistic title="全库扫描 SKU" value={s?.scanned ?? "—"} />
+        <Statistic title="当前筛选 SKU" value={data?.total ?? "—"} />
+        <Statistic title="全库 S/A/B 阻塞" value={s?.blocked ?? "—"} valueStyle={{ color: s && s.blocked > 0 ? "#cf1322" : undefined }} />
+      </div>
+      <div className={styles.tiers}>成品周期齐全 / 总数：{(["S", "A", "B", "C", "unclassified"] as const).map(t => <Tag key={t}>{t === "unclassified" ? "未分层" : `${t}级`} {tierCell(t)}</Tag>)}</div>
+      {storageWarning && <Alert type="warning" showIcon message="浏览器无法保留草稿；本页切换筛选仍保留编辑，离开或刷新前请先保存。" />}
+      {Object.keys(edits).length > 0 && <Alert className={styles.draftNotice} type="info" showIcon
+        message={<Space wrap><span>{Object.keys(edits).length} 个SKU有未保存编辑；筛选/翻页/刷新读取不会清空。</span><Button size="small" onClick={() => setDraftOpen(true)}>查看未保存</Button></Space>}
+        description={Object.keys(edits).length >= 500 ? "已达500个草稿上限，请先保存或放弃部分草稿。" : "草稿按账号保留在本标签页，8小时内可刷新恢复；批量操作前先保存或放弃行内编辑。"} />}
       <ListToolbar
         state={listState}
         extra={
@@ -292,8 +332,8 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
               options={Object.entries(TYPE_LABELS).map(([value, label]) => ({ value, label }))}
               onChange={(v) => listState.setFilter({ skuType: v ?? "" })} />
             <Select placeholder="缺失维度" allowClear style={{ width: 130 }} value={filters.missing || undefined}
-              options={[{ value: "any", label: "任一缺失" }, ...Object.entries(data?.dimLabels ?? {}).map(([value, label]) => ({ value, label: `缺${label}` }))]}
-              onChange={(v) => listState.setFilter({ missing: v ?? "" })} />
+              options={[{ value: "all", label: "全部（不限缺失）" }, { value: "any", label: "任一缺失" }, ...Object.entries(data?.dimLabels ?? {}).map(([value, label]) => ({ value, label: `缺${label}` }))]}
+              onChange={(v) => listState.setFilter({ missing: v ?? "all" })} />
             <Select placeholder="分层" allowClear style={{ width: 100 }} value={filters.tier || undefined}
               options={[{ value: "S", label: "S 级" }, { value: "A", label: "A 级" }, { value: "B", label: "B 级" }, { value: "C", label: "C 级" }, { value: "NONE", label: "未固化" }]}
               onChange={(v) => listState.setFilter({ tier: v ?? "" })} />
@@ -313,29 +353,31 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
               onSearch={(v) => listState.setFilter({ q: v.trim() })} />
           </>
         }
-        onExport={data ? () => void doExport() : undefined}
+        onExport={data && !exporting ? () => void doExport() : undefined}
         exportText={exporting ? "导出中…" : "导出 CSV（当前筛选）"}
         primaryActions={(
           <Space wrap>
             <Button
               type="primary"
-              disabled={selectedIds.length === 0}
+              disabled={selectedIds.length === 0 || !data || !draftsReady || Object.keys(edits).length > 0 || saving != null}
               onClick={() => setBulk({ scope: { kind: "ids", ids: selectedIds }, label: `已选 ${selectedIds.length} 个 SKU` })}
             >
               批量填写{selectedIds.length > 0 ? `（${selectedIds.length}）` : ""}
             </Button>
             <Button
               icon={<DownloadOutlined rotate={180} />}
-              disabled={!data}
+              disabled={!data || !draftsReady || Object.keys(edits).length > 0 || saving != null}
               onClick={() => setBulk({ scope: filterScope(), label: `当前筛选${filters.tier ? ` · ${filters.tier} 级` : ""}${filters.blockedOnly === "1" ? " · 只看阻塞" : ""}` })}
             >
-              按分层/品牌套用默认
+              当前筛选批量填写
             </Button>
             <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
           </Space>
         )}
       />
       <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="周期主数据" />
+      {saveError && <Alert className={styles.draftNotice} type="error" showIcon closable onClose={() => setSaveError(null)} message="保存未确认，编辑已保留" description={saveError} action={<Button size="small" onClick={load}>刷新核对</Button>} />}
+      <div className={styles.desktopTable}>
       <Table<Row>
         rowKey="skuId"
         size={listState.tableSize}
@@ -343,24 +385,49 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
           selectedRowKeys: selectedIds,
           onChange: (keys) => setSelectedIds(keys.map(Number)),
           // 无可编辑周期字段的类型（如服务类）不进批量：勾了也写不进去
-          getCheckboxProps: (r) => ({ disabled: r.leadFields.length === 0 }),
+          getCheckboxProps: (r) => ({ disabled: r.leadFields.length === 0 || saving != null || Object.keys(edits).length > 0 }),
         }}
         columns={columns}
         dataSource={data?.rows ?? []}
         loading={loading}
-        scroll={{ x: "max-content" }}
+        scroll={{ x: 960 }}
         pagination={listState.paginationProps({ total: data?.total ?? 0 })}
         locale={{ emptyText: loadError ? "数据未加载" : "当前条件下没有 SKU" }}
       />
-      <BulkFillModal
-        open={bulk != null}
-        scope={bulk?.scope ?? null}
-        scopeLabel={bulk?.label ?? ""}
+      </div>
+      <div className={styles.mobileRows}>
+        {loading ? <Typography.Text type="secondary">正在读取周期主数据…</Typography.Text> : data?.rows.length === 0 ? <Typography.Text type="secondary">当前条件下没有SKU</Typography.Text> : null}
+        {data?.rows.map(r => <section key={r.skuId} className={styles.mobileRow} aria-label={`${r.code} 周期编辑`}>
+          <div className={styles.mobileHeading}><Checkbox aria-label={`选择 ${r.code}`} checked={selectedIds.includes(r.skuId)} disabled={r.leadFields.length === 0 || saving != null || Object.keys(edits).length > 0}
+            onChange={event => setSelectedIds(ids => event.target.checked ? [...new Set([...ids, r.skuId])] : ids.filter(id => id !== r.skuId))} /><SkuHoverCard code={r.code} /><Tag>{TYPE_LABELS[r.skuType]}</Tag>{dirty(r) && <Tag color="blue">未保存</Tag>}</div>
+          <div>{r.name}</div>
+          <div className={styles.mobileFields}>{r.leadFields.map(f => <label key={f}>{FIELD_LABELS[f]}（天）{cell(r, f, true)}</label>)}</div>
+          <div className={styles.tiers}>{r.missing.length ? `缺失：${r.missing.map(d => data.dimLabels[d]).join("、")}` : "主数据齐全"}{r.blocked ? " · 阻塞试点" : ""}</div>
+          {rowActions(r)}
+        </section>)}
+        <Space wrap className={styles.mobilePagination}>
+          <Button disabled={page <= 1 || loading} onClick={() => listState.paginationProps({ total: data?.total ?? 0 }).onChange?.(page - 1, pageSize)}>上一页</Button>
+          <span>第{page}页 · 共{data?.total ?? "—"}个</span>
+          <Button disabled={!data || page * pageSize >= data.total || loading} onClick={() => listState.paginationProps({ total: data?.total ?? 0 }).onChange?.(page + 1, pageSize)}>下一页</Button>
+        </Space>
+      </div>
+      <Drawer open={draftOpen} onClose={() => setDraftOpen(false)} title="未保存的周期编辑" width={480}>
+        <Typography.Paragraph type="secondary">包含其他筛选或分页下的编辑。定位后先核对服务器现值，再保存；这里不会自动写入。</Typography.Paragraph>
+        {Object.values(edits).map(d => <section key={d.skuId} className={styles.mobileRow}>
+          <Typography.Text strong>{d.code}</Typography.Text>
+          {Object.entries(d.values).map(([f, value]) => <div key={f}>{FIELD_LABELS[f as LeadField]}：{d.base[f as LeadField] ?? "空"} → {value ?? "清空"} 天</div>)}
+          <Space><Button size="small" onClick={() => { listState.setFilter({ q: d.code, missing: "all", tier: "", skuType: "", brandId: "", blockedOnly: "" }); setDraftOpen(false); }}>定位并核对</Button><Button size="small" disabled={saving === d.skuId} onClick={() => discard(d.skuId)}>放弃此项</Button></Space>
+        </section>)}
+      </Drawer>
+      {bulk && <BulkFillModal
+        open
+        scope={bulk.scope}
+        scopeLabel={bulk.label}
         defaults={data?.defaults ?? null}
         canOverride={canOverride}
         onClose={() => setBulk(null)}
-        onDone={() => void load()}
-      />
+        onDone={() => { setSelectedIds([]); load(); }}
+      />}
     </div>
   );
 }

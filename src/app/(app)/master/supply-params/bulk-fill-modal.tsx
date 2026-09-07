@@ -10,15 +10,16 @@
  *
  * 执行前必须先看到预演结果——「会改多少行」是这类批量唯一能自证安全的东西。
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Alert, App, Checkbox, Descriptions, InputNumber, Modal, Space, Typography } from "antd";
-import { postJson } from "@/components/fetchJson";
+import { fetchJson } from "@/components/fetchJson";
 
 export type BulkScope =
   | { kind: "ids"; ids: number[] }
-  | { kind: "filter"; tier?: string; brandId?: number; skuType?: string; blockedOnly?: boolean; onlyMissing?: boolean };
+  | { kind: "filter"; tier?: string; brandId?: number; skuType?: string; blockedOnly?: boolean; onlyMissing?: boolean; q?: string; missing?: "" | "any" | "production" | "logistics" | "purchase" | "moq" | "cost" };
 
 export interface BulkPreview {
+  previewKey: string;
   dryRun: boolean;
   matched: number;
   filled: number;
@@ -47,22 +48,19 @@ export default function BulkFillModal({
   onDone: () => void;
 }) {
   const { message } = App.useApp();
-  const [production, setProduction] = useState<number | null>(null);
-  const [logistics, setLogistics] = useState<number | null>(null);
+  const [production, setProduction] = useState<number | null>(defaults?.production ?? null);
+  const [logistics, setLogistics] = useState<number | null>(defaults?.logistics ?? null);
   const [purchase, setPurchase] = useState<number | null>(null);
   const [overwrite, setOverwrite] = useState(false);
   const [preview, setPreview] = useState<BulkPreview | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inFlight = useRef(false);
+  const mounted = useRef(false);
+  const confirmLabel = preview ? `确认写入 ${preview.changedSkus} 个 SKU` : "先预演";
 
   // 每次打开都从「运行参数缺省」重新起步；改完一批不该把上一批的数字留给下一批
-  useEffect(() => {
-    if (!open) return;
-    setProduction(defaults?.production ?? null);
-    setLogistics(defaults?.logistics ?? null);
-    setPurchase(null);
-    setOverwrite(false);
-    setPreview(null);
-  }, [open, defaults]);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   const values = () => {
     const v: Record<string, number> = {};
@@ -73,17 +71,23 @@ export default function BulkFillModal({
   };
 
   const run = async (dryRun: boolean) => {
-    if (!scope) return;
+    if (!scope || inFlight.current) return;
     const v = values();
     if (Object.keys(v).length === 0) return void message.warning("至少填一个周期字段");
-    setBusy(true);
+    if (!dryRun && !preview?.previewKey) return;
+    inFlight.current = true; setBusy(true); setError(null);
+    const request = new AbortController();
+    const timeout = setTimeout(() => request.abort(), 20_000);
     try {
-      const res = await postJson<BulkPreview>("/api/master/supply-params/bulk", {
+      const res = await fetchJson<BulkPreview>("/api/master/supply-params/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, signal: request.signal, body: JSON.stringify({
         scope,
         values: v,
         overwrite,
         dryRun,
-      });
+        expectedPreview: dryRun ? undefined : preview?.previewKey,
+      }) });
+      if (!mounted.current) return;
+      if (!res || typeof res.previewKey !== "string" || !Number.isSafeInteger(res.changedSkus)) throw new Error("预演/写入回执格式异常，请先核对服务器结果");
       if (dryRun) {
         setPreview(res);
       } else {
@@ -95,10 +99,13 @@ export default function BulkFillModal({
         onClose();
       }
     } catch (e) {
-      message.error((e as Error).message);
-      if (dryRun) setPreview(null);
+      if (mounted.current) {
+        setError(request.signal.aborted ? (dryRun ? "预演超时，可重新预演" : "等待写入回执超时；操作可能已完成，请关闭弹窗并刷新核对，勿直接重复写入") : (e as Error).message);
+        setPreview(null);
+      }
     } finally {
-      setBusy(false);
+      clearTimeout(timeout); inFlight.current = false;
+      if (mounted.current) setBusy(false);
     }
   };
 
@@ -106,16 +113,20 @@ export default function BulkFillModal({
     <Modal
       open={open}
       title={`批量补录周期 · ${scopeLabel}`}
-      onCancel={onClose}
+      onCancel={() => { if (!inFlight.current) onClose(); }}
+      closable={!busy}
+      keyboard={!busy}
+      cancelButtonProps={{ disabled: busy }}
       confirmLoading={busy}
-      okText={preview ? `确认写入 ${preview.changedSkus} 个 SKU` : "先预演"}
-      okButtonProps={{ disabled: preview != null && preview.changedSkus === 0 }}
+      okText={confirmLabel}
+      okButtonProps={{ "aria-label": confirmLabel, "aria-busy": busy, disabled: busy || (preview != null && preview.changedSkus === 0) }}
       onOk={() => void run(preview == null)}
       cancelText="取消"
       width={640}
       maskClosable={false}
     >
       <Space direction="vertical" size={12} style={{ width: "100%" }}>
+        {error && <Alert type="error" showIcon message={error} />}
         <Alert
           type="info"
           showIcon
@@ -124,23 +135,23 @@ export default function BulkFillModal({
         <Space wrap>
           <span>
             加工周期{" "}
-            <InputNumber min={0} max={365} precision={0} value={production} style={{ width: 100 }}
+            <InputNumber aria-label="批量加工周期（天）" disabled={busy} min={0} max={365} precision={0} value={production} style={{ width: 100 }}
               onChange={(v) => { setProduction(v == null ? null : Number(v)); setPreview(null); }} />
           </span>
           <span>
             在途周期{" "}
-            <InputNumber min={0} max={365} precision={0} value={logistics} style={{ width: 100 }}
+            <InputNumber aria-label="批量在途周期（天）" disabled={busy} min={0} max={365} precision={0} value={logistics} style={{ width: 100 }}
               onChange={(v) => { setLogistics(v == null ? null : Number(v)); setPreview(null); }} />
           </span>
           <span>
             采购周期{" "}
-            <InputNumber min={0} max={365} precision={0} value={purchase} style={{ width: 100 }}
+            <InputNumber aria-label="批量采购周期（天）" disabled={busy} min={0} max={365} precision={0} value={purchase} style={{ width: 100 }}
               onChange={(v) => { setPurchase(v == null ? null : Number(v)); setPreview(null); }} />
           </span>
         </Space>
         <Checkbox
           checked={overwrite}
-          disabled={!canOverride}
+          disabled={!canOverride || busy}
           onChange={(e) => { setOverwrite(e.target.checked); setPreview(null); }}
         >
           连同已有值一起覆盖（默认只补空值{canOverride ? "" : "；采购角色只能补空值"}）

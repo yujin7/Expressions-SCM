@@ -1,0 +1,26 @@
+.summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }
+.summary > div { min-width: 0; padding: 10px 14px; border: 1px solid #e7ebf1; border-radius: 10px; }
+.summary :global(.ant-statistic-content) { font-size: 24px; }
+.tiers { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: #667085; font-size: 12px; margin: 8px 0 12px; }
+.tiers :global(.ant-tag) { margin: 0; }
+.draftNotice { margin: 12px 0; }
+.conflict { white-space: normal; overflow-wrap: anywhere; font-size: 12px; color: #ad4e00; max-width: 200px; }
+.conflict :global(.ant-btn) { height: auto; white-space: normal; padding: 0; }
+.desktopTable { min-width: 0; }
+.identity { overflow-wrap: anywhere; }
+.identity > div { font-size: 12px; color: #667085; margin-top: 4px; }
+.mobileRows { display: none; }
+.mobileRow { padding: 12px; margin-bottom: 10px; border: 1px solid #e7ebf1; border-radius: 10px; overflow-wrap: anywhere; }
+.mobileHeading { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.mobileFields { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.mobileFields label { display: grid; gap: 4px; font-size: 12px; }
+.mobilePagination { margin: 8px 0; }
+@media (max-width: 600px) {
+  .summary { gap: 6px; }
+  .summary > div { padding: 8px; }
+  .summary :global(.ant-statistic-title) { font-size: 12px; }
+  .summary :global(.ant-statistic-content) { font-size: 21px; }
+  .desktopTable { display: none; }
+  .mobileRows { display: block; }
+  .conflict { max-width: 100%; }
+}

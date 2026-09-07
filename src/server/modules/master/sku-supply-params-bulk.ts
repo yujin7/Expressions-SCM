@@ -19,6 +19,7 @@
  * 目标集合与页面清单**共用 `listSupplyParams`**：否则「预览说 167 行」和
  * 「页面上看到 167 行」会各算各的，业务永远不知道自己批量改了哪些。
  */
+import { createHash } from "node:crypto";
 import { inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import * as schema from "@/db/schema";
@@ -43,6 +44,8 @@ const bulkSchema = z.object({
       brandId: z.number().int().positive().optional(),
       skuType: z.string().trim().max(20).optional(),
       blockedOnly: z.boolean().optional(),
+      q: z.string().trim().max(200).optional(),
+      missing: z.enum(["", "any", "production", "logistics", "purchase", "moq", "cost"]).optional(),
       /** 只对「还缺周期」的行套用（缺省 true：套默认值不该顺手改掉人工填过的数） */
       onlyMissing: z.boolean().optional(),
     }),
@@ -59,12 +62,15 @@ const bulkSchema = z.object({
     ),
   overwrite: z.boolean().optional(),
   dryRun: z.boolean().optional(),
+  expectedPreview: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   note: z.string().trim().max(200).optional(),
 });
 
 export type BulkSupplyParamsInput = z.infer<typeof bulkSchema>;
 
 export interface BulkSupplyParamsResult {
+  /** Exact reviewed scope, values and current facts; not authorization. */
+  previewKey: string;
   dryRun: boolean;
   /** 落在作用域内的 SKU 数 */
   matched: number;
@@ -99,6 +105,8 @@ async function loadBulkTargets(db: AnyDb, scope: BulkSupplyParamsInput["scope"])
         brandId: scope.brandId,
         skuType: scope.skuType,
         blockedOnly: scope.blockedOnly,
+        q: scope.q,
+        missing: scope.missing,
         page: 1,
         pageSize: BULK_MAX_SKUS,
       },
@@ -173,7 +181,24 @@ export async function bulkFillSupplyParams(
     throw new ApiError(403, "覆盖已有周期须生产计划（pmc）或管理员；采购只能补录空值");
   }
   const db = await resolveDb(dbArg);
-  const targets = await loadBulkTargets(db, v.scope);
+  return db.transaction(async (tx: AnyDb) => {
+  const selected = await loadBulkTargets(tx, v.scope);
+  if (!v.dryRun && selected.length) {
+    await tx.select({ id: schema.skus.id }).from(schema.skus)
+      .where(inArray(schema.skus.id, selected.map(r => r.skuId))).orderBy(schema.skus.id).for("update");
+    await tx.select({ id: schema.skuParams.skuId }).from(schema.skuParams)
+      .where(inArray(schema.skuParams.skuId, selected.map(r => r.skuId))).orderBy(schema.skuParams.skuId).for("update");
+  }
+  // Re-read after the lock: a queued fill must not overwrite a concurrent fill.
+  const targets = selected.length && !v.dryRun
+    ? await loadBulkTargets(tx, { kind: "ids", ids: selected.map(r => r.skuId) }) : selected;
+  targets.sort((a, b) => a.skuId - b.skuId);
+  const previewKey = createHash("sha256").update(JSON.stringify({
+    actor: user.id, overwrite: v.overwrite === true, values: v.values, targets,
+  })).digest("hex");
+  if (!v.dryRun && v.expectedPreview && v.expectedPreview !== previewKey) {
+    throw new ApiError(409, "预演后目标或周期已变化，整批未写入；请重新预演并核对");
+  }
 
   const plans: {
     row: BulkTargetRow;
@@ -223,6 +248,7 @@ export async function bulkFillSupplyParams(
   }
 
   const result: BulkSupplyParamsResult = {
+    previewKey,
     dryRun: v.dryRun === true,
     matched: targets.length,
     filled,
@@ -234,7 +260,6 @@ export async function bulkFillSupplyParams(
   };
   if (v.dryRun || plans.length === 0) return result;
 
-  await db.transaction(async (tx: AnyDb) => {
     for (const plan of plans) {
       await tx
         .insert(schema.skuParams)
@@ -252,6 +277,6 @@ export async function bulkFillSupplyParams(
         after: { skuCode: plan.row.code, ...plan.before, ...plan.set, note: v.note ?? null, bulk: true },
       });
     }
-  });
   return result;
+  });
 }
