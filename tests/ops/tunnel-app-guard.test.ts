@@ -48,6 +48,7 @@ describe("address changes preserve the deployed image and database", () => {
       RUNTIME_DIR="$QA_DIR"
       docker() {
         case "$1" in
+          info) echo qa-tunnel-guard ;;
           inspect)
             [ "$QA_SCENARIO" != inspect-fails ] || return 12
             if [ "$QA_SCENARIO" = invalid-image ]; then echo 'bad';
@@ -57,7 +58,9 @@ describe("address changes preserve the deployed image and database", () => {
             [ "$QA_SCENARIO" != health-fails ] || return 13
             if [ -f "$QA_DIR/updated" ] && [ "$QA_SCENARIO" = revision-changed ]; then echo '${"d".repeat(40)}'; else echo '${revision}'; fi ;;
           compose)
-            if [[ "$*" == *'ps -q app'* ]]; then
+            if [[ "$*" == *'config --format json'* ]]; then
+              printf '{"name":"qa-tunnel-%s"}\\n' "$QA_SCENARIO"
+            elif [[ "$*" == *'ps -q app'* ]]; then
               [ "$QA_SCENARIO" != ps-fails ] || return 11
               case "$QA_SCENARIO" in
                 absent) : ;;
@@ -77,7 +80,7 @@ describe("address changes preserve the deployed image and database", () => {
           *) return 99 ;;
         esac
       }
-      ${guard}
+      source ${JSON.stringify(path.resolve("scripts/tunnel-app-guard.sh"))}
       tunnel_sync_url "$QA_URL" || exit 1
       tunnel_verify_same_app || exit 2
       echo VERIFIED

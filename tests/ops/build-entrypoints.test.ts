@@ -8,7 +8,7 @@ const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe("build entrypoint ownership", () => {
-  it.each(["", "scripts/public-tunnel-daemon.sh"])("syntax gate checks every named script and propagates failure at %s", failAt => {
+  it.each(["", "scripts/public-tunnel-daemon.sh", "scripts/app-operation-lock.sh"])("syntax gate checks every named script and propagates failure at %s", failAt => {
     const dir = mkdtempSync(path.join(tmpdir(), "scm-ops-syntax-")); dirs.push(dir);
     writeFileSync(path.join(dir, "bash"), `#!/bin/sh
 printf 'CHECK %s\\n' "$2"
@@ -18,7 +18,8 @@ printf 'CHECK %s\\n' "$2"
     const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> };
     const r = spawnSync("/bin/sh", ["-c", pkg.scripts["check:ops"]], { encoding: "utf8", timeout: 2000,
       env: { NODE_ENV: "test", PATH: `${dir}:/usr/bin:/bin`, QA_FAIL_AT: failAt } });
-    expect(r.stdout.match(/^CHECK /gm)).toHaveLength(8);
+    expect(r.stdout.match(/^CHECK /gm)).toHaveLength(failAt === "scripts/public-tunnel-daemon.sh" ? 8 : 9);
+    if (failAt !== "scripts/public-tunnel-daemon.sh") expect(r.stdout).toContain("CHECK scripts/app-operation-lock.sh");
     expect(r.stdout).toContain("CHECK scripts/public-tunnel-daemon.sh");
     expect(r.status).toBe(failAt ? 1 : 0);
     expect(r.stdout.includes("SEMANTIC_CHECK")).toBe(!failAt);
@@ -42,6 +43,7 @@ printf 'CHECK %s\\n' "$2"
     const r = spawnSync("/bin/bash", ["-c", `set -euo pipefail
       REPO=/synthetic-only
       source() { TUNNEL_APP_REVISION=${"a".repeat(40)}; }
+      app_operation_acquire() { return 0; }
       tunnel_capture_app() { return ${status}; }
       ${installer.slice(start, end)}
       echo INSTALL_ALLOWED

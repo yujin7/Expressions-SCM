@@ -22,9 +22,18 @@ fi
 # 让备份与部署始终读取同一套生产 Compose/环境配置。
 export SCM_COMPOSE_FILE="$COMPOSE_FILE"
 export SCM_ENV_FILE="$ENV_FILE"
+APP_OPERATION_PROJECT=""
 compose() {
-  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
+  if [[ -n "$APP_OPERATION_PROJECT" ]]; then
+    docker compose -p "$APP_OPERATION_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
+  else
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
+  fi
 }
+# Same lock as public URL updates, held through rollback/build/migration/health/warmup.
+# shellcheck source=scripts/app-operation-lock.sh
+source scripts/app-operation-lock.sh
+app_operation_acquire compose || exit $?
 echo "==> 给当前在跑的镜像打回滚标签"
 # 回滚点必须在 **build 之前** 打，不是 up -d 之前：`compose build` 一接管 latest，旧镜像就变成悬空层，
 # Docker Desktop 的构建 GC 会直接回收它——2026-09-06 实测：标签块放在 build 之后，执行时报 No such image，

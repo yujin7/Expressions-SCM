@@ -23,7 +23,12 @@ function rollbackProbe(scenario: string, initial = false) {
   writeFileSync(path.join(dir, "bin/docker"), `#!/bin/bash
 printf '%s\\n' "$*" >> "$QA_COMMAND_LOG"
 case "$1" in
+  info) echo qa-deploy-safety ;;
   compose)
+    if [[ "$*" == *'config --format json'* ]]; then
+      printf '{"name":"qa-deploy-%s"}\\n' "$QA_SCENARIO"
+      exit 0
+    fi
     case "$QA_SCENARIO" in
       ps-fails) exit 11 ;;
       absent) exit 0 ;;

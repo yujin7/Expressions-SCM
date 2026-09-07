@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Sourced by the installer and daemon. Only the existing Compose app may be reconfigured.
 # No source build, pull, database start, or migration belongs to public-access setup.
+# shellcheck source=scripts/app-operation-lock.sh
+source "$(dirname "${BASH_SOURCE[0]}")/app-operation-lock.sh" || return 1
 tunnel_compose() {
   docker compose -p "$PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_PROD" -f "$COMPOSE_LOCAL" "$@"
 }
@@ -31,6 +33,7 @@ tunnel_capture_app() {
 tunnel_sync_url() {
   local url="$1" pin_file current_container rc=0
   [[ "$url" =~ ^https://[a-z0-9]+(-[a-z0-9]+)+\.trycloudflare\.com$ ]] || return 1
+  app_operation_acquire tunnel_compose || return $?
   tunnel_capture_app || return 1
   TUNNEL_EXPECTED_IMAGE="$TUNNEL_APP_IMAGE"
   TUNNEL_EXPECTED_REVISION="$TUNNEL_APP_REVISION"

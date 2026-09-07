@@ -137,13 +137,19 @@ public_probe() {
 # 把新地址落到应用上。
 # 关键：用**环境变量覆盖**而不是改写 env 文件——compose 的插值优先级是
 # shell 环境 > --env-file，因此磁盘上的配置始终只有一份真相，不会漂。
-apply_url() {
+apply_url() (
   local url="$1"
   local prev
   prev="$(cat "$URL_FILE" 2>/dev/null || true)"
   log "落地 AUTH_URL → ${url}"
 
-  if ! tunnel_sync_url "$url"; then
+  local sync_status=0
+  tunnel_sync_url "$url" || sync_status=$?
+  if [[ "$sync_status" == 75 ]]; then
+    log "应用操作正忙，保留当前隧道，稍后重试"
+    return 75
+  fi
+  if [[ "$sync_status" != 0 ]]; then
     log "✗ 同步访问地址失败：既有应用须通过版本/迁移/HSTS核对；不构建、不拉镜像、不迁移"
     return 1
   fi
@@ -170,7 +176,7 @@ apply_url() {
 
   log "✗ 约 3 分钟内未确认公网健康与登录回跳"
   return 1
-}
+)
 
 # 确保应用当前真的在用这个地址。
 #
@@ -254,7 +260,16 @@ while true; do
   fi
 
   log "隧道地址：${URL}"
-  if ! apply_url "$URL"; then
+  # A deployment is not a broken tunnel. Retry this URL after the lock is released,
+  # without replacing cloudflared, publishing an unverified URL, or notifying users.
+  APPLY_STATUS=0
+  apply_url "$URL" || APPLY_STATUS=$?
+  while [[ "$APPLY_STATUS" == 75 ]] && kill -0 "$CF_PID" 2>/dev/null; do
+    sleep "$TUNNEL_CHECK_SECONDS"
+    APPLY_STATUS=0
+    apply_url "$URL" || APPLY_STATUS=$?
+  done
+  if [[ "$APPLY_STATUS" != 0 ]]; then
     log "新隧道未能通过端到端验活，立即重建"
     kill "$CF_PID" 2>/dev/null
     wait "$CF_PID" 2>/dev/null
@@ -268,10 +283,13 @@ while true; do
   PUBLIC_FAILURES=0
   while kill -0 "$CF_PID" 2>/dev/null; do
     sleep "$TUNNEL_CHECK_SECONDS"
-    if ensure_url "$URL"; then
+    ENSURE_STATUS=0
+    ensure_url "$URL" || ENSURE_STATUS=$?
+    if [[ "$ENSURE_STATUS" == 0 ]]; then
       PUBLIC_FAILURES=0
       continue
     fi
+    [[ "$ENSURE_STATUS" == 75 ]] && continue
     PUBLIC_FAILURES=$((PUBLIC_FAILURES + 1))
     log "公网验活连续失败 ${PUBLIC_FAILURES}/${TUNNEL_FAILURE_LIMIT}"
     if [[ "$PUBLIC_FAILURES" -ge "$TUNNEL_FAILURE_LIMIT" ]]; then

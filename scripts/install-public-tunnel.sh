@@ -40,6 +40,7 @@ COMPOSE_PROD="$REPO/docker-compose.prod.yml"
 COMPOSE_LOCAL="$REPO/docker-compose.local.yml"
 # shellcheck source=scripts/tunnel-app-guard.sh
 source "$REPO/scripts/tunnel-app-guard.sh"
+app_operation_acquire tunnel_compose || exit $?
 if ! tunnel_capture_app; then
   echo "✗ 既有应用版本/迁移/HSTS未就绪；请先按发布清单部署 PUBLIC_HTTPS=1 的已验收镜像。未构建或重启应用。" >&2
   exit 1
@@ -60,6 +61,7 @@ echo "    ${RUNTIME_DIR}（.env.prod 权限 600）"
 echo "==> 4/7 安装守护脚本"
 cp "$REPO/scripts/public-tunnel-daemon.sh" "$TARGET"
 cp "$REPO/scripts/tunnel-app-guard.sh" "$STATE_DIR/tunnel-app-guard.sh"
+cp "$REPO/scripts/app-operation-lock.sh" "$STATE_DIR/app-operation-lock.sh"
 chmod +x "$TARGET"
 
 echo "==> 5/7 收掉手工起的隧道，避免同时开两条"
@@ -88,6 +90,9 @@ cat > "$PLIST" <<PLISTEOF
 </plist>
 PLISTEOF
 
+# Configuration copy is complete. Do not hold the app lock while waiting for the
+# new daemon: it must acquire the same lock to sync and verify the public URL.
+exec 9>&-
 launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
 # bootout 是异步的：旧实例还没完全退出时立刻 bootstrap 会报 "Bootstrap failed: 5: Input/output error"，
 # 并且此时守护**没有**被加载——2026-09-02 实测因此把公网入口整个打掉。先等旧实例消失，再带重试加载。
