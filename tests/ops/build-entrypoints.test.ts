@@ -9,15 +9,16 @@ afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: tru
 
 describe("build entrypoint ownership", () => {
   it.each(["", "scripts/public-tunnel-daemon.sh", "scripts/app-operation-lock.sh"])("syntax gate checks every named script and propagates failure at %s", failAt => {
-    const dir = mkdtempSync(path.join(tmpdir(), "scm-ops-syntax-")); dirs.push(dir);
-    writeFileSync(path.join(dir, "bash"), `#!/bin/sh
-printf 'CHECK %s\\n' "$2"
-[ "$2" != "$QA_FAIL_AT" ]
-`, { mode: 0o700 });
-    writeFileSync(path.join(dir, "node"), "#!/bin/sh\necho SEMANTIC_CHECK\n", { mode: 0o700 });
     const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> };
-    const r = spawnSync("/bin/sh", ["-c", pkg.scripts["check:ops"]], { encoding: "utf8", timeout: 2000,
-      env: { NODE_ENV: "test", PATH: `${dir}:/usr/bin:/bin`, QA_FAIL_AT: failAt } });
+    // Test loop/exit propagation in one shell, not nine OS startup latencies.
+    // check:ops itself still runs the real bash syntax checks in the release gate.
+    const r = spawnSync("/bin/sh", ["-c", `
+      bash() { printf 'CHECK %s\\n' "$2"; [ "$2" != "$QA_FAIL_AT" ]; }
+      node() { echo SEMANTIC_CHECK; }
+      ${pkg.scripts["check:ops"]}
+    `], { encoding: "utf8", timeout: 2000,
+      env: { NODE_ENV: "test", PATH: "/usr/bin:/bin", QA_FAIL_AT: failAt } });
+    expect(r.error).toBeUndefined();
     expect(r.stdout.match(/^CHECK /gm)).toHaveLength(failAt === "scripts/public-tunnel-daemon.sh" ? 8 : 9);
     if (failAt !== "scripts/public-tunnel-daemon.sh") expect(r.stdout).toContain("CHECK scripts/app-operation-lock.sh");
     expect(r.stdout).toContain("CHECK scripts/public-tunnel-daemon.sh");

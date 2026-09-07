@@ -22,8 +22,10 @@ describe("公网快速隧道 watchdog", () => {
     expect(daemon).toContain('wait "$CF_PID"');
   });
 
-  it("新地址必须先完成端到端验活，失败立即丢弃", () => {
-    expect(daemon).toContain('if ! apply_url "$URL"; then');
+  it("新地址必须先完成端到端验活，操作忙碌先重试，真正失败才丢弃", () => {
+    expect(daemon).toContain('apply_url "$URL" || APPLY_STATUS=$?');
+    expect(daemon).toContain('while [[ "$APPLY_STATUS" == 75 ]]');
+    expect(daemon).toContain('if [[ "$APPLY_STATUS" != 0 ]]; then');
     expect(daemon).toContain("新隧道未能通过端到端验活，立即重建");
   });
 
