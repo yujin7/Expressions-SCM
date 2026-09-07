@@ -7,7 +7,7 @@
  *  (e)  close / ack 的幂等键必须稳定（原来嵌 now.toISOString()，等于没有幂等）。
  */
 import { describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { createTestDb } from "../helpers/db";
 import { ackAlert, backfillAlertDedupeKeys, closeAlert, upsertAlerts } from "@/server/modules/alerts/engine";
@@ -52,6 +52,36 @@ function dbWithInterleavedWrite<T extends object>(db: T, interleave: () => Promi
 }
 
 describe("预警引擎护栏", () => {
+  it("历史NULL与数据库微秒时间戳未变化时仍可正常关闭，不被JS毫秒精度卡住", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      await db.insert(schema.systemAlerts).values([
+        { category: "legacy_cas", refKey: "null", dedupeKey: "legacy:null", title: "历史无命中时间", severity: "high", createdAt: new Date("2026-09-01T03:00:00Z") },
+        { category: "legacy_cas", refKey: "micros", dedupeKey: "legacy:micros", title: "历史SQL时间", severity: "high", createdAt: new Date("2026-09-01T03:00:00Z") },
+      ]);
+      await db.execute(sql`UPDATE system_alerts SET last_hit_at = '2026-09-01T03:00:00.000123Z'::timestamptz WHERE dedupe_key = 'legacy:micros'`);
+      expect(await upsertAlerts(db, { category: "legacy_cas", candidates: [], now: new Date("2026-09-08T03:00:00Z"), autoCloseEligibleKeys: ["legacy:null", "legacy:micros"] })).toMatchObject({ autoClosed: 2, stillOpen: 0 });
+    } finally { await client.close(); }
+  });
+  it.each([0, 3])("并发再次命中不能被旧评估自动关闭（迟滞%s天）；未变化的另一个对象仍正常关闭", async (days) => {
+    const { db, client } = await createTestDb();
+    try {
+      const t0 = new Date("2026-09-01T03:00:00.000Z");
+      const now = new Date("2026-09-08T03:00:00.000Z");
+      await upsertAlerts(db, { category: "race_rehit", candidates: [cand("A"), cand("B")], now: t0 });
+      const raced = dbWithInterleavedWrite(db, () => upsertAlerts(db, {
+        category: "race_rehit", candidates: [{ ...cand("A", "critical"), title: "较新评估仍然命中" }], now,
+        autoCloseEligibleKeys: [],
+      }));
+      const result = await upsertAlerts(raced, { category: "race_rehit", candidates: [], now, autoCloseAfterDays: days, autoCloseEligibleKeys: ["t:A", "t:B"] });
+      expect(result.autoClosed).toBe(1);
+      const alerts = await db.select().from(schema.systemAlerts).where(eq(schema.systemAlerts.category, "race_rehit"));
+      expect(alerts.find(a => a.refKey === "A")).toMatchObject({ status: "open", title: "较新评估仍然命中", severity: "critical", lastHitAt: now, autoResolved: false });
+      expect(alerts.find(a => a.refKey === "B")).toMatchObject({ status: "resolved", autoResolved: true });
+      const closes = (await db.select().from(schema.alertEvents)).filter(e => e.event === "close");
+      expect(closes).toHaveLength(1);expect(closes[0].alertId).toBe(alerts.find(a => a.refKey === "B")!.id);
+    } finally { await client.close(); }
+  });
   it("A5：人工关闭在自动关闭前落地 → 不被覆盖成 autoResolved，也不多写一条 close 事件", async () => {
     const { db, client } = await createTestDb();
     try {

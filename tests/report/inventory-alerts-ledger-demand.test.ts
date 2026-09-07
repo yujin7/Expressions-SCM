@@ -6,6 +6,7 @@ import { computeInventoryAlerts, loadInventoryAlerts } from "@/server/modules/re
 import { coverWhy, runInventoryCoverWatchdog } from "@/jobs/alert-watchdogs";
 import { completedShanghaiDays } from "@/server/core/business-day";
 import * as externalVelocity from "@/server/modules/report/external-velocity";
+import { upsertAlerts } from "@/server/modules/alerts/engine";
 
 const NOW = new Date("2026-09-08T04:00:00+08:00");
 const INSIDE = new Date("2026-09-07T12:00:00+08:00");
@@ -23,6 +24,36 @@ async function fixture(db: TestDb) {
 
 describe("库存预警：销售净出库与非销售作业分离（G02）", () => {
   afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+  it("需求缺失/净零/负净量/纯作业/对象停用/降为C均不证明恢复；有效正需求回到阈值外才迟滞关闭", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(NOW);
+    const { db, client } = await createTestDb();
+    try {
+      const f = await fixture(db);
+      const cases = ["UNKNOWN", "ZERO", "NEGATIVE", "OPERATIONS", "INACTIVE", "TIER-C", "RECOVERED", "STILL-HIT"];
+      const seeded = [];
+      for (const code of cases) {
+        const sku = await f.sku(code); seeded.push(sku);
+        await db.insert(schema.skuPlanningPolicy).values({ skuId: sku.id, period: "2026-09", tier: code === "TIER-C" ? "C" : "S", abc: "A", ownership: "joint_review" });
+        if (["ZERO", "NEGATIVE", "RECOVERED", "STILL-HIT", "TIER-C"].includes(code)) await f.move(sku.id, "-300");
+        if (code === "ZERO" || code === "NEGATIVE") await f.move(sku.id, code === "ZERO" ? "300" : "330", "stock_doc", "reverse:sales_out#1");
+        if (code === "OPERATIONS") await f.move(sku.id, "-300", "transfer");
+        if (code === "INACTIVE") await db.update(schema.skus).set({ active: false }).where(eq(schema.skus.id, sku.id));
+        if (code !== "STILL-HIT") await db.insert(schema.stockBalances).values({ skuId: sku.id, warehouseId: f.wh.id, qty: "1000" });
+      }
+      await upsertAlerts(db, { category: "inventory_cover", now: new Date("2026-09-03T04:00:00+08:00"), candidates: seeded.map(s => ({ refKey: s.code, dedupeKey: `inventory_cover:${s.id}`, title: "历史风险", severity: "high", ownerRole: "pmc" })) });
+      const res = await runInventoryCoverWatchdog(db, NOW);
+      expect(res).toMatchObject({ opened: 0, refreshed: 1, autoClosed: 1, stillOpen: 7 });
+      const alerts = await db.select().from(schema.systemAlerts);
+      expect(alerts.filter(a => a.status === "resolved").map(a => a.refKey)).toEqual(["RECOVERED"]);
+      expect(alerts.filter(a => a.status === "open").map(a => a.refKey).sort()).toEqual(cases.filter(c => c !== "RECOVERED").sort());
+      const closes = (await db.select().from(schema.alertEvents)).filter(e => e.event === "close");
+      expect(closes).toHaveLength(1);
+      expect(closes[0].alertId).toBe(alerts.find(a => a.refKey === "RECOVERED")!.id);
+      // 整份评估为空同样不能将保留的风险当恢复；历史事件不改写。
+      for (const s of seeded) await db.update(schema.skus).set({ active: false }).where(eq(schema.skus.id, s.id));
+      expect(await runInventoryCoverWatchdog(db, NOW)).toMatchObject({ candidates: 0, autoClosed: 0, stillOpen: 7 });
+    } finally { await client.close(); }
+  });
   it("窗口按上海整日跨月/闰日，拒绝无效日历和非整数天数", () => {
     expect(completedShanghaiDays(1, "2024-03-01")).toMatchObject({ startDay: "2024-02-29", endDayExclusive: "2024-03-01", days: 1 });
     expect(completedShanghaiDays(30, "2026-09-08").start.toISOString()).toBe("2026-08-08T16:00:00.000Z");

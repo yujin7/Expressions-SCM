@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { shanghaiDayOf } from "@/server/core/business-day";
@@ -218,9 +218,11 @@ export async function upsertAlerts(
   const now = input.now ?? new Date();
   const neverAutoClose = input.autoCloseAfterDays === null;
   const closeAfterMs = (input.autoCloseAfterDays ?? 3) * 24 * 60 * 60 * 1000;
-  const open: { id: number; dedupeKey: string | null; lastHitAt: Date | null; createdAt: Date; severity: string | null; ackedAt: Date | null }[] = await db
+  const open: { id: number; dedupeKey: string | null; lastHitAt: Date | null; lastHitAtVersion: string | null; createdAt: Date; severity: string | null; ackedAt: Date | null }[] = await db
     .select({
       id: schema.systemAlerts.id, dedupeKey: schema.systemAlerts.dedupeKey, lastHitAt: schema.systemAlerts.lastHitAt,
+      // Date只保留毫秒；历史SQL写入可能有微秒，CAS保留数据库原始精度。
+      lastHitAtVersion: sql<string | null>`${schema.systemAlerts.lastHitAt}::text`,
       createdAt: schema.systemAlerts.createdAt, severity: schema.systemAlerts.severity, ackedAt: schema.systemAlerts.ackedAt,
     })
     .from(schema.systemAlerts)
@@ -316,8 +318,7 @@ export async function upsertAlerts(
     // closeAfterMs=0 是"不再命中即刻关闭"：无条件关，不比时间——
     // 否则两次运行的 now 一旦不单调（补跑、时钟回拨、测试注入的历史时刻），
     // 已消失的条件会被判成"还没到迟滞时间"而永远关不掉。
-    .filter((o) => closeAfterMs <= 0 || now.getTime() - new Date(o.lastHitAt ?? o.createdAt).getTime() >= closeAfterMs)
-    .map((o) => o.id);
+    .filter((o) => closeAfterMs <= 0 || now.getTime() - new Date(o.lastHitAt ?? o.createdAt).getTime() >= closeAfterMs);
   /* status='open' 守卫 + RETURNING（红队 A5）：本轮开跑后落地的**人工关闭**不得被自动关闭覆盖——
      覆盖会把 autoResolved 翻成 true，于是人工关闭抑制失效、待办从严口径分母里溜走、
      台账再多写一条 close。只对真正被本次 UPDATE 改到的行落 close 事件。 */
@@ -325,7 +326,13 @@ export async function upsertAlerts(
   if (toClose.length) {
     const closed: { id: number }[] = await db.update(schema.systemAlerts)
       .set({ status: "resolved", autoResolved: true, resolvedAt: now })
-      .where(and(inArray(schema.systemAlerts.id, toClose), eq(schema.systemAlerts.status, "open")))
+      // 乐观并发核对：读完open快照后，另一轮看门狗若再次命中，旧评估不得将其关闭。
+      // 每个id和自己的last_hit_at成对核对；不能只用一条最早/最晚时间线批量比较。
+      // NULL历史值也使用IS NOT DISTINCT FROM，保留原本无last_hit_at的正常关闭能力。
+      .where(and(eq(schema.systemAlerts.status, "open"), or(...toClose.map((o) => and(
+        eq(schema.systemAlerts.id, o.id),
+        sql`${schema.systemAlerts.lastHitAt} IS NOT DISTINCT FROM ${o.lastHitAtVersion}::timestamptz`,
+      )))))
       .returning({ id: schema.systemAlerts.id });
     autoClosed = closed.length;
     for (const r of closed) {

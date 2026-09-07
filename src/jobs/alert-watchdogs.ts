@@ -1,4 +1,5 @@
 import { shanghaiDayOf } from "@/server/core/business-day";
+import { dCmp } from "@/server/core/decimal";
 import { salesSpikeEvidenceCurrent } from "@/server/rules/sales-spike";
 import type { AnyDb } from "@/server/core/svc";
 import { upsertAlerts, type AlertCandidate, type AlertWhy } from "@/server/modules/alerts/engine";
@@ -154,7 +155,15 @@ export async function runInventoryCoverWatchdog(db: AnyDb, now = new Date()) {
         why: coverWhy(r, orderBy),
       } satisfies AlertCandidate;
     });
-  const res = await upsertAlerts(db, { category: "inventory_cover", candidates, now });
+  // “本轮没命中”不等于“风险恢复”：无正需求时 coverStatus(null) 为 ok，
+  // 但那只是没有可计算的覆盖天数，不能拿来关闭历史告警。停用/消失/C级同理。
+  // 这是必要而非充分的数据资格；外部完整窗口与来源切换资格仍由读模型后续收口。
+  const autoCloseEligibleKeys = model.rows.filter((r) =>
+    r.tier != null && r.tier !== "C" && r.primaryDailySource != null
+    && r.primaryDaily != null && Number.isFinite(r.primaryDaily) && dCmp(String(r.primaryDaily), "0") > 0
+    && r.coverDays != null && Number.isFinite(r.coverDays),
+  ).map((r) => `inventory_cover:${r.skuId}`);
+  const res = await upsertAlerts(db, { category: "inventory_cover", candidates, now, autoCloseEligibleKeys });
   return { category: "inventory_cover", rows: model.rows.length, candidates: candidates.length, downgradedBySupply: model.totals.downgradedBySupply, ...res };
 }
 
