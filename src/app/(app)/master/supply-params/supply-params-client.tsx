@@ -73,6 +73,8 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
     defaultPageSize: 50,
   });
   const { filters, page, pageSize } = listState;
+  const [searchText, setSearchText] = useState(filters.q);
+  useEffect(() => setSearchText(filters.q), [filters.q]);
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -306,7 +308,9 @@ export default function SupplyParamsClient({ canOverride }: { canOverride: boole
               onChange={(v) => listState.setFilter({ brandId: v == null ? "" : String(v) })}
             />
             <span>只看阻塞 <Switch size="small" checked={filters.blockedOnly === "1"} onChange={(v) => listState.setFilter({ blockedOnly: v ? "1" : "" })} /></span>
-            <SearchInput allowClear placeholder="搜索 SKU 编码/名称" style={{ width: 200 }} onSearch={(v) => listState.setFilter({ q: v.trim() })} />
+            <SearchInput allowClear placeholder="搜索 SKU 编码/名称" style={{ width: 200 }}
+              value={searchText} onChange={(event) => setSearchText(event.target.value)}
+              onSearch={(v) => listState.setFilter({ q: v.trim() })} />
           </>
         }
         onExport={data ? () => void doExport() : undefined}

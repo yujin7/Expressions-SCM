@@ -18,6 +18,7 @@ import { useDocumentRead } from "@/components/useDocumentRead";
 import { useDocumentTarget } from "@/components/useDocumentTarget";
 import DocumentDrawer from "@/components/DocumentDrawer";
 import ListToolbar from "@/components/ListToolbar";
+import SearchInput from "@/components/SearchInput";
 import { useListState } from "@/components/useListState";
 import { documentHref, DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
 import { buildLaunchExternalEvidenceBriefs } from "@/components/launch-external-evidence";
@@ -228,7 +229,7 @@ export default function NpdProjectsClient() {
         message="D19 · 1.x：新建项目按「各节点核心说明」节点标准实例化，计划沿上一节点链推算（自然日）。节点标准/角色分配见本页「节点模板」页签。"
       />
       <ListToolbar state={listState}
-        extra={<><Input.Search aria-label="搜索项目 / SKU / 品牌" placeholder="搜索项目 / SKU / 品牌" value={searchText}
+        extra={<><SearchInput aria-label="搜索项目 / SKU / 品牌" placeholder="搜索项目 / SKU / 品牌" value={searchText}
           onChange={event => setSearchText(event.target.value)} onSearch={value => listState.setFilter({ q: value.trim() })}
           allowClear style={{ width: 280, maxWidth: "100%" }} />
           <Select aria-label="项目状态" value={status} onChange={value => listState.setFilter({ status: value })}

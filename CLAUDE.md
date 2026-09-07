@@ -34,6 +34,7 @@
   跨渠道拒绝、结果上限、管理员例外由 `tests/inbox/search-scope.test.ts` 行为测试守，不只检查函数名。
 - 余额更新事务内按 (skuId, warehouseId, batchId) 排序；过账/审批靠 UNIQUE 约束幂等
 - UI: AntD5 + 中文界面；列表可导出（>5000 行走异步任务）
+- 搜索统一用 `components/SearchInput`，禁止复引 `<Input.Search>`（SSR 兼容护栏）；中文组词确认不提交搜索，清空须移除筛选；URL 管理的查询必须同步可见输入框，验证刷新/历史导航。
 - 测试: 纯规则用 vitest 直测；涉库测试用 PGlite（`tests/helpers/db.ts`），不依赖 Docker
 - Lint: `npm run lint`（eslint@9 flat config，2026-07-26 引入）。**门禁是 0 error / 0 warning**。
   写 `eslint-disable` 必须带 `--` 理由（豁免要能被复核，

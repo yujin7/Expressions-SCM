@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useEffect, useState } from "react";
+import { forwardRef, useEffect, useRef, useState } from "react";
 import { Button, Input } from "antd";
 import type { InputRef } from "antd";
 import type { SearchProps } from "antd/es/input/Search";
@@ -21,6 +21,8 @@ const SearchInput = forwardRef<InputRef, SearchProps>(function SearchInput(
     onSearch,
     onChange,
     onPressEnter,
+    onCompositionStart,
+    onCompositionEnd,
     value,
     defaultValue,
     className,
@@ -32,6 +34,7 @@ const SearchInput = forwardRef<InputRef, SearchProps>(function SearchInput(
   ref,
 ) {
   const [draft, setDraft] = useState(() => String(value ?? defaultValue ?? ""));
+  const composing = useRef(false);
   const controlled = value !== undefined;
 
   useEffect(() => {
@@ -40,7 +43,7 @@ const SearchInput = forwardRef<InputRef, SearchProps>(function SearchInput(
 
   const current = controlled ? String(value ?? "") : draft;
   const submit = (event?: React.KeyboardEvent<HTMLInputElement> | React.MouseEvent<HTMLElement>) => {
-    onSearch?.(current, event);
+    if (!disabled && !loading && !composing.current) onSearch?.(current, event, { source: "input" });
   };
   const buttonContent =
     enterButton && enterButton !== true ? enterButton : <SearchOutlined />;
@@ -59,12 +62,24 @@ const SearchInput = forwardRef<InputRef, SearchProps>(function SearchInput(
         onChange={(event) => {
           if (!controlled) setDraft(event.target.value);
           onChange?.(event);
+          // AntD's clear affordance reports a click-shaped change event.
+          // Clearing must remove the applied filter as well as the visible text.
+          if (event.type === "click" && !disabled) onSearch?.(event.target.value, event, { source: "clear" });
+        }}
+        onCompositionStart={(event) => {
+          composing.current = true;
+          onCompositionStart?.(event);
+        }}
+        onCompositionEnd={(event) => {
+          composing.current = false;
+          onCompositionEnd?.(event);
         }}
         onPressEnter={(event) => {
+          if (disabled || loading || composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
           onPressEnter?.(event);
           // Read from the input event itself: React state may not have committed
           // yet when a user types and immediately presses Enter.
-          if (!event.defaultPrevented) onSearch?.(event.currentTarget.value, event);
+          if (!event.defaultPrevented) onSearch?.(event.currentTarget.value, event, { source: "input" });
         }}
         style={{
           minWidth: 0,
