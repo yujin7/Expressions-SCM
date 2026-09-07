@@ -428,6 +428,13 @@
       "when": 1788547641190,
       "tag": "0060_integration_record_deletions",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1788793047968,
+      "tag": "0061_npd_write_contract",
+      "breakpoints": true
     }
   ]
 }

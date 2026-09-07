@@ -60,7 +60,7 @@ describe("createBh 的 inTx 钩子：调用方审计与建单同事务", () => {
   });
 
   it("NPD 首单：BH 草稿与 first_order_draft 审计成对落库（同一事务）", async () => {
-    const res = await createNpdFirstOrder(pmcUser, { projectId, qty: "500" }, db);
+    const res = await createNpdFirstOrder(pmcUser, { projectId, qty: "500", version: 1, requestKey: "f20b1541-a765-4a59-ae9a-7091e3b27c92" }, db);
     expect(res.docNo.startsWith("BH")).toBe(true);
 
     const [doc] = await db.select().from(schema.bhDocs).where(eq(schema.bhDocs.id, res.id));
@@ -76,7 +76,7 @@ describe("createBh 的 inTx 钩子：调用方审计与建单同事务", () => {
     expect(npdAudit.length).toBe(1);
     expect(npdAudit[0].userId).toBe(pmcUser.id);
     expect(npdAudit[0].entityId).toBe(projectId);
-    expect(npdAudit[0].after).toMatchObject({ docNo: res.docNo, skuCode: "CP40001", qty: "500" });
+    expect(npdAudit[0].after).toMatchObject({ docNo: res.docNo, skuCode: "CP40001", qty: "500.0000" });
     // 同事务：两条审计 id 相邻，中间不可能夹进别的写
     expect(npdAudit[0].id).toBe(bhAudit[0].id + 1);
   });

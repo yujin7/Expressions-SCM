@@ -9,10 +9,11 @@
  * 为权威（releaseFinishedMoq 既有路径），此表不重复存 MOQ——单一权威原则。
  */
 import {
-  pgTable, serial, integer, text, timestamp, date, unique, index, check,
+  pgTable, serial, integer, text, timestamp, date, unique, index, check, numeric,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { skus, users } from "./masters";
+import { bhDocs } from "./docs";
 
 export const npdProjects = pgTable("npd_projects", {
   id: serial("id").primaryKey(),
@@ -21,11 +22,31 @@ export const npdProjects = pgTable("npd_projects", {
   brand: text("brand"),
   startDate: date("start_date").notNull(),
   status: text("status").notNull().default("active"), // active/done/cancelled
+  version: integer("version").notNull().default(1), // aggregate version: includes node and first-order mutations
   remark: text("remark"),
   createdBy: integer("created_by").notNull().references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index("ix_npd_project_status").on(t.status)]);
+}, (t) => [index("ix_npd_project_status").on(t.status), check("ck_npd_project_version", sql`${t.version} > 0`)]);
+
+/** Immutable request receipt and typed project→BH lineage; a new request is not a project-level uniqueness rule. */
+export const npdFirstOrders = pgTable("npd_first_orders", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => npdProjects.id),
+  projectVersion: integer("project_version").notNull(),
+  bhId: integer("bh_id").notNull().references(() => bhDocs.id),
+  skuId: integer("sku_id").notNull().references(() => skus.id),
+  qty: numeric("qty", { precision: 14, scale: 4 }).notNull(),
+  requestedBy: integer("requested_by").notNull().references(() => users.id),
+  requestKey: text("request_key").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => [
+  unique("uq_npd_first_order_request").on(t.requestedBy, t.requestKey),
+  unique("uq_npd_first_order_bh").on(t.bhId),
+  index("ix_npd_first_order_project").on(t.projectId, t.createdAt),
+  check("ck_npd_first_order_qty", sql`${t.qty} > 0`),
+  check("ck_npd_first_order_version", sql`${t.projectVersion} > 0`),
+]);
 
 export const npdTasks = pgTable("npd_tasks", {
   id: serial("id").primaryKey(),

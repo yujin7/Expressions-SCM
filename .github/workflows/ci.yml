@@ -92,6 +92,8 @@ jobs:
       - run: npm run check:postgres:jdy-concurrency
       - run: npm run check:postgres:sku-identity-concurrency
       - run: npm run check:postgres:review-atomicity
+      - name: NPD versions, replay and audit atomicity (isolated PostgreSQL)
+        run: node --import tsx scripts/verify-postgres-npd-write.ts
       - name: Yonyou retries and concurrency (isolated PostgreSQL)
         env:
           NODE_ENV: test

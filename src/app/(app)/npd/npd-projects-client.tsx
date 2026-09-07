@@ -19,11 +19,13 @@ import { useDocumentTarget } from "@/components/useDocumentTarget";
 import DocumentDrawer from "@/components/DocumentDrawer";
 import ListToolbar from "@/components/ListToolbar";
 import SearchInput from "@/components/SearchInput";
+import { formatQty } from "@/components/format";
+import { clearNpdFirstOrderRequest, loadNpdFirstOrderRequest, prepareNpdFirstOrderRequest, submitNpdFirstOrderRequest, type NpdFirstOrderRequest } from "@/components/npd-first-order-request";
 import { useListState } from "@/components/useListState";
 import { documentHref, DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
 import { buildLaunchExternalEvidenceBriefs } from "@/components/launch-external-evidence";
 import type { ProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
-import { ACTION } from "@/components/dictionary";
+import { ACTION, DOC_STATUS } from "@/components/dictionary";
 import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 
 interface ProjectRow {
@@ -33,6 +35,7 @@ interface ProjectRow {
   brand: string | null;
   startDate: string;
   status: string;
+  version: number;
   remark: string | null;
   taskTotal: number;
   taskDone: number;
@@ -127,7 +130,11 @@ function LaunchExternalEvidence({ observations }: { observations: readonly Jiand
   );
 }
 
-interface ProjectDetail { project: Omit<ProjectRow, "taskTotal" | "taskDone" | "planEnd" | "overdueTasks">; tasks: TaskRow[] }
+interface ProjectDetail {
+  project: Omit<ProjectRow, "taskTotal" | "taskDone" | "planEnd" | "overdueTasks">;
+  tasks: TaskRow[];
+  firstOrders: { id: number; docNo: string; status: string; skuCode: string; baseUom: string; qty: string; createdAt: string }[];
+}
 interface EvidenceResponse {
   supportingObservations: JiandaoyunSupportingObservation[];
   externalDecisionEvidence: ProductExternalDecisionEvidenceBrief;
@@ -318,8 +325,8 @@ export default function NpdProjectsClient() {
           <LaunchExternalEvidence observations={evidenceRead.data.supportingObservations} />
           <ProductExternalDecisionEvidenceCard evidence={evidenceRead.data.externalDecisionEvidence} />
         </div> : null}
-      {selection.present ? <NpdProjectDetail key={selection.id ?? "invalid"} id={selection.id} linkError={selection.error}
-        canWrite={canWrite} onClose={() => selection.setId(null)} onChanged={listRead.retry} /> : null}
+      {selection.present ? <NpdProjectDetail key={`${me?.id ?? "anonymous"}:${selection.id ?? "invalid"}`} id={selection.id} linkError={selection.error}
+        actorId={me?.id ?? null} canWrite={canWrite} onClose={() => selection.setId(null)} onChanged={listRead.retry} /> : null}
 
       <Modal
         title="新建 NPD 项目（按当前节点模板实例化）"
@@ -356,8 +363,8 @@ export default function NpdProjectsClient() {
 }
 
 /** Remounting by identity isolates drafts, confirmations and mutation completions from another project. */
-function NpdProjectDetail({ id, linkError, canWrite, onClose, onChanged }: {
-  id: number | null; linkError: string | null; canWrite: boolean; onClose: () => void; onChanged: () => void;
+function NpdProjectDetail({ id, linkError, actorId, canWrite, onClose, onChanged }: {
+  id: number | null; actorId: number | null; linkError: string | null; canWrite: boolean; onClose: () => void; onChanged: () => void;
 }) {
   const { message } = App.useApp();
   const read = useDocumentRead<ProjectDetail>(id == null ? null : `/api/npd/projects?id=${id}`);
@@ -369,9 +376,21 @@ function NpdProjectDetail({ id, linkError, canWrite, onClose, onChanged }: {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [generated, setGenerated] = useState<{ id: number; docNo: string } | null>(null);
+  const [pendingRequest, setPendingRequest] = useState<NpdFirstOrderRequest | null>(null);
+  const [storageError, setStorageError] = useState<string | null>(null);
   const inFlight = useRef(false);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => {
+    if (actorId == null || id == null) return;
+    const restore = () => {
+      try { setPendingRequest(loadNpdFirstOrderRequest(localStorage, actorId, id)); setStorageError(null); }
+      catch (error) { setStorageError((error as Error).message); }
+    };
+    restore();
+    window.addEventListener("storage", restore);
+    return () => window.removeEventListener("storage", restore);
+  }, [actorId, id]);
   useEffect(() => { if (read.phase !== "success") setFirstOrderOpen(false); }, [read.phase]);
   const run = async (action: () => Promise<void>) => {
     if (!canWrite || !detail || inFlight.current) return;
@@ -382,31 +401,46 @@ function NpdProjectDetail({ id, linkError, canWrite, onClose, onChanged }: {
   };
   const changed = () => { onChanged(); if (mounted.current) read.retry(); };
   const setTask = (taskId: number, status: string) => run(async () => {
-    await patchJson("/api/npd/tasks", { taskId, status });
+    await patchJson("/api/npd/tasks", { taskId, status, version: detail!.project.version });
     if (mounted.current) message.success("节点状态已更新");
     changed();
   });
   const saveSku = () => run(async () => {
     const code = skuDraft.trim();
     if (!code) throw Error("请填写目标 SKU 编码");
-    await patchJson("/api/npd/projects", { intent: "set_sku", projectId: id, skuCode: code });
+    await patchJson("/api/npd/projects", { intent: "set_sku", projectId: id, skuCode: code, version: detail!.project.version });
     if (mounted.current) { message.success("目标 SKU 已补录"); setSkuDraft(""); } changed();
   });
   const reschedule = () => run(async () => {
-    const result = await patchJson<{ changed: number; planEnd: string }>("/api/npd/projects", { intent: "reschedule", projectId: id });
+    const result = await patchJson<{ changed: number; planEnd: string }>("/api/npd/projects", { intent: "reschedule", projectId: id, version: detail!.project.version });
     if (mounted.current) message.success(`计划已重排：${result.changed} 个任务顺延，计划完成 ${result.planEnd}`);
     changed();
   });
   const setProject = (status: string) => run(async () => {
-    await patchJson("/api/npd/projects", { projectId: id, status });
+    await patchJson("/api/npd/projects", { projectId: id, status, version: detail!.project.version });
     if (mounted.current) message.success("项目状态已更新");
     changed();
   });
   const submitFirstOrder = () => run(async () => {
-    if (!firstOrderQty || !/^\d+(\.\d{1,4})?$/.test(firstOrderQty) || Number(firstOrderQty) <= 0) throw Error("请填写大于 0、最多四位小数的数量");
-    const result = await postJson<{ id: number; docNo: string }>("/api/npd/projects", { intent: "first_order", projectId: id, qty: firstOrderQty });
-    if (mounted.current) { setGenerated(result); setFirstOrderOpen(false); setFirstOrderQty(null); message.success(`首单备货草稿已生成：${result.docNo}`); }
+    if (actorId == null || id == null) return;
+    const request = pendingRequest ?? prepareNpdFirstOrderRequest(localStorage, actorId, id, detail!.project.version, firstOrderQty ?? "");
+    setPendingRequest(request);
+    const result = await submitNpdFirstOrderRequest(request);
+    // A late response may clean up its own recovery record, never a newer request or another actor's record.
+    try {
+      const remaining = clearNpdFirstOrderRequest(localStorage, actorId, id, request.requestKey);
+      if (mounted.current) { setPendingRequest(remaining); setStorageError(null); }
+    }
+    catch { if (mounted.current) setStorageError("草稿已确认，但本机重试记录未清除；再次重试仍会返回原草稿"); }
+    if (mounted.current) { setGenerated(result); setFirstOrderOpen(false); setFirstOrderQty(null); message.success(`${result.replayed ? "已找回原" : "已生成"}首单草稿：${result.docNo}`); }
+    changed();
   });
+  const discardRetry = () => {
+    if (actorId == null || id == null || inFlight.current) return;
+    try { setPendingRequest(clearNpdFirstOrderRequest(localStorage, actorId, id, pendingRequest?.requestKey)); setStorageError(null); setActionError(null); }
+    catch (error) { setStorageError((error as Error).message); }
+  };
+  const active = detail?.project.status === "active";
   const taskCols: ColumnsType<TaskRow> = [
     { title: "#", dataIndex: "seq", width: 45 },
     { title: "编号", dataIndex: "nodeNo", width: 65, render: (v: string | null) => (v && v.length <= 10 ? v : "—") },
@@ -434,7 +468,7 @@ function NpdProjectDetail({ id, linkError, canWrite, onClose, onChanged }: {
             size="small"
             value={v}
             style={{ width: 92 }}
-            disabled={!canWrite || busy}
+            disabled={!canWrite || busy || !active}
             aria-label={`节点 ${r.name} 状态`}
             onChange={(nv) => void setTask(r.id, nv)}
             options={Object.entries(TASK_STATUS).map(([val, m]) => ({ value: val, label: m.label }))}
@@ -462,7 +496,7 @@ function NpdProjectDetail({ id, linkError, canWrite, onClose, onChanged }: {
                 重排计划
               </Button>
               {detail.project.skuCode ? (
-                <Button disabled={busy || generated != null} onClick={() => { setFirstOrderQty(null); setFirstOrderOpen(true); }}>
+                <Button disabled={busy || pendingRequest != null || storageError != null} onClick={() => { setFirstOrderQty(null); setFirstOrderOpen(true); }}>
                   {ACTION.createBhDraft}
                 </Button>
               ) : null}
@@ -473,14 +507,35 @@ function NpdProjectDetail({ id, linkError, canWrite, onClose, onChanged }: {
                 <Button danger disabled={busy}>取消项目</Button>
               </Popconfirm>
             </Space>
-          ) : null
+          ) : detail && canWrite ? <Popconfirm title="恢复项目为进行中？" description="保留节点历史与已有首单；不会重新生成任务或订单。" disabled={busy} onConfirm={() => void setProject("active")}>
+            <Button disabled={busy}>恢复项目</Button>
+          </Popconfirm> : null
         }
       >
         {!canWrite && detail ? <Alert type="info" showIcon message="只读查看；节点推进与首单操作由运营或计划角色处理。" style={{ marginBottom: 12 }} /> : null}
+        {detail && !active ? <Alert type="info" showIcon message={`项目${STATUS_TAG[detail.project.status]?.label ?? "已关闭"}；节点、排期和新首单暂不可修改。恢复项目后可继续。`} style={{ marginBottom: 12 }} /> : null}
+        {canWrite && (pendingRequest || storageError) ? <Alert type="warning" showIcon
+          message={storageError ?? `上次首单结果待核对：${formatQty(pendingRequest!.qty)}（基础单位），项目版本 ${pendingRequest!.version}`}
+          description={<Space direction="vertical" size={8}>
+            <span>刷新或网络中断后保留原请求。重试只核对/完成同一次请求，不会重复生成；不要改数量后重复提交。</span>
+            <Space wrap>
+              {pendingRequest ? <Button disabled={busy || !detail} onClick={() => void submitFirstOrder()}>重试原请求</Button> : null}
+              <Popconfirm title="已核对原草稿，放弃本次重试？" description="仅清除本机记录，不撤销可能已生成的草稿；发起新需求可能另建一单。" disabled={busy}
+                onConfirm={discardRetry}><Button disabled={busy}>清除本机重试记录</Button></Popconfirm>
+            </Space>
+          </Space>} style={{ marginBottom: 12 }} /> : null}
         {generated ? <Alert type="success" showIcon message={`首单草稿已生成：${generated.docNo}`}
           description={<Link href={documentHref("bh", generated.id)!}>打开备货草稿并核对 / 提交审批</Link>} style={{ marginBottom: 12 }} /> : null}
         {actionError ? <Alert type="error" showIcon message="操作未完成或结果未确认" description={actionError}
           action={<Button onClick={read.retry}>核对项目</Button>} style={{ marginBottom: 12 }} /> : null}
+        {detail ? <section className={styles.firstOrders} aria-label="关联首单记录">
+          <div className={styles.taskHeading}><strong>关联首单（最近20条可见记录）</strong><Typography.Text type="secondary">生成不等于审批或到货</Typography.Text></div>
+          {(detail.firstOrders ?? []).length ? detail.firstOrders.map(order => <div key={order.id} className={styles.taskMeta}>
+            <Link href={documentHref("bh", order.id)!}>{order.docNo}</Link>
+            <span>{order.skuCode} · {formatQty(order.qty)} {order.baseUom}（生成数量）</span>
+            <Tag>{DOC_STATUS[order.status] ?? order.status}</Tag>
+          </div>) : <Typography.Text type="secondary">暂无可见的结构化首单记录；旧版本草稿不会被猜测回填，请在备货申请核对。</Typography.Text>}
+        </section> : null}
         {detail && canWrite && detail.project.status === "active" && !detail.project.skuCode ? (
           <Alert
             type="warning"
@@ -530,7 +585,7 @@ function NpdProjectDetail({ id, linkError, canWrite, onClose, onChanged }: {
             <Typography.Text type="secondary">{[task.nodeNo, task.stage, task.dept].filter(Boolean).join(" · ") || "阶段/责任部门未提供"}</Typography.Text>
             <div className={styles.taskMeta}><span>{task.planStart ?? "未排期"} → {task.planEnd ?? "未排期"}</span><span>{task.days} 天</span></div>
             <div className={styles.taskMeta}>
-              <Select size="small" aria-label={`节点 ${task.name} 状态`} value={task.status} disabled={!canWrite || busy}
+              <Select size="small" aria-label={`节点 ${task.name} 状态`} value={task.status} disabled={!canWrite || busy || !active}
                 style={{ width: 110 }} onChange={value => void setTask(task.id, value)}
                 options={Object.entries(TASK_STATUS).map(([value, meta]) => ({ value, label: meta.label }))} />
               {task.doneAt ? <Typography.Text type="secondary">完成 {task.doneAt}</Typography.Text> : null}
@@ -545,9 +600,13 @@ function NpdProjectDetail({ id, linkError, canWrite, onClose, onChanged }: {
         open={firstOrderOpen && canWrite}
         onOk={() => void submitFirstOrder()}
         onCancel={() => setFirstOrderOpen(false)}
+        closable={!busy}
+        maskClosable={!busy}
+        keyboard={!busy}
         confirmLoading={busy}
-        okText="生成草稿"
-        cancelText="取消"
+        okText={pendingRequest ? "重试原请求" : "生成草稿"}
+        cancelText="返回项目"
+        cancelButtonProps={{ disabled: busy }}
         width={460}
       >
         {actionError ? <Alert type="error" showIcon message={actionError} style={{ marginBottom: 12 }} /> : null}
@@ -560,6 +619,7 @@ function NpdProjectDetail({ id, linkError, canWrite, onClose, onChanged }: {
               min="0.0001"
               style={{ width: "100%" }}
               value={firstOrderQty}
+              disabled={busy || pendingRequest != null}
               onChange={value => setFirstOrderQty(value)}
               placeholder="请输入数量"
             />

@@ -3,6 +3,7 @@
 .taskHeading, .taskMeta { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
 .taskHeading strong { overflow-wrap: anywhere; min-width: 0; flex: 1 1 180px; }
 .taskMeta { font-size: 13px; }
+.firstOrders { display: grid; gap: 8px; margin-bottom: 16px; padding: 12px; background: #f8fafc; border-radius: 8px; overflow-wrap: anywhere; }
 @media (max-width: 640px) {
   .desktopTasks { display: none; }
   .mobileTasks { display: grid; gap: 10px; }
