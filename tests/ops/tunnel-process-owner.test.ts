@@ -61,6 +61,15 @@ describe("quick tunnel process ownership", () => {
     const r = run(dir, "status"); expect(r.status, r.stderr).toBe(0); expect(Number(r.stdout)).toBe(pid);
     expect(run(dir, "preflight").status).toBe(0);
   });
+  it("keeps process identity stable across operator timezone environments", async () => {
+    const dir = state(); const { pid } = await owned(dir);
+    for (const zone of ["UTC", "Asia/Shanghai", "America/Los_Angeles"]) {
+      const r = spawnSync("python3", [helper, dir, "39871", "status"], {
+        env: { ...env(), TZ: zone }, encoding: "utf8", timeout: 3000,
+      });
+      expect(r.status, r.stderr).toBe(0); expect(Number(r.stdout)).toBe(pid);
+    }
+  });
   it("stops only the recorded process while an unrelated tunnel stays alive", async () => {
     const dir = state(); const { pid } = await owned(dir);
     const unrelated = spawn(path.join(bin, "cloudflared"), ["tunnel", "--no-autoupdate", "--url", "http://localhost:39872"]);

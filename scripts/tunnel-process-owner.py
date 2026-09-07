@@ -20,7 +20,7 @@ import time
 
 def ps(*args):
     result = subprocess.run(["ps", "-ww", *args], capture_output=True, text=True,
-                            env={**os.environ, "LC_ALL": "C"}, timeout=5)
+                            env={**os.environ, "LC_ALL": "C", "TZ": "UTC"}, timeout=5)
     if result.returncode != 0 and not (result.returncode == 1 and "-p" in args and not result.stdout.strip()):
         raise ValueError("process discovery unavailable")
     return result.stdout.strip()
