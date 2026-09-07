@@ -5,6 +5,8 @@ import { resolveDb, type AnyDb } from "@/server/core/svc";
 import { getOnHandBySku } from "@/server/core/stock-view";
 import { getOpenSupplyLines, type OpenSupplyLine } from "@/server/core/supply";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
+import { completedShanghaiDays } from "@/server/core/business-day";
+import { getLedgerMovementSummary } from "@/server/core/sales-ledger";
 import { classifyTier, DEFAULT_TIER_CUTS, type Tier } from "@/server/rules/abc";
 import {
   alertDays as computeAlertDays, coverStatus, coverStatusWithSupply,
@@ -22,7 +24,7 @@ import { salesSpikeEvidenceCurrent } from "@/server/rules/sales-spike";
  * 库存预警表读模型（键见 `INVENTORY_ALERTS_CACHE_KEY`；D57，四屏第 2 屏 B-左）。
  *
  * 逐启用成品 SKU 一行：等级（sku_planning_policy 最新期，缺则按近 6 月内部销量现算四档）、
- * 日销三口径并列（外部平台净件数 ÷30 / 内部月表近 6 月折日 / 实时仓出库近 30 天折日）、
+ * 日销三口径并列（外部平台净件数 ÷30 / 内部月表近 6 月折日 / 实时仓销售净出库近 30 个完整业务日折日）、
  * 在库、在库可销天数（按主日销）、阈值（加工+在途+缓冲，逐 SKU 主数据优先，缺省参数）、
  * 主预警（rules/alert-priority 一 SKU 一主预警）、优先级分数、动作链接。
  * 观察序列只用于预警，不进补货数量（D55）。
@@ -51,7 +53,8 @@ import { salesSpikeEvidenceCurrent } from "@/server/rules/sales-spike";
  *   停用一个 SKU、新建一个成品、把某 SKU 的 near_expiry_days 从 90 改成 30，绑定全都看不见。
  *   改为绑启用成品的行数/最大 id/已维护 near_expiry_days 的个数与其合计/最大 updated_at。
  */
-export const INVENTORY_ALERTS_CACHE_KEY = "inventory-alerts/v6";
+// v7：销售与非销售作业分离、销售红字净额、完整业务日、仓模式绑定。旧 v6 缓存不得复用。
+export const INVENTORY_ALERTS_CACHE_KEY = "inventory-alerts/v7";
 
 export type DailySource = "external" | "internal" | "ledger";
 
@@ -64,6 +67,10 @@ export interface InventoryAlertRow {
   tierSource: "policy" | "computed" | null;
   onHand: string;
   daily: { external: number | null; internal: number | null; ledger: number | null };
+  ledgerDemand: {
+    startDay: string; endDayExclusive: string; days: number;
+    salesNetQty: string | null; operationsOutQty: string | null;
+  };
   net7External: number | null;
   net30External: string | null;
   primaryDaily: number | null;
@@ -159,7 +166,7 @@ export const INVENTORY_ALERTS_BINDING_PARAM_KEYS = [
   "alert_learned_lead_tolerance_days",
 ] as const;
 
-async function binding(db: AnyDb): Promise<string> {
+async function binding(db: AnyDb, today = todayShanghai()): Promise<string> {
   const paramRows = resultRows<{ key: string; value: string }>(await db.execute(sql`
     SELECT key, value FROM sys_params
     WHERE scope = 'global' AND key IN (${sql.join(INVENTORY_ALERTS_BINDING_PARAM_KEYS.map((k) => sql`${k}`), sql`, `)})`));
@@ -192,11 +199,12 @@ async function binding(db: AnyDb): Promise<string> {
            (SELECT count(*) FILTER (WHERE status IN ('approved','in_progress') AND is_paused = false)::text || ':' || coalesce(max(id),0)::text || ':' || coalesce(string_agg(DISTINCT due_date::text, ','), '') FROM wo_docs) AS wo,
            (SELECT coalesce(max(id),0)::text || ':' || coalesce(sum(inbound_qty),0)::text || ':' || coalesce(sum(closed_qty),0)::text FROM transit_refs WHERE kind = 'fg_order') AS tr,
            (SELECT coalesce(max(built_at)::text,'') FROM rollup_supplier_lead) AS rl,
-           (SELECT coalesce(max(built_at)::text,'') FROM report_read_model_cache WHERE key LIKE 'sales-spike/%') AS sp
+           (SELECT coalesce(max(built_at)::text,'') FROM report_read_model_cache WHERE key LIKE 'sales-spike/%') AS sp,
+           (SELECT coalesce(string_agg(id::text || ':' || accounting_mode::text, ',' ORDER BY id), '') FROM warehouses) AS wm
   `));
   const bs = `${Number(bsf?.max_id ?? 0)}/${Number(bsf?.n ?? 0)}/${String(bsf?.qty_sum ?? "0")}/${String(bsf?.max_period ?? "")}`;
   const sk = `${Number(skf?.n ?? 0)}/${Number(skf?.max_id ?? 0)}/${Number(skf?.maintained ?? 0)}/${Number(skf?.sum_days ?? 0)}/${String(skf?.updated ?? "")}`;
-  return `alerts:${b?.l}:${b?.s}:${b?.m}:${b?.p}:${b?.pu}:${b?.pol}|ev:${b?.ev}|supply:${b?.pol_l}|${b?.po_d}|${b?.wo}|${b?.tr}|bs:${bs}|sku:${sk}|rl:${b?.rl}|sp:${SALES_SPIKE_CACHE_KEY}:${b?.sp}|params:${params}|day:${todayShanghai()}`;
+  return `alerts:${b?.l}:${b?.s}:${b?.m}:${b?.p}:${b?.pu}:${b?.pol}|ev:${b?.ev}|supply:${b?.pol_l}|${b?.po_d}|${b?.wo}|${b?.tr}|bs:${bs}|sku:${sk}|rl:${b?.rl}|sp:${SALES_SPIKE_CACHE_KEY}:${b?.sp}|params:${params}|warehouses:${b?.wm}|day:${today}`;
 }
 
 /** 逐 SKU 汇总未结供给：有日期未逾期 / 无日期 / 逾期 / 下一笔到货 */
@@ -265,11 +273,9 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
   const internal6m = new Map(salesRows.map((r) => [Number(r.sku_id), num(r.qty)]));
   const computedTier = classifyTier(skus.map((s) => ({ id: s.id, value: internal6m.get(s.id) ?? 0 })), { sPct, aPct, bPct });
 
-  // 实时仓出库近 30 天
-  const ledgerRows = resultRows<{ sku_id: number; out: string }>(await db.execute(sql`
-    SELECT l.sku_id, sum(-l.qty_delta)::text AS out FROM stock_ledger l
-    WHERE l.qty_delta < 0 AND l.occurred_at >= now() - interval '30 days' GROUP BY l.sku_id`));
-  const ledgerOut30 = new Map(ledgerRows.map((r) => [Number(r.sku_id), num(r.out)]));
+  const ledgerWindow = completedShanghaiDays(30, today);
+  const ledgerRows = await getLedgerMovementSummary(db, ledgerWindow, skuIds);
+  const ledgerBySku = new Map(ledgerRows.map((r) => [r.skuId, r]));
 
   // 学习交期（rollup_supplier_lead，每 SKU 取样本最多的供应商行）——只观察不生效
   const learnedRows = resultRows<{ sku_id: number; samples: number; p50: string | null; p90: string | null; otr: string | null }>(await db.execute(sql`
@@ -298,8 +304,10 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
     const external = evs?.net30 == null ? null : dCmp(evs.net30, "0") > 0 ? Number(dDiv(evs.net30, "30", 2)) : 0;
     const internalWindow = internal6m.get(s.id);
     const internal = internalWindow != null && months.length ? Math.round(dailyFromWindow(internalWindow) * 100) / 100 : null;
-    const ledgerOut = ledgerOut30.get(s.id);
-    const ledger = ledgerOut != null ? Math.round((ledgerOut / 30) * 100) / 100 : null;
+    const ledgerFacts = ledgerBySku.get(s.id);
+    const ledgerNet = ledgerFacts?.salesNetQty ?? null;
+    // 数量四位的小额销售也要保留需求信号；只在展示时压缩，不用两位舍入参与判定。
+    const ledger = ledgerNet != null ? Number(dDiv(ledgerNet, "30", 6)) : null;
     const primaryDailySource: DailySource | null = external != null && external > 0 ? "external" : internal != null && internal > 0 ? "internal" : ledger != null && ledger > 0 ? "ledger" : null;
     const primaryDaily = primaryDailySource === "external" ? external : primaryDailySource === "internal" ? internal : primaryDailySource === "ledger" ? ledger : null;
     const cover = primaryDaily && primaryDaily > 0 ? r1(oh / primaryDaily) : null;
@@ -336,6 +344,10 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
       tier: tierValue, tierSource: s.tier || s.override ? "policy" : tierValue ? "computed" : null,
       onHand: String(oh),
       daily: { external, internal, ledger },
+      ledgerDemand: {
+        startDay: ledgerWindow.startDay, endDayExclusive: ledgerWindow.endDayExclusive, days: ledgerWindow.days,
+        salesNetQty: ledgerNet, operationsOutQty: ledgerFacts?.operationsOutQty ?? null,
+      },
       net7External: null, net30External: evs ? evs.net30 : null,
       primaryDaily, primaryDailySource, coverDays: cover,
       coverDaysWithSupply: coverWithSupply,
@@ -378,7 +390,7 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
   return {
     key: INVENTORY_ALERTS_CACHE_KEY,
     builtAt: new Date().toISOString(),
-    sourceBinding: await binding(db),
+    sourceBinding: await binding(db, today),
     params: { productionDefault, logisticsDefault, bufferDays, targetDays, tierCuts: { sPct, aPct, bPct }, slowDaysThreshold, learnedToleranceDays, today },
     totals: {
       skus: rows.length,
@@ -395,7 +407,8 @@ export async function computeInventoryAlerts(dbArg: AnyDb): Promise<InventoryAle
     rows,
     limitations: [
       "爆单标记仅采纳完整且符合 T+1 时效的观测窗口；过期/缺失证据不作为当前命中，也不证明没有需求。历史爆单与已有告警请在爆单页复核。",
-      "日销三口径不相加：外部 = 平台支付−退款近 30 天折日（observation_only，T+1）；内部 = 销量月表近 6 月折日（止于最新月）；实时仓 = 流水近 30 天出库折日（含调拨/发料，非纯销售）。主日销取外部 > 内部 > 实时仓。",
+      "日销三口径不相加：外部 = 平台支付−退款近 30 天折日（observation_only，T+1）；内部 = 销量月表近 6 月折日（止于最新月）；实时仓 = 正式销售净出库 ÷ 30（已扣同窗销售红字）。主日销在正值中取外部 > 内部 > 实时仓销售；不代表三者来源/截止相同或全渠道覆盖完整。",
+      `实时仓窗口 [${ledgerWindow.startDay}, ${ledgerWindow.endDayExclusive}) 为上海近 30 个已结束业务日，不含今天与未来记录。销售红字按纠正业务日净减，负净量保留展示；无销售事件显示未知，不当作零销售。非销售作业量单列（负向流量，未扣正向冲销），不进主日销、可销天数或补货需求。`,
       "可销天数按「在库可销」（不含在途）；阈值 = 加工周期 + 在途周期 + 缓冲，逐 SKU 主数据优先，缺失用参数缺省并标注（D57）。",
       "未结供给（core/supply：PO 未收、WO 在制、存量单在途）只用于降级：在库 alert 且在库 > 0、下一笔确认到货日落在阈值天数内 → watch 并写明依据；在库 = 0 不降级（物理事实）；逾期/无日期在途不算可信供给。含在途可销 = (在库 + 有日期未逾期在途) ÷ 主日销，粗口径，逐日推演以补货页为准。",
       `学习交期只观察不生效：rollup_supplier_lead 样本 ≥ 3 且 P90 超档案加工周期 > ${learnedToleranceDays} 天（alert_learned_lead_tolerance_days）时在阈值依据里单列，阈值本周期不变。`,

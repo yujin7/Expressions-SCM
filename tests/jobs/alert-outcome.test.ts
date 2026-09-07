@@ -25,7 +25,7 @@ describe("jobs/alert-outcome", () => {
   async function ledger(skuId: number, warehouseId: number, qtyDelta: string, day: string) {
     ledgerSeq += 1;
     await db.insert(schema.stockLedger).values({
-      skuId, warehouseId, qtyDelta, sourceDocType: "test", sourceDocId: ledgerSeq, sourceLineId: 0, action: "post",
+      skuId, warehouseId, qtyDelta, sourceDocType: qtyDelta.startsWith("-") ? "sales_out" : "opening", sourceDocId: ledgerSeq, sourceLineId: 0, action: "post",
       occurredAt: new Date(`${day}T10:00:00+08:00`),
     });
   }
@@ -72,7 +72,7 @@ describe("jobs/alert-outcome", () => {
     const evs = await db.select().from(schema.alertEvents).where(eq(schema.alertEvents.event, "verify"));
     expect(evs).toHaveLength(4);
     const byAlert = new Map(evs.map((e) => [e.alertId, e.evidenceRef as Record<string, unknown>]));
-    expect(evs.every((e) => (e.evidenceRef as Record<string, unknown>).version === "alert-outcome/v2")).toBe(true);
+    expect(evs.every((e) => (e.evidenceRef as Record<string, unknown>).version === "alert-outcome/v3")).toBe(true);
     expect(byAlert.get(alertIds.TP)).toMatchObject({ result: "true_positive", reason: "zero_stock_with_demand", coverage: "realtime", minBalance: "0.0000", demandOutQty: "10.0000" });
     expect(byAlert.get(alertIds.FP)).toMatchObject({ result: "false_positive", reason: "stock_never_zero", minBalance: "95.0000", inboundQty: "0" });
     expect(byAlert.get(alertIds.SNAP)).toMatchObject({ result: "unverifiable", reason: "snapshot_only_no_realtime_ledger", coverage: "none" });
@@ -145,7 +145,7 @@ describe("jobs/alert-outcome：快照仓 SKU 不得用实时仓流水打分（�
       const ledgerRow = async (skuId: number, qtyDelta: string, day: string) => {
         seq += 1;
         await db.insert(schema.stockLedger).values({
-          skuId, warehouseId: rt.id, qtyDelta, sourceDocType: "test", sourceDocId: seq, sourceLineId: 0, action: "post",
+          skuId, warehouseId: rt.id, qtyDelta, sourceDocType: qtyDelta.startsWith("-") ? "sales_out" : "opening", sourceDocId: seq, sourceLineId: 0, action: "post",
           occurredAt: new Date(`${day}T10:00:00+08:00`),
         });
       };
@@ -227,7 +227,7 @@ describe("jobs/alert-outcome：异常 SKU 键不拖垮同批核验", () => {
       }).returning();
       await db.insert(schema.stockLedger).values([
         { skuId: sku.id, warehouseId: warehouse.id, qtyDelta: "10", sourceDocType: "id-test", sourceDocId: 1, action: "post", occurredAt: new Date("2026-08-01T00:00:00Z") },
-        { skuId: sku.id, warehouseId: warehouse.id, qtyDelta: "-10", sourceDocType: "id-test", sourceDocId: 2, action: "post", occurredAt: new Date("2026-08-22T00:00:00Z") },
+        { skuId: sku.id, warehouseId: warehouse.id, qtyDelta: "-10", sourceDocType: "sales_out", sourceDocId: 2, action: "post", occurredAt: new Date("2026-08-22T00:00:00Z") },
       ]);
       const addAlert = async (suffix: string, refKey: string | null) => {
         const [alert] = await db.insert(schema.systemAlerts).values({

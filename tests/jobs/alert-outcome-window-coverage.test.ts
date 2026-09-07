@@ -42,7 +42,7 @@ async function withFixture<T>(run: (fixture: Fixture) => Promise<T>): Promise<T>
 async function realtimeStockout(f: Fixture) {
   await f.db.insert(schema.stockLedger).values([
     { skuId: f.skuId, warehouseId: f.realtimeId, qtyDelta: "10", sourceDocType: "window-test", sourceDocId: 1, action: "post", occurredAt: new Date("2026-07-30T00:00:00Z") },
-    { skuId: f.skuId, warehouseId: f.realtimeId, qtyDelta: "-10", sourceDocType: "window-test", sourceDocId: 2, action: "post", occurredAt: new Date("2026-08-03T00:00:00Z") },
+    { skuId: f.skuId, warehouseId: f.realtimeId, qtyDelta: "-10", sourceDocType: "sales_out", sourceDocId: 2, action: "post", occurredAt: new Date("2026-08-03T00:00:00Z") },
   ]);
 }
 
@@ -154,7 +154,7 @@ describe("告警核验：历史覆盖必须按每条告警窗口判定", () => {
     await snapshots(f, [{ bizDate: "2026-07-31", qty: "0" }]);
     await f.db.insert(schema.stockLedger).values([
       { skuId: f.skuId, warehouseId: f.realtimeId, qtyDelta: "10", sourceDocType: "window-test", sourceDocId: 1, action: "post", occurredAt: OPENED },
-      { skuId: f.skuId, warehouseId: f.realtimeId, qtyDelta: "-5", sourceDocType: "window-test", sourceDocId: 2, action: "post", occurredAt: new Date("2026-08-02T00:00:00Z") },
+      { skuId: f.skuId, warehouseId: f.realtimeId, qtyDelta: "-5", sourceDocType: "sales_out", sourceDocId: 2, action: "post", occurredAt: new Date("2026-08-02T00:00:00Z") },
     ]);
     expect(await verifyA(f)).toMatchObject({
       result: "unverifiable", reason: "averted_by_inbound", openingBalance: null,

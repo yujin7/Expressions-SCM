@@ -11,10 +11,10 @@
  *    （此前只要历史上在实时仓动过一笔就标 coverage=realtime 并打分，
  *    于是"货在快照仓、偶尔有一笔实时仓调拨"的 SKU 被拿去算精确率，而那个数是人调阈值的依据。）
  *  - 期初 = 窗口前全部流水累计；逐笔推演窗口内余额取最小值。
- *  - true_positive  = 窗口内实时仓总余额曾 ≤ 0，且窗口内或前 30 天有出库（有需求）。
+ *  - true_positive  = 窗口内实时仓总余额曾 ≤ 0，且窗口内连同前 30 天有正的销售净出库（扣销售红字）。
  *  - false_positive = 余额从未归零，且窗口内没有任何入库（没人补货、也没断——阈值/日销估高了）。
  *  - unverifiable   = 覆盖不足（无实时仓 / 该 SKU 无实时流水 / 窗口内仍有快照仓在库）；
- *                     或余额归零但流水看不到需求；
+ *                     或流水看不到正的销售净需求（调拨/发料/盘点等不算销售）；
  *                     或窗口内有入库（可能是告警促成了补货、断货被规避——无法与误报区分，只能弃权）。
  * 每条告警只核验一次（幂等键 `${alertId}:verify`）；旧版本记录不覆盖、不自动重算，
  * 非当前版本不进入当前精确率，另披露历史记录数。结果不回写 system_alerts，不调参数。
@@ -25,8 +25,10 @@ import { dAdd, dCmp, dSub } from "@/server/core/decimal";
 import type { AnyDb } from "@/server/core/svc";
 import { classifyLedgerCoverage, loadStockUniverseCoverage, type CoverageReason, type LedgerCoverage, type StockUniverseCoverage } from "@/server/core/stockout-evidence";
 import { appendAlertEvents, type AlertEventInput } from "@/server/modules/alerts/engine";
+import { salesLedgerMovement } from "@/server/core/sales-ledger";
 
-export const ALERT_OUTCOME_VERSION = "alert-outcome/v2";
+// v3：需求只认销售净出库，不把非销售作业或已冲销的销售学成正确预警；旧证据只保留不重写。
+export const ALERT_OUTCOME_VERSION = "alert-outcome/v3";
 export const VERIFY_AFTER_DAYS = 3;
 export const VERIFY_GRACE_DAYS = 3;
 export const DEMAND_LOOKBACK_DAYS = 30;
@@ -37,7 +39,7 @@ export type AlertOutcomeResult = "true_positive" | "false_positive" | "unverifia
 export type AlertOutcomeReason = CoverageReason
   | "zero_stock_with_demand"
   | "stock_never_zero"
-  | "zero_stock_no_ledger_demand"
+  | "no_net_sales_demand"
   | "averted_by_inbound"
   | "sku_unresolved";
 
@@ -106,8 +108,8 @@ async function verifyOne(
     .where(and(eq(l.skuId, input.skuId), inRealtime, lt(l.occurredAt, input.windowStart)));
   const lookbackStart = new Date(input.windowStart.getTime() - DEMAND_LOOKBACK_DAYS * DAY_MS);
   const [lookback] = await db.select({ qty: sql<string | null>`sum(-${l.qtyDelta})` }).from(l)
-    .where(and(eq(l.skuId, input.skuId), inRealtime, lt(l.qtyDelta, "0"), gte(l.occurredAt, lookbackStart), lt(l.occurredAt, input.windowStart)));
-  const moves: { qtyDelta: string }[] = await db.select({ qtyDelta: l.qtyDelta }).from(l)
+    .where(and(eq(l.skuId, input.skuId), inRealtime, salesLedgerMovement(), gte(l.occurredAt, lookbackStart), lt(l.occurredAt, input.windowStart)));
+  const moves: { qtyDelta: string; isSale: boolean }[] = await db.select({ qtyDelta: l.qtyDelta, isSale: sql<boolean>`${salesLedgerMovement()}` }).from(l)
     .where(and(eq(l.skuId, input.skuId), inRealtime, gte(l.occurredAt, input.windowStart), lte(l.occurredAt, input.windowEnd)))
     .orderBy(l.occurredAt, l.id);
 
@@ -121,19 +123,21 @@ async function verifyOne(
   for (const m of moves) {
     running = dAdd(running, m.qtyDelta, 4);
     if (minBalance == null || dCmp(running, minBalance) < 0) minBalance = running;
-    if (dCmp(m.qtyDelta, "0") < 0) demandOut = dSub(demandOut, m.qtyDelta, 4); // 出库为负，减负即累加出库量
-    else inbound = dAdd(inbound, m.qtyDelta, 4);
+    if (m.isSale) demandOut = dSub(demandOut, m.qtyDelta, 4); // 销售负向累加，销售红字正向净减
+    if (dCmp(m.qtyDelta, "0") > 0) inbound = dAdd(inbound, m.qtyDelta, 4);
   }
   const lookbackOut = lookback?.qty ?? "0";
   const base = { coverage: "realtime" as const, openingBalance, minBalance, demandOutQty: demandOut, lookbackOutQty: lookbackOut, inboundQty: inbound };
   if (minBalance == null) {
     return { ...base, result: "unverifiable", reason: "snapshot_only_no_realtime_ledger", note: "窗口内未取得可回放的余额证据，弃权不打分" };
   }
-  const hasDemand = dCmp(demandOut, "0") > 0 || dCmp(lookbackOut, "0") > 0;
+  // 同一个连贯窗口净额：前窗销售在后窗被红字冲销，不能各窗取正再 OR 成需求。
+  const hasDemand = dCmp(dAdd(demandOut, lookbackOut, 4), "0") > 0;
+  if (!hasDemand) {
+    return { ...base, result: "unverifiable", reason: "no_net_sales_demand", note: "观察窗及前30天无正的销售净出库证据；非销售作业不算需求，外部需求可能未入此账，弃权" };
+  }
   if (dCmp(minBalance, "0") <= 0) {
-    return hasDemand
-      ? { ...base, result: "true_positive", reason: "zero_stock_with_demand", note: "窗口内实时仓余额归零且有出库需求：断货确实发生" }
-      : { ...base, result: "unverifiable", reason: "zero_stock_no_ledger_demand", note: "余额归零但流水看不到需求（需求可能在外部渠道），弃权" };
+    return { ...base, result: "true_positive", reason: "zero_stock_with_demand", note: "窗口内实时仓余额归零且有销售净出库需求：断货确实发生" };
   }
   if (dCmp(inbound, "0") > 0) {
     return { ...base, result: "unverifiable", reason: "averted_by_inbound", note: "窗口内有入库、余额未归零：可能是告警促成补货规避了断货，无法与误报区分，弃权" };
@@ -233,6 +237,7 @@ export interface AlertPrecisionSummary {
 export const ALERT_PRECISION_CALIBER =
   "精确率 = 已核验为真 ÷ (真 + 误报)；弃权（快照仓 SKU / 窗口内仍有快照仓在库 / 窗口内有入库 / 看不到需求）单列不进分母；"
   + "仅按每条告警独立窗口的已登记仓证据打分：实时账起点已存在，逐仓快照期初和期间明确为零；缺失、非零或无效快照弃权；"
+  + "需求仅看观察窗连同前30天的销售净出库，销售红字按纠正业务日净减；调拨/发料/盘亏等作业不算需求；"
   + `只纳入 ${ALERT_OUTCOME_VERSION}，非当前/缺版本历史核验另列，不改写、不自动重算；窗口按核验时间；每条告警只核验一次`;
 
 /** 近 N 天已核验告警按 category × sourceRule 的真/误/弃权计数（供后续 UI 块；不给单一总分） */

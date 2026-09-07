@@ -28,7 +28,7 @@ import { ALERT_OWNER_ROLE } from "@/server/rules/task-triggers";
 const DAILY_SOURCE_LABEL: Record<NonNullable<InventoryAlertRow["primaryDailySource"]>, string> = {
   external: "外部平台净件数（支付−退款）近 30 天 ÷ 30",
   internal: "销量月表近 6 月折日",
-  ledger: "实时仓流水近 30 天出库 ÷ 30（含调拨/发料）",
+  ledger: "实时仓销售净出库（含销售红字净减）近 30 个完整业务日 ÷ 30",
 };
 
 /** W6：最晚下单日的取值与来源（engine=补货引擎逐日推演；fallback=在库可销 − 交期近似） */
@@ -48,8 +48,9 @@ export function coverWhy(r: InventoryAlertRow, orderBy?: OrderByExplain): AlertW
   });
   if (r.primaryDailySource) {
     const win = r.primaryDailySource === "external" ? `净件数 ${r.net30External ?? "—"}` : r.primaryDailySource === "internal" ? `内部 ${r.daily.internal ?? "—"}/日` : `实时仓 ${r.daily.ledger ?? "—"}/日`;
-    why.push({ label: "主日销口径", value: `${DAILY_SOURCE_LABEL[r.primaryDailySource]}（${win}；取外部 > 内部 > 实时仓）`, source: "report/inventory-alerts" });
+    why.push({ label: "主日销口径", value: `${DAILY_SOURCE_LABEL[r.primaryDailySource]}（${win}；正值优先：外部 > 内部 > 实时仓销售，不相加）`, source: "report/inventory-alerts" });
   }
+  why.push({ label: "实时仓销售/作业", value: `[${r.ledgerDemand.startDay}, ${r.ledgerDemand.endDayExclusive}) 上海 ${r.ledgerDemand.days} 个完整业务日：销售净出库 ${r.ledgerDemand.salesNetQty ?? "未知"}；非销售作业出库 ${r.ledgerDemand.operationsOutQty ?? "未知"}（负向流量，未扣正向冲销，不作为需求）`, source: "core/sales-ledger" });
   why.push({ label: "阈值", value: `${r.alertDays} 天 = ${r.alertBasis}${r.usedDefault ? "（含缺省周期）" : ""}`, source: "rules/alert-threshold" });
   if (r.learnedLead) {
     const l = r.learnedLead;

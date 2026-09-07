@@ -45,6 +45,7 @@ function row(p: Partial<InventoryAlertRow> & { skuId: number; code: string }): I
     tierSource: "policy",
     onHand: "10",
     daily: { external: 1, internal: null, ledger: null },
+    ledgerDemand: { startDay: "2026-08-09", endDayExclusive: "2026-09-08", days: 30, salesNetQty: null, operationsOutQty: null },
     net7External: null,
     net30External: "30.0000",
     primaryDaily: 1,

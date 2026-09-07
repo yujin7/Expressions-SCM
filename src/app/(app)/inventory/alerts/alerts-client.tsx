@@ -141,8 +141,8 @@ function CoverTab() {
       const all = await fetchJson<InventoryAlertsPage>(`/api/report/inventory-alerts?${sp.toString()}`);
       exportCsv(
         `库存预警表-${all.builtAt.slice(0, 10)}`,
-        ["等级", "等级来源", "SKU", "名称", "品牌", "日销外部", "日销内部", "日销实时仓", "主日销", "主日销来源", "近30天净件", "在库", "可销天数", "阈值天", "阈值依据", "状态", "主预警", "标签", "优先级分"],
-        all.rows.map((r) => [r.tier, r.tierSource, r.code, r.name, r.brand, r.daily.external, r.daily.internal, r.daily.ledger, r.primaryDaily, r.primaryDailySource, r.net30External, r.onHand, r.coverDays, r.alertDays, r.alertBasis, r.status, r.primary, r.tags.join("|"), r.priorityScore]),
+        ["等级", "等级来源", "SKU", "名称", "品牌", "日销外部", "日销内部", "实时仓销售净出库日均", "主日销", "主日销来源", "外部近30天净件", "在库", "可销天数", "阈值天", "阈值依据", "状态", "主预警", "标签", "优先级分", "实时仓窗口开始(含)", "实时仓窗口结束(不含)", "实时仓销售净出库(含销售红字)", "非销售作业出库(未扣正向冲销,不作需求)"],
+        all.rows.map((r) => [r.tier, r.tierSource, r.code, r.name, r.brand, r.daily.external, r.daily.internal, r.daily.ledger, r.primaryDaily, r.primaryDailySource, r.net30External, r.onHand, r.coverDays, r.alertDays, r.alertBasis, r.status, r.primary, r.tags.join("|"), r.priorityScore, r.ledgerDemand.startDay, r.ledgerDemand.endDayExclusive, r.ledgerDemand.salesNetQty, r.ledgerDemand.operationsOutQty]),
         all.filtered.total > all.rows.length ? `仅导出前 ${all.rows.length} 行，共 ${all.filtered.total} 行` : undefined,
       );
     } catch (e) { message.error((e as Error).message); }
@@ -153,8 +153,15 @@ function CoverTab() {
     { title: "等级", dataIndex: "tier", width: 64, render: (v: string | null, r) => v ? <Tag color={TIER_COLOR[v]}>{v}{r.tierSource === "computed" ? "*" : ""}</Tag> : <Tag>未分层</Tag> },
     { title: "日销 外部", key: "de", align: "right", width: 90, render: (_, r) => r.daily.external == null ? "—" : r.daily.external },
     { title: "内部", key: "di", align: "right", width: 80, render: (_, r) => r.daily.internal == null ? "—" : r.daily.internal },
-    { title: "实时仓", key: "dl", align: "right", width: 80, render: (_, r) => r.daily.ledger == null ? "—" : r.daily.ledger },
-    { title: "近30天净件", dataIndex: "net30External", align: "right", width: 100, sorter: (a, b, order) => compareDecimalValues(a.net30External, b.net30External, order === "descend" ? "first" : "last"), render: (v: string | null) => v == null ? "—" : formatQty(v) },
+    { title: "系统销售 / 作业", key: "dl", align: "right", width: 150, render: (_, r) => (
+      <Tooltip title={`上海 [${r.ledgerDemand.startDay}, ${r.ledgerDemand.endDayExclusive})：销售净出库 ${formatQty(r.ledgerDemand.salesNetQty)} ÷ ${r.ledgerDemand.days} 天，销售红字按纠正日净减。作业量是非销售负向流量（未扣正向冲销），不参与需求判断；— 表示无对应事件，不证明零需求或全渠道覆盖。`}>
+        <span>
+          <span>{r.daily.ledger == null ? "—" : formatQty(r.daily.ledger.toFixed(6))} /日</span><br />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>作业 {formatQty(r.ledgerDemand.operationsOutQty)}</Typography.Text>
+        </span>
+      </Tooltip>
+    ) },
+    { title: "外部30天净件", dataIndex: "net30External", align: "right", width: 110, sorter: (a, b, order) => compareDecimalValues(a.net30External, b.net30External, order === "descend" ? "first" : "last"), render: (v: string | null) => v == null ? "—" : formatQty(v) },
     { title: "在库", dataIndex: "onHand", align: "right", width: 90, sorter: (a, b) => compareDecimalValues(a.onHand, b.onHand), render: (v: string) => formatQty(v) },
     { title: "可销天数", dataIndex: "coverDays", align: "right", width: 100, sorter: (a, b) => (a.coverDays ?? Number.MAX_SAFE_INTEGER) - (b.coverDays ?? Number.MAX_SAFE_INTEGER), render: (v: number | null, r) => v == null ? <Typography.Text type="secondary">无日销</Typography.Text> : <Typography.Text type={r.status === "alert" ? "danger" : r.status === "watch" ? "warning" : undefined} strong>{v}d</Typography.Text> },
     { title: "阈值", key: "ad", width: 150, render: (_, r) => <span>{r.alertDays}d {r.usedDefault ? <Tag>缺省周期</Tag> : null}<br /><Typography.Text type="secondary" style={{ fontSize: 11 }}>{r.alertBasis}</Typography.Text></span> },

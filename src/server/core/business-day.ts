@@ -30,6 +30,18 @@ export function todayShanghai(): string {
   return shanghaiDayOf(new Date());
 }
 
+/** 最近 N 个已结束的上海业务日：[start, end)，不混入今天的部分日或未来记录。 */
+export function completedShanghaiDays(days: number, today = todayShanghai()): {
+  start: Date; end: Date; startDay: string; endDayExclusive: string; days: number;
+} {
+  if (!Number.isSafeInteger(days) || days < 1 || days > 3660 || shanghaiDay(today) !== today) {
+    throw new Error("完整业务日窗口须为有效日期及 1–3660 个整天");
+  }
+  const end = new Date(`${today}T00:00:00+08:00`);
+  const start = new Date(end.getTime() - days * 86_400_000);
+  return { start, end, startDay: shanghaiDayOf(start), endDayExclusive: today, days };
+}
+
 /**
  * 任意时间 → Asia/Shanghai 业务日；纯日期串（YYYY-MM-DD）原样视为业务日；无法解析 → null（不猜）。
  *

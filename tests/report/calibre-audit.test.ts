@@ -351,7 +351,7 @@ describe("C2 · inventory-alerts 跨日不得沿用旧结论", () => {
   });
 
   it("缓存键已随口径升版（口径变了就必须换键，否则旧缓存把新线索藏起来）", () => {
-    expect(INVENTORY_ALERTS_CACHE_KEY).toBe("inventory-alerts/v6");
+    expect(INVENTORY_ALERTS_CACHE_KEY).toBe("inventory-alerts/v7");
     expect(RISK_EXPIRY_BUCKETS_KEY).toBe("risk-expiry-buckets/v2");
   });
 });
