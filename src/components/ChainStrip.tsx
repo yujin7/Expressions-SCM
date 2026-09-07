@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Tag, Typography } from "antd";
+import { Alert, Button, Tag, Typography } from "antd";
 import { RightOutlined } from "@ant-design/icons";
+import { useDocumentRead } from "@/components/useDocumentRead";
 
 /**
  * 链路视图条：委外全链 BH→WO→PO→JG→FL/TL→SH→CT→JS 的紧凑横向节点条。
  * 当前单据高亮；其余节点点击跳转对应列表页（?q=单号 作兜底导航参数）。
- * 链路接口出错/无链路（≤1 节点）时不渲染任何内容（graceful）。
+ * 无其他可见节点时不展示；读取失败与无关联不同，显式提供重试。
  */
 
 interface ChainNode {
@@ -44,24 +44,16 @@ const PAGE_HREFS: Record<string, string> = {
 };
 
 export default function ChainStrip({ docType, id }: { docType: string; id: number }) {
-  const [nodes, setNodes] = useState<ChainNode[]>([]);
-
-  useEffect(() => {
-    let alive = true;
-    setNodes([]);
-    fetch(`/api/outsource/chain?docType=${encodeURIComponent(docType)}&id=${id}`)
-      .then((res) => (res.ok ? (res.json() as Promise<{ nodes: ChainNode[] }>) : null))
-      .then((data) => {
-        if (alive && data && Array.isArray(data.nodes)) setNodes(data.nodes);
-      })
-      .catch(() => {
-        /* 链路获取失败：静默不渲染 */
-      });
-    return () => {
-      alive = false;
-    };
-  }, [docType, id]);
-
+  const read = useDocumentRead<{ nodes: ChainNode[] }>(docType && id ? `/api/outsource/chain?docType=${encodeURIComponent(docType)}&id=${id}` : null);
+  const invalid = read.data && (!Array.isArray(read.data.nodes) || read.data.nodes.some(n => !n ||
+    typeof n.docType !== "string" || typeof n.docNo !== "string" || typeof n.label !== "string" ||
+    typeof n.status !== "string" || typeof n.statusLabel !== "string" || typeof n.current !== "boolean" || !Number.isSafeInteger(n.id)));
+  const error = read.error ?? (invalid ? "关联链路响应格式异常" : null);
+  if (error) return <Alert type="warning" showIcon message="关联链路暂不可用"
+    description={`${error}。这不代表没有关联单据。`}
+    action={<Button size="small" onClick={read.retry}>重试</Button>} style={{ marginBottom: 12 }} />;
+  if (!read.data) return read.phase === "loading" ? <div role="status" style={{ marginBottom: 12 }}>正在读取关联链路…</div> : null;
+  const nodes = read.data.nodes;
   if (nodes.length <= 1) return null;
 
   return (

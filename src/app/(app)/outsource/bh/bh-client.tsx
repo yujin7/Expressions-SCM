@@ -2,8 +2,8 @@
 
 import SearchInput from "@/components/SearchInput";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
-import { App, Button, DatePicker, Descriptions, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tabs, Tag, Typography } from "antd";
+import { Suspense, useState } from "react";
+import { App, Button, DatePicker, Descriptions, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
@@ -12,7 +12,10 @@ import ChainStrip from "@/components/ChainStrip";
 import ApprovalBrief from "@/components/ApprovalBrief";
 import DocStatusTag from "@/components/DocStatusTag";
 import DocWindowFilterTag from "@/components/DocWindowFilterTag";
-import { fetchJson, postJson } from "@/components/fetchJson";
+import { postJson } from "@/components/fetchJson";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import DocumentDrawer from "@/components/DocumentDrawer";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
 import { ORDER_TYPE_LABELS, formatOrderType, toOptions } from "@/components/labels";
@@ -247,9 +250,6 @@ function BhActions({
 function BhInner() {
   const { message } = App.useApp();
   const [form] = Form.useForm<CreateFormValues>();
-  const [rows, setRows] = useState<BhRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   // from/to = 制单时间窗（上海业务日，含首尾）：全链漏斗「计划」级点数字回链到本页时带过来
   const listState = useListState({ key: "bh", defaults: { q: "", status: "", from: "", to: "" }, defaultPageSize: 20 });
@@ -263,51 +263,18 @@ function BhInner() {
   const [saving, setSaving] = useState(false);
 
   const [detailId, setDetailId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<BhDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
-      if (status) params.set("status", status);
-      if (from) params.set("from", from);
-      if (to) params.set("to", to);
-      const res = await fetchJson<{ rows: BhRow[]; total: number }>(
-        `/api/outsource/bh?${params.toString()}`,
-      );
-      setRows(res.rows);
-      setTotal(res.total);
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [q, status, from, to, page, pageSize, message]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const loadDetail = useCallback(
-    async (id: number) => {
-      setDetailLoading(true);
-      try {
-        const res = await fetchJson<BhDetail>(`/api/outsource/bh/${id}`);
-        setDetail(res);
-      } catch (e) {
-        message.error((e as Error).message);
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [message],
-  );
-
-  useEffect(() => {
-    if (detailId != null) void loadDetail(detailId);
-    else setDetail(null);
-  }, [detailId, loadDetail]);
+  const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
+  if (status) params.set("status", status);
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  const listRead = useDocumentRead<{ rows: BhRow[]; total: number }>(`/api/outsource/bh?${params}`);
+  const rows = listRead.data?.rows ?? [];
+  const total = listRead.data?.total ?? 0;
+  const loading = listRead.phase === "loading";
+  const load = listRead.retry;
+  const detailRead = useDocumentRead<BhDetail>(detailId == null ? null : `/api/outsource/bh/${detailId}`);
+  const detail = detailRead.data;
+  const detailLoading = detailRead.phase === "loading";
 
   const handleCreate = async () => {
     try {
@@ -430,6 +397,7 @@ function BhInner() {
           </>
         }
       />
+      <LoadErrorAlert error={listRead.error} onRetry={load} subject="备货申请列表" />
       <Table<BhRow>
         rowKey="id"
         size={listState.tableSize}
@@ -507,7 +475,7 @@ function BhInner() {
         </Form>
       </Modal>
 
-      <Drawer
+      <DocumentDrawer
         title={
           detail ? (
             <Space>
@@ -525,20 +493,22 @@ function BhInner() {
         extra={
           detail ? (
             <BhActions
+              key={`${detail.id}:${detail.version}`}
               doc={{ id: detail.id, status: detail.status, version: detail.version }}
               onChanged={() => {
-                void loadDetail(detail.id);
+                detailRead.retry();
                 void load();
               }}
             />
           ) : null
         }
       >
+        <LoadErrorAlert error={detailRead.error} onRetry={detailRead.retry} subject="备货申请详情" />
         {detail ? (
           <div>
             <ChainStrip docType="bh" id={detail.id} />
             {detail.status === "pending" ? <ApprovalBrief docType="bh" docId={detail.id} /> : null}
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered styles={{ label: { width: 112, whiteSpace: "nowrap" } }} style={{ marginBottom: 16 }}>
               <Descriptions.Item label="订单类型">{formatOrderType(detail.orderType)}</Descriptions.Item>
               <Descriptions.Item label="制单人">{detail.createdByName ?? "—"}</Descriptions.Item>
               <Descriptions.Item label="制单时间">
@@ -553,6 +523,7 @@ function BhInner() {
               columns={lineColumns}
               dataSource={detail.lines}
               pagination={false}
+              scroll={{ x: "max-content" }}
               style={{ marginBottom: 24 }}
             />
             {detail.approvals.length > 0 ? (
@@ -563,7 +534,7 @@ function BhInner() {
             ) : null}
           </div>
         ) : null}
-      </Drawer>
+      </DocumentDrawer>
     </div>
   );
 }

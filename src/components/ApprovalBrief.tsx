@@ -2,12 +2,11 @@
 
 /**
  * E3-06 审批简报卡（组件）：在审批那一刻把判断所需上下文送到眼前。
- * 加载失败不得阻断审批——静默降级为不显示。
+ * 简报不代替审批校验；失败显式披露并可重试，不把不可用伪装成无异常。
  */
-import { useEffect, useState } from "react";
-import { Alert, Card, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, Button, Card, Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { fetchJson } from "@/components/fetchJson";
+import { useDocumentRead } from "@/components/useDocumentRead";
 import { formatQty } from "@/components/format";
 
 interface BriefLine {
@@ -25,17 +24,22 @@ interface Brief {
 }
 
 export default function ApprovalBrief({ docType, docId }: { docType: string; docId: number }) {
-  const [data, setData] = useState<Brief | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    if (!docType || !docId) return;
-    fetchJson<Brief>(`/api/inbox/approval-brief?docType=${encodeURIComponent(docType)}&docId=${docId}`)
-      .then(setData)
-      .catch(() => setFailed(true)); // 简报失败绝不阻断审批
-  }, [docType, docId]);
-
-  if (failed || !data) return null;
+  const read = useDocumentRead<Brief>(docType && docId ? `/api/inbox/approval-brief?docType=${encodeURIComponent(docType)}&docId=${docId}` : null);
+  const data = read.data;
+  const invalid = data && (typeof data.docNo !== "string" || typeof data.origin?.note !== "string" ||
+    typeof data.origin?.fromSuggestion !== "boolean" || !Number.isFinite(data.summary?.lineCount) ||
+    !Number.isFinite(data.summary?.flaggedLines) || !Array.isArray(data.lines) || data.lines.some(line =>
+      !line || !Number.isSafeInteger(line.skuId) || typeof line.code !== "string" || typeof line.name !== "string" ||
+      typeof line.baseUom !== "string" || ![line.docQty, line.onHand, line.daily, line.openSupply].every(Number.isFinite) ||
+      (line.daysCover !== null && !Number.isFinite(line.daysCover)) || !Array.isArray(line.flags) ||
+      line.flags.some(flag => typeof flag !== "string") || !Array.isArray(line.recentOrders) ||
+      line.recentOrders.some(order => !order || typeof order.docNo !== "string" || typeof order.docType !== "string" ||
+        typeof order.status !== "string" || !Number.isFinite(order.daysAgo))));
+  const error = read.error ?? (invalid ? "审批简报响应格式异常" : null);
+  if (error) return <Alert type="warning" showIcon message="审批简报暂不可用"
+    description={`${error}。请核对原始单据后再判断；简报缺失不代表无异常。`}
+    action={<Button size="small" onClick={read.retry}>重试</Button>} style={{ marginBottom: 12 }} />;
+  if (!data) return read.phase === "loading" ? <div role="status" style={{ marginBottom: 12 }}>正在读取审批简报…</div> : null;
 
   const cols: ColumnsType<BriefLine> = [
     { title: "SKU", dataIndex: "code", width: 130, render: (v: string, r) => <Tooltip title={r.name}><span>{v}</span></Tooltip> },

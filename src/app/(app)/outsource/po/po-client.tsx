@@ -3,7 +3,8 @@
 import SearchInput from "@/components/SearchInput";
 
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { App, Alert, Button, Descriptions, Drawer, Input, Modal, Popconfirm, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import { App, Alert, Button, Descriptions, Input, Modal, Popconfirm, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import DocumentDrawer from "@/components/DocumentDrawer";
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
@@ -511,7 +512,7 @@ function PoInner() {
         pagination={listState.paginationProps({ total: total })}
       />
 
-      <Drawer
+      <DocumentDrawer
         title={
           detail ? (
             <Space>
@@ -553,7 +554,7 @@ function PoInner() {
                 }
               />
             ) : null}
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered styles={{ label: { width: 112, whiteSpace: "nowrap" } }} style={{ marginBottom: 16 }}>
               <Descriptions.Item label="供应商">{detail.supplierName}</Descriptions.Item>
               <Descriptions.Item label="关联工单">
                 {detail.woId != null ? `#${detail.woId}` : "—"}
@@ -576,6 +577,7 @@ function PoInner() {
               columns={lineColumns}
               dataSource={detail.lines}
               pagination={false}
+              scroll={{ x: "max-content" }}
               style={{ marginBottom: 24 }}
             />
             {/* 交期承诺变更时间线：po_promise_revisions 是仅追加事实表，此前只被写不被读——
@@ -602,7 +604,7 @@ function PoInner() {
             ) : null}
           </div>
         ) : null}
-      </Drawer>
+      </DocumentDrawer>
 
       <Modal
         title="驳回单据"
