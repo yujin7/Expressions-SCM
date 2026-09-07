@@ -1,17 +1,18 @@
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
-import {  bhDocs, bhLines, skus, users } from "@/db/schema";
+import { approvalConfigs, bhDocs, bhLines, skus, users, woDocs } from "@/db/schema";
 import { bhReadScope, type BhReadUser } from "@/server/core/bh-read-scope";
 import { dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { approveDoc, loadApprovalHistory, withdrawDoc } from "@/server/docflow/approval";
+import { approvalRoleError, approveDoc, loadApprovalHistory, withdrawDoc } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb, rethrowApproval } from "./common";
-import { approveDocSchema, createBhSchema, transitionDocSchema, withdrawDocSchema } from "./schemas";
+import { approveDocSchema, createBhSchema, transitionDocSchema, updateBhSchema, withdrawDocSchema } from "./schemas";
 import { createdWithinShanghaiDays, skuLineMatch } from "@/server/core/doc-search";
 import { transitionDoc } from "@/server/docflow/transition";
+import { getBhOrigin } from "./bh-origin";
 
 /** 备货申请单 BH（《02》§3：运营发起，PMC 审批） */
 
@@ -74,26 +75,62 @@ export async function createBh(user: SessionUser, input: unknown, dbArg?: AnyDb,
 
 export async function submitBh(user: SessionUser, id: number, version: number, dbArg?: AnyDb): Promise<BhRow> {
   const db = await resolveDb(dbArg);
-  const [doc]: BhRow[] = await db.select().from(bhDocs).where(eq(bhDocs.id, id));
-  if (!doc) throw new ApiError(404, "单据不存在");
-  if (doc.createdBy !== user.id && !user.roles.includes("admin")) {
-    throw new ApiError(403, "仅制单人或管理员可提交");
-  }
-  let target: DocStatus;
-  try {
-    target = nextStatus(doc.status as DocStatus, "submit");
-  } catch (e) {
-    if (e instanceof TransitionError) throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
-    throw e;
-  }
-  const updated: BhRow[] = await db
-    .update(bhDocs)
-    .set({ status: target, version: sql`${bhDocs.version} + 1`, updatedAt: new Date() })
-    .where(and(eq(bhDocs.id, id), eq(bhDocs.version, version)))
-    .returning();
-  if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
-  await writeAudit(db, { userId: user.id, entity: "bh", entityId: id, action: "submit" });
-  return updated[0];
+  return db.transaction(async (tx: AnyDb) => {
+    const [doc]: BhRow[] = await tx.select().from(bhDocs).where(eq(bhDocs.id, id));
+    if (!doc) throw new ApiError(404, "单据不存在");
+    if (doc.createdBy !== user.id && !user.roles.includes("admin")) {
+      throw new ApiError(403, "仅制单人或管理员可提交");
+    }
+    let target: DocStatus;
+    try {
+      target = nextStatus(doc.status as DocStatus, "submit");
+    } catch (e) {
+      if (e instanceof TransitionError) throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
+      throw e;
+    }
+    const updated: BhRow[] = await tx
+      .update(bhDocs)
+      .set({ status: target, version: sql`${bhDocs.version} + 1`, updatedAt: new Date() })
+      .where(and(eq(bhDocs.id, id), eq(bhDocs.version, version), eq(bhDocs.status, "draft")))
+      .returning();
+    if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
+    await writeAudit(tx, { userId: user.id, entity: "bh", entityId: id, action: "submit" });
+    return updated[0];
+  });
+}
+
+export async function updateBh(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<BhRow> {
+  const v = updateBhSchema.parse(input);
+  const db = await resolveDb(dbArg);
+  return db.transaction(async (tx: AnyDb) => {
+    // Lock the header before touching lines. Competing edit/submit uses the same version predicate.
+    const [doc]: BhRow[] = await tx.select().from(bhDocs).where(eq(bhDocs.id, id)).for("update");
+    if (!doc) throw new ApiError(404, "单据不存在");
+    if (doc.createdBy !== user.id && !user.roles.includes("admin")) throw new ApiError(403, "仅制单人或管理员可修改草稿");
+    if (doc.status !== "draft") throw new ApiError(409, "仅草稿可修改，请先撤回或由审批人驳回");
+    if (doc.version !== v.version) throw new ApiError(409, "版本已更新，请重新加载后核对，勿覆盖他人修改");
+    const [downstream] = await tx.select({ id: woDocs.id }).from(woDocs).where(eq(woDocs.bhId, id)).limit(1);
+    if (downstream) throw new ApiError(409, "已有关联工单，不可改写需求来源，请核对下游单据");
+    const beforeLines: (typeof bhLines.$inferSelect)[] = await tx.select().from(bhLines).where(eq(bhLines.bhId, id)).orderBy(bhLines.id);
+    const sourceSkuLocked = (await getBhOrigin(tx, id, doc.docNo)).fromSuggestion;
+    const identity = (lines: { skuId: number }[]) => lines.map(l => l.skuId).sort((a, b) => a - b).join(",");
+    if (sourceSkuLocked && identity(beforeLines) !== identity(v.lines)) throw new ApiError(409, "来源SKU已绑定计划或新品首单，不可增删/替换；请在来源流程重新发起需求");
+    const skuIds = [...new Set(v.lines.map(l => l.skuId))];
+    const available: { id: number }[] = await tx.select({ id: skus.id }).from(skus).where(and(inArray(skus.id, skuIds), eq(skus.active, true))).for("share");
+    if (available.length !== skuIds.length) throw new ApiError(400, "明细存在不存在或已停用的SKU，请重新选择");
+    const [updated]: BhRow[] = await tx.update(bhDocs).set({
+      remark: v.remark ?? null, orderType: v.orderType ?? null, purpose: null,
+      version: sql`${bhDocs.version} + 1`, updatedAt: new Date(),
+    }).where(and(eq(bhDocs.id, id), eq(bhDocs.version, v.version), eq(bhDocs.status, "draft"))).returning();
+    if (!updated) throw new ApiError(409, "版本冲突，请重新加载");
+    await tx.delete(bhLines).where(eq(bhLines.bhId, id));
+    const lines = v.lines.map(l => ({ bhId: id, skuId: l.skuId, qty: dQty(l.qty), expectDate: l.expectDate ?? null }));
+    await tx.insert(bhLines).values(lines);
+    await writeAudit(tx, { userId: user.id, entity: "bh", entityId: id, action: "update_draft",
+      before: { version: doc.version, remark: doc.remark, orderType: doc.orderType ?? doc.purpose, lines: beforeLines },
+      after: { reason: v.reason, version: updated.version, remark: updated.remark, orderType: updated.orderType, sourceSkuLocked, lines } });
+    return updated;
+  });
 }
 
 export async function approveBh(
@@ -136,7 +173,7 @@ export async function approveBh(
 
 // ---------- 查询 ----------
 
-export async function getBh(id: number, dbArg?: AnyDb, user?: BhReadUser) {
+export async function getBh(id: number, dbArg?: AnyDb, user?: BhReadUser & { isApprover?: boolean }) {
   const db = await resolveDb(dbArg);
   const [doc] = await db
     .select({
@@ -172,7 +209,25 @@ export async function getBh(id: number, dbArg?: AnyDb, user?: BhReadUser) {
 
   const approvalRows = await loadApprovalHistory(db, "bh", id);
 
-  return { ...doc, lines, approvals: approvalRows };
+  const origin = await getBhOrigin(db, id, doc.docNo);
+  const sourceSkuLocked = origin.fromSuggestion;
+  let actions;
+  if (user) {
+    const [cfg] = await db.select().from(approvalConfigs).where(eq(approvalConfigs.docType, "bh"));
+    const owner = doc.createdBy === user.id || user.roles.includes("admin");
+    const roleError = approvalRoleError({ ...user, isApprover: user.isApprover ?? false }, cfg?.approverRole ?? null);
+    const approvalReason = doc.createdBy === user.id ? "制单人与审批人必须分离，请由另一位审批人处理" : roleError?.message ?? null;
+    const operator = user.roles.some(r => ["admin", "pmc", "ops"].includes(r));
+    const [downstream] = doc.status === "draft" && owner
+      ? await db.select({ id: woDocs.id }).from(woDocs).where(eq(woDocs.bhId, id)).limit(1) : [];
+    const editReason = downstream ? "已有关联工单，不可改写需求来源，请核对下游单据" : null;
+    actions = { edit: doc.status === "draft" && owner && !downstream, editReason, submit: doc.status === "draft" && owner,
+      void: doc.status === "draft" && owner, withdraw: doc.status === "pending" && owner,
+      approve: doc.status === "pending" && !approvalReason, approvalReason,
+      complete: doc.status === "in_progress" && operator,
+      shortClose: ["approved", "in_progress"].includes(doc.status) && operator };
+  }
+  return { ...doc, lines, approvals: approvalRows, sourceSkuLocked, origin, ...(actions ? { actions } : {}) };
 }
 
 /** D62：受限用户 = 非 admin 且登记了 channel 范围（与 core/data-scope 同口径；未加载 = 不限） */

@@ -27,6 +27,15 @@ export class ApprovalError extends Error {
 
 export type Approver = { id: number; roles: string[]; isApprover: boolean };
 
+/** Shared role/config qualification for write enforcement and read-only action hints. */
+export function approvalRoleError(approver: { roles: readonly string[]; isApprover: boolean }, role: string | null): ApprovalError | null {
+  if (!role) return new ApprovalError("NO_CONFIG", "缺少审批配置");
+  if (approver.roles.includes("admin")) return null;
+  if (!approver.roles.includes(role)) return new ApprovalError("ROLE_FORBIDDEN", `需要${ROLE_LABELS[role as keyof typeof ROLE_LABELS] ?? role}审批角色`);
+  if (!approver.isApprover) return new ApprovalError("NOT_APPROVER", "当前账号不是审批人");
+  return null;
+}
+
 /**
  * 通用单级审批（MVP node=1，《01》§6）。同一事务内：
  * 权限（角色/is_approver/职责分离）→ 幂等（R10：优先于状态与版本冲突）
@@ -51,12 +60,8 @@ export async function approveDoc(
       .from(approvalConfigs)
       .where(eq(approvalConfigs.docType, i.docType));
     if (!cfg) throw new ApprovalError("NO_CONFIG", `缺少审批配置: ${i.docType}`);
-    const isAdmin = i.approver.roles.includes("admin");
-    if (!isAdmin && !i.approver.roles.includes(cfg.approverRole)) {
-      throw new ApprovalError("ROLE_FORBIDDEN", `需要${ROLE_LABELS[cfg.approverRole as keyof typeof ROLE_LABELS] ?? cfg.approverRole}审批角色`);
-    }
-    // 2) 同角色内仅 is_approver=true 者可审批（管理员豁免）
-    if (!isAdmin && !i.approver.isApprover) throw new ApprovalError("NOT_APPROVER");
+    const roleError = approvalRoleError(i.approver, cfg.approverRole);
+    if (roleError) throw roleError;
 
     const cols = getTableColumns(i.table) as Record<string, PgColumn>;
     const [doc] = await tx

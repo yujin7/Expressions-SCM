@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { dCmp } from "@/server/core/decimal";
 import { ORDER_TYPES } from "@/server/core/constants";
+import { shanghaiDay } from "@/server/core/business-day";
 
 /** W3 委外链输入校验（BH/WO/PO/PC/JG）。十进制字符串，禁 float（CLAUDE.md）。 */
 
@@ -9,10 +10,11 @@ const decStr = z
   .transform((v) => String(v).trim())
   .refine((s) => /^-?\d+(\.\d+)?$/.test(s), "必须是十进制数字");
 
-const qtyPositive = decStr.refine((s) => dCmp(s, "0") > 0, "数量必须大于 0");
-const pricePositive = decStr.refine((s) => dCmp(s, "0") > 0, "单价必须大于 0");
-const priceNonNegative = decStr.refine((s) => dCmp(s, "0") >= 0, "单价不能为负");
-const pctNonNegative = decStr.refine((s) => dCmp(s, "0") >= 0, "税率不能为负");
+// A failed shape refinement is not fatal to later refinements; pipe stops before decimal arithmetic.
+const qtyPositive = decStr.pipe(z.string().refine((s) => dCmp(s, "0") > 0, "数量必须大于 0"));
+const pricePositive = decStr.pipe(z.string().refine((s) => dCmp(s, "0") > 0, "单价必须大于 0"));
+const priceNonNegative = decStr.pipe(z.string().refine((s) => dCmp(s, "0") >= 0, "单价不能为负"));
+const pctNonNegative = decStr.pipe(z.string().refine((s) => dCmp(s, "0") >= 0, "税率不能为负"));
 
 /** 订单类型（NPD 钩子；月备货存 "MONTH_STOCK:<n>"） */
 const orderType = z
@@ -34,13 +36,18 @@ export const createBhSchema = z.object({
     .array(
       z.object({
         skuId: z.number().int().positive({ message: "必须选择 SKU" }),
-        qty: qtyPositive,
-        expectDate: dateStr.nullable().optional(),
+        qty: qtyPositive.refine(s => /^\d{1,10}(\.\d{1,4})?$/.test(s) && dCmp(s, "10000000000") < 0, "数量最多10位整数、4位小数，且必须可精确存储"),
+        expectDate: dateStr.refine(s => shanghaiDay(s) === s, "日期不存在").nullable().optional(),
       }),
     )
     .min(1, "至少需要一行"),
 });
 export type CreateBhInput = z.infer<typeof createBhSchema>;
+/** 完整草稿替换；必须携带版本和修改原因，不把缺字段静默当PATCH。 */
+export const updateBhSchema = createBhSchema.extend({
+  version: z.number().int().positive(),
+  reason: z.string().trim().min(1, "请填写修改原因").max(500),
+}).strict();
 
 // ---------- 通用 提交/审批 ----------
 

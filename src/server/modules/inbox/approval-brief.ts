@@ -20,6 +20,7 @@ import { ApiError } from "@/server/modules/master/common";
 import { getSkuFacts } from "@/server/core/sku-facts";
 import { checkRecentOrders } from "@/server/modules/outsource/duplicate-guard";
 import { num, r1 } from "@/server/core/svc";
+import { getBhOrigin } from "@/server/modules/outsource/bh-origin";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -77,12 +78,7 @@ export async function getApprovalBrief(docType: string, docId: number, dbArg?: A
   }
   const skuIds = [...new Set(lines.map((l) => l.skuId))];
 
-  /* 来源：审计里若有 draft_bh/first_order_draft 指向本单号，说明是系统建议产物 */
-  const auditRows: { action: string; after: unknown }[] = await db
-    .select({ action: schema.auditLogs.action, after: schema.auditLogs.after })
-    .from(schema.auditLogs)
-    .where(inArray(schema.auditLogs.action, ["draft_bh", "first_order_draft"]));
-  const fromSuggestion = auditRows.some((r) => (r.after as { docNo?: string } | null)?.docNo === doc.docNo);
+  const origin = await getBhOrigin(db, docId, doc.docNo);
 
   /* 主档 + 在库 + 销速 */
   const skuRows: { id: number; code: string; name: string; baseUom: string }[] = await db
@@ -139,12 +135,7 @@ export async function getApprovalBrief(docType: string, docId: number, dbArg?: A
     docType: t,
     docId,
     docNo: doc.docNo,
-    origin: {
-      fromSuggestion,
-      note: fromSuggestion
-        ? "由系统建议生成的草稿（补货建议/NPD 首单）——建议量已含安全库存与逐日推演"
-        : "人工直录单据——系统未参与数量测算",
-    },
+    origin,
     lines: briefLines,
     summary: {
       lineCount: briefLines.length,

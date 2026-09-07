@@ -20,6 +20,7 @@ let routeActor: SessionUser;
 vi.mock("@/db", () => ({ getDbAsync: async () => routeDb }));
 vi.mock("@/server/core/dto", async importOriginal => ({
   ...await importOriginal<typeof import("@/server/core/dto")>(), getSessionUser: async () => routeActor,
+  getFreshSessionUser: async () => routeActor,
 }));
 
 describe("BH navigation uses the same visibility as its list", () => {
