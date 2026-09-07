@@ -185,7 +185,7 @@ export async function searchAll(qRaw: string, dbArg?: AnyDb, user?: BhReadUser):
 
   const npdItems: SearchItem[] = npdRows.map((r) => ({
     label: r.name,
-    href: "/npd",
+    href: documentHref("npd", r.id)!,
     tag: "NPD",
   }));
   if (npdItems.length > 0) groups.push({ title: "NPD 项目", items: npdItems });

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
 import { getDbAsync } from "@/db";
-import { errorResponse, guardRead, readJson } from "@/server/modules/master/common";
+import { ApiError, errorResponse, guardRead, readJson } from "@/server/modules/master/common";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { createNpdFirstOrder, createNpdProject, getNpdProject, listNpdProjects, rescheduleNpd, updateNpdProject, updateNpdProjectSkuCode } from "@/server/modules/npd/service";
 import { loadDataSourceReadiness } from "@/server/modules/report/data-source-readiness";
@@ -11,16 +11,25 @@ import { loadJiandaoyunSupportingObservations } from "@/server/modules/report/ji
 export async function GET(req: NextRequest) {
   try {
     await guardRead();
-    const id = new URL(req.url).searchParams.get("id");
+    const params = new URL(req.url).searchParams;
+    const ids = params.getAll("id");
+    const views = params.getAll("view");
+    if (ids.length > 1 || (ids.length === 1 && (!/^[1-9]\d*$/.test(ids[0]) || Number(ids[0]) > 2_147_483_647))) {
+      throw new ApiError(400, "无效的项目 ID");
+    }
+    if (views.length > 1 || (views.length === 1 && !["projects", "evidence"].includes(views[0]))) {
+      throw new ApiError(400, "无效的项目读取范围");
+    }
     const db = await getDbAsync();
-    if (id) return NextResponse.json(await getNpdProject(Number(id), db));
+    if (ids.length) return NextResponse.json(await getNpdProject(Number(ids[0]), db));
+    if (views[0] === "projects") return NextResponse.json({ projects: await listNpdProjects(db) });
     const [projects, supportingObservations, dataSources] = await Promise.all([
-      listNpdProjects(db),
+      views[0] === "evidence" ? undefined : listNpdProjects(db),
       loadJiandaoyunSupportingObservations(db),
       loadDataSourceReadiness(db),
     ]);
     return NextResponse.json({
-      projects,
+      ...(projects === undefined ? {} : { projects }),
       supportingObservations: supportingObservations.filter((observation) =>
         observation.stream === "product-master-observation"
         || observation.stream === "sample-management-observation"),

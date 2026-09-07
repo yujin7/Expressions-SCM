@@ -38,6 +38,8 @@ export default function NpdClientOnly() {
     const params = new URLSearchParams(searchParams.toString());
     if (next === "templates") params.set("tab", "templates");
     else params.delete("tab");
+    // A project target belongs to the project tab; do not carry a hidden action drawer into templates.
+    if (next === "templates") params.delete("docId");
     const query = params.toString();
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
   };
@@ -45,6 +47,7 @@ export default function NpdClientOnly() {
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>新品开发（NPD）</Typography.Title>
       <Tabs
+        destroyOnHidden
         activeKey={tab}
         onChange={setTab}
         items={[
