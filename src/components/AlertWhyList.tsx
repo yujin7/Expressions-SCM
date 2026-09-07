@@ -5,6 +5,7 @@
  * 只展示、不解释口径——口径说明走 metrics 注册表 / DecisionVisual；来源以浅色小字随项标注。
  */
 import { Tooltip, Typography } from "antd";
+import ContextHelp from "@/components/ContextHelp";
 
 export interface AlertWhyItem {
   label: string;
@@ -30,7 +31,6 @@ export default function AlertWhyList({ why, max }: AlertWhyListProps) {
   if (!why?.length) return <Typography.Text type="secondary" style={{ fontSize: 12 }}>无依据明细</Typography.Text>;
   const items = why.slice(0, Math.max(1, max));
   const rest = why.length - items.length;
-  const restTip = rest > 0 ? why.slice(items.length).map((w) => `${w.label}：${formatValue(w.value)}`).join("；") : "";
 
   const item = (w: AlertWhyItem, i: number) => (
     <span key={`${w.label}-${i}`} style={{ whiteSpace: "normal", overflowWrap: "anywhere" }}>
@@ -44,9 +44,13 @@ export default function AlertWhyList({ why, max }: AlertWhyListProps) {
     </span>
   );
   const more = rest > 0 ? (
-    <Tooltip key="more" title={restTip}>
-      <Typography.Text type="secondary" style={{ fontSize: 12 }}>+{rest}</Typography.Text>
-    </Tooltip>
+    <ContextHelp label={`查看其余 ${rest} 项告警依据`} title="更多告警依据"
+      content={<ul className="context-help-evidence">{why.slice(items.length).map((w, i) => <li key={`${w.label}-${i}`}>
+        <strong>{w.label}：</strong>{formatValue(w.value)}
+        {w.source ? <div className="context-help-evidence__source">来源：{w.source}</div> : null}
+      </li>)}</ul>}>
+      +{rest} 项依据
+    </ContextHelp>
   ) : null;
 
   return (

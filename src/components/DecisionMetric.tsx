@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRightOutlined, InfoCircleOutlined } from "@ant-design/icons";
-import { Card, Statistic, Tooltip, Typography } from "antd";
+import { ArrowRightOutlined } from "@ant-design/icons";
+import { Card, Statistic, Typography } from "antd";
 
 import DataSourceBadge, { type LineageTier } from "@/components/DataSourceBadge";
 import { metric, metricTooltip } from "@/components/metrics";
+import ContextHelp from "@/components/ContextHelp";
 
 export default function DecisionMetric({
   metricId,
@@ -43,23 +44,15 @@ export default function DecisionMetric({
       <div className="decision-metric__header">
         <Typography.Text className="decision-metric__title">{definition.label}</Typography.Text>
         <span className="decision-metric__meta">
-          <Tooltip
-            placement="bottom"
-            title={
+          <ContextHelp
+            label={`${definition.label}口径说明`} title={`${definition.label} · 口径说明`}
+            content={
               <div className="decision-metric__tooltip">
                 <div style={{ whiteSpace: "pre-line" }}>{metricTooltip(metricId)}</div>
                 {detail ? <div className="decision-metric__tooltip-detail">{detail}</div> : null}
               </div>
             }
-          >
-            <button
-              type="button"
-              className="decision-metric__info"
-              aria-label={`${definition.label}口径说明`}
-            >
-              <InfoCircleOutlined />
-            </button>
-          </Tooltip>
+          />
           <DataSourceBadge tier={source.tier} source={source.name} date={asOf} />
         </span>
       </div>

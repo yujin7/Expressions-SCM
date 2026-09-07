@@ -927,13 +927,20 @@ body {
   gap: 3px;
 }
 
-.decision-metric__info {
+.context-help-trigger {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 2px 4px;
+  gap: 4px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  vertical-align: middle;
+  white-space: nowrap;
+  flex-shrink: 0;
   color: #64748b;
   border: 0;
   border-radius: 6px;
@@ -941,12 +948,45 @@ body {
   cursor: help;
 }
 
-.decision-metric__info:hover,
-.decision-metric__info:focus-visible {
+.context-help-trigger:hover,
+.context-help-trigger[aria-expanded="true"] {
   color: #3157d5;
   background: #eef2ff;
-  outline: none;
 }
+
+.context-help-trigger:focus-visible {
+  outline: 2px solid #3157d5;
+  outline-offset: 2px;
+}
+
+.caliber-note { display: flex; align-items: flex-start; gap: 8px; margin: 2px 0 12px; color: #667085; font-size: 13px; line-height: 1.6; }
+.caliber-note__summary { min-width: 0; overflow-wrap: anywhere; }
+.caliber-note__help { color: #3157d5; }
+.data-source-glyph { display: inline-block; padding: 1px 3px; border-radius: 3px; font-size: 10px; line-height: 1.2; color: #fff; }
+
+.context-help-panel {
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(480px, calc(100dvh - 32px));
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 12px 14px;
+  border: 1px solid #dce3ef;
+  border-radius: 10px;
+  background: #fff;
+  color: #344054;
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  box-shadow: 0 6px 24px #17203324;
+}
+.context-help-panel:focus-visible { outline: 2px solid #3157d5; outline-offset: 2px; }
+.context-help-panel__header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 6px; color: #172033; }
+.context-help-panel__content { min-width: 0; }
+.context-help-panel__content pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.context-help-evidence { margin: 0; padding-left: 18px; }
+.context-help-evidence li + li { margin-top: 8px; }
+.context-help-evidence__source { font-size: 12px; color: #667085; }
+@media (pointer: coarse) { .context-help-trigger { min-width: 32px; min-height: 32px; } }
 
 .decision-metric__statistic {
   margin-top: 8px;

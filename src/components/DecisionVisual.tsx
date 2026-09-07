@@ -6,7 +6,6 @@ import {
   DownloadOutlined,
   FullscreenExitOutlined,
   FullscreenOutlined,
-  InfoCircleOutlined,
   ShareAltOutlined,
   TableOutlined,
 } from "@ant-design/icons";
@@ -15,6 +14,7 @@ import type { CardProps } from "antd";
 
 import DataSourceBadge, { type LineageTier } from "@/components/DataSourceBadge";
 import { metric, metricTooltip } from "@/components/metrics";
+import ContextHelp from "@/components/ContextHelp";
 import {
   coveragePercent,
   coverageText,
@@ -148,9 +148,8 @@ export default function DecisionVisual({
       <Space size={6} wrap>
         <Typography.Text strong>{title}</Typography.Text>
         {metricDef ? (
-          <Tooltip title={<span style={{ whiteSpace: "pre-line" }}>{metricTooltip(metricDef.id)}</span>}>
-            <InfoCircleOutlined aria-label={`${metricDef.label}口径说明`} style={{ color: "#64748b" }} />
-          </Tooltip>
+          <ContextHelp label={`${metricDef.label}口径说明`} title={`${metricDef.label} · 口径说明`}
+            content={<span style={{ whiteSpace: "pre-line" }}>{metricTooltip(metricDef.id)}</span>} />
         ) : null}
         <DataSourceBadge
           tier={source.tier}
