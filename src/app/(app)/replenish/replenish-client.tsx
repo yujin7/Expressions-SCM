@@ -820,7 +820,7 @@ export default function ReplenishClient() {
         ),
       },
       {
-        title: "已开单/在途",
+        title: "可见未结单",
         key: "recentOrders",
         width: 135,
         align: "center" as const,
@@ -833,7 +833,7 @@ export default function ReplenishClient() {
             <Tooltip
               title={
                 <span style={{ whiteSpace: "pre-line" }}>
-                  {`近 7 天未结单据（只提示不阻断）：\n${hits.map((h) => `${h.docType} ${h.docNo}（${h.status}，${h.qty.toLocaleString("zh-CN")}，${h.daysAgo} 天前）`).join("\n")}`}
+                  {`近 7 天可见未结单据（只提示不阻断）：\n${hits.map((h) => `${h.docType} ${h.docNo}（${h.status}，${h.qty.toLocaleString("zh-CN")}，${h.daysAgo} 天前）`).join("\n")}`}
                 </span>
               }
             >
@@ -964,6 +964,9 @@ export default function ReplenishClient() {
           }
         />
       ) : null}
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
+        重复下单提示仅核对近7天可见未结单；空结果不代表全公司没有未结需求，请与负责计划员核对。
+      </Typography.Paragraph>
       <ListToolbar
         state={listState}
         extra={
@@ -1121,6 +1124,7 @@ export default function ReplenishClient() {
           showIcon
           style={{ marginBottom: 12 }}
           message="将按下表建议量生成一张 BH 草稿（不自动提交），提交与审批在备货申请页完成。"
+          description="重复下单提示仅核对可见单据；无提示不能替代跨渠道核对，不改变本次建议数量。"
         />
         {Object.keys(dupHits).length > 0 ? (
           <Alert

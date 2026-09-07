@@ -79,7 +79,7 @@ export default function ChainStrip({ docType, id }: { docType: string; id: numbe
       }}
     >
       <Typography.Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>
-        链路
+        可见链路
       </Typography.Text>
       {nodes.map((n, idx) => {
         const tag = (

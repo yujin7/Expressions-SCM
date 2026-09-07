@@ -17,6 +17,7 @@ interface BriefLine {
   flags: string[];
 }
 interface Brief {
+  scopeNote?: string;
   docNo: string;
   origin: { fromSuggestion: boolean; note: string };
   lines: BriefLine[];
@@ -67,9 +68,10 @@ export default function ApprovalBrief({ docType, docId }: { docType: string; doc
         style={{ marginBottom: 8 }}
         message={data.origin.note}
         description={
-          data.summary.flaggedLines > 0
+          <>{data.summary.lineCount === 0 ? "暂无明细，不能进行简报判断。" : data.summary.flaggedLines > 0
             ? `${data.summary.lineCount} 行中 ${data.summary.flaggedLines} 行有关注点，请留意下方标记。`
-            : `${data.summary.lineCount} 行，未发现明显异常。`
+            : `${data.summary.lineCount} 行，未发现明显异常。`}
+          {data.scopeNote ? <div>{data.scopeNote}</div> : null}</>
         }
       />
       <Table<BriefLine> rowKey="skuId" size="small" columns={cols} dataSource={data.lines} pagination={false} scroll={{ x: "max-content" }} />

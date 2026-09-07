@@ -13,6 +13,7 @@
 import { and, desc, gte, inArray, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { bhDocs, bhLines, woDocs } from "@/db/schema";
+import { bhReadScope, type BhReadUser } from "@/server/core/bh-read-scope";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -31,6 +32,7 @@ export interface RecentOrderHit {
 }
 
 export interface DuplicateCheckResult {
+  scopeNote?: string;
   windowDays: number;
   /** 命中的未结单（按 SKU 分组便于 UI 呈现） */
   hitsBySku: Record<number, RecentOrderHit[]>;
@@ -46,9 +48,14 @@ export async function checkRecentOrders(
   skuIds: number[],
   windowDays = 7,
   dbArg?: AnyDb,
+  user?: BhReadUser,
 ): Promise<DuplicateCheckResult> {
+  // The limitation depends only on actor scope, never on hidden record existence/counts.
+  const scope = user && !user.roles.includes("admin") && user.channelScope != null
+    ? { scopeNote: "重复下单提示仅核对可见单据；空结果不代表全公司没有未结需求，请与负责计划员核对。" }
+    : {};
   const ids = [...new Set(skuIds)].filter((n) => Number.isInteger(n) && n > 0);
-  if (ids.length === 0) return { windowDays, hitsBySku: {}, skuHitCount: 0 };
+  if (ids.length === 0) return { ...scope, windowDays, hitsBySku: {}, skuHitCount: 0 };
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const since = new Date(Date.now() - Math.max(1, windowDays) * 86_400_000);
   const now = Date.now();
@@ -69,7 +76,7 @@ export async function checkRecentOrders(
     })
     .from(bhLines)
     .innerJoin(bhDocs, sql`${bhLines.bhId} = ${bhDocs.id}`)
-    .where(and(inArray(bhLines.skuId, ids), inArray(bhDocs.status, OPEN_STATUSES), gte(bhDocs.createdAt, since)))
+    .where(and(inArray(bhLines.skuId, ids), inArray(bhDocs.status, OPEN_STATUSES), gte(bhDocs.createdAt, since), bhReadScope(db, user)))
     .orderBy(desc(bhDocs.createdAt));
   for (const r of bhRows) {
     push({
@@ -107,5 +114,5 @@ export async function checkRecentOrders(
     });
   }
 
-  return { windowDays, hitsBySku, skuHitCount: Object.keys(hitsBySku).length };
+  return { ...scope, windowDays, hitsBySku, skuHitCount: Object.keys(hitsBySku).length };
 }

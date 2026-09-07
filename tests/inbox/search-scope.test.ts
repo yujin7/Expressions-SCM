@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
-import { approvalConfigs, bhDocs, boms, channels, jgDocs, jsDocs, pcDocs, skus, spus, suppliers, userDataScopes, users, woDocs } from "@/db/schema";
+import { approvalConfigs, bhDocs, bhLines, boms, channels, jgDocs, jsDocs, pcDocs, skus, spus, suppliers, userDataScopes, users, woDocs } from "@/db/schema";
 import { searchAll } from "@/server/modules/inbox/search";
 import { getBh, listBhs } from "@/server/modules/outsource/bh";
 import type { SessionUser } from "@/server/core/dto";
@@ -9,6 +9,11 @@ import { getInbox } from "@/server/modules/inbox/service";
 import { GET as searchRoute } from "@/app/api/search/route";
 import { GET as detailRoute } from "@/app/api/outsource/bh/[id]/route";
 import { GET as listRoute } from "@/app/api/outsource/bh/route";
+import { GET as briefRoute } from "@/app/api/inbox/approval-brief/route";
+import { GET as chainRoute } from "@/app/api/outsource/chain/route";
+import { GET as duplicateRoute } from "@/app/api/outsource/duplicate-check/route";
+import { getApprovalBrief } from "@/server/modules/inbox/approval-brief";
+import { getChain } from "@/server/modules/outsource/chain";
 
 let routeDb: TestDb;
 let routeActor: SessionUser;
@@ -21,6 +26,9 @@ describe("BH navigation uses the same visibility as its list", () => {
   let db: TestDb;
   let viewer: SessionUser;
   let hiddenId: number;
+  let ownId: number;
+  let skuId: number;
+  let woId: number;
   beforeAll(async () => {
     ({ db } = await createTestDb()); routeDb = db;
     const [own, peer, foreign] = await db.insert(users).values([
@@ -35,9 +43,10 @@ describe("BH navigation uses the same visibility as its list", () => {
     await db.insert(bhDocs).values([0, 1, 2, 3].map(i => ({ docNo: `BH-SCOPE-0${i}`, createdBy: foreign.id })));
     const [hidden] = await db.insert(bhDocs).values({ docNo: "BH-SCOPE-HIDDEN", createdBy: foreign.id }).returning();
     hiddenId = hidden.id;
-    await db.insert(bhDocs).values([
+    const [ownBh] = await db.insert(bhDocs).values([
       { docNo: "BH-SCOPE-OWN", createdBy: own.id, status: "pending" }, { docNo: "BH-SCOPE-PEER", createdBy: peer.id, status: "pending" },
-    ]);
+    ]).returning();
+    ownId = ownBh.id;
     viewer = { id: own.id, name: own.name, roles: ["ops"], isApprover: false, channelScope: [channel.id] };
     routeActor = viewer;
     await db.insert(bhDocs).values({ docNo: "BH-PENDING-HIDDEN", createdBy: foreign.id, status: "pending" });
@@ -47,9 +56,12 @@ describe("BH navigation uses the same visibility as its list", () => {
     await db.insert(pcDocs).values({ docNo: "PC-SCOPE-PRIVATE", createdBy: own.id, status: "pending", target: "jg_fee", oldPrice: "1", newPrice: "2", deviationPct: "100", scope: "unreceived_only" });
     const [spu] = await db.insert(spus).values({ code: "SCOPE-SPU", nameCn: "范围测试产品" }).returning();
     const [sku] = await db.insert(skus).values({ code: "SCOPE-SKU", name: "范围测试产品", spuId: spu.id, skuType: "finished", baseUom: "盒" }).returning();
+    skuId = sku.id;
+    await db.insert(bhLines).values([{ bhId: hiddenId, skuId, qty: "99" }, { bhId: ownId, skuId, qty: "1" }]);
     const [supplier] = await db.insert(suppliers).values({ code: "SCOPE-SUP", name: "范围测试工厂", kinds: ["processor"] }).returning();
     const [bom] = await db.insert(boms).values({ productSkuId: sku.id, versionNo: "1" }).returning();
-    const [wo] = await db.insert(woDocs).values({ docNo: "WO-SCOPE", createdBy: foreign.id, productSkuId: sku.id, qty: "1", supplierId: supplier.id, feeRatePlan: "1", bomId: bom.id }).returning();
+    const [wo] = await db.insert(woDocs).values({ docNo: "WO-SCOPE", bhId: hiddenId, createdBy: foreign.id, productSkuId: sku.id, qty: "1", supplierId: supplier.id, feeRatePlan: "1", bomId: bom.id }).returning();
+    woId = wo.id;
     const [jg] = await db.insert(jgDocs).values({ docNo: "JG-SCOPE", createdBy: foreign.id, woId: wo.id, productSkuId: sku.id, qty: "1", supplierId: supplier.id, feeRateCurrent: "1" }).returning();
     await db.insert(jsDocs).values({ docNo: "JS-SCOPE-PRIVATE", createdBy: foreign.id, status: "pending", jgId: jg.id, goodQty: "1", feePayable: "1", settleAmount: "1" });
   });
@@ -105,5 +117,45 @@ describe("BH navigation uses the same visibility as its list", () => {
     expect((await searchAll("JS-SCOPE", db, finance)).groups[0].items[0].label).toBe("JS-SCOPE-PRIVATE");
     expect((await getInbox(finance, db)).pending.map(i => i.docNo)).toContain("JS-SCOPE-PRIVATE");
     expect((await getInbox({ ...finance, channelScope: viewer.channelScope }, db)).pending).toEqual([]);
+  });
+  it("HTTP brief and chain cannot recover a hidden BH through auxiliary endpoints", async () => {
+    const brief = await briefRoute(new NextRequest(`http://localhost/api/inbox/approval-brief?docType=bh&docId=${hiddenId}`));
+    const chain = await chainRoute(new NextRequest(`http://localhost/api/outsource/chain?docType=bh&id=${hiddenId}`));
+    expect(brief.status).toBe(404);
+    expect(chain.status).toBe(404);
+    expect(JSON.stringify([await brief.json(), await chain.json()])).not.toContain("BH-SCOPE-HIDDEN");
+  });
+  it("duplicate hints do not leak other-channel BH numbers or quantities", async () => {
+    const response = await duplicateRoute(new NextRequest(`http://localhost/api/outsource/duplicate-check?skuIds=${skuId}`));
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.hitsBySku[skuId].map((h: { docNo: string }) => h.docNo)).toEqual(["BH-SCOPE-OWN", "WO-SCOPE"]);
+    expect(data.scopeNote).toContain("可见单据");
+    expect(JSON.stringify(data)).not.toContain("BH-SCOPE-HIDDEN");
+  });
+  it("a public WO chain hides its restricted BH parent and inaccessible settlement nodes", async () => {
+    const response = await chainRoute(new NextRequest(`http://localhost/api/outsource/chain?docType=wo&id=${woId}`));
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.nodes.map((n: { docType: string }) => n.docType)).toEqual(["wo", "jg"]);
+  });
+  it("allowed brief preserves useful facts while omitting hidden duplicate identities", async () => {
+    const brief = await getApprovalBrief("bh", ownId, db, viewer);
+    expect(brief.docNo).toBe("BH-SCOPE-OWN");
+    expect(brief.lines[0].docQty).toBe(1);
+    expect(brief.lines[0].recentOrders.map(o => o.docNo)).toEqual(["WO-SCOPE"]);
+    expect(brief.scopeNote).toContain("可见单据");
+    expect(JSON.stringify(brief)).not.toContain("BH-SCOPE-HIDDEN");
+  });
+  it("admin can still inspect hidden BH brief and all related chain nodes", async () => {
+    const admin = { ...viewer, roles: ["admin"], channelScope: [] };
+    expect((await getApprovalBrief("bh", hiddenId, db, admin)).docNo).toBe("BH-SCOPE-HIDDEN");
+    expect((await getChain({ docType: "bh", id: hiddenId }, db, admin)).nodes.map(n => n.docType)).toEqual(["bh", "wo", "jg", "js"]);
+  });
+  it("explicit empty scope stays own-only in auxiliary routes and malformed IDs are rejected", async () => {
+    await expect(getApprovalBrief("bh", hiddenId, db, { ...viewer, channelScope: [] })).rejects.toMatchObject({ status: 404 });
+    await expect(getChain({ docType: "bh", id: hiddenId }, db, { ...viewer, channelScope: [] })).rejects.toMatchObject({ status: 404 });
+    const response = await briefRoute(new NextRequest("http://localhost/api/inbox/approval-brief?docType=bh&docId=nope"));
+    expect(response.status).toBe(400);
   });
 });
