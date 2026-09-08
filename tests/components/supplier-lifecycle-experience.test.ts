@@ -97,3 +97,21 @@ it("窄屏列表只显示协议摘要，完整原因有明确展开按钮，不�
   const updated = render().find(n => n.type === "table")!;
   expect(updated.props.expandable).toMatchObject({ expandedRowKeys: [5] });
 });
+
+it("历史游标由页面按工作项和版本持有，跨响应式表格重建不跳回最新页", () => {
+  const evidence = (record = row) => {
+    const table = render().find(n => n.type === "table")!;
+    const expanded = table.props.expandable as { expandedRowRender: (record: typeof row) => Node };
+    return expanded.expandedRowRender(record);
+  };
+  expect(evidence().props.cursor).toBeNull();
+  (evidence().props.onCursorChange as (cursor: number | null) => void)(123);
+  state.desktop = true;
+  expect(evidence().props.cursor).toBe(123);
+  state.desktop = false;
+  expect(evidence().props.cursor).toBe(123);
+  expect(evidence({ ...row, id: 6 }).props.cursor).toBeNull();
+  expect(evidence({ ...row, version: 5 }).props.cursor).toBeNull();
+  (evidence().props.onCursorChange as (cursor: number | null) => void)(null);
+  expect(evidence().props.cursor).toBeNull();
+});

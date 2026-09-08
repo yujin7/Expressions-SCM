@@ -170,8 +170,11 @@ function TermEvidence({ row, summaryOnly = false }: { row: LifecycleRow; summary
   </Space>;
 }
 interface CaseEvent { id: number; at: string; actorName: string | null; action: string; after: { progressNote?: string; closureNote?: string; reason?: string; ownerId?: number; dueDate?: string; confirmedCurrentTerm?: boolean } | null }
-function LifecycleEvidence({ row }: { row: LifecycleRow }) {
-  const [cursor, setCursor] = useState<number | null>(null);
+function LifecycleEvidence({ row, cursor, onCursorChange }: {
+  row: LifecycleRow;
+  cursor: number | null;
+  onCursorChange: (cursor: number | null) => void;
+}) {
   const read = useDocumentRead<{ history: CaseEvent[]; nextCursor: number | null }>(`/api/master/supplier/lifecycle/${row.id}${cursor ? `?beforeAuditId=${cursor}` : ""}`);
   return <div className="supplier-lifecycle-evidence">
     <details style={{ marginBottom: 12 }}>
@@ -191,8 +194,8 @@ function LifecycleEvidence({ row }: { row: LifecycleRow }) {
       <Typography.Paragraph>{event.action === "follow_up" ? event.after?.progressNote : event.action === "close" ? event.after?.closureNote : event.after?.reason}{event.after?.confirmedCurrentTerm ? "（已显式核对当时主档条款）" : ""}</Typography.Paragraph>
     </details>)}
     <Space wrap style={{ marginTop: 8 }}>
-      {read.data?.nextCursor ? <Button size="small" onClick={() => setCursor(read.data!.nextCursor)}>更早记录</Button> : null}
-      {cursor ? <Button size="small" onClick={() => setCursor(null)}>返回最新记录</Button> : null}
+      {read.data?.nextCursor ? <Button size="small" onClick={() => onCursorChange(read.data!.nextCursor)}>更早记录</Button> : null}
+      {cursor ? <Button size="small" onClick={() => onCursorChange(null)}>返回最新记录</Button> : null}
     </Space>
   </div>;
 }
@@ -213,6 +216,9 @@ export default function SupplierLifecycleClient() {
   const [writeError, setWriteError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<{ id: number; summary: string } | null>(null);
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
+  // AntD remounts expanded rows when responsive columns change. Keep navigation
+  // above the table, scoped to this case revision so newly saved evidence starts fresh.
+  const [historyCursors, setHistoryCursors] = useState<Record<string, number | null>>({});
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const createKey = useRef<string | null>(null);
@@ -555,7 +561,10 @@ export default function SupplierLifecycleClient() {
         expandable={{
           expandedRowKeys: expandedKeys,
           onExpandedRowsChange: keys => setExpandedKeys([...keys]),
-          expandedRowRender: (row) => <LifecycleEvidence key={`${row.id}:${row.version}`} row={row} />,
+          expandedRowRender: (row) => <LifecycleEvidence key={`${row.id}:${row.version}`} row={row}
+            cursor={historyCursors[`${row.id}:${row.version}`] ?? null}
+            onCursorChange={cursor => setHistoryCursors(current => ({ ...current, [`${row.id}:${row.version}`]: cursor }))}
+          />,
         }}
       />
 
