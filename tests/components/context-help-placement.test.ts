@@ -36,4 +36,14 @@ describe("shared explanation placement contract", () => {
     expect(panel).toContain("尚未提供");
     expect(panel).toContain('aria-label="关闭来源与时点"');
   });
+
+  it("does not retain dropdown's four-pixel placement offset after viewport shifting", () => {
+    renderToStaticMarkup(React.createElement(ContextHelp, {
+      label: "外部窗口", title: "长口径", content: "逐店铺逐日覆盖说明".repeat(30),
+    }));
+    // rc-trigger applies popupOffsetY again after shifting. Default ±4 puts the
+    // dialog at y=-4 or bottom=viewport+4; actual 390px reproduction is retained.
+    expect(captured.props?.align?.offset).toEqual([0, 0]);
+    expect(captured.props?.overlayStyle?.padding).toBe(8);
+  });
 });

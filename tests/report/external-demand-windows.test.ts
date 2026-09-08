@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import * as schema from "@/db/schema";
 import { createTestDb } from "../helpers/db";
 import { computeExternalVelocity } from "@/server/modules/report/external-velocity";
+import { getReplenishSuggestions } from "@/server/modules/replenish/service";
 
 async function fixture() {
   const { db, client } = await createTestDb();
@@ -26,6 +27,27 @@ async function fixture() {
 }
 
 describe("external net-demand windows require independent daily evidence", () => {
+  it.each([
+    { days: 7, paid: "3", refund: "0.3", daily: null },
+    { days: 30, paid: "1", refund: "1", daily: 0 },
+    { days: 30, paid: "1", refund: "2", daily: -1 },
+    { days: 30, paid: "3", refund: "0.3", daily: 2.7 },
+  ])("replenishment consumes real $days-day evidence without converting unknown to decimal or changing quantity ($daily)", async ({ days, paid, refund, daily }) => {
+    const f = await fixture();
+    try {
+      await f.series("补货跨域", days, paid, refund);
+      const result = await getReplenishSuggestions({ q: "WIN-1" }, f.db);
+      expect(result.rows).toHaveLength(1);
+      const row = result.rows[0];
+      expect(row.externalDaily30).toBe(daily);
+      if (daily == null) expect(row.externalDaily30Gate).toContain("30日窗口覆盖不足");
+      else expect(row.externalDaily30Gate).toBeNull();
+      // External observations remain a parallel reference, never R11 quantity inputs.
+      expect(row.suggestQty).toBeNull();
+      expect(row.daily).toBe(0);
+    } finally { await f.client.close(); }
+  });
+
   it("invalid calendar evidence remains unknown without a SQL 500", async () => {
     const f = await fixture();
     try {

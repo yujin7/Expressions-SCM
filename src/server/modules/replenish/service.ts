@@ -1066,7 +1066,9 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       ? "该 SKU 尚无已映射的外部需求"
       : pddWindowIncomplete
         ? `拼多多近 30 天仅观测到 ${externalVelocity.coverage.pddObservedDays30} 个业务日，暂不折算日均`
-        : null;
+        : externalRow.net30 == null
+          ? "外部30日窗口覆盖不足，暂不折算日均；未知不代表零需求"
+          : null;
     return {
       skuId: s.id,
       code: s.code,
@@ -1080,8 +1082,8 @@ export async function getReplenishSuggestions(query: ReplenishQuery, dbArg?: Any
       daily: r1(dailyNum),
       daysCover: cover == null ? null : r1(cover),
       suggestQty: suggest,
-      externalDaily30: externalRow && !pddWindowIncomplete
-        ? r1(num(dDiv(String(externalRow.net30), "30", 6)))
+      externalDaily30: externalRow?.net30 != null && !pddWindowIncomplete
+        ? r1(num(dDiv(externalRow.net30, "30", 6)))
         : null,
       externalDaily30Gate,
       externalLastSold: externalRow?.lastSoldDate ?? null,
