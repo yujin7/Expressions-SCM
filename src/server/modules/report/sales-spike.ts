@@ -262,7 +262,7 @@ export async function computeSalesSpike(dbArg: AnyDb): Promise<SalesSpikeReadMod
     const promo = matchExpectedPromo({ start: windowStart, end: r.anchorDate ?? anchor }, promoBySku.get(skuId) ?? []);
     hits.push({ kind: "sku", skuId, code: e.code, name: e.name, shopName: [...e.shops].join("、"), platformSkuId: null, anchorDate: r.anchorDate ?? anchor,
       days: r.days.map((d) => ({ date: d.date, qty: d.qty, risePct: d.risePct })), baseline: r.baseline, threshold: r.threshold, risePct: last?.risePct ?? null,
-      href: `/replenish?sku=${encodeURIComponent(e.code ?? "")}`,
+      href: `/replenish?q=${encodeURIComponent(e.code ?? "")}`,
       reason: r.reason, gaps: r.gaps,
       expected: promo.expected, planEventRef: promo.planEventRef, expectedUpliftPct: promo.expectedUpliftPct, planEventWindow: promo.planEventWindow });
   }

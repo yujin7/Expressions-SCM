@@ -176,6 +176,20 @@ async function seed(db: Db, options: { omitDate?: string; secondShopGap?: boolea
 }
 
 describe("爆单预警：判定窗口与锚点（行为回归）", () => {
+  it("positive source data generates the replenish page's supported q filter, including encoded SKU codes", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      await seed(db);
+      await db.execute(sql`UPDATE skus SET code = '精华 A&B/+' WHERE code = 'N001-000'`);
+      const model = await computeSalesSpike(db);
+      expect(model.hits).toHaveLength(1);
+      const url = new URL(model.hits[0].href, "http://local.test");
+      expect(url.pathname).toBe("/replenish");
+      expect(url.searchParams.get("q")).toBe("精华 A&B/+");
+      expect(url.searchParams.has("sku")).toBe(false);
+      expect(url.searchParams.has("candidateQty")).toBe(false);
+    } finally { await client.close(); }
+  });
   it("v2 旧缓存不能绕过新的证据资格，重建不删除旧缓存证据", async () => {
     const { db, client } = await createTestDb();
     try {

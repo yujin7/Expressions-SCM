@@ -9,7 +9,7 @@ afterAll(() => vi.unstubAllGlobals());
 const row = {
   kind: "sku" as const, skuId: 7, code: "SPIKE-CHAIN-QA-HOT-LONG-CODE", name: "需要完整阅读的长产品中文名和规格", shopName: "QA旗舰店,华东|直营",
   platformSkuId: null, anchorDate: "2026-09-08", days: [{ date: "2026-09-06", qty: "20", risePct: "100" }, { date: "2026-09-07", qty: "25", risePct: "150" }, { date: "2026-09-08", qty: "30", risePct: "200" }],
-  baseline: "10", threshold: "15", risePct: "200", href: "/replenish?sku=HOT", reason: "连续三天", gaps: 0, expected: false, planEventRef: null, expectedUpliftPct: null, planEventWindow: null,
+  baseline: "10", threshold: "15", risePct: "200", href: "/replenish?q=HOT", reason: "连续三天", gaps: 0, expected: false, planEventRef: null, expectedUpliftPct: null, planEventWindow: null,
 };
 it("narrow spike view keeps full identity, shop, dated quantities, threshold and permitted action", () => {
   const html = renderToStaticMarkup(createElement(SalesSpikeCard, { row, ack: "已知悉 · PMC", action: createElement("a", { href: row.href }, "看补货") }));
