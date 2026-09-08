@@ -43,6 +43,8 @@ import type { ProductExternalDecisionEvidenceBrief } from "@/components/product-
 import { useListState } from "@/components/useListState";
 import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
+import type { InvAnalyticsRow as Row, InvAnalyticsResult } from "@/server/modules/report/inventory-analytics";
+import { formatInventoryDaily, inventorySalesStatus, inventorySalesPeriod, inventorySalesExport, INVENTORY_SALES_EXPORT_COLUMNS } from "@/lib/inventory-sales-evidence";
 
 type AgingBucket = "d30" | "d60" | "d90" | "d180" | "d180p";
 const BUCKETS: AgingBucket[] = ["d30", "d60", "d90", "d180", "d180p"];
@@ -63,42 +65,7 @@ const BUCKET_COLORS: Record<AgingBucket, string> = {
 };
 const ABC_COLORS: Record<string, string> = { A: "#f5222d", B: "#fa8c16", C: "#8c8c8c" };
 
-interface Row {
-  skuId: number;
-  code: string;
-  name: string;
-  brand: string | null;
-  onHand: number;
-  daily: number;
-  daysCover: number | null;
-  outQty: number;
-  avgOnHand: number;
-  turns: number | null;
-  dio: number | null;
-  aging: Record<AgingBucket, number>;
-  avgAgeDays: number | null;
-  unknownOriginQty: number;
-  cell: string | null;
-  abc: "A" | "B" | "C" | null;
-}
-
-interface Data {
-  rows: Row[];
-  total: number;
-  summary: {
-    skuCount: number;
-    agingTotals: Record<AgingBucket, number>;
-    avgTurns: number | null;
-    avgDio: number | null;
-    unknownOriginQty: number;
-    windowDays: number;
-  };
-  today: string;
-  /** 参与在库口径的快照仓最新快照日期（core/stock-view）；无快照仓数据 = null */
-  snapDate: string | null;
-  coverAlertDays: number;
-  slowDaysThreshold: number;
-  avgOnHandNote: string;
+interface Data extends InvAnalyticsResult {
   supportingObservations: JiandaoyunSupportingObservation[];
   externalDecisionEvidence: ProductExternalDecisionEvidenceBrief | null;
 }
@@ -106,7 +73,7 @@ interface Data {
 const fmt = (v: number | null | undefined): string => (v == null ? "—" : Number(v).toLocaleString("zh-CN"));
 /** 图表数据上限：散点/账龄图只画在库量 TOP N（超出在提示中明说，不静默截断） */
 const CHART_LIMIT = 500;
-/** 可销天数显示封顶（无动销 = 无穷，散点上按封顶值画在顶部并注明） */
+/** 可销天数显示封顶；已登记非正日销在左上独立占位，不声称无穷。 */
 const COVER_CAP = 720;
 
 const displayExternalMetric = (value: string): string => {
@@ -247,17 +214,19 @@ export default function InventoryAnalyticsClient() {
   }, []);
 
   const chartRows = useMemo(() => chart?.rows ?? [], [chart]);
+  const stockedRows = useMemo(() => chartRows.filter((r) => r.onHand > 0), [chartRows]);
+  const qualifiedRows = useMemo(() => stockedRows.filter((r): r is Row & { daily: number } => r.daily != null), [stockedRows]);
+  const unknownSalesCount = stockedRows.length - qualifiedRows.length;
   const truncated = (chart?.total ?? 0) > CHART_LIMIT;
   const dailyAxis = useMemo(
-    () => positiveLogAxis(chartRows.filter((r) => r.onHand > 0).map((r) => r.daily)),
-    [chartRows],
+    () => positiveLogAxis(qualifiedRows.map((r) => r.daily)),
+    [qualifiedRows],
   );
 
   /* ── 散点数据 ── */
   const points = useMemo<Point[]>(
     () =>
-      chartRows
-        .filter((r) => r.onHand > 0)
+      qualifiedRows
         .map((r) => ({
           code: r.code,
           name: r.name,
@@ -271,7 +240,7 @@ export default function InventoryAnalyticsClient() {
           daily: r.daily,
           daysCover: r.daysCover,
         })),
-    [chartRows, dailyAxis],
+    [qualifiedRows, dailyAxis],
   );
 
   const onPointClick = (d: unknown) => {
@@ -299,20 +268,23 @@ export default function InventoryAnalyticsClient() {
 
   const doExport = async () => {
     const all: Row[] = [];
+    const salesEvidence: ReturnType<typeof inventorySalesExport>[] = [];
     let serverTotal = 0;
     for (let p2 = 1; p2 <= 20; p2++) {
       const params = new URLSearchParams({ q, windowDays, page: String(p2), pageSize: String(CHART_LIMIT) });
       const d = await fetchJson<Data>(`/api/report/inventory-analytics?${params.toString()}`);
       serverTotal = d.total;
       all.push(...d.rows);
+      salesEvidence.push(...d.rows.map((r) => inventorySalesExport(r, d.salesWindow)));
       if (all.length >= d.total) break;
     }
     exportCsv(
       `库存分析-${data?.today ?? ""}`,
-      ["SKU编码", "名称", "品牌", "ABC", "格", "在库", "日均销", "可销天数", `窗口出库(${windowDays}天)`, "周转次数(年化)", "DIO(天)", "加权库龄(天)", ...BUCKETS.map((b) => BUCKET_LABELS[b]), "来源不明"],
-      all.map((r) => [
+      ["SKU编码", "名称", "品牌", "ABC", "格", "在库", "日均销", "可销天数", `窗口出库(${windowDays}天)`, "周转次数(年化)", "DIO(天)", "加权库龄(天)", ...BUCKETS.map((b) => BUCKET_LABELS[b]), "来源不明", ...INVENTORY_SALES_EXPORT_COLUMNS.map((c) => c.title)],
+      all.map((r, i) => [
         r.code, r.name, r.brand, r.abc, r.cell, r.onHand, r.daily, r.daysCover, r.outQty, r.turns, r.dio, r.avgAgeDays,
         ...BUCKETS.map((b) => r.aging[b]), r.unknownOriginQty,
+        ...INVENTORY_SALES_EXPORT_COLUMNS.map((c) => salesEvidence[i][c.key]),
       ]),
       all.length < serverTotal
         ? `……仅导出前 ${all.length} 行，服务端共 ${serverTotal} 行（浏览器分页取数已达上限）；请缩小筛选范围，或改用「导出任务」`
@@ -334,6 +306,18 @@ export default function InventoryAnalyticsClient() {
   };
   const nameCol: ColumnsType<Row>[number] = { title: "名称", dataIndex: "name", ellipsis: true, width: 200 };
   const onHandCol: ColumnsType<Row>[number] = { title: "在库", dataIndex: "onHand", width: 100, align: "right", render: (v: number) => fmt(v) };
+  const dailyCol: ColumnsType<Row>[number] = { title: "日均销", dataIndex: "daily", width: 145, align: "right",
+    render: (v: number | null, r) => <div>
+      <div>{formatInventoryDaily(v)}</div>
+      <Typography.Text type={r.salesState === "registered" ? "secondary" : "warning"} style={{ fontSize: 12 }}>
+        {inventorySalesStatus(r)}
+      </Typography.Text>
+    </div>,
+  };
+  const coverCol: ColumnsType<Row>[number] = { title: "可销天数", dataIndex: "daysCover", width: 140, align: "right",
+    render: (v: number | null, r) => v != null ? fmt(v)
+      : <Typography.Text type="secondary">{r.daily == null ? "缺销售证据" : "无正日销，不计算"}</Typography.Text>,
+  };
 
   const agingColumns: ColumnsType<Row> = [
     skuCol,
@@ -393,8 +377,8 @@ export default function InventoryAnalyticsClient() {
       sorter: (a, b) => (a.dio ?? -1) - (b.dio ?? -1),
       render: (v: number | null) => (v == null ? <Typography.Text type="secondary">—</Typography.Text> : v > 180 ? <Typography.Text type="danger">{fmt(v)}</Typography.Text> : fmt(v)),
     },
-    { title: "日均销", dataIndex: "daily", width: 90, align: "right" },
-    { title: "可销天数", dataIndex: "daysCover", width: 100, align: "right", render: (v: number | null) => (v == null ? <Typography.Text type="secondary">无动销</Typography.Text> : fmt(Math.round(v))) },
+    dailyCol,
+    coverCol,
   ];
 
   const pagination = {
@@ -421,7 +405,7 @@ export default function InventoryAnalyticsClient() {
               : data
                 ? "本次结果不含任何快照仓数据（快照仓无该口径记录），在库全部来自实时账。"
                 : ""}
-            日均销 = 近 3 月销量 ÷ 91；
+            日均销取正式月销最新月份向前3月，沿用历史÷91；三月均有记录才计算，不证明全渠道完整。缺月/无记录不补零，可销天数保持未知。
             出入库取自 stock_ledger 带符号流水。仅统计在用成品。
             {truncated ? ` 图表仅绘制在库量 TOP ${CHART_LIMIT}（共 ${chart?.total ?? 0} 个 SKU），明细表分页完整。` : ""}
           </>
@@ -430,6 +414,9 @@ export default function InventoryAnalyticsClient() {
 
       <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="库存分析明细" retrying={loading} />
       <LoadErrorAlert error={chartError} onRetry={() => void loadChart()} subject="库存分析图表" />
+      {data ? <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+        正式月销窗口：{inventorySalesPeriod(data.salesWindow)} · 日均分母 {data.salesWindow.divisorDays} 天（历史口径，非自然月实际天数）。已登记月份不代表全渠道覆盖；历史窗口不代表今天的需求。
+      </Typography.Paragraph> : null}
 
       <section className="dashboard-kpi-grid" aria-label="库存分析关键指标" style={{ marginBottom: 12 }}>
         <div className="dashboard-kpi-grid__item">
@@ -524,8 +511,8 @@ export default function InventoryAnalyticsClient() {
                 unit="日均销 × 可销天数 × 在库量"
                 source={{
                   tier: "derived",
-                  source: "库存过账台账 + 最新快照 + 近 3 月销售",
-                  asOf: data?.today,
+                  source: `库存过账台账 + 最新快照 + 正式月销 ${inventorySalesPeriod(chart?.salesWindow)}`,
+                  asOf: chart?.today,
                 }}
                 coverage={{
                   covered: points.length,
@@ -533,30 +520,26 @@ export default function InventoryAnalyticsClient() {
                   label: truncated ? `图形 TOP ${CHART_LIMIT}` : "有在库成品",
                 }}
                 activeFilters={[`周转窗口 ${windowDays} 天`, q ? `搜索：${q}` : "全部 SKU"]}
-                caveat={`对数轴无法显示非正数；当前返回日均销≤0的 SKU 在最左单独占位、降低透明度，不能据此证明没有实际销售。正日销按真实值绘制；可销天数超过 ${COVER_CAP} 天封顶绘制。`}
+                caveat={`当前已加载在库样本中，${unknownSalesCount} 个因无月销/缺月未绘点，仍保留在数据表与导出。已登记非正日销在最左上独立占位，不代表可销无穷或实际无销售。正日销按真实值绘制；可销天数超过 ${COVER_CAP} 天封顶。月销${inventorySalesPeriod(chart?.salesWindow)}，历史÷${chart?.salesWindow.divisorDays ?? "—"}；不代表全渠道完整或当前需求。`}
                 summary={`图中 ${points.length} 个 SKU；橙色虚线为 ${data?.coverAlertDays ?? 30} 天缺货告警线，黄色虚线为 ${data?.slowDaysThreshold ?? 180} 天滞销线。气泡越大表示在库越多。`}
-                state={chartError ? "error" : chart == null ? "loading" : points.length === 0 ? "empty" : "ready"}
-                stateDetail={chartError ?? "当前筛选范围内没有在库成品。"}
+                state={chartError ? "error" : chart == null ? "loading" : points.length === 0 ? stockedRows.length ? "insufficient" : "empty" : "ready"}
+                stateDetail={chartError ?? (stockedRows.length ? "有在库成品，但缺少合格的三个月销售记录；可切换数据表核对，不按零销量绘图。" : "当前筛选范围内没有在库成品。")}
                 extra={<Space size={4}>{(["A", "B", "C"] as const).map((a) => <Tag key={a} color={a === "A" ? "red" : a === "B" ? "orange" : "default"}>{a} 类</Tag>)}</Space>}
                 height={460}
                 dataView={
-                  <Table<Point>
+                  <Table<Row>
                     rowKey="code"
                     size="small"
                     columns={[
                       { title: "SKU", dataIndex: "code" },
                       { title: "名称", dataIndex: "name", ellipsis: true },
                       { title: "ABC", dataIndex: "abc" },
-                      { title: "日均销", dataIndex: "daily", align: "right" },
-                      {
-                        title: "可销天数",
-                        dataIndex: "daysCover",
-                        align: "right",
-                        render: (value: number | null) => value == null ? "无动销" : fmt(Math.round(value)),
-                      },
-                      { title: "在库", dataIndex: "z", align: "right", render: fmt },
+                      dailyCol,
+                      { title: "窗口已登记销量", dataIndex: "salesQty", align: "right", render: (v: string | null) => v ?? "—" },
+                      coverCol,
+                      onHandCol,
                     ]}
-                    dataSource={points}
+                    dataSource={stockedRows}
                     pagination={{ pageSize: 20, showSizeChanger: false }}
                     scroll={{ x: "max-content", y: 330 }}
                   />
@@ -595,9 +578,9 @@ export default function InventoryAnalyticsClient() {
                         formatter={(v, n, item) => {
                           // 横轴对无动销 SKU 用占位值作图，tooltip 必须回到真实值，不能骗人
                           const p = (item as unknown as { payload?: Point } | undefined)?.payload;
-                          if (n === "日均销") return [fmt(p?.daily ?? (v as number)), "日均销"];
+                          if (n === "日均销") return [formatInventoryDaily(p?.daily ?? (v as number)), "日均销"];
                           if (n === "可销天数") {
-                            return [p?.daysCover == null ? "∞（无动销）" : p.capped ? `${fmt(COVER_CAP)}+` : fmt(p.daysCover), "可销天数"];
+                            return [p?.daysCover == null ? "无正日销，不计算（图上占位）" : fmt(p.daysCover), "可销天数"];
                           }
                           return [fmt(v as number), String(n)];
                         }}

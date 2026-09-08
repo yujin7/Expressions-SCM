@@ -403,7 +403,8 @@ export const EXPORT_KINDS: Record<string, ExportKindDef> = {
     }),
     async produce(_user, params, cap, db) {
       const { getInventoryAnalytics } = await import("@/server/modules/report/inventory-analytics");
-      const { rows, total } = await getInventoryAnalytics(
+      const { inventorySalesExport, INVENTORY_SALES_EXPORT_COLUMNS } = await import("@/lib/inventory-sales-evidence");
+      const { rows, total, salesWindow } = await getInventoryAnalytics(
         { q: str(params.q) ?? "", windowDays: num(params.windowDays), allRows: true },
         db,
       );
@@ -413,6 +414,7 @@ export const EXPORT_KINDS: Record<string, ExportKindDef> = {
         brand: r.brand,
         onHand: r.onHand,
         daily: r.daily,
+        ...inventorySalesExport(r, salesWindow),
         daysCover: r.daysCover,
         outQty: r.outQty,
         turns: r.turns,
@@ -431,6 +433,7 @@ export const EXPORT_KINDS: Record<string, ExportKindDef> = {
           { key: "brand", title: "品牌" },
           { key: "onHand", title: "全网在库" },
           { key: "daily", title: "日均销" },
+          ...INVENTORY_SALES_EXPORT_COLUMNS,
           { key: "daysCover", title: "可销天数" },
           { key: "outQty", title: "窗口出库量" },
           { key: "turns", title: "年化周转次数" },

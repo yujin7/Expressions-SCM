@@ -31,6 +31,7 @@ import { AGING_BUCKETS, fifoAging, turnover, type AgingBucket } from "@/server/r
 import { num, r1, r1n } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
 import { participatesInNormalSalesMovement } from "@/server/rules/sku-standardization";
+import type { InventorySalesEvidence, InventorySalesWindow } from "@/lib/inventory-sales-evidence";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -42,16 +43,16 @@ const WINDOW_MIN = 7;
 const WINDOW_MAX = 730;
 const WINDOW_DEFAULT = 90;
 
-export interface InvAnalyticsRow {
+export interface InvAnalyticsRow extends InventorySalesEvidence {
   skuId: number;
   code: string;
   name: string;
   brand: string | null;
   /** 全网在库 = 实时账 + 快照仓最新快照 */
   onHand: number;
-  /** 近3月日均销（÷91） */
-  daily: number;
-  /** 可销天数（无动销 = null） */
+  /** 窗口三月均有登记才计算÷91；不证明全渠道完整，缺记录/缺月=null */
+  daily: number | null;
+  /** 可销天数（未知或非正日销=null） */
   daysCover: number | null;
   /** 窗口内出库量 Σ(-qtyDelta) where qtyDelta<0 */
   outQty: number;
@@ -73,6 +74,7 @@ export interface InvAnalyticsRow {
 }
 
 export interface InvAnalyticsResult {
+  salesWindow: InventorySalesWindow;
   rows: InvAnalyticsRow[];
   total: number;
   summary: {
@@ -113,12 +115,16 @@ export async function getInventoryAnalytics(
   const emptyAging = (): Record<AgingBucket, number> =>
     Object.fromEntries(AGING_BUCKETS.map((k) => [k, 0])) as Record<AgingBucket, number>;
 
-  const [coverAlertDays, slowDaysThreshold] = await Promise.all([
+  const [coverAlertDays, slowDaysThreshold, { maxYm }] = await Promise.all([
     getNumParam("cover_alert_days", 30, dbArg),
     getNumParam("slow_days_threshold", 180, dbArg),
+    salesWindow(db),
   ]);
+  const months3 = maxYm ? lastMonths(maxYm, 3) : [];
+  const salesWindowEvidence: InventorySalesWindow = { months: months3, latestMonth: maxYm, divisorDays: DAILY_WINDOW_DAYS };
 
   const emptyResult = (): InvAnalyticsResult => ({
+    salesWindow: salesWindowEvidence,
     rows: [],
     total: 0,
     summary: { skuCount: 0, agingTotals: emptyAging(), avgTurns: null, avgDio: null, unknownOriginQty: 0, windowDays },
@@ -152,16 +158,14 @@ export async function getInventoryAnalytics(
 
   /* ── 销速：近3月窗口 ÷ 91（core/velocity 唯一口径） ── */
   const sm = schema.salesMonthly;
-  const { maxYm } = await salesWindow(db);
-  const months3 = maxYm ? lastMonths(maxYm, 3) : [];
-  const salesRows: { skuId: number; qty: string | null }[] = months3.length
+  const salesRows: { skuId: number; qty: string; months: number }[] = months3.length
     ? await db
-        .select({ skuId: sm.skuId, qty: sql<string | null>`sum(${sm.qty})` })
+        .select({ skuId: sm.skuId, qty: sql<string>`sum(${sm.qty})::text`, months: sql<number>`count(distinct ${sm.yearMonth})::int` })
         .from(sm)
         .where(inArray(sm.yearMonth, months3))
         .groupBy(sm.skuId)
     : [];
-  const dailyBySku = new Map<number, number>(salesRows.map((r) => [r.skuId, dailyFromWindow(num(r.qty))]));
+  const salesBySku = new Map(salesRows.map((r) => [r.skuId, r]));
 
   /* ── 窗口出库：stock_ledger qtyDelta<0 → Σ(-qtyDelta)（本表无出入库标志列） ── */
   const sl = schema.stockLedger;
@@ -202,7 +206,11 @@ export async function getInventoryAnalytics(
   const all: InvAnalyticsRow[] = [];
   for (const sku of skuRows) {
     const onHand = onHandBySku.get(sku.id) ?? 0;
-    const daily = dailyBySku.get(sku.id) ?? 0;
+    const sales = salesBySku.get(sku.id);
+    const salesMonths = sales?.months ?? 0;
+    const salesState = !sales ? "missing" : salesMonths === 3 ? "registered" : "partial";
+    // 不把缺月按0补齐；复用历史三月分母，保留原始日均供几何和天数同源使用。
+    const daily = salesState === "registered" ? dailyFromWindow(num(sales!.qty)) : null;
     const outQty = outBySku.get(sku.id) ?? 0;
     // ⚠ 简化：平均在库 = 当前在库（无历史日库存，见文件头）
     const avgOnHand = onHand;
@@ -217,8 +225,11 @@ export async function getInventoryAnalytics(
       name: sku.name,
       brand: sku.brand,
       onHand: r2(onHand),
-      daily: r2(daily),
-      daysCover: r1n(coverDays(onHand, daily)),
+      salesQty: sales?.qty ?? null,
+      salesMonths,
+      salesState,
+      daily,
+      daysCover: daily == null ? null : r1n(coverDays(onHand, daily)),
       outQty: r2(outQty),
       avgOnHand: r2(avgOnHand),
       turns: t.turns == null ? null : r2(t.turns),
@@ -249,6 +260,7 @@ export async function getInventoryAnalytics(
   filtered.sort((a, b) => b.onHand - a.onHand);
 
   return {
+    salesWindow: salesWindowEvidence,
     rows: filtered.slice((page - 1) * pageSize, page * pageSize),
     total: filtered.length,
     summary: {
