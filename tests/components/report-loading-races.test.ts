@@ -320,6 +320,22 @@ describe("exact alert lookup lifecycle", () => {
 });
 
 describe("告警状态与行动不被固定列遮挡", () => {
+  it.each(["cover", "spike"])("%s刷新/重算在忙碌与失败后保留稳定名称", async (kind) => {
+    const pending = deferred(); network.fetch.mockReturnValue(pending.promise);
+    const items = elements(AlertsClient()).find(n => n.type === "tabs")!.props.items as { key: string; children: React.ReactElement }[];
+    const component = items.find(item => item.key === kind)!.children.type as () => React.ReactElement;
+    const subject = kind === "cover" ? "库存预警" : "爆单预警";
+    const busy = render(component);
+    for (const action of ["刷新", "重算"]) {
+      expect(button(busy, action).props["aria-label"]).toBe(action + subject);
+      expect(button(busy, action).props["aria-busy"]).toBe(true);
+    }
+    pending.reject(new Error("合成读取失败")); await flush();
+    for (const action of ["刷新", "重算"]) {
+      expect(button(render(component), action).props["aria-label"]).toBe(action + subject);
+      expect(button(render(component), action).props["aria-busy"]).toBe(false);
+    }
+  });
   it.each(["cover", "spike"])("%s把知悉状态与跳转放入同一个右侧固定列", (kind) => {
     network.fetch.mockReturnValue(deferred().promise);
     const items = elements(AlertsClient()).find(n => n.type === "tabs")!.props.items as { key: string; children: React.ReactElement }[];

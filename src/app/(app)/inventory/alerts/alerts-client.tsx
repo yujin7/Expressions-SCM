@@ -280,8 +280,8 @@ function CoverTab() {
         )}
         primaryActions={(
           <Space>
-            {canRefresh ? <Button size="small" onClick={() => void load(true)} loading={loading}>重算</Button> : null}
-            <Button size="small" onClick={() => void load()} loading={loading}>刷新</Button>
+            {canRefresh ? <Button size="small" aria-label="重算库存预警" aria-busy={loading} onClick={() => void load(true)} loading={loading}>重算</Button> : null}
+            <Button size="small" aria-label="刷新库存预警" aria-busy={loading} onClick={() => void load()} loading={loading}>刷新</Button>
           </Space>
         )}
       />
@@ -412,8 +412,8 @@ export function SpikeTab() {
         extra={<SearchInput key={q} allowClear size="small" placeholder="编码 / 名称 / 平台 SKU / 店铺" defaultValue={q} onSearch={(v) => listState.setFilter({ q: v.trim() })} style={{ width: 240 }} />}
         primaryActions={(
           <Space>
-            {canRefresh ? <Button size="small" onClick={() => void load(true)} loading={loading}>重算</Button> : null}
-            <Button size="small" onClick={() => void load()} loading={loading}>刷新</Button>
+            {canRefresh ? <Button size="small" aria-label="重算爆单预警" aria-busy={loading} onClick={() => void load(true)} loading={loading}>重算</Button> : null}
+            <Button size="small" aria-label="刷新爆单预警" aria-busy={loading} onClick={() => void load()} loading={loading}>刷新</Button>
           </Space>
         )}
       />

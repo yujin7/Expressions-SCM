@@ -26,7 +26,7 @@ export default function LoadErrorAlert({
       showIcon
       message={`${subject}加载失败`}
       description={`${error}。本次请求未完成，未返回的指标保持未知，不会用 0 代替；请重试。`}
-      action={<Button size="small" loading={retrying} onClick={onRetry}>重试</Button>}
+      action={<Button size="small" aria-label={`重试${subject}`} aria-busy={retrying} loading={retrying} onClick={onRetry}>重试</Button>}
       style={{ marginBottom: 12 }}
     />
   );
