@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Alert, Button, DatePicker, Drawer, InputNumber, Select, Space, Spin, Typography } from "antd";
 import dayjs from "dayjs";
 import { useDocumentRead } from "./useDocumentRead";
@@ -19,6 +19,7 @@ export default function CapacityCheckDrawer({ target, onClose }: { target: Capac
 }
 
 export function CapacityCheckForm({ target }: { target: CapacityTarget }) {
+  const formRef = useRef<HTMLDivElement>(null);
   const baseUrl = `/api/outsource/sourcing-aid?mode=capacity&skuId=${target.skuId}`;
   const directory = useDocumentRead<CapacityCheck>(baseUrl);
   const [supplierId, setSupplierId] = useState<number>();
@@ -32,11 +33,14 @@ export function CapacityCheckForm({ target }: { target: CapacityTarget }) {
   const scenario = result.data?.scenario;
   const factory = result.data?.factories.find(row => row.id === scenario?.supplierId);
   const data = directory.data;
-  return <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 12, minWidth: 0, overflowWrap: "anywhere" }}>
+  // Retry removes its error button. Keep keyboard focus inside the persistent drawer
+  // before that removal, so Escape and the drawer's tab containment keep working.
+  const focusForRetry = () => formRef.current?.focus({ preventScroll: true });
+  return <div ref={formRef} tabIndex={-1} aria-label="加工产能核对表单" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 12, minWidth: 0, overflowWrap: "anywhere" }}>
     <Typography.Text strong>{target.code} · {target.name}</Typography.Text>
     <Alert type="info" showIcon message="人工核对，不自动开单"
       description="拟新增量由计划员输入，不取爆单观察销量。仅比较本系统未结JG全单计划量与申报情景；不含其他客户占用，不是可承诺产能。" />
-    <LoadErrorAlert error={directory.error} onRetry={() => { setSubmitted(null); directory.retry(); }} subject="加工厂目录" retrying={directory.phase === "loading"} />
+    <LoadErrorAlert error={directory.error} onRetry={() => { focusForRetry(); setSubmitted(null); directory.retry(); }} subject="加工厂目录" retrying={directory.phase === "loading"} />
     {directory.phase === "loading" ? <Spin tip="读取加工厂目录"><div style={{ height: 60 }} /></Spin> : null}
     {data && <>
       <label htmlFor="capacity-factory">加工厂（目录，不代表该SKU已准入）</label>
@@ -54,7 +58,7 @@ export function CapacityCheckForm({ target }: { target: CapacityTarget }) {
       </div>
       <Button type="primary" aria-label="核对产能情景" aria-busy={result.phase === "loading"} disabled={!query} loading={result.phase === "loading"} onClick={() => { if (submitted === query) result.retry(); else setSubmitted(query); }}>核对产能情景</Button>
     </>}
-    <LoadErrorAlert error={result.error} onRetry={result.retry} subject="产能情景" retrying={result.phase === "loading"} />
+    <LoadErrorAlert error={result.error} onRetry={() => { focusForRetry(); result.retry(); }} subject="产能情景" retrying={result.phase === "loading"} />
     {scenario && factory && <section aria-label="本次产能核对结果" style={{ minWidth: 0 }}>
       <Typography.Paragraph strong>{factory.code} {factory.name} · {factory.statusLabel}</Typography.Paragraph>
       {factory.status !== "qualified" && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="该厂不是合格状态；本次比较不代表可以下单，须先核对准入或暂停原因" />}

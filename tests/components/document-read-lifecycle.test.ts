@@ -28,6 +28,11 @@ vi.mock("react", async original => ({
     if (!prev || prev.deps.length !== deps.length || !prev.deps.every((v, j) => Object.is(v, deps[j]))) hooks.slots[i] = { fn, deps };
     return (hooks.slots[i] as { fn: unknown }).fn;
   },
+  useRef: <T,>(initial: T) => {
+    const i = hooks.cursor++;
+    if (!(i in hooks.slots)) hooks.slots[i] = { current: initial };
+    return hooks.slots[i];
+  },
   useEffect: (effect: () => void | (() => void), deps: readonly unknown[]) => {
     const i = hooks.cursor++;
     const prev = hooks.slots[i] as readonly unknown[] | undefined;
@@ -242,6 +247,20 @@ it("capacity failure remains retryable without changing the selected scenario", 
   expect(failure.props.error).toBe("网络连接异常，未能获取服务器响应"); expect(capacityResult()).toBeUndefined();
   fetchMock.mockResolvedValueOnce(capacity("200")); (failure.props.onRetry as () => void)(); render(); await flush();
   expect(capacityResult()).toBeDefined(); expect(fetchMock.mock.calls[1][0]).toBe(fetchMock.mock.calls[2][0]);
+});
+it("capacity retry moves focus to a persistent in-drawer target before removing its button", async () => {
+  await prepareCapacity(); fetchMock.mockRejectedValueOnce(new Error("offline"));
+  (capacityButton().props.onClick as () => void)(); render(); await flush();
+  const tree = render() as Node;
+  expect(tree.props.tabIndex).toBe(-1);
+  const focus = vi.fn();
+  (tree.props.ref as { current: unknown }).current = { focus };
+  const failure = nodes(tree).find(n => n.props.subject === "产能情景")!;
+  fetchMock.mockResolvedValueOnce(capacity("200"));
+  (failure.props.onRetry as () => void)();
+  expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  render(); await flush(); expect(capacityResult()).toBeDefined();
 });
 it("capacity withdraws results when date editing begins before DatePicker commits a new date", async () => {
   await prepareCapacity(); fetchMock.mockResolvedValueOnce(capacity("200"));
