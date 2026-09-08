@@ -1,4 +1,5 @@
 import React, { isValidElement } from "react";
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import ReplenishPage from "@/app/(app)/replenish/page";
 
@@ -11,6 +12,15 @@ beforeAll(() => vi.stubGlobal("React", React));
 afterAll(() => vi.unstubAllGlobals());
 type Query = Record<string, string | string[] | undefined>;
 const page = async (query: Query) => ReplenishPage({ searchParams: Promise.resolve(query) });
+
+// Wiring contract complements the real-browser return/refresh/history regression.
+it("the visible search draft starts from q and resets when URL q changes", () => {
+  const source = readFileSync("src/app/(app)/replenish/replenish-client.tsx", "utf8");
+  const search = source.match(/<SearchInput\b[\s\S]*?\/>/)?.[0];
+  expect(search).toContain("key={q}");
+  expect(search).toContain("defaultValue={q}");
+  expect(search).toContain("listState.setFilter({ q: value.trim() })");
+});
 
 it("old spike and cached capacity-return links redirect before an unfiltered client mounts", async () => {
   await expect(page({ sku: "CAP-UI-SKU" })).rejects.toThrow("redirect:/replenish?q=CAP-UI-SKU");

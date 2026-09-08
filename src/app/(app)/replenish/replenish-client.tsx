@@ -1016,6 +1016,8 @@ export default function ReplenishClient() {
               </span>
             </Tooltip>
             <SearchInput
+              key={q}
+              defaultValue={q}
               allowClear
               placeholder="搜索 SKU 编码/名称"
               style={{ width: 220 }}
