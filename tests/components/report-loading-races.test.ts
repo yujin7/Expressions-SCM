@@ -6,7 +6,7 @@ import ClosedLoopClient from "@/app/(app)/report/closed-loop/closed-loop-client"
 import AlertsClient, { SpikeTab } from "@/app/(app)/inventory/alerts/alerts-client";
 import SystemAlertsClient from "@/app/(app)/alerts/alerts-client";
 import { useAlertLookup } from "@/components/useAlertLookup";
-import ExportButton from "@/components/ExportButton";
+import ExportButton, { AsyncExportButton } from "@/components/ExportButton";
 import ExportsClient from "@/app/(app)/report/exports/exports-client";
 
 // Real components and callbacks, deferred network responses, no DOM or visual claims.
@@ -410,6 +410,87 @@ describe("shared CSV export lifecycle", () => {
     const download = () => ExportButton({ href: "/api/export/jobs/17/download", label: "下载 #17", mode: "download" });
     click(button(render(download), "下载 #17")); await flush();
     expect(text(render(download))).toBe("下载 #17下载失败（502）");
+  });
+});
+
+describe("主动异步导出共用有界交互", () => {
+  let q = "old";
+  const component = () => {
+    const tree = AsyncExportButton({ kind: "risk", params: { q } });
+    return tree.type === ExportButton ? ExportButton(tree.props) : tree;
+  };
+  beforeEach(() => {
+    q = "old"; vi.stubGlobal("window", { open: vi.fn() });
+    // Let the retired postJson implementation reach the same transport, so the
+    // negative control measures behavior rather than a different helper name.
+    network.post.mockImplementation(async (url: string, body: unknown) => (await fetch(url, { method: "POST", body: JSON.stringify(body) })).json());
+  });
+
+  it("one POST per active click pair, with exact filters and a persistent receipt instead of a popup", async () => {
+    const response = deferred(); const fetch = vi.fn().mockReturnValue(response.promise); vi.stubGlobal("fetch", fetch);
+    const start = button(render(component), "转异步导出"); click(start); click(start);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0][0]).toBe("/api/export/jobs");
+    expect(fetch.mock.calls[0][1]).toMatchObject({ method: "POST", credentials: "same-origin", body: JSON.stringify({ kind: "risk", params: { q: "old" } }) });
+    response.resolve(new Response(JSON.stringify({ job: { id: 21 } }), { status: 201 })); await flush();
+    expect(text(render(component))).toContain("任务 #21");
+    expect(text(render(component))).toContain("查看导出任务");
+    expect(window.open).not.toHaveBeenCalled();
+  });
+
+  it("stop waiting aborts the request without claiming to cancel an already-created job", async () => {
+    const response = deferred(); const fetch = vi.fn().mockReturnValue(response.promise); vi.stubGlobal("fetch", fetch);
+    click(button(render(component), "转异步导出")); click(button(render(component), "停止等待"));
+    expect(fetch.mock.calls[0][1].signal.aborted).toBe(true);
+    response.resolve(new Response(JSON.stringify({ job: { id: 22 } }), { status: 201 })); await flush();
+    expect(text(render(component))).toContain("不会取消已创建"); expect(text(render(component))).not.toContain("任务 #22");
+  });
+
+  it("changing filters cancels stale POST receipts, while equal recreated params do not abort", async () => {
+    const response = deferred(); const fetch = vi.fn().mockReturnValue(response.promise); vi.stubGlobal("fetch", fetch);
+    click(button(render(component), "转异步导出")); render(component);
+    expect(fetch.mock.calls[0][1].signal.aborted).toBe(false);
+    q = "new"; render(component); expect(fetch.mock.calls[0][1].signal.aborted).toBe(true);
+    response.resolve(new Response(JSON.stringify({ job: { id: 23 } }), { status: 201 })); await flush();
+    expect(text(render(component))).not.toContain("任务 #23");
+  });
+
+  it("30-second POST timeout is visible, aborts and never retries automatically", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetch = vi.fn().mockReturnValue(deferred().promise); vi.stubGlobal("fetch", fetch);
+      click(button(render(component), "转异步导出")); await vi.advanceTimersByTimeAsync(30000);
+      expect(fetch).toHaveBeenCalledOnce(); expect(fetch.mock.calls[0][1].signal.aborted).toBe(true);
+      expect(text(render(component))).toContain("后台任务可能已创建");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("safe 403 reason remains visible; explicit retry clears it and accepts a valid receipt", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ error: "当前角色不能导出" }), { status: 403 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ job: { id: 24 } }), { status: 201 })); vi.stubGlobal("fetch", fetch);
+    click(button(render(component), "转异步导出")); await flush(); expect(text(render(component))).toContain("当前角色不能导出");
+    click(button(render(component), "转异步导出")); await flush();
+    expect(text(render(component))).toContain("任务 #24"); expect(text(render(component))).not.toContain("当前角色不能导出");
+  });
+
+  it.each([{ job: { id: "25" } }, { job: { id: 0 } }, { jobId: 25 }])("invalid POST receipt is not treated as successful: %j", async body => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 201 })));
+    click(button(render(component), "转异步导出")); await flush();
+    expect(text(render(component))).toContain("回执不完整"); expect(text(render(component))).not.toContain("任务 #");
+  });
+
+  it("leaving the page aborts POST; a late response cannot write state or open a new tab", async () => {
+    const response = deferred(); const fetch = vi.fn().mockReturnValue(response.promise); vi.stubGlobal("fetch", fetch);
+    click(button(render(component), "转异步导出")); unmount(); const writes = hooks.writes;
+    expect(fetch.mock.calls[0][1].signal.aborted).toBe(true);
+    response.resolve(new Response(JSON.stringify({ job: { id: 26 } }), { status: 201 })); await flush();
+    expect(hooks.writes).toBe(writes); expect(window.open).not.toHaveBeenCalled();
+  });
+
+  it("a malformed HTML receipt is not echoed as a raw parser error", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("<html>proxy secret</html>", { status: 201 })));
+    click(button(render(component), "转异步导出")); await flush();
+    expect(text(render(component))).toContain("回执不完整"); expect(text(render(component))).not.toContain("proxy secret");
   });
 });
 

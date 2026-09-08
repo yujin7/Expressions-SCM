@@ -94,7 +94,8 @@ describe("W2-4 重报表异步导出通路", () => {
     expect(src).toContain("res.status === 202");
     expect(src).toContain("URL.createObjectURL");
     expect(src).toContain("export function AsyncExportButton");
-    expect(src).toContain('postJson<{ job: { id: number } }>("/api/export/jobs"');
+    expect(src).toContain('<ExportButton href="/api/export/jobs"');
+    expect(src).not.toContain("window.open(");
   });
 
   it("三个印着「改用「导出任务」」的页面，现在真的有创建任务的入口", () => {

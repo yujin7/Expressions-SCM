@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { App, Button, Space, Typography } from "antd";
+import { Button, Space, Typography } from "antd";
 import { DownloadOutlined, CloudDownloadOutlined } from "@ant-design/icons";
-import { postJson, serverErrorMessage } from "./fetchJson";
+import { serverErrorMessage } from "./fetchJson";
 
 /**
  * 通用 CSV 导出按钮（href 由调用方按当前筛选拼好 `/api/export/*`；脱敏在服务端列级完成——R9 含导出）。
@@ -33,7 +33,17 @@ function filenameFromDisposition(disposition: string | null): string {
   return plain?.[1] ?? "export.csv";
 }
 
-export default function ExportButton({ href, label = "导出 CSV", mode = "export" }: { href: string; label?: string; mode?: "export" | "download" }) {
+export default function ExportButton({ href: endpoint, label = "导出 CSV", mode = "export", job }: {
+  href: string;
+  label?: string;
+  mode?: "export" | "download";
+  /** Only AsyncExportButton supplies this; both entry paths share one bounded lifecycle. */
+  job?: { kind: string; params: Record<string, unknown> };
+}) {
+  const requestBody = job ? JSON.stringify(job) : undefined;
+  // Primitive identity: inline params objects can be recreated without cancelling a request.
+  // Changed filters immediately withdraw the old receipt and invalidate its late response.
+  const href = requestBody ? JSON.stringify([endpoint, requestBody]) : endpoint;
   const active = useRef<{ controller: AbortController; timer: ReturnType<typeof setTimeout>; href: string } | null>(null);
   const [state, setState] = useState<{ href: string; busy: boolean; notice?: string; failed?: boolean; jobs?: boolean } | null>(null);
   const visible = state?.href === href ? state : null;
@@ -59,13 +69,24 @@ export default function ExportButton({ href, label = "导出 CSV", mode = "expor
     const current = () => active.current === request && !controller.signal.aborted;
     setState({ href, busy: true });
     try {
-      const res = await fetch(href, { credentials: "same-origin", signal: controller.signal });
+      const res = await fetch(endpoint, {
+        credentials: "same-origin", signal: controller.signal,
+        ...(requestBody ? { method: "POST", headers: { "Content-Type": "application/json" }, body: requestBody } : {}),
+      });
       if (!current()) return;
+      if (requestBody && res.ok) {
+        const body = (await res.json().catch(() => null)) as { job?: { id?: unknown } } | null;
+        if (!current()) return;
+        const jobId = body?.job?.id;
+        if (res.status !== 201 || !Number.isSafeInteger(jobId) || Number(jobId) <= 0) throw new Error("导出任务回执不完整，请核对任务列表");
+        setState({ href, busy: false, notice: `已创建导出任务 #${jobId}；按本次筛选读取执行时最新数据。`, jobs: true });
+        return;
+      }
       if (res.status === 202) {
         if (mode === "download") throw new Error("文件尚未生成，请刷新任务状态后重试");
-        const body = (await res.json()) as { jobId?: number; message?: string };
+        const body = (await res.json().catch(() => null)) as { jobId?: number; message?: string } | null;
         if (!current()) return;
-        if (!Number.isSafeInteger(body.jobId) || Number(body.jobId) <= 0) throw new Error("导出任务回执不完整，请核对任务列表");
+        if (!body || !Number.isSafeInteger(body.jobId) || Number(body.jobId) <= 0) throw new Error("导出任务回执不完整，请核对任务列表");
         setState({ href, busy: false, notice: `${body.message ?? "已创建异步导出任务"}（任务 #${body.jobId}）`, jobs: true });
         return;
       }
@@ -96,7 +117,7 @@ export default function ExportButton({ href, label = "导出 CSV", mode = "expor
   return (
     <Space direction="vertical" size={4} style={{ maxWidth: "100%", minWidth: 0 }}>
       <Space wrap size={4}>
-        <Button icon={<DownloadOutlined />} aria-label={label} aria-busy={visible?.busy ?? false} loading={visible?.busy} onClick={() => void run()}>{label}</Button>
+        <Button icon={job ? <CloudDownloadOutlined /> : <DownloadOutlined />} aria-label={label} aria-busy={visible?.busy ?? false} loading={visible?.busy} onClick={() => void run()}>{label}</Button>
         {visible?.busy ? <Button onClick={cancel} title={mode === "download" ? "仅停止本次文件下载，不删除任务或文件" : "停止等待不会取消已创建的后台任务"}>停止等待</Button> : null}
       </Space>
       {visible?.notice ? <div role={visible.failed ? "alert" : "status"} style={{ maxWidth: 320, overflowWrap: "anywhere" }}>
@@ -109,7 +130,7 @@ export default function ExportButton({ href, label = "导出 CSV", mode = "expor
 
 /**
  * 「转异步导出」按钮：直接 POST `/api/export/jobs` 建任务（EXPORT_KINDS 已登记的种类）。
- * 给的是那三个页面页脚一直在推销、却从来没有入口的那条路。
+ * 复用同步转异步入口的防重、停止等待、超时、查询绑定和持续任务回执。
  */
 export function AsyncExportButton({
   kind,
@@ -120,25 +141,5 @@ export function AsyncExportButton({
   params: Record<string, unknown>;
   label?: string;
 }) {
-  const { message } = App.useApp();
-  const [loading, setLoading] = useState(false);
-
-  const run = async () => {
-    setLoading(true);
-    try {
-      const res = await postJson<{ job: { id: number } }>("/api/export/jobs", { kind, params });
-      message.success(`已创建导出任务 #${res.job.id}，请到「导出任务」页下载`, 5);
-      window.open(EXPORT_JOBS_PATH, "_blank");
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <Button icon={<CloudDownloadOutlined />} loading={loading} onClick={() => void run()}>
-      {label}
-    </Button>
-  );
+  return <ExportButton href="/api/export/jobs" label={label} job={{ kind, params }} />;
 }
