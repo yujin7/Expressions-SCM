@@ -7,7 +7,7 @@
  * - 爆单：已映射 SKU 与未映射平台 SKU 分列（paramPrefix=spike）；
  * - 两张表都接 system_alerts：「已知悉」写审计、显示知悉人/时间，展开行看规则来源 / 参数快照 / 触发原因，
  *   并可由责任角色（或 admin）带原因**关闭**告警（AlertCloseModal → POST /api/alerts/[id]/close，
- *   服务端回查会话与角色再判一次）；关闭后刷新告警索引，行上的「已知悉」随之变回「未开告警」。
+ *   服务端回查会话与角色再判一次）；关闭后重读当前行的可见告警，不把加载失败或范围外误称没有告警。
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -15,7 +15,9 @@ import { Alert, App, Button, Col, Empty, Pagination, Row, Select, Space, Spin, S
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import AlertCloseModal from "@/components/AlertCloseModal";
-import AlertEvidence, { ackText, type AlertEvidenceFields } from "@/components/AlertEvidence";
+import AlertEvidence, { ackText } from "@/components/AlertEvidence";
+import { useAlertLookup, type AlertRef } from "@/components/useAlertLookup";
+import type { AlertLookupCategory } from "@/lib/alert-lookup";
 import CaliberNote from "@/components/CaliberNote";
 import ContextHelp from "@/components/ContextHelp";
 import { exportCsv } from "@/components/exportCsv";
@@ -127,28 +129,15 @@ function CoverActions({ row }: { row: Pick<InventoryAlertRow, "actions" | "prima
 }
 
 /* ── system_alerts 索引：按去重键找到读模型行对应的告警（已知悉 / 证据） ── */
-interface AlertRef extends AlertEvidenceFields { id: number; dedupeKey: string | null; status: string; ownerRole?: string | null }
-
-function useAlertIndex(category: string) {
+function useAlertIndex(category: AlertLookupCategory, keys: string[] | null) {
   const { message } = App.useApp();
-  const [byKey, setByKey] = useState<Record<string, AlertRef>>({});
-  const [unacked, setUnacked] = useState<number | null>(null);
-  const load = useCallback(async () => {
-    try {
-      const res = await fetchJson<{ rows: AlertRef[] }>(`/api/alerts?category=${category}&status=open&pageSize=500`);
-      const next: Record<string, AlertRef> = {};
-      let n = 0;
-      for (const r of res.rows) { if (r.dedupeKey) next[r.dedupeKey] = r; if (!r.ackedAt) n++; }
-      setByKey(next);
-      setUnacked(n);
-    } catch { setUnacked(null); }
-  }, [category]);
-  useEffect(() => { void load(); }, [load]);
+  const lookup = useAlertLookup(category, keys);
+  const { retry } = lookup;
   const ack = useCallback(async (id: number) => {
-    try { await fetchJson(`/api/alerts/${id}/ack`, { method: "POST", body: JSON.stringify({}) }); message.success("已知悉（已留审计，告警状态不变）"); await load(); }
+    try { await fetchJson(`/api/alerts/${id}/ack`, { method: "POST", body: JSON.stringify({}) }); message.success("已知悉（已留审计，告警状态不变）"); retry(); }
     catch (e) { message.error((e as Error).message); }
-  }, [load, message]);
-  return { byKey, unacked, ack, reload: load };
+  }, [retry, message]);
+  return { ...lookup, ack, reload: lookup.retry };
 }
 
 /**
@@ -156,9 +145,10 @@ function useAlertIndex(category: string) {
  * 与服务端 ackAlert 的判定同口径（安全审计 S2：ack 与 close 现在是同一条权限）；
  * 前端隐藏不是权限，服务端仍会回查会话再判一次。
  */
-function AckCell({ alert, onAck }: { alert: AlertRef | undefined; onAck: (id: number) => void }) {
+function AckCell({ alert, onAck, phase }: { alert: AlertRef | undefined; onAck: (id: number) => void; phase: ReturnType<typeof useAlertLookup>["phase"] }) {
   const me = useMe();
-  if (!alert) return <Typography.Text type="secondary">未开告警</Typography.Text>;
+  if (phase !== "success") return <Typography.Text type="secondary">{phase === "error" ? "告警状态未读取" : "告警读取中"}</Typography.Text>;
+  if (!alert) return <Typography.Text type="secondary">无可见告警</Typography.Text>;
   if (alert.ackedAt) return <Tooltip title={ackText(alert)}><Tag color="default">已知悉 · {alert.ackedByName ?? (alert.ackedBy != null ? `#${alert.ackedBy}` : "")}</Tag></Tooltip>;
   const canAck = alert.ownerRole ? hasAnyRole(me, alert.ownerRole) : hasAnyRole(me);
   if (!canAck) return <Typography.Text type="secondary">未知悉</Typography.Text>;
@@ -205,9 +195,9 @@ function CoverTab() {
   const readRequest = useRef<AbortController | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const alerts = useAlertIndex("inventory_cover");
   const query = listState.queryString();
   const data = snapshot?.query === query ? snapshot.value : null;
+  const alerts = useAlertIndex("inventory_cover", data ? data.rows.map(row => `inventory_cover:${row.skuId}`) : null);
   const load = useCallback(async (refresh = false) => {
     readRequest.current?.abort();
     const request = new AbortController(); readRequest.current = request;
@@ -252,11 +242,14 @@ function CoverTab() {
     { title: "可销天数", dataIndex: "coverDays", align: "right", width: 100, sorter: true, sortOrder: sortOrder("coverDays"), render: (v: number | null, r) => v == null ? <Typography.Text type="secondary">无日销</Typography.Text> : <Typography.Text type={r.status === "alert" ? "danger" : r.status === "watch" ? "warning" : undefined} strong>{v}d</Typography.Text> },
     { title: "阈值", key: "ad", width: 150, render: (_, r) => <span>{r.alertDays}d {r.usedDefault ? <Tag>缺省周期</Tag> : null}<br /><Typography.Text type="secondary" style={{ fontSize: 11 }}>{r.alertBasis}</Typography.Text></span> },
     { title: "主预警", key: "p", width: 120, render: (_, r) => r.primary ? <Space size={4} wrap><Tag color={r.primary === "out_of_stock" ? "error" : r.primary === "spike" ? "magenta" : "warning"}>{KIND_LABEL[r.primary]}</Tag>{r.tags.map((t) => <Tag key={t}>{KIND_LABEL[t]}</Tag>)}</Space> : <Typography.Text type="secondary">—</Typography.Text> },
-    { title: "已知悉", key: "ack", width: 150, render: (_, r) => <AckCell alert={alerts.byKey[`inventory_cover:${r.skuId}`]} onAck={(id) => void alerts.ack(id)} /> },
     {
-      title: "动作", key: "a", width: 150, fixed: "right",
+      title: "知悉与行动", key: "a", width: 170, fixed: "right",
       // 每个主预警种类都有落地页：临期 → 效期批次清单（该 SKU 全部段位），积压 → 风险处置；标签命中也给入口
-      render: (_, r) => <CoverActions row={r} />,
+      // 状态与动作共用固定列，避免横向未滚到底时知悉按钮被右侧链接遮住。
+      render: (_, r) => <Space direction="vertical" size={4}>
+        <AckCell phase={alerts.phase} alert={alerts.byKey[`inventory_cover:${r.skuId}`]} onAck={(id) => void alerts.ack(id)} />
+        <CoverActions row={r} />
+      </Space>,
     },
   ];
 
@@ -267,7 +260,7 @@ function CoverTab() {
           <Col xs={12} md={6}><a href={inventoryCoverMetricHref("outOfStock")}><Statistic title="断货（有需求无在库）" value={data.totals.outOfStock} valueStyle={{ color: data.totals.outOfStock ? "#B23A2E" : undefined }} /></a></Col>
           <Col xs={12} md={6}><a href={inventoryCoverMetricHref("alert")}><Statistic title="低于阈值" value={data.totals.alert} valueStyle={{ color: data.totals.alert ? "#B7791F" : undefined }} /></a></Col>
           <Col xs={12} md={6}><a href={inventoryCoverMetricHref("watch")}><Statistic title="关注" value={data.totals.watch} /></a></Col>
-          <Col xs={12} md={6}><Statistic title="未知悉告警" value={alerts.unacked == null ? "—" : alerts.unacked} valueStyle={{ color: alerts.unacked ? "#B23A2E" : undefined }} /></Col>
+          <Col xs={12} md={6}><Statistic title="本类未知悉告警" value={alerts.unacked == null ? "—" : alerts.unacked} valueStyle={{ color: alerts.unacked ? "#B23A2E" : undefined }} /></Col>
         </Row>
       ) : null}
       <ListToolbar
@@ -293,6 +286,7 @@ function CoverTab() {
         )}
       />
       <LoadErrorAlert error={error} onRetry={() => void load()} subject="库存预警表" retrying={loading} />
+      <LoadErrorAlert error={alerts.error} onRetry={alerts.reload} subject="告警关联" retrying={alerts.phase === "loading"} />
       <Table<InventoryAlertRow>
         className={styles.desktop}
         rowKey="skuId"
@@ -318,7 +312,7 @@ function CoverTab() {
           {data.rows.map(row => {
             const alert = alerts.byKey[`inventory_cover:${row.skuId}`];
             return <li key={row.skuId}><InventoryCoverCard row={row}
-              ack={<AckCell alert={alert} onAck={id => void alerts.ack(id)} />}
+              ack={<AckCell phase={alerts.phase} alert={alert} onAck={id => void alerts.ack(id)} />}
               actions={<CoverActions row={row} />}
               detail={alert ? <AlertRowDetail alert={alert} onClosed={() => void alerts.reload()} /> : null} /></li>;
           })}
@@ -341,29 +335,30 @@ export function SpikeTab() {
   const canRefresh = hasAnyRole(me, "pmc", "ops"); // 与 /api/report/sales-spike?refresh=1 的 requireAnyRole(pmc, ops, admin) 一致
   const listState = useListState<{ q?: string }>({ key: "inventory-alerts-spike", paramPrefix: "spike", defaults: { q: "" }, paginated: false });
   const { filters } = listState;
-  const [data, setData] = useState<SalesSpikePage | null>(null);
+  const [snapshot, setSnapshot] = useState<{ q: string; value: SalesSpikePage } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const alerts = useAlertIndex("sales_spike");
   const request = useRef<AbortController | null>(null);
   const q = (filters.q ?? "").trim();
+  const data = snapshot?.q === q ? snapshot.value : null;
+  const keyOf = (r: SpikeHit) => r.kind === "sku" ? `sales_spike:sku:${r.skuId}` : `sales_spike:platform:${r.shopName}|${r.platformSkuId}`;
+  const alerts = useAlertIndex("sales_spike", data ? [...data.hits, ...data.unmappedHits].map(keyOf) : null);
   const load = useCallback(async (refresh = false) => {
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
-    setData(null);
+    setSnapshot(null);
     setLoading(true);
     setError(null);
     try {
       const sp = new URLSearchParams(); if (q) sp.set("q", q); if (refresh) sp.set("refresh", "1");
       const next = await fetchJson<SalesSpikePage>(`/api/report/sales-spike?${sp.toString()}`, { signal: controller.signal });
-      if (!controller.signal.aborted) setData(next);
+      if (!controller.signal.aborted) setSnapshot({ q, value: next });
     } catch (e) { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "爆单预警加载失败，请重试"); }
     finally { if (!controller.signal.aborted) setLoading(false); }
   }, [q]);
   useEffect(() => { void load(); return () => request.current?.abort(); }, [load]);
 
-  const keyOf = (r: SpikeHit) => r.kind === "sku" ? `sales_spike:sku:${r.skuId}` : `sales_spike:platform:${r.shopName}|${r.platformSkuId}`;
   const columns: ColumnsType<SpikeHit> = [
     { title: "SKU / 平台 SKU", key: "k", width: 220, fixed: "left", render: (_, r) => r.kind === "sku" ? <Space direction="vertical" size={0}><Typography.Text strong>{r.code}</Typography.Text><Typography.Text type="secondary">{r.name}</Typography.Text></Space> : <Space direction="vertical" size={0}><Tag color="blue">未映射</Tag><Typography.Text>{r.platformSkuId}</Typography.Text></Space> },
     { title: "店铺", dataIndex: "shopName", ellipsis: true },
@@ -371,15 +366,17 @@ export function SpikeTab() {
     { title: "涨幅", dataIndex: "risePct", align: "right", width: 90, sorter: (a, b) => Number(a.risePct ?? 0) - Number(b.risePct ?? 0), defaultSortOrder: "descend", render: (v: string | null) => v == null ? "—" : <Typography.Text type="danger" strong>+{v}%</Typography.Text> },
     { title: "基线 / 阈值", key: "b", width: 120, render: (_, r) => `${formatQty(r.baseline)} / ${formatQty(r.threshold)}` },
     { title: "截止", dataIndex: "anchorDate", width: 100 },
-    { title: "已知悉", key: "ack", width: 150, render: (_, r) => <AckCell alert={alerts.byKey[keyOf(r)]} onAck={(id) => void alerts.ack(id)} /> },
-    { title: "动作", key: "a", width: 120, fixed: "right", render: (_, r) => <a href={r.href}>{r.kind === "sku" ? "看补货" : "认领身份"}</a> },
+    { title: "知悉与行动", key: "a", width: 170, fixed: "right", render: (_, r) => <Space direction="vertical" size={4}>
+      <AckCell phase={alerts.phase} alert={alerts.byKey[keyOf(r)]} onAck={(id) => void alerts.ack(id)} />
+      <a href={r.href}>{r.kind === "sku" ? "看补货" : "认领身份"}</a>
+    </Space> },
   ];
   const onExport = () => {
     if (!data) return;
     exportCsv(
       `爆单预警-${data.anchorDate ?? data.builtAt.slice(0, 10)}`,
       ["类型", "SKU", "名称", "平台SKU", "店铺", "各日", "涨幅%", "基线", "阈值", "截止", "已知悉"],
-      [...data.hits, ...data.unmappedHits].map((r) => [r.kind, r.code, r.name, r.platformSkuId, r.shopName, r.days.map((d) => d.qty).join("|"), r.risePct, r.baseline, r.threshold, r.anchorDate, alerts.byKey[keyOf(r)] ? ackText(alerts.byKey[keyOf(r)]) : "未开告警"]),
+      [...data.hits, ...data.unmappedHits].map((r) => [r.kind, r.code, r.name, r.platformSkuId, r.shopName, r.days.map((d) => d.qty).join("|"), r.risePct, r.baseline, r.threshold, r.anchorDate, alerts.phase !== "success" ? "告警状态未读取" : alerts.byKey[keyOf(r)] ? ackText(alerts.byKey[keyOf(r)]) : "无可见告警"]),
     );
   };
   const table = (rows: SpikeHit[]) => (
@@ -405,7 +402,7 @@ export function SpikeTab() {
         <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
           <Col xs={12} md={6}><Statistic title="窗口命中 · 系统 SKU" value={data.state === "insufficient" ? "—" : data.hitCount} valueStyle={{ color: data.hitCount ? "#B23A2E" : undefined }} /></Col>
           <Col xs={12} md={6}><Statistic title="窗口命中 · 未映射 SKU" value={data.state === "insufficient" ? "—" : data.unmappedCount} /></Col>
-          <Col xs={12} md={6}><Statistic title="未知悉告警" value={alerts.unacked == null ? "—" : alerts.unacked} valueStyle={{ color: alerts.unacked ? "#B23A2E" : undefined }} /></Col>
+          <Col xs={12} md={6}><Statistic title="本类未知悉告警" value={alerts.unacked == null ? "—" : alerts.unacked} valueStyle={{ color: alerts.unacked ? "#B23A2E" : undefined }} /></Col>
           <Col xs={12} md={6}><Statistic title="数据截止" value={data.anchorDate ?? "缺流"} valueStyle={{ fontSize: 18 }} /></Col>
         </Row>
       ) : null}
@@ -421,6 +418,7 @@ export function SpikeTab() {
         )}
       />
       <LoadErrorAlert error={error} onRetry={() => void load()} subject="爆单预警" retrying={loading} />
+      <LoadErrorAlert error={alerts.error} onRetry={alerts.reload} subject="告警关联" retrying={alerts.phase === "loading"} />
       {data ? <Alert
         showIcon
         type={data.state !== "ready" || !data.currentEvidence ? "warning" : "info"}

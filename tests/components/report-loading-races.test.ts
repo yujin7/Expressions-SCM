@@ -5,6 +5,7 @@ import SupplierScorecardClient from "@/app/(app)/report/supplier-scorecard/suppl
 import ClosedLoopClient from "@/app/(app)/report/closed-loop/closed-loop-client";
 import AlertsClient, { SpikeTab } from "@/app/(app)/inventory/alerts/alerts-client";
 import SystemAlertsClient from "@/app/(app)/alerts/alerts-client";
+import { useAlertLookup } from "@/components/useAlertLookup";
 
 // Real components and callbacks, deferred network responses, no DOM or visual claims.
 const hooks = vi.hoisted(() => ({
@@ -278,6 +279,60 @@ function spikeData(code: string) {
   };
 }
 const spikeRows = (tree: ReactNode) => elements(tree).find((n) => n.type === "table")!.props.dataSource;
+
+describe("exact alert lookup lifecycle", () => {
+  let keys: string[] | null;
+  const LookupProbe = () => React.createElement("lookup", useAlertLookup("inventory_cover", keys));
+  const state = () => render(LookupProbe).props as ReturnType<typeof useAlertLookup>;
+  const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); return state(); };
+  const result = (n: number) => ({ rows: [{ id: n, dedupeKey: `inventory_cover:${n}`, status: "open" }], total: 1, unackedTotal: 600 });
+  beforeEach(() => { keys = ["inventory_cover:1"]; });
+  it("withdraws previous keys before effects and ignores cancelled late replies", async () => {
+    const old = deferred(), current = deferred(); network.fetch.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+    state(); keys = ["inventory_cover:2"];
+    hooks.cursor = 0; expect(LookupProbe().props.byKey).toEqual({}); state(); expect(signal(0).aborted).toBe(true);
+    current.resolve(result(2)); await settle(); old.resolve(result(1)); await settle();
+    expect(Object.keys(state().byKey)).toEqual(["inventory_cover:2"]);
+    expect(state().unacked).toBe(600);
+  });
+  it("explicit retry withdraws old actions immediately, then failure stays unknown instead of empty-success", async () => {
+    network.fetch.mockResolvedValueOnce(result(1)); state(); await settle(); expect(state().phase).toBe("success");
+    network.fetch.mockRejectedValueOnce(new Error("network failure")); state().retry();
+    hooks.cursor = 0; expect(LookupProbe().props.byKey).toEqual({}); state(); await settle();
+    expect(state()).toMatchObject({ phase: "error", byKey: {}, unacked: null });
+    network.fetch.mockResolvedValueOnce({ rows: [], total: 0, unackedTotal: 0 }); state().retry(); state(); await settle();
+    expect(state()).toMatchObject({ phase: "success", byKey: {}, unacked: 0 });
+  });
+  it("null source cancels lookup without presenting stale actions or a zero count", async () => {
+    const pending = deferred(); network.fetch.mockReturnValueOnce(pending.promise); state(); keys = null; state();
+    expect(signal(0).aborted).toBe(true); pending.resolve(result(1)); await settle();
+    expect(state()).toMatchObject({ phase: "idle", byKey: {}, unacked: null });
+  });
+  it("timeout is retryable and its late reply cannot replace the retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const old = deferred(); network.fetch.mockReturnValueOnce(old.promise); state();
+      await vi.advanceTimersByTimeAsync(15_000); await settle(); expect(state().error).toContain("超时");
+      network.fetch.mockResolvedValueOnce(result(1)); state().retry(); state(); await settle();
+      old.resolve({ rows: [], total: 0, unackedTotal: 0 }); await settle(); expect(state().unacked).toBe(600);
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+describe("告警状态与行动不被固定列遮挡", () => {
+  it.each(["cover", "spike"])("%s把知悉状态与跳转放入同一个右侧固定列", (kind) => {
+    network.fetch.mockReturnValue(deferred().promise);
+    const items = elements(AlertsClient()).find(n => n.type === "tabs")!.props.items as { key: string; children: React.ReactElement }[];
+    const component = items.find(item => item.key === kind)!.children.type as () => React.ReactElement;
+    const columns = table(render(component)).props.columns as { key?: string; fixed?: string; render?: (value: null, row: object) => ReactNode }[];
+    expect(columns.some(column => column.key === "ack")).toBe(false);
+    const action = columns.find(column => column.key === "a")!;
+    expect(action.fixed).toBe("right");
+    const content = action.render!(null, { skuId: 5, kind: "sku", shopName: "QA", href: "/report/auto-replenish?skuIds=5" });
+    expect(elements(content).some(n => typeof n.props.onAck === "function" && n.props.phase === "idle")).toBe(true);
+    expect(elements(content).filter(n => isValidElement(n)).length).toBeGreaterThan(2);
+  });
+});
 
 describe("爆单当前查询与证据状态", () => {
   it("说明区不把已知悉或缺失证据承诺为自动关闭", () => {
