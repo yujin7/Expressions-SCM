@@ -53,6 +53,28 @@ it("locks duplicate clicks and drawer closing while saving, then shows a durable
   pending.resolve({ eventId: 45, replayed: false }); await flush();
   expect(input().value).toBe(""); expect(JSON.stringify(render())).toContain("跟进已保存（记录 #45）"); expect(state.retry).toHaveBeenCalledTimes(1);
 });
+it("retains focus before disabling submit controls, including explicit uncertain-result confirmation", async () => {
+  const content = nodes(render()).find(n => n.type === "div" && n.props.tabIndex === -1)!;
+  const focus = vi.fn();
+  (content.props.ref as { current: unknown }).current = { focus };
+  state.fetch.mockImplementationOnce(() => {
+    expect(focus).toHaveBeenCalledTimes(1);
+    expect(render().props.keyboard).toBe(false);
+    return Promise.reject(new Error("lost response"));
+  });
+  type("合成保存回执丢失后确认"); click("保存跟进");
+  expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+  await flush();
+  expect(render().props.keyboard).toBe(true);
+  state.fetch.mockImplementationOnce(() => {
+    expect(focus).toHaveBeenCalledTimes(2);
+    return Promise.resolve({ eventId: 48, replayed: true });
+  });
+  click("确认同一提交"); await flush();
+  expect(render().props.keyboard).toBe(true);
+  expect(input().value).toBe("");
+  expect(JSON.stringify(render())).toContain("跟进已保存（记录 #48）");
+});
 it("uncertain failure preserves content and request ID; only explicit confirmation retries", async () => {
   state.fetch.mockRejectedValueOnce(new Error("timeout")); type("等待供应商书面依据"); click("保存跟进"); await flush();
   expect(state.fetch).toHaveBeenCalledTimes(1); expect(input()).toMatchObject({ value: "等待供应商书面依据", disabled: true });

@@ -25,7 +25,7 @@ export default function TodoHistoryDrawer({ id, title, onClose }: { id: number; 
   const content = useRef<HTMLDivElement>(null);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const read = useDocumentRead<WorkItemHistoryPage>(`/api/todo/${id}/history${before ? `?before=${before}` : ""}`);
-  // A paging/retry trigger can disappear after the read. Keep Escape and Tab inside the drawer.
+  // Paging/retry triggers can disappear; submit controls become disabled. Keep keyboard focus inside.
   const retainFocus = () => content.current?.focus({ preventScroll: true });
   const retry = () => { retainFocus(); read.retry(); };
 
@@ -33,6 +33,7 @@ export default function TodoHistoryDrawer({ id, title, onClose }: { id: number; 
     if (locked.current || !live.current || (!pending.current && note.trim().length < 5)) return;
     locked.current = true;
     pending.current ??= { requestId: crypto.randomUUID(), note: note.trim() };
+    retainFocus();
     setBusy(true); setError(null); setSaved(null);
     try {
       const result = await fetchJson<{ eventId: number; replayed: boolean }>(`/api/todo/${id}/history`, {
