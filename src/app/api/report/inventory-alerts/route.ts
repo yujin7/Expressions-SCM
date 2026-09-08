@@ -25,6 +25,8 @@ export async function GET(req: NextRequest) {
       status: sp.get("status") ?? undefined,
       onlyAlert: sp.get("onlyAlert") ?? undefined,
       showC: sp.get("showC") ?? undefined,
+      sort: sp.get("sort") ?? undefined,
+      order: sp.get("order") ?? undefined,
       page: Number(sp.get("page")) || undefined,
       pageSize: Number(sp.get("pageSize")) || undefined,
     };

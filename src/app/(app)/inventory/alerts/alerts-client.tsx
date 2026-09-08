@@ -25,7 +25,7 @@ import LoadErrorAlert from "@/components/LoadErrorAlert";
 import SearchInput from "@/components/SearchInput";
 import { useListState } from "@/components/useListState";
 import { hasAnyRole, useMe } from "@/components/useMe";
-import { compareDecimalValues } from "@/lib/decimal-sort";
+import { INVENTORY_ALERT_SORT_OPTIONS } from "@/lib/inventory-alert-sort";
 import { inventoryCoverMetricHref } from "@/lib/cockpit-navigation";
 import type { InventoryAlertRow } from "@/server/modules/report/inventory-alerts";
 import type { InventoryAlertsPage } from "@/server/modules/report/inventory-alerts-query";
@@ -193,13 +193,13 @@ function AlertRowDetail({ alert, onClosed }: { alert: AlertRef; onClosed: () => 
 }
 
 /* ── Tab 1：库存预警表 ── */
-type CoverFilters = { q?: string; tier?: string; primary?: string; status?: string; onlyAlert?: string; showC?: string };
+type CoverFilters = { q?: string; tier?: string; primary?: string; status?: string; onlyAlert?: string; showC?: string; sort?: string; order?: string };
 
 function CoverTab() {
   const { message } = App.useApp();
   const me = useMe();
   const canRefresh = hasAnyRole(me, "pmc"); // 与 /api/report/inventory-alerts?refresh=1 的 requireAnyRole(pmc, admin) 一致
-  const listState = useListState<CoverFilters>({ key: "inventory-alerts-cover", paramPrefix: "cover", defaults: { q: "", tier: "", primary: "", status: "", onlyAlert: "1", showC: "" }, defaultPageSize: 50 });
+  const listState = useListState<CoverFilters>({ key: "inventory-alerts-cover", paramPrefix: "cover", defaults: { q: "", tier: "", primary: "", status: "", onlyAlert: "1", showC: "", sort: "", order: "" }, defaultPageSize: 50 });
   const { filters } = listState;
   const [snapshot, setSnapshot] = useState<{ query: string; value: InventoryAlertsPage } | null>(null);
   const readRequest = useRef<AbortController | null>(null);
@@ -240,15 +240,16 @@ function CoverTab() {
     } catch (e) { message.error((e as Error).message); }
   };
 
+  const sortOrder = (key: string) => filters.sort === key ? (filters.order === "desc" ? "descend" as const : "ascend" as const) : null;
   const columns: ColumnsType<InventoryAlertRow> = [
-    { title: "SKU", key: "sku", width: 220, fixed: "left", render: (_, r) => <Space direction="vertical" size={0}><Typography.Text strong>{r.code}</Typography.Text><Typography.Text type="secondary" ellipsis style={{ maxWidth: 200 }}>{r.name}{r.brand ? ` · ${r.brand}` : ""}</Typography.Text></Space> },
-    { title: "等级", dataIndex: "tier", width: 64, render: (v: string | null, r) => v ? <Tag color={TIER_COLOR[v]}>{v}{r.tierSource === "computed" ? "*" : ""}</Tag> : <Tag>未分层</Tag> },
+    { title: "SKU", key: "code", dataIndex: "code", sorter: true, sortOrder: sortOrder("code"), width: 220, fixed: "left", render: (_, r) => <Space direction="vertical" size={0}><Typography.Text strong>{r.code}</Typography.Text><Typography.Text type="secondary" ellipsis style={{ maxWidth: 200 }}>{r.name}{r.brand ? ` · ${r.brand}` : ""}</Typography.Text></Space> },
+    { title: "等级", dataIndex: "tier", sorter: true, sortOrder: sortOrder("tier"), width: 90, render: (v: string | null, r) => v ? <Tag color={TIER_COLOR[v]}>{v}{r.tierSource === "computed" ? "*" : ""}</Tag> : <Tag>未分层</Tag> },
     { title: "日销 外部", key: "de", align: "right", width: 110, render: (_, r) => dailyText(r.daily.external) },
     { title: "内部", key: "di", align: "right", width: 140, render: (_, r) => <InternalDemandCell row={r} /> },
     { title: "系统销售 / 作业", key: "dl", align: "right", width: 185, render: (_, r) => <LedgerDemandCell row={r} /> },
-    { title: "外部净件（按30日排序）", dataIndex: "net30External", align: "right", width: 230, sorter: (a, b, order) => compareDecimalValues(a.net30External, b.net30External, order === "descend" ? "first" : "last"), render: (_, r) => <ExternalDemandCell row={r} /> },
-    { title: "在库", dataIndex: "onHand", align: "right", width: 90, sorter: (a, b) => compareDecimalValues(a.onHand, b.onHand), render: (v: string) => formatQty(v) },
-    { title: "可销天数", dataIndex: "coverDays", align: "right", width: 100, sorter: (a, b) => (a.coverDays ?? Number.MAX_SAFE_INTEGER) - (b.coverDays ?? Number.MAX_SAFE_INTEGER), render: (v: number | null, r) => v == null ? <Typography.Text type="secondary">无日销</Typography.Text> : <Typography.Text type={r.status === "alert" ? "danger" : r.status === "watch" ? "warning" : undefined} strong>{v}d</Typography.Text> },
+    { title: "外部净件（按30日排序）", dataIndex: "net30External", align: "right", width: 230, sorter: true, sortOrder: sortOrder("net30External"), render: (_, r) => <ExternalDemandCell row={r} /> },
+    { title: "在库", dataIndex: "onHand", align: "right", width: 90, sorter: true, sortOrder: sortOrder("onHand"), render: (v: string) => formatQty(v) },
+    { title: "可销天数", dataIndex: "coverDays", align: "right", width: 100, sorter: true, sortOrder: sortOrder("coverDays"), render: (v: number | null, r) => v == null ? <Typography.Text type="secondary">无日销</Typography.Text> : <Typography.Text type={r.status === "alert" ? "danger" : r.status === "watch" ? "warning" : undefined} strong>{v}d</Typography.Text> },
     { title: "阈值", key: "ad", width: 150, render: (_, r) => <span>{r.alertDays}d {r.usedDefault ? <Tag>缺省周期</Tag> : null}<br /><Typography.Text type="secondary" style={{ fontSize: 11 }}>{r.alertBasis}</Typography.Text></span> },
     { title: "主预警", key: "p", width: 120, render: (_, r) => r.primary ? <Space size={4} wrap><Tag color={r.primary === "out_of_stock" ? "error" : r.primary === "spike" ? "magenta" : "warning"}>{KIND_LABEL[r.primary]}</Tag>{r.tags.map((t) => <Tag key={t}>{KIND_LABEL[t]}</Tag>)}</Space> : <Typography.Text type="secondary">—</Typography.Text> },
     { title: "已知悉", key: "ack", width: 150, render: (_, r) => <AckCell alert={alerts.byKey[`inventory_cover:${r.skuId}`]} onAck={(id) => void alerts.ack(id)} /> },
@@ -278,6 +279,8 @@ function CoverTab() {
             <Select allowClear size="small" placeholder="等级" style={{ width: 100 }} value={filters.tier || undefined} onChange={(v) => listState.setFilter({ tier: v ?? "" })} options={[{ value: "S", label: "S" }, { value: "A", label: "A" }, { value: "B", label: "B" }, { value: "C", label: "C" }, { value: "none", label: "未分层" }]} />
             <Select allowClear size="small" placeholder="主预警" style={{ width: 120 }} value={filters.primary || undefined} onChange={(v) => listState.setFilter({ primary: v ?? "" })} options={Object.entries(KIND_LABEL).map(([value, label]) => ({ value, label }))} />
             <Select aria-label="覆盖状态" allowClear size="small" placeholder="覆盖状态" style={{ width: 130 }} value={filters.status || undefined} onChange={(v) => listState.setFilter({ status: v ?? "" })} options={[{ value: "alert", label: "低于阈值" }, { value: "watch", label: "关注" }, { value: "ok", label: "正常" }]} />
+            <Select aria-label="库存预警排序" size="small" style={{ width: 165 }} value={filters.sort || ""} options={[...INVENTORY_ALERT_SORT_OPTIONS]} onChange={sort => listState.setFilter({ sort, order: sort ? "asc" : "" })} />
+            {filters.sort ? <Button size="small" aria-label="切换库存排序方向" onClick={() => listState.setFilter({ order: filters.order === "desc" ? "asc" : "desc" })}>{filters.order === "desc" ? "降序 ↓" : "升序 ↑"}</Button> : null}
             <span>只看预警 <Switch size="small" checked={filters.onlyAlert !== "0"} onChange={(on) => listState.setFilter({ onlyAlert: on ? "1" : "0" })} /></span>
             <span>含 C 级 <Switch size="small" checked={filters.showC === "1"} onChange={(on) => listState.setFilter({ showC: on ? "1" : "" })} /></span>
           </Space>
@@ -296,6 +299,11 @@ function CoverTab() {
         size={listState.tableSize}
         loading={loading}
         columns={columns}
+        onChange={(_, __, sorter, extra) => {
+          if (extra.action !== "sort") return;
+          const next = Array.isArray(sorter) ? sorter[0] : sorter;
+          listState.setFilter({ sort: next.order ? String(next.field) : "", order: next.order === "ascend" ? "asc" : next.order === "descend" ? "desc" : "" });
+        }}
         dataSource={data?.rows ?? []}
         pagination={false}
         scroll={{ x: 1500 }}

@@ -1,5 +1,7 @@
 import type { InventoryAlertRow, InventoryAlertsReadModel } from "@/server/modules/report/inventory-alerts";
 import { ApiError } from "@/server/modules/master/common";
+import { compareDecimalValues } from "@/lib/decimal-sort";
+import { INVENTORY_ALERT_SORT_OPTIONS, type InventoryAlertSort } from "@/lib/inventory-alert-sort";
 
 /**
  * 库存预警表的服务端筛选/分页（审计 #8：筛选曾在浏览器里跑，链接不可分享、整模型下发客户端）。
@@ -18,10 +20,35 @@ export interface InventoryAlertsQuery {
   showC?: string;
   page?: number;
   pageSize?: number;
+  sort?: string;
+  order?: string;
 }
 
 export function validateInventoryAlertsQuery(query: InventoryAlertsQuery): void {
   if (query.status && !["alert", "watch", "ok"].includes(query.status)) throw new ApiError(400, "库存覆盖状态无效");
+  if ((query.sort && !INVENTORY_ALERT_SORT_OPTIONS.some(option => option.value === query.sort))
+    || (query.order && !["asc", "desc"].includes(query.order))
+    || (query.order && !query.sort)) throw new ApiError(400, "库存预警排序无效，请选择排序字段与方向");
+}
+
+/** Preserve the authoritative risk order when no explicit user sort is selected. */
+export function sortInventoryAlertRows(rows: InventoryAlertRow[], query: InventoryAlertsQuery): InventoryAlertRow[] {
+  validateInventoryAlertsQuery(query);
+  if (!query.sort) return rows;
+  const sort = query.sort as Exclude<InventoryAlertSort, "">;
+  const direction = query.order === "desc" ? -1 : 1;
+  const grades = { S: 0, A: 1, B: 2, C: 3 };
+  const value = (r: InventoryAlertRow) => sort === "tier" ? (r.tier == null ? null : grades[r.tier]) : r[sort];
+  const codeOrder = (a: string, b: string) => a.localeCompare(b, "zh-CN", { numeric: true });
+  return [...rows].sort((a, b) => {
+    const left = value(a), right = value(b);
+    // Unknown is neither zero nor a very large number. Direction never moves it to the top.
+    if (left == null && right != null) return 1;
+    if (left != null && right == null) return -1;
+    const comparison = left == null || right == null ? 0 : sort === "code"
+      ? codeOrder(String(left), String(right)) : compareDecimalValues(left, right);
+    return comparison * direction || codeOrder(a.code, b.code) || a.skuId - b.skuId;
+  });
 }
 
 export function filterInventoryAlertRows(rows: InventoryAlertRow[], query: InventoryAlertsQuery): InventoryAlertRow[] {
@@ -44,7 +71,7 @@ export function filterInventoryAlertRows(rows: InventoryAlertRow[], query: Inven
 export type InventoryAlertsPage = InventoryAlertsReadModel & { filtered: { total: number; page: number; pageSize: number } };
 
 export function pageInventoryAlerts(model: InventoryAlertsReadModel, query: InventoryAlertsQuery): InventoryAlertsPage {
-  const filtered = filterInventoryAlertRows(model.rows, query);
+  const filtered = sortInventoryAlertRows(filterInventoryAlertRows(model.rows, query), query);
   const page = Math.max(1, Math.floor(query.page ?? 1));
   const pageSize = Math.min(5000, Math.max(1, Math.floor(query.pageSize ?? 50)));
   return {

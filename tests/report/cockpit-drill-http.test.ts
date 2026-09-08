@@ -31,6 +31,21 @@ it("invalid status refuses before database access or cache recomputation", async
   expect((await get("status=watc&refresh=1")).status).toBe(400);
   expect(state.db).not.toHaveBeenCalled(); expect(state.refresh).not.toHaveBeenCalled(); expect(state.load).not.toHaveBeenCalled();
 });
+it("HTTP sorts all matching rows before paging and preserves sorting across pages", async () => {
+  const first = await get("sort=code&order=desc&onlyAlert=0&showC=1&pageSize=1");
+  expect(first.status).toBe(200);
+  const data = await first.json();
+  expect(data.rows.map((r: { code: string }) => r.code)).toEqual(["C"]);
+  expect(data.filtered).toEqual({ total: 3, page: 1, pageSize: 1 });
+  const second = await get("sort=code&order=desc&onlyAlert=0&showC=1&pageSize=1&page=2");
+  expect((await second.json()).rows.map((r: { code: string }) => r.code)).toEqual(["B"]);
+});
+it.each(["sort=bogus&order=asc", "sort=onHand&order=ascending", "order=desc"])("invalid HTTP sort refuses before loading or refreshing: %s", async query => {
+  expect((await get(`${query}&refresh=1`)).status).toBe(400);
+  expect(state.db).not.toHaveBeenCalled();
+  expect(state.load).not.toHaveBeenCalled();
+  expect(state.refresh).not.toHaveBeenCalled();
+});
 it("new drill parameters do not bypass anonymous refusal or privileged recomputation", async () => {
   state.role = null; expect((await get("status=watch")).status).toBe(401);
   state.role = "warehouse"; expect((await get("status=watch&refresh=1")).status).toBe(403);

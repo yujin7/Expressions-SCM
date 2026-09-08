@@ -265,6 +265,45 @@ describe("inventory-alerts-query：服务端筛选与分页", () => {
     expect(alertsModel([]).key).toBe(INVENTORY_ALERTS_CACHE_KEY);
     expect(spikeModel([], []).key).toBe(SALES_SPIKE_CACHE_KEY);
   });
+
+  it("sorts the entire filtered population before pagination, without changing the model or totals", () => {
+    const source = Array.from({ length: 53 }, (_, i) => row({ skuId: i + 1, code: `ITEM-${i + 1}`, onHand: String(53 - i), primary: null, status: "ok" }));
+    const model = alertsModel(source);
+    const result = pageInventoryAlerts(model, { onlyAlert: "0", showC: "1", sort: "onHand", order: "asc", pageSize: 2 });
+    expect(result.rows.map(r => r.code)).toEqual(["ITEM-53", "ITEM-52"]);
+    expect(result.filtered.total).toBe(53);
+    expect(result.totals).toEqual(model.totals);
+    expect(model.rows[0].code).toBe("ITEM-1");
+    expect(pageInventoryAlerts(model, { onlyAlert: "0", showC: "1", sort: "onHand", order: "asc", pageSize: 2, page: 2 }).rows.map(r => r.code)).toEqual(["ITEM-51", "ITEM-50"]);
+  });
+
+  it.each(["asc", "desc"])("preserves null, zero and negative demand with null last in %s order", order => {
+    const model = alertsModel([
+      row({ skuId: 1, code: "NULL", net30External: null }), row({ skuId: 2, code: "ZERO", net30External: "0.0000" }),
+      row({ skuId: 3, code: "NEG", net30External: "-30.0000" }), row({ skuId: 4, code: "POS", net30External: "2.0000" }),
+    ]);
+    const result = pageInventoryAlerts(model, { onlyAlert: "0", showC: "1", sort: "net30External", order });
+    expect(result.rows.map(r => r.code)).toEqual(order === "asc" ? ["NEG", "ZERO", "POS", "NULL"] : ["POS", "ZERO", "NEG", "NULL"]);
+  });
+
+  it("sorts large decimal quantities exactly and uses deterministic ties", () => {
+    const model = alertsModel([
+      row({ skuId: 3, code: "A-10", onHand: "999999999999.0002" }),
+      row({ skuId: 2, code: "A-2", onHand: "999999999999.0001" }),
+      row({ skuId: 1, code: "A-1", onHand: "999999999999.0001" }),
+    ]);
+    expect(pageInventoryAlerts(model, { onlyAlert: "0", showC: "1", sort: "onHand", order: "asc" }).rows.map(r => r.code)).toEqual(["A-1", "A-2", "A-10"]);
+    expect(pageInventoryAlerts(model, { onlyAlert: "0", showC: "1", sort: "code", order: "asc" }).rows.map(r => r.code)).toEqual(["A-1", "A-2", "A-10"]);
+  });
+
+  it("grades are semantic S/A/B/C with unknown last in either direction", () => {
+    const model = alertsModel([row({ skuId: 1, code: "NONE", tier: null }), row({ skuId: 2, code: "C", tier: "C" }), row({ skuId: 3, code: "S", tier: "S" }), row({ skuId: 4, code: "A", tier: "A" }), row({ skuId: 5, code: "B", tier: "B" })]);
+    for (const order of ["asc", "desc"]) expect(pageInventoryAlerts(model, { onlyAlert: "0", showC: "1", sort: "tier", order }).rows.map(r => r.code)).toEqual(order === "asc" ? ["S", "A", "B", "C", "NONE"] : ["C", "B", "A", "S", "NONE"]);
+  });
+
+  it.each([{ sort: "bogus", order: "asc" }, { sort: "onHand", order: "ascending" }, { order: "desc" }])("rejects unsupported sorting rather than returning an apparently sorted list: %j", query => {
+    expect(() => pageInventoryAlerts(alertsModel(rows), query)).toThrow("库存预警排序");
+  });
 });
 
 describe("sales-spike-query：q 筛选不改总数", () => {
