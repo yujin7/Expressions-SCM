@@ -8,7 +8,8 @@ import {
   type CapacityStats,
 } from "@/server/rules/supplier-capacity";
 import { type AnyDb, resolveDb } from "@/server/modules/outsource/common";
-import { shanghaiMonthOf } from "@/server/core/business-day";
+import { shanghaiMonthOf, shanghaiDayOf, shanghaiDay } from "@/server/core/business-day";
+import { compareDeclaredCapacity, type DeclaredCapacityComparison } from "@/server/rules/declared-capacity";
 
 const EFFECTIVE_SH_STATUSES = ["approved", "in_progress", "completed"] as const;
 const OPEN_JG_STATUSES = ["draft", "pending", "approved", "in_progress"] as const;
@@ -55,6 +56,8 @@ export interface SupplierCapacitySignal {
   excessQty: string;
   explanation: string;
   limitations: string[];
+  declared: DeclaredCapacityComparison;
+  undatedOrders: number;
 }
 
 export async function getSupplierCapacitySignal(
@@ -98,6 +101,13 @@ export async function getSupplierCapacitySignal(
   const months: CapacityMonth[] = [...byMonth.entries()].map(([month, actualQty]) => ({ month, actualQty }));
   const stats = supplierCapacityStats(months);
 
+  const [declaration] = await db.select({
+    declaredMonthlyCapacity: schema.suppliers.declaredMonthlyCapacity,
+    capacityUom: schema.suppliers.capacityUom, surgeCapacityPct: schema.suppliers.surgeCapacityPct,
+    capacityValidFrom: schema.suppliers.capacityValidFrom, capacityValidUntil: schema.suppliers.capacityValidUntil,
+    capacityEvidence: schema.suppliers.capacityEvidence,
+  }).from(schema.suppliers).where(eq(schema.suppliers.id, input.supplierId));
+
   const dueMonth = monthKeyFromDate(input.dueDate, asOf);
   const scheduledConds = [
     eq(schema.jgDocs.supplierId, input.supplierId),
@@ -118,6 +128,11 @@ export async function getSupplierCapacitySignal(
   }
 
   const comparison = compareCapacity(scheduledQty, input.candidateQty ?? "0", stats.p90);
+  const undatedOrders = scheduledRows.filter(row => !row.dueDate || shanghaiDay(row.dueDate) == null).length;
+  const declared = compareDeclaredCapacity(declaration ?? {
+    declaredMonthlyCapacity: null, capacityUom: null, surgeCapacityPct: null,
+    capacityValidFrom: null, capacityValidUntil: null, capacityEvidence: null,
+  }, { baseUom: input.baseUom, dueDate: input.dueDate, asOfDay: shanghaiDayOf(asOf), projectedQty: comparison.projectedQty, undatedOrders });
   const historyTo = addMonths(current.year, current.month, -1);
   return {
     basis: "effective_jg_receipts_active_month_p90",
@@ -132,6 +147,8 @@ export async function getSupplierCapacitySignal(
     },
     stats,
     ...comparison,
+    declared,
+    undatedOrders,
     explanation: stats.reliable
       ? `按最近 ${HISTORY_MONTHS} 个完整月的有效 JG 收货，${input.baseUom} 活跃月产出 P90 为 ${stats.p90}；${dueMonth} 计划负荷为 ${comparison.projectedQty}。`
       : `有效活跃月样本不足（${stats.sampleMonths}/${stats.minMonths}），暂不形成产能阈值。`,
@@ -140,6 +157,8 @@ export async function getSupplierCapacitySignal(
       "不同基础单位严格分开计算；未建立可靠换算前不跨单位汇总。",
       "当前未完成月份不进入历史 P90，零产出月不代表零产能。",
       "软约束只提示、不阻断建单或审批。",
+      "计划负荷采用本系统未结JG全单量（含草稿），不是剩余加工量；不含供应商其他客户占用。",
+      "申报情景与历史P90分开，不相加；未填交期的历史负荷按建单月归集，不代表实际排程。",
     ],
   };
 }
@@ -159,5 +178,7 @@ export function capacityAuditSnapshot(signal: SupplierCapacitySignal) {
     utilizationPct: signal.utilizationPct,
     overP90: signal.overP90,
     excessQty: signal.excessQty,
+    declared: signal.declared,
+    undatedOrders: signal.undatedOrders,
   };
 }

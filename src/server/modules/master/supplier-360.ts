@@ -37,6 +37,9 @@ export interface Supplier360 {
     paymentTermEffectiveFrom: string | null;
     declaredMonthlyCapacity: string | null;
     capacityUom: string | null;
+    capacityValidFrom: string | null;
+    capacityValidUntil: string | null;
+    capacityEvidence: string | null;
   };
   /** 记分卡该供应商行（窗口内无信号 = null，不是 0 分） */
   scorecard: { windowDays: number; minSamples: number; row: ScorecardRow | null };
@@ -65,6 +68,7 @@ export async function getSupplier360(id: number, roles: string[], dbArg?: AnyDb)
       paymentTerm: s.paymentTerm, paymentTermType: s.paymentTermType, creditDays: s.creditDays,
       paymentTermEffectiveFrom: s.paymentTermEffectiveFrom,
       declaredMonthlyCapacity: s.declaredMonthlyCapacity, capacityUom: s.capacityUom,
+      capacityValidFrom: s.capacityValidFrom, capacityValidUntil: s.capacityValidUntil, capacityEvidence: s.capacityEvidence,
     })
     .from(s)
     .where(eq(s.id, id));

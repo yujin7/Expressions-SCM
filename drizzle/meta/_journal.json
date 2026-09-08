@@ -442,6 +442,13 @@
       "when": 1788882419298,
       "tag": "0062_supplier_term_negotiation",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1788895941690,
+      "tag": "0063_supplier_capacity_evidence",
+      "breakpoints": true
     }
   ]
 }

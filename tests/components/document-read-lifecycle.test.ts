@@ -3,10 +3,11 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import ApprovalBrief from "@/components/ApprovalBrief";
 import ChainStrip from "@/components/ChainStrip";
 import { useDocumentRead } from "@/components/useDocumentRead";
+import Supplier360Drawer from "@/app/(app)/master/supplier/supplier-360-drawer";
 
 // Real hook/callback lifecycle; browser tests separately verify AntD rendering and layout.
 const hooks = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false }));
-vi.mock("antd", () => ({ Alert: "alert", Card: "card", Space: "space", Table: "table", Tag: "tag", Tooltip: "tooltip", Button: "button", Typography: { Text: "text" } }));
+vi.mock("antd", () => ({ Alert: "alert", Card: "card", Space: "space", Table: "table", Tag: "tag", Tooltip: "tooltip", Button: "button", Drawer: "drawer", Col: "col", Row: "row", Descriptions: "descriptions", Empty: "empty", Spin: "spin", Statistic: "statistic", Typography: { Text: "text", Paragraph: "paragraph", Link: "a" } }));
 vi.mock("next/link", () => ({ default: "a" }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
@@ -19,7 +20,12 @@ vi.mock("react", async original => ({
       hooks.slots[i] = next;
     }];
   },
-  useCallback: (fn: unknown) => fn,
+  useCallback: (fn: unknown, deps: readonly unknown[]) => {
+    const i = hooks.cursor++;
+    const prev = hooks.slots[i] as { fn: unknown; deps: readonly unknown[] } | undefined;
+    if (!prev || prev.deps.length !== deps.length || !prev.deps.every((v, j) => Object.is(v, deps[j]))) hooks.slots[i] = { fn, deps };
+    return (hooks.slots[i] as { fn: unknown }).fn;
+  },
   useEffect: (effect: () => void | (() => void), deps: readonly unknown[]) => {
     const i = hooks.cursor++;
     const prev = hooks.slots[i] as readonly unknown[] | undefined;
@@ -32,13 +38,14 @@ type Node = React.ReactElement<Record<string, unknown> & { children?: ReactNode 
 const nodes = (v: ReactNode): Node[] => Array.isArray(v) ? v.flatMap(nodes) : isValidElement<Node["props"]>(v) ? [v, ...nodes(v.props.children)] : [];
 const fetchMock = vi.fn<typeof fetch>();
 let id = 1;
-let surface: "brief" | "chain" | "resource" = "brief";
+let surface: "brief" | "chain" | "resource" | "supplier" = "brief";
+let supplierId: number | null = 1;
 let url: string | null = "/api/outsource/bh/1";
 function ResourceProbe() { return React.createElement("read", useDocumentRead<{ id: number }>(url)); }
 function render(effects = true) {
   for (let n = 0; n < 10; n++) {
     hooks.cursor = 0; hooks.changed = false;
-    const tree = surface === "resource" ? ResourceProbe()
+    const tree = surface === "supplier" ? Supplier360Drawer({ supplierId, onClose: () => {} }) : surface === "resource" ? ResourceProbe()
       : surface === "brief" ? ApprovalBrief({ docType: "bh", docId: id }) : ChainStrip({ docType: "bh", id });
     if (!effects) return tree;
     for (const effect of hooks.effects.splice(0)) effect();
@@ -51,7 +58,7 @@ const brief = (docNo: string) => Response.json({ docNo, origin: { fromSuggestion
 const title = (tree = render()) => nodes(tree).find(n => n.type === "card")?.props.title ?? "";
 function cleanup() { for (const fn of hooks.cleanups.values()) fn(); hooks.cleanups.clear(); }
 beforeEach(() => {
-  hooks.cursor = 0; hooks.slots = []; hooks.effects = []; hooks.changed = false; id = 1; surface = "brief"; url = "/api/outsource/bh/1";
+  hooks.cursor = 0; hooks.slots = []; hooks.effects = []; hooks.changed = false; id = 1; supplierId = 1; surface = "brief"; url = "/api/outsource/bh/1";
   fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock);
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -140,4 +147,55 @@ it("closing aborts a pending detail and clears its timeout", async () => {
   surface = "resource"; fetchMock.mockReturnValueOnce(new Promise(() => {})); render(); url = null; render();
   expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true);
   await vi.advanceTimersByTimeAsync(20_000); expect(resource().phase).toBe("idle"); expect(resource().error).toBeNull();
+});
+
+const supplier = (id: number, name: string) => Response.json({
+  supplier: { id, code: `QA-${id}`, name, kinds: [], status: "qualified" },
+  scorecard: { windowDays: 180, minSamples: 3, row: null },
+  purchaseOrders: { year: 2026, asOf: "2026-09-09", moneyVisible: false, row: null },
+  paymentTerm: { year: 2026, asOf: "2026-09-09", moneyVisible: false, row: null },
+  leadHistory: { source: "synthetic", state: "insufficient", row: null },
+  links: { scorecard: "/score", purchaseOrders: "/purchase", paymentTerm: "/term", leadHistory: "/lead", lifecycle: `/supplier/${id}` },
+});
+const supplierTitle = (tree = render()) => nodes(tree).find(n => n.type === "drawer")?.props.title ?? "";
+const supplierLoad = (tree = render()) => nodes(tree).find(n => typeof n.props.onRetry === "function")!.props;
+
+it("supplier 360 withdraws prior facts and source links before a new identity effect", async () => {
+  surface = "supplier"; fetchMock.mockResolvedValueOnce(supplier(1, "OLD")); render(); await flush();
+  expect(supplierTitle()).toContain("OLD"); supplierId = 2;
+  const tree = render(false); expect(supplierTitle(tree)).not.toContain("OLD");
+  expect(JSON.stringify(tree)).not.toContain("/supplier/1");
+});
+it.each(["success", "failure"])("supplier 360 rejects obsolete %s after a newer response", async mode => {
+  surface = "supplier"; const old = Promise.withResolvers<Response>();
+  fetchMock.mockReturnValueOnce(old.promise).mockResolvedValueOnce(supplier(2, "CURRENT"));
+  render(); supplierId = 2; render(); await flush();
+  expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true);
+  if (mode === "success") old.resolve(supplier(1, "OLD")); else old.reject(new Error("old failure"));
+  await flush(); expect(supplierTitle()).toContain("CURRENT"); expect(supplierLoad().error).toBeNull();
+});
+it("supplier 360 times out, retries the selected identity and rejects a late reply", async () => {
+  surface = "supplier"; const old = Promise.withResolvers<Response>(); fetchMock.mockReturnValueOnce(old.promise);
+  render(); await vi.advanceTimersByTimeAsync(15_000); await flush();
+  expect(supplierLoad().error).toContain("超时");
+  fetchMock.mockResolvedValueOnce(supplier(1, "RECOVERED"));
+  (supplierLoad().onRetry as () => void)(); render(); await flush();
+  old.resolve(supplier(1, "OLD")); await flush();
+  expect(supplierTitle()).toContain("RECOVERED"); expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(vi.getTimerCount()).toBe(0);
+});
+it("supplier 360 close cancels a pending load and reopen does not resurrect old facts", async () => {
+  surface = "supplier"; const old = Promise.withResolvers<Response>(); fetchMock.mockReturnValueOnce(old.promise);
+  render(); supplierId = null; render(); expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true);
+  old.resolve(supplier(1, "OLD")); await flush(); supplierId = 1;
+  expect(supplierTitle(render(false))).not.toContain("OLD");
+  fetchMock.mockResolvedValueOnce(supplier(1, "REOPENED")); render(); await flush();
+  expect(supplierTitle()).toContain("REOPENED");
+});
+it("supplier 360 failed reads remove facts and explicit retry restores the same identity", async () => {
+  surface = "supplier"; fetchMock.mockRejectedValueOnce(new Error("internal-host-details")); render(); await flush();
+  expect(supplierLoad().error).toBe("网络连接异常，未能获取服务器响应");
+  expect(nodes(render()).some(n => n.type === "descriptions")).toBe(false);
+  fetchMock.mockResolvedValueOnce(supplier(1, "RETRY")); (supplierLoad().onRetry as () => void)(); render(); await flush();
+  expect(supplierTitle()).toContain("RETRY"); expect(fetchMock.mock.calls.at(-1)?.[0]).toBe("/api/master/supplier/1/360");
 });

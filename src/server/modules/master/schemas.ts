@@ -113,17 +113,39 @@ export const SUPPLIER_KINDS = ["raw", "packaging", "processor", "service"] as co
 export const SUPPLIER_LEVELS = ["S", "A", "B", "C", "D"] as const;
 export const PAYMENT_TERM_TYPES = ["prepay", "on_delivery", "monthly_credit"] as const;
 const paymentTermDate = dateStr.refine((value) => shanghaiDay(value) != null, "生效日必须是有效的日历日期");
+const capacityDate = dateStr.refine((value) => shanghaiDay(value) != null, "产能有效期必须是有效的日历日期");
+// 供应商详情 DTO 的可空文本会原样回传；保留原请求键，由 service 区分明确清空与未传。
+// 不放宽其他主档的入参，也不把非法非空邮箱吞成空值。
+const supplierEmptyToUndef = (v: unknown) => v === null ? undefined : emptyToUndef(v);
+const supplierOptionalStr = z.preprocess(supplierEmptyToUndef, z.string().trim().optional());
+// 对齐 numeric(14,4)，避免非法大数到数据库才变成500。
+const declaredCapacityQty = z.preprocess(emptyToUndef,
+  z.union([z.string(), z.number()]).transform(String).pipe(z.string().regex(/^\d{1,10}(\.\d{1,4})?$/, "月产能须为非负数（整数最多10位、小数最多4位）")).nullable().optional());
+const capacityEvidenceFields = {
+  capacityValidFrom: z.preprocess(emptyToUndef, capacityDate.nullable().optional()),
+  capacityValidUntil: z.preprocess(emptyToUndef, capacityDate.nullable().optional()),
+  capacityEvidence: z.preprocess(emptyToUndef, z.string().trim().max(1000).nullable().optional()),
+};
+
+function refineCapacity(v: { declaredMonthlyCapacity?: string | null; capacityUom?: string | null; capacityValidFrom?: string | null; capacityValidUntil?: string | null; capacityEvidence?: string | null }, ctx: z.RefinementCtx) {
+  if (v.declaredMonthlyCapacity != null && !v.capacityUom) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["capacityUom"], message: "申报月产能必须带申报单位" });
+  if (v.capacityValidFrom || v.capacityValidUntil) {
+    if (!v.capacityValidFrom || !v.capacityValidUntil || v.capacityValidFrom > v.capacityValidUntil) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["capacityValidUntil"], message: "产能有效期须完整填写且结束日不早于开始日" });
+    if (!v.capacityEvidence?.trim()) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["capacityEvidence"], message: "登记有效期须填写供应商申报依据" });
+    if (v.declaredMonthlyCapacity == null) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["declaredMonthlyCapacity"], message: "登记有效期须有申报月产能" });
+  }
+}
 
 export const supplierSchema = z.object({
   code: z.string().trim().min(1, "编码必填").refine((c) => checkCode(c).ok, (c) => ({ message: checkCode(c).reason ?? "编码不合规" })),
   name: z.string().trim().min(1, "名称必填"),
   kinds: z.array(z.enum(SUPPLIER_KINDS)).min(1, "至少选择一种供应商类型"),
-  contact: optionalStr,
-  phone: optionalStr,
-  email: z.preprocess(emptyToUndef, z.string().email("邮箱格式不正确").optional()),
-  address: optionalStr,
-  paymentTerm: optionalStr, // 款到发货/月结30/月结60…
-  bankAccount: optionalStr, // 敏感：出口经 maskSensitive
+  contact: supplierOptionalStr,
+  phone: supplierOptionalStr,
+  email: z.preprocess(supplierEmptyToUndef, z.string().trim().email("邮箱格式不正确").optional()),
+  address: supplierOptionalStr,
+  paymentTerm: supplierOptionalStr, // 款到发货/月结30/月结60…
+  bankAccount: supplierOptionalStr, // 敏感：出口经 maskSensitive
   level: z.enum(SUPPLIER_LEVELS).nullable().optional(), // S–D 分级（D7 评分 P1 前人工维护）
   licenseExpiry: z.preprocess(emptyToUndef, dateStr.nullable().optional()),
   // 状态变化走 supplier-lifecycle；保留可选入参仅供 seed/迁移显式建档。
@@ -133,13 +155,11 @@ export const supplierSchema = z.object({
   creditDays: z.preprocess(emptyToUndef, z.coerce.number().int().min(0).max(180).nullable().optional()),
   paymentTermEffectiveFrom: z.preprocess(emptyToUndef, paymentTermDate.nullable().optional()),
   // ── 产能申报（申报单位原样存，不换算）──
-  declaredMonthlyCapacity: z.preprocess(
-    emptyToUndef,
-    z.union([z.string(), z.number()]).transform(String).pipe(z.string().regex(/^\d+(\.\d{1,4})?$/, "月产能须为非负数（最多 4 位小数）")).nullable().optional(),
-  ),
-  capacityUom: optionalStr,
+  declaredMonthlyCapacity: declaredCapacityQty,
+  capacityUom: supplierOptionalStr,
   surgeCapacityPct: z.preprocess(emptyToUndef, z.coerce.number().int().min(0).max(300).nullable().optional()),
-}).superRefine((v, ctx) => refinePaymentTerm(v, ctx));
+  ...capacityEvidenceFields,
+}).superRefine((v, ctx) => { refinePaymentTerm(v, ctx); refineCapacity(v, ctx); });
 export type SupplierInput = z.infer<typeof supplierSchema>;
 
 /** 月结必须有天数；非月结不得带天数；填了类型必须带生效日 */
@@ -170,18 +190,12 @@ export type SupplierPaymentTermInput = z.infer<typeof supplierPaymentTermSchema>
 
 /** 产能申报专用写路径入参（PUT /api/master/supplier/[id]/capacity） */
 export const supplierCapacitySchema = z.object({
-  declaredMonthlyCapacity: z.preprocess(
-    emptyToUndef,
-    z.union([z.string(), z.number()]).transform(String).pipe(z.string().regex(/^\d+(\.\d{1,4})?$/, "月产能须为非负数（最多 4 位小数）")).nullable().optional(),
-  ),
-  capacityUom: optionalStr,
+  declaredMonthlyCapacity: declaredCapacityQty,
+  capacityUom: supplierOptionalStr,
   surgeCapacityPct: z.preprocess(emptyToUndef, z.coerce.number().int().min(0).max(300).nullable().optional()),
   note: optionalStr,
-}).superRefine((v, ctx) => {
-  if (v.declaredMonthlyCapacity != null && !v.capacityUom) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["capacityUom"], message: "申报月产能必须带申报单位" });
-  }
-});
+  ...capacityEvidenceFields,
+}).superRefine(refineCapacity);
 export type SupplierCapacityInput = z.infer<typeof supplierCapacitySchema>;
 
 // ---------- 仓库 ----------

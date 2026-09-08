@@ -75,6 +75,7 @@ describe("采购侧界面契约", () => {
     const client = read("src/app/(app)/master/supplier/supplier-client.tsx");
     expect(client).toContain("Supplier360Drawer");
     expect(client).toContain("供应商 360");
+    expect(client).toContain('aria-label="申报月产能" stringMode min="0" max="9999999999.9999"');
 
     const drawer = read("src/app/(app)/master/supplier/supplier-360-drawer.tsx");
     expect(drawer).toContain("/360`");
@@ -89,6 +90,11 @@ describe("采购侧界面契约", () => {
     expect(drawer).toContain("observation_only");
     // 客户端只能类型导入服务端模块（client-server-boundary 护栏）
     expect(drawer).toContain('import type { Supplier360 } from "@/server/modules/master/supplier-360"');
+    // 静态回归防止回退固定三列；实际单元格几何与长依据仍须浏览器验证。
+    expect(drawer).toContain('column={{ xs: 1, sm: 2, lg: 3 }}');
+    expect(drawer).not.toContain('column={3}');
+    expect(drawer).toContain('span: "filled"');
+    expect(drawer).toContain('<summary>查看完整申报依据</summary>');
 
     const svc = read("src/server/modules/master/supplier-360.ts");
     for (const model of [

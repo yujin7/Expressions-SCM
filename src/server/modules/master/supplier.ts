@@ -6,6 +6,7 @@ type AnyTx = any;
 import { getDbAsync, schema } from "@/db";
 import { ApiError } from "./common";
 import { supplierCapacitySchema, supplierPaymentTermSchema, supplierSchema } from "./schemas";
+import type { SupplierCapacityInput } from "./schemas";
 import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 
 function buildWhere(q: string) {
@@ -80,7 +81,7 @@ export async function createSupplier(input: unknown, actor?: SessionUser, dbArg?
   });
 }
 
-/** D64 账期三列 + 产能三列（档案通用写路径与专用写路径共用同一归一化） */
+/** 账期与产能申报（档案通用写路径与专用写路径共用同一归一化） */
 function termAndCapacityColumns(v: {
   paymentTermType?: string | null;
   creditDays?: number | null;
@@ -88,6 +89,9 @@ function termAndCapacityColumns(v: {
   declaredMonthlyCapacity?: string | null;
   capacityUom?: string | null;
   surgeCapacityPct?: number | null;
+  capacityValidFrom?: string | null;
+  capacityValidUntil?: string | null;
+  capacityEvidence?: string | null;
 }) {
   return {
     paymentTermType: v.paymentTermType ?? null,
@@ -95,13 +99,31 @@ function termAndCapacityColumns(v: {
     paymentTermEffectiveFrom: v.paymentTermType == null ? null : (v.paymentTermEffectiveFrom ?? null),
     declaredMonthlyCapacity: v.declaredMonthlyCapacity ?? null,
     capacityUom: v.declaredMonthlyCapacity == null ? null : (v.capacityUom ?? null),
+    capacityValidFrom: v.declaredMonthlyCapacity == null ? null : v.capacityValidFrom ?? null,
+    capacityValidUntil: v.declaredMonthlyCapacity == null ? null : v.capacityValidUntil ?? null,
+    capacityEvidence: v.declaredMonthlyCapacity == null ? null : v.capacityEvidence?.trim() || null,
     surgeCapacityPct: v.surgeCapacityPct ?? null,
   };
 }
 
 const TERM_INPUT_KEYS = ["paymentTermType", "creditDays", "paymentTermEffectiveFrom"] as const;
 const PAYMENT_TERM_COLUMNS = ["paymentTermType", "creditDays", "paymentTermEffectiveFrom", "paymentTerm"] as const;
-const CAPACITY_COLUMNS = ["declaredMonthlyCapacity", "capacityUom", "surgeCapacityPct"] as const;
+const CAPACITY_COLUMNS = ["declaredMonthlyCapacity", "capacityUom", "surgeCapacityPct", "capacityValidFrom", "capacityValidUntil", "capacityEvidence"] as const;
+
+/** 调用方已锁供应商：未传字段保留；显式撤销数量同时撤销单位/有效期/依据。 */
+function mergeCapacity(input: unknown, v: SupplierCapacityInput, existing: Pick<typeof schema.suppliers.$inferSelect, typeof CAPACITY_COLUMNS[number]>) {
+  const has = (key: string) => input != null && typeof input === "object" && Object.prototype.hasOwnProperty.call(input, key);
+  const clear = has("declaredMonthlyCapacity") && v.declaredMonthlyCapacity == null;
+  return supplierCapacitySchema.parse({
+    declaredMonthlyCapacity: has("declaredMonthlyCapacity") ? v.declaredMonthlyCapacity ?? null : existing.declaredMonthlyCapacity,
+    capacityUom: clear ? undefined : has("capacityUom") ? v.capacityUom : existing.capacityUom ?? undefined,
+    surgeCapacityPct: has("surgeCapacityPct") ? v.surgeCapacityPct ?? null : existing.surgeCapacityPct,
+    capacityValidFrom: clear ? null : has("capacityValidFrom") ? v.capacityValidFrom ?? null : existing.capacityValidFrom,
+    capacityValidUntil: clear ? null : has("capacityValidUntil") ? v.capacityValidUntil ?? null : existing.capacityValidUntil,
+    capacityEvidence: clear ? null : has("capacityEvidence") ? v.capacityEvidence ?? null : existing.capacityEvidence,
+    note: v.note,
+  });
+}
 
 function pick<T extends object, K extends keyof T>(row: T, keys: readonly K[]): Pick<T, K> {
   const out = {} as Pick<T, K>;
@@ -147,9 +169,9 @@ export async function setSupplierPaymentTerm(id: number, input: unknown, actor: 
   });
 }
 
-/** 产能申报（专用写路径）：只改产能三列；审计 action=capacity。角色同账期。 */
+/** 产能申报（专用写路径）：局部更新六列；审计 action=capacity。角色同账期。 */
 export async function setSupplierCapacity(id: number, input: unknown, actor: SessionUser, dbArg?: AnyTx) {
-  const v = supplierCapacitySchema.parse(input);
+  const v = supplierCapacitySchema.innerType().parse(input);
   if (!actor.roles.includes("admin") && !actor.roles.includes("purchasing")) {
     throw new ApiError(403, "无权限执行此操作：需要采购/管理员角色");
   }
@@ -157,13 +179,16 @@ export async function setSupplierCapacity(id: number, input: unknown, actor: Ses
   return db.transaction(async (tx: AnyTx) => {
     const [existing] = await tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, id)).for("update");
     if (!existing) throw new ApiError(404, "供应商不存在");
-    const cols = termAndCapacityColumns({ ...v });
+    const cols = termAndCapacityColumns(mergeCapacity(input, v, existing));
     const [updated] = await tx
       .update(schema.suppliers)
       .set({
         declaredMonthlyCapacity: cols.declaredMonthlyCapacity,
         capacityUom: cols.capacityUom,
         surgeCapacityPct: cols.surgeCapacityPct,
+        capacityValidFrom: cols.capacityValidFrom,
+        capacityValidUntil: cols.capacityValidUntil,
+        capacityEvidence: cols.capacityEvidence,
         updatedAt: new Date(),
       })
       .where(eq(schema.suppliers.id, id))
@@ -209,12 +234,7 @@ export async function updateSupplier(id: number, input: unknown, actor?: Session
     paymentTermEffectiveFrom: hasKey("paymentTermType") && v.paymentTermType == null ? null
       : hasKey("paymentTermEffectiveFrom") ? v.paymentTermEffectiveFrom ?? null : existing.paymentTermEffectiveFrom,
   }) : null;
-  const mergedCapacity = CAPACITY_COLUMNS.some(hasKey) ? supplierCapacitySchema.parse({
-    declaredMonthlyCapacity: hasKey("declaredMonthlyCapacity") ? v.declaredMonthlyCapacity ?? null : existing.declaredMonthlyCapacity,
-    capacityUom: hasKey("declaredMonthlyCapacity") && v.declaredMonthlyCapacity == null ? undefined
-      : hasKey("capacityUom") ? v.capacityUom : existing.capacityUom ?? undefined,
-    surgeCapacityPct: hasKey("surgeCapacityPct") ? v.surgeCapacityPct ?? null : existing.surgeCapacityPct,
-  }) : null;
+  const mergedCapacity = CAPACITY_COLUMNS.some(hasKey) ? mergeCapacity(input, v, existing) : null;
   const [updated] = await tx
     .update(schema.suppliers)
     .set({

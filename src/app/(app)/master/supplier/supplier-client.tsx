@@ -22,6 +22,8 @@ interface SupplierRow {
   contact: string | null;
   licenseExpiry: string | null;
   status: string;
+  capacityValidFrom?: string | null;
+  capacityValidUntil?: string | null;
 }
 
 export default function SupplierClient({ initialQuery = "" }: { initialQuery?: string }) {
@@ -86,6 +88,8 @@ export default function SupplierClient({ initialQuery = "" }: { initialQuery?: s
         toFormValues={(r) => ({
           ...r,
           licenseExpiry: r.licenseExpiry ? dayjs(r.licenseExpiry) : undefined,
+          capacityValidFrom: r.capacityValidFrom ? dayjs(r.capacityValidFrom) : undefined,
+          capacityValidUntil: r.capacityValidUntil ? dayjs(r.capacityValidUntil) : undefined,
           paymentTermEffectiveFrom: (r as SupplierRow & { paymentTermEffectiveFrom?: string | null }).paymentTermEffectiveFrom
             ? dayjs((r as SupplierRow & { paymentTermEffectiveFrom?: string | null }).paymentTermEffectiveFrom)
             : undefined,
@@ -96,6 +100,9 @@ export default function SupplierClient({ initialQuery = "" }: { initialQuery?: s
           paymentTermEffectiveFrom: values.paymentTermEffectiveFrom ? (values.paymentTermEffectiveFrom as Dayjs).format("YYYY-MM-DD") : null,
           creditDays: values.paymentTermType === "monthly_credit" ? values.creditDays ?? null : null,
           declaredMonthlyCapacity: values.declaredMonthlyCapacity == null || values.declaredMonthlyCapacity === "" ? null : String(values.declaredMonthlyCapacity),
+          capacityValidFrom: values.declaredMonthlyCapacity == null ? null : values.capacityValidFrom ? (values.capacityValidFrom as Dayjs).format("YYYY-MM-DD") : null,
+          capacityValidUntil: values.declaredMonthlyCapacity == null ? null : values.capacityValidUntil ? (values.capacityValidUntil as Dayjs).format("YYYY-MM-DD") : null,
+          capacityEvidence: values.declaredMonthlyCapacity == null ? null : values.capacityEvidence ?? null,
         })}
         formItems={() => (
           <>
@@ -154,8 +161,8 @@ export default function SupplierClient({ initialQuery = "" }: { initialQuery?: s
               {({ getFieldValue }) => (
                 <>
                   {getFieldValue("paymentTermType") === "monthly_credit" ? (
-                    <Form.Item name="creditDays" label="账期天数" rules={[{ required: true, message: "月结必须填写账期天数" }]}>
-                      <InputNumber min={0} max={180} style={{ width: "100%" }} addonAfter="天" />
+                    <Form.Item name="creditDays" label="账期天数（天）" rules={[{ required: true, message: "月结必须填写账期天数" }]}>
+                      <InputNumber aria-label="账期天数" min={0} max={180} style={{ width: "100%" }} />
                     </Form.Item>
                   ) : null}
                   {getFieldValue("paymentTermType") ? (
@@ -166,15 +173,28 @@ export default function SupplierClient({ initialQuery = "" }: { initialQuery?: s
                 </>
               )}
             </Form.Item>
+            <Typography.Title level={5}>申报产能</Typography.Title>
+            <Typography.Paragraph type="secondary">供应商总体月度情景，不是向我司承诺的余量。填写完整有效期与依据、且单位一致后，才可在加工单比较。</Typography.Paragraph>
+            <div className="supplier-capacity-fields" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", columnGap: 12 }}>
             <Form.Item name="declaredMonthlyCapacity" label="申报月产能" tooltip="供应商申报值，按申报单位原样记录，不做换算">
-              <InputNumber min={0} precision={4} style={{ width: "100%" }} />
+              <InputNumber aria-label="申报月产能" stringMode min="0" max="9999999999.9999" precision={4} style={{ width: "100%" }} />
             </Form.Item>
             <Form.Item name="capacityUom" label="产能单位">
               <Input maxLength={20} placeholder="如 万支 / 吨 / 万套" />
             </Form.Item>
-            <Form.Item name="surgeCapacityPct" label="爆单加班放大比例" tooltip="爆单时可临时放大的产能比例（0–300%）">
-              <InputNumber min={0} max={300} style={{ width: "100%" }} addonAfter="%" />
+            <Form.Item name="capacityValidFrom" label="有效开始日">
+              <DatePicker style={{ width: "100%" }} />
             </Form.Item>
+            <Form.Item name="capacityValidUntil" label="有效结束日">
+              <DatePicker style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item name="surgeCapacityPct" label="加班增幅（%）" tooltip="相对正常申报月产能的增加比例（0–300%）；未填表示未知，不是0%">
+              <InputNumber aria-label="加班增幅" min={0} max={300} style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item name="capacityEvidence" label="产能申报依据" style={{ gridColumn: "1 / -1" }} tooltip="填写供应商确认记录/协议编号或受控文件位置；系统不会自动访问链接">
+              <Input.TextArea aria-label="产能申报依据" rows={2} maxLength={1000} />
+            </Form.Item>
+            </div>
           </>
         )}
       />

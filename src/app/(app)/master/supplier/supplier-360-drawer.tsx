@@ -13,9 +13,8 @@
  * - 「历史交期观察」明确标 observation_only：只观察，不改主数据、不改阈值；
  * - 每块右上角给回源链接，数字不做死胡同。
  */
-import { useCallback, useEffect, useState } from "react";
 import { Alert, Card, Col, Descriptions, Drawer, Empty, Row, Space, Spin, Statistic, Tag, Tooltip, Typography } from "antd";
-import { fetchJson } from "@/components/fetchJson";
+import { useDocumentRead } from "@/components/useDocumentRead";
 import { formatQty, formatYuan } from "@/components/format";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
 import { SUPPLIER_KIND_LABELS, SUPPLIER_STATUS_COLORS, SUPPLIER_STATUS_LABELS } from "@/components/labels";
@@ -51,28 +50,12 @@ export default function Supplier360Drawer({
   supplierId: number | null;
   onClose: () => void;
 }) {
-  const [data, setData] = useState<Supplier360 | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    if (supplierId == null) return;
-    setLoading(true);
-    setLoadError(null);
-    try {
-      setData(await fetchJson<Supplier360>(`/api/master/supplier/${supplierId}/360`));
-    } catch (e) {
-      setData(null);
-      setLoadError((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [supplierId]);
-
-  useEffect(() => {
-    if (supplierId == null) { setData(null); setLoadError(null); return; }
-    void load();
-  }, [supplierId, load]);
+  // Same identity-bound lifecycle as document briefs: withdraw stale facts before
+  // effects, cancel on close/switch, show a 15s timeout and retry only explicitly.
+  const { data, phase, error: loadError, retry } = useDocumentRead<Supplier360>(
+    supplierId == null ? null : `/api/master/supplier/${supplierId}/360`,
+  );
+  const loading = phase === "loading";
 
   const s = data?.supplier;
   const sc = data?.scorecard.row ?? null;
@@ -89,7 +72,7 @@ export default function Supplier360Drawer({
       onClose={onClose}
       destroyOnHidden
     >
-      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="供应商 360" retrying={loading} />
+      <LoadErrorAlert error={loadError} onRetry={retry} subject="供应商 360" retrying={loading} />
       {loading && !data ? (
         <div style={{ textAlign: "center", padding: 40 }}><Spin /></div>
       ) : null}
@@ -103,7 +86,7 @@ export default function Supplier360Drawer({
             description="金额（采购额 / 降本）仅采购 / 生产计划 / 财务 / 管理员可见；「历史交期观察」为外部观察值，只观察不改主数据。"
           />
 
-          <Descriptions size="small" column={3} bordered items={[
+          <Descriptions className="supplier360-profile" size="small" column={{ xs: 1, sm: 2, lg: 3 }} styles={{ label: { whiteSpace: "nowrap" }, content: { overflowWrap: "anywhere", minWidth: 0 } }} bordered items={[
             { key: "code", label: "编码", children: s.code },
             {
               key: "status", label: "状态",
@@ -124,6 +107,10 @@ export default function Supplier360Drawer({
               key: "capacity", label: "申报月产能",
               children: s.declaredMonthlyCapacity ? `${formatQty(s.declaredMonthlyCapacity)} ${s.capacityUom ?? ""}`.trim() : "—",
             },
+            { key: "capacityPeriod", label: "申报有效期", children: s.capacityValidFrom && s.capacityValidUntil ? `${s.capacityValidFrom} 至 ${s.capacityValidUntil}` : "未登记，不计算申报余量" },
+            { key: "capacityEvidence", label: "申报依据", span: "filled", children: s.capacityEvidence && s.capacityEvidence.length > 120
+              ? <details className="supplier360-capacity-evidence"><summary>查看完整申报依据</summary><div>{s.capacityEvidence}</div></details>
+              : s.capacityEvidence || "未提供" },
           ]} />
 
           {/* ── 记分卡：OTIF / 质检 / 价格异动 ── */}
@@ -206,7 +193,7 @@ export default function Supplier360Drawer({
             />
           }>
             {pt ? (
-              <Descriptions size="small" column={3} items={[
+              <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 3 }} styles={{ content: { overflowWrap: "anywhere", minWidth: 0 } }} items={[
                 { key: "pool", label: "供应商池", children: pt.pool },
                 {
                   key: "term", label: "账期类型",
@@ -241,7 +228,7 @@ export default function Supplier360Drawer({
               href={data.links.leadHistory}
             />
           }>
-            <Tag color="default" style={{ marginBottom: 8 }}>
+            <Tag color="default" style={{ marginBottom: 8, whiteSpace: "normal", overflowWrap: "anywhere" }}>
               observation_only · 只观察，不改主数据、不改预警阈值
             </Tag>
             {data.leadHistory.state !== "ready" ? (

@@ -1,0 +1,4 @@
+ALTER TABLE "suppliers" ADD COLUMN "capacity_valid_from" date;--> statement-breakpoint
+ALTER TABLE "suppliers" ADD COLUMN "capacity_valid_until" date;--> statement-breakpoint
+ALTER TABLE "suppliers" ADD COLUMN "capacity_evidence" text;--> statement-breakpoint
+ALTER TABLE "suppliers" ADD CONSTRAINT "ck_suppliers_capacity_period" CHECK (("suppliers"."capacity_valid_from" IS NULL AND "suppliers"."capacity_valid_until" IS NULL) OR ("suppliers"."capacity_valid_from" IS NOT NULL AND "suppliers"."capacity_valid_until" IS NOT NULL AND "suppliers"."capacity_valid_from" <= "suppliers"."capacity_valid_until"));

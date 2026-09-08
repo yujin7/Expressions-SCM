@@ -1,4 +1,6 @@
 "use client";
+import SupplierDeclaredCapacity from "@/components/SupplierDeclaredCapacity";
+import type { DeclaredCapacityComparison } from "@/server/rules/declared-capacity";
 
 import { useDocumentTarget } from "@/components/useDocumentTarget";
 import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
@@ -106,6 +108,7 @@ interface JgDetail {
   feeSegments: FeeSegment[];
   approvals: DocApproval[];
   capacity: {
+    declared: DeclaredCapacityComparison;
     advisoryOnly: true;
     baseUom: string;
     dueMonth: string;
@@ -439,7 +442,8 @@ function JgInner() {
               </Descriptions.Item>
               <Descriptions.Item label="备注">{detail.remark ?? "—"}</Descriptions.Item>
             </Descriptions>
-            <Typography.Title level={5}>供应商产能信号（历史学习·软约束）</Typography.Title>
+            <Typography.Title level={5}>供应商产能（独立证据 · 只提示）</Typography.Title>
+            <SupplierDeclaredCapacity value={detail.capacity.declared} supplierName={detail.supplierName} />
             <Alert
               type={
                 !detail.capacity.stats.reliable

@@ -162,6 +162,9 @@ export const suppliers = pgTable("suppliers", {
   declaredMonthlyCapacity: numeric("declared_monthly_capacity", { precision: 14, scale: 4 }),
   capacityUom: text("capacity_uom"),
   surgeCapacityPct: integer("surge_capacity_pct"), // 爆单可加班放大比例（0..300）
+  capacityValidFrom: date("capacity_valid_from"),
+  capacityValidUntil: date("capacity_valid_until"),
+  capacityEvidence: text("capacity_evidence"), // 申报依据/受控文件位置；不自动访问外部链接
 }, (t) => [
   check(
     "ck_suppliers_payment_term_type",
@@ -169,6 +172,7 @@ export const suppliers = pgTable("suppliers", {
   ),
   check("ck_suppliers_credit_days", sql`${t.creditDays} IS NULL OR (${t.creditDays} >= 0 AND ${t.creditDays} <= 180)`),
   check("ck_suppliers_declared_capacity", sql`${t.declaredMonthlyCapacity} IS NULL OR ${t.declaredMonthlyCapacity} >= 0`),
+  check("ck_suppliers_capacity_period", sql`(${t.capacityValidFrom} IS NULL AND ${t.capacityValidUntil} IS NULL) OR (${t.capacityValidFrom} IS NOT NULL AND ${t.capacityValidUntil} IS NOT NULL AND ${t.capacityValidFrom} <= ${t.capacityValidUntil})`),
   check(
     "ck_suppliers_surge_capacity_pct",
     sql`${t.surgeCapacityPct} IS NULL OR (${t.surgeCapacityPct} >= 0 AND ${t.surgeCapacityPct} <= 300)`,
