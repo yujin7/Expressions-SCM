@@ -73,6 +73,8 @@ type ControlProps = {
   children?: ReactNode;
   disabled?: boolean;
   value?: unknown;
+  style?: React.CSSProperties;
+  showCount?: boolean;
   onChange: (value: unknown) => void;
 };
 
@@ -134,6 +136,14 @@ afterEach(() => {
 });
 
 describe("AlertCloseModal submission lifecycle", () => {
+  it("reserves a line for the absolute textarea counter before footer actions", () => {
+    const note = control(render(props).children, "关闭备注")!;
+    expect(note.showCount).toBe(true);
+    // Actual AntD geometry is checked in the production browser; this pins the
+    // reservation that prevents its 22px counter overlapping the modal footer.
+    expect(note.style?.marginBottom).toBe(24);
+  });
+
   it("blocks duplicate submits and cancellation synchronously, and locks all controls while pending", async () => {
     const pending = deferred();
     mocks.post.mockReturnValue(pending.promise);

@@ -138,7 +138,9 @@ export default function AlertCloseModal({ open, alertId, alertTitle, onCancel, o
             value={note}
             onChange={(e) => setNote(e.target.value)}
             placeholder={noteRequired ? "请说明为何关闭" : "补充说明（进入台账，供误报复盘）"}
-            style={{ marginTop: 4 }}
+            // AntD places showCount below the textarea without reserving flow space.
+            // Keep its 22px line clear of the modal footer at every viewport width.
+            style={{ marginTop: 4, marginBottom: 24 }}
           />
         </div>
       </Space>
