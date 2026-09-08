@@ -1,6 +1,7 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { approvals, poDocs, poLines, reportReadModelCache, skus, spus, suppliers, sysParams, users } from "@/db/schema";
+import { approvals, auditLogs, departmentGoals, poDocs, poLines, reportReadModelCache, skus, spus, suppliers, sysParams, users } from "@/db/schema";
+import { createGoal, getGoal, listGoals, refreshAutoActuals, resolveAutoActual, updateGoal } from "@/server/modules/goals/service";
 import { setSupplierPaymentTerm } from "@/server/modules/master/supplier";
 import {
   computeSupplierPaymentTerm, loadSupplierPaymentTerm, refreshSupplierPaymentTerm, stripSupplierPaymentTermMoney,
@@ -14,7 +15,7 @@ import { createTestDb, type TestDb } from "../helpers/db";
  */
 const ASOF = new Date("2026-09-03T02:00:00.000Z");
 
-describe("supplier-payment-term/v1 读模型（PGlite）", () => {
+describe("supplier-payment-term/v2 读模型（PGlite）", () => {
   let db: TestDb;
   let userId = 0;
   let supAId = 0;
@@ -89,7 +90,7 @@ describe("supplier-payment-term/v1 读模型（PGlite）", () => {
     expect(d.candidateReason).toContain("不可推算");
   });
 
-  it("汇总：候选达成率、账期类采购额占比（月结 B 2000 ÷ 全部 6000）", async () => {
+  it("汇总：候选达成率保留已确认分子，A账期待核对时采购额占比弃权", async () => {
     const m = await computeSupplierPaymentTerm(db, { asOf: ASOF });
     expect(m.summary).toMatchObject({
       suppliers: 4,
@@ -100,10 +101,11 @@ describe("supplier-payment-term/v1 读模型（PGlite）", () => {
       creditTermSuppliers: 1,
       totalSpend: "6000.00",
       creditTermSpend: "2000.00",
-      creditTermSpendSharePct: "33.33",
+      creditTermSpendSharePct: null,
+      unclassifiedSpendSuppliers: 1,
     });
     const processor = m.summary.byPool.find((p) => p.pool === "processor")!;
-    expect(processor).toMatchObject({ suppliers: 2, candidates: 1, totalSpend: "5000.00", creditTermSpendSharePct: "40.00" });
+    expect(processor).toMatchObject({ suppliers: 2, candidates: 1, totalSpend: "5000.00", creditTermSpendSharePct: null, unclassifiedSpendSuppliers: 1 });
     expect(m.rows[0].code).toBe("SPT-A"); // 候选排最前
   });
 
@@ -143,6 +145,7 @@ describe("supplier-payment-term/v1 读模型（PGlite）", () => {
     expect(s.summary.byPool[0].creditTermSpend).toBeNull();
     expect(s.rows[0].spend[0]).toMatchObject({ poNet: null, jsSettle: null, total: null, rank: 1 });
     expect(s.rows[0].candidate).toBe(true);
+    expect(s.rows.filter((r) => r.hasCurrentYearSpend).map((r) => r.supplierId)).toEqual(m.rows.filter((r) => r.hasCurrentYearSpend).map((r) => r.supplierId));
     expect(JSON.stringify(s)).not.toContain("3000.00");
   });
 
@@ -165,5 +168,77 @@ describe("supplier-payment-term/v1 读模型（PGlite）", () => {
     expect(reparam.params.targetMinDays).toBe(30);
     expect(reparam.rows.find((r) => r.code === "SPT-B")!.attainment).toBe("attained");
     await db.delete(sysParams).where(eq(sysParams.key, "payment_term_target_min_days"));
+  });
+
+  it("未来账期不提前达标，上海生效日零点缓存重新判定", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-31T15:59:59Z"));
+      await setSupplierPaymentTerm(supAId, { paymentTermType: "monthly_credit", creditDays: 60, paymentTermEffectiveFrom: "2026-11-01" },
+        { id: userId, name: "采购", roles: ["purchasing"], isApprover: true }, db);
+      const pending = await refreshSupplierPaymentTerm(db);
+      expect(pending.rows.find((r) => r.supplierId === supAId)).toMatchObject({ attainment: "pending", termState: "pending" });
+      expect(pending.summary.candidatesAttained).toBe(0);
+      expect(pending.summary.creditTermSuppliers).toBe(1);
+      expect(pending.summary.creditTermSpend).toBe("2000.00");
+      expect(pending.summary.creditTermSpendSharePct).toBeNull();
+      expect(pending.summary.unclassifiedSpendSuppliers).toBe(1);
+      expect((await loadSupplierPaymentTerm(db)).builtAt).toBe(pending.builtAt);
+      vi.setSystemTime(new Date("2026-10-31T16:00:00Z"));
+      const active = await loadSupplierPaymentTerm(db);
+      expect(active.asOf).toBe("2026-11-01");
+      expect(active.sourceBinding).not.toBe(pending.sourceBinding);
+      expect(active.rows.find((r) => r.supplierId === supAId)).toMatchObject({ attainment: "attained", termState: "effective" });
+      expect(active.summary.candidatesAttained).toBe(1);
+      expect(active.summary.creditTermSuppliers).toBe(2);
+      expect(active.summary.creditTermSpend).toBe("5000.00");
+      expect(active.summary.creditTermSpendSharePct).toBe("71.43");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("历史缺生效日的月结条款待核对，不算有效月结或达标", async () => {
+    await db.update(suppliers).set({ paymentTermType: "monthly_credit", creditDays: 60, paymentTermEffectiveFrom: null }).where(eq(suppliers.id, supAId));
+    const model = await computeSupplierPaymentTerm(db, { asOf: ASOF });
+    expect(model.rows.find((r) => r.supplierId === supAId)).toMatchObject({ attainment: "unknown", termState: "unknown" });
+    expect(model.summary.creditTermSuppliers).toBe(1);
+    expect(model.summary.candidatesAttained).toBe(0);
+    expect(model.summary.creditTermSpendSharePct).toBeNull();
+  });
+
+  it("账期源变更/跨日后目标不读旧缓存，列表详情不伪装旧达标，刷新清空旧自动值但保留人工值", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const buyer = { id: userId, name: "采购", roles: ["purchasing"], isApprover: true };
+    try {
+      vi.setSystemTime(ASOF);
+      await setSupplierPaymentTerm(supAId, { paymentTermType: "monthly_credit", creditDays: 60, paymentTermEffectiveFrom: "2026-09-01" }, buyer, db);
+      await refreshSupplierPaymentTerm(db);
+      const goal = await createGoal({ deptKey: "purchasing", period: "2026-09", metricKey: "paymentTermAttainment", targetValue: "100" }, buyer, db);
+      expect(goal.actualValue).toBe("100.0000");
+      const manual = await createGoal({ deptKey: "purchasing", period: "2026-Q3", metricKey: "paymentTermAttainment", targetValue: "100", actualSource: "manual" }, buyer, db);
+      await updateGoal(manual.id, { actualValue: "55", evidence: "合成财务核对凭证" }, buyer, db);
+
+      await setSupplierPaymentTerm(supAId, { paymentTermType: "monthly_credit", creditDays: 60, paymentTermEffectiveFrom: "2026-11-01" }, buyer, db);
+      expect((await resolveAutoActual(db, "paymentTermAttainment", "2026-09")).value).toBeNull();
+      expect(await getGoal(goal.id, buyer, db)).toMatchObject({ actualValue: null, autoStatus: "unavailable", attained: null });
+      expect((await listGoals({}, buyer, db)).rows.find((r) => r.id === goal.id)).toMatchObject({ actualValue: null, autoStatus: "unavailable" });
+      // 读取不改历史存储值；只有显式刷新在同事务留痕撤下旧自动值。
+      expect((await db.select().from(departmentGoals).where(eq(departmentGoals.id, goal.id)))[0].actualValue).toBe("100.0000");
+      expect(await refreshAutoActuals(db, { actorId: userId })).toMatchObject({ updated: 1, unavailable: 1 });
+      expect((await db.select().from(departmentGoals).where(eq(departmentGoals.id, goal.id)))[0].actualValue).toBeNull();
+      const auditCount = (await db.select().from(auditLogs)).length;
+      expect(await refreshAutoActuals(db, { actorId: userId })).toMatchObject({ updated: 0, unavailable: 1 });
+      expect((await db.select().from(auditLogs)).length).toBe(auditCount);
+      expect(await getGoal(manual.id, buyer, db)).toMatchObject({ actualValue: "55.0000", actualSource: "manual" });
+
+      await refreshSupplierPaymentTerm(db);
+      expect((await resolveAutoActual(db, "paymentTermAttainment", "2026-09")).value).toBe("0.0000");
+      expect((await resolveAutoActual(db, "creditTermSpendShare", "2026-09")).value).toBeNull();
+      vi.setSystemTime(new Date("2026-10-31T16:00:00Z"));
+      expect((await resolveAutoActual(db, "paymentTermAttainment", "2026-09")).value).toBeNull();
+      await loadSupplierPaymentTerm(db);
+      await refreshAutoActuals(db, { actorId: userId });
+      expect(await getGoal(goal.id, buyer, db)).toMatchObject({ actualValue: "100.0000", autoStatus: "ok" });
+      expect(await getGoal(manual.id, buyer, db)).toMatchObject({ actualValue: "55.0000", actualSource: "manual" });
+    } finally { vi.useRealTimers(); }
   });
 });

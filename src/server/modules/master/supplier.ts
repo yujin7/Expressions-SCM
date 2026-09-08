@@ -52,6 +52,7 @@ export async function getSupplier(id: number, dbArg?: AnyTx) {
  */
 export async function createSupplier(input: unknown, actor?: SessionUser, dbArg?: AnyTx) {
   const v = supplierSchema.parse(input);
+  supplierCapacitySchema.parse(v);
   const db: AnyTx = dbArg ?? (await getDbAsync());
   return db.transaction(async (tx: AnyTx) => {
   const [created] = await tx
@@ -98,7 +99,7 @@ function termAndCapacityColumns(v: {
   };
 }
 
-const TERM_CAPACITY_INPUT_KEYS = ["paymentTermType", "creditDays", "paymentTermEffectiveFrom", "declaredMonthlyCapacity", "capacityUom", "surgeCapacityPct"] as const;
+const TERM_INPUT_KEYS = ["paymentTermType", "creditDays", "paymentTermEffectiveFrom"] as const;
 const PAYMENT_TERM_COLUMNS = ["paymentTermType", "creditDays", "paymentTermEffectiveFrom", "paymentTerm"] as const;
 const CAPACITY_COLUMNS = ["declaredMonthlyCapacity", "capacityUom", "surgeCapacityPct"] as const;
 
@@ -120,7 +121,7 @@ export async function setSupplierPaymentTerm(id: number, input: unknown, actor: 
   }
   const db: AnyTx = dbArg ?? (await getDbAsync());
   return db.transaction(async (tx: AnyTx) => {
-    const [existing] = await tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, id));
+    const [existing] = await tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, id)).for("update");
     if (!existing) throw new ApiError(404, "供应商不存在");
     const cols = termAndCapacityColumns({ ...v });
     const [updated] = await tx
@@ -154,7 +155,7 @@ export async function setSupplierCapacity(id: number, input: unknown, actor: Ses
   }
   const db: AnyTx = dbArg ?? (await getDbAsync());
   return db.transaction(async (tx: AnyTx) => {
-    const [existing] = await tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, id));
+    const [existing] = await tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, id)).for("update");
     if (!existing) throw new ApiError(404, "供应商不存在");
     const cols = termAndCapacityColumns({ ...v });
     const [updated] = await tx
@@ -193,12 +194,27 @@ export async function setSupplierCapacity(id: number, input: unknown, actor: Ses
  * code/name/kinds 是必填键，不适用本规则；status 由生命周期状态机独占。
  */
 export async function updateSupplier(id: number, input: unknown, actor?: SessionUser, dbArg?: AnyTx) {
-  const v = supplierSchema.parse(input);
+  // 先验单字段；跨字段约束必须在锁内与未提交旧值合并后验证。
+  const v = supplierSchema.innerType().parse(input);
   const db: AnyTx = dbArg ?? (await getDbAsync());
   const hasKey = (k: string) => input != null && typeof input === "object" && k in (input as Record<string, unknown>);
   return db.transaction(async (tx: AnyTx) => {
-  const [existing] = await tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, id));
+  const [existing] = await tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, id)).for("update");
   if (!existing) throw new ApiError(404, "供应商不存在");
+  // 按字段存在性合并，再校验最终组；任一组被提交都不能清空另一组。
+  const mergedTerms = TERM_INPUT_KEYS.some(hasKey) ? supplierPaymentTermSchema.parse({
+    paymentTermType: hasKey("paymentTermType") ? v.paymentTermType ?? null : existing.paymentTermType,
+    creditDays: hasKey("paymentTermType") && v.paymentTermType !== "monthly_credit" ? null
+      : hasKey("creditDays") ? v.creditDays ?? null : existing.creditDays,
+    paymentTermEffectiveFrom: hasKey("paymentTermType") && v.paymentTermType == null ? null
+      : hasKey("paymentTermEffectiveFrom") ? v.paymentTermEffectiveFrom ?? null : existing.paymentTermEffectiveFrom,
+  }) : null;
+  const mergedCapacity = CAPACITY_COLUMNS.some(hasKey) ? supplierCapacitySchema.parse({
+    declaredMonthlyCapacity: hasKey("declaredMonthlyCapacity") ? v.declaredMonthlyCapacity ?? null : existing.declaredMonthlyCapacity,
+    capacityUom: hasKey("declaredMonthlyCapacity") && v.declaredMonthlyCapacity == null ? undefined
+      : hasKey("capacityUom") ? v.capacityUom : existing.capacityUom ?? undefined,
+    surgeCapacityPct: hasKey("surgeCapacityPct") ? v.surgeCapacityPct ?? null : existing.surgeCapacityPct,
+  }) : null;
   const [updated] = await tx
     .update(schema.suppliers)
     .set({
@@ -217,8 +233,8 @@ export async function updateSupplier(id: number, input: unknown, actor?: Session
       licenseExpiry: hasKey("licenseExpiry") ? (v.licenseExpiry ?? null) : existing.licenseExpiry,
       // 常规档案编辑不能绕过准入/整改闭环改状态。
       status: existing.status,
-      // 审阅修复：档案表单未携带账期/产能字段时保留原值；只有显式提交才按 termAndCapacityColumns 归一化
-      ...(TERM_CAPACITY_INPUT_KEYS.some((k) => input != null && typeof input === "object" && k in (input as object)) ? termAndCapacityColumns(v) : {}),
+      ...(mergedTerms ? pick(termAndCapacityColumns(mergedTerms), TERM_INPUT_KEYS) : {}),
+      ...(mergedCapacity ? pick(termAndCapacityColumns(mergedCapacity), CAPACITY_COLUMNS) : {}),
       updatedAt: new Date(),
     })
     .where(eq(schema.suppliers.id, id))

@@ -1,5 +1,5 @@
 /**
- * D64 供应商账期读模型 `supplier-payment-term/v1`（记分卡页「账期候选」Tab + 第 4 屏部门目标 auto 来源）。
+ * D64 供应商账期读模型 `supplier-payment-term/v2`（记分卡页「账期候选」Tab + 第 4 屏部门目标 auto 来源）。
  *
  * 口径（D64；参数 payment_term_min_years / payment_term_target_min_days / payment_term_target_max_days）：
  * - 年采购额 = 该年 **审批通过** PO 的行未税金额（同 purchase-order-metrics 口径，去税/补税唯一实现 `rules/price.ts` normalizeLineNetGross）
@@ -9,11 +9,11 @@
  * - 候选 = 合作 ≥ payment_term_min_years 年 **且** 当年排名较上一年上升（两年均有排名）。
  *   合作起始日：suppliers 无 cooperation_since 列（0048 待编排方定），此处按最早已批 PO / 已批 JG 建单日 **系统推算**并标 source。
  * - 当前账期：suppliers.payment_term_type / credit_days / payment_term_effective_from（写路径 master/supplier.ts）。
- *   达标 = monthly_credit 且 credit_days ≥ 目标下限；prepay/on_delivery 记 not_credit；未登记记 unknown。
+ *   按上海业务日判生效；未来条款 pending、缺类型/生效日 unknown；有效月结且天数足够才达标。
  * - 达成率 = 候选中已达标 ÷ 候选数（SPT-5：department_goals(purchasing) auto 实际值来源）。
- * - 账期类采购额占比 = 月结类供应商当年采购额 ÷ 全部当年采购额（代理指标，**非应付余额**，血缘 partial）。
+ * - 账期类采购额占比 = 当前有效月结供应商当年采购额 ÷ 全部当年采购额；非零采购额存在未知分类时弃权。
  * - 金额只对 PRICE_VISIBLE_ROLES 可见（stripSupplierPaymentTermMoney）；名次保留。
- * - 缓存：source_binding 绑 po_docs / js_docs / approvals / suppliers 事实 + sys_params 里三项账期参数当前值（改口径即失效重算）。
+ * - 缓存：source_binding 绑事实、三项账期参数及上海业务日（改口径/跨生效日即失效重算）。
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
@@ -26,7 +26,7 @@ import { shanghaiDay } from "@/server/rules/po-cycle";
 import { normalizeLineNetGross } from "@/server/rules/price";
 import { ORDERED_PO_STATUSES } from "./purchase-order-metrics";
 
-export const SUPPLIER_PAYMENT_TERM_KEY = "supplier-payment-term/v1";
+export const SUPPLIER_PAYMENT_TERM_KEY = "supplier-payment-term/v2";
 const ACTIVE_JS_STATUSES = ["approved", "in_progress", "completed"] as const;
 const ACTIVE_JG_STATUSES = ["approved", "in_progress", "completed", "closed"] as const;
 
@@ -34,7 +34,8 @@ export type SupplierPool = "processor" | "packaging" | "raw";
 export const SUPPLIER_POOL_LABELS: Record<SupplierPool, string> = { processor: "OA 加工厂", packaging: "包材厂", raw: "原料商" };
 export type PaymentTermType = "prepay" | "on_delivery" | "monthly_credit";
 export const PAYMENT_TERM_TYPE_LABELS: Record<PaymentTermType, string> = { prepay: "预付", on_delivery: "款到发货", monthly_credit: "月结" };
-export type AttainmentStatus = "attained" | "below_target" | "not_credit" | "unknown";
+export type AttainmentStatus = "attained" | "below_target" | "not_credit" | "unknown" | "pending";
+export type PaymentTermState = "effective" | "pending" | "unknown";
 export type RankTrend = "up" | "down" | "flat" | "unknown";
 
 export interface SupplierYearSpend {
@@ -58,6 +59,7 @@ export interface SupplierPaymentTermRow {
   cooperationSource: "system_inferred" | null;
   cooperationYears: number | null;
   spend: SupplierYearSpend[];
+  hasCurrentYearSpend: boolean;
   rankTrend: RankTrend;
   candidate: boolean;
   candidateReason: string;
@@ -66,6 +68,7 @@ export interface SupplierPaymentTermRow {
   paymentTermEffectiveFrom: string | null;
   paymentTermText: string | null;
   attainment: AttainmentStatus;
+  termState: PaymentTermState;
 }
 
 export interface PoolSummary {
@@ -78,6 +81,7 @@ export interface PoolSummary {
   totalSpend: string | null;
   creditTermSpend: string | null;
   creditTermSpendSharePct: string | null;
+  unclassifiedSpendSuppliers: number;
 }
 
 export interface SupplierPaymentTermModel {
@@ -99,8 +103,9 @@ export interface SupplierPaymentTermModel {
     creditTermSuppliers: number;
     totalSpend: string | null;
     creditTermSpend: string | null;
-    /** 账期类采购额占比（百分数 scale 2）；总额 0 → null */
+    /** 账期类采购额占比（百分数 scale 2）；总额非正或存在非零采购额的未知分类 → null */
     creditTermSpendSharePct: string | null;
+    unclassifiedSpendSuppliers: number;
     byPool: PoolSummary[];
   };
   rows: SupplierPaymentTermRow[];
@@ -118,8 +123,9 @@ function yearsBetween(from: string, to: string): number {
   return Math.round((days / 365.25) * 100) / 100;
 }
 
-function attainmentOf(type: PaymentTermType | null, creditDays: number | null, targetMin: number): AttainmentStatus {
-  if (type == null) return "unknown";
+function attainmentOf(type: PaymentTermType | null, creditDays: number | null, targetMin: number, state: PaymentTermState): AttainmentStatus {
+  if (state === "pending") return "pending";
+  if (state === "unknown" || type == null) return "unknown";
   if (type !== "monthly_credit") return "not_credit";
   if (creditDays == null) return "unknown";
   return creditDays >= targetMin ? "attained" : "below_target";
@@ -142,7 +148,7 @@ async function readPaymentTermParams(db: AnyDb): Promise<PaymentTermParams> {
 }
 
 /** 绑定：事实表 max(id)+行数 + 供应商档案更新时点 + 统计年 + 账期口径参数（改参数即失效重算） */
-async function sourceBinding(db: AnyDb, year: number, p: PaymentTermParams): Promise<string> {
+async function sourceBinding(db: AnyDb, year: number, p: PaymentTermParams, today: string): Promise<string> {
   const [po] = await db
     .select({ maxId: sql<number>`coalesce(max(${schema.poDocs.id}), 0)::int`, n: sql<number>`count(*)::int` })
     .from(schema.poDocs);
@@ -154,9 +160,19 @@ async function sourceBinding(db: AnyDb, year: number, p: PaymentTermParams): Pro
     .from(schema.approvals)
     .where(eq(schema.approvals.docType, "po"));
   const [sup] = await db
-    .select({ n: sql<number>`count(*)::int`, updated: sql<string>`coalesce(max(${schema.suppliers.updatedAt})::text, '')` })
+    .select({ fingerprint: sql<string>`md5(coalesce(string_agg(json_build_array(
+      ${schema.suppliers.id}, ${schema.suppliers.code}, ${schema.suppliers.name}, ${schema.suppliers.kinds},
+      ${schema.suppliers.status}, ${schema.suppliers.paymentTerm}, ${schema.suppliers.paymentTermType},
+      ${schema.suppliers.creditDays}, ${schema.suppliers.paymentTermEffectiveFrom}, ${schema.suppliers.updatedAt}
+    )::text, '|' order by ${schema.suppliers.id}), ''))` })
     .from(schema.suppliers);
-  return `po:${po.maxId}/${po.n}|js:${js.maxId}/${js.n}|appr:${ap.maxId}|sup:${sup.n}/${sup.updated}|year:${year}|pt:${p.minYears}/${p.targetMinDays}/${p.targetMaxDays}`;
+  return `po:${po.maxId}/${po.n}|js:${js.maxId}/${js.n}|appr:${ap.maxId}|sup:${sup.fingerprint}|year:${year}|pt:${p.minYears}/${p.targetMinDays}/${p.targetMaxDays}|day:${today}`;
+}
+
+/** 供只读目标消费复核：日期或源事实已变时拒绝旧缓存，不在目标页偷偷重建报表。 */
+export async function isSupplierPaymentTermBindingCurrent(db: AnyDb, binding: string): Promise<boolean> {
+  const today = shanghaiDay(new Date())!;
+  return binding === await sourceBinding(db, Number(today.slice(0, 4)), await readPaymentTermParams(db), today);
 }
 
 export async function computeSupplierPaymentTerm(db: AnyDb, opts: { asOf?: Date; year?: number } = {}): Promise<SupplierPaymentTermModel> {
@@ -272,6 +288,10 @@ export async function computeSupplierPaymentTerm(db: AnyDb, opts: { asOf?: Date;
   }
 
   const rows: SupplierPaymentTermRow[] = suppliers.map((s) => {
+    const effectiveDay = shanghaiDay(s.paymentTermEffectiveFrom);
+    const termState: PaymentTermState = !s.paymentTermType || !effectiveDay
+      || (s.paymentTermType === "monthly_credit" && s.creditDays == null) ? "unknown"
+      : effectiveDay > today ? "pending" : "effective";
     const pool = poolOf(s.kinds);
     const spend: SupplierYearSpend[] = years.map((y) => {
       const r = rank.get(`${s.id}:${y}`);
@@ -303,6 +323,7 @@ export async function computeSupplierPaymentTerm(db: AnyDb, opts: { asOf?: Date;
       cooperationSource: since ? "system_inferred" : null,
       cooperationYears,
       spend,
+      hasCurrentYearSpend: spend[0].total != null,
       rankTrend,
       candidate,
       candidateReason: reasons.join("；"),
@@ -310,7 +331,8 @@ export async function computeSupplierPaymentTerm(db: AnyDb, opts: { asOf?: Date;
       creditDays: s.creditDays,
       paymentTermEffectiveFrom: s.paymentTermEffectiveFrom,
       paymentTermText: s.paymentTerm,
-      attainment: attainmentOf(s.paymentTermType, s.creditDays, targetMinDays),
+      attainment: attainmentOf(s.paymentTermType, s.creditDays, targetMinDays, termState),
+      termState,
     };
   });
 
@@ -319,12 +341,14 @@ export async function computeSupplierPaymentTerm(db: AnyDb, opts: { asOf?: Date;
     let total = "0.00";
     let credit = "0.00";
     let anySpend = false;
+    let unclassifiedSpendSuppliers = 0;
     for (const r of subset) {
       const t = r.spend[0].total;
       if (t == null) continue;
       anySpend = true;
       total = dAdd(total, t, 2);
-      if (r.paymentTermType === "monthly_credit") credit = dAdd(credit, t, 2);
+      if (r.termState !== "effective" && dCmp(t, 0) !== 0) unclassifiedSpendSuppliers++;
+      if (r.termState === "effective" && r.paymentTermType === "monthly_credit") credit = dAdd(credit, t, 2);
     }
     const candidates = subset.filter((r) => r.candidate);
     const attained = candidates.filter((r) => r.attainment === "attained");
@@ -337,7 +361,8 @@ export async function computeSupplierPaymentTerm(db: AnyDb, opts: { asOf?: Date;
       attainmentRate: candidates.length === 0 ? null : Math.round((attained.length / candidates.length) * 10_000) / 10_000,
       totalSpend: anySpend ? total : null,
       creditTermSpend: anySpend ? credit : null,
-      creditTermSpendSharePct: anySpend && dCmp(total, 0) > 0 ? dMul(dDiv(credit, total, 6), 100, 2) : null,
+      creditTermSpendSharePct: anySpend && unclassifiedSpendSuppliers === 0 && dCmp(total, 0) > 0 ? dMul(dDiv(credit, total, 6), 100, 2) : null,
+      unclassifiedSpendSuppliers,
     };
   };
   const all = poolSummary(null);
@@ -345,7 +370,7 @@ export async function computeSupplierPaymentTerm(db: AnyDb, opts: { asOf?: Date;
   return {
     key: SUPPLIER_PAYMENT_TERM_KEY,
     authority: "ledger",
-    sourceBinding: await sourceBinding(db, year, params),
+    sourceBinding: await sourceBinding(db, year, params, today),
     builtAt: new Date().toISOString(),
     asOf: today,
     year,
@@ -357,10 +382,11 @@ export async function computeSupplierPaymentTerm(db: AnyDb, opts: { asOf?: Date;
       candidates: all.candidates,
       candidatesAttained: all.candidatesAttained,
       attainmentRate: all.attainmentRate,
-      creditTermSuppliers: rows.filter((r) => r.paymentTermType === "monthly_credit").length,
+      creditTermSuppliers: rows.filter((r) => r.termState === "effective" && r.paymentTermType === "monthly_credit").length,
       totalSpend: all.totalSpend,
       creditTermSpend: all.creditTermSpend,
       creditTermSpendSharePct: all.creditTermSpendSharePct,
+      unclassifiedSpendSuppliers: all.unclassifiedSpendSuppliers,
       byPool: (["processor", "packaging", "raw"] as SupplierPool[]).map(poolSummary),
     },
     rows: rows.sort((a, b) => Number(b.candidate) - Number(a.candidate) || dCmp(b.spend[0].total ?? "0", a.spend[0].total ?? "0") || a.code.localeCompare(b.code)),
@@ -368,8 +394,9 @@ export async function computeSupplierPaymentTerm(db: AnyDb, opts: { asOf?: Date;
       `年采购额 = 当年审批通过 PO 行未税额 + 当年生效 JS 结算额（采购订单/结算口径，非应付、非已付）；覆盖 ${year - 2}–${year} 年 SCM 内事实。`,
       "合作起始日由最早已批 PO / JG 建单日系统推算（suppliers 暂无合作起始日列），可能晚于真实合作时间；历史采购额（外部导入）未接入排名。",
       `候选 = 合作 ≥ ${minYears} 年且 ${year} 年池内排名较 ${year - 1} 年上升；分池按 kinds（processor → OA 加工厂，packaging → 包材厂，其余 → 原料商）。`,
-      `达标 = 月结且账期 ≥ ${targetMinDays} 天（目标区间 ${targetMinDays}–${targetMaxDays} 天）；预付/款到发货记「非账期」；未登记记「未知」。`,
-      "账期类采购额占比为代理指标（月结类供应商采购额 ÷ 全部采购额），不是应付余额占比；真应付待用友授权。",
+      `达标 = 截至 ${today} 已生效的月结且账期 ≥ ${targetMinDays} 天（目标区间 ${targetMinDays}–${targetMaxDays} 天）；未来条款待生效，缺类型/生效日待核对，不提前计达标。达成率仍为已确认达标数÷候选总数。`,
+      "档案保存的是最近登记条款，待生效时不猜测此前有效账期；需核对原协议。不是历史条款时间线，也不是谈判关案率。",
+      "账期类采购额占比为代理指标（当前有效月结供应商当年采购额 ÷ 全部当年采购额），不是逐单账期或应付余额占比；有采购额的供应商当前条款待核对/待生效时占比留空。已确认月结采购额仅为已分类小计。",
     ],
   };
 }
@@ -389,8 +416,9 @@ export async function refreshSupplierPaymentTerm(dbArg?: AnyDb): Promise<Supplie
 
 export async function loadSupplierPaymentTerm(dbArg?: AnyDb): Promise<SupplierPaymentTermModel> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
-  const year = Number(shanghaiDay(new Date())!.slice(0, 4));
-  const binding = await sourceBinding(db, year, await readPaymentTermParams(db));
+  const today = shanghaiDay(new Date())!;
+  const year = Number(today.slice(0, 4));
+  const binding = await sourceBinding(db, year, await readPaymentTermParams(db), today);
   const [row] = await db
     .select({ payload: schema.reportReadModelCache.payload, sourceBinding: schema.reportReadModelCache.sourceBinding })
     .from(schema.reportReadModelCache)

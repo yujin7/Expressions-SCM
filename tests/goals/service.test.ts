@@ -19,7 +19,7 @@ import { DATA_QUALITY_CACHE_KEY } from "@/server/modules/report/data-quality";
 import { EXTERNAL_VELOCITY_CACHE_KEY } from "@/server/modules/report/external-velocity";
 import { INVENTORY_SALES_RATIO_CACHE_KEY } from "@/server/modules/report/inventory-sales-ratio";
 import { PURCHASE_ORDER_METRICS_KEY } from "@/server/modules/report/purchase-order-metrics";
-import { SUPPLIER_PAYMENT_TERM_KEY } from "@/server/modules/report/supplier-payment-term";
+import { computeSupplierPaymentTerm, SUPPLIER_PAYMENT_TERM_KEY } from "@/server/modules/report/supplier-payment-term";
 import { warehouseInventoryCacheKey } from "@/server/modules/report/warehouse-inventory";
 import { createTestDb, type TestDb } from "../helpers/db";
 
@@ -38,11 +38,12 @@ describe("goals/service：部门目标 CRUD / auto 实际值（真实读模型�
     admin = await mk("管理员", ["admin"]);
     pmc = await mk("计划", ["pmc"]);
     purchasing = await mk("采购", ["purchasing"]);
+    const termBinding = (await computeSupplierPaymentTerm(db)).sourceBinding;
     // 按真实读模型形状写入最小 payload（键 = 读模型模块导出的常量）
     await db.insert(reportReadModelCache).values([
       {
         key: SUPPLIER_PAYMENT_TERM_KEY,
-        sourceBinding: "test",
+        sourceBinding: termBinding,
         // SupplierPaymentTermModel：summary.attainmentRate 为 0–1 比例；creditTermSpendSharePct 已是百分比字符串
         payload: { key: SUPPLIER_PAYMENT_TERM_KEY, year: 2026, summary: { attainmentRate: 0.4, creditTermSpendSharePct: "35.20" }, rows: [] },
       },

@@ -425,18 +425,20 @@ describe("驾驶舱趋势块 · BI wave 2 纯装配函数", () => {
     cooperationSource: over.cooperationSource ?? "system_inferred",
     cooperationYears: over.cooperationYears ?? 3,
     spend: [{ year: 2026, poNet: over.total, jsSettle: "0.00", total: over.total, rank: over.spend?.[0]?.rank ?? null, rankOf: 5 }],
+    hasCurrentYearSpend: over.total != null,
     rankTrend: over.rankTrend ?? "unknown",
     candidate: false,
     candidateReason: "",
     paymentTermType: over.paymentTermType ?? null,
     creditDays: over.creditDays ?? null,
-    paymentTermEffectiveFrom: null,
+    paymentTermEffectiveFrom: over.paymentTermEffectiveFrom ?? null,
     paymentTermText: over.paymentTermText ?? null,
     attainment: over.attainment ?? "unknown",
+    termState: over.termState ?? "unknown",
   });
 
   const sptModel = (rows: SupplierPaymentTermRow[], totalSpend: string | null): SupplierPaymentTermModel => ({
-    key: "supplier-payment-term/v1",
+    key: "supplier-payment-term/v2",
     authority: "ledger",
     sourceBinding: "t",
     builtAt: new Date().toISOString(),
@@ -446,7 +448,7 @@ describe("驾驶舱趋势块 · BI wave 2 纯装配函数", () => {
     params: { minYears: 2, targetMinDays: 45, targetMaxDays: 60 },
     summary: {
       suppliers: rows.length, withSpend: rows.length, candidates: 2, candidatesAttained: 1, attainmentRate: 0.5,
-      creditTermSuppliers: 1, totalSpend, creditTermSpend: "300.00", creditTermSpendSharePct: "30.00", byPool: [],
+      creditTermSuppliers: 1, totalSpend, creditTermSpend: "300.00", creditTermSpendSharePct: "30.00", unclassifiedSpendSuppliers: 0, byPool: [],
     },
     rows,
     limitations: [],
@@ -483,6 +485,18 @@ describe("驾驶舱趋势块 · BI wave 2 纯装配函数", () => {
     expect(wh.rows.every((r) => r.spend === null)).toBe(true);
     expect(wh.rows.map((r) => r.sharePct)).toEqual([50, 30, 20]); // 占比不是金额，仍全员可见
     expect(wh.topSharePct).toBe(100);
+  });
+
+  it("登记账期优先结构化值，旧原文不能把75天显示为60天；未结构化须明示", () => {
+    const rows = [
+      spendRow({ supplierId: 1, total: "300", paymentTermType: "monthly_credit", creditDays: 75, paymentTermText: "月结60", paymentTermEffectiveFrom: "2100-01-01", attainment: "pending", termState: "pending" }),
+      spendRow({ supplierId: 2, total: "200", paymentTermType: "on_delivery", paymentTermText: "旧月结60" }),
+      spendRow({ supplierId: 3, total: "100", paymentTermText: "口头月结60" }),
+    ];
+    const result = buildSupplierConcentration(sptModel(rows, "600"), null, ["warehouse"]);
+    expect(result.rows[0]).toMatchObject({ paymentTermText: "月结 75 天", paymentTermEffectiveFrom: "2100-01-01", attainment: "pending", spend: null });
+    expect(result.rows[1].paymentTermText).toBe("款到发货");
+    expect(result.rows[2].paymentTermText).toBe("未结构化：口头月结60");
   });
 
   it("临期桶：段位按批次剩余天数统一刻度，> 90 天不入桶；90 天兜底 SKU 计数；外部动销只作注记", () => {

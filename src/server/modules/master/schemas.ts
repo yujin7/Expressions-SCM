@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { checkCode } from "@/server/rules/code-rule";
+import { shanghaiDay } from "@/server/core/business-day";
 import { COMMERCIAL_ROLES, unicodeLength } from "@/server/rules/sku-standardization";
 
 /** 空字符串 → undefined（配合可选字段） */
@@ -111,6 +112,7 @@ export const channelUpdateSchema = channelSchema.omit({ code: true }).partial().
 export const SUPPLIER_KINDS = ["raw", "packaging", "processor", "service"] as const; // +服务（04 §3）
 export const SUPPLIER_LEVELS = ["S", "A", "B", "C", "D"] as const;
 export const PAYMENT_TERM_TYPES = ["prepay", "on_delivery", "monthly_credit"] as const;
+const paymentTermDate = dateStr.refine((value) => shanghaiDay(value) != null, "生效日必须是有效的日历日期");
 
 export const supplierSchema = z.object({
   code: z.string().trim().min(1, "编码必填").refine((c) => checkCode(c).ok, (c) => ({ message: checkCode(c).reason ?? "编码不合规" })),
@@ -129,7 +131,7 @@ export const supplierSchema = z.object({
   // ── D64 账期结构化（payment_term 文本保留作原文；口径以下三列为准）──
   paymentTermType: z.enum(PAYMENT_TERM_TYPES).nullable().optional(),
   creditDays: z.preprocess(emptyToUndef, z.coerce.number().int().min(0).max(180).nullable().optional()),
-  paymentTermEffectiveFrom: z.preprocess(emptyToUndef, dateStr.nullable().optional()),
+  paymentTermEffectiveFrom: z.preprocess(emptyToUndef, paymentTermDate.nullable().optional()),
   // ── 产能申报（申报单位原样存，不换算）──
   declaredMonthlyCapacity: z.preprocess(
     emptyToUndef,
@@ -160,7 +162,7 @@ function refinePaymentTerm(
 export const supplierPaymentTermSchema = z.object({
   paymentTermType: z.enum(PAYMENT_TERM_TYPES).nullable(),
   creditDays: z.preprocess(emptyToUndef, z.coerce.number().int().min(0).max(180).nullable().optional()),
-  paymentTermEffectiveFrom: z.preprocess(emptyToUndef, dateStr.nullable().optional()),
+  paymentTermEffectiveFrom: z.preprocess(emptyToUndef, paymentTermDate.nullable().optional()),
   paymentTerm: optionalStr, // 原文（可空：不改）
   note: optionalStr,
 }).superRefine((v, ctx) => refinePaymentTerm(v, ctx));

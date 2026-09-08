@@ -28,7 +28,7 @@ import { DATA_QUALITY_CACHE_KEY } from "@/server/modules/report/data-quality";
 import { EXTERNAL_VELOCITY_CACHE_KEY } from "@/server/modules/report/external-velocity";
 import { INVENTORY_SALES_RATIO_CACHE_KEY } from "@/server/modules/report/inventory-sales-ratio";
 import { PURCHASE_ORDER_METRICS_KEY } from "@/server/modules/report/purchase-order-metrics";
-import { SUPPLIER_PAYMENT_TERM_KEY } from "@/server/modules/report/supplier-payment-term";
+import { isSupplierPaymentTermBindingCurrent, SUPPLIER_PAYMENT_TERM_KEY } from "@/server/modules/report/supplier-payment-term";
 import { warehouseInventoryCacheKey } from "@/server/modules/report/warehouse-inventory";
 import { shanghaiDayOf} from "@/server/core/business-day";
 
@@ -245,6 +245,19 @@ export function isAttained(target: string, actual: string | null, direction: Goa
 
 type Raw = typeof departmentGoals.$inferSelect;
 
+/** 账期自动目标随当前条款变化：仅展示经源绑定核验的值，不在读取时改库；人工证据值不覆盖。 */
+async function currentTermGoalRows(db: AnyDb, rows: Raw[]): Promise<Raw[]> {
+  const memo = new Map<string, Promise<AutoActual>>();
+  return Promise.all(rows.map(async (r) => {
+    if (r.actualSource === "manual" || autoSourceFor(r.metricKey)?.cacheKey !== SUPPLIER_PAYMENT_TERM_KEY) return r;
+    const key = `${r.metricKey}|${r.period}`;
+    let pending = memo.get(key);
+    if (!pending) { pending = resolveAutoActual(db, r.metricKey, r.period); memo.set(key, pending); }
+    const auto = await pending;
+    return { ...r, actualValue: auto.value == null ? null : dMul(auto.value, 1, 4), actualSource: auto.value == null ? null : "auto" };
+  }));
+}
+
 function toRow(r: Raw, user: SessionUser): GoalRow {
   const def = METRICS[r.metricKey];
   const src = autoSourceFor(r.metricKey);
@@ -294,7 +307,7 @@ export async function listGoals(args: ListGoalsArgs, user: SessionUser, dbArg?: 
     .orderBy(desc(departmentGoals.period), departmentGoals.deptKey, departmentGoals.metricKey);
   const deptKeys = scope.deptKeys ?? [...ROLES];
   return {
-    rows: rows.map((r) => toRow(r, user)),
+    rows: (await currentTermGoalRows(db, rows)).map((r) => toRow(r, user)),
     deptKeys,
     editableDepts: deptKeys.filter((d) => canEditDept(user, d)),
   };
@@ -305,7 +318,7 @@ export async function getGoal(id: number, user: SessionUser, dbArg?: AnyDb): Pro
   const [r]: Raw[] = await db.select().from(departmentGoals).where(eq(departmentGoals.id, id));
   if (!r) throw new ApiError(404, "目标不存在");
   resolveDeptScope(user, r.deptKey); // 范围外 → 403
-  return toRow(r, user);
+  return toRow((await currentTermGoalRows(db, [r]))[0], user);
 }
 
 /* ────────────────────────── auto 实际值：从已登记读模型缓存取 ────────────────────────── */
@@ -394,14 +407,17 @@ export function refreshableDeptKeys(user: SessionUser): readonly string[] | unde
 export async function resolveAutoActual(db: AnyDb, metricKey: string, period: string): Promise<AutoActual> {
   const src = autoSourceFor(metricKey);
   if (!src) return { value: null, sourceKey: null, path: null, builtAt: null };
-  const rows: { key: string; payload: unknown; builtAt: Date }[] = await db
-    .select({ key: reportReadModelCache.key, payload: reportReadModelCache.payload, builtAt: reportReadModelCache.builtAt })
+  const rows: { key: string; sourceBinding: string; payload: unknown; builtAt: Date }[] = await db
+    .select({ key: reportReadModelCache.key, sourceBinding: reportReadModelCache.sourceBinding, payload: reportReadModelCache.payload, builtAt: reportReadModelCache.builtAt })
     .from(reportReadModelCache)
     .where(eq(reportReadModelCache.key, src.cacheKey))
     .orderBy(desc(reportReadModelCache.builtAt))
     .limit(1);
   const r = rows[0];
   if (!r) return { value: null, sourceKey: null, path: null, builtAt: null };
+  if (src.cacheKey === SUPPLIER_PAYMENT_TERM_KEY && !await isSupplierPaymentTermBindingCurrent(db, r.sourceBinding)) {
+    return { value: null, sourceKey: r.key, path: null, builtAt: new Date(r.builtAt).toISOString() };
+  }
   const hit = extractAutoValue(r.payload, period, src.paths);
   if (!hit) return { value: null, sourceKey: r.key, path: null, builtAt: new Date(r.builtAt).toISOString() };
   return { value: hit.value, sourceKey: r.key, path: hit.path, builtAt: new Date(r.builtAt).toISOString() };
@@ -535,20 +551,26 @@ export async function refreshAutoActuals(
     let pending = memo.get(memoKey);
     if (!pending) { pending = resolveAutoActual(db, r.metricKey, r.period); memo.set(memoKey, pending); }
     const auto = await pending;
-    if (auto.value == null) { summary.unavailable++; continue; }
-    if (r.actualValue != null && dCmp(r.actualValue, auto.value) === 0) continue;
-    await db.transaction(async (tx: AnyDb) => {
-      await tx.update(departmentGoals).set({ actualValue: auto.value, actualSource: "auto", updatedAt: now }).where(eq(departmentGoals.id, r.id));
+    if (auto.value == null) summary.unavailable++;
+    // 来源不可用时撤下旧自动值，不能把失效结果继续显示成当前达标。
+    const changed = await db.transaction(async (tx: AnyDb) => {
+      const [current]: Raw[] = await tx.select().from(departmentGoals).where(eq(departmentGoals.id, r.id)).for("update");
+      if (!current || current.actualSource === "manual") return false;
+      if (current.actualValue == null && auto.value == null) return false;
+      if (current.actualValue != null && auto.value != null && dCmp(current.actualValue, auto.value) === 0) return false;
+      const actualSource = auto.value == null ? null : "auto";
+      await tx.update(departmentGoals).set({ actualValue: auto.value, actualSource, updatedAt: now }).where(eq(departmentGoals.id, r.id));
       await writeAudit(tx, {
         userId: opts?.actorId ?? r.createdBy,
         entity: "department_goal",
         entityId: r.id,
         action: "refresh",
-        before: { actualValue: r.actualValue, actualSource: r.actualSource },
-        after: { actualValue: auto.value, actualSource: "auto", sourceKey: auto.sourceKey, path: auto.path, builtAt: auto.builtAt },
+        before: { actualValue: current.actualValue, actualSource: current.actualSource },
+        after: { actualValue: auto.value, actualSource, sourceKey: auto.sourceKey, path: auto.path, builtAt: auto.builtAt },
       });
+      return true;
     });
-    summary.updated++;
+    if (changed) summary.updated++;
   }
   return summary;
 }

@@ -87,7 +87,54 @@ describe("master/supplier 账期与产能写路径", () => {
     }, buyer, db);
     expect(updated).toMatchObject({ paymentTermType: "monthly_credit", creditDays: 45, declaredMonthlyCapacity: "1200.5000", capacityUom: "万支", surgeCapacityPct: 50 });
     await expect(updateSupplier(supplierId, {
-      code: "SPTW-1", name: "账期写路径供应商", kinds: ["processor"], paymentTermType: "monthly_credit",
+      code: "SPTW-1", name: "账期写路径供应商", kinds: ["processor"], paymentTermType: "monthly_credit", creditDays: null,
     }, buyer, db)).rejects.toBeInstanceOf(ZodError);
+  });
+
+  it("通用编辑只改账期或产能时，另一组与未提交组内字段保持原值", async () => {
+    const identity = { code: "SPTW-PART", name: "局部字段样本", kinds: ["processor"] };
+    const created = await createSupplier({ ...identity,
+      paymentTermType: "monthly_credit", creditDays: 45, paymentTermEffectiveFrom: "2026-09-01",
+      declaredMonthlyCapacity: "50000", capacityUom: "支", surgeCapacityPct: 30,
+    }, buyer, db);
+    const term = await updateSupplier(created.id, { ...identity, creditDays: 60 }, buyer, db);
+    expect(term).toMatchObject({ paymentTermType: "monthly_credit", creditDays: 60, paymentTermEffectiveFrom: "2026-09-01",
+      declaredMonthlyCapacity: "50000.0000", capacityUom: "支", surgeCapacityPct: 30 });
+    const capacity = await updateSupplier(created.id, { ...identity, declaredMonthlyCapacity: "60000" }, buyer, db);
+    expect(capacity).toMatchObject({ paymentTermType: "monthly_credit", creditDays: 60, paymentTermEffectiveFrom: "2026-09-01",
+      declaredMonthlyCapacity: "60000.0000", capacityUom: "支", surgeCapacityPct: 30 });
+    const surge = await updateSupplier(created.id, { ...identity, surgeCapacityPct: 35 }, buyer, db);
+    expect(surge).toMatchObject({ paymentTermType: "monthly_credit", creditDays: 60, declaredMonthlyCapacity: "60000.0000", capacityUom: "支", surgeCapacityPct: 35 });
+    const typeOnly = await updateSupplier(created.id, { ...identity, paymentTermType: "on_delivery" }, buyer, db);
+    expect(typeOnly).toMatchObject({ paymentTermType: "on_delivery", creditDays: null, paymentTermEffectiveFrom: "2026-09-01", declaredMonthlyCapacity: "60000.0000" });
+    await expect(updateSupplier(created.id, { ...identity, paymentTermType: "monthly_credit" }, buyer, db)).rejects.toBeInstanceOf(ZodError);
+    expect(await updateSupplier(created.id, { ...identity, paymentTermType: "monthly_credit", creditDays: 45 }, buyer, db)).toMatchObject({ paymentTermEffectiveFrom: "2026-09-01", creditDays: 45 });
+  });
+
+  it("生效日只认真实日历：2月30日及13月在SQL前拒绝，不写审计", async () => {
+    const count = (await db.select().from(auditLogs)).length;
+    for (const day of ["2026-02-30", "2026-13-01"]) {
+      await expect(setSupplierPaymentTerm(supplierId, { paymentTermType: "monthly_credit", creditDays: 60, paymentTermEffectiveFrom: day }, buyer, db)).rejects.toBeInstanceOf(ZodError);
+      await expect(updateSupplier(supplierId, { code: "SPTW-1", name: "日期样本", kinds: ["processor"], paymentTermEffectiveFrom: day }, buyer, db)).rejects.toBeInstanceOf(ZodError);
+    }
+    expect((await db.select().from(auditLogs)).length).toBe(count);
+  });
+
+  it("显式清空一组不清空另一组，合并后的非法账期不写入也不留审计", async () => {
+    const identity = { code: "SPTW-CLEAR", name: "显式清空样本", kinds: ["processor"] };
+    const created = await createSupplier({ ...identity,
+      paymentTermType: "monthly_credit", creditDays: 45, paymentTermEffectiveFrom: "2026-09-01",
+      declaredMonthlyCapacity: "50000", capacityUom: "支", surgeCapacityPct: 30,
+    }, buyer, db);
+    const auditCount = async () => (await db.select().from(auditLogs).where(and(eq(auditLogs.entity, "supplier"), eq(auditLogs.entityId, created.id)))).length;
+    const before = await auditCount();
+    await expect(updateSupplier(created.id, { ...identity, creditDays: null }, buyer, db)).rejects.toBeInstanceOf(ZodError);
+    await expect(updateSupplier(created.id, { ...identity, capacityUom: "" }, buyer, db)).rejects.toBeInstanceOf(ZodError);
+    expect(await auditCount()).toBe(before);
+    const term = await updateSupplier(created.id, { ...identity, paymentTermType: null }, buyer, db);
+    expect(term).toMatchObject({ paymentTermType: null, creditDays: null, paymentTermEffectiveFrom: null,
+      declaredMonthlyCapacity: "50000.0000", capacityUom: "支", surgeCapacityPct: 30 });
+    const capacity = await updateSupplier(created.id, { ...identity, declaredMonthlyCapacity: null }, buyer, db);
+    expect(capacity).toMatchObject({ declaredMonthlyCapacity: null, capacityUom: null, paymentTermType: null });
   });
 });

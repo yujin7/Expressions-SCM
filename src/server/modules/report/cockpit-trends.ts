@@ -21,7 +21,7 @@ import { loadReplenishPilot, PILOT_CACHE_KEY, type PilotReadModel } from "@/serv
 import { loadRiskExpiryBuckets, RISK_EXPIRY_BUCKETS_KEY, type ExpiryBrandRow, type RiskExpiryBucketsModel } from "@/server/modules/report/risk-expiry-buckets";
 import { loadSourceRunHistory, type SourceClassSeries, type SourceRunHistory } from "@/server/modules/report/source-run-history";
 import {
-  loadSupplierPaymentTerm, SUPPLIER_PAYMENT_TERM_KEY, SUPPLIER_POOL_LABELS,
+  loadSupplierPaymentTerm, PAYMENT_TERM_TYPE_LABELS, SUPPLIER_PAYMENT_TERM_KEY, SUPPLIER_POOL_LABELS,
   type AttainmentStatus, type RankTrend, type SupplierPaymentTermModel, type SupplierPaymentTermRow, type SupplierPool,
 } from "@/server/modules/report/supplier-payment-term";
 import { loadWarehouseInventory, WAREHOUSE_INVENTORY_CACHE_KEY, WAREHOUSE_WINDOWS, type WarehouseInventoryModel } from "@/server/modules/report/warehouse-inventory";
@@ -698,6 +698,7 @@ export interface SupplierConcentrationRow {
   cooperationYears: number | null;
   cooperationSource: "system_inferred" | null;
   paymentTermText: string | null;
+  paymentTermEffectiveFrom: string | null;
   attainment: AttainmentStatus;
   /** 同一供应商在 SCM 采购订单读模型里的 OTIF；当年无已批 PO → null（不是 0%） */
   otif: OtifStats | null;
@@ -712,6 +713,8 @@ export interface SupplierConcentrationBlock {
   topSharePct: number | null;
   /** 账期类采购额占比（百分数字符串，读模型原值） */
   creditTermSpendSharePct: string | null;
+  unclassifiedSpendSuppliers: number;
+  termAsOf: string;
   attainment: { rate: number | null; candidates: number; attained: number };
   rows: SupplierConcentrationRow[];
   suppliersWithSpend: number;
@@ -762,7 +765,10 @@ export function buildSupplierConcentration(
       rankTrend: r.rankTrend,
       cooperationYears: r.cooperationYears,
       cooperationSource: r.cooperationSource,
-      paymentTermText: r.paymentTermText,
+      paymentTermText: r.paymentTermType
+        ? `${PAYMENT_TERM_TYPE_LABELS[r.paymentTermType]}${r.paymentTermType === "monthly_credit" ? ` ${r.creditDays ?? "待核对"} 天` : ""}`
+        : r.paymentTermText ? `未结构化：${r.paymentTermText}` : null,
+      paymentTermEffectiveFrom: r.paymentTermEffectiveFrom,
       attainment: r.attainment,
       otif,
       otifRatePct: ratePctNumOf(otif?.rate),
@@ -775,6 +781,8 @@ export function buildSupplierConcentration(
     topN: SUPPLIER_CONCENTRATION_TOP_N,
     topSharePct: share(topSpend),
     creditTermSpendSharePct: spt.summary.creditTermSpendSharePct,
+    unclassifiedSpendSuppliers: spt.summary.unclassifiedSpendSuppliers,
+    termAsOf: spt.asOf,
     attainment: {
       rate: ratePctNumOf(spt.summary.attainmentRate),
       candidates: spt.summary.candidates,

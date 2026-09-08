@@ -777,20 +777,20 @@ Object.assign(METRICS, {
   paymentTermAttainment: {
     id: "paymentTermAttainment",
     label: "账期达成率",
-    short: "账期谈判候选供应商中，已登记月结且天数达到目标下限的比例",
+    short: "账期谈判候选供应商中，截至上海业务日已生效月结且天数达到目标下限的比例",
     formula: "候选中达标数 ÷ 候选数；候选 = 合作 ≥ payment_term_min_years 且当年池内排名较上年上升",
     unit: "pct",
     tier: "derived",
-    caveat: "合作起始日由最早已批 PO/JG 系统推算；候选为 0 时无值而非 100%",
+    caveat: "分子只计已确认达标，分母仍含全部候选；未来条款待生效、缺类型/生效日待核对。不是谈判关案率；合作起始日由最早已批 PO/JG 系统推算；候选为 0 时无值而非 100%",
   },
   creditTermSpendShare: {
     id: "creditTermSpendShare",
     label: "账期类采购额占比",
-    short: "月结类供应商当年采购额占全部当年采购额的比例",
-    formula: "Σ月结供应商（PO 未税额 + JS 结算额）÷ Σ全部供应商同口径采购额",
+    short: "当前已生效月结供应商当年采购额占全部当年采购额的比例",
+    formula: "Σ当前有效月结供应商（PO 未税额 + JS 结算额）÷ Σ全部供应商同口径采购额",
     unit: "pct",
     tier: "derived",
-    caveat: "代理指标：按采购订单/结算口径，不是应付余额占比；真应付待用友授权",
+    caveat: "有非零采购额的供应商条款待生效/待核对时占比留空；月结采购额仅为已确认小计。代理指标：当前分类下的年度采购/结算口径，不是逐单账期或应付余额占比；真应付待用友授权",
   /* ── D60 调拨线路 / 各仓周转（W2-C 登记） ── */
   },
   transferLaneAvgFee: {

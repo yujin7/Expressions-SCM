@@ -116,7 +116,8 @@ const ATTAINMENT_META: Record<string, { text: string; color: string }> = {
   attained: { text: "已达标", color: "success" },
   below_target: { text: "低于目标", color: "warning" },
   not_credit: { text: "非账期", color: "default" },
-  unknown: { text: "未登记", color: "default" },
+  unknown: { text: "待核对", color: "default" },
+  pending: { text: "待生效", color: "warning" },
 };
 const RANK_TREND_META: Record<string, string> = { up: "名次较上一年上升", down: "名次较上一年下降", flat: "名次持平", unknown: "缺对比年，无名次趋势" };
 
@@ -145,7 +146,7 @@ export function SupplierConcentrationCard({ block }: { block: Block<SupplierConc
           { title: "采购额", dataIndex: "spend", width: 120, align: "right", render: (v: string | null) => v == null ? <Typography.Text type="secondary">无权限</Typography.Text> : formatYuan(v) },
           { title: "占比", dataIndex: "sharePct", width: 90, align: "right", render: (v: number | null) => formatPct(v, 1) },
           { title: "合作年限", dataIndex: "cooperationYears", width: 110, align: "right", render: (v: number | null, r) => v == null ? "—" : <AntTooltip title={r.cooperationSource === "system_inferred" ? "由最早已批 PO/JG 建单日系统推算，不是供应商主数据" : ""}><span>{v} 年{r.cooperationSource === "system_inferred" ? " *" : ""}</span></AntTooltip> },
-          { title: "账期", dataIndex: "paymentTermText", width: 150, render: (v: string | null, r) => <Space size={4}><Tag color={ATTAINMENT_META[r.attainment]?.color}>{ATTAINMENT_META[r.attainment]?.text ?? r.attainment}</Tag>{v ?? "—"}</Space> },
+          { title: "登记账期", dataIndex: "paymentTermText", width: 180, render: (v: string | null, r) => <Space direction="vertical" size={0}><Tag color={ATTAINMENT_META[r.attainment]?.color}>{ATTAINMENT_META[r.attainment]?.text ?? r.attainment}</Tag><span>{v ?? "—"}</span>{r.paymentTermEffectiveFrom ? <Typography.Text type="secondary">生效日 {r.paymentTermEffectiveFrom}</Typography.Text> : null}</Space> },
           { title: "OTIF", key: "otif", width: 180, align: "right", render: (_v, r) => r.otif == null || r.otif.evaluable === 0
             ? <Typography.Text type="secondary">当年无可评 PO</Typography.Text>
             : <span>{formatPct(r.otifRatePct, 1)} <Typography.Text type="secondary">n={r.otif.evaluable}</Typography.Text></span> },
@@ -161,7 +162,7 @@ export function SupplierConcentrationCard({ block }: { block: Block<SupplierConc
             </Col>
             <Col xs={12} md={8}>
               <Statistic title={metricLabel("creditTermSpendShare", "账期类采购额占比")} value={formatPct(data.creditTermSpendSharePct, 1)} valueStyle={{ fontSize: 18 }} />
-              <Muted>采购/结算口径的代理指标，不是应付余额占比</Muted>
+              <Muted>截至 {data.termAsOf} 的采购代理，非应付余额。{data.unclassifiedSpendSuppliers > 0 ? `${data.unclassifiedSpendSuppliers} 家有采购额的条款待核对/待生效，占比留空。` : "只计当前已生效月结。"}</Muted>
             </Col>
             <Col xs={24} md={8}>
               <Statistic title={metricLabel("paymentTermAttainment", "账期达成率")} value={formatPct(data.attainment.rate, 1)} valueStyle={{ fontSize: 18 }} />
