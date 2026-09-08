@@ -244,9 +244,9 @@ export default function DecisionVisual({
           <div
             role="group"
             aria-label={`数据覆盖 ${coverageLabel}`}
-            style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}
+            style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 8 }}
           >
-            <Typography.Text type="secondary" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12, overflowWrap: "anywhere", minWidth: 0 }}>
               覆盖 {coverageLabel}
             </Typography.Text>
             {coverageValue != null ? (

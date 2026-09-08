@@ -34,7 +34,7 @@ import CaliberNote from "@/components/CaliberNote";
 import DecisionMetric from "@/components/DecisionMetric";
 import DecisionVisual from "@/components/DecisionVisual";
 import ProductExternalDecisionEvidenceCard from "@/components/ProductExternalDecisionEvidenceCard";
-import { VISUAL_COLOR } from "@/components/decision-visuals";
+import { VISUAL_COLOR, positiveLogAxis } from "@/components/decision-visuals";
 import { exportCsv } from "@/components/exportCsv";
 import ListToolbar from "@/components/ListToolbar";
 import { AsyncExportButton } from "@/components/ExportButton";
@@ -108,8 +108,6 @@ const fmt = (v: number | null | undefined): string => (v == null ? "—" : Numbe
 const CHART_LIMIT = 500;
 /** 可销天数显示封顶（无动销 = 无穷，散点上按封顶值画在顶部并注明） */
 const COVER_CAP = 720;
-/** 对数横轴无法表示 0，无动销 SKU 用该占位值画在最左侧 */
-const DAILY_FLOOR = 0.01;
 
 const displayExternalMetric = (value: string): string => {
   const parsed = Number(value);
@@ -250,6 +248,10 @@ export default function InventoryAnalyticsClient() {
 
   const chartRows = useMemo(() => chart?.rows ?? [], [chart]);
   const truncated = (chart?.total ?? 0) > CHART_LIMIT;
+  const dailyAxis = useMemo(
+    () => positiveLogAxis(chartRows.filter((r) => r.onHand > 0).map((r) => r.daily)),
+    [chartRows],
+  );
 
   /* ── 散点数据 ── */
   const points = useMemo<Point[]>(
@@ -259,7 +261,7 @@ export default function InventoryAnalyticsClient() {
         .map((r) => ({
           code: r.code,
           name: r.name,
-          x: r.daily > 0 ? r.daily : DAILY_FLOOR,
+          x: r.daily > 0 ? r.daily : dailyAxis.placeholder,
           y: r.daysCover == null ? COVER_CAP : Math.min(r.daysCover, COVER_CAP),
           z: r.onHand,
           abc: r.abc ?? "C",
@@ -269,7 +271,7 @@ export default function InventoryAnalyticsClient() {
           daily: r.daily,
           daysCover: r.daysCover,
         })),
-    [chartRows],
+    [chartRows, dailyAxis],
   );
 
   const onPointClick = (d: unknown) => {
@@ -531,7 +533,7 @@ export default function InventoryAnalyticsClient() {
                   label: truncated ? `图形 TOP ${CHART_LIMIT}` : "有在库成品",
                 }}
                 activeFilters={[`周转窗口 ${windowDays} 天`, q ? `搜索：${q}` : "全部 SKU"]}
-                caveat={`对数轴无法显示 0，无动销 SKU 放在最左占位并降低透明度；可销天数超过 ${COVER_CAP} 天封顶绘制。`}
+                caveat={`对数轴无法显示非正数；当前返回日均销≤0的 SKU 在最左单独占位、降低透明度，不能据此证明没有实际销售。正日销按真实值绘制；可销天数超过 ${COVER_CAP} 天封顶绘制。`}
                 summary={`图中 ${points.length} 个 SKU；橙色虚线为 ${data?.coverAlertDays ?? 30} 天缺货告警线，黄色虚线为 ${data?.slowDaysThreshold ?? 180} 天滞销线。气泡越大表示在库越多。`}
                 state={chartError ? "error" : chart == null ? "loading" : points.length === 0 ? "empty" : "ready"}
                 stateDetail={chartError ?? "当前筛选范围内没有在库成品。"}
@@ -568,9 +570,15 @@ export default function InventoryAnalyticsClient() {
                         dataKey="x"
                         name="日均销"
                         scale="log"
-                        domain={[DAILY_FLOOR, "auto"]}
+                        domain={dailyAxis.domain}
+                        ticks={dailyAxis.ticks}
+                        niceTicks="none"
+                        interval="preserveStartEnd"
+                        minTickGap={16}
+                        tick={{ fontSize: 11 }}
+                        padding={{ left: 16, right: 16 }}
                         allowDataOverflow
-                        tickFormatter={(v: number) => (v <= DAILY_FLOOR ? "无动销" : v >= 1000 ? `${Math.round(v / 1000)}k` : String(v))}
+                        tickFormatter={dailyAxis.formatTick}
                         label={{ value: "日均销（对数轴）", position: "insideBottom", offset: -16, fontSize: 12 }}
                       />
                       <YAxis
@@ -587,7 +595,7 @@ export default function InventoryAnalyticsClient() {
                         formatter={(v, n, item) => {
                           // 横轴对无动销 SKU 用占位值作图，tooltip 必须回到真实值，不能骗人
                           const p = (item as unknown as { payload?: Point } | undefined)?.payload;
-                          if (n === "日均销") return [p?.noSales ? "无动销" : fmt(p?.daily ?? (v as number)), "日均销"];
+                          if (n === "日均销") return [fmt(p?.daily ?? (v as number)), "日均销"];
                           if (n === "可销天数") {
                             return [p?.daysCover == null ? "∞（无动销）" : p.capped ? `${fmt(COVER_CAP)}+` : fmt(p.daysCover), "可销天数"];
                           }
