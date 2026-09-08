@@ -11,7 +11,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Alert, App, Button, Col, Empty, Pagination, Row, Select, Space, Spin, Statistic, Switch, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Col, Empty, Grid, Pagination, Row, Select, Space, Spin, Statistic, Switch, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import AlertCloseModal from "@/components/AlertCloseModal";
@@ -317,8 +317,27 @@ function CoverTab() {
 }
 
 /* ── Tab 2：爆单预警 ── */
+/** Compact representation of the same row; pagination, alert lookup and authority stay in the parent. */
+export function SalesSpikeCard({ row, ack, action }: { row: SpikeHit; ack: ReactNode; action: ReactNode }) {
+  const identity = row.kind === "sku" ? row.code : row.platformSkuId;
+  return <article className={styles.spikeCard} aria-label={`${identity ?? "未知身份"} 爆单`}>
+    <strong>{identity ?? "未知身份"}</strong>
+    {row.name ? <div className={styles.name}>{row.name}</div> : null}
+    <div className={styles.spikeMeta}>{row.kind === "platform" ? <Tag color="blue">未映射</Tag> : null}{row.expected ? <Tag color="blue">大促预期内</Tag> : null}</div>
+    <div className={styles.basis}>店铺：{row.shopName}</div>
+    <dl className={styles.facts}>
+      <div><dt>最新日涨幅</dt><dd>{row.risePct == null ? "—" : `+${row.risePct}%`}</dd></div>
+      <div><dt>基线 / 阈值（件/日）</dt><dd>{formatQty(row.baseline)} / {formatQty(row.threshold)}</dd></div>
+    </dl>
+    <dl className={styles.spikeDays}>{row.days.map(day => <div key={day.date}><dt><time dateTime={day.date}>{day.date}</time></dt><dd>{formatQty(day.qty)} 件</dd></div>)}</dl>
+    <div className={styles.basis}>数据截止：{row.anchorDate}</div>
+    <div className={styles.footer}>{ack}{action}</div>
+  </article>;
+}
+
 export function SpikeTab() {
   const me = useMe();
+  const wide = Grid.useBreakpoint().xl;
   const canRefresh = hasAnyRole(me, "pmc", "ops"); // 与 /api/report/sales-spike?refresh=1 的 requireAnyRole(pmc, ops, admin) 一致
   const listState = useListState<{ q?: string }>({ key: "inventory-alerts-spike", paramPrefix: "spike", defaults: { q: "" }, paginated: false });
   const { filters } = listState;
@@ -366,14 +385,21 @@ export function SpikeTab() {
       [...data.hits, ...data.unmappedHits].map((r) => [r.kind, r.code, r.name, r.platformSkuId, r.shopName, r.days.map((d) => d.qty).join("|"), r.risePct, r.baseline, r.threshold, r.anchorDate, alerts.phase !== "success" ? "告警状态未读取" : alerts.byKey[keyOf(r)] ? ackText(alerts.byKey[keyOf(r)]) : "无可见告警"]),
     );
   };
+  const compactColumns: ColumnsType<SpikeHit> = [{
+    title: "爆单 · 涨幅", dataIndex: "risePct", key: "risePct",
+    sorter: (a, b) => Number(a.risePct ?? 0) - Number(b.risePct ?? 0), defaultSortOrder: "descend",
+    render: (_, row) => <SalesSpikeCard row={row}
+      ack={<AckCell phase={alerts.phase} alert={alerts.byKey[keyOf(row)]} onAck={id => void alerts.ack(id)} />}
+      action={<a href={row.href}>{row.kind === "sku" ? "看补货" : "认领身份"}</a>} />,
+  }];
   const table = (rows: SpikeHit[]) => (
     <Table<SpikeHit>
       rowKey={keyOf}
       size={listState.tableSize}
       loading={loading}
-      columns={columns}
+      columns={wide ? columns : compactColumns}
       dataSource={rows}
-      scroll={{ x: 1200 }}
+      scroll={{ x: wide ? 1200 : undefined }}
       pagination={{ showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
       locale={{ emptyText: loading ? "正在加载当前窗口…" : error || !data ? "数据未加载" : data.state === "insufficient" ? "证据不足，无法判定；不代表没有爆单" : "完整观测窗口内没有命中" }}
       expandable={{

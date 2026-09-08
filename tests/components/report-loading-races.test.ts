@@ -77,6 +77,7 @@ vi.mock("react", async (original) => ({
 }));
 vi.mock("antd", () => ({
   App: { useApp: () => ({ message }) },
+  Grid: { useBreakpoint: () => ({ xl: true }) },
   Alert: "alert", Button: "button", Card: "card", Col: "col", Row: "row", Select: "select",
   Space: "space", Switch: "switch", Statistic: "statistic", Table: "table", Tag: "tag", Popconfirm: "popconfirm",
   Progress: "progress", Segmented: "segmented", Tabs: "tabs", Tooltip: "tooltip", Pagination: "pagination", Empty: "empty", Spin: "spin",

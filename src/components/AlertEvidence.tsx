@@ -10,9 +10,10 @@
  * 否则 /alerts（只拿到 params_snapshot）永远看不到依据，而 /inventory/alerts 看得到，同一条告警两个说法。
  * 渲染统一交给 AlertWhyList，本组件不再自画一套列表。
  */
-import { Space, Tag, Typography } from "antd";
+import { Typography } from "antd";
 import AlertWhyList from "@/components/AlertWhyList";
 import { formatAsOf } from "@/components/format";
+import styles from "./AlertEvidence.module.css";
 
 export interface AlertWhy { label: string; value: string; source: string }
 
@@ -52,7 +53,7 @@ export default function AlertEvidence({ alert }: { alert: AlertEvidenceFields })
     : [];
   const why = whyOf(alert);
   return (
-    <Space direction="vertical" size={6} style={{ width: "100%", fontSize: 12 }}>
+    <div className={styles.evidence}>
       {why.length ? (
         <div>
           <Typography.Text strong>为什么触发</Typography.Text>
@@ -61,12 +62,12 @@ export default function AlertEvidence({ alert }: { alert: AlertEvidenceFields })
       ) : null}
       <div><Typography.Text type="secondary">规则：</Typography.Text>{alert.sourceRule ?? "—"}</div>
       {params.length ? (
-        <div>
-          <Typography.Text type="secondary">参数快照：</Typography.Text>
-          <Space wrap size={4}>{params.map(([k, v]) => <Tag key={k} style={{ marginInlineEnd: 0 }}>{k} = {fmtVal(v)}</Tag>)}</Space>
-        </div>
+        <details className={styles.parameters}>
+          <summary>参数快照（{params.length} 项）</summary>
+          <dl className={styles.params} aria-label="参数快照">{params.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{fmtVal(v)}</dd></div>)}</dl>
+        </details>
       ) : null}
       <div><Typography.Text type="secondary">已知悉：</Typography.Text>{ackText(alert)}</div>
-    </Space>
+    </div>
   );
 }
