@@ -211,10 +211,16 @@ describe("预警引擎护栏", () => {
       expect(keyOf("ack")).toBe(`${a.id}:ack:${today}`);
       expect(keyOf("close")).toBe(`${b.id}:close`);
       for (const e of events) expect(e.idempotencyKey).not.toMatch(/\d{2}:\d{2}:\d{2}\.\d{3}Z/);
-      // 同一上海日重复 ack（清知悉后再 ack）不再重复落账
+      // Ordinary retries must not add a fact. Clearing acknowledgement is a new
+      // generation, not a retry; the real engine-reset path is tested separately.
+      await ackAlert(pmc, a.id, db, "重复请求");
+      expect((await db.select().from(schema.alertEvents).where(eq(schema.alertEvents.event, "ack"))).length).toBe(1);
       await db.update(schema.systemAlerts).set({ ackedAt: null, ackedBy: null }).where(eq(schema.systemAlerts.id, a.id));
       await ackAlert(pmc, a.id, db, "又看到了");
-      expect((await db.select().from(schema.alertEvents).where(eq(schema.alertEvents.event, "ack"))).length).toBe(1);
+      const ackEvents = await db.select().from(schema.alertEvents).where(eq(schema.alertEvents.event, "ack"))
+        .orderBy(schema.alertEvents.id);
+      expect(ackEvents).toHaveLength(2);
+      expect(ackEvents[1].idempotencyKey).toBe(`${a.id}:ack:${today}:after:${ackEvents[0].id}`);
     } finally {
       await client.close();
     }

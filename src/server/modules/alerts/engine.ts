@@ -1,4 +1,4 @@
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { shanghaiDayOf } from "@/server/core/business-day";
@@ -366,23 +366,34 @@ export async function ackAlert(actor: SessionUser, alertId: number, dbArg?: AnyD
   const db = await resolveDb(dbArg);
   if (!Number.isInteger(alertId) || alertId <= 0) throw new ApiError(400, "告警 id 非法");
   return db.transaction(async (tx: AnyDb) => {
-    const [row] = await tx.select().from(schema.systemAlerts).where(eq(schema.systemAlerts.id, alertId)).limit(1);
+    // Serialize against another acknowledgement, manual close or engine update.
+    // Event-key deduplication alone does not protect the state or audit receipt.
+    const [row] = await tx.select().from(schema.systemAlerts).where(eq(schema.systemAlerts.id, alertId)).limit(1).for("update");
     if (!row) throw new ApiError(404, "告警不存在");
     const isAdmin = actor.roles.includes("admin");
     const isOwner = row.ownerRole != null && actor.roles.includes(row.ownerRole);
     if (!isAdmin && !isOwner) throw new ApiError(403, `无权限知悉此告警：需要 ${row.ownerRole ?? "admin"} 角色`);
     if (row.status !== "open") throw new ApiError(409, "告警已关闭，无需知悉");
+    // A retry is not a new acknowledgement and must not restart the suppression
+    // clock or replace its original actor. Only the engine's reset permits a new one.
+    if (row.ackedAt) return { id: alertId, ackedAt: row.ackedAt.toISOString() };
+    // The row lock serializes acknowledgement generations. A real reset (including
+    // same-day severity escalation) permits a new fact, linked to the last immutable
+    // ack event; an ordinary retry returned above and cannot consume a generation.
+    const [previousAck] = await tx.select({ id: schema.alertEvents.id }).from(schema.alertEvents)
+      .where(and(eq(schema.alertEvents.alertId, alertId), eq(schema.alertEvents.event, "ack")))
+      .orderBy(desc(schema.alertEvents.id)).limit(1);
     const now = new Date();
     await tx.update(schema.systemAlerts).set({ ackedBy: actor.id, ackedAt: now }).where(eq(schema.systemAlerts.id, alertId));
     await writeAudit(tx, {
       userId: actor.id, entity: "system_alert", entityId: alertId, action: "ack",
       before: { ackedBy: row.ackedBy, ackedAt: row.ackedAt }, after: { ackedBy: actor.id, ackedAt: now.toISOString(), note: note ?? null },
     });
-    /* 幂等键必须稳定（红队 e）：原来嵌 now.toISOString()，每次调用都是新键——
-       "幂等键"反而保证了重复落账。同一告警同一上海日的重复知悉只记一条；
-       跨日再次知悉（清知悉后重新 ack）仍是新事实，落新的一条。 */
+    // Preserve the historical first-ack key; subsequent genuine acknowledgements
+    // use the preceding fact's ID, not a random/request timestamp or daily dedupe.
+    const ackKey = `${alertId}:ack:${alertEventDay(now)}${previousAck ? `:after:${previousAck.id}` : ""}`;
     await appendAlertEvents(tx, [{
-      alertId, event: "ack", at: now, actorId: actor.id, note: note ?? null, idempotencyKey: `${alertId}:ack:${alertEventDay(now)}`,
+      alertId, event: "ack", at: now, actorId: actor.id, note: note ?? null, idempotencyKey: ackKey,
     }]);
     return { id: alertId, ackedAt: now.toISOString() };
   });
@@ -413,12 +424,13 @@ export async function closeAlert(
   const reason = reasonCode as ManualCloseReasonCode;
   const trimmedNote = typeof note === "string" && note.trim() ? note.trim().slice(0, 500) : null;
   return db.transaction(async (tx: AnyDb) => {
-    const [row] = await tx.select().from(schema.systemAlerts).where(eq(schema.systemAlerts.id, alertId)).limit(1);
+    const [row] = await tx.select().from(schema.systemAlerts).where(eq(schema.systemAlerts.id, alertId)).limit(1).for("update");
     if (!row) throw new ApiError(404, "告警不存在");
     const isAdmin = actor.roles.includes("admin");
     const isOwner = row.ownerRole != null && actor.roles.includes(row.ownerRole);
     if (!isAdmin && !isOwner) throw new ApiError(403, `无权限关闭此告警：需要 ${row.ownerRole ?? "admin"} 角色`);
     if (row.status !== "open") throw new ApiError(409, "告警已关闭");
+    if (reason === "manual" && !trimmedNote) throw new ApiError(400, "选择「其他（人工）」时请在备注说明原因");
     const now = opts?.now ?? new Date();
     await tx.update(schema.systemAlerts).set({ status: "resolved", autoResolved: false, resolvedAt: now })
       .where(and(eq(schema.systemAlerts.id, alertId), eq(schema.systemAlerts.status, "open")));
@@ -427,7 +439,7 @@ export async function closeAlert(
       before: { status: row.status, autoResolved: row.autoResolved, resolvedAt: row.resolvedAt },
       after: { status: "resolved", autoResolved: false, resolvedAt: now.toISOString(), reasonCode: reason, note: trimmedNote },
     });
-    /* 幂等键稳定（红队 e）：一条告警只会被关闭一次（上面的 status='open' 守卫保证），
+    /* 行锁后的 status 检查保证只有一位关闭者写状态、审计及事件；
        所以 `${alertId}:close` 就是它的自然键——重放同一次关闭不会再落一条。 */
     await appendAlertEvents(tx, [{
       alertId, event: "close", at: now, actorId: actor.id, reasonCode: reason, note: trimmedNote,
