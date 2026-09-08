@@ -94,6 +94,14 @@ const KIND_LABELS: Record<CaseKind, string> = {
   corrective: "整改闭环",
   payment_term: "账期谈判",
 };
+const SORT_OPTIONS = [
+  { value: ":", label: "优先级 / 截止日" },
+  { value: "dueDate:ascend", label: "截止日：近到远" }, { value: "dueDate:descend", label: "截止日：远到近" },
+  { value: "createdAt:descend", label: "发起时间：新到旧" }, { value: "createdAt:ascend", label: "发起时间：旧到新" },
+  { value: "priority:ascend", label: "优先级：紧急优先" }, { value: "priority:descend", label: "优先级：常规优先" },
+  { value: "supplierCode:ascend", label: "供应商编码：升序" }, { value: "supplierCode:descend", label: "供应商编码：降序" },
+  { value: "ownerName:ascend", label: "责任人：姓名升序" }, { value: "ownerName:descend", label: "责任人：姓名降序" },
+];
 const PRIORITY_LABELS: Record<Priority, string> = {
   normal: "常规",
   high: "高",
@@ -533,7 +541,7 @@ export default function SupplierLifecycleClient() {
             <Select aria-label="责任人筛选" value={filters.ownerId} style={{ width: 150 }} options={[{ value: "", label: "全部责任人" }, ...(data?.owners ?? []).map(owner => ({ value: String(owner.id), label: owner.name }))]} onChange={value => listState.setFilter({ ownerId: value })} />
             {filters.supplierId ? <Tag closable onClose={() => listState.setFilter({ supplierId: "" })}>供应商 #{filters.supplierId}</Tag> : null}
             {filters.caseId ? <Tag closable onClose={() => listState.setFilter({ caseId: "" })}>工作项 #{filters.caseId}</Tag> : null}
-            {!screens.lg ? <Select aria-label="排序" style={{ width: 170 }} value={`${filters.sort}:${filters.order}`} options={[{ value: ":", label: "优先级 / 截止日" }, { value: "dueDate:ascend", label: "截止日：近到远" }, { value: "dueDate:descend", label: "截止日：远到近" }, { value: "supplierCode:ascend", label: "供应商编码升序" }]} onChange={value => { const [sort, order] = value.split(":"); listState.setFilter({ sort, order }); }} /> : null}
+            {!screens.lg ? <Select aria-label="排序" style={{ width: 190 }} value={filters.sort ? `${filters.sort}:${filters.order || "ascend"}` : ":"} options={SORT_OPTIONS} onChange={value => { const [sort, order] = value.split(":"); listState.setFilter({ sort, order }); }} /> : null}
           </>
         )}
         primaryActions={(
@@ -545,9 +553,10 @@ export default function SupplierLifecycleClient() {
         )}
       />
 
-      <Typography.Paragraph type="secondary" style={{ margin: "0 0 12px" }}>
-        导出当前筛选的全部工作项及最新跟进、协议和结果（不是仅本页）；逐次审计请展开记录。超过5,000行转后台任务，单文件上限50,000行。
-      </Typography.Paragraph>
+      <details className="supplier-work-export-help" style={{ marginBottom: 12 }}>
+        <summary style={{ cursor: "pointer" }}>导出范围：全部筛选结果（非本页）</summary>
+        <p style={{ margin: "8px 0 0" }}>包含完整原因、最新跟进、账期基线、协议和结果；逐次审计请展开记录。超过5,000行转后台任务，按执行时最新数据导出，单文件上限50,000行，超限会附提示，请缩小筛选范围。</p>
+      </details>
       <Table<LifecycleRow>
         rowKey="id"
         className="supplier-lifecycle-table"

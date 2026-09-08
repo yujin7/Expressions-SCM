@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import SupplierLifecycleClient from "@/app/(app)/master/supplier/lifecycle/supplier-lifecycle-client";
 
 const h = vi.hoisted(() => ({ cursor: 0, formCursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false }));
-const state = vi.hoisted(() => ({ desktop: false, buyer: true, caseId: "", kind: "payment_term", error: null as string | null }));
+const state = vi.hoisted(() => ({ desktop: false, buyer: true, caseId: "", kind: "payment_term", sort: "", order: "", error: null as string | null }));
 const send = vi.hoisted(() => vi.fn());
 const reload = vi.hoisted(() => vi.fn());
 const forms = vi.hoisted(() => [0, 1, 2].map(() => ({ values: {} as Record<string, unknown>, resetFields() { this.values = {}; },
@@ -26,7 +26,7 @@ vi.mock("antd", () => ({ Alert: "alert", Button: "button", Card: "card", Col: "c
 }));
 vi.mock("@/components/supplier-lifecycle-request", async original => ({ ...await original<typeof import("@/components/supplier-lifecycle-request")>(), submitSupplierWork: send }));
 vi.mock("@/components/useMe", () => ({ useMe: () => ({ id: 3 }), hasAnyRole: () => state.buyer }));
-vi.mock("@/components/useListState", () => ({ useListState: () => ({ filters: { q: "", status: "open", kind: state.kind, caseId: state.caseId }, queryString: () => `kind=${state.kind}&page=3&pageSize=20`, setFilter: vi.fn(), paginationProps: () => ({}), tableSize: "small" }) }));
+vi.mock("@/components/useListState", () => ({ useListState: () => ({ filters: { q: "", status: "open", kind: state.kind, caseId: state.caseId, sort: state.sort, order: state.order }, queryString: () => `kind=${state.kind}&page=3&pageSize=20`, setFilter: vi.fn(), paginationProps: () => ({}), tableSize: "small" }) }));
 vi.mock("@/components/useDocumentRead", () => ({ useDocumentRead: () => ({ data: state.error ? null : { rows: [], owners: [{ id: 3, name: "采购" }], summary: { open: 1, overdue: 0, admissions: 0, corrective: 0, negotiations: 1 }, total: 1 }, error: state.error, phase: state.error ? "error" : "success", retry: reload }) }));
 vi.mock("@/components/ListToolbar", () => ({ default: "toolbar" }));
 vi.mock("@/components/ExportButton", () => ({ default: "export" }));
@@ -47,7 +47,7 @@ function action(label: string) {
   const button = nodes(column.render!(null, row)).find(n => n.type === "button" && text(n.props.children) === label)!;
   (button.props.onClick as () => void)();
 }
-beforeEach(() => { vi.stubGlobal("React", React); h.cursor = 0; h.slots = []; h.effects = []; h.cleanups.clear(); state.desktop = false; state.buyer = true; state.caseId = ""; state.kind = "payment_term"; state.error = null; forms.forEach(f => f.resetFields()); send.mockReset(); reload.mockClear(); });
+beforeEach(() => { vi.stubGlobal("React", React); h.cursor = 0; h.slots = []; h.effects = []; h.cleanups.clear(); state.desktop = false; state.buyer = true; state.caseId = ""; state.kind = "payment_term"; state.sort = ""; state.order = ""; state.error = null; forms.forEach(f => f.resetFields()); send.mockReset(); reload.mockClear(); });
 afterEach(() => { for (const cleanup of h.cleanups.values()) cleanup(); vi.unstubAllGlobals(); });
 it.each(["admission", "corrective", "payment_term", ""])("发起类型跟随当前筛选 %s，无筛选才默认整改", kind => {
   state.kind = kind;
@@ -61,8 +61,30 @@ it("导出入口复用当前查询并明确全部结果而非本页，失败或�
   const tree = render(); const toolbar = tree.find(n => n.type === "toolbar")!;
   const button = nodes(toolbar.props.primaryActions as ReactNode).find(n => n.type === "export")!;
   expect(button.props.href).toBe("/api/export/supplier-lifecycle?kind=admission&page=3&pageSize=20");
-  expect(text(tree.map(n => n.props.children))).toContain("不是仅本页");
+  expect(text(tree.map(n => n.props.children))).toContain("非本页");
   expect(nodes(toolbar.props.primaryActions as ReactNode).some(n => text(n.props.children) === "发起工作项")).toBe(false);
+});
+it("窄屏覆盖每个服务端排序键及方向，不向用户显示原始键；导出长说明默认收起", () => {
+  const tree = render(); const toolbar = tree.find(n => n.type === "toolbar")!;
+  const sort = nodes(toolbar.props.extra as ReactNode).find(n => n.props["aria-label"] === "排序")!;
+  const options = sort.props.options as { value: string; label: string }[];
+  for (const key of ["supplierCode", "priority", "dueDate", "ownerName", "createdAt"]) for (const order of ["ascend", "descend"]) {
+    const option = options.find(o => o.value === `${key}:${order}`);
+    expect(option, `${key}:${order}`).toBeDefined(); expect(option?.label).not.toContain(key);
+  }
+  const help = tree.find(n => n.type === "details" && text(n.props.children).includes("导出范围"))!;
+  expect(help).toBeDefined(); expect(help.props.open).not.toBe(true);
+});
+it.each([
+  ["createdAt", "descend", "createdAt:descend"],
+  ["ownerName", "", "ownerName:ascend"],
+  ["", "descend", ":"],
+  ["", "", ":"],
+])("排序链接 %s/%s 的可见选项与服务端缺省一致", (sortKey, order, expected) => {
+  state.sort = sortKey; state.order = order;
+  const toolbar = render().find(n => n.type === "toolbar")!;
+  const select = nodes(toolbar.props.extra as ReactNode).find(n => n.props["aria-label"] === "排序")!;
+  expect(select.props.value).toBe(expected);
 });
 it("关案后保留准确回执和不受进行中筛选影响的历史链接", async () => {
   action("记录结果"); forms[1].values = { outcome: "failed", closureNote: "本轮未取得实际协议" };
