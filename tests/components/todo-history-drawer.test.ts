@@ -2,11 +2,11 @@ import React, { isValidElement, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import TodoHistoryDrawer from "@/app/(app)/todo/TodoHistoryDrawer";
 
-const state = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: [] as (() => void)[], fetch: vi.fn(), retry: vi.fn(), url: "" }));
+const state = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: [] as (() => void)[], fetch: vi.fn(), retry: vi.fn(), url: "", nextBefore: null as number | null }));
 vi.mock("antd", () => ({ Alert: "alert", Button: "button", Drawer: "drawer", Space: "space", Spin: "spin", Input: { TextArea: "textarea" } }));
 vi.mock("@/components/LoadErrorAlert", () => ({ default: "load-error" }));
 vi.mock("@/components/fetchJson", () => ({ fetchJson: state.fetch }));
-vi.mock("@/components/useDocumentRead", () => ({ useDocumentRead: (url: string) => { state.url = url; return { phase: "success", data: { rows: [], nextBefore: null }, error: null, retry: state.retry }; } }));
+vi.mock("@/components/useDocumentRead", () => ({ useDocumentRead: (url: string) => { state.url = url; return { phase: "success", data: { rows: [], nextBefore: state.nextBefore }, error: null, retry: state.retry }; } }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
   useState: (initial: unknown) => { const i = state.cursor++; if (!(i in state.slots)) state.slots[i] = initial; return [state.slots[i], (v: unknown) => { state.slots[i] = v; }]; },
@@ -21,11 +21,30 @@ const button = (text: string) => nodes(render()).find(n => n.type === "button" &
 const click = (text: string) => (button(text).onClick as () => void)();
 const type = (value: string) => (input().onChange as (e: unknown) => void)({ target: { value } });
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
-beforeEach(() => { state.cursor = 0; state.slots = []; state.effects = []; state.cleanups = []; state.fetch.mockReset(); state.retry.mockReset(); vi.stubGlobal("React", React); });
+beforeEach(() => { state.cursor = 0; state.slots = []; state.effects = []; state.cleanups = []; state.nextBefore = null; state.fetch.mockReset(); state.retry.mockReset(); vi.stubGlobal("React", React); });
 afterEach(() => { for (const cleanup of state.cleanups) cleanup(); vi.unstubAllGlobals(); });
 
 it("loads only the selected item's scoped history and rejects empty notes", () => {
   render(); expect(state.url).toBe("/api/todo/7/history"); click("保存跟进"); expect(state.fetch).not.toHaveBeenCalled();
+});
+it("keeps focus in the persistent drawer content before pagination or retry removes its trigger", () => {
+  state.nextBefore = 123;
+  const content = nodes(render()).find(n => n.type === "div" && n.props.tabIndex === -1);
+  expect(content, "pagination needs a persistent focus target inside the drawer").toBeDefined();
+  const focus = vi.fn();
+  (content!.props.ref as { current: unknown }).current = { focus };
+  click("更早20条");
+  expect(focus).toHaveBeenLastCalledWith({ preventScroll: true });
+  state.nextBefore = null; render();
+  expect(state.url).toBe("/api/todo/7/history?before=123");
+  expect(nodes(render()).some(n => n.type === "button" && n.props.children === "更早20条")).toBe(false);
+  click("最新记录"); render();
+  expect(state.url).toBe("/api/todo/7/history");
+  expect(focus).toHaveBeenCalledTimes(2);
+  const error = nodes(render()).find(n => n.type === "load-error")!;
+  (error.props.onRetry as () => void)();
+  expect(focus).toHaveBeenCalledTimes(3);
+  expect(state.retry).toHaveBeenCalledTimes(2);
 });
 it("locks duplicate clicks and drawer closing while saving, then shows a durable receipt", async () => {
   const pending = Promise.withResolvers<unknown>(); state.fetch.mockReturnValue(pending.promise);

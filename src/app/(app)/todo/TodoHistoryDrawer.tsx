@@ -22,8 +22,12 @@ export default function TodoHistoryDrawer({ id, title, onClose }: { id: number; 
   const live = useRef(false);
   const pending = useRef<{ requestId: string; note: string } | null>(null);
   const locked = useRef(false);
+  const content = useRef<HTMLDivElement>(null);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const read = useDocumentRead<WorkItemHistoryPage>(`/api/todo/${id}/history${before ? `?before=${before}` : ""}`);
+  // A paging/retry trigger can disappear after the read. Keep Escape and Tab inside the drawer.
+  const retainFocus = () => content.current?.focus({ preventScroll: true });
+  const retry = () => { retainFocus(); read.retry(); };
 
   const save = async () => {
     if (locked.current || !live.current || (!pending.current && note.trim().length < 5)) return;
@@ -45,7 +49,7 @@ export default function TodoHistoryDrawer({ id, title, onClose }: { id: number; 
   };
 
   return <Drawer title={`#${id} 跟进与记录`} open width={560} onClose={onClose} closable={!busy} maskClosable={!busy} keyboard={!busy}>
-    <div className={styles.history}>
+    <div className={styles.history} ref={content} tabIndex={-1}>
       <strong>{title}</strong>
       <p>追加跟进或结果依据，不改变待办状态、完成时间，也不会关闭来源告警。历史记录只追加、不覆盖。</p>
       <label htmlFor={`todo-note-${id}`}>本次跟进</label>
@@ -53,8 +57,8 @@ export default function TodoHistoryDrawer({ id, title, onClose }: { id: number; 
       <div className={styles.noteActions}><span>{note.length}/1000 · 至少5字</span><Button type="primary" loading={busy} disabled={busy || (!error && note.trim().length < 5)} onClick={() => void save()}>{error ? "确认同一提交" : "保存跟进"}</Button></div>
       {error ? <Alert type="error" showIcon message="保存结果未确认" description={error} /> : null}
       {saved ? <Alert type="success" showIcon message={`跟进已保存（记录 #${saved}）`} /> : null}
-      <Space wrap><Button size="small" onClick={() => { setBefore(null); read.retry(); }}>最新记录</Button>{read.data?.nextBefore ? <Button size="small" onClick={() => setBefore(read.data!.nextBefore)}>更早20条</Button> : null}</Space>
-      <LoadErrorAlert error={read.error} subject="待办记录" onRetry={read.retry} retrying={read.phase === "loading"} />
+      <Space wrap><Button size="small" onClick={() => { retainFocus(); setBefore(null); read.retry(); }}>最新记录</Button>{read.data?.nextBefore ? <Button size="small" onClick={() => { retainFocus(); setBefore(read.data!.nextBefore); }}>更早20条</Button> : null}</Space>
+      <LoadErrorAlert error={read.error} subject="待办记录" onRetry={retry} retrying={read.phase === "loading"} />
       {read.phase === "loading" ? <Spin aria-label="正在读取待办记录" /> : null}
       {read.data?.rows.length === 0 ? <p>暂无可显示的操作记录；这不表示已处理。</p> : null}
       <ol className={styles.historyList}>{read.data?.rows.map(event => <li key={event.id}>
