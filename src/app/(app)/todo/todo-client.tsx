@@ -25,6 +25,7 @@ import { todoItemHref, todoTabFromQuery, todoTabHref } from "@/lib/todo-navigati
 import { todoSortPatch, type TodoSortField } from "@/lib/todo-sort";
 import TodoProgressCard from "./TodoProgressCard";
 import TodoCreateDrawer from "./TodoCreateDrawer";
+import TodoHistoryDrawer from "./TodoHistoryDrawer";
 import styles from "./todo-client.module.css";
 
 export interface WorkItemRow {
@@ -115,6 +116,7 @@ export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { 
   const pendingIds = useRef(new Set<number>());
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(new Set());
   const [feedback, setFeedback] = useState<{ row: WorkItemRow; text: string; type: "success" | "warning" | "error" } | null>(null);
+  const [historyItem, setHistoryItem] = useState<WorkItemRow | null>(null);
   const listState = useListState<Filters>({
     key: `todo-${view}`,
     defaults: { q: "", status: view === "mine" ? "active" : "", ownerRole: "", overdue: "", sortBy: "", sortOrder: "" },
@@ -206,6 +208,7 @@ export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { 
         const source = workItemSourceAction(r);
         return (
           <Space size={4} wrap>
+            <Button size="small" disabled={disabled} onClick={() => setHistoryItem(r)}>跟进记录</Button>
             {r.status === "open" ? <Button size="small" disabled={disabled} onClick={() => act(r, { status: "in_progress" })}>开始</Button> : null}
             {active ? <Tooltip title={source?.completionHint}><Button size="small" type="primary" disabled={disabled} loading={busy} onClick={() => act(r, { status: "done" })}>完成待办</Button></Tooltip> : null}
             {!active ? <Button size="small" disabled={disabled} onClick={() => act(r, { status: "open" })}>重新打开</Button> : null}
@@ -306,6 +309,7 @@ export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { 
         ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={loadError ? "数据未加载" : "当前条件下没有待办"} />}
       </div>
       <div className={styles.pagination}><Pagination {...listState.paginationProps({ total: data?.total ?? 0 })} size="small" responsive /></div>
+      {historyItem ? <TodoHistoryDrawer key={historyItem.id} id={historyItem.id} title={historyItem.title} onClose={() => setHistoryItem(null)} /> : null}
     </section>
   );
 }
