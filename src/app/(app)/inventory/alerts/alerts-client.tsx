@@ -35,6 +35,7 @@ import type { InventoryAlertsPage } from "@/server/modules/report/inventory-aler
 import type { SpikeHit } from "@/server/modules/report/sales-spike";
 import type { SalesSpikePage } from "@/server/modules/report/sales-spike-query";
 import styles from "./inventory-cover.module.css";
+import CapacityCheckDrawer, { type CapacityTarget } from "@/components/CapacityCheckDrawer";
 
 const TIER_COLOR: Record<string, string> = { S: "red", A: "orange", B: "gold", C: "default" };
 const KIND_LABEL: Record<string, string> = { out_of_stock: "断货", spike: "爆单", low_stock: "低于阈值", near_expiry: "临期", overstock: "超储" };
@@ -120,10 +121,11 @@ export function InventoryCoverCard({ row, ack, actions, detail }: { row: CoverCa
   </article>;
 }
 
-function CoverActions({ row }: { row: Pick<InventoryAlertRow, "actions" | "primary" | "tags"> }) {
+function CoverActions({ row, onCapacity }: { row: Pick<InventoryAlertRow, "actions" | "primary" | "tags">; onCapacity?: () => void }) {
   const kinds = new Set([...(row.primary ? [row.primary] : []), ...row.tags]);
   return <Space size={8} wrap>
     <a href={row.actions.transfer}>调拨</a><a href={row.actions.replenish}>补货</a>
+    {onCapacity && <Button type="link" size="small" style={{ padding: 0 }} onClick={onCapacity}>核对加工产能</Button>}
     {kinds.has("near_expiry") ? <a href={row.actions.nearExpiry}>效期</a> : null}
     {kinds.has("overstock") ? <a href={row.actions.overstock}>处置</a> : null}
   </Space>;
@@ -182,6 +184,10 @@ type CoverFilters = { q?: string; tier?: string; primary?: string; status?: stri
 function CoverTab() {
   const me = useMe();
   const [closing, setClosing] = useState<AlertRef | null>(null);
+  const [capacity, setCapacity] = useState<CapacityTarget | null>(null);
+  const canCheckCapacity = hasAnyRole(me, "purchasing", "pmc", "ops");
+  const capacityAction = (row: InventoryAlertRow) => canCheckCapacity ? () => setCapacity({ skuId: row.skuId, code: row.code,
+    name: row.name, replenishHref: row.actions.replenish }) : undefined;
   const canRefresh = hasAnyRole(me, "pmc"); // 与 /api/report/inventory-alerts?refresh=1 的 requireAnyRole(pmc, admin) 一致
   const listState = useListState<CoverFilters>({ key: "inventory-alerts-cover", paramPrefix: "cover", defaults: { q: "", tier: "", primary: "", status: "", onlyAlert: "1", showC: "", sort: "", order: "" }, defaultPageSize: 50 });
   const { filters } = listState;
@@ -229,13 +235,14 @@ function CoverTab() {
       // 状态与动作共用固定列，避免横向未滚到底时知悉按钮被右侧链接遮住。
       render: (_, r) => <Space direction="vertical" size={4}>
         <AckCell phase={alerts.phase} alert={alerts.byKey[`inventory_cover:${r.skuId}`]} onAck={(id) => void alerts.ack(id)} />
-        <CoverActions row={r} />
+        <CoverActions row={r} onCapacity={capacityAction(r)} />
       </Space>,
     },
   ];
 
   return (
     <div className={styles.list}>
+      <CapacityCheckDrawer target={capacity} onClose={() => setCapacity(null)} />
       {data ? (
         <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
           <Col xs={12} md={6}><a href={inventoryCoverMetricHref("outOfStock")}><Statistic title="断货（有需求无在库）" value={data.totals.outOfStock} valueStyle={{ color: data.totals.outOfStock ? "#B23A2E" : undefined }} /></a></Col>
@@ -294,7 +301,7 @@ function CoverTab() {
             const alert = alerts.byKey[`inventory_cover:${row.skuId}`];
             return <li key={row.skuId}><InventoryCoverCard row={row}
               ack={<AckCell phase={alerts.phase} alert={alert} onAck={id => void alerts.ack(id)} />}
-              actions={<CoverActions row={row} />}
+              actions={<CoverActions row={row} onCapacity={capacityAction(row)} />}
               detail={alert ? <AlertRowDetail alert={alert} onRequestClose={() => setClosing(alert)} /> : null} /></li>;
           })}
         </ul> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={error ? "数据未加载" : "当前筛选下没有预警行"} />}
@@ -333,6 +340,14 @@ export function SalesSpikeCard({ row, ack, action }: { row: SpikeHit; ack: React
 
 export function SpikeTab() {
   const me = useMe();
+  const [capacity, setCapacity] = useState<CapacityTarget | null>(null);
+  const canCheckCapacity = hasAnyRole(me, "purchasing", "pmc", "ops");
+  const capacityAction = (row: SpikeHit) => {
+    const skuId = row.skuId;
+    if (row.kind !== "sku" || !skuId || !canCheckCapacity) return null;
+    return <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setCapacity({ skuId,
+      code: row.code ?? "", name: row.name ?? "", replenishHref: row.href })}>核对加工产能</Button>;
+  };
   // Keep an in-progress close form outside table rows: breakpoint changes rebuild
   // expanded cells and must not discard the reason, note or pending receipt.
   const [closing, setClosing] = useState<AlertRef | null>(null);
@@ -374,6 +389,7 @@ export function SpikeTab() {
     { title: "知悉与行动", key: "a", width: 170, fixed: "right", render: (_, r) => <Space direction="vertical" size={4}>
       <AckCell phase={alerts.phase} alert={alerts.byKey[keyOf(r)]} onAck={(id) => void alerts.ack(id)} />
       <a href={r.href}>{r.kind === "sku" ? "看补货" : "认领身份"}</a>
+      {capacityAction(r)}
     </Space> },
   ];
   const onExport = () => {
@@ -389,7 +405,7 @@ export function SpikeTab() {
     sorter: (a, b) => Number(a.risePct ?? 0) - Number(b.risePct ?? 0), defaultSortOrder: "descend",
     render: (_, row) => <SalesSpikeCard row={row}
       ack={<AckCell phase={alerts.phase} alert={alerts.byKey[keyOf(row)]} onAck={id => void alerts.ack(id)} />}
-      action={<a href={row.href}>{row.kind === "sku" ? "看补货" : "认领身份"}</a>} />,
+      action={<Space wrap><a href={row.href}>{row.kind === "sku" ? "看补货" : "认领身份"}</a>{capacityAction(row)}</Space>} />,
   }];
   const table = (rows: SpikeHit[]) => (
     <Table<SpikeHit>
@@ -410,6 +426,7 @@ export function SpikeTab() {
 
   return (
     <div>
+      <CapacityCheckDrawer target={capacity} onClose={() => setCapacity(null)} />
       {data ? (
         <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
           <Col xs={12} md={6}><Statistic title="窗口命中 · 系统 SKU" value={data.state === "insufficient" ? "—" : data.hitCount} valueStyle={{ color: data.hitCount ? "#B23A2E" : undefined }} /></Col>

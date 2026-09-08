@@ -4,10 +4,12 @@ import ApprovalBrief from "@/components/ApprovalBrief";
 import ChainStrip from "@/components/ChainStrip";
 import { useDocumentRead } from "@/components/useDocumentRead";
 import Supplier360Drawer from "@/app/(app)/master/supplier/supplier-360-drawer";
+import { CapacityCheckForm } from "@/components/CapacityCheckDrawer";
+import dayjs from "dayjs";
 
 // Real hook/callback lifecycle; browser tests separately verify AntD rendering and layout.
 const hooks = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false }));
-vi.mock("antd", () => ({ Alert: "alert", Card: "card", Space: "space", Table: "table", Tag: "tag", Tooltip: "tooltip", Button: "button", Drawer: "drawer", Col: "col", Row: "row", Descriptions: "descriptions", Empty: "empty", Spin: "spin", Statistic: "statistic", Typography: { Text: "text", Paragraph: "paragraph", Link: "a" } }));
+vi.mock("antd", () => ({ DatePicker: "datepicker", InputNumber: "number", Select: "select", Alert: "alert", Card: "card", Space: "space", Table: "table", Tag: "tag", Tooltip: "tooltip", Button: "button", Drawer: "drawer", Col: "col", Row: "row", Descriptions: "descriptions", Empty: "empty", Spin: "spin", Statistic: "statistic", Typography: { Text: "text", Paragraph: "paragraph", Link: "a" } }));
 vi.mock("next/link", () => ({ default: "a" }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
@@ -38,14 +40,15 @@ type Node = React.ReactElement<Record<string, unknown> & { children?: ReactNode 
 const nodes = (v: ReactNode): Node[] => Array.isArray(v) ? v.flatMap(nodes) : isValidElement<Node["props"]>(v) ? [v, ...nodes(v.props.children)] : [];
 const fetchMock = vi.fn<typeof fetch>();
 let id = 1;
-let surface: "brief" | "chain" | "resource" | "supplier" = "brief";
+let surface: "brief" | "chain" | "resource" | "supplier" | "capacity" = "brief";
 let supplierId: number | null = 1;
 let url: string | null = "/api/outsource/bh/1";
 function ResourceProbe() { return React.createElement("read", useDocumentRead<{ id: number }>(url)); }
 function render(effects = true) {
   for (let n = 0; n < 10; n++) {
     hooks.cursor = 0; hooks.changed = false;
-    const tree = surface === "supplier" ? Supplier360Drawer({ supplierId, onClose: () => {} }) : surface === "resource" ? ResourceProbe()
+    const tree = surface === "capacity" ? CapacityCheckForm({ target: { skuId: 1, code: "FG", name: "精华", replenishHref: "/replenish/sop?q=FG" } })
+      : surface === "supplier" ? Supplier360Drawer({ supplierId, onClose: () => {} }) : surface === "resource" ? ResourceProbe()
       : surface === "brief" ? ApprovalBrief({ docType: "bh", docId: id }) : ChainStrip({ docType: "bh", id });
     if (!effects) return tree;
     for (const effect of hooks.effects.splice(0)) effect();
@@ -198,4 +201,54 @@ it("supplier 360 failed reads remove facts and explicit retry restores the same 
   expect(nodes(render()).some(n => n.type === "descriptions")).toBe(false);
   fetchMock.mockResolvedValueOnce(supplier(1, "RETRY")); (supplierLoad().onRetry as () => void)(); render(); await flush();
   expect(supplierTitle()).toContain("RETRY"); expect(fetchMock.mock.calls.at(-1)?.[0]).toBe("/api/master/supplier/1/360");
+});
+
+const capacity = (qty?: string) => Response.json({
+  sku: { id: 1, code: "FG", name: "精华", baseUom: "支" },
+  factories: [{ id: 2, code: "FACTORY", name: "加工厂", status: "qualified", statusLabel: "合格", hasApprovedHistory: false }],
+  scenario: qty ? { supplierId: 2, dueDate: "2026-09-30", candidateQty: qty,
+    signal: { scheduledQty: "900", declared: {}, explanation: "历史不足", limitations: ["不自动开单"] } } : null,
+});
+const capacityResult = (tree = render()) => nodes(tree).find(n => n.props["aria-label"] === "本次产能核对结果");
+const capacityButton = () => nodes(render()).find(n => n.type === "button" && n.props.children === "核对产能情景")!;
+function capacityChange(label: string, value: unknown) {
+  const node = nodes(render()).find(n => n.props["aria-label"] === label)!;
+  (node.props.onChange as (v: unknown) => void)(label === "拟交付日期" ? dayjs(String(value)) : value);
+}
+async function prepareCapacity() {
+  surface = "capacity"; fetchMock.mockResolvedValueOnce(capacity()); render(); await flush();
+  expect(capacityButton().props.disabled).toBe(true);
+  capacityChange("加工厂", 2); capacityChange("拟交付日期", "2026-09-30"); capacityChange("拟新增量", "200"); render();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+}
+it("capacity waits for explicit submission and withdraws old results before an edited-input effect", async () => {
+  await prepareCapacity(); fetchMock.mockResolvedValueOnce(capacity("200"));
+  (capacityButton().props.onClick as () => void)(); render(); await flush(); expect(capacityResult()).toBeDefined();
+  capacityChange("拟新增量", "300"); expect(capacityResult(render(false))).toBeUndefined(); render();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  capacityChange("拟新增量", "200"); expect(capacityResult()).toBeUndefined();
+});
+it("capacity cancels a pending scenario on edits and rejects its late response", async () => {
+  await prepareCapacity(); const pending = Promise.withResolvers<Response>(); fetchMock.mockReturnValueOnce(pending.promise);
+  (capacityButton().props.onClick as () => void)(); render();
+  capacityChange("拟交付日期", "2026-10-01"); render();
+  expect(fetchMock.mock.calls[1][1]?.signal?.aborted).toBe(true);
+  pending.resolve(capacity("200")); await flush(); expect(capacityResult()).toBeUndefined();
+});
+it("capacity failure remains retryable without changing the selected scenario", async () => {
+  await prepareCapacity(); fetchMock.mockRejectedValueOnce(new Error("private-details"));
+  (capacityButton().props.onClick as () => void)(); render(); await flush();
+  const failure = nodes(render()).find(n => n.props.subject === "产能情景")!;
+  expect(failure.props.error).toBe("网络连接异常，未能获取服务器响应"); expect(capacityResult()).toBeUndefined();
+  fetchMock.mockResolvedValueOnce(capacity("200")); (failure.props.onRetry as () => void)(); render(); await flush();
+  expect(capacityResult()).toBeDefined(); expect(fetchMock.mock.calls[1][0]).toBe(fetchMock.mock.calls[2][0]);
+});
+it("capacity withdraws results when date editing begins before DatePicker commits a new date", async () => {
+  await prepareCapacity(); fetchMock.mockResolvedValueOnce(capacity("200"));
+  (capacityButton().props.onClick as () => void)(); render(); await flush(); expect(capacityResult()).toBeDefined();
+  const root = nodes(render())[0];
+  expect(root.props.style).toMatchObject({ gridTemplateColumns: "minmax(0, 1fr)", minWidth: 0 });
+  (nodes(render()).find(n => n.props["aria-label"] === "拟交付日期")!.props.onFocus as () => void)();
+  expect(capacityResult(render(false))).toBeUndefined();
+  expect(capacityButton().props["aria-label"]).toBe("核对产能情景");
 });
