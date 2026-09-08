@@ -113,12 +113,12 @@ export interface DetectorResult {
 const EMPTY_SUMMARY: DetectorSummary = { salesStop: 0, channelShift: 0, velocity: 0, scanned: 0, affectedSkus: 0, multiHitSkus: 0 };
 
 export async function getDetectorAlerts(
-  query: { q?: string; kind?: DetectorKind; page?: number; pageSize?: number },
+  query: { q?: string; kind?: DetectorKind; page?: number; pageSize?: number; /** 内部导出专用，HTTP不透传 */ allRows?: boolean },
   dbArg?: AnyDb,
 ): Promise<DetectorResult> {
   const db = await resolveDb(dbArg);
-  const page = Math.max(1, query.page ?? 1);
-  const pageSize = Math.min(500, Math.max(1, query.pageSize ?? 50));
+  const page = query.allRows ? 1 : Math.max(1, query.page ?? 1);
+  const pageSize = query.allRows ? Number.MAX_SAFE_INTEGER : Math.min(500, Math.max(1, query.pageSize ?? 50));
   const q = (query.q ?? "").trim().toLowerCase();
 
   /* ── 成品主档（只扫成品：包材/原料无渠道销量口径） ── */

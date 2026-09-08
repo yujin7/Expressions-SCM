@@ -13,7 +13,11 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { brands, skus, spus, users } from "@/db/schema";
+import { brands, channels, salesMonthly, skus, spus, stockBalances, users, warehouses } from "@/db/schema";
+import { getSegmentation } from "@/server/modules/report/segmentation";
+import { getRiskWorklist } from "@/server/modules/report/risk";
+import { getDetectorAlerts } from "@/server/modules/report/detectors";
+import { getInventoryAnalytics } from "@/server/modules/report/inventory-analytics";
 import type { SessionUser } from "@/server/core/dto";
 import { EXPORT_KINDS, SYNC_EXPORT_MAX, stripMoneyColumns } from "@/server/modules/report/export";
 import { createTestDb, type TestDb } from "../helpers/db";
@@ -37,6 +41,45 @@ async function seed(db: TestDb) {
 }
 
 describe("W2-4 重报表异步导出通路", () => {
+  it.each(HEAVY_KINDS)("%s 的完整导出不被列表500行上限截断，筛选和安全上限仍生效", async (kind) => {
+    const { db, client } = await createTestDb();
+    try {
+      await seed(db);
+      const [brand] = await db.select().from(brands);
+      const [spu] = await db.select().from(spus);
+      const [channel] = await db.insert(channels).values({ code: "FULL", name: "完整导出测试", kind: "platform" }).returning();
+      const [wh] = await db.insert(warehouses).values({ code: "FULL", name: "测试仓", kind: "finished" }).returning();
+      const items = await db.insert(skus).values(Array.from({ length: 502 }, (_, i) => ({
+        code: `FULL-QA-${String(i + 1).padStart(4, "0")}`, name: "导出正样本", brandId: brand.id,
+        spuId: spu.id, baseUom: "个", skuType: "finished" as const,
+      }))).returning();
+      await db.insert(stockBalances).values(items.map((s) => ({ skuId: s.id, warehouseId: wh.id, qty: "10000" })));
+      await db.insert(salesMonthly).values(items.flatMap((s) => Array.from({ length: 6 }, (_, i) => ({
+        skuId: s.id, channelId: channel.id, yearMonth: `2026-${String(i + 1).padStart(2, "0")}`,
+        qty: i === 5 ? "0" : "100",
+      }))));
+      const query = { q: "FULL-QA-", page: 1, pageSize: 50000 };
+      const list = kind === "risk" ? await getRiskWorklist(query, db)
+        : kind === "detectors" ? await getDetectorAlerts(query, db)
+          : kind === "inventory-analytics" ? await getInventoryAnalytics(query, db)
+            : await getSegmentation(query, db);
+      expect(list.total).toBe(502);
+      expect(list.rows).toHaveLength(500); // HTTP列表仍有边界，不能靠放大分页上限修导出
+      const full = await EXPORT_KINDS[kind].produce(finance, { q: query.q }, 50000, db);
+      expect(full.total).toBe(502);
+      expect(full.rows).toHaveLength(502);
+      expect(new Set(full.rows.map((r) => r.code))).toEqual(new Set(items.map((s) => s.code)));
+      const bounded = await EXPORT_KINDS[kind].produce(finance, { q: query.q }, 17, db);
+      expect(bounded.total).toBe(502);
+      expect(bounded.rows).toEqual(full.rows.slice(0, 17));
+      const filtered = await EXPORT_KINDS[kind].produce(finance, { q: "FULL-QA-0502" }, 50000, db);
+      expect(filtered.total).toBe(1);
+      expect(filtered.rows.map((r) => r.code)).toEqual(["FULL-QA-0502"]);
+    } finally {
+      await client.close();
+    }
+  });
+
   it("四个重报表种类都已登记，且带中文名与参数解析器", () => {
     for (const kind of HEAVY_KINDS) {
       const def = EXPORT_KINDS[kind];

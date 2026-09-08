@@ -678,6 +678,35 @@ body {
   min-width: 0;
 }
 
+/* 图卡按自身可用宽度换行；右侧工具不能把标题挤成单字，窄抽屉同样适用。 */
+.decision-visual > .ant-card-head > .ant-card-head-wrapper {
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 12px;
+  padding-block: 10px;
+}
+
+.decision-visual > .ant-card-head .ant-card-head-title {
+  flex: 1 1 260px;
+  min-width: 0;
+  padding-block: 0;
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+
+.decision-visual > .ant-card-head .ant-card-extra {
+  flex: 0 1 auto;
+  max-width: 100%;
+  margin-inline-start: 0;
+  padding-block: 0;
+}
+
+.decision-visual > .ant-card-head .ant-space-item {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .supplier-scorecard-kpis {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

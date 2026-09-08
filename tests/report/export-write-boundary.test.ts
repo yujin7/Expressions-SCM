@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { auditLogs, exportJobs, users } from "@/db/schema";
 import { createExportJob, runExportWorkerOnce } from "@/jobs/export-worker";
-import { EXPORT_KINDS } from "@/server/modules/report/export";
+import { EXPORT_KINDS, EXPORT_ROW_CAP, TRUNCATION_ROW_TEXT } from "@/server/modules/report/export";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 let db: TestDb, close: () => Promise<void>, user: { id: number };
@@ -44,4 +47,29 @@ it("worker rechecks registered roles after revocation before invoking any produc
   const producer = vi.spyOn(EXPORT_KINDS["settlement-summary"], "produce").mockRejectedValue(new Error("producer must not be reached"));
   expect(await runExportWorkerOnce(db)).toMatchObject({ id: job.id, status: "failed", error: "当前角色无权导出此类数据" });
   expect(producer).not.toHaveBeenCalled();
+});
+
+it.each([2, 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])("producer total=%s cannot publish a misleading one-row successful file", async (total) => {
+  const job = await createExportJob(user, "balance", {}, db);
+  const dir = mkdtempSync(path.join(tmpdir(), "export-incomplete-"));
+  vi.spyOn(EXPORT_KINDS.balance, "produce").mockResolvedValue({ rows: [{ sku: "QA" }], columns: [{ key: "sku", title: "SKU" }], total });
+  expect(await runExportWorkerOnce(db, dir)).toMatchObject({ id: job.id, status: "failed", error: expect.stringContaining("数量核对不一致") });
+  const [saved] = await db.select().from(exportJobs).where(eq(exportJobs.id, job.id));
+  expect(saved.filePath).toBeNull();
+  expect(readdirSync(dir)).toEqual([]);
+  expect(await runExportWorkerOnce(db, dir)).toBeNull(); // 不自动重试或发布部分结果
+});
+
+it.each([0, EXPORT_ROW_CAP + 1])("complete empty or explicitly capped total=%s remains downloadable", async (total) => {
+  const job = await createExportJob(user, "balance", {}, db);
+  const dir = mkdtempSync(path.join(tmpdir(), "export-count-boundary-"));
+  const count = Math.min(total, EXPORT_ROW_CAP);
+  vi.spyOn(EXPORT_KINDS.balance, "produce").mockResolvedValue({
+    rows: Array.from({ length: count }, (_, i) => ({ sku: `QA-${i}` })), columns: [{ key: "sku", title: "SKU" }], total,
+  });
+  expect(await runExportWorkerOnce(db, dir)).toMatchObject({ id: job.id, status: "done", rowCount: count });
+  const [saved] = await db.select().from(exportJobs).where(eq(exportJobs.id, job.id));
+  const csv = readFileSync(saved.filePath!, "utf8");
+  expect(csv.includes(TRUNCATION_ROW_TEXT)).toBe(total > EXPORT_ROW_CAP);
+  if (count) expect(csv).toContain(`QA-${count - 1}`);
 });

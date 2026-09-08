@@ -197,6 +197,10 @@ export async function runExportWorkerOnce(dbArg?: AnyDb, dirOverride?: string): 
     requireExportRole(runAs.roles, def.roles);
     const params = exportRequestParams((job.params ?? {}) as ExportParams);
     const { rows, columns, total } = await def.produce(runAs, params, EXPORT_ROW_CAP, db);
+    // 生产器可能误用列表分页：500行文件和500行任务互相核对仍会“成功”。必须与源总量核对。
+    if (!Number.isSafeInteger(total) || total < 0 || rows.length !== Math.min(total, EXPORT_ROW_CAP)) {
+      throw new ApiError(409, "导出数量核对不一致，未生成文件；请刷新数据后重新导出，若仍失败请联系管理员");
+    }
     const csv = buildCsv(rows, stripMoneyColumns(columns, runAs.roles), { truncated: total > EXPORT_ROW_CAP });
 
     const dir = dirOverride ?? EXPORT_FILE_DIR;

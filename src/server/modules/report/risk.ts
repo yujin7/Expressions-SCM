@@ -168,7 +168,7 @@ export async function getRiskWorklist(
   const today = todayShanghai();
   const slowThreshold = await getNumParam("slow_days_threshold", 180, dbArg);
   const page = query.all ? 1 : Math.max(1, query.page ?? 1);
-  // all = 读模型口径（不分页）；页面/导出仍受 500 行上限约束
+  // all = 内部读模型/导出取全筛选结果；HTTP列表仍受500行上限约束，导出另施加文件上限
   const pageSize = query.all ? Number.MAX_SAFE_INTEGER : Math.min(500, Math.max(1, query.pageSize ?? 50));
   const q = (query.q ?? "").trim().toLowerCase();
 

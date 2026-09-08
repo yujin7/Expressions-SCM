@@ -100,14 +100,14 @@ export const AVG_ONHAND_NOTE =
   "周转指标的「平均在库」用当前在库近似——系统无历史每日库存快照，无法还原窗口内日均库存。补货前后水位波动大的 SKU 会失真，仅供横向排序与量级判断，不可用于财务对账。";
 
 export async function getInventoryAnalytics(
-  query: { q?: string; windowDays?: number; page?: number; pageSize?: number },
+  query: { q?: string; windowDays?: number; page?: number; pageSize?: number; /** 内部导出专用，HTTP不透传 */ allRows?: boolean },
   dbArg?: AnyDb,
 ): Promise<InvAnalyticsResult> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const today = todayShanghai();
   const windowDays = Math.min(WINDOW_MAX, Math.max(WINDOW_MIN, Math.floor(query.windowDays ?? WINDOW_DEFAULT)));
-  const page = Math.max(1, query.page ?? 1);
-  const pageSize = Math.min(500, Math.max(1, query.pageSize ?? 50));
+  const page = query.allRows ? 1 : Math.max(1, query.page ?? 1);
+  const pageSize = query.allRows ? Number.MAX_SAFE_INTEGER : Math.min(500, Math.max(1, query.pageSize ?? 50));
   const q = (query.q ?? "").trim().toLowerCase();
 
   const emptyAging = (): Record<AgingBucket, number> =>

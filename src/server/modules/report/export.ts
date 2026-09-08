@@ -316,6 +316,7 @@ export const EXPORT_KINDS: Record<string, ExportKindDef> = {
         {
           q: str(params.q) ?? "",
           action: str(params.action),
+          all: true, // 导出取全筛选结果，独立应用cap，不受列表500行分页限制
           page: 1,
           pageSize: cap,
           precise: true, // 导出走全精度（E1-06）
@@ -324,7 +325,7 @@ export const EXPORT_KINDS: Record<string, ExportKindDef> = {
         db,
       );
       return {
-        rows: rows as unknown as Record<string, unknown>[],
+        rows: rows.slice(0, cap) as unknown as Record<string, unknown>[],
         total,
         columns: [
           { key: "action", title: "建议动作" },
@@ -359,12 +360,13 @@ export const EXPORT_KINDS: Record<string, ExportKindDef> = {
         {
           q: str(params.q) ?? "",
           kind: DETECTOR_KINDS.includes(rawKind as never) ? (rawKind as never) : undefined,
+          allRows: true,
           page: 1,
           pageSize: cap,
         },
         db,
       );
-      const data = rows.map((r) => ({
+      const data = rows.slice(0, cap).map((r) => ({
         code: r.code,
         name: r.name,
         brand: r.brand,
@@ -402,10 +404,10 @@ export const EXPORT_KINDS: Record<string, ExportKindDef> = {
     async produce(_user, params, cap, db) {
       const { getInventoryAnalytics } = await import("@/server/modules/report/inventory-analytics");
       const { rows, total } = await getInventoryAnalytics(
-        { q: str(params.q) ?? "", windowDays: num(params.windowDays), page: 1, pageSize: cap },
+        { q: str(params.q) ?? "", windowDays: num(params.windowDays), allRows: true },
         db,
       );
-      const data = rows.map((r) => ({
+      const data = rows.slice(0, cap).map((r) => ({
         code: r.code,
         name: r.name,
         brand: r.brand,
@@ -458,12 +460,13 @@ export const EXPORT_KINDS: Record<string, ExportKindDef> = {
           cell: str(params.cell),
           tier: str(params.tier),
           ownership: str(params.ownership),
+          allRows: true,
           page: 1,
           pageSize: cap,
         },
         db,
       );
-      const data = rows.map((r) => ({
+      const data = rows.slice(0, cap).map((r) => ({
         code: r.code,
         name: r.name,
         brand: r.brand,
