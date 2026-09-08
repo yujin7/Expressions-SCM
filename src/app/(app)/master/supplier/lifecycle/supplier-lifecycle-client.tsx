@@ -27,6 +27,7 @@ import dayjs, { type Dayjs } from "dayjs";
 import { CheckCircleOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { submitSupplierWork, supplierWorkHref } from "@/components/supplier-lifecycle-request";
 import ListToolbar from "@/components/ListToolbar";
+import ExportButton from "@/components/ExportButton";
 import RemoteSelect, { type RemoteRow } from "@/components/RemoteSelect";
 import SearchInput from "@/components/SearchInput";
 import { useListState } from "@/components/useListState";
@@ -246,7 +247,7 @@ export default function SupplierLifecycleClient() {
     createKey.current = globalThis.crypto.randomUUID();
     openForm.resetFields();
     openForm.setFieldsValue({
-      kind: filters.kind === "payment_term" ? "payment_term" : "corrective",
+      kind: filters.kind === "payment_term" ? "payment_term" : filters.kind === "admission" ? "admission" : "corrective",
       priority: "normal",
       dueDate: filters.kind === "payment_term" ? dayjs(todayShanghai()).endOf("year") : dayjs(todayShanghai()).add(14, "day"),
       pauseNewOrders: false,
@@ -538,11 +539,15 @@ export default function SupplierLifecycleClient() {
         primaryActions={(
           <>
             <Button aria-label="刷新供应商工作项" aria-busy={loading} icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
+            <ExportButton href={`/api/export/supplier-lifecycle?${apiQuery}`} label="导出筛选结果" />
             {canWrite ? <Button type="primary" icon={<PlusOutlined />} onClick={showCreate} disabled={!data}>发起工作项</Button> : null}
           </>
         )}
       />
 
+      <Typography.Paragraph type="secondary" style={{ margin: "0 0 12px" }}>
+        导出当前筛选的全部工作项及最新跟进、协议和结果（不是仅本页）；逐次审计请展开记录。超过5,000行转后台任务，单文件上限50,000行。
+      </Typography.Paragraph>
       <Table<LifecycleRow>
         rowKey="id"
         className="supplier-lifecycle-table"

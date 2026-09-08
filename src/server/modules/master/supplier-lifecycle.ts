@@ -7,6 +7,7 @@ import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import { shanghaiDay } from "@/server/core/business-day";
 import { setSupplierPaymentTerm } from "./supplier";
+import { supplierLifecycleFilterSchema, supplierLifecycleListSchema, type SupplierLifecycleFilters } from "./supplier-lifecycle-query";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- services accept the production DB or an isolated PGlite transaction
 type AnyDb = any;
@@ -153,31 +154,25 @@ async function hydrateRows(db: AnyDb, rawRows: Array<Record<string, unknown>>): 
 }
 
 export async function listSupplierLifecycleCases(
-  query: {
-    q?: string;
-    page?: number;
-    pageSize?: number;
-    status?: string;
-    kind?: string;
-    supplierId?: number;
-    caseId?: number;
-    ownerId?: number;
-    sort?: string;
-    order?: string;
-  },
+  query: { q?: string; page?: number; pageSize?: number; status?: string; kind?: string; supplierId?: number; caseId?: number; ownerId?: number; sort?: string; order?: string },
   dbArg?: AnyDb,
 ) {
-  z.object({
-    kind: z.enum(["", ...caseKinds]).optional(), status: z.enum(["", "open", "closed"]).optional(),
-    page: z.number().int().positive().optional(), pageSize: z.number().int().positive().max(200).optional(),
-    supplierId: z.number().int().positive().optional(), caseId: z.number().int().positive().optional(),
-    ownerId: z.number().int().positive().optional(),
-    sort: z.enum(["", "supplierCode", "priority", "dueDate", "ownerName", "createdAt"]).optional(),
-    order: z.enum(["", "ascend", "descend"]).optional(),
-  }).parse(query);
+  return readSupplierLifecycleCases(supplierLifecycleListSchema.parse(query), dbArg);
+}
+
+/** Internal export reader: same predicates/order, no public-list page ceiling. */
+export async function exportSupplierLifecycleCases(query: SupplierLifecycleFilters, cap: number, dbArg?: AnyDb) {
+  const filters = supplierLifecycleFilterSchema.parse(query);
+  const limit = z.number().int().positive().max(50000).parse(cap);
+  return readSupplierLifecycleCases(filters, dbArg, limit);
+}
+
+async function readSupplierLifecycleCases(
+  query: SupplierLifecycleFilters & { page?: number; pageSize?: number }, dbArg?: AnyDb, exportLimit?: number,
+) {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const page = Math.max(1, query.page ?? 1);
-  const pageSize = Math.min(200, Math.max(1, query.pageSize ?? 20));
+  const pageSize = exportLimit ?? Math.min(200, Math.max(1, query.pageSize ?? 20));
   const q = (query.q ?? "").trim();
   const scopeConditions = [
     q
