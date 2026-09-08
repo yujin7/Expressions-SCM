@@ -377,7 +377,7 @@ const LEGACY_MENU: LegacyNode[] = [
       },
       {
         "key": "/master/supplier/lifecycle",
-        "label": "供应商准入与整改"
+        "label": "供应商工作项"
       },
       {
         "key": "/master/warehouse",

@@ -166,7 +166,7 @@ export default function PaymentTermTab() {
     },
     ...(canWrite ? [{
       title: "操作", key: "actions", width: 100, fixed: "right" as const,
-      render: (_: unknown, r: SupplierPaymentTermRow) => <Button type="link" size="small" onClick={() => openEdit(r)}>登记账期</Button>,
+      render: (_: unknown, r: SupplierPaymentTermRow) => <Space wrap size={0}><Button type="link" size="small" onClick={() => openEdit(r)}>登记账期</Button><Typography.Link href={`/master/supplier/lifecycle?kind=payment_term&supplierId=${r.supplierId}`}>谈判跟进</Typography.Link></Space>,
     }] : []),
   ];
 
@@ -181,7 +181,7 @@ export default function PaymentTermTab() {
       <Typography.Paragraph type="secondary" style={{ margin: "6px 0" }}>{r.candidateReason}</Typography.Paragraph>
       {r.spend.map((p) => <div key={p.year}>{p.year}：{mv ? money(p.total) : "金额无权限"} · 池内排名 {p.rank == null ? "—" : `${p.rank}/${p.rankOf}`}</div>)}
       <div>合作起始（推算）：{r.cooperationSince ?? "无往来"}</div>
-      {canWrite ? <Button type="link" size="small" style={{ paddingInline: 0, marginTop: 6 }} onClick={() => openEdit(r)}>登记账期</Button> : null}
+      {canWrite ? <Space wrap size={8}><Button type="link" size="small" style={{ paddingInline: 0, marginTop: 6 }} onClick={() => openEdit(r)}>登记账期</Button><Typography.Link href={`/master/supplier/lifecycle?kind=payment_term&supplierId=${r.supplierId}`}>谈判跟进</Typography.Link></Space> : null}
     </div>,
   }];
 

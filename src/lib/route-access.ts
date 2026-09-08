@@ -173,7 +173,7 @@ export const ROUTE_REGISTRY = {
   master_category: { path: "/master/category", label: "分类", group: "master", scopedMode: "public" },
   master_channel: { path: "/master/channel", label: "渠道", group: "master", scopedMode: "public", keywords: "channel qudao 渠道" },
   master_supplier: { path: "/master/supplier", label: "供应商", group: "master", scopedMode: "public", keywords: "supplier gongyingshang" },
-  master_supplier_lifecycle: { path: "/master/supplier/lifecycle", label: "供应商准入与整改", roles: ["purchasing", "pmc", "finance"], group: "master", scopedMode: "public", keywords: "supplier onboarding corrective gongyingshang zhunru zhenggai" },
+  master_supplier_lifecycle: { path: "/master/supplier/lifecycle", label: "供应商工作项", roles: ["purchasing", "pmc", "finance"], group: "master", scopedMode: "public", keywords: "supplier onboarding corrective payment terms negotiation gongyingshang zhunru zhenggai zhangqi tanpan 准入 整改 账期 谈判" },
   master_warehouse: { path: "/master/warehouse", label: "仓库", group: "master", scopedMode: "public", keywords: "warehouse cangku" },
   master_bin: { path: "/master/bin", label: "库位", roles: ["warehouse"], group: "master", scopedMode: "public", keywords: "bin location kuwei" },
   master_bom: { path: "/master/bom", label: "BOM", group: "master", scopedMode: "public", keywords: "bom wuliaoqingdan" },

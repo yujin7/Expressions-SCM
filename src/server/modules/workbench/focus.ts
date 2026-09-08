@@ -623,7 +623,7 @@ export async function getWorkbenchFocus(
          仓管点红色「待我审批 2」进去是空列表。
        - 未读通知：完全不带收件人条件，4 类角色恒显 8（实际可见 4），读完仍卡 4 且无法归零。
      现改为复用两处唯一权威：getInbox（审批域 + SoD）与 notifyUnreadWhere（收件人×逐人已读）。 */
-  const [pendingDocs, unreadNotify, openAlerts, openReview, myTodo] = await Promise.all([
+  const [pendingDocs, unreadNotify, openAlerts, openReview, myTodo, supplierWork] = await Promise.all([
     user ? getInbox(user, db).then((r) => r.total) : Promise.resolve(0),
     user
       // 已读是逐收件人的（S6）：与 /api/notifications 调同一个 notifyUnreadWhere，不再各写一套
@@ -634,6 +634,9 @@ export async function getWorkbenchFocus(
     // D61 待办任务（work_items）：与 /todo「我的待办」同源（getTodoProgressBlock.mine）；无登录人视角时不出卡
     // 动态导入：todo/service → jobs/notify → workbench/focus → todo/stats 会成环（next build 收集页面数据时 TDZ 报错）
     user ? import("@/server/modules/todo/stats").then(({ getTodoProgressBlock }) => getTodoProgressBlock(user, db)).then((b) => b.mine) : Promise.resolve(null),
+    user && (isAdmin || roles.includes("purchasing"))
+      ? countWhere(db, schema.supplierLifecycleCases, and(eq(schema.supplierLifecycleCases.status, "open"), eq(schema.supplierLifecycleCases.ownerId, user.id)))
+      : Promise.resolve(null),
   ]);
   const exceptions = exceptionSet.visible;
   const queues = [
@@ -645,6 +648,8 @@ export async function getWorkbenchFocus(
     { key: "alerts", label: "系统告警", count: openAlerts, href: "/alerts" },
     { key: "review", label: "待复核事项", count: openReview, href: "/review/checklist" },
     { key: "mine", label: "我发起的未完结", count: myOpenDocs ?? 0, href: "/inbox" },
+    ...(supplierWork != null && user ? [{ key: "supplierWork", label: "我负责的供应商工作项", count: supplierWork,
+      href: `/master/supplier/lifecycle?ownerId=${user.id}&status=open` }] : []),
   ];
 
   /* W2「自上次访问以来」：只标记，不排序、不评分、不过滤。

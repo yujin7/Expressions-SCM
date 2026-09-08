@@ -276,7 +276,7 @@ export default function Supplier360Drawer({
           </Card>
 
           <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 0 }}>
-            准入与整改记录见 <Typography.Link href={data.links.lifecycle}>供应商准入与整改</Typography.Link>。
+            准入、整改与账期谈判记录见 <Typography.Link href={data.links.lifecycle}>供应商工作项</Typography.Link>。
           </Typography.Paragraph>
         </Space>
       ) : null}

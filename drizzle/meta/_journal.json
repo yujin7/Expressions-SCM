@@ -435,6 +435,13 @@
       "when": 1788793047968,
       "tag": "0061_npd_write_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1788882419298,
+      "tag": "0062_supplier_term_negotiation",
+      "breakpoints": true
     }
   ]
 }
