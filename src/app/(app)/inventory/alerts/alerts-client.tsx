@@ -161,22 +161,15 @@ function AckCell({ alert, onAck, phase }: { alert: AlertRef | undefined; onAck: 
  * 关闭按钮只对持有该告警 ownerRole 的人或 admin 显示（ownerRole 为空的历史行只有 admin）——
  * 与服务端 closeAlert 的判定同口径；前端隐藏不是权限，服务端仍会回查会话再判一次。
  */
-function AlertRowDetail({ alert, onClosed }: { alert: AlertRef; onClosed: () => void }) {
+function AlertRowDetail({ alert, onRequestClose }: { alert: AlertRef; onRequestClose: () => void }) {
   const me = useMe();
-  const [open, setOpen] = useState(false);
   const canClose = alert.status === "open" && (alert.ownerRole ? hasAnyRole(me, alert.ownerRole) : hasAnyRole(me));
   return (
     <Space direction="vertical" size={8} style={{ width: "100%" }}>
       <AlertEvidence alert={alert} />
       {canClose ? (
         <>
-          <Button size="small" danger onClick={() => setOpen(true)}>关闭告警</Button>
-          <AlertCloseModal
-            open={open}
-            alertId={alert.id}
-            onCancel={() => setOpen(false)}
-            onClosed={() => { setOpen(false); onClosed(); }}
-          />
+          <Button size="small" danger onClick={onRequestClose}>关闭告警</Button>
         </>
       ) : null}
     </Space>
@@ -188,6 +181,7 @@ type CoverFilters = { q?: string; tier?: string; primary?: string; status?: stri
 
 function CoverTab() {
   const me = useMe();
+  const [closing, setClosing] = useState<AlertRef | null>(null);
   const canRefresh = hasAnyRole(me, "pmc"); // 与 /api/report/inventory-alerts?refresh=1 的 requireAnyRole(pmc, admin) 一致
   const listState = useListState<CoverFilters>({ key: "inventory-alerts-cover", paramPrefix: "cover", defaults: { q: "", tier: "", primary: "", status: "", onlyAlert: "1", showC: "", sort: "", order: "" }, defaultPageSize: 50 });
   const { filters } = listState;
@@ -291,7 +285,7 @@ function CoverTab() {
         locale={{ emptyText: loading ? "正在加载库存预警…" : error ? "数据未加载" : "当前筛选下没有预警行" }}
         expandable={{
           rowExpandable: (r) => !!alerts.byKey[`inventory_cover:${r.skuId}`],
-          expandedRowRender: (r) => { const a = alerts.byKey[`inventory_cover:${r.skuId}`]; return a ? <AlertRowDetail alert={a} onClosed={() => void alerts.reload()} /> : null; },
+          expandedRowRender: (r) => { const a = alerts.byKey[`inventory_cover:${r.skuId}`]; return a ? <AlertRowDetail alert={a} onRequestClose={() => setClosing(a)} /> : null; },
         }}
       />
       <div className={styles.mobile} data-density={listState.density} aria-busy={loading}>
@@ -301,10 +295,12 @@ function CoverTab() {
             return <li key={row.skuId}><InventoryCoverCard row={row}
               ack={<AckCell phase={alerts.phase} alert={alert} onAck={id => void alerts.ack(id)} />}
               actions={<CoverActions row={row} />}
-              detail={alert ? <AlertRowDetail alert={alert} onClosed={() => void alerts.reload()} /> : null} /></li>;
+              detail={alert ? <AlertRowDetail alert={alert} onRequestClose={() => setClosing(alert)} /> : null} /></li>;
           })}
         </ul> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={error ? "数据未加载" : "当前筛选下没有预警行"} />}
       </div>
+      <AlertCloseModal open={closing != null} alertId={closing?.id ?? null}
+        onCancel={() => setClosing(null)} onClosed={() => { setClosing(null); void alerts.reload(); }} />
       <div className={styles.pagination}><Pagination {...listState.paginationProps({ total: data?.filtered.total ?? 0, showTotal: (t) => `筛选命中 ${t} 个 SKU（成品共 ${data?.totals.skus ?? "—"}）` })} size="small" responsive /></div>
       {data ? (
         <CaliberNote
@@ -337,6 +333,9 @@ export function SalesSpikeCard({ row, ack, action }: { row: SpikeHit; ack: React
 
 export function SpikeTab() {
   const me = useMe();
+  // Keep an in-progress close form outside table rows: breakpoint changes rebuild
+  // expanded cells and must not discard the reason, note or pending receipt.
+  const [closing, setClosing] = useState<AlertRef | null>(null);
   const wide = Grid.useBreakpoint().xl;
   const canRefresh = hasAnyRole(me, "pmc", "ops"); // 与 /api/report/sales-spike?refresh=1 的 requireAnyRole(pmc, ops, admin) 一致
   const listState = useListState<{ q?: string }>({ key: "inventory-alerts-spike", paramPrefix: "spike", defaults: { q: "" }, paginated: false });
@@ -404,7 +403,7 @@ export function SpikeTab() {
       locale={{ emptyText: loading ? "正在加载当前窗口…" : error || !data ? "数据未加载" : data.state === "insufficient" ? "证据不足，无法判定；不代表没有爆单" : "完整观测窗口内没有命中" }}
       expandable={{
         rowExpandable: (r) => !!alerts.byKey[keyOf(r)],
-        expandedRowRender: (r) => { const a = alerts.byKey[keyOf(r)]; return a ? <AlertRowDetail alert={a} onClosed={() => void alerts.reload()} /> : null; },
+        expandedRowRender: (r) => { const a = alerts.byKey[keyOf(r)]; return a ? <AlertRowDetail alert={a} onRequestClose={() => setClosing(a)} /> : null; },
       }}
     />
   );
@@ -447,6 +446,8 @@ export function SpikeTab() {
       {table(data?.hits ?? [])}
       <Typography.Title level={5} style={{ marginTop: 12 }}>未映射平台 SKU {data ? `（${data.q ? `筛选 ${data.unmappedHits.length} / ` : ""}共 ${data.unmappedCount}）` : ""}</Typography.Title>
       {table(data?.unmappedHits ?? [])}
+      <AlertCloseModal open={closing != null} alertId={closing?.id ?? null}
+        onCancel={() => setClosing(null)} onClosed={() => { setClosing(null); void alerts.reload(); }} />
       {data ? (
         <CaliberNote
           summary={`规则：最近 ${data.params.consecutiveDays} 天每日 ≥ 前 ${data.params.baselineDays} 日日均 × ${(1 + data.params.risePct / 100).toFixed(2)}，基线 ≥ ${data.params.minBaseQty} · 覆盖：平台序列 ${data.coverage.platformSeries}，已映射 ${data.coverage.mappedSeries}，系统 SKU ${data.coverage.systemSkus}`}

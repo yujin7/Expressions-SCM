@@ -16,6 +16,7 @@ const hooks = vi.hoisted(() => ({
 }));
 const network = vi.hoisted(() => ({ fetch: vi.fn(), post: vi.fn(), csv: vi.fn() }));
 const message = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
+const breakpoint = vi.hoisted(() => ({ xl: true }));
 const lists = vi.hoisted(() => ({
   filters: {} as Record<string, Record<string, string>>,
   pages: {} as Record<string, number>,
@@ -77,7 +78,7 @@ vi.mock("react", async (original) => ({
 }));
 vi.mock("antd", () => ({
   App: { useApp: () => ({ message }) },
-  Grid: { useBreakpoint: () => ({ xl: true }) },
+  Grid: { useBreakpoint: () => breakpoint },
   Alert: "alert", Button: "button", Card: "card", Col: "col", Row: "row", Select: "select",
   Space: "space", Switch: "switch", Statistic: "statistic", Table: "table", Tag: "tag", Popconfirm: "popconfirm",
   Progress: "progress", Segmented: "segmented", Tabs: "tabs", Tooltip: "tooltip", Pagination: "pagination", Empty: "empty", Spin: "spin",
@@ -256,6 +257,7 @@ function priceData(name: string) {
 }
 
 beforeEach(() => {
+  breakpoint.xl = true;
   vi.stubGlobal("React", React); // Scoped classic JSX transform, no inherited globals.
   hooks.cursor = 0; hooks.slots = []; hooks.effects = []; hooks.cleanups.clear(); hooks.changed = false; hooks.writes = 0;
   lists.filters = {}; lists.pages = {};
@@ -585,6 +587,28 @@ describe("告警状态与行动不被固定列遮挡", () => {
 });
 
 describe("爆单当前查询与证据状态", () => {
+  it("keeps one close target outside rows while responsive columns rebuild", async () => {
+    const alert = { id: 506, dedupeKey: "sales_spike:sku:1", status: "open", ownerRole: "pmc" };
+    network.fetch.mockImplementation((url: string) => Promise.resolve(url.startsWith("/api/alerts?")
+      ? { rows: [alert], total: 1, unackedTotal: 1 } : spikeData("responsive")));
+    for (let n = 0; n < 5; n++) { render(SpikeTab); await flush(); }
+    const tree = render(SpikeTab);
+    const mapped = elements(tree).find(n => n.type === "table")!;
+    const expandable = mapped.props.expandable as { expandedRowRender: (row: object) => React.ReactElement<{ onRequestClose: () => void }> };
+    const detail = expandable.expandedRowRender(spikeData("responsive").hits[0]);
+    expect(detail.props.onRequestClose).toBeTypeOf("function");
+    detail.props.onRequestClose();
+    for (const xl of [false, true, false]) {
+      breakpoint.xl = xl;
+      const dialogs = elements(render(SpikeTab)).filter(n => n.type === "alert-close");
+      expect(dialogs).toHaveLength(1);
+      expect(dialogs[0].props).toMatchObject({ open: true, alertId: 506 });
+    }
+    const dialog = elements(render(SpikeTab)).find(n => n.type === "alert-close")!;
+    (dialog.props.onCancel as () => void)();
+    expect(elements(render(SpikeTab)).find(n => n.type === "alert-close")?.props.open).toBe(false);
+  });
+
   it("说明区不把已知悉或缺失证据承诺为自动关闭", () => {
     const note = elements(render(AlertsClient)).find((n) => n.type === "caliber-note")!;
     const detail = text(note.props.detail as ReactNode);
