@@ -1,9 +1,10 @@
 /**
  * 异步导出 worker（UAT 缺口 #4）：export_jobs 表驱动，进程内轮询（PGlite/PG 通用，
- * 单进程部署——认领用「先选后条件更新」乐观锁，竞态窗口可忽略）。
+ * 认领用「先选后条件更新」乐观锁，只有条件更新成功者执行任务）。
  * 行生产器复用 report/export.ts 的 EXPORT_KINDS（与同步导出同一套列/脱敏/截断语义）。
  */
 import { mkdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { storageDir } from "@/server/core/storage";
 import path from "node:path";
 import { and, asc, desc, eq } from "drizzle-orm";
@@ -53,6 +54,37 @@ export function toJobRow(j: ExportJobRecord): ExportJobRow {
   };
 }
 
+export function requireExportRole(roles: string[], allowed?: readonly string[]): void {
+  if (allowed?.length && !roles.includes("admin") && !allowed.some(role => roles.includes(role))) {
+    throw new ApiError(403, "当前角色无权导出此类数据");
+  }
+}
+
+/** Reserved worker evidence in the existing job JSON, never accepted from a client. */
+export const EXPORT_ACCESS_KEY = "__generatedAccess";
+export const exportFileHash = (data: string | Buffer): string => createHash("sha256").update(data).digest("hex");
+export function exportAccessFingerprint(user: SessionUser): string {
+  return exportFileHash(JSON.stringify({ v: 1, id: user.id, roles: [...new Set(user.roles)].sort(),
+    version: user.sessionVersion, approver: user.isApprover,
+    channels: user.channelScope == null ? null : [...new Set(user.channelScope)].sort((a, b) => a - b),
+    departments: user.deptScope == null ? null : [...new Set(user.deptScope)].sort() }));
+}
+
+/** Parent row lock shares the admin scope writer's boundary; no long producer/file work in this transaction. */
+export async function loadExportUser(db: AnyDb, id: number): Promise<SessionUser> {
+  return db.transaction(async (tx: AnyDb) => {
+    const [u]: (typeof users.$inferSelect)[] = await tx.select().from(users).where(eq(users.id, id)).for("share");
+    if (!u?.active) throw new ApiError(403, "申请人账号已停用或不存在");
+    const scopes = await loadUserScopes(tx, u.id);
+    return { id: u.id, name: u.name, roles: u.roles, isApprover: u.isApprover,
+      sessionVersion: u.sessionVersion, scopeVersion: u.sessionVersion, ...scopes };
+  });
+}
+
+function exportRequestParams(params: ExportParams): ExportParams {
+  return Object.fromEntries(Object.entries(params).filter(([key]) => key !== EXPORT_ACCESS_KEY));
+}
+
 /** 建任务（kind 必须已注册；params 须 JSON 可序列化）；writeAudit 留痕 */
 export async function createExportJob(
   user: { id: number },
@@ -60,20 +92,25 @@ export async function createExportJob(
   params: ExportParams,
   dbArg?: AnyDb,
 ): Promise<ExportJobRow> {
-  if (!EXPORT_KINDS[kind]) throw new ApiError(400, `未知导出类型：${kind}`);
+  const def = EXPORT_KINDS[kind];
+  if (!def) throw new ApiError(400, `未知导出类型：${kind}`);
+  params = exportRequestParams(params);
   const db = await resolveDb(dbArg);
-  const [row]: ExportJobRecord[] = await db
-    .insert(exportJobs)
-    .values({ kind, params, requestedBy: user.id })
-    .returning();
-  await writeAudit(db, {
-    userId: user.id,
-    entity: "export_job",
-    entityId: row.id,
-    action: "create",
-    after: { kind, params },
+  return db.transaction(async (tx: AnyDb) => {
+    const [current]: (typeof users.$inferSelect)[] = await tx.select().from(users).where(eq(users.id, user.id)).for("share");
+    if (!current?.active) throw new ApiError(403, "申请人账号已停用或不存在");
+    requireExportRole(current.roles, def.roles);
+    const [row]: ExportJobRecord[] = await tx.insert(exportJobs)
+      .values({ kind, params, requestedBy: current.id }).returning();
+    await writeAudit(tx, {
+      userId: current.id,
+      entity: "export_job",
+      entityId: row.id,
+      action: "create",
+      after: { kind, params },
+    });
+    return toJobRow(row);
   });
-  return toJobRow(row);
 }
 
 /** 同步导出闸门：total 超上限 → 自动建异步任务并返回 jobId；未超返回 null */
@@ -156,22 +193,9 @@ export async function runExportWorkerOnce(dbArg?: AnyDb, dirOverride?: string): 
   try {
     const def = EXPORT_KINDS[job.kind];
     if (!def) throw new ApiError(400, "未知导出类型，请重新创建导出任务");
-    const [u]: (typeof users.$inferSelect)[] = await db.select().from(users).where(eq(users.id, job.requestedBy));
-    if (!u || !u.active) throw new ApiError(403, "申请人账号已停用或不存在");
-    // D62：runAs 携带申请人**当前**的数据范围（与 HTTP 路径 getFreshSessionUser 同源），行生产器按同一口径裁剪
-    const scopes = await loadUserScopes(db, u.id);
-    const runAs: SessionUser = {
-      id: u.id,
-      name: u.name,
-      roles: u.roles as string[],
-      isApprover: u.isApprover,
-      sessionVersion: u.sessionVersion,
-      channelScope: scopes.channelScope,
-      deptScope: scopes.deptScope,
-      scopeVersion: u.sessionVersion,
-    };
-
-    const params = (job.params ?? {}) as ExportParams;
+    const runAs = await loadExportUser(db, job.requestedBy);
+    requireExportRole(runAs.roles, def.roles);
+    const params = exportRequestParams((job.params ?? {}) as ExportParams);
     const { rows, columns, total } = await def.produce(runAs, params, EXPORT_ROW_CAP, db);
     const csv = buildCsv(rows, stripMoneyColumns(columns, runAs.roles), { truncated: total > EXPORT_ROW_CAP });
 
@@ -182,7 +206,8 @@ export async function runExportWorkerOnce(dbArg?: AnyDb, dirOverride?: string): 
 
     await db
       .update(exportJobs)
-      .set({ status: "done", filePath, rowCount: rows.length, finishedAt: new Date() })
+      .set({ status: "done", filePath, rowCount: rows.length, finishedAt: new Date(),
+        params: { ...params, [EXPORT_ACCESS_KEY]: { version: 1, identity: exportAccessFingerprint(runAs), sha256: exportFileHash(csv) } } })
       .where(eq(exportJobs.id, job.id));
     return { id: job.id, kind: job.kind, status: "done", rowCount: rows.length };
   } catch (e) {

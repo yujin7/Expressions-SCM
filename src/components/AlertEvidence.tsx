@@ -12,6 +12,7 @@
  */
 import { Space, Tag, Typography } from "antd";
 import AlertWhyList from "@/components/AlertWhyList";
+import { formatAsOf } from "@/components/format";
 
 export interface AlertWhy { label: string; value: string; source: string }
 
@@ -33,7 +34,8 @@ function fmtVal(v: unknown): string {
 export function ackText(a: Pick<AlertEvidenceFields, "ackedAt" | "ackedBy" | "ackedByName">): string {
   if (!a.ackedAt) return "未知悉";
   const who = a.ackedByName ?? (a.ackedBy != null ? `#${a.ackedBy}` : "—");
-  return `${who} · ${String(a.ackedAt).replace("T", " ").slice(0, 16)}`;
+  const time = formatAsOf(a.ackedAt);
+  return `${who} · ${time === "—" ? "时间未知" : time}`;
 }
 
 /** 行上的 why 优先；否则取 paramsSnapshot.why（引擎落库的位置）。形状不对就当没有，不猜。 */

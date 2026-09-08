@@ -21,6 +21,7 @@ import type { AlertLookupCategory } from "@/lib/alert-lookup";
 import CaliberNote from "@/components/CaliberNote";
 import ContextHelp from "@/components/ContextHelp";
 import { exportCsv } from "@/components/exportCsv";
+import ExportButton from "@/components/ExportButton";
 import { formatQty } from "@/components/format";
 import ListToolbar from "@/components/ListToolbar";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
@@ -186,7 +187,6 @@ function AlertRowDetail({ alert, onClosed }: { alert: AlertRef; onClosed: () => 
 type CoverFilters = { q?: string; tier?: string; primary?: string; status?: string; onlyAlert?: string; showC?: string; sort?: string; order?: string };
 
 function CoverTab() {
-  const { message } = App.useApp();
   const me = useMe();
   const canRefresh = hasAnyRole(me, "pmc"); // 与 /api/report/inventory-alerts?refresh=1 的 requireAnyRole(pmc, admin) 一致
   const listState = useListState<CoverFilters>({ key: "inventory-alerts-cover", paramPrefix: "cover", defaults: { q: "", tier: "", primary: "", status: "", onlyAlert: "1", showC: "", sort: "", order: "" }, defaultPageSize: 50 });
@@ -216,19 +216,6 @@ function CoverTab() {
     finally { clearTimeout(timeout); if (!request.signal.aborted) setLoading(false); }
   }, [query]);
   useEffect(() => { void load(); return () => readRequest.current?.abort(); }, [load]);
-
-  const onExport = async () => {
-    try {
-      const sp = new URLSearchParams(query); sp.set("page", "1"); sp.set("pageSize", "5000");
-      const all = await fetchJson<InventoryAlertsPage>(`/api/report/inventory-alerts?${sp.toString()}`);
-      exportCsv(
-        `库存预警表-${all.builtAt.slice(0, 10)}`,
-        ["等级", "等级来源", "SKU", "名称", "品牌", "日销外部", "日销内部", "实时仓销售净出库日均", "主日销", "主日销来源", "外部近30天净件", "在库", "可销天数", "阈值天", "阈值依据", "状态", "主预警", "标签", "优先级分", "实时仓窗口开始(含)", "实时仓窗口结束(不含)", "实时仓销售净出库(含销售红字)", "非销售作业出库(未扣正向冲销,不作需求)", "内部月销窗口开始(含)", "内部月销窗口结束(不含)", "内部月销窗口自然日", "内部已登记销量", "内部有记录月份数(不证明完整覆盖)", "外部近7天净件", "外部近15天净件", "外部窗口截止(含)", "外部时点T+1内", ...([7, 15, 30] as const).flatMap(days => [`外部${days}日开始(含)`, `外部${days}日完整序列数`, `外部${days}日应有序列数`, `外部${days}日窗口完整`])],
-        all.rows.map((r) => [r.tier, r.tierSource, r.code, r.name, r.brand, r.daily.external, r.daily.internal, r.daily.ledger, r.primaryDaily, r.primaryDailySource, r.net30External, r.onHand, r.coverDays, r.alertDays, r.alertBasis, r.status, r.primary, r.tags.join("|"), r.priorityScore, r.ledgerDemand.startDay, r.ledgerDemand.endDayExclusive, r.ledgerDemand.salesNetQty, r.ledgerDemand.operationsOutQty, r.internalDemand.startDay, r.internalDemand.endDayExclusive, r.internalDemand.days, r.internalDemand.salesQty, r.internalDemand.observedMonths, r.net7External, r.net15External, r.externalDemand.anchorDate, r.externalDemand.current ? "是" : "否", ...([7, 15, 30] as const).flatMap(days => { const w = r.externalDemand.windows?.[days]; return [w?.startDay ?? null, w?.completeSequences ?? null, w?.requiredSequences ?? null, w?.complete ? "是" : "否"]; })]),
-        all.filtered.total > all.rows.length ? `仅导出前 ${all.rows.length} 行，共 ${all.filtered.total} 行` : undefined,
-      );
-    } catch (e) { message.error((e as Error).message); }
-  };
 
   const sortOrder = (key: string) => filters.sort === key ? (filters.order === "desc" ? "descend" as const : "ascend" as const) : null;
   const columns: ColumnsType<InventoryAlertRow> = [
@@ -265,7 +252,6 @@ function CoverTab() {
       ) : null}
       <ListToolbar
         state={listState}
-        onExport={data ? () => void onExport() : undefined}
         extra={(
           <Space wrap>
             <SearchInput key={filters.q} allowClear size="small" placeholder="编码 / 名称 / 品牌" defaultValue={filters.q} onSearch={(v) => listState.setFilter({ q: v.trim() })} style={{ width: 200 }} />
@@ -280,6 +266,7 @@ function CoverTab() {
         )}
         primaryActions={(
           <Space>
+            {data ? <ExportButton key={query} href={`/api/export/inventory-alerts?${query}`} /> : null}
             {canRefresh ? <Button size="small" aria-label="重算库存预警" aria-busy={loading} onClick={() => void load(true)} loading={loading}>重算</Button> : null}
             <Button size="small" aria-label="刷新库存预警" aria-busy={loading} onClick={() => void load()} loading={loading}>刷新</Button>
           </Space>

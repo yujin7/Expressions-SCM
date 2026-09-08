@@ -1,0 +1,10 @@
+.heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.reason { overflow-wrap: anywhere; white-space: normal; }
+.pollNotice { margin-bottom: 12px; color: #667085; font-size: 13px; }
+.desktop { min-width: 0; }
+.mobile { display: none; }
+.task { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid #e6e9ef; border-radius: 10px; min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 767px) {
+  .desktop { display: none; }
+  .mobile { display: grid; gap: 12px; }
+}

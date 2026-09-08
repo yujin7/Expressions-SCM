@@ -6,6 +6,8 @@ import ClosedLoopClient from "@/app/(app)/report/closed-loop/closed-loop-client"
 import AlertsClient, { SpikeTab } from "@/app/(app)/inventory/alerts/alerts-client";
 import SystemAlertsClient from "@/app/(app)/alerts/alerts-client";
 import { useAlertLookup } from "@/components/useAlertLookup";
+import ExportButton from "@/components/ExportButton";
+import ExportsClient from "@/app/(app)/report/exports/exports-client";
 
 // Real components and callbacks, deferred network responses, no DOM or visual claims.
 const hooks = vi.hoisted(() => ({
@@ -81,12 +83,12 @@ vi.mock("antd", () => ({
   Typography: { Text: "text", Paragraph: "paragraph", Title: "title" },
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn() }), useSearchParams: () => new URLSearchParams() }));
-vi.mock("@ant-design/icons", () => ({ ReloadOutlined: "reload-icon" }));
+vi.mock("@ant-design/icons", () => ({ ReloadOutlined: "reload-icon", DownloadOutlined: "download-icon", CloudDownloadOutlined: "cloud-download-icon" }));
 vi.mock("recharts", () => ({
   Bar: "bar", BarChart: "bar-chart", CartesianGrid: "grid", Legend: "legend", Cell: "cell",
   ResponsiveContainer: "chart-container", Tooltip: "chart-tooltip", XAxis: "x-axis", YAxis: "y-axis",
 }));
-vi.mock("@/components/fetchJson", () => ({ fetchJson: network.fetch, postJson: network.post }));
+vi.mock("@/components/fetchJson", async (original) => ({ ...await original<typeof import("@/components/fetchJson")>(), fetchJson: network.fetch, postJson: network.post }));
 vi.mock("@/components/exportCsv", () => ({ exportCsv: network.csv }));
 vi.mock("@/components/format", () => ({ formatQty: String }));
 vi.mock("@/components/SearchInput", () => ({ default: "search" }));
@@ -260,6 +262,156 @@ beforeEach(() => {
   network.fetch.mockReturnValue(new Promise(() => {}));
 });
 afterEach(() => { unmount(); vi.unstubAllGlobals(); });
+
+describe("export task reading and recovery", () => {
+  const done = { id: 17, kind: "inventory-alerts", kindLabel: "库存预警", status: "done", rowCount: 5002,
+    requestedByName: "计划员", createdAt: "2026-09-08T07:00:00Z", finishedAt: "2026-09-08T07:01:00Z", error: null };
+  it("withdraws old download actions on explicit refresh; failure persists until retry", async () => {
+    const pending = deferred();
+    network.fetch.mockResolvedValueOnce({ rows: [done] }).mockReturnValueOnce(pending.promise).mockResolvedValueOnce({ rows: [] });
+    render(ExportsClient); await flush();
+    expect(rows(render(ExportsClient))).toEqual([done]);
+    click(button(render(ExportsClient), "刷新"));
+    expect(rows(render(ExportsClient))).toEqual([]);
+    pending.reject(new Error("任务服务暂不可用")); await flush();
+    const error = elements(render(ExportsClient)).find(n => n.type === "load-error")!;
+    expect(error.props.error).toBe("任务服务暂不可用");
+    (error.props.onRetry as () => void)(); render(ExportsClient); await flush();
+    expect(rows(render(ExportsClient))).toEqual([]);
+    expect(elements(render(ExportsClient)).find(n => n.type === "load-error")?.props.error).toBeNull();
+  });
+  it("polls only after a settled read, labels previous facts, and stops on timeout without overlapping reads", async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = deferred(), active = { ...done, id: 18, status: "running", rowCount: null };
+      network.fetch.mockResolvedValueOnce({ rows: [done, active] }).mockReturnValueOnce(pending.promise);
+      render(ExportsClient); await flush(); render(ExportsClient);
+      await vi.advanceTimersByTimeAsync(5000); render(ExportsClient);
+      expect(network.fetch).toHaveBeenCalledTimes(2);
+      expect(rows(render(ExportsClient))).toEqual([done, active]);
+      expect(text(render(ExportsClient))).toContain("上次成功读取");
+      await vi.advanceTimersByTimeAsync(10000); render(ExportsClient);
+      expect(network.fetch).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(5000); render(ExportsClient);
+      expect(signal(1).aborted).toBe(true);
+      expect(rows(render(ExportsClient))).toEqual([]);
+      expect(elements(render(ExportsClient)).find(n => n.type === "load-error")?.props.error).toContain("超时");
+      pending.resolve({ rows: [done] }); await flush();
+      await vi.advanceTimersByTimeAsync(30000); render(ExportsClient);
+      expect(network.fetch).toHaveBeenCalledTimes(2); expect(rows(render(ExportsClient))).toEqual([]);
+    } finally { vi.useRealTimers(); }
+  });
+  it("aborts on unmount and rejects late results without state writes", async () => {
+    const pending = deferred(); network.fetch.mockReturnValue(pending.promise);
+    render(ExportsClient); unmount();
+    expect(signal(0).aborted).toBe(true);
+    const writes = hooks.writes; pending.resolve({ rows: [done] }); await flush(); expect(hooks.writes).toBe(writes);
+  });
+  it("uses the shared download lifecycle and makes failure evidence readable without hover", async () => {
+    network.fetch.mockResolvedValue({ rows: [done] }); render(ExportsClient); await flush();
+    const tree = render(ExportsClient);
+    const columns = table(tree).props.columns as { key?: string; render?: (v: unknown, row: typeof done) => ReactNode }[];
+    const action = columns.find(c => c.key === "action")!.render!(null, done);
+    expect(elements(action).find(n => n.type === ExportButton)?.props.href).toBe("/api/export/jobs/17/download");
+    const status = columns.find(c => c.key === "status")!.render!(null, { ...done, status: "failed", error: "权限已变化，请重新导出" } as unknown as typeof done);
+    expect(text(status)).toContain("权限已变化，请重新导出");
+    expect(elements(status).some(n => n.type === "tooltip")).toBe(false);
+    expect(text(tree)).toContain("最新 100 个任务");
+  });
+});
+
+describe("shared CSV export lifecycle", () => {
+  let href: string;
+  const component = () => ExportButton({ href });
+  beforeEach(() => { href = "/api/export/inventory-alerts?q=first"; });
+
+  it("rejects duplicate clicks synchronously and leaves an async receipt without opening a popup", async () => {
+    const pending = deferred(), fetch = vi.fn().mockReturnValue(pending.promise), open = vi.fn();
+    vi.stubGlobal("fetch", fetch); vi.stubGlobal("window", { open });
+    const tree = render(component); click(button(tree, "导出 CSV")); click(button(tree, "导出 CSV"));
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(button(render(component), "导出 CSV").props["aria-busy"]).toBe(true);
+    pending.resolve(new Response(JSON.stringify({ jobId: 12, message: "已创建任务" }), { status: 202 })); await flush();
+    const done = render(component);
+    expect(text(done)).toContain("任务 #12"); expect(text(done)).toContain("查看导出任务");
+    expect(button(done, "导出 CSV").props["aria-busy"]).toBe(false); expect(open).not.toHaveBeenCalled();
+  });
+
+  it("stop waiting aborts the request and ignores a late async receipt without claiming job cancellation", async () => {
+    const pending = deferred(), fetch = vi.fn().mockReturnValue(pending.promise); vi.stubGlobal("fetch", fetch);
+    click(button(render(component), "导出 CSV")); click(button(render(component), "停止等待"));
+    expect(fetch.mock.calls[0][1].signal.aborted).toBe(true);
+    pending.resolve(new Response(JSON.stringify({ jobId: 99 }), { status: 202 })); await flush();
+    const done = text(render(component)); expect(done).toContain("不会取消已创建的后台任务"); expect(done).not.toContain("#99");
+  });
+
+  it("filter changes and unmount abort stale reads and cannot overwrite current feedback", async () => {
+    const old = deferred(), next = deferred(), fetch = vi.fn().mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise); vi.stubGlobal("fetch", fetch);
+    click(button(render(component), "导出 CSV")); href = "/api/export/inventory-alerts?q=second"; render(component);
+    expect(fetch.mock.calls[0][1].signal.aborted).toBe(true);
+    click(button(render(component), "导出 CSV"));
+    old.resolve(new Response(JSON.stringify({ jobId: 88 }), { status: 202 })); await flush();
+    expect(text(render(component))).not.toContain("#88");
+    unmount(); expect(fetch.mock.calls[1][1].signal.aborted).toBe(true);
+    const writes = hooks.writes; next.reject(new Error("late failure")); await flush(); expect(hooks.writes).toBe(writes);
+  });
+
+  it("30-second timeout remains visible, aborts, and never automatically submits a second request", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetch = vi.fn().mockReturnValue(deferred().promise); vi.stubGlobal("fetch", fetch);
+      click(button(render(component), "导出 CSV")); await vi.advanceTimersByTimeAsync(30000);
+      expect(fetch.mock.calls[0][1].signal.aborted).toBe(true); expect(fetch).toHaveBeenCalledOnce();
+      expect(text(render(component))).toContain("后台任务可能已创建");
+      expect(button(render(component), "导出 CSV").props["aria-busy"]).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("HTML login response is not downloaded as CSV; explicit retry can recover", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(new Response("<html>login</html>", { headers: { "Content-Type": "text/html" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ jobId: 13 }), { status: 202 })); vi.stubGlobal("fetch", fetch);
+    click(button(render(component), "导出 CSV")); await flush();
+    expect(text(render(component))).toContain("未收到CSV文件");
+    click(button(render(component), "导出 CSV")); await flush();
+    expect(text(render(component))).toContain("任务 #13"); expect(text(render(component))).not.toContain("未收到CSV文件");
+  });
+
+  it("CSV body finishing after cancellation cannot start a download", async () => {
+    const body = deferred(), blob = vi.fn().mockReturnValue(body.promise), create = vi.fn();
+    vi.stubGlobal("document", { createElement: create });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: new Headers({ "Content-Type": "text/csv" }), blob }));
+    click(button(render(component), "导出 CSV")); await flush(); expect(blob).toHaveBeenCalledOnce();
+    click(button(render(component), "停止等待")); body.resolve(new Blob(["CSV"])); await flush();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("existing-file download failures stay in-page and do not claim a new job may exist", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "生成权限已变化，请重新导出" }), { status: 409 }));
+    const open = vi.fn(); vi.stubGlobal("fetch", fetch); vi.stubGlobal("window", { open });
+    const download = () => ExportButton({ href: "/api/export/jobs/17/download", label: "下载 #17", mode: "download" });
+    click(button(render(download), "下载 #17")); await flush();
+    expect(text(render(download))).toContain("生成权限已变化，请重新导出");
+    expect(text(render(download))).not.toContain("核对导出任务");
+    expect(open).not.toHaveBeenCalled(); expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("stopping an existing download offers download retry, not duplicate task creation", () => {
+    const fetch = vi.fn().mockReturnValue(deferred().promise); vi.stubGlobal("fetch", fetch);
+    const download = () => ExportButton({ href: "/api/export/jobs/17/download", label: "下载 #17", mode: "download" });
+    click(button(render(download), "下载 #17")); click(button(render(download), "停止等待"));
+    expect(fetch.mock.calls[0][1].signal.aborted).toBe(true);
+    expect(text(render(download))).toContain("无需创建新任务");
+    expect(text(render(download))).not.toContain("查看导出任务");
+    click(button(render(download), "下载 #17")); expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([{ error: "<html>proxy secret</html>" }, { error: { secret: "private" } }, { error: "x".repeat(501) }])("does not echo an unsafe server download error: %j", async body => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 502 })));
+    const download = () => ExportButton({ href: "/api/export/jobs/17/download", label: "下载 #17", mode: "download" });
+    click(button(render(download), "下载 #17")); await flush();
+    expect(text(render(download))).toBe("下载 #17下载失败（502）");
+  });
+});
 
 function closedLoopData(name: string) {
   return {

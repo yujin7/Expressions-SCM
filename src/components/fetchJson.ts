@@ -5,7 +5,7 @@ function isAbortError(error: unknown): boolean {
 }
 
 /** 只展示约定的短纯文本错误，不回显代理 HTML、对象或原始响应；脱敏仍由服务端负责。 */
-function serverErrorMessage(body: unknown): string | null {
+export function serverErrorMessage(body: unknown): string | null {
   if (typeof body !== "object" || body === null || !("error" in body) || typeof body.error !== "string") return null;
   const message = body.error.trim();
   if (!message || message.length > 500 || /[\p{Cc}\p{Cf}]/u.test(message) || /<\/?[a-z][^>]*>/i.test(message)) return null;
