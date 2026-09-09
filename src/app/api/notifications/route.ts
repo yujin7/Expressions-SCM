@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { getDbAsync } from "@/db";
 import { notificationReads, notifications } from "@/db/schema";
-import { ApiError, errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
+import { ApiError, errorResponse, parseListQuery, readJson } from "@/server/modules/master/common";
+import { getFreshSessionUser } from "@/server/core/dto";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import {
   notifyReadWhere,
@@ -28,12 +29,17 @@ import { alertIdOfNotification } from "@/lib/notify-links";
  */
 export async function GET(req: NextRequest) {
   try {
-    const user = await guardRead();
+    const user = await getFreshSessionUser();
     const db = await getDbAsync();
     const { page, pageSize: rawPageSize, searchParams } = parseListQuery(req.url);
     const pageSize = Math.min(200, searchParams.get("pageSize") ? rawPageSize : 50);
     const severity = searchParams.get("severity")?.trim() || "";
     const read = searchParams.get("read")?.trim() || ""; // ""=全部 | unread | read
+    if (searchParams.getAll("read").length > 1 || searchParams.getAll("severity").length > 1
+      || !["", "read", "unread"].includes(read)
+      || !["", "critical", "high", "medium", "info"].includes(severity)) {
+      throw new ApiError(400, "通知筛选无效，请选择已读状态与严重度");
+    }
 
     const where: (SQL | undefined)[] = [notifyVisibleWhere(user)];
     if (severity) where.push(eq(notifications.severity, severity));
@@ -77,15 +83,15 @@ export async function GET(req: NextRequest) {
       page,
       pageSize,
       unread: unread ?? 0,
-    });
+    }, { headers: { "Cache-Control": "private, no-store" } });
   } catch (e) {
     return errorResponse(e);
   }
 }
 
 const markReadSchema = z.union([
-  z.object({ all: z.literal(true) }),
-  z.object({ id: z.number().int().positive(), all: z.literal(false).optional() }),
+  z.object({ all: z.literal(true) }).strict(),
+  z.object({ id: z.number().int().positive(), all: z.literal(false).optional() }).strict(),
 ]);
 
 /**
@@ -114,33 +120,37 @@ export async function POST(req: NextRequest) {
     const scope = "all" in body && body.all
       ? notifyUnreadWhere(user)
       : and(eq(notifications.id, (body as { id: number }).id), notifyVisibleWhere(user));
-    const targets: { id: number; userId: number | null }[] = await db
-      .select({ id: notifications.id, userId: notifications.userId })
-      .from(notifications)
-      .where(scope);
-    if (targets.length === 0) return NextResponse.json({ ok: true, marked: 0 });
+    const result = await db.transaction(async tx => {
+      const targets: { id: number; userId: number | null }[] = await tx
+        .select({ id: notifications.id, userId: notifications.userId })
+        .from(notifications)
+        .where(scope)
+        .orderBy(asc(notifications.id));
+      if (targets.length === 0) return { ok: true, marked: 0 };
 
-    const now = new Date();
-    await db
-      .insert(notificationReads)
-      .values(targets.map((t) => ({ notificationId: t.id, userId: user.id, readAt: now })))
-      .onConflictDoNothing();
+      const now = new Date();
+      const inserted = await tx
+        .insert(notificationReads)
+        .values(targets.map((t) => ({ notificationId: t.id, userId: user.id, readAt: now })))
+        .onConflictDoNothing().returning({ notificationId: notificationReads.notificationId });
 
-    /* 兼容保留期判定：housekeeping 按「userId 非空＝唯一收件人，read_at 语义准确」分档清理。
-       只有当**我就是这一行唯一的收件人**时才同步写行级 read_at——
-       这个 UPDATE 的 where 里带着 user_id = 我，因此结构上碰不到别人的行。 */
-    const mine = targets.filter((t) => t.userId === user.id).map((t) => t.id);
-    if (mine.length > 0) {
-      await db
-        .update(notifications)
-        .set({ readAt: now })
-        .where(and(
-          eq(notifications.userId, user.id),
-          inArray(notifications.id, mine),
-          isNull(notifications.readAt),
-        ));
-    }
-    return NextResponse.json({ ok: true, marked: targets.length });
+      /* 兼容保留期判定：housekeeping 按「userId 非空＝唯一收件人，read_at 语义准确」分档清理。
+         只有当**我就是这一行唯一的收件人**时才同步写行级 read_at——
+         这个 UPDATE 的 where 里带着 user_id = 我，因此结构上碰不到别人的行。 */
+      const mine = targets.filter((t) => t.userId === user.id).map((t) => t.id);
+      if (mine.length > 0) {
+        await tx
+          .update(notifications)
+          .set({ readAt: now })
+          .where(and(
+            eq(notifications.userId, user.id),
+            inArray(notifications.id, mine),
+            isNull(notifications.readAt),
+          ));
+      }
+      return { ok: true, marked: inserted.length };
+    });
+    return NextResponse.json(result);
   } catch (e) {
     return errorResponse(e);
   }

@@ -14,9 +14,19 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { alertDeepLink, alertIdOfNotification, SYSTEM_ALERT_DEDUPE_PREFIX } from "@/lib/notify-links";
+import { notificationDelivery } from "@/lib/notification-delivery";
 
 const root = process.cwd();
 const read = (rel: string): string => readFileSync(path.join(root, rel), "utf8");
+
+it("separates readable in-app messages from unconfirmed external delivery", () => {
+  for (const status of ["pending", "sending", "sent"]) expect(notificationDelivery("in_app", status).label).toBe("站内可读");
+  expect(notificationDelivery("in_app", "failed").label).toContain("登记失败");
+  expect(notificationDelivery("feishu", "sending").label).toContain("未确认");
+  expect(notificationDelivery("feishu", "failed").label).toContain("未确认");
+  expect(notificationDelivery("feishu", "sent").label).toBe("飞书已发送");
+  expect(notificationDelivery("other", "sent").label).toBe("投递状态待核对");
+});
 
 describe("通知 → 告警反查（lib/notify-links）", () => {
   it("解析 system_alert:<id>[:<role>]，其它通知返回 null", () => {
@@ -58,6 +68,24 @@ describe("通知中心：列表状态平台", () => {
     expect(client).toContain("state={listState}");
     expect(client).toContain("paginationProps");
     expect(page).toContain("<Suspense>");
+  });
+
+  it("binds rows and unread count to the active request and uses keyboard read actions", () => {
+    expect(client).toContain("useDocumentRead<Data>");
+    expect(client).not.toContain("data?.unread ?? 0");
+    expect(client).not.toContain('<a key="rd"');
+    expect(client).toContain("notificationDelivery");
+    expect(client).not.toContain("同批通知自动推送到飞书群");
+  });
+
+  it("keeps full notice text keyboard accessible without column-flex intrinsic height inflation", () => {
+    expect(client).toContain("<details className={styles.message}>");
+    expect(client).toContain("完整内容（展开/收起）");
+    expect(client).toContain("<p className={styles.body}>{n.body}</p>");
+    const css = read("src/app/(app)/notifications/notifications.module.css");
+    expect(css).toContain("display: block !important");
+    expect(css).not.toContain("flex-direction: column");
+    // This protects the repaired wiring; actual layout/keyboard proof is browser evidence.
   });
 
   it("严重度与已读状态都是筛选项（未读开关不再只是一个数字）", () => {

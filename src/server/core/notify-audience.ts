@@ -14,7 +14,7 @@ import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { notificationReads, notifications } from "@/db/schema";
 
 /** 出现在收件箱里的状态（failed 也要能看见，否则发送失败会静默消失） */
-export const NOTIFY_VISIBLE_STATUS = ["pending", "sent", "skipped", "failed"] as const;
+export const NOTIFY_VISIBLE_STATUS = ["pending", "sending", "sent", "skipped", "failed"] as const;
 
 /**
  * 当前用户可见的通知谓词。

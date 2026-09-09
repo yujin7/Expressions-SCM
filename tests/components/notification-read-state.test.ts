@@ -18,6 +18,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { notificationReads, notifications, users } from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
+import { getFreshSessionUser, getSessionUser } from "@/server/core/dto";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 const mocks = vi.hoisted(() => ({ db: null as unknown, session: null as unknown }));
@@ -75,6 +76,49 @@ const markOne = (id: unknown) =>
   POST(new NextRequest("http://localhost/api/notifications", { method: "POST", body: JSON.stringify({ id }) }));
 
 describe("S6 通知已读：一个人读完不再影响别人", () => {
+  it("reads current identity instead of a stale admin session", async () => {
+    as(pmc);
+    const [privateNotice] = await db.insert(notifications).values({ channel: "in_app", title: "仅运营可读", body: "x", userId: ops.id }).returning();
+    vi.mocked(getSessionUser).mockResolvedValueOnce(admin);
+    const before = vi.mocked(getFreshSessionUser).mock.calls.length;
+    expect((await list()).rows.some(r => r.id === privateNotice.id)).toBe(false);
+    expect(vi.mocked(getFreshSessionUser).mock.calls.length).toBe(before + 1);
+    vi.mocked(getSessionUser).mockReset().mockImplementation(async () => mocks.session as SessionUser);
+  });
+  it("pending and sending remain readable and markable for their recipient only", async () => {
+    const [notice] = await db.insert(notifications).values({ channel: "in_app", title: "合成投递中的消息", body: "无需等待飞书", status: "pending", userId: pmc.id }).returning();
+    as(pmc);
+    expect((await list()).rows.some(r => r.id === notice.id)).toBe(true);
+    await db.update(notifications).set({ status: "sending", dispatchStartedAt: new Date() }).where(eq(notifications.id, notice.id));
+    expect((await list()).rows.some(r => r.id === notice.id), "dispatch must not make an already visible message disappear").toBe(true);
+    expect((await list()).unread).toBe(4);
+    expect((await (await markOne(notice.id)).json()).marked).toBe(1);
+    expect((await list()).rows.find(r => r.id === notice.id)?.readAt).not.toBeNull();
+    as(ops); expect((await list()).rows.some(r => r.id === notice.id)).toBe(false);
+  });
+
+  it("rejects invalid or repeated read/severity filters instead of returning an unfiltered answer", async () => {
+    as(pmc);
+    for (const q of ["read=bad", "read=read&read=unread", "severity=bad", "severity=high&severity=info"]) {
+      expect((await GET(new NextRequest(`http://localhost/api/notifications?${q}`))).status, q).toBe(400);
+    }
+  });
+
+  it("rolls back recipient reads if the retention-field update fails", async () => {
+    as(pmc);
+    await db.execute(`CREATE FUNCTION qa_reject_notice_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic notification update failure'; END; $$`);
+    await db.execute(`CREATE TRIGGER qa_reject_notice_update BEFORE UPDATE ON notifications FOR EACH ROW EXECUTE FUNCTION qa_reject_notice_update()`);
+    try {
+      expect((await markAll()).status).toBe(500);
+      expect(await db.select().from(notificationReads), "both effects must roll back together").toHaveLength(0);
+    } finally {
+      await db.execute(`DROP TRIGGER qa_reject_notice_update ON notifications`);
+      await db.execute(`DROP FUNCTION qa_reject_notice_update()`);
+    }
+    expect((await markAll()).status).toBe(200);
+    expect((await list()).unread).toBe(0);
+  });
+
   it("管理员「全部已读」不再清空所有人的未读队列", async () => {
     as(admin);
     expect((await list()).unread, "admin 全见：三条都是未读").toBe(3);
@@ -137,12 +181,23 @@ describe("S6 通知已读：一个人读完不再影响别人", () => {
 
   it("入参校验：非数字 id 是 400，不是 500（坏参数不该污染 error_logs）", async () => {
     as(pmc);
-    for (const body of [{ id: "abc" }, { id: -1 }, {}, { all: false }, { id: 1.5 }]) {
+    for (const body of [{ id: "abc" }, { id: -1 }, {}, { all: false }, { id: 1.5 }, { all: true, id: 1 }, { all: true, userId: ops.id }]) {
       const res = await POST(new NextRequest("http://localhost/api/notifications", {
         method: "POST", body: JSON.stringify(body),
       }));
       expect(res.status, JSON.stringify(body)).toBe(400);
     }
+  });
+
+  it("keeps recipient-specific responses out of shared caches and reports only newly inserted reads", async () => {
+    as(pmc);
+    const response = await GET(new NextRequest("http://localhost/api/notifications"));
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const { rows } = await response.json();
+    expect((await (await markOne(rows[0].id)).json()).marked).toBe(1);
+    expect((await (await markOne(rows[0].id)).json()).marked).toBe(0);
+    expect((await (await markAll()).json()).marked).toBe(2);
+    expect((await (await markAll()).json()).marked).toBe(0);
   });
 
   it("保留期判定仍能用：唯一收件人自己读时同步写行级 read_at，且只写自己那一行", async () => {
