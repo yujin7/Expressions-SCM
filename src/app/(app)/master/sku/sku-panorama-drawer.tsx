@@ -1,11 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { App, Descriptions, Drawer, Empty, Spin, Table, Tag, Typography } from "antd";
+import { Alert, Button, Collapse, Descriptions, Drawer, Empty, Spin, Table, Tag, Typography } from "antd";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { fetchJson } from "@/components/fetchJson";
 import { formatQty, LIFECYCLE_LABELS } from "@/components/format";
 import { DOC_STATUS_LABELS, LEDGER_SOURCE_LABELS, SKU_TYPE_LABELS, WAREHOUSE_KIND_LABELS } from "@/components/labels";
+import { useMe, hasAnyRole } from "@/components/useMe";
+
+const SourceStatusPanel = dynamic(() => import("./sku-source-status-panel"), { loading: () => <Spin /> });
 
 /** /api/master/sku/[id]/panorama 载荷（纯数量口径） */
 interface Panorama {
@@ -68,36 +72,46 @@ function expiryTag(daysLeft: number): React.ReactNode {
 }
 
 export default function SkuPanoramaDrawer({ skuId, onClose }: { skuId: number | null; onClose: () => void }) {
-  const { message } = App.useApp();
+  const me = useMe();
   const [data, setData] = useState<Panorama | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
+  const [sourcePending, setSourcePending] = useState(false);
 
   useEffect(() => {
     if (skuId == null) return;
+    const controller = new AbortController();
     setData(null);
+    setError(null);
     setLoading(true);
-    fetchJson<Panorama>(`/api/master/sku/${skuId}/panorama`)
-      .then(setData)
-      .catch((e) => message.error((e as Error).message))
-      .finally(() => setLoading(false));
-  }, [skuId, message]);
+    fetchJson<Panorama>(`/api/master/sku/${skuId}/panorama`, { signal: controller.signal })
+      .then(next => { if (!controller.signal.aborted) setData(next); })
+      .catch(e => { if (!controller.signal.aborted) setError((e as Error).message); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [skuId, retry]);
 
   const maxMonthQty = Math.max(1, ...(data?.sales.byMonth.map((r) => r.qty) ?? [1]));
 
   return (
     <Drawer
-      title={data ? `SKU 全景 · ${data.sku.code} ${data.sku.name}` : "SKU 全景"}
+      title={data?.sku.id === skuId ? `SKU 全景 · ${data.sku.code} ${data.sku.name}` : "SKU 全景"}
       width={720}
       open={skuId != null}
       onClose={onClose}
+      closable={!sourcePending}
+      maskClosable={!sourcePending}
+      keyboard={!sourcePending}
       destroyOnHidden
     >
       {loading && <Spin style={{ display: "block", margin: "48px auto" }} />}
-      {!loading && data && (
+      {!loading && error && <Alert type="error" showIcon message="SKU 全景读取失败" description={error} action={<Button onClick={() => setRetry(value => value + 1)}>重新读取</Button>} />}
+      {!loading && !error && data?.sku.id === skuId && (
         <div>
           <Descriptions
             size="small"
-            column={2}
+            column={{ xs: 1, sm: 2 }}
             bordered
             items={[
               { key: "code", label: "编码", children: data.sku.code },
@@ -124,6 +138,11 @@ export default function SkuPanoramaDrawer({ skuId, onClose }: { skuId: number | 
               { key: "spec", label: "规格", children: data.sku.spec ?? "—" },
             ]}
           />
+
+          {hasAnyRole(me, "pmc", "purchasing", "warehouse") && <Collapse style={{ marginTop: 12 }} items={[{
+            key: "source-status", label: "来源状态与人工核对（聚水潭 / 简道云）",
+            children: <SourceStatusPanel key={data.sku.id} skuId={data.sku.id} onPendingChange={setSourcePending} onConfirmed={lifecycle => setData(previous => previous?.sku.id === skuId ? { ...previous, sku: { ...previous.sku, lifecycle } } : previous)} />,
+          }]} />}
 
           <SectionTitle>库存（实时账）</SectionTitle>
           <Table

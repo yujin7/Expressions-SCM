@@ -37,7 +37,7 @@ const controls: Control[] = [
 }));
 
 const expectedCounts: Record<Category, number> = {
-  API_ROUTE: 284,
+  API_ROUTE: 285,
   AUTH_PAGE: 97,
   MIGRATION: 64,
   ARCH_GATE: 80,
@@ -177,13 +177,13 @@ function verify(control: Control): void {
   assertTestModule(testPath);
 }
 
-describe("708 项系统执行审计台账", () => {
-  it("ID 恰好 A001–A708、对象唯一、分类数量固定", () => {
-    expect(controls).toHaveLength(708);
+describe("709 项系统执行审计台账", () => {
+  it("ID 恰好 A001–A709、对象唯一、分类数量固定", () => {
+    expect(controls).toHaveLength(709);
     expect(controls.map((control) => control.id)).toEqual(
-      Array.from({ length: 708 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
+      Array.from({ length: 709 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
     );
-    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(708);
+    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(709);
     // Keep the same component's control ID when retiring its hook suppression;
     // do not restore a lint exception or substitute an unrelated object to fill the slot.
     expect(controls.find((control) => control.id === "A373")).toEqual({
