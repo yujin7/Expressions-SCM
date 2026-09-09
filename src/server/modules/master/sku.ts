@@ -5,7 +5,7 @@ import type { SessionUser } from "@/server/core/dto";
 type AnyTx = any;
 import { getDbAsync, schema } from "@/db";
 import { ApiError } from "./common";
-import { SKU_TYPES, skuCreateSchema, skuSchema } from "./schemas";
+import { SKU_TYPES, skuCreateSchema, skuUpdateSchema } from "./schemas";
 import {
   assessSkuStandardName,
   COMMERCIAL_ROLES,
@@ -297,10 +297,11 @@ export async function setSkuCommercialRoles(
 }
 
 export async function updateSku(id: number, input: unknown, actor?: SessionUser, dbArg?: AnyTx) {
-  const v = skuSchema.parse(input);
+  const v = skuUpdateSchema.parse(input);
   const db: AnyTx = dbArg ?? (await getDbAsync());
   return db.transaction(async (tx: AnyTx) => {
-    const [existing] = await tx.select().from(schema.skus).where(eq(schema.skus.id, id));
+    // Bind retained fields and audit before-values to the serialized current master row.
+    const [existing] = await tx.select().from(schema.skus).where(eq(schema.skus.id, id)).for("update");
     if (!existing) throw new ApiError(404, "SKU 不存在");
     const [existingParams] = await tx
       .select({ normalLeadDays: schema.skuParams.normalLeadDays, logisticsLeadDays: schema.skuParams.logisticsLeadDays })
@@ -324,21 +325,21 @@ export async function updateSku(id: number, input: unknown, actor?: SessionUser,
       .set({
         code: existing.code,
         name: v.name,
-        brandId: v.brandId ?? null,
-        channelId: v.channelId ?? null,
-        shortName: v.shortName ?? null,
+        brandId: v.brandId === undefined ? existing.brandId : v.brandId,
+        channelId: v.channelId === undefined ? existing.channelId : v.channelId,
+        shortName: v.shortName === undefined ? existing.shortName : v.shortName,
         commercialRole: v.commercialRole ?? existing.commercialRole,
-        lifecycle: v.lifecycle ?? "on_sale",
+        lifecycle: v.lifecycle ?? existing.lifecycle,
         spuId: v.spuId,
         skuType: v.skuType,
         baseUom: v.baseUom,
-        spec: v.spec ?? null,
-        version: v.version ?? null,
-        prodMode: v.prodMode ?? null,
-        lossCategory: v.lossCategory ?? null,
-        shelfLifeDays: v.shelfLifeDays ?? null,
-        nearExpiryDays: v.nearExpiryDays ?? null,
-        active: v.active,
+        spec: v.spec === undefined ? existing.spec : v.spec,
+        version: v.version === undefined ? existing.version : v.version,
+        prodMode: v.prodMode === undefined ? existing.prodMode : v.prodMode,
+        lossCategory: v.lossCategory === undefined ? existing.lossCategory : v.lossCategory,
+        shelfLifeDays: v.shelfLifeDays === undefined ? existing.shelfLifeDays : v.shelfLifeDays,
+        nearExpiryDays: v.nearExpiryDays === undefined ? existing.nearExpiryDays : v.nearExpiryDays,
+        active: v.active ?? existing.active,
         updatedAt: new Date(),
       })
       .where(eq(schema.skus.id, id))
@@ -366,8 +367,8 @@ export async function updateSku(id: number, input: unknown, actor?: SessionUser,
         before: { ...existing, normalLeadDays: existingParams?.normalLeadDays ?? null, logisticsLeadDays: existingParams?.logisticsLeadDays ?? null },
         after: {
           ...updated,
-          ...(v.normalLeadDays !== undefined ? { normalLeadDays: v.normalLeadDays ?? null } : {}),
-          ...(v.logisticsLeadDays !== undefined ? { logisticsLeadDays: v.logisticsLeadDays ?? null } : {}),
+          normalLeadDays: v.normalLeadDays === undefined ? existingParams?.normalLeadDays ?? null : v.normalLeadDays,
+          logisticsLeadDays: v.logisticsLeadDays === undefined ? existingParams?.logisticsLeadDays ?? null : v.logisticsLeadDays,
         },
       });
     }

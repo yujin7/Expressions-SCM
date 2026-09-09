@@ -66,6 +66,17 @@ export const skuSchema = z.object({
 });
 export type SkuInput = z.infer<typeof skuSchema>;
 
+const blankToNull = (value: unknown) => typeof value === "string" && value.trim() === "" ? null : value;
+/** Updates preserve omitted fields; null/blank explicitly clears nullable master data, never state. */
+export const skuUpdateSchema = skuSchema.extend({
+  active: z.boolean().optional(),
+  spec: z.preprocess(blankToNull, skuSchema.shape.spec.nullable()),
+  version: z.preprocess(blankToNull, skuSchema.shape.version.nullable()),
+  prodMode: z.preprocess(blankToNull, skuSchema.shape.prodMode.nullable()),
+  shortName: z.preprocess(blankToNull, skuSchema.shape.shortName.nullable()),
+  lossCategory: z.preprocess(blankToNull, skuSchema.shape.lossCategory.nullable()),
+});
+
 export const SKU_CREATE_MODES = ["governed_s1", "historical_migration"] as const;
 /**
  * 主数据交互式新建契约。默认只能由系统生成 S1；历史码例外还须在 service 内

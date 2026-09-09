@@ -22,6 +22,7 @@ import { InfoCircleOutlined } from "@ant-design/icons";
 import Link from "next/link";
 import AttachmentPanel from "@/components/AttachmentPanel";
 import CrudTable from "@/components/CrudTable";
+import { skuFormPayload } from "@/components/sku-form-payload";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import RemoteSelect from "@/components/RemoteSelect";
 import { COMMERCIAL_ROLE_LABELS, LOSS_CATEGORY_LABELS, SKU_TYPE_LABELS, toOptions } from "@/components/labels";
@@ -117,6 +118,7 @@ export default function SkuClient() {
         </Button>
       </Space>
       <CrudTable<SkuRow>
+        transformSubmit={(values, editing) => skuFormPayload(values, editing ? { ...editing } : null)}
         rowActions={(r, reload) => (
           <>
             {canWrite && r.namingStatus === "ready" && r.standardName ? (
