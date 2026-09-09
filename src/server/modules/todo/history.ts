@@ -8,6 +8,7 @@ import type { AnyDb } from "@/server/core/svc";
 import { ApiError } from "@/server/modules/master/common";
 import { isWorkItemVisible } from "./service";
 import { capacitySource } from "@/server/modules/outsource/capacity-source";
+import { resolveChannelScope } from "@/server/core/data-scope";
 
 export const workItemNoteSchema = z.object({
   note: z.string().trim().min(5, "请记录至少5个字的跟进或结果依据").max(1000),
@@ -61,13 +62,24 @@ export async function listWorkItemHistory(id: number, query: unknown, actor: Ses
     const safeRows = await Promise.all(page.map(async (row: typeof auditLogs.$inferSelect) => {
       const dto = eventDto(row);
       if (row.action !== "capacity_check") return dto;
-      const context = (row.after as Record<string, unknown> | null)?.capacity as { alertId?: unknown; skuId?: unknown } | undefined;
+      const context = (row.after as Record<string, unknown> | null)?.capacity as { alertId?: unknown; skuId?: unknown;
+        source?: { category?: unknown; channelIds?: unknown } } | undefined;
       if (!context || !Number.isSafeInteger(context.alertId) || !Number.isSafeInteger(context.skuId)) {
         return { ...dto, note: "产能依据格式无法核验，请联系管理员", requestId: null };
       }
       const key = `${context.alertId}:${context.skuId}`;
       if (!sourceAccess.has(key)) sourceAccess.set(key, capacitySource(actor, context.alertId as number, context.skuId as number, tx).then(() => undefined));
-      try { await sourceAccess.get(key); }
+      try {
+        await sourceAccess.get(key);
+        const scope = resolveChannelScope(actor, null);
+        if (scope.channelIds !== null && context.source?.category !== "inventory_cover") {
+          const ids = context.source?.channelIds;
+          if (context.source?.category !== "sales_spike" || !Array.isArray(ids) || !ids.length
+            || !ids.every(id => typeof id === "number" && Number.isSafeInteger(id) && scope.channelIds!.includes(id))) {
+            throw new ApiError(403, "历史产能依据超出当前渠道范围或缺少归属证据");
+          }
+        }
+      }
       catch (error) {
         if (!(error instanceof ApiError) || ![400, 403, 404].includes(error.status)) throw error;
         return { ...dto, note: "已保存产能核对依据；当前无权读取其来源内容", requestId: null };

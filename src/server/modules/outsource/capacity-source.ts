@@ -4,7 +4,8 @@ import { systemAlerts, users, workItems } from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
 import { loadUserScopes, resolveChannelScope } from "@/server/core/data-scope";
 import { ApiError } from "@/server/modules/master/common";
-import { channelScopedAlertCondition, visibleChannelScopedAlertIds } from "@/server/modules/report/shop-channel-scope";
+import { alertShopNames, channelScopedAlertCondition, visibleChannelScopedAlertIds } from "@/server/modules/report/shop-channel-scope";
+import { loadShopChannelMap } from "@/server/modules/report/channel-observation";
 import { workItemVisibilitySql } from "@/server/modules/todo/service";
 import { requireAnyRole, type AnyDb } from "./common";
 
@@ -21,7 +22,13 @@ export async function capacitySource(actor: SessionUser, alertId: number, skuId:
     || (row.category === "sales_spike" && row.dedupeKey === `sales_spike:sku:${skuId}`))) {
     throw new ApiError(400, "来源告警与成品SKU不匹配，请从对应预警重新核对");
   }
-  return { id: row.id as number, category: row.category as string, title: row.title as string,
+  // Freeze the channel attribution, not just the mutable alert ID. Later narrowing of the
+  // current alert or alias mapping must not authorize wider historical quantities.
+  const shops = row.category === "sales_spike" ? alertShopNames(row) : [];
+  const mapping = row.category === "sales_spike" && shops?.length ? await loadShopChannelMap(db, shops) : null;
+  const channelIds = row.category !== "sales_spike" ? [] : !mapping || mapping.unmapped.length ? null
+    : [...new Set(shops!.map(shop => mapping.byShop[shop] as number))].sort((a, b) => a - b);
+  return { id: row.id as number, category: row.category as string, title: row.title as string, channelIds,
     status: row.status as string, lastHitAt: row.lastHitAt?.toISOString() ?? null,
     fingerprint: capacityFingerprint({ detail: row.detail, params: row.paramsSnapshot, lastHitAt: row.lastHitAt, status: row.status }) };
 }

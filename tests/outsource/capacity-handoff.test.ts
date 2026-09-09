@@ -105,6 +105,53 @@ it("task access cannot grant source access; revoked channel scope blocks replay 
   await expect(attachCapacityCheck(f.input, stranger, db)).rejects.toMatchObject({ status: 403 });
   await expect(attachCapacityCheck(f.input, { ...stranger, roles: ["purchasing"] }, db)).rejects.toMatchObject({ status: 404 });
 });
+it("historical channel scope stays frozen when the current alert or shop attribution narrows", async () => {
+  const f = await fixture("sales_spike"), key = randomUUID();
+  const [a, b] = await db.insert(schema.channels).values([
+    { code: `cap-a-${key}`, name: "合成渠道甲", kind: "platform" },
+    { code: `cap-b-${key}`, name: "合成渠道乙", kind: "platform" },
+  ]).returning();
+  const shopA = `合成甲店-${key}`, shopB = `合成乙店-${key}`;
+  const links = await db.insert(schema.aliases).values([
+    { aliasType: "channel", scope: "JIANDAOYUN", rawValue: shopA, targetId: a.id },
+    { aliasType: "channel", scope: "JIANDAOYUN", rawValue: shopB, targetId: b.id },
+  ]).returning();
+  await db.update(schema.systemAlerts).set({ detail: `店铺 ${shopA}、${shopB}；合成跨渠道观察` }).where(eq(schema.systemAlerts.id, f.alert.id));
+  const check = await getCapacityCheck(actor, f.query, db);
+  expect(check.handoff?.source.channelIds).toEqual([a.id, b.id]);
+  await attachCapacityCheck({ ...f.input, evidenceKey: check.evidenceKey! }, actor, db);
+  await db.update(schema.systemAlerts).set({ detail: `店铺 ${shopA}；合成当前单渠道观察` }).where(eq(schema.systemAlerts.id, f.alert.id));
+  const limited = { ...actor, channelScope: [a.id] };
+  // The current source is readable, but that is not authority to read its wider old snapshot.
+  expect((await getCapacityCheck(limited, f.query, db)).handoff?.source.id).toBe(f.alert.id);
+  const hidden = await listWorkItemHistory(f.item.id, {}, limited, db);
+  expect(hidden.rows[0]).toMatchObject({ note: "已保存产能核对依据；当前无权读取其来源内容", requestId: null });
+  expect(hidden.rows[0].sourceAlertId).toBeUndefined();
+  expect(JSON.stringify(hidden)).not.toContain(f.sku.code);
+  expect((await listWorkItemHistory(f.item.id, {}, { ...actor, channelScope: [a.id, b.id] }, db)).rows[0].note).toContain(f.sku.code);
+  // Re-attribution after capture must not retroactively authorize the old cross-channel evidence.
+  await db.update(schema.aliases).set({ targetId: a.id }).where(eq(schema.aliases.id, links[1].id));
+  await db.update(schema.systemAlerts).set({ detail: `店铺 ${shopA}、${shopB}；合成当前同渠道观察` }).where(eq(schema.systemAlerts.id, f.alert.id));
+  expect((await getCapacityCheck(limited, f.query, db)).handoff?.source.channelIds).toEqual([a.id]);
+  expect((await listWorkItemHistory(f.item.id, {}, limited, db)).rows[0].note).toContain("当前无权读取");
+});
+it("unmapped historical attribution remains unknown after a later shop mapping; fresh scoped evidence is readable", async () => {
+  const f = await fixture("sales_spike"), shop = `合成未知店-${randomUUID()}`;
+  await db.update(schema.systemAlerts).set({ detail: `店铺 ${shop}；合成未归属观察` }).where(eq(schema.systemAlerts.id, f.alert.id));
+  const initial = await getCapacityCheck(actor, f.query, db);
+  expect(initial.handoff?.source.channelIds).toBeNull();
+  const old = await attachCapacityCheck({ ...f.input, evidenceKey: initial.evidenceKey! }, actor, db);
+  const [channel] = await db.insert(schema.channels).values({ code: `cap-known-${randomUUID()}`, name: "合成已知渠道", kind: "platform" }).returning();
+  await db.insert(schema.aliases).values({ aliasType: "channel", scope: "JIANDAOYUN", rawValue: shop, targetId: channel.id });
+  const limited = { ...actor, channelScope: [channel.id] };
+  const fresh = await getCapacityCheck(limited, f.query, db);
+  expect(fresh.evidenceKey).not.toBe(initial.evidenceKey);
+  const saved = await attachCapacityCheck({ ...f.input, evidenceKey: fresh.evidenceKey!, requestId: randomUUID() }, limited, db);
+  const history = await listWorkItemHistory(f.item.id, {}, limited, db);
+  expect(history.rows.find(row => row.id === old.eventId)?.note).toContain("当前无权读取");
+  expect(history.rows.find(row => row.id === saved.eventId)).toMatchObject({ sourceAlertId: f.alert.id });
+  expect(history.rows.find(row => row.id === saved.eventId)?.note).toContain(f.sku.code);
+});
 it("audit failure rolls back, explicit retry persists once, and the API rejects arbitrary snapshots", async () => {
   const f = await fixture(); deps.fail = true;
   try { await expect(attachCapacityCheck(f.input, actor, db)).rejects.toThrow("synthetic capacity audit failure"); } finally { deps.fail = false; }
