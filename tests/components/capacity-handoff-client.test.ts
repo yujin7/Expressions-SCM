@@ -1,0 +1,66 @@
+import React, { isValidElement, type ReactNode } from "react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import CapacityHandoff from "@/components/CapacityHandoff";
+import type { CapacityCheck } from "@/server/modules/outsource/capacity-check";
+
+const hooks = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: [] as (() => void)[] }));
+vi.mock("antd", () => ({ Alert: "alert", Button: "button", Input: { TextArea: "textarea" }, Select: "select", Space: "space" }));
+vi.mock("react", async original => ({ ...await original<typeof import("react")>(),
+  useState: (initial: unknown) => { const i = hooks.cursor++; if (!(i in hooks.slots)) hooks.slots[i] = initial;
+    return [hooks.slots[i], (value: unknown) => { hooks.slots[i] = value; }]; },
+  useRef: (initial: unknown) => { const i = hooks.cursor++; if (!(i in hooks.slots)) hooks.slots[i] = { current: initial }; return hooks.slots[i]; },
+  useEffect: (effect: () => void | (() => void)) => { const i = hooks.cursor++; if (!(i in hooks.slots)) { hooks.slots[i] = true; hooks.effects.push(() => { const cleanup = effect(); if (cleanup) hooks.cleanups.push(cleanup); }); } },
+}));
+type Node = React.ReactElement<Record<string, unknown> & { children?: ReactNode }>;
+const nodes = (value: ReactNode): Node[] => Array.isArray(value) ? value.flatMap(nodes) : isValidElement<Node["props"]>(value) ? [value, ...nodes(value.props.children)] : [];
+const fetchMock = vi.fn<typeof fetch>(), busy = vi.fn(), focus = vi.fn();
+let check: CapacityCheck | null;
+function render() { hooks.cursor = 0; const tree = CapacityHandoff({ check, onBusyChange: busy }); for (const effect of hooks.effects.splice(0)) effect(); return tree; }
+const find = (type: string) => nodes(render()).find(node => node.type === type)!;
+const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); return render(); };
+function fill() { render(); (find("select").props.onChange as (v: number) => void)(7); (find("textarea").props.onChange as (e: unknown) => void)({ target: { value: "请核对真实交期与供应商依据" } });
+  (render().props.ref as { current: unknown }).current = { focus }; render(); }
+const click = () => (find("button").props.onClick as () => void)();
+const payload = () => JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+beforeEach(() => {
+  hooks.cursor = 0; hooks.slots = []; hooks.effects = []; hooks.cleanups = []; fetchMock.mockReset(); busy.mockReset(); focus.mockReset();
+  vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock);
+  check = { sku: { id: 1, code: "FG", name: "精华", baseUom: "支" }, factories: [], evidenceKey: "a".repeat(64),
+    scenario: { supplierId: 2, dueDate: "2026-09-30", candidateQty: "300.0001", signal: {} },
+    handoff: { source: { id: 3, category: "inventory_cover", title: "核对告警", status: "open", lastHitAt: null, fingerprint: "a" },
+      items: [{ id: 7, title: "真实承接", assigneeId: 9, assigneeName: "采购", updatedAt: "2026-09-09" }] } } as unknown as CapacityCheck; // This callback harness does not render the signal; service/browser tests use real signals.
+});
+afterEach(() => { for (const cleanup of hooks.cleanups) cleanup(); vi.unstubAllGlobals(); });
+it("does not auto-select owner, post on render or accept a vanished scenario", () => {
+  render(); expect(find("button").props.disabled).toBe(true); expect(fetchMock).not.toHaveBeenCalled();
+  fill(); const oldClick = find("button").props.onClick as () => void;
+  check = null; render(); expect(nodes(render()).some(n => n.type === "button")).toBe(false);
+  // User cannot reach the old rendered callback; no automatic effect invokes it.
+  expect(typeof oldClick).toBe("function"); expect(fetchMock).not.toHaveBeenCalled();
+});
+it("duplicate clicks post once, bind the explicit source/owner/evidence and retain focus and receipt", async () => {
+  fill(); const pending = Promise.withResolvers<Response>(); fetchMock.mockReturnValue(pending.promise);
+  click(); click(); expect(fetchMock).toHaveBeenCalledOnce(); expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+  expect(payload()).toMatchObject({ skuId: 1, alertId: 3, supplierId: 2, workItemId: 7, assigneeId: 9, candidateQty: "300.0001", evidenceKey: "a".repeat(64) });
+  check = null; render(); pending.resolve(Response.json({ itemId: 7, eventId: 44, replayed: false })); await flush();
+  expect(nodes(render()).find(n => n.type === "alert")?.props.message).toContain("#44"); expect(busy.mock.calls.map(c => c[0])).toEqual([true, false]);
+});
+it("lost response never auto-retries; explicit confirmation reuses exactly the original payload despite changed inputs", async () => {
+  fill(); fetchMock.mockRejectedValueOnce(new Error("lost")); click(); await flush();
+  const first = payload(); check = null; render(); expect(find("button").props.children).toBe("确认同一提交");
+  expect(fetchMock).toHaveBeenCalledOnce();
+  fetchMock.mockResolvedValueOnce(Response.json({ itemId: 7, eventId: 45, replayed: true })); click(); await flush();
+  expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual(first); expect(nodes(render()).find(n => n.type === "alert")?.props.message).toContain("#45");
+});
+it("a received application conflict releases the old token and preserves the note for deliberate rechecking", async () => {
+  fill(); fetchMock.mockResolvedValueOnce(Response.json({ error: "产能依据已变化" }, { status: 409 })); click(); await flush();
+  expect(find("textarea").props.value).toContain("真实交期"); expect(find("textarea").props.disabled).toBe(false);
+  expect(find("button").props.children).toBe("保存到承接待办");
+  const old = payload(); check = { ...check!, evidenceKey: "b".repeat(64) };
+  fetchMock.mockResolvedValueOnce(Response.json({ itemId: 7, eventId: 46, replayed: false })); click(); await flush();
+  const next = JSON.parse(String(fetchMock.mock.calls[1][1]?.body)); expect(next.requestId).not.toBe(old.requestId); expect(next.evidenceKey).toBe("b".repeat(64));
+});
+it("malformed success is uncertain, not a false saved receipt", async () => {
+  fill(); fetchMock.mockResolvedValueOnce(Response.json({ itemId: 999, eventId: 1, replayed: false })); click(); await flush();
+  expect(find("button").props.children).toBe("确认同一提交"); expect(fetchMock).toHaveBeenCalledOnce();
+});

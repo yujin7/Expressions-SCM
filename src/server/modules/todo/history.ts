@@ -7,6 +7,7 @@ import type { SessionUser } from "@/server/core/dto";
 import type { AnyDb } from "@/server/core/svc";
 import { ApiError } from "@/server/modules/master/common";
 import { isWorkItemVisible } from "./service";
+import { capacitySource } from "@/server/modules/outsource/capacity-source";
 
 export const workItemNoteSchema = z.object({
   note: z.string().trim().min(5, "请记录至少5个字的跟进或结果依据").max(1000),
@@ -15,7 +16,7 @@ export const workItemNoteSchema = z.object({
 export const workItemHistoryQuery = z.object({
   before: z.coerce.number().int().positive().max(2_147_483_647).optional(),
 }).strict();
-const ACTIONS = ["create", "assign", "update", "complete", "cancel", "reopen", "follow_up"];
+const ACTIONS = ["create", "assign", "update", "complete", "cancel", "reopen", "follow_up", "capacity_check"];
 
 export interface WorkItemHistoryEvent {
   id: number;
@@ -26,6 +27,7 @@ export interface WorkItemHistoryEvent {
   status: string | null;
   assigneeId: number | null;
   requestId: string | null;
+  sourceAlertId?: number;
 }
 export interface WorkItemHistoryPage { rows: WorkItemHistoryEvent[]; nextBefore: number | null }
 
@@ -37,7 +39,7 @@ function eventDto(row: typeof auditLogs.$inferSelect & { actorName?: string | nu
     note: typeof after.note === "string" ? after.note : null,
     status: typeof after.status === "string" && ["open", "in_progress", "done", "cancelled"].includes(after.status) ? after.status : null,
     assigneeId: typeof after.assigneeId === "number" && Number.isSafeInteger(after.assigneeId) ? after.assigneeId : null,
-    requestId: row.action === "follow_up" && typeof after.requestId === "string" ? after.requestId : null,
+    requestId: ["follow_up", "capacity_check"].includes(row.action) && typeof after.requestId === "string" ? after.requestId : null,
   };
 }
 
@@ -55,7 +57,24 @@ export async function listWorkItemHistory(id: number, query: unknown, actor: Ses
       .where(and(eq(auditLogs.entity, "work_item"), eq(auditLogs.entityId, id), inArray(auditLogs.action, ACTIONS), before ? lt(auditLogs.id, before) : undefined))
       .orderBy(desc(auditLogs.id)).limit(21);
     const page = rows.slice(0, 20);
-    return { rows: page.map(eventDto), nextBefore: rows.length > 20 ? page[page.length - 1].id : null };
+    const sourceAccess = new Map<string, Promise<void>>();
+    const safeRows = await Promise.all(page.map(async (row: typeof auditLogs.$inferSelect) => {
+      const dto = eventDto(row);
+      if (row.action !== "capacity_check") return dto;
+      const context = (row.after as Record<string, unknown> | null)?.capacity as { alertId?: unknown; skuId?: unknown } | undefined;
+      if (!context || !Number.isSafeInteger(context.alertId) || !Number.isSafeInteger(context.skuId)) {
+        return { ...dto, note: "产能依据格式无法核验，请联系管理员", requestId: null };
+      }
+      const key = `${context.alertId}:${context.skuId}`;
+      if (!sourceAccess.has(key)) sourceAccess.set(key, capacitySource(actor, context.alertId as number, context.skuId as number, tx).then(() => undefined));
+      try { await sourceAccess.get(key); }
+      catch (error) {
+        if (!(error instanceof ApiError) || ![400, 403, 404].includes(error.status)) throw error;
+        return { ...dto, note: "已保存产能核对依据；当前无权读取其来源内容", requestId: null };
+      }
+      return { ...dto, sourceAlertId: context.alertId as number };
+    }));
+    return { rows: safeRows, nextBefore: rows.length > 20 ? page[page.length - 1].id : null };
   });
 }
 

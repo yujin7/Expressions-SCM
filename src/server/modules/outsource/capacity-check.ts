@@ -7,10 +7,12 @@ import { ApiError } from "@/server/modules/master/common";
 import { getSupplierCapacitySignal, type SupplierCapacitySignal } from "@/server/modules/report/supplier-capacity";
 import { type AnyDb, requireAnyRole, resolveDb } from "./common";
 import { SUPPLIER_STATUS_LABELS } from "./sourcing-aid";
+import { capacityFingerprint, capacityHandoffOptions } from "./capacity-source";
 
 const id = z.coerce.number().int().positive().max(2_147_483_647);
 const querySchema = z.object({
   skuId: id,
+  alertId: id.optional(),
   supplierId: id.optional(),
   dueDate: z.string().refine(v => shanghaiDay(v) !== null, "交付日期无效").optional(),
   candidateQty: z.string().regex(/^\d{1,10}(\.\d{1,4})?$/, "数量最多10位整数、4位小数")
@@ -26,6 +28,8 @@ export interface CapacityCheck {
   sku: { id: number; code: string; name: string; baseUom: string };
   factories: { id: number; code: string; name: string; status: string; statusLabel: string; hasApprovedHistory: boolean }[];
   scenario: { supplierId: number; dueDate: string; candidateQty: string; signal: SupplierCapacitySignal } | null;
+  handoff?: Awaited<ReturnType<typeof capacityHandoffOptions>>;
+  evidenceKey?: string;
 }
 
 /** Manual scenario only. No observation-derived quantity, allocation, approval or posting. */
@@ -56,5 +60,10 @@ export async function getCapacityCheck(user: SessionUser, raw: unknown, dbArg?: 
       signal: await getSupplierCapacitySignal({ supplierId: query.supplierId, baseUom: sku.baseUom,
         dueDate: query.dueDate, candidateQty: query.candidateQty }, db) }
     : null;
-  return { sku: { id: sku.id, code: sku.code, name: sku.name, baseUom: sku.baseUom }, factories, scenario };
+  const handoff = query.alertId === undefined ? undefined : await capacityHandoffOptions(user, query.alertId, sku.id, db);
+  const result: CapacityCheck = { sku: { id: sku.id, code: sku.code, name: sku.name, baseUom: sku.baseUom }, factories, scenario,
+    ...(handoff ? { handoff } : {}) };
+  if (handoff && scenario) result.evidenceKey = capacityFingerprint({ sku: result.sku,
+    factory: factories.find(row => row.id === scenario.supplierId), scenario, source: handoff.source });
+  return result;
 }

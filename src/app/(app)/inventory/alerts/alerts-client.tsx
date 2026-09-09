@@ -187,7 +187,7 @@ function CoverTab() {
   const [capacity, setCapacity] = useState<CapacityTarget | null>(null);
   const canCheckCapacity = hasAnyRole(me, "purchasing", "pmc", "ops");
   const capacityAction = (row: InventoryAlertRow) => canCheckCapacity ? () => setCapacity({ skuId: row.skuId, code: row.code,
-    name: row.name, replenishHref: row.actions.replenish }) : undefined;
+    name: row.name, replenishHref: row.actions.replenish, alertId: alerts.byKey[`inventory_cover:${row.skuId}`]?.id }) : undefined;
   const canRefresh = hasAnyRole(me, "pmc"); // 与 /api/report/inventory-alerts?refresh=1 的 requireAnyRole(pmc, admin) 一致
   const listState = useListState<CoverFilters>({ key: "inventory-alerts-cover", paramPrefix: "cover", defaults: { q: "", tier: "", primary: "", status: "", onlyAlert: "1", showC: "", sort: "", order: "" }, defaultPageSize: 50 });
   const { filters } = listState;
@@ -346,7 +346,7 @@ export function SpikeTab() {
     const skuId = row.skuId;
     if (row.kind !== "sku" || !skuId || !canCheckCapacity) return null;
     return <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setCapacity({ skuId,
-      code: row.code ?? "", name: row.name ?? "", replenishHref: row.href })}>核对加工产能</Button>;
+      code: row.code ?? "", name: row.name ?? "", replenishHref: row.href, alertId: alerts.byKey[`sales_spike:sku:${skuId}`]?.id })}>核对加工产能</Button>;
   };
   // Keep an in-progress close form outside table rows: breakpoint changes rebuild
   // expanded cells and must not discard the reason, note or pending receipt.

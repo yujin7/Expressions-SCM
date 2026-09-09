@@ -7,27 +7,30 @@ import { useDocumentRead } from "./useDocumentRead";
 import LoadErrorAlert from "./LoadErrorAlert";
 import SupplierDeclaredCapacity from "./SupplierDeclaredCapacity";
 import { formatQty } from "./format";
+import CapacityHandoff from "./CapacityHandoff";
 import type { CapacityCheck } from "@/server/modules/outsource/capacity-check";
 
-export interface CapacityTarget { skuId: number; code: string; name: string; replenishHref: string }
+export interface CapacityTarget { skuId: number; code: string; name: string; replenishHref: string; alertId?: number }
 
 /** Parent owns the drawer so responsive table/card switches cannot discard a scenario. */
 export default function CapacityCheckDrawer({ target, onClose }: { target: CapacityTarget | null; onClose: () => void }) {
-  return <Drawer title="核对加工产能" open={target !== null} onClose={onClose} width={680} destroyOnHidden>
-    {target && <CapacityCheckForm key={target.skuId} target={target} />}
+  const [busy, setBusy] = useState(false);
+  return <Drawer title="核对加工产能" open={target !== null} onClose={onClose} width={680} destroyOnHidden closable={!busy} maskClosable={!busy} keyboard={!busy}>
+    {target && <CapacityCheckForm key={`${target.skuId}:${target.alertId ?? "none"}`} target={target} onBusyChange={setBusy} />}
   </Drawer>;
 }
 
-export function CapacityCheckForm({ target }: { target: CapacityTarget }) {
+export function CapacityCheckForm({ target, onBusyChange }: { target: CapacityTarget; onBusyChange?: (busy: boolean) => void }) {
   const formRef = useRef<HTMLDivElement>(null);
-  const baseUrl = `/api/outsource/sourcing-aid?mode=capacity&skuId=${target.skuId}`;
+  const baseUrl = `/api/outsource/sourcing-aid?mode=capacity&skuId=${target.skuId}${target.alertId ? `&alertId=${target.alertId}` : ""}`;
   const directory = useDocumentRead<CapacityCheck>(baseUrl);
   const [supplierId, setSupplierId] = useState<number>();
   const [dueDate, setDueDate] = useState("");
   const [qty, setQty] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const query = supplierId && dueDate && qty ? new URLSearchParams({ mode: "capacity", skuId: String(target.skuId),
-    supplierId: String(supplierId), dueDate, candidateQty: qty }).toString() : null;
+    supplierId: String(supplierId), dueDate, candidateQty: qty, ...(target.alertId ? { alertId: String(target.alertId) } : {}) }).toString() : null;
   // Any edit immediately withdraws previous results/actions, before a new request can start.
   const result = useDocumentRead<CapacityCheck>(submitted && submitted === query ? `/api/outsource/sourcing-aid?${submitted}` : null);
   const scenario = result.data?.scenario;
@@ -44,19 +47,19 @@ export function CapacityCheckForm({ target }: { target: CapacityTarget }) {
     {directory.phase === "loading" ? <Spin tip="读取加工厂目录"><div style={{ height: 60 }} /></Spin> : null}
     {data && <>
       <label htmlFor="capacity-factory">加工厂（目录，不代表该SKU已准入）</label>
-      <Select id="capacity-factory" aria-label="加工厂" value={supplierId} onChange={value => { setSupplierId(value); setSubmitted(null); }}
+      <Select id="capacity-factory" aria-label="加工厂" disabled={saving} value={supplierId} onChange={value => { setSupplierId(value); setSubmitted(null); }}
         showSearch optionFilterProp="label" placeholder="人工选择加工厂" style={{ width: "100%", minWidth: 0 }}
         options={data.factories.map(row => ({ value: row.id,
           label: `${row.code} ${row.name} · ${row.statusLabel} · ${row.hasApprovedHistory ? "有已批JG往来" : "无已批JG往来"}` }))} />
       {!data.factories.length && <Alert type="warning" showIcon message="尚无加工厂档案，请采购先核对供应商主档" />}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(180px, 100%), 1fr))", gap: 12, minWidth: 0 }}>
-        <label>拟交付日期<DatePicker aria-label="拟交付日期" format="YYYY-MM-DD" placeholder="选择交付日期" style={{ width: "100%" }}
+        <label>拟交付日期<DatePicker aria-label="拟交付日期" disabled={saving} format="YYYY-MM-DD" placeholder="选择交付日期" style={{ width: "100%" }}
           value={dueDate ? dayjs(dueDate) : null} onFocus={() => setSubmitted(null)}
           onChange={value => { setDueDate(value?.format("YYYY-MM-DD") ?? ""); setSubmitted(null); }} /></label>
-        <label>拟新增量（{data.sku.baseUom}）<InputNumber aria-label="拟新增量" stringMode min="0.0001" max="9999999999.9999" precision={4}
+        <label>拟新增量（{data.sku.baseUom}）<InputNumber aria-label="拟新增量" disabled={saving} stringMode min="0.0001" max="9999999999.9999" precision={4}
           value={qty} onChange={value => { setQty(value); setSubmitted(null); }} style={{ width: "100%" }} /></label>
       </div>
-      <Button type="primary" aria-label="核对产能情景" aria-busy={result.phase === "loading"} disabled={!query} loading={result.phase === "loading"} onClick={() => { if (submitted === query) result.retry(); else setSubmitted(query); }}>核对产能情景</Button>
+      <Button type="primary" aria-label="核对产能情景" aria-busy={result.phase === "loading"} disabled={!query || saving} loading={result.phase === "loading"} onClick={() => { if (submitted === query) result.retry(); else setSubmitted(query); }}>核对产能情景</Button>
     </>}
     <LoadErrorAlert error={result.error} onRetry={() => { focusForRetry(); result.retry(); }} subject="产能情景" retrying={result.phase === "loading"} />
     {scenario && factory && <section aria-label="本次产能核对结果" style={{ minWidth: 0 }}>
@@ -71,5 +74,7 @@ export function CapacityCheckForm({ target }: { target: CapacityTarget }) {
       <Typography.Paragraph style={{ marginTop: 12 }}>下一步：采购核实真实可用产能与交期；计划员回补货页核对库存、在途和建议。此情景不会带入下单数量、锁定产能或关闭预警。</Typography.Paragraph>
       <Space wrap><Button href={target.replenishHref}>回到该SKU补货</Button></Space>
     </section>}
+    {!target.alertId && scenario && <Alert type="info" showIcon message="当前未关联到可见源告警；本次仅核对产能，不能保存为来源待办依据。请在预警状态读取完成后重新进入。" />}
+    <CapacityHandoff check={result.data ?? null} onBusyChange={value => { setSaving(value); onBusyChange?.(value); }} />
   </div>;
 }

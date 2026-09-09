@@ -9,7 +9,7 @@ import LoadErrorAlert from "@/components/LoadErrorAlert";
 import type { WorkItemHistoryPage } from "@/server/modules/todo/history";
 import styles from "./todo-client.module.css";
 
-const labels: Record<string, string> = { create: "创建", assign: "改派", update: "更新", complete: "完成待办", cancel: "取消", reopen: "重新打开", follow_up: "跟进记录" };
+const labels: Record<string, string> = { create: "创建", assign: "改派", update: "更新", complete: "完成待办", cancel: "取消", reopen: "重新打开", follow_up: "跟进记录", capacity_check: "产能核对依据" };
 const statuses: Record<string, string> = { open: "待处理", in_progress: "进行中", done: "已完成", cancelled: "已取消" };
 
 /** Parent-owned drawer survives desktop/mobile table reconstruction; one item per mount. */
@@ -67,7 +67,8 @@ export default function TodoHistoryDrawer({ id, title, onClose }: { id: number; 
         <small>{dayjs(event.at).format("YYYY-MM-DD HH:mm:ss")} · #{event.id}</small>
         {event.status ? <div>状态：{statuses[event.status]}</div> : null}
         {event.assigneeId ? <div>责任人编号：#{event.assigneeId}</div> : null}
-        {event.note ? <p>{event.note}</p> : null}
+        {event.sourceAlertId ? <a href={`/alerts?id=${event.sourceAlertId}`}>查看来源告警 #{event.sourceAlertId}</a> : null}
+        {event.note ? event.action === "capacity_check" ? <details><summary>查看核对时点的来源、情景与负责人依据</summary><p>{event.note}</p></details> : <p>{event.note}</p> : null}
       </li>)}</ol>
     </div>
   </Drawer>;

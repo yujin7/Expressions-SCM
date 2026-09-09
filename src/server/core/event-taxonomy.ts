@@ -98,6 +98,7 @@ const CATALOG: Record<string, CatalogEntry> = {
   set_sku_code: { domain: "master", label: "设置 SKU 编码", verb: "setSkuCode", isStateChange: false },
   register: { domain: "master", label: "登记", verb: "register", isStateChange: false },
   follow_up: { domain: "master", label: "工作项跟进", verb: "followUp", isStateChange: false },
+  capacity_check: { domain: "plan", label: "保存产能核对依据", verb: "capacityCheck", isStateChange: false },
   register_batch: { domain: "master", label: "批量登记", verb: "registerBatch", isStateChange: false },
   change_password: { domain: "master", label: "修改密码", verb: "changePassword", isStateChange: false },
   bind_feishu_identity: { domain: "master", label: "绑定飞书身份", verb: "bindFeishuIdentity", isStateChange: false },
