@@ -605,7 +605,7 @@ export async function getGoalsBlock(user: SessionUser, dbArg?: AnyDb, opts?: { n
   const clauses: SQL[] = [inArray(departmentGoals.period, [periods.month, periods.quarter])];
   if (scope.deptKeys) clauses.push(inArray(departmentGoals.deptKey, scope.deptKeys));
   const raw: Raw[] = await db.select().from(departmentGoals).where(and(...clauses)).orderBy(departmentGoals.deptKey, departmentGoals.period, departmentGoals.metricKey);
-  const rows = raw.map((r) => toRow(r, user));
+  const rows = (await currentTermGoalRows(db, raw)).map((r) => toRow(r, user));
   const depts = scope.deptKeys ?? [...ROLES];
   const byDept = depts.map((d) => {
     const mine = rows.filter((r) => r.deptKey === d);

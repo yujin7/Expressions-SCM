@@ -187,8 +187,8 @@ export function GoalHistoryCard({ block }: { block: Block<GoalHistoryBlock> }) {
           { title: "各期", key: "pts", render: (_, r) => (
             <Space wrap size={[4, 4]}>
               {r.points.map((p) => (
-                <Tag key={p.period} color={p.attained == null ? "default" : p.attained ? "success" : "warning"}>
-                  {p.period.slice(2)} {p.valueWithheld ? "无权限" : p.attainment == null ? (p.actualValue == null ? "未填" : "—") : `${p.attainment}%`}{p.actualSource === "manual" ? "·手" : ""}
+                <Tag key={p.period} title={p.unavailableReason ?? undefined} color={p.attained == null ? "default" : p.attained ? "success" : "warning"}>
+                  {p.period.slice(2)} {p.valueWithheld ? "无权限" : p.unavailableReason ? "缺逐期依据" : p.attainment == null ? (p.actualValue == null ? "未填" : "—") : `${p.attainment}%`}{p.actualSource === "manual" ? "·手" : ""}
                 </Tag>
               ))}
             </Space>

@@ -26,7 +26,7 @@ import {
 } from "@/server/modules/report/supplier-payment-term";
 import { loadWarehouseInventory, WAREHOUSE_INVENTORY_CACHE_KEY, WAREHOUSE_WINDOWS, type WarehouseInventoryModel } from "@/server/modules/report/warehouse-inventory";
 import { getTodoStats, monthShanghai, type TodoStatsRow } from "@/server/modules/todo/stats";
-import { computeAttainment, isAttained, isValueWithheld, type GoalDirection } from "@/server/modules/goals/service";
+import { autoSourceFor, computeAttainment, isAttained, isValueWithheld, type GoalDirection } from "@/server/modules/goals/service";
 import { METRICS } from "@/components/metrics";
 
 /**
@@ -468,6 +468,8 @@ export interface GoalHistoryPoint {
   attained: boolean | null;
   /** S1：金额型指标对非价格角色扣住实际值与达成度（不是 0、不是缺数据） */
   valueWithheld: boolean;
+  /** Missing period evidence is different from an unfilled value or denied permission. */
+  unavailableReason?: string | null;
 }
 
 export interface GoalHistorySeries {
@@ -497,9 +499,11 @@ export async function loadGoalHistory(db: AnyDb, user: SessionUser): Promise<Goa
     const periodKind: "month" | "quarter" = r.period.includes("Q") ? "quarter" : "month";
     const key = `${r.deptKey}|${r.metricKey}|${periodKind}`;
     const direction = r.direction as GoalDirection;
-    // S1：与 goals/service.toRow 同一道闸（金额指标 × 非价格角色 → 扣住），否则第 4 屏成了降本额的旁路
     const withheld = isValueWithheld(r.metricKey, user.roles);
-    const actualValue = withheld ? null : r.actualValue;
+    // Annual/current-term auto values have no period-bound evidence snapshot. A current source check
+    // cannot validate an old month's value; do not copy today's model into historical gaps either.
+    const unboundTermHistory = r.actualSource !== "manual" && autoSourceFor(r.metricKey)?.cacheKey === SUPPLIER_PAYMENT_TERM_KEY;
+    const actualValue = withheld || unboundTermHistory ? null : r.actualValue;
     const s = groups.get(key) ?? {
       deptKey: r.deptKey, metricKey: r.metricKey, metricLabel: METRICS[r.metricKey]?.label ?? r.metricKey, unit: METRICS[r.metricKey]?.unit ?? null,
       direction, periodKind, points: [],
@@ -508,6 +512,7 @@ export async function loadGoalHistory(db: AnyDb, user: SessionUser): Promise<Goa
       period: r.period, targetValue: r.targetValue, actualValue, actualSource: (r.actualSource as "auto" | "manual" | null) ?? null,
       attainment: computeAttainment(r.targetValue, actualValue, direction), attained: isAttained(r.targetValue, actualValue, direction),
       valueWithheld: withheld,
+      unavailableReason: unboundTermHistory ? "账期自动值未封存逐期来源依据，不能作为历史实际值" : null,
     });
     groups.set(key, s);
   }
@@ -1241,7 +1246,7 @@ export async function getCockpitTrends(user: SessionUser, dbArg?: AnyDb, opts: {
     ? {
         state: goals.value.series.length ? "ready" : "insufficient",
         data: goals.value,
-        note: goals.value.series.length ? "只读历史期间的登记值，不用当前读模型回填缺失的历史实际值" : "同一部门 × 指标不足 2 个期间，尚不成历史",
+        note: goals.value.series.length ? "只读历史期间的登记值，不用当前读模型回填缺失的历史实际值；账期自动值未封存逐期来源依据，历史留空，人工证据值保留" : "同一部门 × 指标不足 2 个期间，尚不成历史",
         source: { tier: "manual", source: "department_goals（逐期登记）", asOf: now.toISOString() },
       }
     : errorBlock(goals.error, "department_goals", "manual");

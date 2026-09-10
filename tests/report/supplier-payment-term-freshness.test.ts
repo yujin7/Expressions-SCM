@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import * as s from "@/db/schema";
 import { computeSupplierPaymentTerm, isSupplierPaymentTermBindingCurrent, loadSupplierPaymentTerm, refreshSupplierPaymentTerm } from "@/server/modules/report/supplier-payment-term";
-import { resolveAutoActual } from "@/server/modules/goals/service";
+import { createGoal, getGoal, getGoalsBlock, listGoals, resolveAutoActual } from "@/server/modules/goals/service";
+import { loadGoalHistory } from "@/server/modules/report/cockpit-trends";
 import { createTestDb } from "../helpers/db";
 
 const clients: Awaited<ReturnType<typeof createTestDb>>["client"][] = [];
@@ -37,10 +38,66 @@ async function fixture(since = "2023-01-01") {
   const [wo] = await db.insert(s.woDocs).values({ docNo: "F-WO", productSkuId: sku.id, supplierId: supplier.id, qty: "1", feeRatePlan: "1", bomId: bom.id, createdBy: user.id }).returning();
   const [jg] = await db.insert(s.jgDocs).values({ docNo: "F-JG", woId: wo.id, productSkuId: sku.id, supplierId: supplier.id, qty: "1", feeRateCurrent: "1", createdBy: user.id, createdAt: new Date("2020-01-01T02:00:00Z") }).returning();
   const [js] = await db.insert(s.jsDocs).values({ docNo: "F-JS", jgId: jg.id, goodQty: "1", feePayable: "100", settleAmount: "100", createdBy: user.id, createdAt: new Date("2026-01-01T02:00:00Z") }).returning();
-  return { db, supplier, current, jg, js };
+  return { db, supplier, current, jg, js, user: { ...user, roles: ["admin"], isApprover: false } };
 }
 
 describe("账期决策事实新鲜度与年限边界", () => {
+  it("驾驶舱、列表与详情同步撤下过期账期值，重建后读新值；人工证据不覆盖", async () => {
+    const { db, supplier, current, user } = await fixture();
+    await refreshSupplierPaymentTerm(db);
+    const auto = await createGoal({ deptKey: "purchasing", period: "2026-09", metricKey: "paymentTermAttainment", targetValue: "80" }, user, db);
+    await createGoal({ deptKey: "purchasing", period: "2026-08", metricKey: "paymentTermAttainment", targetValue: "80" }, user, db);
+    const manual = await createGoal({ deptKey: "finance", period: "2026-Q3", metricKey: "paymentTermAttainment", targetValue: "80", actualSource: "manual" }, user, db);
+    await db.update(s.departmentGoals).set({ actualValue: "75", note: "合成人工证据" }).where(eq(s.departmentGoals.id, manual.id));
+    const storedBefore = await db.select().from(s.departmentGoals);
+    const block = () => getGoalsBlock(user, db, { now: new Date("2026-09-03T02:00:00Z") });
+    expect((await block()).rows.find(r => r.id === auto.id)).toMatchObject({ actualValue: "100.0000", attained: true });
+    // A live annual/current-terms value is not proof of the old month's terms, even before any change.
+    expect((await loadGoalHistory(db, user)).series.find(r => r.deptKey === "purchasing")!.points.every(p => p.actualValue === null)).toBe(true);
+    await db.update(s.poLines).set({ price: "10" }).where(eq(s.poLines.id, current.line.id));
+    const expected = { actualValue: null, attained: null, attainment: null, autoStatus: "unavailable" };
+    expect(await getGoal(auto.id, user, db)).toMatchObject(expected);
+    expect((await listGoals({}, user, db)).rows.find(r => r.id === auto.id)).toMatchObject(expected);
+    const history = await loadGoalHistory(db, user);
+    expect(history.series.find(r => r.deptKey === "purchasing")!.points.every(p => p.actualValue === null && p.attained === null && p.attainment === null)).toBe(true);
+    const stale = await block();
+    expect(stale.rows.find(r => r.id === auto.id)).toMatchObject(expected);
+    expect(stale.byDept.find(d => d.deptKey === "purchasing")).toMatchObject({ withActual: 0, attained: 0, attainmentRate: null });
+    expect(stale.rows.find(r => r.id === manual.id)).toMatchObject({ actualValue: "75.0000", actualSource: "manual", note: "合成人工证据" });
+    // Rebuilding changes the supplier's rank: no eligible candidate must remain unknown, not a stale 100%.
+    await refreshSupplierPaymentTerm(db);
+    expect((await block()).rows.find(r => r.id === auto.id)).toMatchObject(expected);
+    await db.update(s.poLines).set({ price: "100" }).where(eq(s.poLines.id, current.line.id));
+    await db.update(s.suppliers).set({ creditDays: 20 }).where(eq(s.suppliers.id, supplier.id));
+    await refreshSupplierPaymentTerm(db);
+    expect((await block()).rows.find(r => r.id === auto.id)).toMatchObject({ actualValue: "0.0000", attained: false, attainment: "0.0", autoStatus: "ok" });
+    expect(await db.select().from(s.departmentGoals)).toEqual(storedBefore);
+  });
+
+  it("历史不把本期模型补进旧月：两类账期自动值均留空，人工逐期值和部门范围保留", async () => {
+    const { db, user } = await fixture();
+    for (const metricKey of ["paymentTermAttainment", "creditTermSpendShare"]) {
+      for (const period of ["2026-08", "2026-09"]) {
+        await db.insert(s.departmentGoals).values([
+          { deptKey: "purchasing", metricKey, period, targetValue: "80", actualValue: "100", actualSource: "auto", direction: "up", createdBy: user.id },
+          { deptKey: "finance", metricKey, period, targetValue: "80", actualValue: "70", actualSource: "manual", direction: "up", createdBy: user.id, note: "合成逐期证据" },
+        ]);
+      }
+    }
+    const history = await loadGoalHistory(db, user);
+    expect(history.series).toHaveLength(4);
+    for (const series of history.series) {
+      expect(series.points).toHaveLength(2);
+      for (const point of series.points) {
+        if (series.deptKey === "purchasing") expect(point).toMatchObject({ actualValue: null, attainment: null, attained: null, valueWithheld: false, unavailableReason: "账期自动值未封存逐期来源依据，不能作为历史实际值" });
+        else expect(point).toMatchObject({ actualValue: "70.0000", attainment: "87.5", attained: false, unavailableReason: null });
+      }
+    }
+    const scoped = await loadGoalHistory(db, { ...user, roles: ["ops"], deptScope: ["finance"] });
+    expect(scoped.series).toHaveLength(2);
+    expect(scoped.series.every(s => s.deptKey === "finance")).toBe(true);
+  });
+
   it.each(["price", "poStatus", "jgStatus", "jsStatus"] as const)("已有单据%s变化必须撤下旧目标值并重算", async kind => {
     const { db, supplier, current, jg, js } = await fixture();
     if (kind === "poStatus") await db.update(s.poDocs).set({ status: "draft" }).where(eq(s.poDocs.id, current.doc.id));
