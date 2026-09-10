@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { errorResponse, guardRead, parseListQuery } from "@/server/modules/master/common";
 import { listPos } from "@/server/modules/outsource/po";
+import { parseSelectedValues } from "@/server/core/selected-options";
+import { ApiError } from "@/server/modules/master/common";
 
 // PO 本波仅由 WO generateDocs 派生（独立采购创建入口在后续波次），故无 POST
 export async function GET(req: NextRequest) {
@@ -8,8 +10,11 @@ export async function GET(req: NextRequest) {
     await guardRead();
     const { q, page, pageSize, searchParams } = parseListQuery(req.url);
     const woId = Number(searchParams.get("woId")) || undefined;
+    const eligible = searchParams.get("returnEligible");
+    if (eligible !== null && eligible !== "1") throw new ApiError(400, "returnEligible 仅支持 1");
     return NextResponse.json(
-      await listPos(q, { status: searchParams.get("status") ?? undefined, woId, page, pageSize }),
+      await listPos(q, { status: searchParams.get("status") ?? undefined, woId, page, pageSize,
+        returnEligible: eligible === "1", selectedValues: parseSelectedValues(searchParams) }),
     );
   } catch (e) {
     return errorResponse(e);

@@ -18,6 +18,7 @@ import { approveDocSchema, confirmDocSchema, transitionDocSchema, withdrawDocSch
 import { skuLineMatch } from "@/server/core/doc-search";
 import { transitionDoc } from "@/server/docflow/transition";
 import { currentPriceListRow } from "./price-list";
+import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 
 /** 采购订单 PO + 价格变更 PC（R1：基础单位未税比价；异动自动生成 PC，PO 留在草稿） */
 
@@ -413,7 +414,7 @@ export function poListProgress(
 
 export async function listPos(
   q: string,
-  opts: { status?: string; woId?: number; page: number; pageSize: number },
+  opts: { status?: string; woId?: number; page: number; pageSize: number; returnEligible?: boolean; selectedValues?: SelectedOptionValue[] },
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
@@ -421,6 +422,9 @@ export async function listPos(
   if (q) conds.push(or(sql`${poDocs.docNo} ILIKE ${"%" + q + "%"}`, skuLineMatch("po_lines", "po_id", poDocs.id, q)));
   if (opts.status) conds.push(eq(poDocs.status, opts.status as DocStatus));
   if (opts.woId) conds.push(eq(poDocs.woId, opts.woId));
+  if (opts.returnEligible) conds.push(inArray(poDocs.status, ["approved", "in_progress", "completed"]));
+  const selected = selectedOptionsPredicate(opts.selectedValues, { id: poDocs.id, text: [poDocs.docNo] });
+  if (selected) conds.push(selected);
   const where = conds.length ? and(...conds) : undefined;
 
   // 行聚合：行数 + Σ数量 + Σ已收（列表页「已收%」；采购单位口径逐行同单位，直接相加即可）
@@ -457,8 +461,8 @@ export async function listPos(
       .leftJoin(users, eq(poDocs.createdBy, users.id))
       .where(where)
       .orderBy(desc(poDocs.createdAt), desc(poDocs.id))
-      .limit(opts.pageSize)
-      .offset((opts.page - 1) * opts.pageSize),
+      .limit(opts.selectedValues === undefined ? opts.pageSize : SELECTED_OPTIONS_LIMIT)
+      .offset(opts.selectedValues === undefined ? (opts.page - 1) * opts.pageSize : 0),
     db.select({ total: sql<number>`count(*)::int` }).from(poDocs).where(where),
   ]);
   const today = todayShanghai();
