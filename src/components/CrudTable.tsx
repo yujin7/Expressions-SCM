@@ -8,6 +8,8 @@ import type { FormInstance, TableProps } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { fetchJson, postJson, putJson } from "./fetchJson";
+import { useDocumentRead } from "./useDocumentRead";
+import LoadErrorAlert from "./LoadErrorAlert";
 
 export interface ListResponse<T> {
   data: T[];
@@ -74,9 +76,6 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
 
   const { message } = App.useApp();
   const [form] = Form.useForm();
-  const [data, setData] = useState<T[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [q, setQ] = useState(initialQuery);
@@ -86,42 +85,35 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
   const [saving, setSaving] = useState(false);
   const queryParamsKey = JSON.stringify(queryParams ?? {});
   const previousQueryParamsKey = useRef(queryParamsKey);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = new URLSearchParams({
-        q,
-        page: String(page),
-        pageSize: String(pageSize),
-      });
-      for (const [key, value] of Object.entries(JSON.parse(queryParamsKey) as Record<string, string>)) {
-        if (value) params.set(key, value);
-      }
-      const res = await fetchJson<ListResponse<T>>(
-        `${apiPath}?${params.toString()}`,
-      );
-      setData(res.data);
-      setTotal(res.total);
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [apiPath, q, page, pageSize, message, queryParamsKey]);
+  const content = useRef<HTMLDivElement>(null);
+  const editRequest = useRef<AbortController | null>(null);
+  const effectivePage = previousQueryParamsKey.current !== queryParamsKey ? 1 : page;
+  const params = new URLSearchParams({ q, page: String(effectivePage), pageSize: String(pageSize) });
+  for (const [key, value] of Object.entries(JSON.parse(queryParamsKey) as Record<string, string>)) {
+    if (value) params.set(key, value);
+  }
+  const read = useDocumentRead<ListResponse<T>>(`${apiPath}?${params.toString()}`);
+  const valid = read.data !== null && Array.isArray(read.data.data) && Number.isSafeInteger(read.data.total) && read.data.total >= 0;
+  const data = valid ? read.data!.data : [];
+  const total = valid ? read.data!.total : 0;
+  const loading = read.phase === "loading";
+  const loadError = read.error ?? (read.phase === "success" && !valid ? "列表响应格式异常，未显示为有效结果" : null);
+  const retryRead = read.retry;
+  const load = useCallback(() => { content.current?.focus({ preventScroll: true }); retryRead(); }, [retryRead]);
 
   useEffect(() => {
     if (previousQueryParamsKey.current !== queryParamsKey) {
       previousQueryParamsKey.current = queryParamsKey;
       if (page !== 1) {
         setPage(1);
-        return;
       }
     }
-    void load();
-  }, [load, page, queryParamsKey]);
+  }, [page, queryParamsKey]);
+  useEffect(() => () => editRequest.current?.abort(), []);
 
   const openCreate = () => {
+    editRequest.current?.abort();
+    setOpeningEditId(null);
     setEditing(null);
     form.resetFields();
     setModalOpen(true);
@@ -129,11 +121,15 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
 
   const openEdit = useCallback(
     async (record: T) => {
+      editRequest.current?.abort();
+      const request = new AbortController();
+      editRequest.current = request;
       setOpeningEditId(record.id);
       try {
         const completeRecord = loadDetailOnEdit
-          ? await fetchJson<T>(`${apiPath}/${record.id}`)
+          ? await fetchJson<T>(`${apiPath}/${record.id}`, { signal: request.signal })
           : record;
+        if (request.signal.aborted) return;
         setEditing(completeRecord);
         form.resetFields();
         form.setFieldsValue(
@@ -141,9 +137,9 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
         );
         setModalOpen(true);
       } catch (e) {
-        message.error((e as Error).message);
+        if (!request.signal.aborted) message.error((e as Error).message);
       } finally {
-        setOpeningEditId(null);
+        if (!request.signal.aborted) setOpeningEditId(null);
       }
     },
     [apiPath, form, loadDetailOnEdit, message, toFormValues],
@@ -200,7 +196,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
   );
 
   return (
-    <div>
+    <div ref={content} tabIndex={-1}>
       <Space className="crud-table__toolbar" wrap>
         <SearchInput
           defaultValue={initialQuery}
@@ -225,6 +221,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
           )}
         </Space>
       </Space>
+      <LoadErrorAlert error={loadError} subject={entityName} onRetry={load} retrying={loading} />
       <Table<T>
         {...tableProps}
         className={`crud-table${tableProps?.className ? ` ${tableProps.className}` : ""}`}
@@ -233,8 +230,9 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
         columns={mergedColumns}
         dataSource={data}
         loading={loading}
-        pagination={{
-          current: page,
+        locale={{ ...tableProps?.locale, emptyText: loading ? "正在读取…" : loadError ? "本次数据未能读取，请重试" : tableProps?.locale?.emptyText ?? "暂无符合条件的记录" }}
+        pagination={valid ? {
+          current: effectivePage,
           pageSize,
           total,
           showSizeChanger: true,
@@ -243,7 +241,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
             setPage(p);
             setPageSize(ps);
           },
-        }}
+        } : false}
         scroll={tableProps?.scroll ?? { x: "max-content" }}
       />
       <Modal

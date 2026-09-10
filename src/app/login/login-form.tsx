@@ -1,10 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { App, Button, Card, Divider, Form, Input, Tooltip, Typography } from "antd";
 import { LockOutlined, UserOutlined } from "@ant-design/icons";
 import { signIn } from "next-auth/react";
-import { useRouter } from "next/navigation";
 import { loginReturnPath } from "@/lib/login-return-path";
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -21,10 +20,13 @@ function getCallbackUrl(): string {
 
 function LoginFormInner({ feishuEnabled }: { feishuEnabled: boolean }) {
   const { message } = App.useApp();
-  const router = useRouter();
   const [loading, setLoading] = useState(false);
+  const submitting = useRef(false);
 
   const onFinish = async (values: { username: string; password: string }) => {
+    if (submitting.current) return;
+    submitting.current = true;
+    let navigating = false;
     setLoading(true);
     try {
       const res = await signIn("local", {
@@ -32,17 +34,19 @@ function LoginFormInner({ feishuEnabled }: { feishuEnabled: boolean }) {
         password: values.password,
         redirect: false,
       });
-      if (res?.error) {
-        message.error(ERROR_MESSAGES[res.code ?? ""] ?? "登录失败，请重试");
+      if (!res?.ok || res.error) {
+        message.error(ERROR_MESSAGES[res?.code ?? ""] ?? "登录失败，请重试");
         return;
       }
       const target = getCallbackUrl();
-      router.replace(target);
-      router.refresh();
+      // Cross the authentication boundary with one fresh document request. Racing
+      // router.replace + router.refresh can reuse unauthenticated RSC navigation state.
+      window.location.replace(target);
+      navigating = true;
     } catch {
       message.error("登录失败，请重试");
     } finally {
-      setLoading(false);
+      if (!navigating) { submitting.current = false; setLoading(false); }
     }
   };
 
