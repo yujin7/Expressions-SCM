@@ -1,16 +1,11 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { App, Button, Card, Divider, Form, Input, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Card, Divider, Form, Input, Tooltip, Typography } from "antd";
 import { LockOutlined, UserOutlined } from "@ant-design/icons";
 import { signIn } from "next-auth/react";
 import { loginReturnPath } from "@/lib/login-return-path";
-
-const ERROR_MESSAGES: Record<string, string> = {
-  invalid: "用户名或密码错误",
-  disabled: "账号已停用，请联系管理员",
-  rate_limited: "尝试过于频繁，请稍后再试",
-};
+import { loginErrorMessage } from "@/lib/login-error";
 
 function getCallbackUrl(): string {
   if (typeof window === "undefined") return "/";
@@ -21,6 +16,7 @@ function getCallbackUrl(): string {
 function LoginFormInner({ feishuEnabled }: { feishuEnabled: boolean }) {
   const { message } = App.useApp();
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const submitting = useRef(false);
 
   const onFinish = async (values: { username: string; password: string }) => {
@@ -28,6 +24,7 @@ function LoginFormInner({ feishuEnabled }: { feishuEnabled: boolean }) {
     submitting.current = true;
     let navigating = false;
     setLoading(true);
+    setError(null);
     try {
       const res = await signIn("local", {
         username: values.username,
@@ -35,7 +32,9 @@ function LoginFormInner({ feishuEnabled }: { feishuEnabled: boolean }) {
         redirect: false,
       });
       if (!res?.ok || res.error) {
-        message.error(ERROR_MESSAGES[res?.code ?? ""] ?? "登录失败，请重试");
+        const text = loginErrorMessage(res);
+        setError(text);
+        message.error({ key: "login-error", content: "登录未完成，请查看表单提示" });
         return;
       }
       const target = getCallbackUrl();
@@ -44,7 +43,9 @@ function LoginFormInner({ feishuEnabled }: { feishuEnabled: boolean }) {
       window.location.replace(target);
       navigating = true;
     } catch {
-      message.error("登录失败，请重试");
+      const text = loginErrorMessage();
+      setError(text);
+      message.error({ key: "login-error", content: "登录未完成，请查看表单提示" });
     } finally {
       if (!navigating) { submitting.current = false; setLoading(false); }
     }
@@ -93,7 +94,8 @@ function LoginFormInner({ feishuEnabled }: { feishuEnabled: boolean }) {
         <Typography.Paragraph type="secondary" style={{ textAlign: "center", marginBottom: 24 }}>
           登录供应链控制塔
         </Typography.Paragraph>
-        <Form<{ username: string; password: string }> onFinish={onFinish} size="large">
+        {error ? <Alert type="error" showIcon role="alert" message={error} style={{ marginBottom: 16 }} /> : null}
+        <Form<{ username: string; password: string }> onFinish={onFinish} size="large" disabled={loading}>
           <Form.Item name="username" rules={[{ required: true, message: "请输入用户名" }]}>
             <Input prefix={<UserOutlined />} placeholder="用户名" autoComplete="username" />
           </Form.Item>
