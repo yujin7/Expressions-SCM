@@ -644,7 +644,7 @@ export default function ShClient() {
   ];
 
   const lineColumns: ColumnsType<ShLine> = [
-    { title: "物料", key: "material", render: (_, r) => `${r.skuCode} ${r.skuName}` },
+    { title: "物料", key: "material", width: 160, render: (_, r) => `${r.skuCode} ${r.skuName}` },
     { title: "单位", dataIndex: "baseUom", width: 70 },
     {
       title: "行类型",
@@ -670,6 +670,7 @@ export default function ShClient() {
     {
       title: "物料",
       key: "material",
+      width: 160,
       render: (_, r) => {
         const l = shLineById.get(r.shLineId);
         return l ? `${l.skuCode} ${l.skuName}` : `行#${r.shLineId}`;
@@ -702,7 +703,7 @@ export default function ShClient() {
   ];
 
   const qcEditColumns: ColumnsType<QcEditRow> = [
-    { title: "物料", dataIndex: "label" },
+    { title: "物料", dataIndex: "label", width: 160 },
     {
       title: "行类型",
       dataIndex: "lineType",
@@ -1074,6 +1075,8 @@ export default function ShClient() {
               rowKey="id"
               size="small"
               columns={lineColumns}
+              tableLayout="fixed"
+              scroll={{ x: 840 }}
               dataSource={detail.lines}
               pagination={false}
               style={{ marginBottom: 24 }}
@@ -1086,6 +1089,8 @@ export default function ShClient() {
                   rowKey="id"
                   size="small"
                   columns={qcResultColumns}
+                  tableLayout="fixed"
+                  scroll={{ x: 720 }}
                   dataSource={detail.qc.lines}
                   pagination={false}
                   style={{ marginBottom: 8 }}
@@ -1103,6 +1108,8 @@ export default function ShClient() {
                   rowKey="shLineId"
                   size="small"
                   columns={qcEditColumns}
+                  tableLayout="fixed"
+                  scroll={{ x: 890 }}
                   dataSource={qcRows}
                   pagination={false}
                   style={{ marginBottom: 8 }}
