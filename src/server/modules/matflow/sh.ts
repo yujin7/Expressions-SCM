@@ -26,7 +26,7 @@ import {
 } from "./common-notes";
 import { createQcSchema, createShSchema } from "./schemas";
 import { lockPurchaseReceipt } from "./purchase-receipt-lock";
-import { currentMatflowActor } from "./current-actor";
+import { currentWriteActor as currentMatflowActor } from "@/server/core/current-write-actor";
 
 /**
  * 收货单 SH + 检验 QC + 入库确认（《01》§3/§4，《02》§3 关键校验）。

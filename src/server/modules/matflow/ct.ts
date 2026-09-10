@@ -19,7 +19,7 @@ import { createCtSchema } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
 import { skuLineMatch } from "@/server/core/doc-search";
 import { lockPurchaseReceipt } from "./purchase-receipt-lock";
-import { currentMatflowActor } from "./current-actor";
+import { currentWriteActor as currentMatflowActor } from "@/server/core/current-write-actor";
 
 /**
  * 采购退货单 CT（B9）：仓库 −，PO 已收数回冲（po_line.receivedQty −=，基础单位）。
