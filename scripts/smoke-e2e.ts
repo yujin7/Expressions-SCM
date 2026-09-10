@@ -34,11 +34,20 @@ function record(name: string, status: Status, detail = ""): void {
   console.log(`${icon} [${status}] ${name}${detail ? ` — ${detail}` : ""}`);
 }
 
-/** 极简 cookie jar（next-auth 需要 csrf + session cookie 往返） */
+function cookieProtocolMatches(line: string): boolean {
+  const protocol = new URL(BASE).protocol;
+  return (protocol === "http:" || protocol === "https:")
+    && /;\s*secure\s*(?:;|$)/i.test(line) === (protocol === "https:");
+}
+
+/** 有界冒烟 Cookie jar；不能无条件回传 Safari 会拒绝的 HTTP Secure Cookie。 */
 class Jar {
   private cookies = new Map<string, string>();
   absorb(res: Response): void {
     for (const line of res.headers.getSetCookie?.() ?? []) {
+      if (/^(?:__Host-|__Secure-)?authjs\./.test(line) && !cookieProtocolMatches(line)) {
+        throw new Error("认证 Cookie 与访问协议不一致");
+      }
       const [pair] = line.split(";");
       const eq = pair.indexOf("=");
       if (eq > 0) {
@@ -140,6 +149,31 @@ async function main(): Promise<void> {
       record("健康检查 /api/health", "PASS", `migrations ${h.applied}/${h.migrationFiles}`);
     } else {
       record("健康检查 /api/health", "FAIL", `status=${status} body=${JSON.stringify(body)}`);
+    }
+  }
+
+  // The Node jar is not a browser: first reject the real Safari failure mode before
+  // transmitting passwords. This does not replace browser login or HTTPS proxy UAT.
+  {
+    let matches = false;
+    try {
+      const response = await fetch(`${BASE}/api/auth/csrf`, {
+        redirect: "error", cache: "no-store", signal: AbortSignal.timeout(5000),
+      });
+      const csrfCookies = (response.headers.getSetCookie?.() ?? [])
+        .filter((line) => /^(?:__Host-)?authjs\.csrf-token=/.test(line));
+      const body: unknown = await response.json();
+      matches = response.ok && csrfCookies.length === 1 && cookieProtocolMatches(csrfCookies[0])
+        && body !== null && typeof body === "object" && "csrfToken" in body
+        && typeof body.csrfToken === "string" && body.csrfToken.length > 0;
+    } catch { /* Never print cookie/token values or raw authentication responses. */ }
+    record("登录 Cookie 与访问协议", matches ? "PASS" : "FAIL", matches
+      ? "CSRF Cookie 与 HTTP/HTTPS 匹配；浏览器仍需独立验证"
+      : "Cookie 缺失、协议不符或验证端点失败；停止账号验证");
+    if (!matches) {
+      printSummary();
+      process.exitCode = 1;
+      return;
     }
   }
 
