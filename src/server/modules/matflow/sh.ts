@@ -1,7 +1,7 @@
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import {
    jgDocs, offsetPools, poDocs, poLines, qcLines, qcRecords,
-  shDocs, shLines, users, woLines,
+  shDocs, shLines, warehouses, woLines,
 } from "@/db/schema";
 import { dAdd, dCmp, dDiv, dMul, dNeg, dQty, dSub, dZero } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
@@ -26,6 +26,7 @@ import {
 } from "./common-notes";
 import { createQcSchema, createShSchema } from "./schemas";
 import { lockPurchaseReceipt } from "./purchase-receipt-lock";
+import { currentMatflowActor } from "./current-actor";
 
 /**
  * 收货单 SH + 检验 QC + 入库确认（《01》§3/§4，《02》§3 关键校验）。
@@ -33,7 +34,7 @@ import { lockPurchaseReceipt } from "./purchase-receipt-lock";
  * - 累计校验（jg 源）：Σ正常行实收 ≤ JG数量 − Σ已判不合格 + 超收容差（sys_param over_receive_tolerance_pct）。
  * - 审批仅置 approved——检验前不入库；QC 一单一检；confirmInbound 才过账：
  *   jg 源 → sh_outsource_in（成品仓 +合格+让步；委外仓 −净标准用量×(合格+让步+备品)）+ spare_in（备品零成本+对冲池）；
- *   po 源 → sh_purchase_in（仓库 +合格数）+ po_line.receivedQty 累加（全收自动完成 PO）。
+ *   po 源 → sh_purchase_in（仓库 +合格+让步）+ po_line.receivedQty 累加（全收自动完成 PO）。
  */
 
 type ShRow = typeof shDocs.$inferSelect;
@@ -112,39 +113,42 @@ export async function createSh(user: SessionUser, input: unknown, dbArg?: AnyDb)
   const v = createShSchema.parse(input);
   const db = await resolveDb(dbArg);
 
-  await requireRealtimeWarehouse(db, v.warehouseId, "收货仓");
-
-  let lines = v.lines;
-  if (v.sourceType === "jg") {
-    const jg = await getJgForMatflow(db, v.sourceId);
-    for (const l of lines) {
-      if (l.skuId !== jg.productSkuId) {
-        throw new ApiError(400, `jg 源收货行 SKU 必须是加工成品 sku#${jg.productSkuId}，实为 sku#${l.skuId}`);
-      }
-    }
-    // 累计校验（分母=JG数量−已判不合格+容差）
-    let thisNormal = "0";
-    for (const l of lines) if (l.lineType === "normal") thisNormal = dAdd(thisNormal, l.actualQty);
-    await assertJgReceiptWithinCap(db, jg, thisNormal);
-  } else {
-    const [po]: (typeof poDocs.$inferSelect)[] = await db.select().from(poDocs).where(eq(poDocs.id, v.sourceId));
-    if (!po) throw new ApiError(404, `采购订单不存在: #${v.sourceId}`);
-    if (po.status !== "approved" && po.status !== "in_progress") {
-      throw new ApiError(409, `采购订单当前状态不可收货: ${po.status}`);
-    }
-    const plRows: { skuId: number }[] = await db
-      .select({ skuId: poLines.skuId })
-      .from(poLines)
-      .where(eq(poLines.poId, po.id));
-    const poSkus = new Set(plRows.map((r) => r.skuId));
-    for (const l of lines) {
-      if (!poSkus.has(l.skuId)) throw new ApiError(400, `SKU #${l.skuId} 不在该 PO 行上，不可收货`);
-    }
-    // po 源无行类型概念，强制 normal
-    lines = lines.map((l) => ({ ...l, lineType: "normal" as const }));
-  }
-
   return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentMatflowActor(tx, user);
+    requireAnyRole(actor, "warehouse");
+    await tx.select({ id: warehouses.id }).from(warehouses).where(eq(warehouses.id, v.warehouseId)).for("share");
+    await requireRealtimeWarehouse(tx, v.warehouseId, "收货仓");
+
+    let lines = v.lines;
+    if (v.sourceType === "jg") {
+      await tx.select({ id: jgDocs.id }).from(jgDocs).where(eq(jgDocs.id, v.sourceId)).for("share");
+      const jg = await getJgForMatflow(tx, v.sourceId);
+      for (const l of lines) {
+        if (l.skuId !== jg.productSkuId) {
+          throw new ApiError(400, `jg 源收货行 SKU 必须是加工成品 sku#${jg.productSkuId}，实为 sku#${l.skuId}`);
+        }
+      }
+      // 草稿不预占累计；审批仍须重查。
+      let thisNormal = "0";
+      for (const l of lines) if (l.lineType === "normal") thisNormal = dAdd(thisNormal, l.actualQty);
+      await assertJgReceiptWithinCap(tx, jg, thisNormal);
+    } else {
+      const [po]: (typeof poDocs.$inferSelect)[] = await tx.select().from(poDocs).where(eq(poDocs.id, v.sourceId)).for("share");
+      if (!po) throw new ApiError(404, `采购订单不存在: #${v.sourceId}`);
+      if (po.status !== "approved" && po.status !== "in_progress") {
+        throw new ApiError(409, `采购订单当前状态不可收货: ${po.status}`);
+      }
+      const plRows: { skuId: number }[] = await tx
+        .select({ skuId: poLines.skuId })
+        .from(poLines)
+        .where(eq(poLines.poId, po.id)).orderBy(poLines.id).for("share");
+      const poSkus = new Set(plRows.map((r) => r.skuId));
+      for (const l of lines) {
+        if (!poSkus.has(l.skuId)) throw new ApiError(400, `SKU #${l.skuId} 不在该 PO 行上，不可收货`);
+      }
+      // po 源无行类型概念，强制 normal
+      lines = lines.map((l) => ({ ...l, lineType: "normal" as const }));
+    }
     const docNo = await nextDocNo(tx, "SH");
     const [doc]: ShRow[] = await tx
       .insert(shDocs)
@@ -182,20 +186,23 @@ export async function createSh(user: SessionUser, input: unknown, dbArg?: AnyDb)
 
 export async function submitSh(user: SessionUser, id: number, version: number, dbArg?: AnyDb): Promise<ShRow> {
   const db = await resolveDb(dbArg);
-  const [doc]: ShRow[] = await db.select().from(shDocs).where(eq(shDocs.id, id));
-  if (!doc) throw new ApiError(404, "单据不存在");
-  if (doc.createdBy !== user.id && !user.roles.includes("warehouse") && !user.roles.includes("admin")) {
-    throw new ApiError(403, "仅制单人/仓管/管理员可提交");
-  }
-  if (doc.status !== "draft") throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
-  const updated: ShRow[] = await db
-    .update(shDocs)
-    .set({ status: "pending", version: sql`${shDocs.version} + 1`, updatedAt: new Date() })
-    .where(and(eq(shDocs.id, id), eq(shDocs.version, version)))
-    .returning();
-  if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
-  await writeAudit(db, { userId: user.id, entity: "sh", entityId: id, action: "submit" });
-  return updated[0];
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentMatflowActor(tx, user);
+    const [doc]: ShRow[] = await tx.select().from(shDocs).where(eq(shDocs.id, id)).for("update");
+    if (!doc) throw new ApiError(404, "单据不存在");
+    if (doc.createdBy !== actor.id && !actor.roles.includes("warehouse") && !actor.roles.includes("admin")) {
+      throw new ApiError(403, "仅制单人/仓管/管理员可提交");
+    }
+    if (doc.status !== "draft") throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
+    const updated: ShRow[] = await tx
+      .update(shDocs)
+      .set({ status: "pending", version: sql`${shDocs.version} + 1`, updatedAt: new Date() })
+      .where(and(eq(shDocs.id, id), eq(shDocs.version, version)))
+      .returning();
+    if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
+    await writeAudit(tx, { userId: actor.id, entity: "sh", entityId: id, action: "submit" });
+    return updated[0];
+  });
 }
 
 // ---------- 审批（仅置 approved——检验前不入库；累计校验并发兜底重查） ----------
@@ -210,14 +217,15 @@ export async function approveSh(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
-      const [doc]: ShRow[] = await tx.select().from(shDocs).where(eq(shDocs.id, id));
+      const actor = await currentMatflowActor(tx, user);
+      const [doc]: ShRow[] = await tx.select().from(shDocs).where(eq(shDocs.id, id)).for("update");
       if (!doc) throw new ApiError(404, "单据不存在");
 
       const r = await approveDoc(tx, {
         docType: "sh",
         table: shDocs,
         docId: id,
-        approver: { id: user.id, roles: user.roles, isApprover: user.isApprover },
+        approver: actor,
         action: v.action,
         comment: v.comment,
         expectedVersion: v.version,
@@ -250,13 +258,6 @@ export async function approveSh(
 
 // ---------- QC 检验（一单一检；每个收货行必须完整三分且合计=实收） ----------
 
-/** Hold the current role through QC/inbound commit, not only at HTTP entry. */
-async function requireCurrentWarehouseActor(tx: AnyDb, user: SessionUser): Promise<void> {
-  const [current]: (typeof users.$inferSelect)[] = await tx.select().from(users).where(eq(users.id, user.id)).for("share");
-  if (!current?.active) throw new ApiError(403, "账号已停用或不存在，请重新登录核对权限");
-  requireAnyRole(current, "warehouse");
-}
-
 export async function createQc(
   user: SessionUser,
   input: unknown,
@@ -267,7 +268,7 @@ export async function createQc(
   const db = await resolveDb(dbArg);
 
   return db.transaction(async (tx: AnyDb) => {
-    await requireCurrentWarehouseActor(tx, user);
+    requireAnyRole(await currentMatflowActor(tx, user), "warehouse");
     // Serialize QC creation and inbound against this exact receipt. All facts
     // used below are read after the lock, not from a stale pre-transaction check.
     const [sh]: ShRow[] = await tx.select().from(shDocs).where(eq(shDocs.id, v.shId)).for("update");
@@ -338,7 +339,7 @@ export async function confirmInbound(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
-      await requireCurrentWarehouseActor(tx, user);
+      requireAnyRole(await currentMatflowActor(tx, user), "warehouse");
       const [sh]: ShRow[] = await tx.select().from(shDocs).where(eq(shDocs.id, shId)).for("update");
       if (!sh) throw new ApiError(404, "单据不存在");
       if (sh.status === "completed") throw new ApiError(409, "该收货单已入库，不可重复入库");

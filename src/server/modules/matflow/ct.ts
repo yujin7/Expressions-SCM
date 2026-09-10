@@ -19,6 +19,7 @@ import { createCtSchema } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
 import { skuLineMatch } from "@/server/core/doc-search";
 import { lockPurchaseReceipt } from "./purchase-receipt-lock";
+import { currentMatflowActor } from "./current-actor";
 
 /**
  * 采购退货单 CT（B9）：仓库 −，PO 已收数回冲（po_line.receivedQty −=，基础单位）。
@@ -29,16 +30,6 @@ import { lockPurchaseReceipt } from "./purchase-receipt-lock";
 type CtRow = typeof ctDocs.$inferSelect;
 type CtLineRow = typeof ctLines.$inferSelect;
 type PoLineRow = typeof poLines.$inferSelect;
-
-/** Keep current identity stable through the CT transaction, including HTTP session revocation. */
-async function currentCtActor(tx: AnyDb, user: SessionUser): Promise<SessionUser> {
-  const [current]: (typeof users.$inferSelect)[] = await tx.select().from(users).where(eq(users.id, user.id)).for("share");
-  if (!current?.active) throw new ApiError(403, "账号已停用或不存在，请重新登录核对权限");
-  if (user.sessionVersion != null && user.sessionVersion !== current.sessionVersion) {
-    throw new ApiError(401, "登录状态已失效，请重新登录");
-  }
-  return { id: current.id, name: current.name, roles: current.roles, isApprover: current.isApprover };
-}
 
 /** 逐 PO 行合计本单退货量，并校验 ≤ 当前已收数 */
 function assertWithinReceived(
@@ -79,7 +70,7 @@ export async function createCt(user: SessionUser, input: unknown, dbArg?: AnyDb)
   assertWithinReceived(ctQtyByPoLine, poLineById);
 
   return db.transaction(async (tx: AnyDb) => {
-    const actor = await currentCtActor(tx, user);
+    const actor = await currentMatflowActor(tx, user);
     requireAnyRole(actor, "warehouse");
     const allocatedLines = await expandOutboundLinesForBatchPosting(tx, v.warehouseId, v.lines);
     const docNo = await nextDocNo(tx, "CT");
@@ -116,7 +107,7 @@ export async function createCt(user: SessionUser, input: unknown, dbArg?: AnyDb)
 export async function submitCt(user: SessionUser, id: number, version: number, dbArg?: AnyDb): Promise<CtRow> {
   const db = await resolveDb(dbArg);
   return db.transaction(async (tx: AnyDb) => {
-    const actor = await currentCtActor(tx, user);
+    const actor = await currentMatflowActor(tx, user);
     const [doc]: CtRow[] = await tx.select().from(ctDocs).where(eq(ctDocs.id, id)).for("update");
     if (!doc) throw new ApiError(404, "单据不存在");
     if (doc.createdBy !== actor.id && !actor.roles.includes("warehouse") && !actor.roles.includes("admin")) {
@@ -146,7 +137,7 @@ export async function approveCt(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
-      const actor = await currentCtActor(tx, user);
+      const actor = await currentMatflowActor(tx, user);
       const [doc]: CtRow[] = await tx.select().from(ctDocs).where(eq(ctDocs.id, id)).for("update");
       if (!doc) throw new ApiError(404, "单据不存在");
 
