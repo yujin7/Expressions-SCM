@@ -25,6 +25,7 @@ import {
   getOutsourceWarehouseOf, requireRealtimeWarehouse,
 } from "./common-notes";
 import { createQcSchema, createShSchema } from "./schemas";
+import { lockPurchaseReceipt } from "./purchase-receipt-lock";
 
 /**
  * 收货单 SH + 检验 QC + 入库确认（《01》§3/§4，《02》§3 关键校验）。
@@ -352,6 +353,9 @@ export async function confirmInbound(
       const qcByShLine = new Map(qcRows.map((l) => [l.shLineId, l]));
       const lines: ShLineRow[] = await tx.select().from(shLines).where(eq(shLines.shId, shId)).orderBy(shLines.id);
 
+      // Lock the shared PO aggregate before batch/stock writes; different SH and CT
+      // must not independently read the same old receivedQty.
+      const purchase = sh.sourceType === "po" ? await lockPurchaseReceipt(tx, sh.sourceId) : null;
       const batchPostingEnabled = await isBatchPostingEnabled(tx);
       const batchIds = await registerBatchesFromReceipt(
         tx,
@@ -370,7 +374,7 @@ export async function confirmInbound(
       if (sh.sourceType === "jg") {
         await inboundFromJg(tx, user, sh, lines, qcByShLine, batchByShLine);
       } else {
-        await inboundFromPo(tx, user, sh, lines, qcByShLine, batchByShLine);
+        await inboundFromPo(tx, user, sh, lines, qcByShLine, batchByShLine, purchase!);
       }
 
       const finalStatus = await completeApprovedDoc(tx, shDocs, shId);
@@ -532,14 +536,9 @@ async function inboundFromPo(
   lines: ShLineRow[],
   qcByShLine: Map<number, typeof qcLines.$inferSelect>,
   batchByShLine: Map<number, number | null>,
+  purchase: Awaited<ReturnType<typeof lockPurchaseReceipt>>,
 ): Promise<void> {
-  const [po]: (typeof poDocs.$inferSelect)[] = await tx.select().from(poDocs).where(eq(poDocs.id, sh.sourceId));
-  if (!po) throw new ApiError(500, `收货单挂空 PO: #${sh.sourceId}`);
-  const plRows: (typeof poLines.$inferSelect)[] = await tx
-    .select()
-    .from(poLines)
-    .where(eq(poLines.poId, po.id))
-    .orderBy(poLines.id);
+  const { po, lines: plRows } = purchase;
 
   const eventLines: PostingLine[] = [];
   const passBySku = new Map<number, string>();

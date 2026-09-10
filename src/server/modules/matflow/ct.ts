@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
    batches, ctDocs, ctLines, poDocs, poLines, skus, users, warehouses,
 } from "@/db/schema";
@@ -18,6 +18,7 @@ import { completeApprovedDoc, requireRealtimeWarehouse } from "./common-notes";
 import { createCtSchema } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
 import { skuLineMatch } from "@/server/core/doc-search";
+import { lockPurchaseReceipt } from "./purchase-receipt-lock";
 
 /**
  * 采购退货单 CT（B9）：仓库 −，PO 已收数回冲（po_line.receivedQty −=，基础单位）。
@@ -153,11 +154,14 @@ export async function approveCt(
       if (lines.length === 0) throw new ApiError(409, "退货单无行，不可审批过账");
 
       // 兜底重查：创建后可能又有 CT 回冲过——退货量不得超过当前已收数
-      const poLineIds = [...new Set(lines.map((l) => l.poLineId))];
-      const plRows: PoLineRow[] = await tx.select().from(poLines).where(inArray(poLines.id, poLineIds));
+      const { lines: plRows } = await lockPurchaseReceipt(tx, doc.poId);
       const poLineById = new Map(plRows.map((row) => [row.id, row]));
       const ctQtyByPoLine = new Map<number, string>();
-      for (const l of lines) ctQtyByPoLine.set(l.poLineId, dAdd(ctQtyByPoLine.get(l.poLineId) ?? "0", l.qty));
+      for (const l of lines) {
+        const pl = poLineById.get(l.poLineId);
+        if (!pl || pl.skuId !== l.skuId) throw new ApiError(409, `退货行与来源采购订单不匹配: po_line#${l.poLineId}`);
+        ctQtyByPoLine.set(l.poLineId, dAdd(ctQtyByPoLine.get(l.poLineId) ?? "0", l.qty));
+      }
       assertWithinReceived(ctQtyByPoLine, poLineById);
 
       // 过账 ct_return：仓库 −
