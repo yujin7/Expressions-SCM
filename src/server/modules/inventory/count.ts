@@ -15,6 +15,7 @@ import { post, PostingError, type AnyDb, type PostingLine } from "@/server/posti
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { resolveDb } from "@/server/core/svc";
 import { currentWriteActor } from "@/server/core/current-write-actor";
+import { shanghaiDay } from "@/server/core/business-day";
 import { participatesInNormalSalesMovement } from "@/server/rules/sku-standardization";
 
 /**
@@ -71,7 +72,8 @@ export const createCountTaskSchema = z
       .optional(),
     remark: z.string().trim().max(500).optional(),
     /** 盘点期（业务日期）。不传按今天（Asia/Shanghai）——补录时可显式指定。 */
-    bizDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "盘点期格式 YYYY-MM-DD").optional(),
+    bizDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "盘点期格式 YYYY-MM-DD")
+      .refine(value => !value.startsWith("0000-") && shanghaiDay(value) === value, "盘点期必须是真实存在的日历日期").optional(),
   })
   .superRefine((v, ctx) => {
     const f = v.filters;
@@ -87,7 +89,20 @@ export const updateCountsSchema = z.object({
   lines: z
     .array(z.object({ lineId: z.number().int().positive(), countedQty: qtyNonNegative }))
     .min(1, "至少一行实盘数"),
+}).superRefine((value, ctx) => {
+  const seen = new Set<number>();
+  value.lines.forEach((line, index) => {
+    if (seen.has(line.lineId)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["lines", index, "lineId"], message: `实盘明细行 #${line.lineId} 重复，请每行只提交一次` });
+    seen.add(line.lineId);
+  });
 });
+
+/** List and export must reject the same invalid month instead of returning a plausible empty report. */
+function validateCountPeriod(period: string | undefined) {
+  if (period && (!/^\d{4}-\d{2}$/.test(period) || period.startsWith("0000-") || shanghaiDay(`${period}-01`) == null)) {
+    throw new ApiError(400, "盘点期必须是有效月份（YYYY-MM），请核对筛选条件");
+  }
+}
 
 export const approveCountTaskSchema = z.object({
   action: z.enum(["approve", "reject"]),
@@ -548,6 +563,7 @@ export async function listCountTasks(
   },
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
+  validateCountPeriod(opts.period);
   const db = await resolveDb(dbArg);
   const conds = [];
   if (q) conds.push(sql`${pdDocs.docNo} ILIKE ${"%" + q + "%"}`);
@@ -608,6 +624,7 @@ export async function listCountLinesForExport(
   opts: { period?: string; pdId?: number; commercialRole?: string; limit: number },
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
+  validateCountPeriod(opts.period);
   const db = await resolveDb(dbArg);
   const conds = [];
   if (opts.pdId) conds.push(eq(pdDocs.id, opts.pdId));

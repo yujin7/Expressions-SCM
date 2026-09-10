@@ -27,6 +27,14 @@ async function draft(maker: SessionUser) {
 }
 const read = async (id: number) => (await fixture.db.select().from(pdDocs).where(eq(pdDocs.id, id)))[0];
 
+it("duplicate lines reject the whole save with no line, version or audit effect", async () => {
+  const maker = await actor(), { doc, line } = await draft(maker);
+  await expect(updateCounts(maker, doc.id, { version: 1, lines: [{ lineId: line.id, countedQty: "0.2" }, { lineId: line.id, countedQty: "0.4" }] }, fixture.db)).rejects.toThrow("重复");
+  expect((await read(doc.id)).version).toBe(1);
+  expect((await fixture.db.select().from(pdLines).where(eq(pdLines.id, line.id)))[0].countedQty).toBe("0.1000");
+  expect(await fixture.db.select().from(auditLogs).where(and(eq(auditLogs.entity, "pd_doc"), eq(auditLogs.entityId, doc.id)))).toHaveLength(0);
+});
+
 it("detail action hints use the actual count approval configuration and exact maker", async () => {
   const maker = await actor(), checker = await actor(["finance"], true), { doc } = await draft(maker);
   expect((await getCountTask(doc.id, fixture.db, maker)).actions).toMatchObject({ edit: true, submit: true, approve: false });
