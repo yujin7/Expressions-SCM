@@ -51,6 +51,16 @@ const create = () => nodes(render()).find(n => n.type === "modal" && n.props.tit
 beforeEach(() => { h.cursor = 0; h.slots = []; h.effects = []; h.changed = false; h.q = ""; h.period = ""; h.detailId = null; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
 afterEach(() => { for (const fn of h.cleanups.values()) fn(); h.cleanups.clear(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
+it.each(["", "2026-09"])("period and search never reuse the same React identity when values equal %s", value => {
+  h.q=value;h.period=value;fetchMock.mockResolvedValue(list(1));render();
+  const keys=nodes(props('toolbar').extra as ReactNode).filter(n=>['盘点期 YYYY-MM','搜索单据号'].includes(n.props.placeholder as string)).map(n=>n.key);
+  expect(keys).toHaveLength(2);expect(new Set(keys).size).toBe(2);
+});
+it("failed list distinguishes unknown data from a successful empty result",async()=>{
+  fetchMock.mockResolvedValue(Response.json({error:'无效月份'},{status:400}));render();await flush();
+  expect(props('table').locale).toEqual({emptyText:'数据未加载，请先修正筛选条件或重试'});
+});
+
 it("read-only draft hides editing and submit, explains authority and refuses stale callbacks", async () => {
   h.detailId=1;fetchMock.mockImplementation(async u=>String(u).endsWith('/1')?Response.json({...detail(1),actions:{edit:false,submit:false,approve:false,reason:'当前仅可查看，请由仓管录入'}}):Response.json({rows:[row(1)],total:1,canCreate:false}));render();await flush();
   expect(save()).toBeUndefined();expect(buttons().some(n=>n.props.children==='提交')).toBe(false);
@@ -80,7 +90,7 @@ it("list failure withdraws total; explicit retry reads without any POST", async 
 it("malformed list never becomes a successful empty list", async () => {fetchMock.mockResolvedValue(Response.json({rows:null,total:1}));render();await flush();expect(props("read-error").error).toContain("异常");expect(props("table").pagination).toBe(false);});
 it("period restores from URL and clear removes it from actual request", async () => {
   h.period="2026-08";fetchMock.mockResolvedValue(list(1));render();await flush();const input=nodes(props("toolbar").extra as ReactNode).find(n=>n.props.placeholder==="盘点期 YYYY-MM")!;
-  expect(input.key).toBe("2026-08");expect(input.props.defaultValue).toBe(h.period);expect(String(fetchMock.mock.calls.at(-1)![0])).toContain("period=2026-08");
+  expect(input.key).toBe("period:2026-08");expect(input.props.defaultValue).toBe(h.period);expect(String(fetchMock.mock.calls.at(-1)![0])).toContain("period=2026-08");
   (input.props.onChange as (e: unknown)=>void)({target:{value:""}});render();await flush();expect(String(fetchMock.mock.calls.at(-1)![0])).not.toContain("period=");
 });
 it("detail quantities stay decimal strings and each table has usable fixed columns", async () => {

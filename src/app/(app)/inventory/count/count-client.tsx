@@ -457,7 +457,7 @@ function CountInner() {
         extra={
           <>
             <Input
-              key={period ?? ""}
+              key={`period:${period ?? ""}`}
               allowClear
               placeholder="盘点期 YYYY-MM"
               style={{ width: 150 }}
@@ -467,7 +467,7 @@ function CountInner() {
               onPressEnter={(e) => listState.setFilter({ period: (e.target as HTMLInputElement).value.trim() })}
             />
             <SearchInput
-              key={q}
+              key={`query:${q}`}
               allowClear
               defaultValue={q}
               placeholder="搜索单据号"
@@ -493,6 +493,7 @@ function CountInner() {
         dataSource={rows}
         scroll={{ x: "max-content" }}
         loading={loading}
+        locale={listError ? { emptyText: "数据未加载，请先修正筛选条件或重试" } : undefined}
         pagination={validList ? listState.paginationProps({ total }) : false}
       />
 
