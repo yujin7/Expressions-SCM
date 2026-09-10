@@ -14,6 +14,7 @@ const hooks = vi.hoisted(() => ({
   cleanups: new Map<number, () => void>(),
   changed: false,
   writes: 0,
+  wideTables: false,
 }));
 const state = vi.hoisted(() => ({
   me: { id: 1, name: "QA", roles: ["admin"], isApprover: false } as { id: number; name: string; roles: string[]; isApprover: boolean } | null,
@@ -67,6 +68,7 @@ vi.mock("next/dynamic", () => ({ default: () => "readiness-panel" }));
 vi.mock("antd", () => ({
   Alert: "alert", App: { useApp: () => ({ message: state.message }) },
   Button: "button", Card: "card", Col: "col", Progress: "progress",
+  Grid: { useBreakpoint: () => ({ lg: hooks.wideTables }) },
   Radio: { Group: "radio-group" }, Row: "row", Select: "select", Space: "space",
   Statistic: "statistic", Table: "table", Tabs: "tabs", Tag: "tag",
   Typography: { Title: "title", Text: "text", Paragraph: "paragraph" },
@@ -110,6 +112,8 @@ type Props = {
   available?: boolean;
   dataSource?: unknown[];
   href?: string;
+  fitContent?: boolean;
+  columns?: { key?: string; fixed?: string; width?: number; render?: (...args: unknown[]) => ReactNode }[];
 };
 function elements(node: ReactNode): React.ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
@@ -178,6 +182,7 @@ beforeEach(() => {
   hooks.cleanups.clear();
   hooks.changed = false;
   hooks.writes = 0;
+  hooks.wideTables = false;
   state.fetch.mockReset();
   state.me = { id: 1, name: "QA", roles: ["admin"], isApprover: false };
   for (const message of Object.values(state.message)) message.mockReset();
@@ -186,6 +191,28 @@ beforeEach(() => {
 afterEach(() => { unmount(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("Decision Studio query-bound loading and response cache", () => {
+  it("keeps mobile pivot months readable and the table at its natural height without losing drill-down", async () => {
+    await loaded("B", 22);
+    const tree = render();
+    const pivot = elements(tree).find((node) => node.type === "tabs")!.props.items!.find((item) => item.key === "pivot")!;
+    const visual = elements(pivot.children).find((node) => node.type === "decision-visual")!;
+    const table = elements(pivot.children).find((node) => node.type === "table")!;
+    expect(visual.props.fitContent).toBe(true);
+    const columns = table.props.columns!;
+    expect(columns[0]).toMatchObject({ key: "label", fixed: "left", width: 104 });
+    expect(columns.at(-1)!.fixed).toBeUndefined();
+    expect(columns.slice(1, -1).every((column) => column.width === 120)).toBe(true);
+    const button = columns[0].render!("长名称", { key: "fixture" }) as React.ReactElement<Props>;
+    button.props.onClick!();
+    expect(state.filters).toMatchObject({ key: "fixture", tab: "focus", brand: "B" });
+
+    hooks.wideTables = true;
+    const desktop = elements(render()).find((node) => node.type === "tabs")!.props.items!.find((item) => item.key === "pivot")!;
+    const desktopTable = elements(desktop.children).find((node) => node.type === "table")!;
+    expect(desktopTable.props.columns![0]).toMatchObject({ width: 220, fixed: "left" });
+    expect(desktopTable.props.columns!.at(-1)).toMatchObject({ fixed: "right", width: 130 });
+  });
+
   it("all four core visuals withhold coverage and empty conclusions until the current response arrives", () => {
     state.fetch.mockReturnValueOnce(deferred().promise);
     for (const tree of [render(false), render()]) {

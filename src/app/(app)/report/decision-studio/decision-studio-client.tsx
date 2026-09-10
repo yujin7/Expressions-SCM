@@ -8,6 +8,7 @@ import {
   Button,
   Card,
   Col,
+  Grid,
   Progress,
   Radio,
   Row,
@@ -160,6 +161,7 @@ function hasReportEnvelope(value: unknown, dimension: StudioDimension): boolean 
 
 export default function DecisionStudioClient() {
   const { message } = App.useApp();
+  const wideTables = Boolean(Grid.useBreakpoint().lg);
   const me = useMe();
   // Presentation only: the APIs still recheck current roles in the database.
   const canObserveChannels = hasAnyRole(me, ...PRICE_VISIBLE_ROLES);
@@ -289,12 +291,12 @@ export default function DecisionStudioClient() {
         dataIndex: "label",
         key: "label",
         fixed: "left",
-        width: 220,
+        width: wideTables ? 220 : 104,
         render: (value: string, row) => (
           <Button
             type="link"
             size="small"
-            style={{ padding: 0 }}
+            style={{ padding: 0, height: "auto", maxWidth: "100%", whiteSpace: "normal", overflowWrap: "anywhere", textAlign: "left" }}
             onClick={() => view.setFilter({ key: row.key, tab: "focus" })}
           >
             {value}
@@ -314,12 +316,12 @@ export default function DecisionStudioClient() {
         dataIndex: "total",
         key: "total",
         width: 130,
-        fixed: "right",
+        fixed: wideTables ? "right" : undefined,
         align: "right",
         render: (value: number) => <Typography.Text strong>{formatQty(value)}</Typography.Text>,
       },
     ],
-    [data?.months, dimension, view],
+    [data?.months, dimension, view, wideTables],
   );
 
   const copyReview = async () => {
@@ -765,9 +767,26 @@ export default function DecisionStudioClient() {
                 caveat="为保持交互轻量，透视表展示全期销量 TOP 20；服务端先基于全量事实聚合，再排序，不使用当前表格页冒充全量。"
                 state={loading && !data ? "loading" : data?.pivot.length ? "ready" : "empty"}
                 height={380}
+                fitContent
                 dataView={null}
                 contentIsTable
               >
+                {!wideTables ? <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
+                  左右滑动查看月份与合计；聚焦表格后也可用左右方向键。点击成员查看结构与趋势。
+                </Typography.Text> : null}
+                <div
+                  role="region"
+                  aria-label="月份透视表，可左右滚动"
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+                    const viewport = event.currentTarget.querySelector<HTMLElement>(".ant-table-body");
+                    if (viewport && viewport.scrollWidth > viewport.clientWidth) {
+                      event.preventDefault();
+                      viewport.scrollBy({ left: event.key === "ArrowRight" ? 120 : -120 });
+                    }
+                  }}
+                >
                 <Table
                   rowKey="key"
                   size="small"
@@ -776,6 +795,7 @@ export default function DecisionStudioClient() {
                   dataSource={data?.pivot ?? []}
                   scroll={{ x: "max-content", y: 320 }}
                 />
+                </div>
               </DecisionVisual>
             ),
           },
@@ -1080,7 +1100,7 @@ export default function DecisionStudioClient() {
                       dataSource={refundDrivers?.topContributors ?? []}
                       scroll={{ x: 1320 }}
                       columns={[
-                        { title: "店铺", dataIndex: "shopName", width: 160, fixed: "left", sorter: (a, b) => a.shopName.localeCompare(b.shopName, "zh-CN") },
+                        { title: "店铺", dataIndex: "shopName", width: 160, fixed: wideTables ? "left" : undefined, sorter: (a, b) => a.shopName.localeCompare(b.shopName, "zh-CN") },
                         { title: "平台 SKU", dataIndex: "platformSkuId", width: 170, sorter: (a, b) => a.platformSkuId.localeCompare(b.platformSkuId) },
                         { title: "商品 / 规格", key: "name", width: 220, ellipsis: true, render: (_, row) => row.skuName || row.productName || "（未提供）" },
                         { title: "本期退款", dataIndex: "currentRefundQty", width: 110, align: "right", sorter: (a, b) => a.currentRefundQty - b.currentRefundQty, render: formatQty },
@@ -1104,7 +1124,7 @@ export default function DecisionStudioClient() {
                           title: "下一步",
                           key: "action",
                           width: 175,
-                          fixed: "right",
+                          fixed: wideTables ? "right" : undefined,
                           render: (_, row) => {
                             const action = externalRefundDriverAction(row);
                             if (row.skuId != null) return <Typography.Text>{action}</Typography.Text>;
@@ -1312,7 +1332,7 @@ export default function DecisionStudioClient() {
                         title: "身份动作",
                         key: "identityAction",
                         width: 150,
-                        fixed: "right",
+                        fixed: wideTables ? "right" : undefined,
                         render: (_, row) => {
                           const action = externalDemandIdentityAction(row);
                           if (!row.barcode) return <Tag color="error">{action}</Tag>;
@@ -1588,7 +1608,7 @@ export default function DecisionStudioClient() {
                         title: "下一步",
                         dataIndex: "action",
                         width: 280,
-                        fixed: "right",
+                        fixed: wideTables ? "right" : undefined,
                         render: (value, row) => {
                           if (!row.claimable || !row.bridgeValue) return value;
                           const query = new URLSearchParams({
