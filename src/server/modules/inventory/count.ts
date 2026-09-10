@@ -2,13 +2,13 @@ import { and, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import {
-   pdDocs, pdLines, skus, spus, stockBalances, stockDocLines, stockDocs, users, warehouses,
+   approvalConfigs, pdDocs, pdLines, skus, spus, stockBalances, stockDocLines, stockDocs, users, warehouses,
 } from "@/db/schema";
 import { dAdd, dCmp, dQty, dSub } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { requireRole } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { ApprovalError, approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
+import { ApprovalError, approvalRoleError, approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { post, PostingError, type AnyDb, type PostingLine } from "@/server/posting/post";
@@ -427,7 +427,27 @@ export async function approveCountTask(
 
 // ---------- 查询 ----------
 
-export async function getCountTask(id: number, dbArg?: AnyDb) {
+/** Read-only hints mirror the HTTP warehouse guard; writes still recheck inside their transaction. */
+export function canCreateCountTask(user: SessionUser): boolean {
+  try { requireRole(user, "warehouse"); return true; } catch { return false; }
+}
+
+export function countTaskActions(user: SessionUser, doc: { status: string; createdBy: number }, approvalRole: string | null) {
+  const operator = canCreateCountTask(user);
+  const owner = doc.createdBy === user.id || user.roles.includes("admin");
+  const edit = doc.status === "draft" && operator;
+  const submit = edit && owner;
+  const approvalReason = doc.createdBy === user.id
+    ? "制单人与审批人必须分离，请由另一位审批人处理"
+    : approvalRoleError(user, approvalRole)?.message ?? null;
+  const approve = doc.status === "pending" && !approvalReason;
+  const reason = doc.status === "pending" ? approvalReason
+    : doc.status === "draft" && !operator ? "当前仅可查看，请由仓管录入实盘并由制单人或管理员提交"
+    : doc.status === "draft" && !owner ? "可代录实盘数；请由制单人或管理员提交财务审批" : null;
+  return { edit, submit, approve, reason };
+}
+
+export async function getCountTask(id: number, dbArg?: AnyDb, user?: SessionUser) {
   const db = await resolveDb(dbArg);
   const [doc]: (PdDocRow & {
     warehouseName: string | null; createdByName: string | null; bizDate: string | null;
@@ -487,8 +507,11 @@ export async function getCountTask(id: number, dbArg?: AnyDb) {
     : [];
 
   const approvalRows = await loadApprovalHistory(db, "count", id);
+  const [config] = user && doc.status === "pending"
+    ? await db.select({ role: approvalConfigs.approverRole }).from(approvalConfigs).where(eq(approvalConfigs.docType, "count")) : [];
 
   return {
+    ...(user ? { actions: countTaskActions(user, doc, config?.role ?? null) } : {}),
     id: doc.id,
     docNo: doc.docNo,
     status: doc.status,

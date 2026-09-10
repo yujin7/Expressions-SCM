@@ -80,6 +80,7 @@ interface TaskApproval {
 }
 
 interface TaskDetail {
+  actions?: { edit: boolean; submit: boolean; approve: boolean; reason: string | null };
   id: number;
   docNo: string;
   status: string;
@@ -209,7 +210,7 @@ function CountInner() {
   if (status) params.set("status", status);
   if (mode) params.set("mode", mode);
   if (period) params.set("period", period);
-  const listRead = useDocumentRead<{ rows: TaskRow[]; total: number }>(`/api/inventory/count?${params.toString()}`);
+  const listRead = useDocumentRead<{ rows: TaskRow[]; total: number; canCreate?: boolean }>(`/api/inventory/count?${params.toString()}`);
   const listData = listRead.data;
   const validList = listData != null && Array.isArray(listData.rows) && Number.isInteger(listData.total)
     && listData.total >= 0 && listData.rows.every(row => Number.isInteger(row.id) && row.id > 0 && typeof row.docNo === "string");
@@ -218,9 +219,10 @@ function CountInner() {
   const loading = listRead.phase === "loading";
   const listError = listRead.error ?? (listData && !validList ? "盘点列表响应异常，请重试" : null);
   const load = listRead.retry;
+  const canCreate = validList && listData.canCreate === true;
 
   const handleCreate = async () => {
-    if (createLock.current) return;
+    if (createLock.current || !canCreate) return;
     createLock.current = true;
     setSaving(true);
     setCreateError(null);
@@ -252,7 +254,8 @@ function CountInner() {
   };
 
   const doAction = async (path: string, body: unknown, successText: string): Promise<boolean> => {
-    if (!detail || actionLock.current || (path === "submit" && Object.keys(edited).length > 0)) return false;
+    if (!detail || actionLock.current || (path === "submit" && (detail.actions?.submit !== true || Object.keys(edited).length > 0))
+      || (path === "approve" && detail.actions?.approve !== true) || (path === "lines" && detail.actions?.edit !== true)) return false;
     actionLock.current = true;
     const key = detailKey;
     setActionLoading(true);
@@ -275,7 +278,7 @@ function CountInner() {
   };
 
   const dirtyCount = Object.keys(edited).length;
-  const editable = detail?.status === "draft";
+  const editable = detail?.status === "draft" && detail.actions?.edit === true;
 
   const handleScan = (code: string, qty: string): boolean => {
     if (!detail || !editable || actionLock.current) return false;
@@ -437,7 +440,7 @@ function CountInner() {
               }).toString()}`}
               label="导出盘点明细"
             />
-            <Button
+            {canCreate && <Button
               type="primary"
               icon={<PlusOutlined />}
               onClick={() => {
@@ -448,7 +451,7 @@ function CountInner() {
               }}
             >
               新建盘点任务
-            </Button>
+            </Button>}
           </>
         }
         extra={
@@ -501,6 +504,7 @@ function CountInner() {
         closable={!saving}
         keyboard={!saving}
         cancelButtonProps={{ disabled: saving }}
+        okButtonProps={{ disabled: !canCreate }}
         confirmLoading={saving}
         width="min(640px, 100vw)"
         forceRender
@@ -508,6 +512,7 @@ function CountInner() {
         okText="创建（快照账面数）"
         cancelText="取消"
       >
+        {!canCreate && <Alert type="info" showIcon message="当前不能创建盘点任务，请关闭后刷新列表核对权限" />}
         {createError && <Alert type="error" showIcon message="创建未确认成功" description={createError} style={{ marginBottom: 12 }} />}
         <Form form={form} layout="vertical" disabled={saving}>
           <Form.Item name="warehouseId" label="仓库（仅实时记账仓）" rules={[{ required: true, message: "必须选择仓库" }]}>
@@ -589,7 +594,7 @@ function CountInner() {
                   保存实盘数{dirtyCount > 0 ? `（${dirtyCount}）` : ""}
                 </Button>
               ) : null}
-              {detail.status === "draft" ? (
+              {detail.status === "draft" && detail.actions?.submit === true ? (
                 <Popconfirm
                   title="确认提交财务审批？"
                   disabled={dirtyCount > 0 || actionLoading}
@@ -602,7 +607,7 @@ function CountInner() {
                   </Button>
                 </Popconfirm>
               ) : null}
-              {detail.status === "pending" ? (
+              {detail.status === "pending" && detail.actions?.approve === true ? (
                 <>
                   <Popconfirm
                     disabled={actionLoading}
@@ -628,6 +633,9 @@ function CountInner() {
       >
         {detail ? (
           <div>
+            {(detail.actions?.reason || !detail.actions) && <Alert type="info" showIcon
+              message={detail.actions?.reason ?? "未取得当前操作权限，请重新读取单据；暂仅展示数据"}
+              action={<Button disabled={actionLoading} onClick={loadDetail}>刷新操作权限</Button>} style={{ marginBottom: 12 }} />}
             {actionError?.key === detailKey && <Alert type="error" showIcon message="操作未确认成功" description={actionError.message}
               action={<Button disabled={actionLoading} onClick={loadDetail}>重新读取单据</Button>} style={{ marginBottom: 12 }} />}
             <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
@@ -723,7 +731,7 @@ function CountInner() {
 
       <Modal
         title="驳回盘点单"
-        open={rejectOpen}
+        open={rejectOpen && detail?.actions?.approve === true}
         okText="确认驳回"
         okButtonProps={{ danger: true }}
         cancelText="取消"

@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { approvalConfigs, approvals, auditLogs, pdDocs, pdLines, skus, spus, users, warehouses } from "@/db/schema";
 import * as audit from "@/server/core/audit";
 import type { SessionUser } from "@/server/core/dto";
-import { approveCountTask, createCountTask, submitCountTask, updateCounts } from "@/server/modules/inventory/count";
+import { approveCountTask, createCountTask, getCountTask, submitCountTask, updateCounts } from "@/server/modules/inventory/count";
 import { createTestDb } from "../helpers/db";
 
 let fixture: Awaited<ReturnType<typeof createTestDb>>, seq = 0, warehouseId: number, skuId: number;
@@ -26,6 +26,18 @@ async function draft(maker: SessionUser) {
   return { doc, line };
 }
 const read = async (id: number) => (await fixture.db.select().from(pdDocs).where(eq(pdDocs.id, id)))[0];
+
+it("detail action hints use the actual count approval configuration and exact maker", async () => {
+  const maker = await actor(), checker = await actor(["finance"], true), { doc } = await draft(maker);
+  expect((await getCountTask(doc.id, fixture.db, maker)).actions).toMatchObject({ edit: true, submit: true, approve: false });
+  expect((await getCountTask(doc.id, fixture.db, checker)).actions).toMatchObject({ edit: false, submit: false, approve: false });
+  await submitCountTask(maker, doc.id, 1, fixture.db);
+  expect((await getCountTask(doc.id, fixture.db, checker)).actions?.approve).toBe(true);
+  expect((await getCountTask(doc.id, fixture.db, maker)).actions).toMatchObject({ approve: false, reason: expect.stringContaining("分离") });
+  await fixture.db.update(approvalConfigs).set({ approverRole: "pmc" }).where(eq(approvalConfigs.docType, "count"));
+  try { expect((await getCountTask(doc.id, fixture.db, checker)).actions).toMatchObject({ approve: false, reason: expect.stringContaining("审批角色") }); }
+  finally { await fixture.db.update(approvalConfigs).set({ approverRole: "finance" }).where(eq(approvalConfigs.docType, "count")); }
+});
 
 it("submit audit failure rolls back status/version; original version can then succeed once", async () => {
   const user = await actor(), { doc } = await draft(user);

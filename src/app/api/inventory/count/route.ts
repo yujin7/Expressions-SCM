@@ -1,15 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
+import { errorResponse, parseListQuery, readJson } from "@/server/modules/master/common";
+import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { guardWarehouseWrite } from "@/server/modules/inventory/stock-doc";
-import { createCountTask, listCountTasks } from "@/server/modules/inventory/count";
+import { canCreateCountTask, createCountTask, listCountTasks } from "@/server/modules/inventory/count";
 
 export async function GET(req: NextRequest) {
   try {
-    await guardRead();
+    const user = await guardFreshWrite();
     const { q, page, pageSize, searchParams } = parseListQuery(req.url);
     const warehouseId = Number(searchParams.get("warehouseId")) || undefined;
-    return NextResponse.json(
-      await listCountTasks(q, {
+    return NextResponse.json({
+      ...await listCountTasks(q, {
         status: searchParams.get("status") ?? undefined,
         mode: searchParams.get("mode") ?? undefined,
         warehouseId,
@@ -18,7 +19,8 @@ export async function GET(req: NextRequest) {
         page,
         pageSize,
       }),
-    );
+      canCreate: canCreateCountTask(user),
+    });
   } catch (e) {
     return errorResponse(e);
   }

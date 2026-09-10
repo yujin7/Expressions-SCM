@@ -38,8 +38,8 @@ const props = (type: string) => nodes(render()).find(n => n.type === type)!.prop
 const fetchMock = vi.fn<typeof fetch>();
 const flush = async () => { for (let i = 0; i < 25; i++) await Promise.resolve(); return render(); };
 const row = (id: number) => ({ id, docNo: `PD-${id}`, status: "draft" });
-const list = (id: number) => Response.json({ rows: [row(id)], total: 1 });
-const detail = (id: number, version = 1) => ({ id, version, docNo: `PD-${id}`, status: "draft", roleSummary: [], approvals: [], adjustDocs: [], lines: [
+const list = (id: number) => Response.json({ rows: [row(id)], total: 1, canCreate: true });
+const detail = (id: number, version = 1) => ({ id, version, docNo: `PD-${id}`, status: "draft", actions: { edit: true, submit: true, approve: false, reason: null }, roleSummary: [], approvals: [], adjustDocs: [], lines: [
   { id: id * 10, skuId: 1, skuCode: "SKU-1", skuName: "精华液", batchId: 101, commercialRole: "sample", baseUom: "kg", bookQty: "0.1000", countedQty: "9999999999.9999", diffQty: "9999999999.8999" },
 ] });
 const lineTable = () => nodes(props("drawer").children as ReactNode).find(n => n.type === "table" && n.props.rowKey === "id")!.props;
@@ -50,6 +50,24 @@ const save = () => buttons().find(n => JSON.stringify(n.props.children).includes
 const create = () => nodes(render()).find(n => n.type === "modal" && n.props.title === "新建盘点任务")!;
 beforeEach(() => { h.cursor = 0; h.slots = []; h.effects = []; h.changed = false; h.q = ""; h.period = ""; h.detailId = null; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
 afterEach(() => { for (const fn of h.cleanups.values()) fn(); h.cleanups.clear(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+it("read-only draft hides editing and submit, explains authority and refuses stale callbacks", async () => {
+  h.detailId=1;fetchMock.mockImplementation(async u=>String(u).endsWith('/1')?Response.json({...detail(1),actions:{edit:false,submit:false,approve:false,reason:'当前仅可查看，请由仓管录入'}}):Response.json({rows:[row(1)],total:1,canCreate:false}));render();await flush();
+  expect(save()).toBeUndefined();expect(buttons().some(n=>n.props.children==='提交')).toBe(false);
+  expect(nodes(props('drawer').children as ReactNode).some(n=>n.type==='scanner')).toBe(false);
+  expect(JSON.stringify(props('drawer').children)).toContain('当前仅可查看');
+  (create().props.onOk as()=>void)();await flush();expect(h.validate).not.toHaveBeenCalled();
+});
+it("pending action hints hide financial buttons without permission and retain them for qualified checker", async () => {
+  h.detailId=1;let allowed=false;fetchMock.mockImplementation(async u=>String(u).endsWith('/1')?Response.json({...detail(1),status:'pending',actions:{edit:false,submit:false,approve:allowed,reason:allowed?null:'需要财务审批角色'}}):list(1));render();await flush();
+  expect(buttons().some(n=>n.props.children==='审批通过')).toBe(false);
+  allowed=true;(props('drawer').onRetry as()=>void)();render();await flush();
+  expect(buttons().some(n=>n.props.children==='审批通过')).toBe(true);
+});
+it("missing action hints fail closed rather than exposing writes", async () => {
+  h.detailId=1;fetchMock.mockImplementation(async u=>String(u).endsWith('/1')?Response.json({...detail(1),actions:undefined}):Response.json({rows:[row(1)],total:1}));render();await flush();
+  expect(save()).toBeUndefined();expect(buttons().some(n=>n.props.children==='提交')).toBe(false);
+});
 
 it("list withdraws stale rows immediately and late results cannot change current query", async () => {
   const old = Promise.withResolvers<Response>();fetchMock.mockResolvedValueOnce(list(1)).mockReturnValueOnce(old.promise).mockResolvedValueOnce(list(3));
