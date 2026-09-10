@@ -63,3 +63,12 @@ it("mobile retains one identity column, no fixed-right overlap, unknown cycle de
   expect(cols[0]).toMatchObject({ key: "identity", width: 164, fixed: "left" }); expect(cols.some(c => c.fixed === "right")).toBe(false);
   expect(nodes(render()).filter(n => n.type === "stat").map(n => n.props.value)).toContain("无可评样本");
 });
+it("actual WIP cell renderers link the exact JG and WO, including reserved query characters", async () => {
+  mock.mockResolvedValueOnce(Response.json(wipData)); await flush();
+  const cols = find("table").props.columns as { key?: string; dataIndex?: string; render?: (v: unknown, row: unknown) => ReactNode }[];
+  const row = { jgNo: "JG 中文&/1", woNo: "WO 中文&/2", supplierId: 1, supplierName: "厂", baseUom: "盒", productSkuCode: "S", productName: "成品" };
+  const jg = nodes(cols.find(c => c.key === "identity")!.render!(null, row)).find(n => n.type === "a")!;
+  const wo = nodes(cols.find(c => c.dataIndex === "woNo")!.render!(row.woNo, row)).find(n => n.type === "a")!;
+  expect(jg.props.href).toBe(`/outsource/jg?q=${encodeURIComponent(row.jgNo)}`);
+  expect(wo.props.href).toBe(`/outsource/wo?q=${encodeURIComponent(row.woNo)}`);
+});

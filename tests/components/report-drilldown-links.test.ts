@@ -60,7 +60,7 @@ describe("报表回链与来源标注", () => {
 
   it("委外在制看板：JG / 工单单号回链到各自列表", () => {
     const src = read("src/app/(app)/report/wip/wip-client.tsx");
-    expect(src).toContain("`/outsource/jg?q=${encodeURIComponent(v)}`");
+    expect(src).toContain("`/outsource/jg?q=${encodeURIComponent(r.jgNo)}`");
     expect(src).toContain("`/outsource/wo?q=${encodeURIComponent(v)}`");
   });
 
