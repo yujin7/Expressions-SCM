@@ -414,7 +414,7 @@ export function poListProgress(
 
 export async function listPos(
   q: string,
-  opts: { status?: string; woId?: number; page: number; pageSize: number; returnEligible?: boolean; selectedValues?: SelectedOptionValue[] },
+  opts: { status?: string; woId?: number; page: number; pageSize: number; returnEligible?: boolean; receiptEligible?: boolean; selectedValues?: SelectedOptionValue[] },
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
@@ -423,6 +423,7 @@ export async function listPos(
   if (opts.status) conds.push(eq(poDocs.status, opts.status as DocStatus));
   if (opts.woId) conds.push(eq(poDocs.woId, opts.woId));
   if (opts.returnEligible) conds.push(inArray(poDocs.status, ["approved", "in_progress", "completed"]));
+  if (opts.receiptEligible) conds.push(inArray(poDocs.status, ["approved", "in_progress"]));
   const selected = selectedOptionsPredicate(opts.selectedValues, { id: poDocs.id, text: [poDocs.docNo] });
   if (selected) conds.push(selected);
   const where = conds.length ? and(...conds) : undefined;
