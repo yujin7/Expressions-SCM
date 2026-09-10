@@ -19,6 +19,7 @@
 import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
+import ts from "typescript";
 
 const SRC = path.resolve(__dirname, "../../src");
 const APP = path.join(SRC, "app", "(app)");
@@ -46,15 +47,29 @@ function resolveSpec(spec: string, fromDir: string): string | null {
   return existsSync(base) && statSync(base).isFile() ? base : null;
 }
 
-/** 该文件（含其本地依赖）是否触达 useSearchParams */
+/** Type-only imports disappear from JavaScript; they cannot execute a navigation hook. */
+function runtimeDependencies(source: string): string[] {
+  const ast = ts.createSourceFile("consumer.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  return ast.statements.flatMap(statement => {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) return [];
+    const clause = statement.importClause;
+    if (clause?.isTypeOnly) return [];
+    if (clause && !clause.name && clause.namedBindings && ts.isNamedImports(clause.namedBindings)
+      && clause.namedBindings.elements.every(element => element.isTypeOnly)) return [];
+    const spec = statement.moduleSpecifier.text;
+    return spec.startsWith(".") || spec.startsWith("@/components/") ? [spec] : [];
+  });
+}
+
+/** 该文件（含其运行时本地依赖）是否触达 useSearchParams */
 function touchesHook(file: string, seen = new Set<string>(), depth = 0): boolean {
   if (seen.has(file) || depth > MAX_DEPTH) return false;
   seen.add(file);
   const src = read(file);
   if (src.includes(HOOK)) return true;
   const dir = path.dirname(file);
-  for (const m of src.matchAll(/from\s+["'](\.[^"']+|@\/components\/[^"']+)["']/g)) {
-    const target = resolveSpec(m[1], dir);
+  for (const spec of runtimeDependencies(src)) {
+    const target = resolveSpec(spec, dir);
     if (target && touchesHook(target, seen, depth + 1)) return true;
   }
   return false;
@@ -70,6 +85,20 @@ function allPageFiles(dir: string, out: string[] = []): string[] {
 }
 
 describe("架构护栏：Suspense 边界", () => {
+  it("still detects real list hooks without treating a typed shared toolbar as a hook caller", () => {
+    expect(touchesHook(path.join(APP, "master/supplier/supplier-client.tsx"))).toBe(true);
+    expect(touchesHook(path.join(SRC, "components/CrudTable.tsx"))).toBe(false);
+  });
+  it("ignores erased type imports but follows real, mixed and side-effect dependencies", () => {
+    expect(runtimeDependencies(`
+      import type { ListState } from './types';
+      import { type Density, type State } from '@/components/types';
+      import { type State, useListState } from './mixed';
+      import Toolbar from '@/components/ListToolbar';
+      import * as runtime from './namespace';
+      import './side-effect';
+    `)).toEqual(['./mixed', '@/components/ListToolbar', './namespace', './side-effect']);
+  });
   it("触达 useSearchParams 的 page.tsx 必须包 <Suspense>（缺失=整页水合失败，但路由仍返回 200）", () => {
     const need: string[] = [];
     const offenders: string[] = [];

@@ -3,19 +3,41 @@
 import SearchInput from "@/components/SearchInput";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { App, Button, Form, Modal, Space, Table } from "antd";
+import { App, Button, Form, Grid, Modal, Popover, Space, Table } from "antd";
 import type { FormInstance, TableProps } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { fetchJson, postJson, putJson } from "./fetchJson";
 import { useDocumentRead } from "./useDocumentRead";
 import LoadErrorAlert from "./LoadErrorAlert";
-import ListToolbar from "./ListToolbar";
+import ListToolbar from "@/components/ListToolbar";
 import type { ListState } from "./useListState";
 
 export interface ListResponse<T> {
   data: T[];
   total: number;
+}
+
+/** Keep row actions reachable without letting a fixed column cover the record on phones. */
+function CompactRowActions({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLSpanElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  return <span ref={trigger}>
+    <Popover open={open} onOpenChange={setOpen} trigger="click" placement="bottomRight"
+      afterOpenChange={visible => { if (visible) content.current?.querySelector<HTMLElement>("button, a[href]")?.focus(); }}
+      content={<div ref={content} role="group" aria-label="记录操作" style={{ maxWidth: 240, display: "flex", flexDirection: "column", gap: 4 }}
+        onClick={() => setOpen(false)}
+        onKeyDown={event => {
+          if (event.key !== "Escape") return;
+          event.preventDefault(); event.stopPropagation(); setOpen(false);
+          trigger.current?.querySelector("button")?.focus();
+        }}>{children}</div>}>
+      <Button size="small" aria-expanded={open} onKeyDown={event => {
+        if (event.key === "Escape") { event.preventDefault(); setOpen(false); }
+      }}>操作</Button>
+    </Popover>
+  </span>;
 }
 
 export interface CrudTableProps<T extends { id: number }> {
@@ -80,6 +102,8 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
   } = props;
 
   const { message } = App.useApp();
+  const screens = Grid.useBreakpoint();
+  const compactActions = !screens.md;
   const [form] = Form.useForm();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -179,16 +203,17 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
     }
   };
 
+  const hasRowActions = Boolean(rowActions) || data.some(record => canEdit ? canEdit(record) : true);
   const mergedColumns = useMemo<ColumnsType<T>>(
-    () => [
+    () => !hasRowActions ? columns : [
       ...columns,
       {
         title: "操作",
         key: "_actions",
-        width: rowActions ? 220 : 100,
+        width: compactActions ? 76 : rowActions ? 220 : 100,
         fixed: "right",
-        render: (_: unknown, record: T) => (
-          <Space size={0}>
+        render: (_: unknown, record: T) => {
+          const actions = <>
             {(canEdit ? canEdit(record) : true) && (
               <Button
                 type="link"
@@ -200,11 +225,14 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
               </Button>
             )}
             {rowActions?.(record, () => void load())}
-          </Space>
-        ),
+          </>;
+          return compactActions && rowActions
+            ? <CompactRowActions>{actions}</CompactRowActions>
+            : <div style={{ display: "flex", flexWrap: "wrap", maxWidth: "100%" }}>{actions}</div>;
+        },
       },
     ],
-    [columns, canEdit, rowActions, load, openEdit, openingEditId],
+    [columns, canEdit, rowActions, load, openEdit, openingEditId, compactActions, hasRowActions],
   );
 
   const searchControls = <>
@@ -259,7 +287,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
             setPageSize(ps);
           },
         } : false}
-        scroll={tableProps?.scroll ?? { x: "max-content" }}
+        scroll={{ x: "max-content", ...tableProps?.scroll }}
       />
       <Modal
         title={editing ? `编辑${entityName}` : `新建${entityName}`}

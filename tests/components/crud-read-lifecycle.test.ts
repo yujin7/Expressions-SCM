@@ -1,11 +1,12 @@
 import React, { isValidElement, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import CrudTable from "@/components/CrudTable";
+import CrudTable, { type CrudTableProps } from "@/components/CrudTable";
 import { WarehousePanoramaDrawer } from "@/app/(app)/master/warehouse/warehouse-client";
 
-const hooks = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false,
+const hooks = vi.hoisted(() => ({ md: true, cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false,
   form: { resetFields: vi.fn(), setFieldsValue: vi.fn() }, message: { error: vi.fn(), success: vi.fn() } }));
 vi.mock("antd", () => ({ App: { useApp: () => ({ message: hooks.message }) }, Button: "button", Form: Object.assign("form", { useForm: () => [hooks.form] }), Modal: "modal", Space: "space", Table: "table",
+  Grid: { useBreakpoint: () => ({ md: hooks.md }) }, Popover: "popover",
   Drawer: "drawer", Descriptions: Object.assign("descriptions", { Item: "description-item" }), Skeleton: "skeleton", Tag: "tag", Typography: { Text: "text" } }));
 vi.mock("@/components/ListToolbar", () => ({ default: "list-toolbar" }));
 vi.mock("@/components/SearchInput", () => ({ default: "search" }));
@@ -33,16 +34,36 @@ const fetchMock = vi.fn<typeof fetch>();
 let detailMode = false;
 let panelMode = false;
 let panelId: number | null = 1;
+let extraProps: Partial<CrudTableProps<{ id: number }>> = {};
 function render() { for (let i = 0; i < 10; i++) { hooks.cursor = 0; hooks.changed = false;
-  const tree = panelMode ? WarehousePanoramaDrawer({ id: panelId, onClose: () => {} }) : CrudTable({ entityName: "SKU", apiPath: "/api/master/sku", columns: [], formItems: () => null, loadDetailOnEdit: detailMode });
+  const tree = panelMode ? WarehousePanoramaDrawer({ id: panelId, onClose: () => {} }) : CrudTable({ entityName: "SKU", apiPath: "/api/master/sku", columns: [], formItems: () => null, loadDetailOnEdit: detailMode, ...extraProps });
   for (const effect of hooks.effects.splice(0)) effect(); if (!hooks.changed) return tree;
 } throw new Error("render did not settle"); }
 const props = (type: string) => nodes(render()).find(n => n.type === type)!.props;
 const search = (q: string) => { (props("search").onSearch as (v: string) => void)(q); render(); };
 const rows = () => props("table").dataSource;
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); render(); };
-beforeEach(() => { hooks.cursor = 0; hooks.slots = []; hooks.effects = []; hooks.changed = false; detailMode = false; panelMode = false; panelId = 1; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
+beforeEach(() => { hooks.md = true; extraProps = {}; hooks.cursor = 0; hooks.slots = []; hooks.effects = []; hooks.changed = false; detailMode = false; panelMode = false; panelId = 1; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
 afterEach(() => { for (const cleanup of hooks.cleanups.values()) cleanup(); hooks.cleanups.clear(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+it("does not reserve an empty fixed action column for a read-only role", async () => {
+  extraProps = { canEdit: () => false, columns: [{ title: "编码", dataIndex: "id" }] };
+  fetchMock.mockResolvedValue(Response.json({ data: [{ id: 1 }], total: 1 })); render(); await flush();
+  expect(props("table").columns).toEqual(extraProps.columns);
+});
+it("limits narrow-screen actions and restores wrapped desktop actions without changing rows", async () => {
+  extraProps = { rowActions: () => React.createElement("button", null, "360") };
+  fetchMock.mockResolvedValue(Response.json({ data: [{ id: 1 }], total: 1 })); render(); await flush();
+  hooks.md = false;
+  const narrow = props("table").columns as { width: number; render: (_: unknown, row: { id: number }) => ReactNode }[];
+  expect(narrow.at(-1)!.width).toBe(76);
+  expect(typeof nodes(narrow.at(-1)!.render(undefined, { id: 1 }))[0].type).toBe("function");
+  hooks.md = true;
+  const wide = props("table").columns as typeof narrow;
+  expect(wide.at(-1)!.width).toBe(220);
+  expect(nodes(wide.at(-1)!.render(undefined, { id: 1 }))[0].props.style).toMatchObject({ flexWrap: "wrap" });
+  expect(rows()).toEqual([{ id: 1 }]);
+});
 
 it("cancels an old list request and refuses its late success", async () => {
   const old = Promise.withResolvers<Response>(); fetchMock.mockReturnValueOnce(old.promise).mockResolvedValueOnce(Response.json({ data: [{ id: 2 }], total: 1 }));
