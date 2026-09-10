@@ -74,6 +74,11 @@ describe("leadTimeStats", () => {
 describe("suggestLeadDays", () => {
   const stats = (arr: number[]) => leadTimeStats(arr.map((d) => s(d)));
 
+  it("不可采纳的0天和超一年样本只观察，不发出必被接口拒绝的建议", () => {
+    expect(suggestLeadDays(30, stats([0, 0, 0])).suggest).toBeNull();
+    expect(suggestLeadDays(null, stats([366, 366, 366])).suggest).toBeNull();
+  });
+
   it("样本不足（<minSamples）→ 不建议", () => {
     const r = suggestLeadDays(10, stats([30, 30]));
     expect(r.suggest).toBeNull();

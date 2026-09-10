@@ -122,6 +122,9 @@ export function suggestLeadDays(
     return { suggest: null, reason: "无有效交期样本" };
   }
   const target = Math.round(stats.p50);
+  if (!Number.isFinite(target) || target < 1 || target > 365) {
+    return { suggest: null, reason: "历史P50不在可采纳的1–365天范围内，请核对原始录单日期" };
+  }
   if (current == null || current <= 0) {
     return { suggest: target, reason: `档案未设常规交期，按历史 P50 ${stats.p50} 天建议` };
   }

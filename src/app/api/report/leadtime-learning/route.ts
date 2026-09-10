@@ -6,19 +6,22 @@ import { guardFreshWrite } from "@/server/modules/outsource/common";
 /** E2-04 交期学习：历史 PO 承诺交期 vs 实际收货 → 交期分布/准时率（只读） */
 export async function GET(req: NextRequest) {
   try {
-    await guardRead();
+    const user = await guardRead();
     const { q, page, pageSize } = parseListQuery(req.url);
-    return NextResponse.json(await getLeadTimeLearning({ q, page, pageSize }));
+    return NextResponse.json({ ...await getLeadTimeLearning({ q, page, pageSize }), permissions: {
+      canFill: user.roles.some(r => ["admin", "pmc", "purchasing"].includes(r)),
+      canOverride: user.roles.some(r => ["admin", "pmc"].includes(r)),
+    } });
   } catch (e) {
     return errorResponse(e);
   }
 }
 
-/** 采纳建议 → 写 sku_params.normal_lead_days（pmc/purchasing/admin；人工闸，新鲜会话回查） */
+/** 采纳所见采购周期建议；采购仅补空值，覆盖须pmc/admin，新鲜会话回查。 */
 export async function POST(req: NextRequest) {
   try {
     const user = await guardFreshWrite();
-    const body = (await readJson(req)) as { skuId: number; leadDays: number };
+    const body = await readJson(req);
     return NextResponse.json(await applyLeadTimeSuggestion(user, body), { status: 200 });
   } catch (e) {
     return errorResponse(e);
