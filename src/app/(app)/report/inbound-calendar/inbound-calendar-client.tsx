@@ -277,7 +277,7 @@ export default function InboundCalendarClient() {
         title="采购承诺可信度（版本化基线）"
         question="已到期采购承诺中，多少在原始承诺日前按基础单位足量兑现；改期是否掩盖迟延？"
         metricId="promiseReliability"
-        grain={promise?.grain ?? "PO × SKU（仅唯一行）"}
+        grain={promise?.grain ?? "采购行（收货来源可核对）"}
         unit="采购承诺行占比"
         source={{
           tier: "ledger",
@@ -298,7 +298,7 @@ export default function InboundCalendarClient() {
               `承诺版本：${PROMISE_VERSION_LABEL[promise.promiseVersionState]}`,
               `原始版本覆盖：${promise.coverage.historyPct == null ? "未知" : `${promise.coverage.historyPct.toFixed(1)}%`}`,
               "数量：基础单位",
-              "重复 PO×SKU 行排除",
+              "收货归属不清的行排除",
               "缺失不补零",
             ]
           : []}

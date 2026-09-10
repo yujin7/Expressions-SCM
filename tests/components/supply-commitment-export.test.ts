@@ -9,7 +9,7 @@ const fixture: PromiseReliability = {
   asOf: "2026-08-10",
   windowDays: 180,
   windowFrom: "2026-02-12",
-  grain: "PO × SKU（仅唯一行）",
+  grain: "采购行（收货来源可核对）",
   promiseVersionState: "immutable_history",
   rate: 50,
   originalRate: 0,

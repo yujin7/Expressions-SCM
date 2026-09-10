@@ -42,6 +42,28 @@ function line(seed: Partial<PromiseLineFact> & Pick<PromiseLineFact, "lineId" | 
 }
 
 describe("供给承诺可信度纯计算", () => {
+  it("同SKU按显式采购行分开接收和退货，不互借准时数量", () => {
+    const result = buildPromiseReliability([
+      line({ lineId: 1, poId: 1, skuId: 1, currentReceivedQty: "10" }),
+      line({ lineId: 2, poId: 1, skuId: 1, currentReceivedQty: "8" }),
+    ], [
+      { poId: 1, poLineId: 1, skuId: 1, acceptedQty: "10", acceptedDate: "2026-08-04" },
+      { poId: 1, poLineId: 2, skuId: 1, acceptedQty: "10", acceptedDate: "2026-08-07" },
+    ], [{ poLineId: 2, qty: "2", returnedDate: "2026-08-08" }], { asOf: "2026-08-10" });
+    expect(result.totals).toMatchObject({ eligibleLines: 2, ambiguous: 0, onTimeInFull: 1, overdueShort: 1 });
+    expect(result.rate).toBe(50);
+    expect(result.exceptions).toEqual([expect.objectContaining({ lineId: 2, receivedByPromise: 0, receivedAsOf: 8 })]);
+  });
+
+  it("同SKU尚未收货且控制量为0是逾期未齐，不是身份歧义", () => {
+    const result = buildPromiseReliability([
+      line({ lineId: 1, poId: 1, skuId: 1 }),
+      line({ lineId: 2, poId: 1, skuId: 1 }),
+    ], [], [], { asOf: "2026-08-10" });
+    expect(result.totals).toMatchObject({ eligibleLines: 2, ambiguous: 0, overdueShort: 2 });
+    expect(result.rate).toBe(0);
+  });
+
   it("分开按期足量、迟到补齐、逾期未齐，并排除未知、未来、重复归属和控制量不一致", () => {
     const lines = [
       line({ lineId: 1, poId: 1, skuId: 1, currentReceivedQty: "10" }),
@@ -60,6 +82,8 @@ describe("供给承诺可信度纯计算", () => {
         { poId: 1, skuId: 1, acceptedQty: "10", acceptedDate: "2026-08-05" },
         { poId: 2, skuId: 2, acceptedQty: "10", acceptedDate: "2026-08-06" },
         { poId: 3, skuId: 3, acceptedQty: "5", acceptedDate: "2026-08-01" },
+        // 只有实际存在归属不明的历史事件才是歧义；不能仅因PO拆行排除尚未收货的行。
+        { poId: 6, skuId: 6, acceptedQty: "1", acceptedDate: "2026-08-01" },
       ],
       [{ poLineId: 3, qty: "2", returnedDate: "2026-08-04" }],
       { asOf: "2026-08-10", windowDays: 30 },

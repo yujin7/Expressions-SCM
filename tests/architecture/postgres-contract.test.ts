@@ -27,6 +27,11 @@ const triggers = (): AlertTriggerRow[] => [
 }));
 
 describe("PostgreSQL 只读契约验证器（纯目录与合成 catalog，不连接数据库）", () => {
+  it("采购收货行外键必须注册，不能只依赖迁移日志数量正确", () => {
+    expect(RECENT_PG_CONSTRAINTS).toContainEqual([
+      "sh_lines", "sh_lines_po_line_id_po_lines_id_fk", "FOREIGN KEY (po_line_id) REFERENCES po_lines(id)",
+    ]);
+  });
   it("每个 journal SQL 的 hash/时间与实际 Drizzle 迁移器一致，不靠固定数量或最后一条", () => {
     const drizzle = readMigrationFiles({ migrationsFolder: resolve(process.cwd(), "drizzle") });
     expect(expected.map(({ hash, when }) => ({ hash, folderMillis: when })))

@@ -180,7 +180,7 @@ export const METRICS: Record<string, MetricDef> = {
     unit: "pct",
     tier: "derived",
     caveat: "按原始承诺判——供应商改期只影响并列的「当前承诺」口径，不计分，故改期越勤分数越高的洗白路径已封死；"
-      + "实际收货以收货单建单时刻为准，仓库补录会使其偏晚",
+      + "实际收货以采购行的首张生效收货单建单时刻为准，仓库补录会使其偏晚；明确采购行分别计算，历史未记行号仅兼容同PO唯一SKU，归属不清的行排除并披露，不互借首批日期",
   },
   expiryRiskQty: {
     id: "expiryRiskQty",

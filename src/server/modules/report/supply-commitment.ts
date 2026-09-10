@@ -2,11 +2,11 @@
  * 供给承诺可信度：先建立 SCM 内部可重放基线，再等待简道云/JST/用友各自成为独立对照边。
  *
  * 纪律：
- * - 分母只含已经到期、具有当前有效承诺日且能够唯一落到 PO×SKU 的采购行；
+ * - 分母只含已经到期、具有有效承诺日且收货来源无歧义的采购行；
  * - 数量统一换算为基础单位，收货只计已质检合格/接收量，采购退货按事件日期回冲；
- * - 同一 PO 重复 SKU 行因 SH 无 po_line_id 无法安全分摊，必须排除并披露；
+ * - SH显式采购行优先，历史只兼容唯一PO×SKU；归属不清的行必须排除并披露；
  * - 收货/退货事件净额与 po_lines.received_qty 不一致时停止该行计算，不用其中一边覆盖另一边；
- * - 当前模型没有采购交期版本链，因此结果只解释“当前承诺”，不能冒充原始承诺兑现率；
+ * - 原始承诺只接受可信版本链；当前承诺单列，不用改期覆盖迟延；
  * - 外部三边未通过身份、单位、状态和 UAT 前，不参与本计算，也不改变 SCM 正式事实。
  */
 import { and, eq, inArray } from "drizzle-orm";
@@ -17,6 +17,7 @@ import { dayDiff as daysBetween, shanghaiDayOf} from "@/server/core/business-day
 import { dAdd, dCmp, dMul, dQty, dSub } from "@/server/core/decimal";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { resolvePromiseBasis, type PromiseHistoryState } from "@/server/rules/promise-basis";
+import { indexPurchaseLineReceipts } from "./purchase-line-receipts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -50,6 +51,7 @@ export interface PromiseLineFact {
 
 export interface PromiseReceiptFact {
   poId: number;
+  poLineId?: number | null;
   skuId: number;
   acceptedQty: string;
   acceptedDate: string;
@@ -92,7 +94,7 @@ export interface PromiseReliability {
   asOf: string;
   windowDays: number;
   windowFrom: string;
-  grain: "PO × SKU（仅唯一行）";
+  grain: "采购行（收货来源可核对）";
   promiseVersionState: "immutable_history" | "mixed_history" | "current_only";
   rate: number | null;
   originalRate: number | null;
@@ -191,18 +193,9 @@ export function buildPromiseReliability(
   const windowDays = Math.min(1095, Math.max(30, options.windowDays ?? DEFAULT_WINDOW_DAYS));
   const limit = Math.min(200, Math.max(1, options.limit ?? DEFAULT_LIMIT));
   const windowFrom = addDays(asOf, -(windowDays - 1));
-  const lineCountByPoSku = new Map<string, number>();
-  for (const line of lines) {
-    const key = `${line.poId}\u0000${line.skuId}`;
-    lineCountByPoSku.set(key, (lineCountByPoSku.get(key) ?? 0) + 1);
-  }
-  const receiptsByPoSku = new Map<string, PromiseReceiptFact[]>();
-  for (const item of receipts) {
-    const key = `${item.poId}\u0000${item.skuId}`;
-    const list = receiptsByPoSku.get(key) ?? [];
-    list.push(item);
-    receiptsByPoSku.set(key, list);
-  }
+  const receiptIndex = indexPurchaseLineReceipts(
+    lines.map(line => ({ id: line.lineId, poId: line.poId, skuId: line.skuId })), receipts,
+  );
   const returnsByLine = new Map<number, PromiseReturnFact[]>();
   for (const item of returns) {
     const list = returnsByLine.get(item.poLineId) ?? [];
@@ -265,13 +258,12 @@ export function buildPromiseReliability(
     }
     if (!currentEligible && !originalEligible) continue;
 
-    const key = `${line.poId}\u0000${line.skuId}`;
-    if ((lineCountByPoSku.get(key) ?? 0) !== 1) {
+    if (receiptIndex.unresolvedLineIds.has(line.lineId)) {
       if (currentEligible) totals.ambiguous += 1;
       if (originalEligible) originalTotals.ambiguous += 1;
       continue;
     }
-    const lineReceipts = receiptsByPoSku.get(key) ?? [];
+    const lineReceipts = receiptIndex.byLine.get(line.lineId) ?? [];
     const lineReturns = returnsByLine.get(line.lineId) ?? [];
     const receivedAsOf = cumulativeNet(lineReceipts, lineReturns, asOf);
     if (dCmp(receivedAsOf, line.currentReceivedQty) !== 0) {
@@ -359,7 +351,7 @@ export function buildPromiseReliability(
     asOf,
     windowDays,
     windowFrom,
-    grain: "PO × SKU（仅唯一行）",
+    grain: "采购行（收货来源可核对）",
     promiseVersionState,
     rate: pct(totals.onTimeInFull, totals.eligibleLines),
     originalRate: pct(originalTotals.onTimeInFull, originalTotals.eligibleLines),
@@ -373,14 +365,14 @@ export function buildPromiseReliability(
     exceptions,
     gate: state === "ready"
       ? null
-      : "窗口内没有可安全计算的已到期采购承诺行；无交期、未来交期、重复 SKU 行、版本缺口和控制量不一致均不会被当作零。",
+      : "窗口内没有可安全计算的已到期采购承诺行；无交期、未来交期、收货归属不清、版本缺口和控制量不一致均不会被当作零。",
     historyGate: originalTotals.eligibleLines > 0
       ? null
       : "窗口内尚无可安全使用的原始承诺版本分母；迁移快照与缺失历史不会冒充原始承诺。",
     limitations: [
       "当前只计算 SCM 内部采购承诺基线；简道云流程、聚水潭入库和用友 PO/入库尚未通过身份、单位、状态与 UAT，不参与本率值。",
       "新发生的供应商承诺与改期已进入不可变版本链；迁移前日期仅标为当前快照，不倒推、不冒充原始承诺。原始承诺与当前承诺分列，避免改期覆盖掩盖迟延。",
-      "同一 PO 的重复 SKU 行无法从 SH 安全反推到具体 PO 行，已从分母排除并单列覆盖缺口。",
+      "收货按明确采购行核对；历史未记行号时仅兼容同PO唯一SKU。归属不清或与PO/SKU冲突的相关行排除并计入覆盖缺口，不自动分摊。无收货事件且已收控制量确为0的到期行仍计逾期未齐。",
       "跨 SKU 数量不汇总；率值以采购承诺行计数，质量、价格与财务责任需在各自证据链独立判断。",
     ],
     externalEdges: [
@@ -462,6 +454,7 @@ export async function loadPromiseReliability(
 
   const receiptRows: Array<{
     poId: number;
+    poLineId: number | null;
     skuId: number;
     passQty: string;
     concessionQty: string;
@@ -469,6 +462,7 @@ export async function loadPromiseReliability(
   }> = await db
     .select({
       poId: schema.shDocs.sourceId,
+      poLineId: schema.shLines.poLineId,
       skuId: schema.shLines.skuId,
       passQty: schema.qcLines.passQty,
       concessionQty: schema.qcLines.concessionQty,
@@ -493,6 +487,7 @@ export async function loadPromiseReliability(
     lines,
     receiptRows.map((row) => ({
       poId: row.poId,
+      poLineId: row.poLineId,
       skuId: row.skuId,
       // SH 过账与 po_lines.received_qty 均以“合格 + 让步接收”为有效接收量。
       acceptedQty: dAdd(row.passQty, row.concessionQty),

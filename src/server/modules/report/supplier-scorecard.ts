@@ -7,17 +7,17 @@
  *
  * ── 取数口径（全部沿用既有模块的口径，不新造）──
  * 1) 准时率：完全复用 rules/leadtime-stats.ts 的 leadTimeStats，样本取法与
- *    report/leadtime-learning.ts 一致——
+ *    按可核对采购行取首批录单代理（与按PO/SKU学习采购周期的粒度不同）——
  *      起算日 = po_docs.created_at（Asia/Shanghai 日界）；
  *      承诺到货日（W2 起**主口径 = 原始承诺**，口径唯一权威 rules/promise-basis.ts）：
  *        原始承诺 = 该 PO 行第一条可信 po_promise_revisions 的承诺日；无可信版本链回落当前承诺；
  *        当前承诺 = coalesce(po_lines.expected_date, po_docs.expected_date)（两者皆空 → 不进准时率分母）。
  *      为什么换：当前承诺是供应商自己能改的——经确认门户把交期往后挪一次，准时率立刻变好看，
  *      「改期越勤分数越高」。原始承诺进综合分，当前承诺作为并列副列（onTimeRateCurrent）只展示不计分。
- *      实际收货日 = 该 (PO, SKU) 最早一张生效 SH 的 created_at（生效 = approved/in_progress/completed，
+ *      实际收货日 = 该采购行最早一张生效 SH 的 created_at（生效 = approved/in_progress/completed，
  *      与 report/wip.ts 的 ACTIVE_SH_STATUSES 同集合）；
  *      负交期（收货早于制单，多为历史补录）丢弃。
- *      与 leadtime-learning 的唯一差别：那边按 (供应商 × SKU) 出行，这里把同一供应商的样本**汇总成一条**。
+ *      SH显式采购行优先；旧SH仅在PO/SKU唯一时兼容，归属不清的行不评分并披露原因。
  *    局限：委外加工（JG）没有「承诺交期 vs 收货」的等价链路（dueDate 在 JG 上、收货走 SH sourceType='jg'），
  *    1.0 阶段准时率只覆盖采购 PO；纯加工厂该维度无数据 → 权重归一（见 rules/scorecard.ts）。
  * 2) 质检：qc_lines（一单一检，pass/fail/concession 三桶互斥、合计 ≤ 实收）。
@@ -66,6 +66,7 @@ import {
 import { scoreSupplier, type ScoreBreakdownItem, type SupplierGrade } from "@/server/rules/scorecard";
 import { num } from "@/server/core/svc";
 import { shanghaiDayOf } from "@/server/core/business-day";
+import { indexPurchaseLineReceipts } from "./purchase-line-receipts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -319,30 +320,39 @@ interface LeadSamplePair {
 async function leadSamplesBySupplier(
   db: AnyDb,
   cutoff: Date,
-): Promise<{ samples: Map<number, LeadSamplePair>; promiseHistory: PromiseHistoryCoverage }> {
-  const receipts = db
+): Promise<{ samples: Map<number, LeadSamplePair>; promiseHistory: PromiseHistoryCoverage; unresolvedBySupplier: Map<number, number> }> {
+  const receipts: { poId: number; skuId: number; poLineId: number | null; receivedAt: Date }[] = await db
     .select({
       poId: schema.shDocs.sourceId,
       skuId: schema.shLines.skuId,
-      receivedAt: sql<Date>`min(${schema.shDocs.createdAt})`.as("received_at"),
+      poLineId: schema.shLines.poLineId,
+      receivedAt: schema.shDocs.createdAt,
     })
     .from(schema.shDocs)
     .innerJoin(schema.shLines, eq(schema.shLines.shId, schema.shDocs.id))
-    .where(and(eq(schema.shDocs.sourceType, "po"), inArray(schema.shDocs.status, [...ACTIVE_SH_STATUSES])))
-    .groupBy(schema.shDocs.sourceId, schema.shLines.skuId)
-    .as("receipts");
+    .where(and(eq(schema.shDocs.sourceType, "po"), inArray(schema.shDocs.status, [...ACTIVE_SH_STATUSES])));
 
-  const rows: { supplierId: number; poLineId: number; orderedAt: Date; promisedDate: string | null; receivedAt: Date }[] = await db
+  const rows: { supplierId: number; id: number; poId: number; skuId: number; orderedAt: Date; promisedDate: string | null }[] = await db
     .select({
       supplierId: schema.poDocs.supplierId,
-      poLineId: schema.poLines.id,
+      id: schema.poLines.id,
+      poId: schema.poLines.poId,
+      skuId: schema.poLines.skuId,
       orderedAt: schema.poDocs.createdAt,
       promisedDate: sql<string | null>`coalesce(${schema.poLines.expectedDate}, ${schema.poDocs.expectedDate})`,
-      receivedAt: receipts.receivedAt,
     })
     .from(schema.poLines)
-    .innerJoin(schema.poDocs, eq(schema.poLines.poId, schema.poDocs.id))
-    .innerJoin(receipts, and(eq(receipts.poId, schema.poLines.poId), eq(receipts.skuId, schema.poLines.skuId)));
+    .innerJoin(schema.poDocs, eq(schema.poLines.poId, schema.poDocs.id));
+
+  const receiptIndex = indexPurchaseLineReceipts(rows, receipts);
+  const recentIndex = indexPurchaseLineReceipts(rows, receipts.filter(r => new Date(r.receivedAt) >= cutoff));
+  const recentLineIds = new Set([...recentIndex.byLine.keys(), ...recentIndex.unresolvedLineIds]);
+  const unresolvedBySupplier = new Map<number, number>();
+  for (const row of rows) {
+    if (receiptIndex.unresolvedLineIds.has(row.id) && recentLineIds.has(row.id)) {
+      unresolvedBySupplier.set(row.supplierId, (unresolvedBySupplier.get(row.supplierId) ?? 0) + 1);
+    }
+  }
 
   /* 承诺版本链：逐 PO 行取原始承诺（口径唯一权威 rules/promise-basis.ts） */
   const revisionRows: { poLineId: number; sequence: number; promisedDate: string | null; source: string }[] = rows.length > 0
@@ -354,7 +364,7 @@ async function leadSamplesBySupplier(
         source: schema.poPromiseRevisions.source,
       })
       .from(schema.poPromiseRevisions)
-      .where(inArray(schema.poPromiseRevisions.poLineId, [...new Set(rows.map((r) => r.poLineId))]))
+      .where(inArray(schema.poPromiseRevisions.poLineId, rows.map(r => r.id)))
       .orderBy(schema.poPromiseRevisions.poLineId, schema.poPromiseRevisions.sequence)
     : [];
   const revisionsByLine = new Map<number, typeof revisionRows>();
@@ -367,12 +377,14 @@ async function leadSamplesBySupplier(
   const samples = new Map<number, LeadSamplePair>();
   const promiseHistory = emptyPromiseHistoryCoverage();
   for (const r of rows) {
-    const received = new Date(r.receivedAt);
+    const events = receiptIndex.byLine.get(r.id);
+    if (!events?.length) continue;
+    const received = new Date(events.reduce((first, event) => Math.min(first, new Date(event.receivedAt).getTime()), Infinity));
     if (received < cutoff) continue; // 窗口外的历史履约不参与本期评分
     const orderedStr = shanghaiDate(new Date(r.orderedAt));
     const actualDays = daysBetween(orderedStr, shanghaiDate(received));
     if (!Number.isFinite(actualDays) || actualDays < 0) continue; // 收货早于制单 = 补录脏数据
-    const fact = resolvePromiseBasis(revisionsByLine.get(r.poLineId) ?? []);
+    const fact = resolvePromiseBasis(revisionsByLine.get(r.id) ?? []);
     countPromiseHistory(promiseHistory, fact);
     const pair = samples.get(r.supplierId) ?? { original: [], current: [] };
     for (const [basis, list] of [["original", pair.original], ["current", pair.current]] as const) {
@@ -382,7 +394,7 @@ async function leadSamplesBySupplier(
     }
     samples.set(r.supplierId, pair);
   }
-  return { samples, promiseHistory };
+  return { samples, promiseHistory, unresolvedBySupplier };
 }
 
 /**
@@ -562,7 +574,9 @@ export async function getSupplierScorecard(
       sampleN,
       breakdown: res.breakdown,
       suggestLevelChange: res.grade != null && res.confidence !== "low" && res.grade !== sup.level,
-      reason: res.reason,
+      reason: [res.reason, lead.unresolvedBySupplier.has(sup.id)
+        ? `${lead.unresolvedBySupplier.get(sup.id)}个采购行归属待核对，已排除准时率；请在收货单核对采购行来源，不自动分摊。`
+        : null].filter(Boolean).join(" "),
     });
   }
 
