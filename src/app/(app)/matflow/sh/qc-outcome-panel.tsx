@@ -24,6 +24,7 @@ interface OutcomeLine {
   concessionQty: string;
   failHandlingLabel: string;
   returnableQty: string;
+  purchaseLineIssue?: string | null;
 }
 interface Outcome {
   qcId: number;
@@ -86,6 +87,7 @@ export default function QcOutcomePanel({ shId, canWrite, onDone }: { shId: numbe
   if (!data) return null;
   const hasIssue = Number(data.totals.fail) > 0 || Number(data.totals.concession) > 0;
   if (!hasIssue) return null;
+  const purchaseLineIssues = data.lines.flatMap(l => l.purchaseLineIssue ? [l.purchaseLineIssue] : []);
 
   const columns: ColumnsType<OutcomeLine> = [
     { title: "物料", key: "sku", render: (_: unknown, r) => `${r.skuCode} ${r.skuName}` },
@@ -93,11 +95,12 @@ export default function QcOutcomePanel({ shId, canWrite, onDone }: { shId: numbe
     { title: "不合格", dataIndex: "failQty", width: 100, align: "right" },
     { title: "去向", dataIndex: "failHandlingLabel", width: 100 },
     { title: "让步接收", dataIndex: "concessionQty", width: 100, align: "right" },
-    { title: "可退货量", dataIndex: "returnableQty", width: 110, align: "right" },
+    { title: "可退货量", dataIndex: "returnableQty", width: 110, align: "right", render: (value, row) => row.purchaseLineIssue ? "待核对" : value },
   ];
 
   return (
     <Card size="small" title="不合格去向" style={{ marginBottom: 24 }}>
+      {purchaseLineIssues.length > 0 && <Alert type="warning" showIcon message="采购行归属待核对，暂不能生成退货单" description={`${purchaseLineIssues.join("；")}。仍可登记质量案件。`} style={{ marginBottom: 12 }} />}
       <Alert
         type={data.needsOutcome ? "warning" : "success"}
         showIcon
@@ -120,7 +123,7 @@ export default function QcOutcomePanel({ shId, canWrite, onDone }: { shId: numbe
         <Descriptions.Item label="已登记退货单">
           {data.returnCtId ? <Tag color="blue">#{data.returnCtId}</Tag> : "—"}
         </Descriptions.Item>
-        <Descriptions.Item label="可退货合计">{data.totals.returnable}</Descriptions.Item>
+        <Descriptions.Item label="可退货合计">{purchaseLineIssues.length ? "待核对采购行" : data.totals.returnable}</Descriptions.Item>
       </Descriptions>
       {canWrite ? (
         <Button type="primary" disabled={!data.needsOutcome} onClick={() => setOpen(true)}>
@@ -150,10 +153,10 @@ export default function QcOutcomePanel({ shId, canWrite, onDone }: { shId: numbe
           ) : null}
           <Checkbox
             checked={createReturn}
-            disabled={data.sourceType !== "po"}
+            disabled={data.sourceType !== "po" || purchaseLineIssues.length > 0}
             onChange={(e) => setCreateReturn(e.target.checked)}
           >
-            建采购退货（CT）草稿{data.sourceType !== "po" ? "（仅采购收货可用）" : `（可退 ${data.totals.returnable}）`}
+            建采购退货（CT）草稿{data.sourceType !== "po" ? "（仅采购收货可用）" : purchaseLineIssues.length ? "（先核对采购行）" : `（可退 ${data.totals.returnable}）`}
           </Checkbox>
           <Typography.Text type="secondary">
             两者可以只选一个，但不能都不选——「登记后果」的意思就是至少有一件事真的发生。

@@ -36,6 +36,7 @@ import type { SessionUser } from "@/server/core/dto";
 import { deterministicIdempotencyKey } from "@/server/core/idempotency";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { createCt } from "@/server/modules/matflow/ct";
+import { resolvePurchaseReceiptLine } from "@/server/modules/matflow/purchase-receipt-lock";
 import { type AnyDb, requireAnyRole, resolveDb } from "@/server/modules/outsource/common";
 import { createQualityCase } from "./service";
 
@@ -62,6 +63,7 @@ export interface QcOutcomeLine {
   poLineId: number | null;
   /** 该 PO 行当前已收数（退货量上限的来源） */
   poLineReceivedQty: string | null;
+  purchaseLineIssue: string | null;
   /** 本行可开退货的量 = min(让步接收量, PO 行已收数)；0 = 没有可退过账的量（不合格量从未入库） */
   returnableQty: string;
 }
@@ -129,10 +131,12 @@ export async function getQcOutcome(
   const rows: {
     qcLineId: number; shLineId: number; skuId: number; skuCode: string; skuName: string;
     passQty: string; failQty: string; concessionQty: string; failHandling: string;
+    poLineId: number | null;
   }[] = await db
     .select({
       qcLineId: schema.qcLines.id,
       shLineId: schema.qcLines.shLineId,
+      poLineId: schema.shLines.poLineId,
       skuId: schema.shLines.skuId,
       skuCode: schema.skus.code,
       skuName: schema.skus.name,
@@ -147,7 +151,7 @@ export async function getQcOutcome(
     .where(eq(schema.qcLines.qcId, qc.id))
     .orderBy(schema.qcLines.id);
 
-  // po 源：按 SKU 找到对应 PO 行（与 matflow/sh.ts inboundFromPo 的「同 SKU 计入首行」同口径）
+  // 与入库共用身份解析；历史歧义不猜首行，也不妨碍登记质量案件。
   const poLines: { id: number; skuId: number; receivedQty: string }[] = sh.sourceType === "po"
     ? await db
       .select({ id: schema.poLines.id, skuId: schema.poLines.skuId, receivedQty: schema.poLines.receivedQty })
@@ -155,12 +159,17 @@ export async function getQcOutcome(
       .where(eq(schema.poLines.poId, sh.sourceId))
       .orderBy(schema.poLines.id)
     : [];
-  const poLineBySku = new Map<number, typeof poLines[number]>();
-  for (const pl of poLines) if (!poLineBySku.has(pl.skuId)) poLineBySku.set(pl.skuId, pl);
-
   const totals = { pass: "0", fail: "0", concession: "0", returnable: "0" };
   const lines: QcOutcomeLine[] = rows.map((r) => {
-    const pl = poLineBySku.get(r.skuId) ?? null;
+    let pl: typeof poLines[number] | null = null;
+    let purchaseLineIssue: string | null = null;
+    if (sh.sourceType === "po") {
+      try { pl = resolvePurchaseReceiptLine(poLines, r.skuId, r.poLineId); }
+      catch (error) {
+        if (!(error instanceof ApiError)) throw error;
+        purchaseLineIssue = error.message;
+      }
+    }
     // 唯一真正可退的量 = 让步接收量（W2 起确实入了库）；不合格量从未入库，合格量不属本次结论
     const wanted = dQty(r.concessionQty);
     const returnable = pl == null
@@ -175,6 +184,7 @@ export async function getQcOutcome(
       failHandlingLabel: FAIL_HANDLING_LABELS[r.failHandling] ?? r.failHandling,
       poLineId: pl?.id ?? null,
       poLineReceivedQty: pl?.receivedQty ?? null,
+      purchaseLineIssue,
       returnableQty: returnable,
     };
   });
@@ -233,6 +243,8 @@ export async function raiseQcFailureOutcome(
   const v = raiseSchema.parse(input);
   const db = await resolveDb(dbArg);
   const summary = await getQcOutcome(user, v.shId, db);
+  const purchaseLineIssues = summary.lines.flatMap(l => l.purchaseLineIssue ? [l.purchaseLineIssue] : []);
+  if (v.createReturn && purchaseLineIssues.length) throw new ApiError(409, `采购退货来源待核对：${purchaseLineIssues.join("；")}。可先仅登记质量案件，不会自动分摊或部分开退货单。`);
   if (dCmp(summary.totals.fail, "0") <= 0 && dCmp(summary.totals.concession, "0") <= 0) {
     throw new ApiError(409, "本次检验没有不合格量或让步量，无需登记后果");
   }
@@ -246,7 +258,7 @@ export async function raiseQcFailureOutcome(
   /* 案件正文 = 这次检验的结构化事实（也是扣款依据的叙述面） */
   const failLines = summary.lines.filter((l) => dCmp(l.failQty, "0") > 0 || dCmp(l.concessionQty, "0") > 0);
   const narrative = failLines
-    .map((l) => `${l.skuCode} ${l.skuName}：不合格 ${l.failQty}（${l.failHandlingLabel}）、让步 ${l.concessionQty}、可退 ${l.returnableQty}`)
+    .map((l) => `${l.skuCode} ${l.skuName}：不合格 ${l.failQty}（${l.failHandlingLabel}）、让步 ${l.concessionQty}、可退 ${l.purchaseLineIssue ? "待核对采购行" : l.returnableQty}`)
     .join("；");
   const evidence = {
     qcId: summary.qcId,
@@ -259,6 +271,7 @@ export async function raiseQcFailureOutcome(
       qcLineId: l.qcLineId, skuId: l.skuId, skuCode: l.skuCode,
       failQty: l.failQty, concessionQty: l.concessionQty,
       failHandling: l.failHandling, returnableQty: l.returnableQty,
+      poLineId: l.poLineId, purchaseLineIssue: l.purchaseLineIssue,
     })),
   };
 

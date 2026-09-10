@@ -260,6 +260,8 @@ export const shLines = pgTable("sh_lines", {
   id: serial("id").primaryKey(),
   shId: integer("sh_id").notNull().references(() => shDocs.id),
   skuId: integer("sku_id").notNull().references(() => skus.id),
+  // PO来源逐行身份；JG及尚未核实的历史SH为null，不自动分摊同SKU多行。
+  poLineId: integer("po_line_id").references(() => poLines.id),
   lineType: shLineTypeEnum("line_type").notNull().default("normal"),
   expectedQty: numeric("expected_qty", { precision: 14, scale: 4 }),
   actualQty: numeric("actual_qty", { precision: 14, scale: 4 }).notNull(),

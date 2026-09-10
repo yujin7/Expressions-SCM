@@ -88,6 +88,12 @@ it("same-SKU PO lines retain separate identities and edits in a scrollable table
   const column = (table.columns as { key: string; render: (v: unknown, r: unknown, i: number) => Node }[]).find(c => c.key === "actualQty")!;
   (column.render(null, rows[1], 1).props.onChange as (v: string) => void)("3"); render();
   expect(lines()?.dataSource).toMatchObject([{ poLineId: 11, actualQty: "0" }, { poLineId: 12, actualQty: "3" }]);
+  const warehouse = nodes(create()).find(n => String(n.props.api).includes("/master/warehouse"))!;
+  (warehouse.props.onChange as (value: number) => void)(18); render();
+  fetchMock.mockImplementation(async (_url, init) => init?.method === "POST" ? Response.json({ id: 99 }) : Response.json({ rows: [], total: 0 }));
+  await (create().props.onOk as () => Promise<void>)();
+  const sent = fetchMock.mock.calls.find(([, init]) => init?.method === "POST")!;
+  expect(JSON.parse(String(sent[1]?.body))).toMatchObject({ sourceType: "po", sourceId: 1, warehouseId: 18, lines: [{ poLineId: 12, skuId: 1, actualQty: "3" }] });
 });
 it.each(["wrong-id", "closed", "missing-quantity"])("%s source cannot produce editable rows", async mode => {
   fetchMock.mockImplementation(async url => {

@@ -59,6 +59,7 @@ export async function getSh(id: number, dbArg?: AnyDb) {
   const lines = await db
     .select({
       id: shLines.id,
+      poLineId: shLines.poLineId,
       skuId: shLines.skuId,
       skuCode: skus.code,
       skuName: skus.name,

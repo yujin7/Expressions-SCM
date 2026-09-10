@@ -63,6 +63,7 @@ export const createShSchema = z.object({
     .array(
       z.object({
         skuId: z.number().int().positive({ message: "必须选择 SKU" }),
+        poLineId: z.number().int().positive().optional(),
         lineType: z.enum(["normal", "rework", "spare"]).default("normal"),
         expectedQty: qtyPositive.nullable().optional(),
         actualQty: qtyPositive,

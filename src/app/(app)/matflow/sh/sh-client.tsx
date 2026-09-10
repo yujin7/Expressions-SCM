@@ -91,6 +91,7 @@ interface ShRow {
 
 interface ShLine {
   id: number;
+  poLineId: number | null;
   skuId: number;
   skuCode: string;
   skuName: string;
@@ -408,6 +409,7 @@ export default function ShClient() {
       if (valid.length === 0) return void message.warning("至少需要一行实收数量大于 0 的收货行");
       lines = valid.map((l) => ({
         skuId: l.skuId,
+        poLineId: l.poLineId,
         lineType: "normal",
         actualQty: l.actualQty,
         batchNo: l.batchNo.trim() || undefined,
@@ -598,7 +600,7 @@ export default function ShClient() {
   ];
 
   const lineColumns: ColumnsType<ShLine> = [
-    { title: "物料", key: "material", width: 160, render: (_, r) => `${r.skuCode} ${r.skuName}` },
+    { title: "物料", key: "material", width: 160, render: (_, r) => <><div>{r.skuCode} {r.skuName}</div>{detail?.sourceType === "po" && <Typography.Text type="secondary">{r.poLineId != null ? `采购行 #${r.poLineId}` : "历史采购行未记录"}</Typography.Text>}</> },
     { title: "单位", dataIndex: "baseUom", width: 70 },
     {
       title: "行类型",
@@ -835,7 +837,7 @@ export default function ShClient() {
   ];
 
   const poCreateColumns: ColumnsType<PoCreateLine> = [
-    { title: "物料 / 单位", key: "material", width: 260, render: (_, r) => `${r.skuCode} ${r.skuName}（${r.baseUom}）` },
+    { title: "物料 / 单位", key: "material", width: 260, render: (_, r) => <><div>{r.skuCode} {r.skuName}（{r.baseUom}）</div><Typography.Text type="secondary">采购行 #{r.poLineId}</Typography.Text></> },
     {
       title: "订购",
       key: "ordered",

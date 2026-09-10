@@ -25,7 +25,7 @@ import {
   getOutsourceWarehouseOf, requireRealtimeWarehouse,
 } from "./common-notes";
 import { createQcSchema, createShSchema } from "./schemas";
-import { lockPurchaseReceipt } from "./purchase-receipt-lock";
+import { lockPurchaseReceipt, resolvePurchaseReceiptLine } from "./purchase-receipt-lock";
 import { currentWriteActor as currentMatflowActor } from "@/server/core/current-write-actor";
 
 /**
@@ -134,6 +134,7 @@ export async function createSh(user: SessionUser, input: unknown, dbArg?: AnyDb)
       await tx.select({ id: jgDocs.id }).from(jgDocs).where(eq(jgDocs.id, v.sourceId)).for("share");
       const jg = await getJgForMatflow(tx, v.sourceId);
       for (const l of lines) {
+        if (l.poLineId != null) throw new ApiError(400, "加工来源收货不可携带采购行编号");
         if (l.skuId !== jg.productSkuId) {
           throw new ApiError(400, `jg 源收货行 SKU 必须是加工成品 sku#${jg.productSkuId}，实为 sku#${l.skuId}`);
         }
@@ -148,16 +149,12 @@ export async function createSh(user: SessionUser, input: unknown, dbArg?: AnyDb)
       if (po.status !== "approved" && po.status !== "in_progress") {
         throw new ApiError(409, `采购订单当前状态不可收货: ${po.status}`);
       }
-      const plRows: { skuId: number }[] = await tx
-        .select({ skuId: poLines.skuId })
+      const plRows: { id: number; skuId: number }[] = await tx
+        .select({ id: poLines.id, skuId: poLines.skuId })
         .from(poLines)
         .where(eq(poLines.poId, po.id)).orderBy(poLines.id).for("share");
-      const poSkus = new Set(plRows.map((r) => r.skuId));
-      for (const l of lines) {
-        if (!poSkus.has(l.skuId)) throw new ApiError(400, `SKU #${l.skuId} 不在该 PO 行上，不可收货`);
-      }
       // po 源无行类型概念，强制 normal
-      lines = lines.map((l) => ({ ...l, lineType: "normal" as const }));
+      lines = lines.map((l) => ({ ...l, poLineId: resolvePurchaseReceiptLine(plRows, l.skuId, l.poLineId).id, lineType: "normal" as const }));
     }
     const docNo = await nextDocNo(tx, "SH");
     const [doc]: ShRow[] = await tx
@@ -177,6 +174,7 @@ export async function createSh(user: SessionUser, input: unknown, dbArg?: AnyDb)
       lines.map((l) => ({
         shId: doc.id,
         skuId: l.skuId,
+        poLineId: l.poLineId ?? null,
         lineType: l.lineType,
         expectedQty: l.expectedQty != null ? dQty(l.expectedQty) : null,
         actualQty: dQty(l.actualQty),
@@ -553,8 +551,10 @@ async function inboundFromPo(
   const { po, lines: plRows } = purchase;
 
   const eventLines: PostingLine[] = [];
-  const passBySku = new Map<number, string>();
+  const passByPoLine = new Map<number, string>();
   for (const l of lines) {
+    // 在同一PO聚合锁内复核，历史歧义不能在库存已过账后才发现。
+    const purchaseLine = resolvePurchaseReceiptLine(plRows, l.skuId, l.poLineId);
     const qc = qcByShLine.get(l.id);
     // 有效接收量 = 合格 + 让步接收（与 jg 源入库、supply-commitment 的接收口径同一定义）
     const accepted = qc ? dAdd(qc.passQty, qc.concessionQty) : "0";
@@ -566,16 +566,16 @@ async function inboundFromPo(
       batchId: batchByShLine.get(l.id) ?? null,
       qtyDelta: dQty(accepted),
     });
-    passBySku.set(l.skuId, dAdd(passBySku.get(l.skuId) ?? "0", accepted));
+    passByPoLine.set(purchaseLine.id, dAdd(passByPoLine.get(purchaseLine.id) ?? "0", accepted));
   }
   if (eventLines.length > 0) {
     await post(tx, { sourceDocType: "sh_purchase_in", sourceDocId: sh.id, action: "post", lines: eventLines });
   }
 
-  // 已收数累加（合格 + 让步接收；同 SKU 多 PO 行时计入首行——PoC 口径）
-  for (const [skuId, pass] of passBySku) {
-    const pl = plRows.find((r) => r.skuId === skuId);
-    if (!pl) throw new ApiError(500, `PO 行缺失: po#${po.id} sku#${skuId}`);
+  // 基础单位数量只累加到明确采购行；同采购行的多个批次先精确合计。
+  for (const pl of plRows) {
+    const pass = passByPoLine.get(pl.id);
+    if (pass == null) continue;
     await tx
       .update(poLines)
       .set({ receivedQty: dAdd(pl.receivedQty, pass) })
@@ -583,7 +583,7 @@ async function inboundFromPo(
   }
 
   // 全收自动完成（仅执行中 PO 可走 complete 边；approved 未确认的留待人工）
-  if (po.status === "in_progress" && passBySku.size > 0) {
+  if (po.status === "in_progress" && passByPoLine.size > 0) {
     const fresh: (typeof poLines.$inferSelect)[] = await tx
       .select()
       .from(poLines)
