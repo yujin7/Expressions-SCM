@@ -4,6 +4,7 @@ import { useDocumentTarget } from "@/components/useDocumentTarget";
 import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
 import { useDocumentRead } from "@/components/useDocumentRead";
 import DocumentDrawer from "@/components/DocumentDrawer";
+import DocumentTargetLink from "@/components/DocumentTargetLink";
 
 import SearchInput from "@/components/SearchInput";
 
@@ -559,7 +560,7 @@ export default function ShClient() {
       title: "单据号",
       dataIndex: "docNo",
       width: 160,
-      render: (v: string, r) => <Typography.Link onClick={() => setDetailId(r.id)}>{v}</Typography.Link>,
+      render: (v: string, r) => <DocumentTargetLink id={r.id} onOpen={setDetailId}>{v}</DocumentTargetLink>,
     },
     {
       title: "来源",
