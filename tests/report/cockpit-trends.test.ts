@@ -438,7 +438,7 @@ describe("驾驶舱趋势块 · BI wave 2 纯装配函数", () => {
   });
 
   const sptModel = (rows: SupplierPaymentTermRow[], totalSpend: string | null): SupplierPaymentTermModel => ({
-    key: "supplier-payment-term/v2",
+    key: "supplier-payment-term/v3",
     authority: "ledger",
     sourceBinding: "t",
     builtAt: new Date().toISOString(),

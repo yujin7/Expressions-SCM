@@ -2,7 +2,7 @@
 
 /**
  * D64 供应商账期候选（记分卡页第四页签）：谁该谈账期、谈到了没有、账期类采购额占多少。
- * 只消费读模型 supplier-payment-term/v2；采购额由 API 按角色剥离；登记账期走 master/supplier.ts 专用写路径（审计）。
+ * 只消费读模型 supplier-payment-term/v3；采购额由 API 按角色剥离；登记账期走 master/supplier.ts 专用写路径（审计）。
  */
 import { useMemo, useState } from "react";
 import { Alert, App, Button, Card, Col, DatePicker, Form, Grid, Input, InputNumber, Modal, Row, Segmented, Select, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";

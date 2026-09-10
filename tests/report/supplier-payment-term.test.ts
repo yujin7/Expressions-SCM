@@ -15,7 +15,7 @@ import { createTestDb, type TestDb } from "../helpers/db";
  */
 const ASOF = new Date("2026-09-03T02:00:00.000Z");
 
-describe("supplier-payment-term/v2 读模型（PGlite）", () => {
+describe("supplier-payment-term/v3 读模型（PGlite）", () => {
   let db: TestDb;
   let userId = 0;
   let supAId = 0;

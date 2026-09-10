@@ -1,5 +1,5 @@
 /**
- * D64 供应商账期读模型 `supplier-payment-term/v2`（记分卡页「账期候选」Tab + 第 4 屏部门目标 auto 来源）。
+ * D64 供应商账期读模型 `supplier-payment-term/v3`（记分卡页「账期候选」Tab + 第 4 屏部门目标 auto 来源）。
  *
  * 口径（D64；参数 payment_term_min_years / payment_term_target_min_days / payment_term_target_max_days）：
  * - 年采购额 = 该年 **审批通过** PO 的行未税金额（同 purchase-order-metrics 口径，去税/补税唯一实现 `rules/price.ts` normalizeLineNetGross）
@@ -26,7 +26,7 @@ import { shanghaiDay } from "@/server/rules/po-cycle";
 import { normalizeLineNetGross } from "@/server/rules/price";
 import { ORDERED_PO_STATUSES } from "./purchase-order-metrics";
 
-export const SUPPLIER_PAYMENT_TERM_KEY = "supplier-payment-term/v2";
+export const SUPPLIER_PAYMENT_TERM_KEY = "supplier-payment-term/v3";
 const ACTIVE_JS_STATUSES = ["approved", "in_progress", "completed"] as const;
 const ACTIVE_JG_STATUSES = ["approved", "in_progress", "completed", "closed"] as const;
 
@@ -119,8 +119,16 @@ function poolOf(kinds: string[]): SupplierPool {
 }
 
 function yearsBetween(from: string, to: string): number {
-  const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;
-  return Math.round((days / 365.25) * 100) / 100;
+  if (from > to) return -yearsBetween(to, from);
+  const [year, month, day] = from.split("-").map(Number);
+  const end = Date.parse(`${to}T00:00:00Z`);
+  // 按业务日周年判整年；2月29日在非闰年按2月末。小数年按相邻周年间实际日数折算。
+  const anniversary = (y: number) => Date.UTC(y, month - 1, Math.min(day, new Date(Date.UTC(y, month, 0)).getUTCDate()));
+  let fullYears = Number(to.slice(0, 4)) - year;
+  if (anniversary(year + fullYears) > end) fullYears--;
+  const start = anniversary(year + fullYears);
+  const next = anniversary(year + fullYears + 1);
+  return fullYears + (end - start) / (next - start);
 }
 
 function attainmentOf(type: PaymentTermType | null, creditDays: number | null, targetMin: number, state: PaymentTermState): AttainmentStatus {
@@ -139,34 +147,40 @@ interface PaymentTermParams {
 
 /** 账期参数（sys_params，PARAM_DEFS 已登记；测试传 db 走实时不走缓存） */
 async function readPaymentTermParams(db: AnyDb): Promise<PaymentTermParams> {
-  const [minYears, targetMinDays, targetMaxDays] = await Promise.all([
-    getNumParam("payment_term_min_years", 2, db),
-    getNumParam("payment_term_target_min_days", 45, db),
-    getNumParam("payment_term_target_max_days", 60, db),
-  ]);
+  // 同一快照事务只有一个连接，逐次读取，避免 pg 客户端并发 query 的弃用行为。
+  const minYears = await getNumParam("payment_term_min_years", 2, db);
+  const targetMinDays = await getNumParam("payment_term_target_min_days", 45, db);
+  const targetMaxDays = await getNumParam("payment_term_target_max_days", 60, db);
   return { minYears, targetMinDays, targetMaxDays };
 }
 
-/** 绑定：事实表 max(id)+行数 + 供应商档案更新时点 + 统计年 + 账期口径参数（改参数即失效重算） */
+/** 一条SQL快照覆盖所有被消费字段，已有单据改价/流转/JG首单变化也必须失效。 */
 async function sourceBinding(db: AnyDb, year: number, p: PaymentTermParams, today: string): Promise<string> {
-  const [po] = await db
-    .select({ maxId: sql<number>`coalesce(max(${schema.poDocs.id}), 0)::int`, n: sql<number>`count(*)::int` })
-    .from(schema.poDocs);
-  const [js] = await db
-    .select({ maxId: sql<number>`coalesce(max(${schema.jsDocs.id}), 0)::int`, n: sql<number>`count(*)::int` })
-    .from(schema.jsDocs);
-  const [ap] = await db
-    .select({ maxId: sql<number>`coalesce(max(${schema.approvals.id}), 0)::int` })
-    .from(schema.approvals)
-    .where(eq(schema.approvals.docType, "po"));
-  const [sup] = await db
-    .select({ fingerprint: sql<string>`md5(coalesce(string_agg(json_build_array(
+  const result = await db.execute(sql`select
+    (select md5(coalesce(string_agg(md5(json_build_array(
+      ${schema.poDocs.id}, ${schema.poDocs.supplierId}, ${schema.poDocs.status}, ${schema.poDocs.createdAt}
+    )::text), '' order by ${schema.poDocs.id}), '')) from ${schema.poDocs}) as po,
+    (select md5(coalesce(string_agg(md5(json_build_array(
+      ${schema.poLines.id}, ${schema.poLines.poId}, ${schema.poLines.qty}, ${schema.poLines.price},
+      ${schema.poLines.taxIncluded}, ${schema.poLines.taxRatePct}
+    )::text), '' order by ${schema.poLines.id}), '')) from ${schema.poLines}) as pol,
+    (select md5(coalesce(string_agg(md5(json_build_array(
+      ${schema.jgDocs.id}, ${schema.jgDocs.supplierId}, ${schema.jgDocs.status}, ${schema.jgDocs.createdAt}
+    )::text), '' order by ${schema.jgDocs.id}), '')) from ${schema.jgDocs}) as jg,
+    (select md5(coalesce(string_agg(md5(json_build_array(
+      ${schema.jsDocs.id}, ${schema.jsDocs.jgId}, ${schema.jsDocs.status}, ${schema.jsDocs.createdAt}, ${schema.jsDocs.settleAmount}
+    )::text), '' order by ${schema.jsDocs.id}), '')) from ${schema.jsDocs}) as js,
+    (select md5(coalesce(string_agg(md5(json_build_array(
+      ${schema.approvals.id}, ${schema.approvals.docId}, ${schema.approvals.action}, ${schema.approvals.createdAt}
+    )::text), '' order by ${schema.approvals.id}), '')) from ${schema.approvals}
+      where ${schema.approvals.docType} = 'po') as appr,
+    (select md5(coalesce(string_agg(md5(json_build_array(
       ${schema.suppliers.id}, ${schema.suppliers.code}, ${schema.suppliers.name}, ${schema.suppliers.kinds},
-      ${schema.suppliers.status}, ${schema.suppliers.paymentTerm}, ${schema.suppliers.paymentTermType},
-      ${schema.suppliers.creditDays}, ${schema.suppliers.paymentTermEffectiveFrom}, ${schema.suppliers.updatedAt}
-    )::text, '|' order by ${schema.suppliers.id}), ''))` })
-    .from(schema.suppliers);
-  return `po:${po.maxId}/${po.n}|js:${js.maxId}/${js.n}|appr:${ap.maxId}|sup:${sup.fingerprint}|year:${year}|pt:${p.minYears}/${p.targetMinDays}/${p.targetMaxDays}|day:${today}`;
+      ${schema.suppliers.status}, ${schema.suppliers.paymentTerm}, ${schema.suppliers.paymentTermType}, ${schema.suppliers.creditDays},
+      ${schema.suppliers.paymentTermEffectiveFrom}
+    )::text), '' order by ${schema.suppliers.id}), '')) from ${schema.suppliers}) as sup`);
+  const r = result.rows[0] as Record<string, string>;
+  return `v3|po:${r.po}|pol:${r.pol}|jg:${r.jg}|js:${r.js}|appr:${r.appr}|sup:${r.sup}|year:${year}|pt:${p.minYears}/${p.targetMinDays}/${p.targetMaxDays}|day:${today}`;
 }
 
 /** 供只读目标消费复核：日期或源事实已变时拒绝旧缓存，不在目标页偷偷重建报表。 */
@@ -176,6 +190,13 @@ export async function isSupplierPaymentTermBindingCurrent(db: AnyDb, binding: st
 }
 
 export async function computeSupplierPaymentTerm(db: AnyDb, opts: { asOf?: Date; year?: number } = {}): Promise<SupplierPaymentTermModel> {
+  // 数值和sourceBinding必须来自同一快照，避免旧计算结果被盖上新指纹。
+  return db.transaction((tx: AnyDb) => computeSupplierPaymentTermSnapshot(tx, opts), {
+    isolationLevel: "repeatable read", accessMode: "read only",
+  });
+}
+
+async function computeSupplierPaymentTermSnapshot(db: AnyDb, opts: { asOf?: Date; year?: number }): Promise<SupplierPaymentTermModel> {
   const today = shanghaiDay(opts.asOf ?? new Date())!;
   const year = opts.year ?? Number(today.slice(0, 4));
   const years = [year, year - 1, year - 2];
@@ -301,12 +322,13 @@ export async function computeSupplierPaymentTerm(db: AnyDb, opts: { asOf?: Date;
     const rPrev = spend[1].rank;
     const rankTrend: RankTrend = rCur == null || rPrev == null ? "unknown" : rCur < rPrev ? "up" : rCur > rPrev ? "down" : "flat";
     const since = firstDay.get(s.id) ?? null;
-    const cooperationYears = since ? yearsBetween(since, today) : null;
-    const longEnough = cooperationYears != null && cooperationYears >= minYears;
+    const preciseYears = since ? yearsBetween(since, today) : null;
+    const cooperationYears = preciseYears == null ? null : Math.round(preciseYears * 100) / 100;
+    const longEnough = preciseYears != null && preciseYears >= minYears;
     const candidate = longEnough && rankTrend === "up";
     const reasons: string[] = [];
     if (cooperationYears == null) reasons.push("无已批 PO/JG，合作起始日不可推算");
-    else reasons.push(`合作 ${cooperationYears} 年（${longEnough ? "≥" : "<"} ${minYears} 年）`);
+    else reasons.push(`自 ${since} 合作约 ${cooperationYears} 年（按业务日核算，${longEnough ? "已满" : "未满"} ${minYears} 年）`);
     reasons.push(
       rankTrend === "unknown"
         ? `${year} 或 ${year - 1} 年无池内排名`
@@ -393,6 +415,7 @@ export async function computeSupplierPaymentTerm(db: AnyDb, opts: { asOf?: Date;
     limitations: [
       `年采购额 = 当年审批通过 PO 行未税额 + 当年生效 JS 结算额（采购订单/结算口径，非应付、非已付）；覆盖 ${year - 2}–${year} 年 SCM 内事实。`,
       "合作起始日由最早已批 PO / JG 建单日系统推算（suppliers 暂无合作起始日列），可能晚于真实合作时间；历史采购额（外部导入）未接入排名。",
+      "合作年限按起始业务日周年核算，2月29日在非闰年按2月末；小数年按相邻周年间实际日数折算。展示值四舍五入，但不参与门槛判定。",
       `候选 = 合作 ≥ ${minYears} 年且 ${year} 年池内排名较 ${year - 1} 年上升；分池按 kinds（processor → OA 加工厂，packaging → 包材厂，其余 → 原料商）。`,
       `达标 = 截至 ${today} 已生效的月结且账期 ≥ ${targetMinDays} 天（目标区间 ${targetMinDays}–${targetMaxDays} 天）；未来条款待生效，缺类型/生效日待核对，不提前计达标。达成率仍为已确认达标数÷候选总数。`,
       "档案保存的是最近登记条款，待生效时不猜测此前有效账期；需核对原协议。不是历史条款时间线，也不是谈判关案率。",

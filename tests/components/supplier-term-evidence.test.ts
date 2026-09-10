@@ -27,7 +27,7 @@ const nodes = (v: ReactNode): Node[] => Array.isArray(v) ? v.flatMap(nodes) : is
 const text = (v: ReactNode): string => typeof v === "string" || typeof v === "number" ? String(v) : Array.isArray(v) ? v.map(text).join("") : isValidElement<Node["props"]>(v) ? text(v.props.children) : "";
 function fixture(): SupplierPaymentTermModel {
   return {
-    key: "supplier-payment-term/v2", authority: "ledger", sourceBinding: "test", builtAt: "2026-09-08T00:00:00Z", asOf: "2026-09-08", year: 2026, moneyVisible: true,
+    key: "supplier-payment-term/v3", authority: "ledger", sourceBinding: "test", builtAt: "2026-09-08T00:00:00Z", asOf: "2026-09-08", year: 2026, moneyVisible: true,
     params: { minYears: 2, targetMinDays: 45, targetMaxDays: 60 }, limitations: ["未来条款待生效，不提前计达标"],
     summary: { suppliers: 1, withSpend: 1, candidates: 1, candidatesAttained: 0, attainmentRate: 0, creditTermSuppliers: 0, totalSpend: "3000", creditTermSpend: "0", creditTermSpendSharePct: null, unclassifiedSpendSuppliers: 1, byPool: [] },
     rows: [{ supplierId: 1, code: "TERM-TEST", name: "长名称合成供应商", kinds: ["processor"], status: "qualified", pool: "processor", cooperationSince: "2023-01-01", cooperationSource: "system_inferred", cooperationYears: 3, hasCurrentYearSpend: true,
