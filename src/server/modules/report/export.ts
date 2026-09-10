@@ -2,6 +2,7 @@ import { SENSITIVE_FIELDS } from "@/server/core/constants";
 import { canSeePrices } from "@/server/core/dto";
 import { inventoryAlertsExport } from "./inventory-alerts-export";
 import { supplierLifecycleExport } from "./supplier-lifecycle-export";
+import { wipExport } from "./wip-export";
 
 /**
  * CSV 导出基础设施（W5）。
@@ -125,6 +126,7 @@ const num = (v: unknown): number | undefined => {
 };
 
 export const EXPORT_KINDS: Record<string, ExportKindDef> = {
+  wip: wipExport,
   "inventory-alerts": inventoryAlertsExport,
   "supplier-lifecycle": supplierLifecycleExport,
   balance: {

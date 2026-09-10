@@ -273,8 +273,8 @@ export const METRICS: Record<string, MetricDef> = {
   wipPendingQty: {
     id: "wipPendingQty",
     label: "委外待收数量",
-    short: "委外订单尚未通过正常收货行入库的剩余数量",
-    formula: "Σ max(JG订单数量−正常行累计实收, 0)",
+    short: "当前筛选在制加工单尚未正常实收的剩余量，非待合格入库量",
+    formula: "Σ max(已批准/执行中JG订单数量−生效SH正常行累计实收, 0)",
     unit: "qty",
     tier: "ledger",
     caveat: "跨 SKU 合计可能混合件、箱、kg 等基础单位，仅用于催交排序，不可视为统一产能",

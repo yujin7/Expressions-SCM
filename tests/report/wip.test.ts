@@ -222,7 +222,7 @@ describe("委外在制看板 listWip：收货进度聚合 + 逾期 + 过滤", ()
     expect(summary.pendingTotal).toBe("1000.0000"); // 500 + 500
   });
 
-  it("3) 过滤：supplierId 与 仅逾期（汇总随筛选集合，不随裁行）", async () => {
+  it("3) supplierId/仅逾期的行、汇总与图表使用同一集合", async () => {
     const bySup = await listWip({ supplierId: supB }, db);
     expect(bySup.rows).toHaveLength(1);
     expect(bySup.rows[0].jgId).toBe(jgOverdue);
@@ -230,9 +230,8 @@ describe("委外在制看板 listWip：收货进度聚合 + 逾期 + 过滤", ()
 
     const onlyOverdue = await listWip({ overdueOnly: true }, db);
     expect(onlyOverdue.rows.map((r) => r.jgId)).toEqual([jgOverdue]);
-    // 汇总仍是全集口径（卡片数字不因"仅逾期"裁行而变）
-    expect(onlyOverdue.summary.wipCount).toBe(2);
-    expect(onlyOverdue.summary.pendingTotal).toBe("1000.0000");
+    expect(onlyOverdue.summary.wipCount).toBe(1);
+    expect(onlyOverdue.summary.pendingTotal).toBe("500.0000");
   });
 
   it("4) 无金额字段泄漏（R9：本报表运营/仓管可见，故行内不得含任何价格键）", async () => {
@@ -241,5 +240,26 @@ describe("委外在制看板 listWip：收货进度聚合 + 逾期 + 过滤", ()
     for (const row of rows) {
       for (const key of Object.keys(row)) expect(banned).not.toContain(key);
     }
+  });
+
+  it("5) 待审批不进生效看板，短关可查但不逾期、不计在制", async () => {
+    const pending = await mkJg({ supplierId: supA, qty: "90", status: "pending", dueDate: PAST });
+    const closed = await mkJg({ supplierId: supA, qty: "80", status: "closed", dueDate: PAST });
+    const result = await listWip({}, db);
+    expect(result.rows.some(r => r.jgId === pending)).toBe(false);
+    expect(result.rows.find(r => r.jgId === closed)?.overdue).toBe(false);
+    expect(result.summary.wipCount).toBe(2);
+    expect(result.summary.overdueCount).toBe(1);
+  });
+
+  it("6) 超收显式呈现但待收不负；同名不同ID工厂分别汇总", async () => {
+    const [other] = await db.insert(suppliers).values({ code: "SUPW5C", name: "看板加工厂A", kinds: ["processor"] }).returning();
+    const over = await mkJg({ supplierId: other.id, qty: "10", status: "in_progress" });
+    await mkSh({ jgId: over, status: "approved", lines: [{ lineType: "normal", actualQty: "12" }] });
+    const result = await listWip({}, db);
+    expect(result.rows.find(r => r.jgId === over)).toMatchObject({ pendingQty: "0.0000", overReceivedQty: "2.0000" });
+    expect(result.suppliers.filter(r => r.name === "看板加工厂A")).toHaveLength(2);
+    expect(result.suppliers.find(r => r.supplierId === other.id)).toMatchObject({ pending: "0.0000", jobs: 1 });
+    expect(result.suppliers.find(r => r.supplierId === supA)).toMatchObject({ pending: "500.0000", jobs: 1 });
   });
 });
