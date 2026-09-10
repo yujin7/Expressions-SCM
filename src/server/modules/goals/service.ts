@@ -192,6 +192,7 @@ export const goalCreateSchema = z.object({
 export type GoalCreateInput = z.input<typeof goalCreateSchema>;
 
 export const goalPatchSchema = z.object({
+  expectedUpdatedAt: z.string().datetime().optional(),
   targetValue: numericStr.optional(),
   direction: z.enum(GOAL_DIRECTIONS).optional(),
   note: z.preprocess(emptyToUndef, z.string().trim().max(500).nullable().optional()),
@@ -481,31 +482,33 @@ export async function updateGoal(id: number, raw: z.input<typeof goalPatchSchema
   const patch = goalPatchSchema.parse(raw);
   const db = dbArg ?? (await getDbAsync());
   const now = opts?.now ?? new Date();
-  const [existing]: Raw[] = await db.select().from(departmentGoals).where(eq(departmentGoals.id, id));
-  if (!existing) throw new ApiError(404, "目标不存在");
-  if (!canEditDept(user, existing.deptKey)) throw new ApiError(403, "只能修改本部门的目标（管理员除外）");
-  resolveDeptScope(user, existing.deptKey);
-  // S1：与 createGoal 同口径——看不到金额的人也不该改金额目标（改目标即可反推达成度口径）
-  if (isMoneyMetric(existing.metricKey) && !canSeePrices(user.roles)) {
-    throw new ApiError(403, "金额类指标目标只能由可见价格的角色（采购/PMC/财务/管理员）维护");
-  }
-
-  const set: Partial<typeof departmentGoals.$inferInsert> = { updatedAt: now };
-  if (patch.targetValue !== undefined) set.targetValue = patch.targetValue;
-  if (patch.direction !== undefined) set.direction = patch.direction;
-  if (patch.note !== undefined) set.note = patch.note;
-  if (patch.actualValue !== undefined) {
-    if (patch.actualValue === null) {
-      set.actualValue = null;
-      set.actualSource = null;
-    } else {
-      set.actualValue = patch.actualValue;
-      set.actualSource = "manual";
-      const evidenceLine = `[证据 ${shanghaiDayOf(now)}] ${patch.evidence}`;
-      set.note = `${(patch.note !== undefined ? patch.note : existing.note) ?? ""}\n${evidenceLine}`.trim();
-    }
-  }
   await db.transaction(async (tx: AnyDb) => {
+    const [existing]: Raw[] = await tx.select().from(departmentGoals).where(eq(departmentGoals.id, id)).for("update");
+    if (!existing) throw new ApiError(404, "目标不存在");
+    if (!canEditDept(user, existing.deptKey)) throw new ApiError(403, "只能修改本部门的目标（管理员除外）");
+    resolveDeptScope(user, existing.deptKey);
+    if (isMoneyMetric(existing.metricKey) && !canSeePrices(user.roles)) {
+      throw new ApiError(403, "金额类指标目标只能由可见价格的角色（采购/PMC/财务/管理员）维护");
+    }
+    if (patch.expectedUpdatedAt !== undefined && new Date(existing.updatedAt).toISOString() !== patch.expectedUpdatedAt) {
+      throw new ApiError(409, "目标已被修改，请保留当前输入，关闭后重新读取最新目标再编辑");
+    }
+    // Monotonic revision even for two writes within one millisecond; shared with auto refresh.
+    const set: Partial<typeof departmentGoals.$inferInsert> = { updatedAt: nextGoalUpdatedAt(existing.updatedAt, now) };
+    if (patch.targetValue !== undefined) set.targetValue = patch.targetValue;
+    if (patch.direction !== undefined) set.direction = patch.direction;
+    if (patch.note !== undefined) set.note = patch.note;
+    if (patch.actualValue !== undefined) {
+      if (patch.actualValue === null) {
+        set.actualValue = null;
+        set.actualSource = null;
+      } else {
+        set.actualValue = patch.actualValue;
+        set.actualSource = "manual";
+        const evidenceLine = `[证据 ${shanghaiDayOf(now)}] ${patch.evidence}`;
+        set.note = `${(patch.note !== undefined ? patch.note : existing.note) ?? ""}\n${evidenceLine}`.trim();
+      }
+    }
     await tx.update(departmentGoals).set(set).where(eq(departmentGoals.id, id));
     await writeAudit(tx, {
       userId: user.id,
@@ -517,6 +520,10 @@ export async function updateGoal(id: number, raw: z.input<typeof goalPatchSchema
     });
   });
   return getGoal(id, user, db);
+}
+
+function nextGoalUpdatedAt(previous: Date, now: Date): Date {
+  return new Date(Math.max(now.getTime(), new Date(previous).getTime() + 1));
 }
 
 export interface RefreshAutoSummary {
@@ -561,7 +568,7 @@ export async function refreshAutoActuals(
       if (current.actualValue == null && auto.value == null) return false;
       if (current.actualValue != null && auto.value != null && dCmp(current.actualValue, auto.value) === 0) return false;
       const actualSource = auto.value == null ? null : "auto";
-      await tx.update(departmentGoals).set({ actualValue: auto.value, actualSource, updatedAt: now }).where(eq(departmentGoals.id, r.id));
+      await tx.update(departmentGoals).set({ actualValue: auto.value, actualSource, updatedAt: nextGoalUpdatedAt(current.updatedAt, now) }).where(eq(departmentGoals.id, r.id));
       await writeAudit(tx, {
         userId: opts?.actorId ?? r.createdBy,
         entity: "department_goal",

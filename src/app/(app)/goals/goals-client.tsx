@@ -7,7 +7,7 @@
  */
 import { useMemo, useRef, useState } from "react";
 import {
-  Alert, App, Button, Col, DatePicker, Drawer, Form, InputNumber, Input, Popconfirm, Row, Segmented, Select, Space, Table, Tabs, Tag, Typography,
+  Alert, App, Button, Col, DatePicker, Drawer, Form, Grid, InputNumber, Input, Popconfirm, Row, Segmented, Select, Space, Table, Tabs, Tag, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
@@ -76,9 +76,11 @@ type Filters = { period?: string; dept?: string };
 
 export default function GoalsClient() {
   const { message } = App.useApp();
+  const compact = !Grid.useBreakpoint().md;
   const [writing, setWriting] = useState<"refresh" | "save" | null>(null);
   const writeLock = useRef(false);
   const [writeResult, setWriteResult] = useState<{ type: "success" | "warning"; message: string } | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [drawer, setDrawer] = useState<{ mode: "create"; dept: string } | { mode: "edit"; row: GoalRow } | null>(null);
   const [form] = Form.useForm();
   // 单调计数：每次写入后 +1，进度卡据此重取（行数不变的编辑也要刷新——审计 #11）
@@ -132,7 +134,7 @@ export default function GoalsClient() {
 
   const submit = async () => {
     if (writeLock.current || !drawer) return;
-    writeLock.current = true; setWriting("save");
+    writeLock.current = true; setWriting("save"); setSaveError(null);
     let submitted = false;
     try {
       const v = await form.validateFields();
@@ -143,14 +145,16 @@ export default function GoalsClient() {
         await postJson("/api/goals", { period, metricKey: v.metricKey, direction: v.direction, note: v.note, deptKey: drawer.dept, targetValue: String(v.targetValue) });
         message.success("已创建目标");
       } else if (drawer?.mode === "edit") {
+        const patch: Record<string, unknown> = { expectedUpdatedAt: drawer.row.updatedAt };
+        if (v.targetValue != null && String(v.targetValue) !== drawer.row.targetValue) patch.targetValue = String(v.targetValue);
+        if (v.direction !== drawer.row.direction) patch.direction = v.direction;
+        if ((v.note ?? "").trim() !== (drawer.row.note ?? "").trim()) patch.note = v.note?.trim() || null;
+        if (v.actualValue != null && v.actualValue !== "") {
+          patch.actualValue = String(v.actualValue); patch.evidence = v.evidence;
+        }
+        if (Object.keys(patch).length === 1) { message.info("未修改任何内容"); return; }
         submitted = true;
-        await patchJson(`/api/goals/${drawer.row.id}`, {
-          targetValue: v.targetValue != null ? String(v.targetValue) : undefined,
-          direction: v.direction,
-          note: v.note,
-          actualValue: v.actualValue != null && v.actualValue !== "" ? String(v.actualValue) : undefined,
-          evidence: v.evidence,
-        });
+        await patchJson(`/api/goals/${drawer.row.id}`, patch);
         message.success("已更新");
       }
       setDrawer(null);
@@ -160,6 +164,7 @@ export default function GoalsClient() {
       // Form validation already renders field-level errors; do not turn it into an unhandled rejection.
       if (submitted) {
         message.error((e as Error).message);
+        setSaveError((e as Error).message);
         setWriteResult({ type: "warning", message: `保存未确认完成：${(e as Error).message}。请先重新读取核对结果。` });
       }
     } finally {
@@ -168,15 +173,25 @@ export default function GoalsClient() {
     }
   };
 
+  const editAction = (r: GoalRow) => r.editable ? (
+    <Button size="small" disabled={!!writing} onClick={() => {
+      setSaveError(null);
+      form.setFieldsValue({ targetValue: r.targetValue, direction: r.direction, note: r.note ?? "", actualValue: undefined, evidence: "" });
+      setDrawer({ mode: "edit", row: r });
+    }}>编辑</Button>
+  ) : <Typography.Text type="secondary">只读</Typography.Text>;
+
   const columns: ColumnsType<GoalRow> = [
-    { title: "期间", dataIndex: "period", width: 90, fixed: "left", sorter: (a, b) => a.period.localeCompare(b.period) },
+    ...(!compact ? [{ title: "期间", dataIndex: "period", width: 90, fixed: "left" as const, sorter: (a: GoalRow, b: GoalRow) => a.period.localeCompare(b.period) }] : []),
     {
-      title: "指标", dataIndex: "metricLabel", width: 200,
+      title: compact ? "期间 / 指标" : "指标", dataIndex: "metricLabel", width: compact ? 160 : 200, fixed: compact ? "left" : undefined,
+      sorter: compact ? (a, b) => a.period.localeCompare(b.period) || a.metricLabel.localeCompare(b.metricLabel, "zh-CN") : undefined,
       render: (v: string, r) => (
-        <Space size={4}>
-          <span>{v}</span>
-          <ContextHelp label={`查看${v}说明`} title={v} content={metricTooltip(r.metricKey) || r.metricKey} />
-        </Space>
+        <div style={{ whiteSpace: "normal", overflowWrap: "anywhere" }}>
+          {compact && <Typography.Text type="secondary">{r.period}</Typography.Text>}
+          <div><span>{v}</span> <ContextHelp label={`查看${v}说明`} title={v} content={metricTooltip(r.metricKey) || r.metricKey} /></div>
+          {compact && <div style={{ marginTop: 6 }}>{editAction(r)}</div>}
+        </div>
       ),
     },
     { title: "目标", dataIndex: "targetValue", width: 110, align: "right", render: (v: string, r) => formatMetricValue(v, r.unit) },
@@ -185,15 +200,7 @@ export default function GoalsClient() {
     { title: "方向", dataIndex: "direction", width: 100, render: (v: string) => (v === "up" ? "↑ 越高越好" : "↓ 越低越好") },
     { title: "来源", key: "src", width: 130, render: (_, r) => { const k = goalSourceKey(r.actualSource, r.autoStatus); return <Tag color={GOAL_SOURCE[k].color}>{GOAL_SOURCE[k].label}</Tag>; } },
     { title: "备注 / 证据", dataIndex: "note", ellipsis: true, render: (v: string | null) => v ?? "—" },
-    {
-      title: "操作", key: "ops", width: 90, fixed: "right",
-      render: (_, r) => (r.editable ? (
-        <Button size="small" disabled={!!writing} onClick={() => {
-          form.setFieldsValue({ targetValue: r.targetValue, direction: r.direction, note: r.note ?? "", actualValue: undefined, evidence: "" });
-          setDrawer({ mode: "edit", row: r });
-        }}>编辑</Button>
-      ) : <Typography.Text type="secondary">只读</Typography.Text>),
-    },
+    ...(!compact ? [{ title: "操作", key: "ops", width: 90, fixed: "right" as const, render: (_: unknown, r: GoalRow) => editAction(r) }] : []),
   ];
 
   const tabs = useMemo(() => deptKeys.map((d) => ({
@@ -223,8 +230,9 @@ export default function GoalsClient() {
               <Button icon={<ReloadOutlined />} loading={writing === "refresh"} disabled={!canRefresh}>回填自动实际值</Button>
             </Popconfirm>
             <Button type="primary" icon={<PlusOutlined />} disabled={!editable || !!writing} onClick={() => {
+              setSaveError(null);
               form.resetFields();
-              form.setFieldsValue({ periodKind: "month", direction: "up" });
+              form.setFieldsValue({ periodKind: filterPeriod?.kind ?? periodKind, periodDate: filterPeriod?.value, direction: "up" });
               setDrawer({ mode: "create", dept: activeDept });
             }}>设置目标</Button>
           </Space>
@@ -267,7 +275,7 @@ export default function GoalsClient() {
         columns={columns}
         dataSource={rows}
         loading={loading}
-        scroll={{ x: "max-content" }}
+        scroll={{ x: compact ? 1040 : "max-content" }}
         pagination={false}
         locale={{ emptyText: loading ? "正在读取目标…" : error ? "数据未加载" : "本部门在该期间尚未设置目标" }}
       />
@@ -278,14 +286,18 @@ export default function GoalsClient() {
         closable={!writing}
         maskClosable={!writing}
         keyboard={!writing}
-        width={520}
+        width={compact ? "100%" : 520}
         extra={<Button type="primary" loading={writing === "save"} disabled={writing === "refresh"} onClick={submit}>保存</Button>}
       >
+        {saveError && <Alert type="error" showIcon message="目标未确认保存" description={saveError} style={{ marginBottom: 12 }} />}
+        {drawer?.mode === "edit" && <Typography.Paragraph type="secondary">
+          当前实际：{drawer.row.autoStatus === "withheld" ? "无权限" : formatMetricValue(drawer.row.actualValue, drawer.row.unit)} · {GOAL_SOURCE[goalSourceKey(drawer.row.actualSource, drawer.row.autoStatus)].label}。不填新的实际值即保留；填报后转为人工值，不再自动覆盖。
+        </Typography.Paragraph>}
         <Form form={form} disabled={!!writing} layout="vertical" initialValues={{ direction: "up", periodKind: "month" }}>
           {drawer?.mode === "create" ? (
             <>
               <Form.Item label="期间" required>
-                <Space>
+                <Space wrap>
                   <Form.Item name="periodKind" noStyle>
                     <Segmented options={[{ value: "month", label: "月" }, { value: "quarter", label: "季" }]} />
                   </Form.Item>
@@ -326,7 +338,11 @@ export default function GoalsClient() {
           {drawer?.mode === "edit" ? (
             <>
               <Form.Item name="actualValue" label="手工填报实际值（可选）"><InputNumber stringMode style={{ width: "100%" }} precision={4} /></Form.Item>
-              <Form.Item name="evidence" label="证据说明（填报实际值时必填）"><Input.TextArea rows={2} maxLength={500} /></Form.Item>
+              <Form.Item name="evidence" label="证据说明（填报实际值时必填）" dependencies={["actualValue"]}
+                rules={[({ getFieldValue }) => ({ validator: (_, value) => {
+                  const actual = getFieldValue("actualValue");
+                  return actual != null && actual !== "" && !String(value ?? "").trim() ? Promise.reject(new Error("请填写实际值的证据说明")) : Promise.resolve();
+                } })]}><Input.TextArea rows={2} maxLength={500} /></Form.Item>
             </>
           ) : null}
         </Form>

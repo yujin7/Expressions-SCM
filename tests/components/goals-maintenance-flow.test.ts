@@ -4,16 +4,16 @@ import GoalsClient from "@/app/(app)/goals/goals-client";
 
 // Exercise real page callbacks and useDocumentRead. Browser evidence remains separate.
 const hooks = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false }));
-const ui = vi.hoisted(() => ({ filters: { period: "2026-09", dept: "purchasing" }, message: { success: vi.fn(), error: vi.fn() }, form: { validateFields: vi.fn(), resetFields: vi.fn(), setFieldsValue: vi.fn(), setFieldValue: vi.fn() } }));
+const ui = vi.hoisted(() => ({ wide: true, filters: { period: "2026-09", dept: "purchasing" }, message: { success: vi.fn(), error: vi.fn(), info: vi.fn() }, form: { validateFields: vi.fn(), resetFields: vi.fn(), setFieldsValue: vi.fn(), setFieldValue: vi.fn() } }));
 vi.mock("@/components/useListState", () => ({ useListState: () => ({ filters: ui.filters, tableSize: "small", setFilter: (v: object) => { ui.filters = { ...ui.filters, ...v }; } }) }));
 vi.mock("@/components/ListToolbar", () => ({ default: "toolbar" }));
 vi.mock("@/components/LoadErrorAlert", () => ({ default: "load-error" }));
 vi.mock("@/components/CaliberNote", () => ({ default: "caliber" }));
 vi.mock("@/app/(app)/goals/GoalProgressCard", () => ({ default: "summary" }));
 vi.mock("antd", () => ({
-  Alert: "alert", App: { useApp: () => ({ message: ui.message }) }, Button: "button", Col: "col", DatePicker: "date-picker", Drawer: "drawer",
+  Alert: "alert", App: { useApp: () => ({ message: ui.message }) }, Grid: { useBreakpoint: () => ({ md: ui.wide }) }, Button: "button", Col: "col", DatePicker: "date-picker", Drawer: "drawer",
   Form: Object.assign("form", { useForm: () => [ui.form], Item: "form-item" }), InputNumber: "number", Input: { TextArea: "textarea" },
-  Popconfirm: "confirm", Row: "row", Segmented: "segmented", Select: "select", Space: "space", Table: "table", Tabs: "tabs", Tag: "tag", Tooltip: "tooltip", Typography: { Title: "h4", Text: "text" },
+  Popconfirm: "confirm", Row: "row", Segmented: "segmented", Select: "select", Space: "space", Table: "table", Tabs: "tabs", Tag: "tag", Tooltip: "tooltip", Typography: { Title: "h4", Text: "text", Paragraph: "p" },
 }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
@@ -55,8 +55,8 @@ const confirm = () => {
 const requests = (method: string) => fetchMock.mock.calls.filter(([, init]) => (init?.method ?? "GET") === method);
 const cleanup = () => { for (const fn of hooks.cleanups.values()) fn(); hooks.cleanups.clear(); };
 beforeEach(() => {
-  cleanup(); hooks.slots = []; hooks.effects = []; hooks.changed = false; ui.filters = { period: "2026-09", dept: "purchasing" };
-  ui.message.error.mockReset(); ui.message.success.mockReset(); ui.form.validateFields.mockReset(); fetchMock.mockReset();
+  cleanup(); hooks.slots = []; hooks.effects = []; hooks.changed = false; ui.wide = true; ui.filters = { period: "2026-09", dept: "purchasing" };
+  ui.message.error.mockReset(); ui.message.success.mockReset(); ui.form.validateFields.mockReset(); ui.form.setFieldsValue.mockReset(); fetchMock.mockReset();
   vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock);
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -124,4 +124,34 @@ it("回填回包丢失保留核对提示并撤旧，不自动再次提交", asyn
   expect(find("alert").props.type).toBe("warning");
   expect(find("alert").props.message).toContain("勿直接再次回填");
   expect(requests("POST")).toHaveLength(1);
+});
+
+type Column = { key?: string; title?: string; dataIndex?: string; fixed?: string; width?: number; render?: (v: unknown, r: unknown) => ReactNode };
+it("手机将期间、指标与编辑放在同一固定身份列，不让操作列遮挡指标", async () => {
+  ui.wide = false; fetchMock.mockResolvedValueOnce(Response.json(data())); await flush();
+  const columns = find("table").props.columns as Column[];
+  expect(columns.some(c => c.fixed === "right")).toBe(false);
+  expect(columns[0].dataIndex).toBe("metricLabel");
+  expect(columns[0].width).toBeLessThanOrEqual(170);
+  const cell = columns[0].render!("准时率", data().rows[0]);
+  expect(words(cell)).toContain("2026-09"); expect(words(cell)).toContain("准时率");
+  expect(nodes(cell).some(n => n.type === "button")).toBe(true);
+});
+it("新建目标继承当前期间，不要求重新选择", async () => {
+  fetchMock.mockResolvedValueOnce(Response.json(data())); await flush();
+  (button("设置目标").props.onClick as () => void)();
+  const values = ui.form.setFieldsValue.mock.calls.at(-1)![0];
+  expect(values.periodKind).toBe("month"); expect(values.periodDate?.format("YYYY-MM")).toBe("2026-09");
+});
+it("编辑携带所见版本，只提交变化字段，清空备注发送null", async () => {
+  const payload = data(); payload.rows[0].note = "旧备注" as never;
+  fetchMock.mockResolvedValueOnce(Response.json(payload)); await flush();
+  const columns = find("table").props.columns as Column[];
+  const edit = nodes(columns.find(c => c.key === "ops")!.render!(null, payload.rows[0])).find(n => n.type === "button")!;
+  (edit.props.onClick as () => void)(); render();
+  ui.form.validateFields.mockResolvedValueOnce({ targetValue: "95", direction: "up", note: "", actualValue: undefined, evidence: "" });
+  fetchMock.mockResolvedValueOnce(Response.json(payload.rows[0])); fetchMock.mockResolvedValueOnce(Response.json(payload));
+  await ((find("drawer").props.extra as Node).props.onClick as () => Promise<void>)(); await flush();
+  const sent = JSON.parse(requests("PATCH")[0][1]!.body as string);
+  expect(sent).toEqual({ targetValue: "95", note: null, expectedUpdatedAt: payload.rows[0].updatedAt });
 });

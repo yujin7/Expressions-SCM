@@ -111,6 +111,28 @@ describe("goals/service：部门目标 CRUD / auto 实际值（真实读模型�
     ]);
   });
 
+  it("旧表单保存冲突不能覆盖新目标，也不能追加虚假审计", async () => {
+    const created = await createGoal({ deptKey: "purchasing", period: "2027-01", metricKey: "onTimeRate", targetValue: "90", note: "原备注" }, admin, db);
+    const first = await updateGoal(created.id, { targetValue: "95", expectedUpdatedAt: created.updatedAt }, admin, db);
+    const auditBefore = await db.select().from(auditLogs);
+    await expect(updateGoal(created.id, { targetValue: "88", note: "旧表单", expectedUpdatedAt: created.updatedAt }, admin, db)).rejects.toMatchObject({ status: 409 });
+    expect((await listGoals({ period: "2027-01" }, admin, db)).rows.find(r => r.id === created.id)?.targetValue).toBe(first.targetValue);
+    expect(await db.select().from(auditLogs)).toEqual(auditBefore);
+  });
+
+  it("同毫秒修改也推进版本；明确清空备注，后续填报保留最新证据与准确before", async () => {
+    const now = new Date("2026-09-10T13:00:00.000Z");
+    const created = await createGoal({ deptKey: "quality", period: "2027-02", metricKey: "onTimeRate", targetValue: "90", note: "待清空" }, admin, db, { now });
+    const cleared = await updateGoal(created.id, { note: null, expectedUpdatedAt: created.updatedAt }, admin, db, { now });
+    expect(cleared.note).toBeNull(); expect(cleared.updatedAt).not.toBe(created.updatedAt);
+    const first = await updateGoal(created.id, { actualValue: "80", evidence: "证据一", expectedUpdatedAt: cleared.updatedAt }, admin, db, { now });
+    const second = await updateGoal(created.id, { actualValue: "85", evidence: "证据二", expectedUpdatedAt: first.updatedAt }, admin, db, { now });
+    expect(second.note).toContain("证据一"); expect(second.note).toContain("证据二");
+    expect(new Date(second.updatedAt).getTime()).toBeGreaterThan(new Date(first.updatedAt).getTime());
+    const logs = await db.select().from(auditLogs).where(and(eq(auditLogs.entity, "department_goal"), eq(auditLogs.entityId, created.id)));
+    expect(logs.at(-1)?.before).toMatchObject({ actualValue: "80.0000", note: first.note });
+  });
+
   it("达成度：up = 实际/目标，down = 目标/实际，decimal 一位小数；分母 0 → null", () => {
     expect(computeAttainment("100", "40", "up")).toBe("40.0");
     expect(computeAttainment("47", "48.6", "down")).toBe("96.7");
