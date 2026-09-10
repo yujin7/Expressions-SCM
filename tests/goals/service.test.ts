@@ -64,6 +64,43 @@ describe("goals/service：部门目标 CRUD / auto 实际值（真实读模型�
     ]);
   });
 
+  it("非法期间不能静默扩大查询或回填范围，登记与审计保持不变", async () => {
+    const before = await db.select().from(departmentGoals);
+    const audits = await db.select().from(auditLogs);
+    for (const period of ["2026-13", "2026-Q5", "", "all"]) {
+      await expect(listGoals({ period }, admin, db)).rejects.toMatchObject({ status: 400 });
+      await expect(refreshAutoActuals(db, { period, actorId: admin.id })).rejects.toMatchObject({ status: 400 });
+    }
+    expect(await db.select().from(departmentGoals)).toEqual(before);
+    expect(await db.select().from(auditLogs)).toEqual(audits);
+  });
+
+  it("期间与部门同时限制回填，手工值保留，相同来源重放无重复审计", async () => {
+    const { db: isolated } = await createTestDb();
+    const [actor] = await isolated.insert(users).values({ name: "回填范围QA", roles: ["admin"] }).returning();
+    const user = { ...admin, id: actor.id };
+    await isolated.insert(reportReadModelCache).values({ key: INVENTORY_SALES_RATIO_CACHE_KEY, sourceBinding: "qa", payload: {
+      rows: [{ yearMonth: "2026-08", ratioMonthEndPct: 20 }, { yearMonth: "2026-09", ratioMonthEndPct: 30 }],
+    } });
+    const august = await createGoal({ deptKey: "purchasing", period: "2026-08", metricKey: "inventorySalesRatio", targetValue: "50" }, user, isolated);
+    const september = await createGoal({ deptKey: "purchasing", period: "2026-09", metricKey: "inventorySalesRatio", targetValue: "50" }, user, isolated);
+    const otherDept = await createGoal({ deptKey: "quality", period: "2026-09", metricKey: "inventorySalesRatio", targetValue: "50" }, user, isolated);
+    const manual = await createGoal({ deptKey: "purchasing", period: "2026-09", metricKey: "onTimeRate", targetValue: "90", actualSource: "manual" }, user, isolated);
+    await updateGoal(manual.id, { actualValue: "77", evidence: "合成证据" }, user, isolated);
+    const before = await isolated.select().from(departmentGoals);
+    const auditBefore = await isolated.select().from(auditLogs);
+    await isolated.update(reportReadModelCache).set({ payload: { rows: [{ yearMonth: "2026-08", ratioMonthEndPct: 80 }, { yearMonth: "2026-09", ratioMonthEndPct: 90 }] } }).where(eq(reportReadModelCache.key, INVENTORY_SALES_RATIO_CACHE_KEY));
+    expect(await refreshAutoActuals(isolated, { period: "2026-09", deptKeys: ["purchasing"], actorId: user.id })).toEqual({ scanned: 1, updated: 1, unavailable: 0 });
+    const after = await isolated.select().from(departmentGoals);
+    for (const id of [august.id, otherDept.id, manual.id]) expect(after.find(r => r.id === id)).toEqual(before.find(r => r.id === id));
+    expect(Number(after.find(r => r.id === september.id)!.actualValue)).toBe(90);
+    const auditAfter = await isolated.select().from(auditLogs);
+    expect(auditAfter).toHaveLength(auditBefore.length + 1);
+    expect(auditAfter.at(-1)).toMatchObject({ entity: "department_goal", entityId: september.id, action: "refresh", userId: user.id });
+    expect((await refreshAutoActuals(isolated, { period: "2026-09", deptKeys: ["purchasing"], actorId: user.id })).updated).toBe(0);
+    expect(await isolated.select().from(auditLogs)).toEqual(auditAfter);
+  });
+
   it("AUTO_METRIC_SOURCES 只引用真实存在的读模型缓存键（不再前缀猜测）", () => {
     // 仓库库存读模型实际落库的键带窗口后缀（/w90）：goals 必须读同一把键（审阅修复：原来读裸前缀永远取不到）
     const real = new Set([INVENTORY_SALES_RATIO_CACHE_KEY, warehouseInventoryCacheKey(90), SUPPLIER_PAYMENT_TERM_KEY, PURCHASE_ORDER_METRICS_KEY, DATA_QUALITY_CACHE_KEY, EXTERNAL_VELOCITY_CACHE_KEY]);

@@ -5,15 +5,16 @@
  * 自动取值指标从已登记读模型取；取不到显示「来源未就绪」，不编造。
  * 指标下拉列出指标注册表（components/metrics）全部指标，按「自动取值 / 手工填报」分组并带一句话说明。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
-  App, Button, Col, DatePicker, Drawer, Form, InputNumber, Input, Row, Segmented, Select, Space, Table, Tabs, Tag, Tooltip, Typography,
+  Alert, App, Button, Col, DatePicker, Drawer, Form, InputNumber, Input, Popconfirm, Row, Segmented, Select, Space, Table, Tabs, Tag, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { InfoCircleOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
+import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
-import { fetchJson, patchJson, postJson } from "@/components/fetchJson";
+import { patchJson, postJson } from "@/components/fetchJson";
 import CaliberNote from "@/components/CaliberNote";
+import ContextHelp from "@/components/ContextHelp";
 import { GOAL_SOURCE, goalSourceKey, roleLabel } from "@/components/dictionary";
 import { exportCsv } from "@/components/exportCsv";
 import { formatMetricValue } from "@/components/format";
@@ -21,6 +22,7 @@ import ListToolbar from "@/components/ListToolbar";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
 import { METRICS, metricTooltip } from "@/components/metrics";
 import { useListState } from "@/components/useListState";
+import { useDocumentRead } from "@/components/useDocumentRead";
 import GoalProgressCard from "./GoalProgressCard";
 
 interface GoalRow {
@@ -74,9 +76,9 @@ type Filters = { period?: string; dept?: string };
 
 export default function GoalsClient() {
   const { message } = App.useApp();
-  const [data, setData] = useState<GoalsData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [writing, setWriting] = useState<"refresh" | "save" | null>(null);
+  const writeLock = useRef(false);
+  const [writeResult, setWriteResult] = useState<{ type: "success" | "warning"; message: string } | null>(null);
   const [drawer, setDrawer] = useState<{ mode: "create"; dept: string } | { mode: "edit"; row: GoalRow } | null>(null);
   const [form] = Form.useForm();
   // 单调计数：每次写入后 +1，进度卡据此重取（行数不变的编辑也要刷新——审计 #11）
@@ -85,26 +87,16 @@ export default function GoalsClient() {
   const listState = useListState<Filters>({ key: "goals", defaults: { period: "", dept: "" }, paginated: false, paramPrefix: "g" });
   const { filters } = listState;
 
-  const load = useCallback(async (refresh = false) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams();
-      if (filters.period) params.set("period", filters.period);
-      if (refresh) await fetchJson("/api/goals/refresh", { method: "POST", body: JSON.stringify({}) });
-      setData(await fetchJson<GoalsData>(`/api/goals?${params.toString()}`));
-      if (refresh) setTick((t) => t + 1);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [filters.period]);
-  useEffect(() => { void load(); }, [load]);
+  const params = new URLSearchParams({ refresh: String(tick) });
+  if (filters.period) params.set("period", filters.period);
+  const { data, error, phase, retry } = useDocumentRead<GoalsData>(`/api/goals?${params}`);
+  const loading = phase === "loading";
 
   const deptKeys = useMemo(() => data?.deptKeys ?? [], [data?.deptKeys]);
   const activeDept = filters.dept && deptKeys.includes(filters.dept) ? filters.dept : (deptKeys[0] ?? "");
   const editable = !!data?.editableDepts.includes(activeDept);
+  const canRefresh = !!data?.editableDepts.length && !writing;
+  const refreshScope = filters.period || "全部期间";
   const autoKeys = useMemo(() => new Set((data?.autoMetrics ?? []).map((m) => m.metricKey)), [data?.autoMetrics]);
 
   const metricOptions = useMemo(() => {
@@ -119,15 +111,39 @@ export default function GoalsClient() {
     ];
   }, [data?.autoMetrics, autoKeys]);
 
-  const submit = async () => {
-    const v = await form.validateFields();
+  const refreshActuals = async () => {
+    if (writeLock.current || !canRefresh) return;
+    writeLock.current = true;
+    setWriting("refresh"); setWriteResult(null);
     try {
+      const result = await postJson<{ scanned: number; updated: number; unavailable: number }>("/api/goals/refresh", filters.period ? { period: filters.period } : {});
+      if (!result || ![result.scanned, result.updated, result.unavailable].every(v => Number.isInteger(v) && v >= 0)) {
+        throw new Error("未收到有效回填回执，请先重新读取核对结果，勿重复提交");
+      }
+      setWriteResult({ type: "success", message: `${refreshScope}回填已完成：检查 ${result.scanned} 项，更新 ${result.updated} 项，来源未就绪 ${result.unavailable} 项。` });
+    } catch (e) {
+      setWriteResult({ type: "warning", message: `${refreshScope}回填未确认完成：${(e as Error).message}。请先重新读取核对，勿直接再次回填。` });
+    } finally {
+      // The write may have succeeded (or partially completed) even when its response was lost.
+      // Invalidating GETs never retries the mutation; its receipt remains visible if reading fails.
+      setTick(t => t + 1); setWriting(null); writeLock.current = false;
+    }
+  };
+
+  const submit = async () => {
+    if (writeLock.current || !drawer) return;
+    writeLock.current = true; setWriting("save");
+    let submitted = false;
+    try {
+      const v = await form.validateFields();
       if (drawer?.mode === "create") {
         const period = dayjsToPeriod(v.periodKind ?? "month", v.periodDate ?? null);
         if (!period) { message.error("期间必填"); return; }
+        submitted = true;
         await postJson("/api/goals", { period, metricKey: v.metricKey, direction: v.direction, note: v.note, deptKey: drawer.dept, targetValue: String(v.targetValue) });
         message.success("已创建目标");
       } else if (drawer?.mode === "edit") {
+        submitted = true;
         await patchJson(`/api/goals/${drawer.row.id}`, {
           targetValue: v.targetValue != null ? String(v.targetValue) : undefined,
           direction: v.direction,
@@ -139,10 +155,16 @@ export default function GoalsClient() {
       }
       setDrawer(null);
       form.resetFields();
-      setTick((t) => t + 1);
-      await load();
+      setWriteResult({ type: "success", message: "目标已保存；正在重新读取最新列表与摘要。" });
     } catch (e) {
-      message.error((e as Error).message);
+      // Form validation already renders field-level errors; do not turn it into an unhandled rejection.
+      if (submitted) {
+        message.error((e as Error).message);
+        setWriteResult({ type: "warning", message: `保存未确认完成：${(e as Error).message}。请先重新读取核对结果。` });
+      }
+    } finally {
+      if (submitted) setTick(t => t + 1);
+      setWriting(null); writeLock.current = false;
     }
   };
 
@@ -153,7 +175,7 @@ export default function GoalsClient() {
       render: (v: string, r) => (
         <Space size={4}>
           <span>{v}</span>
-          <Tooltip title={metricTooltip(r.metricKey) || r.metricKey}><InfoCircleOutlined style={{ color: "#8c8c8c" }} /></Tooltip>
+          <ContextHelp label={`查看${v}说明`} title={v} content={metricTooltip(r.metricKey) || r.metricKey} />
         </Space>
       ),
     },
@@ -166,8 +188,8 @@ export default function GoalsClient() {
     {
       title: "操作", key: "ops", width: 90, fixed: "right",
       render: (_, r) => (r.editable ? (
-        <Button size="small" onClick={() => {
-          form.setFieldsValue({ targetValue: Number(r.targetValue), direction: r.direction, note: r.note ?? "", actualValue: undefined, evidence: "" });
+        <Button size="small" disabled={!!writing} onClick={() => {
+          form.setFieldsValue({ targetValue: r.targetValue, direction: r.direction, note: r.note ?? "", actualValue: undefined, evidence: "" });
           setDrawer({ mode: "edit", row: r });
         }}>编辑</Button>
       ) : <Typography.Text type="secondary">只读</Typography.Text>),
@@ -195,9 +217,12 @@ export default function GoalsClient() {
       <Row justify="space-between" align="middle" style={{ marginBottom: 8 }}>
         <Col><Typography.Title level={4} style={{ margin: 0 }}>供应链目标</Typography.Title></Col>
         <Col>
-          <Space>
-            <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load(true)}>回填自动实际值</Button>
-            <Button type="primary" icon={<PlusOutlined />} disabled={!editable} onClick={() => {
+          <Space wrap>
+            <Popconfirm title="确认回填自动实际值？" description={`${refreshScope} · 所有可编辑部门（不限当前页签）；不覆盖手工值，来源失效时撤下旧自动值。`}
+              onConfirm={refreshActuals} okText="确认回填" cancelText="取消" disabled={!canRefresh}>
+              <Button icon={<ReloadOutlined />} loading={writing === "refresh"} disabled={!canRefresh}>回填自动实际值</Button>
+            </Popconfirm>
+            <Button type="primary" icon={<PlusOutlined />} disabled={!editable || !!writing} onClick={() => {
               form.resetFields();
               form.setFieldsValue({ periodKind: "month", direction: "up" });
               setDrawer({ mode: "create", dept: activeDept });
@@ -209,17 +234,20 @@ export default function GoalsClient() {
         summary="部门 = 角色（D61）；本部门可编辑，其他部门只读，管理员全部可编辑。"
         detail={<div>自动取值指标（库存占比 / 库存周转 / DIO / 账期达成率 / OTIF 等）从已登记读模型缓存取值，取不到留空不编造；手工填报实际值必须附证据说明并留审计。达成度：越高越好 = 实际 ÷ 目标，越低越好 = 目标 ÷ 实际。</div>}
       />
-      <LoadErrorAlert error={error} onRetry={() => void load()} subject="供应链目标" retrying={loading} />
+      {writeResult && <Alert type={writeResult.type} message={writeResult.message} showIcon style={{ marginBottom: 12 }} />}
+      <LoadErrorAlert error={error} onRetry={retry} subject="供应链目标" retrying={loading} />
       <GoalProgressCard refreshKey={tick} />
       <ListToolbar
         state={listState}
-        onExport={data ? onExport : undefined}
+        onExport={data && !writing ? onExport : undefined}
+        primaryActions={<Button size="small" loading={loading} disabled={!!writing} onClick={retry}>重新读取</Button>}
         extra={(
           <Space wrap>
-            <Segmented size="small" value={filterPeriod?.kind ?? periodKind} options={[{ value: "month", label: "月" }, { value: "quarter", label: "季" }]} onChange={(v) => { setPeriodKind(v as PeriodKind); listState.setFilter({ period: "" }); }} />
+            <Segmented size="small" disabled={!!writing} value={filterPeriod?.kind ?? periodKind} options={[{ value: "month", label: "月" }, { value: "quarter", label: "季" }]} onChange={(v) => { setPeriodKind(v as PeriodKind); listState.setFilter({ period: "" }); }} />
             <DatePicker
               size="small"
               allowClear
+              disabled={!!writing}
               picker={filterPeriod?.kind ?? periodKind}
               value={filterPeriod?.value ?? null}
               placeholder={(filterPeriod?.kind ?? periodKind) === "month" ? "期间（月）" : "期间（季）"}
@@ -241,16 +269,19 @@ export default function GoalsClient() {
         loading={loading}
         scroll={{ x: "max-content" }}
         pagination={false}
-        locale={{ emptyText: error ? "数据未加载" : "本部门在该期间尚未设置目标" }}
+        locale={{ emptyText: loading ? "正在读取目标…" : error ? "数据未加载" : "本部门在该期间尚未设置目标" }}
       />
       <Drawer
         title={drawer?.mode === "create" ? `设置目标 · ${roleLabel(drawer.dept)}` : drawer?.mode === "edit" ? `编辑 · ${drawer.row.metricLabel} ${drawer.row.period}` : ""}
         open={!!drawer}
-        onClose={() => setDrawer(null)}
+        onClose={() => { if (!writeLock.current) setDrawer(null); }}
+        closable={!writing}
+        maskClosable={!writing}
+        keyboard={!writing}
         width={520}
-        extra={<Button type="primary" onClick={submit}>保存</Button>}
+        extra={<Button type="primary" loading={writing === "save"} disabled={writing === "refresh"} onClick={submit}>保存</Button>}
       >
-        <Form form={form} layout="vertical" initialValues={{ direction: "up", periodKind: "month" }}>
+        <Form form={form} disabled={!!writing} layout="vertical" initialValues={{ direction: "up", periodKind: "month" }}>
           {drawer?.mode === "create" ? (
             <>
               <Form.Item label="期间" required>
@@ -288,13 +319,13 @@ export default function GoalsClient() {
             </>
           ) : null}
           <Form.Item name="targetValue" label="目标值" rules={[{ required: drawer?.mode === "create", message: "目标值必填" }]}>
-            <InputNumber style={{ width: "100%" }} precision={4} />
+            <InputNumber stringMode style={{ width: "100%" }} precision={4} />
           </Form.Item>
           <Form.Item name="direction" label="方向"><Select options={[{ value: "up", label: "↑ 越高越好" }, { value: "down", label: "↓ 越低越好" }]} /></Form.Item>
           <Form.Item name="note" label="备注"><Input.TextArea rows={2} maxLength={500} /></Form.Item>
           {drawer?.mode === "edit" ? (
             <>
-              <Form.Item name="actualValue" label="手工填报实际值（可选）"><InputNumber style={{ width: "100%" }} precision={4} /></Form.Item>
+              <Form.Item name="actualValue" label="手工填报实际值（可选）"><InputNumber stringMode style={{ width: "100%" }} precision={4} /></Form.Item>
               <Form.Item name="evidence" label="证据说明（填报实际值时必填）"><Input.TextArea rows={2} maxLength={500} /></Form.Item>
             </>
           ) : null}

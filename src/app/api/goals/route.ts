@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getFreshSessionUser, maskSensitive } from "@/server/core/dto";
 import { AUTO_METRIC_SOURCES, createGoal, getGoalsBlock, listGoals } from "@/server/modules/goals/service";
-import { errorResponse, guardRead, readJson } from "@/server/modules/master/common";
+import { ApiError, errorResponse, guardRead, readJson } from "@/server/modules/master/common";
 
 /**
  * D61 部门目标。
@@ -17,7 +17,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(maskSensitive(await getGoalsBlock(summaryUser), summaryUser.roles));
     }
     const user = await guardRead();
-    const period = sp.get("period") || undefined;
+    if (sp.getAll("period").length > 1) throw new ApiError(400, "期间只能选择一个");
+    const period = sp.get("period") ?? undefined;
     const list = await listGoals({ period, deptKey: sp.get("deptKey") || undefined }, user);
     // 金额型指标的实际值已在 service 按角色扣住（S1）；maskSensitive 是 R9 唯一收口的兜底，
     // 防止以后往 GoalRow 上挂 SENSITIVE_FIELDS 里的键时漏掉这条出口。

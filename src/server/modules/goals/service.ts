@@ -295,11 +295,12 @@ export interface ListGoalsArgs {
 }
 
 export async function listGoals(args: ListGoalsArgs, user: SessionUser, dbArg?: AnyDb): Promise<{ rows: GoalRow[]; deptKeys: string[]; editableDepts: string[] }> {
+  if (args.period !== undefined && !PERIOD_RE.test(args.period)) throw new ApiError(400, "期间格式须为 YYYY-MM（01–12月）或 YYYY-Q1 至 YYYY-Q4");
   const db = dbArg ?? (await getDbAsync());
   const scope = resolveDeptScope(user, args.deptKey ?? null);
   const clauses: SQL[] = [];
   if (scope.deptKeys) clauses.push(inArray(departmentGoals.deptKey, scope.deptKeys));
-  if (args.period && PERIOD_RE.test(args.period)) clauses.push(eq(departmentGoals.period, args.period));
+  if (args.period !== undefined) clauses.push(eq(departmentGoals.period, args.period));
   const rows: Raw[] = await db
     .select()
     .from(departmentGoals)
@@ -532,6 +533,7 @@ export async function refreshAutoActuals(
   dbArg?: AnyDb,
   opts?: { period?: string; actorId?: number; now?: Date; /** 只回填这些部门（页面刷新按触发人可编辑部门限定；任务缺省全部） */ deptKeys?: readonly string[] },
 ): Promise<RefreshAutoSummary> {
+  if (opts?.period !== undefined && !PERIOD_RE.test(opts.period)) throw new ApiError(400, "期间格式须为 YYYY-MM（01–12月）或 YYYY-Q1 至 YYYY-Q4");
   const db = dbArg ?? (await getDbAsync());
   const now = opts?.now ?? new Date();
   const clauses: SQL[] = [inArray(departmentGoals.metricKey, AUTO_METRIC_SOURCES.map((s) => s.metricKey))];
