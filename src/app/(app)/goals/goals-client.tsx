@@ -16,7 +16,7 @@ import { fetchJson, patchJson, postJson } from "@/components/fetchJson";
 import CaliberNote from "@/components/CaliberNote";
 import { GOAL_SOURCE, goalSourceKey, roleLabel } from "@/components/dictionary";
 import { exportCsv } from "@/components/exportCsv";
-import { formatQty } from "@/components/format";
+import { formatMetricValue } from "@/components/format";
 import ListToolbar from "@/components/ListToolbar";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
 import { METRICS, metricTooltip } from "@/components/metrics";
@@ -49,8 +49,6 @@ interface GoalsData {
   editableDepts: string[];
   autoMetrics: { metricKey: string; label: string; defaultDirection: "up" | "down" }[];
 }
-
-const UNIT_SUFFIX: Record<string, string> = { pct: "%", days: "天", qty: "", count: "", money: "元", ratio: "", minutes: "分", hours: "时" };
 
 /** 期间字符串 ↔ DatePicker：YYYY-MM 为月，YYYY-Qn 为季 */
 type PeriodKind = "month" | "quarter";
@@ -159,8 +157,8 @@ export default function GoalsClient() {
         </Space>
       ),
     },
-    { title: "目标", dataIndex: "targetValue", width: 110, align: "right", render: (v: string, r) => `${formatQty(v)}${UNIT_SUFFIX[r.unit ?? ""] ?? ""}` },
-    { title: "实际", dataIndex: "actualValue", width: 110, align: "right", render: (v: string | null, r) => (v == null ? (r.autoStatus === "withheld" ? "无权限" : "—") : `${formatQty(v)}${UNIT_SUFFIX[r.unit ?? ""] ?? ""}`) },
+    { title: "目标", dataIndex: "targetValue", width: 110, align: "right", render: (v: string, r) => formatMetricValue(v, r.unit) },
+    { title: "实际", dataIndex: "actualValue", width: 110, align: "right", render: (v: string | null, r) => (v == null ? (r.autoStatus === "withheld" ? "无权限" : "—") : formatMetricValue(v, r.unit)) },
     { title: "达成", key: "attain", width: 150, sorter: (a, b) => Number(a.attainment ?? -1) - Number(b.attainment ?? -1), render: (_, r) => attainTag(r) },
     { title: "方向", dataIndex: "direction", width: 100, render: (v: string) => (v === "up" ? "↑ 越高越好" : "↓ 越低越好") },
     { title: "来源", key: "src", width: 130, render: (_, r) => { const k = goalSourceKey(r.actualSource, r.autoStatus); return <Tag color={GOAL_SOURCE[k].color}>{GOAL_SOURCE[k].label}</Tag>; } },

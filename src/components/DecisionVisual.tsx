@@ -128,7 +128,8 @@ export default function DecisionVisual({
   const isReady = state === "ready";
   const isShowingData = Boolean(showTable && dataView);
   const contentHeight: number | string = fullscreen ? "calc(100vh - 230px)" : height;
-  const useNaturalHeight = fitContent && !fullscreen;
+  // 记录/表格在全屏也按内容撑开，否则长内容溢出固定画布并与限制说明重叠。
+  const useNaturalHeight = fitContent;
   const preserveCanvasHeight = isReady || state === "loading";
   const minimumContentHeight = preserveCanvasHeight
     ? contentHeight

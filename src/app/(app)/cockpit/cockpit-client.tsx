@@ -17,7 +17,7 @@ import { Alert, Button, Card, Col, Collapse, Row, Skeleton, Space, Statistic, Ta
 import type { ColumnsType } from "antd/es/table";
 import { useDocumentRead } from "@/components/useDocumentRead";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
-import { formatAsOf, formatCount, formatPct, formatQty, formatYuan } from "@/components/format";
+import { formatAsOf, formatCount, formatMetricValue, formatPct, formatQty, formatYuan } from "@/components/format";
 import { inventoryCoverMetricHref, todoCohortHref } from "@/lib/cockpit-navigation";
 import { GOAL_SOURCE, goalSourceKey, roleLabel, sourceStateColor, sourceStateLabel } from "@/components/dictionary";
 import type { Block, CockpitData, RedlineItem, SourceStatusRow } from "@/server/modules/report/cockpit";
@@ -401,8 +401,8 @@ export default function CockpitClient() {
                 { title: "部门", dataIndex: "deptKey", width: 90, fixed: "left", render: (v: string) => <a href={`/goals?g_dept=${v}`}>{roleLabel(v)}</a> },
                 { title: "指标", dataIndex: "metricLabel" },
                 { title: "期间", dataIndex: "period", width: 90 },
-                { title: "目标", dataIndex: "targetValue", align: "right", width: 90, render: (v: string, r) => `${formatQty(v)}${r.unit ?? ""}` },
-                { title: "实际", dataIndex: "actualValue", align: "right", width: 90, render: (v: string | null, r) => v == null ? <Typography.Text type="secondary">{r.autoStatus === "withheld" ? "无权限" : r.autoStatus === "unavailable" ? "来源未就绪" : "未填"}</Typography.Text> : `${formatQty(v)}${r.unit ?? ""}` },
+                { title: "目标", dataIndex: "targetValue", align: "right", width: 110, render: (v: string, r) => formatMetricValue(v, r.unit) },
+                { title: "实际", dataIndex: "actualValue", align: "right", width: 110, render: (v: string | null, r) => v == null ? <Typography.Text type="secondary">{r.autoStatus === "withheld" ? "无权限" : r.autoStatus === "unavailable" ? "来源未就绪" : "未填"}</Typography.Text> : formatMetricValue(v, r.unit) },
                 { title: "达成", dataIndex: "attained", width: 100, sorter: (a, b) => Number(a.attainment ?? -1) - Number(b.attainment ?? -1), render: (v: boolean | null, r) => v == null ? "—" : <Tag color={v ? "success" : "warning"}>{v ? "达成" : "未达"}{r.attainment ? ` ${r.attainment}%` : ""}</Tag> },
                 { title: "来源", key: "src", width: 110, render: (_, r) => { const k = goalSourceKey(r.actualSource, r.autoStatus); return <Tag color={GOAL_SOURCE[k].color}>{GOAL_SOURCE[k].label}</Tag>; } },
               ]} />

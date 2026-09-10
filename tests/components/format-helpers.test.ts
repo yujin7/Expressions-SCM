@@ -8,9 +8,22 @@
  * 这里只钉展示层：null 保持 "—"（不可评 ≠ 0%），以及 formatPct 的两种小数位契约。
  */
 import { describe, expect, it } from "vitest";
-import { formatAsOf, formatCount, formatPct, formatYuan } from "@/components/format";
+import { formatAsOf, formatCount, formatMetricValue, formatPct, formatYuan } from "@/components/format";
 
 describe("format：百分数与金额显示", () => {
+  it("目标单位按业务显示且不舍入、不二次换算比例、不把空值变0", () => {
+    expect(formatMetricValue("223344.5500", "money")).toBe("223344.55元");
+    expect(formatMetricValue("80.0000", "pct")).toBe("80%");
+    expect(formatMetricValue("0", "pct")).toBe("0%");
+    expect(formatMetricValue("0.83", "pct")).toBe("0.83%");
+    expect(formatMetricValue("-999999999999999.1234", "money")).toBe("-999999999999999.1234元");
+    expect(formatMetricValue("1.50", "days")).toBe("1.5天");
+    expect(formatMetricValue("1", "hours")).toBe("1小时");
+    expect(formatMetricValue("1", "minutes")).toBe("1分钟");
+    for (const unit of ["qty", "count", "ratio", null]) expect(formatMetricValue("1.25", unit)).toBe("1.25");
+    for (const value of [null, undefined, ""]) expect(formatMetricValue(value, "money")).toBe("—");
+    expect(formatMetricValue("1", "件")).toBe("1件");
+  });
   it("source instants use Shanghai while business dates remain dates, without guessing missing timezones", () => {
     expect(formatAsOf("2026-09-07T18:23:00Z")).toBe("2026-09-08 02:23");
     expect(formatAsOf("2026-09-08T00:00:00+08:00")).toBe("2026-09-08 00:00");

@@ -1,4 +1,5 @@
 import { shanghaiTimestampOf } from "@/server/core/business-day";
+import type { MetricUnit } from "@/components/metrics";
 
 /** 日期保留业务日；有时区的时刻按上海展示，未知/无时区时刻不猜测。 */
 export function formatAsOf(v: string | null | undefined): string {
@@ -19,6 +20,17 @@ export function formatQty(v: string | number | null | undefined): string {
   const s = String(v);
   if (!/^-?\d+(\.\d+)?$/.test(s)) return s;
   return s.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+}
+
+const METRIC_UNIT_SUFFIX: Record<MetricUnit, string> = {
+  pct: "%", days: "天", qty: "", count: "", money: "元", ratio: "", minutes: "分钟", hours: "小时",
+};
+
+/** 指标表格的精确展示：只去尾零、翻译单位，不压缩金额或换算百分数。 */
+export function formatMetricValue(v: string | number | null | undefined, unit: string | null | undefined): string {
+  if (v == null || v === "") return "—";
+  const suffix = unit && Object.hasOwn(METRIC_UNIT_SUFFIX, unit) ? METRIC_UNIT_SUFFIX[unit as MetricUnit] : unit ?? "";
+  return `${formatQty(v)}${suffix}`;
 }
 
 /** 生命周期标签 */
