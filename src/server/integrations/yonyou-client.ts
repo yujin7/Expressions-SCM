@@ -165,11 +165,14 @@ export class YonyouClient {
     );
     const envelope = asObject(payload, "envelope");
     const code = String(envelope.code ?? "");
-    // 用友成功码是 "00000"；部分接口成功时省略 code，故 code 为空且带 data 也视为成功
+    // 无状态码的兼容响应必须有对象 data；不能把空/错误信封回退成业务数据。
     if (code && code !== "00000") {
       throw new YonyouApiError(code, name);
     }
-    return asObject(envelope.data ?? envelope, "data");
+    if (envelope.success === false) {
+      throw new Error("用友响应明确标记失败，请核对接口契约与服务状态");
+    }
+    return asObject(code === "00000" ? envelope.data ?? envelope : envelope.data, "data");
   }
 
   /**

@@ -152,4 +152,42 @@ describe("用友运行时客户端", () => {
     const bizCall = seen.find((u) => u.includes("queryBalance"));
     expect(bizCall).toContain("access_token=tok-abc");
   });
+
+  it.each([
+    {},
+    { message: "RAW-SECRET-RESPONSE" },
+    { data: null },
+    { data: [] },
+    { data: "RAW-SECRET-RESPONSE" },
+    { code: "", message: "RAW-SECRET-RESPONSE" },
+    { success: false, data: { rows: [] } },
+    { code: "00000", success: false, data: {} },
+  ])("不把无成功证据或明确失败的响应当成已授权：%j", async (body) => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) =>
+      jsonResponse(String(input).includes("getAccessToken") ? TOKEN_OK : body));
+    const client = makeClient(fetchMock as unknown as typeof fetch);
+    await expect(client.callContract("分页查询当前租户组织架构")).rejects.toThrow();
+    const result = await client.probeApprovedContracts();
+    expect(result.every((row) => !row.granted)).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("RAW-SECRET-RESPONSE");
+  });
+
+  it.each([
+    { code: "00000", data: { rows: [] } },
+    { data: { rows: [] } },
+    { code: "", data: { rows: [] } },
+  ])("保留已支持的明确成功/无状态码但有data信封：%j", async (body) => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) =>
+      jsonResponse(String(input).includes("getAccessToken") ? TOKEN_OK : body));
+    await expect(makeClient(fetchMock as unknown as typeof fetch).callContract("分页查询当前租户组织架构"))
+      .resolves.toEqual({ rows: [] });
+  });
+
+  it("保留明确成功码的无data直包，但不推断其中记录语义", async () => {
+    const body = { code: "00000", recordList: [] };
+    const fetchMock = vi.fn(async (input: string | URL | Request) =>
+      jsonResponse(String(input).includes("getAccessToken") ? TOKEN_OK : body));
+    await expect(makeClient(fetchMock as unknown as typeof fetch).callContract("分页查询当前租户组织架构"))
+      .resolves.toEqual(body);
+  });
 });

@@ -81,6 +81,22 @@ async function seedActor() {
 }
 
 describe("用友只读观测同步", () => {
+  it.each([{}, { message: "SYNTH_VENDOR_PRIVATE" }, { success: false, data: {} }])(
+    "畸形或失败信封不生成观察、不推进同步水位：%j", async (body) => {
+      const { db, actorId } = await seedActor();
+      const { client } = clientReturning(body);
+      await expect(syncYonyouContract(db, {
+        client, actorId, contract: "存货成本查询", scopeKey: "invalid-envelope",
+      })).rejects.toThrow();
+      const [run] = await db.select().from(schema.integrationRuns);
+      expect(run).toMatchObject({ status: "failed", importJobId: null, sourceRows: 0, stagedRows: 0 });
+      expect(JSON.stringify(run)).not.toContain("SYNTH_VENDOR_PRIVATE");
+      expect(await db.select().from(schema.integrationCheckpoints)).toHaveLength(0);
+      expect(await db.select().from(schema.importJobs)).toHaveLength(0);
+      expect(await db.select().from(schema.stagingRows)).toHaveLength(0);
+    },
+  );
+
   it("vendor failure persists only code and recovery context; no checkpoint/job is invented", async () => {
     const { db, actorId } = await seedActor();
     const { client } = clientReturning({ code: "999998", message: "SYNTH_VENDOR_PRIVATE_UNLABELLED" });

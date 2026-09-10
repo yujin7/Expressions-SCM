@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { runYonyouPermissionProbe } from "@/jobs/probe-yonyou";
 import { YONYOU_READ_CONTRACTS } from "@/server/integrations/yonyou-contracts";
-import { YonyouApiError } from "@/server/integrations/yonyou-client";
+import { YonyouApiError, YonyouClient } from "@/server/integrations/yonyou-client";
 
 const env = {
   NODE_ENV: "test",
@@ -17,6 +17,25 @@ const env = {
 } satisfies NodeJS.ProcessEnv;
 
 describe("用友只读权限探针", () => {
+  it("真实客户端收到八个空响应时不能宣称8/8授权成功", async () => {
+    const client = new YonyouClient({
+      appKey: env.YY_APP_KEY, appSecret: env.YY_APP_SECRET,
+      tenantId: env.YY_TENANT_ID, orgId: env.YY_ORG_ID,
+      productProfile: "c4", approvedApiContracts: YONYOU_READ_CONTRACTS.map(c => c.name),
+      allowedHosts: ["c4.yonyoucloud.com"], baseUrl: env.YY_BASE_URL, tokenUrl: env.YY_TOKEN_URL,
+    }, {
+      retries: 0,
+      dnsLookup: async () => [{ address: "121.199.0.1", family: 4 }],
+      fetchImpl: vi.fn(async (input) => Response.json(String(input).includes("getAccessToken")
+        ? { code: "00000", data: { access_token: "TOKEN-MUST-NOT-LEAK", expire: 7200 } }
+        : {})),
+    });
+    const result = await runYonyouPermissionProbe({ env, client });
+    expect(result).toMatchObject({ s: "partial", a: "validated", p: 0, t: 8, w: false });
+    expect(result.r).toEqual(Array(8).fill("unexpected_response"));
+    expect(JSON.stringify(result)).not.toContain("TOKEN-MUST-NOT-LEAK");
+  });
+
   it("逐条测量 8 个只读契约，仅返回紧凑安全证据", async () => {
     const client = {
       getAccessToken: vi.fn(async () => "TOKEN-MUST-NOT-LEAK"),
