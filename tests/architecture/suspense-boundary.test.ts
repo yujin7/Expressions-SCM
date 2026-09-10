@@ -51,11 +51,19 @@ function resolveSpec(spec: string, fromDir: string): string | null {
 function runtimeDependencies(source: string): string[] {
   const ast = ts.createSourceFile("consumer.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   return ast.statements.flatMap(statement => {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) return [];
-    const clause = statement.importClause;
-    if (clause?.isTypeOnly) return [];
-    if (clause && !clause.name && clause.namedBindings && ts.isNamedImports(clause.namedBindings)
-      && clause.namedBindings.elements.every(element => element.isTypeOnly)) return [];
+    if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) return [];
+    if (!statement.moduleSpecifier || !ts.isStringLiteral(statement.moduleSpecifier)) return [];
+    if (ts.isImportDeclaration(statement)) {
+      const clause = statement.importClause;
+      if (clause?.isTypeOnly) return [];
+      if (clause && !clause.name && clause.namedBindings && ts.isNamedImports(clause.namedBindings)
+        && clause.namedBindings.elements.length > 0 && clause.namedBindings.elements.every(element => element.isTypeOnly)) return [];
+    } else {
+      if (statement.isTypeOnly) return [];
+      const clause = statement.exportClause;
+      if (clause && ts.isNamedExports(clause) && clause.elements.length > 0
+        && clause.elements.every(element => element.isTypeOnly)) return [];
+    }
     const spec = statement.moduleSpecifier.text;
     return spec.startsWith(".") || spec.startsWith("@/components/") ? [spec] : [];
   });
@@ -85,6 +93,15 @@ function allPageFiles(dir: string, out: string[] = []): string[] {
 }
 
 describe("架构护栏：Suspense 边界", () => {
+  it("follows runtime re-exports while ignoring erased type re-exports", () => {
+    expect(runtimeDependencies(`
+      export type { ListState } from './types';
+      export { type State } from './more-types';
+      export { useListState } from './list';
+      export { type State, Toolbar } from './mixed-exports';
+      export * from './all';
+    `)).toEqual(['./list', './mixed-exports', './all']);
+  });
   it("still detects real list hooks without treating a typed shared toolbar as a hook caller", () => {
     expect(touchesHook(path.join(APP, "master/supplier/supplier-client.tsx"))).toBe(true);
     expect(touchesHook(path.join(SRC, "components/CrudTable.tsx"))).toBe(false);

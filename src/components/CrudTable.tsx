@@ -241,7 +241,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
           defaultValue={listState ? listState.filters.q ?? "" : initialQuery}
           allowClear
           placeholder={searchPlaceholder ?? "搜索编码/名称"}
-          style={{ width: 280 }}
+          style={{ width: 280, maxWidth: "100%", minWidth: 0 }}
           onSearch={(value) => {
             if (listState) { listState.setFilter({ q: value.trim() }); return; }
             setQ(value.trim());

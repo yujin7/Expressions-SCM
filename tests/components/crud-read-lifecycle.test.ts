@@ -46,6 +46,11 @@ const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve()
 beforeEach(() => { hooks.md = true; extraProps = {}; hooks.cursor = 0; hooks.slots = []; hooks.effects = []; hooks.changed = false; detailMode = false; panelMode = false; panelId = 1; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
 afterEach(() => { for (const cleanup of hooks.cleanups.values()) cleanup(); hooks.cleanups.clear(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
+it("bounds the search control to its toolbar instead of overflowing a narrow padded surface", () => {
+  fetchMock.mockReturnValue(new Promise(() => {}));
+  expect(props("search").style).toMatchObject({ maxWidth: "100%", minWidth: 0 });
+});
+
 it("does not reserve an empty fixed action column for a read-only role", async () => {
   extraProps = { canEdit: () => false, columns: [{ title: "编码", dataIndex: "id" }] };
   fetchMock.mockResolvedValue(Response.json({ data: [{ id: 1 }], total: 1 })); render(); await flush();
