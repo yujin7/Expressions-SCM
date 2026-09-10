@@ -10,6 +10,8 @@ import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { fetchJson, postJson, putJson } from "./fetchJson";
 import { useDocumentRead } from "./useDocumentRead";
 import LoadErrorAlert from "./LoadErrorAlert";
+import ListToolbar from "./ListToolbar";
+import type { ListState } from "./useListState";
 
 export interface ListResponse<T> {
   data: T[];
@@ -36,6 +38,8 @@ export interface CrudTableProps<T extends { id: number }> {
   searchPlaceholder?: string;
   /** Initial deep-link search. Caller keys the table by this value when navigation changes it. */
   initialQuery?: string;
+  /** Optional shared URL state. Owns search, sort/filter query, pagination and density together. */
+  listState?: ListState<Record<string, string | undefined>>;
   /** 业务筛选器，展示在搜索框后、操作按钮前。 */
   toolbarFilters?: React.ReactNode;
   /** 除 q/page/pageSize 外传给列表 API 的筛选参数。 */
@@ -64,6 +68,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
     transformSubmit,
     searchPlaceholder,
     initialQuery = "",
+    listState,
     toolbarFilters,
     queryParams,
     modalWidth,
@@ -87,8 +92,8 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
   const previousQueryParamsKey = useRef(queryParamsKey);
   const content = useRef<HTMLDivElement>(null);
   const editRequest = useRef<AbortController | null>(null);
-  const effectivePage = previousQueryParamsKey.current !== queryParamsKey ? 1 : page;
-  const params = new URLSearchParams({ q, page: String(effectivePage), pageSize: String(pageSize) });
+  const effectivePage = listState?.page ?? (previousQueryParamsKey.current !== queryParamsKey ? 1 : page);
+  const params = new URLSearchParams(listState ? listState.queryString() : { q, page: String(effectivePage), pageSize: String(pageSize) });
   for (const [key, value] of Object.entries(JSON.parse(queryParamsKey) as Record<string, string>)) {
     if (value) params.set(key, value);
   }
@@ -125,6 +130,12 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
       const request = new AbortController();
       editRequest.current = request;
       setOpeningEditId(record.id);
+      const timeout = setTimeout(() => {
+        if (request.signal.aborted) return;
+        request.abort();
+        setOpeningEditId(null);
+        message.error("读取详情超时，请重新点击编辑");
+      }, 15_000);
       try {
         const completeRecord = loadDetailOnEdit
           ? await fetchJson<T>(`${apiPath}/${record.id}`, { signal: request.signal })
@@ -139,6 +150,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
       } catch (e) {
         if (!request.signal.aborted) message.error((e as Error).message);
       } finally {
+        clearTimeout(timeout);
         if (!request.signal.aborted) setOpeningEditId(null);
       }
     },
@@ -195,21 +207,22 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
     [columns, canEdit, rowActions, load, openEdit, openingEditId],
   );
 
-  return (
-    <div ref={content} tabIndex={-1}>
-      <Space className="crud-table__toolbar" wrap>
+  const searchControls = <>
         <SearchInput
-          defaultValue={initialQuery}
+          key={listState ? listState.filters.q ?? "" : undefined}
+          defaultValue={listState ? listState.filters.q ?? "" : initialQuery}
           allowClear
           placeholder={searchPlaceholder ?? "搜索编码/名称"}
           style={{ width: 280 }}
           onSearch={(value) => {
+            if (listState) { listState.setFilter({ q: value.trim() }); return; }
             setQ(value.trim());
             setPage(1);
           }}
         />
         {toolbarFilters}
-        <Space className="crud-table__toolbar-actions" wrap>
+      </>;
+  const actions = <Space className="crud-table__toolbar-actions" wrap>
           {toolbarActions?.(() => void load())}
           <Button icon={<ReloadOutlined />} onClick={() => void load()}>
             刷新
@@ -219,19 +232,23 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
               新建{entityName}
             </Button>
           )}
-        </Space>
-      </Space>
+        </Space>;
+
+  return (
+    <div ref={content} tabIndex={-1}>
+      {listState ? <ListToolbar state={listState} extra={searchControls} primaryActions={actions} /> :
+        <Space className="crud-table__toolbar" wrap>{searchControls}{actions}</Space>}
       <LoadErrorAlert error={loadError} subject={entityName} onRetry={load} retrying={loading} />
       <Table<T>
         {...tableProps}
         className={`crud-table${tableProps?.className ? ` ${tableProps.className}` : ""}`}
         rowKey="id"
-        size="middle"
+        size={listState?.tableSize ?? "middle"}
         columns={mergedColumns}
         dataSource={data}
         loading={loading}
         locale={{ ...tableProps?.locale, emptyText: loading ? "正在读取…" : loadError ? "本次数据未能读取，请重试" : tableProps?.locale?.emptyText ?? "暂无符合条件的记录" }}
-        pagination={valid ? {
+        pagination={valid ? listState ? listState.paginationProps({ total }) : {
           current: effectivePage,
           pageSize,
           total,

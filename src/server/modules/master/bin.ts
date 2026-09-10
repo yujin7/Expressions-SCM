@@ -23,12 +23,14 @@ function whereFor(args: { q: string; warehouseId?: number; kind?: string; active
   return clauses.length ? and(...clauses) : undefined;
 }
 
+export const BIN_SORT_KEYS = ["warehouseCode", "code", "name"] as const;
 export async function listBins(
-  args: { q: string; warehouseId?: number; kind?: string; active?: boolean; page: number; pageSize: number },
+  args: { q: string; warehouseId?: number; kind?: string; active?: boolean; page: number; pageSize: number; sort?: typeof BIN_SORT_KEYS[number]; order?: "asc" | "desc" },
   dbArg?: AnyDb,
 ) {
   const db = dbArg ?? (await getDbAsync());
   const where = whereFor(args);
+  const column = args.sort === "code" ? schema.bins.code : args.sort === "name" ? schema.bins.name : schema.warehouses.code;
   const [data, [{ total }]] = await Promise.all([
     db
       .select({
@@ -46,7 +48,7 @@ export async function listBins(
       .from(schema.bins)
       .innerJoin(schema.warehouses, eq(schema.bins.warehouseId, schema.warehouses.id))
       .where(where)
-      .orderBy(schema.warehouses.code, schema.bins.code)
+      .orderBy(args.order === "desc" ? sql`${column} desc nulls last` : sql`${column} asc nulls last`, schema.warehouses.code, schema.bins.code, schema.bins.id)
       .limit(args.pageSize)
       .offset((args.page - 1) * args.pageSize),
     db.select({ total: sql<number>`count(*)::int` }).from(schema.bins).where(where),

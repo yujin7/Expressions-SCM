@@ -1,10 +1,13 @@
 import React, { isValidElement, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import CrudTable from "@/components/CrudTable";
+import { WarehousePanoramaDrawer } from "@/app/(app)/master/warehouse/warehouse-client";
 
 const hooks = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false,
   form: { resetFields: vi.fn(), setFieldsValue: vi.fn() }, message: { error: vi.fn(), success: vi.fn() } }));
-vi.mock("antd", () => ({ App: { useApp: () => ({ message: hooks.message }) }, Button: "button", Form: Object.assign("form", { useForm: () => [hooks.form] }), Modal: "modal", Space: "space", Table: "table" }));
+vi.mock("antd", () => ({ App: { useApp: () => ({ message: hooks.message }) }, Button: "button", Form: Object.assign("form", { useForm: () => [hooks.form] }), Modal: "modal", Space: "space", Table: "table",
+  Drawer: "drawer", Descriptions: Object.assign("descriptions", { Item: "description-item" }), Skeleton: "skeleton", Tag: "tag", Typography: { Text: "text" } }));
+vi.mock("@/components/ListToolbar", () => ({ default: "list-toolbar" }));
 vi.mock("@/components/SearchInput", () => ({ default: "search" }));
 vi.mock("@/components/LoadErrorAlert", () => ({ default: "read-error" }));
 vi.mock("@ant-design/icons", () => ({ PlusOutlined: "plus", ReloadOutlined: "reload" }));
@@ -28,15 +31,17 @@ type Node = React.ReactElement<Record<string, unknown> & { children?: ReactNode 
 const nodes = (v: ReactNode): Node[] => Array.isArray(v) ? v.flatMap(nodes) : isValidElement<Node["props"]>(v) ? [v, ...nodes(v.props.children)] : [];
 const fetchMock = vi.fn<typeof fetch>();
 let detailMode = false;
+let panelMode = false;
+let panelId: number | null = 1;
 function render() { for (let i = 0; i < 10; i++) { hooks.cursor = 0; hooks.changed = false;
-  const tree = CrudTable({ entityName: "SKU", apiPath: "/api/master/sku", columns: [], formItems: () => null, loadDetailOnEdit: detailMode });
+  const tree = panelMode ? WarehousePanoramaDrawer({ id: panelId, onClose: () => {} }) : CrudTable({ entityName: "SKU", apiPath: "/api/master/sku", columns: [], formItems: () => null, loadDetailOnEdit: detailMode });
   for (const effect of hooks.effects.splice(0)) effect(); if (!hooks.changed) return tree;
 } throw new Error("render did not settle"); }
 const props = (type: string) => nodes(render()).find(n => n.type === type)!.props;
 const search = (q: string) => { (props("search").onSearch as (v: string) => void)(q); render(); };
 const rows = () => props("table").dataSource;
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); render(); };
-beforeEach(() => { hooks.cursor = 0; hooks.slots = []; hooks.effects = []; hooks.changed = false; detailMode = false; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
+beforeEach(() => { hooks.cursor = 0; hooks.slots = []; hooks.effects = []; hooks.changed = false; detailMode = false; panelMode = false; panelId = 1; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
 afterEach(() => { for (const cleanup of hooks.cleanups.values()) cleanup(); hooks.cleanups.clear(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 it("cancels an old list request and refuses its late success", async () => {
@@ -75,4 +80,44 @@ it("a late detail response cannot overwrite the next record's edit form", async 
   await pending; await flush();
   expect(hooks.form.setFieldsValue).toHaveBeenCalledOnce();
   expect(hooks.message.error).not.toHaveBeenCalled();
+});
+
+const panorama = (id: number) => ({ warehouse: { id, code: `WH-${id}`, name: "合成仓", accountingMode: "realtime", kind: "finished", regionCode: "CN" }, totals: { total: "0", skuCount: 0 }, topStock: [], recentLedger: [], batches: [], snapDates: [] });
+it("warehouse panorama withdraws the previous identity, refuses late success and aborts on close", async () => {
+  panelMode = true;
+  const old = Promise.withResolvers<Response>();
+  fetchMock.mockReturnValueOnce(old.promise).mockResolvedValueOnce(Response.json(panorama(2)));
+  render(); panelId = 2; render(); await flush();
+  expect(props("drawer").title).toBe("仓库 360 — WH-2 合成仓");
+  old.resolve(Response.json(panorama(1))); await flush();
+  expect(props("drawer").title).toBe("仓库 360 — WH-2 合成仓");
+  panelId = null; render(); expect(props("drawer").title).toBe("仓库 360"); expect(props("drawer").open).toBe(false);
+  expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true);
+});
+it("warehouse failure is not an endless skeleton; retry reads the same warehouse", async () => {
+  panelMode = true;
+  fetchMock.mockRejectedValueOnce(new Error("offline")); render(); await flush();
+  expect(props("read-error").error).toBe("网络连接异常，未能获取服务器响应"); expect(nodes(render()).some(n => n.type === "skeleton")).toBe(false);
+  fetchMock.mockResolvedValueOnce(Response.json(panorama(1))); (props("read-error").onRetry as () => void)(); render(); await flush();
+  expect(props("read-error").error).toBeNull(); expect(props("drawer").title).toBe("仓库 360 — WH-1 合成仓");
+  expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/master/warehouse/1/panorama", "/api/master/warehouse/1/panorama"]);
+});
+it("warehouse timeout and malformed or mismatched identity are explicit errors, not empty stock", async () => {
+  panelMode = true; fetchMock.mockReturnValueOnce(new Promise(() => {})); render();
+  await vi.advanceTimersByTimeAsync(15_000); await flush(); expect(props("read-error").error).toContain("超时");
+  fetchMock.mockResolvedValueOnce(Response.json(panorama(9))); (props("read-error").onRetry as () => void)(); render(); await flush();
+  expect(props("read-error").error).toContain("不一致"); expect(props("drawer").title).toBe("仓库 360");
+});
+it("shared edit detail timeout unlocks editing and rejects a late response", async () => {
+  detailMode = true;
+  const held = Promise.withResolvers<Response>();
+  fetchMock.mockResolvedValueOnce(Response.json({ data: [{ id: 1 }], total: 1 })).mockReturnValueOnce(held.promise);
+  render(); await flush();
+  const columns = props("table").columns as { render?: (_: unknown, row: { id: number }) => ReactNode }[];
+  const action = nodes(columns.at(-1)!.render!(undefined, { id: 1 })).find(n => n.type === "button")!;
+  const pending = (action.props.onClick as () => Promise<void>)();
+  await vi.advanceTimersByTimeAsync(15_000); await flush();
+  expect(hooks.message.error).toHaveBeenCalledWith("读取详情超时，请重新点击编辑");
+  held.resolve(Response.json({ id: 1, name: "late" })); await pending; await flush();
+  expect(hooks.form.setFieldsValue).not.toHaveBeenCalled();
 });

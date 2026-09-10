@@ -13,9 +13,13 @@ function buildWhere(q: string) {
   return q ? or(ilike(schema.suppliers.code, `%${q}%`), ilike(schema.suppliers.name, `%${q}%`)) : undefined;
 }
 
-export async function listSuppliers(q: string, page: number, pageSize: number, selectedValues?: SelectedOptionValue[]) {
+export const SUPPLIER_SORT_KEYS = ["code", "name", "licenseExpiry"] as const;
+export async function listSuppliers(q: string, page: number, pageSize: number, selectedValues?: SelectedOptionValue[], options?: {
+  sort?: typeof SUPPLIER_SORT_KEYS[number]; order?: "asc" | "desc"; status?: string;
+}) {
   const db = await getDbAsync();
-  const where = and(buildWhere(q), selectedOptionsPredicate(selectedValues, {
+  const sortColumn = schema.suppliers[options?.sort ?? "code"];
+  const where = and(buildWhere(q), options?.status ? eq(schema.suppliers.status, options.status as typeof schema.supplierStatusEnum.enumValues[number]) : undefined, selectedOptionsPredicate(selectedValues, {
     id: schema.suppliers.id, text: [schema.suppliers.code, schema.suppliers.name],
   }));
   const [rows, [{ total }]] = await Promise.all([
@@ -31,7 +35,7 @@ export async function listSuppliers(q: string, page: number, pageSize: number, s
       })
       .from(schema.suppliers)
       .where(where)
-      .orderBy(schema.suppliers.code)
+      .orderBy(options?.order === "desc" ? sql`${sortColumn} desc nulls last` : sql`${sortColumn} asc nulls last`, schema.suppliers.code, schema.suppliers.id)
       .limit(selectedValues === undefined ? pageSize : SELECTED_OPTIONS_LIMIT)
       .offset(selectedValues === undefined ? (page - 1) * pageSize : 0),
     db.select({ total: sql<number>`count(*)::int` }).from(schema.suppliers).where(where),

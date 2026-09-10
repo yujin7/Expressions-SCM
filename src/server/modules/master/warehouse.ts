@@ -13,8 +13,12 @@ function buildWhere(q: string) {
   return q ? or(ilike(schema.warehouses.code, `%${q}%`), ilike(schema.warehouses.name, `%${q}%`)) : undefined;
 }
 
-export async function listWarehouses(q: string, page: number, pageSize: number, selectedValues?: SelectedOptionValue[]) {
+export const WAREHOUSE_SORT_KEYS = ["code", "name", "regionCode"] as const;
+export async function listWarehouses(q: string, page: number, pageSize: number, selectedValues?: SelectedOptionValue[], options?: {
+  sort?: typeof WAREHOUSE_SORT_KEYS[number]; order?: "asc" | "desc";
+}) {
   const db = await getDbAsync();
+  const sortColumn = schema.warehouses[options?.sort ?? "code"];
   const where = and(buildWhere(q), selectedOptionsPredicate(selectedValues, {
     id: schema.warehouses.id, text: [schema.warehouses.code, schema.warehouses.name],
   }));
@@ -35,7 +39,7 @@ export async function listWarehouses(q: string, page: number, pageSize: number, 
       .from(schema.warehouses)
       .leftJoin(schema.suppliers, eq(schema.warehouses.supplierId, schema.suppliers.id))
       .where(where)
-      .orderBy(schema.warehouses.code)
+      .orderBy(options?.order === "desc" ? sql`${sortColumn} desc nulls last` : sql`${sortColumn} asc nulls last`, schema.warehouses.code, schema.warehouses.id)
       .limit(selectedValues === undefined ? pageSize : SELECTED_OPTIONS_LIMIT)
       .offset(selectedValues === undefined ? (page - 1) * pageSize : 0),
     db.select({ total: sql<number>`count(*)::int` }).from(schema.warehouses).where(where),

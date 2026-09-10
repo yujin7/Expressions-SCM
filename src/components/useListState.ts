@@ -44,6 +44,8 @@ export interface ListStateConfig<F extends Record<string, string | undefined>> {
   paginated?: boolean;
   /** 每页条数默认值（默认 50）；等于该值时不写入 URL */
   defaultPageSize?: number;
+  /** First-visit density; an explicitly saved preference still wins. */
+  defaultDensity?: Density;
   /**
    * URL 参数前缀——同一页面存在多个独立列表（每个 Tab 一份）时必填且互不相同，
    * 例如 prefix "fg" → 参数写作 fg_q / fg_page。不填=无前缀（单列表页，向后兼容）。
@@ -311,7 +313,7 @@ export function useListState<F extends Record<string, string | undefined>>(
   }, [currentQuery, persistedQuery, keys.last]);
 
   /* --- 密度（纯本地偏好） --- */
-  const [density, setDensityState] = useState<Density>("default");
+  const [density, setDensityState] = useState<Density>(cfg.defaultDensity ?? "default");
   useEffect(() => {
     if (typeof window === "undefined") return;
     const raw = window.localStorage.getItem(keys.density);

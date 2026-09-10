@@ -1,9 +1,6 @@
 import SupplierClient from "./supplier-client";
+import { Suspense } from "react";
 
-export default async function SupplierPage({ searchParams }: {
-  searchParams: Promise<{ q?: string | string[] }>;
-}) {
-  const { q } = await searchParams;
-  const initialQuery = (Array.isArray(q) ? q[0] ?? "" : q ?? "").trim();
-  return <SupplierClient initialQuery={initialQuery} />;
+export default function SupplierPage() {
+  return <Suspense fallback={<p>正在读取供应商…</p>}><SupplierClient /></Suspense>;
 }

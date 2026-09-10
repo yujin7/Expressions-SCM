@@ -5,6 +5,7 @@ import { Button, DatePicker, Drawer, Form, Input, InputNumber, Select, Tag, Typo
 import dayjs, { type Dayjs } from "dayjs";
 import AttachmentPanel from "@/components/AttachmentPanel";
 import CrudTable from "@/components/CrudTable";
+import { useListState } from "@/components/useListState";
 import Supplier360Drawer from "./supplier-360-drawer";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import {
@@ -26,7 +27,9 @@ interface SupplierRow {
   capacityValidUntil?: string | null;
 }
 
-export default function SupplierClient({ initialQuery = "" }: { initialQuery?: string }) {
+export default function SupplierClient() {
+  const list = useListState({ key: "master-supplier", defaults: { q: "", sort: "code", order: "asc", status: "" }, defaultPageSize: 20, defaultDensity: "middle" });
+  const sortOrder = (key: string) => list.filters.sort === key ? list.filters.order === "desc" ? "descend" as const : "ascend" as const : null;
   const me = useMe();
   const canWrite = hasAnyRole(me, "purchasing");
   const [attachSupplier, setAttachSupplier] = useState<SupplierRow | null>(null);
@@ -38,9 +41,13 @@ export default function SupplierClient({ initialQuery = "" }: { initialQuery?: s
         供应商
       </Typography.Title>
       <CrudTable<SupplierRow>
-        key={initialQuery}
-        initialQuery={initialQuery}
+        listState={list}
         loadDetailOnEdit
+        tableProps={{ onChange: (_page, filters, sorter, extra) => {
+          if (extra.action === "paginate") return;
+          const current = Array.isArray(sorter) ? sorter[0] : sorter;
+          list.setFilter({ sort: current.order ? String(current.columnKey) : "code", order: current.order === "descend" ? "desc" : "asc", status: String(filters.status?.[0] ?? "") });
+        } }}
         rowActions={(r) => (
           <>
             <Button type="link" size="small" onClick={() => setView360(r.id)}>
@@ -60,8 +67,8 @@ export default function SupplierClient({ initialQuery = "" }: { initialQuery?: s
         apiPath="/api/master/supplier"
         searchPlaceholder="搜索编码/名称"
         columns={[
-          { title: "编码", dataIndex: "code", width: 110, sorter: (a, b) => a.code.localeCompare(b.code) },
-          { title: "名称", dataIndex: "name", sorter: (a, b) => a.name.localeCompare(b.name) },
+          { title: "编码", key: "code", dataIndex: "code", width: 130, sorter: true, sortOrder: sortOrder("code") },
+          { title: "名称", key: "name", dataIndex: "name", sorter: true, sortOrder: sortOrder("name") },
           {
             title: "类型",
             dataIndex: "kinds",
@@ -71,17 +78,21 @@ export default function SupplierClient({ initialQuery = "" }: { initialQuery?: s
           { title: "联系人", dataIndex: "contact", width: 120 },
           {
             title: "营业执照到期日",
+            key: "licenseExpiry",
             dataIndex: "licenseExpiry",
             width: 140,
-            sorter: (a, b) => (a.licenseExpiry ?? "").localeCompare(b.licenseExpiry ?? ""),
+            sorter: true,
+            sortOrder: sortOrder("licenseExpiry"),
             render: (v: string | null) => v ?? "—",
           },
           {
             title: "状态",
+            key: "status",
             dataIndex: "status",
             width: 100,
             filters: Object.entries(SUPPLIER_STATUS_LABELS).map(([value, text]) => ({ value, text })),
-            onFilter: (value, row) => row.status === value,
+            filterMultiple: false,
+            filteredValue: list.filters.status ? [list.filters.status] : null,
             render: (v: string) => <Tag color={SUPPLIER_STATUS_COLORS[v]}>{SUPPLIER_STATUS_LABELS[v] ?? v}</Tag>,
           },
         ]}
