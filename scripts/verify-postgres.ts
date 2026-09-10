@@ -89,6 +89,8 @@ export const RECENT_PG_CONSTRAINTS = [
   ["qc_records", "fk_qc_record_quality_case", "FOREIGN KEY (quality_case_id) REFERENCES quality_cases(id)"],
   ["qc_records", "uq_qc_record_quality_case", "UNIQUE (quality_case_id)"],
   ["qc_records", "uq_qc_record_return_ct", "UNIQUE (return_ct_id)"],
+  ["qc_records", "uq_qc_record_sh", "UNIQUE (sh_id)"],
+  ["qc_lines", "uq_qc_line_receipt_line", "UNIQUE (qc_id, sh_line_id)"],
   ["notification_reads", "pk_notification_reads", "PRIMARY KEY (notification_id, user_id)"],
   ["notification_reads", "notification_reads_notification_id_notifications_id_fk", "FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE"],
   ["notification_reads", "notification_reads_user_id_users_id_fk", "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"],

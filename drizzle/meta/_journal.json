@@ -449,6 +449,13 @@
       "when": 1788895941690,
       "tag": "0063_supplier_capacity_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1789059143109,
+      "tag": "0064_qc_single_receipt",
+      "breakpoints": true
     }
   ]
 }

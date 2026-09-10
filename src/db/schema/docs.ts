@@ -292,6 +292,7 @@ export const qcRecords = pgTable("qc_records", {
   createdBy: integer("created_by").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
+  unique("uq_qc_record_sh").on(t.shId),
   unique("uq_qc_record_quality_case").on(t.qualityCaseId),
   unique("uq_qc_record_return_ct").on(t.returnCtId),
 ]);
@@ -303,7 +304,7 @@ export const qcLines = pgTable("qc_lines", {
   failQty: numeric("fail_qty", { precision: 14, scale: 4 }).notNull().default("0"),
   concessionQty: numeric("concession_qty", { precision: 14, scale: 4 }).notNull().default("0"), // 让步接收
   failHandling: qcHandlingEnum("fail_handling").notNull().default("pending"), // 退厂返工/让步/报废(红字)
-});
+}, (t) => [unique("uq_qc_line_receipt_line").on(t.qcId, t.shLineId)]);
 
 /* ── 采购退货单 CT（B9：库存−、PO 已收数回冲） ── */
 export const ctDocs = pgTable("ct_docs", {

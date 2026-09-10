@@ -1,7 +1,7 @@
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import {
    jgDocs, offsetPools, poDocs, poLines, qcLines, qcRecords,
-  shDocs, shLines, woLines,
+  shDocs, shLines, users, woLines,
 } from "@/db/schema";
 import { dAdd, dCmp, dDiv, dMul, dNeg, dQty, dSub, dZero } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
@@ -249,6 +249,13 @@ export async function approveSh(
 
 // ---------- QC 检验（一单一检；每个收货行必须完整三分且合计=实收） ----------
 
+/** Hold the current role through QC/inbound commit, not only at HTTP entry. */
+async function requireCurrentWarehouseActor(tx: AnyDb, user: SessionUser): Promise<void> {
+  const [current]: (typeof users.$inferSelect)[] = await tx.select().from(users).where(eq(users.id, user.id)).for("share");
+  if (!current?.active) throw new ApiError(403, "账号已停用或不存在，请重新登录核对权限");
+  requireAnyRole(current, "warehouse");
+}
+
 export async function createQc(
   user: SessionUser,
   input: unknown,
@@ -258,40 +265,42 @@ export async function createQc(
   const v = createQcSchema.parse(input);
   const db = await resolveDb(dbArg);
 
-  const [sh]: ShRow[] = await db.select().from(shDocs).where(eq(shDocs.id, v.shId));
-  if (!sh) throw new ApiError(404, `收货单不存在: #${v.shId}`);
-  if (sh.status !== "approved") throw new ApiError(409, `收货单须先审批方可检验，当前状态: ${sh.status}`);
-
-  const [dup]: { id: number }[] = await db
-    .select({ id: qcRecords.id })
-    .from(qcRecords)
-    .where(eq(qcRecords.shId, v.shId));
-  if (dup) throw new ApiError(409, `该收货单已有检验记录: qc#${dup.id}（一单一检）`);
-
-  const lineRows: ShLineRow[] = await db.select().from(shLines).where(eq(shLines.shId, v.shId));
-  const lineById = new Map(lineRows.map((l) => [l.id, l]));
-  const submittedIds = new Set<number>();
-  for (const l of v.lines) {
-    const shLine = lineById.get(l.shLineId);
-    if (!shLine) throw new ApiError(400, `检验行不属于该收货单: sh_line#${l.shLineId}`);
-    if (submittedIds.has(l.shLineId)) {
-      throw new ApiError(400, `同一收货行不可重复检验: sh_line#${l.shLineId}`);
-    }
-    submittedIds.add(l.shLineId);
-    const graded = dAdd(dAdd(l.passQty, l.failQty), l.concessionQty);
-    if (dCmp(graded, shLine.actualQty) !== 0) {
-      throw new ApiError(
-        400,
-        `检验数量必须完整覆盖实收: sh_line#${l.shLineId}（判定合计 ${graded} ≠ 实收 ${shLine.actualQty}）`,
-      );
-    }
-  }
-  const missingIds = lineRows.filter((l) => !submittedIds.has(l.id)).map((l) => l.id);
-  if (missingIds.length > 0) {
-    throw new ApiError(400, `检验必须覆盖全部收货行，缺少: ${missingIds.map((id) => `sh_line#${id}`).join("、")}`);
-  }
-
   return db.transaction(async (tx: AnyDb) => {
+    await requireCurrentWarehouseActor(tx, user);
+    // Serialize QC creation and inbound against this exact receipt. All facts
+    // used below are read after the lock, not from a stale pre-transaction check.
+    const [sh]: ShRow[] = await tx.select().from(shDocs).where(eq(shDocs.id, v.shId)).for("update");
+    if (!sh) throw new ApiError(404, `收货单不存在: #${v.shId}`);
+    if (sh.status !== "approved") throw new ApiError(409, `收货单须先审批方可检验，当前状态: ${sh.status}`);
+
+    const [dup]: { id: number }[] = await tx
+      .select({ id: qcRecords.id })
+      .from(qcRecords)
+      .where(eq(qcRecords.shId, v.shId));
+    if (dup) throw new ApiError(409, `该收货单已有检验记录: qc#${dup.id}（一单一检）`);
+
+    const lineRows: ShLineRow[] = await tx.select().from(shLines).where(eq(shLines.shId, v.shId)).orderBy(shLines.id).for("share");
+    const lineById = new Map(lineRows.map((l) => [l.id, l]));
+    const submittedIds = new Set<number>();
+    for (const l of v.lines) {
+      const shLine = lineById.get(l.shLineId);
+      if (!shLine) throw new ApiError(400, `检验行不属于该收货单: sh_line#${l.shLineId}`);
+      if (submittedIds.has(l.shLineId)) {
+        throw new ApiError(400, `同一收货行不可重复检验: sh_line#${l.shLineId}`);
+      }
+      submittedIds.add(l.shLineId);
+      const graded = dAdd(dAdd(l.passQty, l.failQty), l.concessionQty);
+      if (dCmp(graded, shLine.actualQty) !== 0) {
+        throw new ApiError(
+          400,
+          `检验数量必须完整覆盖实收: sh_line#${l.shLineId}（判定合计 ${graded} ≠ 实收 ${shLine.actualQty}）`,
+        );
+      }
+    }
+    const missingIds = lineRows.filter((l) => !submittedIds.has(l.id)).map((l) => l.id);
+    if (missingIds.length > 0) {
+      throw new ApiError(400, `检验必须覆盖全部收货行，缺少: ${missingIds.map((id) => `sh_line#${id}`).join("、")}`);
+    }
     const [qc]: QcRecordRow[] = await tx
       .insert(qcRecords)
       .values({ shId: v.shId, conclusion: v.conclusion ?? null, createdBy: user.id })
@@ -328,7 +337,8 @@ export async function confirmInbound(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
-      const [sh]: ShRow[] = await tx.select().from(shDocs).where(eq(shDocs.id, shId));
+      await requireCurrentWarehouseActor(tx, user);
+      const [sh]: ShRow[] = await tx.select().from(shDocs).where(eq(shDocs.id, shId)).for("update");
       if (!sh) throw new ApiError(404, "单据不存在");
       if (sh.status === "completed") throw new ApiError(409, "该收货单已入库，不可重复入库");
       if (sh.status !== "approved") throw new ApiError(409, `当前状态不可入库: ${sh.status}（须先审批）`);
