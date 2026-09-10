@@ -2,10 +2,11 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Col, Row, Segmented, Space, Statistic, Table, Tag, Typography } from "antd";
+import { Col, Grid, Row, Segmented, Space, Statistic, Table, Tag, Typography } from "antd";
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, ResponsiveContainer, Tooltip, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 import { SERIES_COLORS, VISUAL_COLOR } from "@/components/decision-visuals";
 import { formatPct } from "@/components/format";
+import { roleLabel } from "@/components/dictionary";
 import type { Block } from "@/server/modules/report/cockpit";
 import type { AlertLifecycleBlock, GoalHistoryBlock, GoalHistorySeries, SourceTrendBlock, TierCell, TierMigrationBlock, TodoCompletionStrictBlock, TodoCompletionStrictCell, TodoThroughputBlock } from "@/server/modules/report/cockpit-trends";
 import { metricLabel, Muted, sourceChartRows, TrendCard, useChartTheme } from "./shared";
@@ -42,8 +43,8 @@ export function TodoThroughputCard({ block }: { block: Block<TodoThroughputBlock
       grain="创建月 × 责任角色"
       unit="待办条数"
       height={320}
-      summary={d ? `近 6 个月（${d.months[0]} → ${d.months.at(-1)}）${role === "全部" ? "全部角色" : role}：${rows.map((r) => `${r.month.slice(5)} 完成率 ${formatPct(r.completionRate, 1)}`).join("，")}` : "无数据"}
-      extra={d ? <Segmented size="small" options={["全部", ...d.roles]} value={role} onChange={(v) => setRole(String(v))} /> : undefined}
+      summary={d ? `近 6 个月（${d.months[0]} → ${d.months.at(-1)}）${role === "全部" ? "全部角色" : roleLabel(role)}：${rows.map((r) => `${r.month.slice(5)} 完成率 ${formatPct(r.completionRate, 1)}`).join("，")}` : "无数据"}
+      extra={d ? <Segmented size="small" options={[{ label: "全部", value: "全部" }, ...d.roles.map(r => ({ label: roleLabel(r), value: r }))]} value={role} onChange={(v) => setRole(String(v))} /> : undefined}
       dataView={d ? (
         <Table rowKey="month" size="small" pagination={false} dataSource={rows} columns={[
           { title: "月份", dataIndex: "month", width: 90 },
@@ -152,7 +153,7 @@ function AttainmentSpark({ s }: { s: GoalHistorySeries }) {
   const has = data.some((p) => p.attainment != null);
   if (!has) return <Typography.Text type="secondary" style={{ fontSize: 12 }}>无实际值</Typography.Text>;
   return (
-    <div role="img" aria-label={`${s.deptKey} ${s.metricLabel} 达成度：${data.map((p) => `${p.period} ${p.attainment ?? "—"}%`).join("，")}`} style={{ width: 140, height: 36 }}>
+    <div role="img" aria-label={`${roleLabel(s.deptKey)} ${s.metricLabel} 达成度：${data.map((p) => `${p.period} ${p.attainment == null ? "无可评估值" : `${p.attainment}%`}`).join("，")}`} style={{ width: 140, maxWidth: "100%", height: 36 }}>
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={data} margin={{ top: 4, right: 4, left: 4, bottom: 4 }}>
           <YAxis hide domain={[0, "auto"]} />
@@ -163,8 +164,23 @@ function AttainmentSpark({ s }: { s: GoalHistorySeries }) {
   );
 }
 
+function GoalPeriodTags({ s }: { s: GoalHistorySeries }) {
+  return <Space wrap size={[4, 4]}>{s.points.map(p => (
+    <Tag key={p.period} style={{ marginInlineEnd: 0, whiteSpace: "normal" }} title={p.unavailableReason ?? undefined} color={p.attained == null ? "default" : p.attained ? "success" : "warning"}>
+      {p.period.slice(2)} {p.valueWithheld ? "无权限" : p.unavailableReason ? "缺逐期依据" : p.attainment == null ? (p.actualValue == null ? "未填" : "—") : `${p.attainment}%`}{p.actualSource === "manual" ? "·手" : ""}
+    </Tag>
+  ))}</Space>;
+}
+
+function GoalEvaluatedCount({ s }: { s: GoalHistorySeries }) {
+  const known = s.points.filter(p => p.attained != null);
+  return known.length ? <span>{known.filter(p => p.attained).length} / {known.length}</span>
+    : <Typography.Text type="secondary">{s.points.length && s.points.every(p => p.valueWithheld) ? "无权限" : "无可评估期间"}</Typography.Text>;
+}
+
 export function GoalHistoryCard({ block }: { block: Block<GoalHistoryBlock> }) {
   const d = block.data;
+  const desktop = Grid.useBreakpoint().md === true;
   return (
     <TrendCard
       block={block}
@@ -178,23 +194,31 @@ export function GoalHistoryCard({ block }: { block: Block<GoalHistoryBlock> }) {
       height={200}
       summary={d ? `${d.series.length} 条部门×指标序列，每条最多 ${d.periodsPerSeries} 期；只读历史登记值，不回填` : "无数据"}
     >
-      {(data) => (
+      {(data) => desktop ? (
         <Table<GoalHistorySeries> rowKey={(r) => `${r.deptKey}|${r.metricKey}|${r.periodKind}`} size="small" pagination={false} scroll={{ x: 760 }} dataSource={data.series} columns={[
-          { title: "部门", dataIndex: "deptKey", width: 90 },
+          { title: "部门", dataIndex: "deptKey", width: 90, render: (v: string) => roleLabel(v) },
           { title: "指标", dataIndex: "metricLabel", width: 160 },
           { title: "期间", dataIndex: "periodKind", width: 60, render: (v: string) => v === "month" ? "月" : "季" },
           { title: "达成度走势", key: "spark", width: 160, render: (_, r) => <AttainmentSpark s={r} /> },
-          { title: "各期", key: "pts", render: (_, r) => (
-            <Space wrap size={[4, 4]}>
-              {r.points.map((p) => (
-                <Tag key={p.period} title={p.unavailableReason ?? undefined} color={p.attained == null ? "default" : p.attained ? "success" : "warning"}>
-                  {p.period.slice(2)} {p.valueWithheld ? "无权限" : p.unavailableReason ? "缺逐期依据" : p.attainment == null ? (p.actualValue == null ? "未填" : "—") : `${p.attainment}%`}{p.actualSource === "manual" ? "·手" : ""}
-                </Tag>
-              ))}
-            </Space>
-          ) },
-          { title: "达成次数", key: "n", width: 90, align: "right", render: (_, r) => `${r.points.filter((p) => p.attained).length} / ${r.points.filter((p) => p.attained != null).length}` },
+          { title: "各期", key: "pts", render: (_, r) => <GoalPeriodTags s={r} /> },
+          { title: "达成次数", key: "n", width: 110, align: "right", render: (_, r) => <GoalEvaluatedCount s={r} /> },
         ]} />
+      ) : (
+        <div role="list" aria-label="部门目标历史" style={{ display: "grid", gap: 12 }}>
+          {data.series.map(s => (
+            <div role="listitem" key={`${s.deptKey}|${s.metricKey}|${s.periodKind}`} aria-label={`${roleLabel(s.deptKey)} ${s.metricLabel}`} style={{ minWidth: 0, paddingBottom: 12, borderBottom: "1px solid var(--ant-color-border-secondary, #f0f0f0)" }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+                <Typography.Text strong style={{ overflowWrap: "anywhere" }}>{roleLabel(s.deptKey)} · {s.metricLabel}</Typography.Text>
+                <Typography.Text type="secondary">{s.periodKind === "month" ? "月度" : "季度"}</Typography.Text>
+              </div>
+              <GoalPeriodTags s={s} />
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginTop: 6, fontSize: 12 }}>
+                <span>达成次数：<GoalEvaluatedCount s={s} /></span>
+                {s.points.some(p => p.attainment != null) ? <AttainmentSpark s={s} /> : null}
+              </div>
+            </div>
+          ))}
+        </div>
       )}
     </TrendCard>
   );
@@ -225,7 +249,7 @@ export function TodoCompletionStrictCard({ block }: { block: Block<TodoCompletio
       extra={<Segmented size="small" options={[{ label: "按月", value: "month" }, { label: "按角色", value: "role" }]} value={view} onChange={(v) => setView(v as StrictView)} />}
       dataView={d ? (
         <Table<TodoCompletionStrictCell> rowKey="key" size="small" pagination={false} scroll={{ x: 760 }} dataSource={rows} columns={[
-          { title: view === "month" ? "月份" : "角色", dataIndex: "key", width: 110 },
+          { title: view === "month" ? "月份" : "角色", dataIndex: "key", width: 110, render: (v: string) => view === "month" ? v : roleLabel(v) },
           { title: "总数", dataIndex: "total", align: "right" },
           { title: "已完成", dataIndex: "done", align: "right" },
           { title: "已取消", dataIndex: "cancelled", align: "right" },
@@ -263,9 +287,9 @@ export function TodoCompletionStrictCard({ block }: { block: Block<TodoCompletio
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={rows} margin={{ top: 8, right: 12, left: 0, bottom: 0 }} barCategoryGap="30%">
                 <CartesianGrid stroke={t.grid} strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="key" tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} tickFormatter={(v: string) => (view === "month" ? v.slice(2) : v)} />
+                <XAxis dataKey="key" tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} tickFormatter={(v: string) => (view === "month" ? v.slice(2) : roleLabel(v))} />
                 <YAxis domain={[0, 100]} tick={{ fill: t.axis, fontSize: 11 }} stroke={t.grid} width={40} />
-                <Tooltip {...t.tooltip} cursor={{ fill: t.grid, opacity: 0.4 }} formatter={(v) => formatPct(typeof v === "number" ? v : null, 1)} />
+                <Tooltip {...t.tooltip} cursor={{ fill: t.grid, opacity: 0.4 }} labelFormatter={(v) => view === "month" ? String(v) : roleLabel(String(v))} formatter={(v) => formatPct(typeof v === "number" ? v : null, 1)} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Bar dataKey="completionRate" name="宽口径" fill={VISUAL_COLOR.muted} radius={[4, 4, 0, 0]} />
                 <Bar dataKey="completionRateStrict" name="严口径" fill={VISUAL_COLOR.primary} radius={[4, 4, 0, 0]} />
