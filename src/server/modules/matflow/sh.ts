@@ -46,6 +46,16 @@ const NON_SPARE_TYPES = ["normal", "rework"] as const;
 // ---------- 累计校验（《02》§3：分母 = JG数量 − 已判不合格 + 容差） ----------
 
 /**
+ * SH审批改变正常累计，QC改变不合格分母：两者都在本单SH锁后锁共同JG，
+ * 直到各自事务提交。不能仅锁SH，也不能用可并行的FOR SHARE保护累计。
+ * 这里只保源存在；已批SH的检验事实不因JG后来关闭而禁止登记。
+ */
+async function lockJgReceiptAggregate(tx: AnyDb, jgId: number): Promise<void> {
+  const [jg]: { id: number }[] = await tx.select({ id: jgDocs.id }).from(jgDocs).where(eq(jgDocs.id, jgId)).for("update");
+  if (!jg) throw new ApiError(500, `收货单挂空 JG: #${jgId}`);
+}
+
+/**
  * jg 源 SH 的累计口径（excludeShId=排除审批中的本单）：
  * normalCum = 已生效 SH 正常行实收合计；failCum = 已检 SH（正常+返工行）不合格合计。
  */
@@ -239,8 +249,8 @@ export async function approveSh(
 
       // 累计校验兜底重查（创建后可能有其他 SH 先行生效；本单已置 approved 故排除自身再加回）
       if (doc.sourceType === "jg") {
-        const [jg]: (typeof jgDocs.$inferSelect)[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, doc.sourceId));
-        if (!jg) throw new ApiError(500, `收货单挂空 JG: #${doc.sourceId}`);
+        await lockJgReceiptAggregate(tx, doc.sourceId);
+        const jg = await getJgForMatflow(tx, doc.sourceId);
         const rows: { qty: string }[] = await tx
           .select({ qty: shLines.actualQty })
           .from(shLines)
@@ -274,6 +284,7 @@ export async function createQc(
     const [sh]: ShRow[] = await tx.select().from(shDocs).where(eq(shDocs.id, v.shId)).for("update");
     if (!sh) throw new ApiError(404, `收货单不存在: #${v.shId}`);
     if (sh.status !== "approved") throw new ApiError(409, `收货单须先审批方可检验，当前状态: ${sh.status}`);
+    if (sh.sourceType === "jg") await lockJgReceiptAggregate(tx, sh.sourceId);
 
     const [dup]: { id: number }[] = await tx
       .select({ id: qcRecords.id })
