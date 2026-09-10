@@ -103,7 +103,9 @@ describe("契约 → 下游读模型登记表", () => {
     expect(orphans.filter((c) => c.connector === "yy"), "用友八条契约当前全部无下游读模型").toHaveLength(
       YONYOU_READ_CONTRACTS.length,
     );
-    expect(orphans.map((c) => c.key)).toContain("item-master");
+    expect(orphans.map((c) => c.key)).not.toContain("item-master");
+    expect(CONTRACT_CONSUMERS.find(c => c.key === "item-master")?.consumers).toEqual(["master/sku-source-status.ts"]);
+    expect(READ_MODEL_LABELS["master/sku-source-status.ts"]).toBe("商品来源状态人工核对");
     expect(orphans.map((c) => c.key)).toContain("inbound-receipts-daily");
   });
 

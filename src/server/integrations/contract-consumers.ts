@@ -16,6 +16,7 @@
 export const READ_MODEL_LABELS: Readonly<Record<string, string>> = {
   "master/platform-sku-claim.ts": "平台身份认领校验",
   "master/sales-amount.ts": "销售金额",
+  "master/sku-source-status.ts": "商品来源状态人工核对",
   "report/bonded-outbound.ts": "保税出库",
   "report/channel-observation.ts": "渠道观察",
   "report/commerce-identity-coverage.ts": "商品身份覆盖",
@@ -65,7 +66,7 @@ export const CONTRACT_CONSUMERS: readonly ContractConsumerEntry[] = [
   { connector: "jdy", key: "pdd-order-observation", label: "拼多多订单", consumers: ["report/external-velocity.ts"] },
   { connector: "jdy", key: "vip-shop-trading-observation", label: "唯品会店铺交易", consumers: ["master/sales-amount.ts", "report/channel-observation.ts"] },
   { connector: "jdy", key: "tmall-product-pnl-observation", label: "天猫商品损益", consumers: ["report/channel-observation.ts"] },
-  { connector: "jdy", key: "jst-item-master-mirror-observation", label: "聚水潭商品镜像", consumers: ["report/platform-sku-identity-gap.ts"] },
+  { connector: "jdy", key: "jst-item-master-mirror-observation", label: "聚水潭商品镜像", consumers: ["master/sku-source-status.ts", "report/platform-sku-identity-gap.ts"] },
   { connector: "jdy", key: "jst-bundle-bom-mirror-observation", label: "聚水潭组合装 BOM 镜像", consumers: [] },
   { connector: "jdy", key: "tmall-bundle-detail-observation", label: "天猫组合装明细", consumers: ["report/external-velocity.ts", "report/platform-sku-identity-gap.ts"] },
   { connector: "jdy", key: "pdd-sku-cost-standard-observation", label: "拼多多 SKU 标准成本", consumers: ["report/platform-sku-identity-gap.ts"] },
@@ -84,7 +85,7 @@ export const CONTRACT_CONSUMERS: readonly ContractConsumerEntry[] = [
   /* ── 聚水潭数据流 ── */
   { connector: "jst", key: "outbound-sales-daily", label: "T-1 出库日快照", consumers: ["report/data-source-readiness.ts", "report/external-demand-signal.ts"] },
   { connector: "jst", key: "inventory-total-delta", label: "全仓合计库存增量", consumers: ["report/data-source-readiness.ts"] },
-  { connector: "jst", key: "item-master", label: "商品档案观察", consumers: [] },
+  { connector: "jst", key: "item-master", label: "商品档案观察", consumers: ["master/sku-source-status.ts"] },
   { connector: "jst", key: "inbound-receipts-daily", label: "入库单日观察", consumers: [] },
 
   /* ── 用友只读契约（按 API path 登记；全部尚无下游读模型） ── */
