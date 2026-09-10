@@ -478,8 +478,8 @@ function BhInner() {
           {editTarget && <Form.Item name="reason" label="修改原因" rules={[{ required: true, whitespace: true, message: "请填写修改原因" }]}>
             <Input.TextArea rows={2} maxLength={500} placeholder="说明数量、日期或其他内容为何需要调整" />
           </Form.Item>}
-          <Form.Item name="orderType" label="订单类型">
-            <Select allowClear options={toOptions(ORDER_TYPE_LABELS)} placeholder="常规备货/新品首单/紧急需求/月备货" />
+          <Form.Item name="orderType" label="订单类型" extra="再次生产已上市成品时，明确选择成品返单；常规备货不会自动视为返单。10–20天是返单目标，不代表本单已达成。">
+            <Select allowClear options={toOptions(ORDER_TYPE_LABELS)} placeholder="选择订单类型（含成品返单）" />
           </Form.Item>
           <Form.Item name="remark" label="备注">
             <Input.TextArea rows={2} maxLength={500} />

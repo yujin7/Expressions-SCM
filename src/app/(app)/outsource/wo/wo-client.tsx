@@ -259,7 +259,7 @@ function WoInner() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [bhOptions, setBhOptions] = useState<{ value: number; label: string }[]>([]);
+  const [bhOptions, setBhOptions] = useState<{ value: number; label: string; orderType: string | null }[]>([]);
 
   const documentSelection = useDocumentTarget();
   const { id: detailId, setId: setDetailId } = documentSelection;
@@ -314,6 +314,7 @@ function WoInner() {
           setBhOptions(
             res.rows.map((r) => ({
               value: r.id,
+              orderType: r.orderType,
               label: `${r.docNo}${r.orderType ? `（${formatOrderType(r.orderType)}）` : ""}`,
             })),
           );
@@ -538,7 +539,8 @@ function WoInner() {
       >
         <Form form={form} layout="vertical">
           <Form.Item name="bhId" label="关联备货申请（可选，仅已审批）">
-            <Select allowClear showSearch optionFilterProp="label" options={bhOptions} placeholder="选择备货申请" />
+            <Select allowClear showSearch optionFilterProp="label" options={bhOptions} placeholder="选择备货申请"
+              onChange={(id: number | undefined) => form.setFieldValue("orderType", bhOptions.find(b => b.value === id)?.orderType ?? undefined)} />
           </Form.Item>
           <Form.Item
             name="productSkuId"
@@ -576,8 +578,8 @@ function WoInner() {
           <Form.Item name="dueDate" label="交期">
             <DatePicker style={{ width: "100%" }} />
           </Form.Item>
-          <Form.Item name="orderType" label="订单类型">
-            <Select allowClear options={toOptions(ORDER_TYPE_LABELS)} placeholder="常规备货/新品首单/紧急需求/月备货" />
+          <Form.Item name="orderType" label="订单类型" extra="关联申请已有类型时必须继承；未分类或无来源时可人工明确。成品返单的10–20天是目标，不能用首批收货代表全量交付。">
+            <Select allowClear options={toOptions(ORDER_TYPE_LABELS)} placeholder="选择类型；关联申请留空时继承来源" />
           </Form.Item>
           <Form.Item name="remark" label="备注">
             <Input.TextArea rows={2} maxLength={500} />

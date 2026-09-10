@@ -1,11 +1,12 @@
 import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
-   bhDocs, bomLines, boms, jgDocs, jgFeeSegments, poDocs, poLines,
+   bhDocs, bhLines, bomLines, boms, jgDocs, jgFeeSegments, poDocs, poLines,
   skus, stockBalances, suppliers, uomConvs, users, warehouses, woDocs, woLines,
 } from "@/db/schema";
 import { dAdd, dCmp, dDiv, dMoney, dMul, dQty, dSub } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
+import { bhReadScope } from "@/server/core/bh-read-scope";
 import {
   BomCycleError,
   BomDepthError,
@@ -57,12 +58,24 @@ export async function createWo(user: SessionUser, input: unknown, dbArg?: AnyDb)
   const block = supplierNewOrderBlock(supplier.status);
   if (block.blocked) throw new ApiError(400, `供应商${block.label}，禁止新单: ${supplier.name}（${block.reason}）`);
 
-  if (v.bhId != null) {
-    const [bh] = await db.select({ id: bhDocs.id }).from(bhDocs).where(eq(bhDocs.id, v.bhId));
-    if (!bh) throw new ApiError(400, `备货申请不存在: #${v.bhId}`);
-  }
-
   return db.transaction(async (tx: AnyDb) => {
+    // Same transaction as insert/audit; a concurrent BH edit/withdraw must not change
+    // the approved source underneath the derived WO. Historical regular is NOT repeat.
+    let sourceOrderType: string | null = null;
+    if (v.bhId != null) {
+      const [bh]: (typeof bhDocs.$inferSelect)[] = await tx.select().from(bhDocs)
+        .where(and(eq(bhDocs.id, v.bhId), bhReadScope(tx, user))).for("share");
+      if (!bh) throw new ApiError(404, "备货申请不存在或不可访问");
+      if (bh.status !== "approved") throw new ApiError(409, "关联备货申请必须已审批，请重新核对来源状态");
+      const [sourceLine] = await tx.select({ id: bhLines.id }).from(bhLines)
+        .where(and(eq(bhLines.bhId, bh.id), eq(bhLines.skuId, v.productSkuId))).limit(1);
+      if (!sourceLine) throw new ApiError(400, "成品不属于该备货申请，请核对关联申请和成品");
+      sourceOrderType = bh.orderType ?? bh.purpose;
+      if (sourceOrderType && v.orderType && sourceOrderType !== v.orderType) {
+        throw new ApiError(409, "订单类型与已审批备货申请不一致；请继承来源类型，勿在工单中改写首单/返单身份");
+      }
+    }
+    const orderType = sourceOrderType || v.orderType || null;
     const docNo = await nextDocNo(tx, "WO");
     const [doc]: WoRow[] = await tx
       .insert(woDocs)
@@ -74,7 +87,7 @@ export async function createWo(user: SessionUser, input: unknown, dbArg?: AnyDb)
         qty: dQty(v.qty),
         supplierId: v.supplierId,
         feeRatePlan: dMoney(v.feeRatePlan),
-        orderType: v.orderType ?? null,
+        orderType,
         dueDate: v.dueDate ?? null,
         bomId: activeBom.id,
         createdBy: user.id,
@@ -82,7 +95,8 @@ export async function createWo(user: SessionUser, input: unknown, dbArg?: AnyDb)
       .returning();
     await writeAudit(tx, {
       userId: user.id, entity: "wo", entityId: doc.id, action: "create",
-      after: { docNo: doc.docNo, productSkuId: v.productSkuId, qty: doc.qty, bomId: activeBom.id },
+      after: { docNo: doc.docNo, productSkuId: v.productSkuId, qty: doc.qty, bomId: activeBom.id,
+        bhId: v.bhId ?? null, orderType, orderTypeSource: sourceOrderType ? "bh" : v.orderType ? "manual" : "unclassified" },
     });
     return doc;
   });
