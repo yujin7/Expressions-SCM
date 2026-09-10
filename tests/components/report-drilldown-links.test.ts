@@ -42,8 +42,11 @@ describe("报表回链与来源标注", () => {
       const src = read(file);
       expect(src, file).toContain('from: ""');
       expect(src, file).toContain('to: ""');
-      expect(src, file).toContain('if (from) params.set("from", from);');
-      expect(src, file).toContain('if (to) params.set("to", to);');
+      // Declaration names are not part of the contract. SH additionally exercises the
+      // real request and clear callback in sh-read-lifecycle.test.ts.
+      const setter = src.match(/if \(from\) (\w+)\.set\("from", from\);/);
+      expect(setter, file).not.toBeNull();
+      expect(src, file).toContain(`if (to) ${setter![1]}.set("to", to);`);
       expect(src, file).toContain(api);
       // 窗口生效时必须可见且可清除，否则用户只看到「行数莫名变少」
       expect(src, file).toContain("DocWindowFilterTag");

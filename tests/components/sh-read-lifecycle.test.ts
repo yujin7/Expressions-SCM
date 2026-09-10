@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import ShClient from "@/app/(app)/matflow/sh/sh-client";
 
 const h = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false,
-  q: "", detailId: null as number | null, message: { error: vi.fn(), success: vi.fn(), warning: vi.fn() } }));
+  q: "", from: "", to: "", detailId: null as number | null, message: { error: vi.fn(), success: vi.fn(), warning: vi.fn() } }));
 vi.mock("antd", () => ({ App: { useApp: () => ({ message: h.message }) }, Alert: "alert", Badge: "badge", Tag: "tag", Button: "button", Modal: "modal", Space: "space", Table: "table", Tabs: "tabs", Popconfirm: "confirm", Select: "select", InputNumber: "number", DatePicker: "date", Radio: { Group: "radio" },
   Input: Object.assign("input", { TextArea: "textarea" }), Descriptions: Object.assign("descriptions", { Item: "item" }), Typography: { Title: "title", Paragraph: "paragraph", Link: "a", Text: "text" } }));
 vi.mock("@ant-design/icons", () => ({ PlusOutlined: "plus", ReloadOutlined: "reload", DeleteOutlined: "delete" }));
@@ -18,7 +18,8 @@ vi.mock("@/components/ApprovalTimeline", () => ({ default: "timeline" }));
 vi.mock("@/components/ScannerEntry", () => ({ default: "scanner" }));
 vi.mock("@/components/useMe", () => ({ useMe: () => ({ id: 1, roles: ["warehouse"], isApprover: true }), hasAnyRole: () => true }));
 vi.mock("@/components/useDocumentTarget", () => ({ useDocumentTarget: () => ({ id: h.detailId, setId: vi.fn(), present: h.detailId !== null }) }));
-vi.mock("@/components/useListState", () => ({ useListState: () => ({ filters: { q: h.q, status: "", from: "", to: "" }, page: 1, pageSize: 20, tableSize: "small", paginationProps: (v: unknown) => v }) }));
+vi.mock("@/components/useListState", () => ({ useListState: () => ({ filters: { q: h.q, status: "", from: h.from, to: h.to }, page: 1, pageSize: 20, tableSize: "small", paginationProps: (v: unknown) => v,
+  setFilter: (patch: { from?: string; to?: string }) => { if (patch.from !== undefined) h.from = patch.from; if (patch.to !== undefined) h.to = patch.to; } }) }));
 vi.mock("react", async original => ({ ...await original<typeof import("react")>(),
   useState: <T,>(initial: T | (() => T)) => { const i = h.cursor++; if (!(i in h.slots)) h.slots[i] = typeof initial === "function" ? (initial as () => T)() : initial;
     return [h.slots[i], (update: T | ((old: T) => T)) => { const v = typeof update === "function" ? (update as (old: T) => T)(h.slots[i] as T) : update; if (!Object.is(v, h.slots[i])) h.changed = true; h.slots[i] = v; }]; },
@@ -42,13 +43,23 @@ const lines = () => nodes(create()).find(n => n.type === "table")?.props;
 function open(kind = "po") { const button = nodes(props("toolbar").primaryActions as ReactNode).find(n => n.props.children === "新建收货单")!; (button.props.onClick as () => void)(); render();
   (nodes(create()).find(n => n.type === "radio")!.props.onChange as (e: unknown) => void)({ target: { value: kind } }); render(); }
 function select(id: number) { const p = nodes(create()).find(n => n.props.placeholder === "选择来源单据")!.props; (p.onChange as (v: number) => void)(id); render(); }
-beforeEach(() => { h.cursor = 0; h.slots = []; h.effects = []; h.changed = false; h.q = ""; h.detailId = null; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
+beforeEach(() => { h.cursor = 0; h.slots = []; h.effects = []; h.changed = false; h.q = ""; h.from = ""; h.to = ""; h.detailId = null; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
 afterEach(() => { for (const fn of h.cleanups.values()) fn(); h.cleanups.clear(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 it("list withdraws obsolete rows before effects and ignores a late result", async () => {
   const old = Promise.withResolvers<Response>(); fetchMock.mockResolvedValueOnce(list(1)).mockReturnValueOnce(old.promise).mockResolvedValueOnce(list(3));
   render(); await flush(); h.q = "OLD"; expect(nodes(render(false)).find(n => n.type === "table")!.props.dataSource).toEqual([]); render();
   h.q = "NEW"; render(); await flush(); old.resolve(list(2)); await flush(); expect(props("table").dataSource).toMatchObject([{ id: 3 }]);
+});
+it("report date-window drilldown reaches the actual request, remains visible, and clearing removes both bounds", async () => {
+  h.from = "2026-09-01"; h.to = "2026-09-11"; h.q = "SKU & 精华";
+  fetchMock.mockResolvedValue(list(1)); render(); await flush();
+  const query = new URL(String(fetchMock.mock.calls[0][0]), "http://localhost").searchParams;
+  expect(query.get("from")).toBe(h.from); expect(query.get("to")).toBe(h.to); expect(query.get("q")).toBe(h.q);
+  const windowTag = nodes(props("toolbar").extra as ReactNode).find(n => n.props.from === h.from)!;
+  expect(windowTag.props.to).toBe(h.to); (windowTag.props.onClear as () => void)(); render(); await flush();
+  const cleared = new URL(String(fetchMock.mock.calls.at(-1)![0]), "http://localhost").searchParams;
+  expect(cleared.has("from")).toBe(false); expect(cleared.has("to")).toBe(false); expect(cleared.get("q")).toBe(h.q);
 });
 it("failed list has a persistent error, no fake total, and a GET retry", async () => {
   fetchMock.mockRejectedValueOnce(Error("offline")); render(); await flush(); expect(props("table").pagination).toBe(false);
