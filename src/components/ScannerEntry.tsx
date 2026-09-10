@@ -1,7 +1,7 @@
 "use client";
 
 import { BarcodeOutlined } from "@ant-design/icons";
-import { Input, InputNumber, Space, Typography } from "antd";
+import { Input, InputNumber, Typography } from "antd";
 import type { InputRef } from "antd";
 import { useEffect, useRef, useState } from "react";
 
@@ -40,7 +40,7 @@ export default function ScannerEntry({ disabled = false, help, onScan }: Scanner
         background: "#f7faff",
       }}
     >
-      <Space wrap size={8} style={{ width: "100%" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, minWidth: 0 }}>
         <Input
           ref={inputRef}
           allowClear
@@ -50,22 +50,24 @@ export default function ScannerEntry({ disabled = false, help, onScan }: Scanner
           value={code}
           onChange={(event) => setCode(event.target.value)}
           onPressEnter={submit}
-          style={{ width: 300, maxWidth: "100%" }}
+          style={{ flex: "1 1 260px", minWidth: 0, width: "100%" }}
           aria-label="扫码输入"
         />
-        <Typography.Text type="secondary">每次计入</Typography.Text>
-        <InputNumber<string>
-          stringMode
-          min="0.0001"
-          precision={4}
-          disabled={disabled}
-          value={qty}
-          onChange={(value) => setQty(value ?? "1")}
-          onPressEnter={submit}
-          style={{ width: 110 }}
-          aria-label="每次扫码数量"
-        />
-      </Space>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <Typography.Text type="secondary">每次计入</Typography.Text>
+          <InputNumber<string>
+            stringMode
+            min="0.0001"
+            precision={4}
+            disabled={disabled}
+            value={qty}
+            onChange={(value) => setQty(value ?? "1")}
+            onPressEnter={submit}
+            style={{ width: 110 }}
+            aria-label="每次扫码数量"
+          />
+        </div>
+      </div>
       <Typography.Text type="secondary" style={{ display: "block", marginTop: 6, fontSize: 12 }}>
         {help}
       </Typography.Text>
