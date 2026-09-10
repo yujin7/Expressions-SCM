@@ -119,6 +119,37 @@ it("a failed chain is visible and retryable rather than indistinguishable from n
 });
 
 const resource = (effects = true) => nodes(render(effects)).find(n => n.type === "read")!.props;
+const textOf = (v: ReactNode): string => Array.isArray(v) ? v.map(textOf).join("") : isValidElement<Node["props"]>(v) ? textOf(v.props.children) : v == null ? "" : String(v);
+const chainNode = (docType: string, nodeId: number, current = false) => ({ docType, id: nodeId,
+  label: docType === "bh" ? "备货申请" : "加工通知·批2", docNo: `SAME-${nodeId}`, status: "pending", statusLabel: "待审批", current });
+it("groups siblings without hiding the current document or losing exact links and visible statuses", async () => {
+  surface = "chain";
+  fetchMock.mockResolvedValueOnce(Response.json({ nodes: [chainNode("bh", 1, true), chainNode("jg", 23), chainNode("jg", 24)] }));
+  render(); await flush();
+  const tree = render(), all = nodes(tree), groups = all.filter(n => n.type === "details");
+  expect(groups).toHaveLength(1);
+  expect(groups[0].props.open).not.toBe(true);
+  expect(textOf(nodes(groups[0]).find(n => n.type === "summary"))).toBe("加工通知（2张）");
+  expect(textOf(groups[0])).not.toContain("SAME-1");
+  expect(textOf(tree)).toContain("当前单据");
+  expect(textOf(tree)).toContain("关联单据 · 2张可见");
+  expect(all.filter(n => n.type === "a").map(n => n.props.href)).toEqual(["/outsource/jg?docId=23", "/outsource/jg?docId=24"]);
+  expect(all.filter(n => n.type === "tag").every(n => textOf(n).includes("待审批"))).toBe(true);
+  expect(textOf(groups[0])).toContain("加工通知·批2");
+});
+it("keeps a singleton directly reachable without a disclosure", async () => {
+  surface = "chain"; fetchMock.mockResolvedValueOnce(Response.json({ nodes: [chainNode("bh", 1, true), chainNode("po", 9)] }));
+  render(); await flush();
+  expect(nodes(render()).filter(n => n.type === "details")).toHaveLength(0);
+  expect(nodes(render()).filter(n => n.type === "a").map(n => n.props.href)).toEqual(["/outsource/po?docId=9"]);
+});
+it.each([false, 0, { nodes: [chainNode("bh", 1, true), chainNode("bh", 1, true)] },
+  { nodes: [chainNode("bh", 1, false), chainNode("po", 9, true)] },
+  { nodes: [chainNode("bh", 1, true), chainNode("po", -1)] }])("rejects ambiguous chain identity or malformed payload %j", async payload => {
+  surface = "chain"; fetchMock.mockResolvedValueOnce(Response.json(payload)); render(); await flush();
+  expect(nodes(render()).find(n => n.type === "alert")?.props.description).toContain("响应格式异常");
+  expect(nodes(render()).filter(n => n.type === "a")).toHaveLength(0);
+});
 it("chain links open an exact related identity, even when document labels repeat", async () => {
   surface = "chain";
   fetchMock.mockResolvedValueOnce(Response.json({ nodes: [
