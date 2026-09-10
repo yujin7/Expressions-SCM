@@ -120,7 +120,9 @@ describe("采购侧界面契约", () => {
 
     const tab = read("src/app/(app)/report/supplier-scorecard/leadtime-learning-tab.tsx");
     // 每套口径自己的表头 + 独立 URL 命名空间（不得与 sc_/qc_/pv_/pt_/lh_ 撞）
-    expect(tab).toContain("交期学习与供应商准时率（系统学习值）");
+    expect(tab).toContain("采购首批交期学习（系统记录）");
+    expect(tab).toContain("首批到货不等于全部收齐");
+    expect(tab).toContain("不改加工周期");
     expect(tab).toContain('paramPrefix: "lt"');
 
     // 旧路径 → 跳转，而不是 404

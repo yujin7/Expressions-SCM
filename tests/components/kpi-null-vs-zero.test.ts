@@ -30,7 +30,14 @@ describe("KPI 未加载态：— 而不是 0", () => {
       const src = read(file);
       expect(src, file).toContain("LoadErrorAlert");
       expect(src, file).toContain("loadError");
-      expect(src, file).toMatch(/onRetry=\{\(\)\s*=>\s*void load\(\)\}/);
+      if (file.endsWith("leadtime-learning-tab.tsx")) {
+        // Shared identity-bound read replaces the former page-local load(); its retry behavior
+        // is executed in leadtime-learning-flow.test.ts, not inferred from a callback's spelling.
+        expect(src, file).toContain("error: loadError, retry } = useDocumentRead<LtData>");
+        expect(src, file).toContain("onRetry={retry}");
+      } else {
+        expect(src, file).toMatch(/onRetry=\{\(\)\s*=>\s*void load\(\)\}/);
+      }
     }
   });
 

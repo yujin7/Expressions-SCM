@@ -55,6 +55,8 @@ it("synchronous double confirm sends one evidence-bound write; reload failure ca
   pending.resolve(Response.json({ ok: true, skuId: 2, leadDays: 10 })); await flush(); await flush();
   expect(nodes(render()).some(n => n.type === "alert" && n.props.type === "success")).toBe(true);
   expect(find("load-error").props.error).toContain("读取失败"); expect(find("table").props.dataSource).toEqual([]);
+  mock.mockResolvedValueOnce(Response.json(data())); (find("load-error").props.onRetry as () => void)(); await flush();
+  expect(find("table").props.dataSource).toHaveLength(1); expect(posts()).toHaveLength(1);
 });
 it("malformed write success retains an explicit unconfirmed receipt", async () => {
   mock.mockResolvedValueOnce(Response.json(data())); await flush(); mock.mockResolvedValueOnce(Response.json({})); mock.mockResolvedValueOnce(Response.json(data())); send(); await flush(); await flush();
