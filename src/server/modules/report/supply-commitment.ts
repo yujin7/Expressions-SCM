@@ -13,7 +13,7 @@ import { and, eq, inArray } from "drizzle-orm";
 
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
-import { dayDiff as daysBetween, shanghaiDayOf} from "@/server/core/business-day";
+import { dayDiff as daysBetween, shanghaiDay, shanghaiDayOf} from "@/server/core/business-day";
 import { dAdd, dCmp, dMul, dQty, dSub } from "@/server/core/decimal";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { resolvePromiseBasis, type PromiseHistoryState } from "@/server/rules/promise-basis";
@@ -130,6 +130,8 @@ export interface PromiseReliability {
     historyPct: number | null;
   };
   exceptions: PromiseReliabilityRow[];
+  /** Both bases count separately; computed before the preview/export cap. */
+  exceptionTotal: number;
   gate: string | null;
   historyGate: string | null;
   limitations: string[];
@@ -187,11 +189,12 @@ export function buildPromiseReliability(
   options: { asOf: string; windowDays?: number; limit?: number },
 ): PromiseReliability {
   const asOf = options.asOf;
-  if (!DATE_RE.test(asOf) || Number.isNaN(Date.parse(`${asOf}T00:00:00Z`))) {
+  if (!DATE_RE.test(asOf) || asOf.startsWith("0000") || shanghaiDay(asOf) !== asOf) {
     throw new ApiError(400, "供给承诺截止日格式不正确（应为 YYYY-MM-DD）");
   }
   const windowDays = Math.min(1095, Math.max(30, options.windowDays ?? DEFAULT_WINDOW_DAYS));
-  const limit = Math.min(200, Math.max(1, options.limit ?? DEFAULT_LIMIT));
+  const limit = options.limit ?? DEFAULT_LIMIT;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50000) throw new ApiError(400, "承诺例外读取上限须为1–50000的整数");
   const windowFrom = addDays(asOf, -(windowDays - 1));
   const receiptIndex = indexPurchaseLineReceipts(
     lines.map(line => ({ id: line.lineId, poId: line.poId, skuId: line.skuId })), receipts,
@@ -334,9 +337,9 @@ export function buildPromiseReliability(
         || (a.basis === b.basis ? 0 : a.basis === "original" ? -1 : 1)
         || b.daysLate - a.daysLate
         || b.shortQty - a.shortQty
-        || a.docNo.localeCompare(b.docNo);
-    })
-    .slice(0, limit);
+        || a.docNo.localeCompare(b.docNo)
+        || a.poId - b.poId || a.lineId - b.lineId;
+    });
   const calculableBase = totals.eligibleLines + totals.ambiguous + totals.controlMismatch;
   const historyBase = originalTotals.historyTrusted + originalTotals.historyBackfilled + originalTotals.historyMissing;
   const state = totals.eligibleLines > 0 || originalTotals.eligibleLines > 0 ? "ready" : "insufficient";
@@ -362,7 +365,8 @@ export function buildPromiseReliability(
       calculablePct: pct(totals.eligibleLines, calculableBase),
       historyPct: pct(originalTotals.historyTrusted, historyBase),
     },
-    exceptions,
+    exceptions: exceptions.slice(0, limit),
+    exceptionTotal: exceptions.length,
     gate: state === "ready"
       ? null
       : "窗口内没有可安全计算的已到期采购承诺行；无交期、未来交期、收货归属不清、版本缺口和控制量不一致均不会被当作零。",

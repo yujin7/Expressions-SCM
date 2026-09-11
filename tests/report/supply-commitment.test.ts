@@ -42,6 +42,16 @@ function line(seed: Partial<PromiseLineFact> & Pick<PromiseLineFact, "lineId" | 
 }
 
 describe("供给承诺可信度纯计算", () => {
+  it("预览30条不伪装全量，导出可读取200条之外的异常且顺序稳定", () => {
+    const lines = Array.from({ length: 251 }, (_, i) => line({ lineId: i + 1, poId: 1, skuId: 1 }));
+    const preview = buildPromiseReliability(lines, [], [], { asOf: "2026-08-10" });
+    expect(preview.exceptions).toHaveLength(30);
+    expect(preview).toHaveProperty("exceptionTotal", 251);
+    const exported = buildPromiseReliability([...lines].reverse(), [], [], { asOf: "2026-08-10", limit: 5000 });
+    expect(exported.exceptions).toHaveLength(251);
+    expect(exported.exceptions.map(row => row.lineId)).toEqual(lines.map(row => row.lineId));
+  });
+
   it("同SKU按显式采购行分开接收和退货，不互借准时数量", () => {
     const result = buildPromiseReliability([
       line({ lineId: 1, poId: 1, skuId: 1, currentReceivedQty: "10" }),

@@ -3,6 +3,7 @@ import { canSeePrices } from "@/server/core/dto";
 import { inventoryAlertsExport } from "./inventory-alerts-export";
 import { supplierLifecycleExport } from "./supplier-lifecycle-export";
 import { wipExport } from "./wip-export";
+import { supplyCommitmentExport } from "./supply-commitment-export";
 
 /**
  * CSV 导出基础设施（W5）。
@@ -126,6 +127,7 @@ const num = (v: unknown): number | undefined => {
 };
 
 export const EXPORT_KINDS: Record<string, ExportKindDef> = {
+  "supply-commitment": supplyCommitmentExport,
   wip: wipExport,
   "inventory-alerts": inventoryAlertsExport,
   "supplier-lifecycle": supplierLifecycleExport,

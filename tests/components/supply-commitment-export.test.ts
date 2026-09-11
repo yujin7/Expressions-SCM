@@ -40,6 +40,7 @@ const fixture: PromiseReliability = {
     controlMismatch: 0,
   },
   coverage: { promisePct: 66.67, calculablePct: 100, historyPct: 100 },
+  exceptionTotal: 1,
   exceptions: [{
     lineId: 7,
     poId: 3,
@@ -75,6 +76,20 @@ const fixture: PromiseReliability = {
 };
 
 describe("供给承诺可信度导出", () => {
+  it("同采购单同SKU的两行保留独立身份和原单入口", () => {
+    const output = buildPromiseReliabilityExport({ ...fixture, exceptions: [fixture.exceptions[0], { ...fixture.exceptions[0], lineId: 8 }] });
+    const records = output.rows.map(row => Object.fromEntries(output.headers.map((title, i) => [title, row[i]])));
+    expect(records.map(row => row["采购行ID"])).toEqual([7, 8]);
+    expect(records.map(row => row["采购单ID"])).toEqual([3, 3]);
+    expect(records.map(row => row["采购行入口（系统内路径）"])).toEqual(["/outsource/po?docId=3&poLineId=7", "/outsource/po?docId=3&poLineId=8"]);
+  });
+
+  it("空结果也与全部表头逐列对齐", () => {
+    const output = buildPromiseReliabilityExport({ ...fixture, exceptions: [] });
+    expect(output.rows[0]).toHaveLength(output.headers.length);
+    expect(output.rows[0][output.headers.indexOf("采购行ID")]).toBe("");
+  });
+
   it("保留口径、覆盖、例外行和三条外部对照门禁", () => {
     const output = buildPromiseReliabilityExport(fixture);
     expect(output.filename).toBe("供给承诺可信度-2026-08-10.csv");

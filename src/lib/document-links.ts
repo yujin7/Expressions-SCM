@@ -13,6 +13,19 @@ export function documentHref(type: string, id: number): string | null {
   return page && validId(id) ? `${page}?docId=${id}` : null;
 }
 
+export function purchaseLineHref(poId: number, lineId: number): string | null {
+  const href = documentHref("po", poId);
+  return href && validId(lineId) ? `${href}&poLineId=${lineId}` : null;
+}
+
+/** A navigation hint only: the PO detail must independently contain this line. */
+export function purchaseLineTarget(query: string): number | null {
+  const values = new URLSearchParams(query).getAll("poLineId");
+  if (values.length !== 1 || !/^[1-9]\d*$/.test(values[0])) return null;
+  const id = Number(values[0]);
+  return validId(id) ? id : null;
+}
+
 export function documentTarget(query: string) {
   const values = new URLSearchParams(query).getAll("docId");
   if (values.length === 0) return { present: false, id: null, error: null };
@@ -27,8 +40,9 @@ export function documentTarget(query: string) {
 export function documentTargetPath(pathname: string, query: string, id: number | null, hash = "") {
   if (id !== null && !validId(id)) throw new Error("无效的单据 ID");
   const params = new URLSearchParams(query);
+  if (String(id) !== params.get("docId")) params.delete("poLineId");
   if (id === null) params.delete("docId"); else params.set("docId", String(id));
   return `${pathname}${params.size ? `?${params}` : ""}${hash}`;
 }
 
-export const DOCUMENT_TRANSIENT_PARAMS = ["docId"] as const;
+export const DOCUMENT_TRANSIENT_PARAMS = ["docId", "poLineId"] as const;

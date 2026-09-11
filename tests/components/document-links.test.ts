@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { DOCUMENT_PAGES, DOCUMENT_TRANSIENT_PARAMS, documentHref, documentTarget, documentTargetPath } from "@/lib/document-links";
+import { DOCUMENT_PAGES, DOCUMENT_TRANSIENT_PARAMS, documentHref, documentTarget, documentTargetPath, purchaseLineHref, purchaseLineTarget } from "@/lib/document-links";
 import { persistentListQuery } from "@/components/useListState";
 
 describe("exact document navigation", () => {
+  it("采购行链接保留身份，换单/关闭撤掉旧行，保存视图不固化行选择", () => {
+    expect(purchaseLineHref(3, 8)).toBe("/outsource/po?docId=3&poLineId=8");
+    expect(purchaseLineHref(3, 0)).toBeNull();
+    expect(purchaseLineTarget("poLineId=8")).toBe(8);
+    expect(purchaseLineTarget("poLineId=8&poLineId=9")).toBeNull();
+    expect(documentTargetPath("/outsource/po", "q=PO&docId=3&poLineId=8", 4)).toBe("/outsource/po?q=PO&docId=4");
+    expect(documentTargetPath("/outsource/po", "q=PO&docId=3&poLineId=8", null)).toBe("/outsource/po?q=PO");
+    expect(persistentListQuery("q=PO&docId=3&poLineId=8", DOCUMENT_TRANSIENT_PARAMS)).toBe("q=PO");
+  });
   it.each(Object.entries(DOCUMENT_PAGES))("%s selects a database identity, not a matching list row", (type, page) => {
     expect(documentHref(type, 42)).toBe(`${page}?docId=42`);
     expect(documentTarget("docId=42&q=no-match&page=999&status=void")).toEqual({ present: true, id: 42, error: null });

@@ -1,7 +1,8 @@
 "use client";
 
 import { useDocumentTarget } from "@/components/useDocumentTarget";
-import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+import { DOCUMENT_TRANSIENT_PARAMS, purchaseLineTarget } from "@/lib/document-links";
+import { useSearchParams } from "next/navigation";
 import { useDocumentRead } from "@/components/useDocumentRead";
 
 import SearchInput from "@/components/SearchInput";
@@ -129,6 +130,9 @@ const STATUS_TABS = [
 const LINE_TYPE_LABELS: Record<string, string> = { raw: "原料", packaging: "包材" };
 
 function PoInner() {
+  const searchParams = useSearchParams();
+  const hasRequestedLine = searchParams.has("poLineId");
+  const requestedLineId = purchaseLineTarget(searchParams.toString());
   const { message } = App.useApp();
   const [rows, setRows] = useState<PoRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -288,6 +292,7 @@ function PoInner() {
   ];
 
   const lineColumns: ColumnsType<PoLine> = [
+    { title: "采购行", dataIndex: "id", width: 100, render: (id: number) => <span>{`#${id}`}{id === requestedLineId ? <Tag color="blue">已定位</Tag> : null}</span> },
     { title: "物料", key: "material", render: (_, r) => `${r.skuCode} ${r.skuName}` },
     {
       title: "类型",
@@ -563,11 +568,18 @@ function PoInner() {
               <Descriptions.Item label="备注">{detail.remark ?? "—"}</Descriptions.Item>
             </Descriptions>
             <Typography.Title level={5}>明细行</Typography.Title>
+            {hasRequestedLine ? <Alert showIcon style={{ marginBottom: 8 }}
+              type={detail.lines.some(line => line.id === requestedLineId) ? "info" : "warning"}
+              message={detail.lines.some(line => line.id === requestedLineId)
+                ? `来源报表指定采购行 #${requestedLineId}，下表已标记；数量与交期请以本单当前记录核对。`
+                : requestedLineId == null ? "采购行链接格式无效，请向发送人索取正确链接。"
+                  : `来源链接的采购行 #${requestedLineId} 不在本单内，请核对来源，不自动匹配同SKU其他行。`} /> : null}
             <Table<PoLine>
               rowKey="id"
               size="small"
               columns={lineColumns}
               dataSource={detail.lines}
+              onRow={line => ({ style: line.id === requestedLineId ? { background: "#e6f4ff" } : undefined })}
               pagination={false}
               scroll={{ x: "max-content" }}
               style={{ marginBottom: 24 }}

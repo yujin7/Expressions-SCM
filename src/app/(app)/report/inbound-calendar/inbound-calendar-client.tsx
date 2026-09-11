@@ -1,8 +1,8 @@
 "use client";
 
 /** E4-03 到货日历：未结供给按预计到货日排成收货计划（只读；空档日保留占位，无交期条数顶部明示） */
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, App, Button, Card, DatePicker, Empty, Space, Spin, Statistic, Table, Tag, Typography } from "antd";
+import { useMemo, useState } from "react";
+import { Alert, Button, Card, DatePicker, Empty, Space, Spin, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
@@ -18,12 +18,12 @@ import {
 } from "recharts";
 import DecisionVisual from "@/components/DecisionVisual";
 import ProductExternalDecisionEvidenceCard from "@/components/ProductExternalDecisionEvidenceCard";
-import { exportCsv } from "@/components/exportCsv";
-import { fetchJson } from "@/components/fetchJson";
+import ExportButton from "@/components/ExportButton";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import { purchaseLineHref } from "@/lib/document-links";
 import { formatQty } from "@/components/format";
 import SkuHoverCard from "@/components/SkuHoverCard";
 import { buildSupplyExternalEvidenceBrief } from "@/components/supply-external-evidence";
-import { buildPromiseReliabilityExport } from "@/components/supply-commitment-export";
 import type { ProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
 import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 import type { PromiseReliability } from "@/server/modules/report/supply-commitment";
@@ -135,27 +135,12 @@ const PROMISE_VERSION_LABEL = {
 } as const;
 
 export default function InboundCalendarClient() {
-  const { message } = App.useApp();
   const today = dayjs().format("YYYY-MM-DD");
   const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs(), dayjs().add(14, "day")]);
-  const [data, setData] = useState<CalendarData | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = new URLSearchParams({
-        from: range[0].format("YYYY-MM-DD"),
-        to: range[1].format("YYYY-MM-DD"),
-      });
-      setData(await fetchJson<CalendarData>(`/api/report/inbound-calendar?${params.toString()}`));
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [range, message]);
-  useEffect(() => { void load(); }, [load]);
+  const params = new URLSearchParams({ from: range[0].format("YYYY-MM-DD"), to: range[1].format("YYYY-MM-DD") });
+  const read = useDocumentRead<CalendarData>(`/api/report/inbound-calendar?${params}`);
+  const data = read.data;
+  const loading = read.phase === "loading";
 
   const columns: ColumnsType<CalendarLine> = useMemo(
     () => [
@@ -213,7 +198,10 @@ export default function InboundCalendarClient() {
     : [];
   const promiseColumns: ColumnsType<PromiseReliability["exceptions"][number]> = [
     { title: "口径", dataIndex: "basis", width: 100, render: (value: "original" | "current") => value === "original" ? <Tag color="purple">原始承诺</Tag> : <Tag>当前承诺</Tag> },
-    { title: "采购单", dataIndex: "docNo", width: 170, sorter: (a, b) => a.docNo.localeCompare(b.docNo) },
+    { title: "采购单 / 行", dataIndex: "docNo", width: 190, sorter: (a, b) => a.docNo.localeCompare(b.docNo),
+      render: (value: string, row) => <a href={purchaseLineHref(row.poId, row.lineId) ?? undefined} title={`打开 ${value}，核对采购行 #${row.lineId}`}>
+        {value}<br /><Typography.Text type="secondary">采购行 #{row.lineId}</Typography.Text>
+      </a> },
     { title: "供应商", dataIndex: "supplierName", width: 160, ellipsis: true },
     { title: "SKU", dataIndex: "skuCode", width: 145, render: (value: string) => <SkuHoverCard code={value} /> },
     { title: "名称", dataIndex: "skuName", width: 190, ellipsis: true },
@@ -232,15 +220,11 @@ export default function InboundCalendarClient() {
     { title: "仍缺", dataIndex: "shortQty", width: 90, align: "right", sorter: (a, b) => a.shortQty - b.shortQty, render: (value: number) => formatQty(value) },
   ];
 
-  const exportPromise = () => {
-    if (!promise) return;
-    const output = buildPromiseReliabilityExport(promise);
-    exportCsv(output.filename, output.headers, output.rows);
-  };
-
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>到货日历</Typography.Title>
+      {read.error ? <Alert type="error" showIcon message="到货与承诺数据读取失败，已撤回旧结果"
+        description={read.error} action={<Button onClick={read.retry}>重试读取</Button>} style={{ marginBottom: 12 }} /> : null}
       <Alert
         type="info"
         showIcon
@@ -270,8 +254,8 @@ export default function InboundCalendarClient() {
         />
       ) : null}
 
-      <SupplyExternalEvidence observations={data?.supportingObservations ?? []} />
-      <ProductExternalDecisionEvidenceCard evidence={data?.externalDecisionEvidence} />
+      {data ? <><SupplyExternalEvidence observations={data.supportingObservations} />
+        <ProductExternalDecisionEvidenceCard evidence={data.externalDecisionEvidence} /></> : null}
 
       <DecisionVisual
         title="采购承诺可信度（版本化基线）"
@@ -308,20 +292,25 @@ export default function InboundCalendarClient() {
             ? `当前承诺基线 ${promise.rate.toFixed(1)}%；${promise.historyGate ?? "原始承诺版本仍不足。"}`
             : promise?.gate ?? "正在计算供给承诺基线。"}
         caveat={[promise?.historyGate, ...(promise?.limitations ?? [])].filter(Boolean).join(" ")}
-        state={loading && !data ? "loading" : promise?.state === "ready" ? "ready" : "insufficient"}
-        stateDetail={promise?.gate ?? undefined}
+        state={read.error ? "error" : loading ? "loading" : promise?.state === "ready" ? "ready" : "insufficient"}
+        stateDetail={read.error ?? promise?.gate ?? undefined}
         height={270}
-        onExport={promise ? exportPromise : undefined}
-        exportLabel="导出承诺例外证据"
+        extra={promise ? <ExportButton href={`/api/export/supply-commitment?${new URLSearchParams({ asOf: promise.asOf, windowDays: String(promise.windowDays) })}`} label="导出全部承诺例外" /> : undefined}
         dataView={(
+          <>
+          <Typography.Paragraph type="secondary">
+            {promise ? `预览 ${promise.exceptions.length} / ${promise.exceptionTotal} 条（原始与当前承诺分别计一条）；列排序仅作用于本预览。` : "尚未加载例外。"}
+            导出读取同一观察窗口的全部例外，不受预览条数限制；读取执行时最新事实，不是页面快照。超过50,000条会明确标注截断。
+          </Typography.Paragraph>
           <Table
             rowKey={(row) => `${row.basis}:${row.lineId}`}
             size="small"
             pagination={false}
             columns={promiseColumns}
             dataSource={promise?.exceptions ?? []}
-            scroll={{ x: 1430 }}
+            scroll={{ x: 1480 }}
           />
+          </>
         )}
       >
         <ResponsiveContainer minWidth={0} minHeight={1}>
@@ -343,7 +332,7 @@ export default function InboundCalendarClient() {
           value={range}
           onChange={(v) => { if (v?.[0] && v[1]) setRange([v[0], v[1]]); }}
         />
-        <a onClick={() => { void load(); }}><ReloadOutlined /> 刷新</a>
+        <Button onClick={read.retry} icon={<ReloadOutlined />} loading={loading}>刷新</Button>
         {data ? (
           <Space className="compact-stat-strip compact-stat-strip--inline" wrap>
             <Statistic title="预计到货条数" value={data.summary.totalLines} valueStyle={{ fontSize: 20 }} />
