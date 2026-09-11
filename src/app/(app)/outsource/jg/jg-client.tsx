@@ -438,7 +438,7 @@ function JgInner() {
               message={detail.actions?.reason ?? "尚未取得当前操作资格，请刷新单据；暂仅展示数据。"}
               action={<Button size="small" disabled={actionLoading || planSaving} onClick={loadDetail}>刷新权限</Button>} />
             <ChainStrip docType="jg" id={detail.id} />
-            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2, md: 2, lg: 2, xl: 2, xxl: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="关联工单">{detail.woDocNo}</Descriptions.Item>
               <Descriptions.Item label="加工厂">{detail.supplierName}</Descriptions.Item>
               <Descriptions.Item label="成品">

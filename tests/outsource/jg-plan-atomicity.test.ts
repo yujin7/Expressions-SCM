@@ -57,3 +57,11 @@ it("revisions retain an ordered history with the previous authoritative due date
     { from: "2026-09-20", to: "2026-09-22" }, { from: "2026-09-22", to: "2026-09-24" },
   ]);
 });
+it.each(["closed", "completed", "void"] as const)("%s plan flags cannot be rewritten as new historical facts", async status => {
+  const a = await setup();
+  await f.db.update(s.jgDocs).set({ status }).where(eq(s.jgDocs.id, a.doc.id));
+  const before = await snap(a.doc.id);
+  await expect(updateJgPlan(a.user, a.doc.id, { urgentFlag: true, isPaused: true, pkgReadyDate: "2026-09-22" }, f.db))
+    .rejects.toMatchObject({ status: 409 });
+  expect(await snap(a.doc.id)).toEqual(before);
+});

@@ -78,13 +78,19 @@ async function main() {
     assert(!closeConfirm.second.ok); assert.equal(closeConfirm.second.error.status, 409);
     assert.equal((await dbA.select().from(s.jgDocs).where(eq(s.jgDocs.id, terminal.id)))[0].inProduction, false);
     console.log("PASS confirmation waits for close and cannot resurrect terminal JG");
+    const completed = await freshDoc("approved");
+    const finishPlan = await race(tx => tx.update(s.jgDocs).set({ status: "completed" }).where(eq(s.jgDocs.id, completed.id)),
+      () => updateJgPlan(user, completed.id, { urgentFlag: true }, dbB));
+    assert(!finishPlan.second.ok); assert.equal(finishPlan.second.error.status, 409);
+    assert.equal((await dbA.select().from(s.jgDocs).where(eq(s.jgDocs.id, completed.id)))[0].urgentFlag, false);
+    console.log("PASS plan edit waits for completion and preserves historical flags");
     const disabled = await freshDoc("draft");
     const revoke = await race(tx => tx.update(s.users).set({ active: false }).where(eq(s.users.id, user.id)),
       () => submitJg(user, disabled.id, 1, dbB));
     assert(!revoke.second.ok); assert.equal(revoke.second.error.status, 403);
     assert.equal((await dbA.select().from(s.jgDocs).where(eq(s.jgDocs.id, disabled.id)))[0].status, "draft");
     console.log("PASS submit waits for account disable and refuses revoked actor");
-    console.log(JSON.stringify({ passed: true, cases: 6, fixture: key, database: new URL(connectionString).pathname.slice(1) }));
+    console.log(JSON.stringify({ passed: true, cases: 7, fixture: key, database: new URL(connectionString).pathname.slice(1) }));
   } finally { await Promise.allSettled([a.end(), b.end(), control.end()]); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

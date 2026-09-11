@@ -334,7 +334,7 @@ export async function updateJgPlan(user: SessionUser, id: number, input: unknown
     requireAnyRole(actor, "pmc");
     const [doc]: JgRow[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, id)).for("update");
     if (!doc) throw new ApiError(404, "加工通知单不存在");
-    if (["void", "closed"].includes(doc.status)) throw new ApiError(409, "已作废/关闭的单据不可维护计划属性");
+    if (["void", "closed", "completed"].includes(doc.status)) throw new ApiError(409, "终态单据不可维护计划属性");
     const patch: Record<string, unknown> = { updatedAt: new Date() };
     for (const k of ["pkgRequiredDate", "pkgSupplierReplyDate", "pkgReadyDate", "urgentFlag", "priority", "isPaused"] as const) {
       if (v[k] !== undefined) patch[k] = v[k];
