@@ -14,6 +14,8 @@ import { type AnyDb, requireAnyRole, resolveDb, rethrowApproval } from "./common
 import { approveDocSchema, confirmDocSchema, createPcForJgFeeSchema, withdrawDocSchema } from "./schemas";
 import { getSupplierCapacitySignal } from "@/server/modules/report/supplier-capacity";
 import { skuHeaderMatch } from "@/server/core/doc-search";
+import { businessDateSchema } from "@/server/core/business-date-schema";
+import { currentWriteActor } from "@/server/core/current-write-actor";
 
 /**
  * 委外加工通知单 JG。审批走 docType "jg"（JG 与 WO 同域=PMC 审批）；
@@ -281,8 +283,8 @@ export async function listJgs(
 import { z } from "zod";
 
 const dateStrOpt = z.preprocess(
-  (v) => (v === "" || v == null ? undefined : v),
-  z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "日期须为 YYYY-MM-DD").nullable().optional(),
+  (v) => (v === "" ? null : v),
+  businessDateSchema.nullable().optional(),
 );
 
 export const jgPlanSchema = z.object({
@@ -297,55 +299,61 @@ export const jgPlanSchema = z.object({
 
 /** 计划属性维护（PMC/admin）：包材齐套三日期、关联单号、紧急/优先级/暂停 */
 export async function updateJgPlan(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<JgRow> {
-  requireAnyRole(user, "pmc");
   const v = jgPlanSchema.parse(input);
   const db = await resolveDb(dbArg);
-  const [doc]: JgRow[] = await db.select().from(jgDocs).where(eq(jgDocs.id, id));
-  if (!doc) throw new ApiError(404, "加工通知单不存在");
-  if (["void", "closed"].includes(doc.status)) throw new ApiError(409, "已作废/关闭的单据不可维护计划属性");
-  const patch: Record<string, unknown> = { updatedAt: new Date() };
-  for (const k of ["pkgRequiredDate", "pkgSupplierReplyDate", "pkgReadyDate", "urgentFlag", "priority", "isPaused"] as const) {
-    if (v[k] !== undefined) patch[k] = v[k];
-  }
-  if (v.pkgRefNos !== undefined) patch.pkgRefNos = v.pkgRefNos;
-  const [updated]: JgRow[] = await db.update(jgDocs).set(patch).where(eq(jgDocs.id, id)).returning();
-  await writeAudit(db, {
-    userId: user.id,
-    entity: "jg",
-    entityId: id,
-    action: "plan_update",
-    before: {
-      pkgRequiredDate: doc.pkgRequiredDate, pkgSupplierReplyDate: doc.pkgSupplierReplyDate,
-      pkgReadyDate: doc.pkgReadyDate, urgentFlag: doc.urgentFlag, priority: doc.priority, isPaused: doc.isPaused,
-    },
-    after: v,
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "pmc");
+    const [doc]: JgRow[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, id)).for("update");
+    if (!doc) throw new ApiError(404, "加工通知单不存在");
+    if (["void", "closed"].includes(doc.status)) throw new ApiError(409, "已作废/关闭的单据不可维护计划属性");
+    const patch: Record<string, unknown> = { updatedAt: new Date() };
+    for (const k of ["pkgRequiredDate", "pkgSupplierReplyDate", "pkgReadyDate", "urgentFlag", "priority", "isPaused"] as const) {
+      if (v[k] !== undefined) patch[k] = v[k];
+    }
+    if (v.pkgRefNos !== undefined) patch.pkgRefNos = v.pkgRefNos;
+    const [updated]: JgRow[] = await tx.update(jgDocs).set(patch).where(eq(jgDocs.id, id)).returning();
+    await writeAudit(tx, {
+      userId: actor.id,
+      entity: "jg",
+      entityId: id,
+      action: "plan_update",
+      before: {
+        pkgRequiredDate: doc.pkgRequiredDate, pkgSupplierReplyDate: doc.pkgSupplierReplyDate,
+        pkgReadyDate: doc.pkgReadyDate, urgentFlag: doc.urgentFlag, priority: doc.priority, isPaused: doc.isPaused,
+      },
+      after: v,
   });
   return updated;
+  });
 }
 
 export const jgReviseDueSchema = z.object({
-  newDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "日期须为 YYYY-MM-DD"),
+  newDate: businessDateSchema,
   reason: z.string().trim().min(1, "改期原因必填").max(200),
 });
 
 /** 交期修改（留痕入 revisedDates 历史，禁止直接改 dueDate 旁路） */
 export async function reviseJgDueDate(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<JgRow> {
-  requireAnyRole(user, "pmc", "purchasing");
   const v = jgReviseDueSchema.parse(input);
   const db = await resolveDb(dbArg);
-  const [doc]: JgRow[] = await db.select().from(jgDocs).where(eq(jgDocs.id, id));
-  if (!doc) throw new ApiError(404, "加工通知单不存在");
-  if (["void", "closed", "completed"].includes(doc.status)) throw new ApiError(409, "终态单据不可改期");
-  const history = Array.isArray(doc.revisedDates) ? (doc.revisedDates as unknown[]) : [];
-  if (history.length >= 20) throw new ApiError(409, "改期次数已达上限（20），请走线下评审");
-  const entry = { from: doc.dueDate, to: v.newDate, reason: v.reason, by: user.name, at: new Date().toISOString() };
-  const [updated]: JgRow[] = await db
-    .update(jgDocs)
-    .set({ dueDate: v.newDate, revisedDates: [...history, entry], updatedAt: new Date() })
-    .where(eq(jgDocs.id, id))
-    .returning();
-  await writeAudit(db, { userId: user.id, entity: "jg", entityId: id, action: "revise_due", before: { dueDate: doc.dueDate }, after: entry });
-  return updated;
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "pmc", "purchasing");
+    const [doc]: JgRow[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, id)).for("update");
+    if (!doc) throw new ApiError(404, "加工通知单不存在");
+    if (["void", "closed", "completed"].includes(doc.status)) throw new ApiError(409, "终态单据不可改期");
+    const history = Array.isArray(doc.revisedDates) ? (doc.revisedDates as unknown[]) : [];
+    if (history.length >= 20) throw new ApiError(409, "改期次数已达上限（20），请走线下评审");
+    const entry = { from: doc.dueDate, to: v.newDate, reason: v.reason, by: actor.name, at: new Date().toISOString() };
+    const [updated]: JgRow[] = await tx
+      .update(jgDocs)
+      .set({ dueDate: v.newDate, revisedDates: [...history, entry], updatedAt: new Date() })
+      .where(eq(jgDocs.id, id))
+      .returning();
+    await writeAudit(tx, { userId: actor.id, entity: "jg", entityId: id, action: "revise_due", before: { dueDate: doc.dueDate }, after: entry });
+    return updated;
+  });
 }
 
 /** 撤回：待审批 → 草稿。仅制单人本人（管理员豁免）；不写审批轨迹、不占审批轮次。 */

@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import { useCallback, useEffect, useState } from "react";
 import { App, Button, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
@@ -183,20 +185,23 @@ export default function JobsClient() {
   const listState = useListState({ key: "import-jobs", defaults: {}, defaultPageSize: 20 });
   const { page, pageSize } = listState;
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const res = await fetchJson<{ data: JobRow[]; total: number }>(
-        `/api/import/jobs?page=${page}&pageSize=${pageSize}`,
-      );
+        `/api/import/jobs?page=${page}&pageSize=${pageSize}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.data);
       setTotal(res.total);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [page, pageSize, message]);
+  }, [beginLoadRead, page, pageSize, message]);
 
   useEffect(() => {
     void load();

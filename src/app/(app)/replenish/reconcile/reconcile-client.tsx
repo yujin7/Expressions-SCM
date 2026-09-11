@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /**
  * 过渡期运营提报核对（D55/R3）：运营按 SKU×渠道×月提报需求量，与系统基线（Holt 月量 / 朴素月均）并排，
  * 差异 ≥ 阈值标「需核对」。提报只对照不驱动建议量。
@@ -76,7 +78,9 @@ export default function ReconcileClient({ canSubmit }: { canSubmit: boolean }) {
   const [csvText, setCsvText] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     setLoadError(null);
     try {
@@ -84,14 +88,17 @@ export default function ReconcileClient({ canSubmit }: { canSubmit: boolean }) {
       if (filters.period) params.set("period", filters.period);
       if (filters.channelId) params.set("channelId", filters.channelId);
       if (filters.flaggedOnly === "1") params.set("flaggedOnly", "1");
-      setData(await fetchJson<ReconcileData>(`/api/replenish/reconcile?${params.toString()}`));
+      const latestReadResult = await fetchJson<ReconcileData>(`/api/replenish/reconcile?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       setData(null);
       setLoadError(e instanceof Error ? e.message : "加载失败");
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [filters.q, filters.period, filters.channelId, filters.flaggedOnly, page, pageSize]);
+  }, [beginLoadRead, filters.q, filters.period, filters.channelId, filters.flaggedOnly, page, pageSize]);
   useEffect(() => { void load(); }, [load]);
 
   useEffect(() => {

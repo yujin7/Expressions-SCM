@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
@@ -74,20 +76,23 @@ export default function ReconClient() {
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const res = await fetchJson<{ rows: ReconDiffRow[]; summary: ReconSummary }>(
-        `/api/jobs/recon?bizDate=${bizDate}`,
-      );
+        `/api/jobs/recon?bizDate=${bizDate}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setSummary(res.summary);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [bizDate, message]);
+  }, [beginLoadRead, bizDate, message]);
 
   useEffect(() => {
     void load();

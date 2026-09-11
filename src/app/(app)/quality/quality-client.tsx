@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
@@ -1778,19 +1780,23 @@ function RegulatoryTab() {
   const { filters } = listState;
   const apiQuery = listState.queryString();
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     const sequence = ++loadSequence.current;
     setLoading(true);
     setError(null);
     try {
-      const next = await fetchJson<RegulatoryRecord[]>(`/api/quality/regulatory?${apiQuery}`);
+      const next = await fetchJson<RegulatoryRecord[]>(`/api/quality/regulatory?${apiQuery}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       if (sequence === loadSequence.current) setRows(next);
     } catch (loadError) {
+      if (!readRequest.isCurrent()) return;
       if (sequence === loadSequence.current) setError((loadError as Error).message);
     } finally {
-      if (sequence === loadSequence.current) setLoading(false);
+      if (readRequest.isCurrent()) { if (sequence === loadSequence.current) setLoading(false); }
     }
-  }, [apiQuery]);
+  }, [beginLoadRead, apiQuery]);
 
   useEffect(() => {
     void load();
@@ -2110,19 +2116,23 @@ function ElectronicLabelsTab() {
   const { filters } = listState;
   const apiQuery = listState.queryString();
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     const sequence = ++loadSequence.current;
     setLoading(true);
     setError(null);
     try {
-      const next = await fetchJson<ElectronicLabel[]>(`/api/quality/labels?${apiQuery}`);
+      const next = await fetchJson<ElectronicLabel[]>(`/api/quality/labels?${apiQuery}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       if (sequence === loadSequence.current) setRows(next);
     } catch (loadError) {
+      if (!readRequest.isCurrent()) return;
       if (sequence === loadSequence.current) setError((loadError as Error).message);
     } finally {
-      if (sequence === loadSequence.current) setLoading(false);
+      if (readRequest.isCurrent()) { if (sequence === loadSequence.current) setLoading(false); }
     }
-  }, [apiQuery]);
+  }, [beginLoadRead, apiQuery]);
 
   useEffect(() => {
     void load();

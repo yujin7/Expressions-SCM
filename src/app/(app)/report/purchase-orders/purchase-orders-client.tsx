@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /**
  * D63 采购订单指标（真报表）：采购下了多少、多久到、省了多少、供应商 OTIF。
  * W2：OTIF 主口径改为**原始承诺**，当前承诺并列为副列——供应商改期不再抬高主口径。
@@ -91,23 +93,28 @@ export default function PurchaseOrdersClient() {
   const q = (filters.q ?? "").trim().toLowerCase();
   const year = filters.year ?? "";
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     setLoadError(null);
     try {
       const params = new URLSearchParams();
       if (year) params.set("year", year);
       const qs = params.toString();
-      setData(await fetchJson<PurchaseOrderMetricsResponse>(`/api/report/purchase-orders${qs ? `?${qs}` : ""}`));
+      const latestReadResult = await fetchJson<PurchaseOrderMetricsResponse>(`/api/report/purchase-orders${qs ? `?${qs}` : ""}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       const text = e instanceof Error ? e.message : "采购订单指标加载失败";
       setData(null);
       setLoadError(text);
       message.error(text);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [year, message]);
+  }, [beginLoadRead, year, message]);
   useEffect(() => { void load(); }, [load]);
 
   const refresh = async () => {

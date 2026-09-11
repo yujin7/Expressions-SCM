@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /**
  * 运营计划事件（大促 / 上新 / 下架 / 换链接 / 调价 / 其他）维护页。
  *
@@ -88,7 +90,9 @@ export default function PlanEventsClient({ canWrite }: { canWrite: boolean }) {
   const openEnded = Form.useWatch("openEnded", form);
   const target = Form.useWatch("target", form);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     setLoadError(null);
     try {
@@ -96,14 +100,17 @@ export default function PlanEventsClient({ canWrite }: { canWrite: boolean }) {
       if (filters.kind) params.set("kind", filters.kind);
       if (filters.channelId) params.set("channelId", filters.channelId);
       params.set("openOnly", filters.openOnly === "1" ? "1" : "0");
-      setData(await fetchJson<PlanEventData>(`/api/planning/events?${params.toString()}`));
+      const latestReadResult = await fetchJson<PlanEventData>(`/api/planning/events?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       setData(null);
       setLoadError(e instanceof Error ? e.message : "加载失败");
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [filters.q, filters.kind, filters.channelId, filters.openOnly, page, pageSize]);
+  }, [beginLoadRead, filters.q, filters.kind, filters.channelId, filters.openOnly, page, pageSize]);
   useEffect(() => { void load(); }, [load]);
 
   const kindOptions = useMemo(

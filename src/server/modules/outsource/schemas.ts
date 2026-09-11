@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { businessDateSchema } from "@/server/core/business-date-schema";
 import { dCmp } from "@/server/core/decimal";
 import { ORDER_TYPES } from "@/server/core/constants";
 import { shanghaiDay } from "@/server/core/business-day";
@@ -25,7 +26,7 @@ const orderType = z
     "订单类型非法",
   );
 
-const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "日期格式须为 YYYY-MM-DD");
+const dateStr = businessDateSchema;
 
 // ---------- BH 备货申请 ----------
 

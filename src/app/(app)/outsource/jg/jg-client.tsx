@@ -1,4 +1,6 @@
 "use client";
+
+import { useLatestRead } from "@/components/useLatestRead";
 import SupplierDeclaredCapacity from "@/components/SupplierDeclaredCapacity";
 import type { DeclaredCapacityComparison } from "@/server/rules/declared-capacity";
 
@@ -173,27 +175,30 @@ function JgInner() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmNote, setConfirmNote] = useState("");
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     setLoadError(null);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (status) params.set("status", status);
       const res = await fetchJson<{ rows: JgRow[]; total: number }>(
-        `/api/outsource/jg?${params.toString()}`,
-      );
+        `/api/outsource/jg?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setTotal(res.total);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       const text = e instanceof Error ? e.message : "加工通知单加载失败";
       setRows([]);
       setTotal(0);
       setLoadError(text);
       message.error(text);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [q, status, page, pageSize, message]);
+  }, [beginLoadRead, q, status, page, pageSize, message]);
 
   useEffect(() => {
     void load();

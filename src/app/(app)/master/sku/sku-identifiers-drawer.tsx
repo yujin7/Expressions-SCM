@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Alert,
   App,
@@ -17,7 +17,9 @@ import {
   Typography,
 } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
-import { fetchJson, patchJson, postJson } from "@/components/fetchJson";
+import { patchJson, postJson } from "@/components/fetchJson";
+
+import { useDocumentRead } from "@/components/useDocumentRead";
 
 interface SkuRef {
   id: number;
@@ -74,31 +76,15 @@ export default function SkuIdentifiersDrawer({
 }) {
   const { message, modal } = App.useApp();
   const [form] = Form.useForm<IdentifierForm>();
-  const [rows, setRows] = useState<IdentifierRow[]>([]);
-  const [loading, setLoading] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const kind = Form.useWatch("kind", form);
   const skuId = sku?.id ?? null;
 
-  const load = useCallback(async () => {
-    if (skuId == null) {
-      setRows([]);
-      return;
-    }
-    setLoading(true);
-    try {
-      setRows(await fetchJson<IdentifierRow[]>(`/api/master/sku/${skuId}/identifiers`));
-    } catch (error) {
-      message.error((error as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [message, skuId]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const { data, phase, error, retry: load } = useDocumentRead<IdentifierRow[]>(skuId == null ? null : `/api/master/sku/${skuId}/identifiers`);
+  const rows = data ?? [];
+  const loading = phase === "loading";
+  useEffect(() => { setCreateOpen(false); form.resetFields(); }, [skuId, form]);
 
   const openCreate = () => {
     form.resetFields();
@@ -107,7 +93,7 @@ export default function SkuIdentifiersDrawer({
   };
 
   const create = async () => {
-    if (skuId == null) return;
+    if (skuId == null || !canWrite || loading || error || saving) return;
     setSaving(true);
     try {
       const value = await form.validateFields();
@@ -188,6 +174,7 @@ export default function SkuIdentifiersDrawer({
             message="S1 是内部稳定主码；GTIN 与外部编码独立登记"
             description="同一 SKU 可按单品、内包、箱、托盘维护不同 GTIN，也可同时维护聚水潭、用友、供应商、客户和历史编码。不要把包装、渠道或交易伙伴编码写进永久 SKU 主码。"
           />
+          {error && <Alert type="error" showIcon message={error} action={<Button onClick={load}>重试</Button>} />}
           <Table<IdentifierRow>
             rowKey="id"
             size="small"

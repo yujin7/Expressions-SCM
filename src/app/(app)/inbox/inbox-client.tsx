@@ -24,6 +24,7 @@ interface InboxData {
   total: number;
   pending: InboxItem[];
   submitted: InboxItem[];
+  review?: InboxItem[];
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -41,7 +42,7 @@ const TYPE_COLORS: Record<string, string> = {
   pd: "default",
 };
 
-/** 等待时长（提交→现在）人性化：X天 / X小时 / 不足1小时 */
+/** 单据账龄（制单→现在），不是审批等待时长。 */
 function humanizeWait(createdAt: string): string {
   const hours = dayjs().diff(dayjs(createdAt), "hour");
   if (hours >= 24) return `${Math.floor(hours / 24)}天`;
@@ -68,6 +69,7 @@ export default function InboxClient() {
     requestRef.current = controller;
     setLoading(true);
     setLoadError(null);
+    setSelected([]);
     try {
       const next = await fetchJson<InboxData>("/api/inbox", { signal: controller.signal });
       if (!controller.signal.aborted) setData(next);
@@ -82,6 +84,7 @@ export default function InboxClient() {
   }, []);
 
   const doBatch = async () => {
+    if (loading || loadError || approving) return;
     const items = selected.filter((r) => BATCHABLE.has(r.docType)).map((r) => ({ docType: r.docType, id: r.id, version: r.version }));
     if (items.length === 0) { message.info("所选单据均不支持批量审批"); return; }
     setApproving(true);
@@ -116,13 +119,13 @@ export default function InboxClient() {
     { title: "摘要", dataIndex: "title", ellipsis: true },
     { title: "制单人", dataIndex: "createdByName", width: 100, render: (v: string | null) => v ?? "—" },
     {
-      title: "提交时间",
+      title: "制单时间",
       dataIndex: "createdAt",
       width: 150,
       render: (v: string) => dayjs(v).format("YYYY-MM-DD HH:mm"),
     },
     {
-      title: "等待时长",
+      title: "单据账龄",
       key: "wait",
       width: 100,
       render: (_, r) => humanizeWait(r.createdAt),
@@ -139,7 +142,7 @@ export default function InboxClient() {
     },
   ];
 
-  const empty = !loading && data != null && data.pending.length === 0 && data.submitted.length === 0;
+  const empty = !loading && data != null && data.pending.length === 0 && data.submitted.length === 0 && !data.review?.length;
 
   return (
     <div>
@@ -158,6 +161,12 @@ export default function InboxClient() {
         </Typography.Paragraph>
       ) : (
         <>
+          {data?.review?.length ? <section style={{ marginBottom: 24 }}>
+            <Alert type="warning" showIcon message={`来源待核对（${data.review.length}）`}
+              description="以下盘点调整单处于异常待审状态，不计入待审批数量；请打开单据核对来源盘点，不单独审批、也不隐藏异常。" style={{ marginBottom: 12 }} />
+            <Table<InboxItem> rowKey={(r) => `${r.docType}-${r.id}`} size="small" columns={columns("核对来源")}
+              dataSource={data.review} pagination={{ pageSize: 20 }} scroll={{ x: 950 }} />
+          </section> : null}
           <Typography.Title level={5} style={{ marginTop: 8 }}>
             待我审批（{data ? data.total : "—"}）
           </Typography.Title>
@@ -175,7 +184,7 @@ export default function InboxClient() {
                   title={`将批量通过 ${selected.filter((r) => BATCHABLE.has(r.docType)).length} 单，逐单独立生效（失败不影响其他单）`}
                   onConfirm={() => void doBatch()}
                 >
-                  <Button size="small" type="primary" loading={approving}>批量通过</Button>
+                  <Button size="small" type="primary" loading={approving} disabled={loading || !!loadError}>批量通过</Button>
                 </Popconfirm>
               </Space>
             </div>
@@ -189,7 +198,7 @@ export default function InboxClient() {
             pagination={false}
             rowSelection={{
               selectedRowKeys: selected.map((r) => `${r.docType}-${r.id}`),
-              preserveSelectedRowKeys: true,
+              getCheckboxProps: (r) => ({ disabled: loading || approving || !!loadError || !BATCHABLE.has(r.docType) }),
               onChange: (_k, rows) => setSelected(rows.filter((r) => r != null)),
             }}
             locale={{ emptyText: loadError ? "数据未加载" : "没有等待您审批的单据" }}

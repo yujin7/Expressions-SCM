@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Button, DatePicker, Space, Table, Tabs, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
@@ -80,20 +82,23 @@ export default function SettlementSummaryClient() {
     return params;
   }, [status, supplierId, from, to]);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const res = await fetchJson<{ bySupplier: SupplierRow[]; docs: DocRow[] }>(
-        `/api/report/settlement-summary?${buildParams().toString()}`,
-      );
+        `/api/report/settlement-summary?${buildParams().toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setBySupplier(res.bySupplier);
       setDocs(res.docs);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [buildParams, message]);
+  }, [beginLoadRead, buildParams, message]);
 
   useEffect(() => {
     if (me == null || !canView) return; // 无权角色不发请求（服务端仍是唯一权威，403）

@@ -177,6 +177,8 @@ describe("W2-3 库存单据可以被撤回 / 作废 / 短关", () => {
       docNo: "CK-S4", createdBy: s.author.id, status: "approved", skuId: s.skuId, warehouseId: s.warehouseId,
     });
     const finance: SessionUser = { id: s.other.id, name: "财务", roles: ["finance"], isApprover: false };
+    // The database, not a forged in-memory SessionUser, is now the authority.
+    await db.update(users).set({ roles: ["finance"] }).where(eq(users.id, finance.id));
     await expect(shortCloseStockDoc(finance, approved.id, { version: approved.version, reason: "财务来关" }, db))
       .rejects.toThrow(/仅仓管或管理员/);
   });

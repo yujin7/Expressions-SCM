@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import SearchInput from "@/components/SearchInput";
 
 /** 效期批次清单（仓库操作层）：逐批次×仓库的实物处置视图；PMC 决策视图见「风险库存处置」 */
@@ -103,20 +105,25 @@ function ExpiryInner() {
       .catch(() => setWarehouses([]));
   }, []);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize), sort });
       if (bucket) params.set("bucket", bucket);
       if (warehouseId) params.set("warehouseId", String(warehouseId));
       if (brand) params.set("brand", brand);
-      setData(await fetchJson<Data>(`/api/inventory/expiry?${params.toString()}`));
+      const latestReadResult = await fetchJson<Data>(`/api/inventory/expiry?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [q, bucket, warehouseId, brand, sort, page, pageSize, message]);
+  }, [beginLoadRead, q, bucket, warehouseId, brand, sort, page, pageSize, message]);
   useEffect(() => { void load(); }, [load]);
 
   const doExport = async () => {

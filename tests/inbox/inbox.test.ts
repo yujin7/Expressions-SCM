@@ -119,4 +119,19 @@ describe("inbox：待办聚合（域过滤 / SoD / 排序）", () => {
       "RK20260703-001",
     ]);
   });
+  it("异常待审盘点调整进入来源核对区，不变成可独立审批的待办，也不向无关角色泄露", async () => {
+    const [doc] = await db.insert(stockDocs).values({
+      docNo: "CA-QA-ANOMALY", status: "pending", subtype: "count_adjust", createdBy: pmcNonApprover.id,
+    }).returning();
+    for (const person of [admin, financeApprover]) {
+      const result = await getInbox(person, db);
+      expect(result.review.map(r => r.id)).toContain(doc.id);
+      expect(result.pending.some(r => r.docNo === doc.docNo)).toBe(false);
+      expect(result.submitted.some(r => r.docNo === doc.docNo)).toBe(false);
+      expect(result.total).toBe(person === admin ? 3 : 1);
+      expect(result.review.find(r => r.id === doc.id)?.href).toBe(`/inventory/docs?docId=${doc.id}`);
+    }
+    const unrelated = await getInbox(pmcApprover, db);
+    expect(unrelated.review).toEqual([]);
+  });
 });

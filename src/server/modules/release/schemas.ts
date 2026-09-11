@@ -3,6 +3,7 @@
  * 约定：dryRun 缺省 true——放行是不可逆写主档的动作，默认只预演。
  */
 import { z } from "zod";
+import { businessDateSchema } from "@/server/core/business-date-schema";
 
 /** 所有放行动作必须明确绑定输入任务，禁止“把全库待处理行都放掉”。 */
 const jobIds = z.array(z.number().int().positive()).min(1, "至少选择一个导入任务");
@@ -60,7 +61,7 @@ export type ReleasePlainBody = z.infer<typeof releasePlainBody>;
 /** 快照刷新（D20 运营环）：bizDate 必填——快照必须有数据日期 */
 export const releaseSnapshotsBody = z.object({
   jobIds: z.array(z.number().int().positive()).length(1, "快照刷新每次必须且只能选择一个导入任务"),
-  bizDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "数据日期格式须为 YYYY-MM-DD"),
+  bizDate: businessDateSchema,
   expectedDigest: z.string().length(64).optional(),
   preflightOverrides,
   dryRun: z.boolean().default(true),

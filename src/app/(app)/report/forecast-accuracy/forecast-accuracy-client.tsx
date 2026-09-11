@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import SearchInput from "@/components/SearchInput";
 
 /** E7-05 预测复盘：滚动回测线上 Holt 算法——不存历史预测也能回答「准不准」 */
@@ -46,20 +48,25 @@ export default function ForecastAccuracyClient() {
   const q = filters.q;
   const onlyReliable = filters.onlyReliable === "1";
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     setLoadError(null);
     try {
       const p = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (onlyReliable) p.set("onlyReliable", "1");
-      setData(await fetchJson<Data>(`/api/report/forecast-accuracy?${p.toString()}`));
+      const latestReadResult = await fetchJson<Data>(`/api/report/forecast-accuracy?${p.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       setLoadError((e as Error).message);
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [q, onlyReliable, page, pageSize, message]);
+  }, [beginLoadRead, q, onlyReliable, page, pageSize, message]);
   useEffect(() => { void load(); }, [load]);
 
   const s = data?.summary;

@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Col, Descriptions, Drawer, Row, Select, Space, Table, Tag, Typography } from "antd";
+import { useState } from "react";
+import { Alert, Button, Col, Descriptions, Drawer, Row, Select, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { fetchJson } from "@/components/fetchJson";
+import { useDocumentRead } from "@/components/useDocumentRead";
 import { BOM_STATUS_COLORS, BOM_STATUS_LABELS } from "@/components/labels";
 
 interface DiffSide {
@@ -92,34 +92,11 @@ export default function BomDiffDrawer({
   open: boolean;
   onClose: () => void;
 }) {
-  const { message } = App.useApp();
-  const [diff, setDiff] = useState<DiffResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [againstId, setAgainstId] = useState<number | undefined>(undefined);
-
-  const load = useCallback(async () => {
-    if (bomId == null) return;
-    setLoading(true);
-    try {
-      const url = `/api/master/bom/${bomId}/diff${againstId != null ? `?againstId=${againstId}` : ""}`;
-      setDiff(await fetchJson<DiffResult>(url));
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [bomId, againstId, message]);
-
-  useEffect(() => {
-    if (open) void load();
-  }, [open, load]);
-
-  useEffect(() => {
-    if (!open) {
-      setDiff(null);
-      setAgainstId(undefined);
-    }
-  }, [open]);
+  const [baseline, setBaseline] = useState<{ bomId: number | null; id?: number }>({ bomId: null });
+  const againstId = baseline.bomId === bomId ? baseline.id : undefined;
+  const { data: diff, error, retry, phase } = useDocumentRead<DiffResult>(open && bomId != null
+    ? `/api/master/bom/${bomId}/diff${againstId != null ? `?againstId=${againstId}` : ""}` : null);
+  const loading = phase === "loading";
 
   const columns: ColumnsType<DiffLine> = [
     {
@@ -163,6 +140,8 @@ export default function BomDiffDrawer({
 
   return (
     <Drawer title={`版本对比：${title}`} width={880} open={open} onClose={onClose} destroyOnHidden>
+      {error && <Alert type="error" showIcon message={error} action={<Button onClick={retry}>重试</Button>} />}
+      {loading && <Typography.Text type="secondary">正在读取版本对比…</Typography.Text>}
       {diff && (
         <>
           <Space style={{ marginBottom: 12 }}>
@@ -171,7 +150,7 @@ export default function BomDiffDrawer({
               style={{ width: 260 }}
               placeholder="默认：上一版本"
               value={diff.base?.id}
-              onChange={(v) => setAgainstId(v)}
+              onChange={(v) => setBaseline({ bomId, id: v })}
               options={diff.siblings
                 .filter((s) => s.id !== diff.target.id)
                 .map((s) => ({

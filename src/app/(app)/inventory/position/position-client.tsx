@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /**
  * 库存日级走向（D51/D52）：当月逐日出入库明细钻取页 + 历史月末序列 + 各仓明细。
  * 数据只读 `inventory-position/v1` 读模型；金额字段由服务端按角色剥离（缺 amount = 无权限）。
@@ -89,18 +91,23 @@ function PositionInner() {
   const source = filters.source === "realtime" || filters.source === "snapshot" ? filters.source : "all";
   const months = Number(filters.months) || 12;
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async (refresh = false) => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const params = new URLSearchParams({ months: String(months) });
       if (refresh) params.set("refresh", "1");
-      setData(await fetchJson<InventoryPositionReadModel>(`/api/report/inventory-position?${params.toString()}`));
+      const latestReadResult = await fetchJson<InventoryPositionReadModel>(`/api/report/inventory-position?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [months, message]);
+  }, [beginLoadRead, months, message]);
   useEffect(() => { void load(); }, [load]);
 
   const dailyRows = useMemo(() => {

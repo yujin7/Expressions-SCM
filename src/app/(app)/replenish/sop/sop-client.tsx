@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import {
   Alert,
   App,
@@ -132,11 +134,14 @@ export default function SopClient() {
   const [name, setName] = useState(`${dayjs().format("YYYY年MM月")} 数量供需计划`);
   const [planId, setPlanId] = useState<number | null>(null);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     setLoadError(null);
     try {
-      const next = await fetchJson<Workspace>("/api/replenish/sop");
+      const next = await fetchJson<Workspace>("/api/replenish/sop", { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setData(next);
       setSelectedId((current) =>
         current && next.cycles.some((cycle) => cycle.id === current)
@@ -144,15 +149,16 @@ export default function SopClient() {
           : next.cycles[0]?.id ?? null);
       setPlanId((current) => current ?? next.versions[0]?.id ?? null);
     } catch (error) {
+      if (!readRequest.isCurrent()) return;
       const text = error instanceof Error ? error.message : "S&OP 工作区加载失败";
       setData(null);
       setSelectedId(null);
       setLoadError(text);
       message.error(text);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [message]);
+  }, [beginLoadRead, message]);
 
   useEffect(() => {
     void load();
@@ -272,16 +278,21 @@ export default function SopClient() {
   const executeKey = useRef<string | null>(null);
   const [includeSuppressed, setIncludeSuppressed] = useState(false);
 
+  const beginLoadExecutionRead = useLatestRead();
   const loadExecution = useCallback(async (cycleId: number) => {
+    const readRequest = beginLoadExecutionRead();
     setExecLoading(true);
     try {
-      setExecution(await fetchJson<FrozenExecution>(`/api/replenish/sop?cycleId=${cycleId}`));
+      const latestReadResult = await fetchJson<FrozenExecution>(`/api/replenish/sop?cycleId=${cycleId}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setExecution(latestReadResult);
     } catch {
+      if (!readRequest.isCurrent()) return;
       setExecution(null);
     } finally {
-      setExecLoading(false);
+      if (readRequest.isCurrent()) { setExecLoading(false); }
     }
-  }, []);
+  }, [beginLoadExecutionRead]);
 
   const executable = cycle?.status === "frozen" || cycle?.status === "executing";
   useEffect(() => {

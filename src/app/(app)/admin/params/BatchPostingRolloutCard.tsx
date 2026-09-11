@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
@@ -51,16 +53,21 @@ export function BatchPostingRolloutCard({
   const [loading, setLoading] = useState(false);
   const [activating, setActivating] = useState(false);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
-      setReport(await fetchJson<BatchRolloutReport>("/api/admin/batch-posting"));
+      const latestReadResult = await fetchJson<BatchRolloutReport>("/api/admin/batch-posting", { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setReport(latestReadResult);
     } catch (error) {
+      if (!readRequest.isCurrent()) return;
       message.error((error as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [message]);
+  }, [beginLoadRead, message]);
 
   useEffect(() => {
     void load();

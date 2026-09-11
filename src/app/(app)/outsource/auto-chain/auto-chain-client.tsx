@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /** D33 自动链预演（spec/11 上线闸）：先看清会生成什么，再逐步放开开关 */
 import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Button, Card, Space, Table, Tag, Tooltip, Typography } from "antd";
@@ -28,16 +30,21 @@ export default function AutoChainClient() {
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(false);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
-      setData(await fetchJson<Data>("/api/outsource/auto-chain/preview"));
+      const latestReadResult = await fetchJson<Data>("/api/outsource/auto-chain/preview", { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [message]);
+  }, [beginLoadRead, message]);
   useEffect(() => { void load(); }, [load]);
 
   const genBatch = async (woId: number) => {

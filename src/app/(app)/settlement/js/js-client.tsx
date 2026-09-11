@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import { useDocumentTarget } from "@/components/useDocumentTarget";
 import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
 import { useDocumentRead } from "@/components/useDocumentRead";
@@ -294,20 +296,24 @@ export default function JsClient() {
   const [creating, setCreating] = useState(false);
   const contextualOpenHandled = useRef(false);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (status) params.set("status", status);
-      const res = await fetchJson<{ rows: JsRow[]; total: number }>(`/api/settlement/js?${params.toString()}`);
+      const res = await fetchJson<{ rows: JsRow[]; total: number }>(`/api/settlement/js?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setTotal(res.total);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [q, status, page, pageSize, message]);
+  }, [beginLoadRead, q, status, page, pageSize, message]);
 
   useEffect(() => {
     void load();
@@ -362,19 +368,24 @@ export default function JsClient() {
     }
   };
 
+  const beginPickJgRead = useLatestRead();
   const pickJg = useCallback(async (jgId: number) => {
+    const readRequest = beginPickJgRead();
     setCreateStep(2);
     setPreviewLoading(true);
     setPreview(null);
     try {
-      setPreview(await fetchJson<JsPreview>(`/api/settlement/js/preview?jgId=${jgId}`));
+      const result = await fetchJson<JsPreview>(`/api/settlement/js/preview?jgId=${jgId}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setPreview(result);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
       setCreateStep(1);
     } finally {
-      setPreviewLoading(false);
+      if (readRequest.isCurrent()) setPreviewLoading(false);
     }
-  }, [message]);
+  }, [beginPickJgRead, message]);
 
   useEffect(() => {
     const jgId = Number(searchParams.get("jgId"));

@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import SearchInput from "@/components/SearchInput";
 
 /**
@@ -44,19 +46,23 @@ function BorrowHistoryTab() {
   const { page, pageSize } = listState;
   const q = listState.filters.q;
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const params = new URLSearchParams({ kind: "borrow", q, page: String(page), pageSize: String(pageSize) });
-      const res = await fetchJson<{ rows: BorrowRow[]; total: number }>(`/api/report/transit?${params.toString()}`);
+      const res = await fetchJson<{ rows: BorrowRow[]; total: number }>(`/api/report/transit?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setTotal(res.total);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [q, page, pageSize, message]);
+  }, [beginLoadRead, q, page, pageSize, message]);
 
   useEffect(() => {
     void load();
@@ -129,16 +135,21 @@ export default function JiediaoClient() {
     }, 60);
   };
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
-      setData(await fetchJson<JiediaoReport>(`/api/report/jiediao?month=${month.format("YYYY-MM")}`));
+      const latestReadResult = await fetchJson<JiediaoReport>(`/api/report/jiediao?month=${month.format("YYYY-MM")}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [month, message]);
+  }, [beginLoadRead, month, message]);
 
   useEffect(() => {
     void load();

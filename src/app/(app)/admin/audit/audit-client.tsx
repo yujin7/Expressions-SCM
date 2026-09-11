@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /**
  * 审计日志查看（UAT 缺口 #2）：筛选（对象/单据ID/操作人/动作/时间段/关键字）+
  * 展开行左右并排展示 before/after JSON。仅追加数据，无任何写操作。
@@ -147,7 +149,9 @@ function AuditInner({ isAdmin }: { isAdmin: boolean }) {
     setQ(filters.q);
   }, [filters]);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const sp = new URLSearchParams();
@@ -160,15 +164,17 @@ function AuditInner({ isAdmin }: { isAdmin: boolean }) {
       if (filters.from) sp.set("from", filters.from);
       if (filters.to) sp.set("to", filters.to);
       if (filters.q.trim()) sp.set("q", filters.q.trim());
-      const res = await fetchJson<{ rows: AuditRow[]; total: number }>(`/api/admin/audit?${sp}`);
+      const res = await fetchJson<{ rows: AuditRow[]; total: number }>(`/api/admin/audit?${sp}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setTotal(res.total);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [page, pageSize, filters, message]);
+  }, [beginLoadRead, page, pageSize, filters, message]);
 
   useEffect(() => {
     void load();

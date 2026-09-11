@@ -5,10 +5,10 @@
  * ⚠ 合同条款为占位框架——正式条款待业务定稿（会议待办「委外工单模板制定」），定稿后仅改 TERMS。
  * 加工费随 API 角色脱敏（R9）；未生效单据带水印。
  */
-import { use, useCallback, useEffect, useState } from "react";
+import { use } from "react";
 import { Alert, Button, Space, Spin } from "antd";
 import { PrinterOutlined } from "@ant-design/icons";
-import { fetchJson } from "@/components/fetchJson";
+import { useDocumentRead } from "@/components/useDocumentRead";
 import { DOC_STATUS_LABELS } from "@/components/labels";
 import { shanghaiDayOf } from "@/server/core/business-day";
 
@@ -46,20 +46,9 @@ const TERMS_PLACEHOLDER = [
 
 export default function JgPrintPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const [detail, setDetail] = useState<JgDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const load = useCallback(async () => {
-    try {
-      setDetail(await fetchJson<JgDetail>(`/api/outsource/jg/${id}`));
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }, [id]);
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const { data: detail, error, retry } = useDocumentRead<JgDetail>(`/api/outsource/jg/${id}`);
 
-  if (error) return <Alert type="error" showIcon message={error} style={{ margin: 24 }} />;
+  if (error) return <Alert type="error" showIcon message={error} action={<Button onClick={retry}>重试</Button>} style={{ margin: 24 }} />;
   if (!detail) return <Spin style={{ display: "block", margin: "80px auto" }} />;
   const notEffective = ["draft", "pending", "void"].includes(detail.status);
 

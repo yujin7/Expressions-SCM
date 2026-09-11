@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import SearchInput from "@/components/SearchInput";
 
 /** E5-08 物料比价：同一物料多供应商基准价并排，价差最大者优先（只读；R1 防买贵，本页防买错家） */
@@ -56,19 +58,24 @@ export default function PriceCompareClient() {
   const { filters, page, pageSize } = listState;
   const q = filters.q;
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     setLoadError(null);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
-      setData(await fetchJson<PriceCompareData>(`/api/report/price-compare?${params.toString()}`));
+      const latestReadResult = await fetchJson<PriceCompareData>(`/api/report/price-compare?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       setLoadError((e as Error).message);
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [q, page, pageSize, message]);
+  }, [beginLoadRead, q, page, pageSize, message]);
   useEffect(() => { if (canView) void load(); }, [load, canView]);
 
   if (me && !canView) {

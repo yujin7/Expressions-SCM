@@ -10,10 +10,12 @@
  *  · 让步接收量**已经入库**（W2 起），所以它是唯一真正可退的量；
  *  · 不合格量从未入库，可退量为 0 时不会开一张永远批不掉的退货单——但质量案件照登记。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Alert, App, Button, Card, Checkbox, Descriptions, Modal, Select, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
+
+import { useDocumentRead } from "@/components/useDocumentRead";
 
 interface OutcomeLine {
   qcLineId: number;
@@ -46,21 +48,17 @@ const SEVERITIES = [
 
 export default function QcOutcomePanel({ shId, canWrite, onDone }: { shId: number; canWrite: boolean; onDone?: () => void }) {
   const { message } = App.useApp();
-  const [data, setData] = useState<Outcome | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [createCase, setCreateCase] = useState(true);
   const [createReturn, setCreateReturn] = useState(false);
   const [severity, setSeverity] = useState("medium");
 
-  const load = useCallback(async () => {
-    try { setData(await fetchJson<Outcome>(`/api/matflow/sh/${shId}/qc-outcome`)); setError(null); }
-    catch (e) { setError((e as Error).message); }
-  }, [shId]);
-  useEffect(() => { void load(); }, [load]);
+  const { data, error, retry: load } = useDocumentRead<Outcome>(`/api/matflow/sh/${shId}/qc-outcome`);
+  useEffect(() => { setOpen(false); setCreateCase(true); setCreateReturn(false); setSeverity("medium"); }, [shId]);
 
   const submit = async () => {
+    if (!data || !canWrite || saving) return;
     setSaving(true);
     try {
       const res = await fetchJson<{ qualityCaseNo: string | null; returnCtDocNo: string | null; returnSkippedReason: string | null }>(
@@ -83,8 +81,8 @@ export default function QcOutcomePanel({ shId, canWrite, onDone }: { shId: numbe
     }
   };
 
-  if (error) return <Alert type="warning" showIcon message="不合格去向加载失败" description={error} style={{ marginBottom: 16 }} />;
-  if (!data) return null;
+  if (error) return <Alert type="warning" showIcon message="不合格去向加载失败" description={error} action={<Button onClick={load}>重试</Button>} style={{ marginBottom: 16 }} />;
+  if (!data) return <Typography.Text type="secondary">正在核对检验去向…</Typography.Text>;
   const hasIssue = Number(data.totals.fail) > 0 || Number(data.totals.concession) > 0;
   if (!hasIssue) return null;
   const purchaseLineIssues = data.lines.flatMap(l => l.purchaseLineIssue ? [l.purchaseLineIssue] : []);
