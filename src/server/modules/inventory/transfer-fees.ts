@@ -21,6 +21,8 @@ import { getNumParam } from "@/server/core/params";
 import { type AnyDb, resolveDb } from "@/server/core/svc";
 import { deviation, type DeviationResult, laneBaseline, unitFee } from "@/server/rules/transfer-cost";
 import { ApiError } from "@/server/modules/master/common";
+import { businessDateSchema } from "@/server/core/business-date-schema";
+import { currentWriteActor } from "@/server/core/current-write-actor";
 import { laneKeyOf, loadTransferDocFacts, shanghaiDate } from "@/server/modules/report/transfer-routes";
 
 export const TRANSFER_FEE_TYPES = ["freight", "handling", "customs", "other"] as const;
@@ -43,10 +45,10 @@ const decStr = z
 export const addTransferFeeSchema = z.object({
   stockDocId: z.number().int().positive({ message: "必须指定调拨单" }),
   feeType: z.enum(TRANSFER_FEE_TYPES, { errorMap: () => ({ message: "费用类型仅限 运费/装卸/关税/其他" }) }),
-  amount: decStr.refine((s) => dCmp(s, "0") >= 0, "费用金额不能为负（作废走红字）"),
+  amount: decStr.pipe(z.string().refine((s) => dCmp(s, "0") >= 0, "费用金额不能为负（作废走红字）")),
   currency: z.string().trim().max(8).optional(),
   carrier: z.string().trim().max(100).optional(),
-  bizDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "费用发生日须为 YYYY-MM-DD"),
+  bizDate: businessDateSchema,
   note: z.string().trim().max(500).optional(),
 });
 export type AddTransferFeeInput = z.infer<typeof addTransferFeeSchema>;
@@ -109,10 +111,12 @@ export async function addTransferFee(
   const v = addTransferFeeSchema.parse(input);
   const db = await resolveDb(dbArg);
   return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    if (!actor.roles.some(role => ["admin", "warehouse", "finance"].includes(role))) throw new ApiError(403, "需仓管或财务权限");
     const [doc]: { id: number; docNo: string; subtype: string; status: string }[] = await tx
       .select({ id: schema.stockDocs.id, docNo: schema.stockDocs.docNo, subtype: schema.stockDocs.subtype, status: schema.stockDocs.status })
       .from(schema.stockDocs)
-      .where(eq(schema.stockDocs.id, v.stockDocId));
+      .where(eq(schema.stockDocs.id, v.stockDocId)).for("update");
     if (!doc) throw new ApiError(404, "调拨单不存在");
     if (doc.subtype !== "transfer") throw new ApiError(400, `仅调拨单可登记费用：${doc.docNo} 为 ${doc.subtype}`);
     if (!(FEE_ALLOWED_DOC_STATUSES as readonly string[]).includes(doc.status)) {
@@ -129,12 +133,12 @@ export async function addTransferFee(
         bizDate: v.bizDate,
         source: "manual",
         note: v.note || null,
-        createdBy: user.id,
+        createdBy: actor.id,
       })
       .returning();
     const warning = await evaluateWarning(tx, doc.id);
     await writeAudit(tx, {
-      userId: user.id,
+      userId: actor.id,
       entity: "transfer_fee",
       entityId: fee.id,
       action: "create",
@@ -157,7 +161,9 @@ export async function reverseTransferFee(user: SessionUser, input: unknown, dbAr
   const v = reverseTransferFeeSchema.parse(input);
   const db = await resolveDb(dbArg);
   return db.transaction(async (tx: AnyDb) => {
-    const [orig]: FeeRow[] = await tx.select().from(schema.transferFees).where(eq(schema.transferFees.id, v.reversalOfId));
+    const actor = await currentWriteActor(tx, user);
+    if (!actor.roles.some(role => ["admin", "warehouse", "finance"].includes(role))) throw new ApiError(403, "需仓管或财务权限");
+    const [orig]: FeeRow[] = await tx.select().from(schema.transferFees).where(eq(schema.transferFees.id, v.reversalOfId)).for("update");
     if (!orig) throw new ApiError(404, "费用记录不存在");
     if (orig.reversalOfId != null) throw new ApiError(400, "红字行不可再作废（无套娃）");
     const dup: { id: number }[] = await tx
@@ -179,11 +185,11 @@ export async function reverseTransferFee(user: SessionUser, input: unknown, dbAr
         source: "manual",
         note: v.reason,
         reversalOfId: orig.id,
-        createdBy: user.id,
+        createdBy: actor.id,
       })
       .returning();
     await writeAudit(tx, {
-      userId: user.id,
+      userId: actor.id,
       entity: "transfer_fee",
       entityId: rev.id,
       action: "reverse",
@@ -240,6 +246,12 @@ export async function listTransferFees(
   query: ListTransferFeesQuery,
   dbArg?: AnyDb,
 ): Promise<{ rows: TransferFeeListRow[]; total: number }> {
+  const dateFrom = query.dateFrom === "" ? undefined : query.dateFrom;
+  const dateTo = query.dateTo === "" ? undefined : query.dateTo;
+  for (const date of [dateFrom, dateTo]) {
+    if (date !== undefined && !businessDateSchema.safeParse(date).success) throw new ApiError(400, "费用日期筛选无效，请使用有效的 YYYY-MM-DD 日期");
+  }
+  if (dateFrom && dateTo && dateFrom > dateTo) throw new ApiError(400, "起始日期不能晚于结束日期");
   const db = await resolveDb(dbArg);
   const page = Math.max(1, query.page ?? 1);
   const pageSize = Math.min(500, Math.max(1, query.pageSize ?? 50));
@@ -266,8 +278,8 @@ export async function listTransferFees(
   if (query.toWarehouseId) conds.push(eq(lineAgg.toId, query.toWarehouseId));
   if (query.transferType === "unclassified") conds.push(sql`${sd.transferType} IS NULL`);
   else if (query.transferType) conds.push(eq(sd.transferType, query.transferType));
-  if (query.dateFrom && /^\d{4}-\d{2}-\d{2}$/.test(query.dateFrom)) conds.push(sql`${tf.bizDate} >= ${query.dateFrom}`);
-  if (query.dateTo && /^\d{4}-\d{2}-\d{2}$/.test(query.dateTo)) conds.push(sql`${tf.bizDate} <= ${query.dateTo}`);
+  if (dateFrom) conds.push(sql`${tf.bizDate} >= ${dateFrom}`);
+  if (dateTo) conds.push(sql`${tf.bizDate} <= ${dateTo}`);
   if (query.view === "active") conds.push(sql`${tf.reversalOfId} IS NULL`, sql`${rev.id} IS NULL`);
   const where = conds.length ? and(...conds) : undefined;
 

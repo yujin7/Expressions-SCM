@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { approvalConfigs, auditLogs, skus, spus, transferFees, users, warehouses } from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
 import { approveStockDoc, createStockDoc, submitStockDoc } from "@/server/modules/inventory/stock-doc";
-import { addTransferFee, listTransferFees, reverseTransferFee, transferFeeNetByDoc } from "@/server/modules/inventory/transfer-fees";
+import { addTransferFee, addTransferFeeSchema, listTransferFees, reverseTransferFee, transferFeeNetByDoc } from "@/server/modules/inventory/transfer-fees";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 describe("transfer-fees：登记 / 红字作废 / 列表", () => {
@@ -76,6 +76,23 @@ describe("transfer-fees：登记 / 红字作废 / 列表", () => {
     ).rejects.toMatchObject({ name: "ZodError" });
   });
 
+  it("invalid date filters fail before querying, including impossible calendar days and reversed bounds", async () => {
+    for (const value of ["bad", "2026-13-45", "2026-02-29", "2026-04-31", "0000-01-01", " "]) {
+      for (const field of ["dateFrom", "dateTo"]) await expect(listTransferFees({ [field]: value }, db)).rejects.toMatchObject({ status: 400 });
+    }
+    await expect(listTransferFees({ dateFrom: "2026-09-02", dateTo: "2026-09-01" }, db)).rejects.toMatchObject({ status: 400 });
+    expect((await listTransferFees({ dateFrom: "2024-02-29", dateTo: "2024-02-29" }, db)).total).toBe(0);
+  });
+
+  it("bad amounts are validation errors, not decimal parser exceptions; input dates are real dates", () => {
+    const base = { stockDocId: completedDocId, feeType: "freight", amount: "1", bizDate: "2026-09-01" };
+    for (const amount of ["abc", "NaN", "Infinity", "1e4", "", "--1"]) {
+      expect(addTransferFeeSchema.safeParse({ ...base, amount }).success).toBe(false);
+    }
+    expect(addTransferFeeSchema.safeParse({ ...base, bizDate: "2026-02-29" }).success).toBe(false);
+    expect(addTransferFeeSchema.safeParse({ ...base, bizDate: "2024-02-29" }).success).toBe(true);
+  });
+
   it("已完成调拨单登记费用：金额 scale 2、审计同事务、首单无基线 → 提醒 ok/样本不足", async () => {
     const { fee, warning } = await addTransferFee(
       finance,
@@ -124,5 +141,18 @@ describe("transfer-fees：登记 / 红字作废 / 列表", () => {
     expect(byLane.total).toBe(3);
     const none = await listTransferFees({ fromWarehouseId: whB }, db);
     expect(none.total).toBe(0);
+  });
+  it("create and reversal reject a revoked role or disabled account even through direct service calls", async () => {
+    const [u] = await db.insert(users).values({ name: "fee stale session", roles: ["finance"] }).returning();
+    const stale = { id: u.id, name: u.name, roles: u.roles, isApprover: u.isApprover, sessionVersion: u.sessionVersion };
+    const input = { stockDocId: completedDocId, feeType: "freight", amount: "2", bizDate: "2026-09-11" };
+    const fee = await addTransferFee(stale, input, db);
+    for (const patch of [{ roles: ["ops"] }, { roles: ["finance"], active: false }, { active: true, sessionVersion: u.sessionVersion + 1 }]) {
+      await db.update(users).set(patch).where(eq(users.id, u.id));
+      const before = await db.select().from(transferFees);
+      await expect(addTransferFee(stale, input, db)).rejects.toMatchObject({ status: "sessionVersion" in patch ? 401 : 403 });
+      await expect(reverseTransferFee(stale, { reversalOfId: fee.fee.id, reason: "重复" }, db)).rejects.toMatchObject({ status: "sessionVersion" in patch ? 401 : 403 });
+      expect(await db.select().from(transferFees)).toEqual(before);
+    }
   });
 });
