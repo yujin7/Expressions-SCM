@@ -198,7 +198,7 @@ export default function BatchTraceClient() {
             description={data.coverage.note}
           />
           <Card size="small" title="批次登记">
-            <Descriptions column={2} size="small">
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small">
               <Descriptions.Item label="SKU">{data.batch.skuCode} {data.batch.skuName}</Descriptions.Item>
               <Descriptions.Item label="批次号">{data.batch.batchNo}</Descriptions.Item>
               <Descriptions.Item label="生产日期">{data.batch.prodDate ?? "—"}</Descriptions.Item>
@@ -214,10 +214,11 @@ export default function BatchTraceClient() {
               size="small"
               pagination={false}
               dataSource={data.stockByWarehouse}
+              scroll={{ x: 420 }}
               locale={{ emptyText: "该批次当前无参考层库存记录" }}
               columns={[
-                { title: "仓库", dataIndex: "warehouse" },
-                { title: "数量", dataIndex: "qty", align: "right", render: (v: number) => formatQty(String(v)) },
+                { title: "仓库", dataIndex: "warehouse", width: 180 },
+                { title: "数量", dataIndex: "qty", width: 120, align: "right", render: (v: number) => formatQty(String(v)) },
                 { title: "盘点期间", dataIndex: "stocktakeDate", width: 120 },
               ]}
             />
@@ -247,13 +248,14 @@ export default function BatchTraceClient() {
               size="small"
               pagination={false}
               dataSource={data.ledger}
+              scroll={{ x: 650 }}
               locale={{ emptyText: "暂无带该批次的台账流水（见上方覆盖说明）" }}
               columns={[
                 { title: "日期", dataIndex: "occurredAt", width: 110 },
-                { title: "仓库", dataIndex: "warehouse" },
+                { title: "仓库", dataIndex: "warehouse", width: 150 },
                 { title: "方向", width: 80, render: (_: unknown, r: LedgerRow) => <Tag color={r.qtyDelta >= 0 ? "green" : "orange"}>{r.qtyDelta >= 0 ? "入库" : "出库"}</Tag> },
-                { title: "数量", dataIndex: "qtyDelta", align: "right", render: (v: number) => formatQty(String(Math.abs(v))) },
-                { title: "来源单据", render: (_: unknown, r: LedgerRow) => `${r.sourceDocType} #${r.sourceDocId}` },
+                { title: "数量", dataIndex: "qtyDelta", width: 130, align: "right", render: (v: number) => formatQty(String(Math.abs(v))) },
+                { title: "来源单据", width: 180, render: (_: unknown, r: LedgerRow) => `${r.sourceDocType} #${r.sourceDocId}` },
               ]}
             />
           </Card>

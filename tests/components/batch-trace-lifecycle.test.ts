@@ -107,6 +107,8 @@ it("write timeout warns that abort is not cancellation and blocks resubmission",
 });
 it("lookup has exactly two labelled fields and the placement table scrolls internally", async () => {
   await ready(); expect(nodes(render()).filter(n => String(n.type) === "input").map(n => n.props["aria-label"])).toEqual(["SKU 编码", "批次号"]); expect(placements()!.scroll).toEqual({ x: 660 });
+  expect(nodes(render()).filter(n => n.type === "table").map(n => n.props.scroll)).toEqual([{ x: 420 }, { x: 660 }, { x: 650 }]);
+  expect(nodes(render()).find(n => String(n.type) === "descriptions")!.props.column).toEqual({ xs: 1, sm: 2 });
 });
 it("Chinese composition confirmation does not submit an unfinished lookup", () => {
   change("SKU 编码", "SKU-1"); render(); change("批次号", "LOT-1"); render();
