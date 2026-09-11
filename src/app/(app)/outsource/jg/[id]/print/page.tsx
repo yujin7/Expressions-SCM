@@ -10,6 +10,8 @@ import { Alert, Button, Space, Spin } from "antd";
 import { PrinterOutlined } from "@ant-design/icons";
 import { useDocumentRead } from "@/components/useDocumentRead";
 import { DOC_STATUS_LABELS } from "@/components/labels";
+import { formatQty } from "@/components/format";
+import { jgExecutionView } from "@/lib/jg-execution";
 import { shanghaiDayOf } from "@/server/core/business-day";
 
 interface JgDetail {
@@ -21,11 +23,14 @@ interface JgDetail {
   productSkuCode: string;
   productSkuName: string;
   qty: string;
+  baseUom: string;
   dueDate: string | null;
   feeRateCurrent?: string;
   orderType: string | null;
   pkgReadyDate: string | null;
   urgentFlag: boolean;
+  isPaused: boolean;
+  inProduction: boolean;
   priority: string | null;
   createdAt: string;
   createdByName: string | null;
@@ -51,6 +56,7 @@ export default function JgPrintPage({ params }: { params: Promise<{ id: string }
   if (error) return <Alert type="error" showIcon message={error} action={<Button onClick={retry}>重试</Button>} style={{ margin: 24 }} />;
   if (!detail) return <Spin style={{ display: "block", margin: "80px auto" }} />;
   const notEffective = ["draft", "pending", "void"].includes(detail.status);
+  const execution = jgExecutionView(detail);
 
   return (
     <div style={{ maxWidth: 900, margin: "0 auto", padding: 24, background: "#fff", color: "#000", position: "relative" }}>
@@ -70,12 +76,17 @@ export default function JgPrintPage({ params }: { params: Promise<{ id: string }
       <h2 style={{ textAlign: "center", marginBottom: 4 }}>委 外 加 工 通 知 单</h2>
       <div style={{ textAlign: "center", fontSize: 13, marginBottom: 16 }}>单号：{detail.docNo}（工单 {detail.woDocNo}）</div>
       <table className="jg-meta"><tbody>
-        <tr><td>加工厂：{detail.supplierName}</td><td>交期：{detail.dueDate ?? "—"}{detail.urgentFlag ? "（紧急）" : ""}</td></tr>
-        <tr><td>成品：{detail.productSkuCode} {detail.productSkuName}</td><td>数量：{detail.qty}</td></tr>
+        <tr><td>加工厂：{detail.supplierName}</td><td>交期：{detail.dueDate ?? "未填交期"}</td></tr>
+        <tr><td>成品：{detail.productSkuCode} {detail.productSkuName}</td><td>数量：{formatQty(detail.qty)} {detail.baseUom || "单位待核对"}</td></tr>
         <tr><td>订单类型：{detail.orderType ?? "—"}</td><td>包材齐套日：{detail.pkgReadyDate ?? "—"}</td></tr>
         {detail.feeRateCurrent != null ? <tr><td>加工费单价：{detail.feeRateCurrent}</td><td>优先级：{detail.priority ?? "—"}</td></tr> : null}
         <tr><td>制单：{detail.createdByName ?? "—"} {shDate(detail.createdAt)}</td><td>状态：{DOC_STATUS_LABELS[detail.status] ?? detail.status}</td></tr>
       </tbody></table>
+      <p style={{ fontSize: 12 }}>执行口径：{execution.phase}。
+        {execution.flags.map(flag => flag.text).join("、")}
+        {execution.flags.length ? `；${execution.flagExplanation}` : ""}
+        {execution.explanation}
+      </p>
       {detail.remark ? <p style={{ fontSize: 13 }}>备注：{detail.remark}</p> : null}
       <h4 style={{ marginTop: 20 }}>合同条款（占位框架）</h4>
       <ol style={{ fontSize: 12.5, paddingLeft: 20, lineHeight: 1.8 }}>

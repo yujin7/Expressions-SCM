@@ -183,6 +183,7 @@ export async function getJg(id: number, dbArg?: AnyDb) {
       productSkuCode: skus.code,
       productSkuName: skus.name,
       productSkuBarcode: skus.barcode,
+      baseUom: skus.baseUom,
       qty: jgDocs.qty,
       dueDate: jgDocs.dueDate,
       feeRateCurrent: jgDocs.feeRateCurrent, // 敏感——路由边界 maskSensitive 剥离
@@ -223,9 +224,7 @@ export async function getJg(id: number, dbArg?: AnyDb) {
 
   const capacity = await getSupplierCapacitySignal({
     supplierId: doc.supplierId,
-    baseUom: (
-      await db.select({ baseUom: skus.baseUom }).from(skus).where(eq(skus.id, doc.productSkuId))
-    )[0]?.baseUom ?? "未标",
+    baseUom: doc.baseUom,
     dueDate: doc.dueDate,
   }, db);
 
@@ -257,6 +256,7 @@ export async function listJgs(
         supplierName: suppliers.name,
         productSkuCode: skus.code,
         productSkuName: skus.name,
+        baseUom: skus.baseUom,
         qty: jgDocs.qty,
         dueDate: jgDocs.dueDate,
         inProduction: jgDocs.inProduction,

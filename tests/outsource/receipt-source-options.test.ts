@@ -1,7 +1,7 @@
 import { beforeAll, expect, it } from "vitest";
 import { createTestDb, type TestDb } from "../helpers/db";
 import { listPos } from "@/server/modules/outsource/po";
-import { listJgs } from "@/server/modules/outsource/jg";
+import { getJg, listJgs } from "@/server/modules/outsource/jg";
 import * as s from "@/db/schema";
 
 let db: TestDb, poId: number, jgId: number, closedPo: number, closedJg: number;
@@ -21,6 +21,12 @@ beforeAll(async () => {
 it.each(["po", "jg"])("%s filters receipt eligibility before paging past 501 newer drafts", async kind => {
   const result = await (kind === "po" ? listPos : listJgs)("", { page: 1, pageSize: 50, receiptEligible: true }, db);
   expect(result.total).toBe(1); expect(result.rows).toMatchObject([{ id: kind === "po" ? poId : jgId }]);
+});
+it("JG list, detail and capacity share the SKU base unit without fabricating progress", async () => {
+  const result = await listJgs("", { page: 1, pageSize: 50, selectedValues: [closedJg] }, db);
+  expect(result.rows).toMatchObject([{ id: closedJg, status: "completed", inProduction: false, baseUom: "盒", qty: "10.0000" }]);
+  const detail = await getJg(closedJg, db);
+  expect(detail).toMatchObject({ baseUom: "盒", status: "completed", inProduction: false, capacity: { baseUom: "盒" } });
 });
 it.each(["po", "jg"])("%s selected identities intersect receipt status and search, ignoring ordinary page offset", async kind => {
   const list = kind === "po" ? listPos : listJgs, id = kind === "po" ? poId : jgId;
