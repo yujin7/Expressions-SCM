@@ -12,7 +12,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Alert, App, Button, Descriptions, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { DeleteOutlined, ExperimentOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
-import dayjs from "dayjs";
+import { formatAsOf } from "@/components/format";
 import ExportButton from "@/components/ExportButton";
 import RemoteSelect from "@/components/RemoteSelect";
 import DocStatusTag from "@/components/DocStatusTag";
@@ -394,7 +394,7 @@ function DocsInner() {
       title: "时间",
       dataIndex: "createdAt",
       width: 160,
-      render: (v: string) => dayjs(v).format("YYYY-MM-DD HH:mm"),
+      render: (v: string) => formatAsOf(v),
     },
     { title: "状态", dataIndex: "status", width: 100, render: (v: string) => <DocStatusTag status={v} /> },
     {
@@ -411,7 +411,7 @@ function DocsInner() {
 
   const lineColumns: ColumnsType<DocLine> = [
     { title: "SKU 编码", dataIndex: "skuCode", width: 110 },
-    { title: "名称", dataIndex: "skuName" },
+    { title: "名称", dataIndex: "skuName", width: 180 },
     { title: "数量", dataIndex: "qty", width: 110, align: "right" },
     {
       title: "批次",
@@ -419,8 +419,8 @@ function DocsInner() {
       width: 150,
       render: (value: string | null, row) =>
         value ? (
-          <Space size={4}>
-            <Tag color="blue">{value}</Tag>
+          <Space size={4} wrap>
+            <Tag color="blue" style={{ whiteSpace: "normal", overflowWrap: "anywhere" }}>{value}</Tag>
             {row.expiryDate ? <Typography.Text type="secondary">{row.expiryDate}</Typography.Text> : null}
           </Space>
         ) : (
@@ -741,7 +741,7 @@ function DocsInner() {
               </Descriptions.Item>
               <Descriptions.Item label="制单人">{detail.createdByName}</Descriptions.Item>
               <Descriptions.Item label="制单时间">
-                {dayjs(detail.createdAt).format("YYYY-MM-DD HH:mm")}
+                {formatAsOf(detail.createdAt)}（上海时间）
               </Descriptions.Item>
               <Descriptions.Item label="备注">{detail.remark ?? "—"}</Descriptions.Item>
               <Descriptions.Item label="红字引用">
@@ -755,6 +755,7 @@ function DocsInner() {
               columns={lineColumns}
               dataSource={detail.lines}
               pagination={false}
+              scroll={{ x: 740 }}
               style={{ marginBottom: 24 }}
             />
             {detail.approvalBasis?.note ? <Alert
