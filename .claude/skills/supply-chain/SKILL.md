@@ -11,6 +11,9 @@ Own the business outcome, system boundaries, and sequencing. Do not load every s
 
 1. Read `CLAUDE.md` and `docs/NOW.md` when present.
    Read `docs/spec/CURRENT.md` when current intent, scope, or a business ruling matters.
+   Keep NOW a short current-state handoff: replace superseded status, link detailed evidence,
+   and preserve unresolved requirements. Do not append each turn's log or load its linked history
+   by default; search the relevant dated section only when it changes the next action.
 2. State the outcome, accountable role, affected facts, irreversible choices, and acceptance evidence.
 3. Select exactly one primary skill for the current phase:
    - workflow, UX, planning, quality, and alerts: `design-supply-chain-flows`
