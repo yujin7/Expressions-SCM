@@ -41,6 +41,7 @@ const fixture: PromiseReliability = {
   },
   coverage: { promisePct: 66.67, calculablePct: 100, historyPct: 100 },
   exceptionTotal: 1,
+  exceptionView: { q: "", basis: "", status: "", sort: "", order: "desc", page: 1, pageSize: 30, total: 1 },
   exceptions: [{
     lineId: 7,
     poId: 3,

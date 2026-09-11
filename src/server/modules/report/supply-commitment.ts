@@ -18,6 +18,7 @@ import { dAdd, dCmp, dMul, dQty, dSub } from "@/server/core/decimal";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { resolvePromiseBasis, type PromiseHistoryState } from "@/server/rules/promise-basis";
 import { indexPurchaseLineReceipts } from "./purchase-line-receipts";
+import { promiseExceptionQuerySchema, type PromiseExceptionQuery } from "./promise-exception-query";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -132,6 +133,8 @@ export interface PromiseReliability {
   exceptions: PromiseReliabilityRow[];
   /** Both bases count separately; computed before the preview/export cap. */
   exceptionTotal: number;
+  /** Filters affect exceptions only, never the full-window reliability denominator. */
+  exceptionView: PromiseExceptionQuery & { total: number };
   gate: string | null;
   historyGate: string | null;
   limitations: string[];
@@ -186,14 +189,15 @@ export function buildPromiseReliability(
   lines: PromiseLineFact[],
   receipts: PromiseReceiptFact[],
   returns: PromiseReturnFact[],
-  options: { asOf: string; windowDays?: number; limit?: number },
+  options: { asOf: string; windowDays?: number; limit?: number; exceptionQuery?: Partial<PromiseExceptionQuery> },
 ): PromiseReliability {
   const asOf = options.asOf;
   if (!DATE_RE.test(asOf) || asOf.startsWith("0000") || shanghaiDay(asOf) !== asOf) {
     throw new ApiError(400, "供给承诺截止日格式不正确（应为 YYYY-MM-DD）");
   }
   const windowDays = Math.min(1095, Math.max(30, options.windowDays ?? DEFAULT_WINDOW_DAYS));
-  const limit = options.limit ?? DEFAULT_LIMIT;
+  const exceptionQuery = promiseExceptionQuerySchema.parse(options.exceptionQuery ?? {});
+  const limit = options.limit ?? (options.exceptionQuery ? exceptionQuery.pageSize : DEFAULT_LIMIT);
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50000) throw new ApiError(400, "承诺例外读取上限须为1–50000的整数");
   const windowFrom = addDays(asOf, -(windowDays - 1));
   const receiptIndex = indexPurchaseLineReceipts(
@@ -340,6 +344,20 @@ export function buildPromiseReliability(
         || a.docNo.localeCompare(b.docNo)
         || a.poId - b.poId || a.lineId - b.lineId;
     });
+  const needle = exceptionQuery.q.toLocaleLowerCase("zh-CN");
+  const matching = exceptions.filter(row =>
+    (!exceptionQuery.basis || row.basis === exceptionQuery.basis)
+    && (!exceptionQuery.status || row.status === exceptionQuery.status)
+    && (!needle || [row.docNo, String(row.lineId), row.supplierCode, row.supplierName, row.skuCode, row.skuName]
+      .some(value => value.toLocaleLowerCase("zh-CN").includes(needle))));
+  const sort = exceptionQuery.sort;
+  if (sort) matching.sort((a, b) => {
+    const av = a[sort], bv = b[sort];
+    const comparison = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv), "zh-CN");
+    return comparison * (exceptionQuery.order === "desc" ? -1 : 1)
+      || a.poId - b.poId || a.lineId - b.lineId || a.basis.localeCompare(b.basis);
+  });
+  const offset = (exceptionQuery.page - 1) * exceptionQuery.pageSize;
   const calculableBase = totals.eligibleLines + totals.ambiguous + totals.controlMismatch;
   const historyBase = originalTotals.historyTrusted + originalTotals.historyBackfilled + originalTotals.historyMissing;
   const state = totals.eligibleLines > 0 || originalTotals.eligibleLines > 0 ? "ready" : "insufficient";
@@ -365,8 +383,9 @@ export function buildPromiseReliability(
       calculablePct: pct(totals.eligibleLines, calculableBase),
       historyPct: pct(originalTotals.historyTrusted, historyBase),
     },
-    exceptions: exceptions.slice(0, limit),
+    exceptions: matching.slice(offset, offset + limit),
     exceptionTotal: exceptions.length,
+    exceptionView: { ...exceptionQuery, total: matching.length },
     gate: state === "ready"
       ? null
       : "窗口内没有可安全计算的已到期采购承诺行；无交期、未来交期、收货归属不清、版本缺口和控制量不一致均不会被当作零。",
@@ -390,7 +409,7 @@ export function buildPromiseReliability(
 const shanghaiDate = shanghaiDayOf;
 
 export async function loadPromiseReliability(
-  query: { asOf?: string; windowDays?: number; limit?: number } = {},
+  query: { asOf?: string; windowDays?: number; limit?: number; exceptionQuery?: Partial<PromiseExceptionQuery> } = {},
   dbArg?: AnyDb,
 ): Promise<PromiseReliability> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
@@ -502,6 +521,6 @@ export async function loadPromiseReliability(
       qty: row.qty,
       returnedDate: shanghaiDate(new Date(row.returnedAt)),
     })),
-    { asOf: query.asOf ?? todayShanghai(), windowDays: query.windowDays, limit: query.limit },
+    { asOf: query.asOf ?? todayShanghai(), windowDays: query.windowDays, limit: query.limit, exceptionQuery: query.exceptionQuery },
   );
 }

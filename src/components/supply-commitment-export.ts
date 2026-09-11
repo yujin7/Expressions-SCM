@@ -35,6 +35,8 @@ export function buildPromiseReliabilityExport(data: PromiseReliability) {
     "足量日期",
     "例外总数（原始与当前分列）",
     "本文件例外数",
+    "筛选匹配总数",
+    "明细筛选与排序（不改变总体率分母）",
     "取数说明",
     "外部对照门禁",
   ];
@@ -56,6 +58,7 @@ export function buildPromiseReliabilityExport(data: PromiseReliability) {
     data.coverage.calculablePct == null ? "未知" : `${data.coverage.calculablePct}%`,
     data.coverage.historyPct == null ? "未知" : `${data.coverage.historyPct}%`,
   ];
+  const filterNote = `搜索=${data.exceptionView.q || "全部"}；口径=${data.exceptionView.basis || "全部"}；状态=${data.exceptionView.status || "全部"}；排序=${data.exceptionView.sort || "默认优先级"}；方向=${data.exceptionView.order}`;
   const rows = data.exceptions.map((row) => [
     ...common,
     row.basis === "original" ? "原始承诺" : "当前承诺",
@@ -82,15 +85,19 @@ export function buildPromiseReliabilityExport(data: PromiseReliability) {
     row.fulfilledDate ?? "未足量",
     data.exceptionTotal,
     data.exceptions.length,
+    data.exceptionView.total,
+    filterNote,
     "按指定观察窗读取执行时最新事实；不是页面快照；两种口径不可合并相加为采购行数",
     externalGate,
   ]);
   if (rows.length === 0) {
     const empty: (string | number)[] = Array(headers.length).fill("");
     common.forEach((value, i) => { empty[i] = value; });
-    empty[headers.indexOf("状态")] = data.state === "ready" ? "窗口内无例外" : "证据不足";
-    empty[headers.indexOf("例外总数（原始与当前分列）")] = 0;
+    empty[headers.indexOf("状态")] = data.state !== "ready" ? "证据不足" : data.exceptionTotal > 0 ? "当前筛选无匹配" : "窗口内无例外";
+    empty[headers.indexOf("例外总数（原始与当前分列）")] = data.exceptionTotal;
     empty[headers.indexOf("本文件例外数")] = 0;
+    empty[headers.indexOf("筛选匹配总数")] = data.exceptionView.total;
+    empty[headers.indexOf("明细筛选与排序（不改变总体率分母）")] = filterNote;
     empty[headers.indexOf("取数说明")] = "说明行，非采购例外；按指定观察窗读取执行时最新事实";
     empty[headers.indexOf("外部对照门禁")] = externalGate;
     rows.push(empty);

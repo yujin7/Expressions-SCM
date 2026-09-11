@@ -68,6 +68,17 @@ it("空窗口同步导出是明确说明行，不是零值异常", async () => {
   expect(response.headers.get("Cache-Control")).toBe("private, no-store");
   expect(await response.text()).toContain("说明行，非采购例外"); expect(mocks.start).not.toHaveBeenCalled();
 });
+it("导出与跨页列表按同一筛选和全量排序，空匹配保留窗口总数", async () => {
+  const query = { q: "PO-EXPORT", basis: "current" as const, status: "overdue_short" as const, sort: "lineId" as const, order: "desc" as const };
+  const page = await loadPromiseReliability({ ...params, exceptionQuery: { ...query, page: 2, pageSize: 30 } }, db);
+  const result = await def.produce(user, { ...params, ...query }, 50000, db);
+  const key = result.columns.find(c => c.title === "采购行ID")!.key;
+  expect(page.exceptions.map(row => row.lineId)).toEqual(result.rows.slice(30, 60).map(row => row[key]));
+  expect(result.total).toBe(page.exceptionView.total); expect(result.rows).toHaveLength(5001);
+  const empty = await request("asOf=2026-08-10&windowDays=30&basis=original");
+  const csv = await empty.text(); expect(empty.status).toBe(200); expect(csv).toContain("当前筛选无匹配"); expect(csv).toContain("5001");
+  expect(mocks.start).not.toHaveBeenCalled();
+});
 it.each(["", "asOf=2026-02-30&windowDays=30", "asOf=0000-01-01&windowDays=30", "asOf=2026-08-10&windowDays=29", "asOf=2026-08-10&windowDays=30.5", "asOf=2026-08-10&windowDays=30&windowDays=90", "asOf=2026-08-10&windowDays=30&limit=1"])("坏参数拒绝，不扩大范围: %s", async query => {
   expect((await request(query)).status).toBe(400); expect(mocks.start).not.toHaveBeenCalled();
 });
