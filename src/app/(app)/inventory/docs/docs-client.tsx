@@ -72,6 +72,7 @@ interface DocDetail {
   reversalOfId: number | null;
   lines: DocLine[];
   approvals: DocApproval[];
+  approvalBasis?: { label: string; href: string | null; sourceDocNo: string | null; verified: boolean; note: string | null };
   createdByName: string;
   createdAt: string;
 }
@@ -708,7 +709,7 @@ function DocsInner() {
         width="min(720px, 100vw)"
         loading={detailLoading}
         extra={
-          detail ? (
+          detail && (detail.subtype !== "count_adjust" || detail.status === "completed") ? (
             <DocActions
               docType="stock-doc"
               apiBase="/api/inventory/stock-doc"
@@ -756,9 +757,19 @@ function DocsInner() {
               pagination={false}
               style={{ marginBottom: 24 }}
             />
+            {detail.approvalBasis?.note ? <Alert
+              type={detail.approvalBasis.verified ? "info" : "warning"}
+              showIcon
+              message={detail.approvalBasis.label}
+              description={<>
+                {detail.approvalBasis.note}
+                {detail.approvalBasis.href ? <div style={{ marginTop: 8 }}><a href={detail.approvalBasis.href} style={{ display: "inline-block" }}>查看来源盘点：{detail.approvalBasis.sourceDocNo}</a></div> : null}
+              </>}
+              style={{ marginBottom: 16 }}
+            /> : null}
             {detail.approvals.length > 0 ? (
               <>
-                <Typography.Title level={5}>审批记录</Typography.Title>
+                <Typography.Title level={5}>{detail.approvalBasis?.label ?? "审批记录"}</Typography.Title>
                 <ApprovalTimeline items={detail.approvals} />
               </>
             ) : null}

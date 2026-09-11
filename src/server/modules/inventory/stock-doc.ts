@@ -2,7 +2,7 @@ import { and, desc, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import {
-   batches, reviewItems, skus, stockBalances, stockDocLines, stockDocs, users, warehouses,
+   batches, pdDocs, pdLines, reviewItems, skus, stockBalances, stockDocLines, stockDocs, users, warehouses,
 } from "@/db/schema";
 import { dMoney, dNeg, dQty } from "@/server/core/decimal";
 import {  requireRole, type SessionUser } from "@/server/core/dto";
@@ -19,6 +19,7 @@ import {
 } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "./batch-allocation";
 import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
+import { documentHref } from "@/lib/document-links";
 
 /** 单号前缀（CLAUDE.md）：入库 RK / 出库 CK / 调拨 DB；红字沿用原单前缀 */
 const DOC_PREFIX: Record<ManualSubtype, string> = {
@@ -301,12 +302,14 @@ export async function approveStockDoc(
     return await db.transaction(async (tx: AnyDb) => {
       const [doc]: StockDocRow[] = await tx.select().from(stockDocs).where(eq(stockDocs.id, id));
       if (!doc) throw new ApiError(404, "单据不存在");
+      if (doc.subtype === "count_adjust") {
+        throw new ApiError(409, "盘点调整单由来源盘点单审批后自动生成，不可单独审批或驳回；请查看来源盘点，已过账纠错走红字冲销");
+      }
 
       // 1) 通用审批：权限/职责分离/幂等/状态/乐观锁（pending → approved | draft）
-      //    体检审计 #2 整改：期初/盘点按子类型映射独立审批配置（《01》§6：期初/盘点=财务），
-      //    其余库存单仍走 stock_doc（仓管）。seed 中 opening/count→finance 配置由此启用。
-      const approvalDocType =
-        doc.subtype === "opening" ? "opening" : doc.subtype === "count_adjust" ? "count" : "stock_doc";
+      // 期初=opening财务域；其他可审批库存单=stock_doc仓管域。
+      // count只能以pd_docs.id为身份，不能借给stock_docs独立编号。
+      const approvalDocType = doc.subtype === "opening" ? "opening" : "stock_doc";
       const r = await approveDoc(tx, {
         docType: approvalDocType,
         table: stockDocs,
@@ -609,7 +612,26 @@ export async function getStockDoc(id: number, dbArg?: AnyDb) {
     : [];
   const whName = (wid: number | null) => whRows.find((w) => w.id === wid)?.name ?? null;
 
-  const approvalRows = await loadApprovalHistory(db, ["stock_doc", "opening", "count"], id);
+  let approvalBasis: { label: string; href: string | null; sourceDocNo: string | null; verified: boolean; note: string | null } = {
+    label: "本单审批记录", href: null, sourceDocNo: doc.docNo, verified: true, note: null,
+  };
+  // opening与历史stock_doc都以stock_docs.id为身份；count以pd_docs.id为身份，绝不可按相同数字并集。
+  let approvalRows = doc.subtype === "count_adjust" ? []
+    : await loadApprovalHistory(db, doc.subtype === "opening" ? ["opening", "stock_doc"] : "stock_doc", id);
+  if (doc.subtype === "count_adjust") {
+    const [source] = doc.sourceDocType === "pd" && doc.sourceDocId != null
+      ? await db.select({ id: pdDocs.id, docNo: pdDocs.docNo, status: pdDocs.status }).from(pdDocs).where(eq(pdDocs.id, doc.sourceDocId)) : [];
+    const backRefs: { pdId: number }[] = await db.selectDistinct({ pdId: pdLines.pdId }).from(pdLines).where(eq(pdLines.adjustDocId, id));
+    const matched = source && source.status === "completed" && backRefs.length === 1 && backRefs[0].pdId === source.id;
+    if (matched) {
+      approvalRows = await loadApprovalHistory(db, "count", source.id);
+      approvalBasis = { label: "来源盘点审批", href: documentHref("pd", source.id), sourceDocNo: source.docNo, verified: true,
+        note: "本调整单由来源盘点审批后自动生成，不单独审批；下方是来源盘点单的审批记录。" };
+    } else {
+      approvalBasis = { label: "审批依据待核对", href: null, sourceDocNo: null, verified: false,
+        note: "来源盘点缺失、状态异常或明细关联不一致，无法确认本调整单的审批依据；请核对来源单据，不借用同编号的审批记录。" };
+    }
+  }
 
   return {
     id: doc.id,
@@ -632,6 +654,7 @@ export async function getStockDoc(id: number, dbArg?: AnyDb) {
       batchId: l.batchId, batchNo: l.batchNo, expiryDate: l.expiryDate,
     })),
     approvals: approvalRows,
+    approvalBasis,
     createdByName: doc.createdByName,
     createdAt: doc.createdAt,
   };

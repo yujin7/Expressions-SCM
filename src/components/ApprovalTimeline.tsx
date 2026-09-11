@@ -15,7 +15,7 @@
  * 零命中不占位：`items` 为空时返回 null，由调用方决定要不要显示标题。
  */
 import { Timeline, Typography } from "antd";
-import dayjs from "dayjs";
+import { formatAsOf } from "@/components/format";
 
 export interface ApprovalTimelineItem {
   /** 审批人姓名；账号被删/停用后为 null */
@@ -38,7 +38,7 @@ export default function ApprovalTimeline({ items }: { items: ApprovalTimelineIte
             <div>
               {a.approverName ?? "—"} {a.action === "approve" ? "审批通过" : "驳回"}
               <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-                {dayjs(a.createdAt).format("YYYY-MM-DD HH:mm")}
+                {formatAsOf(typeof a.createdAt === "string" ? a.createdAt : Number.isFinite(a.createdAt.getTime()) ? a.createdAt.toISOString() : null)}（上海时间）
               </Typography.Text>
             </div>
             {a.comment ? <Typography.Text type="secondary">{a.comment}</Typography.Text> : null}

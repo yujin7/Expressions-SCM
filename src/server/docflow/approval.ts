@@ -202,8 +202,8 @@ export interface ApprovalHistoryRow {
  *
  * 此前这段 select + leftJoin + orderBy 在 11 个单据模块里逐字复制。
  * 复制体之间已经开始分叉：6 处用 `eq(docType, "x")`、5 处用 `inArray(docType, [...])`，
- * 因此本函数签名同时接受两种形态——**stock-doc 确实需要一次查三个域**
- * （stock_doc / opening / count 共用一条单据线）。
+ * 本函数接受多个域仅用于确认共用同一实体编号的历史记录（如opening/stock_doc）。
+ * count归属pd_docs，不能与stock_docs按相同数字ID合并；调整单须先核对来源PD及明细反向引用。
  *
  * `approverName` 走 leftJoin，审批人账号被删后为 null；调用方渲染时必须带兜底，
  * 曾有两个页面漏写导致该行显示空白。
