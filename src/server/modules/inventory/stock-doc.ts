@@ -13,6 +13,7 @@ import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/st
 import { post, PostingError, reverse, type AnyDb, type PostingEvent, type PostingLine } from "@/server/posting/post";
 import { ApiError } from "@/server/modules/master/common";
 import { resolveDb } from "@/server/core/svc";
+import { currentWriteActor } from "@/server/core/current-write-actor";
 import {
   approveStockDocSchema, createStockDocSchema, type ManualSubtype, reverseStockDocSchema,
   shortCloseStockDocSchema, voidStockDocSchema, withdrawStockDocSchema,
@@ -151,26 +152,40 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
 
 export async function submitStockDoc(user: SessionUser, id: number, version: number, dbArg?: AnyDb): Promise<StockDocRow> {
   const db = await resolveDb(dbArg);
-  const [doc]: StockDocRow[] = await db.select().from(stockDocs).where(eq(stockDocs.id, id));
-  if (!doc) throw new ApiError(404, "单据不存在");
-  if (doc.createdBy !== user.id && !user.roles.includes("admin")) {
-    throw new ApiError(403, "仅制单人或管理员可提交");
-  }
-  let target: DocStatus;
-  try {
-    target = nextStatus(doc.status as DocStatus, "submit");
-  } catch (e) {
-    if (e instanceof TransitionError) throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
-    throw e;
-  }
-  const updated: StockDocRow[] = await db
-    .update(stockDocs)
-    .set({ status: target, version: sql`${stockDocs.version} + 1`, updatedAt: new Date() })
-    .where(and(eq(stockDocs.id, id), eq(stockDocs.version, version)))
-    .returning();
-  if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
-  await writeAudit(db, { userId: user.id, entity: "stock_doc", entityId: id, action: "submit" });
-  return updated[0];
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    // Same warehouse/admin eligibility as the HTTP guard, held through commit.
+    if (!actor.roles.includes("warehouse") && !actor.roles.includes("admin")) {
+      throw new ApiError(403, "仅仓管或管理员可提交库存单据");
+    }
+    const [doc]: StockDocRow[] = await tx.select().from(stockDocs).where(eq(stockDocs.id, id)).for("update");
+    if (!doc) throw new ApiError(404, "单据不存在");
+    if (doc.createdBy !== actor.id && !actor.roles.includes("admin")) {
+      throw new ApiError(403, "仅制单人或管理员可提交");
+    }
+    if (doc.subtype === "count_adjust") {
+      throw new ApiError(409, "盘点调整单由来源盘点单审批后自动生成，不可单独提交；请核对来源盘点，已过账纠错走红字冲销");
+    }
+    let target: DocStatus;
+    try {
+      target = nextStatus(doc.status as DocStatus, "submit");
+    } catch (e) {
+      if (e instanceof TransitionError) throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
+      throw e;
+    }
+    const updated: StockDocRow[] = await tx
+      .update(stockDocs)
+      .set({ status: target, version: sql`${stockDocs.version} + 1`, updatedAt: new Date() })
+      .where(and(eq(stockDocs.id, id), eq(stockDocs.version, version)))
+      .returning();
+    if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
+    await writeAudit(tx, {
+      userId: actor.id, entity: "stock_doc", entityId: id, action: "submit",
+      before: { status: doc.status, version: doc.version },
+      after: { status: target, version: updated[0].version },
+    });
+    return updated[0];
+  });
 }
 
 // ---------- 撤回 / 作废 / 短关（W2-3：此前只有提交/审批/红字，草稿无法放弃，「已关闭」页签永远为空） ----------
