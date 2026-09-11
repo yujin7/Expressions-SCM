@@ -9,7 +9,8 @@
 | 门禁 | `verify-fast.ts` `verify-release.ts` `verify-ops.ts` `verify-postgres*.ts` | `npm run check:*` |
 | 缓存清理 | `clean-caches.ts`，经`scm.ts`亦可调用 | 默认预览；`--all`仅扩大预览。先停已确认owner，`--apply --target .next-dev`等逐项移到`.cache-cleanup-trash/<批次>/`，不自动删除；占用或检查失败即拒绝 |
 | PostgreSQL 复核原子性 | `verify-postgres-review-atomicity.ts` | `npm run check:postgres:review-atomicity`；仅一次性本机 `scm_contract_*` 库，须 `SCM_ALLOW_MUTATING_PG_CONTRACT=1`；先运行迁移。保留合成记录与审计，不用于生产库或发布后清理 |
-| PostgreSQL 调拨费用/加工计划并发 | `verify-postgres-transfer-fees.ts`、`verify-postgres-jg-plan.ts` | CI现有PG门禁自动运行；手动用`node --import tsx scripts/<对应脚本>`。先迁移隔离loopback `scm_contract_*` 库，显式`SCM_ALLOW_MUTATING_PG_CONTRACT=1`、`SCM_RUN_JOBS=0`；3项费用锁与2项JG锁证明，保留合成记录，不用于生产库 |
+| PostgreSQL 调拨费用/加工计划并发 | `verify-postgres-transfer-fees.ts`、`verify-postgres-jg-plan.ts` | CI现有PG门禁自动运行；手动用`node --import tsx scripts/<对应脚本>`。先迁移隔离loopback `scm_contract_*` 库，显式`SCM_ALLOW_MUTATING_PG_CONTRACT=1`、`SCM_RUN_JOBS=0`；3项费用锁与7项JG锁证明，保留合成记录，不用于生产库 |
+| PostgreSQL 加工费申请/审批并发 | `verify-postgres-pc-write.ts` | 同一隔离PG门自动运行；相同显式loopback/一次性库守卫。5项真实多连接竞争：重复申请、审批后取现价、审批重放、历史重复申请冲突、停用身份；保留合成记录与审计，不在生产执行 |
 | PostgreSQL 用友重试与并发 | `verify-postgres-yonyou-concurrency.ts` | `npm run check:postgres:yonyou-concurrency`；仅临时复制候选 + 一次性 loopback PG16 `scm_contract_*` 库；显式 `NODE_ENV=test`、`SCM_RUN_JOBS=0`、`SCM_ALLOW_MUTATING_PG_CONTRACT=1`、`DATABASE_URL` 及候选内绝对 `FILE_STORAGE_DIR`；先迁移并运行 `check:postgres`。库内不得已有用友 run/checkpoint，重跑用新库，不删除合成事实绕过守卫 |
 | 局域网/公网访问 | `install-public-tunnel.sh` `public-tunnel-daemon.sh` `remove-public-tunnel.sh` `show-access-link.sh` `sync-lan-auth-url.sh` `*mdns-alias.sh` `setup-public-tunnel.sh`（具名隧道，需域名）`setup-tailscale-access.sh`（需注册） | `npm run access:*` / `lan:*`；见 `docs/guides/对外访问方案-选型与步骤.md` |
 | 账号 | `set-initial-passwords.ts`（逐人独立初始口令、首登改密）`reset-admin-emergency.ts`（三重开关）`reset-local-admin.ts`（仅 PGlite） | `docs/engineering/本机实跑指南.md` |

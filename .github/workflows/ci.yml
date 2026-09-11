@@ -122,6 +122,10 @@ jobs:
         env:
           SCM_RUN_JOBS: "0"
         run: node --import tsx scripts/verify-postgres-jg-plan.ts
+      - name: Processing fee application and approval locks (isolated PostgreSQL)
+        env:
+          SCM_RUN_JOBS: "0"
+        run: node --import tsx scripts/verify-postgres-pc-write.ts
       - name: Yonyou retries and concurrency (isolated PostgreSQL)
         env:
           NODE_ENV: test
