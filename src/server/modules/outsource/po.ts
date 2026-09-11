@@ -18,6 +18,7 @@ import { approveDocSchema, confirmDocSchema, transitionDocSchema, withdrawDocSch
 import { skuLineMatch } from "@/server/core/doc-search";
 import { transitionDoc } from "@/server/docflow/transition";
 import { currentPriceListRow } from "./price-list";
+import { currentWriteActor } from "@/server/core/current-write-actor";
 import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 
 /** 采购订单 PO + 价格变更 PC（R1：基础单位未税比价；异动自动生成 PC，PO 留在草稿） */
@@ -215,20 +216,21 @@ export async function approvePc(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
-      const [pc]: PcRow[] = await tx.select().from(pcDocs).where(eq(pcDocs.id, id));
+      const actor = await currentWriteActor(tx, user);
+      const [pc]: PcRow[] = await tx.select().from(pcDocs).where(eq(pcDocs.id, id)).for("update");
       if (!pc) throw new ApiError(404, "单据不存在");
       const r = await approveDoc(tx, {
         docType: "pc",
         table: pcDocs,
         docId: id,
-        approver: { id: user.id, roles: user.roles, isApprover: user.isApprover },
+        approver: actor,
         action: v.action,
         comment: v.comment,
         expectedVersion: v.version,
       });
       if (r.idempotent) return r;
       await writeAudit(tx, {
-        userId: user.id, entity: "pc", entityId: id, action: v.action,
+        userId: actor.id, entity: "pc", entityId: id, action: v.action,
         after: { comment: v.comment ?? null, target: pc.target },
       });
       if (v.action === "reject") return r;
@@ -236,6 +238,13 @@ export async function approvePc(
       if (pc.target === "jg_fee") {
         // 加工费变更立即生效：现价更新 + 新分段（结算按收货时点分段取价）
         if (pc.jgId == null) throw new ApiError(500, `jg_fee PC 缺 jgId: #${id}`);
+        const [jg]: (typeof jgDocs.$inferSelect)[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, pc.jgId)).for("update");
+        if (!jg) throw new ApiError(409, "关联加工单不存在，请核对改价来源");
+        // Legacy duplicate requests must not overwrite a fee changed since application.
+        // Throwing rolls back approval, PC state and audit together; rejection remains available.
+        if (dCmp(jg.feeRateCurrent, pc.oldPrice) !== 0) {
+          throw new ApiError(409, "加工费现价已与申请原价不一致，请核对并驳回旧申请后重新发起");
+        }
         const now = new Date();
         await tx
           .update(jgDocs)
@@ -243,7 +252,7 @@ export async function approvePc(
           .where(eq(jgDocs.id, pc.jgId));
         await tx.insert(jgFeeSegments).values({ jgId: pc.jgId, rate: pc.newPrice, effectiveFrom: now });
         await writeAudit(tx, {
-          userId: user.id, entity: "jg", entityId: pc.jgId, action: "fee_change",
+          userId: actor.id, entity: "jg", entityId: pc.jgId, action: "fee_change",
           before: { feeRateCurrent: pc.oldPrice },
           after: { feeRateCurrent: pc.newPrice, viaPc: pc.docNo },
         });

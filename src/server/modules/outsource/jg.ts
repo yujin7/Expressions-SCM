@@ -127,15 +127,19 @@ export async function confirmJg(user: SessionUser, id: number, input: unknown, d
 // ---------- 加工费改价：PC(target=jg_fee) 发起（采购）；审批见 po.ts approvePc ----------
 
 export async function createPcForJgFee(user: SessionUser, input: unknown, dbArg?: AnyDb): Promise<PcRow> {
-  requireAnyRole(user, "purchasing");
   const v = createPcForJgFeeSchema.parse(input);
   const db = await resolveDb(dbArg);
 
-  const [jg]: JgRow[] = await db.select().from(jgDocs).where(eq(jgDocs.id, v.jgId));
+  return db.transaction(async (tx: AnyDb) => {
+  const actor = await currentWriteActor(tx, user);
+  requireAnyRole(actor, "purchasing");
+  // The JG is the shared serialization point for creation and fee approval.
+  // Hold it through pending-check, price snapshot, numbering and audit commit.
+  const [jg]: JgRow[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, v.jgId)).for("update");
   if (!jg) throw new ApiError(404, `加工通知单不存在: #${v.jgId}`);
 
   // 已有待审的 jg_fee PC → 不重复发起（一次一单，避免并行改价互踩）
-  const [open] = await db
+  const [open] = await tx
     .select({ docNo: pcDocs.docNo })
     .from(pcDocs)
     .where(and(eq(pcDocs.target, "jg_fee"), eq(pcDocs.jgId, v.jgId), eq(pcDocs.status, "pending")));
@@ -146,7 +150,6 @@ export async function createPcForJgFee(user: SessionUser, input: unknown, dbArg?
   // 现价=0 属数据异常：偏差比无法计算，按 0 记录并仍走审批复核（与 R1 口径一致）
   const deviationPct = dZero(oldPrice) ? "0" : dDeviationPct(oldPrice, newPrice);
 
-  return db.transaction(async (tx: AnyDb) => {
     const docNo = await nextDocNo(tx, "PC");
     const [pc]: PcRow[] = await tx
       .insert(pcDocs)
@@ -160,11 +163,11 @@ export async function createPcForJgFee(user: SessionUser, input: unknown, dbArg?
         newPrice,
         deviationPct,
         scope: v.scope,
-        createdBy: user.id,
+        createdBy: actor.id,
       })
       .returning();
     await writeAudit(tx, {
-      userId: user.id, entity: "pc", entityId: pc.id, action: "create",
+      userId: actor.id, entity: "pc", entityId: pc.id, action: "create",
       after: { docNo: pc.docNo, jgId: v.jgId, oldPrice, newPrice, deviationPct, scope: v.scope },
     });
     return pc;
