@@ -38,10 +38,14 @@ jobs:
       - run: npm run check:ops
       - run: npm run test:fast
 
-  test:
-    name: Full test suite
+  test-shards:
+    name: Tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -49,7 +53,21 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm test
+      - run: npm test -- --shard=${{ matrix.shard }}/4
+
+  # Preserve the protected check name. A skipped, failed or cancelled shard is
+  # never a green full suite; all shards must complete successfully.
+  test:
+    name: Full test suite
+    needs: test-shards
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every test shard
+        env:
+          SHARD_RESULT: ${{ needs.test-shards.result }}
+        run: test "$SHARD_RESULT" = success
 
   build:
     name: Production container

@@ -1,11 +1,37 @@
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 const root = process.cwd();
 const read = (relative: string): string => readFileSync(path.join(root, relative), "utf8");
+const yaml = createRequire(import.meta.url)("js-yaml") as { load: (text: string) => unknown };
 
 describe("agile delivery loop", () => {
+  it("shards the entire test suite without weakening the protected aggregate check", () => {
+    const workflow = yaml.load(read(".github/workflows/ci.yml")) as {
+      jobs: Record<string, {
+        name: string; needs?: string; if?: string; "continue-on-error"?: boolean;
+        strategy?: { matrix: { shard: number[] }; "fail-fast": boolean };
+        steps: { run?: string; env?: Record<string, string> }[];
+      }>;
+    };
+    const shards = workflow.jobs["test-shards"];
+    expect(shards.strategy).toEqual({ matrix: { shard: [1, 2, 3, 4] }, "fail-fast": false });
+    expect(shards.steps.some((step) => step.run === "npm test -- --shard=${{ matrix.shard }}/4")).toBe(true);
+    expect(shards["continue-on-error"]).not.toBe(true);
+    const gate = workflow.jobs.test;
+    expect(gate.name).toBe("Full test suite");
+    expect(gate.needs).toBe("test-shards");
+    expect(gate.if).toBe("${{ always() }}");
+    const step = gate.steps[0];
+    expect(step.env?.SHARD_RESULT).toBe("${{ needs.test-shards.result }}");
+    for (const result of ["success", "failure", "cancelled", "skipped", ""]) {
+      const check = spawnSync("bash", ["-c", step.run!], { env: { ...process.env, SHARD_RESULT: result } });
+      expect(check.status === 0).toBe(result === "success");
+    }
+  });
   it("keeps development, build, and background-job state isolated", () => {
     const pkg = JSON.parse(read("package.json")) as { scripts: Record<string, string> };
     expect(pkg.scripts.dev).toContain("next dev --turbopack");
