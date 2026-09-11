@@ -1,12 +1,12 @@
 import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { selectedOptionsPredicate, SELECTED_OPTIONS_LIMIT, type SelectedOptionValue } from "@/server/core/selected-options";
 import {
-   jgDocs, jgFeeSegments, pcDocs, skus, suppliers, users, woDocs,
+   approvalConfigs, jgDocs, jgFeeSegments, pcDocs, skus, suppliers, users, woDocs,
 } from "@/db/schema";
 import { dDeviationPct, dMoney, dZero } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { approveDoc, loadApprovalHistory, withdrawDoc } from "@/server/docflow/approval";
+import { approvalRoleError, approveDoc, loadApprovalHistory, withdrawDoc } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { ApiError } from "@/server/modules/master/common";
@@ -31,20 +31,23 @@ type PcRow = typeof pcDocs.$inferSelect;
 
 export async function submitJg(user: SessionUser, id: number, version: number, dbArg?: AnyDb): Promise<JgRow> {
   const db = await resolveDb(dbArg);
-  const [doc]: JgRow[] = await db.select().from(jgDocs).where(eq(jgDocs.id, id));
+  return db.transaction(async (tx: AnyDb) => {
+  const actor = await currentWriteActor(tx, user);
+  const [doc]: JgRow[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, id)).for("update");
   if (!doc) throw new ApiError(404, "单据不存在");
-  if (doc.createdBy !== user.id && !user.roles.includes("pmc") && !user.roles.includes("admin")) {
+  if (doc.createdBy !== actor.id && !actor.roles.includes("pmc") && !actor.roles.includes("admin")) {
     throw new ApiError(403, "仅制单人/PMC/管理员可提交");
   }
   if (doc.status !== "draft") throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
-  const updated: JgRow[] = await db
+  const updated: JgRow[] = await tx
     .update(jgDocs)
     .set({ status: "pending", version: sql`${jgDocs.version} + 1`, updatedAt: new Date() })
     .where(and(eq(jgDocs.id, id), eq(jgDocs.version, version)))
     .returning();
   if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
-  await writeAudit(db, { userId: user.id, entity: "jg", entityId: id, action: "submit" });
+  await writeAudit(tx, { userId: actor.id, entity: "jg", entityId: id, action: "submit" });
   return updated[0];
+  });
 }
 
 // ---------- 审批 ----------
@@ -59,11 +62,12 @@ export async function approveJg(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
+      const actor = await currentWriteActor(tx, user);
       const r = await approveDoc(tx, {
         docType: "jg",
         table: jgDocs,
         docId: id,
-        approver: { id: user.id, roles: user.roles, isApprover: user.isApprover },
+        approver: { id: actor.id, roles: actor.roles, isApprover: actor.isApprover },
         action: v.action,
         comment: v.comment,
         expectedVersion: v.version,
@@ -83,10 +87,12 @@ export async function approveJg(
 // ---------- 加工厂确认（内部代录）：approved → in_progress ----------
 
 export async function confirmJg(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<JgRow> {
-  requireAnyRole(user, "purchasing", "pmc");
   const v = confirmDocSchema.parse(input);
   const db = await resolveDb(dbArg);
-  const [doc]: JgRow[] = await db.select().from(jgDocs).where(eq(jgDocs.id, id));
+  return db.transaction(async (tx: AnyDb) => {
+  const actor = await currentWriteActor(tx, user);
+  requireAnyRole(actor, "purchasing", "pmc");
+  const [doc]: JgRow[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, id)).for("update");
   if (!doc) throw new ApiError(404, "单据不存在");
   let target: DocStatus;
   try {
@@ -96,25 +102,26 @@ export async function confirmJg(user: SessionUser, id: number, input: unknown, d
     throw e;
   }
   const now = new Date();
-  const updated: JgRow[] = await db
+  const updated: JgRow[] = await tx
     .update(jgDocs)
     .set({
       status: target,
       confirmedAt: now,
-      confirmedBy: user.id,
+      confirmedBy: actor.id,
       confirmNote: v.note ?? null,
-      inProduction: true, // 确认即视为进入生产（W4 收货前的看板口径）
+      inProduction: true, // 既有流程确认标记，不是现场开工或实收数量。
       version: sql`${jgDocs.version} + 1`,
       updatedAt: now,
     })
     .where(and(eq(jgDocs.id, id), eq(jgDocs.version, v.version)))
     .returning();
   if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${v.version} 已过期`);
-  await writeAudit(db, {
-    userId: user.id, entity: "jg", entityId: id, action: "confirm",
+  await writeAudit(tx, {
+    userId: actor.id, entity: "jg", entityId: id, action: "confirm",
     after: { note: v.note ?? null },
   });
   return updated[0];
+  });
 }
 
 // ---------- 加工费改价：PC(target=jg_fee) 发起（采购）；审批见 po.ts approvePc ----------
@@ -166,7 +173,25 @@ export async function createPcForJgFee(user: SessionUser, input: unknown, dbArg?
 
 // ---------- 查询 ----------
 
-export async function getJg(id: number, dbArg?: AnyDb) {
+export function jgTaskActions(user: SessionUser, doc: { status: string; createdBy: number | null }, approvalRole: string | null) {
+  const admin = user.roles.includes("admin"), pmc = admin || user.roles.includes("pmc");
+  const buying = pmc || user.roles.includes("purchasing"), maker = user.id === doc.createdBy;
+  const active = ["draft", "pending", "approved", "in_progress"].includes(doc.status);
+  const approvalError = approvalRoleError(user, approvalRole);
+  const submit = doc.status === "draft" && (maker || pmc);
+  const approve = doc.status === "pending" && !maker && !approvalError;
+  const withdraw = doc.status === "pending" && (maker || admin);
+  const confirm = doc.status === "approved" && buying;
+  const reason = !active ? "历史单据只读；计划、交期及执行流程不可继续修改。"
+    : doc.status === "pending" ? (maker ? "制单人不可自审；请等待另一位有资格的审批人处理，可撤回本单。"
+      : approvalError?.message ?? "请核对单据后审批；加工确认在审批通过后登记。")
+    : doc.status === "draft" ? (submit ? "提交后由另一位有资格的审批人审核。" : "请联系制单人、PMC或管理员提交审批。")
+    : doc.status === "approved" ? "加工厂确认由采购、PMC或管理员代录；不等于已核实现场开工。"
+    : "已登记加工确认；后续收货、质检和入库请沿单据链核对。";
+  return { submit, approve, withdraw, confirm, plan: active && pmc, revise: active && buying, reason };
+}
+
+export async function getJg(id: number, dbArg?: AnyDb, user?: SessionUser) {
   const db = await resolveDb(dbArg);
   const [doc] = await db
     .select({
@@ -228,7 +253,10 @@ export async function getJg(id: number, dbArg?: AnyDb) {
     dueDate: doc.dueDate,
   }, db);
 
-  return { ...doc, feeSegments: segments, approvals: approvalRows, capacity };
+  const [config] = user && doc.status === "pending"
+    ? await db.select({ role: approvalConfigs.approverRole }).from(approvalConfigs).where(eq(approvalConfigs.docType, "jg")) : [];
+  return { ...doc, feeSegments: segments, approvals: approvalRows, capacity,
+    ...(user ? { actions: jgTaskActions(user, doc, config?.role ?? null) } : {}) };
 }
 
 export async function listJgs(
@@ -367,11 +395,12 @@ export async function withdrawJG(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
+      const actor = await currentWriteActor(tx, user);
       const r = await withdrawDoc(tx, {
         docType: "jg",
         table: jgDocs,
         docId: id,
-        user: { id: user.id, roles: user.roles },
+        user: { id: actor.id, roles: actor.roles },
         expectedVersion: v.version,
       });
       if (r.idempotent) return r;

@@ -5,7 +5,7 @@ import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { eq } from "drizzle-orm";
 import * as s from "@/db/schema";
-import { reviseJgDueDate, updateJgPlan } from "@/server/modules/outsource/jg";
+import { confirmJg, submitJg, reviseJgDueDate, updateJgPlan } from "@/server/modules/outsource/jg";
 import { reviewContractConnectionString } from "./verify-postgres-review-atomicity";
 
 async function main() {
@@ -55,7 +55,36 @@ async function main() {
     assert(!closed.second.ok); assert.equal(closed.second.error.status, 409);
     assert.equal((await dbA.select().from(s.jgDocs).where(eq(s.jgDocs.id, doc.id)))[0].urgentFlag, false);
     console.log("PASS packaging-plan edit waits for close and refuses terminal mutation");
-    console.log(JSON.stringify({ passed: true, cases: 2, fixture: key, database: new URL(connectionString).pathname.slice(1) }));
+    let sequence = 1;
+    const freshDoc = async (status: "draft" | "approved") => (await dbA.insert(s.jgDocs).values({
+      docNo: `JG-${key}-${++sequence}`, batchSeq: sequence, createdBy: u.id, woId: wo.id, productSkuId: sku.id,
+      supplierId: supplier.id, qty: "10", feeRateCurrent: "1", status,
+    }).returning())[0];
+    for (const kind of ["submit", "confirm"] as const) {
+      const target = await freshDoc(kind === "submit" ? "draft" : "approved");
+      const run = (db: typeof dbA | Tx) => kind === "submit" ? submitJg(user, target.id, 1, db)
+        : confirmJg(user, target.id, { version: 1 }, db);
+      const duplicate = await race(tx => run(tx), () => run(dbB));
+      assert(!duplicate.second.ok); assert.equal(duplicate.second.error.status, 409);
+      const rows = await control.query("select action from audit_logs where entity='jg' and entity_id=$1", [target.id]);
+      assert.deepEqual(rows.rows.map(r => r.action), [kind]);
+      const [result] = await dbA.select().from(s.jgDocs).where(eq(s.jgDocs.id, target.id));
+      assert.equal(result.version, 2); assert.equal(result.status, kind === "submit" ? "pending" : "in_progress");
+      console.log(`PASS concurrent JG ${kind} commits exactly one version and audit`);
+    }
+    const terminal = await freshDoc("approved");
+    const closeConfirm = await race(tx => tx.update(s.jgDocs).set({ status: "closed" }).where(eq(s.jgDocs.id, terminal.id)),
+      () => confirmJg(user, terminal.id, { version: 1 }, dbB));
+    assert(!closeConfirm.second.ok); assert.equal(closeConfirm.second.error.status, 409);
+    assert.equal((await dbA.select().from(s.jgDocs).where(eq(s.jgDocs.id, terminal.id)))[0].inProduction, false);
+    console.log("PASS confirmation waits for close and cannot resurrect terminal JG");
+    const disabled = await freshDoc("draft");
+    const revoke = await race(tx => tx.update(s.users).set({ active: false }).where(eq(s.users.id, user.id)),
+      () => submitJg(user, disabled.id, 1, dbB));
+    assert(!revoke.second.ok); assert.equal(revoke.second.error.status, 403);
+    assert.equal((await dbA.select().from(s.jgDocs).where(eq(s.jgDocs.id, disabled.id)))[0].status, "draft");
+    console.log("PASS submit waits for account disable and refuses revoked actor");
+    console.log(JSON.stringify({ passed: true, cases: 6, fixture: key, database: new URL(connectionString).pathname.slice(1) }));
   } finally { await Promise.allSettled([a.end(), b.end(), control.end()]); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
