@@ -31,13 +31,14 @@ interface PlacementBin { id: number; warehouseId: number; code: string; name: st
 
 const BIN_KIND_LABELS: Record<string, string> = { normal: "普通", quarantine: "隔离", staging: "暂存" };
 const BIN_KIND_COLORS: Record<string, string> = { normal: "blue", quarantine: "red", staging: "gold" };
-interface LedgerRow { occurredAt: string; warehouse: string; qtyDelta: number; sourceDocType: string; sourceDocId: number }
+interface LedgerRow { id: number; occurredAt: string; warehouse: string; qtyDelta: string; sourceDocType: string; sourceDocId: number; sourceLineId: number; sourceDocNo: string | null; sourceHref: string | null }
 
 interface Trace {
-  batch: { id: number; skuId: number; batchNo: string; skuCode: string; skuName: string; prodDate: string | null; expiryDate: string | null };
-  source: { docType: string | null; docId: number | null };
+  batch: { id: number; skuId: number; batchNo: string; skuCode: string; skuName: string; baseUom: string; prodDate: string | null; expiryDate: string | null };
+  source: { docType: string | null; docId: number | null; href: string | null };
   stockByWarehouse: StockRow[];
   ledger: LedgerRow[];
+  ledgerPage: { page: number; pageSize: number; total: number };
   coverage: { outboundTraceable: boolean; note: string };
 }
 
@@ -45,12 +46,17 @@ export default function BatchTraceClient() {
   const { message } = App.useApp();
   const [sku, setSku] = useState("");
   const [batch, setBatch] = useState("");
-  const [query, setQuery] = useState<{ sku: string; batch: string } | null>(null);
-  const traceRead = useDocumentRead<Trace>(query ? `/api/inventory/batch-trace?sku=${encodeURIComponent(query.sku)}&batch=${encodeURIComponent(query.batch)}` : null);
+  const [query, setQuery] = useState<{ sku: string; batch: string; page: number; pageSize: number } | null>(null);
+  const traceRead = useDocumentRead<Trace>(query ? `/api/inventory/batch-trace?sku=${encodeURIComponent(query.sku)}&batch=${encodeURIComponent(query.batch)}&page=${query.page}&pageSize=${query.pageSize}` : null);
   const trace = traceRead.data;
   const validTrace = trace != null && trace.batch?.skuCode === query?.sku && trace.batch?.batchNo === query?.batch
     && Number.isInteger(trace.batch.id) && trace.batch.id > 0 && Number.isInteger(trace.batch.skuId) && trace.batch.skuId > 0
-    && Array.isArray(trace.ledger) && Array.isArray(trace.stockByWarehouse) && trace.coverage != null && trace.source != null;
+    && Array.isArray(trace.ledger) && Array.isArray(trace.stockByWarehouse) && trace.coverage != null && trace.source != null
+    && trace.ledgerPage?.page === query?.page && trace.ledgerPage?.pageSize === query?.pageSize
+    && Number.isSafeInteger(trace.ledgerPage.total) && trace.ledgerPage.total >= 0
+    && trace.ledger.length <= trace.ledgerPage.pageSize && trace.ledger.length <= trace.ledgerPage.total
+    && trace.ledger.every(row => Number.isSafeInteger(row.id) && row.id > 0 && typeof row.qtyDelta === "string" && /^-?\d+(\.\d{1,4})?$/.test(row.qtyDelta))
+    && new Set(trace.ledger.map(row => row.id)).size === trace.ledger.length;
   const data = validTrace ? trace : null;
   const traceError = traceRead.error ?? (traceRead.phase === "success" && !validTrace ? "批次身份或响应结构不匹配，请重新核对" : null);
   const loading = traceRead.phase === "loading";
@@ -81,9 +87,15 @@ export default function BatchTraceClient() {
     if (!sku.trim() || !batch.trim()) { message.warning("请填写 SKU 编码与批次号"); return; }
     setActing(null);
     setWriteError(null);
-    setQuery({ sku: sku.trim(), batch: batch.trim() });
+    setQuery({ sku: sku.trim(), batch: batch.trim(), page: 1, pageSize: 30 });
     traceRead.retry();
     placementRead.retry();
+  };
+  const changeLedgerPage = (page: number, pageSize: number) => {
+    if (busy.current || !query || !data) return;
+    setActing(null);
+    setWriteError(null);
+    setQuery({ ...query, page: pageSize === query.pageSize ? page : 1, pageSize });
   };
 
   const openAction = (row: PlacementRow, intent: "quarantine" | "release") => {
@@ -192,9 +204,9 @@ export default function BatchTraceClient() {
       ) : (
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
           <Alert
-            type={data.coverage.outboundTraceable ? "success" : "warning"}
+            type={data.coverage.outboundTraceable ? "info" : "warning"}
             showIcon
-            message={data.coverage.outboundTraceable ? "出库侧可追溯" : "出库侧覆盖有限"}
+            message={data.coverage.outboundTraceable ? "已发现批次出库证据（非完整覆盖证明）" : "出库侧覆盖有限"}
             description={data.coverage.note}
           />
           <Card size="small" title="批次登记">
@@ -203,8 +215,9 @@ export default function BatchTraceClient() {
               <Descriptions.Item label="批次号">{data.batch.batchNo}</Descriptions.Item>
               <Descriptions.Item label="生产日期">{data.batch.prodDate ?? "—"}</Descriptions.Item>
               <Descriptions.Item label="到期日">{data.batch.expiryDate ?? "—"}</Descriptions.Item>
-              <Descriptions.Item label="来源单据">
-                {data.source.docType ? `${data.source.docType.toUpperCase()} #${data.source.docId}` : "—"}
+              <Descriptions.Item label="基础单位">{data.batch.baseUom}</Descriptions.Item>
+              <Descriptions.Item label="首次登记来源">
+                {data.source.href ? <a href={data.source.href} style={{ display: "inline-block" }}>{data.source.docType?.toUpperCase()} #{data.source.docId}</a> : data.source.docType ? `${data.source.docType.toUpperCase()} #${data.source.docId}` : "—"}
               </Descriptions.Item>
             </Descriptions>
           </Card>
@@ -243,19 +256,25 @@ export default function BatchTraceClient() {
             />
           </Card>
           <Card size="small" title="台账流水（带批次的部分）">
+            <div style={{ marginBottom: 12 }}><Typography.Text type="secondary">共 {data.ledgerPage.total} 条，本页 {data.ledger.length} 条 · 数量单位：{data.batch.baseUom} · 日期：上海时间。按发生时间、流水号倒序；翻页读取最新事实，不是冻结召回清单。</Typography.Text></div>
+            {!data.ledger.length && data.ledgerPage.total > 0 ? <Button onClick={() => changeLedgerPage(1, data.ledgerPage.pageSize)} disabled={saving} style={{ marginBottom: 12 }}>返回第一页</Button> : null}
             <Table<LedgerRow>
-              rowKey={(r) => `${r.occurredAt}-${r.sourceDocId}`}
+              rowKey="id"
               size="small"
-              pagination={false}
+              pagination={{ current: data.ledgerPage.page, pageSize: data.ledgerPage.pageSize, total: data.ledgerPage.total,
+                showSizeChanger: true, pageSizeOptions: [30, 50, 100], size: "small", responsive: true, disabled: saving, onChange: changeLedgerPage }}
               dataSource={data.ledger}
-              scroll={{ x: 650 }}
-              locale={{ emptyText: "暂无带该批次的台账流水（见上方覆盖说明）" }}
+              scroll={{ x: 830 }}
+              locale={{ emptyText: data.ledgerPage.total ? "本页无记录，请返回第一页核对" : "暂无带该批次的台账流水（见上方覆盖说明）" }}
               columns={[
+                { title: "流水号", dataIndex: "id", width: 90 },
                 { title: "日期", dataIndex: "occurredAt", width: 110 },
                 { title: "仓库", dataIndex: "warehouse", width: 150 },
-                { title: "方向", width: 80, render: (_: unknown, r: LedgerRow) => <Tag color={r.qtyDelta >= 0 ? "green" : "orange"}>{r.qtyDelta >= 0 ? "入库" : "出库"}</Tag> },
-                { title: "数量", dataIndex: "qtyDelta", width: 130, align: "right", render: (v: number) => formatQty(String(Math.abs(v))) },
-                { title: "来源单据", width: 180, render: (_: unknown, r: LedgerRow) => `${r.sourceDocType} #${r.sourceDocId}` },
+                { title: "方向", width: 80, render: (_: unknown, r: LedgerRow) => <Tag color={r.qtyDelta.startsWith("-") ? "orange" : "green"}>{r.qtyDelta.startsWith("-") ? "减少" : "增加"}</Tag> },
+                { title: `数量（${data.batch.baseUom}）`, dataIndex: "qtyDelta", width: 130, align: "right", render: (v: string) => formatQty(v.replace(/^-/, "")) },
+                { title: "来源单据", width: 180, render: (_: unknown, r: LedgerRow) => r.sourceHref
+                  ? <a href={r.sourceHref} style={{ display: "inline-block" }}>{r.sourceDocNo}</a> : `${r.sourceDocType} #${r.sourceDocId}（待核对）` },
+                { title: "来源行标识", dataIndex: "sourceLineId", width: 90, render: (v: number) => v !== 0 ? v : "未记录" },
               ]}
             />
           </Card>

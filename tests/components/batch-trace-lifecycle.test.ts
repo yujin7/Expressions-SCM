@@ -26,7 +26,7 @@ function render(effects = true) { for (let i = 0; i < 12; i++) { h.cursor = 0; h
 const props = (type: string) => nodes(render()).find(n => n.type === type)!.props;
 const fetchMock = vi.fn<typeof fetch>();
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); return render(); };
-const trace = (id: number) => ({ batch: { id, skuId: id * 10, skuCode: `SKU-${id}`, batchNo: `LOT-${id}`, skuName: "合成物料", prodDate: null, expiryDate: null }, source: { docType: "sh", docId: id }, ledger: [], stockByWarehouse: [], coverage: { outboundTraceable: false, note: "部分覆盖" } });
+const trace = (id: number, page = 1, pageSize = 30) => ({ batch: { id, skuId: id * 10, skuCode: `SKU-${id}`, batchNo: `LOT-${id}`, skuName: "合成物料", baseUom: "瓶", prodDate: null, expiryDate: null }, source: { docType: "sh", docId: id, href: `/matflow/sh?docId=${id}` }, ledger: [], ledgerPage: { page, pageSize, total: 0 }, stockByWarehouse: [], coverage: { outboundTraceable: false, note: "部分覆盖" } });
 const placement = (id: number) => ({ rows: [{ key: `unlocated:${id}`, warehouseId: id, warehouseName: `仓${id}`, binId: null, binCode: null, binName: null, binKind: null, qty: "1.0001", locationState: "unlocated" }], bins: [{ id: id + 100, warehouseId: id, code: "Q", name: "隔离", kind: "quarantine" }] });
 function change(label: string, value: string) { (nodes(render()).find(n => n.props["aria-label"] === label)!.props.onChange as (e: unknown) => void)({ target: { value } }); }
 function run(id: number) { change("SKU 编码", `SKU-${id}`); render(); change("批次号", `LOT-${id}`); render(); (nodes(render()).find(n => n.type === "button" && n.props.children === "追溯")!.props.onClick as () => void)(); render(); }
@@ -38,7 +38,7 @@ async function ready(id = 1) { run(id); await flush(); await flush(); }
 beforeEach(() => { h.cursor = 0; h.slots = []; h.effects = []; h.changed = false; h.allowed = true; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock);
   h.form.validateFields.mockResolvedValue({ qty: "0.0001", reason: "合成隔离验证", toBinId: 101 });
   fetchMock.mockImplementation(async url => { const u = new URL(String(url), "http://localhost"); const id = Number((u.searchParams.get("sku") ?? "").split("-")[1] ?? u.searchParams.get("batchId"));
-    return Response.json(u.pathname.endsWith("batch-trace") ? trace(id) : placement(Number(u.searchParams.get("batchId")))); }); });
+    return Response.json(u.pathname.endsWith("batch-trace") ? trace(id, Number(u.searchParams.get("page") ?? 1), Number(u.searchParams.get("pageSize") ?? 30)) : placement(Number(u.searchParams.get("batchId")))); }); });
 afterEach(() => { for (const fn of h.cleanups.values()) fn(); h.cleanups.clear(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 it("editing the lookup withdraws old facts and its modal before effect cleanup", async () => {
@@ -107,7 +107,7 @@ it("write timeout warns that abort is not cancellation and blocks resubmission",
 });
 it("lookup has exactly two labelled fields and the placement table scrolls internally", async () => {
   await ready(); expect(nodes(render()).filter(n => String(n.type) === "input").map(n => n.props["aria-label"])).toEqual(["SKU 编码", "批次号"]); expect(placements()!.scroll).toEqual({ x: 660 });
-  expect(nodes(render()).filter(n => n.type === "table").map(n => n.props.scroll)).toEqual([{ x: 420 }, { x: 660 }, { x: 650 }]);
+  expect(nodes(render()).filter(n => n.type === "table").map(n => n.props.scroll)).toEqual([{ x: 420 }, { x: 660 }, { x: 830 }]);
   expect(nodes(render()).find(n => String(n.type) === "descriptions")!.props.column).toEqual({ xs: 1, sm: 2 });
 });
 it("Chinese composition confirmation does not submit an unfinished lookup", () => {
@@ -115,4 +115,38 @@ it("Chinese composition confirmation does not submit an unfinished lookup", () =
   const enter = nodes(render()).find(n => n.props["aria-label"] === "批次号")!.props.onPressEnter as (e: unknown) => void;
   enter({ nativeEvent: { isComposing: true }, keyCode: 13 }); enter({ nativeEvent: { isComposing: false }, keyCode: 229 }); render(); expect(fetchMock).not.toHaveBeenCalled();
   enter({ nativeEvent: { isComposing: false }, keyCode: 13 }); render(); expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
+const ledgerTable = () => nodes(render()).find(n => n.type === "table" && n.props.rowKey === "id")!.props;
+const pageTo = (page: number, size = 30) => (ledgerTable().pagination as { onChange: (p: number, s: number) => void }).onChange(page, size);
+it("paging binds the response to its page and closes old placement actions immediately", async () => {
+  await ready(); open(); const late = Promise.withResolvers<Response>(); fetchMock.mockReturnValueOnce(late.promise);
+  pageTo(2); expect(nodes(render(false)).some(n => n.type === "card")).toBe(false); render();
+  expect(String(fetchMock.mock.calls.at(-1)![0])).toContain("page=2&pageSize=30");
+  late.resolve(Response.json(trace(1, 2))); await flush(); await flush();
+  expect(ledgerTable().pagination).toMatchObject({ current: 2, pageSize: 30 }); expect(props("modal").open).toBe(false);
+  pageTo(2, 50); render(); await flush(); await flush(); expect(ledgerTable().pagination).toMatchObject({ current: 1, pageSize: 50 });
+});
+it("a response for the wrong page cannot display old ledger facts", async () => {
+  await ready(); fetchMock.mockResolvedValueOnce(Response.json(trace(1, 1))); pageTo(2); render(); await flush();
+  expect(placements()).toBeUndefined(); expect(nodes(render()).find(n => n.type === "read-error")!.props.error).toContain("不匹配");
+});
+it("paging is blocked during an uncertain in-flight inventory operation", async () => {
+  await ready(); open(); const saving = Promise.withResolvers<Response>(); fetchMock.mockReturnValueOnce(saving.promise);
+  (props("modal").onOk as () => void)(); await flush(); pageTo(2); render();
+  expect(ledgerTable().pagination).toMatchObject({ current: 1, disabled: true });
+  saving.resolve(Response.json({ id: 1 })); await flush();
+});
+it("duplicate immutable ledger IDs are a visible response error, not merged table rows", async () => {
+  const row = { id: 4, qtyDelta: "0.0001", occurredAt: "2026-09-04", warehouse: "仓1", sourceDocType: "opening", sourceDocId: 1, sourceLineId: 1, sourceDocNo: null, sourceHref: null };
+  fetchMock.mockResolvedValueOnce(Response.json({ ...trace(1), ledger: [row, row], ledgerPage: { page: 1, pageSize: 30, total: 2 } }));
+  await ready(); expect(placements()).toBeUndefined(); expect(nodes(render()).find(n => n.type === "read-error")!.props.error).toContain("不匹配");
+});
+it("source links have continuous click targets and decimal quantities are not rounded", async () => {
+  const row = { id: 4, qtyDelta: "-0.0001", occurredAt: "2026-09-04", warehouse: "仓1", sourceDocType: "sales_out", sourceDocId: 41, sourceLineId: 5, sourceDocNo: "CK-QA-41", sourceHref: "/inventory/docs?docId=41" };
+  fetchMock.mockResolvedValueOnce(Response.json({ ...trace(1), ledger: [row], ledgerPage: { page: 1, pageSize: 30, total: 1 } }));
+  await ready(); const cols = ledgerTable().columns as { title: string; render?: (v: unknown, row: unknown) => Node | string }[];
+  expect(cols.find(c => c.title === "数量（瓶）")!.render!(row.qtyDelta, row)).toBe("0.0001");
+  const link = cols.find(c => c.title === "来源单据")!.render!(null, row) as Node;
+  expect(link.props).toMatchObject({ href: "/inventory/docs?docId=41", style: { display: "inline-block" }, children: "CK-QA-41" });
 });

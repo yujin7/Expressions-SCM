@@ -16,12 +16,16 @@
  *   - 先迁移/盘点历史 null 批次余额并完成全出库路径 UAT；
  *   - 管理员再把 `batch_posting_enabled` 从 0 改为 1。默认关闭，避免半链路上线。
  */
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { ApiError } from "@/server/modules/master/common";
 import { num } from "@/server/core/svc";
 import { latestStocktakeRows, loadLatestStocktakeDates } from "@/server/core/stock-view";
+import { shanghaiDayOf } from "@/server/core/business-day";
+import { documentHref, documentTargetPath } from "@/lib/document-links";
+import { LEDGER_SOURCE_TARGETS } from "@/lib/ledger-source-docs";
+import { resolveSourceDocNos } from "./queries";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -109,26 +113,31 @@ export async function requireBatchForExpirySkus(db: AnyDb, lines: ReceiptBatchLi
 }
 
 export interface BatchTraceResult {
-  batch: { id: number; batchNo: string; skuId: number; skuCode: string; skuName: string; prodDate: string | null; expiryDate: string | null };
+  batch: { id: number; batchNo: string; skuId: number; skuCode: string; skuName: string; baseUom: string; prodDate: string | null; expiryDate: string | null };
   /** 来源单据（登记时记录） */
-  source: { docType: string | null; docId: number | null };
+  source: { docType: string | null; docId: number | null; href: string | null };
   /** 该批次在各仓的参考层库存（batch_stocks） */
   stockByWarehouse: { warehouse: string; qty: number; stocktakeDate: string }[];
   /** 台账中带该 batchId 的流水（当前仅发料/库存单等已支持批次的路径会有） */
-  ledger: { occurredAt: string; warehouse: string; qtyDelta: number; sourceDocType: string; sourceDocId: number }[];
+  ledger: { id: number; occurredAt: string; warehouse: string; qtyDelta: string; sourceDocType: string; sourceDocId: number; sourceLineId: number; sourceDocNo: string | null; sourceHref: string | null }[];
+  ledgerPage: { page: number; pageSize: number; total: number };
   /** 诚实标注：出库侧批次归属的覆盖情况 */
   coverage: { outboundTraceable: boolean; note: string };
 }
 
 /** 按 SKU 编码 + 批次号追溯 */
-export async function traceBatch(skuCode: string, batchNo: string, dbArg?: AnyDb): Promise<BatchTraceResult> {
+export async function traceBatch(skuCode: string, batchNo: string, dbArg?: AnyDb, options: { page?: number; pageSize?: number } = {}): Promise<BatchTraceResult> {
+  const { page = 1, pageSize = 30 } = options;
+  if (!Number.isSafeInteger(page) || page < 1 || page > 1_000_000 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+    throw new ApiError(400, "分页参数无效：页码须为1至1000000的整数，每页条数须为1至100的整数");
+  }
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const code = String(skuCode ?? "").trim();
   const bn = String(batchNo ?? "").trim();
   if (!code || !bn) throw new ApiError(400, "请提供 SKU 编码与批次号");
 
   const [sku] = await db
-    .select({ id: schema.skus.id, code: schema.skus.code, name: schema.skus.name })
+    .select({ id: schema.skus.id, code: schema.skus.code, name: schema.skus.name, baseUom: schema.skus.baseUom })
     .from(schema.skus)
     .where(eq(schema.skus.code, code));
   if (!sku) throw new ApiError(404, "SKU 不存在");
@@ -147,41 +156,50 @@ export async function traceBatch(skuCode: string, batchNo: string, dbArg?: AnyDb
   // 盘点期间收口（core/stock-view 唯一权威）：召回时「这批货现在在哪」只认该仓最新一期，旧期行不再重复出现
   const stockRows = latestStocktakeRows(stockRowsAllPeriods, await loadLatestStocktakeDates(db));
 
-  const ledgerRows: { occurredAt: Date; warehouse: string; qtyDelta: string; sourceDocType: string; sourceDocId: number }[] = await db
-    .select({
-      occurredAt: schema.stockLedger.occurredAt,
-      warehouse: schema.warehouses.name,
-      qtyDelta: schema.stockLedger.qtyDelta,
-      sourceDocType: schema.stockLedger.sourceDocType,
-      sourceDocId: schema.stockLedger.sourceDocId,
-    })
-    .from(schema.stockLedger)
-    .innerJoin(schema.warehouses, eq(schema.stockLedger.warehouseId, schema.warehouses.id))
-    .where(eq(schema.stockLedger.batchId, b.id))
-    .orderBy(desc(schema.stockLedger.occurredAt))
-    .limit(200);
-
-  const outboundTraceable = ledgerRows.some((r) => num(r.qtyDelta) < 0);
+  // 一条语句保证总数、出库证据与本页处于同一DB快照；空页也保留全量统计。
+  // 不把全部流水传回JS，不以当前页推断全批覆盖。同时间按不可变流水ID稳定排序。
+  const result = await db.execute(sql`
+    with matched as not materialized (
+      select id, occurred_at, warehouse_id, qty_delta, source_doc_type, source_doc_id, source_line_id
+      from stock_ledger where sku_id = ${sku.id} and batch_id = ${b.id}
+    ), summary as (
+      select count(*)::integer as total, coalesce(bool_or(qty_delta < 0 and source_doc_type in
+        ('ct_return', 'fl_issue', 'tl_return', 'issue_out', 'sales_out', 'transfer')), false) as outbound from matched
+    ), detail as (
+      select m.*, w.name as warehouse from matched m join warehouses w on w.id = m.warehouse_id
+      order by m.occurred_at desc, m.id desc limit ${pageSize} offset ${(page - 1) * pageSize}
+    )
+    select summary.total, summary.outbound, coalesce(jsonb_agg(jsonb_build_object(
+      'id', detail.id, 'occurredAt', detail.occurred_at, 'warehouse', detail.warehouse,
+      'qtyDelta', detail.qty_delta::text, 'sourceDocType', detail.source_doc_type,
+      'sourceDocId', detail.source_doc_id, 'sourceLineId', detail.source_line_id
+    ) order by detail.occurred_at desc, detail.id desc) filter (where detail.id is not null), '[]'::jsonb) as rows
+    from summary left join detail on true group by summary.total, summary.outbound
+  `);
+  const summary: { total: number; outbound: boolean; rows: Omit<BatchTraceResult["ledger"][number], "sourceDocNo" | "sourceHref">[] } = result.rows[0];
+  const ledgerRows = summary.rows;
+  const sourceNos = await resolveSourceDocNos(db, ledgerRows);
+  const outboundTraceable = summary.outbound;
   return {
     batch: {
       id: b.id, batchNo: b.batchNo, skuId: sku.id, skuCode: sku.code, skuName: sku.name,
-      prodDate: b.prodDate ?? null, expiryDate: b.expiryDate ?? null,
+      baseUom: sku.baseUom, prodDate: b.prodDate ?? null, expiryDate: b.expiryDate ?? null,
     },
-    source: { docType: b.sourceDocType ?? null, docId: b.sourceDocId ?? null },
+    source: { docType: b.sourceDocType ?? null, docId: b.sourceDocId ?? null, href: documentHref(b.sourceDocType ?? "", b.sourceDocId ?? 0) },
     stockByWarehouse: stockRows.map((r) => ({ warehouse: r.warehouse, qty: num(r.qty), stocktakeDate: r.stocktakeDate })),
-    ledger: ledgerRows.map((r) => ({
-      occurredAt: new Date(r.occurredAt).toISOString().slice(0, 10),
-      warehouse: r.warehouse,
-      qtyDelta: num(r.qtyDelta),
-      sourceDocType: r.sourceDocType,
-      sourceDocId: r.sourceDocId,
-    })),
+    ledger: ledgerRows.map((r) => {
+      const target = Object.hasOwn(LEDGER_SOURCE_TARGETS, r.sourceDocType) ? LEDGER_SOURCE_TARGETS[r.sourceDocType] : null;
+      const sourceDocNo = target ? sourceNos.get(`${target.table}:${r.sourceDocId}`) ?? null : null;
+      return { ...r, occurredAt: shanghaiDayOf(new Date(r.occurredAt)), sourceDocNo,
+        sourceHref: target && sourceDocNo ? documentTargetPath(target.path, "", r.sourceDocId) : null };
+    }),
+    ledgerPage: { page, pageSize, total: summary.total },
     coverage: {
       outboundTraceable,
       note: outboundTraceable
-        ? "该批次已有带批次的出库流水，可追至出库单据。"
+        ? "全部带该批次的流水中已有出库、退货或调拨负向记录，可逐行核对来源；盘亏、冲销及核销不充当发货证据。出库记录不代表未批次化历史或外部去向已完整覆盖，也不代表未被后续冲销。"
         : "该批次尚无带批次的出库流水。可能是批次/FEFO 迁移闸门仍关闭、尚未发生出库，"
-          + "或历史余额仍在无批次维度；在出现批次出库前，本页只能证明来源与当前库存分布。",
+          + "或历史余额仍在无批次维度；参考层按仓库最新盘点期展示，不等于实时总账。",
     },
   };
 }

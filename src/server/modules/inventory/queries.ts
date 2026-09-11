@@ -181,13 +181,13 @@ const LEDGER_SOURCE_TABLES = {
 } as const;
 
 /** 逐来源表批量解析单号（每页最多 6 次查询；解析不到的行 docNo=null） */
-async function resolveSourceDocNos(
+export async function resolveSourceDocNos(
   db: AnyDb,
   rows: { sourceDocType: string; sourceDocId: number }[],
 ): Promise<Map<string, string>> {
   const byTable = new Map<LedgerSourceTable, Set<number>>();
   for (const r of rows) {
-    const target = LEDGER_SOURCE_TARGETS[r.sourceDocType];
+    const target = Object.hasOwn(LEDGER_SOURCE_TARGETS, r.sourceDocType) ? LEDGER_SOURCE_TARGETS[r.sourceDocType] : null;
     if (!target) continue;
     const set = byTable.get(target.table) ?? new Set<number>();
     set.add(r.sourceDocId);
