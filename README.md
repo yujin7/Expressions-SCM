@@ -3,6 +3,8 @@
 内部供应链管理系统。中文资料总入口见 [`docs/README.md`](docs/README.md)，当前状态见
 [`docs/NOW.md`](docs/NOW.md)，规格与决议见 [`docs/spec/CURRENT.md`](docs/spec/CURRENT.md)。
 
+**团队交接与私有访问：[`docs/TEAM-HANDOFF.md`](docs/TEAM-HANDOFF.md)**（资料、源码、权限和部署边界）。
+
 ## 技术栈
 Next.js 15 · TypeScript · Ant Design 5 · PostgreSQL 16 · Drizzle ORM · NextAuth v5 · pg-boss · vitest(+PGlite)
 
