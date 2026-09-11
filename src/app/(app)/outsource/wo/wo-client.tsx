@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import { useDocumentTarget } from "@/components/useDocumentTarget";
 import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
 import { useDocumentRead } from "@/components/useDocumentRead";
@@ -277,7 +279,9 @@ function WoInner() {
   const [genOpen, setGenOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
@@ -285,16 +289,17 @@ function WoInner() {
       if (from) params.set("from", from);
       if (to) params.set("to", to);
       const res = await fetchJson<{ rows: WoRow[]; total: number }>(
-        `/api/outsource/wo?${params.toString()}`,
-      );
+        `/api/outsource/wo?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setTotal(res.total);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [q, status, from, to, page, pageSize, message]);
+  }, [beginLoadRead, q, status, from, to, page, pageSize, message]);
 
   useEffect(() => {
     void load();

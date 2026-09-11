@@ -9,6 +9,28 @@ const read = (relative: string): string => readFileSync(path.join(root, relative
 const yaml = createRequire(import.meta.url)("js-yaml") as { load: (text: string) => unknown };
 
 describe("agile delivery loop", () => {
+  it("runs quickwin real database races in the required isolated PostgreSQL job", () => {
+    type Step = { run?: string; if?: string; "continue-on-error"?: boolean; env?: Record<string, string> };
+    const workflow = yaml.load(read(".github/workflows/ci.yml")) as {
+      jobs: { postgres: { if?: string; "continue-on-error"?: boolean; env: Record<string, string>; steps: Step[] } };
+    };
+    const job = workflow.jobs.postgres;
+    expect(job.if).toBeUndefined();
+    expect(job["continue-on-error"]).not.toBe(true);
+    expect(job.env.DATABASE_URL).toBe("postgres://scm:scm_ci_password@127.0.0.1:5432/scm_contract_ci");
+    expect(job.env.SCM_ALLOW_MUTATING_PG_CONTRACT).toBe("1");
+    const migration = job.steps.findIndex(step => step.run === "npm run db:migrate");
+    expect(migration).toBeGreaterThanOrEqual(0);
+    for (const script of ["verify-postgres-transfer-fees.ts", "verify-postgres-jg-plan.ts"]) {
+      const index = job.steps.findIndex(step => step.run === `node --import tsx scripts/${script}`);
+      expect(index).toBeGreaterThan(migration);
+      const step = job.steps[index];
+      expect(step.if).toBeUndefined();
+      expect(step["continue-on-error"]).not.toBe(true);
+      expect(step.env?.SCM_RUN_JOBS).toBe("0");
+      expect(read(`scripts/${script}`)).toContain("reviewContractConnectionString(process.env)");
+    }
+  });
   it("shards the entire test suite without weakening the protected aggregate check", () => {
     const workflow = yaml.load(read(".github/workflows/ci.yml")) as {
       jobs: Record<string, {

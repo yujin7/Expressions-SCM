@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /**
  * 运维面板（仅 admin）：db/迁移、任务运行史、连接器运行/检查点、错误留档、导入/导出、
  * 快照数据龄和备份新鲜度。
@@ -940,17 +942,21 @@ function DeletionAckCard() {
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
-      const res = await fetchJson<{ rows: DeletionAckRow[] }>("/api/admin/integrations/deletion-ack?connector=jdy");
+      const res = await fetchJson<{ rows: DeletionAckRow[] }>("/api/admin/integrations/deletion-ack?connector=jdy", { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [message]);
+  }, [beginLoadRead, message]);
 
   useEffect(() => { void load(); }, [load]);
 

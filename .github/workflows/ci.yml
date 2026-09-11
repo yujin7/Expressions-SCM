@@ -114,6 +114,14 @@ jobs:
         run: node --import tsx scripts/verify-postgres-npd-write.ts
       - name: Supply parameter edits and preview row locks (isolated PostgreSQL)
         run: node --import tsx scripts/verify-postgres-supply-params.ts
+      - name: Transfer fee close and reversal locks (isolated PostgreSQL)
+        env:
+          SCM_RUN_JOBS: "0"
+        run: node --import tsx scripts/verify-postgres-transfer-fees.ts
+      - name: JG revision history and terminal-state locks (isolated PostgreSQL)
+        env:
+          SCM_RUN_JOBS: "0"
+        run: node --import tsx scripts/verify-postgres-jg-plan.ts
       - name: Yonyou retries and concurrency (isolated PostgreSQL)
         env:
           NODE_ENV: test

@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /** 自动补货候选（守护式）——把 A/B×X/Y·非覆盖缺口·有生产周期的告急 SKU 挑出批量生成草稿；其余转人工（只读+人工闸 R13）。 */
 import { useCallback, useEffect, useState } from "react";
 import {  App, Button, Popconfirm, Space, Statistic, Table, Tabs, Tag, Typography } from "antd";
@@ -49,17 +51,22 @@ export default function AutoReplenishClient() {
   const [selected, setSelected] = useState<Candidate[]>([]);
   const [drafting, setDrafting] = useState(false);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     setLoadError(null);
     try {
-      setData(await fetchJson<AutoData>("/api/report/auto-replenish"));
+      const latestReadResult = await fetchJson<AutoData>("/api/report/auto-replenish", { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       setLoadError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, []);
+  }, [beginLoadRead]);
   useEffect(() => { void load(); }, [load]);
 
   const bulkDraft = async () => {

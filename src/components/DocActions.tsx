@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { App, Button, Input, Modal, Popconfirm, Space } from "antd";
 import { postJson } from "./fetchJson";
+import type { StockDocActionHints } from "@/lib/stock-doc-actions";
 
 export interface DocActionsDoc {
   id: number;
@@ -10,6 +11,7 @@ export interface DocActionsDoc {
   version: number;
   subtype: string;
   reversalOfId: number | null;
+  actions?: StockDocActionHints;
 }
 
 /** 需要填原因的动作：作废草稿 / 短关（原因进 closed_reason，同事务写审计） */
@@ -43,7 +45,7 @@ export interface DocActionsProps {
 
 /**
  * 单据操作按钮组：提交 / 撤回 / 作废 / 审批通过 / 驳回 / 短关 / 红字冲销
- * （权限由服务端强制，403 直接提示）。
+ * 服务端下发当前身份操作提示；缺失则只读。写端仍重新强制授权。
  */
 export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps) {
   const { message } = App.useApp();
@@ -56,6 +58,9 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
   const [reasonText, setReasonText] = useState("");
 
   const post = async (path: string, body: unknown, successText: string) => {
+    const permitted = path === "short-close" ? doc.actions?.shortClose
+      : doc.actions?.[path as "submit" | "withdraw" | "void" | "approve" | "reverse"];
+    if (!permitted || loading) return false;
     setLoading(true);
     try {
       await postJson(`${apiBase}/${doc.id}/${path}`, body);
@@ -110,7 +115,7 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
   if (doc.status === "draft") {
     return (
       <Space>
-        <Popconfirm
+        {doc.actions?.submit ? <Popconfirm
           title="确认提交审批？"
           okText="提交"
           cancelText="取消"
@@ -119,8 +124,8 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
           <Button type="primary" loading={loading}>
             提交
           </Button>
-        </Popconfirm>
-        <Button
+        </Popconfirm> : null}
+        {doc.actions?.void ? <Button
           danger
           loading={loading}
           onClick={() => {
@@ -129,7 +134,7 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
           }}
         >
           作废
-        </Button>
+        </Button> : null}
         {reasonModal}
       </Space>
     );
@@ -138,7 +143,7 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
   if (doc.status === "pending") {
     return (
       <Space>
-        <Popconfirm
+        {doc.actions?.approve ? <Popconfirm
           title="确认审批通过？"
           okText="通过"
           cancelText="取消"
@@ -149,18 +154,18 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
           <Button type="primary" loading={loading}>
             审批通过
           </Button>
-        </Popconfirm>
-        <Button danger loading={loading} onClick={() => setRejectOpen(true)}>
+        </Popconfirm> : null}
+        {doc.actions?.approve ? <Button danger loading={loading} onClick={() => setRejectOpen(true)}>
           驳回
-        </Button>
-        <Popconfirm
+        </Button> : null}
+        {doc.actions?.withdraw ? <Popconfirm
           title="撤回到草稿？"
           okText="撤回"
           cancelText="取消"
           onConfirm={() => void post("withdraw", { version: doc.version }, "已撤回到草稿")}
         >
           <Button loading={loading}>撤回</Button>
-        </Popconfirm>
+        </Popconfirm> : null}
         <Modal
           title="驳回单据"
           open={rejectOpen}
@@ -194,7 +199,7 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
     );
   }
 
-  if (doc.status === "approved" || doc.status === "in_progress") {
+  if ((doc.status === "approved" || doc.status === "in_progress") && doc.actions?.shortClose) {
     return (
       <Space>
         <Button
@@ -212,7 +217,7 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
     );
   }
 
-  if (doc.status === "completed" && doc.subtype !== "reversal" && !doc.reversalOfId) {
+  if (doc.status === "completed" && doc.actions?.reverse && doc.subtype !== "reversal" && !doc.reversalOfId) {
     return (
       <>
         <Button danger loading={loading} onClick={() => setReverseOpen(true)}>

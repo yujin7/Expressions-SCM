@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /**
  * 采购价目表维护（W2 审计 2）。
  *
@@ -66,19 +68,24 @@ export default function PriceListClient() {
   const { filters, page, pageSize } = listState;
   const { q, effective } = filters;
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     setLoadError(null);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (effective) params.set("effective", effective);
-      setData(await fetchJson<Data>(`/api/outsource/price-list?${params.toString()}`));
+      const latestReadResult = await fetchJson<Data>(`/api/outsource/price-list?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       setLoadError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [q, effective, page, pageSize]);
+  }, [beginLoadRead, q, effective, page, pageSize]);
   useEffect(() => { if (canView) void load(); }, [load, canView]);
 
   const handleCreate = async () => {

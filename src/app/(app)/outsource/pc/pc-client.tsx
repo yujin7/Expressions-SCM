@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import { useDocumentTarget } from "@/components/useDocumentTarget";
 import { useDocumentRead } from "@/components/useDocumentRead";
 import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
@@ -112,22 +114,25 @@ function PcInner() {
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
       if (status) params.set("status", status);
       const res = await fetchJson<{ rows: PcRow[]; total: number }>(
-        `/api/outsource/pc?${params.toString()}`,
-      );
+        `/api/outsource/pc?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setTotal(res.total);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [status, page, pageSize, message]);
+  }, [beginLoadRead, status, page, pageSize, message]);
 
   useEffect(() => {
     void load();

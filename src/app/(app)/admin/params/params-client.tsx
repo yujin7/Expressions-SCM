@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /** 运行参数（D39）：滞销/断货/补货阈值与 R 规则容差统一维护；改动即刻生效（60s 缓存内刷新） */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, App, Button, InputNumber, Select, Space, Table, Tag, Tooltip, Typography } from "antd";
@@ -42,18 +44,22 @@ export default function ParamsClient({ canWrite, isAdmin = canWrite }: { canWrit
   const [edits, setEdits] = useState<Record<string, number | string>>({});
   const [scopedKey, setScopedKey] = useState<string | null>(null);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
-      const res = await fetchJson<{ rows: Row[] }>("/api/admin/params");
+      const res = await fetchJson<{ rows: Row[] }>("/api/admin/params", { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setEdits({});
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [message]);
+  }, [beginLoadRead, message]);
 
   useEffect(() => {
     void load();

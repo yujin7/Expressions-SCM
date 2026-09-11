@@ -53,10 +53,11 @@ export interface InboxResult {
   total: number; // 待我审批数（供头部角标复用）
   pending: InboxItem[]; // 待我审批
   submitted: InboxItem[]; // 我提交的待审
+  review: InboxItem[]; // 异常来源核对；不是可审批队列，也不计入审批角标
 }
 
 /** 内部行：带审批域与制单人（分组后剥离） */
-type RawItem = InboxItem & { domain: string; createdBy: number };
+type RawItem = InboxItem & { domain: string; createdBy: number; needsReview?: boolean };
 
 
 /** 展示用数量：去掉 numeric(14,4) 的尾零（100.0000→100、2.5000→2.5） */
@@ -104,11 +105,17 @@ async function collectBh(db: AnyDb, user: SessionUser): Promise<RawItem[]> {
     .innerJoin(skus, eq(bhLines.skuId, skus.id))
     .where(inArray(bhLines.bhId, rows.map((r) => r.id)))
     .orderBy(bhLines.id);
+  const summaries = new Map<number, { first: typeof lines[number]; count: number }>();
+  for (const line of lines) {
+    const summary = summaries.get(line.bhId);
+    if (summary) summary.count++;
+    else summaries.set(line.bhId, { first: line, count: 1 });
+  }
   return rows.map((r) => {
-    const mine = lines.filter((l) => l.bhId === r.id);
-    const first = mine[0];
+    const summary = summaries.get(r.id);
+    const first = summary?.first;
     const title = first
-      ? `${first.skuName}×${fmtQty(first.qty)}${mine.length > 1 ? ` 等${mine.length}项` : ""}`
+      ? `${first.skuName}×${fmtQty(first.qty)}${summary!.count > 1 ? ` 等${summary!.count}项` : ""}`
       : "（无明细）";
     return mk("bh", "bh", r, title);
   });
@@ -252,9 +259,13 @@ async function collectStockDocs(db: AnyDb): Promise<RawItem[]> {
     .leftJoin(users, eq(stockDocs.createdBy, users.id))
     .where(eq(stockDocs.status, "pending"));
   return rows.map((r) => {
-    // 审批域映射与 approveStockDoc 同口径：期初→opening、盘点调整→count（财务），其余=stock_doc（仓管）
-    const domain = r.subtype === "opening" ? "opening" : r.subtype === "count_adjust" ? "count" : "stock_doc";
+    // CA只能由来源PD审批自动产生；历史pending是异常，不借count域把它变成可独立审批。
+    const domain = r.subtype === "opening" ? "opening" : "stock_doc";
     const subtypeLabel = STOCK_SUBTYPE_LABELS[r.subtype] ?? r.subtype;
+    if (r.subtype === "count_adjust") return {
+      ...mk("stock_doc", domain, r, "异常待审状态：请核对来源盘点及明细关联，不可单独审批", "盘点调整·待核对"),
+      needsReview: true,
+    };
     return mk("stock_doc", domain, r, subtypeLabel, `库存·${subtypeLabel}`);
   });
 }
@@ -275,7 +286,7 @@ async function collectPd(db: AnyDb): Promise<RawItem[]> {
 }
 
 function strip(items: RawItem[]): InboxItem[] {
-  return items.map(({ domain: _d, createdBy: _c, ...rest }) => rest);
+  return items.map(({ domain: _d, createdBy: _c, needsReview: _r, ...rest }) => rest);
 }
 
 export async function getInbox(user: SessionUser, dbArg?: AnyDb): Promise<InboxResult> {
@@ -308,12 +319,14 @@ export async function getInbox(user: SessionUser, dbArg?: AnyDb): Promise<InboxR
     ])
   ).flat().filter((item) => canReadInboxDestination(INBOX_PAGE_HREFS[item.docType], user));
 
-  // 最早提交的排最前
+  // 按制单时间显示账龄；createdAt并非提交事件时间，不冒充审批等待时长。
   all.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id - b.id);
 
   // SoD：我创建的单据即便审批域匹配也不能自审——单列「我提交的待审」
-  const submitted = all.filter((i) => i.createdBy === user.id);
-  const pending = all.filter((i) => i.createdBy !== user.id && myDomains.has(i.domain));
+  const review = all.filter((i) => i.needsReview && (i.createdBy === user.id
+    || user.roles.some(role => ["admin", "warehouse", "finance"].includes(role))));
+  const submitted = all.filter((i) => !i.needsReview && i.createdBy === user.id);
+  const pending = all.filter((i) => !i.needsReview && i.createdBy !== user.id && myDomains.has(i.domain));
 
-  return { total: pending.length, pending: strip(pending), submitted: strip(submitted) };
+  return { total: pending.length, pending: strip(pending), submitted: strip(submitted), review: strip(review) };
 }

@@ -5,10 +5,10 @@
  * 价格列跟随 API 角色脱敏（R9）：无价格权限的角色打印出的是不含价单。
  * 合同固定条款为公司现行模板文字；改条款改这里（单点）。
  */
-import { use, useCallback, useEffect, useState } from "react";
+import { use } from "react";
 import { Alert, Button, Space, Spin } from "antd";
 import { PrinterOutlined } from "@ant-design/icons";
-import { fetchJson } from "@/components/fetchJson";
+import { useDocumentRead } from "@/components/useDocumentRead";
 import { DOC_STATUS_LABELS } from "@/components/labels";
 import { shanghaiDayOf } from "@/server/core/business-day";
 
@@ -53,10 +53,11 @@ function mulDec(a: string, b: string): string {
   let v = va * vb;
   let scale = sa + sb;
   // 半入舍位到 2 位
-  while (scale > 2) {
-    const rem = v % 10n;
-    v = v / 10n + (rem >= 5n ? 1n : rem <= -5n ? -1n : 0n);
-    scale--;
+  if (scale > 2) {
+    const divisor = 10n ** BigInt(scale - 2);
+    const rem = v % divisor;
+    v = v / divisor + (rem * 2n >= divisor ? 1n : rem * 2n <= -divisor ? -1n : 0n);
+    scale = 2;
   }
   while (scale < 2) {
     v *= 10n;
@@ -95,22 +96,9 @@ const CONTRACT_TERMS = [
 
 export default function PoPrintPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const [detail, setDetail] = useState<PoDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { data: detail, error, retry } = useDocumentRead<PoDetail>(`/api/outsource/po/${id}`);
 
-  const load = useCallback(async () => {
-    try {
-      setDetail(await fetchJson<PoDetail>(`/api/outsource/po/${id}`));
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }, [id]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  if (error) return <Alert type="error" showIcon message={error} style={{ margin: 24 }} />;
+  if (error) return <Alert type="error" showIcon message={error} action={<Button onClick={retry}>重试</Button>} style={{ margin: 24 }} />;
   if (!detail) return <Spin style={{ display: "block", margin: "80px auto" }} />;
 
   const hasPrice = detail.lines.some((l) => l.price != null);

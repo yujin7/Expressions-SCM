@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /**
  * B4 历史交期观察（记分卡页第五页签）：把简道云历史采购订单 → 入库观察算出来的
  * 「下单 → 收货」交期分布，与本系统自己学出来的 rollup_supplier_lead **并排**摆出来。
@@ -50,18 +52,23 @@ export default function LeadHistoryTab() {
   const grain = filters.grain === "sku" ? "sku" : "supplier";
   const q = (filters.q ?? "").trim().toLowerCase();
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async (refresh = false) => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     setLoadError(null);
     try {
-      setModel(await fetchJson<SupplierLeadHistory>(`/api/report/supplier-lead-history${refresh ? "?refresh=1" : ""}`));
+      const latestReadResult = await fetchJson<SupplierLeadHistory>(`/api/report/supplier-lead-history${refresh ? "?refresh=1" : ""}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setModel(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       setModel(null);
       setLoadError(e instanceof Error ? e.message : "加载失败");
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, []);
+  }, [beginLoadRead]);
   useEffect(() => { void load(); }, [load]);
 
   const supplierRows = useMemo(() => {

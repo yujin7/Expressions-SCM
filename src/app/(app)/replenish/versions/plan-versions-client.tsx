@@ -1,4 +1,5 @@
 "use client";
+import { useLatestRead } from "@/components/useLatestRead";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -260,14 +261,17 @@ export default function PlanVersionsClient({ canCapture }: { canCapture: boolean
     });
   }, [data, filters.category, filters.q]);
 
+  const beginLoadPeggingRead = useLatestRead();
   const loadPegging = useCallback(async (query: {
     versionId: number;
     skuId?: number;
     sourceType?: string;
     sourceRef?: string;
   }) => {
+    const readRequest = beginLoadPeggingRead();
     setPeggingOpen(true);
     setPeggingLoading(true);
+    setPegging(null);
     try {
       const params = new URLSearchParams({ versionId: String(query.versionId) });
       if (query.skuId != null) params.set("skuId", String(query.skuId));
@@ -275,13 +279,16 @@ export default function PlanVersionsClient({ canCapture }: { canCapture: boolean
         params.set("sourceType", query.sourceType);
         params.set("sourceRef", query.sourceRef);
       }
-      setPegging(await fetchJson<PeggingData>(`/api/replenish/versions/pegging?${params}`));
+      const result = await fetchJson<PeggingData>(`/api/replenish/versions/pegging?${params}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setPegging(result);
     } catch (error) {
+      if (!readRequest.isCurrent()) return;
       message.error(error instanceof Error ? error.message : "供需追溯加载失败");
     } finally {
-      setPeggingLoading(false);
+      if (readRequest.isCurrent()) setPeggingLoading(false);
     }
-  }, [message]);
+  }, [beginLoadPeggingRead, message]);
 
   const columns: ColumnsType<DiffRow> = useMemo(() => [
     {

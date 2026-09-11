@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /**
  * E7-03：销量变化瀑布图 + KPI 异动自动归因（只读，sales_monthly 单源）。
  * 瀑布图用 recharts <BarChart> + <Bar dataKey="range"> 的「区间条」（每条 [base, base+delta]）实现：
@@ -67,19 +69,24 @@ export default function SalesBridgeClient() {
   const fromYm = viewState.filters.fromYm;
   const toYm = viewState.filters.toYm;
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const params = new URLSearchParams({ dim });
       if (fromYm) params.set("fromYm", fromYm);
       if (toYm) params.set("toYm", toYm);
-      setData(await fetchJson<SalesBridgeResult>(`/api/report/sales-bridge?${params.toString()}`));
+      const latestReadResult = await fetchJson<SalesBridgeResult>(`/api/report/sales-bridge?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [dim, fromYm, toYm, message]);
+  }, [beginLoadRead, dim, fromYm, toYm, message]);
   useEffect(() => { void load(); }, [load]);
 
   /* ── 瀑布数据：起始总量柱 → 各增减悬浮条 → 结束总量柱 ── */

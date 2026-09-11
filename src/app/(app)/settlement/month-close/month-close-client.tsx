@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import {
   Alert,
   App,
@@ -93,16 +95,21 @@ export default function MonthCloseClient() {
   const [lockSaving, setLockSaving] = useState(false);
 
   const monthKey = month.format("YYYY-MM");
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
-      setData(await fetchJson<Checklist>(`/api/settlement/month-close?month=${monthKey}`));
+      const latestReadResult = await fetchJson<Checklist>(`/api/settlement/month-close?month=${monthKey}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (error) {
+      if (!readRequest.isCurrent()) return;
       message.error((error as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [message, monthKey]);
+  }, [beginLoadRead, message, monthKey]);
 
   useEffect(() => {
     void load();

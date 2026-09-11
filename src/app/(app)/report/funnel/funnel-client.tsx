@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /**
  * E7-06 全链达成漏斗：需求 → 计划 → 下单 → 到货 → 动销 五级量级 + 级间转化率（只读）。
  * 横向条形（recharts layout="vertical"）看量级落差，条右侧标注到下一级的转化率；
@@ -88,16 +90,21 @@ export default function FunnelClient() {
   });
   const months = Number(viewState.filters.months) || 3;
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
-      setData(await fetchJson<FunnelData>(`/api/report/funnel?months=${months}`));
+      const latestReadResult = await fetchJson<FunnelData>(`/api/report/funnel?months=${months}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [months, message]);
+  }, [beginLoadRead, months, message]);
   useEffect(() => { void load(); }, [load]);
 
   /** 条形数据（含到下一级的转化率，用于条右侧标注） */

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { businessDateSchema } from "@/server/core/business-date-schema";
 import { dCmp } from "@/server/core/decimal";
 
 /** W4 物料流转链输入校验（FL/TL/SH/QC/CT）。十进制字符串，禁 float（CLAUDE.md）。 */
@@ -11,7 +12,7 @@ const decStr = z
 const qtyPositive = decStr.refine((s) => dCmp(s, "0") > 0, "数量必须大于 0");
 const qtyNonNegative = decStr.refine((s) => dCmp(s, "0") >= 0, "数量不能为负");
 
-const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "日期格式须为 YYYY-MM-DD");
+const dateStr = businessDateSchema;
 
 // ---------- FL 发料 ----------
 

@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /**
  * D60 调拨线路与费用（/inventory/transfer-routes）：
  * Tab 线路汇总（transfer-routes/v2 读模型，paramPrefix ln）/ 费用明细（transfer_fees，paramPrefix fee）/
@@ -389,7 +391,9 @@ function FeesTab() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     setError(null);
     try {
@@ -399,15 +403,17 @@ function FeesTab() {
       if (filters.type) params.set("type", filters.type);
       if (filters.feeType) params.set("feeType", filters.feeType);
       if (filters.view) params.set("view", filters.view);
-      const res = await fetchJson<{ rows: FeeRow[]; total: number }>(`/api/inventory/transfer-fees?${params.toString()}`);
+      const res = await fetchJson<{ rows: FeeRow[]; total: number }>(`/api/inventory/transfer-fees?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setTotal(res.total);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       setError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [filters.q, filters.from, filters.to, filters.type, filters.feeType, filters.view, page, pageSize]);
+  }, [beginLoadRead, filters.q, filters.from, filters.to, filters.type, filters.feeType, filters.view, page, pageSize]);
   useEffect(() => { void load(); }, [load]);
 
   const reverse = (r: FeeRow) => {

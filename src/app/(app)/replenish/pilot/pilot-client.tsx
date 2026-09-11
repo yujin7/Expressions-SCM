@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /**
  * 补货试点候选（D59 R5）：候选 = 生效分层 S/A/B ∧ XYZ=X ∧ 加工/在途周期已维护 ∧ 无异动命中。
  * 同页提供「固化本期分层」（pmc）与「纳入/移出试点」（pmc）。读模型 replenish-pilot/v2。
@@ -201,18 +203,23 @@ export default function PilotClient({ canManage }: { canManage: boolean }) {
   const [selected, setSelected] = useState<number[]>([]);
   const [building, setBuilding] = useState(false);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async (refresh = false) => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     setLoadError(null);
     try {
-      setModel(await fetchJson<PilotModel>(`/api/replenish/pilot${refresh ? "?refresh=1" : ""}`));
+      const latestReadResult = await fetchJson<PilotModel>(`/api/replenish/pilot${refresh ? "?refresh=1" : ""}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setModel(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       setModel(null);
       setLoadError(e instanceof Error ? e.message : "加载失败");
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, []);
+  }, [beginLoadRead]);
   useEffect(() => { void load(); }, [load]);
 
   const filtered = useMemo(() => {
