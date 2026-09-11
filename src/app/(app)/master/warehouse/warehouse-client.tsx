@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useRef, useState } from "react";
 import { Button, Descriptions, Drawer, Form, Input, Select, Skeleton, Space, Switch, Table, Tag, Typography } from "antd";
 import CrudTable from "@/components/CrudTable";
-import { fetchJson } from "@/components/fetchJson";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import { useListState } from "@/components/useListState";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 import { formatQty } from "@/components/format";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import RemoteSelect from "@/components/RemoteSelect";
@@ -42,30 +44,32 @@ interface WhPanorama {
 }
 
 /** 仓库 360（0724 会议：单仓维度全链路） */
-function WarehousePanoramaDrawer({ id, onClose }: { id: number | null; onClose: () => void }) {
-  const [data, setData] = useState<WhPanorama | null>(null);
-  const load = useCallback(async () => {
-    if (id == null) return;
-    setData(null);
-    setData(await fetchJson<WhPanorama>(`/api/master/warehouse/${id}/panorama`));
-  }, [id]);
-  useEffect(() => {
-    void load().catch(() => setData(null));
-  }, [load]);
+export function WarehousePanoramaDrawer({ id, onClose }: { id: number | null; onClose: () => void }) {
+  const read = useDocumentRead<WhPanorama>(id == null ? null : `/api/master/warehouse/${id}/panorama`);
+  const candidate = read.data;
+  const valid = candidate?.warehouse?.id === id && typeof candidate?.totals?.total === "string"
+    && Number.isSafeInteger(candidate?.totals?.skuCount)
+    && [candidate?.topStock, candidate?.recentLedger, candidate?.batches, candidate?.snapDates].every(Array.isArray);
+  const data = valid ? candidate : null;
+  const error = read.error ?? (read.phase === "success" && !valid ? "仓库响应与当前选择不一致或格式异常" : null);
+  const content = useRef<HTMLDivElement>(null);
+  const retry = () => { content.current?.focus({ preventScroll: true }); read.retry(); };
   const rt = data?.warehouse.accountingMode === "realtime";
   return (
     <Drawer
       title={data ? `仓库 360 — ${data.warehouse.code} ${data.warehouse.name}` : "仓库 360"}
-      width={680}
+      width="min(680px, 100vw)"
       open={id != null}
       onClose={onClose}
       destroyOnHidden
     >
-      {!data ? (
+      <div ref={content} tabIndex={-1}>
+      <LoadErrorAlert error={error} subject="仓库全景" onRetry={retry} retrying={read.phase === "loading"} />
+      {read.phase === "loading" ? (
         <Skeleton active />
-      ) : (
+      ) : data ? (
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
-          <Descriptions size="small" column={4} bordered>
+          <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 2 }} bordered>
             <Descriptions.Item label="类型">{WAREHOUSE_KIND_LABELS[data.warehouse.kind] ?? data.warehouse.kind}</Descriptions.Item>
             <Descriptions.Item label="记账">{rt ? "实时账" : "快照参考"}</Descriptions.Item>
             <Descriptions.Item label="区域">{data.warehouse.regionCode}</Descriptions.Item>
@@ -76,6 +80,7 @@ function WarehousePanoramaDrawer({ id, onClose }: { id: number | null; onClose: 
             <Table
               rowKey="skuCode"
               size="small"
+              scroll={{ x: 500 }}
               pagination={false}
               dataSource={data.topStock}
               columns={[
@@ -92,6 +97,7 @@ function WarehousePanoramaDrawer({ id, onClose }: { id: number | null; onClose: 
               <Table
                 rowKey={(r: WhPanorama["batches"][number]) => `${r.skuCode}-${r.expiryDate}`}
                 size="small"
+                scroll={{ x: 420 }}
                 pagination={false}
                 dataSource={data.batches}
                 columns={[
@@ -108,6 +114,7 @@ function WarehousePanoramaDrawer({ id, onClose }: { id: number | null; onClose: 
               <Table
                 rowKey={(r: WhPanorama["recentLedger"][number], i) => `${r.occurredAt}-${i}`}
                 size="small"
+                scroll={{ x: 550 }}
                 pagination={false}
                 dataSource={data.recentLedger}
                 columns={[
@@ -130,12 +137,15 @@ function WarehousePanoramaDrawer({ id, onClose }: { id: number | null; onClose: 
             </div>
           ) : null}
         </Space>
-      )}
+      ) : null}
+      </div>
     </Drawer>
   );
 }
 
 export default function WarehouseClient() {
+  const list = useListState({ key: "master-warehouse", defaults: { q: "", sort: "code", order: "asc" }, defaultPageSize: 20, defaultDensity: "middle" });
+  const sortOrder = (key: string) => list.filters.sort === key ? list.filters.order === "desc" ? "descend" as const : "ascend" as const : null;
   const me = useMe();
   const canWrite = hasAnyRole(me);
   const [panoId, setPanoId] = useState<number | null>(null);
@@ -145,6 +155,12 @@ export default function WarehouseClient() {
         仓库
       </Typography.Title>
       <CrudTable<WarehouseRow>
+        listState={list}
+        tableProps={{ onChange: (_page, _filters, sorter, extra) => {
+          if (extra.action !== "sort") return;
+          const current = Array.isArray(sorter) ? sorter[0] : sorter;
+          list.setFilter({ sort: current.order ? String(current.columnKey) : "code", order: current.order === "descend" ? "desc" : "asc" });
+        } }}
         loadDetailOnEdit
         canCreate={canWrite}
         canEdit={() => canWrite}
@@ -160,8 +176,8 @@ export default function WarehouseClient() {
         apiPath="/api/master/warehouse"
         searchPlaceholder="搜索编码/名称"
         columns={[
-          { title: "编码", dataIndex: "code", width: 140 },
-          { title: "名称", dataIndex: "name" },
+          { title: "编码", key: "code", dataIndex: "code", width: 140, sorter: true, sortOrder: sortOrder("code") },
+          { title: "名称", key: "name", dataIndex: "name", sorter: true, sortOrder: sortOrder("name") },
           {
             title: "类型",
             dataIndex: "kind",
@@ -176,9 +192,11 @@ export default function WarehouseClient() {
           },
           {
             title: "区域",
+            key: "regionCode",
             dataIndex: "regionCode",
             width: 80,
-            sorter: (a, b) => a.regionCode.localeCompare(b.regionCode),
+            sorter: true,
+            sortOrder: sortOrder("regionCode"),
           },
           {
             title: "关联供应商",

@@ -1,5 +1,6 @@
 import WarehouseClient from "./warehouse-client";
+import { Suspense } from "react";
 
 export default function WarehousePage() {
-  return <WarehouseClient />;
+  return <Suspense fallback={<p>正在读取仓库…</p>}><WarehouseClient /></Suspense>;
 }

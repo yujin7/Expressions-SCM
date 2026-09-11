@@ -1,4 +1,5 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
+import { DOCUMENT_PAGES, documentHref } from "@/lib/document-links";
 import {
   approvalConfigs, bhDocs, bhLines, ctDocs, flDocs, jgDocs, jsDocs, pcDocs, pdDocs,
   poDocs, shDocs, skus, stockDocs, suppliers, tlDocs, users, warehouses, woDocs,
@@ -8,6 +9,8 @@ import type { AnyDb } from "@/server/docflow/doc-no";
 import type { SessionUser } from "@/server/core/dto";
 import { STOCK_SUBTYPE_LABELS } from "@/components/labels";
 import { resolveDb } from "@/server/core/svc";
+import { bhReadScope } from "@/server/core/bh-read-scope";
+import { canReadInboxDestination } from "./read-access";
 
 /**
  * 我的待办（inbox）：聚合所有等待「我」审批的单据 + 我提交的待审单据。
@@ -31,21 +34,8 @@ export const INBOX_DOC_TYPE_LABELS: Record<string, string> = {
   pd: "盘点单",
 };
 
-/** 列表页跳转（现有列表客户端均不支持 open-by-id/?q 查询参数直达，故用纯页面路径） */
-export const INBOX_PAGE_HREFS: Record<string, string> = {
-  bh: "/outsource/bh",
-  wo: "/outsource/wo",
-  po: "/outsource/po",
-  pc: "/outsource/pc",
-  jg: "/outsource/jg",
-  fl: "/matflow/fl",
-  tl: "/matflow/tl",
-  sh: "/matflow/sh",
-  ct: "/matflow/ct",
-  js: "/settlement/js",
-  stock_doc: "/inventory/docs",
-  pd: "/inventory/count",
-};
+/** Page identities remain available for permission checks; items link to an exact document. */
+export const INBOX_PAGE_HREFS = DOCUMENT_PAGES;
 
 export interface InboxItem {
   docType: string;
@@ -89,7 +79,7 @@ function mk(
     title,
     createdByName: r.createdByName,
     createdAt: r.createdAt,
-    href: INBOX_PAGE_HREFS[docType] ?? "/",
+    href: documentHref(docType, r.id) ?? "/",
     version: r.version,
     domain,
     createdBy: r.createdBy,
@@ -98,7 +88,7 @@ function mk(
 
 /* ── 各单据源（均取 status='pending'；title=对方/品名摘要） ── */
 
-async function collectBh(db: AnyDb): Promise<RawItem[]> {
+async function collectBh(db: AnyDb, user: SessionUser): Promise<RawItem[]> {
   const rows = await db
     .select({
       id: bhDocs.id, docNo: bhDocs.docNo, version: bhDocs.version,
@@ -106,7 +96,7 @@ async function collectBh(db: AnyDb): Promise<RawItem[]> {
     })
     .from(bhDocs)
     .leftJoin(users, eq(bhDocs.createdBy, users.id))
-    .where(eq(bhDocs.status, "pending"));
+    .where(and(eq(bhDocs.status, "pending"), bhReadScope(db, user)));
   if (rows.length === 0) return [];
   const lines = await db
     .select({ bhId: bhLines.bhId, qty: bhLines.qty, skuName: skus.name })
@@ -303,7 +293,7 @@ export async function getInbox(user: SessionUser, dbArg?: AnyDb): Promise<InboxR
 
   const all = (
     await Promise.all([
-      collectBh(db),
+      collectBh(db, user),
       collectWo(db),
       collectPo(db),
       collectPc(db),
@@ -316,7 +306,7 @@ export async function getInbox(user: SessionUser, dbArg?: AnyDb): Promise<InboxR
       collectStockDocs(db),
       collectPd(db),
     ])
-  ).flat();
+  ).flat().filter((item) => canReadInboxDestination(INBOX_PAGE_HREFS[item.docType], user));
 
   // 最早提交的排最前
   all.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id - b.id);

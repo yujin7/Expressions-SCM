@@ -1,61 +1,81 @@
 /**
  * 运行参数维护（D39 阈值参数化 + 既有 R 规则参数统一入口）。
- * 白名单制：仅暴露登记过的 global 参数；写=admin，读=admin/pmc/purchasing/finance。
+ * 白名单制：仅暴露登记过的参数；读=admin/pmc/purchasing/finance。
+ * 写权限按**键组**（D59：补货规则单一主体 = pmc）：`replenish` 组 pmc 可写（admin 兜底），其余仅 admin；审计不变。
+ *
+ * 白名单本体与缺省值在 `core/param-defs.ts`（零依赖纯常量，缺省值唯一权威）；本模块只做读写与权限。
  */
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { sysParams } from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { clearParamCache } from "@/server/core/params";
+import { PARAM_CATEGORY_OPTIONS, PARAM_DEFS, PMC_WRITABLE_PARAM_KEYS, paramDef, type EnumParamDef, type NumParamDef, type ParamDef } from "@/server/core/param-defs";
 import { ApiError, type SessionUser } from "@/server/modules/master/common";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
 
-export interface ParamDef {
-  key: string;
-  label: string;
-  fallback: number;
-  min: number;
-  max: number;
-  unit: string;
-  note: string;
+export { PARAM_DEFS, PMC_WRITABLE_PARAM_KEYS };
+export type { EnumParamDef, NumParamDef, ParamDef };
+
+/** 该角色集合能否写某键：admin 恒可；pmc 仅限 replenish 键组 */
+export function canWriteParam(roles: readonly string[], key: string): boolean {
+  if (roles.includes("admin")) return true;
+  if (roles.includes("pmc")) return PMC_WRITABLE_PARAM_KEYS.includes(key);
+  return false;
 }
 
-/** 白名单（含缺省与边界；D 号=裁决出处） */
-export const PARAM_DEFS: ParamDef[] = [
-  { key: "price_tolerance_pct", label: "价格异动容差", fallback: 3, min: 0, max: 50, unit: "%", note: "R1 比价硬门（D4，UAT 校准）" },
-  { key: "over_receive_tolerance_pct", label: "超收容差", fallback: 0, min: 0, max: 20, unit: "%", note: "收货超单比例上限" },
-  { key: "concession_price_ratio", label: "让步默认价率", fallback: 100, min: 0, max: 100, unit: "%", note: "让步接收结算价比例（D6）" },
-  { key: "slow_days_threshold", label: "滞销警戒阈值", fallback: 180, min: 30, max: 720, unit: "天", note: "可销天数超过即判滞销（D39/0724 会议）" },
-  { key: "cover_alert_days", label: "断货预警阈值", fallback: 30, min: 3, max: 180, unit: "天", note: "可销天数低于即预警（R11/驾驶舱）" },
-  { key: "cover_target_days", label: "补货目标覆盖", fallback: 45, min: 7, max: 365, unit: "天", note: "补货建议的目标覆盖天数（R11，未分层默认）" },
-  { key: "cover_target_days_a", label: "A类目标覆盖", fallback: 60, min: 7, max: 365, unit: "天", note: "func#14 分层策略：A类(销量前80%)目标覆盖——高价值多备缓冲" },
-  { key: "cover_target_days_b", label: "B类目标覆盖", fallback: 45, min: 7, max: 365, unit: "天", note: "func#14：B类(次15%)目标覆盖" },
-  { key: "cover_target_days_c", label: "C类目标覆盖", fallback: 25, min: 7, max: 365, unit: "天", note: "func#14：C类(长尾5%)目标覆盖——少备减压库" },
-  { key: "safety_days_fallback", label: "安全库存兜底天数", fallback: 7, min: 0, max: 90, unit: "天", note: "E2-01：统计法不可用（样本<3月或缺生产周期）时按此天数×日均兜底" },
-  { key: "service_level_pct", label: "目标服务水平", fallback: 95, min: 90, max: 99, unit: "%", note: "E2-01：安全库存 z 值档位（90/95/97.5→98取95、99）" },
-  /* 异动侦测三阈值（2026-07-25 审计收编）：此前硬编码在 report/detectors.ts:34-43，
-     无 D 号、不在本白名单、API 也不收覆盖参数——要调阈值必须改代码发版，
-     而这三个数字没有业务归属，谁都不敢动。实测命中率 343/441=78% 的「有销量」成品，
-     目录三分之一都在清单里等于没有清单。 */
-  { key: "detector_sales_drop_pct", label: "销量骤停跌幅", fallback: 70, min: 30, max: 95, unit: "%", note: "E5-10：较前期均值跌幅超过即命中（末期为0直接命中）" },
-  { key: "detector_channel_shift_pct", label: "渠道迁移阈值", fallback: 15, min: 5, max: 50, unit: "个百分点", note: "E5-10：任一渠道占比变化绝对值超过即命中" },
-  { key: "detector_velocity_dev_pct", label: "速度突变偏离", fallback: 40, min: 15, max: 100, unit: "%", note: "E5-10：本期日均相对近3月基线偏离超过即命中（月度数据下 40% 属常态波动，建议校准后上调）" },
-  { key: "auto_wo_on_bh", label: "BH审批自动建WO", fallback: 0, min: 0, max: 1, unit: "", note: "D33 自动链开关①（0=关；上线前须预演验证——spec/11）" },
-  { key: "auto_jg_on_ready", label: "齐套自动JG草稿", fallback: 0, min: 0, max: 1, unit: "", note: "D33 自动链开关②（0=关；自动仅产草稿，审批留人工闸）" },
-  { key: "batch_posting_enabled", label: "批次过账与FEFO", fallback: 0, min: 0, max: 1, unit: "", note: "E2-12 迁移闸门（默认关；历史余额迁移、全出库路径UAT后方可开启）" },
-];
+export type ParamRow = ParamDef & {
+  /** 全局层当前值；enum 参数为字符串 */
+  value: number | string;
+  isDefault: boolean;
+  lastChangedBy: string | null;
+  lastChangedAt: string | null;
+  writableBy: "admin" | "pmc";
+  /** 该键在 sku/brand/segment/category 层的覆盖行数（页面在全局行上提示「有 N 处覆盖」） */
+  overrideCount: number;
+  /**
+   * 该键可维护的作用域层（页面据此渲染「分域覆盖」表单，不在客户端另写一份判定）：
+   * 品类参数只有 category；枚举开关不分域（空数组）；其余数值参数三层可覆盖。
+   */
+  scopeKinds: ("sku" | "brand" | "segment" | "category")[];
+  /** scopeKinds 含 category 时的可选品类（唯一权威 core/param-defs） */
+  categoryOptions: readonly { value: string; label: string }[];
+};
 
-export async function listParams(dbArg?: AnyDb): Promise<(ParamDef & { value: number; isDefault: boolean; lastChangedBy: string | null; lastChangedAt: string | null })[]> {
+/** 某参数允许的分域层（服务端唯一口径；与 scoped-params 的 assertScopeAllowedForDef 同源） */
+export function scopeKindsFor(def: ParamDef): ParamRow["scopeKinds"] {
+  if (def.kind === "enum") return [];
+  return def.scope === "category" ? ["category"] : ["sku", "brand", "segment"];
+}
+
+function parseValue(def: ParamDef, raw: string | undefined): { value: number | string; isDefault: boolean } {
+  if (raw == null) return { value: def.fallback, isDefault: true };
+  if (def.kind === "enum") {
+    const v = raw.trim();
+    return def.options.some((o) => o.value === v) ? { value: v, isDefault: false } : { value: def.fallback, isDefault: true };
+  }
+  const n = Number(raw);
+  return Number.isFinite(n) ? { value: n, isDefault: false } : { value: def.fallback, isDefault: true };
+}
+
+export async function listParams(dbArg?: AnyDb): Promise<ParamRow[]> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const rows: { key: string; value: string }[] = await db
     .select({ key: sysParams.key, value: sysParams.value })
     .from(sysParams)
     .where(eq(sysParams.scope, "global"));
-  const byKey = new Map(rows.map((r) => [r.key, Number(r.value)]));
+  const byKey = new Map(rows.map((r) => [r.key, r.value]));
+  /* 分域覆盖计数：全局层以外的所有行（sku:/brand:/segment:/category:） */
+  const overrideRows: { key: string; n: number }[] = await db
+    .select({ key: sysParams.key, n: sql<number>`count(*)::int` })
+    .from(sysParams)
+    .where(ne(sysParams.scope, "global"))
+    .groupBy(sysParams.key);
+  const overrideByKey = new Map(overrideRows.map((r) => [r.key, Number(r.n)]));
   /* #17：最近修改人/时间——audit_log entity=sys_param 逐键取最新一条 */
   const auditRows: { after: unknown; createdAt: Date; name: string | null }[] = await db
     .select({ after: schema.auditLogs.after, createdAt: schema.auditLogs.createdAt, name: schema.users.name })
@@ -69,29 +89,57 @@ export async function listParams(dbArg?: AnyDb): Promise<(ParamDef & { value: nu
     if (key && !lastByKey.has(key)) lastByKey.set(key, { by: a.name, at: a.createdAt.toISOString().slice(0, 16).replace("T", " ") });
   }
   return PARAM_DEFS.map((d) => {
-    const v = byKey.get(d.key);
-    const ok = v != null && Number.isFinite(v);
+    const parsed = parseValue(d, byKey.get(d.key));
     const last = lastByKey.get(d.key);
-    return { ...d, value: ok ? (v as number) : d.fallback, isDefault: !ok, lastChangedBy: last?.by ?? null, lastChangedAt: last?.at ?? null };
+    return {
+      ...d,
+      value: parsed.value,
+      isDefault: parsed.isDefault,
+      lastChangedBy: last?.by ?? null,
+      lastChangedAt: last?.at ?? null,
+      writableBy: PMC_WRITABLE_PARAM_KEYS.includes(d.key) ? "pmc" : "admin",
+      overrideCount: overrideByKey.get(d.key) ?? 0,
+      scopeKinds: scopeKindsFor(d),
+      categoryOptions: PARAM_CATEGORY_OPTIONS,
+    };
   });
 }
 
-const updateSchema = z.object({ key: z.string(), value: z.number().finite() });
+const updateSchema = z.object({ key: z.string(), value: z.union([z.number().finite(), z.string().trim().min(1).max(50)]) });
 
-export async function updateParam(user: SessionUser, input: unknown, dbArg?: AnyDb): Promise<void> {
-  if (!user.roles.includes("admin")) throw new ApiError(403, "仅管理员可修改运行参数");
-  const v = updateSchema.parse(input);
-  const def = PARAM_DEFS.find((d) => d.key === v.key);
-  if (!def) throw new ApiError(400, "未登记的参数键");
-  if (v.value < def.min || v.value > def.max) {
+/** 按定义校验取值；返回落库字符串。数值参数拒绝字符串，枚举参数拒绝选项外取值 */
+export function validateParamValue(def: ParamDef, value: number | string): string {
+  if (def.kind === "enum") {
+    const v = String(value);
+    if (!def.options.some((o) => o.value === v)) {
+      throw new ApiError(400, `「${def.label}」只能取 ${def.options.map((o) => o.value).join(" / ")}`);
+    }
+    return v;
+  }
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new ApiError(400, `「${def.label}」须为数值`);
+  if (value < def.min || value > def.max) {
     throw new ApiError(400, `「${def.label}」取值须在 ${def.min}–${def.max}${def.unit} 之间`);
   }
+  return String(value);
+}
+
+export async function updateParam(user: SessionUser, input: unknown, dbArg?: AnyDb): Promise<void> {
+  const v = updateSchema.parse(input);
+  const def = paramDef(v.key);
+  if (!def) throw new ApiError(400, "未登记的参数键");
+  if (!canWriteParam(user.roles, v.key)) {
+    throw new ApiError(403, PMC_WRITABLE_PARAM_KEYS.includes(v.key) ? "仅生产计划（pmc）或管理员可修改补货参数" : "仅管理员可修改该参数");
+  }
+  if (def.scope === "category") {
+    throw new ApiError(400, `「${def.label}」只按品类维护，请在「分域覆盖」里按品类填写（结算不读全局值）`);
+  }
+  const stored = validateParamValue(def, v.value);
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const [old] = await db
     .select({ value: sysParams.value })
     .from(sysParams)
     .where(and(eq(sysParams.scope, "global"), eq(sysParams.key, v.key)));
-  if (v.key === "batch_posting_enabled" && String(v.value) !== (old?.value ?? String(def.fallback))) {
+  if (v.key === "batch_posting_enabled" && stored !== (old?.value ?? String(def.fallback))) {
     if (v.value === 1) {
       throw new ApiError(409, "批次过账必须通过同页「上线体检」确认后启用，不能作为普通参数直接修改");
     }
@@ -99,8 +147,8 @@ export async function updateParam(user: SessionUser, input: unknown, dbArg?: Any
   }
   await db
     .insert(sysParams)
-    .values({ scope: "global", key: v.key, value: String(v.value), note: def.label })
-    .onConflictDoUpdate({ target: [sysParams.scope, sysParams.key], set: { value: String(v.value) } });
+    .values({ scope: "global", key: v.key, value: stored, note: def.label })
+    .onConflictDoUpdate({ target: [sysParams.scope, sysParams.key], set: { value: stored } });
   clearParamCache();
   await writeAudit(db, {
     userId: user.id,

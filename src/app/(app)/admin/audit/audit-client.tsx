@@ -17,6 +17,7 @@ import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
 import { fetchJson } from "@/components/fetchJson";
 import type { AuditRow } from "@/server/modules/admin/audit";
+import { shanghaiTimestampOf } from "@/server/core/business-day";
 
 /** 常见审计对象 → 中文（未知值原样展示） */
 const ENTITY_LABELS: Record<string, string> = {
@@ -62,12 +63,7 @@ const ACTION_LABELS: Record<string, string> = {
   ignore: "忽略",
 };
 
-const SH_FMT = new Intl.DateTimeFormat("sv-SE", {
-  timeZone: "Asia/Shanghai",
-  year: "numeric", month: "2-digit", day: "2-digit",
-  hour: "2-digit", minute: "2-digit", second: "2-digit",
-  hour12: false,
-});
+const SH_FMT = { format: shanghaiTimestampOf };
 
 function fmtTime(iso: string): string {
   const d = new Date(iso);

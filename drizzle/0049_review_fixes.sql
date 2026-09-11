@@ -1,0 +1,6 @@
+ALTER TABLE "department_goals" DROP CONSTRAINT "ck_department_goals_actual_pair";--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_alert_open_dedupe" ON "system_alerts" USING btree ("category","dedupe_key") WHERE "system_alerts"."status" = 'open';--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_ops_demand_submissions_head" ON "ops_demand_submissions" USING btree ("sku_id",coalesce("channel_id", 0),"period") WHERE "ops_demand_submissions"."supersedes_id" IS NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_sales_amount_monthly_head" ON "sales_amount_monthly" USING btree ("year_month","scope_kind",coalesce("scope_id", 0)) WHERE "sales_amount_monthly"."supersedes_id" IS NULL;--> statement-breakpoint
+CREATE INDEX "ix_work_items_source" ON "work_items" USING btree ("source_kind","source_ref");--> statement-breakpoint
+ALTER TABLE "department_goals" ADD CONSTRAINT "ck_department_goals_actual_pair" CHECK (("department_goals"."actual_value" IS NULL OR "department_goals"."actual_source" IS NOT NULL) AND ("department_goals"."actual_source" IS DISTINCT FROM 'auto' OR "department_goals"."actual_value" IS NOT NULL));

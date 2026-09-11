@@ -1,24 +1,33 @@
 "use client";
 
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import DocumentDrawer from "@/components/DocumentDrawer";
+import DocumentTargetLink from "@/components/DocumentTargetLink";
+
 import SearchInput from "@/components/SearchInput";
 
-import { useCallback, useEffect, useState } from "react";
-import { App, Alert, Badge, Button, DatePicker, Descriptions, Drawer, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Table, Tabs, Tag, Typography } from "antd";
+import { useEffect, useState } from "react";
+import { App, Alert, Badge, Button, DatePicker, Descriptions, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import AttachmentPanel from "@/components/AttachmentPanel";
 import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
+import DocWindowFilterTag from "@/components/DocWindowFilterTag";
 import ListToolbar from "@/components/ListToolbar";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 import RemoteSelect from "@/components/RemoteSelect";
-import { fetchJson, postJson } from "@/components/fetchJson";
+import { postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import { useListState } from "@/components/useListState";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
 import ScannerEntry from "@/components/ScannerEntry";
 import { addScanQty, findUniqueScanMatch } from "@/components/scanner";
+import QcOutcomePanel from "./qc-outcome-panel";
 
 // ---------- 客户端十进制工具（仅 UI 过滤/汇总提示用；非负字符串，禁 float） ----------
 
@@ -82,6 +91,7 @@ interface ShRow {
 
 interface ShLine {
   id: number;
+  poLineId: number | null;
   skuId: number;
   skuCode: string;
   skuName: string;
@@ -127,21 +137,20 @@ interface ShDetail {
   approvals: DocApproval[];
 }
 
-interface JgOption {
+interface JgSource {
   id: number;
-  docNo: string;
   status: string;
-  supplierName: string;
+  productSkuId: number;
   productSkuCode: string;
   productSkuName: string;
+  productSkuBarcode: string | null;
   qty: string;
 }
 
-interface PoOption {
+interface PoSource {
   id: number;
-  docNo: string;
   status: string;
-  supplierName: string;
+  lines: PoDetailLine[];
 }
 
 interface PoDetailLine {
@@ -169,6 +178,7 @@ interface JgCreateLine {
 
 /** po 源创建行（按 PO 行预填） */
 interface PoCreateLine {
+  poLineId: number;
   skuId: number;
   skuCode: string;
   skuName: string;
@@ -209,19 +219,36 @@ export default function ShClient() {
   const canApprove =
     me != null && (me.roles.includes("admin") || (me.isApprover && me.roles.includes("warehouse")));
 
-  const [rows, setRows] = useState<ShRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "sh", defaults: { q: "", status: "" }, defaultPageSize: 20 });
+  // from/to = 制单时间窗（上海业务日，含首尾）：全链漏斗「到货」级点数字回链到本页时带过来
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "sh", defaults: { q: "", status: "", from: "", to: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
+  const from = filters.from;
+  const to = filters.to;
+  const listParams = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
+  if (status) listParams.set("status", status);
+  if (from) listParams.set("from", from);
+  if (to) listParams.set("to", to);
+  const listRead = useDocumentRead<{ rows: ShRow[]; total: number }>(`/api/matflow/sh?${listParams}`);
+  const listValid = listRead.data != null && Array.isArray(listRead.data.rows) && Number.isSafeInteger(listRead.data.total)
+    && listRead.data.total >= 0 && listRead.data.rows.every(r => r && Number.isSafeInteger(r.id) && r.id > 0 && typeof r.docNo === "string");
+  const rows = listValid ? listRead.data!.rows : [];
+  const total = listValid ? listRead.data!.total : 0;
+  const loading = listRead.phase === "loading";
+  const listError = listRead.error ?? (listRead.phase === "success" && !listValid ? "收货列表格式异常，请重新读取" : null);
+  const load = listRead.retry;
 
-  const [detailId, setDetailId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<ShDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const documentSelection = useDocumentTarget();
+  const { id: detailId, setId: setDetailId } = documentSelection;
+  useEffect(() => { setRejectOpen(false); }, [detailId]);
+  const detailRead = useDocumentRead<ShDetail>(detailId == null ? null : `/api/matflow/sh/${detailId}`);
+  const detail = detailRead.data;
+  const detailLoading = detailRead.phase === "loading";
+  const loadDetail = detailRead.retry;
   const [actionLoading, setActionLoading] = useState(false);
+  const [actionError, setActionError] = useState<{ id: number; message: string } | null>(null);
   const [overCapAlert, setOverCapAlert] = useState<string | null>(null);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
@@ -236,62 +263,41 @@ export default function ShClient() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createLoading, setCreateLoading] = useState(false);
   const [sourceType, setSourceType] = useState<"jg" | "po">("jg");
-  const [jgOptions, setJgOptions] = useState<JgOption[]>([]);
-  const [poOptions, setPoOptions] = useState<PoOption[]>([]);
-  const [sourceLoading, setSourceLoading] = useState(false);
   const [sourceId, setSourceId] = useState<number | null>(null);
   const [warehouseId, setWarehouseId] = useState<number | null>(null);
   const [remark, setRemark] = useState("");
-  const [jgProduct, setJgProduct] = useState<{
-    skuId: number;
-    skuCode: string;
-    skuName: string;
-    barcode: string | null;
-    qty: string;
-  } | null>(null);
   const [jgLines, setJgLines] = useState<JgCreateLine[]>([]);
   const [jgLineKey, setJgLineKey] = useState(1);
-  const [poLines, setPoLines] = useState<PoCreateLine[]>([]);
-  const [linesLoading, setLinesLoading] = useState(false);
+  const [poEdits, setPoEdits] = useState<Partial<Record<number, Pick<PoCreateLine, "actualQty" | "batchNo" | "prodDate">>>>({});
+  const jgRead = useDocumentRead<JgSource>(createOpen && sourceType === "jg" && sourceId != null ? `/api/outsource/jg/${sourceId}` : null);
+  const poRead = useDocumentRead<PoSource>(createOpen && sourceType === "po" && sourceId != null ? `/api/outsource/po/${sourceId}` : null);
+  const sourceRead = sourceType === "jg" ? jgRead : poRead;
+  const validStatus = (value: string) => value === "approved" || value === "in_progress";
+  const jgValid = jgRead.data != null && jgRead.data.id === sourceId && validStatus(jgRead.data.status)
+    && Number.isSafeInteger(jgRead.data.productSkuId) && jgRead.data.productSkuId > 0
+    && typeof jgRead.data.productSkuCode === "string" && typeof jgRead.data.productSkuName === "string"
+    && typeof jgRead.data.qty === "string" && DEC_RE.test(jgRead.data.qty);
+  const poValid = poRead.data != null && poRead.data.id === sourceId && validStatus(poRead.data.status)
+    && Array.isArray(poRead.data.lines) && poRead.data.lines.length > 0
+    && poRead.data.lines.every(l => l && Number.isSafeInteger(l.id) && l.id > 0 && Number.isSafeInteger(l.skuId) && l.skuId > 0
+      && typeof l.skuCode === "string" && typeof l.skuName === "string" && typeof l.baseUom === "string" && typeof l.purchaseUom === "string"
+      && typeof l.qty === "string" && DEC_RE.test(l.qty) && typeof l.receivedQty === "string" && DEC_RE.test(l.receivedQty))
+    && new Set(poRead.data.lines.map(l => l.id)).size === poRead.data.lines.length;
+  const sourceReady = sourceType === "jg" ? jgValid : poValid;
+  const sourceError = sourceRead.error ?? (sourceRead.phase === "success" && !sourceReady ? "来源单据身份、状态或收货行异常；仅已审批/执行中的单据可收货，请重新读取或改选来源" : null);
+  const jg = jgValid ? jgRead.data : null;
+  const jgProduct = jg ? { skuId: jg.productSkuId, skuCode: jg.productSkuCode, skuName: jg.productSkuName, barcode: jg.productSkuBarcode, qty: jg.qty } : null;
+  const poLines: PoCreateLine[] = poValid ? poRead.data!.lines.map(l => ({
+    poLineId: l.id, skuId: l.skuId, skuCode: l.skuCode, skuName: l.skuName, barcode: l.barcode,
+    baseUom: l.baseUom, orderedQty: l.qty, purchaseUom: l.purchaseUom, receivedQty: l.receivedQty,
+    actualQty: "0", batchNo: "", prodDate: null, ...poEdits[l.id],
+  })) : [];
+  const editPoLine = (id: number, edit: Partial<Pick<PoCreateLine, "actualQty" | "batchNo" | "prodDate">>) => {
+    if (createLoading || !poValid) return;
+    setPoEdits(prev => ({ ...prev, [id]: { actualQty: "0", batchNo: "", prodDate: null, ...prev[id], ...edit } }));
+  };
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
-      if (status) params.set("status", status);
-      const res = await fetchJson<{ rows: ShRow[]; total: number }>(`/api/matflow/sh?${params.toString()}`);
-      setRows(res.rows);
-      setTotal(res.total);
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [q, status, page, pageSize, message]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const loadDetail = useCallback(
-    async (id: number) => {
-      setDetailLoading(true);
-      try {
-        setDetail(await fetchJson<ShDetail>(`/api/matflow/sh/${id}`));
-      } catch (e) {
-        message.error((e as Error).message);
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [message],
-  );
-
-  useEffect(() => {
-    setOverCapAlert(null);
-    if (detailId != null) void loadDetail(detailId);
-    else setDetail(null);
-  }, [detailId, loadDetail]);
+  useEffect(() => { setOverCapAlert(null); }, [detailId]);
 
   /** 检验区编辑态初始化：已审批且未检验时，按收货行预填（合格=实收） */
   useEffect(() => {
@@ -315,7 +321,7 @@ export default function ShClient() {
   }, [detail]);
 
   const refresh = () => {
-    if (detail) void loadDetail(detail.id);
+    if (detail) void loadDetail();
     void load();
   };
 
@@ -323,9 +329,8 @@ export default function ShClient() {
 
   const resetCreateSource = () => {
     setSourceId(null);
-    setJgProduct(null);
     setJgLines([]);
-    setPoLines([]);
+    setPoEdits({});
   };
 
   const openCreate = () => {
@@ -334,68 +339,18 @@ export default function ShClient() {
     resetCreateSource();
     setWarehouseId(null);
     setRemark("");
-    setSourceLoading(true);
-    Promise.all([
-      fetchJson<{ rows: JgOption[] }>("/api/outsource/jg?page=1&pageSize=999"),
-      fetchJson<{ rows: PoOption[] }>("/api/outsource/po?page=1&pageSize=999"),
-    ])
-      .then(([jg, po]) => {
-        setJgOptions(jg.rows.filter((r) => r.status === "approved" || r.status === "in_progress"));
-        setPoOptions(po.rows.filter((r) => r.status === "approved" || r.status === "in_progress"));
-      })
-      .catch((e) => message.error((e as Error).message))
-      .finally(() => setSourceLoading(false));
   };
 
-  const handleSourceChange = async (id: number) => {
+  const handleSourceChange = (id: number) => {
+    if (createLoading) return;
     setSourceId(id);
-    setLinesLoading(true);
-    try {
-      if (sourceType === "jg") {
-        const jg = await fetchJson<{
-          productSkuId: number;
-          productSkuCode: string;
-          productSkuName: string;
-          productSkuBarcode: string | null;
-          qty: string;
-        }>(`/api/outsource/jg/${id}`);
-        setJgProduct({
-          skuId: jg.productSkuId,
-          skuCode: jg.productSkuCode,
-          skuName: jg.productSkuName,
-          barcode: jg.productSkuBarcode,
-          qty: jg.qty,
-        });
-        setJgLines([
-          { key: 0, lineType: "normal", expectedQty: "", actualQty: "0", batchNo: "", prodDate: null },
-        ]);
-        setJgLineKey(1);
-      } else {
-        const po = await fetchJson<{ lines: PoDetailLine[] }>(`/api/outsource/po/${id}`);
-        setPoLines(
-          po.lines.map((l) => ({
-            skuId: l.skuId,
-            skuCode: l.skuCode,
-            skuName: l.skuName,
-            barcode: l.barcode,
-            baseUom: l.baseUom,
-            orderedQty: l.qty,
-            purchaseUom: l.purchaseUom,
-            receivedQty: l.receivedQty,
-            actualQty: "0",
-            batchNo: "",
-            prodDate: null,
-          })),
-        );
-      }
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setLinesLoading(false);
-    }
+    setPoEdits({});
+    setJgLines([{ key: 0, lineType: "normal", expectedQty: "", actualQty: "0", batchNo: "", prodDate: null }]);
+    setJgLineKey(1);
   };
 
   const handleReceiveScan = (code: string, qty: string): boolean => {
+    if (createLoading || !sourceReady) return false;
     if (sourceType === "jg") {
       if (!jgProduct) return false;
       const result = findUniqueScanMatch([jgProduct], code, (item) => [item.barcode, item.skuCode]);
@@ -426,19 +381,15 @@ export default function ShClient() {
       message.error(`条码/SKU 命中当前订单 ${result.count} 行，请手工选择行录入`);
       return false;
     }
-    setPoLines((prev) =>
-      prev.map((line) =>
-        line.skuId === result.item.skuId
-          ? { ...line, actualQty: addScanQty(line.actualQty, qty) }
-          : line,
-      ),
-    );
+    editPoLine(result.item.poLineId, { actualQty: addScanQty(result.item.actualQty, qty) });
     message.success(`已计入 ${result.item.skuCode}：+${qty}`, 0.8);
     return true;
   };
 
   const handleCreate = async () => {
+    if (createLoading) return;
     if (sourceId == null) return void message.warning("请选择来源单据");
+    if (!sourceReady) return void message.warning("请等待当前来源读取完成；读取失败时先重试，不能用旧数据创建");
     if (warehouseId == null) return void message.warning("请选择收货仓");
     let lines: Record<string, unknown>[];
     if (sourceType === "jg") {
@@ -458,6 +409,7 @@ export default function ShClient() {
       if (valid.length === 0) return void message.warning("至少需要一行实收数量大于 0 的收货行");
       lines = valid.map((l) => ({
         skuId: l.skuId,
+        poLineId: l.poLineId,
         lineType: "normal",
         actualQty: l.actualQty,
         batchNo: l.batchNo.trim() || undefined,
@@ -493,13 +445,14 @@ export default function ShClient() {
 
   const handleSubmit = async () => {
     if (!detail) return;
+    setActionError(null);
     setActionLoading(true);
     try {
       await postJson(`/api/matflow/sh/${detail.id}/submit`, { version: detail.version });
       message.success("已提交审批");
       refresh();
     } catch (e) {
-      message.error((e as Error).message);
+      setActionError({ id: detail.id, message: (e as Error).message });
     } finally {
       setActionLoading(false);
     }
@@ -507,6 +460,7 @@ export default function ShClient() {
 
   const handleApprove = async (action: "approve" | "reject", comment?: string) => {
     if (!detail) return false;
+    setActionError(null);
     setActionLoading(true);
     setOverCapAlert(null);
     try {
@@ -522,9 +476,9 @@ export default function ShClient() {
       const msg = (e as Error).message;
       if (msg.includes("累计收货超限")) {
         setOverCapAlert(msg);
-        void loadDetail(detail.id);
+        void loadDetail();
       } else {
-        message.error(msg);
+        setActionError({ id: detail.id, message: msg });
       }
       return false;
     } finally {
@@ -608,7 +562,7 @@ export default function ShClient() {
       title: "单据号",
       dataIndex: "docNo",
       width: 160,
-      render: (v: string, r) => <Typography.Link onClick={() => setDetailId(r.id)}>{v}</Typography.Link>,
+      render: (v: string, r) => <DocumentTargetLink id={r.id} onOpen={setDetailId}>{v}</DocumentTargetLink>,
     },
     {
       title: "来源",
@@ -646,7 +600,7 @@ export default function ShClient() {
   ];
 
   const lineColumns: ColumnsType<ShLine> = [
-    { title: "物料", key: "material", render: (_, r) => `${r.skuCode} ${r.skuName}` },
+    { title: "物料", key: "material", width: 160, render: (_, r) => <><div>{r.skuCode} {r.skuName}</div>{detail?.sourceType === "po" && <Typography.Text type="secondary">{r.poLineId != null ? `采购行 #${r.poLineId}` : "历史采购行未记录"}</Typography.Text>}</> },
     { title: "单位", dataIndex: "baseUom", width: 70 },
     {
       title: "行类型",
@@ -672,6 +626,7 @@ export default function ShClient() {
     {
       title: "物料",
       key: "material",
+      width: 160,
       render: (_, r) => {
         const l = shLineById.get(r.shLineId);
         return l ? `${l.skuCode} ${l.skuName}` : `行#${r.shLineId}`;
@@ -704,7 +659,7 @@ export default function ShClient() {
   ];
 
   const qcEditColumns: ColumnsType<QcEditRow> = [
-    { title: "物料", dataIndex: "label" },
+    { title: "物料", dataIndex: "label", width: 160 },
     {
       title: "行类型",
       dataIndex: "lineType",
@@ -784,6 +739,7 @@ export default function ShClient() {
       width: 130,
       render: (_, r, idx) => (
         <Select<ShLineType>
+          disabled={createLoading}
           style={{ width: "100%" }}
           value={r.lineType}
           options={[
@@ -807,6 +763,7 @@ export default function ShClient() {
           min="0"
           style={{ width: "100%" }}
           placeholder="可留空"
+          disabled={createLoading}
           value={r.expectedQty || null}
           onChange={(v) =>
             setJgLines((prev) => prev.map((l, i) => (i === idx ? { ...l, expectedQty: v ?? "" } : l)))
@@ -824,6 +781,7 @@ export default function ShClient() {
           min="0"
           style={{ width: "100%" }}
           value={r.actualQty}
+          disabled={createLoading}
           onChange={(v) =>
             setJgLines((prev) => prev.map((l, i) => (i === idx ? { ...l, actualQty: v ?? "0" } : l)))
           }
@@ -838,6 +796,7 @@ export default function ShClient() {
         <Input
           maxLength={50}
           value={r.batchNo}
+          disabled={createLoading}
           onChange={(e) =>
             setJgLines((prev) => prev.map((l, i) => (i === idx ? { ...l, batchNo: e.target.value } : l)))
           }
@@ -852,6 +811,7 @@ export default function ShClient() {
         <DatePicker
           style={{ width: "100%" }}
           value={r.prodDate ? dayjs(r.prodDate) : null}
+          disabled={createLoading}
           onChange={(d) =>
             setJgLines((prev) =>
               prev.map((l, i) => (i === idx ? { ...l, prodDate: d ? d.format("YYYY-MM-DD") : null } : l)),
@@ -869,6 +829,7 @@ export default function ShClient() {
           type="text"
           size="small"
           icon={<DeleteOutlined />}
+          disabled={createLoading}
           onClick={() => setJgLines((prev) => prev.filter((_, i) => i !== idx))}
         />
       ),
@@ -876,7 +837,7 @@ export default function ShClient() {
   ];
 
   const poCreateColumns: ColumnsType<PoCreateLine> = [
-    { title: "物料", key: "material", render: (_, r) => `${r.skuCode} ${r.skuName}` },
+    { title: "物料 / 单位", key: "material", width: 260, render: (_, r) => <><div>{r.skuCode} {r.skuName}（{r.baseUom}）</div><Typography.Text type="secondary">采购行 #{r.poLineId}</Typography.Text></> },
     {
       title: "订购",
       key: "ordered",
@@ -895,15 +856,14 @@ export default function ShClient() {
       title: "本次实收（基础单位）",
       key: "actualQty",
       width: 150,
-      render: (_, r, idx) => (
+      render: (_, r) => (
         <InputNumber<string>
           stringMode
           min="0"
           style={{ width: "100%" }}
           value={r.actualQty}
-          onChange={(v) =>
-            setPoLines((prev) => prev.map((l, i) => (i === idx ? { ...l, actualQty: v ?? "0" } : l)))
-          }
+          disabled={createLoading}
+          onChange={(v) => editPoLine(r.poLineId, { actualQty: v ?? "0" })}
         />
       ),
     },
@@ -911,13 +871,12 @@ export default function ShClient() {
       title: "批号",
       key: "batchNo",
       width: 120,
-      render: (_, r, idx) => (
+      render: (_, r) => (
         <Input
           maxLength={50}
           value={r.batchNo}
-          onChange={(e) =>
-            setPoLines((prev) => prev.map((l, i) => (i === idx ? { ...l, batchNo: e.target.value } : l)))
-          }
+          disabled={createLoading}
+          onChange={(e) => editPoLine(r.poLineId, { batchNo: e.target.value })}
         />
       ),
     },
@@ -925,15 +884,12 @@ export default function ShClient() {
       title: "生产日期",
       key: "prodDate",
       width: 140,
-      render: (_, r, idx) => (
+      render: (_, r) => (
         <DatePicker
           style={{ width: "100%" }}
           value={r.prodDate ? dayjs(r.prodDate) : null}
-          onChange={(d) =>
-            setPoLines((prev) =>
-              prev.map((l, i) => (i === idx ? { ...l, prodDate: d ? d.format("YYYY-MM-DD") : null } : l)),
-            )
-          }
+          disabled={createLoading}
+          onChange={(d) => editPoLine(r.poLineId, { prodDate: d ? d.format("YYYY-MM-DD") : null })}
         />
       ),
     },
@@ -996,16 +952,20 @@ export default function ShClient() {
           </>
         }
         extra={
-          <SearchInput
-            key={q}
-            allowClear
-            defaultValue={q}
-            placeholder="搜索单号 / SKU 编码 / 货品名称"
-            style={{ width: 240 }}
-            onSearch={(value) => listState.setFilter({ q: value.trim() })}
-          />
+          <>
+            <SearchInput
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索单号 / SKU 编码 / 货品名称"
+              style={{ width: 240 }}
+              onSearch={(value) => listState.setFilter({ q: value.trim() })}
+            />
+            <DocWindowFilterTag from={from} to={to} onClear={() => listState.setFilter({ from: "", to: "" })} />
+          </>
         }
       />
+      <LoadErrorAlert error={listError} onRetry={load} subject="收货列表" retrying={loading} />
       <Table<ShRow>
         rowKey="id"
         size={listState.tableSize}
@@ -1013,10 +973,11 @@ export default function ShClient() {
         dataSource={rows}
         loading={loading}
         scroll={{ x: "max-content" }}
-        pagination={listState.paginationProps({ total: total })}
+        pagination={listValid ? listState.paginationProps({ total }) : false}
       />
 
-      <Drawer
+      <DocumentDrawer
+        key={detailId ?? "invalid-document"}
         title={
           detail ? (
             <Space>
@@ -1028,8 +989,13 @@ export default function ShClient() {
             "收货单详情"
           )
         }
-        open={detailId != null}
-        onClose={() => setDetailId(null)}
+        open={documentSelection.present}
+        readError={documentSelection.error ?? detailRead.error}
+        onRetry={detailId != null ? detailRead.retry : undefined}
+        closable={!actionLoading && !qcLoading && !inboundLoading}
+        maskClosable={!actionLoading && !qcLoading && !inboundLoading}
+        keyboard={!actionLoading && !qcLoading && !inboundLoading}
+        onClose={() => { if (!actionLoading && !qcLoading && !inboundLoading) setDetailId(null); }}
         width={980}
         loading={detailLoading}
         extra={actions}
@@ -1037,6 +1003,10 @@ export default function ShClient() {
         {detail ? (
           <div>
             <ChainStrip docType="sh" id={detail.id} />
+            {actionError?.id === detail.id ? <Alert type="error" showIcon style={{ marginBottom: 12 }}
+              message="操作未完成，请核对当前单据"
+              description={actionError.message}
+              action={<Button size="small" onClick={loadDetail}>重新读取单据</Button>} /> : null}
             {overCapAlert ? (
               <Alert
                 type="warning"
@@ -1048,7 +1018,7 @@ export default function ShClient() {
                 description={overCapAlert}
               />
             ) : null}
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="来源">
                 <Space size={4}>
                   {detail.sourceType === "jg" ? <Tag color="blue">委外</Tag> : <Tag color="green">采购</Tag>}
@@ -1060,7 +1030,7 @@ export default function ShClient() {
               <Descriptions.Item label="制单时间">
                 {dayjs(detail.createdAt).format("YYYY-MM-DD HH:mm")}
               </Descriptions.Item>
-              <Descriptions.Item label="备注" span={2}>
+              <Descriptions.Item label="备注" span={{ xs: 1, sm: 2 }}>
                 {detail.remark ?? "—"}
               </Descriptions.Item>
             </Descriptions>
@@ -1070,6 +1040,8 @@ export default function ShClient() {
               rowKey="id"
               size="small"
               columns={lineColumns}
+              tableLayout="fixed"
+              scroll={{ x: 840 }}
               dataSource={detail.lines}
               pagination={false}
               style={{ marginBottom: 24 }}
@@ -1082,6 +1054,8 @@ export default function ShClient() {
                   rowKey="id"
                   size="small"
                   columns={qcResultColumns}
+                  tableLayout="fixed"
+                  scroll={{ x: 720 }}
                   dataSource={detail.qc.lines}
                   pagination={false}
                   style={{ marginBottom: 8 }}
@@ -1090,6 +1064,8 @@ export default function ShClient() {
                   检验时间：{dayjs(detail.qc.createdAt).format("YYYY-MM-DD HH:mm")}
                   {detail.qc.conclusion ? `｜结论：${detail.qc.conclusion}` : ""}
                 </Typography.Text>
+                {/* W2 审计 3：不合格量必须有去向（质量案件 / 退货草稿），否则它只是报表里的一个比率 */}
+                <QcOutcomePanel shId={detail.id} canWrite={canWrite} onDone={() => void loadDetail()} />
               </div>
             ) : detail.status === "approved" && canWrite ? (
               <div style={{ marginBottom: 24 }}>
@@ -1097,6 +1073,8 @@ export default function ShClient() {
                   rowKey="shLineId"
                   size="small"
                   columns={qcEditColumns}
+                  tableLayout="fixed"
+                  scroll={{ x: 890 }}
                   dataSource={qcRows}
                   pagination={false}
                   style={{ marginBottom: 8 }}
@@ -1184,7 +1162,7 @@ export default function ShClient() {
             ) : null}
           </div>
         ) : null}
-      </Drawer>
+      </DocumentDrawer>
 
       <Modal
         title="新建收货单"
@@ -1193,11 +1171,17 @@ export default function ShClient() {
         okText="创建"
         cancelText="取消"
         confirmLoading={createLoading}
-        onCancel={() => setCreateOpen(false)}
+        okButtonProps={{ disabled: !sourceReady || warehouseId == null }}
+        cancelButtonProps={{ disabled: createLoading }}
+        closable={!createLoading}
+        maskClosable={!createLoading}
+        keyboard={!createLoading}
+        onCancel={() => { if (!createLoading) { setCreateOpen(false); resetCreateSource(); } }}
         onOk={() => void handleCreate()}
       >
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
           <Radio.Group
+            disabled={createLoading}
             value={sourceType}
             onChange={(e) => {
               setSourceType(e.target.value as "jg" | "po");
@@ -1213,24 +1197,16 @@ export default function ShClient() {
             <div style={{ marginBottom: 4 }}>
               {sourceType === "jg" ? "加工通知单（仅 已审批/执行中）" : "采购订单（仅 已审批/执行中）"}
             </div>
-            <Select
-              showSearch
-              optionFilterProp="label"
-              loading={sourceLoading}
+            <RemoteSelect
+              key={sourceType}
+              api={`/api/outsource/${sourceType}?receiptEligible=1`}
+              disabled={createLoading}
               style={{ width: "100%" }}
               placeholder="选择来源单据"
               value={sourceId}
-              options={
-                sourceType === "jg"
-                  ? jgOptions.map((j) => ({
-                      value: j.id,
-                      label: `${j.docNo}｜${j.supplierName}｜${j.productSkuCode} ${j.productSkuName}｜数量 ${formatQty(j.qty)}`,
-                    }))
-                  : poOptions.map((p) => ({
-                      value: p.id,
-                      label: `${p.docNo}｜${p.supplierName}`,
-                    }))
-              }
+              getLabel={r => sourceType === "jg"
+                ? `${r.docNo}｜${r.supplierName}｜${r.productSkuCode} ${r.productSkuName}｜数量 ${formatQty(String(r.qty))}`
+                : `${r.docNo}｜${r.supplierName}`}
               onChange={(v: number) => void handleSourceChange(v)}
             />
           </div>
@@ -1238,6 +1214,7 @@ export default function ShClient() {
             <div style={{ marginBottom: 4 }}>收货仓（自有实时仓）</div>
             <RemoteSelect
               api="/api/master/warehouse"
+              disabled={createLoading}
               style={{ width: "100%" }}
               placeholder="选择收货仓"
               value={warehouseId}
@@ -1251,7 +1228,14 @@ export default function ShClient() {
               onChange={(v: number) => setWarehouseId(v)}
             />
           </div>
-          {(sourceType === "jg" ? jgProduct != null : poLines.length > 0) ? (
+          <LoadErrorAlert error={sourceError} onRetry={() => {
+            setPoEdits({});
+            setJgLines([{ key: 0, lineType: "normal", expectedQty: "", actualQty: "0", batchNo: "", prodDate: null }]);
+            setJgLineKey(1);
+            sourceRead.retry();
+          }} subject="来源收货行" retrying={sourceRead.phase === "loading"} />
+          {sourceRead.phase === "loading" ? <Typography.Text type="secondary">正在读取当前来源收货行，请稍候…</Typography.Text> : null}
+          {!createLoading && (sourceType === "jg" ? jgProduct != null : poLines.length > 0) ? (
             <ScannerEntry
               help="扫码枪请保持光标在输入框；设备回车后系统按条码或 SKU 编码匹配当前来源单，并把数量累加到本次实收。委外扫码默认计入正常收货行。"
               onScan={handleReceiveScan}
@@ -1265,12 +1249,14 @@ export default function ShClient() {
               <Table<JgCreateLine>
                 rowKey="key"
                 size="small"
-                loading={linesLoading}
+                tableLayout="fixed"
+                scroll={{ x: 810 }}
                 columns={jgCreateColumns}
                 dataSource={jgLines}
                 pagination={false}
                 footer={() => (
                   <Button
+                    disabled={createLoading}
                     type="dashed"
                     size="small"
                     icon={<PlusOutlined />}
@@ -1299,9 +1285,10 @@ export default function ShClient() {
             <div>
               <div style={{ marginBottom: 4 }}>收货行（按 PO 行预填；实收为 0 的行不提交）</div>
               <Table<PoCreateLine>
-                rowKey="skuId"
+                rowKey="poLineId"
                 size="small"
-                loading={linesLoading}
+                tableLayout="fixed"
+                scroll={{ x: 910 }}
                 columns={poCreateColumns}
                 dataSource={poLines}
                 pagination={false}
@@ -1309,6 +1296,7 @@ export default function ShClient() {
             </div>
           ) : null}
           <Input.TextArea
+            disabled={createLoading}
             rows={2}
             maxLength={500}
             placeholder="备注（可选）"

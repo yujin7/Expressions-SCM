@@ -21,6 +21,8 @@ import { refreshPlatformSkuIdentityGap } from "@/server/modules/report/platform-
 import { refreshJiandaoyunExternalDemandReadModel } from "@/server/modules/report/external-demand-signal";
 import { refreshExternalVelocity } from "@/server/modules/report/external-velocity";
 import type { AnyDb } from "@/server/core/svc";
+import { assertPlatformIdentityWriter } from "./platform-identity-access";
+import { identityBulkError } from "./identity-bulk-error";
 
 export const PLATFORM_SCOPES = {
   tmall: "JIANDAOYUN:TMALL",
@@ -91,11 +93,14 @@ async function assertClaimIsConsistent(
     WITH latest AS (
       SELECT ir.import_job_id
       FROM integration_runs ir
+      INNER JOIN import_jobs ij ON ij.id = ir.import_job_id
       WHERE ir.connector = 'jdy'
         AND ir.stream = ${crosswalkStream}
         AND ir.status = 'succeeded'
         AND ir.import_job_id IS NOT NULL
-        AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
+        AND ij.status <> 'superseded'
+        -- 此处只检查已治理的 _identity，不把 review 原始字段升级成可信候选。
+        -- 与观察消费者一致：review 中已有归属也必须阻止矛盾的直接认领。
         AND coalesce(ir.request_scope->>'emptySource', 'false') = 'false'
       ORDER BY ir.started_at DESC, ir.id DESC
       LIMIT 1
@@ -140,6 +145,7 @@ async function claimOne(
 }
 
 export async function claimPlatformSku(actor: SessionUser, input: unknown, dbArg?: AnyDb) {
+  assertPlatformIdentityWriter(actor);
   const v = platformSkuClaimSchema.parse(input);
   const db = dbArg ?? (await getDbAsync());
   const value = platformSkuIdentifierValue(v.shopName, v.platformSkuId);
@@ -179,9 +185,10 @@ export const platformSkuBulkClaimSchema = z.object({
  * 读模型在整批结束后刷新一次。上限 300 行——超过就分批，避免一次锁太久。
  */
 export async function claimPlatformSkusBulk(actor: SessionUser, input: unknown, dbArg?: AnyDb) {
+  assertPlatformIdentityWriter(actor);
   const v = platformSkuBulkClaimSchema.parse(input);
   const db = dbArg ?? (await getDbAsync());
-  const results: { shopName: string; platformSkuId: string; skuId: number; ok: boolean; created?: boolean; error?: string }[] = [];
+  const results: { shopName: string; platformSkuId: string; skuId: number; ok: boolean; created?: boolean; error?: string; errorKind?: "business" | "unconfirmed"; errorId?: string }[] = [];
   for (const item of v.items) {
     try {
       const r = await db.transaction(async (tx: AnyDb) =>
@@ -192,7 +199,7 @@ export async function claimPlatformSkusBulk(actor: SessionUser, input: unknown, 
       );
       results.push({ ...item, ok: true, created: r.created });
     } catch (error) {
-      results.push({ ...item, ok: false, error: (error as Error).message });
+      results.push({ ...item, ok: false, ...identityBulkError(error, { operation: "claim", userId: actor.id, skuId: item.skuId }) });
     }
   }
   let readModels: "refreshed" | "deferred" = "refreshed";

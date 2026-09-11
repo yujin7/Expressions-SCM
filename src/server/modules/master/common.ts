@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
-import { log, persistErrorLog } from "@/server/core/logger";
+import { todayShanghai as businessToday } from "@/server/core/business-day";
+import { log, persistErrorLog, sanitizeErrorDiagnostic } from "@/server/core/logger";
+import { isUserFacingPostingError } from "@/server/posting/error-codes";
+import type { SelectedOptionValue } from "@/server/core/selected-options";
 
 /** 业务错误：service 层抛出，route 层统一转 JSON */
 export class ApiError extends Error {
@@ -39,12 +42,13 @@ export function errorResponse(e: unknown, ctx?: ErrorCtx): NextResponse {
     const msg = e.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("；");
     return NextResponse.json({ error: `参数校验失败：${msg}` }, { status: 400 });
   }
+  /* 过账错误的放行名单**由 posting/error-codes.ts 派生**，禁止在这里重抄字面量。
+     C1 事故：手抄的三条名单漏了 CLOSED_PERIOD，于是每一次期间锁拒绝都变成带 errorId 的 500、
+     进 error_logs 当「未预期错误」，而 post.ts 里写好的「按当前开放期间做红字冲销」被丢掉。 */
   if (
     e instanceof Error
     && e.name === "PostingError"
-    && ["NEGATIVE_STOCK", "SNAPSHOT_WAREHOUSE", "LOCATED_STOCK"].includes(
-      String((e as Error & { code?: string }).code ?? ""),
-    )
+    && isUserFacingPostingError(String((e as Error & { code?: string }).code ?? ""))
   ) {
     return NextResponse.json({ error: e.message }, { status: 409 });
   }
@@ -53,20 +57,22 @@ export function errorResponse(e: unknown, ctx?: ErrorCtx): NextResponse {
   }
   // 未预期 500：生成 errorId 落结构化日志，报文回显错误码供用户转述——业务错误（ApiError）不在此收口，防日志噪音
   const errorId = globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+  const diagnosticMessage = sanitizeErrorDiagnostic(e, e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+  const diagnosticStack = e instanceof Error && e.stack ? sanitizeErrorDiagnostic(e, e.stack) : null;
   log({
     level: "error",
     msg: "api 未预期错误",
     errorId,
-    error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
-    stack: e instanceof Error ? e.stack : undefined,
+    error: e,
+    stack: diagnosticStack,
     path: ctx?.path,
     method: ctx?.method,
   });
   // 落库留档（fire-and-forget：绝不阻塞/破坏响应；失败在 persistErrorLog 内吞掉）
   void persistErrorLog({
     errorId,
-    message: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
-    stack: e instanceof Error ? (e.stack ?? null) : null,
+    message: diagnosticMessage,
+    stack: diagnosticStack,
     path: ctx?.path ?? null,
     method: ctx?.method ?? null,
     userId: ctx?.userId ?? null,
@@ -82,6 +88,7 @@ export interface ListQuery {
   page: number;
   pageSize: number;
   searchParams: URLSearchParams;
+  selectedValues?: SelectedOptionValue[];
 }
 
 export function parseListQuery(url: string): ListQuery {
@@ -97,9 +104,13 @@ export function parseId(raw: string): number {
   return id;
 }
 
-/** 业务日期统一 Asia/Shanghai（CLAUDE.md 约定） */
+/**
+ * 业务日期统一 Asia/Shanghai（CLAUDE.md 约定）；换算走 `core/business-day` 唯一权威。
+ * 保留本层的具名函数而不是直接 re-export：`tests/quality/service.test.ts` 用
+ * `vi.spyOn(masterCommon, "todayShanghai")` 冻结业务日，re-export 的只读绑定 spy 不上。
+ */
 export function todayShanghai(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date());
+  return businessToday();
 }
 
 // ---------- 权限守卫（集成层：《01》§6 功能矩阵） ----------
@@ -113,6 +124,7 @@ const WRITE_ROLES: Record<string, string[]> = {
   supplier: ["purchasing"],
   warehouse: [],
   bom: ["pmc"],
+  channel: ["pmc"],
 };
 
 export type SessionUser = { id: number; name: string; roles: string[]; isApprover: boolean };

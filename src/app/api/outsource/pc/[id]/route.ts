@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { approvals, pcDocs, users } from "@/db/schema";
 import { maskSensitive } from "@/server/core/dto";
@@ -12,7 +12,8 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     const user = await guardRead();
     const { id } = await ctx.params;
     const db = await getDbAsync();
-    const [doc] = await db.select().from(pcDocs).where(eq(pcDocs.id, parseId(id)));
+    const [doc] = await db.select({ ...getTableColumns(pcDocs), createdByName: users.name })
+      .from(pcDocs).leftJoin(users, eq(pcDocs.createdBy, users.id)).where(eq(pcDocs.id, parseId(id)));
     if (!doc) throw new ApiError(404, "价格变更申请不存在");
     const timeline = await db
       .select({ approverName: users.name, action: approvals.action, comment: approvals.comment, createdAt: approvals.createdAt })

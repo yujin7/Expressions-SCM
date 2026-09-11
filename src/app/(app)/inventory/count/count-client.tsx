@@ -1,9 +1,15 @@
 "use client";
 
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import DocumentDrawer from "@/components/DocumentDrawer";
+import DocumentTargetLink from "@/components/DocumentTargetLink";
+
 import SearchInput from "@/components/SearchInput";
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { App, Button, Descriptions, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Table, Tabs, Tag, Typography } from "antd";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { Alert, App, Button, Descriptions, Form, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, PrinterOutlined, ReloadOutlined, SaveOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
@@ -11,7 +17,9 @@ import RemoteSelect from "@/components/RemoteSelect";
 import DocStatusTag from "@/components/DocStatusTag";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
-import { fetchJson, postJson } from "@/components/fetchJson";
+import { fetchJson } from "@/components/fetchJson";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
+import { formatQty } from "@/components/format";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
 import ScannerEntry from "@/components/ScannerEntry";
 import { addScanQty, findUniqueScanMatch } from "@/components/scanner";
@@ -21,6 +29,19 @@ import ExportButton from "@/components/ExportButton";
 /** 抽盘=循环抽点（原 PRD"永续盘点"）；full=定期全盘 */
 const MODE_LABELS: Record<string, string> = { full: "定期全盘", partial: "抽盘" };
 const MODE_COLORS: Record<string, string> = { full: "blue", partial: "purple" };
+
+/** A stopped wait is not a cancelled business write; recovery must read before retrying. */
+async function postCountAction(url: string, body: unknown) {
+  const request = new AbortController();
+  const timer = setTimeout(() => request.abort(), 30_000);
+  try {
+    return await fetchJson(url, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body), signal: request.signal });
+  } catch (error) {
+    if (request.signal.aborted) throw new Error("等待响应超过 30 秒，操作可能已完成。请先重新读取单据；新建任务请关闭弹窗并刷新列表核对，勿直接重复提交。");
+    throw error;
+  } finally { clearTimeout(timer); }
+}
 
 interface TaskRow {
   id: number;
@@ -59,6 +80,7 @@ interface TaskApproval {
 }
 
 interface TaskDetail {
+  actions?: { edit: boolean; submit: boolean; approve: boolean; reason: string | null };
   id: number;
   docNo: string;
   status: string;
@@ -134,11 +156,8 @@ export default function CountClient() {
 function CountInner() {
   const { message } = App.useApp();
   const [form] = Form.useForm<CreateFormValues>();
-  const [rows, setRows] = useState<TaskRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS,
     key: "count",
     defaults: { q: "", status: "", mode: "", period: "" },
     defaultPageSize: 20,
@@ -151,66 +170,64 @@ function CountInner() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const createLock = useRef(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const createMode = Form.useWatch("mode", form);
 
-  const [detailId, setDetailId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<TaskDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const documentSelection = useDocumentTarget();
+  const { id: detailId, setId: setDetailId } = documentSelection;
+  useEffect(() => { setRejectOpen(false); }, [detailId]);
+  const detailRead = useDocumentRead<TaskDetail>(detailId == null ? null : `/api/inventory/count/${detailId}`);
+  const rawDetail = detailRead.data;
+  const validDetail = rawDetail != null && rawDetail.id === detailId && Number.isInteger(rawDetail.version)
+    && rawDetail.version > 0 && Array.isArray(rawDetail.lines) && Array.isArray(rawDetail.roleSummary)
+    && Array.isArray(rawDetail.approvals) && Array.isArray(rawDetail.adjustDocs)
+    && new Set(rawDetail.lines.map(line => line.id)).size === rawDetail.lines.length
+    && rawDetail.lines.every(line => Number.isInteger(line.id) && line.id > 0
+      && typeof line.bookQty === "string" && /^-?\d+(\.\d+)?$/.test(line.bookQty)
+      && typeof line.countedQty === "string" && /^\d+(\.\d+)?$/.test(line.countedQty)
+      && typeof line.diffQty === "string" && /^-?\d+(\.\d+)?$/.test(line.diffQty));
+  const detail = validDetail ? rawDetail : null;
+  const detailError = detailRead.error ?? (rawDetail && !validDetail ? "盘点单身份或数量结构异常，请重新读取" : null);
+  const detailLoading = detailRead.phase === "loading";
+  const loadDetail = detailRead.retry;
+  const detailKey = detail ? `${detail.id}:${detail.version}` : "";
+  const currentDetailKey = useRef(detailKey);
+  currentDetailKey.current = detailKey;
   const [actionLoading, setActionLoading] = useState(false);
+  const actionLock = useRef(false);
+  const [actionError, setActionError] = useState<{ key: string; message: string } | null>(null);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
   /** 草稿态本地编辑的实盘数（lineId → 输入值） */
-  const [edited, setEdited] = useState<Record<number, string>>({});
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
-      if (status) params.set("status", status);
-      if (mode) params.set("mode", mode);
-      if (period) params.set("period", period);
-      const res = await fetchJson<{ rows: TaskRow[]; total: number }>(`/api/inventory/count?${params.toString()}`);
-      setRows(res.rows);
-      setTotal(res.total);
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [q, status, mode, period, page, pageSize, message]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const loadDetail = useCallback(
-    async (id: number) => {
-      setDetailLoading(true);
-      try {
-        const res = await fetchJson<TaskDetail>(`/api/inventory/count/${id}`);
-        setDetail(res);
-        setEdited({});
-      } catch (e) {
-        message.error((e as Error).message);
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [message],
-  );
-
-  useEffect(() => {
-    if (detailId != null) void loadDetail(detailId);
-    else {
-      setDetail(null);
-      setEdited({});
-    }
-  }, [detailId, loadDetail]);
+  const [editState, setEditState] = useState<{ key: string; values: Record<number, string> }>({ key: "", values: {} });
+  const edited = editState.key === detailKey ? editState.values : {};
+  const setEdited = (update: (previous: Record<number, string>) => Record<number, string>) => {
+    if (actionLock.current || !detailKey) return;
+    setEditState(previous => ({ key: detailKey, values: update(previous.key === detailKey ? previous.values : {}) }));
+  };
+  const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
+  if (status) params.set("status", status);
+  if (mode) params.set("mode", mode);
+  if (period) params.set("period", period);
+  const listRead = useDocumentRead<{ rows: TaskRow[]; total: number; canCreate?: boolean }>(`/api/inventory/count?${params.toString()}`);
+  const listData = listRead.data;
+  const validList = listData != null && Array.isArray(listData.rows) && Number.isInteger(listData.total)
+    && listData.total >= 0 && listData.rows.every(row => Number.isInteger(row.id) && row.id > 0 && typeof row.docNo === "string");
+  const rows = validList ? listData.rows : [];
+  const total = validList ? listData.total : 0;
+  const loading = listRead.phase === "loading";
+  const listError = listRead.error ?? (listData && !validList ? "盘点列表响应异常，请重试" : null);
+  const load = listRead.retry;
+  const canCreate = validList && listData.canCreate === true;
 
   const handleCreate = async () => {
+    if (createLock.current || !canCreate) return;
+    createLock.current = true;
+    setSaving(true);
+    setCreateError(null);
     try {
       const values = await form.validateFields();
-      setSaving(true);
       const filters =
         values.mode === "partial"
           ? {
@@ -218,7 +235,7 @@ function CountInner() {
               skuIds: values.skuIds && values.skuIds.length > 0 ? values.skuIds : undefined,
             }
           : undefined;
-      await postJson<{ id: number }>("/api/inventory/count", {
+      await postCountAction("/api/inventory/count", {
         warehouseId: values.warehouseId,
         mode: values.mode,
         filters,
@@ -229,34 +246,42 @@ function CountInner() {
       form.resetFields();
       void load();
     } catch (e) {
-      if (e instanceof Error && e.message) message.error(e.message);
+      if (e instanceof Error && e.message) setCreateError(e.message);
     } finally {
+      createLock.current = false;
       setSaving(false);
     }
   };
 
   const doAction = async (path: string, body: unknown, successText: string): Promise<boolean> => {
-    if (!detail) return false;
+    if (!detail || actionLock.current || (path === "submit" && (detail.actions?.submit !== true || Object.keys(edited).length > 0))
+      || (path === "approve" && detail.actions?.approve !== true) || (path === "lines" && detail.actions?.edit !== true)) return false;
+    actionLock.current = true;
+    const key = detailKey;
     setActionLoading(true);
+    setActionError(null);
     try {
-      await postJson(`/api/inventory/count/${detail.id}/${path}`, body);
-      message.success(successText);
-      void loadDetail(detail.id);
+      await postCountAction(`/api/inventory/count/${detail.id}/${path}`, body);
+      if (currentDetailKey.current === key) {
+        message.success(successText);
+        loadDetail();
+      }
       void load();
-      return true;
+      return currentDetailKey.current === key;
     } catch (e) {
-      message.error((e as Error).message);
+      setActionError({ key, message: e instanceof Error ? e.message : "操作失败，请核对单据后再试" });
       return false;
     } finally {
+      actionLock.current = false;
       setActionLoading(false);
     }
   };
 
-  const dirtyCount = useMemo(() => Object.keys(edited).length, [edited]);
-  const editable = detail?.status === "draft";
+  const dirtyCount = Object.keys(edited).length;
+  const editable = detail?.status === "draft" && detail.actions?.edit === true;
 
   const handleScan = (code: string, qty: string): boolean => {
-    if (!detail || !editable) return false;
+    if (!detail || !editable || actionLock.current) return false;
     const result = findUniqueScanMatch(detail.lines, code, (line) => [line.barcode, line.skuCode]);
     if (result.kind === "missing") {
       message.error(`未在本盘点任务中找到条码/SKU：${code}`);
@@ -292,7 +317,7 @@ function CountInner() {
       title: "单据号",
       dataIndex: "docNo",
       width: 160,
-      render: (v: string, r) => <Typography.Link onClick={() => setDetailId(r.id)}>{v}</Typography.Link>,
+      render: (v: string, r) => <DocumentTargetLink id={r.id} onOpen={setDetailId}>{v}</DocumentTargetLink>,
     },
     {
       // 盘点期＝业务日期，不是录入时间。补录/次月才录的盘点按这个归期。
@@ -335,7 +360,8 @@ function CountInner() {
 
   const lineColumns: ColumnsType<TaskLine> = [
     { title: "SKU 编码", dataIndex: "skuCode", width: 110 },
-    { title: "名称", dataIndex: "skuName" },
+    { title: "名称", dataIndex: "skuName", width: 220 },
+    { title: "批次 ID", dataIndex: "batchId", width: 90, render: (v: number | null) => v ?? "—" },
     {
       // 0727 行动项：「单独标注小样分类」——导出的清单要能一眼区分库存类别
       title: "业务用途",
@@ -348,7 +374,7 @@ function CountInner() {
       ),
     },
     { title: "单位", dataIndex: "baseUom", width: 70 },
-    { title: "账面数", dataIndex: "bookQty", width: 100, align: "right" },
+    { title: "账面数", dataIndex: "bookQty", width: 100, align: "right", render: formatQty },
     {
       title: "实盘数",
       dataIndex: "countedQty",
@@ -356,19 +382,22 @@ function CountInner() {
       align: "right",
       render: (v: string, r) =>
         editable ? (
-          <InputNumber
-            min={0}
+          <InputNumber<string>
+            stringMode
+            min="0"
             precision={4}
             size="small"
             style={{ width: 120 }}
-            value={edited[r.id] != null ? Number(edited[r.id]) : Number(v)}
+            disabled={actionLoading}
+            aria-label={`实盘数 ${r.skuCode} 批次 ${r.batchId ?? "无"}`}
+            value={edited[r.id] ?? v}
             onChange={(val) => {
               if (val == null) return;
               setEdited((prev) => ({ ...prev, [r.id]: String(val) }));
             }}
           />
         ) : (
-          v
+          formatQty(v)
         ),
     },
     {
@@ -411,31 +440,34 @@ function CountInner() {
               }).toString()}`}
               label="导出盘点明细"
             />
-            <Button
+            {canCreate && <Button
               type="primary"
               icon={<PlusOutlined />}
               onClick={() => {
                 form.resetFields();
                 form.setFieldsValue({ mode: "partial" });
+                setCreateError(null);
                 setCreateOpen(true);
               }}
             >
               新建盘点任务
-            </Button>
+            </Button>}
           </>
         }
         extra={
           <>
             <Input
+              key={`period:${period ?? ""}`}
               allowClear
               placeholder="盘点期 YYYY-MM"
               style={{ width: 150 }}
               defaultValue={period}
+              onChange={(e) => { if (!e.target.value) listState.setFilter({ period: "" }); }}
               onBlur={(e) => listState.setFilter({ period: e.target.value.trim() })}
               onPressEnter={(e) => listState.setFilter({ period: (e.target as HTMLInputElement).value.trim() })}
             />
             <SearchInput
-              key={q}
+              key={`query:${q}`}
               allowClear
               defaultValue={q}
               placeholder="搜索单据号"
@@ -453,6 +485,7 @@ function CountInner() {
           </>
         }
       />
+      <LoadErrorAlert error={listError} subject="盘点列表" onRetry={load} />
       <Table<TaskRow>
         rowKey="id"
         size={listState.tableSize}
@@ -460,14 +493,19 @@ function CountInner() {
         dataSource={rows}
         scroll={{ x: "max-content" }}
         loading={loading}
-        pagination={listState.paginationProps({ total: total })}
+        locale={listError ? { emptyText: "数据未加载，请先修正筛选条件或重试" } : undefined}
+        pagination={validList ? listState.paginationProps({ total }) : false}
       />
 
       <Modal
         title="新建盘点任务"
         open={createOpen}
         onOk={() => void handleCreate()}
-        onCancel={() => setCreateOpen(false)}
+        onCancel={() => { if (!createLock.current) setCreateOpen(false); }}
+        closable={!saving}
+        keyboard={!saving}
+        cancelButtonProps={{ disabled: saving }}
+        okButtonProps={{ disabled: !canCreate }}
         confirmLoading={saving}
         width="min(640px, 100vw)"
         forceRender
@@ -475,7 +513,9 @@ function CountInner() {
         okText="创建（快照账面数）"
         cancelText="取消"
       >
-        <Form form={form} layout="vertical">
+        {!canCreate && <Alert type="info" showIcon message="当前不能创建盘点任务，请关闭后刷新列表核对权限" />}
+        {createError && <Alert type="error" showIcon message="创建未确认成功" description={createError} style={{ marginBottom: 12 }} />}
+        <Form form={form} layout="vertical" disabled={saving}>
           <Form.Item name="warehouseId" label="仓库（仅实时记账仓）" rules={[{ required: true, message: "必须选择仓库" }]}>
             <RemoteSelect
               api="/api/master/warehouse"
@@ -514,7 +554,8 @@ function CountInner() {
         </Typography.Text>
       </Modal>
 
-      <Drawer
+      <DocumentDrawer
+        key={detailId ?? "invalid-document"}
         title={
           detail ? (
             <Space>
@@ -526,8 +567,13 @@ function CountInner() {
             "盘点单详情"
           )
         }
-        open={detailId != null}
-        onClose={() => setDetailId(null)}
+        open={documentSelection.present}
+        readError={documentSelection.error ?? detailError}
+        onRetry={detailId != null ? detailRead.retry : undefined}
+        onClose={() => { if (!actionLock.current) setDetailId(null); }}
+        closable={!actionLoading}
+        maskClosable={!actionLoading}
+        keyboard={!actionLoading}
         width="min(860px, 100vw)"
         loading={detailLoading}
         extra={
@@ -542,28 +588,30 @@ function CountInner() {
               {editable ? (
                 <Button
                   icon={<SaveOutlined />}
-                  disabled={dirtyCount === 0}
+                  disabled={dirtyCount === 0 || actionLoading}
                   loading={actionLoading}
                   onClick={() => void saveCounts()}
                 >
                   保存实盘数{dirtyCount > 0 ? `（${dirtyCount}）` : ""}
                 </Button>
               ) : null}
-              {detail.status === "draft" ? (
+              {detail.status === "draft" && detail.actions?.submit === true ? (
                 <Popconfirm
-                  title={dirtyCount > 0 ? "有未保存的实盘数，提交前请先保存。仍要提交？" : "确认提交财务审批？"}
+                  title="确认提交财务审批？"
+                  disabled={dirtyCount > 0 || actionLoading}
                   okText="提交"
                   cancelText="取消"
                   onConfirm={() => void doAction("submit", { version: detail.version }, "已提交审批（盘点=财务审批域）")}
                 >
-                  <Button type="primary" loading={actionLoading}>
+                  <Button type="primary" loading={actionLoading} disabled={dirtyCount > 0 || actionLoading}>
                     提交
                   </Button>
                 </Popconfirm>
               ) : null}
-              {detail.status === "pending" ? (
+              {detail.status === "pending" && detail.actions?.approve === true ? (
                 <>
                   <Popconfirm
+                    disabled={actionLoading}
                     title="审批通过将立即生成盘盈亏调整单并过账，确认？"
                     okText="通过"
                     cancelText="取消"
@@ -575,7 +623,7 @@ function CountInner() {
                       审批通过
                     </Button>
                   </Popconfirm>
-                  <Button danger loading={actionLoading} onClick={() => setRejectOpen(true)}>
+                  <Button danger loading={actionLoading} onClick={() => { setRejectComment(""); setRejectOpen(true); }}>
                     驳回
                   </Button>
                 </>
@@ -586,7 +634,12 @@ function CountInner() {
       >
         {detail ? (
           <div>
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+            {(detail.actions?.reason || !detail.actions) && <Alert type="info" showIcon
+              message={detail.actions?.reason ?? "未取得当前操作权限，请重新读取单据；暂仅展示数据"}
+              action={<Button disabled={actionLoading} onClick={loadDetail}>刷新操作权限</Button>} style={{ marginBottom: 12 }} />}
+            {actionError?.key === detailKey && <Alert type="error" showIcon message="操作未确认成功" description={actionError.message}
+              action={<Button disabled={actionLoading} onClick={loadDetail}>重新读取单据</Button>} style={{ marginBottom: 12 }} />}
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="仓库">{detail.warehouseName ?? "—"}</Descriptions.Item>
               <Descriptions.Item label="盘点期">{detail.bizDate ?? "—"}</Descriptions.Item>
               <Descriptions.Item label="模式">{MODE_LABELS[detail.mode] ?? detail.mode}</Descriptions.Item>
@@ -616,12 +669,14 @@ function CountInner() {
               pagination={false}
               style={{ marginBottom: 16 }}
               rowKey="group"
+              tableLayout="fixed"
+              scroll={{ x: 650 }}
               dataSource={detail.roleSummary}
               columns={[
                 {
                   title: "库存类别",
                   dataIndex: "group",
-                  width: 150,
+                  width: 210,
                   render: (v: string) => (
                     <Tag color={v === "sample" ? "purple" : "blue"}>
                       {v === "sample" ? "小样/赠品/试用/内用" : "正常销售（含未分类）"}
@@ -629,15 +684,15 @@ function CountInner() {
                   ),
                 },
                 { title: "行数", dataIndex: "lineCount", width: 80, align: "right" },
-                { title: "账面合计", dataIndex: "bookQty", width: 120, align: "right" },
-                { title: "实盘合计", dataIndex: "countedQty", width: 120, align: "right" },
+                { title: "账面合计", dataIndex: "bookQty", width: 120, align: "right", render: formatQty },
+                { title: "实盘合计", dataIndex: "countedQty", width: 120, align: "right", render: formatQty },
                 {
                   title: "差异",
                   dataIndex: "diffQty",
                   width: 120,
                   align: "right",
                   render: (v: string) => (
-                    <Typography.Text type={Number(v) === 0 ? undefined : "danger"}>{v}</Typography.Text>
+                    <DiffText value={formatQty(v)} />
                   ),
                 },
               ]}
@@ -645,16 +700,20 @@ function CountInner() {
             {editable ? (
               <>
                 <ScannerEntry
+                  disabled={actionLoading}
                   help="扫码枪请保持光标在输入框；首次扫描该 SKU 从扫码数量开始计数，后续扫描累加。若同一 SKU 有多个批次行，系统会阻止歧义写入。"
                   onScan={handleScan}
                 />
                 <Typography.Paragraph type="secondary" style={{ margin: "8px 0" }}>
                   实盘数已预填账面数；手工修改按表格值保存，首次扫码则从扫码数量开始累计。
+                  {dirtyCount > 0 && "有未保存修改，请先保存实盘数，再提交审批。"}
                 </Typography.Paragraph>
               </>
             ) : null}
             <Table<TaskLine>
               rowKey="id"
+              tableLayout="fixed"
+              scroll={{ x: 1016 }}
               size="small"
               columns={lineColumns}
               dataSource={detail.lines}
@@ -669,16 +728,20 @@ function CountInner() {
             ) : null}
           </div>
         ) : null}
-      </Drawer>
+      </DocumentDrawer>
 
       <Modal
         title="驳回盘点单"
-        open={rejectOpen}
+        open={rejectOpen && detail?.actions?.approve === true}
         okText="确认驳回"
         okButtonProps={{ danger: true }}
         cancelText="取消"
         confirmLoading={actionLoading}
-        onCancel={() => setRejectOpen(false)}
+        closable={!actionLoading}
+        maskClosable={!actionLoading}
+        keyboard={!actionLoading}
+        cancelButtonProps={{ disabled: actionLoading }}
+        onCancel={() => { if (!actionLock.current) setRejectOpen(false); }}
         onOk={() =>
           void doAction(
             "approve",
@@ -693,6 +756,7 @@ function CountInner() {
         }
       >
         <Input.TextArea
+          disabled={actionLoading}
           rows={3}
           maxLength={200}
           placeholder="驳回意见（可选）"

@@ -7,6 +7,7 @@
  *
  * 本层只检查稳定的工作表/表头指纹，不检查业务值；业务值仍由各适配器逐行校验。
  */
+import { SUPPLY_PARAMS_CSV_KEY_HEADER, SUPPLY_PARAMS_CSV_LEAD_HEADERS } from "@/lib/supply-params-csv";
 import type { CellValue, SheetData, WorkbookData } from "./parse/xlsx";
 
 export const IMPORT_TEMPLATES = [
@@ -15,6 +16,7 @@ export const IMPORT_TEMPLATES = [
   "expiry",
   "sales",
   "leadtime",
+  "sku_leadtime_simple",
   "transit",
   "demand",
   "pallet",
@@ -60,6 +62,12 @@ function matches(wb: WorkbookData, template: ImportTemplate): boolean {
       return (!!sales && hasHeader(sales, ["商家编码", "常规生产周期"]))
         || (!!transit && hasHeader(transit, ["商家编码", "成品起订量"]));
     }
+    /* 简版周期补录表（#2）：不绑页名、不绑供应商列名——业务自己导出的表就是这一份。
+       只要有「SKU编码」+ 任意一个周期列即认，正是 `@/lib/supply-params-csv` 的表头。 */
+    case "sku_leadtime_simple":
+      return wb.sheets.some(
+        (sheet) => hasHeader(sheet, [SUPPLY_PARAMS_CSV_KEY_HEADER], [...Object.values(SUPPLY_PARAMS_CSV_LEAD_HEADERS)]),
+      );
     case "transit": {
       const sheet = named(wb, "成品跟进表");
       return !!sheet && hasHeader(sheet, ["商品编码", "订单数量", "订单实时进度"]);
@@ -85,6 +93,7 @@ const LABELS: Record<ImportTemplate, string> = {
   expiry: "效期批次",
   sales: "月销量",
   leadtime: "生产周期/起订量",
+  sku_leadtime_simple: "周期补录（导出→填写→导回）",
   transit: "成品与包材在途",
   demand: "需求计划达成",
   pallet: "总货盘",

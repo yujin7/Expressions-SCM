@@ -24,6 +24,7 @@ import dayjs, { type Dayjs } from "dayjs";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import { hasAnyRole, useMe } from "@/components/useMe";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 interface ReconDiffRow {
   id: number;
@@ -59,9 +60,7 @@ const STATUS_META: Record<ReconDiffRow["status"], { color: string; label: string
 
 /** 昨日（Asia/Shanghai 自然日，与后端 shanghaiToday(-1) 同口径） */
 function shanghaiYesterday(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(
-    new Date(Date.now() - 24 * 3600 * 1000),
-  );
+  return shanghaiDayOf(new Date(Date.now() - 24 * 3600 * 1000));
 }
 
 export default function ReconClient() {

@@ -8,22 +8,31 @@
  * - 展示层聚合允许 Number()（非记账路径）；
  * - 时区 Asia/Shanghai（今日出入库的日界）。
  */
-import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import { getNumParam } from "@/server/core/params";
 import { getReplenishSuggestions } from "@/server/modules/replenish/service";
 import type { SessionUser } from "@/server/core/dto";
 import { getInbox } from "@/server/modules/inbox/service";
-import { notifyVisibleWhere } from "@/server/core/notify-audience";
+import { notifyUnreadWhere } from "@/server/core/notify-audience";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { getRiskWorklist } from "@/server/modules/report/risk";
 import { ROLE_LABELS, type Role } from "@/server/core/constants";
 import { todayShanghai } from "@/server/modules/master/common";
 import { dailyFromWindow, lastMonths } from "@/server/core/velocity";
-import { getOnHandBySku } from "@/server/core/stock-view";
+import { getOnHandBySku, latestStocktakeRows, loadLatestStocktakeDates } from "@/server/core/stock-view";
 import { num } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
 import { getNextActions, type NextActionItem } from "@/server/modules/workbench/next-actions";
+import {
+  isSnoozed,
+  loadExceptionMemory,
+  recordExceptionsShown,
+  shanghaiDay,
+} from "@/server/modules/workbench/exception-dismissals";
+import { markWorkbenchVisit, type VisitMarkerState } from "@/server/modules/workbench/visit-marker";
+import { resolveChannelScope, type ScopeUser } from "@/server/core/data-scope";
+import { channelScopedAlertCondition, visibleChannelScopedAlertIds } from "@/server/modules/report/shop-channel-scope";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -52,6 +61,22 @@ export interface ExceptionItem {
   impact: string;
   count: number;
   href: string;
+  /**
+   * W9：连续出现天数（含今天）。0 = 还没记过（本表刚建 / 首次出现当次尚未落账）。
+   * 用来把"这条已经挂了 40 天没人点"变成看得见的事实——慢性被忽略本身就是要处理的问题。
+   */
+  daysShown?: number;
+  /**
+   * W2：本条自**当前登录人**上次访问以来有变化——键是新出现的，**或**同一条例外下的
+   * 条目数变多了（`inventory_cover` 从 2 个 SKU 涨到 200 个 SKU，键一个字没变，
+   * 只比键就会写出「上次访问后无新增」，而那正是最该被看见的一晚）。
+   * 无登录人视角（每日摘要/推送）与首次访问一律 false。
+   */
+  newSinceLastVisit?: boolean;
+  /** 上次访问时本条的条目数（未知/新出现 = null）——行上可显示「2 → 200」 */
+  previousCount?: number | null;
+  /** 本条相对上次访问的条目增量（无可比基线 = null；只增不减地标，减少不算新增） */
+  countDelta?: number | null;
 }
 
 export interface WorkbenchFocus {
@@ -65,6 +90,23 @@ export interface WorkbenchFocus {
   exceptions: ExceptionItem[];
   /** C153：审计事件触发、当前状态复核后的有限下一步建议；只建议，不自动写单。 */
   nextActions: NextActionItem[];
+  /**
+   * W2「自上次访问以来」：比对基线对应的上次访问时刻与变化条数。
+   * 无登录人视角（每日摘要）= null；首次访问 = since:null / newCount:0。
+   *
+   * `state` 三态（`firstVisit` 一个布尔量说不清「记忆表不可用」——迁移没跑时界面
+   * 曾**永远**显示「首次访问」，一个坏掉的功能长期伪装成正常状态）：
+   * `first_visit` 真首次 / `compared` 已比对 / `unavailable` 记忆表不可用。
+   */
+  sinceLastVisit: {
+    since: string | null;
+    /** 新出现的例外条数 */
+    newCount: number;
+    /** 键已存在、但条目数变多的例外条数（分类不变、里面的东西变多也是变化） */
+    grownCount: number;
+    firstVisit: boolean;
+    state: VisitMarkerState;
+  } | null;
 }
 
 async function countWhere(db: AnyDb, table: AnyDb, where: unknown): Promise<number> {
@@ -221,17 +263,20 @@ async function financeSection(db: AnyDb): Promise<FocusSection> {
 /* ── 运营：近效期批次 / 驾驶舱入口 ── */
 async function opsSection(db: AnyDb): Promise<FocusSection> {
   const limit = plusDays(todayShanghai(), 90);
-  const nearExpiry = await countWhere(
-    db,
-    schema.batchStocks,
-    and(isNotNull(schema.batchStocks.expiryDate), sql`${schema.batchStocks.qty} > 0`, lte(schema.batchStocks.expiryDate, limit)),
-  );
+  // 盘点期间收口（core/stock-view 唯一权威）：batch_stocks 每期一行，直接 count 会按期数翻倍
+  const nearExpiryAllPeriods: { warehouseId: number; stocktakeDate: string }[] = await db
+    .select({ warehouseId: schema.batchStocks.warehouseId, stocktakeDate: schema.batchStocks.stocktakeDate })
+    .from(schema.batchStocks)
+    .where(and(isNotNull(schema.batchStocks.expiryDate), sql`${schema.batchStocks.qty} > 0`, lte(schema.batchStocks.expiryDate, limit)));
+  const nearExpiry = latestStocktakeRows(nearExpiryAllPeriods, await loadLatestStocktakeDates(db)).length;
   return {
     role: "ops",
     roleLabel: ROLE_LABELS.ops,
     metrics: [
-      { key: "nearExpiryBatches", label: "近效期批次（90天内）", value: nearExpiry, href: "/report/dashboard", suffix: "批" },
-      { key: "dashboard", label: "经营驾驶舱", value: null, href: "/report/dashboard" },
+      // 审计 #14：计数必须落到行清单页（/inventory/expiry），而不是总览
+      { key: "nearExpiryBatches", label: "近效期批次（90天内）", value: nearExpiry, href: "/inventory/expiry", suffix: "批" },
+      // 审计 #7：登录首屏的驾驶舱入口指向四屏（例外优先）；经营分析总览在侧栏「经营分析」
+      { key: "dashboard", label: "驾驶舱四屏", value: null, href: "/cockpit" },
     ],
   };
 }
@@ -247,39 +292,179 @@ const SECTION_BUILDERS: [Role, (db: AnyDb) => Promise<FocusSection>][] = [
 const SEVERITY_RANK: Record<ExceptionSeverity, number> = { critical: 0, high: 1, medium: 2 };
 
 /** #6 控制塔：跨域异常聚合（均为廉价聚合查询，登录首屏可承受） */
-export async function computeExceptions(db: AnyDb): Promise<ExceptionItem[]> {
+/** 例外计算结果：`visible` 已过打盹过滤，`all` 是过滤前的全量（访问标记必须用 `all`） */
+export interface ExceptionSet { visible: ExceptionItem[]; all: ExceptionItem[] }
+
+const exceptionsMemo = new WeakMap<object, { at: number; value: Promise<ExceptionSet> }>();
+
+interface ExceptionOptions {
+  memoMs?: number;
+  recordShown?: boolean;
+  applySnooze?: boolean;
+  /** Counts must use the same channel visibility as the destination alert list. */
+  user?: ScopeUser;
+}
+
+/** Pending rows, not a new risk evaluation. SQL visibility matches /api/alerts before aggregation. */
+async function openAlertCounts(db: AnyDb, user?: ScopeUser): Promise<Map<string, number>> {
+  const scope = user ? resolveChannelScope(user, null) : null;
+  const visibility = scope?.forced
+    ? channelScopedAlertCondition(await visibleChannelScopedAlertIds(db, scope)) : undefined;
+  const rows: { category: string; count: number }[] = await db
+    .select({ category: schema.systemAlerts.category, count: sql<number>`count(*)::int` })
+    .from(schema.systemAlerts)
+    .where(and(eq(schema.systemAlerts.status, "open"), visibility))
+    .groupBy(schema.systemAlerts.category);
+  return new Map(rows.map((r) => [r.category, r.count]));
+}
+
+/**
+ * 例外清单；`memoMs` 打开时同一 db 实例在该时长内复用上一次结果（驾驶舱多用户刷新不重复跑全量补货引擎）。
+ * 缺省不记忆（测试与写后读一致性优先）。
+ *
+ * `applySnooze`（红队审计 A6）：**打盹是展示层策略，不是静音开关**——
+ * exception-dismissals 的模块头、打盹路由文案与页面都写明「只影响展示」，
+ * 可推送任务此前也走同一条过滤，于是四种角色里任何一人都能把一条 critical 例外的推送压 90 天。
+ * 推送路径（jobs/notify.runExceptionNotify）传 `applySnooze: false` 拿到未过滤清单；
+ * 展示路径保持缺省 true。`recordShown` 同理：只有**人真的看到了**才推进"连续出现天数"，
+ * 定时任务传 false，否则那个计数量的是"例外存在了几天"，不是"有人看了几天"。
+ */
+export async function computeExceptionSet(
+  db: AnyDb,
+  opts?: ExceptionOptions,
+): Promise<ExceptionSet> {
+  const memoMs = opts?.memoMs ?? 0;
+  const recordShown = opts?.recordShown ?? true;
+  const applySnooze = opts?.applySnooze ?? true;
+  // Only the default global display may share this memo. User scopes and notification/display
+  // policies must never reuse a different audience or a snooze-filtered result.
+  if (memoMs > 0 && !opts?.user && recordShown && applySnooze) {
+    const hit = exceptionsMemo.get(db as object);
+    if (hit && Date.now() - hit.at < memoMs) return hit.value;
+    const value = computeExceptionsUncached(db, recordShown, applySnooze);
+    exceptionsMemo.set(db as object, { at: Date.now(), value });
+    value.catch(() => exceptionsMemo.delete(db as object));
+    return value;
+  }
+  return computeExceptionsUncached(db, recordShown, applySnooze, opts?.user);
+}
+
+/** 兼容既有调用方：只要可见清单（已过打盹过滤） */
+export async function computeExceptions(
+  db: AnyDb,
+  opts?: ExceptionOptions,
+): Promise<ExceptionItem[]> {
+  return (await computeExceptionSet(db, opts)).visible;
+}
+
+/**
+ * W9 打盹与出现天数：算完例外后统一过一遍记忆表——
+ * 打盹未到期的整条隐藏（连同它的计数，不留半条），其余标注连续出现天数并推进计数。
+ * 记忆表出问题只降级为"没有 daysShown"，绝不让首屏 500：控制塔的可用性优先于这份增益。
+ */
+async function applyExceptionMemory(
+  db: AnyDb,
+  items: ExceptionItem[],
+  recordShown: boolean,
+  applySnooze = true,
+): Promise<{ visible: ExceptionItem[]; all: ExceptionItem[] }> {
+  const today = shanghaiDay();
+  try {
+    const memory = await loadExceptionMemory(db);
+    // applySnooze=false（推送路径）：打盹只隐藏页面，不静音推送
+    const visible = applySnooze ? items.filter((it) => !isSnoozed(memory.get(it.key), today)) : items;
+    if (recordShown && visible.length) await recordExceptionsShown(db, visible.map((it) => it.key), today);
+    const withDays = (it: ExceptionItem): ExceptionItem => {
+      const mem = memory.get(it.key);
+      const prior = Number(mem?.consecutiveDays ?? 0);
+      // 本轮已把 today 记进去了（或本来就是今天）：连续天数 = 已记到今天的值
+      const daysShown = !recordShown ? prior
+        : mem?.lastShownOn === today ? prior
+          : prior > 0 && mem?.lastShownOn === yesterdayOf(today) ? prior + 1
+            : 1;
+      return { ...it, daysShown };
+    };
+    /* `all` = **打盹过滤之前**的全量清单：访问标记必须以它为快照，
+       否则一条被打盹 90 天的例外会在打盹到期那天冒充「上次访问后新增」。 */
+    return { visible: visible.map(withDays), all: items.map(withDays) };
+  } catch {
+    return { visible: items, all: items }; // 记忆表不可用（迁移未跑等）时按无记忆展示，不隐藏也不标注
+  }
+}
+
+function yesterdayOf(day: string): string {
+  return new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * 平台身份缺口（与 /report/decision-studio 的身份卡**同源**：同一个读模型、同一份缓存）。
+ * 该读模型依赖外部观察数据，未就绪时返回 null——首屏宁可不显示这张卡，也不显示一个算不准的数。
+ * 读模型不可用（迁移未跑、观察数据缺失）只降级为「没有这张卡」，绝不让工作台首屏 500。
+ */
+async function platformIdentityGap(
+  db: AnyDb,
+): Promise<{ unmapped: number; withCandidates: number; mappedAmountPct: number | null } | null> {
+  try {
+    const { loadPlatformSkuIdentityGap } = await import("@/server/modules/report/platform-sku-identity-gap");
+    const gap = await loadPlatformSkuIdentityGap(db);
+    if (gap.state !== "ready") return null;
+    const unmapped = gap.totals.platformSkus - gap.totals.mappedSkus;
+    return {
+      unmapped: unmapped > 0 ? unmapped : 0,
+      withCandidates: gap.totals.unmappedWithCandidates,
+      mappedAmountPct: gap.totals.mappedAmountPct,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function computeExceptionsUncached(db: AnyDb, recordShown = true, applySnooze = true, user?: ScopeUser): Promise<ExceptionSet> {
   const today = todayShanghai();
   const out: ExceptionItem[] = [];
 
   // 1) 已过期库存待处置（金额未定，用数量+SKU数量化）
-  const [expired] = await db
+  //    盘点期间收口（core/stock-view 唯一权威）：两期并存时 SQL 直接 sum 会把同一批过期货算两遍
+  const expiredAllPeriods: { skuId: number; warehouseId: number; stocktakeDate: string; qty: string }[] = await db
     .select({
-      skus: sql<number>`count(distinct ${schema.batchStocks.skuId})::int`,
-      qty: sql<string>`coalesce(sum(${schema.batchStocks.qty}),0)`,
+      skuId: schema.batchStocks.skuId,
+      warehouseId: schema.batchStocks.warehouseId,
+      stocktakeDate: schema.batchStocks.stocktakeDate,
+      qty: schema.batchStocks.qty,
     })
     .from(schema.batchStocks)
     .where(and(isNotNull(schema.batchStocks.expiryDate), sql`${schema.batchStocks.qty} > 0`, lte(schema.batchStocks.expiryDate, today)));
-  if ((expired?.skus ?? 0) > 0) {
+  const expiredRows = latestStocktakeRows(expiredAllPeriods, await loadLatestStocktakeDates(db));
+  const expiredSkus = new Set(expiredRows.map((r) => r.skuId)).size;
+  const expiredQty = expiredRows.reduce((s, r) => s + num(r.qty), 0);
+  if (expiredSkus > 0) {
     out.push({
       key: "expired_stock",
       severity: "critical",
       title: "已过期库存待处置",
-      impact: `${expired.skus} 个 SKU · ${num(expired.qty).toLocaleString("zh-CN")} 件`,
-      count: expired.skus,
+      impact: `${expiredSkus} 个 SKU · ${expiredQty.toLocaleString("zh-CN")} 件`,
+      count: expiredSkus,
       href: "/report/risk?action=报废评审",
     });
   }
 
-  // 2) 单据超时（时效看门狗）
-  const docAging = await countWhere(db, schema.systemAlerts, and(eq(schema.systemAlerts.category, "doc_aging"), eq(schema.systemAlerts.status, "open")));
-  if (docAging > 0) {
-    out.push({ key: "doc_aging", severity: "high", title: "单据超时未流转", impact: `${docAging} 张单据停留超阈值`, count: docAging, href: "/alerts" });
-  }
-
-  // 3) 参考数据过期（新鲜度看门狗）
-  const staleData = await countWhere(db, schema.systemAlerts, and(eq(schema.systemAlerts.category, "data_freshness"), eq(schema.systemAlerts.status, "open")));
-  if (staleData > 0) {
-    out.push({ key: "stale_data", severity: "high", title: "关键参考数据过期", impact: `${staleData} 类数据待重传（口径将失真）`, count: staleData, href: "/alerts" });
+  // 2/3) The engine may intentionally retain old alerts when evidence is missing. An open row
+  // proves a pending review, not a current threshold breach, distinct SKU, or fixed three-day rule.
+  // Keep it actionable without hiding/closing history: each count links to precisely that queue.
+  const alertCounts = await openAlertCounts(db, user);
+  const pendingQueues: { key: string; category: string; severity: ExceptionSeverity; title: string; guidance: string }[] = [
+    { key: "doc_aging", category: "doc_aging", severity: "high", title: "单据时效告警待核对", guidance: "请核对单据当前状态，未关闭不代表当前仍超时" },
+    { key: "sales_spike", category: "sales_spike", severity: "critical", title: "爆单告警待复核", guidance: "请核对最新日销证据，未关闭不代表当前仍在爆单" },
+    { key: "inventory_cover", category: "inventory_cover", severity: "high", title: "断货告警待复核", guidance: "请核对最新库存与供给，未关闭不代表当前仍断货" },
+    { key: "stale_data", category: "data_freshness", severity: "high", title: "数据新鲜度告警待核对", guidance: "请核对来源与批次截止日，未关闭不代表当前仍过期" },
+  ];
+  for (const queue of pendingQueues) {
+    const count = alertCounts.get(queue.category) ?? 0;
+    if (count > 0) out.push({
+      key: queue.key, severity: queue.severity, title: queue.title,
+      impact: `${user ? "" : "全局 "}${count} 条未关闭告警；${queue.guidance}${user ? "" : "；列表按查看者权限展示"}`, count,
+      href: `/alerts?category=${queue.category}&status=open`,
+    });
   }
 
   /* 4) 断货且已错过下单窗口（可销 < 生产周期）
@@ -325,7 +510,15 @@ export async function computeExceptions(db: AnyDb): Promise<ExceptionItem[]> {
     }
   }
 
-  // 5) 成品缺生产周期（阻断投影/补货判定）
+  /* 5) 上线就绪三件事（2026-09-04 审计 #8）
+     
+     此前这里只有「成品缺生产周期」一条，还链到只读的 /report/data-health——
+     看得见、改不了。新来的计划员看到的是一屏告警数，看不到「系统还没就绪、
+     先把这三件事补上」。三条卡片都链到**能改的那个页面**：
+       缺生产周期 → /master/supply-params?blockedOnly=1（与 replenish/pilot 的链接同一个）
+       平台身份缺口 → 决策工作室身份页签（系统给候选、批量提交）
+       缺单位成本 → 文件上传（sku_cost 模板，财务放行）
+     口径都取自各自的权威读模型，不在这里另算一套。 */
   const missingLead = await countWhere(
     db,
     schema.skus,
@@ -336,10 +529,48 @@ export async function computeExceptions(db: AnyDb): Promise<ExceptionItem[]> {
     ),
   );
   if (missingLead > 0) {
-    out.push({ key: "missing_lead", severity: "medium", title: "成品缺生产周期", impact: `${missingLead} 个成品无法推算下单日`, count: missingLead, href: "/report/data-health?missing=生产周期" });
+    out.push({ key: "missing_lead", severity: "medium", title: "成品缺生产周期", impact: `${missingLead} 个成品无法推算下单日；补录页可批量按分层/品牌套用`, count: missingLead, href: "/master/supply-params?blockedOnly=1" });
   }
 
-  return out.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.count - a.count);
+  // 5b) 缺单位成本：没有成本就没有库存金额、没有毛利、没有金额口径分层
+  const missingCost = await countWhere(
+    db,
+    schema.skus,
+    and(
+      eq(schema.skus.skuType, "finished"),
+      eq(schema.skus.active, true),
+      sql`not exists (select 1 from sku_costs sc where sc.sku_id = ${schema.skus.id})`,
+    ),
+  );
+  if (missingCost > 0) {
+    out.push({
+      key: "missing_cost",
+      severity: "medium",
+      title: "成品缺单位成本",
+      impact: `${missingCost} 个成品没有 sku_costs：库存金额、毛利与金额口径分层都算不出`,
+      count: missingCost,
+      href: "/import/upload",
+    });
+  }
+
+  // 5c) 平台身份缺口：外部销速/退款驱动都要先落到系统 SKU 才能用
+  const identityGap = await platformIdentityGap(db);
+  if (identityGap && identityGap.unmapped > 0) {
+    out.push({
+      key: "identity_gap",
+      severity: "medium",
+      title: "平台商品缺 SCM 身份",
+      impact:
+        `${identityGap.unmapped} 个平台 SKU 未认领`
+        + (identityGap.mappedAmountPct != null ? `，销售额覆盖仅 ${identityGap.mappedAmountPct.toFixed(1)}%` : "")
+        + (identityGap.withCandidates > 0 ? `；其中 ${identityGap.withCandidates} 个系统已给出候选，可一键确认` : ""),
+      count: identityGap.unmapped,
+      href: "/report/decision-studio?tab=identity",
+    });
+  }
+
+  const sorted = out.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.count - a.count);
+  return applyExceptionMemory(db, sorted, recordShown, applySnooze);
 }
 
 /** 按当前用户角色计算聚焦区块；admin 全量可见；多角色叠加多区块 */
@@ -376,9 +607,9 @@ export async function getWorkbenchFocus(
     builders.sort((a, b) => priority(a[0]) - priority(b[0]));
   }
   const planningRole = isAdmin || roles.some((r) => ["pmc", "purchasing", "ops", "warehouse"].includes(r));
-  const [sections, exceptions, nextActions] = await Promise.all([
+  const [sections, exceptionSet, nextActions] = await Promise.all([
     Promise.all(builders.map(([, build]) => build(db))),
-    planningRole ? computeExceptions(db) : Promise.resolve<ExceptionItem[]>([]),
+    planningRole ? computeExceptionSet(db, { user }) : Promise.resolve<ExceptionSet>({ visible: [], all: [] }),
     getNextActions(roles, db),
   ]);
   const myOpenDocs = userId != null ? await countMyOpenDocs(db, userId) : null;
@@ -391,21 +622,75 @@ export async function getWorkbenchFocus(
          七个角色一律显示 2，而 /api/inbox 实际为 admin=4 / ops01=0 / warehouse01=0。
          仓管点红色「待我审批 2」进去是空列表。
        - 未读通知：完全不带收件人条件，4 类角色恒显 8（实际可见 4），读完仍卡 4 且无法归零。
-     现改为复用两处唯一权威：getInbox（审批域 + SoD）与 notifyVisibleWhere（收件人）。 */
-  const [pendingDocs, unreadNotify, openAlerts, openReview] = await Promise.all([
+     现改为复用两处唯一权威：getInbox（审批域 + SoD）与 notifyUnreadWhere（收件人×逐人已读）。 */
+  const [pendingDocs, unreadNotify, openAlerts, openReview, myTodo, supplierWork] = await Promise.all([
     user ? getInbox(user, db).then((r) => r.total) : Promise.resolve(0),
     user
-      ? countWhere(db, schema.notifications, and(isNull(schema.notifications.readAt), notifyVisibleWhere(user)))
+      // 已读是逐收件人的（S6）：与 /api/notifications 调同一个 notifyUnreadWhere，不再各写一套
+      ? countWhere(db, schema.notifications, notifyUnreadWhere(user))
       : Promise.resolve(0),
-    countWhere(db, schema.systemAlerts, eq(schema.systemAlerts.status, "open")),
+    openAlertCounts(db, user).then((counts) => [...counts.values()].reduce((total, count) => total + count, 0)),
     countWhere(db, schema.reviewItems, eq(schema.reviewItems.status, "open")),
+    // D61 待办任务（work_items）：与 /todo「我的待办」同源（getTodoProgressBlock.mine）；无登录人视角时不出卡
+    // 动态导入：todo/service → jobs/notify → workbench/focus → todo/stats 会成环（next build 收集页面数据时 TDZ 报错）
+    user ? import("@/server/modules/todo/stats").then(({ getTodoProgressBlock }) => getTodoProgressBlock(user, db)).then((b) => b.mine) : Promise.resolve(null),
+    user && (isAdmin || roles.includes("purchasing"))
+      ? countWhere(db, schema.supplierLifecycleCases, and(eq(schema.supplierLifecycleCases.status, "open"), eq(schema.supplierLifecycleCases.ownerId, user.id)))
+      : Promise.resolve(null),
   ]);
+  const exceptions = exceptionSet.visible;
   const queues = [
     { key: "inbox", label: "待我审批", count: pendingDocs, href: "/inbox" },
+    ...(myTodo
+      ? [{ key: "todo", label: myTodo.overdue > 0 ? `我的待办任务（逾期 ${myTodo.overdue}）` : "我的待办任务", count: myTodo.open, href: "/todo" }]
+      : []),
     { key: "notify", label: "未读通知", count: unreadNotify, href: "/notifications" },
     { key: "alerts", label: "系统告警", count: openAlerts, href: "/alerts" },
     { key: "review", label: "待复核事项", count: openReview, href: "/review/checklist" },
     { key: "mine", label: "我发起的未完结", count: myOpenDocs ?? 0, href: "/inbox" },
+    ...(supplierWork != null && user ? [{ key: "supplierWork", label: "我负责的供应商工作项", count: supplierWork,
+      href: `/master/supplier/lifecycle?ownerId=${user.id}&status=open` }] : []),
   ];
-  return { generatedAt: new Date().toISOString(), sections, exceptions, nextActions, myOpenDocs, queues };
+
+  /* W2「自上次访问以来」：只标记，不排序、不评分、不过滤。
+     无登录人视角（每日摘要 getWorkbenchFocus(roles, db)）跳过——那不是"某个人的上一次访问"。 */
+  let sinceLastVisit: WorkbenchFocus["sinceLastVisit"] = null;
+  let markedExceptions = exceptions;
+  if (userId != null) {
+    /* 快照用 `exceptionSet.all`（**打盹过滤之前**）+ 条目数：
+       - 用过滤后的清单，一条打盹到期的老例外会冒充「新增」（它从没消失，只是被藏起来）；
+       - 只用分类键，`inventory_cover` 从 2 个 SKU 涨到 200 个 SKU 会被判成「无新增」。 */
+    const delta = await markWorkbenchVisit(
+      db,
+      userId,
+      exceptionSet.all.map((e) => ({ k: e.key, c: e.count })),
+    );
+    const changed = new Set([...delta.newKeys, ...delta.grownKeys]);
+    markedExceptions = exceptions.map((e) => {
+      const before = delta.previousCounts[e.key] ?? null;
+      return {
+        ...e,
+        newSinceLastVisit: changed.has(e.key),
+        previousCount: before,
+        countDelta: before == null ? null : e.count - before,
+      };
+    });
+    sinceLastVisit = {
+      since: delta.since,
+      newCount: delta.newKeys.length,
+      grownCount: delta.grownKeys.length,
+      firstVisit: delta.firstVisit,
+      state: delta.state,
+    };
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    sections,
+    exceptions: markedExceptions,
+    nextActions,
+    myOpenDocs,
+    queues,
+    sinceLastVisit,
+  };
 }

@@ -10,3 +10,4 @@ export * from "./npd";
 export * from "./rollup";
 export * from "./planning";
 export * from "./quality";
+export * from "./director";

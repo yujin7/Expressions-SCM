@@ -4,6 +4,8 @@
  * 不变式：
  * - 幂等优先（R10）：同 (sourceDocType, sourceDocId, action) 已过账 → 直接返回
  *   { posted:false }，不触碰余额；UNIQUE(uq_ledger_source) 为并发硬兜底。
+ * - 期间锁（W2-1）：业务时间落在已关账期间的过账一律拒绝（含红字冲销，无豁免）——
+ *   `period_locks` 是唯一权威，重开须管理员且留痕（modules/settlement/period-lock.ts）。
  * - 余额更新在事务内按 (skuId, warehouseId, batchId) 排序，防死锁（CLAUDE.md）。
  * - 负库存规则（R4）：实时仓 ≥0；委外仓可负（=加工厂垫料）；快照仓禁止过账。
  * - 数量运算一律走 src/server/core/decimal.ts，禁止 float。
@@ -12,6 +14,8 @@ import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { stockBalances, stockLedger, warehouses } from "@/db/schema";
 import { dCmp, dNeg, dQty } from "@/server/core/decimal";
 import { getLocatedQty } from "@/server/modules/inventory/location-balance";
+import { isPeriodClosed, periodOf } from "@/server/modules/settlement/period-lock";
+import type { PostingErrorCode } from "./error-codes";
 import { isRegisteredSource } from "./registry";
 
 /**
@@ -38,12 +42,11 @@ export type PostingEvent = {
   occurredAt?: Date;
 };
 
-export type PostingErrorCode =
-  | "NEGATIVE_STOCK"
-  | "EMPTY_EVENT"
-  | "UNREGISTERED_SOURCE"
-  | "SNAPSHOT_WAREHOUSE"
-  | "LOCATED_STOCK";
+/**
+ * 错误码全集与 HTTP 路由表都在 `posting/error-codes.ts`（零依赖纯常量模块）——
+ * 放行名单必须由类型派生，不得在 route 层再抄一份字面量（C1 事故：CLOSED_PERIOD 漏抄成 500）。
+ */
+export type { PostingErrorCode } from "./error-codes";
 
 export class PostingError extends Error {
   readonly code: PostingErrorCode;
@@ -91,6 +94,18 @@ export async function post(db: AnyDb, event: PostingEvent): Promise<{ posted: bo
       )
       .limit(1);
     if (dup.length > 0) return { posted: false };
+
+    // 1.5) 期间锁（W2-1）：业务时间所属会计期间已关账 → 拒绝。
+    //      放在幂等短路之后：已过账事件的重放不该因为事后关账而报错。
+    const occurredAt = event.occurredAt ?? new Date();
+    const period = periodOf(occurredAt);
+    if (await isPeriodClosed(tx, period)) {
+      throw new PostingError(
+        "CLOSED_PERIOD",
+        `会计期间 ${period} 已关账，拒绝过账 ${event.sourceDocType}#${event.sourceDocId}`
+          + "（纠错请按当前开放期间做红字冲销，或由管理员先重开该期间）",
+      );
+    }
 
     // 2) 排序防死锁（CLAUDE.md）
     const lines = [...event.lines].sort(compareLines);
@@ -202,6 +217,9 @@ export async function reverse(
     sourceDocType: "stock_doc",
     sourceDocId: reversalDocId,
     action: reverseAction,
+    /* 业务时间：调用方给了就沿用（红字随原单期间），没给就取 now（默认路径＝当前开放期间）。
+       不在这里"洗掉"业务时间，否则回填到已关账月份的冲销就能绕过期间锁（W2-1）。 */
+    ...(original.occurredAt ? { occurredAt: original.occurredAt } : {}),
     lines: original.lines.map((l) => ({
       sourceLineId: l.sourceLineId,
       skuId: l.skuId,

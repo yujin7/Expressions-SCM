@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createTestDb, type TestDb } from "../helpers/db";
-import { errorLogs, exportJobs, importJobs, jobRuns, stagingRows, notifications } from "@/db/schema";
+import { errorLogs, exportJobs, importJobs, jobRuns, reportReadModelCache, stagingRows, notifications } from "@/db/schema";
 import { runHousekeeping } from "@/jobs/housekeeping";
 
 const DAY = 24 * 3600 * 1000;
@@ -72,6 +72,7 @@ describe("housekeeping 保洁任务", () => {
       errorLogsDeleted: 1,
       jobRunsDeleted: 1,
       notificationsDeleted: 0, // 本用例未造已读通知；保留期逻辑另见下一用例
+      readModelCacheDeleted: 0, // 本用例未造缓存行；保留期逻辑另见下一用例
     });
 
     // 任务头行保留；fresh superseded / done 任务的 staging 行保留
@@ -101,6 +102,7 @@ describe("housekeeping 保洁任务", () => {
       errorLogsDeleted: 0,
       jobRunsDeleted: 0,
       notificationsDeleted: 0,
+      readModelCacheDeleted: 0,
     });
   });
 });
@@ -132,5 +134,27 @@ describe("housekeeping 通知保留期", () => {
     expect(new Set(left.map((x) => x.title))).toEqual(
       new Set(["定向-近期已读", "定向-老的未读", "定向pmc-被admin读过"]),
     );
+  });
+});
+
+/**
+ * 读模型缓存保留期：口径升版（key 带 /vN）后旧键再没有读者，行却一直留着。
+ * 缓存丢了只会重算，所以按绝对年龄兜底；新鲜的行绝不能被删（那会让驾驶舱当场重算）。
+ */
+describe("housekeeping 读模型缓存保留期", () => {
+  it("删掉超期的旧口径缓存行，保留新鲜行", async () => {
+    const { db } = await createTestDb();
+    const old = new Date(Date.now() - 90 * 864e5);
+    const fresh = new Date(Date.now() - 2 * 864e5);
+    await db.insert(reportReadModelCache).values([
+      { key: "inventory-alerts/v1", sourceBinding: "b", payload: {}, builtAt: old },
+      { key: "inventory-alerts/v2", sourceBinding: "b", payload: {}, builtAt: fresh },
+    ]);
+
+    const r = await runHousekeeping(db);
+    expect(r.readModelCacheDeleted).toBe(1);
+
+    const left = await db.select({ key: reportReadModelCache.key }).from(reportReadModelCache);
+    expect(left.map((x) => x.key)).toEqual(["inventory-alerts/v2"]);
   });
 });

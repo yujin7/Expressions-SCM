@@ -1,0 +1,496 @@
+"use client";
+
+/**
+ * 库存预警表（D57）与爆单预警（D56）。
+ * - 预警表：每 SKU 一个主预警；日销三口径并列不相加；阈值来源逐行标注；C 级默认折叠。
+ *   筛选/分页在 URL（useListState，paramPrefix=cover）并由服务端执行（/api/report/inventory-alerts?q/tier/primary/onlyAlert/showC）。
+ * - 爆单：已映射 SKU 与未映射平台 SKU 分列（paramPrefix=spike）；
+ * - 两张表都接 system_alerts：「已知悉」写审计、显示知悉人/时间，展开行看规则来源 / 参数快照 / 触发原因，
+ *   并可由责任角色（或 admin）带原因**关闭**告警（AlertCloseModal → POST /api/alerts/[id]/close，
+ *   服务端回查会话与角色再判一次）；关闭后重读当前行的可见告警，不把加载失败或范围外误称没有告警。
+ */
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Alert, App, Button, Col, Empty, Grid, Pagination, Row, Select, Space, Spin, Statistic, Switch, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import type { ColumnsType } from "antd/es/table";
+import { fetchJson } from "@/components/fetchJson";
+import AlertCloseModal from "@/components/AlertCloseModal";
+import AlertEvidence, { ackText } from "@/components/AlertEvidence";
+import { useAlertLookup, type AlertRef } from "@/components/useAlertLookup";
+import type { AlertLookupCategory } from "@/lib/alert-lookup";
+import CaliberNote from "@/components/CaliberNote";
+import ContextHelp from "@/components/ContextHelp";
+import { exportCsv } from "@/components/exportCsv";
+import ExportButton from "@/components/ExportButton";
+import { formatQty } from "@/components/format";
+import ListToolbar from "@/components/ListToolbar";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
+import SearchInput from "@/components/SearchInput";
+import { useListState } from "@/components/useListState";
+import { hasAnyRole, useMe } from "@/components/useMe";
+import { INVENTORY_ALERT_SORT_OPTIONS } from "@/lib/inventory-alert-sort";
+import { inventoryCoverMetricHref } from "@/lib/cockpit-navigation";
+import type { InventoryAlertRow } from "@/server/modules/report/inventory-alerts";
+import type { InventoryAlertsPage } from "@/server/modules/report/inventory-alerts-query";
+import type { SpikeHit } from "@/server/modules/report/sales-spike";
+import type { SalesSpikePage } from "@/server/modules/report/sales-spike-query";
+import styles from "./inventory-cover.module.css";
+import CapacityCheckDrawer, { type CapacityTarget } from "@/components/CapacityCheckDrawer";
+
+const TIER_COLOR: Record<string, string> = { S: "red", A: "orange", B: "gold", C: "default" };
+const KIND_LABEL: Record<string, string> = { out_of_stock: "断货", spike: "爆单", low_stock: "低于阈值", near_expiry: "临期", overstock: "超储" };
+
+const dailyText = (value: number | null) => value == null ? "—" : formatQty(value.toFixed(6));
+const DAILY_BASIS: Record<string, string> = { external: "外部观察", internal: "内部月销", ledger: "系统销售净出库" };
+
+/** One evidence cell shared by the desktop table and narrow cards. Never recompute demand here. */
+export function ExternalDemandCell({ row }: { row: Pick<InventoryAlertRow, "code" | "net7External" | "net15External" | "net30External" | "externalDemand"> }) {
+  const evidence = row.externalDemand;
+  return <div className={styles.externalDemand}>
+    <div className={styles.externalWindows}>{([7, 15, 30] as const).map((days) => <div key={days}>
+      <span>{days}日</span><strong>{formatQty(days === 7 ? row.net7External : days === 15 ? row.net15External : row.net30External)}</strong>
+    </div>)}</div>
+    <span className={styles.secondary}>{evidence?.anchorDate ? `截至 ${evidence.anchorDate}` : "未取得外部窗口"}
+      {evidence?.anchorDate && !evidence.current ? " · 历史" : ""} <ContextHelp label={`${row.code}外部窗口依据`} title="外部净件与覆盖"
+        content={<>
+          <p>天猫支付件数减成功退款子订单数，加拼多多已付款有效订单件数；保留观察口径，不等同全部渠道销量，不用于补货定量。</p>
+          {([7, 15, 30] as const).map(days => { const w = evidence?.windows?.[days]; return <p key={days}>{days}日：{w ? `${w.startDay ?? "未知"}至${w.endDay ?? "未知"}（含）；完整序列 ${w.completeSequences}/${w.requiredSequences}` : "无受控身份窗口证据"}。{w?.complete ? "该窗口可读" : "覆盖不足，—不是零"}。</p>; })}
+          <p>天猫每家店/平台SKU须有逐日支付和退款记录，不能用别家店补缺日；拼多多覆盖来自连续抽取窗口。完整只指已认领序列，不证明全平台覆盖。</p>
+          <p>{evidence?.current ? "时点在T+1内；只有完整30日且净日销为正才可作为当前外部主需求。" : "历史/未知时点只供核对，不作为当前外部主需求；内部与实时仓来源另行披露。"}</p>
+        </>} /></span>
+  </div>;
+}
+
+export function InternalDemandCell({ row }: { row: Pick<InventoryAlertRow, "code" | "daily" | "internalDemand"> }) {
+  const evidence = row.internalDemand;
+  return <div className={styles.ledger}>
+    <span className={styles.ledgerValue}>{dailyText(row.daily.internal)} <ContextHelp label={`${row.code}内部月销口径`} title="内部月销折日口径"
+      content={<>
+        <p>上海自然月窗口：{evidence.startDay ?? "未知"}（含）至{evidence.endDayExclusive ?? "未知"}（不含），共{evidence.days ?? "未知"}天。</p>
+        <p>已登记销量 {formatQty(evidence.salesQty)} ÷ {evidence.days ?? "未知"} 天 = {dailyText(row.daily.internal)} /日。六个月销量不使用三个月91天分母。</p>
+        <p>有记录 {evidence.observedMonths}/6 月；不证明每月、各渠道完整，也不证明已更新到当前月份。缺数须补齐，— 不表示零销售。</p>
+      </>} /></span>
+    {evidence.observedMonths < 6 && evidence.salesQty != null ? <span className={styles.secondary}>仅{evidence.observedMonths}/6月有记录</span> : null}
+  </div>;
+}
+
+/** Same figures and explanation in the wide table and narrow cards; no demand recomputation. */
+export function LedgerDemandCell({ row }: { row: Pick<InventoryAlertRow, "code" | "daily" | "ledgerDemand"> }) {
+  const evidence = row.ledgerDemand;
+  return <div className={styles.ledger}>
+    <span className={styles.ledgerValue}>{dailyText(row.daily.ledger)} /日 <ContextHelp
+      label={`${row.code}销售与作业口径`} title="销售与作业口径"
+      content={<>
+        <p>上海业务日：{evidence.startDay}（含）至{evidence.endDayExclusive}（不含），共{evidence.days}天。</p>
+        <p>销售净出库 {formatQty(evidence.salesNetQty)} ÷ {evidence.days} 天。销售红字按纠正日净减。</p>
+        <p>作业量是窗口内非销售负向流量合计，未扣正向冲销，不参与需求判断。</p>
+        <p>— 表示无对应事件；不证明零需求或全渠道覆盖。零或负销售净量也不作正需求。</p>
+      </>} /></span>
+    <span className={styles.secondary}>作业 {formatQty(evidence.operationsOutQty)}（窗口合计）</span>
+  </div>;
+}
+
+type CoverCardRow = Pick<InventoryAlertRow, "code" | "name" | "brand" | "tier" | "tierSource" | "primary" | "tags" | "onHand" | "primaryDaily" | "primaryDailySource" | "coverDays" | "alertDays" | "alertBasis" | "usedDefault" | "daily" | "ledgerDemand" | "internalDemand" | "net7External" | "net15External" | "net30External" | "externalDemand" | "statusBasis">;
+
+export function InventoryCoverCard({ row, ack, actions, detail }: { row: CoverCardRow; ack: ReactNode; actions: ReactNode; detail?: ReactNode }) {
+  return <article className={styles.card} aria-label={`${row.code} 库存预警`}>
+    <header className={styles.cardHeader}>
+      <strong>{row.code}</strong>
+      <span>{row.tier ? <Tag color={TIER_COLOR[row.tier]}>{row.tier}{row.tierSource === "computed" ? "*" : ""}</Tag> : <Tag>未分层</Tag>}
+        {row.primary ? <Tag color={row.primary === "out_of_stock" ? "error" : "warning"}>{KIND_LABEL[row.primary]}</Tag> : <span className={styles.secondary}>未形成主预警</span>}
+        {row.tags.map(tag => <Tag key={tag}>{KIND_LABEL[tag]}</Tag>)}
+      </span>
+    </header>
+    <p className={styles.name}>{row.name}{row.brand ? ` · ${row.brand}` : ""}</p>
+    <dl className={styles.facts}>
+      <div><dt>在库</dt><dd>{formatQty(row.onHand)}</dd></div>
+      <div><dt>主日销 /日</dt><dd>{dailyText(row.primaryDaily)}</dd></div>
+      <div><dt>可销天数</dt><dd>{row.coverDays == null ? "无正日销" : `${row.coverDays}天`}</dd></div>
+      <div><dt>阈值</dt><dd>{row.alertDays}天{row.usedDefault ? <small> · 含缺省周期</small> : null}</dd></div>
+    </dl>
+    <div className={styles.sales}><span className={styles.secondary}>系统销售 / 作业</span><LedgerDemandCell row={row} /></div>
+    <div className={styles.sales}><span className={styles.secondary}>外部净件</span><ExternalDemandCell row={row} /></div>
+    <p className={styles.basis}>主日销来源：{row.primaryDailySource ? DAILY_BASIS[row.primaryDailySource] : "未取得正日销"}；三口径不相加，作业量不作需求。</p>
+    {row.primaryDailySource === "internal" && row.internalDemand.observedMonths < 6 ? <p className={styles.basis}>月销仅{row.internalDemand.observedMonths}/6月有记录，需核对缺失数据。</p> : null}
+    <details className={styles.details}><summary>其他口径与阈值依据</summary>
+      <dl><dt>外部日销</dt><dd>{dailyText(row.daily.external)}</dd><dt>内部日销</dt><dd><InternalDemandCell row={row} /></dd><dt>外部30天净件</dt><dd>{formatQty(row.net30External)}</dd></dl>
+      <p>{row.alertBasis}</p>{row.statusBasis ? <p>{row.statusBasis}</p> : null}
+    </details>
+    <footer className={styles.footer}>{ack}<div>{actions}</div></footer>
+    {detail ? <details className={styles.details}><summary>告警证据与处置</summary>{detail}</details> : null}
+  </article>;
+}
+
+function CoverActions({ row, onCapacity }: { row: Pick<InventoryAlertRow, "actions" | "primary" | "tags">; onCapacity?: () => void }) {
+  const kinds = new Set([...(row.primary ? [row.primary] : []), ...row.tags]);
+  return <Space size={8} wrap>
+    <a href={row.actions.transfer}>调拨</a><a href={row.actions.replenish}>补货</a>
+    {onCapacity && <Button type="link" size="small" style={{ padding: 0 }} onClick={onCapacity}>核对加工产能</Button>}
+    {kinds.has("near_expiry") ? <a href={row.actions.nearExpiry}>效期</a> : null}
+    {kinds.has("overstock") ? <a href={row.actions.overstock}>处置</a> : null}
+  </Space>;
+}
+
+/* ── system_alerts 索引：按去重键找到读模型行对应的告警（已知悉 / 证据） ── */
+function useAlertIndex(category: AlertLookupCategory, keys: string[] | null) {
+  const { message } = App.useApp();
+  const lookup = useAlertLookup(category, keys);
+  const { retry } = lookup;
+  const ack = useCallback(async (id: number) => {
+    try { await fetchJson(`/api/alerts/${id}/ack`, { method: "POST", body: JSON.stringify({}) }); message.success("已知悉（已留审计，告警状态不变）"); retry(); }
+    catch (e) { message.error((e as Error).message); }
+  }, [retry, message]);
+  return { ...lookup, ack, reload: lookup.retry };
+}
+
+/**
+ * 「已知悉」按钮只对持有该告警 ownerRole 的人或 admin 显示（ownerRole 为空的历史行只有 admin）——
+ * 与服务端 ackAlert 的判定同口径（安全审计 S2：ack 与 close 现在是同一条权限）；
+ * 前端隐藏不是权限，服务端仍会回查会话再判一次。
+ */
+function AckCell({ alert, onAck, phase }: { alert: AlertRef | undefined; onAck: (id: number) => void; phase: ReturnType<typeof useAlertLookup>["phase"] }) {
+  const me = useMe();
+  if (phase !== "success") return <Typography.Text type="secondary">{phase === "error" ? "告警状态未读取" : "告警读取中"}</Typography.Text>;
+  if (!alert) return <Typography.Text type="secondary">无可见告警</Typography.Text>;
+  if (alert.ackedAt) return <Tooltip title={ackText(alert)}><Tag color="default">已知悉 · {alert.ackedByName ?? (alert.ackedBy != null ? `#${alert.ackedBy}` : "")}</Tag></Tooltip>;
+  const canAck = alert.ownerRole ? hasAnyRole(me, alert.ownerRole) : hasAnyRole(me);
+  if (!canAck) return <Typography.Text type="secondary">未知悉</Typography.Text>;
+  return <Button size="small" onClick={() => onAck(alert.id)}>已知悉</Button>;
+}
+
+/**
+ * 展开行：证据（规则/参数快照/why）+ 人工关闭。
+ * 关闭按钮只对持有该告警 ownerRole 的人或 admin 显示（ownerRole 为空的历史行只有 admin）——
+ * 与服务端 closeAlert 的判定同口径；前端隐藏不是权限，服务端仍会回查会话再判一次。
+ */
+function AlertRowDetail({ alert, onRequestClose }: { alert: AlertRef; onRequestClose: () => void }) {
+  const me = useMe();
+  const canClose = alert.status === "open" && (alert.ownerRole ? hasAnyRole(me, alert.ownerRole) : hasAnyRole(me));
+  return (
+    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+      <AlertEvidence alert={alert} />
+      {canClose ? (
+        <>
+          <Button size="small" danger onClick={onRequestClose}>关闭告警</Button>
+        </>
+      ) : null}
+    </Space>
+  );
+}
+
+/* ── Tab 1：库存预警表 ── */
+type CoverFilters = { q?: string; tier?: string; primary?: string; status?: string; onlyAlert?: string; showC?: string; sort?: string; order?: string };
+
+function CoverTab() {
+  const me = useMe();
+  const [closing, setClosing] = useState<AlertRef | null>(null);
+  const [capacity, setCapacity] = useState<CapacityTarget | null>(null);
+  const canCheckCapacity = hasAnyRole(me, "purchasing", "pmc", "ops");
+  const capacityAction = (row: InventoryAlertRow) => canCheckCapacity ? () => setCapacity({ skuId: row.skuId, code: row.code,
+    name: row.name, replenishHref: row.actions.replenish, alertId: alerts.byKey[`inventory_cover:${row.skuId}`]?.id }) : undefined;
+  const canRefresh = hasAnyRole(me, "pmc"); // 与 /api/report/inventory-alerts?refresh=1 的 requireAnyRole(pmc, admin) 一致
+  const listState = useListState<CoverFilters>({ key: "inventory-alerts-cover", paramPrefix: "cover", defaults: { q: "", tier: "", primary: "", status: "", onlyAlert: "1", showC: "", sort: "", order: "" }, defaultPageSize: 50 });
+  const { filters } = listState;
+  const [snapshot, setSnapshot] = useState<{ query: string; value: InventoryAlertsPage } | null>(null);
+  const readRequest = useRef<AbortController | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const query = listState.queryString();
+  const data = snapshot?.query === query ? snapshot.value : null;
+  const alerts = useAlertIndex("inventory_cover", data ? data.rows.map(row => `inventory_cover:${row.skuId}`) : null);
+  const load = useCallback(async (refresh = false) => {
+    readRequest.current?.abort();
+    const request = new AbortController(); readRequest.current = request;
+    setLoading(true);
+    setError(null);
+    setSnapshot(null);
+    const timeout = setTimeout(() => {
+      if (readRequest.current !== request || request.signal.aborted) return;
+      request.abort(); setError("库存预警读取超时，请重试"); setLoading(false);
+    }, 15000);
+    try {
+      const value = await fetchJson<InventoryAlertsPage>(`/api/report/inventory-alerts?${query}${refresh ? "&refresh=1" : ""}`, { signal: request.signal });
+      if (!request.signal.aborted) setSnapshot({ query, value });
+    }
+    catch (e) { if (!request.signal.aborted) setError((e as Error).message); }
+    finally { clearTimeout(timeout); if (!request.signal.aborted) setLoading(false); }
+  }, [query]);
+  useEffect(() => { void load(); return () => readRequest.current?.abort(); }, [load]);
+
+  const sortOrder = (key: string) => filters.sort === key ? (filters.order === "desc" ? "descend" as const : "ascend" as const) : null;
+  const columns: ColumnsType<InventoryAlertRow> = [
+    { title: "SKU", key: "code", dataIndex: "code", sorter: true, sortOrder: sortOrder("code"), width: 220, fixed: "left", render: (_, r) => <Space direction="vertical" size={0}><Typography.Text strong>{r.code}</Typography.Text><Typography.Text type="secondary" ellipsis style={{ maxWidth: 200 }}>{r.name}{r.brand ? ` · ${r.brand}` : ""}</Typography.Text></Space> },
+    { title: "等级", dataIndex: "tier", sorter: true, sortOrder: sortOrder("tier"), width: 90, render: (v: string | null, r) => v ? <Tag color={TIER_COLOR[v]}>{v}{r.tierSource === "computed" ? "*" : ""}</Tag> : <Tag>未分层</Tag> },
+    { title: "日销 外部", key: "de", align: "right", width: 110, render: (_, r) => dailyText(r.daily.external) },
+    { title: "内部", key: "di", align: "right", width: 140, render: (_, r) => <InternalDemandCell row={r} /> },
+    { title: "系统销售 / 作业", key: "dl", align: "right", width: 185, render: (_, r) => <LedgerDemandCell row={r} /> },
+    { title: "外部净件（按30日排序）", dataIndex: "net30External", align: "right", width: 230, sorter: true, sortOrder: sortOrder("net30External"), render: (_, r) => <ExternalDemandCell row={r} /> },
+    { title: "在库", dataIndex: "onHand", align: "right", width: 90, sorter: true, sortOrder: sortOrder("onHand"), render: (v: string) => formatQty(v) },
+    { title: "可销天数", dataIndex: "coverDays", align: "right", width: 100, sorter: true, sortOrder: sortOrder("coverDays"), render: (v: number | null, r) => v == null ? <Typography.Text type="secondary">无日销</Typography.Text> : <Typography.Text type={r.status === "alert" ? "danger" : r.status === "watch" ? "warning" : undefined} strong>{v}d</Typography.Text> },
+    { title: "阈值", key: "ad", width: 150, render: (_, r) => <span>{r.alertDays}d {r.usedDefault ? <Tag>缺省周期</Tag> : null}<br /><Typography.Text type="secondary" style={{ fontSize: 11 }}>{r.alertBasis}</Typography.Text></span> },
+    { title: "主预警", key: "p", width: 120, render: (_, r) => r.primary ? <Space size={4} wrap><Tag color={r.primary === "out_of_stock" ? "error" : r.primary === "spike" ? "magenta" : "warning"}>{KIND_LABEL[r.primary]}</Tag>{r.tags.map((t) => <Tag key={t}>{KIND_LABEL[t]}</Tag>)}</Space> : <Typography.Text type="secondary">—</Typography.Text> },
+    {
+      title: "知悉与行动", key: "a", width: 170, fixed: "right",
+      // 每个主预警种类都有落地页：临期 → 效期批次清单（该 SKU 全部段位），积压 → 风险处置；标签命中也给入口
+      // 状态与动作共用固定列，避免横向未滚到底时知悉按钮被右侧链接遮住。
+      render: (_, r) => <Space direction="vertical" size={4}>
+        <AckCell phase={alerts.phase} alert={alerts.byKey[`inventory_cover:${r.skuId}`]} onAck={(id) => void alerts.ack(id)} />
+        <CoverActions row={r} onCapacity={capacityAction(r)} />
+      </Space>,
+    },
+  ];
+
+  return (
+    <div className={styles.list}>
+      <CapacityCheckDrawer target={capacity} onClose={() => setCapacity(null)} />
+      {data ? (
+        <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
+          <Col xs={12} md={6}><a href={inventoryCoverMetricHref("outOfStock")}><Statistic title="断货（有需求无在库）" value={data.totals.outOfStock} valueStyle={{ color: data.totals.outOfStock ? "#B23A2E" : undefined }} /></a></Col>
+          <Col xs={12} md={6}><a href={inventoryCoverMetricHref("alert")}><Statistic title="低于阈值" value={data.totals.alert} valueStyle={{ color: data.totals.alert ? "#B7791F" : undefined }} /></a></Col>
+          <Col xs={12} md={6}><a href={inventoryCoverMetricHref("watch")}><Statistic title="关注" value={data.totals.watch} /></a></Col>
+          <Col xs={12} md={6}><Statistic title="本类未知悉告警" value={alerts.unacked == null ? "—" : alerts.unacked} valueStyle={{ color: alerts.unacked ? "#B23A2E" : undefined }} /></Col>
+        </Row>
+      ) : null}
+      <ListToolbar
+        state={listState}
+        extra={(
+          <Space wrap>
+            <SearchInput key={filters.q} allowClear size="small" placeholder="编码 / 名称 / 品牌" defaultValue={filters.q} onSearch={(v) => listState.setFilter({ q: v.trim() })} style={{ width: 200 }} />
+            <Select allowClear size="small" placeholder="等级" style={{ width: 100 }} value={filters.tier || undefined} onChange={(v) => listState.setFilter({ tier: v ?? "" })} options={[{ value: "S", label: "S" }, { value: "A", label: "A" }, { value: "B", label: "B" }, { value: "C", label: "C" }, { value: "none", label: "未分层" }]} />
+            <Select allowClear size="small" placeholder="主预警" style={{ width: 120 }} value={filters.primary || undefined} onChange={(v) => listState.setFilter({ primary: v ?? "" })} options={Object.entries(KIND_LABEL).map(([value, label]) => ({ value, label }))} />
+            <Select aria-label="覆盖状态" allowClear size="small" placeholder="覆盖状态" style={{ width: 130 }} value={filters.status || undefined} onChange={(v) => listState.setFilter({ status: v ?? "" })} options={[{ value: "alert", label: "低于阈值" }, { value: "watch", label: "关注" }, { value: "ok", label: "正常" }]} />
+            <Select aria-label="库存预警排序" size="small" style={{ width: 165 }} value={filters.sort || ""} options={[...INVENTORY_ALERT_SORT_OPTIONS]} onChange={sort => listState.setFilter({ sort, order: sort ? "asc" : "" })} />
+            {filters.sort ? <Button size="small" aria-label="切换库存排序方向" onClick={() => listState.setFilter({ order: filters.order === "desc" ? "asc" : "desc" })}>{filters.order === "desc" ? "降序 ↓" : "升序 ↑"}</Button> : null}
+            <span>只看预警 <Switch size="small" checked={filters.onlyAlert !== "0"} onChange={(on) => listState.setFilter({ onlyAlert: on ? "1" : "0" })} /></span>
+            <span>含 C 级 <Switch size="small" checked={filters.showC === "1"} onChange={(on) => listState.setFilter({ showC: on ? "1" : "" })} /></span>
+          </Space>
+        )}
+        primaryActions={(
+          <Space>
+            {data ? <ExportButton key={query} href={`/api/export/inventory-alerts?${query}`} /> : null}
+            {canRefresh ? <Button size="small" aria-label="重算库存预警" aria-busy={loading} onClick={() => void load(true)} loading={loading}>重算</Button> : null}
+            <Button size="small" aria-label="刷新库存预警" aria-busy={loading} onClick={() => void load()} loading={loading}>刷新</Button>
+          </Space>
+        )}
+      />
+      <LoadErrorAlert error={error} onRetry={() => void load()} subject="库存预警表" retrying={loading} />
+      <LoadErrorAlert error={alerts.error} onRetry={alerts.reload} subject="告警关联" retrying={alerts.phase === "loading"} />
+      <Table<InventoryAlertRow>
+        className={styles.desktop}
+        rowKey="skuId"
+        size={listState.tableSize}
+        loading={loading}
+        columns={columns}
+        onChange={(_, __, sorter, extra) => {
+          if (extra.action !== "sort") return;
+          const next = Array.isArray(sorter) ? sorter[0] : sorter;
+          listState.setFilter({ sort: next.order ? String(next.field) : "", order: next.order === "ascend" ? "asc" : next.order === "descend" ? "desc" : "" });
+        }}
+        dataSource={data?.rows ?? []}
+        pagination={false}
+        scroll={{ x: 1500 }}
+        locale={{ emptyText: loading ? "正在加载库存预警…" : error ? "数据未加载" : "当前筛选下没有预警行" }}
+        expandable={{
+          rowExpandable: (r) => !!alerts.byKey[`inventory_cover:${r.skuId}`],
+          expandedRowRender: (r) => { const a = alerts.byKey[`inventory_cover:${r.skuId}`]; return a ? <AlertRowDetail alert={a} onRequestClose={() => setClosing(a)} /> : null; },
+        }}
+      />
+      <div className={styles.mobile} data-density={listState.density} aria-busy={loading}>
+        {loading ? <div className={styles.empty}><Spin /> 正在加载库存预警…</div> : data?.rows.length ? <ul className={styles.cards}>
+          {data.rows.map(row => {
+            const alert = alerts.byKey[`inventory_cover:${row.skuId}`];
+            return <li key={row.skuId}><InventoryCoverCard row={row}
+              ack={<AckCell phase={alerts.phase} alert={alert} onAck={id => void alerts.ack(id)} />}
+              actions={<CoverActions row={row} onCapacity={capacityAction(row)} />}
+              detail={alert ? <AlertRowDetail alert={alert} onRequestClose={() => setClosing(alert)} /> : null} /></li>;
+          })}
+        </ul> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={error ? "数据未加载" : "当前筛选下没有预警行"} />}
+      </div>
+      <AlertCloseModal open={closing != null} alertId={closing?.id ?? null}
+        onCancel={() => setClosing(null)} onClosed={() => { setClosing(null); void alerts.reload(); }} />
+      <div className={styles.pagination}><Pagination {...listState.paginationProps({ total: data?.filtered.total ?? 0, showTotal: (t) => `筛选命中 ${t} 个 SKU（成品共 ${data?.totals.skus ?? "—"}）` })} size="small" responsive /></div>
+      {data ? (
+        <CaliberNote
+          summary={`参数：加工缺省 ${data.params.productionDefault} 天 · 在途缺省 ${data.params.logisticsDefault} 天 · 缓冲 ${data.params.bufferDays} 天 · 分层切点 ${data.params.tierCuts.sPct}/${data.params.tierCuts.aPct}/${data.params.tierCuts.bPct}%（* 为现算等级）`}
+          detail={<div>{data.limitations.map((l) => <p key={l} style={{ margin: "0 0 4px" }}>· {l}</p>)}</div>}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/* ── Tab 2：爆单预警 ── */
+/** Compact representation of the same row; pagination, alert lookup and authority stay in the parent. */
+export function SalesSpikeCard({ row, ack, action }: { row: SpikeHit; ack: ReactNode; action: ReactNode }) {
+  const identity = row.kind === "sku" ? row.code : row.platformSkuId;
+  return <article className={styles.spikeCard} aria-label={`${identity ?? "未知身份"} 爆单`}>
+    <strong>{identity ?? "未知身份"}</strong>
+    {row.name ? <div className={styles.name}>{row.name}</div> : null}
+    <div className={styles.spikeMeta}>{row.kind === "platform" ? <Tag color="blue">未映射</Tag> : null}{row.expected ? <Tag color="blue">大促预期内</Tag> : null}</div>
+    <div className={styles.basis}>店铺：{row.shopName}</div>
+    <dl className={styles.facts}>
+      <div><dt>最新日涨幅</dt><dd>{row.risePct == null ? "—" : `+${row.risePct}%`}</dd></div>
+      <div><dt>基线 / 阈值（件/日）</dt><dd>{formatQty(row.baseline)} / {formatQty(row.threshold)}</dd></div>
+    </dl>
+    <dl className={styles.spikeDays}>{row.days.map(day => <div key={day.date}><dt><time dateTime={day.date}>{day.date}</time></dt><dd>{formatQty(day.qty)} 件</dd></div>)}</dl>
+    <div className={styles.basis}>数据截止：{row.anchorDate}</div>
+    <div className={styles.footer}>{ack}{action}</div>
+  </article>;
+}
+
+export function SpikeTab() {
+  const me = useMe();
+  const [capacity, setCapacity] = useState<CapacityTarget | null>(null);
+  const canCheckCapacity = hasAnyRole(me, "purchasing", "pmc", "ops");
+  const capacityAction = (row: SpikeHit) => {
+    const skuId = row.skuId;
+    if (row.kind !== "sku" || !skuId || !canCheckCapacity) return null;
+    return <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setCapacity({ skuId,
+      code: row.code ?? "", name: row.name ?? "", replenishHref: row.href, alertId: alerts.byKey[`sales_spike:sku:${skuId}`]?.id })}>核对加工产能</Button>;
+  };
+  // Keep an in-progress close form outside table rows: breakpoint changes rebuild
+  // expanded cells and must not discard the reason, note or pending receipt.
+  const [closing, setClosing] = useState<AlertRef | null>(null);
+  const wide = Grid.useBreakpoint().xl;
+  const canRefresh = hasAnyRole(me, "pmc", "ops"); // 与 /api/report/sales-spike?refresh=1 的 requireAnyRole(pmc, ops, admin) 一致
+  const listState = useListState<{ q?: string }>({ key: "inventory-alerts-spike", paramPrefix: "spike", defaults: { q: "" }, paginated: false });
+  const { filters } = listState;
+  const [snapshot, setSnapshot] = useState<{ q: string; value: SalesSpikePage } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const request = useRef<AbortController | null>(null);
+  const q = (filters.q ?? "").trim();
+  const data = snapshot?.q === q ? snapshot.value : null;
+  const keyOf = (r: SpikeHit) => r.kind === "sku" ? `sales_spike:sku:${r.skuId}` : `sales_spike:platform:${r.shopName}|${r.platformSkuId}`;
+  const alerts = useAlertIndex("sales_spike", data ? [...data.hits, ...data.unmappedHits].map(keyOf) : null);
+  const load = useCallback(async (refresh = false) => {
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
+    setSnapshot(null);
+    setLoading(true);
+    setError(null);
+    try {
+      const sp = new URLSearchParams(); if (q) sp.set("q", q); if (refresh) sp.set("refresh", "1");
+      const next = await fetchJson<SalesSpikePage>(`/api/report/sales-spike?${sp.toString()}`, { signal: controller.signal });
+      if (!controller.signal.aborted) setSnapshot({ q, value: next });
+    } catch (e) { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "爆单预警加载失败，请重试"); }
+    finally { if (!controller.signal.aborted) setLoading(false); }
+  }, [q]);
+  useEffect(() => { void load(); return () => request.current?.abort(); }, [load]);
+
+  const columns: ColumnsType<SpikeHit> = [
+    { title: "SKU / 平台 SKU", key: "k", width: 220, fixed: "left", render: (_, r) => r.kind === "sku" ? <Space direction="vertical" size={0}><Typography.Text strong>{r.code}</Typography.Text><Typography.Text type="secondary">{r.name}</Typography.Text></Space> : <Space direction="vertical" size={0}><Tag color="blue">未映射</Tag><Typography.Text>{r.platformSkuId}</Typography.Text></Space> },
+    { title: "店铺", dataIndex: "shopName", ellipsis: true },
+    { title: "最近各日", key: "d", render: (_, r) => r.days.map((d) => formatQty(d.qty)).join(" / ") },
+    { title: "涨幅", dataIndex: "risePct", align: "right", width: 90, sorter: (a, b) => Number(a.risePct ?? 0) - Number(b.risePct ?? 0), defaultSortOrder: "descend", render: (v: string | null) => v == null ? "—" : <Typography.Text type="danger" strong>+{v}%</Typography.Text> },
+    { title: "基线 / 阈值", key: "b", width: 120, render: (_, r) => `${formatQty(r.baseline)} / ${formatQty(r.threshold)}` },
+    { title: "截止", dataIndex: "anchorDate", width: 100 },
+    { title: "知悉与行动", key: "a", width: 170, fixed: "right", render: (_, r) => <Space direction="vertical" size={4}>
+      <AckCell phase={alerts.phase} alert={alerts.byKey[keyOf(r)]} onAck={(id) => void alerts.ack(id)} />
+      <a href={r.href}>{r.kind === "sku" ? "看补货" : "认领身份"}</a>
+      {capacityAction(r)}
+    </Space> },
+  ];
+  const onExport = () => {
+    if (!data) return;
+    exportCsv(
+      `爆单预警-${data.anchorDate ?? data.builtAt.slice(0, 10)}`,
+      ["类型", "SKU", "名称", "平台SKU", "店铺", "各日", "涨幅%", "基线", "阈值", "截止", "已知悉"],
+      [...data.hits, ...data.unmappedHits].map((r) => [r.kind, r.code, r.name, r.platformSkuId, r.shopName, r.days.map((d) => d.qty).join("|"), r.risePct, r.baseline, r.threshold, r.anchorDate, alerts.phase !== "success" ? "告警状态未读取" : alerts.byKey[keyOf(r)] ? ackText(alerts.byKey[keyOf(r)]) : "无可见告警"]),
+    );
+  };
+  const compactColumns: ColumnsType<SpikeHit> = [{
+    title: "爆单 · 涨幅", dataIndex: "risePct", key: "risePct",
+    sorter: (a, b) => Number(a.risePct ?? 0) - Number(b.risePct ?? 0), defaultSortOrder: "descend",
+    render: (_, row) => <SalesSpikeCard row={row}
+      ack={<AckCell phase={alerts.phase} alert={alerts.byKey[keyOf(row)]} onAck={id => void alerts.ack(id)} />}
+      action={<Space wrap><a href={row.href}>{row.kind === "sku" ? "看补货" : "认领身份"}</a>{capacityAction(row)}</Space>} />,
+  }];
+  const table = (rows: SpikeHit[]) => (
+    <Table<SpikeHit>
+      rowKey={keyOf}
+      size={listState.tableSize}
+      loading={loading}
+      columns={wide ? columns : compactColumns}
+      dataSource={rows}
+      scroll={{ x: wide ? 1200 : undefined }}
+      pagination={{ showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
+      locale={{ emptyText: loading ? "正在加载当前窗口…" : error || !data ? "数据未加载" : data.state === "insufficient" ? "证据不足，无法判定；不代表没有爆单" : "完整观测窗口内没有命中" }}
+      expandable={{
+        rowExpandable: (r) => !!alerts.byKey[keyOf(r)],
+        expandedRowRender: (r) => { const a = alerts.byKey[keyOf(r)]; return a ? <AlertRowDetail alert={a} onRequestClose={() => setClosing(a)} /> : null; },
+      }}
+    />
+  );
+
+  return (
+    <div>
+      <CapacityCheckDrawer target={capacity} onClose={() => setCapacity(null)} />
+      {data ? (
+        <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
+          <Col xs={12} md={6}><Statistic title="窗口命中 · 系统 SKU" value={data.state === "insufficient" ? "—" : data.hitCount} valueStyle={{ color: data.hitCount ? "#B23A2E" : undefined }} /></Col>
+          <Col xs={12} md={6}><Statistic title="窗口命中 · 未映射 SKU" value={data.state === "insufficient" ? "—" : data.unmappedCount} /></Col>
+          <Col xs={12} md={6}><Statistic title="本类未知悉告警" value={alerts.unacked == null ? "—" : alerts.unacked} valueStyle={{ color: alerts.unacked ? "#B23A2E" : undefined }} /></Col>
+          <Col xs={12} md={6}><Statistic title="数据截止" value={data.anchorDate ?? "缺流"} valueStyle={{ fontSize: 18 }} /></Col>
+        </Row>
+      ) : null}
+      <ListToolbar
+        state={listState}
+        onExport={data ? onExport : undefined}
+        extra={<SearchInput key={q} allowClear size="small" placeholder="编码 / 名称 / 平台 SKU / 店铺" defaultValue={q} onSearch={(v) => listState.setFilter({ q: v.trim() })} style={{ width: 240 }} />}
+        primaryActions={(
+          <Space>
+            {canRefresh ? <Button size="small" aria-label="重算爆单预警" aria-busy={loading} onClick={() => void load(true)} loading={loading}>重算</Button> : null}
+            <Button size="small" aria-label="刷新爆单预警" aria-busy={loading} onClick={() => void load()} loading={loading}>刷新</Button>
+          </Space>
+        )}
+      />
+      <LoadErrorAlert error={error} onRetry={() => void load()} subject="爆单预警" retrying={loading} />
+      <LoadErrorAlert error={alerts.error} onRetry={alerts.reload} subject="告警关联" retrying={alerts.phase === "loading"} />
+      {data ? <Alert
+        showIcon
+        type={data.state !== "ready" || !data.currentEvidence ? "warning" : "info"}
+        style={{ marginBottom: 12 }}
+        message={`完整窗口可判定 ${data.coverage.evaluatedItems} 项；证据不足 ${data.coverage.incompleteItems} 项`}
+        description={<>
+          缺日或非法销量不当作零，多店铺须逐序列覆盖。无法判定或已消失的序列不会自动关闭旧告警。
+          {!data.currentEvidence ? " 当前为历史、未来或缺失窗口，不用于当前告警更新；请核对来源业务日期。" : " 来源截止符合 T+1；不代表未接入平台已有覆盖。"}
+          {" "}<a href="/alerts?category=sales_spike">核对已有爆单告警</a>
+        </>}
+      /> : null}
+      <Typography.Title level={5} style={{ marginTop: 4 }}>已映射 SKU {data ? `（${data.q ? `筛选 ${data.hits.length} / ` : ""}共 ${data.hitCount}）` : ""}</Typography.Title>
+      {table(data?.hits ?? [])}
+      <Typography.Title level={5} style={{ marginTop: 12 }}>未映射平台 SKU {data ? `（${data.q ? `筛选 ${data.unmappedHits.length} / ` : ""}共 ${data.unmappedCount}）` : ""}</Typography.Title>
+      {table(data?.unmappedHits ?? [])}
+      <AlertCloseModal open={closing != null} alertId={closing?.id ?? null}
+        onCancel={() => setClosing(null)} onClosed={() => { setClosing(null); void alerts.reload(); }} />
+      {data ? (
+        <CaliberNote
+          summary={`规则：最近 ${data.params.consecutiveDays} 天每日 ≥ 前 ${data.params.baselineDays} 日日均 × ${(1 + data.params.risePct / 100).toFixed(2)}，基线 ≥ ${data.params.minBaseQty} · 覆盖：平台序列 ${data.coverage.platformSeries}，已映射 ${data.coverage.mappedSeries}，系统 SKU ${data.coverage.systemSkus}`}
+          detail={<div>{data.limitations.map((l) => <p key={l} style={{ margin: "0 0 4px" }}>· {l}</p>)}</div>}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+export default function AlertsClient() {
+  const router = useRouter();
+  const sp = useSearchParams();
+  const tab = sp.get("tab") === "spike" ? "spike" : "cover";
+  const setTab = (key: string) => { const p = new URLSearchParams(sp.toString()); p.set("tab", key); router.replace(`/inventory/alerts?${p.toString()}`, { scroll: false }); };
+  return (
+    <div>
+      <Typography.Title level={4} style={{ marginTop: 0 }}>库存预警与爆单</Typography.Title>
+      <CaliberNote
+        summary="每个 SKU 只有一个主预警；日销三口径（外部 / 内部 / 实时仓）并列不相加；C 级默认折叠；观察序列只预警不定量。"
+        detail={<div>主预警优先级：断货 &gt; 爆单 &gt; 低于阈值（rules/alert-priority）。阈值 = 加工周期 + 在途周期 + 缓冲，逐 SKU 主数据优先、缺则用运行参数缺省并标「缺省周期」。已知悉只留审计不改状态。自动关闭按各类规则判断；爆单须有完整且符合 T+1 时效的新窗口确认不命中，并距最后命中满 3 天。缺失或过期证据保留旧告警待复核，不能视为问题已解决。</div>}
+      />
+      <Tabs activeKey={tab} onChange={setTab} destroyOnHidden items={[
+        { key: "cover", label: "库存预警表", children: <CoverTab /> },
+        { key: "spike", label: "爆单预警", children: <SpikeTab /> },
+      ]} />
+    </div>
+  );
+}

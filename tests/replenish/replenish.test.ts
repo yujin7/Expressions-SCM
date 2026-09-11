@@ -10,6 +10,7 @@ import {
   getReplenishSuggestions,
   isPddWindowIncomplete,
   normalizeReplenishSort,
+  REPLENISH_DEFAULT_SORT_BY,
 } from "@/server/modules/replenish/service";
 import { createTestDb, type TestDb } from "../helpers/db";
 
@@ -108,7 +109,8 @@ describe("R11 补货建议：口径 + 建议量 + BH 草稿", () => {
   it("口径：全网在库 + PO在途 + 近3月日均 → 可销天数与建议量（MOQ/倍数取整）", async () => {
     const res = await getReplenishSuggestions({ coverDaysTarget: 45, minCoverAlert: 30 }, db);
     expect(res.total).toBe(3); // 仅成品；原料不进报表
-    expect(res.rows.map((r) => r.code)).toEqual(["CP00001", "CP00002", "CP00003"]); // daysCover 升序，无动销殿后
+    // 缺省排序＝最晚下单日升序（REPLENISH_DEFAULT_SORT_BY），无下单日的行置底并按编码排
+    expect(res.rows.map((r) => r.code)).toEqual(["CP00001", "CP00002", "CP00003"]);
     expect(res.meta.months3).toEqual(["2026-04", "2026-05", "2026-06"]);
     expect(res.meta.snapDate).toBe("2026-07-10");
     expect(res.meta.suggestCount).toBe(1);
@@ -181,10 +183,12 @@ describe("R11 补货建议：口径 + 建议量 + BH 草稿", () => {
     );
     expect(coverDesc.rows.map((r) => r.code)).toEqual(["CP00002", "CP00001", "CP00003"]);
 
+    // 缺省排序＝最晚下单日升序（补货页要回答「今天该下哪几张单」，不是「谁可销最低」）
     expect(normalizeReplenishSort("not-a-column", "sideways")).toEqual({
-      sortBy: "coverFull",
+      sortBy: "orderByDate",
       sortOrder: "ascend",
     });
+    expect(normalizeReplenishSort(null, null).sortBy).toBe(REPLENISH_DEFAULT_SORT_BY);
   });
 
   it("生成 BH 草稿：复用 createBh，一张草稿多行，双审计留痕", async () => {

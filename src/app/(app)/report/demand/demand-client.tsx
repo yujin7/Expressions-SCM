@@ -9,13 +9,14 @@ import { useRouter, useSearchParams } from "next/navigation";
  * 达成率=达成/需求 前端现算（源文件公式未缓存——不落假数）；月度重导整类替换。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, App, Col, Progress, Row, Select, Space, Statistic, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Col, Progress, Row, Space, Statistic, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import CaliberNote from "@/components/CaliberNote";
 import DecisionVisual from "@/components/DecisionVisual";
 import { formatQty } from "@/components/format";
 import ListToolbar from "@/components/ListToolbar";
+import RemoteSelect from "@/components/RemoteSelect";
 import { useListState } from "@/components/useListState";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
 
@@ -245,13 +246,18 @@ function DemandTab() {
               style={{ width: 260 }}
               onSearch={(v) => listState.setFilter({ q: v.trim() })}
             />
-            <Select
+            {/* 渠道选项来自主数据 /api/master/channel（与经营分析总览同源），不再硬编码九个名字；
+                需求登记（transit_refs kind=demand）按 follower=渠道名称 存储，故选项值取 name 而非 code */}
+            <RemoteSelect
+              api="/api/master/channel"
+              getLabel={(r) => String(r.name ?? r.code)}
+              getValue={(r) => String(r.name ?? r.code)}
               allowClear
+              showSearch
               placeholder="全部渠道"
               style={{ width: 160 }}
               value={channel || undefined}
-              onChange={(value) => listState.setFilter({ channel: value ?? "" })}
-              options={["天猫", "拼多多", "唯品会", "京东", "抖音商品卡", "私域", "商务", "品牌中心", "海外运营部"].map((v) => ({ value: v, label: v }))}
+              onChange={(value) => listState.setFilter({ channel: value == null ? "" : String(value) })}
             />
             {importedAt ? <Tag color="green">导入于 {new Date(importedAt).toLocaleDateString("zh-CN")}</Tag> : <Tag>尚未导入</Tag>}
           </>

@@ -147,7 +147,7 @@ const DATE_TIME = new Intl.DateTimeFormat("zh-CN", {
   day: "2-digit",
   hour: "2-digit",
   minute: "2-digit",
-  hour12: false,
+  hourCycle: "h23",
 });
 
 function versionLabel(version: PlanningVersion): string {

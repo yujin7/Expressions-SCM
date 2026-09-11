@@ -22,6 +22,8 @@ node_modules/
 .next/
 .next-*/
 .artifacts/
+.cache/
+.cache-cleanup-trash/
 out/
 dist/
 coverage/
@@ -43,6 +45,7 @@ scripts/*
 !scripts/patch-minimatch-brace-api.mjs
 !scripts/sanitize-standalone.ts
 !scripts/normalize-next-env.ts
+!scripts/build-identity.ts
 **/*.test.ts
 **/*.test.tsx
 README.md

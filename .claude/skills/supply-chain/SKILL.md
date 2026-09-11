@@ -11,6 +11,9 @@ Own the business outcome, system boundaries, and sequencing. Do not load every s
 
 1. Read `CLAUDE.md` and `docs/NOW.md` when present.
    Read `docs/spec/CURRENT.md` when current intent, scope, or a business ruling matters.
+   Keep NOW a short current-state handoff: replace superseded status, link detailed evidence,
+   and preserve unresolved requirements. Do not append each turn's log or load its linked history
+   by default; search the relevant dated section only when it changes the next action.
 2. State the outcome, accountable role, affected facts, irreversible choices, and acceptance evidence.
 3. Select exactly one primary skill for the current phase:
    - workflow, UX, planning, quality, and alerts: `design-supply-chain-flows`
@@ -23,6 +26,17 @@ Own the business outcome, system boundaries, and sequencing. Do not load every s
 5. When the phase changes, hand off sequentially to the new primary. In particular, use
    `release-sweep` only after an exact candidate exists.
 6. Keep recommendations explainable, reversible, and proportional to present scale.
+
+For handoff/cleanup, use the existing navigation and Git change history rather than creating
+parallel agent/skills/SSOT copies. Check callers, retention, runtime ownership and recovery before
+retiring anything; verification receipts are not caches. Route file placement through
+`docs/README.md` and cleanup commands through `scripts/README.md`. Persist memory only when
+the user requests it, using the memory provider's supported update path, without credentials.
+
+For a broad improvement goal, keep an explicit task-to-evidence map and select the next slice by
+user impact and dependencies. Log incidental findings without letting low-impact cleanup replace
+the requested experience. Inspect existing skills/components/tools before adding another layer;
+compare a credible alternative and the cost of keeping it, not just the cost of building it.
 
 ## Non-negotiable judgment
 

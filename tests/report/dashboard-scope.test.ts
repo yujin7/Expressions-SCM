@@ -89,6 +89,8 @@ describe("驾驶舱缓存键", () => {
     const keyBlock = src.slice(src.indexOf("const key = ["), src.indexOf("].join(\"|\")") + 12);
     expect(keyBlock).toContain("scope.brand");
     expect(keyBlock).toContain("scope.channel");
+    // D62：键还必须含用户的渠道范围——两个受限于不同渠道的 ops 报文不同形，不能互相命中
+    expect(keyBlock).toContain("user.channelScope");
   });
 });
 
@@ -110,8 +112,8 @@ describe("驾驶舱缓存容量", () => {
     const src = readFileSync("src/server/modules/report/dashboard.ts", "utf8");
     expect(src).toMatch(/DASHBOARD_MAX_STALE_MS\s*=\s*5\s*\*\s*60_000/);
     expect(src).toContain("dashboardRefreshes.get(key)");
-    expect(src).toContain("void refreshDashboard(key, roles, scope).catch");
+    expect(src).toContain("void refreshDashboard(key, user, scope).catch");
     expect(src).toContain("return hit.value");
-    expect(src).toContain("return refreshDashboard(key, roles, scope)");
+    expect(src).toContain("return refreshDashboard(key, user, scope)");
   });
 });

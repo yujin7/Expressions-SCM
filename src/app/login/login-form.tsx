@@ -1,49 +1,53 @@
 "use client";
 
-import { useState } from "react";
-import { App, Button, Card, Divider, Form, Input, Tooltip, Typography } from "antd";
+import { useRef, useState } from "react";
+import { Alert, App, Button, Card, Divider, Form, Input, Tooltip, Typography } from "antd";
 import { LockOutlined, UserOutlined } from "@ant-design/icons";
 import { signIn } from "next-auth/react";
-import { useRouter } from "next/navigation";
-
-const ERROR_MESSAGES: Record<string, string> = {
-  invalid: "用户名或密码错误",
-  disabled: "账号已停用，请联系管理员",
-  rate_limited: "尝试过于频繁，请稍后再试",
-};
+import { loginReturnPath } from "@/lib/login-return-path";
+import { loginErrorMessage } from "@/lib/login-error";
 
 function getCallbackUrl(): string {
   if (typeof window === "undefined") return "/";
   const raw = new URLSearchParams(window.location.search).get("callbackUrl");
-  // 仅允许站内相对路径，防开放重定向
-  if (raw && raw.startsWith("/") && !raw.startsWith("//")) return raw;
-  return "/";
+  return loginReturnPath(raw);
 }
 
 function LoginFormInner({ feishuEnabled }: { feishuEnabled: boolean }) {
   const { message } = App.useApp();
-  const router = useRouter();
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submitting = useRef(false);
 
   const onFinish = async (values: { username: string; password: string }) => {
+    if (submitting.current) return;
+    submitting.current = true;
+    let navigating = false;
     setLoading(true);
+    setError(null);
     try {
       const res = await signIn("local", {
         username: values.username,
         password: values.password,
         redirect: false,
       });
-      if (res?.error) {
-        message.error(ERROR_MESSAGES[res.code ?? ""] ?? "登录失败，请重试");
+      if (!res?.ok || res.error) {
+        const text = loginErrorMessage(res);
+        setError(text);
+        message.error({ key: "login-error", content: "登录未完成，请查看表单提示" });
         return;
       }
       const target = getCallbackUrl();
-      router.replace(target);
-      router.refresh();
+      // Cross the authentication boundary with one fresh document request. Racing
+      // router.replace + router.refresh can reuse unauthenticated RSC navigation state.
+      window.location.replace(target);
+      navigating = true;
     } catch {
-      message.error("登录失败，请重试");
+      const text = loginErrorMessage();
+      setError(text);
+      message.error({ key: "login-error", content: "登录未完成，请查看表单提示" });
     } finally {
-      setLoading(false);
+      if (!navigating) { submitting.current = false; setLoading(false); }
     }
   };
 
@@ -90,7 +94,8 @@ function LoginFormInner({ feishuEnabled }: { feishuEnabled: boolean }) {
         <Typography.Paragraph type="secondary" style={{ textAlign: "center", marginBottom: 24 }}>
           登录供应链控制塔
         </Typography.Paragraph>
-        <Form<{ username: string; password: string }> onFinish={onFinish} size="large">
+        {error ? <Alert type="error" showIcon role="alert" message={error} style={{ marginBottom: 16 }} /> : null}
+        <Form<{ username: string; password: string }> onFinish={onFinish} size="large" disabled={loading}>
           <Form.Item name="username" rules={[{ required: true, message: "请输入用户名" }]}>
             <Input prefix={<UserOutlined />} placeholder="用户名" autoComplete="username" />
           </Form.Item>
@@ -115,6 +120,10 @@ function LoginFormInner({ feishuEnabled }: { feishuEnabled: boolean }) {
         ) : (
           <Tooltip title="未配置飞书应用">{feishuButton}</Tooltip>
         )}
+        <Typography.Paragraph type="secondary" style={{ textAlign: "center", fontSize: 12, margin: "16px 0 0" }}>
+          登录状态异常？<Typography.Link href="/signout" style={{ fontSize: 12 }}>清除当前登录状态</Typography.Link>
+          <br />仅清理此入口的会话，不会重置密码。
+        </Typography.Paragraph>
       </Card>
     </div>
   );

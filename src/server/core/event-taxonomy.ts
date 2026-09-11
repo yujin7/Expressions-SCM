@@ -56,6 +56,12 @@ const CATALOG: Record<string, CatalogEntry> = {
   confirm: { domain: "doc", label: "确认", verb: "confirm", isStateChange: true },
   complete: { domain: "doc", label: "完成", verb: "complete", isStateChange: true },
   close: { domain: "doc", label: "关闭", verb: "close", isStateChange: true },
+  withdraw: { domain: "doc", label: "撤回", verb: "withdraw", isStateChange: true },
+  void: { domain: "doc", label: "作废", verb: "void", isStateChange: true },
+  short_close: { domain: "doc", label: "短关", verb: "shortClose", isStateChange: true },
+  period_close: { domain: "system", label: "会计期间关账", verb: "periodClose", isStateChange: true },
+  period_reopen: { domain: "system", label: "会计期间重开", verb: "periodReopen", isStateChange: true },
+  quarantine: { domain: "doc", label: "隔离", verb: "quarantine", isStateChange: false },
   accept: { domain: "doc", label: "接收", verb: "accept", isStateChange: true },
   inbound: { domain: "doc", label: "入库", verb: "inbound", isStateChange: true },
   post: { domain: "doc", label: "过账", verb: "post", isStateChange: true },
@@ -91,6 +97,9 @@ const CATALOG: Record<string, CatalogEntry> = {
   regroup: { domain: "master", label: "重组归属", verb: "regroup", isStateChange: false },
   set_sku_code: { domain: "master", label: "设置 SKU 编码", verb: "setSkuCode", isStateChange: false },
   register: { domain: "master", label: "登记", verb: "register", isStateChange: false },
+  follow_up: { domain: "master", label: "工作项跟进", verb: "followUp", isStateChange: false },
+  capacity_check: { domain: "plan", label: "保存产能核对依据", verb: "capacityCheck", isStateChange: false },
+  confirm_source_status: { domain: "master", label: "人工核对商品来源状态", verb: "confirmSourceStatus", isStateChange: false },
   register_batch: { domain: "master", label: "批量登记", verb: "registerBatch", isStateChange: false },
   change_password: { domain: "master", label: "修改密码", verb: "changePassword", isStateChange: false },
   bind_feishu_identity: { domain: "master", label: "绑定飞书身份", verb: "bindFeishuIdentity", isStateChange: false },
@@ -110,6 +119,10 @@ const CATALOG: Record<string, CatalogEntry> = {
   review_overrule: { domain: "data", label: "复核驳回", verb: "reviewOverrule", isStateChange: false },
   review_reopen: { domain: "data", label: "复核重开", verb: "reviewReopen", isStateChange: false },
   feedback: { domain: "system", label: "用户反馈", verb: "feedback", isStateChange: false },
+
+  /* ── 工作台例外（W9：打盹只影响展示，不改任何业务事实，故 isStateChange=false） ── */
+  snooze: { domain: "system", label: "例外打盹", verb: "snooze", isStateChange: false },
+  snooze_clear: { domain: "system", label: "取消例外打盹", verb: "snoozeClear", isStateChange: false },
 };
 
 /** 只读目录（供 UI 列出全部已登记事件） */

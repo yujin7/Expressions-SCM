@@ -3,6 +3,7 @@
 import { Form, Input, Select, Switch, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import CrudTable from "@/components/CrudTable";
+import { useListState } from "@/components/useListState";
 import RemoteSelect from "@/components/RemoteSelect";
 import { hasAnyRole, useMe } from "@/components/useMe";
 
@@ -31,42 +32,49 @@ const KIND_COLORS: Record<BinRow["kind"], string> = {
 };
 
 export default function BinClient() {
+  const list = useListState({ key: "master-bin", defaults: { q: "", sort: "warehouseCode", order: "asc", kind: "", active: "", warehouseId: "" }, defaultPageSize: 20, defaultDensity: "middle" });
+  const sortOrder = (key: string) => list.filters.sort === key ? list.filters.order === "desc" ? "descend" as const : "ascend" as const : null;
   const me = useMe();
   const canWrite = hasAnyRole(me, "warehouse");
   const columns: ColumnsType<BinRow> = [
     {
       title: "仓库",
+      key: "warehouseCode",
       dataIndex: "warehouseCode",
       width: 190,
-      sorter: (a, b) => a.warehouseCode.localeCompare(b.warehouseCode),
+      sorter: true, sortOrder: sortOrder("warehouseCode"),
       render: (_value, row) => `${row.warehouseCode} · ${row.warehouseName}`,
     },
     {
       title: "库位编码",
+      key: "code",
       dataIndex: "code",
       width: 150,
-      sorter: (a, b) => a.code.localeCompare(b.code),
+      sorter: true, sortOrder: sortOrder("code"),
     },
     {
       title: "名称",
+      key: "name",
       dataIndex: "name",
-      sorter: (a, b) => (a.name ?? "").localeCompare(b.name ?? ""),
+      sorter: true, sortOrder: sortOrder("name"),
       render: (value: string | null) => value || "—",
     },
     {
       title: "用途",
+      key: "kind",
       dataIndex: "kind",
       width: 100,
       filters: Object.entries(KIND_LABELS).map(([value, text]) => ({ value, text })),
-      onFilter: (value, row) => row.kind === value,
+      filterMultiple: false, filteredValue: list.filters.kind ? [list.filters.kind] : null,
       render: (value: BinRow["kind"]) => <Tag color={KIND_COLORS[value]}>{KIND_LABELS[value]}</Tag>,
     },
     {
       title: "状态",
+      key: "active",
       dataIndex: "active",
       width: 90,
       filters: [{ text: "启用", value: true }, { text: "停用", value: false }],
-      onFilter: (value, row) => row.active === value,
+      filterMultiple: false, filteredValue: list.filters.active ? [list.filters.active === "true"] : null,
       render: (value: boolean) => value ? <Tag color="success">启用</Tag> : <Tag>停用</Tag>,
     },
     { title: "备注", dataIndex: "remark", ellipsis: true, render: (value: string | null) => value || "—" },
@@ -79,6 +87,16 @@ export default function BinClient() {
         仅实时仓维护库位。隔离与暂存是可审计的作业状态；仓库库存总账仍是数量真相。
       </Typography.Paragraph>
       <CrudTable<BinRow>
+        listState={list}
+        toolbarFilters={<RemoteSelect api="/api/master/warehouse" placeholder="筛选所属仓库" aria-label="筛选所属仓库" allowClear
+          getLabel={row => `${String(row.code)} · ${String(row.name)}`}
+          style={{ width: 220 }} value={list.filters.warehouseId ? Number(list.filters.warehouseId) : undefined}
+          onChange={value => list.setFilter({ warehouseId: value == null ? "" : String(value) })} />}
+        tableProps={{ onChange: (_page, filters, sorter, extra) => {
+          if (extra.action === "paginate") return;
+          const current = Array.isArray(sorter) ? sorter[0] : sorter;
+          list.setFilter({ sort: current.order ? String(current.columnKey) : "warehouseCode", order: current.order === "descend" ? "desc" : "asc", kind: String(filters.kind?.[0] ?? ""), active: String(filters.active?.[0] ?? "") });
+        } }}
         entityName="库位"
         apiPath="/api/master/bin"
         loadDetailOnEdit

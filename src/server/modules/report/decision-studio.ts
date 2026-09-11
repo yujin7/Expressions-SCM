@@ -6,6 +6,8 @@
  * - 所有聚合在全量服务端事实上完成，客户端分页/筛选不参与口径；
  * - 同比、SPC、日级归因不满足前提时返回明确 gate，不用 0 或演示数据补位；
  * - 跨 SKU 数量直加只用于结构与趋势，不代表收入、利润或统一实物量。
+ * - D62：渠道维按 `core/data-scope` 解析结果裁剪——受限用户的月度事实强制加 channel_id 条件，
+ *   越权渠道 403；JST 日事实没有渠道维度，受限用户一律 gate 不呈现。
  */
 import { and, inArray, sql } from "drizzle-orm";
 
@@ -13,6 +15,12 @@ import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
 import { num } from "@/server/core/svc";
+import {
+  channelScopeCondition,
+  resolveChannelScopeByCode,
+  UNRESTRICTED_SCOPE,
+  type ResolvedChannelScope,
+} from "@/server/modules/report/channel-scope";
 import { detectSignals, type SpcResult } from "@/server/rules/spc";
 import {
   emptyExternalDemandSignal,
@@ -90,6 +98,8 @@ export interface DailyFact {
 export interface DecisionStudioResult {
   generatedAt: string;
   loadedSections: StudioSection[];
+  /** D62：渠道范围裁剪结果；forced=true 时页面把渠道筛选改为只读标签 */
+  channelScope: { forced: boolean; channelIds: number[] | null; label: string | null };
   dimension: StudioDimension;
   selectedKey: string | null;
   selectedLabel: string | null;
@@ -117,7 +127,8 @@ export interface DecisionStudioResult {
     sharePct: number;
     cumulativePct: number;
   }[];
-  pareto80Count: number;
+  /** Null when the latest month has no positive total to use as a denominator. */
+  pareto80Count: number | null;
   medianQty: number | null;
   pivot: { key: string; label: string; total: number; byMonth: Record<string, number> }[];
   spc: SpcResult;
@@ -247,7 +258,9 @@ export function buildDecisionStudio(
       cumulativePct: latestTotal > 0 ? round((cumulative / latestTotal) * 100, 1) : 0,
     };
   });
-  const pareto80Count = pareto.findIndex((item) => item.cumulativePct >= 80) + 1 || pareto.length;
+  const pareto80Count = latestTotal > 0 && pareto.length > 0
+    ? pareto.findIndex((item) => item.cumulativePct >= 80) + 1 || pareto.length
+    : null;
   const medianQty = median(latestRows.map((item) => item.qty));
 
   const topKeys = new Set(groups.slice(0, PIVOT_GROUP_LIMIT).map((item) => item.key));
@@ -301,9 +314,11 @@ export function buildDecisionStudio(
     momPct == null
       ? "环比：缺少可比较的上一期或上一期为零，暂不计算。"
       : `环比：${momPct >= 0 ? "增长" : "下降"} ${Math.abs(momPct).toFixed(1)}%。`,
-    top
+    top && pareto80Count !== null
       ? `${pareto80Count} 个${DIMENSION_LABELS[dimension]}贡献最新月约 80% 销量；第一位 ${top.label} 占 ${top.sharePct.toFixed(1)}%。`
-      : "结构：当前期间没有可排名事实。",
+      : top
+        ? "结构：最新月销量合计不为正数，缺少可用的正数分母，不计算 80% 贡献成员数。"
+        : "结构：当前期间没有可排名事实，缺少可用的正数分母，不计算 80% 贡献成员数。",
     yoyPct == null
       ? `同比：缺少 ${yearAgoMonth ?? "去年同期"} 一致口径数据，保持留白。`
       : `同比：${yoyPct >= 0 ? "增长" : "下降"} ${Math.abs(yoyPct).toFixed(1)}%。`,
@@ -323,6 +338,7 @@ export function buildDecisionStudio(
   return {
     generatedAt: new Date().toISOString(),
     loadedSections: ["core", "daily", "external", "identity", "readiness"],
+    channelScope: { forced: false, channelIds: null, label: null },
     dimension,
     selectedKey,
     selectedLabel,
@@ -375,8 +391,11 @@ export function buildDecisionStudio(
  * 整批丢掉，于是"没加筛选时"的既有数字也会跟着变。EXISTS 只过滤，不影响基数。
  * 无筛选时 where 传 undefined（drizzle 视作不加条件），保证与改动前逐字等价。
  */
-function scopeWhere(scope: StudioScope) {
+function scopeWhere(scope: StudioScope, channelScope: ResolvedChannelScope = UNRESTRICTED_SCOPE) {
   const conds = [];
+  // D62：受限用户强制加 channel_id 条件；不限用户不加（保持逐字等价）
+  const forced = channelScopeCondition(schema.salesMonthly.channelId, channelScope);
+  if (forced) conds.push(forced);
   if (scope.brand) {
     conds.push(sql`EXISTS (
       SELECT 1 FROM skus ss LEFT JOIN brands bb ON bb.id = ss.brand_id
@@ -397,9 +416,10 @@ async function loadMonthlyFacts(
   db: AnyDb,
   dimension: StudioDimension,
   scope: StudioScope = {},
+  channelScope: ResolvedChannelScope = UNRESTRICTED_SCOPE,
 ): Promise<MonthlyGroupFact[]> {
   const qtyExpr = sql<string>`sum(${schema.salesMonthly.qty})`;
-  const where = scopeWhere(scope);
+  const where = scopeWhere(scope, channelScope);
 
   if (dimension === "month") {
     // 月份维：只按月分组，配合 scope 就是「NING × 天猫 的月度走势」
@@ -531,17 +551,21 @@ export async function getDecisionStudio(
     ? [...new Set<StudioSection>(["core", ...query.sections])].filter((section) => allSections.includes(section))
     : allSections;
   const includes = (section: StudioSection) => requestedSections.includes(section);
+  // D62：先解析渠道范围（越权 403），再取数；受限用户的月度事实强制按范围裁剪
+  const channelScope = await resolveChannelScopeByCode(db, user, scope.channel);
   const [facts, daily, externalDemand, commerceIdentity, dataSources, supportingObservations] = await Promise.all([
-    loadMonthlyFacts(db, dimension, scope),
-    includes("daily") ? loadDailyFacts(db) : Promise.resolve([]),
-    includes("external")
+    loadMonthlyFacts(db, dimension, scope, channelScope),
+    // JST 日事实没有渠道维度：受限用户不能诚实裁剪，直接不取（下方 gate 说明）
+    includes("daily") && !channelScope.forced ? loadDailyFacts(db) : Promise.resolve([]),
+    // D62：外部平台观察是店铺级行（含他人渠道），受限用户一律不下发，给出空态与原因
+    includes("external") && !channelScope.forced
       ? loadJiandaoyunExternalDemandSignal(db)
-      : Promise.resolve(emptyExternalDemandSignal("切换到外部需求信号后加载。")),
-    includes("identity")
+      : Promise.resolve(emptyExternalDemandSignal(channelScope.forced ? "受限渠道范围不下发外部平台观察（D62）。" : "切换到外部需求信号后加载。")),
+    includes("identity") && !channelScope.forced
       ? loadCommerceIdentityCoverage(db)
       : Promise.resolve(emptyCommerceIdentityCoverage()),
     includes("readiness") ? loadDataSourceReadiness(db) : Promise.resolve([]),
-    includes("readiness") ? loadJiandaoyunSupportingObservations(db) : Promise.resolve([]),
+    includes("readiness") && !channelScope.forced ? loadJiandaoyunSupportingObservations(db) : Promise.resolve([]),
   ]);
   const studio = buildDecisionStudio(
     facts,
@@ -554,8 +578,20 @@ export async function getDecisionStudio(
   const dataProductReleases = includes("readiness")
     ? await loadDataProductReleaseReadiness(dataSources, user, db)
     : [];
+  const dailyOut: DecisionStudioResult["daily"] = channelScope.forced
+    ? {
+        state: "insufficient",
+        gate: `当前账号按渠道范围（${channelScope.scopeLabel ?? "本渠道"}）受限，JST 日事实没有渠道维度，不能诚实归因到本渠道，故不呈现。`,
+        dates: [],
+        coveredRows: 0,
+        totalRows: 0,
+        latestDate: null,
+      }
+    : studio.daily;
   return {
     ...studio,
+    daily: dailyOut,
+    channelScope: { forced: channelScope.forced, channelIds: channelScope.channelIds, label: channelScope.scopeLabel },
     loadedSections: requestedSections,
     supportingObservations,
     dataProductReleases,

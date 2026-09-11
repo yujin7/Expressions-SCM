@@ -1,18 +1,24 @@
 "use client";
 
 /**
- * 用户管理（仅 admin）：建号 / 角色 / 审批人 / 停用 / 重置密码。
+ * 用户管理（仅 admin）：建号 / 角色 / 审批人 / 停用 / 重置密码 / 数据范围（D62）。
  * 服务端已有自锁保护（不可停用自己、不可摘own admin）；前端同步禁用对应控件。
+ * 数据范围：渠道多选 + 部门（=角色）多选，PUT /api/admin/users/[id]/scopes 整体替换；
+ * 范围变化会令该用户既有会话失效（服务端 bump session_version），页面据返回的 sessionInvalidated 提示。
  */
 import { useCallback, useEffect, useState } from "react";
-import { App, Button, Form, Input, Modal, Select, Space, Switch, Table, Tag, Typography } from "antd";
+import { App, Alert, Button, Form, Input, Modal, Select, Space, Switch, Table, Tag, Typography } from "antd";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson, patchJson, postJson, putJson } from "@/components/fetchJson";
+import RemoteSelect from "@/components/RemoteSelect";
 import { ROLE_LABELS } from "@/server/core/constants";
+import type { UserScopesResult } from "@/server/modules/admin/user-scopes";
 import type { UserRow } from "@/server/modules/admin/users";
 
 const ROLE_OPTIONS = Object.entries(ROLE_LABELS).map(([value, label]) => ({ value, label }));
+/** 部门先=角色（D61）；admin 不受范围限制，不作为部门键提供 */
+const DEPT_OPTIONS = ROLE_OPTIONS.filter((o) => o.value !== "admin");
 
 export default function UsersClient() {
   const { message, modal } = App.useApp();
@@ -22,10 +28,13 @@ export default function UsersClient() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editRow, setEditRow] = useState<UserRow | null>(null);
   const [bindRow, setBindRow] = useState<UserRow | null>(null);
+  const [scopeRow, setScopeRow] = useState<UserRow | null>(null);
+  const [scopeLoading, setScopeLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [createForm] = Form.useForm();
   const [editForm] = Form.useForm();
   const [bindForm] = Form.useForm();
+  const [scopeForm] = Form.useForm<{ channelIds: number[]; deptKeys: string[] }>();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -100,6 +109,48 @@ export default function UsersClient() {
     }
   };
 
+  /** D62：打开数据范围抽屉——先从服务端取当前范围（唯一权威），再回填表单 */
+  const openScope = async (row: UserRow) => {
+    setScopeRow(row);
+    scopeForm.setFieldsValue({ channelIds: [], deptKeys: [] });
+    setScopeLoading(true);
+    try {
+      const cur = await fetchJson<UserScopesResult>(`/api/admin/users/${row.id}/scopes`);
+      scopeForm.setFieldsValue({ channelIds: cur.channelScope ?? [], deptKeys: cur.deptScope ?? [] });
+    } catch (e) {
+      message.error((e as Error).message);
+      setScopeRow(null);
+    } finally {
+      setScopeLoading(false);
+    }
+  };
+
+  const handleSaveScope = async () => {
+    if (!scopeRow) return;
+    const v = await scopeForm.validateFields();
+    setSaving(true);
+    try {
+      // [] = 清空（= 不限）；两类都整体替换
+      const r = await putJson<UserScopesResult>(`/api/admin/users/${scopeRow.id}/scopes`, {
+        channelIds: v.channelIds ?? [],
+        deptKeys: v.deptKeys ?? [],
+      });
+      message.success(
+        r.sessionInvalidated
+          ? `已保存 ${scopeRow.name} 的数据范围；该用户既有会话已失效，需重新登录后生效`
+          : `已保存 ${scopeRow.name} 的数据范围（无变化）`,
+      );
+      setScopeRow(null);
+      if (r.sessionInvalidated && scopeRow.id === me) {
+        window.location.assign("/signout");
+      }
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const confirmUnbindFeishu = (row: UserRow) => {
     modal.confirm({
       title: `解绑 ${row.name} 的飞书登录？`,
@@ -149,7 +200,7 @@ export default function UsersClient() {
     },
     {
       title: "操作",
-      width: 180,
+      width: 260,
       render: (_, r) => (
         <Space size={0}>
           <Button
@@ -161,6 +212,9 @@ export default function UsersClient() {
             }}
           >
             编辑
+          </Button>
+          <Button type="link" size="small" onClick={() => void openScope(r)}>
+            数据范围
           </Button>
           {r.feishuBound ? (
             <Button type="link" danger size="small" disabled={!r.active} onClick={() => confirmUnbindFeishu(r)}>
@@ -245,6 +299,45 @@ export default function UsersClient() {
           </Form.Item>
           <Form.Item name="password" label="重置密码（留空=不改；重置同时解除锁定）">
             <Input.Password placeholder="至少 8 位" autoComplete="new-password" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={`数据范围：${scopeRow?.name ?? ""}`}
+        open={scopeRow != null}
+        onOk={() => void handleSaveScope()}
+        confirmLoading={saving}
+        onCancel={() => setScopeRow(null)}
+        okText="保存"
+        cancelText="取消"
+        okButtonProps={{ disabled: scopeLoading }}
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="渠道范围只对非管理员生效（D62）"
+          description={
+            <>
+              留空 = 不限。登记了渠道后，该用户在经营驾驶舱 / 决策工作室 / 销量归因 / 备货申请列表只看到所选渠道；
+              库存总量、临期、到货日历等非渠道维内容仍公开；销售金额对运营角色始终不下发。
+              范围变化会令其既有登录失效，需重新登录。
+            </>
+          }
+        />
+        <Form form={scopeForm} layout="vertical" disabled={scopeLoading}>
+          <Form.Item name="channelIds" label="可见渠道（多选，留空=不限）">
+            <RemoteSelect
+              api="/api/master/channel"
+              mode="multiple"
+              getLabel={(r) => `${String(r.name ?? r.code)}${r.active === false ? "（停用）" : ""}`}
+              placeholder="选择渠道主档中的渠道"
+              loading={scopeLoading}
+            />
+          </Form.Item>
+          <Form.Item name="deptKeys" label="所属部门（=角色，多选，留空=不限；用于部门维目标查阅）">
+            <Select mode="multiple" options={DEPT_OPTIONS} placeholder="选择部门" />
           </Form.Item>
         </Form>
       </Modal>

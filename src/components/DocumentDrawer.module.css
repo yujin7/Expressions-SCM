@@ -1,0 +1,44 @@
+.drawer :global(.ant-drawer-header) {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.drawer :global(.ant-drawer-header-title) {
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
+.drawer :global(.ant-drawer-title) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.drawer :global(.ant-drawer-title > .ant-space) {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.drawer :global(.ant-drawer-extra) {
+  min-width: 0;
+  max-width: 100%;
+  margin-inline-start: 0;
+}
+
+.drawer :global(.ant-drawer-extra .ant-space) {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 640px) {
+  .drawer :global(.ant-drawer-header-title) {
+    flex-basis: 100%;
+  }
+
+  .drawer :global(.ant-drawer-extra) {
+    width: 100%;
+  }
+
+  .drawer :global(.ant-drawer-header),
+  .drawer :global(.ant-drawer-body) {
+    padding: 16px;
+  }
+}

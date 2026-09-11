@@ -57,6 +57,11 @@ export async function transitionDoc(
 
     const from = doc.status as DocStatus;
 
+    // Authorization precedes replay: another user's completed request is not our success receipt.
+    if (i.action === "void" && !i.user.roles.includes("admin") && i.user.id !== (doc.createdBy as number)) {
+      throw new ApprovalError("NOT_OWNER", "只有制单人本人可作废自己的草稿");
+    }
+
     // 幂等先于状态校验：已经到目标态说明动作已生效，重试不该报错
     let target: DocStatus;
     try {
@@ -73,14 +78,6 @@ export async function transitionDoc(
         "BAD_STATUS",
         `当前状态「${from}」不可${ACTION_LABEL[i.action]}`,
       );
-    }
-
-    // 作废只针对自己的草稿：已提交的单据要纠错走驳回/短关/红字，不能一键抹掉
-    if (i.action === "void") {
-      const isAdmin = i.user.roles.includes("admin");
-      if (!isAdmin && i.user.id !== (doc.createdBy as number)) {
-        throw new ApprovalError("NOT_OWNER", "只有制单人本人可作废自己的草稿");
-      }
     }
 
     // 短关原因写进单据自己的 closed_reason 列（docColumns 早就留了这一列），

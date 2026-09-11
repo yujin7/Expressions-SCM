@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * #5 字段级数据血缘徽标：任意数字/字段旁加一枚小徽标，hover 显示来源与可信层级。
+ * #5 字段级数据血缘徽标：点按或键盘打开来源与可信层级，不依赖 hover。
  * 层级（tier）语义与全系统口径纪律一致：
  * - ledger（记账层）：过账台账/实时账，权威可信；
  * - snapshot（快照层）：期初/快照导入，时点权威；
@@ -9,7 +9,7 @@
  * - derived（推导层）：由上述计算得出（可销天数、投影等）。
  * 用法：<DataSourceBadge tier="reference" source="总库存明细" date="2026-07-21" note="全公司口径" />
  */
-import { Tooltip } from "antd";
+import ContextHelp from "@/components/ContextHelp";
 
 export type LineageTier = "ledger" | "snapshot" | "reference" | "derived";
 
@@ -34,31 +34,14 @@ export default function DataSourceBadge({
   const m = TIER_META[tier];
   const lines = [
     `口径：${m.label}`,
-    source ? `来源：${source}` : null,
-    date ? `数据时点：${date}` : null,
+    `来源：${source || "未提供"}`,
+    `数据时点：${date || "未提供，请核对新鲜度"}`,
     note ?? null,
   ].filter(Boolean);
   return (
-    <Tooltip title={<span style={{ whiteSpace: "pre-line" }}>{lines.join("\n")}</span>}>
-      <sup
-        role="img"
-        aria-label={lines.join("；")}
-        tabIndex={0}
-        style={{
-          marginLeft: 3,
-          fontSize: 9,
-          lineHeight: 1,
-          padding: "0 3px",
-          borderRadius: 3,
-          color: "#fff",
-          background: m.color,
-          cursor: "help",
-          verticalAlign: "super",
-          userSelect: "none",
-        }}
-      >
-        {m.glyph}
-      </sup>
-    </Tooltip>
+    <ContextHelp label={`查看数据来源：${source || m.label}`} title="数据来源与时点"
+      content={<span style={{ whiteSpace: "pre-line" }}>{lines.join("\n")}</span>}>
+      <span className="data-source-glyph" style={{ background: m.color }} aria-hidden>{m.glyph}</span>
+    </ContextHelp>
   );
 }

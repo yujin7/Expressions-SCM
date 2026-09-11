@@ -1,5 +1,6 @@
 import {
-  pgTable, serial, text, integer, numeric, date, timestamp, boolean, unique, jsonb, index, check } from "drizzle-orm/pg-core";
+  pgTable, serial, text, integer, numeric, date, timestamp, boolean, unique, jsonb, index, check,
+  type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import {
   docStatusEnum, poLineTypeEnum, shLineTypeEnum, qcHandlingEnum,
@@ -143,7 +144,20 @@ export const poPromiseRevisions = pgTable("po_promise_revisions", {
     "ck_po_promise_actor_type",
     sql`${t.actorType} IN ('supplier_token', 'internal_user', 'system_backfill', 'external_system')`,
   ),
-  check("ck_po_promise_date_changed", sql`${t.previousDate} IS DISTINCT FROM ${t.promisedDate}`),
+  /**
+   * 「一条修订 = 日期真的变了」——**除了承诺建立行**（C5）。
+   *
+   * 供应商第一次确认时，即使确认的日期与买手下单时预填的一模一样，也必须留一条行：
+   * 不留就出现一个洗白缺口——确认 03-01（无行）→ 重发 token → 改到 03-30（成了第一条行）→
+   * `rules/promise-basis` 把 03-30 当作「原始承诺」且标 trusted，03-28 到货算 OTIF 命中。
+   * 承诺建立（sequence=1 且来源是供应商本人）因此是本约束的唯一例外；
+   * 其余任何一条行仍必须代表一次**真实的改期**。
+   */
+  check(
+    "ck_po_promise_date_changed",
+    sql`${t.previousDate} IS DISTINCT FROM ${t.promisedDate}
+      OR (${t.sequence} = 1 AND ${t.source} = 'supplier_confirm')`,
+  ),
 ]);
 
 /* ── 价格变更申请单 PC ──────────────────────── */
@@ -246,6 +260,8 @@ export const shLines = pgTable("sh_lines", {
   id: serial("id").primaryKey(),
   shId: integer("sh_id").notNull().references(() => shDocs.id),
   skuId: integer("sku_id").notNull().references(() => skus.id),
+  // PO来源逐行身份；JG及尚未核实的历史SH为null，不自动分摊同SKU多行。
+  poLineId: integer("po_line_id").references(() => poLines.id),
   lineType: shLineTypeEnum("line_type").notNull().default("normal"),
   expectedQty: numeric("expected_qty", { precision: 14, scale: 4 }),
   actualQty: numeric("actual_qty", { precision: 14, scale: 4 }).notNull(),
@@ -258,9 +274,30 @@ export const qcRecords = pgTable("qc_records", {
   id: serial("id").primaryKey(),
   shId: integer("sh_id").notNull().references(() => shDocs.id),
   conclusion: text("conclusion"),
+  /**
+   * W2 审计 3：检验不合格的**去向留痕**。此前 `qc_lines.fail_handling` 存了 rework/scrap
+   * 却什么都不会发生——没有退货单、没有质量案件、没有扣款依据，不合格量就地蒸发。
+   * 这两列是「这次检验最终怎么处理的」的正向链接（反向链接在 quality_cases.qc_record_id）。
+   *
+   * quality_case_id 的**外键**写在迁移 SQL 里、不写在 drizzle schema：
+   * quality_cases 在 schema/quality.ts，而 quality.ts 已经 import 了本文件的 qcRecords，
+   * 在此加 drizzle 引用会形成 import 环。唯一键则可以在这里声明。
+   *
+   * 两把唯一键是 `qc-outcome.ts` 里那道读-改-写守卫的数据库背书（2026-09-04 安全审计 S5）：
+   * 一次检验只能挂一个质量案件、一张退货单。此前只有应用层「先查后写」，
+   * 并发两次「登记不合格后果」会开出两个 QI 案件（两个单号、记分卡双计）与两张 CT 草稿，
+   * 而只有一个被链回来——另一个成了没有出处的孤儿单。
+   * NULL 在 Postgres 唯一键里互不相等，所以未挂接的检验记录可以有任意多条。
+   */
+  qualityCaseId: integer("quality_case_id"),
+  returnCtId: integer("return_ct_id").references((): AnyPgColumn => ctDocs.id),
   createdBy: integer("created_by").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  unique("uq_qc_record_sh").on(t.shId),
+  unique("uq_qc_record_quality_case").on(t.qualityCaseId),
+  unique("uq_qc_record_return_ct").on(t.returnCtId),
+]);
 export const qcLines = pgTable("qc_lines", {
   id: serial("id").primaryKey(),
   qcId: integer("qc_id").notNull().references(() => qcRecords.id),
@@ -269,7 +306,7 @@ export const qcLines = pgTable("qc_lines", {
   failQty: numeric("fail_qty", { precision: 14, scale: 4 }).notNull().default("0"),
   concessionQty: numeric("concession_qty", { precision: 14, scale: 4 }).notNull().default("0"), // 让步接收
   failHandling: qcHandlingEnum("fail_handling").notNull().default("pending"), // 退厂返工/让步/报废(红字)
-});
+}, (t) => [unique("uq_qc_line_receipt_line").on(t.qcId, t.shLineId)]);
 
 /* ── 采购退货单 CT（B9：库存−、PO 已收数回冲） ── */
 export const ctDocs = pgTable("ct_docs", {
@@ -297,7 +334,14 @@ export const stockDocs = pgTable("stock_docs", {
   sourceDocId: integer("source_doc_id"),
   reversalOfId: integer("reversal_of_id"), // 红字：引用原 stock_doc
   reason: text("reason"), // R16 借调等业务原因（04 §2；渠道占用由逻辑仓表达，不加渠道字段）
-});
+  /** D60 调拨类型（仅 subtype=transfer 有意义；清单权威 `src/lib/transfer-types.ts`，存量单可空） */
+  transferType: text("transfer_type"),
+}, (t) => [
+  check(
+    "ck_stock_docs_transfer_type",
+    sql`${t.transferType} IS NULL OR ${t.transferType} IN ('factory_to_warehouse', 'bonded_transfer', 'inter_warehouse', 'borrow', 'return_to_factory', 'other')`,
+  ),
+]);
 export const stockDocLines = pgTable("stock_doc_lines", {
   id: serial("id").primaryKey(),
   stockDocId: integer("stock_doc_id").notNull().references(() => stockDocs.id),

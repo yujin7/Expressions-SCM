@@ -193,6 +193,11 @@ describe("C153 审计事件 → 当前状态 → 下一步建议", () => {
       expect(row.href).toMatch(/^\//);
     }
     expect(rows.some((row) => row.docNo === "BH-NO-EVENT")).toBe(false);
+    expect(rows.find(row => row.ruleId === "wo.generate_execution_docs")?.href).toBe(`/outsource/wo?docId=${woId}`);
+    expect(rows.find(row => row.ruleId === "po.confirm_due_date")?.href).toBe(`/outsource/po?docId=${poId}`);
+    expect(rows.find(row => row.ruleId === "jg.confirm_production")?.href).toBe(`/outsource/jg?docId=${approvedJgId}`);
+    expect(rows.find(row => row.ruleId === "sh.finish_qc_inbound")?.href).toBe(`/matflow/sh?docId=${shId}`);
+    expect(rows.find(row => row.ruleId === "jg.create_settlement")?.href).toBe(`/settlement/js?jgId=${completedJgId}`);
     expect(rows.some((row) => row.docNo === "BH-REJECT-EVENT")).toBe(false);
   });
 

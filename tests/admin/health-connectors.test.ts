@@ -8,8 +8,91 @@ import {
 } from "@/server/modules/admin/health";
 import { createTestDb } from "../helpers/db";
 import { connectorProbeEvidence } from "@/server/integrations/connector-probe-evidence";
+import { yonyouJobSummary } from "@/lib/yonyou-job-summary";
+
+const observation = (blocked: boolean, id = 1) => ({
+  runId: id, importJobId: blocked ? null : id, sourceRows: blocked ? 0 : 1250,
+  stagedRows: blocked ? 0 : 1250, replayed: false, blockedByConsoleGrant: blocked,
+});
+const RAW_ERROR_SENTINEL = "YY_RAW_ERROR_SENTINEL_20260906";
 
 describe("admin connector run health", () => {
+  it("用友历史成功中的授权等待独立显示，保留既有检查点；真实零行成功不误判", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const [user] = await db.insert(schema.users).values({ name: "合成运维" }).returning();
+      const [job] = await db.insert(schema.importJobs).values({ template: "yonyou-observation", filename: "synthetic.json", createdBy: user.id }).returning();
+      const priorAt = new Date(Date.now() - 120_000);
+      const latestAt = new Date(Date.now() - 30_000);
+      const [prior] = await db.insert(schema.integrationRuns).values({
+        connector: "yy", stream: "cost", idempotencyKey: "health:yy:prior", status: "succeeded",
+        importJobId: job.id, startedAt: priorAt, finishedAt: priorAt,
+      }).returning();
+      await db.insert(schema.integrationCheckpoints).values({
+        connector: "yy", stream: "cost", cursor: "synthetic-prior", version: 1, lastRunId: prior.id, lastSuccessAt: priorAt,
+      });
+      await db.insert(schema.integrationRuns).values([
+        { connector: "yy", stream: "cost", idempotencyKey: "health:yy:waiting", status: "succeeded", error: "待控制台授权：310037", startedAt: latestAt, finishedAt: latestAt },
+        { connector: "yonyou", stream: "legacy", idempotencyKey: "health:yonyou:waiting", status: "succeeded", error: "待控制台授权：310005", startedAt: latestAt, finishedAt: latestAt },
+        { connector: "yy", stream: "empty", idempotencyKey: "health:yy:empty", status: "succeeded", importJobId: job.id, sourceRows: 0, stagedRows: 0, startedAt: latestAt, finishedAt: latestAt },
+        { connector: "jst", stream: "not-yy", idempotencyKey: "health:jst:not-yy", status: "succeeded", error: `待控制台授权：310037 ${RAW_ERROR_SENTINEL}`, startedAt: latestAt, finishedAt: latestAt },
+        { connector: "yy", stream: "missing-job", idempotencyKey: "health:yy:missing-job", status: "succeeded", startedAt: latestAt, finishedAt: latestAt },
+        { connector: "yy", stream: "mixed", idempotencyKey: "health:yy:mixed", status: "succeeded", importJobId: job.id, error: `待控制台授权：310037 ${RAW_ERROR_SENTINEL}`, startedAt: latestAt, finishedAt: latestAt },
+        { connector: "yonyou", stream: "other-error", idempotencyKey: "health:yy:error", status: "succeeded", importJobId: job.id, error: RAW_ERROR_SENTINEL, startedAt: latestAt, finishedAt: latestAt },
+        { connector: "yy", stream: "tail-error", idempotencyKey: "health:yy:tail-error", status: "succeeded", error: `待控制台授权：310037 ${RAW_ERROR_SENTINEL}`, startedAt: latestAt, finishedAt: latestAt },
+        { connector: "yy", stream: "nonzero-wait", idempotencyKey: "health:yy:nonzero-wait", status: "succeeded", error: "待控制台授权：310037", sourceRows: 1, startedAt: latestAt, finishedAt: latestAt },
+        { connector: "yy", stream: "rejected-wait", idempotencyKey: "health:yy:rejected-wait", status: "succeeded", error: "待控制台授权：310037", rejectedRows: 1, startedAt: latestAt, finishedAt: latestAt },
+        { connector: "yy", stream: "evidence-wait", idempotencyKey: "health:yy:evidence-wait", status: "succeeded", error: "待控制台授权：310037", evidenceHash: "f".repeat(64), evidencePath: RAW_ERROR_SENTINEL, startedAt: latestAt, finishedAt: latestAt },
+      ]);
+      const result = await getOpsHealth(db);
+      expect(result.connectorRuns.find((row) => row.connector === "yy" && row.stream === "cost")).toMatchObject({
+        status: "succeeded", authorizationBlocked: true, checkpointVersion: 1, checkpointOnLatestRun: false,
+        checkpointLastSuccessAt: priorAt.toISOString(), errorSummary: expect.stringContaining("等待用友控制台授权"),
+      });
+      expect(result.connectorRuns.find((row) => row.stream === "legacy")).toMatchObject({ authorizationBlocked: true, resultInconsistent: false });
+      expect(result.connectorRuns.find((row) => row.stream === "empty")).toMatchObject({
+        status: "succeeded", sourceRows: 0, authorizationBlocked: false, resultInconsistent: false, errorSummary: null,
+      });
+      expect(result.connectorRuns.find((row) => row.connector === "jst")).toMatchObject({ authorizationBlocked: false });
+      for (const stream of ["missing-job", "mixed", "other-error", "tail-error", "nonzero-wait", "rejected-wait", "evidence-wait"]) {
+        expect(result.connectorRuns.find((row) => row.stream === stream)).toMatchObject({
+          status: "succeeded", authorizationBlocked: false, resultInconsistent: true, checkpointOnLatestRun: false,
+          errorSummary: expect.stringContaining("结果待核对"),
+        });
+      }
+      expect(JSON.stringify(result)).not.toContain(RAW_ERROR_SENTINEL);
+    } finally { await client.close(); }
+  });
+
+  it.each([
+    { summary: { status: "succeeded", results: [observation(true)], awaitingConsoleGrant: ["成本"] }, expected: "awaiting_authorization", label: "等待授权" },
+    { summary: { status: "partial", results: [observation(true), observation(false, 2)], awaitingConsoleGrant: ["成本"] }, expected: "partial", label: "部分完成" },
+    { summary: { status: "succeeded", results: [observation(false)], awaitingConsoleGrant: [] }, expected: "succeeded", label: "已读取" },
+  ])("用友 job 健康读模型展示 $expected 而非统一任务成功", async ({ summary, expected, label }) => {
+    const { db, client } = await createTestDb();
+    try {
+      const at = new Date();
+      await db.insert(schema.jobRuns).values({ job: "sync-yonyou", ok: true, message: JSON.stringify(yonyouJobSummary(summary)), startedAt: at, finishedAt: at });
+      const result = await getOpsHealth(db);
+      expect(result.lastJobRuns.find((row) => row.job === "sync-yonyou")).toMatchObject({
+        ok: true, outcome: { status: expected }, message: expect.stringContaining(label),
+      });
+    } finally { await client.close(); }
+  });
+
+  it.each([
+    '{"status":"succeeded","results":[',
+    JSON.stringify({ status: "succeeded", awaitingConsoleGrant: [], results: [{ ...observation(false), importJobId: null, sourceRows: 0, stagedRows: 0, replayed: true }] }),
+  ])("截断历史或无导入任务的旧假重放摘要不显示绿色成功", async (message) => {
+    const { db, client } = await createTestDb();
+    try {
+      const at = new Date();
+      await db.insert(schema.jobRuns).values({ job: "sync-yonyou", ok: true, message, startedAt: at, finishedAt: at });
+      const result = await getOpsHealth(db);
+      expect(result.lastJobRuns.find((row) => row.job === "sync-yonyou")).toMatchObject({ ok: true, outcome: { status: "unknown" }, message: expect.stringContaining("取数结果未确认") });
+    } finally { await client.close(); }
+  });
+
   it("returns only the latest run per stream with checkpoint and scoped alias controls", async () => {
     const { db } = await createTestDb();
     const oldSuccessAt = new Date(Date.now() - 6 * 3_600_000);
@@ -109,7 +192,7 @@ describe("admin connector run health", () => {
     ]);
     await db.insert(schema.errorLogs).values({
       errorId: "deadbeef",
-      path: "/api/integrations/run",
+      path: "/api/integrations/run?auth_code=SYNTH_HISTORY_PRIVATE#private",
       method: "POST",
       message: "upstream 401 token=DEMO_SECRET_VALUE https://example.invalid?key=secret",
       stack: "Error: DEMO_SECRET_VALUE",
@@ -236,6 +319,7 @@ describe("admin connector run health", () => {
 
     expect(result.recentErrors).toMatchObject([{
       errorId: "deadbeef",
+      path: "/api/integrations/run?[REDACTED]",
       message: "认证或授权异常（详情仅限受控日志）",
     }]);
     expect(result.lastJobRuns.find((row) => row.job === "connector-probe")).toMatchObject({
@@ -251,6 +335,9 @@ describe("admin connector run health", () => {
     const errorListPayload = JSON.stringify(await listErrorLogs(50, db));
     expect(errorListPayload).not.toContain("DEMO_SECRET_VALUE");
     expect(errorListPayload).not.toContain("example.invalid");
+    expect(errorListPayload).not.toContain("SYNTH_HISTORY_PRIVATE");
+    const [historical] = await db.select().from(schema.errorLogs);
+    expect(historical.path).toContain("SYNTH_HISTORY_PRIVATE"); // Read projection never rewrites evidence.
   });
 
   it("reduces arbitrary stored errors to bounded safe categories", () => {

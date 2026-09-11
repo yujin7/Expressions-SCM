@@ -8,10 +8,12 @@ import { verify } from "@node-rs/argon2";
 import { eq } from "drizzle-orm";
 import { getDbAsync, schema } from "@/db";
 import type { Role } from "@/server/core/constants";
+import { loadUserScopes } from "@/server/core/data-scope";
 import { authCookieConfig } from "./cookies";
 import { refreshSessionIdentity } from "./session-version";
+import { AUTH_SESSION_MAX_AGE, withinSessionLifetime } from "./session-policy";
 
-/* ---------- 类型扩展：session/jwt 携带 userId/roles/isApprover ---------- */
+/* ---------- 类型扩展：session/jwt 携带 userId/roles/isApprover + D62 数据范围 ---------- */
 
 declare module "next-auth" {
   interface Session {
@@ -20,12 +22,20 @@ declare module "next-auth" {
       roles: Role[];
       isApprover: boolean;
       sessionVersion: number;
+      /** D62：null = 不限 */
+      channelScope: number[] | null;
+      deptScope: string[] | null;
+      /** 范围载荷对应的 session_version（范围变更即 bump → 旧 JWT 失效） */
+      scopeVersion: number;
     } & DefaultSession["user"];
   }
   interface User {
     roles?: Role[];
     isApprover?: boolean;
     sessionVersion?: number;
+    channelScope?: number[] | null;
+    deptScope?: string[] | null;
+    scopeVersion?: number;
   }
 }
 
@@ -35,6 +45,9 @@ declare module "next-auth/jwt" {
     roles?: Role[];
     isApprover?: boolean;
     sessionVersion?: number;
+    channelScope?: number[] | null;
+    deptScope?: string[] | null;
+    scopeVersion?: number;
   }
 }
 
@@ -249,12 +262,16 @@ const localProvider = Credentials({
         .where(eq(schema.users.id, u.id));
     }
 
+    const scopes = await loadUserScopes(db, u.id);
     return {
       id: String(u.id),
       name: u.name,
       roles: u.roles as Role[],
       isApprover: u.isApprover,
       sessionVersion: u.sessionVersion,
+      channelScope: scopes.channelScope,
+      deptScope: scopes.deptScope,
+      scopeVersion: u.sessionVersion,
     };
   },
 });
@@ -280,7 +297,7 @@ export const authConfig: NextAuthConfig = {
   trustHost: true,
   secret: process.env.AUTH_SECRET,
   // 8 小时 JWT 会话；所有业务写操作通过 getFreshSessionUser 回查 active/session_version/角色，变更即时生效。
-  session: { strategy: "jwt", maxAge: 8 * 60 * 60, updateAge: 60 * 60 },
+  session: { strategy: "jwt", maxAge: AUTH_SESSION_MAX_AGE, updateAge: 60 * 60 },
   pages: { signIn: "/login" },
   providers: [
     localProvider,
@@ -300,20 +317,29 @@ export const authConfig: NextAuthConfig = {
       if (account?.provider === "feishu" && user?.id) {
         const u = await findUserByUnionId(user.id);
         if (u) {
+          const scopes = await loadUserScopes(await getDbAsync(), u.id);
           token.userId = u.id;
           token.name = u.name;
           token.roles = u.roles as Role[];
           token.isApprover = u.isApprover;
           token.sessionVersion = u.sessionVersion;
+          token.channelScope = scopes.channelScope;
+          token.deptScope = scopes.deptScope;
+          token.scopeVersion = u.sessionVersion;
         }
       } else if (user) {
-        // local credentials：authorize 已返回完整用户
+        // local credentials：authorize 已返回完整用户（含 D62 范围）
         token.userId = Number(user.id);
         token.name = user.name;
         token.roles = user.roles ?? [];
         token.isApprover = user.isApprover ?? false;
         token.sessionVersion = user.sessionVersion;
+        token.channelScope = user.channelScope ?? null;
+        token.deptScope = user.deptScope ?? null;
+        token.scopeVersion = user.scopeVersion ?? user.sessionVersion;
       } else if (token.userId != null) {
+        // /api/auth/session bypasses middleware; do not let a legacy 30-day token renew here.
+        if (!withinSessionLifetime(token)) return null;
         return refreshSessionIdentity(token);
       }
       return token;
@@ -324,12 +350,15 @@ export const authConfig: NextAuthConfig = {
       session.user.roles = token.roles ?? [];
       session.user.isApprover = token.isApprover ?? false;
       session.user.sessionVersion = token.sessionVersion ?? -1;
+      session.user.channelScope = token.channelScope ?? null;
+      session.user.deptScope = token.deptScope ?? null;
+      session.user.scopeVersion = token.scopeVersion ?? token.sessionVersion ?? -1;
       return session;
     },
   },
 };
 
-/** Request-aware wrapper: loopback HTTP and the HTTPS tunnel must both authenticate safely. */
+/** Preserve the full authorization policy while resolving cookie security per request. */
 export function authConfigForRequest(request?: NextRequest): NextAuthConfig {
   return { ...authConfig, ...authCookieConfig(request) };
 }

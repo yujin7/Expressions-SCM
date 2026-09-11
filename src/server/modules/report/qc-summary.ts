@@ -21,6 +21,7 @@ import * as schema from "@/db/schema";
 import { lastMonths } from "@/server/core/velocity";
 import { todayShanghai } from "@/server/modules/master/common";
 import { num } from "@/server/core/svc";
+import { shanghaiMonthOf } from "@/server/core/business-day";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -35,10 +36,7 @@ export const DEFAULT_MONTHS = 6;
 const r2 = (v: number): number => Math.round(v * 100) / 100;
 const r4 = (v: number): number => Math.round(v * 10000) / 10000;
 
-/** 时间戳 → Asia/Shanghai 年月 YYYY-MM */
-function shanghaiMonth(d: Date): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(d).slice(0, 7);
-}
+const shanghaiMonth = shanghaiMonthOf;
 
 export interface QcSummaryRow {
   supplierId: number;

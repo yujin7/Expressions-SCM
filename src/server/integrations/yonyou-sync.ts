@@ -11,8 +11,9 @@
  *
  * 与 D16 同一口径：用友数据是**观测/对账参照**，永远不直接进库存台账或总账。
  */
-import { and, desc, eq, gt, inArray, isNotNull, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import { integrationCheckpoints, integrationRuns, users } from "@/db/schema";
+import { isYonyouAuthorizationWait } from "@/lib/yonyou-job-summary";
 import {
   createSourceImportJobInTransaction,
   finalizeImportJob,
@@ -22,6 +23,7 @@ import {
 } from "@/server/import/staging";
 import { writeIntegrationEvidence } from "./evidence";
 import { YonyouApiError, YonyouClient } from "./yonyou-client";
+import { storedErrorDiagnostic } from "@/server/core/logger";
 import {
   yonyouContractStreamKey,
   yonyouReadContractByName,
@@ -73,7 +75,7 @@ export interface YonyouSyncSummary {
   runId: number;
   importJobId: number | null;
   contract: string;
-  /** 源侧返回的顶层记录数；无法判定时为 0 并在 shapeNote 说明。 */
+  /** 可识别数组的记录数；未知结构整包保留为一条观察，不推断其业务记录总量。 */
   sourceRows: number;
   stagedRows: number;
   evidenceHash: string;
@@ -97,7 +99,10 @@ interface PriorRun {
   importJobId: number | null;
   sourceRows: number;
   stagedRows: number;
+  rejectedRows: number;
   evidenceHash: string | null;
+  evidencePath: string | null;
+  error: string | null;
   requestScope: unknown;
 }
 
@@ -330,7 +335,10 @@ async function priorRun(db: AnyDb, idempotencyKey: string): Promise<PriorRun | n
       importJobId: integrationRuns.importJobId,
       sourceRows: integrationRuns.sourceRows,
       stagedRows: integrationRuns.stagedRows,
+      rejectedRows: integrationRuns.rejectedRows,
       evidenceHash: integrationRuns.evidenceHash,
+      evidencePath: integrationRuns.evidencePath,
+      error: integrationRuns.error,
       requestScope: integrationRuns.requestScope,
     })
     .from(integrationRuns)
@@ -354,10 +362,14 @@ async function claimRun(
     if (inserted) return inserted;
   }
   const existing = observed ?? await priorRun(db, String(values.idempotencyKey));
-  if (!existing || existing.status === "succeeded") return null;
+  if (!existing) return null;
+  const awaitingGrant = isYonyouAuthorizationWait(existing);
   const stale = existing.status === "running"
     && startedAt.getTime() - existing.startedAt.getTime() >= RUN_STALE_AFTER_MS;
-  if (existing.status !== "failed" && !stale) return null;
+  if (existing.status !== "failed" && !stale && !awaitingGrant) return null;
+
+  // startedAt 是租约栅栏，不只是展示时间。快速重试也必须改变，避免同毫秒 ABA。
+  const nextStartedAt = new Date(Math.max(startedAt.getTime(), existing.startedAt.getTime() + 1));
 
   const [reclaimed]: { id: number; startedAt: Date }[] = await db
     .update(integrationRuns)
@@ -368,14 +380,29 @@ async function claimRun(
       stagedRows: 0,
       rejectedRows: 0,
       importJobId: null,
+      evidenceHash: null,
+      evidencePath: null,
+      requestScope: null,
+      cursorStart: null,
+      cursorEnd: null,
       error: null,
-      startedAt,
+      startedAt: nextStartedAt,
       finishedAt: null,
     })
     .where(and(
       eq(integrationRuns.id, existing.id),
       eq(integrationRuns.status, existing.status),
       eq(integrationRuns.startedAt, existing.startedAt),
+      // 保留认领前的等待谓词，不能以旧快照接管已产生事实的成功运行。
+      awaitingGrant ? and(
+        eq(integrationRuns.error, existing.error!),
+        isNull(integrationRuns.importJobId),
+        eq(integrationRuns.sourceRows, 0),
+        eq(integrationRuns.stagedRows, 0),
+        eq(integrationRuns.rejectedRows, 0),
+        sql`coalesce(${integrationRuns.evidenceHash}, '') = ''`,
+        sql`coalesce(${integrationRuns.evidencePath}, '') = ''`,
+      ) : undefined,
     ))
     .returning({ id: integrationRuns.id, startedAt: integrationRuns.startedAt });
   return reclaimed ?? null;
@@ -387,12 +414,12 @@ async function failRun(
   attemptStartedAt: Date,
   error: unknown,
 ): Promise<void> {
-  const message = (error instanceof Error ? error.message : String(error)).slice(0, 500);
+  const message = storedErrorDiagnostic(error).slice(0, 500);
   await db.update(integrationRuns).set({
     status: "failed",
     importJobId: null,
     error: message,
-    finishedAt: new Date(),
+    finishedAt: new Date(Math.max(Date.now(), attemptStartedAt.getTime())),
   }).where(and(
     eq(integrationRuns.id, runId),
     eq(integrationRuns.status, "running"),
@@ -406,7 +433,7 @@ export interface YonyouSyncOptions {
   actorId: number;
   /** 请求体；分页由调用方决定，本模块不臆断分页参数名。 */
   request?: Record<string, unknown>;
-  /** 幂等窗口标识（例如 bizDate）。同 key 重跑直接返回上次结果。 */
+  /** 幂等窗口标识（例如 bizDate）。真实成功才重放；等待授权可在下次调用安全重试。 */
   scopeKey: string;
   /** 明确的源业务/观察日期；与幂等键分离，禁止从任意 scopeKey 猜日期。 */
   sourceAsOf?: string;
@@ -441,7 +468,11 @@ export async function syncYonyouContract(
   await assertActor(db, actorId);
 
   const existing = await priorRun(db, idempotencyKey);
-  if (existing?.status === "succeeded") {
+  if (existing?.status === "succeeded" && !isYonyouAuthorizationWait(existing)) {
+    // 真实空响应也有 importJob。矛盾的历史记录不能伪装成功或被自动清除重拉。
+    if (existing.importJobId === null || existing.error !== null) {
+      throw new Error(`用友同步运行 #${existing.id} 成功状态与观察证据不一致，需人工核对`);
+    }
     const existingScope = scopeObject(existing.requestScope);
     return {
       runId: existing.id,
@@ -473,17 +504,19 @@ export async function syncYonyouContract(
       data = await client.callContract(contract, request);
     } catch (error) {
       if (error instanceof YonyouApiError && error.needsConsoleGrant) {
-        // 等授权是正常中间态，不是故障：记成功但不推进 checkpoint
-        await db.update(integrationRuns).set({
+        // 技术运行正常结束，但业务仍等待授权；不创建观察 job 或推进 checkpoint。
+        const [claimed]: { id: number }[] = await db.update(integrationRuns).set({
           status: "succeeded",
           sourceRows: 0,
           stagedRows: 0,
           error: `待控制台授权：${error.code}`,
-          finishedAt: new Date(),
+          finishedAt: new Date(Math.max(Date.now(), attempt.startedAt.getTime())),
         }).where(and(
           eq(integrationRuns.id, attempt.id),
+          eq(integrationRuns.status, "running"),
           eq(integrationRuns.startedAt, attempt.startedAt),
-        ));
+        )).returning({ id: integrationRuns.id });
+        if (!claimed) throw new Error("用友同步运行租约已被其他重试接管");
         return {
           runId: attempt.id,
           importJobId: null,
@@ -531,7 +564,7 @@ export async function syncYonyouContract(
       status: "pending",
     }));
 
-    const finishedAt = new Date();
+    const finishedAt = new Date(Math.max(Date.now(), attempt.startedAt.getTime()));
     // 事务闭包内产生的 jobId 要带出来；用函数内局部变量，切忌模块级共享（并发会串号）
     let stagedJobId: number | null = null;
     let schemaDrift = false;
@@ -542,9 +575,10 @@ export async function syncYonyouContract(
         .select({ id: integrationRuns.id })
         .from(integrationRuns)
         .where(and(
-          eq(integrationRuns.connector, CONNECTOR),
+          inArray(integrationRuns.connector, [CONNECTOR, "yonyou"]),
           eq(integrationRuns.stream, stream),
           eq(integrationRuns.status, "succeeded"),
+          isNotNull(integrationRuns.importJobId),
           gt(integrationRuns.id, attempt.id),
         ))
         .orderBy(desc(integrationRuns.id))
@@ -563,6 +597,7 @@ export async function syncYonyouContract(
           eq(integrationRuns.status, "succeeded"),
           isNotNull(integrationRuns.importJobId),
           lt(integrationRuns.id, attempt.id),
+          isNull(integrationRuns.error),
           sql`coalesce(${integrationRuns.requestScope} ->> 'schemaVersion', '') = ${SCHEMA_VERSION}`,
           sql`coalesce(${integrationRuns.requestScope} ->> 'shapeFingerprint', '') <> ''`,
           sql`coalesce(${integrationRuns.requestScope} ->> 'releaseBlocked', 'false') <> 'true'`,

@@ -1,19 +1,31 @@
 "use client";
 
 /** NPD 1.x 项目跟踪（D19 激活）：69 节点标准模板实例化 → 计划推算 → 任务推进 */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import styles from "./npd-projects.module.css";
 import {
-  Alert, App, Button, Card, Col, DatePicker, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Progress, Row, Select, Space, Table, Tag, Typography,
+  Alert, App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Modal, Popconfirm, Progress, Row, Select, Space, Table, Tag, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { PlusOutlined } from "@ant-design/icons";
+import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import DecisionVisual from "@/components/DecisionVisual";
 import ProductExternalDecisionEvidenceCard from "@/components/ProductExternalDecisionEvidenceCard";
-import { fetchJson, postJson } from "@/components/fetchJson";
+import { patchJson, postJson } from "@/components/fetchJson";
+import { hasAnyRole, useMe } from "@/components/useMe";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import DocumentDrawer from "@/components/DocumentDrawer";
+import ListToolbar from "@/components/ListToolbar";
+import SearchInput from "@/components/SearchInput";
+import { formatQty } from "@/components/format";
+import { clearNpdFirstOrderRequest, loadNpdFirstOrderRequest, prepareNpdFirstOrderRequest, submitNpdFirstOrderRequest, type NpdFirstOrderRequest } from "@/components/npd-first-order-request";
+import { useListState } from "@/components/useListState";
+import { documentHref, DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
 import { buildLaunchExternalEvidenceBriefs } from "@/components/launch-external-evidence";
 import type { ProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
-import { ACTION } from "@/components/dictionary";
+import { ACTION, DOC_STATUS } from "@/components/dictionary";
 import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
 
 interface ProjectRow {
@@ -23,6 +35,7 @@ interface ProjectRow {
   brand: string | null;
   startDate: string;
   status: string;
+  version: number;
   remark: string | null;
   taskTotal: number;
   taskDone: number;
@@ -117,168 +130,65 @@ function LaunchExternalEvidence({ observations }: { observations: readonly Jiand
   );
 }
 
-async function patchJson<T>(url: string, body: unknown): Promise<T> {
-  const res = await fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const data = (await res.json()) as T & { error?: string };
-  if (!res.ok) throw new Error(data.error ?? `请求失败（${res.status}）`);
-  return data;
+interface ProjectDetail {
+  project: Omit<ProjectRow, "taskTotal" | "taskDone" | "planEnd" | "overdueTasks">;
+  tasks: TaskRow[];
+  firstOrders: { id: number; docNo: string; status: string; skuCode: string; baseUom: string; qty: string; createdAt: string }[];
+}
+interface EvidenceResponse {
+  supportingObservations: JiandaoyunSupportingObservation[];
+  externalDecisionEvidence: ProductExternalDecisionEvidenceBrief;
 }
 
 export default function NpdProjectsClient() {
   const { message } = App.useApp();
-  const [rows, setRows] = useState<ProjectRow[]>([]);
-  const [supportingObservations, setSupportingObservations] = useState<JiandaoyunSupportingObservation[]>([]);
-  const [externalDecisionEvidence, setExternalDecisionEvidence] = useState<ProductExternalDecisionEvidenceBrief | null>(null);
-  const [loading, setLoading] = useState(false);
+  const me = useMe();
+  const canWrite = hasAnyRole(me, "ops", "pmc");
+  const selection = useDocumentTarget();
+  const listRead = useDocumentRead<{ projects: ProjectRow[] }>("/api/npd/projects?view=projects");
+  const evidenceRead = useDocumentRead<EvidenceResponse>("/api/npd/projects?view=evidence");
+  const listState = useListState({ key: "npd-projects", defaults: { q: "", status: "", sortBy: "", sortOrder: "" },
+    transientParams: DOCUMENT_TRANSIENT_PARAMS, defaultPageSize: 20 });
+  const { q, status } = listState.filters;
+  const [searchText, setSearchText] = useState(q);
+  useEffect(() => setSearchText(q), [q]);
+  const allRows = listRead.data?.projects ?? [];
+  const rows = allRows.filter(row => (!status || row.status === status)
+    && (!q || [row.name, row.skuCode, row.brand].some(value => value?.toLocaleLowerCase().includes(q.toLocaleLowerCase()))));
+  const loading = listRead.phase === "loading";
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const creatingRef = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [form] = Form.useForm<{ name: string; skuCode?: string; brand?: string; startDate: Dayjs; remark?: string }>();
-
-  const [detail, setDetail] = useState<{ project: ProjectRow; tasks: TaskRow[] } | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [stageFilter, setStageFilter] = useState<string | null>(null);
-  /* E6-P4：以正规表单弹窗取代 window.prompt（原生对话框无校验样式/无单位提示/与全站风格断裂） */
-  const [firstOrderOpen, setFirstOrderOpen] = useState(false);
-  const [firstOrderQty, setFirstOrderQty] = useState<number | null>(null);
-  const [firstOrdering, setFirstOrdering] = useState(false);
-
-  const submitFirstOrder = async () => {
-    if (!detail?.project.skuCode || firstOrderQty == null || firstOrderQty <= 0) {
-      message.error("请填写大于 0 的数量");
-      return;
-    }
-    setFirstOrdering(true);
-    try {
-      const r = await postJson<{ docNo: string }>("/api/npd/projects", {
-        intent: "first_order",
-        projectId: detail.project.id,
-        qty: String(firstOrderQty),
-      });
-      message.success(`首单备货草稿已生成：${r.docNo}——请到备货申请页提交审批`);
-      setFirstOrderOpen(false);
-      setFirstOrderQty(null);
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setFirstOrdering(false);
-    }
-  };
-  const [skuDraft, setSkuDraft] = useState("");
-  const [savingSku, setSavingSku] = useState(false);
-  const [rescheduling, setRescheduling] = useState(false);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const d = await fetchJson<{
-        projects: ProjectRow[];
-        supportingObservations: JiandaoyunSupportingObservation[];
-        externalDecisionEvidence: ProductExternalDecisionEvidenceBrief;
-      }>("/api/npd/projects");
-      setRows(d.projects);
-      setSupportingObservations(d.supportingObservations ?? []);
-      setExternalDecisionEvidence(d.externalDecisionEvidence ?? null);
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [message]);
-  useEffect(() => { void load(); }, [load]);
-
-  const openDetail = async (id: number) => {
-    setSkuDraft("");
-    setDetailLoading(true);
-    try {
-      setDetail(await fetchJson<{ project: ProjectRow; tasks: TaskRow[] }>(`/api/npd/projects?id=${id}`));
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setDetailLoading(false);
-    }
-  };
-
+  const openDetail = (id: number) => selection.setId(id);
+  const orderFor = (field: string) => listState.filters.sortBy !== field ? null
+    : listState.filters.sortOrder === "asc" ? "ascend" as const : listState.filters.sortOrder === "desc" ? "descend" as const : null;
   const handleCreate = async () => {
-    const v = await form.validateFields();
-    setCreating(true);
+    if (!canWrite || creatingRef.current) return;
+    creatingRef.current = true;
     try {
+      const v = await form.validateFields();
+      setCreating(true);
       const res = await postJson<{ id: number; taskCount: number; planEnd: string }>("/api/npd/projects", {
-        name: v.name,
-        skuCode: v.skuCode || undefined,
-        brand: v.brand || undefined,
-        startDate: v.startDate.format("YYYY-MM-DD"),
-        remark: v.remark || undefined,
+        name: v.name, skuCode: v.skuCode || undefined, brand: v.brand || undefined,
+        startDate: v.startDate.format("YYYY-MM-DD"), remark: v.remark || undefined,
       });
+      if (!mounted.current) return;
       message.success(`项目已创建：${res.taskCount} 个节点任务，计划完成 ${res.planEnd}`);
-      setCreateOpen(false);
-      form.resetFields();
-      void load();
-      void openDetail(res.id);
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const setTask = async (taskId: number, status: string) => {
-    try {
-      await patchJson("/api/npd/tasks", { taskId, status });
-      if (detail) void openDetail(detail.project.id);
-      void load();
-    } catch (e) {
-      message.error((e as Error).message);
-    }
-  };
-
-  const saveSku = async (projectId: number) => {
-    const code = skuDraft.trim();
-    if (!code) { message.error("请填写目标 SKU 编码"); return; }
-    setSavingSku(true);
-    try {
-      await patchJson("/api/npd/projects", { intent: "set_sku", projectId, skuCode: code });
-      message.success("目标 SKU 已补录");
-      setSkuDraft("");
-      void openDetail(projectId);
-      void load();
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setSavingSku(false);
-    }
-  };
-
-  const reschedule = async (projectId: number) => {
-    setRescheduling(true);
-    try {
-      const r = await patchJson<{ changed: number; planEnd: string }>("/api/npd/projects", { intent: "reschedule", projectId });
-      message.success(`计划已重排：${r.changed} 个任务顺延，计划完成 ${r.planEnd}`);
-      void openDetail(projectId);
-      void load();
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setRescheduling(false);
-    }
-  };
-
-  const setProject = async (projectId: number, status: string) => {
-    try {
-      await patchJson("/api/npd/projects", { projectId, status });
-      message.success("项目状态已更新");
-      setDetail(null);
-      void load();
-    } catch (e) {
-      message.error((e as Error).message);
-    }
+      setCreateOpen(false); form.resetFields(); listRead.retry(); openDetail(res.id);
+    } catch (error) {
+      if (mounted.current && !(typeof error === "object" && error !== null && "errorFields" in error)) message.error((error as Error).message);
+    } finally { creatingRef.current = false; if (mounted.current) setCreating(false); }
   };
 
   const columns: ColumnsType<ProjectRow> = [
-    { title: "项目", dataIndex: "name", width: 220, render: (v: string, r) => <a onClick={() => void openDetail(r.id)}>{v}</a> },
+    { title: "项目", dataIndex: "name", width: 220, sortOrder: orderFor("name"), sorter: (a, b) => a.name.localeCompare(b.name, "zh-CN"), render: (v: string, r) => <Link href={documentHref("npd", r.id)!} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); openDetail(r.id); } }}>{v}</Link> },
     { title: "目标 SKU", dataIndex: "skuCode", width: 130, render: (v: string | null) => v ?? "—" },
     { title: "品牌", dataIndex: "brand", width: 110, render: (v: string | null) => v ?? "—" },
-    { title: "启动日", dataIndex: "startDate", width: 110 },
-    { title: "计划完成", dataIndex: "planEnd", width: 110, render: (v: string | null) => v ?? "—" },
+    { title: "启动日", dataIndex: "startDate", width: 110, sortOrder: orderFor("startDate"), sorter: (a, b) => a.startDate.localeCompare(b.startDate) },
+    { title: "计划完成", dataIndex: "planEnd", width: 110, sortOrder: orderFor("planEnd"), sorter: (a, b) => (a.planEnd ?? "").localeCompare(b.planEnd ?? ""), render: (v: string | null) => v ?? "—" },
     {
       title: "进度",
       width: 170,
@@ -303,42 +213,6 @@ export default function NpdProjectsClient() {
     },
   ];
 
-  const taskCols: ColumnsType<TaskRow> = [
-    { title: "#", dataIndex: "seq", width: 45 },
-    { title: "编号", dataIndex: "nodeNo", width: 65, render: (v: string | null) => (v && v.length <= 10 ? v : "—") },
-    { title: "节点", dataIndex: "name", ellipsis: true, width: 230 },
-    { title: "阶段", dataIndex: "stage", width: 95, render: (v: string | null) => (v ? <Tag>{v}</Tag> : "—") },
-    { title: "部门/岗位", dataIndex: "dept", width: 150, ellipsis: true, render: (v: string | null) => v ?? "—" },
-    { title: "天数", dataIndex: "days", width: 55, align: "right" },
-    {
-      title: "计划",
-      width: 210,
-      render: (_, r) => (
-        <Space size={4}>
-          <span>{r.planStart ? `${r.planStart} ~ ${r.planEnd}` : "—"}</span>
-          {r.overdue ? <Tag color="red">逾期</Tag> : null}
-        </Space>
-      ),
-    },
-    {
-      title: "状态",
-      dataIndex: "status",
-      width: 210,
-      render: (v: string, r) => (
-        <Space size={4}>
-          <Select
-            size="small"
-            value={v}
-            style={{ width: 92 }}
-            onChange={(nv) => void setTask(r.id, nv)}
-            options={Object.entries(TASK_STATUS).map(([val, m]) => ({ value: val, label: m.label }))}
-          />
-          {r.doneAt ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.doneAt}</Typography.Text> : null}
-        </Space>
-      ),
-    },
-  ];
-
   const projectSummary = useMemo(() => {
     const active = rows.filter((row) => row.status === "active");
     const taskTotal = active.reduce((sum, row) => sum + row.taskTotal, 0);
@@ -355,20 +229,23 @@ export default function NpdProjectsClient() {
 
   return (
     <div>
-      <Typography.Title level={4} style={{ marginTop: 0 }}>NPD 项目跟踪</Typography.Title>
       <Alert
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="D19 · 1.x：新建项目按「各节点核心说明」69 节点标准实例化，计划沿上一节点链推算（自然日）。节点标准/角色分配见「NPD 节点参考」页。"
+        message="D19 · 1.x：新建项目按「各节点核心说明」节点标准实例化，计划沿上一节点链推算（自然日）。节点标准/角色分配见本页「节点模板」页签。"
       />
-      <Space style={{ marginBottom: 12 }}>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-          新建 NPD 项目
-        </Button>
-      </Space>
-      <LaunchExternalEvidence observations={supportingObservations} />
-      <ProductExternalDecisionEvidenceCard evidence={externalDecisionEvidence} />
+      <ListToolbar state={listState}
+        extra={<><SearchInput aria-label="搜索项目 / SKU / 品牌" placeholder="搜索项目 / SKU / 品牌" value={searchText}
+          onChange={event => setSearchText(event.target.value)} onSearch={value => listState.setFilter({ q: value.trim() })}
+          allowClear style={{ width: 280, maxWidth: "100%" }} />
+          <Select aria-label="项目状态" value={status} onChange={value => listState.setFilter({ status: value })}
+          style={{ width: 130 }} options={[{ value: "", label: "全部状态" }, ...Object.entries(STATUS_TAG).map(([value, meta]) => ({ value, label: meta.label }))]} /></>}
+        primaryActions={<>
+          <Button icon={<ReloadOutlined />} onClick={listRead.retry}>刷新项目</Button>
+          {canWrite ? <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建 NPD 项目</Button> : null}
+        </>}
+      />
       <DecisionVisual
         title="新品项目组合进度"
         question="哪些在研项目已落后计划，哪些节点需要本周优先解除阻塞？"
@@ -376,31 +253,36 @@ export default function NpdProjectsClient() {
         grain="项目 / 节点任务"
         unit="项目、任务、%"
         source={{ tier: "ledger", source: "NPD 项目与实例化节点任务" }}
-        coverage={{
+        coverage={listRead.data ? {
           covered: projectSummary.active.filter((row) => row.taskTotal > 0).length,
           total: projectSummary.active.length,
-          label: "进行中项目含节点计划",
-        }}
-        summary={`进行中 ${projectSummary.active.length} 个项目，已完成 ${projectSummary.taskDone}/${projectSummary.taskTotal} 个节点${projectSummary.progress == null ? "" : `，组合进度 ${projectSummary.progress}%`}；逾期节点 ${projectSummary.overdueTasks} 个。`}
+          label: "当前筛选进行中项目含节点计划",
+        } : undefined}
+        summary={listRead.data ? `当前筛选：进行中 ${projectSummary.active.length} 个项目，已完成 ${projectSummary.taskDone}/${projectSummary.taskTotal} 个节点${projectSummary.progress == null ? "" : `，组合进度 ${projectSummary.progress}%`}；逾期节点 ${projectSummary.overdueTasks} 个。` : "项目事实尚不可用，不推断项目或节点为零。"}
         caveat="当前只有项目计划与节点完成事实；缺少上市后销量、毛利、退货和复盘标签，不能据此评价新品商业成功率。"
-        state={loading ? "loading" : rows.length === 0 ? "empty" : projectSummary.taskTotal === 0 ? "insufficient" : "ready"}
-        stateDetail={rows.length === 0
-          ? "尚无 NPD 项目；新建项目后将自动实例化节点计划。"
+        state={listRead.error ? "error" : loading ? "loading" : rows.length === 0 ? "empty" : projectSummary.taskTotal === 0 ? "insufficient" : "ready"}
+        stateDetail={listRead.error ? <Space direction="vertical"><span>{listRead.error}</span><Button onClick={listRead.retry}>重试项目</Button></Space> : rows.length === 0
+          ? q || status ? "当前筛选没有匹配项目，请调整搜索或状态。" : "尚无 NPD 项目；新建项目后将自动实例化节点计划。"
           : projectSummary.taskTotal === 0
             ? "现有进行中项目尚未实例化节点计划，无法形成组合进度。"
             : undefined}
         height={Math.max(220, Math.min(420, projectSummary.active.length * 58 + 30))}
         fitContent
-        dataView={
+        dataView={listRead.data ?
           <Table<ProjectRow>
             rowKey="id"
-            size="small"
+            size={listState.tableSize}
             columns={columns}
             dataSource={rows}
             loading={loading}
-            pagination={false}
+            pagination={{ current: listState.page, pageSize: listState.pageSize, total: rows.length, onChange: listState.setPage }}
+            onChange={(_page, _filters, sorter, extra) => {
+              if (extra.action !== "sort") return;
+              const selected = Array.isArray(sorter) ? sorter[0] : sorter;
+              listState.setFilter({ sortBy: selected.order ? String(selected.field) : "", sortOrder: selected.order === "ascend" ? "asc" : selected.order === "descend" ? "desc" : "" });
+            }}
             scroll={{ x: "max-content" }}
-          />
+          /> : undefined
         }
       >
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
@@ -436,9 +318,19 @@ export default function NpdProjectsClient() {
         </Space>
       </DecisionVisual>
 
+      {evidenceRead.error ? <Alert type="warning" showIcon message="外部佐证暂不可用；不影响项目事实"
+        description={evidenceRead.error} action={<Button onClick={evidenceRead.retry}>重试佐证</Button>} style={{ marginTop: 12 }} />
+        : evidenceRead.phase === "loading" ? <div role="status" style={{ marginTop: 12 }}>外部佐证正在独立加载，项目可继续查看。</div>
+        : evidenceRead.data ? <div style={{ marginTop: 12 }}>
+          <LaunchExternalEvidence observations={evidenceRead.data.supportingObservations} />
+          <ProductExternalDecisionEvidenceCard evidence={evidenceRead.data.externalDecisionEvidence} />
+        </div> : null}
+      {selection.present ? <NpdProjectDetail key={`${me?.id ?? "anonymous"}:${selection.id ?? "invalid"}`} id={selection.id} linkError={selection.error}
+        actorId={me?.id ?? null} canWrite={canWrite} onClose={() => selection.setId(null)} onChanged={listRead.retry} /> : null}
+
       <Modal
-        title="新建 NPD 项目（按 69 节点标准实例化）"
-        open={createOpen}
+        title="新建 NPD 项目（按当前节点模板实例化）"
+        open={createOpen && canWrite}
         onOk={() => void handleCreate()}
         onCancel={() => setCreateOpen(false)}
         confirmLoading={creating}
@@ -449,7 +341,7 @@ export default function NpdProjectsClient() {
           <Form.Item name="name" label="项目名称" rules={[{ required: true, min: 2, message: "至少 2 字" }]}>
             <Input placeholder="如：EXPRESSIONS 秋季新品-胶原蛋白饮" maxLength={120} />
           </Form.Item>
-          <Space style={{ display: "flex" }} align="start">
+          <Space style={{ display: "flex" }} align="start" wrap>
             <Form.Item name="skuCode" label="目标 SKU（可后补）">
               <Input placeholder="如 E120-000" maxLength={60} />
             </Form.Item>
@@ -466,49 +358,201 @@ export default function NpdProjectsClient() {
         </Form>
       </Modal>
 
-      <Drawer
-        title={detail ? `${detail.project.name}（${detail.tasks.filter((t) => t.status === "done" || t.status === "skipped").length}/${detail.tasks.length}）` : ""}
-        open={detail != null}
-        onClose={() => setDetail(null)}
+    </div>
+  );
+}
+
+/** Remounting by identity isolates drafts, confirmations and mutation completions from another project. */
+function NpdProjectDetail({ id, linkError, actorId, canWrite, onClose, onChanged }: {
+  id: number | null; actorId: number | null; linkError: string | null; canWrite: boolean; onClose: () => void; onChanged: () => void;
+}) {
+  const { message } = App.useApp();
+  const read = useDocumentRead<ProjectDetail>(id == null ? null : `/api/npd/projects?id=${id}`);
+  const detail = read.data;
+  const [stageFilter, setStageFilter] = useState<string | null>(null);
+  const [firstOrderOpen, setFirstOrderOpen] = useState(false);
+  const [firstOrderQty, setFirstOrderQty] = useState<string | null>(null);
+  const [skuDraft, setSkuDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [generated, setGenerated] = useState<{ id: number; docNo: string } | null>(null);
+  const [pendingRequest, setPendingRequest] = useState<NpdFirstOrderRequest | null>(null);
+  const [storageError, setStorageError] = useState<string | null>(null);
+  const inFlight = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => {
+    if (actorId == null || id == null) return;
+    const restore = () => {
+      try { setPendingRequest(loadNpdFirstOrderRequest(localStorage, actorId, id)); setStorageError(null); }
+      catch (error) { setStorageError((error as Error).message); }
+    };
+    restore();
+    window.addEventListener("storage", restore);
+    return () => window.removeEventListener("storage", restore);
+  }, [actorId, id]);
+  useEffect(() => { if (read.phase !== "success") setFirstOrderOpen(false); }, [read.phase]);
+  const run = async (action: () => Promise<void>) => {
+    if (!canWrite || !detail || inFlight.current) return;
+    inFlight.current = true; setBusy(true); setActionError(null);
+    try { await action(); }
+    catch (error) { if (mounted.current) setActionError((error as Error).message); }
+    finally { inFlight.current = false; if (mounted.current) setBusy(false); }
+  };
+  const changed = () => { onChanged(); if (mounted.current) read.retry(); };
+  const setTask = (taskId: number, status: string) => run(async () => {
+    await patchJson("/api/npd/tasks", { taskId, status, version: detail!.project.version });
+    if (mounted.current) message.success("节点状态已更新");
+    changed();
+  });
+  const saveSku = () => run(async () => {
+    const code = skuDraft.trim();
+    if (!code) throw Error("请填写目标 SKU 编码");
+    await patchJson("/api/npd/projects", { intent: "set_sku", projectId: id, skuCode: code, version: detail!.project.version });
+    if (mounted.current) { message.success("目标 SKU 已补录"); setSkuDraft(""); } changed();
+  });
+  const reschedule = () => run(async () => {
+    const result = await patchJson<{ changed: number; planEnd: string }>("/api/npd/projects", { intent: "reschedule", projectId: id, version: detail!.project.version });
+    if (mounted.current) message.success(`计划已重排：${result.changed} 个任务顺延，计划完成 ${result.planEnd}`);
+    changed();
+  });
+  const setProject = (status: string) => run(async () => {
+    await patchJson("/api/npd/projects", { projectId: id, status, version: detail!.project.version });
+    if (mounted.current) message.success("项目状态已更新");
+    changed();
+  });
+  const submitFirstOrder = () => run(async () => {
+    if (actorId == null || id == null) return;
+    const request = pendingRequest ?? prepareNpdFirstOrderRequest(localStorage, actorId, id, detail!.project.version, firstOrderQty ?? "");
+    setPendingRequest(request);
+    const result = await submitNpdFirstOrderRequest(request);
+    // A late response may clean up its own recovery record, never a newer request or another actor's record.
+    try {
+      const remaining = clearNpdFirstOrderRequest(localStorage, actorId, id, request.requestKey);
+      if (mounted.current) { setPendingRequest(remaining); setStorageError(null); }
+    }
+    catch { if (mounted.current) setStorageError("草稿已确认，但本机重试记录未清除；再次重试仍会返回原草稿"); }
+    if (mounted.current) { setGenerated(result); setFirstOrderOpen(false); setFirstOrderQty(null); message.success(`${result.replayed ? "已找回原" : "已生成"}首单草稿：${result.docNo}`); }
+    changed();
+  });
+  const discardRetry = () => {
+    if (actorId == null || id == null || inFlight.current) return;
+    try { setPendingRequest(clearNpdFirstOrderRequest(localStorage, actorId, id, pendingRequest?.requestKey)); setStorageError(null); setActionError(null); }
+    catch (error) { setStorageError((error as Error).message); }
+  };
+  const active = detail?.project.status === "active";
+  const taskCols: ColumnsType<TaskRow> = [
+    { title: "#", dataIndex: "seq", width: 45 },
+    { title: "编号", dataIndex: "nodeNo", width: 65, render: (v: string | null) => (v && v.length <= 10 ? v : "—") },
+    { title: "节点", dataIndex: "name", ellipsis: true, width: 230 },
+    { title: "阶段", dataIndex: "stage", width: 95, render: (v: string | null) => (v ? <Tag>{v}</Tag> : "—") },
+    { title: "部门/岗位", dataIndex: "dept", width: 150, ellipsis: true, render: (v: string | null) => v ?? "—" },
+    { title: "天数", dataIndex: "days", width: 55, align: "right" },
+    {
+      title: "计划",
+      width: 210,
+      render: (_, r) => (
+        <Space size={4}>
+          <span>{r.planStart ? `${r.planStart} ~ ${r.planEnd}` : "—"}</span>
+          {r.overdue ? <Tag color="red">逾期</Tag> : null}
+        </Space>
+      ),
+    },
+    {
+      title: "状态",
+      dataIndex: "status",
+      width: 210,
+      render: (v: string, r) => (
+        <Space size={4}>
+          <Select
+            size="small"
+            value={v}
+            style={{ width: 92 }}
+            disabled={!canWrite || busy || !active}
+            aria-label={`节点 ${r.name} 状态`}
+            onChange={(nv) => void setTask(r.id, nv)}
+            options={Object.entries(TASK_STATUS).map(([val, m]) => ({ value: val, label: m.label }))}
+          />
+          {r.doneAt ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.doneAt}</Typography.Text> : null}
+        </Space>
+      ),
+    },
+  ];
+
+
+  return <>
+      <DocumentDrawer
+        title={detail ? `${detail.project.name}（${detail.tasks.filter((t) => t.status === "done" || t.status === "skipped").length}/${detail.tasks.length}）` : id == null ? "项目链接无效" : `项目 #${id}`}
+        open
+        onClose={onClose}
+        loading={read.phase === "loading"}
+        readError={linkError ?? read.error}
+        onRetry={id == null ? undefined : read.retry}
         width="min(1080px, 100vw)"
         extra={
-          detail && detail.project.status === "active" ? (
+          detail && canWrite && detail.project.status === "active" ? (
             <Space>
-              <Button loading={rescheduling} onClick={() => void reschedule(detail.project.id)}>
+              <Button loading={busy} onClick={() => void reschedule()}>
                 重排计划
               </Button>
               {detail.project.skuCode ? (
-                <Button onClick={() => { setFirstOrderQty(null); setFirstOrderOpen(true); }}>
+                <Button disabled={busy || pendingRequest != null || storageError != null} onClick={() => { setFirstOrderQty(null); setFirstOrderOpen(true); }}>
                   {ACTION.createBhDraft}
                 </Button>
               ) : null}
-              <Popconfirm title="确认整项目完成？" onConfirm={() => void setProject(detail.project.id, "done")}>
-                <Button type="primary">标记完成</Button>
+              <Popconfirm title="确认整项目完成？" disabled={busy} onConfirm={() => void setProject("done")}>
+                <Button type="primary" disabled={busy}>标记完成</Button>
               </Popconfirm>
-              <Popconfirm title="确认取消项目？（任务保留，仅状态标记）" onConfirm={() => void setProject(detail.project.id, "cancelled")}>
-                <Button danger>取消项目</Button>
+              <Popconfirm title="确认取消项目？（任务保留，仅状态标记）" disabled={busy} onConfirm={() => void setProject("cancelled")}>
+                <Button danger disabled={busy}>取消项目</Button>
               </Popconfirm>
             </Space>
-          ) : null
+          ) : detail && canWrite ? <Popconfirm title="恢复项目为进行中？" description="保留节点历史与已有首单；不会重新生成任务或订单。" disabled={busy} onConfirm={() => void setProject("active")}>
+            <Button disabled={busy}>恢复项目</Button>
+          </Popconfirm> : null
         }
       >
-        {detail && detail.project.status === "active" && !detail.project.skuCode ? (
+        {!canWrite && detail ? <Alert type="info" showIcon message="只读查看；节点推进与首单操作由运营或计划角色处理。" style={{ marginBottom: 12 }} /> : null}
+        {detail && !active ? <Alert type="info" showIcon message={`项目${STATUS_TAG[detail.project.status]?.label ?? "已关闭"}；节点、排期和新首单暂不可修改。恢复项目后可继续。`} style={{ marginBottom: 12 }} /> : null}
+        {canWrite && (pendingRequest || storageError) ? <Alert type="warning" showIcon
+          message={storageError ?? `上次首单结果待核对：${formatQty(pendingRequest!.qty)}（基础单位），项目版本 ${pendingRequest!.version}`}
+          description={<Space direction="vertical" size={8}>
+            <span>刷新或网络中断后保留原请求。重试只核对/完成同一次请求，不会重复生成；不要改数量后重复提交。</span>
+            <Space wrap>
+              {pendingRequest ? <Button disabled={busy || !detail} onClick={() => void submitFirstOrder()}>重试原请求</Button> : null}
+              <Popconfirm title="已核对原草稿，放弃本次重试？" description="仅清除本机记录，不撤销可能已生成的草稿；发起新需求可能另建一单。" disabled={busy}
+                onConfirm={discardRetry}><Button disabled={busy}>清除本机重试记录</Button></Popconfirm>
+            </Space>
+          </Space>} style={{ marginBottom: 12 }} /> : null}
+        {generated ? <Alert type="success" showIcon message={`首单草稿已生成：${generated.docNo}`}
+          description={<Link href={documentHref("bh", generated.id)!}>打开备货草稿并核对 / 提交审批</Link>} style={{ marginBottom: 12 }} /> : null}
+        {actionError ? <Alert type="error" showIcon message="操作未完成或结果未确认" description={actionError}
+          action={<Button onClick={read.retry}>核对项目</Button>} style={{ marginBottom: 12 }} /> : null}
+        {detail ? <section className={styles.firstOrders} aria-label="关联首单记录">
+          <div className={styles.taskHeading}><strong>关联首单（最近20条可见记录）</strong><Typography.Text type="secondary">生成不等于审批或到货</Typography.Text></div>
+          {(detail.firstOrders ?? []).length ? detail.firstOrders.map(order => <div key={order.id} className={styles.taskMeta}>
+            <Link href={documentHref("bh", order.id)!}>{order.docNo}</Link>
+            <span>{order.skuCode} · {formatQty(order.qty)} {order.baseUom}（生成数量）</span>
+            <Tag>{DOC_STATUS[order.status] ?? order.status}</Tag>
+          </div>) : <Typography.Text type="secondary">暂无可见的结构化首单记录；旧版本草稿不会被猜测回填，请在备货申请核对。</Typography.Text>}
+        </section> : null}
+        {detail && canWrite && detail.project.status === "active" && !detail.project.skuCode ? (
           <Alert
             type="warning"
             showIcon
             style={{ marginBottom: 8 }}
             message="目标 SKU 尚未设置——补录后方可生成新品首单 BH"
             description={
-              <Space.Compact style={{ marginTop: 4 }}>
+              <Space.Compact style={{ marginTop: 4, width: "100%" }}>
                 <Input
                   placeholder="目标 SKU 编码或别名，如 N024-000"
                   value={skuDraft}
                   maxLength={60}
-                  style={{ width: 260 }}
+                  style={{ width: "100%", minWidth: 0 }}
                   onChange={(e) => setSkuDraft(e.target.value)}
-                  onPressEnter={() => void saveSku(detail.project.id)}
+                  onPressEnter={() => void saveSku()}
                 />
-                <Button type="primary" loading={savingSku} onClick={() => void saveSku(detail.project.id)}>
+                <Button type="primary" loading={busy} onClick={() => void saveSku()}>
                   补录目标 SKU
                 </Button>
               </Space.Compact>
@@ -525,42 +569,62 @@ export default function NpdProjectsClient() {
             options={[...new Set((detail?.tasks ?? []).map((t) => t.stage).filter(Boolean))].map((st) => ({ value: st as string, label: st as string }))}
           />
         </Space>
-        <Table<TaskRow>
+        <div className={styles.desktopTasks}><Table<TaskRow>
           rowKey="id"
           size="small"
           columns={taskCols}
           dataSource={(detail?.tasks ?? []).filter((t) => !stageFilter || t.stage === stageFilter)}
-          loading={detailLoading}
+          loading={read.phase === "loading"}
           pagination={false}
           scroll={{ x: "max-content" }}
           rowClassName={(r) => (r.overdue ? "npd-overdue-row" : "")}
-        />
+        /></div>
+        <div className={styles.mobileTasks} aria-label="项目节点紧凑列表">
+          {(detail?.tasks ?? []).filter(task => !stageFilter || task.stage === stageFilter).map(task => <section key={task.id} className={styles.task}>
+            <div className={styles.taskHeading}><strong>{task.seq}. {task.name}</strong>{task.overdue ? <Tag color="red">逾期</Tag> : null}</div>
+            <Typography.Text type="secondary">{[task.nodeNo, task.stage, task.dept].filter(Boolean).join(" · ") || "阶段/责任部门未提供"}</Typography.Text>
+            <div className={styles.taskMeta}><span>{task.planStart ?? "未排期"} → {task.planEnd ?? "未排期"}</span><span>{task.days} 天</span></div>
+            <div className={styles.taskMeta}>
+              <Select size="small" aria-label={`节点 ${task.name} 状态`} value={task.status} disabled={!canWrite || busy || !active}
+                style={{ width: 110 }} onChange={value => void setTask(task.id, value)}
+                options={Object.entries(TASK_STATUS).map(([value, meta]) => ({ value, label: meta.label }))} />
+              {task.doneAt ? <Typography.Text type="secondary">完成 {task.doneAt}</Typography.Text> : null}
+            </div>
+          </section>)}
+          {detail && !detail.tasks.some(task => !stageFilter || task.stage === stageFilter) ? <Typography.Text type="secondary">当前阶段没有节点。</Typography.Text> : null}
+        </div>
         <style dangerouslySetInnerHTML={{ __html: ".npd-overdue-row > td { background: #fff1f0; }" }} />
-      </Drawer>
+      </DocumentDrawer>
       <Modal
         title={`生成首单备货草稿 · ${detail?.project.skuCode ?? ""}`}
-        open={firstOrderOpen}
+        open={firstOrderOpen && canWrite}
         onOk={() => void submitFirstOrder()}
         onCancel={() => setFirstOrderOpen(false)}
-        confirmLoading={firstOrdering}
-        okText="生成草稿"
-        cancelText="取消"
+        closable={!busy}
+        maskClosable={!busy}
+        keyboard={!busy}
+        confirmLoading={busy}
+        okText={pendingRequest ? "重试原请求" : "生成草稿"}
+        cancelText="返回项目"
+        cancelButtonProps={{ disabled: busy }}
         width={460}
       >
+        {actionError ? <Alert type="error" showIcon message={actionError} style={{ marginBottom: 12 }} /> : null}
         <Alert type="info" showIcon style={{ marginBottom: 12 }} message={ACTION.createBhDraftHint} />
         <Form layout="vertical">
           <Form.Item label={`首单数量（${detail?.project.skuCode ?? ""}，基础单位）`} required>
             <InputNumber
               autoFocus
-              min={1}
+              stringMode
+              min="0.0001"
               style={{ width: "100%" }}
               value={firstOrderQty}
-              onChange={setFirstOrderQty}
+              disabled={busy || pendingRequest != null}
+              onChange={value => setFirstOrderQty(value)}
               placeholder="请输入数量"
             />
           </Form.Item>
         </Form>
       </Modal>
-    </div>
-  );
+  </>;
 }

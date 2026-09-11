@@ -5,7 +5,7 @@ import type { SessionUser } from "@/server/core/dto";
 type AnyTx = any;
 import { getDbAsync, schema } from "@/db";
 import { ApiError } from "./common";
-import { SKU_TYPES, skuCreateSchema, skuSchema } from "./schemas";
+import { SKU_TYPES, skuCreateSchema, skuUpdateSchema } from "./schemas";
 import {
   assessSkuStandardName,
   COMMERCIAL_ROLES,
@@ -16,6 +16,7 @@ import {
   isGovernedSkuCode,
 } from "@/server/rules/sku-code";
 import { allocateGovernedSkuCode } from "./sku-code-allocation";
+import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 
 type SkuType = (typeof SKU_TYPES)[number];
 
@@ -38,6 +39,7 @@ export async function listSkus(
   pageSize: number,
   typeParam: string | null,
   roleParam?: string | null,
+  selectedValues?: SelectedOptionValue[],
 ) {
   const db = await getDbAsync();
   const conds = [];
@@ -62,6 +64,8 @@ export async function listSkus(
   if (types) conds.push(inArray(schema.skus.skuType, types));
   const commercialRole = parseCommercialRole(roleParam ?? null);
   if (commercialRole) conds.push(eq(schema.skus.commercialRole, commercialRole));
+  const selectedWhere = selectedOptionsPredicate(selectedValues, { id: schema.skus.id, text: [schema.skus.code, schema.skus.name] });
+  if (selectedWhere) conds.push(selectedWhere);
   const where = conds.length ? and(...conds) : undefined;
 
   const base = db
@@ -86,6 +90,7 @@ export async function listSkus(
       channel: schema.channels.name,
       shortName: schema.skus.shortName,
       commercialRole: schema.skus.commercialRole,
+      normalLeadDays: schema.skuParams.normalLeadDays,
       logisticsLeadDays: schema.skuParams.logisticsLeadDays,
       lifecycle: schema.skus.lifecycle,
       active: schema.skus.active,
@@ -97,7 +102,9 @@ export async function listSkus(
     .leftJoin(schema.skuParams, eq(schema.skus.id, schema.skuParams.skuId));
 
   const [rawRows, [{ total }]] = await Promise.all([
-    base.where(where).orderBy(schema.skus.code).limit(pageSize).offset((page - 1) * pageSize),
+    base.where(where).orderBy(schema.skus.code)
+      .limit(selectedValues === undefined ? pageSize : SELECTED_OPTIONS_LIMIT)
+      .offset(selectedValues === undefined ? (page - 1) * pageSize : 0),
     db
       .select({ total: sql<number>`count(*)::int` })
       .from(schema.skus)
@@ -196,10 +203,13 @@ export async function createSku(input: unknown, actor?: SessionUser, dbArg?: Any
         active: v.active,
       })
       .returning();
-    if (v.logisticsLeadDays !== undefined) {
+    /* 加工周期与在途周期落在同一行 sku_params，且与 /master/supply-params 是同一行
+       （审计 #12：此前主档表单只有在途，加工只能去补录页填，一行数据两张半张表单）。 */
+    if (v.normalLeadDays !== undefined || v.logisticsLeadDays !== undefined) {
       await tx.insert(schema.skuParams).values({
         skuId: created.id,
-        logisticsLeadDays: v.logisticsLeadDays ?? null,
+        ...(v.normalLeadDays !== undefined ? { normalLeadDays: v.normalLeadDays ?? null } : {}),
+        ...(v.logisticsLeadDays !== undefined ? { logisticsLeadDays: v.logisticsLeadDays ?? null } : {}),
         updatedBy: actor?.id ?? null,
       });
     }
@@ -211,6 +221,7 @@ export async function createSku(input: unknown, actor?: SessionUser, dbArg?: Any
         action: "create",
         after: {
           ...created,
+          normalLeadDays: v.normalLeadDays ?? null,
           logisticsLeadDays: v.logisticsLeadDays ?? null,
           creationMode: v.creationMode,
           ...(isHistoricalMigration
@@ -286,13 +297,14 @@ export async function setSkuCommercialRoles(
 }
 
 export async function updateSku(id: number, input: unknown, actor?: SessionUser, dbArg?: AnyTx) {
-  const v = skuSchema.parse(input);
+  const v = skuUpdateSchema.parse(input);
   const db: AnyTx = dbArg ?? (await getDbAsync());
   return db.transaction(async (tx: AnyTx) => {
-    const [existing] = await tx.select().from(schema.skus).where(eq(schema.skus.id, id));
+    // Bind retained fields and audit before-values to the serialized current master row.
+    const [existing] = await tx.select().from(schema.skus).where(eq(schema.skus.id, id)).for("update");
     if (!existing) throw new ApiError(404, "SKU 不存在");
     const [existingParams] = await tx
-      .select({ logisticsLeadDays: schema.skuParams.logisticsLeadDays })
+      .select({ normalLeadDays: schema.skuParams.normalLeadDays, logisticsLeadDays: schema.skuParams.logisticsLeadDays })
       .from(schema.skuParams)
       .where(eq(schema.skuParams.skuId, id));
     if (v.code !== undefined && v.code !== existing.code) {
@@ -313,37 +325,37 @@ export async function updateSku(id: number, input: unknown, actor?: SessionUser,
       .set({
         code: existing.code,
         name: v.name,
-        brandId: v.brandId ?? null,
-        channelId: v.channelId ?? null,
-        shortName: v.shortName ?? null,
+        brandId: v.brandId === undefined ? existing.brandId : v.brandId,
+        channelId: v.channelId === undefined ? existing.channelId : v.channelId,
+        shortName: v.shortName === undefined ? existing.shortName : v.shortName,
         commercialRole: v.commercialRole ?? existing.commercialRole,
-        lifecycle: v.lifecycle ?? "on_sale",
+        lifecycle: v.lifecycle ?? existing.lifecycle,
         spuId: v.spuId,
         skuType: v.skuType,
         baseUom: v.baseUom,
-        spec: v.spec ?? null,
-        version: v.version ?? null,
-        prodMode: v.prodMode ?? null,
-        lossCategory: v.lossCategory ?? null,
-        shelfLifeDays: v.shelfLifeDays ?? null,
-        nearExpiryDays: v.nearExpiryDays ?? null,
-        active: v.active,
+        spec: v.spec === undefined ? existing.spec : v.spec,
+        version: v.version === undefined ? existing.version : v.version,
+        prodMode: v.prodMode === undefined ? existing.prodMode : v.prodMode,
+        lossCategory: v.lossCategory === undefined ? existing.lossCategory : v.lossCategory,
+        shelfLifeDays: v.shelfLifeDays === undefined ? existing.shelfLifeDays : v.shelfLifeDays,
+        nearExpiryDays: v.nearExpiryDays === undefined ? existing.nearExpiryDays : v.nearExpiryDays,
+        active: v.active ?? existing.active,
         updatedAt: new Date(),
       })
       .where(eq(schema.skus.id, id))
       .returning();
-    if (v.logisticsLeadDays !== undefined) {
+    if (v.normalLeadDays !== undefined || v.logisticsLeadDays !== undefined) {
+      const leadSet = {
+        ...(v.normalLeadDays !== undefined ? { normalLeadDays: v.normalLeadDays ?? null } : {}),
+        ...(v.logisticsLeadDays !== undefined ? { logisticsLeadDays: v.logisticsLeadDays ?? null } : {}),
+      };
       await tx.insert(schema.skuParams).values({
         skuId: id,
-        logisticsLeadDays: v.logisticsLeadDays ?? null,
+        ...leadSet,
         updatedBy: actor?.id ?? null,
       }).onConflictDoUpdate({
         target: schema.skuParams.skuId,
-        set: {
-          logisticsLeadDays: v.logisticsLeadDays ?? null,
-          updatedBy: actor?.id ?? null,
-          updatedAt: new Date(),
-        },
+        set: { ...leadSet, updatedBy: actor?.id ?? null, updatedAt: new Date() },
       });
     }
     if (actor) {
@@ -352,8 +364,12 @@ export async function updateSku(id: number, input: unknown, actor?: SessionUser,
         entity: "sku",
         entityId: id,
         action: "update",
-        before: { ...existing, logisticsLeadDays: existingParams?.logisticsLeadDays ?? null },
-        after: { ...updated, ...(v.logisticsLeadDays !== undefined ? { logisticsLeadDays: v.logisticsLeadDays ?? null } : {}) },
+        before: { ...existing, normalLeadDays: existingParams?.normalLeadDays ?? null, logisticsLeadDays: existingParams?.logisticsLeadDays ?? null },
+        after: {
+          ...updated,
+          normalLeadDays: v.normalLeadDays === undefined ? existingParams?.normalLeadDays ?? null : v.normalLeadDays,
+          logisticsLeadDays: v.logisticsLeadDays === undefined ? existingParams?.logisticsLeadDays ?? null : v.logisticsLeadDays,
+        },
       });
     }
     return updated;

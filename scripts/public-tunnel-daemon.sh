@@ -44,6 +44,9 @@ LOCAL_PORT=3100
 TUNNEL_CHECK_SECONDS=30
 TUNNEL_FAILURE_LIMIT=5
 
+# shellcheck source=scripts/tunnel-app-guard.sh
+source "$(dirname "$0")/tunnel-app-guard.sh" || exit 1
+
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
 env_get() {
@@ -55,10 +58,18 @@ env_get() {
 
 CF_PID=""
 cleanup() {
-  [[ -n "$CF_PID" ]] && kill "$CF_PID" 2>/dev/null
+  # A daemon upgrade leaves its detached, recorded tunnel for the next owner.
+  # Explicit removal/recovery uses the identity-checked stop operation instead.
   exit 0
 }
 trap cleanup TERM INT
+
+tunnel_process() { python3 "$(dirname "$0")/tunnel-process-owner.py" "$STATE_DIR" "$LOCAL_PORT" "$@"; }
+stop_tunnel() {
+  tunnel_process stop || return 1
+  [[ -z "$CF_PID" ]] || wait "$CF_PID" 2>/dev/null || true
+  CF_PID=""
+}
 
 # 往飞书群推链接。签名算法与 src/jobs/notify.ts 一致：
 # 把 `时间戳\n密钥` 整体当 HMAC 的**密钥**，对**空串**做 HmacSHA256 再 Base64。
@@ -100,10 +111,17 @@ ${url}"
   esac
 }
 
+# Docker Desktop 退出时（2026-09-04 02:20 实测：构建 + 门禁 + 并行测试高负载下 Docker 自行退出，
+# 公网整站 502），守护负责把它拉起来：daemon 不可用时先 `open -a Docker`（每次等待只拉一次），再轮询。
 wait_for_docker() {
-  local i
+  local i launched=0
   for i in $(seq 1 60); do
     docker info >/dev/null 2>&1 && return 0
+    if [[ "$launched" == 0 ]]; then
+      log "Docker daemon 不可用，尝试启动 Docker Desktop"
+      open -a Docker >/dev/null 2>&1 || true
+      launched=1
+    fi
     sleep 5
   done
   return 1
@@ -127,15 +145,20 @@ public_probe() {
 # 把新地址落到应用上。
 # 关键：用**环境变量覆盖**而不是改写 env 文件——compose 的插值优先级是
 # shell 环境 > --env-file，因此磁盘上的配置始终只有一份真相，不会漂。
-apply_url() {
+apply_url() (
   local url="$1"
   local prev
   prev="$(cat "$URL_FILE" 2>/dev/null || true)"
   log "落地 AUTH_URL → ${url}"
 
-  if ! AUTH_URL="$url" PUBLIC_HTTPS=1 docker compose -p "$PROJECT" \
-      --env-file "$ENV_FILE" -f "$COMPOSE_PROD" -f "$COMPOSE_LOCAL" up -d --no-build app 2>&1 | tail -3; then
-    log "✗ 重启应用失败"
+  local sync_status=0
+  tunnel_sync_url "$url" || sync_status=$?
+  if [[ "$sync_status" == 75 ]]; then
+    log "应用操作正忙，保留当前隧道，稍后重试"
+    return 75
+  fi
+  if [[ "$sync_status" != 0 ]]; then
+    log "✗ 同步访问地址失败：既有应用须通过版本/迁移/HSTS核对；不构建、不拉镜像、不迁移"
     return 1
   fi
 
@@ -147,7 +170,7 @@ apply_url() {
     # 健康 200 还不够：AUTH_URL 没生效时页面照样能开，但登录回跳会指向旧地址。
     public_probe "$url"
     probe_status=$?
-    if [[ "$probe_status" == "0" ]]; then
+    if [[ "$probe_status" == "0" ]] && tunnel_verify_same_app; then
       printf '%s\n' "$url" > "$URL_FILE"
       log "✓ 已生效：${url}（公网健康与登录回跳均通过）"
       # 只有换了新地址才打扰群里；修复漂移不播报（地址没变，同事无需知道）
@@ -161,7 +184,7 @@ apply_url() {
 
   log "✗ 约 3 分钟内未确认公网健康与登录回跳"
   return 1
-}
+)
 
 # 确保应用当前真的在用这个地址。
 #
@@ -194,6 +217,16 @@ ensure_url() {
   esac
 }
 
+# One daemon owns this state. FD 8 is not passed to detached cloudflared, so a
+# dead daemon cannot strand its lock in the surviving child. Never unlink it.
+[[ -d "$STATE_DIR" && ! -L "$STATE_DIR" && -O "$STATE_DIR" ]] || exit 1
+[[ ! -L "$STATE_DIR/tunnel-daemon.lock" ]] || exit 1
+[[ ! -e "$STATE_DIR/tunnel-daemon.lock" || -f "$STATE_DIR/tunnel-daemon.lock" ]] || exit 1
+(umask 077; touch "$STATE_DIR/tunnel-daemon.lock") || exit 1
+exec 8>>"$STATE_DIR/tunnel-daemon.lock" || exit 1
+tunnel_process lock || exit $?
+tunnel_process preflight || exit 1
+CLOUDFLARED_BIN="$(command -v cloudflared)" || exit 1
 log "=== 公网入口守护启动 ==="
 
 while true; do
@@ -205,15 +238,14 @@ while true; do
 
   # 守护自身重启（升级脚本、崩溃拉起）时，接管仍在运行的隧道而不是另起一条——否则每次升级守护都换地址。
   URL=""
-  # 锚定行首：不锚定会匹配到任何命令行里含这串字的 shell（例如正在 grep 它的终端），把别的进程当成隧道
-  EXISTING_PID="$(pgrep -f '^cloudflared tunnel --no-autoupdate' | head -1 || true)"
+  tunnel_process preflight || exit 1
+  EXISTING_PID="$(tunnel_process status)" || exit 1
   EXISTING_URL="$(/usr/bin/grep -m1 -oE 'https://[a-z0-9]+(-[a-z0-9]+)+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null || true)"
-  if [[ -n "$EXISTING_PID" && -n "$EXISTING_URL" ]] && public_probe "$EXISTING_URL" >/dev/null 2>&1; then
+  if [[ -n "$EXISTING_PID" ]]; then
     CF_PID="$EXISTING_PID"
     URL="$EXISTING_URL"
     log "接管已在运行的隧道 (pid=${CF_PID})：${URL}（守护重启不换址）"
   else
-    [[ -n "$EXISTING_PID" ]] && { log "已有隧道进程 ${EXISTING_PID} 但不可用，先清掉"; kill "$EXISTING_PID" 2>/dev/null; sleep 2; }
     : > "$TUNNEL_LOG"
     # --protocol http2：默认 QUIC(UDP) 出境实测被显著劣化——同一时刻同一应用，
     # QUIC 隧道 /api/health 0.65–1.4 s、并发拉 33 个前端分块墙钟 6.4 s；
@@ -221,55 +253,72 @@ while true; do
     # 用 setsid 把 cloudflared 放进独立会话：launchd 在守护退出时会 SIGKILL 整个任务进程组，
     # 2026-09-02 实测 kill -9 守护后隧道随之被杀、接管失败、地址又换。脱离进程组后守护重启才能真正接管。
     /usr/bin/python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
-      cloudflared tunnel --no-autoupdate --protocol http2 --url "http://localhost:${LOCAL_PORT}" >> "$TUNNEL_LOG" 2>&1 &
+      "$CLOUDFLARED_BIN" tunnel --no-autoupdate --protocol http2 --pidfile "$STATE_DIR/cloudflared.pid" --url "http://localhost:${LOCAL_PORT}" 8>&- 9>&- >> "$TUNNEL_LOG" 2>&1 &
     CF_PID=$!
-    log "cloudflared 已启动 (pid=${CF_PID})，等待分配地址…"
-
-    for _ in $(seq 1 40); do
-      sleep 3
-      # Quick Tunnel 主机名由多个连字符分隔的词组成；要求带连字符可避免把控制端点
-      # api.trycloudflare.com 误认为对外地址。
-      URL="$(/usr/bin/grep -m1 -oE 'https://[a-z0-9]+(-[a-z0-9]+)+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null || true)"
-      [[ -n "$URL" ]] && break
-      kill -0 "$CF_PID" 2>/dev/null || break
+    RECORDED=0
+    for _ in $(seq 1 50); do
+      if tunnel_process record "$CF_PID" 2>/dev/null; then RECORDED=1; break; fi
+      sleep 0.1
     done
-
-    if [[ -z "$URL" ]]; then
-      log "✗ 未取到隧道地址，重建（cloudflared 日志见 ${TUNNEL_LOG}）"
-      kill "$CF_PID" 2>/dev/null
-      wait "$CF_PID" 2>/dev/null
-      CF_PID=""
-      sleep 15
-      continue
+    if [[ "$RECORDED" != 1 ]]; then
+      log "新隧道身份未能登记；保留进程供人工核对，不继续重建或公布地址"
+      exit 1
     fi
+    log "cloudflared 已启动 (pid=${CF_PID})，等待分配地址…"
   fi
 
-  log "隧道地址：${URL}"
-  if ! apply_url "$URL"; then
-    log "新隧道未能通过端到端验活，立即重建"
-    kill "$CF_PID" 2>/dev/null
-    wait "$CF_PID" 2>/dev/null
-    CF_PID=""
+  for _ in $(seq 1 40); do
+    [[ -n "$URL" ]] && break
+    sleep 3
+    # Quick Tunnel 主机名由多个连字符分隔的词组成；要求带连字符可避免把控制端点
+    # api.trycloudflare.com 误认为对外地址。
+    URL="$(/usr/bin/grep -m1 -oE 'https://[a-z0-9]+(-[a-z0-9]+)+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null || true)"
+    [[ -n "$URL" ]] && break
+    [[ -n "$(tunnel_process status)" ]] || break
+  done
+
+  if [[ -z "$URL" ]]; then
+    log "✗ 未取到隧道地址，重建（cloudflared 日志见 ${TUNNEL_LOG}）"
+    stop_tunnel || exit 1
     sleep 15
     continue
   fi
 
-  # 同时守 PID 与端到端结果。连续三次失败即判该 quick tunnel 已死亡，清掉旧链接并
+  log "隧道地址：${URL}"
+  # A deployment is not a broken tunnel. Retry this URL after the lock is released,
+  # without replacing cloudflared, publishing an unverified URL, or notifying users.
+  APPLY_STATUS=0
+  apply_url "$URL" || APPLY_STATUS=$?
+  while [[ "$APPLY_STATUS" == 75 ]] && [[ -n "$(tunnel_process status)" ]]; do
+    sleep "$TUNNEL_CHECK_SECONDS"
+    APPLY_STATUS=0
+    apply_url "$URL" || APPLY_STATUS=$?
+  done
+  if [[ "$APPLY_STATUS" != 0 ]]; then
+    log "新隧道未能通过端到端验活，立即重建"
+    stop_tunnel || exit 1
+    sleep 15
+    continue
+  fi
+
+  # 同时守进程身份与端到端结果。连续五次失败即判该 quick tunnel 已死亡，清掉旧链接并
   # 杀进程申请新地址；不能让 cloudflared 自己无限重连一个已失去 DNS 的临时端点。
   PUBLIC_FAILURES=0
-  while kill -0 "$CF_PID" 2>/dev/null; do
+  while [[ -n "$(tunnel_process status)" ]]; do
     sleep "$TUNNEL_CHECK_SECONDS"
-    if ensure_url "$URL"; then
+    ENSURE_STATUS=0
+    ensure_url "$URL" || ENSURE_STATUS=$?
+    if [[ "$ENSURE_STATUS" == 0 ]]; then
       PUBLIC_FAILURES=0
       continue
     fi
+    [[ "$ENSURE_STATUS" == 75 ]] && continue
     PUBLIC_FAILURES=$((PUBLIC_FAILURES + 1))
     log "公网验活连续失败 ${PUBLIC_FAILURES}/${TUNNEL_FAILURE_LIMIT}"
     if [[ "$PUBLIC_FAILURES" -ge "$TUNNEL_FAILURE_LIMIT" ]]; then
       log "隧道进程仍在但端到端已失效——停止旧隧道并申请新地址"
       rm -f "$URL_FILE"
-      kill "$CF_PID" 2>/dev/null
-      wait "$CF_PID" 2>/dev/null
+      stop_tunnel || exit 1
       break
     fi
   done

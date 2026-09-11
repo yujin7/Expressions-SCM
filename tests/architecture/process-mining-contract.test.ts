@@ -5,14 +5,13 @@ const read = (path: string) => readFileSync(path, "utf8");
 
 describe("C154 process mining reachability and safety contract", () => {
   it("is reachable from analytics and protected by page, API, and service role checks", () => {
-    const shell = read("src/components/AppShell.tsx");
+    // D62：菜单分组/条目/角色迁至单一注册表 src/lib/route-access.ts（AppShell 只派生）
+    const shell = read("src/lib/route-access.ts");
     const page = read("src/app/(app)/report/process-mining/page.tsx");
     const route = read("src/app/api/report/process-mining/route.ts");
     const service = read("src/server/modules/report/process-mining.ts");
 
-    expect(shell).toContain('"/report/process-mining": "analytics"');
-    expect(shell).toContain('{ key: "/report/process-mining", label: "流程效率与瓶颈" }');
-    expect(shell).toContain('"/report/process-mining": ["pmc", "finance"]');
+    expect(shell).toContain('path: "/report/process-mining", label: "流程效率与瓶颈", roles: ["pmc", "finance"], group: "analytics"');
     expect(page).toContain("管理员、生产计划或财务");
     expect(route).toContain("getProcessMining(user");
     expect(service).toContain("guardProcessMining(user)");

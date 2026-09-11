@@ -1,4 +1,5 @@
-import { and, asc, desc, eq, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { selectedOptionsPredicate, SELECTED_OPTIONS_LIMIT, type SelectedOptionValue } from "@/server/core/selected-options";
 import {
    jgDocs, jgFeeSegments, pcDocs, skus, suppliers, users, woDocs,
 } from "@/db/schema";
@@ -231,7 +232,7 @@ export async function getJg(id: number, dbArg?: AnyDb) {
 
 export async function listJgs(
   q: string,
-  opts: { status?: string; woId?: number; page: number; pageSize: number },
+  opts: { status?: string; woId?: number; page: number; pageSize: number; receiptEligible?: boolean; selectedValues?: SelectedOptionValue[] },
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
@@ -239,6 +240,9 @@ export async function listJgs(
   if (q) conds.push(or(sql`${jgDocs.docNo} ILIKE ${"%" + q + "%"}`, skuHeaderMatch(jgDocs.productSkuId, q)));
   if (opts.status) conds.push(eq(jgDocs.status, opts.status as DocStatus));
   if (opts.woId) conds.push(eq(jgDocs.woId, opts.woId));
+  if (opts.receiptEligible) conds.push(inArray(jgDocs.status, ["approved", "in_progress"]));
+  const selected = selectedOptionsPredicate(opts.selectedValues, { id: jgDocs.id, text: [jgDocs.docNo] });
+  if (selected) conds.push(selected);
   const where = conds.length ? and(...conds) : undefined;
 
   const [rows, [{ total }]] = await Promise.all([
@@ -265,8 +269,8 @@ export async function listJgs(
       .leftJoin(users, eq(jgDocs.createdBy, users.id))
       .where(where)
       .orderBy(desc(jgDocs.createdAt), desc(jgDocs.id))
-      .limit(opts.pageSize)
-      .offset((opts.page - 1) * opts.pageSize),
+      .limit(opts.selectedValues === undefined ? opts.pageSize : SELECTED_OPTIONS_LIMIT)
+      .offset(opts.selectedValues === undefined ? (opts.page - 1) * opts.pageSize : 0),
     db.select({ total: sql<number>`count(*)::int` }).from(jgDocs).where(where),
   ]);
   return { rows, total };

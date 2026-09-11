@@ -19,3 +19,12 @@ or worktrees.
 6. Remove the change when it is neutral, slower, or unsupported.
 
 For iteration work, measure edit-to-signal time independently for typecheck, lint, focused tests, full tests, first route compilation, and build. Do not add worker caps, caches, rollups, queues, or service boundaries without evidence that they improve the target environment.
+
+Distinguish development feedback from release evidence. During a cohesive implementation slice,
+run the affected tests and checks first; inspect `check:fast` before assuming it is narrowly scoped
+(it also runs architecture/rule/component suites and then related tests). Measure duplicate work
+before changing selection. One focused pass is not a substitute for the final exact-candidate gate.
+
+For a proposed new tool or framework, compare the current approach and a bounded alternative on
+task success, correctness coverage, setup/maintenance cost and measured edit-to-signal time.
+Record versions and limitations; do not equate a mocked hook test with real-browser behavior.

@@ -1,10 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Alert, App, Button, Card, Col, List, Row, Space, Statistic, Tag, Typography } from "antd";
+import { Alert, App, Button, Card, Col, DatePicker, Input, List, Modal, Row, Segmented, Space, Statistic, Tag, Tooltip, Typography } from "antd";
+import type { Dayjs } from "dayjs";
 import { BulbOutlined, ReloadOutlined, RightOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import Link from "next/link";
-import { fetchJson } from "@/components/fetchJson";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { fetchJson, postJson } from "@/components/fetchJson";
+import { hasAnyRole, useMe } from "@/components/useMe";
+import { ACTION } from "@/components/dictionary";
+import DigestView from "./digest-view";
+import styles from "./workbench.module.css";
 
 interface ExceptionItem {
   key: string;
@@ -13,7 +19,21 @@ interface ExceptionItem {
   impact: string;
   count: number;
   href: string;
+  /** W9：连续出现天数（含今天）；≥ 长期阈值即"慢性被忽略" */
+  daysShown?: number;
+  /** W2：上次访问时这条还不在清单里（纯事实比对，不改排序、不评分） */
+  newSinceLastVisit?: boolean;
 }
+
+/** W2：自上次访问以来的变化摘要（无登录人视角 = null） */
+interface SinceLastVisit {
+  since: string | null;
+  newCount: number;
+  firstVisit: boolean;
+}
+
+/** 连续出现多少天就该被当成"慢性被忽略"高亮出来（只是展示口径，不改任何判定） */
+const CHRONIC_DAYS = 7;
 
 const SEV_META: Record<string, { color: string; label: string }> = {
   critical: { color: "#cf1322", label: "紧急" },
@@ -21,29 +41,144 @@ const SEV_META: Record<string, { color: string; label: string }> = {
   medium: { color: "#faad14", label: "中" },
 };
 
-/** #6 控制塔：登录第一屏「今天最需要处理的事」，按严重度+影响排序，一键直达 */
-function ControlTower({ items, loading }: { items: ExceptionItem[]; loading: boolean }) {
+/**
+ * W9 打盹弹窗：日期 + 必填原因 → POST /api/workbench/exceptions/snooze。
+ * 打盹是**全局**的（控制塔是全员同一块板），文案里必须说清楚，别让人以为只是自己眼前清净。
+ */
+function SnoozeModal({ item, onCancel, onDone }: { item: ExceptionItem | null; onCancel: () => void; onDone: () => void }) {
+  const { message } = App.useApp();
+  const [until, setUntil] = useState<Dayjs | null>(null);
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  useEffect(() => { setUntil(null); setNote(""); }, [item?.key]);
+
+  const submit = async () => {
+    if (!item) return;
+    if (!until) { message.warning("请选择打盹到期日"); return; }
+    if (!note.trim()) { message.warning("请填写打盹原因（到期恢复时要能看懂当初的判断）"); return; }
+    setSubmitting(true);
+    try {
+      await postJson("/api/workbench/exceptions/snooze", {
+        exceptionKey: item.key, until: until.format("YYYY-MM-DD"), note: note.trim(),
+      });
+      message.success(`已打盹到 ${until.format("YYYY-MM-DD")}（到期自动恢复显示）`);
+      onDone();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={item ? `${ACTION.snoozeException}：${item.title}` : ACTION.snoozeException}
+      open={item != null}
+      onOk={() => void submit()}
+      onCancel={onCancel}
+      confirmLoading={submitting}
+      okText={ACTION.snoozeException}
+      cancelText="取消"
+      width="min(480px, 100vw)"
+    >
+      <Alert
+        type="warning"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message={ACTION.snoozeExceptionHint}
+      />
+      <Space direction="vertical" size={8} style={{ width: "100%" }}>
+        <div>
+          <Typography.Text strong>{ACTION.snoozeException}到（含当日）</Typography.Text>
+          <DatePicker aria-label="打盹到期日" value={until} onChange={setUntil} style={{ width: "100%", marginTop: 4 }} />
+        </div>
+        <div>
+          <Typography.Text strong>原因（必填）</Typography.Text>
+          <Input.TextArea
+            aria-label="打盹原因"
+            rows={3}
+            maxLength={500}
+            showCount
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="例如：已排产，8 月 20 日到货后自然消解"
+            style={{ marginTop: 4 }}
+          />
+        </div>
+      </Space>
+    </Modal>
+  );
+}
+
+/** 「上次访问 …」的人话时间（服务端下发 ISO；无基线=首次访问） */
+function visitTimeText(since: string | null): string {
+  if (!since) return "首次访问";
+  return new Date(since).toLocaleString("zh-CN", { hourCycle: "h23" });
+}
+
+/**
+ * #6 控制塔：登录第一屏「今天最需要处理的事」，按严重度+影响排序，一键直达。
+ * W9：每条带「已连续 N 天」——一条挂了 40 天没人点的例外，本身就是要处理的问题；
+ * 计划/采购/运营/仓管（及 admin）可带日期与原因打盹（全局生效、写审计、到期自动恢复）。
+ * W2：每条带「上次访问后新增」——回访的人要看的是"有什么变了"，不是把整屏再读一遍。
+ *   只是标记：不改排序、不过滤、不评分（严重度仍然压倒新鲜度——一条挂了三天的 critical
+ *   不会因为"不新"就该被往后放）。
+ */
+export function ControlTower({ items, loading, onSnooze, canSnooze, sinceLastVisit }: {
+  items: ExceptionItem[];
+  loading: boolean;
+  onSnooze: (item: ExceptionItem) => void;
+  canSnooze: boolean;
+  sinceLastVisit: SinceLastVisit | null;
+}) {
   if (loading) return <Card loading style={{ marginBottom: 16 }} />;
   if (items.length === 0) {
     return (
-      <Alert type="success" showIcon style={{ marginBottom: 16 }} message="控制塔：当前无跨域异常——各项监控均在阈值内。" />
+      <Alert type="info" showIcon style={{ marginBottom: 16 }} message="控制塔：当前没有可显示的例外。已打盹或证据不足的事项可能不在此列，请结合来源数据核对。" />
     );
   }
   return (
     <Card
       size="small"
+      className={styles.controlTower}
       style={{ marginBottom: 16, borderColor: "#ffccc7" }}
       title={<span><ThunderboltOutlined style={{ color: "#cf1322" }} /> 控制塔 · 今天最需要处理的事（{items.length}）</span>}
+      extra={sinceLastVisit ? (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {sinceLastVisit.firstVisit
+            ? "首次访问：本次不标新增"
+            : sinceLastVisit.newCount > 0
+              ? `上次访问（${visitTimeText(sinceLastVisit.since)}）后新增 ${sinceLastVisit.newCount} 条`
+              : `上次访问（${visitTimeText(sinceLastVisit.since)}）后无新增`}
+        </Typography.Text>
+      ) : null}
     >
       <List
         dataSource={items}
         renderItem={(it) => (
           <List.Item
-            actions={[<Link key="go" href={it.href}>处理 <RightOutlined /></Link>]}
+            actions={[
+              <Link key="go" href={it.href} aria-label={`处理：${it.title}`}>处理 <RightOutlined /></Link>,
+              ...(canSnooze ? [<Button key="snooze" type="link" size="small" aria-label={`打盹：${it.title}`} onClick={() => onSnooze(it)}>{ACTION.snoozeException}</Button>] : []),
+            ]}
           >
             <List.Item.Meta
               avatar={<Tag color={SEV_META[it.severity].color}>{SEV_META[it.severity].label}</Tag>}
-              title={<Link href={it.href}>{it.title}</Link>}
+              title={(
+                <Space size={6} wrap>
+                  <Link href={it.href}>{it.title}</Link>
+                  {it.newSinceLastVisit ? (
+                    <Tooltip title="你上次访问工作台时这条还不在清单里">
+                      <Tag color="blue">上次访问后新增</Tag>
+                    </Tooltip>
+                  ) : null}
+                  {it.daysShown && it.daysShown > 1 ? (
+                    <Tooltip title={it.daysShown >= CHRONIC_DAYS ? "长期挂着没被处理——要么解决，要么带原因打盹" : "连续出现天数"}>
+                      <Tag color={it.daysShown >= CHRONIC_DAYS ? "red" : "default"}>已连续 {it.daysShown} 天</Tag>
+                    </Tooltip>
+                  ) : null}
+                </Space>
+              )}
               description={it.impact}
             />
           </List.Item>
@@ -123,7 +258,7 @@ function NextActions({ items, loading }: { items: NextActionItem[]; loading: boo
               }
               description={
                 <Space wrap split={<span>·</span>}>
-                  <span>触发：{item.triggerLabel}（{new Date(item.triggerAt).toLocaleString("zh-CN", { hour12: false })}）</span>
+                  <span>触发：{item.triggerLabel}（{new Date(item.triggerAt).toLocaleString("zh-CN", { hourCycle: "h23" })}）</span>
                   <span>责任：{item.ownerLabel}</span>
                   <span>证据：{item.evidence}</span>
                 </Space>
@@ -183,12 +318,28 @@ function FocusSections({ sections, loading }: { sections: FocusSection[]; loadin
 
 export default function WorkbenchClient() {
   const { message } = App.useApp();
+  const me = useMe();
+  /* 视图写进 URL（`?view=digest`）：旧 /report/digest 的收藏与外链跳到这里仍然落在简报上 */
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const viewParam = searchParams.get("view");
+  const setView = (next: string) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "digest") params.set("view", "digest");
+    else params.delete("view");
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  };
+  const canSnooze = hasAnyRole(me, "pmc", "purchasing", "ops", "warehouse"); // 与路由 requireAnyRole 同口径
+  const [snoozing, setSnoozing] = useState<ExceptionItem | null>(null);
   const [openAliasCount, setOpenAliasCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [sections, setSections] = useState<FocusSection[]>([]);
   const [exceptions, setExceptions] = useState<ExceptionItem[]>([]);
   const [nextActions, setNextActions] = useState<NextActionItem[]>([]);
   const [queues, setQueues] = useState<QueueItem[]>([]);
+  const [sinceLastVisit, setSinceLastVisit] = useState<SinceLastVisit | null>(null);
   const [focusLoading, setFocusLoading] = useState(false);
   const [focusError, setFocusError] = useState<string | null>(null);
 
@@ -203,12 +354,14 @@ export default function WorkbenchClient() {
       nextActions: NextActionItem[];
       myOpenDocs: number | null;
       queues: QueueItem[];
+      sinceLastVisit: SinceLastVisit | null;
     }>("/api/workbench")
       .then((r) => {
         setSections(r.sections);
         setExceptions(r.exceptions ?? []);
         setNextActions(r.nextActions ?? []);
         setQueues(r.queues ?? []);
+        setSinceLastVisit(r.sinceLastVisit ?? null);
       })
       .catch((e) => {
         const error = (e as Error).message;
@@ -217,6 +370,7 @@ export default function WorkbenchClient() {
         setExceptions([]);
         setNextActions([]);
         setQueues([]);
+        setSinceLastVisit(null);
         message.error(error);
       })
       .finally(() => setFocusLoading(false));
@@ -234,12 +388,31 @@ export default function WorkbenchClient() {
     void load();
   }, [load]);
 
+  /* W2 简报视图：`/report/digest` 与本页渲染的是同一份 workbench/focus 例外，
+     并成本页的一个视图（?view=digest）。视图切换写进 URL——链接仍可分享、后退可用。 */
+  const view = viewParam === "digest" ? "digest" : "board";
+
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <Typography.Title level={4} style={{ marginTop: 0 }}>工作台</Typography.Title>
-        <Link href="/report/digest">每日经营摘要（简报视图）→</Link>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <Space size={12} wrap>
+          <Typography.Title level={4} style={{ marginTop: 0, marginBottom: 0 }}>工作台</Typography.Title>
+          <Segmented
+            size="small"
+            value={view}
+            onChange={(v) => setView(String(v))}
+            options={[
+              { label: "控制塔", value: "board" },
+              { label: "简报视图", value: "digest" },
+            ]}
+          />
+        </Space>
+        <Space size={16}>
+          <Link href="/cockpit">驾驶舱四屏 →</Link>
+        </Space>
       </div>
+      {view === "digest" ? <DigestView /> : (
+      <>
       {focusError ? (
         <Alert
           type="error"
@@ -251,7 +424,14 @@ export default function WorkbenchClient() {
         />
       ) : (
         <>
-          <ControlTower items={exceptions} loading={focusLoading && exceptions.length === 0} />
+          <ControlTower
+            items={exceptions}
+            loading={focusLoading && exceptions.length === 0}
+            canSnooze={canSnooze}
+            onSnooze={setSnoozing}
+            sinceLastVisit={sinceLastVisit}
+          />
+          <SnoozeModal item={snoozing} onCancel={() => setSnoozing(null)} onDone={() => { setSnoozing(null); void load(); }} />
           <NextActions items={nextActions} loading={focusLoading && nextActions.length === 0} />
           <FocusSections sections={sections} loading={focusLoading} />
         </>
@@ -288,6 +468,8 @@ export default function WorkbenchClient() {
           </Link>
         </Col>
       </Row>
+      </>
+      )}
     </div>
   );
 }

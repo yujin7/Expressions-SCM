@@ -27,6 +27,15 @@ export class ApprovalError extends Error {
 
 export type Approver = { id: number; roles: string[]; isApprover: boolean };
 
+/** Shared role/config qualification for write enforcement and read-only action hints. */
+export function approvalRoleError(approver: { roles: readonly string[]; isApprover: boolean }, role: string | null): ApprovalError | null {
+  if (!role) return new ApprovalError("NO_CONFIG", "缺少审批配置");
+  if (approver.roles.includes("admin")) return null;
+  if (!approver.roles.includes(role)) return new ApprovalError("ROLE_FORBIDDEN", `需要${ROLE_LABELS[role as keyof typeof ROLE_LABELS] ?? role}审批角色`);
+  if (!approver.isApprover) return new ApprovalError("NOT_APPROVER", "当前账号不是审批人");
+  return null;
+}
+
 /**
  * 通用单级审批（MVP node=1，《01》§6）。同一事务内：
  * 权限（角色/is_approver/职责分离）→ 幂等（R10：优先于状态与版本冲突）
@@ -51,12 +60,8 @@ export async function approveDoc(
       .from(approvalConfigs)
       .where(eq(approvalConfigs.docType, i.docType));
     if (!cfg) throw new ApprovalError("NO_CONFIG", `缺少审批配置: ${i.docType}`);
-    const isAdmin = i.approver.roles.includes("admin");
-    if (!isAdmin && !i.approver.roles.includes(cfg.approverRole)) {
-      throw new ApprovalError("ROLE_FORBIDDEN", `需要${ROLE_LABELS[cfg.approverRole as keyof typeof ROLE_LABELS] ?? cfg.approverRole}审批角色`);
-    }
-    // 2) 同角色内仅 is_approver=true 者可审批（管理员豁免）
-    if (!isAdmin && !i.approver.isApprover) throw new ApprovalError("NOT_APPROVER");
+    const roleError = approvalRoleError(i.approver, cfg.approverRole);
+    if (roleError) throw roleError;
 
     const cols = getTableColumns(i.table) as Record<string, PgColumn>;
     const [doc] = await tx
@@ -197,8 +202,8 @@ export interface ApprovalHistoryRow {
  *
  * 此前这段 select + leftJoin + orderBy 在 11 个单据模块里逐字复制。
  * 复制体之间已经开始分叉：6 处用 `eq(docType, "x")`、5 处用 `inArray(docType, [...])`，
- * 因此本函数签名同时接受两种形态——**stock-doc 确实需要一次查三个域**
- * （stock_doc / opening / count 共用一条单据线）。
+ * 本函数接受多个域仅用于确认共用同一实体编号的历史记录（如opening/stock_doc）。
+ * count归属pd_docs，不能与stock_docs按相同数字ID合并；调整单须先核对来源PD及明细反向引用。
  *
  * `approverName` 走 leftJoin，审批人账号被删后为 null；调用方渲染时必须带兜底，
  * 曾有两个页面漏写导致该行显示空白。

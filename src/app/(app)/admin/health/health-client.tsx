@@ -3,20 +3,112 @@
 /**
  * 运维面板（仅 admin）：db/迁移、任务运行史、连接器运行/检查点、错误留档、导入/导出、
  * 快照数据龄和备份新鲜度。
- * 30s 自动刷新；红色高亮：任务失败 / 24h 错误>0 / 快照龄>3天 / 备份>25h 或缺失说明。
+ * 30s 自动刷新；快照缺失/日期异常/陈旧分开显示，无快照仓不表示健康。
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { App, Card, Col, Row, Space, Spin, Table, Tag, Typography } from "antd";
+import { App, Card, Col, Input, Popconfirm, Row, Space, Spin, Table, Tag, Tooltip, Typography } from "antd";
 import { DownloadOutlined, ExportOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { Button } from "antd";
-import { fetchJson } from "@/components/fetchJson";
+import { fetchJson, postJson } from "@/components/fetchJson";
 import type { OpsHealth } from "@/server/modules/admin/health";
+import type { ManualJobRunResult } from "@/server/modules/admin/job-run";
 
-const SNAPSHOT_RED_DAYS = 3;
+/** 任务目录行：已登记任务 ∪ 跑过的任务（后者可能是已下线的历史记录） */
+interface JobCatalogRow {
+  job: string;
+  /** 在当前 INTERVAL_JOBS 目录里 → 可手动触发 */
+  registered: boolean;
+  last: OpsHealth["lastJobRuns"][number] | null;
+}
+
+const CONNECTOR_LABELS: Record<string, string> = { jdy: "简道云", yy: "用友", jst: "聚水潭", feishu: "飞书" };
+
 const BACKUP_RED_HOURS = 25;
 
-const fmtTime = (iso: string): string => new Date(iso).toLocaleString("zh-CN", { hour12: false });
+type SnapshotRow = OpsHealth["snapshotAges"][number];
+type SnapshotState = SnapshotRow["ageState"] | "unknown";
+
+function snapshotState(row: SnapshotRow, thresholdDays: number | undefined): SnapshotState {
+  // Missing new DTO evidence is unknown; never infer a green state from an old age alone.
+  if (typeof thresholdDays !== "number" || !Number.isSafeInteger(thresholdDays) || thresholdDays < 0) return "unknown";
+  if (row.ageState === "missing") return row.latestBizDate === null && row.ageDays === null ? "missing" : "unknown";
+  if (row.ageState === "invalid") return "invalid";
+  const days = row.ageDays;
+  if (typeof row.latestBizDate !== "string" || !row.latestBizDate || typeof days !== "number" || !Number.isSafeInteger(days)) return "unknown";
+  if (row.ageState === "future") return days < 0 ? "future" : "unknown";
+  if (days < 0) return "unknown";
+  if (row.ageState === "fresh" && days <= thresholdDays) return "fresh";
+  if (row.ageState === "stale" && days > thresholdDays) return "stale";
+  return "unknown";
+}
+
+const SNAPSHOT_STATE_LABELS: Record<SnapshotState, string> = {
+  fresh: "新鲜", stale: "陈旧", missing: "暂无快照", future: "未来日期", invalid: "日期异常", unknown: "状态未知",
+};
+
+export function SnapshotAgeStatus({ row, thresholdDays }: { row: SnapshotRow; thresholdDays?: number }) {
+  const state = snapshotState(row, thresholdDays);
+  return <Tag color={state === "fresh" ? "green" : state === "missing" || state === "unknown" ? "orange" : "red"}>
+    {SNAPSHOT_STATE_LABELS[state]}{state === "fresh" || state === "stale" ? ` · ${row.ageDays} 天` : ""}
+  </Tag>;
+}
+
+export function SnapshotHealthCard({ rows, thresholdDays }: { rows: SnapshotRow[]; thresholdDays?: number }) {
+  const states = Array.isArray(rows) ? rows.map((row) => snapshotState(row, thresholdDays)) : [];
+  const ready = states.length > 0 && states.every((state) => state === "fresh");
+  const emptyLabel = Array.isArray(rows) ? "未配置活跃快照仓" : "快照范围未知";
+  return <Card size="small" style={ready ? undefined : { borderColor: "#faad14", background: "#fffbe6" }}>
+    <Typography.Text type="secondary">快照数据龄</Typography.Text>
+    <div style={{ marginTop: 4 }}>
+      {states.length === 0 ? <Tag color="orange">{emptyLabel}，无法判断</Tag> :
+        (Object.keys(SNAPSHOT_STATE_LABELS) as SnapshotState[]).map((state) => {
+          const count = states.filter((value) => value === state).length;
+          return count ? <Tag key={state} color={state === "fresh" ? "green" : state === "missing" || state === "unknown" ? "orange" : "red"}>
+            {SNAPSHOT_STATE_LABELS[state]} {count} 仓
+          </Tag> : null;
+        })}
+    </div>
+    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+      {Number.isSafeInteger(thresholdDays) && (thresholdDays ?? -1) >= 0 ? `超过 ${thresholdDays} 天为陈旧；` : "阈值未确认；"}
+      仅核对每仓最新日期，不代表完整覆盖
+    </Typography.Text>
+  </Card>;
+}
+
+export function SnapshotAgeTable({ rows, thresholdDays }: { rows: SnapshotRow[]; thresholdDays?: number }) {
+  const columns: ColumnsType<SnapshotRow> = [
+    { title: "仓库", render: (_, row) => `${row.code} ${row.name}` },
+    { title: "最新快照", dataIndex: "latestBizDate", width: 120, render: (value: string | null) => typeof value === "string" && value ? value : "—" },
+    { title: "新鲜度", width: 150, render: (_, row) => <SnapshotAgeStatus row={row} thresholdDays={thresholdDays} /> },
+  ];
+  return <Table rowKey="warehouseId" size="small" columns={columns} dataSource={rows} pagination={false}
+    scroll={{ x: "max-content" }} locale={{ emptyText: "未配置活跃快照仓，无法判断数据新鲜度" }} />;
+}
+
+export function MigrationHealthCard({ dbOk, migrations }: Pick<OpsHealth, "dbOk" | "migrations">) {
+  const ready = dbOk && migrations.ready === true && migrations.state === "current";
+  const label = !dbOk ? "DB 不可用"
+    : migrations.state === "behind" ? "迁移落后"
+      : migrations.state === "ahead" ? "迁移超前"
+        : "迁移状态未知";
+  return (
+    <Card size="small" style={ready ? undefined : { borderColor: "#ff4d4f", background: "#fff2f0" }}>
+      <Typography.Text type="secondary">数据库 / 迁移</Typography.Text>
+      <div style={{ fontSize: 16, marginTop: 4 }}>
+        {ready ? <span>迁移计数一致 </span> : <Tag color="red">{label}</Tag>}
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {dbOk ? "DB 可连接；" : ""}
+          {migrations.applied >= 0 && migrations.files > 0
+            ? `${migrations.applied}/${migrations.files} 已应用`
+            : "迁移计数尚未确认"}
+        </Typography.Text>
+      </div>
+    </Card>
+  );
+}
+
+const fmtTime = (iso: string): string => new Date(iso).toLocaleString("zh-CN", { hourCycle: "h23" });
 
 function fmtAgeHours(hours: number): string {
   if (hours < 0) return "时间异常";
@@ -102,8 +194,38 @@ function identityClearanceTag(connector: OpsHealth["connectors"][number]) {
   }
 }
 
+export function ConnectorUnlockGuidance({ connector }: { connector: OpsHealth["connectors"][number] }) {
+  const catalog = connector.key === "yy" ? connector.readOnlyApiCatalog : undefined;
+  return <div>
+    <Space style={{ justifyContent: "space-between", width: "100%", marginBottom: 4 }}>
+      <Typography.Text strong>核对与恢复</Typography.Text>
+      {connector.managementUrl ? <Button type="link" size="small" icon={<ExportOutlined />}
+        href={connector.managementUrl} target="_blank" rel="noreferrer">打开官方后台</Button> : null}
+    </Space>
+    <ol style={{ margin: 0, paddingInlineStart: 22 }}>
+      {connector.remediationSteps.map((step) => <li key={step} style={{ marginBottom: 4 }}>
+        <Typography.Text style={{ fontSize: 12 }}>{step}</Typography.Text>
+      </li>)}
+    </ol>
+    {catalog && catalog.length > 0 ? <details style={{ marginTop: 8, fontSize: 12 }}>
+      <summary style={{ cursor: "pointer" }}>查看代码白名单（{catalog.length} 项只读 API）</summary>
+      <Typography.Paragraph type="secondary" style={{ margin: "6px 0" }}>
+        这是代码支持目录，不是当前已选或已授权清单，也不要求全部授权；只核对业务批准的最小集合。
+        {connector.contractSelectionState === "selected"
+          ? ` 当前配置已选 ${connector.selectedContractCount} 项，选择不等于权限已获批、读取成功或 UAT 通过。`
+          : " 当前未形成有效选择，先完成范围评审。"}
+      </Typography.Paragraph>
+      <ul style={{ margin: 0, paddingInlineStart: 20 }}>{catalog.map((name) => <li key={name}>{name}</li>)}</ul>
+    </details> : null}
+  </div>;
+}
+
 export function ConnectorRunState({ row }: { row: OpsHealth["connectorRuns"][number] }) {
-  const status = row.status === "failed"
+  const status = row.authorizationBlocked
+    ? <Tag color="orange">等待授权</Tag>
+    : row.resultInconsistent
+      ? <Tag color="orange">结果待核对</Tag>
+    : row.status === "failed"
     ? <Tag color="red">失败</Tag>
     : row.status === "running"
       ? <Tag color="processing">运行中</Tag>
@@ -119,25 +241,41 @@ export function ConnectorRunState({ row }: { row: OpsHealth["connectorRuns"][num
   );
 }
 
-function connectorRuntimeState(rows: OpsHealth["connectorRuns"]) {
+export function connectorRuntimeState(rows: OpsHealth["connectorRuns"]) {
   if (rows.length === 0) return <Tag>尚无运行</Tag>;
   const failed = rows.filter((row) => row.status === "failed").length;
   const running = rows.filter((row) => row.status === "running").length;
+  const waiting = rows.filter((row) => row.authorizationBlocked).length;
+  const inconsistent = rows.filter((row) => row.resultInconsistent && !row.authorizationBlocked).length;
+  const succeeded = rows.filter((row) => row.status === "succeeded" && !row.authorizationBlocked && !row.resultInconsistent).length;
   const empty = rows.filter((row) => row.emptySource).length;
   const schemaDrift = rows.filter((row) => row.schemaDrift).length;
   const releaseBlocked = rows.filter((row) => row.releaseBlocked && !row.schemaDrift).length;
   return (
     <Space wrap size={[4, 4]}>
-      {failed > 0
-        ? <Tag color="red">{failed} 条数据流最近失败</Tag>
-        : running > 0
-          ? <Tag color="processing">{running} 条数据流运行中</Tag>
-          : <Tag color="green">{rows.length} 条数据流最近成功</Tag>}
+      {failed > 0 ? <Tag color="red">{failed} 条数据流最近失败</Tag> : null}
+      {running > 0 ? <Tag color="processing">{running} 条数据流运行中</Tag> : null}
+      {waiting > 0 ? <Tag color="orange">{waiting} 条数据流等待授权</Tag> : null}
+      {inconsistent > 0 ? <Tag color="orange">{inconsistent} 条数据流结果待核对</Tag> : null}
+      {succeeded > 0 ? <Tag color="green">{succeeded} 条数据流最近成功</Tag> : null}
       {empty > 0 ? <Tag color="orange">{empty} 条空观察，旧批次保留</Tag> : null}
       {schemaDrift > 0 ? <Tag color="red">{schemaDrift} 条字段结构变化</Tag> : null}
       {releaseBlocked > 0 ? <Tag color="orange">{releaseBlocked} 条仅观察，不可放行</Tag> : null}
     </Space>
   );
+}
+
+export function JobRunState({ row }: { row: OpsHealth["lastJobRuns"][number] }) {
+  if (!row.ok) return <Tag color="red">失败</Tag>;
+  switch (row.outcome?.status) {
+    case "awaiting_authorization": return <Tag color="orange">等待授权</Tag>;
+    case "partial": return <Tag color="orange">部分完成</Tag>;
+    case "unknown": return <Tag>结果未确认</Tag>;
+    case "skipped": return <Tag>未执行</Tag>;
+    case "failed": return <Tag color="red">失败</Tag>;
+    case "succeeded": return <Tag color="green">读取完成</Tag>;
+    default: return <Tag color="green">成功</Tag>;
+  }
 }
 
 function isAbortError(error: unknown): boolean {
@@ -176,6 +314,7 @@ export default function HealthClient() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   const requestSeq = useRef(0);
+  const [runningJob, setRunningJob] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     requestRef.current?.abort();
@@ -229,11 +368,9 @@ export default function HealthClient() {
     );
   }
 
-  const { migrations, backupFreshness } = data;
-  const dbBad = !data.dbOk || migrations.drift;
+  const { backupFreshness } = data;
   const jobBad = data.lastJobRuns.some((r) => !r.ok);
   const errBad = data.errorCount24h > 0;
-  const snapBad = data.snapshotAges.some((r) => r.ageDays === null || r.ageDays > SNAPSHOT_RED_DAYS);
   const backupBad = backupFreshness !== null && backupFreshness.ageHours > BACKUP_RED_HOURS;
 
   const statusCard = (title: string, ok: boolean, body: React.ReactNode) => (
@@ -243,20 +380,69 @@ export default function HealthClient() {
     </Card>
   );
 
-  const jobColumns: ColumnsType<OpsHealth["lastJobRuns"][number]> = [
+  /* 任务目录 = 已登记任务 ∪ 跑过的任务（审计 #10）。
+     只列「跑过的」会漏掉最需要手动触发的那批——从没跑成过的任务。 */
+  const jobRows: JobCatalogRow[] = (() => {
+    const lastByJob = new Map(data.lastJobRuns.map((r) => [r.job, r]));
+    const names = [...new Set([...(data.registeredJobs ?? []), ...data.lastJobRuns.map((r) => r.job)])];
+    return names.map((job) => ({ job, registered: (data.registeredJobs ?? []).includes(job), last: lastByJob.get(job) ?? null }));
+  })();
+
+  const runJob = async (job: string) => {
+    setRunningJob(job);
+    try {
+      const res = await postJson<ManualJobRunResult>(
+        `/api/admin/jobs/${encodeURIComponent(job)}/run`,
+        {},
+      );
+      if (res.ok && res.outcome) {
+        if (res.outcome.status === "succeeded") message.success(res.message);
+        else message.warning(res.message);
+      }
+      else if (res.ok) message.success(`${job} 执行成功（${(res.durationMs / 1000).toFixed(1)}s）`);
+      else message.warning(`${job} 未成功：${res.message}`);
+      await load();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setRunningJob(null);
+    }
+  };
+
+  const jobColumns: ColumnsType<JobCatalogRow> = [
     { title: "任务", dataIndex: "job" },
     {
       title: "结果",
-      dataIndex: "ok",
-      width: 80,
-      render: (ok: boolean) => (ok ? <Tag color="green">成功</Tag> : <Tag color="red">失败</Tag>),
+      width: 110,
+      render: (_, row) =>
+        row.last == null
+          ? <Tag>未运行过</Tag>
+          : <JobRunState row={row.last} />,
     },
-    { title: "完成时间", dataIndex: "finishedAt", width: 170, render: fmtTime },
+    { title: "完成时间", width: 170, render: (_, row) => (row.last ? fmtTime(row.last.finishedAt) : "—") },
     {
       title: "摘要",
-      dataIndex: "message",
       ellipsis: true,
-      render: (v: string | null) => <Typography.Text style={{ fontSize: 12 }}>{v ?? "—"}</Typography.Text>,
+      render: (_, row) => <Typography.Text style={{ fontSize: 12 }}>{row.last?.message ?? "—"}</Typography.Text>,
+    },
+    {
+      title: "操作",
+      width: 120,
+      render: (_, row) =>
+        row.registered ? (
+          <Popconfirm
+            title={`立即运行「${row.job}」？同步类任务可能耗时数分钟，期间不会重复触发。`}
+            onConfirm={() => void runJob(row.job)}
+          >
+            <Button size="small" loading={runningJob === row.job} disabled={runningJob != null}>
+              立即运行
+            </Button>
+          </Popconfirm>
+        ) : (
+          <Tooltip title="该任务不在当前调度目录里（历史遗留记录），不能手动触发">
+            <Typography.Text type="secondary">—</Typography.Text>
+          </Tooltip>
+        ),
     },
   ];
 
@@ -280,18 +466,6 @@ export default function HealthClient() {
     },
     { title: "成功/失败行", width: 110, render: (_, r) => `${r.okRows} / ${r.failRows}` },
     { title: "时间", dataIndex: "createdAt", width: 170, render: fmtTime },
-  ];
-
-  const snapColumns: ColumnsType<OpsHealth["snapshotAges"][number]> = [
-    { title: "仓库", render: (_, r) => `${r.code} ${r.name}` },
-    { title: "最新快照", dataIndex: "latestBizDate", width: 120, render: (v: string | null) => v ?? "从未导入" },
-    {
-      title: "数据龄（天）",
-      dataIndex: "ageDays",
-      width: 120,
-      render: (v: number | null) =>
-        v === null || v > SNAPSHOT_RED_DAYS ? <Tag color="red">{v ?? "∞"}</Tag> : <Tag color="green">{v}</Tag>,
-    },
   ];
 
   const connectorRunColumns: ColumnsType<OpsHealth["connectorRuns"][number]> = [
@@ -387,8 +561,8 @@ export default function HealthClient() {
       dataIndex: "errorSummary",
       width: 210,
       ellipsis: true,
-      render: (value: string | null) => value
-        ? <Typography.Text type="danger">{value}</Typography.Text>
+      render: (value: string | null, row) => value
+        ? <Typography.Text type={row.authorizationBlocked || row.resultInconsistent ? "warning" : "danger"}>{value}</Typography.Text>
         : <Typography.Text type="secondary">—</Typography.Text>,
     },
   ];
@@ -410,19 +584,10 @@ export default function HealthClient() {
 
       <Row gutter={[12, 12]}>
         <Col xs={24} sm={12} md={8} lg={4}>
-          {statusCard("数据库 / 迁移", !dbBad, dbBad ? (
-            <Tag color="red">{!data.dbOk ? "DB 不可用" : "schema 漂移"}</Tag>
-          ) : (
-            <span>
-              正常{" "}
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {migrations.applied === -2 ? `${migrations.files} 个迁移（PG 模式）` : `${migrations.applied}/${migrations.files} 已应用`}
-              </Typography.Text>
-            </span>
-          ))}
+          <MigrationHealthCard dbOk={data.dbOk} migrations={data.migrations} />
         </Col>
         <Col xs={24} sm={12} md={8} lg={4}>
-          {statusCard("定时任务", !jobBad, jobBad ? <Tag color="red">有失败</Tag> : `${data.lastJobRuns.length} 个任务正常`)}
+          {statusCard("任务执行健康", !jobBad, jobBad ? <Tag color="red">有执行失败</Tag> : `${data.lastJobRuns.length} 个任务无执行故障；取数结果见下表`)}
         </Col>
         <Col xs={24} sm={12} md={8} lg={4}>
           {statusCard("24h 错误", !errBad, errBad ? <Tag color="red">{data.errorCount24h} 条</Tag> : "0 条")}
@@ -435,7 +600,7 @@ export default function HealthClient() {
           )}
         </Col>
         <Col xs={24} sm={12} md={8} lg={4}>
-          {statusCard("快照数据龄", !snapBad, snapBad ? <Tag color="red">超 {SNAPSHOT_RED_DAYS} 天</Tag> : "正常")}
+          <SnapshotHealthCard rows={data.snapshotAges} thresholdDays={data.snapshotAgeThresholdDays} />
         </Col>
         <Col xs={24} sm={12} md={8} lg={4}>
           {statusCard(
@@ -452,16 +617,20 @@ export default function HealthClient() {
         </Col>
       </Row>
 
-      <Card size="small" title="任务运行史（各任务最近一次）">
+      <Card size="small" title={`已登记任务与运行史（${jobRows.length} 个；各任务最近一次）`}>
         <Table
           rowKey="job"
           size="small"
           columns={jobColumns}
-          dataSource={data.lastJobRuns}
+          dataSource={jobRows}
           pagination={false}
           scroll={{ x: 1_270 }}
           locale={{ emptyText: "尚无任务运行记录（进程内调度首轮在启动 60 秒后）" }}
         />
+        <Typography.Paragraph type="secondary" style={{ margin: "8px 0 0", fontSize: 12 }}>
+          手动运行与调度走同一条留痕路径（job_runs），另留一条审计记「是谁按的按钮」；
+          同名任务不会并发跑两遍。缺配置/未开开关的任务会返回「未成功」并写明原因——那不是故障，是没配。
+        </Typography.Paragraph>
       </Card>
 
       <Card size="small" title="外部系统连接器（代码、凭据、启用、契约与真实 UAT 分开判定）">
@@ -533,30 +702,7 @@ export default function HealthClient() {
                   <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
                     {connector.blocker ?? "—"}
                   </Typography.Paragraph>
-                  <div>
-                    <Space style={{ justifyContent: "space-between", width: "100%", marginBottom: 4 }}>
-                      <Typography.Text strong>解锁步骤</Typography.Text>
-                      {connector.managementUrl ? (
-                        <Button
-                          type="link"
-                          size="small"
-                          icon={<ExportOutlined />}
-                          href={connector.managementUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          打开官方后台
-                        </Button>
-                      ) : null}
-                    </Space>
-                    <ol style={{ margin: 0, paddingInlineStart: 22 }}>
-                      {connector.remediationSteps.map((step) => (
-                        <li key={step} style={{ marginBottom: 4 }}>
-                          <Typography.Text style={{ fontSize: 12 }}>{step}</Typography.Text>
-                        </li>
-                      ))}
-                    </ol>
-                  </div>
+                  <ConnectorUnlockGuidance connector={connector} />
                   {connector.liveVerifiedAt ? (
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                       验证时间：{fmtTime(connector.liveVerifiedAt)}
@@ -596,6 +742,62 @@ export default function HealthClient() {
         </Row>
       </Card>
 
+      <Card size="small" title="契约就绪：同步了 ≠ 有人读">
+        <Table
+          rowKey={(row) => `${row.connector}:${row.key}`}
+          size="small"
+          pagination={false}
+          scroll={{ x: 1_000 }}
+          dataSource={data.contractConsumers ?? []}
+          locale={{ emptyText: "尚未登记契约消费者" }}
+          columns={[
+            {
+              title: "系统",
+              dataIndex: "connector",
+              width: 100,
+              render: (v: string) => CONNECTOR_LABELS[v] ?? v.toUpperCase(),
+            },
+            {
+              title: "契约 / 数据流",
+              width: 260,
+              render: (_, row) => (
+                <Space direction="vertical" size={0}>
+                  <Typography.Text type={row.consumers.length === 0 ? "secondary" : undefined}>{row.label}</Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }} code>{row.key}</Typography.Text>
+                </Space>
+              ),
+            },
+            {
+              title: "下游读模型",
+              render: (_, row) =>
+                row.consumers.length === 0 ? (
+                  <Tooltip title="同步照常跑、staging 照常长，但没有任何读模型消费它：占三方配额、占存储，对业务零产出。要么接上消费者，要么停掉这条契约。">
+                    <Tag>无消费者</Tag>
+                  </Tooltip>
+                ) : (
+                  <Space wrap size={[4, 4]}>
+                    {row.consumers.map((c) => <Tag key={c} color="blue">{c}</Tag>)}
+                  </Space>
+                ),
+            },
+            {
+              title: "读模型数",
+              width: 100,
+              align: "right",
+              render: (_, row) =>
+                row.consumers.length === 0
+                  ? <Typography.Text type="secondary">0</Typography.Text>
+                  : row.consumers.length,
+            },
+          ]}
+        />
+        <Typography.Paragraph type="secondary" style={{ margin: "8px 0 0", fontSize: 12 }}>
+          「已选 N 条契约」只说明拉数配置齐了，不说明数据有人读。灰行 = 目录未登记下游消费者；实际同步结果另看运行记录
+          （当前 {(data.contractConsumers ?? []).filter((c) => c.consumers.length === 0).length} 条）。
+          本列由 `integrations/contract-consumers.ts` 静态登记，架构门用 grep 逐条比对真实引用，登记漂移即红。
+        </Typography.Paragraph>
+      </Card>
+
       <Card size="small" title="连接器只读权限探测（实时 API，不写业务数据）">
         <Table
           rowKey="connector"
@@ -604,7 +806,7 @@ export default function HealthClient() {
           pagination={false}
           dataSource={data.connectorProbes}
           scroll={{ x: 1_100 }}
-          locale={{ emptyText: "尚无已留痕的权限探测；可手动运行已登记任务" }}
+          locale={{ emptyText: "尚无已留痕的权限探测；可在上方「已登记任务」里手动运行 probe-jst-permissions / probe-yonyou-permissions" }}
           columns={[
             {
               title: "系统",
@@ -671,6 +873,8 @@ export default function HealthClient() {
         />
       </Card>
 
+      <DeletionAckCard />
+
       <Card size="small" title={`最近错误（${data.recentErrors.length} 条 / 24h 共 ${data.errorCount24h} 条）`}>
         <Table
           rowKey="id"
@@ -699,18 +903,151 @@ export default function HealthClient() {
         </Col>
         <Col xs={24} lg={10}>
           <Card size="small" title="快照仓数据龄">
-            <Table
-              rowKey="warehouseId"
-              size="small"
-              columns={snapColumns}
-              dataSource={data.snapshotAges}
-              pagination={false}
-              scroll={{ x: "max-content" }}
-              locale={{ emptyText: "无快照仓" }}
-            />
+            <SnapshotAgeTable rows={data.snapshotAges} thresholdDays={data.snapshotAgeThresholdDays} />
           </Card>
         </Col>
       </Row>
     </Space>
+  );
+}
+
+interface DeletionAckRow {
+  id: number;
+  connector: string;
+  stream: string;
+  sourceRecordId: string;
+  observedInJobId: number;
+  reason: string;
+  ackedAt: string;
+}
+
+/**
+ * 上游删除墓碑（2026-09-05）。
+ *
+ * 为什么这块必须有界面：同步因为「上一批 6448 行、这批 6447 行」而停摆了两天，
+ * 拒绝是对的（没有墓碑就分不清删除与截断），但当时**没有任何让人确认的路径**——
+ * 除了改代码没有别的恢复方式。只有 API 而没有界面等于这条路径仍然不存在。
+ *
+ * 缺失形状只提示完整性风险，不证明删除、分页或权限故障；所有缺失均须回源核实。
+ * 签认不能洗掉截断风险，也不保证批次放行；命中尾部形状守卫仍须升级人工核对。
+ */
+function DeletionAckCard() {
+  const { message } = App.useApp();
+  const [rows, setRows] = useState<DeletionAckRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [stream, setStream] = useState("jst-item-master-mirror-observation");
+  const [recordId, setRecordId] = useState("");
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetchJson<{ rows: DeletionAckRow[] }>("/api/admin/integrations/deletion-ack?connector=jdy");
+      setRows(res.rows);
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [message]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const submit = async () => {
+    setSaving(true);
+    try {
+      await postJson("/api/admin/integrations/deletion-ack", {
+        connector: "jdy", stream: stream.trim(), sourceRecordId: recordId.trim(), reason: reason.trim(),
+      });
+      message.success("已登记删除签认，不代表批次已放行。请先完成回源与提取完整性核对，再由负责人决定是否走受控重试；截断等守卫仍生效，受阻时须升级人工审核。");
+      setRecordId(""); setReason("");
+      await load();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const columns: ColumnsType<DeletionAckRow> = [
+    { title: "数据流", dataIndex: "stream", width: 260, ellipsis: true },
+    { title: "上游记录 ID", dataIndex: "sourceRecordId", width: 230, ellipsis: true },
+    { title: "出现于批次", dataIndex: "observedInJobId", width: 100 },
+    { title: "确认依据", dataIndex: "reason", ellipsis: true },
+    {
+      title: "确认时间", dataIndex: "ackedAt", width: 170,
+      render: (v: string) => new Date(v).toLocaleString("zh-CN"),
+    },
+    {
+      title: "操作", width: 90,
+      render: (_: unknown, row: DeletionAckRow) => (
+        <Popconfirm
+          title="撤销这条确认？"
+          description="撤销后同步会重新拒绝这一条，直到再次确认。"
+          onConfirm={async () => {
+            try {
+              /* 走 fetchJson 而不是裸 fetch：403/404 必须抛出来。
+                 裸 fetch 不看 res.ok，会在服务端拒绝之后照样弹「已撤销」，而行还在。 */
+              await fetchJson(`/api/admin/integrations/deletion-ack?id=${row.id}`, { method: "DELETE" });
+              message.success("已撤销");
+              await load();
+            } catch (e) {
+              message.error((e as Error).message);
+            }
+          }}
+        >
+          <Button size="small" danger type="link">撤销</Button>
+        </Popconfirm>
+      ),
+    },
+  ];
+
+  return (
+    <Card size="small" title="上游删除墓碑（同步因少了记录而停摆时，在这里逐条确认）">
+      <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+        同步报出「新观察缺少旧记录 N 条」时，先核对缺失 ID 与形状提示：
+        <b>「尾部整段消失」</b>或<b>「零散缺失」</b>只是完整性风险线索，不能据此判定真实删除或分页/权限故障。
+        所有缺失均须回源核实，确认真实删除后再逐条签认；签认不绕过截断守卫，也不保证本批次放行。
+        命中尾部形状守卫仍须升级人工核对，不可借签满记录绕过。确认会写审计，签错了可以撤销。
+      </Typography.Paragraph>
+      <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
+        <Input
+          style={{ width: 300 }}
+          value={stream}
+          onChange={(e) => setStream(e.target.value)}
+          placeholder="数据流（contractKey）"
+        />
+        <Input
+          style={{ width: 260 }}
+          value={recordId}
+          onChange={(e) => setRecordId(e.target.value)}
+          placeholder="上游记录 ID（sourceRecordId）"
+        />
+        <Input
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="确认依据（至少 4 个字，一年后要有人看得懂）"
+        />
+        <Button
+          type="primary"
+          loading={saving}
+          disabled={!stream.trim() || !recordId.trim() || reason.trim().length < 4}
+          onClick={submit}
+        >
+          确认删除
+        </Button>
+      </Space.Compact>
+      <Table
+        rowKey="id"
+        size="small"
+        loading={loading}
+        columns={columns}
+        dataSource={rows}
+        pagination={false}
+        scroll={{ x: "max-content" }}
+        locale={{ emptyText: "尚无删除墓碑" }}
+      />
+    </Card>
   );
 }

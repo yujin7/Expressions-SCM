@@ -13,6 +13,12 @@ This is the terminal verification primary, not an implementation companion. Acti
 the implementation skill has produced an exact candidate; add `parallel-sessions` only while
 shared state makes the evidence unstable.
 
+During implementation, use focused development checks rather than repeatedly invoking this gate
+after every small edit. Batch a coherent change, then verify its exact candidate. Documentation or
+skill-only reviews can report their own link/metadata/scenario checks without building the app;
+that is not an application `READY` verdict. If application code or tests also changed, they remain
+part of the candidate and must not be hidden to obtain a documentation-only conclusion.
+
 ## Anchor and verify
 
 1. Record commit, branch, dirty paths, target environment, migration/config version, evidence cutoff, rollout, and rollback.

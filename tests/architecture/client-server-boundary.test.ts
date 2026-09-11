@@ -20,7 +20,12 @@ import path from "node:path";
 const SRC = path.resolve(__dirname, "../../src");
 
 /** 自身零 import 的纯数据模块——进客户端包无害 */
-const PURE_CONSTANT_ALLOWLIST = ["@/server/core/constants"];
+const PURE_CONSTANT_ALLOWLIST = [
+  "@/server/core/constants",
+  /* 业务日唯一权威：自身零 import（由 business-day-single-authority 门守住），
+     客户端也必须用同一个日界——补货页的「今日」和服务端的「今日」不一致就是脏数据 */
+  "@/server/core/business-day",
+];
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {

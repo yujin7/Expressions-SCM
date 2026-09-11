@@ -13,7 +13,9 @@ import {
   InputNumber,
   Modal,
   Popover,
+  Select,
   Space,
+  Switch,
   Table,
   Tag,
   Tooltip,
@@ -26,6 +28,12 @@ import { formatQty } from "@/components/format";
 import ProjectionDrawer from "@/components/ProjectionDrawer";
 import CaliberNote from "@/components/CaliberNote";
 import { useListState } from "@/components/useListState";
+import { hasAnyRole, useMe } from "@/components/useMe";
+import { DECLINE_REASON_LABELS, type DeclineReasonCode } from "@/lib/replenish-decline-reasons";
+import { HELD_QTY_LABEL, replenishDraftItems, type ReplenishDraftItem } from "@/lib/replenish-draft";
+import { metricTooltip } from "@/components/metrics";
+import DeclineSuggestionModal, { type DeclineResult, type DeclineTarget } from "./decline-modal";
+import { todayShanghai } from "@/server/core/business-day";
 
 interface ReplenishRow {
   skuId: number;
@@ -34,10 +42,18 @@ interface ReplenishRow {
   brand: string | null;
   baseUom: string;
   onHand: number;
+  availableOnHand: number;
+  expiryRisk: {
+    unsellableQty: number; expiredQty: number; atRiskQty: number; batches: number;
+    minDaysLeft: number | null; bindingDaysLeft: number | null; horizonDays: number; label: string;
+  } | null;
   inTransit: number;
   daily: number;
   daysCover: number | null;
   suggestQty: string | null;
+  /** C10：另一页（先挪后买 / 调拨建议）已经为这个 SKU 起草的量——只提示，不参与本页净额 */
+  inFlightDrafts: { buyQty: number; buyDocs: number; transferQty: number; transferDocs: number };
+  inFlightWarning: string | null;
   refQty: number | null;
   onOrder: number | null;
   legacyTransit: number;
@@ -45,6 +61,26 @@ interface ReplenishRow {
   borrowOut: number;
   abcClass: "A" | "B" | "C" | null;
   effectiveTarget: number;
+  /** W3：目标覆盖天数来自哪一层（页面/分域参数/ABC 分层/全局） */
+  targetBasis: {
+    value: number;
+    source: "user" | "sku" | "brand" | "segment" | "global" | "abc_a" | "abc_b" | "abc_c";
+    scope: string | null;
+    abcClass: "A" | "B" | "C" | null;
+    label: string;
+  };
+  /** W3：安全库存兜底天数命中的分域层 */
+  safetyDaysBasis: { value: number; layer: "sku" | "brand" | "segment" | "global" | "fallback"; scope: string; label: string };
+  /** W3：没有建议时的结构化原因 */
+  noSuggestReason: { code: string; label: string; text: string } | null;
+  /** D58 四档（最近固化期，含覆写）；null = 未固化 */
+  tier: "S" | "A" | "B" | "C" | null;
+  tierOverridden: boolean;
+  /** D59 权责 */
+  ownership: "supply_chain_direct" | "joint_review" | "ops_fallback" | null;
+  ownershipLabel: string | null;
+  pilot: boolean;
+  planEventTags: string[];
   leadDays: number | null;
   productionLeadDays: number | null;
   logisticsLeadDays: number | null;
@@ -57,6 +93,16 @@ interface ReplenishRow {
   forecastTrend: "up" | "down" | "flat";
   forecastDivergent: boolean;
   forecastTrusted: boolean;
+  /** B7：该 SKU 的预测误差（滚动回测） */
+  forecastAccuracy: { samples: number; wape: number | null; bias: number | null; fva: number | null; reliable: boolean };
+  /** W5：当日已复核并放弃（服务端权威，全员可见） */
+  declinedToday: { by: string; at: string; reason: string; reasonCode: DeclineReasonCode; businessDate: string } | null;
+  /** W2-#6：生效中的放弃抑制窗口（下一次运行不再重复建议；行上必须可见、可解除） */
+  suppression: {
+    id: number; reasonCode: DeclineReasonCode; reasonLabel: string; reason: string; by: string;
+    since: string; untilDate: string; daysLeft: number; releaseOnArrival: boolean;
+    withheldQty: string | null; label: string;
+  } | null;
   safetyQty: number;
   safetyMethod: string;
   shortageDate: string | null;
@@ -64,6 +110,10 @@ interface ReplenishRow {
   orderByDate: string | null;
   orderWindowMissed: boolean;
   planExplain: string[];
+  /** R11 规整警告（超买 / 已按单次上限下调 / MOQ 与上限自相矛盾） */
+  lotWarnings: { level: "info" | "warn" | "blocking"; message: string }[];
+  /** 超买折算天数（相对日均；无日均 = null） */
+  overshootDays: number | null;
   externalDaily30: number | null;
   externalDaily30Gate: string | null;
   externalLastSold: string | null;
@@ -80,16 +130,70 @@ interface ReplenishResult {
     suggestCount: number;
     refDate: string | null;
     suppressedCount: number;
+    declineSuppressedCount: number;
     engine: string;
     serviceLevel: number;
+    policyPeriod: string | null;
+    hiddenTierC: number;
+    ownershipMix: Record<"supply_chain_direct" | "joint_review" | "ops_fallback", number>;
   };
 }
+
+/** /api/outsource/duplicate-check 的命中行（服务端 RecentOrderHit 的结构镜像） */
+interface DupHit {
+  docType: string;
+  docNo: string;
+  status: string;
+  qty: number;
+  daysAgo: number;
+}
+
+/** /api/replenish/sop 的 liveSuggestionsFreeze（服务端 LiveSuggestionsFreeze 的结构镜像） */
+interface SopFreeze {
+  frozen: boolean;
+  cycle: { id: number; month: string; name: string; status: string } | null;
+  month: string;
+}
+
+interface PlanEventRow {
+  id: number;
+  kindLabel: string;
+  channelName: string | null;
+  startDate: string;
+  endDate: string | null;
+  expectedUpliftPct: number | null;
+  note: string | null;
+  createdBy: string | null;
+  phase: "upcoming" | "active" | "past";
+}
+
+const TIER_COLORS: Record<string, string> = { S: "magenta", A: "red", B: "orange", C: "default" };
+/** W3 目标覆盖天数来源的短标签（完整解释在 tooltip 的 targetBasis.label 里） */
+const TARGET_SOURCE_TAG: Record<string, string> = {
+  user: "页面",
+  sku: "SKU 覆盖",
+  brand: "品牌覆盖",
+  segment: "分层覆盖",
+  global: "全局",
+  abc_a: "A 类",
+  abc_b: "B 类",
+  abc_c: "C 类",
+};
+const OWNERSHIP_COLORS: Record<string, string> = { supply_chain_direct: "green", joint_review: "gold", ops_fallback: "default" };
+const TIER_OPTIONS = [
+  { value: "S", label: "S 级" }, { value: "A", label: "A 级" }, { value: "B", label: "B 级" }, { value: "C", label: "C 级" }, { value: "none", label: "未固化" },
+];
+const OWNERSHIP_OPTIONS = [
+  { value: "supply_chain_direct", label: "供应链直出" }, { value: "joint_review", label: "联合评审" }, { value: "ops_fallback", label: "运营按需" },
+];
 
 type ReplenishSortBy =
   | "code"
   | "name"
   | "brand"
   | "abcClass"
+  | "tier"
+  | "ownership"
   | "onHand"
   | "inTransit"
   | "legacyTransit"
@@ -103,10 +207,37 @@ type ReplenishSortBy =
   | "daysCover"
   | "coverFull"
   | "leadDays"
-  | "suggestQty";
+  | "suggestQty"
+  | "orderByDate"
+  | "daysToShortage";
 
 type ReplenishSortOrder = "ascend" | "descend";
 
+/* 闭环审计 #12 / W5：「不采纳」的权威状态由服务端下发（row.declinedToday，取自审计台账，全员可见）。
+   sessionStorage 只留作**乐观提示**：点完到下一次拉取之间先把标打上，拉取回来即以服务端为准。 */
+const DECLINED_STORE = "replenish:declined";
+const shanghaiToday = todayShanghai; // 日界只有 core/business-day 一处实现
+function loadDeclinedToday(): Record<number, DeclineResult> {
+  try {
+    const raw = sessionStorage.getItem(DECLINED_STORE);
+    if (!raw) return {};
+    const today = shanghaiToday();
+    const out: Record<number, DeclineResult> = {};
+    for (const v of Object.values(JSON.parse(raw) as Record<string, DeclineResult>)) {
+      if (v && v.businessDate === today) out[v.skuId] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+function saveDeclined(map: Record<number, DeclineResult>): void {
+  try {
+    sessionStorage.setItem(DECLINED_STORE, JSON.stringify(map));
+  } catch {
+    // 存储不可用（隐私模式等）时只保留内存态
+  }
+}
 
 function SharedPackagingPanel({ skuId }: { skuId: number }) {
   const [items, setItems] = useState<{ materialCode: string; materialName: string; baseUom: string; onHand: string; sharedCount: number; sharedWith: { code: string }[] }[] | null>(null);
@@ -156,6 +287,45 @@ function SharedPackagingPanel({ skuId }: { skuId: number }) {
   );
 }
 
+/** D55：运营计划事件只作行上下文，不进公式；受限用户按渠道范围裁剪（API 侧） */
+function PlanEventsPanel({ skuId }: { skuId: number }) {
+  const [rows, setRows] = useState<PlanEventRow[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    setRows(null);
+    setLoadError(null);
+    try {
+      const data = await fetchJson<{ rows?: PlanEventRow[] }>(`/api/planning/events?skuId=${skuId}&openOnly=1&pageSize=20`);
+      setRows(data.rows ?? []);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "计划事件加载失败");
+    }
+  }, [skuId]);
+  useEffect(() => { void load(); }, [load]);
+  if (loadError) {
+    return <Alert type="error" showIcon message="计划事件加载失败" description={loadError} action={<Button size="small" onClick={() => void load()}>重试</Button>} />;
+  }
+  if (rows == null) return <Typography.Text type="secondary">载入运营计划事件…</Typography.Text>;
+  return (
+    <Space direction="vertical" size={4} style={{ padding: "4px 0" }}>
+      <Typography.Text strong style={{ fontSize: 12 }}>
+        运营计划事件（未结束，只作上下文、不改建议量）：
+        <Link href="/replenish/reconcile" style={{ marginLeft: 8, fontSize: 12 }}>去提报核对 →</Link>
+      </Typography.Text>
+      {rows.length === 0 ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>无未结束的计划事件</Typography.Text> : rows.map((e) => (
+        <Typography.Text key={e.id} style={{ fontSize: 12 }}>
+          <Tag color={e.phase === "active" ? "processing" : "default"} style={{ marginInlineEnd: 4 }}>{e.phase === "active" ? "进行中" : "即将"}</Tag>
+          <b>{e.kindLabel}</b> {e.startDate}{e.endDate ? ` ~ ${e.endDate}` : " 起"}
+          {e.channelName ? `　渠道 ${e.channelName}` : "　全渠道"}
+          {e.expectedUpliftPct != null ? `　预期 ${e.expectedUpliftPct > 0 ? "+" : ""}${e.expectedUpliftPct}%` : ""}
+          {e.note ? `　${e.note}` : ""}
+          {e.createdBy ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>　（{e.createdBy}）</Typography.Text> : null}
+        </Typography.Text>
+      ))}
+    </Space>
+  );
+}
+
 export default function ReplenishClient() {
   const { message } = App.useApp();
   const listState = useListState({
@@ -164,8 +334,13 @@ export default function ReplenishClient() {
       q: "",
       coverDays: "45",
       minCover: "30",
-      sortBy: "coverFull",
+      // 缺省按「最晚下单日」升序（服务端 REPLENISH_DEFAULT_SORT_BY 同值）——先看今天必须动的
+      sortBy: "orderByDate",
       sortOrder: "ascend",
+      tier: "",
+      ownership: "",
+      // D58：C 级默认折叠（运营兜底），需要时手动展开
+      hideTierC: "1",
     },
     defaultPageSize: 50,
   });
@@ -175,20 +350,52 @@ export default function ReplenishClient() {
   const minCover = Number(filters.minCover) || 30;
   const sortBy = filters.sortBy as ReplenishSortBy;
   const sortOrder = filters.sortOrder as ReplenishSortOrder;
+  const tier = filters.tier;
+  const ownership = filters.ownership;
+  const hideTierC = filters.hideTierC === "1";
   const [data, setData] = useState<ReplenishResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  /* 开屏就问「当月 S&OP 是否已冻结」（/api/replenish/sop 的 liveSuggestionsFreeze，
+     与提交闸门 assertLiveSuggestionsWritable 同一判定）——此前不问，
+     用户勾满 200 行、点提交才吃 409，一次白干还容易被当成系统故障。 */
+  const [sopFreeze, setSopFreeze] = useState<SopFreeze | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetchJson<{ liveSuggestionsFreeze: SopFreeze }>("/api/replenish/sop")
+      .then((d) => { if (alive) setSopFreeze(d.liveSuggestionsFreeze ?? null); })
+      .catch(() => { /* 横幅是增益信息，取不到就不显示，绝不阻断建议页 */ });
+    return () => { alive = false; };
+  }, []);
+
+  /* E3-03 重复下单守卫**逐行前置**：此前只在确认弹窗里查一次，
+     用户是在勾完之后才知道「这个 SKU 三天前已经开过单」——那时判断已经做完了。
+     现在按当前页 SKU 预取，直接上列，勾之前就能看见。只提示，不阻断。 */
+  const [pageDupHits, setPageDupHits] = useState<Record<number, DupHit[]>>({});
+  const pageSkuIds = (data?.rows ?? []).map((r) => r.skuId).join(",");
+  useEffect(() => {
+    if (!pageSkuIds) { setPageDupHits({}); return; }
+    let alive = true;
+    fetchJson<{ hitsBySku: Record<number, DupHit[]> }>(`/api/outsource/duplicate-check?skuIds=${pageSkuIds}&days=7`)
+      .then((d) => { if (alive) setPageDupHits(d.hitsBySku ?? {}); })
+      .catch(() => { if (alive) setPageDupHits({}); });
+    return () => { alive = false; };
+  }, [pageSkuIds]);
+
   const [selectedRows, setSelectedRows] = useState<ReplenishRow[]>([]);
+  /* 弹窗展示与提交载荷的唯一来源（@/lib/replenish-draft）：
+     被抑制行的数量取 heldQty，标「放行保留量」；两者皆空的行根本不成单。 */
+  const draftItems = useMemo(() => replenishDraftItems(selectedRows), [selectedRows]);
   const [confirmOpen, setConfirmOpen] = useState(false);
   /* E3-03 重复下单守卫：打开确认框时查近 7 天未结 BH/WO（提示不阻断） */
-  const [dupHits, setDupHits] = useState<Record<number, { docType: string; docNo: string; status: string; qty: number; daysAgo: number }[]>>({});
+  const [dupHits, setDupHits] = useState<Record<number, DupHit[]>>({});
   const openConfirm = useCallback(() => {
     setConfirmOpen(true);
     setDupHits({});
     const ids = selectedRows.map((r) => r.skuId);
     if (ids.length === 0) return;
-    fetchJson<{ hitsBySku: Record<number, { docType: string; docNo: string; status: string; qty: number; daysAgo: number }[]> }>(
+    fetchJson<{ hitsBySku: Record<number, DupHit[]> }>(
       `/api/outsource/duplicate-check?skuIds=${ids.join(",")}&days=7`,
     )
       .then((d) => setDupHits(d.hitsBySku ?? {}))
@@ -198,6 +405,12 @@ export default function ReplenishClient() {
   const [submitting, setSubmitting] = useState(false);
   const [createdDocNo, setCreatedDocNo] = useState<string | null>(null);
   const [projSku, setProjSku] = useState<string | null>(null);
+  // 闭环审计 #12：「不采纳」（pmc/admin；服务端 requireAnyRole 仍是权威）
+  const me = useMe();
+  const canDecline = hasAnyRole(me, "pmc");
+  const [declineTarget, setDeclineTarget] = useState<DeclineTarget | null>(null);
+  const [declined, setDeclined] = useState<Record<number, DeclineResult>>({});
+  useEffect(() => { setDeclined(loadDeclinedToday()); }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -212,6 +425,9 @@ export default function ReplenishClient() {
         sortBy,
         sortOrder,
       });
+      if (tier) params.set("tier", tier);
+      if (ownership) params.set("ownership", ownership);
+      if (hideTierC) params.set("hideTierC", "1");
       const res = await fetchJson<ReplenishResult>(`/api/replenish/suggestions?${params.toString()}`);
       setData(res);
     } catch (e) {
@@ -223,11 +439,26 @@ export default function ReplenishClient() {
     } finally {
       setLoading(false);
     }
-  }, [coverDays, minCover, q, page, pageSize, sortBy, sortOrder, message]);
+  }, [coverDays, minCover, q, page, pageSize, sortBy, sortOrder, tier, ownership, hideTierC, message]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  /* W2-#6 解除抑制：抑制既不静默，也不是单向门——任何计划员随手就能撤回。 */
+  const clearSuppression = useCallback(async (id: number, code: string) => {
+    try {
+      await fetchJson("/api/replenish/decline", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      message.success(`已解除 ${code} 的建议抑制，下次运行即恢复建议`);
+      void load();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "解除失败");
+    }
+  }, [load, message]);
 
   // 数据刷新后同步勾选：当前页内的行以最新建议量为准，建议消失则剔除；不在当前页的保留（跨页勾选）
   useEffect(() => {
@@ -248,7 +479,8 @@ export default function ReplenishClient() {
     try {
       const res = await postJson<{ id: number; docNo: string }>("/api/replenish/draft", {
         remark: remark.trim() || undefined,
-        items: selectedRows.slice(0, 200).map((r) => ({ skuId: r.skuId, qty: r.suggestQty ?? r.heldQty })),
+        // 与弹窗同源（@/lib/replenish-draft）：显示的数就是提交的数
+        items: draftItems.slice(0, 200).map((r) => ({ skuId: r.skuId, qty: r.qty })),
       });
       setCreatedDocNo(res.docNo);
       setConfirmOpen(false);
@@ -262,6 +494,7 @@ export default function ReplenishClient() {
     }
   };
 
+  const policyPeriod = data?.meta.policyPeriod ?? null;
   const columns: ColumnsType<ReplenishRow> = useMemo(
     () => {
       const sortable = (key: ReplenishSortBy) => ({
@@ -279,9 +512,73 @@ export default function ReplenishClient() {
         render: (v: string | null, r: ReplenishRow) => v ? <Tooltip title={`ABC ${v} 类——目标覆盖 ${r.effectiveTarget} 天（分层策略，可在运行参数调）`}><Tag color={v === "A" ? "red" : v === "B" ? "orange" : "default"}>{v}</Tag></Tooltip> : "—",
       },
       {
+        // W3：目标覆盖天数此前只是「分层」列 tooltip 里的一句话，看不出到底是页面输入、分域覆盖还是分层参数在起作用
+        title: "目标天数", dataIndex: "effectiveTarget", width: 96, align: "right" as const,
+        render: (v: number, r: ReplenishRow) => (
+          <Tooltip
+            title={
+              <span style={{ whiteSpace: "pre-line" }}>
+                {`目标覆盖：${r.targetBasis.label}\n安全库存兜底：${r.safetyDaysBasis.label}\n（优先级：页面指定 > 分域覆盖 sku/品牌/分层 > ABC 分层参数 > 全局缺省）`}
+              </span>
+            }
+          >
+            <Space size={2}>
+              <span>{v} 天</span>
+              <Tag
+                color={r.targetBasis.source === "user" ? "blue" : r.targetBasis.source.startsWith("abc_") ? "default" : r.targetBasis.source === "global" ? "default" : "purple"}
+                style={{ marginInlineEnd: 0 }}
+              >
+                {TARGET_SOURCE_TAG[r.targetBasis.source]}
+              </Tag>
+            </Space>
+          </Tooltip>
+        ),
+      },
+      {
+        title: "四档", dataIndex: "tier", width: 82, align: "center" as const, ...sortable("tier"),
+        render: (v: ReplenishRow["tier"], r: ReplenishRow) => v
+          ? (
+            <Tooltip title={`${v} 级（${policyPeriod ?? ""} 期固化${r.tierOverridden ? "，人工覆写" : ""}${r.pilot ? "，已纳入试点" : ""}）`}>
+              <Space size={2}>
+                <Tag color={TIER_COLORS[v]} style={{ marginInlineEnd: 0 }}>{v}{r.tierOverridden ? "*" : ""}</Tag>
+                {r.pilot ? <Tag color="cyan" style={{ marginInlineEnd: 0 }}>试点</Tag> : null}
+              </Space>
+            </Tooltip>
+          )
+          : <Tooltip title="尚未固化分层（sku_planning_policy 为空或本 SKU 未入本期）——在「补货试点候选」页执行本期固化"><Typography.Text type="secondary">未固化</Typography.Text></Tooltip>,
+      },
+      {
+        title: "权责", dataIndex: "ownership", width: 110, align: "center" as const, ...sortable("ownership"),
+        render: (v: ReplenishRow["ownership"], r: ReplenishRow) => v
+          ? (
+            <Space size={2} wrap>
+              <Tag color={OWNERSHIP_COLORS[v]} style={{ marginInlineEnd: 0 }}>{v === "ops_fallback" ? "运营兜底" : r.ownershipLabel}</Tag>
+              {r.planEventTags.slice(0, 2).map((t) => <Tag key={t} color="purple" style={{ marginInlineEnd: 0 }}>{t}</Tag>)}
+            </Space>
+          )
+          : "—",
+      },
+      {
         title: "系统口径",
         children: [
-          { title: "在库", dataIndex: "onHand", width: 105, align: "right" as const, ...sortable("onHand"), render: (v: number) => v.toLocaleString("zh-CN") },
+          { title: "在库（账面）", dataIndex: "onHand", width: 110, align: "right" as const, ...sortable("onHand"), render: (v: number) => v.toLocaleString("zh-CN") },
+          {
+            /* W2-#2：临期与已过期批次此前一并算作可用，引擎判「够」→ 批次过期报废 = 结构性缺货。
+               账面在库照旧显示，可用在库单列，扣了多少、为什么，都在 tooltip 里。 */
+            title: "可用在库", dataIndex: "availableOnHand", width: 120, align: "right" as const,
+            render: (v: number, r: ReplenishRow) => r.expiryRisk && r.expiryRisk.unsellableQty > 0
+              ? (
+                <Tooltip title={r.expiryRisk.label}>
+                  <Space size={2}>
+                    <Typography.Text type="danger">{v.toLocaleString("zh-CN")}</Typography.Text>
+                    <Tag color="orange" style={{ marginInlineEnd: 0 }}>临期 −{r.expiryRisk.unsellableQty.toLocaleString("zh-CN")}</Tag>
+                  </Space>
+                </Tooltip>
+              )
+              : r.expiryRisk
+                ? <Tooltip title={r.expiryRisk.label}><span>{v.toLocaleString("zh-CN")}</span></Tooltip>
+                : v.toLocaleString("zh-CN"),
+          },
           { title: "PO 在途", dataIndex: "inTransit", width: 105, align: "right" as const, ...sortable("inTransit"), render: (v: number) => v.toLocaleString("zh-CN") },
         ],
       },
@@ -354,6 +651,41 @@ export default function ReplenishClient() {
             },
           },
           {
+            // B7：回测本就在引擎里算好（用于门控预测），此前只在内部当开关用，计划员看不到「这条建议该信几分」
+            title: <Tooltip title={metricTooltip("wape")}>预测误差</Tooltip>,
+            key: "forecastAccuracy",
+            width: 120,
+            align: "right" as const,
+            render: (_: unknown, r: ReplenishRow) => {
+              const a = r.forecastAccuracy;
+              if (a.wape == null) {
+                return (
+                  <Tooltip title={`无法回测：${a.samples === 0 ? "历史不足 4 个月，滚动回测起不了测" : "该 SKU 回测期实际销量合计为 0"}——预测列仅供参考`}>
+                    <Typography.Text type="secondary">—</Typography.Text>
+                  </Tooltip>
+                );
+              }
+              const pct = Math.round(a.wape * 1000) / 10;
+              const color = !a.reliable ? "default" : pct <= 30 ? "green" : pct <= 60 ? "gold" : "red";
+              return (
+                <Tooltip
+                  title={
+                    <span style={{ whiteSpace: "pre-line" }}>
+                      {[
+                        metricTooltip("wape"),
+                        `本 SKU：WAPE ${pct}%，偏差 ${a.bias == null ? "—" : `${a.bias > 0 ? "+" : ""}${Math.round(a.bias * 1000) / 10}%`}（${a.bias == null ? "无法判定" : a.bias > 0.1 ? "系统性高估，会备多" : a.bias < -0.1 ? "系统性低估，有断货风险" : "无明显系统性偏差"}），回测 ${a.samples} 期`,
+                        a.fva == null ? "" : a.fva > 0 ? `优于「下月＝上月」朴素预测 ${Math.round(a.fva * 1000) / 10} 个点` : "不优于「下月＝上月」朴素预测——该 SKU 的预测不宜作为判断依据",
+                        a.reliable ? "" : "样本 < 3 期，结论参考价值有限",
+                      ].filter(Boolean).join("\n")}
+                    </span>
+                  }
+                >
+                  <Tag color={color} style={{ marginInlineEnd: 0 }}>{pct}%{a.reliable ? "" : "?"}</Tag>
+                </Tooltip>
+              );
+            },
+          },
+          {
             title: "可销（系统）", dataIndex: "daysCover", width: 135, align: "right" as const, ...sortable("daysCover"),
             render: (v: number | null, r: ReplenishRow) => {
               const body = v == null ? <Typography.Text type="secondary">无动销</Typography.Text>
@@ -405,11 +737,27 @@ export default function ReplenishClient() {
                 </div>
               }
             >
-              <Space size={4} style={{ cursor: "pointer" }}>
+              <Space size={4} style={{ cursor: "pointer" }} wrap>
                 <Tag color="orange" style={{ marginInlineEnd: 0 }}>
                   {Number(v).toLocaleString("zh-CN")}
                 </Tag>
                 <Typography.Text type="secondary">{r.baseUom}</Typography.Text>
+                {/* R11 规整警告：MOQ/箱规导致的超买、单次上限下调、策略自相矛盾——
+                    规则一直会算，只是服务端此前不传 maxOrder/dailyDemand，警告永远为空 */}
+                {r.lotWarnings.map((w, i) => (
+                  <Tooltip key={i} title={w.message}>
+                    <Tag color={w.level === "blocking" ? "error" : "warning"} style={{ marginInlineEnd: 0 }}>
+                      {w.level === "blocking" ? "策略冲突" : w.message.includes("单次上限") ? "已按上限下调" : `超买${r.overshootDays != null ? ` ${r.overshootDays} 天` : ""}`}
+                    </Tag>
+                  </Tooltip>
+                ))}
+                {/* C10：先挪后买页可能已经为同一个缺口起草了调拨——本页仍按**全额**建议，
+                    两页各下一次就多订一个调拨量。只提示不自动扣减（草稿随时会被驳回或改量）。 */}
+                {r.inFlightWarning ? (
+                  <Tooltip title={r.inFlightWarning}>
+                    <Tag color="gold" style={{ marginInlineEnd: 0 }}>另一页已起草</Tag>
+                  </Tooltip>
+                ) : null}
               </Space>
             </Popover>
           ) : r.suppressReason ? (
@@ -419,9 +767,83 @@ export default function ReplenishClient() {
                 {r.heldQty ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>({Number(r.heldQty).toLocaleString("zh-CN")})</Typography.Text> : null}
               </Space>
             </Tooltip>
+          ) : r.noSuggestReason ? (
+            <Tooltip title={r.noSuggestReason.text}>
+              <Tag style={{ marginInlineEnd: 0, color: "#8c8c8c", borderStyle: "dashed" }}>{r.noSuggestReason.label}</Tag>
+            </Tooltip>
           ) : (
             "—"
           ),
+      },
+      {
+        /* E2-05 决策列：引擎早就算出这三个数（DTO 里一直有），此前一个都不上屏，
+           计划员只能用「可销天数」近似——可销不含生产周期，短周期 SKU 因此被误判为急。 */
+        title: "最晚下单日",
+        dataIndex: "orderByDate",
+        width: 145,
+        align: "center" as const,
+        ...sortable("orderByDate"),
+        render: (v: string | null, r: ReplenishRow) => (
+          v == null
+            ? <Tooltip title={r.leadDays == null ? "未维护生产周期，无法倒推最晚下单日——请在「供应参数」补齐" : "视野内未触发短缺，无需倒推下单日"}><Typography.Text type="secondary">—</Typography.Text></Tooltip>
+            : (
+              <Tooltip title={`短缺日 ${r.shortageDate ?? "—"} 减去总供应周期 ${r.leadDays ?? "—"} 天${r.orderWindowMissed ? "；该日已过，现在下单也来不及，短缺已不可避免" : ""}`}>
+                <Space size={4}>
+                  <span>{v}</span>
+                  {r.orderWindowMissed ? <Tag color="red" style={{ marginInlineEnd: 0 }}>窗口已过</Tag> : null}
+                </Space>
+              </Tooltip>
+            )
+        ),
+      },
+      {
+        title: "距短缺天数",
+        dataIndex: "daysToShortage",
+        width: 125,
+        align: "right" as const,
+        ...sortable("daysToShortage"),
+        render: (v: number | null, r: ReplenishRow) => (
+          v == null
+            ? <Typography.Text type="secondary">—</Typography.Text>
+            : <Tooltip title={`预计 ${r.shortageDate ?? "—"} 跌破安全库存 ${r.safetyQty.toLocaleString("zh-CN")} ${r.baseUom}`}><span>{v} 天</span></Tooltip>
+        ),
+      },
+      {
+        title: "安全库存",
+        dataIndex: "safetyQty",
+        width: 125,
+        align: "right" as const,
+        render: (v: number, r: ReplenishRow) => (
+          <Tooltip title={`取值方法：${r.safetyMethod}`}>
+            <span>{v.toLocaleString("zh-CN")} {r.baseUom}</span>
+          </Tooltip>
+        ),
+      },
+      {
+        title: "可见未结单",
+        key: "recentOrders",
+        width: 135,
+        align: "center" as const,
+        render: (_: unknown, r: ReplenishRow) => {
+          const hits = pageDupHits[r.skuId] ?? [];
+          if (hits.length === 0) return <Typography.Text type="secondary">—</Typography.Text>;
+          const bh = hits.filter((h) => h.docType === "BH").length;
+          const wo = hits.length - bh;
+          return (
+            <Tooltip
+              title={
+                <span style={{ whiteSpace: "pre-line" }}>
+                  {`近 7 天可见未结单据（只提示不阻断）：\n${hits.map((h) => `${h.docType} ${h.docNo}（${h.status}，${h.qty.toLocaleString("zh-CN")}，${h.daysAgo} 天前）`).join("\n")}`}
+                </span>
+              }
+            >
+              <Space size={4}>
+                {bh > 0 ? <Tag color="gold" style={{ marginInlineEnd: 0 }}>BH×{bh}</Tag> : null}
+                {wo > 0 ? <Tag color="geekblue" style={{ marginInlineEnd: 0 }}>WO×{wo}</Tag> : null}
+              </Space>
+            </Tooltip>
+          );
+        },
       },
       {
         title: "库存曲线",
@@ -430,9 +852,56 @@ export default function ReplenishClient() {
         align: "center",
         render: (_: unknown, r: ReplenishRow) => <a onClick={() => setProjSku(r.code)}>查看</a>,
       },
+      {
+        /* W5：放弃状态对**所有人**可见（服务端下发），只有计划员看得到「不采纳」入口 */
+        title: "复核",
+        key: "decline",
+        width: 120,
+        align: "center" as const,
+        render: (_: unknown, r: ReplenishRow) => {
+          /* W2-#6：抑制窗口优先展示——被抑制的行必须**在行上**说出「谁、为什么、压到哪天」，
+             并且随手就能解除。抑制静默地改变建议，比不抑制更糟。 */
+          if (r.suppression) {
+            const s = r.suppression;
+            return (
+              <Space size={2} direction="vertical" style={{ lineHeight: 1.4 }}>
+                <Tooltip title={s.label}>
+                  <Tag color="volcano" style={{ marginInlineEnd: 0 }}>已抑制 · {s.reasonLabel}</Tag>
+                </Tooltip>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  至 {s.untilDate}（{s.daysLeft} 天）
+                </Typography.Text>
+                {canDecline ? <a onClick={() => void clearSuppression(s.id, r.code)}>解除抑制</a> : null}
+              </Space>
+            );
+          }
+          // 服务端（审计台账）优先；本地乐观提示只在服务端尚未刷新到时兜底
+          const server = r.declinedToday;
+          const local = declined[r.skuId];
+          if (server || local) {
+            const reasonCode = server?.reasonCode ?? local!.reasonCode;
+            const label = DECLINE_REASON_LABELS[reasonCode]?.label ?? reasonCode;
+            const title = server
+              ? `${server.by} 于 ${new Date(server.at).toLocaleString("zh-CN", { hourCycle: "h23" })} 复核并放弃（${label}）${server.reason ? `：${server.reason}` : ""}；已留痕审计，不进采纳率分母`
+              : `本次已提交放弃（${label}），刷新后以服务端记录为准`;
+            return (
+              <Tooltip title={title}>
+                <Tag style={{ marginInlineEnd: 0 }}>{server ? `${server.by} 已放弃` : "今日已放弃（待刷新）"}</Tag>
+              </Tooltip>
+            );
+          }
+          if (!canDecline) return "—";
+          if (r.suggestQty == null && r.heldQty == null) return "—";
+          return (
+            <a onClick={() => setDeclineTarget({ skuId: r.skuId, code: r.code, name: r.name, baseUom: r.baseUom, suggestQty: r.suggestQty, heldQty: r.heldQty })}>
+              不采纳
+            </a>
+          );
+        },
+      },
     ];
     },
-    [sortBy, sortOrder],
+    [sortBy, sortOrder, policyPeriod, canDecline, declined, pageDupHits, clearSuppression],
   );
 
   const handleTableChange: TableProps<ReplenishRow>["onChange"] = (
@@ -444,7 +913,7 @@ export default function ReplenishClient() {
     if (extra.action !== "sort" || Array.isArray(sorter)) return;
     const nextSortBy = typeof sorter.columnKey === "string"
       ? sorter.columnKey as ReplenishSortBy
-      : "coverFull";
+      : "orderByDate";
     listState.setFilter({
       sortBy: nextSortBy,
       sortOrder: sorter.order === "descend" ? "descend" : "ascend",
@@ -459,12 +928,17 @@ export default function ReplenishClient() {
       <CaliberNote
         summary={
           <>逐日推演引擎：断货日落在生产周期内才建议下单，建议量补至「安全库存＋目标覆盖」；生成草稿走审批。
-          {data?.meta ? <>　触发 <b>{data.meta.suggestCount}</b> 个建议{data.meta.suppressedCount > 0 ? <>，另 {data.meta.suppressedCount} 个因全口径参考充足被抑制（防重复下单）</> : null}。</> : null}</>
+          {data?.meta ? <>　触发 <b>{data.meta.suggestCount}</b> 个建议{data.meta.suppressedCount > 0 ? <>，另 {data.meta.suppressedCount} 个因全口径参考充足被抑制（防重复下单）</> : null}{data.meta.declineSuppressedCount > 0 ? <>，另 {data.meta.declineSuppressedCount} 个在「已复核并放弃」的抑制窗口内（行上标出原因与到期日，可随时解除）</> : null}。</> : null}
+          {data?.meta ? (data.meta.policyPeriod
+            ? <>　分层取 {data.meta.policyPeriod} 期固化{data.meta.hiddenTierC > 0 ? <>，已折叠 <b>{data.meta.hiddenTierC}</b> 个 C 级（运营兜底）</> : null}。</>
+            : <>　<Typography.Text type="warning">分层尚未固化</Typography.Text>（四档/权责列为空；请在「补货试点候选」页固化本期）。</>) : null}</>
         }
         detail={
           <div>
             <p>建议引擎 v2：按安全库存与逐日到货推演首次短缺；只有短缺日落在生产周期内才触发建议（更早下单是浪费，更晚来不及）。</p>
             <p>融合参考层做标注与抑制（只提示不入账）：全口径参考（总库存明细）、存量在途（旧流程成品跟进表）、在制委外（WO 计划产出）、在订未出、借出未还、生产周期。覆盖缺口 SKU（参考显著高于系统）触发的建议会被抑制并逐行给出原因，人工核实后可放行。</p>
+            <p>看过建议、判断不需要下单时点行上「不采纳」留痕（计划/管理员）：只写审计、不改建议、不开单据；「已复核并放弃」在建议闭环追踪单列，不进采纳率分母。放弃状态由服务端按业务日下发（谁、何时、什么原因），换人换设备都看得到——不再只存在点击者自己的浏览器里。</p>
+            <p>每行都能追到「为什么」：目标天数列标出该值来自页面输入、分域覆盖（SKU/品牌/分层）、ABC 分层参数还是全局缺省；没有建议时给出结构化原因（库存充足 / 已抑制 / 无销量历史 / 缺生产周期 / 无动销 / 未到下单窗口），空单元格不再模棱两可；预测误差列给出该 SKU 的滚动回测 WAPE 与偏差，作为「这条建议该信几分」的依据。</p>
             {data?.meta ? (
               <p>
                 销速窗口：{data.meta.months3.length ? data.meta.months3.join("、") : "无销量数据"}
@@ -475,6 +949,24 @@ export default function ReplenishClient() {
           </div>
         }
       />
+      {sopFreeze?.frozen ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={`当月（${sopFreeze.month}）S&OP 计划已冻结——本页实时建议只读，不能生成草稿`}
+          description={
+            <Typography.Text type="secondary">
+              周期「{sopFreeze.cycle?.name ?? "—"}」当前为 {sopFreeze.cycle?.status === "executing" ? "执行中" : "已冻结"}：
+              实时重算的建议不得绕过共识下单，请按冻结的计划版本执行。
+              现在勾选并提交会被服务端以 409 拒绝——先到「S&OP 周期」页按冻结版本走，或等本月周期关闭。
+            </Typography.Text>
+          }
+        />
+      ) : null}
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
+        重复下单提示仅核对近7天可见未结单；空结果不代表全公司没有未结需求，请与负责计划员核对。
+      </Typography.Paragraph>
       <ListToolbar
         state={listState}
         extra={
@@ -501,7 +993,31 @@ export default function ReplenishClient() {
                 style={{ width: 90 }}
               />
             </span>
+            <Select
+              allowClear
+              placeholder="四档"
+              style={{ width: 100 }}
+              value={tier || undefined}
+              options={TIER_OPTIONS}
+              onChange={(v) => listState.setFilter({ tier: v ?? "" })}
+            />
+            <Select
+              allowClear
+              placeholder="权责"
+              style={{ width: 120 }}
+              value={ownership || undefined}
+              options={OWNERSHIP_OPTIONS}
+              onChange={(v) => listState.setFilter({ ownership: v ?? "" })}
+            />
+            <Tooltip title="D58：C 级长尾默认折叠（运营兜底），展开后 C 级行进入列表">
+              <span>
+                折叠 C 级{" "}
+                <Switch size="small" checked={hideTierC} disabled={Boolean(tier)} onChange={(v) => listState.setFilter({ hideTierC: v ? "1" : "0" })} />
+              </span>
+            </Tooltip>
             <SearchInput
+              key={q}
+              defaultValue={q}
               allowClear
               placeholder="搜索 SKU 编码/名称"
               style={{ width: 220 }}
@@ -557,7 +1073,12 @@ export default function ReplenishClient() {
         }}
         expandable={{
           rowExpandable: (r) => (r as { skuId?: number }).skuId != null,
-          expandedRowRender: (r) => <SharedPackagingPanel skuId={(r as { skuId: number }).skuId} />,
+          expandedRowRender: (r) => (
+            <Space direction="vertical" size={8} style={{ width: "100%" }}>
+              <SharedPackagingPanel skuId={(r as { skuId: number }).skuId} />
+              <PlanEventsPanel skuId={(r as { skuId: number }).skuId} />
+            </Space>
+          ),
         }}
         pagination={listState.paginationProps({ total: data?.total ?? 0 })}
         locale={{ emptyText: loadError ? "数据未加载" : "当前条件下没有补货建议" }}
@@ -578,14 +1099,16 @@ export default function ReplenishClient() {
         }}
       >
         <Typography.Text>已选 {selectedRows.length} 项</Typography.Text>
-        <Button
-          type="primary"
-          icon={<ThunderboltOutlined />}
-          disabled={selectedRows.length === 0}
-          onClick={openConfirm}
-        >
-          生成备货申请草稿（BH）
-        </Button>
+        <Tooltip title={sopFreeze?.frozen ? `当月（${sopFreeze.month}）S&OP 已冻结，实时建议只读——服务端会拒绝` : ""}>
+          <Button
+            type="primary"
+            icon={<ThunderboltOutlined />}
+            disabled={selectedRows.length === 0 || sopFreeze?.frozen === true}
+            onClick={openConfirm}
+          >
+            生成备货申请草稿（BH）
+          </Button>
+        </Tooltip>
       </div>
 
       <Modal
@@ -603,6 +1126,7 @@ export default function ReplenishClient() {
           showIcon
           style={{ marginBottom: 12 }}
           message="将按下表建议量生成一张 BH 草稿（不自动提交），提交与审批在备货申请页完成。"
+          description="重复下单提示仅核对可见单据；无提示不能替代跨渠道核对，不改变本次建议数量。"
         />
         {Object.keys(dupHits).length > 0 ? (
           <Alert
@@ -633,28 +1157,42 @@ export default function ReplenishClient() {
             message={`注意：所选含 ${selectedRows.filter((r) => r.suggestQty == null && r.heldQty != null).length} 个「被抑制」项（覆盖缺口 SKU）——这些 SKU 系统外仓可能已有库存。请确认已核实全口径库存后再放行，否则可能重复采购。`}
           />
         ) : null}
-        {selectedRows.length > 200 ? (
+        {draftItems.length > 200 ? (
           <Alert
             type="warning"
             showIcon
             style={{ marginBottom: 12 }}
-            message={`一张 BH 最多 200 项，当前 ${selectedRows.length} 项——将只生成前 200 项，其余请分批。`}
+            message={`一张 BH 最多 200 项，当前 ${draftItems.length} 项——将只生成前 200 项，其余请分批。`}
           />
         ) : null}
-        <Table<ReplenishRow>
+        {selectedRows.length > draftItems.length ? (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={`所选 ${selectedRows.length} 项中有 ${selectedRows.length - draftItems.length} 项既无建议量也无保留量，不会进入草稿。`}
+          />
+        ) : null}
+        <Table<ReplenishDraftItem>
           rowKey="skuId"
           size="small"
           pagination={false}
-          dataSource={selectedRows}
+          dataSource={draftItems}
           columns={[
             { title: "SKU 编码", dataIndex: "code", width: 110 },
-            { title: "名称", dataIndex: "name", ellipsis: true, render: (v: string, r: ReplenishRow) => (v === r.code ? <Typography.Text type="secondary">（未命名）</Typography.Text> : v) },
+            { title: "名称", dataIndex: "name", ellipsis: true, render: (v: string, r: ReplenishDraftItem) => (v === r.code ? <Typography.Text type="secondary">（未命名）</Typography.Text> : v) },
             {
-              title: "建议补货量",
-              dataIndex: "suggestQty",
-              width: 130,
+              // 此前渲染 suggestQty ?? 0，被抑制行显示「0 件」而提交发的是 heldQty——看到的数不是提交的数
+              title: "提交数量",
+              dataIndex: "qty",
+              width: 165,
               align: "right",
-              render: (v: string | null, r) => `${Number(v ?? 0).toLocaleString("zh-CN")} ${r.baseUom}`,
+              render: (v: string, r: ReplenishDraftItem) => (
+                <Space size={4}>
+                  <span>{Number(v).toLocaleString("zh-CN")} {r.baseUom}</span>
+                  {r.fromHeld ? <Tooltip title="该行建议被抑制（全口径参考充足），此数量是核实后放行的原始建议量"><Tag color="warning" style={{ marginInlineEnd: 0 }}>{HELD_QTY_LABEL}</Tag></Tooltip> : null}
+                </Space>
+              ),
             },
           ]}
           style={{ marginBottom: 12 }}
@@ -668,6 +1206,18 @@ export default function ReplenishClient() {
         />
       </Modal>
       <ProjectionDrawer skuCode={projSku} open={projSku != null} onClose={() => setProjSku(null)} />
+      <DeclineSuggestionModal
+        target={declineTarget}
+        onCancel={() => setDeclineTarget(null)}
+        onDeclined={(r) => {
+          setDeclined((m) => {
+            const next = { ...m, [r.skuId]: r };
+            saveDeclined(next);
+            return next;
+          });
+          setDeclineTarget(null);
+        }}
+      />
     </div>
   );
 }

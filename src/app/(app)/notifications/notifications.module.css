@@ -1,0 +1,22 @@
+.root { min-width: 0; overflow-wrap: anywhere; }
+.help { margin: 0 0 12px; color: #536176; font-size: 13px; line-height: 1.6; }
+.help summary { cursor: pointer; color: #3156b9; }
+.help p { margin: 8px 0; }
+.item { min-width: 0; gap: 12px; align-items: flex-start !important; }
+.item :global(.ant-list-item-meta) { min-width: 0; }
+.item :global(.ant-list-item-meta-title) { line-height: 1.6; }
+.item :global(.ant-list-item-meta-description) { color: #536176 !important; }
+.item :global(.ant-list-item-action) { flex-shrink: 0; }
+.body { margin: 4px 0 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.message { margin: 4px 0 6px; }
+.message summary { cursor: pointer; }
+.message[open] .preview { display: none; }
+.disclosure { color: #3156b9; white-space: nowrap; }
+@media (max-width: 768px) {
+  /* AntD meta has flex:1 and a width:0 content child. Turning its parent into a
+     column inflates intrinsic height to thousands of pixels; use normal block flow. */
+  .item { display: block !important; }
+  .item :global(.ant-list-item-meta) { width: 100%; }
+  .item :global(.ant-list-item-action) { margin: 8px 0 0 !important; display: flex; flex-wrap: wrap; row-gap: 8px; }
+  .item :global(.ant-list-item-action > li) { padding: 0 10px 0 0; }
+}

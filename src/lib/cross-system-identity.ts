@@ -363,6 +363,119 @@ export const CROSS_SYSTEM_IDENTITY_STREAM_CONTRACTS: readonly CrossSystemIdentit
       document: notAvailable("应收/收款/核销的准确只读契约尚未在目标租户冻结", "先冻结业务单号与核销引用字段，再实现外部单据引用"),
     },
   },
+  // 2026-09-03 第四阶段：聚水潭镜像 / 财务成本 / 平台组合对照 / 流量先行指标
+  {
+    source: "JIANDAOYUN",
+    stream: "jst-item-master-mirror-observation",
+    identities: {
+      sku: implemented("聚水潭商品编码/款式编码/国标码作为 JST 命名空间外部标识保留，只作精确候选线索，不自动认领"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "jst-bundle-bom-mirror-observation",
+    identities: {
+      sku: implemented("组合商品编码与子商品编码均为聚水潭命名空间；BOM 只用于把平台组合装拆到子货品候选"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "tmall-bundle-detail-observation",
+    identities: {
+      sku: implemented("系统编码/条码只进入 JIANDAOYUN 作用域精确候选（exactHits）供人确认，不自动认领"),
+      shop: notImplemented("店铺名称已保留但尚未进入受控店铺治理", "店铺档案流落地后按来源作用域逐值认领"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "pdd-sku-cost-standard-observation",
+    identities: {
+      sku: implemented("商家编码（规格维度）→ 聚水潭编码/匹配编码/国际条码三列分列保留，作为拼多多另一命名空间的精确候选线索"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "vip-bundle-crosswalk-observation",
+    identities: {
+      sku: implemented("唯品会上架条码与单品条码分列保留，对应商品编码只作精确候选，不自动认领"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "finance-goods-master-observation",
+    identities: {
+      sku: implemented("财务内部货品档案的系统编码↔条码作为精确候选线索；与 SCM 主数据冲突时以 SCM 为准并进入人工队列"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "finance-operating-cost-observation",
+    identities: {
+      sku: implemented("按系统编码保留；成本只作观察，不回写 SCU 成本字段"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "vip-sku-cost-observation",
+    identities: {
+      sku: implemented("系统编码/唯品会条码/款式条码分列保留，只作精确候选线索"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "tmall-sku-cost-pnl-observation",
+    identities: {
+      sku: implemented("平台 SKU ID 与关联货品分列保留；关联货品只作精确候选线索"),
+      shop: notImplemented("店铺名称已保留但尚未进入受控店铺治理", "店铺档案流落地后按来源作用域逐值认领"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "tmall-product-traffic-observation",
+    identities: {
+      sku: notImplemented("只有商品 ID（宝贝级），无 SKU 级标识", "通过天猫商品↔SKU 对照流下钻，不在本流解析"),
+      shop: notImplemented("店铺名称已保留但尚未进入受控店铺治理", "店铺档案流落地后按来源作用域逐值认领"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "pdd-product-daily-observation",
+    identities: {
+      sku: notImplemented("只有拼多多商品 ID（商品级），无规格级商家编码", "经拼多多订单流/成本标准流下钻到规格"),
+      shop: notImplemented("店铺名称已保留但尚未进入受控店铺治理", "店铺档案流落地后按来源作用域逐值认领"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "pdd-shop-daily-observation",
+    identities: {
+      shop: notImplemented("店铺名称已保留但尚未进入受控店铺治理", "店铺档案流落地后按来源作用域逐值认领"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "shop-master-observation",
+    identities: {
+      shop: implemented("店铺名称、销售平台编码、聚水潭店铺编号分列保留，作为店铺主档来源作用域候选"),
+      channel: implemented("销售平台编码/名称保留为渠道候选，不自动映射 SCM 渠道枚举"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "brand-master-observation",
+    identities: {
+      sku: notImplemented("品牌档案不含 SKU", "仅作品牌维度对照"),
+    },
+  },
+  {
+    source: "JIANDAOYUN",
+    stream: "bonded-warehouse-order-observation",
+    identities: {
+      sku: implemented("商品编码走 sku_code 别名解析，未命中再按条形码精确唯一命中；仍不中进 JIANDAOYUN 认领队列，不自动认领"),
+      warehouse: implemented("仓库名称走 warehouse 别名解析，未命中进认领队列；保税仓为快照仓，出库只作观察"),
+      shop: notImplemented("店铺名称已保留但尚未进入受控店铺治理", "店铺档案流落地后按来源作用域逐值认领"),
+    },
+  },
 ];
 
 const EXTRACTION_CONTRACT_BY_KEY = new Map(

@@ -16,6 +16,7 @@ import * as schema from "@/db/schema";
 import { dAdd, dCmp, dDeviationPct, dDiv, dMoney, dMul, dQty } from "@/server/core/decimal";
 import { type AnyDb, resolveDb } from "@/server/modules/outsource/common";
 import { normalizeToBaseNet, PriceRuleError } from "@/server/rules/price";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 const EFFECTIVE_PO_STATUSES = ["approved", "in_progress", "completed"] as const;
 export const DEFAULT_PRICE_VARIANCE_WINDOW_DAYS = 180;
@@ -261,9 +262,7 @@ export function calculateSupplierPriceVariance(observations: PurchasePriceObserv
   };
 }
 
-function shanghaiDate(value: Date): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(value);
-}
+const shanghaiDate = shanghaiDayOf;
 
 export async function getSupplierPriceVariance(
   query: { q?: string; page?: number; pageSize?: number; windowDays?: number; asOf?: Date },

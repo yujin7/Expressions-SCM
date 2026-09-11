@@ -1,0 +1,24 @@
+.editor :global(.ant-modal-content) {
+  max-height: calc(100dvh - 48px);
+  display: flex;
+  flex-direction: column;
+}
+.editor :global(.ant-modal-body) { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.editor :global(.ant-modal-header),
+.editor :global(.ant-modal-footer) { flex-shrink: 0; }
+.editor :global(.ant-modal-title) { overflow-wrap: anywhere; padding-right: 24px; }
+.line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 135px 145px 32px;
+  align-items: start;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #eef0f4;
+}
+.line > * { min-width: 0; }
+.remove { margin-top: 30px; }
+@media (max-width: 640px) {
+  .line { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 32px; }
+  .sku { grid-column: 1 / -1; }
+}

@@ -84,7 +84,7 @@ Verify these live before relying on them:
 - Shape: modular monolith with server modules, pure rules, a central posting engine, a unified approval/state layer, imports through staging/release, and reports/decision support.
 - Data states: transactional ledger for controlled warehouses, external snapshots/reference facts for other coverage, derived planning views, and review queues for ambiguity.
 - Delivery state: treat the system as UAT-ready, not production-proven, until current staging PostgreSQL load, environment, stakeholder review, UAT, parallel reconciliation, and sign-off evidence say otherwise.
-- External data layer (2026-09-02): Jiandaoyun is the only live external source (19 explicit contracts into observation staging; JST/Yonyou blocked by platform authorization). Read models over it are `observation_only` and cached in `report_read_model_cache` bound to exact batches: `external-demand-signal`, `external-velocity`, `platform-sku-identity-gap`, `channel-observation`, `tmall-channel-contribution`. Platform identity is the bottleneck; claims go through `master/platform-sku-claim.ts` only.
+- External data layer: obtain dated per-stream status from `docs/NOW.md` and the integration evidence it links; do not preserve a contract count or token result here as live readiness. Read models are observation-only until qualified, with caches bound to source batches. Platform identity claims go through `master/platform-sku-claim.ts` only.
 - Deployment (laptop): production compose stack `supply-chain` on port 3100, public entry via Cloudflare quick tunnel (HTTP/2) managed by a launchd daemon in `~/Library/Application Support/exp-scm/`; link rotates on tunnel rebuild and is announced to Feishu. See `docs/guides/对外访问方案-选型与步骤.md`.
 
 Do not infer that all brands are legally “cosmetics.” Keep product regulatory class and destination market explicit.
@@ -162,7 +162,7 @@ These were observed on 2026-07-25. Re-check rather than preserving them as perma
 
 Before editing:
 
-1. Run a focused file inventory and `git status --short --branch` inside `supply-chain`.
+1. Run a focused file inventory and `git status --short --branch` at the verified Git root (a worktree may itself be that root; do not descend into a same-named data folder).
 2. Inspect affected schema, migration history, services, API routes, UI, and tests.
 3. Identify user changes and avoid overwriting them.
 4. Re-check status and recent commits before committing because another session may change the shared repository concurrently.
@@ -189,3 +189,6 @@ The local environment may lack `rg`; prefer it when available and fall back to `
 `/usr/bin/grep`. Avoid competing writers against the same `.data/dev` PGlite directory. Identify
 ports and PIDs with `lsof`, stop only a process owned by the current session, and restart it after
 new migrations.
+
+Historical contract counts/cache versions belong in dated engineering reports, not this router.
+Inspect current contracts, source-binding keys and consumers together when changing a read model.

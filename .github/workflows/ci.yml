@@ -38,10 +38,14 @@ jobs:
       - run: npm run check:ops
       - run: npm run test:fast
 
-  test:
-    name: Full test suite
+  test-shards:
+    name: Tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -49,7 +53,21 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm test
+      - run: npm test -- --shard=${{ matrix.shard }}/4
+
+  # Preserve the protected check name. A skipped, failed or cancelled shard is
+  # never a green full suite; all shards must complete successfully.
+  test:
+    name: Full test suite
+    needs: test-shards
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every test shard
+        env:
+          SHARD_RESULT: ${{ needs.test-shards.result }}
+        run: test "$SHARD_RESULT" = success
 
   build:
     name: Production container
@@ -57,7 +75,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - run: docker build --tag supply-chain:ci .
+      - run: bash scripts/build-ci-container.sh
 
   postgres:
     name: PostgreSQL migration contract
@@ -69,16 +87,16 @@ jobs:
         env:
           POSTGRES_USER: scm
           POSTGRES_PASSWORD: scm_ci_password
-          POSTGRES_DB: scm
+          POSTGRES_DB: scm_contract_ci
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U scm -d scm"
+          --health-cmd "pg_isready -U scm -d scm_contract_ci"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
     env:
-      DATABASE_URL: postgres://scm:scm_ci_password@127.0.0.1:5432/scm
+      DATABASE_URL: postgres://scm:scm_ci_password@127.0.0.1:5432/scm_contract_ci
       SCM_ALLOW_MUTATING_PG_CONTRACT: "1"
     steps:
       - uses: actions/checkout@v7
@@ -91,3 +109,41 @@ jobs:
       - run: npm run check:postgres
       - run: npm run check:postgres:jdy-concurrency
       - run: npm run check:postgres:sku-identity-concurrency
+      - run: npm run check:postgres:review-atomicity
+      - name: NPD versions, replay and audit atomicity (isolated PostgreSQL)
+        run: node --import tsx scripts/verify-postgres-npd-write.ts
+      - name: Supply parameter edits and preview row locks (isolated PostgreSQL)
+        run: node --import tsx scripts/verify-postgres-supply-params.ts
+      - name: Yonyou retries and concurrency (isolated PostgreSQL)
+        env:
+          NODE_ENV: test
+          SCM_RUN_JOBS: "0"
+          SCM_ALLOW_MUTATING_PG_CONTRACT: "1"
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import pg from 'pg';
+          const source = new URL(process.env.DATABASE_URL ?? '');
+          if (source.protocol !== 'postgres:' || source.hostname !== '127.0.0.1'
+            || source.port !== '5432' || source.pathname !== '/scm_contract_ci'
+            || source.search || source.hash) {
+            throw new Error('Refusing database creation outside the isolated CI PostgreSQL service');
+          }
+          const client = new pg.Client({
+            connectionString: source.href, connectionTimeoutMillis: 5000, query_timeout: 15000,
+            options: '-c statement_timeout=10000 -c lock_timeout=5000',
+          });
+          await client.connect();
+          try { await client.query('CREATE DATABASE scm_contract_yonyou_ci'); }
+          finally { await client.end(); }
+          NODE
+          candidate_dir=$(mktemp -d /tmp/expscm-yonyou-ci.XXXXXX)
+          cp -R src drizzle scripts "$candidate_dir/"
+          cp package.json package-lock.json tsconfig.json drizzle.config.ts "$candidate_dir/"
+          ln -s "$PWD/node_modules" "$candidate_dir/node_modules"
+          cd "$candidate_dir"
+          export DATABASE_URL="${DATABASE_URL%/scm_contract_ci}/scm_contract_yonyou_ci"
+          export FILE_STORAGE_DIR="$candidate_dir/.data/yonyou-evidence"
+          npm run db:migrate
+          npm run check:postgres
+          npm run check:postgres:yonyou-concurrency

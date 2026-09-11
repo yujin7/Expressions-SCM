@@ -1,16 +1,29 @@
 /** release 流水线：snapshots（自 engine.ts 拆出，行为未变） */
 import { createHash } from "node:crypto";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, lt, max } from "drizzle-orm";
 
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { dAdd, dCmp, dQty } from "@/server/core/decimal";
+import { getNumParam } from "@/server/core/params";
 import { ApiError } from "@/server/modules/master/common";
+import { compareAdjacentSnapshots, type SnapshotQualityResult } from "@/server/rules/snapshot-quality";
 
 import {
   type AnyDb, type ReleaseUser, resolveDb, loadStagedRows, commitRows, aliasCache, loadSkuIdByCode,
 } from "./common";
 import { assertImportPreflight, type PreflightOverrides } from "./preflight";
+
+/**
+ * D65 快照放行预检：同仓「上一批 vs 本批」控制量对比（rules/snapshot-quality），只警告不阻断。
+ * 阈值与数据质量读模型同源：sys_params dq_snapshot_qty_jump_pct（默认 30）/ dq_snapshot_vanished_pct（默认 10）。
+ */
+export interface SnapshotQualityWarning extends SnapshotQualityResult {
+  warehouseId: number;
+  prevBizDate: string | null;
+  /** flags 含 qty_jump / vanished / negatives 之一 */
+  warning: boolean;
+}
 
 export interface ReleaseSnapshotsResult {
   dryRun: boolean;
@@ -24,6 +37,45 @@ export interface ReleaseSnapshotsResult {
   controlQty: string;
   releaseDigest: string;
   blocked: { stagingRowId: number; reason: string }[];
+  snapshotQuality: SnapshotQualityWarning[];
+}
+
+/** 同仓上一批（biz_date < 本批）vs 本批聚合行；无上一批 → empty_prev 只出行数 */
+async function snapshotQualityPreflight(
+  db: AnyDb,
+  bizDate: string,
+  agg: Map<string, { warehouseId: number; skuId: number; qty: string }>,
+): Promise<SnapshotQualityWarning[]> {
+  const byWarehouse = new Map<number, { skuId: number; qty: string }[]>();
+  for (const e of agg.values()) {
+    const list = byWarehouse.get(e.warehouseId) ?? [];
+    list.push({ skuId: e.skuId, qty: e.qty });
+    byWarehouse.set(e.warehouseId, list);
+  }
+  const [qtyJumpPct, vanishedPct] = await Promise.all([
+    getNumParam("dq_snapshot_qty_jump_pct", 30, db),
+    getNumParam("dq_snapshot_vanished_pct", 10, db),
+  ]);
+  const out: SnapshotQualityWarning[] = [];
+  for (const [warehouseId, next] of [...byWarehouse.entries()].sort((a, b) => a[0] - b[0])) {
+    const [prevRow]: { d: string | null }[] = await db
+      .select({ d: max(schema.stockSnapshots.bizDate) })
+      .from(schema.stockSnapshots)
+      .where(and(eq(schema.stockSnapshots.warehouseId, warehouseId), lt(schema.stockSnapshots.bizDate, bizDate)));
+    const prevBizDate = prevRow?.d ?? null;
+    const prev: { skuId: number; qty: string }[] = prevBizDate == null ? [] : await db
+      .select({ skuId: schema.stockSnapshots.skuId, qty: schema.stockSnapshots.qty })
+      .from(schema.stockSnapshots)
+      .where(and(eq(schema.stockSnapshots.warehouseId, warehouseId), eq(schema.stockSnapshots.bizDate, prevBizDate)));
+    const cmp = compareAdjacentSnapshots(prev, next, { qtyJumpPct, vanishedPct });
+    out.push({
+      ...cmp,
+      warehouseId,
+      prevBizDate,
+      warning: cmp.flags.some((f) => f === "qty_jump" || f === "vanished" || f === "negatives"),
+    });
+  }
+  return out;
 }
 
 const SNAPSHOT_RULES_VERSION = "snapshot-release-v2";
@@ -124,6 +176,7 @@ export async function releaseSnapshots(
   }
 
   const controlQty = [...agg.values()].reduce((sum, row) => dAdd(sum, row.qty, 4), "0.0000");
+  const snapshotQuality = await snapshotQualityPreflight(db, args.bizDate, agg);
   const releaseDigest = createHash("sha256")
     .update(
       JSON.stringify({
@@ -146,6 +199,7 @@ export async function releaseSnapshots(
     controlQty: dQty(controlQty),
     releaseDigest,
     blocked,
+    snapshotQuality,
   };
 
   if (args.dryRun) {
@@ -211,6 +265,11 @@ export async function releaseSnapshots(
           rowsCommitted,
           zeroRows,
           blocked: 0,
+          snapshotQuality: snapshotQuality.map((q) => ({
+            warehouseId: q.warehouseId, prevBizDate: q.prevBizDate, prevRows: q.prevRows, nextRows: q.nextRows,
+            prevQty: q.prevQty, nextQty: q.nextQty, qtyDeltaPct: q.qtyDeltaPct, added: q.added, vanished: q.vanished,
+            vanishedPct: q.vanishedPct, negatives: q.negatives, flags: q.flags, warning: q.warning,
+          })),
         },
       })
       .where(eq(schema.importJobs.id, jobId));
@@ -228,6 +287,7 @@ export async function releaseSnapshots(
         zeroRows,
         controlQty: dQty(controlQty),
         blocked: 0,
+        snapshotQualityWarnings: snapshotQuality.filter((q) => q.warning).map((q) => ({ warehouseId: q.warehouseId, flags: q.flags })),
       },
     });
   });

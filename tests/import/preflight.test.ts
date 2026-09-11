@@ -100,7 +100,7 @@ describe("E3-13 导入版本预检", () => {
         expect.objectContaining({
           bucket: "sales_monthly",
           metric: "qty:qty",
-          deviationPct: "50.00",
+          driftPct: "50.00",
         }),
       ]),
     );

@@ -22,6 +22,8 @@ export async function GET(req: NextRequest) {
       pageSize,
       kind: searchParams.get("kind") ?? undefined,
       status: searchParams.get("status") ?? undefined,
+      sort: searchParams.get("sort") ?? undefined,
+      direction: searchParams.get("direction") ?? undefined,
     }));
   } catch (e) {
     return errorResponse(e, { path: "/api/quality/cases", method: "GET" });

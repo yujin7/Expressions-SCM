@@ -14,7 +14,7 @@ import { loadApprovalHistory } from "@/server/docflow/approval";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, resolveDb } from "@/server/modules/outsource/common";
 import type { DocStatus } from "@/server/docflow/state";
-import { skuLineMatch } from "@/server/core/doc-search";
+import { createdWithinShanghaiDays, skuLineMatch } from "@/server/core/doc-search";
 
 type QcRecordRow = typeof qcRecords.$inferSelect;
 
@@ -59,6 +59,7 @@ export async function getSh(id: number, dbArg?: AnyDb) {
   const lines = await db
     .select({
       id: shLines.id,
+      poLineId: shLines.poLineId,
       skuId: shLines.skuId,
       skuCode: skus.code,
       skuName: skus.name,
@@ -107,13 +108,15 @@ export async function getSh(id: number, dbArg?: AnyDb) {
 
 export async function listShs(
   q: string,
-  opts: { status?: string; sourceType?: string; sourceId?: number; page: number; pageSize: number },
+  opts: { status?: string; sourceType?: string; sourceId?: number; from?: string; to?: string; page: number; pageSize: number },
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
   const conds = [];
   if (q) conds.push(or(sql`${shDocs.docNo} ILIKE ${"%" + q + "%"}`, skuLineMatch("sh_lines", "sh_id", shDocs.id, q)));
   if (opts.status) conds.push(eq(shDocs.status, opts.status as DocStatus));
+  // 制单时间窗（上海业务日，含首尾）：全链漏斗「到货」级按同一口径回链到本列表
+  conds.push(...createdWithinShanghaiDays(shDocs.createdAt, opts.from, opts.to));
   if (opts.sourceType) conds.push(eq(shDocs.sourceType, opts.sourceType));
   if (opts.sourceId) conds.push(eq(shDocs.sourceId, opts.sourceId));
   const where = conds.length ? and(...conds) : undefined;

@@ -1,15 +1,23 @@
 "use client";
 
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { DOCUMENT_TRANSIENT_PARAMS, purchaseLineTarget } from "@/lib/document-links";
+import { useSearchParams } from "next/navigation";
+import { useDocumentRead } from "@/components/useDocumentRead";
+
 import SearchInput from "@/components/SearchInput";
 
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { App, Alert, Button, Descriptions, Drawer, Input, Modal, Popconfirm, Space, Table, Tabs, Tag, Typography } from "antd";
+import { App, Alert, Button, Descriptions, Input, Modal, Popconfirm, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import DocumentDrawer from "@/components/DocumentDrawer";
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
+import DocTransitionActions from "@/components/DocTransitionActions";
 import { fetchJson, postJson } from "@/components/fetchJson";
+import { formatQty } from "@/components/format";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
@@ -21,6 +29,12 @@ interface PoRow {
   woId: number | null;
   supplierName: string;
   lineCount: number;
+  /** 表头承诺交期（供应商门户逐行回填后表头取最晚一行） */
+  expectedDate: string | null;
+  confirmedAt: string | null;
+  /** 服务端派生（po.ts poListProgress）：已收占比 %、逾期天数 */
+  receivedPct: number | null;
+  overdueDays: number | null;
   createdByName: string | null;
   createdAt: string;
 }
@@ -40,6 +54,26 @@ interface PoLine {
   taxIncluded: boolean;
   taxRatePct: string;
   receivedQty: string;
+  /** 行级承诺交期：供应商门户 po-confirm 逐行回填的唯一落点；空 = 沿用表头 */
+  expectedDate: string | null;
+}
+
+/** 交期承诺变更事实（po_promise_revisions，仅追加）：门户确认 / 采购改期 / 历史回填 / 外部观察 */
+interface PromiseRevision {
+  id: number;
+  poLineId: number;
+  skuCode: string;
+  skuName: string;
+  sequence: number;
+  previousDate: string | null;
+  promisedDate: string | null;
+  source: string;
+  actorType: string;
+  recordedByName: string | null;
+  reason: string | null;
+  externalSource: string | null;
+  externalRef: string | null;
+  occurredAt: string;
 }
 
 interface DocApproval {
@@ -65,7 +99,22 @@ interface PoDetail {
   createdByName: string | null;
   lines: PoLine[];
   approvals: DocApproval[];
+  promiseRevisions: PromiseRevision[];
 }
+
+/** po_promise_revisions.source / actor_type 的中文标签（枚举见 db/schema） */
+const PROMISE_SOURCE_LABELS: Record<string, string> = {
+  supplier_confirm: "供应商确认",
+  buyer_revision: "采购改期",
+  legacy_backfill: "历史回填",
+  external_observation: "外部观察",
+};
+const PROMISE_ACTOR_LABELS: Record<string, string> = {
+  supplier_token: "供应商（门户令牌）",
+  internal_user: "内部用户",
+  system_backfill: "系统回填",
+  external_system: "外部系统",
+};
 
 const STATUS_TABS = [
   { key: "", label: "全部" },
@@ -74,24 +123,33 @@ const STATUS_TABS = [
   { key: "approved", label: "已审批" },
   { key: "in_progress", label: "执行中" },
   { key: "completed", label: "已完成" },
+  // 手工短关后单据落到 closed，没有页签就等于「短关完就找不到了」
+  { key: "closed", label: "已短关" },
 ];
 
 const LINE_TYPE_LABELS: Record<string, string> = { raw: "原料", packaging: "包材" };
 
 function PoInner() {
+  const searchParams = useSearchParams();
+  const hasRequestedLine = searchParams.has("poLineId");
+  const requestedLineId = purchaseLineTarget(searchParams.toString());
   const { message } = App.useApp();
   const [rows, setRows] = useState<PoRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "po", defaults: { q: "", status: "" }, defaultPageSize: 20 });
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "po", defaults: { q: "", status: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
 
-  const [detailId, setDetailId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<PoDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const documentSelection = useDocumentTarget();
+  const { id: detailId, setId: setDetailId } = documentSelection;
+  useEffect(() => { setRejectOpen(false); setConfirmOpen(false); }, [detailId]);
+  const detailRead = useDocumentRead<PoDetail>(detailId == null ? null : `/api/outsource/po/${detailId}`);
+  const detail = detailRead.data;
+  const detailLoading = detailRead.phase === "loading";
+  const loadDetail = detailRead.retry;
   const [actionLoading, setActionLoading] = useState(false);
 
   /** R1：提交遇价格异动时的警示（含 PC 单号） */
@@ -123,29 +181,10 @@ function PoInner() {
     void load();
   }, [load]);
 
-  const loadDetail = useCallback(
-    async (id: number) => {
-      setDetailLoading(true);
-      try {
-        const res = await fetchJson<PoDetail>(`/api/outsource/po/${id}`);
-        setDetail(res);
-      } catch (e) {
-        message.error((e as Error).message);
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [message],
-  );
-
-  useEffect(() => {
-    setPriceAlert(null);
-    if (detailId != null) void loadDetail(detailId);
-    else setDetail(null);
-  }, [detailId, loadDetail]);
+  useEffect(() => { setPriceAlert(null); }, [detailId]);
 
   const refresh = () => {
-    if (detail) void loadDetail(detail.id);
+    if (detail) void loadDetail();
     void load();
   };
 
@@ -179,7 +218,7 @@ function PoInner() {
       if (msg.includes("价格异动")) {
         const pcNos = msg.match(/PC[0-9A-Za-z-]+/g) ?? [];
         setPriceAlert({ text: msg, pcNos });
-        void loadDetail(detail.id);
+        void loadDetail();
       } else {
         message.error(msg);
       }
@@ -199,16 +238,38 @@ function PoInner() {
     },
     { title: "供应商", dataIndex: "supplierName" },
     { title: "行数", dataIndex: "lineCount", width: 70, align: "right" },
+    // 交期承诺与履约进度：接口一直返回 expectedDate/confirmedAt，列表却整列丢掉——
+    // 采购只能靠一张张点开抽屉才知道哪张单晚了。
     {
-      title: "确认状态",
-      key: "confirm",
-      width: 100,
-      render: (_, r) =>
-        r.status === "in_progress" || r.status === "completed" ? (
-          <Tag color="green">已确认</Tag>
-        ) : (
-          <Tag>未确认</Tag>
-        ),
+      title: "预计到货",
+      dataIndex: "expectedDate",
+      width: 110,
+      render: (v: string | null) => v ?? <Typography.Text type="secondary">未承诺</Typography.Text>,
+    },
+    {
+      title: "已确认",
+      dataIndex: "confirmedAt",
+      width: 130,
+      render: (v: string | null) =>
+        v ? <Tag color="green">{dayjs(v).format("YYYY-MM-DD")}</Tag> : <Tag>未确认</Tag>,
+    },
+    {
+      title: "已收%",
+      dataIndex: "receivedPct",
+      width: 90,
+      align: "right",
+      render: (v: number | null) =>
+        v == null ? <Typography.Text type="secondary">—</Typography.Text>
+          : <Typography.Text style={{ color: v >= 100 ? "#52c41a" : v > 0 ? "#1677ff" : undefined }}>{formatQty(v)}%</Typography.Text>,
+    },
+    {
+      title: "逾期",
+      dataIndex: "overdueDays",
+      width: 90,
+      align: "right",
+      render: (v: number | null) =>
+        v == null ? <Typography.Text type="secondary">—</Typography.Text>
+          : <Tag color="red">逾期 {v} 天</Tag>,
     },
     { title: "状态", dataIndex: "status", width: 100, render: (v: string) => <DocStatusTag status={v} /> },
     { title: "制单人", dataIndex: "createdByName", width: 100, render: (v: string | null) => v ?? "—" },
@@ -231,6 +292,7 @@ function PoInner() {
   ];
 
   const lineColumns: ColumnsType<PoLine> = [
+    { title: "采购行", dataIndex: "id", width: 100, render: (id: number) => <span>{`#${id}`}{id === requestedLineId ? <Tag color="blue">已定位</Tag> : null}</span> },
     { title: "物料", key: "material", render: (_, r) => `${r.skuCode} ${r.skuName}` },
     {
       title: "类型",
@@ -256,6 +318,49 @@ function PoInner() {
     },
     { title: "税率%", dataIndex: "taxRatePct", width: 70, align: "right" },
     { title: "已收量", dataIndex: "receivedQty", width: 100, align: "right" },
+    // 行级承诺交期：供应商门户逐行回填的唯一落点。此前 getPo 根本没 select 这一列，
+    // 供应商在门户上按行改了交期，内部页面一个字都看不到。
+    {
+      title: "行承诺交期",
+      dataIndex: "expectedDate",
+      width: 120,
+      render: (v: string | null) =>
+        v ?? (
+          <Tooltip title="该行没有单独的承诺交期，按表头「预计到货」执行">
+            <Typography.Text type="secondary">同表头</Typography.Text>
+          </Tooltip>
+        ),
+    },
+  ];
+
+  const promiseColumns: ColumnsType<PromiseRevision> = [
+    { title: "时间", dataIndex: "occurredAt", width: 140, render: (v: string) => dayjs(v).format("YYYY-MM-DD HH:mm") },
+    { title: "物料", key: "sku", render: (_, r) => `${r.skuCode} ${r.skuName}` },
+    { title: "第几次", dataIndex: "sequence", width: 80, align: "right" },
+    {
+      title: "承诺交期变化",
+      key: "change",
+      width: 190,
+      render: (_, r) => (
+        <span>
+          {r.previousDate ?? "未承诺"} → <Typography.Text strong>{r.promisedDate ?? "撤销承诺"}</Typography.Text>
+        </span>
+      ),
+    },
+    { title: "来源", dataIndex: "source", width: 110, render: (v: string) => PROMISE_SOURCE_LABELS[v] ?? v },
+    {
+      title: "操作方",
+      key: "actor",
+      width: 150,
+      render: (_, r) =>
+        `${PROMISE_ACTOR_LABELS[r.actorType] ?? r.actorType}${r.recordedByName ? ` · ${r.recordedByName}` : ""}`,
+    },
+    {
+      title: "说明",
+      key: "reason",
+      render: (_, r) =>
+        r.reason ?? (r.externalSource ? `${r.externalSource}${r.externalRef ? ` #${r.externalRef}` : ""}` : "—"),
+    },
   ];
 
   /* 生成/复制供应商确认链接。链接为 UUID token + 30 天有效期 + 单次使用，
@@ -343,6 +448,17 @@ function PoInner() {
           生成供应商确认链接
         </Button>
       ) : null}
+      {/* 手工收口（完成 / 短关）：服务与路由早就有，此前没有任何按钮——
+          少送尾数的 PO 永久停在「执行中」，把 OTIF 的 pending 桶越撑越大 */}
+      <DocTransitionActions
+        docType="po"
+        doc={detail}
+        onChanged={refresh}
+        labels={{
+          completeHint: "标记本采购订单已履约完成：剩余未收数量不再期待到货。",
+          shortCloseHint: "短关＝供应商不再补齐剩余数量（少送尾数/取消尾单）。已收部分保持不变，仅停止后续到货预期，OTIF 也不再把它算作待收。",
+        }}
+      />
       {detail.status !== "draft" ? (
         <Button onClick={() => window.open(`/outsource/po/${detail.id}/print`, "_blank")}>打印采购单</Button>
       ) : null}
@@ -390,7 +506,8 @@ function PoInner() {
         pagination={listState.paginationProps({ total: total })}
       />
 
-      <Drawer
+      <DocumentDrawer
+        key={detailId ?? "invalid-document"}
         title={
           detail ? (
             <Space>
@@ -401,7 +518,9 @@ function PoInner() {
             "采购订单详情"
           )
         }
-        open={detailId != null}
+        open={documentSelection.present}
+        readError={documentSelection.error ?? detailRead.error}
+        onRetry={detailId != null ? detailRead.retry : undefined}
         onClose={() => setDetailId(null)}
         width={860}
         loading={detailLoading}
@@ -432,7 +551,7 @@ function PoInner() {
                 }
               />
             ) : null}
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered styles={{ label: { width: 112, whiteSpace: "nowrap" } }} style={{ marginBottom: 16 }}>
               <Descriptions.Item label="供应商">{detail.supplierName}</Descriptions.Item>
               <Descriptions.Item label="关联工单">
                 {detail.woId != null ? `#${detail.woId}` : "—"}
@@ -449,13 +568,37 @@ function PoInner() {
               <Descriptions.Item label="备注">{detail.remark ?? "—"}</Descriptions.Item>
             </Descriptions>
             <Typography.Title level={5}>明细行</Typography.Title>
+            {hasRequestedLine ? <Alert showIcon style={{ marginBottom: 8 }}
+              type={detail.lines.some(line => line.id === requestedLineId) ? "info" : "warning"}
+              message={detail.lines.some(line => line.id === requestedLineId)
+                ? `来源报表指定采购行 #${requestedLineId}，下表已标记；数量与交期请以本单当前记录核对。`
+                : requestedLineId == null ? "采购行链接格式无效，请向发送人索取正确链接。"
+                  : `来源链接的采购行 #${requestedLineId} 不在本单内，请核对来源，不自动匹配同SKU其他行。`} /> : null}
             <Table<PoLine>
               rowKey="id"
               size="small"
               columns={lineColumns}
               dataSource={detail.lines}
+              onRow={line => ({ style: line.id === requestedLineId ? { background: "#e6f4ff" } : undefined })}
               pagination={false}
+              scroll={{ x: "max-content" }}
               style={{ marginBottom: 24 }}
+            />
+            {/* 交期承诺变更时间线：po_promise_revisions 是仅追加事实表，此前只被写不被读——
+                供应商在门户上改了三次交期，内部页面看不到任何痕迹，只剩最后一个日期。 */}
+            <Typography.Title level={5}>交期承诺变更</Typography.Title>
+            <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+              仅追加事实：每次「有效承诺日」变化留一行，不覆盖历史。行交期优先，缺省继承表头。
+            </Typography.Paragraph>
+            <Table<PromiseRevision>
+              rowKey="id"
+              size="small"
+              columns={promiseColumns}
+              dataSource={detail.promiseRevisions}
+              pagination={false}
+              scroll={{ x: "max-content" }}
+              style={{ marginBottom: 24 }}
+              locale={{ emptyText: "尚无交期承诺变更记录（供应商确认或采购改期后会在此留痕）" }}
             />
             {detail.approvals.length > 0 ? (
               <>
@@ -465,7 +608,7 @@ function PoInner() {
             ) : null}
           </div>
         ) : null}
-      </Drawer>
+      </DocumentDrawer>
 
       <Modal
         title="驳回单据"

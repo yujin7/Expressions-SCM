@@ -2,18 +2,20 @@ import { and, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import {
-   pdDocs, pdLines, skus, spus, stockBalances, stockDocLines, stockDocs, users, warehouses,
+   approvalConfigs, pdDocs, pdLines, skus, spus, stockBalances, stockDocLines, stockDocs, users, warehouses,
 } from "@/db/schema";
 import { dAdd, dCmp, dQty, dSub } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { requireRole } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { ApprovalError, approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
+import { ApprovalError, approvalRoleError, approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { post, PostingError, type AnyDb, type PostingLine } from "@/server/posting/post";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { resolveDb } from "@/server/core/svc";
+import { currentWriteActor } from "@/server/core/current-write-actor";
+import { shanghaiDay } from "@/server/core/business-day";
 import { participatesInNormalSalesMovement } from "@/server/rules/sku-standardization";
 
 /**
@@ -34,6 +36,19 @@ import { participatesInNormalSalesMovement } from "@/server/rules/sku-standardiz
 
 const PD_PREFIX = "PD";
 const ADJUST_PREFIX = "CA";
+
+/**
+ * 盘盈亏调整流水的业务时点：按盘点期 `pd_docs.biz_date`（上海日界）落账，而不是审批那一刻。
+ * 8/31 的盘点在 9/4 审批通过，差异属于 8 月期末，不能落进 9 月流水（库存水位/月末归属都按 occurred_at 分月）。
+ * 取该业务日的**日末**（23:59:59.999+08:00）：盘点数是期末数，同日其它流水都在它之前；
+ * 盘点期是今天（或未来日期）时退回当前时刻，避免流水时点跑到"现在"之后。
+ * 纯函数，可直测；bizDate 为空时返回 undefined（沿用过账缺省 now()）。
+ */
+export function countAdjustOccurredAt(bizDate: string | null | undefined, now: Date = new Date()): Date | undefined {
+  if (!bizDate || !/^\d{4}-\d{2}-\d{2}$/.test(bizDate)) return undefined;
+  const endOfBizDay = new Date(`${bizDate}T23:59:59.999+08:00`);
+  return endOfBizDay.getTime() < now.getTime() ? endOfBizDay : now;
+}
 
 // ---------- 输入校验（schemas.ts 归属他人，本模块 zod 就地定义） ----------
 
@@ -57,7 +72,8 @@ export const createCountTaskSchema = z
       .optional(),
     remark: z.string().trim().max(500).optional(),
     /** 盘点期（业务日期）。不传按今天（Asia/Shanghai）——补录时可显式指定。 */
-    bizDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "盘点期格式 YYYY-MM-DD").optional(),
+    bizDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "盘点期格式 YYYY-MM-DD")
+      .refine(value => !value.startsWith("0000-") && shanghaiDay(value) === value, "盘点期必须是真实存在的日历日期").optional(),
   })
   .superRefine((v, ctx) => {
     const f = v.filters;
@@ -73,7 +89,20 @@ export const updateCountsSchema = z.object({
   lines: z
     .array(z.object({ lineId: z.number().int().positive(), countedQty: qtyNonNegative }))
     .min(1, "至少一行实盘数"),
+}).superRefine((value, ctx) => {
+  const seen = new Set<number>();
+  value.lines.forEach((line, index) => {
+    if (seen.has(line.lineId)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["lines", index, "lineId"], message: `实盘明细行 #${line.lineId} 重复，请每行只提交一次` });
+    seen.add(line.lineId);
+  });
 });
+
+/** List and export must reject the same invalid month instead of returning a plausible empty report. */
+function validateCountPeriod(period: string | undefined) {
+  if (period && (!/^\d{4}-\d{2}$/.test(period) || period.startsWith("0000-") || shanghaiDay(`${period}-01`) == null)) {
+    throw new ApiError(400, "盘点期必须是有效月份（YYYY-MM），请核对筛选条件");
+  }
+}
 
 export const approveCountTaskSchema = z.object({
   action: z.enum(["approve", "reject"]),
@@ -144,16 +173,17 @@ export async function createCountTask(user: SessionUser, input: unknown, dbArg?:
   const v = createCountTaskSchema.parse(input);
   const db = await resolveDb(dbArg);
 
-  const [wh]: (typeof warehouses.$inferSelect)[] = await db
-    .select()
-    .from(warehouses)
-    .where(eq(warehouses.id, v.warehouseId));
-  if (!wh || !wh.active) throw new ApiError(400, `仓库不存在或已停用: #${v.warehouseId}`);
-  if (wh.accountingMode !== "realtime") {
-    throw new ApiError(400, "盘点仅限实时记账仓——快照仓（保税/E/云）以每日快照对账，不走盘点单");
-  }
-
   return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    if (!actor.roles.includes("warehouse") && !actor.roles.includes("admin")) {
+      throw new ApiError(403, "仅仓库或管理员可创建盘点任务");
+    }
+    const [wh]: (typeof warehouses.$inferSelect)[] = await tx
+      .select().from(warehouses).where(eq(warehouses.id, v.warehouseId)).for("share");
+    if (!wh || !wh.active) throw new ApiError(400, `仓库不存在或已停用: #${v.warehouseId}`);
+    if (wh.accountingMode !== "realtime") {
+      throw new ApiError(400, "盘点仅限实时记账仓——快照仓（保税/E/云）以每日快照对账，不走盘点单");
+    }
     // 账面快照：该仓非零余额行（抽盘按筛选命中；无筛选=全部非零行）
     const conds = [eq(stockBalances.warehouseId, v.warehouseId), sql`${stockBalances.qty} <> 0`];
     const f = v.mode === "partial" ? v.filters : undefined;
@@ -210,17 +240,19 @@ export async function updateCounts(user: SessionUser, pdId: number, input: unkno
   const v = updateCountsSchema.parse(input);
   const db = await resolveDb(dbArg);
   return db.transaction(async (tx: AnyDb) => {
-    const [doc]: PdDocRow[] = await tx.select().from(pdDocs).where(eq(pdDocs.id, pdId));
+    const actor = await currentWriteActor(tx, user);
+    const [doc]: PdDocRow[] = await tx.select().from(pdDocs).where(eq(pdDocs.id, pdId)).for("update");
     if (!doc) throw new ApiError(404, "盘点单不存在");
     if (doc.status !== "draft") throw new ApiError(409, `仅草稿可录入实盘数，当前状态: ${doc.status}`);
-    if (doc.createdBy !== user.id && !user.roles.includes("admin")) {
+    if (doc.createdBy !== actor.id && !actor.roles.includes("admin")) {
       try {
-        requireRole(user, "warehouse"); // 仓库同事可代录；其余角色拒绝
+        requireRole(actor, "warehouse"); // 仓库同事可代录；其余角色拒绝
       } catch {
         throw new ApiError(403, "仅制单人/仓库/管理员可录入实盘数");
       }
     }
 
+    if (doc.version !== v.version) throw new ApiError(409, `版本冲突：期望版本 ${v.version} 已过期`);
     const lineIds = v.lines.map((l) => l.lineId);
     const owned: { id: number }[] = await tx
       .select({ id: pdLines.id })
@@ -250,26 +282,29 @@ export async function updateCounts(user: SessionUser, pdId: number, input: unkno
 
 export async function submitCountTask(user: SessionUser, pdId: number, version: number, dbArg?: AnyDb): Promise<PdDocRow> {
   const db = await resolveDb(dbArg);
-  const [doc]: PdDocRow[] = await db.select().from(pdDocs).where(eq(pdDocs.id, pdId));
-  if (!doc) throw new ApiError(404, "盘点单不存在");
-  if (doc.createdBy !== user.id && !user.roles.includes("admin")) {
-    throw new ApiError(403, "仅制单人或管理员可提交");
-  }
-  let target: DocStatus;
-  try {
-    target = nextStatus(doc.status as DocStatus, "submit");
-  } catch (e) {
-    if (e instanceof TransitionError) throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
-    throw e;
-  }
-  const updated: PdDocRow[] = await db
-    .update(pdDocs)
-    .set({ status: target, version: sql`${pdDocs.version} + 1`, updatedAt: new Date() })
-    .where(and(eq(pdDocs.id, pdId), eq(pdDocs.version, version)))
-    .returning();
-  if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
-  await writeAudit(db, { userId: user.id, entity: "pd_doc", entityId: pdId, action: "submit" });
-  return updated[0];
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    const [doc]: PdDocRow[] = await tx.select().from(pdDocs).where(eq(pdDocs.id, pdId)).for("update");
+    if (!doc) throw new ApiError(404, "盘点单不存在");
+    if (doc.createdBy !== actor.id && !actor.roles.includes("admin")) {
+      throw new ApiError(403, "仅制单人或管理员可提交");
+    }
+    let target: DocStatus;
+    try {
+      target = nextStatus(doc.status as DocStatus, "submit");
+    } catch (e) {
+      if (e instanceof TransitionError) throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
+      throw e;
+    }
+    const updated: PdDocRow[] = await tx
+      .update(pdDocs)
+      .set({ status: target, version: sql`${pdDocs.version} + 1`, updatedAt: new Date() })
+      .where(and(eq(pdDocs.id, pdId), eq(pdDocs.version, version)))
+      .returning();
+    if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
+    await writeAudit(tx, { userId: actor.id, entity: "pd_doc", entityId: pdId, action: "submit" });
+    return updated[0];
+  });
 }
 
 // ---------- 审批（原子：审批+调整单+过账+完成态同一事务） ----------
@@ -284,7 +319,8 @@ export async function approveCountTask(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
-      const [doc]: PdDocRow[] = await tx.select().from(pdDocs).where(eq(pdDocs.id, pdId));
+      const actor = await currentWriteActor(tx, user);
+      const [doc]: PdDocRow[] = await tx.select().from(pdDocs).where(eq(pdDocs.id, pdId)).for("update");
       if (!doc) throw new ApiError(404, "盘点单不存在");
 
       // 1) 通用审批：docType='count'（审批域=财务，seed）；SoD/幂等/乐观锁由 approveDoc 保证
@@ -292,7 +328,7 @@ export async function approveCountTask(
         docType: "count",
         table: pdDocs,
         docId: pdId,
-        approver: { id: user.id, roles: user.roles, isApprover: user.isApprover },
+        approver: actor,
         action: v.action,
         comment: v.comment,
         expectedVersion: v.version,
@@ -354,7 +390,11 @@ export async function approveCountTask(
           batchId: d.line.batchId,
           qtyDelta: d.delta, // 带符号 ±
         }));
-        await post(tx, { sourceDocType: "count_adjust", sourceDocId: adj.id, action: "post", lines: postingLines });
+        // 业务时点按盘点期 biz_date 落账（见 countAdjustOccurredAt）：8/31 的盘点 9/4 审批也归 8 月
+        await post(tx, {
+          sourceDocType: "count_adjust", sourceDocId: adj.id, action: "post", lines: postingLines,
+          occurredAt: countAdjustOccurredAt(doc.bizDate),
+        });
 
         // 5) 差异行回填调整单引用
         await tx
@@ -384,6 +424,17 @@ export async function approveCountTask(
     if (e instanceof PostingError && e.code === "NEGATIVE_STOCK") {
       throw new ApiError(409, `盘亏调整导致负库存被拒（账面已变动）——请红字/复盘后重建盘点任务：${e.message}`);
     }
+    /* C2：盘点按 biz_date 落账（countAdjustOccurredAt），补录到已关账月份的盘点审批必然撞期间锁。
+       不映射就退回 errorResponse 的通用 409/500，审批人看不出「是月份关了、不是盘点错了」，
+       也不知道 occurredAt 改不了、只能重开期间。月结清单已按业务日纳入待处理盘点（month-close），
+       正常路径不该走到这里；走到了就必须说清楚下一步。 */
+    if (e instanceof PostingError && e.code === "CLOSED_PERIOD") {
+      throw new ApiError(
+        409,
+        `盘点差异调整按盘点期（业务日期）落账，该期间已关账：${e.message}`
+          + "——盘点单的业务日期不可改，请由管理员重开该期间后再审批（月结清单已按业务日期把待处理盘点计入所属月份）。",
+      );
+    }
     if (e instanceof ApprovalError) throw mapApprovalError(e);
     throw e;
   }
@@ -391,7 +442,27 @@ export async function approveCountTask(
 
 // ---------- 查询 ----------
 
-export async function getCountTask(id: number, dbArg?: AnyDb) {
+/** Read-only hints mirror the HTTP warehouse guard; writes still recheck inside their transaction. */
+export function canCreateCountTask(user: SessionUser): boolean {
+  try { requireRole(user, "warehouse"); return true; } catch { return false; }
+}
+
+export function countTaskActions(user: SessionUser, doc: { status: string; createdBy: number }, approvalRole: string | null) {
+  const operator = canCreateCountTask(user);
+  const owner = doc.createdBy === user.id || user.roles.includes("admin");
+  const edit = doc.status === "draft" && operator;
+  const submit = edit && owner;
+  const approvalReason = doc.createdBy === user.id
+    ? "制单人与审批人必须分离，请由另一位审批人处理"
+    : approvalRoleError(user, approvalRole)?.message ?? null;
+  const approve = doc.status === "pending" && !approvalReason;
+  const reason = doc.status === "pending" ? approvalReason
+    : doc.status === "draft" && !operator ? "当前仅可查看，请由仓管录入实盘并由制单人或管理员提交"
+    : doc.status === "draft" && !owner ? "可代录实盘数；请由制单人或管理员提交财务审批" : null;
+  return { edit, submit, approve, reason };
+}
+
+export async function getCountTask(id: number, dbArg?: AnyDb, user?: SessionUser) {
   const db = await resolveDb(dbArg);
   const [doc]: (PdDocRow & {
     warehouseName: string | null; createdByName: string | null; bizDate: string | null;
@@ -451,8 +522,11 @@ export async function getCountTask(id: number, dbArg?: AnyDb) {
     : [];
 
   const approvalRows = await loadApprovalHistory(db, "count", id);
+  const [config] = user && doc.status === "pending"
+    ? await db.select({ role: approvalConfigs.approverRole }).from(approvalConfigs).where(eq(approvalConfigs.docType, "count")) : [];
 
   return {
+    ...(user ? { actions: countTaskActions(user, doc, config?.role ?? null) } : {}),
     id: doc.id,
     docNo: doc.docNo,
     status: doc.status,
@@ -489,6 +563,7 @@ export async function listCountTasks(
   },
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
+  validateCountPeriod(opts.period);
   const db = await resolveDb(dbArg);
   const conds = [];
   if (q) conds.push(sql`${pdDocs.docNo} ILIKE ${"%" + q + "%"}`);
@@ -549,6 +624,7 @@ export async function listCountLinesForExport(
   opts: { period?: string; pdId?: number; commercialRole?: string; limit: number },
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
+  validateCountPeriod(opts.period);
   const db = await resolveDb(dbArg);
   const conds = [];
   if (opts.pdId) conds.push(eq(pdDocs.id, opts.pdId));

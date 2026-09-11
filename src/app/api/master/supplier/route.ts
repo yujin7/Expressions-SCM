@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse, parseListQuery, readJson } from "@/server/modules/master/common";
+import { errorResponse, readJson } from "@/server/modules/master/common";
 import { guardRead, guardWrite } from "@/server/modules/master/common";
-import { createSupplier, listSuppliers } from "@/server/modules/master/supplier";
+import { createSupplier, listSuppliers, SUPPLIER_SORT_KEYS } from "@/server/modules/master/supplier";
+import { parseSelectedValues } from "@/server/core/selected-options";
+import { parseMasterListQuery } from "@/server/modules/master/list-query";
+import { supplierStatusEnum } from "@/db/schema";
 
 export async function GET(req: NextRequest) {
   try {
     await guardRead();
-    const { q, page, pageSize } = parseListQuery(req.url);
-    return NextResponse.json(await listSuppliers(q, page, pageSize));
+    const query = parseMasterListQuery(req.url, SUPPLIER_SORT_KEYS, supplierStatusEnum.enumValues);
+    return NextResponse.json(await listSuppliers(query.q, query.page, query.pageSize, parseSelectedValues(query.searchParams), query));
   } catch (e) {
     return errorResponse(e);
   }

@@ -1,10 +1,12 @@
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
-   jgDocs, jgFeeSegments, pcDocs, poDocs, poLines, priceLists,
+   jgDocs, jgFeeSegments, pcDocs, poDocs, poLines, poPromiseRevisions,
   skus, suppliers, sysParams, users,
 } from "@/db/schema";
+import { dayDiff } from "@/server/core/business-day";
 import { dCmp } from "@/server/core/decimal";
 import { canSeePrices, type SessionUser } from "@/server/core/dto";
+import { getNumParam } from "@/server/core/params";
 import { writeAudit } from "@/server/core/audit";
 import { approveDoc, loadApprovalHistory, withdrawDoc } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
@@ -15,6 +17,8 @@ import { type AnyDb, requireAnyRole, resolveDb, rethrowApproval } from "./common
 import { approveDocSchema, confirmDocSchema, transitionDocSchema, withdrawDocSchema } from "./schemas";
 import { skuLineMatch } from "@/server/core/doc-search";
 import { transitionDoc } from "@/server/docflow/transition";
+import { currentPriceListRow } from "./price-list";
+import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 
 /** 采购订单 PO + 价格变更 PC（R1：基础单位未税比价；异动自动生成 PC，PO 留在草稿） */
 
@@ -36,7 +40,7 @@ async function getTolerancePct(db: AnyDb): Promise<string> {
 /**
  * 基准价（基础单位未税，《00》A5）：
  *   1) 最近一张已审批 PO 同 (供应商,SKU) 行价（approved/in_progress/completed，按单 id 倒序）
- *   2) 兜底 price_lists 生效日≤今日的最新行（表内已是基础单位未税价）
+ *   2) 兜底 price_lists 生效日≤今日的最新行（表内已是基础单位未税价；取行口径唯一权威 price-list.currentPriceListRow）
  *   3) 都无 → null（首购免检）
  */
 async function findBaseline(db: AnyDb, supplierId: number, skuId: number, excludePoId: number): Promise<string | null> {
@@ -67,18 +71,8 @@ async function findBaseline(db: AnyDb, supplierId: number, skuId: number, exclud
       uomFactor: prev.uomFactor,
     });
   }
-  const [pl] = await db
-    .select({ price: priceLists.price })
-    .from(priceLists)
-    .where(
-      and(
-        eq(priceLists.skuId, skuId),
-        eq(priceLists.supplierId, supplierId),
-        sql`${priceLists.effectiveDate} <= ${todayShanghai()}`,
-      ),
-    )
-    .orderBy(desc(priceLists.effectiveDate), desc(priceLists.id))
-    .limit(1);
+  // 生效日口径唯一权威 = price-list.currentPriceListRow（价目表维护页与本兜底判定必须取到同一行）
+  const pl = await currentPriceListRow(db, { skuId, supplierId });
   return pl?.price ?? null;
 }
 
@@ -95,6 +89,13 @@ export async function submitPo(user: SessionUser, id: number, version: number, d
 
   const lines: PoLineRow[] = await db.select().from(poLines).where(eq(poLines.poId, id)).orderBy(poLines.id);
   if (lines.length === 0) throw new ApiError(409, "PO 无行，不可提交");
+  // D63/D64 OTIF 前置：承诺交期必填（sys_params po_expected_date_required=1 开启；表头或逐行任一有值即可）
+  if ((await getNumParam("po_expected_date_required", 0, db)) >= 1 && !doc.expectedDate) {
+    const missing = lines.filter((l) => !l.expectedDate).length;
+    if (missing > 0) {
+      throw new ApiError(409, `承诺交期必填：表头未填预计交期且 ${missing} 行缺行交期（运行参数 po_expected_date_required 可关闭）`);
+    }
+  }
   const tolerancePct = await getTolerancePct(db);
 
   // 逐行 R1：异动行需有「同价已批 PC」放行，否则挂/建 PC
@@ -334,20 +335,86 @@ export async function getPo(id: number, dbArg?: AnyDb) {
       taxIncluded: poLines.taxIncluded,
       taxRatePct: poLines.taxRatePct,
       receivedQty: poLines.receivedQty,
+      // 行级承诺交期：供应商门户 po-confirm 逐行回填的唯一落点；缺省 = 沿用表头 expectedDate
+      expectedDate: poLines.expectedDate,
     })
     .from(poLines)
     .innerJoin(skus, eq(poLines.skuId, skus.id))
     .where(eq(poLines.poId, id))
     .orderBy(poLines.id);
 
-  const approvalRows = await loadApprovalHistory(db, "po", id);
+  const [approvalRows, promiseRevisions] = await Promise.all([
+    loadApprovalHistory(db, "po", id),
+    listPoPromiseRevisions(db, id),
+  ]);
 
-  return { ...doc, lines, approvals: approvalRows };
+  return { ...doc, lines, approvals: approvalRows, promiseRevisions };
+}
+
+export interface PoPromiseRevisionRow {
+  id: number;
+  poLineId: number;
+  skuCode: string;
+  skuName: string;
+  sequence: number;
+  previousDate: string | null;
+  promisedDate: string | null;
+  source: string;
+  actorType: string;
+  recordedByName: string | null;
+  reason: string | null;
+  externalSource: string | null;
+  externalRef: string | null;
+  occurredAt: Date | string;
+}
+
+/**
+ * 交期承诺变更时间线（po_promise_revisions，仅追加事实）：供应商门户确认 / 采购改期 / 历史回填 / 外部观察。
+ * 之前这张表只被写不被读——供应商在门户改了交期，内部页面看不到任何痕迹。
+ */
+export async function listPoPromiseRevisions(db: AnyDb, poId: number): Promise<PoPromiseRevisionRow[]> {
+  const rows: PoPromiseRevisionRow[] = await db
+    .select({
+      id: poPromiseRevisions.id,
+      poLineId: poPromiseRevisions.poLineId,
+      skuCode: skus.code,
+      skuName: skus.name,
+      sequence: poPromiseRevisions.sequence,
+      previousDate: poPromiseRevisions.previousDate,
+      promisedDate: poPromiseRevisions.promisedDate,
+      source: poPromiseRevisions.source,
+      actorType: poPromiseRevisions.actorType,
+      recordedByName: users.name,
+      reason: poPromiseRevisions.reason,
+      externalSource: poPromiseRevisions.externalSource,
+      externalRef: poPromiseRevisions.externalRef,
+      occurredAt: poPromiseRevisions.occurredAt,
+    })
+    .from(poPromiseRevisions)
+    .innerJoin(poLines, eq(poPromiseRevisions.poLineId, poLines.id))
+    .innerJoin(skus, eq(poLines.skuId, skus.id))
+    .leftJoin(users, eq(poPromiseRevisions.recordedBy, users.id))
+    .where(eq(poPromiseRevisions.poId, poId))
+    .orderBy(desc(poPromiseRevisions.occurredAt), desc(poPromiseRevisions.id));
+  return rows;
+}
+
+/** 列表页派生：已收占比（Σ已收 / Σ数量，1 位小数；无数量 → null）与逾期天数（只对 approved/in_progress 且承诺日已过） */
+export function poListProgress(
+  row: { status: string; expectedDate: string | null; qtySum: string | null; receivedSum: string | null },
+  today: string,
+): { receivedPct: number | null; overdueDays: number | null } {
+  const qty = Number(row.qtySum ?? 0);
+  const received = Number(row.receivedSum ?? 0);
+  const receivedPct = qty > 0 ? Math.round((received / qty) * 1000) / 10 : null;
+  const open = row.status === "approved" || row.status === "in_progress";
+  const overdue = open && row.expectedDate ? dayDiff(row.expectedDate, today) : 0;
+  return { receivedPct, overdueDays: overdue > 0 ? overdue : null };
 }
 
 export async function listPos(
   q: string,
-  opts: { status?: string; woId?: number; page: number; pageSize: number },
+  opts: { status?: string; woId?: number; page: number; pageSize: number; returnEligible?: boolean; receiptEligible?: boolean; selectedValues?: SelectedOptionValue[] },
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
@@ -355,15 +422,25 @@ export async function listPos(
   if (q) conds.push(or(sql`${poDocs.docNo} ILIKE ${"%" + q + "%"}`, skuLineMatch("po_lines", "po_id", poDocs.id, q)));
   if (opts.status) conds.push(eq(poDocs.status, opts.status as DocStatus));
   if (opts.woId) conds.push(eq(poDocs.woId, opts.woId));
+  if (opts.returnEligible) conds.push(inArray(poDocs.status, ["approved", "in_progress", "completed"]));
+  if (opts.receiptEligible) conds.push(inArray(poDocs.status, ["approved", "in_progress"]));
+  const selected = selectedOptionsPredicate(opts.selectedValues, { id: poDocs.id, text: [poDocs.docNo] });
+  if (selected) conds.push(selected);
   const where = conds.length ? and(...conds) : undefined;
 
+  // 行聚合：行数 + Σ数量 + Σ已收（列表页「已收%」；采购单位口径逐行同单位，直接相加即可）
   const lineAgg = db
-    .select({ poId: poLines.poId, lineCount: sql<number>`count(*)::int`.as("agg_line_count") })
+    .select({
+      poId: poLines.poId,
+      lineCount: sql<number>`count(*)::int`.as("agg_line_count"),
+      qtySum: sql<string | null>`sum(${poLines.qty})::text`.as("agg_qty_sum"),
+      receivedSum: sql<string | null>`sum(${poLines.receivedQty})::text`.as("agg_received_sum"),
+    })
     .from(poLines)
     .groupBy(poLines.poId)
     .as("la");
 
-  const [rows, [{ total }]] = await Promise.all([
+  const [rawRows, [{ total }]] = await Promise.all([
     db
       .select({
         id: poDocs.id,
@@ -372,6 +449,8 @@ export async function listPos(
         woId: poDocs.woId,
         supplierName: suppliers.name,
         lineCount: sql<number>`coalesce(${lineAgg.lineCount}, 0)`,
+        qtySum: lineAgg.qtySum,
+        receivedSum: lineAgg.receivedSum,
         expectedDate: poDocs.expectedDate,
         confirmedAt: poDocs.confirmedAt,
         createdByName: users.name,
@@ -383,10 +462,15 @@ export async function listPos(
       .leftJoin(users, eq(poDocs.createdBy, users.id))
       .where(where)
       .orderBy(desc(poDocs.createdAt), desc(poDocs.id))
-      .limit(opts.pageSize)
-      .offset((opts.page - 1) * opts.pageSize),
+      .limit(opts.selectedValues === undefined ? opts.pageSize : SELECTED_OPTIONS_LIMIT)
+      .offset(opts.selectedValues === undefined ? (opts.page - 1) * opts.pageSize : 0),
     db.select({ total: sql<number>`count(*)::int` }).from(poDocs).where(where),
   ]);
+  const today = todayShanghai();
+  const rows = (rawRows as Array<(typeof rawRows)[number] & { status: string; expectedDate: string | null }>).map((r) => ({
+    ...r,
+    ...poListProgress(r, today),
+  }));
   return { rows, total };
 }
 

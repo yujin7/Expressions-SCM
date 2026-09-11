@@ -9,12 +9,16 @@ import SearchInput from "@/components/SearchInput";
  * - 记分卡：这家供应商到底几分？分从哪来？（展开行逐维度拆给你看——不可解释的评分没人敢用）
  * - 质检透视：质量问题在时间上怎么走？（按月堆叠，让步/报废是不是在变多）
  * - 价格偏差：同 SKU 的已生效采购价统一到基础单位未税后，哪些供应商值得复核？
+ * - 账期候选（D64）：谁该谈账期、谈到了没有、账期类采购额占多少？（payment-term-tab.tsx）
+ * - 历史交期观察（B4）：简道云历史采购订单→入库的交期分布，与系统学习交期并列（lead-history-tab.tsx，observation_only）
+ * - 交期学习（2026-09-04 并入）：系统自己学出来的 P50/P90/准时率与建议档案交期（leadtime-learning-tab.tsx）。
+ *   三套交期口径（记分卡 OTIF / 系统学习 / 简道云观察）此前分散在两个菜单分组，只看得见其中一个就会拿它当唯一事实。
  * 评分只是**数据建议**：采纳与否由采购判断，点「采纳」才写档案等级；样本不足者不评级而非给低分。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  Alert, App, Button, Card, Col, Popconfirm, Progress, Row, Segmented, Select,
+  Alert, App, Button, Card, Col, Popconfirm, Progress, Row, Segmented,
   Space, Statistic, Table, Tabs, Tag, Tooltip, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
@@ -24,10 +28,14 @@ import { fetchJson, postJson } from "@/components/fetchJson";
 import DecisionVisual from "@/components/DecisionVisual";
 import ProductExternalDecisionEvidenceCard from "@/components/ProductExternalDecisionEvidenceCard";
 import ListToolbar from "@/components/ListToolbar";
+import RemoteSelect, { type RemoteRow } from "@/components/RemoteSelect";
 import { buildSupplierExternalEvidenceBriefs } from "@/components/supplier-external-evidence";
 import type { ProductExternalDecisionEvidenceBrief } from "@/components/product-external-decision-evidence";
 import { useListState } from "@/components/useListState";
 import type { JiandaoyunSupportingObservation } from "@/server/modules/report/jiandaoyun-supporting-observation";
+import LeadHistoryTab from "./lead-history-tab";
+import LeadTimeLearningTab from "./leadtime-learning-tab";
+import PaymentTermTab from "./payment-term-tab";
 
 /* ───────────────── 类型（与服务端 DTO 对齐） ───────────────── */
 
@@ -49,6 +57,9 @@ interface ScoreRow {
   grade: string | null;
   confidence: "high" | "medium" | "low";
   onTimeRate: number | null;
+  onTimeRateCurrent: number | null;
+  openQualityCases: number | null;
+  overdueQualityCases: number | null;
   qcPassRate: number | null;
   concessionRate: number | null;
   scrapRate: number | null;
@@ -67,9 +78,26 @@ interface ScoreData {
     suppliers: number;
     rated: number;
     suggestChanges: number;
+    /** 整体准时率（pooled，样本加权）——不是各供应商比率的算术平均 */
     avgOnTimeRate: number | null;
+    avgOnTimeRateCurrent: number | null;
+    onTimeSamples: number;
+    onTimeHits: number;
+    onTimeSamplesCurrent: number;
+    onTimeHitsCurrent: number;
+    onTimeSuppliers: number;
+    /** 无承诺交期样本、被排除在准时率之外的供应商数（缺数据 ≠ 差） */
+    onTimeExcludedSuppliers: number;
+    onTimeAggregationLabel: string;
+    /** 未关闭质量案件里立案早于窗口起点的件数 */
+    legacyQualityCases: number;
+    /** 质量案件维度的口径标签（说明它不受 windowDays 限制） */
+    qualityCaseScope: string;
     windowDays: number;
   };
+  onTimeBasisLabel: string;
+  onTimeSecondaryBasisLabel: string;
+  promiseHistory: { trusted: number; backfilled: number; missing: number };
   supportingObservations: JiandaoyunSupportingObservation[];
   externalDecisionEvidence: ProductExternalDecisionEvidenceBrief;
 }
@@ -165,6 +193,7 @@ const QC_SERIES = [
 
 const pct = (v: number | null): string => (v == null ? "—" : `${(v * 100).toFixed(1)}%`);
 const fmt = (v: number): string => (Number.isInteger(v) ? String(v) : v.toFixed(2));
+const supplierOptionLabel = (row: RemoteRow): string => `${String(row.name)}（${String(row.code)}）`;
 const displayExternalMetric = (value: string): string => {
   const parsed = Number(value);
   return Number.isFinite(parsed)
@@ -236,11 +265,49 @@ function SupplierExternalEvidence({ observations }: { observations: readonly Jia
 
 /* ───────────────── 页签一：记分卡 ───────────────── */
 
+/** Keep each tab's facts, errors, and refresh callback bound to its current query. */
+function useSupplierReport<T>(url: string | null, failureMessage: string) {
+  const { message } = App.useApp();
+  const [result, setResult] = useState<{ url: string; data: T | null; error: string | null; loading: boolean } | null>(null);
+  const request = useRef<AbortController | null>(null);
+  const activeLoad = useRef<(() => Promise<void>) | null>(null);
+  const load = useCallback(async () => {
+    request.current?.abort();
+    if (url === null) return;
+    const controller = new AbortController();
+    request.current = controller;
+    setResult({ url, data: null, error: null, loading: true });
+    try {
+      const data = await fetchJson<T>(url, { signal: controller.signal });
+      if (!controller.signal.aborted) setResult({ url, data, error: null, loading: false });
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      const text = error instanceof Error ? error.message : failureMessage;
+      setResult({ url, data: null, error: text, loading: false });
+      message.error(text);
+    }
+  }, [url, failureMessage, message]);
+  useEffect(() => {
+    activeLoad.current = load;
+    void load();
+    return () => {
+      request.current?.abort();
+      activeLoad.current = null;
+    };
+  }, [load]);
+  // A mutation begun on an older page must refresh today's query, not its captured one.
+  const refresh = useCallback(async () => { await activeLoad.current?.(); }, []);
+  const current = url !== null && result?.url === url ? result : null;
+  return {
+    data: current?.data ?? null,
+    loading: url !== null && (!current || current.loading),
+    loadError: url === null ? failureMessage : current?.error ?? null,
+    load: refresh,
+  };
+}
+
 function ScorecardTab() {
   const { message } = App.useApp();
-  const [data, setData] = useState<ScoreData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [applying, setApplying] = useState<number | null>(null);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地；
   // 本页两个页签各是独立列表，用 paramPrefix 分命名空间（sc_* / qc_*）互不清空
@@ -249,22 +316,8 @@ function ScorecardTab() {
   const q = filters.q;
   const windowDays = Number(filters.windowDays);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize), windowDays: String(windowDays) });
-      setData(await fetchJson<ScoreData>(`/api/report/supplier-scorecard?${params.toString()}`));
-    } catch (e) {
-      const text = e instanceof Error ? e.message : "供应商记分卡加载失败";
-      setData(null);
-      setLoadError(text);
-      message.error(text);
-    } finally {
-      setLoading(false);
-    }
-  }, [q, page, pageSize, windowDays, message]);
-  useEffect(() => { void load(); }, [load]);
+  const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize), windowDays: String(windowDays) });
+  const { data, loading, loadError, load } = useSupplierReport<ScoreData>(`/api/report/supplier-scorecard?${params}`, "供应商记分卡加载失败");
 
   const apply = async (r: ScoreRow) => {
     if (!r.grade) return;
@@ -348,7 +401,30 @@ function ScorecardTab() {
           <Tag color={v === "high" ? "green" : "gold"}>{CONFIDENCE_LABELS[v]}</Tag>
         ),
     },
-    { title: "准时率", dataIndex: "onTimeRate", width: 95, align: "right", render: (v: number | null) => <RateCell v={v} warnBelow={0.8} /> },
+    {
+      title: `准时率（${data?.onTimeBasisLabel ?? "原始承诺"}）`, dataIndex: "onTimeRate", width: 130, align: "right",
+      render: (v: number | null) => <RateCell v={v} warnBelow={0.8} />,
+    },
+    {
+      title: `准时率（${data?.onTimeSecondaryBasisLabel ?? "当前承诺"}）`, dataIndex: "onTimeRateCurrent", width: 130, align: "right",
+      render: (v: number | null, r) => (
+        <Tooltip title={
+          v != null && r.onTimeRate != null && v > r.onTimeRate
+            ? "当前承诺口径高于原始承诺口径：差额来自供应商自己的改期，不计入综合分"
+            : "并列副口径，只展示不计分"
+        }>
+          <span><RateCell v={v} /></span>
+        </Tooltip>
+      ),
+    },
+    {
+      title: "在办质量案件", dataIndex: "openQualityCases", width: 120, align: "right",
+      render: (v: number | null, r) => (v == null
+        ? <Typography.Text type="secondary">—</Typography.Text>
+        : <Typography.Text style={{ color: (r.overdueQualityCases ?? 0) > 0 ? "#cf1322" : "#fa8c16" }}>
+          {v} 件{(r.overdueQualityCases ?? 0) > 0 ? `（逾期 ${r.overdueQualityCases}）` : ""}
+        </Typography.Text>),
+    },
     { title: "合格率", dataIndex: "qcPassRate", width: 95, align: "right", render: (v: number | null) => <RateCell v={v} warnBelow={0.95} /> },
     { title: "让步率", dataIndex: "concessionRate", width: 95, align: "right", render: (v: number | null) => <RateCell v={v} warnAbove={0.05} /> },
     { title: "报废率", dataIndex: "scrapRate", width: 95, align: "right", render: (v: number | null) => <RateCell v={v} warnAbove={0.02} /> },
@@ -367,6 +443,7 @@ function ScorecardTab() {
         size="small"
         pagination={false}
         tableLayout="fixed"
+        scroll={{ x: 800 }}
         dataSource={r.breakdown}
         columns={[
           { title: "维度", dataIndex: "label", width: 110 },
@@ -381,7 +458,7 @@ function ScorecardTab() {
             render: (v: number | null, d) =>
               v == null ? <Typography.Text type="secondary">不计分</Typography.Text> : <Typography.Text strong>{v} / {d.weight}</Typography.Text>,
           },
-          { title: "说明", dataIndex: "note" },
+          { title: "说明", dataIndex: "note", width: 430 },
         ]}
         footer={() => <Typography.Text type="secondary">{r.reason}</Typography.Text>}
       />
@@ -406,10 +483,17 @@ function ScorecardTab() {
             <details className="supplier-scorecard-methodology__details">
               <summary>查看完整评分口径与数据限制</summary>
               <Typography.Paragraph type="secondary">
-                综合分 = 准时交付 40 分（复用交期学习的准时率：实际收货 ≤ 承诺到货）+ 质量 40 分（合格率 − 让步率×0.5 − 报废率×1.0）+ 价格稳定 20 分（窗口内生效调价次数，满 5 次归零）。
+                综合分 = 准时交付 40 分（准时率：实际收货 ≤ 承诺到货）+ 质量 40 分（合格率 − 让步率×0.5 − 报废率×1.0）+ 价格稳定 20 分（窗口内生效调价次数，满 5 次归零）；
+                该供应商<strong>有未关闭质量案件时</strong>再并入「质量案件 20 分」维度（逾期全罚、其余在办半罚，满 4 件加权归零），按 120 分权重归一——无案件的供应商不进这一维。
                 某维度无数据时该维度不计分、按剩余权重归一（展开行有逐维度说明）；
                 窗口内收货不足 {data?.minSamples ?? 3} 单的供应商<strong>不予评级</strong>，而不是给一个低分——单笔波动不足以定性。
                 准时率目前只覆盖采购 PO（委外 JG 无「承诺 vs 收货」等价链路），纯加工厂该维度按归一处理。
+                <br />
+                <strong>准时率主口径 = {data?.onTimeBasisLabel ?? "原始承诺"}</strong>（po_promise_revisions 第一条可信修订）；
+                「{data?.onTimeSecondaryBasisLabel ?? "当前承诺"}」列是供应商改期后的值，<strong>只展示不计分</strong>——
+                否则供应商在确认门户里把交期往后改一次就能把自己的准时率洗白。
+                承诺版本链覆盖：可信 {data?.promiseHistory?.trusted ?? "—"} / 迁移快照 {data?.promiseHistory?.backfilled ?? "—"} / 无版本链 {data?.promiseHistory?.missing ?? "—"} 个样本，
+                后两类的「原始承诺」是回落的当前承诺。
               </Typography.Paragraph>
             </details>
           </div>
@@ -427,8 +511,8 @@ function ScorecardTab() {
         />
       ) : null}
 
-      {!loadError ? <SupplierExternalEvidence observations={data?.supportingObservations ?? []} /> : null}
-      {!loadError ? <ProductExternalDecisionEvidenceCard evidence={data?.externalDecisionEvidence} /> : null}
+      {data ? <SupplierExternalEvidence observations={data.supportingObservations ?? []} /> : null}
+      {data ? <ProductExternalDecisionEvidenceCard evidence={data.externalDecisionEvidence} /> : null}
 
       <div className="supplier-scorecard-kpis">
         <Card size="small"><Statistic title={`窗口内有往来的供应商（近 ${s?.windowDays ?? windowDays} 天）`} value={s ? s.suppliers : "—"} /></Card>
@@ -437,15 +521,53 @@ function ScorecardTab() {
           <Statistic title="建议调整等级" value={s ? s.suggestChanges : "—"} valueStyle={{ color: s && s.suggestChanges > 0 ? "#fa8c16" : undefined }} />
         </Card>
         <Card size="small">
+          {/* 「平均」是错的词：这是**整体**准时率（pooled）。叫「平均」会让人以为
+              9 家各 1 单 100% 和 1 家 200 单 50% 一人一票——那个数是 95%，真实整体 ~50%。 */}
           <Statistic
-            title="平均准时率"
+            title={(
+              <Tooltip title={`${s?.onTimeAggregationLabel ?? ""}${s ? `　本次：${s.onTimeHits}/${s.onTimeSamples} 采购行（${s.onTimeSuppliers} 家有样本，${s.onTimeExcludedSuppliers} 家无可评估样本已排除）` : ""}`}>
+                <span>{`整体准时率（${data?.onTimeBasisLabel ?? "原始承诺"}）ⓘ`}</span>
+              </Tooltip>
+            )}
             value={s?.avgOnTimeRate == null ? "—" : s.avgOnTimeRate * 100}
             precision={s?.avgOnTimeRate == null ? undefined : 1}
             suffix={s?.avgOnTimeRate == null ? undefined : "%"}
             valueStyle={{ color: s?.avgOnTimeRate == null ? undefined : s.avgOnTimeRate < 0.8 ? "#cf1322" : "#52c41a" }}
           />
+          {s ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {s.onTimeHits}/{s.onTimeSamples} 采购行
+              {s.onTimeExcludedSuppliers > 0 ? `　${s.onTimeExcludedSuppliers} 家无样本已排除` : ""}
+            </Typography.Text>
+          ) : null}
+        </Card>
+        <Card size="small">
+          <Statistic
+            title={(
+              <Tooltip title={s?.onTimeAggregationLabel ?? ""}>
+                <span>{`整体准时率（${data?.onTimeSecondaryBasisLabel ?? "当前承诺"}）ⓘ`}</span>
+              </Tooltip>
+            )}
+            value={s?.avgOnTimeRateCurrent == null ? "—" : s.avgOnTimeRateCurrent * 100}
+            precision={s?.avgOnTimeRateCurrent == null ? undefined : 1}
+            suffix={s?.avgOnTimeRateCurrent == null ? undefined : "%"}
+          />
+          {s ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {s.onTimeHitsCurrent}/{s.onTimeSamplesCurrent} 采购行
+            </Typography.Text>
+          ) : null}
         </Card>
       </div>
+      {/* 质量案件维度不按窗口裁：页面标着「近 N 天」，就必须在同一屏说清这一维不受它限制 */}
+      {s && s.legacyQualityCases > 0 ? (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={s.qualityCaseScope}
+        />
+      ) : null}
 
       <ListToolbar
         state={listState}
@@ -490,10 +612,6 @@ function ScorecardTab() {
 /* ───────────────── 页签二：质检透视 ───────────────── */
 
 function QcSummaryTab() {
-  const { message } = App.useApp();
-  const [data, setData] = useState<QcData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   // 本页签独立列表状态：URL 参数命名空间 qc_*（与「记分卡」页签的 sc_* 互不干扰）
   const listState = useListState({
     key: "supplier-scorecard-qc",
@@ -502,35 +620,21 @@ function QcSummaryTab() {
     defaultPageSize: 20,
   });
   const months = Number(listState.filters.months);
-  const supplierId = listState.filters.supplierId ? Number(listState.filters.supplierId) : null;
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      // 供应商筛选在前端做：一次取全量才能填出下拉选项（月份数有限、行量可控）
-      setData(await fetchJson<QcData>(`/api/report/qc-summary?months=${months}`));
-    } catch (e) {
-      const text = e instanceof Error ? e.message : "质检透视加载失败";
-      setData(null);
-      setLoadError(text);
-      message.error(text);
-    } finally {
-      setLoading(false);
-    }
-  }, [months, message]);
-  useEffect(() => { void load(); }, [load]);
-
-  const supplierOptions = useMemo(() => {
-    const m = new Map<number, string>();
-    for (const r of data?.rows ?? []) m.set(r.supplierId, `${r.name}（${r.code}）`);
-    return [...m.entries()].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label));
-  }, [data]);
-
-  const rows = useMemo(
-    () => (supplierId == null ? (data?.rows ?? []) : (data?.rows ?? []).filter((r) => r.supplierId === supplierId)),
-    [data, supplierId],
+  const supplierFilter = listState.filters.supplierId;
+  const supplierId = supplierFilter ? Number(supplierFilter) : null;
+  const validSupplier = supplierId === null || (/^\d+$/.test(supplierFilter) && Number.isSafeInteger(supplierId) && supplierId > 0 && supplierId <= 2_147_483_647);
+  const validMonths = /^\d+$/.test(listState.filters.months) && Number.isInteger(months) && months >= 1 && months <= 36;
+  const filterError = !validSupplier ? "供应商筛选无效，请重新选择供应商。" : !validMonths ? "月份筛选无效，请选择 1 至 36 个月。" : null;
+  const params = new URLSearchParams({ months: String(months) });
+  if (supplierId !== null) params.set("supplierId", String(supplierId));
+  // The server owns distinct receipt counts and ratios of unrounded quantities.
+  // Summing monthly DTO rows would double-count repeat receipts and alter rounding.
+  const { data, loading, loadError, load } = useSupplierReport<QcData>(
+    filterError ? null : `/api/report/qc-summary?${params}`,
+    filterError ?? "质检透视加载失败",
   );
+  const rows = useMemo(() => data?.rows ?? [], [data]);
+  const supplierLabel = supplierId === null ? "全部供应商" : rows[0] ? `${rows[0].name}（${rows[0].code}）` : `供应商 #${supplierId}`;
 
   /** 堆叠柱：X=月份，堆叠=五类判定量（选定供应商时即该供应商的月度走势） */
   const chartData = useMemo(() => {
@@ -607,15 +711,15 @@ function QcSummaryTab() {
               onChange={(v) => listState.setFilter({ months: String(v) })}
               options={[{ label: "近 3 月", value: 3 }, { label: "近 6 月", value: 6 }, { label: "近 12 月", value: 12 }]}
             />
-            <Select
+            <RemoteSelect
+              api="/api/master/supplier"
+              getLabel={supplierOptionLabel}
               allowClear
-              showSearch
-              optionFilterProp="label"
-              placeholder="全部供应商"
+              placeholder="全部供应商（主档）"
               style={{ width: 260 }}
-              value={supplierId}
+              value={validSupplier ? supplierId ?? undefined : undefined}
+              labelRender={({ value, label }) => label ?? (Number(value) === supplierId ? supplierLabel : `供应商 #${value}`)}
               onChange={(v) => listState.setFilter({ supplierId: v == null ? "" : String(v) })}
-              options={supplierOptions}
             />
           </>
         }
@@ -633,12 +737,12 @@ function QcSummaryTab() {
             source: "收货检验台账按月聚合",
             asOf: data?.months.at(-1),
           }}
-          coverage={{ covered: data?.months.length ?? 0, total: months, label: "目标窗口月份" }}
+          coverage={data ? { covered: new Set(rows.map((row) => row.month)).size, total: months, label: "有检验记录月份" } : undefined}
           activeFilters={[
-            `近 ${months} 月`,
-            supplierId == null ? "全部供应商" : supplierOptions.find((option) => option.value === supplierId)?.label ?? "指定供应商",
+            validMonths ? `近 ${months} 月` : "月份筛选无效",
+            validSupplier ? supplierLabel : "供应商筛选无效",
           ]}
-          summary={t ? `收货批次 ${t.batches}，合格率 ${pct(t.passRate)}，让步率 ${pct(t.concessionRate)}，报废率 ${pct(t.scrapRate)}。` : "数据尚未成功加载。"}
+          summary={t ? `${supplierLabel}：收货批次 ${t.batches}，合格率 ${pct(t.passRate)}，让步率 ${pct(t.concessionRate)}，报废率 ${pct(t.scrapRate)}。` : "数据尚未成功加载。"}
           caveat="月份取检验录入月；占比分母只含已判定数量，未检验数量不进入分母。"
           state={loading && !data ? "loading" : loadError ? "error" : !hasData ? "empty" : "ready"}
           stateDetail={loadError ?? "当前窗口与供应商筛选下没有检验记录。"}
@@ -700,9 +804,9 @@ function QcSummaryTab() {
 
 function PriceVarianceTab() {
   const { message } = App.useApp();
-  const [data, setData] = useState<PriceVarianceData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const active = useSearchParams().get("tab") === "price";
+  const [exporting, setExporting] = useState(false);
+  const exportRequest = useRef<AbortController | null>(null);
   const listState = useListState({
     key: "supplier-price-variance",
     paramPrefix: "pv",
@@ -713,22 +817,22 @@ function PriceVarianceTab() {
   const q = filters.q;
   const windowDays = Number(filters.windowDays);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize), windowDays: String(windowDays) });
-      setData(await fetchJson<PriceVarianceData>(`/api/report/supplier-price-variance?${params.toString()}`));
-    } catch (error) {
-      const text = error instanceof Error ? error.message : "供应商价格偏差加载失败";
-      setData(null);
-      setLoadError(text);
-      message.error(text);
-    } finally {
-      setLoading(false);
-    }
-  }, [q, page, pageSize, windowDays, message]);
-  useEffect(() => { void load(); }, [load]);
+  const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize), windowDays: String(windowDays) });
+  const { data, loading, loadError, load } = useSupplierReport<PriceVarianceData>(`/api/report/supplier-price-variance?${params}`, "供应商价格偏差加载失败");
+  const exportScope = useMemo(() => ({ q, windowDays, page, pageSize, active, data, loading }), [q, windowDays, page, pageSize, active, data, loading]);
+  const currentExportScope = useRef<typeof exportScope | null>(null);
+  useLayoutEffect(() => {
+    currentExportScope.current = exportScope;
+    exportRequest.current?.abort();
+    exportRequest.current = null;
+    setExporting(false);
+    return () => {
+      if (currentExportScope.current !== exportScope) return;
+      currentExportScope.current = null;
+      exportRequest.current?.abort();
+      exportRequest.current = null;
+    };
+  }, [exportScope]);
 
   const chartData = useMemo(
     () => (data?.supplierSummary ?? []).slice(0, 12).map((row) => ({
@@ -741,27 +845,58 @@ function PriceVarianceTab() {
   );
 
   const download = useCallback(async () => {
+    const { data: source, q, windowDays, active, loading } = exportScope;
+    if (!source || loading || !active || currentExportScope.current !== exportScope || exportRequest.current) return;
+    const controller = new AbortController();
+    exportRequest.current = controller; // Synchronous lock: repeated clicks may precede a render.
+    setExporting(true);
+    const isCurrent = () => !controller.signal.aborted && exportRequest.current === controller && currentExportScope.current === exportScope;
+    let failureMessage = "网络连接异常，未能获取导出响应";
     try {
       const params = new URLSearchParams({ q, windowDays: String(windowDays), format: "csv" });
-      const response = await fetch(`/api/report/supplier-price-variance?${params.toString()}`);
+      const response = await fetch(`/api/report/supplier-price-variance?${params.toString()}`, { signal: controller.signal });
+      if (!isCurrent()) return;
       if (!response.ok) {
-        const body = await response.json().catch(() => ({})) as { error?: string };
-        throw new Error(body.error ?? `导出失败（HTTP ${response.status}）`);
+        const body: unknown = await response.json().catch(() => null);
+        if (!isCurrent()) return;
+        const detail = typeof body === "object" && body !== null && "error" in body && typeof body.error === "string" ? body.error.trim() : "";
+        // Never echo proxy HTML, object bodies, controls, or unbounded upstream details.
+        failureMessage = detail && detail.length <= 500 && !/[\p{Cc}\p{Cf}]/u.test(detail) && !/<\/?[a-z][^>]*>/i.test(detail)
+          ? detail
+          : `导出失败（HTTP ${response.status}）`;
+        throw new Error(failureMessage);
       }
-      const url = URL.createObjectURL(await response.blob());
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = `供应商价格偏差观察值-${data?.summary.asOf ?? "当前"}.csv`;
-      anchor.style.display = "none";
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      // Safari/部分 WebKit 在同一事件循环立即 revoke 会吞掉下载；延迟释放仍不泄漏对象 URL。
-      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "导出失败");
+      if (!/^text\/csv(?:\s*;|$)/i.test(response.headers.get("content-type") ?? "")) {
+        failureMessage = "服务器未返回 CSV 文件，请确认登录状态后重试";
+        throw new Error(failureMessage);
+      }
+      failureMessage = "导出文件读取失败，请稍后重试";
+      const blob = await response.blob();
+      if (!isCurrent()) return;
+      failureMessage = "文件下载未能开始，请重试";
+      const url = URL.createObjectURL(blob);
+      let anchor: HTMLAnchorElement | null = null;
+      try {
+        anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `供应商价格偏差观察值-${source.summary.asOf ?? "当前"}.csv`;
+        anchor.style.display = "none";
+        document.body.appendChild(anchor);
+        anchor.click();
+      } finally {
+        // WebKit may consume the object URL after the current event loop.
+        window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+        anchor?.remove();
+      }
+    } catch {
+      if (isCurrent()) message.error(failureMessage);
+    } finally {
+      if (isCurrent()) {
+        exportRequest.current = null;
+        setExporting(false);
+      }
     }
-  }, [q, windowDays, data?.summary.asOf, message]);
+  }, [exportScope, message]);
 
   const columns: ColumnsType<PriceVarianceRow> = [
     {
@@ -908,7 +1043,7 @@ function PriceVarianceTab() {
             asOf: summary?.asOf,
             note: "CNY 为系统默认；用友供应商身份仍待 UAT",
           }}
-          coverage={{ covered: summary?.comparableLineCount ?? 0, total: summary?.inputLineCount ?? 0, label: "有效 PO 行" }}
+          coverage={summary ? { covered: summary.comparableLineCount, total: summary.inputLineCount, label: "有效 PO 行" } : undefined}
           activeFilters={[`近 ${windowDays} 天`, q ? `搜索：${q}` : "全部供应商与 SKU"]}
           summary={summary
             ? `完整窗口共 ${summary.comparableSkuCount} 个可比 SKU、${summary.comparableSupplierCount} 家供应商，采购行覆盖 ${summary.coveragePct}%。${q ? "图表与明细已按搜索条件收窄；" : ""}图中为供应商跨可比 SKU 的偏差中位数。`
@@ -917,8 +1052,8 @@ function PriceVarianceTab() {
           state={loading && !data ? "loading" : loadError ? "error" : chartData.length === 0 ? "insufficient" : "ready"}
           stateDetail={loadError ?? "当前窗口缺少至少两家供应商采购同一 SKU 的可比样本。"}
           height={300}
-          onExport={() => void download()}
-          exportLabel="导出完整筛选结果（最多 5000 行）"
+          onExport={data && !loading && active ? () => void download() : undefined}
+          exportLabel={exporting ? "正在导出，请稍候" : "导出完整筛选结果（最多 5000 行）"}
           dataView={
             <Table
               rowKey="supplierId"
@@ -970,7 +1105,8 @@ export default function SupplierScorecardClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedTab = searchParams.get("tab");
-  const activeTab = requestedTab === "qc" || requestedTab === "price" ? requestedTab : "scorecard";
+  const activeTab = requestedTab === "qc" || requestedTab === "price" || requestedTab === "term"
+    || requestedTab === "lead-history" || requestedTab === "leadtime" ? requestedTab : "scorecard";
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>供应商记分卡</Typography.Title>
@@ -986,6 +1122,13 @@ export default function SupplierScorecardClient() {
           { key: "scorecard", label: "记分卡", children: <ScorecardTab /> },
           { key: "qc", label: "质检透视", children: <QcSummaryTab /> },
           { key: "price", label: "价格偏差", children: <PriceVarianceTab /> },
+          // W2-G（D64）：账期候选——独立 URL 参数命名空间 pt_*，与 sc_/qc_/pv_ 互不干扰
+          { key: "term", label: "账期候选", children: <PaymentTermTab /> },
+          // B4：历史交期观察（简道云历史采购订单→入库，observation_only）——命名空间 lh_*
+          { key: "lead-history", label: "历史交期观察", children: <LeadHistoryTab /> },
+          // 2026-09-04：交期学习（系统学习值，可人工采纳进档案）——命名空间 lt_*；
+          // 与「历史交期观察」并排，三套交期口径同页可比（旧路径 /report/leadtime-learning 跳转到这里）
+          { key: "leadtime", label: "交期学习", children: <LeadTimeLearningTab /> },
         ]}
       />
     </div>

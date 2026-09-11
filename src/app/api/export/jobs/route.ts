@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getFreshSessionUser } from "@/server/core/dto";
-import { ApiError, errorResponse, guardRead, readJson } from "@/server/modules/master/common";
+import { ApiError, errorResponse, readJson } from "@/server/modules/master/common";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import { EXPORT_KIND_LABELS, EXPORT_KINDS } from "@/server/modules/report/export";
 import { createExportJob, ensureExportWorkerStarted, listExportJobs } from "@/jobs/export-worker";
@@ -35,11 +35,12 @@ export async function POST(req: NextRequest) {
 /** GET /api/export/jobs：我的任务列表（admin 可见全部；最新在前） */
 export async function GET() {
   try {
-    const user = await guardRead();
+    let user;
+    try { user = await getFreshSessionUser(); } catch { throw new ApiError(401, "未登录或会话已失效，请重新登录"); }
     ensureExportWorkerStarted(); // 开发模式兜底：确保有人在消费队列
     /* 标签由服务端下发：客户端页面禁止 import 服务端模块（会把 auth/pg/argon2 拖进客户端包） */
     const rows = (await listExportJobs(user)).map((r) => ({ ...r, kindLabel: EXPORT_KIND_LABELS[r.kind] ?? r.kind }));
-    return NextResponse.json({ rows });
+    return NextResponse.json({ rows }, { headers: { "Cache-Control": "private, no-store" } });
   } catch (e) {
     return errorResponse(e);
   }

@@ -72,7 +72,21 @@ async function seed() {
     { importJobId: refunds.id, rowNo: 3, status: "pending", targetTable: "jdy_tmall_sku_refund_observation",
       payload: { data: { statisticalDate: "2026-09-01", shopName: shop, skuId: "P-CW", successRefundSuborderNumber: "0" } } },
   ]);
-  return { db, client, actor, viaCrosswalk, viaDirect, unmapped };
+  // This fixture asserts complete-window consumer behavior, so supply explicit daily zero evidence.
+  // Sparse/missing-day semantics are tested separately in external-demand-windows.test.ts.
+  const zeros = [];
+  let zeroRow = 100;
+  for (let back = 0; back < 90; back++) {
+    const date = new Date(Date.UTC(2026, 8, 1 - back)).toISOString().slice(0, 10);
+    for (const psku of ["P-CW", "P-DIRECT"]) {
+      const paidDates = psku === "P-CW" ? ["2026-09-01", "2026-08-15", "2026-07-01"] : ["2026-08-20"];
+      const refundDates = psku === "P-CW" ? ["2026-08-20", "2026-09-01"] : ["2026-08-20"];
+      if (!paidDates.includes(date)) zeros.push(sale(++zeroRow, psku, date, "0"));
+      if (!refundDates.includes(date)) zeros.push({ importJobId: refunds.id, rowNo: ++zeroRow, status: "pending" as const, targetTable: "jdy_tmall_sku_refund_observation", payload: { data: { statisticalDate: date, shopName: shop, skuId: psku, successRefundSuborderNumber: "0" } } });
+    }
+  }
+  await db.insert(schema.stagingRows).values(zeros);
+  return { db, client, actor, viaCrosswalk, viaDirect, unmapped, crosswalk };
 }
 
 describe("外部观察销速读模型", () => {
@@ -193,7 +207,7 @@ describe("外部观察销速读模型", () => {
       expect(v.bySku[String(unmapped.id)]).toBeUndefined();
       expect(v.coverage).toEqual({
         platformSkus: 4,
-        mappedPlatformSkus: 2,
+        bundlePlatformSkus: 0, mappedPlatformSkus: 2,
         mappedSkus: 2,
         pddObservedDays30: 0,
         pddWindowComplete30: true,
@@ -516,6 +530,33 @@ describe("外部观察销速读模型", () => {
         .where(eq(schema.integrationRuns.id, olderRun.id));
       const expired = await loadExternalVelocity(db);
       expect(expired.bySku[String(sku.id)]).toMatchObject({ pddNet30: "6.0000", net30: null });
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+describe("对照表批次被标 review 且上一批已 supersede（2026-09-03 生产实况）", () => {
+  it("身份维表允许 qualityBlocked 批次；被 supersede 的批次不再当作可用批次", async () => {
+    const { db, client, viaCrosswalk, crosswalk } = await seed();
+    try {
+      const [actor] = await db.select().from(schema.users).limit(1);
+      // 上一批被 supersede（可用行清零）
+      await db.update(schema.importJobs).set({ status: "superseded" }).where(eq(schema.importJobs.id, crosswalk.id));
+      await db.update(schema.stagingRows).set({ status: "error" }).where(eq(schema.stagingRows.importJobId, crosswalk.id));
+      const [next] = await db.insert(schema.importJobs).values({ template: "jdy_tmall_sku_crosswalk_observation", filename: "cw2", sourceAsOf: "2026-09-03", createdBy: actor.id, status: "done" }).returning();
+      await db.insert(schema.integrationRuns).values({
+        connector: "jdy", stream: "tmall-sku-crosswalk-observation", idempotencyKey: "cw2", status: "succeeded", importJobId: next.id,
+        startedAt: new Date("2026-09-03T05:00:00.000Z"), finishedAt: new Date("2026-09-03T05:01:00.000Z"),
+        requestScope: { qualityBlocked: true, releaseBlocked: true, controlSummary: { status: "review", missingBusinessKeyRows: 2 } },
+      });
+      await db.insert(schema.stagingRows).values({
+        importJobId: next.id, rowNo: 1, status: "pending", targetTable: "jdy_tmall_sku_crosswalk_observation",
+        payload: { data: { shopName: "(天猫国际)NING海外旗舰店", platformSkuId: "P-CW" }, _identity: { skuId: viaCrosswalk.id } },
+      });
+      const v = await computeExternalVelocity(db);
+      expect(v.bySku[String(viaCrosswalk.id)]).toBeDefined();
+      expect(v.coverage.mappedPlatformSkus).toBeGreaterThanOrEqual(2);
     } finally {
       await client.close();
     }

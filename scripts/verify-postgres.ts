@@ -6,8 +6,156 @@
  * exist there. It is intentionally read-only after migration.
  */
 import pg from "pg";
+import { createHash } from "node:crypto";
+import { readFileSync, readdirSync } from "node:fs";
+import { resolve } from "node:path";
+
+export interface ExpectedMigration { tag: string; when: number; hash: string }
+export interface AppliedMigration { hash: string; created_at: string | number | null }
+
+/** Match drizzle's exact UTF-8 file hashing, but also reject unjournaled SQL. */
+export function expectedPostgresMigrations(folder: string): ExpectedMigration[] {
+  const journal = JSON.parse(readFileSync(resolve(folder, "meta/_journal.json"), "utf8")) as {
+    entries: { idx: number; tag: string; when: number }[];
+  };
+  if (!Array.isArray(journal.entries) || !journal.entries.length) throw new Error("Empty migration journal");
+  const tags = new Set<string>();
+  let previousWhen = -1;
+  const expected = journal.entries.map((entry, index) => {
+    if (entry.idx !== index || !/^\d{4}_[A-Za-z0-9_]+$/.test(entry.tag)
+      || tags.has(entry.tag) || !Number.isSafeInteger(entry.when) || entry.when <= previousWhen) {
+      throw new Error(`Invalid migration journal entry at index ${index}`);
+    }
+    tags.add(entry.tag);
+    previousWhen = entry.when;
+    return { tag: entry.tag, when: entry.when, hash: createHash("sha256")
+      .update(readFileSync(resolve(folder, `${entry.tag}.sql`), "utf8")).digest("hex") };
+  });
+  const sqlFiles = readdirSync(folder).filter((file) => file.endsWith(".sql"));
+  if (sqlFiles.length !== expected.length || sqlFiles.some((file) => !tags.has(file.slice(0, -4)))) {
+    throw new Error("Migration SQL files and journal differ");
+  }
+  return expected;
+}
+
+export function assertPostgresMigrationHistory(expected: readonly ExpectedMigration[], applied: readonly AppliedMigration[]): void {
+  if (applied.length !== expected.length) throw new Error(`Migration count mismatch: expected ${expected.length}, applied ${applied.length}`);
+  const byTime = new Map<number, AppliedMigration>();
+  for (const row of applied) {
+    const when = row.created_at == null ? Number.NaN : Number(row.created_at);
+    if (!Number.isSafeInteger(when) || byTime.has(when)) throw new Error("Invalid or duplicate applied migration timestamp");
+    byTime.set(when, row);
+  }
+  for (const entry of expected) {
+    if (byTime.get(entry.when)?.hash !== entry.hash) throw new Error(`Migration timestamp/hash mismatch: ${entry.tag}`);
+  }
+}
+
+/** Normalize whitespace only outside SQL literals/quoted identifiers. Expected
+ * definitions below are the actual PG16 catalog grammar, not reconstructed SQL.
+ * Never erase casts, parentheses, token boundaries, or characters inside quotes. */
+export function normalizedPgDefinition(value: string): string {
+  let result = "";
+  let quote: "'" | '"' | null = null;
+  let pendingSpace = false;
+  for (let index = 0; index < value.length; index++) {
+    const char = value[index];
+    if (quote !== null) {
+      result += char;
+      if (char === quote) {
+        if (value[index + 1] === quote) result += value[++index];
+        else quote = null;
+      }
+    } else if (/\s/.test(char)) {
+      pendingSpace = true;
+    } else {
+      if (pendingSpace && result) result += " ";
+      pendingSpace = false;
+      result += char;
+      if (char === "'" || char === '"') quote = char;
+    }
+  }
+  if (quote !== null) throw new Error("Unclosed quote in PostgreSQL catalog definition");
+  return result;
+}
+export const RECENT_PG_CONSTRAINTS = [
+  ["alert_events", "alert_events_idempotency_key_unique", "UNIQUE (idempotency_key)"],
+  ["alert_events", "ck_alert_events_event", "CHECK ((event = ANY (ARRAY['open'::text, 'refresh'::text, 'ack'::text, 'ack_reset'::text, 'close'::text, 'verify'::text, 'reopen'::text])))"],
+  ["alert_events", "ck_alert_events_reason", "CHECK (((reason_code IS NULL) OR (reason_code = ANY (ARRAY['fixed'::text, 'false_positive'::text, 'wont_fix'::text, 'superseded'::text, 'auto_hysteresis'::text, 'manual'::text]))))"],
+  ["alert_events", "ck_alert_events_close_reason_required", "CHECK (((event <> 'close'::text) OR (reason_code IS NOT NULL)))"],
+  ["alert_events", "ck_alert_events_verify_evidence_required", "CHECK (((event <> 'verify'::text) OR (evidence_ref IS NOT NULL)))"],
+  ["alert_events", "alert_events_alert_id_system_alerts_id_fk", "FOREIGN KEY (alert_id) REFERENCES system_alerts(id)"],
+  ["alert_events", "alert_events_actor_id_users_id_fk", "FOREIGN KEY (actor_id) REFERENCES users(id)"],
+  ["qc_records", "fk_qc_record_quality_case", "FOREIGN KEY (quality_case_id) REFERENCES quality_cases(id)"],
+  ["qc_records", "uq_qc_record_quality_case", "UNIQUE (quality_case_id)"],
+  ["qc_records", "uq_qc_record_return_ct", "UNIQUE (return_ct_id)"],
+  ["qc_records", "uq_qc_record_sh", "UNIQUE (sh_id)"],
+  ["qc_lines", "uq_qc_line_receipt_line", "UNIQUE (qc_id, sh_line_id)"],
+  ["sh_lines", "sh_lines_po_line_id_po_lines_id_fk", "FOREIGN KEY (po_line_id) REFERENCES po_lines(id)"],
+  ["notification_reads", "pk_notification_reads", "PRIMARY KEY (notification_id, user_id)"],
+  ["notification_reads", "notification_reads_notification_id_notifications_id_fk", "FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE"],
+  ["notification_reads", "notification_reads_user_id_users_id_fk", "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"],
+  ["sop_execution_drafts", "uq_sop_execution_draft_idempotency", "UNIQUE (idempotency_key)"],
+  ["sop_execution_drafts", "uq_sop_execution_draft_bh", "UNIQUE (bh_id)"],
+  ["sop_execution_drafts", "ck_sop_execution_draft_round", "CHECK ((cycle_version > 0))"],
+  ["sop_execution_drafts", "sop_execution_drafts_cycle_id_sop_cycles_id_fk", "FOREIGN KEY (cycle_id) REFERENCES sop_cycles(id)"],
+  ["sop_execution_drafts", "sop_execution_drafts_bh_id_bh_docs_id_fk", "FOREIGN KEY (bh_id) REFERENCES bh_docs(id)"],
+  ["sop_execution_drafts", "sop_execution_drafts_planning_version_id_planning_versions_id_fk", "FOREIGN KEY (planning_version_id) REFERENCES planning_versions(id)"],
+  ["sop_execution_drafts", "sop_execution_drafts_created_by_users_id_fk", "FOREIGN KEY (created_by) REFERENCES users(id)"],
+  ["integration_record_deletions", "ck_integration_record_deletion_reason", "CHECK ((length(btrim(reason)) >= 4))"],
+  ["integration_record_deletions", "integration_record_deletions_observed_in_job_id_import_jobs_id_fk", "FOREIGN KEY (observed_in_job_id) REFERENCES import_jobs(id)"],
+  ["integration_record_deletions", "integration_record_deletions_acked_by_users_id_fk", "FOREIGN KEY (acked_by) REFERENCES users(id)"],
+] as const;
+
+export interface RecentConstraintRow { table_name: string; constraint_name: string; definition: string; validated: boolean }
+export function assertRecentPostgresConstraints(rows: readonly RecentConstraintRow[]): void {
+  for (const [table, name, definition] of RECENT_PG_CONSTRAINTS) {
+    const row = rows.find((item) => item.table_name === table && item.constraint_name === name.slice(0, 63));
+    if (!row?.validated || normalizedPgDefinition(row.definition) !== normalizedPgDefinition(definition)) {
+      throw new Error(`Missing, unvalidated or changed PostgreSQL constraint: ${table}.${name}`);
+    }
+  }
+}
+
+export const RECENT_PG_INDEXES = [
+  { table: "system_alerts", name: "uq_alert_open_dedupe", unique: true, columns: ["category", "dedupe_key"], predicate: "(status = 'open'::text)" },
+  { table: "sop_decisions", name: "uq_sop_agree_one_per_signer", unique: true, columns: ["cycle_id", "cycle_version", "decided_by"], predicate: "(decision = 'agree'::text)" },
+  { table: "sop_decisions", name: "uq_sop_reject_one_per_role_round", unique: true, columns: ["cycle_id", "cycle_version", "role"], predicate: "(decision = 'reject'::text)" },
+  { table: "integration_record_deletions", name: "uq_integration_record_deletion", unique: true, columns: ["connector", "stream", "source_record_id"], predicate: null },
+  { table: "integration_record_deletions", name: "ix_integration_record_deletion_stream", unique: false, columns: ["connector", "stream"], predicate: null },
+] as const;
+export interface RecentIndexRow { table_name: string; index_name: string; valid: boolean; ready: boolean; unique: boolean; columns: string[]; predicate: string | null }
+export function assertRecentPostgresIndexes(rows: readonly RecentIndexRow[]): void {
+  for (const expected of RECENT_PG_INDEXES) {
+    const row = rows.find((item) => item.table_name === expected.table && item.index_name === expected.name);
+    if (!row?.valid || !row.ready || row.unique !== expected.unique
+      || JSON.stringify(row.columns) !== JSON.stringify(expected.columns)
+      || normalizedPgDefinition(row.predicate ?? "") !== normalizedPgDefinition(expected.predicate ?? "")) {
+      throw new Error(`Missing, invalid or changed PostgreSQL index: ${expected.table}.${expected.name}`);
+    }
+  }
+}
+
+export interface AlertTriggerRow {
+  trigger_name: string; enabled: string; type: number; function_schema: string;
+  function_name: string; function_body: string; function_language: string;
+  function_returns: string; condition: string | null; argument_count: number;
+}
+const IMMUTABLE_BODY = "BEGIN RAISE EXCEPTION '% is append-only; % is not allowed', TG_TABLE_NAME, TG_OP USING ERRCODE = '55000'; END;";
+export function assertPostgresAlertTriggers(rows: readonly AlertTriggerRow[]): void {
+  for (const [name, type] of [["alert_events_append_only", 27], ["alert_events_append_only_truncate", 34]] as const) {
+    const row = rows.find((item) => item.trigger_name === name);
+    if (!row || !["O", "A"].includes(row.enabled) || row.type !== type || row.condition !== null || row.argument_count !== 0
+      || row.function_schema !== "public" || row.function_name !== "reject_immutable_fact_mutation"
+      || row.function_language !== "plpgsql" || row.function_returns !== "trigger"
+      || normalizedPgDefinition(row.function_body) !== IMMUTABLE_BODY) {
+      throw new Error(`Missing, disabled or changed immutable alert trigger: ${name}`);
+    }
+  }
+}
 
 async function main(): Promise<void> {
+  const expectedMigrations = expectedPostgresMigrations(resolve(process.cwd(), "drizzle"));
   const url = process.env.DATABASE_URL?.trim();
   if (!url?.startsWith("postgres")) {
     throw new Error("check:postgres requires DATABASE_URL=postgres://...");
@@ -16,6 +164,9 @@ async function main(): Promise<void> {
   const client = new pg.Client({ connectionString: url, connectionTimeoutMillis: 5_000 });
   await client.connect();
   try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    await client.query("SET LOCAL search_path = public, pg_catalog");
+    await client.query("SET LOCAL statement_timeout = '10s'");
     const health = await client.query<{ ok: number }>("select 1 as ok");
     if (health.rows[0]?.ok !== 1) throw new Error("PostgreSQL SELECT 1 failed");
 
@@ -53,6 +204,7 @@ async function main(): Promise<void> {
         "alias_exceptions",
         "data_product_outcome_events",
         "report_read_model_cache",
+        "alert_events", "integration_record_deletions", "job_locks", "notification_reads", "sop_execution_drafts",
       ]],
     );
     const found = new Set(tables.rows.map((row) => row.table_name));
@@ -85,6 +237,7 @@ async function main(): Promise<void> {
       "alias_exceptions",
       "data_product_outcome_events",
       "report_read_model_cache",
+      "alert_events", "integration_record_deletions", "job_locks", "notification_reads", "sop_execution_drafts",
     ].filter((name) => !found.has(name));
     if (missing.length) throw new Error(`Missing migrated tables: ${missing.join(", ")}`);
 
@@ -251,6 +404,7 @@ async function main(): Promise<void> {
          join pg_namespace n on n.oid = c.relnamespace
         where n.nspname = 'public'
           and not t.tgisinternal
+          and t.tgenabled in ('O', 'A')
           and t.tgname = any($1::text[])`,
       [[
         "stock_ledger_append_only",
@@ -428,7 +582,9 @@ async function main(): Promise<void> {
     const locationConstraints = await client.query<{ conname: string }>(
       `select conname
          from pg_constraint
-        where conname = any($1::text[])`,
+        where connamespace = 'public'::regnamespace
+          and convalidated
+          and conname = any($1::text[])`,
       [requiredLocationConstraints],
     );
     const foundConstraints = new Set(locationConstraints.rows.map((row) => row.conname));
@@ -563,16 +719,52 @@ async function main(): Promise<void> {
       );
     }
 
-    const migrationCount = await client.query<{ count: string }>(
-      `select count(*)::text as count from drizzle.__drizzle_migrations`,
+    const recentConstraints = await client.query<RecentConstraintRow>(
+      `select c.relname as table_name, k.conname as constraint_name,
+              pg_get_constraintdef(k.oid) as definition, k.convalidated as validated
+         from pg_constraint k join pg_class c on c.oid = k.conrelid
+        where k.connamespace = 'public'::regnamespace and k.conname = any($1::text[])`,
+      [RECENT_PG_CONSTRAINTS.map(([, name]) => name.slice(0, 63))],
     );
-    const applied = Number(migrationCount.rows[0]?.count ?? 0);
-    if (!Number.isInteger(applied) || applied < 1) throw new Error("No drizzle migrations recorded");
+    assertRecentPostgresConstraints(recentConstraints.rows);
+
+    const recentIndexes = await client.query<RecentIndexRow>(
+      `select c.relname as table_name, x.relname as index_name,
+              i.indisvalid as valid, i.indisready as ready, i.indisunique as "unique",
+              array(select pg_get_indexdef(i.indexrelid, k, true)
+                      from generate_series(1, i.indnkeyatts) k order by k) as columns,
+              pg_get_expr(i.indpred, i.indrelid) as predicate
+         from pg_index i join pg_class c on c.oid = i.indrelid
+         join pg_class x on x.oid = i.indexrelid
+        where c.relnamespace = 'public'::regnamespace and x.relname = any($1::text[])`,
+      [RECENT_PG_INDEXES.map((item) => item.name)],
+    );
+    assertRecentPostgresIndexes(recentIndexes.rows);
+
+    const alertTriggers = await client.query<AlertTriggerRow>(
+      `select t.tgname as trigger_name, t.tgenabled as enabled, t.tgtype::int as type,
+              n.nspname as function_schema, p.proname as function_name, p.prosrc as function_body,
+              l.lanname as function_language, format_type(p.prorettype, null) as function_returns,
+              t.tgqual::text as condition, t.tgnargs::int as argument_count
+         from pg_trigger t join pg_proc p on p.oid = t.tgfoid
+         join pg_namespace n on n.oid = p.pronamespace join pg_language l on l.oid = p.prolang
+        where t.tgrelid = 'public.alert_events'::regclass and not t.tgisinternal
+          and t.tgname = any($1::text[])`,
+      [["alert_events_append_only", "alert_events_append_only_truncate"]],
+    );
+    assertPostgresAlertTriggers(alertTriggers.rows);
+
+    const migrations = await client.query<AppliedMigration>(
+      "select hash, created_at from drizzle.__drizzle_migrations order by created_at, id",
+    );
+    assertPostgresMigrationHistory(expectedMigrations, migrations.rows);
+    const applied = migrations.rows.length;
 
     console.log(JSON.stringify({
       ok: true,
       engine: "postgresql",
       appliedMigrations: applied,
+      journalMatched: true,
       requiredTables: [...found].sort(),
       sessionVersion: column,
       inspectionSiteKey: inspectionSiteKeyColumn.rows[0],
@@ -586,10 +778,20 @@ async function main(): Promise<void> {
       supplierLifecycleIndexes: [...foundLifecycleIndexes].sort(),
       qualityComplianceIndexes: [...foundQualityIndexes].sort(),
       skuIdentifierIndexes: [...foundSkuIdentifierIndexes].sort(),
+      recentConstraints: recentConstraints.rows.map((row) => `${row.table_name}.${row.constraint_name}`).sort(),
+      recentIndexes: recentIndexes.rows.map((row) => `${row.table_name}.${row.index_name}`).sort(),
+      alertImmutableTriggers: alertTriggers.rows.map((row) => row.trigger_name).sort(),
     }, null, 2));
   } finally {
+    await client.query("ROLLBACK").catch(() => undefined);
     await client.end();
   }
 }
 
-void main();
+// Pure contract helpers are imported by tests; only the documented CLI entry opens PG.
+if (process.argv[1] && resolve(process.argv[1]) === resolve(process.cwd(), "scripts/verify-postgres.ts")) {
+  void main().catch((error) => {
+    console.error(`PostgreSQL contract failed: ${error instanceof Error ? error.message : "unknown error"}`);
+    process.exitCode = 1;
+  });
+}

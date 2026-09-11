@@ -1,7 +1,4 @@
-import {
-  pgTable, serial, integer, text, timestamp, jsonb, unique, uniqueIndex, numeric, date, primaryKey, index, boolean, check,
-  type AnyPgColumn,
-} from "drizzle-orm/pg-core";
+import { boolean, check, date, index, integer, jsonb, numeric, pgTable, primaryKey, serial, text, timestamp, type AnyPgColumn, unique, uniqueIndex } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { approvalActionEnum, importStatusEnum, reconStatusEnum } from "./enums";
 import { users, skus } from "./masters";
@@ -125,6 +122,33 @@ export const monthCloseChecks = pgTable("month_close_checks", {
   check("ck_month_close_waiver_note", sql`${t.status} <> 'waived' OR length(trim(coalesce(${t.note}, ''))) > 0`),
 ]);
 
+/**
+ * 会计期间锁（W2-1）：月结签认之后，把「这个月已关账」变成**可执行的事实**，
+ * 而不是 `month < 当前月` 这样的日历推断——日历推断挡不住任何一笔过账。
+ *
+ * 语义：本表存在一行且 `reopened_at IS NULL` ⇒ 该期间已锁定，
+ * `posting/post.ts` 拒绝业务时间落在该期间的任何过账（含红字冲销）。
+ * 重开只允许管理员，且必须留原因；重开写回同一行（reopened_by/at），
+ * 再次关账时行被复用（closed_by/at 更新、reopened_* 清空）——审计流水在 audit_logs，
+ * 本表只回答「此刻这个期间锁没锁」。
+ */
+export const periodLocks = pgTable("period_locks", {
+  id: serial("id").primaryKey(),
+  period: text("period").notNull().unique(), // YYYY-MM，Asia/Shanghai
+  closedBy: integer("closed_by").notNull().references(() => users.id),
+  closedAt: timestamp("closed_at", { withTimezone: true }).notNull().defaultNow(),
+  closeNote: text("close_note"),
+  reopenedBy: integer("reopened_by").references(() => users.id),
+  reopenedAt: timestamp("reopened_at", { withTimezone: true }),
+  reopenReason: text("reopen_reason"),
+}, (t) => [
+  check("ck_period_lock_period", sql`${t.period} ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`),
+  check(
+    "ck_period_lock_reopen",
+    sql`(${t.reopenedAt} IS NULL AND ${t.reopenedBy} IS NULL AND ${t.reopenReason} IS NULL) OR (${t.reopenedAt} IS NOT NULL AND ${t.reopenedBy} IS NOT NULL AND length(trim(coalesce(${t.reopenReason}, ''))) > 0)`,
+  ),
+]);
+
 /** 取号器（R8/B5）：行锁 UPDATE…RETURNING；doc_no UNIQUE 兜底 */
 export const docCounters = pgTable("doc_counters", {
   prefix: text("prefix").notNull(),
@@ -184,6 +208,34 @@ export const jobRuns = pgTable("job_runs", {
   startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
   finishedAt: timestamp("finished_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("ix_job_runs").on(t.job, t.finishedAt)]);
+
+/**
+ * 任务互斥锁（2026-09-04 安全审计 S4）——**跨调度器**的唯一互斥点。
+ *
+ * 事故形态：手动「立即运行」用的是 `admin/job-run.ts` 里的一个模块级 `Set`，
+ * PGlite 回退调度器用自己闭包里的另一个 `Set`，而生产由 pg-boss 的 `boss.work(...)`
+ * 驱动，两个 Set 一个都不碰。于是在计划中的 `sync-jiandaoyun-forms` 跑到一半时点
+ * 「立即运行」，同一个同步会真的跑两遍——正是代码注释声称已经防住的那件事
+ * （「并发跑两遍会把外部接口配额打光，也会让 checkpoint 互相覆盖」：单轮约 12 分钟、
+ * 约 850 次三方分页请求）。进程内的锁在多副本/多调度器下从来就不是锁。
+ *
+ * 语义：
+ *  · 一行一个任务名；`lease_until > now()` 即视为**正在运行**（租约到期自动可被抢占，
+ *    这样进程崩溃不会把任务永久锁死——没有释放动作的锁比没有锁更糟）。
+ *  · `last_finished_at` 供冷却期判定：手动触发不设冷却就能被循环点。
+ *  · 抢锁是一条 `INSERT … ON CONFLICT DO UPDATE … WHERE` 原子语句，
+ *    胜者由数据库裁决，不依赖任何进程内状态。
+ */
+export const jobLocks = pgTable("job_locks", {
+  job: text("job").primaryKey(),
+  /** 持有者标识（用于释放时校验，避免释放掉别人续上的锁） */
+  holder: text("holder").notNull(),
+  lockedAt: timestamp("locked_at", { withTimezone: true }).notNull().defaultNow(),
+  /** 租约到期时刻；<= now() 即可被抢占 */
+  leaseUntil: timestamp("lease_until", { withTimezone: true }).notNull(),
+  /** 上一轮结束时刻（冷却期基准；未结束过为 null） */
+  lastFinishedAt: timestamp("last_finished_at", { withTimezone: true }),
+}, (t) => [index("ix_job_locks_lease").on(t.leaseUntil)]);
 
 /**
  * 外部系统同步运行史。每次 API 拉取先建 running 行，成功/失败后仅补齐结果字段；
@@ -355,7 +407,16 @@ export const notifications = pgTable("notifications", {
   // func#12 收件人：userId=定向个人（null=广播）；targetRole=定向角色（null=全员）
   userId: integer("user_id"),
   targetRole: text("target_role"),
-  // 站内已读（null=未读）
+  /**
+   * 站内已读（null=未读）——**只对「唯一收件人」有意义**。
+   *
+   * 一行通知可以被多个人看见（广播 userId=null、角色定向 targetRole，admin 更是全见），
+   * 所以行级的 read_at 表达不了「谁读过」。2026-09-04 安全审计 S6 之后，
+   * 每个人的已读状态落在 `notification_reads`；本列**仅在 `user_id = 读的人**（即这一行
+   * 只有这一个收件人）时同步写一次，保留给 housekeeping 的保留期判定用——
+   * 那段逻辑正是按「userId 非空＝唯一收件人，read_at 语义准确」分档的。
+   * 任何「这个人读了没有」的判断都必须问 notification_reads，不许再读本列。
+   */
   readAt: timestamp("read_at", { withTimezone: true }),
   error: text("error"),
   dispatchStartedAt: timestamp("dispatch_started_at", { withTimezone: true }),
@@ -367,6 +428,33 @@ export const notifications = pgTable("notifications", {
   unique("uq_notify_dedupe").on(t.dedupeKey),
   index("ix_notify_status").on(t.status, t.createdAt),
   check("ck_notify_attempt_count", sql`${t.attemptCount} >= 0`),
+]);
+
+/**
+ * 站内通知的**逐收件人**已读状态（2026-09-04 安全审计 S6）。
+ *
+ * 事故形态：已读是 `notifications.read_at` 这一个列，而 `user_id` / `target_role` 都可空，
+ * 且 `notifyAudienceWhere` 对 admin 返回 undefined（＝不加任何条件）。于是
+ * 管理员点一次「全部已读」执行的是
+ * `UPDATE notifications SET read_at = now() WHERE read_at IS NULL`——
+ * **把所有人的未读队列一次清空**，包括定向给某个人、他还从没看到过的那些；
+ * 传单个 `{id}` 则可以把任意一个人的某条通知标成已读。非管理员也一样：
+ * 广播行是共享的，谁读了就对所有人变成已读。
+ *
+ * 为什么选「逐收件人已读表」而不是「把 UPDATE 收窄到 user_id = 自己」：
+ * 后者能堵住越权，却把广播与角色定向的通知变成**永远无法标已读**——
+ * 未读徽标从此归不了零，正是本仓反复吃过亏的「用户学会无视徽标」那条路
+ * （见 core/notify-audience 的事故说明）。已读天然是「人 × 通知」的关系，
+ * 就该有自己的表；顺带 housekeeping 里那段「广播行的 read_at 归属不明、
+ * 只能按年龄兜底」的将就也终于有了正解。
+ */
+export const notificationReads = pgTable("notification_reads", {
+  notificationId: integer("notification_id").notNull().references(() => notifications.id, { onDelete: "cascade" }),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  readAt: timestamp("read_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  primaryKey({ name: "pk_notification_reads", columns: [t.notificationId, t.userId] }),
+  index("ix_notification_reads_user").on(t.userId, t.notificationId),
 ]);
 
 /** struct#4/#15：系统告警（看门狗产出，与人工裁决 review_items 分家——生命周期不同）。
@@ -382,4 +470,169 @@ export const systemAlerts = pgTable("system_alerts", {
   autoResolved: boolean("auto_resolved").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
-}, (t) => [index("ix_alert_status_cat").on(t.status, t.category)]);
+  // ── 预警引擎扩列（D56/D57，迁移 0048）：责任角色、动作链接、去重键、规则来源、参数快照、最近命中、已知悉 ──
+  ownerRole: text("owner_role"),
+  actionHref: text("action_href"),
+  dedupeKey: text("dedupe_key"),
+  sourceRule: text("source_rule"),
+  paramsSnapshot: jsonb("params_snapshot"),
+  lastHitAt: timestamp("last_hit_at", { withTimezone: true }),
+  ackedBy: integer("acked_by"),
+  ackedAt: timestamp("acked_at", { withTimezone: true }),
+}, (t) => [
+  index("ix_alert_status_cat").on(t.status, t.category),
+  index("ix_alert_dedupe").on(t.dedupeKey, t.status),
+  // 审阅修复：引擎"同 category+dedupeKey 只保留一条 open"由数据库保证（并发/重叠运行不再双开）
+  uniqueIndex("uq_alert_open_dedupe").on(t.category, t.dedupeKey).where(sql`${t.status} = 'open'`),
+]);
+
+/** alert_events 允许的事件 / 原因码（与 CHECK 约束、引擎与人工关闭写路径共用同一常量）。
+ *  原因码唯一定义在零依赖模块 `src/lib/alert-close-reasons.ts`（客户端表单可直接导入），这里再导出保持既有路径。 */
+/** ack_reset（红队 c）：引擎在再命中时清掉人工「已知悉」也是历史事实，必须能从台账重建 */
+export const ALERT_EVENT_KINDS = ["open", "refresh", "ack", "ack_reset", "close", "verify", "reopen"] as const;
+export type AlertEventKind = (typeof ALERT_EVENT_KINDS)[number];
+export { ALERT_CLOSE_REASON_CODES, MANUAL_CLOSE_REASON_CODES, type AlertCloseReasonCode } from "../../lib/alert-close-reasons";
+
+/**
+ * 告警事件台账（智能闭环审计 #2）：system_alerts 是"当前状态白板"，本表是"历史账本"。
+ *
+ * 只追加（数据库触发器 alert_events_append_only 拒绝 UPDATE/DELETE/TRUNCATE，与 stock_ledger / audit_logs 同一函数）。
+ * 引擎写 open / refresh / ack_reset / close(auto_hysteresis)；人工写 ack / close(reason)；结果核验任务写 verify(evidence_ref.result)。
+ * idempotencyKey 防止同一轮次/同一次核验重复落账（与 data_product_outcome_events 同型）。
+ * 它只用于精确率、处理时长与误报复盘，不回写 system_alerts、不触发任何单据。
+ */
+export const alertEvents = pgTable("alert_events", {
+  id: serial("id").primaryKey(),
+  alertId: integer("alert_id").notNull().references(() => systemAlerts.id),
+  event: text("event").notNull(), // open | refresh | ack | ack_reset | close | verify | reopen
+  at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+  actorId: integer("actor_id").references(() => users.id), // null = 系统
+  reasonCode: text("reason_code"), // fixed | false_positive | wont_fix | superseded | auto_hysteresis | manual
+  note: text("note"),
+  evidenceRef: jsonb("evidence_ref"),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+}, (t) => [
+  index("ix_alert_events_alert_time").on(t.alertId, t.at),
+  index("ix_alert_events_event_time").on(t.event, t.at),
+  check("ck_alert_events_event", sql`${t.event} IN ('open', 'refresh', 'ack', 'ack_reset', 'close', 'verify', 'reopen')`),
+  check(
+    "ck_alert_events_reason",
+    sql`${t.reasonCode} IS NULL OR ${t.reasonCode} IN ('fixed', 'false_positive', 'wont_fix', 'superseded', 'auto_hysteresis', 'manual')`,
+  ),
+  check("ck_alert_events_close_reason_required", sql`${t.event} <> 'close' OR ${t.reasonCode} IS NOT NULL`),
+  check("ck_alert_events_verify_evidence_required", sql`${t.event} <> 'verify' OR ${t.evidenceRef} IS NOT NULL`),
+]);
+
+
+/**
+ * 例外「打盹 / 忽略」与出现天数记忆（路线图 W9）。
+ *
+ * 工作台控制塔的例外（workbench/focus.computeExceptions）每次进页面现算，**没有任何记忆**：
+ * 既不能把一条已知会的例外按日期压下去，也答不出"这条已经连续出现 40 天、没人点过"。
+ * 本表就是那份记忆——**一个例外键一行**，同时承担两件事（同一自然键，一次 upsert 就都写了，
+ * 拆两张表只会多一次写和一次 join）：
+ *  - 打盹：snoozed_until（上海日）+ 原因备注 + 谁按的；到期自动恢复显示，不需要人再点一次；
+ *  - 出现天数：last_shown_on / consecutive_days —— 每次算出例外时按上海日推进，
+ *    中断一天即从 1 重新计数（"连续"就是字面意思；被打盹期间不算展示，因此打盹会中断连续段）。
+ *
+ * 打盹是**全局**的（控制塔是全员同一块板，不是个人收件箱），因此写路径必须写审计
+ * （workbench/exception-dismissals.ts，与业务写路径同口径：同事务 writeAudit + getFreshSessionUser）。
+ * 本表只影响展示：不改任何告警状态、不动待办、不参与任何记账。
+ */
+export const exceptionDismissals = pgTable("exception_dismissals", {
+  id: serial("id").primaryKey(),
+  /** 例外键（workbench/focus 的 ExceptionItem.key，如 below_lead / expired_stock） */
+  exceptionKey: text("exception_key").notNull().unique(),
+  /** 打盹到期日（含当日仍隐藏；null = 未打盹） */
+  snoozedUntil: date("snoozed_until"),
+  snoozeNote: text("snooze_note"),
+  snoozedBy: integer("snoozed_by").references(() => users.id),
+  snoozedAt: timestamp("snoozed_at", { withTimezone: true }),
+  /** 当前连续段的起始上海日 */
+  firstShownOn: date("first_shown_on"),
+  /** 最近一次被展示的上海日 */
+  lastShownOn: date("last_shown_on"),
+  /** 连续出现天数（含今天） */
+  consecutiveDays: integer("consecutive_days").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("ix_exception_dismissal_snooze").on(t.snoozedUntil),
+  check("ck_exception_consecutive_days_nonneg", sql`${t.consecutiveDays} >= 0`),
+]);
+
+/**
+ * 工作台「上次访问」标记（W2）——每个用户一行。
+ *
+ * 控制塔每次进页面现算例外，此前**对访问者没有任何记忆**：一个每天早上打开工作台的总监，
+ * 看到的永远是完整的一整屏，分不出哪几条是昨天已经看过的、哪一条是今早新冒出来的。
+ * W9 补的 `exception_dismissals` 是**全局**记忆（这条例外挂了几天、被谁打盹了），
+ * 回答不了「**对我而言**有什么变化」——两者自然键不同（例外键 vs 用户），故分表。
+ *
+ * 为什么是**四**个字段而不是一对：一次「访问」是一段工作会话，不是一次页面刷新。
+ * 若只存一份「上次看到的键」并每次请求都覆盖，用户按一下刷新，刚才那条「新增」就永远消失了——
+ * 而那正是本功能要解决的问题本身。所以拆成两层：
+ *  - `baseline_*`：**上一段会话**结束时的快照与时刻，整段会话内固定不动，就是「上次访问」；
+ *  - `last_seen_*`：最近一次请求的滚动快照与时刻。距上次请求超过 `WORKBENCH_VISIT_GAP_MS`
+ *    即视为新会话：把 `last_seen_*` 顺移成新的 `baseline_*`，再开始新一段。
+ *
+ * 口径纪律：
+ *  - 「新增」= 本次可见键中不在 `baseline_keys` 里的那些。纯事实比对，不评分、不排序、不改判定；
+ *  - 首次访问不标任何一条为新增（第一次见到就整屏飘红等于没有信息）；
+ *  - 只影响展示：不改告警状态、不动待办、不参与任何记账，因此不写审计
+ *    （与 W9 的「连续出现天数」同性质；打盹是**全局**业务动作才写审计）。
+ */
+export const workbenchVisits = pgTable("workbench_visits", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().unique().references(() => users.id),
+  /** 上一段会话的结束时刻——界面上的「上次访问」 */
+  baselineAt: timestamp("baseline_at", { withTimezone: true }).notNull().defaultNow(),
+  /** 上一段会话结束时可见的例外键（string[]）——本段会话内固定的比对基线 */
+  baselineKeys: jsonb("baseline_keys").notNull().default(sql`'[]'::jsonb`),
+  /** 最近一次请求的时刻（用于判定会话是否已断开） */
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  /** 最近一次请求时可见的例外键（下一段会话的基线来源） */
+  lastSeenKeys: jsonb("last_seen_keys").notNull().default(sql`'[]'::jsonb`),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("ix_workbench_visit_user").on(t.userId),
+]);
+
+/**
+ * 上游删除墓碑（2026-09-05）。
+ *
+ * 事故实况：`jst-item-master-mirror-observation` 从 6448 掉到 6447，同步自 2026-09-04 起
+ * 每轮都拒绝替代批次。拒绝是**对的**——没有墓碑就分不清「上游删了一条」和
+ * 「我们的权限/分页缩了，只看得到一部分」，后者当成前者接受，观察基线就被悄悄削掉一截。
+ * 但系统当时**没有任何让人确认的路径**：唯一在跑通的连接器就此永久停摆，
+ * 只能改代码才能恢复。本表就是那条缺失的路径。
+ *
+ * 语义：一行 = 一个人对**一条具体记录**签字确认「上游确实删除了它」。
+ *  - 按 (connector, stream, source_record_id) 唯一：一次确认只放行这一条，
+ *    不存在「以后丢的都算数」这种口子；
+ *  - `observed_in_job_id` 必须是这条记录**真的出现过**的那个批次——
+ *    不能为一条系统从未见过的记录预先签字；
+ *  - `reason` 必填：签字要留下依据，否则一年后没人说得清当时凭什么放行；
+ *  - 墓碑**不改变截断判定**：若缺失呈「尾部整段消失」的形状，即使每条都签了字也照样拒绝
+ *    （那不是删除，是截断——见 integrations/jiandaoyun-sync.ts）。
+ *
+ * 纪律：这是业务写路径（放行的是数据基线），因此仅管理员可写、须回查新鲜会话、同事务写审计。
+ */
+export const integrationRecordDeletions = pgTable("integration_record_deletions", {
+  id: serial("id").primaryKey(),
+  connector: text("connector").notNull(),
+  stream: text("stream").notNull(),
+  /** 上游记录 ID（与 staging_rows.payload->>'sourceRecordId' 同源） */
+  sourceRecordId: text("source_record_id").notNull(),
+  /** 这条记录最后出现过的批次——防止为从未见过的记录预先签字 */
+  observedInJobId: integer("observed_in_job_id").notNull().references(() => importJobs.id),
+  /** 签字依据（必填） */
+  reason: text("reason").notNull(),
+  ackedBy: integer("acked_by").notNull().references(() => users.id),
+  ackedAt: timestamp("acked_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("uq_integration_record_deletion").on(t.connector, t.stream, t.sourceRecordId),
+  index("ix_integration_record_deletion_stream").on(t.connector, t.stream),
+  check("ck_integration_record_deletion_reason", sql`length(btrim(${t.reason})) >= 4`),
+]);

@@ -1,0 +1,2 @@
+ALTER TABLE "alert_events" DROP CONSTRAINT "ck_alert_events_event";--> statement-breakpoint
+ALTER TABLE "alert_events" ADD CONSTRAINT "ck_alert_events_event" CHECK ("alert_events"."event" IN ('open', 'refresh', 'ack', 'ack_reset', 'close', 'verify', 'reopen'));

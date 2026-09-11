@@ -17,6 +17,8 @@ import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { importJobs, reconDiffs, stagingRows, stockLedger } from "@/db/schema";
 import { resolveKnownReference, type DimDb } from "@/server/modules/dimension/resolver";
 import type { AnyDb } from "@/server/import/staging";
+import { shanghaiDayOf } from "@/server/core/business-day";
+import { salesLedgerMovement } from "@/server/core/sales-ledger";
 
 const JST_TARGET_TABLE = "jst_daily_sales";
 
@@ -54,10 +56,9 @@ export function shanghaiDayBounds(bizDate: string): { start: Date; end: Date } {
   return { start, end: new Date(start.getTime() + 24 * 3600 * 1000) };
 }
 
-/** Asia/Shanghai 今日/偏移日（cron 默认对 T-1 对账） */
+/** Asia/Shanghai 今日/偏移日（cron 默认对 T-1 对账；日界走 core/business-day 唯一权威） */
 export function shanghaiToday(offsetDays = 0): string {
-  const now = new Date(Date.now() + offsetDays * 24 * 3600 * 1000);
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(now);
+  return shanghaiDayOf(new Date(Date.now() + offsetDays * 24 * 3600 * 1000));
 }
 
 const round4 = (n: number): number => Math.round(n * 10000) / 10000;
@@ -138,16 +139,12 @@ export async function runReconcileJst(db: AnyDb, bizDate: string): Promise<Recon
   // ── sys 侧：自有仓销售出库流水（qty_delta 为负 → 取正出库量）
   //    W5 修正：红字冲销行（action=reverse:sales_out#<原单id>，qty_delta 为正）纳入净额——
   //    冲销当日发生即从当日出库净减（此前红字不参与，sys 侧被高估）。 ──
-  const { or, like } = await import("drizzle-orm");
   const ledger: { skuId: number; qtyDelta: string }[] = await db
     .select({ skuId: stockLedger.skuId, qtyDelta: stockLedger.qtyDelta })
     .from(stockLedger)
     .where(
       and(
-        or(
-          and(eq(stockLedger.action, "post"), eq(stockLedger.sourceDocType, "sales_out")),
-          like(stockLedger.action, "reverse:sales_out#%"),
-        ),
+        salesLedgerMovement(),
         gte(stockLedger.occurredAt, start),
         lt(stockLedger.occurredAt, end),
       ),

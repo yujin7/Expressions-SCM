@@ -330,6 +330,139 @@
       "when": 1786675500000,
       "tag": "0046_calm_read_model",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1788417183712,
+      "tag": "0047_director_program",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1788447614331,
+      "tag": "0048_alert_engine",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1788468709929,
+      "tag": "0049_review_fixes",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1788473977043,
+      "tag": "0050_alert_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1788504430802,
+      "tag": "0051_exception_dismissals",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1788508340122,
+      "tag": "0052_alert_ack_reset_event",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1788530391517,
+      "tag": "0053_vengeful_jean_grey",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1788532499420,
+      "tag": "0054_workbench_visits",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1788532873896,
+      "tag": "0055_qc_failure_outcome_links",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1788532926880,
+      "tag": "0056_planning_loop_execution",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1788535630817,
+      "tag": "0057_suppression_on_hand_baseline",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1788536458280,
+      "tag": "0058_po_promise_establishment_row",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1788537640827,
+      "tag": "0059_security_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1788547641190,
+      "tag": "0060_integration_record_deletions",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1788793047968,
+      "tag": "0061_npd_write_contract",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1788882419298,
+      "tag": "0062_supplier_term_negotiation",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1788895941690,
+      "tag": "0063_supplier_capacity_evidence",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1789059143109,
+      "tag": "0064_qc_single_receipt",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1789082974867,
+      "tag": "0065_sh_purchase_line_identity",
+      "breakpoints": true
     }
   ]
 }

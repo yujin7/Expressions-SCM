@@ -2,19 +2,23 @@
  * 供给承诺可信度：先建立 SCM 内部可重放基线，再等待简道云/JST/用友各自成为独立对照边。
  *
  * 纪律：
- * - 分母只含已经到期、具有当前有效承诺日且能够唯一落到 PO×SKU 的采购行；
+ * - 分母只含已经到期、具有有效承诺日且收货来源无歧义的采购行；
  * - 数量统一换算为基础单位，收货只计已质检合格/接收量，采购退货按事件日期回冲；
- * - 同一 PO 重复 SKU 行因 SH 无 po_line_id 无法安全分摊，必须排除并披露；
+ * - SH显式采购行优先，历史只兼容唯一PO×SKU；归属不清的行必须排除并披露；
  * - 收货/退货事件净额与 po_lines.received_qty 不一致时停止该行计算，不用其中一边覆盖另一边；
- * - 当前模型没有采购交期版本链，因此结果只解释“当前承诺”，不能冒充原始承诺兑现率；
+ * - 原始承诺只接受可信版本链；当前承诺单列，不用改期覆盖迟延；
  * - 外部三边未通过身份、单位、状态和 UAT 前，不参与本计算，也不改变 SCM 正式事实。
  */
 import { and, eq, inArray } from "drizzle-orm";
 
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
+import { dayDiff as daysBetween, shanghaiDay, shanghaiDayOf} from "@/server/core/business-day";
 import { dAdd, dCmp, dMul, dQty, dSub } from "@/server/core/decimal";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
+import { resolvePromiseBasis, type PromiseHistoryState } from "@/server/rules/promise-basis";
+import { indexPurchaseLineReceipts } from "./purchase-line-receipts";
+import { promiseExceptionQuerySchema, type PromiseExceptionQuery } from "./promise-exception-query";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -42,12 +46,13 @@ export interface PromiseLineFact {
   currentReceivedQty: string;
   promisedDate: string | null;
   originalPromisedDate: string | null;
-  promiseHistoryState: "trusted" | "backfilled" | "missing";
+  promiseHistoryState: PromiseHistoryState;
   revisionCount: number;
 }
 
 export interface PromiseReceiptFact {
   poId: number;
+  poLineId?: number | null;
   skuId: number;
   acceptedQty: string;
   acceptedDate: string;
@@ -90,7 +95,7 @@ export interface PromiseReliability {
   asOf: string;
   windowDays: number;
   windowFrom: string;
-  grain: "PO × SKU（仅唯一行）";
+  grain: "采购行（收货来源可核对）";
   promiseVersionState: "immutable_history" | "mixed_history" | "current_only";
   rate: number | null;
   originalRate: number | null;
@@ -126,6 +131,10 @@ export interface PromiseReliability {
     historyPct: number | null;
   };
   exceptions: PromiseReliabilityRow[];
+  /** Both bases count separately; computed before the preview/export cap. */
+  exceptionTotal: number;
+  /** Filters affect exceptions only, never the full-window reliability denominator. */
+  exceptionView: PromiseExceptionQuery & { total: number };
   gate: string | null;
   historyGate: string | null;
   limitations: string[];
@@ -142,10 +151,6 @@ const pct = (part: number, total: number): number | null =>
 
 function addDays(date: string, days: number): string {
   return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
-}
-
-function daysBetween(from: string, to: string): number {
-  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 }
 
 function cumulativeNet(
@@ -184,27 +189,20 @@ export function buildPromiseReliability(
   lines: PromiseLineFact[],
   receipts: PromiseReceiptFact[],
   returns: PromiseReturnFact[],
-  options: { asOf: string; windowDays?: number; limit?: number },
+  options: { asOf: string; windowDays?: number; limit?: number; exceptionQuery?: Partial<PromiseExceptionQuery> },
 ): PromiseReliability {
   const asOf = options.asOf;
-  if (!DATE_RE.test(asOf) || Number.isNaN(Date.parse(`${asOf}T00:00:00Z`))) {
+  if (!DATE_RE.test(asOf) || asOf.startsWith("0000") || shanghaiDay(asOf) !== asOf) {
     throw new ApiError(400, "供给承诺截止日格式不正确（应为 YYYY-MM-DD）");
   }
   const windowDays = Math.min(1095, Math.max(30, options.windowDays ?? DEFAULT_WINDOW_DAYS));
-  const limit = Math.min(200, Math.max(1, options.limit ?? DEFAULT_LIMIT));
+  const exceptionQuery = promiseExceptionQuerySchema.parse(options.exceptionQuery ?? {});
+  const limit = options.limit ?? (options.exceptionQuery ? exceptionQuery.pageSize : DEFAULT_LIMIT);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50000) throw new ApiError(400, "承诺例外读取上限须为1–50000的整数");
   const windowFrom = addDays(asOf, -(windowDays - 1));
-  const lineCountByPoSku = new Map<string, number>();
-  for (const line of lines) {
-    const key = `${line.poId}\u0000${line.skuId}`;
-    lineCountByPoSku.set(key, (lineCountByPoSku.get(key) ?? 0) + 1);
-  }
-  const receiptsByPoSku = new Map<string, PromiseReceiptFact[]>();
-  for (const item of receipts) {
-    const key = `${item.poId}\u0000${item.skuId}`;
-    const list = receiptsByPoSku.get(key) ?? [];
-    list.push(item);
-    receiptsByPoSku.set(key, list);
-  }
+  const receiptIndex = indexPurchaseLineReceipts(
+    lines.map(line => ({ id: line.lineId, poId: line.poId, skuId: line.skuId })), receipts,
+  );
   const returnsByLine = new Map<number, PromiseReturnFact[]>();
   for (const item of returns) {
     const list = returnsByLine.get(item.poLineId) ?? [];
@@ -267,13 +265,12 @@ export function buildPromiseReliability(
     }
     if (!currentEligible && !originalEligible) continue;
 
-    const key = `${line.poId}\u0000${line.skuId}`;
-    if ((lineCountByPoSku.get(key) ?? 0) !== 1) {
+    if (receiptIndex.unresolvedLineIds.has(line.lineId)) {
       if (currentEligible) totals.ambiguous += 1;
       if (originalEligible) originalTotals.ambiguous += 1;
       continue;
     }
-    const lineReceipts = receiptsByPoSku.get(key) ?? [];
+    const lineReceipts = receiptIndex.byLine.get(line.lineId) ?? [];
     const lineReturns = returnsByLine.get(line.lineId) ?? [];
     const receivedAsOf = cumulativeNet(lineReceipts, lineReturns, asOf);
     if (dCmp(receivedAsOf, line.currentReceivedQty) !== 0) {
@@ -344,9 +341,23 @@ export function buildPromiseReliability(
         || (a.basis === b.basis ? 0 : a.basis === "original" ? -1 : 1)
         || b.daysLate - a.daysLate
         || b.shortQty - a.shortQty
-        || a.docNo.localeCompare(b.docNo);
-    })
-    .slice(0, limit);
+        || a.docNo.localeCompare(b.docNo)
+        || a.poId - b.poId || a.lineId - b.lineId;
+    });
+  const needle = exceptionQuery.q.toLocaleLowerCase("zh-CN");
+  const matching = exceptions.filter(row =>
+    (!exceptionQuery.basis || row.basis === exceptionQuery.basis)
+    && (!exceptionQuery.status || row.status === exceptionQuery.status)
+    && (!needle || [row.docNo, String(row.lineId), row.supplierCode, row.supplierName, row.skuCode, row.skuName]
+      .some(value => value.toLocaleLowerCase("zh-CN").includes(needle))));
+  const sort = exceptionQuery.sort;
+  if (sort) matching.sort((a, b) => {
+    const av = a[sort], bv = b[sort];
+    const comparison = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv), "zh-CN");
+    return comparison * (exceptionQuery.order === "desc" ? -1 : 1)
+      || a.poId - b.poId || a.lineId - b.lineId || a.basis.localeCompare(b.basis);
+  });
+  const offset = (exceptionQuery.page - 1) * exceptionQuery.pageSize;
   const calculableBase = totals.eligibleLines + totals.ambiguous + totals.controlMismatch;
   const historyBase = originalTotals.historyTrusted + originalTotals.historyBackfilled + originalTotals.historyMissing;
   const state = totals.eligibleLines > 0 || originalTotals.eligibleLines > 0 ? "ready" : "insufficient";
@@ -361,7 +372,7 @@ export function buildPromiseReliability(
     asOf,
     windowDays,
     windowFrom,
-    grain: "PO × SKU（仅唯一行）",
+    grain: "采购行（收货来源可核对）",
     promiseVersionState,
     rate: pct(totals.onTimeInFull, totals.eligibleLines),
     originalRate: pct(originalTotals.onTimeInFull, originalTotals.eligibleLines),
@@ -372,17 +383,19 @@ export function buildPromiseReliability(
       calculablePct: pct(totals.eligibleLines, calculableBase),
       historyPct: pct(originalTotals.historyTrusted, historyBase),
     },
-    exceptions,
+    exceptions: matching.slice(offset, offset + limit),
+    exceptionTotal: exceptions.length,
+    exceptionView: { ...exceptionQuery, total: matching.length },
     gate: state === "ready"
       ? null
-      : "窗口内没有可安全计算的已到期采购承诺行；无交期、未来交期、重复 SKU 行、版本缺口和控制量不一致均不会被当作零。",
+      : "窗口内没有可安全计算的已到期采购承诺行；无交期、未来交期、收货归属不清、版本缺口和控制量不一致均不会被当作零。",
     historyGate: originalTotals.eligibleLines > 0
       ? null
       : "窗口内尚无可安全使用的原始承诺版本分母；迁移快照与缺失历史不会冒充原始承诺。",
     limitations: [
       "当前只计算 SCM 内部采购承诺基线；简道云流程、聚水潭入库和用友 PO/入库尚未通过身份、单位、状态与 UAT，不参与本率值。",
       "新发生的供应商承诺与改期已进入不可变版本链；迁移前日期仅标为当前快照，不倒推、不冒充原始承诺。原始承诺与当前承诺分列，避免改期覆盖掩盖迟延。",
-      "同一 PO 的重复 SKU 行无法从 SH 安全反推到具体 PO 行，已从分母排除并单列覆盖缺口。",
+      "收货按明确采购行核对；历史未记行号时仅兼容同PO唯一SKU。归属不清或与PO/SKU冲突的相关行排除并计入覆盖缺口，不自动分摊。无收货事件且已收控制量确为0的到期行仍计逾期未齐。",
       "跨 SKU 数量不汇总；率值以采购承诺行计数，质量、价格与财务责任需在各自证据链独立判断。",
     ],
     externalEdges: [
@@ -393,12 +406,10 @@ export function buildPromiseReliability(
   };
 }
 
-function shanghaiDate(value: Date): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(value);
-}
+const shanghaiDate = shanghaiDayOf;
 
 export async function loadPromiseReliability(
-  query: { asOf?: string; windowDays?: number; limit?: number } = {},
+  query: { asOf?: string; windowDays?: number; limit?: number; exceptionQuery?: Partial<PromiseExceptionQuery> } = {},
   dbArg?: AnyDb,
 ): Promise<PromiseReliability> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
@@ -452,23 +463,21 @@ export async function loadPromiseReliability(
     revisionsByLine.set(revision.poLineId, list);
   }
   const lines: PromiseLineFact[] = rawLines.map(({ docPromisedDate, ...line }) => {
-    const revisions = revisionsByLine.get(line.lineId) ?? [];
-    const startsWithLegacy = revisions[0]?.source === "legacy_backfill";
-    const firstTrusted = startsWithLegacy
-      ? undefined
-      : revisions.find((revision) => revision.source !== "legacy_backfill" && revision.promisedDate != null);
-    const nonLegacyCount = revisions.filter((revision) => revision.source !== "legacy_backfill").length;
+    // 原始承诺口径唯一权威 = rules/promise-basis.ts（记分卡与 PO 指标读同一份实现，
+    // 否则「原始承诺」会在三处各写一遍、各漂一次）
+    const fact = resolvePromiseBasis(revisionsByLine.get(line.lineId) ?? []);
     return {
       ...line,
       promisedDate: line.promisedDate ?? docPromisedDate ?? null,
-      originalPromisedDate: firstTrusted?.promisedDate ?? null,
-      promiseHistoryState: startsWithLegacy ? "backfilled" : firstTrusted ? "trusted" : "missing",
-      revisionCount: startsWithLegacy ? nonLegacyCount : Math.max(0, nonLegacyCount - 1),
+      originalPromisedDate: fact.originalPromisedDate,
+      promiseHistoryState: fact.historyState,
+      revisionCount: fact.revisionCount,
     };
   });
 
   const receiptRows: Array<{
     poId: number;
+    poLineId: number | null;
     skuId: number;
     passQty: string;
     concessionQty: string;
@@ -476,6 +485,7 @@ export async function loadPromiseReliability(
   }> = await db
     .select({
       poId: schema.shDocs.sourceId,
+      poLineId: schema.shLines.poLineId,
       skuId: schema.shLines.skuId,
       passQty: schema.qcLines.passQty,
       concessionQty: schema.qcLines.concessionQty,
@@ -500,6 +510,7 @@ export async function loadPromiseReliability(
     lines,
     receiptRows.map((row) => ({
       poId: row.poId,
+      poLineId: row.poLineId,
       skuId: row.skuId,
       // SH 过账与 po_lines.received_qty 均以“合格 + 让步接收”为有效接收量。
       acceptedQty: dAdd(row.passQty, row.concessionQty),
@@ -510,6 +521,6 @@ export async function loadPromiseReliability(
       qty: row.qty,
       returnedDate: shanghaiDate(new Date(row.returnedAt)),
     })),
-    { asOf: query.asOf ?? todayShanghai(), windowDays: query.windowDays, limit: query.limit },
+    { asOf: query.asOf ?? todayShanghai(), windowDays: query.windowDays, limit: query.limit, exceptionQuery: query.exceptionQuery },
   );
 }

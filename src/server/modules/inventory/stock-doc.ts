@@ -1,8 +1,8 @@
-import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import {
-   batches, reviewItems, skus, stockBalances, stockDocLines, stockDocs, users, warehouses,
+   batches, pdDocs, pdLines, reviewItems, skus, stockBalances, stockDocLines, stockDocs, users, warehouses,
 } from "@/db/schema";
 import { dMoney, dNeg, dQty } from "@/server/core/decimal";
 import {  requireRole, type SessionUser } from "@/server/core/dto";
@@ -13,10 +13,14 @@ import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/st
 import { post, PostingError, reverse, type AnyDb, type PostingEvent, type PostingLine } from "@/server/posting/post";
 import { ApiError } from "@/server/modules/master/common";
 import { resolveDb } from "@/server/core/svc";
+import { currentWriteActor } from "@/server/core/current-write-actor";
 import {
   approveStockDocSchema, createStockDocSchema, type ManualSubtype, reverseStockDocSchema,
+  shortCloseStockDocSchema, voidStockDocSchema, withdrawStockDocSchema,
 } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "./batch-allocation";
+import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
+import { documentHref } from "@/lib/document-links";
 
 /** 单号前缀（CLAUDE.md）：入库 RK / 出库 CK / 调拨 DB；红字沿用原单前缀 */
 const DOC_PREFIX: Record<ManualSubtype, string> = {
@@ -118,6 +122,7 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
         docNo,
         subtype: v.subtype,
         reason: v.subtype === "transfer" ? (v.reason ?? null) : null,
+        transferType: v.subtype === "transfer" ? (v.transferType ?? null) : null,
         remark: v.remark ?? null,
         sourceDocType: v.riskDisposalId ? "risk_disposal" : null,
         sourceDocId: v.riskDisposalId ?? null,
@@ -137,7 +142,7 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
     );
     await writeAudit(tx, {
       userId: user.id, entity: "stock_doc", entityId: doc.id, action: "create",
-      after: { docNo: doc.docNo, subtype: doc.subtype, lineCount: lines.length },
+      after: { docNo: doc.docNo, subtype: doc.subtype, transferType: doc.transferType ?? null, lineCount: lines.length },
     });
     return doc;
   });
@@ -147,26 +152,127 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
 
 export async function submitStockDoc(user: SessionUser, id: number, version: number, dbArg?: AnyDb): Promise<StockDocRow> {
   const db = await resolveDb(dbArg);
-  const [doc]: StockDocRow[] = await db.select().from(stockDocs).where(eq(stockDocs.id, id));
-  if (!doc) throw new ApiError(404, "单据不存在");
-  if (doc.createdBy !== user.id && !user.roles.includes("admin")) {
-    throw new ApiError(403, "仅制单人或管理员可提交");
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    // Same warehouse/admin eligibility as the HTTP guard, held through commit.
+    if (!actor.roles.includes("warehouse") && !actor.roles.includes("admin")) {
+      throw new ApiError(403, "仅仓管或管理员可提交库存单据");
+    }
+    const [doc]: StockDocRow[] = await tx.select().from(stockDocs).where(eq(stockDocs.id, id)).for("update");
+    if (!doc) throw new ApiError(404, "单据不存在");
+    if (doc.createdBy !== actor.id && !actor.roles.includes("admin")) {
+      throw new ApiError(403, "仅制单人或管理员可提交");
+    }
+    if (doc.subtype === "count_adjust") {
+      throw new ApiError(409, "盘点调整单由来源盘点单审批后自动生成，不可单独提交；请核对来源盘点，已过账纠错走红字冲销");
+    }
+    let target: DocStatus;
+    try {
+      target = nextStatus(doc.status as DocStatus, "submit");
+    } catch (e) {
+      if (e instanceof TransitionError) throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
+      throw e;
+    }
+    const updated: StockDocRow[] = await tx
+      .update(stockDocs)
+      .set({ status: target, version: sql`${stockDocs.version} + 1`, updatedAt: new Date() })
+      .where(and(eq(stockDocs.id, id), eq(stockDocs.version, version)))
+      .returning();
+    if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
+    await writeAudit(tx, {
+      userId: actor.id, entity: "stock_doc", entityId: id, action: "submit",
+      before: { status: doc.status, version: doc.version },
+      after: { status: target, version: updated[0].version },
+    });
+    return updated[0];
+  });
+}
+
+// ---------- 撤回 / 作废 / 短关（W2-3：此前只有提交/审批/红字，草稿无法放弃，「已关闭」页签永远为空） ----------
+
+/**
+ * 三个动作共用的落库骨架：状态机算目标态 → 乐观锁更新 → 同事务写审计。
+ * 不碰 stock_doc_lines，不碰任何流水：短关只关剩余，已过账数量的纠错唯一路径仍是红字冲销（R12）。
+ */
+async function transitionStockDoc(
+  user: SessionUser,
+  id: number,
+  version: number,
+  action: "withdraw" | "void" | "short_close",
+  opts: { reason?: string | null; requireOwner: boolean; badStatusMessage: (status: string) => string },
+  dbArg?: AnyDb,
+): Promise<StockDocRow> {
+  const db = await resolveDb(dbArg);
+  return db.transaction(async (tx: AnyDb) => {
+    const [doc]: StockDocRow[] = await tx.select().from(stockDocs).where(eq(stockDocs.id, id));
+    if (!doc) throw new ApiError(404, "单据不存在");
+    if (opts.requireOwner && doc.createdBy !== user.id && !user.roles.includes("admin")) {
+      throw new ApiError(403, "仅制单人或管理员可执行此操作");
+    }
+    let target: DocStatus;
+    try {
+      target = nextStatus(doc.status as DocStatus, action);
+    } catch (e) {
+      if (e instanceof TransitionError) throw new ApiError(409, opts.badStatusMessage(doc.status));
+      throw e;
+    }
+    const reason = opts.reason?.trim() || null;
+    const updated: StockDocRow[] = await tx
+      .update(stockDocs)
+      .set({
+        status: target,
+        ...(reason ? { closedReason: reason } : {}),
+        version: sql`${stockDocs.version} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(stockDocs.id, id), eq(stockDocs.version, version)))
+      .returning();
+    if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
+    await writeAudit(tx, {
+      userId: user.id,
+      entity: "stock_doc",
+      entityId: id,
+      action,
+      before: { status: doc.status, version: doc.version },
+      after: { status: target, reason },
+    });
+    return updated[0];
+  });
+}
+
+/** 撤回：待审批 → 草稿（制单人或管理员）。审批人已通过的单不在此列——纠错走红字。 */
+export async function withdrawStockDoc(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<StockDocRow> {
+  const v = withdrawStockDocSchema.parse(input);
+  return transitionStockDoc(user, id, v.version, "withdraw", {
+    requireOwner: true,
+    badStatusMessage: (status) => `仅待审批单据可撤回，当前状态: ${status}`,
+  }, dbArg);
+}
+
+/** 作废草稿：草稿 → 已作废（制单人或管理员，必须留原因）。草稿从此可以被放弃，而不是永远挂着。 */
+export async function voidStockDoc(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<StockDocRow> {
+  const v = voidStockDocSchema.parse(input);
+  return transitionStockDoc(user, id, v.version, "void", {
+    reason: v.reason,
+    requireOwner: true,
+    badStatusMessage: (status) => `仅草稿可作废，当前状态: ${status}`,
+  }, dbArg);
+}
+
+/**
+ * 短关：已审批/执行中 → 已关闭（仓管或管理员，必须留原因）。
+ * **不触任何库存**：已过账的部分保持原样，本动作只声明「剩余不再执行」。
+ */
+export async function shortCloseStockDoc(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<StockDocRow> {
+  const v = shortCloseStockDocSchema.parse(input);
+  if (!user.roles.includes("warehouse") && !user.roles.includes("admin")) {
+    throw new ApiError(403, "仅仓管或管理员可短关库存单据");
   }
-  let target: DocStatus;
-  try {
-    target = nextStatus(doc.status as DocStatus, "submit");
-  } catch (e) {
-    if (e instanceof TransitionError) throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
-    throw e;
-  }
-  const updated: StockDocRow[] = await db
-    .update(stockDocs)
-    .set({ status: target, version: sql`${stockDocs.version} + 1`, updatedAt: new Date() })
-    .where(and(eq(stockDocs.id, id), eq(stockDocs.version, version)))
-    .returning();
-  if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
-  await writeAudit(db, { userId: user.id, entity: "stock_doc", entityId: id, action: "submit" });
-  return updated[0];
+  return transitionStockDoc(user, id, v.version, "short_close", {
+    reason: v.reason,
+    requireOwner: false,
+    badStatusMessage: (status) => `仅已审批或执行中的单据可短关，当前状态: ${status}`,
+  }, dbArg);
 }
 
 // ---------- 过账事件构造（方向由子类型决定；行数据源=stock_doc_lines） ----------
@@ -182,7 +288,12 @@ function buildPostingEvent(doc: StockDocRow, lines: StockDocLineRow[]): PostingE
       if (!l.toWarehouseId) throw new ApiError(500, `调拨行缺转入仓: line#${l.id}`);
       pls.push({ sourceLineId: l.id, skuId: l.skuId, warehouseId: l.warehouseId, batchId: l.batchId, qtyDelta: dNeg(l.qty) });
       pls.push({ sourceLineId: -l.id, skuId: l.skuId, warehouseId: l.toWarehouseId, batchId: l.batchId, qtyDelta: dQty(l.qty) });
-    } else if (doc.subtype === "opening") {
+    } else if (doc.subtype === "opening" || doc.subtype === "count_adjust") {
+      /* 期初：行 qty 即入账量（+）。
+         盘盈亏调整（CA）：行 qty **本身带符号**（+盘盈 / −盘亏，见 inventory/count.ts 建行处），
+         过账量就是它，**不取负**。C3 事故：CA 此前落进下面的 issue_out/sales_out 分支被 dNeg 取负一次，
+         reverse() 再取负一次 = 负负得正，红字冲销把原始过账**又做了一遍**
+         （账面 100 盘成 90：CA −10 → 余额 90；冲销后余额 80，正确应回到 100）。 */
       pls.push({ sourceLineId: l.id, skuId: l.skuId, warehouseId: l.warehouseId, batchId: l.batchId, qtyDelta: dQty(l.qty) });
     } else {
       // issue_out / sales_out：自有仓 −
@@ -206,12 +317,14 @@ export async function approveStockDoc(
     return await db.transaction(async (tx: AnyDb) => {
       const [doc]: StockDocRow[] = await tx.select().from(stockDocs).where(eq(stockDocs.id, id));
       if (!doc) throw new ApiError(404, "单据不存在");
+      if (doc.subtype === "count_adjust") {
+        throw new ApiError(409, "盘点调整单由来源盘点单审批后自动生成，不可单独审批或驳回；请查看来源盘点，已过账纠错走红字冲销");
+      }
 
       // 1) 通用审批：权限/职责分离/幂等/状态/乐观锁（pending → approved | draft）
-      //    体检审计 #2 整改：期初/盘点按子类型映射独立审批配置（《01》§6：期初/盘点=财务），
-      //    其余库存单仍走 stock_doc（仓管）。seed 中 opening/count→finance 配置由此启用。
-      const approvalDocType =
-        doc.subtype === "opening" ? "opening" : doc.subtype === "count_adjust" ? "count" : "stock_doc";
+      // 期初=opening财务域；其他可审批库存单=stock_doc仓管域。
+      // count只能以pd_docs.id为身份，不能借给stock_docs独立编号。
+      const approvalDocType = doc.subtype === "opening" ? "opening" : "stock_doc";
       const r = await approveDoc(tx, {
         docType: approvalDocType,
         table: stockDocs,
@@ -434,7 +547,9 @@ export async function reverseStockDoc(user: SessionUser, id: number, input: unkn
         warehouseId: l.warehouseId,
         toWarehouseId: l.toWarehouseId,
         batchId: l.batchId,
-        qty: dQty(l.qty), // 存正数；取负发生在过账 reverse()
+        // 原样复制（出入库单为正数，盘盈亏调整 CA 带符号）；取负一律发生在过账 reverse()，
+        // 且 reverse 读的是**原单**行、不是这里的副本，本副本只供展示
+        qty: dQty(l.qty),
         price: l.price,
       })),
     );
@@ -465,6 +580,8 @@ export async function getStockDoc(id: number, dbArg?: AnyDb) {
       sourceDocType: stockDocs.sourceDocType,
       sourceDocId: stockDocs.sourceDocId,
       reversalOfId: stockDocs.reversalOfId,
+      reason: stockDocs.reason,
+      transferType: stockDocs.transferType,
       createdBy: stockDocs.createdBy,
       createdAt: stockDocs.createdAt,
       updatedAt: stockDocs.updatedAt,
@@ -510,7 +627,26 @@ export async function getStockDoc(id: number, dbArg?: AnyDb) {
     : [];
   const whName = (wid: number | null) => whRows.find((w) => w.id === wid)?.name ?? null;
 
-  const approvalRows = await loadApprovalHistory(db, ["stock_doc", "opening", "count"], id);
+  let approvalBasis: { label: string; href: string | null; sourceDocNo: string | null; verified: boolean; note: string | null } = {
+    label: "本单审批记录", href: null, sourceDocNo: doc.docNo, verified: true, note: null,
+  };
+  // opening与历史stock_doc都以stock_docs.id为身份；count以pd_docs.id为身份，绝不可按相同数字并集。
+  let approvalRows = doc.subtype === "count_adjust" ? []
+    : await loadApprovalHistory(db, doc.subtype === "opening" ? ["opening", "stock_doc"] : "stock_doc", id);
+  if (doc.subtype === "count_adjust") {
+    const [source] = doc.sourceDocType === "pd" && doc.sourceDocId != null
+      ? await db.select({ id: pdDocs.id, docNo: pdDocs.docNo, status: pdDocs.status }).from(pdDocs).where(eq(pdDocs.id, doc.sourceDocId)) : [];
+    const backRefs: { pdId: number }[] = await db.selectDistinct({ pdId: pdLines.pdId }).from(pdLines).where(eq(pdLines.adjustDocId, id));
+    const matched = source && source.status === "completed" && backRefs.length === 1 && backRefs[0].pdId === source.id;
+    if (matched) {
+      approvalRows = await loadApprovalHistory(db, "count", source.id);
+      approvalBasis = { label: "来源盘点审批", href: documentHref("pd", source.id), sourceDocNo: source.docNo, verified: true,
+        note: "本调整单由来源盘点审批后自动生成，不单独审批；下方是来源盘点单的审批记录。" };
+    } else {
+      approvalBasis = { label: "审批依据待核对", href: null, sourceDocNo: null, verified: false,
+        note: "来源盘点缺失、状态异常或明细关联不一致，无法确认本调整单的审批依据；请核对来源单据，不借用同编号的审批记录。" };
+    }
+  }
 
   return {
     id: doc.id,
@@ -524,28 +660,58 @@ export async function getStockDoc(id: number, dbArg?: AnyDb) {
     toWarehouseId,
     toWarehouseName: whName(toWarehouseId),
     reversalOfId: doc.reversalOfId,
+    reason: doc.reason,
+    /** D60：存量调拨单可为 null（兼容读，界面显示「未分类」） */
+    transferType: doc.transferType ?? null,
     lines: lines.map((l) => ({
       id: l.id, skuId: l.skuId, skuCode: l.skuCode, skuName: l.skuName,
       baseUom: l.baseUom, qty: l.qty, price: l.price,
       batchId: l.batchId, batchNo: l.batchNo, expiryDate: l.expiryDate,
     })),
     approvals: approvalRows,
+    approvalBasis,
     createdByName: doc.createdByName,
     createdAt: doc.createdAt,
   };
 }
 
+export interface ListStockDocsOptions {
+  status?: string;
+  subtype?: string;
+  /** D60 调拨筛选：转出仓 / 转入仓 / 调拨类型（"unclassified" = 存量未分类）/ 创建日期区间（Asia/Shanghai 日界） */
+  fromWarehouseId?: number;
+  toWarehouseId?: number;
+  transferType?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  page: number;
+  pageSize: number;
+  selectedValues?: SelectedOptionValue[];
+}
+
 export async function listStockDocs(
   q: string,
-  opts: { status?: string; subtype?: string; page: number; pageSize: number },
+  opts: ListStockDocsOptions,
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
   const conds = [];
   if (q) conds.push(sql`${stockDocs.docNo} ILIKE ${"%" + q + "%"}`);
+  const selectedWhere = selectedOptionsPredicate(opts.selectedValues, { id: stockDocs.id, text: [stockDocs.docNo] });
+  if (selectedWhere) conds.push(selectedWhere);
   if (opts.status) conds.push(eq(stockDocs.status, opts.status as DocStatus));
   if (opts.subtype) conds.push(eq(stockDocs.subtype, opts.subtype as ManualSubtype));
-  const where = conds.length ? and(...conds) : undefined;
+  if (opts.transferType === "unclassified") {
+    conds.push(eq(stockDocs.subtype, "transfer"), sql`${stockDocs.transferType} IS NULL`);
+  } else if (opts.transferType) {
+    conds.push(eq(stockDocs.transferType, opts.transferType));
+  }
+  if (opts.dateFrom && /^\d{4}-\d{2}-\d{2}$/.test(opts.dateFrom)) {
+    conds.push(gte(stockDocs.createdAt, new Date(`${opts.dateFrom}T00:00:00+08:00`)));
+  }
+  if (opts.dateTo && /^\d{4}-\d{2}-\d{2}$/.test(opts.dateTo)) {
+    conds.push(lte(stockDocs.createdAt, new Date(`${opts.dateTo}T23:59:59.999+08:00`)));
+  }
 
   const lineAgg = db
     .select({
@@ -553,10 +719,14 @@ export async function listStockDocs(
       warehouseId: sql<number>`min(${stockDocLines.warehouseId})`.as("agg_wh_id"),
       toWarehouseId: sql<number | null>`min(${stockDocLines.toWarehouseId})`.as("agg_to_wh_id"),
       lineCount: sql<number>`count(*)::int`.as("agg_line_count"),
+      totalQty: sql<string>`sum(${stockDocLines.qty})`.as("agg_total_qty"),
     })
     .from(stockDocLines)
     .groupBy(stockDocLines.stockDocId)
     .as("la");
+  if (opts.fromWarehouseId) conds.push(eq(lineAgg.warehouseId, opts.fromWarehouseId));
+  if (opts.toWarehouseId) conds.push(eq(lineAgg.toWarehouseId, opts.toWarehouseId));
+  const where = conds.length ? and(...conds) : undefined;
   const wh = alias(warehouses, "wh_from");
   const toWh = alias(warehouses, "wh_to");
 
@@ -567,11 +737,17 @@ export async function listStockDocs(
         docNo: stockDocs.docNo,
         subtype: stockDocs.subtype,
         status: stockDocs.status,
+        transferType: stockDocs.transferType,
+        reason: stockDocs.reason,
+        warehouseId: lineAgg.warehouseId,
+        toWarehouseId: lineAgg.toWarehouseId,
         warehouseName: wh.name,
         toWarehouseName: toWh.name,
         lineCount: sql<number>`coalesce(${lineAgg.lineCount}, 0)`,
+        totalQty: sql<string>`coalesce(${lineAgg.totalQty}, 0)`,
         createdByName: users.name,
         createdAt: stockDocs.createdAt,
+        updatedAt: stockDocs.updatedAt,
       })
       .from(stockDocs)
       .leftJoin(lineAgg, eq(lineAgg.stockDocId, stockDocs.id))
@@ -580,9 +756,13 @@ export async function listStockDocs(
       .leftJoin(users, eq(stockDocs.createdBy, users.id))
       .where(where)
       .orderBy(desc(stockDocs.createdAt), desc(stockDocs.id))
-      .limit(opts.pageSize)
-      .offset((opts.page - 1) * opts.pageSize),
-    db.select({ total: sql<number>`count(*)::int` }).from(stockDocs).where(where),
+      .limit(opts.selectedValues === undefined ? opts.pageSize : SELECTED_OPTIONS_LIMIT)
+      .offset(opts.selectedValues === undefined ? (opts.page - 1) * opts.pageSize : 0),
+    db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(stockDocs)
+      .leftJoin(lineAgg, eq(lineAgg.stockDocId, stockDocs.id))
+      .where(where),
   ]);
   return { rows, total };
 }

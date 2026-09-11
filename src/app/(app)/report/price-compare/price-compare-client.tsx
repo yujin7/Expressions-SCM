@@ -8,6 +8,8 @@ import { Alert, App, Space, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { fetchJson } from "@/components/fetchJson";
 import ListToolbar from "@/components/ListToolbar";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
+import { hasAnyRole, useMe } from "@/components/useMe";
 import { useListState } from "@/components/useListState";
 
 interface PriceQuote {
@@ -43,8 +45,12 @@ const money = (v: string): string => Number(v).toLocaleString("zh-CN", { minimum
 
 export default function PriceCompareClient() {
   const { message } = App.useApp();
+  const me = useMe();
+  // 与 API（PRICE_VISIBLE_ROLES）和注册表 roles 同口径：供应商采购价只对采购/PMC/财务（admin 兜底）
+  const canView = hasAnyRole(me, "purchasing", "pmc", "finance");
   const [data, setData] = useState<PriceCompareData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   const listState = useListState({ key: "price-compare", defaults: { q: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
@@ -52,16 +58,27 @@ export default function PriceCompareClient() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       setData(await fetchJson<PriceCompareData>(`/api/report/price-compare?${params.toString()}`));
     } catch (e) {
+      setLoadError((e as Error).message);
       message.error((e as Error).message);
     } finally {
       setLoading(false);
     }
   }, [q, page, pageSize, message]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { if (canView) void load(); }, [load, canView]);
+
+  if (me && !canView) {
+    return (
+      <div>
+        <Typography.Title level={4} style={{ marginTop: 0 }}>物料比价</Typography.Title>
+        <Alert type="warning" showIcon message="无权查看" description="物料比价逐行展示供应商采购基准价，仅采购 / 生产计划 / 财务 / 管理员可见。" />
+      </div>
+    );
+  }
 
   const columns: ColumnsType<PriceCompareRow> = [
     {
@@ -160,6 +177,7 @@ export default function PriceCompareClient() {
           </Typography.Text>
         }
       />
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="物料比价" retrying={loading} />
 
       {data ? (
         <Space className="compact-stat-strip" wrap>

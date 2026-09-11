@@ -151,6 +151,12 @@ body {
   width: 100%;
 }
 
+/* Search results must retain full Chinese names and identifiers at narrow widths. */
+.scm-search-popup.ant-select-dropdown .ant-select-item-option-content {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 /* 顶栏三件套（搜索框 / 反馈按钮 / 头像）统一高度与圆角。
    AntD 的 size="small" 对 Input 与 Button 给的是同一档，但搜索框外面套了
    AutoComplete，其包裹层不会把高度透传下去，于是搜索框比按钮高出几个像素、
@@ -481,6 +487,31 @@ body {
   max-width: 100%;
 }
 
+.decision-studio-help {
+  margin: 0 0 12px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.decision-studio-help summary {
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.decision-studio-help p { margin: 6px 0; }
+
+.analysis-section-hint {
+  color: #64748b;
+  font-size: 12px;
+  margin-left: 10px;
+  display: inline-block;
+}
+
+.analysis-section .ant-collapse-header-text { min-width: 0; }
+
+.channel-platform-name { white-space: nowrap; }
+
 .compact-stat-strip.ant-space {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 220px));
@@ -645,6 +676,35 @@ body {
 .decision-visual,
 .decision-visual .ant-card-body {
   min-width: 0;
+}
+
+/* 图卡按自身可用宽度换行；右侧工具不能把标题挤成单字，窄抽屉同样适用。 */
+.decision-visual > .ant-card-head > .ant-card-head-wrapper {
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 12px;
+  padding-block: 10px;
+}
+
+.decision-visual > .ant-card-head .ant-card-head-title {
+  flex: 1 1 260px;
+  min-width: 0;
+  padding-block: 0;
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+
+.decision-visual > .ant-card-head .ant-card-extra {
+  flex: 0 1 auto;
+  max-width: 100%;
+  margin-inline-start: 0;
+  padding-block: 0;
+}
+
+.decision-visual > .ant-card-head .ant-space-item {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .supplier-scorecard-kpis {
@@ -896,13 +956,20 @@ body {
   gap: 3px;
 }
 
-.decision-metric__info {
+.context-help-trigger {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 2px 4px;
+  gap: 4px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  vertical-align: middle;
+  white-space: nowrap;
+  flex-shrink: 0;
   color: #64748b;
   border: 0;
   border-radius: 6px;
@@ -910,12 +977,45 @@ body {
   cursor: help;
 }
 
-.decision-metric__info:hover,
-.decision-metric__info:focus-visible {
+.context-help-trigger:hover,
+.context-help-trigger[aria-expanded="true"] {
   color: #3157d5;
   background: #eef2ff;
-  outline: none;
 }
+
+.context-help-trigger:focus-visible {
+  outline: 2px solid #3157d5;
+  outline-offset: 2px;
+}
+
+.caliber-note { display: flex; align-items: flex-start; gap: 8px; margin: 2px 0 12px; color: #667085; font-size: 13px; line-height: 1.6; }
+.caliber-note__summary { min-width: 0; overflow-wrap: anywhere; }
+.caliber-note__help { color: #3157d5; }
+.data-source-glyph { display: inline-block; padding: 1px 3px; border-radius: 3px; font-size: 10px; line-height: 1.2; color: #fff; }
+
+.context-help-panel {
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(480px, calc(100dvh - 32px));
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 12px 14px;
+  border: 1px solid #dce3ef;
+  border-radius: 10px;
+  background: #fff;
+  color: #344054;
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  box-shadow: 0 6px 24px #17203324;
+}
+.context-help-panel:focus-visible { outline: 2px solid #3157d5; outline-offset: 2px; }
+.context-help-panel__header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 6px; color: #172033; }
+.context-help-panel__content { min-width: 0; }
+.context-help-panel__content pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.context-help-evidence { margin: 0; padding-left: 18px; }
+.context-help-evidence li + li { margin-top: 8px; }
+.context-help-evidence__source { font-size: 12px; color: #667085; }
+@media (pointer: coarse) { .context-help-trigger { min-width: 32px; min-height: 32px; } }
 
 .decision-metric__statistic {
   margin-top: 8px;
@@ -1359,11 +1459,33 @@ body {
   }
 
   .decision-studio-scope-filters {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .decision-studio-scope-filters > :last-child {
     grid-column: auto;
+  }
+
+  /* Keep alert actions below the explanation, rather than squeezing Chinese text. */
+  .decision-studio .ant-alert:has(> .ant-alert-action) {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr);
+    align-items: start;
+    gap: 8px;
+  }
+
+  .decision-studio .ant-alert:has(> .ant-alert-action) > .ant-alert-icon {
+    margin: 0;
+  }
+
+  .decision-studio .ant-alert:has(> .ant-alert-action) > .ant-alert-content {
+    grid-column: 2;
+    min-width: 0;
+  }
+
+  .decision-studio .ant-alert > .ant-alert-action {
+    grid-column: 2;
+    margin: 0;
   }
 
   .compact-stat-strip.ant-space {

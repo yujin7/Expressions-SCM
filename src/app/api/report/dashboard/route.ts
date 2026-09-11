@@ -14,7 +14,8 @@ export async function GET(req: NextRequest) {
     const brand = sp.get("brand")?.trim() || undefined;
     const channel = sp.get("channel")?.trim() || undefined;
     const started = performance.now();
-    const result = await getDashboard(fresh.roles, { brand, channel });
+    // D62：传整个新鲜身份（含渠道范围）——受限用户越权渠道由服务层 403
+    const result = await getDashboard(fresh, { brand, channel });
     const response = NextResponse.json(result);
     response.headers.set("Cache-Control", "private, no-store");
     response.headers.set("Server-Timing", `dashboard;dur=${(performance.now() - started).toFixed(1)}`);

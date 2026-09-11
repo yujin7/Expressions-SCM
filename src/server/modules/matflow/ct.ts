@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
    batches, ctDocs, ctLines, poDocs, poLines, skus, users, warehouses,
 } from "@/db/schema";
@@ -18,6 +18,8 @@ import { completeApprovedDoc, requireRealtimeWarehouse } from "./common-notes";
 import { createCtSchema } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
 import { skuLineMatch } from "@/server/core/doc-search";
+import { lockPurchaseReceipt } from "./purchase-receipt-lock";
+import { currentWriteActor as currentMatflowActor } from "@/server/core/current-write-actor";
 
 /**
  * 采购退货单 CT（B9）：仓库 −，PO 已收数回冲（po_line.receivedQty −=，基础单位）。
@@ -68,6 +70,8 @@ export async function createCt(user: SessionUser, input: unknown, dbArg?: AnyDb)
   assertWithinReceived(ctQtyByPoLine, poLineById);
 
   return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentMatflowActor(tx, user);
+    requireAnyRole(actor, "warehouse");
     const allocatedLines = await expandOutboundLinesForBatchPosting(tx, v.warehouseId, v.lines);
     const docNo = await nextDocNo(tx, "CT");
     const [doc]: CtRow[] = await tx
@@ -102,20 +106,23 @@ export async function createCt(user: SessionUser, input: unknown, dbArg?: AnyDb)
 
 export async function submitCt(user: SessionUser, id: number, version: number, dbArg?: AnyDb): Promise<CtRow> {
   const db = await resolveDb(dbArg);
-  const [doc]: CtRow[] = await db.select().from(ctDocs).where(eq(ctDocs.id, id));
-  if (!doc) throw new ApiError(404, "单据不存在");
-  if (doc.createdBy !== user.id && !user.roles.includes("warehouse") && !user.roles.includes("admin")) {
-    throw new ApiError(403, "仅制单人/仓管/管理员可提交");
-  }
-  if (doc.status !== "draft") throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
-  const updated: CtRow[] = await db
-    .update(ctDocs)
-    .set({ status: "pending", version: sql`${ctDocs.version} + 1`, updatedAt: new Date() })
-    .where(and(eq(ctDocs.id, id), eq(ctDocs.version, version)))
-    .returning();
-  if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
-  await writeAudit(db, { userId: user.id, entity: "ct", entityId: id, action: "submit" });
-  return updated[0];
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentMatflowActor(tx, user);
+    const [doc]: CtRow[] = await tx.select().from(ctDocs).where(eq(ctDocs.id, id)).for("update");
+    if (!doc) throw new ApiError(404, "单据不存在");
+    if (doc.createdBy !== actor.id && !actor.roles.includes("warehouse") && !actor.roles.includes("admin")) {
+      throw new ApiError(403, "仅制单人/仓管/管理员可提交");
+    }
+    if (doc.status !== "draft") throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
+    const updated: CtRow[] = await tx
+      .update(ctDocs)
+      .set({ status: "pending", version: sql`${ctDocs.version} + 1`, updatedAt: new Date() })
+      .where(and(eq(ctDocs.id, id), eq(ctDocs.version, version)))
+      .returning();
+    if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
+    await writeAudit(tx, { userId: actor.id, entity: "ct", entityId: id, action: "submit" });
+    return updated[0];
+  });
 }
 
 // ---------- 审批（过账 ct_return + 已收数回冲，同一事务） ----------
@@ -130,14 +137,15 @@ export async function approveCt(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
-      const [doc]: CtRow[] = await tx.select().from(ctDocs).where(eq(ctDocs.id, id));
+      const actor = await currentMatflowActor(tx, user);
+      const [doc]: CtRow[] = await tx.select().from(ctDocs).where(eq(ctDocs.id, id)).for("update");
       if (!doc) throw new ApiError(404, "单据不存在");
 
       const r = await approveDoc(tx, {
         docType: "ct",
         table: ctDocs,
         docId: id,
-        approver: { id: user.id, roles: user.roles, isApprover: user.isApprover },
+        approver: actor,
         action: v.action,
         comment: v.comment,
         expectedVersion: v.version,
@@ -153,11 +161,14 @@ export async function approveCt(
       if (lines.length === 0) throw new ApiError(409, "退货单无行，不可审批过账");
 
       // 兜底重查：创建后可能又有 CT 回冲过——退货量不得超过当前已收数
-      const poLineIds = [...new Set(lines.map((l) => l.poLineId))];
-      const plRows: PoLineRow[] = await tx.select().from(poLines).where(inArray(poLines.id, poLineIds));
+      const { lines: plRows } = await lockPurchaseReceipt(tx, doc.poId);
       const poLineById = new Map(plRows.map((row) => [row.id, row]));
       const ctQtyByPoLine = new Map<number, string>();
-      for (const l of lines) ctQtyByPoLine.set(l.poLineId, dAdd(ctQtyByPoLine.get(l.poLineId) ?? "0", l.qty));
+      for (const l of lines) {
+        const pl = poLineById.get(l.poLineId);
+        if (!pl || pl.skuId !== l.skuId) throw new ApiError(409, `退货行与来源采购订单不匹配: po_line#${l.poLineId}`);
+        ctQtyByPoLine.set(l.poLineId, dAdd(ctQtyByPoLine.get(l.poLineId) ?? "0", l.qty));
+      }
       assertWithinReceived(ctQtyByPoLine, poLineById);
 
       // 过账 ct_return：仓库 −

@@ -22,8 +22,14 @@ LOCAL_PORT=3100
 
 command -v cloudflared >/dev/null 2>&1 || {
   echo "✗ 未安装 cloudflared：brew install cloudflared" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "✗ 需要 Python 3，未执行安装" >&2; exit 1; }
+# An old/manual same-origin tunnel needs an explicit cutover, not a broad pkill.
+[[ ! -L "$STATE_DIR" ]] || { echo "✗ 运行目录不能是符号链接" >&2; exit 1; }
+mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR"
+python3 "$REPO/scripts/tunnel-process-owner.py" "$STATE_DIR" "$LOCAL_PORT" preflight || exit 1
 [[ -f "$REPO/.env.prod" ]] || {
-  echo "✗ 缺少 $REPO/.env.prod，不能安全重建生产镜像" >&2; exit 1; }
+  echo "✗ 缺少 $REPO/.env.prod，不能核对既有应用配置" >&2; exit 1; }
 
 echo "==> 1/7 确认应用本机可达"
 if [[ "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "http://localhost:${LOCAL_PORT}/api/health")" != "200" ]]; then
@@ -32,11 +38,20 @@ if [[ "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "http://localhost:${LOCAL_P
 fi
 echo "    http://localhost:${LOCAL_PORT} ✓"
 
-echo "==> 2/7 构建 HTTPS 安全头镜像"
-# HSTS 在 next build 时烘焙进 routes-manifest；只给运行期环境变量不会生效。
-# 这里先构建，守护拿到 URL 后再用同一镜像重建 app 并同步 AUTH_URL。
-PUBLIC_HTTPS=1 docker compose -p supply-chain --env-file "$REPO/.env.prod" \
-  -f "$REPO/docker-compose.prod.yml" -f "$REPO/docker-compose.local.yml" build app
+echo "==> 2/7 核对已部署应用的版本、迁移与 HTTPS 安全头"
+# 开公网不是部署：缺 HSTS/版本时先走受控发布（PUBLIC_HTTPS=1），不在此处绕过备份和迁移。
+PROJECT="supply-chain"
+ENV_FILE="$REPO/.env.prod"
+COMPOSE_PROD="$REPO/docker-compose.prod.yml"
+COMPOSE_LOCAL="$REPO/docker-compose.local.yml"
+# shellcheck source=scripts/tunnel-app-guard.sh
+source "$REPO/scripts/tunnel-app-guard.sh"
+app_operation_acquire tunnel_compose || exit $?
+if ! tunnel_capture_app; then
+  echo "✗ 既有应用版本/迁移/HSTS未就绪；请先按发布清单部署 PUBLIC_HTTPS=1 的已验收镜像。未构建或重启应用。" >&2
+  exit 1
+fi
+echo "    已核对版本 ${TUNNEL_APP_REVISION}；仅安装访问入口，不发布源码"
 
 echo "==> 3/7 复制运行期配置出 TCC 保护目录"
 # 仓库在 ~/Downloads 下，launchd 派生的进程读不到（实测 Operation not permitted）。
@@ -51,11 +66,12 @@ echo "    ${RUNTIME_DIR}（.env.prod 权限 600）"
 
 echo "==> 4/7 安装守护脚本"
 cp "$REPO/scripts/public-tunnel-daemon.sh" "$TARGET"
+cp "$REPO/scripts/tunnel-app-guard.sh" "$STATE_DIR/tunnel-app-guard.sh"
+cp "$REPO/scripts/app-operation-lock.sh" "$STATE_DIR/app-operation-lock.sh"
+cp "$REPO/scripts/tunnel-process-owner.py" "$STATE_DIR/tunnel-process-owner.py"
 chmod +x "$TARGET"
 
-echo "==> 5/7 收掉手工起的隧道，避免同时开两条"
-pkill -f 'cloudflared tunnel --no-autoupdate' 2>/dev/null || true
-rm -f "$URL_FILE"   # 清掉旧地址，强制本轮重新同步 AUTH_URL
+echo "==> 5/7 保留已登记的隧道和地址，新守护按进程身份接管"
 
 echo "==> 6/7 写入并加载 LaunchAgent"
 cat > "$PLIST" <<PLISTEOF
@@ -79,6 +95,9 @@ cat > "$PLIST" <<PLISTEOF
 </plist>
 PLISTEOF
 
+# Configuration copy is complete. Do not hold the app lock while waiting for the
+# new daemon: it must acquire the same lock to sync and verify the public URL.
+exec 9>&-
 launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
 # bootout 是异步的：旧实例还没完全退出时立刻 bootstrap 会报 "Bootstrap failed: 5: Input/output error"，
 # 并且此时守护**没有**被加载——2026-09-02 实测因此把公网入口整个打掉。先等旧实例消失，再带重试加载。
@@ -100,8 +119,12 @@ launchctl enable "gui/$(id -u)/${LABEL}" 2>/dev/null || true
 echo "==> 7/7 等待隧道就绪并验证（最多 3 分钟）"
 for _ in $(seq 1 60); do
   sleep 3
-  if [[ -s "$URL_FILE" ]]; then
+  if [[ -s "$URL_FILE" ]] && [[ -n "$(python3 "$STATE_DIR/tunnel-process-owner.py" "$STATE_DIR" "$LOCAL_PORT" status)" ]]; then
     URL="$(cat "$URL_FILE")"
+    # A retained URL file alone is not a successful installation receipt.
+    [[ "$URL" =~ ^https://[a-z0-9]+(-[a-z0-9]+)+\.trycloudflare\.com$ ]] || continue
+    [[ "$(curl -s --connect-timeout 5 -m 10 -o /dev/null -w '%{http_code}' "${URL}/api/health")" == 200 ]] || continue
+    [[ "$(curl -s --connect-timeout 5 -m 10 -o /dev/null -w '%{redirect_url}' "${URL}/")" == "${URL}"* ]] || continue
     echo
     echo "✓ 公网链接已就绪，把这条发给所有人："
     echo

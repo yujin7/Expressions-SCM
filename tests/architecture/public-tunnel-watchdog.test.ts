@@ -18,12 +18,15 @@ describe("公网快速隧道 watchdog", () => {
     expect(daemon).toContain("TUNNEL_FAILURE_LIMIT=5");
     expect(daemon).toContain("PUBLIC_FAILURES=$((PUBLIC_FAILURES + 1))");
     expect(daemon).toContain('rm -f "$URL_FILE"');
-    expect(daemon).toContain('kill "$CF_PID"');
+    expect(daemon).toContain('stop_tunnel || exit 1');
+    expect(daemon).toContain('tunnel_process stop || return 1');
     expect(daemon).toContain('wait "$CF_PID"');
   });
 
-  it("新地址必须先完成端到端验活，失败立即丢弃", () => {
-    expect(daemon).toContain('if ! apply_url "$URL"; then');
+  it("新地址必须先完成端到端验活，操作忙碌先重试，真正失败才丢弃", () => {
+    expect(daemon).toContain('apply_url "$URL" || APPLY_STATUS=$?');
+    expect(daemon).toContain('while [[ "$APPLY_STATUS" == 75 ]]');
+    expect(daemon).toContain('if [[ "$APPLY_STATUS" != 0 ]]; then');
     expect(daemon).toContain("新隧道未能通过端到端验活，立即重建");
   });
 
@@ -32,5 +35,12 @@ describe("公网快速隧道 watchdog", () => {
       "https://[a-z0-9]+(-[a-z0-9]+)+\\.trycloudflare\\.com",
     );
     expect(daemon).not.toContain("https://[a-z0-9-]+\\.trycloudflare\\.com");
+  });
+});
+
+describe("Docker 退出自恢复（2026-09-04 实况）", () => {
+  it("daemon 不可用时守护会拉起 Docker Desktop 再轮询，而不是干等 5 分钟后放弃", () => {
+    expect(daemon).toContain("open -a Docker");
+    expect(daemon).toMatch(/wait_for_docker\(\) \{[\s\S]*open -a Docker[\s\S]*return 1\n\}/);
   });
 });

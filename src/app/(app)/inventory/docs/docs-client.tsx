@@ -1,12 +1,18 @@
 "use client";
 
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import DocumentDrawer from "@/components/DocumentDrawer";
+
 import SearchInput from "@/components/SearchInput";
+import { TRANSFER_TYPE_LABELS, TRANSFER_TYPES } from "@/lib/transfer-types";
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { Alert, App, Button, Descriptions, Drawer, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Typography } from "antd";
+import { Alert, App, Button, Descriptions, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { DeleteOutlined, ExperimentOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
-import dayjs from "dayjs";
+import { formatAsOf } from "@/components/format";
 import ExportButton from "@/components/ExportButton";
 import RemoteSelect from "@/components/RemoteSelect";
 import DocStatusTag from "@/components/DocStatusTag";
@@ -24,6 +30,7 @@ interface DocRow {
   docNo: string;
   subtype: string;
   status: string;
+  transferType?: string | null;
   warehouseName: string;
   toWarehouseName: string | null;
   lineCount: number;
@@ -65,6 +72,7 @@ interface DocDetail {
   reversalOfId: number | null;
   lines: DocLine[];
   approvals: DocApproval[];
+  approvalBasis?: { label: string; href: string | null; sourceDocNo: string | null; verified: boolean; note: string | null };
   createdByName: string;
   createdAt: string;
 }
@@ -85,6 +93,7 @@ interface CreateFormValues {
   warehouseId: number;
   toWarehouseId?: number;
   reason?: string; // R16：调拨业务原因
+  transferType?: string; // D60：调拨类型（固定清单，调拨必填）
   remark?: string;
   riskDisposalId?: number;
   lines?: { skuId: number; qty: number; price?: number }[];
@@ -129,7 +138,9 @@ const STATUS_TABS = [
   { key: "draft", label: "草稿" },
   { key: "pending", label: "待审批" },
   { key: "completed", label: "已完成" },
+  // W2-3：短关（已审批/执行中 → 已关闭）与作废（草稿 → 已作废）落地后，这两个页签才有数据来源
   { key: "closed", label: "已关闭" },
+  { key: "void", label: "已作废" },
 ];
 
 function SubtypeTag({ subtype }: { subtype: string }) {
@@ -153,7 +164,7 @@ function DocsInner() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL（?status=pending 工作台直达），密度与已保存视图存本地
-  const listState = useListState({
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS,
     key: "inv-docs",
     defaults: { q: "", status: "", subtype: "" },
     defaultPageSize: 20,
@@ -238,9 +249,12 @@ function DocsInner() {
     return () => clearTimeout(timer);
   }, [createOpen, createSubtype, createWarehouseId, createLines]);
 
-  const [detailId, setDetailId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<DocDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const documentSelection = useDocumentTarget();
+  const { id: detailId, setId: setDetailId } = documentSelection;
+  const detailRead = useDocumentRead<DocDetail>(detailId == null ? null : `/api/inventory/stock-doc/${detailId}`);
+  const detail = detailRead.data;
+  const detailLoading = detailRead.phase === "loading";
+  const loadDetail = detailRead.retry;
 
   const loadFefoPreview = async (): Promise<boolean> => {
     try {
@@ -299,25 +313,7 @@ function DocsInner() {
     void load();
   }, [load]);
 
-  const loadDetail = useCallback(
-    async (id: number) => {
-      setDetailLoading(true);
-      try {
-        const res = await fetchJson<DocDetail>(`/api/inventory/stock-doc/${id}`);
-        setDetail(res);
-      } catch (e) {
-        message.error((e as Error).message);
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [message],
-  );
 
-  useEffect(() => {
-    if (detailId != null) void loadDetail(detailId);
-    else setDetail(null);
-  }, [detailId, loadDetail]);
 
   const handleCreate = async () => {
     try {
@@ -341,6 +337,7 @@ function DocsInner() {
         warehouseId: values.warehouseId,
         toWarehouseId: values.subtype === "transfer" ? values.toWarehouseId : undefined,
         reason: values.subtype === "transfer" ? values.reason || undefined : undefined,
+        transferType: values.subtype === "transfer" ? values.transferType : undefined,
         remark: values.remark?.trim() || undefined,
         riskDisposalId: values.riskDisposalId,
         lines: lines.map((l) => ({
@@ -370,7 +367,19 @@ function DocsInner() {
         <Typography.Link onClick={() => setDetailId(r.id)}>{v}</Typography.Link>
       ),
     },
-    { title: "类型", dataIndex: "subtype", width: 120, render: (v: string) => <SubtypeTag subtype={v} /> },
+    {
+      title: "类型",
+      dataIndex: "subtype",
+      width: 150,
+      render: (v: string, r) => (
+        <span>
+          <SubtypeTag subtype={v} />
+          {v === "transfer" ? (
+            <Tag style={{ marginInlineStart: 4 }}>{r.transferType ? (TRANSFER_TYPE_LABELS[r.transferType as keyof typeof TRANSFER_TYPE_LABELS] ?? r.transferType) : "未分类"}</Tag>
+          ) : null}
+        </span>
+      ),
+    },
     {
       title: "仓库",
       dataIndex: "warehouseName",
@@ -385,7 +394,7 @@ function DocsInner() {
       title: "时间",
       dataIndex: "createdAt",
       width: 160,
-      render: (v: string) => dayjs(v).format("YYYY-MM-DD HH:mm"),
+      render: (v: string) => formatAsOf(v),
     },
     { title: "状态", dataIndex: "status", width: 100, render: (v: string) => <DocStatusTag status={v} /> },
     {
@@ -402,7 +411,7 @@ function DocsInner() {
 
   const lineColumns: ColumnsType<DocLine> = [
     { title: "SKU 编码", dataIndex: "skuCode", width: 110 },
-    { title: "名称", dataIndex: "skuName" },
+    { title: "名称", dataIndex: "skuName", width: 180 },
     { title: "数量", dataIndex: "qty", width: 110, align: "right" },
     {
       title: "批次",
@@ -410,8 +419,8 @@ function DocsInner() {
       width: 150,
       render: (value: string | null, row) =>
         value ? (
-          <Space size={4}>
-            <Tag color="blue">{value}</Tag>
+          <Space size={4} wrap>
+            <Tag color="blue" style={{ whiteSpace: "normal", overflowWrap: "anywhere" }}>{value}</Tag>
             {row.expiryDate ? <Typography.Text type="secondary">{row.expiryDate}</Typography.Text> : null}
           </Space>
         ) : (
@@ -517,10 +526,12 @@ function DocsInner() {
               placeholder="期初/领料出/销售出/调拨（红字冲销不可手工创建）"
             />
           </Form.Item>
-          <Form.Item name="warehouseId" label="仓库" rules={[{ required: true, message: "必须选择仓库" }]}>
+          <Form.Item name="warehouseId" label="仓库（仅实时记账仓）" rules={[{ required: true, message: "必须选择仓库" }]}>
             <RemoteSelect
               api="/api/master/warehouse"
               getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
+              // 与盘点页同一过滤：四类手工单的源仓必须是实时记账仓，快照仓选了也只会在提交时被拒（createStockDoc）
+              filterRow={(r) => r.accountingMode === "realtime" && r.active !== false}
               placeholder="选择仓库"
             />
           </Form.Item>
@@ -533,6 +544,8 @@ function DocsInner() {
               <RemoteSelect
                 api="/api/master/warehouse"
                 getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
+                // 转入仓不能是快照仓（服务端「快照仓 1.1 启用」拒绝），选项里就不给
+                filterRow={(r) => r.active !== false && r.accountingMode !== "snapshot" && r.kind !== "snapshot"}
                 placeholder="选择目标仓库"
               />
             </Form.Item>
@@ -545,6 +558,18 @@ function DocsInner() {
               message="已绑定风险库存报废登记"
               description="请核对仓库、批次与实际报废数量。审批过账后处置登记会自动完成；若后续红字冲销，登记会自动重开。"
             />
+          ) : null}
+          {createSubtype === "transfer" ? (
+            <Form.Item
+              name="transferType"
+              label="调拨类型（D60 固定清单；线路成本基线按类型分列）"
+              rules={[{ required: true, message: "调拨必须选择调拨类型" }]}
+            >
+              <Select
+                placeholder="工厂发仓 / 保税转运 / 仓间调拨 / 借调 / 退回工厂 / 其他"
+                options={TRANSFER_TYPES.map((t) => ({ value: t, label: TRANSFER_TYPE_LABELS[t] }))}
+              />
+            </Form.Item>
           ) : null}
           {createSubtype === "transfer" ? (
             <Form.Item name="reason" label="业务原因（R16：借调将进入月末部门间借调对账）">
@@ -665,7 +690,8 @@ function DocsInner() {
         }}
       />
 
-      <Drawer
+      <DocumentDrawer
+        key={detailId ?? "invalid-document"}
         title={
           detail ? (
             <Space>
@@ -676,12 +702,14 @@ function DocsInner() {
             "单据详情"
           )
         }
-        open={detailId != null}
+        open={documentSelection.present}
+        readError={documentSelection.error ?? detailRead.error}
+        onRetry={detailId != null ? detailRead.retry : undefined}
         onClose={() => setDetailId(null)}
         width="min(720px, 100vw)"
         loading={detailLoading}
         extra={
-          detail ? (
+          detail && (detail.subtype !== "count_adjust" || detail.status === "completed") ? (
             <DocActions
               docType="stock-doc"
               apiBase="/api/inventory/stock-doc"
@@ -693,7 +721,7 @@ function DocsInner() {
                 reversalOfId: detail.reversalOfId,
               }}
               onChanged={() => {
-                void loadDetail(detail.id);
+                void loadDetail();
                 void load();
               }}
             />
@@ -702,7 +730,7 @@ function DocsInner() {
       >
         {detail ? (
           <div>
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="类型">
                 <SubtypeTag subtype={detail.subtype} />
               </Descriptions.Item>
@@ -713,7 +741,7 @@ function DocsInner() {
               </Descriptions.Item>
               <Descriptions.Item label="制单人">{detail.createdByName}</Descriptions.Item>
               <Descriptions.Item label="制单时间">
-                {dayjs(detail.createdAt).format("YYYY-MM-DD HH:mm")}
+                {formatAsOf(detail.createdAt)}（上海时间）
               </Descriptions.Item>
               <Descriptions.Item label="备注">{detail.remark ?? "—"}</Descriptions.Item>
               <Descriptions.Item label="红字引用">
@@ -727,17 +755,28 @@ function DocsInner() {
               columns={lineColumns}
               dataSource={detail.lines}
               pagination={false}
+              scroll={{ x: 740 }}
               style={{ marginBottom: 24 }}
             />
+            {detail.approvalBasis?.note ? <Alert
+              type={detail.approvalBasis.verified ? "info" : "warning"}
+              showIcon
+              message={detail.approvalBasis.label}
+              description={<>
+                {detail.approvalBasis.note}
+                {detail.approvalBasis.href ? <div style={{ marginTop: 8 }}><a href={detail.approvalBasis.href} style={{ display: "inline-block" }}>查看来源盘点：{detail.approvalBasis.sourceDocNo}</a></div> : null}
+              </>}
+              style={{ marginBottom: 16 }}
+            /> : null}
             {detail.approvals.length > 0 ? (
               <>
-                <Typography.Title level={5}>审批记录</Typography.Title>
+                <Typography.Title level={5}>{detail.approvalBasis?.label ?? "审批记录"}</Typography.Title>
                 <ApprovalTimeline items={detail.approvals} />
               </>
             ) : null}
           </div>
         ) : null}
-      </Drawer>
+      </DocumentDrawer>
     </div>
   );
 }

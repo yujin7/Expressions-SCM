@@ -19,8 +19,10 @@ import {
   Typography,
 } from "antd";
 import { InfoCircleOutlined } from "@ant-design/icons";
+import Link from "next/link";
 import AttachmentPanel from "@/components/AttachmentPanel";
 import CrudTable from "@/components/CrudTable";
+import { skuFormPayload } from "@/components/sku-form-payload";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import RemoteSelect from "@/components/RemoteSelect";
 import { COMMERCIAL_ROLE_LABELS, LOSS_CATEGORY_LABELS, SKU_TYPE_LABELS, toOptions } from "@/components/labels";
@@ -47,6 +49,7 @@ interface SkuRow {
   channelId: number | null;
   shortName: string | null;
   commercialRole: string;
+  normalLeadDays: number | null;
   logisticsLeadDays: number | null;
   shelfLifeDays: number | null;
   nearExpiryDays: number | null;
@@ -115,6 +118,7 @@ export default function SkuClient() {
         </Button>
       </Space>
       <CrudTable<SkuRow>
+        transformSubmit={(values, editing) => skuFormPayload(values, editing ? { ...editing } : null)}
         rowActions={(r, reload) => (
           <>
             {canWrite && r.namingStatus === "ready" && r.standardName ? (
@@ -398,10 +402,21 @@ export default function SkuClient() {
             >
               <Select options={toOptions(COMMERCIAL_ROLE_LABELS)} />
             </Form.Item>
+            {/* 加工周期与物流周期是 sku_params 的同一行；此前本表单只有物流，
+                加工只能去「周期主数据补录」填——一行数据被两张半张表单维护（审计 #12）。
+                两处写的是同一行，改哪边都留审计；批量补录仍在补录页。 */}
+            <Form.Item
+              name="normalLeadDays"
+              label="加工周期（天）"
+              tooltip="下单到生产完成的常规周期；与「周期主数据补录」页是同一行 sku_params，两处任填其一"
+            >
+              <InputNumber min={0} max={365} precision={0} style={{ width: "100%" }} placeholder="未维护时按运行参数缺省" />
+            </Form.Item>
             <Form.Item
               name="logisticsLeadDays"
               label="物流/调拨周期（天）"
-              tooltip="生产完成到可售仓的运输/调拨时间；补货总周期 = 生产周期 + 此字段"
+              tooltip="生产完成到可售仓的运输/调拨时间；补货总周期 = 加工周期 + 此字段"
+              extra={<Link href="/master/supply-params">批量补录周期（按分层/品牌套用默认）</Link>}
             >
               <InputNumber min={0} max={365} precision={0} style={{ width: "100%" }} placeholder="未维护时暂按 0 天" />
             </Form.Item>

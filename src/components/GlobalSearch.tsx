@@ -1,89 +1,42 @@
 "use client";
 
-/** 全局搜索（编码/中文/拼音/首字母/单号直达）——数据源 /api/search */
-import { useEffect, useRef, useState } from "react";
-import { AutoComplete, Input, Tag } from "antd";
+/** Global entity search; query identity and request cleanup are shared with the command palette. */
+import { useState } from "react";
+import { AutoComplete, Button, Input, Tag } from "antd";
 import { SearchOutlined } from "@ant-design/icons";
 import { useRouter } from "next/navigation";
-
-interface Item { label: string; href: string; tag?: string }
-interface Group { title: string; items: Item[] }
+import { useEntitySearch } from "@/components/useEntitySearch";
 
 export default function GlobalSearch() {
   const router = useRouter();
-  const [options, setOptions] = useState<{ label: React.ReactNode; options: { value: string; label: React.ReactNode }[] }[]>([]);
-  const hrefByKey = useRef(new Map<string, string>());
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const controller = useRef<AbortController | null>(null);
-
-  useEffect(() => () => {
-    if (timer.current) clearTimeout(timer.current);
-    controller.current?.abort();
-  }, []);
-
-  const search = (q: string) => {
-    if (timer.current) clearTimeout(timer.current);
-    controller.current?.abort();
-    if (q.trim().length < 2) {
-      hrefByKey.current.clear();
-      setOptions([]);
-      return;
-    }
-    timer.current = setTimeout(async () => {
-      const request = new AbortController();
-      controller.current = request;
-      try {
-        const res = await fetch(`/api/search?q=${encodeURIComponent(q.trim())}`, {
-          signal: request.signal,
-        });
-        if (!res.ok) return;
-        const d = (await res.json()) as { groups: Group[] };
-        if (request.signal.aborted) return;
-        hrefByKey.current.clear();
-        setOptions(
-          (d.groups ?? [])
-            .filter((g) => g.items.length > 0)
-            .map((g) => ({
-              label: <span style={{ fontSize: 12 }}>{g.title}</span>,
-              options: g.items.map((it, i) => {
-                const key = `${g.title}:${i}:${it.label}`;
-                hrefByKey.current.set(key, it.href);
-                return {
-                  value: key,
-                  label: (
-                    <span>
-                      {it.label} {it.tag ? <Tag style={{ marginLeft: 6 }}>{it.tag}</Tag> : null}
-                    </span>
-                  ),
-                };
-              }),
-            })),
-        );
-      } catch {
-        if (request.signal.aborted) return;
-        /* 忽略搜索失败 */
-      }
-    }, 300);
-  };
+  const [q, setQ] = useState("");
+  const search = useEntitySearch(q);
+  const status = search.error ? "搜索失败：" + search.error : search.phase === "loading" ? "正在搜索…"
+    : search.phase === "success" ? "未找到匹配数据" : "输入至少 2 个字符";
+  const options = search.entries.length ? [{
+    label: "数据",
+    options: search.entries.map(item => ({ value: item.value, label: <span>
+      {item.label} {item.tag ? <Tag style={{ marginLeft: 6 }}>{item.tag}</Tag> : null}
+      {item.tag === item.group ? null : <span style={{ color: "#667085", fontSize: 12, whiteSpace: "nowrap", display: "inline-block" }}> · {item.group}</span>}
+    </span> })),
+  }] : [{ label: "数据", options: [{ value: "search-status", disabled: true,
+    label: <span role={search.error ? "alert" : "status"}
+      style={{ whiteSpace: "normal", color: search.error ? "#b42318" : "#667085" }}>{status}</span> }] }];
 
   return (
-    <AutoComplete
-      className="global-search"
-      style={{ width: "100%" }}
-      options={options}
-      onSearch={search}
-      onSelect={(key: string) => {
-        const href = hrefByKey.current.get(key);
-        if (href) router.push(href);
+    <AutoComplete className="global-search" style={{ width: "100%" }} value={q} options={options}
+      classNames={{ popup: { root: "scm-search-popup" } }}
+      onChange={setQ}
+      onSelect={(value: string) => {
+        const href = search.entries.find(item => item.value === value)?.href;
+        if (href) { setQ(""); router.push(href); }
       }}
+      popupRender={menu => <>{menu}{search.error ? <Button size="small" type="link"
+        onMouseDown={event => event.preventDefault()} onClick={search.retry}>重试搜索</Button> : null}</>}
     >
-      <Input
-        size="small"
-        prefix={<SearchOutlined />}
+      <Input size="small" prefix={<SearchOutlined />}
         placeholder="搜编码 / 中文 / 拼音 / 首字母 / 单号"
-        aria-label="全局搜索：编码、中文、拼音、首字母或单号"
-        allowClear
-      />
+        aria-label="全局搜索：编码、中文、拼音、首字母或单号" allowClear />
     </AutoComplete>
   );
 }

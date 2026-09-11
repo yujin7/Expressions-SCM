@@ -59,6 +59,40 @@ export const SENSITIVE_FIELDS = [
   "totalSalesCost", // 平台销售总成本
   "estimatedGrossProfit", // 平台预估毛利
   "estimatedNetProfit", // 平台预估净利
+  "salesAmount", // 月度销售金额（D53：默认仅 finance/admin/pmc 可见）
+  "unitFee", // 调拨/加工单位费用（D60 成本基线；可反推价格）
+  "avgUnitFee", // 调拨线路均价（D60）
+  "medianUnitFee", // 调拨线路中位单价（D60）
+  "docUnitFee", // 单据单位费用（D60 偏差提示）
+  "baselineAvgUnitFee", // 基线均价（D60 偏差提示）
+  "monthNetAmount", // 采购下单净额（D63）
+  "monthGrossAmount", // 采购下单毛额（D63）
+  "savingYtd", // 年累计降本额（D63）
+  "increaseYtd", // 年累计涨价额（D63）
+  // ── 安全审计 S7：原本只靠各读模型手工置空的金额键，补进黑名单当兜底 ──
+  // （手工闸门漏一处就整条链路裸奔；进黑名单后 maskSensitive 在唯一收口再删一次）
+  "netAmount", // PO 未税金额（purchase-order-metrics / 驾驶舱屏2 逐月点）
+  "grossAmount", // PO 含税金额（同上）
+  "previousAmount", // 手工改写清单里被替代行的金额（DQ-6）
+  "balanceAmount", // 库存流水窗口累计余额金额（W2-2；与 amount 同权限，缺它则金额从余额列漏出）
+  "atRiskAmount", // 临期/过期风险金额（W2-5 效期清单与风险处置台；与 amount 同权限）
+  /* ── 安全审计（2026-09-04）：两张只读报表的金额键此前一个兜底都没有 ──
+     move-or-buy 的调拨线路费用与 price-compare 的比价价格都直接来自 price_lists /
+     transfer_fees，却既不在黑名单里、也没有各自的置空闸；price-compare 的模块头
+     甚至写着「已脱敏」——一句与代码相反的注释比没有注释更危险（已同步改正）。
+     spreadPct 必须一并收录：它是 (最高−最低)/最低，任一价格已知即可反推另一个。 */
+  "laneMedianUnitFee", // 调拨线路中位单价（move-or-buy 的「挪还是买」成本对比）
+  "laneEstCost", // 调拨估算成本 = 单位费用 × 建议量（同上）
+  "bestPrice", // 物料比价最低价（price-compare）
+  "worstPrice", // 物料比价最高价（同上）
+  "spreadPct", // 比价价差率（可与任一价格互推，随价格同权限）
+  // 注：**不收录 `spend`**。它在 supplier-payment-term 读模型里不是金额标量，而是
+  // `SupplierYearSpend[]` 容器（year / rank / rankOf + 金额），而名次按产品口径对全员可见
+  // （见 /api/report/supplier-payment-term 的路由说明）。把键加进来会整个数组被删，
+  // 记分卡「账期候选」Tab 的 `r.spend[0].total` 直接 TypeError。要收口须先把容器改名
+  // （并按约定给读模型缓存键升版），本次安全修复不夹带该重构；容器内金额目前由
+  // stripSupplierPaymentTermMoney 置空，驾驶舱屏2 的 `spend` 标量由 canSeeMoney 置空，
+  // 二者都有测试钉住（tests/report/cockpit-trends.test.ts、tests/report/supplier-payment-term.test.ts）。
 ] as const;
 
 /** 可见敏感价格的角色（●）：采购/PMC/财务/管理员 */
@@ -76,9 +110,10 @@ export const PARAM_KEYS = {
 } as const;
 
 /** 订单类型（NPD 钩子，05 §5；来源=在途表 下拉选项 订单类型）。N月备货以 "MONTH_STOCK:<n>" 形式存储 */
-export const ORDER_TYPES = ["regular", "npd_first", "urgent", "month_stock"] as const;
+export const ORDER_TYPES = ["regular", "repeat", "npd_first", "urgent", "month_stock"] as const;
 export const ORDER_TYPE_LABELS: Record<string, string> = {
   regular: "常规备货",
+  repeat: "成品返单",
   npd_first: "新品首单",
   urgent: "紧急需求",
   month_stock: "月备货",

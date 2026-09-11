@@ -80,7 +80,7 @@ describe("inbox：待办聚合（域过滤 / SoD / 排序）", () => {
     const bh1 = r.pending.find((i) => i.docNo === "BH20260702-001")!;
     expect(bh1.docTypeLabel).toBe("备货申请");
     expect(bh1.title).toBe("胶原蛋白肽饮品×100 等2项");
-    expect(bh1.href).toBe("/outsource/bh");
+    expect(bh1.href).toBe(`/outsource/bh?docId=${bh1.id}`);
     expect(bh1.version).toBe(1);
     expect(bh1.createdByName).toBe("PMC制单");
     expect(r.submitted).toHaveLength(0);
@@ -92,7 +92,7 @@ describe("inbox：待办聚合（域过滤 / SoD / 排序）", () => {
     expect(r.pending[0].docNo).toBe("RK20260703-001");
     expect(r.pending[0].docType).toBe("stock_doc");
     expect(r.pending[0].docTypeLabel).toBe("库存·期初");
-    expect(r.pending[0].href).toBe("/inventory/docs");
+    expect(r.pending[0].href).toBe(`/inventory/docs?docId=${r.pending[0].id}`);
   });
 
   it("SoD：自己创建的 pending 单不进待审区，落入「我提交的待审」", async () => {

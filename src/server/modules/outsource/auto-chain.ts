@@ -14,6 +14,7 @@ import { getMaterialReferenceLines } from "@/server/core/material-reference";
 import { getNumParam } from "@/server/core/params";
 import { batchAllowed, producibleQty, suggestBatchQty, MAX_AUTO_BATCHES } from "@/server/rules/kitting";
 import { earliestKitDate, type KitBlocker } from "@/server/rules/kitting-atp";
+import { supplierNewOrderBlock } from "@/server/rules/supplier-status";
 import { getOnHandBySku } from "@/server/core/stock-view";
 import { getOpenSupplyLines } from "@/server/core/supply";
 import { nextDocNo } from "@/server/docflow/doc-no";
@@ -259,7 +260,9 @@ export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchS
       if (supplierId != null) {
         const [sup] = await db.select({ name: schema.suppliers.name, status: schema.suppliers.status }).from(schema.suppliers).where(eq(schema.suppliers.id, supplierId));
         supplierName = sup?.name ?? null;
-        if (sup?.status === "blacklisted") { supplierId = null; supplierName = `${supplierName}（黑名单）`; }
+        // 黑名单 / 整改暂停都不能作为自动链的加工厂（与 createWo / generateDocs 同一条规则）
+        const block = supplierNewOrderBlock(sup?.status);
+        if (block.blocked) { supplierId = null; supplierName = `${supplierName}（${block.label}）`; }
       }
       // 计划加工费：feeref 最新
       let feeRatePlan: string | null = null;

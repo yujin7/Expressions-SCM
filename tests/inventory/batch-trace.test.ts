@@ -81,6 +81,27 @@ describe("批次登记与追溯", () => {
     expect(map.size).toBe(0);
   });
 
+  it("同一收货单重复批次行合并缺失日期，不因首行为空吞掉后续信息", async () => {
+    const map = await registerBatchesFromReceipt(db, [
+      { skuId: skuPlain, batchNo: " SAME-RECEIPT ", prodDate: null },
+      { skuId: skuPlain, batchNo: "SAME-RECEIPT", prodDate: "2026-08-01" },
+      { skuId: skuPlain, batchNo: "SAME-RECEIPT", expiryDate: "2027-08-01" },
+      { skuId: skuPlain, batchNo: "SAME-RECEIPT", prodDate: "2020-01-01" },
+    ], { docType: "sh", docId: 80 });
+    expect(map.size).toBe(1);
+    const [row] = await db.select().from(batches).where(eq(batches.id, map.get(`${skuPlain}:SAME-RECEIPT`)!));
+    expect(row).toMatchObject({ prodDate: "2026-08-01", expiryDate: "2027-08-01", sourceDocId: 80 });
+  });
+
+  it("登记按SKU和批次固定顺序，调用方行顺序不改变多批锁顺序", async () => {
+    const map = await registerBatchesFromReceipt(db, [
+      { skuId: skuPlain, batchNo: "ORDER-Z" },
+      { skuId: skuManaged, batchNo: "ORDER-Z" },
+      { skuId: skuManaged, batchNo: "ORDER-A" },
+    ], { docType: "sh", docId: 81 });
+    expect([...map.keys()]).toEqual([`${skuManaged}:ORDER-A`, `${skuManaged}:ORDER-Z`, `${skuPlain}:ORDER-Z`]);
+  });
+
   it("追溯：返回登记信息+来源单+批次库存分布", async () => {
     await db.insert(batchStocks).values({
       skuId: skuManaged, warehouseId: whId, batchNo: "L2601", qty: "120",

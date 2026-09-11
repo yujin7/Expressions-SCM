@@ -4,6 +4,10 @@
  *
  * 运行（dev server 必须停止——PGlite 单进程独占 .data/dev）：
  *   npx tsx scripts/seed-review-items.ts [md路径]
+ *
+ * W2 起**首选在应用内导入**：/review/checklist →「导入代决清单」（仅管理员，同事务写审计）。
+ * 服务端是同一个解析器与同一条按 title 的幂等规则（`review/checklist.importReviewChecklist`）。
+ * 本脚本保留给「机器上已有 md、且不想开浏览器」的场景；它**不写审计**，因此不是首选路径。
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";

@@ -71,7 +71,8 @@ describe("通知发件箱", () => {
       const [row] = await db.select().from(notifications)
         .where(eq(notifications.dedupeKey, "fs:fallback"));
       expect(row.status).toBe("failed");
-      expect(row.error).toContain("app unavailable");
+      expect(row.error).toContain(`通知 #${row.id}`);
+      expect(row.error).not.toContain("app unavailable");
     } finally {
       globalThis.fetch = previousFetch;
     }
@@ -128,6 +129,27 @@ describe("通知发件箱", () => {
       .where(eq(notifications.dedupeKey, "fs:retry"));
     expect(row.status).toBe("sent");
     expect(row.error).toBeNull();
+  });
+
+  it.each([null, undefined, "SYNTH_NOTIFY_PRIVATE", new Error("SYNTH_NOTIFY_PRIVATE"),
+    { get message() { throw new Error("must not invoke accessor"); } },
+  ])("任意投递异常不阻断后续通知，不持久化上游原文，下一轮仍能恢复：%#", async (failure) => {
+    await enqueueNotification(db, { channel: "feishu", title: "first", body: "b", dedupeKey: "unsafe:first" });
+    await enqueueNotification(db, { channel: "feishu", title: "second", body: "b", dedupeKey: "unsafe:second" });
+    let attempts = 0;
+    const result = await dispatchNotifications(db, { webhookUrl: null, appClient: {
+      sendText: async () => { if (attempts++ === 0) throw failure; return {}; },
+    } });
+    expect(result).toEqual({ sent: 1, failed: 1, skipped: 0 });
+    const rows = await db.select().from(notifications);
+    const failed = rows.find((row) => row.status === "failed")!;
+    expect(failed).toMatchObject({ attemptCount: 1, dispatchStartedAt: null, sentAt: null });
+    expect(failed.error).toContain(`通知 #${failed.id}`);
+    expect(JSON.stringify(rows)).not.toContain("SYNTH_NOTIFY_PRIVATE");
+    expect(await dispatchNotifications(db, { webhookUrl: null, appClient: { sendText: async () => ({}) } }))
+      .toEqual({ sent: 1, failed: 0, skipped: 0 });
+    expect(await db.select().from(notifications).where(eq(notifications.id, failed.id)))
+      .toMatchObject([{ status: "sent", attemptCount: 2, error: null, dispatchStartedAt: null }]);
   });
 
   it("dispatch：并发分发通过原子租约只发送一次", async () => {

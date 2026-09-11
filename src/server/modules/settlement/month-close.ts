@@ -18,6 +18,8 @@ import type { SessionUser } from "@/server/core/dto";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb } from "@/server/modules/outsource/common";
 import { getJiediaoReport } from "@/server/modules/report/jiediao";
+import { getPeriodLock, isPeriodClosed } from "@/server/modules/settlement/period-lock";
+import { shanghaiMonthOf } from "@/server/core/business-day";
 
 export const MONTH_CLOSE_DEFINITIONS = [
   { key: "data_release", title: "数据导入与放行收口", owner: "PMC / 财务", href: "/import/jobs" },
@@ -55,7 +57,22 @@ export interface MonthCloseCheck extends AutomatedCheck {
 export interface MonthCloseChecklist {
   month: string;
   generatedAt: string;
+  /**
+   * 该期间是否**真的**关账了——`period_locks` 是唯一权威（W2-1）。
+   * 此前这里是 `month < 当前月` 的日历推断：它既不阻止任何过账，也不代表任何人签过字。
+   */
   periodClosed: boolean;
+  /** 关账人/时间/说明（未关账时为 null） */
+  closedByName: string | null;
+  closedAt: Date | null;
+  closeNote: string | null;
+  /** 最近一次重开（管理员）的时间与原因；从未重开为 null */
+  reopenedAt: Date | null;
+  reopenReason: string | null;
+  /** 六项检查是否全部收口——关账的前置条件 */
+  closable: boolean;
+  /** 日历上是否已翻篇（旧 periodClosed 的含义，仅供文案用） */
+  pastMonth: boolean;
   checks: MonthCloseCheck[];
   progress: { current: number; total: 6; percent: number };
   limitations: string[];
@@ -82,11 +99,7 @@ async function countRows(db: AnyDb, table: PgTable, condition: SQL): Promise<num
 }
 
 function currentShanghaiMonth(now: Date): string {
-  return new Intl.DateTimeFormat("sv-SE", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-  }).format(now).slice(0, 7);
+  return shanghaiMonthOf(now);
 }
 
 async function buildAutomatedChecks(month: string, db: AnyDb): Promise<AutomatedCheck[]> {
@@ -95,6 +108,17 @@ async function buildAutomatedChecks(month: string, db: AnyDb): Promise<Automated
     and(gte(column, range.start), lt(column, range.end))!;
   const updatedInMonth = (column: AnyColumn) =>
     and(gte(column, range.start), lt(column, range.end))!;
+
+  /* C2 盘点归期必须按**业务日期**（pd_docs.biz_date），不能按录入时间。
+     盘点差异调整是按 biz_date 落账的（inventory/count.countAdjustOccurredAt），
+     所以 7/31 盘的、8/2 才录进来的那张单，它的流水属于 7 月。按 created_at 筛的话
+     7 月清单看不见它 → 7 月照常关账 → 再去审批这张盘点必然撞期间锁 CLOSED_PERIOD 并整笔回滚，
+     而 occurredAt 改不了 = 这张盘点单**永久无法审批**。
+     biz_date 可空（存量单据没有这个事实，见 schema 注释），缺失时才回落 created_at。 */
+  const countedInMonth = or(
+    and(gte(schema.pdDocs.bizDate, range.startDate), lt(schema.pdDocs.bizDate, range.endDate)),
+    and(isNull(schema.pdDocs.bizDate), gte(schema.pdDocs.createdAt, range.start), lt(schema.pdDocs.createdAt, range.end)),
+  )!;
 
   const importScope = or(
     and(
@@ -141,13 +165,13 @@ async function buildAutomatedChecks(month: string, db: AnyDb): Promise<Automated
     countRows(db, schema.shDocs, and(createdInMonth(schema.shDocs.createdAt), inArray(schema.shDocs.status, ["draft", "pending", "approved", "in_progress"]))!),
     countRows(db, schema.ctDocs, and(createdInMonth(schema.ctDocs.createdAt), inArray(schema.ctDocs.status, ["draft", "pending", "approved", "in_progress"]))!),
     countRows(db, schema.stockDocs, and(createdInMonth(schema.stockDocs.createdAt), inArray(schema.stockDocs.status, ["draft", "pending", "approved", "in_progress"]))!),
-    countRows(db, schema.pdDocs, createdInMonth(schema.pdDocs.createdAt)),
-    countRows(db, schema.pdDocs, and(createdInMonth(schema.pdDocs.createdAt), inArray(schema.pdDocs.status, ["draft", "pending", "approved", "in_progress"]))!),
+    countRows(db, schema.pdDocs, countedInMonth),
+    countRows(db, schema.pdDocs, and(countedInMonth, inArray(schema.pdDocs.status, ["draft", "pending", "approved", "in_progress"]))!),
     countRows(
       db,
       schema.pdLines,
       and(
-        sql`${schema.pdLines.pdId} IN (SELECT id FROM pd_docs WHERE created_at >= ${range.start} AND created_at < ${range.end})`,
+        sql`${schema.pdLines.pdId} IN (SELECT id FROM pd_docs WHERE (biz_date >= ${range.startDate} AND biz_date < ${range.endDate}) OR (biz_date IS NULL AND created_at >= ${range.start} AND created_at < ${range.end}))`,
         ne(schema.pdLines.bookQty, schema.pdLines.countedQty),
         isNull(schema.pdLines.adjustDocId),
       )!,
@@ -207,7 +231,11 @@ async function buildAutomatedChecks(month: string, db: AnyDb): Promise<Automated
         : countTotal === 0
           ? "本月未发现盘点任务，需确认是否适用"
           : `${countTotal} 张盘点任务已收口且差异均有调整单`,
-      evidence: { countTotal, countOpen, countUnadjusted },
+      evidence: {
+        countTotal, countOpen, countUnadjusted,
+        // C2：按盘点期（pd_docs.biz_date）归月，缺失才回落 created_at——补录的跨月盘点必须挡住它所属的那个月
+        scope: "bizDate 自然月，缺失时回落 createdAt",
+      },
     },
     {
       key: "jst_reconciliation",
@@ -304,16 +332,25 @@ export async function getMonthCloseChecklist(
     };
   });
   const current = checks.filter((check) => check.current).length;
+  const lock = await getPeriodLock(month, db);
   return {
     month,
     generatedAt: now.toISOString(),
-    periodClosed: month < currentShanghaiMonth(now),
+    periodClosed: lock.closed,
+    closedByName: lock.closedByName,
+    closedAt: lock.closedAt,
+    closeNote: lock.closeNote,
+    reopenedAt: lock.reopenedAt,
+    reopenReason: lock.reopenReason,
+    closable: current === 6 && !lock.closed && month < currentShanghaiMonth(now),
+    pastMonth: month < currentShanghaiMonth(now),
     checks,
     progress: { current, total: 6, percent: Math.round((current / 6) * 100) },
     limitations: [
       "本页是系统预关账与运营签认，不替代法定会计关账或 ERP 总账关账。",
       "系统证据实时重算；完成后证据变化会自动标为需复核。",
       "自动控制异常时只能填写原因后例外关闭，不能伪装为正常完成。",
+      "「关账」写入期间锁：此后业务时间落在该月的过账（含红字冲销）一律被过账引擎拒绝，重开须管理员并留原因。",
     ],
   };
 }
@@ -331,6 +368,9 @@ export async function updateMonthCloseCheck(
 ): Promise<MonthCloseChecklist> {
   requireAnyRole(user, "finance");
   const db = await resolveDb(dbArg);
+  if (await isPeriodClosed(db, input.month)) {
+    throw new ApiError(409, `期间 ${input.month} 已关账，请先由管理员重开后再修改签认`);
+  }
   if (!MONTH_CLOSE_DEFINITIONS.some((item) => item.key === input.checkKey)) {
     throw new ApiError(400, "未知月结检查项");
   }

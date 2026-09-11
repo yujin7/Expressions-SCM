@@ -18,7 +18,9 @@ const STREAM = {
   sales: "tmall-sku-sales-observation",
   refunds: "tmall-sku-refund-observation",
 } as const;
-const READ_MODEL_CACHE_KEY = "jiandaoyun-external-demand/v5";
+/** 读模型缓存键（导出：驾驶舱来源文案必须由它派生，改口径升版时文案跟着走——审计 C6） */
+export const EXTERNAL_DEMAND_SIGNAL_CACHE_KEY = "jiandaoyun-external-demand/v7";
+const READ_MODEL_CACHE_KEY = EXTERNAL_DEMAND_SIGNAL_CACHE_KEY;
 
 export interface ExternalDemandDailyRow {
   date: string;
@@ -732,6 +734,7 @@ async function latestBatch(
     INNER JOIN import_jobs ij ON ij.id = ir.import_job_id
     WHERE ir.connector = ${connector} AND ir.stream = ${stream}
       AND ir.status = 'succeeded' AND ir.import_job_id IS NOT NULL
+      AND ij.status <> 'superseded'
       AND coalesce(ir.request_scope->>'qualityBlocked', 'false') = 'false'
       AND (${connector} <> 'jdy' OR coalesce(ir.request_scope->>'emptySource', 'false') = 'false')
     ORDER BY ir.id DESC

@@ -69,7 +69,7 @@ describe("scoped-params 作用域继承", () => {
     expect(r.scope).toBe("brand:12");
     // 别的品牌仍走 segment
     const other = await resolveNumParam(KEY, FB, { brandId: 99, segment: "AX" }, db);
-    expect(other).toEqual({ value: 30, scope: "segment:AX" });
+    expect(other).toEqual({ value: 30, scope: "segment:AX", layer: "segment" });
   });
 
   it("sku 胜全部", async () => {
@@ -85,9 +85,9 @@ describe("scoped-params 作用域继承", () => {
   it("缺项自动跳级：只有 segment 行、ctx 无 sku/brand", async () => {
     await put("segment:BY", 33);
     const r = await resolveNumParam(KEY, FB, { segment: "BY" }, db);
-    expect(r).toEqual({ value: 33, scope: "segment:BY" });
+    expect(r).toEqual({ value: 33, scope: "segment:BY", layer: "segment" });
     // 空 ctx → fallback（无 global 行）
-    expect(await resolveNumParam(KEY, FB, {}, db)).toEqual({ value: FB, scope: FALLBACK_SCOPE });
+    expect(await resolveNumParam(KEY, FB, {}, db)).toEqual({ value: FB, scope: FALLBACK_SCOPE, layer: "fallback" });
   });
 
   it("makeResolver 批量解析与逐个 resolveNumParam 结果一致", async () => {
@@ -123,7 +123,7 @@ describe("scoped-params 作用域继承", () => {
     expect(rows.map((r) => r.scope).sort()).toEqual(["segment:AX", "sku:401"]);
 
     const r = await resolveNumParam(KEY, FB, CTX, db);
-    expect(r).toEqual({ value: 12, scope: "sku:401" });
+    expect(r).toEqual({ value: 12, scope: "sku:401", layer: "sku" });
 
     const audits = await db.select().from(auditLogs).where(eq(auditLogs.entity, "sys_param_scoped"));
     expect(audits.length).toBe(2);
@@ -157,14 +157,19 @@ describe("scoped-params 作用域继承", () => {
     ).rejects.toThrow(/管理员/);
   });
 
-  it("listScopedOverrides 返回全部覆盖，按优先级排序", async () => {
+  /* 全局层那一行不算「覆盖」：它就是 /admin/params 主表的那一行本身。分域覆盖区只列真正的覆盖，
+     否则页面上会出现「全局值 50」与「覆盖 50」两条同源行，看起来像两处配置。
+     （注意：本注释不能以 `global` 开头——ESLint 会把它当成 /* global *​/ 指令注释。） */
+  it("listScopedOverrides 只返回 global 以外的覆盖，按优先级排序", async () => {
     await put("global", 50);
     await put("segment:AX", 30);
     await put("brand:12", 20);
     await put("sku:401", 10);
     const list = await listScopedOverrides(KEY, db);
-    expect(list.map((r) => r.scope)).toEqual(["sku:401", "brand:12", "segment:AX", "global"]);
-    expect(list.map((r) => r.value)).toEqual([10, 20, 30, 50]);
+    expect(list.map((r) => r.scope)).toEqual(["sku:401", "brand:12", "segment:AX"]);
+    expect(list.map((r) => r.value)).toEqual([10, 20, 30]);
+    expect(list.map((r) => r.kind)).toEqual(["sku", "brand", "segment"]);
+    expect(list.map((r) => r.label)).toEqual(["SKU#401", "品牌#12", "AX 分层"]);
   });
 
   it("scope 编码与中文解释", () => {
@@ -189,12 +194,18 @@ describe("clearScopedParam：覆盖可撤销并回落上一级", () => {
 
     await setScopedParam(admin, { key: "safety_days_fallback", scope: { kind: "global" }, value: 7 }, db);
     await setScopedParam(admin, { key: "safety_days_fallback", scope: { kind: "brand", brandId: 12 }, value: 21 }, db);
-    expect((await resolveNumParam("safety_days_fallback", 0, { brandId: 12 }, db)).value).toBe(21);
+    const brandHit = await resolveNumParam("safety_days_fallback", 0, { brandId: 12 }, db);
+    expect(brandHit.value).toBe(21);
+    // W3：解析结果自带命中层级枚举，消费方（补货行 targetBasis/safetyDaysBasis）不必再各自解析 scope 串
+    expect(brandHit.layer).toBe("brand");
+    expect((await resolveNumParam("safety_days_fallback", 0, {}, db)).layer).toBe("global");
+    expect((await resolveNumParam("no_such_key_for_layer", 3, { skuId: 1 }, db)).layer).toBe("fallback");
 
     await clearScopedParam(admin, { key: "safety_days_fallback", scope: { kind: "brand", brandId: 12 } }, db);
     const back = await resolveNumParam("safety_days_fallback", 0, { brandId: 12 }, db);
     expect(back.value).toBe(7);
     expect(back.scope).toBe("global"); // 确实回落到上一级，而不是落到 fallback
+    expect(back.layer).toBe("global");
   });
 
   it("global 层拒绝删除（它是兜底底座）；不存在的覆盖报 404", async () => {
@@ -253,5 +264,51 @@ describe("setScopedParam：global 层的权限边界", () => {
         setScopedParam(admin, { key: "safety_days_fallback", scope: bad as any, value: 9 }, db),
       ).rejects.toMatchObject({ status: 400 });
     }
+  });
+});
+
+/**
+ * S3（2026-09-04 安全审计）：**每一层**都按参数键判权限，不给任何层留例外。
+ *
+ * `assertScopedWriter` 此前只对 `scope === "category"` 查 `PMC_WRITABLE_PARAM_KEYS`；
+ * sku/brand/segment 三层是「是 pmc 就放行任意键」。于是同一个 pmc 账号对
+ * `PUT /api/admin/params {key:"price_tolerance_pct"}` 得 403、对分域路由的同一个 key 得 201——
+ * 2026-07-26 在 global 层堵掉的那个提权形状，换一层又开着。
+ *
+ * 今天它还没有立即变成越权，只因为分域解析器目前只读两个键、两个都归 pmc；
+ * 而「让更多键走分域解析」正是本模块的既定方向，那一刻它自己就变成活口子。
+ * 这三条用例是那件事的守门人。
+ */
+describe("S3 分域写权限：按键判，不按层判", () => {
+  const ADMIN_ONLY_KEY = "price_tolerance_pct";
+
+  it("pmc 在 sku/brand/segment 三层同样写不了 admin-only 的键（此前三层全部放行）", async () => {
+    const { db } = await createTestDb();
+    for (const scope of [
+      { kind: "sku", skuId: 401 },
+      { kind: "brand", brandId: 12 },
+      { kind: "segment", cell: "AX" },
+    ] as const) {
+      await expect(
+        setScopedParam(pmc, { key: ADMIN_ONLY_KEY, scope, value: 3 }, db),
+        `${scope.kind} 层不得成为 admin-only 参数的旁路`,
+      ).rejects.toMatchObject({ status: 403 });
+    }
+    expect(await db.select().from(sysParams).where(eq(sysParams.key, ADMIN_ONLY_KEY))).toHaveLength(0);
+  });
+
+  it("清除覆盖走同一道闸（能删掉覆盖就等于能改口径）", async () => {
+    const { db } = await createTestDb();
+    await setScopedParam(admin, { key: ADMIN_ONLY_KEY, scope: { kind: "sku", skuId: 401 }, value: 3 }, db);
+    await expect(
+      clearScopedParam(pmc, { key: ADMIN_ONLY_KEY, scope: { kind: "sku", skuId: 401 } }, db),
+    ).rejects.toMatchObject({ status: 403 });
+    await clearScopedParam(admin, { key: ADMIN_ONLY_KEY, scope: { kind: "sku", skuId: 401 } }, db);
+  });
+
+  it("pmc 归属的键在三层照常可写（收紧的是权限口径，不是把分域参数关掉）", async () => {
+    const { db } = await createTestDb();
+    await setScopedParam(pmc, { key: KEY, scope: { kind: "brand", brandId: 12 }, value: 33 }, db);
+    expect((await resolveNumParam(KEY, FB, { brandId: 12 }, db)).value).toBe(33);
   });
 });

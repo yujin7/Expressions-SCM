@@ -1,0 +1,2 @@
+ALTER TABLE "sh_lines" ADD COLUMN "po_line_id" integer;--> statement-breakpoint
+ALTER TABLE "sh_lines" ADD CONSTRAINT "sh_lines_po_line_id_po_lines_id_fk" FOREIGN KEY ("po_line_id") REFERENCES "public"."po_lines"("id") ON DELETE no action ON UPDATE no action;

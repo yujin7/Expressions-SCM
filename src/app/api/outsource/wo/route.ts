@@ -8,7 +8,14 @@ export async function GET(req: NextRequest) {
     await guardRead();
     const { q, page, pageSize, searchParams } = parseListQuery(req.url);
     return NextResponse.json(
-      await listWos(q, { status: searchParams.get("status") ?? undefined, page, pageSize }),
+      await listWos(q, {
+        status: searchParams.get("status") ?? undefined,
+        // 制单时间窗（全链漏斗回链）
+        from: searchParams.get("from") ?? undefined,
+        to: searchParams.get("to") ?? undefined,
+        page,
+        pageSize,
+      }),
     );
   } catch (e) {
     return errorResponse(e);

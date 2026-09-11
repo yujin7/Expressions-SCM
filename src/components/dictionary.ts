@@ -112,6 +112,13 @@ export const ACTION = {
   adopt: "采纳",
   preview: "预演",
   export: "导出",
+  /** 系统告警的人工关闭（必须带原因码，进 alert_events 台账）——与"标记处置完成"不是一回事 */
+  closeAlert: "关闭",
+  closeAlertHint: "带原因关闭并写入台账；不删除告警，条件仍成立时引擎下一轮会另开一条新告警",
+  /** 控制塔例外「压后再看」统一叫打盹——不叫"忽略/隐藏/屏蔽"（那些听起来像永久删除） */
+  snoozeException: "打盹",
+  snoozeExceptionHint: "按日期压后，对所有人生效并写审计，到期自动恢复显示；只影响控制塔展示，不改告警/待办/单据",
+  unsnoozeException: "取消打盹",
 } as const;
 
 /* ────────────────────────── 四、单据类型（代码↔中文，含流转顺序） ────────────────────────── */
@@ -152,4 +159,44 @@ export function severityColor(s: string | null | undefined): string {
 }
 export function docTypeLabel(t: string | null | undefined): string {
   return t ? (DOC_TYPE[t.toUpperCase()]?.label ?? t) : "—";
+}
+
+/* ────────────────────────── 六、数据来源 / 目标来源 / 告警类别（驾驶舱、目标页、告警页） ────────────────────────── */
+
+/** 数据来源就绪状态（data-source-readiness.state）——驾驶舱屏 1 表格 */
+export const SOURCE_STATE: Record<string, { label: string; color: string }> = {
+  operational: { label: "正式", color: "success" },
+  observation: { label: "观察", color: "blue" },
+  blocked: { label: "阻断", color: "error" },
+  contract_only: { label: "仅契约", color: "default" },
+};
+export function sourceStateLabel(s: string | null | undefined): string {
+  return s ? (SOURCE_STATE[s]?.label ?? "仅契约") : "—";
+}
+export function sourceStateColor(s: string | null | undefined): string {
+  return s ? (SOURCE_STATE[s]?.color ?? "default") : "default";
+}
+
+/** 部门目标实际值来源（goals：actualSource × autoStatus） */
+export const GOAL_SOURCE: Record<string, { label: string; color: string }> = {
+  auto: { label: "自动取值", color: "blue" },
+  manual: { label: "手工填报", color: "gold" },
+  auto_pending: { label: "自动·来源未就绪", color: "default" },
+  manual_pending: { label: "手工·待填报", color: "default" },
+  withheld: { label: "金额·无权限", color: "default" },
+};
+export function goalSourceKey(actualSource: string | null | undefined, autoStatus: string | null | undefined): keyof typeof GOAL_SOURCE {
+  // 金额型指标对非价格角色一律先判 withheld：值被服务端扣住（不是没取到、也不是待填）
+  if (autoStatus === "withheld") return "withheld";
+  if (actualSource === "auto") return "auto";
+  if (actualSource === "manual") return "manual";
+  return autoStatus === "unavailable" ? "auto_pending" : "manual_pending";
+}
+
+/** 角色中文（客户端可用；服务端权威在 core/constants.ROLE_LABELS） */
+export const ROLE_LABEL: Record<string, string> = {
+  ops: "运营", purchasing: "采购", warehouse: "仓管", quality: "质量合规", pmc: "生产计划", finance: "财务", admin: "管理员",
+};
+export function roleLabel(r: string | null | undefined): string {
+  return r ? (ROLE_LABEL[r] ?? r) : "—";
 }

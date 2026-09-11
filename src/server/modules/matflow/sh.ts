@@ -1,7 +1,7 @@
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import {
    jgDocs, offsetPools, poDocs, poLines, qcLines, qcRecords,
-  shDocs, shLines, woLines,
+  shDocs, shLines, warehouses, woLines,
 } from "@/db/schema";
 import { dAdd, dCmp, dDiv, dMul, dNeg, dQty, dSub, dZero } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
@@ -25,6 +25,8 @@ import {
   getOutsourceWarehouseOf, requireRealtimeWarehouse,
 } from "./common-notes";
 import { createQcSchema, createShSchema } from "./schemas";
+import { lockPurchaseReceipt, resolvePurchaseReceiptLine } from "./purchase-receipt-lock";
+import { currentWriteActor as currentMatflowActor } from "@/server/core/current-write-actor";
 
 /**
  * 收货单 SH + 检验 QC + 入库确认（《01》§3/§4，《02》§3 关键校验）。
@@ -32,7 +34,7 @@ import { createQcSchema, createShSchema } from "./schemas";
  * - 累计校验（jg 源）：Σ正常行实收 ≤ JG数量 − Σ已判不合格 + 超收容差（sys_param over_receive_tolerance_pct）。
  * - 审批仅置 approved——检验前不入库；QC 一单一检；confirmInbound 才过账：
  *   jg 源 → sh_outsource_in（成品仓 +合格+让步；委外仓 −净标准用量×(合格+让步+备品)）+ spare_in（备品零成本+对冲池）；
- *   po 源 → sh_purchase_in（仓库 +合格数）+ po_line.receivedQty 累加（全收自动完成 PO）。
+ *   po 源 → sh_purchase_in（仓库 +合格+让步）+ po_line.receivedQty 累加（全收自动完成 PO）。
  */
 
 type ShRow = typeof shDocs.$inferSelect;
@@ -42,6 +44,16 @@ type QcRecordRow = typeof qcRecords.$inferSelect;
 const NON_SPARE_TYPES = ["normal", "rework"] as const;
 
 // ---------- 累计校验（《02》§3：分母 = JG数量 − 已判不合格 + 容差） ----------
+
+/**
+ * SH审批改变正常累计，QC改变不合格分母：两者都在本单SH锁后锁共同JG，
+ * 直到各自事务提交。不能仅锁SH，也不能用可并行的FOR SHARE保护累计。
+ * 这里只保源存在；已批SH的检验事实不因JG后来关闭而禁止登记。
+ */
+async function lockJgReceiptAggregate(tx: AnyDb, jgId: number): Promise<void> {
+  const [jg]: { id: number }[] = await tx.select({ id: jgDocs.id }).from(jgDocs).where(eq(jgDocs.id, jgId)).for("update");
+  if (!jg) throw new ApiError(500, `收货单挂空 JG: #${jgId}`);
+}
 
 /**
  * jg 源 SH 的累计口径（excludeShId=排除审批中的本单）：
@@ -111,39 +123,39 @@ export async function createSh(user: SessionUser, input: unknown, dbArg?: AnyDb)
   const v = createShSchema.parse(input);
   const db = await resolveDb(dbArg);
 
-  await requireRealtimeWarehouse(db, v.warehouseId, "收货仓");
-
-  let lines = v.lines;
-  if (v.sourceType === "jg") {
-    const jg = await getJgForMatflow(db, v.sourceId);
-    for (const l of lines) {
-      if (l.skuId !== jg.productSkuId) {
-        throw new ApiError(400, `jg 源收货行 SKU 必须是加工成品 sku#${jg.productSkuId}，实为 sku#${l.skuId}`);
-      }
-    }
-    // 累计校验（分母=JG数量−已判不合格+容差）
-    let thisNormal = "0";
-    for (const l of lines) if (l.lineType === "normal") thisNormal = dAdd(thisNormal, l.actualQty);
-    await assertJgReceiptWithinCap(db, jg, thisNormal);
-  } else {
-    const [po]: (typeof poDocs.$inferSelect)[] = await db.select().from(poDocs).where(eq(poDocs.id, v.sourceId));
-    if (!po) throw new ApiError(404, `采购订单不存在: #${v.sourceId}`);
-    if (po.status !== "approved" && po.status !== "in_progress") {
-      throw new ApiError(409, `采购订单当前状态不可收货: ${po.status}`);
-    }
-    const plRows: { skuId: number }[] = await db
-      .select({ skuId: poLines.skuId })
-      .from(poLines)
-      .where(eq(poLines.poId, po.id));
-    const poSkus = new Set(plRows.map((r) => r.skuId));
-    for (const l of lines) {
-      if (!poSkus.has(l.skuId)) throw new ApiError(400, `SKU #${l.skuId} 不在该 PO 行上，不可收货`);
-    }
-    // po 源无行类型概念，强制 normal
-    lines = lines.map((l) => ({ ...l, lineType: "normal" as const }));
-  }
-
   return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentMatflowActor(tx, user);
+    requireAnyRole(actor, "warehouse");
+    await tx.select({ id: warehouses.id }).from(warehouses).where(eq(warehouses.id, v.warehouseId)).for("share");
+    await requireRealtimeWarehouse(tx, v.warehouseId, "收货仓");
+
+    let lines = v.lines;
+    if (v.sourceType === "jg") {
+      await tx.select({ id: jgDocs.id }).from(jgDocs).where(eq(jgDocs.id, v.sourceId)).for("share");
+      const jg = await getJgForMatflow(tx, v.sourceId);
+      for (const l of lines) {
+        if (l.poLineId != null) throw new ApiError(400, "加工来源收货不可携带采购行编号");
+        if (l.skuId !== jg.productSkuId) {
+          throw new ApiError(400, `jg 源收货行 SKU 必须是加工成品 sku#${jg.productSkuId}，实为 sku#${l.skuId}`);
+        }
+      }
+      // 草稿不预占累计；审批仍须重查。
+      let thisNormal = "0";
+      for (const l of lines) if (l.lineType === "normal") thisNormal = dAdd(thisNormal, l.actualQty);
+      await assertJgReceiptWithinCap(tx, jg, thisNormal);
+    } else {
+      const [po]: (typeof poDocs.$inferSelect)[] = await tx.select().from(poDocs).where(eq(poDocs.id, v.sourceId)).for("share");
+      if (!po) throw new ApiError(404, `采购订单不存在: #${v.sourceId}`);
+      if (po.status !== "approved" && po.status !== "in_progress") {
+        throw new ApiError(409, `采购订单当前状态不可收货: ${po.status}`);
+      }
+      const plRows: { id: number; skuId: number }[] = await tx
+        .select({ id: poLines.id, skuId: poLines.skuId })
+        .from(poLines)
+        .where(eq(poLines.poId, po.id)).orderBy(poLines.id).for("share");
+      // po 源无行类型概念，强制 normal
+      lines = lines.map((l) => ({ ...l, poLineId: resolvePurchaseReceiptLine(plRows, l.skuId, l.poLineId).id, lineType: "normal" as const }));
+    }
     const docNo = await nextDocNo(tx, "SH");
     const [doc]: ShRow[] = await tx
       .insert(shDocs)
@@ -162,6 +174,7 @@ export async function createSh(user: SessionUser, input: unknown, dbArg?: AnyDb)
       lines.map((l) => ({
         shId: doc.id,
         skuId: l.skuId,
+        poLineId: l.poLineId ?? null,
         lineType: l.lineType,
         expectedQty: l.expectedQty != null ? dQty(l.expectedQty) : null,
         actualQty: dQty(l.actualQty),
@@ -181,20 +194,23 @@ export async function createSh(user: SessionUser, input: unknown, dbArg?: AnyDb)
 
 export async function submitSh(user: SessionUser, id: number, version: number, dbArg?: AnyDb): Promise<ShRow> {
   const db = await resolveDb(dbArg);
-  const [doc]: ShRow[] = await db.select().from(shDocs).where(eq(shDocs.id, id));
-  if (!doc) throw new ApiError(404, "单据不存在");
-  if (doc.createdBy !== user.id && !user.roles.includes("warehouse") && !user.roles.includes("admin")) {
-    throw new ApiError(403, "仅制单人/仓管/管理员可提交");
-  }
-  if (doc.status !== "draft") throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
-  const updated: ShRow[] = await db
-    .update(shDocs)
-    .set({ status: "pending", version: sql`${shDocs.version} + 1`, updatedAt: new Date() })
-    .where(and(eq(shDocs.id, id), eq(shDocs.version, version)))
-    .returning();
-  if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
-  await writeAudit(db, { userId: user.id, entity: "sh", entityId: id, action: "submit" });
-  return updated[0];
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentMatflowActor(tx, user);
+    const [doc]: ShRow[] = await tx.select().from(shDocs).where(eq(shDocs.id, id)).for("update");
+    if (!doc) throw new ApiError(404, "单据不存在");
+    if (doc.createdBy !== actor.id && !actor.roles.includes("warehouse") && !actor.roles.includes("admin")) {
+      throw new ApiError(403, "仅制单人/仓管/管理员可提交");
+    }
+    if (doc.status !== "draft") throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
+    const updated: ShRow[] = await tx
+      .update(shDocs)
+      .set({ status: "pending", version: sql`${shDocs.version} + 1`, updatedAt: new Date() })
+      .where(and(eq(shDocs.id, id), eq(shDocs.version, version)))
+      .returning();
+    if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
+    await writeAudit(tx, { userId: actor.id, entity: "sh", entityId: id, action: "submit" });
+    return updated[0];
+  });
 }
 
 // ---------- 审批（仅置 approved——检验前不入库；累计校验并发兜底重查） ----------
@@ -209,14 +225,15 @@ export async function approveSh(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
-      const [doc]: ShRow[] = await tx.select().from(shDocs).where(eq(shDocs.id, id));
+      const actor = await currentMatflowActor(tx, user);
+      const [doc]: ShRow[] = await tx.select().from(shDocs).where(eq(shDocs.id, id)).for("update");
       if (!doc) throw new ApiError(404, "单据不存在");
 
       const r = await approveDoc(tx, {
         docType: "sh",
         table: shDocs,
         docId: id,
-        approver: { id: user.id, roles: user.roles, isApprover: user.isApprover },
+        approver: actor,
         action: v.action,
         comment: v.comment,
         expectedVersion: v.version,
@@ -230,8 +247,8 @@ export async function approveSh(
 
       // 累计校验兜底重查（创建后可能有其他 SH 先行生效；本单已置 approved 故排除自身再加回）
       if (doc.sourceType === "jg") {
-        const [jg]: (typeof jgDocs.$inferSelect)[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, doc.sourceId));
-        if (!jg) throw new ApiError(500, `收货单挂空 JG: #${doc.sourceId}`);
+        await lockJgReceiptAggregate(tx, doc.sourceId);
+        const jg = await getJgForMatflow(tx, doc.sourceId);
         const rows: { qty: string }[] = await tx
           .select({ qty: shLines.actualQty })
           .from(shLines)
@@ -258,40 +275,43 @@ export async function createQc(
   const v = createQcSchema.parse(input);
   const db = await resolveDb(dbArg);
 
-  const [sh]: ShRow[] = await db.select().from(shDocs).where(eq(shDocs.id, v.shId));
-  if (!sh) throw new ApiError(404, `收货单不存在: #${v.shId}`);
-  if (sh.status !== "approved") throw new ApiError(409, `收货单须先审批方可检验，当前状态: ${sh.status}`);
-
-  const [dup]: { id: number }[] = await db
-    .select({ id: qcRecords.id })
-    .from(qcRecords)
-    .where(eq(qcRecords.shId, v.shId));
-  if (dup) throw new ApiError(409, `该收货单已有检验记录: qc#${dup.id}（一单一检）`);
-
-  const lineRows: ShLineRow[] = await db.select().from(shLines).where(eq(shLines.shId, v.shId));
-  const lineById = new Map(lineRows.map((l) => [l.id, l]));
-  const submittedIds = new Set<number>();
-  for (const l of v.lines) {
-    const shLine = lineById.get(l.shLineId);
-    if (!shLine) throw new ApiError(400, `检验行不属于该收货单: sh_line#${l.shLineId}`);
-    if (submittedIds.has(l.shLineId)) {
-      throw new ApiError(400, `同一收货行不可重复检验: sh_line#${l.shLineId}`);
-    }
-    submittedIds.add(l.shLineId);
-    const graded = dAdd(dAdd(l.passQty, l.failQty), l.concessionQty);
-    if (dCmp(graded, shLine.actualQty) !== 0) {
-      throw new ApiError(
-        400,
-        `检验数量必须完整覆盖实收: sh_line#${l.shLineId}（判定合计 ${graded} ≠ 实收 ${shLine.actualQty}）`,
-      );
-    }
-  }
-  const missingIds = lineRows.filter((l) => !submittedIds.has(l.id)).map((l) => l.id);
-  if (missingIds.length > 0) {
-    throw new ApiError(400, `检验必须覆盖全部收货行，缺少: ${missingIds.map((id) => `sh_line#${id}`).join("、")}`);
-  }
-
   return db.transaction(async (tx: AnyDb) => {
+    requireAnyRole(await currentMatflowActor(tx, user), "warehouse");
+    // Serialize QC creation and inbound against this exact receipt. All facts
+    // used below are read after the lock, not from a stale pre-transaction check.
+    const [sh]: ShRow[] = await tx.select().from(shDocs).where(eq(shDocs.id, v.shId)).for("update");
+    if (!sh) throw new ApiError(404, `收货单不存在: #${v.shId}`);
+    if (sh.status !== "approved") throw new ApiError(409, `收货单须先审批方可检验，当前状态: ${sh.status}`);
+    if (sh.sourceType === "jg") await lockJgReceiptAggregate(tx, sh.sourceId);
+
+    const [dup]: { id: number }[] = await tx
+      .select({ id: qcRecords.id })
+      .from(qcRecords)
+      .where(eq(qcRecords.shId, v.shId));
+    if (dup) throw new ApiError(409, `该收货单已有检验记录: qc#${dup.id}（一单一检）`);
+
+    const lineRows: ShLineRow[] = await tx.select().from(shLines).where(eq(shLines.shId, v.shId)).orderBy(shLines.id).for("share");
+    const lineById = new Map(lineRows.map((l) => [l.id, l]));
+    const submittedIds = new Set<number>();
+    for (const l of v.lines) {
+      const shLine = lineById.get(l.shLineId);
+      if (!shLine) throw new ApiError(400, `检验行不属于该收货单: sh_line#${l.shLineId}`);
+      if (submittedIds.has(l.shLineId)) {
+        throw new ApiError(400, `同一收货行不可重复检验: sh_line#${l.shLineId}`);
+      }
+      submittedIds.add(l.shLineId);
+      const graded = dAdd(dAdd(l.passQty, l.failQty), l.concessionQty);
+      if (dCmp(graded, shLine.actualQty) !== 0) {
+        throw new ApiError(
+          400,
+          `检验数量必须完整覆盖实收: sh_line#${l.shLineId}（判定合计 ${graded} ≠ 实收 ${shLine.actualQty}）`,
+        );
+      }
+    }
+    const missingIds = lineRows.filter((l) => !submittedIds.has(l.id)).map((l) => l.id);
+    if (missingIds.length > 0) {
+      throw new ApiError(400, `检验必须覆盖全部收货行，缺少: ${missingIds.map((id) => `sh_line#${id}`).join("、")}`);
+    }
     const [qc]: QcRecordRow[] = await tx
       .insert(qcRecords)
       .values({ shId: v.shId, conclusion: v.conclusion ?? null, createdBy: user.id })
@@ -328,7 +348,8 @@ export async function confirmInbound(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
-      const [sh]: ShRow[] = await tx.select().from(shDocs).where(eq(shDocs.id, shId));
+      requireAnyRole(await currentMatflowActor(tx, user), "warehouse");
+      const [sh]: ShRow[] = await tx.select().from(shDocs).where(eq(shDocs.id, shId)).for("update");
       if (!sh) throw new ApiError(404, "单据不存在");
       if (sh.status === "completed") throw new ApiError(409, "该收货单已入库，不可重复入库");
       if (sh.status !== "approved") throw new ApiError(409, `当前状态不可入库: ${sh.status}（须先审批）`);
@@ -342,6 +363,9 @@ export async function confirmInbound(
       const qcByShLine = new Map(qcRows.map((l) => [l.shLineId, l]));
       const lines: ShLineRow[] = await tx.select().from(shLines).where(eq(shLines.shId, shId)).orderBy(shLines.id);
 
+      // Lock the shared PO aggregate before batch/stock writes; different SH and CT
+      // must not independently read the same old receivedQty.
+      const purchase = sh.sourceType === "po" ? await lockPurchaseReceipt(tx, sh.sourceId) : null;
       const batchPostingEnabled = await isBatchPostingEnabled(tx);
       const batchIds = await registerBatchesFromReceipt(
         tx,
@@ -360,7 +384,7 @@ export async function confirmInbound(
       if (sh.sourceType === "jg") {
         await inboundFromJg(tx, user, sh, lines, qcByShLine, batchByShLine);
       } else {
-        await inboundFromPo(tx, user, sh, lines, qcByShLine, batchByShLine);
+        await inboundFromPo(tx, user, sh, lines, qcByShLine, batchByShLine, purchase!);
       }
 
       const finalStatus = await completeApprovedDoc(tx, shDocs, shId);
@@ -502,8 +526,17 @@ async function inboundFromJg(
 }
 
 /**
- * po 源入库：sh_purchase_in 仓库 +合格数；po_line.receivedQty += 合格数（基础单位，
- * SH 实收即基础单位——让步件另行处置不自动入库，MVP 与任务口径一致）。
+ * po 源入库：sh_purchase_in 仓库 +（合格 + 让步接收）；po_line.receivedQty 同额累加（基础单位）。
+ *
+ * **W2 审计 3（让步量不再静默蒸发）**：此前这里只入合格数，让步接收量既不入库也不退货——
+ * 它在 `qc_lines.concession_qty` 里留着，然后凭空消失：仓库账少了这批货，PO 的已收数也不含它，
+ * 而 `report/supply-commitment` 早已按「合格 + 让步接收」当有效接收量算承诺兑现
+ * （于是那边一路判 controlMismatch 把整行踢出分母）。jg 源入库本来就按「合格 + 让步」入，
+ * 两条收货路径的口径在此对齐——让步接收的定义就是**接收**，不是丢弃。
+ *
+ * 不合格量（fail_qty，去向 rework/scrap）仍然不入库，但也不再无声无息：
+ * 由 `modules/quality/qc-outcome.ts` 显式登记质量案件 / 退货（CT）草稿并双向留痕。
+ *
  * 全部行 receivedQty ≥ qty×uomFactor 且 PO 执行中 → 状态机完成 PO。
  */
 async function inboundFromPo(
@@ -513,38 +546,36 @@ async function inboundFromPo(
   lines: ShLineRow[],
   qcByShLine: Map<number, typeof qcLines.$inferSelect>,
   batchByShLine: Map<number, number | null>,
+  purchase: Awaited<ReturnType<typeof lockPurchaseReceipt>>,
 ): Promise<void> {
-  const [po]: (typeof poDocs.$inferSelect)[] = await tx.select().from(poDocs).where(eq(poDocs.id, sh.sourceId));
-  if (!po) throw new ApiError(500, `收货单挂空 PO: #${sh.sourceId}`);
-  const plRows: (typeof poLines.$inferSelect)[] = await tx
-    .select()
-    .from(poLines)
-    .where(eq(poLines.poId, po.id))
-    .orderBy(poLines.id);
+  const { po, lines: plRows } = purchase;
 
   const eventLines: PostingLine[] = [];
-  const passBySku = new Map<number, string>();
+  const passByPoLine = new Map<number, string>();
   for (const l of lines) {
+    // 在同一PO聚合锁内复核，历史歧义不能在库存已过账后才发现。
+    const purchaseLine = resolvePurchaseReceiptLine(plRows, l.skuId, l.poLineId);
     const qc = qcByShLine.get(l.id);
-    const pass = qc ? qc.passQty : "0";
-    if (dCmp(pass, "0") <= 0) continue;
+    // 有效接收量 = 合格 + 让步接收（与 jg 源入库、supply-commitment 的接收口径同一定义）
+    const accepted = qc ? dAdd(qc.passQty, qc.concessionQty) : "0";
+    if (dCmp(accepted, "0") <= 0) continue;
     eventLines.push({
       sourceLineId: l.id,
       skuId: l.skuId,
       warehouseId: sh.warehouseId,
       batchId: batchByShLine.get(l.id) ?? null,
-      qtyDelta: dQty(pass),
+      qtyDelta: dQty(accepted),
     });
-    passBySku.set(l.skuId, dAdd(passBySku.get(l.skuId) ?? "0", pass));
+    passByPoLine.set(purchaseLine.id, dAdd(passByPoLine.get(purchaseLine.id) ?? "0", accepted));
   }
   if (eventLines.length > 0) {
     await post(tx, { sourceDocType: "sh_purchase_in", sourceDocId: sh.id, action: "post", lines: eventLines });
   }
 
-  // 已收数累加（同 SKU 多 PO 行时计入首行——PoC 口径）
-  for (const [skuId, pass] of passBySku) {
-    const pl = plRows.find((r) => r.skuId === skuId);
-    if (!pl) throw new ApiError(500, `PO 行缺失: po#${po.id} sku#${skuId}`);
+  // 基础单位数量只累加到明确采购行；同采购行的多个批次先精确合计。
+  for (const pl of plRows) {
+    const pass = passByPoLine.get(pl.id);
+    if (pass == null) continue;
     await tx
       .update(poLines)
       .set({ receivedQty: dAdd(pl.receivedQty, pass) })
@@ -552,7 +583,7 @@ async function inboundFromPo(
   }
 
   // 全收自动完成（仅执行中 PO 可走 complete 边；approved 未确认的留待人工）
-  if (po.status === "in_progress" && passBySku.size > 0) {
+  if (po.status === "in_progress" && passByPoLine.size > 0) {
     const fresh: (typeof poLines.$inferSelect)[] = await tx
       .select()
       .from(poLines)

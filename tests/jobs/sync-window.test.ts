@@ -61,6 +61,15 @@ describe("同步时间窗：午饭前与傍晚前各一次", () => {
     }
   });
 
+  it("告警投递排在三只预警引擎看门狗之后（同一小时内分钟更大），本轮新开告警当轮送达", () => {
+    const minute = (expr: string) => Number(expr.trim().split(/\s+/)[0]);
+    const producers = ["inventory-cover-watchdog", "sales-spike-watchdog", "transfer-cost-watchdog", "doc-aging", "job-failure-watchdog", "data-product-gate-watchdog"];
+    const latest = Math.max(...producers.map((n) => minute(SCHEDULES[n])));
+    expect(minute(SCHEDULES["system-alert-notify"])).toBeGreaterThan(latest);
+    expect(minute(SCHEDULES["notify-dispatch"])).toBeGreaterThan(minute(SCHEDULES["system-alert-notify"]));
+    expect(minute(SCHEDULES["notify-dispatch"])).toBeLessThan(60);
+  });
+
   it("没有任何同步任务残留 `*/N` 这类高频表达式", () => {
     const offenders = [...PULL_JOBS, ...DOWNSTREAM_JOBS]
       .filter((name) => SCHEDULES[name]?.includes("*/"));

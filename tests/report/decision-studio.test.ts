@@ -41,6 +41,52 @@ describe("decision studio evidence model", () => {
     expect(result.spc.samples).toBe(13);
     expect(result.spc.bands).not.toBeNull();
     expect(result.commerceIdentity.state).toBe("insufficient");
+    expect(result.review.bullets[1]).toContain("2 个品牌贡献最新月约 80% 销量");
+  });
+
+  it.each([
+    { label: "no monthly facts", quantities: [] },
+    { label: "one zero group", quantities: [0] },
+    { label: "all zero groups", quantities: [0, 0, 0] },
+    { label: "positive and negative quantities cancel", quantities: [5, -5] },
+    { label: "all negative groups", quantities: [-2, -5] },
+    { label: "net-negative month", quantities: [5, -10] },
+  ])("does not invent an 80% contribution count for $label", ({ quantities }) => {
+    const facts: MonthlyGroupFact[] = quantities.map((qty, index) => ({
+      month: "2026-07", key: String(index), label: `品牌 ${index}`, qty,
+    }));
+    const result = buildDecisionStudio(facts, [], { dimension: "brand" });
+
+    expect(result.pareto80Count).toBeNull();
+    expect(result.review.bullets[1]).toContain("缺少可用的正数分母");
+    expect(result.review.markdown).not.toMatch(/\d+ 个品牌贡献最新月约 80%/);
+    expect(result.comparison.current).toBe(quantities.length ? quantities.reduce((sum, qty) => sum + qty, 0) : null);
+    expect(result.pareto.map((row) => row.qty)).toEqual([...quantities].sort((a, b) => b - a));
+    expect(result.pivot.reduce((sum, row) => sum + row.total, 0)).toBe(quantities.reduce((sum, qty) => sum + qty, 0));
+    // Do not broaden this correction into a change to the existing ratio DTO contract.
+    expect(result.pareto.every((row) => row.sharePct === 0 && row.cumulativePct === 0)).toBe(true);
+  });
+
+  it("uses the latest-month denominator rather than earlier positive facts", () => {
+    const result = buildDecisionStudio([
+      { month: "2026-06", key: "A", label: "品牌 A", qty: 100 },
+      { month: "2026-07", key: "A", label: "品牌 A", qty: 0 },
+    ], [], { dimension: "brand" });
+
+    expect(result.pareto80Count).toBeNull();
+    expect(result.comparison).toMatchObject({ current: 0, previous: 100, momPct: -100 });
+    expect(result.monthly.map((row) => row.qty)).toEqual([100, 0]);
+    expect(result.review.bullets[1]).toContain("最新月销量合计不为正数");
+  });
+
+  it("keeps the ordinary positive single-group contribution count", () => {
+    const result = buildDecisionStudio([
+      { month: "2026-07", key: "A", label: "品牌 A", qty: 0.0001 },
+    ], [], { dimension: "brand" });
+
+    expect(result.pareto80Count).toBe(1);
+    expect(result.pareto[0]).toMatchObject({ qty: 0.0001, sharePct: 100, cumulativePct: 100 });
+    expect(result.review.bullets[1]).toContain("1 个品牌贡献最新月约 80% 销量");
   });
 
   it("keeps unavailable YoY, SPC and daily analysis explicitly gated", () => {

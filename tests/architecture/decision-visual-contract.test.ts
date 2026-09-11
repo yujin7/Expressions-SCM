@@ -6,6 +6,17 @@ const root = process.cwd();
 const read = (relative: string): string => readFileSync(path.join(root, relative), "utf8");
 
 describe("governed decision visual contract", () => {
+  it("keeps title and tool areas wrapping within each card rather than clipping the title", () => {
+    const css = read("src/app/globals.css");
+    const block = (selector: string) => css.slice(css.indexOf(selector)).split("}")[0];
+    expect(block(".decision-visual > .ant-card-head > .ant-card-head-wrapper")).toContain("flex-wrap: wrap");
+    const title = block(".decision-visual > .ant-card-head .ant-card-head-title");
+    expect(title).toContain("flex: 1 1 260px");
+    expect(title).toContain("white-space: normal");
+    expect(title).toContain("overflow: visible");
+    expect(block(".decision-visual > .ant-card-head .ant-card-extra")).toContain("max-width: 100%");
+  });
+
   it("requires source, question, summary, and explicit insufficient-data handling", () => {
     const visual = read("src/components/DecisionVisual.tsx");
     expect(visual).toContain("question: string");

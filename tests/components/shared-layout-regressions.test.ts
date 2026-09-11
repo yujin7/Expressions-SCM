@@ -107,7 +107,7 @@ describe("shared layout regressions", () => {
       "src/app/(app)/inventory/locations/locations-client.tsx",
       "src/app/(app)/report/closed-loop/closed-loop-client.tsx",
       "src/app/(app)/report/forecast-accuracy/forecast-accuracy-client.tsx",
-      "src/app/(app)/report/leadtime-learning/leadtime-learning-client.tsx",
+      "src/app/(app)/report/supplier-scorecard/leadtime-learning-tab.tsx",
       "src/app/(app)/report/margin/margin-client.tsx",
       "src/app/(app)/report/wip/wip-client.tsx",
     ];
@@ -266,7 +266,9 @@ describe("shared layout regressions", () => {
 
   it("submits the live input value when Enter follows typing before React state commits", () => {
     const source = read("src/components/SearchInput.tsx");
-    expect(source).toContain("onSearch?.(event.currentTarget.value, event)");
+    // Source metadata must not regress the live-value contract; callback behavior
+    // (including stale controlled state) is exercised in search-input-interactions.
+    expect(source).toContain('onSearch?.(event.currentTarget.value, event, { source: "input" })');
     expect(source).not.toContain("if (!event.defaultPrevented) submit(event)");
   });
 });

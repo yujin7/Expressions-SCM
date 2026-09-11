@@ -1,9 +1,14 @@
 "use client";
 
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import DocumentDrawer from "@/components/DocumentDrawer";
+
 import SearchInput from "@/components/SearchInput";
 
 import { useCallback, useEffect, useState } from "react";
-import { App, Alert, Button, Descriptions, Drawer, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tabs, Typography } from "antd";
+import { App, Alert, Button, Descriptions, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tabs, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
@@ -132,14 +137,18 @@ export default function TlClient() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "tl", defaults: { q: "", status: "" }, defaultPageSize: 20 });
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "tl", defaults: { q: "", status: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
 
-  const [detailId, setDetailId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<TlDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const documentSelection = useDocumentTarget();
+  const { id: detailId, setId: setDetailId } = documentSelection;
+  useEffect(() => { setRejectOpen(false); }, [detailId]);
+  const detailRead = useDocumentRead<TlDetail>(detailId == null ? null : `/api/matflow/tl/${detailId}`);
+  const detail = detailRead.data;
+  const detailLoading = detailRead.phase === "loading";
+  const loadDetail = detailRead.retry;
   const [actionLoading, setActionLoading] = useState(false);
   /** 审批 409「退料超过累计发料」专项警示 */
   const [overReturnAlert, setOverReturnAlert] = useState<string | null>(null);
@@ -176,28 +185,10 @@ export default function TlClient() {
     void load();
   }, [load]);
 
-  const loadDetail = useCallback(
-    async (id: number) => {
-      setDetailLoading(true);
-      try {
-        setDetail(await fetchJson<TlDetail>(`/api/matflow/tl/${id}`));
-      } catch (e) {
-        message.error((e as Error).message);
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [message],
-  );
-
-  useEffect(() => {
-    setOverReturnAlert(null);
-    if (detailId != null) void loadDetail(detailId);
-    else setDetail(null);
-  }, [detailId, loadDetail]);
+  useEffect(() => { setOverReturnAlert(null); }, [detailId]);
 
   const refresh = () => {
-    if (detail) void loadDetail(detail.id);
+    if (detail) void loadDetail();
     void load();
   };
 
@@ -300,7 +291,7 @@ export default function TlClient() {
       const msg = (e as Error).message;
       if (msg.includes("退料超过累计发料")) {
         setOverReturnAlert(msg);
-        void loadDetail(detail.id);
+        void loadDetail();
       } else {
         message.error(msg);
       }
@@ -470,7 +461,8 @@ export default function TlClient() {
         pagination={listState.paginationProps({ total: total })}
       />
 
-      <Drawer
+      <DocumentDrawer
+        key={detailId ?? "invalid-document"}
         title={
           detail ? (
             <Space>
@@ -481,7 +473,9 @@ export default function TlClient() {
             "退料单详情"
           )
         }
-        open={detailId != null}
+        open={documentSelection.present}
+        readError={documentSelection.error ?? detailRead.error}
+        onRetry={detailId != null ? detailRead.retry : undefined}
         onClose={() => setDetailId(null)}
         width={860}
         loading={detailLoading}
@@ -501,7 +495,7 @@ export default function TlClient() {
                 description={overReturnAlert}
               />
             ) : null}
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="加工通知单">{detail.jgDocNo}</Descriptions.Item>
               <Descriptions.Item label="退料路径">
                 {detail.fromWarehouseName} → {detail.toWarehouseName}
@@ -510,7 +504,7 @@ export default function TlClient() {
               <Descriptions.Item label="制单时间">
                 {dayjs(detail.createdAt).format("YYYY-MM-DD HH:mm")}
               </Descriptions.Item>
-              <Descriptions.Item label="备注" span={2}>
+              <Descriptions.Item label="备注" span={{ xs: 1, sm: 2 }}>
                 {detail.remark ?? "—"}
               </Descriptions.Item>
             </Descriptions>
@@ -531,7 +525,7 @@ export default function TlClient() {
             ) : null}
           </div>
         ) : null}
-      </Drawer>
+      </DocumentDrawer>
 
       <Modal
         title="新建退料单"

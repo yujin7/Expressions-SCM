@@ -37,16 +37,16 @@ const controls: Control[] = [
 }));
 
 const expectedCounts: Record<Category, number> = {
-  API_ROUTE: 222,
-  AUTH_PAGE: 81,
-  MIGRATION: 47,
-  ARCH_GATE: 61,
-  REDTEAM_GATE: 11,
-  RELEASE_GATE: 13,
+  API_ROUTE: 286,
+  AUTH_PAGE: 97,
+  MIGRATION: 66,
+  ARCH_GATE: 81,
+  REDTEAM_GATE: 12,
+  RELEASE_GATE: 15,
   PROJECT_SKILL: 7,
-  LINT_EXCEPTION: 91,
+  LINT_EXCEPTION: 93,
   DATA_SOURCE: 20,
-  CRITICAL_INVARIANT: 34,
+  CRITICAL_INVARIANT: 36,
 };
 
 function walkFiles(relative: string, matcher: string | RegExp): string[] {
@@ -177,13 +177,27 @@ function verify(control: Control): void {
   assertTestModule(testPath);
 }
 
-describe("587 项系统执行审计台账", () => {
-  it("ID 恰好 A001–A587、对象唯一、分类数量固定", () => {
-    expect(controls).toHaveLength(587);
+describe("713 项系统执行审计台账", () => {
+  it("ID 恰好 A001–A713、对象唯一、分类数量固定", () => {
+    expect(controls).toHaveLength(713);
     expect(controls.map((control) => control.id)).toEqual(
-      Array.from({ length: 587 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
+      Array.from({ length: 713 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
     );
-    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(587);
+    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(713);
+    // Keep the same component's control ID when retiring its hook suppression;
+    // do not restore a lint exception or substitute an unrelated object to fill the slot.
+    expect(controls.find((control) => control.id === "A373")).toEqual({
+      id: "A373",
+      category: "CRITICAL_INVARIANT",
+      subject: "src/components/RemoteSelect.tsx",
+      evidence: "有界搜索、精确回显与已选值主动移除；tests/components/remote-select.test.ts",
+    });
+    expect(controls.find((control) => control.id === "A643")).toEqual({
+      id: "A643",
+      category: "CRITICAL_INVARIANT",
+      subject: "src/app/(app)/master/supply-params/supply-params-client.tsx",
+      evidence: "草稿原值、保存回执与跨刷新恢复；tests/components/supply-param-drafts.test.ts",
+    });
     for (const [category, count] of Object.entries(expectedCounts)) {
       expect(
         controls.filter((control) => control.category === category).length,
@@ -209,6 +223,54 @@ describe("587 项系统执行审计台账", () => {
     expect(subjects("REDTEAM_GATE")).toEqual(walkFiles("tests/redteam", ".test.ts"));
     expect(subjects("RELEASE_GATE")).toEqual(walkFiles("tests/release", ".test.ts"));
     expect(subjects("PROJECT_SKILL")).toEqual(walkFiles(".claude/skills", "SKILL.md"));
+  });
+
+  /**
+   * 台账正文（标题 / 范围段 / 分类汇总表）此前不受任何断言约束：合并两次冲突后逐次漂移，
+   * 到 2026-09-04 已变成「标题 582、API_ROUTE 单元格 260、合计 653、各行相加 650」四者互相矛盾。
+   * 行级数据一直是对的，因为行被钉住了；正文错了，因为没被钉住。这里把正文也钉上。
+   */
+  /**
+   * 索引也会漂：`docs/spec/CURRENT.md` 是 SSOT 的入口页，它引用本台账的条数。
+   * 2026-09-05 实测——台账真实 696 条，CURRENT.md 里写着 580，差了 116 条。
+   * 台账正文自己已经被上面那条门钉住，但**引用它的索引没有门**，于是同一种漂移
+   * 换了一层继续发生：读者从入口页拿到的是一个三周前的数字。
+   */
+  it("CURRENT.md 引用的台账条数必须与真实行数一致（索引漂移＝入口页说谎）", () => {
+    const current = readFileSync(path.resolve(__dirname, "../../docs/spec/CURRENT.md"), "utf8");
+    const total = controls.length;
+    const cited = [...current.matchAll(/16-500项系统执行审计台账[^|\n]*\|[^|\n]*?(\d{3,4})\s*个可定位/g)]
+      .map((m) => Number(m[1]));
+    expect(cited.length, "CURRENT.md 的文档角色表里必须仍然引用本台账的条数").toBeGreaterThan(0);
+    for (const n of cited) {
+      expect(n, `CURRENT.md 写着 ${n} 条，台账实际 ${total} 条`).toBe(total);
+    }
+  });
+
+  it("台账正文的标题、范围段与分类汇总表必须与行数据一致（正文漂移是历史真实事故）", () => {
+    const doc = readFileSync(ledgerPath, "utf8");
+    const total = controls.length;
+    const countOf = (category: Category) => controls.filter((c) => c.category === category).length;
+
+    expect(doc, "标题条数").toMatch(new RegExp(`^# ${total} 项系统执行审计台账`, "m"));
+    expect(doc, "范围段条数").toContain(`**${total} 个互不重复`);
+    expect(doc, "合计单元格").toMatch(new RegExp(`^> \\| \\*\\*合计\\*\\* \\| \\*\\*${total}\\*\\* \\|`, "m"));
+
+    for (const category of Object.keys(expectedCounts) as Category[]) {
+      expect(doc, `${category} 汇总单元格`).toMatch(new RegExp(`^> \\| ${category} \\| ${countOf(category)} \\|`, "m"));
+    }
+
+    // 汇总表各行之和必须等于合计，否则表格自相矛盾
+    const cells = [...doc.matchAll(/^> \| ([A-Z_]+) \| (\d+) \|/gm)].map((m) => Number(m[2]));
+    expect(cells.reduce((a, b) => a + b, 0), "汇总各行之和 = 合计").toBe(total);
+
+    // 范围段里逐个分类的数字也必须对（曾长期停留在 218 路由 / 81 页面 / 47 迁移）
+    const scope = doc.match(/> 范围由 [\s\S]*?组成。/)?.[0] ?? "";
+    for (const [category, label] of [["API_ROUTE", "个 API 路由"], ["AUTH_PAGE", "个认证页面"], ["MIGRATION", "个迁移"],
+      ["ARCH_GATE", "个架构门"], ["REDTEAM_GATE", "个红队门"], ["RELEASE_GATE", "个放行门"],
+      ["PROJECT_SKILL", "个项目技能"], ["LINT_EXCEPTION", "个代码规则例外"]] as [Category, string][]) {
+      expect(scope, `范围段 ${category}`).toContain(`${countOf(category)} ${label}`);
+    }
   });
 
   it("规则抑制与当前代码逐项一致，新增或删除都不得漏审", () => {

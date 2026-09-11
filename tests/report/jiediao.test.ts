@@ -50,7 +50,7 @@ describe("R16 借调对账：reason='借调' 的完成态调拨进入月度矩�
     // 借调 30：A → B
     const jd = await createStockDoc(
       creator,
-      { subtype: "transfer", warehouseId: whA, toWarehouseId: whB, reason: "借调", remark: "直播活动借货", lines: [{ skuId, qty: "30" }] },
+      { subtype: "transfer", transferType: "borrow", warehouseId: whA, toWarehouseId: whB, reason: "借调", remark: "直播活动借货", lines: [{ skuId, qty: "30" }] },
       db,
     );
     const s1 = await submitStockDoc(creator, jd.id, jd.version, db);
@@ -58,7 +58,7 @@ describe("R16 借调对账：reason='借调' 的完成态调拨进入月度矩�
     // 普通调拨 10：A → B（无 reason）
     const normal = await createStockDoc(
       creator,
-      { subtype: "transfer", warehouseId: whA, toWarehouseId: whB, lines: [{ skuId, qty: "10" }] },
+      { subtype: "transfer", transferType: "inter_warehouse", warehouseId: whA, toWarehouseId: whB, lines: [{ skuId, qty: "10" }] },
       db,
     );
     const s2 = await submitStockDoc(creator, normal.id, normal.version, db);

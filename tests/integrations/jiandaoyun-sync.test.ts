@@ -8,6 +8,7 @@ import {
   syncJiandaoyunForm,
 } from "@/server/integrations/jiandaoyun-sync";
 import { createTestDb } from "../helpers/db";
+import { ackRecordDeletion } from "@/server/integrations/deletion-ack";
 
 function response(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -329,6 +330,8 @@ describe("简道云受控同步", () => {
     expect(formEvidence.mock.calls[0]?.[2]).toMatchObject({
       contract: "jiandaoyun-observation-v5",
       scope: {
+        sourceSequence: "source-record-id-asc/v1",
+        deletionPolicy: "per-record-tombstone-suspected-tail-fail-closed/v1",
         controlSummary: {
           version: "jdy-control-v1",
           status: "pass",
@@ -346,11 +349,15 @@ describe("简道云受控同步", () => {
     expect(runs).toHaveLength(3);
     expect(runs.every((run) => run.status === "succeeded")).toBe(true);
     expect(runs.find((run) => run.id === first.runId)?.requestScope).toMatchObject({
+      sourceSequence: "source-record-id-asc/v1",
+      deletionPolicy: "per-record-tombstone-suspected-tail-fail-closed/v1",
       qualityBlocked: false,
       controlSummary: { version: "jdy-control-v1", status: "pass" },
     });
     expect(jobs.map((job) => job.status)).toEqual(["done", "done"]);
     expect(jobs.find((job) => job.id === first.importJobId)?.scope).toMatchObject({
+      sourceSequence: "source-record-id-asc/v1",
+      deletionPolicy: "per-record-tombstone-suspected-tail-fail-closed/v1",
       qualityBlocked: false,
       controlSummary: { version: "jdy-control-v1", status: "pass" },
     });
@@ -458,7 +465,7 @@ describe("简道云受控同步", () => {
       writeEvidence,
     });
     expect(recovered.replayed).toBe(false);
-    const recoveredJobs = await db.select().from(schema.importJobs);
+    const recoveredJobs = await db.select().from(schema.importJobs).orderBy(schema.importJobs.id);
     expect(recoveredJobs.map((job) => job.status)).toEqual(["superseded", "superseded", "done"]);
     const [recoveredRun] = await db.select().from(schema.integrationRuns)
       .where(eq(schema.integrationRuns.id, recovered.runId));
@@ -616,7 +623,7 @@ describe("简道云受控同步", () => {
         fromBusinessDate: "2026-08-30",
         throughBusinessDate: "2026-09-01",
         extractionCutoff: "2026-09-01T06:00:00.000Z",
-      } },
+      }, sourceSequence: "source-record-id-asc/v1", deletionPolicy: "rolling-window-retain-history/v1" },
     });
     expect(listRecords).toHaveBeenCalledWith(
       windowedContract.appId,
@@ -639,11 +646,11 @@ describe("简道云受控同步", () => {
       expect.objectContaining({ window: expect.objectContaining({
         field: "statistical_date", days: 3, includeUpdatedSince: true,
         fromBusinessDate: "2026-08-30", throughBusinessDate: "2026-09-01",
-      }) }),
+      }), deletionPolicy: "rolling-window-retain-history/v1" }),
       expect.objectContaining({ window: expect.objectContaining({
         field: "statistical_date", days: 3, includeUpdatedSince: true,
         fromBusinessDate: "2026-08-31", throughBusinessDate: "2026-09-02",
-      }) }),
+      }), deletionPolicy: "rolling-window-retain-history/v1" }),
     ]);
   });
 
@@ -700,12 +707,17 @@ describe("简道云受控同步", () => {
       writeEvidence: evidence("3"),
     });
     sourceRows = 1;
+    /* 拒绝口径不变（旧批次原封不动保留），但报文必须说清楚**少了哪一条、像什么形状**：
+       2026-09-04 生产上只报了「6447 < 6448，需人工复核」，运维无从下手，
+       该流及同轮后续流受阻，不能据此推断其他单流也全部失败。 */
     await expect(syncJiandaoyunForm(db, {
       client,
       actorId: actor.id,
       contract,
       writeEvidence: evidence("4"),
-    })).rejects.toThrow("全量行数下降");
+      /* 一次调用同时验三件事：仍然拒绝、说得出少了哪一条、说得出形状。
+         「尾部整段消失」仅提示疑似截断，指向回源核验，不把形状当成根因证明。 */
+    })).rejects.toThrow(/缺少旧记录 1 条[\s\S]*ccc[\s\S]*尾部/u);
 
     const jobs = await db.select().from(schema.importJobs);
     expect(jobs).toHaveLength(1);
@@ -735,6 +747,189 @@ describe("简道云受控同步", () => {
       { id: "3".repeat(24), code: "SKU-3", updatedAt: "2026-07-30T03:00:00.000Z" },
       { id: "4".repeat(24), code: "SKU-4", updatedAt: "2026-07-30T03:00:00.000Z" },
     ], "9");
+  });
+
+  it("签了墓碑的记录被放行：同步恢复，旧批次被新批次替代", async () => {
+    const { db } = await createTestDb();
+    const [admin] = await db.insert(schema.users).values({ name: "墓碑管理员", roles: ["admin"] }).returning();
+    const original = [
+      { id: "1".repeat(24), code: "SKU-1", updatedAt: "2026-07-30T02:00:00.000Z" },
+      { id: "2".repeat(24), code: "SKU-2", updatedAt: "2026-07-30T02:00:00.000Z" },
+      { id: "3".repeat(24), code: "SKU-3", updatedAt: "2026-07-30T02:00:00.000Z" },
+    ];
+    let rows: readonly TestObservationRow[] = original;
+    const client = observationClient(() => rows);
+    const first = await syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("a1"),
+    });
+
+    /* 中间那条被上游删掉 → 零散缺失，不是尾部截断 */
+    rows = [original[0], original[2]];
+    await expect(syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("a2"),
+    })).rejects.toThrow(/缺少旧记录 1 条/);
+
+    await ackRecordDeletion({ ...admin, isApprover: false }, {
+      connector: "jdy", stream: contract.key, sourceRecordId: original[1].id,
+      reason: "已与业务确认该条上游删除",
+    }, db);
+
+    const second = await syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("a3"),
+    });
+    expect(second.importJobId, "签字后应产出新批次").not.toBe(first.importJobId);
+    const jobs = await db.select().from(schema.importJobs);
+    expect(jobs.find((j) => j.id === second.importJobId)).toMatchObject({ status: "done", controlRows: 2 });
+  });
+
+  it("疑似尾部截断即使逐条签了墓碑也拒绝，全部缺失 ID 仍须可见", async () => {
+    const { db } = await createTestDb();
+    const [admin] = await db.insert(schema.users).values({ name: "截断管理员", roles: ["admin"] }).returning();
+    const original = [
+      { id: "1".repeat(24), code: "SKU-1", updatedAt: "2026-07-30T02:00:00.000Z" },
+      { id: "2".repeat(24), code: "SKU-2", updatedAt: "2026-07-30T02:00:00.000Z" },
+      { id: "3".repeat(24), code: "SKU-3", updatedAt: "2026-07-30T02:00:00.000Z" },
+    ];
+    let rows: readonly TestObservationRow[] = original;
+    const client = observationClient(() => rows);
+    const first = await syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("b1"),
+    });
+
+    /* 只剩第一条 = 后两条整段消失（分页/权限截断的形状） */
+    rows = [original[0]];
+    for (const gone of [original[1], original[2]]) {
+      await ackRecordDeletion({ ...admin, isApprover: false }, {
+        connector: "jdy", stream: contract.key, sourceRecordId: gone.id,
+        reason: "误以为是删除，逐条签字",
+      }, db);
+    }
+    await expect(syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("b2"),
+    })).rejects.toThrow(new RegExp(`缺少旧记录 2 条[\\s\\S]*${original[1].id}[\\s\\S]*${original[2].id}[\\s\\S]*未签 0 条[\\s\\S]*尾部[\\s\\S]*疑似`));
+
+    const jobs = await db.select().from(schema.importJobs);
+    expect(jobs, "旧批次必须原封不动").toHaveLength(1);
+    expect(jobs[0]).toMatchObject({ id: first.importJobId, status: "done", controlRows: 3 });
+  });
+
+  it.each([
+    { label: "已签中间删除可放行", missingIndex: 1, allowed: true },
+    { label: "已签尾部缺失仍拒绝", missingIndex: 2, allowed: false },
+  ])("数据库物理行序打乱后按保存的 rowNo 诊断：$label", async ({ missingIndex, allowed }) => {
+    const { db } = await createTestDb();
+    const [admin] = await db.insert(schema.users).values({ name: "顺序复核管理员", roles: ["admin"] }).returning();
+    const original = [1, 2, 3].map((id) => ({
+      id: String(id).repeat(24), code: `SKU-${id}`, updatedAt: "2026-07-30T02:00:00.000Z",
+    }));
+    // API 返回顺序本身不是契约：摄取会按 sourceRecordId 规范排序并保存 rowNo。
+    let rows: readonly TestObservationRow[] = [original[2], original[0], original[1]];
+    const client = observationClient(() => rows);
+    const first = await syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("c1"),
+    });
+    const saved = await db.select().from(schema.stagingRows)
+      .where(eq(schema.stagingRows.importJobId, first.importJobId)).orderBy(schema.stagingRows.rowNo);
+    expect(saved.map((row) => [row.rowNo, (row.payload as { sourceRecordId: string }).sourceRecordId]))
+      .toEqual(original.map((row, index) => [index + 1, row.id]));
+    // 仅重排隔离测试库的物理插入顺序，保留每条记录的真实 rowNo/ID/payload。
+    // 没有 ORDER BY 的旧实现会把中间记录当尾部、把真正尾部当零散缺失。
+    await db.delete(schema.stagingRows).where(eq(schema.stagingRows.importJobId, first.importJobId));
+    await db.insert(schema.stagingRows).values([saved[2], saved[0], saved[1]]);
+    const missing = original[missingIndex];
+    await ackRecordDeletion({ ...admin, isApprover: false }, {
+      connector: "jdy", stream: contract.key, sourceRecordId: missing.id, reason: "已逐条回源核验记录",
+    }, db);
+    rows = original.filter((_, index) => index !== missingIndex);
+    const sync = syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("c2"),
+    });
+    if (allowed) {
+      const second = await sync;
+      const jobs = await db.select().from(schema.importJobs);
+      expect(jobs.find((job) => job.id === first.importJobId)?.status).toBe("superseded");
+      expect(jobs.find((job) => job.id === second.importJobId)).toMatchObject({ status: "done", controlRows: 2 });
+    } else {
+      await expect(sync).rejects.toThrow(new RegExp(`${missing.id}[\\s\\S]*未签 0 条[\\s\\S]*尾部[\\s\\S]*疑似`));
+      expect(await db.select().from(schema.importJobs)).toEqual([expect.objectContaining({ id: first.importJobId, status: "done" })]);
+    }
+  });
+
+  it.each([0, 1, 4])("旧批次 rowNo=%i 造成缺号/重号时拒绝，墓碑不能修饰损坏序列", async (rowNo) => {
+    const { db } = await createTestDb();
+    const [admin] = await db.insert(schema.users).values({ name: "序列完整性管理员", roles: ["admin"] }).returning();
+    const original = [1, 2, 3].map((id) => ({
+      id: String(id).repeat(24), code: `SKU-${id}`, updatedAt: "2026-07-30T02:00:00.000Z",
+    }));
+    let rows: readonly TestObservationRow[] = original;
+    const client = observationClient(() => rows);
+    const first = await syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("d1"),
+    });
+    const saved = await db.select().from(schema.stagingRows)
+      .where(eq(schema.stagingRows.importJobId, first.importJobId)).orderBy(schema.stagingRows.rowNo);
+    await db.update(schema.stagingRows).set({ rowNo }).where(eq(schema.stagingRows.id, saved[1].id));
+    await ackRecordDeletion({ ...admin, isApprover: false }, {
+      connector: "jdy", stream: contract.key, sourceRecordId: original[1].id, reason: "记录删除已经业务确认",
+    }, db);
+    rows = [original[0], original[2]];
+    await expect(syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("d2"),
+    })).rejects.toThrow("rowNo 序列不连续或重复");
+    expect(await db.select().from(schema.importJobs)).toEqual([expect.objectContaining({ id: first.importJobId, status: "done" })]);
+  });
+
+  it("同 ID 在其他连接器/流的墓碑不能放行当前流的缺失", async () => {
+    const { db } = await createTestDb();
+    const [admin] = await db.insert(schema.users).values({ name: "墓碑作用域管理员", roles: ["admin"] }).returning();
+    const original = [1, 2, 3].map((id) => ({
+      id: String(id).repeat(24), code: `SKU-${id}`, updatedAt: "2026-07-30T02:00:00.000Z",
+    }));
+    let rows: readonly TestObservationRow[] = original;
+    const client = observationClient(() => rows);
+    const first = await syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("e1"),
+    });
+    // 隔离测试夹具：证明读取墓碑时严格限定 connector + stream，不依赖 ID 恰好相同。
+    await db.insert(schema.integrationRecordDeletions).values([
+      { connector: "other", stream: contract.key },
+      { connector: "jdy", stream: "other-observation" },
+    ].map((scope) => ({ ...scope, sourceRecordId: original[1].id, observedInJobId: first.importJobId, reason: "其他来源的删除确认", ackedBy: admin.id })));
+    rows = [original[0], original[2]];
+    await expect(syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("e2"),
+    })).rejects.toThrow(new RegExp(`缺少旧记录 1 条[\\s\\S]*${original[1].id}[\\s\\S]*零散`));
+    expect(await db.select().from(schema.importJobs)).toEqual([expect.objectContaining({ id: first.importJobId, status: "done" })]);
+  });
+
+  it("全部旧记录已签墓碑也不能把空观察当作清空基线或推进游标", async () => {
+    const { db } = await createTestDb();
+    const [admin] = await db.insert(schema.users).values({ name: "空观察管理员", roles: ["admin"] }).returning();
+    const original = [1, 2].map((id) => ({
+      id: String(id).repeat(24), code: `SKU-${id}`, updatedAt: "2026-07-30T02:00:00.000Z",
+    }));
+    let rows: readonly TestObservationRow[] = original;
+    const client = observationClient(() => rows);
+    const first = await syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("f1"),
+    });
+    for (const row of original) {
+      await ackRecordDeletion({ ...admin, isApprover: false }, {
+        connector: "jdy", stream: contract.key, sourceRecordId: row.id, reason: "逐条登记删除核验依据",
+      }, db);
+    }
+    rows = [];
+    const empty = await syncJiandaoyunForm(db, {
+      client, actorId: admin.id, contract, writeEvidence: observationEvidence("f2"),
+    });
+    expect(empty).toMatchObject({ sourceRows: 0, stagedRows: 0 });
+    const jobs = await db.select().from(schema.importJobs);
+    expect(jobs.find((job) => job.id === first.importJobId)).toMatchObject({ status: "done", controlRows: 2 });
+    const [checkpoint] = await db.select().from(schema.integrationCheckpoints);
+    expect(checkpoint).toMatchObject({ lastRunId: first.runId, cursor: "f1".repeat(64), version: 1 });
+    const priorRows = await db.select().from(schema.stagingRows).where(eq(schema.stagingRows.importJobId, first.importJobId));
+    expect(priorRows).toHaveLength(2);
+    expect(priorRows.every((row) => row.status === "pending")).toBe(true);
   });
 
   it("不同信封并发时每个 stream 只保留一个可复核全量批次", async () => {
@@ -980,6 +1175,9 @@ describe("简道云受控同步", () => {
 
     const [failed] = await db.select().from(schema.integrationRuns);
     expect(failed).toMatchObject({ status: "failed", importJobId: null });
+    expect(failed.error).toContain("SQLSTATE P0001");
+    expect(failed.error).not.toContain("injected checkpoint failure");
+    expect(failed.error).not.toContain("RECOVERY-SKU");
     expect(await db.select().from(schema.importJobs)).toHaveLength(0);
     expect(await db.select().from(schema.stagingRows)).toHaveLength(0);
     expect(await db.select().from(schema.aliasExceptions)).toHaveLength(0);

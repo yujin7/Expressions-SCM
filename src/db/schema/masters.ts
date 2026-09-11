@@ -154,7 +154,30 @@ export const suppliers = pgTable("suppliers", {
   phone: text("phone"),
   email: text("email"),
   address: text("address"),
-});
+  // ── D64 账期结构化（payment_term 文本保留作原文；口径以下列三列为准）──
+  paymentTermType: text("payment_term_type"), // prepay 预付 | on_delivery 款到发货 | monthly_credit 月结
+  creditDays: integer("credit_days"), // 月结天数（0..180）
+  paymentTermEffectiveFrom: date("payment_term_effective_from"),
+  // ── D64/产能：供应商申报月产能（capacity_uom 为申报单位，不做换算）──
+  declaredMonthlyCapacity: numeric("declared_monthly_capacity", { precision: 14, scale: 4 }),
+  capacityUom: text("capacity_uom"),
+  surgeCapacityPct: integer("surge_capacity_pct"), // 爆单可加班放大比例（0..300）
+  capacityValidFrom: date("capacity_valid_from"),
+  capacityValidUntil: date("capacity_valid_until"),
+  capacityEvidence: text("capacity_evidence"), // 申报依据/受控文件位置；不自动访问外部链接
+}, (t) => [
+  check(
+    "ck_suppliers_payment_term_type",
+    sql`${t.paymentTermType} IS NULL OR ${t.paymentTermType} IN ('prepay', 'on_delivery', 'monthly_credit')`,
+  ),
+  check("ck_suppliers_credit_days", sql`${t.creditDays} IS NULL OR (${t.creditDays} >= 0 AND ${t.creditDays} <= 180)`),
+  check("ck_suppliers_declared_capacity", sql`${t.declaredMonthlyCapacity} IS NULL OR ${t.declaredMonthlyCapacity} >= 0`),
+  check("ck_suppliers_capacity_period", sql`(${t.capacityValidFrom} IS NULL AND ${t.capacityValidUntil} IS NULL) OR (${t.capacityValidFrom} IS NOT NULL AND ${t.capacityValidUntil} IS NOT NULL AND ${t.capacityValidFrom} <= ${t.capacityValidUntil})`),
+  check(
+    "ck_suppliers_surge_capacity_pct",
+    sql`${t.surgeCapacityPct} IS NULL OR (${t.surgeCapacityPct} >= 0 AND ${t.surgeCapacityPct} <= 300)`,
+  ),
+]);
 
 /**
  * C184：供应商准入与整改闭环。
@@ -176,6 +199,12 @@ export const supplierLifecycleCases = pgTable("supplier_lifecycle_cases", {
   supplierStatusAfter: text("supplier_status_after").notNull(),
   outcome: text("outcome"),
   closureNote: text("closure_note"),
+  /** G03: negotiated target and immutable-at-close snapshots; not historical AP terms. */
+  targetCreditDays: integer("target_credit_days"),
+  termBaseline: jsonb("term_baseline"),
+  termAgreement: jsonb("term_agreement"),
+  progressNote: text("progress_note"),
+  version: integer("version").notNull().default(1),
   idempotencyKey: text("idempotency_key").notNull(),
   createdBy: integer("created_by").notNull().references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -189,7 +218,16 @@ export const supplierLifecycleCases = pgTable("supplier_lifecycle_cases", {
     .where(sql`${t.status} = 'open'`),
   index("ix_supplier_lifecycle_status_due").on(t.status, t.dueDate),
   index("ix_supplier_lifecycle_supplier_created").on(t.supplierId, t.createdAt),
-  check("ck_supplier_lifecycle_kind", sql`${t.kind} IN ('admission', 'corrective')`),
+  check("ck_supplier_lifecycle_kind", sql`${t.kind} IN ('admission', 'corrective', 'payment_term')`),
+  check("ck_supplier_lifecycle_version", sql`${t.version} >= 1`),
+  check("ck_supplier_lifecycle_term", sql`
+    (${t.kind} <> 'payment_term' AND ${t.targetCreditDays} IS NULL AND ${t.termBaseline} IS NULL AND ${t.termAgreement} IS NULL)
+    OR (${t.kind} = 'payment_term' AND ${t.targetCreditDays} IS NOT NULL AND ${t.targetCreditDays} BETWEEN 45 AND 60
+      AND ${t.termBaseline} IS NOT NULL AND jsonb_typeof(${t.termBaseline}) = 'object'
+      AND NOT ${t.pauseNewOrders}
+      AND (${t.outcome} IS NULL OR ${t.outcome} IN ('resolved', 'failed'))
+      AND ((${t.status} = 'closed' AND ${t.outcome} = 'resolved' AND ${t.termAgreement} IS NOT NULL AND jsonb_typeof(${t.termAgreement}) = 'object')
+        OR ((${t.status} = 'open' OR ${t.outcome} = 'failed') AND ${t.termAgreement} IS NULL)))`),
   check("ck_supplier_lifecycle_status", sql`${t.status} IN ('open', 'closed')`),
   check("ck_supplier_lifecycle_priority", sql`${t.priority} IN ('normal', 'high', 'critical')`),
   check(

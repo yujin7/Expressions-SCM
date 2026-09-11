@@ -2,12 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { errorResponse, parseListQuery, readJson } from "@/server/modules/master/common";
 import {  guardRead, guardWrite } from "@/server/modules/master/common";
 import { createCategory, listCategories } from "@/server/modules/master/category";
+import { parseSelectedValues } from "@/server/core/selected-options";
 
 export async function GET(req: NextRequest) {
   try {
     await guardRead();
-    const { q, page, pageSize } = parseListQuery(req.url);
-    return NextResponse.json(await listCategories(q, page, pageSize));
+    const { q, page, pageSize, searchParams } = parseListQuery(req.url);
+    return NextResponse.json(await listCategories(q, page, pageSize, parseSelectedValues(searchParams)));
   } catch (e) {
     return errorResponse(e);
   }

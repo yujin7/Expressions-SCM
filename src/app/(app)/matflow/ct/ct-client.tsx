@@ -1,9 +1,14 @@
 "use client";
 
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import DocumentDrawer from "@/components/DocumentDrawer";
+
 import SearchInput from "@/components/SearchInput";
 
-import { useCallback, useEffect, useState } from "react";
-import { App, Alert, Button, Descriptions, Drawer, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tabs, Typography } from "antd";
+import { useEffect, useState } from "react";
+import { App, Alert, Button, Descriptions, Input, InputNumber, Modal, Popconfirm, Space, Table, Tabs, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
@@ -11,7 +16,8 @@ import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
 import ListToolbar from "@/components/ListToolbar";
 import RemoteSelect from "@/components/RemoteSelect";
-import { fetchJson, postJson } from "@/components/fetchJson";
+import { postJson } from "@/components/fetchJson";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 import { formatQty } from "@/components/format";
 import { useListState } from "@/components/useListState";
 import { hasAnyRole, useMe } from "@/components/useMe";
@@ -80,13 +86,6 @@ interface CtDetail {
   approvals: DocApproval[];
 }
 
-interface PoOption {
-  id: number;
-  docNo: string;
-  status: string;
-  supplierName: string;
-}
-
 interface PoDetailLine {
   id: number;
   skuId: number;
@@ -121,18 +120,29 @@ export default function CtClient() {
   const canApprove =
     me != null && (me.roles.includes("admin") || (me.isApprover && me.roles.includes("warehouse")));
 
-  const [rows, setRows] = useState<CtRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "ct", defaults: { q: "", status: "" }, defaultPageSize: 20 });
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "ct", defaults: { q: "", status: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
+  const listQuery = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
+  if (status) listQuery.set("status", status);
+  const listRead = useDocumentRead<{ rows: CtRow[]; total: number }>(`/api/matflow/ct?${listQuery}`);
+  const listValid = listRead.data != null && Array.isArray(listRead.data.rows)
+    && Number.isSafeInteger(listRead.data.total) && listRead.data.total >= 0
+    && listRead.data.rows.every(r => r != null && Number.isSafeInteger(r.id) && r.id > 0
+      && typeof r.docNo === "string" && typeof r.status === "string");
+  const rows = listValid ? listRead.data!.rows : [];
+  const listError = listRead.error ?? (listRead.data && !listValid ? "列表响应格式异常，请重新读取" : null);
+  const load = listRead.retry;
 
-  const [detailId, setDetailId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<CtDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const documentSelection = useDocumentTarget();
+  const { id: detailId, setId: setDetailId } = documentSelection;
+  useEffect(() => { setRejectOpen(false); }, [detailId]);
+  const detailRead = useDocumentRead<CtDetail>(detailId == null ? null : `/api/matflow/ct/${detailId}`);
+  const detail = detailRead.data;
+  const detailLoading = detailRead.phase === "loading";
+  const loadDetail = detailRead.retry;
   const [actionLoading, setActionLoading] = useState(false);
   /** 审批 409「退货量超过已收数」专项警示 */
   const [overAlert, setOverAlert] = useState<string | null>(null);
@@ -142,55 +152,26 @@ export default function CtClient() {
   // 创建
   const [createOpen, setCreateOpen] = useState(false);
   const [createLoading, setCreateLoading] = useState(false);
-  const [poOptions, setPoOptions] = useState<PoOption[]>([]);
-  const [poLoading, setPoLoading] = useState(false);
   const [poId, setPoId] = useState<number | null>(null);
   const [warehouseId, setWarehouseId] = useState<number | null>(null);
   const [remark, setRemark] = useState("");
-  const [createLines, setCreateLines] = useState<CreateLine[]>([]);
-  const [linesLoading, setLinesLoading] = useState(false);
+  const [lineEdits, setLineEdits] = useState<Record<number, { qty: string; reason: string }>>({});
+  const poRead = useDocumentRead<{ id: number; lines: PoDetailLine[] }>(createOpen && poId != null ? `/api/outsource/po/${poId}` : null);
+  const poValid = poRead.data != null && poRead.data.id === poId && Array.isArray(poRead.data.lines)
+    && poRead.data.lines.every(l => l != null && Number.isSafeInteger(l.id) && l.id > 0 && Number.isSafeInteger(l.skuId) && l.skuId > 0
+      && typeof l.skuCode === "string" && typeof l.skuName === "string" && typeof l.baseUom === "string"
+      && typeof l.receivedQty === "string" && DEC_RE.test(l.receivedQty))
+    && new Set(poRead.data.lines.map(l => l.id)).size === poRead.data.lines.length;
+  const poError = poRead.error ?? (poRead.data && !poValid ? "采购订单身份或行数据不一致，请重新读取" : null);
+  const createLines: CreateLine[] = poValid ? poRead.data!.lines.filter(l => decCmp(l.receivedQty, "0") > 0).map(l => ({
+    poLineId: l.id, skuId: l.skuId, skuCode: l.skuCode, skuName: l.skuName, baseUom: l.baseUom,
+    receivedQty: l.receivedQty, qty: lineEdits[l.id]?.qty ?? "0", reason: lineEdits[l.id]?.reason ?? "",
+  })) : [];
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
-      if (status) params.set("status", status);
-      const res = await fetchJson<{ rows: CtRow[]; total: number }>(`/api/matflow/ct?${params.toString()}`);
-      setRows(res.rows);
-      setTotal(res.total);
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [q, status, page, pageSize, message]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const loadDetail = useCallback(
-    async (id: number) => {
-      setDetailLoading(true);
-      try {
-        setDetail(await fetchJson<CtDetail>(`/api/matflow/ct/${id}`));
-      } catch (e) {
-        message.error((e as Error).message);
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [message],
-  );
-
-  useEffect(() => {
-    setOverAlert(null);
-    if (detailId != null) void loadDetail(detailId);
-    else setDetail(null);
-  }, [detailId, loadDetail]);
+  useEffect(() => { setOverAlert(null); }, [detailId]);
 
   const refresh = () => {
-    if (detail) void loadDetail(detail.id);
+    if (detail) void loadDetail();
     void load();
   };
 
@@ -201,50 +182,18 @@ export default function CtClient() {
     setPoId(null);
     setWarehouseId(null);
     setRemark("");
-    setCreateLines([]);
-    setPoLoading(true);
-    fetchJson<{ rows: PoOption[] }>("/api/outsource/po?page=1&pageSize=999")
-      .then((res) =>
-        setPoOptions(
-          res.rows.filter(
-            (r) => r.status === "approved" || r.status === "in_progress" || r.status === "completed",
-          ),
-        ),
-      )
-      .catch((e) => message.error((e as Error).message))
-      .finally(() => setPoLoading(false));
+    setLineEdits({});
   };
 
   /** 选 PO 后：取已收行（可退数量 = 当前已收数，基础单位） */
-  const handlePoChange = async (id: number) => {
+  const handlePoChange = (id: number) => {
     setPoId(id);
-    setCreateLines([]);
-    setLinesLoading(true);
-    try {
-      const po = await fetchJson<{ lines: PoDetailLine[] }>(`/api/outsource/po/${id}`);
-      const received = po.lines.filter((l) => DEC_RE.test(l.receivedQty) && decCmp(l.receivedQty, "0") > 0);
-      if (received.length === 0) message.warning("该采购订单暂无已收数量，无可退行");
-      setCreateLines(
-        received.map((l) => ({
-          poLineId: l.id,
-          skuId: l.skuId,
-          skuCode: l.skuCode,
-          skuName: l.skuName,
-          baseUom: l.baseUom,
-          receivedQty: l.receivedQty,
-          qty: "0",
-          reason: "",
-        })),
-      );
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setLinesLoading(false);
-    }
+    setLineEdits({});
   };
 
   const handleCreate = async () => {
     if (poId == null) return void message.warning("请选择采购订单");
+    if (!poValid || poRead.phase !== "success") return void message.warning("请先成功读取当前采购订单的可退行");
     if (warehouseId == null) return void message.warning("请选择退货出库仓");
     const valid = createLines.filter((l) => DEC_RE.test(l.qty) && decCmp(l.qty, "0") > 0);
     if (valid.length === 0) return void message.warning("至少需要一行数量大于 0 的退货行");
@@ -311,7 +260,7 @@ export default function CtClient() {
       const msg = (e as Error).message;
       if (msg.includes("退货量超过已收数")) {
         setOverAlert(msg);
-        void loadDetail(detail.id);
+        void loadDetail();
       } else {
         message.error(msg);
       }
@@ -344,7 +293,7 @@ export default function CtClient() {
   ];
 
   const lineColumns: ColumnsType<CtLine> = [
-    { title: "物料", key: "material", render: (_, r) => `${r.skuCode} ${r.skuName}` },
+    { title: "物料", key: "material", width: 220, render: (_, r) => `${r.skuCode} ${r.skuName}` },
     { title: "单位", dataIndex: "baseUom", width: 70 },
     { title: "PO 行", dataIndex: "poLineId", width: 80, render: (v: number) => `#${v}` },
     {
@@ -358,7 +307,7 @@ export default function CtClient() {
   ];
 
   const createLineColumns: ColumnsType<CreateLine> = [
-    { title: "物料", key: "material", render: (_, r) => `${r.skuCode} ${r.skuName}` },
+    { title: "物料", key: "material", width: 220, render: (_, r) => `${r.skuCode} ${r.skuName}` },
     { title: "单位", dataIndex: "baseUom", width: 70 },
     {
       title: "可退数量（已收）",
@@ -371,15 +320,17 @@ export default function CtClient() {
       title: "退货数量",
       key: "qty",
       width: 140,
-      render: (_, r, idx) => (
+      render: (_, r) => (
         <InputNumber<string>
+          aria-label={`${r.skuCode} 退货数量`}
+          disabled={createLoading}
           stringMode
           min="0"
           style={{ width: "100%" }}
           value={r.qty}
           status={DEC_RE.test(r.qty) && decCmp(r.qty, r.receivedQty) > 0 ? "error" : undefined}
           onChange={(v) =>
-            setCreateLines((prev) => prev.map((l, i) => (i === idx ? { ...l, qty: v ?? "0" } : l)))
+            setLineEdits(prev => ({ ...prev, [r.poLineId]: { qty: v ?? "0", reason: prev[r.poLineId]?.reason ?? "" } }))
           }
         />
       ),
@@ -388,12 +339,14 @@ export default function CtClient() {
       title: "退货原因（可选）",
       key: "reason",
       width: 180,
-      render: (_, r, idx) => (
+      render: (_, r) => (
         <Input
+          aria-label={`${r.skuCode} 退货原因`}
+          disabled={createLoading}
           maxLength={200}
           value={r.reason}
           onChange={(e) =>
-            setCreateLines((prev) => prev.map((l, i) => (i === idx ? { ...l, reason: e.target.value } : l)))
+            setLineEdits(prev => ({ ...prev, [r.poLineId]: { qty: prev[r.poLineId]?.qty ?? "0", reason: e.target.value } }))
           }
         />
       ),
@@ -462,22 +415,25 @@ export default function CtClient() {
             allowClear
             defaultValue={q}
             placeholder="搜索单号 / SKU 编码 / 货品名称"
-            style={{ width: 240 }}
+            style={{ width: 240, maxWidth: "100%", minWidth: 0 }}
             onSearch={(value) => listState.setFilter({ q: value.trim() })}
           />
         }
       />
+      <LoadErrorAlert error={listError} onRetry={load} subject="采购退货列表" />
       <Table<CtRow>
         rowKey="id"
         size={listState.tableSize}
         columns={columns}
         dataSource={rows}
-        loading={loading}
+        loading={listRead.phase === "loading"}
         scroll={{ x: "max-content" }}
-        pagination={listState.paginationProps({ total: total })}
+        pagination={listValid ? listState.paginationProps({ total: listRead.data!.total }) : false}
+        locale={{ emptyText: listError ? "读取失败，请重试" : listRead.phase === "loading" ? "正在读取采购退货…" : "当前筛选下暂无采购退货单" }}
       />
 
-      <Drawer
+      <DocumentDrawer
+        key={detailId ?? "invalid-document"}
         title={
           detail ? (
             <Space>
@@ -488,7 +444,9 @@ export default function CtClient() {
             "采购退货单详情"
           )
         }
-        open={detailId != null}
+        open={documentSelection.present}
+        readError={documentSelection.error ?? detailRead.error}
+        onRetry={detailId != null ? detailRead.retry : undefined}
         onClose={() => setDetailId(null)}
         width={860}
         loading={detailLoading}
@@ -508,14 +466,14 @@ export default function CtClient() {
                 description={overAlert}
               />
             ) : null}
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="采购订单">{detail.poDocNo}</Descriptions.Item>
               <Descriptions.Item label="退货出库仓">{detail.warehouseName}</Descriptions.Item>
               <Descriptions.Item label="制单人">{detail.createdByName ?? "—"}</Descriptions.Item>
               <Descriptions.Item label="制单时间">
                 {dayjs(detail.createdAt).format("YYYY-MM-DD HH:mm")}
               </Descriptions.Item>
-              <Descriptions.Item label="备注" span={2}>
+              <Descriptions.Item label="备注" span={{ xs: 1, sm: 2 }}>
                 {detail.remark ?? "—"}
               </Descriptions.Item>
             </Descriptions>
@@ -524,6 +482,8 @@ export default function CtClient() {
               rowKey="id"
               size="small"
               columns={lineColumns}
+              tableLayout="fixed"
+              scroll={{ x: 800 }}
               dataSource={detail.lines}
               pagination={false}
               style={{ marginBottom: 24 }}
@@ -536,7 +496,7 @@ export default function CtClient() {
             ) : null}
           </div>
         ) : null}
-      </Drawer>
+      </DocumentDrawer>
 
       <Modal
         title="新建采购退货单"
@@ -545,29 +505,33 @@ export default function CtClient() {
         okText="创建"
         cancelText="取消"
         confirmLoading={createLoading}
-        onCancel={() => setCreateOpen(false)}
+        okButtonProps={{ disabled: !poValid || createLines.length === 0 || warehouseId == null }}
+        cancelButtonProps={{ disabled: createLoading }}
+        closable={!createLoading}
+        maskClosable={!createLoading}
+        keyboard={!createLoading}
+        onCancel={() => { if (!createLoading) setCreateOpen(false); }}
         onOk={() => void handleCreate()}
       >
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
           <div>
             <div style={{ marginBottom: 4 }}>采购订单</div>
-            <Select
-              showSearch
-              optionFilterProp="label"
-              loading={poLoading}
+            <RemoteSelect
+              api="/api/outsource/po?returnEligible=1"
+              aria-label="采购订单"
+              disabled={createLoading}
               style={{ width: "100%" }}
               placeholder="选择采购订单"
               value={poId}
-              options={poOptions.map((p) => ({
-                value: p.id,
-                label: `${p.docNo}｜${p.supplierName}`,
-              }))}
+              getLabel={p => `${String(p.docNo)}｜${String(p.supplierName)}`}
               onChange={(v: number) => void handlePoChange(v)}
             />
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>退货出库仓（自有实时仓）</div>
             <RemoteSelect
+              aria-label="退货出库仓"
+              disabled={createLoading}
               api="/api/master/warehouse"
               style={{ width: "100%" }}
               placeholder="选择退货出库仓"
@@ -584,17 +548,22 @@ export default function CtClient() {
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>退货行（仅列出已收数量大于 0 的 PO 行；数量为 0 的行不提交）</div>
+            <LoadErrorAlert error={poError} onRetry={poRead.retry} subject="采购订单可退行" />
             <Table<CreateLine>
               rowKey="poLineId"
               size="small"
-              loading={linesLoading}
+              loading={poRead.phase === "loading"}
               columns={createLineColumns}
+              tableLayout="fixed"
+              scroll={{ x: 760 }}
               dataSource={createLines}
               pagination={false}
-              locale={{ emptyText: "请先选择采购订单" }}
+              locale={{ emptyText: poId == null ? "请先选择采购订单" : poError ? "读取失败，请重试" : poRead.phase === "loading" ? "正在读取可退行…" : "该采购订单暂无已收数量，无可退行" }}
             />
           </div>
           <Input.TextArea
+            aria-label="退货备注"
+            disabled={createLoading}
             rows={2}
             maxLength={500}
             placeholder="备注（可选）"

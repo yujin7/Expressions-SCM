@@ -72,7 +72,7 @@ interface ImportPreflight {
     metric: string;
     baseline: string;
     current: string;
-    deviationPct: string;
+    driftPct: string;
   }[];
   token: string;
   note: string;
@@ -96,6 +96,7 @@ const TABLE_LABELS: Record<string, string> = {
   sales_monthly: "月销量",
   stock_opening_candidate: "库存明细（期初/快照）",
   sku_leadtime: "交期参考（起订量已放行；周期 1.1）",
+  sku_leadtime_simple: "周期补录（导出→填写→导回）",
   transit_ref: "在途参考（成品/包材/备料/OEM）",
   sku_cost: "SKU 单位成本",
 };
@@ -327,6 +328,8 @@ export default function ReleaseClient({
 
   /* BOM：预演出歧义块 → 勾选「按推荐裁决」 → 执行 → 生效 */
   const bom = useAction("bom", selectedJobId, preflightGate);
+  const leadSimple = useAction("sku_leadtime_simple", selectedJobId, preflightGate);
+  const [leadSimpleOverwrite, setLeadSimpleOverwrite] = useState(false);
   const bomActivate = useAction("bom_activate", selectedJobId, undefined, { includeJobIds: false });
   const [useRecommended, setUseRecommended] = useState(true);
   useEffect(() => {
@@ -481,7 +484,7 @@ export default function ReleaseClient({
                 {preflight.reasons.slice(0, 5).map((reason) => (
                   <Typography.Text key={`${reason.bucket}:${reason.metric}`} type="danger">
                     {reason.bucket} · {reason.metric}：{reason.baseline} → {reason.current}
-                    （偏差 {reason.deviationPct}%）
+                    （偏差 {reason.driftPct}%）
                   </Typography.Text>
                 ))}
               </Space>
@@ -610,6 +613,47 @@ export default function ReleaseClient({
                   </Button>
                 </Space>
                 <ResultLine result={sales.result} pick={[["created", "新增"], ["updated", "更新"], ["blocked", "阻塞"], ["unresolved", "未解析"]]} />
+              </Space>
+            ),
+          },
+          {
+            key: "sku_leadtime_simple",
+            label: "周期补录（导出 → 线下填 → 导回 → 写 sku_params）",
+            children: (
+              <Space direction="vertical">
+                <Alert
+                  type="info"
+                  showIcon
+                  message="缺省只补空值；勾选「连同已有值一起覆盖」才会改动已经维护过的周期。同一编码在文件里值不一致会整项阻塞，引擎不猜哪一行是对的。"
+                />
+                <Space wrap>
+                  <Checkbox checked={leadSimpleOverwrite} onChange={(e) => setLeadSimpleOverwrite(e.target.checked)}>
+                    连同已有值一起覆盖
+                  </Checkbox>
+                  <Button
+                    loading={leadSimple.busy}
+                    disabled={loading}
+                    onClick={() => void leadSimple.run("/api/release/sku-leadtime-simple", { dryRun: true, overwrite: leadSimpleOverwrite })}
+                  >
+                    预演
+                  </Button>
+                  <Button
+                    type="primary"
+                    loading={leadSimple.busy}
+                    disabled={!leadSimple.canExecute || loading}
+                    onClick={() => void leadSimple.run(
+                      "/api/release/sku-leadtime-simple",
+                      { dryRun: false, overwrite: leadSimpleOverwrite },
+                      () => void loadStatus(),
+                    )}
+                  >
+                    执行
+                  </Button>
+                </Space>
+                <ResultLine
+                  result={leadSimple.result}
+                  pick={[["upserted", "写入 SKU"], ["filled", "补空字段"], ["overridden", "覆盖字段"], ["unchanged", "本就相同"], ["unresolvedSku", "未解析 SKU"], ["blocked", "阻塞"]]}
+                />
               </Space>
             ),
           },

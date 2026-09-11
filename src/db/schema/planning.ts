@@ -11,9 +11,11 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
+import { bhDocs } from "./docs";
 import { skus, users } from "./masters";
 
 /**
@@ -109,7 +111,24 @@ export const sopCycles = pgTable("sop_cycles", {
   ),
 ]);
 
-/** 共识签认是只增事件，不更新、不删除；同一角色可用后一条决定纠正前一条。 */
+/**
+ * 共识签认是只增事件，不更新、不删除；同一角色可用后一条决定纠正前一条。
+ *
+ * 两个数据库背书（2026-09-04 安全审计 S1/S7）——应用层已各自拦一道，这里再钉一次，
+ * 避免下一次改动把闸门挪走后无人察觉：
+ *  · `uq_sop_agree_one_per_signer`：**一轮里一个人只能持有一份「同意」**。
+ *    此前只校验「每个角色的最新决定是 agree 且摘要一致」，没有任何「三个人」的要求；
+ *    而角色是叠加的，一个同时持有 pmc/ops/finance 的人（小组织里很常见）
+ *    可以一个人签完三方共识并冻结当月——冻结会让全系统实时建议转只读、
+ *    所有下单改走他冻结的那个版本。三方共识必须是三个人。
+ *    代价：同一轮「同意→驳回→再同意」被一并挡住（同一人的第二条 agree 落不进来）。
+ *    这是刻意的：本轮计划没变而本人反复改主意，应当走「更换源计划开新一轮」，
+ *    应用层会给出这句中文提示，不会让用户吃 23505。
+ *  · `uq_sop_reject_one_per_role_round`：**一轮里一个角色只能驳回一次**。
+ *    驳回不改状态也不改轮次，此前可以无限次重复，每次都插一条决定、一条审计
+ *    和一条 severity=high 的新通知给发起人（配置了飞书就是一条飞书消息）——
+ *    一个未计量的通知放大器。
+ */
 export const sopDecisions = pgTable("sop_decisions", {
   id: serial("id").primaryKey(),
   cycleId: integer("cycle_id").notNull().references(() => sopCycles.id),
@@ -122,10 +141,50 @@ export const sopDecisions = pgTable("sop_decisions", {
   decidedAt: timestamp("decided_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("ix_sop_decision_cycle_round").on(t.cycleId, t.cycleVersion, t.role, t.id),
+  uniqueIndex("uq_sop_agree_one_per_signer")
+    .on(t.cycleId, t.cycleVersion, t.decidedBy)
+    .where(sql`${t.decision} = 'agree'`),
+  uniqueIndex("uq_sop_reject_one_per_role_round")
+    .on(t.cycleId, t.cycleVersion, t.role)
+    .where(sql`${t.decision} = 'reject'`),
   check("ck_sop_decision_round", sql`${t.cycleVersion} > 0`),
   check("ck_sop_decision_role", sql`${t.role} IN ('ops', 'pmc', 'finance')`),
   check("ck_sop_decision_value", sql`${t.decision} IN ('agree', 'reject')`),
   check("ck_sop_reject_note", sql`${t.decision} <> 'reject' OR length(trim(coalesce(${t.note}, ''))) >= 5`),
+]);
+
+/**
+ * 「按冻结计划开单」的单据链接（2026-09-04 安全审计 S2）。
+ *
+ * 为什么不能继续从 `audit_logs` 反推：执行页的「本行已开过单」原本是读
+ * `audit_logs(entity=sop_cycle, action=execute_draft).after.skuIds` 算出来的，
+ * 于是审计写失败＝页面认为这些行没开过＝同样的量被再开一张 BH 草稿进审批链。
+ * audit_logs 是「谁做了什么」的只增账本，不是业务索引：它的 payload 形状可以变、
+ * 有保留期、也不该被业务读路径依赖。链接关系是业务事实，给它自己的表。
+ *
+ * 幂等键让「双击开单」只产生一张草稿（与 createSopCycle 同型）；本表与 BH 主单
+ * 在**同一个事务**里写（createBh 的 inTx 钩子），要么都在，要么都不在。
+ */
+export const sopExecutionDrafts = pgTable("sop_execution_drafts", {
+  id: serial("id").primaryKey(),
+  cycleId: integer("cycle_id").notNull().references(() => sopCycles.id),
+  /** 开单时的共识轮次（换源计划后重开的单与旧轮次分得开） */
+  cycleVersion: integer("cycle_version").notNull(),
+  bhId: integer("bh_id").notNull().references(() => bhDocs.id),
+  docNo: text("doc_no").notNull(),
+  planningVersionId: integer("planning_version_id").notNull().references(() => planningVersions.id),
+  planDigest: text("plan_digest").notNull(),
+  /** 本次开单覆盖的冻结计划行（planning_version_lines.sku_id） */
+  skuIds: jsonb("sku_ids").$type<number[]>().notNull(),
+  includeSuppressed: boolean("include_suppressed").notNull().default(false),
+  idempotencyKey: text("idempotency_key").notNull(),
+  createdBy: integer("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique("uq_sop_execution_draft_idempotency").on(t.idempotencyKey),
+  unique("uq_sop_execution_draft_bh").on(t.bhId),
+  index("ix_sop_execution_draft_cycle").on(t.cycleId, t.id),
+  check("ck_sop_execution_draft_round", sql`${t.cycleVersion} > 0`),
 ]);
 
 /**
@@ -193,4 +252,84 @@ export const projectionScenarios = pgTable("projection_scenarios", {
   unique("uq_projection_scenario_idempotency").on(t.idempotencyKey),
   index("ix_projection_scenario_sku_created").on(t.skuId, t.createdAt),
   index("ix_projection_scenario_creator_created").on(t.createdBy, t.createdAt),
+]);
+
+/**
+ * W2-#6 建议放弃后的抑制窗口（replenish_suppressions）。
+ *
+ * 事故形状：`replenish/decline.ts` 只写一条审计，**下一次运行照旧建议同一个 SKU**——
+ * 计划员每天对同一条建议重复做同一个判断，「已复核并放弃」等于一张当天有效的便签。
+ * 抑制窗口按放弃原因取不同长度（`rules/replenish-suppression.ts` 纯函数定义）：
+ *  - supply_already_arranged：N 天到期，或**供应事实一变**即提前解除（C8，先到先算）——
+ *    到货入库（on_hand_baseline ↑）、被登记为未结供给（pipeline_baseline ↑）、
+ *    安排告吹（pipeline_baseline ↓）。故两条基线都要存：到货在全管道量上是不可见的；
+ *  - demand_overstated：窗口最短——需求判断比供应事实更容易错，压得久了就成了漏补。
+ * 纪律：抑制**绝不静默**——被抑制的行仍然出现在列表里，标着「已抑制」、原因与到期日，任何人可一键解除。
+ * 同一 SKU 同时最多一条有效抑制（部分唯一索引保证）；解除 = 写 cleared_at，不删行（留痕）。
+ */
+export const replenishSuppressions = pgTable("replenish_suppressions", {
+  id: serial("id").primaryKey(),
+  skuId: integer("sku_id").notNull().references(() => skus.id),
+  /** 与 lib/replenish-decline-reasons.ts 的原因码同集合 */
+  reasonCode: text("reason_code").notNull(),
+  reason: text("reason").notNull(),
+  /** 放弃当天的业务日（Asia/Shanghai） */
+  businessDate: date("business_date").notNull(),
+  /** 抑制到期日（含当天）；过期即自动失效，不需要任何任务去清 */
+  untilDate: date("until_date").notNull(),
+  /** true = 供应事实一变即提前解除（到货入库 / 被登记为未结供给 / 安排被取消，见 rules/replenish-suppression） */
+  releaseOnArrival: boolean("release_on_arrival").notNull().default(false),
+  /** 放弃当时的全管道量（在库 + PO 在途 + 在制 + 存量在途），releaseOnArrival 的比较基线 */
+  pipelineBaseline: numeric("pipeline_baseline", { precision: 14, scale: 4 }).notNull().default("0"),
+  /**
+   * 放弃当时的**账面在库**（C8）。
+   *
+   * 只有管道基线是不够的：货**到货**时在库上升、未结供给同额下降，全管道量**纹丝不动**，
+   * 于是 `pipelineNow > pipelineBaseline` 这个解除条件永远不成立——界面上写着
+   * 「该批供应落库后自动解除」，实现上却只会等 30 天到期。到货看在库、
+   * 「安排被取消」看管道下降，两个信号各需一个基线。
+   * 存量行迁移时回填为 pipeline_baseline（保守：在库 ≤ 全管道，回填成上界只会让到货解除更难触发，
+   * 不会凭空解除一条正在生效的抑制）。
+   */
+  onHandBaseline: numeric("on_hand_baseline", { precision: 14, scale: 4 }).notNull().default("0"),
+  createdBy: integer("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  clearedBy: integer("cleared_by").references(() => users.id),
+  clearedAt: timestamp("cleared_at", { withTimezone: true }),
+  clearNote: text("clear_note"),
+}, (t) => [
+  uniqueIndex("uq_replenish_suppression_active").on(t.skuId).where(sql`${t.clearedAt} IS NULL`),
+  index("ix_replenish_suppression_until").on(t.untilDate),
+  check("ck_replenish_suppression_window", sql`${t.untilDate} >= ${t.businessDate}`),
+]);
+
+/**
+ * W2-#7 运营提报的处置（ops_demand_dispositions）。
+ *
+ * 事故形状：`replenish/reconcile.ts` 把提报与基线并排、标出「需核对」，然后**什么也不发生**——
+ * 没有接受/驳回、没有责任人、对下游没有任何影响，一块只读看板。
+ * 处置口径（D55 不变）：
+ *  - accepted 记录运营数字为该 SKU×渠道×月的**已达成一致的需求**，仍**不自动驱动建议量**，
+ *    只是从此成为计划员看得见、可据以行动的输入；
+ *  - rejected 必须写原因（否则驳回等于沉默）。
+ * 每条提报（supersedes 链尾）最多一条处置；提报被新行 supersede 后，新行是新的待处置对象。
+ */
+export const opsDemandDispositions = pgTable("ops_demand_dispositions", {
+  id: serial("id").primaryKey(),
+  submissionId: integer("submission_id").notNull(),
+  skuId: integer("sku_id").notNull().references(() => skus.id),
+  channelId: integer("channel_id"),
+  period: text("period").notNull(),
+  decision: text("decision").notNull(), // accepted | rejected
+  /** accepted：记为该期已达成一致的需求量（不自动驱动数量） */
+  agreedQty: numeric("agreed_qty", { precision: 14, scale: 4 }),
+  reason: text("reason"),
+  decidedBy: integer("decided_by").notNull().references(() => users.id),
+  decidedAt: timestamp("decided_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique("uq_ops_demand_disposition_submission").on(t.submissionId),
+  index("ix_ops_demand_disposition_period").on(t.period),
+  check("ck_ops_demand_disposition_decision", sql`${t.decision} IN ('accepted', 'rejected')`),
+  check("ck_ops_demand_disposition_accepted_qty", sql`${t.decision} <> 'accepted' OR ${t.agreedQty} IS NOT NULL`),
+  check("ck_ops_demand_disposition_rejected_reason", sql`${t.decision} <> 'rejected' OR (${t.reason} IS NOT NULL AND length(btrim(${t.reason})) >= 5)`),
 ]);

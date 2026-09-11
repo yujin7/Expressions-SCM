@@ -61,6 +61,7 @@ const TEMPLATE_LABELS: Record<string, string> = {
   jdy_vip_sku_cost_observation: "简道云唯品会SKU成本·观测",
   jdy_tmall_sku_cost_pnl_observation: "简道云天猫SKU成本损益·观测",
   jdy_tmall_product_traffic_observation: "简道云天猫商品流量转化·观测",
+  jdy_bonded_warehouse_order_observation: "简道云保税仓保税订单·观测",
   jdy_pdd_product_daily_observation: "简道云拼多多商品日报·观测",
   jdy_pdd_shop_daily_observation: "简道云拼多多店铺日报·观测",
   jdy_shop_master_observation: "简道云店铺档案·观测",

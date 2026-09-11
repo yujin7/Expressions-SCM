@@ -5,6 +5,7 @@ import { getDbAsync, schema } from "@/db";
 import { writeAudit } from "@/server/core/audit";
 import { dAdd, dCmp, dNeg } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
+import { latestStocktakeRows } from "@/server/core/stock-view";
 import type { AnyDb } from "@/server/core/svc";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
@@ -19,6 +20,7 @@ import {
   isRealIsoDate,
   type CanonicalJsonValue,
 } from "@/server/rules/quality-compliance";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 const dateString = z.string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "日期格式应为 YYYY-MM-DD")
@@ -276,16 +278,7 @@ function normalizeQuantity4(value: string): string {
   return `${whole}.${fraction.padEnd(4, "0")}`;
 }
 
-const SHANGHAI_DATE = new Intl.DateTimeFormat("en-CA", {
-  timeZone: "Asia/Shanghai",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
-
-function dateInShanghai(value: Date): string {
-  return SHANGHAI_DATE.format(value);
-}
+const dateInShanghai = shanghaiDayOf;
 
 async function assertActiveUser(db: AnyDb, id: number): Promise<void> {
   const [row] = await db
@@ -336,52 +329,7 @@ function casePrefix(kind: z.infer<typeof caseKind>): string {
   return "QI";
 }
 
-export async function listQualityCases(
-  user: SessionUser,
-  query: {
-    q?: string;
-    page?: number;
-    pageSize?: number;
-    kind?: string;
-    status?: string;
-  },
-  dbArg?: AnyDb,
-) {
-  requireQualityRead(user);
-  const db: AnyDb = dbArg ?? (await getDbAsync());
-  const page = Math.max(1, query.page ?? 1);
-  const pageSize = Math.min(200, Math.max(1, query.pageSize ?? 20));
-  const conditions = [];
-  const q = (query.q ?? "").trim();
-  const canReadRestrictedEvidence = user.roles.includes("quality") || user.roles.includes("admin");
-  if (q) {
-    conditions.push(canReadRestrictedEvidence
-      ? or(
-        ilike(schema.qualityCases.caseNo, `%${q}%`),
-        ilike(schema.qualityCases.title, `%${q}%`),
-        ilike(schema.qualityCases.summary, `%${q}%`),
-        ilike(schema.skus.code, `%${q}%`),
-      )
-      : or(
-        ilike(schema.qualityCases.caseNo, `%${q}%`),
-        ilike(schema.skus.code, `%${q}%`),
-        and(
-          sql`${schema.qualityCases.kind} NOT IN ('complaint', 'adverse_event')`,
-          or(
-            ilike(schema.qualityCases.title, `%${q}%`),
-            ilike(schema.qualityCases.summary, `%${q}%`),
-          ),
-        ),
-      ));
-  }
-  if (caseKind.safeParse(query.kind).success) {
-    conditions.push(eq(schema.qualityCases.kind, query.kind!));
-  }
-  if (["open", "triaged", "scoped", "active", "closed"].includes(query.status ?? "")) {
-    conditions.push(eq(schema.qualityCases.status, query.status!));
-  }
-  const where = conditions.length ? and(...conditions) : undefined;
-  const fields = {
+const qualityCaseFields = {
     id: schema.qualityCases.id,
     caseNo: schema.qualityCases.caseNo,
     kind: schema.qualityCases.kind,
@@ -423,19 +371,115 @@ export async function listQualityCases(
     closedAt: schema.qualityCases.closedAt,
     closureNote: schema.qualityCases.closureNote,
   };
-  const [rows, totalRows, summaryRows] = await Promise.all([
-    db
-      .select(fields)
+
+function selectQualityCaseRows(db: AnyDb) {
+  return db
+      .select(qualityCaseFields)
       .from(schema.qualityCases)
       .leftJoin(schema.skus, eq(schema.qualityCases.skuId, schema.skus.id))
       .leftJoin(schema.batches, eq(schema.qualityCases.batchId, schema.batches.id))
       .leftJoin(schema.suppliers, eq(schema.qualityCases.supplierId, schema.suppliers.id))
-      .innerJoin(schema.users, eq(schema.qualityCases.ownerId, schema.users.id))
-      .where(where)
-      .orderBy(
-        sql`CASE ${schema.qualityCases.severity} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`,
-        desc(schema.qualityCases.createdAt),
+      .innerJoin(schema.users, eq(schema.qualityCases.ownerId, schema.users.id));
+}
+
+function qualityCaseDto<T extends { kind: string; reportDueDate: string | null; reportedAt: unknown }>(user: SessionUser, row: T) {
+  const canReadRestrictedEvidence = user.roles.includes("quality") || user.roles.includes("admin");
+  const today = todayShanghai();
+  return ({
+      ...row,
+      ...(canReadRestrictedEvidence || !["complaint", "adverse_event"].includes(row.kind)
+        ? {}
+        : {
+          title: "受限投诉/不良事件案件",
+          summary: "受限投诉/不良事件案件；详细叙述仅质量合规角色可见。",
+          externalRef: null,
+          assessmentBasis: null,
+          regulatorRef: null,
+          rootCause: null,
+        }),
+      reportDueState: row.reportDueDate
+        ? classifyDueState({
+          dueDate: row.reportDueDate,
+          asOfDate: today,
+          dueSoonThroughDate: addCalendarDays(today, 30),
+          completedDate: row.reportedAt ? today : null,
+        })
+        : null,
+    });
+}
+
+export async function getQualityCase(user: SessionUser, id: number, dbArg?: AnyDb) {
+  requireQualityRead(user);
+  const db: AnyDb = dbArg ?? (await getDbAsync());
+  const [row] = await selectQualityCaseRows(db).where(eq(schema.qualityCases.id, id)).limit(1);
+  if (!row) throw new ApiError(404, "质量案件不存在或不可访问");
+  return qualityCaseDto(user, row);
+}
+
+export async function listQualityCases(
+  user: SessionUser,
+  query: {
+    q?: string;
+    page?: number;
+    pageSize?: number;
+    kind?: string;
+    status?: string;
+    sort?: string;
+    direction?: string;
+  },
+  dbArg?: AnyDb,
+) {
+  requireQualityRead(user);
+  const db: AnyDb = dbArg ?? (await getDbAsync());
+  const page = Math.max(1, query.page ?? 1);
+  const pageSize = Math.min(200, Math.max(1, query.pageSize ?? 20));
+  const sortFields = {
+    caseNo: schema.qualityCases.caseNo, reportDueDate: schema.qualityCases.reportDueDate,
+    ownerName: schema.users.name, receivedDate: schema.qualityCases.receivedDate,
+  };
+  if (query.sort && !Object.hasOwn(sortFields, query.sort)) throw new ApiError(400, "不支持的案件排序字段");
+  if (query.direction && !["asc", "desc"].includes(query.direction)) throw new ApiError(400, "不支持的案件排序方向");
+  if (query.direction && !query.sort) throw new ApiError(400, "请同时指定案件排序字段");
+  if (query.kind && !caseKind.safeParse(query.kind).success) throw new ApiError(400, "不支持的案件类型");
+  if (query.status && !["open", "triaged", "scoped", "active", "closed"].includes(query.status)) throw new ApiError(400, "不支持的案件状态");
+  const sortField = query.sort ? sortFields[query.sort as keyof typeof sortFields] : null;
+  const ordering = sortField
+    ? [query.direction === "desc" ? sql`${sortField} DESC NULLS LAST` : sql`${sortField} ASC NULLS LAST`, desc(schema.qualityCases.id)]
+    : [sql`CASE ${schema.qualityCases.severity} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`, desc(schema.qualityCases.createdAt), desc(schema.qualityCases.id)];
+  const conditions = [];
+  const q = (query.q ?? "").trim();
+  const canReadRestrictedEvidence = user.roles.includes("quality") || user.roles.includes("admin");
+  if (q) {
+    conditions.push(canReadRestrictedEvidence
+      ? or(
+        ilike(schema.qualityCases.caseNo, `%${q}%`),
+        ilike(schema.qualityCases.title, `%${q}%`),
+        ilike(schema.qualityCases.summary, `%${q}%`),
+        ilike(schema.skus.code, `%${q}%`),
       )
+      : or(
+        ilike(schema.qualityCases.caseNo, `%${q}%`),
+        ilike(schema.skus.code, `%${q}%`),
+        and(
+          sql`${schema.qualityCases.kind} NOT IN ('complaint', 'adverse_event')`,
+          or(
+            ilike(schema.qualityCases.title, `%${q}%`),
+            ilike(schema.qualityCases.summary, `%${q}%`),
+          ),
+        ),
+      ));
+  }
+  if (caseKind.safeParse(query.kind).success) {
+    conditions.push(eq(schema.qualityCases.kind, query.kind!));
+  }
+  if (["open", "triaged", "scoped", "active", "closed"].includes(query.status ?? "")) {
+    conditions.push(eq(schema.qualityCases.status, query.status!));
+  }
+  const where = conditions.length ? and(...conditions) : undefined;
+  const [rows, totalRows, summaryRows] = await Promise.all([
+    selectQualityCaseRows(db)
+      .where(where)
+      .orderBy(...ordering)
       .limit(pageSize)
       .offset((page - 1) * pageSize),
     db
@@ -461,29 +505,8 @@ export async function listQualityCases(
       })
       .from(schema.qualityCases),
   ]);
-  const today = todayShanghai();
   return {
-    rows: rows.map((row: typeof rows[number]) => ({
-      ...row,
-      ...(canReadRestrictedEvidence || !["complaint", "adverse_event"].includes(row.kind)
-        ? {}
-        : {
-          title: "受限投诉/不良事件案件",
-          summary: "受限投诉/不良事件案件；详细叙述仅质量合规角色可见。",
-          externalRef: null,
-          assessmentBasis: null,
-          regulatorRef: null,
-          rootCause: null,
-        }),
-      reportDueState: row.reportDueDate
-        ? classifyDueState({
-          dueDate: row.reportDueDate,
-          asOfDate: today,
-          dueSoonThroughDate: addCalendarDays(today, 30),
-          completedDate: row.reportedAt ? today : null,
-        })
-        : null,
-    })),
+    rows: rows.map((row: typeof rows[number]) => qualityCaseDto(user, row)),
     total: Number(totalRows[0]?.total ?? 0),
     summary: {
       open: Number(summaryRows[0]?.open ?? 0),
@@ -755,14 +778,10 @@ async function buildRecallScope(tx: AnyDb, batchId: number, limitationNote?: str
       )),
   ]);
 
-  const latestReferenceDate = new Map<number, string>();
-  for (const row of referenceRows) {
-    if (!latestReferenceDate.has(row.warehouseId)) {
-      latestReferenceDate.set(row.warehouseId, row.stocktakeDate);
-    }
-  }
-  const latestReferenceRows = referenceRows.filter((row: typeof referenceRows[number]) =>
-    latestReferenceDate.get(row.warehouseId) === row.stocktakeDate);
+  /* 盘点期间收口走 core/stock-view 唯一实现（风险工作台 / R15 临期 / 调拨建议同源）。
+     tx 是 AnyDb，查询结果推不出行类型，故在此显式标注行形状供泛型推断。 */
+  type ReferenceRow = { warehouseId: number; warehouseCode: string; warehouseName: string; qty: string; stocktakeDate: string; source: string | null };
+  const latestReferenceRows = latestStocktakeRows<ReferenceRow>(referenceRows as ReferenceRow[]);
   const latestSnapshots = new Map<number, typeof snapshotRows[number]>();
   for (const row of snapshotRows) if (!latestSnapshots.has(row.warehouseId)) latestSnapshots.set(row.warehouseId, row);
   const addQty = (rows: Array<{ qty: string }>) => rows.reduce((sum, row) => dAdd(sum, row.qty, 4), "0.0000");

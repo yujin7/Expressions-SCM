@@ -145,7 +145,7 @@ const WORK_STAGE_META: Record<DataProductWorkStage, { label: string; color: stri
 function fmtDateTime(value: string | null): string {
   if (!value) return "—";
   return new Date(value).toLocaleString("zh-CN", {
-    hour12: false,
+    hourCycle: "h23",
     timeZone: "Asia/Shanghai",
   });
 }

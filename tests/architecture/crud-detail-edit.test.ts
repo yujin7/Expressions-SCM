@@ -16,7 +16,7 @@ describe("CRUD 编辑不得用列表行覆盖完整主数据", () => {
     );
 
     expect(crud).toContain("loadDetailOnEdit");
-    expect(crud).toContain("await fetchJson<T>(`${apiPath}/${record.id}`)");
+    expect(crud).toContain("await fetchJson<T>(`${apiPath}/${record.id}`, { signal: request.signal })");
     expect(supplier).toMatch(/<CrudTable<SupplierRow>[\s\S]*?loadDetailOnEdit/);
     expect(warehouse).toMatch(/<CrudTable<WarehouseRow>[\s\S]*?loadDetailOnEdit/);
     expect(warehouse).toContain('name="parentId"');

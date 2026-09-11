@@ -6,7 +6,6 @@ import {
   DownloadOutlined,
   FullscreenExitOutlined,
   FullscreenOutlined,
-  InfoCircleOutlined,
   ShareAltOutlined,
   TableOutlined,
 } from "@ant-design/icons";
@@ -15,6 +14,7 @@ import type { CardProps } from "antd";
 
 import DataSourceBadge, { type LineageTier } from "@/components/DataSourceBadge";
 import { metric, metricTooltip } from "@/components/metrics";
+import ContextHelp from "@/components/ContextHelp";
 import {
   coveragePercent,
   coverageText,
@@ -128,7 +128,8 @@ export default function DecisionVisual({
   const isReady = state === "ready";
   const isShowingData = Boolean(showTable && dataView);
   const contentHeight: number | string = fullscreen ? "calc(100vh - 230px)" : height;
-  const useNaturalHeight = fitContent && !fullscreen;
+  // 记录/表格在全屏也按内容撑开，否则长内容溢出固定画布并与限制说明重叠。
+  const useNaturalHeight = fitContent;
   const preserveCanvasHeight = isReady || state === "loading";
   const minimumContentHeight = preserveCanvasHeight
     ? contentHeight
@@ -148,9 +149,8 @@ export default function DecisionVisual({
       <Space size={6} wrap>
         <Typography.Text strong>{title}</Typography.Text>
         {metricDef ? (
-          <Tooltip title={<span style={{ whiteSpace: "pre-line" }}>{metricTooltip(metricDef.id)}</span>}>
-            <InfoCircleOutlined aria-label={`${metricDef.label}口径说明`} style={{ color: "#64748b" }} />
-          </Tooltip>
+          <ContextHelp label={`${metricDef.label}口径说明`} title={`${metricDef.label} · 口径说明`}
+            content={<span style={{ whiteSpace: "pre-line" }}>{metricTooltip(metricDef.id)}</span>} />
         ) : null}
         <DataSourceBadge
           tier={source.tier}
@@ -245,9 +245,9 @@ export default function DecisionVisual({
           <div
             role="group"
             aria-label={`数据覆盖 ${coverageLabel}`}
-            style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}
+            style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 8 }}
           >
-            <Typography.Text type="secondary" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12, overflowWrap: "anywhere", minWidth: 0 }}>
               覆盖 {coverageLabel}
             </Typography.Text>
             {coverageValue != null ? (

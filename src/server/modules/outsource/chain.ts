@@ -5,6 +5,9 @@ import {
 import { DOC_STATUS_LABELS } from "@/components/labels";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, resolveDb } from "./common";
+import { bhReadScope, type BhReadUser } from "@/server/core/bh-read-scope";
+import { canReadInboxDestination } from "@/server/modules/inbox/read-access";
+import { INBOX_PAGE_HREFS } from "@/server/modules/inbox/service";
 
 /**
  * 链路视图：以 WO 为中心解析委外全链 BH→WO→PO→JG→FL/TL→SH→CT→JS。
@@ -64,11 +67,12 @@ async function one<T>(rows: T[]): Promise<T> {
 async function resolveCenter(
   db: AnyDb,
   input: { docType: ChainDocType; id: number },
+  user?: BhReadUser,
 ): Promise<{ woIds: number[]; soloPoIds: number[]; soloBhId: number | null }> {
   const { docType, id } = input;
   switch (docType) {
     case "bh": {
-      await one(await db.select({ id: bhDocs.id }).from(bhDocs).where(eq(bhDocs.id, id)));
+      await one(await db.select({ id: bhDocs.id }).from(bhDocs).where(and(eq(bhDocs.id, id), bhReadScope(db, user))));
       const wos = await db.select({ id: woDocs.id }).from(woDocs).where(eq(woDocs.bhId, id));
       return { woIds: wos.map((w) => w.id), soloPoIds: [], soloBhId: wos.length === 0 ? id : null };
     }
@@ -127,9 +131,12 @@ async function resolveCenter(
 export async function getChain(
   input: { docType: ChainDocType; id: number },
   dbArg?: AnyDb,
+  user?: BhReadUser,
 ): Promise<{ nodes: ChainNode[] }> {
+  const mayRead = (docType: ChainDocType) => !user || canReadInboxDestination(INBOX_PAGE_HREFS[docType], user);
+  if (!mayRead(input.docType)) throw new ApiError(404, "单据不存在");
   const db = await resolveDb(dbArg);
-  const { woIds, soloPoIds, soloBhId } = await resolveCenter(db, input);
+  const { woIds, soloPoIds, soloBhId } = await resolveCenter(db, input, user);
   const nodes: ChainNode[] = [];
 
   // 无 WO 的孤立 BH：仅自身
@@ -137,7 +144,7 @@ export async function getChain(
     const [bh] = await db
       .select({ id: bhDocs.id, docNo: bhDocs.docNo, status: bhDocs.status })
       .from(bhDocs)
-      .where(eq(bhDocs.id, soloBhId));
+      .where(and(eq(bhDocs.id, soloBhId), bhReadScope(db, user)));
     if (bh) nodes.push(toNode("bh", bh, input));
     return { nodes };
   }
@@ -173,7 +180,7 @@ export async function getChain(
       ? await db
           .select({ id: bhDocs.id, docNo: bhDocs.docNo, status: bhDocs.status })
           .from(bhDocs)
-          .where(inArray(bhDocs.id, bhIds))
+          .where(and(inArray(bhDocs.id, bhIds), bhReadScope(db, user)))
           .orderBy(asc(bhDocs.id))
       : [];
 
@@ -261,5 +268,5 @@ export async function getChain(
   for (const d of cts) nodes.push(toNode("ct", d, input));
   for (const d of jss) nodes.push(toNode("js", d, input));
 
-  return { nodes };
+  return { nodes: nodes.filter(node => mayRead(node.docType)) };
 }

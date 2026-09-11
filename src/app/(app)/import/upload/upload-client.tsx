@@ -11,6 +11,12 @@ import { InboxOutlined } from "@ant-design/icons";
 import type { RcFile } from "antd/es/upload";
 import Link from "next/link";
 import RemoteSelect from "@/components/RemoteSelect";
+import { exportCsv } from "@/components/exportCsv";
+import {
+  SKU_LEADTIME_SIMPLE_TEMPLATE,
+  SUPPLY_PARAMS_CSV_HEADERS,
+  SUPPLY_PARAMS_CSV_SAMPLE_ROW,
+} from "@/lib/supply-params-csv";
 
 const TEMPLATE_OPTS = [
   { value: "inventory", label: "库存明细（电商部长表→快照/期初候选）" },
@@ -18,6 +24,7 @@ const TEMPLATE_OPTS = [
   { value: "expiry", label: "效期占比（批次效期参考）" },
   { value: "bom", label: "产品 BOM 工作簿（须选品牌）" },
   { value: "leadtime", label: "在途/交期表（提前期参考，1.1 启用）" },
+  { value: "sku_leadtime_simple", label: "周期补录（从周期主数据页导出 → 线下填 → 导回）" },
   { value: "transit", label: "在途进度表（成品/包材/备料/OEM 归属）" },
   { value: "demand", label: "需求&计划&达成统计表（月度需求/借调历史）" },
   { value: "pallet", label: "总货盘情况表-PMC（月度货盘/处置注记）" },
@@ -62,9 +69,16 @@ export default function UploadClient({
   const [file, setFile] = useState<RcFile | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<UploadResult | null>(null);
+  const isSimpleLeadtime = template === SKU_LEADTIME_SIMPLE_TEMPLATE;
+
+  /* 空白模板：表头与 `/master/supply-params` 的导出**同一份常量**，
+     导出的表和这张空表在系统眼里是同一种文件——业务不必猜列名。 */
+  const downloadTemplate = () => {
+    exportCsv("周期补录模板.csv", [...SUPPLY_PARAMS_CSV_HEADERS], [[...SUPPLY_PARAMS_CSV_SAMPLE_ROW]]);
+  };
 
   const submit = async () => {
-    if (!file) return void message.warning("请先选择 .xlsx 文件");
+    if (!file) return void message.warning("请先选择文件");
     if (template === "bom" && !brand) return void message.warning("BOM 导入必须选择品牌");
     if (template === "bom" && !identityMode) {
       return void message.warning("BOM 导入必须明确选择 SKU 身份模式");
@@ -160,8 +174,21 @@ export default function UploadClient({
                   : "请根据这批数据的真实业务含义选择身份模式，系统不会从文件名或品牌猜测。"}
             />
           )}
+          {isSimpleLeadtime ? (
+            <Alert
+              type="info"
+              showIcon
+              message={(
+                <Space wrap>
+                  <span>本模板接受 .csv 或 .xlsx，只认「SKU编码 + 加工/在途/采购周期」这几列；上传后到「放行工作台」执行「周期补录」放行。</span>
+                  <Button size="small" onClick={downloadTemplate}>下载空白模板</Button>
+                  <Link href="/master/supply-params">去周期主数据页导出当前缺口</Link>
+                </Space>
+              )}
+            />
+          ) : null}
           <Upload.Dragger
-            accept=".xlsx"
+            accept={isSimpleLeadtime ? ".csv,.xlsx" : ".xlsx"}
             maxCount={1}
             fileList={file ? [{ uid: file.uid, name: file.name, originFileObj: file }] : []}
             beforeUpload={(f) => {
@@ -177,7 +204,7 @@ export default function UploadClient({
             <p className="ant-upload-drag-icon">
               <InboxOutlined />
             </p>
-            <p className="ant-upload-text">点击或拖拽 .xlsx 到此处</p>
+            <p className="ant-upload-text">点击或拖拽 {isSimpleLeadtime ? ".csv / .xlsx" : ".xlsx"} 到此处</p>
             <p className="ant-upload-hint">单文件 ≤30MB；损坏的工作簿会自动走 OOXML 兜底通道解析</p>
           </Upload.Dragger>
           <Button

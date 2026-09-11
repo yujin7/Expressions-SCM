@@ -1,4 +1,5 @@
 import { and, desc, eq, like, sql } from "drizzle-orm";
+import { storedErrorDiagnostic } from "@/server/core/logger";
 import {
   importJobs,
   integrationCheckpoints,
@@ -20,6 +21,7 @@ import {
   inventoryStreamBlockReason,
   jstWarehouseTrustFromEnv,
 } from "./jst-warehouse-trust";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 const CONNECTOR = "jst";
 const STREAM = "inventory-total-delta";
@@ -50,14 +52,7 @@ interface PriorRun {
   cursorEnd: string | null;
 }
 
-function shanghaiDate(instant: Date): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(instant);
-}
+const shanghaiDate = shanghaiDayOf;
 
 function cursorMax(rows: JstInventoryRow[], start: string): string {
   return rows.reduce(
@@ -349,7 +344,7 @@ export async function syncJstInventoryObservations(
         await failImportJob(db, importJobId, TARGET_TABLE, error).catch(() => undefined);
       }
     }
-    const message = error instanceof Error ? error.message : String(error);
+    const message = storedErrorDiagnostic(error);
     await db.update(integrationRuns).set({
       status: "failed",
       importJobId,

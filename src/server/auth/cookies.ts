@@ -11,9 +11,10 @@ function normalizedProtocol(value: string | null | undefined): "http" | "https" 
 }
 
 /**
- * This deployment is reachable through both loopback HTTP and a Cloudflare HTTPS tunnel.
- * Auth.js normally changes both cookie security and cookie names based on one AUTH_URL, which
- * makes the other origin unable to log in. Names stay stable while HTTPS requests remain Secure.
+ * Loopback HTTP and the Cloudflare HTTPS tunnel share one deployment. Cookie names must stay
+ * stable across origins; Secure follows the actual request, not the global AUTH_URL alone.
+ * The trusted reverse proxy must overwrite x-forwarded-proto (the same trustHost boundary
+ * used by Auth.js). Middleware only reads the session token and never writes Cookie attributes.
  */
 export function authCookieConfig(
   request?: AuthRequestOrigin,
@@ -22,12 +23,7 @@ export function authCookieConfig(
   const requestProtocol = normalizedProtocol(request?.nextUrl?.protocol);
   const configuredProtocol = normalizedProtocol(process.env.AUTH_URL?.split(":", 1)[0]);
   const secure = (forwardedProtocol ?? requestProtocol ?? configuredProtocol) === "https";
-  const common = {
-    httpOnly: true,
-    sameSite: "lax" as const,
-    path: "/",
-    secure,
-  };
+  const common = { httpOnly: true, sameSite: "lax" as const, path: "/", secure };
   const transient = { ...common, maxAge: 15 * 60 };
 
   return {

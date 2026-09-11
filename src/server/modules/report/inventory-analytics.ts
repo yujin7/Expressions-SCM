@@ -20,7 +20,7 @@
  * 全表无金额字段，免脱敏；只读不写库。
  */
 import { and, eq, gt, gte, inArray, lt, sql } from "drizzle-orm";
-import { coverDays } from "@/server/core/stock-view";
+import { coverDays, getOnHandBySku } from "@/server/core/stock-view";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
@@ -31,6 +31,7 @@ import { AGING_BUCKETS, fifoAging, turnover, type AgingBucket } from "@/server/r
 import { num, r1, r1n } from "@/server/core/svc";
 import { salesWindow } from "@/server/core/sales-window";
 import { participatesInNormalSalesMovement } from "@/server/rules/sku-standardization";
+import type { InventorySalesEvidence, InventorySalesWindow } from "@/lib/inventory-sales-evidence";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -42,16 +43,16 @@ const WINDOW_MIN = 7;
 const WINDOW_MAX = 730;
 const WINDOW_DEFAULT = 90;
 
-export interface InvAnalyticsRow {
+export interface InvAnalyticsRow extends InventorySalesEvidence {
   skuId: number;
   code: string;
   name: string;
   brand: string | null;
   /** 全网在库 = 实时账 + 快照仓最新快照 */
   onHand: number;
-  /** 近3月日均销（÷91） */
-  daily: number;
-  /** 可销天数（无动销 = null） */
+  /** 窗口三月均有登记才计算÷91；不证明全渠道完整，缺记录/缺月=null */
+  daily: number | null;
+  /** 可销天数（未知或非正日销=null） */
   daysCover: number | null;
   /** 窗口内出库量 Σ(-qtyDelta) where qtyDelta<0 */
   outQty: number;
@@ -73,6 +74,7 @@ export interface InvAnalyticsRow {
 }
 
 export interface InvAnalyticsResult {
+  salesWindow: InventorySalesWindow;
   rows: InvAnalyticsRow[];
   total: number;
   summary: {
@@ -86,6 +88,8 @@ export interface InvAnalyticsResult {
     windowDays: number;
   };
   today: string;
+  /** 参与在库口径的快照仓最新快照日期（core/stock-view）；无快照仓数据 = null。页面据此标注「快照口径时点」 */
+  snapDate: string | null;
   /** 可销天数告警阈值（运行参数 cover_alert_days，散点参考线用） */
   coverAlertDays: number;
   /** 滞销阈值（运行参数 slow_days_threshold，散点参考线用） */
@@ -98,29 +102,34 @@ export const AVG_ONHAND_NOTE =
   "周转指标的「平均在库」用当前在库近似——系统无历史每日库存快照，无法还原窗口内日均库存。补货前后水位波动大的 SKU 会失真，仅供横向排序与量级判断，不可用于财务对账。";
 
 export async function getInventoryAnalytics(
-  query: { q?: string; windowDays?: number; page?: number; pageSize?: number },
+  query: { q?: string; windowDays?: number; page?: number; pageSize?: number; /** 内部导出专用，HTTP不透传 */ allRows?: boolean },
   dbArg?: AnyDb,
 ): Promise<InvAnalyticsResult> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
   const today = todayShanghai();
   const windowDays = Math.min(WINDOW_MAX, Math.max(WINDOW_MIN, Math.floor(query.windowDays ?? WINDOW_DEFAULT)));
-  const page = Math.max(1, query.page ?? 1);
-  const pageSize = Math.min(500, Math.max(1, query.pageSize ?? 50));
+  const page = query.allRows ? 1 : Math.max(1, query.page ?? 1);
+  const pageSize = query.allRows ? Number.MAX_SAFE_INTEGER : Math.min(500, Math.max(1, query.pageSize ?? 50));
   const q = (query.q ?? "").trim().toLowerCase();
 
   const emptyAging = (): Record<AgingBucket, number> =>
     Object.fromEntries(AGING_BUCKETS.map((k) => [k, 0])) as Record<AgingBucket, number>;
 
-  const [coverAlertDays, slowDaysThreshold] = await Promise.all([
+  const [coverAlertDays, slowDaysThreshold, { maxYm }] = await Promise.all([
     getNumParam("cover_alert_days", 30, dbArg),
     getNumParam("slow_days_threshold", 180, dbArg),
+    salesWindow(db),
   ]);
+  const months3 = maxYm ? lastMonths(maxYm, 3) : [];
+  const salesWindowEvidence: InventorySalesWindow = { months: months3, latestMonth: maxYm, divisorDays: DAILY_WINDOW_DAYS };
 
   const emptyResult = (): InvAnalyticsResult => ({
+    salesWindow: salesWindowEvidence,
     rows: [],
     total: 0,
     summary: { skuCount: 0, agingTotals: emptyAging(), avgTurns: null, avgDio: null, unknownOriginQty: 0, windowDays },
     today,
+    snapDate: null,
     coverAlertDays,
     slowDaysThreshold,
     avgOnHandNote: AVG_ONHAND_NOTE,
@@ -140,36 +149,23 @@ export async function getInventoryAnalytics(
   if (skuRows.length === 0) return emptyResult();
   const skuIds = skuRows.map((s) => s.id);
 
-  /* ── 在库：实时账 + 快照仓最新快照（口径同 report/risk.ts） ── */
-  const balRows: { skuId: number; qty: string | null }[] = await db
-    .select({ skuId: schema.stockBalances.skuId, qty: sql<string | null>`sum(${schema.stockBalances.qty})` })
-    .from(schema.stockBalances)
-    .groupBy(schema.stockBalances.skuId);
-  const onHandBySku = new Map<number, number>(balRows.map((r) => [r.skuId, num(r.qty)]));
-  const s = schema.stockSnapshots;
-  const latest = db
-    .select({ warehouseId: s.warehouseId, skuId: s.skuId, maxDate: sql<string>`max(${s.bizDate})`.as("max_date") })
-    .from(s)
-    .groupBy(s.warehouseId, s.skuId)
-    .as("latest");
-  const snapRows: { skuId: number; qty: string }[] = await db
-    .select({ skuId: s.skuId, qty: s.qty })
-    .from(s)
-    .innerJoin(latest, and(eq(latest.warehouseId, s.warehouseId), eq(latest.skuId, s.skuId), eq(latest.maxDate, s.bizDate)));
-  for (const r of snapRows) onHandBySku.set(r.skuId, (onHandBySku.get(r.skuId) ?? 0) + num(r.qty));
+  /* ── 在库：core/stock-view.getOnHandBySku 唯一权威（实时账 + 快照仓最新快照，decimal 累加，带快照时点）——
+        此前本地逐字复制了一份「Σ余额 + 最新快照子查询」并用 float 累加，且不出 snapDate，页面无法标注数据时点。 ── */
+  const onHandView = await getOnHandBySku(db, { skuIds });
+  const onHandBySku = new Map<number, number>();
+  for (const [skuId, qty] of onHandView.bySku) onHandBySku.set(skuId, num(qty));
+  const snapDate = onHandView.snapDate;
 
   /* ── 销速：近3月窗口 ÷ 91（core/velocity 唯一口径） ── */
   const sm = schema.salesMonthly;
-  const { maxYm } = await salesWindow(db);
-  const months3 = maxYm ? lastMonths(maxYm, 3) : [];
-  const salesRows: { skuId: number; qty: string | null }[] = months3.length
+  const salesRows: { skuId: number; qty: string; months: number }[] = months3.length
     ? await db
-        .select({ skuId: sm.skuId, qty: sql<string | null>`sum(${sm.qty})` })
+        .select({ skuId: sm.skuId, qty: sql<string>`sum(${sm.qty})::text`, months: sql<number>`count(distinct ${sm.yearMonth})::int` })
         .from(sm)
         .where(inArray(sm.yearMonth, months3))
         .groupBy(sm.skuId)
     : [];
-  const dailyBySku = new Map<number, number>(salesRows.map((r) => [r.skuId, dailyFromWindow(num(r.qty))]));
+  const salesBySku = new Map(salesRows.map((r) => [r.skuId, r]));
 
   /* ── 窗口出库：stock_ledger qtyDelta<0 → Σ(-qtyDelta)（本表无出入库标志列） ── */
   const sl = schema.stockLedger;
@@ -210,7 +206,11 @@ export async function getInventoryAnalytics(
   const all: InvAnalyticsRow[] = [];
   for (const sku of skuRows) {
     const onHand = onHandBySku.get(sku.id) ?? 0;
-    const daily = dailyBySku.get(sku.id) ?? 0;
+    const sales = salesBySku.get(sku.id);
+    const salesMonths = sales?.months ?? 0;
+    const salesState = !sales ? "missing" : salesMonths === 3 ? "registered" : "partial";
+    // 不把缺月按0补齐；复用历史三月分母，保留原始日均供几何和天数同源使用。
+    const daily = salesState === "registered" ? dailyFromWindow(num(sales!.qty)) : null;
     const outQty = outBySku.get(sku.id) ?? 0;
     // ⚠ 简化：平均在库 = 当前在库（无历史日库存，见文件头）
     const avgOnHand = onHand;
@@ -225,8 +225,11 @@ export async function getInventoryAnalytics(
       name: sku.name,
       brand: sku.brand,
       onHand: r2(onHand),
-      daily: r2(daily),
-      daysCover: r1n(coverDays(onHand, daily)),
+      salesQty: sales?.qty ?? null,
+      salesMonths,
+      salesState,
+      daily,
+      daysCover: daily == null ? null : r1n(coverDays(onHand, daily)),
       outQty: r2(outQty),
       avgOnHand: r2(avgOnHand),
       turns: t.turns == null ? null : r2(t.turns),
@@ -257,6 +260,7 @@ export async function getInventoryAnalytics(
   filtered.sort((a, b) => b.onHand - a.onHand);
 
   return {
+    salesWindow: salesWindowEvidence,
     rows: filtered.slice((page - 1) * pageSize, page * pageSize),
     total: filtered.length,
     summary: {
@@ -268,6 +272,7 @@ export async function getInventoryAnalytics(
       windowDays,
     },
     today,
+    snapDate,
     coverAlertDays,
     slowDaysThreshold,
     avgOnHandNote: AVG_ONHAND_NOTE,

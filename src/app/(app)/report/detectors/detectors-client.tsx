@@ -13,6 +13,8 @@ import { fetchJson } from "@/components/fetchJson";
 import { exportCsv } from "@/components/exportCsv";
 import { formatQty } from "@/components/format";
 import ListToolbar from "@/components/ListToolbar";
+import { AsyncExportButton } from "@/components/ExportButton";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 import { useListState } from "@/components/useListState";
 import CaliberNote from "@/components/CaliberNote";
 
@@ -70,6 +72,7 @@ export default function DetectorsClient() {
   const { message } = App.useApp();
   const [data, setData] = useState<DetectorData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const listState = useListState({ key: "detectors", defaults: { q: "", kind: "" }, defaultPageSize: 50 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
@@ -77,11 +80,13 @@ export default function DetectorsClient() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (kind) params.set("kind", kind);
       setData(await fetchJson<DetectorData>(`/api/report/detectors?${params.toString()}`));
     } catch (e) {
+      setLoadError((e as Error).message);
       message.error((e as Error).message);
     } finally {
       setLoading(false);
@@ -196,33 +201,39 @@ export default function DetectorsClient() {
         message="规则化侦测，命中即提示，需人工确认"
         description="本页不是结论：销量归零可能是链接下架/失效，也可能是季节性、断货或换新链接；渠道位移可能是活动节奏。请结合链接状态、活动排期与实际库存核实后再决策。"
       />
+      <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="异动侦测" retrying={loading} />
+      {/* 未加载 = 「—」而不是 0：接口失败时「0 项命中」会被读成「一切正常」 */}
       <Space className="compact-stat-strip" wrap>
         <Card size="small" style={{ minWidth: 150 }}>
-          <Statistic title="销量骤停" value={s?.salesStop ?? 0} valueStyle={{ color: "#cf1322" }} suffix="项" />
+          <Statistic title="销量骤停" value={s ? s.salesStop : "—"} valueStyle={{ color: "#cf1322" }} suffix="项" />
         </Card>
         <Card size="small" style={{ minWidth: 150 }}>
-          <Statistic title="渠道迁移" value={s?.channelShift ?? 0} valueStyle={{ color: "#722ed1" }} suffix="项" />
+          <Statistic title="渠道迁移" value={s ? s.channelShift : "—"} valueStyle={{ color: "#722ed1" }} suffix="项" />
         </Card>
         <Card size="small" style={{ minWidth: 150 }}>
-          <Statistic title="速度突变" value={s?.velocity ?? 0} valueStyle={{ color: "#1677ff" }} suffix="项" />
+          <Statistic title="速度突变" value={s ? s.velocity : "—"} valueStyle={{ color: "#1677ff" }} suffix="项" />
         </Card>
         <Card size="small" style={{ minWidth: 170 }}>
           {/* 三项之和 > 待看 SKU 数，差额就是同一 SKU 中多条的重叠量——把它摆出来，
               否则「554」会被读成「554 个东西要处理」，实际只有 343 个对象 */}
           <Statistic
             title="待看 SKU"
-            value={s?.affectedSkus ?? 0}
+            value={s ? s.affectedSkus : "—"}
             suffix={s ? `个（其中 ${s.multiHitSkus} 个中多条）` : "个"}
             valueStyle={{ color: "#d4380d" }}
           />
         </Card>
         <Card size="small" style={{ minWidth: 150 }}>
-          <Statistic title="扫描成品 SKU" value={s?.scanned ?? 0} suffix="个" />
+          <Statistic title="扫描成品 SKU" value={s ? s.scanned : "—"} suffix="个" />
         </Card>
       </Space>
       <ListToolbar
         state={listState}
         onExport={() => void doExport()}
+        primaryActions={
+          /* W2-4：页脚一直在推销的「导出任务」现在真的有入口（EXPORT_KINDS.detectors） */
+          <AsyncExportButton kind="detectors" params={{ q, ...(kind ? { kind } : {}) }} />
+        }
         extra={
           <>
             {KIND_ORDER.map((k) => (

@@ -1,11 +1,16 @@
 "use client";
 
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+import DocumentDrawer from "@/components/DocumentDrawer";
+import ApprovalTimeline from "@/components/ApprovalTimeline";
+
 import { Suspense, useCallback, useEffect, useState } from "react";
 import {
   App,
   Button,
   Descriptions,
-  Drawer,
   Form,
   Input,
   InputNumber,
@@ -42,6 +47,10 @@ interface PcRow {
   version: number;
   createdByName: string | null;
   createdAt: string;
+}
+
+interface PcDetail extends PcRow {
+  approvals: { approverName: string | null; action: "approve" | "reject"; comment: string | null; createdAt: string }[];
 }
 
 interface CreateFormValues {
@@ -86,7 +95,7 @@ function PcInner() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "pc", defaults: { status: "" }, defaultPageSize: 20 });
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "pc", defaults: { status: "" }, defaultPageSize: 20 });
   const { page, pageSize } = listState;
   const status = listState.filters.status;
 
@@ -94,7 +103,11 @@ function PcInner() {
   const [saving, setSaving] = useState(false);
   const [jgOptions, setJgOptions] = useState<{ value: number; label: string }[]>([]);
 
-  const [current, setCurrent] = useState<PcRow | null>(null);
+  const documentSelection = useDocumentTarget();
+  const { id: detailId, setId: setDetailId } = documentSelection;
+  useEffect(() => { setRejectOpen(false); }, [detailId]);
+  const detailRead = useDocumentRead<PcDetail>(detailId == null ? null : `/api/outsource/pc/${detailId}`);
+  const current = detailRead.data;
   const [actionLoading, setActionLoading] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
@@ -170,7 +183,7 @@ function PcInner() {
         version: row.version,
       });
       message.success(action === "approve" ? "审批已通过" : "已驳回");
-      setCurrent(null);
+      setDetailId(null);
       setRejectOpen(false);
       setRejectComment("");
       void load();
@@ -186,7 +199,7 @@ function PcInner() {
       title: "单据号",
       dataIndex: "docNo",
       width: 160,
-      render: (v: string, r) => <Typography.Link onClick={() => setCurrent(r)}>{v}</Typography.Link>,
+      render: (v: string, r) => <Typography.Link onClick={() => setDetailId(r.id)}>{v}</Typography.Link>,
     },
     {
       title: "对象",
@@ -223,7 +236,7 @@ function PcInner() {
       key: "_actions",
       width: 80,
       render: (_, r) => (
-        <Button type="link" size="small" onClick={() => setCurrent(r)}>
+        <Button type="link" size="small" onClick={() => setDetailId(r.id)}>
           查看
         </Button>
       ),
@@ -309,7 +322,8 @@ function PcInner() {
         </Form>
       </Modal>
 
-      <Drawer
+      <DocumentDrawer
+        key={detailId ?? "invalid-document"}
         title={
           current ? (
             <Space>
@@ -320,8 +334,11 @@ function PcInner() {
             "价格变更详情"
           )
         }
-        open={current != null}
-        onClose={() => setCurrent(null)}
+        open={documentSelection.present}
+        loading={detailRead.phase === "loading"}
+        readError={documentSelection.error ?? detailRead.error}
+        onRetry={detailId != null ? detailRead.retry : undefined}
+        onClose={() => setDetailId(null)}
         width={560}
         extra={
           current && current.status === "pending" ? (
@@ -348,7 +365,7 @@ function PcInner() {
         }
       >
         {current ? (
-          <Descriptions column={1} size="small" bordered>
+          <><Descriptions column={1} size="small" bordered>
             <Descriptions.Item label="变更对象">{TARGET_LABELS[current.target]}</Descriptions.Item>
             <Descriptions.Item label="关联单据">{targetText(current)}</Descriptions.Item>
             <Descriptions.Item label="原价">{current.oldPrice ?? "—"}</Descriptions.Item>
@@ -364,8 +381,9 @@ function PcInner() {
               {dayjs(current.createdAt).format("YYYY-MM-DD HH:mm")}
             </Descriptions.Item>
           </Descriptions>
+          <ApprovalTimeline items={current.approvals} /></>
         ) : null}
-      </Drawer>
+      </DocumentDrawer>
 
       <Modal
         title="驳回价格变更"

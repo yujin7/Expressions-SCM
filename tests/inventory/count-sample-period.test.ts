@@ -15,9 +15,9 @@ import { createCountTask, getCountTask, listCountTasks } from "@/server/modules/
 async function setup() {
   const { db } = await createTestDb();
   const [user] = await db.insert(users).values({
-    username: "pd_actor", name: "仓管", roles: ["ops"], isApprover: false,
+    username: "pd_actor", name: "仓管", roles: ["warehouse"], isApprover: false,
   }).returning();
-  const actor = { id: user.id, name: user.name, roles: ["ops"], isApprover: false };
+  const actor = { id: user.id, name: user.name, roles: user.roles, isApprover: false };
   const [wh] = await db.insert(warehouses).values({
     code: "WH-PD", name: "盘点测试仓", kind: "finished", accountingMode: "realtime", active: true,
   }).returning();

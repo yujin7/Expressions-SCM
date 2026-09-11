@@ -8,10 +8,12 @@ import {
   feishuTargetEvidenceBinding,
 } from "@/server/integrations/feishu";
 import {
+  JIANDAOYUN_FORM_CONTRACTS,
   jiandaoyunContract,
   jiandaoyunContractSetEvidenceBinding,
 } from "@/server/integrations/jiandaoyun-contracts";
 import { jstLiveEvidenceBinding } from "@/server/integrations/jst";
+import { YONYOU_READ_CONTRACTS } from "@/server/integrations/yonyou-contracts";
 
 const envKeys = [
   "JST_APP_KEY", "JST_APP_SECRET", "JST_ACCESS_TOKEN", "JST_SYNC_ACTOR_ID", "JST_BASE_URL",
@@ -169,7 +171,7 @@ describe("外部连接器目录", () => {
       });
   });
 
-  it("用友通用就绪对象只声明八条白名单范围且不把鉴权配置当作授权成功", () => {
+  it("用友通用就绪对象从当前白名单计算范围且不把鉴权配置当作授权成功", () => {
     process.env.YY_APP_KEY = "app";
     process.env.YY_APP_SECRET = "secret";
     const row = getConnectorReadiness(process.env, NOW).find((item) => item.key === "yy");
@@ -179,9 +181,62 @@ describe("外部连接器目录", () => {
       managementUrl: "https://c4.yonyoucloud.com/",
     });
     const text = row?.remediationSteps.join("\n") ?? "";
-    expect(text).toContain("代码白名单中的 8 项只读 API");
+    expect(text).toContain(`代码白名单中的 ${YONYOU_READ_CONTRACTS.length} 项只读 API`);
     expect(text).not.toContain("供应商档案列表查询");
     expect(text).toContain("禁止只按名称猜测");
+  });
+
+  it("连接器静态说明不冒充当前探针或同步成功；用友只展示已实现的只读能力", () => {
+    const jdy = getConnectorReadiness({ NODE_ENV: "test" }, NOW).find((row) => row.key === "jdy")!;
+    const yy = getConnectorReadiness({ NODE_ENV: "test" }, NOW).find((row) => row.key === "yy")!;
+    expect(jdy.blocker).toContain("已选数量仅反映当前配置");
+    expect(jdy.blocker).toContain("不代表同步成功或 UAT 通过");
+    expect(jdy.blocker).not.toMatch(/\d+\s*条(?:显式观察契约|现行已选)/);
+    expect(yy.label).toContain("只读观察");
+    expect(yy.systemOfRecord).toContain("不回写凭证或结算");
+    expect(yy.capabilities).toEqual([
+      "read-only-contract-observations",
+      "immutable-evidence-and-staging",
+      "field-profile-without-values",
+      "schema-drift-guard",
+    ]);
+    expect(yy.blocker).toContain("以带时间和范围的探针及运行记录为准");
+    expect(yy.blocker).not.toMatch(/已实测打通|token 正常|当前均返回|HTTP 403|310037/);
+    expect(yy.effectiveCapabilities).toEqual([]);
+    expect(yy.operational).toBe(false);
+  });
+
+  it("简道云选择数只取运行配置并去重，全部已定义也不等于同步成功或 UAT", () => {
+    const keys = JIANDAOYUN_FORM_CONTRACTS.map((contract) => contract.key);
+    expect(keys.length).toBeGreaterThan(1);
+    const env = {
+      NODE_ENV: "test",
+      JIANDAOYUN_API_KEY: "test-only-key",
+      JIANDAOYUN_SYNC_ACTOR_ID: "3",
+      JIANDAOYUN_SYNC_ENABLED: "true",
+    } satisfies NodeJS.ProcessEnv;
+    for (const selection of [[], [keys[0]], [keys[0], keys[0]], keys]) {
+      const row = getConnectorReadiness({
+        ...env,
+        JIANDAOYUN_SYNC_CONTRACTS: selection.join(","),
+      }, NOW).find((item) => item.key === "jdy")!;
+      expect(row).toMatchObject({
+        configured: true,
+        selectedContractCount: new Set(selection).size,
+        contractSelectionState: selection.length ? "selected" : "missing",
+        liveVerificationState: "missing",
+        configurationReady: false,
+        operational: false,
+      });
+    }
+    expect(getConnectorReadiness({
+      ...env,
+      JIANDAOYUN_SYNC_CONTRACTS: `${keys[0]},not-a-defined-contract`,
+    }, NOW).find((row) => row.key === "jdy")).toMatchObject({
+      contractSelectionState: "invalid",
+      selectedContractCount: 0,
+      operational: false,
+    });
   });
 
   it("简道云把凭据、启用开关、契约选择和 UAT 分别判定", () => {

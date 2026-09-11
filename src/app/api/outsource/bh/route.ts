@@ -5,10 +5,18 @@ import { createBh, listBhs } from "@/server/modules/outsource/bh";
 
 export async function GET(req: NextRequest) {
   try {
-    await guardRead();
+    // D62：受限 ops 只见本人制单或本渠道制单人的单据（service 内按 user.channelScope 裁剪）
+    const user = await guardRead();
     const { q, page, pageSize, searchParams } = parseListQuery(req.url);
     return NextResponse.json(
-      await listBhs(q, { status: searchParams.get("status") ?? undefined, page, pageSize }),
+      await listBhs(q, {
+        status: searchParams.get("status") ?? undefined,
+        // 制单时间窗（全链漏斗回链）
+        from: searchParams.get("from") ?? undefined,
+        to: searchParams.get("to") ?? undefined,
+        page,
+        pageSize,
+      }, undefined, user),
     );
   } catch (e) {
     return errorResponse(e);

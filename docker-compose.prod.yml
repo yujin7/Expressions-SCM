@@ -25,6 +25,8 @@ services:
     build:
       context: .
       target: migrator
+      args:
+        SCM_BUILD_REVISION: ${SCM_BUILD_REVISION-}
     profiles: ["tools"]
     depends_on:
       db:
@@ -42,6 +44,7 @@ services:
         # 有 PUBLIC_HTTPS=1 但响应头里没有 HSTS。走稳定 HTTPS 域名时才置 1，
         # 且必须重新构建镜像：docker compose build --build-arg PUBLIC_HTTPS=1 app
         PUBLIC_HTTPS: ${PUBLIC_HTTPS-}
+        SCM_BUILD_REVISION: ${SCM_BUILD_REVISION-}
     restart: unless-stopped
     depends_on:
       db:

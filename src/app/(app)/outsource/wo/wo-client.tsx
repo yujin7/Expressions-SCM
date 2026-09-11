@@ -1,9 +1,15 @@
 "use client";
 
+import { useDocumentTarget } from "@/components/useDocumentTarget";
+import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
+import { useDocumentRead } from "@/components/useDocumentRead";
+import { formatQty } from "@/components/format";
+import DocumentDrawer from "@/components/DocumentDrawer";
+
 import SearchInput from "@/components/SearchInput";
 
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { App, Alert, Button, DatePicker, Descriptions, Divider, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import { App, Alert, Button, DatePicker, Descriptions, Divider, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
   DeleteOutlined,
@@ -14,8 +20,11 @@ import {
 } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import RemoteSelect from "@/components/RemoteSelect";
+import SourcingAidPanel from "./sourcing-aid-panel";
 import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
+import DocTransitionActions from "@/components/DocTransitionActions";
+import DocWindowFilterTag from "@/components/DocWindowFilterTag";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
@@ -106,6 +115,9 @@ const STATUS_TABS = [
   { key: "draft", label: "草稿" },
   { key: "pending", label: "待审批" },
   { key: "approved", label: "已审批" },
+  // 手工收口后单据落到 completed/closed，没有页签就等于「短关完就找不到了」
+  { key: "completed", label: "已完成" },
+  { key: "closed", label: "已短关" },
 ];
 
 function WoActions({
@@ -147,6 +159,21 @@ function WoActions({
           提交
         </Button>
       </Popconfirm>
+    );
+  }
+
+  // 已审批之后没有任何「收口」动作时，工单永远停在半路（在办量只增不减）——补手工完成/短关
+  if (doc.status === "approved" || doc.status === "in_progress") {
+    return (
+      <DocTransitionActions
+        docType="wo"
+        doc={doc}
+        onChanged={onChanged}
+        labels={{
+          completeHint: "标记本工单已完工：加工通知单与收货已按实际收口，后续不再产生新的收货。",
+          shortCloseHint: "短关＝加工厂不再继续做这张工单的剩余数量（少做/终止/换厂）。已发生的加工与收货保持不变，仅停止后续执行。",
+        }}
+      />
     );
   }
 
@@ -222,20 +249,30 @@ function WoInner() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
-  const listState = useListState({ key: "wo", defaults: { q: "", status: "" }, defaultPageSize: 20 });
+  // from/to = 制单时间窗（上海业务日，含首尾）：全链漏斗「下单」级点数字回链到本页时带过来
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "wo", defaults: { q: "", status: "", from: "", to: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
+  const from = filters.from;
+  const to = filters.to;
 
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [bhOptions, setBhOptions] = useState<{ value: number; label: string }[]>([]);
+  const [bhOptions, setBhOptions] = useState<{ value: number; label: string; orderType: string | null }[]>([]);
 
-  const [detailId, setDetailId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<WoDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  /** 该 WO 已生成的 JG 单号（null=未生成） */
-  const [existingJgNo, setExistingJgNo] = useState<string | null>(null);
+  const documentSelection = useDocumentTarget();
+  const { id: detailId, setId: setDetailId } = documentSelection;
+  useEffect(() => { setGenOpen(false); }, [detailId]);
+  const detailRead = useDocumentRead<WoDetail>(detailId == null ? null : `/api/outsource/wo/${detailId}`);
+  const detail = detailRead.data;
+  const detailLoading = detailRead.phase === "loading";
+  const generatedJg = useDocumentRead<{ rows: { docNo: string }[] }>(
+    detail?.status === "approved" ? `/api/outsource/jg?woId=${detail.id}&page=1&pageSize=1` : null,
+  );
+  const generatedKnown = generatedJg.phase === "success" && Array.isArray(generatedJg.data?.rows);
+  const existingJgNo = generatedKnown ? generatedJg.data?.rows[0]?.docNo ?? null : null;
+  const loadDetail = () => { detailRead.retry(); generatedJg.retry(); };
 
   const [genOpen, setGenOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -245,6 +282,8 @@ function WoInner() {
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (status) params.set("status", status);
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
       const res = await fetchJson<{ rows: WoRow[]; total: number }>(
         `/api/outsource/wo?${params.toString()}`,
       );
@@ -255,43 +294,13 @@ function WoInner() {
     } finally {
       setLoading(false);
     }
-  }, [q, status, page, pageSize, message]);
+  }, [q, status, from, to, page, pageSize, message]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const loadDetail = useCallback(
-    async (id: number) => {
-      setDetailLoading(true);
-      try {
-        const res = await fetchJson<WoDetail>(`/api/outsource/wo/${id}`);
-        setDetail(res);
-        if (res.status === "approved") {
-          // 委外链列表统一返回 {rows,total}
-          const jgs = await fetchJson<{ rows: { docNo: string }[]; total: number }>(
-            `/api/outsource/jg?woId=${id}&page=1&pageSize=1`,
-          );
-          setExistingJgNo(jgs.rows[0]?.docNo ?? null);
-        } else {
-          setExistingJgNo(null);
-        }
-      } catch (e) {
-        message.error((e as Error).message);
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [message],
-  );
 
-  useEffect(() => {
-    if (detailId != null) void loadDetail(detailId);
-    else {
-      setDetail(null);
-      setExistingJgNo(null);
-    }
-  }, [detailId, loadDetail]);
 
   // 创建弹窗打开时拉取已审批 BH 供关联（委外链列表返回 {rows,total}，RemoteSelect 不适用）
   useEffect(() => {
@@ -305,6 +314,7 @@ function WoInner() {
           setBhOptions(
             res.rows.map((r) => ({
               value: r.id,
+              orderType: r.orderType,
               label: `${r.docNo}${r.orderType ? `（${formatOrderType(r.orderType)}）` : ""}`,
             })),
           );
@@ -398,7 +408,7 @@ function WoInner() {
           </div>
         ),
       });
-      void loadDetail(detail.id);
+      void loadDetail();
       void load();
     } catch (e) {
       if (e instanceof Error && e.message) message.error(e.message);
@@ -492,14 +502,17 @@ function WoInner() {
           </>
         }
         extra={
-          <SearchInput
-            key={q}
-            allowClear
-            defaultValue={q}
-            placeholder="搜索单号 / SKU 编码 / 货品名称"
-            style={{ width: 240 }}
-            onSearch={(value) => listState.setFilter({ q: value.trim() })}
-          />
+          <>
+            <SearchInput
+              key={q}
+              allowClear
+              defaultValue={q}
+              placeholder="搜索单号 / SKU 编码 / 货品名称"
+              style={{ width: 240 }}
+              onSearch={(value) => listState.setFilter({ q: value.trim() })}
+            />
+            <DocWindowFilterTag from={from} to={to} onClear={() => listState.setFilter({ from: "", to: "" })} />
+          </>
         }
       />
       <Table<WoRow>
@@ -526,7 +539,8 @@ function WoInner() {
       >
         <Form form={form} layout="vertical">
           <Form.Item name="bhId" label="关联备货申请（可选，仅已审批）">
-            <Select allowClear showSearch optionFilterProp="label" options={bhOptions} placeholder="选择备货申请" />
+            <Select allowClear showSearch optionFilterProp="label" options={bhOptions} placeholder="选择备货申请"
+              onChange={(id: number | undefined) => form.setFieldValue("orderType", bhOptions.find(b => b.value === id)?.orderType ?? undefined)} />
           </Form.Item>
           <Form.Item
             name="productSkuId"
@@ -564,8 +578,8 @@ function WoInner() {
           <Form.Item name="dueDate" label="交期">
             <DatePicker style={{ width: "100%" }} />
           </Form.Item>
-          <Form.Item name="orderType" label="订单类型">
-            <Select allowClear options={toOptions(ORDER_TYPE_LABELS)} placeholder="常规备货/新品首单/紧急需求/月备货" />
+          <Form.Item name="orderType" label="订单类型" extra="关联申请已有类型时必须继承；未分类或无来源时可人工明确。成品返单的10–20天是目标，不能用首批收货代表全量交付。">
+            <Select allowClear options={toOptions(ORDER_TYPE_LABELS)} placeholder="选择类型；关联申请留空时继承来源" />
           </Form.Item>
           <Form.Item name="remark" label="备注">
             <Input.TextArea rows={2} maxLength={500} />
@@ -573,7 +587,8 @@ function WoInner() {
         </Form>
       </Modal>
 
-      <Drawer
+      <DocumentDrawer
+        key={detailId ?? "invalid-document"}
         title={
           detail ? (
             <Space>
@@ -584,14 +599,16 @@ function WoInner() {
             "委外工单详情"
           )
         }
-        open={detailId != null}
+        open={documentSelection.present}
+        readError={documentSelection.error ?? detailRead.error}
+        onRetry={detailId != null ? detailRead.retry : undefined}
         onClose={() => setDetailId(null)}
         width={860}
         loading={detailLoading}
         extra={
           detail ? (
             <Space>
-              {detail.status === "approved" && existingJgNo == null ? (
+              {detail.status === "approved" && generatedKnown && existingJgNo == null ? (
                 <Button type="primary" icon={<ThunderboltOutlined />} onClick={openGenerate}>
                   生成单据
                 </Button>
@@ -599,7 +616,7 @@ function WoInner() {
               <WoActions
                 doc={{ id: detail.id, status: detail.status, version: detail.version }}
                 onChanged={() => {
-                  void loadDetail(detail.id);
+                  void loadDetail();
                   void load();
                 }}
               />
@@ -610,6 +627,12 @@ function WoInner() {
         {detail ? (
           <div>
             <ChainStrip docType="wo" id={detail.id} />
+            {detail.status === "approved" && !generatedKnown ? (
+              <Alert type={generatedJg.phase === "loading" ? "info" : "warning"} showIcon
+                message={generatedJg.phase === "loading" ? "正在核对已生成单据…" : "暂不能核实是否已生成加工通知单"}
+                description={generatedJg.error ?? "核对成功后才可生成单据，避免重复操作。"}
+                action={generatedJg.phase !== "loading" ? <Button onClick={generatedJg.retry}>重试核对</Button> : undefined} />
+            ) : null}
             {detail.status === "approved" && existingJgNo != null ? (
               <Alert
                 type="info"
@@ -618,11 +641,11 @@ function WoInner() {
                 message={`该工单已生成加工通知单 ${existingJgNo}，不可重复生成。`}
               />
             ) : null}
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="成品">
                 {detail.productSkuCode} {detail.productSkuName}
               </Descriptions.Item>
-              <Descriptions.Item label="数量">{detail.qty}</Descriptions.Item>
+              <Descriptions.Item label="数量">{formatQty(detail.qty)}</Descriptions.Item>
               <Descriptions.Item label="加工厂">{detail.supplierName}</Descriptions.Item>
               <Descriptions.Item label="加工费计划单价">
                 {detail.feeRatePlan != null ? detail.feeRatePlan : "—"}
@@ -637,7 +660,7 @@ function WoInner() {
               <Descriptions.Item label="制单时间">
                 {dayjs(detail.createdAt).format("YYYY-MM-DD HH:mm")}
               </Descriptions.Item>
-              <Descriptions.Item label="备注" span={2}>
+              <Descriptions.Item label="备注" span={{ xs: 1, sm: 2 }}>
                 {detail.remark ?? "—"}
               </Descriptions.Item>
             </Descriptions>
@@ -664,7 +687,7 @@ function WoInner() {
             ) : null}
           </div>
         ) : null}
-      </Drawer>
+      </DocumentDrawer>
 
       <Modal
         title={`生成采购订单 / 加工通知单${detail ? ` — ${detail.docNo}` : ""}`}
@@ -683,6 +706,11 @@ function WoInner() {
           showIcon
           style={{ marginBottom: 16 }}
           message="按需求快照预填：可按供应商分组拆分 PO（0..n 张），数量/单价逐行可改；同时生成 1 张加工通知单。"
+        />
+        {/* W2 审计 6：这里是全系统唯一一个真的在选供应商的地方，此前只有一个光秃秃的下拉框。
+            面板只读——摆事实，不排名次、不自动改表单。 */}
+        <SourcingAidPanel
+          skuOptions={(detail?.lines ?? []).map((l) => ({ value: l.materialSkuId, label: `${l.skuCode} ${l.skuName}` }))}
         />
         <Form form={genForm} layout="vertical">
           <Form.List name="poGroups">

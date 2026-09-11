@@ -11,7 +11,8 @@
  * - 重复下单 → outsource/duplicate-guard（同一守卫，不另写一套判定）
  * 只读、不写库；失败不得阻断审批（调用方 catch 后照常渲染审批按钮）。
  */
-import {  eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
+import { bhReadScope, type BhReadUser } from "@/server/core/bh-read-scope";
 import { coverDays } from "@/server/core/stock-view";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
@@ -19,6 +20,7 @@ import { ApiError } from "@/server/modules/master/common";
 import { getSkuFacts } from "@/server/core/sku-facts";
 import { checkRecentOrders } from "@/server/modules/outsource/duplicate-guard";
 import { num, r1 } from "@/server/core/svc";
+import { getBhOrigin } from "@/server/modules/outsource/bh-origin";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -41,6 +43,7 @@ export interface BriefLine {
 }
 
 export interface ApprovalBrief {
+  scopeNote?: string;
   docType: string;
   docId: number;
   docNo: string;
@@ -54,12 +57,12 @@ export interface ApprovalBrief {
 /** 支持简报的单据类型（当前：BH——数量型需求单，审批最需要上下文） */
 const SUPPORTED = new Set(["bh"]);
 
-export async function getApprovalBrief(docType: string, docId: number, dbArg?: AnyDb): Promise<ApprovalBrief> {
+export async function getApprovalBrief(docType: string, docId: number, dbArg?: AnyDb, user?: BhReadUser): Promise<ApprovalBrief> {
   const t = String(docType ?? "").toLowerCase();
   if (!SUPPORTED.has(t)) throw new ApiError(400, `暂不支持该单据类型的审批简报：${docType}`);
   const db: AnyDb = dbArg ?? (await getDbAsync());
 
-  const [doc] = await db.select().from(schema.bhDocs).where(eq(schema.bhDocs.id, docId));
+  const [doc] = await db.select().from(schema.bhDocs).where(and(eq(schema.bhDocs.id, docId), bhReadScope(db, user)));
   if (!doc) throw new ApiError(404, "单据不存在");
 
   const lines: { skuId: number; qty: string }[] = await db
@@ -75,12 +78,7 @@ export async function getApprovalBrief(docType: string, docId: number, dbArg?: A
   }
   const skuIds = [...new Set(lines.map((l) => l.skuId))];
 
-  /* 来源：审计里若有 draft_bh/first_order_draft 指向本单号，说明是系统建议产物 */
-  const auditRows: { action: string; after: unknown }[] = await db
-    .select({ action: schema.auditLogs.action, after: schema.auditLogs.after })
-    .from(schema.auditLogs)
-    .where(inArray(schema.auditLogs.action, ["draft_bh", "first_order_draft"]));
-  const fromSuggestion = auditRows.some((r) => (r.after as { docNo?: string } | null)?.docNo === doc.docNo);
+  const origin = await getBhOrigin(db, docId, doc.docNo);
 
   /* 主档 + 在库 + 销速 */
   const skuRows: { id: number; code: string; name: string; baseUom: string }[] = await db
@@ -100,7 +98,7 @@ export async function getApprovalBrief(docType: string, docId: number, dbArg?: A
   const dailyBySku = new Map<number, number>([...facts.bySku].map(([id, f]) => [id, f.daily]));
 
   /* 重复下单守卫（同一守卫）；未结供给已随 facts 装配 */
-  const dup = await checkRecentOrders(skuIds, 7, db);
+  const dup = await checkRecentOrders(skuIds, 7, db, user);
 
   const briefLines: BriefLine[] = lines.map((l) => {
     const sku = skuById.get(l.skuId);
@@ -133,15 +131,11 @@ export async function getApprovalBrief(docType: string, docId: number, dbArg?: A
   });
 
   return {
+    ...(dup.scopeNote ? { scopeNote: dup.scopeNote } : {}),
     docType: t,
     docId,
     docNo: doc.docNo,
-    origin: {
-      fromSuggestion,
-      note: fromSuggestion
-        ? "由系统建议生成的草稿（补货建议/NPD 首单）——建议量已含安全库存与逐日推演"
-        : "人工直录单据——系统未参与数量测算",
-    },
+    origin,
     lines: briefLines,
     summary: {
       lineCount: briefLines.length,

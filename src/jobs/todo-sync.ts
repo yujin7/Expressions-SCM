@@ -1,0 +1,92 @@
+/**
+ * D61 待办同步任务（不在此注册；建议编排方登记到 scheduler：每 30 分钟，cron `0,30 * * * *`）。
+ *
+ *  1. 投影触发：system_alerts(open) / review_items(open，类别 blocked… 与 doc_aging) → 待办候选 → service.projectCandidates
+ *     （指纹去重、7 天内 reopen；默认指派该责任角色最早在职用户，无则 admin）。
+ *  2. 到期提醒：今天到期或已逾期且未完成的待办 → 定向站内 + 飞书私聊（有 union_id 时）
+ *     dedupeKey task:{id}:due:{today}（每天至多一次；与告警群发不重叠——提醒只发给责任人）。
+ *
+ * 执行者：首个在职 admin（审计 userId）；无 admin 则跳过投影只做提醒。全部 best-effort。
+ */
+import { and, eq, sql } from "drizzle-orm";
+import { users } from "@/db/schema";
+import type { SessionUser } from "@/server/core/dto";
+import type { AnyDb } from "@/server/core/svc";
+import { closeStaleProjectedItems, listDueReminderTargets, projectCandidates, type ProjectCandidatesSummary } from "@/server/modules/todo/service";
+import { collectTodoCandidatesDetailed, type CollectTriggerOptions } from "@/server/modules/todo/triggers";
+import { enqueueNotification, isFeishuAppConfigured } from "./notify";
+import { shanghaiDayOf } from "@/server/core/business-day";
+
+export interface TodoSyncSummary {
+  projection: ProjectCandidatesSummary | null;
+  /** 来源告警/裁决项已关闭的投影待办自动取消 */
+  autoClosed: { scanned: number; cancelled: number } | null;
+  /** W2-#7：运营提报「标红未处置」→ review_items 的投影结果；不可用时 null */
+  reconcileProjection: { scanned: number; opened: number; closed: number; period: string | null } | null;
+  reminders: { scanned: number; enqueued: number };
+  actorId: number | null;
+}
+
+const dayShanghai = shanghaiDayOf;
+
+async function systemActor(db: AnyDb): Promise<SessionUser | null> {
+  const [u]: { id: number; name: string; roles: string[]; isApprover: boolean }[] = await db
+    .select({ id: users.id, name: users.name, roles: users.roles, isApprover: users.isApprover })
+    .from(users)
+    .where(and(eq(users.active, true), sql`'admin' = ANY(${users.roles})`))
+    .orderBy(users.id)
+    .limit(1);
+  return u ? { id: u.id, name: u.name, roles: u.roles, isApprover: u.isApprover } : null;
+}
+
+export async function runTodoSync(
+  db: AnyDb,
+  opts?: { now?: Date; triggers?: CollectTriggerOptions; feishuConfigured?: boolean },
+): Promise<TodoSyncSummary> {
+  const now = opts?.now ?? new Date();
+  const today = dayShanghai(now);
+  const actor = await systemActor(db);
+
+  /* W2-#7：先把「运营提报标红且未处置」投影成 review_items（有责任角色），再收集候选——
+     否则这些行只停在核对看板上，永远不会走到任何人面前。失败不反噬本轮同步。
+     动态 import 断环：replenish/reconcile → … 与 jobs/notify 同处一张模块图上。 */
+  let reconcileProjection: { scanned: number; opened: number; closed: number; period: string | null } | null = null;
+  try {
+    const { projectReconcileReviewItems } = await import("@/server/modules/replenish/reconcile");
+    reconcileProjection = await projectReconcileReviewItems(null, db);
+  } catch {
+    reconcileProjection = null;
+  }
+
+  let projection: ProjectCandidatesSummary | null = null;
+  let autoClosed: { scanned: number; cancelled: number } | null = null;
+  if (actor) {
+    // 预算截断（红队 A1）随投影汇总一起上报：告警风暴把窗口占满时必须看得见，不能只报 scanned/matched
+    const collected = await collectTodoCandidatesDetailed(db, opts?.triggers);
+    projection = await projectCandidates(db, collected.candidates, actor, { now, truncated: collected.truncated });
+    autoClosed = await closeStaleProjectedItems(db, actor, { now });
+  }
+
+  const feishu = opts?.feishuConfigured ?? isFeishuAppConfigured();
+  const due = await listDueReminderTargets(db, today);
+  let enqueued = 0;
+  for (const item of due) {
+    const state = item.dueDate === today ? "今天到期" : `已逾期（截止 ${item.dueDate}）`;
+    const title = `【待办提醒】${item.title}`;
+    const body = `${state}｜优先级 ${item.priority}｜责任角色 ${item.ownerRole ?? "-"}`;
+    const href = `/todo?mine_q=${encodeURIComponent(`#${item.id}`)}`;
+    if (await enqueueNotification(db, {
+      channel: "in_app", title, body, href, severity: item.overdue ? "high" : "info",
+      dedupeKey: `task:${item.id}:due:${today}`, userId: item.assigneeId,
+    })) enqueued++;
+    if (feishu) {
+      const [u]: { feishuUnionId: string | null }[] = await db
+        .select({ feishuUnionId: users.feishuUnionId }).from(users).where(eq(users.id, item.assigneeId));
+      if (u?.feishuUnionId && await enqueueNotification(db, {
+        channel: "feishu", title, body, href, severity: item.overdue ? "high" : "info",
+        dedupeKey: `task:${item.id}:due:${today}:feishu`, userId: item.assigneeId,
+      })) enqueued++;
+    }
+  }
+  return { projection, autoClosed, reconcileProjection, reminders: { scanned: due.length, enqueued }, actorId: actor?.id ?? null };
+}

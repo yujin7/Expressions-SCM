@@ -8,7 +8,9 @@ export async function GET(req: NextRequest) {
     await guardRead();
     const { q, page, pageSize, searchParams } = parseListQuery(req.url);
     const cell = searchParams.get("cell") ?? undefined;
-    const data = await getSegmentation({ q, cell, page, pageSize });
+    const tier = searchParams.get("tier") ?? undefined;
+    const ownership = searchParams.get("ownership") ?? undefined;
+    const data = await getSegmentation({ q, cell, tier, ownership, page, pageSize });
     return NextResponse.json(data);
   } catch (e) {
     return errorResponse(e);

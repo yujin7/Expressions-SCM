@@ -8,6 +8,7 @@ import {
   Button,
   Card,
   Col,
+  Grid,
   Progress,
   Radio,
   Row,
@@ -37,8 +38,12 @@ import {
 import { CopyOutlined, DownloadOutlined, ReloadOutlined } from "@ant-design/icons";
 
 import DecisionVisual from "@/components/DecisionVisual";
+import AnalysisSection from "@/components/AnalysisSection";
 import { VISUAL_COLOR } from "@/components/decision-visuals";
 import { fetchJson } from "@/components/fetchJson";
+import { hasAnyRole, useMe } from "@/components/useMe";
+import { PRICE_VISIBLE_ROLES, ROLE_LABELS } from "@/server/core/constants";
+import { isRouteVisible, ROUTE_REGISTRY } from "@/lib/route-access";
 import { formatQty } from "@/components/format";
 import { exportCsv } from "@/components/exportCsv";
 import {
@@ -58,6 +63,7 @@ import { useListState } from "@/components/useListState";
 import RemoteSelect from "@/components/RemoteSelect";
 import PlatformSkuGapCard from "./platform-sku-gap-card";
 import ChannelObservationCard from "./channel-observation-card";
+import ExternalSkuRankingCard from "./external-sku-ranking-card";
 import type {
   DecisionStudioResult,
   StudioDimension,
@@ -116,11 +122,56 @@ function heatColor(value: number, max: number): string {
   return "#dbeafe";
 }
 
+// Check the containers actually consumed by the charts before cache admission.
+// This is not a second business schema: do not coerce values or invent missing
+// coverage. An incomplete response belongs in the retry state, not an empty chart.
+function hasReportEnvelope(value: unknown, dimension: StudioDimension): boolean {
+  const isObject = (item: unknown): item is Record<string, unknown> =>
+    item !== null && typeof item === "object" && !Array.isArray(item);
+  const at = (path: string): unknown => path.split(".").reduce<unknown>(
+    (item, key) => isObject(item) ? item[key] : undefined, value,
+  );
+  const objects = [
+    "channelScope", "comparison", "spc", "daily", "review", "externalDemand",
+    "externalDemand.coverage", "externalDemand.totals", "externalDemand.decisionBrief",
+    "externalDemand.decisionBrief.current", "externalDemand.decisionBrief.previous",
+    "externalDemand.decisionBrief.change", "externalDemand.decisionBrief.movement",
+    "externalDemand.refundDrivers", "externalDemand.refundDrivers.identityCoverage",
+    "externalDemand.refundDrivers.totals", "externalDemand.fulfillment",
+    "externalDemand.fulfillment.coverage", "externalDemand.fulfillment.totals",
+    "commerceIdentity", "commerceIdentity.summary",
+  ];
+  const arrays = [
+    "loadedSections", "months", "groups", "monthly", "pareto", "pivot", "daily.dates",
+    "review.bullets", "limitations", "externalDemand.daily", "externalDemand.limitations",
+    "externalDemand.topUnmapped", "externalDemand.refundDrivers.byShop",
+    "externalDemand.refundDrivers.topContributors", "externalDemand.fulfillment.daily",
+    "externalDemand.fulfillment.topGaps", "commerceIdentity.platforms",
+    "commerceIdentity.repairQueue", "commerceIdentity.limitations", "dataSources",
+    "dataProductReleases", "dataProductOutcomes", "supportingObservations",
+  ];
+  return at("dimension") === dimension && objects.every((path) => isObject(at(path)))
+    && arrays.every((path) => Array.isArray(at(path)))
+    && ["current", "previous", "momPct", "yearAgo", "yoyPct"].every((key) => {
+      const number = at(`comparison.${key}`);
+      return number === null || (typeof number === "number" && Number.isFinite(number));
+    })
+    && typeof at("commerceIdentity.summary.repairBacklog") === "number";
+}
+
 export default function DecisionStudioClient() {
   const { message } = App.useApp();
-  const [data, setData] = useState<DecisionStudioResult | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const wideTables = Boolean(Grid.useBreakpoint().lg);
+  const me = useMe();
+  // Presentation only: the APIs still recheck current roles in the database.
+  const canObserveChannels = hasAnyRole(me, ...PRICE_VISIBLE_ROLES);
+  const canClaimIdentity = isRouteVisible(ROUTE_REGISTRY.import_exceptions, me?.roles ?? []);
+  const [snapshot, setSnapshot] = useState<{
+    query: string;
+    data: DecisionStudioResult | null;
+    loading: boolean;
+    error: string | null;
+  } | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const responseCache = useRef(new Map<string, { data: DecisionStudioResult; cachedAt: number }>());
   const view = useListState({
@@ -138,55 +189,71 @@ export default function DecisionStudioClient() {
   const activeTab = view.filters.tab || "focus";
   const focusProductId = view.filters.product;
 
-  const load = useCallback(async (force = false) => {
+  const queryKey = useMemo(() => {
     const query = new URLSearchParams({ dimension });
     query.set("tab", activeTab);
     if (selectedKey) query.set("key", selectedKey);
     if (scopeBrand) query.set("brand", scopeBrand);
     if (scopeChannel) query.set("channel", scopeChannel);
-    const cacheKey = query.toString();
+    return query.toString();
+  }, [activeTab, dimension, selectedKey, scopeBrand, scopeChannel]);
+  // Bind all visible values to the current URL, including the render before its
+  // effect runs. Never show old-brand results beneath a newly selected brand.
+  const currentSnapshot = snapshot?.query === queryKey ? snapshot : null;
+  const data = currentSnapshot?.data ?? null;
+  const loading = currentSnapshot?.loading ?? true;
+  const loadError = currentSnapshot?.error ?? null;
+
+  const load = useCallback(async (force = false) => {
+    const cacheKey = queryKey;
+    // An explicit refresh withdraws the previous result. A failed refresh must
+    // not be hidden by leaving and returning to the same cached view.
+    if (force) responseCache.current.delete(cacheKey);
     const cached = responseCache.current.get(cacheKey);
-    if (!force && cached && Date.now() - cached.cachedAt < 30_000) {
+    const cacheAge = cached ? Date.now() - cached.cachedAt : -1;
+    if (!force && cached && cacheAge >= 0 && cacheAge < 30_000) {
       activeRequest.current?.abort();
       activeRequest.current = null;
-      setLoadError(null);
-      setData(cached.data);
-      setLoading(false);
+      setSnapshot({ query: cacheKey, data: cached.data, loading: false, error: null });
       return;
     }
     activeRequest.current?.abort();
     const controller = new AbortController();
     activeRequest.current = controller;
-    setLoading(true);
-    setLoadError(null);
-    setData(null);
+    setSnapshot({ query: cacheKey, data: null, loading: true, error: null });
     try {
       const nextData = await fetchJson<DecisionStudioResult>(
-        `/api/report/decision-studio?${query.toString()}`,
+        `/api/report/decision-studio?${cacheKey}`,
         { signal: controller.signal },
       );
+      if (controller.signal.aborted || activeRequest.current !== controller) return;
+      if (!hasReportEnvelope(nextData, dimension)) {
+        throw new Error("决策数据结构异常，请重新加载；若持续出现，请联系管理员。");
+      }
       responseCache.current.set(cacheKey, { data: nextData, cachedAt: Date.now() });
       if (responseCache.current.size > 12) {
         const oldestKey = responseCache.current.keys().next().value as string | undefined;
         if (oldestKey) responseCache.current.delete(oldestKey);
       }
-      setData(nextData);
+      setSnapshot({ query: cacheKey, data: nextData, loading: false, error: null });
     } catch (error) {
-      if ((error as Error).name === "AbortError") return;
-      const detail = (error as Error).message;
-      setLoadError(detail);
+      if (controller.signal.aborted || activeRequest.current !== controller) return;
+      const detail = error instanceof Error ? error.message : "决策数据加载失败，请重新加载。";
+      setSnapshot({ query: cacheKey, data: null, loading: false, error: detail });
       message.error(detail);
     } finally {
       if (activeRequest.current === controller) {
-        setLoading(false);
         activeRequest.current = null;
       }
     }
-  }, [activeTab, dimension, selectedKey, scopeBrand, scopeChannel, message]);
+  }, [queryKey, dimension, message]);
 
   useEffect(() => {
     void load();
-    return () => activeRequest.current?.abort();
+    return () => {
+      activeRequest.current?.abort();
+      activeRequest.current = null;
+    };
   }, [load]);
 
   const groupOptions = useMemo(
@@ -207,6 +274,12 @@ export default function DecisionStudioClient() {
   const heatMax = Math.max(0, ...(data?.daily.dates ?? []).map((item) => item.qty));
   const external = data?.externalDemand;
   const externalReady = external?.state === "ready";
+  // Fold only genuinely unavailable analysis, never a ready zero or partial evidence.
+  const externalHasEvidence = externalReady || Boolean(external && (
+    external.daily.length || external.topUnmapped.length || external.decisionBrief.anchorDate
+    || external.refundDrivers.byShop.length || external.refundDrivers.topContributors.length
+    || external.fulfillment.daily.length || external.fulfillment.topGaps.length
+  ));
   const refundDrivers = external?.refundDrivers;
   const refundShopChartRows = (refundDrivers?.byShop ?? []).slice(0, 10);
   const identity = data?.commerceIdentity;
@@ -218,12 +291,12 @@ export default function DecisionStudioClient() {
         dataIndex: "label",
         key: "label",
         fixed: "left",
-        width: 220,
+        width: wideTables ? 220 : 104,
         render: (value: string, row) => (
           <Button
             type="link"
             size="small"
-            style={{ padding: 0 }}
+            style={{ padding: 0, height: "auto", maxWidth: "100%", whiteSpace: "normal", overflowWrap: "anywhere", textAlign: "left" }}
             onClick={() => view.setFilter({ key: row.key, tab: "focus" })}
           >
             {value}
@@ -243,12 +316,12 @@ export default function DecisionStudioClient() {
         dataIndex: "total",
         key: "total",
         width: 130,
-        fixed: "right",
+        fixed: wideTables ? "right" : undefined,
         align: "right",
         render: (value: number) => <Typography.Text strong>{formatQty(value)}</Typography.Text>,
       },
     ],
-    [data?.months, dimension, view],
+    [data?.months, dimension, view, wideTables],
   );
 
   const copyReview = async () => {
@@ -322,7 +395,7 @@ export default function DecisionStudioClient() {
   };
 
   return (
-    <div>
+    <div className="decision-studio">
       <div className="decision-studio-heading">
         <Typography.Title level={3} style={{ margin: 0 }}>决策工作室</Typography.Title>
         <Typography.Text type="secondary">
@@ -379,9 +452,10 @@ export default function DecisionStudioClient() {
             allowClear
             showSearch
             optionFilterProp="label"
-            aria-label={`筛选${DIMENSION_LABEL[dimension]}`}
+            aria-label={`下钻${DIMENSION_LABEL[dimension]}`}
             style={{ width: "100%" }}
-            placeholder={`筛选${DIMENSION_LABEL[dimension]}（全部）`}
+            placeholder={`下钻${DIMENSION_LABEL[dimension]}（可选）`}
+            disabled={loading || (groupOptions.length === 0 && !selectedKey)}
             value={selectedKey || undefined}
             options={groupOptions}
             onChange={(key) => view.setFilter({ key: key ?? "" })}
@@ -396,13 +470,11 @@ export default function DecisionStudioClient() {
         </div>
       </div>
 
-      <Alert
-        showIcon
-        type="info"
-        style={{ marginBottom: 12 }}
-        message="联动筛选已进入 URL：刷新、分享、前进后退都保留现场。点击帕累托柱或透视表成员可继续下钻。"
-        description={data?.limitations[0]}
-      />
+      <details className="decision-studio-help">
+        <summary>跨 SKU 数量仅作结构参考 · 筛选与口径说明</summary>
+        <p>联动筛选保留在链接中，刷新、分享、前进后退均可恢复。品牌与渠道可组合筛选；“下钻”只选当前分组成员，也可点击图表或透视表进入。</p>
+        <p>{data?.limitations[0] ?? "月度数量可能包含件、箱、kg 等不同单位，不应直接作为统一经营总量。"}</p>
+      </details>
 
       {loadError ? (
         <Alert
@@ -415,7 +487,7 @@ export default function DecisionStudioClient() {
         />
       ) : null}
 
-      <Row gutter={[10, 10]} className="compact-kpi-row">
+      {!["external", "identity", "readiness"].includes(activeTab) ? <Row gutter={[10, 10]} className="compact-kpi-row">
         <Col xs={12} md={6}>
           <Card size="small" loading={loading && !data}>
             <Statistic
@@ -449,12 +521,12 @@ export default function DecisionStudioClient() {
           <Card size="small" loading={loading && !data}>
             <Statistic
               title={`贡献 80% 的${DIMENSION_LABEL[dimension]}数`}
-              value={data ? data.pareto80Count : "—"}
-              suffix={data ? `/ ${data.pareto.length}` : undefined}
+              value={data ? data.pareto80Count ?? "不适用" : "—"}
+              suffix={data?.pareto80Count != null ? `/ ${data.pareto.length}` : undefined}
             />
           </Card>
         </Col>
-      </Row>
+      </Row> : null}
 
       <Tabs
         destroyOnHidden
@@ -476,16 +548,19 @@ export default function DecisionStudioClient() {
                   source: "sales_monthly 销售月事实",
                   asOf: data?.latestMonth,
                 }}
-                coverage={{
+                coverage={data ? {
                   covered: paretoRows.length,
-                  total: data?.pareto.length ?? 0,
+                  total: data.pareto.length,
                   label: "图中成员",
-                }}
+                } : undefined}
                 activeFilters={filters}
                 summary={
-                  data?.pareto[0]
+                  data?.pareto[0] && data.pareto80Count != null
                     ? `${data.pareto80Count} 个成员贡献约 80%；第一位 ${data.pareto[0].label} 占 ${data.pareto[0].sharePct.toFixed(1)}%。`
-                    : "当前范围没有可排名的销量事实。"
+                    : data ? data.pareto.length
+                      ? "当前月总销量不为正，80% 贡献占比不适用；数量事实仍保留。"
+                      : "当前范围没有可排名的销量事实。"
+                      : "正在读取当前筛选的销量事实。"
                 }
                 caveat="柱形为销量，折线为累计占比；基准线是当前成员销量中位数，不是经营目标。图中仅画 TOP 30，数据表保留当前透视 TOP 20。"
                 state={loading && !data ? "loading" : paretoRows.length ? "ready" : "empty"}
@@ -595,11 +670,11 @@ export default function DecisionStudioClient() {
                     source: "sales_monthly 销售月事实",
                     asOf: data?.latestMonth,
                   }}
-                  coverage={{
-                    covered: data?.months.length ?? 0,
-                    total: Math.max(12, data?.months.length ?? 0),
+                  coverage={data ? {
+                    covered: data.months.length,
+                    total: Math.max(12, data.months.length),
                     label: "可用月份（统计门槛 12）",
-                  }}
+                  } : undefined}
                   activeFilters={filters}
                   summary={data
                     ? `${data.review.bullets[0]} ${data.review.bullets[3]}`
@@ -682,19 +757,36 @@ export default function DecisionStudioClient() {
                   source: "sales_monthly 销售月事实",
                   asOf: data?.latestMonth,
                 }}
-                coverage={{
-                  covered: data?.pivot.length ?? 0,
-                  total: data?.groups.length ?? 0,
+                coverage={data ? {
+                  covered: data.pivot.length,
+                  total: data.groups.length,
                   label: "透视成员（按全期销量 TOP 20）",
-                }}
+                } : undefined}
                 activeFilters={[`维度：${DIMENSION_LABEL[dimension]}`]}
-                summary={`展示全期销量最高的 ${data?.pivot.length ?? 0} 个成员；点击成员可联动结构与趋势。`}
+                summary={data ? `展示全期销量最高的 ${data.pivot.length} 个成员；点击成员可联动结构与趋势。` : "正在读取当前筛选的透视成员。"}
                 caveat="为保持交互轻量，透视表展示全期销量 TOP 20；服务端先基于全量事实聚合，再排序，不使用当前表格页冒充全量。"
                 state={loading && !data ? "loading" : data?.pivot.length ? "ready" : "empty"}
                 height={380}
+                fitContent
                 dataView={null}
                 contentIsTable
               >
+                {!wideTables ? <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
+                  左右滑动查看月份与合计；聚焦表格后也可用左右方向键。点击成员查看结构与趋势。
+                </Typography.Text> : null}
+                <div
+                  role="region"
+                  aria-label="月份透视表，可左右滚动"
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+                    const viewport = event.currentTarget.querySelector<HTMLElement>(".ant-table-body");
+                    if (viewport && viewport.scrollWidth > viewport.clientWidth) {
+                      event.preventDefault();
+                      viewport.scrollBy({ left: event.key === "ArrowRight" ? 120 : -120 });
+                    }
+                  }}
+                >
                 <Table
                   rowKey="key"
                   size="small"
@@ -703,6 +795,7 @@ export default function DecisionStudioClient() {
                   dataSource={data?.pivot ?? []}
                   scroll={{ x: "max-content", y: 320 }}
                 />
+                </div>
               </DecisionVisual>
             ),
           },
@@ -721,15 +814,15 @@ export default function DecisionStudioClient() {
                   source: "JST 日销量受控 staging（每个日期取最新导入批次）",
                   asOf: data?.daily.latestDate,
                 }}
-                coverage={{
-                  covered: data?.daily.coveredRows ?? 0,
-                  total: data?.daily.totalRows ?? 0,
+                coverage={data ? {
+                  covered: data.daily.coveredRows,
+                  total: data.daily.totalRows,
                   label: "已解析 SKU 行",
-                }}
+                } : undefined}
                 activeFilters={selectedKey ? filters : ["范围：全部 JST 导入"]}
                 summary={data?.daily.state === "ready"
                   ? `已覆盖 ${data.daily.dates.length} 个日期；颜色越深表示当日出库量越高。`
-                  : data?.daily.gate ?? "等待 JST 日销量。"}
+                  : data ? data.daily.gate ?? "等待 JST 日销量。" : "正在读取日级数据覆盖。"}
                 caveat="该来源没有渠道、促销、退款和可售状态。热力只显示日级节奏，不能据此计算促销提升或断货损失。"
                 state={loading && !data ? "loading" : data?.daily.state ?? "insufficient"}
                 stateDetail={data?.daily.gate}
@@ -791,13 +884,21 @@ export default function DecisionStudioClient() {
                   type={external?.state === "ready" ? "warning" : "error"}
                   message="观察口径：可用于发现趋势与身份缺口，不可直接驱动正式销量、库存、财务或补货"
                   description={external?.gate}
-                  action={(
+                  action={canClaimIdentity ? (
                     <Button href="/import/exceptions?status=open&scope=JIANDAOYUN">
                       处理简道云身份认领
                     </Button>
-                  )}
+                  ) : undefined}
                 />
-                <ChannelObservationCard active={activeTab === "external"} />
+                {canObserveChannels ? <>
+                  <ChannelObservationCard active={activeTab === "external"} />
+                  <ExternalSkuRankingCard active={activeTab === "external"} />
+                </> : <Alert type="info" showIcon
+                  message={me ? "当前角色不开放全渠道观察及外部销量排名" : "正在确认分析访问权限"}
+                  description={me ? `这两项分析仅向${PRICE_VISIBLE_ROLES.map((role) => ROLE_LABELS[role]).join("/")}开放。其他已授权分析仍可使用；如需协作，请联系相应负责人。` : undefined}
+                />}
+                <AnalysisSection available={externalHasEvidence} title="天猫净需求、退款与履约分析" reason={external?.gate}>
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
                 <Row gutter={[10, 10]} className="compact-kpi-row">
                   <Col xs={12} lg={6}>
                     <Card size="small">
@@ -999,7 +1100,7 @@ export default function DecisionStudioClient() {
                       dataSource={refundDrivers?.topContributors ?? []}
                       scroll={{ x: 1320 }}
                       columns={[
-                        { title: "店铺", dataIndex: "shopName", width: 160, fixed: "left", sorter: (a, b) => a.shopName.localeCompare(b.shopName, "zh-CN") },
+                        { title: "店铺", dataIndex: "shopName", width: 160, fixed: wideTables ? "left" : undefined, sorter: (a, b) => a.shopName.localeCompare(b.shopName, "zh-CN") },
                         { title: "平台 SKU", dataIndex: "platformSkuId", width: 170, sorter: (a, b) => a.platformSkuId.localeCompare(b.platformSkuId) },
                         { title: "商品 / 规格", key: "name", width: 220, ellipsis: true, render: (_, row) => row.skuName || row.productName || "（未提供）" },
                         { title: "本期退款", dataIndex: "currentRefundQty", width: 110, align: "right", sorter: (a, b) => a.currentRefundQty - b.currentRefundQty, render: formatQty },
@@ -1023,7 +1124,7 @@ export default function DecisionStudioClient() {
                           title: "下一步",
                           key: "action",
                           width: 175,
-                          fixed: "right",
+                          fixed: wideTables ? "right" : undefined,
                           render: (_, row) => {
                             const action = externalRefundDriverAction(row);
                             if (row.skuId != null) return <Typography.Text>{action}</Typography.Text>;
@@ -1231,7 +1332,7 @@ export default function DecisionStudioClient() {
                         title: "身份动作",
                         key: "identityAction",
                         width: 150,
-                        fixed: "right",
+                        fixed: wideTables ? "right" : undefined,
                         render: (_, row) => {
                           const action = externalDemandIdentityAction(row);
                           if (!row.barcode) return <Tag color="error">{action}</Tag>;
@@ -1252,6 +1353,8 @@ export default function DecisionStudioClient() {
                     ]}
                   />
                 </Card>
+                </Space>
+                </AnalysisSection>
               </Space>
             ),
           },
@@ -1274,9 +1377,9 @@ export default function DecisionStudioClient() {
                   >
                     导出修复队列
                   </Button>
-                  <Button href="/import/exceptions?status=open&scope=JIANDAOYUN">
+                  {canClaimIdentity ? <Button href="/import/exceptions?status=open&scope=JIANDAOYUN">
                     处理身份认领
-                  </Button>
+                  </Button> : null}
                 </Space>
                 <Row gutter={[10, 10]} className="compact-kpi-row">
                   <Col xs={12} lg={6}>
@@ -1505,7 +1608,7 @@ export default function DecisionStudioClient() {
                         title: "下一步",
                         dataIndex: "action",
                         width: 280,
-                        fixed: "right",
+                        fixed: wideTables ? "right" : undefined,
                         render: (value, row) => {
                           if (!row.claimable || !row.bridgeValue) return value;
                           const query = new URLSearchParams({
@@ -1581,7 +1684,18 @@ export default function DecisionStudioClient() {
               />
             ),
           },
-        ]}
+        ].map((item) => ({
+          ...item,
+          // A transport/report failure is not an empty dataset or a missing
+          // business capability. Keep navigation, but withdraw failed analysis.
+          children: loadError ? (
+            <Card size="small">
+              <Typography.Text type="secondary" role="status">
+                本次分析尚未加载，请使用上方“重新加载”核对数据。
+              </Typography.Text>
+            </Card>
+          ) : item.children,
+        }))}
       />
     </div>
   );

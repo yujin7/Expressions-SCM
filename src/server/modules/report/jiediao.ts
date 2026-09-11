@@ -3,10 +3,11 @@
  * 月末自动生成部门间借调对账矩阵，替代 借入/借出 手工透视表。
  * 只读报表口径；月份按过账时间（审批完成 updatedAt，Asia/Shanghai）归属。
  */
-import { and, eq, gte, lt, sql } from "drizzle-orm";
+import { and, eq, gte, lt, or, sql } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { ApiError } from "@/server/modules/master/common";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -78,7 +79,8 @@ export async function getJiediaoReport(month: string, dbArg?: AnyDb): Promise<Ji
     .where(
       and(
         eq(schema.stockDocs.subtype, "transfer"),
-        eq(schema.stockDocs.reason, "借调"),
+        // D60：借调 = transfer_type='borrow'；存量单（transfer_type 为空）沿用 reason='借调' 兼容
+        or(eq(schema.stockDocs.transferType, "borrow"), eq(schema.stockDocs.reason, "借调")),
         eq(schema.stockDocs.status, "completed"),
         gte(schema.stockDocs.updatedAt, start),
         lt(schema.stockDocs.updatedAt, end),
@@ -86,7 +88,7 @@ export async function getJiediaoReport(month: string, dbArg?: AnyDb): Promise<Ji
     )
     .orderBy(schema.stockDocs.docNo, sql`${schema.skus.code}`);
 
-  const shDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" });
+  const shDate = { format: shanghaiDayOf };
   const lines = rows.map((r) => ({
     docNo: r.docNo,
     postedAt: shDate.format(r.postedAt), // RT4：上海口径显示（跨月凌晨单不再显示出报表月之外的日期）

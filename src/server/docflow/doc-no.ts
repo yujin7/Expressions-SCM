@@ -1,22 +1,15 @@
 import { sql } from "drizzle-orm";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import { docCounters } from "@/db/schema";
+import { shanghaiDayOf } from "@/server/core/business-day";
 
 /** 任意 drizzle PG 连接（node-postgres / PGlite / 事务均兼容） */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 export type AnyDb = PgDatabase<any, any, any>;
 
-const SHANGHAI_FMT = new Intl.DateTimeFormat("en-CA", {
-  timeZone: "Asia/Shanghai",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
-
-/** 业务日期 = Asia/Shanghai 的 YYYYMMDD */
+/** 业务日期 = Asia/Shanghai 的 YYYYMMDD（日界走 core/business-day 唯一权威） */
 export function bizDateShanghai(now: Date = new Date()): string {
-  // en-CA locale 输出 YYYY-MM-DD
-  return SHANGHAI_FMT.format(now).replaceAll("-", "");
+  return shanghaiDayOf(now).replaceAll("-", "");
 }
 
 /**

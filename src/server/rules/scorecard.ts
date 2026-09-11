@@ -16,6 +16,11 @@
  *  · 价格稳定 20：单价本身由采购谈判决定、不宜由记分卡评判（低价可能对应差质量），
  *    但「频繁调价」本身是可管理性问题（预算失真、成本核算返工），故只罚频次不罚价格水平。
  *    窗口内变更 0 次满分，达到 PRICE_CHANGE_ZERO_AT 次归零，线性递减。
+ *  · 质量案件 20（W2 审计 4b 新增，**仅对有案件的供应商生效**）：`quality_cases` 此前是个孤岛——
+ *    投诉/不良事件/召回挂着供应商，却对该供应商的评分零影响，于是「案件越多分数越高」也不会有人发现
+ *    （案件多往往伴随收货多、样本多、置信度高）。逾期案件全罚、未逾期在办案件半罚。
+ *    **没有案件的供应商不进这个维度**（不是「无数据」，是「不适用」），分数与本次改动前逐位相同；
+ *    有案件的按 100 + 20 = 120 分权重归一（归一逻辑本就按可用权重，见下）。
  *
  * ── 缺数据 ≠ 零分（关键设计）──
  * 某维度无数据（如该供应商所有 PO 都没填承诺交期 → onTimeRate=null）时，该维度**不计分**，
@@ -43,6 +48,11 @@ export interface ScoreInput {
   priceChangeCount: number;
   /** 收货样本数（置信度依据） */
   sampleN: number;
+  /**
+   * 质量案件（W2）：null / 省略 = 该供应商窗口内没有任何质量案件 → **本维度不适用、不参与归一**；
+   * 有案件才进维度。openCases 含 overdueCases（后者是前者的子集，逾期按全罚、其余半罚）。
+   */
+  qualityCase?: { openCases: number; overdueCases: number } | null;
 }
 
 export interface ScoreBreakdownItem {
@@ -67,8 +77,11 @@ export interface ScoreResult {
   reason: string;
 }
 
-/** 权重（总和 100） */
-export const SCORE_WEIGHTS = { onTime: 40, quality: 40, price: 20 } as const;
+/**
+ * 权重：onTime + quality + price = 100（基准三维，恒存在）。
+ * qualityCase 是**条件维度**：只有窗口内有质量案件的供应商才加进来，届时按 120 权重归一。
+ */
+export const SCORE_WEIGHTS = { onTime: 40, quality: 40, price: 20, qualityCase: 20 } as const;
 
 /** 质量惩罚系数：让步半罚（勉强可用）、报废全罚（全损） */
 export const CONCESSION_PENALTY = 0.5;
@@ -76,6 +89,11 @@ export const SCRAP_PENALTY = 1.0;
 
 /** 价格稳定：窗口内变更达到该次数则该维度归零 */
 export const PRICE_CHANGE_ZERO_AT = 5;
+
+/** 质量案件惩罚：逾期全罚、其余在办半罚；加权案件数达到该值该维度归零 */
+export const QUALITY_CASE_OPEN_PENALTY = 0.5;
+export const QUALITY_CASE_OVERDUE_PENALTY = 1.0;
+export const QUALITY_CASE_ZERO_AT = 4;
 
 /** 置信度：≥ 该样本数视为高置信 */
 export const HIGH_CONFIDENCE_SAMPLES = 10;
@@ -119,7 +137,7 @@ export function scoreSupplier(i: ScoreInput, minSamples = 3): ScoreResult {
       weight: SCORE_WEIGHTS.onTime,
       value: null,
       ratio: null,
-      note: "无「承诺交期」样本（PO 未填预计到货日），该维度无数据，权重已归一",
+      note: "无可核对的原始承诺交期样本（交期、版本链或收货来源不足），该维度无数据，权重已归一",
     });
   } else {
     const ratio = clamp01(i.onTimeRate);
@@ -176,6 +194,25 @@ export function scoreSupplier(i: ScoreInput, minSamples = 3): ScoreResult {
         count === 0
           ? `窗口内无价格变更，满分 ${SCORE_WEIGHTS.price} 分`
           : `窗口内价格变更 ${count} 次（满 ${PRICE_CHANGE_ZERO_AT} 次归零）× ${SCORE_WEIGHTS.price} 分 = ${r1(ratio * SCORE_WEIGHTS.price)} 分`,
+    });
+  }
+
+  /* ── 维度 4：质量案件（条件维度；无案件的供应商完全不进这一维）── */
+  if (i.qualityCase != null) {
+    const overdue = Math.max(0, Math.round(i.qualityCase.overdueCases || 0));
+    const open = Math.max(0, Math.round(i.qualityCase.openCases || 0));
+    const otherOpen = Math.max(0, open - overdue);
+    const weighted = otherOpen * QUALITY_CASE_OPEN_PENALTY + overdue * QUALITY_CASE_OVERDUE_PENALTY;
+    const ratio = clamp01(1 - weighted / QUALITY_CASE_ZERO_AT);
+    dims.push({
+      key: "qualityCase",
+      label: "质量案件",
+      weight: SCORE_WEIGHTS.qualityCase,
+      value: open,
+      ratio,
+      note:
+        `在办质量案件 ${open} 件（其中逾期 ${overdue} 件）：逾期×${QUALITY_CASE_OVERDUE_PENALTY} + 其余×${QUALITY_CASE_OPEN_PENALTY}`
+        + ` = 加权 ${weighted}（满 ${QUALITY_CASE_ZERO_AT} 归零）× ${SCORE_WEIGHTS.qualityCase} 分 = ${r1(ratio * SCORE_WEIGHTS.qualityCase)} 分`,
     });
   }
 
@@ -239,6 +276,9 @@ export function scoreSupplier(i: ScoreInput, minSamples = 3): ScoreResult {
     reason:
       `综合 ${score} 分（${grade} 级）：` +
       `准时率 ${pct(i.onTimeRate)}、合格率 ${pct(i.qcPassRate)}、让步率 ${pct(i.concessionRate)}、报废率 ${pct(i.scrapRate)}、价格变更 ${Math.max(0, Math.round(i.priceChangeCount || 0))} 次` +
+      (i.qualityCase != null
+        ? `、在办质量案件 ${i.qualityCase.openCases} 件（逾期 ${i.qualityCase.overdueCases} 件）`
+        : "") +
       `${normNote}；收货样本 ${i.sampleN} 单，${confNote}`,
   };
 }

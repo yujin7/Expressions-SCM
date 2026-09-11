@@ -7,22 +7,26 @@
  *    应用发送一旦发起就不跨渠道自动回退，避免超时已送达后 webhook 再发一遍；
  *    仅应用未配置时使用 webhook，两者均未配置则标记 skipped；
  *  - channel=in_app：站内通知，直接标记 sent（前端从 notifications 表读）。
- * runExceptionNotify：把控制塔 critical/high 异常按天去重入队（每日一次推送到飞书/站内）。
+ * runExceptionNotify：把控制塔 critical/high 异常按天去重入队（每日一次推送到飞书/站内）；
+ *   打盹（例外"稍后处理"）只影响展示，不影响推送，也不推进"连续出现天数"（红队审计 A6）。
  *
- * 网络失败标记 failed（保留 error），下轮重试。全部 best-effort，绝不反噬业务。
+ * 网络失败标记 failed（保留 error），下轮重试，不撤销已提交业务。
+ * 入队仅写库，失败交调用方处理；需要原子保证的业务把 outbox 与业务/审计放在同一事务。
  */
 import { createHmac } from "node:crypto";
 import { and, eq, inArray, lt, or, sql } from "drizzle-orm";
-import { notifications } from "@/db/schema";
+import { notifications, users } from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
 import { computeExceptions } from "@/server/modules/workbench/focus";
 import { getDecisionStudio } from "@/server/modules/report/decision-studio";
 import {
   FeishuAppClient,
+  FeishuApiError,
   feishuAppConfigFromEnv,
   feishuWebhookUrlFromEnv,
 } from "@/server/integrations/feishu";
-import { fetchJson } from "@/server/integrations/http";
+import { fetchJson, IntegrationHttpError } from "@/server/integrations/http";
+import { sanitizeErrorDiagnostic } from "@/server/core/logger";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -104,7 +108,7 @@ async function pushFeishu(url: string, title: string, body: string, href?: strin
   const rawCode = envelope.code ?? envelope.StatusCode;
   const code = Number(rawCode);
   if (!Number.isFinite(code) || code !== 0) {
-    throw new Error(`飞书 webhook 业务失败 (${Number.isFinite(code) ? code : "unknown"})`);
+    throw new FeishuApiError("飞书 webhook 业务失败", code);
   }
 }
 
@@ -120,11 +124,40 @@ interface FeishuSender {
     body: string;
     href?: string | null;
     uuid: string;
+    /** D61：按人私聊（users.feishu_union_id）；缺省群 chat_id */
+    receiveIdType?: "chat_id" | "union_id";
+    receiveId?: string | null;
   }): Promise<unknown>;
+}
+
+/** 定向个人的通知：查其飞书 union_id；无绑定 → null（回落群发） */
+async function feishuUnionIdOf(db: AnyDb, userId: number | null): Promise<string | null> {
+  if (userId == null) return null;
+  const [u]: { feishuUnionId: string | null }[] = await db
+    .select({ feishuUnionId: users.feishuUnionId })
+    .from(users)
+    .where(eq(users.id, userId));
+  return u?.feishuUnionId ?? null;
+}
+
+/** 仅应用机器人（可按 union_id 私聊）；webhook-only 时私聊会退化成群发，调用方据此不入队定向私聊 */
+export function isFeishuAppConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return feishuAppConfigFromEnv(env) !== null;
 }
 
 export function isFeishuDeliveryConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
   return feishuWebhookUrlFromEnv(env) !== null || feishuAppConfigFromEnv(env) !== null;
+}
+
+function notificationFailureMessage(error: unknown, notificationId: number): string {
+  // Unknown errors can contain unlabelled provider prose, or not be Error objects at all.
+  // Keep the durable notification ID for correlation; don't misstate a timeout as non-delivery.
+  let detail = "投递失败或结果未确认；请核对飞书授权、目标和服务状态";
+  if (error instanceof FeishuApiError) detail = error.message;
+  else if (error instanceof IntegrationHttpError) {
+    detail = error.status ? `飞书 HTTP ${error.status}，请核对授权和服务状态` : "飞书网络或响应异常，投递结果未确认";
+  }
+  return `通知 #${notificationId}：${sanitizeErrorDiagnostic(error, detail)}`.slice(0, 300);
 }
 
 /** 分发 pending 通知；应用机器人优先，但发送尝试后不做无法幂等的跨渠道回退。 */
@@ -150,6 +183,7 @@ export async function dispatchNotifications(
     title: string;
     body: string;
     href: string | null;
+    userId: number | null;
   }[] = await db
     .select({
       id: notifications.id,
@@ -157,6 +191,7 @@ export async function dispatchNotifications(
       title: notifications.title,
       body: notifications.body,
       href: notifications.href,
+      userId: notifications.userId,
     })
     .from(notifications)
     .where(or(
@@ -209,11 +244,14 @@ export async function dispatchNotifications(
       }
       try {
         if (appClient) {
+          // D61：定向个人且已绑定 union_id → 私聊；否则群发（webhook 只能进群）
+          const unionId = await feishuUnionIdOf(db, p.userId);
           await appClient.sendText({
             title: p.title,
             body: p.body,
             href: p.href,
             uuid: `scm-notification-${p.id}`,
+            ...(unionId ? { receiveIdType: "union_id" as const, receiveId: unionId } : {}),
           });
         } else if (webhookUrl) {
           await pushFeishu(webhookUrl, p.title, p.body, p.href);
@@ -228,7 +266,7 @@ export async function dispatchNotifications(
       } catch (e) {
         await db.update(notifications).set({
           status: "failed",
-          error: (e as Error).message.slice(0, 300),
+          error: notificationFailureMessage(e, p.id),
           dispatchStartedAt: null,
         }).where(eq(notifications.id, p.id));
         failed++;
@@ -263,7 +301,13 @@ export async function runExceptionNotify(db: AnyDb): Promise<{ enqueued: number 
   const today = todayShanghai();
   const channel: NotifyInput["channel"] = isFeishuDeliveryConfigured() ? "feishu" : "in_app";
   let enqueued = 0;
-  const exceptions = await computeExceptions(db); // 与工作台控制塔/驾驶舱同源同口径
+  /* 红队审计 A6：**打盹不静音推送**（applySnooze:false），**推送也不推进"连续出现天数"**（recordShown:false）。
+     打盹在 workbench/exception-dismissals、打盹路由文案与页面上都定义为"只影响展示"，
+     而这里此前走的是同一条过滤：任一有权角色打盹 90 天，一条 critical 例外就 90 天不再推送——
+     那是静音，不是稍后处理，且没有任何一处文档这么承诺过。
+     recordShown 同理：定时任务每天跑一次，会把"连续出现天数"推成"这条例外存在了几天"，
+     而那个数字在页面上被当作"连续 N 天摆在人面前没人处理"来读。 */
+  const exceptions = await computeExceptions(db, { applySnooze: false, recordShown: false }); // 与工作台控制塔/驾驶舱同源同口径
   for (const ex of exceptions) {
     // 内容指纹：同一异常、同一措辞（含计数）→ 同一 key → 不重复入队
     const fingerprint = fnv1a(`${ex.title}|${ex.impact}`);
