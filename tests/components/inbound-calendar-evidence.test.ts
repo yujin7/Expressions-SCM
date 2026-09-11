@@ -34,6 +34,8 @@ it("完整导出绑定观察窗而不是预览数组，每行链接按PO/行身�
   expect(visual.props.onExport).toBeUndefined();
   const table = nodes(visual.props.dataView as ReactNode).find(n => n.type === "table")!;
   const column = (table.props.columns as { dataIndex: string; render: (value: string, row: unknown) => ReactNode }[]).find(c => c.dataIndex === "docNo")!;
-  expect(nodes(column.render("PO-SAME", { poId: 3, lineId: 8 }))[0].props.href).toBe("/outsource/po?docId=3&poLineId=8");
+  const link = nodes(column.render("PO-SAME", { poId: 3, lineId: 8 }))[0];
+  expect(link.props.href).toBe("/outsource/po?docId=3&poLineId=8");
+  expect(link.props.style).toMatchObject({ display: "inline-block", minHeight: 24 });
   expect(JSON.stringify(visual.props.dataView)).toContain("列排序仅作用于本预览");
 });

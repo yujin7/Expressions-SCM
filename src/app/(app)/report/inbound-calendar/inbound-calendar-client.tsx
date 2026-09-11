@@ -199,7 +199,8 @@ export default function InboundCalendarClient() {
   const promiseColumns: ColumnsType<PromiseReliability["exceptions"][number]> = [
     { title: "口径", dataIndex: "basis", width: 100, render: (value: "original" | "current") => value === "original" ? <Tag color="purple">原始承诺</Tag> : <Tag>当前承诺</Tag> },
     { title: "采购单 / 行", dataIndex: "docNo", width: 190, sorter: (a, b) => a.docNo.localeCompare(b.docNo),
-      render: (value: string, row) => <a href={purchaseLineHref(row.poId, row.lineId) ?? undefined} title={`打开 ${value}，核对采购行 #${row.lineId}`}>
+      render: (value: string, row) => <a href={purchaseLineHref(row.poId, row.lineId) ?? undefined} title={`打开 ${value}，核对采购行 #${row.lineId}`}
+        style={{ display: "inline-block", minHeight: 24, maxWidth: "100%", overflowWrap: "anywhere" }}>
         {value}<br /><Typography.Text type="secondary">采购行 #{row.lineId}</Typography.Text>
       </a> },
     { title: "供应商", dataIndex: "supplierName", width: 160, ellipsis: true },
