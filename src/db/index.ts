@@ -96,7 +96,7 @@ export function getDbAsync(): Promise<DB> {
   return g.__scmDb;
 }
 
-/** @deprecated 仅限已确认 postgres:// 环境的同步调用；新代码一律 await getDbAsync() */
+/** @deprecated 始终拒绝同步调用的旧入口；所有环境均须 await getDbAsync()。保留显式迁移错误，不提供同步兼容。 */
 export function getDb(): DB {
   throw new Error("getDb() 已由 getDbAsync() 取代（支持 PGlite 开发模式）——请改用 await getDbAsync()");
 }

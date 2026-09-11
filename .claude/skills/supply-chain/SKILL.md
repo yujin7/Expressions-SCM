@@ -27,6 +27,12 @@ Own the business outcome, system boundaries, and sequencing. Do not load every s
    `release-sweep` only after an exact candidate exists.
 6. Keep recommendations explainable, reversible, and proportional to present scale.
 
+For handoff/cleanup, use the existing navigation and Git change history rather than creating
+parallel agent/skills/SSOT copies. Check callers, retention, runtime ownership and recovery before
+retiring anything; verification receipts are not caches. Route file placement through
+`docs/README.md` and cleanup commands through `scripts/README.md`. Persist memory only when
+the user requests it, using the memory provider's supported update path, without credentials.
+
 For a broad improvement goal, keep an explicit task-to-evidence map and select the next slice by
 user impact and dependencies. Log incidental findings without letting low-impact cleanup replace
 the requested experience. Inspect existing skills/components/tools before adding another layer;

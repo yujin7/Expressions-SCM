@@ -15,7 +15,8 @@ function usage(): never {
 
   npm run scm -- verify fast|pr|release
   npm run scm -- dev <session-name> [--create-only]
-  npm run scm -- clean [--all]
+  npm run scm -- clean [--all]     (preview only)
+  npm run scm -- clean --apply --target <cache>  (recoverable; stop owner first)
   npm run scm -- doctor`);
   process.exit(2);
 }
@@ -55,7 +56,7 @@ if (command === "doctor") {
       const gib = kib / 1024 / 1024;
       console.log(`\nproduction build cache: ${gib.toFixed(2)} GiB`);
       if (gib >= 1) {
-        console.warn("cache exceeds 1 GiB; reclaim it with: npm run scm -- clean --all");
+        console.warn("cache exceeds 1 GiB; inspect candidates with: npm run scm -- clean --all (preview only)");
       }
     }
   }

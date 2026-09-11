@@ -1,6 +1,7 @@
 node_modules
 .next*/
 .cache/
+.cache-cleanup-trash/
 .artifacts/
 .env
 .env.local

@@ -22,6 +22,8 @@ node_modules/
 .next/
 .next-*/
 .artifacts/
+.cache/
+.cache-cleanup-trash/
 out/
 dist/
 coverage/

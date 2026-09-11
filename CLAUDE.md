@@ -21,6 +21,9 @@
   历史审计和代码注释都只是支撑材料；冲突不得静默裁决，实施/验证/部署事实仍须在当前 revision 取证。
 - `docs/NOW.md` 只保留当前状态、阻塞和下一步（维护目标120行/20KB内）；更新替换同一状态，不叠加逐轮日志。
   细节进领域工程报告，历史完整留档且按需搜索，不默认加载；压缩不得删除未完成要求或发布安全前置。
+- 收尾/清理先核对引用、数据类别、进程归属和恢复路径；`.artifacts`是验收证据，不是缓存。
+  `clean:cache`默认预览，`--all`只预览；停掉已核对的owner后才逐个`--apply --target`移存。
+  不剪共享node_modules、不删迁移/源文件/兼容入口来美化目录；操作与保留规则见`scripts/README.md`。
 - 单据前缀: BH/WO/PO/PC/JG/FL/TL/SH/CT/RK/CK/DB/JS/PD/CA/QI/RC/GA；取号走 doc_counters（`src/server/docflow/doc-no.ts`），禁止 MAX+1
 - 精度按字段契约：单据金额/价格通常 decimal(14,2)，基础单位成本等 schema 明示字段可 decimal(14,4)；
   业务数量通常 decimal(14,4)，导入控制总量等聚合字段可更宽。不得凭本摘要改 schema；

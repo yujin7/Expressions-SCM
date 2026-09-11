@@ -18,7 +18,7 @@ import reactHooks from "eslint-plugin-react-hooks";
 const config = [
   {
     ignores: [
-      ".next/**", ".next-*/**", ".cache/**",
+      ".next/**", ".next-*/**", ".cache/**", ".cache-cleanup-trash/**",
       "node_modules/**", "drizzle/**", ".data/**", ".artifacts/**",
       "coverage/**", "uploads/**", "reports/**", "next-env.d.ts",
       ".claude/**", // 并行 worktree（.claude/worktrees/*）与技能文档不进主仓 lint
