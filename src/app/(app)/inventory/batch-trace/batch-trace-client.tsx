@@ -1,15 +1,15 @@
 "use client";
 
-import SearchInput from "@/components/SearchInput";
-
 /** E4-01 批次追溯：召回场景的"这批货从哪来、现在在哪"。出库侧覆盖情况如实标注。 */
-import { useCallback, useState } from "react";
+import { useRef, useState } from "react";
 import {
   Alert, App, Button, Card, Descriptions, Empty, Form, Input, InputNumber, Modal, Select, Space,
   Table, Tag, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { fetchJson, postJson } from "@/components/fetchJson";
+import { fetchJson } from "@/components/fetchJson";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
+import { useDocumentRead } from "@/components/useDocumentRead";
 import { formatQty } from "@/components/format";
 import { hasAnyRole, useMe } from "@/components/useMe";
 
@@ -45,80 +45,96 @@ export default function BatchTraceClient() {
   const { message } = App.useApp();
   const [sku, setSku] = useState("");
   const [batch, setBatch] = useState("");
-  const [data, setData] = useState<Trace | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [query, setQuery] = useState<{ sku: string; batch: string } | null>(null);
+  const traceRead = useDocumentRead<Trace>(query ? `/api/inventory/batch-trace?sku=${encodeURIComponent(query.sku)}&batch=${encodeURIComponent(query.batch)}` : null);
+  const trace = traceRead.data;
+  const validTrace = trace != null && trace.batch?.skuCode === query?.sku && trace.batch?.batchNo === query?.batch
+    && Number.isInteger(trace.batch.id) && trace.batch.id > 0 && Number.isInteger(trace.batch.skuId) && trace.batch.skuId > 0
+    && Array.isArray(trace.ledger) && Array.isArray(trace.stockByWarehouse) && trace.coverage != null && trace.source != null;
+  const data = validTrace ? trace : null;
+  const traceError = traceRead.error ?? (traceRead.phase === "success" && !validTrace ? "批次身份或响应结构不匹配，请重新核对" : null);
+  const loading = traceRead.phase === "loading";
   const me = useMe();
   const canOperate = hasAnyRole(me, "warehouse");
-  const [placements, setPlacements] = useState<{ rows: PlacementRow[]; bins: PlacementBin[] } | null>(null);
-  const [acting, setActing] = useState<{ row: PlacementRow; intent: "quarantine" | "release" } | null>(null);
+  const placementRead = useDocumentRead<{ rows: PlacementRow[]; bins: PlacementBin[] }>(data ? `/api/inventory/quarantine?skuId=${data.batch.skuId}&batchId=${data.batch.id}` : null);
+  const placements = placementRead.data && Array.isArray(placementRead.data.rows) && Array.isArray(placementRead.data.bins) ? placementRead.data : null;
+  const placementError = placementRead.error ?? (placementRead.phase === "success" && !placements ? "库位分布响应不完整，请重试" : null);
+  const [acting, setActing] = useState<{ row: PlacementRow; intent: "quarantine" | "release"; trace: Trace; placements: NonNullable<typeof placements> } | null>(null);
   const [saving, setSaving] = useState(false);
+  const busy = useRef(false);
+  const [writeError, setWriteError] = useState<string | null>(null);
   const [idempotencyKey, setIdempotencyKey] = useState("");
   const [form] = Form.useForm();
+  const current = useRef({ data, placements, canOperate });
+  current.current = { data, placements, canOperate };
+  const active = acting && acting.trace === data && acting.placements === placements && canOperate ? acting : null;
 
-  const loadPlacements = useCallback(async (skuId: number, batchId: number) => {
-    try {
-      setPlacements(
-        await fetchJson<{ rows: PlacementRow[]; bins: PlacementBin[] }>(
-          `/api/inventory/quarantine?skuId=${skuId}&batchId=${batchId}`,
-        ),
-      );
-    } catch {
-      setPlacements(null); // 分布查不到不应挡住追溯本身
-    }
-  }, []);
-
-  const run = useCallback(async () => {
+  const editQuery = (kind: "sku" | "batch", value: string) => {
+    if (busy.current) return;
+    if (kind === "sku") setSku(value); else setBatch(value);
+    setQuery(null);
+    setActing(null);
+    setWriteError(null);
+  };
+  const run = () => {
+    if (busy.current) return;
     if (!sku.trim() || !batch.trim()) { message.warning("请填写 SKU 编码与批次号"); return; }
-    setLoading(true);
-    setData(null);
-    setPlacements(null);
-    try {
-      const trace = await fetchJson<Trace>(`/api/inventory/batch-trace?sku=${encodeURIComponent(sku.trim())}&batch=${encodeURIComponent(batch.trim())}`);
-      setData(trace);
-      void loadPlacements(trace.batch.skuId, trace.batch.id);
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [sku, batch, message, loadPlacements]);
+    setActing(null);
+    setWriteError(null);
+    setQuery({ sku: sku.trim(), batch: batch.trim() });
+    traceRead.retry();
+    placementRead.retry();
+  };
 
   const openAction = (row: PlacementRow, intent: "quarantine" | "release") => {
-    setActing({ row, intent });
+    if (busy.current || !canOperate || !data || !placements || !placements.rows.includes(row)) return;
+    setActing({ row, intent, trace: data, placements });
+    setWriteError(null);
     setIdempotencyKey(crypto.randomUUID());
     form.resetFields();
-    form.setFieldsValue({ qty: Number(row.qty), reason: "", toBinId: undefined });
+    form.setFieldsValue({ qty: row.qty, reason: "", toBinId: undefined });
   };
 
   const targetBins = (placements?.bins ?? []).filter((bin) => {
-    if (!acting) return false;
-    if (bin.warehouseId !== acting.row.warehouseId) return false;
-    if (bin.id === acting.row.binId) return false;
-    return acting.intent === "quarantine" ? bin.kind === "quarantine" : ["normal", "staging"].includes(bin.kind);
+    if (!active) return false;
+    if (bin.warehouseId !== active.row.warehouseId) return false;
+    if (bin.id === active.row.binId) return false;
+    return active.intent === "quarantine" ? bin.kind === "quarantine" : ["normal", "staging"].includes(bin.kind);
   });
 
   const submitAction = async () => {
-    if (!acting || !data) return;
+    if (!active || busy.current || writeError) return;
+    const target = active;
+    busy.current = true;
+    setSaving(true);
+    const request = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       const values = await form.validateFields();
-      setSaving(true);
-      await postJson("/api/inventory/quarantine", {
+      if (current.current.data !== target.trace || current.current.placements !== target.placements || !current.current.canOperate) {
+        throw new Error("批次或库位信息已变更，请重新查询后操作");
+      }
+      timeout = setTimeout(() => request.abort(), 30_000);
+      await fetchJson("/api/inventory/quarantine", { method: "POST", signal: request.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({
         idempotencyKey,
-        intent: acting.intent,
-        warehouseId: acting.row.warehouseId,
-        skuId: data.batch.skuId,
-        batchId: data.batch.id,
-        fromBinId: acting.row.binId,
+        intent: target.intent,
+        warehouseId: target.row.warehouseId,
+        skuId: target.trace.batch.skuId,
+        batchId: target.trace.batch.id,
+        fromBinId: target.row.binId,
         toBinId: values.toBinId ?? null,
         qty: String(values.qty),
         reason: values.reason,
-      });
-      message.success(acting.intent === "quarantine" ? "已隔离该批次库存" : "已放行该批次库存");
+      }) });
+      message.success(target.intent === "quarantine" ? "已隔离该批次库存" : "已放行该批次库存");
       setActing(null);
-      await loadPlacements(data.batch.skuId, data.batch.id);
+      placementRead.retry();
     } catch (e) {
-      if (e instanceof Error && e.message) message.error(e.message);
+      if (request.signal.aborted) setWriteError("操作等待超时，服务端可能已完成。请先核对库位分布与作业记录，勿重复提交。");
+      else if (e instanceof Error && e.message) setWriteError(e.message);
     } finally {
+      if (timeout) clearTimeout(timeout);
+      busy.current = false;
       setSaving(false);
     }
   };
@@ -165,13 +181,14 @@ export default function BatchTraceClient() {
         message="召回/质量事件时回答「这批货从哪来、现在在哪」。批次登记自收货单采集；管效期的 SKU 收货必须填批次号。"
       />
       <Space style={{ marginBottom: 16 }} wrap>
-        <Input placeholder="SKU 编码" value={sku} onChange={(e) => setSku(e.target.value)} style={{ width: 200 }} onPressEnter={() => void run()} />
-        <Input placeholder="批次号" value={batch} onChange={(e) => setBatch(e.target.value)} style={{ width: 200 }} onPressEnter={() => void run()} />
-        <SearchInput enterButton="追溯" loading={loading} onSearch={() => void run()} style={{ width: 120 }} />
+        <Input aria-label="SKU 编码" placeholder="SKU 编码" value={sku} disabled={saving} onChange={(e) => editQuery("sku", e.target.value)} style={{ width: 200, maxWidth: "100%" }} onPressEnter={(e) => { if (!e.nativeEvent.isComposing && e.keyCode !== 229) run(); }} />
+        <Input aria-label="批次号" placeholder="批次号" value={batch} disabled={saving} onChange={(e) => editQuery("batch", e.target.value)} style={{ width: 200, maxWidth: "100%" }} onPressEnter={(e) => { if (!e.nativeEvent.isComposing && e.keyCode !== 229) run(); }} />
+        <Button type="primary" loading={loading} disabled={saving} onClick={run}>追溯</Button>
       </Space>
+      <LoadErrorAlert subject="批次追溯" error={traceError} onRetry={run} />
 
       {!data ? (
-        <Empty description="输入 SKU 编码与批次号开始追溯" />
+        <Empty description={loading ? "正在读取当前批次…" : traceError ? "当前批次尚未加载，请重试或核对编码" : "输入 SKU 编码与批次号开始追溯"} />
       ) : (
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
           <Alert
@@ -210,15 +227,18 @@ export default function BatchTraceClient() {
           <Card
             size="small"
             title="物理分布与隔离处置（库位子账）"
-            extra={<Typography.Text type="secondary">仓库总账仍是数量真相；隔离只改「货在哪」，不改库存数量</Typography.Text>}
           >
+            <div style={{ marginBottom: 12 }}><Typography.Text type="secondary">仓库总账仍是数量真相；隔离只改「货在哪」，不改库存数量</Typography.Text></div>
+            <LoadErrorAlert subject="库位分布" error={placementError} onRetry={() => { if (!busy.current) { setActing(null); placementRead.retry(); } }} />
             <Table<PlacementRow>
               rowKey="key"
               size="small"
               pagination={false}
               dataSource={placements?.rows ?? []}
+              loading={placementRead.phase === "loading"}
+              scroll={{ x: 660 }}
               columns={placementColumns}
-              locale={{ emptyText: "该批次在实时仓无可作业库存（快照仓不参与库位作业）" }}
+              locale={{ emptyText: placements ? "该批次在实时仓无可作业库存（快照仓不参与库位作业）" : "库位分布尚未加载，不能判断可作业库存" }}
             />
           </Card>
           <Card size="small" title="台账流水（带批次的部分）">
@@ -241,27 +261,33 @@ export default function BatchTraceClient() {
       )}
 
       <Modal
-        open={acting != null}
-        title={acting ? `${acting.intent === "quarantine" ? "隔离" : "放行"} · ${data?.batch.skuCode} / ${data?.batch.batchNo}` : ""}
+        open={active != null}
+        title={active ? `${active.intent === "quarantine" ? "隔离" : "放行"} · ${active.trace.batch.skuCode} / ${active.trace.batch.batchNo}` : ""}
         okText="确认作业"
         cancelText="取消"
         confirmLoading={saving}
+        okButtonProps={{ disabled: !active || saving || writeError != null }}
+        cancelButtonProps={{ disabled: saving }}
+        closable={!saving}
+        keyboard={!saving}
         maskClosable={false}
         onOk={() => void submitAction()}
-        onCancel={() => setActing(null)}
+        onCancel={() => { if (!busy.current) setActing(null); }}
         destroyOnHidden
       >
-        {acting ? (
+        {active ? (
           <>
+            {writeError ? <Alert type="error" showIcon message="操作未确认，请先核对结果" description={writeError}
+              action={<Button onClick={() => { if (!busy.current) { setActing(null); setWriteError(null); placementRead.retry(); } }}>核对当前分布</Button>} style={{ marginBottom: 12 }} /> : null}
             <Descriptions size="small" bordered column={1} style={{ marginBottom: 16 }}>
-              <Descriptions.Item label="仓库">{acting.row.warehouseName}</Descriptions.Item>
-              <Descriptions.Item label="来源位置">{acting.row.binCode ?? "未定位"}</Descriptions.Item>
-              <Descriptions.Item label="可作业量">{formatQty(acting.row.qty)}</Descriptions.Item>
+              <Descriptions.Item label="仓库">{active.row.warehouseName}</Descriptions.Item>
+              <Descriptions.Item label="来源位置">{active.row.binCode ?? "未定位"}</Descriptions.Item>
+              <Descriptions.Item label="可作业量">{formatQty(active.row.qty)}</Descriptions.Item>
             </Descriptions>
-            <Form form={form} layout="vertical">
+            <Form form={form} layout="vertical" disabled={saving || writeError != null}>
               <Form.Item
                 name="toBinId"
-                label={acting.intent === "quarantine" ? "目标隔离库位" : "放行目标库位"}
+                label={active.intent === "quarantine" ? "目标隔离库位" : "放行目标库位"}
                 rules={[{ required: targetBins.length > 1, message: "请选择目标库位" }]}
                 extra={targetBins.length === 1 ? "该仓仅一个候选库位，留空即自动使用" : undefined}
               >
@@ -277,7 +303,7 @@ export default function BatchTraceClient() {
                 />
               </Form.Item>
               <Form.Item name="qty" label="数量" rules={[{ required: true, message: "数量必填" }]}>
-                <InputNumber min={0.0001} precision={4} style={{ width: 180 }} />
+                <InputNumber stringMode min="0.0001" precision={4} style={{ width: 180 }} />
               </Form.Item>
               <Form.Item name="reason" label="作业原因" rules={[{ required: true, message: "作业原因必填" }]}>
                 <Input.TextArea rows={3} maxLength={300} showCount placeholder="如：批次召回 / 检验不合格 / 复检合格放行" />
