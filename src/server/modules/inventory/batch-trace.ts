@@ -1,10 +1,9 @@
 /**
  * E4-01 批次登记与追溯（合规硬需求：召回时"这批货从哪来、去了哪"）。
  *
- * ── 现状诊断（实读代码后的结论，非推测）──
- * 1. 收货单行 `sh_lines` **已采集** batchNo / prodDate；
- * 2. 主档 `batches` 表**早已定义但从无任何代码写入**——批次登记册是空的；
- * 3. 批次过账现由 `batch_posting_enabled` 迁移闸门控制；打开后，收货、发料、
+ * ── 当前边界 ──
+ * 收货单行 `sh_lines` 采集 batchNo / prodDate，入库时登记批次主档。
+ * 批次过账由 `batch_posting_enabled` 迁移闸门控制；打开后，收货、发料、
  *    退料、采购退货及手工出库/调拨均写入 batchId，未批次化历史余额允许显式回落。
  *
  * ── 本模块的范围与刻意不做的事（重要）──
@@ -35,60 +34,55 @@ export interface ReceiptBatchLine {
 }
 
 /**
- * 收货入库时登记批次主档（幂等）。
- * @returns 每行对应的 batchId（无批次号的行为 null）
+ * 收货入库时登记批次主档（幂等），须在调用方的入库/审计事务内使用。
+ * 同批行先合并缺失字段；已有非空日期和首次来源不覆盖。
+ * @returns SKU:批次号 → batchId（无批次号不进入映射）
  */
 export async function registerBatchesFromReceipt(
   db: AnyDb,
   lines: ReceiptBatchLine[],
   source: { docType: string; docId: number },
 ): Promise<Map<string, number>> {
-  const idByKey = new Map<string, number>();
+  const byKey = new Map<string, ReceiptBatchLine & { batchNo: string }>();
   for (const l of lines) {
     const batchNo = (l.batchNo ?? "").trim();
     if (!batchNo) continue;
     const key = `${l.skuId}:${batchNo}`;
-    if (idByKey.has(key)) continue;
-
-    const [existing] = await db
-      .select({ id: schema.batches.id, prodDate: schema.batches.prodDate, expiryDate: schema.batches.expiryDate })
-      .from(schema.batches)
-      .where(and(eq(schema.batches.skuId, l.skuId), eq(schema.batches.batchNo, batchNo)));
-
-    if (existing) {
-      // 补齐既有登记里缺失的日期（不覆盖已有值——先到先得，避免后录数据篡改历史）
-      const patch: Record<string, unknown> = {};
-      if (existing.prodDate == null && l.prodDate) patch.prodDate = l.prodDate;
-      if (existing.expiryDate == null && l.expiryDate) patch.expiryDate = l.expiryDate;
-      if (Object.keys(patch).length > 0) {
-        await db.update(schema.batches).set(patch).where(eq(schema.batches.id, existing.id));
-      }
-      idByKey.set(key, existing.id);
-      continue;
+    const prior = byKey.get(key);
+    if (prior) {
+      // 同一请求也沿用每字段首次非空优先，不以整个首行代表全部批次信息。
+      prior.prodDate ??= l.prodDate;
+      prior.expiryDate ??= l.expiryDate;
+    } else {
+      byKey.set(key, { ...l, batchNo });
     }
+  }
 
-    const [created] = await db
+  // 跨PO的收货不共享PO锁；统一批次锁顺序，避免两张SH按相反行顺序补日期时死锁。
+  const ordered = [...byKey.values()].sort((a, b) => a.skuId - b.skuId || (a.batchNo < b.batchNo ? -1 : a.batchNo > b.batchNo ? 1 : 0));
+  const idByKey = new Map<string, number>();
+  for (const l of ordered) {
+    const [registered]: { id: number }[] = await db
       .insert(schema.batches)
       .values({
         skuId: l.skuId,
-        batchNo,
+        batchNo: l.batchNo,
         prodDate: l.prodDate ?? null,
         expiryDate: l.expiryDate ?? null,
         sourceDocType: source.docType,
         sourceDocId: source.docId,
       })
-      .onConflictDoNothing()
-      .returning();
-    if (created) {
-      idByKey.set(key, created.id);
-    } else {
-      // 并发下被他人抢先插入——回查
-      const [again] = await db
-        .select({ id: schema.batches.id })
-        .from(schema.batches)
-        .where(and(eq(schema.batches.skuId, l.skuId), eq(schema.batches.batchNo, batchNo)));
-      if (again) idByKey.set(key, again.id);
-    }
+      .onConflictDoUpdate({
+        target: [schema.batches.skuId, schema.batches.batchNo],
+        set: {
+          // 在唯一键冲突持锁后判断“仍为空”，不能先SELECT再无条件UPDATE。
+          prodDate: sql`coalesce(${schema.batches.prodDate}, excluded.prod_date)`,
+          expiryDate: sql`coalesce(${schema.batches.expiryDate}, excluded.expiry_date)`,
+        },
+      })
+      .returning({ id: schema.batches.id });
+    if (!registered) throw new ApiError(409, `批次登记未返回身份：SKU #${l.skuId} / ${l.batchNo}，请重新核对收货单`);
+    idByKey.set(`${l.skuId}:${l.batchNo}`, registered.id);
   }
   return idByKey;
 }
