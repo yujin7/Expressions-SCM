@@ -12,11 +12,10 @@ import DocumentDrawer from "@/components/DocumentDrawer";
 
 import SearchInput from "@/components/SearchInput";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   App,
   Alert,
-  Badge,
   Button,
   DatePicker,
   Descriptions,
@@ -31,7 +30,6 @@ import {
   Switch,
   Table,
   Tabs,
-  Tag,
   Timeline,
   Typography,
 } from "antd";
@@ -39,11 +37,12 @@ import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import ChainStrip from "@/components/ChainStrip";
-import DocStatusTag from "@/components/DocStatusTag";
+import JgExecutionStatus from "@/components/JgExecutionStatus";
+import CaliberNote from "@/components/CaliberNote";
 import { fetchJson, patchJson, postJson } from "@/components/fetchJson";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
-import { useMe } from "@/components/useMe";
+import type { jgTaskActions } from "@/server/modules/outsource/jg";
 import { formatOrderType } from "@/components/labels";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
 
@@ -55,9 +54,12 @@ interface JgRow {
   supplierName: string;
   productSkuCode: string;
   productSkuName: string;
+  baseUom: string;
   qty: string;
   dueDate: string | null;
   inProduction: boolean;
+  urgentFlag: boolean;
+  isPaused: boolean;
   createdByName: string | null;
   createdAt: string;
 }
@@ -77,6 +79,7 @@ interface DocApproval {
 }
 
 interface JgDetail {
+  actions?: ReturnType<typeof jgTaskActions>;
   id: number;
   docNo: string;
   status: string;
@@ -89,6 +92,7 @@ interface JgDetail {
   productSkuId: number;
   productSkuCode: string;
   productSkuName: string;
+  baseUom: string;
   qty: string;
   dueDate: string | null;
   /** 敏感字段：非可见角色时后端已剥离（键不存在） */
@@ -139,6 +143,8 @@ const STATUS_TABS = [
   { key: "approved", label: "已审批" },
   { key: "in_progress", label: "执行中" },
   { key: "completed", label: "已完成" },
+  { key: "closed", label: "已关闭" },
+  { key: "void", label: "已作废" },
 ];
 
 function JgInner() {
@@ -153,9 +159,6 @@ function JgInner() {
   const q = filters.q;
   const status = filters.status;
 
-  const me = useMe();
-  const canPlan = !!me && (me.roles.includes("pmc") || me.roles.includes("admin"));
-  const canRevise = !!me && ["pmc", "purchasing", "admin"].some((r) => me.roles.includes(r));
   const [planForm] = Form.useForm();
   const [planSaving, setPlanSaving] = useState(false);
   const [reviseOpen, setReviseOpen] = useState(false);
@@ -169,6 +172,9 @@ function JgInner() {
   const loadDetail = detailRead.retry;
   const detailLoadError = detailRead.error;
   const [actionLoading, setActionLoading] = useState(false);
+  const actionLock = useRef(false);
+  const canPlan = detail?.actions?.plan === true && !actionLoading && !planSaving;
+  const canRevise = detail?.actions?.revise === true && !actionLoading && !planSaving;
 
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
@@ -212,7 +218,10 @@ function JgInner() {
   };
 
   const post = async (path: string, body: unknown, successText: string) => {
-    if (!detail) return false;
+    const permission = path === "revise-due" ? "revise" : path === "approve" ? "approve"
+      : path === "submit" ? "submit" : path === "withdraw" ? "withdraw" : path === "confirm" ? "confirm" : null;
+    if (!detail || !permission || detail.actions?.[permission] !== true || actionLock.current) return false;
+    actionLock.current = true;
     setActionLoading(true);
     try {
       await postJson(`/api/outsource/jg/${detail.id}/${path}`, body);
@@ -223,6 +232,7 @@ function JgInner() {
       message.error((e as Error).message);
       return false;
     } finally {
+      actionLock.current = false;
       setActionLoading(false);
     }
   };
@@ -233,40 +243,36 @@ function JgInner() {
       dataIndex: "docNo",
       width: 160,
       render: (v: string, r) => (
-        <Typography.Link onClick={() => setDetailId(r.id)}>{v}</Typography.Link>
+        <Typography.Link style={{ whiteSpace: "nowrap" }} onClick={() => setDetailId(r.id)}>{v}</Typography.Link>
       ),
     },
     {
       title: "成品",
       key: "product",
-      render: (_, r) => `${r.productSkuCode} ${r.productSkuName}`,
+      width: 210,
+      render: (_, r) => <div style={{ minWidth: 140, maxWidth: 210, overflowWrap: "anywhere" }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.productSkuCode}</Typography.Text>
+        <div>{r.productSkuName || "名称待补录"}</div>
+      </div>,
     },
-    { title: "数量", dataIndex: "qty", width: 100, align: "right" },
-    { title: "加工厂", dataIndex: "supplierName", width: 140 },
+    { title: "数量", dataIndex: "qty", width: 100, align: "right", render: (value: string, row) => <span style={{ whiteSpace: "nowrap" }}>{formatQty(value)} {row.baseUom || "单位待核对"}</span> },
+    { title: "加工厂", dataIndex: "supplierName", width: 120 },
     {
       title: "交期",
       dataIndex: "dueDate",
-      width: 150,
-      render: (v: string | null, r) => (
-        <Space size={4}>
-          {v ?? "—"}
-          {(r as { urgentFlag?: boolean }).urgentFlag ? <Tag color="red">紧急</Tag> : null}
-          {(r as { isPaused?: boolean }).isPaused ? <Tag color="orange">暂停</Tag> : null}
-        </Space>
-      ),
+      width: 110,
+      render: (v: string | null) => <span style={{ whiteSpace: "nowrap" }}>{v ?? "未填交期"}</span>,
     },
     {
-      title: "生产中",
-      dataIndex: "inProduction",
-      width: 90,
-      render: (v: boolean) =>
-        v ? <Badge status="processing" text="生产中" /> : <Badge status="default" text="未开始" />,
+      title: "状态与执行",
+      key: "execution",
+      width: 180,
+      render: (_, row) => <JgExecutionStatus facts={row} docNo={row.docNo} />,
     },
-    { title: "状态", dataIndex: "status", width: 100, render: (v: string) => <DocStatusTag status={v} /> },
     {
       title: "操作",
       key: "_actions",
-      width: 80,
+      width: 64,
       render: (_, r) => (
         <Button type="link" size="small" onClick={() => setDetailId(r.id)}>
           查看
@@ -291,8 +297,8 @@ function JgInner() {
   ];
 
   const actions = detail ? (
-    <Space>
-      {detail.status === "draft" ? (
+    <Space wrap>
+      {detail.actions?.submit === true ? (
         <Popconfirm
           title="确认提交审批？"
           okText="提交"
@@ -304,7 +310,7 @@ function JgInner() {
           </Button>
         </Popconfirm>
       ) : null}
-      {detail.status === "pending" ? (
+      {detail.actions?.approve === true ? (
         <>
           <Popconfirm
             title="确认审批通过？"
@@ -321,7 +327,9 @@ function JgInner() {
           <Button danger loading={actionLoading} onClick={() => setRejectOpen(true)}>
             驳回
           </Button>
-          {/* 撤回：制单人收回自己的提交（服务端校验 createdBy，非制单人会被拒） */}
+        </>
+      ) : null}
+      {detail.actions?.withdraw === true ? (
           <Popconfirm
             title="撤回本单？"
             description="撤回后回到草稿，可继续修改再提交。"
@@ -331,9 +339,8 @@ function JgInner() {
           >
             <Button loading={actionLoading}>撤回</Button>
           </Popconfirm>
-        </>
       ) : null}
-      {detail.status === "approved" ? (
+      {detail.actions?.confirm === true ? (
         <Button type="primary" loading={actionLoading} onClick={() => setConfirmOpen(true)}>
           加工厂确认（代录）
         </Button>
@@ -347,8 +354,10 @@ function JgInner() {
         加工通知单（JG）
       </Typography.Title>
       <Typography.Paragraph type="secondary">
-        加工通知单由委外工单「生成单据」派生（一工单一 JG），本页不提供手工创建；加工费改价请前往「价格变更」发起。
+        加工通知单由委外工单派生，来源及批次关系见单据链，本页不提供手工创建；加工费改价请前往「价格变更」发起。
       </Typography.Paragraph>
+      <CaliberNote summary="加工确认不是实时生产进度；收货、质检与入库请沿单据链核对。"
+        detail="已完成、已关闭、已作废的单据不再显示正在生产或未开始。历史加急/暂停保留用于追溯；当前计划标记也不等于自动逾期预警。" />
       <Tabs
         activeKey={status}
         items={STATUS_TABS}
@@ -397,10 +406,9 @@ function JgInner() {
         key={detailId ?? "invalid-document"}
         title={
           detail ? (
-            <Space>
+            <Space wrap align="start">
               <span>{detail.docNo}</span>
-              <DocStatusTag status={detail.status} />
-              {detail.inProduction ? <Badge status="processing" text="生产中" /> : null}
+              <JgExecutionStatus facts={detail} docNo={detail.docNo} />
             </Space>
           ) : (
             "加工通知单详情"
@@ -409,7 +417,9 @@ function JgInner() {
         open={documentSelection.present}
         readError={documentSelection.error ?? detailRead.error}
         onRetry={detailId != null ? detailRead.retry : undefined}
-        onClose={() => setDetailId(null)}
+        onClose={() => { if (!actionLock.current) setDetailId(null); }}
+        keyboard={!actionLoading && !planSaving}
+        maskClosable={!actionLoading && !planSaving}
         width={760}
         loading={detailLoading}
         extra={actions}
@@ -424,14 +434,17 @@ function JgInner() {
           />
         ) : detail ? (
           <div>
+            <Alert type="info" showIcon style={{ marginBottom: 12 }}
+              message={detail.actions?.reason ?? "尚未取得当前操作资格，请刷新单据；暂仅展示数据。"}
+              action={<Button size="small" disabled={actionLoading || planSaving} onClick={loadDetail}>刷新权限</Button>} />
             <ChainStrip docType="jg" id={detail.id} />
-            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2, md: 2, lg: 2, xl: 2, xxl: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="关联工单">{detail.woDocNo}</Descriptions.Item>
               <Descriptions.Item label="加工厂">{detail.supplierName}</Descriptions.Item>
               <Descriptions.Item label="成品">
                 {detail.productSkuCode} {detail.productSkuName}
               </Descriptions.Item>
-              <Descriptions.Item label="数量">{formatQty(detail.qty)}</Descriptions.Item>
+              <Descriptions.Item label="数量">{formatQty(detail.qty)} {detail.baseUom || "单位待核对"}</Descriptions.Item>
               <Descriptions.Item label="交期">{detail.dueDate ?? "—"}</Descriptions.Item>
               <Descriptions.Item label="加工费现价">
                 {detail.feeRateCurrent != null ? detail.feeRateCurrent : "—"}
@@ -539,6 +552,8 @@ function JgInner() {
                   loading={planSaving}
                   disabled={!canPlan}
                   onClick={async () => {
+                    if (!canPlan || actionLock.current) return;
+                    actionLock.current = true;
                     const v = planForm.getFieldsValue();
                     setPlanSaving(true);
                     try {
@@ -557,6 +572,7 @@ function JgInner() {
                     } catch (e) {
                       message.error((e as Error).message);
                     } finally {
+                      actionLock.current = false;
                       setPlanSaving(false);
                     }
                   }}
@@ -566,7 +582,7 @@ function JgInner() {
                 <Button disabled={!canRevise} onClick={() => setReviseOpen(true)}>
                   交期修改
                 </Button>
-                <Button onClick={() => window.open(`/outsource/jg/${detail.id}/print`, "_blank")}>打印通知单</Button>
+                <Button disabled={false} onClick={() => window.open(`/outsource/jg/${detail.id}/print`, "_blank")}>打印通知单</Button>
               </Space>
             </Form>
             {(detail.revisedDates?.length ?? 0) > 0 ? (
@@ -582,15 +598,16 @@ function JgInner() {
             ) : null}
             <Modal
               title="交期修改（留痕）"
-              open={reviseOpen}
-              onCancel={() => setReviseOpen(false)}
+              open={reviseOpen && detail.actions?.revise === true}
+              confirmLoading={actionLoading}
+              onCancel={() => { if (!actionLock.current) setReviseOpen(false); }}
               onOk={async () => {
                 const v = await reviseForm.validateFields();
-                await postJson(`/api/outsource/jg/${detail.id}/revise-due`, {
+                const ok = await post("revise-due", {
                   newDate: v.newDate.format("YYYY-MM-DD"),
                   reason: v.reason,
-                });
-                message.success("交期已修改并留痕");
+                }, "交期已修改并留痕");
+                if (!ok) return;
                 setReviseOpen(false);
                 reviseForm.resetFields();
                 void loadDetail();
@@ -620,12 +637,12 @@ function JgInner() {
 
       <Modal
         title="驳回单据"
-        open={rejectOpen}
+        open={rejectOpen && detail?.actions?.approve === true}
         okText="确认驳回"
         okButtonProps={{ danger: true }}
         cancelText="取消"
         confirmLoading={actionLoading}
-        onCancel={() => setRejectOpen(false)}
+        onCancel={() => { if (!actionLock.current) setRejectOpen(false); }}
         onOk={() =>
           void post(
             "approve",
@@ -654,16 +671,16 @@ function JgInner() {
 
       <Modal
         title="加工厂确认（内部代录）"
-        open={confirmOpen}
+        open={confirmOpen && detail?.actions?.confirm === true}
         okText="确认"
         cancelText="取消"
         confirmLoading={actionLoading}
-        onCancel={() => setConfirmOpen(false)}
+        onCancel={() => { if (!actionLock.current) setConfirmOpen(false); }}
         onOk={() =>
           void post(
             "confirm",
             { version: detail?.version ?? 0, note: confirmNote.trim() || undefined },
-            "已确认，单据进入执行中（生产中）",
+            "已登记加工厂确认，单据进入执行中",
           ).then((ok) => {
             if (ok) {
               setConfirmOpen(false);
@@ -675,7 +692,7 @@ function JgInner() {
         <Input.TextArea
           rows={3}
           maxLength={200}
-          placeholder="确认备注（可选）——确认后标记为生产中"
+          placeholder="确认备注（可选）——登记工厂回复，不代表现场开工或完工"
           value={confirmNote}
           onChange={(e) => setConfirmNote(e.target.value)}
         />
