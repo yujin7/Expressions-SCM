@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /**
  * 审批节点配置：单据类型 → 审批角色。
  *
@@ -27,18 +29,22 @@ export default function ApprovalConfigClient() {
   const [loading, setLoading] = useState(false);
   const [savingKey, setSavingKey] = useState<string | null>(null);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
-      const d = await fetchJson<{ rows: Row[]; assignableRoles: string[] }>("/api/admin/approval-config");
+      const d = await fetchJson<{ rows: Row[]; assignableRoles: string[] }>("/api/admin/approval-config", { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(d.rows);
       setAssignable(d.assignableRoles);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [message]);
+  }, [beginLoadRead, message]);
 
   useEffect(() => { void load(); }, [load]);
 

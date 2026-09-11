@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, ilike, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
+import { businessDateSchema } from "@/server/core/business-date-schema";
 import { getDbAsync } from "@/db";
 import { auditLogs, users } from "@/db/schema";
 import { maskSensitive } from "@/server/core/dto";
@@ -24,13 +25,14 @@ export const auditQuerySchema = z.object({
   userId: z.coerce.number().int().positive().optional(),
   action: z.string().trim().max(50).optional(),
   /** YYYY-MM-DD（Asia/Shanghai 闭区间） */
-  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  from: businessDateSchema.optional(),
+  to: businessDateSchema.optional(),
   /** entity/action 模糊 */
   q: z.string().trim().max(50).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
-});
+}).refine(value => !value.from || !value.to || value.from <= value.to,
+  { message: "起始日期不能晚于结束日期", path: ["to"] });
 
 export interface AuditRow {
   id: number;

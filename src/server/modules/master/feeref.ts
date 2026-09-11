@@ -1,5 +1,6 @@
 import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { z } from "zod";
+import { businessDateSchema } from "@/server/core/business-date-schema";
 import { getDbAsync, schema, type DB } from "@/db";
 import { writeAudit } from "@/server/core/audit";
 import { dMoney } from "@/server/core/decimal";
@@ -12,7 +13,7 @@ import { ApiError } from "./common";
  * 写权限：采购（admin 兜底）。表无停用标志（uq_fee_sku_sup_date 天然按生效日版本化），故无 deactivate。
  */
 
-const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "日期格式应为 YYYY-MM-DD");
+const dateStr = businessDateSchema;
 const feeRateVal = z.preprocess(
   (v) => (v === "" || v === undefined ? null : v),
   z

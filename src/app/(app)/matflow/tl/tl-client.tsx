@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import { useDocumentTarget } from "@/components/useDocumentTarget";
 import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
 import { useDocumentRead } from "@/components/useDocumentRead";
@@ -166,20 +168,24 @@ export default function TlClient() {
   const [createLines, setCreateLines] = useState<CreateLine[]>([]);
   const [linesLoading, setLinesLoading] = useState(false);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (status) params.set("status", status);
-      const res = await fetchJson<{ rows: TlRow[]; total: number }>(`/api/matflow/tl?${params.toString()}`);
+      const res = await fetchJson<{ rows: TlRow[]; total: number }>(`/api/matflow/tl?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setTotal(res.total);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [q, status, page, pageSize, message]);
+  }, [beginLoadRead, q, status, page, pageSize, message]);
 
   useEffect(() => {
     void load();

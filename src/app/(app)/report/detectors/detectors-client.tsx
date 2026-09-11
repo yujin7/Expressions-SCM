@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import SearchInput from "@/components/SearchInput";
 
 /**
@@ -78,20 +80,25 @@ export default function DetectorsClient() {
   const q = filters.q;
   const kind = filters.kind;
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     setLoadError(null);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (kind) params.set("kind", kind);
-      setData(await fetchJson<DetectorData>(`/api/report/detectors?${params.toString()}`));
+      const latestReadResult = await fetchJson<DetectorData>(`/api/report/detectors?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       setLoadError((e as Error).message);
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [q, kind, page, pageSize, message]);
+  }, [beginLoadRead, q, kind, page, pageSize, message]);
   useEffect(() => { void load(); }, [load]);
 
   const doExport = async () => {

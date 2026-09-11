@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, App, Button, Card, Col, Input, Modal, Row, Select, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
@@ -55,17 +57,22 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const beginLoadReportRead = useLatestRead();
   const loadReport = useCallback(async (refresh = false) => {
+    const readRequest = beginLoadReportRead();
     setLoading(true);
     setError(null);
     try {
-      setReport(await fetchJson<DataQualityReport>(`/api/report/data-quality${refresh ? "?refresh=1" : ""}`));
+      const latestReadResult = await fetchJson<DataQualityReport>(`/api/report/data-quality${refresh ? "?refresh=1" : ""}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setReport(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       setError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, []);
+  }, [beginLoadReportRead]);
 
   useEffect(() => {
     void loadReport();
@@ -75,18 +82,23 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
   const reviewState = useListState({ key: "dq-reviews", defaults: { status: "" as string | undefined }, defaultPageSize: 20, paramPrefix: "rv" });
   const [reviews, setReviews] = useState<ReviewsResponse | null>(null);
   const [reviewLoading, setReviewLoading] = useState(false);
+  const beginLoadReviewsRead = useLatestRead();
   const loadReviews = useCallback(async () => {
+    const readRequest = beginLoadReviewsRead();
     setReviewLoading(true);
     try {
       const qs = new URLSearchParams({ page: String(reviewState.page), pageSize: String(reviewState.pageSize) });
       if (reviewState.filters.status) qs.set("status", reviewState.filters.status);
-      setReviews(await fetchJson<ReviewsResponse>(`/api/dq/reviews?${qs.toString()}`));
+      const latestReadResult = await fetchJson<ReviewsResponse>(`/api/dq/reviews?${qs.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setReviews(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setReviewLoading(false);
+      if (readRequest.isCurrent()) { setReviewLoading(false); }
     }
-  }, [reviewState.page, reviewState.pageSize, reviewState.filters.status, message]);
+  }, [beginLoadReviewsRead, reviewState.page, reviewState.pageSize, reviewState.filters.status, message]);
   useEffect(() => {
     void loadReviews();
   }, [loadReviews]);
@@ -147,36 +159,46 @@ export default function DataQualityClient({ canReview }: { canReview: boolean })
   const moState = useListState({ key: "dq-manual-overrides", defaults: { yearMonth: "" as string | undefined }, defaultPageSize: 20, paramPrefix: "mo" });
   const [overrides, setOverrides] = useState<ManualOverrideList | null>(null);
   const [moLoading, setMoLoading] = useState(false);
+  const beginLoadOverridesRead = useLatestRead();
   const loadOverrides = useCallback(async () => {
+    const readRequest = beginLoadOverridesRead();
     setMoLoading(true);
     try {
       const qs = new URLSearchParams({ page: String(moState.page), pageSize: String(moState.pageSize) });
       if (moState.filters.yearMonth) qs.set("yearMonth", moState.filters.yearMonth);
-      setOverrides(await fetchJson<ManualOverrideList>(`/api/report/data-quality/manual-overrides?${qs.toString()}`));
+      const latestReadResult = await fetchJson<ManualOverrideList>(`/api/report/data-quality/manual-overrides?${qs.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setOverrides(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setMoLoading(false);
+      if (readRequest.isCurrent()) { setMoLoading(false); }
     }
-  }, [moState.page, moState.pageSize, moState.filters.yearMonth, message]);
+  }, [beginLoadOverridesRead, moState.page, moState.pageSize, moState.filters.yearMonth, message]);
   useEffect(() => { void loadOverrides(); }, [loadOverrides]);
 
   /* ── C10 低于量下限逐条清单（paramPrefix bf） ── */
   const bfState = useListState({ key: "dq-below-floor", defaults: { month: "" as string | undefined }, defaultPageSize: 20, paramPrefix: "bf" });
   const [belowFloor, setBelowFloor] = useState<BelowFloorList | null>(null);
   const [bfLoading, setBfLoading] = useState(false);
+  const beginLoadBelowFloorRead = useLatestRead();
   const loadBelowFloor = useCallback(async () => {
+    const readRequest = beginLoadBelowFloorRead();
     setBfLoading(true);
     try {
       const qs = new URLSearchParams({ page: String(bfState.page), pageSize: String(bfState.pageSize) });
       if (bfState.filters.month) qs.set("month", bfState.filters.month);
-      setBelowFloor(await fetchJson<BelowFloorList>(`/api/report/data-quality/below-floor?${qs.toString()}`));
+      const latestReadResult = await fetchJson<BelowFloorList>(`/api/report/data-quality/below-floor?${qs.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setBelowFloor(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setBfLoading(false);
+      if (readRequest.isCurrent()) { setBfLoading(false); }
     }
-  }, [bfState.page, bfState.pageSize, bfState.filters.month, message]);
+  }, [beginLoadBelowFloorRead, bfState.page, bfState.pageSize, bfState.filters.month, message]);
   useEffect(() => { void loadBelowFloor(); }, [loadBelowFloor]);
 
   const sourceColumns: ColumnsType<DqSourceRow> = [

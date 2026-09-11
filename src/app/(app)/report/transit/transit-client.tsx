@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import SearchInput from "@/components/SearchInput";
 
 /**
@@ -86,7 +88,9 @@ function useTransit(kind: string, prefix: string) {
   const { page, pageSize } = listState;
   const q = listState.filters.q;
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const params = new URLSearchParams({
@@ -102,18 +106,19 @@ function useTransit(kind: string, prefix: string) {
         importedAt: string | null;
         summary: MaterialCoverage | null;
       }>(
-        `/api/report/transit?${params.toString()}`,
-      );
+        `/api/report/transit?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setTotal(res.total);
       setImportedAt(res.importedAt);
       setSummary(res.summary?.type === "material_coverage" ? res.summary : null);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [kind, q, page, pageSize, message]);
+  }, [beginLoadRead, kind, q, page, pageSize, message]);
 
   useEffect(() => {
     void load();

@@ -1,13 +1,14 @@
 import { z } from "zod";
 import { checkCode } from "@/server/rules/code-rule";
 import { shanghaiDay } from "@/server/core/business-day";
+import { businessDateSchema } from "@/server/core/business-date-schema";
 import { COMMERCIAL_ROLES, unicodeLength } from "@/server/rules/sku-standardization";
 
 /** 空字符串 → undefined（配合可选字段） */
 const emptyToUndef = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 
 const optionalStr = z.preprocess(emptyToUndef, z.string().trim().optional());
-const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "日期格式应为 YYYY-MM-DD");
+const dateStr = businessDateSchema;
 
 // ---------- SPU ----------
 export const spuSchema = z.object({

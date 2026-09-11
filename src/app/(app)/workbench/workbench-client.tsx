@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import { useCallback, useEffect, useState } from "react";
 import { Alert, App, Button, Card, Col, DatePicker, Input, List, Modal, Row, Segmented, Space, Statistic, Tag, Tooltip, Typography } from "antd";
 import type { Dayjs } from "dayjs";
@@ -343,7 +345,9 @@ export default function WorkbenchClient() {
   const [focusLoading, setFocusLoading] = useState(false);
   const [focusError, setFocusError] = useState<string | null>(null);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     setFocusLoading(true);
     setFocusError(null);
@@ -355,8 +359,9 @@ export default function WorkbenchClient() {
       myOpenDocs: number | null;
       queues: QueueItem[];
       sinceLastVisit: SinceLastVisit | null;
-    }>("/api/workbench")
+    }>("/api/workbench", { signal: readRequest.signal })
       .then((r) => {
+        if (!readRequest.isCurrent()) return;
         setSections(r.sections);
         setExceptions(r.exceptions ?? []);
         setNextActions(r.nextActions ?? []);
@@ -364,6 +369,7 @@ export default function WorkbenchClient() {
         setSinceLastVisit(r.sinceLastVisit ?? null);
       })
       .catch((e) => {
+        if (!readRequest.isCurrent()) return;
         const error = (e as Error).message;
         setFocusError(error);
         setSections([]);
@@ -373,16 +379,19 @@ export default function WorkbenchClient() {
         setSinceLastVisit(null);
         message.error(error);
       })
-      .finally(() => setFocusLoading(false));
+      .finally(() => { if (readRequest.isCurrent()) setFocusLoading(false); });
     try {
-      const aliasRes = await fetchJson<{ total: number }>("/api/import/exceptions?status=open&page=1&pageSize=1");
+      const aliasRes = await fetchJson<{ total: number }>("/api/import/exceptions?status=open&page=1&pageSize=1", { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setOpenAliasCount(aliasRes.total);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
+      setOpenAliasCount(null);
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [message]);
+  }, [beginLoadRead, message]);
 
   useEffect(() => {
     void load();

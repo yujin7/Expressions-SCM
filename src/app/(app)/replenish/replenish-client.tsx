@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import SearchInput from "@/components/SearchInput";
 import ListToolbar from "@/components/ListToolbar";
 
@@ -242,18 +244,22 @@ function saveDeclined(map: Record<number, DeclineResult>): void {
 function SharedPackagingPanel({ skuId }: { skuId: number }) {
   const [items, setItems] = useState<{ materialCode: string; materialName: string; baseUom: string; onHand: string; sharedCount: number; sharedWith: { code: string }[] }[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setItems(null);
     setLoadError(null);
     try {
       const data = await fetchJson<{ items?: { materialCode: string; materialName: string; baseUom: string; onHand: string; sharedCount: number; sharedWith: { code: string }[] }[] }>(
-        `/api/master/sku/${skuId}/shared-packaging`,
+        `/api/master/sku/${skuId}/shared-packaging`, { signal: readRequest.signal },
       );
+      if (!readRequest.isCurrent()) return;
       setItems(data.items ?? []);
     } catch (error) {
+      if (!readRequest.isCurrent()) return;
       setLoadError(error instanceof Error ? error.message : "包材信息加载失败");
     }
-  }, [skuId]);
+  }, [beginLoadRead, skuId]);
   useEffect(() => {
     void load();
   }, [load]);
@@ -291,16 +297,20 @@ function SharedPackagingPanel({ skuId }: { skuId: number }) {
 function PlanEventsPanel({ skuId }: { skuId: number }) {
   const [rows, setRows] = useState<PlanEventRow[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setRows(null);
     setLoadError(null);
     try {
-      const data = await fetchJson<{ rows?: PlanEventRow[] }>(`/api/planning/events?skuId=${skuId}&openOnly=1&pageSize=20`);
+      const data = await fetchJson<{ rows?: PlanEventRow[] }>(`/api/planning/events?skuId=${skuId}&openOnly=1&pageSize=20`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(data.rows ?? []);
     } catch (error) {
+      if (!readRequest.isCurrent()) return;
       setLoadError(error instanceof Error ? error.message : "计划事件加载失败");
     }
-  }, [skuId]);
+  }, [beginLoadRead, skuId]);
   useEffect(() => { void load(); }, [load]);
   if (loadError) {
     return <Alert type="error" showIcon message="计划事件加载失败" description={loadError} action={<Button size="small" onClick={() => void load()}>重试</Button>} />;
@@ -412,7 +422,9 @@ export default function ReplenishClient() {
   const [declined, setDeclined] = useState<Record<number, DeclineResult>>({});
   useEffect(() => { setDeclined(loadDeclinedToday()); }, []);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     setLoadError(null);
     try {
@@ -428,18 +440,20 @@ export default function ReplenishClient() {
       if (tier) params.set("tier", tier);
       if (ownership) params.set("ownership", ownership);
       if (hideTierC) params.set("hideTierC", "1");
-      const res = await fetchJson<ReplenishResult>(`/api/replenish/suggestions?${params.toString()}`);
+      const res = await fetchJson<ReplenishResult>(`/api/replenish/suggestions?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setData(res);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       const text = e instanceof Error ? e.message : "补货建议加载失败";
       setData(null);
       setSelectedRows([]);
       setLoadError(text);
       message.error(text);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [coverDays, minCover, q, page, pageSize, sortBy, sortOrder, tier, ownership, hideTierC, message]);
+  }, [beginLoadRead, coverDays, minCover, q, page, pageSize, sortBy, sortOrder, tier, ownership, hideTierC, message]);
 
   useEffect(() => {
     void load();

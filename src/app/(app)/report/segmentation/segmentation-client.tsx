@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import SearchInput from "@/components/SearchInput";
 
 /** ABC/XYZ 库存分层——近6月销售贡献（ABC）×需求波动（XYZ）3×3 矩阵（只读） */
@@ -76,20 +78,25 @@ export default function SegmentationClient() {
   const tier = filters.tier;
   const ownership = filters.ownership;
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (cell) params.set("cell", cell);
       if (tier) params.set("tier", tier);
       if (ownership) params.set("ownership", ownership);
-      setData(await fetchJson<SegData>(`/api/report/segmentation?${params.toString()}`));
+      const latestReadResult = await fetchJson<SegData>(`/api/report/segmentation?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [q, cell, tier, ownership, page, pageSize, message]);
+  }, [beginLoadRead, q, cell, tier, ownership, page, pageSize, message]);
   useEffect(() => { void load(); }, [load]);
 
   const columns: ColumnsType<SegRow> = [

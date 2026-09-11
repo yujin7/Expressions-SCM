@@ -2,12 +2,12 @@ import { and, desc, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import {
-   batches, pdDocs, pdLines, reviewItems, skus, stockBalances, stockDocLines, stockDocs, users, warehouses,
+   approvalConfigs, batches, pdDocs, pdLines, reviewItems, skus, stockBalances, stockDocLines, stockDocs, users, warehouses,
 } from "@/db/schema";
 import { dMoney, dNeg, dQty } from "@/server/core/decimal";
 import {  requireRole, type SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { ApprovalError, approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
+import { ApprovalError, approvalRoleError, approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { post, PostingError, reverse, type AnyDb, type PostingEvent, type PostingLine } from "@/server/posting/post";
@@ -21,6 +21,7 @@ import {
 import { expandOutboundLinesForBatchPosting } from "./batch-allocation";
 import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 import { documentHref } from "@/lib/document-links";
+import type { StockDocActionHints } from "@/lib/stock-doc-actions";
 
 /** 单号前缀（CLAUDE.md）：入库 RK / 出库 CK / 调拨 DB；红字沿用原单前缀 */
 const DOC_PREFIX: Record<ManualSubtype, string> = {
@@ -51,6 +52,14 @@ export async function guardWarehouseWrite(): Promise<SessionUser> {
 
 type StockDocRow = typeof stockDocs.$inferSelect;
 type StockDocLineRow = typeof stockDocLines.$inferSelect;
+
+async function warehouseActor(tx: AnyDb, user: SessionUser): Promise<SessionUser> {
+  const actor = await currentWriteActor(tx, user);
+  if (!actor.roles.includes("warehouse") && !actor.roles.includes("admin")) {
+    throw new ApiError(403, "仅仓管或管理员可操作库存单据");
+  }
+  return actor;
+}
 
 // ---------- 创建 ----------
 
@@ -90,6 +99,7 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
   }
 
   return db.transaction(async (tx: AnyDb) => {
+    const actor = await warehouseActor(tx, user);
     if (v.riskDisposalId) {
       const [disposal]: { refKey: string | null; title: string }[] = await tx
         .select({ refKey: reviewItems.refKey, title: reviewItems.title })
@@ -126,7 +136,7 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
         remark: v.remark ?? null,
         sourceDocType: v.riskDisposalId ? "risk_disposal" : null,
         sourceDocId: v.riskDisposalId ?? null,
-        createdBy: user.id,
+        createdBy: actor.id,
       })
       .returning();
     await tx.insert(stockDocLines).values(
@@ -141,7 +151,7 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
       })),
     );
     await writeAudit(tx, {
-      userId: user.id, entity: "stock_doc", entityId: doc.id, action: "create",
+      userId: actor.id, entity: "stock_doc", entityId: doc.id, action: "create",
       after: { docNo: doc.docNo, subtype: doc.subtype, transferType: doc.transferType ?? null, lineCount: lines.length },
     });
     return doc;
@@ -204,9 +214,10 @@ async function transitionStockDoc(
 ): Promise<StockDocRow> {
   const db = await resolveDb(dbArg);
   return db.transaction(async (tx: AnyDb) => {
-    const [doc]: StockDocRow[] = await tx.select().from(stockDocs).where(eq(stockDocs.id, id));
+    const actor = await warehouseActor(tx, user);
+    const [doc]: StockDocRow[] = await tx.select().from(stockDocs).where(eq(stockDocs.id, id)).for("update");
     if (!doc) throw new ApiError(404, "单据不存在");
-    if (opts.requireOwner && doc.createdBy !== user.id && !user.roles.includes("admin")) {
+    if (opts.requireOwner && doc.createdBy !== actor.id && !actor.roles.includes("admin")) {
       throw new ApiError(403, "仅制单人或管理员可执行此操作");
     }
     let target: DocStatus;
@@ -229,7 +240,7 @@ async function transitionStockDoc(
       .returning();
     if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
     await writeAudit(tx, {
-      userId: user.id,
+      userId: actor.id,
       entity: "stock_doc",
       entityId: id,
       action,
@@ -265,9 +276,6 @@ export async function voidStockDoc(user: SessionUser, id: number, input: unknown
  */
 export async function shortCloseStockDoc(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<StockDocRow> {
   const v = shortCloseStockDocSchema.parse(input);
-  if (!user.roles.includes("warehouse") && !user.roles.includes("admin")) {
-    throw new ApiError(403, "仅仓管或管理员可短关库存单据");
-  }
   return transitionStockDoc(user, id, v.version, "short_close", {
     reason: v.reason,
     requireOwner: false,
@@ -315,7 +323,8 @@ export async function approveStockDoc(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
-      const [doc]: StockDocRow[] = await tx.select().from(stockDocs).where(eq(stockDocs.id, id));
+      const actor = await currentWriteActor(tx, user);
+      const [doc]: StockDocRow[] = await tx.select().from(stockDocs).where(eq(stockDocs.id, id)).for("update");
       if (!doc) throw new ApiError(404, "单据不存在");
       if (doc.subtype === "count_adjust") {
         throw new ApiError(409, "盘点调整单由来源盘点单审批后自动生成，不可单独审批或驳回；请查看来源盘点，已过账纠错走红字冲销");
@@ -329,14 +338,14 @@ export async function approveStockDoc(
         docType: approvalDocType,
         table: stockDocs,
         docId: id,
-        approver: { id: user.id, roles: user.roles, isApprover: user.isApprover },
+        approver: { id: actor.id, roles: actor.roles, isApprover: actor.isApprover },
         action: v.action,
         comment: v.comment,
         expectedVersion: v.version,
       });
       if (r.idempotent) return r; // 重试短路：不再过账（post 本身也幂等，双保险）
       await writeAudit(tx, {
-        userId: user.id, entity: "stock_doc", entityId: id, action: v.action,
+        userId: actor.id, entity: "stock_doc", entityId: id, action: v.action,
         after: { comment: v.comment ?? null, approvalDocType },
       });
       if (v.action === "reject") return r; // 驳回→草稿，无过账
@@ -507,7 +516,8 @@ export async function reverseStockDoc(user: SessionUser, id: number, input: unkn
   const v = reverseStockDocSchema.parse(input);
   const db = await resolveDb(dbArg);
   return db.transaction(async (tx: AnyDb) => {
-    const [orig]: StockDocRow[] = await tx.select().from(stockDocs).where(eq(stockDocs.id, id));
+    const actor = await warehouseActor(tx, user);
+    const [orig]: StockDocRow[] = await tx.select().from(stockDocs).where(eq(stockDocs.id, id)).for("update");
     if (!orig) throw new ApiError(404, "单据不存在");
     if (orig.subtype === "reversal") throw new ApiError(400, "红字单不可再冲销（无套娃）");
     if (orig.status !== "completed") throw new ApiError(409, `仅已完成单据可红字冲销，当前状态: ${orig.status}`);
@@ -537,7 +547,7 @@ export async function reverseStockDoc(user: SessionUser, id: number, input: unkn
         sourceDocType: "stock_doc",
         sourceDocId: id,
         reversalOfId: id,
-        createdBy: user.id,
+        createdBy: actor.id,
       })
       .returning();
     await tx.insert(stockDocLines).values(
@@ -554,7 +564,7 @@ export async function reverseStockDoc(user: SessionUser, id: number, input: unkn
       })),
     );
     await writeAudit(tx, {
-      userId: user.id, entity: "stock_doc", entityId: doc.id, action: "reverse_create",
+      userId: actor.id, entity: "stock_doc", entityId: doc.id, action: "reverse_create",
       after: { docNo: doc.docNo, reversalOfId: id, reason: v.reason, lineCount: origLines.length },
     });
     return doc;
@@ -563,7 +573,29 @@ export async function reverseStockDoc(user: SessionUser, id: number, input: unkn
 
 // ---------- 查询 ----------
 
-export async function getStockDoc(id: number, dbArg?: AnyDb) {
+export function stockDocActions(user: SessionUser, doc: Pick<StockDocRow, "status" | "subtype" | "createdBy" | "reversalOfId">,
+  approvalRole: string | null, hasReversal = false): StockDocActionHints {
+  const operator = user.roles.includes("admin") || user.roles.includes("warehouse");
+  const owner = doc.createdBy === user.id || user.roles.includes("admin");
+  const adjustment = doc.subtype === "count_adjust";
+  const approvalReason = doc.createdBy === user.id ? "制单人与审批人必须分离，请由另一位审批人处理"
+    : approvalRoleError(user, approvalRole)?.message ?? null;
+  return {
+    submit: doc.status === "draft" && operator && owner && !adjustment,
+    void: doc.status === "draft" && operator && owner && !adjustment,
+    withdraw: doc.status === "pending" && operator && owner && !adjustment,
+    approve: doc.status === "pending" && !adjustment && !approvalReason,
+    shortClose: ["approved", "in_progress"].includes(doc.status) && operator && !adjustment,
+    reverse: doc.status === "completed" && operator && doc.subtype !== "reversal" && !doc.reversalOfId && !hasReversal,
+    reason: adjustment && doc.status !== "completed" ? "盘点调整单不单独流转，请核对来源盘点单及明细关联"
+      : doc.status === "pending" ? approvalReason
+      : doc.status === "draft" && (!operator || !owner) ? "请由制单仓管或管理员提交或作废"
+      : doc.status === "completed" && hasReversal ? "已存在红字冲销单，请核对该单处理进度，不重复生成"
+      : !operator && ["approved", "in_progress", "completed"].includes(doc.status) ? "当前仅可查看，库存纠错请由仓管或管理员处理" : null,
+  };
+}
+
+export async function getStockDoc(id: number, dbArg?: AnyDb, user?: SessionUser) {
   const db = await resolveDb(dbArg);
   const [doc]: (StockDocRow & { createdByName: string | null })[] = await db
     .select({
@@ -648,6 +680,10 @@ export async function getStockDoc(id: number, dbArg?: AnyDb) {
     }
   }
 
+  const [config] = user ? await db.select({ role: approvalConfigs.approverRole }).from(approvalConfigs)
+    .where(eq(approvalConfigs.docType, doc.subtype === "opening" ? "opening" : "stock_doc")) : [];
+  const [reversal] = user && doc.status === "completed" ? await db.select({ id: stockDocs.id }).from(stockDocs)
+    .where(and(eq(stockDocs.reversalOfId, id), ne(stockDocs.status, "void"))).limit(1) : [];
   return {
     id: doc.id,
     docNo: doc.docNo,
@@ -670,6 +706,7 @@ export async function getStockDoc(id: number, dbArg?: AnyDb) {
     })),
     approvals: approvalRows,
     approvalBasis,
+    ...(user ? { actions: stockDocActions(user, doc, config?.role ?? null, Boolean(reversal)) } : {}),
     createdByName: doc.createdByName,
     createdAt: doc.createdAt,
   };

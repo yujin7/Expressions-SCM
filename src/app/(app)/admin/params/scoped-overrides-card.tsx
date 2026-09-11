@@ -11,12 +11,14 @@
  * 全局层保护不在这里放宽：表单不提供 global 选项，服务端也仍然拒绝
  * 非 admin 经本路径改 global（那条路是 `/api/admin/params` 的 admin-only 闸）。
  */
-import { useCallback, useEffect, useState } from "react";
-import { App, Button, Card, Empty, InputNumber, Popconfirm, Select, Space, Table, Tag, Typography } from "antd";
+import { useEffect, useState } from "react";
+import { Alert, App, Button, Card, Empty, InputNumber, Popconfirm, Select, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import { fetchJson } from "@/components/fetchJson";
 import RemoteSelect from "@/components/RemoteSelect";
+
+import { useDocumentRead } from "@/components/useDocumentRead";
 
 export type ScopeKind = "sku" | "brand" | "segment" | "category";
 
@@ -66,8 +68,6 @@ export default function ScopedOverridesCard({
   onChanged: () => void;
 }) {
   const { message } = App.useApp();
-  const [rows, setRows] = useState<OverrideRow[]>([]);
-  const [loading, setLoading] = useState(false);
   const [kind, setKind] = useState<ScopeKind | null>(null);
   const [target, setTarget] = useState<string | number | null>(null);
   const [value, setValue] = useState<number | null>(null);
@@ -76,28 +76,10 @@ export default function ScopedOverridesCard({
   const def = params.find((p) => p.key === selectedKey) ?? null;
   const overridable = params.filter((p) => p.scopeKinds.length > 0);
 
-  const load = useCallback(async () => {
-    if (!selectedKey) {
-      setRows([]);
-      return;
-    }
-    setLoading(true);
-    try {
-      const res = await fetchJson<{ rows: OverrideRow[] }>(
-        `/api/admin/params/scoped?key=${encodeURIComponent(selectedKey)}`,
-      );
-      setRows(res.rows);
-    } catch (e) {
-      message.error((e as Error).message);
-      setRows([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedKey, message]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const { data, phase, error, retry: load } = useDocumentRead<{ rows: OverrideRow[] }>(selectedKey
+    ? `/api/admin/params/scoped?key=${encodeURIComponent(selectedKey)}` : null);
+  const rows = data?.rows ?? [];
+  const loading = phase === "loading";
 
   // 换参数时重置表单：不同参数的层与量纲都不同，留着上一个的目标只会误提交
   useEffect(() => {
@@ -290,6 +272,8 @@ export default function ScopedOverridesCard({
         ) : null}
       </Space>
       {selectedKey ? (
+        <>
+        {error && <Alert type="error" showIcon message={error} action={<Button onClick={load}>重试</Button>} />}
         <Table<OverrideRow>
           rowKey="scope"
           size="small"
@@ -297,8 +281,9 @@ export default function ScopedOverridesCard({
           dataSource={rows}
           loading={loading}
           pagination={false}
-          locale={{ emptyText: "该参数尚无分域覆盖：全部目标都用全局值" }}
+          locale={{ emptyText: error ? "覆盖读取失败，请重试" : "该参数尚无分域覆盖：全部目标都用全局值" }}
         />
+        </>
       ) : (
         <Empty description="选择一个参数查看它的分域覆盖" image={Empty.PRESENTED_IMAGE_SIMPLE} />
       )}

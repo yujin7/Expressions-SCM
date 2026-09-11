@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import { useDocumentTarget } from "@/components/useDocumentTarget";
 import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
 import { useDocumentRead } from "@/components/useDocumentRead";
@@ -24,6 +26,7 @@ import { STOCK_SUBTYPE_LABELS, toOptions } from "@/components/labels";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
 import { useSearchParams } from "next/navigation";
 import { FefoPreviewModal, type FefoPreviewGroup } from "./FefoPreviewModal";
+import type { StockDocActionHints } from "@/lib/stock-doc-actions";
 
 interface DocRow {
   id: number;
@@ -59,6 +62,7 @@ interface DocApproval {
 }
 
 interface DocDetail {
+  actions?: StockDocActionHints;
   id: number;
   docNo: string;
   subtype: string;
@@ -291,23 +295,26 @@ function DocsInner() {
     }
   };
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (status) params.set("status", status);
       if (subtype) params.set("subtype", subtype);
       const res = await fetchJson<{ rows: DocRow[]; total: number }>(
-        `/api/inventory/stock-doc?${params.toString()}`,
-      );
+        `/api/inventory/stock-doc?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setTotal(res.total);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [q, status, subtype, page, pageSize, message]);
+  }, [beginLoadRead, q, status, subtype, page, pageSize, message]);
 
   useEffect(() => {
     void load();
@@ -711,6 +718,7 @@ function DocsInner() {
         extra={
           detail && (detail.subtype !== "count_adjust" || detail.status === "completed") ? (
             <DocActions
+              key={`${detail.id}:${detail.version}`}
               docType="stock-doc"
               apiBase="/api/inventory/stock-doc"
               doc={{
@@ -719,6 +727,7 @@ function DocsInner() {
                 version: detail.version,
                 subtype: detail.subtype,
                 reversalOfId: detail.reversalOfId,
+                actions: detail.actions,
               }}
               onChanged={() => {
                 void loadDetail();
@@ -730,7 +739,9 @@ function DocsInner() {
       >
         {detail ? (
           <div>
-            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
+            {detail.actions?.reason ? <Alert type="info" showIcon message={detail.actions.reason} style={{ marginBottom: 12 }} /> : null}
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered
+              styles={{ label: { whiteSpace: "nowrap" }, content: { overflowWrap: "anywhere" } }} style={{ marginBottom: 16 }}>
               <Descriptions.Item label="类型">
                 <SubtypeTag subtype={detail.subtype} />
               </Descriptions.Item>

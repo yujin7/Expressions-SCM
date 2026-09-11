@@ -4,10 +4,10 @@
  * 盘点表打印页：仓库拿纸质表清点，实盘栏留白手工填写，盘完回系统录入。
  * 草稿/待审批均可打印（清点发生在提交之前）；已完成打印含实盘与差异（复盘存档用）。
  */
-import { use, useCallback, useEffect, useState } from "react";
+import { use } from "react";
 import { Alert, Button, Space, Spin } from "antd";
 import { PrinterOutlined } from "@ant-design/icons";
-import { fetchJson } from "@/components/fetchJson";
+import { useDocumentRead } from "@/components/useDocumentRead";
 import { DOC_STATUS_LABELS } from "@/components/labels";
 import { shanghaiDayOf } from "@/server/core/business-day";
 
@@ -43,22 +43,9 @@ const shDate = (v: string | null | undefined): string =>
 
 export default function CountPrintPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const [detail, setDetail] = useState<CountDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { data: detail, error, retry } = useDocumentRead<CountDetail>(`/api/inventory/count/${id}`);
 
-  const load = useCallback(async () => {
-    try {
-      setDetail(await fetchJson<CountDetail>(`/api/inventory/count/${id}`));
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }, [id]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  if (error) return <Alert type="error" showIcon message={error} style={{ margin: 24 }} />;
+  if (error) return <Alert type="error" showIcon message={error} action={<Button onClick={retry}>重试</Button>} style={{ margin: 24 }} />;
   if (!detail) return <Spin style={{ display: "block", margin: "80px auto" }} />;
 
   // 已完成=存档表（打印实盘与差异）；其余=清点表（实盘/差异留白手填）

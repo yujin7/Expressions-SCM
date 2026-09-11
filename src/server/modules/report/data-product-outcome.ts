@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
+import { businessDateSchema } from "@/server/core/business-date-schema";
 
 import { DATA_PRODUCTS, type DataProductDefinition } from "@/components/data-products";
 import * as schema from "@/db/schema";
@@ -86,7 +87,7 @@ const decimalString = z.union([z.string(), z.number()]).transform((value, ctx) =
 const inputSchema = z.object({
   productId: z.string().trim().min(1).max(80),
   decisionRef: z.string().trim().min(3, "请填写建议/决策编号").max(200),
-  businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "业务日期格式应为 YYYY-MM-DD"),
+  businessDate: businessDateSchema,
   decision: z.enum(["accepted", "modified", "rejected", "deferred"]),
   result: z.enum(["pending", "positive", "neutral", "negative", "false_positive"]),
   handlingMinutes: z.number().int().min(0).max(525_600).optional().nullable(),

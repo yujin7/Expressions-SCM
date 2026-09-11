@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { App, DatePicker, Table, Tag, Tooltip, Typography } from "antd";
@@ -73,7 +75,9 @@ function LedgerInner() {
   const from = filters.from || undefined;
   const to = filters.to || undefined;
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
@@ -82,18 +86,19 @@ function LedgerInner() {
       if (from) params.set("from", from);
       if (to) params.set("to", to);
       const res = await fetchJson<{ rows: LedgerRow[]; total: number; canSeeValue?: boolean; moneyCalibre?: MoneyCalibre | null }>(
-        `/api/inventory/ledger?${params.toString()}`,
-      );
+        `/api/inventory/ledger?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setTotal(res.total);
       setCanSeeValue(Boolean(res.canSeeValue));
       setMoneyCalibre(res.moneyCalibre ?? null);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [skuId, warehouseId, from, to, page, pageSize, message]);
+  }, [beginLoadRead, skuId, warehouseId, from, to, page, pageSize, message]);
 
   useEffect(() => {
     void load();

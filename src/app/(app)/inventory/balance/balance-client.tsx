@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 import SearchInput from "@/components/SearchInput";
 
 import { Suspense, useCallback, useEffect, useState } from "react";
@@ -63,7 +65,9 @@ function SkuBalanceTab() {
   const includeZero = filters.includeZero === "1";
   const commercialRole = filters.commercialRole;
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const params = new URLSearchParams({
@@ -75,16 +79,17 @@ function SkuBalanceTab() {
       if (warehouseId != null) params.set("warehouseId", String(warehouseId));
       if (commercialRole) params.set("commercialRole", commercialRole);
       const res = await fetchJson<{ rows: BalanceRow[]; total: number }>(
-        `/api/inventory/balance?${params.toString()}`,
-      );
+        `/api/inventory/balance?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setTotal(res.total);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [q, warehouseId, includeZero, commercialRole, page, pageSize, message]);
+  }, [beginLoadRead, q, warehouseId, includeZero, commercialRole, page, pageSize, message]);
 
   useEffect(() => {
     void load();
@@ -218,20 +223,23 @@ function SpuBalanceTab() {
   const [pageSize, setPageSize] = useState(20);
   const [q, setQ] = useState("");
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const res = await fetchJson<{ rows: SpuBalanceRow[]; total: number }>(
-        `/api/inventory/balance/spu?q=${encodeURIComponent(q)}&page=${page}&pageSize=${pageSize}`,
-      );
+        `/api/inventory/balance/spu?q=${encodeURIComponent(q)}&page=${page}&pageSize=${pageSize}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setTotal(res.total);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [q, page, pageSize, message]);
+  }, [beginLoadRead, q, page, pageSize, message]);
 
   useEffect(() => {
     void load();
@@ -313,22 +321,25 @@ function SnapshotTab() {
   const [q, setQ] = useState(initialQ);
   const [warehouseId, setWarehouseId] = useState<number | undefined>();
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (warehouseId != null) params.set("warehouseId", String(warehouseId));
       const res = await fetchJson<{ rows: SnapshotRow[]; total: number }>(
-        `/api/inventory/balance/snapshot?${params.toString()}`,
-      );
+        `/api/inventory/balance/snapshot?${params.toString()}`, { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setTotal(res.total);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [q, warehouseId, page, pageSize, message]);
+  }, [beginLoadRead, q, warehouseId, page, pageSize, message]);
 
   useEffect(() => {
     void load();

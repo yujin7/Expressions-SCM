@@ -1,5 +1,7 @@
 "use client";
 
+import { useLatestRead } from "@/components/useLatestRead";
+
 /**
  * 每日经营摘要——in-app 晨间简报（只读）：异常 × 关键指标 × 角色速览。装配自工作台聚焦。
  *
@@ -57,18 +59,23 @@ export default function DigestView() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
+    const readRequest = beginLoadRead();
     setLoading(true);
     setLoadError(null);
     try {
-      setData(await fetchJson<Digest>("/api/report/digest"));
+      const latestReadResult = await fetchJson<Digest>("/api/report/digest", { signal: readRequest.signal });
+      if (!readRequest.isCurrent()) return;
+      setData(latestReadResult);
     } catch (e) {
+      if (!readRequest.isCurrent()) return;
       setLoadError((e as Error).message);
       message.error((e as Error).message);
     } finally {
-      setLoading(false);
+      if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [message]);
+  }, [beginLoadRead, message]);
   useEffect(() => { void load(); }, [load]);
 
   if (loading && !data) {

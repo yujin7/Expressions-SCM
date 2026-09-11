@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 import { App, Empty, Space, Spin, Tag, Timeline, Tooltip, Typography } from "antd";
 import { fetchJson } from "@/components/fetchJson";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
+import { useLatestRead } from "@/components/useLatestRead";
 
 type TimelineCategory = "stock" | "order" | "expiry" | "disposal" | "other";
 
@@ -52,25 +53,31 @@ export default function Sku360Client({ initialSku = "" }: { initialSku?: string 
   const [searched, setSearched] = useState(false);
   const [lastCode, setLastCode] = useState(initialSku);
 
+  const beginLoadRead = useLatestRead();
   const load = useCallback(
     async (sku: string) => {
       const code = sku.trim();
       if (!code) return;
+      const readRequest = beginLoadRead();
       setLoading(true);
+      setData(null);
       setSearched(true);
       setLastCode(code);
       setLoadError(null);
       try {
-        setData(await fetchJson<SkuTimeline>(`/api/report/sku-timeline?sku=${encodeURIComponent(code)}`));
+        const result = await fetchJson<SkuTimeline>(`/api/report/sku-timeline?sku=${encodeURIComponent(code)}`, { signal: readRequest.signal });
+        if (!readRequest.isCurrent()) return;
+        setData(result);
       } catch (e) {
+        if (!readRequest.isCurrent()) return;
         setData(null);
         setLoadError((e as Error).message);
         message.error((e as Error).message);
       } finally {
-        setLoading(false);
+        if (readRequest.isCurrent()) setLoading(false);
       }
     },
-    [message],
+    [beginLoadRead, message],
   );
   useEffect(() => {
     if (initialSku) void load(initialSku);
