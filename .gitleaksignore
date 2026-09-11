@@ -10,3 +10,17 @@ d88de7d2ff47d891e367f2556316a26c2d52f34c:tests/replenish/sop-cycle.test.ts:gener
 b00ee29be10a70648f3f89a02b0f2404455a1da0:tests/replenish/plan-versions.test.ts:generic-api-key:72
 b00ee29be10a70648f3f89a02b0f2404455a1da0:tests/replenish/plan-versions.test.ts:generic-api-key:101
 b00ee29be10a70648f3f89a02b0f2404455a1da0:tests/replenish/plan-versions.test.ts:generic-api-key:119
+# 2026-09-11 team handoff review: synthetic request/idempotency keys, not authentication secrets.
+# Exact historical fingerprints only; no rule/path-wide exclusion.
+475dab5eaee62237906c119cb1a6a5d67acdb87d:tests/quality/navigation-http.test.ts:generic-api-key:22
+475dab5eaee62237906c119cb1a6a5d67acdb87d:tests/quality/navigation-http.test.ts:generic-api-key:23
+e57106b24870df8b52f05faf62faa8698a08a4f4:tests/outsource/bh-create-audit-boundary.test.ts:generic-api-key:63
+e57106b24870df8b52f05faf62faa8698a08a4f4:tests/npd/write-http.test.ts:generic-api-key:14
+e57106b24870df8b52f05faf62faa8698a08a4f4:tests/npd/write-safety.test.ts:generic-api-key:8
+e57106b24870df8b52f05faf62faa8698a08a4f4:tests/npd/write-safety.test.ts:generic-api-key:102
+e57106b24870df8b52f05faf62faa8698a08a4f4:tests/npd/write-safety.test.ts:generic-api-key:147
+fe009774dbbc1c73b8ed4e48478118ef349119cd:tests/inventory/quarantine-batch.test.ts:generic-api-key:142
+fe009774dbbc1c73b8ed4e48478118ef349119cd:tests/inventory/quarantine-batch.test.ts:generic-api-key:161
+fe009774dbbc1c73b8ed4e48478118ef349119cd:tests/inventory/quarantine-batch.test.ts:generic-api-key:171
+fe009774dbbc1c73b8ed4e48478118ef349119cd:tests/inventory/quarantine-batch.test.ts:generic-api-key:207
+85abcc5f4417b3a91c9d75ab29ccf0ec18bde88b:tests/replenish/sop-freeze-banner.test.ts:generic-api-key:53
