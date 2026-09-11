@@ -137,7 +137,7 @@ export function scoreSupplier(i: ScoreInput, minSamples = 3): ScoreResult {
       weight: SCORE_WEIGHTS.onTime,
       value: null,
       ratio: null,
-      note: "无「承诺交期」样本（PO 未填预计到货日），该维度无数据，权重已归一",
+      note: "无可核对的原始承诺交期样本（交期、版本链或收货来源不足），该维度无数据，权重已归一",
     });
   } else {
     const ratio = clamp01(i.onTimeRate);

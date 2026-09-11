@@ -443,6 +443,7 @@ function ScorecardTab() {
         size="small"
         pagination={false}
         tableLayout="fixed"
+        scroll={{ x: 800 }}
         dataSource={r.breakdown}
         columns={[
           { title: "维度", dataIndex: "label", width: 110 },
@@ -457,7 +458,7 @@ function ScorecardTab() {
             render: (v: number | null, d) =>
               v == null ? <Typography.Text type="secondary">不计分</Typography.Text> : <Typography.Text strong>{v} / {d.weight}</Typography.Text>,
           },
-          { title: "说明", dataIndex: "note" },
+          { title: "说明", dataIndex: "note", width: 430 },
         ]}
         footer={() => <Typography.Text type="secondary">{r.reason}</Typography.Text>}
       />
@@ -524,7 +525,7 @@ function ScorecardTab() {
               9 家各 1 单 100% 和 1 家 200 单 50% 一人一票——那个数是 95%，真实整体 ~50%。 */}
           <Statistic
             title={(
-              <Tooltip title={`${s?.onTimeAggregationLabel ?? ""}${s ? `　本次：${s.onTimeHits}/${s.onTimeSamples} 批（${s.onTimeSuppliers} 家有样本，${s.onTimeExcludedSuppliers} 家无承诺交期样本已排除）` : ""}`}>
+              <Tooltip title={`${s?.onTimeAggregationLabel ?? ""}${s ? `　本次：${s.onTimeHits}/${s.onTimeSamples} 采购行（${s.onTimeSuppliers} 家有样本，${s.onTimeExcludedSuppliers} 家无可评估样本已排除）` : ""}`}>
                 <span>{`整体准时率（${data?.onTimeBasisLabel ?? "原始承诺"}）ⓘ`}</span>
               </Tooltip>
             )}
@@ -535,7 +536,7 @@ function ScorecardTab() {
           />
           {s ? (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {s.onTimeHits}/{s.onTimeSamples} 批
+              {s.onTimeHits}/{s.onTimeSamples} 采购行
               {s.onTimeExcludedSuppliers > 0 ? `　${s.onTimeExcludedSuppliers} 家无样本已排除` : ""}
             </Typography.Text>
           ) : null}
@@ -553,7 +554,7 @@ function ScorecardTab() {
           />
           {s ? (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {s.onTimeHitsCurrent}/{s.onTimeSamplesCurrent} 批
+              {s.onTimeHitsCurrent}/{s.onTimeSamplesCurrent} 采购行
             </Typography.Text>
           ) : null}
         </Card>

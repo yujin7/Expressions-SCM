@@ -461,7 +461,7 @@ export function onTimeCounts(samples: readonly LeadTimeSample[]): { n: number; h
 
 /** 准时率汇总口径标签（唯一权威；页面原样展示，不得自写一份） */
 export const ON_TIME_AGGREGATION_LABEL =
-  "整体准时率 = Σ准时批次 ÷ Σ有承诺交期的批次（样本加权 pooled，不是各供应商准时率的算术平均）；无承诺交期样本的供应商既不进分子也不进分母";
+  "整体准时率 = Σ首批准时采购行 ÷ Σ可核对承诺与首批收货的采购行（样本加权 pooled，不是各供应商准时率的算术平均）；无可评估样本的供应商既不进分子也不进分母";
 
 /** 质量案件维度的窗口口径标签（唯一权威） */
 export function qualityCaseScopeLabel(windowDays: number, legacy: number): string {

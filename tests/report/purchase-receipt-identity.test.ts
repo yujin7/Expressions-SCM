@@ -46,5 +46,7 @@ describe("采购收货身份贯穿承诺报表和供应商评分", () => {
     const row = card.rows.find(r => r.supplierId === supplierId)!;
     expect(row).toMatchObject({ onTimeSampleN: 0, onTimeRate: null, onTimeRateCurrent: null });
     expect(row.reason).toContain("采购行归属");
+    expect(row.breakdown.find(item => item.key === "onTime")?.note).toContain("收货来源不足");
+    expect(row.breakdown.find(item => item.key === "onTime")?.note).not.toContain("PO 未填");
   });
 });
