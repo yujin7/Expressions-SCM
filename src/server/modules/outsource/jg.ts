@@ -16,6 +16,7 @@ import { getSupplierCapacitySignal } from "@/server/modules/report/supplier-capa
 import { skuHeaderMatch } from "@/server/core/doc-search";
 import { businessDateSchema } from "@/server/core/business-date-schema";
 import { currentWriteActor } from "@/server/core/current-write-actor";
+import { assertJgFeeMutable } from "@/server/core/jg-fee-boundary";
 
 /**
  * 委外加工通知单 JG。审批走 docType "jg"（JG 与 WO 同域=PMC 审批）；
@@ -137,6 +138,7 @@ export async function createPcForJgFee(user: SessionUser, input: unknown, dbArg?
   // Hold it through pending-check, price snapshot, numbering and audit commit.
   const [jg]: JgRow[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, v.jgId)).for("update");
   if (!jg) throw new ApiError(404, `加工通知单不存在: #${v.jgId}`);
+  await assertJgFeeMutable(tx, v.jgId);
 
   // 已有待审的 jg_fee PC → 不重复发起（一次一单，避免并行改价互踩）
   const [open] = await tx

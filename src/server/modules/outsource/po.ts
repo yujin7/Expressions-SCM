@@ -19,6 +19,7 @@ import { skuLineMatch } from "@/server/core/doc-search";
 import { transitionDoc } from "@/server/docflow/transition";
 import { currentPriceListRow } from "./price-list";
 import { currentWriteActor } from "@/server/core/current-write-actor";
+import { assertJgFeeMutable } from "@/server/core/jg-fee-boundary";
 import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 
 /** 采购订单 PO + 价格变更 PC（R1：基础单位未税比价；异动自动生成 PC，PO 留在草稿） */
@@ -240,12 +241,15 @@ export async function approvePc(
         if (pc.jgId == null) throw new ApiError(500, `jg_fee PC 缺 jgId: #${id}`);
         const [jg]: (typeof jgDocs.$inferSelect)[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, pc.jgId)).for("update");
         if (!jg) throw new ApiError(409, "关联加工单不存在，请核对改价来源");
+        await assertJgFeeMutable(tx, pc.jgId);
         // Legacy duplicate requests must not overwrite a fee changed since application.
         // Throwing rolls back approval, PC state and audit together; rejection remains available.
         if (dCmp(jg.feeRateCurrent, pc.oldPrice) !== 0) {
           throw new ApiError(409, "加工费现价已与申请原价不一致，请核对并驳回旧申请后重新发起");
         }
         const now = new Date();
+        // Record the same locked effect time as the segment (transaction-start approval time may predate a lock wait).
+        await tx.update(pcDocs).set({ updatedAt: now }).where(eq(pcDocs.id, id));
         await tx
           .update(jgDocs)
           .set({ feeRateCurrent: pc.newPrice, updatedAt: now })

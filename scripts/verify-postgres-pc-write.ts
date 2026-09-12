@@ -7,6 +7,7 @@ import { eq } from "drizzle-orm";
 import * as s from "@/db/schema";
 import { createPcForJgFee } from "@/server/modules/outsource/jg";
 import { approvePc } from "@/server/modules/outsource/po";
+import { approveJs, createJs, refreshJsFee, submitJs } from "@/server/modules/settlement/js";
 import { reviewContractConnectionString } from "./verify-postgres-review-atomicity";
 
 async function main() {
@@ -85,13 +86,57 @@ async function main() {
     assert.equal(rejectedEffects.rows[0].n, 0);
     console.log("PASS legacy parallel application cannot overwrite a newly approved fee");
 
+    const [plannerRow] = await dbA.insert(s.users).values({ name: `PC-${key}-planner`, roles: ["pmc"], isApprover: true }).returning();
+    const [financeRow] = await dbA.insert(s.users).values({ name: `PC-${key}-finance`, roles: ["finance"], isApprover: true }).returning();
+    const planner = { id: plannerRow.id, name: plannerRow.name, roles: plannerRow.roles, isApprover: true };
+    const finance = { id: financeRow.id, name: financeRow.name, roles: financeRow.roles, isApprover: true };
+    await dbA.insert(s.approvalConfigs).values({ docType: "js", approverRole: "finance" }).onConflictDoNothing();
+    const [wh] = await dbA.insert(s.warehouses).values({ code: `PC-${key}`, name: "合成委外仓", kind: "outsource", supplierId: supplier.id }).returning();
+    const receivedJg = async () => {
+      const jg = await freshJg();
+      await dbA.update(s.jgDocs).set({ status: "completed" }).where(eq(s.jgDocs.id, jg.id));
+      await dbA.insert(s.jgFeeSegments).values({ jgId: jg.id, rate: "2.50", effectiveFrom: new Date("2020-01-01T00:00:00Z") });
+      const [sh] = await dbA.insert(s.shDocs).values({ docNo: `SH-${key}-${seq}`, sourceType: "jg", sourceId: jg.id, warehouseId: wh.id,
+        createdBy: planner.id, status: "completed", createdAt: new Date("2020-02-01T00:00:00Z") }).returning();
+      const [line] = await dbA.insert(s.shLines).values({ shId: sh.id, skuId: sku.id, lineType: "normal", actualQty: "10" }).returning();
+      const [qc] = await dbA.insert(s.qcRecords).values({ shId: sh.id, conclusion: "合格", createdBy: planner.id }).returning();
+      await dbA.insert(s.qcLines).values({ qcId: qc.id, shLineId: line.id, passQty: "10", concessionQty: "0" });
+      return jg;
+    };
+    const forCreate = await receivedJg();
+    const retro = await createPcForJgFee(maker, { ...input(forCreate.id, "3.50"), scope: "retroactive" }, dbA);
+    const createRace = await race(tx => approvePc(checker, retro.id, { action: "approve", version: 1 }, tx),
+      () => createJs(planner, { jgId: forCreate.id }, dbB));
+    assert(createRace.second.ok); assert.equal(createRace.second.value.feePayable, "35.00");
+    console.log("PASS JS creation waits for retrospective approval and saves its committed fee");
+
+    const forSubmit = await receivedJg();
+    const oldDraft = await createJs(planner, { jgId: forSubmit.id }, dbA);
+    const retro2 = await createPcForJgFee(maker, { ...input(forSubmit.id, "3.50"), scope: "retroactive" }, dbA);
+    const submitRace = await race(tx => approvePc(checker, retro2.id, { action: "approve", version: 1 }, tx),
+      () => submitJs(planner, oldDraft.id, { version: 1 }, dbB));
+    assert(!submitRace.second.ok); assert.equal(submitRace.second.error.status, 409);
+    assert.equal((await dbA.select().from(s.jsDocs).where(eq(s.jsDocs.id, oldDraft.id)))[0].status, "draft");
+    const refreshed = await refreshJsFee(planner, oldDraft.id, { version: 1 }, dbA);
+    assert.equal(refreshed.feePayable, "35.00");
+    console.log("PASS stale settlement submission waits, refuses and recovers via explicit fee refresh");
+
+    const ready = await submitJs(planner, oldDraft.id, { version: refreshed.version }, dbA);
+    const afterFreeze = await createPcForJgFee(maker, { ...input(forSubmit.id, "4.00"), scope: "retroactive" }, dbA);
+    const freezeRace = await race(tx => approveJs(finance, ready.id, { action: "approve", version: ready.version }, tx),
+      () => approvePc(checker, afterFreeze.id, { action: "approve", version: 1 }, dbB));
+    assert(!freezeRace.second.ok); assert.equal(freezeRace.second.error.status, 409);
+    assert.equal((await dbA.select().from(s.jsDocs).where(eq(s.jsDocs.id, ready.id)))[0].settleAmount, "35.00");
+    assert.equal((await dbA.select().from(s.jgDocs).where(eq(s.jgDocs.id, forSubmit.id)))[0].feeRateCurrent, "3.50");
+    console.log("PASS concurrent financial approval freezes settlement before the waiting fee change");
+
     const disabledTarget = await freshJg();
     const revoke = await race(tx => tx.update(s.users).set({ active: false }).where(eq(s.users.id, maker.id)),
       () => createPcForJgFee(maker, input(disabledTarget.id), dbB));
     assert(!revoke.second.ok); assert.equal(revoke.second.error.status, 403);
     assert.equal((await dbA.select().from(s.pcDocs).where(eq(s.pcDocs.jgId, disabledTarget.id))).length, 0);
     console.log("PASS creation waits for account disable and refuses the stale actor");
-    console.log(JSON.stringify({ passed: true, cases: 5, fixture: key, database: new URL(connectionString).pathname.slice(1) }));
+    console.log(JSON.stringify({ passed: true, cases: 8, fixture: key, database: new URL(connectionString).pathname.slice(1) }));
   } finally { await Promise.allSettled([a.end(), b.end(), control.end()]); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
