@@ -99,8 +99,8 @@ describe("D33 自动链的旧包材旁证", () => {
     const batch = result.batches.find((row) => row.woId === woId);
     expect(batch).toBeDefined();
     expect(batch).toMatchObject({
-      producible: 50,
-      suggestQty: 50,
+      producible: "50",
+      suggestQty: "50.0000",
       kitDate: null,
       referenceKitDate: referenceDate,
       referenceEvidenceCount: 1,

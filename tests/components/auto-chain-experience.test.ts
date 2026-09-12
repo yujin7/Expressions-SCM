@@ -27,7 +27,7 @@ const props = (type: string) => all(type)[0].props;
 const fetchMock = vi.fn<typeof fetch>();
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); return render(); };
 const preview = () => ({ flags: { autoWoOnBh: false, autoJgOnReady: false }, batches: [
-  { woId: 18, woDocNo: "WO-18", productCode: "CP-18", productName: "合成中文长名称精华", woQty: "100", producible: 50, alreadyBatched: "0", existingBatches: 0, suggestQty: 50, blockedReason: null,
+  { woId: 18, woDocNo: "WO-18", productCode: "CP-18", productName: "合成中文长名称精华", woQty: "100", producible: "50", alreadyBatched: "0", existingBatches: 0, suggestQty: "50.0000", blockedReason: null,
     kitDate: null, kitNote: "系统供给预测说明", kitBlockers: [{ materialSkuId: 8, shortBy: "3", readyDate: null }], referenceKitDate: null, referenceKitNote: "仅旁证", referenceEvidenceCount: 1, referenceReservedQty: "2" },
 ], wos: [{ bhId: 9, bhDocNo: "BH-9", skuId: 7, skuCode: "CP-7", qty: "10", supplierName: "合成OEM", feeRatePlan: "1", blockedReason: null }] });
 type Row = ReturnType<typeof preview>["batches"][number] | ReturnType<typeof preview>["wos"][number];
@@ -103,4 +103,15 @@ it("unmount aborts only the read, never the business mutation or a post-unmount 
 });
 it("source deep links preserve WO and BH identity", async () => {
   await begin(); expect(nodes(cell("工单"))[0].props.href).toBe("/outsource/wo?docId=18"); expect(nodes(cell("备货申请", 1))[0].props.href).toBe("/outsource/bh?docId=9");
+});
+
+it("renders exact large capacity and decimal suggested quantities without float conversion", async () => {
+  await begin();
+  const columns = table().columns as Column[];
+  const row = (table().dataSource as Row[])[0];
+  const capacity = columns.find(c => c.title === "到料可产")!.render!("999999999999980000000000", row);
+  expect(nodes(capacity)[0].props.children).toBe("999999999999980000000000");
+  const suggested = columns.find(c => c.title === "建议新批")!.render!;
+  expect(nodes(suggested("9.9000", row))[0].props.children).toBe("9.9");
+  expect(suggested("0.0000", row)).toBe("—");
 });
