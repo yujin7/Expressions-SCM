@@ -300,7 +300,7 @@ export default function TlClient() {
   ];
 
   const lineColumns: ColumnsType<TlLine> = [
-    { title: "物料", key: "material", render: (_, r) => `${r.skuCode} ${r.skuName}` },
+    { title: "物料", key: "material", width: 200, render: (_, r) => `${r.skuCode} ${r.skuName}` },
     { title: "单位", dataIndex: "baseUom", width: 70 },
     { title: "数量", dataIndex: "qty", width: 110, align: "right", render: (v: string) => formatQty(v) },
     {
@@ -318,7 +318,7 @@ export default function TlClient() {
   ];
 
   const createLineColumns: ColumnsType<CreateLine> = [
-    { title: "物料", key: "material", render: (_, r) => `${r.skuCode} ${r.skuName}` },
+    { title: "物料", key: "material", width: 200, render: (_, r) => `${r.skuCode} ${r.skuName}` },
     { title: "单位", dataIndex: "baseUom", width: 70 },
     {
       title: "退料数量",
@@ -467,7 +467,8 @@ export default function TlClient() {
                 description={overReturnAlert}
               />
             ) : null}
-            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}
+              styles={{ label: { width: 104, whiteSpace: "nowrap" }, content: { overflowWrap: "anywhere" } }}>
               <Descriptions.Item label="加工通知单">{detail.jgDocNo}</Descriptions.Item>
               <Descriptions.Item label="退料路径">
                 {detail.fromWarehouseName} → {detail.toWarehouseName}
@@ -487,6 +488,8 @@ export default function TlClient() {
               columns={lineColumns}
               dataSource={detail.lines}
               pagination={false}
+              scroll={{ x: 660 }}
+              tableLayout="fixed"
               style={{ marginBottom: 24 }}
             />
             {detail.approvals.length > 0 ? (
@@ -513,10 +516,12 @@ export default function TlClient() {
         onOk={() => void handleCreate()}
       >
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
+          <Alert type="info" showIcon message="收货关闭后、结算冻结前可退回实物余料。"
+            description="退料不会自动更新结算，请通知PMC核对草稿或待审批依据。结算已冻结的工单禁止继续退料，请联系财务和仓管核对库存及差额纠错，不改写历史金额。" />
           <div>
-            <div style={{ marginBottom: 4 }}>加工通知单（仅 已审批/执行中）</div>
+            <div style={{ marginBottom: 4 }}>加工通知单（已审批、执行中、收货关闭或短关）</div>
             <RemoteSelect
-              api="/api/outsource/jg?receiptEligible=1"
+              api="/api/outsource/jg?returnEligible=1"
               disabled={createLoading}
               style={{ width: "100%" }}
               placeholder="选择加工通知单"
@@ -553,6 +558,8 @@ export default function TlClient() {
               columns={createLineColumns}
               dataSource={createLines}
               pagination={false}
+              scroll={{ x: 580 }}
+              tableLayout="fixed"
               locale={{ emptyText: materialRead.error ? "物料读取失败" : jgId == null ? "请先选择加工通知单" : "当前工单没有物料行" }}
             />
           </div>

@@ -4,6 +4,7 @@ import { jgDocs, sysParams, warehouses } from "@/db/schema";
 import { nextStatus } from "@/server/docflow/state";
 import { ApiError } from "@/server/modules/master/common";
 import type { AnyDb } from "@/server/modules/outsource/common";
+import { getFrozenJgSettlement } from "@/server/core/jg-fee-boundary";
 
 /**
  * W4 物料流转链（FL/TL/SH+QC/CT）公共工具（模块私有）。
@@ -34,14 +35,25 @@ export async function getGlobalParam(db: AnyDb, key: string, fallback: string): 
 
 type JgRow = typeof jgDocs.$inferSelect;
 
-/** JG 回查：存在 + 处于可发/收料状态（已审批/执行中） */
-export async function getJgForMatflow(db: AnyDb, jgId: number): Promise<JgRow> {
+/** 发料限已审批/执行中；退料可用已完成/已关闭JG，但结算冻结后必须另走纠错。 */
+export async function getJgForMatflow(db: AnyDb, jgId: number, operation: "issue" | "return" = "issue"): Promise<JgRow> {
   const [jg]: JgRow[] = await db.select().from(jgDocs).where(eq(jgDocs.id, jgId));
   if (!jg) throw new ApiError(404, `加工通知单不存在: #${jgId}`);
+  if (operation === "return") {
+    const settlement = await getFrozenJgSettlement(db, jgId);
+    if (settlement) throw new ApiError(409, `结算单 ${settlement.docNo} 已冻结，不可继续退料；损耗可能已核销，请联系财务和仓管核对库存及差额纠错，不可借用其他工单库存`);
+  }
+  if (operation === "return" && (jg.status === "completed" || jg.status === "closed")) return jg;
   if (jg.status !== "in_progress" && jg.status !== "approved") {
     throw new ApiError(409, `加工通知单当前状态不可操作: ${jg.status}（需 已审批/执行中）`);
   }
   return jg;
+}
+
+/** Serialize physical issue/return with JG closure and JS snapshot approval. */
+export async function lockMatflowJg(db: AnyDb, jgId: number): Promise<void> {
+  const [jg] = await db.select({ id: jgDocs.id }).from(jgDocs).where(eq(jgDocs.id, jgId)).for("update");
+  if (!jg) throw new ApiError(404, `加工通知单不存在: #${jgId}`);
 }
 
 type WarehouseRow = typeof warehouses.$inferSelect;

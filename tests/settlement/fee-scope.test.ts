@@ -6,7 +6,7 @@ import { createPcForJgFee } from "@/server/modules/outsource/jg";
 import { approvePc } from "@/server/modules/outsource/po";
 import { getPc } from "@/server/modules/outsource/pc-detail";
 import { maskSensitive } from "@/server/core/dto";
-import { approveJs, closeJgReceiving, createJs, getJs, previewJs, refreshJsFee, submitJs } from "@/server/modules/settlement/js";
+import { approveJs, closeJgReceiving, createJs, getJs, previewJs, refreshJsBasis, refreshJsFee, submitJs } from "@/server/modules/settlement/js";
 import { createTestDb } from "../helpers/db";
 
 let f: Awaited<ReturnType<typeof createTestDb>>, seq = 0;
@@ -20,7 +20,7 @@ beforeAll(async () => {
 });
 afterAll(async () => f?.client.close());
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
-it.each(["create", "refresh", "submit", "approve", "reject"])("%s rechecks stored channel restrictions without trusting caller scope", async operation => {
+it.each(["create", "refresh", "basis", "submit", "approve", "reject"])("%s rechecks stored channel restrictions without trusting caller scope", async operation => {
   const a = await setup();
   const js = operation === "create" ? null : await createJs(a.pmc, { jgId: a.jg.id }, f.db);
   if (operation === "approve" || operation === "reject") await submitJs(a.pmc, js!.id, { version: 1 }, f.db);
@@ -34,6 +34,7 @@ it.each(["create", "refresh", "submit", "approve", "reject"])("%s rechecks store
   const caller = { ...user, channelScope: null }; // Stored scope must win over stale/forged input.
   const run = operation === "create" ? createJs(caller, { jgId: a.jg.id }, f.db)
     : operation === "refresh" ? refreshJsFee(caller, js!.id, { version: 1 }, f.db)
+    : operation === "basis" ? refreshJsBasis(caller, js!.id, { version: 1, basisToken: "0".repeat(64), note: "范围" }, f.db)
     : operation === "submit" ? submitJs(caller, js!.id, { version: 1 }, f.db)
     : approveJs(caller, js!.id, { action: operation, version: 2 }, f.db);
   await expect(run).rejects.toMatchObject({ status: 403, message: expect.stringContaining("渠道范围") });

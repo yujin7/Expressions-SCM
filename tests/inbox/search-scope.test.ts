@@ -18,6 +18,7 @@ import { getChain } from "@/server/modules/outsource/chain";
 import { GET as jsDetailRoute } from "@/app/api/settlement/js/[id]/route";
 import { GET as jsListRoute } from "@/app/api/settlement/js/route";
 import { GET as jsPreviewRoute } from "@/app/api/settlement/js/preview/route";
+import { GET as jsBasisRoute } from "@/app/api/settlement/js/[id]/basis/route";
 import { canReadSettlement } from "@/server/modules/settlement/read-access";
 
 let routeDb: TestDb;
@@ -208,6 +209,9 @@ describe("BH navigation uses the same visibility as its list", () => {
       expect(allowed.search.groups[0].items[0].label).toBe("JS-SCOPE-PRIVATE");
       expect((await allowed.chain.json()).nodes.some((n: { current: boolean }) => n.current)).toBe(true);
       expect((await jsPreviewRoute(new NextRequest(`http://localhost/api/settlement/js/preview?jgId=${jgId}`))).status).toBe(403);
+      const basis = await jsBasisRoute(new NextRequest(`http://localhost/api/settlement/js/${jsId}/basis`), { params: Promise.resolve({ id: String(jsId) }) });
+      expect(basis.status).toBe(403);
+      expect(JSON.stringify(await basis.json())).not.toMatch(/basisToken|settleAmount|deductPrice/);
       routeActor = { ...routeActor, isApprover: false };
       expect((await jsReads()).detail.status).toBe(403);
       routeActor = { ...routeActor, isApprover: true, channelScope: [] };
@@ -230,6 +234,7 @@ describe("BH navigation uses the same visibility as its list", () => {
       const r = await jsReads();
       expect([r.detail.status, r.list.status, r.chain.status]).toEqual([403, 403, 404]);
       expect((await jsPreviewRoute(new NextRequest(`http://localhost/api/settlement/js/preview?jgId=${jgId}`))).status).toBe(403);
+      expect((await jsBasisRoute(new NextRequest(`http://localhost/api/settlement/js/${jsId}/basis`), { params: Promise.resolve({ id: String(jsId) }) })).status).toBe(403);
     } finally { routeActor = viewer; }
   });
   it.each(["bad", "0", "-1", "", "1.5"])("invalid JG filter %s must not silently return an unfiltered settlement list", async value => {

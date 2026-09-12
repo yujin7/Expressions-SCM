@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
    approvals, pcDocs, flDocs, flLines, jgDocs, jgFeeSegments, jsDocs, jsLines,
@@ -20,7 +21,7 @@ import {
 import { currentPriceListRow } from "@/server/modules/outsource/price-list";
 import { post } from "@/server/posting";
 import { settle, type SettleResult } from "@/server/rules/settlement";
-import { approveJsSchema, closeJgSchema, createJsSchema, submitJsSchema } from "./schemas";
+import { approveJsSchema, closeJgSchema, createJsSchema, refreshJsBasisSchema, submitJsSchema } from "./schemas";
 import { loadSettlementReadPolicy } from "./read-access";
 import { loadUserScopes } from "@/server/core/data-scope";
 
@@ -268,9 +269,16 @@ export async function previewJs(jgId: number, manualAdj = "0", dbArg?: AnyDb): P
     }
   }
 
+  // A material may occur on several WO snapshot lines. Its issued/returned totals belong
+  // to the SKU once, not to each BOM component row; sum its per-unit requirement first.
+  const materialBySku = new Map<number, typeof materialRows[number]>();
+  for (const row of materialRows) {
+    const previous = materialBySku.get(row.materialSkuId);
+    materialBySku.set(row.materialSkuId, { ...row, qtyPer: dAdd(previous?.qtyPer ?? "0", row.qtyPer, 4) });
+  }
   const settleMaterials = [];
   const lineMeta: { skuCode: string; skuName: string; issuedQty: string; returnedQty: string; allowedLossRatePct: string; qtyPer: string }[] = [];
-  for (const m of materialRows) {
+  for (const m of materialBySku.values()) {
     const lossRate = await getLossRatePct(db, m.lossCategory);
     if (lossRate == null) {
       warnings.push(
@@ -501,6 +509,73 @@ async function assertCurrentFee(tx: AnyDb, doc: JsRow) {
   if (dCmp(doc.feePayable, preview.feePayable) !== 0 || dCmp(doc.concessionPrice, preview.concessionPrice) !== 0) {
     throw new ApiError(409, "加工费依据已变化：草稿请先更新加工费；待审批单请由财务驳回后更新再提交");
   }
+  const savedLines = await tx.select().from(jsLines).where(eq(jsLines.jsId, doc.id));
+  if (basisKey(doc, savedLines) !== basisKey(preview, preview.lines)) {
+    throw new ApiError(409, "结算物料或扣款依据已变化，请核对结算依据；草稿由PMC更新，待审批单先驳回，不能按旧依据批准");
+  }
+}
+
+const BASIS_HEADER_FIELDS = ["goodQty", "concessionQty", "spareQty", "feePayable", "concessionPrice", "deductionTotal", "manualAdj", "settleAmount"] as const;
+const BASIS_LINE_FIELDS = ["issuedQty", "returnedQty", "stdQty", "allowedLoss", "actualLoss", "excessLoss", "deductPrice", "deductAmount"] as const;
+type BasisHeader = Pick<JsRow, typeof BASIS_HEADER_FIELDS[number]>;
+type BasisLine = Pick<typeof jsLines.$inferSelect, "materialSkuId" | typeof BASIS_LINE_FIELDS[number]>;
+function basisKey(header: BasisHeader, lines: BasisLine[]) {
+  return JSON.stringify({ header: BASIS_HEADER_FIELDS.map(k => dQty(header[k])),
+    lines: lines.map(l => [l.materialSkuId, ...BASIS_LINE_FIELDS.map(k => dQty(l[k]))])
+      .sort((a, b) => Number(a[0]) - Number(b[0]) || JSON.stringify(a).localeCompare(JSON.stringify(b))) });
+}
+
+async function readBasis(tx: AnyDb, doc: JsRow) {
+  const savedLines = await tx.select({ ...getJsLineColumns(), skuCode: skus.code, skuName: skus.name })
+    .from(jsLines).innerJoin(skus, eq(jsLines.materialSkuId, skus.id)).where(eq(jsLines.jsId, doc.id)).orderBy(asc(jsLines.id));
+  const current = await previewJs(doc.jgId, doc.manualAdj, tx);
+  const saved = { ...Object.fromEntries(BASIS_HEADER_FIELDS.map(k => [k, doc[k]])) as BasisHeader, lines: savedLines };
+  const savedKey = basisKey(doc, savedLines), currentKey = basisKey(current, current.lines);
+  // Freshness token binds the exact reviewed persisted version and current calculations.
+  // It grants no authority and contains no raw monetary facts.
+  const basisToken = createHash("sha256").update(JSON.stringify([doc.id, doc.version, savedKey, currentKey, current.warnings])).digest("hex");
+  return { id: doc.id, docNo: doc.docNo, version: doc.version, status: doc.status,
+    saved, current, changed: savedKey !== currentKey, basisToken };
+}
+
+function getJsLineColumns() {
+  return { materialSkuId: jsLines.materialSkuId, issuedQty: jsLines.issuedQty, returnedQty: jsLines.returnedQty,
+    stdQty: jsLines.stdQty, allowedLoss: jsLines.allowedLoss, actualLoss: jsLines.actualLoss, excessLoss: jsLines.excessLoss,
+    deductPrice: jsLines.deductPrice, deductAmount: jsLines.deductAmount };
+}
+
+/** Read-only review, including frozen history. Never replaces the saved document on GET. */
+export async function getJsBasis(user: SessionUser, id: number, dbArg?: AnyDb) {
+  const db = await resolveDb(dbArg);
+  if (!(await loadSettlementReadPolicy(db, user)).allowed || !canSeePrices(user.roles)) {
+    throw new ApiError(403, "无权限核对结算金额依据");
+  }
+  return db.transaction(async (tx: AnyDb) => readBasis(tx, await lockedJs(tx, id)));
+}
+
+/** Explicit reviewed draft recovery. No ledger effects; immutable approvals and frozen JS stay intact. */
+export async function refreshJsBasis(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb) {
+  const v = refreshJsBasisSchema.parse(input), db = await resolveDb(dbArg);
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user); requireAnyRole(actor, "pmc");
+    await assertSettlementWriteAccess(tx, actor);
+    const doc = await lockedJs(tx, id);
+    if (doc.status !== "draft" || doc.version !== v.version) throw new ApiError(409, "仅当前版本草稿可更新依据；待审批单先驳回，已审批结算请交财务处理差额");
+    const review = await readBasis(tx, doc);
+    if (review.basisToken !== v.basisToken) throw new ApiError(409, "核对后结算依据又有变化，请重新读取并核对，不会自动覆盖");
+    if (!review.changed) return doc;
+    const values = Object.fromEntries(BASIS_HEADER_FIELDS.map(k => [k, review.current[k]])) as BasisHeader;
+    // Draft rows have never been posted; replace the snapshot as one versioned transaction.
+    await tx.delete(jsLines).where(eq(jsLines.jsId, id));
+    if (review.current.lines.length) await tx.insert(jsLines).values(review.current.lines.map(l => ({ jsId: id,
+      materialSkuId: l.materialSkuId, ...Object.fromEntries(BASIS_LINE_FIELDS.map(k => [k, l[k]])) as Omit<BasisLine, "materialSkuId"> })));
+    const [updated]: JsRow[] = await tx.update(jsDocs).set({ ...values, version: sql`${jsDocs.version} + 1`, updatedAt: new Date() })
+      .where(eq(jsDocs.id, id)).returning();
+    await writeAudit(tx, { userId: actor.id, entity: "js", entityId: id, action: "refresh_basis",
+      before: review.saved, after: { ...values, lines: review.current.lines, note: v.note, warnings: review.current.warnings,
+        deductPriceSource: review.current.deductPriceSource, retrospectivePc: review.current.retrospectivePc } });
+    return updated;
+  });
 }
 
 /** Explicit fee-only draft refresh: preserve material deductions, manual adjustments and posted history. */

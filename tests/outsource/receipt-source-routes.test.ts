@@ -17,3 +17,11 @@ it.each([poGet, jgGet])("source route validates receipt flag and exact selected 
   expect(get === poGet ? mocks.listPo : mocks.listJg).toHaveBeenCalledWith("SKU", expect.objectContaining({ receiptEligible: true, selectedValues: [7], page: 2, pageSize: 50 }));
   expect(mocks.guard).toHaveBeenCalledTimes(4);
 });
+it("return eligibility accepts one explicit flag, never a contradictory or ignored filter", async () => {
+  for (const query of ["returnEligible=0", "returnEligible=1&returnEligible=1", "returnEligible=1&receiptEligible=1"]) {
+    expect((await jgGet(new NextRequest(`http://localhost/api?${query}`))).status).toBe(400);
+  }
+  expect(mocks.listJg).not.toHaveBeenCalled();
+  expect((await jgGet(new NextRequest("http://localhost/api?returnEligible=1"))).status).toBe(200);
+  expect(mocks.listJg).toHaveBeenCalledWith("", expect.objectContaining({ returnEligible: true, receiptEligible: false }));
+});

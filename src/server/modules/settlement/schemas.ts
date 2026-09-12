@@ -35,6 +35,11 @@ export const submitJsSchema = z.object({
   version: z.number().int().positive(),
 });
 
+export const refreshJsBasisSchema = submitJsSchema.extend({
+  basisToken: z.string().regex(/^[a-f0-9]{64}$/, "请先读取并核对当前结算依据"),
+  note: z.string().trim().min(1, "请填写依据更新说明").max(500),
+});
+
 // ---------- 审批（财务；结余物料须确认或先退料 TL） ----------
 
 export const approveJsSchema = z

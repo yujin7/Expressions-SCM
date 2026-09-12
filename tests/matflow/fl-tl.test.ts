@@ -1,5 +1,5 @@
 import { eq, inArray } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
   approvalConfigs, auditLogs, boms, flDocs, jgDocs, skus, spus, stockBalances,
   stockLedger, suppliers, tlDocs, users, warehouses, woDocs, woLines,
@@ -9,6 +9,7 @@ import { getBalance } from "@/server/posting";
 import { approveFl, createFl, getFl, listFls, submitFl } from "@/server/modules/matflow/fl";
 import { approveTl, createTl, getTl, listTls, submitTl } from "@/server/modules/matflow/tl";
 import { createTestDb, type TestDb } from "../helpers/db";
+import * as auditModule from "@/server/core/audit";
 
 /**
  * W4 发料 FL / 退料 TL：
@@ -115,8 +116,9 @@ describe("物料流转 W4：FL 发料 / TL 退料", () => {
     expect(fl.toWarehouseId).toBe(whWxId); // 自动 = 该加工厂委外仓
 
     // 非仓管拒建
+    const [ops] = await db.insert(users).values({ name: "非仓管", roles: ["ops"] }).returning();
     await expect(
-      createFl({ ...whCreator, roles: ["ops"] }, { jgId: jg1, fromWarehouseId: whRawId, lines: [{ skuId: yl, qty: "1" }] }, db),
+      createFl({ id: ops.id, name: ops.name, roles: ops.roles, isApprover: false }, { jgId: jg1, fromWarehouseId: whRawId, lines: [{ skuId: yl, qty: "1" }] }, db),
     ).rejects.toMatchObject({ status: 403 });
 
     // 无委外仓的加工厂 → 404
@@ -247,6 +249,36 @@ describe("物料流转 W4：FL 发料 / TL 退料", () => {
     await expect(
       approveFl(whApprover, fl.id, { action: "approve", version: pending.version }, db),
     ).rejects.toMatchObject({ status: 403, message: expect.stringContaining("SELF_APPROVAL") });
+  });
+
+  it("退料提交审计失败整笔回滚；旧会话角色不能代替当前写入身份", async () => {
+    const tl = await createTl(whCreator, { jgId: jg1, toWarehouseId: whRawId, lines: [{ skuId: yl, qty: "1", reason: "surplus_return" }] }, db);
+    const fail = vi.spyOn(auditModule, "writeAudit").mockRejectedValueOnce(new Error("submit audit failed"));
+    try { await expect(submitTl(whCreator, tl.id, tl.version, db)).rejects.toThrow("submit audit failed"); } finally { fail.mockRestore(); }
+    expect((await db.select().from(tlDocs).where(eq(tlDocs.id, tl.id)))[0]).toMatchObject({ status: "draft", version: tl.version });
+    await db.update(users).set({ active: false }).where(eq(users.id, whCreator.id));
+    try {
+      await expect(submitTl(whCreator, tl.id, tl.version, db)).rejects.toMatchObject({ status: 403 });
+      await expect(createTl(whCreator, { jgId: jg1, toWarehouseId: whRawId, lines: [{ skuId: yl, qty: "1", reason: "surplus_return" }] }, db)).rejects.toMatchObject({ status: 403 });
+    } finally { await db.update(users).set({ active: true }).where(eq(users.id, whCreator.id)); }
+  });
+
+  it("关闭JG拦截待审发料但保留驳回；退料允许短关回收；审批仍核对当前身份", async () => {
+    const fl = await createFl(whCreator, { jgId: jg1, fromWarehouseId: whRawId, lines: [{ skuId: yl, qty: "1" }] }, db);
+    const fp = await submitFl(whCreator, fl.id, fl.version, db);
+    await db.update(jgDocs).set({ status: "closed" }).where(eq(jgDocs.id, jg1));
+    try {
+      await expect(approveFl(whApprover, fl.id, { action: "approve", version: fp.version }, db)).rejects.toMatchObject({ status: 409 });
+      expect((await db.select().from(flDocs).where(eq(flDocs.id, fl.id)))[0].status).toBe("pending");
+      await approveFl(whApprover, fl.id, { action: "reject", version: fp.version }, db);
+      const tl = await createTl(whCreator, { jgId: jg1, toWarehouseId: whRawId, lines: [{ skuId: yl, qty: "1", reason: "surplus_return" }] }, db);
+      const pending = await submitTl(whCreator, tl.id, tl.version, db);
+      await db.update(users).set({ isApprover: false }).where(eq(users.id, whApprover.id));
+      try { await expect(approveTl(whApprover, tl.id, { action: "approve", version: pending.version }, db)).rejects.toMatchObject({ status: 403 }); }
+      finally { await db.update(users).set({ isApprover: true }).where(eq(users.id, whApprover.id)); }
+      expect(await approveTl(whApprover, tl.id, { action: "approve", version: pending.version }, db)).toMatchObject({ status: "completed" });
+      expect(await approveTl(whApprover, tl.id, { action: "approve", version: pending.version }, db)).toMatchObject({ idempotent: true });
+    } finally { await db.update(jgDocs).set({ status: "in_progress" }).where(eq(jgDocs.id, jg1)); }
   });
 
   it("7) 审计留痕：FL/TL 每个写动作均有 audit_logs 行", async () => {
