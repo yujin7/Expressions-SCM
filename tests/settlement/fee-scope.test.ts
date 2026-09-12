@@ -4,7 +4,9 @@ import * as s from "@/db/schema";
 import * as audit from "@/server/core/audit";
 import { createPcForJgFee } from "@/server/modules/outsource/jg";
 import { approvePc } from "@/server/modules/outsource/po";
-import { approveJs, closeJgReceiving, createJs, previewJs, refreshJsFee, submitJs } from "@/server/modules/settlement/js";
+import { getPc } from "@/server/modules/outsource/pc-detail";
+import { maskSensitive } from "@/server/core/dto";
+import { approveJs, closeJgReceiving, createJs, getJs, previewJs, refreshJsFee, submitJs } from "@/server/modules/settlement/js";
 import { createTestDb } from "../helpers/db";
 
 let f: Awaited<ReturnType<typeof createTestDb>>, seq = 0;
@@ -121,4 +123,63 @@ it("closing receipts and submitting settlement roll back their transition on aud
   vi.spyOn(audit, "writeAudit").mockRejectedValueOnce(Error("submit audit failed"));
   await expect(submitJs(a.pmc, js.id, { version: 1 }, f.db)).rejects.toThrow("submit audit failed");
   expect((await f.db.select().from(s.jsDocs).where(eq(s.jsDocs.id, js.id)))[0]).toMatchObject({ status: "draft", version: 1 });
+});
+it("PC detail disables stale/frozen approval but preserves rejection and does not change facts", async () => {
+  const a = await setup();
+  const pc = await createPcForJgFee(a.purchasing, { jgId: a.jg.id, newPrice: "3", scope: "retroactive" }, f.db);
+  expect((await getPc(pc.id, a.purchasing, f.db)).actions).toMatchObject({ approve: false, reject: false });
+  expect((await getPc(pc.id, a.checker, f.db)).actions).toMatchObject({ approve: true, reject: true });
+  await f.db.update(s.jgDocs).set({ feeRateCurrent: "2.50" }).where(eq(s.jgDocs.id, a.jg.id));
+  expect((await getPc(pc.id, a.checker, f.db)).actions).toMatchObject({ approve: false, reject: true, reason: expect.stringContaining("原价不一致") });
+  const js = await createJs(a.pmc, { jgId: a.jg.id }, f.db);
+  await submitJs(a.pmc, js.id, { version: 1 }, f.db);
+  await approveJs(a.finance, js.id, { version: 2, action: "approve" }, f.db);
+  expect((await getPc(pc.id, a.checker, f.db)).actions).toMatchObject({ approve: false, reject: true, reason: expect.stringContaining("已冻结") });
+  expect((await f.db.select().from(s.pcDocs).where(eq(s.pcDocs.id, pc.id)))[0]).toMatchObject({ status: "pending", version: 1 });
+  const masked = maskSensitive(await getPc(pc.id, { ...a.checker, roles: ["warehouse"] }, f.db), ["warehouse"]);
+  expect(masked).not.toHaveProperty("newPrice"); expect(masked).not.toHaveProperty("oldPrice");
+  expect(masked.actions).toMatchObject({ approve: false, reject: false });
+  await approvePc(a.checker, pc.id, { action: "reject", version: 1 }, f.db);
+  expect((await getPc(pc.id, a.checker, f.db)).actions).toMatchObject({ approve: false, reject: false });
+});
+it("JS detail follows current approval configuration and retains monetary masking", async () => {
+  const a = await setup(), js = await createJs(a.pmc, { jgId: a.jg.id }, f.db);
+  expect((await getJs(js.id, f.db, a.pmc)).actions).toMatchObject({ submit: true, refreshFee: true, approve: false });
+  await submitJs(a.pmc, js.id, { version: 1 }, f.db);
+  expect((await getJs(js.id, f.db, a.finance)).actions).toMatchObject({ approve: true, reject: true });
+  await f.db.update(s.approvalConfigs).set({ approverRole: "purchasing" }).where(eq(s.approvalConfigs.docType, "js"));
+  try {
+    expect((await getJs(js.id, f.db, a.finance)).actions).toMatchObject({ approve: false, reject: false });
+    expect((await getJs(js.id, f.db, a.checker)).actions).toMatchObject({ approve: true, reject: true });
+    const masked = maskSensitive(await getJs(js.id, f.db, { ...a.checker, roles: ["warehouse"] }), ["warehouse"]);
+    expect(masked).not.toHaveProperty("feePayable"); expect(masked).not.toHaveProperty("settleAmount");
+    expect(masked.actions).toMatchObject({ approve: false, reject: false });
+  } finally {
+    await f.db.update(s.approvalConfigs).set({ approverRole: "finance" }).where(eq(s.approvalConfigs.docType, "js"));
+  }
+});
+it.each(["ops", "warehouse", "quality"])("JS configured %s checker cannot approve hidden amounts; rejection stays atomic", async role => {
+  const a = await setup(), checker = await actor([role]);
+  const js = await createJs(a.pmc, { jgId: a.jg.id }, f.db);
+  await submitJs(a.pmc, js.id, { version: 1 }, f.db);
+  await f.db.update(s.approvalConfigs).set({ approverRole: role }).where(eq(s.approvalConfigs.docType, "js"));
+  try {
+    const detail = maskSensitive(await getJs(js.id, f.db, checker), checker.roles);
+    expect(detail.actions).toMatchObject({ approve: false, reject: true });
+    expect(detail).not.toHaveProperty("feePayable");
+    await expect(approveJs(checker, js.id, { action: "approve", version: 2 }, f.db))
+      .rejects.toMatchObject({ status: 403, message: expect.stringContaining("不可查看结算金额") });
+    // A stale caller-supplied finance role cannot bypass the current database identity.
+    await expect(approveJs({ ...checker, roles: [role, "finance"] }, js.id, { action: "approve", version: 2 }, f.db))
+      .rejects.toMatchObject({ status: 403 });
+    expect((await getJs(js.id, f.db)).status).toBe("pending");
+    expect((await getJs(js.id, f.db)).approvals).toEqual([]);
+    expect((await getJs(js.id, f.db)).version).toBe(2);
+    await approveJs(checker, js.id, { action: "reject", version: 2, comment: "请配置金额可见审批人" }, f.db);
+    const rejected = await getJs(js.id, f.db);
+    expect(rejected).toMatchObject({ status: "draft", version: 3, feePayable: "20.00" });
+    expect(rejected.approvals).toHaveLength(1);
+  } finally {
+    await f.db.update(s.approvalConfigs).set({ approverRole: "finance" }).where(eq(s.approvalConfigs.docType, "js"));
+  }
 });

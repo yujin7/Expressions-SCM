@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
-   approvals, pcDocs, flDocs, flLines, jgDocs, jgFeeSegments, jsDocs, jsLines,
+   approvalConfigs, approvals, pcDocs, flDocs, flLines, jgDocs, jgFeeSegments, jsDocs, jsLines,
   shDocs, shLines, qcLines, skus, suppliers, sysParams,
   tlDocs, tlLines, users, warehouses, woDocs, woLines,
 } from "@/db/schema";
@@ -8,9 +8,9 @@ import { PARAM_KEYS } from "@/server/core/constants";
 import { dAdd, dCmp, dDiv, dMoney, dMul, dNeg, dQty, dSub, dZero } from "@/server/core/decimal";
 import { currentWriteActor } from "@/server/core/current-write-actor";
 import { processingFeeAt } from "@/server/rules/processing-fee";
-import type { SessionUser } from "@/server/core/dto";
+import { canSeePrices, type SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
+import { approvalRoleError, approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { nextStatus, TransitionError, type DocStatus } from "@/server/docflow/state";
 import { ApiError } from "@/server/modules/master/common";
@@ -545,6 +545,11 @@ export async function approveJs(
   try {
     return await db.transaction(async (tx: AnyDb) => {
       const actor = await currentWriteActor(tx, user), doc = await lockedJs(tx, id);
+      // Configuration alone cannot grant review of amounts hidden by the DTO policy.
+      // Rejection remains available to an otherwise qualified checker for recovery.
+      if (v.action === "approve" && !canSeePrices(actor.roles)) {
+        throw new ApiError(403, "当前角色不可查看结算金额，不能审批通过；请联系管理员配置具备金额查看权限的审批人，或驳回交PMC核对");
+      }
       const lines: (typeof jsLines.$inferSelect)[] = await tx
         .select()
         .from(jsLines)
@@ -640,7 +645,24 @@ export async function approveJs(
 
 // ---------- 查询 ----------
 
-export async function getJs(id: number, dbArg?: AnyDb) {
+/** Role/config hints only: submit and approval still revalidate monetary/quantity facts in their transaction. */
+export function jsTaskActions(user: SessionUser, doc: { status: string; createdBy: number | null }, role: string | null) {
+  const pmc = user.roles.includes("admin") || user.roles.includes("pmc"), maker = user.id === doc.createdBy;
+  const qualification = approvalRoleError(user, role);
+  const submit = doc.status === "draft" && (maker || pmc);
+  const reject = doc.status === "pending" && !maker && !qualification;
+  const approve = reject && canSeePrices(user.roles);
+  const reason = doc.status === "draft"
+    ? submit ? "核对已保存的数量与金额后提交；加工费更新仅限PMC/管理员，不改变物料扣款或手工调整。" : "请联系制单人、PMC或管理员核对并提交；加工费更新仅限PMC/管理员。"
+    : doc.status === "pending" ? maker ? "制单人不可自审或自行驳回；请另一位有资格的审批人处理。"
+      : qualification?.message ?? (!canSeePrices(user.roles)
+        ? "当前角色不可查看结算金额，不能审批通过；请联系管理员配置具备金额查看权限的审批人，或驳回交PMC核对。"
+        : "当前具备审批资格；提交时仍须核对费用、数量及余料，异常可驳回交PMC处理。")
+    : "结算已冻结或结束，只读保留历史；如有差额请联系财务，不可重算或重复审批。";
+  return { submit, refreshFee: doc.status === "draft" && pmc, approve, reject, reason };
+}
+
+export async function getJs(id: number, dbArg?: AnyDb, user?: SessionUser) {
   const db = await resolveDb(dbArg);
   const [doc] = await db
     .select({
@@ -699,8 +721,10 @@ export async function getJs(id: number, dbArg?: AnyDb) {
     .orderBy(asc(jsLines.id));
 
   const approvalRows = await loadApprovalHistory(db, "js", id);
+  const [cfg] = user ? await db.select({ role: approvalConfigs.approverRole }).from(approvalConfigs).where(eq(approvalConfigs.docType, "js")) : [];
 
-  return { ...doc, lines, approvals: approvalRows, deductPriceSource: "price_list_proxy" as const };
+  return { ...doc, lines, approvals: approvalRows, deductPriceSource: "price_list_proxy" as const,
+    actions: user ? jsTaskActions(user, doc, cfg?.role ?? null) : undefined };
 }
 
 export async function listJss(
